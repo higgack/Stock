@@ -144,6 +144,14 @@ def _split(text: str, size: int) -> list[str]:
         return [text]
     chunks, buf, cur = [], [], 0
     for line in text.splitlines(keepends=True):
+        # Hard-split lines that alone exceed the size budget — otherwise
+        # Telegram rejects them with HTTP 413.
+        while len(line) > size:
+            if buf:
+                chunks.append("".join(buf))
+                buf, cur = [], 0
+            chunks.append(line[:size])
+            line = line[size:]
         if cur + len(line) > size and buf:
             chunks.append("".join(buf))
             buf, cur = [], 0
