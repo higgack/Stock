@@ -20,7 +20,10 @@ def _build_config() -> dict:
     config = DEFAULT_CONFIG.copy()
     config["llm_provider"] = "google"
     config["deep_think_llm"] = "gemini-2.5-flash"
-    config["quick_think_llm"] = "gemini-2.5-flash-lite"
+    # gemini-2.5-flash (not -lite) is materially more reliable at honoring
+    # tool-call protocols and language directives. The free tier is slower
+    # but the cost difference is small relative to the quality gain.
+    config["quick_think_llm"] = "gemini-2.5-flash"
     config["google_thinking_level"] = "minimal"
     config["max_debate_rounds"] = 1
     config["max_risk_discuss_rounds"] = 1
@@ -69,10 +72,35 @@ def _format_full(state: dict, decision: str, ticker: str, date_: str) -> str:
         ("trader_investment_plan", "💼 트레이더 제안"),
     ]:
         body = state.get(key) if isinstance(state, dict) else None
-        if body:
-            parts.append(f"\n## {label}\n{body}")
+        parts.append(f"\n## {label}\n{_clean_section(body)}")
     parts.append(f"\n## ✅ 최종 결정\n{decision}")
     return "\n".join(parts)
+
+
+_GARBAGE_MARKERS = (
+    '{"error"',
+    '"error":',
+    "tool_code",
+    "default_api.",
+    "print(default_api",
+)
+_FAILURE_PLACEHOLDER = "_(이번 분석은 모델 응답 오류로 미완성. 다른 티커로 재시도해보세요.)_"
+
+
+def _clean_section(body) -> str:
+    """Replace empty or obviously-broken agent output with a clear placeholder.
+
+    Gemini occasionally emits a JSON error blob, raw tool_code, or no content
+    at all instead of a real report. Surface that as an explicit failure marker
+    so the reader knows the section is missing rather than silently dropping
+    it (which used to leave the report header followed by the next section).
+    """
+    if not body or not body.strip():
+        return _FAILURE_PLACEHOLDER
+    head = body.strip()[:500]
+    if any(m in head for m in _GARBAGE_MARKERS):
+        return _FAILURE_PLACEHOLDER
+    return body
 
 
 def _extract_rating(decision: str) -> str | None:
