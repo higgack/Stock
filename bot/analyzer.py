@@ -51,9 +51,9 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
 def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
     rating = _extract_rating(decision) or "N/A"
     return (
-        f"📊 <b>{ticker}</b> ({date_})\n"
+        f"📊 **{ticker}** ({date_})\n"
         f"━━━━━━━━━━━━━━\n"
-        f"🎯 최종 판정: <b>{rating}</b>\n\n"
+        f"🎯 최종 판정: **{rating}**\n\n"
         f"{_first_lines(decision, max_lines=8)}"
     )
 

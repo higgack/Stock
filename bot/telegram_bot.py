@@ -9,6 +9,7 @@ Flow:
 """
 
 import asyncio
+import html as _html
 import logging
 import os
 import re
@@ -47,7 +48,9 @@ CHANNEL_CHAT_IDS: set[int] = {int(x) for x in _raw_ids.split(",") if x.strip()}
 
 TICKER_PREFIX = "-"
 TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.]{0,9}$")
-TELEGRAM_LIMIT = 4000
+# Headroom under Telegram's 4096-char sendMessage cap, leaving room for the
+# small per-chunk overhead added by the Markdown→HTML conversion.
+TELEGRAM_LIMIT = 3500
 
 # In-memory cache: callback_id -> full markdown report
 _FULL_CACHE: dict[str, str] = {}
@@ -79,7 +82,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     # Immediately post a progress message to the channel
     progress = await ctx.bot.send_message(
         chat_id=post.chat.id,
-        text=f"📊 <b>{raw}</b> 분석 시작… (1~3분 소요)",
+        text=f"📊 <b>{_html.escape(raw)}</b> 분석 시작… (1~3분 소요)",
         parse_mode=ParseMode.HTML,
     )
 
@@ -89,7 +92,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as exc:
         log.exception("analysis failed for %s", raw)
         await ctx.bot.edit_message_text(
-            text=f"❌ <b>{raw}</b> 분석 실패: {exc!s}",
+            text=f"❌ <b>{_html.escape(raw)}</b> 분석 실패: {_html.escape(str(exc))}",
             chat_id=post.chat.id,
             message_id=progress.message_id,
             parse_mode=ParseMode.HTML,
@@ -103,7 +106,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         InlineKeyboardButton("📋 전체 리포트 보기", callback_data=f"full:{cb_id}")
     ]])
     await ctx.bot.edit_message_text(
-        text=summary,
+        text=_md_to_html(summary),
         chat_id=post.chat.id,
         message_id=progress.message_id,
         parse_mode=ParseMode.HTML,
@@ -129,11 +132,16 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         if not chunk.strip():
             continue  # Telegram rejects whitespace-only text
         try:
-            await query.message.reply_text(chunk)
+            await query.message.reply_text(
+                _md_to_html(chunk), parse_mode=ParseMode.HTML
+            )
         except Exception as exc:
             log.warning("chunk send failed (%d chars): %s", len(chunk), exc)
             try:
-                await query.message.reply_text(f"⚠️ 일부 본문 누락: {exc!s}")
+                await query.message.reply_text(
+                    f"⚠️ 일부 본문 누락: {_html.escape(str(exc))}",
+                    parse_mode=ParseMode.HTML,
+                )
             except Exception:
                 pass
 
@@ -146,6 +154,38 @@ async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         "예: <code>-NVDA</code>  <code>-AAPL</code>  <code>-TSLA</code>",
         parse_mode=ParseMode.HTML,
     )
+
+
+def _md_to_html(text: str) -> str:
+    """Render a subset of Markdown as Telegram HTML for readable formatting.
+
+    - **bold** → <b>bold</b>
+    - leading #/##/### → bold line
+    - "* " or "- " bullets → "• "
+    - Pipe-delimited tables → <pre> for monospace alignment
+    Other characters pass through after HTML escaping.
+    """
+    lines = text.splitlines()
+    blocks: list[tuple[str, list[str]]] = []
+    for line in lines:
+        kind = "table" if line.lstrip().startswith("|") else "prose"
+        if blocks and blocks[-1][0] == kind:
+            blocks[-1][1].append(line)
+        else:
+            blocks.append((kind, [line]))
+
+    out: list[str] = []
+    for kind, lns in blocks:
+        body = "\n".join(lns)
+        if kind == "table":
+            out.append("<pre>" + _html.escape(body) + "</pre>")
+        else:
+            body = _html.escape(body)
+            body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
+            body = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", body)
+            body = re.sub(r"(?m)^(\s*)[\*\-]\s+", r"\1• ", body)
+            out.append(body)
+    return "\n".join(out)
 
 
 def _split(text: str, size: int) -> list[str]:
