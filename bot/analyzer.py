@@ -105,6 +105,46 @@ _TOOL_HEADER_RE = re.compile(
 )
 _ESCAPED_NEWLINES_RE = re.compile(r"(?:\\n){2,}")
 
+# Comma-separated big numbers (≥ 1,000,000) and bare 9+-digit integers,
+# optionally followed by 달러/원. Negative lookbehinds avoid eating part of
+# IP-addresses or decimals.
+_LARGE_NUM_RE = re.compile(
+    r"(?<![\d.,])(\d{1,3}(?:,\d{3}){2,}|\d{9,})(\s*(?:달러|원))?"
+)
+# Decimals with 5+ digits after the dot — collapse to 4 places for readability.
+_LONG_DECIMAL_RE = re.compile(r"(?<![\d.])(\d+\.\d{5,})(?![\d.])")
+
+
+def _abbrev_korean(num: int) -> str:
+    if num >= 10**12:
+        return f"약 {num / 10**12:.2f}조"
+    if num >= 10**8:
+        return f"약 {num / 10**8:.0f}억"
+    if num >= 10**6:
+        return f"약 {num / 10**6:.1f}백만"
+    return ""
+
+
+def _abbrev_match(m: re.Match) -> str:
+    raw = m.group(0)
+    num_str = m.group(1).replace(",", "")
+    unit = (m.group(2) or "").strip()
+    try:
+        num = int(num_str)
+    except ValueError:
+        return raw
+    abbreviated = _abbrev_korean(num)
+    if not abbreviated:
+        return raw
+    return f"{abbreviated} {unit}".rstrip() if unit else abbreviated
+
+
+def _round_long_decimal(m: re.Match) -> str:
+    try:
+        return f"{float(m.group(1)):.4f}"
+    except ValueError:
+        return m.group(0)
+
 
 def _polish(body: str) -> str:
     """Strip noise patterns that agents occasionally leak into their text.
@@ -122,6 +162,8 @@ def _polish(body: str) -> str:
     body = _ESCAPED_NEWLINES_RE.sub("\n\n", body)
     # Any remaining stray literal '\n' becomes a real newline.
     body = body.replace("\\n", "\n")
+    body = _LARGE_NUM_RE.sub(_abbrev_match, body)
+    body = _LONG_DECIMAL_RE.sub(_round_long_decimal, body)
     body = re.sub(r"\n{3,}", "\n\n", body)
     return body.strip()
 

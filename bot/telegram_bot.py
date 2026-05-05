@@ -162,7 +162,8 @@ def _md_to_html(text: str) -> str:
     - **bold** → <b>bold</b>
     - leading #/##/### → bold line
     - "* " or "- " bullets → "• "
-    - Pipe-delimited tables → <pre> for monospace alignment
+    - Pipe-delimited tables → bullet lists (mobile-friendly; first cell
+      becomes a bold key, the rest joined with em dashes)
     Other characters pass through after HTML escaping.
     """
     # Normalize whitespace before block detection
@@ -181,15 +182,9 @@ def _md_to_html(text: str) -> str:
     out: list[str] = []
     for kind, lns in blocks:
         if kind == "table":
-            # Drop markdown alignment rows (e.g. "| :--- | :---: |") and
-            # strip bold markers from cells; <pre> keeps monospace alignment.
-            kept = [
-                ln for ln in lns
-                if not re.match(r"^\s*\|[\s\|:\-]+\|\s*$", ln)
-            ]
-            body = "\n".join(kept)
-            body = re.sub(r"\*\*(.+?)\*\*", r"\1", body)
-            out.append("<pre>" + _html.escape(body) + "</pre>")
+            rendered = _table_to_bullets(lns)
+            if rendered:
+                out.append(rendered)
         else:
             body = "\n".join(lns)
             body = _html.escape(body)
@@ -198,6 +193,45 @@ def _md_to_html(text: str) -> str:
             body = re.sub(r"(?m)^(\s*)[\*\-]\s+", r"\1• ", body)
             out.append(body)
     return "\n".join(out)
+
+
+def _table_to_bullets(lines: list[str]) -> str:
+    """Convert a Markdown pipe table into a Telegram-friendly bullet list.
+
+    Drops alignment rows like '| :--- | :--- |' and the header row, then
+    formats each remaining row as '• <b>{first cell}</b>: {others joined}'.
+    Rows whose only content is the first cell render as a bold section line.
+    """
+    rows: list[list[str]] = []
+    for line in lines:
+        if re.match(r"^\s*\|[\s\|:\-]+\|\s*$", line):
+            continue  # alignment row
+        cells = [c.strip() for c in line.split("|")]
+        if cells and not cells[0]:
+            cells = cells[1:]
+        if cells and not cells[-1]:
+            cells = cells[:-1]
+        if cells and any(c for c in cells):
+            rows.append(cells)
+
+    if len(rows) <= 1:
+        return ""  # only header (or empty) — nothing useful
+
+    # Skip header (row 0); render the rest as bullets.
+    bullets: list[str] = []
+    for row in rows[1:]:
+        # Strip Markdown bold from cells before HTML-escaping; the first
+        # cell gets wrapped in <b> on its own, and double-wrapping
+        # ('<b><b>...</b></b>') is invalid for Telegram.
+        cells = [_html.escape(re.sub(r"\*\*(.+?)\*\*", r"\1", c)) for c in row]
+        rest = [c for c in cells[1:] if c]
+        if not cells or not cells[0]:
+            continue
+        if not rest:
+            bullets.append(f"<b>{cells[0]}</b>")
+        else:
+            bullets.append(f"• <b>{cells[0]}</b>: {' — '.join(rest)}")
+    return "\n".join(bullets)
 
 
 def _split(text: str, size: int) -> list[str]:
