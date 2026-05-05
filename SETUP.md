@@ -61,14 +61,58 @@ python -m bot.telegram_bot
 
 봇 종료: `Ctrl+C`
 
-## Phase 2: GCP Compute Engine 배포 (다음 단계)
+## Phase 2: GCP Compute Engine 배포 (systemd 24h 운영)
 
-기존 `텔레그램 요약` VM에 추가 배포할 예정. systemd 서비스로 등록해서:
+기존 `텔레그램 요약` VM에 추가 배포. systemd 서비스로 등록하면:
 - VM 부팅 시 자동 시작
-- 충돌 시 자동 재시작
+- 봇 충돌 시 10초 후 자동 재시작
+- SSH 세션이 끊겨도 계속 실행 (단, **VM 자체는 켜져 있어야 함**)
 - `journalctl`로 로그 확인
 
-상세 단계는 본인의 기존 VM 환경 정보 받은 뒤 작성.
+### 1) 유닛 파일 설치
+
+레포의 `deploy/stock-bot.service` 를 systemd 디렉토리에 복사:
+
+```bash
+sudo cp /home/higgack/stock/deploy/stock-bot.service /etc/systemd/system/stock-bot.service
+sudo systemctl daemon-reload
+```
+
+User나 경로가 다르면 복사한 파일을 직접 수정 (`sudo nano /etc/systemd/system/stock-bot.service`).
+
+### 2) 부팅 자동 시작 + 즉시 실행
+
+```bash
+sudo systemctl enable stock-bot      # 부팅 시 자동 시작
+sudo systemctl start stock-bot       # 지금 실행
+sudo systemctl status stock-bot      # 상태 확인 (active (running) 이어야 정상)
+```
+
+### 3) 로그 확인
+
+```bash
+sudo journalctl -u stock-bot -f      # 실시간 follow
+sudo journalctl -u stock-bot -n 100  # 최근 100줄
+```
+
+성공 신호: `bot starting — watching channels: {...}` 로그가 보이면 OK.
+
+### 4) 운영 명령
+
+```bash
+sudo systemctl stop stock-bot        # 정지
+sudo systemctl restart stock-bot     # 재시작 (코드 변경 후)
+sudo systemctl disable stock-bot     # 부팅 자동 시작 해제
+```
+
+### 5) 코드 업데이트 시 워크플로
+
+```bash
+cd /home/higgack/stock
+git pull
+sudo systemctl restart stock-bot
+sudo journalctl -u stock-bot -n 30   # 정상 기동 확인
+```
 
 ## 비용 (Gemini Flash 기준)
 

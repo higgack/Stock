@@ -1,0 +1,17 @@
+[Unit]
+Description=Stock Analyst Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=higgack
+WorkingDirectory=/home/higgack/stock
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.telegram_bot
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
