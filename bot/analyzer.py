@@ -4,6 +4,7 @@ Keeps the heavy initialization out of the bot file and exposes a single
 synchronous `analyze(ticker, date)` call that returns (summary, full_report).
 """
 
+import re
 import sys
 from datetime import date as _date
 from pathlib import Path
@@ -88,6 +89,42 @@ _GARBAGE_MARKERS = (
 )
 _FAILURE_PLACEHOLDER = "_(이번 분석은 모델 응답 오류로 미완성. 다른 티커로 재시도해보세요.)_"
 
+# Patterns the agents sometimes emit that read as noise to a human reader.
+_FINAL_PROPOSAL_RE = re.compile(
+    r"^[^\n]*FINAL TRANSACTION PROPOSAL[^\n]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+# Raw tool-result fragments: news payload pieces that the agent should have
+# summarized but instead pasted verbatim. The dumps contain literal '\n'
+# escape sequences (two characters: a backslash followed by 'n'), not real
+# newlines, so the patterns match those escapes too.
+_LINK_LINE_RE = re.compile(r"\\?nLink:\s*[^\s\\]+", re.IGNORECASE)
+_TOOL_HEADER_RE = re.compile(
+    r"###\s+[^()\n\\]{1,300}\(source:\s*[^)\n\\]+\)",
+    re.IGNORECASE,
+)
+_ESCAPED_NEWLINES_RE = re.compile(r"(?:\\n){2,}")
+
+
+def _polish(body: str) -> str:
+    """Strip noise patterns that agents occasionally leak into their text.
+
+    Removes per-section 'FINAL TRANSACTION PROPOSAL' lines (the rating is
+    already extracted into the summary, so showing them again — sometimes
+    contradicting each other — just confuses the reader), raw tool-result
+    fragments like literal '\\nLink: https://...' and '### Title (source: X)'
+    headers, and collapses leftover literal '\\n\\n' escape sequences and
+    runs of blank lines.
+    """
+    body = _FINAL_PROPOSAL_RE.sub("", body)
+    body = _LINK_LINE_RE.sub("", body)
+    body = _TOOL_HEADER_RE.sub("", body)
+    body = _ESCAPED_NEWLINES_RE.sub("\n\n", body)
+    # Any remaining stray literal '\n' becomes a real newline.
+    body = body.replace("\\n", "\n")
+    body = re.sub(r"\n{3,}", "\n\n", body)
+    return body.strip()
+
 
 def _clean_section(body) -> str:
     """Replace empty or obviously-broken agent output with a clear placeholder.
@@ -96,13 +133,14 @@ def _clean_section(body) -> str:
     at all instead of a real report. Surface that as an explicit failure marker
     so the reader knows the section is missing rather than silently dropping
     it (which used to leave the report header followed by the next section).
+    Otherwise pass the body through `_polish` to remove leaked noise.
     """
     if not body or not body.strip():
         return _FAILURE_PLACEHOLDER
     head = body.strip()[:500]
     if any(m in head for m in _GARBAGE_MARKERS):
         return _FAILURE_PLACEHOLDER
-    return body
+    return _polish(body)
 
 
 def _extract_rating(decision: str) -> str | None:
