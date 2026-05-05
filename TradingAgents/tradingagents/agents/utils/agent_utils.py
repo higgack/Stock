@@ -24,14 +24,32 @@ def get_language_instruction() -> str:
     """Return a prompt instruction for the configured output language.
 
     Returns empty string when English (default), so no extra tokens are used.
-    Only applied to user-facing agents (analysts, portfolio manager).
-    Internal debate agents stay in English for reasoning quality.
     """
     from tradingagents.dataflows.config import get_config
     lang = get_config().get("output_language", "English")
     if lang.strip().lower() == "english":
         return ""
-    return f" Write your entire response in {lang}."
+    return (
+        f" CRITICAL LANGUAGE REQUIREMENT: Write your ENTIRE response in {lang}."
+        f" Every section header, paragraph, bullet, and table cell MUST be in {lang}."
+        f" Do not include English prose anywhere in the response, even in the conclusion."
+        f" Technical symbols (ticker codes, indicator names like RSI, MACD) may stay as-is,"
+        f" but every explanatory sentence must be in {lang}."
+    )
+
+
+def get_analyst_directive() -> str:
+    """Force analysts to call tools immediately instead of asking the user for parameters."""
+    return (
+        " EXECUTION RULES (MANDATORY):"
+        " 1) Begin by calling the appropriate tools immediately to gather raw data."
+        " 2) Do NOT ask the user for clarification, parameters, date ranges, or indicator selections —"
+        " use sensible defaults: the most recent ~30 days for date ranges, and all standard indicators"
+        " when relevant. The current date is provided in this prompt; use it as the end date and"
+        " subtract 30 days for the start date."
+        " 3) Your final message must be a complete written report based on the tool results."
+        " Never respond with a question or a request for input — that is a failure."
+    )
 
 
 def build_instrument_context(ticker: str) -> str:
