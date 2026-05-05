@@ -165,6 +165,10 @@ def _md_to_html(text: str) -> str:
     - Pipe-delimited tables → <pre> for monospace alignment
     Other characters pass through after HTML escaping.
     """
+    # Normalize whitespace before block detection
+    text = re.sub(r"[ \t]+\n", "\n", text)  # strip trailing spaces
+    text = re.sub(r"\n{3,}", "\n\n", text)  # collapse 3+ blank lines
+
     lines = text.splitlines()
     blocks: list[tuple[str, list[str]]] = []
     for line in lines:
@@ -176,10 +180,18 @@ def _md_to_html(text: str) -> str:
 
     out: list[str] = []
     for kind, lns in blocks:
-        body = "\n".join(lns)
         if kind == "table":
+            # Drop markdown alignment rows (e.g. "| :--- | :---: |") and
+            # strip bold markers from cells; <pre> keeps monospace alignment.
+            kept = [
+                ln for ln in lns
+                if not re.match(r"^\s*\|[\s\|:\-]+\|\s*$", ln)
+            ]
+            body = "\n".join(kept)
+            body = re.sub(r"\*\*(.+?)\*\*", r"\1", body)
             out.append("<pre>" + _html.escape(body) + "</pre>")
         else:
+            body = "\n".join(lns)
             body = _html.escape(body)
             body = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", body)
             body = re.sub(r"(?m)^#{1,6}\s+(.+)$", r"<b>\1</b>", body)
