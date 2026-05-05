@@ -19,11 +19,13 @@ from tradingagents.default_config import DEFAULT_CONFIG
 def _build_config() -> dict:
     config = DEFAULT_CONFIG.copy()
     config["llm_provider"] = "google"
+    # Hybrid model strategy:
+    # - deep_think_llm (flash) handles tool-using analysts and final managers
+    # - quick_think_llm (flash-lite) handles the debate/risk nodes that don't
+    #   need tools, trading ~25% of total cost for slightly less polish on
+    #   intermediate text. graph/setup.py routes analysts to deep_think_llm.
     config["deep_think_llm"] = "gemini-2.5-flash"
-    # gemini-2.5-flash (not -lite) is materially more reliable at honoring
-    # tool-call protocols and language directives. The free tier is slower
-    # but the cost difference is small relative to the quality gain.
-    config["quick_think_llm"] = "gemini-2.5-flash"
+    config["quick_think_llm"] = "gemini-2.5-flash-lite"
     config["google_thinking_level"] = "minimal"
     config["max_debate_rounds"] = 1
     config["max_risk_discuss_rounds"] = 1
