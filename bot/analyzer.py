@@ -106,13 +106,16 @@ _TOOL_HEADER_RE = re.compile(
 _ESCAPED_NEWLINES_RE = re.compile(r"(?:\\n){2,}")
 
 # Comma-separated big numbers (≥ 1,000,000) and bare 9+-digit integers,
-# optionally followed by 달러/원. Negative lookbehinds avoid eating part of
-# IP-addresses or decimals.
+# optionally followed by 달러/원. The lookarounds also exclude word chars,
+# '.', '/', and '-' so digit runs inside URLs (e.g. 'articles/.../12345678.html')
+# don't get rewritten into '약 12.3백만'.
 _LARGE_NUM_RE = re.compile(
-    r"(?<![\d.,])(\d{1,3}(?:,\d{3}){2,}|\d{9,})(\s*(?:달러|원))?"
+    r"(?<![\w./\-])(\d{1,3}(?:,\d{3}){2,}|\d{9,})(\s*(?:달러|원))?(?![\w./\-])"
 )
 # Decimals with 5+ digits after the dot — collapse to 4 places for readability.
 _LONG_DECIMAL_RE = re.compile(r"(?<![\d.])(\d+\.\d{5,})(?![\d.])")
+# Runaway repetition Gemini sometimes emits ('--------…' x thousands of chars).
+_RUNAWAY_CHAR_RE = re.compile(r"([\-=_*#~])\1{29,}")
 
 
 def _abbrev_korean(num: int) -> str:
@@ -162,6 +165,7 @@ def _polish(body: str) -> str:
     body = _ESCAPED_NEWLINES_RE.sub("\n\n", body)
     # Any remaining stray literal '\n' becomes a real newline.
     body = body.replace("\\n", "\n")
+    body = _RUNAWAY_CHAR_RE.sub("", body)
     body = _LARGE_NUM_RE.sub(_abbrev_match, body)
     body = _LONG_DECIMAL_RE.sub(_round_long_decimal, body)
     body = re.sub(r"\n{3,}", "\n\n", body)
