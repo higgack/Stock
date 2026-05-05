@@ -126,7 +126,16 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     for chunk in _split(full, TELEGRAM_LIMIT):
-        await query.message.reply_text(chunk)
+        if not chunk.strip():
+            continue  # Telegram rejects whitespace-only text
+        try:
+            await query.message.reply_text(chunk)
+        except Exception as exc:
+            log.warning("chunk send failed (%d chars): %s", len(chunk), exc)
+            try:
+                await query.message.reply_text(f"⚠️ 일부 본문 누락: {exc!s}")
+            except Exception:
+                pass
 
 
 async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
