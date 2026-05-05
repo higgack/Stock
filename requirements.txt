@@ -1,0 +1,5 @@
+# Top-level deps for the Telegram bot.
+# TradingAgents own deps come from TradingAgents/requirements.txt.
+python-telegram-bot>=21.0
+python-dotenv>=1.0.0
+-r TradingAgents/requirements.txt
