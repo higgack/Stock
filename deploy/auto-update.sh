@@ -29,17 +29,23 @@ fi
 
 notify() {
     local text="$1"
+    local has_token has_chan
+    has_token=$([ -n "${TELEGRAM_BOT_TOKEN:-}" ] && echo "yes" || echo "no")
+    has_chan=$([ -n "${CHANNEL_CHAT_IDS:-}" ] && echo "yes" || echo "no")
+    echo "stock-bot-update: notify token=${has_token} channel=${has_chan}"
     if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${CHANNEL_CHAT_IDS:-}" ]; then
         return 0
     fi
     # CHANNEL_CHAT_IDS may be a comma-separated list — pick the first
     local chat_id="${CHANNEL_CHAT_IDS%%,*}"
-    curl -s -m 10 \
+    local response
+    response=$(curl -s -m 10 \
         -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
         --data-urlencode "chat_id=${chat_id}" \
         --data-urlencode "text=${text}" \
-        --data-urlencode "parse_mode=HTML" \
-        >/dev/null 2>&1 || true
+        --data-urlencode "parse_mode=HTML" 2>&1) || true
+    # Log first ~200 chars of the response so we can diagnose silent failures.
+    echo "stock-bot-update: notify response: ${response:0:200}"
 }
 
 git fetch --quiet origin "$BRANCH"
