@@ -104,6 +104,56 @@ _SECTION_LABELS_FOR_SUMMARY = [
     ("fundamentals_report", "💰"),
 ]
 
+# Stance keywords ordered by specificity (longest first to avoid 'buy'
+# matching '강한매수' too late). Each entry maps a search key to a short
+# Korean label shown in the summary header.
+_STANCE_KEYWORDS = [
+    ("strong sell", "강매도"),
+    ("strong buy", "강매수"),
+    ("overweight", "비중확대"),
+    ("underweight", "비중축소"),
+    ("FINAL TRANSACTION PROPOSAL: BUY", "매수"),
+    ("FINAL TRANSACTION PROPOSAL: HOLD", "보유"),
+    ("FINAL TRANSACTION PROPOSAL: SELL", "매도"),
+    ("매수 (BUY)", "매수"),
+    ("매도 (SELL)", "매도"),
+    ("보유 (HOLD)", "보유"),
+    ("매수 의견", "매수"),
+    ("매도 의견", "매도"),
+    ("보유 의견", "보유"),
+    ("홀드 의견", "보유"),
+    ("거래 제안: BUY", "매수"),
+    ("거래 제안: SELL", "매도"),
+    ("거래 제안: HOLD", "보유"),
+    ("buy", "매수"),
+    ("sell", "매도"),
+    ("hold", "보유"),
+    ("매수", "매수"),
+    ("매도", "매도"),
+    ("보유", "보유"),
+    ("홀드", "보유"),
+]
+
+
+def _extract_stance(body: str | None) -> str:
+    """Pick the analyst's bottom-line stance from its report body.
+
+    Looks for the LAST occurrence of any known stance keyword — analysts
+    typically conclude with their recommendation, so the last hit is most
+    representative. Returns an empty string when nothing matches.
+    """
+    if not body:
+        return ""
+    lower = body.lower()
+    last_pos = -1
+    last_label = ""
+    for keyword, label in _STANCE_KEYWORDS:
+        pos = lower.rfind(keyword.lower())
+        if pos > last_pos:
+            last_pos = pos
+            last_label = label
+    return last_label
+
 
 def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
     rating = _extract_rating(decision) or "N/A"
@@ -111,8 +161,18 @@ def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
         f"📊 **{ticker}** ({date_})",
         "━━━━━━━━━━━━━━",
         f"🎯 최종 판정: **{rating}**",
-        "",
     ]
+    # Compact one-line per-analyst stance bar so the user sees who voted
+    # what at a glance, before the longer per-section snippets.
+    stance_chunks = []
+    for key, icon in _SECTION_LABELS_FOR_SUMMARY:
+        body = state.get(key) if isinstance(state, dict) else None
+        stance = _extract_stance(body)
+        if stance:
+            stance_chunks.append(f"{icon} {stance}")
+    if stance_chunks:
+        parts.append("  ·  ".join(stance_chunks))
+    parts.append("")
     # One key sentence per analyst section, so the summary tells the user
     # WHY without forcing them to expand the full report.
     for key, icon in _SECTION_LABELS_FOR_SUMMARY:
@@ -125,22 +185,28 @@ def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
     return "\n".join(parts)
 
 
-def _first_meaningful_sentence(text: str, max_chars: int = 140) -> str:
-    """Pick the first non-trivial line from a section body."""
+def _first_meaningful_sentence(text: str, max_chars: int = 200) -> str:
+    """Pick the first non-trivial line from a section body. Tries to end at
+    a sentence boundary instead of hard-cutting mid-word."""
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
-        # Skip headers and short title-like lines.
         if line.startswith(("#", "•", "*", "-", "|")):
             continue
         if line.endswith(":"):
             continue
         if len(line) < 30:
             continue
-        if len(line) > max_chars:
-            line = line[:max_chars].rstrip() + "…"
-        return line
+        if len(line) <= max_chars:
+            return line
+        # Prefer ending at the closest '. ' before max_chars (Korean and
+        # English both end sentences with that pattern). If none found in
+        # the back half of the budget, fall back to a hard cut with '…'.
+        cutoff = line.rfind(". ", 0, max_chars + 1)
+        if cutoff >= max_chars - 80:
+            return line[: cutoff + 1]
+        return line[:max_chars].rstrip() + "…"
     return ""
 
 
