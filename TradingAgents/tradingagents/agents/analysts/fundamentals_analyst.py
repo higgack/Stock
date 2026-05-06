@@ -65,6 +65,23 @@ def create_fundamentals_analyst(llm):
             " Do NOT use HTML break tags like '<br>' inside table cells — Telegram"
             " ignores them and they show as literal text. Use real newlines or"
             " separate bullets instead."
+            + " VALUATION SECTIONS — after the financial statement walk-through, add two"
+            " short valuation sections, each ~5-8 lines. Use estimates and clearly mark"
+            " them as such ('추정치이며 정밀한 모델은 아님'); the goal is to give the"
+            " trader an order-of-magnitude check, not an investment-bank-grade model."
+            "\n• 'DCF 시나리오 (간이)': pick reasonable Bear/Base/Bull assumptions for"
+            " (a) revenue growth over the next 5 years, (b) terminal margin, and (c)"
+            " WACC (use 8-12% unless the company is unusual). Compute or estimate an"
+            " implied per-share fair value for each scenario and compare to the current"
+            " price. Note the single largest sensitivity (e.g. '터미널 마진 1%p 변화 시"
+            " 가치 약 ±15%'). If you don't have enough data for a real DCF, write one"
+            " honest line explaining what's missing rather than fabricating numbers."
+            "\n• '동종업계 비교 (Comps)': pick 3-5 peers in the same sub-industry. For"
+            " each list ticker + ~1-line position (e.g. 'AVGO — 맞춤형 AI 칩 강자')"
+            " plus 2-3 comparable multiples (PER, EV/EBITDA, P/S, EV/Sales — pick"
+            " whichever is meaningful for the sector). Conclude with one sentence on"
+            " whether the subject ticker trades at a premium / in line / at a discount"
+            " to peers and the most plausible reason."
             + get_analyst_directive()
             + get_language_instruction()
         )

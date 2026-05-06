@@ -49,6 +49,15 @@ Volume-Based Indicators:
             + " STRUCTURE: Output the Markdown summary table FIRST (right after a 1-2 line"
             " opening), THEN the detailed body analysis. This protects the most useful"
             " reference content from being cut if the response hits the output budget."
+            + " SECTOR PRIMER: Before diving into the company-specific technicals,"
+            " write a short paragraph (3-5 sentences) of sector context — what segment"
+            " of the market the ticker belongs to (e.g. 'AI 인프라 반도체', '클라우드"
+            " 소프트웨어', '대체에너지 유틸리티'), what the dominant theme of that"
+            " segment has been over the last 2 weeks (rotation in/out, sector indices"
+            " up/down, peer drivers), and where this specific name sits inside the"
+            " segment (leader, laggard, niche, recent breakout). Use this as the"
+            " opening paragraph of the body so a reader can place the chart pattern in"
+            " context before reading indicator-by-indicator commentary."
             + get_analyst_directive()
             + get_language_instruction()
         )
