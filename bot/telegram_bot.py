@@ -29,6 +29,7 @@ from telegram.ext import (
 )
 
 from bot import cache as _cache
+from bot import recovery as _recovery
 from bot.analyzer import analyze
 
 load_dotenv()
@@ -89,54 +90,60 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode=ParseMode.HTML,
     )
 
+    # Track the in-flight analysis so a future bot restart can edit the
+    # orphaned progress message instead of leaving it stuck on '분석 시작…'.
+    _recovery.write(post.chat.id, progress.message_id, raw)
     try:
-        loop = asyncio.get_running_loop()
-        summary, full = await asyncio.wait_for(
-            loop.run_in_executor(_executor, analyze, raw, None),
-            timeout=ANALYSIS_TIMEOUT_SEC,
-        )
-    except asyncio.TimeoutError:
-        log.warning("analysis timed out for %s after %ss", raw, ANALYSIS_TIMEOUT_SEC)
-        await ctx.bot.edit_message_text(
-            text=(
-                f"⏱️ <b>{_html.escape(raw)}</b> 분석 타임아웃 "
-                f"({ANALYSIS_TIMEOUT_SEC // 60}분 초과)\n\n"
-                f"평소보다 오래 걸리고 있습니다. 잠시 후 다른 종목 또는 같은 종목으로 "
-                f"다시 시도해주세요. 만약 분석이 백그라운드에서 결국 끝나면 결과는 캐시되어 "
-                f"다음 동일 티커 요청 시 즉시 반환됩니다."
-            ),
-            chat_id=post.chat.id,
-            message_id=progress.message_id,
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    except Exception as exc:
-        log.exception("analysis failed for %s", raw)
-        await ctx.bot.edit_message_text(
-            text=_format_failure(raw, exc),
-            chat_id=post.chat.id,
-            message_id=progress.message_id,
-            parse_mode=ParseMode.HTML,
-        )
-        return
+        try:
+            loop = asyncio.get_running_loop()
+            summary, full = await asyncio.wait_for(
+                loop.run_in_executor(_executor, analyze, raw, None),
+                timeout=ANALYSIS_TIMEOUT_SEC,
+            )
+        except asyncio.TimeoutError:
+            log.warning("analysis timed out for %s after %ss", raw, ANALYSIS_TIMEOUT_SEC)
+            await ctx.bot.edit_message_text(
+                text=(
+                    f"⏱️ <b>{_html.escape(raw)}</b> 분석 타임아웃 "
+                    f"({ANALYSIS_TIMEOUT_SEC // 60}분 초과)\n\n"
+                    f"평소보다 오래 걸리고 있습니다. 잠시 후 다른 종목 또는 같은 종목으로 "
+                    f"다시 시도해주세요. 만약 분석이 백그라운드에서 결국 끝나면 결과는 캐시되어 "
+                    f"다음 동일 티커 요청 시 즉시 반환됩니다."
+                ),
+                chat_id=post.chat.id,
+                message_id=progress.message_id,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except Exception as exc:
+            log.exception("analysis failed for %s", raw)
+            await ctx.bot.edit_message_text(
+                text=_format_failure(raw, exc),
+                chat_id=post.chat.id,
+                message_id=progress.message_id,
+                parse_mode=ParseMode.HTML,
+            )
+            return
 
-    # Callback data carries the ticker + date so we can re-fetch the report
-    # from the on-disk daily cache. Survives bot restarts (the previous
-    # in-memory _FULL_CACHE did not).
-    today = _date.today().isoformat()
-    keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "📋 전체 리포트 보기",
-            callback_data=f"full:{raw}:{today}",
+        # Callback data carries the ticker + date so we can re-fetch the report
+        # from the on-disk daily cache. Survives bot restarts (the previous
+        # in-memory _FULL_CACHE did not).
+        today = _date.today().isoformat()
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "📋 전체 리포트 보기",
+                callback_data=f"full:{raw}:{today}",
+            )
+        ]])
+        await ctx.bot.edit_message_text(
+            text=_md_to_html(summary),
+            chat_id=post.chat.id,
+            message_id=progress.message_id,
+            parse_mode=ParseMode.HTML,
+            reply_markup=keyboard,
         )
-    ]])
-    await ctx.bot.edit_message_text(
-        text=_md_to_html(summary),
-        chat_id=post.chat.id,
-        message_id=progress.message_id,
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
-    )
+    finally:
+        _recovery.clear()
 
 
 async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -336,6 +343,34 @@ def _split(text: str, size: int) -> list[str]:
     return chunks
 
 
+async def _on_startup(application) -> None:
+    """Edit any orphaned 'analysis started' progress message left behind by
+    a previous bot instance that died mid-analysis. Without this, the
+    message would stay 'VICR 분석 시작…' forever after a crash/restart."""
+    orphan = _recovery.read()
+    if orphan is None:
+        return
+    log.warning(
+        "found orphaned progress for %s (msg %s in chat %s) — marking interrupted",
+        orphan.get("ticker"),
+        orphan.get("message_id"),
+        orphan.get("chat_id"),
+    )
+    try:
+        await application.bot.edit_message_text(
+            text=(
+                f"❌ <b>{_html.escape(orphan.get('ticker', 'Unknown'))}</b> "
+                f"분석이 봇 재시작으로 중단됐습니다. 다시 시도해주세요."
+            ),
+            chat_id=orphan["chat_id"],
+            message_id=orphan["message_id"],
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        log.warning("could not edit orphaned message: %s", exc)
+    _recovery.clear()
+
+
 def main() -> None:
     if not CHANNEL_CHAT_IDS:
         log.warning(
@@ -343,7 +378,7 @@ def main() -> None:
             "check the log for the chat ID, then add it to .env"
         )
 
-    app = Application.builder().token(TOKEN).build()
+    app = Application.builder().token(TOKEN).post_init(_on_startup).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(on_full_report, pattern=r"^full:"))
     app.add_handler(
