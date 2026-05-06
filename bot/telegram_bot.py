@@ -83,10 +83,23 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if not TICKER_RE.match(raw):
         return  # malformed ticker after the "-" prefix
 
+    # Peek the daily cache so the progress message can be honest about
+    # whether the user is going to wait 1-3 minutes or get an instant result.
+    today = _date.today().isoformat()
+    is_cached = _cache.get(raw, today) is not None
+    if is_cached:
+        progress_text = (
+            f"📊 <b>{_html.escape(raw)}</b> 캐시된 결과 불러오는 중…"
+        )
+    else:
+        progress_text = (
+            f"📊 <b>{_html.escape(raw)}</b> 분석 시작… (보통 1~3분, 큰 종목은 더 걸릴 수 있음)"
+        )
+
     # Immediately post a progress message to the channel
     progress = await ctx.bot.send_message(
         chat_id=post.chat.id,
-        text=f"📊 <b>{_html.escape(raw)}</b> 분석 시작… (1~3분 소요)",
+        text=progress_text,
         parse_mode=ParseMode.HTML,
     )
 
@@ -127,8 +140,8 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
         # Callback data carries the ticker + date so we can re-fetch the report
         # from the on-disk daily cache. Survives bot restarts (the previous
-        # in-memory _FULL_CACHE did not).
-        today = _date.today().isoformat()
+        # in-memory _FULL_CACHE did not). 'today' is captured above when we
+        # peeked the cache for the progress-message decision.
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(
                 "📋 전체 리포트 보기",
