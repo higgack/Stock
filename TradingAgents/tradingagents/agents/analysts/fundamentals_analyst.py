@@ -38,6 +38,18 @@ def create_fundamentals_analyst(llm):
             " ✅ RIGHT: '시가총액: 약 2218억 달러' or '시가총액: $221.8B'"
             " Always abbreviate large dollar amounts to '약 X.X조/억/백만 달러' or '$X.XB/M' rather"
             " than spelling out every place value."
+            + " SUMMARY TABLE RULES (the bullet rows that open the report):"
+            " (a) Time-series values MUST be labeled with their period."
+            " ❌ WRONG: '총 매출: 2,817 — 2,451 — 2,119 — 1,983 — 달러'"
+            " ✅ RIGHT: '총 매출 (10억 달러): FY25 281.7 | FY24 245.1 | FY23 211.9 | FY22 198.3 (+15% YoY)'"
+            " (b) Point-in-time values (시가총액, PER, 베타, 52주 최고/최저, 이동평균) get a SINGLE"
+            " value — never pad with '해당 없음 — 해당 없음'. Example: '시가총액: 약 3.06조 달러'."
+            " (c) Include both annual (last 4 fiscal years) AND the most recent quarter for"
+            " key statement items (매출, 순이익, EPS, 영업활동 현금흐름)."
+            " (d) Include ratio metrics in the table: 영업이익률, 순이익률, ROE, ROA, 부채비율,"
+            " 유동비율, 잉여현금흐름 마진. These are at least as informative as raw absolute values."
+            " (e) Show the most recent year-over-year growth rate alongside the latest values"
+            " (e.g. '+15%' or '-3%') so the trend direction is immediately visible."
             + get_analyst_directive()
             + get_language_instruction()
         )
