@@ -6,6 +6,20 @@ from dateutil.relativedelta import relativedelta
 
 from .stockstats_utils import yf_retry
 
+# Cap each article summary so the news payload doesn't blow up the LLM
+# context window. Title + first ~300 chars of summary are enough for the
+# analyst to identify the story; the agent never reads further anyway.
+_SUMMARY_CHAR_CAP = 300
+
+
+def _shorten(text: str, cap: int = _SUMMARY_CHAR_CAP) -> str:
+    if not text:
+        return ""
+    text = text.strip()
+    if len(text) <= cap:
+        return text
+    return text[:cap].rstrip() + "…"
+
 
 def _extract_article_data(article: dict) -> dict:
     """Extract article data from yfinance news format (handles nested 'content' structure)."""
@@ -66,7 +80,9 @@ def get_news_yfinance(
     """
     try:
         stock = yf.Ticker(ticker)
-        news = yf_retry(lambda: stock.get_news(count=20))
+        # 10 articles is plenty for a 14-day window; previously 20 articles
+        # × full summary blew the LLM context budget on news-heavy tickers.
+        news = yf_retry(lambda: stock.get_news(count=10))
 
         if not news:
             return f"No news found for {ticker}"
@@ -88,10 +104,9 @@ def get_news_yfinance(
                     continue
 
             news_str += f"### {data['title']} (source: {data['publisher']})\n"
-            if data["summary"]:
-                news_str += f"{data['summary']}\n"
-            if data["link"]:
-                news_str += f"Link: {data['link']}\n"
+            summary = _shorten(data["summary"])
+            if summary:
+                news_str += f"{summary}\n"
             news_str += "\n"
             filtered_count += 1
 
@@ -185,10 +200,9 @@ def get_global_news_yfinance(
                 summary = ""
 
             news_str += f"### {title} (source: {publisher})\n"
+            summary = _shorten(summary)
             if summary:
                 news_str += f"{summary}\n"
-            if link:
-                news_str += f"Link: {link}\n"
             news_str += "\n"
 
         return f"## Global Market News, from {start_date} to {curr_date}:\n\n{news_str}"
