@@ -13,8 +13,8 @@ import html as _html
 import logging
 import os
 import re
-import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date as _date
 
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -28,6 +28,7 @@ from telegram.ext import (
     filters,
 )
 
+from bot import cache as _cache
 from bot.analyzer import analyze
 
 load_dotenv()
@@ -56,8 +57,6 @@ TELEGRAM_LIMIT = 3500
 # to the user instead of leaving the progress message hanging forever.
 ANALYSIS_TIMEOUT_SEC = 600
 
-# In-memory cache: callback_id -> full markdown report
-_FULL_CACHE: dict[str, str] = {}
 _executor = ThreadPoolExecutor(max_workers=1)  # one analysis at a time
 
 
@@ -121,11 +120,15 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    cb_id = uuid.uuid4().hex[:12]
-    _FULL_CACHE[cb_id] = full
-
+    # Callback data carries the ticker + date so we can re-fetch the report
+    # from the on-disk daily cache. Survives bot restarts (the previous
+    # in-memory _FULL_CACHE did not).
+    today = _date.today().isoformat()
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📋 전체 리포트 보기", callback_data=f"full:{cb_id}")
+        InlineKeyboardButton(
+            "📋 전체 리포트 보기",
+            callback_data=f"full:{raw}:{today}",
+        )
     ]])
     await ctx.bot.edit_message_text(
         text=_md_to_html(summary),
@@ -137,7 +140,12 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    """Inline button handler — sends the full report to the channel."""
+    """Inline button handler — sends the full report to the channel.
+
+    Looks the report up from the on-disk daily cache by (ticker, date)
+    embedded in the callback data, so 'view full report' buttons keep
+    working even after a bot restart.
+    """
     query = update.callback_query
     await query.answer()
 
@@ -145,10 +153,20 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if not data.startswith("full:"):
         return
 
-    full = _FULL_CACHE.get(data.split(":", 1)[1])
-    if not full:
-        await query.message.reply_text("⌛ 캐시 만료. 티커를 다시 입력해주세요.")
+    parts = data.split(":", 2)
+    if len(parts) != 3:
+        await query.message.reply_text("⌛ 잘못된 콜백입니다. 티커를 다시 입력해주세요.")
         return
+    _, ticker, date_ = parts
+
+    cached = _cache.get(ticker, date_)
+    if cached is None:
+        await query.message.reply_text(
+            "⌛ 결과 캐시를 찾을 수 없습니다 (오래되어 만료됐거나 다른 날짜). "
+            "티커를 다시 입력해주세요."
+        )
+        return
+    _, full = cached
 
     for chunk in _split(full, TELEGRAM_LIMIT):
         if not chunk.strip():
