@@ -4,6 +4,7 @@ Keeps the heavy initialization out of the bot file and exposes a single
 synchronous `analyze(ticker, date)` call that returns (summary, full_report).
 """
 
+import logging
 import re
 import sys
 from datetime import date as _date
@@ -15,6 +16,14 @@ sys.path.insert(0, str(_ROOT / "TradingAgents"))
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+
+from bot import cache as _cache
+
+log = logging.getLogger("stock-bot.analyzer")
+
+# Skip the social-media analyst — it overlaps ~80% with the news analyst on
+# Gemini and accounts for ~15-20% of total Gemini spend per analysis.
+_SELECTED_ANALYSTS = ["market", "news", "fundamentals"]
 
 
 def _build_config() -> dict:
@@ -43,14 +52,28 @@ def _build_config() -> dict:
 def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     """Run TradingAgents on a single ticker.
 
-    Returns (summary, full_report) — both Markdown strings.
+    Returns (summary, full_report) — both Markdown strings. Same
+    (ticker, target_date) pair is served from disk cache to avoid paying
+    for Gemini twice on the same trading day.
     """
     target_date = target_date or _date.today().isoformat()
-    ta = TradingAgentsGraph(debug=False, config=_build_config())
+    ticker = ticker.upper()
+
+    cached = _cache.get(ticker, target_date)
+    if cached is not None:
+        log.info("cache hit for %s/%s", ticker, target_date)
+        return cached
+
+    ta = TradingAgentsGraph(
+        debug=False,
+        config=_build_config(),
+        selected_analysts=_SELECTED_ANALYSTS,
+    )
     state, decision = ta.propagate(ticker, target_date)
 
     full = _format_full(state, decision, ticker, target_date)
     summary = _format_summary(state, decision, ticker, target_date)
+    _cache.put(ticker, target_date, summary, full)
     return summary, full
 
 
@@ -64,16 +87,21 @@ def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
     )
 
 
+_REPORT_SECTIONS = [
+    ("market_report", "📈 시장 분석", "market"),
+    ("sentiment_report", "💬 감정 분석", "social"),
+    ("news_report", "📰 뉴스 분석", "news"),
+    ("fundamentals_report", "💰 펀더멘털", "fundamentals"),
+    ("investment_plan", "🧭 투자 계획", None),
+    ("trader_investment_plan", "💼 트레이더 제안", None),
+]
+
+
 def _format_full(state: dict, decision: str, ticker: str, date_: str) -> str:
     parts = [f"📋 {ticker} 전체 리포트 ({date_})\n"]
-    for key, label in [
-        ("market_report", "📈 시장 분석"),
-        ("sentiment_report", "💬 감정 분석"),
-        ("news_report", "📰 뉴스 분석"),
-        ("fundamentals_report", "💰 펀더멘털"),
-        ("investment_plan", "🧭 투자 계획"),
-        ("trader_investment_plan", "💼 트레이더 제안"),
-    ]:
+    for key, label, analyst_id in _REPORT_SECTIONS:
+        if analyst_id is not None and analyst_id not in _SELECTED_ANALYSTS:
+            continue  # we never ran this analyst — skip the section entirely
         body = state.get(key) if isinstance(state, dict) else None
         parts.append(f"\n## {label}\n{_clean_section(body)}")
     parts.append(f"\n## ✅ 최종 결정\n{decision}")
