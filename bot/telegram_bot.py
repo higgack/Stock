@@ -51,6 +51,10 @@ TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.]{0,9}$")
 # Headroom under Telegram's 4096-char sendMessage cap, leaving room for the
 # small per-chunk overhead added by the Markdown→HTML conversion.
 TELEGRAM_LIMIT = 3500
+# Stop waiting for a single analysis after 10 minutes. The actual work
+# happens in a worker thread we can't cancel, but we surface the timeout
+# to the user instead of leaving the progress message hanging forever.
+ANALYSIS_TIMEOUT_SEC = 600
 
 # In-memory cache: callback_id -> full markdown report
 _FULL_CACHE: dict[str, str] = {}
@@ -88,7 +92,25 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         loop = asyncio.get_running_loop()
-        summary, full = await loop.run_in_executor(_executor, analyze, raw, None)
+        summary, full = await asyncio.wait_for(
+            loop.run_in_executor(_executor, analyze, raw, None),
+            timeout=ANALYSIS_TIMEOUT_SEC,
+        )
+    except asyncio.TimeoutError:
+        log.warning("analysis timed out for %s after %ss", raw, ANALYSIS_TIMEOUT_SEC)
+        await ctx.bot.edit_message_text(
+            text=(
+                f"⏱️ <b>{_html.escape(raw)}</b> 분석 타임아웃 "
+                f"({ANALYSIS_TIMEOUT_SEC // 60}분 초과)\n\n"
+                f"평소보다 오래 걸리고 있습니다. 잠시 후 다른 종목 또는 같은 종목으로 "
+                f"다시 시도해주세요. 만약 분석이 백그라운드에서 결국 끝나면 결과는 캐시되어 "
+                f"다음 동일 티커 요청 시 즉시 반환됩니다."
+            ),
+            chat_id=post.chat.id,
+            message_id=progress.message_id,
+            parse_mode=ParseMode.HTML,
+        )
+        return
     except Exception as exc:
         log.exception("analysis failed for %s", raw)
         await ctx.bot.edit_message_text(
