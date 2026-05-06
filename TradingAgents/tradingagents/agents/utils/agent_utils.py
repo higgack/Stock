@@ -44,11 +44,14 @@ def get_analyst_directive() -> str:
         " EXECUTION RULES (MANDATORY):"
         " 1) Begin by calling the appropriate tools immediately to gather raw data."
         " 2) Do NOT ask the user for clarification, parameters, date ranges, or indicator selections —"
-        " use sensible defaults: the most recent ~30 days for date ranges, and all standard indicators"
+        " use sensible defaults: the most recent ~14 days for date ranges, and all standard indicators"
         " when relevant. The current date is provided in this prompt; use it as the end date and"
-        " subtract 30 days for the start date."
+        " subtract 14 days for the start date."
         " 3) Your final message must be a complete written report based on the tool results."
         " Never respond with a question or a request for input — that is a failure."
+        " 4) Keep tool calls focused: fetch only what you need to write the report. Do not call the"
+        " same tool repeatedly with different parameters trying to gather everything available —"
+        " one or two well-chosen calls is enough."
     )
 
 

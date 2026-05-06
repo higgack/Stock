@@ -92,7 +92,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as exc:
         log.exception("analysis failed for %s", raw)
         await ctx.bot.edit_message_text(
-            text=f"❌ <b>{_html.escape(raw)}</b> 분석 실패: {_html.escape(str(exc))}",
+            text=_format_failure(raw, exc),
             chat_id=post.chat.id,
             message_id=progress.message_id,
             parse_mode=ParseMode.HTML,
@@ -154,6 +154,31 @@ async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         "예: <code>-NVDA</code>  <code>-AAPL</code>  <code>-TSLA</code>",
         parse_mode=ParseMode.HTML,
     )
+
+
+def _format_failure(ticker: str, exc: Exception) -> str:
+    """Translate raw analyzer exceptions into a user-readable Korean message."""
+    text = str(exc)
+    ticker_html = _html.escape(ticker)
+    if "exceeds the maximum number of tokens" in text or "INVALID_ARGUMENT" in text:
+        return (
+            f"❌ <b>{ticker_html}</b> 분석 실패: 입력 데이터가 Gemini 컨텍스트 한도(1M 토큰)를 초과했습니다.\n\n"
+            f"이 종목은 뉴스 양이 너무 많아서 한 번에 처리되지 않습니다. 잠시 후 다시 시도하거나, "
+            f"뉴스 양이 적은 다른 종목으로 시도해보세요. (수정 작업이 진행 중입니다.)"
+        )
+    if "ResourceExhausted" in text or "429" in text or "quota" in text.lower():
+        return (
+            f"❌ <b>{ticker_html}</b> 분석 실패: Gemini API 사용량 한도에 도달했습니다.\n\n"
+            f"무료 등급 분당/일별 할당량을 초과했을 가능성. 잠시 후 재시도해주세요."
+        )
+    if "Timed out" in text or "Timeout" in text:
+        return (
+            f"❌ <b>{ticker_html}</b> 분석 실패: 요청이 시간 초과됐습니다.\n\n"
+            f"네트워크 또는 모델 응답 지연. 잠시 후 다시 시도해주세요."
+        )
+    # Fallback — show first 300 chars only, keep tidy
+    short = text[:300] + ("…" if len(text) > 300 else "")
+    return f"❌ <b>{ticker_html}</b> 분석 실패: {_html.escape(short)}"
 
 
 def _md_to_html(text: str) -> str:
