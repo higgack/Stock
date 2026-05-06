@@ -28,6 +28,12 @@ def create_fundamentals_analyst(llm):
             "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements."
+            + " UNITS ARE MANDATORY: every monetary value you cite from balance sheet, cash flow,"
+            " or income statement MUST be followed by an explicit unit such as '백만 달러' (millions USD)"
+            " or '$' / 'USD' so the reader can interpret the magnitude. yfinance returns raw dollar"
+            " amounts — when you scale to millions or billions for readability, always state the"
+            " unit (e.g. '8,475.1백만 달러', '$8.47B', '약 84.7억 달러'). Never list a bare number"
+            " like '8,475.1' without a unit."
             + get_analyst_directive()
             + get_language_instruction()
         )
