@@ -99,14 +99,50 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
             pass
 
 
+_SECTION_LABELS_FOR_SUMMARY = [
+    ("market_report", "📈"),
+    ("news_report", "📰"),
+    ("fundamentals_report", "💰"),
+]
+
+
 def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
     rating = _extract_rating(decision) or "N/A"
-    return (
-        f"📊 **{ticker}** ({date_})\n"
-        f"━━━━━━━━━━━━━━\n"
-        f"🎯 최종 판정: **{rating}**\n\n"
-        f"{_first_lines(decision, max_lines=8)}"
-    )
+    parts = [
+        f"📊 **{ticker}** ({date_})",
+        "━━━━━━━━━━━━━━",
+        f"🎯 최종 판정: **{rating}**",
+        "",
+    ]
+    # One key sentence per analyst section, so the summary tells the user
+    # WHY without forcing them to expand the full report.
+    for key, icon in _SECTION_LABELS_FOR_SUMMARY:
+        body = state.get(key) if isinstance(state, dict) else None
+        snippet = _first_meaningful_sentence(body) if body else ""
+        if snippet:
+            parts.append(f"{icon} {snippet}")
+    parts.append("")
+    parts.append(_first_lines(decision, max_lines=4))
+    return "\n".join(parts)
+
+
+def _first_meaningful_sentence(text: str, max_chars: int = 140) -> str:
+    """Pick the first non-trivial line from a section body."""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # Skip headers and short title-like lines.
+        if line.startswith(("#", "•", "*", "-", "|")):
+            continue
+        if line.endswith(":"):
+            continue
+        if len(line) < 30:
+            continue
+        if len(line) > max_chars:
+            line = line[:max_chars].rstrip() + "…"
+        return line
+    return ""
 
 
 _REPORT_SECTIONS = [
@@ -154,6 +190,20 @@ _TOOL_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 _ESCAPED_NEWLINES_RE = re.compile(r"(?:\\n){2,}")
+
+# English structured-field labels that the research_manager / trader / risk
+# debators emit even under a Korean directive. The patterns tolerate
+# Markdown-bold wraps ('**Recommendation**:') as well as plain
+# 'Recommendation:'. The leading-of-line anchor keeps in-prose mentions
+# from being touched.
+_KO_LABEL_REPLACEMENTS = [
+    (re.compile(r"(?m)^(\*+)?Recommendation(\*+)?:\s*", re.IGNORECASE), r"\1추천\2: "),
+    (re.compile(r"(?m)^(\*+)?Rationale(\*+)?:\s*", re.IGNORECASE), r"\1근거\2: "),
+    (re.compile(r"(?m)^(\*+)?Strategic Actions(\*+)?:\s*", re.IGNORECASE), r"\1전략 실행\2: "),
+    (re.compile(r"(?m)^(\*+)?Action(\*+)?:\s*", re.IGNORECASE), r"\1거래 액션\2: "),
+    (re.compile(r"(?m)^(\*+)?Reasoning(\*+)?:\s*", re.IGNORECASE), r"\1근거\2: "),
+    (re.compile(r"(?m)^(\*+)?Position Sizing(\*+)?:\s*", re.IGNORECASE), r"\1포지션 규모\2: "),
+]
 
 # Comma-separated big numbers (≥ 1,000,000) and bare 9+-digit integers,
 # optionally followed by 달러/원. The lookarounds also exclude word chars,
@@ -309,6 +359,8 @@ def _polish(body: str) -> str:
     body = _KO_NUM_RE.sub(_ko_num_normalize, body)
     body = _LONG_DECIMAL_RE.sub(_round_long_decimal, body)
     body = _FIN_BULLET_RE.sub(_add_unit_hint, body)
+    for pat, repl in _KO_LABEL_REPLACEMENTS:
+        body = pat.sub(repl, body)
     body = re.sub(r"\n{3,}", "\n\n", body)
     return body.strip()
 
