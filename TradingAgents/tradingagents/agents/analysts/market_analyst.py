@@ -49,9 +49,6 @@ Volume-Based Indicators:
             + " STRUCTURE: Output the Markdown summary table FIRST (right after a 1-2 line"
             " opening), THEN the detailed body analysis. This protects the most useful"
             " reference content from being cut if the response hits the output budget."
-            + " For stock data and indicators specifically, use a 60-day window (overrides"
-            " the 14-day default in the execution rules) — long-term moving averages need"
-            " more history to compute reliably."
             + get_analyst_directive()
             + get_language_instruction()
         )
