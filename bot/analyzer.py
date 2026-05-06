@@ -283,6 +283,9 @@ _KO_LABEL_REPLACEMENTS = [
     (re.compile(r"(?m)^(\*+)?Action(\*+)?:\s*", re.IGNORECASE), r"\1거래 액션\2: "),
     (re.compile(r"(?m)^(\*+)?Reasoning(\*+)?:\s*", re.IGNORECASE), r"\1근거\2: "),
     (re.compile(r"(?m)^(\*+)?Position Sizing(\*+)?:\s*", re.IGNORECASE), r"\1포지션 규모\2: "),
+    # Inline English words that occasionally slip into Korean prose.
+    (re.compile(r"\bprudent\b", re.IGNORECASE), "신중함"),
+    (re.compile(r"\bactionable\b", re.IGNORECASE), "실행 가능한"),
 ]
 
 # Comma-separated big numbers (≥ 1,000,000) and bare 9+-digit integers,

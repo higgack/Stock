@@ -46,6 +46,7 @@ def create_fundamentals_analyst(llm):
             " just give a single value — don't pad with '해당 없음 — 해당 없음'."
             " (c) Try to include both annual (last 4 fiscal years) AND the most recent"
             " quarter for major statement items (매출, 순이익, EPS, 영업활동 현금흐름)."
+            " Quarterly data must use 'Q1 26', 'Q4 25' style labels, not just numbers."
             " (d) Useful ratio metrics to surface in the table when available:"
             " 영업이익률, 순이익률, ROE, ROA, 부채비율, 유동비율, 잉여현금흐름 마진."
             " (e) Show the latest year-over-year growth rate (e.g. '+15%') alongside"
@@ -56,6 +57,14 @@ def create_fundamentals_analyst(llm):
             " a bullet should have ONE value and stop — do not append placeholders."
             " ❌ WRONG: '시가총액: $36.94B — - — - — - — -'"
             " ✅ RIGHT: '시가총액: $36.94B'"
+            " (f) TTM vs FY consistency: when you cite a TTM figure (e.g. 'PER (TTM)',"
+            " 'EPS (TTM)', 'TTM 잉여현금흐름') and a fiscal-year figure for the same"
+            " metric, ALWAYS label which is which and never blend them. If the TTM and"
+            " latest annual numbers diverge significantly, briefly note the reason in"
+            " prose (e.g. 'TTM은 최근 분기 대규모 자본 지출로 음수')."
+            " Do NOT use HTML break tags like '<br>' inside table cells — Telegram"
+            " ignores them and they show as literal text. Use real newlines or"
+            " separate bullets instead."
             + get_analyst_directive()
             + get_language_instruction()
         )

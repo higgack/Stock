@@ -278,6 +278,12 @@ def _md_to_html(text: str) -> str:
     text = re.sub(r"[ \t]+\n", "\n", text)  # strip trailing spaces
     text = re.sub(r"\n{3,}", "\n\n", text)  # collapse 3+ blank lines
 
+    # Agents sometimes embed HTML-style break tags ('<br>', '<br/>') inside
+    # table cells or bullets. Telegram's HTML parse mode does NOT support
+    # <br>, so without this conversion they end up shown as literal text
+    # ('foo<br>bar'). Convert to real newlines before any escaping.
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+
     lines = text.splitlines()
     blocks: list[tuple[str, list[str]]] = []
     for line in lines:
