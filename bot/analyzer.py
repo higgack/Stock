@@ -99,6 +99,7 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
 
 _SECTION_LABELS_FOR_SUMMARY = [
     ("market_report", "📈"),
+    ("sentiment_report", "💬"),
     ("news_report", "📰"),
     ("fundamentals_report", "💰"),
 ]
