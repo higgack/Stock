@@ -115,19 +115,28 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             )
         except asyncio.TimeoutError:
             log.warning("analysis timed out for %s after %ss", raw, ANALYSIS_TIMEOUT_SEC)
-            await ctx.bot.edit_message_text(
-                text=(
-                    f"⏱️ <b>{_html.escape(raw)}</b> 분석 타임아웃 "
-                    f"({ANALYSIS_TIMEOUT_SEC // 60}분 초과)\n\n"
-                    f"평소보다 오래 걸리고 있습니다. 잠시 후 다른 종목 또는 같은 종목으로 "
-                    f"다시 시도해주세요. 만약 분석이 백그라운드에서 결국 끝나면 결과는 캐시되어 "
-                    f"다음 동일 티커 요청 시 즉시 반환됩니다."
-                ),
-                chat_id=post.chat.id,
-                message_id=progress.message_id,
-                parse_mode=ParseMode.HTML,
-            )
-            return
+            try:
+                await ctx.bot.edit_message_text(
+                    text=(
+                        f"❌ <b>{_html.escape(raw)}</b> 분석 실패: 10분 타임아웃\n\n"
+                        f"분석이 강제 중단되어 추가 토큰 소비가 멈춥니다. "
+                        f"잠시 후 다시 시도하거나 다른 종목으로 시도해주세요."
+                    ),
+                    chat_id=post.chat.id,
+                    message_id=progress.message_id,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as edit_exc:
+                log.warning("could not edit timeout message: %s", edit_exc)
+            # The worker thread that's actually making Gemini calls cannot
+            # be cancelled cooperatively (TradingAgents has no checkpoint
+            # for that). Force-kill the whole process so the thread dies
+            # with it; systemd Restart=always brings us back. We clear
+            # _recovery first so the post_init recovery doesn't overwrite
+            # the timeout message we just posted.
+            _recovery.clear()
+            log.warning("forcing process exit to terminate the runaway analysis thread")
+            os._exit(1)
         except Exception as exc:
             log.exception("analysis failed for %s", raw)
             await ctx.bot.edit_message_text(
