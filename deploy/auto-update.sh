@@ -72,8 +72,11 @@ SUBJECT="$(git log -1 --format='%s' "$REMOTE" 2>/dev/null || echo '')"
 
 echo "stock-bot-update: pulling ${LOCAL_SHORT} → ${REMOTE_SHORT}"
 
-if ! git pull --quiet --ff-only origin "$BRANCH"; then
-    notify "❌ <b>배포 실패</b>: git pull (${LOCAL_SHORT} → ${REMOTE_SHORT})"
+# Force-sync to origin. Any local edits (e.g. an admin running 'sed -i'
+# on a deploy script) get overwritten — auto-deploy assumes origin is
+# the source of truth and we never want a half-applied state.
+if ! git reset --hard "origin/${BRANCH}" --quiet; then
+    notify "❌ <b>배포 실패</b>: git reset --hard (${LOCAL_SHORT} → ${REMOTE_SHORT})"
     exit 1
 fi
 
