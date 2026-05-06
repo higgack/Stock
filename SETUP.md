@@ -114,6 +114,50 @@ sudo systemctl restart stock-bot
 sudo journalctl -u stock-bot -n 30   # 정상 기동 확인
 ```
 
+## Phase 3: 자동 배포 (선택)
+
+서버가 매 2분마다 origin 을 fetch 하여 새 커밋 발견 시 자동으로 pull + 재시작.
+한 번 설치하면 이후 push 만으로 배포 끝납니다.
+
+### 1) 봇 재시작 sudoers 권한 부여
+
+타이머가 비대화식으로 봇을 재시작할 수 있도록, `higgack` 계정에 무비밀번호
+sudo 권한을 **단 하나의 명령** (stock-bot 재시작)에 한정해 부여합니다.
+
+```bash
+echo "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart stock-bot" | \
+  sudo tee /etc/sudoers.d/stock-bot
+sudo chmod 440 /etc/sudoers.d/stock-bot
+```
+
+### 2) 자동 업데이트 유닛 + 타이머 설치
+
+```bash
+sudo cp /home/higgack/stock/deploy/stock-bot-update.service /etc/systemd/system/
+sudo cp /home/higgack/stock/deploy/stock-bot-update.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now stock-bot-update.timer
+```
+
+### 3) 동작 확인
+
+```bash
+systemctl list-timers --all | grep stock-bot-update    # 다음 실행 시각 표시
+sudo journalctl -u stock-bot-update.service -n 30      # pull 실행 로그
+```
+
+`stock-bot-update.timer` 에 `Active: active (waiting)` 가 보이고,
+`Trigger: 2min N seconds left` 정도면 정상.
+
+새 커밋이 push 되면 2분 내 로그에 `pulling abc1234 → def5678` 이 찍히고,
+이어서 봇이 재시작됩니다.
+
+### 끄고 싶다면
+
+```bash
+sudo systemctl disable --now stock-bot-update.timer
+```
+
 ## 비용 (Gemini Flash 기준)
 
 - 1회 분석 ≈ 25k 토큰 ≈ **$0.005**
