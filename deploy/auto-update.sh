@@ -13,6 +13,35 @@ STALE_AFTER_MINUTES=20
 
 cd "$REPO"
 
+# Pull bot creds from .env so we can post deploy result notifications.
+# Done in a subshell-equivalent block with set -a so any KEY=VAL pairs
+# become exported for this script's lifetime, then turned back off.
+TELEGRAM_BOT_TOKEN=""
+CHANNEL_CHAT_IDS=""
+if [ -f .env ]; then
+    set +u
+    set -a
+    # shellcheck disable=SC1091
+    source .env || true
+    set +a
+    set -u
+fi
+
+notify() {
+    local text="$1"
+    if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${CHANNEL_CHAT_IDS:-}" ]; then
+        return 0
+    fi
+    # CHANNEL_CHAT_IDS may be a comma-separated list — pick the first
+    local chat_id="${CHANNEL_CHAT_IDS%%,*}"
+    curl -s -m 10 \
+        -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        --data-urlencode "chat_id=${chat_id}" \
+        --data-urlencode "text=${text}" \
+        --data-urlencode "parse_mode=HTML" \
+        >/dev/null 2>&1 || true
+}
+
 git fetch --quiet origin "$BRANCH"
 
 LOCAL=$(git rev-parse HEAD)
@@ -31,7 +60,32 @@ if [ -f "$BUSY_MARKER" ]; then
     echo "stock-bot-update: stale busy marker (>${STALE_AFTER_MINUTES}m), proceeding"
 fi
 
-echo "stock-bot-update: pulling ${LOCAL:0:7} → ${REMOTE:0:7}"
-git pull --quiet --ff-only origin "$BRANCH"
-sudo /bin/systemctl restart stock-bot
-echo "stock-bot-update: restart complete"
+LOCAL_SHORT="${LOCAL:0:7}"
+REMOTE_SHORT="${REMOTE:0:7}"
+SUBJECT="$(git log -1 --format='%s' "$REMOTE" 2>/dev/null || echo '')"
+
+echo "stock-bot-update: pulling ${LOCAL_SHORT} → ${REMOTE_SHORT}"
+
+if ! git pull --quiet --ff-only origin "$BRANCH"; then
+    notify "❌ <b>배포 실패</b>: git pull (${LOCAL_SHORT} → ${REMOTE_SHORT})"
+    exit 1
+fi
+
+if ! sudo /bin/systemctl restart stock-bot; then
+    notify "❌ <b>배포 실패</b>: systemctl restart (${REMOTE_SHORT})"
+    exit 1
+fi
+
+# Give systemd a moment to actually start the new process before we check.
+sleep 3
+if systemctl is-active --quiet stock-bot; then
+    msg="✅ <b>배포 완료</b>: <code>${LOCAL_SHORT}</code> → <code>${REMOTE_SHORT}</code>"
+    if [ -n "$SUBJECT" ]; then
+        msg="${msg}"$'\n'"${SUBJECT}"
+    fi
+    notify "$msg"
+    echo "stock-bot-update: restart complete"
+else
+    notify "❌ <b>배포 실패</b>: stock-bot 서비스가 재시작 후 active 상태가 아님 (${REMOTE_SHORT})"
+    exit 1
+fi
