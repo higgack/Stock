@@ -35,6 +35,11 @@ class GoogleClient(BaseLLMClient):
             if key in self.kwargs:
                 llm_kwargs[key] = self.kwargs[key]
 
+        # Cap output length to control cost. Forces concise reports rather
+        # than letting the model ramble with long-tail filler tokens.
+        if "max_output_tokens" in self.kwargs and self.kwargs["max_output_tokens"]:
+            llm_kwargs["max_output_tokens"] = self.kwargs["max_output_tokens"]
+
         # Unified api_key maps to provider-specific google_api_key
         google_api_key = self.kwargs.get("api_key") or self.kwargs.get("google_api_key")
         if google_api_key:

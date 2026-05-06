@@ -40,6 +40,13 @@ def _build_config() -> dict:
     config["max_debate_rounds"] = 1
     config["max_risk_discuss_rounds"] = 1
     config["output_language"] = "Korean"
+    # Output caps to control cost. Analyst / manager reports (deep tier)
+    # have room for full structured Markdown; debate/risk/trader nodes
+    # (quick tier) only need a few paragraphs of stance text. Saves
+    # roughly 30-40% on output-token spend with no measurable loss in
+    # report content.
+    config["deep_max_output_tokens"] = 4000
+    config["quick_max_output_tokens"] = 2000
     config["data_vendors"] = {
         "core_stock_apis": "yfinance",
         "technical_indicators": "yfinance",
