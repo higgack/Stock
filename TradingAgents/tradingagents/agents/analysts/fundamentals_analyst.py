@@ -29,11 +29,13 @@ def create_fundamentals_analyst(llm):
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements."
             + " UNITS ARE MANDATORY: every monetary value you cite from balance sheet, cash flow,"
-            " or income statement MUST be followed by an explicit unit such as '백만 달러' (millions USD)"
-            " or '$' / 'USD' so the reader can interpret the magnitude. yfinance returns raw dollar"
-            " amounts — when you scale to millions or billions for readability, always state the"
-            " unit (e.g. '8,475.1백만 달러', '$8.47B', '약 84.7억 달러'). Never list a bare number"
-            " like '8,475.1' without a unit."
+            " or income statement MUST be followed by an explicit unit."
+            " ❌ WRONG: '총 자산: 10,176 — 9,710 — 9,395 — 8,932'"
+            " ✅ RIGHT: '총 자산 (백만 달러): 10,176 — 9,710 — 9,395 — 8,932'"
+            " ❌ WRONG: '시가총액: 2217억 8778만 3168 달러' (Korean place-by-place reading)"
+            " ✅ RIGHT: '시가총액: 약 2218억 달러' or '시가총액: $221.8B'"
+            " Always abbreviate large dollar amounts to '약 X.X조/억/백만 달러' or '$X.XB/M' rather"
+            " than spelling out every place value."
             + get_analyst_directive()
             + get_language_instruction()
         )

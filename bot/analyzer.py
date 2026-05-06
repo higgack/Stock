@@ -145,6 +145,42 @@ _LONG_DECIMAL_RE = re.compile(r"(?<![\d.])(\d+\.\d{5,})(?![\d.])")
 # Runaway repetition Gemini sometimes emits ('--------…' x thousands of chars).
 _RUNAWAY_CHAR_RE = re.compile(r"([\-=_*#~])\1{29,}")
 
+# Korean place-value reading like '46억 7100만 64 달러' that Gemini often emits
+# when reading large dollar amounts verbatim. We rewrite them as '약 47억 달러'.
+_KO_NUM_RE = re.compile(
+    r"(?<![\w가-힣])"
+    r"(?:(\d{1,4})\s*조\s*)?"
+    r"(?:(\d{1,4})\s*억\s*)?"
+    r"(?:(\d{1,4})\s*만\s*)?"
+    r"(\d{1,4})?"
+    r"\s*달러"
+    r"(?!\w)"
+)
+
+# Bullet rows that label a financial concept and dump a series of numbers
+# without a unit, e.g. '• 총 자산: 10,176 — 9,710 — …'. We append a unit hint
+# only when the label contains a clear monetary keyword and the line has
+# neither '달러' nor '%' already.
+_FIN_KEYWORDS = (
+    "자산", "부채", "자본", "매출", "이익", "흐름", "비용", "현금",
+    "투자", "영업", "순이익", "EBITDA", "EPS", "배당", "장부",
+)
+_FIN_BULLET_RE = re.compile(
+    r"^(\s*[•\*\-]\s*(?:\*\*)?[^:\n]*?:\s*)"
+    r"([\-\d,.\s—]+)$",
+    re.MULTILINE,
+)
+
+# A line that looks like the start of a fresh numbered report section, e.g.
+# '1. 회사 개요', '1. 포괄적 재무 데이터'. When we see two of them inside a
+# single agent body we treat the second as a Gemini re-emission and truncate.
+_DUP_HEADER_RE = re.compile(
+    r"(?m)^\s*1\.\s+"
+    r"(?:회사\s*개요|기업\s*개요|회사\s*기본\s*정보|"
+    r"포괄적\s*재무\s*데이터|기업\s*심층\s*분석|"
+    r"기업\s*기본\s*정보|회사\s*기본\s*프로필)\b"
+)
+
 
 def _abbrev_korean(num: int) -> str:
     if num >= 10**12:
@@ -177,6 +213,51 @@ def _round_long_decimal(m: re.Match) -> str:
         return m.group(0)
 
 
+def _ko_num_normalize(m: re.Match) -> str:
+    """'46억 7100만 64 달러' → '약 46.7억 달러'. Skips single-part values
+    (like '8억 달러') so the regex doesn't churn perfectly fine text."""
+    jo = int(m.group(1)) if m.group(1) else 0
+    eok = int(m.group(2)) if m.group(2) else 0
+    man = int(m.group(3)) if m.group(3) else 0
+    base = int(m.group(4)) if m.group(4) else 0
+    parts = sum(1 for x in (jo, eok, man, base) if x > 0)
+    if parts < 2:
+        return m.group(0)
+    total = jo * 10**12 + eok * 10**8 + man * 10**4 + base
+    if total >= 10**12:
+        return f"약 {total / 10**12:.2f}조 달러"
+    if total >= 10**11:
+        return f"약 {round(total / 10**8)}억 달러"
+    if total >= 10**8:
+        return f"약 {total / 10**8:.1f}억 달러"
+    if total >= 10**6:
+        return f"약 {round(total / 10**6)}백만 달러"
+    return m.group(0)
+
+
+def _add_unit_hint(m: re.Match) -> str:
+    label = m.group(1)
+    nums = m.group(2).rstrip()
+    # The regex's number-only character class can't contain '%' / '달러' /
+    # '원' anyway, so the only thing left to filter is whether the *label*
+    # actually mentions a monetary concept. (We can't filter on "원" in the
+    # label because of words like '매출원가'.)
+    if not any(kw in label for kw in _FIN_KEYWORDS):
+        return m.group(0)
+    if nums.count("—") < 1:
+        return m.group(0)
+    return f"{label}{nums} (단위: 백만 달러)"
+
+
+def _drop_repeated_section(body: str) -> str:
+    """If a major section header appears twice, the agent emitted its
+    report twice — keep only up to the second occurrence."""
+    matches = list(_DUP_HEADER_RE.finditer(body))
+    if len(matches) >= 2:
+        return body[: matches[1].start()].rstrip()
+    return body
+
+
 def _polish(body: str) -> str:
     """Strip noise patterns that agents occasionally leak into their text.
 
@@ -194,8 +275,11 @@ def _polish(body: str) -> str:
     # Any remaining stray literal '\n' becomes a real newline.
     body = body.replace("\\n", "\n")
     body = _RUNAWAY_CHAR_RE.sub("", body)
+    body = _drop_repeated_section(body)
     body = _LARGE_NUM_RE.sub(_abbrev_match, body)
+    body = _KO_NUM_RE.sub(_ko_num_normalize, body)
     body = _LONG_DECIMAL_RE.sub(_round_long_decimal, body)
+    body = _FIN_BULLET_RE.sub(_add_unit_hint, body)
     body = re.sub(r"\n{3,}", "\n\n", body)
     return body.strip()
 
