@@ -21,9 +21,7 @@ from bot import cache as _cache
 
 log = logging.getLogger("stock-bot.analyzer")
 
-# Skip the social-media analyst — it overlaps ~80% with the news analyst on
-# Gemini and accounts for ~15-20% of total Gemini spend per analysis.
-_SELECTED_ANALYSTS = ["market", "news", "fundamentals"]
+_SELECTED_ANALYSTS = ["market", "social", "news", "fundamentals"]
 
 
 def _build_config() -> dict:
