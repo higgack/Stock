@@ -51,7 +51,11 @@ def create_fundamentals_analyst(llm):
             " (e) Show the latest year-over-year growth rate (e.g. '+15%') alongside"
             " the most recent value when you can compute it from the data."
             " If a metric isn't in the tool output, simply omit that bullet — never"
-            " emit a row whose values are all blank or all '해당 없음'."
+            " emit a row whose values are all blank, all '-', or all '해당 없음'."
+            " For point-in-time metrics like 시가총액 / PER / 베타 / 52주 최고/최저 / 이동평균,"
+            " a bullet should have ONE value and stop — do not append placeholders."
+            " ❌ WRONG: '시가총액: $36.94B — - — - — - — -'"
+            " ✅ RIGHT: '시가총액: $36.94B'"
             + get_analyst_directive()
             + get_language_instruction()
         )

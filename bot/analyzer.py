@@ -190,6 +190,21 @@ _TOOL_HEADER_RE = re.compile(
 )
 _ESCAPED_NEWLINES_RE = re.compile(r"(?:\\n){2,}")
 
+# build_instrument_context() output that the model occasionally pastes
+# verbatim into the section body (e.g. 'The instrument to analyze is `ALAB`.
+# Use this exact ticker ... (e.g. `.TO`, `.L`, …).'). Strip those leaks.
+_INSTRUMENT_CTX_RE = re.compile(
+    r"(?:The current date is\s+\d{4}-\d{2}-\d{2}\.\s*)?"
+    r"The instrument to analyze is\s+[`'\"]?[^`'\"\n]+[`'\"]?\.\s+"
+    r"Use this exact ticker[^\n]*?\([^)]+\)\.?",
+    re.IGNORECASE,
+)
+
+# Bullet rows where the agent padded a single point-in-time value with
+# trailing '— -' placeholders (e.g. '시가총액: $36.94B — - — - — -').
+# Collapse to just the value(s) actually present.
+_DASH_PADDING_RE = re.compile(r"(?:\s+[—\-]+\s+-){2,}\s*$", re.MULTILINE)
+
 # English structured-field labels that the research_manager / trader / risk
 # debators emit even under a Korean directive. The patterns tolerate
 # Markdown-bold wraps ('**Recommendation**:') as well as plain
@@ -349,6 +364,8 @@ def _polish(body: str) -> str:
     body = _FINAL_PROPOSAL_RE.sub("", body)
     body = _LINK_LINE_RE.sub("", body)
     body = _TOOL_HEADER_RE.sub("", body)
+    body = _INSTRUMENT_CTX_RE.sub("", body)
+    body = _DASH_PADDING_RE.sub("", body)
     body = _ESCAPED_NEWLINES_RE.sub("\n\n", body)
     # Any remaining stray literal '\n' becomes a real newline.
     body = body.replace("\\n", "\n")
