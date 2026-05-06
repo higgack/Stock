@@ -131,9 +131,12 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     for chunk in _split(full, TELEGRAM_LIMIT):
         if not chunk.strip():
             continue  # Telegram rejects whitespace-only text
+        html_chunk = _md_to_html(chunk)
+        if not html_chunk.strip():
+            continue  # all-table chunk that collapsed to nothing after dedup
         try:
             await query.message.reply_text(
-                _md_to_html(chunk), parse_mode=ParseMode.HTML
+                html_chunk, parse_mode=ParseMode.HTML
             )
         except Exception as exc:
             log.warning("chunk send failed (%d chars): %s", len(chunk), exc)

@@ -202,6 +202,10 @@ _DUP_HEADER_RE = re.compile(
     r"포괄적\s*재무\s*데이터|기업\s*심층\s*분석|"
     r"기업\s*기본\s*정보|회사\s*기본\s*프로필)\b"
 )
+# Generic fallback: '1. <something>' appearing twice with substantial
+# content in between is also a re-emission signal (catches cases like
+# '1. 가격 추세' restarting after '1. 이동평균선' has already been used).
+_DUP_NUMBERED_RE = re.compile(r"(?m)^\s*1\.\s+\S")
 
 
 def _abbrev_korean(num: int) -> str:
@@ -277,6 +281,9 @@ def _drop_repeated_section(body: str) -> str:
     matches = list(_DUP_HEADER_RE.finditer(body))
     if len(matches) >= 2:
         return body[: matches[1].start()].rstrip()
+    nums = list(_DUP_NUMBERED_RE.finditer(body))
+    if len(nums) >= 2 and nums[1].start() - nums[0].start() > 1000:
+        return body[: nums[1].start()].rstrip()
     return body
 
 
