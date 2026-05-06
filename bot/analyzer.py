@@ -378,7 +378,16 @@ def _clean_section(body) -> str:
     head = body.strip()[:500]
     if any(m in head for m in _GARBAGE_MARKERS):
         return _FAILURE_PLACEHOLDER
-    return _polish(body)
+    polished = _polish(body)
+    # If the polished body is mostly headers + empty placeholders ('• :: :',
+    # '요약표' alone), treat it as a failed run rather than serving the husk.
+    stripped = polished.strip()
+    if len(stripped) < 200:
+        return _FAILURE_PLACEHOLDER
+    text_chars = sum(1 for c in stripped if c.isalnum())
+    if text_chars < 80:
+        return _FAILURE_PLACEHOLDER
+    return polished
 
 
 def _extract_rating(decision: str) -> str | None:
