@@ -56,12 +56,19 @@ def _build_config() -> dict:
     return config
 
 
+_BUSY_MARKER = Path.home() / ".tradingagents" / ".busy"
+
+
 def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     """Run TradingAgents on a single ticker.
 
     Returns (summary, full_report) — both Markdown strings. Same
     (ticker, target_date) pair is served from disk cache to avoid paying
     for Gemini twice on the same trading day.
+
+    A `.busy` marker file is created for the duration of an actual
+    TradingAgents run so that the auto-update timer can defer a restart
+    and not lose an in-flight analysis.
     """
     target_date = target_date or _date.today().isoformat()
     ticker = ticker.upper()
@@ -71,17 +78,25 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
         log.info("cache hit for %s/%s", ticker, target_date)
         return cached
 
-    ta = TradingAgentsGraph(
-        debug=False,
-        config=_build_config(),
-        selected_analysts=_SELECTED_ANALYSTS,
-    )
-    state, decision = ta.propagate(ticker, target_date)
+    _BUSY_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    _BUSY_MARKER.touch()
+    try:
+        ta = TradingAgentsGraph(
+            debug=False,
+            config=_build_config(),
+            selected_analysts=_SELECTED_ANALYSTS,
+        )
+        state, decision = ta.propagate(ticker, target_date)
 
-    full = _format_full(state, decision, ticker, target_date)
-    summary = _format_summary(state, decision, ticker, target_date)
-    _cache.put(ticker, target_date, summary, full)
-    return summary, full
+        full = _format_full(state, decision, ticker, target_date)
+        summary = _format_summary(state, decision, ticker, target_date)
+        _cache.put(ticker, target_date, summary, full)
+        return summary, full
+    finally:
+        try:
+            _BUSY_MARKER.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
