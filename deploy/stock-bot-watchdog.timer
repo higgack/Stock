@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the stock-bot watchdog every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=stock-bot-watchdog.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Detect a stalled stock-bot and restart it
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/higgack/stock/deploy/watchdog.sh
+StandardOutput=journal
+StandardError=journal
