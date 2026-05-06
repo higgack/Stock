@@ -47,7 +47,7 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 _raw_ids = os.environ.get("CHANNEL_CHAT_IDS", "")
 CHANNEL_CHAT_IDS: set[int] = {int(x) for x in _raw_ids.split(",") if x.strip()}
 
-TICKER_PREFIX = "-"
+TICKER_PREFIX = "/"
 TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.]{0,9}$")
 # Headroom under Telegram's 4096-char sendMessage cap, leaving room for the
 # small per-chunk overhead added by the Markdown→HTML conversion.
@@ -204,8 +204,8 @@ async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """DM /start — useful for verifying the bot is alive."""
     await update.message.reply_text(
         "✅ Stock Analyst Bot 작동 중\n\n"
-        "채널에 <code>-티커</code> 형식으로 입력하면 분석합니다.\n"
-        "예: <code>-NVDA</code>  <code>-AAPL</code>  <code>-TSLA</code>",
+        "채널에 <code>/티커</code> 형식으로 입력하면 분석합니다.\n"
+        "예: <code>/NVDA</code>  <code>/AAPL</code>  <code>/TSLA</code>",
         parse_mode=ParseMode.HTML,
     )
 
