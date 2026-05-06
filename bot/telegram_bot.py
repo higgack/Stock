@@ -168,6 +168,17 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         return
     _, full = cached
 
+    # Remove the inline keyboard now that we've confirmed the report is
+    # available. Two effects:
+    #   1) clicking the button a second time during/after delivery does
+    #      nothing — Telegram simply won't have a button to click.
+    #   2) the user gets a clear visual cue that the report has been sent.
+    # Failure to edit (e.g. message too old) is non-fatal.
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as exc:
+        log.debug("could not clear keyboard: %s", exc)
+
     for chunk in _split(full, TELEGRAM_LIMIT):
         if not chunk.strip():
             continue  # Telegram rejects whitespace-only text
