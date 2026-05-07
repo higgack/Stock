@@ -80,7 +80,7 @@ def get_news_yfinance(
     """
     try:
         stock = yf.Ticker(ticker)
-        # 10 articles is plenty for a 14-day window; previously 20 articles
+        # 10 articles is enough for a 4-week window; previously 20 articles
         # × full summary blew the LLM context budget on news-heavy tickers.
         news = yf_retry(lambda: stock.get_news(count=10))
 
