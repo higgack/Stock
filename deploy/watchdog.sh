@@ -25,6 +25,33 @@ BUSY_MARKER=/home/higgack/.tradingagents/.busy
 # leaving the marker behind forever.
 BUSY_STALE_MINUTES=30
 
+# --- Telegram notify helper -------------------------------------------
+# Reads bot creds from /home/higgack/stock/.env and posts one message.
+# Silent failure: never lets a notification problem fail the watchdog.
+TELEGRAM_BOT_TOKEN=""
+CHANNEL_CHAT_IDS=""
+if [ -f /home/higgack/stock/.env ]; then
+    set +u; set -a
+    # shellcheck disable=SC1091
+    source /home/higgack/stock/.env || true
+    set +a; set -u
+fi
+
+notify() {
+    local text="$1"
+    if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${CHANNEL_CHAT_IDS:-}" ]; then
+        return 0
+    fi
+    local chat_id="${CHANNEL_CHAT_IDS%%,*}"
+    curl -s -m 10 \
+        -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+        --data-urlencode "chat_id=${chat_id}" \
+        --data-urlencode "text=${text}" \
+        --data-urlencode "parse_mode=HTML" \
+        >/dev/null 2>&1 || true
+}
+# ----------------------------------------------------------------------
+
 # Active analysis? Skip — analyze() has its own asyncio.wait_for(timeout=600).
 if [ -f "$BUSY_MARKER" ]; then
     if [ -z "$(find "$BUSY_MARKER" -mmin +"$BUSY_STALE_MINUTES" 2>/dev/null)" ]; then
@@ -50,5 +77,6 @@ RECENT=$(journalctl -u stock-bot --since "${WINDOW_SECONDS} seconds ago" \
 
 if [ "$RECENT" = "0" ]; then
     echo "stock-bot-watchdog: no Telegram polling for ${WINDOW_SECONDS}s — restarting"
+    notify "⚠️ <b>봇 hang 감지</b>: Telegram polling ${WINDOW_SECONDS}초 멈춤 — 재시작 시도"
     /bin/systemctl restart stock-bot
 fi
