@@ -72,6 +72,12 @@ SUBJECT="$(git log -1 --format='%s' "$REMOTE" 2>/dev/null || echo '')"
 
 echo "stock-bot-update: pulling ${LOCAL_SHORT} → ${REMOTE_SHORT}"
 
+start_msg="🚀 <b>배포 시작</b>: <code>${LOCAL_SHORT}</code> → <code>${REMOTE_SHORT}</code>"
+if [ -n "$SUBJECT" ]; then
+    start_msg="${start_msg}"$'\n'"${SUBJECT}"
+fi
+notify "$start_msg"
+
 # Force-sync to origin. Any local edits (e.g. an admin running 'sed -i'
 # on a deploy script) get overwritten — auto-deploy assumes origin is
 # the source of truth and we never want a half-applied state.
