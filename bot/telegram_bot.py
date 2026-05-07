@@ -30,7 +30,7 @@ from telegram.ext import (
 
 from bot import cache as _cache
 from bot import recovery as _recovery
-from bot.analyzer import analyze
+from bot.analyzer import analyze, clear_busy, mark_busy
 
 load_dotenv()
 
@@ -105,7 +105,12 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
     # Track the in-flight analysis so a future bot restart can edit the
     # orphaned progress message instead of leaving it stuck on '분석 시작…'.
+    # Touch .busy in the same breath: analyze() will also write it, but
+    # there's a race window before the worker thread picks the job up
+    # where auto-update / watchdog could see no marker and restart us
+    # mid-analysis. Writing it here on the asyncio loop closes that gap.
     _recovery.write(post.chat.id, progress.message_id, raw)
+    mark_busy()
     try:
         try:
             loop = asyncio.get_running_loop()
@@ -135,6 +140,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             # _recovery first so the post_init recovery doesn't overwrite
             # the timeout message we just posted.
             _recovery.clear()
+            clear_busy()
             log.warning("forcing process exit to terminate the runaway analysis thread")
             os._exit(1)
         except Exception as exc:
@@ -166,6 +172,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
     finally:
         _recovery.clear()
+        clear_busy()
 
 
 async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:

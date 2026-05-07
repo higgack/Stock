@@ -57,6 +57,25 @@ def _build_config() -> dict:
 _BUSY_MARKER = Path.home() / ".tradingagents" / ".busy"
 
 
+def mark_busy() -> None:
+    """Create the .busy marker so auto-update / watchdog defer restarts.
+
+    Called from the asyncio handler BEFORE the worker thread starts, to
+    close the race where a deploy timer fires after recovery state is
+    written but before analyze() has had a chance to touch the marker
+    itself.
+    """
+    _BUSY_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    _BUSY_MARKER.touch()
+
+
+def clear_busy() -> None:
+    try:
+        _BUSY_MARKER.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     """Run TradingAgents on a single ticker.
 
@@ -76,8 +95,7 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
         log.info("cache hit for %s/%s", ticker, target_date)
         return cached
 
-    _BUSY_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    _BUSY_MARKER.touch()
+    mark_busy()  # idempotent — handler usually wrote it already
     try:
         ta = TradingAgentsGraph(
             debug=False,
@@ -91,10 +109,7 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
         _cache.put(ticker, target_date, summary, full)
         return summary, full
     finally:
-        try:
-            _BUSY_MARKER.unlink()
-        except FileNotFoundError:
-            pass
+        clear_busy()
 
 
 _SECTION_LABELS_FOR_SUMMARY = [
