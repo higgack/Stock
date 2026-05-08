@@ -113,10 +113,10 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
 
 
 _SECTION_LABELS_FOR_SUMMARY = [
-    ("market_report", "📈"),
-    ("sentiment_report", "💬"),
-    ("news_report", "📰"),
-    ("fundamentals_report", "💰"),
+    ("market_report", "📈", "시장"),
+    ("sentiment_report", "💬", "감정"),
+    ("news_report", "📰", "뉴스"),
+    ("fundamentals_report", "💰", "펀더멘털"),
 ]
 
 # Stance keywords ordered by specificity (longest first to avoid 'buy'
@@ -180,21 +180,21 @@ def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
     # Compact one-line per-analyst stance bar so the user sees who voted
     # what at a glance, before the longer per-section snippets.
     stance_chunks = []
-    for key, icon in _SECTION_LABELS_FOR_SUMMARY:
+    for key, icon, name in _SECTION_LABELS_FOR_SUMMARY:
         body = state.get(key) if isinstance(state, dict) else None
         stance = _extract_stance(body)
         if stance:
-            stance_chunks.append(f"{icon} {stance}")
+            stance_chunks.append(f"{icon} {name}: {stance}")
     if stance_chunks:
         parts.append("  ·  ".join(stance_chunks))
     parts.append("")
     # One key sentence per analyst section, so the summary tells the user
     # WHY without forcing them to expand the full report.
-    for key, icon in _SECTION_LABELS_FOR_SUMMARY:
+    for key, icon, name in _SECTION_LABELS_FOR_SUMMARY:
         body = state.get(key) if isinstance(state, dict) else None
         snippet = _first_meaningful_sentence(body) if body else ""
         if snippet:
-            parts.append(f"{icon} {snippet}")
+            parts.append(f"{icon} **{name}**: {snippet}")
     parts.append("")
     parts.append(_first_lines(decision, max_lines=4))
     return "\n".join(parts)
