@@ -21,9 +21,11 @@ set -euo pipefail
 WINDOW_SECONDS=180
 BUSY_MARKER=/home/higgack/.tradingagents/.busy
 # If the busy marker is older than this, treat it as stale and let the
-# watchdog kick in regardless — protects against a crashed analyze()
-# leaving the marker behind forever.
-BUSY_STALE_MINUTES=30
+# watchdog kick in regardless. Sized to bot's own ANALYSIS_TIMEOUT_SEC
+# (10 min) plus a 2 min buffer — when the asyncio loop itself freezes,
+# the bot's own timeout can't fire, and the watchdog is the only safety
+# net. A 30 min threshold leaves a frozen bot stuck for too long.
+BUSY_STALE_MINUTES=12
 
 # --- Telegram notify helper -------------------------------------------
 # Reads bot creds from /home/higgack/stock/.env and posts one message.
