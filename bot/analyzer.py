@@ -70,10 +70,10 @@ def _build_config() -> dict:
         "fundamental_data": "yfinance",
         "news_data": "yfinance",
     }
-    # Hooks every Gemini call into the usage log so /usage can show
-    # daily costs by model. The callback is forwarded to each LLM client
-    # by trading_graph._get_provider_kwargs (already plumbs callbacks).
-    config["callbacks"] = [UsageCallback()]
+    # NOTE: UsageCallback is wired in directly at TradingAgentsGraph
+    # construction time (see analyze()) rather than via config — the
+    # graph's __init__ takes a separate `callbacks=` kwarg, anything
+    # in the config dict under that key is ignored.
     return config
 
 
@@ -129,6 +129,9 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
         debug=False,
         config=_build_config(),
         selected_analysts=_SELECTED_ANALYSTS,
+        # Hooks every Gemini call into ~/.tradingagents/usage.jsonl so
+        # /usage and the dashboard cost card stay accurate.
+        callbacks=[UsageCallback()],
     )
     log.info("analyze: graph built — invoking propagate")
     state, decision = ta.propagate(ticker, target_date)
