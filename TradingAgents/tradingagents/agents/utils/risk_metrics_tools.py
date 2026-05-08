@@ -17,6 +17,7 @@ Coverage:
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 import numpy as np
@@ -25,6 +26,7 @@ from langchain_core.tools import tool
 from tradingagents.dataflows.stockstats_utils import load_ohlcv
 
 
+logger = logging.getLogger(__name__)
 _TRADING_DAYS = 252
 
 
@@ -114,10 +116,15 @@ def get_risk_metrics(
     objective numbers — surface them in the technical analysis report so
     the reader has a quantified risk view alongside the chart commentary.
     """
+    logger.info("get_risk_metrics: called symbol=%s curr_date=%s lookback=%d",
+                symbol, curr_date, look_back_days)
     try:
         m = _compute_metrics(symbol, curr_date, look_back_days)
     except Exception as exc:
+        logger.warning("get_risk_metrics: failed for %s: %s", symbol, exc)
         return f"리스크 지표 계산 실패 ({symbol}): {exc}"
+    logger.info("get_risk_metrics: ok symbol=%s vol=%s beta=%s",
+                symbol, m["annual_vol"], m["beta_spy"])
 
     return (
         f"## {symbol} 리스크 지표 ({m['trading_days']} 거래일 기준)\n\n"

@@ -594,6 +594,18 @@ def _clean_section(body) -> str:
     """
     if not body or not body.strip():
         return _FAILURE_PLACEHOLDER
+    # Defensively reject pathologically long sections. A normal analyst
+    # response tops out around 20-30K chars; anything past 200K is almost
+    # always raw tool-call output (news payload, OHLCV CSV, indicator
+    # dump) accidentally echoed verbatim by the analyst into its 'final
+    # report' instead of summarised. Fail fast — passing it through would
+    # blow the Telegram message budget and produce unreadable garbage.
+    if len(body) > 200_000:
+        log.warning(
+            "clean_section: pathological length %d chars — treating as failure",
+            len(body),
+        )
+        return _FAILURE_PLACEHOLDER
     head = body.strip()[:500]
     if any(m in head for m in _GARBAGE_MARKERS):
         return _FAILURE_PLACEHOLDER

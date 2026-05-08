@@ -105,16 +105,21 @@ def get_macro_context(
     for rate-sensitive sectors (REITs, utilities, banks), commodity-tied
     names (energy, miners), and any risk-on/off positioning context.
     """
+    logger.info("get_macro_context: called curr_date=%s", curr_date)
     rows = []
+    fetched = 0
     for ticker, label, suffix in _MACRO_SERIES:
         latest, pct = _fetch_one(ticker, curr_date)
         if latest is None:
             continue
         change = "n/a" if pct is None else f"{pct:+.2f}%"
         rows.append(f"- {label} ({ticker}): {_format_value(latest, suffix)} (30D {change})")
+        fetched += 1
 
     if not rows:
+        logger.warning("get_macro_context: no series fetched (all upstream failures)")
         return "거시 지표 데이터를 가져오지 못했습니다."
+    logger.info("get_macro_context: ok %d/%d series", fetched, len(_MACRO_SERIES))
 
     return (
         "## 거시 지표 스냅샷\n\n"

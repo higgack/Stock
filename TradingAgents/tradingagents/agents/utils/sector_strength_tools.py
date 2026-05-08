@@ -144,8 +144,12 @@ def get_sector_relative_strength(
     Surface this in the sector primer so 'leader vs laggard' becomes a
     quantified claim instead of a guess.
     """
+    logger.info("get_sector_relative_strength: called symbol=%s curr_date=%s",
+                symbol, curr_date)
     bench = _resolve_benchmark(symbol)
     bench_etf, bench_label = bench if bench else (None, None)
+    logger.info("get_sector_relative_strength: %s → benchmark=%s",
+                symbol, bench_etf or "(none)")
 
     horizons = [(30, "30D"), (90, "90D")]
     rows = []
