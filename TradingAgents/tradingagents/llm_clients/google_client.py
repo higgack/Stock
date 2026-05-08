@@ -48,7 +48,8 @@ class GoogleClient(BaseLLMClient):
         # Map thinking_level to appropriate API param based on model
         # Gemini 3 Pro: low, high
         # Gemini 3 Flash: minimal, low, medium, high
-        # Gemini 2.5: thinking_budget (0=disable, -1=dynamic)
+        # Gemini 2.5 Pro: thinking required (rejects thinking_budget=0)
+        # Gemini 2.5 Flash/Flash-Lite: thinking_budget (0=disable, -1=dynamic)
         thinking_level = self.kwargs.get("thinking_level")
         if thinking_level:
             model_lower = self.model.lower()
@@ -57,8 +58,15 @@ class GoogleClient(BaseLLMClient):
                 if "pro" in model_lower and thinking_level == "minimal":
                     thinking_level = "low"
                 llm_kwargs["thinking_level"] = thinking_level
+            elif "pro" in model_lower:
+                # Gemini 2.5 Pro requires thinking — thinking_budget=0
+                # raises 400 'Budget 0 is invalid. This model only works
+                # in thinking mode.' Use dynamic budget (-1) so the model
+                # picks a sensible amount per request regardless of the
+                # caller's thinking_level preference.
+                llm_kwargs["thinking_budget"] = -1
             else:
-                # Gemini 2.5: map to thinking_budget
+                # Gemini 2.5 Flash / Flash-Lite: map to thinking_budget
                 llm_kwargs["thinking_budget"] = -1 if thinking_level == "high" else 0
 
         return NormalizedChatGoogleGenerativeAI(**llm_kwargs)
