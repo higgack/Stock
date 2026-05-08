@@ -217,6 +217,12 @@ def _first_meaningful_sentence(text: str, max_chars: int = 200) -> str:
             continue
         if line.endswith(":"):
             continue
+        # Strip the rating echo lines that managers/analysts sometimes put
+        # at the very top of their report — those bubble up into the user-
+        # facing summary as a redundant 'FINAL TRANSACTION PROPOSAL: HOLD'
+        # line that's already conveyed by the per-analyst stance bar.
+        if "FINAL TRANSACTION PROPOSAL" in line.upper():
+            continue
         if len(line) < 30:
             continue
         if len(line) <= max_chars:

@@ -54,7 +54,7 @@ Volume-Based Indicators:
             " write a short paragraph (3-5 sentences) of sector context — what segment"
             " of the market the ticker belongs to (e.g. 'AI 인프라 반도체', '클라우드"
             " 소프트웨어', '대체에너지 유틸리티'), what the dominant theme of that"
-            " segment has been over the last 2 weeks (rotation in/out, sector indices"
+            " segment has been over the last 4 weeks (rotation in/out, sector indices"
             " up/down, peer drivers), and where this specific name sits inside the"
             " segment (leader, laggard, niche, recent breakout). Use this as the"
             " opening paragraph of the body so a reader can place the chart pattern in"
