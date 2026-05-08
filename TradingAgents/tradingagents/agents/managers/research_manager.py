@@ -19,6 +19,17 @@ def create_research_manager(llm):
 
         investment_debate_state = state["investment_debate_state"]
 
+        past_context = state.get("past_context", "")
+        lessons_line = (
+            f"\n\n**Lessons from prior decisions and outcomes** "
+            "(use these to calibrate confidence — past misses on this name "
+            "or sector should make you more cautious about repeating the same "
+            "thesis):\n"
+            f"{past_context}\n"
+            if past_context
+            else ""
+        )
+
         prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
 {instrument_context}
@@ -32,7 +43,7 @@ def create_research_manager(llm):
 - **Underweight**: Cautious view; recommend trimming exposure
 - **Sell**: Strong conviction in the bear thesis; recommend exiting or avoiding the position
 
-Commit to a clear stance whenever the debate's strongest arguments warrant one; reserve Hold for situations where the evidence on both sides is genuinely balanced.
+Commit to a clear stance whenever the debate's strongest arguments warrant one; reserve Hold for situations where the evidence on both sides is genuinely balanced.{lessons_line}
 
 ---
 

@@ -119,12 +119,53 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
         )
         state, decision = ta.propagate(ticker, target_date)
 
-        full = _format_full(state, decision, ticker, target_date)
-        summary = _format_summary(state, decision, ticker, target_date)
+        # Surface the last few resolved recommendations for this ticker as a
+        # short Korean header line — gives the reader an immediate sense of
+        # whether the bot has been right or wrong on this name lately.
+        past_outcomes = _format_past_outcomes(ta.memory_log, ticker)
+
+        full = _format_full(state, decision, ticker, target_date, past_outcomes)
+        summary = _format_summary(state, decision, ticker, target_date, past_outcomes)
         _cache.put(ticker, target_date, summary, full)
         return summary, full
     finally:
         clear_busy()
+
+
+def _format_past_outcomes(memory_log, ticker: str, limit: int = 2) -> str:
+    """Build a one-or-two line Korean string summarizing the most recent
+    RESOLVED recommendations for this ticker. Empty when no resolved
+    history exists yet (first-time ticker or all entries still pending).
+    """
+    try:
+        entries = memory_log.load_entries()
+    except Exception:
+        return ""
+    matched = [
+        e for e in reversed(entries)
+        if e.get("ticker") == ticker and not e.get("pending") and e.get("raw")
+    ]
+    if not matched:
+        return ""
+    lines = []
+    for e in matched[:limit]:
+        raw = e.get("raw") or "n/a"
+        alpha = e.get("alpha")
+        rating_kr = _RATING_KR.get(e.get("rating", "").upper(), e.get("rating", ""))
+        date = e.get("date", "")
+        # Compose: "지난 추천 (2026-04-24): 매수 → +5.3% (벤치마크 대비 +1.2%)"
+        bench = f" (벤치마크 대비 {alpha})" if alpha and alpha != "n/a" else ""
+        lines.append(f"📒 지난 추천 ({date}): {rating_kr} → {raw}{bench}")
+    return "\n".join(lines)
+
+
+_RATING_KR = {
+    "BUY": "매수",
+    "OVERWEIGHT": "비중확대",
+    "HOLD": "보유",
+    "UNDERWEIGHT": "비중축소",
+    "SELL": "매도",
+}
 
 
 _SECTION_LABELS_FOR_SUMMARY = [
@@ -185,13 +226,21 @@ def _extract_stance(body: str | None) -> str:
     return last_label
 
 
-def _format_summary(state: dict, decision: str, ticker: str, date_: str) -> str:
+def _format_summary(
+    state: dict,
+    decision: str,
+    ticker: str,
+    date_: str,
+    past_outcomes: str = "",
+) -> str:
     rating = _extract_rating(decision) or "N/A"
     parts = [
         f"📊 **{ticker}** ({date_})",
         "━━━━━━━━━━━━━━",
         f"🎯 최종 판정: **{rating}**",
     ]
+    if past_outcomes:
+        parts.append(past_outcomes)
     # Compact one-line per-analyst stance bar so the user sees who voted
     # what at a glance, before the longer per-section snippets.
     stance_chunks = []
@@ -256,8 +305,16 @@ _REPORT_SECTIONS = [
 ]
 
 
-def _format_full(state: dict, decision: str, ticker: str, date_: str) -> str:
+def _format_full(
+    state: dict,
+    decision: str,
+    ticker: str,
+    date_: str,
+    past_outcomes: str = "",
+) -> str:
     parts = [f"📋 {ticker} 전체 리포트 ({date_})\n"]
+    if past_outcomes:
+        parts.append(past_outcomes + "\n")
     for key, label, analyst_id in _REPORT_SECTIONS:
         if analyst_id is not None and analyst_id not in _SELECTED_ANALYSTS:
             continue  # we never ran this analyst — skip the section entirely
