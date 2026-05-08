@@ -145,6 +145,12 @@ class TradingAgentsGraph:
         kwargs = {}
         provider = self.config.get("llm_provider", "").lower()
 
+        # Per-request HTTP timeout, applied to every provider that supports
+        # it. Without this a single hung Gemini call can burn the whole
+        # 10-minute analysis budget. Lets the caller's retry kick in.
+        if self.config.get("llm_request_timeout"):
+            kwargs["timeout"] = self.config["llm_request_timeout"]
+
         if provider == "google":
             thinking_level = self.config.get("google_thinking_level")
             if thinking_level:
