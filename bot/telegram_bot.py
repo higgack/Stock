@@ -14,8 +14,11 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
-from datetime import date as _date
+import time
+from collections import Counter, defaultdict
+from datetime import date as _date, datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -31,6 +34,7 @@ from telegram.ext import (
 
 from bot import cache as _cache
 from bot import recovery as _recovery
+from bot import usage_tracker
 from bot.analyzer import clear_busy, mark_busy
 
 load_dotenv()
@@ -201,6 +205,15 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /usage in channel — post the cost / activity digest.
+    if first_word == "usage":
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text=_build_usage_report(),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     # /compare A B → branch off to the comparison handler.
     cmp_match = COMPARE_RE.match(body)
     if cmp_match:
@@ -272,6 +285,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 summary, full = await _run_analysis_subprocess(raw, today)
         except asyncio.TimeoutError:
             log.warning("analysis timed out for %s after %ss", raw, ANALYSIS_TIMEOUT_SEC)
+            usage_tracker.log_failure(raw, "10분 타임아웃")
             try:
                 await ctx.bot.edit_message_text(
                     text=(
@@ -291,6 +305,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             return
         except Exception as exc:
             log.exception("analysis failed for %s", raw)
+            usage_tracker.log_failure(raw, str(exc))
             await ctx.bot.edit_message_text(
                 text=_format_failure(raw, exc),
                 chat_id=post.chat.id,
@@ -525,9 +540,10 @@ _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
 <b>【1. 명령어】</b>
 아래 명령어를 <b>탭하면 입력창에 자동 입력</b>됩니다.
 
-▸ 도움말 (어디서든)
+▸ 도움말 / 상태 (어디서든)
 /start
 /help
+/usage
 
 ▸ 단일 종목 분석 (채널에서)
 /NVDA
@@ -639,6 +655,199 @@ _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
 async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """DM /start or /help — comprehensive bot usage guide."""
     await update.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.HTML)
+
+
+# ─── /usage ───────────────────────────────────────────────────────────
+
+# Local-day boundaries are computed in KST regardless of server tz so
+# the daily chart aligns with how the user actually thinks about days.
+_KST = timezone(timedelta(hours=9))
+
+
+def _kst_day_str(ts: float) -> str:
+    return datetime.fromtimestamp(ts, _KST).strftime("%Y-%m-%d")
+
+
+def _kst_today_start_ts() -> float:
+    now = datetime.now(_KST)
+    midnight = datetime(now.year, now.month, now.day, tzinfo=_KST)
+    return midnight.timestamp()
+
+
+def _format_seconds(sec: float) -> str:
+    sec = int(sec)
+    if sec >= 60:
+        return f"{sec // 60}분 {sec % 60}초"
+    return f"{sec}초"
+
+
+def _count_watchdog_restarts_24h() -> int:
+    """Best-effort count of watchdog-triggered restarts in the last day.
+
+    Reads the watchdog timer's journal; returns 0 if journalctl isn't
+    available or the unit doesn't exist on this host.
+    """
+    try:
+        out = subprocess.run(
+            ["journalctl", "-u", "stock-bot-watchdog", "--since", "24 hours ago",
+             "--no-pager", "-q"],
+            capture_output=True, text=True, timeout=10,
+        )
+        # `restarting` appears in our notify line when watchdog actually fires
+        return out.stdout.count("restarting")
+    except Exception:
+        return 0
+
+
+def _build_usage_report() -> str:
+    records = usage_tracker.load_records(window_days=30)
+    today_start = _kst_today_start_ts()
+    week_start = today_start - 6 * 86400  # 7 days inclusive of today
+    now = time.time()
+
+    # Counts per window
+    def in_window(rec: dict, since: float) -> bool:
+        return rec.get("ts", 0) >= since
+
+    analyses = [r for r in records if r.get("type") == "analysis"]
+    today_runs  = [r for r in analyses if in_window(r, today_start)]
+    week_runs   = [r for r in analyses if in_window(r, week_start)]
+    month_runs  = analyses  # already 30d window
+
+    today_cache = sum(1 for r in today_runs if r.get("cache_hit"))
+    today_new   = len(today_runs) - today_cache
+
+    # Costs by window
+    calls = [r for r in records if r.get("type") == "llm_call"]
+    today_calls = [r for r in calls if in_window(r, today_start)]
+    week_calls  = [r for r in calls if in_window(r, week_start)]
+    today_cost  = sum(r.get("cost_usd", 0) for r in today_calls)
+    week_cost   = sum(r.get("cost_usd", 0) for r in week_calls)
+    month_cost  = sum(r.get("cost_usd", 0) for r in calls)
+
+    # Per-model breakdown for today
+    by_model: dict[str, dict] = defaultdict(lambda: {"calls": 0, "cost": 0.0, "tokens": 0})
+    for r in today_calls:
+        model = r.get("model") or "unknown"
+        by_model[model]["calls"] += 1
+        by_model[model]["cost"] += r.get("cost_usd", 0)
+        by_model[model]["tokens"] += (
+            r.get("prompt_tokens", 0) + r.get("completion_tokens", 0)
+        )
+
+    # 7-day daily series — costs + analysis count keyed by KST day
+    daily: dict[str, dict] = defaultdict(lambda: {"cost": 0.0, "runs": 0})
+    for r in calls:
+        if in_window(r, week_start):
+            daily[_kst_day_str(r["ts"])]["cost"] += r.get("cost_usd", 0)
+    for r in analyses:
+        if in_window(r, week_start):
+            daily[_kst_day_str(r["ts"])]["runs"] += 1
+
+    last_7_days = []
+    for offset in range(6, -1, -1):
+        d_ts = today_start - offset * 86400
+        last_7_days.append(_kst_day_str(d_ts))
+
+    max_daily_cost = max(
+        (daily[d]["cost"] for d in last_7_days), default=0.0
+    )
+
+    # Most-analyzed tickers (7d, fresh runs only)
+    ticker_counter: Counter[str] = Counter()
+    for r in week_runs:
+        if not r.get("cache_hit"):
+            ticker_counter[r.get("ticker", "?")] += 1
+
+    # Average elapsed for fresh runs in last 24h
+    elapsed = [
+        r.get("elapsed_sec", 0) for r in analyses
+        if not r.get("cache_hit")
+        and r.get("elapsed_sec", 0) > 0
+        and now - r.get("ts", 0) < 86400
+    ]
+    avg_elapsed = sum(elapsed) / len(elapsed) if elapsed else 0.0
+
+    # Failures in last 24h
+    failure_24h = sum(
+        1 for r in records
+        if r.get("type") == "failure" and now - r.get("ts", 0) < 86400
+    )
+    watchdog_24h = _count_watchdog_restarts_24h()
+
+    fx = usage_tracker.KRW_PER_USD
+
+    def krw(usd: float) -> str:
+        return f"₩{int(round(usd * fx)):,}"
+
+    lines = [
+        "📊 <b>NOAH 봇 사용 현황</b> (KST)",
+        "",
+        "🔬 <b>분석 실행</b>",
+        f"  • 오늘: {len(today_runs)}건  (새 {today_new}건 + 캐시 {today_cache}건)",
+        f"  • 7일:  {len(week_runs)}건",
+        f"  • 30일: {len(month_runs)}건",
+        "",
+        f"💰 <b>추정 비용</b> (Gemini API, ₩{fx}/$)",
+        f"  • 오늘: {krw(today_cost)}  (${today_cost:.2f})",
+        f"  • 7일:  {krw(week_cost)}  (${week_cost:.2f})",
+        f"  • 30일: {krw(month_cost)}  (${month_cost:.2f})",
+        "",
+        "🤖 <b>모델별 (오늘)</b>",
+    ]
+    if by_model:
+        for model in sorted(by_model, key=lambda m: -by_model[m]["cost"]):
+            stats = by_model[model]
+            short = model.replace("gemini-2.5-", "") if model.startswith("gemini-2.5-") else model
+            tokens_k = stats["tokens"] / 1000.0
+            lines.append(
+                f"  {short:<11} {krw(stats['cost']):>7}  "
+                f"({stats['calls']}콜, {tokens_k:.1f}K 토큰)"
+            )
+            purpose = usage_tracker.MODEL_PURPOSE.get(model)
+            if purpose:
+                lines.append(f"     ↳ {purpose}")
+    else:
+        lines.append("  (오늘 호출 없음)")
+    lines.append("")
+
+    lines.append("📅 <b>최근 7일 일별</b>")
+    for day in last_7_days:
+        cost = daily[day]["cost"]
+        runs = daily[day]["runs"]
+        if max_daily_cost > 0 and cost > 0:
+            bar_len = max(1, int(cost / max_daily_cost * 20))
+        else:
+            bar_len = 0
+        bar = "█" * bar_len if bar_len else "·"
+        bar = bar.ljust(20)
+        # MM-DD slice from YYYY-MM-DD
+        lines.append(f"  {day[5:]}  {bar}  {krw(cost):>7}  ({runs}건)")
+    lines.append("")
+
+    lines.append("📈 <b>자주 분석된 종목 (7일)</b>")
+    if ticker_counter:
+        top = ", ".join(f"{t} × {n}" for t, n in ticker_counter.most_common(7))
+        lines.append(f"  {top}")
+    else:
+        lines.append("  (분석 없음)")
+    lines.append("")
+
+    if avg_elapsed > 0:
+        lines.append(f"⏱ 평균 분석 시간 (24h): {_format_seconds(avg_elapsed)}")
+    lines.append(f"🛡 Watchdog 재시작 (24h): {watchdog_24h}건")
+    lines.append(f"❌ 분석 실패 (24h): {failure_24h}건")
+
+    return "\n".join(lines)
+
+
+async def cmd_usage(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/usage in DM — show analysis + cost digest. Channel /usage is
+    handled in on_channel_post (PTB CommandHandler doesn't fire on
+    channel_post updates)."""
+    if update.message is None:
+        return
+    await update.message.reply_text(_build_usage_report(), parse_mode=ParseMode.HTML)
 
 
 async def cmd_compare_hint(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -811,6 +1020,7 @@ async def _on_startup(application) -> None:
         await application.bot.set_my_commands([
             BotCommand("start", "사용법 안내"),
             BotCommand("help", "사용법 안내"),
+            BotCommand("usage", "사용량 / 비용 / 7일 차트"),
             BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
         ])
     except Exception as exc:
@@ -850,6 +1060,7 @@ def main() -> None:
     app = Application.builder().token(TOKEN).post_init(_on_startup).build()
     app.add_handler(CommandHandler("start", cmd_help))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("usage", cmd_usage))
     # Catch /compare typed in DM and redirect — actual compare runs only
     # via on_channel_post inside the registered channel.
     app.add_handler(CommandHandler("compare", cmd_compare_hint))

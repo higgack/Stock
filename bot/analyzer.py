@@ -7,6 +7,7 @@ synchronous `analyze(ticker, date)` call that returns (summary, full_report).
 import logging
 import re
 import sys
+import time
 from datetime import date as _date
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 
 from bot import cache as _cache
+from bot.usage_tracker import UsageCallback, log_analysis
 
 log = logging.getLogger("stock-bot.analyzer")
 
@@ -66,6 +68,10 @@ def _build_config() -> dict:
         "fundamental_data": "yfinance",
         "news_data": "yfinance",
     }
+    # Hooks every Gemini call into the usage log so /usage can show
+    # daily costs by model. The callback is forwarded to each LLM client
+    # by trading_graph._get_provider_kwargs (already plumbs callbacks).
+    config["callbacks"] = [UsageCallback()]
     return config
 
 
@@ -104,10 +110,12 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     """
     target_date = target_date or _date.today().isoformat()
     ticker = ticker.upper()
+    started_at = time.time()
 
     cached = _cache.get(ticker, target_date)
     if cached is not None:
         log.info("cache hit for %s/%s", ticker, target_date)
+        log_analysis(ticker, time.time() - started_at, cache_hit=True)
         return cached
 
     # NOTE: .busy marker lifecycle is now owned by the main bot's handler
@@ -138,6 +146,7 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
 
     _cache.put(ticker, target_date, summary, full)
     log.info("analyze: cache write done — returning to worker")
+    log_analysis(ticker, time.time() - started_at, cache_hit=False)
     return summary, full
 
 
