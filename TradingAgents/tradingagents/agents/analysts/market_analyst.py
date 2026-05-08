@@ -7,6 +7,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_macro_context,
     get_risk_metrics,
+    get_sector_relative_strength,
     get_stock_data,
 )
 from tradingagents.dataflows.config import get_config
@@ -23,6 +24,7 @@ def create_market_analyst(llm):
             get_indicators,
             get_risk_metrics,
             get_macro_context,
+            get_sector_relative_strength,
         ]
 
         system_message = (
@@ -76,6 +78,13 @@ Volume-Based Indicators:
             " — e.g. rising 10Y yields hurt high-multiple growth, oil spike"
             " helps energy names, VIX expansion compresses risk appetite."
             " Skip this only if the result is clearly empty."
+            "\n  (c) Call `get_sector_relative_strength(symbol, curr_date)` once"
+            " and use the returned 30D/90D/YTD relative-strength table to"
+            " ground the SECTOR PRIMER's 'leader vs laggard' claim. Replace"
+            " any vague '섹터 내 강세' wording with the actual percent-point"
+            " differential (e.g. '90D +12.4%p vs SOXX → 명확한 섹터 리더')."
+            " Include the table inline in the sector primer paragraph or"
+            " immediately after."
             + get_analyst_directive()
             + get_language_instruction()
         )

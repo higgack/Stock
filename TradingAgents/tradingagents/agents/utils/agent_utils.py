@@ -90,6 +90,7 @@ from tradingagents.agents.utils.news_data_tools import (
 )
 from tradingagents.agents.utils.risk_metrics_tools import get_risk_metrics
 from tradingagents.agents.utils.macro_context_tools import get_macro_context
+from tradingagents.agents.utils.sector_strength_tools import get_sector_relative_strength
 
 
 def get_language_instruction() -> str:
