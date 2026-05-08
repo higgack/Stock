@@ -18,7 +18,7 @@ import sys
 from datetime import date as _date
 
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -497,14 +497,22 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
 ━━━━━━━━━━━━━━
-<b>【1. 명령어】</b>
+<b>【1. 명령어】</b> (탭하면 입력창에 들어감)
+
 ▸ 종목 분석
- • <code>/&lt;티커&gt;</code>          단일 종목 풀 분석 (1~3분)
-   예: <code>/NVDA</code>  <code>/AAPL</code>  <code>/TSLA</code>
- • <code>/compare A B</code>     두 종목 사이드바이사이드 비교
-   예: <code>/compare NVDA AMD</code>
+ • /&lt;티커&gt;        단일 종목 풀 분석 (1~3분)
+   예시 (탭해보기): /NVDA  /AAPL  /TSLA  /AMD  /GOOGL
+ • /compare      두 종목 사이드바이사이드 비교
+   사용법: /compare 티커1 티커2
+   예시 (탭해보기): /compare NVDA AMD
+
 ▸ 도움말
- • <code>/start</code>  <code>/help</code>    이 안내 표시
+ • /start  — 사용법 안내
+ • /help   — 사용법 안내 (위와 동일)
+
+※ 입력창 옆 '/' 메뉴 버튼으로도 명령어 확인 가능
+※ 명령어는 모두 봇 DM 또는 등록된 채널에서 동작
+※ 등록 채널 외에선 무시됨 (보안)
 
 ━━━━━━━━━━━━━━
 <b>【2. 분석 흐름】</b>
@@ -580,7 +588,7 @@ _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
    (Gemini 503 일시 장애일 수 있음)
  • "봇 재시작으로 중단" → 자동 복구 메시지, 다시 입력
  • 미국 외 거래소: 접미사 유지
-   예: <code>/TSM</code> (미국 ADR), <code>/005930.KS</code> (삼성전자)
+   예: /TSM (미국 ADR), /005930.KS (삼성전자)
 
 ━━━━━━━━━━━━━━
 <b>【10. 차별화 포인트】</b>
@@ -596,6 +604,32 @@ _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
 async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """DM /start or /help — comprehensive bot usage guide."""
     await update.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.HTML)
+
+
+async def cmd_compare_hint(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/compare in DM doesn't run — analysis happens in the registered
+    channel. Point the user at the right place instead of staying silent."""
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        "💡 /compare 는 등록된 채널에서만 동작합니다.\n\n"
+        "채널에 다음과 같이 입력하면 두 종목 비교 분석이 돌아갑니다:\n"
+        "/compare NVDA AMD\n\n"
+        "단일 종목 분석도 동일하게 채널에서 /NVDA, /AAPL 등으로 입력하세요.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_ticker_hint(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """Catch random /<TICKER> typed in DM — same redirect."""
+    if update.message is None or update.message.text is None:
+        return
+    typed = update.message.text.split()[0]  # e.g. '/NVDA'
+    await update.message.reply_text(
+        f"💡 종목 분석은 등록된 채널에서만 동작합니다.\n\n"
+        f"채널에 {typed} 라고 입력하면 분석이 시작됩니다.",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 def _format_failure(ticker: str, exc: Exception) -> str:
@@ -731,9 +765,22 @@ def _split(text: str, size: int) -> list[str]:
 
 
 async def _on_startup(application) -> None:
-    """Edit any orphaned 'analysis started' progress message left behind by
-    a previous bot instance that died mid-analysis. Without this, the
-    message would stay 'VICR 분석 시작…' forever after a crash/restart."""
+    """Bot init: register the slash-command menu, then handle any orphan
+    progress message left behind by a previous instance that died
+    mid-analysis (otherwise it would stay 'VICR 분석 시작…' forever)."""
+    # Populates the 'Menu' button beside the input area + the '/' typing
+    # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
+    # registered (the universe is too large) — Telegram still recognises
+    # them as tappable commands when typed in plain text.
+    try:
+        await application.bot.set_my_commands([
+            BotCommand("start", "사용법 안내"),
+            BotCommand("help", "사용법 안내"),
+            BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
+        ])
+    except Exception as exc:
+        log.warning("set_my_commands failed: %s", exc)
+
     orphan = _recovery.read()
     if orphan is None:
         return
@@ -768,9 +815,20 @@ def main() -> None:
     app = Application.builder().token(TOKEN).post_init(_on_startup).build()
     app.add_handler(CommandHandler("start", cmd_help))
     app.add_handler(CommandHandler("help", cmd_help))
+    # Catch /compare typed in DM and redirect — actual compare runs only
+    # via on_channel_post inside the registered channel.
+    app.add_handler(CommandHandler("compare", cmd_compare_hint))
     app.add_handler(CallbackQueryHandler(on_full_report, pattern=r"^full:"))
     app.add_handler(
         MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, on_channel_post)
+    )
+    # Last-resort DM hint for any other /<TICKER>-style command typed at
+    # the bot privately. Only fires for slash-prefixed messages that none
+    # of the explicit CommandHandlers above matched.
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.COMMAND, cmd_ticker_hint
+        )
     )
 
     log.info("bot starting — watching channels: %s", CHANNEL_CHAT_IDS or "auto-detect")
