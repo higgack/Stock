@@ -19,10 +19,16 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: Dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        decision_thinking_llm: Any = None,
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
+        # Optional dedicated tier for final-decision nodes (research manager,
+        # trader, portfolio/risk manager). Falls back to deep when caller
+        # didn't configure one — behavior identical to before this option
+        # existed.
+        self.decision_thinking_llm = decision_thinking_llm or deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
 
@@ -80,14 +86,19 @@ class GraphSetup:
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
         bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
-        research_manager_node = create_research_manager(self.deep_thinking_llm)
-        trader_node = create_trader(self.quick_thinking_llm)
+        # research_manager / trader / portfolio_manager are the three nodes
+        # that produce or finalize the BUY/HOLD/SELL call. Routing them to
+        # the decision tier (Pro by default) lifts the quality of the user-
+        # facing recommendation without paying Pro prices for the analyst
+        # and debate phases.
+        research_manager_node = create_research_manager(self.decision_thinking_llm)
+        trader_node = create_trader(self.decision_thinking_llm)
 
         # Create risk analysis nodes
         aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
         neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
         conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+        portfolio_manager_node = create_portfolio_manager(self.decision_thinking_llm)
 
         # Create workflow
         workflow = StateGraph(AgentState)

@@ -34,6 +34,12 @@ def _build_config() -> dict:
     #   intermediate text. graph/setup.py routes analysts to deep_think_llm.
     config["deep_think_llm"] = "gemini-2.5-flash"
     config["quick_think_llm"] = "gemini-2.5-flash-lite"
+    # Final-decision tier (research_manager / trader / portfolio_manager).
+    # Pro lifts the quality of the actual BUY/HOLD/SELL synthesis without
+    # paying Pro prices for the analyst+debate phases — those stay on
+    # Flash/Flash-Lite. Adds roughly $0.03-0.05/analysis on top of the
+    # ~$0.05 baseline.
+    config["decision_think_llm"] = "gemini-2.5-pro"
     config["google_thinking_level"] = "minimal"
     config["max_debate_rounds"] = 1
     config["max_risk_discuss_rounds"] = 1
@@ -45,6 +51,9 @@ def _build_config() -> dict:
     # report content.
     config["deep_max_output_tokens"] = 16384
     config["quick_max_output_tokens"] = 2000
+    # Decision tier shares the long-output budget with deep — the trader
+    # / managers write multi-paragraph rationales that benefit from room.
+    config["decision_max_output_tokens"] = 16384
     # Per-Gemini-call HTTP timeout. Without this, a single hung response
     # can chew the entire 10-minute analysis budget; SIMO hit exactly that
     # case (worker silent for 7+ min before the asyncio-side timeout fired).

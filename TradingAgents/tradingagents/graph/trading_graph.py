@@ -92,6 +92,12 @@ class TradingAgentsGraph:
         quick_kwargs = dict(llm_kwargs)
         if self.config.get("quick_max_output_tokens"):
             quick_kwargs["max_output_tokens"] = self.config["quick_max_output_tokens"]
+        # Decision tier (research_manager / trader / portfolio_manager).
+        # Optional — when not configured the deep tier is reused, so the
+        # behavior is identical to before this option existed.
+        decision_kwargs = dict(deep_kwargs)
+        if self.config.get("decision_max_output_tokens"):
+            decision_kwargs["max_output_tokens"] = self.config["decision_max_output_tokens"]
 
         deep_client = create_llm_client(
             provider=self.config["llm_provider"],
@@ -108,6 +114,19 @@ class TradingAgentsGraph:
 
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
+
+        decision_model = self.config.get("decision_think_llm")
+        if decision_model and decision_model != self.config["deep_think_llm"]:
+            decision_client = create_llm_client(
+                provider=self.config["llm_provider"],
+                model=decision_model,
+                base_url=self.config.get("backend_url"),
+                **decision_kwargs,
+            )
+            self.decision_thinking_llm = decision_client.get_llm()
+        else:
+            # No dedicated decision tier — fall back to the deep tier.
+            self.decision_thinking_llm = self.deep_thinking_llm
         
         self.memory_log = TradingMemoryLog(self.config)
 
@@ -124,6 +143,7 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            decision_thinking_llm=self.decision_thinking_llm,
         )
 
         self.propagator = Propagator()
