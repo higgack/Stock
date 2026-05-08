@@ -22,6 +22,7 @@ import html as _html
 import json
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 
 from bot.archive import ARCHIVE_ROOT
@@ -39,6 +40,255 @@ _PAST_OUTCOMES_RE = re.compile(r"^(📒\s*지난 추천[^\n]+)$", re.MULTILINE)
 def _extract(pattern: re.Pattern, text: str) -> str:
     m = pattern.search(text or "")
     return m.group(1).strip() if (m and m.lastindex) else (m.group(0).strip() if m else "")
+
+
+# ─── stats sources ───────────────────────────────────────────────────
+_USAGE_LOG_PATH = Path.home() / ".tradingagents" / "usage.jsonl"
+_MEMORY_LOG_PATH = Path.home() / ".tradingagents" / "memory" / "trading_memory.md"
+_KRW_PER_USD = 1380  # mirrors usage_tracker's constant; keep in sync
+
+
+def _read_usage_records() -> list[dict]:
+    """Read raw llm_call records from usage.jsonl. Read-only — does NOT
+    rotate the file (that's owned by usage_tracker)."""
+    if not _USAGE_LOG_PATH.exists():
+        return []
+    out: list[dict] = []
+    try:
+        with open(_USAGE_LOG_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception as exc:
+        log.warning("dashboard: usage.jsonl read failed: %s", exc)
+    return out
+
+
+def _read_memory_resolved() -> list[dict]:
+    """Read trading_memory.md and return only resolved entries (those
+    with realized return data). Pending entries get skipped."""
+    if not _MEMORY_LOG_PATH.exists():
+        return []
+    try:
+        text = _MEMORY_LOG_PATH.read_text(encoding="utf-8")
+    except Exception as exc:
+        log.warning("dashboard: memory log read failed: %s", exc)
+        return []
+    out: list[dict] = []
+    blocks = text.split("\n\n<!-- ENTRY_END -->\n\n")
+    for block in blocks:
+        lines = block.strip().splitlines()
+        if not lines:
+            continue
+        tag = lines[0].strip()
+        if not (tag.startswith("[") and tag.endswith("]")):
+            continue
+        fields = [f.strip() for f in tag[1:-1].split("|")]
+        # Resolved tag has 6 fields: [date, ticker, rating, raw, alpha, holding]
+        # Pending has 4 with last being 'pending'.
+        if len(fields) < 6 or fields[3] == "pending":
+            continue
+        out.append({
+            "date": fields[0], "ticker": fields[1], "rating": fields[2],
+            "raw": fields[3], "alpha": fields[4],
+        })
+    return out
+
+
+def _parse_pct(s: str) -> float | None:
+    """Parse '+5.0%' / '-3.2%' / 'n/a' → float (5.0 / -3.2 / None)."""
+    if not s or s == "n/a":
+        return None
+    try:
+        return float(s.rstrip("%").replace("+", ""))
+    except ValueError:
+        return None
+
+
+def _compute_stats(records: list[dict]) -> dict:
+    """Roll up archive + usage + memory into the headline numbers shown
+    on the dashboard's stats panel."""
+    # ── analysis counts and timing ──
+    total = len(records)
+    dates = [r.get("trade_date") for r in records if r.get("trade_date")]
+    first_date = min(dates) if dates else None
+    last_date = max(dates) if dates else None
+    span_days = 0
+    if first_date and last_date:
+        try:
+            d0 = datetime.date.fromisoformat(first_date)
+            d1 = datetime.date.fromisoformat(last_date)
+            span_days = (d1 - d0).days + 1
+        except Exception:
+            pass
+    elapsed_vals = [
+        float(r.get("elapsed_sec") or 0)
+        for r in records
+        if r.get("elapsed_sec")
+    ]
+    avg_elapsed = sum(elapsed_vals) / len(elapsed_vals) if elapsed_vals else 0.0
+    ticker_counter = Counter(
+        r["ticker"] for r in records if r.get("ticker")
+    )
+    top_ticker, top_count = (
+        ticker_counter.most_common(1)[0] if ticker_counter else ("-", 0)
+    )
+
+    # ── cost (last 30 days from usage.jsonl) ──
+    usage = _read_usage_records()
+    llm_calls = [r for r in usage if r.get("type") == "llm_call"]
+    total_cost_usd = sum(r.get("cost_usd", 0) or 0 for r in llm_calls)
+    cost_by_model: dict[str, float] = {}
+    for r in llm_calls:
+        m = r.get("model") or "unknown"
+        cost_by_model[m] = cost_by_model.get(m, 0.0) + (r.get("cost_usd", 0) or 0)
+    daily_avg_usd = total_cost_usd / max(span_days, 1) if total_cost_usd else 0.0
+
+    # ── recommendation accuracy from memory log ──
+    resolved = _read_memory_resolved()
+    correct = 0
+    evaluated = 0
+    returns: list[float] = []
+    alphas: list[float] = []
+    for e in resolved:
+        ret = _parse_pct(e.get("raw", ""))
+        alpha = _parse_pct(e.get("alpha", ""))
+        if ret is not None:
+            returns.append(ret)
+        if alpha is not None:
+            alphas.append(alpha)
+        rating = (e.get("rating") or "").lower()
+        if ret is None:
+            continue
+        if rating in ("buy", "overweight"):
+            evaluated += 1
+            if ret > 0:
+                correct += 1
+        elif rating in ("sell", "underweight"):
+            evaluated += 1
+            if ret < 0:
+                correct += 1
+        # 'hold' / 'overweight' weak — skip from accuracy calc
+    accuracy = correct / evaluated if evaluated else None
+    avg_return = sum(returns) / len(returns) if returns else None
+    avg_alpha = sum(alphas) / len(alphas) if alphas else None
+
+    return {
+        "total": total,
+        "first_date": first_date,
+        "last_date": last_date,
+        "span_days": span_days,
+        "avg_elapsed_sec": avg_elapsed,
+        "top_ticker": top_ticker,
+        "top_count": top_count,
+        "ticker_distinct": len(ticker_counter),
+        "total_cost_usd": total_cost_usd,
+        "daily_avg_usd": daily_avg_usd,
+        "cost_by_model": cost_by_model,
+        "evaluated": evaluated,
+        "correct": correct,
+        "accuracy": accuracy,
+        "avg_return": avg_return,
+        "avg_alpha": avg_alpha,
+        "resolved_count": len(resolved),
+    }
+
+
+def _format_seconds(sec: float) -> str:
+    sec = int(sec)
+    if sec >= 60:
+        return f"{sec // 60}분 {sec % 60}초"
+    return f"{sec}초"
+
+
+def _krw(usd: float) -> str:
+    return f"₩{int(round(usd * _KRW_PER_USD)):,}"
+
+
+def _stat_card(label: str, value: str, sub: str = "") -> str:
+    sub_html = f'<div class="stat-sub">{_html.escape(sub)}</div>' if sub else ""
+    return f"""
+    <div class="stat-card">
+      <div class="stat-label">{label}</div>
+      <div class="stat-value">{value}</div>
+      {sub_html}
+    </div>
+    """
+
+
+def _render_stats_panel(stats: dict) -> str:
+    if stats["total"] == 0:
+        return ""
+
+    # Card 1: 총 분석
+    span_sub = ""
+    if stats["first_date"] and stats["last_date"]:
+        if stats["first_date"] == stats["last_date"]:
+            span_sub = f"{stats['first_date']} ({stats['span_days']}일)"
+        else:
+            span_sub = (
+                f"{stats['first_date']} ~ {stats['last_date']} "
+                f"({stats['span_days']}일)"
+            )
+    card_total = _stat_card(
+        "📊 총 분석", f"{stats['total']}건",
+        span_sub + f" · {stats['ticker_distinct']}개 종목" if span_sub else "",
+    )
+
+    # Card 2: 비용 (30일)
+    cost_label_parts = []
+    for model in ("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"):
+        usd = stats["cost_by_model"].get(model, 0)
+        if usd > 0:
+            short = model.replace("gemini-2.5-", "")
+            cost_label_parts.append(f"{short} {_krw(usd)}")
+    cost_value = _krw(stats['total_cost_usd'])
+    cost_sub = (
+        f"${stats['total_cost_usd']:.2f} · 일평균 {_krw(stats['daily_avg_usd'])}"
+        + (" · " + " / ".join(cost_label_parts) if cost_label_parts else "")
+    )
+    card_cost = _stat_card("💰 누적 비용 (30일)", cost_value, cost_sub)
+
+    # Card 3: 평균 시간
+    top_part = (
+        f"가장 많이 분석: {stats['top_ticker']} × {stats['top_count']}"
+        if stats["top_count"] > 0 else ""
+    )
+    card_time = _stat_card(
+        "⏱ 평균 분석 시간",
+        _format_seconds(stats["avg_elapsed_sec"]),
+        top_part,
+    )
+
+    # Card 4: 추천 정확도
+    if stats["accuracy"] is not None:
+        acc_pct = stats["accuracy"] * 100
+        acc_value = f"{acc_pct:.0f}%"
+        sub_parts = [f"{stats['correct']}/{stats['evaluated']}건 방향 일치"]
+        if stats["avg_return"] is not None:
+            sub_parts.append(f"평균 {stats['avg_return']:+.2f}%")
+        if stats["avg_alpha"] is not None:
+            sub_parts.append(f"벤치 대비 {stats['avg_alpha']:+.2f}%p")
+        acc_sub = " · ".join(sub_parts)
+    else:
+        acc_value = "—"
+        acc_sub = (
+            f"평가 가능 결과 0건 "
+            f"(추천 후 5거래일 지나야 측정)" if stats["resolved_count"] == 0 else
+            f"Buy/Sell 추천이 아직 없음"
+        )
+    card_acc = _stat_card("🎯 추천 정확도", acc_value, acc_sub)
+
+    return f"""
+    <section class="stats-grid">
+      {card_total}{card_cost}{card_time}{card_acc}
+    </section>
+    """
 
 
 # ─── date / rating utilities ─────────────────────────────────────────
@@ -143,6 +393,27 @@ h1 { font-size: 22px; margin: 0 0 4px; }
 """
 
 _INDEX_CSS = _BASE_CSS + """
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px; margin: 16px 0 8px;
+}
+.stat-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 16px;
+}
+.stat-label {
+  font-size: 12px; color: var(--fg-soft); margin-bottom: 6px;
+  font-weight: 500;
+}
+.stat-value {
+  font-size: 22px; font-weight: 700; color: var(--fg);
+  line-height: 1.2;
+}
+.stat-sub {
+  font-size: 11px; color: var(--fg-soft); margin-top: 6px;
+  word-break: keep-all;
+}
 .search-bar {
   display: flex; align-items: center; gap: 8px; margin: 16px 0 24px;
   padding: 4px;
@@ -314,6 +585,8 @@ def _render_index(records: list[dict]) -> str:
             """)
         body = "".join(sections)
 
+    stats_panel = _render_stats_panel(_compute_stats(records))
+
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -326,6 +599,7 @@ def _render_index(records: list[dict]) -> str:
 <div class="wrap">
   <h1>🦉 NOAH 주식분석 아카이브</h1>
   <p class="sub">카드 클릭 시 전체 리포트 · 검색창에서 종목 필터</p>
+  {stats_panel}
   <div class="search-bar">
     <input id="search" type="text" placeholder="종목 검색 (예: NVDA, AMD, GOOGL)" autocomplete="off" autocapitalize="characters" spellcheck="false">
     <button id="clear-btn" type="button" title="검색 초기화">초기화</button>
