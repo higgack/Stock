@@ -23,6 +23,7 @@ from datetime import date as _date, datetime, timedelta, timezone
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import RetryAfter
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -516,19 +517,41 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         html_chunk = _md_to_html(chunk)
         if not html_chunk.strip():
             continue  # all-table chunk that collapsed to nothing after dedup
-        try:
-            await query.message.reply_text(
-                html_chunk, parse_mode=ParseMode.HTML
-            )
-        except Exception as exc:
-            log.warning("chunk send failed (%d chars): %s", len(chunk), exc)
+        # Send with RetryAfter handling: a long full report split into 10+
+        # chunks fired back-to-back trips Telegram's per-chat flood guard.
+        # Sleep briefly between chunks; on a 429, honour the server-given
+        # retry_after and try the same chunk again.
+        attempts = 0
+        while True:
             try:
                 await query.message.reply_text(
-                    f"⚠️ 일부 본문 누락: {_html.escape(str(exc))}",
-                    parse_mode=ParseMode.HTML,
+                    html_chunk, parse_mode=ParseMode.HTML
                 )
-            except Exception:
-                pass
+                break
+            except RetryAfter as ra:
+                wait = max(1, int(getattr(ra, "retry_after", 5)))
+                log.warning(
+                    "flood control on chunk (%d chars) — waiting %ds",
+                    len(chunk), wait,
+                )
+                await asyncio.sleep(wait + 1)
+                attempts += 1
+                if attempts >= 3:
+                    log.warning("giving up chunk after %d retries", attempts)
+                    break
+            except Exception as exc:
+                log.warning("chunk send failed (%d chars): %s", len(chunk), exc)
+                try:
+                    await query.message.reply_text(
+                        f"⚠️ 일부 본문 누락: {_html.escape(str(exc))}",
+                        parse_mode=ParseMode.HTML,
+                    )
+                except Exception:
+                    pass
+                break
+        # Baseline pacing — Telegram tolerates ~1 message/sec sustained
+        # to a single chat. 0.7s keeps us comfortably under that ceiling.
+        await asyncio.sleep(0.7)
 
 
 _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>

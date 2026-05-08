@@ -419,6 +419,12 @@ _LARGE_NUM_RE = re.compile(
 _LONG_DECIMAL_RE = re.compile(r"(?<![\d.])(\d+\.\d{5,})(?![\d.])")
 # Runaway repetition Gemini sometimes emits ('--------…' x thousands of chars).
 _RUNAWAY_CHAR_RE = re.compile(r"([\-=_*#~])\1{29,}")
+# Whole lines that are essentially nothing but dashes / equals / underscores
+# (Markdown table separators echoed dozens of times). _RUNAWAY_CHAR_RE
+# misses these when whitespace breaks the run; this pattern catches lines
+# made of those chars even with intermixed spaces. 15 minimum keeps real
+# horizontal rules ('---' as a Markdown separator) intact.
+_DASH_LINE_RE = re.compile(r"(?m)^[\s\-=_*#~]{15,}$\n?")
 
 # Korean place-value reading like '46억 7100만 64 달러' that Gemini often emits
 # when reading large dollar amounts verbatim. We rewrite them as '약 47억 달러'.
@@ -561,6 +567,20 @@ def _polish(body: str) -> str:
     headers, and collapses leftover literal '\\n\\n' escape sequences and
     runs of blank lines.
     """
+    # Cheap, high-impact passes ALWAYS run, even before the length guard.
+    # When a fundamentals analyst response goes off the rails and emits a
+    # 50K-char run of dashes, the body can balloon past the polish-length
+    # threshold and bypass the runaway cleanup, leaving a wall of '---'
+    # in the user-facing report. Stripping runaway chars + dash-only
+    # lines is O(n) regex with no backtracking risk, so doing it up
+    # front is essentially free and fixes the common case.
+    pre_len = len(body)
+    body = _RUNAWAY_CHAR_RE.sub("", body)
+    body = _DASH_LINE_RE.sub("", body)
+    if len(body) != pre_len:
+        log.info("polish: pre-strip removed %d chars of runaway/dash garbage",
+                 pre_len - len(body))
+
     if len(body) > _POLISH_LENGTH_GUARD:
         log.warning(
             "polish: body too long (%d chars > %d) — skipping regex pass",
