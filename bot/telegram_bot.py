@@ -55,11 +55,6 @@ TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.]{0,9}$")
 # tickers run through the same analyzer pipeline (via cache or fresh
 # subprocess) and the result is condensed to verdict + stance bar.
 COMPARE_RE = re.compile(r"^compare\s+(\S+)\s+(\S+)\s*$", re.IGNORECASE)
-# Slash commands the bot recognises. Without this set, /start, /help, or a
-# bare /compare typed in the channel would slip past COMPARE_RE and land in
-# the ticker branch below — TICKER_RE happily matches 'START' / 'HELP' /
-# 'COMPARE' as alphabetic tickers, which kicks off a fruitless analysis run.
-RESERVED_COMMANDS = frozenset({"START", "HELP", "COMPARE"})
 # Patterns for parsing a previously-rendered summary string back into the
 # pieces we need for the compact compare view. The summary format is
 # produced by `bot.analyzer._format_summary` so these are stable.
@@ -191,6 +186,20 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if not text.startswith(TICKER_PREFIX):
         return  # not a ticker request — ignore
     body = text[len(TICKER_PREFIX):].strip()
+    first_word = body.split(None, 1)[0].lower() if body else ""
+
+    # /start or /help in the channel — surface the usage guide. PTB's
+    # CommandHandler only fires on Update.message, not channel_post, so
+    # without this branch a user typing /help in the channel would either
+    # silently no-op or (with our old TICKER_RE fall-through) get
+    # interpreted as a 'HELP' ticker.
+    if first_word in ("start", "help"):
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text=_HELP_TEXT,
+            parse_mode=ParseMode.HTML,
+        )
+        return
 
     # /compare A B → branch off to the comparison handler.
     cmp_match = COMPARE_RE.match(body)
@@ -214,13 +223,18 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         await _handle_compare(ctx, post, tk_a, tk_b)
         return
 
-    raw = body.upper()
-    # Don't treat registered slash commands as tickers. /start, /help, and
-    # bare /compare (without args) would otherwise match TICKER_RE and
-    # trigger an analysis attempt for a non-existent 'START' / 'HELP' /
-    # 'COMPARE' ticker — wasting tokens on a hopeless yfinance lookup.
-    if raw.split()[0] in RESERVED_COMMANDS:
+    # Bare /compare with no args (or malformed args that didn't match
+    # COMPARE_RE) — show the short usage hint instead of falling into
+    # the ticker branch and trying to analyze 'COMPARE' as a symbol.
+    if first_word == "compare":
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text="⚠️ 사용법: <code>/compare 티커1 티커2</code>\n예: <code>/compare NVDA AMD</code>",
+            parse_mode=ParseMode.HTML,
+        )
         return
+
+    raw = body.upper()
     if not TICKER_RE.match(raw):
         return  # malformed ticker after the "/" prefix
 
