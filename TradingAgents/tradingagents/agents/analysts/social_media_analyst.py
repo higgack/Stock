@@ -1,6 +1,7 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
+    finalize_analyst_result,
     get_analyst_directive,
     get_language_instruction,
     get_news,
@@ -52,10 +53,9 @@ def create_social_media_analyst(llm):
 
         result = chain.invoke(state["messages"])
 
-        report = ""
-
-        if len(result.tool_calls) == 0:
-            report = result.content
+        result, report = finalize_analyst_result(
+            prompt, llm, state["messages"], result, "social"
+        )
 
         return {
             "messages": [result],

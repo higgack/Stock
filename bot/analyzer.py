@@ -43,7 +43,7 @@ def _build_config() -> dict:
     # (quick tier) only need a few paragraphs of stance text. Saves
     # roughly 30-40% on output-token spend with no measurable loss in
     # report content.
-    config["deep_max_output_tokens"] = 4000
+    config["deep_max_output_tokens"] = 8192
     config["quick_max_output_tokens"] = 2000
     config["data_vendors"] = {
         "core_stock_apis": "yfinance",

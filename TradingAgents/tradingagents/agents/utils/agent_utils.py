@@ -1,4 +1,74 @@
+import logging
+
 from langchain_core.messages import HumanMessage, RemoveMessage
+
+_analyst_log = logging.getLogger("tradingagents.analyst")
+
+
+def _content_to_str(result) -> str:
+    """Normalize an LLM message's content into a single string. Some Gemini
+    responses come back as a list of content parts; collapse those to plain
+    text so callers can treat content as a string uniformly."""
+    content = result.content
+    if isinstance(content, list):
+        pieces = []
+        for part in content:
+            if isinstance(part, str):
+                pieces.append(part)
+            else:
+                text = getattr(part, "text", None)
+                if text:
+                    pieces.append(text)
+        return "".join(pieces)
+    return content or ""
+
+
+def finalize_analyst_result(prompt, llm, messages, result, analyst_name: str):
+    """Extract a non-empty report string from an analyst's chain invocation.
+
+    Returns (message_to_record, report_text). If the analyst stopped tool-
+    calling but emitted empty content (Gemini sometimes hits MAX_TOKENS or
+    just returns nothing after a heavy tool result), re-invoke the LLM once
+    WITHOUT tools and explicitly demand a written report from the message
+    history we already have. This recovers the common failure mode where a
+    section ends up as "_(이번 분석은 모델 응답 오류로 미완성. 다른 티커로
+    재시도해보세요.)_" downstream.
+
+    On total failure (retry also empty), returns the original result and an
+    empty string — the caller's downstream placeholder logic still handles
+    that gracefully.
+    """
+    if result.tool_calls:
+        # Still in the tool-calling phase; the graph will route us back here.
+        return result, ""
+    text = _content_to_str(result)
+    if text.strip():
+        return result, text
+    _analyst_log.warning(
+        "%s analyst finished with empty content and no tool calls — retrying without tools",
+        analyst_name,
+    )
+    finalize_msg = HumanMessage(
+        content=(
+            "지금까지 호출한 도구 결과를 바탕으로 추가 도구 호출 없이 한국어로 분석 보고서를"
+            " 즉시 작성해라. 도구 호출이나 빈 응답은 허용되지 않는다. 데이터가 부족하면"
+            " 부족한 점을 명시하고 가능한 범위에서 결론을 내려라."
+        )
+    )
+    try:
+        retry = (prompt | llm).invoke(messages + [finalize_msg])
+    except Exception as exc:
+        _analyst_log.warning("%s analyst retry raised: %s", analyst_name, exc)
+        return result, ""
+    text = _content_to_str(retry)
+    if text.strip():
+        _analyst_log.info(
+            "%s analyst retry recovered %d chars", analyst_name, len(text)
+        )
+        return retry, text
+    _analyst_log.warning("%s analyst retry also returned empty content", analyst_name)
+    return result, ""
+
 
 # Import tools from separate utility files
 from tradingagents.agents.utils.core_stock_tools import (
