@@ -20,6 +20,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 
 from bot import cache as _cache
 from bot.archive import save_analysis as _archive_save
+from bot.dashboard import regenerate_index as _dashboard_regen
 from bot.usage_tracker import UsageCallback, log_analysis
 
 log = logging.getLogger("stock-bot.analyzer")
@@ -152,6 +153,9 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     # Persist to the long-term archive. Cache writes expire at midnight;
     # the archive does not, and is what the dashboard reads from.
     _archive_save(ticker, target_date, summary, full, elapsed)
+    # Refresh the static HTML dashboard. Internally swallows errors, so
+    # a dashboard hiccup can't break the analysis path.
+    _dashboard_regen()
     return summary, full
 
 
