@@ -210,6 +210,11 @@ class TradingAgentsGraph:
         try:
             start = datetime.strptime(trade_date, "%Y-%m-%d")
             end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
+            # If the holding window hasn't elapsed yet there are no returns to
+            # score. Bailing here also stops yfinance from logging '$TICKER:
+            # possibly delisted' for a forward range it can't possibly serve.
+            if end > datetime.now():
+                return None, None, None
             end_str = end.strftime("%Y-%m-%d")
 
             stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
