@@ -531,6 +531,17 @@ def _drop_repeated_section(body: str) -> str:
     return body
 
 
+# If a section body is longer than this, skip the polish-pass regexes
+# entirely and serve the raw content. Polishing a 100K+ char Korean
+# response can hit catastrophic backtracking on _INSTRUMENT_CTX_RE /
+# _KO_NUM_RE and burn the whole 10-min wall budget. The reader sees a
+# slightly noisier report, which is far better than no report at all.
+_POLISH_LENGTH_GUARD = 100_000
+
+# Each polish step paired with a short label so we can log which step
+# is currently running. Past hangs in this function happened silently
+# between the propagate log and the timeout — the labels make the
+# culprit obvious in the journal next time.
 def _polish(body: str) -> str:
     """Strip noise patterns that agents occasionally leak into their text.
 
@@ -541,23 +552,34 @@ def _polish(body: str) -> str:
     headers, and collapses leftover literal '\\n\\n' escape sequences and
     runs of blank lines.
     """
-    body = _FINAL_PROPOSAL_RE.sub("", body)
-    body = _LINK_LINE_RE.sub("", body)
-    body = _TOOL_HEADER_RE.sub("", body)
-    body = _INSTRUMENT_CTX_RE.sub("", body)
-    body = _DASH_PADDING_RE.sub("", body)
-    body = _ESCAPED_NEWLINES_RE.sub("\n\n", body)
-    # Any remaining stray literal '\n' becomes a real newline.
-    body = body.replace("\\n", "\n")
-    body = _RUNAWAY_CHAR_RE.sub("", body)
-    body = _drop_repeated_section(body)
-    body = _LARGE_NUM_RE.sub(_abbrev_match, body)
-    body = _KO_NUM_RE.sub(_ko_num_normalize, body)
-    body = _LONG_DECIMAL_RE.sub(_round_long_decimal, body)
-    body = _FIN_BULLET_RE.sub(_add_unit_hint, body)
-    for pat, repl in _KO_LABEL_REPLACEMENTS:
-        body = pat.sub(repl, body)
-    body = re.sub(r"\n{3,}", "\n\n", body)
+    if len(body) > _POLISH_LENGTH_GUARD:
+        log.warning(
+            "polish: body too long (%d chars > %d) — skipping regex pass",
+            len(body), _POLISH_LENGTH_GUARD,
+        )
+        return body.strip()
+
+    def _step(label: str, fn):
+        nonlocal body
+        body = fn(body)
+        log.info("polish: %s done (%d chars)", label, len(body))
+
+    _step("final-proposal",     lambda b: _FINAL_PROPOSAL_RE.sub("", b))
+    _step("link-line",          lambda b: _LINK_LINE_RE.sub("", b))
+    _step("tool-header",         lambda b: _TOOL_HEADER_RE.sub("", b))
+    _step("instrument-ctx",      lambda b: _INSTRUMENT_CTX_RE.sub("", b))
+    _step("dash-padding",        lambda b: _DASH_PADDING_RE.sub("", b))
+    _step("escaped-newlines",    lambda b: _ESCAPED_NEWLINES_RE.sub("\n\n", b))
+    _step("literal-bs-n",        lambda b: b.replace("\\n", "\n"))
+    _step("runaway-char",        lambda b: _RUNAWAY_CHAR_RE.sub("", b))
+    _step("drop-repeated",       _drop_repeated_section)
+    _step("large-num",           lambda b: _LARGE_NUM_RE.sub(_abbrev_match, b))
+    _step("ko-num",              lambda b: _KO_NUM_RE.sub(_ko_num_normalize, b))
+    _step("long-decimal",        lambda b: _LONG_DECIMAL_RE.sub(_round_long_decimal, b))
+    _step("fin-bullet",          lambda b: _FIN_BULLET_RE.sub(_add_unit_hint, b))
+    for idx, (pat, repl) in enumerate(_KO_LABEL_REPLACEMENTS, 1):
+        _step(f"ko-label-{idx}", lambda b, p=pat, r=repl: p.sub(r, b))
+    _step("blank-lines",         lambda b: re.sub(r"\n{3,}", "\n\n", b))
     return body.strip()
 
 
