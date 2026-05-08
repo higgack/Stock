@@ -514,16 +514,14 @@ def _load_all() -> list[dict]:
 
 
 # ─── HTML rendering ──────────────────────────────────────────────────
+# Light theme only. The earlier dark-mode media query rendered as a
+# near-black background on phones whose OS was in dark mode, which the
+# user found unreadable. Dropping the override means the page always
+# uses the light palette regardless of system preference.
 _BASE_CSS = """
 :root {
   --fg: #1f2937; --fg-soft: #6b7280; --bg: #f8fafc; --card: #ffffff;
   --border: #e5e7eb; --accent: #0ea5e9;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --fg: #f3f4f6; --fg-soft: #9ca3af; --bg: #0f172a; --card: #1e293b;
-    --border: #334155; --accent: #38bdf8;
-  }
 }
 * { box-sizing: border-box; }
 body {
@@ -819,6 +817,7 @@ def _render_errors_page(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
 <title>🚨 NOAH 오류 / 미완성 기록</title>
 <style>{_ERRORS_CSS}</style>
 </head>
@@ -908,6 +907,7 @@ def _render_index(records: list[dict]) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
 <title>🦉 NOAH 주식분석 아카이브</title>
 <style>{_INDEX_CSS}</style>
 </head>
@@ -971,6 +971,7 @@ def _render_detail(rec: dict) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
 <title>📊 {_html.escape(ticker)} ({_html.escape(date)})</title>
 <style>{_DETAIL_CSS}</style>
 </head>
