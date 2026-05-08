@@ -652,13 +652,27 @@ _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
  • URL: <a href="http://34.64.89.160:8081/">http://34.64.89.160:8081/</a>
  • PC / 폰 / 태블릿 어느 브라우저에서든 접속
  • 새 분석마다 자동 갱신, 인증 없이 즉시 열람
- • 화면 구성:
-   - 날짜별 아코디언 (최근일이 위)
-   - 종목 카드: 🎯 판정 + 4명 stance + 시간 + 지난 추천 결과
-   - 카드 클릭 → 상세 페이지에 요약 + 전체 리포트
- • 검색창으로 종목 즉시 필터 (예: NVDA 입력 → NVDA만 표시)
  • 다크 모드 자동 (시스템 설정 따름)
- • 데이터: <code>~/.tradingagents/archive/YYYY-MM-DD/{TICKER}.json</code>
+
+▸ 화면 상단: <b>통계 카드 4개</b>
+   📊 총 분석   누적 분석 건수 + 활동 기간 + 종목 수
+   💰 누적 비용 30일 비용 (USD/KRW) + 모델별 분포
+   ⏱ 평균 시간 분석 평균 소요 + 가장 자주 분석된 종목
+   🎯 정확도   Buy/Sell 추천 방향 일치율 (5거래일 후 자동 채워짐)
+
+▸ 화면 본문: <b>날짜별 아코디언</b>
+   - 최근일이 위, 클릭으로 펼치기/접기
+   - 종목 카드: 🎯 판정 + 4명 stance + 시간 + 지난 추천 결과
+   - 카드 클릭 → 상세 페이지 (요약 + 전체 리포트)
+
+▸ <b>검색</b>: 상단 검색창에 종목 입력 → 즉시 필터
+   - 매칭 안 되는 날짜 자동 숨김 + 매칭 날짜 자동 펼침
+   - URL <code>#ticker=NVDA</code>로 직접 링크 가능
+
+▸ 데이터 경로
+   - 분석 본문: <code>~/.tradingagents/archive/YYYY-MM-DD/{TICKER}.json</code>
+   - 비용 로그: <code>~/.tradingagents/usage.jsonl</code>
+   - 메모리: <code>~/.tradingagents/memory/trading_memory.md</code>
 """
 
 
