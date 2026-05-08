@@ -75,6 +75,31 @@ ANALYSIS_TIMEOUT_SEC = 600
 # guarantee; this lock preserves it under the subprocess model.
 _analysis_lock = asyncio.Lock()
 
+# Refcounted .busy marker. The marker means "at least one analysis is
+# in flight" — auto-update / watchdog defer restarts while it exists.
+# Naive mark_busy/clear_busy at handler scope races when a second request
+# is queued behind a first: the first's clear_busy unlinks the file while
+# the second is still about to acquire the lock. We track active requests
+# with a counter and only clear the file when nothing is in flight.
+_busy_state_lock = asyncio.Lock()
+_busy_refcount = 0
+
+
+async def _busy_acquire() -> None:
+    global _busy_refcount
+    async with _busy_state_lock:
+        _busy_refcount += 1
+        if _busy_refcount == 1:
+            mark_busy()
+
+
+async def _busy_release() -> None:
+    global _busy_refcount
+    async with _busy_state_lock:
+        _busy_refcount = max(0, _busy_refcount - 1)
+        if _busy_refcount == 0:
+            clear_busy()
+
 
 async def _run_analysis_subprocess(
     ticker: str, target_date: str
@@ -215,7 +240,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     # where auto-update / watchdog could see no marker and restart us
     # mid-analysis. Writing it here on the asyncio loop closes that gap.
     _recovery.write(post.chat.id, progress.message_id, raw)
-    mark_busy()
+    await _busy_acquire()
     try:
         try:
             async with _analysis_lock:
@@ -268,7 +293,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
     finally:
         _recovery.clear()
-        clear_busy()
+        await _busy_release()
 
 
 async def _ensure_analysis(
@@ -290,7 +315,7 @@ async def _ensure_analysis(
     # ticker handler does so a deploy / watchdog kick mid-compare can't catch
     # us between subprocess spawn and completion.
     _recovery.write(chat_id, progress_msg_id, ticker)
-    mark_busy()
+    await _busy_acquire()
     try:
         async with _analysis_lock:
             return await _run_analysis_subprocess(ticker, target_date)
@@ -302,7 +327,7 @@ async def _ensure_analysis(
         return None
     finally:
         _recovery.clear()
-        clear_busy()
+        await _busy_release()
 
 
 def _compose_compare_view(

@@ -110,26 +110,26 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
         log.info("cache hit for %s/%s", ticker, target_date)
         return cached
 
-    mark_busy()  # idempotent — handler usually wrote it already
-    try:
-        ta = TradingAgentsGraph(
-            debug=False,
-            config=_build_config(),
-            selected_analysts=_SELECTED_ANALYSTS,
-        )
-        state, decision = ta.propagate(ticker, target_date)
+    # NOTE: .busy marker lifecycle is now owned by the main bot's handler
+    # (refcount-based) so that a second queued request doesn't lose the
+    # marker mid-flight when the first request's subprocess finishes.
+    # Calling mark/clear_busy from inside analyze() would race with that.
+    ta = TradingAgentsGraph(
+        debug=False,
+        config=_build_config(),
+        selected_analysts=_SELECTED_ANALYSTS,
+    )
+    state, decision = ta.propagate(ticker, target_date)
 
-        # Surface the last few resolved recommendations for this ticker as a
-        # short Korean header line — gives the reader an immediate sense of
-        # whether the bot has been right or wrong on this name lately.
-        past_outcomes = _format_past_outcomes(ta.memory_log, ticker)
+    # Surface the last few resolved recommendations for this ticker as a
+    # short Korean header line — gives the reader an immediate sense of
+    # whether the bot has been right or wrong on this name lately.
+    past_outcomes = _format_past_outcomes(ta.memory_log, ticker)
 
-        full = _format_full(state, decision, ticker, target_date, past_outcomes)
-        summary = _format_summary(state, decision, ticker, target_date, past_outcomes)
-        _cache.put(ticker, target_date, summary, full)
-        return summary, full
-    finally:
-        clear_busy()
+    full = _format_full(state, decision, ticker, target_date, past_outcomes)
+    summary = _format_summary(state, decision, ticker, target_date, past_outcomes)
+    _cache.put(ticker, target_date, summary, full)
+    return summary, full
 
 
 def _format_past_outcomes(memory_log, ticker: str, limit: int = 2) -> str:
