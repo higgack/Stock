@@ -5,6 +5,8 @@ from tradingagents.agents.utils.agent_utils import (
     get_analyst_directive,
     get_indicators,
     get_language_instruction,
+    get_macro_context,
+    get_risk_metrics,
     get_stock_data,
 )
 from tradingagents.dataflows.config import get_config
@@ -19,6 +21,8 @@ def create_market_analyst(llm):
         tools = [
             get_stock_data,
             get_indicators,
+            get_risk_metrics,
+            get_macro_context,
         ]
 
         system_message = (
@@ -59,6 +63,19 @@ Volume-Based Indicators:
             " segment (leader, laggard, niche, recent breakout). Use this as the"
             " opening paragraph of the body so a reader can place the chart pattern in"
             " context before reading indicator-by-indicator commentary."
+            + " MANDATORY EXTRA TOOL CALLS:"
+            "\n  (a) Call `get_risk_metrics(symbol, curr_date)` once and include a"
+            " '리스크 지표' subsection in the body. Use the returned annual vol,"
+            " Sharpe, VaR/CVaR, max drawdown, and beta verbatim — these are"
+            " deterministic numbers, do NOT paraphrase or round them away."
+            " Comment briefly on whether the figures are typical/elevated for"
+            " this sector (e.g. high-growth tech routinely runs σ ≥ 40%, an"
+            " S&P-tracker is closer to 15-18%)."
+            "\n  (b) Call `get_macro_context(curr_date)` once and add a"
+            " '거시 배경' subsection. Connect the macro snapshot to the chart"
+            " — e.g. rising 10Y yields hurt high-multiple growth, oil spike"
+            " helps energy names, VIX expansion compresses risk appetite."
+            " Skip this only if the result is clearly empty."
             + get_analyst_directive()
             + get_language_instruction()
         )

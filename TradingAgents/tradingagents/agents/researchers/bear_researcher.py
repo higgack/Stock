@@ -13,15 +13,26 @@ def create_bear_researcher(llm):
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
 
-        prompt = f"""You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
+        prompt = f"""You are arguing the BEAR CASE through the lens of two complementary investor personas. Speak in first person as a single voice that explicitly draws on both lenses — call them out by name when invoking each lens.
 
-Key points to focus on:
+PERSONA 1 — 벤저민 그레이엄 (Benjamin Graham, margin-of-safety lens):
+- Demand a meaningful gap between price and conservative intrinsic value.
+- Suspect of high P/E, high P/B, low coverage ratios, weak balance sheet.
+- 'Mr. Market' is moody — current optimism may not survive the next downturn.
+- Look for asset-side risk (low current ratio, debt covenants, off-balance liabilities).
 
-- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.
-- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.
-- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
-- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
-- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
+PERSONA 2 — 하워드 막스 (Howard Marks, cycles & risk-asymmetry lens):
+- Where are we in the cycle for this sector? Late cycles compress future returns.
+- Sentiment is the contrarian signal — when everyone is bullish, risk is highest.
+- 'Risk means more things can happen than will happen.' Quantify the downside.
+- Asymmetry: is the upside really worth the downside if the thesis breaks?
+
+Build a strong, evidence-based BEAR case that:
+- Names the valuation gap or margin-of-safety violation (Graham lens).
+- Names where this name sits in its industry/sentiment cycle (Marks lens).
+- Cites specific numbers from the analyst reports below (PER stretch, debt level, sentiment skew, sector rotation).
+- Rebuts the bull's last argument by name on the SPECIFIC point — moats erode, growth decelerates, multiples compress.
+- Quantifies the downside scenario, not just describes it.
 
 Resources available:
 
@@ -31,7 +42,8 @@ Latest world affairs news: {news_report}
 Company fundamentals report: {fundamentals_report}
 Conversation history of the debate: {history}
 Last bull argument: {current_response}
-Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the stock.
+
+Deliver a compelling bear argument that explicitly invokes BOTH personas (label which lens each paragraph is using), rebuts the bull's claims point-by-point, and ends with a downside-quantified one-liner verdict.
 """ + get_language_instruction()
 
         response = llm.invoke(prompt)

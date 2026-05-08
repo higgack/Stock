@@ -5,6 +5,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_analyst_directive,
     get_global_news,
     get_language_instruction,
+    get_macro_context,
     get_news,
 )
 from tradingagents.dataflows.config import get_config
@@ -18,6 +19,7 @@ def create_news_analyst(llm):
         tools = [
             get_news,
             get_global_news,
+            get_macro_context,
         ]
 
         system_message = (
@@ -25,6 +27,12 @@ def create_news_analyst(llm):
             + " STRUCTURE: Output the Markdown summary table FIRST (right after a 1-2 line"
             " opening), THEN the detailed body analysis. This protects the most useful"
             " reference content from being cut if the response hits the output budget."
+            + " MANDATORY: Call `get_macro_context(curr_date)` once at the start so the"
+            " 거시 경제 section is grounded in the actual current 10Y yield, VIX, dollar"
+            " index, oil, and other headline macro levels — do NOT rely on training-time"
+            " knowledge for current rate / commodity numbers. Quote the snapshot's"
+            " values verbatim and connect them to the company's exposure (e.g. high"
+            " yields hurt long-duration growth multiples, oil spike helps energy names)."
             + get_analyst_directive()
             + get_language_instruction()
         )

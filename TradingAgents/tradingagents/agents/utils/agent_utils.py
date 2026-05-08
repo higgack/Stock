@@ -88,6 +88,8 @@ from tradingagents.agents.utils.news_data_tools import (
     get_insider_transactions,
     get_global_news
 )
+from tradingagents.agents.utils.risk_metrics_tools import get_risk_metrics
+from tradingagents.agents.utils.macro_context_tools import get_macro_context
 
 
 def get_language_instruction() -> str:
