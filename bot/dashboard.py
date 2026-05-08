@@ -143,6 +143,29 @@ h1 { font-size: 22px; margin: 0 0 4px; }
 """
 
 _INDEX_CSS = _BASE_CSS + """
+.search-bar {
+  display: flex; align-items: center; gap: 8px; margin: 16px 0 24px;
+  padding: 4px;
+}
+.search-bar input {
+  flex: 1; padding: 10px 14px; font-size: 15px; color: var(--fg);
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  outline: none; transition: border-color 0.12s;
+}
+.search-bar input:focus { border-color: var(--accent); }
+.search-bar button {
+  padding: 10px 14px; font-size: 14px; cursor: pointer;
+  background: var(--card); color: var(--fg-soft);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+.search-bar button:hover { color: var(--fg); border-color: var(--accent); }
+.status-line {
+  color: var(--fg-soft); font-size: 13px; margin: 0 4px 16px;
+}
+.empty-search {
+  color: var(--fg-soft); font-size: 14px; padding: 32px 0;
+  text-align: center; display: none;
+}
 details.day { margin-bottom: 18px; }
 summary.day-head {
   font-size: 16px; font-weight: 600; padding: 10px 4px; cursor: pointer;
@@ -185,6 +208,62 @@ summary.day-head .count {
 """
 
 
+_INDEX_JS = """
+(function() {
+  const searchEl = document.getElementById('search');
+  const clearBtn = document.getElementById('clear-btn');
+  const statusEl = document.getElementById('status');
+  const emptyEl = document.getElementById('empty-search');
+  const cards = Array.from(document.querySelectorAll('.card'));
+  const days = Array.from(document.querySelectorAll('details.day'));
+  const total = cards.length;
+
+  function applyFilter() {
+    const q = (searchEl.value || '').trim().toUpperCase();
+    let matched = 0;
+    for (const c of cards) {
+      const tk = (c.dataset.ticker || '').toUpperCase();
+      const visible = !q || tk.includes(q);
+      c.style.display = visible ? '' : 'none';
+      if (visible) matched++;
+    }
+    for (const d of days) {
+      const anyVisible = Array.from(d.querySelectorAll('.card'))
+        .some(c => c.style.display !== 'none');
+      d.style.display = anyVisible ? '' : 'none';
+      // Auto-expand days that match — easier to spot the result
+      if (anyVisible && q) d.open = true;
+    }
+    if (q) {
+      statusEl.textContent = matched + '건 매칭 (검색: "' + q + '")';
+      emptyEl.style.display = matched === 0 ? 'block' : 'none';
+    } else {
+      statusEl.textContent = '총 ' + total + '건의 분석 기록';
+      emptyEl.style.display = 'none';
+    }
+  }
+
+  function syncFromHash() {
+    const m = (location.hash || '').match(/^#ticker=([A-Za-z0-9.]+)/);
+    if (m) {
+      searchEl.value = m[1].toUpperCase();
+    }
+    applyFilter();
+  }
+
+  searchEl.addEventListener('input', applyFilter);
+  clearBtn.addEventListener('click', function() {
+    searchEl.value = '';
+    if (location.hash) history.replaceState(null, '', location.pathname);
+    applyFilter();
+    searchEl.focus();
+  });
+  window.addEventListener('hashchange', syncFromHash);
+  syncFromHash();
+})();
+"""
+
+
 def _render_index(records: list[dict]) -> str:
     by_date: dict[str, list[dict]] = {}
     for r in records:
@@ -214,7 +293,7 @@ def _render_index(records: list[dict]) -> str:
                     f'<div class="past">{_html.escape(past)}</div>' if past else ""
                 )
                 cards.append(f"""
-                <div class="card">
+                <div class="card" data-ticker="{_html.escape(ticker)}">
                   <div class="card-row">
                     <a class="ticker" href="{href}">📊 {_html.escape(ticker)}</a>
                     {_badge_html(rating)}
@@ -246,9 +325,16 @@ def _render_index(records: list[dict]) -> str:
 <body>
 <div class="wrap">
   <h1>🦉 NOAH 주식분석 아카이브</h1>
-  <p class="sub">총 {len(records)}건의 분석 기록 · 카드 클릭 시 전체 리포트</p>
+  <p class="sub">카드 클릭 시 전체 리포트 · 검색창에서 종목 필터</p>
+  <div class="search-bar">
+    <input id="search" type="text" placeholder="종목 검색 (예: NVDA, AMD, GOOGL)" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    <button id="clear-btn" type="button" title="검색 초기화">초기화</button>
+  </div>
+  <p id="status" class="status-line">총 {len(records)}건의 분석 기록</p>
+  <div id="empty-search" class="empty-search">검색 결과가 없습니다.</div>
   {body}
 </div>
+<script>{_INDEX_JS}</script>
 </body>
 </html>
 """
