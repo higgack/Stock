@@ -497,22 +497,32 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
 ━━━━━━━━━━━━━━
-<b>【1. 명령어】</b> (탭하면 입력창에 들어감)
+<b>【1. 명령어】</b>
+아래 명령어를 <b>탭하면 입력창에 자동 입력</b>됩니다.
 
-▸ 종목 분석
- • /&lt;티커&gt;        단일 종목 풀 분석 (1~3분)
-   예시 (탭해보기): /NVDA  /AAPL  /TSLA  /AMD  /GOOGL
- • /compare      두 종목 사이드바이사이드 비교
-   사용법: /compare 티커1 티커2
-   예시 (탭해보기): /compare NVDA AMD
+▸ 도움말 (어디서든)
+/start
+/help
 
-▸ 도움말
- • /start  — 사용법 안내
- • /help   — 사용법 안내 (위와 동일)
+▸ 단일 종목 분석 (채널에서)
+/NVDA
+/AAPL
+/TSLA
+/AMD
+/GOOGL
+/AVGO
+/MSFT
+/META
 
-※ 입력창 옆 '/' 메뉴 버튼으로도 명령어 확인 가능
-※ 명령어는 모두 봇 DM 또는 등록된 채널에서 동작
-※ 등록 채널 외에선 무시됨 (보안)
+▸ 두 종목 비교 (채널에서)
+/compare NVDA AMD
+/compare GOOGL META
+/compare TSLA F
+
+※ 다른 종목은 /티커 형식으로 직접 입력 (예: /PLTR, /CRM)
+※ 미국 외 거래소는 접미사 유지 (/TSM, /005930.KS)
+※ 등록된 채널 외에서는 무시됨 (보안)
+※ 입력창 옆 '/' 메뉴 버튼으로도 등록 명령 확인 가능
 
 ━━━━━━━━━━━━━━
 <b>【2. 분석 흐름】</b>
