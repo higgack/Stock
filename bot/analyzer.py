@@ -114,21 +114,30 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     # (refcount-based) so that a second queued request doesn't lose the
     # marker mid-flight when the first request's subprocess finishes.
     # Calling mark/clear_busy from inside analyze() would race with that.
+    log.info("analyze: building TradingAgentsGraph for %s", ticker)
     ta = TradingAgentsGraph(
         debug=False,
         config=_build_config(),
         selected_analysts=_SELECTED_ANALYSTS,
     )
+    log.info("analyze: graph built — invoking propagate")
     state, decision = ta.propagate(ticker, target_date)
+    log.info("analyze: propagate done — formatting output")
 
     # Surface the last few resolved recommendations for this ticker as a
     # short Korean header line — gives the reader an immediate sense of
     # whether the bot has been right or wrong on this name lately.
     past_outcomes = _format_past_outcomes(ta.memory_log, ticker)
+    log.info("analyze: past_outcomes done — building full report")
 
     full = _format_full(state, decision, ticker, target_date, past_outcomes)
+    log.info("analyze: full report done (%d chars) — building summary", len(full))
+
     summary = _format_summary(state, decision, ticker, target_date, past_outcomes)
+    log.info("analyze: summary done (%d chars) — writing cache", len(summary))
+
     _cache.put(ticker, target_date, summary, full)
+    log.info("analyze: cache write done — returning to worker")
     return summary, full
 
 

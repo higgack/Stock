@@ -55,6 +55,11 @@ TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.]{0,9}$")
 # tickers run through the same analyzer pipeline (via cache or fresh
 # subprocess) and the result is condensed to verdict + stance bar.
 COMPARE_RE = re.compile(r"^compare\s+(\S+)\s+(\S+)\s*$", re.IGNORECASE)
+# Slash commands the bot recognises. Without this set, /start, /help, or a
+# bare /compare typed in the channel would slip past COMPARE_RE and land in
+# the ticker branch below — TICKER_RE happily matches 'START' / 'HELP' /
+# 'COMPARE' as alphabetic tickers, which kicks off a fruitless analysis run.
+RESERVED_COMMANDS = frozenset({"START", "HELP", "COMPARE"})
 # Patterns for parsing a previously-rendered summary string back into the
 # pieces we need for the compact compare view. The summary format is
 # produced by `bot.analyzer._format_summary` so these are stable.
@@ -210,6 +215,12 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     raw = body.upper()
+    # Don't treat registered slash commands as tickers. /start, /help, and
+    # bare /compare (without args) would otherwise match TICKER_RE and
+    # trigger an analysis attempt for a non-existent 'START' / 'HELP' /
+    # 'COMPARE' ticker — wasting tokens on a hopeless yfinance lookup.
+    if raw.split()[0] in RESERVED_COMMANDS:
+        return
     if not TICKER_RE.match(raw):
         return  # malformed ticker after the "/" prefix
 
