@@ -567,20 +567,12 @@ _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
 ▸ 단일 종목 분석 (채널에서)
 /NVDA
 /AAPL
-/TSLA
-/AMD
-/GOOGL
-/AVGO
-/MSFT
-/META
 
 ▸ 두 종목 비교 (채널에서)
 /compare NVDA AMD
 /compare GOOGL META
-/compare TSLA F
 
 ※ 다른 종목은 /티커 형식으로 직접 입력 (예: /PLTR, /CRM)
-※ 미국 외 거래소는 접미사 유지 (/TSM, /005930.KS)
 ※ 등록된 채널 외에서는 무시됨 (보안)
 ※ 입력창 옆 '/' 메뉴 버튼으로도 등록 명령 확인 가능
 
