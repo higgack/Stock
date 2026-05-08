@@ -414,23 +414,19 @@ async def _handle_compare(
     tk_b: str,
 ) -> None:
     today = _date.today().isoformat()
-    a_cached = _cache.get(tk_a, today) is not None
-    b_cached = _cache.get(tk_b, today) is not None
-    cached_count = int(a_cached) + int(b_cached)
-    if cached_count == 2:
+    both_cached = (
+        _cache.get(tk_a, today) is not None
+        and _cache.get(tk_b, today) is not None
+    )
+    if both_cached:
         progress_text = (
             f"⚖️ <b>{_html.escape(tk_a)}</b> vs <b>{_html.escape(tk_b)}</b> "
             f"캐시된 결과 비교 중…"
         )
-    elif cached_count == 1:
-        progress_text = (
-            f"⚖️ <b>{_html.escape(tk_a)}</b> vs <b>{_html.escape(tk_b)}</b> "
-            f"비교 분석 시작… (캐시 1개 + 새 분석 1개, 1~3분 소요)"
-        )
     else:
         progress_text = (
             f"⚖️ <b>{_html.escape(tk_a)}</b> vs <b>{_html.escape(tk_b)}</b> "
-            f"비교 분석 시작… (새 분석 2개, 3~6분 소요)"
+            f"비교 분석 시작…"
         )
 
     progress = await ctx.bot.send_message(
