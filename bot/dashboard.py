@@ -48,6 +48,100 @@ _MEMORY_LOG_PATH = Path.home() / ".tradingagents" / "memory" / "trading_memory.m
 _KRW_PER_USD = 1380  # mirrors usage_tracker's constant; keep in sync
 
 
+# ─── issue detection ─────────────────────────────────────────────────
+# Patterns that indicate something went wrong inside an otherwise-
+# completed analysis. Hard failures (timeout / process exit) are tracked
+# separately via usage_tracker.log_failure → usage.jsonl type:'failure'.
+_FAILURE_PLACEHOLDER = (
+    "_(이번 분석은 모델 응답 오류로 미완성. 다른 티커로 재시도해보세요.)_"
+)
+_SECTION_HEADER_RE = re.compile(r"^##\s+([^\n]+)$", re.MULTILINE)
+_ISSUE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"리스크 지표 계산 실패"),
+     "리스크 지표 계산 실패 (도구)"),
+    (re.compile(r"거시 지표 데이터를 가져오지 못했습니다"),
+     "거시 지표 fetch 실패 (도구)"),
+    (re.compile(r"`?get_risk_metrics`?.*?(?:오류|실패|N/A|사용할 수 없|데이터 없음)",
+                re.DOTALL),
+     "리스크 지표 도구 사용 안 됨 (모델)"),
+    (re.compile(r"`?get_macro_context`?.*?(?:오류|실패|N/A|사용할 수 없|데이터 없음)",
+                re.DOTALL),
+     "거시 배경 도구 사용 안 됨 (모델)"),
+    (re.compile(r"`?get_sector_relative_strength`?.*?(?:오류|실패|사용할 수 없)",
+                re.DOTALL),
+     "섹터 상대 강도 도구 사용 안 됨 (모델)"),
+    (re.compile(r"매크로 컨텍스트.*?(?:오류|도구 오류)"),
+     "매크로 컨텍스트 오류 (모델)"),
+]
+
+
+def _detect_issues(record: dict) -> list[str]:
+    """Walk a single archived analysis and return a list of human-readable
+    issue strings. Empty list means clean run."""
+    issues: list[str] = []
+    full = record.get("full_report", "") or ""
+    summary = record.get("summary", "") or ""
+
+    # Map each FAILURE_PLACEHOLDER occurrence in the body to whichever
+    # '## …' section header most recently preceded it.
+    headers = list(_SECTION_HEADER_RE.finditer(full))
+    for ph in re.finditer(re.escape(_FAILURE_PLACEHOLDER), full):
+        # Find most recent header before this placeholder.
+        section = None
+        for h in headers:
+            if h.start() < ph.start():
+                section = h.group(1).strip()
+            else:
+                break
+        label = f"{section} 섹션 미완성" if section else "섹션 미완성"
+        if label not in issues:
+            issues.append(label)
+
+    # Generic placeholder in summary too (rare — usually summary skips it)
+    if _FAILURE_PLACEHOLDER in summary and not any(
+        "미완성" in i for i in issues
+    ):
+        issues.append("요약 미완성")
+
+    # Tool-related issues across the body
+    seen_msgs: set[str] = set()
+    for pat, msg in _ISSUE_PATTERNS:
+        if pat.search(full) and msg not in seen_msgs:
+            seen_msgs.add(msg)
+            issues.append(msg)
+    return issues
+
+
+def _read_hard_failures(window_days: int = 365) -> list[dict]:
+    """Read type:'failure' records from usage.jsonl. These are analyses
+    that didn't complete (timeout / exception)."""
+    if not _USAGE_LOG_PATH.exists():
+        return []
+    cutoff = _now_ts() - window_days * 86400
+    out: list[dict] = []
+    try:
+        with open(_USAGE_LOG_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") == "failure" and rec.get("ts", 0) >= cutoff:
+                    out.append(rec)
+    except Exception as exc:
+        log.warning("dashboard: hard-failure read failed: %s", exc)
+    out.sort(key=lambda r: r.get("ts", 0), reverse=True)
+    return out
+
+
+def _now_ts() -> float:
+    import time
+    return time.time()
+
+
 def _read_usage_records() -> list[dict]:
     """Read raw llm_call records from usage.jsonl. Read-only — does NOT
     rotate the file (that's owned by usage_tracker)."""
@@ -593,6 +687,161 @@ _INDEX_JS = """
 """
 
 
+_ERRORS_CSS = _BASE_CSS + """
+.section-head {
+  font-size: 16px; font-weight: 600; padding: 10px 4px;
+  border-bottom: 1px solid var(--border);
+  margin: 24px 0 12px;
+}
+.issue-card {
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin-bottom: 8px;
+}
+.issue-head {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.issue-head .ticker {
+  font-weight: 700; font-size: 15px; color: var(--fg); text-decoration: none;
+}
+.issue-head .ticker:hover { color: var(--accent); }
+.issue-head .when { color: var(--fg-soft); font-size: 12px; margin-left: auto; }
+.issue-list { color: var(--fg); font-size: 13px; line-height: 1.6; }
+.issue-list .item { color: #f97316; }
+.fail-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 6px;
+}
+.fail-row .ticker { font-weight: 700; }
+.fail-row .reason { color: #dc2626; flex: 1; min-width: 0; }
+.fail-row .when { color: var(--fg-soft); font-size: 12px; }
+.empty {
+  color: var(--fg-soft); font-size: 14px; padding: 24px 0; text-align: center;
+}
+.back { color: var(--fg-soft); font-size: 13px; }
+.back:hover { color: var(--accent); }
+"""
+
+
+def _render_errors_page(
+    records: list[dict],
+    hard_failures: list[dict],
+) -> str:
+    """Build errors.html — a chronological catalog of analyses that
+    either failed outright (hard) or completed with placeholder/error
+    sections (soft)."""
+    soft: list[tuple[dict, list[str]]] = []
+    for r in records:
+        issues = _detect_issues(r)
+        if issues:
+            soft.append((r, issues))
+    # Newest first
+    soft.sort(
+        key=lambda pair: (
+            pair[0].get("trade_date", ""), pair[0].get("analyzed_at", "")
+        ),
+        reverse=True,
+    )
+
+    # ── hard failures (timeouts / exceptions) ──
+    if hard_failures:
+        hard_html_rows = []
+        for f in hard_failures:
+            ts = f.get("ts", 0)
+            when = datetime.datetime.fromtimestamp(
+                ts, tz=datetime.timezone(datetime.timedelta(hours=9))
+            ).strftime("%Y-%m-%d %H:%M") if ts else "-"
+            ticker = f.get("ticker", "?")
+            reason = f.get("reason") or "(사유 없음)"
+            hard_html_rows.append(f"""
+            <div class="fail-row">
+              <span class="ticker">📊 {_html.escape(ticker)}</span>
+              <span class="reason">❌ {_html.escape(reason)}</span>
+              <span class="when">{_html.escape(when)}</span>
+            </div>
+            """)
+        hard_section = (
+            f'<div class="section-head">❌ 분석 자체 실패 ({len(hard_failures)}건)</div>'
+            + "".join(hard_html_rows)
+        )
+    else:
+        hard_section = ""
+
+    # ── soft issues, grouped by date ──
+    if soft:
+        by_date: dict[str, list[tuple[dict, list[str]]]] = {}
+        for r, issues in soft:
+            by_date.setdefault(r["trade_date"], []).append((r, issues))
+
+        soft_groups = []
+        for date in sorted(by_date.keys(), reverse=True):
+            day_items = by_date[date]
+            cards_html = []
+            for r, issues in day_items:
+                ticker = r.get("ticker", "?")
+                analyzed_at = r.get("analyzed_at") or ""
+                time_str = analyzed_at[11:16] if len(analyzed_at) >= 16 else ""
+                href = f"./{date}/{_html.escape(ticker)}.html"
+                rating = _extract(_RATING_RE, r.get("summary", "")) or "?"
+                items_html = "".join(
+                    f'<div class="item">⚠️ {_html.escape(i)}</div>'
+                    for i in issues
+                )
+                cards_html.append(f"""
+                <div class="issue-card">
+                  <div class="issue-head">
+                    <a class="ticker" href="{href}">📊 {_html.escape(ticker)}</a>
+                    {_badge_html(rating)}
+                    <span class="when">{_html.escape(time_str)}</span>
+                  </div>
+                  <div class="issue-list">{items_html}</div>
+                </div>
+                """)
+            soft_groups.append(f"""
+            <div class="section-head">
+              📅 {_format_date_kr(date)} — {len(day_items)}건 부분 미완성
+            </div>
+            {"".join(cards_html)}
+            """)
+        soft_section = "".join(soft_groups)
+    else:
+        soft_section = '<div class="empty">부분 미완성 케이스가 없습니다.</div>'
+
+    body_empty = not hard_failures and not soft
+    if body_empty:
+        body = '<div class="empty">기록된 오류가 없습니다. 🎉</div>'
+    else:
+        body = hard_section + soft_section
+
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🚨 NOAH 오류 / 미완성 기록</title>
+<style>{_ERRORS_CSS}</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="./index.html">← 아카이브로 돌아가기</a>
+  <h1 style="margin-top:8px">🚨 오류 / 미완성 분석 기록</h1>
+  <p class="sub">하드 실패 (타임아웃/예외) 와 부분 미완성 (도구 실패·섹션 placeholder) 통합</p>
+  {body}
+</div>
+</body>
+</html>
+"""
+
+
+def _count_total_issues(records: list[dict], hard_failures: list[dict]) -> int:
+    n = len(hard_failures)
+    for r in records:
+        if _detect_issues(r):
+            n += 1
+    return n
+
+
 def _render_index(records: list[dict]) -> str:
     by_date: dict[str, list[dict]] = {}
     for r in records:
@@ -644,6 +893,15 @@ def _render_index(records: list[dict]) -> str:
         body = "".join(sections)
 
     stats_panel = _render_stats_panel(_compute_stats(records))
+    # Headline link to the errors page; count includes hard failures
+    # (usage.jsonl) plus archive entries with placeholder/tool issues.
+    issue_count = _count_total_issues(records, _read_hard_failures())
+    if issue_count > 0:
+        errors_link = (
+            f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
+        )
+    else:
+        errors_link = ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
 
     return f"""<!doctype html>
 <html lang="ko">
@@ -656,7 +914,7 @@ def _render_index(records: list[dict]) -> str:
 <body>
 <div class="wrap">
   <h1>🦉 NOAH 주식분석 아카이브</h1>
-  <p class="sub">카드 클릭 시 전체 리포트 · 검색창에서 종목 필터</p>
+  <p class="sub">카드 클릭 시 전체 리포트 · 검색창에서 종목 필터{errors_link}</p>
   {stats_panel}
   <div class="search-bar">
     <input id="search" type="text" placeholder="종목 검색 (예: NVDA, AMD, GOOGL)" autocomplete="off" autocapitalize="characters" spellcheck="false">
@@ -759,6 +1017,11 @@ def regenerate_index() -> None:
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "index.html").write_text(
             _render_index(records), encoding="utf-8"
+        )
+        # Errors / partial-completion catalog (Option A from the spec).
+        hard_failures = _read_hard_failures()
+        (ARCHIVE_ROOT / "errors.html").write_text(
+            _render_errors_page(records, hard_failures), encoding="utf-8"
         )
         for rec in records:
             day = rec.get("trade_date", "")
