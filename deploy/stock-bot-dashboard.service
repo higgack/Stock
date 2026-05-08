@@ -1,0 +1,24 @@
+[Unit]
+Description=NOAH 주식분석 아카이브 대시보드 (static HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=higgack
+Group=higgack
+WorkingDirectory=/home/higgack/.tradingagents/archive
+# Plain stdlib http.server is enough — the dashboard files are pure
+# static HTML emitted by bot.dashboard. No auth here, matching the
+# existing public dashboard on :8080.
+ExecStart=/usr/bin/python3 -m http.server 8081 \
+  --bind 0.0.0.0 \
+  --directory /home/higgack/.tradingagents/archive
+Restart=always
+RestartSec=5
+# Belt-and-suspenders: cycle the process daily so any slow stdlib
+# memory growth never accumulates indefinitely.
+RuntimeMaxSec=86400
+
+[Install]
+WantedBy=multi-user.target
