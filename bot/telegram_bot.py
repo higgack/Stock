@@ -261,7 +261,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
     else:
         progress_text = (
-            f"📊 <b>{_html.escape(raw)}</b> 분석 시작… (보통 1~3분, 큰 종목은 더 걸릴 수 있음)"
+            f"📊 <b>{_html.escape(raw)}</b> 분석 시작…"
         )
 
     # Immediately post a progress message to the channel
