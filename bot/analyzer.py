@@ -43,14 +43,14 @@ def _build_config() -> dict:
     # (quick tier) only need a few paragraphs of stance text. Saves
     # roughly 30-40% on output-token spend with no measurable loss in
     # report content.
-    config["deep_max_output_tokens"] = 8192
+    config["deep_max_output_tokens"] = 16384
     config["quick_max_output_tokens"] = 2000
     # Per-Gemini-call HTTP timeout. Without this, a single hung response
     # can chew the entire 10-minute analysis budget; SIMO hit exactly that
     # case (worker silent for 7+ min before the asyncio-side timeout fired).
-    # 90s is generous for a tool-using analyst response and still leaves
-    # headroom for ~5-6 calls within the 600s wall budget.
-    config["llm_request_timeout"] = 90
+    # 150s is generous for a long Korean-language analyst response with
+    # tools, still leaves headroom for ~4 calls within the 600s wall budget.
+    config["llm_request_timeout"] = 150
     config["data_vendors"] = {
         "core_stock_apis": "yfinance",
         "technical_indicators": "yfinance",
