@@ -72,15 +72,32 @@ def _read_usage_records() -> list[dict]:
 def _read_memory_resolved() -> list[dict]:
     """Read trading_memory.md and return only resolved entries (those
     with realized return data). Pending entries get skipped."""
+    info = _read_memory_full()
+    return info["resolved"]
+
+
+def _read_memory_full() -> dict:
+    """Single pass over trading_memory.md returning both the resolved
+    entries (for accuracy calc) and the pending bucket counts (so the
+    UI can be transparent about why accuracy might be based on a tiny
+    sample). The dashboard's accuracy card stops being misleading when
+    we surface 'evaluated 1 / pending 32 / hold 12' instead of just '1/1'.
+    """
+    out = {
+        "resolved": [],          # list of {date, ticker, rating, raw, alpha}
+        "pending_directional": 0,  # pending Buy/Sell/Over/Underweight
+        "pending_hold": 0,         # pending Hold (won't ever count in accuracy)
+        "resolved_hold": 0,        # resolved Hold (excluded from accuracy denom)
+    }
     if not _MEMORY_LOG_PATH.exists():
-        return []
+        return out
     try:
         text = _MEMORY_LOG_PATH.read_text(encoding="utf-8")
     except Exception as exc:
         log.warning("dashboard: memory log read failed: %s", exc)
-        return []
-    out: list[dict] = []
+        return out
     blocks = text.split("\n\n<!-- ENTRY_END -->\n\n")
+    seen: set[tuple[str, str]] = set()  # de-dupe by (date, ticker)
     for block in blocks:
         lines = block.strip().splitlines()
         if not lines:
@@ -89,14 +106,31 @@ def _read_memory_resolved() -> list[dict]:
         if not (tag.startswith("[") and tag.endswith("]")):
             continue
         fields = [f.strip() for f in tag[1:-1].split("|")]
-        # Resolved tag has 6 fields: [date, ticker, rating, raw, alpha, holding]
-        # Pending has 4 with last being 'pending'.
-        if len(fields) < 6 or fields[3] == "pending":
+        if len(fields) < 4:
             continue
-        out.append({
-            "date": fields[0], "ticker": fields[1], "rating": fields[2],
-            "raw": fields[3], "alpha": fields[4],
-        })
+        date, ticker, rating = fields[0], fields[1], fields[2]
+        rating_l = rating.lower()
+        directional = rating_l in ("buy", "overweight", "sell", "underweight")
+        is_hold = rating_l == "hold"
+        is_pending = (fields[3] == "pending") or len(fields) < 6
+
+        key = (date, ticker)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        if is_pending:
+            if directional:
+                out["pending_directional"] += 1
+            elif is_hold:
+                out["pending_hold"] += 1
+        else:
+            if is_hold:
+                out["resolved_hold"] += 1
+            out["resolved"].append({
+                "date": date, "ticker": ticker, "rating": rating,
+                "raw": fields[3], "alpha": fields[4],
+            })
     return out
 
 
@@ -150,7 +184,8 @@ def _compute_stats(records: list[dict]) -> dict:
     daily_avg_usd = total_cost_usd / max(span_days, 1) if total_cost_usd else 0.0
 
     # ── recommendation accuracy from memory log ──
-    resolved = _read_memory_resolved()
+    mem = _read_memory_full()
+    resolved = mem["resolved"]
     correct = 0
     evaluated = 0
     returns: list[float] = []
@@ -173,7 +208,8 @@ def _compute_stats(records: list[dict]) -> dict:
             evaluated += 1
             if ret < 0:
                 correct += 1
-        # 'hold' / 'overweight' weak — skip from accuracy calc
+        # 'hold' is excluded from the accuracy denominator (no clean
+        # directional bet) but still rolls into the average-return number.
     accuracy = correct / evaluated if evaluated else None
     avg_return = sum(returns) / len(returns) if returns else None
     avg_alpha = sum(alphas) / len(alphas) if alphas else None
@@ -196,6 +232,9 @@ def _compute_stats(records: list[dict]) -> dict:
         "avg_return": avg_return,
         "avg_alpha": avg_alpha,
         "resolved_count": len(resolved),
+        "pending_directional": mem["pending_directional"],
+        "pending_hold": mem["pending_hold"],
+        "resolved_hold": mem["resolved_hold"],
     }
 
 
@@ -211,7 +250,14 @@ def _krw(usd: float) -> str:
 
 
 def _stat_card(label: str, value: str, sub: str = "") -> str:
-    sub_html = f'<div class="stat-sub">{_html.escape(sub)}</div>' if sub else ""
+    if sub:
+        # Newlines in `sub` become explicit <br> so multi-line subs
+        # (e.g. accuracy card with a footnote) render correctly while
+        # the rest of the content stays HTML-escaped.
+        sub_escaped = _html.escape(sub).replace("\n", "<br>")
+        sub_html = f'<div class="stat-sub">{sub_escaped}</div>'
+    else:
+        sub_html = ""
     return f"""
     <div class="stat-card">
       <div class="stat-label">{label}</div>
@@ -266,22 +312,34 @@ def _render_stats_panel(stats: dict) -> str:
     )
 
     # Card 4: 추천 정확도
+    # Surface the denominator transparency so a 1/1 = 100% case doesn't
+    # read as 'the bot has been right every time'. Show pending and
+    # Hold-excluded counts alongside, plus a footnote explaining why
+    # most analyses haven't matured into the score yet.
+    pending_dir = stats.get("pending_directional", 0)
+    pending_hold = stats.get("pending_hold", 0)
+    resolved_hold = stats.get("resolved_hold", 0)
+    hold_total = pending_hold + resolved_hold
+
     if stats["accuracy"] is not None:
         acc_pct = stats["accuracy"] * 100
-        acc_value = f"{acc_pct:.0f}%"
-        sub_parts = [f"{stats['correct']}/{stats['evaluated']}건 방향 일치"]
-        if stats["avg_return"] is not None:
-            sub_parts.append(f"평균 {stats['avg_return']:+.2f}%")
-        if stats["avg_alpha"] is not None:
-            sub_parts.append(f"벤치 대비 {stats['avg_alpha']:+.2f}%p")
-        acc_sub = " · ".join(sub_parts)
+        acc_value = f"{acc_pct:.0f}% ({stats['correct']}/{stats['evaluated']})"
     else:
         acc_value = "—"
-        acc_sub = (
-            f"평가 가능 결과 0건 "
-            f"(추천 후 5거래일 지나야 측정)" if stats["resolved_count"] == 0 else
-            f"Buy/Sell 추천이 아직 없음"
-        )
+
+    sub_parts = []
+    sub_parts.append(f"평가 {stats['evaluated']}건")
+    if pending_dir:
+        sub_parts.append(f"미해소 {pending_dir}건")
+    if hold_total:
+        sub_parts.append(f"Hold {hold_total}건 (분모 제외)")
+    if stats["avg_return"] is not None:
+        sub_parts.append(f"평균 수익 {stats['avg_return']:+.2f}%")
+    if stats["avg_alpha"] is not None:
+        sub_parts.append(f"벤치 {stats['avg_alpha']:+.2f}%p")
+
+    note = "※ 분석 후 5거래일 + 동일 종목 재분석 시 자동 평가"
+    acc_sub = " · ".join(sub_parts) + "\n" + note
     card_acc = _stat_card("🎯 추천 정확도", acc_value, acc_sub)
 
     return f"""
