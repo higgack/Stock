@@ -51,6 +51,17 @@ CHANNEL_CHAT_IDS: set[int] = {int(x) for x in _raw_ids.split(",") if x.strip()}
 
 TICKER_PREFIX = "/"
 TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.]{0,9}$")
+# `/compare A B` triggers a side-by-side digest of two tickers. Both
+# tickers run through the same analyzer pipeline (via cache or fresh
+# subprocess) and the result is condensed to verdict + stance bar.
+COMPARE_RE = re.compile(r"^compare\s+(\S+)\s+(\S+)\s*$", re.IGNORECASE)
+# Patterns for parsing a previously-rendered summary string back into the
+# pieces we need for the compact compare view. The summary format is
+# produced by `bot.analyzer._format_summary` so these are stable.
+_SUMMARY_RATING_RE = re.compile(r"🎯 최종 판정:\s*\*\*([^*]+?)\*\*")
+_SUMMARY_STANCE_LINE_RE = re.compile(
+    r"^(?:📈|💬|📰|💰).+·.+$", re.MULTILINE
+)
 # Headroom under Telegram's 4096-char sendMessage cap, leaving room for the
 # small per-chunk overhead added by the Markdown→HTML conversion.
 TELEGRAM_LIMIT = 3500
@@ -149,9 +160,33 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     text = (post.text or "").strip()
     if not text.startswith(TICKER_PREFIX):
         return  # not a ticker request — ignore
-    raw = text[len(TICKER_PREFIX):].strip().upper()
+    body = text[len(TICKER_PREFIX):].strip()
+
+    # /compare A B → branch off to the comparison handler.
+    cmp_match = COMPARE_RE.match(body)
+    if cmp_match:
+        tk_a = cmp_match.group(1).upper()
+        tk_b = cmp_match.group(2).upper()
+        if not (TICKER_RE.match(tk_a) and TICKER_RE.match(tk_b)):
+            await ctx.bot.send_message(
+                chat_id=post.chat.id,
+                text="⚠️ 사용법: <code>/compare NVDA AMD</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if tk_a == tk_b:
+            await ctx.bot.send_message(
+                chat_id=post.chat.id,
+                text="⚠️ 두 종목이 같습니다.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await _handle_compare(ctx, post, tk_a, tk_b)
+        return
+
+    raw = body.upper()
     if not TICKER_RE.match(raw):
-        return  # malformed ticker after the "-" prefix
+        return  # malformed ticker after the "/" prefix
 
     # Peek the daily cache so the progress message can be honest about
     # whether the user is going to wait 1-3 minutes or get an instant result.
@@ -236,6 +271,144 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         clear_busy()
 
 
+async def _ensure_analysis(
+    ctx: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    progress_msg_id: int,
+    ticker: str,
+    target_date: str,
+) -> tuple[str, str] | None:
+    """Return (summary, full) for a ticker using cache when fresh, otherwise
+    by spawning the analyzer subprocess. Returns None on failure (the caller
+    is responsible for editing the progress message into a user-facing error).
+    """
+    cached = _cache.get(ticker, target_date)
+    if cached is not None:
+        return cached
+
+    # Fresh run — guard the .busy + .progress files exactly like the single-
+    # ticker handler does so a deploy / watchdog kick mid-compare can't catch
+    # us between subprocess spawn and completion.
+    _recovery.write(chat_id, progress_msg_id, ticker)
+    mark_busy()
+    try:
+        async with _analysis_lock:
+            return await _run_analysis_subprocess(ticker, target_date)
+    except asyncio.TimeoutError:
+        log.warning("compare: analysis timed out for %s", ticker)
+        return None
+    except Exception as exc:
+        log.exception("compare: analysis failed for %s: %s", ticker, exc)
+        return None
+    finally:
+        _recovery.clear()
+        clear_busy()
+
+
+def _compose_compare_view(
+    tk_a: str, summary_a: str, tk_b: str, summary_b: str, target_date: str
+) -> str:
+    """Render the compact two-ticker comparison from existing summary text.
+
+    Pulls just the rating line and stance bar out of each per-ticker
+    summary; the full reports are still available via the inline buttons
+    rendered alongside this view.
+    """
+
+    def _extract(summary: str) -> tuple[str, str]:
+        rating_match = _SUMMARY_RATING_RE.search(summary)
+        rating = rating_match.group(1).strip() if rating_match else "?"
+        stance_match = _SUMMARY_STANCE_LINE_RE.search(summary)
+        stance = stance_match.group(0).strip() if stance_match else ""
+        return rating, stance
+
+    rating_a, stance_a = _extract(summary_a)
+    rating_b, stance_b = _extract(summary_b)
+
+    parts = [
+        f"⚖️ **{tk_a} vs {tk_b}** ({target_date})",
+        "━━━━━━━━━━━━━━",
+        "",
+        f"📊 **{tk_a}**  →  🎯 {rating_a}",
+    ]
+    if stance_a:
+        parts.append(stance_a)
+    parts.append("")
+    parts.append(f"📊 **{tk_b}**  →  🎯 {rating_b}")
+    if stance_b:
+        parts.append(stance_b)
+    parts.append("")
+    parts.append("아래 버튼으로 각 종목 전체 리포트를 볼 수 있습니다.")
+    return "\n".join(parts)
+
+
+async def _handle_compare(
+    ctx: ContextTypes.DEFAULT_TYPE,
+    post,
+    tk_a: str,
+    tk_b: str,
+) -> None:
+    today = _date.today().isoformat()
+    a_cached = _cache.get(tk_a, today) is not None
+    b_cached = _cache.get(tk_b, today) is not None
+    cached_count = int(a_cached) + int(b_cached)
+    if cached_count == 2:
+        progress_text = (
+            f"⚖️ <b>{_html.escape(tk_a)}</b> vs <b>{_html.escape(tk_b)}</b> "
+            f"캐시된 결과 비교 중…"
+        )
+    elif cached_count == 1:
+        progress_text = (
+            f"⚖️ <b>{_html.escape(tk_a)}</b> vs <b>{_html.escape(tk_b)}</b> "
+            f"비교 분석 시작… (캐시 1개 + 새 분석 1개, 1~3분 소요)"
+        )
+    else:
+        progress_text = (
+            f"⚖️ <b>{_html.escape(tk_a)}</b> vs <b>{_html.escape(tk_b)}</b> "
+            f"비교 분석 시작… (새 분석 2개, 3~6분 소요)"
+        )
+
+    progress = await ctx.bot.send_message(
+        chat_id=post.chat.id,
+        text=progress_text,
+        parse_mode=ParseMode.HTML,
+    )
+
+    pair: dict[str, tuple[str, str]] = {}
+    for tk in (tk_a, tk_b):
+        result = await _ensure_analysis(ctx, post.chat.id, progress.message_id, tk, today)
+        if result is None:
+            try:
+                await ctx.bot.edit_message_text(
+                    text=(
+                        f"❌ <b>{_html.escape(tk)}</b> 분석 실패로 비교를 완료하지 못했습니다. "
+                        f"잠시 후 다시 시도해주세요."
+                    ),
+                    chat_id=post.chat.id,
+                    message_id=progress.message_id,
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception as edit_exc:
+                log.warning("compare: could not edit failure message: %s", edit_exc)
+            return
+        pair[tk] = result
+
+    summary_a, _ = pair[tk_a]
+    summary_b, _ = pair[tk_b]
+    view = _compose_compare_view(tk_a, summary_a, tk_b, summary_b, today)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"📋 {tk_a} 전체", callback_data=f"full:{tk_a}:{today}"),
+        InlineKeyboardButton(f"📋 {tk_b} 전체", callback_data=f"full:{tk_b}:{today}"),
+    ]])
+    await ctx.bot.edit_message_text(
+        text=_md_to_html(view),
+        chat_id=post.chat.id,
+        message_id=progress.message_id,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
 async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """Inline button handler — sends the full report to the channel.
 
@@ -302,7 +475,9 @@ async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "✅ Stock Analyst Bot 작동 중\n\n"
         "채널에 <code>/티커</code> 형식으로 입력하면 분석합니다.\n"
-        "예: <code>/NVDA</code>  <code>/AAPL</code>  <code>/TSLA</code>",
+        "예: <code>/NVDA</code>  <code>/AAPL</code>  <code>/TSLA</code>\n\n"
+        "두 종목 비교는 <code>/compare A B</code> 형태로:\n"
+        "예: <code>/compare NVDA AMD</code>",
         parse_mode=ParseMode.HTML,
     )
 
