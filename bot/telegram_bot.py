@@ -10,10 +10,11 @@ Flow:
 
 import asyncio
 import html as _html
+import json
 import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
+import sys
 from datetime import date as _date
 
 from dotenv import load_dotenv
@@ -30,7 +31,7 @@ from telegram.ext import (
 
 from bot import cache as _cache
 from bot import recovery as _recovery
-from bot.analyzer import analyze, clear_busy, mark_busy
+from bot.analyzer import clear_busy, mark_busy
 
 load_dotenv()
 
@@ -58,7 +59,76 @@ TELEGRAM_LIMIT = 3500
 # to the user instead of leaving the progress message hanging forever.
 ANALYSIS_TIMEOUT_SEC = 600
 
-_executor = ThreadPoolExecutor(max_workers=1)  # one analysis at a time
+# Serializes ticker requests so we never spawn more than one analysis worker
+# at a time. The previous ThreadPoolExecutor(max_workers=1) gave the same
+# guarantee; this lock preserves it under the subprocess model.
+_analysis_lock = asyncio.Lock()
+
+
+async def _run_analysis_subprocess(
+    ticker: str, target_date: str
+) -> tuple[str, str]:
+    """Run a single analysis in a fresh Python subprocess and return
+    (summary, full).
+
+    The subprocess fully insulates the bot's asyncio loop from the heavy
+    work: GIL contention, memory growth, and langgraph stalls in the
+    worker can't reach Telegram polling. On the configured timeout we
+    SIGKILL the worker so even a fully wedged subprocess can't block the
+    bot — `analyze_worker.py` is stateless and writes nothing the bot
+    can't recover from a kill.
+
+    Raises asyncio.TimeoutError on timeout and RuntimeError otherwise.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "bot.analyze_worker",
+        ticker,
+        target_date,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=None,  # let worker logs flow straight to systemd journal
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(
+            proc.communicate(), timeout=ANALYSIS_TIMEOUT_SEC
+        )
+    except asyncio.TimeoutError:
+        log.warning("analysis subprocess timed out — killing pid %s", proc.pid)
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        # Reap so we don't leave a zombie. wait() can't deadlock here
+        # because the kill we just sent makes the child exit promptly.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            log.warning("worker pid %s did not reap within 5s", proc.pid)
+        raise
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"analysis worker exited with code {proc.returncode}"
+        )
+
+    payload = (stdout or b"").decode("utf-8", errors="replace").strip()
+    # Worker may have logged unexpectedly to stdout above the JSON line.
+    # Take the LAST non-empty line — that's the result envelope.
+    last_line = next(
+        (line for line in reversed(payload.splitlines()) if line.strip()),
+        "",
+    )
+    try:
+        result = json.loads(last_line)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"analysis worker output not JSON: {payload[:300]!r}"
+        ) from exc
+
+    if not result.get("ok"):
+        raise RuntimeError(result.get("error", "unknown analysis worker failure"))
+    return result["summary"], result["full"]
 
 
 def _allowed_channel(chat_id: int) -> bool:
@@ -113,11 +183,8 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     mark_busy()
     try:
         try:
-            loop = asyncio.get_running_loop()
-            summary, full = await asyncio.wait_for(
-                loop.run_in_executor(_executor, analyze, raw, None),
-                timeout=ANALYSIS_TIMEOUT_SEC,
-            )
+            async with _analysis_lock:
+                summary, full = await _run_analysis_subprocess(raw, today)
         except asyncio.TimeoutError:
             log.warning("analysis timed out for %s after %ss", raw, ANALYSIS_TIMEOUT_SEC)
             try:
@@ -133,16 +200,10 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 )
             except Exception as edit_exc:
                 log.warning("could not edit timeout message: %s", edit_exc)
-            # The worker thread that's actually making Gemini calls cannot
-            # be cancelled cooperatively (TradingAgents has no checkpoint
-            # for that). Force-kill the whole process so the thread dies
-            # with it; systemd Restart=always brings us back. We clear
-            # _recovery first so the post_init recovery doesn't overwrite
-            # the timeout message we just posted.
-            _recovery.clear()
-            clear_busy()
-            log.warning("forcing process exit to terminate the runaway analysis thread")
-            os._exit(1)
+            # The analysis subprocess was already SIGKILLed inside
+            # _run_analysis_subprocess on timeout, so nothing further is
+            # needed — the bot itself stays up and keeps serving updates.
+            return
         except Exception as exc:
             log.exception("analysis failed for %s", raw)
             await ctx.bot.edit_message_text(
