@@ -470,16 +470,107 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
                 pass
 
 
-async def cmd_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    """DM /start — useful for verifying the bot is alive."""
-    await update.message.reply_text(
-        "✅ Stock Analyst Bot 작동 중\n\n"
-        "채널에 <code>/티커</code> 형식으로 입력하면 분석합니다.\n"
-        "예: <code>/NVDA</code>  <code>/AAPL</code>  <code>/TSLA</code>\n\n"
-        "두 종목 비교는 <code>/compare A B</code> 형태로:\n"
-        "예: <code>/compare NVDA AMD</code>",
-        parse_mode=ParseMode.HTML,
-    )
+_HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
+━━━━━━━━━━━━━━
+<b>【1. 명령어】</b>
+▸ 종목 분석
+ • <code>/&lt;티커&gt;</code>          단일 종목 풀 분석 (1~3분)
+   예: <code>/NVDA</code>  <code>/AAPL</code>  <code>/TSLA</code>
+ • <code>/compare A B</code>     두 종목 사이드바이사이드 비교
+   예: <code>/compare NVDA AMD</code>
+▸ 도움말
+ • <code>/start</code>  <code>/help</code>    이 안내 표시
+
+━━━━━━━━━━━━━━
+<b>【2. 분석 흐름】</b>
+ 1) 채널에 <code>/티커</code> 입력 → 즉시 진행 메시지
+ 2) 4명 분석가 단계 (~2분) — Gemini 2.5 Flash
+    📈 시장 (기술적 + 거시 + 리스크 + 섹터)
+    💬 감정 (소셜/뉴스 감성)
+    📰 뉴스 (회사 + 거시 통합)
+    💰 펀더멘털 (재무 + DCF + Comps)
+ 3) Bull/Bear 페르소나 토론 (~1분) — Flash-Lite
+    Bull: 워런 버핏 (해자/가치) + 피터 린치 (PEG/성장)
+    Bear: 벤 그레이엄 (안전마진) + 하워드 막스 (사이클)
+ 4) Trader 제안 → Risk 3인 토론 → Portfolio Manager 최종
+    핵심 결정 3개 노드는 Gemini 2.5 <b>Pro</b>
+ 5) 채널에 요약 + [📋 전체 리포트] 버튼
+
+━━━━━━━━━━━━━━
+<b>【3. 요약 메시지 구성】</b>
+ • 🎯 최종 판정 (Buy / Overweight / Hold / Underweight / Sell)
+ • 📒 지난 추천 결과 (자동, 5거래일 지나면)
+ • 4명 분석가 stance 한눈
+ • 각 분석가 한 줄 요지
+ • [📋 전체 리포트 보기] → 토론·계획·결정 풀버전
+
+━━━━━━━━━━━━━━
+<b>【4. 자동 사용 데이터】</b>
+ • 가격/지표  yfinance (15년 캐시)
+ • 뉴스       yfinance + Alpha Vantage
+ • 펀더멘털   yfinance 재무제표 (분기 + 연간)
+ • 거시       ^TNX·^VIX·DXY·CL=F·GC=F·BTC-USD (자동)
+ • 섹터 매핑  XLK·SOXX·IGV·IBB·KRE·XOP·TAN·... (자동)
+ • 리스크     연환산 σ / Sharpe / Sortino / VaR / Max DD / 베타
+ • 윈도우     기본 28일 (분석 디렉티브)
+
+━━━━━━━━━━━━━━
+<b>【5. 메모리 피드백 루프】</b>
+ • 매 분석은 추천을 pending으로 기록
+ • 다음 동일 종목 분석 시 실제 수익률 자동 fetch
+ • '지난 추천' 라인이 요약 상단에 자동 표시
+   예: 📒 지난 추천 (2026-04-24): 매수 → +5.3% (벤치 +1.2%)
+ • 결정 LLM도 같은 컨텍스트 받음 → 자기 과거 실수 반영
+
+━━━━━━━━━━━━━━
+<b>【6. 캐시 & 비용】</b>
+ • 오늘 같은 종목 재분석 → 디스크 캐시 즉시 반환 (무료)
+ • 새 분석 ~$0.05~0.10/회 (Flash 분석가 + Pro 결정자)
+ • /compare 둘 다 새거 → ~$0.10~0.20
+ • 일일 캐시는 자정 KST 만료
+ • 윈도우 데이터 (15년 가격)는 영구 캐시
+
+━━━━━━━━━━━━━━
+<b>【7. 안정성 (자동 처리)】</b>
+ • 분석은 별도 subprocess → 봇 메인 절대 멈추지 않음
+ • 10분 wall 타임아웃 자동 발동 (토큰 낭비 차단)
+ • LLM HTTP 호출 150초 cap (단발 hang 방지)
+ • 분석가 빈 응답 → 무도구 모드 1회 자동 재시도
+ • watchdog 12분 stale → 자동 재시작
+ • auto-update 2분마다 git pull + 무중단 재배포
+ • 봇 재시작 중에도 진행 메시지 자동 복구
+
+━━━━━━━━━━━━━━
+<b>【8. 채널 알림】</b>
+ • 🚀 배포 시작 / ✅ 배포 완료 — auto-update
+ • ⚠️ 봇 hang 감지 — watchdog 발동
+ • ❌ 분석 실패 — 타임아웃 / 토큰 한도 / API 에러
+
+━━━━━━━━━━━━━━
+<b>【9. 제한 / 트러블슈팅】</b>
+ • 한 번에 분석 1건 (lock으로 직렬화)
+ • /compare는 2종목까지, 같은 티커 두 번 거부
+ • "캐시 결과를 찾을 수 없습니다" → 자정 지나 만료, 티커 재입력
+ • "분석 실패: 10분 타임아웃" → 1~2분 후 재시도
+   (Gemini 503 일시 장애일 수 있음)
+ • "봇 재시작으로 중단" → 자동 복구 메시지, 다시 입력
+ • 미국 외 거래소: 접미사 유지
+   예: <code>/TSM</code> (미국 ADR), <code>/005930.KS</code> (삼성전자)
+
+━━━━━━━━━━━━━━
+<b>【10. 차별화 포인트】</b>
+ • 페르소나 토론 — Buffett/Lynch vs Graham/Marks
+ • 결정 3노드만 Pro — 비용 ~$0.05 추가로 결정 품질 점프
+ • 메모리 피드백 — 자기 과거 추천 결과 학습
+ • 리스크 지표 결정적 계산 (LLM 추측 X)
+ • 섹터 ETF 상대 강도 (서브섹터 자동 매핑)
+ • 거시 스냅샷 (학습 cutoff 메우기)
+"""
+
+
+async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """DM /start or /help — comprehensive bot usage guide."""
+    await update.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.HTML)
 
 
 def _format_failure(ticker: str, exc: Exception) -> str:
@@ -650,7 +741,8 @@ def main() -> None:
         )
 
     app = Application.builder().token(TOKEN).post_init(_on_startup).build()
-    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("start", cmd_help))
+    app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CallbackQueryHandler(on_full_report, pattern=r"^full:"))
     app.add_handler(
         MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, on_channel_post)
