@@ -19,6 +19,7 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 
 from bot import cache as _cache
+from bot.archive import save_analysis as _archive_save
 from bot.usage_tracker import UsageCallback, log_analysis
 
 log = logging.getLogger("stock-bot.analyzer")
@@ -146,7 +147,11 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
 
     _cache.put(ticker, target_date, summary, full)
     log.info("analyze: cache write done — returning to worker")
-    log_analysis(ticker, time.time() - started_at, cache_hit=False)
+    elapsed = time.time() - started_at
+    log_analysis(ticker, elapsed, cache_hit=False)
+    # Persist to the long-term archive. Cache writes expire at midnight;
+    # the archive does not, and is what the dashboard reads from.
+    _archive_save(ticker, target_date, summary, full, elapsed)
     return summary, full
 
 
