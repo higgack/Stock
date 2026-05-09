@@ -242,26 +242,35 @@ def get_analyst_directive() -> str:
 # so a repeated /TICKER inside the same analysis (e.g. analyst rerun) or
 # back-to-back /compare doesn't pay the round-trip again. None entries
 # mean "we tried and it failed"; we don't retry within a process lifetime.
-_QUOTE_TYPE_CACHE: dict[str, str | None] = {}
+_INSTRUMENT_INFO_CACHE: dict[str, dict] = {}
+
+
+def _instrument_info(ticker: str) -> dict:
+    """Cached yfinance .info lookup. Returns a small dict with the fields
+    we actually use (quoteType, sector, industry, longName), or empty
+    dict when the lookup fails. Single network call per ticker per
+    process; downstream callers (is_etf, _quote_type, sector/industry
+    injection) all share the same fetch."""
+    if ticker in _INSTRUMENT_INFO_CACHE:
+        return _INSTRUMENT_INFO_CACHE[ticker]
+    out: dict = {}
+    try:
+        import yfinance as yf
+        raw = yf.Ticker(ticker).info or {}
+        for key in ("quoteType", "typeDisp", "sector", "industry", "longName"):
+            v = raw.get(key)
+            if isinstance(v, str) and v.strip():
+                out[key] = v.strip()
+    except Exception as exc:
+        _analyst_log.warning("instrument info lookup failed for %s: %s", ticker, exc)
+    _INSTRUMENT_INFO_CACHE[ticker] = out
+    return out
 
 
 def _quote_type(ticker: str) -> str | None:
-    """Best-effort yfinance lookup of an instrument's quoteType. Returns
-    e.g. "EQUITY", "ETF", "MUTUALFUND", "INDEX", "CURRENCY", or None when
-    yfinance won't say. Cached per-process."""
-    if ticker in _QUOTE_TYPE_CACHE:
-        return _QUOTE_TYPE_CACHE[ticker]
-    try:
-        import yfinance as yf
-        info = yf.Ticker(ticker).info or {}
-        qt = info.get("quoteType") or info.get("typeDisp") or None
-        if isinstance(qt, str):
-            qt = qt.upper()
-    except Exception as exc:
-        _analyst_log.warning("quoteType lookup failed for %s: %s", ticker, exc)
-        qt = None
-    _QUOTE_TYPE_CACHE[ticker] = qt
-    return qt
+    info = _instrument_info(ticker)
+    qt = info.get("quoteType") or info.get("typeDisp")
+    return qt.upper() if isinstance(qt, str) else None
 
 
 def is_etf(ticker: str) -> bool:
@@ -280,7 +289,29 @@ def build_instrument_context(ticker: str) -> str:
         "Use this exact ticker in every tool call, report, and recommendation, "
         "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."
     )
-    qt = _quote_type(ticker)
+    info = _instrument_info(ticker)
+    qt = (info.get("quoteType") or info.get("typeDisp") or "").upper()
+    # Inject the GICS-style sector/industry that yfinance actually has on
+    # file. Without this the market analyst's SECTOR PRIMER picks one of
+    # the prompt's example labels at random and routinely mis-classifies
+    # (GOOGL on 2026-05-10 was labelled "AI 인프라 반도체" when its
+    # actual classification is Communication Services / Internet Content).
+    sector = info.get("sector")
+    industry = info.get("industry")
+    long_name = info.get("longName")
+    facts: list[str] = []
+    if long_name:
+        facts.append(f"company name: {long_name}")
+    if sector:
+        facts.append(f"sector: {sector}")
+    if industry:
+        facts.append(f"industry: {industry}")
+    if facts:
+        base += (
+            "\n\nKnown classification (yfinance, authoritative — use these"
+            " exact labels in any sector / industry primer instead of"
+            " guessing): " + "; ".join(facts) + "."
+        )
     if qt in ("ETF", "ETN", "MUTUALFUND"):
         # ETFs / leveraged funds have no company news, no executive
         # quotes, no earnings transcripts. The analyst's standard "company

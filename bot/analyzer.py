@@ -302,18 +302,38 @@ def _extract_stance(body: str | None) -> str:
     Looks for the LAST occurrence of any known stance keyword — analysts
     typically conclude with their recommendation, so the last hit is most
     representative. Returns an empty string when nothing matches.
+
+    Length-aware to avoid substring collisions: when "strong buy" appears
+    at position 20, naïve rfind("buy") would find the "buy" inside it at
+    position 27, then a later real "buy" at position 50 would override
+    the strong-buy classification. We process keywords longest-first and
+    skip subsequent matches that fall inside an already-accepted range.
     """
     if not body:
         return ""
     lower = body.lower()
-    last_pos = -1
-    last_label = ""
-    for keyword, label in _STANCE_KEYWORDS:
-        pos = lower.rfind(keyword.lower())
-        if pos > last_pos:
-            last_pos = pos
-            last_label = label
-    return last_label
+    # Sort longest keywords first so "strong buy" claims its range before
+    # "buy" gets a chance to match the same characters.
+    by_len = sorted(_STANCE_KEYWORDS, key=lambda kv: -len(kv[0]))
+    accepted: list[tuple[int, int]] = []
+    candidates: list[tuple[int, str]] = []
+    for keyword, label in by_len:
+        kw = keyword.lower()
+        # Walk occurrences from right to left; take the rightmost one
+        # that doesn't overlap an already-accepted longer match.
+        pos = lower.rfind(kw)
+        while pos >= 0:
+            end = pos + len(kw)
+            inside = any(s <= pos and end <= e for s, e in accepted)
+            if not inside:
+                accepted.append((pos, end))
+                candidates.append((pos, label))
+                break
+            pos = lower.rfind(kw, 0, pos)
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda kv: -kv[0])
+    return candidates[0][1]
 
 
 _DECISION_DIRECTION = {

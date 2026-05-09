@@ -85,6 +85,18 @@ Volume-Based Indicators:
             " differential (e.g. '90D +12.4%p vs SOXX → 명확한 섹터 리더')."
             " Include the table inline in the sector primer paragraph or"
             " immediately after."
+            + " NO TOOL APOLOGIES: Every tool wired up here (get_stock_data,"
+            " get_indicators, get_risk_metrics, get_macro_context,"
+            " get_sector_relative_strength) is always callable — call it and"
+            " use whatever it returns. Even when an upstream API is flaky,"
+            " the tool returns a partial-success / 'data unavailable' payload"
+            " that is itself the usable input. NEVER write phrases like"
+            " 'tools are not available', 'tool is not available',"
+            " 'I cannot provide', 'Therefore I cannot', '도구를 사용할 수"
+            " 없습니다', '죄송합니다'. If a particular subsection's data"
+            " genuinely came back empty, mention it in one short sentence"
+            " (e.g. '리스크 지표는 본 분석에서 미수집') and move on with"
+            " the rest of the report."
             + get_analyst_directive()
             + get_language_instruction()
         )
