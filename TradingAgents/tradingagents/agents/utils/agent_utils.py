@@ -18,20 +18,45 @@ _FAILURE_MARKERS = (
     "InvalidArgument",
 )
 
-# Apology-mode openings: the analyst gave up on a tool call and started
-# narrating the failure as if it were the report. Real reports never start
-# this way. Kept narrow — only phrases that clearly signal "I'm reporting
-# my own tool failure" rather than incidental analytical use of the words.
+# Apology-mode openings (Korean): the analyst gave up on a tool call and
+# started narrating the failure as if it were the report. Real reports
+# never start this way. Kept narrow — only phrases that clearly signal
+# "I'm reporting my own tool failure" rather than incidental analytical
+# use of the words. Scanned in head[:500] only; legitimate reports may
+# mention "데이터 누락" deeper in the body when discussing a specific
+# obscure metric.
 _APOLOGY_MARKERS = (
     "죄송합니다",
-    "도구를 사용할 수 없습니다",
-    "도구가 유효하지 않다",
     "도구 호출에 실패",
     "도구 오류로 인해",
-    "도구를 호출할 수 없",
     "가져오는 데 오류가 발생",
     "데이터를 가져오지 못했",
     "데이터를 가져올 수 없",
+)
+
+# English equivalents — Gemini sometimes drops into English mid-Korean
+# report when refusing tool calls (GOOGL on 2026-05-10 was the canonical
+# case: "The `get_macro_context` tool is not available...").
+_APOLOGY_MARKERS_EN = (
+    "I cannot provide",
+    "I do not have access to",
+    "I am unable to access",
+    "I am unable to retrieve",
+    "Therefore, I cannot",
+)
+
+# Tool-failure phrases that are SO specific they're never legitimate
+# analytical use. Scanned across the WHOLE body — Gemini sometimes
+# buries the apology mid-section (news analyst on 2026-05-10 had it
+# inside the "거시 경제 현황" subsection ~1500 chars in). Anything
+# matching here is treated as a failed report.
+_TOOL_FAILURE_ANYWHERE = (
+    "도구를 사용할 수 없",
+    "도구가 유효하지 않",
+    "tools are not available",
+    "tool is not available",
+    "tools are unavailable",
+    "tool is unavailable",
 )
 
 # Raw CSV / TSV bleed-through: when the fundamentals analyst pastes the
@@ -66,6 +91,15 @@ def looks_failed_report(text: str) -> bool:
     # text, the leading apology means the LLM was filling a gap rather than
     # analyzing real data — retry once with a clean message slate.
     if any(m in head for m in _APOLOGY_MARKERS):
+        return True
+    if any(m in head for m in _APOLOGY_MARKERS_EN):
+        return True
+    # Specific tool-unavailability phrases anywhere in the body. These are
+    # never legitimate analytical content — every occurrence is the LLM
+    # refusing to call a wired-up tool and inventing an excuse. Scanned
+    # body-wide so a buried "거시 경제 현황: 죄송합니다. 도구를 사용할
+    # 수 없어..." subsection still triggers a retry.
+    if any(m in stripped for m in _TOOL_FAILURE_ANYWHERE):
         return True
     # Raw financial-CSV bleed (≥3 numeric data rows): fundamentals analyst
     # pasted the tool's CSV instead of summarising it. Real reports use
