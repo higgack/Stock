@@ -281,6 +281,33 @@ def is_etf(ticker: str) -> bool:
     return qt in ("ETF", "ETN", "MUTUALFUND")
 
 
+_NEWS_AVAILABILITY_CACHE: dict[str, bool] = {}
+
+
+def has_recent_news(ticker: str) -> bool:
+    """Return True iff yfinance currently surfaces ANY news article for
+    the ticker. Used as a pre-flight check so the bot can skip the news
+    analyst entirely on coverage-poor names (newly-IPO'd, OTC, foreign
+    secondary) instead of paying for an analyst that will produce a
+    placeholder and then trip the fail-fast guard.
+
+    Conservative on error: a yfinance hiccup returns True so we don't
+    spuriously drop the news analyst on a transient network blip — the
+    in-graph retry will catch a real failure downstream anyway.
+    """
+    if ticker in _NEWS_AVAILABILITY_CACHE:
+        return _NEWS_AVAILABILITY_CACHE[ticker]
+    try:
+        import yfinance as yf
+        items = yf.Ticker(ticker).news or []
+        has = len(items) > 0
+    except Exception as exc:
+        _analyst_log.warning("news availability check failed for %s: %s", ticker, exc)
+        has = True  # fail open
+    _NEWS_AVAILABILITY_CACHE[ticker] = has
+    return has
+
+
 def build_instrument_context(ticker: str) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified
     tickers and adjust their data expectations for non-equity products."""

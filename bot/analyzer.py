@@ -169,6 +169,7 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     # for funds; the news/fundamentals analysts get a fund-specific
     # prompt via build_instrument_context.
     selected = list(_SELECTED_ANALYSTS)
+    pre_flight_notes: list[str] = []
     try:
         from tradingagents.agents.utils.agent_utils import is_etf
         if is_etf(ticker):
@@ -176,6 +177,27 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
             log.info("analyze: %s detected as fund — skipping social analyst", ticker)
     except Exception as exc:
         log.warning("analyze: ETF detection failed for %s: %s", ticker, exc)
+
+    # News pre-flight: newly-IPO'd / low-coverage tickers (IBTA on
+    # 2026-05-10 was the canonical case) have zero yfinance news, the
+    # analyst's fail-fast retry then aborts the whole pipeline after
+    # paying ~$0.05. Skip the news analyst entirely up front and warn
+    # the user instead.
+    if "news" in selected:
+        try:
+            from tradingagents.agents.utils.agent_utils import has_recent_news
+            if not has_recent_news(ticker):
+                selected = [a for a in selected if a != "news"]
+                pre_flight_notes.append(
+                    f"📰 뉴스 분석 자동 생략: yfinance에 {ticker} 기사 0건"
+                    " (신생주·저커버리지 종목 추정 — 시장·감정·펀더멘털만으로 분석 진행)"
+                )
+                log.info(
+                    "analyze: %s has 0 yfinance news items — skipping news analyst",
+                    ticker,
+                )
+        except Exception as exc:
+            log.warning("analyze: news pre-check failed for %s: %s", ticker, exc)
     ta = TradingAgentsGraph(
         debug=False,
         config=_build_config(),
@@ -206,7 +228,10 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     full = _format_full(state, decision, ticker, target_date, past_outcomes)
     log.info("analyze: full report done (%d chars) — building summary", len(full))
 
-    summary = _format_summary(state, decision, ticker, target_date, past_outcomes)
+    summary = _format_summary(
+        state, decision, ticker, target_date, past_outcomes,
+        notes=pre_flight_notes,
+    )
     log.info("analyze: summary done (%d chars) — writing cache", len(summary))
 
     _cache.put(ticker, target_date, summary, full)
@@ -403,6 +428,7 @@ def _format_summary(
     ticker: str,
     date_: str,
     past_outcomes: str = "",
+    notes: list[str] | None = None,
 ) -> str:
     rating = _extract_rating(decision) or "N/A"
     parts = [
@@ -412,6 +438,13 @@ def _format_summary(
     ]
     if past_outcomes:
         parts.append(past_outcomes)
+    # Pre-flight notes (news pre-check, ETF detection, etc) sit right
+    # under the headline so the user knows up front which analyst paths
+    # were skipped before reading the stance bar — otherwise a missing
+    # 📰 뉴스 line in the stance bar looks like a silent failure.
+    if notes:
+        for note in notes:
+            parts.append(note)
     # Compact one-line per-analyst stance bar so the user sees who voted
     # what at a glance, before the longer per-section snippets.
     stance_chunks = []
