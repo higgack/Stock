@@ -359,7 +359,10 @@ def _format_seconds(sec: float) -> str:
 
 
 def _krw(usd: float) -> str:
-    return f"₩{int(round(usd * _KRW_PER_USD)):,}"
+    # Space between ₩ and the digits: in large bold weights the Won
+    # glyph's two horizontal strokes visually merge with the following
+    # digit and look like a strikethrough. The space fixes that.
+    return f"₩ {int(round(usd * _KRW_PER_USD)):,}"
 
 
 def _stat_card(label: str, value: str, sub: str = "") -> str:
