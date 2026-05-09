@@ -149,24 +149,34 @@ async def _run_analysis_subprocess(
             log.warning("worker pid %s did not reap within 5s", proc.pid)
         raise
 
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"analysis worker exited with code {proc.returncode}"
-        )
-
+    # Parse the JSON envelope FIRST — when the worker catches an exception
+    # internally it prints the real Korean error message to stdout and
+    # then exits 1. The previous code raised "exited with code 1" before
+    # ever looking at stdout, swallowing the actual error reason.
     payload = (stdout or b"").decode("utf-8", errors="replace").strip()
-    # Worker may have logged unexpectedly to stdout above the JSON line.
-    # Take the LAST non-empty line — that's the result envelope.
     last_line = next(
         (line for line in reversed(payload.splitlines()) if line.strip()),
         "",
     )
-    try:
-        result = json.loads(last_line)
-    except json.JSONDecodeError as exc:
+    result: dict | None = None
+    if last_line:
+        try:
+            result = json.loads(last_line)
+        except json.JSONDecodeError:
+            result = None
+
+    if proc.returncode != 0:
+        if result and not result.get("ok") and result.get("error"):
+            raise RuntimeError(result["error"])
+        raise RuntimeError(
+            f"analysis worker exited with code {proc.returncode}"
+            + (f": {payload[:300]!r}" if payload else "")
+        )
+
+    if result is None:
         raise RuntimeError(
             f"analysis worker output not JSON: {payload[:300]!r}"
-        ) from exc
+        )
 
     if not result.get("ok"):
         raise RuntimeError(result.get("error", "unknown analysis worker failure"))
