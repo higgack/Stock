@@ -37,6 +37,7 @@ from bot import cache as _cache
 from bot import recovery as _recovery
 from bot import usage_tracker
 from bot.analyzer import clear_busy, mark_busy
+from bot.dashboard import regenerate_index as _dashboard_regen
 
 load_dotenv()
 
@@ -1114,6 +1115,14 @@ def main() -> None:
             filters.ChatType.PRIVATE & filters.COMMAND, cmd_ticker_hint
         )
     )
+
+    # Refresh the static dashboard once at startup so an auto-update
+    # deploy (which restarts the bot) immediately shows any changes
+    # to dashboard.py without waiting for the next analysis to fire.
+    try:
+        _dashboard_regen()
+    except Exception as exc:
+        log.warning("startup dashboard regen failed: %s", exc)
 
     log.info("bot starting — watching channels: %s", CHANNEL_CHAT_IDS or "auto-detect")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
