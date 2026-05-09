@@ -919,6 +919,13 @@ def _format_failure(ticker: str, exc: Exception) -> str:
     """Translate raw analyzer exceptions into a user-readable Korean message."""
     text = str(exc)
     ticker_html = _html.escape(ticker)
+    if "분석가 응답 누락" in text:
+        return (
+            f"❌ <b>{ticker_html}</b> 분석 실패: 분석가 응답 누락\n\n"
+            f"{_html.escape(text)}\n"
+            f"(자동 1회 재시도 후에도 분석가가 응답하지 않아 결정 단계로 진행하지 않았습니다. "
+            f"hallucination 위험을 피하기 위해 분석을 중단합니다.)"
+        )
     if "exceeds the maximum number of tokens" in text or "INVALID_ARGUMENT" in text:
         return (
             f"❌ <b>{ticker_html}</b> 분석 실패: 입력 데이터가 Gemini 컨텍스트 한도(1M 토큰)를 초과했습니다.\n\n"

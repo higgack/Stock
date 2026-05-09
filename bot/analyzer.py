@@ -99,6 +99,41 @@ def clear_busy() -> None:
         pass
 
 
+_ANALYST_REPORT_KEYS = {
+    "📈 시장": "market_report",
+    "💬 감정": "sentiment_report",
+    "📰 뉴스": "news_report",
+    "💰 펀더멘털": "fundamentals_report",
+}
+
+
+class AnalysisIncompleteError(RuntimeError):
+    """Raised when ≥1 analyst's final report is still unusable after the
+    in-graph retry. The Telegram handler converts this into a Korean error
+    message that prompts the user to retry, rather than serving a hollow
+    BUY/HOLD/SELL synthesis."""
+
+
+def _check_reports_or_raise(state) -> None:
+    from tradingagents.agents.utils.agent_utils import looks_failed_report
+
+    failed = [
+        label
+        for label, key in _ANALYST_REPORT_KEYS.items()
+        if looks_failed_report((state.get(key) or ""))
+    ]
+    if not failed:
+        return
+    log.warning(
+        "analyze: %d/%d analyst reports still failed after retry: %s",
+        len(failed), len(_ANALYST_REPORT_KEYS), failed,
+    )
+    raise AnalysisIncompleteError(
+        "분석가 응답 누락: " + ", ".join(failed)
+        + " — 잠시 후 재시도해주세요"
+    )
+
+
 def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     """Run TradingAgents on a single ticker.
 
@@ -136,6 +171,15 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     log.info("analyze: graph built — invoking propagate")
     state, decision = ta.propagate(ticker, target_date)
     log.info("analyze: propagate done — formatting output")
+
+    # Fail-fast on still-broken analyst reports. The graph already retried
+    # each analyst once internally (see ConditionalLogic.should_retry_*);
+    # if any final report still looks unusable, the downstream debate /
+    # decision LLMs will hallucinate around the gap and produce an
+    # authoritative-looking BUY/SELL on a hollow foundation. Better to
+    # surface a clear error so the user retries than to deliver a confident
+    # decision built on missing inputs.
+    _check_reports_or_raise(state)
 
     # Surface the last few resolved recommendations for this ticker as a
     # short Korean header line — gives the reader an immediate sense of

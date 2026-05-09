@@ -10,6 +10,33 @@ from tradingagents.agents.utils.agent_states import AgentState
 from .conditional_logic import ConditionalLogic
 
 
+def _make_retry_bump(analyst_type: str):
+    """Tiny node that increments an analyst's retry counter and clears its
+    cached report.
+
+    Routed to from "Msg Clear X" when ConditionalLogic.should_retry_X
+    decides the report is unusable. Clearing the report is what lets the
+    re-run actually overwrite the bad value rather than leaving it in
+    state (the `Annotated[str, ...]` reducer is last-write-wins by default,
+    so this is just defensive housekeeping). Messages have already been
+    cleared by Msg Clear, so the analyst restarts with the standard
+    "Continue" placeholder.
+    """
+    count_key = f"{analyst_type}_retry_count"
+    if analyst_type == "social":
+        report_key = "sentiment_report"
+    else:
+        report_key = f"{analyst_type}_report"
+
+    def bump(state):
+        return {
+            count_key: (state.get(count_key, 0) or 0) + 1,
+            report_key: "",
+        }
+
+    return bump
+
+
 class GraphSetup:
     """Handles the setup and configuration of the agent graph."""
 
@@ -110,6 +137,14 @@ class GraphSetup:
                 f"Msg Clear {analyst_type.capitalize()}", delete_nodes[analyst_type]
             )
             workflow.add_node(f"tools_{analyst_type}", tool_nodes[analyst_type])
+            # One-shot retry bump per analyst. ConditionalLogic.should_retry_X
+            # routes here from Msg Clear X when the report looks unusable;
+            # this node bumps the counter (capping retries) and clears the
+            # bad report so the next analyst pass can overwrite it cleanly.
+            workflow.add_node(
+                f"Retry {analyst_type.capitalize()}",
+                _make_retry_bump(analyst_type),
+            )
 
         # Add other nodes
         workflow.add_node("Bull Researcher", bull_researcher_node)
@@ -140,12 +175,24 @@ class GraphSetup:
             )
             workflow.add_edge(current_tools, current_analyst)
 
-            # Connect to next analyst or to Bull Researcher if this is the last analyst
+            # After Msg Clear, decide: retry this analyst once if its report
+            # looks unusable, otherwise advance to the next analyst (or Bull
+            # Researcher if this was the last one).
             if i < len(selected_analysts) - 1:
-                next_analyst = f"{selected_analysts[i+1].capitalize()} Analyst"
-                workflow.add_edge(current_clear, next_analyst)
+                advance_target = f"{selected_analysts[i+1].capitalize()} Analyst"
             else:
-                workflow.add_edge(current_clear, "Bull Researcher")
+                advance_target = "Bull Researcher"
+            current_retry = f"Retry {analyst_type.capitalize()}"
+            workflow.add_conditional_edges(
+                current_clear,
+                getattr(self.conditional_logic, f"should_retry_{analyst_type}"),
+                {
+                    "retry": current_retry,
+                    "advance": advance_target,
+                },
+            )
+            # Retry bump runs the analyst again with a fresh message slate.
+            workflow.add_edge(current_retry, current_analyst)
 
         # Add remaining edges
         workflow.add_conditional_edges(

@@ -71,3 +71,12 @@ class AgentState(MessagesState):
     ]
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
     past_context: Annotated[str, "Memory log context injected at run start (same-ticker decisions + cross-ticker lessons)"]
+
+    # Per-analyst retry counters. Bumped by Retry-bump nodes in graph.setup
+    # when ConditionalLogic.should_retry_X detects an unusable report after
+    # Msg Clear X runs. Capped at 1 retry per analyst so a persistently
+    # broken upstream can't loop forever.
+    market_retry_count: Annotated[int, "Times the market analyst has been retried"]
+    social_retry_count: Annotated[int, "Times the social analyst has been retried"]
+    news_retry_count: Annotated[int, "Times the news analyst has been retried"]
+    fundamentals_retry_count: Annotated[int, "Times the fundamentals analyst has been retried"]

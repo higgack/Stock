@@ -1,6 +1,34 @@
 # TradingAgents/graph/conditional_logic.py
 
+import logging
+
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.agents.utils.agent_utils import looks_failed_report
+
+_log = logging.getLogger("tradingagents.retry")
+
+# At most one retry per analyst — a persistently broken upstream (Gemini
+# 503 storm, yfinance dead) shouldn't trap the graph in a loop, and each
+# retry doubles that analyst's cost. The bot's analyzer.py raises if any
+# report is still failed after the graph completes.
+_MAX_ANALYST_RETRIES = 1
+
+
+def _should_retry(state, analyst: str, report_key: str) -> str:
+    """Shared body for should_retry_market/social/news/fundamentals.
+
+    Returns "retry" if the analyst's report on `state` still looks unusable
+    AND we haven't hit the per-analyst retry cap yet; "advance" otherwise.
+    """
+    report = state.get(report_key, "") or ""
+    count = state.get(f"{analyst}_retry_count", 0) or 0
+    if looks_failed_report(report) and count < _MAX_ANALYST_RETRIES:
+        _log.warning(
+            "analyst %s produced unusable report (%d chars), retrying (%d/%d)",
+            analyst, len(report), count + 1, _MAX_ANALYST_RETRIES,
+        )
+        return "retry"
+    return "advance"
 
 
 class ConditionalLogic:
@@ -10,6 +38,18 @@ class ConditionalLogic:
         """Initialize with configuration parameters."""
         self.max_debate_rounds = max_debate_rounds
         self.max_risk_discuss_rounds = max_risk_discuss_rounds
+
+    def should_retry_market(self, state: AgentState) -> str:
+        return _should_retry(state, "market", "market_report")
+
+    def should_retry_social(self, state: AgentState) -> str:
+        return _should_retry(state, "social", "sentiment_report")
+
+    def should_retry_news(self, state: AgentState) -> str:
+        return _should_retry(state, "news", "news_report")
+
+    def should_retry_fundamentals(self, state: AgentState) -> str:
+        return _should_retry(state, "fundamentals", "fundamentals_report")
 
     def should_continue_market(self, state: AgentState):
         """Determine if market analysis should continue."""

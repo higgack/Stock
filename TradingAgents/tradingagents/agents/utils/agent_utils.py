@@ -5,6 +5,44 @@ from langchain_core.messages import HumanMessage, RemoveMessage
 _analyst_log = logging.getLogger("tradingagents.analyst")
 
 
+# Markers that strongly suggest the analyst output is broken (raw error blob,
+# unprocessed tool_code, etc) rather than a real Korean-language report. Kept
+# here, near the analyst infrastructure, so the graph-level retry conditional
+# uses the same definition the bot's downstream rendering has settled on.
+_FAILURE_MARKERS = (
+    "tool_code",
+    '"error"',
+    "Traceback",
+    "Internal Server Error",
+    "InvalidArgument",
+)
+
+
+def looks_failed_report(text: str) -> bool:
+    """Return True if an analyst's final report looks unusable.
+
+    Mirrors bot.analyzer._clean_section's failure heuristics so the graph
+    retries on the same conditions the bot would otherwise mask with a
+    placeholder. Anything passing this check is a candidate for a single
+    in-graph retry; on second failure the bot raises.
+    """
+    if not text or not text.strip():
+        return True
+    stripped = text.strip()
+    if len(stripped) > 200_000:
+        return True
+    head = stripped[:500]
+    if any(m in head for m in _FAILURE_MARKERS):
+        return True
+    if len(stripped) < 200:
+        return True
+    text_chars = sum(1 for c in stripped if c.isalnum())
+    if text_chars < 80:
+        return True
+    return False
+
+
+
 def _content_to_str(result) -> str:
     """Normalize an LLM message's content into a single string. Some Gemini
     responses come back as a list of content parts; collapse those to plain
