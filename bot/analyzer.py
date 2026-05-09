@@ -316,6 +316,67 @@ def _extract_stance(body: str | None) -> str:
     return last_label
 
 
+_DECISION_DIRECTION = {
+    "Buy": "buy", "Overweight": "buy",
+    "Sell": "sell", "Underweight": "sell",
+    "Hold": "hold",
+}
+_STANCE_DIRECTION_KEYWORDS = (
+    ("매수", "buy"),
+    ("매도", "sell"),
+    ("보유", "hold"),
+)
+_DIRECTION_KR = {"buy": "매수", "sell": "매도", "hold": "보유"}
+
+
+def _detect_stance_decision_mismatch(state: dict, final_rating: str) -> str:
+    """Return a one-line warning when the analyst-section stance majority
+    disagrees with the final BUY/HOLD/SELL direction. Empty string when
+    they agree or the signal is too weak.
+
+    The debate / decision LLMs sometimes legitimately override the
+    analyst consensus — e.g. when the bear surfaces a new framing the
+    analysts missed (the GOOGL 2026-05-10 case: 4×보유 → Underweight
+    after the bear caught the Q1 26 81% earnings jump being driven by
+    a one-off security sale). That's valuable, not a bug. But the
+    summary card showing "보유 · 보유 · 보유 · 보유" alongside a "매도"
+    verdict is genuinely confusing to read, and the user deserves to
+    know to re-read the decision rationale instead of glossing over.
+    """
+    final_dir = _DECISION_DIRECTION.get(final_rating)
+    if not final_dir:
+        return ""
+    counts = {"buy": 0, "sell": 0, "hold": 0}
+    for key, _, _ in _SECTION_LABELS_FOR_SUMMARY:
+        body = state.get(key) if isinstance(state, dict) else None
+        stance = _extract_stance(body)
+        if not stance:
+            continue
+        for kw, direction in _STANCE_DIRECTION_KEYWORDS:
+            if kw in stance:
+                counts[direction] += 1
+                break
+    total = sum(counts.values())
+    if total < 2:
+        return ""  # not enough analyst stances to form a meaningful majority
+    # Need either unanimity or a 3+ majority that contradicts the final
+    # direction. A 2-2 split (e.g. 매수 2 / 보유 2) isn't worth flagging.
+    majority_dir, majority_count = max(counts.items(), key=lambda kv: kv[1])
+    if majority_dir == final_dir:
+        return ""
+    if majority_count == total:
+        scope = "전원"
+    elif majority_count >= 3 and majority_count > counts.get(final_dir, 0):
+        scope = "다수"
+    else:
+        return ""
+    return (
+        f"⚠️ 분석가 {scope} {_DIRECTION_KR[majority_dir]} → "
+        f"결정 {_DIRECTION_KR[final_dir]} "
+        f"(토론·결정 단계가 분석가 합의를 뒤집음 — 결정 근거를 다시 확인)"
+    )
+
+
 def _format_summary(
     state: dict,
     decision: str,
@@ -341,6 +402,11 @@ def _format_summary(
             stance_chunks.append(f"{icon} {name}: {stance}")
     if stance_chunks:
         parts.append("  ·  ".join(stance_chunks))
+    # Surface analyst-vs-decision direction mismatch on its own line so
+    # the user doesn't gloss over a verdict that contradicts the stance bar.
+    mismatch = _detect_stance_decision_mismatch(state, rating)
+    if mismatch:
+        parts.append(mismatch)
     parts.append("")
     # One key sentence per analyst section, so the summary tells the user
     # WHY without forcing them to expand the full report.
