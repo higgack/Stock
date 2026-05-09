@@ -541,10 +541,33 @@ def _load_all() -> list[dict]:
 # near-black background on phones whose OS was in dark mode, which the
 # user found unreadable. Dropping the override means the page always
 # uses the light palette regardless of system preference.
+# Inline theme script — runs synchronously in <head> before <style>
+# applies, so the dashboard never flashes the wrong theme on load.
+# 19:00–07:00 KST → dark; rest → light. Re-checks every 60s so a
+# tab left open across the boundary flips automatically.
+_THEME_JS = """
+(function() {
+  function apply() {
+    var h = parseInt(new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Seoul', hour: 'numeric', hour12: false
+    }).format(new Date()), 10) % 24;
+    var dark = (h >= 19 || h < 7);
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  }
+  apply();
+  setInterval(apply, 60000);
+})();
+"""
+
+
 _BASE_CSS = """
 :root {
   --fg: #1f2937; --fg-soft: #6b7280; --bg: #f8fafc; --card: #ffffff;
   --border: #e5e7eb; --accent: #0ea5e9;
+}
+:root[data-theme="dark"] {
+  --fg: #e5e7eb; --fg-soft: #9ca3af; --bg: #111827; --card: #1f2937;
+  --border: #374151; --accent: #38bdf8;
 }
 * { box-sizing: border-box; }
 body {
@@ -840,8 +863,9 @@ def _render_errors_page(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
 <title>🚨 NOAH 오류 / 미완성 기록</title>
+<script>{_THEME_JS}</script>
 <style>{_ERRORS_CSS}</style>
 </head>
 <body>
@@ -930,8 +954,9 @@ def _render_index(records: list[dict]) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
 <title>🦉 NOAH 주식분석 아카이브</title>
+<script>{_THEME_JS}</script>
 <style>{_INDEX_CSS}</style>
 </head>
 <body>
@@ -994,8 +1019,9 @@ def _render_detail(rec: dict) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light">
+<meta name="color-scheme" content="light dark">
 <title>📊 {_html.escape(ticker)} ({_html.escape(date)})</title>
+<script>{_THEME_JS}</script>
 <style>{_DETAIL_CSS}</style>
 </head>
 <body>
