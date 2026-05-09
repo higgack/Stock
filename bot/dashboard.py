@@ -267,15 +267,32 @@ def _compute_stats(records: list[dict]) -> dict:
         ticker_counter.most_common(1)[0] if ticker_counter else ("-", 0)
     )
 
-    # ── cost (last 30 days from usage.jsonl) ──
+    # ── cost: today (KST) and current month (KST) ──
+    # Two windows the user actually thinks in. The KST date of each
+    # record is computed once and reused for both buckets.
+    kst = datetime.timezone(datetime.timedelta(hours=9))
+    now_kst = datetime.datetime.now(kst)
+    today_str = now_kst.strftime("%Y-%m-%d")
+    month_prefix = now_kst.strftime("%Y-%m")
+
     usage = _read_usage_records()
-    llm_calls = [r for r in usage if r.get("type") == "llm_call"]
-    total_cost_usd = sum(r.get("cost_usd", 0) or 0 for r in llm_calls)
-    cost_by_model: dict[str, float] = {}
-    for r in llm_calls:
-        m = r.get("model") or "unknown"
-        cost_by_model[m] = cost_by_model.get(m, 0.0) + (r.get("cost_usd", 0) or 0)
-    daily_avg_usd = total_cost_usd / max(span_days, 1) if total_cost_usd else 0.0
+    today_cost_usd = 0.0
+    month_cost_usd = 0.0
+    month_cost_by_model: dict[str, float] = {}
+    for r in usage:
+        if r.get("type") != "llm_call":
+            continue
+        ts = r.get("ts")
+        if not ts:
+            continue
+        rec_day = datetime.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d")
+        cost = r.get("cost_usd", 0) or 0
+        if rec_day.startswith(month_prefix):
+            month_cost_usd += cost
+            m = r.get("model") or "unknown"
+            month_cost_by_model[m] = month_cost_by_model.get(m, 0.0) + cost
+            if rec_day == today_str:
+                today_cost_usd += cost
 
     # ── recommendation accuracy from memory log ──
     mem = _read_memory_full()
@@ -317,9 +334,11 @@ def _compute_stats(records: list[dict]) -> dict:
         "top_ticker": top_ticker,
         "top_count": top_count,
         "ticker_distinct": len(ticker_counter),
-        "total_cost_usd": total_cost_usd,
-        "daily_avg_usd": daily_avg_usd,
-        "cost_by_model": cost_by_model,
+        "today_cost_usd": today_cost_usd,
+        "month_cost_usd": month_cost_usd,
+        "month_cost_by_model": month_cost_by_model,
+        "today_label": now_kst.strftime("%-m월 %-d일"),
+        "month_label": now_kst.strftime("%Y년 %-m월"),
         "evaluated": evaluated,
         "correct": correct,
         "accuracy": accuracy,
@@ -380,19 +399,20 @@ def _render_stats_panel(stats: dict) -> str:
         span_sub + f" · {stats['ticker_distinct']}개 종목" if span_sub else "",
     )
 
-    # Card 2: 비용 (30일)
+    # Card 2: 비용 (오늘 / 이번 달)
     cost_label_parts = []
     for model in ("gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"):
-        usd = stats["cost_by_model"].get(model, 0)
+        usd = stats["month_cost_by_model"].get(model, 0)
         if usd > 0:
             short = model.replace("gemini-2.5-", "")
             cost_label_parts.append(f"{short} {_krw(usd)}")
-    cost_value = _krw(stats['total_cost_usd'])
-    cost_sub = (
-        f"${stats['total_cost_usd']:.2f} · 일평균 {_krw(stats['daily_avg_usd'])}"
-        + (" · " + " / ".join(cost_label_parts) if cost_label_parts else "")
+    cost_value = f"{_krw(stats['today_cost_usd'])} / {_krw(stats['month_cost_usd'])}"
+    cost_sub_parts = [f"{stats['today_label']} / {stats['month_label']}"]
+    if cost_label_parts:
+        cost_sub_parts.append(" / ".join(cost_label_parts))
+    card_cost = _stat_card(
+        "💰 비용 (오늘 / 이번 달)", cost_value, "\n".join(cost_sub_parts),
     )
-    card_cost = _stat_card("💰 누적 비용 (30일)", cost_value, cost_sub)
 
     # Card 3: 평균 시간
     top_part = (
