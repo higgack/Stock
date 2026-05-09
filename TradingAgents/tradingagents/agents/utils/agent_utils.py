@@ -1,4 +1,5 @@
 import logging
+import re
 
 from langchain_core.messages import HumanMessage, RemoveMessage
 
@@ -17,6 +18,32 @@ _FAILURE_MARKERS = (
     "InvalidArgument",
 )
 
+# Apology-mode openings: the analyst gave up on a tool call and started
+# narrating the failure as if it were the report. Real reports never start
+# this way. Kept narrow — only phrases that clearly signal "I'm reporting
+# my own tool failure" rather than incidental analytical use of the words.
+_APOLOGY_MARKERS = (
+    "죄송합니다",
+    "도구를 사용할 수 없습니다",
+    "도구가 유효하지 않다",
+    "도구 호출에 실패",
+    "도구 오류로 인해",
+    "도구를 호출할 수 없",
+    "가져오는 데 오류가 발생",
+    "데이터를 가져오지 못했",
+    "데이터를 가져올 수 없",
+)
+
+# Raw CSV / TSV bleed-through: when the fundamentals analyst pastes the
+# yfinance financial-statement dump verbatim instead of summarising. The
+# pattern matches lines like:
+#   Total Revenue,33172000000.0,31797000000.0,29771000000.0,27518000000.0
+# A handful of legitimate inline tables won't match (Markdown uses pipes),
+# so 3+ such lines is a strong signal the analyst skipped its job.
+_RAW_CSV_LINE_RE = re.compile(
+    r"(?m)^[A-Za-z][A-Za-z0-9 _]+,-?\d+(?:\.\d+)?(?:,-?\d+(?:\.\d+)?){2,}\s*$"
+)
+
 
 def looks_failed_report(text: str) -> bool:
     """Return True if an analyst's final report looks unusable.
@@ -33,6 +60,17 @@ def looks_failed_report(text: str) -> bool:
         return True
     head = stripped[:500]
     if any(m in head for m in _FAILURE_MARKERS):
+        return True
+    # Apology-mode: the analyst opened with "죄송합니다 + 도구 오류" instead
+    # of a real report. Even when followed by paragraphs of hallucinated
+    # text, the leading apology means the LLM was filling a gap rather than
+    # analyzing real data — retry once with a clean message slate.
+    if any(m in head for m in _APOLOGY_MARKERS):
+        return True
+    # Raw financial-CSV bleed (≥3 numeric data rows): fundamentals analyst
+    # pasted the tool's CSV instead of summarising it. Real reports use
+    # Markdown tables (pipe-delimited), not comma-delimited rows.
+    if len(_RAW_CSV_LINE_RE.findall(stripped)) >= 3:
         return True
     if len(stripped) < 200:
         return True

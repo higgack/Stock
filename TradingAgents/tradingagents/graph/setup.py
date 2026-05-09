@@ -10,6 +10,33 @@ from tradingagents.agents.utils.agent_states import AgentState
 from .conditional_logic import ConditionalLogic
 
 
+def _pre_debate_guard(state):
+    """Passthrough node sitting between the last analyst and Bull Researcher.
+
+    The conditional edge after this node decides proceed-to-debate vs
+    short-circuit-to-END. When aborting, we also stub the debate / risk /
+    decision state fields so trading_graph._log_state and the propagate()
+    return path don't KeyError on the partial state — the bot's
+    _check_reports_or_raise still detects the failed analyst reports and
+    converts that into a Korean retry message before any of these empty
+    placeholder values are user-visible.
+    """
+    from tradingagents.agents.utils.agent_utils import looks_failed_report
+
+    aborting = any(
+        looks_failed_report(state.get(k, "") or "")
+        for k in ("market_report", "sentiment_report", "news_report",
+                  "fundamentals_report")
+    )
+    if not aborting:
+        return {}
+    return {
+        "investment_plan": "",
+        "trader_investment_plan": "",
+        "final_trade_decision": "",
+    }
+
+
 def _make_retry_bump(analyst_type: str):
     """Tiny node that increments an analyst's retry counter and clears its
     cached report.
@@ -176,12 +203,12 @@ class GraphSetup:
             workflow.add_edge(current_tools, current_analyst)
 
             # After Msg Clear, decide: retry this analyst once if its report
-            # looks unusable, otherwise advance to the next analyst (or Bull
-            # Researcher if this was the last one).
+            # looks unusable, otherwise advance to the next analyst (or to
+            # the pre-debate guard after the last analyst).
             if i < len(selected_analysts) - 1:
                 advance_target = f"{selected_analysts[i+1].capitalize()} Analyst"
             else:
-                advance_target = "Bull Researcher"
+                advance_target = "Pre Debate Guard"
             current_retry = f"Retry {analyst_type.capitalize()}"
             workflow.add_conditional_edges(
                 current_clear,
@@ -193,6 +220,20 @@ class GraphSetup:
             )
             # Retry bump runs the analyst again with a fresh message slate.
             workflow.add_edge(current_retry, current_analyst)
+
+        # Pre-debate guard: short-circuit to END if any analyst report is
+        # still unusable after its retry. Saves Bull/Bear/Trader/Risk/PM
+        # cost and prevents the decision LLM from hallucinating around
+        # the missing data.
+        workflow.add_node("Pre Debate Guard", _pre_debate_guard)
+        workflow.add_conditional_edges(
+            "Pre Debate Guard",
+            self.conditional_logic.should_proceed_to_debate,
+            {
+                "proceed": "Bull Researcher",
+                "abort": END,
+            },
+        )
 
         # Add remaining edges
         workflow.add_conditional_edges(

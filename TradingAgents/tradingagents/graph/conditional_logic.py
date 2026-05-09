@@ -51,6 +51,33 @@ class ConditionalLogic:
     def should_retry_fundamentals(self, state: AgentState) -> str:
         return _should_retry(state, "fundamentals", "fundamentals_report")
 
+    def should_proceed_to_debate(self, state: AgentState) -> str:
+        """After all four analysts (and their per-analyst retries) have run,
+        decide whether the debate phase is worth running at all.
+
+        Bull/Bear → Research Manager → Trader → Risk debate → Portfolio
+        Manager is roughly 60–70% of an analysis's LLM cost. If any
+        analyst's final report still looks unusable, the decision LLMs
+        will hallucinate around the gap and produce an authoritative-
+        looking BUY/SELL on a hollow foundation. Better to short-circuit
+        to END now: bot.analyzer's _check_reports_or_raise will then
+        surface a clear retry message instead of a fabricated decision.
+        """
+        for label, key in (
+            ("market", "market_report"),
+            ("social", "sentiment_report"),
+            ("news", "news_report"),
+            ("fundamentals", "fundamentals_report"),
+        ):
+            if looks_failed_report(state.get(key, "") or ""):
+                _log.warning(
+                    "pre-debate guard: %s report still failed after retry — "
+                    "short-circuiting to END (saves debate/decision cost)",
+                    label,
+                )
+                return "abort"
+        return "proceed"
+
     def should_continue_market(self, state: AgentState):
         """Determine if market analysis should continue."""
         messages = state["messages"]
