@@ -10,8 +10,18 @@ from tradingagents.agents.utils.agent_states import AgentState
 from .conditional_logic import ConditionalLogic
 
 
-def _pre_debate_guard(state):
-    """Passthrough node sitting between the last analyst and Bull Researcher.
+_ANALYST_REPORT_FIELD = {
+    "market":       "market_report",
+    "social":       "sentiment_report",
+    "news":         "news_report",
+    "fundamentals": "fundamentals_report",
+}
+
+
+def _make_pre_debate_guard(selected_analysts: list[str]):
+    """Factory for the pre-debate guard node, closed over the analyst set
+    that actually ran. ETF analyses skip the social analyst, so the guard
+    must not flag sentiment_report's empty initial value as a failure.
 
     The conditional edge after this node decides proceed-to-debate vs
     short-circuit-to-END. When aborting, we also stub the debate / risk /
@@ -21,20 +31,26 @@ def _pre_debate_guard(state):
     converts that into a Korean retry message before any of these empty
     placeholder values are user-visible.
     """
-    from tradingagents.agents.utils.agent_utils import looks_failed_report
+    keys_to_check = [
+        _ANALYST_REPORT_FIELD[a] for a in selected_analysts
+        if a in _ANALYST_REPORT_FIELD
+    ]
 
-    aborting = any(
-        looks_failed_report(state.get(k, "") or "")
-        for k in ("market_report", "sentiment_report", "news_report",
-                  "fundamentals_report")
-    )
-    if not aborting:
-        return {}
-    return {
-        "investment_plan": "",
-        "trader_investment_plan": "",
-        "final_trade_decision": "",
-    }
+    def guard(state):
+        from tradingagents.agents.utils.agent_utils import looks_failed_report
+        aborting = any(
+            looks_failed_report(state.get(k, "") or "")
+            for k in keys_to_check
+        )
+        if not aborting:
+            return {}
+        return {
+            "investment_plan": "",
+            "trader_investment_plan": "",
+            "final_trade_decision": "",
+        }
+
+    return guard, keys_to_check
 
 
 def _make_retry_bump(analyst_type: str):
@@ -224,11 +240,15 @@ class GraphSetup:
         # Pre-debate guard: short-circuit to END if any analyst report is
         # still unusable after its retry. Saves Bull/Bear/Trader/Risk/PM
         # cost and prevents the decision LLM from hallucinating around
-        # the missing data.
-        workflow.add_node("Pre Debate Guard", _pre_debate_guard)
+        # the missing data. Both the guard node and its conditional edge
+        # are closed over `selected_analysts` so analyses that drop the
+        # social analyst (ETFs) don't trigger a false abort on the empty
+        # initial sentiment_report.
+        guard_node, guard_keys = _make_pre_debate_guard(selected_analysts)
+        workflow.add_node("Pre Debate Guard", guard_node)
         workflow.add_conditional_edges(
             "Pre Debate Guard",
-            self.conditional_logic.should_proceed_to_debate,
+            self.conditional_logic.make_should_proceed_to_debate(guard_keys),
             {
                 "proceed": "Bull Researcher",
                 "abort": END,

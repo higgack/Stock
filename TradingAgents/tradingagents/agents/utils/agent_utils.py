@@ -204,13 +204,69 @@ def get_analyst_directive() -> str:
     )
 
 
+# yfinance.Ticker(t).info is a network call; cache the lookups in-process
+# so a repeated /TICKER inside the same analysis (e.g. analyst rerun) or
+# back-to-back /compare doesn't pay the round-trip again. None entries
+# mean "we tried and it failed"; we don't retry within a process lifetime.
+_QUOTE_TYPE_CACHE: dict[str, str | None] = {}
+
+
+def _quote_type(ticker: str) -> str | None:
+    """Best-effort yfinance lookup of an instrument's quoteType. Returns
+    e.g. "EQUITY", "ETF", "MUTUALFUND", "INDEX", "CURRENCY", or None when
+    yfinance won't say. Cached per-process."""
+    if ticker in _QUOTE_TYPE_CACHE:
+        return _QUOTE_TYPE_CACHE[ticker]
+    try:
+        import yfinance as yf
+        info = yf.Ticker(ticker).info or {}
+        qt = info.get("quoteType") or info.get("typeDisp") or None
+        if isinstance(qt, str):
+            qt = qt.upper()
+    except Exception as exc:
+        _analyst_log.warning("quoteType lookup failed for %s: %s", ticker, exc)
+        qt = None
+    _QUOTE_TYPE_CACHE[ticker] = qt
+    return qt
+
+
+def is_etf(ticker: str) -> bool:
+    """True if yfinance reports this ticker as an ETF (or close cousin
+    like a 3X leveraged fund). Conservative: when yfinance is unsure,
+    we assume EQUITY so the standard analyst path runs."""
+    qt = _quote_type(ticker) or ""
+    return qt in ("ETF", "ETN", "MUTUALFUND")
+
+
 def build_instrument_context(ticker: str) -> str:
-    """Describe the exact instrument so agents preserve exchange-qualified tickers."""
-    return (
+    """Describe the exact instrument so agents preserve exchange-qualified
+    tickers and adjust their data expectations for non-equity products."""
+    base = (
         f"The instrument to analyze is `{ticker}`. "
         "Use this exact ticker in every tool call, report, and recommendation, "
         "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."
     )
+    qt = _quote_type(ticker)
+    if qt in ("ETF", "ETN", "MUTUALFUND"):
+        # ETFs / leveraged funds have no company news, no executive
+        # quotes, no earnings transcripts. The analyst's standard "company
+        # news" and "social sentiment" paths return empty for these,
+        # which previously bled into the report as "데이터 없음" placeholders.
+        # Tell the model up front: this is a fund, analyse the structure
+        # and the underlying instead of inventing company-style narrative.
+        base += (
+            f"\n\nIMPORTANT: `{ticker}` is a {qt} (fund product), not a single"
+            " company. Do NOT search for company-specific news, executive"
+            " statements, earnings, or insider transactions. Instead analyse:"
+            " (1) the fund's structure (leverage, expense ratio, tracking"
+            " target), (2) the macro / sector / country exposure of the"
+            " underlying, (3) recent flow data and price action, and"
+            " (4) leveraged-fund-specific risks like daily-reset volatility"
+            " decay where applicable. If a tool returns no company news or"
+            " social sentiment, that is expected — note it briefly and move"
+            " on. Do NOT apologise or call the tool 'broken'."
+        )
+    return base
 
 def create_msg_delete():
     def delete_messages(state):

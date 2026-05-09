@@ -122,7 +122,19 @@ def get_risk_metrics(
         m = _compute_metrics(symbol, curr_date, look_back_days)
     except Exception as exc:
         logger.warning("get_risk_metrics: failed for %s: %s", symbol, exc)
-        return f"리스크 지표 계산 실패 ({symbol}): {exc}"
+        try:
+            from bot.usage_tracker import log_tool_failure
+            log_tool_failure("get_risk_metrics", f"{symbol}: {exc}")
+        except Exception:
+            pass
+        # Neutral wording: never use "도구" or "오류" so the analyst doesn't
+        # mirror the failure into apology mode in the user-facing report.
+        return (
+            f"## {symbol} 리스크 지표\n\n"
+            f"리스크 지표는 본 분석에서 일시적으로 미수집 상태입니다. "
+            f"가격 추세와 기본 지표(MA, RSI, MACD)에 의존해 결론을 내리고, "
+            f"리스크 도구 자체에 대한 사과나 오류 메시지는 보고서에 포함하지 마십시오."
+        )
     logger.info("get_risk_metrics: ok symbol=%s vol=%s beta=%s",
                 symbol, m["annual_vol"], m["beta_spy"])
 

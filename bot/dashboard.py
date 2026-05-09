@@ -137,6 +137,36 @@ def _read_hard_failures(window_days: int = 365) -> list[dict]:
     return out
 
 
+def _read_tool_failures(window_hours: int = 24) -> dict[str, int]:
+    """Aggregate type:'tool_failure' records over the recent window. Returns
+    {tool_name: count}, ordered by count descending. Used for the
+    dashboard's tool-health card so a yfinance / alpha vantage outage
+    becomes visible before it cascades into analyst failures."""
+    if not _USAGE_LOG_PATH.exists():
+        return {}
+    cutoff = _now_ts() - window_hours * 3600
+    counts: dict[str, int] = {}
+    try:
+        with open(_USAGE_LOG_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "tool_failure":
+                    continue
+                if rec.get("ts", 0) < cutoff:
+                    continue
+                tool = rec.get("tool") or "unknown"
+                counts[tool] = counts.get(tool, 0) + 1
+    except Exception as exc:
+        log.warning("dashboard: tool_failure read failed: %s", exc)
+    return dict(sorted(counts.items(), key=lambda kv: kv[1], reverse=True))
+
+
 def _now_ts() -> float:
     import time
     return time.time()
@@ -339,6 +369,7 @@ def _compute_stats(records: list[dict]) -> dict:
         "month_cost_by_model": month_cost_by_model,
         "today_label": now_kst.strftime("%-m월 %-d일"),
         "month_label": now_kst.strftime("%Y년 %-m월"),
+        "tool_failures_24h": _read_tool_failures(window_hours=24),
         "evaluated": evaluated,
         "correct": correct,
         "accuracy": accuracy,
@@ -413,6 +444,22 @@ def _render_stats_panel(stats: dict) -> str:
     cost_sub_parts = [f"{stats['today_label']} / {stats['month_label']}"]
     if cost_label_parts:
         cost_sub_parts.append(" / ".join(cost_label_parts))
+    # Surface upstream tool health on the same card. A persistent
+    # yfinance / alpha vantage outage shows up here BEFORE it cascades
+    # into analyst failures on the errors page, so the operator can
+    # diagnose root cause without staring at journalctl.
+    tool_fails = stats.get("tool_failures_24h") or {}
+    if tool_fails:
+        top = list(tool_fails.items())[:3]
+        short = {
+            "get_macro_context": "macro",
+            "get_risk_metrics": "risk",
+            "get_sector_relative_strength": "sector",
+        }
+        line = "⚠️ 24h 도구 실패 — " + ", ".join(
+            f"{short.get(t, t)} ×{n}" for t, n in top
+        )
+        cost_sub_parts.append(line)
     card_cost = _stat_card(
         "💰 비용 (오늘 / 이번 달)", cost_value, "\n".join(cost_sub_parts),
     )

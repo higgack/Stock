@@ -100,10 +100,10 @@ def clear_busy() -> None:
 
 
 _ANALYST_REPORT_KEYS = {
-    "📈 시장": "market_report",
-    "💬 감정": "sentiment_report",
-    "📰 뉴스": "news_report",
-    "💰 펀더멘털": "fundamentals_report",
+    "market":       ("📈 시장",     "market_report"),
+    "social":       ("💬 감정",     "sentiment_report"),
+    "news":         ("📰 뉴스",     "news_report"),
+    "fundamentals": ("💰 펀더멘털", "fundamentals_report"),
 }
 
 
@@ -114,19 +114,22 @@ class AnalysisIncompleteError(RuntimeError):
     BUY/HOLD/SELL synthesis."""
 
 
-def _check_reports_or_raise(state) -> None:
+def _check_reports_or_raise(state, selected: list[str]) -> None:
     from tradingagents.agents.utils.agent_utils import looks_failed_report
 
-    failed = [
-        label
-        for label, key in _ANALYST_REPORT_KEYS.items()
-        if looks_failed_report((state.get(key) or ""))
-    ]
+    failed = []
+    for analyst in selected:
+        meta = _ANALYST_REPORT_KEYS.get(analyst)
+        if not meta:
+            continue
+        label, key = meta
+        if looks_failed_report((state.get(key) or "")):
+            failed.append(label)
     if not failed:
         return
     log.warning(
         "analyze: %d/%d analyst reports still failed after retry: %s",
-        len(failed), len(_ANALYST_REPORT_KEYS), failed,
+        len(failed), len(selected), failed,
     )
     raise AnalysisIncompleteError(
         "분석가 응답 누락: " + ", ".join(failed)
@@ -160,10 +163,23 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     # marker mid-flight when the first request's subprocess finishes.
     # Calling mark/clear_busy from inside analyze() would race with that.
     log.info("analyze: building TradingAgentsGraph for %s", ticker)
+    # ETFs and leveraged funds have no company-specific social chatter or
+    # news flow — the social analyst returns empty placeholders for these
+    # (KORU on 2026-05-08 was the canonical case). Drop social entirely
+    # for funds; the news/fundamentals analysts get a fund-specific
+    # prompt via build_instrument_context.
+    selected = list(_SELECTED_ANALYSTS)
+    try:
+        from tradingagents.agents.utils.agent_utils import is_etf
+        if is_etf(ticker):
+            selected = [a for a in selected if a != "social"]
+            log.info("analyze: %s detected as fund — skipping social analyst", ticker)
+    except Exception as exc:
+        log.warning("analyze: ETF detection failed for %s: %s", ticker, exc)
     ta = TradingAgentsGraph(
         debug=False,
         config=_build_config(),
-        selected_analysts=_SELECTED_ANALYSTS,
+        selected_analysts=selected,
         # Hooks every Gemini call into ~/.tradingagents/usage.jsonl so
         # /usage and the dashboard cost card stay accurate.
         callbacks=[UsageCallback()],
@@ -179,7 +195,7 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     # authoritative-looking BUY/SELL on a hollow foundation. Better to
     # surface a clear error so the user retries than to deliver a confident
     # decision built on missing inputs.
-    _check_reports_or_raise(state)
+    _check_reports_or_raise(state, selected)
 
     # Surface the last few resolved recommendations for this ticker as a
     # short Korean header line — gives the reader an immediate sense of

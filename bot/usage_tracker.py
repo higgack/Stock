@@ -182,6 +182,19 @@ def log_failure(ticker: str, reason: str) -> None:
     })
 
 
+def log_tool_failure(tool: str, reason: str) -> None:
+    """Record a single tool-level failure (yfinance fetch dead, alpha
+    vantage rate-limited, etc). Aggregated by the dashboard so persistent
+    upstream issues become visible before they cause a wave of analyst
+    failures. Cheap append-only — call freely from inside tool wrappers."""
+    _append({
+        "ts": time.time(),
+        "type": "tool_failure",
+        "tool": tool,
+        "reason": reason[:200],
+    })
+
+
 def load_records(window_days: int = ROTATION_DAYS) -> list[dict]:
     """Read all records within the window. Auto-rotates older records out
     of the file on each read so the JSONL never grows unbounded."""

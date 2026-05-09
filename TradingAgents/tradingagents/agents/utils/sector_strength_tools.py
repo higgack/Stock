@@ -156,8 +156,11 @@ def get_sector_relative_strength(
     rows.append("| 기간 | " + symbol + " | " + (bench_label or "섹터 ETF n/a") + " | SPY | vs 섹터 | vs SPY |")
     rows.append("|---|---|---|---|---|---|")
 
+    stock_returns_collected = 0
     for days, label in horizons:
         stock_pct = _pct_return(symbol, curr_date, days)
+        if stock_pct is not None:
+            stock_returns_collected += 1
         bench_pct = _pct_return(bench_etf, curr_date, days) if bench_etf else None
         spy_pct = _pct_return("SPY", curr_date, days)
         rows.append(
@@ -176,8 +179,22 @@ def get_sector_relative_strength(
         )
 
     stock_ytd = _ytd_return(symbol, curr_date)
+    if stock_ytd is not None:
+        stock_returns_collected += 1
     bench_ytd = _ytd_return(bench_etf, curr_date) if bench_etf else None
     spy_ytd = _ytd_return("SPY", curr_date)
+    # If we couldn't pull a single stock-side return across all 3 horizons,
+    # the underlying yfinance fetch is dead for this ticker. Surface that
+    # to the telemetry log so persistent breakage is visible in aggregate.
+    if stock_returns_collected == 0:
+        try:
+            from bot.usage_tracker import log_tool_failure
+            log_tool_failure(
+                "get_sector_relative_strength",
+                f"{symbol}: all 3 horizons (30D/90D/YTD) returned no data",
+            )
+        except Exception:
+            pass
     rows.append(
         "| YTD | "
         + " | ".join(
