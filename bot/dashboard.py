@@ -729,6 +729,11 @@ summary.day-head .count {
 }
 .time { color: var(--fg-soft); font-size: 12px; min-width: 38px; text-align: right; }
 .past { color: var(--fg-soft); font-size: 12px; margin-top: 6px; }
+.outcome { font-size: 12px; margin-top: 4px; color: var(--fg-soft); }
+.outcome.hit { color: #10b981; }       /* directional call matched alpha */
+.outcome.miss { color: #ef4444; }      /* directional call missed */
+:root[data-theme="dark"] .outcome.hit { color: #34d399; }
+:root[data-theme="dark"] .outcome.miss { color: #f87171; }
 .empty {
   color: var(--fg-soft); font-size: 14px; padding: 32px 0; text-align: center;
 }
@@ -937,6 +942,54 @@ def _count_total_issues(records: list[dict], hard_failures: list[dict]) -> int:
     return n
 
 
+def _build_resolved_lookup() -> dict[tuple[str, str], dict]:
+    """Map (trade_date, ticker) → resolved memory-log entry. Used by the
+    index card renderer to surface 5-trading-day realized return + alpha
+    next to each historical analysis once auto_resolve has caught up."""
+    mem = _read_memory_full()
+    return {(e["date"], e["ticker"]): e for e in mem.get("resolved", [])}
+
+
+def _render_outcome_html(resolved: dict | None) -> str:
+    """Render the inline outcome line shown beneath an analysis card once
+    its 5-trading-day window has been resolved. Empty when the entry is
+    still pending or when the realized return couldn't be parsed.
+
+    Color cue: directional calls (Buy/Sell/Overweight/Underweight) get a
+    ✓ or ✗ marker depending on whether the SPY-relative alpha agreed
+    with the call direction. Hold calls are reported neutrally — there
+    was no directional bet to score."""
+    if not resolved:
+        return ""
+    raw = (resolved.get("raw") or "").strip()
+    alpha = (resolved.get("alpha") or "").strip()
+    rating = (resolved.get("rating") or "").lower()
+    if not raw or raw == "n/a":
+        return ""
+
+    cls = "outcome"
+    marker = ""
+    alpha_num = _parse_pct(alpha)
+    if alpha_num is not None:
+        if rating in ("buy", "overweight"):
+            cls += " hit" if alpha_num > 0 else " miss"
+            marker = " ✓" if alpha_num > 0 else " ✗"
+        elif rating in ("sell", "underweight"):
+            cls += " hit" if alpha_num < 0 else " miss"
+            marker = " ✓" if alpha_num < 0 else " ✗"
+        # Hold gets no marker — it's an explicit "no directional bet" call.
+
+    alpha_part = (
+        f" (벤치 {_html.escape(alpha)}p)"
+        if alpha and alpha != "n/a"
+        else ""
+    )
+    return (
+        f'<div class="{cls}">📒 5거래일 후 '
+        f'{_html.escape(raw)}{alpha_part}{marker}</div>'
+    )
+
+
 def _render_index(records: list[dict]) -> str:
     by_date: dict[str, list[dict]] = {}
     for r in records:
@@ -945,6 +998,8 @@ def _render_index(records: list[dict]) -> str:
     if not records:
         body = '<div class="empty">아직 분석 기록이 없습니다.</div>'
     else:
+        # One memory-log read per index render; reused across every card.
+        resolved_lookup = _build_resolved_lookup()
         sections = []
         for date in sorted(by_date.keys(), reverse=True):
             day_records = sorted(
@@ -965,6 +1020,12 @@ def _render_index(records: list[dict]) -> str:
                 past_html = (
                     f'<div class="past">{_html.escape(past)}</div>' if past else ""
                 )
+                # Show realized 5-day outcome if auto_resolve has caught up.
+                # Empty string before the window elapses or when the entry
+                # never made it into the memory log (older runs, Hold-only).
+                outcome_html = _render_outcome_html(
+                    resolved_lookup.get((date, ticker))
+                )
                 cards.append(f"""
                 <div class="card" data-ticker="{_html.escape(ticker)}">
                   <div class="card-row">
@@ -974,6 +1035,7 @@ def _render_index(records: list[dict]) -> str:
                     <div class="time">{_html.escape(time_str)}</div>
                   </div>
                   {past_html}
+                  {outcome_html}
                 </div>
                 """)
             sections.append(f"""
