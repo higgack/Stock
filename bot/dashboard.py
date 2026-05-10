@@ -782,6 +782,11 @@ summary.day-head .count {
 .empty {
   color: var(--fg-soft); font-size: 14px; padding: 32px 0; text-align: center;
 }
+.archive-footer {
+  margin-top: 32px; padding-top: 16px;
+  border-top: 1px solid var(--border);
+  text-align: center; color: var(--fg-soft); font-size: 12px;
+}
 """
 
 
@@ -1171,6 +1176,17 @@ def _render_index(records: list[dict]) -> str:
         body = "".join(sections)
 
     stats_panel = _render_stats_panel(_compute_stats(records))
+    # Footer line shown at the bottom of the page so the user can see at
+    # a glance when the dashboard was regenerated and that the archive
+    # has no rotation policy. Matches the convention used by the
+    # search_my_brain dashboard the user asked us to mirror.
+    kst = datetime.timezone(datetime.timedelta(hours=9))
+    generated_at = datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M")
+    footer_html = (
+        f'<div class="archive-footer">'
+        f'생성: {generated_at} · {len(records)}건 누적 · 무제한 보관'
+        f'</div>'
+    )
     # Headline link to the errors page; count includes hard failures
     # (usage.jsonl) plus archive entries with placeholder/tool issues.
     issue_count = _count_total_issues(records, _read_hard_failures())
@@ -1203,6 +1219,7 @@ def _render_index(records: list[dict]) -> str:
   <p id="status" class="status-line">총 {len(records)}건의 분석 기록</p>
   <div id="empty-search" class="empty-search">검색 결과가 없습니다.</div>
   {body}
+  {footer_html}
 </div>
 <script>{_INDEX_JS}</script>
 </body>
