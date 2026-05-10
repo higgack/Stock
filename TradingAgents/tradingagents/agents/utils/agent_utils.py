@@ -57,6 +57,13 @@ _TOOL_FAILURE_ANYWHERE = (
     "tool is not available",
     "tools are unavailable",
     "tool is unavailable",
+    # PLUG 2026-05-10 news analyst variant: when get_macro_context
+    # returned a partial-failure message the LLM rephrased it as
+    # "(macro context API 호출 실패로 인해 데이터 없음)" — a different
+    # surface form from the older "도구를 사용할 수 없" that still means
+    # the same thing. Caught body-wide so the buried subsection match
+    # works.
+    "API 호출 실패",
 )
 
 # Raw CSV / TSV bleed-through: when the fundamentals analyst pastes the

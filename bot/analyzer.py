@@ -383,10 +383,16 @@ def _detect_stance_decision_mismatch(state: dict, final_rating: str) -> str:
     analyst consensus — e.g. when the bear surfaces a new framing the
     analysts missed (the GOOGL 2026-05-10 case: 4×보유 → Underweight
     after the bear caught the Q1 26 81% earnings jump being driven by
-    a one-off security sale). That's valuable, not a bug. But the
-    summary card showing "보유 · 보유 · 보유 · 보유" alongside a "매도"
-    verdict is genuinely confusing to read, and the user deserves to
-    know to re-read the decision rationale instead of glossing over.
+    a one-off security sale; the PLUG 2026-05-10 case: 2 매수 + 1 보유
+    + 1 매도 → Sell after the bear surfaced cash-burn / dilution risk).
+    That's valuable, not a bug. But the summary card showing the stance
+    bar alongside a contradicting verdict is genuinely confusing to
+    read, and the user deserves to know to re-read the decision
+    rationale instead of glossing over.
+
+    Trigger rule: more analysts disagreed with the final direction than
+    agreed. A 2-2 tie where the final matches one side, or a 3-1 with
+    the final matching the 3, both stay quiet.
     """
     final_dir = _DECISION_DIRECTION.get(final_rating)
     if not final_dir:
@@ -403,22 +409,19 @@ def _detect_stance_decision_mismatch(state: dict, final_rating: str) -> str:
                 break
     total = sum(counts.values())
     if total < 2:
-        return ""  # not enough analyst stances to form a meaningful majority
-    # Need either unanimity or a 3+ majority that contradicts the final
-    # direction. A 2-2 split (e.g. 매수 2 / 보유 2) isn't worth flagging.
-    majority_dir, majority_count = max(counts.items(), key=lambda kv: kv[1])
-    if majority_dir == final_dir:
+        return ""  # too few stances to form a meaningful comparison
+    final_count = counts.get(final_dir, 0)
+    disagreeing = total - final_count
+    if disagreeing <= final_count:
         return ""
-    if majority_count == total:
-        scope = "전원"
-    elif majority_count >= 3 and majority_count > counts.get(final_dir, 0):
-        scope = "다수"
-    else:
-        return ""
+    # Show actual breakdown so the user can see WHY we're flagging.
+    breakdown = " · ".join(
+        f"{_DIRECTION_KR[d]} {c}" for d, c in counts.items() if c > 0
+    )
     return (
-        f"⚠️ 분석가 {scope} {_DIRECTION_KR[majority_dir]} → "
-        f"결정 {_DIRECTION_KR[final_dir]} "
-        f"(토론·결정 단계가 분석가 합의를 뒤집음 — 결정 근거를 다시 확인)"
+        f"⚠️ 분석가 stance vs 결정: {breakdown} → 결정 "
+        f"{_DIRECTION_KR[final_dir]} ({final_count}/{total}명만 동의, "
+        f"토론·결정 단계가 다수 분석가와 다른 결론 — 결정 근거 재확인)"
     )
 
 

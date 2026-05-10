@@ -83,6 +83,8 @@ _ISSUE_PATTERNS: list[tuple[re.Pattern, str]] = [
      "도구 사용 불가 사과 (영어)"),
     (re.compile(r"도구를 사용할 수 없|도구가 유효하지 않"),
      "도구 사용 불가 사과 (한국어)"),
+    (re.compile(r"API 호출 실패"),
+     "API 호출 실패 사과 (모델)"),
 ]
 
 
