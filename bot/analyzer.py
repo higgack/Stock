@@ -774,9 +774,48 @@ def _polish(body: str) -> str:
         return body.strip()
 
     def _step(label: str, fn):
+        """Run a single polish pass with a per-step wall-clock guard.
+
+        Past incidents (ONTO 2026-05-10 hung _format_full for 7+ minutes
+        between propagate-done and the subprocess timeout, no journal
+        evidence of which regex was responsible) showed that a single
+        pathological input can push one of these regexes into worst-case
+        backtracking and silently burn the whole 10-minute budget. Each
+        step now gets 10 wall seconds; if it doesn't return in time we
+        skip it and continue with the unchanged body. The skipped log
+        line names the step so the regex can be hardened later, and
+        readability of the section degrades gracefully (one missing
+        cosmetic pass) instead of the whole analysis getting killed.
+
+        SIGALRM works here because we run in the analyze_worker
+        subprocess — main thread, no other timers in flight.
+        """
         nonlocal body
-        body = fn(body)
-        log.info("polish: %s done (%d chars)", label, len(body))
+        import signal as _signal
+
+        class _StepTimeout(Exception):
+            pass
+
+        def _handler(_signum, _frame):
+            raise _StepTimeout()
+
+        prev = _signal.signal(_signal.SIGALRM, _handler)
+        _signal.alarm(10)
+        t0 = time.time()
+        try:
+            body = fn(body)
+            log.info("polish: %s done (%d chars)", label, len(body))
+        except _StepTimeout:
+            log.warning(
+                "polish: %s exceeded 10s wall budget — skipping (body kept "
+                "as-is, %d chars)", label, len(body),
+            )
+        finally:
+            _signal.alarm(0)
+            _signal.signal(_signal.SIGALRM, prev)
+            elapsed = time.time() - t0
+            if elapsed > 1.0:
+                log.info("polish: %s took %.1fs", label, elapsed)
 
     _step("final-proposal",     lambda b: _FINAL_PROPOSAL_RE.sub("", b))
     _step("link-line",          lambda b: _LINK_LINE_RE.sub("", b))
