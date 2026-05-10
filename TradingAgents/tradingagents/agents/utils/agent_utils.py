@@ -315,6 +315,40 @@ def has_recent_news(ticker: str) -> bool:
     return has
 
 
+# Macro snapshot cache. yfinance fetches for ^TNX/^VIX/DXY/etc are slow
+# and analyst LLMs were observed (2026-05 across PLUG/AMAT/GOOGL/JPM/TSM)
+# to skip the get_macro_context tool call entirely despite the prompt
+# marking it as MANDATORY. The fix: have the analyst NODES (Python, not
+# LLM) call this helper at entry, inject the result into the prompt as
+# already-fetched fact, and drop get_macro_context from the analyst's
+# tool list so the LLM can't decide to skip it. Two analysts (market,
+# news) share one fetch per (curr_date) per process.
+_MACRO_CACHE: dict[str, str] = {}
+
+
+def get_macro_for(curr_date: str) -> str:
+    """Return cached macro snapshot for `curr_date`, fetching once if
+    needed. Empty string on failure — caller decides how to label the
+    section so the analyst prompt can include a graceful fallback line
+    without the LLM apologising."""
+    if curr_date in _MACRO_CACHE:
+        return _MACRO_CACHE[curr_date]
+    try:
+        # Late import: macro_context_tools imports yfinance which is
+        # heavy enough to keep out of the agent_utils module load path
+        # for callers that never need the snapshot.
+        from tradingagents.agents.utils.macro_context_tools import get_macro_context
+        snapshot = get_macro_context.invoke({"curr_date": curr_date}) or ""
+    except Exception as exc:
+        _analyst_log.warning(
+            "macro pre-fetch for %s failed: %s — analyst will run without snapshot",
+            curr_date, exc,
+        )
+        snapshot = ""
+    _MACRO_CACHE[curr_date] = snapshot
+    return snapshot
+
+
 def build_instrument_context(ticker: str) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified
     tickers and adjust their data expectations for non-equity products."""

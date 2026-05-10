@@ -5,7 +5,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_analyst_directive,
     get_indicators,
     get_language_instruction,
-    get_macro_context,
+    get_macro_for,
     get_risk_metrics,
     get_sector_relative_strength,
     get_stock_data,
@@ -19,11 +19,35 @@ def create_market_analyst(llm):
         current_date = state["trade_date"]
         instrument_context = build_instrument_context(state["company_of_interest"])
 
+        # Pre-fetch macro snapshot deterministically and inject it into the
+        # prompt as an already-fetched fact. The 2026-05 batch (PLUG, AMAT,
+        # GOOGL, JPM, TSM) showed analyst LLMs skipping the
+        # get_macro_context tool call entirely despite the prompt marking
+        # it MANDATORY. By doing the fetch in Python and removing the tool
+        # from the analyst's tool list, the LLM no longer has the option
+        # to skip — the snapshot is right there in the system prompt.
+        macro_snapshot = get_macro_for(current_date)
+        if macro_snapshot:
+            instrument_context += (
+                "\n\n=== Pre-fetched macro snapshot (use VERBATIM in the"
+                " '거시 배경' subsection — do NOT claim the data is"
+                " unavailable, do NOT call any macro tool, this IS the"
+                f" macro data for {current_date}) ===\n{macro_snapshot}"
+            )
+        else:
+            instrument_context += (
+                "\n\n=== Macro snapshot was attempted at node entry but"
+                " yfinance returned no usable series. Write the '거시"
+                " 배경' subsection as a single sentence: '거시 배경은 본"
+                " 분석에서 미수집되었습니다.' Do NOT apologise; do NOT"
+                " attempt a tool call. ==="
+            )
+
         tools = [
             get_stock_data,
             get_indicators,
             get_risk_metrics,
-            get_macro_context,
+            # get_macro_context intentionally removed — pre-fetched above.
             get_sector_relative_strength,
         ]
 
@@ -73,11 +97,14 @@ Volume-Based Indicators:
             " Comment briefly on whether the figures are typical/elevated for"
             " this sector (e.g. high-growth tech routinely runs σ ≥ 40%, an"
             " S&P-tracker is closer to 15-18%)."
-            "\n  (b) Call `get_macro_context(curr_date)` once and add a"
-            " '거시 배경' subsection. Connect the macro snapshot to the chart"
-            " — e.g. rising 10Y yields hurt high-multiple growth, oil spike"
-            " helps energy names, VIX expansion compresses risk appetite."
-            " Skip this only if the result is clearly empty."
+            "\n  (b) Add a '거시 배경' subsection using the pre-fetched"
+            " macro snapshot embedded in your instrument context above"
+            " — do NOT call any macro tool, the data is already there."
+            " Connect the snapshot's actual numbers (10Y yield, VIX,"
+            " DXY, oil) to the chart — e.g. rising 10Y yields hurt"
+            " high-multiple growth, oil spike helps energy names, VIX"
+            " expansion compresses risk appetite. If the snapshot is"
+            " absent, write the single fallback line specified above."
             "\n  (c) Call `get_sector_relative_strength(symbol, curr_date)` once"
             " and use the returned 30D/90D/YTD relative-strength table to"
             " ground the SECTOR PRIMER's 'leader vs laggard' claim. Replace"

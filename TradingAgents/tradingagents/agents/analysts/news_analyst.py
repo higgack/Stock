@@ -5,7 +5,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_analyst_directive,
     get_global_news,
     get_language_instruction,
-    get_macro_context,
+    get_macro_for,
     get_news,
 )
 from tradingagents.dataflows.config import get_config
@@ -16,10 +16,32 @@ def create_news_analyst(llm):
         current_date = state["trade_date"]
         instrument_context = build_instrument_context(state["company_of_interest"])
 
+        # Pre-fetch macro and inject (same rationale as market_analyst):
+        # the LLM was skipping the MANDATORY get_macro_context tool call
+        # entirely. Doing the fetch in Python guarantees the snapshot is
+        # in the prompt; the cache (agent_utils._MACRO_CACHE) means the
+        # market analyst's earlier fetch is reused at zero extra cost.
+        macro_snapshot = get_macro_for(current_date)
+        if macro_snapshot:
+            instrument_context += (
+                "\n\n=== Pre-fetched macro snapshot (use VERBATIM in the"
+                " '거시 경제' subsection — do NOT claim the data is"
+                " unavailable, do NOT call any macro tool, this IS the"
+                f" macro data for {current_date}) ===\n{macro_snapshot}"
+            )
+        else:
+            instrument_context += (
+                "\n\n=== Macro snapshot was attempted at node entry but"
+                " yfinance returned no usable series. Write the '거시"
+                " 경제' subsection as a single sentence acknowledging"
+                " the absence; do NOT apologise; do NOT attempt a tool"
+                " call. ==="
+            )
+
         tools = [
             get_news,
             get_global_news,
-            get_macro_context,
+            # get_macro_context intentionally removed — pre-fetched above.
         ]
 
         system_message = (
@@ -27,12 +49,14 @@ def create_news_analyst(llm):
             + " STRUCTURE: Output the Markdown summary table FIRST (right after a 1-2 line"
             " opening), THEN the detailed body analysis. This protects the most useful"
             " reference content from being cut if the response hits the output budget."
-            + " MANDATORY: Call `get_macro_context(curr_date)` once at the start so the"
-            " 거시 경제 section is grounded in the actual current 10Y yield, VIX, dollar"
-            " index, oil, and other headline macro levels — do NOT rely on training-time"
-            " knowledge for current rate / commodity numbers. Quote the snapshot's"
-            " values verbatim and connect them to the company's exposure (e.g. high"
-            " yields hurt long-duration growth multiples, oil spike helps energy names)."
+            + " MACRO SECTION: Use the pre-fetched macro snapshot embedded"
+            " in your instrument context above for the '거시 경제' subsection."
+            " Do NOT call any macro tool — the snapshot is already there."
+            " Quote the snapshot's actual numbers (10Y yield, VIX, dollar"
+            " index, oil) verbatim and connect them to the company's exposure"
+            " (e.g. high yields hurt long-duration growth multiples, oil"
+            " spike helps energy names). If the snapshot is absent, write"
+            " the single fallback line specified in the instrument context."
             + " RELEVANCE FILTER: This report is about ONE specific ticker. Headlines"
             " about unrelated companies (different sub-industry, no business or"
             " supplier/customer overlap) get AT MOST one bullet under '간접 시사점'"
