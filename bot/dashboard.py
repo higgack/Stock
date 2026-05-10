@@ -515,7 +515,7 @@ def _render_stats_panel(stats: dict) -> str:
     if stats["avg_alpha"] is not None:
         sub_parts.append(f"벤치 {stats['avg_alpha']:+.2f}%p")
 
-    note = "※ 분석 후 5거래일 + 동일 종목 재분석 시 자동 평가"
+    note = "※ 분석 후 5거래일 경과 시 자동 평가 (백그라운드 12시간마다)"
     acc_sub = " · ".join(sub_parts) + "\n" + note
     card_acc = _stat_card("🎯 추천 정확도", acc_value, acc_sub)
 

@@ -1064,6 +1064,43 @@ def _split(text: str, size: int) -> list[str]:
     return chunks
 
 
+async def _periodic_auto_resolve() -> None:
+    """Daily background task that resolves pending memory-log entries.
+
+    Without this, accuracy stats only grow when the user re-analyzes the
+    same ticker — analyze a name once and never come back, the entry
+    stays "pending" forever and never enters the 1/N denominator. The
+    task runs once at startup (catches anything that matured while the
+    bot was down) and then every 12h.
+
+    Runs in a subprocess so a yfinance hang or network blip can't take
+    out the bot's asyncio loop. Subprocess exit code is ignored —
+    failures are logged to journal but don't propagate.
+    """
+    while True:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-m", "bot.auto_resolve",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=None,
+            )
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=300
+            )
+            line = (stdout or b"").decode("utf-8", "replace").strip()
+            if line:
+                log.info("auto_resolve: %s", line)
+        except asyncio.TimeoutError:
+            log.warning("auto_resolve subprocess timed out — killing")
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        except Exception as exc:
+            log.warning("auto_resolve subprocess failed: %s", exc)
+        await asyncio.sleep(12 * 3600)
+
+
 async def _on_startup(application) -> None:
     """Bot init: register the slash-command menu, then handle any orphan
     progress message left behind by a previous instance that died
@@ -1081,6 +1118,11 @@ async def _on_startup(application) -> None:
         ])
     except Exception as exc:
         log.warning("set_my_commands failed: %s", exc)
+
+    # Kick off the background pending-entry resolver. fire-and-forget —
+    # the task runs forever, sleeping 12h between cycles. Stored on the
+    # application so it stays referenced (otherwise the GC could collect it).
+    application._auto_resolve_task = asyncio.create_task(_periodic_auto_resolve())
 
     orphan = _recovery.read()
     if orphan is None:
