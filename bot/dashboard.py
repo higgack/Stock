@@ -61,17 +61,28 @@ _ISSUE_PATTERNS: list[tuple[re.Pattern, str]] = [
      "리스크 지표 계산 실패 (도구)"),
     (re.compile(r"거시 지표 데이터를 가져오지 못했습니다"),
      "거시 지표 fetch 실패 (도구)"),
-    (re.compile(r"`?get_risk_metrics`?.*?(?:오류|실패|N/A|사용할 수 없|데이터 없음)",
+    (re.compile(r"`?get_risk_metrics`?.*?(?:오류|실패|N/A|사용할 수 없|데이터 없음|not available|unavailable)",
                 re.DOTALL),
      "리스크 지표 도구 사용 안 됨 (모델)"),
-    (re.compile(r"`?get_macro_context`?.*?(?:오류|실패|N/A|사용할 수 없|데이터 없음)",
+    (re.compile(r"`?get_macro_context`?.*?(?:오류|실패|N/A|사용할 수 없|데이터 없음|not available|unavailable)",
                 re.DOTALL),
      "거시 배경 도구 사용 안 됨 (모델)"),
-    (re.compile(r"`?get_sector_relative_strength`?.*?(?:오류|실패|사용할 수 없)",
+    (re.compile(r"`?get_sector_relative_strength`?.*?(?:오류|실패|사용할 수 없|not available|unavailable)",
                 re.DOTALL),
      "섹터 상대 강도 도구 사용 안 됨 (모델)"),
     (re.compile(r"매크로 컨텍스트.*?(?:오류|도구 오류)"),
      "매크로 컨텍스트 오류 (모델)"),
+    # Generic tool-apology phrases anywhere in the body — catches the
+    # GOOGL 2026-05-10 case where the market analyst opened in English
+    # ("tools are not available") and the news analyst buried "죄송합니다.
+    # 도구를 사용할 수 없" deep in the body. These bypass the older
+    # tool-name-anchored patterns above.
+    (re.compile(r"tools? (?:are|is) (?:not available|unavailable)", re.IGNORECASE),
+     "도구 사용 불가 사과 (영어)"),
+    (re.compile(r"Therefore,?\s*I cannot (?:provide|generate)", re.IGNORECASE),
+     "도구 사용 불가 사과 (영어)"),
+    (re.compile(r"도구를 사용할 수 없|도구가 유효하지 않"),
+     "도구 사용 불가 사과 (한국어)"),
 ]
 
 
@@ -820,8 +831,15 @@ def _render_errors_page(
     hard_failures: list[dict],
 ) -> str:
     """Build errors.html — a chronological catalog of analyses that
-    either failed outright (hard) or completed with placeholder/error
-    sections (soft)."""
+    completed with placeholder/error sections (soft issues only).
+
+    Hard failures (timeout / exception) are deliberately NOT shown here:
+    the user gets an immediate Telegram error message at the time of the
+    failure, so re-listing them on the dashboard is redundant noise.
+    The records still live in usage.jsonl for /usage and tool-failure
+    aggregation; we just don't surface them on this catalog page.
+    """
+    _ = hard_failures  # accepted for API compatibility; intentionally unused
     soft: list[tuple[dict, list[str]]] = []
     for r in records:
         issues = _detect_issues(r)
@@ -835,29 +853,7 @@ def _render_errors_page(
         reverse=True,
     )
 
-    # ── hard failures (timeouts / exceptions) ──
-    if hard_failures:
-        hard_html_rows = []
-        for f in hard_failures:
-            ts = f.get("ts", 0)
-            when = datetime.datetime.fromtimestamp(
-                ts, tz=datetime.timezone(datetime.timedelta(hours=9))
-            ).strftime("%Y-%m-%d %H:%M") if ts else "-"
-            ticker = f.get("ticker", "?")
-            reason = f.get("reason") or "(사유 없음)"
-            hard_html_rows.append(f"""
-            <div class="fail-row">
-              <span class="ticker">📊 {_html.escape(ticker)}</span>
-              <span class="reason">❌ {_html.escape(reason)}</span>
-              <span class="when">{_html.escape(when)}</span>
-            </div>
-            """)
-        hard_section = (
-            f'<div class="section-head">❌ 분석 자체 실패 ({len(hard_failures)}건)</div>'
-            + "".join(hard_html_rows)
-        )
-    else:
-        hard_section = ""
+    hard_section = ""
 
     # ── soft issues, grouped by date ──
     if soft:
@@ -899,11 +895,11 @@ def _render_errors_page(
     else:
         soft_section = '<div class="empty">부분 미완성 케이스가 없습니다.</div>'
 
-    body_empty = not hard_failures and not soft
+    body_empty = not soft
     if body_empty:
-        body = '<div class="empty">기록된 오류가 없습니다. 🎉</div>'
+        body = '<div class="empty">부분 미완성 케이스가 없습니다. 🎉</div>'
     else:
-        body = hard_section + soft_section
+        body = soft_section
 
     return f"""<!doctype html>
 <html lang="ko">
@@ -919,7 +915,7 @@ def _render_errors_page(
 <div class="wrap">
   <a class="back" href="./index.html">← 아카이브로 돌아가기</a>
   <h1 style="margin-top:8px">🚨 오류 / 미완성 분석 기록</h1>
-  <p class="sub">하드 실패 (타임아웃/예외) 와 부분 미완성 (도구 실패·섹션 placeholder) 통합</p>
+  <p class="sub">분석가 부분 미완성 (도구 실패·섹션 placeholder·사과형 응답)만 추적합니다. 하드 실패는 텔레그램에서 즉시 알림됨.</p>
   {body}
 </div>
 </body>
@@ -928,7 +924,11 @@ def _render_errors_page(
 
 
 def _count_total_issues(records: list[dict], hard_failures: list[dict]) -> int:
-    n = len(hard_failures)
+    """Count only soft (partial-completion) issues for the index nav badge.
+    Hard failures are excluded — they're shown to the user via Telegram in
+    real time and don't belong on this catalog page anymore."""
+    _ = hard_failures  # accepted for compatibility; no longer counted
+    n = 0
     for r in records:
         if _detect_issues(r):
             n += 1
