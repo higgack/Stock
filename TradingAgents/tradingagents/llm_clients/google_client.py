@@ -61,10 +61,19 @@ class GoogleClient(BaseLLMClient):
             elif "pro" in model_lower:
                 # Gemini 2.5 Pro requires thinking — thinking_budget=0
                 # raises 400 'Budget 0 is invalid. This model only works
-                # in thinking mode.' Use dynamic budget (-1) so the model
-                # picks a sensible amount per request regardless of the
-                # caller's thinking_level preference.
-                llm_kwargs["thinking_budget"] = -1
+                # in thinking mode.' Previously we used dynamic budget
+                # (-1) which let the model think for as long as it
+                # wanted; on the AMAT 2026-05-10 batch this routinely
+                # consumed thousands of thinking tokens per Pro call,
+                # making the decision tier ~50% of total analysis cost.
+                # Capping at 4096 keeps enough room for the bull/bear
+                # synthesis the decision nodes actually need (research
+                # manager / trader / portfolio manager outputs are
+                # rarely longer than 1.5K tokens) while cutting the
+                # silent thinking overhead by ~70%. If a future case
+                # genuinely needs more thinking, raise the cap rather
+                # than going back to unbounded dynamic.
+                llm_kwargs["thinking_budget"] = 4096
             else:
                 # Gemini 2.5 Flash / Flash-Lite: map to thinking_budget
                 llm_kwargs["thinking_budget"] = -1 if thinking_level == "high" else 0
