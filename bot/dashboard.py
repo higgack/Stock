@@ -88,6 +88,19 @@ _ISSUE_PATTERNS: list[tuple[re.Pattern, str]] = [
 ]
 
 
+# Per-report section markers — should appear EXACTLY once in a finished
+# report. When the fundamentals analyst goes into a repetition loop (the
+# ONTO 2026-05-10 case) it sometimes emits the trailing valuation /
+# decision blocks twice, and _polish's drop-repeated pass either misses
+# the duplication pattern or hits the SIGALRM step guard. The dashboard
+# audits the assembled body separately so duplications still surface.
+_DUP_SECTION_MARKERS = (
+    "🧭 투자 계획",
+    "💼 트레이더 제안",
+    "✅ 최종 결정",
+)
+
+
 def _detect_issues(record: dict) -> list[str]:
     """Walk a single archived analysis and return a list of human-readable
     issue strings. Empty list means clean run."""
@@ -122,6 +135,21 @@ def _detect_issues(record: dict) -> list[str]:
         if pat.search(full) and msg not in seen_msgs:
             seen_msgs.add(msg)
             issues.append(msg)
+
+    # Section duplication: each of the 투자 계획 / 트레이더 / 최종 결정
+    # markers should appear once. If any appears twice or more, an
+    # analyst (most often fundamentals) emitted its valuation / decision
+    # block in a repetition loop and _polish didn't deduplicate. Surface
+    # as a dashboard issue so the user notices the report quality dip.
+    dup_labels = [
+        marker for marker in _DUP_SECTION_MARKERS
+        if full.count(marker) > 1
+    ]
+    if dup_labels:
+        issues.append(
+            "섹션 중복 — " + " · ".join(dup_labels)
+            + " (분석가 반복 루프, polish 미정리)"
+        )
     return issues
 
 
