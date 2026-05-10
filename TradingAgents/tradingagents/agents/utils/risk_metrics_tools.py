@@ -146,6 +146,7 @@ def get_risk_metrics(
         f"- 95% VaR (일간): {m['var_95']} — 최악 5% 일에 평균 이상 잃을 손실\n"
         f"- 95% CVaR (일간): {m['cvar_95']} — 그 5% 일들의 평균 손실 (꼬리 위험)\n"
         f"- 최대 낙폭 (Max Drawdown): {m['max_drawdown']}\n"
-        f"- 베타 (SPY 대비): {m['beta_spy']}\n\n"
+        f"- 베타 (SPY 대비, 90거래일 기준): {m['beta_spy']}"
+        f" — 펀더멘털 표의 yfinance 기본 베타(5년 월간)와는 다른 윈도\n\n"
         f"※ Sharpe/Sortino는 무위험 수익률 0% 가정. 절대값보다 동종업종 비교용."
     )

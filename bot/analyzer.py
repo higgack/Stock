@@ -418,11 +418,56 @@ def _detect_stance_decision_mismatch(state: dict, final_rating: str) -> str:
     breakdown = " · ".join(
         f"{_DIRECTION_KR[d]} {c}" for d, c in counts.items() if c > 0
     )
-    return (
+    lines = [
         f"⚠️ 분석가 stance vs 결정: {breakdown} → 결정 "
         f"{_DIRECTION_KR[final_dir]} ({final_count}/{total}명만 동의, "
-        f"토론·결정 단계가 다수 분석가와 다른 결론 — 결정 근거 재확인)"
-    )
+        f"토론·결정 단계가 다수 분석가와 다른 결론)"
+    ]
+    rationale = _extract_decision_rationale(state)
+    if rationale:
+        lines.append(f"결정 근거: {rationale}")
+    return "\n".join(lines)
+
+
+_RATIONALE_BLOCK_RE = re.compile(
+    r"근거\s*:\s*(.+?)(?=\s*전략\s*실행\s*:|\s*거래\s*액션\s*:|$)",
+    re.DOTALL,
+)
+
+
+def _extract_decision_rationale(state: dict) -> str:
+    """Pull a short version of the decision rationale from research_manager's
+    investment_plan. Returns the first 1–2 sentences after '근거:' or empty
+    string when the marker isn't present.
+
+    The full rationale is several paragraphs long; the summary card only has
+    room for one line, so we trim aggressively. Truncation rules:
+      * stop at the next major section header (전략 실행, 거래 액션)
+      * keep the LAST 2 sentences (the verdict + its reasoning live there;
+        the first sentences are typically scene-setting that says
+        "this was a contest between bull and bear" without conveying
+        which side won)
+      * hard-cap at 220 chars and ellipsize if needed
+    """
+    plan = (state.get("investment_plan") or "") if isinstance(state, dict) else ""
+    if not plan:
+        return ""
+    m = _RATIONALE_BLOCK_RE.search(plan)
+    if not m:
+        return ""
+    body = m.group(1).strip()
+    if not body:
+        return ""
+    # Split on Korean sentence enders + ASCII period; take last 2 sentences
+    # so the verdict and its reasoning come through instead of the intro.
+    sentences = [s.strip() for s in re.split(r"(?<=[.다요])\s+", body) if s.strip()]
+    if not sentences:
+        return ""
+    tail = sentences[-2:] if len(sentences) >= 2 else sentences
+    out = " ".join(tail).strip()
+    if len(out) > 220:
+        out = out[:217].rstrip() + "…"
+    return out
 
 
 def _format_summary(
