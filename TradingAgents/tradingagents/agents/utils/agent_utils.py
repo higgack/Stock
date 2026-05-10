@@ -349,6 +349,53 @@ def get_macro_for(curr_date: str) -> str:
     return snapshot
 
 
+# Same pattern as the macro cache: the market analyst was observed to
+# skip get_risk_metrics and get_sector_relative_strength even though
+# both were marked MANDATORY in the prompt. Pre-fetch in Python at node
+# entry and remove the tools from the analyst's tool list — that's the
+# only reliable way to guarantee the data ends up in the report.
+_RISK_METRICS_CACHE: dict[tuple[str, str], str] = {}
+_SECTOR_STRENGTH_CACHE: dict[tuple[str, str], str] = {}
+
+
+def get_risk_metrics_for(symbol: str, curr_date: str) -> str:
+    """Cached risk-metrics snapshot for (symbol, curr_date). Empty string
+    on failure; caller writes a single fallback sentence so the analyst
+    doesn't slip into apology mode."""
+    key = (symbol, curr_date)
+    if key in _RISK_METRICS_CACHE:
+        return _RISK_METRICS_CACHE[key]
+    try:
+        from tradingagents.agents.utils.risk_metrics_tools import get_risk_metrics
+        snapshot = get_risk_metrics.invoke({"symbol": symbol, "curr_date": curr_date}) or ""
+    except Exception as exc:
+        _analyst_log.warning(
+            "risk metrics pre-fetch for %s/%s failed: %s", symbol, curr_date, exc,
+        )
+        snapshot = ""
+    _RISK_METRICS_CACHE[key] = snapshot
+    return snapshot
+
+
+def get_sector_strength_for(symbol: str, curr_date: str) -> str:
+    """Cached sector-relative-strength snapshot for (symbol, curr_date)."""
+    key = (symbol, curr_date)
+    if key in _SECTOR_STRENGTH_CACHE:
+        return _SECTOR_STRENGTH_CACHE[key]
+    try:
+        from tradingagents.agents.utils.sector_strength_tools import get_sector_relative_strength
+        snapshot = get_sector_relative_strength.invoke(
+            {"symbol": symbol, "curr_date": curr_date}
+        ) or ""
+    except Exception as exc:
+        _analyst_log.warning(
+            "sector strength pre-fetch for %s/%s failed: %s", symbol, curr_date, exc,
+        )
+        snapshot = ""
+    _SECTOR_STRENGTH_CACHE[key] = snapshot
+    return snapshot
+
+
 def build_instrument_context(ticker: str) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified
     tickers and adjust their data expectations for non-equity products."""

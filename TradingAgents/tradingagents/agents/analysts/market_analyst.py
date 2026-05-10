@@ -6,8 +6,8 @@ from tradingagents.agents.utils.agent_utils import (
     get_indicators,
     get_language_instruction,
     get_macro_for,
-    get_risk_metrics,
-    get_sector_relative_strength,
+    get_risk_metrics_for,
+    get_sector_strength_for,
     get_stock_data,
 )
 from tradingagents.dataflows.config import get_config
@@ -17,15 +17,16 @@ def create_market_analyst(llm):
 
     def market_analyst_node(state):
         current_date = state["trade_date"]
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        symbol = state["company_of_interest"]
+        instrument_context = build_instrument_context(symbol)
 
-        # Pre-fetch macro snapshot deterministically and inject it into the
-        # prompt as an already-fetched fact. The 2026-05 batch (PLUG, AMAT,
-        # GOOGL, JPM, TSM) showed analyst LLMs skipping the
-        # get_macro_context tool call entirely despite the prompt marking
-        # it MANDATORY. By doing the fetch in Python and removing the tool
-        # from the analyst's tool list, the LLM no longer has the option
-        # to skip — the snapshot is right there in the system prompt.
+        # Pre-fetch ALL three deterministic snapshots (macro, risk metrics,
+        # sector strength) in Python and inject them as already-fetched
+        # facts. journalctl confirmed the analyst LLM was skipping the
+        # MANDATORY tool calls for all three across the 2026-05 batch
+        # despite the prompt marking them MANDATORY. Doing the fetch
+        # outside the LLM and removing the tools from the tool list
+        # guarantees the data ends up in the report.
         macro_snapshot = get_macro_for(current_date)
         if macro_snapshot:
             instrument_context += (
@@ -43,12 +44,47 @@ def create_market_analyst(llm):
                 " attempt a tool call. ==="
             )
 
+        risk_snapshot = get_risk_metrics_for(symbol, current_date)
+        if risk_snapshot:
+            instrument_context += (
+                "\n\n=== Pre-fetched risk metrics snapshot (use VERBATIM"
+                " in the '리스크 지표' subsection — annual vol, Sharpe,"
+                " VaR/CVaR, max drawdown, beta come from this snapshot."
+                " Do NOT claim the data is unavailable, do NOT call any"
+                f" risk tool) ===\n{risk_snapshot}"
+            )
+        else:
+            instrument_context += (
+                "\n\n=== Risk metrics snapshot was attempted at node entry"
+                " but the deterministic computation failed. Write the"
+                " '리스크 지표' subsection as a single sentence: '리스크"
+                " 지표는 본 분석에서 미수집되었습니다.' Do NOT apologise;"
+                " do NOT attempt a tool call. ==="
+            )
+
+        sector_snapshot = get_sector_strength_for(symbol, current_date)
+        if sector_snapshot:
+            instrument_context += (
+                "\n\n=== Pre-fetched sector relative-strength snapshot"
+                " (use VERBATIM to ground the SECTOR PRIMER's 'leader vs"
+                " laggard' claim — replace any vague '섹터 내 강세' with"
+                " the actual percent-point differential from this table."
+                " Do NOT call any sector tool) ===\n{sector_snapshot}"
+            ).replace("{sector_snapshot}", sector_snapshot)
+        else:
+            instrument_context += (
+                "\n\n=== Sector relative-strength snapshot was attempted"
+                " at node entry but yfinance returned no usable benchmark"
+                " data. Note '섹터 상대 강도는 본 분석에서 미수집' in the"
+                " sector primer; do NOT apologise; do NOT attempt a tool"
+                " call. ==="
+            )
+
         tools = [
             get_stock_data,
             get_indicators,
-            get_risk_metrics,
-            # get_macro_context intentionally removed — pre-fetched above.
-            get_sector_relative_strength,
+            # get_risk_metrics, get_sector_relative_strength,
+            # get_macro_context — all three pre-fetched above.
         ]
 
         system_message = (
@@ -89,37 +125,37 @@ Volume-Based Indicators:
             " segment (leader, laggard, niche, recent breakout). Use this as the"
             " opening paragraph of the body so a reader can place the chart pattern in"
             " context before reading indicator-by-indicator commentary."
-            + " MANDATORY EXTRA TOOL CALLS:"
-            "\n  (a) Call `get_risk_metrics(symbol, curr_date)` once and include a"
-            " '리스크 지표' subsection in the body. Use the returned annual vol,"
-            " Sharpe, VaR/CVaR, max drawdown, and beta verbatim — these are"
-            " deterministic numbers, do NOT paraphrase or round them away."
-            " Comment briefly on whether the figures are typical/elevated for"
-            " this sector (e.g. high-growth tech routinely runs σ ≥ 40%, an"
-            " S&P-tracker is closer to 15-18%)."
-            "\n  (b) Add a '거시 배경' subsection using the pre-fetched"
-            " macro snapshot embedded in your instrument context above"
-            " — do NOT call any macro tool, the data is already there."
-            " Connect the snapshot's actual numbers (10Y yield, VIX,"
-            " DXY, oil) to the chart — e.g. rising 10Y yields hurt"
-            " high-multiple growth, oil spike helps energy names, VIX"
-            " expansion compresses risk appetite. If the snapshot is"
-            " absent, write the single fallback line specified above."
-            "\n  (c) Call `get_sector_relative_strength(symbol, curr_date)` once"
-            " and use the returned 30D/90D/YTD relative-strength table to"
-            " ground the SECTOR PRIMER's 'leader vs laggard' claim. Replace"
-            " any vague '섹터 내 강세' wording with the actual percent-point"
-            " differential (e.g. '90D +12.4%p vs SOXX → 명확한 섹터 리더')."
-            " Include the table inline in the sector primer paragraph or"
+            + " THREE PRE-FETCHED SUBSECTIONS — all three data payloads are"
+            " ALREADY in your instrument context above. Do NOT attempt to"
+            " call any macro / risk / sector tool — those tools are no"
+            " longer in your tool list. Build these subsections from the"
+            " embedded snapshots:"
+            "\n  (a) '리스크 지표' subsection — use the pre-fetched risk"
+            " metrics snapshot (annual vol, Sharpe, VaR/CVaR, max drawdown,"
+            " beta). Quote the numbers verbatim and add one sentence on"
+            " whether the figures are typical/elevated for this sector"
+            " (e.g. high-growth tech routinely runs σ ≥ 40%, an S&P"
+            " tracker is closer to 15-18%)."
+            "\n  (b) '거시 배경' subsection — use the pre-fetched macro"
+            " snapshot. Connect the actual numbers (10Y yield, VIX, DXY,"
+            " oil) to the chart — e.g. rising 10Y yields hurt high-multiple"
+            " growth, oil spike helps energy names, VIX expansion"
+            " compresses risk appetite."
+            "\n  (c) SECTOR PRIMER — use the pre-fetched sector"
+            " relative-strength snapshot to ground the 'leader vs laggard'"
+            " claim. Replace any vague '섹터 내 강세' wording with the"
+            " actual percent-point differential from the snapshot table"
+            " (e.g. '90D +12.4%p vs SOXX → 명확한 섹터 리더'). Include"
+            " the table inline in the sector primer paragraph or"
             " immediately after."
-            + " NO TOOL APOLOGIES: Every tool wired up here (get_stock_data,"
-            " get_indicators, get_risk_metrics, get_macro_context,"
-            " get_sector_relative_strength) is always callable — call it and"
-            " use whatever it returns. Even when an upstream API is flaky,"
-            " the tool returns a partial-success / 'data unavailable' payload"
-            " that is itself the usable input. NEVER write phrases like"
-            " 'tools are not available', 'tool is not available',"
-            " 'I cannot provide', 'Therefore I cannot', '도구를 사용할 수"
+            + " NO TOOL APOLOGIES: The remaining tools (get_stock_data,"
+            " get_indicators) are always callable — call them and use"
+            " whatever they return. The risk / macro / sector data is"
+            " ALREADY in your instrument context (pre-fetched in Python),"
+            " so you don't need to call any tool for those subsections."
+            " NEVER write phrases like 'tools are not available', 'tool"
+            " is not available', 'I cannot provide', 'Therefore I cannot',"
+            " '도구를 사용할 수"
             " 없습니다', '죄송합니다'. If a particular subsection's data"
             " genuinely came back empty, mention it in one short sentence"
             " (e.g. '리스크 지표는 본 분석에서 미수집') and move on with"
