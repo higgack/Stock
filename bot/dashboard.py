@@ -734,6 +734,15 @@ summary.day-head .count {
 .outcome.miss { color: #ef4444; }      /* directional call missed */
 :root[data-theme="dark"] .outcome.hit { color: #34d399; }
 :root[data-theme="dark"] .outcome.miss { color: #f87171; }
+.orphan-day { opacity: 0.85; margin-top: 12px; }
+.orphan-list { padding: 8px 12px; }
+.orphan-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 6px 0; border-bottom: 1px solid var(--border);
+}
+.orphan-row:last-child { border-bottom: none; }
+.orphan-meta { color: var(--fg-soft); font-size: 12px; }
+.orphan-outcome { margin-top: 0; }
 .empty {
   color: var(--fg-soft); font-size: 14px; padding: 32px 0; text-align: center;
 }
@@ -1045,6 +1054,40 @@ def _render_index(records: list[dict]) -> str:
                 <span class="count">{len(day_records)}건</span>
               </summary>
               <div class="cards">{"".join(cards)}</div>
+            </details>
+            """)
+        # Orphan resolved entries: in the memory log but with no matching
+        # archive record (typically analyses that predate the archive
+        # system rollout). Surface them in a small footer so the
+        # accuracy card's "평가 N건" denominator stays auditable — the
+        # user can see exactly which past calls feed the percentage even
+        # when there's no card to attach the outcome to.
+        archive_keys = {(r.get("trade_date", ""), r.get("ticker", "")) for r in records}
+        orphans = [
+            e for (k, e) in resolved_lookup.items() if k not in archive_keys
+        ]
+        if orphans:
+            orphans.sort(key=lambda e: (e.get("date", ""), e.get("ticker", "")), reverse=True)
+            orphan_rows = []
+            for e in orphans:
+                row_outcome = _render_outcome_html(e).replace(
+                    'class="outcome', 'class="outcome orphan-outcome'
+                )
+                orphan_rows.append(f"""
+                <div class="orphan-row">
+                  <span class="orphan-meta">📊 {_html.escape(e.get('ticker', '?'))}
+                    · {_html.escape(e.get('date', ''))}
+                    · {_html.escape(e.get('rating', ''))}</span>
+                  {row_outcome}
+                </div>
+                """)
+            sections.append(f"""
+            <details class="day orphan-day">
+              <summary class="day-head">
+                <span>📒 archive 이전 평가 결과</span>
+                <span class="count">{len(orphans)}건</span>
+              </summary>
+              <div class="orphan-list">{"".join(orphan_rows)}</div>
             </details>
             """)
         body = "".join(sections)
