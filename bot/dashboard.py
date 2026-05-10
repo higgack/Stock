@@ -758,11 +758,12 @@ summary.day-head .count {
 .time { color: var(--fg-soft); font-size: 12px; min-width: 38px; text-align: right; }
 .del-btn {
   background: none; border: none; cursor: pointer; padding: 4px 6px;
-  color: var(--fg-soft); font-size: 14px; line-height: 1; opacity: 0.4;
-  transition: opacity 0.15s, color 0.15s;
+  color: #f87171; font-size: 14px; line-height: 1;
+  transition: color 0.15s;
 }
-.del-btn:hover { opacity: 1; color: #ef4444; }
-:root[data-theme="dark"] .del-btn:hover { color: #f87171; }
+.del-btn:hover { color: #ef4444; }
+:root[data-theme="dark"] .del-btn { color: #f87171; }
+:root[data-theme="dark"] .del-btn:hover { color: #fca5a5; }
 .past { color: var(--fg-soft); font-size: 12px; margin-top: 6px; }
 .outcome { font-size: 12px; margin-top: 4px; color: var(--fg-soft); }
 .outcome.hit { color: #10b981; }       /* directional call matched alpha */
