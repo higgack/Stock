@@ -574,7 +574,7 @@ _INSTRUMENT_CTX_RE = re.compile(
 # Bullet rows where the agent padded a single point-in-time value with
 # trailing '— -' placeholders (e.g. '시가총액: $36.94B — - — - — -').
 # Collapse to just the value(s) actually present.
-_DASH_PADDING_RE = re.compile(r"(?:\s+[—\-]+\s+-){2,}\s*$", re.MULTILINE)
+_DASH_PADDING_RE = re.compile(r"(?: [—\-]{1,5} -){2,15}\s*$", re.MULTILINE)
 
 # English structured-field labels that the research_manager / trader / risk
 # debators emit even under a Korean directive. The patterns tolerate
@@ -615,11 +615,19 @@ _DASH_LINE_RE = re.compile(r"(?m)^[\s\-=_*#~]{15,}$\n?")
 # when reading large dollar amounts verbatim. We rewrite them as '약 47억 달러'.
 _KO_NUM_RE = re.compile(
     r"(?<![\w가-힣])"
-    r"(?:(\d{1,4})\s*조\s*)?"
-    r"(?:(\d{1,4})\s*억\s*)?"
-    r"(?:(\d{1,4})\s*만\s*)?"
+    # Require at least one of the place-value groups OR a leading digit
+    # before '달러'. The previous fully-optional structure (every group
+    # `?`) gave the engine free rein to try empty matches at every
+    # '달러' occurrence; on a 76K-char fundamentals body the catastrophic
+    # backtracking triggered the SIGALRM step guard. The lookahead anchors
+    # the prefix so the regex only fires when there's actually a number to
+    # normalize.
+    r"(?=\d)"
+    r"(?:(\d{1,4})\s{0,3}조\s{0,3})?"
+    r"(?:(\d{1,4})\s{0,3}억\s{0,3})?"
+    r"(?:(\d{1,4})\s{0,3}만\s{0,3})?"
     r"(\d{1,4})?"
-    r"\s*달러"
+    r"\s{0,3}달러"
     r"(?!\w)"
 )
 
@@ -650,6 +658,23 @@ _DUP_HEADER_RE = re.compile(
 # content in between is also a re-emission signal (catches cases like
 # '1. 가격 추세' restarting after '1. 이동평균선' has already been used).
 _DUP_NUMBERED_RE = re.compile(r"(?m)^\s*1\.\s+\S")
+# Cross-section emoji headers that an analyst should never include in
+# its OWN body — they belong to downstream nodes (research_manager /
+# trader / portfolio_manager). When the fundamentals analyst goes into
+# a re-emission loop (ONTO 2026-05-10 case) it sometimes mimics the
+# downstream report format and writes these headers itself, repeating
+# them at the tail. A second occurrence of any of these inside a single
+# analyst body is unambiguous evidence of duplication — truncate at it.
+_DUP_DOWNSTREAM_RE = re.compile(
+    r"(?m)^\s*(?:🧭\s*투자\s*계획|💼\s*트레이더\s*제안|✅\s*최종\s*결정)\b"
+)
+# DCF / 결론 / 거래자 인사이트 etc — fundamentals-analyst-specific
+# section labels that should appear at most once per body. Their second
+# occurrence is the same kind of re-emission signal.
+_DUP_FUND_TAIL_RE = re.compile(
+    r"(?m)^\s*(?:DCF\s*시나리오|결론\s*및\s*투자\s*통찰|"
+    r"결론\s*및\s*거래\s*시사점|거래자\s*인사이트)\b"
+)
 
 
 def _abbrev_korean(num: int) -> str:
@@ -719,15 +744,38 @@ def _add_unit_hint(m: re.Match) -> str:
     return f"{label}{nums} (단위: 백만 달러)"
 
 
+def _find_first_repeat(pattern: re.Pattern, body: str) -> int | None:
+    """Return the start position of the FIRST occurrence whose matched
+    text was already seen earlier in the body, else None.
+
+    Patterns like _DUP_DOWNSTREAM_RE and _DUP_FUND_TAIL_RE have multiple
+    alternatives (e.g. 🧭/💼/✅). Naively taking matches[1] would point
+    at a different header's first appearance, not a duplicate. We key
+    by the actual matched text so only true repetition triggers
+    truncation.
+    """
+    seen: set[str] = set()
+    for m in pattern.finditer(body):
+        key = re.sub(r"\s+", " ", m.group().strip())
+        if key in seen:
+            return m.start()
+        seen.add(key)
+    return None
+
+
 def _drop_repeated_section(body: str) -> str:
     """If a major section header appears twice, the agent emitted its
     report twice — keep only up to the second occurrence."""
-    matches = list(_DUP_HEADER_RE.finditer(body))
-    if len(matches) >= 2:
-        return body[: matches[1].start()].rstrip()
+    candidates: list[int] = []
+    for pattern in (_DUP_HEADER_RE, _DUP_DOWNSTREAM_RE, _DUP_FUND_TAIL_RE):
+        pos = _find_first_repeat(pattern, body)
+        if pos is not None:
+            candidates.append(pos)
     nums = list(_DUP_NUMBERED_RE.finditer(body))
     if len(nums) >= 2 and nums[1].start() - nums[0].start() > 1000:
-        return body[: nums[1].start()].rstrip()
+        candidates.append(nums[1].start())
+    if candidates:
+        return body[: min(candidates)].rstrip()
     return body
 
 
