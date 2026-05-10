@@ -756,6 +756,13 @@ summary.day-head .count {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .time { color: var(--fg-soft); font-size: 12px; min-width: 38px; text-align: right; }
+.del-btn {
+  background: none; border: none; cursor: pointer; padding: 4px 6px;
+  color: var(--fg-soft); font-size: 14px; line-height: 1; opacity: 0.4;
+  transition: opacity 0.15s, color 0.15s;
+}
+.del-btn:hover { opacity: 1; color: #ef4444; }
+:root[data-theme="dark"] .del-btn:hover { color: #f87171; }
 .past { color: var(--fg-soft); font-size: 12px; margin-top: 6px; }
 .outcome { font-size: 12px; margin-top: 4px; color: var(--fg-soft); }
 .outcome.hit { color: #10b981; }       /* directional call matched alpha */
@@ -829,6 +836,47 @@ _INDEX_JS = """
   });
   window.addEventListener('hashchange', syncFromHash);
   syncFromHash();
+
+  // Card deletion: POST /api/delete with {date, ticker}, then remove the
+  // card from the DOM on success. We don't location.reload() because
+  // that would kick the user back to the top of the page; the
+  // regenerate_index() call on the server side has already rewritten
+  // index.html so a manual refresh later picks up everything.
+  document.querySelectorAll('.del-btn').forEach(function(btn) {
+    btn.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      ev.preventDefault();
+      const card = btn.closest('.card');
+      if (!card) return;
+      const date = card.dataset.date;
+      const ticker = card.dataset.ticker;
+      if (!date || !ticker) return;
+      if (!confirm('📊 ' + ticker + ' (' + date + ') 분석 기록을 삭제할까요?')) return;
+      btn.disabled = true;
+      btn.textContent = '⏳';
+      fetch('/api/delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({date: date, ticker: ticker})
+      }).then(function(r) {
+        return r.json().then(function(d) { return {status: r.status, body: d}; });
+      }).then(function(res) {
+        if (res.status === 200 && res.body && res.body.ok) {
+          card.style.transition = 'opacity 0.2s';
+          card.style.opacity = '0';
+          setTimeout(function() { card.remove(); }, 200);
+        } else {
+          alert('삭제 실패: ' + (res.body && res.body.error || res.status));
+          btn.disabled = false;
+          btn.textContent = '🗑️';
+        }
+      }).catch(function(err) {
+        alert('삭제 실패: ' + err);
+        btn.disabled = false;
+        btn.textContent = '🗑️';
+      });
+    });
+  });
 })();
 """
 
@@ -1064,12 +1112,13 @@ def _render_index(records: list[dict]) -> str:
                     resolved_lookup.get((date, ticker))
                 )
                 cards.append(f"""
-                <div class="card" data-ticker="{_html.escape(ticker)}">
+                <div class="card" data-ticker="{_html.escape(ticker)}" data-date="{_html.escape(date)}">
                   <div class="card-row">
                     <a class="ticker" href="{href}">📊 {_html.escape(ticker)}</a>
                     {_badge_html(rating)}
                     <div class="stance">{_html.escape(stance)}</div>
                     <div class="time">{_html.escape(time_str)}</div>
+                    <button class="del-btn" type="button" title="이 분석 기록 삭제">🗑️</button>
                   </div>
                   {past_html}
                   {outcome_html}

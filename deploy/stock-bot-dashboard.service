@@ -1,5 +1,5 @@
 [Unit]
-Description=NOAH 주식분석 아카이브 대시보드 (static HTTP)
+Description=NOAH 주식분석 아카이브 대시보드 (custom HTTP server with delete API)
 After=network-online.target
 Wants=network-online.target
 
@@ -7,13 +7,12 @@ Wants=network-online.target
 Type=simple
 User=higgack
 Group=higgack
-WorkingDirectory=/home/higgack/.tradingagents/archive
-# Plain stdlib http.server is enough — the dashboard files are pure
-# static HTML emitted by bot.dashboard. No auth here, matching the
-# existing public dashboard on :8080.
-ExecStart=/usr/bin/python3 -m http.server 8081 \
-  --bind 0.0.0.0 \
-  --directory /home/higgack/.tradingagents/archive
+WorkingDirectory=/home/higgack/stock
+Environment=PYTHONPATH=/home/higgack/stock:/home/higgack/stock/TradingAgents
+# bot.dashboard_server is a thin wrapper around stdlib http.server that
+# adds POST /api/delete. Static GET behavior is identical to the old
+# `python3 -m http.server 8081` setup. No auth — same posture as before.
+ExecStart=/usr/bin/python3 -m bot.dashboard_server --port 8081 --bind 0.0.0.0
 Restart=always
 RestartSec=5
 # Belt-and-suspenders: cycle the process daily so any slow stdlib
