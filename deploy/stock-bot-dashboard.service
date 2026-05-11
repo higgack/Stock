@@ -9,9 +9,17 @@ User=higgack
 Group=higgack
 WorkingDirectory=/home/higgack/stock
 Environment=PYTHONPATH=/home/higgack/stock:/home/higgack/stock/TradingAgents
+# Load DASHBOARD_TOKEN / DASHBOARD_USER / DASHBOARD_PASSWORD (and any
+# other ambient secrets the bot uses) directly via systemd. This is
+# the primary mechanism — the dashboard_server's dotenv fallback only
+# fires when python-dotenv happens to be available in the system
+# interpreter. EnvironmentFile= works regardless and parses the same
+# KEY=VALUE format as .env.
+EnvironmentFile=-/home/higgack/stock/.env
 # bot.dashboard_server is a thin wrapper around stdlib http.server that
-# adds POST /api/delete. Static GET behavior is identical to the old
-# `python3 -m http.server 8081` setup. No auth — same posture as before.
+# adds POST /api/delete plus optional URL-token + Basic Auth gating.
+# Static GET behavior is identical to the old `python3 -m http.server
+# 8081` setup when no credentials are configured.
 ExecStart=/usr/bin/python3 -m bot.dashboard_server --port 8081 --bind 0.0.0.0
 Restart=always
 RestartSec=5

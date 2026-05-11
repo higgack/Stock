@@ -52,20 +52,31 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from secrets import compare_digest
 
-# Load .env in CWD (systemd WorkingDirectory=/home/higgack/stock) so
-# DASHBOARD_TOKEN / USER / PASSWORD pick up without separate
-# EnvironmentFile= entries. python-dotenv is already a dependency of
-# the main bot, so no new install needed.
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
-
 from bot.archive import ARCHIVE_ROOT
 from bot.dashboard import regenerate_index
 
 log = logging.getLogger("bot.dashboard_server")
+
+# Load .env from the repo root regardless of CWD. Path is absolute
+# (parent.parent of this module) so a wrong WorkingDirectory can't
+# silently break auth. We collect a status string here (no log calls
+# yet — logging isn't configured at module import time) and emit it
+# in main() once basicConfig has run.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_DOTENV_STATUS: str
+try:
+    from dotenv import load_dotenv
+    _env_path = _REPO_ROOT / ".env"
+    if _env_path.exists():
+        load_dotenv(_env_path, override=False)
+        _DOTENV_STATUS = f"loaded {_env_path}"
+    else:
+        _DOTENV_STATUS = f"{_env_path} not found"
+except ImportError:
+    _DOTENV_STATUS = (
+        "python-dotenv not installed — "
+        "credentials must come from systemd EnvironmentFile="
+    )
 
 # Strict input validation. Date matches the YYYY-MM-DD form the analyzer
 # writes; ticker matches the same charset bot.telegram_bot.TICKER_RE
@@ -230,6 +241,7 @@ def main() -> int:
     parser.add_argument("--bind", default="0.0.0.0")
     args = parser.parse_args()
 
+    log.info("dotenv: %s", _DOTENV_STATUS)
     server = ThreadingHTTPServer((args.bind, args.port), DashboardHandler)
     log.info(
         "serving %s on %s:%d  token=%s  basic_auth=%s",
