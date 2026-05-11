@@ -573,171 +573,80 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         await asyncio.sleep(0.7)
 
 
-_HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
-━━━━━━━━━━━━━━
-<b>【1. 명령어】</b>
-아래 명령어를 탭하면 입력창에 자동 입력됩니다.
+_HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
+━━━━━━━━━
+<b>【1. 명령어】</b> (탭하면 자동 입력)
+/start /help /usage — 도움말·비용
+/NVDA /AAPL — 단일 분석 (채널에서)
+/compare NVDA AMD — 두 종목 비교
+※ 다른 종목은 /티커 (예: /PLTR), 미국 외엔 접미사 유지 (/005930.KS)
+※ 등록된 채널 외에선 무시 (보안)
 
-▸ 도움말 / 상태 (어디서든)
-/start
-/help
-/usage
+━━━━━━━━━
+<b>【2. 분석 흐름】</b> (~3분, ~₩100~150/회)
+ 1) 채널에 <code>/티커</code> → 즉시 진행 메시지
+ 2) <b>사전 fetch (Python, 결정적·스킵 불가)</b>
+    매크로 9개 / 리스크 (σ·Sharpe·VaR·MDD·β) / 섹터 ETF / Wall Street 컨센서스 / 공매도·내부자·기관 / 실적 일정
+    ETF·뉴스 0건 종목은 해당 분석가 자동 스킵
+ 3) 분석가 4명 (~2분, Flash) — 📈시장 💬감정 📰뉴스 💰펀더멘털
+    빈/사과형 응답 → 1회 retry → 실패 시 토론 스킵 + 알림 (hallucination 차단)
+ 4) Bull/Bear 페르소나 토론 (Flash-Lite)
+    Bull: 버핏(해자) + 린치(PEG) / Bear: 그레이엄(안전마진) + 막스(사이클)
+ 5) Trader → Risk 3인 → Portfolio Manager 최종 (Pro, thinking cap 4096)
+    5거래일 평가 윈도 인지 → valuation-only 매도 자제
+ 6) 채널에 요약 + [📋 전체 리포트]
 
-▸ 단일 종목 분석 (채널에서)
-/NVDA
-/AAPL
+━━━━━━━━━
+<b>【3. 요약 구성】</b>
+🎯 최종 판정 (Buy/Overweight/Hold/Underweight/Sell) · 📒 지난 추천 결과 (5거래일 후 자동) · ⚠️/📅/📊 실적 ±10일 경고 · 📰 뉴스 스킵 알림 · 4명 stance + ⚠️ stance↔결정 mismatch (불일치 시만) · 각 분석가 한 줄 요지 · [📋 전체 리포트]
 
-▸ 두 종목 비교 (채널에서)
-/compare NVDA AMD
-/compare GOOGL META
+━━━━━━━━━
+<b>【4. 자동 데이터 소스】</b>
+yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매크로 9종 병렬 · 섹터 ETF 자동 매핑 · 리스크 6종 · Wall Street 목표가/등급 · 공매도 % + DTC (10%↑ squeeze 경고) · 내부자/기관 % · 실적 캘린더 ±10일 · Forward EPS sanity (TTM 대비 3x↑ 또는 부호 반전 경고)
 
-※ 다른 종목은 /티커 형식으로 직접 입력 (예: /PLTR, /CRM)
-※ 등록된 채널 외에서는 무시됨 (보안)
-※ 입력창 옆 '/' 메뉴 버튼으로도 등록 명령 확인 가능
-
-━━━━━━━━━━━━━━
-<b>【2. 분석 흐름】</b>
- 1) 채널에 <code>/티커</code> 입력 → 즉시 진행 메시지
- 2) <b>사전 fetch (Python, 결정적)</b>
-    • 매크로 9개 시계열, 리스크 지표 (σ/Sharpe/VaR/MDD/β), 섹터 ETF 상대 강도
-    • Wall Street 컨센서스 (목표가/등급/분석가 수)
-    • 공매도 비중, 내부자·기관 보유, 실적 일정
-    • ETF 자동 감지 → social 분석가 스킵
-    • 뉴스 0건 종목 → news 분석가 스킵
- 3) 4명 분석가 단계 (~2분) — Gemini 2.5 Flash
-    📈 시장 (기술적 + 매크로 + 리스크 + 섹터)
-    💬 감정 (소셜/뉴스 감성)
-    📰 뉴스 (회사 + 매크로 통합)
-    💰 펀더멘털 (재무 + DCF + Comps + 컨센서스)
-    ※ 분석가 빈/사과형 응답 → 자동 1회 retry
-    ※ retry 후에도 실패 → 토론 단계 스킵 + 사용자 에러 알림 (hallucination 차단)
- 4) Bull/Bear 페르소나 토론 (~1분) — Flash-Lite
-    Bull: 워런 버핏 (해자/가치) + 피터 린치 (PEG/성장)
-    Bear: 벤 그레이엄 (안전마진) + 하워드 막스 (사이클)
- 5) Trader 제안 → Risk 3인 토론 → Portfolio Manager 최종
-    핵심 결정 3개 노드 = Gemini 2.5 Pro (thinking 4096 토큰 cap)
-    ※ 결정 LLM은 5거래일 평가 윈도 인지 — valuation-only 매도 자제
- 6) 채널에 요약 + [📋 전체 리포트] 버튼
-
-━━━━━━━━━━━━━━
-<b>【3. 요약 메시지 구성】</b>
- • 🎯 최종 판정 (Buy / Overweight / Hold / Underweight / Sell)
- • 📒 지난 추천 결과 (자동, 5거래일 지나면)
- • ⚠️/📅/📊 실적 임박/직후 경고 (±10일 윈도)
- • 📰 뉴스 분석 자동 생략 알림 (신생주/저커버리지)
- • 4명 분석가 stance 한눈
- • ⚠️ 분석가 stance vs 결정 mismatch + 결정 근거 (불일치 시만)
- • 각 분석가 한 줄 요지
- • [📋 전체 리포트 보기] → 토론·계획·결정 풀버전
-
-━━━━━━━━━━━━━━
-<b>【4. 자동 사용 데이터】</b>
- • 가격/지표  yfinance (15년 캐시)
- • 뉴스       yfinance + Alpha Vantage
- • 펀더멘털   yfinance 재무제표 (분기 + 연간)
- • 매크로     ^TNX·^FVX·^VIX·DXY·CL=F·GC=F·HG=F·BTC-USD (병렬)
- • 섹터 매핑  XLK·SOXX·IGV·IBB·KRE·XOP·TAN·XLF·... (자동)
- • 리스크     연환산 σ / Sharpe / Sortino / VaR / Max DD / 베타
- • Wall Street  목표가, 등급(매수/보유/매도), 분석가 수
- • 공매도     % of float, days-to-cover (10% 초과 시 squeeze 경고)
- • 보유 구성  내부자 % / 기관 %
- • 실적 일정  yfinance earnings calendar (±10일 자동 알림)
- • Forward EPS sanity (TTM 대비 3x+ 또는 부호 반전 시 경고)
- • 윈도우     기본 28일 (분석 디렉티브)
-
-━━━━━━━━━━━━━━
+━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
- • 매 분석은 추천을 pending으로 기록
- • <b>12시간마다 백그라운드 자동 평가</b> — 5거래일 지난 pending 항목 → yfinance에서 raw return + 알파 fetch
- • 알파 = <b>섹터 ETF 대비</b> (SPY 아님; PLUG vs TAN, NVDA vs SOXX 등)
- • '지난 추천' 라인이 다음 동일 종목 분석 요약 상단에 자동 표시
-   예: 📒 지난 추천 (2026-04-24): 매수 → +5.3% (벤치 +1.2%p)
- • 결정 LLM도 같은 컨텍스트 받음 → 자기 과거 실수 반영
+ • 추천은 pending 기록 → <b>12시간마다 백그라운드 자동 해소</b>
+ • 5거래일 지난 항목 → raw return + <b>섹터 ETF 알파</b> (SPY 아님; PLUG↔TAN, NVDA↔SOXX 등)
+ • 다음 동일 종목 분석 요약 상단에 자동 표시
+   예: 📒 지난 추천 (04-24): 매수 → +5.3% (벤치 +1.2%p)
+ • 결정 LLM도 같은 컨텍스트 → 과거 실수 반영
 
-━━━━━━━━━━━━━━
+━━━━━━━━━
 <b>【6. 캐시 &amp; 비용】</b>
  • 오늘 같은 종목 재분석 → 디스크 캐시 즉시 반환 (무료)
- • 새 분석 ~₩100~150/회 (Pro thinking cap 적용)
- • /compare 둘 다 새거 → ~₩200~300
- • 일일 캐시는 자정 KST 만료
- • 윈도우 데이터 (15년 가격)는 영구 캐시
- • /usage 명령으로 모델별 비용 분포 + 7일 차트 확인
+ • 새 분석 ~₩100~150 / /compare 둘 다 새거 ~₩200~300
+ • 일일 캐시 자정 KST 만료, 15년 가격 데이터는 영구 캐시
+ • /usage → 모델별 분포 + 7일 차트
 
-━━━━━━━━━━━━━━
-<b>【7. 안정성 (자동 처리)】</b>
- • 분석은 별도 subprocess → 봇 메인 절대 멈추지 않음
- • 10분 wall 타임아웃 자동 발동 (토큰 낭비 차단)
- • LLM HTTP 호출 150초 cap (단발 hang 방지)
- • Polish 정규식 step별 10초 SIGALRM 가드 (catastrophic backtracking 차단)
- • 분석가 실패 → 자동 retry → 그래도 실패 시 토론 스킵 + abort
- • watchdog 12분 stale → 자동 재시작
- • auto-update 2분마다 git pull + 무중단 재배포
- • 봇 재시작 중에도 진행 메시지 자동 복구
- • 펀더멘털 RULE 1~5 (숫자 정확성, 섹션 중복 차단, downstream 헤더 금지)
+━━━━━━━━━
+<b>【7. 안정성 (자동)】</b>
+별도 subprocess (메인 안 멈춤) · 10분 wall 타임아웃 · LLM HTTP 150초 cap · Polish 정규식 step별 10초 SIGALRM · watchdog 12분 stale 재시작 · auto-update 2분 git pull 무중단 재배포 · 재시작 중 진행 메시지 자동 복구 · 펀더멘털 RULE 1~5 (숫자 정확성·섹션 중복·downstream 헤더 금지)
 
-━━━━━━━━━━━━━━
+━━━━━━━━━
 <b>【8. 채널 알림】</b>
- • 🚀 배포 시작 / ✅ 배포 완료 — auto-update
- • ⚠️ 봇 hang 감지 — watchdog 발동
- • ❌ 분석 실패 — 타임아웃 / 토큰 한도 / API 에러 / 분석가 응답 누락
+🚀✅ 배포 시작/완료 · ⚠️ hang 감지 · ❌ 분석 실패 (타임아웃/토큰/API/응답 누락)
 
-━━━━━━━━━━━━━━
-<b>【9. 제한 / 트러블슈팅】</b>
- • 한 번에 분석 1건 (lock으로 직렬화)
- • /compare는 2종목까지, 같은 티커 두 번 거부
- • "캐시 결과를 찾을 수 없습니다" → 자정 지나 만료, 티커 재입력
- • "분석 실패: 10분 타임아웃" → 1~2분 후 재시도
-   (Gemini 503 일시 장애일 수 있음)
- • "분석가 응답 누락" → retry 후에도 실패. 다른 종목으로 시도
+━━━━━━━━━
+<b>【9. 트러블슈팅】</b>
+ • 동시 분석 1건 (lock 직렬화), /compare 2종목까지
+ • "캐시 없음" → 자정 만료, 재입력
+ • "10분 타임아웃" → 1~2분 후 재시도 (Gemini 503 가능)
+ • "분석가 응답 누락" → retry 후 실패. 다른 종목 시도
  • "봇 재시작으로 중단" → 자동 복구 메시지, 다시 입력
- • 미국 외 거래소: 접미사 유지
-   예: /TSM (미국 ADR), /005930.KS (삼성전자)
 
-━━━━━━━━━━━━━━
+━━━━━━━━━
 <b>【10. 차별화 포인트】</b>
- • 페르소나 토론 — Buffett/Lynch vs Graham/Marks
- • 결정 3노드만 Pro — 비용 ~₩30 추가로 결정 품질 점프
- • 메모리 피드백 — 자기 과거 추천 결과 학습 (12시간마다 자동)
- • 모든 결정적 데이터 (매크로/리스크/섹터/컨센서스/공매도/내부자/실적)는
-   Python에서 사전 fetch → LLM은 받아서 사용만 (스킵 불가)
- • Wall Street 컨센서스 ground truth 비교 (봇 결정과 자동 대조)
- • Stance ↔ 결정 mismatch 자동 감지 + 결정 근거 한 줄 노출
- • 5거래일 시간 지평 명시 → 단기 평가에 장기 thesis 매도 자제
- • 섹터 ETF 알파 (SPY 단일 벤치마크 아님)
- • 분석 실패 시 hallucination 결정 대신 명시적 abort
+페르소나 토론 (Buffett/Lynch vs Graham/Marks) · 결정 3노드만 Pro (~₩30 추가로 품질 점프) · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 ground truth 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 (장기 thesis 매도 자제) · 섹터 ETF 알파 · 실패 시 hallucination 대신 명시적 abort
 
-━━━━━━━━━━━━━━
-<b>【11. 대시보드 (웹 아카이브)】</b>
-🦉 분석 기록 영구 보관 — 자정 만료 X
- • URL: <a href="http://34.64.89.160:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.64.89.160:8081/06beb08f5f4ad5515007e65f8f60b471/</a>
- • PC / 폰 / 태블릿 어느 브라우저에서든 접속
- • 첫 접속 시 사용자명/비밀번호 팝업 → 입력 후 "비밀번호 저장" 체크하면 다음부턴 자동 (자격증명 별도 보관)
-
-▸ 화면 상단: 통계 카드 4개
-   📊 총 분석   누적 분석 건수 + 활동 기간 + 종목 수
-   💰 비용     오늘 / 이번 달 (KRW) + 모델별 분포 + 24h 도구 실패율
-   ⏱ 평균 시간 분석 평균 소요 + 가장 자주 분석된 종목
-   🎯 정확도   평가/미해소/Hold 분리 + 평균 수익 + 벤치 알파
-
-▸ 화면 본문: 날짜별 아코디언
-   - 최근일이 위, 클릭으로 펼치기/접기
-   - 종목 카드: 🎯 판정 + 4명 stance + 시간 + 지난 추천 결과
-   - <b>5거래일 결과 자동 표시</b> (✓ 적중 녹색 / ✗ 빗나감 빨강)
-   - 카드 우측 🗑️ — 클릭 시 해당 분석 영구 삭제 (확인 후)
-   - 카드 클릭 → 상세 페이지 (요약 + 전체 리포트)
-
-▸ 검색: 상단 검색창에 종목 입력 → 즉시 필터
-   - 매칭 안 되는 날짜 자동 숨김 + 매칭 날짜 자동 펼침
-   - URL <code>#ticker=NVDA</code>로 직접 링크 가능
-
-▸ 하단 섹션
-   - 📒 archive 이전 평가 결과 (메모리 로그엔 있지만 카드 없는 과거 분석)
-   - 푸터: 생성 시각 (KST) · 누적 건수 · 보관 정책
-
-▸ 데이터 경로
-   - 분석 본문: <code>~/.tradingagents/archive/YYYY-MM-DD/{TICKER}.json</code>
-   - 비용 로그: <code>~/.tradingagents/usage.jsonl</code>
-   - 메모리: <code>~/.tradingagents/memory/trading_memory.md</code>
+━━━━━━━━━
+<b>【11. 대시보드】</b> 🦉 영구 보관 (자정 만료 X)
+ • <a href="http://34.64.89.160:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.64.89.160:8081/06beb08f5f4ad5515007e65f8f60b471/</a>
+ • PC/폰/태블릿 어디서든. 첫 접속 시 ID/PW 팝업 → "비밀번호 저장"
+ • 상단 카드 4개: 📊 총 분석 / 💰 비용·도구 실패율 / ⏱ 평균 시간 / 🎯 정확도 (평가·미해소·Hold 분리, 알파 포함)
+ • 본문: 날짜 아코디언 (최근일 위) · 종목 카드에 5거래일 결과 ✓/✗ 색상 표시 · 🗑️ 영구 삭제 · 카드 클릭 → 상세 (요약 + 풀 리포트)
+ • 검색창에 종목 입력 → 즉시 필터, URL <code>#ticker=NVDA</code> 직접 링크
+ • 데이터 경로: <code>~/.tradingagents/{archive,usage.jsonl,memory/}</code>
 """
 
 
