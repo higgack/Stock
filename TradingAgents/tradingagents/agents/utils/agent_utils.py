@@ -459,6 +459,36 @@ def get_market_signals_for(ticker: str) -> str:
             line += " · " + " · ".join(extras)
         lines.append(line)
 
+    # Forward EPS sanity check. yfinance occasionally serves a stale or
+    # malformed forward EPS (often >3x TTM or even negative when the
+    # TTM is positive). When the ratio is suspicious, note it explicitly
+    # so the analyst doesn't anchor a bullish thesis on a number that
+    # may be garbage. SNDK 2026-05-11 had TTM EPS $29.22 vs Forward EPS
+    # $169.26 (5.8x) — plausibly real given the Western Digital spin-off
+    # but worth flagging for the LLM to verify against the actual
+    # earnings statements.
+    try:
+        from tradingagents.dataflows.config import get_config  # noqa: F401
+        import yfinance as yf
+        raw = yf.Ticker(ticker).info or {}
+        fwd_eps = raw.get("forwardEps")
+        ttm_eps = raw.get("trailingEps")
+        if (
+            isinstance(fwd_eps, (int, float)) and fwd_eps == fwd_eps
+            and isinstance(ttm_eps, (int, float)) and ttm_eps == ttm_eps
+            and ttm_eps != 0
+        ):
+            ratio = fwd_eps / ttm_eps
+            if abs(ratio) >= 3 or (ttm_eps > 0 and fwd_eps < 0):
+                lines.append(
+                    f"- ⚠️ Forward EPS ${fwd_eps:.2f} vs TTM EPS ${ttm_eps:.2f}"
+                    f" (비율 {ratio:.1f}x) — 통상 범위 밖. spin-off/일회성/"
+                    f"yfinance 데이터 오류 가능. 본문에서 이 숫자에 큰 비중을"
+                    f" 두기 전에 EPS 추세를 확인하라"
+                )
+    except Exception:
+        pass
+
     # Short interest.
     short_pct = info.get("shortPercentOfFloat")
     short_ratio = info.get("shortRatio")

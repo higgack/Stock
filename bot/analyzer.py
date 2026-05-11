@@ -200,14 +200,20 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
             log.warning("analyze: news pre-check failed for %s: %s", ticker, exc)
 
     # Earnings calendar warning. A 5-trading-day recommendation that
-    # lands within a ±5-day earnings window has its outcome dominated
-    # by the earnings reaction, not by the bot's analysis. Surface this
-    # up front so the user can decide whether to wait.
+    # lands inside the earnings reaction window has its outcome
+    # dominated by the earnings move, not by the bot's analysis.
+    # Window is ±10 calendar days so we catch both pre-earnings runup
+    # and the post-earnings drift that typically plays out for 1-2
+    # weeks after the print.
     try:
         from tradingagents.agents.utils.agent_utils import days_until_earnings
         delta = days_until_earnings(ticker, target_date)
-        if delta is not None and -5 <= delta <= 5:
-            if delta > 0:
+        if delta is not None and -10 <= delta <= 10:
+            if delta > 5:
+                pre_flight_notes.append(
+                    f"📅 실적 발표 {delta}일 후 — 발표 임박. 추천 평가가 어닝 반응에 좌우될 가능성"
+                )
+            elif 0 < delta <= 5:
                 pre_flight_notes.append(
                     f"⚠️ 실적 발표 {delta}일 후 — 발표 전후 변동성 ↑."
                     " 5거래일 추천 평가가 어닝 반응에 좌우될 수 있음"
@@ -216,9 +222,13 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
                 pre_flight_notes.append(
                     "⚠️ 실적 발표 당일 — 발표 결과에 따라 큰 변동 가능"
                 )
-            else:
+            elif -5 <= delta < 0:
                 pre_flight_notes.append(
-                    f"📊 실적 발표 {-delta}일 전 발표됨 — post-earnings drift 영향 가능"
+                    f"📊 실적 발표 {-delta}일 전 발표됨 — post-earnings drift 영향권"
+                )
+            else:  # -10 <= delta < -5
+                pre_flight_notes.append(
+                    f"📊 실적 발표 {-delta}일 전 발표됨 — drift 잔영 가능"
                 )
     except Exception as exc:
         log.warning("analyze: earnings check failed for %s: %s", ticker, exc)
