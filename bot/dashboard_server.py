@@ -5,7 +5,21 @@ POST /api/delete endpoint so the dashboard can render a 🗑️ button next
 to each analysis card. GET requests serve the archive directory
 exactly like the stdlib server did.
 
-Wire protocol:
+Two-layer authentication (both optional via env vars, disabled when
+the corresponding var is unset):
+  * URL path token: env `DASHBOARD_TOKEN`. When set, every request must
+    start with `/<token>/...`; anything else returns 404. Mirrors the
+    Second Brain dashboard's URL-token convention so a casual scanner
+    hitting the server's public IP sees nothing.
+  * HTTP Basic Auth: env `DASHBOARD_USER` + `DASHBOARD_PASSWORD`. When
+    both are set, the server requires a matching `Authorization: Basic`
+    header on every request, returning 401 + WWW-Authenticate otherwise.
+
+Both layers must pass when configured. Either layer alone is plenty
+weak against a sustained attack; the combination keeps a curious
+passerby out without depending on TLS.
+
+Wire protocol (after auth):
   POST /api/delete  body: {"date": "YYYY-MM-DD", "ticker": "NVDA"}
                     → 200 {"ok": true,  "deleted": [".json", ".html"]}
                     → 400 {"ok": false, "error": "..."}
@@ -28,12 +42,25 @@ Run with:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
+import os
 import re
 import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from secrets import compare_digest
+
+# Load .env in CWD (systemd WorkingDirectory=/home/higgack/stock) so
+# DASHBOARD_TOKEN / USER / PASSWORD pick up without separate
+# EnvironmentFile= entries. python-dotenv is already a dependency of
+# the main bot, so no new install needed.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 from bot.archive import ARCHIVE_ROOT
 from bot.dashboard import regenerate_index
@@ -48,9 +75,15 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 _ARCHIVE_ROOT = ARCHIVE_ROOT.resolve()
 
+_TOKEN = (os.getenv("DASHBOARD_TOKEN") or "").strip()
+_AUTH_USER = (os.getenv("DASHBOARD_USER") or "").strip()
+_AUTH_PASSWORD = (os.getenv("DASHBOARD_PASSWORD") or "").strip()
+_AUTH_REALM = "NOAH stock dashboard"
+
 
 class DashboardHandler(SimpleHTTPRequestHandler):
-    """Serves the archive directory; adds POST /api/delete."""
+    """Serves the archive directory; adds POST /api/delete + optional
+    URL-token and Basic-Auth gating."""
 
     def __init__(self, *args, **kwargs):
         # `directory` keyword wires up SimpleHTTPRequestHandler's static
@@ -62,7 +95,69 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # picks up systemd's journal formatting / log levels.
         log.info("%s - %s", self.address_string(), fmt % args)
 
+    # ── Auth helpers ──────────────────────────────────────────────────
+    def _strip_token_or_404(self) -> bool:
+        """If DASHBOARD_TOKEN is set, require `/<token>` prefix. Strips
+        the prefix from self.path so SimpleHTTPRequestHandler serves the
+        right file. Returns True on success, sends 404 and returns False
+        when the prefix is missing or wrong."""
+        if not _TOKEN:
+            return True
+        # Accept both `/<token>` and `/<token>/<rest>` (with/without
+        # trailing slash). Anything else → 404 with no body so a scanner
+        # can't tell whether tokens exist at all.
+        candidate = f"/{_TOKEN}"
+        if self.path == candidate or self.path == candidate + "/":
+            self.path = "/"
+            return True
+        if self.path.startswith(candidate + "/"):
+            self.path = self.path[len(candidate):]
+            return True
+        self.send_error(404, "Not Found")
+        return False
+
+    def _check_basic_auth_or_401(self) -> bool:
+        """If credentials are configured, require a matching
+        `Authorization: Basic` header. Returns True on success;
+        on failure sends 401 + WWW-Authenticate and returns False."""
+        if not (_AUTH_USER and _AUTH_PASSWORD):
+            return True
+        header = self.headers.get("Authorization", "")
+        if header.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(header[6:]).decode("utf-8", "replace")
+                user, _, password = decoded.partition(":")
+                if (
+                    compare_digest(user, _AUTH_USER)
+                    and compare_digest(password, _AUTH_PASSWORD)
+                ):
+                    return True
+            except Exception:
+                pass
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", f'Basic realm="{_AUTH_REALM}"')
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Authentication required\n")
+        return False
+
+    def _authorize(self) -> bool:
+        return self._strip_token_or_404() and self._check_basic_auth_or_401()
+
+    # ── Request handlers ─────────────────────────────────────────────
+    def do_GET(self):
+        if not self._authorize():
+            return
+        return super().do_GET()
+
+    def do_HEAD(self):
+        if not self._authorize():
+            return
+        return super().do_HEAD()
+
     def do_POST(self):
+        if not self._authorize():
+            return
         if self.path != "/api/delete":
             self.send_error(404, "Not Found")
             return
@@ -136,7 +231,14 @@ def main() -> int:
     args = parser.parse_args()
 
     server = ThreadingHTTPServer((args.bind, args.port), DashboardHandler)
-    log.info("serving %s on %s:%d", _ARCHIVE_ROOT, args.bind, args.port)
+    log.info(
+        "serving %s on %s:%d  token=%s  basic_auth=%s",
+        _ARCHIVE_ROOT,
+        args.bind,
+        args.port,
+        "on" if _TOKEN else "off",
+        "on" if (_AUTH_USER and _AUTH_PASSWORD) else "off",
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
