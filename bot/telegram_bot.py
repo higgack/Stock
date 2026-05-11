@@ -1109,6 +1109,35 @@ async def _periodic_auto_resolve() -> None:
         await asyncio.sleep(12 * 3600)
 
 
+async def _periodic_dashboard_refresh() -> None:
+    """Regenerate dashboard index.html ~1 min after each KST midnight.
+
+    regenerate_index() otherwise only fires on (a) analysis completion,
+    (b) card deletion, (c) auto_resolve. If none of those happen on a
+    given day the dashboard's 'today / this month' cards still show
+    yesterday's date and cost — confusing the user into thinking ₩X
+    was spent today when it was actually yesterday's tally rolling over.
+
+    Sleep until 00:01 KST, regen, repeat. The 1-minute offset gives any
+    in-flight analysis straddling midnight time to write its final
+    usage record before the day boundary is rendered."""
+    kst = timezone(timedelta(hours=9))
+    while True:
+        now_kst = datetime.now(kst)
+        # Next 00:01 KST. If we just crossed midnight, target tomorrow.
+        target = (now_kst + timedelta(days=1)).replace(
+            hour=0, minute=1, second=0, microsecond=0
+        )
+        sleep_secs = max(60.0, (target - now_kst).total_seconds())
+        await asyncio.sleep(sleep_secs)
+        try:
+            from bot.dashboard import regenerate_index
+            regenerate_index()
+            log.info("midnight dashboard regen: ok")
+        except Exception:
+            log.exception("midnight dashboard regen failed")
+
+
 async def _on_startup(application) -> None:
     """Bot init: register the slash-command menu, then handle any orphan
     progress message left behind by a previous instance that died
@@ -1131,6 +1160,7 @@ async def _on_startup(application) -> None:
     # the task runs forever, sleeping 12h between cycles. Stored on the
     # application so it stays referenced (otherwise the GC could collect it).
     application._auto_resolve_task = asyncio.create_task(_periodic_auto_resolve())
+    application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh())
 
     orphan = _recovery.read()
     if orphan is None:
