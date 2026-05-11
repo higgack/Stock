@@ -76,6 +76,18 @@ Calibrate the verdict accordingly:
   4-0 analyst lean toward Buy with a 5-day window of high volatility
   is usually best served by Hold, not by overriding the consensus.
 
+- **Sell-side vs buy-side — keep them separate**: the "Wall Street
+  consensus 목표가" is a sell-side ANALYST average (and often stale
+  for weeks after a sharp rally; the pre-fetched block flags this
+  with a ⚠️ when the gap is >=20%). It is NOT the same signal as
+  the institutional/insider HOLDING percentage from the same block.
+  A target-price gap describes analyst opinion; the holding %
+  describes buy-side positioning. Do NOT cite a stale-target gap as
+  evidence that "institutions think it's overpriced" — those are
+  different actors with different incentives and different update
+  cadences. If you reference the target gap, also reference the ⚠️
+  staleness flag when it's present.
+
 ---
 
 **Debate History:**

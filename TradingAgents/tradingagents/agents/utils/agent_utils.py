@@ -459,6 +459,24 @@ def get_market_signals_for(ticker: str) -> str:
             line += " · " + " · ".join(extras)
         lines.append(line)
 
+        # Staleness warning: when the consensus mean target sits >=20% BELOW
+        # the current price, the average is almost always stale post-rally.
+        # Individual analysts re-rate one at a time, so the mean lags by
+        # weeks after a sharp move (DELL 2026-05-12: UBS raised target to
+        # $243 and Mizuho to $260, but the yfinance mean was still $189.61
+        # because most of the 23 analysts hadn't updated yet). Without
+        # this flag the decision LLM tends to read the gap as "ground
+        # truth — institutions think it's overpriced" and over-weights
+        # the bear case. Threshold mirrors the magnitude where staleness
+        # dominates real disagreement.
+        if upside <= -20:
+            lines.append(
+                f"  ⚠️ 현재가가 컨센서스 목표가보다 {-upside:.0f}% 높음 — 최근 랠리로"
+                f" 다수 애널리스트가 목표가를 아직 업데이트하지 않았을 가능성이 큼."
+                f" 평균값을 'ground truth'로 사용하기 전에 본문의 개별"
+                f" 상향/하향 조정 뉴스와 대조하라"
+            )
+
     # Forward EPS sanity check. yfinance occasionally serves a stale or
     # malformed forward EPS (often >3x TTM or even negative when the
     # TTM is positive). When the ratio is suspicious, note it explicitly
