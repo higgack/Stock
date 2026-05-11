@@ -210,10 +210,18 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     # silently no-op or (with our old TICKER_RE fall-through) get
     # interpreted as a 'HELP' ticker.
     if first_word in ("start", "help"):
-        await ctx.bot.send_message(
-            chat_id=post.chat.id,
-            text=_HELP_TEXT,
-            parse_mode=ParseMode.HTML,
+        # Channel /help — same chunking path as DM /help. Sending
+        # _HELP_TEXT whole here used to blow Telegram's 4096-char cap
+        # ("Message is too long") and that's the channel branch users
+        # actually hit, since `cmd_help`'s CommandHandler only fires on
+        # Update.message, not channel_post.
+        chat_id = post.chat.id
+        await _send_help(
+            send_html=lambda t: ctx.bot.send_message(
+                chat_id=chat_id, text=t, parse_mode=ParseMode.HTML
+            ),
+            send_plain=lambda t: ctx.bot.send_message(chat_id=chat_id, text=t),
+            label="channel_help",
         )
         return
 
@@ -733,15 +741,10 @@ _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
 """
 
 
-async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    """DM /start or /help — comprehensive bot usage guide.
-
-    The text is too long for a single Telegram message (4096-char cap),
-    so split at the section dividers (━━━ lines) and pack chunks up to
-    ~3500 chars each. Sections stay grouped when they fit; otherwise
-    each section becomes its own message. Sequential await preserves
-    order; the small sleep keeps us under Telegram's per-chat rate
-    limit when the help is long."""
+def _chunk_help_text() -> list[str]:
+    """Split _HELP_TEXT at section dividers (━━━ lines) into chunks
+    ≤3500 chars — well under Telegram's 4096-char message cap. Sections
+    stay grouped when they fit; otherwise each becomes its own chunk."""
     sections = _HELP_TEXT.split("━━━━━━━━━━━━━━")
     chunks: list[str] = []
     current = ""
@@ -759,10 +762,47 @@ async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
             current = current + "\n" + piece if current else piece
     if current:
         chunks.append(current)
+    return chunks
 
-    for chunk in chunks:
-        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+
+async def _send_help(send_html, send_plain, label: str) -> None:
+    """Send the chunked help via the two callables (HTML + plain fallback).
+    `send_html(text)` and `send_plain(text)` are awaitables the caller
+    binds to either `update.message.reply_text` or `bot.send_message` so
+    this works for both DM (`cmd_help`) and channel post paths.
+
+    Defensive fallback: if Telegram rejects an HTML chunk (entity parse
+    error or oversize) the chunk is re-sent as plain text with tags
+    stripped — the user never sees nothing at all."""
+    chunks = _chunk_help_text()
+    log.info("%s: sending %d chunk(s)", label, len(chunks))
+    for idx, chunk in enumerate(chunks, 1):
+        try:
+            await send_html(chunk)
+        except Exception as exc:
+            log.warning(
+                "%s chunk %d/%d HTML send failed (%s) — retrying as plain text",
+                label, idx, len(chunks), exc,
+            )
+            plain = re.sub(r"<[^>]+>", "", chunk)
+            try:
+                await send_plain(plain)
+            except Exception:
+                log.exception(
+                    "%s chunk %d/%d plain fallback also failed",
+                    label, idx, len(chunks),
+                )
         await asyncio.sleep(0.5)
+
+
+async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """DM /start or /help — comprehensive bot usage guide. See
+    `_send_help` for the chunking + fallback logic."""
+    await _send_help(
+        send_html=lambda t: update.message.reply_text(t, parse_mode=ParseMode.HTML),
+        send_plain=lambda t: update.message.reply_text(t),
+        label="cmd_help",
+    )
 
 
 # ─── /usage ───────────────────────────────────────────────────────────
