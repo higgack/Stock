@@ -114,11 +114,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         when the prefix is missing or wrong."""
         if not _TOKEN:
             return True
-        # Accept both `/<token>` and `/<token>/<rest>` (with/without
-        # trailing slash). Anything else → 404 with no body so a scanner
-        # can't tell whether tokens exist at all.
+        # Accept `/<token>/` and `/<token>/<rest>`. The no-trailing-slash
+        # form `/<token>` gets a 301 redirect to `/<token>/` so relative
+        # URLs in the page (e.g. `fetch('api/delete')`) resolve against
+        # the right base — otherwise the browser treats the page as
+        # being at `/` and POSTs to `/api/delete`, missing the token
+        # prefix and getting a 404. Anything else → 404 with no body
+        # so a scanner can't tell whether tokens exist at all.
         candidate = f"/{_TOKEN}"
-        if self.path == candidate or self.path == candidate + "/":
+        if self.path == candidate:
+            self.send_response(301)
+            self.send_header("Location", candidate + "/")
+            self.end_headers()
+            return False
+        if self.path == candidate + "/":
             self.path = "/"
             return True
         if self.path.startswith(candidate + "/"):

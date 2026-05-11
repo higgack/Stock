@@ -860,7 +860,7 @@ _INDEX_JS = """
       if (!confirm('📊 ' + ticker + ' (' + date + ') 분석 기록을 삭제할까요?')) return;
       btn.disabled = true;
       btn.textContent = '⏳';
-      fetch('/api/delete', {
+      fetch('api/delete', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({date: date, ticker: ticker})
