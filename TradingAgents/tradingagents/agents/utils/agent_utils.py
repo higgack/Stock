@@ -253,21 +253,37 @@ _INSTRUMENT_INFO_CACHE: dict[str, dict] = {}
 
 
 def _instrument_info(ticker: str) -> dict:
-    """Cached yfinance .info lookup. Returns a small dict with the fields
-    we actually use (quoteType, sector, industry, longName), or empty
-    dict when the lookup fails. Single network call per ticker per
-    process; downstream callers (is_etf, _quote_type, sector/industry
-    injection) all share the same fetch."""
+    """Cached yfinance .info lookup. Returns a dict with the fields we
+    actually use (quoteType, sector, industry, longName, Wall Street
+    consensus, short interest, insider holdings, earnings timestamps),
+    or empty dict when the lookup fails. Single network call per ticker
+    per process; downstream callers (is_etf, _quote_type, sector/industry
+    injection, market-signals injection, earnings warning) all share
+    the same fetch."""
     if ticker in _INSTRUMENT_INFO_CACHE:
         return _INSTRUMENT_INFO_CACHE[ticker]
     out: dict = {}
     try:
         import yfinance as yf
         raw = yf.Ticker(ticker).info or {}
-        for key in ("quoteType", "typeDisp", "sector", "industry", "longName"):
+        # Strings — keep only when non-empty
+        for key in ("quoteType", "typeDisp", "sector", "industry", "longName",
+                    "recommendationKey"):
             v = raw.get(key)
             if isinstance(v, str) and v.strip():
                 out[key] = v.strip()
+        # Numerics — keep when present (zero is a meaningful value)
+        for key in ("targetMeanPrice", "targetHighPrice", "targetLowPrice",
+                    "recommendationMean", "numberOfAnalystOpinions",
+                    "currentPrice", "regularMarketPrice",
+                    "sharesShort", "shortRatio", "shortPercentOfFloat",
+                    "heldPercentInsiders", "heldPercentInstitutions",
+                    "earningsTimestamp", "earningsTimestampStart",
+                    "earningsTimestampEnd"):
+            v = raw.get(key)
+            if isinstance(v, (int, float)) and not (isinstance(v, float) and v != v):
+                # exclude NaN
+                out[key] = v
     except Exception as exc:
         _analyst_log.warning("instrument info lookup failed for %s: %s", ticker, exc)
     _INSTRUMENT_INFO_CACHE[ticker] = out
@@ -396,6 +412,103 @@ def get_sector_strength_for(symbol: str, curr_date: str) -> str:
     return snapshot
 
 
+_RECOMMENDATION_KR = {
+    "strong_buy": "강매수",
+    "buy": "매수",
+    "hold": "보유",
+    "sell": "매도",
+    "strong_sell": "강매도",
+    "underperform": "비중축소",
+    "outperform": "비중확대",
+    "none": "없음",
+}
+
+
+def get_market_signals_for(ticker: str) -> str:
+    """Format Wall Street consensus + short interest + insider holdings
+    into a snippet suitable for injection into analyst / decision
+    prompts. Empty string when no relevant signals are available.
+
+    These are deterministic numbers from yfinance — never make the LLM
+    fetch them via a tool call. The pattern matches macro/risk/sector
+    pre-fetching: Python pulls the data, prompt receives it as fact."""
+    info = _instrument_info(ticker)
+    if not info:
+        return ""
+
+    lines: list[str] = []
+
+    # Wall Street analyst consensus.
+    target = info.get("targetMeanPrice")
+    current = info.get("currentPrice") or info.get("regularMarketPrice")
+    rec_key = (info.get("recommendationKey") or "").lower()
+    n_analysts = info.get("numberOfAnalystOpinions")
+    rec_mean = info.get("recommendationMean")
+    if target and current:
+        upside = (target - current) / current * 100
+        rec_kr = _RECOMMENDATION_KR.get(rec_key, rec_key or "")
+        line = f"- Wall Street 컨센서스: 목표가 ${target:,.2f} (현재가 ${current:,.2f} 대비 {upside:+.1f}%)"
+        extras = []
+        if rec_kr:
+            extras.append(f"등급 {rec_kr}")
+        if rec_mean:
+            extras.append(f"평균 {rec_mean:.2f}/5 (1=강매수)")
+        if n_analysts:
+            extras.append(f"{int(n_analysts)}명")
+        if extras:
+            line += " · " + " · ".join(extras)
+        lines.append(line)
+
+    # Short interest.
+    short_pct = info.get("shortPercentOfFloat")
+    short_ratio = info.get("shortRatio")
+    if short_pct or short_ratio:
+        parts = []
+        if short_pct is not None:
+            parts.append(f"공매도 {short_pct * 100:.1f}% of float")
+        if short_ratio is not None:
+            parts.append(f"days-to-cover {short_ratio:.1f}일")
+        if parts:
+            risk_hint = ""
+            if short_pct and short_pct > 0.10:
+                risk_hint = " (10% 초과 — squeeze 위험 ↑)"
+            lines.append("- 공매도 비중: " + " · ".join(parts) + risk_hint)
+
+    # Insider holdings.
+    insider_pct = info.get("heldPercentInsiders")
+    inst_pct = info.get("heldPercentInstitutions")
+    if insider_pct or inst_pct:
+        parts = []
+        if insider_pct is not None:
+            parts.append(f"내부자 {insider_pct * 100:.1f}%")
+        if inst_pct is not None:
+            parts.append(f"기관 {inst_pct * 100:.1f}%")
+        if parts:
+            lines.append("- 보유 구성: " + " · ".join(parts))
+
+    return "\n".join(lines)
+
+
+def days_until_earnings(ticker: str, curr_date: str) -> int | None:
+    """Return signed integer days until/since the next earnings event,
+    or None if yfinance doesn't have a usable timestamp. Positive = days
+    in the future, negative = days since release."""
+    info = _instrument_info(ticker)
+    ts = (
+        info.get("earningsTimestampStart")
+        or info.get("earningsTimestamp")
+    )
+    if not ts:
+        return None
+    try:
+        import datetime as _dt
+        earnings = _dt.date.fromtimestamp(ts)
+        current = _dt.date.fromisoformat(curr_date)
+        return (earnings - current).days
+    except Exception:
+        return None
+
+
 def build_instrument_context(ticker: str) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified
     tickers and adjust their data expectations for non-equity products."""
@@ -446,6 +559,24 @@ def build_instrument_context(ticker: str) -> str:
             " social sentiment, that is expected — note it briefly and move"
             " on. Do NOT apologise or call the tool 'broken'."
         )
+    else:
+        # Equity-only signals: Wall Street consensus, short interest,
+        # insider holdings. Pre-fetched from yfinance .info; the analyst
+        # quotes them verbatim instead of trying to call a tool for the
+        # same data (or worse, hallucinating "데이터 없음"). The decision
+        # nodes also see these via the same prompt path, so the bot's
+        # verdict can be compared against the Wall Street consensus
+        # directly (a 4-0 매수 → 매도 mismatch reads very differently
+        # when analysts also point at $517 average target).
+        signals = get_market_signals_for(ticker)
+        if signals:
+            base += (
+                "\n\n=== Pre-fetched market signals (yfinance, verbatim —"
+                " do NOT call any tool for these numbers; use them in the"
+                " fundamentals summary table and let the debate / decision"
+                " nodes see them as ground truth) ===\n"
+                + signals
+            )
     return base
 
 def create_msg_delete():

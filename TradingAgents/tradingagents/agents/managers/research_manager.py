@@ -47,6 +47,37 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 
 ---
 
+**EVALUATION HORIZON — read carefully:**
+
+Your recommendation is evaluated over a **5-trading-day** window (the
+memory log resolves entries by 5-day raw return vs SPY/sector alpha).
+Calibrate the verdict accordingly:
+
+- **Pure-valuation bear theses** (e.g. "PER 44배 is expensive", "PEG > 2 is rich")
+  are TYPICALLY 6-12 month theses. Over 5 trading days, momentum,
+  flows, and short-term catalysts dominate valuation. Do NOT downgrade
+  a momentum leader to Sell/Underweight on a valuation argument ALONE
+  unless there is also a concrete near-term catalyst (earnings within
+  5 days, FOMC, guide cut, regulatory event, etc).
+
+- **Wall Street consensus disagreement matters**: if the pre-fetched
+  market-signals block shows a Buy/Strong Buy consensus with material
+  upside to target (>10%), your Sell/Underweight verdict carries a
+  higher burden of proof — explicitly name the near-term catalyst that
+  Wall Street is missing.
+
+- **Strong momentum + bull-aligned analysts**: if all four analysts
+  lean Buy/Overweight AND the stock is up materially over 30D/90D,
+  flipping to Sell/Underweight is rarely the 5-day-correct call.
+  Prefer Hold or a smaller-step Underweight (trim, not exit) in that
+  setup.
+
+- **Hold is not a cop-out** when the directional signal is weak — a
+  4-0 analyst lean toward Buy with a 5-day window of high volatility
+  is usually best served by Hold, not by overriding the consensus.
+
+---
+
 **Debate History:**
 {history}""" + get_language_instruction()
 

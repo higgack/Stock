@@ -229,6 +229,13 @@ class TradingAgentsGraph:
     ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
         """Fetch raw and alpha return for ticker over holding_days from trade_date.
 
+        Alpha is computed against the ticker's matched SECTOR ETF when one
+        is available (e.g. PLUG → TAN, NVDA → SOXX, JPM → XLF), with SPY
+        as the fallback for tickers we can't classify. Comparing against
+        the sector is a fairer scorecard: a +3% week on PLUG only beats
+        the market alpha test if PLUG actually outperformed the solar
+        sector — otherwise the bot is just riding sector beta.
+
         Returns (raw_return, alpha_return, actual_holding_days) or
         (None, None, None) if price data is unavailable (too recent, delisted,
         or network error).
@@ -243,22 +250,36 @@ class TradingAgentsGraph:
                 return None, None, None
             end_str = end.strftime("%Y-%m-%d")
 
-            stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
-            spy = yf.Ticker("SPY").history(start=trade_date, end=end_str)
+            # Resolve benchmark — sector ETF preferred, SPY fallback.
+            benchmark_symbol = "SPY"
+            try:
+                from tradingagents.agents.utils.sector_strength_tools import _resolve_benchmark
+                bm = _resolve_benchmark(ticker)
+                if bm and bm[0]:
+                    benchmark_symbol = bm[0]
+            except Exception:
+                pass  # SPY default already set
 
-            if len(stock) < 2 or len(spy) < 2:
+            stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
+            bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
+
+            if len(stock) < 2 or len(bench) < 2:
                 return None, None, None
 
-            actual_days = min(holding_days, len(stock) - 1, len(spy) - 1)
+            actual_days = min(holding_days, len(stock) - 1, len(bench) - 1)
             raw = float(
                 (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])
                 / stock["Close"].iloc[0]
             )
-            spy_ret = float(
-                (spy["Close"].iloc[actual_days] - spy["Close"].iloc[0])
-                / spy["Close"].iloc[0]
+            bench_ret = float(
+                (bench["Close"].iloc[actual_days] - bench["Close"].iloc[0])
+                / bench["Close"].iloc[0]
             )
-            alpha = raw - spy_ret
+            alpha = raw - bench_ret
+            logger.info(
+                "fetch_returns: %s/%s — raw=%.4f bench=%s ret=%.4f alpha=%.4f days=%d",
+                ticker, trade_date, raw, benchmark_symbol, bench_ret, alpha, actual_days,
+            )
             return raw, alpha, actual_days
         except Exception as e:
             logger.warning(

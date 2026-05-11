@@ -198,6 +198,31 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
                 )
         except Exception as exc:
             log.warning("analyze: news pre-check failed for %s: %s", ticker, exc)
+
+    # Earnings calendar warning. A 5-trading-day recommendation that
+    # lands within a ±5-day earnings window has its outcome dominated
+    # by the earnings reaction, not by the bot's analysis. Surface this
+    # up front so the user can decide whether to wait.
+    try:
+        from tradingagents.agents.utils.agent_utils import days_until_earnings
+        delta = days_until_earnings(ticker, target_date)
+        if delta is not None and -5 <= delta <= 5:
+            if delta > 0:
+                pre_flight_notes.append(
+                    f"⚠️ 실적 발표 {delta}일 후 — 발표 전후 변동성 ↑."
+                    " 5거래일 추천 평가가 어닝 반응에 좌우될 수 있음"
+                )
+            elif delta == 0:
+                pre_flight_notes.append(
+                    "⚠️ 실적 발표 당일 — 발표 결과에 따라 큰 변동 가능"
+                )
+            else:
+                pre_flight_notes.append(
+                    f"📊 실적 발표 {-delta}일 전 발표됨 — post-earnings drift 영향 가능"
+                )
+    except Exception as exc:
+        log.warning("analyze: earnings check failed for %s: %s", ticker, exc)
+
     ta = TradingAgentsGraph(
         debug=False,
         config=_build_config(),
