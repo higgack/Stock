@@ -647,7 +647,7 @@ _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
  • 결정 LLM도 같은 컨텍스트 받음 → 자기 과거 실수 반영
 
 ━━━━━━━━━━━━━━
-<b>【6. 캐시 & 비용】</b>
+<b>【6. 캐시 &amp; 비용】</b>
  • 오늘 같은 종목 재분석 → 디스크 캐시 즉시 반환 (무료)
  • 새 분석 ~₩100~150/회 (Pro thinking cap 적용)
  • /compare 둘 다 새거 → ~₩200~300
@@ -734,8 +734,35 @@ _HELP_TEXT = """🧠 <b>NOAH의 주식분석 봇 사용법</b>
 
 
 async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    """DM /start or /help — comprehensive bot usage guide."""
-    await update.message.reply_text(_HELP_TEXT, parse_mode=ParseMode.HTML)
+    """DM /start or /help — comprehensive bot usage guide.
+
+    The text is too long for a single Telegram message (4096-char cap),
+    so split at the section dividers (━━━ lines) and pack chunks up to
+    ~3500 chars each. Sections stay grouped when they fit; otherwise
+    each section becomes its own message. Sequential await preserves
+    order; the small sleep keeps us under Telegram's per-chat rate
+    limit when the help is long."""
+    sections = _HELP_TEXT.split("━━━━━━━━━━━━━━")
+    chunks: list[str] = []
+    current = ""
+    for i, section in enumerate(sections):
+        section = section.strip()
+        if not section:
+            continue
+        # The first non-empty section carries the title; later sections
+        # get the divider prepended to keep the visual structure intact.
+        piece = section if i == 0 else "━━━━━━━━━━━━━━\n" + section
+        if current and len(current) + len(piece) + 2 > 3500:
+            chunks.append(current)
+            current = piece
+        else:
+            current = current + "\n" + piece if current else piece
+    if current:
+        chunks.append(current)
+
+    for chunk in chunks:
+        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
+        await asyncio.sleep(0.5)
 
 
 # ─── /usage ───────────────────────────────────────────────────────────
