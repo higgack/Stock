@@ -156,6 +156,14 @@ def get_sector_relative_strength(
     rows.append("| 기간 | " + symbol + " | " + (bench_label or "섹터 ETF n/a") + " | SPY | vs 섹터 | vs SPY |")
     rows.append("|---|---|---|---|---|---|")
 
+    # Track relative diffs so we can flag implausible spreads. AAPL
+    # 2026-05-13 surfaced an XLK relative-strength of -17.77%p over
+    # 30 days, which is impossible because AAPL itself is a ~6% weight
+    # of XLK — the two move within a few %p of each other. The
+    # underlying yfinance fetch on the benchmark must have grabbed a
+    # bad price. Flag anything beyond ±25%p so the LLM doesn't quote
+    # the broken number verbatim.
+    max_abs_vs_sector = 0.0
     stock_returns_collected = 0
     for days, label in horizons:
         stock_pct = _pct_return(symbol, curr_date, days)
@@ -163,6 +171,8 @@ def get_sector_relative_strength(
             stock_returns_collected += 1
         bench_pct = _pct_return(bench_etf, curr_date, days) if bench_etf else None
         spy_pct = _pct_return("SPY", curr_date, days)
+        if stock_pct is not None and bench_pct is not None:
+            max_abs_vs_sector = max(max_abs_vs_sector, abs(stock_pct - bench_pct))
         rows.append(
             "| "
             + " | ".join(
@@ -221,5 +231,12 @@ def get_sector_relative_strength(
         "30D/90D 둘 다 양수이고 차이가 5%p 이상이면 명확한 '리더', "
         "둘 다 음수이고 -5%p 이하면 '후행'."
     )
+    if max_abs_vs_sector > 25:
+        notes += (
+            "\n⚠️ vs 섹터 차이가 |25%p| 초과 — yfinance 벤치마크 fetch 오류"
+            " 가능성. 본문에 이 숫자를 인용하지 말고 (해당 종목과 섹터 ETF가"
+            " 매우 어긋난 움직임을 보인다는 결론을 내리지 말 것), '섹터 강도"
+            " 데이터 신뢰성 이슈로 평가 보류' 한 줄로 갈음하라."
+        )
 
     return f"{header}\n\n" + "\n".join(rows) + notes
