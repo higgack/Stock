@@ -74,6 +74,18 @@ def create_news_analyst(llm):
             " equivalents. If the tool's response says data was missing, mention"
             " that the data was missing in one short sentence and continue with"
             " the rest of the analysis."
+            + " NO HEADER RE-EMISSION: Write ONE news report per call and stop."
+            " Do NOT restate '뉴스 분석', '<Company> (TICKER) 뉴스', '<Company>"
+            " (TICKER) 트레이딩 및 거시 경제 분석 보고서', or any variant of the"
+            " section title in the body — the downstream renderer adds a single"
+            " '## 📰 뉴스 분석' header for you. Do NOT re-emit '요약 테이블'"
+            " more than once. SNPS 2026-05-13 emitted three different section"
+            " titles plus a 'SNEPS' typo lead-in — that's exactly the failure"
+            " mode this rule prevents. Start with the table, write the body"
+            " once, end cleanly. Also: NEVER mistype the ticker symbol in the"
+            " body (e.g. 'SNEPS' instead of 'SNPS'); double-check every"
+            " ticker mention against the symbol passed in the instrument"
+            " context block."
             + get_analyst_directive()
             + get_language_instruction()
         )

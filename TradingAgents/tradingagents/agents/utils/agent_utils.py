@@ -588,6 +588,22 @@ def build_instrument_context(ticker: str) -> str:
             " exact labels in any sector / industry primer instead of"
             " guessing): " + "; ".join(facts) + "."
         )
+
+    # Single source of truth for the current price. Without this, every
+    # analyst can pick a different number — SNPS 2026-05-13 had the
+    # sentiment analyst quoting $497.5 while fundamentals quoted $513.21,
+    # because one grabbed an older trailing close and the other read
+    # currentPrice from yfinance .info. The trader and PM then can't tell
+    # which "현재가" anchors the verdict. Inject the canonical number
+    # here so every prompt sees the same value and stops re-fetching.
+    px = info.get("currentPrice") or info.get("regularMarketPrice")
+    if isinstance(px, (int, float)) and px == px and px > 0:
+        base += (
+            f"\n\nCanonical current price (yfinance, point-in-time — use"
+            f" this single value verbatim for any '현재가 / current price'"
+            f" reference in your report; do NOT quote a different price"
+            f" derived from a trailing close or a tool call): ${px:,.2f}"
+        )
     if qt in ("ETF", "ETN", "MUTUALFUND"):
         # ETFs / leveraged funds have no company news, no executive
         # quotes, no earnings transcripts. The analyst's standard "company
