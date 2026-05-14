@@ -9,6 +9,28 @@ Operational rules for working in this repo.
 3. Wait for explicit "커밋" before committing
 4. After commit, push to current `claude/...` branch
 
+## Automation-first principle
+
+**Default to fully automated solutions.** The user runs operations alone and prefers not to ssh / paste shell commands when avoidable. Before proposing any manual server step, ask: "can this be a cron job, systemd timer, asyncio task, or in-process scheduler instead?" Examples of what's already automated and the pattern to follow:
+
+- Bot lifecycle → systemd (`stock-bot.service`)
+- Code updates → `stock-bot-update.service` polls git every 2 min and redeploys without manual intervention
+- Stale process recovery → `stock-bot-watchdog.service` restarts if main loop hangs 12 min
+- Memory pending-entry resolution → `_periodic_auto_resolve` asyncio task, 12 h cycle
+- Daily dashboard regen → `_periodic_dashboard_refresh` asyncio task, 00:01 KST
+- Journal log size → `SystemMaxUse=500M` in `journald.conf` (auto-trim)
+
+**Acceptable manual steps** (rare, one-time):
+- Initial systemd unit installation
+- Secret rotation (API keys leaked, etc.)
+- Investigating an unknown failure
+
+**Unacceptable as a recurring ask**: "ssh in and run X every time Y happens." If it recurs, it must be automated. When proposing a fix, prefer (in order):
+1. In-process scheduler (asyncio task / APScheduler)
+2. systemd timer / oneshot service
+3. Cron entry
+4. Manual command (only if 1-3 are infeasible and impact is one-time)
+
 ## Help text maintenance (`_HELP_TEXT` in `bot/telegram_bot.py`)
 
 The help text is **pinned as a channel announcement**. Treat it as a public-facing spec.
