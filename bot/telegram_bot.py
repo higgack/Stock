@@ -579,8 +579,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /start /help /usage — 도움말·비용
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
-※ 다른 종목은 /티커 (예: /PLTR), 미국 외엔 접미사 유지 (/005930.KS)
-※ 등록된 채널 외에선 무시 (보안)
+※ 다른 종목은 /티커 (예: /PLTR)
 
 ━━━━━━━━━
 <b>【2. 분석 흐름】</b> (~3분, ~₩100~150/회)
@@ -621,7 +620,7 @@ yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매�
 
 ━━━━━━━━━
 <b>【7. 안정성 (자동)】</b>
-별도 subprocess (메인 안 멈춤) · 10분 wall 타임아웃 · LLM HTTP 150초 cap · Polish 정규식 step별 10초 SIGALRM · watchdog 12분 stale 재시작 · auto-update 2분 git pull 무중단 재배포 · 재시작 중 진행 메시지 자동 복구 · 펀더멘털 RULE 1~5 (숫자 정확성·섹션 중복·downstream 헤더 금지)
+별도 subprocess (메인 안 멈춤) · 10분 wall 타임아웃 · LLM HTTP 150초 cap · Polish 정규식 step별 10초 SIGALRM · watchdog 12분 stale 재시작 · auto-update 2분 git pull 무중단 재배포 · 재시작 중 진행 메시지 자동 복구 · 펀더멘털 RULE 1~6 (숫자 정확성·실제 티커·자본 잠식 처리·섹션 중복 차단) · 분석가 stance 추출 정확도 보정 (결론 우선) · 섹터 강도 sanity (|25%p|↑ 시 인용 차단) · Wall Street 목표가 staleness 경고 (현재가 +20%↑ 갭 시)
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
