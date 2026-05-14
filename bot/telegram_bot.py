@@ -639,7 +639,7 @@ yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매�
 페르소나 토론 (Buffett/Lynch vs Graham/Marks) · 결정 3노드만 Pro (~₩30 추가로 품질 점프) · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 ground truth 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 (장기 thesis 매도 자제) · 섹터 ETF 알파 · 실패 시 hallucination 대신 명시적 abort
 
 ━━━━━━━━━
-<b>【11. 대시보드】</b> 🦉 영구 보관 (자정 만료 X)
+<b>【11. 대시보드】</b> 🦉 영구 보관
  • <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/</a>
  • PC/폰/태블릿 어디서든. 첫 접속 시 ID/PW 팝업 → "비밀번호 저장"
  • 상단 카드 4개: 📊 총 분석 / 💰 비용·도구 실패율 / ⏱ 평균 시간 / 🎯 정확도 (평가·미해소·Hold 분리, 알파 포함)
