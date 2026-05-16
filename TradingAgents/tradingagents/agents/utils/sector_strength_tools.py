@@ -60,12 +60,53 @@ _INDUSTRY_OVERRIDES = [
 ]
 
 
+# Korean market — KODEX sector ETFs. yfinance returns the same English
+# sector/industry vocabulary for KRX-listed names (Samsung Electronics
+# is sector='Technology' / industry='Consumer Electronics', Kakao is
+# sector='Communication Services' / industry='Internet Content &
+# Information'), so we can reuse substring matching on `industry` and
+# fall back to KODEX 200 as the broad benchmark when no specific KODEX
+# sector fits. Maintained as a list (not dict) so KODEX 반도체 wins over
+# the generic KODEX 200 default. Source: KRX ETF listings as of 2026.
+_KR_INDUSTRY_OVERRIDES = [
+    ("semiconductor", ("091160.KS", "반도체 (KODEX 반도체)")),
+    ("software", ("266370.KS", "IT (KODEX IT)")),
+    ("internet content", ("266370.KS", "IT (KODEX IT)")),
+    ("communication equipment", ("266370.KS", "IT (KODEX IT)")),
+    ("auto", ("091180.KS", "자동차 (KODEX 자동차)")),
+    ("bank", ("091170.KS", "은행 (KODEX 은행)")),
+    ("insurance", ("140700.KS", "보험 (KODEX 보험)")),
+    ("capital markets", ("102970.KS", "증권 (KODEX 증권)")),
+    ("biotechnology", ("244580.KS", "바이오 (KODEX 바이오)")),
+    ("drug manufacturers", ("266420.KS", "헬스케어 (KODEX 헬스케어)")),
+    ("medical", ("266420.KS", "헬스케어 (KODEX 헬스케어)")),
+    ("construction", ("117700.KS", "건설 (KODEX 건설)")),
+    ("steel", ("117680.KS", "철강 (KODEX 철강)")),
+    ("chemical", ("102710.KS", "화학 (KODEX 화학)")),
+    ("battery", ("305720.KS", "2차전지 (KODEX 2차전지산업)")),
+    ("electronic gaming", ("300950.KS", "게임 (KODEX 게임산업)")),
+    ("entertainment", ("266360.KS", "미디어 (KODEX 미디어&엔터)")),
+    ("broadcasting", ("266360.KS", "미디어 (KODEX 미디어&엔터)")),
+    ("airlines", ("140710.KS", "운송 (KODEX 운송)")),
+    ("marine shipping", ("140710.KS", "운송 (KODEX 운송)")),
+    ("trucking", ("140710.KS", "운송 (KODEX 운송)")),
+    ("machinery", ("102960.KS", "기계 (KODEX 기계장비)")),
+    ("oil & gas", ("117460.KS", "에너지화학 (KODEX 에너지화학)")),
+]
+
+# Broad-market fallback when KR sector mapping doesn't hit anything
+# specific. KOSPI 200 is the closest KR analogue to SPY for US.
+_KR_BROAD_FALLBACK = ("069500.KS", "KOSPI 200 (KODEX 200)")
+
+
 def _resolve_benchmark(ticker: str) -> tuple[str, str] | None:
     """Pick the most specific sector/industry ETF for `ticker`.
 
     Returns (etf_symbol, korean_label) or None if yfinance refuses to
     give us a sector. Industry overrides win when they match; otherwise
-    fall back to the broad sector ETF.
+    fall back to the broad sector ETF. Market detection (US/KR/JP/CN)
+    determines which ETF family to use — KODEX for Korean tickers,
+    SPDR Select Sector for US.
     """
     try:
         info = yf_retry(lambda: yf.Ticker(ticker).info) or {}
@@ -74,11 +115,30 @@ def _resolve_benchmark(ticker: str) -> tuple[str, str] | None:
         return None
 
     industry = (info.get("industry") or "").lower()
+    sector = info.get("sector") or ""
+
+    # Import here to avoid a circular dep — bot.market is part of the
+    # bot package while this file lives under TradingAgents. The cost
+    # is one extra import on the cold path; the lookup itself is O(1).
+    try:
+        from bot.market import detect_market
+        market = detect_market(ticker)
+    except Exception:
+        market = "US"
+
+    if market == "KR":
+        for needle, etf in _KR_INDUSTRY_OVERRIDES:
+            if needle in industry:
+                return etf
+        # No specific KODEX sector — use KOSPI 200 as broad fallback.
+        return _KR_BROAD_FALLBACK
+
+    # JP / CN coverage to come in later phases. For now they fall
+    # through to the US logic which probably won't have a useful
+    # mapping for them, returning None.
     for needle, etf in _INDUSTRY_OVERRIDES:
         if needle in industry:
             return etf
-
-    sector = info.get("sector") or ""
     return _SECTOR_TO_ETF.get(sector)
 
 
@@ -151,9 +211,21 @@ def get_sector_relative_strength(
     logger.info("get_sector_relative_strength: %s → benchmark=%s",
                 symbol, bench_etf or "(none)")
 
+    # Broad-market benchmark is market-dependent. For Korean tickers we
+    # compare against KOSPI 200 (KODEX 200), not SPY — SPY would tell
+    # us the company is up/down relative to the US market, which isn't
+    # the right frame for a KRX-listed name. Same logic will extend to
+    # TOPIX for JP, CSI 300 for CN in later phases.
+    try:
+        from bot.market import get_market_config
+        broad = get_market_config(symbol)["broad_benchmark"]
+        broad_label = get_market_config(symbol)["broad_label"]
+    except Exception:
+        broad, broad_label = "SPY", "SPY"
+
     horizons = [(30, "30D"), (90, "90D")]
     rows = []
-    rows.append("| 기간 | " + symbol + " | " + (bench_label or "섹터 ETF n/a") + " | SPY | vs 섹터 | vs SPY |")
+    rows.append("| 기간 | " + symbol + " | " + (bench_label or "섹터 ETF n/a") + " | " + broad_label + " | vs 섹터 | vs " + broad_label.split(" ")[0] + " |")
     rows.append("|---|---|---|---|---|---|")
 
     # Track relative diffs so we can flag implausible spreads. AAPL
@@ -170,7 +242,7 @@ def get_sector_relative_strength(
         if stock_pct is not None:
             stock_returns_collected += 1
         bench_pct = _pct_return(bench_etf, curr_date, days) if bench_etf else None
-        spy_pct = _pct_return("SPY", curr_date, days)
+        spy_pct = _pct_return(broad, curr_date, days)
         if stock_pct is not None and bench_pct is not None:
             max_abs_vs_sector = max(max_abs_vs_sector, abs(stock_pct - bench_pct))
         rows.append(
@@ -192,7 +264,7 @@ def get_sector_relative_strength(
     if stock_ytd is not None:
         stock_returns_collected += 1
     bench_ytd = _ytd_return(bench_etf, curr_date) if bench_etf else None
-    spy_ytd = _ytd_return("SPY", curr_date)
+    spy_ytd = _ytd_return(broad, curr_date)
     # If we couldn't pull a single stock-side return across all 3 horizons,
     # the underlying yfinance fetch is dead for this ticker. Surface that
     # to the telemetry log so persistent breakage is visible in aggregate.

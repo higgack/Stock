@@ -88,3 +88,41 @@ The user has accidentally pasted API keys in chat multiple times. When discussin
 - `cat ~/stock/.env | sed 's/=.*$/=***REDACTED***/'` for sharing
 - Never echo or quote the user's real key values back
 - Recommend revocation if a real key was exposed
+
+## Multi-market expansion (US → KR → JP → CN)
+
+Phase tracking — what's done, what's blocking the next phase:
+
+**Phase 0 — Infrastructure (done)**
+- `bot/market.py` — `detect_market()` + `MARKET_CONFIG` (US/KR/JP/CN)
+- `TICKER_RE` accepts numeric-start tickers (was the blocker for `005930.KS`)
+- `_resolve_benchmark` picks KODEX sector ETFs for KR tickers
+- `get_sector_relative_strength` uses KOSPI 200 as broad benchmark for KR
+
+**Phase 1 — KR data sources (blocked on user)**
+- DART API client (실적 일정 / 임원지분 / 공시) — needs user-supplied `DART_API_KEY`
+- KR macro 9-series (USD/KRW, KOSPI VIX, KR10Y, etc.) — partly yfinance, partly 한은 API
+- KR earnings calendar via DART (yfinance coverage too thin)
+- KR insider holdings via DART (yfinance returns nothing useful)
+
+**Phase 2 — KR validation + help text**
+- Test `/005930.KS`, `/035720.KS`, `/000660.KS` end-to-end
+- Re-add a KR usage note to `_HELP_TEXT` section 1 once Phase 1 ships
+- Update CLAUDE.md analyst-count / RULE-count if any KR-specific rule lands
+
+**Phase 3 — JP / CN expansion** (further out)
+- Same shape: market-specific benchmark mapping + data source adapters
+- TOPIX sector ETFs for JP, CSI 300 sectors for CN
+
+## TODO
+
+- **Korean sell-side consensus — free source research.** yfinance's
+  `recommendationKey` / `targetMeanPrice` coverage on KRX-listed names
+  is sparse. Investigate free sources before committing to a paid
+  data feed: 네이버 금융 페이지 스크래핑 (ToS check), 한경 컨센서스
+  스크래핑, KIS Developers API (한투 계좌 필요 여부 확인), 한국거래소
+  KIND 시스템. The decision flow needs `targetMeanPrice` + `recommendationKey`
+  + `numberOfAnalystOpinions` at minimum — anything that returns those
+  three for arbitrary `.KS`/`.KQ` tickers is a candidate. Until this
+  is resolved, Phase 1 ships KR analyses WITHOUT a consensus signal
+  (the existing market-signals block will gracefully omit it).

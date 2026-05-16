@@ -56,7 +56,12 @@ _raw_ids = os.environ.get("CHANNEL_CHAT_IDS", "")
 CHANNEL_CHAT_IDS: set[int] = {int(x) for x in _raw_ids.split(",") if x.strip()}
 
 TICKER_PREFIX = "/"
-TICKER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9.]{0,9}$")
+# Accept both US-style alpha-starting tickers (NVDA, BRK.B) and
+# numeric-starting tickers from foreign exchanges (005930.KS Samsung,
+# 7203.T Toyota, 600519.SS Kweichow Moutai). Allowing a digit at
+# position 0 was the missing piece — previously /005930.KS hit the
+# 'invalid ticker' branch on the channel router.
+TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.]{0,9}$")
 # `/compare A B` triggers a side-by-side digest of two tickers. Both
 # tickers run through the same analyzer pipeline (via cache or fresh
 # subprocess) and the result is condensed to verdict + stance bar.
