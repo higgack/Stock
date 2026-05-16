@@ -305,12 +305,26 @@ class DartClient:
             # the latest per-person snapshot. Caller can dedupe later if
             # needed — for now expose everything and let the prompt
             # builder cap the list.
-            shares_raw = (r.get("stkqy") or "0").replace(",", "")
+            #
+            # Field names per DART /api/elestock.json spec (verified
+            # against 한솔케미칼 2026-05-17 case where all 5 entries
+            # showed 0.00% with the old 'stkqy' / 'stkrt' guesses —
+            # those field names don't exist on this endpoint):
+            #   sp_stock_lmp_cnt   — 특정증권등 소유수
+            #   sp_stock_lmp_rate  — 특정증권등 소유비율 (%, e.g. "1.65")
+            # Fallback to the old names just in case DART exposes them
+            # for some response shapes; defensive against future schema
+            # changes.
+            shares_raw = str(
+                r.get("sp_stock_lmp_cnt") or r.get("stkqy") or "0"
+            ).replace(",", "")
             try:
                 shares = int(shares_raw)
             except ValueError:
                 shares = 0
-            pct_raw = (r.get("stkrt") or "0").replace(",", "")
+            pct_raw = str(
+                r.get("sp_stock_lmp_rate") or r.get("stkrt") or "0"
+            ).replace(",", "")
             try:
                 pct = float(pct_raw)
             except ValueError:

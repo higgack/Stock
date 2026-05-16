@@ -260,7 +260,7 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     past_outcomes = _format_past_outcomes(ta.memory_log, ticker)
     log.info("analyze: past_outcomes done — building full report")
 
-    full = _format_full(state, decision, ticker, target_date, past_outcomes)
+    full = _format_full(state, decision, ticker, target_date, past_outcomes, selected)
     log.info("analyze: full report done (%d chars) — building summary", len(full))
 
     summary = _format_summary(
@@ -694,13 +694,36 @@ def _format_full(
     ticker: str,
     date_: str,
     past_outcomes: str = "",
+    selected: list[str] | None = None,
 ) -> str:
+    """Render the long-form report. `selected` is the per-run list of
+    analyst ids that actually ran — when the pre-flight pruning drops
+    one (e.g. news for a 0-coverage KR ticker), we use the run-level
+    list so the section header isn't followed by a misleading
+    '_(모델 응답 오류로 미완성)_' placeholder. Falls back to the
+    module-default list when callers don't pass anything."""
     parts = [f"📋 {_display_ticker(ticker)} 전체 리포트 ({date_})\n"]
     if past_outcomes:
         parts.append(past_outcomes + "\n")
+    run_selected = set(selected) if selected is not None else set(_SELECTED_ANALYSTS)
+    module_default = set(_SELECTED_ANALYSTS)
     for key, label, analyst_id in _REPORT_SECTIONS:
-        if analyst_id is not None and analyst_id not in _SELECTED_ANALYSTS:
-            continue  # we never ran this analyst — skip the section entirely
+        if analyst_id is not None and analyst_id not in module_default:
+            # never wired into the graph at all — skip silently
+            continue
+        if analyst_id is not None and analyst_id not in run_selected:
+            # Pre-flight pruning dropped this analyst on this run.
+            # Surface a clear '자동 생략' line instead of letting the
+            # section fall through to the generic FAILURE_PLACEHOLDER
+            # which reads as a model error — the user already saw the
+            # skip note in the summary header and shouldn't see a
+            # contradicting 'oops' message in the full report.
+            parts.append(
+                f"\n## {label}\n_(분석가 자동 생략 — 사전 데이터 부족 또는"
+                f" 종목 특성상 해당 분석을 진행하지 않았습니다. 요약 메시지"
+                f" 상단의 사유를 참고하세요.)_"
+            )
+            continue
         body = state.get(key) if isinstance(state, dict) else None
         parts.append(f"\n## {label}\n{_clean_section(body)}")
     parts.append(f"\n## ✅ 최종 결정\n{decision}")
