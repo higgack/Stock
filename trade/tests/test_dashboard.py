@@ -291,6 +291,41 @@ class TestDashboardRenderer(unittest.TestCase):
         # The CSV exports the currently-filtered result, not all rows.
         self.assertIn("ALERTS.filter(matches)", html)
 
+    def test_payload_carries_extra_metadata_for_csv(self):
+        # CSV export needs item_raw, regions/countries, stocks_meta,
+        # composite_parts, title_kind, commentary, ingested_at — verify
+        # the payload exposes them.
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        for a in payload:
+            for k in (
+                "item_raw", "regions", "countries", "stocks_meta",
+                "composite_parts", "title_kind", "commentary", "ingested_at",
+            ):
+                self.assertIn(k, a, f"missing CSV field {k}")
+
+    def test_next_announcement_and_quickstats_present(self):
+        html = render_html(self.db_path)
+        self.assertIn("nextAnnouncement", html)
+        self.assertIn("quickStats", html)
+        # Header has the two empty meta lines that JS populates on render.
+        self.assertIn('id="meta-next"', html)
+        self.assertIn('id="meta-today"', html)
+
+    def test_csv_exports_expanded_columns(self):
+        html = render_html(self.db_path)
+        # Verify the expanded header set is in the embedded downloadCSV.
+        for col in (
+            "title_kind", "item_raw", "composite_parts", "regions",
+            "countries", "stocks_meta", "expected_final_date",
+            "days_to_final", "ingested_at", "commentary",
+            "parse_warnings", "media_urls",
+        ):
+            self.assertIn(col, html, f"CSV column {col} missing")
+        # Absolute URL helper present so Excel hyperlinks resolve.
+        self.assertIn("absUrl", html)
+
     def test_empty_store_renders_without_crash(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:

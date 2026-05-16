@@ -71,18 +71,30 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
     """Strip the alert down to the fields the client view actually uses.
 
     Includes dedup_key so the modal can find sibling history alerts
-    without a server round-trip.
+    without a server round-trip, plus all the extra metadata the CSV
+    export needs (item_raw, multi region/country JSON, composite parts,
+    title_kind, commentary). raw_text and source_* fields are
+    intentionally omitted from the payload — they'd inflate it
+    materially for little browser-side gain.
     """
     return {
         "id": a["id"],
         "dir": a["direction"],
         "status": a["status"],
         "item": a["item"],
+        "item_raw": a.get("item_raw") or a["item"],
         "region": a.get("region") or "",
         "country": a.get("country") or "",
+        "regions": a.get("regions") or [],
+        "countries": a.get("countries") or [],
         "stocks": a.get("stocks") or [],
+        "stocks_meta": a.get("stocks_meta") or {},
         "is_composite": bool(a.get("is_composite")),
+        "composite_parts": a.get("composite_parts") or [],
+        "title_kind": a.get("title_kind") or "",
+        "commentary": a.get("commentary") or "",
         "posted_at": (a.get("posted_at") or "")[:10],
+        "ingested_at": (a.get("ingested_at") or "")[:19],
         "period_start": a.get("period_start") or "",
         "period_end": a.get("period_end") or "",
         "period_kind": a.get("period_kind") or "",
@@ -117,7 +129,13 @@ def _build_html(
         f"수출 {by_dir.get('export', 0)} / 수입 {by_dir.get('import', 0)} · "
         f"잠정 {by_status.get('preliminary', 0)} / 확정 {by_status.get('final', 0)} · "
         f"품목 {s.get('distinct_items', 0)}"
-        f"</div></header>"
+        f"</div>"
+        # Two extra lines populated by JS on render(): the next BeOn
+        # announcement countdown and today's activity stats. Hidden via
+        # CSS when empty so first paint stays clean.
+        f'<div class="meta meta-next" id="meta-next"></div>'
+        f'<div class="meta meta-today" id="meta-today"></div>'
+        f"</header>"
     )
 
     return (
@@ -201,6 +219,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Ne
 header{background:var(--surface);padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
 h1{margin:0 0 4px;font-size:18px}
 .meta{font-size:11px;color:var(--text-sub);line-height:1.5}
+.meta-next,.meta-today{margin-top:2px}
+.meta-next:empty,.meta-today:empty{display:none}
+.meta-next strong{color:var(--accent);font-weight:600}
+.meta-today strong{color:var(--text);font-weight:600}
 .tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:60px;z-index:9}
 .tab{flex:1;padding:13px 0;background:none;border:none;font-size:14px;font-weight:600;color:var(--text-sub);cursor:pointer;border-bottom:2px solid transparent}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
@@ -329,6 +351,52 @@ function kstTodayString(){
   // KST = UTC + 9h. Shift the timestamp so a UTC midnight in KST
   // round-trips to the right calendar date when sliced.
   return new Date(utcMs+9*3600000).toISOString().slice(0,10);
+}
+
+// Next-up BeOn publication date. The schedule (KST):
+//   매월 11일경 — 1-10일 잠정
+//   매월 21일경 — 1-20일 잠정
+//   익월 1일경 — 전월 전체 잠정
+//   익월 15일경 — 전월 전체 확정 (관세청)
+// Returns {date, kind, daysUntil} for the first one strictly after today.
+function nextAnnouncement(){
+  const today=kstTodayString();
+  const [y,m]=today.split('-').map(Number);
+  const ny=m===12?y+1:y;
+  const nm=m===12?1:m+1;
+  const pad=n=>String(n).padStart(2,'0');
+  const cands=[
+    {date:y+'-'+pad(m)+'-11', kind:m+'월 1-10일 잠정'},
+    {date:y+'-'+pad(m)+'-21', kind:m+'월 1-20일 잠정'},
+    {date:ny+'-'+pad(nm)+'-01', kind:m+'월 전체 잠정'},
+    {date:ny+'-'+pad(nm)+'-15', kind:m+'월 전체 확정'},
+  ];
+  const future=cands.filter(c=>c.date>today).sort((a,b)=>a.date.localeCompare(b.date));
+  if(!future.length)return null;
+  const f=future[0];
+  return {date:f.date, kind:f.kind, daysUntil:daysBetween(today,f.date)};
+}
+
+// 'Today's activity' summary. Counts the latest-visible alerts whose
+// posted_at lands on today's KST date and separately how many of those
+// are 확정 arrivals and how many bring a never-before-seen item into
+// the corpus.
+function quickStats(){
+  const today=kstTodayString();
+  const earliestByItem={};
+  ALERTS.forEach(a=>{
+    const e=earliestByItem[a.item];
+    if(!e||(a.posted_at||'')<e)earliestByItem[a.item]=a.posted_at||'';
+  });
+  let newToday=0,finalsToday=0,firstItemsToday=0;
+  ALERTS.forEach(a=>{
+    if(!isLatest(a))return;
+    if(a.posted_at!==today)return;
+    newToday++;
+    if(a.status==='final')finalsToday++;
+    if(earliestByItem[a.item]===today)firstItemsToday++;
+  });
+  return {newToday,finalsToday,firstItemsToday};
 }
 
 function daysBetween(aStr,bStr){
@@ -544,11 +612,32 @@ function buildCompaniesView(filtered){
   }).join('');
 }
 
+function renderHeaderMeta(){
+  const next=nextAnnouncement();
+  const mn=document.getElementById('meta-next');
+  if(next){
+    mn.innerHTML='⏭ 다음 발표 <strong>D-'+next.daysUntil+'</strong> ('+esc(next.date)+' · '+esc(next.kind)+')';
+  }else{
+    mn.textContent='';
+  }
+  const q=quickStats();
+  const mt=document.getElementById('meta-today');
+  if(q.newToday>0){
+    const parts=['오늘 신규 <strong>'+q.newToday+'</strong>건'];
+    if(q.finalsToday)parts.push('확정 도착 <strong>'+q.finalsToday+'</strong>');
+    if(q.firstItemsToday)parts.push('첫 등장 품목 <strong>'+q.firstItemsToday+'</strong>');
+    mt.innerHTML='📌 '+parts.join(' · ');
+  }else{
+    mt.textContent='';
+  }
+}
+
 function render(){
   const filtered=ALERTS.filter(matches);
   document.getElementById('visible-count').textContent=filtered.length;
   document.getElementById('items-view').innerHTML=buildItemsView(filtered);
   document.getElementById('companies-view').innerHTML=buildCompaniesView(filtered);
+  renderHeaderMeta();
 }
 
 // --- tab / chip / search / modal events (delegated) ---
@@ -605,16 +694,46 @@ document.addEventListener('keydown',e=>{
 // '﻿' BOM keeps Korean readable when Excel opens the file. Only
 // the LATEST-visible-after-filter rows are exported so the download
 // matches what the operator currently sees on screen.
+//
+// Full field set includes everything in the alert payload plus two
+// computed SLA columns and absolute media URLs (so Excel cells turn
+// into clickable hyperlinks instead of unreachable relative paths).
+function absUrl(p){
+  try{return new URL(p, location.href).href}catch(_){return p}
+}
+
+function metaPairsToString(obj){
+  if(!obj)return '';
+  return Object.entries(obj).map(([k,v])=>k+'='+v).join(';');
+}
+
 function downloadCSV(){
   const filtered=ALERTS.filter(matches);
-  const headers=['id','dedup_key','direction','status','item','region','country','stocks','period_start','period_end','period_kind','posted_at','is_composite','has_etc'];
+  const today=kstTodayString();
+  const headers=[
+    'id','dedup_key','direction','status','title_kind',
+    'item','item_raw','is_composite','composite_parts',
+    'region','country','regions','countries',
+    'stocks','stocks_meta','has_etc',
+    'period_start','period_end','period_kind',
+    'expected_final_date','days_to_final',
+    'posted_at','ingested_at',
+    'commentary','parse_warnings','media_urls',
+  ];
   const rows=[headers];
   filtered.forEach(a=>{
+    const expectedFinal=expectedFinalKst(a);
+    const days=expectedFinal?daysBetween(today,expectedFinal):'';
     rows.push([
-      a.id,a.dedup_key,a.dir,a.status,a.item,a.region,a.country,
-      (a.stocks||[]).join(';'),
-      a.period_start,a.period_end,a.period_kind,a.posted_at,
-      a.is_composite?1:0,a.has_etc?1:0,
+      a.id,a.dedup_key,a.dir,a.status,a.title_kind,
+      a.item,a.item_raw,a.is_composite?1:0,(a.composite_parts||[]).join(';'),
+      a.region,a.country,(a.regions||[]).join(';'),(a.countries||[]).join(';'),
+      (a.stocks||[]).join(';'),metaPairsToString(a.stocks_meta),a.has_etc?1:0,
+      a.period_start,a.period_end,a.period_kind,
+      expectedFinal||'',days,
+      a.posted_at,a.ingested_at,
+      a.commentary||'',(a.warnings||[]).join(';'),
+      (a.media||[]).map(absUrl).join(';'),
     ]);
   });
   const csv=rows.map(r=>r.map(v=>{
@@ -626,7 +745,7 @@ function downloadCSV(){
   const url=URL.createObjectURL(blob);
   const link=document.createElement('a');
   link.href=url;
-  link.download='trade-alerts-'+kstTodayString()+'.csv';
+  link.download='trade-alerts-'+today+'.csv';
   document.body.appendChild(link);link.click();document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }

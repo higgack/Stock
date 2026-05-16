@@ -96,6 +96,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 <b>2. 대쉬보드</b>
 <a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
 모바일 OK · 5분마다 자동 갱신 · BasicAuth 보호 · 다크모드 자동 (19~07 KST)
+헤더에 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) 자동 표시
 
 <b>3. BeOn 발표 사이클 (KST)</b>
 • 매월 11일경 — 1-10일 잠정
@@ -120,7 +121,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 <b>7. 부가 기능</b>
 • 검색: 품목/회사/국가 부분일치 (회사명 정확 일치 시 회사 뷰 자동 좁힘)
 • 칩 필터: 수출/수입, 잠정/확정
-• 📥 CSV — 현재 필터 결과 다운로드 (Excel 호환)
+• 📥 CSV — 현재 필터 결과 풀필드 다운로드 (id·dedup_key·item·item_raw·title_kind·is_composite·composite_parts·region(s)·country(s)·stocks·stocks_meta·has_etc·period_*·expected_final_date·days_to_final·posted_at·ingested_at·commentary·parse_warnings·media_urls 절대경로)
 • 모달 — 카드 클릭 시 같은 dedup 키 과거 발표 인라인 비교 (전번 확정 ↔ 이번 잠정 시각 비교)
 
 <b>8. 명령어</b>
@@ -133,7 +134,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-dashboard — HTTP 서버 (포트 8765)
 • trade-bot-dashboard-refresh (5분) — store + HTML 재생성
 
-<i>최종 갱신: 2026-05-17 — /help 명령어 + SLA 배지 + CSV 다운로드 + 정렬 룰 (전국 우선)</i>
+<i>최종 갱신: 2026-05-17 — Phase A: CSV 풀필드 + 헤더에 다음 발표 D-N + 오늘 활동 quick stats</i>
 """
 
 
