@@ -136,10 +136,17 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot — 실시간 메시지 수집
 • trade-bot-update (2분) — git pull + 재배포
 • trade-bot-watchdog (1분) — 폴링 hang 감지 + 자동 재시작
-• trade-bot-dashboard — HTTP 서버 (포트 8765)
+• trade-bot-dashboard — HTTP 서버 (포트 8765, gzip on)
 • trade-bot-dashboard-refresh (5분) — store + HTML 재생성
+• trade-bot-health (1시간) — dormancy + 사이클 누락 감지 → ⚠️ 알림
+• trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 
-<i>최종 갱신: 2026-05-17 — Phase D: 매트릭스 뷰 (품목×국가 heatmap) + 품목 섹션 국가 mix 막대</i>
+<b>10. API endpoints</b>
+• /api/alerts.json — 전체 alert 덤프 (latest + history)
+• /api/stats — 카운트 (수출/수입, 잠정/확정 등)
+• /api/health — alert 수, 마지막 게시, 디스크 잔여
+
+<i>최종 갱신: 2026-05-17 — Phase E: gzip + JSON API (/api/alerts.json·stats·health) + Dormancy/사이클 누락 알림 + store.db 일간 백업</i>
 """
 
 

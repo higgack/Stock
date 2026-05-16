@@ -18,9 +18,12 @@ Usage:
 
 import argparse
 import base64
+import gzip
 import http.server
+import json
 import logging
 import os
+import shutil
 import socketserver
 import sys
 from functools import partial
@@ -28,13 +31,163 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from trade.store import latest_per_dedup_key, list_all_alerts, open_db, stats
+
 load_dotenv()
 
 _TOKEN = (os.environ.get("TRADE_DASHBOARD_TOKEN") or "").strip()
 _AUTH_USER = (os.environ.get("TRADE_DASHBOARD_USER") or "").strip()
 _AUTH_PASSWORD = (os.environ.get("TRADE_DASHBOARD_PASSWORD") or "").strip()
+_DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
+_STORE_PATH = _DATA_DIR / "store.db"
+_INBOX_PATH = _DATA_DIR / "inbox.jsonl"
+
+# Compress text responses larger than this. JPEG/PNG already
+# pre-compressed; gzipping again wastes CPU for no win.
+_GZIP_MIN_BYTES = 1024
+_GZIP_MIME_PREFIXES = (
+    "text/", "application/json", "application/javascript",
+)
 
 log = logging.getLogger("trade-dashboard")
+
+
+# ---------------------------------------------------------------------
+# gzip helpers
+# ---------------------------------------------------------------------
+
+class _CapturingWFile:
+    """File-like that buffers everything the SimpleHTTPRequestHandler
+    writes (headers + body), so we can inspect Content-Type and gzip
+    eligible MIME types after the handler finishes.
+    """
+
+    def __init__(self) -> None:
+        self._buf = BytesIO()
+
+    def write(self, data: bytes) -> int:
+        return self._buf.write(data)
+
+    def flush(self) -> None:
+        pass
+
+    def split(self) -> tuple[bytes, bytes]:
+        """Returns (header_bytes_with_crlf, body_bytes)."""
+        raw = self._buf.getvalue()
+        sep = raw.find(b"\r\n\r\n")
+        if sep == -1:
+            return raw, b""
+        return raw[: sep + 4], raw[sep + 4 :]
+
+
+def _pick_content_type(header_bytes: bytes) -> str | None:
+    for line in header_bytes.split(b"\r\n"):
+        if line.lower().startswith(b"content-type:"):
+            return line.split(b":", 1)[1].strip().decode("latin-1", errors="replace").split(";", 1)[0].strip().lower()
+    return None
+
+
+def _patch_headers(
+    header_bytes: bytes,
+    *,
+    content_length: int | None,
+    add: dict[str, str],
+) -> bytes:
+    """Rewrite a captured-headers blob — replace Content-Length when
+    given, and append any extra headers in `add` (de-duplicating against
+    existing names). Keeps the status line intact.
+    """
+    lines = header_bytes.split(b"\r\n")
+    out: list[bytes] = []
+    seen_lower: set[str] = set()
+    for line in lines:
+        if not line:
+            continue
+        if b":" in line:
+            name, _, _ = line.partition(b":")
+            lname = name.decode("ascii", errors="replace").lower()
+            if lname == "content-length" and content_length is not None:
+                continue  # rewritten below
+            if lname in {k.lower() for k in add}:
+                continue  # caller wants to set this
+            seen_lower.add(lname)
+        out.append(line)
+    if content_length is not None:
+        out.append(f"Content-Length: {content_length}".encode("ascii"))
+    for k, v in add.items():
+        out.append(f"{k}: {v}".encode("latin-1", errors="replace"))
+    return b"\r\n".join(out) + b"\r\n\r\n"
+
+
+# ---------------------------------------------------------------------
+# API payloads
+# ---------------------------------------------------------------------
+
+from trade.dashboard import _alert_to_payload as _payload_for_api
+
+
+def _api_alerts() -> dict:
+    if not _STORE_PATH.exists():
+        return {"alerts": [], "latest_ids": []}
+    conn = open_db(_STORE_PATH)
+    try:
+        all_alerts = list_all_alerts(conn)
+    finally:
+        conn.close()
+    seen: set[str] = set()
+    latest_ids: list[int] = []
+    for a in all_alerts:
+        if a.get("dedup_key") not in seen:
+            seen.add(a.get("dedup_key") or "")
+            latest_ids.append(a["id"])
+    return {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "alerts": [_payload_for_api(a, "/") for a in all_alerts],
+        "latest_ids": latest_ids,
+    }
+
+
+def _api_health() -> dict:
+    out: dict = {
+        "ok": True,
+        "now": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        if _STORE_PATH.exists():
+            conn = open_db(_STORE_PATH)
+            try:
+                out["alert_count"] = stats(conn)["total"]
+                row = conn.execute(
+                    "SELECT MAX(posted_at) FROM alerts"
+                ).fetchone()
+                out["last_posted_at"] = row[0] if row and row[0] else None
+            finally:
+                conn.close()
+        else:
+            out["alert_count"] = 0
+            out["last_posted_at"] = None
+        if _INBOX_PATH.exists():
+            out["inbox_mtime"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(_INBOX_PATH.stat().st_mtime)
+            )
+        else:
+            out["inbox_mtime"] = None
+        usage = shutil.disk_usage("/")
+        out["disk_free_gb"] = round(usage.free / (1024 ** 3), 2)
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = str(e)
+    return out
+
+
+def _api_stats() -> dict:
+    if not _STORE_PATH.exists():
+        return {"total": 0}
+    conn = open_db(_STORE_PATH)
+    try:
+        return stats(conn)
+    finally:
+        conn.close()
 
 
 class GatedHandler(http.server.SimpleHTTPRequestHandler):
@@ -50,12 +203,106 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 — stdlib signature
         if not self._gates_pass():
             return
-        super().do_GET()
+        # API endpoints take precedence over static file serving.
+        if self.path.startswith("/api/"):
+            self._serve_api()
+            return
+        # Wrap the stdlib static-file serve in our gzip transform.
+        self._serve_static_with_gzip(method="GET")
 
     def do_HEAD(self):  # noqa: N802
         if not self._gates_pass():
             return
-        super().do_HEAD()
+        if self.path.startswith("/api/"):
+            self._serve_api(head_only=True)
+            return
+        self._serve_static_with_gzip(method="HEAD")
+
+    # --- gzip wrapper ---
+
+    def _serve_static_with_gzip(self, method: str) -> None:
+        accept = self.headers.get("Accept-Encoding", "")
+        wants_gzip = "gzip" in accept
+        if not wants_gzip:
+            if method == "HEAD":
+                super().do_HEAD()
+            else:
+                super().do_GET()
+            return
+        # Buffer the response, gzip eligible MIME types over the
+        # threshold, otherwise pass-through.
+        orig_wfile = self.wfile
+        buf = _CapturingWFile()
+        self.wfile = buf
+        try:
+            if method == "HEAD":
+                super().do_HEAD()
+            else:
+                super().do_GET()
+        finally:
+            self.wfile = orig_wfile
+
+        header_bytes, body_bytes = buf.split()
+        mime = _pick_content_type(header_bytes)
+        gzippable = (
+            mime is not None
+            and any(mime.startswith(p) for p in _GZIP_MIME_PREFIXES)
+            and len(body_bytes) >= _GZIP_MIN_BYTES
+        )
+        if gzippable and method == "GET":
+            gz = gzip.compress(body_bytes)
+            patched = _patch_headers(
+                header_bytes,
+                content_length=len(gz),
+                add={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
+            )
+            orig_wfile.write(patched + gz)
+        elif gzippable and method == "HEAD":
+            # Can't predict body size without reading the file; advertise
+            # the gzip Vary but keep Content-Length the uncompressed
+            # value the stdlib computed (clients use HEAD only for cache
+            # validation, and Vary is the part that matters).
+            patched = _patch_headers(
+                header_bytes,
+                content_length=None,
+                add={"Vary": "Accept-Encoding"},
+            )
+            orig_wfile.write(patched + body_bytes)
+        else:
+            orig_wfile.write(header_bytes + body_bytes)
+
+    # --- API endpoints ---
+
+    def _serve_api(self, head_only: bool = False) -> None:
+        path = self.path.split("?", 1)[0]
+        if path == "/api/alerts.json":
+            payload = _api_alerts()
+        elif path == "/api/health":
+            payload = _api_health()
+        elif path == "/api/stats":
+            payload = _api_stats()
+        else:
+            self.send_error(404)
+            return
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        accept = self.headers.get("Accept-Encoding", "")
+        if "gzip" in accept and len(body) >= _GZIP_MIN_BYTES:
+            body = gzip.compress(body)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+        else:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+        if not head_only:
+            self.wfile.write(body)
 
     def _gates_pass(self) -> bool:
         if not self._check_auth():

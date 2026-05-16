@@ -1,0 +1,13 @@
+[Unit]
+Description=Trade-bot store.db daily snapshot
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+Group=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/trade/scripts/backup_store.sh
+StandardOutput=journal
+StandardError=journal
