@@ -701,6 +701,40 @@ def build_instrument_context(ticker: str) -> str:
     )
     info = _instrument_info(ticker)
     qt = (info.get("quoteType") or info.get("typeDisp") or "").upper()
+
+    # Market detection + DART name lookup. We do this once at the top
+    # because three downstream branches need the result: (1) the
+    # quoteType override, (2) the company-name display, (3) the
+    # currency directive.
+    try:
+        from bot.market import detect_market, get_market_config
+        market = detect_market(ticker)
+        _cfg = get_market_config(ticker)
+    except Exception:
+        market = "US"
+        _cfg = {"currency": "USD", "currency_symbol": "$"}
+
+    kr_name: str | None = None
+    if market == "KR":
+        try:
+            from bot.dart_client import get_dart
+            code = (ticker or "").upper().split(".")[0]
+            kr_name = get_dart().stock_code_to_name(code)
+        except Exception:
+            kr_name = None
+
+        # yfinance occasionally tags KOSDAQ-listed real companies as
+        # MUTUALFUND / ETF / ETN — 039030.KS 이오테크닉스 on
+        # 2026-05-17 was MUTUALFUND, which cascaded the whole analysis
+        # into fund mode (all four analysts wrote '펀드 상품입니다'
+        # in their bodies, sentiment failed, DART block was skipped).
+        # DART corp_code only lists real corporations, so if DART
+        # knows this stock_code, override yfinance and treat it as
+        # equity. Real KR ETFs (KODEX 200, TIGER 200, etc.) aren't
+        # in DART, so they fall through to the fund branch correctly.
+        if qt in ("ETF", "ETN", "MUTUALFUND") and kr_name:
+            qt = "EQUITY"
+
     # Inject the GICS-style sector/industry that yfinance actually has on
     # file. Without this the market analyst's SECTOR PRIMER picks one of
     # the prompt's example labels at random and routinely mis-classifies
@@ -709,6 +743,11 @@ def build_instrument_context(ticker: str) -> str:
     sector = info.get("sector")
     industry = info.get("industry")
     long_name = info.get("longName")
+    # For KR tickers, prefer DART's Korean corp name over yfinance's
+    # English longName — readers can't recognize '이오테크닉스' as
+    # 'Eo Technics Co Ltd' at a glance.
+    if market == "KR" and kr_name:
+        long_name = kr_name
     facts: list[str] = []
     if long_name:
         facts.append(f"company name: {long_name}")
@@ -723,6 +762,21 @@ def build_instrument_context(ticker: str) -> str:
             " guessing): " + "; ".join(facts) + "."
         )
 
+    # KR body-text directive — readers can't parse '039030.KS' alone.
+    # Force every analyst to surface the Korean corp name in narrative
+    # sentences, not just bury it in the classification fact above.
+    if market == "KR" and kr_name:
+        base += (
+            f"\n\n=== KR NAMING DIRECTIVE (MANDATORY) ===\n"
+            f"When referring to the company in ANY narrative sentence,"
+            f" use one of these forms — NEVER the bare numeric ticker:\n"
+            f" • '{kr_name} ({ticker})' on first mention per section\n"
+            f" • '{kr_name}' (Korean name only) on subsequent mentions\n"
+            f"❌ WRONG: '{ticker}는 최근 급락하며...'\n"
+            f"✅ RIGHT: '{kr_name} ({ticker})는 최근 급락하며...'"
+            f" or '{kr_name}는 최근 급락하며...'"
+        )
+
     # Single source of truth for the current price. Without this, every
     # analyst can pick a different number — SNPS 2026-05-13 had the
     # sentiment analyst quoting $497.5 while fundamentals quoted $513.21,
@@ -732,14 +786,8 @@ def build_instrument_context(ticker: str) -> str:
     # here so every prompt sees the same value and stops re-fetching.
     # Currency rendering follows the ticker's market — KRW is whole-won
     # integer, USD/JPY/CNY get two decimals.
-    try:
-        from bot.market import get_market_config
-        _cfg = get_market_config(ticker)
-        _sym = _cfg["currency_symbol"]
-        _fmt = "{:,.0f}" if _cfg["currency"] == "KRW" else "{:,.2f}"
-    except Exception:
-        _sym = "$"
-        _fmt = "{:,.2f}"
+    _sym = _cfg.get("currency_symbol", "$")
+    _fmt = "{:,.0f}" if _cfg.get("currency") == "KRW" else "{:,.2f}"
     px = info.get("currentPrice") or info.get("regularMarketPrice")
     if isinstance(px, (int, float)) and px == px and px > 0:
         base += (
@@ -748,6 +796,41 @@ def build_instrument_context(ticker: str) -> str:
             f" reference in your report; do NOT quote a different price"
             f" derived from a trailing close or a tool call): {_sym}{_fmt.format(px)}"
         )
+
+        # Price-gap sanity check. yfinance's 50-day SMA is computed
+        # from historical closes that should be split-adjusted, so a
+        # current price that differs from the 50-day SMA by more than
+        # 40% almost always indicates one of: (a) recent stock split
+        # not yet propagated to either current or historical series,
+        # (b) yfinance KR data quality issue, or (c) a genuinely
+        # catastrophic move. In all three cases the technical
+        # indicators (10 EMA, MACD, RSI, Bollinger bands) computed
+        # from the historical series are useless until verified.
+        # Flag the gap so the market analyst stops anchoring on
+        # impossible-looking '하루 만에 50% 하락' narratives —
+        # 039030.KS 2026-05-17 had current ₩202,000 vs 50d SMA
+        # ₩445,660 (-55%) and the analyst built a whole bearish
+        # thesis on indicators that may have been split-stale.
+        sma50 = info.get("fiftyDayAverage")
+        if isinstance(sma50, (int, float)) and sma50 > 0:
+            gap = abs(px - sma50) / sma50
+            if gap > 0.40:
+                direction = "below" if px < sma50 else "above"
+                base += (
+                    f"\n\n⚠️ PRICE GAP SANITY — current price"
+                    f" {_sym}{_fmt.format(px)} is {gap*100:.0f}%"
+                    f" {direction} the 50-day SMA"
+                    f" {_sym}{_fmt.format(sma50)}. This usually"
+                    f" indicates a stock-split adjustment issue in"
+                    f" the historical price series (yfinance KR"
+                    f" sometimes lags), not a real ~{gap*100:.0f}%"
+                    f" intra-window move. DO NOT build a directional"
+                    f" thesis on 10-EMA / 50-SMA / MACD / Bollinger"
+                    f" comparisons that hinge on this gap; quote"
+                    f" the canonical current price + recent realized"
+                    f" volatility instead, and explicitly note the"
+                    f" data quality caveat in the report."
+                )
 
     # Currency directive for KR tickers. yfinance returns KRX-listed
     # companies' financial fields (marketCap, totalRevenue, netIncome,

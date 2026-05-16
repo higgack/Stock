@@ -171,10 +171,14 @@ Phase tracking — what's done, what's blocking the next phase:
 - `build_instrument_context` injects DART block (최근 30일 공시 / 임원·주요주주 지분 top 5 / 다음 정기보고서 윈도) for KR tickers
 - Currency rendering market-aware: ₩ whole-won for KR, $ for US
 
-**Phase 2 — KR validation (next)**
-- Test `/005930.KS`, `/035720.KS`, `/000660.KS` end-to-end on the live bot
-- Watch for KR-specific failure modes (FnGuide page structure shifts, DART 429 / rate limits, KRW formatting in fundamentals tables)
-- Update analyst-count / RULE-count if any KR-specific rule lands
+**Phase 2 — KR validation (in progress)**
+- ✅ Validated: `/005930.KS` (SNG 2026-05-17), `/039030.KS` (이오테크닉스 2026-05-17). Fixes shipped from each run.
+- Known yfinance KR data quality issues — list grows as we hit them, fix in code where possible, document workarounds otherwise:
+  - **MUTUALFUND misclassification**: yfinance tagged 039030.KS as MUTUALFUND despite being a regular KOSDAQ company. Fix: in `build_instrument_context`, override `qt` to EQUITY for KR tickers when DART has the corp_name (DART corp_code only includes real corporations; ETFs/funds aren't in DART). KODEX/TIGER ETFs correctly fall through to the fund branch.
+  - **Stock-split staleness in historical series**: yfinance occasionally serves an unadjusted historical price series alongside a split-adjusted current price (or vice versa), producing impossible-looking gaps like 039030.KS current ₩202,000 vs 50d SMA ₩445,660 (-55%). Fix: `build_instrument_context` flags any |current − fiftyDayAverage| / fiftyDayAverage > 0.40 with a sanity warning telling the market analyst to skip MA-based comparisons.
+  - **Sparse coverage for small-cap KOSDAQ**: handled in Phase 1 — yfinance returns None for consensus fields and we silently degrade to '분석가 커버리지 없음'.
+- Watch for additional KR failure modes: FnGuide page structure shifts, DART 429 / rate limits, currency unit drift in fundamentals tables.
+- Update analyst-count / RULE-count if any KR-specific rule lands.
 
 **Phase 3 — JP / CN expansion** (further out)
 - Same shape: market-specific benchmark mapping + data source adapters
