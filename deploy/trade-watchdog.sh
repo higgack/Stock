@@ -12,7 +12,10 @@
 
 set -euo pipefail
 
-WINDOW_SECONDS=180
+# 300s leaves margin for BeOn publication bursts (~50/year, 100-300 msgs
+# each in ~10 min). The fast-path handler keeps polling unblocked even
+# under load, so a real hang stays detectable without false positives.
+WINDOW_SECONDS=300
 REPO="${TRADE_REPO:-/home/higgack/stock-trade}"
 
 # --- Telegram notify helper -------------------------------------------

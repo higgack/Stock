@@ -1,22 +1,59 @@
 # Trade — Korea import/export dashboard bot
 
-Sibling project to the NOAH stock bot. **Shares the GitHub repo, but runs
+Sibling project to the NOAH stock bot. **Shares the GitHub repo, runs
 from its own clone on the host** so the two auto-update timers don't
 fight over the working tree's branch / HEAD.
 
-## Architecture (phase 1: ingestion only)
+## What it does
+
+BeOn (`t.me/BeOn_BeClear`) publishes Korean import/export alerts in
+bursts (~50 events/year, 100-300 messages per event, each item shipped
+as text + a graph image + a table image). The user gets these forwarded
+to a private channel by an external forwarder tool. This bot turns that
+firehose into a **two-view dashboard**:
+
+- **품목별** — one card per (item, country), showing only the latest alert
+- **회사별** — one section per related company, listing every (item, country)
+  that mentions it, again only the latest
+
+Older alerts stay in the database (so a future "history" toggle is cheap)
+but the dashboard surfaces only the most recent state per key.
+
+## Design principles (in order)
+
+1. **Speed** — message arrival → dashboard reflects ≤ 90s, even under burst
+2. **Don't crash** — bot must survive 300-message bursts without restart loops
+3. **Cost ≈ $0** — no OCR, no LLM, no external APIs; just storage + Telegram
+4. **Readability** — mobile-first, image-centric, only two views
+5. **Accuracy** — BeOn images shown verbatim (no transformation = no distortion);
+   metadata extracted by regex with `parse_warnings` for ambiguous cases
+
+## Architecture (phase 1.5: ingestion)
 
 ```
 BeOn_BeClear (public)
-        │  (auto-forwarder tool, externally configured)
+        │  external forwarder (preserves images & forward_origin OR
+        │  prepends "BeOn - 비온" header in copy mode — both supported)
         ▼
 my private channel ──► trade-bot ──► ~/.trade/inbox.jsonl
+                              │                ~/.trade/media/YYYY-MM-DD/<uid>.jpg
                               │
-                              └─► (phase 2: parser + SQLite + dashboard)
+                              └─► (phase 2a: parser → store.db)
+                              └─► (phase 2b: dashboard/index.html)
 ```
 
-Phase 1 only captures forwarded messages with full metadata. Parsing,
-aggregation, and dashboard rendering land once we have real samples.
+### Burst handling
+
+Each `on_channel_post` returns within ~1ms (synchronous JSONL append +
+`asyncio.create_task` for image download). Photo downloads share a
+semaphore (default 8 concurrent) to stay under Telegram's ~30 req/sec
+bot API cap. Telegram delivers album members (text + 2 images) as
+separate messages with the same `media_group_id`; phase 2's parser joins
+siblings at read time so the bot itself is stateless across restarts.
+
+The watchdog's polling-stall window is 300s — wide enough to absorb
+short Telegram API hiccups during a burst, narrow enough that a real
+hang is still caught quickly.
 
 ## On-host layout
 
@@ -24,7 +61,9 @@ aggregation, and dashboard rendering land once we have real samples.
 /home/higgack/stock/         ← stock-bot clone (existing, untouched)
 /home/higgack/stock-trade/   ← trade-bot clone (new, this README's repo)
 ~/.tradingagents/            ← stock-bot data
-~/.trade/                    ← trade-bot data (inbox.jsonl etc.)
+~/.trade/                    ← trade-bot data
+  ├ inbox.jsonl              one row per Telegram message (append-only)
+  └ media/YYYY-MM-DD/        photos, deterministic file_unique_id.jpg
 ```
 
 Two clones, two working trees, two branches, zero conflict. Both clones
@@ -67,12 +106,10 @@ sudo systemctl enable --now trade-bot trade-bot-update.timer trade-bot-watchdog.
 ## Verifying ingestion
 
 ```bash
-tail -f ~/.trade/inbox.jsonl
+tail -f ~/.trade/inbox.jsonl                # one line per message
+ls ~/.trade/media/$(date -I)/                # downloaded photos for today
+journalctl -u trade-bot -f                   # live log
 ```
-
-Each line is one forwarded post: text, forward-origin chat ID, original
-message ID, timestamps, media flags — enough for the parser to reconstruct
-the source without re-fetching Telegram.
 
 ## Coexistence with the stock-bot
 
