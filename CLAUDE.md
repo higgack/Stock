@@ -72,6 +72,38 @@ existing siblings' scope-guard regex updates in the same commit —
 adding a subproject without updating siblings' guards means trade
 commits would still restart NOAH (and vice versa).
 
+## One-shot maintenance scripts — required safety pattern
+
+Long-running one-shot scripts (backfills, migrations, large reindexes)
+MUST be safe to start, interrupt, and resume without operator
+hand-holding. Mirror `trade/scripts/backfill_beon.py`:
+
+- **Idempotent** — track what's already done in a persistent store
+  (e.g. scan `inbox.jsonl` / SQLite / a marker file) and skip on
+  rerun. Aborting and restarting with the same args must Just Work.
+- **Adaptive pacing for rate-limited APIs** — start slow, grow slower
+  as the run accumulates, cap at a safe ceiling. Defaults in env vars
+  so the operator can tune without editing code. Avoid the "flat 1
+  s/call worked in dev → wall-of-FloodWait at 90 % done" trap.
+- **Hard cap on retry backoff** — past a sane threshold (e.g. 10 min)
+  exit gracefully with a Telegram alert instead of sleeping in-process.
+  Rerunning next day costs nothing thanks to idempotency.
+- **Disk guard** — before / during writes, check free space on `/`.
+  Pause + ⏸ alert below threshold, auto-resume (▶ alert) when a
+  user-provided cleanup helper (e.g. `free_disk.sh`) brings it back
+  above threshold + hysteresis. Never auto-delete project data.
+- **Telegram lifecycle alerts** — at minimum ⏸/▶ on pause/resume, ❌
+  on abort, ✅ on completion. Reuse the project's `*_BOT_TOKEN` +
+  `*_CHANNEL_CHAT_IDS`. Missing creds = silent skip, never an error.
+- **Restart-safe vs concurrent deploys** — assume `git reset --hard`
+  can land mid-run. Don't rely on the script's own file staying on
+  disk; Python's in-memory bytecode survives. New code applies on
+  the next invocation, not in-flight.
+
+A cleanup helper script (e.g. `trade/scripts/free_disk.sh`) ships in
+the same commit as anything that introduces a disk guard, so the
+operator's "what do I do about the ⏸ alert?" answer is one line.
+
 ## Automation-first principle
 
 **Every recurring operation MUST be automated** (cron / systemd timer /

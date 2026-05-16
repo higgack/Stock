@@ -127,9 +127,23 @@ each forward as if it were live.
 - API creds (`TRADE_TELETHON_API_ID`, `TRADE_TELETHON_API_HASH`) live
   in the same `.env` (chmod 600) but are read by the backfill script only
 
-**Idempotent:** scans `inbox.jsonl` and skips any BeOn `message_id`
-already ingested, so re-running after a `FloodWaitError` abort just
-resumes where it stopped.
+**Safe under load:**
+- *Idempotent* — scans `inbox.jsonl` and skips any BeOn `message_id`
+  already ingested. Rerun after Ctrl+C, FloodWait abort, or disk-low
+  pause just resumes where it stopped.
+- *Adaptive pacing* — starts at 1.5 s/unit, grows by 0.1 s every 500
+  msgs, caps at 3.0 s. Tunable via `TRADE_PAUSE_BASE_S` etc. in `.env`.
+- *FloodWait hard cap* — exits gracefully with a Telegram alert past
+  `TRADE_MAX_FLOOD_WAIT_S` (default 600 s) instead of sleeping for
+  hours inside the script. Rerun next day picks up the rest.
+- *Disk guard* — every 20 units, checks free space on `/`. If below
+  `TRADE_MIN_FREE_GB` (default 2.0), pauses with a ⏸ Telegram alert,
+  polls every 60 s, auto-resumes (▶ alert) once free space recovers.
+  Manual cleanup helper: `bash trade/scripts/free_disk.sh`.
+- *Restart-safe under git updates* — auto-update's `git reset --hard`
+  rewrites the script on disk but the running Python process keeps
+  its in-memory bytecode. Pushing a fix mid-run is safe; the new code
+  applies to the next invocation.
 
 ```bash
 # 1. Get personal-account API credentials (one-time)
@@ -144,9 +158,11 @@ python -m venv .backfill-venv
 # 3. Dry-run first to see how many messages are in range
 .backfill-venv/bin/python trade/scripts/backfill_beon.py --since 2026-05-01 --dry-run
 
-# 4. Actual run. First time: prompts for your phone number + SMS code
-#    (plus 2FA password if enabled). Subsequent runs: silent.
-.backfill-venv/bin/python trade/scripts/backfill_beon.py --since 2026-05-01
+# 4. Actual run, in a tmux session so SSH drops don't kill it.
+#    First time: prompts for your phone number + SMS code (+ 2FA password
+#    if enabled). Subsequent runs: silent.
+tmux new -s backfill -d ".backfill-venv/bin/python trade/scripts/backfill_beon.py --since 2026-05-01 2>&1 | tee -a ~/backfill.log"
+tmux attach -t backfill   # observe; Ctrl+B then D to detach
 
 # 5. (Optional) Tear down once the backfill is done
 rm -rf .backfill-venv .backfill-session*
@@ -156,6 +172,12 @@ While it runs, watch ingestion in another terminal:
 ```bash
 tail -f ~/.trade/inbox.jsonl
 journalctl -u trade-bot -f
+```
+
+If a ⏸ Telegram alert arrives mid-run:
+```bash
+bash trade/scripts/free_disk.sh   # one-shot safe cleanup
+# backfill auto-detects the free space and resumes within ~60 s
 ```
 
 ## Coexistence with the stock-bot
