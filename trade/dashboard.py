@@ -294,6 +294,16 @@ function stocksSubtitle(variants){
   return '관련종목: '+s.slice(0,3).join(' · ')+' 외 '+(s.length-3)+'개';
 }
 
+// Region tier for in-section ordering. Aggregates always rise:
+//   0: 전국 (no country)                    — broadest aggregate
+//   1: 전국_<country>                       — country-specific aggregate
+//   2: specific region (e.g. 경기 수원시)   — site-level breakdown
+function regionTier(a){
+  if(a.region==='전국'&&!a.country)return 0;
+  if(a.region==='전국')return 1;
+  return 2;
+}
+
 // Human-friendly period label that bundles status into one phrase so
 // the card / modal header reads naturally in Korean.
 function niceLabel(a){
@@ -429,13 +439,12 @@ function buildItemsView(filtered){
   });
   if(!sorted.length)return '<div class="empty">조건에 맞는 품목이 없습니다.</div>';
   return sorted.map(([name,variants])=>{
-    // Cluster same-item siblings by item name first (groups all
-    // '라면 (전국_*)' entries together), then by region/country so
-    // 전국 sits above시 단위 etc. — more intuitive than purely-recency
-    // when a single section has many variants.
+    // Within a 품목 section: 전국 aggregates first (broadest, then
+    // country-specific), then site-level breakdowns. Inside each tier
+    // sort by posted_at desc so the freshest report is on top.
     variants.sort((a,b)=>
-      (a.region||'').localeCompare(b.region||'')||
-      (a.country||'').localeCompare(b.country||'')
+      regionTier(a)-regionTier(b)||
+      (b.posted_at||'').localeCompare(a.posted_at||'')
     );
     const cards=variants.map(renderMiniCard).join('');
     return renderSection(name, [
@@ -459,13 +468,14 @@ function buildCompaniesView(filtered){
   }
   if(!sorted.length)return '<div class="empty">조건에 맞는 회사가 없습니다.</div>';
   return sorted.map(([name,items])=>{
-    // Cluster the company's items by item name so '라면' rows sit
-    // together, then by region/country, so the section reads like
-    // an organized index instead of a recency-shuffled list.
+    // Within a 회사 section: keep same-item rows clustered (so '라면'
+    // entries stay together, '디램' together, ...), then inside each
+    // item cluster apply the same 전국-tier + posted_at-desc rule as
+    // the 품목별 view.
     items.sort((a,b)=>
       (a.item||'').localeCompare(b.item||'')||
-      (a.region||'').localeCompare(b.region||'')||
-      (a.country||'').localeCompare(b.country||'')
+      regionTier(a)-regionTier(b)||
+      (b.posted_at||'').localeCompare(a.posted_at||'')
     );
     const cards=items.map(renderMiniCard).join('');
     return renderSection(name, [items.length+'개 품목'], cards);
