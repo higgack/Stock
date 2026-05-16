@@ -994,6 +994,12 @@ def _render_errors_page(
                 time_str = analyzed_at[11:16] if len(analyzed_at) >= 16 else ""
                 href = f"./{date}/{_html.escape(ticker)}.html"
                 rating = _extract(_RATING_RE, r.get("summary", "")) or "?"
+                # KR tickers show their Korean corp name on this catalog
+                # page too — the user reported the errors panel was the
+                # last place still rendering bare numeric tickers
+                # (019680/014680/039030 in their 2026-05-17 view).
+                kr_name = _ticker_kr_name(ticker)
+                label = kr_name or ticker
                 items_html = "".join(
                     f'<div class="item">⚠️ {_html.escape(i)}</div>'
                     for i in issues
@@ -1001,7 +1007,7 @@ def _render_errors_page(
                 cards_html.append(f"""
                 <div class="issue-card">
                   <div class="issue-head">
-                    <a class="ticker" href="{href}">📊 {_html.escape(ticker)}</a>
+                    <a class="ticker" href="{href}">📊 {_html.escape(label)}</a>
                     {_badge_html(rating)}
                     <span class="when">{_html.escape(time_str)}</span>
                   </div>

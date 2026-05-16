@@ -183,17 +183,24 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     # analyst's fail-fast retry then aborts the whole pipeline after
     # paying ~$0.05. Skip the news analyst entirely up front and warn
     # the user instead.
+    #
+    # Social/sentiment is dropped together because it reads from the
+    # same yfinance news / social feed — 319660.KS 피에스케이 on
+    # 2026-05-17 had 'news 자동 생략' announced but the sentiment
+    # analyst ran anyway and failed with the generic '모델 응답
+    # 오류' placeholder because it had no data either. They share
+    # one upstream so they share the pre-flight skip.
     if "news" in selected:
         try:
             from tradingagents.agents.utils.agent_utils import has_recent_news
             if not has_recent_news(ticker):
-                selected = [a for a in selected if a != "news"]
+                selected = [a for a in selected if a not in ("news", "social")]
                 pre_flight_notes.append(
-                    f"📰 뉴스 분석 자동 생략: yfinance에 {ticker} 기사 0건"
-                    " (신생주·저커버리지 종목 추정 — 시장·감정·펀더멘털만으로 분석 진행)"
+                    f"📰 뉴스·💬 감정 분석 자동 생략: yfinance에 {ticker} 기사 0건"
+                    " (신생주·저커버리지 종목 추정 — 시장·펀더멘털만으로 분석 진행)"
                 )
                 log.info(
-                    "analyze: %s has 0 yfinance news items — skipping news analyst",
+                    "analyze: %s has 0 yfinance news items — skipping news + social",
                     ticker,
                 )
         except Exception as exc:
