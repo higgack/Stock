@@ -261,6 +261,108 @@ class TestParserSamples(unittest.TestCase):
         self.assertIsNone(parse_caption(""))
         self.assertIsNone(parse_caption(None))  # type: ignore[arg-type]
 
+    # --- RULE 11~14 (variants found in the post-backfill unknown-pile) ---
+
+    def test_rule_11_multiline_title_with_parens_overflow(self):
+        # 항생제 sample — title's first line opens a paren that the
+        # second line closes; region paren is on the second line.
+        caption = (
+            "항생제 (카바페넴계, 이미페넴(IMIPENEM / 에르타페넴(Ertapenem))\n"
+            "(전국_이탈리아)\n"
+            "관련종목 : 하이텍팜\n"
+            "\n"
+            "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다."
+        )
+        r = parse_caption(caption)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.region, "전국")
+        self.assertEqual(r.country, "이탈리아")
+        self.assertEqual(r.stocks, ["하이텍팜"])
+        self.assertIn("항생제", r.item)
+
+    def test_rule_11_multiline_title_qualifier_then_region(self):
+        # '해상용 안테나 부분품\n(VSAT ...) (전국)' — qualifier paren on
+        # line 2 followed by the region paren, all one logical title.
+        caption = (
+            "해상용 안테나 부분품\n"
+            "(VSAT , FBB , 저/중궤도 관련 안테나 매출 포함) (전국)\n"
+            "관련종목 : 인텔리안테크\n"
+            "\n"
+            "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다."
+        )
+        r = parse_caption(caption)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.region, "전국")
+        self.assertEqual(r.stocks, ["인텔리안테크"])
+        self.assertIn("해상용 안테나 부분품", r.item)
+        self.assertIn("VSAT", r.item)  # qualifier preserved in item
+
+    def test_rule_12_inline_stocks_after_region_paren(self):
+        # '수산화리튬 (전국): 미래나노텍 / 강원에너지 / ...'
+        caption = (
+            "수산화리튬 (전국): 미래나노텍 / 강원에너지 / 하이드로리튬 / POSCO홀딩스\n"
+            "\n"
+            "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다."
+        )
+        r = parse_caption(caption)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.item, "수산화리튬")
+        self.assertEqual(r.region, "전국")
+        self.assertEqual(
+            r.stocks,
+            ["미래나노텍", "강원에너지", "하이드로리튬", "POSCO홀딩스"],
+        )
+
+    def test_rule_13_trailing_text_after_region(self):
+        # 'H형강 (전국) 합산' — paren in the middle with a qualifier
+        # word after; the qualifier is folded into the item name.
+        caption = (
+            "H형강 (전국) 합산\n"
+            "관련종목 : 현대제철 / 동국제강\n"
+            "\n"
+            "전국 300미리 미만 + 300~600미리 + 600미리 초과 합산\n"
+            "\n"
+            "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다."
+        )
+        r = parse_caption(caption)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.region, "전국")
+        self.assertEqual(r.item, "H형강 합산")
+        self.assertEqual(r.stocks, ["현대제철", "동국제강"])
+        self.assertIn("title_has_trailing_text", r.parse_warnings)
+        # commentary captures the breakdown explanation
+        self.assertIsNotNone(r.commentary)
+        self.assertIn("300미리", r.commentary)
+
+    def test_rule_14_company_first_without_region(self):
+        # 'LG디스플레이 : OLED 패널 + 평판디스플레이 모듈 + ...' —
+        # company-first with no region paren anywhere.
+        caption = (
+            "LG디스플레이 : OLED 패널 + 평판디스플레이 모듈 + 평판디스플레이 + 유기발광다이오드 OLED 제조용\n"
+            "\n"
+            "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다."
+        )
+        r = parse_caption(caption)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["LG디스플레이"])
+        self.assertIsNone(r.region)
+        self.assertIsNone(r.country)
+        self.assertTrue(r.is_composite)
+        self.assertEqual(len(r.composite_parts), 4)
+        self.assertIn("title_no_region", r.parse_warnings)
+
+    def test_synthesis_post_is_still_unknown_after_new_rules(self):
+        # Inverted shape — guard against RULE 12/13 misclassifying it
+        # as inline stocks or trailing text.
+        caption = (
+            "한화에어로스페이스 / 현대로템 등 (전국) : 전차와 그 밖의 장갑차량  + 부분품\n"
+            "\n"
+            "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다."
+        )
+        r = parse_caption(caption)
+        self.assertEqual(r.title_kind, "unknown")
+        self.assertIn("title_format_unknown", r.parse_warnings)
+
     def test_dedup_key_groups_same_logical_alert(self):
         # 잠정 1-10일, 잠정 1-20일, 확정 월 모두 같은 dedup_key
         cap_a = (

@@ -42,6 +42,20 @@ _COMPANY_TITLE_RE = re.compile(r"^([^():]+?)\s+:\s+(.+?)\s*\(([^()]+)\)\s*$")
 # inside the item, with only the rightmost group treated as region.
 _STANDARD_TITLE_RE = re.compile(r"^(.+?)\s*\(([^()]+)\)\s*$")
 
+# --- RULE 12 — inline stocks: '<품목> (<지역>): <회사>/<회사>/...' ---
+# Same line carries title + 관련종목. Caller must verify group(1) has no
+# '/' to reject the inverted synthesis-post shape (companies → items).
+_INLINE_STOCKS_TITLE_RE = re.compile(r"^(.+?)\s*\(([^()]+)\)\s*:\s*(.+)$")
+
+# --- RULE 13 — trailing text after region paren: '<품목> (<지역>) <suffix>' ---
+# Used for 'H형강 (전국) 합산' style. Caller must verify the suffix doesn't
+# start with ':' (that's the synthesis-post shape, not trailing text).
+_TRAILING_TEXT_TITLE_RE = re.compile(r"^(.+?)\s*\(([^()]+)\)\s*(.+)$")
+
+# --- RULE 14 — company-first without region paren: '<회사> : <품목>' ---
+# Used only when the title has NO parens at all. region/country = None.
+_COMPANY_NO_REGION_RE = re.compile(r"^([^():]+?)\s+:\s+(.+?)\s*$")
+
 # --- RULE 9 — related-stocks line ---
 # Allows '관련종목 :' / '관련종목:' / '관련종목  :'.
 _STOCKS_LINE_RE = re.compile(r"^\s*관련종목\s*:\s*(.*)$")
@@ -160,7 +174,7 @@ def _parse_period(
 
 def _parse_region(
     region_part: str,
-) -> tuple[str, str | None, list[str], list[str]]:
+) -> tuple[str | None, str | None, list[str], list[str]]:
     """RULE 6 — split the (...) content into region/country/multi.
 
     Variants observed in the wild:
@@ -170,8 +184,11 @@ def _parse_region(
       (경기 평택시)                → 경기 평택시 / None
       (경기 평택시_글로벌)         → 경기 평택시 / 글로벌
       (경기 이천시 + 충북 청주시)  → multi-region, no country
+      ""                          → None / None (RULE 14 fallback)
     """
     s = region_part.strip()
+    if not s:
+        return None, None, [], []
     if "+" in s and "_" not in s:
         regions = [p.strip() for p in s.split("+")]
         return regions[0], None, regions, []
@@ -260,24 +277,38 @@ def parse_caption(caption: str) -> ParsedAlert | None:
     status = "preliminary" if final_match.group(6) == "잠정치" else "final"
     direction = "export" if final_match.group(7) == "수출" else "import"
 
-    # First non-empty line = title.
-    title = ""
+    # RULE 11 — stitch consecutive non-empty lines into one logical
+    # title until we hit a blank line, the 관련종목 line, or the final
+    # status line. Handles wrap-arounds like the 항생제 and 해상용
+    # 안테나 samples where parens / qualifiers spill onto a second
+    # line. Single-line titles are unaffected (the very next iteration
+    # breaks on blank/stocks/final).
+    title_lines: list[str] = []
     title_idx = -1
+    title_end_idx = -1
     for i, line in enumerate(lines):
         if line.strip():
-            title = line.strip()
-            title_idx = i
+            if title_idx == -1:
+                title_idx = i
+            if _STOCKS_LINE_RE.match(line) or _FINAL_LINE_RE.search(line):
+                break
+            title_lines.append(line.strip())
+            title_end_idx = i
+        elif title_lines:
             break
-    if not title:
+    if not title_lines:
         return None
+    title = " ".join(title_lines)
 
     warnings: list[str] = []
 
     company_from_title: str | None = None
+    inline_stocks_raw: str | None = None
     item_raw: str | None = None
     region_part: str | None = None
-    title_kind: str
+    title_kind: str = ""
 
+    # Try variants in order of specificity.
     cm = _COMPANY_TITLE_RE.match(title)
     if cm:
         company_from_title = cm.group(1).strip()
@@ -285,24 +316,70 @@ def parse_caption(caption: str) -> ParsedAlert | None:
         region_part = cm.group(3).strip()
         title_kind = "company_first"
     else:
-        sm = _STANDARD_TITLE_RE.match(title)
-        if sm:
-            item_raw = sm.group(1).strip()
-            region_part = sm.group(2).strip()
+        # RULE 12 — inline stocks. Reject when LEFT side has '/' because
+        # that's the synthesis-post inversion (companies / companies (region) :
+        # items + items), not '품목 (지역): 회사/회사'.
+        ism = _INLINE_STOCKS_TITLE_RE.match(title)
+        if ism and "/" not in ism.group(1):
+            item_raw = ism.group(1).strip()
+            region_part = ism.group(2).strip()
+            inline_stocks_raw = ism.group(3).strip()
             title_kind = "item_first"
         else:
-            return ParsedAlert(
-                direction=direction,
-                status=status,
-                period_start=period_start,
-                period_end=period_end,
-                period_kind=period_kind,
-                title_kind="unknown",
-                item=_norm_ws(title),
-                item_raw=title,
-                is_composite=False,
-                parse_warnings=["title_format_unknown"],
-            )
+            sm = _STANDARD_TITLE_RE.match(title)
+            if sm:
+                item_raw = sm.group(1).strip()
+                region_part = sm.group(2).strip()
+                title_kind = "item_first"
+            else:
+                # RULE 13 — '<품목> (<지역>) <suffix>' (e.g. 'H형강 (전국) 합산').
+                # Reject when LEFT has '/' or suffix starts with ':'
+                # (both signal synthesis-post shape).
+                ttm = _TRAILING_TEXT_TITLE_RE.match(title)
+                if (
+                    ttm
+                    and "/" not in ttm.group(1)
+                    and not ttm.group(3).lstrip().startswith(":")
+                ):
+                    item_raw = (ttm.group(1).strip() + " " + ttm.group(3).strip()).strip()
+                    region_part = ttm.group(2).strip()
+                    title_kind = "item_first"
+                    warnings.append("title_has_trailing_text")
+                elif "(" not in title and ")" not in title and " : " in title:
+                    # RULE 14 — company-first with no region paren at all.
+                    cnrm = _COMPANY_NO_REGION_RE.match(title)
+                    if cnrm:
+                        company_from_title = cnrm.group(1).strip()
+                        item_raw = cnrm.group(2).strip()
+                        region_part = ""
+                        title_kind = "company_first"
+                        warnings.append("title_no_region")
+                    else:
+                        return ParsedAlert(
+                            direction=direction,
+                            status=status,
+                            period_start=period_start,
+                            period_end=period_end,
+                            period_kind=period_kind,
+                            title_kind="unknown",
+                            item=_norm_ws(title),
+                            item_raw=title,
+                            is_composite=False,
+                            parse_warnings=["title_format_unknown"],
+                        )
+                else:
+                    return ParsedAlert(
+                        direction=direction,
+                        status=status,
+                        period_start=period_start,
+                        period_end=period_end,
+                        period_kind=period_kind,
+                        title_kind="unknown",
+                        item=_norm_ws(title),
+                        item_raw=title,
+                        is_composite=False,
+                        parse_warnings=["title_format_unknown"],
+                    )
 
     parts = [p.strip() for p in _COMPOSITE_SPLIT_RE.split(item_raw) if p.strip()]
     is_composite = len(parts) > 1
@@ -315,9 +392,13 @@ def parse_caption(caption: str) -> ParsedAlert | None:
         stocks = [company_from_title] if company_from_title else []
         stocks_meta: dict[str, str] = {}
         has_etc = False
+    elif inline_stocks_raw is not None:
+        # RULE 12 — stocks list came inline with the title.
+        stocks, stocks_meta, has_etc, stock_warns = _parse_stocks(inline_stocks_raw)
+        warnings.extend(stock_warns)
     else:
         stocks_raw: str | None = None
-        for i in range(title_idx + 1, final_idx):
+        for i in range(title_end_idx + 1, final_idx):
             sm2 = _STOCKS_LINE_RE.match(lines[i])
             if sm2:
                 stocks_raw = sm2.group(1)
@@ -329,11 +410,11 @@ def parse_caption(caption: str) -> ParsedAlert | None:
             warnings.extend(stock_warns)
 
     # Free-text commentary: lines between stocks (or title for
-    # company_first) and the final status line, skipping blanks and
-    # the stocks line itself.
+    # company_first / inline_stocks) and the final status line, skipping
+    # blanks and the stocks line itself.
     commentary_lines: list[str] = []
-    seen_stocks_line = title_kind == "company_first"
-    for i in range(title_idx + 1, final_idx):
+    seen_stocks_line = title_kind == "company_first" or inline_stocks_raw is not None
+    for i in range(title_end_idx + 1, final_idx):
         line = lines[i].strip()
         if not line:
             continue
