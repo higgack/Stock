@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh trade dashboard every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Unit=trade-bot-dashboard-refresh.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

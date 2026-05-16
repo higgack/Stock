@@ -180,6 +180,80 @@ bash trade/scripts/free_disk.sh   # one-shot safe cleanup
 # backfill auto-detects the free space and resumes within ~60 s
 ```
 
+## Dashboard (phase 2b/2c)
+
+The dashboard is a single static HTML file regenerated from `store.db`
+every 5 minutes by a systemd timer, and served by a thin HTTP server
+with optional Basic Auth.
+
+### One-time install
+
+```bash
+cd ~/stock-trade
+sudo cp deploy/trade-bot-dashboard.service /etc/systemd/system/
+sudo cp deploy/trade-bot-dashboard-refresh.service /etc/systemd/system/
+sudo cp deploy/trade-bot-dashboard-refresh.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# (optional but recommended) Lock the dashboard behind Basic Auth.
+# Edit ~/stock-trade/.env, fill in:
+#   TRADE_DASHBOARD_USER=...
+#   TRADE_DASHBOARD_PASSWORD=...   (random 16+ chars)
+#   TRADE_DASHBOARD_TOKEN=...      (optional URL prefix, e.g. /xyz123/)
+
+sudo systemctl enable --now trade-bot-dashboard trade-bot-dashboard-refresh.timer
+sudo systemctl start trade-bot-dashboard-refresh.service    # first render now
+
+# Open port 8082 if your VM has a firewall (GCP/AWS Security Groups).
+# Or skip and use SSH tunneling from your laptop (next section).
+```
+
+### Accessing from your laptop
+
+**Option A — SSH tunnel (recommended, no firewall change):**
+```bash
+ssh -L 8082:localhost:8082 higgack@<host>
+# then on your laptop browser:
+#   http://localhost:8082/dashboard/
+```
+
+**Option B — Direct (requires open port):**
+```
+http://<host-public-ip>:8082/dashboard/
+```
+
+If you set `TRADE_DASHBOARD_USER` + `_PASSWORD`, the browser prompts
+for Basic Auth on first load. If you set `TRADE_DASHBOARD_TOKEN=xyz`,
+the URL becomes `http://.../xyz/dashboard/` — the token gates every
+request and isn't logged on most reverse proxies, useful as a
+mild-obscurity gate before Basic Auth.
+
+### What's auto
+
+- `trade-bot.service` ingests forwards into `inbox.jsonl` in real time
+- `trade-bot-dashboard-refresh.timer` fires every 5 min:
+    1. `ingest_inbox` → upserts any new captured rows into `store.db`
+    2. `dashboard` → re-renders `~/.trade/dashboard/index.html`
+- `trade-bot-dashboard.service` serves the file (and `~/.trade/media/`)
+
+Worst-case latency from "BeOn publishes" → "card shows up in
+dashboard" is **5 minutes** (the refresh tick). The HTML page itself
+filters/searches client-side, so user interactions never round-trip.
+
+### Manual operations
+
+Force an immediate refresh after pushing a parser fix or merging new
+forwards mid-cycle:
+```bash
+sudo systemctl start trade-bot-dashboard-refresh.service
+journalctl -u trade-bot-dashboard-refresh -n 20 --no-pager
+```
+
+Restart the server (after changing auth settings in `.env`):
+```bash
+sudo systemctl restart trade-bot-dashboard
+```
+
 ## Coexistence with the stock-bot
 
 | What                       | Stock-bot                                | Trade-bot                                  |

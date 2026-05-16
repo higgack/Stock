@@ -1,0 +1,17 @@
+[Unit]
+Description=Re-ingest inbox.jsonl into store.db and re-render the trade dashboard
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+Group=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+# Two passes in one timer tick: live forwards reach store.db, then the
+# HTML reflects them. Both are idempotent so a missed/duplicated run
+# costs nothing.
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.ingest_inbox
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard
+StandardOutput=journal
+StandardError=journal
