@@ -40,7 +40,12 @@ from pathlib import Path
 import html as _html
 
 from dotenv import load_dotenv
-from telegram import Message, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    Update,
+)
 from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TelegramError
 from telegram.ext import (
@@ -84,6 +89,29 @@ _download_sem: asyncio.Semaphore | None = None  # built once the loop is up
 
 # Copy-style forwarder detection: header pattern injected into the body.
 _BEON_HEADER_RE = re.compile(r"^\s*BeOn\s*-\s*비온", re.MULTILINE)
+
+# Cached at startup via Application.post_init. Used to build the
+# 'open bot DM' inline keyboard buttons we attach to channel /help
+# and /watch hint messages so the operator can tap straight from
+# the channel into a 1:1 chat with the bot.
+_BOT_USERNAME: str | None = None
+
+
+def _dm_keyboard() -> InlineKeyboardMarkup | None:
+    """Inline keyboard with a single 'open bot chat' URL button.
+
+    Returns None when the bot username hasn't been cached yet (e.g.
+    if Application.post_init failed); the caller drops the keyboard
+    and sends a plain text message.
+    """
+    if not _BOT_USERNAME:
+        return None
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🤖 봇과 1:1 채팅 열기 (/watch 등록)",
+            url=f"https://t.me/{_BOT_USERNAME}",
+        )
+    ]])
 
 
 # ---------------------------------------------------------------------
@@ -156,7 +184,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — /watch DM 전용 안내 (채널 입력 시 hint) + kind 생략 시 품목+회사 둘 다 자동 등록</i>
+<i>최종 갱신: 2026-05-17 — 채널 /help · /watch hint에 '봇 1:1 채팅 열기' 인라인 버튼 (탭 한 번에 DM 진입)</i>
 """
 
 
@@ -345,20 +373,22 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             text=_HELP_TEXT,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
+            reply_markup=_dm_keyboard(),
         )
         return
     if first_word in ("/watch", "/unwatch"):
         # Watch state is per-Telegram-user; a channel post has no
         # personal user_id to attach it to. Reply once with the
-        # DM-only hint and stop.
+        # DM-only hint and a one-tap keyboard button into the bot DM.
         await ctx.bot.send_message(
             chat_id=post.chat.id,
             text=(
-                "⚠️ <b>/watch · /unwatch는 봇과 1:1 채팅에서만 동작</b>합니다.\n"
-                "Telegram 검색에서 봇 username 찾아 'Start' 누른 뒤 명령어를 입력하세요.\n"
-                "(워치 등록은 사용자별 — 채널에 박으면 누구 워치인지 알 수 없음)"
+                "⚠️ <b>/watch · /unwatch는 봇과 1:1 채팅(DM)에서만 동작</b>합니다.\n"
+                "아래 버튼을 누르면 봇과의 채팅이 열립니다 → <b>[START]</b> 누르고 "
+                "<code>/watch 이오테크닉스</code> 같이 입력."
             ),
             parse_mode=ParseMode.HTML,
+            reply_markup=_dm_keyboard(),
         )
         return
 
@@ -543,8 +573,27 @@ async def _notify_watchers(ctx: ContextTypes.DEFAULT_TYPE, caption_text: str) ->
             log.warning("watch DM failed user=%s err=%s", uid, e)
 
 
+async def _post_init(app: Application) -> None:
+    """Cache the bot's username once at startup so the inline-keyboard
+    button on channel /help / /watch hints can point at
+    https://t.me/<bot_username> without a getMe round-trip per reply.
+    """
+    global _BOT_USERNAME
+    try:
+        me = await app.bot.get_me()
+        _BOT_USERNAME = me.username
+        log.info("bot username cached: @%s", _BOT_USERNAME)
+    except Exception as e:
+        log.warning("could not fetch bot username at startup: %s", e)
+
+
 def main() -> None:
-    app = Application.builder().token(TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .post_init(_post_init)
+        .build()
+    )
     # Commands fire in private chats (DM the bot directly).
     app.add_handler(CommandHandler(["help", "start"], cmd_help))
     app.add_handler(CommandHandler("watch", cmd_watch))
