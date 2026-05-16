@@ -182,7 +182,7 @@ _CSS = """
 }
 body.dark{
   --bg:#1a1a1c;--surface:#2c2c2e;--surface-2:#252527;--text:#f5f5f7;
-  --text-sub:#98989d;--border:#3a3a3c;--border-soft:#3a3a3c;
+  --text-sub:#b8b8bd;--border:#3a3a3c;--border-soft:#3a3a3c;
   --chip-bg:#3a3a3c;--accent:#0a84ff;
   --tone-export:#30d158;--tone-import:#ff9f0a;
   --b-export-bg:#0f3a1a;--b-export-fg:#5fd778;
@@ -213,14 +213,14 @@ h1{margin:0 0 4px;font-size:18px}
 .section{background:var(--surface);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
 .section-header{padding:13px 14px;background:var(--surface-2);border-bottom:1px solid var(--border-soft)}
 .section-header h2{margin:0;font-size:15px}
-.section-header .sub-line{margin-top:3px;font-size:11px;color:var(--text-sub);word-break:keep-all}
+.section-header .sub-line{margin-top:4px;font-size:12px;color:var(--text-sub);word-break:keep-all;line-height:1.4}
 .section-items{padding:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
 .mini-card{border:1px solid var(--border-soft);border-radius:8px;overflow:hidden;cursor:pointer;transition:transform .1s;background:var(--surface);position:relative}
 .mini-card:hover{transform:translateY(-1px)}
 .mini-card .mini-img{height:90px;background:var(--img-placeholder);background-size:cover;background-position:center}
-.mini-card .mini-text{padding:7px 9px;font-size:11px}
-.mini-card .mini-text strong{display:block;margin-bottom:1px;font-weight:600;word-break:keep-all;color:var(--text)}
-.mini-card .mini-text span{color:var(--text-sub);font-size:10px}
+.mini-card .mini-text{padding:8px 10px;font-size:12px;line-height:1.35}
+.mini-card .mini-text strong{display:block;margin-bottom:2px;font-size:12.5px;font-weight:600;word-break:keep-all;color:var(--text)}
+.mini-card .mini-text span{color:var(--text-sub);font-size:11.5px}
 .mini-card .dot{position:absolute;top:6px;right:6px;width:8px;height:8px;border-radius:4px;background:#999}
 .mini-card.export .dot{background:var(--tone-export)}
 .mini-card.import .dot{background:var(--tone-import)}
@@ -288,8 +288,10 @@ function unionStocks(variants){
 function stocksSubtitle(variants){
   const s=unionStocks(variants);
   if(!s.length)return '';
-  if(s.length<=3)return '관련종목: '+s.join(' / ');
-  return '관련종목: '+s.slice(0,3).join(' / ')+' 외 '+(s.length-3)+'개';
+  // '·' separator reads more softly than '/' for Korean company names
+  // sitting next to each other in a single line.
+  if(s.length<=3)return '관련종목: '+s.join(' · ');
+  return '관련종목: '+s.slice(0,3).join(' · ')+' 외 '+(s.length-3)+'개';
 }
 
 // Human-friendly period label that bundles status into one phrase so
