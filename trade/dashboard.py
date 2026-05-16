@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
-from trade.store import latest_per_dedup_key, open_db, stats
+from trade.store import latest_per_dedup_key, list_all_alerts, open_db, stats
 
 
 def render_html(
@@ -49,18 +49,29 @@ def render_html(
     """
     conn = open_db(db_path)
     try:
-        alerts = latest_per_dedup_key(conn)
+        all_alerts = list_all_alerts(conn)
         s = stats(conn)
     finally:
         conn.close()
-    return _build_html(alerts, s, media_url_prefix)
+    # list_all_alerts orders so the first row of each dedup_key block is
+    # the 'latest' (newest posted_at + final-wins-tie). The remainder of
+    # each block is the history rendered inline in the modal for visual
+    # comparison.
+    seen: set[str] = set()
+    latest_ids: list[int] = []
+    for a in all_alerts:
+        key = a.get("dedup_key") or ""
+        if key not in seen:
+            seen.add(key)
+            latest_ids.append(a["id"])
+    return _build_html(all_alerts, latest_ids, s, media_url_prefix)
 
 
 def _alert_to_payload(a: dict, media_prefix: str) -> dict:
     """Strip the alert down to the fields the client view actually uses.
 
-    Cuts ~30 % of the embedded JSON size vs dumping the full row, which
-    matters at 1000+ cards.
+    Includes dedup_key so the modal can find sibling history alerts
+    without a server round-trip.
     """
     return {
         "id": a["id"],
@@ -78,14 +89,21 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
         "media": [media_prefix + p for p in (a.get("media_paths") or [])],
         "has_etc": bool(a.get("has_etc")),
         "warnings": a.get("parse_warnings") or [],
+        "dedup_key": a.get("dedup_key") or "",
     }
 
 
-def _build_html(alerts: list[dict], s: dict, media_prefix: str) -> str:
+def _build_html(
+    alerts: list[dict],
+    latest_ids: list[int],
+    s: dict,
+    media_prefix: str,
+) -> str:
     payload = [_alert_to_payload(a, media_prefix) for a in alerts]
     payload_json = json.dumps(
         payload, ensure_ascii=False, separators=(",", ":")
     )
+    latest_ids_json = json.dumps(latest_ids, separators=(",", ":"))
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     by_status = s.get("by_status", {})
@@ -95,7 +113,7 @@ def _build_html(alerts: list[dict], s: dict, media_prefix: str) -> str:
         f'<header><h1>🇰🇷 한국 수출입 데이터</h1>'
         f'<div class="meta">'
         f"갱신 {escape(now)} · "
-        f"총 {s.get('total', 0)}건 (최신 {len(alerts)}개) · "
+        f"총 {s.get('total', 0)}건 (최신 {len(latest_ids)}개) · "
         f"수출 {by_dir.get('export', 0)} / 수입 {by_dir.get('import', 0)} · "
         f"잠정 {by_status.get('preliminary', 0)} / 확정 {by_status.get('final', 0)} · "
         f"품목 {s.get('distinct_items', 0)}"
@@ -129,7 +147,7 @@ def _build_html(alerts: list[dict], s: dict, media_prefix: str) -> str:
         '<button class="chip" data-val="final">확정</button>'
         '</span>'
         '</div>'
-        f'<div class="count"><span id="visible-count">{len(alerts)}</span> / {len(alerts)} 표시 중</div>'
+        f'<div class="count"><span id="visible-count">{len(latest_ids)}</span> / {len(latest_ids)} 표시 중</div>'
         '</section>'
         '<main id="items-view" class="view active"></main>'
         '<main id="companies-view" class="view"></main>'
@@ -142,6 +160,7 @@ def _build_html(alerts: list[dict], s: dict, media_prefix: str) -> str:
         '</div>'
         '<script>'
         f"const ALERTS={payload_json};\n"
+        f"const LATEST_IDS=new Set({latest_ids_json});\n"
         + _JS
         + '</script></body></html>'
     )
@@ -194,7 +213,7 @@ h1{margin:0 0 4px;font-size:18px}
 .section{background:var(--surface);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
 .section-header{padding:13px 14px;background:var(--surface-2);border-bottom:1px solid var(--border-soft)}
 .section-header h2{margin:0;font-size:15px}
-.section-header .sub-count{margin-top:3px;font-size:11px;color:var(--text-sub)}
+.section-header .sub-line{margin-top:3px;font-size:11px;color:var(--text-sub);word-break:keep-all}
 .section-items{padding:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
 .mini-card{border:1px solid var(--border-soft);border-radius:8px;overflow:hidden;cursor:pointer;transition:transform .1s;background:var(--surface);position:relative}
 .mini-card:hover{transform:translateY(-1px)}
@@ -228,6 +247,12 @@ h1{margin:0 0 4px;font-size:18px}
 .modal-images{display:flex;flex-direction:column;gap:1px;background:var(--bg)}
 .modal-images img{width:100%;display:block;background:var(--img-placeholder)}
 .modal-text{padding:14px 22px;font-size:12px;color:var(--text-sub);white-space:pre-wrap;border-top:1px solid var(--border-soft);background:var(--surface-2)}
+.modal-card{display:block}
+.modal-card.secondary{border-top:1px solid var(--border-soft);cursor:pointer;transition:background .15s}
+.modal-card.secondary:hover{background:var(--surface-2)}
+.modal-card.secondary .modal-head{padding:14px 22px}
+.modal-card.secondary .modal-head .sib-title{margin:0;font-size:13px;font-weight:600;color:var(--text)}
+.modal-divider{padding:14px 22px 4px;font-size:11px;color:var(--text-sub);font-weight:600;text-align:center;background:var(--surface-2);border-top:1px solid var(--border-soft)}
 @media (max-width:600px){
   header{padding:12px 14px}.filters{padding:10px 14px}.view{padding:8px}
   .section-items{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
@@ -240,6 +265,32 @@ _JS = r"""
 // --- helpers ---
 function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
 function whereLabel(a){return [a.region,a.country].filter(Boolean).join(' → ')}
+
+// Build a one-shot dedup_key → alerts[] index so the modal can find
+// sibling history alerts (and so the views don't have to repeat work).
+const BY_DEDUP={};
+ALERTS.forEach(a=>{(BY_DEDUP[a.dedup_key]=BY_DEDUP[a.dedup_key]||[]).push(a)});
+
+function isLatest(a){return LATEST_IDS.has(a.id)}
+
+// Union of stocks across a section's variants, sorted by frequency
+// (so the most-mentioned company shows first). Drives the section
+// subtitle in 품목별 view so the operator sees the relevant company
+// names without opening every mini-card.
+function unionStocks(variants){
+  const counts={};
+  variants.forEach(a=>{(a.stocks||[]).forEach(s=>{counts[s]=(counts[s]||0)+1})});
+  return Object.entries(counts)
+    .sort((x,y)=>y[1]-x[1]||x[0].localeCompare(y[0]))
+    .map(([n])=>n);
+}
+
+function stocksSubtitle(variants){
+  const s=unionStocks(variants);
+  if(!s.length)return '';
+  if(s.length<=3)return '관련종목: '+s.join(' / ');
+  return '관련종목: '+s.slice(0,3).join(' / ')+' 외 '+(s.length-3)+'개';
+}
 
 // Human-friendly period label that bundles status into one phrase so
 // the card / modal header reads naturally in Korean.
@@ -270,13 +321,30 @@ function renderMiniCard(a){
 }
 
 // --- modal (full card view) ---
+// Modal renders the clicked alert as 'primary' on top, then every
+// other alert sharing the same dedup_key as 'secondary' inline below,
+// newest-first. The operator scrolls to visually compare current
+// 잠정/확정 against the previous report's graphs and tables side by
+// side — the OCR-less path to '전번 확정 vs 이번 잠정' diffing.
 function renderModalBody(a){
+  const siblings=(BY_DEDUP[a.dedup_key]||[])
+    .filter(x=>x.id!==a.id)
+    .sort((x,y)=>(y.posted_at||'').localeCompare(x.posted_at||''));
+  let html=renderModalCard(a,true);
+  if(siblings.length){
+    html+='<div class="modal-divider"><span>이전 발표 '+siblings.length+'건 — 비교 (클릭하면 그 시점이 위로)</span></div>';
+    siblings.forEach(s=>{html+=renderModalCard(s,false)});
+  }
+  return html;
+}
+
+function renderModalCard(a, primary){
   const where=whereLabel(a);
   const titleSuffix=where?' ('+where+')':'';
   const dirLabel=a.dir==='export'?'수출':'수입';
   const statusLabel=a.status==='preliminary'?'잠정':'확정';
   let stocksHtml='';
-  if(a.stocks&&a.stocks.length){
+  if(primary&&a.stocks&&a.stocks.length){
     stocksHtml='<div class="stocks"><span class="label">관련종목</span>'+
       a.stocks.map(s=>'<span class="stock">'+esc(s)+'</span>').join('')+
       (a.has_etc?'<span class="stock">등</span>':'')+'</div>';
@@ -284,21 +352,26 @@ function renderModalBody(a){
   let imagesHtml='';
   if(a.media&&a.media.length){
     imagesHtml='<div class="modal-images">'+
-      a.media.map(p=>'<img src="'+esc(p)+'" alt="">').join('')+'</div>';
+      a.media.map(p=>'<img loading="lazy" src="'+esc(p)+'" alt="">').join('')+'</div>';
   }else{
     imagesHtml='<div class="empty">이미지 없음</div>';
   }
-  return '<div class="modal-head">'+
-    '<h2>'+esc(a.item)+esc(titleSuffix)+'</h2>'+
-    '<div class="badges">'+
-      '<span class="badge '+a.dir+'">'+dirLabel+'</span>'+
-      '<span class="badge '+a.status+'">'+statusLabel+'</span>'+
-      (a.is_composite?'<span class="badge composite">합산</span>':'')+
-    '</div>'+
-    '<div class="period-label">📅 '+esc(niceLabel(a))+'</div>'+
-    '<div class="sub">게시 '+esc(a.posted_at)+'</div>'+
-    stocksHtml+
-    '</div>'+imagesHtml;
+  const titleHtml=primary
+    ? '<h2>'+esc(a.item)+esc(titleSuffix)+'</h2>'
+    : '<h3 class="sib-title">📅 '+esc(niceLabel(a))+'</h3>';
+  const klass=primary?'modal-card primary':'modal-card secondary';
+  return '<div class="'+klass+'" data-id="'+a.id+'">'+
+    '<div class="modal-head">'+
+      titleHtml+
+      '<div class="badges">'+
+        (primary?'<span class="badge '+a.dir+'">'+dirLabel+'</span>':'')+
+        '<span class="badge '+a.status+'">'+statusLabel+'</span>'+
+        (a.is_composite?'<span class="badge composite">합산</span>':'')+
+      '</div>'+
+      (primary?'<div class="period-label">📅 '+esc(niceLabel(a))+'</div>':'')+
+      '<div class="sub">게시 '+esc(a.posted_at)+'</div>'+
+      stocksHtml+
+    '</div>'+imagesHtml+'</div>';
 }
 
 function showModal(a){
@@ -314,6 +387,7 @@ function hideModal(){
 // --- state + filter ---
 const state={dir:'',status:'',q:''};
 function matches(a){
+  if(!isLatest(a))return false;  // views render the latest of each dedup_key
   if(state.dir&&a.dir!==state.dir)return false;
   if(state.status&&a.status!==state.status)return false;
   if(state.q){
@@ -325,11 +399,16 @@ function matches(a){
 }
 
 // --- view builders ---
-function renderSection(title, count, miniCardsHtml){
+// Section header can carry one or two muted subtitle lines under the
+// title. 품목별 uses [stocks-union, region/country-count]; 회사별 uses
+// just [items-count]. Empty entries are dropped silently.
+function renderSection(title, subtitles, miniCardsHtml){
+  const lines=(subtitles||[]).filter(Boolean)
+    .map(s=>'<div class="sub-line">'+esc(s)+'</div>').join('');
   return '<section class="section">'+
     '<div class="section-header">'+
       '<h2>'+esc(title)+'</h2>'+
-      '<div class="sub-count">'+count+'</div>'+
+      lines+
     '</div>'+
     '<div class="section-items">'+miniCardsHtml+'</div>'+
   '</section>';
@@ -348,9 +427,19 @@ function buildItemsView(filtered){
   });
   if(!sorted.length)return '<div class="empty">조건에 맞는 품목이 없습니다.</div>';
   return sorted.map(([name,variants])=>{
-    variants.sort((a,b)=>(b.posted_at||'').localeCompare(a.posted_at||''));
+    // Cluster same-item siblings by item name first (groups all
+    // '라면 (전국_*)' entries together), then by region/country so
+    // 전국 sits above시 단위 etc. — more intuitive than purely-recency
+    // when a single section has many variants.
+    variants.sort((a,b)=>
+      (a.region||'').localeCompare(b.region||'')||
+      (a.country||'').localeCompare(b.country||'')
+    );
     const cards=variants.map(renderMiniCard).join('');
-    return renderSection(name, variants.length+'개 (지역/국가)', cards);
+    return renderSection(name, [
+      stocksSubtitle(variants),
+      variants.length+'개 (지역/국가)',
+    ], cards);
   }).join('');
 }
 
@@ -368,9 +457,16 @@ function buildCompaniesView(filtered){
   }
   if(!sorted.length)return '<div class="empty">조건에 맞는 회사가 없습니다.</div>';
   return sorted.map(([name,items])=>{
-    items.sort((a,b)=>(b.posted_at||'').localeCompare(a.posted_at||''));
+    // Cluster the company's items by item name so '라면' rows sit
+    // together, then by region/country, so the section reads like
+    // an organized index instead of a recency-shuffled list.
+    items.sort((a,b)=>
+      (a.item||'').localeCompare(b.item||'')||
+      (a.region||'').localeCompare(b.region||'')||
+      (a.country||'').localeCompare(b.country||'')
+    );
     const cards=items.map(renderMiniCard).join('');
-    return renderSection(name, items.length+'개 품목', cards);
+    return renderSection(name, [items.length+'개 품목'], cards);
   }).join('');
 }
 
@@ -409,7 +505,17 @@ document.addEventListener('click',e=>{
   if(card&&card.dataset.id){
     const id=parseInt(card.dataset.id,10);
     const a=ALERTS.find(x=>x.id===id);
-    if(a)showModal(a);
+    if(a){document.getElementById('modal-body').scrollTop=0;showModal(a)}
+    return;
+  }
+  // Clicking a secondary card inside the modal swaps it to primary,
+  // so the operator can drill deeper into the history (e.g. compare
+  // 4월 확정 → 3월 확정 → ...) without closing and reopening.
+  const sib=e.target.closest('.modal-card.secondary');
+  if(sib&&sib.dataset.id){
+    const id=parseInt(sib.dataset.id,10);
+    const a=ALERTS.find(x=>x.id===id);
+    if(a){document.getElementById('modal-body').scrollTop=0;showModal(a)}
     return;
   }
   if(e.target.classList.contains('modal-close')||e.target.classList.contains('modal-backdrop')){

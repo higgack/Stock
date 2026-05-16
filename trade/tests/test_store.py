@@ -13,6 +13,7 @@ from trade.store import (
     alert_to_row,
     count_alerts,
     latest_per_dedup_key,
+    list_all_alerts,
     open_db,
     query_by_item,
     query_by_stock,
@@ -213,6 +214,61 @@ class TestStore(unittest.TestCase):
         )
 
     # --- stats ---
+
+    def test_list_all_alerts_groups_by_dedup_key_latest_first(self):
+        # Same (item, country) over 3 sequential reports → all rows
+        # returned, with the latest first within each dedup_key block.
+        for msg_id, posted_at, caption in [
+            (10, "2026-05-11T02:45:00+00:00",
+             "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+             "2026년 5월 1일 ~ 10일 잠정치 수출데이터 입니다."),
+            (20, "2026-05-21T02:45:00+00:00",
+             "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+             "2026년 5월 1일 ~ 20일 잠정치 수출데이터 입니다."),
+            (30, "2026-06-15T02:45:00+00:00",
+             "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+             "2026년 5월 확정치 수출데이터 입니다."),
+        ]:
+            upsert_alert(
+                self.conn, _row_for(caption, msg_id=msg_id, posted_at=posted_at)
+            )
+
+        rows = list_all_alerts(self.conn)
+        self.assertEqual(len(rows), 3)
+        # The first row of the dedup_key block is the latest (msg_id=30).
+        self.assertEqual(rows[0]["source_message_id"], 30)
+        # Second is the next-most-recent (msg_id=20).
+        self.assertEqual(rows[1]["source_message_id"], 20)
+        # Third is the oldest (msg_id=10).
+        self.assertEqual(rows[2]["source_message_id"], 10)
+
+    def test_list_all_alerts_separates_different_dedup_keys(self):
+        # Two distinct dedup_keys → results group by key with each
+        # group's latest first; the groups themselves stay together.
+        captions = [
+            (1, "2026-05-11T02:45:00+00:00",
+             "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+             "2026년 5월 1일 ~ 10일 잠정치 수출데이터 입니다."),
+            (2, "2026-05-15T02:45:00+00:00",
+             "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+             "2026년 4월 확정치 수출데이터 입니다."),
+            (3, "2026-05-11T02:45:00+00:00",
+             "김치 (전국)\n관련종목 : 풀무원\n\n"
+             "2026년 5월 1일 ~ 10일 잠정치 수출데이터 입니다."),
+        ]
+        for mid, posted_at, cap in captions:
+            upsert_alert(
+                self.conn, _row_for(cap, msg_id=mid, posted_at=posted_at)
+            )
+        rows = list_all_alerts(self.conn)
+        self.assertEqual(len(rows), 3)
+        # Adjacent rows with the same dedup_key are grouped.
+        seen_keys: list[str] = []
+        for r in rows:
+            if not seen_keys or seen_keys[-1] != r["dedup_key"]:
+                seen_keys.append(r["dedup_key"])
+        # 2 distinct dedup_keys visited contiguously.
+        self.assertEqual(len(seen_keys), 2)
 
     def test_stats_returns_buckets(self):
         captions = [

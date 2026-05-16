@@ -196,6 +196,82 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn("buildCompaniesView", html)
         self.assertIn("direct.length", html)
 
+    def test_payload_carries_dedup_key_and_history_alerts(self):
+        # Seed two alerts sharing one dedup_key + one alert with a
+        # different dedup_key → payload should carry all 3 (so the
+        # modal can find siblings), and LATEST_IDS should mark only
+        # the latest one of each dedup_key.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "store.db"
+            conn = open_db(db_path)
+            cap_a = (
+                "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+                "2026년 5월 1일 ~ 10일 잠정치 수출데이터 입니다."
+            )
+            cap_b = (
+                "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+                "2026년 4월 확정치 수출데이터 입니다."
+            )
+            cap_c = (
+                "김치 (전국)\n관련종목 : 풀무원\n\n"
+                "2026년 5월 1일 ~ 10일 잠정치 수출데이터 입니다."
+            )
+            for msg_id, posted_at, caption in [
+                (1, "2026-05-11T02:45:00+00:00", cap_a),
+                (2, "2026-05-15T02:45:00+00:00", cap_b),
+                (3, "2026-05-11T02:45:00+00:00", cap_c),
+            ]:
+                parsed = parse_caption(caption)
+                upsert_alert(
+                    conn,
+                    alert_to_row(
+                        parsed,
+                        source_chat_id=-100,
+                        source_message_id=msg_id,
+                        media_group_id=None,
+                        ingested_at=posted_at,
+                        posted_at=posted_at,
+                        raw_text=caption,
+                        media_paths=[],
+                    ),
+                )
+            conn.close()
+
+            html = render_html(db_path)
+            m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+            self.assertIsNotNone(m)
+            payload = json.loads(m.group(1))
+            self.assertEqual(len(payload), 3)
+            # Every alert carries its dedup_key so BY_DEDUP can be
+            # rebuilt client-side.
+            for a in payload:
+                self.assertIn("dedup_key", a)
+
+            # LATEST_IDS contains exactly 2 (one per dedup_key).
+            m2 = re.search(r"const LATEST_IDS=new Set\((\[.*?\])\);", html, re.DOTALL)
+            self.assertIsNotNone(m2)
+            latest_ids = json.loads(m2.group(1))
+            self.assertEqual(len(latest_ids), 2)
+
+    def test_modal_renders_primary_and_secondary_card_helpers(self):
+        html = render_html(self.db_path)
+        # The modal uses a primary + secondary scheme so click-to-swap
+        # works inside the modal. Both class names must be in the
+        # renderModalCard helper.
+        self.assertIn("renderModalCard", html)
+        self.assertIn("modal-card primary", html)
+        self.assertIn("modal-card secondary", html)
+        self.assertIn("BY_DEDUP", html)
+
+    def test_section_subtitle_helper_present(self):
+        html = render_html(self.db_path)
+        # 품목별 view shows a 관련종목 subtitle line built from the
+        # union of variants' stocks; helper must be embedded.
+        self.assertIn("unionStocks", html)
+        self.assertIn("stocksSubtitle", html)
+        self.assertIn("관련종목:", html)
+
     def test_empty_store_renders_without_crash(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:

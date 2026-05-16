@@ -245,6 +245,31 @@ def count_alerts(conn: sqlite3.Connection) -> int:
     return cur.fetchone()[0]
 
 
+def list_all_alerts(conn: sqlite3.Connection) -> list[dict]:
+    """Every alert, grouped by dedup_key with each group's latest first.
+
+    Tie-break inside a group: newest posted_at; 'final' wins against
+    'preliminary' at identical posted_at (matches latest_per_dedup_key
+    semantics so the first row of each dedup_key block is the same
+    'latest' that view rendering uses).
+
+    Powers the dashboard's modal-history feature: render_html walks
+    the result once, splits the first row of each dedup_key group as
+    'latest' (used for the views) and the remainder as 'history'
+    (rendered inline in the modal so the operator can eyeball prior
+    잠정/확정 reports next to the current one without OCR).
+    """
+    return [
+        row_to_dict(r)
+        for r in conn.execute(
+            "SELECT * FROM alerts "
+            "ORDER BY dedup_key, "
+            "posted_at DESC, "
+            "CASE WHEN status='final' THEN 0 ELSE 1 END"
+        )
+    ]
+
+
 def latest_per_dedup_key(conn: sqlite3.Connection) -> list[dict]:
     """One row per (direction, item, region, country) — the most
     recently published, with 'final' winning ties against 'preliminary'
