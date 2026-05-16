@@ -155,7 +155,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — fix: dashboard_server time import + 모든 commit 채널 알림 (📝 운영 업데이트 / 🚀✅ 배포)</i>
+<i>최종 갱신: 2026-05-17 — auto-update이 dashboard 코드 변경 감지 시 trade-bot-dashboard도 자동 재시작 (sudoers 한 줄 필요)</i>
 """
 
 

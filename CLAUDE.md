@@ -124,6 +124,14 @@ existing siblings' scope-guard regex updates in the same commit —
 adding a subproject without updating siblings' guards means trade
 commits would still restart NOAH (and vice versa).
 
+When a subproject grows a sibling service (e.g. trade-bot-dashboard
+alongside the main trade-bot), the auto-update script restarts BOTH
+on changes that touch the sibling's code, with a `sudo -n` graceful
+fallback when the operator hasn't added the sibling-restart sudoers
+entry yet. The deploy notification appends a one-line note about the
+sibling restart (or the missing-sudoers warning) so the operator can
+spot setup gaps from Telegram instead of digging through journals.
+
 ## One-shot maintenance scripts — required safety pattern
 
 Long-running one-shot scripts (backfills, migrations, large reindexes)

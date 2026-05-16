@@ -89,12 +89,28 @@ if ! sudo /bin/systemctl restart trade-bot; then
     exit 1
 fi
 
+# Best-effort: also restart the dashboard server when the change set
+# touches its code. Requires a sudoers entry; logs and continues if
+# the entry is missing so the main deploy doesn't fail because of it.
+DASHBOARD_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/dashboard(_server)?\.py$|^deploy/trade-bot-dashboard.*\.(service|timer)$' || true)
+DASH_NOTE=""
+if [ -n "$DASHBOARD_RELEVANT" ]; then
+    if sudo -n /bin/systemctl restart trade-bot-dashboard 2>/dev/null; then
+        echo "trade-bot-update: also restarted trade-bot-dashboard"
+        DASH_NOTE=$'\n'"<i>+ trade-bot-dashboard 재시작</i>"
+    else
+        echo "trade-bot-update: trade-bot-dashboard restart skipped (no sudoers entry)"
+        DASH_NOTE=$'\n'"<i>⚠️ dashboard 재시작 권한 없음 — sudoers에 'restart trade-bot-dashboard' 추가 필요</i>"
+    fi
+fi
+
 sleep 3
 if systemctl is-active --quiet trade-bot; then
     msg="✅ <b>배포 완료</b>: <code>${LOCAL_SHORT}</code> → <code>${REMOTE_SHORT}</code>"
     if [ -n "$SUBJECT" ]; then
         msg="${msg}"$'\n'"${SUBJECT}"
     fi
+    msg="${msg}${DASH_NOTE}"
     notify "$msg"
     echo "trade-bot-update: restart complete"
 else
