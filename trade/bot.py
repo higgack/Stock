@@ -37,6 +37,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+import html as _html
+
 from dotenv import load_dotenv
 from telegram import Message, Update
 from telegram.constants import ParseMode
@@ -48,6 +50,9 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+
+from trade import watchlist
+from trade.parser import parse_caption
 
 load_dotenv()
 
@@ -131,6 +136,10 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 
 <b>8. 명령어</b>
 /help · /start — 이 안내
+/watch item &lt;검색어&gt; — 품목 부분일치 시 DM 알림 (예: /watch item 라면)
+/watch company &lt;검색어&gt; — 관련종목 부분일치 시 DM 알림 (예: /watch company 삼양식품)
+/watch list — 현재 워치 목록
+/unwatch item|company &lt;검색어&gt; — 워치 제거
 
 <b>9. 자동화 systemd</b>
 • trade-bot — 실시간 메시지 수집
@@ -146,7 +155,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — Phase E: gzip + JSON API (/api/alerts.json·stats·health) + Dormancy/사이클 누락 알림 + store.db 일간 백업</i>
+<i>최종 갱신: 2026-05-17 — Phase F: 워치리스트 (/watch item·company &lt;검색어&gt;, 신규 alert 매칭 시 DM 자동 푸시)</i>
 """
 
 
@@ -355,11 +364,151 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if post.photo:
         asyncio.create_task(_download_photo_bg(post, ctx))
 
+    # Best-effort watchlist DM notify on the captioned (primary) member
+    # of an album. Photo-only siblings carry no text so parse_caption
+    # returns None and we skip them.
+    caption_text = post.text or post.caption or ""
+    if caption_text.strip():
+        asyncio.create_task(_notify_watchers(ctx, caption_text))
+
+
+# ---------------------------------------------------------------------
+# Watchlist commands + DM notify
+# ---------------------------------------------------------------------
+
+_WATCH_USAGE = (
+    "사용법:\n"
+    "/watch item &lt;검색어&gt; — 품목명에 검색어가 들어가면 DM\n"
+    "/watch company &lt;검색어&gt; — 관련종목에 검색어가 들어가면 DM\n"
+    "/watch list — 현재 워치 목록\n"
+    "/unwatch item|company &lt;검색어&gt; — 워치 제거\n"
+    "검색은 부분일치 (대소문자 무시). 예: '라면'은 '라면 (전국)'·'라면 + 기타 소스'에 모두 매칭."
+)
+
+
+def _format_watch_list(watches: list[dict]) -> str:
+    if not watches:
+        return "📋 현재 워치 없음.\n\n" + _WATCH_USAGE
+    by_kind: dict[str, list[str]] = {}
+    for w in watches:
+        by_kind.setdefault(w["kind"], []).append(w["pattern"])
+    lines = ["📋 <b>현재 워치</b>"]
+    for kind in ("item", "company"):
+        if kind in by_kind:
+            label = "품목" if kind == "item" else "회사"
+            for p in by_kind[kind]:
+                lines.append(f"• {label}: <code>{_html.escape(p)}</code>")
+    lines.append("")
+    lines.append(_WATCH_USAGE)
+    return "\n".join(lines)
+
+
+async def cmd_watch(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    args = list(ctx.args or [])
+    if not args or args[0].lower() == "list":
+        with watchlist.session() as conn:
+            watches = watchlist.list_for(conn, user_id)
+        await update.message.reply_text(
+            _format_watch_list(watches), parse_mode=ParseMode.HTML
+        )
+        return
+    sub = args[0].lower()
+    if sub not in ("item", "company") or len(args) < 2:
+        await update.message.reply_text(_WATCH_USAGE, parse_mode=ParseMode.HTML)
+        return
+    pattern = " ".join(args[1:]).strip()
+    with watchlist.session() as conn:
+        added = watchlist.add(conn, user_id, sub, pattern)
+    label = "품목" if sub == "item" else "회사"
+    if added:
+        msg = f"✅ <b>{label}</b> 워치 추가: <code>{_html.escape(pattern)}</code>"
+    else:
+        msg = f"이미 등록됨: {label} <code>{_html.escape(pattern)}</code>"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def cmd_unwatch(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    user_id = update.effective_user.id
+    args = list(ctx.args or [])
+    if len(args) < 2 or args[0].lower() not in ("item", "company"):
+        await update.message.reply_text(
+            "사용법: /unwatch item &lt;검색어&gt; 또는 /unwatch company &lt;검색어&gt;",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    sub = args[0].lower()
+    pattern = " ".join(args[1:]).strip()
+    with watchlist.session() as conn:
+        removed = watchlist.remove(conn, user_id, sub, pattern)
+    label = "품목" if sub == "item" else "회사"
+    if removed:
+        msg = f"🗑 <b>{label}</b> 워치 제거: <code>{_html.escape(pattern)}</code>"
+    else:
+        msg = f"못 찾음: {label} <code>{_html.escape(pattern)}</code>"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def _notify_watchers(ctx: ContextTypes.DEFAULT_TYPE, caption_text: str) -> None:
+    """Parse the caption with the live trade parser and DM every user
+    whose watch pattern matches the resulting item/stocks. Failures
+    swallowed so DM hiccups can't break the ingest hot path.
+    """
+    try:
+        parsed = parse_caption(caption_text)
+    except Exception as e:
+        log.warning("watchlist parse failed: %s", e)
+        return
+    if parsed is None:
+        return
+    try:
+        with watchlist.session() as conn:
+            users = watchlist.matching_users(conn, parsed.item, parsed.stocks)
+    except Exception as e:
+        log.warning("watchlist lookup failed: %s", e)
+        return
+    if not users:
+        return
+
+    where = []
+    if parsed.region:
+        where.append(parsed.region)
+    if parsed.country:
+        where.append(parsed.country)
+    where_str = " → ".join(where)
+    dir_label = "수출" if parsed.direction == "export" else "수입"
+    status_label = "잠정" if parsed.status == "preliminary" else "확정"
+    title = _html.escape(parsed.item)
+    if where_str:
+        title += f" ({_html.escape(where_str)})"
+    lines = [f"🔔 <b>{title}</b>", f"{dir_label} · {status_label}"]
+    if parsed.stocks:
+        lines.append(
+            "관련종목: "
+            + " · ".join(_html.escape(s) for s in parsed.stocks[:6])
+            + (" 등" if parsed.has_etc or len(parsed.stocks) > 6 else "")
+        )
+    msg = "\n".join(lines)
+
+    for uid in users:
+        try:
+            await ctx.bot.send_message(
+                chat_id=uid, text=msg, parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            log.warning("watch DM failed user=%s err=%s", uid, e)
+
 
 def main() -> None:
     app = Application.builder().token(TOKEN).build()
     # Commands fire in private chats (DM the bot directly).
     app.add_handler(CommandHandler(["help", "start"], cmd_help))
+    app.add_handler(CommandHandler("watch", cmd_watch))
+    app.add_handler(CommandHandler("unwatch", cmd_unwatch))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     log.info(
