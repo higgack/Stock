@@ -1,0 +1,167 @@
+"""Dashboard renderer tests.
+
+We seed an in-memory store with a few representative alerts and inspect
+the rendered HTML for the structural pieces that downstream features
+(filtering, tab switching, image embedding) depend on. We don't try to
+execute the inline JS — that would require a browser — but we verify
+the JSON payload embedded for the JS to consume.
+"""
+
+import json
+import re
+import unittest
+from pathlib import Path
+
+from trade.dashboard import render_html
+from trade.parser import parse_caption
+from trade.store import alert_to_row, open_db, upsert_alert
+
+
+SAMPLES = [
+    # item_first with country
+    (
+        100,
+        "2026-05-11T02:45:00+00:00",
+        "라면 (전국_중국)\n관련종목 : 삼양식품 / 농심\n\n"
+        "2026년 5월 1일 ~ 10일 잠정치 수출데이터 입니다.",
+        ["media/2026-05-11/abc.jpg", "media/2026-05-11/def.jpg"],
+    ),
+    # company_first
+    (
+        101,
+        "2026-05-15T02:45:00+00:00",
+        "SK하이닉스 : 플래시 메모리 (충북 청주시)\n\n"
+        "2026년 4월 확정치 수출데이터 입니다.",
+        ["media/2026-05-15/ghi.jpg"],
+    ),
+    # item-only (placeholder stocks)
+    (
+        102,
+        "2026-05-11T02:45:00+00:00",
+        "2차전지 (전국)\n관련종목: 월별 수출 데이터\n\n"
+        "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다.",
+        [],
+    ),
+    # import
+    (
+        103,
+        "2026-05-11T02:45:00+00:00",
+        "염화칼륨 (전국)\n관련종목 : 유니드\n\n"
+        "2026년 5월 1일 ~ 10일 잠정치 수입데이터 입니다.",
+        ["media/2026-05-11/jkl.jpg"],
+    ),
+]
+
+
+def _seed_store(tmp_db_path: Path):
+    conn = open_db(tmp_db_path)
+    for msg_id, posted_at, caption, media in SAMPLES:
+        parsed = parse_caption(caption)
+        row = alert_to_row(
+            parsed,
+            source_chat_id=-1003715527602,
+            source_message_id=msg_id,
+            media_group_id=None,
+            ingested_at=posted_at,
+            posted_at=posted_at,
+            raw_text=caption,
+            media_paths=media,
+        )
+        upsert_alert(conn, row)
+    conn.close()
+
+
+class TestDashboardRenderer(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "store.db"
+        _seed_store(self.db_path)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_renders_full_html_document(self):
+        html = render_html(self.db_path)
+        self.assertTrue(html.startswith("<!DOCTYPE html>"))
+        self.assertIn("<html lang=\"ko\">", html)
+        self.assertIn("</html>", html)
+
+    def test_header_meta_shows_totals(self):
+        html = render_html(self.db_path)
+        # 4 alerts, all distinct dedup_keys → 4 latest
+        self.assertIn("총 4건", html)
+        self.assertIn("(최신 4개)", html)
+
+    def test_tabs_and_views_exist(self):
+        html = render_html(self.db_path)
+        self.assertIn('data-tab="items"', html)
+        self.assertIn('data-tab="companies"', html)
+        self.assertIn('id="items-view"', html)
+        self.assertIn('id="companies-view"', html)
+
+    def test_filter_controls_exist(self):
+        html = render_html(self.db_path)
+        self.assertIn('id="q"', html)
+        self.assertIn('data-val="export"', html)
+        self.assertIn('data-val="import"', html)
+        self.assertIn('data-val="preliminary"', html)
+        self.assertIn('data-val="final"', html)
+
+    def test_embedded_payload_parses_and_carries_all_alerts(self):
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        self.assertIsNotNone(m, "ALERTS payload not found in script")
+        payload = json.loads(m.group(1))
+        self.assertEqual(len(payload), 4)
+
+        items = {p["item"] for p in payload}
+        self.assertIn("라면", items)
+        self.assertIn("플래시 메모리", items)
+        self.assertIn("2차전지", items)
+        self.assertIn("염화칼륨", items)
+
+    def test_media_paths_get_prefix(self):
+        html = render_html(self.db_path, media_url_prefix="/static/")
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        all_media = [p for a in payload for p in a["media"]]
+        self.assertTrue(all_media, "expected at least one media path")
+        for path in all_media:
+            self.assertTrue(
+                path.startswith("/static/"),
+                f"path should start with media prefix, got {path!r}",
+            )
+
+    def test_stocks_visible_in_payload(self):
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        by_item = {p["item"]: p for p in payload}
+        self.assertEqual(by_item["라면"]["stocks"], ["삼양식품", "농심"])
+        self.assertEqual(by_item["플래시 메모리"]["stocks"], ["SK하이닉스"])
+        self.assertEqual(by_item["2차전지"]["stocks"], [])  # placeholder
+        self.assertEqual(by_item["염화칼륨"]["stocks"], ["유니드"])
+
+    def test_payload_carries_direction_and_status(self):
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        by_item = {p["item"]: p for p in payload}
+        self.assertEqual(by_item["라면"]["dir"], "export")
+        self.assertEqual(by_item["라면"]["status"], "preliminary")
+        self.assertEqual(by_item["플래시 메모리"]["status"], "final")
+        self.assertEqual(by_item["염화칼륨"]["dir"], "import")
+
+    def test_empty_store_renders_without_crash(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            empty_db = Path(td) / "empty.db"
+            open_db(empty_db).close()
+            html = render_html(empty_db)
+            self.assertIn("<!DOCTYPE html>", html)
+            self.assertIn("총 0건", html)
+
+
+if __name__ == "__main__":
+    unittest.main()
