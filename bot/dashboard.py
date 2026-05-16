@@ -559,6 +559,25 @@ _DAY_OF_WEEK = ["월", "화", "수", "목", "금", "토", "일"]
 _DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
 
+def _ticker_kr_name(ticker: str) -> str | None:
+    """Return the Korean corp name for a KR ticker, else None.
+
+    Used by card / detail / search rendering so users see '삼성전자'
+    instead of '005930.KS'. Pure numeric tickers are unfriendly to
+    skim in a list of mixed-market cards. Falls back to None on any
+    DART lookup miss (KR ETFs that aren't in DART, US tickers, etc.)
+    and the caller renders the bare ticker."""
+    try:
+        from bot.market import detect_market
+        if detect_market(ticker) != "KR":
+            return None
+        from bot.dart_client import get_dart
+        code = (ticker or "").upper().split(".")[0]
+        return get_dart().stock_code_to_name(code)
+    except Exception:
+        return None
+
+
 def _format_date_kr(date_str: str) -> str:
     m = _DATE_RE.match(date_str)
     if not m:
@@ -801,11 +820,17 @@ _INDEX_JS = """
   const total = cards.length;
 
   function applyFilter() {
-    const q = (searchEl.value || '').trim().toUpperCase();
+    const raw = (searchEl.value || '').trim();
+    const q = raw.toLowerCase();
     let matched = 0;
     for (const c of cards) {
-      const tk = (c.dataset.ticker || '').toUpperCase();
-      const visible = !q || tk.includes(q);
+      // Lowercase both sides so '005930' / 'NVDA' / '삼성전자' /
+      // 'SK하이닉스' (mixed alpha + hangul) all match case-insensitively.
+      // data-name is only set for KR tickers with a DART name match;
+      // bare US/JP/CN tickers fall back to ticker-only search.
+      const tk = (c.dataset.ticker || '').toLowerCase();
+      const nm = (c.dataset.name || '').toLowerCase();
+      const visible = !q || tk.includes(q) || (nm && nm.includes(q));
       c.style.display = visible ? '' : 'none';
       if (visible) matched++;
     }
@@ -817,7 +842,7 @@ _INDEX_JS = """
       if (anyVisible && q) d.open = true;
     }
     if (q) {
-      statusEl.textContent = matched + '건 매칭 (검색: "' + q + '")';
+      statusEl.textContent = matched + '건 매칭 (검색: "' + raw + '")';
       emptyEl.style.display = matched === 0 ? 'block' : 'none';
     } else {
       statusEl.textContent = '총 ' + total + '건의 분석 기록';
@@ -1117,10 +1142,21 @@ def _render_index(records: list[dict]) -> str:
                 outcome_html = _render_outcome_html(
                     resolved_lookup.get((date, ticker))
                 )
+                # For KR tickers with a DART match, display the Korean
+                # corp name instead of the raw '005930.KS' / '014680.KS'
+                # numeric ticker — pure digits are hard to scan in a
+                # mixed-market list. data-name is added so JS search
+                # matches the Korean name too (in addition to the
+                # ticker via data-ticker).
+                kr_name = _ticker_kr_name(ticker)
+                label = kr_name or ticker
+                data_name_attr = (
+                    f' data-name="{_html.escape(kr_name)}"' if kr_name else ""
+                )
                 cards.append(f"""
-                <div class="card" data-ticker="{_html.escape(ticker)}" data-date="{_html.escape(date)}">
+                <div class="card" data-ticker="{_html.escape(ticker)}"{data_name_attr} data-date="{_html.escape(date)}">
                   <div class="card-row">
-                    <a class="ticker" href="{href}">📊 {_html.escape(ticker)}</a>
+                    <a class="ticker" href="{href}">📊 {_html.escape(label)}</a>
                     {_badge_html(rating)}
                     <div class="stance">{_html.escape(stance)}</div>
                     <div class="time">{_html.escape(time_str)}</div>
@@ -1263,13 +1299,20 @@ def _render_detail(rec: dict) -> str:
     summary = rec.get("summary", "") or ""
     full = rec.get("full_report", "") or ""
 
+    # Title / header use the Korean corp name for KR tickers so the
+    # browser tab and the in-page H1 read '한솔케미칼 / 014680.KS'
+    # rather than the bare numeric ticker. The bare ticker stays in
+    # the meta line below for users who navigated by ticker.
+    kr_name = _ticker_kr_name(ticker)
+    h1_label = f"{kr_name} / {ticker}" if kr_name else ticker
+
     return f"""<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>📊 {_html.escape(ticker)} ({_html.escape(date)})</title>
+<title>📊 {_html.escape(h1_label)} ({_html.escape(date)})</title>
 <script>{_THEME_JS}</script>
 <style>{_DETAIL_CSS}</style>
 </head>
@@ -1277,7 +1320,7 @@ def _render_detail(rec: dict) -> str:
 <div class="wrap">
   <a class="back" href="../index.html">← 아카이브로 돌아가기</a>
   <div class="title-row">
-    <h1>📊 {_html.escape(ticker)}</h1>
+    <h1>📊 {_html.escape(h1_label)}</h1>
     {_badge_html(rating)}
   </div>
   <div class="meta">
