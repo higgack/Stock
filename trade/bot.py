@@ -134,10 +134,11 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
   · 합산 ↔ 개별 양방향 링크 (수산화칼륨+탄산칼륨 ↔ 각 개별)
   · 같은 품목 다른 회사 (peer chip — 클릭 시 회사 뷰 자동 필터)
 
-<b>8. 명령어</b>
-/help · /start — 이 안내
-/watch item &lt;검색어&gt; — 품목 부분일치 시 DM 알림 (예: /watch item 라면)
-/watch company &lt;검색어&gt; — 관련종목 부분일치 시 DM 알림 (예: /watch company 삼양식품)
+<b>8. 명령어</b> (워치 명령은 봇과 <b>1:1 채팅(DM)</b>에서만 동작)
+/help · /start — 이 안내 (채널·DM 둘 다)
+/watch &lt;검색어&gt; — 품목+관련종목 둘 다 부분일치 시 DM (예: /watch 이오테크닉스)
+/watch item &lt;검색어&gt; — 품목만 매칭하고 싶을 때 (예: /watch item 라면)
+/watch company &lt;검색어&gt; — 관련종목만 매칭 (예: /watch company 삼양식품)
 /watch list — 현재 워치 목록
 /unwatch item|company &lt;검색어&gt; — 워치 제거
 
@@ -155,7 +156,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — auto-update이 dashboard 코드 변경 감지 시 trade-bot-dashboard도 자동 재시작 (sudoers 한 줄 필요)</i>
+<i>최종 갱신: 2026-05-17 — /watch DM 전용 안내 (채널 입력 시 hint) + kind 생략 시 품목+회사 둘 다 자동 등록</i>
 """
 
 
@@ -346,6 +347,20 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             disable_web_page_preview=True,
         )
         return
+    if first_word in ("/watch", "/unwatch"):
+        # Watch state is per-Telegram-user; a channel post has no
+        # personal user_id to attach it to. Reply once with the
+        # DM-only hint and stop.
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text=(
+                "⚠️ <b>/watch · /unwatch는 봇과 1:1 채팅에서만 동작</b>합니다.\n"
+                "Telegram 검색에서 봇 username 찾아 'Start' 누른 뒤 명령어를 입력하세요.\n"
+                "(워치 등록은 사용자별 — 채널에 박으면 누구 워치인지 알 수 없음)"
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+        return
 
     if not _origin_matches(post):
         return
@@ -378,8 +393,9 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
 _WATCH_USAGE = (
     "사용법:\n"
-    "/watch item &lt;검색어&gt; — 품목명에 검색어가 들어가면 DM\n"
-    "/watch company &lt;검색어&gt; — 관련종목에 검색어가 들어가면 DM\n"
+    "/watch &lt;검색어&gt; — 품목+관련종목 둘 다 매칭 (가장 편함)\n"
+    "/watch item &lt;검색어&gt; — 품목명만\n"
+    "/watch company &lt;검색어&gt; — 관련종목만\n"
     "/watch list — 현재 워치 목록\n"
     "/unwatch item|company &lt;검색어&gt; — 워치 제거\n"
     "검색은 부분일치 (대소문자 무시). 예: '라면'은 '라면 (전국)'·'라면 + 기타 소스'에 모두 매칭."
@@ -416,17 +432,41 @@ async def cmd_watch(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     sub = args[0].lower()
-    if sub not in ("item", "company") or len(args) < 2:
-        await update.message.reply_text(_WATCH_USAGE, parse_mode=ParseMode.HTML)
+    if sub in ("item", "company"):
+        if len(args) < 2:
+            await update.message.reply_text(_WATCH_USAGE, parse_mode=ParseMode.HTML)
+            return
+        pattern = " ".join(args[1:]).strip()
+        with watchlist.session() as conn:
+            added = watchlist.add(conn, user_id, sub, pattern)
+        label = "품목" if sub == "item" else "회사"
+        if added:
+            msg = f"✅ <b>{label}</b> 워치 추가: <code>{_html.escape(pattern)}</code>"
+        else:
+            msg = f"이미 등록됨: {label} <code>{_html.escape(pattern)}</code>"
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
-    pattern = " ".join(args[1:]).strip()
+    # No 'item' / 'company' keyword — treat the whole input as a
+    # pattern and register it under BOTH kinds so '/watch 이오테크닉스'
+    # matches whether 이오테크닉스 shows up as the item name or in
+    # 관련종목. /unwatch can still narrow to one side later.
+    pattern = " ".join(args).strip()
     with watchlist.session() as conn:
-        added = watchlist.add(conn, user_id, sub, pattern)
-    label = "품목" if sub == "item" else "회사"
-    if added:
-        msg = f"✅ <b>{label}</b> 워치 추가: <code>{_html.escape(pattern)}</code>"
+        added_item = watchlist.add(conn, user_id, "item", pattern)
+        added_co = watchlist.add(conn, user_id, "company", pattern)
+    flavors = []
+    if added_item:
+        flavors.append("품목")
+    if added_co:
+        flavors.append("회사")
+    if not flavors:
+        msg = f"이미 등록됨: <code>{_html.escape(pattern)}</code> (품목+회사 둘 다)"
     else:
-        msg = f"이미 등록됨: {label} <code>{_html.escape(pattern)}</code>"
+        msg = (
+            f"✅ 워치 추가: <code>{_html.escape(pattern)}</code> "
+            f"({' · '.join(flavors)})\n"
+            f"<i>품목 또는 관련종목 중 어디든 들어가면 DM</i>"
+        )
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
