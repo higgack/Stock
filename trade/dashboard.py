@@ -285,6 +285,16 @@ h1{margin:0 0 4px;font-size:18px}
 .modal-images{display:flex;flex-direction:column;gap:1px;background:var(--bg)}
 .modal-images img{width:100%;display:block;background:var(--img-placeholder)}
 .modal-text{padding:14px 22px;font-size:12px;color:var(--text-sub);white-space:pre-wrap;border-top:1px solid var(--border-soft);background:var(--surface-2)}
+.modal-toolbar{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
+.tool-btn{padding:5px 11px;font-size:12px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;cursor:pointer}
+.tool-btn:hover:not(:disabled){background:var(--surface-2)}
+.tool-btn:disabled{opacity:.6;cursor:default}
+.modal-links,.modal-peers{margin-top:10px;font-size:12px}
+.modal-links .label,.modal-peers .label{color:var(--text-sub);margin-right:6px;font-size:11px}
+.link-chip{padding:3px 9px;margin:2px 3px 0 0;background:var(--chip-bg);color:var(--text);border:1px solid var(--border-soft);border-radius:4px;font-size:11px;cursor:pointer;font-weight:500}
+.link-chip:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.peer-chip{display:inline-block;padding:2px 7px;margin:2px 3px 0 0;background:var(--chip-bg);color:var(--text);border-radius:4px;font-size:11px;cursor:pointer}
+.peer-chip:hover{background:var(--accent);color:#fff}
 .modal-card{display:block}
 .modal-card.secondary{border-top:1px solid var(--border-soft);cursor:pointer;transition:background .15s}
 .modal-card.secondary:hover{background:var(--surface-2)}
@@ -515,6 +525,52 @@ function renderModalBody(a){
   return html;
 }
 
+// Primary modal head also gets a small toolbar (URL copy + image save
+// buttons) and three optional sections below the main card:
+//   합산 ↔ 개별   bidirectional link between '+' composite items and
+//                 their parts (when both exist in the corpus)
+//   연관 종목      other companies that appear on alerts for the same
+//                 item — discovery of peer stocks within a category
+function findCompositeLinks(a){
+  // Returns {asComposite: [...individual items], asPart: [...composite items]}
+  // for the given alert's item.
+  const out={asComposite:[], asPart:[]};
+  if(a.is_composite&&a.composite_parts&&a.composite_parts.length){
+    // For each part name, find latest alert with that item name.
+    a.composite_parts.forEach(part=>{
+      const partName=part.trim();
+      if(!partName)return;
+      const found=ALERTS.find(x=>isLatest(x)&&x.item===partName);
+      if(found)out.asComposite.push(found);
+    });
+  }
+  // Look for any composite alert whose composite_parts contain THIS item.
+  ALERTS.forEach(x=>{
+    if(!isLatest(x))return;
+    if(!x.is_composite)return;
+    if((x.composite_parts||[]).map(p=>p.trim()).includes(a.item)){
+      out.asPart.push(x);
+    }
+  });
+  return out;
+}
+
+function findPeerStocks(a){
+  // Other companies mentioned on alerts of the SAME item (any
+  // region/country). Dedup, drop the alert's own stocks.
+  const own=new Set(a.stocks||[]);
+  const peers={};
+  ALERTS.forEach(x=>{
+    if(x.item!==a.item)return;
+    if(x.id===a.id)return;
+    (x.stocks||[]).forEach(s=>{
+      if(own.has(s))return;
+      peers[s]=(peers[s]||0)+1;
+    });
+  });
+  return Object.entries(peers).sort((x,y)=>y[1]-x[1]||x[0].localeCompare(y[0]));
+}
+
 function renderModalCard(a, primary){
   const where=whereLabel(a);
   const titleSuffix=where?' ('+where+')':'';
@@ -539,6 +595,38 @@ function renderModalCard(a, primary){
   const sla=slaBadge(a);
   const slaBadgeHtml=sla?'<span class="badge sla-'+sla.kind+'">'+esc(sla.text)+'</span>':'';
   const klass=primary?'modal-card primary':'modal-card secondary';
+
+  // Primary-only sections — toolbar + composite links + peer stocks.
+  let extrasHtml='';
+  if(primary){
+    extrasHtml+='<div class="modal-toolbar">'+
+      '<button type="button" class="tool-btn" data-tool="copy-url" data-id="'+a.id+'">🔗 URL 복사</button>'+
+      '<button type="button" class="tool-btn" data-tool="save-image" data-id="'+a.id+'">🖼 이미지 저장</button>'+
+      '</div>';
+
+    const links=findCompositeLinks(a);
+    if(links.asComposite.length||links.asPart.length){
+      const chips=[];
+      links.asComposite.forEach(p=>{
+        chips.push('<button type="button" class="link-chip" data-id="'+p.id+'">→ '+esc(p.item)+'</button>');
+      });
+      links.asPart.forEach(p=>{
+        chips.push('<button type="button" class="link-chip" data-id="'+p.id+'">⤴ '+esc(p.item)+' (합산)</button>');
+      });
+      extrasHtml+='<div class="modal-links"><span class="label">합산 ↔ 개별</span>'+chips.join('')+'</div>';
+    }
+
+    const peers=findPeerStocks(a);
+    if(peers.length){
+      const shown=peers.slice(0,8);
+      const more=peers.length>shown.length?' 외 '+(peers.length-shown.length)+'개':'';
+      extrasHtml+='<div class="modal-peers"><span class="label">같은 품목 다른 회사</span>'+
+        shown.map(([n,c])=>'<span class="peer-chip" data-name="'+esc(n)+'" title="'+c+'건">'+esc(n)+'</span>').join('')+
+        esc(more)+
+        '</div>';
+    }
+  }
+
   return '<div class="'+klass+'" data-id="'+a.id+'">'+
     '<div class="modal-head">'+
       titleHtml+
@@ -551,6 +639,7 @@ function renderModalCard(a, primary){
       (primary?'<div class="period-label">📅 '+esc(niceLabel(a))+'</div>':'')+
       '<div class="sub">게시 '+esc(a.posted_at)+'</div>'+
       stocksHtml+
+      extrasHtml+
     '</div>'+imagesHtml+'</div>';
 }
 
@@ -704,7 +793,72 @@ document.getElementById('q').addEventListener('input',e=>{
   clearTimeout(qTimer);
   qTimer=setTimeout(()=>{state.q=e.target.value;render();},120);
 });
+function alertShareUrl(a){
+  // Hash-based deep link: #a/<id>. Hashes never round-trip to the
+  // server so this works even behind BasicAuth.
+  return location.origin+location.pathname+'#a/'+a.id;
+}
+
+async function copyToClipboard(text){
+  try{
+    await navigator.clipboard.writeText(text);
+    return true;
+  }catch(_){
+    // Fallback for older browsers / insecure contexts.
+    const ta=document.createElement('textarea');
+    ta.value=text;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');return true}finally{document.body.removeChild(ta)}
+  }
+}
+
+function flashTool(btn,msg){
+  const orig=btn.textContent;btn.textContent=msg;btn.disabled=true;
+  setTimeout(()=>{btn.textContent=orig;btn.disabled=false},1500);
+}
+
 document.addEventListener('click',e=>{
+  // Composite link chips inside the modal — open the linked alert
+  // as the new primary. Handled before .modal-card.secondary because
+  // they live inside it.
+  const link=e.target.closest('.link-chip');
+  if(link&&link.dataset.id){
+    const id=parseInt(link.dataset.id,10);
+    const a=ALERTS.find(x=>x.id===id);
+    if(a){document.getElementById('modal-body').scrollTop=0;showModal(a)}
+    return;
+  }
+  // Peer-stock chip → close modal, search by company, switch to
+  // 회사별 tab (smart-search narrows to that company section).
+  const peer=e.target.closest('.peer-chip');
+  if(peer&&peer.dataset.name){
+    state.q=peer.dataset.name;
+    document.getElementById('q').value=peer.dataset.name;
+    document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+    document.querySelector('[data-tab="companies"]').classList.add('active');
+    document.getElementById('companies-view').classList.add('active');
+    render();
+    hideModal();
+    return;
+  }
+  // Toolbar buttons inside the modal: copy URL / save image.
+  const tool=e.target.closest('.tool-btn');
+  if(tool&&tool.dataset.tool){
+    const id=parseInt(tool.dataset.id,10);
+    const a=ALERTS.find(x=>x.id===id);
+    if(!a)return;
+    if(tool.dataset.tool==='copy-url'){
+      copyToClipboard(alertShareUrl(a)).then(ok=>flashTool(tool,ok?'복사됨 ✓':'복사 실패'));
+    }else if(tool.dataset.tool==='save-image'){
+      const url=(a.media&&a.media[0])?absUrl(a.media[0]):null;
+      if(!url){flashTool(tool,'이미지 없음');return}
+      const link=document.createElement('a');
+      link.href=url;link.download='trade-'+a.id+'.jpg';link.target='_blank';
+      document.body.appendChild(link);link.click();document.body.removeChild(link);
+    }
+    return;
+  }
   const card=e.target.closest('.mini-card');
   if(card&&card.dataset.id){
     const id=parseInt(card.dataset.id,10);
@@ -726,6 +880,17 @@ document.addEventListener('click',e=>{
     hideModal();
   }
 });
+
+// Deep-link support: opening 'http://.../dashboard/#a/123' auto-opens
+// the modal for alert 123 once the page has finished initial render.
+function handleHashDeepLink(){
+  const m=location.hash.match(/^#a\/(\d+)$/);
+  if(!m)return;
+  const id=parseInt(m[1],10);
+  const a=ALERTS.find(x=>x.id===id);
+  if(a)showModal(a);
+}
+window.addEventListener('hashchange',handleHashDeepLink);
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&!document.getElementById('modal').hidden)hideModal();
 });
@@ -804,6 +969,8 @@ applyDarkMode();
 setInterval(applyDarkMode,60000);
 
 render();
+// Fire after initial render so the modal can locate by id.
+handleHashDeepLink();
 """
 
 

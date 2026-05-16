@@ -124,6 +124,9 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • 칩 필터: 수출/수입, 잠정/확정
 • 📥 CSV — 현재 필터 결과 풀필드 다운로드 (id·dedup_key·item·item_raw·title_kind·is_composite·composite_parts·region(s)·country(s)·stocks·stocks_meta·has_etc·period_*·expected_final_date·days_to_final·posted_at·ingested_at·commentary·parse_warnings·media_urls 절대경로)
 • 모달 — 카드 클릭 시 같은 dedup 키 과거 발표 인라인 비교 (전번 확정 ↔ 이번 잠정 시각 비교)
+  · 🔗 URL 복사 (#a/&lt;id&gt; 딥링크) · 🖼 이미지 저장
+  · 합산 ↔ 개별 양방향 링크 (수산화칼륨+탄산칼륨 ↔ 각 개별)
+  · 같은 품목 다른 회사 (peer chip — 클릭 시 회사 뷰 자동 필터)
 
 <b>8. 명령어</b>
 /help · /start — 이 안내
@@ -135,7 +138,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-dashboard — HTTP 서버 (포트 8765)
 • trade-bot-dashboard-refresh (5분) — store + HTML 재생성
 
-<i>최종 갱신: 2026-05-17 — Phase B: NEW 배지 시리즈 (오늘 alert / 7일 이내 첫 등장 품목·회사)</i>
+<i>최종 갱신: 2026-05-17 — Phase C: 모달 보강 (URL/이미지 공유 + 합산↔개별 양방향 + 같은 품목 다른 회사)</i>
 """
 
 

@@ -339,6 +339,23 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn("mini-new", html)
         self.assertIn("section-new", html)
 
+    def test_modal_extras_present(self):
+        html = render_html(self.db_path)
+        # Toolbar buttons
+        self.assertIn('data-tool="copy-url"', html)
+        self.assertIn('data-tool="save-image"', html)
+        # Composite ↔ individual link helper
+        self.assertIn("findCompositeLinks", html)
+        # Peer-stock helper
+        self.assertIn("findPeerStocks", html)
+        # Deep-link handler
+        self.assertIn("handleHashDeepLink", html)
+        self.assertIn("alertShareUrl", html)
+        # CSS classes for the new chips
+        self.assertIn("modal-toolbar", html)
+        self.assertIn("link-chip", html)
+        self.assertIn("peer-chip", html)
+
     def test_empty_store_renders_without_crash(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
