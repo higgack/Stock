@@ -27,7 +27,7 @@ def create_market_analyst(llm):
         # despite the prompt marking them MANDATORY. Doing the fetch
         # outside the LLM and removing the tools from the tool list
         # guarantees the data ends up in the report.
-        macro_snapshot = get_macro_for(current_date)
+        macro_snapshot = get_macro_for(symbol, current_date)
         if macro_snapshot:
             instrument_context += (
                 "\n\n=== Pre-fetched macro snapshot (use VERBATIM in the"

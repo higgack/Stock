@@ -53,6 +53,38 @@ _MACRO_SERIES = [
 ]
 
 
+# Korean-market-specific macro snapshot. Same 9-slot shape as the US
+# series but tilted toward what actually moves KRX-listed names:
+#   - USD/KRW: export-driven economy, FX directly hits margins
+#   - KOSPI / KOSDAQ: domestic market direction + small/mid-cap proxy
+#   - US 10Y: KR growth stocks correlate with US yields (the standalone
+#     KR yield curve via yfinance is too flaky to depend on — KR10YT=RR
+#     returns empty for many days)
+#   - VIX: global risk-on/off proxy still dominates EM equities
+#   - WTI: KR is net oil importer
+#   - Copper: heavy industrial economy (semis, autos, shipbuilding)
+#   - CNY/USD: China is KR's #1 trade partner, RMB weakens KR competitively
+#   - JPY/USD: KR/JP head-on in autos + electronics; weak yen pressures KR
+_MACRO_SERIES_KR = [
+    ("KRW=X", "원/달러 (USD/KRW)", ""),
+    ("^KS11", "KOSPI 종합", ""),
+    ("^KQ11", "KOSDAQ 종합", ""),
+    ("^TNX", "美 10Y 국채금리", "%"),
+    ("^VIX", "VIX 지수", ""),
+    ("CL=F", "WTI 원유", "$"),
+    ("HG=F", "구리 (선물)", "$"),
+    ("CNY=X", "위안/달러 (USD/CNY)", ""),
+    ("JPY=X", "엔/달러 (USD/JPY)", ""),
+]
+
+
+def _series_for_market(market: str):
+    """Return the macro series list for the given market code. Falls
+    back to the US series for unknown markets so JP/CN tickers still
+    get *some* macro context until phase 3 ships market-specific sets."""
+    return _MACRO_SERIES_KR if market == "KR" else _MACRO_SERIES
+
+
 def _fetch_one(ticker: str, curr_date: str) -> tuple[float | None, float | None]:
     """Return (latest_close, pct_change_30d) or (None, None) on failure.
 
@@ -106,6 +138,7 @@ def _format_value(value: float, suffix: str) -> str:
 @tool
 def get_macro_context(
     curr_date: Annotated[str, "current trading date, YYYY-mm-dd"],
+    market: Annotated[str, "market code: 'US' (default) or 'KR'"] = "US",
 ) -> str:
     """Snapshot of headline macro indicators with 30-day percent change.
 
@@ -113,18 +146,26 @@ def get_macro_context(
     actual current rate / commodity / risk levels — especially important
     for rate-sensitive sectors (REITs, utilities, banks), commodity-tied
     names (energy, miners), and any risk-on/off positioning context.
-    """
-    logger.info("get_macro_context: called curr_date=%s", curr_date)
 
-    # Fan out the 9 yfinance fetches in parallel — they're independent and
+    The series fetched depends on `market`: US gets the original 9-set
+    (US treasuries / VIX / DXY / oil / metals / BTC), KR gets a KR-tilted
+    9-set (USD/KRW / KOSPI / KOSDAQ / US 10Y / VIX / oil / copper / CNY /
+    JPY) since the macro drivers of KRX-listed names differ. Default
+    stays US for backward compatibility with any cached @tool call sites.
+    """
+    series = _series_for_market(market)
+    logger.info("get_macro_context: called curr_date=%s market=%s series=%d",
+                curr_date, market, len(series))
+
+    # Fan out the N yfinance fetches in parallel — they're independent and
     # network-bound, so serial fetching wastes wall time and lets one slow
     # ticker delay the rest. ThreadPoolExecutor with a small pool keeps
     # yfinance's session reuse working.
     results: dict[str, tuple[float | None, float | None]] = {}
-    with ThreadPoolExecutor(max_workers=9, thread_name_prefix="macro") as ex:
+    with ThreadPoolExecutor(max_workers=len(series), thread_name_prefix="macro") as ex:
         future_to_meta = {
             ex.submit(_fetch_one, ticker, curr_date): (ticker, label, suffix)
-            for ticker, label, suffix in _MACRO_SERIES
+            for ticker, label, suffix in series
         }
         try:
             for future in as_completed(future_to_meta, timeout=_TOTAL_TIMEOUT_S):
@@ -137,12 +178,12 @@ def get_macro_context(
         except TimeoutError:
             logger.warning(
                 "macro: total %ss budget exhausted; %d/%d fetched",
-                _TOTAL_TIMEOUT_S, len(results), len(_MACRO_SERIES),
+                _TOTAL_TIMEOUT_S, len(results), len(series),
             )
 
     rows: list[str] = []
     missing: list[str] = []
-    for ticker, label, suffix in _MACRO_SERIES:
+    for ticker, label, suffix in series:
         latest, pct = results.get(ticker, (None, None))
         if latest is None:
             missing.append(label)
@@ -151,7 +192,7 @@ def get_macro_context(
         rows.append(f"- {label} ({ticker}): {_format_value(latest, suffix)} (30D {change})")
 
     fetched = len(rows)
-    total = len(_MACRO_SERIES)
+    total = len(series)
     logger.info("get_macro_context: ok %d/%d series", fetched, total)
 
     # Even on total failure, return a neutral template the analyst can

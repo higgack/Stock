@@ -339,29 +339,45 @@ def has_recent_news(ticker: str) -> bool:
 # already-fetched fact, and drop get_macro_context from the analyst's
 # tool list so the LLM can't decide to skip it. Two analysts (market,
 # news) share one fetch per (curr_date) per process.
-_MACRO_CACHE: dict[str, str] = {}
+# Cache key is (market, curr_date) so US and KR get separate snapshots —
+# the two series differ (KR pulls USD/KRW + KOSPI + CNY + JPY instead of
+# DXY + 5Y/13W treasuries + BTC + gold), and caching them together would
+# clobber each other across an analysis session that mixes markets.
+_MACRO_CACHE: dict[tuple[str, str], str] = {}
 
 
-def get_macro_for(curr_date: str) -> str:
-    """Return cached macro snapshot for `curr_date`, fetching once if
-    needed. Empty string on failure — caller decides how to label the
-    section so the analyst prompt can include a graceful fallback line
-    without the LLM apologising."""
-    if curr_date in _MACRO_CACHE:
-        return _MACRO_CACHE[curr_date]
+def get_macro_for(symbol: str, curr_date: str) -> str:
+    """Return cached macro snapshot, fetching once per (market, curr_date)
+    if needed. `symbol` is used only to detect the market — the snapshot
+    itself is market-keyed, so two KR tickers on the same date share one
+    cached snapshot.
+
+    Empty string on failure — caller decides how to label the section so
+    the analyst prompt can include a graceful fallback line without the
+    LLM apologising."""
+    try:
+        from bot.market import detect_market
+        market = detect_market(symbol)
+    except Exception:
+        market = "US"
+    key = (market, curr_date)
+    if key in _MACRO_CACHE:
+        return _MACRO_CACHE[key]
     try:
         # Late import: macro_context_tools imports yfinance which is
         # heavy enough to keep out of the agent_utils module load path
         # for callers that never need the snapshot.
         from tradingagents.agents.utils.macro_context_tools import get_macro_context
-        snapshot = get_macro_context.invoke({"curr_date": curr_date}) or ""
+        snapshot = get_macro_context.invoke(
+            {"curr_date": curr_date, "market": market}
+        ) or ""
     except Exception as exc:
         _analyst_log.warning(
-            "macro pre-fetch for %s failed: %s — analyst will run without snapshot",
-            curr_date, exc,
+            "macro pre-fetch for %s/%s failed: %s — analyst will run without snapshot",
+            symbol, curr_date, exc,
         )
         snapshot = ""
-    _MACRO_CACHE[curr_date] = snapshot
+    _MACRO_CACHE[key] = snapshot
     return snapshot
 
 

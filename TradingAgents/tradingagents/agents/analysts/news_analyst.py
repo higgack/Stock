@@ -14,14 +14,15 @@ from tradingagents.dataflows.config import get_config
 def create_news_analyst(llm):
     def news_analyst_node(state):
         current_date = state["trade_date"]
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        symbol = state["company_of_interest"]
+        instrument_context = build_instrument_context(symbol)
 
         # Pre-fetch macro and inject (same rationale as market_analyst):
         # the LLM was skipping the MANDATORY get_macro_context tool call
         # entirely. Doing the fetch in Python guarantees the snapshot is
         # in the prompt; the cache (agent_utils._MACRO_CACHE) means the
         # market analyst's earlier fetch is reused at zero extra cost.
-        macro_snapshot = get_macro_for(current_date)
+        macro_snapshot = get_macro_for(symbol, current_date)
         if macro_snapshot:
             instrument_context += (
                 "\n\n=== Pre-fetched macro snapshot (use VERBATIM in the"

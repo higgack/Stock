@@ -606,7 +606,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매크로 9종 병렬 · 섹터 ETF 자동 매핑 · 리스크 6종 · Wall Street 목표가/등급 · 공매도 % + DTC (10%↑ squeeze 경고) · 내부자/기관 % · 실적 캘린더 ±10일 · Forward EPS sanity (TTM 대비 3x↑ 또는 부호 반전 경고)
+yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매크로 9종 병렬 (시장별 자동 분기 — 미국: US금리/DXY/원자재, 한국: USD/KRW·KOSPI·KOSDAQ·CNY/JPY) · 섹터 ETF 자동 매핑 · 리스크 6종 · Wall Street 목표가/등급 · 공매도 % + DTC (10%↑ squeeze 경고) · 내부자/기관 % · 실적 캘린더 ±10일 · Forward EPS sanity (TTM 대비 3x↑ 또는 부호 반전 경고)
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
