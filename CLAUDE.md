@@ -17,6 +17,32 @@ For **any** request (analysis output, feature idea, bug report, refactor):
 3. **After explicit commit**: stage, commit, and push to the current
    `claude/...` branch. Open / update the draft PR if one doesn't exist.
 
+## Deploy notifications — Telegram start/complete/fail are mandatory
+
+Every deploy automation in this repo (any auto-update script, any
+provisioner, anything that promotes code to a running service) MUST send
+the project's Telegram channel the three lifecycle messages:
+
+- `🚀 <b>배포 시작</b>: <code>{old_sha7}</code> → <code>{new_sha7}</code>` plus the new commit subject on a new line
+- `✅ <b>배포 완료</b>: <code>{old_sha7}</code> → <code>{new_sha7}</code>` plus the new commit subject
+- `❌ <b>배포 실패</b>: <reason> (<code>{new_sha7}</code>)` on any abort path (`git reset` failure, `systemctl restart` failure, service not `active` after restart)
+
+Rationale: the user runs the host alone and treats the channel as the
+single source of truth for what's live. Silent deploys leave no audit
+trail and break that trust.
+
+Implementation pattern (mirror `deploy/auto-update.sh` for stock-bot,
+`deploy/trade-auto-update.sh` for trade-bot):
+
+- Source the project's `.env` for `*_BOT_TOKEN` and `*_CHANNEL_CHAT_IDS`
+- POST to `https://api.telegram.org/bot{token}/sendMessage` with `parse_mode=HTML`
+- On missing creds: silently skip the notify (don't fail the deploy)
+- Use `curl -s -m 10` so a Telegram outage can't block the deploy
+
+When introducing a new subproject or a new deploy path, scaffold the
+three notifications **in the same commit** as the deploy script — never
+ship the script first and add notifications later.
+
 ## Automation-first principle
 
 **Every recurring operation MUST be automated** (cron / systemd timer /
