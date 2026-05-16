@@ -345,6 +345,26 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         if not TICKER_RE.match(raw):
             return  # malformed ticker after the "/" prefix
 
+        # English alias for well-known KR companies (NAVER → 035420.KS).
+        # Without this, '/NAVER' goes to yfinance as a literal ticker,
+        # returns empty .info, and the pre-flight validator below
+        # rejects it. The alias resolution short-circuits that and
+        # gives the user a smoother path. Ambiguous aliases (LG / SK
+        # / HYUNDAI) intentionally resolve to None — user must use the
+        # specific Korean name or 6-digit ticker.
+        try:
+            from bot.market import resolve_english_alias
+            resolved = resolve_english_alias(raw)
+            if resolved:
+                await ctx.bot.send_message(
+                    chat_id=post.chat.id,
+                    text=f"🔎 {raw} → <code>{resolved}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+                raw = resolved
+        except Exception as exc:
+            log.warning("english alias lookup failed for %r: %s", raw, exc)
+
     # Peek the daily cache so the progress message can be honest about
     # whether the user is going to wait 1-3 minutes or get an instant result.
     today = _date.today().isoformat()
@@ -1018,6 +1038,18 @@ def _format_failure(ticker: str, exc: Exception) -> str:
     """Translate raw analyzer exceptions into a user-readable Korean message."""
     text = str(exc)
     ticker_html = _html.escape(ticker)
+    if "가격 데이터를 찾을 수 없습니다" in text:
+        return (
+            f"❌ <b>{ticker_html}</b> 분석 실패: yfinance에 해당 종목이 없습니다.\n\n"
+            f"입력하신 '{ticker_html}'는 yfinance에서 가격 데이터를 반환하지 않습니다."
+            f" 회사 이름을 ticker로 입력하셨거나, 오타 / 상장폐지 가능성이 있습니다.\n\n"
+            f"올바른 입력 예시:\n"
+            f"• 미국: <code>/NVDA</code>, <code>/AAPL</code>\n"
+            f"• 한국 (6자리 + 거래소): <code>/035420.KS</code> (네이버),"
+            f" <code>/005930.KS</code> (삼성전자)\n"
+            f"• 한국 (종목명 직접): <code>/네이버</code>, <code>/카카오</code>,"
+            f" <code>/삼성전자</code>"
+        )
     if "분석가 응답 누락" in text:
         return (
             f"❌ <b>{ticker_html}</b> 분석 실패: 분석가 응답 누락\n\n"

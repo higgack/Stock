@@ -77,6 +77,45 @@ def detect_market(ticker: str) -> str:
     return "US"
 
 
+# Common KR company names that users type in romanized form but yfinance
+# doesn't recognize without the exchange-qualified ticker. NAVER /
+# 2026-05-17 burnt the full pipeline on '/NAVER' producing a hollow
+# 'Sell' decision on empty data — this map intercepts that class of
+# input upstream of the analyzer.
+#
+# Only UNAMBIGUOUS aliases live here. 'LG' / 'SK' / 'HYUNDAI' map to
+# multiple listed entities (LG전자 / LG화학 / LG에너지솔루션 etc.) so
+# they intentionally resolve to None and the router replies with the
+# Korean-name path's 'multiple matches' message instead of guessing.
+_KR_ENGLISH_ALIAS = {
+    "NAVER": "035420.KS",
+    "KAKAO": "035720.KS",
+    "SAMSUNG": "005930.KS",      # default to 삼성전자 (보통주)
+    "HYNIX": "000660.KS",        # SK하이닉스
+    "SKHYNIX": "000660.KS",
+    "POSCO": "005490.KS",        # POSCO 홀딩스
+    "CELLTRION": "068270.KS",
+    "KAKAOBANK": "323410.KS",
+    "KAKAOPAY": "377300.KS",
+    "KRAFTON": "259960.KS",
+    "COUPANG": None,             # NYSE-listed CPNG; user should type /CPNG
+    "LG": None,
+    "SK": None,
+    "HYUNDAI": None,
+    "LOTTE": None,
+}
+
+
+def resolve_english_alias(token: str) -> str | None:
+    """Map a romanized KR company name (NAVER / KAKAO / etc.) to the
+    yfinance-format KR ticker, or None when the alias is ambiguous /
+    unknown. Returns the canonical ticker for direct routing into the
+    analyzer; the caller still applies its own ticker validation."""
+    if not token:
+        return None
+    return _KR_ENGLISH_ALIAS.get(token.upper())
+
+
 def get_market_config(ticker: str) -> MarketConfig:
     """Convenience wrapper: detect market and return its config dict."""
     return MARKET_CONFIG[detect_market(ticker)]

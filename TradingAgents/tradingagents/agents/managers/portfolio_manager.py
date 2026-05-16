@@ -52,6 +52,20 @@ def create_portfolio_manager(llm):
 - **Underweight**: Reduce exposure, take partial profits
 - **Sell**: Exit position or avoid entry
 
+**DATA-AVAILABILITY GUARD (mandatory):** If the analyst reports
+materially fail (e.g. 'data unavailable', '데이터 없음', '정보
+없음', '데이터 부족', 'currentPrice 미수집', '재무제표 검색
+불가') — i.e. you cannot quote even one specific number from the
+fundamentals or market sections — your verdict MUST be **Hold**,
+with the rationale '데이터 부족으로 평가 불가, 사용자 재시도 필요'.
+Do NOT pick Sell / Underweight on a 'no data = risk' line of
+reasoning; that's an artificial bearish signal manufactured from
+the absence of evidence. NAVER on 2026-05-17 took exactly that
+wrong path — fundamentals had 'PER 정보 없음 / EPS 정보 없음'
+across the board and the PM still output Sell, which actively
+mislead the user. The correct response to empty data is to
+neither buy nor sell; ask for a retry.
+
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**

@@ -114,6 +114,18 @@ class AnalysisIncompleteError(RuntimeError):
     BUY/HOLD/SELL synthesis."""
 
 
+class InvalidTickerError(RuntimeError):
+    """Raised when yfinance returns no usable price data for the
+    requested ticker — typically because the user typed a company name
+    instead of a ticker (NAVER → should be 035420.KS), a typo, or a
+    delisted symbol. NAVER on 2026-05-17 was the canonical case: the
+    bot ran the full ~3 minute pipeline with empty data and the PM
+    output 'Sell' on a 'no data = risk = sell' line of reasoning. The
+    pre-flight aborts before any LLM call so the user gets a clear
+    'ticker not found' message and we don't waste tokens producing a
+    misleading recommendation."""
+
+
 def _check_reports_or_raise(state, selected: list[str]) -> None:
     from tradingagents.agents.utils.agent_utils import looks_failed_report
 
@@ -157,6 +169,32 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
         log.info("cache hit for %s/%s", ticker, target_date)
         log_analysis(ticker, time.time() - started_at, cache_hit=True)
         return cached
+
+    # Pre-flight: ticker must exist in yfinance. NAVER on 2026-05-17
+    # ran the full pipeline against an empty .info dict and produced a
+    # 'Sell' decision on 'no data = risk' reasoning — actively
+    # dangerous. Abort here before spending tokens. The DM / channel
+    # router catches InvalidTickerError and translates it into a
+    # human-readable message pointing at the right input form (KR
+    # 6-digit + suffix, US bare ticker, or Korean name).
+    try:
+        from tradingagents.agents.utils.agent_utils import _instrument_info
+        info = _instrument_info(ticker)
+        has_price = info.get("currentPrice") or info.get("regularMarketPrice")
+        if not has_price:
+            raise InvalidTickerError(
+                f"yfinance에서 '{ticker}' 가격 데이터를 찾을 수 없습니다."
+            )
+    except InvalidTickerError:
+        raise
+    except Exception as exc:
+        # yfinance .info itself blew up (network blip etc.) — let the
+        # main pipeline try anyway. If it really is bad data the
+        # AnalysisIncompleteError path will catch it downstream.
+        log.warning(
+            "analyze: pre-flight yfinance check for %s failed: %s — proceeding",
+            ticker, exc,
+        )
 
     # NOTE: .busy marker lifecycle is now owned by the main bot's handler
     # (refcount-based) so that a second queued request doesn't lose the
