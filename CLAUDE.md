@@ -17,6 +17,30 @@ For **any** request (analysis output, feature idea, bug report, refactor):
 3. **After explicit commit**: stage, commit, and push to the current
    `claude/...` branch. Open / update the draft PR if one doesn't exist.
 
+## Per-ticker reviews are SYSTEM-WIDE rule changes
+
+When the user shares a single analysis output (e.g. 삼성전기 2026-05-17)
+and asks for a review, the resulting fixes are **always universal
+rules**, never ticker-specific patches. The ticker that exposed the
+issue is cited in the commit body for traceability, but the fix
+applies to every future analysis of every ticker that hits the same
+code path. Specifically:
+
+- A bug surfaced by a US ticker fixes the US + KR + JP + CN code
+  path, not just the US one. Phase-3 markets will inherit the fix
+  automatically.
+- A KR-specific failure (DART field name, KRW unit) gets a KR
+  branch; the existing US branch stays correct.
+- A prompt-rule update (RULE 1-6, stance extraction, etc.) applies
+  to every future analyst run, not just the case it was surfaced by.
+- Commit messages MUST say "rule applies to all analyses going
+  forward, surfaced by the {ticker} review" — not "fix for {ticker}".
+
+This rule exists because the bot is consumed by many users (channel
+subscribers) and many tickers, but the user only sees one analysis
+at a time. Without this principle, the codebase would accrete N
+ticker-specific shims instead of converging on robust universal rules.
+
 ## Pre-commit verification — mandatory
 
 **Every change must be verified before the commit goes out.** No "ship and pray." Concretely, before staging:

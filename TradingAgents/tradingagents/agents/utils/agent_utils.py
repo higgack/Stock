@@ -795,42 +795,65 @@ def build_instrument_context(ticker: str) -> str:
             f" this single value verbatim for any '현재가 / current price'"
             f" reference in your report; do NOT quote a different price"
             f" derived from a trailing close or a tool call): {_sym}{_fmt.format(px)}"
+            f"\n\nCANONICAL PRICE PRECISION RULES:\n"
+            f" • Summary tables / 펀더멘털 표 / DCF inputs / 진입가 / 손절가"
+            f" cells: use the EXACT canonical value ({_sym}{_fmt.format(px)})."
+            f" Rounding in these cells loses the precision the downstream"
+            f" decision LLM needs.\n"
+            f" • Narrative prose: light rounding for readability is OK"
+            f" but stay close ('약 {_sym}{_fmt.format(round(px, -3) if px > 1000 else px)}'"
+            f" or '약 {_sym}{_fmt.format(px)}'). '₩약 1.0백만' style"
+            f" (삼성전기 2026-05-17) loses 1% of precision AND uses the"
+            f" awkward '백만' unit — both forbidden."
         )
 
-        # Price-gap sanity check. yfinance's 50-day SMA is computed
-        # from historical closes that should be split-adjusted, so a
-        # current price that differs from the 50-day SMA by more than
-        # 40% almost always indicates one of: (a) recent stock split
-        # not yet propagated to either current or historical series,
-        # (b) yfinance KR data quality issue, or (c) a genuinely
-        # catastrophic move. In all three cases the technical
-        # indicators (10 EMA, MACD, RSI, Bollinger bands) computed
-        # from the historical series are useless until verified.
-        # Flag the gap so the market analyst stops anchoring on
-        # impossible-looking '하루 만에 50% 하락' narratives —
-        # 039030.KS 2026-05-17 had current ₩202,000 vs 50d SMA
-        # ₩445,660 (-55%) and the analyst built a whole bearish
-        # thesis on indicators that may have been split-stale.
-        sma50 = info.get("fiftyDayAverage")
-        if isinstance(sma50, (int, float)) and sma50 > 0:
-            gap = abs(px - sma50) / sma50
-            if gap > 0.40:
-                direction = "below" if px < sma50 else "above"
-                base += (
-                    f"\n\n⚠️ PRICE GAP SANITY — current price"
-                    f" {_sym}{_fmt.format(px)} is {gap*100:.0f}%"
-                    f" {direction} the 50-day SMA"
-                    f" {_sym}{_fmt.format(sma50)}. This usually"
-                    f" indicates a stock-split adjustment issue in"
-                    f" the historical price series (yfinance KR"
-                    f" sometimes lags), not a real ~{gap*100:.0f}%"
-                    f" intra-window move. DO NOT build a directional"
-                    f" thesis on 10-EMA / 50-SMA / MACD / Bollinger"
-                    f" comparisons that hinge on this gap; quote"
-                    f" the canonical current price + recent realized"
-                    f" volatility instead, and explicitly note the"
-                    f" data quality caveat in the report."
-                )
+        # Price-gap sanity check. yfinance's 50-day / 200-day averages
+        # are computed from historical closes that should be
+        # split-adjusted, so a current price that differs from either
+        # SMA by more than 30% almost always indicates one of:
+        # (a) recent stock split not yet propagated to either current
+        # or historical series, (b) yfinance KR data quality issue,
+        # or (c) a genuinely catastrophic / explosive move. In all
+        # three cases the technical indicators (10 EMA, MACD, RSI,
+        # Bollinger bands) computed from the historical series need
+        # to be cross-checked before the analyst anchors a directional
+        # thesis on them.
+        #
+        # Threshold lowered from 40% to 30% on 2026-05-17 after 삼성전기
+        # (009150.KS, current ₩1,010,000 vs 50d SMA ₩614,960 =
+        # +64% gap) failed to trigger — the analyst happily built a
+        # full bullish-momentum analysis on '50% 한 달 상승' which
+        # may or may not be real. 30% is the threshold where
+        # split-staleness / data-quality cases dominate organic moves.
+        # 039030.KS (이오테크닉스) -55% gap and 319660.KS (피에스케이)
+        # -62% gap both stay caught. The 200-day check covers cases
+        # where the 50d SMA happens to track current closely but the
+        # longer window reveals an outlier.
+        for window_label, key in [("50일 SMA", "fiftyDayAverage"),
+                                  ("200일 SMA", "twoHundredDayAverage")]:
+            sma = info.get(key)
+            if not (isinstance(sma, (int, float)) and sma > 0):
+                continue
+            gap = abs(px - sma) / sma
+            if gap <= 0.30:
+                continue
+            direction = "below" if px < sma else "above"
+            base += (
+                f"\n\n⚠️ PRICE GAP SANITY — current price"
+                f" {_sym}{_fmt.format(px)} is {gap*100:.0f}%"
+                f" {direction} the {window_label}"
+                f" {_sym}{_fmt.format(sma)}. This usually"
+                f" indicates a stock-split adjustment issue in"
+                f" the historical price series (yfinance KR / JP"
+                f" sometimes lags), not a real ~{gap*100:.0f}%"
+                f" intra-window move. DO NOT build a directional"
+                f" thesis on 10-EMA / 50-SMA / 200-SMA / MACD /"
+                f" Bollinger comparisons that hinge on this gap;"
+                f" quote the canonical current price + recent"
+                f" realized volatility instead, and explicitly"
+                f" note the data quality caveat in the report."
+            )
+            break  # one warning per analysis is enough — don't spam both windows
 
     # Currency directive for KR tickers. yfinance returns KRX-listed
     # companies' financial fields (marketCap, totalRevenue, netIncome,
@@ -846,10 +869,14 @@ def build_instrument_context(ticker: str) -> str:
                 " yfinance .info / financial statements is in **KRW**,"
                 " never USD. When you render the fundamentals summary"
                 " table and body:\n"
-                " • Label monetary columns as '원' / '백만 원' / '억 원'"
-                " / '조 원' — NEVER '달러' / 'USD' / '백만 달러'.\n"
-                " • For headline-scale numbers (시가총액, 매출, 순이익,"
-                " FCF), ROUND to two significant figures at the unit"
+                " • Use Korean scale units '조 원' (≥1조), '억 원'"
+                " (1억 ~ 1조 미만), '만 원' (1만 ~ 1억 미만). NEVER"
+                " '백만' / '백만 원' — that's a million-style English"
+                " unit awkward in Korean. '₩약 1.0백만' (삼성전기"
+                " 2026-05-17) → use '₩1,010,000' or '약 101만 원' instead.\n"
+                " • Never '달러' / 'USD' / '백만 달러' for KR tickers.\n"
+                " • Headline-scale numbers (시가총액, 매출, 순이익,"
+                " FCF) ROUND to two significant figures at the unit"
                 " scale: '약 8,840억 원' or '약 0.88조 원'.\n"
                 " • EPS / 주당 배당금 stays as integer KRW: '₩6,603'.\n"
                 " • Per-share DCF outputs (Bear/Base/Bull): '₩XXX,XXX'.\n"
@@ -861,11 +888,15 @@ def build_instrument_context(ticker: str) -> str:
                 " ❌ WRONG: '시가총액: 약 1776조 달러' (불가능한 단위)\n"
                 " ❌ WRONG: '총 매출: FY25 8839억 6871만 4100원' (자리수별"
                 " 풀스펠 — 한솔케미칼 2026-05-17 이 정확히 이 실수)\n"
+                " ❌ WRONG: '₩약 1.0백만' or '약 1.0백만 원' ('백만'"
+                " 단어 자체 금지 — 삼성전기 2026-05-17 이 실수)\n"
                 " ✅ RIGHT: '시가총액: 약 1,776조 원'\n"
                 " ✅ RIGHT: '총 매출 (억 원): FY25 8,840 | FY24 7,764'"
                 " (table column header carries the unit, cells stay"
                 " plain numbers)\n"
-                " ✅ RIGHT: '약 0.88조 원' for headline prose mention."
+                " ✅ RIGHT: '약 0.88조 원' for headline prose mention.\n"
+                " ✅ RIGHT: '₩1,010,000' (정확) or '약 101만 원' (반올림)"
+                " for 100만 원~1억 원 range values."
             )
     except Exception:
         pass
@@ -928,6 +959,17 @@ def build_instrument_context(ticker: str) -> str:
                         " the news / fundamentals / risk sections as ground"
                         " truth) ===\n"
                         + dart_block
+                        + "\n\nRENDERING RULES for the DART block:\n"
+                        " • 최근 공시: render as a bullet list, one filing"
+                        " per line, with the date prefix preserved.\n"
+                        " • 임원·주요주주 지분: render as a bullet list or"
+                        " table, EVERY name with its exact % (e.g. '국민연금"
+                        " 10.74%, 장덕현 대표이사 0.05%, ...'). 삼성전기"
+                        " 2026-05-17 buried this in a narrative sentence"
+                        " ('대표이사 장덕현을 비롯한 임원진도 소량의 지분을"
+                        " 보유') with no individual % — FORBIDDEN. The"
+                        " reader needs the actual % per person.\n"
+                        " • 다음 정기보고서 윈도: one prose sentence is fine."
                     )
         except Exception as exc:
             _analyst_log.warning(
