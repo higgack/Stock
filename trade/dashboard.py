@@ -134,7 +134,10 @@ def _build_html(
         '<button class="tab" data-tab="companies">회사별</button>'
         '</nav>'
         '<section class="filters">'
+        '<div class="top-row">'
         '<input type="search" id="q" placeholder="검색: 품목 / 회사 / 국가" autocomplete="off">'
+        '<button type="button" id="csv-btn" class="csv-btn" title="현재 필터 결과를 CSV로 내려받기">📥 CSV</button>'
+        '</div>'
         '<div class="chips">'
         '<span class="chip-group" data-key="dir">'
         '<button class="chip active" data-val="">전체</button>'
@@ -230,6 +233,17 @@ h1{margin:0 0 4px;font-size:18px}
 .badge.preliminary{background:var(--b-prelim-bg);color:var(--b-prelim-fg)}
 .badge.final{background:var(--b-final-bg);color:var(--b-final-fg)}
 .badge.composite{background:var(--b-comp-bg);color:var(--b-comp-fg)}
+.badge.sla-pending{background:var(--b-prelim-bg);color:var(--text)}
+.badge.sla-due{background:var(--b-import-bg);color:var(--b-import-fg)}
+.badge.sla-late{background:var(--b-comp-bg);color:var(--b-comp-fg)}
+.mini-sla{display:inline-block;margin-top:4px;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:.2px}
+.mini-sla.pending{background:var(--b-prelim-bg);color:var(--text-sub)}
+.mini-sla.due{background:var(--b-import-bg);color:var(--b-import-fg)}
+.mini-sla.late{background:var(--b-comp-bg);color:var(--b-comp-fg)}
+.csv-btn{display:inline-flex;align-items:center;gap:4px;background:var(--surface);color:var(--text);border:1px solid var(--border);padding:5px 11px;border-radius:14px;font-size:12px;cursor:pointer;margin-left:auto}
+.csv-btn:hover{background:var(--surface-2)}
+.filters .top-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.filters .top-row #q{flex:1;margin-bottom:0}
 .empty{padding:40px 20px;text-align:center;color:var(--text-sub);font-size:13px}
 .modal{position:fixed;inset:0;z-index:100;display:flex;align-items:flex-start;justify-content:center}
 .modal[hidden]{display:none}
@@ -294,6 +308,48 @@ function stocksSubtitle(variants){
   return '관련종목: '+s.slice(0,3).join(' · ')+' 외 '+(s.length-3)+'개';
 }
 
+// Expected 확정 (final) date for a 잠정 (preliminary) alert.
+// Per CLAUDE.md / BeOn schedule: 관세청 publishes the previous month's
+// 확정 around the 15th of the following month. So for any 잠정 whose
+// period_start is in month M, the expected 확정 announcement is
+// (M+1) 월 15일 KST.
+function expectedFinalKst(a){
+  if(a.status==='final')return null;
+  const ps=a.period_start||'';
+  if(!ps)return null;
+  const [y,m]=ps.split('-').map(Number);
+  if(!y||!m)return null;
+  const ny=m===12?y+1:y;
+  const nm=m===12?1:m+1;
+  return ny+'-'+String(nm).padStart(2,'0')+'-15';
+}
+
+function kstTodayString(){
+  const utcMs=Date.now();
+  // KST = UTC + 9h. Shift the timestamp so a UTC midnight in KST
+  // round-trips to the right calendar date when sliced.
+  return new Date(utcMs+9*3600000).toISOString().slice(0,10);
+}
+
+function daysBetween(aStr,bStr){
+  const a=new Date(aStr+'T00:00:00Z').getTime();
+  const b=new Date(bStr+'T00:00:00Z').getTime();
+  return Math.round((b-a)/86400000);
+}
+
+// SLA badge for the dashboard card. Returns {text, kind} or null when
+// no SLA applies (already 확정, or period_start missing). 'pending' /
+// 'due' / 'late' map to three color treatments in the CSS.
+function slaBadge(a){
+  const target=expectedFinalKst(a);
+  if(!target)return null;
+  const today=kstTodayString();
+  const diff=daysBetween(today,target);
+  if(diff>0)return {text:'확정 D-'+diff,kind:'pending'};
+  if(diff===0)return {text:'확정 D-DAY',kind:'due'};
+  return {text:'확정 D+'+(-diff)+' 지연',kind:'late'};
+}
+
 // Region tier for in-section ordering. Aggregates always rise:
 //   0: 전국 (no country)                    — broadest aggregate
 //   1: 전국_<country>                       — country-specific aggregate
@@ -323,12 +379,15 @@ function niceLabel(a){
 function renderMiniCard(a){
   const where=whereLabel(a);
   const bg=(a.media&&a.media[0])?' style="background-image:url('+esc(a.media[0])+')"':'';
+  const sla=slaBadge(a);
+  const slaHtml=sla?'<span class="mini-sla '+sla.kind+'">'+esc(sla.text)+'</span>':'';
   return '<div class="mini-card '+a.dir+'" data-id="'+a.id+'">'+
     '<span class="dot" title="'+(a.dir==='export'?'수출':'수입')+'"></span>'+
     '<div class="mini-img"'+bg+'></div>'+
     '<div class="mini-text">'+
       '<strong>'+esc(a.item)+'</strong>'+
       '<span>'+esc(where||'—')+'</span>'+
+      slaHtml+
     '</div></div>';
 }
 
@@ -371,6 +430,8 @@ function renderModalCard(a, primary){
   const titleHtml=primary
     ? '<h2>'+esc(a.item)+esc(titleSuffix)+'</h2>'
     : '<h3 class="sib-title">📅 '+esc(niceLabel(a))+'</h3>';
+  const sla=slaBadge(a);
+  const slaBadgeHtml=sla?'<span class="badge sla-'+sla.kind+'">'+esc(sla.text)+'</span>':'';
   const klass=primary?'modal-card primary':'modal-card secondary';
   return '<div class="'+klass+'" data-id="'+a.id+'">'+
     '<div class="modal-head">'+
@@ -379,6 +440,7 @@ function renderModalCard(a, primary){
         (primary?'<span class="badge '+a.dir+'">'+dirLabel+'</span>':'')+
         '<span class="badge '+a.status+'">'+statusLabel+'</span>'+
         (a.is_composite?'<span class="badge composite">합산</span>':'')+
+        slaBadgeHtml+
       '</div>'+
       (primary?'<div class="period-label">📅 '+esc(niceLabel(a))+'</div>':'')+
       '<div class="sub">게시 '+esc(a.posted_at)+'</div>'+
@@ -537,6 +599,38 @@ document.addEventListener('click',e=>{
 document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&!document.getElementById('modal').hidden)hideModal();
 });
+
+// --- CSV download (current filter) ---
+// Generates the CSV client-side so there's no server round-trip; the
+// '﻿' BOM keeps Korean readable when Excel opens the file. Only
+// the LATEST-visible-after-filter rows are exported so the download
+// matches what the operator currently sees on screen.
+function downloadCSV(){
+  const filtered=ALERTS.filter(matches);
+  const headers=['id','dedup_key','direction','status','item','region','country','stocks','period_start','period_end','period_kind','posted_at','is_composite','has_etc'];
+  const rows=[headers];
+  filtered.forEach(a=>{
+    rows.push([
+      a.id,a.dedup_key,a.dir,a.status,a.item,a.region,a.country,
+      (a.stocks||[]).join(';'),
+      a.period_start,a.period_end,a.period_kind,a.posted_at,
+      a.is_composite?1:0,a.has_etc?1:0,
+    ]);
+  });
+  const csv=rows.map(r=>r.map(v=>{
+    const s=v==null?'':String(v);
+    if(/[",\n]/.test(s))return '"'+s.replace(/"/g,'""')+'"';
+    return s;
+  }).join(',')).join('\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement('a');
+  link.href=url;
+  link.download='trade-alerts-'+kstTodayString()+'.csv';
+  document.body.appendChild(link);link.click();document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+document.getElementById('csv-btn').addEventListener('click',downloadCSV);
 
 // --- automatic dark mode 19:00 - 07:00 KST ---
 // Computes KST hour from UTC + 9 so the page works regardless of the

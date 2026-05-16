@@ -272,6 +272,25 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn("stocksSubtitle", html)
         self.assertIn("관련종목:", html)
 
+    def test_sla_badge_helpers_present(self):
+        html = render_html(self.db_path)
+        # SLA badge for 잠정 alerts — computes expected 확정 date and
+        # renders D-N / D-DAY / D+N 지연 chip.
+        self.assertIn("expectedFinalKst", html)
+        self.assertIn("slaBadge", html)
+        # 'mini-sla' element class used on mini-cards.
+        self.assertIn("mini-sla", html)
+        # Modal-head SLA chip uses the badge namespace.
+        self.assertIn("sla-pending", html)
+        self.assertIn("sla-late", html)
+
+    def test_csv_button_and_download_function_present(self):
+        html = render_html(self.db_path)
+        self.assertIn('id="csv-btn"', html)
+        self.assertIn("downloadCSV", html)
+        # The CSV exports the currently-filtered result, not all rows.
+        self.assertIn("ALERTS.filter(matches)", html)
+
     def test_empty_store_renders_without_crash(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
