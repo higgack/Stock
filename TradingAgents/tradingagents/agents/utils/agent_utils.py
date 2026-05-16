@@ -447,23 +447,70 @@ def get_market_signals_for(ticker: str) -> str:
 
     These are deterministic numbers from yfinance — never make the LLM
     fetch them via a tool call. The pattern matches macro/risk/sector
-    pre-fetching: Python pulls the data, prompt receives it as fact."""
+    pre-fetching: Python pulls the data, prompt receives it as fact.
+
+    For KR tickers: yfinance is tried first (KOSPI Top 100 reliable),
+    and if the consensus block comes back empty, FnGuide CompanyGuide
+    is scraped as a fallback. Small-cap KOSDAQ may have no coverage
+    anywhere — in that case the block is omitted silently rather than
+    fabricated."""
     info = _instrument_info(ticker)
     if not info:
         return ""
 
+    # Market-dependent labels / formatting. KRW prices are integers (no
+    # decimal in the trading screen); USD prices carry 2 decimals.
+    try:
+        from bot.market import detect_market, get_market_config
+        market = detect_market(ticker)
+        cfg = get_market_config(ticker)
+    except Exception:
+        market = "US"
+        cfg = {"currency": "USD", "currency_symbol": "$"}
+    sym = cfg["currency_symbol"]
+    price_fmt = "{:,.0f}" if cfg["currency"] == "KRW" else "{:,.2f}"
+    consensus_label = (
+        "Wall Street 컨센서스" if market == "US" else "애널리스트 컨센서스"
+    )
+
     lines: list[str] = []
 
-    # Wall Street analyst consensus.
+    # Wall Street / KR analyst consensus — yfinance first.
     target = info.get("targetMeanPrice")
     current = info.get("currentPrice") or info.get("regularMarketPrice")
     rec_key = (info.get("recommendationKey") or "").lower()
     n_analysts = info.get("numberOfAnalystOpinions")
     rec_mean = info.get("recommendationMean")
+
+    # KR fallback: when yfinance returns no target (typical for mid /
+    # small caps), scrape FnGuide CompanyGuide. We only fill fields
+    # yfinance left empty — yfinance wins where both have data because
+    # it's more structured. recommendationMean isn't available on
+    # FnGuide so it stays None when the fallback fires.
+    if market == "KR" and not target:
+        try:
+            from bot.fnguide_consensus import fetch_consensus
+            fn = fetch_consensus(ticker)
+            if fn:
+                target = target or fn.get("target_mean")
+                n_analysts = n_analysts or fn.get("n_analysts")
+                fn_rating = fn.get("rating")
+                if fn_rating and not rec_key:
+                    rec_key = {
+                        "매수": "buy", "보유": "hold", "매도": "sell",
+                    }.get(fn_rating, "")
+        except Exception as exc:
+            _analyst_log.warning(
+                "fnguide fallback failed for %s: %s", ticker, exc,
+            )
+
     if target and current:
         upside = (target - current) / current * 100
         rec_kr = _RECOMMENDATION_KR.get(rec_key, rec_key or "")
-        line = f"- Wall Street 컨센서스: 목표가 ${target:,.2f} (현재가 ${current:,.2f} 대비 {upside:+.1f}%)"
+        line = (
+            f"- {consensus_label}: 목표가 {sym}{price_fmt.format(target)}"
+            f" (현재가 {sym}{price_fmt.format(current)} 대비 {upside:+.1f}%)"
+        )
         extras = []
         if rec_kr:
             extras.append(f"등급 {rec_kr}")
@@ -514,8 +561,11 @@ def get_market_signals_for(ticker: str) -> str:
         ):
             ratio = fwd_eps / ttm_eps
             if abs(ratio) >= 3 or (ttm_eps > 0 and fwd_eps < 0):
+                # EPS is per-share earnings — use the same currency
+                # symbol as the price line so the report doesn't mix
+                # $ and ₩ in the same paragraph for KR tickers.
                 lines.append(
-                    f"- ⚠️ Forward EPS ${fwd_eps:.2f} vs TTM EPS ${ttm_eps:.2f}"
+                    f"- ⚠️ Forward EPS {sym}{fwd_eps:.2f} vs TTM EPS {sym}{ttm_eps:.2f}"
                     f" (비율 {ratio:.1f}x) — 통상 범위 밖. spin-off/일회성/"
                     f"yfinance 데이터 오류 가능. 본문에서 이 숫자에 큰 비중을"
                     f" 두기 전에 EPS 추세를 확인하라"
@@ -612,13 +662,23 @@ def build_instrument_context(ticker: str) -> str:
     # currentPrice from yfinance .info. The trader and PM then can't tell
     # which "현재가" anchors the verdict. Inject the canonical number
     # here so every prompt sees the same value and stops re-fetching.
+    # Currency rendering follows the ticker's market — KRW is whole-won
+    # integer, USD/JPY/CNY get two decimals.
+    try:
+        from bot.market import get_market_config
+        _cfg = get_market_config(ticker)
+        _sym = _cfg["currency_symbol"]
+        _fmt = "{:,.0f}" if _cfg["currency"] == "KRW" else "{:,.2f}"
+    except Exception:
+        _sym = "$"
+        _fmt = "{:,.2f}"
     px = info.get("currentPrice") or info.get("regularMarketPrice")
     if isinstance(px, (int, float)) and px == px and px > 0:
         base += (
             f"\n\nCanonical current price (yfinance, point-in-time — use"
             f" this single value verbatim for any '현재가 / current price'"
             f" reference in your report; do NOT quote a different price"
-            f" derived from a trailing close or a tool call): ${px:,.2f}"
+            f" derived from a trailing close or a tool call): {_sym}{_fmt.format(px)}"
         )
     if qt in ("ETF", "ETN", "MUTUALFUND"):
         # ETFs / leveraged funds have no company news, no executive
