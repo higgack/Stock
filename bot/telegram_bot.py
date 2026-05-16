@@ -62,6 +62,14 @@ TICKER_PREFIX = "/"
 # position 0 was the missing piece — previously /005930.KS hit the
 # 'invalid ticker' branch on the channel router.
 TICKER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.]{0,9}$")
+# Korean company-name shortcut. When the body after '/' is a hangul-
+# bearing word (with optional alphanumeric mix like 'SK하이닉스' or
+# 'LG에너지솔루션'), resolve it via DART corp_code lookup before falling
+# through to the ticker path. The lookahead requires at least one
+# hangul char anywhere so a pure-ASCII US ticker like 'NVDA' stays on
+# the ticker path; the start class allows English or hangul so chaebol
+# brand-prefixed names (SK/LG/CJ/...) match too.
+KOREAN_NAME_RE = re.compile(r"^(?=.*[가-힣])[가-힣A-Za-z][가-힣A-Za-z0-9]{0,19}$")
 # `/compare A B` triggers a side-by-side digest of two tickers. Both
 # tickers run through the same analyzer pipeline (via cache or fresh
 # subprocess) and the result is condensed to verdict + stance bar.
@@ -272,9 +280,70 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    raw = body.upper()
-    if not TICKER_RE.match(raw):
-        return  # malformed ticker after the "/" prefix
+    # Korean-name shortcut: '/삼성전자' → resolve to '005930.KS' before
+    # hitting the analyzer. The resolver returns one of:
+    #   resolved → continue with the resolved ticker
+    #   multiple → reply with candidate list and stop (user retypes)
+    #   not_found / no_price → reply with a short error and stop
+    # We branch here (before body.upper()) because uppercasing Korean is
+    # a no-op but the subsequent TICKER_RE check would reject hangul.
+    if KOREAN_NAME_RE.match(body):
+        try:
+            from bot.kr_resolver import resolve_korean_name
+            result = resolve_korean_name(body)
+        except Exception as exc:
+            log.warning("kr name resolve crashed for %r: %s", body, exc)
+            result = {"status": "not_found"}
+        status = result.get("status")
+        if status == "resolved":
+            raw = result["ticker"].upper()
+            # Confirm the resolution so the user sees what we'll analyze.
+            try:
+                await ctx.bot.send_message(
+                    chat_id=post.chat.id,
+                    text=f"🔎 {result['name']} → <code>{raw}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
+        elif status == "multiple":
+            lines = [
+                f"• {c['name']} → <code>/{c['ticker']}</code>"
+                for c in result.get("candidates", [])
+            ]
+            await ctx.bot.send_message(
+                chat_id=post.chat.id,
+                text=(
+                    f"⚠️ '{body}' 매칭이 여러 개입니다. 다음 중 하나로 다시 입력해주세요:\n"
+                    + "\n".join(lines)
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        elif status == "no_price":
+            await ctx.bot.send_message(
+                chat_id=post.chat.id,
+                text=(
+                    f"⚠️ '{body}' DART에는 있지만 yfinance에 상장 데이터가 없습니다."
+                    " 상장폐지 / 우선주 / 신규 상장 가능성. 티커를 직접 입력해주세요."
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        else:  # not_found
+            await ctx.bot.send_message(
+                chat_id=post.chat.id,
+                text=(
+                    f"⚠️ '{body}' DART에서 종목명을 찾을 수 없습니다."
+                    " 정확한 종목명으로 다시 입력하거나 6자리 종목코드(.KS/.KQ)로 시도해주세요."
+                ),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+    else:
+        raw = body.upper()
+        if not TICKER_RE.match(raw):
+            return  # malformed ticker after the "/" prefix
 
     # Peek the daily cache so the progress message can be honest about
     # whether the user is going to wait 1-3 minutes or get an instant result.
@@ -584,7 +653,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /start /help /usage — 도움말·비용
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
-※ 다른 종목은 /티커 (예: /PLTR)
+※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
 
 ━━━━━━━━━
 <b>【2. 분석 흐름】</b> (~3분, ~₩100~150/회)

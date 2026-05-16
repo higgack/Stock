@@ -48,9 +48,23 @@ log = logging.getLogger("bot.dart")
 
 _DART_BASE = "https://opendart.fss.or.kr/api"
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache"
-_CORPCODE_CACHE = _CACHE_DIR / "dart_corpcode.json"
+# v2 cache includes both stock_code→corp_code and normalized_name→entries.
+# Old v1 file (stock_code → corp_code only) is ignored and superseded;
+# anyone upgrading just re-downloads the corp_code.xml on first call.
+_CORPCODE_CACHE = _CACHE_DIR / "dart_corpcode_v2.json"
 _CORPCODE_TTL_DAYS = 30
 _HTTP_TIMEOUT = 10  # seconds — keep tight so a slow DART doesn't stall analysis
+
+
+def _normalize_name(name: str) -> str:
+    """Lowercase + strip common Korean corporate suffixes / whitespace
+    so '삼성전자', '삼성전자(주)', '주식회사 삼성전자' all collapse to
+    the same key. Used to make name lookup forgiving of how the user
+    types it vs how DART stores it."""
+    n = (name or "").strip()
+    for noise in ("(주)", "㈜", "(유)", "주식회사 ", "주식회사", "유한회사 ", "유한회사"):
+        n = n.replace(noise, "")
+    return n.strip().lower()
 
 
 class DartClient:
@@ -61,21 +75,30 @@ class DartClient:
         # Read key lazily so a missing env var doesn't crash module import.
         self.api_key = (api_key or os.getenv("DART_API_KEY") or "").strip()
         self._corp_code_map: dict[str, str] | None = None  # stock_code → corp_code
+        # normalized name → list of {name, stock_code, corp_code} entries.
+        # One normalized key can map to multiple companies when a search
+        # like "현대" matches several entries — caller decides what to do.
+        self._name_map: dict[str, list[dict]] | None = None
 
     # ── corp_code mapping ───────────────────────────────────────────────
     def _load_corp_code_map(self) -> dict[str, str]:
         """Stock code (6-digit) → corp_code (8-digit). DART exposes the
         mapping as a single zipped XML; we cache it locally for 30 days
-        so we don't re-download on every analysis."""
-        if self._corp_code_map is not None:
+        so we don't re-download on every analysis. The cache also carries
+        the reverse name→entries map so `find_by_name()` doesn't have to
+        re-parse the XML."""
+        if self._corp_code_map is not None and self._name_map is not None:
             return self._corp_code_map
 
-        # Disk cache check.
+        # Disk cache check (v2 format: dict with 'stock_to_corp' and
+        # 'name_to_entries' keys).
         if _CORPCODE_CACHE.exists():
             try:
                 age_days = (time.time() - _CORPCODE_CACHE.stat().st_mtime) / 86400
                 if age_days < _CORPCODE_TTL_DAYS:
-                    self._corp_code_map = json.loads(_CORPCODE_CACHE.read_text())
+                    data = json.loads(_CORPCODE_CACHE.read_text())
+                    self._corp_code_map = data.get("stock_to_corp", {})
+                    self._name_map = data.get("name_to_entries", {})
                     return self._corp_code_map
             except Exception as exc:
                 log.warning("dart: corp_code cache read failed: %s", exc)
@@ -84,6 +107,7 @@ class DartClient:
         if not self.api_key:
             log.warning("dart: DART_API_KEY missing — corp_code map unavailable")
             self._corp_code_map = {}
+            self._name_map = {}
             return self._corp_code_map
 
         try:
@@ -99,26 +123,77 @@ class DartClient:
         except Exception as exc:
             log.warning("dart: corp_code download failed: %s", exc)
             self._corp_code_map = {}
+            self._name_map = {}
             return self._corp_code_map
 
-        mapping: dict[str, str] = {}
+        stock_to_corp: dict[str, str] = {}
+        name_to_entries: dict[str, list[dict]] = {}
         for item in root.findall("list"):
             stock_code = (item.findtext("stock_code") or "").strip()
             corp_code = (item.findtext("corp_code") or "").strip()
+            corp_name = (item.findtext("corp_name") or "").strip()
             # Only KRX-listed entries have a 6-digit stock_code; skip the
             # rest (DART also tracks unlisted entities).
-            if stock_code and len(stock_code) == 6 and corp_code:
-                mapping[stock_code] = corp_code
-        log.info("dart: loaded %d corp_code entries", len(mapping))
+            if not (stock_code and len(stock_code) == 6 and corp_code):
+                continue
+            stock_to_corp[stock_code] = corp_code
+            norm = _normalize_name(corp_name)
+            if norm:
+                name_to_entries.setdefault(norm, []).append({
+                    "name": corp_name,
+                    "stock_code": stock_code,
+                    "corp_code": corp_code,
+                })
+        log.info(
+            "dart: loaded %d corp_code / %d unique normalized names",
+            len(stock_to_corp), len(name_to_entries),
+        )
 
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            _CORPCODE_CACHE.write_text(json.dumps(mapping))
+            _CORPCODE_CACHE.write_text(json.dumps(
+                {"stock_to_corp": stock_to_corp, "name_to_entries": name_to_entries},
+                ensure_ascii=False,
+            ))
         except Exception as exc:
             log.warning("dart: corp_code cache write failed: %s", exc)
 
-        self._corp_code_map = mapping
-        return mapping
+        self._corp_code_map = stock_to_corp
+        self._name_map = name_to_entries
+        return stock_to_corp
+
+    def find_by_name(self, query: str) -> list[dict]:
+        """Resolve a Korean / English company name to listed-entity entries.
+
+        Returns a list of {name, stock_code, corp_code} dicts ordered by
+        match specificity:
+          - Exact normalized match (e.g. '삼성전자' → 005930)
+          - Prefix or substring match if no exact hit
+          - Empty list when nothing matches at all
+
+        Capped at 20 to keep ambiguous queries (e.g. '현대') tractable
+        for the caller's UX."""
+        norm = _normalize_name(query)
+        if not norm:
+            return []
+        self._load_corp_code_map()
+        if not self._name_map:
+            return []
+
+        # Exact-normalized match wins.
+        exact = self._name_map.get(norm) or []
+        if exact:
+            return exact[:20]
+
+        # Fallback: prefix match first (more specific), then substring.
+        prefix: list[dict] = []
+        contains: list[dict] = []
+        for n, entries in self._name_map.items():
+            if n.startswith(norm):
+                prefix.extend(entries)
+            elif norm in n:
+                contains.extend(entries)
+        return (prefix + contains)[:20]
 
     def stock_code_to_corp_code(self, stock_code: str) -> Optional[str]:
         """Resolve 6-digit KRX stock code → 8-digit DART corp_code.
