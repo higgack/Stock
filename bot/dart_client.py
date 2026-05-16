@@ -79,6 +79,10 @@ class DartClient:
         # One normalized key can map to multiple companies when a search
         # like "현대" matches several entries — caller decides what to do.
         self._name_map: dict[str, list[dict]] | None = None
+        # Reverse map: stock_code → corp_name. Built lazily on first
+        # stock_code_to_name() call from _name_map; not persisted to
+        # disk because it's cheap to rebuild from the v2 cache.
+        self._stock_to_name: dict[str, str] | None = None
 
     # ── corp_code mapping ───────────────────────────────────────────────
     def _load_corp_code_map(self) -> dict[str, str]:
@@ -202,6 +206,26 @@ class DartClient:
         if not (code.isdigit() and len(code) == 6):
             return None
         return self._load_corp_code_map().get(code)
+
+    def stock_code_to_name(self, stock_code: str) -> Optional[str]:
+        """Reverse lookup: 6-digit stock code → Korean corp name.
+        Used by the analyzer to render '삼성전자 / 005930.KS' style
+        titles. Builds a stock→name map lazily on first call from the
+        cached _name_map so we don't pay the O(n) cost more than once
+        per bot lifetime."""
+        code = (stock_code or "").upper().split(".")[0]
+        if not (code.isdigit() and len(code) == 6):
+            return None
+        self._load_corp_code_map()
+        if not self._name_map:
+            return None
+        if self._stock_to_name is None:
+            self._stock_to_name = {
+                e["stock_code"]: e["name"]
+                for entries in self._name_map.values()
+                for e in entries
+            }
+        return self._stock_to_name.get(code)
 
     # ── /api/list.json — recent disclosures ─────────────────────────────
     def get_recent_disclosures(

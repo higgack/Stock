@@ -748,6 +748,35 @@ def build_instrument_context(ticker: str) -> str:
             f" reference in your report; do NOT quote a different price"
             f" derived from a trailing close or a tool call): {_sym}{_fmt.format(px)}"
         )
+
+    # Currency directive for KR tickers. yfinance returns KRX-listed
+    # companies' financial fields (marketCap, totalRevenue, netIncome,
+    # epsActualX) in **KRW**, not USD. Without this directive the
+    # fundamentals analyst defaults to its US-trained habit of labeling
+    # the table in "백만 달러" / "조 달러" — SNG 2026-05-17 produced
+    # '시가총액: 약 약 1776.26조 달러' (correct number, wrong unit).
+    try:
+        if _cfg.get("currency") == "KRW":
+            base += (
+                "\n\n=== CURRENCY DIRECTIVE (KR ticker, MANDATORY) ===\n"
+                "This is a KRX-listed company. EVERY monetary value from"
+                " yfinance .info / financial statements is in **KRW**,"
+                " never USD. When you render the fundamentals summary"
+                " table and body:\n"
+                " • Label monetary columns as '원' / '백만 원' / '억 원'"
+                " / '조 원' — NEVER '달러' / 'USD' / '백만 달러'.\n"
+                " • For headline-scale numbers (시가총액, 매출, 순이익,"
+                " FCF), convert to '약 X.XX조 원' (use Korean 조/억 unit)"
+                " rather than '333,605 백만 원' which is hard to read.\n"
+                " • EPS / 주당 배당금 stays as integer KRW: '₩6,603'.\n"
+                " • Per-share DCF outputs (Bear/Base/Bull): '₩XXX,XXX'.\n"
+                " ❌ WRONG: '시가총액: 약 1776조 달러' (jolting to a KR"
+                " reader; 1776조 달러 = ~$1.3 quadrillion which is"
+                " physically impossible for one company).\n"
+                " ✅ RIGHT: '시가총액: 약 1,776조 원'."
+            )
+    except Exception:
+        pass
     if qt in ("ETF", "ETN", "MUTUALFUND"):
         # ETFs / leveraged funds have no company news, no executive
         # quotes, no earnings transcripts. The analyst's standard "company

@@ -77,19 +77,30 @@ def _compute_metrics(symbol: str, curr_date: str, look_back_days: int) -> dict:
     drawdown = (closes - running_peak) / running_peak
     max_dd = drawdown.min()
 
-    # Beta vs SPY from overlapping daily returns.
+    # Beta vs the broad market benchmark, market-dependent. SPY for US
+    # tickers, KOSPI 200 (069500.KS) for KR — SNG 2026-05-17 had its
+    # market-analyst beta computed as 0.48 against SPY which is the
+    # wrong frame for a KRX-listed stock (gives a meaningless number).
+    try:
+        from bot.market import get_market_config
+        bench_symbol = get_market_config(symbol)["broad_benchmark"]
+        bench_label = get_market_config(symbol)["broad_label"]
+    except Exception:
+        bench_symbol = "SPY"
+        bench_label = "SPY"
+
     beta = float("nan")
     try:
-        spy_df = load_ohlcv("SPY", curr_date).sort_values("Date").tail(look_back_days)
-        merged = df.merge(spy_df, on="Date", suffixes=("", "_spy"))
+        bench_df = load_ohlcv(bench_symbol, curr_date).sort_values("Date").tail(look_back_days)
+        merged = df.merge(bench_df, on="Date", suffixes=("", "_b"))
         if len(merged) >= 20:
             r_t = np.diff(np.log(merged["Close"].astype(float).to_numpy()))
-            r_m = np.diff(np.log(merged["Close_spy"].astype(float).to_numpy()))
+            r_m = np.diff(np.log(merged["Close_b"].astype(float).to_numpy()))
             cov = np.cov(r_t, r_m, ddof=1)
             if cov[1, 1] > 0:
                 beta = cov[0, 1] / cov[1, 1]
     except Exception:
-        pass  # SPY missing or merge failed — leave beta as NaN
+        pass  # benchmark missing or merge failed — leave beta as NaN
 
     return {
         "trading_days": len(df),
@@ -100,6 +111,7 @@ def _compute_metrics(symbol: str, curr_date: str, look_back_days: int) -> dict:
         "cvar_95": _format_pct(cvar_95),
         "max_drawdown": _format_pct(max_dd),
         "beta_spy": "n/a" if np.isnan(beta) else f"{beta:.2f}",
+        "beta_label": bench_label,
     }
 
 
@@ -146,7 +158,7 @@ def get_risk_metrics(
         f"- 95% VaR (일간): {m['var_95']} — 최악 5% 일에 평균 이상 잃을 손실\n"
         f"- 95% CVaR (일간): {m['cvar_95']} — 그 5% 일들의 평균 손실 (꼬리 위험)\n"
         f"- 최대 낙폭 (Max Drawdown): {m['max_drawdown']}\n"
-        f"- 베타 (SPY 대비, 90거래일 기준): {m['beta_spy']}"
+        f"- 베타 ({m.get('beta_label', 'SPY')} 대비, 90거래일 기준): {m['beta_spy']}"
         f" — 펀더멘털 표의 yfinance 기본 베타(5년 월간)와는 다른 윈도\n\n"
         f"※ Sharpe/Sortino는 무위험 수익률 0% 가정. 절대값보다 동종업종 비교용."
     )

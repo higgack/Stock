@@ -484,16 +484,19 @@ def _compose_compare_view(
     rating_a, stance_a = _extract(summary_a)
     rating_b, stance_b = _extract(summary_b)
 
+    from bot.analyzer import _display_ticker
+    disp_a = _display_ticker(tk_a)
+    disp_b = _display_ticker(tk_b)
     parts = [
-        f"⚖️ **{tk_a} vs {tk_b}** ({target_date})",
+        f"⚖️ **{disp_a} vs {disp_b}** ({target_date})",
         "━━━━━━━━━━━━━━",
         "",
-        f"📊 **{tk_a}**  →  🎯 {rating_a}",
+        f"📊 **{disp_a}**  →  🎯 {rating_a}",
     ]
     if stance_a:
         parts.append(stance_a)
     parts.append("")
-    parts.append(f"📊 **{tk_b}**  →  🎯 {rating_b}")
+    parts.append(f"📊 **{disp_b}**  →  🎯 {rating_b}")
     if stance_b:
         parts.append(stance_b)
     parts.append("")

@@ -392,7 +392,46 @@ _STANCE_EXPLICIT_KEYWORDS = [
     ("추천: Sell", "매도"),
     ("추천: Underweight", "매도"),
     ("추천: Hold", "보유"),
+    # Korean section-title variants seen in analyst output. SNG
+    # 2026-05-17 market body concluded with '투자 제언: HOLD' but
+    # the bare-keyword fallback picked up a later 매수 mention and
+    # mislabeled the stance as 매수.
+    ("투자 제언: BUY", "매수"),
+    ("투자 제언: SELL", "매도"),
+    ("투자 제언: HOLD", "보유"),
+    ("투자 제언: 매수", "매수"),
+    ("투자 제언: 매도", "매도"),
+    ("투자 제언: 보유", "보유"),
+    ("투자 제안: BUY", "매수"),
+    ("투자 제안: SELL", "매도"),
+    ("투자 제안: HOLD", "보유"),
+    ("투자 제안: 매수", "매수"),
+    ("투자 제안: 매도", "매도"),
+    ("투자 제안: 보유", "보유"),
 ]
+
+
+def _display_ticker(ticker: str) -> str:
+    """Format a ticker for display in headlines and summary cards.
+
+    For KR tickers, prepend the Korean company name from DART so
+    '005930.KS' renders as '삼성전자 / 005930.KS' — KR users find pure
+    numeric tickers hard to read at a glance. US tickers pass through
+    unchanged. Falls back to bare ticker on any lookup failure (DART
+    key missing, name not in cache, etc.) so the report still ships.
+    """
+    try:
+        from bot.market import detect_market
+        if detect_market(ticker) != "KR":
+            return ticker
+        from bot.dart_client import get_dart
+        code = (ticker or "").upper().split(".")[0]
+        name = get_dart().stock_code_to_name(code)
+        if name:
+            return f"{name} / {ticker}"
+    except Exception:
+        pass
+    return ticker
 
 
 def _extract_stance(body: str | None) -> str:
@@ -565,8 +604,9 @@ def _format_summary(
     notes: list[str] | None = None,
 ) -> str:
     rating = _extract_rating(decision) or "N/A"
+    display = _display_ticker(ticker)
     parts = [
-        f"📊 **{ticker}** ({date_})",
+        f"📊 **{display}** ({date_})",
         "━━━━━━━━━━━━━━",
         f"🎯 최종 판정: **{rating}**",
     ]
@@ -655,7 +695,7 @@ def _format_full(
     date_: str,
     past_outcomes: str = "",
 ) -> str:
-    parts = [f"📋 {ticker} 전체 리포트 ({date_})\n"]
+    parts = [f"📋 {_display_ticker(ticker)} 전체 리포트 ({date_})\n"]
     if past_outcomes:
         parts.append(past_outcomes + "\n")
     for key, label, analyst_id in _REPORT_SECTIONS:
@@ -1012,6 +1052,14 @@ def _polish(body: str) -> str:
     for idx, (pat, repl) in enumerate(_KO_LABEL_REPLACEMENTS, 1):
         _step(f"ko-label-{idx}", lambda b, p=pat, r=repl: p.sub(r, b))
     _step("blank-lines",         lambda b: re.sub(r"\n{3,}", "\n\n", b))
+    # Conservative dedup for short Korean approximation words that
+    # analysts occasionally double-print before a number ("약 약 1776조"
+    # — SNG 2026-05-17). Only handles a fixed allowlist; we don't do
+    # a general "(\w+) \1" pass because legitimate Korean phrases
+    # ("그 그 사람", "이 이 종목" etc.) would get clobbered.
+    _step("ko-double-prefix",    lambda b: re.sub(
+        r"\b(약|대략|혹은|또는|즉)\s+\1\b", r"\1", b,
+    ))
     return body.strip()
 
 
