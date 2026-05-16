@@ -1,17 +1,32 @@
 # NOAH Stock Bot — Project Notes for Claude
 
-Operational rules for working in this repo.
+Operational rules for working in this repo. Apply to **every subproject** in
+this repo (currently: `bot/` NOAH stock-bot, `trade/` Korea import/export bot).
 
-## Workflow
+## Default workflow — review first, commit only on request
 
-1. User shares analysis output → review (system check / fact-check / improvement opportunities)
-2. Propose changes as **generalized universal rules** — never ticker-specific patches
-3. Wait for explicit "커밋" before committing
-4. After commit, push to current `claude/...` branch
+For **any** request (analysis output, feature idea, bug report, refactor):
+
+1. **Review and propose** — never edit/commit yet. Surface the diagnosis,
+   the proposed change as a **generalized universal rule** (never a
+   ticker-specific or one-off patch), and the trade-offs.
+2. **Wait for explicit "커밋"** from the user before staging anything.
+   Until then, the deliverable is the proposal itself, not committed code.
+   The only exception is when the user opens with an explicit instruction
+   to commit ("이대로 커밋", "스캐폴드 만들고 커밋해줘", etc.).
+3. **After explicit commit**: stage, commit, and push to the current
+   `claude/...` branch. Open / update the draft PR if one doesn't exist.
 
 ## Automation-first principle
 
-**Default to fully automated solutions.** The user runs operations alone and prefers not to ssh / paste shell commands when avoidable. Before proposing any manual server step, ask: "can this be a cron job, systemd timer, asyncio task, or in-process scheduler instead?" Examples of what's already automated and the pattern to follow:
+**Every recurring operation MUST be automated** (cron / systemd timer /
+asyncio task). The user runs operations alone and explicitly does not
+want to ssh / paste shell commands when avoidable. Before proposing any
+manual server step, ask: "can this be a cron job, systemd timer, asyncio
+task, or in-process scheduler instead?" If a fix involves the operator
+running a command more than once, the fix is wrong — re-design until the
+runtime drives itself. Examples of what's already automated and the
+pattern to follow:
 
 - Bot lifecycle → systemd (`stock-bot.service`)
 - Code updates → `stock-bot-update.service` polls git every 2 min and redeploys without manual intervention

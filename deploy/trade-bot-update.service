@@ -1,0 +1,12 @@
+[Unit]
+Description=Pull latest trade-bot code and restart if changed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+ExecStart=/home/higgack/stock-trade/deploy/trade-auto-update.sh
+StandardOutput=journal
+StandardError=journal

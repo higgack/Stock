@@ -1,0 +1,9 @@
+[Unit]
+Description=Detect a stalled trade-bot and restart it
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/home/higgack/stock/deploy/trade-watchdog.sh
+StandardOutput=journal
+StandardError=journal
