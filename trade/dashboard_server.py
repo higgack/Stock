@@ -26,11 +26,14 @@ import os
 import shutil
 import socketserver
 import sys
+import time
 from functools import partial
+from io import BytesIO
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from trade.dashboard import _alert_to_payload as _payload_for_api
 from trade.store import latest_per_dedup_key, list_all_alerts, open_db, stats
 
 load_dotenv()
@@ -122,9 +125,6 @@ def _patch_headers(
 # ---------------------------------------------------------------------
 # API payloads
 # ---------------------------------------------------------------------
-
-from trade.dashboard import _alert_to_payload as _payload_for_api
-
 
 def _api_alerts() -> dict:
     if not _STORE_PATH.exists():

@@ -155,7 +155,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — Phase F: 워치리스트 (/watch item·company &lt;검색어&gt;, 신규 alert 매칭 시 DM 자동 푸시)</i>
+<i>최종 갱신: 2026-05-17 — fix: dashboard_server time import + 모든 commit 채널 알림 (📝 운영 업데이트 / 🚀✅ 배포)</i>
 """
 
 

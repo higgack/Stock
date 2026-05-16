@@ -57,16 +57,26 @@ if [ "$LOCAL" = "$REMOTE" ]; then
     exit 0  # nothing to do
 fi
 
-# Scope guard — only restart / notify when the incoming commits touch
-# stock-bot's runtime files. Trade-bot commits (trade/, deploy/trade-*)
-# arrive on this branch via PR merges too, but they don't affect NOAH;
-# pulling silently keeps the working tree in sync without a wasted
-# restart or an irrelevant 🚀/✅ in the deploy channel.
+LOCAL_SHORT_PRE="${LOCAL:0:7}"
+REMOTE_SHORT_PRE="${REMOTE:0:7}"
+SUBJECT_PRE="$(git log -1 --format='%s' "$REMOTE" 2>/dev/null || echo '')"
+
+# Scope guard — restart NOAH only when commits actually touch
+# stock-bot's runtime files. Trade-bot commits, docs, and shared infra
+# (arriving on this branch via PR merges) pull silently but still
+# emit a 📝 notification so the operator can track every commit
+# landing on the host.
 CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE")
 STOCK_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^(bot/|TradingAgents/|requirements\.txt$|deploy/(auto-update\.sh|watchdog\.sh|stock-bot[^/]*\.(service|timer))$)' || true)
 if [ -z "$STOCK_RELEVANT" ]; then
-    echo "stock-bot-update: non-stock-bot changes only — pulling silently"
+    echo "stock-bot-update: non-stock-bot changes — pull + 📝 notify (no restart)"
     git reset --hard "origin/${BRANCH}" --quiet
+    note_msg="📝 <b>운영 업데이트</b>: <code>${LOCAL_SHORT_PRE}</code> → <code>${REMOTE_SHORT_PRE}</code>"
+    if [ -n "$SUBJECT_PRE" ]; then
+        note_msg="${note_msg}"$'\n'"${SUBJECT_PRE}"
+    fi
+    note_msg="${note_msg}"$'\n'"<i>재시작 불필요 — doc / 다른 서브프로젝트 변경</i>"
+    notify "$note_msg"
     exit 0
 fi
 

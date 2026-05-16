@@ -60,19 +60,28 @@ For **any** request (analysis output, feature idea, bug report, refactor):
 3. **After explicit commit**: stage, commit, and push to the current
    `claude/...` branch. Open / update the draft PR if one doesn't exist.
 
-## Deploy notifications — Telegram start/complete/fail are mandatory
+## Deploy notifications — Telegram on every commit, lifecycle-shaped
 
 Every deploy automation in this repo (any auto-update script, any
-provisioner, anything that promotes code to a running service) MUST send
-the project's Telegram channel the three lifecycle messages:
+provisioner, anything that promotes code to a running service) MUST
+send the project's Telegram channel at least one message per new
+commit so the operator can track exactly what landed on the host:
 
+Scope-relevant commits (the script's own subproject) → full
+restart cycle:
 - `🚀 <b>배포 시작</b>: <code>{old_sha7}</code> → <code>{new_sha7}</code>` plus the new commit subject on a new line
 - `✅ <b>배포 완료</b>: <code>{old_sha7}</code> → <code>{new_sha7}</code>` plus the new commit subject
 - `❌ <b>배포 실패</b>: <reason> (<code>{new_sha7}</code>)` on any abort path (`git reset` failure, `systemctl restart` failure, service not `active` after restart)
 
+Scope-irrelevant commits (docs, shared infra, sibling subproject) →
+pull silently but still notify so nothing on the host is invisible:
+- `📝 <b>운영 업데이트</b>: <code>{old_sha7}</code> → <code>{new_sha7}</code>` plus the subject, plus `<i>재시작 불필요 — doc / 다른 서브프로젝트 변경</i>`
+
 Rationale: the user runs the host alone and treats the channel as the
-single source of truth for what's live. Silent deploys leave no audit
-trail and break that trust.
+single source of truth for what's live. Both silent deploys and
+invisible doc-only commits break that trust — every commit gets
+exactly one notification (📝 or 🚀+✅/❌), never zero, never
+duplicated.
 
 Implementation pattern (mirror `deploy/auto-update.sh` for stock-bot,
 `deploy/trade-auto-update.sh` for trade-bot):
