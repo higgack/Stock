@@ -49,6 +49,18 @@ if [ "$LOCAL" = "$REMOTE" ]; then
     exit 0
 fi
 
+# Scope guard — only restart / notify when commits touch trade-bot's
+# runtime files. Stock-bot commits or doc-only updates pulled from the
+# shared repo shouldn't restart trade-bot or spam the trade channel
+# with deploy notifications about NOAH work.
+CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE")
+TRADE_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^(trade/|deploy/(trade-auto-update\.sh|trade-watchdog\.sh|trade-bot[^/]*\.(service|timer))$)' || true)
+if [ -z "$TRADE_RELEVANT" ]; then
+    echo "trade-bot-update: non-trade-bot changes only — pulling silently"
+    git reset --hard "origin/${BRANCH}" --quiet
+    exit 0
+fi
+
 LOCAL_SHORT="${LOCAL:0:7}"
 REMOTE_SHORT="${REMOTE:0:7}"
 SUBJECT="$(git log -1 --format='%s' "$REMOTE" 2>/dev/null || echo '')"

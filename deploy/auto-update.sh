@@ -57,6 +57,19 @@ if [ "$LOCAL" = "$REMOTE" ]; then
     exit 0  # nothing to do
 fi
 
+# Scope guard — only restart / notify when the incoming commits touch
+# stock-bot's runtime files. Trade-bot commits (trade/, deploy/trade-*)
+# arrive on this branch via PR merges too, but they don't affect NOAH;
+# pulling silently keeps the working tree in sync without a wasted
+# restart or an irrelevant 🚀/✅ in the deploy channel.
+CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE")
+STOCK_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^(bot/|TradingAgents/|requirements\.txt$|deploy/(auto-update\.sh|watchdog\.sh|stock-bot[^/]*\.(service|timer))$)' || true)
+if [ -z "$STOCK_RELEVANT" ]; then
+    echo "stock-bot-update: non-stock-bot changes only — pulling silently"
+    git reset --hard "origin/${BRANCH}" --quiet
+    exit 0
+fi
+
 if [ -f "$BUSY_MARKER" ]; then
     # find prints the marker only if it is older than the threshold
     if [ -z "$(find "$BUSY_MARKER" -mmin +"$STALE_AFTER_MINUTES" 2>/dev/null)" ]; then

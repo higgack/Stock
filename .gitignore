@@ -3,3 +3,5 @@
 __pycache__/
 *.pyc
 .tradingagents/
+.backfill-venv/
+.backfill-session*

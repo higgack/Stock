@@ -111,6 +111,53 @@ ls ~/.trade/media/$(date -I)/                # downloaded photos for today
 journalctl -u trade-bot -f                   # live log
 ```
 
+## One-time backfill — Telethon (`trade/scripts/backfill_beon.py`)
+
+Bots can't read channel history; only messages that arrive after the
+bot joined are delivered via `getUpdates`. To seed `inbox.jsonl` with
+posts older than the trade-bot's first boot, a one-shot Telethon
+script uses your personal Telegram account to forward BeOn_BeClear's
+history into the private destination channel — trade-bot then ingests
+each forward as if it were live.
+
+**Isolated from the live bot:**
+- separate venv (`.backfill-venv/`) so Telethon's crypto stack never
+  touches `trade-bot.service`'s deps
+- separate session file (`.backfill-session`), gitignored
+- API creds (`TRADE_TELETHON_API_ID`, `TRADE_TELETHON_API_HASH`) live
+  in the same `.env` (chmod 600) but are read by the backfill script only
+
+**Idempotent:** scans `inbox.jsonl` and skips any BeOn `message_id`
+already ingested, so re-running after a `FloodWaitError` abort just
+resumes where it stopped.
+
+```bash
+# 1. Get personal-account API credentials (one-time)
+#    https://my.telegram.org/apps  →  Create application
+#    add TRADE_TELETHON_API_ID + TRADE_TELETHON_API_HASH to ~/stock-trade/.env
+
+# 2. Temp venv for the backfill (Telethon only)
+cd ~/stock-trade
+python -m venv .backfill-venv
+.backfill-venv/bin/pip install -r trade/scripts/requirements.txt
+
+# 3. Dry-run first to see how many messages are in range
+.backfill-venv/bin/python trade/scripts/backfill_beon.py --since 2026-05-01 --dry-run
+
+# 4. Actual run. First time: prompts for your phone number + SMS code
+#    (plus 2FA password if enabled). Subsequent runs: silent.
+.backfill-venv/bin/python trade/scripts/backfill_beon.py --since 2026-05-01
+
+# 5. (Optional) Tear down once the backfill is done
+rm -rf .backfill-venv .backfill-session*
+```
+
+While it runs, watch ingestion in another terminal:
+```bash
+tail -f ~/.trade/inbox.jsonl
+journalctl -u trade-bot -f
+```
+
 ## Coexistence with the stock-bot
 
 | What                       | Stock-bot                                | Trade-bot                                  |

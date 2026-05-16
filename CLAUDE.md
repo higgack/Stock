@@ -43,6 +43,35 @@ When introducing a new subproject or a new deploy path, scaffold the
 three notifications **in the same commit** as the deploy script — never
 ship the script first and add notifications later.
 
+## Scope-matched auto-update
+
+Each subproject's auto-update script MUST decide whether incoming
+commits touch its own runtime before restarting the service or sending
+a deploy notification. Pull silently for everything else so:
+
+- the service isn't restarted for unrelated subprojects' commits
+- the deploy channel doesn't get spammed with irrelevant 🚀/✅ for
+  changes the operator only cares about in another channel
+
+Pattern (mirror `deploy/auto-update.sh` and `deploy/trade-auto-update.sh`):
+
+```bash
+CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE")
+RELEVANT=$(echo "$CHANGED_FILES" | grep -E '<this subproject's path regex>' || true)
+if [ -z "$RELEVANT" ]; then
+    git reset --hard "origin/${BRANCH}" --quiet
+    exit 0
+fi
+```
+
+The regex must cover the subproject's code dir, its own service / timer
+unit files, its own deploy/watchdog scripts, and any root-level files
+(`requirements.txt`, entry-point scripts) that participate in its
+runtime. New subprojects scaffold both the auto-update script and the
+existing siblings' scope-guard regex updates in the same commit —
+adding a subproject without updating siblings' guards means trade
+commits would still restart NOAH (and vice versa).
+
 ## Automation-first principle
 
 **Every recurring operation MUST be automated** (cron / systemd timer /
