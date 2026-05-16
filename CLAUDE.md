@@ -3,6 +3,49 @@
 Operational rules for working in this repo. Apply to **every subproject** in
 this repo (currently: `bot/` NOAH stock-bot, `trade/` Korea import/export bot).
 
+## Pre-push verification — mandatory
+
+Before pushing **any** commit, run every applicable check below and
+state the results in the commit message (or as a single explicit
+"verified" line). Pushing code that hasn't been verified is a
+regression even when it compiles.
+
+1. **Tests** — `python3 -m unittest discover <project>/tests` must
+   show all green. Never push with failing or skipped tests unless
+   the commit message names the test and explains why.
+
+2. **Syntax** — for every changed `*.py` run `python -c "import ast;
+   ast.parse(open('FILE').read())"`; for every changed `*.sh` run
+   `bash -n FILE`; for every changed systemd unit grep for the
+   required `[Unit]` plus the matching `[Service]` / `[Timer]`.
+
+3. **Help-text** — if `_HELP_TEXT` (or any user-facing pinned spec)
+   was touched, verify:
+   - UTF-16 length < 4096 (Telegram cap, see Help text maintenance
+     section). Headroom target ≥ 200.
+   - The 최종 갱신 line was updated and one-line-summarizes the
+     actual change.
+   - Every listed feature in the commit message resolves to a
+     keyword search hit in the help text.
+
+4. **Render / smoke check** — for dashboard or report-generating
+   changes, render once against a representative dataset (real
+   store.db when available, in-memory seed otherwise) and grep the
+   output for the markers each new feature should produce. Tests can
+   replace this when they assert the same markers.
+
+5. **Scope coverage** — when the user supplies a numbered list of
+   work items, the commit message must enumerate which items are
+   addressed in this commit and which are deferred. Don't claim a
+   list of N items is "all done" without one ✓ per item.
+
+6. **Verify in the artifact, not in your head** — actually run
+   `grep` / open the rendered HTML / inspect the SQLite output.
+   Implementing-then-trusting-the-diff is how regressions ship.
+
+If any check fails, fix forward and re-run all checks; never push
+"will fix after" or "should be fine".
+
 ## Default workflow — review first, commit only on request
 
 For **any** request (analysis output, feature idea, bug report, refactor):
