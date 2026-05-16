@@ -1,0 +1,367 @@
+"""BeOn caption parser — RULE 1~10 (see CLAUDE.md / trade/README.md).
+
+A pure-Python single-file module. Takes one caption string (the text body
+of a forwarded BeOn alert, e.g. trade-bot's inbox.jsonl 'caption' field)
+and returns a ParsedAlert dataclass. Returns None when the caption
+isn't a BeOn data alert at all (no recognizable trailing status line).
+
+Design choices:
+- Be forgiving on whitespace / dash variants, strict on structure.
+- Never lose data: anything unparseable goes into parse_warnings rather
+  than silently dropped. ingest_inbox.py surfaces warning counts so we
+  notice new variants instead of guessing about them.
+- item-only alerts (BeOn knows the HS code but not the Korean company)
+  are first-class citizens — stocks=[] with no warning. They show up
+  in the 품목별 view and are absent from 회사별 view by virtue of
+  having no companies attached.
+"""
+
+import re
+from calendar import monthrange
+from dataclasses import dataclass, field
+from datetime import date
+
+
+# --- RULE 3 — period + status + direction (the final line of every alert) ---
+# Accepts ~, –, —, - between days; tolerant of whitespace; the day-range
+# group is optional (확정치 typically only has 'YYYY년 M월' with no days).
+_FINAL_LINE_RE = re.compile(
+    r"(\d{4})\s*년\s*(\d{1,2})\s*월"
+    r"(?:\s*(\d{1,2})\s*일\s*[~–—\-]\s*"
+    r"(?:(\d{1,2})\s*월\s*)?(\d{1,2})\s*일)?"
+    r"\s*(잠정치|확정치)\s*(수출|수입)\s*데이터"
+)
+
+# --- RULE 5 — company-first title: '<회사> : <품목> (<지역>)' ---
+# Tried before standard. Company name must contain no parens (so the
+# item's own parens, e.g. '음극재 (천연흑연)', don't get swallowed).
+_COMPANY_TITLE_RE = re.compile(r"^([^():]+?)\s+:\s+(.+?)\s*\(([^()]+)\)\s*$")
+
+# --- RULE 4 — standard title: '<품목> (<지역>)' ---
+# Right-anchored to (...) so multi-paren items keep their inner parens
+# inside the item, with only the rightmost group treated as region.
+_STANDARD_TITLE_RE = re.compile(r"^(.+?)\s*\(([^()]+)\)\s*$")
+
+# --- RULE 9 — related-stocks line ---
+# Allows '관련종목 :' / '관련종목:' / '관련종목  :'.
+_STOCKS_LINE_RE = re.compile(r"^\s*관련종목\s*:\s*(.*)$")
+
+# --- RULE 8 — composite item separator ' + ' (with or without spaces) ---
+# `&` is NOT a separator — e.g. 'SB&MSB' is a single item name.
+_COMPOSITE_SPLIT_RE = re.compile(r"\s*\+\s*")
+
+# Trailing '등' on the stocks line (with leading whitespace or '/').
+_ETC_SUFFIX_RE = re.compile(r"[\s/]+등\s*$")
+
+# Marker like '(비상장)' at the tail of a stock name.
+_STOCK_MARKER_RE = re.compile(r"\s*\(([^)]+)\)\s*$")
+
+
+@dataclass
+class ParsedAlert:
+    """Structured form of one BeOn caption. Field order mirrors the
+    SQLite schema in trade/store.py so dict serialization is direct.
+    """
+
+    direction: str  # 'export' | 'import'
+    status: str  # 'preliminary' | 'final'
+    period_start: date
+    period_end: date
+    period_kind: str  # 'decadal_10' | 'decadal_20' | 'monthly' | 'custom'
+
+    title_kind: str  # 'item_first' | 'company_first' | 'unknown'
+    item: str  # normalized (whitespace collapsed)
+    item_raw: str  # as it appeared in the title
+    is_composite: bool
+
+    composite_parts: list[str] = field(default_factory=list)
+
+    region: str | None = None
+    country: str | None = None
+    regions: list[str] = field(default_factory=list)
+    countries: list[str] = field(default_factory=list)
+
+    stocks: list[str] = field(default_factory=list)
+    stocks_meta: dict[str, str] = field(default_factory=dict)
+    has_etc: bool = False
+
+    commentary: str | None = None
+    parse_warnings: list[str] = field(default_factory=list)
+
+    def dedup_key(self) -> str:
+        """Group key for the 'latest only' dashboard query: same
+        (direction, item, region, country) tuple shares one slot.
+        """
+        return "|".join(
+            [self.direction, self.item, self.region or "", self.country or ""]
+        )
+
+
+def _last_day(year: int, month: int) -> int:
+    return monthrange(year, month)[1]
+
+
+def _norm_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _looks_like_placeholder(stocks_line_raw: str) -> bool:
+    """RULE 10 — '월별 수출 데이터' / '분기 수출 데이터' style placeholder.
+
+    BeOn writes these when the HS code is published but no specific
+    Korean company is associated. We treat the alert as item-only
+    (stocks=[]); the item itself is the value.
+    """
+    s = stocks_line_raw.strip()
+    if not s:
+        return False
+    if "/" in s:
+        return False  # real lists have slash separators
+    if " " not in s:
+        return False  # bare names like '유니드' are single companies
+    return "데이터" in s
+
+
+def _parse_period(
+    year: int,
+    month: int,
+    day_start_str: str | None,
+    end_month_str: str | None,
+    day_end_str: str | None,
+) -> tuple[date, date, str]:
+    """RULE 3 — period bounds + canonical period_kind."""
+    if day_start_str is None:
+        # bare month → full month, typical of 확정치
+        return (
+            date(year, month, 1),
+            date(year, month, _last_day(year, month)),
+            "monthly",
+        )
+
+    day_start = int(day_start_str)
+    end_month = int(end_month_str) if end_month_str else month
+    day_end = int(day_end_str)
+    start = date(year, month, day_start)
+    end = date(year, end_month, day_end)
+
+    last = _last_day(year, month)
+    if end_month != month:
+        kind = "custom"
+    elif day_start == 1 and day_end == 10:
+        kind = "decadal_10"
+    elif day_start == 1 and day_end == 20:
+        kind = "decadal_20"
+    elif day_start == 1 and day_end == last:
+        kind = "monthly"
+    else:
+        kind = "custom"
+    return start, end, kind
+
+
+def _parse_region(
+    region_part: str,
+) -> tuple[str, str | None, list[str], list[str]]:
+    """RULE 6 — split the (...) content into region/country/multi.
+
+    Variants observed in the wild:
+      (전국)                       → 전국 / None
+      (전국_중국)                  → 전국 / 중국
+      (전국_중국+베트남)           → 전국 / 중국 + [중국, 베트남]
+      (경기 평택시)                → 경기 평택시 / None
+      (경기 평택시_글로벌)         → 경기 평택시 / 글로벌
+      (경기 이천시 + 충북 청주시)  → multi-region, no country
+    """
+    s = region_part.strip()
+    if "+" in s and "_" not in s:
+        regions = [p.strip() for p in s.split("+")]
+        return regions[0], None, regions, []
+    if "_" in s:
+        region, _, country = s.partition("_")
+        region = region.strip()
+        country = country.strip()
+        if "+" in country:
+            countries = [c.strip() for c in country.split("+")]
+            return region, countries[0], [region], countries
+        return region, country, [region], [country]
+    return s, None, [s], []
+
+
+def _parse_stocks(
+    raw: str,
+) -> tuple[list[str], dict[str, str], bool, list[str]]:
+    """RULE 9 + 10 — split the 관련종목 line into stocks + metadata.
+
+    Returns (stocks, stocks_meta, has_etc, warnings).
+    """
+    raw = raw.strip()
+    warnings: list[str] = []
+    if not raw:
+        return [], {}, False, []
+
+    if _looks_like_placeholder(raw):
+        return [], {}, False, []  # legitimate item-only alert
+
+    has_etc = False
+    m = _ETC_SUFFIX_RE.search(raw)
+    if m:
+        has_etc = True
+        raw = raw[: m.start()].rstrip()
+
+    stocks: list[str] = []
+    meta: dict[str, str] = {}
+    for part in raw.split("/"):
+        part = part.strip()
+        if not part:
+            continue
+        mk = _STOCK_MARKER_RE.search(part)
+        if mk:
+            name = part[: mk.start()].strip()
+            marker = mk.group(1).strip()
+            if name:
+                stocks.append(name)
+                meta[name] = marker
+            else:
+                warnings.append("stocks_marker_without_name")
+        else:
+            stocks.append(part)
+
+    return stocks, meta, has_etc, warnings
+
+
+def parse_caption(caption: str) -> ParsedAlert | None:
+    """Top-level entry point. None if the caption is not a BeOn alert."""
+    if not caption:
+        return None
+    lines = caption.strip().split("\n")
+    if not lines:
+        return None
+
+    # Locate the trailing status line (search from bottom).
+    final_match = None
+    final_idx = -1
+    for i in range(len(lines) - 1, -1, -1):
+        m = _FINAL_LINE_RE.search(lines[i])
+        if m:
+            final_match = m
+            final_idx = i
+            break
+    if final_match is None:
+        return None
+
+    year = int(final_match.group(1))
+    month = int(final_match.group(2))
+    period_start, period_end, period_kind = _parse_period(
+        year,
+        month,
+        final_match.group(3),
+        final_match.group(4),
+        final_match.group(5),
+    )
+    status = "preliminary" if final_match.group(6) == "잠정치" else "final"
+    direction = "export" if final_match.group(7) == "수출" else "import"
+
+    # First non-empty line = title.
+    title = ""
+    title_idx = -1
+    for i, line in enumerate(lines):
+        if line.strip():
+            title = line.strip()
+            title_idx = i
+            break
+    if not title:
+        return None
+
+    warnings: list[str] = []
+
+    company_from_title: str | None = None
+    item_raw: str | None = None
+    region_part: str | None = None
+    title_kind: str
+
+    cm = _COMPANY_TITLE_RE.match(title)
+    if cm:
+        company_from_title = cm.group(1).strip()
+        item_raw = cm.group(2).strip()
+        region_part = cm.group(3).strip()
+        title_kind = "company_first"
+    else:
+        sm = _STANDARD_TITLE_RE.match(title)
+        if sm:
+            item_raw = sm.group(1).strip()
+            region_part = sm.group(2).strip()
+            title_kind = "item_first"
+        else:
+            return ParsedAlert(
+                direction=direction,
+                status=status,
+                period_start=period_start,
+                period_end=period_end,
+                period_kind=period_kind,
+                title_kind="unknown",
+                item=_norm_ws(title),
+                item_raw=title,
+                is_composite=False,
+                parse_warnings=["title_format_unknown"],
+            )
+
+    parts = [p.strip() for p in _COMPOSITE_SPLIT_RE.split(item_raw) if p.strip()]
+    is_composite = len(parts) > 1
+    composite_parts = parts if is_composite else []
+    item = _norm_ws(item_raw)
+
+    region, country, regions, countries = _parse_region(region_part)
+
+    if title_kind == "company_first":
+        stocks = [company_from_title] if company_from_title else []
+        stocks_meta: dict[str, str] = {}
+        has_etc = False
+    else:
+        stocks_raw: str | None = None
+        for i in range(title_idx + 1, final_idx):
+            sm2 = _STOCKS_LINE_RE.match(lines[i])
+            if sm2:
+                stocks_raw = sm2.group(1)
+                break
+        if stocks_raw is None:
+            stocks, stocks_meta, has_etc = [], {}, False
+        else:
+            stocks, stocks_meta, has_etc, stock_warns = _parse_stocks(stocks_raw)
+            warnings.extend(stock_warns)
+
+    # Free-text commentary: lines between stocks (or title for
+    # company_first) and the final status line, skipping blanks and
+    # the stocks line itself.
+    commentary_lines: list[str] = []
+    seen_stocks_line = title_kind == "company_first"
+    for i in range(title_idx + 1, final_idx):
+        line = lines[i].strip()
+        if not line:
+            continue
+        if _STOCKS_LINE_RE.match(lines[i]):
+            seen_stocks_line = True
+            continue
+        if seen_stocks_line:
+            commentary_lines.append(line)
+    commentary = "\n".join(commentary_lines) if commentary_lines else None
+
+    return ParsedAlert(
+        direction=direction,
+        status=status,
+        period_start=period_start,
+        period_end=period_end,
+        period_kind=period_kind,
+        title_kind=title_kind,
+        item=item,
+        item_raw=item_raw,
+        is_composite=is_composite,
+        composite_parts=composite_parts,
+        region=region,
+        country=country,
+        regions=regions,
+        countries=countries,
+        stocks=stocks,
+        stocks_meta=stocks_meta,
+        has_etc=has_etc,
+        commentary=commentary,
+        parse_warnings=warnings,
+    )
