@@ -39,8 +39,15 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Message, Update
+from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TelegramError
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 load_dotenv()
 
@@ -72,6 +79,62 @@ _download_sem: asyncio.Semaphore | None = None  # built once the loop is up
 
 # Copy-style forwarder detection: header pattern injected into the body.
 _BEON_HEADER_RE = re.compile(r"^\s*BeOn\s*-\s*비온", re.MULTILINE)
+
+
+# ---------------------------------------------------------------------
+# /help text
+# ---------------------------------------------------------------------
+# Pinned-as-spec convention (see CLAUDE.md): every user-visible change
+# in trade-bot or its dashboard must update this string in the same
+# commit so the operator can /help and see what's actually live. The
+# trailing '최종 갱신' line records the last commit's date.
+_HELP_TEXT = """🇰🇷 <b>한국 수출입 데이터 대쉬보드 봇</b>
+
+<b>1. 무엇을 하나</b>
+BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채널로 자동 수집·정리. BeOn 원본 그래프·표 이미지 그대로 보존, 메타데이터(품목·지역·국가·종목·기간·잠정/확정)만 regex 파싱. OCR 안 함, 가공 0.
+
+<b>2. 대쉬보드</b>
+<a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
+모바일 OK · 5분마다 자동 갱신 · BasicAuth 보호 · 다크모드 자동 (19~07 KST)
+
+<b>3. BeOn 발표 사이클 (KST)</b>
+• 매월 11일경 — 1-10일 잠정
+• 매월 21일경 — 1-20일 잠정
+• 익월 1일경 — 전월 전체 잠정
+• 익월 15일경 — 전월 전체 확정 (관세청 공식)
+
+<b>4. 두 가지 뷰</b>
+• <b>품목별</b> — 품목당 1 섹션, (지역/국가) variant 미니카드
+• <b>회사별</b> — 회사당 1 섹션, 관련 (품목·지역) 미니카드
+
+<b>5. 카드 정렬</b>
+같은 섹션 안에서:
+① 전국 (no country) ② 전국_&lt;국가&gt; ③ 시군구
+각 단계 내 게시 최신순. 새 발표가 도착하면 그 dedup 키의 최신 카드로 자동 교체, 과거는 모달 history에 누적.
+
+<b>6. 배지</b>
+🟢 수출 · 🟠 수입 · 잠정 · 확정 · 합산
+🟡 확정 D-N (잠정의 예상 확정일 카운트다운)
+🔴 확정 D+N 지연 (예정일 초과)
+
+<b>7. 부가 기능</b>
+• 검색: 품목/회사/국가 부분일치 (회사명 정확 일치 시 회사 뷰 자동 좁힘)
+• 칩 필터: 수출/수입, 잠정/확정
+• 📥 CSV — 현재 필터 결과 다운로드 (Excel 호환)
+• 모달 — 카드 클릭 시 같은 dedup 키 과거 발표 인라인 비교 (전번 확정 ↔ 이번 잠정 시각 비교)
+
+<b>8. 명령어</b>
+/help · /start — 이 안내
+
+<b>9. 자동화 systemd</b>
+• trade-bot — 실시간 메시지 수집
+• trade-bot-update (2분) — git pull + 재배포
+• trade-bot-watchdog (1분) — 폴링 hang 감지 + 자동 재시작
+• trade-bot-dashboard — HTTP 서버 (포트 8765)
+• trade-bot-dashboard-refresh (5분) — store + HTML 재생성
+
+<i>최종 갱신: 2026-05-17 — /help 명령어 + SLA 배지 + CSV 다운로드 + 정렬 룰 (전국 우선)</i>
+"""
 
 
 def _allowed_channel(chat_id: int) -> bool:
@@ -226,15 +289,42 @@ async def _download_photo_bg(post: Message, ctx: ContextTypes.DEFAULT_TYPE) -> N
             log.error("download retry failed msg=%s err=%s", post.message_id, e)
 
 
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/help and /start in a private chat with the bot — replies with
+    the pinned-as-spec _HELP_TEXT.
+    """
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        _HELP_TEXT, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+    )
+
+
 async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Fast-path handler. Returns to the event loop within ~1ms so PTB's
     update queue keeps draining at full speed during a 300-message burst.
+
+    Also intercepts /help and /start typed directly in the channel
+    (BeOn forwards are filtered later) so the operator can pull up
+    the spec from inside Telegram without DM'ing the bot.
     """
     post = update.channel_post
     if not post:
         return
     if not _allowed_channel(post.chat.id):
         return
+
+    text = (post.text or post.caption or "").strip()
+    first_word = text.split()[0].lower() if text else ""
+    if first_word in ("/help", "/start"):
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text=_HELP_TEXT,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+
     if not _origin_matches(post):
         return
 
@@ -255,6 +345,9 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
 def main() -> None:
     app = Application.builder().token(TOKEN).build()
+    # Commands fire in private chats (DM the bot directly).
+    app.add_handler(CommandHandler(["help", "start"], cmd_help))
+    # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     log.info(
         "trade-bot starting — inbox=%s media=%s allowed=%s origin=%s concurrency=%d",

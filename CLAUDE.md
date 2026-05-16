@@ -133,11 +133,23 @@ pattern to follow:
 3. Cron entry
 4. Manual command (only if 1-3 are infeasible and impact is one-time)
 
-## Help text maintenance (`_HELP_TEXT` in `bot/telegram_bot.py`)
+## Help text maintenance — every user-facing bot
 
-The help text is **pinned as a channel announcement**. Treat it as a public-facing spec.
+Each user-facing bot in this repo carries a `_HELP_TEXT` constant. Treat
+it as the public-facing spec — pinned in the channel, the first thing
+the operator reads on `/help`.
 
-**Whenever a feature changes that affects user-visible behavior, update `_HELP_TEXT` in the same commit.** Specifically watch for changes in:
+**Whenever a change affects user-visible behavior, update the relevant
+`_HELP_TEXT` in the same commit.** The trailing `최종 갱신: YYYY-MM-DD
+— <one-line summary>` line records what just changed so the operator
+can track drift between releases by reading the spec only.
+
+Current help texts:
+
+- `bot/telegram_bot.py::_HELP_TEXT` — NOAH 주식분석 봇
+- `trade/bot.py::_HELP_TEXT` — 한국 수출입 데이터 대쉬보드 봇
+
+### NOAH stock-bot — what to watch for
 
 - New / removed commands → section 1 (명령어)
 - Pipeline stage changes (analyst count, model tiers, retry logic) → section 2 (분석 흐름)
@@ -145,6 +157,16 @@ The help text is **pinned as a channel announcement**. Treat it as a public-faci
 - New fundamentals RULEs → section 7 (안정성), update "RULE 1~N" count
 - New stability / quality guards → section 7
 - Dashboard changes → section 11
+
+### Trade-bot — what to watch for
+
+- Dashboard URL / port / auth → section 2 (대쉬보드)
+- BeOn cycle change → section 3 (발표 사이클)
+- View / sort / badge changes → sections 4-6
+- New filter, search behavior, CSV column, modal capability → section 7 (부가 기능)
+- New commands → section 8 (명령어)
+- New systemd unit, refresh interval → section 9 (자동화 systemd)
+- Always touch the trailing `최종 갱신` line on the same commit
 
 **Constraints when editing:**
 
