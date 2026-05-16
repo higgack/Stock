@@ -72,6 +72,22 @@ The help text is **pinned as a channel announcement**. Treat it as a public-faci
 - **All slash commands MUST stay** (`/start`, `/help`, `/usage`, `/NVDA` etc., `/compare`)
 - Content must reflect the CURRENT model state — no aspirational or deprecated features
 
+**The help text doubles as a public spec AND a public roadmap.** Two surfaces to keep current:
+
+1. **Current state description** — sections 2-11 describe what the model
+   does TODAY. Every time a user-visible behavior changes (new analyst,
+   new RULE, new pre-fetch source, new quality guard, new dashboard
+   feature, dropped feature), update the relevant section in the same
+   commit. Stale text is a bug.
+2. **"현재 진행 중 / 예정" section** — a final section listing every
+   open multi-step initiative (e.g. Korean market support Phase N,
+   pending data-source integrations, planned model upgrades). Update
+   this section in the same commit that creates / closes a TODO. The
+   user pins the help as a channel announcement, so this section
+   functions as a publicly-visible roadmap. Never let it drift.
+
+Both surfaces must fit inside the 4096 UTF-16 cap — keep them concise.
+
 ## Stance / RULE counting
 
 When user-facing prose mentions "분석가 4명" or "RULE 1~N", verify against code before editing:

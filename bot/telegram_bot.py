@@ -651,6 +651,12 @@ yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매�
  • 본문: 날짜 아코디언 (최근일 위) · 종목 카드에 5거래일 결과 ✓/✗ 색상 표시 · 🗑️ 영구 삭제 · 카드 클릭 → 상세 (요약 + 풀 리포트)
  • 검색창에 종목 입력 → 즉시 필터, URL <code>#ticker=NVDA</code> 직접 링크
  • 데이터 경로: <code>~/.tradingagents/{archive,usage.jsonl,memory/}</code>
+
+━━━━━━━━━
+<b>【12. 진행 중 / 예정】</b>
+ • 한국 주식 지원 — Phase 0 완료 (티커 인식 + KODEX 섹터 매핑), Phase 1 진행 (DART 통합 / 한국 매크로)
+ • 한국 sell-side 컨센서스 무료 소스 조사 (yfinance KR 커버리지 빈약)
+ • 일본 / 중국 시장 확장 (Phase 3 예정)
 """
 
 
