@@ -17,6 +17,55 @@ For **any** request (analysis output, feature idea, bug report, refactor):
 3. **After explicit commit**: stage, commit, and push to the current
    `claude/...` branch. Open / update the draft PR if one doesn't exist.
 
+## Pre-commit verification — mandatory
+
+**Every change must be verified before the commit goes out.** No "ship and pray." Concretely, before staging:
+
+1. **Syntax check** every Python file touched:
+   ```bash
+   python3 -c "import ast; ast.parse(open('<path>').read()); print('OK')"
+   ```
+2. **Logic check** any non-trivial pure function — write a quick smoke
+   test inline (in a `python3 -c '...'` one-liner is fine) that exercises
+   the happy path and one obvious edge case. Mirror the existing pattern
+   in this repo: when stance extraction changed, the diff was validated
+   with four input cases before the commit. Do the same for any new
+   parser, classifier, mapper, or formatter.
+3. **Length check** for `_HELP_TEXT` whenever it's touched — see Help
+   text maintenance section below.
+4. **Cross-file consistency check** when a rule moves between modules —
+   `grep -rn` to confirm no orphaned references remain (e.g. when
+   renaming RULE numbers or relocating a helper).
+5. **Multi-step phase work**: after each item finishes, verify the
+   item works in isolation (syntax + smoke test + help text if user-
+   visible) BEFORE starting the next item in the sequence. Report the
+   verification result to the user; only continue when they signal
+   "OK / 다음" or no objection arrives. Don't batch four items into
+   one commit when the user asked for sequential validation.
+
+Skipping verification is treated the same as skipping the explicit-
+commit-request rule — never do it.
+
+## Help text registration of changes — mandatory
+
+Whenever a change ships that is user-visible (new command, new data
+source, new RULE, new analyst, new dashboard feature, removed
+behavior, etc.), `_HELP_TEXT` MUST be updated in the SAME commit. The
+help is pinned as a channel announcement; out-of-sync help is treated
+as a public spec bug. The two surfaces it must keep current are spelled
+out under "Help text maintenance" below (current-state sections 2-11
++ '진행 중 / 예정' section 12).
+
+**If the new content cannot fit inside the 4096 UTF-16 cap after
+reasonable prose compression, STOP and REPORT to the user.** Specifically:
+- Try compressing existing sections first (bullets → inline phrases,
+  prose → terse fragments).
+- If still over the cap, surface the situation: "현재 help 길이 X UTF-16,
+  추가 필요분 Y, 한도 4096. 압축 더 시도할지 / 어느 섹션을 줄일지 / 한도
+  올리기 위해 다중 메시지로 분할할지 결정 요청." Do NOT silently drop a
+  feature, do NOT silently split into multiple messages, do NOT commit
+  with a too-long _HELP_TEXT. The default is to stop and ask.
+
 ## Automation-first principle
 
 **Every recurring operation MUST be automated** (cron / systemd timer /
