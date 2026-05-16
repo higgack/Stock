@@ -164,17 +164,17 @@ Phase tracking — what's done, what's blocking the next phase:
 - `_resolve_benchmark` picks KODEX sector ETFs for KR tickers
 - `get_sector_relative_strength` uses KOSPI 200 as broad benchmark for KR
 
-**Phase 1 — KR data sources (in progress)**
-- DART API client (실적 일정 / 임원지분 / 공시) — `DART_API_KEY` configured in user's `.env`
-- KR macro 9-series (USD/KRW, KOSPI VIX, KR10Y, etc.) — partly yfinance, partly 한은 API
-- KR earnings calendar via DART (yfinance coverage too thin)
-- KR insider holdings via DART (yfinance returns nothing useful)
-- KR analyst consensus: yfinance primary (KOSPI Top 100 reliable) + FnGuide CompanyGuide HTML fallback (`comp.fnguide.com/SVO2/asp/SVD_Consensus.asp?gicode=A{6digit}`) for mid/small caps. Small-cap KOSDAQ may have NO coverage anywhere — degrade to "분석가 커버리지 없음" silently.
+**Phase 1 — KR data sources (done)**
+- `bot/dart_client.py` — DART OpenAPI thin wrapper (corp_code map cached 30d on disk, 공시 / 임원지분 / 실적 윈도)
+- KR-tilted macro 9-series in `_MACRO_SERIES_KR` (USD/KRW · KOSPI · KOSDAQ · 美10Y · VIX · WTI · 구리 · CNY · JPY); `get_macro_for` routes by market
+- KR consensus path: yfinance 1차 + `bot/fnguide_consensus.py` (FnGuide CompanyGuide HTML scrape) 2차 fallback; small-cap KOSDAQ degrades to "분석가 커버리지 없음" silently
+- `build_instrument_context` injects DART block (최근 30일 공시 / 임원·주요주주 지분 top 5 / 다음 정기보고서 윈도) for KR tickers
+- Currency rendering market-aware: ₩ whole-won for KR, $ for US
 
-**Phase 2 — KR validation + help text**
-- Test `/005930.KS`, `/035720.KS`, `/000660.KS` end-to-end
-- Re-add a KR usage note to `_HELP_TEXT` section 1 once Phase 1 ships
-- Update CLAUDE.md analyst-count / RULE-count if any KR-specific rule lands
+**Phase 2 — KR validation (next)**
+- Test `/005930.KS`, `/035720.KS`, `/000660.KS` end-to-end on the live bot
+- Watch for KR-specific failure modes (FnGuide page structure shifts, DART 429 / rate limits, KRW formatting in fundamentals tables)
+- Update analyst-count / RULE-count if any KR-specific rule lands
 
 **Phase 3 — JP / CN expansion** (further out)
 - Same shape: market-specific benchmark mapping + data source adapters

@@ -606,7 +606,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매크로 9종 병렬 (시장별 자동 분기 — 미국: US금리/DXY/원자재, 한국: USD/KRW·KOSPI·KOSDAQ·CNY/JPY) · 섹터 ETF 자동 매핑 · 리스크 6종 · 컨센서스 목표가/등급 (한국 종목은 yfinance 1차 + FnGuide CompanyGuide 2차 fallback) · 공매도 % + DTC (10%↑ squeeze 경고) · 내부자/기관 % · 실적 캘린더 ±10일 · Forward EPS sanity (TTM 대비 3x↑ 또는 부호 반전 경고)
+yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매크로 9종 병렬 (시장별 자동 분기 — 미국: US금리/DXY/원자재, 한국: USD/KRW·KOSPI·KOSDAQ·CNY/JPY) · 섹터 ETF 자동 매핑 (미국 SPDR / 한국 KODEX 22종) · 리스크 6종 · 컨센서스 목표가/등급 (한국: yfinance 1차 + FnGuide 2차) · 공매도 % + DTC (10%↑ squeeze 경고) · 내부자/기관 % · 실적 캘린더 ±10일 · 한국 종목 DART 통합 (최근 공시 / 임원·주요주주 지분 / 정기보고서 윈도) · Forward EPS sanity (TTM 대비 3x↑ 또는 부호 반전 경고)
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -654,8 +654,7 @@ yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매�
 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
- • 한국 주식 — Phase 0 완료 (티커 + KODEX 매핑), Phase 1 진행 (DART 통합 / KR 매크로 / 컨센서스 구현)
- • 컨센서스 소스 결정: yfinance 1차 + FnGuide HTML 2차 fallback (DART는 컨센서스 데이터 없음 확정)
+ • 한국 주식 — Phase 0 + Phase 1 완료 (티커 / KODEX 매핑 / KR 매크로 9종 / DART 통합 / yfinance + FnGuide 컨센서스). Phase 2 (실제 KR 종목 분석 검증) 진행 예정
  • 일본 / 중국 시장 확장 (Phase 3 예정)
 """
 

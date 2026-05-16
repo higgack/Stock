@@ -623,6 +623,74 @@ def days_until_earnings(ticker: str, curr_date: str) -> int | None:
         return None
 
 
+def _format_dart_kr_block(
+    disclosures: list[dict],
+    insiders: list[dict],
+    earnings_window,
+) -> str:
+    """Render DART (KR-only) data as a single prompt-injection block.
+    Returns '' when all three slots are empty so the caller can decide
+    to skip the section header entirely."""
+    from datetime import date
+
+    lines: list[str] = []
+
+    # Recent disclosures — most useful for catching guidance updates,
+    # M&A, lawsuits in the last month. Cap at 8 to keep the prompt
+    # compact; the LLM only needs the gist, not the full filing list.
+    if disclosures:
+        lines.append("- 최근 30일 공시 (상위 {}건):".format(min(len(disclosures), 8)))
+        for d in disclosures[:8]:
+            date_str = d.get("date") or ""
+            # DART returns dates as 'YYYYMMDD'; render as 'YYYY-MM-DD'.
+            if len(date_str) == 8 and date_str.isdigit():
+                date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+            title = (d.get("title") or "").strip()
+            if title:
+                lines.append(f"  • {date_str}: {title}")
+
+    # Insider / major shareholder holdings. DART returns rolling
+    # history rows per person; dedupe by name keeping the highest pct
+    # snapshot (most-recent ≈ highest in stable holdings; for active
+    # traders this rule undercounts which is fine for a snapshot).
+    if insiders:
+        by_name: dict[str, dict] = {}
+        for r in insiders:
+            name = r.get("name") or ""
+            if not name:
+                continue
+            prev = by_name.get(name)
+            if prev is None or (r.get("pct") or 0) > (prev.get("pct") or 0):
+                by_name[name] = r
+        top = sorted(by_name.values(), key=lambda r: r.get("pct") or 0, reverse=True)[:5]
+        if top:
+            lines.append(f"- 임원·주요주주 지분 (상위 {len(top)}):")
+            for r in top:
+                name = r.get("name") or "?"
+                role = (r.get("role") or "").strip()
+                pct = r.get("pct") or 0
+                role_part = f" ({role})" if role else ""
+                lines.append(f"  • {name}{role_part}: {pct:.2f}%")
+
+    # Next earnings filing window — inferred from KR statutory deadlines.
+    if earnings_window:
+        start, end = earnings_window
+        days = (start - date.today()).days
+        if days >= 0:
+            lines.append(
+                f"- 다음 정기보고서 윈도: {start.isoformat()} ~ {end.isoformat()}"
+                f" (약 {days}일 후)"
+            )
+        else:
+            # Window has started but not ended — earnings imminent / overdue.
+            lines.append(
+                f"- 정기보고서 윈도 진행 중: {start.isoformat()} ~ {end.isoformat()}"
+                f" (마감 {(end - date.today()).days}일 남음)"
+            )
+
+    return "\n".join(lines)
+
+
 def build_instrument_context(ticker: str) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified
     tickers and adjust their data expectations for non-equity products."""
@@ -716,6 +784,33 @@ def build_instrument_context(ticker: str) -> str:
                 " fundamentals summary table and let the debate / decision"
                 " nodes see them as ground truth) ===\n"
                 + signals
+            )
+
+        # DART (KR-only) — 공시 / 임원지분 / 실적 윈도. yfinance returns
+        # nothing useful for these on KRX-listed names; DART is the
+        # authoritative source. Graceful degradation: if DART_API_KEY is
+        # missing or the API is down, the block is just empty and the
+        # analyst continues without it.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "KR":
+                from bot.dart_client import get_dart
+                dart = get_dart()
+                disclosures = dart.get_recent_disclosures(ticker, days_back=30, limit=8)
+                insiders = dart.get_insider_holdings(ticker)
+                window = dart.next_earnings_window(ticker)
+                dart_block = _format_dart_kr_block(disclosures, insiders, window)
+                if dart_block:
+                    base += (
+                        "\n\n=== Pre-fetched KR market data (DART, verbatim —"
+                        " do NOT call any tool for these numbers; use them in"
+                        " the news / fundamentals / risk sections as ground"
+                        " truth) ===\n"
+                        + dart_block
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "dart context injection failed for %s: %s", ticker, exc,
             )
     return base
 
