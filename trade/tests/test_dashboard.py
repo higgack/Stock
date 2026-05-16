@@ -153,6 +153,49 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertEqual(by_item["플래시 메모리"]["status"], "final")
         self.assertEqual(by_item["염화칼륨"]["dir"], "import")
 
+    def test_modal_container_present(self):
+        html = render_html(self.db_path)
+        self.assertIn('id="modal"', html)
+        self.assertIn('class="modal-backdrop"', html)
+        self.assertIn('class="modal-close"', html)
+        self.assertIn('id="modal-body"', html)
+
+    def test_dark_mode_helper_embedded(self):
+        html = render_html(self.db_path)
+        # applyDarkMode() reads UTC + 9 and toggles body.dark for the
+        # 19:00–07:00 KST window. The script must be embedded for the
+        # transition to fire without page reloads.
+        self.assertIn("applyDarkMode", html)
+        self.assertIn("getUTCHours()+9", html)
+        self.assertIn("setInterval(applyDarkMode", html)
+        # CSS dark-mode variables defined.
+        self.assertIn("body.dark", html)
+
+    def test_mini_card_carries_data_id_for_modal_lookup(self):
+        # Both items view and companies view emit mini-cards with
+        # data-id so the click handler can resolve back to ALERTS[id]
+        # without re-embedding the full alert per card.
+        html = render_html(self.db_path)
+        self.assertIn("renderMiniCard", html)
+        self.assertIn("data-id", html)
+
+    def test_nice_period_label_function_embedded(self):
+        html = render_html(self.db_path)
+        # The modal shows a Korean-language period label rather than
+        # the raw ISO dates. niceLabel() needs to be in the page.
+        self.assertIn("niceLabel", html)
+        self.assertIn("상순", html)
+        self.assertIn("중순까지", html)
+        self.assertIn("확정", html)
+
+    def test_company_view_smart_search_branch_present(self):
+        # When the search query directly matches a company name, the
+        # company view should narrow to only matching sections; check
+        # the branch is emitted.
+        html = render_html(self.db_path)
+        self.assertIn("buildCompaniesView", html)
+        self.assertIn("direct.length", html)
+
     def test_empty_store_renders_without_crash(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
