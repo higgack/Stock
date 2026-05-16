@@ -60,14 +60,14 @@ CHANNEL_CHAT_IDS: set[int] = {int(x) for x in _raw_ids.split(",") if x.strip()}
 # destination channel's chat ID on first run.
 SOURCE_ORIGIN = os.environ.get("TRADE_SOURCE_ORIGIN", "").lstrip("@").strip()
 
-INBOX_DIR = Path(os.environ.get("TRADE_DATA_DIR", str(Path.home() / ".trade")))
+INBOX_DIR = Path(os.environ.get("TRADE_DATA_DIR") or str(Path.home() / ".trade"))
 INBOX_PATH = INBOX_DIR / "inbox.jsonl"
 MEDIA_ROOT = INBOX_DIR / "media"
 
 # Cap concurrent Telegram file downloads. Telegram tolerates ~30 req/sec
 # bot API-wide; with bursts of 200+ photo messages an unbounded fan-out
 # trips 429s. 8 keeps us well under with margin for getUpdates traffic.
-DOWNLOAD_CONCURRENCY = int(os.environ.get("TRADE_DOWNLOAD_CONCURRENCY", "8"))
+DOWNLOAD_CONCURRENCY = int(os.environ.get("TRADE_DOWNLOAD_CONCURRENCY") or "8")
 _download_sem: asyncio.Semaphore | None = None  # built once the loop is up
 
 # Copy-style forwarder detection: header pattern injected into the body.
