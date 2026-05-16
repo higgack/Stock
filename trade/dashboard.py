@@ -247,6 +247,8 @@ h1{margin:0 0 4px;font-size:18px}
 .mini-card .mini-text strong{display:block;margin-bottom:2px;font-size:12.5px;font-weight:600;word-break:keep-all;color:var(--text)}
 .mini-card .mini-text span{color:var(--text-sub);font-size:11.5px}
 .mini-card .dot{position:absolute;top:6px;right:6px;width:8px;height:8px;border-radius:4px;background:#999}
+.mini-card .mini-new{position:absolute;top:5px;left:5px;padding:1px 6px;font-size:9px;font-weight:700;letter-spacing:.5px;background:#ff3b30;color:#fff;border-radius:3px;z-index:1;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.section-header .section-new{display:inline-block;margin-left:6px;padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.5px;background:#ff3b30;color:#fff;border-radius:3px;vertical-align:middle}
 .mini-card.export .dot{background:var(--tone-export)}
 .mini-card.import .dot{background:var(--tone-import)}
 .badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600;margin-right:3px;letter-spacing:.3px}
@@ -383,21 +385,53 @@ function nextAnnouncement(){
 // the corpus.
 function quickStats(){
   const today=kstTodayString();
-  const earliestByItem={};
-  ALERTS.forEach(a=>{
-    const e=earliestByItem[a.item];
-    if(!e||(a.posted_at||'')<e)earliestByItem[a.item]=a.posted_at||'';
-  });
   let newToday=0,finalsToday=0,firstItemsToday=0;
   ALERTS.forEach(a=>{
     if(!isLatest(a))return;
     if(a.posted_at!==today)return;
     newToday++;
     if(a.status==='final')finalsToday++;
-    if(earliestByItem[a.item]===today)firstItemsToday++;
+    if(EARLIEST_ITEM_DATE[a.item]===today)firstItemsToday++;
   });
   return {newToday,finalsToday,firstItemsToday};
 }
+
+// One-shot precompute used by the NEW badges and quickStats. For each
+// item/company we cache the date of its first-ever alert; if that date
+// is within 24 hours of today (KST), the latest card / company section
+// shows a 'NEW' chip. cheap O(n) on page load.
+const EARLIEST_ITEM_DATE={};
+const EARLIEST_COMPANY_DATE={};
+(function(){
+  ALERTS.forEach(a=>{
+    const pa=a.posted_at||'';
+    if(!pa)return;
+    if(!EARLIEST_ITEM_DATE[a.item]||pa<EARLIEST_ITEM_DATE[a.item]){
+      EARLIEST_ITEM_DATE[a.item]=pa;
+    }
+    (a.stocks||[]).forEach(s=>{
+      if(!EARLIEST_COMPANY_DATE[s]||pa<EARLIEST_COMPANY_DATE[s]){
+        EARLIEST_COMPANY_DATE[s]=pa;
+      }
+    });
+  });
+})();
+
+function withinDays(dateStr,n){
+  if(!dateStr)return false;
+  const today=kstTodayString();
+  return daysBetween(dateStr,today)<=n;
+}
+
+// NEW badges:
+//   alert-NEW   = the latest alert for this dedup_key was posted today
+//                 (i.e. fresh from this cycle, < 24h old in KST)
+//   item-NEW    = this item's earliest alert ever is within 7 days
+//                 (the item itself debuted recently in our corpus)
+//   company-NEW = same rule for a company name
+function isAlertNew(a){return a.posted_at===kstTodayString()}
+function isItemNew(item){return withinDays(EARLIEST_ITEM_DATE[item]||'',7)}
+function isCompanyNew(name){return withinDays(EARLIEST_COMPANY_DATE[name]||'',7)}
 
 function daysBetween(aStr,bStr){
   const a=new Date(aStr+'T00:00:00Z').getTime();
@@ -449,8 +483,12 @@ function renderMiniCard(a){
   const bg=(a.media&&a.media[0])?' style="background-image:url('+esc(a.media[0])+')"':'';
   const sla=slaBadge(a);
   const slaHtml=sla?'<span class="mini-sla '+sla.kind+'">'+esc(sla.text)+'</span>':'';
+  // NEW chip — overlaid on the image corner. Visually pops without
+  // taking text-line real estate. Latest-posted-today only.
+  const newHtml=isAlertNew(a)?'<span class="mini-new">NEW</span>':'';
   return '<div class="mini-card '+a.dir+'" data-id="'+a.id+'">'+
     '<span class="dot" title="'+(a.dir==='export'?'수출':'수입')+'"></span>'+
+    newHtml+
     '<div class="mini-img"'+bg+'></div>'+
     '<div class="mini-text">'+
       '<strong>'+esc(a.item)+'</strong>'+
@@ -543,13 +581,16 @@ function matches(a){
 // --- view builders ---
 // Section header can carry one or two muted subtitle lines under the
 // title. 품목별 uses [stocks-union, region/country-count]; 회사별 uses
-// just [items-count]. Empty entries are dropped silently.
-function renderSection(title, subtitles, miniCardsHtml){
+// just [items-count]. Empty entries are dropped silently. The optional
+// `newBadge` flag puts a small NEW chip next to the title for sections
+// whose item/company first appeared within the last 7 days.
+function renderSection(title, subtitles, miniCardsHtml, newBadge){
   const lines=(subtitles||[]).filter(Boolean)
     .map(s=>'<div class="sub-line">'+esc(s)+'</div>').join('');
+  const badge=newBadge?' <span class="section-new">NEW</span>':'';
   return '<section class="section">'+
     '<div class="section-header">'+
-      '<h2>'+esc(title)+'</h2>'+
+      '<h2>'+esc(title)+badge+'</h2>'+
       lines+
     '</div>'+
     '<div class="section-items">'+miniCardsHtml+'</div>'+
@@ -580,7 +621,7 @@ function buildItemsView(filtered){
     return renderSection(name, [
       stocksSubtitle(variants),
       variants.length+'개 (지역/국가)',
-    ], cards);
+    ], cards, isItemNew(name));
   }).join('');
 }
 
@@ -608,7 +649,7 @@ function buildCompaniesView(filtered){
       (b.posted_at||'').localeCompare(a.posted_at||'')
     );
     const cards=items.map(renderMiniCard).join('');
-    return renderSection(name, [items.length+'개 품목'], cards);
+    return renderSection(name, [items.length+'개 품목'], cards, isCompanyNew(name));
   }).join('');
 }
 

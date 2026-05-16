@@ -117,6 +117,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 🟢 수출 · 🟠 수입 · 잠정 · 확정 · 합산
 🟡 확정 D-N (잠정의 예상 확정일 카운트다운)
 🔴 확정 D+N 지연 (예정일 초과)
+🆕 NEW — 카드: 오늘 게시된 alert / 섹션 헤더: 7일 이내 첫 등장 품목·회사
 
 <b>7. 부가 기능</b>
 • 검색: 품목/회사/국가 부분일치 (회사명 정확 일치 시 회사 뷰 자동 좁힘)
@@ -134,7 +135,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-dashboard — HTTP 서버 (포트 8765)
 • trade-bot-dashboard-refresh (5분) — store + HTML 재생성
 
-<i>최종 갱신: 2026-05-17 — Phase A: CSV 풀필드 + 헤더에 다음 발표 D-N + 오늘 활동 quick stats</i>
+<i>최종 갱신: 2026-05-17 — Phase B: NEW 배지 시리즈 (오늘 alert / 7일 이내 첫 등장 품목·회사)</i>
 """
 
 

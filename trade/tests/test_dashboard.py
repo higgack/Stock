@@ -326,6 +326,19 @@ class TestDashboardRenderer(unittest.TestCase):
         # Absolute URL helper present so Excel hyperlinks resolve.
         self.assertIn("absUrl", html)
 
+    def test_new_badge_helpers_present(self):
+        html = render_html(self.db_path)
+        # Three NEW chip variants: alert (today), item (debut in 7d),
+        # company (debut in 7d). All driven by EARLIEST_* maps built
+        # once on page load.
+        self.assertIn("isAlertNew", html)
+        self.assertIn("isItemNew", html)
+        self.assertIn("isCompanyNew", html)
+        self.assertIn("EARLIEST_ITEM_DATE", html)
+        self.assertIn("EARLIEST_COMPANY_DATE", html)
+        self.assertIn("mini-new", html)
+        self.assertIn("section-new", html)
+
     def test_empty_store_renders_without_crash(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
