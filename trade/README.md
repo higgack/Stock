@@ -204,7 +204,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trade-bot-dashboard trade-bot-dashboard-refresh.timer
 sudo systemctl start trade-bot-dashboard-refresh.service    # first render now
 
-# Open port 8082 if your VM has a firewall (GCP/AWS Security Groups).
+# Open port 8765 if your VM has a firewall (GCP/AWS Security Groups).
 # Or skip and use SSH tunneling from your laptop (next section).
 ```
 
@@ -212,14 +212,14 @@ sudo systemctl start trade-bot-dashboard-refresh.service    # first render now
 
 **Option A — SSH tunnel (recommended, no firewall change):**
 ```bash
-ssh -L 8082:localhost:8082 higgack@<host>
+ssh -L 8765:localhost:8765 higgack@<host>
 # then on your laptop browser:
-#   http://localhost:8082/dashboard/
+#   http://localhost:8765/dashboard/
 ```
 
 **Option B — Direct (requires open port):**
 ```
-http://<host-public-ip>:8082/dashboard/
+http://<host-public-ip>:8765/dashboard/
 ```
 
 If you set `TRADE_DASHBOARD_USER` + `_PASSWORD`, the browser prompts

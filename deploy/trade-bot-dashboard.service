@@ -9,7 +9,7 @@ User=higgack
 Group=higgack
 WorkingDirectory=/home/higgack/stock-trade
 EnvironmentFile=-/home/higgack/stock-trade/.env
-ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard_server --port 8082 --bind 0.0.0.0
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard_server --port 8765 --bind 0.0.0.0
 Restart=always
 RestartSec=5
 # Cycle the process daily so stdlib http.server's slow growth (if any)

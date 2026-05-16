@@ -129,7 +129,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Static file server for the trade dashboard."
     )
-    ap.add_argument("--port", type=int, default=8082)
+    ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--bind", default="0.0.0.0")
     ap.add_argument(
         "--data-dir",
