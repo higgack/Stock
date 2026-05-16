@@ -654,8 +654,8 @@ yfinance (15년 캐시) · Alpha Vantage 뉴스 · 분기+연간 재무 · 매�
 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
- • 한국 주식 지원 — Phase 0 완료 (티커 인식 + KODEX 섹터 매핑), Phase 1 진행 (DART 통합 / 한국 매크로)
- • 한국 sell-side 컨센서스 무료 소스 조사 (yfinance KR 커버리지 빈약)
+ • 한국 주식 — Phase 0 완료 (티커 + KODEX 매핑), Phase 1 진행 (DART 통합 / KR 매크로 / 컨센서스 구현)
+ • 컨센서스 소스 결정: yfinance 1차 + FnGuide HTML 2차 fallback (DART는 컨센서스 데이터 없음 확정)
  • 일본 / 중국 시장 확장 (Phase 3 예정)
 """
 

@@ -115,11 +115,12 @@ Phase tracking — what's done, what's blocking the next phase:
 - `_resolve_benchmark` picks KODEX sector ETFs for KR tickers
 - `get_sector_relative_strength` uses KOSPI 200 as broad benchmark for KR
 
-**Phase 1 — KR data sources (blocked on user)**
-- DART API client (실적 일정 / 임원지분 / 공시) — needs user-supplied `DART_API_KEY`
+**Phase 1 — KR data sources (in progress)**
+- DART API client (실적 일정 / 임원지분 / 공시) — `DART_API_KEY` configured in user's `.env`
 - KR macro 9-series (USD/KRW, KOSPI VIX, KR10Y, etc.) — partly yfinance, partly 한은 API
 - KR earnings calendar via DART (yfinance coverage too thin)
 - KR insider holdings via DART (yfinance returns nothing useful)
+- KR analyst consensus: yfinance primary (KOSPI Top 100 reliable) + FnGuide CompanyGuide HTML fallback (`comp.fnguide.com/SVO2/asp/SVD_Consensus.asp?gicode=A{6digit}`) for mid/small caps. Small-cap KOSDAQ may have NO coverage anywhere — degrade to "분석가 커버리지 없음" silently.
 
 **Phase 2 — KR validation + help text**
 - Test `/005930.KS`, `/035720.KS`, `/000660.KS` end-to-end
@@ -132,13 +133,12 @@ Phase tracking — what's done, what's blocking the next phase:
 
 ## TODO
 
-- **Korean sell-side consensus — free source research.** yfinance's
-  `recommendationKey` / `targetMeanPrice` coverage on KRX-listed names
-  is sparse. Investigate free sources before committing to a paid
-  data feed: 네이버 금융 페이지 스크래핑 (ToS check), 한경 컨센서스
-  스크래핑, KIS Developers API (한투 계좌 필요 여부 확인), 한국거래소
-  KIND 시스템. The decision flow needs `targetMeanPrice` + `recommendationKey`
-  + `numberOfAnalystOpinions` at minimum — anything that returns those
-  three for arbitrary `.KS`/`.KQ` tickers is a candidate. Until this
-  is resolved, Phase 1 ships KR analyses WITHOUT a consensus signal
-  (the existing market-signals block will gracefully omit it).
+- **KR consensus implementation** (research complete — see Phase 1).
+  yfinance primary for KOSPI Top 100 (already returns `targetMeanPrice`
+  + `numberOfAnalystOpinions` + `recommendationMean` for `.KS`/`.KQ`
+  large/mid-caps); FnGuide CompanyGuide HTML scrape as fallback when
+  yfinance is empty. DART has ZERO sell-side consensus data, confirmed
+  — only regulatory filings, do not waste time querying it for target
+  prices. KIS Developers requires a 한국투자증권 brokerage account
+  (no-go for general users). Alpha Vantage / Finnhub free tiers don't
+  cover `.KS`/`.KQ` analyst aggregates.
