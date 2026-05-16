@@ -356,6 +356,17 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn("link-chip", html)
         self.assertIn("peer-chip", html)
 
+    def test_matrix_view_helpers_present(self):
+        html = render_html(self.db_path)
+        self.assertIn("buildMatrixView", html)
+        self.assertIn("countryMix", html)
+        # New tab + view container
+        self.assertIn('data-tab="matrix"', html)
+        self.assertIn('id="matrix-view"', html)
+        # CSS for matrix + mix
+        self.assertIn("matrix-table", html)
+        self.assertIn("country-mix", html)
+
     def test_empty_store_renders_without_crash(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:

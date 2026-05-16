@@ -104,9 +104,10 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • 익월 1일경 — 전월 전체 잠정
 • 익월 15일경 — 전월 전체 확정 (관세청 공식)
 
-<b>4. 두 가지 뷰</b>
-• <b>품목별</b> — 품목당 1 섹션, (지역/국가) variant 미니카드
+<b>4. 세 가지 뷰</b>
+• <b>품목별</b> — 품목당 1 섹션 (다중 variant 섹션엔 국가 mix 막대 자동)
 • <b>회사별</b> — 회사당 1 섹션, 관련 (품목·지역) 미니카드
+• <b>매트릭스</b> — 품목 × 국가 heatmap (셀 = 알림 수, 셀 클릭 시 최신 alert)
 
 <b>5. 카드 정렬</b>
 같은 섹션 안에서:
@@ -138,7 +139,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-dashboard — HTTP 서버 (포트 8765)
 • trade-bot-dashboard-refresh (5분) — store + HTML 재생성
 
-<i>최종 갱신: 2026-05-17 — Phase C: 모달 보강 (URL/이미지 공유 + 합산↔개별 양방향 + 같은 품목 다른 회사)</i>
+<i>최종 갱신: 2026-05-17 — Phase D: 매트릭스 뷰 (품목×국가 heatmap) + 품목 섹션 국가 mix 막대</i>
 """
 
 

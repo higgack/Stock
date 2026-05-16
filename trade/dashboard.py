@@ -150,6 +150,7 @@ def _build_html(
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
+        '<button class="tab" data-tab="matrix">매트릭스</button>'
         '</nav>'
         '<section class="filters">'
         '<div class="top-row">'
@@ -172,6 +173,7 @@ def _build_html(
         '</section>'
         '<main id="items-view" class="view active"></main>'
         '<main id="companies-view" class="view"></main>'
+        '<main id="matrix-view" class="view"></main>'
         '<div id="modal" class="modal" hidden>'
         '<div class="modal-backdrop"></div>'
         '<div class="modal-content">'
@@ -269,6 +271,26 @@ h1{margin:0 0 4px;font-size:18px}
 .filters .top-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .filters .top-row #q{flex:1;margin-bottom:0}
 .empty{padding:40px 20px;text-align:center;color:var(--text-sub);font-size:13px}
+.country-mix{padding:8px 14px 4px}
+.mix-bar{width:100%;height:18px;display:block;border-radius:3px;overflow:hidden;background:var(--border-soft)}
+.mix-legend{margin-top:6px;display:flex;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--text-sub)}
+.mix-legend-item{display:inline-flex;align-items:center;gap:3px}
+.mix-legend-item em{font-style:normal;color:var(--text);font-weight:600}
+.mix-dot{display:inline-block;width:8px;height:8px;border-radius:2px}
+.mix-legend-more{color:var(--text-sub);font-style:italic}
+.matrix-meta{padding:14px 18px 8px;font-size:12px;color:var(--text-sub);line-height:1.5}
+.matrix-scroll{overflow:auto;max-width:100%;padding:0 12px 12px;-webkit-overflow-scrolling:touch}
+.matrix-table{border-collapse:separate;border-spacing:0;font-size:11px;color:var(--text);background:var(--surface);border-radius:8px;box-shadow:var(--shadow)}
+.matrix-table th,.matrix-table td{padding:4px 6px;border-right:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);text-align:center;white-space:nowrap}
+.matrix-table th.row-head{text-align:left;background:var(--surface-2);position:sticky;left:0;font-weight:600;max-width:200px;overflow:hidden;text-overflow:ellipsis;z-index:1}
+.matrix-table th.row-head em{font-style:normal;color:var(--text-sub);margin-left:4px;font-size:10px}
+.matrix-table th.col-head{background:var(--surface-2);position:sticky;top:0;font-weight:600;min-width:60px;z-index:1}
+.matrix-table th.col-head span{display:block}
+.matrix-table th.col-head em{font-style:normal;color:var(--text-sub);font-size:10px}
+.matrix-table thead th.row-head{z-index:2}
+.matrix-table td.cell{cursor:pointer;font-weight:600;color:#fff;text-shadow:0 0 2px rgba(0,0,0,.5);min-width:32px}
+.matrix-table td.cell.empty-cell{background:transparent;cursor:default;color:transparent}
+.matrix-table td.cell:hover:not(.empty-cell){outline:2px solid var(--accent);outline-offset:-2px;z-index:1}
 .modal{position:fixed;inset:0;z-index:100;display:flex;align-items:flex-start;justify-content:center}
 .modal[hidden]{display:none}
 .modal-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.7);cursor:pointer}
@@ -707,11 +729,103 @@ function buildItemsView(filtered){
       (b.posted_at||'').localeCompare(a.posted_at||'')
     );
     const cards=variants.map(renderMiniCard).join('');
+    // Country mix bar between section header and the cards — only
+    // for sections with more than one variant (single-variant
+    // sections don't benefit from a mix view).
+    const mixHtml=variants.length>1?countryMix(variants):'';
     return renderSection(name, [
       stocksSubtitle(variants),
       variants.length+'개 (지역/국가)',
-    ], cards, isItemNew(name));
+    ], mixHtml+cards, isItemNew(name));
   }).join('');
+}
+
+// Item × country matrix view. One row per item, one column per
+// country (sorted by total alerts desc), cell color = number of
+// distinct alerts for that pair. Clicking a cell opens the latest
+// alert for that (item, country) pair as a modal.
+function buildMatrixView(filtered){
+  const pivot={};
+  const itemTotals={};
+  const countryTotals={};
+  filtered.forEach(a=>{
+    const country=a.country||'전국';
+    pivot[a.item]=pivot[a.item]||{};
+    (pivot[a.item][country]=pivot[a.item][country]||[]).push(a);
+    itemTotals[a.item]=(itemTotals[a.item]||0)+1;
+    countryTotals[country]=(countryTotals[country]||0)+1;
+  });
+  const items=Object.keys(itemTotals).sort((x,y)=>itemTotals[y]-itemTotals[x]||x.localeCompare(y));
+  const countries=Object.keys(countryTotals).sort((x,y)=>countryTotals[y]-countryTotals[x]||x.localeCompare(y));
+
+  if(!items.length||!countries.length){
+    return '<div class="empty">조건에 맞는 데이터가 없습니다.</div>';
+  }
+
+  // Cell color scales with frequency vs the section max so the
+  // densest pair is fully saturated and sparse pairs fade out.
+  let maxCell=1;
+  items.forEach(i=>countries.forEach(c=>{const v=(pivot[i][c]||[]).length;if(v>maxCell)maxCell=v}));
+  function cellColor(n){
+    if(!n)return 'transparent';
+    const ratio=n/maxCell;
+    const op=(0.15+ratio*0.85).toFixed(2);
+    return 'rgba(0,113,227,'+op+')';
+  }
+
+  const head='<thead><tr><th class="row-head">품목 \\ 국가</th>'+
+    countries.map(c=>'<th class="col-head"><span>'+esc(c)+'</span><em>'+countryTotals[c]+'</em></th>').join('')+
+    '</tr></thead>';
+  const body='<tbody>'+items.map(i=>{
+    const cells=countries.map(c=>{
+      const alerts=pivot[i][c]||[];
+      if(!alerts.length)return '<td class="cell empty-cell"></td>';
+      const latest=alerts.sort((a,b)=>(b.posted_at||'').localeCompare(a.posted_at||''))[0];
+      return '<td class="cell" data-id="'+latest.id+'" style="background:'+cellColor(alerts.length)+'">'+alerts.length+'</td>';
+    }).join('');
+    return '<tr><th class="row-head">'+esc(i)+' <em>'+itemTotals[i]+'</em></th>'+cells+'</tr>';
+  }).join('')+'</tbody>';
+
+  return '<div class="matrix-meta">'+items.length+'개 품목 × '+countries.length+'개 국가 (셀 = (품목·국가) 알림 수, 색 진하기 = 빈도). 셀 클릭 → 최신 alert 모달.</div>'+
+    '<div class="matrix-scroll"><table class="matrix-table">'+head+body+'</table></div>';
+}
+
+// Country mix mini-chart for a 품목 section. Renders an inline SVG
+// stacked bar showing how the item's variants are distributed across
+// (region, country) buckets. 'no-country' entries collapse into a
+// '전국' bucket; multi-country entries spread proportionally.
+function countryMix(variants){
+  const buckets={};
+  variants.forEach(a=>{
+    const label=a.country||a.region||'-';
+    buckets[label]=(buckets[label]||0)+1;
+  });
+  const entries=Object.entries(buckets).sort((x,y)=>y[1]-x[1]);
+  const total=entries.reduce((s,[,c])=>s+c,0)||1;
+  // Palette — cycle through deterministically by hashing label string.
+  const colors=['#0071e3','#34c759','#ff9500','#af52de','#ff3b30','#5ac8fa','#ffcc00','#ff2d55','#5856d6','#a2845e'];
+  function colorFor(label){
+    let h=0;for(let i=0;i<label.length;i++)h=(h*31+label.charCodeAt(i))&0xffff;
+    return colors[h%colors.length];
+  }
+  // SVG: 100% width, 18px tall stacked segments. Each label tagged
+  // with title="<label> (N)" for hover tooltip.
+  let x=0;
+  const segs=entries.map(([label,n])=>{
+    const w=(n/total)*100;
+    const seg='<rect x="'+x.toFixed(2)+'%" y="0" width="'+w.toFixed(2)+'%" height="18" fill="'+colorFor(label)+'"><title>'+esc(label)+' ('+n+')</title></rect>';
+    x+=w;
+    return seg;
+  }).join('');
+  const legendShown=entries.slice(0,5);
+  const legend=legendShown.map(([label,n])=>
+    '<span class="mix-legend-item"><span class="mix-dot" style="background:'+colorFor(label)+'"></span>'+esc(label)+' <em>'+n+'</em></span>'
+  ).join('');
+  const more=entries.length>legendShown.length?' <span class="mix-legend-more">외 '+(entries.length-legendShown.length)+'개</span>':'';
+  return '<div class="country-mix">'+
+    '<svg class="mix-bar" preserveAspectRatio="none" viewBox="0 0 100 18" xmlns="http://www.w3.org/2000/svg">'+segs+'</svg>'+
+    '<div class="mix-legend">'+legend+more+'</div>'+
+  '</div>';
 }
 
 function buildCompaniesView(filtered){
@@ -767,6 +881,7 @@ function render(){
   document.getElementById('visible-count').textContent=filtered.length;
   document.getElementById('items-view').innerHTML=buildItemsView(filtered);
   document.getElementById('companies-view').innerHTML=buildCompaniesView(filtered);
+  document.getElementById('matrix-view').innerHTML=buildMatrixView(filtered);
   renderHeaderMeta();
 }
 
@@ -862,6 +977,14 @@ document.addEventListener('click',e=>{
   const card=e.target.closest('.mini-card');
   if(card&&card.dataset.id){
     const id=parseInt(card.dataset.id,10);
+    const a=ALERTS.find(x=>x.id===id);
+    if(a){document.getElementById('modal-body').scrollTop=0;showModal(a)}
+    return;
+  }
+  // Matrix cell click → open the latest alert for that (item, country)
+  const cell=e.target.closest('.matrix-table .cell');
+  if(cell&&cell.dataset.id){
+    const id=parseInt(cell.dataset.id,10);
     const a=ALERTS.find(x=>x.id===id);
     if(a){document.getElementById('modal-body').scrollTop=0;showModal(a)}
     return;
