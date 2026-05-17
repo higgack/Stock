@@ -299,11 +299,13 @@ def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:
     market = detect_market(ticker)
     if market == "JP":
         base = _JP_INDUSTRY_PEERS.get(industry)
-    else:
-        # KR + US fall through to the existing KR-leaning dict which
-        # also contains US ADRs for many industries. Phase 3 will add
-        # a CN dict for .HK / .SS tickers.
+    elif market == "KR":
         base = _KR_INDUSTRY_PEERS.get(industry)
+    else:
+        # Default (US + future CN/EU) goes to the US dict. Phase 4 will
+        # add a CN dict for .HK / .SS tickers; for now the US dict
+        # covers the bulk of mega/large/mid-cap US ticker traffic.
+        base = _US_INDUSTRY_PEERS.get(industry)
     if not base:
         return None
     subject = (ticker or "").upper()
@@ -421,6 +423,112 @@ _JP_INDUSTRY_PEERS = {
     "Shipping": [
         "9101.T", "9104.T", "9107.T",
     ],
+}
+
+
+# US industry peer sets — same shape and intent as the KR / JP dicts.
+# Without this, US Comps tables had no MANDATORY PEER SET injection and
+# the fundamentals analyst cargo-culted whatever 4-5 names sounded peer-
+# adjacent. SNDK 2026-05-11 listed "WDC / MU / STX" mixing storage and
+# memory; DELL 2026-05-12 listed "HPQ / IBM" mixing client + services.
+# Pre-fetched peer multiples (Rule C) keep the Comps table populated
+# even when the LLM has nothing else to anchor on.
+#
+# Industries below cover ~90% of US ticker traffic the bot sees (S&P
+# 500 mega/large caps + active mid-cap names). Each row: 4-6 peers from
+# the same yfinance 'industry' string. Subject ticker filtered out by
+# resolve_peer_set. Add a new row when a US subject hits an industry
+# we haven't covered.
+_US_INDUSTRY_PEERS = {
+    # ─── Technology
+    "Software - Infrastructure": ["MSFT", "ORCL", "IBM", "NOW", "PANW"],
+    "Software - Application": ["ADBE", "CRM", "INTU", "SNOW", "WDAY"],
+    "Semiconductors": ["NVDA", "AMD", "AVGO", "QCOM", "TXN", "MU"],
+    "Semiconductor Equipment & Materials": ["AMAT", "LRCX", "KLAC", "ASML", "TER"],
+    "Information Technology Services": ["ACN", "CTSH", "IBM", "INFY"],
+    "Communication Equipment": ["CSCO", "MSI", "ANET", "JNPR"],
+    "Computer Hardware": ["DELL", "HPQ", "ANET", "STX", "WDC"],
+    "Consumer Electronics": ["AAPL", "GPRO", "SONO"],
+    "Internet Content & Information": ["GOOGL", "META", "NFLX", "SPOT", "PINS"],
+    "Internet Retail": ["AMZN", "EBAY", "ETSY", "MELI"],
+    # ─── Financials
+    "Banks - Diversified": ["JPM", "BAC", "C", "WFC"],
+    "Banks - Regional": ["USB", "PNC", "TFC", "MTB", "RF"],
+    "Capital Markets": ["GS", "MS", "SCHW", "BLK", "BX"],
+    "Asset Management": ["BLK", "BX", "KKR", "AMP", "TROW"],
+    "Insurance - Diversified": ["AIG", "MET", "PRU", "AFL"],
+    "Insurance - Property & Casualty": ["TRV", "CB", "PGR", "ALL", "HIG"],
+    "Insurance - Life": ["MET", "PRU", "AFL"],
+    "Credit Services": ["V", "MA", "AXP", "COF", "SYF", "DFS"],
+    "Mortgage Finance": ["RKT", "UWMC", "PFSI"],
+    # ─── Healthcare
+    "Drug Manufacturers - General": ["PFE", "MRK", "JNJ", "LLY", "BMY", "ABBV"],
+    "Drug Manufacturers - Specialty & Generic": ["TEVA", "VTRS", "AMGN"],
+    "Biotechnology": ["VRTX", "GILD", "REGN", "BIIB", "MRNA"],
+    "Medical Devices": ["MDT", "ABT", "BSX", "SYK", "EW"],
+    "Diagnostics & Research": ["TMO", "DHR", "IDXX", "ILMN"],
+    "Healthcare Plans": ["UNH", "CVS", "HUM", "CI", "ELV"],
+    "Medical Instruments & Supplies": ["ABT", "BAX", "BDX", "ZBH"],
+    # ─── Energy
+    "Oil & Gas Integrated": ["XOM", "CVX", "COP", "SHEL", "BP"],
+    "Oil & Gas E&P": ["EOG", "FANG", "OXY", "DVN", "PXD"],
+    "Oil & Gas Midstream": ["KMI", "WMB", "ENB", "EPD", "MPLX"],
+    "Oil & Gas Refining & Marketing": ["VLO", "PSX", "MPC", "DK"],
+    "Oil & Gas Equipment & Services": ["SLB", "HAL", "BKR"],
+    # ─── Real Estate (REITs)
+    "REIT - Specialty": ["AMT", "CCI", "EQIX", "DLR"],
+    "REIT - Residential": ["AVB", "ESS", "EQR", "MAA"],
+    "REIT - Retail": ["SPG", "REG", "KIM", "MAC"],
+    "REIT - Industrial": ["PLD", "EGP", "REXR", "FR"],
+    "REIT - Office": ["BXP", "KRC", "VNO", "SLG"],
+    "REIT - Healthcare Facilities": ["WELL", "VTR", "OHI"],
+    # ─── Utilities
+    "Utilities - Regulated Electric": ["NEE", "DUK", "SO", "AEP", "EXC"],
+    "Utilities - Regulated Gas": ["ATO", "NJR", "NWE"],
+    "Utilities - Renewable": ["NEE", "BEPC", "BEP"],
+    # ─── Consumer Discretionary
+    "Auto Manufacturers": ["TSLA", "F", "GM", "RIVN", "LCID"],
+    "Auto Parts": ["APTV", "BWA", "LEA", "GNTX"],
+    "Specialty Retail": ["TJX", "ROST", "ULTA", "BBY"],
+    "Apparel Retail": ["NKE", "LULU", "RL"],
+    "Restaurants": ["MCD", "SBUX", "CMG", "YUM"],
+    "Lodging": ["MAR", "HLT", "H", "IHG"],
+    "Resorts & Casinos": ["LVS", "WYNN", "MGM", "CZR"],
+    "Travel Services": ["BKNG", "EXPE", "ABNB", "TRIP"],
+    "Home Improvement Retail": ["HD", "LOW"],
+    "Discount Stores": ["WMT", "COST", "TGT", "BJ"],
+    # ─── Consumer Staples
+    "Beverages - Non-Alcoholic": ["KO", "PEP", "MNST", "CELH"],
+    "Beverages - Wineries & Distilleries": ["STZ", "DEO"],
+    "Beverages - Brewers": ["BUD", "TAP"],
+    "Packaged Foods": ["GIS", "K", "CPB", "SJM", "KHC", "MDLZ"],
+    "Confectioners": ["HSY", "MDLZ"],
+    "Household & Personal Products": ["PG", "CL", "KMB", "EL"],
+    "Tobacco": ["MO", "PM", "BTI"],
+    # ─── Industrials
+    "Aerospace & Defense": ["BA", "LMT", "RTX", "GD", "NOC", "LHX"],
+    "Industrial Distribution": ["GWW", "FAST", "WSO"],
+    "Building Products & Equipment": ["MAS", "OC", "IBP"],
+    "Specialty Industrial Machinery": ["HON", "EMR", "ITW", "ROK", "ETN"],
+    "Farm & Heavy Construction Machinery": ["CAT", "DE", "AGCO"],
+    "Conglomerates": ["GE", "HON", "MMM", "ITW"],
+    "Railroads": ["UNP", "CSX", "NSC"],
+    "Trucking": ["ODFL", "JBHT", "KNX", "XPO"],
+    "Airlines": ["DAL", "UAL", "AAL", "LUV"],
+    "Integrated Freight & Logistics": ["UPS", "FDX", "CHRW"],
+    "Specialty Business Services": ["ADP", "PAYX", "RHI", "WTW"],
+    # ─── Materials
+    "Specialty Chemicals": ["PPG", "LIN", "APD", "ECL"],
+    "Chemicals": ["DOW", "DD", "LYB", "CE", "EMN"],
+    "Agricultural Inputs": ["NTR", "MOS", "CF"],
+    "Containers & Packaging": ["BLL", "IP", "PKG", "AMCR"],
+    "Steel": ["NUE", "STLD", "X"],
+    "Copper": ["FCX", "SCCO"],
+    "Gold": ["NEM", "GOLD"],
+    # ─── Communication Services
+    "Telecom Services": ["VZ", "T", "TMUS"],
+    "Entertainment": ["DIS", "NFLX", "PARA", "WBD"],
+    "Broadcasting": ["FOX", "FOXA", "NWSA"],
 }
 
 

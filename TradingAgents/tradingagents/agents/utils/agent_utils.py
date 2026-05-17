@@ -821,6 +821,50 @@ def _detect_kr_corp_action(disclosures: list[dict]) -> dict | None:
     return None
 
 
+def _detect_yf_corp_action(ticker: str, lookback_days: int = 14) -> dict | None:
+    """Universal corporate-action detector via yfinance .splits series.
+
+    Catches the EX-DATE event for any market (US/KR/JP/CN), complementing
+    the DART/EDINET announcement scans which only fire for KR/JP. For US
+    tickers this is the ONLY corp-action signal we have; for KR/JP it
+    acts as a safety net if the regulatory-filing scan missed something
+    (DART/EDINET key absent, filing keyword variant, etc.).
+
+    Returns {date, event} when a split happened in the last `lookback_days`
+    calendar days, else None. Network-dependent — caught at call site.
+    """
+    try:
+        import yfinance as yf
+        import pandas as pd
+        splits = yf.Ticker(ticker).splits
+        if splits is None or len(splits) == 0:
+            return None
+        # splits index is tz-aware; use the same tz for the cutoff to
+        # avoid 'cannot compare tz-naive and tz-aware' on some pandas
+        # versions. UTC is fine — the lookback window is in days.
+        tz = splits.index.tz
+        cutoff = pd.Timestamp.now(tz=tz) - pd.Timedelta(days=lookback_days)
+        recent = splits[splits.index >= cutoff]
+        if recent.empty:
+            return None
+        last_date = recent.index[-1]
+        factor = float(recent.iloc[-1])
+        if factor == 1.0:
+            return None
+        # Render direction so the analyst can tell forward (TSLA 3:1) from
+        # reverse (low-priced stocks); factor > 1 = forward, < 1 = reverse.
+        if factor > 1:
+            label = f"{factor:g}:1 forward split"
+        else:
+            label = f"1:{(1/factor):g} reverse split"
+        return {
+            "date": last_date.strftime("%Y-%m-%d"),
+            "event": f"{label} (yfinance ex-date)",
+        }
+    except Exception:
+        return None
+
+
 def _detect_jp_corp_action(disclosures: list[dict]) -> dict | None:
     """JP analogue. EDINET 臨時報告書 carry 株式分割 / 無償割当 / 株式併合
     headlines in their docDescription field."""
@@ -1126,6 +1170,25 @@ def build_instrument_context(ticker: str) -> str:
             f" or '{kr_name}는 최근 급락하며...'"
         )
 
+    # US naming directive — soft variant. US tickers like AAPL / NVDA are
+    # recognizable on their own, but some symbols (SNDK = SanDisk, AVGO =
+    # Broadcom, BRK-B = Berkshire Hathaway, GOOGL = Alphabet) do not
+    # surface the company name to a non-finance reader without help.
+    # Inject a SOFT directive (recommendation, not mandatory) — for the
+    # tickers where yfinance returns a clearly different longName, prefer
+    # "{Company} ({TICKER})" form on first mention per section. KR/JP
+    # versions stay MANDATORY because numeric tickers are unreadable.
+    if market == "US" and long_name and long_name.upper() != (ticker or "").upper():
+        base += (
+            f"\n\n=== US NAMING DIRECTIVE (recommended) ===\n"
+            f"yfinance longName: '{long_name}'. When this differs"
+            f" meaningfully from the ticker symbol (e.g. SNDK / SanDisk,"
+            f" AVGO / Broadcom, GOOGL / Alphabet), prefer"
+            f" '{long_name} ({ticker})' on first mention per section so"
+            f" readers can place the company without context. Subsequent"
+            f" mentions can use either form."
+        )
+
     # Single source of truth for the current price. Without this, every
     # analyst can pick a different number — SNPS 2026-05-13 had the
     # sentiment analyst quoting $497.5 while fundamentals quoted $513.21,
@@ -1203,6 +1266,43 @@ def build_instrument_context(ticker: str) -> str:
                 f" note the data quality caveat in the report."
             )
             break  # one warning per analysis is enough — don't spam both windows
+
+    # Universal corporate-action scan via yfinance .splits — catches the
+    # ex-date event for ANY market (US/KR/JP/CN). This is the only
+    # corp-action signal available for US tickers (TSLA 2022-08 3:1,
+    # NVDA 2024-06 10:1, AAPL 2020-08 4:1 all hit the same yfinance
+    # historical-series staleness pattern as the KR 코미코 2026-05-17
+    # case). For KR/JP, the DART / EDINET announcement scan above
+    # usually fires first; this serves as a safety net when the
+    # regulatory filing scan missed something. Universal HARD GUARD
+    # body so the LLM sees the same directive regardless of market.
+    try:
+        yf_corp_action = _detect_yf_corp_action(ticker, lookback_days=14)
+    except Exception as exc:
+        _analyst_log.warning("yfinance corp action scan failed for %s: %s", ticker, exc)
+        yf_corp_action = None
+    if yf_corp_action:
+        base += (
+            "\n\n=== ⛔ CORPORATE ACTION IN-FLIGHT (HARD GUARD — yfinance ex-date) ===\n"
+            f"{yf_corp_action['date']} yfinance .splits: {yf_corp_action['event']}\n"
+            "이 종목은 최근 14일 이내 주식 분할 (split) ex-date가 지났다."
+            " yfinance의 historical 시계열은 ex-date 전후로 자동 조정되지만,"
+            " 일별 조정에 lag이 있는 경우가 흔해 currentPrice vs 50일/200일"
+            " SMA 등에 대규모 갭이 남는다.\n"
+            "다음 기술적 분석 요소는 사용 금지 (값이 의미 없음):\n"
+            "  • 10 EMA / 50 SMA / 200 SMA 비교\n"
+            "  • MACD / RSI / Bollinger 밴드 / ATR 추세 해석\n"
+            "  • '과매수 / 과매도 / 단기 모멘텀 약화' 류 결론\n"
+            "  • 52주 최고/최저 비교\n"
+            "시장 분석가는 다음 두 항목만 다룬다:\n"
+            "  (1) 분할 이벤트 자체의 정성 분석 (주주가치·유통주식수·"
+            "ex-date 시점·시장 반응 톤)\n"
+            "  (2) 분할 이후 가격이 안정화될 때까지 (~5-10 거래일) 기술적"
+            " 추세 분석 보류 명시\n"
+            "현재가만 'canonical current price' 한 줄로 인용하고 그 이상의"
+            " 가격 비교는 금지. 펀더멘털 / 결정 노드도 이 가드를 따른다"
+            " (밸류에이션은 분할 이후 EPS / 시총 환산본 기준으로만 계산)."
+        )
 
     # Currency directive for KR tickers. yfinance returns KRX-listed
     # companies' financial fields (marketCap, totalRevenue, netIncome,
@@ -1616,6 +1716,34 @@ def build_instrument_context(ticker: str) -> str:
                         " • 다음 정기보고서 윈도: one prose sentence."
                         " JP 회계연도 3월말 종료가 표준이라 분기 라벨"
                         " (1Q=4-6월 등)을 명시하라."
+                    )
+
+                # Anti-hallucination guard mirroring the KR DART branch
+                # (Rule B). EDINET 대량보유 (5%+) returns nothing for many
+                # mid/small-cap JP names; yfinance heldPercentInsiders is
+                # also frequently absent for `.T` tickers. Without this
+                # directive the fundamentals LLM tends to backfill a
+                # generic 'BlackRock / Vanguard 등 institutional investors'
+                # or '創業家 family holdings' narrative invented from
+                # zero data — the JP equivalent of the 코미코 '공기업'
+                # hallucination.
+                yf_insider_pct = info.get("heldPercentInsiders")
+                yf_inst_pct = info.get("heldPercentInstitutions")
+                insider_data_missing = (
+                    not jp_holders
+                    and not (isinstance(yf_insider_pct, (int, float)) and yf_insider_pct >= 0.001)
+                    and not (isinstance(yf_inst_pct, (int, float)) and yf_inst_pct >= 0.001)
+                )
+                if insider_data_missing:
+                    base += (
+                        "\n\n=== JP 소유구조 데이터 부재 (ANTI-HALLUCINATION) ===\n"
+                        "EDINET 대량보유 공시(5%+) 도 없고 yfinance"
+                        " heldPercentInsiders / heldPercentInstitutions 도"
+                        " 미수집 상태이다. 'BlackRock / Vanguard 등 글로벌"
+                        " 패시브 펀드 보유', '創業家 / family holdings 우세',"
+                        " '主要株主는 ___그룹 계열사' 같은 generic 지배구조"
+                        " narrative를 만들지 마라. 한 줄로 'JP 소유구조"
+                        " 데이터 미수집' 만 명시하고 다음 항목으로 진행."
                     )
         except Exception as exc:
             _analyst_log.warning(

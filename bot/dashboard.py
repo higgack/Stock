@@ -559,23 +559,38 @@ _DAY_OF_WEEK = ["월", "화", "수", "목", "금", "토", "일"]
 _DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
 
-def _ticker_kr_name(ticker: str) -> str | None:
-    """Return the Korean corp name for a KR ticker, else None.
+def _ticker_display_name(ticker: str) -> str | None:
+    """Return the human-readable company name for the ticker, or None.
 
-    Used by card / detail / search rendering so users see '삼성전자'
-    instead of '005930.KS'. Pure numeric tickers are unfriendly to
-    skim in a list of mixed-market cards. Falls back to None on any
-    DART lookup miss (KR ETFs that aren't in DART, US tickers, etc.)
-    and the caller renders the bare ticker."""
+    Resolves: KR → DART corp_name, JP → yfinance longName, US → None
+    (US tickers are usually recognizable enough that the bare symbol
+    works). Used by card / detail / search rendering so users see
+    '삼성전자' / 'Toyota Motor Corporation' instead of '005930.KS' /
+    '7203.T' in a mixed-market card list. Falls back to None on any
+    lookup miss (KR ETFs not in DART, JP longName missing, etc.) and
+    the caller renders the bare ticker."""
     try:
         from bot.market import detect_market
-        if detect_market(ticker) != "KR":
+        m = detect_market(ticker)
+        if m == "KR":
+            from bot.dart_client import get_dart
+            code = (ticker or "").upper().split(".")[0]
+            return get_dart().stock_code_to_name(code)
+        if m == "JP":
+            from tradingagents.agents.utils.agent_utils import _instrument_info
+            info = _instrument_info(ticker) or {}
+            name = info.get("longName") or info.get("shortName")
+            if name and isinstance(name, str) and name.upper() != (ticker or "").upper():
+                return name
             return None
-        from bot.dart_client import get_dart
-        code = (ticker or "").upper().split(".")[0]
-        return get_dart().stock_code_to_name(code)
     except Exception:
-        return None
+        pass
+    return None
+
+
+# Backwards-compat alias — the helper was KR-only originally; existing
+# call sites still use _ticker_kr_name. Same callable, more general scope.
+_ticker_kr_name = _ticker_display_name
 
 
 def _format_date_kr(date_str: str) -> str:

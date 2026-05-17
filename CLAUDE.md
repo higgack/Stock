@@ -31,7 +31,7 @@ code path. Specifically:
   automatically.
 - A KR-specific failure (DART field name, KRW unit) gets a KR
   branch; the existing US branch stays correct.
-- A prompt-rule update (RULE 1-6, stance extraction, etc.) applies
+- A prompt-rule update (RULE 1-12, stance extraction, etc.) applies
   to every future analyst run, not just the case it was surfaced by.
 - Commit messages MUST say "rule applies to all analyses going
   forward, surfaced by the {ticker} review" — not "fix for {ticker}".
@@ -265,6 +265,58 @@ Phase tracking — what's done, what's blocking the next phase:
 **Phase 4 — CN expansion** (further out)
 - Same shape: market-specific benchmark mapping + data source adapters
 - CSI 300 sector mapping, Tushare / akshare for filings + news
+
+## Universal guard symmetry (US ↔ KR ↔ JP)
+
+All structural guards added during KR/JP expansion now also cover US,
+preventing US-side asymmetric weakness. Reflect this in any future
+review:
+
+- **MANDATORY COMPS PEER SET** — `_US_INDUSTRY_PEERS` (bot/market.py)
+  with ~70 yfinance-industry rows covers S&P 500 mega/large + active
+  mid-caps. `resolve_peer_set` dispatches by market: KR→`_KR_*`,
+  JP→`_JP_*`, default→`_US_*`. Peer multiples pre-fetch (Rule C in
+  agent_utils._fetch_peer_multiples) runs for any market once a peer
+  set is returned.
+- **CORPORATE ACTION HARD GUARD — 3-source** in build_instrument_context:
+  (1) DART scan for 무상증자/주식분할/액면분할/주식병합/감자 (KR),
+  (2) EDINET scan for 株式分割/株式無償割当/株式併合 (JP),
+  (3) universal yfinance `.splits` ex-date scan (`_detect_yf_corp_action`,
+  any market, 14-day lookback). All three emit the same "ban
+  SMA/EMA/MACD/RSI/Bollinger comparisons" HARD GUARD body. US gets
+  layer (3) only; KR/JP get (1)+(3) or (2)+(3). DART/EDINET catch
+  the ANNOUNCEMENT (before ex-date, more useful), yfinance catches
+  the EX-DATE (universal fallback).
+- **소유구조 빈 결과 환각 차단** — KR branch (DART insider holdings empty
+  → "임원지분 데이터 미수집" prose, no fabricated 공기업/정부 narrative),
+  JP branch (EDINET 大量保有 + yfinance heldPercentInsiders both empty
+  → "JP 소유구조 데이터 미수집" prose). US implicitly covered: yfinance
+  heldPercentInsiders + heldPercentInstitutions are populated for almost
+  all US large/mid-caps, so the no-data case is rare; no separate US
+  directive needed.
+- **RULE 12 (US INDUSTRY POLICY)** — fundamentals_analyst.py mirrors
+  RULE 10 (KR) and RULE 11 (JP). 11 US industries with a single
+  dominant policy / macro variable: Banks/FOMC, Oil/OPEC+, Biotech/FDA,
+  Semis/CHIPS+對中 수출규제, Healthcare Plans/Medicare, Autos/IRA EV
+  credit, Aerospace+Defense/DoD budget, REIT/Fed rate, Utilities/PUC,
+  Telecom/5G capex+FCC, Tobacco-Alcohol/FDA-소비세, Travel-Lodging-
+  Airlines/jet fuel+TSA.
+- **US NAMING DIRECTIVE (soft)** — when yfinance longName differs from
+  the ticker symbol meaningfully (SNDK/SanDisk, AVGO/Broadcom,
+  GOOGL/Alphabet, BRK-B/Berkshire), the directive recommends
+  '{Company} ({TICKER})' form on first mention. Soft (not MANDATORY)
+  because most US tickers (AAPL, NVDA, TSLA) are recognizable bare.
+- **Dashboard JP name display** — `bot/dashboard._ticker_display_name`
+  (renamed from `_ticker_kr_name`, alias preserved) resolves KR via
+  DART, JP via yfinance longName, US returns None. JP analyses in the
+  card list now show "Toyota Motor Corporation / 7203.T" instead of
+  bare "7203.T". Search filter's `data-name` attribute covers both KR
+  and JP names automatically.
+
+The rule of thumb: when adding any structural guard going forward,
+default to **universal** (no market gate) unless the guard depends on
+a market-specific data source. Even then, prefer a universal helper
+with market-aware branches over per-market parallel functions.
 
 ## TODO
 
