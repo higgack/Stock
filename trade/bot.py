@@ -186,7 +186,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — systemd unit 자동 install (deploy/install-trade-units.sh, sudoers 1회 설정 후 신규 unit 수동 cp 불필요)</i>
+<i>최종 갱신: 2026-05-17 — install-trade-units.sh SUMMARY 라인 bash 문법 오류 수정 (설치는 성공해도 ⚠️ false-alarm 알리던 버그)</i>
 """
 
 

@@ -83,4 +83,4 @@ for s in "${CHANGED_SERVICES[@]:-}"; do
     echo "install-trade-units: restarted $s"
 done
 
-echo "install-trade-units: SUMMARY changed=${#CHANGED_FILES[@]} new_timers=${#NEW_TIMERS[@]:-0} restarted=${#CHANGED_SERVICES[@]:-0}"
+echo "install-trade-units: SUMMARY changed=${#CHANGED_FILES[@]} new_timers=${#NEW_TIMERS[@]} restarted=${#CHANGED_SERVICES[@]}"
