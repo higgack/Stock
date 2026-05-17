@@ -666,12 +666,20 @@ def _format_summary(
             parts.append(note)
     # Compact one-line per-analyst stance bar so the user sees who voted
     # what at a glance, before the longer per-section snippets.
+    # Fallback to '미명시' when an analyst body produces no recognizable
+    # verdict — 한국전력공사 2026-05-17 had the fundamentals body skip
+    # the explicit verdict line, so the stance bar silently dropped from
+    # 4 entries to 3 and the user couldn't tell whether the analyst
+    # actually ran. Showing '미명시' instead of omission makes the gap
+    # visible and prevents the mismatch detector's denominator from
+    # silently shrinking.
     stance_chunks = []
     for key, icon, name in _SECTION_LABELS_FOR_SUMMARY:
         body = state.get(key) if isinstance(state, dict) else None
-        stance = _extract_stance(body)
-        if stance:
-            stance_chunks.append(f"{icon} {name}: {stance}")
+        if not body or not body.strip():
+            continue  # analyst was pre-flight-skipped; don't show entry at all
+        stance = _extract_stance(body) or "미명시"
+        stance_chunks.append(f"{icon} {name}: {stance}")
     if stance_chunks:
         parts.append("  ·  ".join(stance_chunks))
     # Surface analyst-vs-decision direction mismatch on its own line so
@@ -1128,6 +1136,22 @@ def _polish(body: str) -> str:
     _step("ko-double-prefix",    lambda b: re.sub(
         r"\b(약|대략|혹은|또는|즉)\s+\1\b", r"\1", b,
     ))
+    # News-section "요약 테이블" / "요약표" / "Summary table" repeated
+    # headers — 한국전력공사 2026-05-17 emitted three of them with
+    # broken markdown in between. Keep the FIRST occurrence, strip
+    # subsequent ones along with the line they sit on.
+    def _dedup_summary_table(b):
+        pattern = re.compile(
+            r"^[ \t]*요약\s*(?:테이블|표|table)[ \t]*$",
+            re.IGNORECASE | re.MULTILINE,
+        )
+        count = 0
+        def repl(_match):
+            nonlocal count
+            count += 1
+            return _match.group(0) if count == 1 else ""
+        return pattern.sub(repl, b)
+    _step("dup-summary-table-header", _dedup_summary_table)
     return body.strip()
 
 

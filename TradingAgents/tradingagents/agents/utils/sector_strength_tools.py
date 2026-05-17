@@ -305,10 +305,19 @@ def get_sector_relative_strength(
     )
     if max_abs_vs_sector > 25:
         notes += (
-            "\n⚠️ vs 섹터 차이가 |25%p| 초과 — yfinance 벤치마크 fetch 오류"
-            " 가능성. 본문에 이 숫자를 인용하지 말고 (해당 종목과 섹터 ETF가"
-            " 매우 어긋난 움직임을 보인다는 결론을 내리지 말 것), '섹터 강도"
-            " 데이터 신뢰성 이슈로 평가 보류' 한 줄로 갈음하라."
+            "\n\n⚠️ DATA-INTEGRITY HOLD — vs 섹터 / vs 시장 차이가"
+            " |25%p| 초과. 이 표의 vs 섹터 / vs SPY-or-broad 수치를"
+            " 본문에 어떤 형태로도 인용하면 안 된다. 한국전력공사"
+            " 2026-05-17 'KOSPI 200 대비 -54.59%p, -111.42%p' 같은"
+            " 수치를 그대로 quote하면 분석가가 '명확한 후행주' /"
+            " 'laggard' / '추세 이탈' 같은 결론으로 빠진다. 둘 중"
+            " 한 케이스: (a) 실제 격렬한 outperformance/underperformance"
+            " — 5거래일 horizon에는 ground-truth이 아닌 노이즈,"
+            " (b) yfinance 벤치마크 fetch 오류 / 분할 staleness —"
+            " 인용 시 잘못된 thesis. 둘 다 인용 가치 없음. 본문"
+            " 섹터 프라이머에는 단 한 줄만 적어라: '섹터 강도 데이터"
+            " 신뢰성 또는 5거래일 horizon 적합성 이슈로 평가 보류.'"
+            " 더 길게 쓰지 말 것. 30D/90D/YTD %p 숫자 인용 금지."
         )
 
     return f"{header}\n\n" + "\n".join(rows) + notes

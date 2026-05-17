@@ -663,14 +663,28 @@ def _format_dart_kr_block(
             if prev is None or (r.get("pct") or 0) > (prev.get("pct") or 0):
                 by_name[name] = r
         top = sorted(by_name.values(), key=lambda r: r.get("pct") or 0, reverse=True)[:5]
+        # State-owned enterprises (한국전력공사, 한국가스공사, 등) have
+        # officers who are civil servants — they hold ~zero stock. The
+        # raw '상위 5 모두 0.00%' list looks broken to a reader. Detect
+        # the all-near-zero pattern and replace with a single explanatory
+        # line so the user doesn't think DART data is broken.
         if top:
-            lines.append(f"- 임원·주요주주 지분 (상위 {len(top)}):")
-            for r in top:
-                name = r.get("name") or "?"
-                role = (r.get("role") or "").strip()
-                pct = r.get("pct") or 0
-                role_part = f" ({role})" if role else ""
-                lines.append(f"  • {name}{role_part}: {pct:.2f}%")
+            nonzero = [r for r in top if (r.get("pct") or 0) >= 0.01]
+            if not nonzero:
+                lines.append(
+                    "- 임원·주요주주 지분: 공기업 / 공공 entity — 임원진은"
+                    " 공직자 신분이라 의미 있는 보유 없음 (정상). 지배"
+                    " 구조는 주요 주주 (산업은행 / 정부 등) 기준으로"
+                    " 분석할 것."
+                )
+            else:
+                lines.append(f"- 임원·주요주주 지분 (상위 {len(top)}):")
+                for r in top:
+                    name = r.get("name") or "?"
+                    role = (r.get("role") or "").strip()
+                    pct = r.get("pct") or 0
+                    role_part = f" ({role})" if role else ""
+                    lines.append(f"  • {name}{role_part}: {pct:.2f}%")
 
     # Next earnings filing window — inferred from KR statutory deadlines.
     if earnings_window:
@@ -760,6 +774,37 @@ def build_instrument_context(ticker: str) -> str:
             "\n\nKnown classification (yfinance, authoritative — use these"
             " exact labels in any sector / industry primer instead of"
             " guessing): " + "; ".join(facts) + "."
+        )
+
+    # COMPS INDUSTRY MATCH DIRECTIVE — every peer in the Comps table
+    # MUST match this exact industry string. Without this, the LLM
+    # cargo-cults whatever example peer set is closest to the prompt,
+    # even across industries. 한국전력공사 (015760.KS, Utilities -
+    # Regulated Electric) 2026-05-17 listed KMI / WMB / ENB (oil-gas
+    # midstream) + 000660.KS SK하이닉스 (semiconductor) — none of
+    # which match the subject's industry. Inject the subject industry
+    # as a hard constraint here so the analyst can't drift.
+    if industry:
+        base += (
+            f"\n\n=== COMPS INDUSTRY CONSTRAINT (MANDATORY) ===\n"
+            f"Subject's yfinance industry: '{industry}'.\n"
+            f"EVERY ticker in your Comps table MUST have yfinance"
+            f" industry == '{industry}' (exact string match) OR be a"
+            f" globally-recognized direct competitor in the same product"
+            f" market. FORBIDDEN: borrowing example peer sets from a"
+            f" different industry just because the example tickers look"
+            f" Korean or look 'utility-adjacent'.\n"
+            f"  ❌ WRONG (한국전력공사 2026-05-17): KMI / WMB / ENB are"
+            f" 'Oil & Gas Midstream', NOT 'Utilities - Regulated"
+            f" Electric'. 000660.KS is 'Semiconductors', completely"
+            f" unrelated. Mixing these in a Utilities Comps table is"
+            f" cargo-cult, not peer analysis.\n"
+            f"  ✅ RIGHT for '{industry}': pick tickers whose yfinance"
+            f" industry string LITERALLY matches '{industry}'. If you"
+            f" cannot name 3 such tickers from memory, write ONE honest"
+            f" sentence ('국내 직접 경쟁사 부재 — 글로벌 비교 보류') and"
+            f" skip the Comps section. Fabricated peers worse than no"
+            f" peers."
         )
 
     # KR body-text directive — readers can't parse '039030.KS' alone.
