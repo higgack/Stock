@@ -698,7 +698,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance (15년 캐시) · Alpha Vantage 뉴스 (영문) · 한국 종목 네이버 뉴스 (한경/매경/연합 등 한국어) · 분기+연간 재무 · 매크로 9종 (시장별 분기) · 섹터 ETF (미국 SPDR / 한국 KODEX 22종) · 리스크 6종 · 컨센서스 (한국: yfinance + FnGuide 2단) · 공매도 % + DTC · 내부자/기관 % · 실적 캘린더 ±10일 · 한국 DART (공시·임원지분·정기보고서) · 한국 KRX 외국인·기관·개인 5거래일 순매수 · Forward EPS sanity · 컨센서스 staleness 양방향
+yfinance (15년 캐시) · Alpha Vantage (영문 뉴스) · 한국 네이버 뉴스 (한경/매경/연합 등) · 분기+연간 재무 · 매크로 9종 (시장별 분기) · 섹터 ETF (미국 SPDR / 한국 KODEX 22종) · 리스크 6종 · 컨센서스 (한국: yfinance + FnGuide 2단) · 공매도 % + DTC · 내부자/기관 % · 실적 캘린더 ±10일 · 한국 DART (공시·임원지분·정기보고서) · 한국 KRX (5거래일 순매수 + 외국인지분율·공매도잔고 30일 추이) · Forward EPS sanity · 컨센서스 staleness (가격갭 양방향 + FnGuide 갱신일)
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>

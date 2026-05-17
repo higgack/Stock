@@ -83,6 +83,7 @@ def fetch_consensus(stock_code: str) -> Optional[dict]:
     target = _parse_target(html)
     rating = _parse_rating(html)
     n_analysts = _parse_analyst_count(html)
+    last_report_date = _parse_latest_report_date(html)
 
     # Empty page (small-cap with zero coverage) — return None so the
     # caller can label '분석가 커버리지 없음' instead of showing a
@@ -91,10 +92,47 @@ def fetch_consensus(stock_code: str) -> Optional[dict]:
         return None
 
     return {
+        "last_report_date": last_report_date,
         "target_mean": target,
         "rating": rating,
         "n_analysts": n_analysts,
     }
+
+
+def _parse_latest_report_date(html: str) -> Optional[str]:
+    """Find the most recent analyst-report date on the FnGuide page.
+    Useful for concrete consensus-staleness detection: if the latest
+    report is > 30 days ago, the mean target is genuinely stale.
+
+    Two-pass: try labelled patterns ('최근 갱신일' / '최종 업데이트')
+    first; fall back to scanning all dates in the page and picking
+    the most recent plausible one (2020-2030, valid month/day).
+    Returns 'YYYY-MM-DD' or None. Defensive — wrong page structure
+    just degrades to None."""
+    # Pass 1: labelled patterns
+    labelled = re.search(
+        r"(?:최근\s*갱신일|최종\s*업데이트|마지막\s*업데이트|보고서\s*일자)"
+        r"[^0-9]{0,40}?(\d{4})[./\-](\d{1,2})[./\-](\d{1,2})",
+        html,
+    )
+    if labelled:
+        y, m, d = int(labelled.group(1)), int(labelled.group(2)), int(labelled.group(3))
+        if 2020 <= y <= 2030 and 1 <= m <= 12 and 1 <= d <= 31:
+            return f"{y:04d}-{m:02d}-{d:02d}"
+
+    # Pass 2: scan all dates, pick most recent plausible one
+    candidates: list[tuple[int, int, int]] = []
+    for match in re.finditer(r"(\d{4})[./\-](\d{1,2})[./\-](\d{1,2})", html):
+        try:
+            y, m, d = int(match.group(1)), int(match.group(2)), int(match.group(3))
+            if 2020 <= y <= 2030 and 1 <= m <= 12 and 1 <= d <= 31:
+                candidates.append((y, m, d))
+        except Exception:
+            continue
+    if not candidates:
+        return None
+    y, m, d = max(candidates)
+    return f"{y:04d}-{m:02d}-{d:02d}"
 
 
 def _parse_target(html: str) -> Optional[float]:

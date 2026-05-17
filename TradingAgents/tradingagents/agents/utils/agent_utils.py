@@ -513,27 +513,29 @@ def get_market_signals_for(ticker: str) -> str:
     n_analysts = info.get("numberOfAnalystOpinions")
     rec_mean = info.get("recommendationMean")
 
-    # KR fallback: when yfinance returns no target (typical for mid /
-    # small caps), scrape FnGuide CompanyGuide. We only fill fields
-    # yfinance left empty — yfinance wins where both have data because
-    # it's more structured. recommendationMean isn't available on
-    # FnGuide so it stays None when the fallback fires.
-    if market == "KR" and not target:
+    # FnGuide CompanyGuide scrape for KR tickers. Two uses out of one
+    # fetch: (1) fallback when yfinance returns no target (mid / small
+    # caps), (2) last_report_date for concrete consensus-staleness
+    # detection. Fetched unconditionally for KR so the date check
+    # works even when yfinance has the consensus block populated.
+    fn_data: dict | None = None
+    if market == "KR":
         try:
             from bot.fnguide_consensus import fetch_consensus
-            fn = fetch_consensus(ticker)
-            if fn:
-                target = target or fn.get("target_mean")
-                n_analysts = n_analysts or fn.get("n_analysts")
-                fn_rating = fn.get("rating")
-                if fn_rating and not rec_key:
-                    rec_key = {
-                        "매수": "buy", "보유": "hold", "매도": "sell",
-                    }.get(fn_rating, "")
+            fn_data = fetch_consensus(ticker)
         except Exception as exc:
             _analyst_log.warning(
-                "fnguide fallback failed for %s: %s", ticker, exc,
+                "fnguide fetch failed for %s: %s", ticker, exc,
             )
+
+    if market == "KR" and not target and fn_data:
+        target = target or fn_data.get("target_mean")
+        n_analysts = n_analysts or fn_data.get("n_analysts")
+        fn_rating = fn_data.get("rating")
+        if fn_rating and not rec_key:
+            rec_key = {
+                "매수": "buy", "보유": "hold", "매도": "sell",
+            }.get(fn_rating, "")
 
     if target and current:
         upside = (target - current) / current * 100
@@ -584,6 +586,25 @@ def get_market_signals_for(ticker: str) -> str:
                 f" 평균값을 'ground truth'로 사용하기 전에 본문의 개별 등급 강등 /"
                 f" 목표가 하향 뉴스와 대조하라."
             )
+
+        # Concrete staleness signal (KR only) — actual date of the last
+        # analyst report from FnGuide. The gap-based heuristics above
+        # are indirect; this is the literal date. > 30 days = mean
+        # target is genuinely lagging individual revisions.
+        if fn_data and fn_data.get("last_report_date"):
+            from datetime import datetime as _dt, date as _date
+            try:
+                last_dt = _dt.strptime(fn_data["last_report_date"], "%Y-%m-%d").date()
+                days_old = (_date.today() - last_dt).days
+                if days_old > 30:
+                    lines.append(
+                        f"  ⚠️ FnGuide 최근 리포트 갱신일 {last_dt.isoformat()}"
+                        f" ({days_old}일 전) — 컨센서스 평균이 stale일 가능성이"
+                        f" 매우 큼. 본문 사용 시 'consensus snapshot이 {days_old}"
+                        f"일 전 시점' caveat 명시."
+                    )
+            except Exception:
+                pass
 
     # Forward EPS sanity check. yfinance occasionally serves a stale or
     # malformed forward EPS (often >3x TTM or even negative when the
@@ -1105,7 +1126,13 @@ def build_instrument_context(ticker: str) -> str:
         try:
             from bot.market import detect_market
             if detect_market(ticker) == "KR":
-                from bot.pykrx_client import get_kr_trading_flow, format_flow_for_prompt
+                from bot.pykrx_client import (
+                    get_kr_trading_flow,
+                    format_flow_for_prompt,
+                    get_kr_foreign_ownership_trend,
+                    get_kr_short_balance_trend,
+                    format_trend_for_prompt,
+                )
                 flow = get_kr_trading_flow(ticker, days_back=5)
                 if flow:
                     base += (
@@ -1127,9 +1154,29 @@ def build_instrument_context(ticker: str) -> str:
                         " short-term variable and the bot was"
                         " missing it before this commit."
                     )
+
+                # 30-day positioning trends: foreign ownership pct +
+                # short-balance pct. Daily flow (above) shows what
+                # happened in the last 5 days; these show longer
+                # positioning trajectory (foreigners accumulating
+                # vs distributing, shorts building vs squeezing).
+                foreign_trend = get_kr_foreign_ownership_trend(ticker, days_back=30)
+                short_trend = get_kr_short_balance_trend(ticker, days_back=30)
+                trend_block = format_trend_for_prompt(foreign_trend, short_trend)
+                if trend_block:
+                    base += (
+                        "\n\n=== Pre-fetched KR positioning trends"
+                        " (KRX, 30일 추이) ===\n"
+                        + trend_block
+                        + "\n\n외국인 지분율 추세 (꾸준한 증가 vs"
+                        " 꾸준한 감소)는 5일 flow보다 안정적인"
+                        " 신호이다. 공매도 잔고 감소 + 가격 상승"
+                        " 동반은 short squeeze 청산 진행. 본문"
+                        " 결론에 한 줄로 인용하라."
+                    )
         except Exception as exc:
             _analyst_log.warning(
-                "pykrx flow injection failed for %s: %s", ticker, exc,
+                "pykrx flow / trend injection failed for %s: %s", ticker, exc,
             )
 
         # Korean news via Naver search (KR-only). Alpha Vantage and
