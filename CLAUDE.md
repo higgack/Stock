@@ -158,6 +158,32 @@ entry yet. The deploy notification appends a one-line note about the
 sibling restart (or the missing-sudoers warning) so the operator can
 spot setup gaps from Telegram instead of digging through journals.
 
+## Systemd unit auto-install — no more manual cp
+
+New / changed systemd units MUST land on the host via the auto-update
+pipeline, not via manual `sudo cp` + `daemon-reload` + `enable`.
+Adding a new feature should never require the operator to ssh in
+just to wire up a service.
+
+Pattern (mirror `deploy/install-trade-units.sh`):
+- Idempotent installer script in `deploy/install-<project>-units.sh`
+  that diffs `deploy/<project>-*.{service,timer}` against
+  `/etc/systemd/system/`, copies what changed, daemon-reloads if
+  anything changed, enables+starts newly-introduced timers, and
+  restarts currently-active services whose unit file content
+  changed. Skips restarting trade-bot-update / similar self-services.
+- Auto-update script (`deploy/<project>-auto-update.sh`) detects
+  any `deploy/<project>-*.{service,timer}` in the change set and
+  runs the installer via `sudo -n` so it gracefully degrades to a
+  notification warning when the sudoers entry is missing.
+- One-time operator sudoers entry per project:
+    higgack ALL=(ALL) NOPASSWD: /home/higgack/<repo>/deploy/install-<project>-units.sh
+  After that, every commit that introduces or modifies a unit file
+  is applied automatically on the next auto-update tick. The
+  ✅ deploy notification appends a SUMMARY line ('changed=N
+  new_timers=M restarted=K') so the operator can verify from
+  Telegram alone.
+
 ## One-shot maintenance scripts — required safety pattern
 
 Long-running one-shot scripts (backfills, migrations, large reindexes)

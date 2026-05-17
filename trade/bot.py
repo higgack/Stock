@@ -179,13 +179,14 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-health (1시간) — dormancy + 사이클 누락 감지 → ⚠️ 알림
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent)
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
+신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 
 <b>10. API endpoints</b>
 • /api/alerts.json — 전체 alert 덤프 (latest + history)
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — claude.md 룰 강화 (명시적 '커밋' 없으면 푸쉬 X, 모든 user-visible 변경은 _HELP_TEXT 동시 갱신 필수)</i>
+<i>최종 갱신: 2026-05-17 — systemd unit 자동 install (deploy/install-trade-units.sh, sudoers 1회 설정 후 신규 unit 수동 cp 불필요)</i>
 """
 
 

@@ -84,6 +84,27 @@ if ! git reset --hard "origin/${BRANCH}" --quiet; then
     exit 1
 fi
 
+# Auto-install any new / changed systemd unit files. install-trade-units.sh
+# is idempotent — copies what differs, daemon-reloads, enables new timers,
+# restarts running services with changed unit files. Requires a sudoers
+# entry (one-time, see trade/README.md); gracefully degrades when missing.
+INSTALL_NOTE=""
+UNIT_FILES_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^deploy/trade-bot[^/]*\.(service|timer)$' || true)
+if [ -n "$UNIT_FILES_CHANGED" ]; then
+    if INSTALL_OUTPUT=$(sudo -n "$REPO/deploy/install-trade-units.sh" 2>&1); then
+        echo "$INSTALL_OUTPUT"
+        SUMMARY=$(echo "$INSTALL_OUTPUT" | grep -oE 'SUMMARY .*$' | head -1)
+        if [ -n "$SUMMARY" ]; then
+            INSTALL_NOTE=$'\n'"<i>+ systemd: ${SUMMARY}</i>"
+        else
+            INSTALL_NOTE=$'\n'"<i>+ systemd: 자동 설치 완료</i>"
+        fi
+    else
+        echo "trade-bot-update: install-trade-units.sh failed"
+        INSTALL_NOTE=$'\n'"<i>⚠️ systemd 자동 설치 권한 없음 — sudoers에 install-trade-units.sh 추가</i>"
+    fi
+fi
+
 if ! sudo /bin/systemctl restart trade-bot; then
     notify "❌ <b>배포 실패</b>: systemctl restart (${REMOTE_SHORT})"
     exit 1
@@ -110,7 +131,7 @@ if systemctl is-active --quiet trade-bot; then
     if [ -n "$SUBJECT" ]; then
         msg="${msg}"$'\n'"${SUBJECT}"
     fi
-    msg="${msg}${DASH_NOTE}"
+    msg="${msg}${INSTALL_NOTE}${DASH_NOTE}"
     notify "$msg"
     echo "trade-bot-update: restart complete"
 else
