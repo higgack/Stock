@@ -358,6 +358,21 @@ def has_recent_news(ticker: str) -> bool:
             )
             # don't flip `has` here — yfinance answer stands
 
+    # JP fallback: yfinance .news is English-centric and frequently 0
+    # for `.T` tickers. Kabutan aggregates JP-language news per ticker.
+    # Mirrors the KR / Naver path above.
+    if not has:
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "JP":
+                from bot.kabutan_news import has_recent_japanese_news
+                if has_recent_japanese_news(ticker):
+                    has = True
+        except Exception as exc:
+            _analyst_log.warning(
+                "news availability (kabutan) check failed for %s: %s", ticker, exc,
+            )
+
     _NEWS_AVAILABILITY_CACHE[ticker] = has
     return has
 
@@ -537,6 +552,30 @@ def get_market_signals_for(ticker: str) -> str:
                 "매수": "buy", "보유": "hold", "매도": "sell",
             }.get(fn_rating, "")
 
+    # Kabutan consensus scrape — JP equivalent of the FnGuide block.
+    # Same two-purpose use: fallback for mid/small-caps yfinance missed,
+    # and last_report_date for staleness detection. Fetched
+    # unconditionally for JP so the date check works even when yfinance
+    # already has the consensus block.
+    kabu_data: dict | None = None
+    if market == "JP":
+        try:
+            from bot.kabutan_consensus import fetch_consensus as fetch_jp_consensus
+            kabu_data = fetch_jp_consensus(ticker)
+        except Exception as exc:
+            _analyst_log.warning(
+                "kabutan consensus fetch failed for %s: %s", ticker, exc,
+            )
+
+    if market == "JP" and not target and kabu_data:
+        target = target or kabu_data.get("target_mean")
+        n_analysts = n_analysts or kabu_data.get("n_analysts")
+        kabu_rating = kabu_data.get("rating")
+        if kabu_rating and not rec_key:
+            rec_key = {
+                "매수": "buy", "보유": "hold", "매도": "sell",
+            }.get(kabu_rating, "")
+
     if target and current:
         upside = (target - current) / current * 100
         rec_kr = _RECOMMENDATION_KR.get(rec_key, rec_key or "")
@@ -587,18 +626,21 @@ def get_market_signals_for(ticker: str) -> str:
                 f" 목표가 하향 뉴스와 대조하라."
             )
 
-        # Concrete staleness signal (KR only) — actual date of the last
-        # analyst report from FnGuide. The gap-based heuristics above
-        # are indirect; this is the literal date. > 30 days = mean
-        # target is genuinely lagging individual revisions.
-        if fn_data and fn_data.get("last_report_date"):
+        # Concrete staleness signal — actual date of the last analyst
+        # report from FnGuide (KR) / Kabutan (JP). The gap-based
+        # heuristics above are indirect; this is the literal date.
+        # > 30 days = mean target is genuinely lagging individual
+        # revisions.
+        _staleness_data = fn_data if market == "KR" else (kabu_data if market == "JP" else None)
+        _staleness_source = "FnGuide" if market == "KR" else "Kabutan"
+        if _staleness_data and _staleness_data.get("last_report_date"):
             from datetime import datetime as _dt, date as _date
             try:
-                last_dt = _dt.strptime(fn_data["last_report_date"], "%Y-%m-%d").date()
+                last_dt = _dt.strptime(_staleness_data["last_report_date"], "%Y-%m-%d").date()
                 days_old = (_date.today() - last_dt).days
                 if days_old > 30:
                     lines.append(
-                        f"  ⚠️ FnGuide 최근 리포트 갱신일 {last_dt.isoformat()}"
+                        f"  ⚠️ {_staleness_source} 최근 리포트 갱신일 {last_dt.isoformat()}"
                         f" ({days_old}일 전) — 컨센서스 평균이 stale일 가능성이"
                         f" 매우 큼. 본문 사용 시 'consensus snapshot이 {days_old}"
                         f"일 전 시점' caveat 명시."
@@ -900,6 +942,34 @@ def build_instrument_context(ticker: str) -> str:
         except Exception:
             pass
 
+    # JP body-text directive — same shape as the KR one below. Readers
+    # can't parse '7203.T' alone; force every analyst to surface a
+    # human-readable company name in narrative sentences. For now we
+    # use yfinance longName (typically English: 'Toyota Motor Corporation')
+    # because EDINET's Japanese-name lookup isn't wired yet. Skip the
+    # directive when longName == ticker (yfinance fallback) or missing.
+    # yfinance occasionally tags J-REITs / JDR (8951.T 일본 빌딩펀드 등)
+    # as MUTUALFUND despite being real listed entities; mirror the KR
+    # override here so .T tickers don't cascade into fund mode unless
+    # they're an actual ETF.
+    if market == "JP" and qt in ("MUTUALFUND",) and long_name and ".T" in (ticker or "").upper():
+        # Heuristic: real .T mutual funds don't have a sector/industry
+        # in yfinance, while misclassified equities do. If sector is
+        # populated, treat as equity.
+        if sector and industry:
+            qt = "EQUITY"
+
+    if market == "JP" and long_name and long_name.upper() != (ticker or "").upper():
+        base += (
+            f"\n\n=== JP NAMING DIRECTIVE (MANDATORY) ===\n"
+            f"When referring to the company in ANY narrative sentence,"
+            f" use one of these forms — NEVER the bare numeric ticker:\n"
+            f" • '{long_name} ({ticker})' on first mention per section\n"
+            f" • '{long_name}' (name only) on subsequent mentions\n"
+            f"❌ WRONG: '{ticker}는 최근 급락하며...'\n"
+            f"✅ RIGHT: '{long_name} ({ticker})는 최근 급락하며...'"
+        )
+
     # KR body-text directive — readers can't parse '039030.KS' alone.
     # Force every analyst to surface the Korean corp name in narrative
     # sentences, not just bury it in the classification fact above.
@@ -1036,6 +1106,61 @@ def build_instrument_context(ticker: str) -> str:
                 " ✅ RIGHT: '₩1,010,000' (정확) or '약 101만 원' (반올림)"
                 " for 100만 원~1억 원 range values."
             )
+    except Exception:
+        pass
+
+    # Currency directive for JP tickers. yfinance returns Tokyo-listed
+    # companies' financial fields in **JPY** (with one exception flagged
+    # below). The analyst's US-trained default of '백만 달러' / '조 달러'
+    # would render a Toyota market cap of ¥45조 as '약 45조 달러' — wrong
+    # by ~150x and unreadable to Korean readers. Force native JPY with
+    # native Japanese scale units (兆 / 億) and Korean-language labels
+    # ('엔') so report headline values stay consistent with yfinance raw.
+    #
+    # Gotcha: a small number of JP-listed multinationals report financials
+    # in USD (e.g. Sony reports parts of its consolidated statements in
+    # USD due to global ops). Check `financialCurrency` against the
+    # trading currency and warn the analyst when they diverge.
+    try:
+        if _cfg.get("currency") == "JPY":
+            fin_ccy = (info.get("financialCurrency") or "").upper()
+            base += (
+                "\n\n=== CURRENCY DIRECTIVE (JP ticker, MANDATORY) ===\n"
+                "This is a Tokyo-listed company. Default yfinance .info /"
+                " financial fields are in **JPY**, never USD. When you"
+                " render the fundamentals summary table and body:\n"
+                " • Use Japanese scale units '兆 円' (≥1兆), '億 円'"
+                " (1億 ~ 1兆 미만), '万 円' (1万 ~ 1億 미만). 한국어"
+                " 본문에서는 '조 엔 / 억 엔 / 만 엔'으로 옮겨 써도 OK.\n"
+                " • Never '달러' / 'USD' / '백만 달러' for JP tickers.\n"
+                " • Headline-scale numbers (시가총액, 매출, 순이익,"
+                " FCF) ROUND to two significant figures: '약 45조 엔'"
+                " or '약 4,500억 엔'.\n"
+                " • EPS / 주당 배당금 stays as integer JPY: '¥320'.\n"
+                " • Per-share DCF outputs (Bear/Base/Bull): '¥X,XXX'.\n"
+                "FORBIDDEN — place-by-place spelling. Convert raw"
+                " integers (e.g. 45123456789000) to abbreviated form"
+                " before they appear in the report.\n"
+                " ❌ WRONG: '시가총액: 약 45조 달러' (불가능한 단위)\n"
+                " ❌ WRONG: '총 매출: FY25 4조 5123억 4567만 8900 엔' (자리수별 풀스펠)\n"
+                " ✅ RIGHT: '시가총액: 약 45조 엔'\n"
+                " ✅ RIGHT: '총 매출 (억 엔): FY25 451,235 | FY24 412,800'\n"
+                " ✅ RIGHT: '약 4.5조 엔' for headline prose mention.\n"
+                "\n"
+                "FISCAL YEAR — JP 상장사 대부분 회계연도 종료가 3월 31일"
+                " (4월–익년 3월). yfinance의 'fiscalYearEnd' / 분기 라벨"
+                " (Q1=4–6월, Q2=7–9월, Q3=10–12월, Q4=1–3월) 인용 시"
+                " 미국 캘린더 분기로 착각하지 말 것. 최근 분기 실적 인용"
+                " 시 '2026년 3월기 1Q (4-6월)' 식으로 표기."
+            )
+            if fin_ccy and fin_ccy not in ("JPY", ""):
+                base += (
+                    f"\n\n⚠️ FINANCIAL CURRENCY MISMATCH — yfinance reports"
+                    f" `{ticker}`'s financial statements in **{fin_ccy}**,"
+                    f" not JPY (trading currency). 시가총액과 일치하지"
+                    f" 않을 수 있다. 손익계산서 / 대차대조표 수치 인용 시"
+                    f" '{fin_ccy} 기준' 명시 + 환산하지 말고 그대로 인용."
+                )
     except Exception:
         pass
     if qt in ("ETF", "ETN", "MUTUALFUND"):
@@ -1247,6 +1372,110 @@ def build_instrument_context(ticker: str) -> str:
             _analyst_log.warning(
                 "ecos macro injection failed for %s: %s", ticker, exc,
             )
+
+        # ─────────────────────────────────────────────────────────────
+        # JP equity-only injections — same shape as the KR blocks above,
+        # so the JP analyst's prompt is symmetric with the KR analyst's.
+        # All four sources degrade silently (missing key / 403 / parse
+        # failure → block omitted, never an exception that bubbles up).
+        # ─────────────────────────────────────────────────────────────
+
+        # EDINET (JP regulatory filings — annual / quarterly / 임시 /
+        # 5%+ stake). yfinance has nothing here; EDINET is the FSA-run
+        # authoritative source. Mirrors the KR DART block.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "JP":
+                from bot.edinet_client import get_edinet, format_edinet_jp_block
+                edinet = get_edinet()
+                jp_disclosures = edinet.get_recent_disclosures(ticker, days_back=30, limit=8)
+                jp_holders = edinet.get_major_holders(ticker, days_back=180)
+                jp_window = edinet.next_earnings_window(ticker)
+                edinet_block = format_edinet_jp_block(jp_disclosures, jp_holders, jp_window)
+                if edinet_block:
+                    base += (
+                        "\n\n=== Pre-fetched JP market data (EDINET, verbatim —"
+                        " do NOT call any tool for these numbers; use them in"
+                        " the news / fundamentals / risk sections as ground"
+                        " truth) ===\n"
+                        + edinet_block
+                        + "\n\nRENDERING RULES for the EDINET block:\n"
+                        " • 최근 공시: render as a bullet list, one filing"
+                        " per line, with the date prefix preserved.\n"
+                        " • 대량보유 공시: render as a bullet list with"
+                        " filer name + 보유 변동 사유. 5% rule 공시는"
+                        " activist / institutional positioning 신호이므로"
+                        " 단순 나열하지 말고 결론에서 해석 한 줄 추가.\n"
+                        " • 다음 정기보고서 윈도: one prose sentence."
+                        " JP 회계연도 3월말 종료가 표준이라 분기 라벨"
+                        " (1Q=4-6월 등)을 명시하라."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "edinet injection failed for %s: %s", ticker, exc,
+            )
+
+        # Japanese news via Kabutan scrape (JP-only). yfinance / Alpha
+        # Vantage barely cover JP-language publishers. Kabutan
+        # aggregates Reuters Japan / 日経 / 東洋経済 / 株探 desk into
+        # one per-ticker news listing. Mirrors the Naver KR block.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "JP":
+                from bot.kabutan_news import fetch_news as fetch_jp_news, format_news_for_prompt as fmt_jp_news
+                jp_news = fetch_jp_news(ticker, days_back=28, max_items=10)
+                if jp_news:
+                    base += (
+                        "\n\n=== Pre-fetched JP news (Kabutan 스크랩, verbatim) ===\n"
+                        + fmt_jp_news(jp_news)
+                        + "\n\n위 일본어 뉴스가 일본 종목에 대한 primary"
+                        " news source이다. 영문 뉴스 (Alpha Vantage /"
+                        " yfinance) 가 비어있더라도 위 리스트를 활용해"
+                        " news / sentiment 분석을 진행하라. 미국 무관"
+                        " 뉴스를 끌어다가 간접 추론으로 메우는 패턴"
+                        " (호텔신라 2026-05-17 케이스) 금지. 위 리스트가"
+                        " 비어있는 경우만 일본어 뉴스 부재로 인정."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "kabutan news injection failed for %s: %s", ticker, exc,
+            )
+
+        # JP macro from FRED (BoJ policy rate / JGB 10Y / JP CPI). yfinance
+        # ^TNX is US; the JP rate environment was previously absent.
+        # Mirrors the BoK ECOS KR block.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "JP":
+                from bot.fred_client import fetch_macro, format_macro_for_prompt
+                jp_macro = fetch_macro("JP")
+                jp_macro_block = format_macro_for_prompt(jp_macro, "JP")
+                if jp_macro_block:
+                    base += (
+                        "\n\n=== Pre-fetched JP macro (FRED 미러: BoJ / OECD,"
+                        " verbatim — JP-specific rate environment) ===\n"
+                        + jp_macro_block
+                        + "\n\n위 JP 거시 지표는 JP equity 분석의 기본"
+                        " frame이다. ^TNX (미국 10Y)만 보고 '고금리"
+                        " 환경' 결론을 내리지 말고, BoJ 정책금리 + JGB"
+                        " 10Y의 절대 수준 + 직전 변동 방향을 같이"
+                        " 인용하라. 2024년 3월 BoJ NIRP 종료 이후"
+                        " 정상화 경로가 진행 중이므로, 은행 / 부동산 /"
+                        " J-REIT 종목 분석에서는 이 변수가 펀더멘털을"
+                        " 압도하는 단일 매크로이다."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "fred jp macro injection failed for %s: %s", ticker, exc,
+            )
+
+        # JP consensus fallback — yfinance 1st, Kabutan 2nd. yfinance
+        # already covers Nikkei 225 / large TOPIX names; the Kabutan
+        # path here is invoked from get_market_signals_for() at the
+        # same layer the FnGuide fallback is. We don't duplicate the
+        # call here — get_market_signals_for is already wired upstream
+        # and returns the merged consensus line for JP via the same
+        # path as KR. (See get_market_signals_for in this module.)
     return base
 
 def create_msg_delete():

@@ -698,7 +698,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance (15년 캐시) · Alpha Vantage (영문) · 한국 네이버 뉴스 (한경/매경/연합) · 분기+연간 재무 · 매크로 9종 (시장별 분기) · 한국 ECOS (기준금리·KR10Y·CPI) · 섹터 ETF (미국 SPDR/한국 KODEX 22종) · 리스크 6종 · 컨센서스 (한국: yfinance+FnGuide) · 공매도 + DTC · 내부자/기관 · 실적 ±10일 · 한국 DART (공시·임원지분) · 한국 KRX (5일순매수+외국인지분율·공매도잔고 30일추이) · Forward EPS sanity · 컨센서스 staleness (가격갭+갱신일)
+yfinance (15년 캐시) · Alpha Vantage (영문) · 한국 네이버 뉴스 · 일본 Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 분기: 미국/한국/일본 전용 세트) · 한국 ECOS (기준금리·KR10Y·CPI) · 일본 FRED (BoJ금리·JGB10Y·CPI) · 섹터 ETF (미국 SPDR·한국 KODEX·일본 NEXT FUNDS TOPIX-17) · 리스크 6종 · 컨센서스 (한국: yfinance+FnGuide / 일본: yfinance+Kabutan) · 공매도 + DTC · 내부자/기관 · 실적 ±10일 · 한국 DART · 일본 EDINET (공시·5%대량보유) · 한국 KRX (5일순매수+외국인·공매도 30일추이) · Forward EPS sanity · 컨센서스 staleness (가격갭+갱신일)
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -746,8 +746,9 @@ yfinance (15년 캐시) · Alpha Vantage (영문) · 한국 네이버 뉴스 (�
 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
- • 한국 주식 — Phase 0 + Phase 1 완료 (티커 / KODEX 매핑 / KR 매크로 9종 / DART 통합 / yfinance + FnGuide 컨센서스). Phase 2 (실제 KR 종목 분석 검증) 진행 예정
- • 일본 / 중국 시장 확장 (Phase 3 예정)
+ • 한국 — Phase 0~2.5 완료 (KODEX 매핑·KR 매크로·DART·FnGuide·KRX 5일 flow·30일 외국인/공매도 추이·BoK ECOS·네이버 뉴스). 신규 종목 검증 지속
+ • 일본 — Phase 3 진행 중 (티커 별칭 50+·TOPIX-17 ETF 매핑·JP 매크로 9종·EDINET 공시·Kabutan 컨센서스·Kabutan 뉴스·FRED BoJ/JGB/CPI·JPY 통화 디렉티브·JP RULE 11 산업 정책 변수). EDINET / FRED 키 등록 후 가동
+ • 중국 — Phase 4 예정
 """
 
 

@@ -78,11 +78,47 @@ _MACRO_SERIES_KR = [
 ]
 
 
+# JP-tilted macro 9-series. Same shape and intent as the KR set:
+# pull the indicators that actually move .T-listed stocks on a short
+# horizon, drop the US-specific ones that aren't relevant.
+#   - USD/JPY: every ¥1 weaker = +¥40-50bn operating profit for
+#     Toyota — the dominant single variable for the entire export
+#     cohort.
+#   - Nikkei 225 / TOPIX: domestic broad market + style overlay.
+#   - 美 10Y: JP growth multiples co-move with US yields (esp.
+#     semis/software when global risk-off hits).
+#   - JGB 10Y: BoJ YCC stance proxy, dominant variable for banks
+#     / insurers / REITs. Yfinance exposes via ^TNX-like? Actually
+#     yfinance is unreliable for ^N225 yield series; we'll add a
+#     FRED-backed JGB later. For now use ^TNX as the rate proxy.
+#   - VIX: global risk-off carries over directly to JP.
+#   - WTI: JP is a net energy importer, oil = inflation passthrough.
+#   - 구리: industrial demand bellwether (semis, machinery exposure).
+#   - USD/CNY: China is JP's #1 export market — RMB weakness hits
+#     JP exporters' relative competitiveness.
+#   - 비트코인: same risk-on/risk-off proxy as the US set.
+_MACRO_SERIES_JP = [
+    ("JPY=X", "엔/달러 (USD/JPY)", ""),
+    ("^N225", "Nikkei 225", ""),
+    ("1306.T", "TOPIX (1306 ETF)", "¥"),
+    ("^TNX", "美 10Y 국채금리", "%"),
+    ("^VIX", "VIX 지수", ""),
+    ("CL=F", "WTI 원유", "$"),
+    ("HG=F", "구리 (선물)", "$"),
+    ("CNY=X", "위안/달러 (USD/CNY)", ""),
+    ("KRW=X", "원/달러 (USD/KRW)", ""),
+]
+
+
 def _series_for_market(market: str):
     """Return the macro series list for the given market code. Falls
-    back to the US series for unknown markets so JP/CN tickers still
-    get *some* macro context until phase 3 ships market-specific sets."""
-    return _MACRO_SERIES_KR if market == "KR" else _MACRO_SERIES
+    back to the US series for unknown markets so CN tickers still
+    get *some* macro context until Phase 3 ships its own set."""
+    if market == "KR":
+        return _MACRO_SERIES_KR
+    if market == "JP":
+        return _MACRO_SERIES_JP
+    return _MACRO_SERIES
 
 
 def _fetch_one(ticker: str, curr_date: str) -> tuple[float | None, float | None]:

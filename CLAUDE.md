@@ -229,9 +229,25 @@ Phase tracking — what's done, what's blocking the next phase:
 - Watch for additional KR failure modes: FnGuide page structure shifts, DART 429 / rate limits, currency unit drift in fundamentals tables.
 - Update analyst-count / RULE-count if any KR-specific rule lands.
 
-**Phase 3 — JP / CN expansion** (further out)
+**Phase 3 — JP expansion (foundation shipped)**
+- Ticker / classification: `bot/market.py` has `_JP_ENGLISH_ALIAS` (50+ romanized JP company names → `.T` tickers — TOYOTA→7203.T, SONY→6758.T, NINTENDO→7974.T, MUFG→8306.T, SOFTBANK→9984.T, …) + `_JP_INDUSTRY_PEERS` (30+ industries). `resolve_english_alias` / `resolve_peer_set` are market-aware.
+- Sector strength: `_JP_INDUSTRY_OVERRIDES` maps yfinance industries to NEXT FUNDS TOPIX-17 ETFs (1617 식품 ~ 1633 부동산); `_JP_BROAD_FALLBACK = ("1306.T", "TOPIX (1306)")`.
+- Macro: JP-tilted 9-series in `_MACRO_SERIES_JP` (USD/JPY · Nikkei 225 · TOPIX · 美 10Y · VIX · WTI · 구리 · USD/CNY · USD/KRW); `get_macro_for` dispatches by market.
+- FRED client (`bot/fred_client.py`) — BoJ 정책금리 / JGB 10Y / JP CPI YoY via FRED's OECD/BoJ mirror; 12h disk cache; same shape as `bok_ecos_client`.
+- EDINET client (`bot/edinet_client.py`) — daily document listing API, secCode filter (4-digit ticker + 0 checksum), surfaces 120/130/140/150/160/170/180/190/350/360 doc types (annual / quarterly / semi-annual / 임시 / 대량보유). Per-day disk cache (forever for past days, 12h for today). `next_earnings_window` infers JP fiscal-year-end 3/31 + 45/90-day filing windows.
+- Kabutan consensus (`bot/kabutan_consensus.py`) — HTML scrape for target / rating (強気/中立/弱気 → 매수/보유/매도) / analyst count / last_report_date. Fallback path when yfinance is empty; mirrors `fnguide_consensus.py`.
+- Kabutan news (`bot/kabutan_news.py`) — HTML scrape of `kabutan.jp/stock/news?code=NNNN`; year-implicit date resolution; 4h cache; same `{date, title, source, link, summary}` schema as `naver_news_client`.
+- `build_instrument_context` injections (JP branch): JP naming directive (yfinance longName + ticker), JP currency directive (¥, 兆/億, 회계연도 3/31 인지, financialCurrency ≠ JPY 경고), EDINET 공시 / 5% 대량보유 / 분기 윈도 block, Kabutan 뉴스 block, FRED JP 매크로 block, J-REIT MUTUALFUND-misclass override.
+- `get_market_signals_for` JP path: yfinance 1차 + Kabutan 2차 consensus fallback, last_report_date staleness warning shared with KR.
+- `has_recent_news` JP fallback: Kabutan when yfinance .news returns 0 articles.
+- `fundamentals_analyst.py` RULE 11 (JP INDUSTRY-SPECIFIC POLICY / MACRO VARIABLES — JP ONLY): 自動車·銀行·不動産·製薬·商社·반도체 장비·통신·철강·전력 9개 산업별 단일 매크로 변수 명시 의무. Keiretsu cross-holding rule deferred (current keiretsu coupling is weak vs KR chaebol).
+- `analyzer._display_ticker` JP branch: prepend longName ("Toyota Motor Corporation / 7203.T") when available.
+- Needs user-supplied: `EDINET_API_KEY` (free at https://disclosure2.edinet-fsa.go.jp/), `FRED_API_KEY` (free at https://fredaccount.stlouisfed.org/). Kabutan needs no key.
+- Phase 3 validation: pending — `/7203.T` (Toyota), `/6758.T` (Sony), `/8306.T` (MUFG) will be the first three test cases once keys are loaded.
+
+**Phase 4 — CN expansion** (further out)
 - Same shape: market-specific benchmark mapping + data source adapters
-- TOPIX sector ETFs for JP, CSI 300 sectors for CN
+- CSI 300 sector mapping, Tushare / akshare for filings + news
 
 ## TODO
 
@@ -245,14 +261,16 @@ Phase tracking — what's done, what's blocking the next phase:
   (no-go for general users). Alpha Vantage / Finnhub free tiers don't
   cover `.KS`/`.KQ` analyst aggregates.
 
-- **Hydrator-registry refactor for pre-fetch** (deferred). When
-  `build_instrument_context`'s data sources grow past ~10 (currently
-  7: yfinance .info, yfinance averages, macro 9-series, risk metrics,
-  sector strength, DART block, FnGuide consensus), revisit the
-  typed-stage pattern from xai-org/x-algorithm's `candidate-pipeline`
-  crate: each source declares its inputs / outputs / failure mode,
-  the orchestrator handles parallelism + per-stage error isolation
-  instead of the current imperative try/except chain. Triggered by
-  Phase 3 (JP / CN expansion) which will add Japan / China data
-  sources. Not worth introducing now — the chain is still readable
-  at 7 sources.
+- **Hydrator-registry refactor for pre-fetch** (deferred but now urgent).
+  After Phase 3 JP foundation, `build_instrument_context`'s data
+  sources are: yfinance .info, yfinance averages, macro 9-series,
+  risk metrics, sector strength, DART (KR), FnGuide consensus (KR),
+  KRX pykrx flow (KR), KRX 30-day trends (KR), BoK ECOS macro (KR),
+  Naver news (KR), EDINET (JP), Kabutan consensus (JP), Kabutan news
+  (JP), FRED JP macro (JP). 15 sources, all sequential imperative
+  try/except, all per-market gated. The hydrator-registry pattern
+  (xai-org/x-algorithm's `candidate-pipeline` crate) — each source
+  declares its inputs / outputs / market scope / failure mode, the
+  orchestrator handles parallelism + per-stage error isolation — is
+  now overdue. Phase 4 (CN) will push this past 20 sources; refactor
+  before then.

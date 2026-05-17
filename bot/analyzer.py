@@ -467,13 +467,26 @@ def _display_ticker(ticker: str) -> str:
     """
     try:
         from bot.market import detect_market
-        if detect_market(ticker) != "KR":
+        market = detect_market(ticker)
+        if market == "KR":
+            from bot.dart_client import get_dart
+            code = (ticker or "").upper().split(".")[0]
+            name = get_dart().stock_code_to_name(code)
+            if name:
+                return f"{name} / {ticker}"
             return ticker
-        from bot.dart_client import get_dart
-        code = (ticker or "").upper().split(".")[0]
-        name = get_dart().stock_code_to_name(code)
-        if name:
-            return f"{name} / {ticker}"
+        if market == "JP":
+            # JP: prefer yfinance longName (English / occasionally JP). EDINET
+            # Japanese-name lookup will replace this once edinet_client lands.
+            try:
+                from tradingagents.agents.utils.agent_utils import _instrument_info
+                info = _instrument_info(ticker) or {}
+                name = info.get("longName") or info.get("shortName")
+                if name and name.upper() != ticker.upper():
+                    return f"{name} / {ticker}"
+            except Exception:
+                pass
+            return ticker
     except Exception:
         pass
     return ticker

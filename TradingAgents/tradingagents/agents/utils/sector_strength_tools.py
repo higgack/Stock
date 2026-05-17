@@ -99,6 +99,76 @@ _KR_INDUSTRY_OVERRIDES = [
 _KR_BROAD_FALLBACK = ("069500.KS", "KOSPI 200 (KODEX 200)")
 
 
+# Japanese sector ETFs — NEXT FUNDS TOPIX-17 series (Nomura).
+# The TOPIX-33 series exists but liquidity for the narrow buckets is
+# too thin for benchmark relative-strength calculations. TOPIX-17 is
+# the right granularity for sector strength: broad enough to be
+# tradable, narrow enough to isolate sub-industry performance.
+# Source: https://nextfunds.jp/lineup/ (NEXT FUNDS official lineup).
+_JP_INDUSTRY_OVERRIDES = [
+    # 食品
+    ("packaged foods", ("1617.T", "식품 (NEXT FUNDS TOPIX-17 식품)")),
+    ("beverages", ("1617.T", "식품 (NEXT FUNDS TOPIX-17 식품)")),
+    ("food distribution", ("1617.T", "식품 (NEXT FUNDS TOPIX-17 식품)")),
+    # エネルギー資源
+    ("oil & gas", ("1618.T", "에너지 (NEXT FUNDS TOPIX-17 에너지)")),
+    ("oil and gas", ("1618.T", "에너지 (NEXT FUNDS TOPIX-17 에너지)")),
+    # 建設・資材
+    ("construction", ("1619.T", "건설·자재 (NEXT FUNDS TOPIX-17 건설)")),
+    ("building materials", ("1619.T", "건설·자재 (NEXT FUNDS TOPIX-17 건설)")),
+    # 素材・化学
+    ("chemical", ("1620.T", "소재·화학 (NEXT FUNDS TOPIX-17 화학)")),
+    ("specialty chemical", ("1620.T", "소재·화학 (NEXT FUNDS TOPIX-17 화학)")),
+    # 医薬品
+    ("drug manufacturers", ("1621.T", "제약 (NEXT FUNDS TOPIX-17 제약)")),
+    ("pharma", ("1621.T", "제약 (NEXT FUNDS TOPIX-17 제약)")),
+    ("biotech", ("1621.T", "제약 (NEXT FUNDS TOPIX-17 제약)")),
+    # 自動車・輸送機
+    ("auto", ("1622.T", "자동차 (NEXT FUNDS TOPIX-17 자동차)")),
+    # 鉄鋼・非鉄
+    ("steel", ("1623.T", "철강·비철 (NEXT FUNDS TOPIX-17 철강)")),
+    ("metals & mining", ("1623.T", "철강·비철 (NEXT FUNDS TOPIX-17 철강)")),
+    # 機械
+    ("industrial machinery", ("1624.T", "기계 (NEXT FUNDS TOPIX-17 기계)")),
+    ("farm & heavy machinery", ("1624.T", "기계 (NEXT FUNDS TOPIX-17 기계)")),
+    # 電機・精密
+    ("electronic components", ("1625.T", "전기·정밀 (NEXT FUNDS TOPIX-17 전기)")),
+    ("semiconductor", ("1625.T", "전기·정밀 (NEXT FUNDS TOPIX-17 전기)")),
+    ("consumer electronics", ("1625.T", "전기·정밀 (NEXT FUNDS TOPIX-17 전기)")),
+    ("scientific & technical instruments", ("1625.T", "전기·정밀 (NEXT FUNDS TOPIX-17 전기)")),
+    # 情報通信・サービスその他
+    ("software", ("1626.T", "IT·서비스 (NEXT FUNDS TOPIX-17 IT)")),
+    ("internet content", ("1626.T", "IT·서비스 (NEXT FUNDS TOPIX-17 IT)")),
+    ("communication services", ("1626.T", "IT·서비스 (NEXT FUNDS TOPIX-17 IT)")),
+    ("information technology services", ("1626.T", "IT·서비스 (NEXT FUNDS TOPIX-17 IT)")),
+    # 電気・ガス
+    ("utilities - regulated electric", ("1627.T", "전력·가스 (NEXT FUNDS TOPIX-17 전력)")),
+    ("utilities - regulated gas", ("1627.T", "전력·가스 (NEXT FUNDS TOPIX-17 전력)")),
+    # 運輸・物流
+    ("railroads", ("1628.T", "운수·물류 (NEXT FUNDS TOPIX-17 운수)")),
+    ("trucking", ("1628.T", "운수·물류 (NEXT FUNDS TOPIX-17 운수)")),
+    ("airlines", ("1628.T", "운수·물류 (NEXT FUNDS TOPIX-17 운수)")),
+    ("marine shipping", ("1628.T", "운수·물류 (NEXT FUNDS TOPIX-17 운수)")),
+    # 商社・卸売
+    ("conglomerates", ("1629.T", "상사·도매 (NEXT FUNDS TOPIX-17 상사)")),
+    ("trading companies", ("1629.T", "상사·도매 (NEXT FUNDS TOPIX-17 상사)")),
+    # 小売
+    ("specialty retail", ("1630.T", "소매 (NEXT FUNDS TOPIX-17 소매)")),
+    ("department stores", ("1630.T", "소매 (NEXT FUNDS TOPIX-17 소매)")),
+    ("apparel retail", ("1630.T", "소매 (NEXT FUNDS TOPIX-17 소매)")),
+    # 銀行
+    ("banks", ("1631.T", "은행 (NEXT FUNDS TOPIX-17 은행)")),
+    # 金融（除く銀行）
+    ("insurance", ("1632.T", "금융 (NEXT FUNDS TOPIX-17 금융)")),
+    ("capital markets", ("1632.T", "금융 (NEXT FUNDS TOPIX-17 금융)")),
+    # 不動産
+    ("real estate", ("1633.T", "부동산 (NEXT FUNDS TOPIX-17 부동산)")),
+    ("reit", ("1633.T", "부동산 (NEXT FUNDS TOPIX-17 부동산)")),
+]
+
+_JP_BROAD_FALLBACK = ("1306.T", "TOPIX (1306)")
+
+
 def _resolve_benchmark(ticker: str) -> tuple[str, str] | None:
     """Pick the most specific sector/industry ETF for `ticker`.
 
@@ -133,9 +203,15 @@ def _resolve_benchmark(ticker: str) -> tuple[str, str] | None:
         # No specific KODEX sector — use KOSPI 200 as broad fallback.
         return _KR_BROAD_FALLBACK
 
-    # JP / CN coverage to come in later phases. For now they fall
-    # through to the US logic which probably won't have a useful
-    # mapping for them, returning None.
+    if market == "JP":
+        for needle, etf in _JP_INDUSTRY_OVERRIDES:
+            if needle in industry:
+                return etf
+        # No specific TOPIX-17 sector match — use TOPIX broad ETF.
+        return _JP_BROAD_FALLBACK
+
+    # CN coverage to come in Phase 3. For now CN falls through to US
+    # logic which probably won't have a useful mapping, returning None.
     for needle, etf in _INDUSTRY_OVERRIDES:
         if needle in industry:
             return etf

@@ -1,0 +1,199 @@
+"""FRED (Federal Reserve Economic Data) Open API client.
+
+Used as a single-source macro adapter for non-US markets where yfinance
+doesn't reliably surface central-bank-policy / government-bond-yield /
+inflation series. Phase 3 starts with Japan (BoJ policy rate, JGB 10Y,
+JP CPI YoY); future phases (EU, CN) extend via the same module.
+
+FRED docs: https://fred.stlouisfed.org/docs/api/fred/
+Endpoint shape:
+  /fred/series/observations?series_id=ID&api_key=KEY&file_type=json
+  &observation_start=YYYY-MM-DD&sort_order=desc&limit=N
+
+Auth: FRED_API_KEY env var (free at https://fredaccount.stlouisfed.org/).
+Missing key ⇒ silent None and the rest of the analysis continues.
+
+Cache: per (series_id, today) at ~/.tradingagents/cache/fred/ with 12h
+TTL — monthly series rarely move intra-day, daily series tolerate the
+freshness gap given the 5-day analysis horizon.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import time
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Optional
+
+import requests
+
+log = logging.getLogger("bot.fred")
+
+_CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "fred"
+_CACHE_TTL_HOURS = 12
+_BASE_URL = "https://api.stlouisfed.org/fred"
+_TIMEOUT = 10
+
+# Per-market series catalog. Each entry is one indicator we surface in
+# the macro block; the FRED series_id maps to OECD / IMF / BoJ-sourced
+# data via FRED's mirror. label / unit drive the prompt rendering.
+#
+# Why FRED instead of direct BoJ API: BoJ's API is Japanese-only with
+# inconsistent CSV formatting; FRED mirrors the same series with a
+# consistent JSON shape and a single free API key works for JP/EU/CN.
+_SERIES_JP = {
+    "policy_rate": {
+        "series_id": "IRSTCB01JPM156N",
+        "label": "BoJ 정책금리",
+        "unit": "%",
+        "lookback_days": 365,
+    },
+    "jp10y": {
+        "series_id": "IRLTLT01JPM156N",
+        "label": "JGB 10Y 국채금리",
+        "unit": "%",
+        "lookback_days": 90,
+    },
+    "cpi_yoy": {
+        "series_id": "CPALTT01JPM659N",
+        "label": "JP CPI (전년동월비)",
+        "unit": "%",
+        "lookback_days": 365,
+    },
+}
+
+_MARKETS = {
+    "JP": _SERIES_JP,
+}
+
+
+def _fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
+    """Fetch latest observation from a FRED series. Returns dict with
+    value / time / prev_value / change, or None on any failure."""
+    api_key = os.getenv("FRED_API_KEY", "").strip()
+    if not api_key:
+        log.warning("fred: FRED_API_KEY missing — %s unavailable", series_id)
+        return None
+
+    today_str = date.today().isoformat()
+    cache_file = _CACHE_DIR / f"{series_id}_{today_str}.json"
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < _CACHE_TTL_HOURS:
+                return json.loads(cache_file.read_text())
+        except Exception as exc:
+            log.warning("fred: cache read failed for %s: %s", series_id, exc)
+
+    start = (date.today() - timedelta(days=lookback_days)).isoformat()
+    url = (
+        f"{_BASE_URL}/series/observations"
+        f"?series_id={series_id}"
+        f"&api_key={api_key}"
+        f"&file_type=json"
+        f"&observation_start={start}"
+        f"&sort_order=desc"
+        f"&limit=10"
+    )
+
+    try:
+        resp = requests.get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:
+        log.warning("fred: HTTP fetch failed for %s: %s", series_id, exc)
+        return None
+
+    obs = payload.get("observations") or []
+    # FRED returns "." for missing values; filter them out.
+    clean: list[tuple[str, float]] = []
+    for row in obs:
+        v = row.get("value", "")
+        d = row.get("date", "")
+        if not v or v == "." or not d:
+            continue
+        try:
+            clean.append((d, float(v)))
+        except ValueError:
+            continue
+    if not clean:
+        log.info("fred: empty observations for %s (start %s)", series_id, start)
+        return None
+
+    # desc order: clean[0] = latest, clean[1] = previous period.
+    latest_date, latest_val = clean[0]
+    prev_val: Optional[float] = clean[1][1] if len(clean) >= 2 else None
+    change = (latest_val - prev_val) if prev_val is not None else None
+
+    result = {
+        "value": latest_val,
+        "time": latest_date,
+        "prev_value": prev_val,
+        "change": change,
+    }
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(result, ensure_ascii=False))
+    except Exception as exc:
+        log.warning("fred: cache write failed for %s: %s", series_id, exc)
+
+    return result
+
+
+def fetch_macro(market: str) -> dict:
+    """Return {key: indicator} for all defined series in this market.
+    Missing / failed indicators are silently dropped — callers should
+    check whether the dict is non-empty before rendering."""
+    catalog = _MARKETS.get(market.upper())
+    if not catalog:
+        return {}
+    out: dict[str, dict] = {}
+    for key, cfg in catalog.items():
+        obs = _fetch_series(cfg["series_id"], cfg["lookback_days"])
+        if not obs:
+            continue
+        out[key] = {
+            **obs,
+            "label": cfg["label"],
+            "unit": cfg["unit"],
+        }
+    return out
+
+
+def format_macro_for_prompt(macro: dict, market: str) -> str:
+    """Render the macro dict as a bullet list for prompt injection.
+    Each line shows value + change-from-previous (+/-) + reference date."""
+    if not macro:
+        return ""
+    market = market.upper()
+    header = {
+        "JP": "JP 거시 (FRED 미러: BoJ / OECD / IMF):",
+    }.get(market, f"{market} 거시 (FRED):")
+
+    order = {
+        "JP": ["policy_rate", "jp10y", "cpi_yoy"],
+    }.get(market, list(macro.keys()))
+
+    lines = [header]
+    for key in order:
+        ind = macro.get(key)
+        if not ind:
+            continue
+        value = ind.get("value", 0)
+        unit = ind.get("unit", "")
+        label = ind.get("label", key)
+        change = ind.get("change")
+        time_s = ind.get("time", "")
+        change_part = ""
+        if change is not None:
+            if change > 0:
+                change_part = f" (전기 대비 +{change:.2f}{unit})"
+            elif change < 0:
+                change_part = f" (전기 대비 {change:.2f}{unit})"
+        date_part = f" — {time_s}" if time_s else ""
+        lines.append(f"  • {label}: {value:.2f}{unit}{change_part}{date_part}")
+    return "\n".join(lines) if len(lines) > 1 else ""

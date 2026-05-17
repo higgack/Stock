@@ -107,13 +107,85 @@ _KR_ENGLISH_ALIAS = {
 
 
 def resolve_english_alias(token: str) -> str | None:
-    """Map a romanized KR company name (NAVER / KAKAO / etc.) to the
-    yfinance-format KR ticker, or None when the alias is ambiguous /
+    """Map a romanized company name (NAVER / TOYOTA / etc.) to the
+    yfinance-format ticker, or None when the alias is ambiguous /
     unknown. Returns the canonical ticker for direct routing into the
-    analyzer; the caller still applies its own ticker validation."""
+    analyzer; the caller still applies its own ticker validation.
+
+    Searches both _KR_ENGLISH_ALIAS and _JP_ENGLISH_ALIAS. Each market
+    has its own dict so a clash like 'SUMITOMO' (could be 三井住友 vs
+    住友商事) can be resolved with explicit market-specific keys."""
     if not token:
         return None
-    return _KR_ENGLISH_ALIAS.get(token.upper())
+    upper = token.upper()
+    return _KR_ENGLISH_ALIAS.get(upper) or _JP_ENGLISH_ALIAS.get(upper)
+
+
+# Romanized JP company aliases. Same problem as the KR map (NAVER /
+# 035420.KS) — users type TOYOTA expecting the bot to resolve, but
+# yfinance has no such ticker. Most names are unambiguous; the few
+# that aren't (MITSUBISHI = 商事 vs 重工 vs UFJ, SOFTBANK = group vs
+# 9434 telecom) are mapped to the most-queried form, with explicit
+# disambiguated variants (MITSUBISHIUFJ, SOFTBANKCORP) for users who
+# actually want the other one.
+_JP_ENGLISH_ALIAS = {
+    "TOYOTA": "7203.T",
+    "SONY": "6758.T",
+    "HONDA": "7267.T",
+    "NISSAN": "7201.T",
+    "SUZUKI": "7269.T",
+    "SUBARU": "7270.T",
+    "SOFTBANK": "9984.T",        # default: SoftBank Group (holding co)
+    "SOFTBANKGROUP": "9984.T",
+    "SOFTBANKCORP": "9434.T",    # explicit: telecom subsidiary
+    "NINTENDO": "7974.T",
+    "HITACHI": "6501.T",
+    "MITSUBISHI": "8058.T",      # default: 三菱商事 (most-queried 三菱)
+    "MITSUBISHIUFJ": "8306.T",
+    "MUFG": "8306.T",
+    "SMFG": "8316.T",
+    "MIZUHO": "8411.T",
+    "TOKYOELECTRON": "8035.T",
+    "ADVANTEST": "6857.T",
+    "KEYENCE": "6861.T",
+    "FANUC": "6954.T",
+    "FASTRETAILING": "9983.T",
+    "UNIQLO": "9983.T",
+    "RECRUIT": "6098.T",
+    "TAKEDA": "4502.T",
+    "ASTELLAS": "4503.T",
+    "DAIICHISANKYO": "4568.T",
+    "EISAI": "4523.T",
+    "CHUGAI": "4519.T",
+    "SHINETSU": "4063.T",
+    "DENSO": "6902.T",
+    "KOMATSU": "6301.T",
+    "KUBOTA": "6326.T",
+    "DAIKIN": "6367.T",
+    "NTT": "9432.T",
+    "KDDI": "9433.T",
+    "RAKUTEN": "4755.T",
+    "MERCARI": "4385.T",
+    "NIDEC": "6594.T",
+    "MURATA": "6981.T",
+    "CANON": "7751.T",
+    "PANASONIC": "6752.T",
+    "BRIDGESTONE": "5108.T",
+    "ITOCHU": "8001.T",
+    "MITSUI": "8031.T",          # default: 三井物産 (trading)
+    "MITSUIFUDOSAN": "8801.T",
+    "MITSUBISHIESTATE": "8802.T",
+    "JR": "9020.T",              # default: JR East
+    "JREAST": "9020.T",
+    "JRWEST": "9021.T",
+    "NIPPONSTEEL": "5401.T",
+    "JFE": "5411.T",
+    "ROHM": "6963.T",
+    "RENESAS": "6723.T",
+    "DISCO": "6146.T",
+    "LASERTEC": "6920.T",
+    "OLYMPUS": "7733.T",
+}
 
 
 # Hardcoded peer sets keyed by yfinance 'industry' string. The
@@ -215,15 +287,141 @@ def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:
     """Return a hand-curated peer ticker list for the subject's industry,
     or None when we don't have one for that industry. The subject ticker
     is filtered out so an analysis never compares a company to itself.
-    Capped at 5 peers for prompt brevity."""
+    Capped at 5 peers for prompt brevity.
+
+    Market-aware: picks JP-listed peers for .T tickers, KR-listed for
+    .KS/.KQ, US-listed for bare alpha tickers. Industry strings use
+    yfinance's standardized English vocabulary ('Auto Manufacturers',
+    'Banks - Diversified', etc.) so the same industry key works
+    across markets — the dict choice is what makes it market-specific."""
     if not industry:
         return None
-    base = _KR_INDUSTRY_PEERS.get(industry)
+    market = detect_market(ticker)
+    if market == "JP":
+        base = _JP_INDUSTRY_PEERS.get(industry)
+    else:
+        # KR + US fall through to the existing KR-leaning dict which
+        # also contains US ADRs for many industries. Phase 3 will add
+        # a CN dict for .HK / .SS tickers.
+        base = _KR_INDUSTRY_PEERS.get(industry)
     if not base:
         return None
     subject = (ticker or "").upper()
     peers = [t for t in base if t.upper() != subject]
     return peers[:5] or None
+
+
+# JP industry peer sets — Nikkei 225 / TOPIX 100 large caps grouped
+# by yfinance 'industry' field. Same shape as _KR_INDUSTRY_PEERS:
+# 3-5 peers per industry, subject filtered at resolve time, prompt
+# injection forces analyst to use exactly these tickers in Comps.
+# JP-specific industries (商社 Trading Houses, J-REIT 不動産) added
+# as their own keys since yfinance does carry distinct industry
+# strings for them.
+_JP_INDUSTRY_PEERS = {
+    "Auto Manufacturers": [
+        "7203.T", "7267.T", "7201.T", "7269.T", "7270.T",
+    ],
+    "Auto Parts": [
+        "6902.T", "7259.T", "5108.T", "7282.T",
+    ],
+    "Banks - Diversified": [
+        "8306.T", "8316.T", "8411.T", "8308.T", "7182.T",
+    ],
+    "Banks - Regional": [
+        "8306.T", "8316.T", "8411.T", "8308.T",
+    ],
+    "Insurance - Diversified": [
+        "8766.T", "8725.T", "8630.T", "8750.T",
+    ],
+    "Insurance - Life": [
+        "8750.T", "8725.T", "8766.T",
+    ],
+    "Consumer Electronics": [
+        "6758.T", "6752.T", "6753.T", "7751.T",
+    ],
+    "Semiconductors": [
+        "6857.T", "6723.T", "6963.T", "6526.T",
+    ],
+    "Semiconductor Equipment & Materials": [
+        "8035.T", "6146.T", "7735.T", "6920.T", "4063.T",
+    ],
+    "Drug Manufacturers - General": [
+        "4502.T", "4503.T", "4519.T", "4568.T", "4523.T",
+    ],
+    "Software - Application": [
+        "4307.T", "6098.T", "4684.T", "4751.T",
+    ],
+    "Software - Infrastructure": [
+        "9613.T", "4307.T", "4684.T",
+    ],
+    "Telecom Services": [
+        "9432.T", "9433.T", "9434.T", "9984.T",
+    ],
+    "Real Estate Services": [
+        "8801.T", "8802.T", "8830.T", "3289.T",
+    ],
+    "REIT - Diversified": [
+        "8951.T", "8953.T", "8954.T", "8960.T",
+    ],
+    "Steel": [
+        "5401.T", "5411.T", "5406.T",
+    ],
+    "Specialty Chemicals": [
+        "4063.T", "4188.T", "4005.T", "3402.T",
+    ],
+    "Chemicals": [
+        "4063.T", "4188.T", "4005.T", "3402.T",
+    ],
+    "Industrial Machinery": [
+        "6301.T", "6326.T", "6367.T", "6273.T", "6954.T",
+    ],
+    "Specialty Retail": [
+        "9983.T", "3382.T", "8267.T", "3099.T",
+    ],
+    "Department Stores": [
+        "3099.T", "8267.T", "8233.T",
+    ],
+    "Internet Content & Information": [
+        "4385.T", "4755.T", "4689.T", "2432.T",
+    ],
+    "Conglomerates": [
+        "8058.T", "8001.T", "8031.T", "8002.T", "8053.T",
+    ],
+    # JP-specific 商社 (general trading) — yfinance often classifies
+    # under 'Conglomerates' but it's a distinct business model worth
+    # its own peer set for analysis quality.
+    "Trading Companies": [
+        "8058.T", "8001.T", "8031.T", "8002.T", "8053.T",
+    ],
+    "Utilities - Regulated Electric": [
+        "9501.T", "9502.T", "9503.T",
+    ],
+    "Utilities - Regulated Gas": [
+        "9531.T", "9532.T",
+    ],
+    "Railroads": [
+        "9020.T", "9021.T", "9022.T", "9005.T", "9007.T",
+    ],
+    "Beverages - Non-Alcoholic": [
+        "2502.T", "2503.T", "2587.T",
+    ],
+    "Food Distribution": [
+        "8267.T", "3382.T",
+    ],
+    "Apparel Retail": [
+        "9983.T", "8273.T",
+    ],
+    "Aerospace & Defense": [
+        "7011.T", "7012.T", "7013.T",
+    ],
+    "Construction & Engineering": [
+        "1801.T", "1802.T", "1803.T", "1812.T",
+    ],
+    "Shipping": [
+        "9101.T", "9104.T", "9107.T",
+    ],
+}
 
 
 def get_market_config(ticker: str) -> MarketConfig:
