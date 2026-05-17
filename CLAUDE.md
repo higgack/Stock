@@ -219,3 +219,15 @@ Phase tracking — what's done, what's blocking the next phase:
   prices. KIS Developers requires a 한국투자증권 brokerage account
   (no-go for general users). Alpha Vantage / Finnhub free tiers don't
   cover `.KS`/`.KQ` analyst aggregates.
+
+- **Hydrator-registry refactor for pre-fetch** (deferred). When
+  `build_instrument_context`'s data sources grow past ~10 (currently
+  7: yfinance .info, yfinance averages, macro 9-series, risk metrics,
+  sector strength, DART block, FnGuide consensus), revisit the
+  typed-stage pattern from xai-org/x-algorithm's `candidate-pipeline`
+  crate: each source declares its inputs / outputs / failure mode,
+  the orchestrator handles parallelism + per-stage error isolation
+  instead of the current imperative try/except chain. Triggered by
+  Phase 3 (JP / CN expansion) which will add Japan / China data
+  sources. Not worth introducing now — the chain is still readable
+  at 7 sources.
