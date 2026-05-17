@@ -308,25 +308,56 @@ _NEWS_AVAILABILITY_CACHE: dict[str, bool] = {}
 
 
 def has_recent_news(ticker: str) -> bool:
-    """Return True iff yfinance currently surfaces ANY news article for
-    the ticker. Used as a pre-flight check so the bot can skip the news
-    analyst entirely on coverage-poor names (newly-IPO'd, OTC, foreign
-    secondary) instead of paying for an analyst that will produce a
-    placeholder and then trip the fail-fast guard.
+    """Return True iff some news source surfaces ANY article for the
+    ticker. Pre-flight gate so the bot can skip the news analyst on
+    coverage-poor names (newly-IPO'd, OTC, foreign secondary) instead
+    of paying for an analyst that will produce a placeholder and then
+    trip the fail-fast guard.
 
-    Conservative on error: a yfinance hiccup returns True so we don't
-    spuriously drop the news analyst on a transient network blip — the
-    in-graph retry will catch a real failure downstream anyway.
+    Source priority:
+    1. yfinance .news (US-heavy, the primary path for non-KR tickers).
+    2. Naver search via the KR corp name from DART (KR-only fallback).
+       Without this, KR tickers like 호텔신라 / 현대모비스 — which
+       yfinance returns 0 articles for despite plenty of Korean
+       coverage — got prematurely skipped from news/sentiment.
+
+    Conservative on error: any exception returns True so we don't
+    spuriously drop the news analyst on a transient network blip —
+    the in-graph retry will catch a real failure downstream.
     """
     if ticker in _NEWS_AVAILABILITY_CACHE:
         return _NEWS_AVAILABILITY_CACHE[ticker]
+    has = False
     try:
         import yfinance as yf
         items = yf.Ticker(ticker).news or []
-        has = len(items) > 0
+        if items:
+            has = True
     except Exception as exc:
-        _analyst_log.warning("news availability check failed for %s: %s", ticker, exc)
+        _analyst_log.warning(
+            "news availability (yfinance) check failed for %s: %s", ticker, exc,
+        )
         has = True  # fail open
+
+    # KR fallback: yfinance often shows 0 KR news even when Naver has
+    # dozens. Resolve ticker → corp_name via DART and probe Naver.
+    if not has:
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "KR":
+                from bot.dart_client import get_dart
+                code = (ticker or "").upper().split(".")[0]
+                kr_name = get_dart().stock_code_to_name(code)
+                if kr_name:
+                    from bot.naver_news_client import has_recent_korean_news
+                    if has_recent_korean_news(kr_name):
+                        has = True
+        except Exception as exc:
+            _analyst_log.warning(
+                "news availability (naver) check failed for %s: %s", ticker, exc,
+            )
+            # don't flip `has` here — yfinance answer stands
+
     _NEWS_AVAILABILITY_CACHE[ticker] = has
     return has
 
@@ -1099,6 +1130,41 @@ def build_instrument_context(ticker: str) -> str:
         except Exception as exc:
             _analyst_log.warning(
                 "pykrx flow injection failed for %s: %s", ticker, exc,
+            )
+
+        # Korean news via Naver search (KR-only). Alpha Vantage and
+        # yfinance don't index 한국어 publishers (한경 / 매경 / 연합
+        # / etc.) reliably, which is why 호텔신라 / 현대모비스
+        # 2026-05-17 had the news/sentiment analysts fall back to
+        # "data not found" or to citing one unrelated US battery
+        # company headline as their sole datapoint. Naver fills the
+        # gap with 25K free calls/day. Query by the KR corp name we
+        # already resolved above (kr_name from DART) — the ticker
+        # code '012330.KS' doesn't surface KR news. Inject the top
+        # 10 most-recent articles so the news/sentiment analysts
+        # have a real KR source to build on.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "KR" and kr_name:
+                from bot.naver_news_client import fetch_news, format_news_for_prompt
+                news_items = fetch_news(kr_name, days_back=28, max_items=10)
+                if news_items:
+                    base += (
+                        "\n\n=== Pre-fetched KR news (Naver 검색, verbatim) ===\n"
+                        + format_news_for_prompt(news_items)
+                        + "\n\n위 한국어 뉴스가 한국 종목에 대한"
+                        " primary news source이다. 영문 뉴스 (Alpha"
+                        " Vantage / yfinance) 가 비어있더라도 위"
+                        " 리스트를 활용해 news / sentiment 분석을"
+                        " 진행하라. 미국 무관 뉴스 (예: 미국 배터리"
+                        " 회사 헤드라인) 끌어다가 간접 추론으로"
+                        " 메우지 말 것 — 호텔신라 2026-05-17 케이스가"
+                        " 그 실수. 위 리스트가 비어있는 경우만"
+                        " 한국어 뉴스 부재로 인정."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "naver news injection failed for %s: %s", ticker, exc,
             )
     return base
 
