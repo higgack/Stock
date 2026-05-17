@@ -116,6 +116,116 @@ def resolve_english_alias(token: str) -> str | None:
     return _KR_ENGLISH_ALIAS.get(token.upper())
 
 
+# Hardcoded peer sets keyed by yfinance 'industry' string. The
+# fundamentals analyst kept cargo-culting peer examples across
+# industries (한국전력공사 → KMI/WMB/ENB; 호텔신라 → 005930/000660)
+# despite a prompt-level INDUSTRY CONSTRAINT — text rules alone can't
+# stop the LLM picking convenient names. Pre-fetch the right peer set
+# from this dict at analyze time and inject it as MANDATORY so the
+# analyst has no choice.
+#
+# Maintenance: add a row when a new KR-listed subject hits an industry
+# we haven't covered. Each row mixes KR-listed peers first (.KS/.KQ),
+# then ADR / TWSE / TSE peers second for broader context. Subject
+# ticker itself is filtered out by resolve_peer_set so the analyst
+# never compares a company to itself.
+_KR_INDUSTRY_PEERS = {
+    "Semiconductors": [
+        "000660.KS", "005930.KS", "TSM", "INTC", "AMD", "NVDA",
+    ],
+    "Semiconductor Equipment & Materials": [
+        "240810.KS", "042700.KS", "036930.KQ", "095610.KQ",
+        "319660.KS", "AMAT", "LRCX", "KLAC",
+    ],
+    "Specialty Chemicals": [
+        "005290.KS", "036830.KS", "093370.KS", "102710.KS",
+        "014680.KS",
+    ],
+    "Electronic Components": [
+        "011070.KS", "090460.KS", "353200.KS", "009150.KS",
+        "6981.T", "6762.T",
+    ],
+    "Consumer Electronics": [
+        "005930.KS", "066570.KS", "6758.T", "0992.HK",
+    ],
+    "Utilities - Regulated Electric": [
+        "015760.KS", "DUK", "SO", "AEP", "NEE",
+    ],
+    "Utilities - Regulated Gas": [
+        "036460.KS", "071320.KS",
+    ],
+    "Specialty Retail": [
+        "069960.KS", "057050.KS", "008770.KS", "TPR", "LULU",
+    ],
+    "Department Stores": [
+        "004170.KS", "004990.KS", "069960.KS", "M", "JWN",
+    ],
+    "Internet Content & Information": [
+        "035420.KS", "035720.KS", "GOOGL", "META", "9988.HK",
+    ],
+    "Auto Manufacturers": [
+        "005380.KS", "000270.KS", "TM", "F", "GM",
+    ],
+    "Auto Parts": [
+        "012330.KS", "204320.KS", "018880.KS", "DNZOY",
+    ],
+    "Banks - Regional": [
+        "086790.KS", "316140.KS", "024110.KS", "138930.KS",
+    ],
+    "Banks - Diversified": [
+        "055550.KS", "105560.KS", "086790.KS",
+    ],
+    "Insurance - Diversified": [
+        "001450.KS", "032830.KS", "000810.KS",
+    ],
+    "Drug Manufacturers - General": [
+        "207940.KS", "068270.KS", "326030.KS",
+    ],
+    "Biotechnology": [
+        "207940.KS", "068270.KS", "326030.KS", "REGN", "VRTX",
+    ],
+    "Steel": [
+        "005490.KS", "004020.KS", "002380.KS",
+    ],
+    "Shipbuilding": [
+        "010140.KS", "009540.KS", "042660.KS",
+    ],
+    "Aerospace & Defense": [
+        "047810.KS", "012450.KS", "079550.KS", "LMT", "RTX",
+    ],
+    "Software - Application": [
+        "352820.KS", "035420.KS", "035720.KS", "MSFT", "CRM",
+    ],
+    "Software - Infrastructure": [
+        "MSFT", "ORCL", "CRM",
+    ],
+    "Travel Services": [
+        "008770.KS", "035250.KS",  # 호텔신라, 강원랜드
+    ],
+    "Lodging": [
+        "008770.KS", "035250.KS",
+    ],
+    "Resorts & Casinos": [
+        "035250.KS", "114090.KS",
+    ],
+}
+
+
+def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:
+    """Return a hand-curated peer ticker list for the subject's industry,
+    or None when we don't have one for that industry. The subject ticker
+    is filtered out so an analysis never compares a company to itself.
+    Capped at 5 peers for prompt brevity."""
+    if not industry:
+        return None
+    base = _KR_INDUSTRY_PEERS.get(industry)
+    if not base:
+        return None
+    subject = (ticker or "").upper()
+    peers = [t for t in base if t.upper() != subject]
+    return peers[:5] or None
+
+
 def get_market_config(ticker: str) -> MarketConfig:
     """Convenience wrapper: detect market and return its config dict."""
     return MARKET_CONFIG[detect_market(ticker)]

@@ -799,6 +799,9 @@ def build_instrument_context(ticker: str) -> str:
             f" Electric'. 000660.KS is 'Semiconductors', completely"
             f" unrelated. Mixing these in a Utilities Comps table is"
             f" cargo-cult, not peer analysis.\n"
+            f"  ❌ WRONG (호텔신라 2026-05-17): listed 삼성전자 /"
+            f" SK하이닉스 in a Specialty Retail Comps table; even"
+            f" after self-noting the mismatch the table was kept.\n"
             f"  ✅ RIGHT for '{industry}': pick tickers whose yfinance"
             f" industry string LITERALLY matches '{industry}'. If you"
             f" cannot name 3 such tickers from memory, write ONE honest"
@@ -806,6 +809,30 @@ def build_instrument_context(ticker: str) -> str:
             f" skip the Comps section. Fabricated peers worse than no"
             f" peers."
         )
+
+        # MANDATORY PEER SET — when we have a curated peer list for
+        # this industry (bot/market._KR_INDUSTRY_PEERS), inject it
+        # directly so the analyst has no choice. Text-only rules
+        # don't stop the LLM from cargo-culting; a literal "use these
+        # five tickers" line does.
+        try:
+            from bot.market import resolve_peer_set
+            peers = resolve_peer_set(ticker, industry)
+            if peers:
+                peer_lines = "\n".join(f"  • {t}" for t in peers)
+                base += (
+                    f"\n\n=== MANDATORY COMPS PEER SET ===\n"
+                    f"For industry '{industry}', use EXACTLY these"
+                    f" peer tickers in the Comps table — do NOT add,"
+                    f" remove, or substitute any of them:\n"
+                    f"{peer_lines}\n"
+                    f"This list is curated to match the yfinance"
+                    f" 'industry' field. Fabricating different peers"
+                    f" (or borrowing from a different industry's"
+                    f" example list) is FORBIDDEN."
+                )
+        except Exception:
+            pass
 
     # KR body-text directive — readers can't parse '039030.KS' alone.
     # Force every analyst to surface the Korean corp name in narrative
