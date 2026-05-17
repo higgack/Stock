@@ -3,4 +3,7 @@
 # dependencies come from TradingAgents/pyproject.toml.
 python-telegram-bot>=21.0
 python-dotenv>=1.0.0
+# pykrx — KRX trading data (가격 정합성 + 외국인/기관/개인 일별 수급).
+# KR-only; pure-Python wrapper, no native deps.
+pykrx>=1.0.45
 -e ./TradingAgents

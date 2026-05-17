@@ -66,6 +66,28 @@ across the board and the PM still output Sell, which actively
 mislead the user. The correct response to empty data is to
 neither buy nor sell; ask for a retry.
 
+**ANALYST CONSENSUS OVERRIDE DISCIPLINE (mandatory):** When the
+four analysts' stance bar shows unanimous (4-0) or near-unanimous
+(3-0 with 1 abstain) agreement on a direction AND the Wall Street
+/ KR analyst consensus rating is 강매수 / 매수, you MAY override
+to the opposite direction (e.g. Underweight / Sell) ONLY if you
+explicitly name at least ONE of these triggers in your rationale:
+(a) 5-day-horizon technical extreme — RSI > 75 for Buy-reverse,
+    RSI < 25 for Sell-reverse
+(b) imminent specific catalyst — earnings within ±5 days, FOMC,
+    guide cut, regulatory event in the next 5 days
+(c) stance-vs-decision mismatch detector explicit warning text
+    was visible in your prompt
+(d) data-availability HOLD per the GUARD above
+Without ONE of these triggers named, default to the analyst
+direction: Buy / Overweight when analysts lean buy, Hold when
+split, Sell / Underweight when analysts lean sell. The pattern
+'분석가 4명 합의 보유 + 컨센서스 강매수 → PM Underweight on a
+single RSI signal' (현대모비스 / 호텔신라 / 한전 2026-05-17
+cluster) is exactly what this rule prevents. Unanimous analyst
+signals plus consensus should not flip on a single technical
+indicator without explicit justification.
+
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**

@@ -539,6 +539,20 @@ def get_market_signals_for(ticker: str) -> str:
                 f" 평균값을 'ground truth'로 사용하기 전에 본문의 개별"
                 f" 상향/하향 조정 뉴스와 대조하라"
             )
+        elif upside >= 30:
+            # Reverse direction: current price << consensus target by a
+            # wide margin. Two equally common causes: (a) real
+            # undervaluation, (b) analysts haven't pulled their targets
+            # down after a sustained selloff — same staleness pattern as
+            # the rally case above, just the other direction. 한국전력공사
+            # 2026-05-17 had +53.8% upside and the analyst happily quoted
+            # it as a buy signal; could just as easily be lagging targets.
+            lines.append(
+                f"  ⚠️ 컨센서스 목표가가 현재가보다 {upside:.0f}% 높음 — 최근 매도세"
+                f" 이후 일부 애널리스트가 목표가를 아직 하향하지 않았을 가능성도 큼."
+                f" 평균값을 'ground truth'로 사용하기 전에 본문의 개별 등급 강등 /"
+                f" 목표가 하향 뉴스와 대조하라."
+            )
 
     # Forward EPS sanity check. yfinance occasionally serves a stale or
     # malformed forward EPS (often >3x TTM or even negative when the
@@ -1046,6 +1060,45 @@ def build_instrument_context(ticker: str) -> str:
         except Exception as exc:
             _analyst_log.warning(
                 "dart context injection failed for %s: %s", ticker, exc,
+            )
+
+        # KRX investor-type trading flow (KR-only) — foreign /
+        # institutional / individual net purchases over 5 trading
+        # days. KR markets are dominated by foreign + institutional
+        # flow on short horizons (foreigners selling = KOSPI down,
+        # regardless of single-stock fundamentals). yfinance has
+        # nothing on this; pykrx wraps the KRX endpoint. Inject so
+        # the market analyst can size the directional bias correctly
+        # — current bot was missing the most important KR short-term
+        # signal entirely.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "KR":
+                from bot.pykrx_client import get_kr_trading_flow, format_flow_for_prompt
+                flow = get_kr_trading_flow(ticker, days_back=5)
+                if flow:
+                    base += (
+                        "\n\n=== Pre-fetched KR investor flow (KRX,"
+                        " verbatim — quote in 시장 분석 본문) ===\n"
+                        + format_flow_for_prompt(flow)
+                        + "\n\nINTERPRETATION GUIDE (mandatory):"
+                        " foreign + institutional + individual must"
+                        " sum to ~zero by construction. The signal"
+                        " in 5거래일 horizon comes from the"
+                        " direction + magnitude of the foreign +"
+                        " institutional rows. '외국인 순매수 +수백억"
+                        " 원' is a bullish short-term signal even"
+                        " if technicals look mixed; '외국인 순매도"
+                        " -수백억 원' is a bearish signal even with"
+                        " strong fundamentals. Cite this flow"
+                        " explicitly in the 시장 분석 결론 — it is"
+                        " the single most predictive KR-market"
+                        " short-term variable and the bot was"
+                        " missing it before this commit."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "pykrx flow injection failed for %s: %s", ticker, exc,
             )
     return base
 

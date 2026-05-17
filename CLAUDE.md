@@ -119,6 +119,31 @@ pattern to follow:
 3. Cron entry
 4. Manual command (only if 1-3 are infeasible and impact is one-time)
 
+## Portfolio Manager override discipline
+
+When the four-analyst stance bar shows unanimous (4-0) or
+near-unanimous (3-0 with 1 abstain) agreement on a direction AND
+the Wall Street / KR analyst consensus is 강매수 / 매수, the
+Portfolio Manager's verdict MAY override to the opposite direction
+ONLY if at least one of these triggers is named in the PM rationale:
+
+- 5-day-horizon technical extreme: RSI > 75 (for Buy-reverse to
+  Underweight) or RSI < 25 (for Sell-reverse to Overweight)
+- Imminent specific catalyst: earnings within ±5 days, FOMC,
+  guide cut, regulatory event
+- Stance-vs-decision mismatch detector explicit warning text was
+  visible to the PM in its prompt
+- Data-availability HOLD per portfolio_manager.py guard
+
+Without ONE of those triggers documented, the PM defaults to
+following the analyst-consensus direction: Buy / Overweight when
+analysts lean buy, Hold when split, Sell / Underweight when
+analysts lean sell. This rule exists because the bot was producing
+"분석가 4명 합의 보유 + 컨센서스 강매수 → PM Underweight on RSI
+alone" patterns (현대모비스 / 호텔신라 / 한전 2026-05-17 cluster);
+unanimous analyst signals plus consensus shouldn't be flipped on
+a single technical indicator without explicit justification.
+
 ## Help text maintenance (`_HELP_TEXT` in `bot/telegram_bot.py`)
 
 The help text is **pinned as a channel announcement**. Treat it as a public-facing spec.
