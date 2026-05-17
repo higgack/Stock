@@ -717,7 +717,7 @@ yfinance (15년 캐시) · Alpha Vantage (영문) · 한국 네이버 뉴스 · 
 
 ━━━━━━━━━
 <b>【7. 안정성 (자동)】</b>
-별도 subprocess (메인 안 멈춤) · 10분 wall 타임아웃 · LLM HTTP 150초 cap · Polish 정규식 step별 10초 SIGALRM · watchdog 12분 stale 재시작 · auto-update 2분 git pull 무중단 재배포 · 재시작 중 진행 메시지 자동 복구 · 펀더멘털 RULE 1~6 (숫자 정확성·실제 티커·자본 잠식 처리·섹션 중복 차단) · 분석가 stance 추출 정확도 보정 (결론 우선) · 섹터 강도 sanity (|25%p|↑ 시 인용 차단) · Wall Street 목표가 staleness 경고 (현재가 +20%↑ 갭 시)
+별도 subprocess · 10분 wall 타임아웃 · LLM 150초 cap · watchdog 12분 stale 재시작 · auto-update 2분 git pull 무중단 재배포 · 재시작 진행 메시지 자동 복구 · 펀더멘털 RULE 1~11 (숫자·티커·자본잠식·KR/JP 산업정책·중복 차단) · stance 추출 결론우선 · 섹터강도 |25%p|↑ 인용 차단 · 컨센서스 목표가 staleness (가격갭 ±20%↑ + 갱신일 30일+) · 코퍼레이트액션 HARD GUARD (분할/무상증자/병합 14일내 시 SMA/MACD/RSI 인용 차단) · DART/EDINET 임원지분 빈 결과 환각 차단 (지배구조 narrative 금지) · Comps peer multiples 사전 fetch (PER/PSR/PBR/EV·EBITDA) · PM override discipline (다수 분석가 동일 방향 시 trigger 명시 의무)
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>

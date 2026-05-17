@@ -233,13 +233,41 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
             from tradingagents.agents.utils.agent_utils import has_recent_news
             if not has_recent_news(ticker):
                 selected = [a for a in selected if a not in ("news", "social")]
-                pre_flight_notes.append(
-                    f"📰 뉴스·💬 감정 분석 자동 생략: yfinance에 {ticker} 기사 0건"
-                    " (신생주·저커버리지 종목 추정 — 시장·펀더멘털만으로 분석 진행)"
-                )
+                # Market-specific skip message so the user can see which
+                # fallback sources were actually tried. Default text
+                # "yfinance에 기사 0건" mis-implies for KR/JP that the
+                # KR / JP fallback path wasn't even attempted, when in
+                # fact has_recent_news already tried Naver (KR) /
+                # Kabutan (JP) and got 0 too. 코미코 2026-05-17 case
+                # surfaced this: user reasonably assumed Naver fallback
+                # wasn't wired when it actually had run and returned
+                # empty.
+                try:
+                    from bot.market import detect_market
+                    _market = detect_market(ticker)
+                except Exception:
+                    _market = "US"
+                if _market == "KR":
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + Naver(한국어)"
+                        f" 양쪽 모두 최근 28일간 {ticker} 기사 0건"
+                        " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
+                    )
+                elif _market == "JP":
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + Kabutan(일본어)"
+                        f" 양쪽 모두 최근 28일간 {ticker} 기사 0건"
+                        " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
+                    )
+                else:
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance에 {ticker} 기사 0건"
+                        " (신생주·저커버리지 종목 추정 — 시장·펀더멘털만으로 분석 진행)"
+                    )
+                pre_flight_notes.append(_skip_msg)
                 log.info(
-                    "analyze: %s has 0 yfinance news items — skipping news + social",
-                    ticker,
+                    "analyze: %s has 0 news items (market=%s) — skipping news + social",
+                    ticker, _market,
                 )
         except Exception as exc:
             log.warning("analyze: news pre-check failed for %s: %s", ticker, exc)

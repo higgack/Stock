@@ -121,11 +121,11 @@ pattern to follow:
 
 ## Portfolio Manager override discipline
 
-When the four-analyst stance bar shows unanimous (4-0) or
-near-unanimous (3-0 with 1 abstain) agreement on a direction AND
-the Wall Street / KR analyst consensus is 강매수 / 매수, the
-Portfolio Manager's verdict MAY override to the opposite direction
-ONLY if at least one of these triggers is named in the PM rationale:
+When the analyst stance bar shows **consistent** agreement — defined
+as ALL the analysts that actually ran (i.e. weren't pre-skipped for
+missing data) leaning the same way — the Portfolio Manager's verdict
+MAY override to the opposite direction ONLY if at least one of these
+triggers is named in the PM rationale:
 
 - 5-day-horizon technical extreme: RSI > 75 (for Buy-reverse to
   Underweight) or RSI < 25 (for Sell-reverse to Overweight)
@@ -135,14 +135,31 @@ ONLY if at least one of these triggers is named in the PM rationale:
   visible to the PM in its prompt
 - Data-availability HOLD per portfolio_manager.py guard
 
+This rule covers ALL voter-count combinations, not just 4-of-4:
+- 4-of-4 unanimous
+- 3-of-4 with 1 abstain
+- **2-of-2 with 2 abstain** (news / sentiment skipped — common for
+  KR/JP low-coverage tickers; the smaller voter count does NOT
+  lower the trigger bar)
+- 3-of-3 with 1 abstain
+
 Without ONE of those triggers documented, the PM defaults to
-following the analyst-consensus direction: Buy / Overweight when
-analysts lean buy, Hold when split, Sell / Underweight when
-analysts lean sell. This rule exists because the bot was producing
-"분석가 4명 합의 보유 + 컨센서스 강매수 → PM Underweight on RSI
-alone" patterns (현대모비스 / 호텔신라 / 한전 2026-05-17 cluster);
-unanimous analyst signals plus consensus shouldn't be flipped on
-a single technical indicator without explicit justification.
+following the analyst direction: Buy / Overweight when analysts
+lean buy, Hold when analysts lean hold (even a 2-of-2 partial Hold
+counts), Sell / Underweight when analysts lean sell. This rule
+exists because the bot was producing "analysts 합의 보유 → PM Sell
+on a single technical indicator" patterns (현대모비스 / 호텔신라 /
+한전 2026-05-17 cluster, **코미코 2026-05-17** with only 시장 +
+펀더멘털 voters both Hold and PM flipped to Sell on RSI 55.36 /
+'단기 모멘텀 약화'). Consistent analyst signals should not flip on
+a single technical indicator or generic phrasing without explicit
+justification.
+
+**Corollary** — when build_instrument_context emits a CORPORATE
+ACTION IN-FLIGHT (HARD GUARD), the standard technical triggers
+(RSI / MACD / SMA) are invalid for the run and CANNOT be used as
+override triggers; only the imminent-catalyst or data-availability
+HOLD triggers apply.
 
 ## Help text maintenance (`_HELP_TEXT` in `bot/telegram_bot.py`)
 

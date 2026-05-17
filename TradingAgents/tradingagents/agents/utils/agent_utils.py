@@ -296,6 +296,56 @@ def _quote_type(ticker: str) -> str | None:
     return qt.upper() if isinstance(qt, str) else None
 
 
+_PEER_MULTIPLES_CACHE: dict[str, str] = {}
+
+
+def _fetch_peer_multiples(ticker: str) -> str:
+    """Pull headline valuation multiples from yfinance .info for a peer
+    ticker in the Comps table. Returns a single-line string like
+    'PER 18.4 / PSR 1.8 / PBR 2.1 / EV/EBITDA 11.2' with the metrics
+    yfinance actually returned populated, or '' when every metric is
+    missing (so the caller can render '(multiples 미수집)').
+
+    Why a separate fetch: the existing _instrument_info cache filters
+    out valuation ratios — they're only relevant in Comps context.
+    Adding them to _instrument_info would change every other caller's
+    output. A dedicated cache + targeted fetch keeps the two paths
+    independent and bounded to the 4-6 peer tickers we care about per
+    analysis (one extra yfinance .info call per peer, cached per
+    process — total < 1s wall time, network already warm)."""
+    if ticker in _PEER_MULTIPLES_CACHE:
+        return _PEER_MULTIPLES_CACHE[ticker]
+    out_parts: list[str] = []
+    try:
+        import yfinance as yf
+        raw = yf.Ticker(ticker).info or {}
+        # PER (trailing) — most universal multiple
+        per = raw.get("trailingPE")
+        if isinstance(per, (int, float)) and not (isinstance(per, float) and per != per) and 0 < per < 1000:
+            out_parts.append(f"PER {per:.1f}")
+        # Forward PER — useful when TTM is distorted by one-offs
+        fper = raw.get("forwardPE")
+        if isinstance(fper, (int, float)) and not (isinstance(fper, float) and fper != fper) and 0 < fper < 1000:
+            out_parts.append(f"Fwd PER {fper:.1f}")
+        # PSR
+        psr = raw.get("priceToSalesTrailing12Months")
+        if isinstance(psr, (int, float)) and not (isinstance(psr, float) and psr != psr) and 0 < psr < 100:
+            out_parts.append(f"PSR {psr:.2f}")
+        # PBR
+        pbr = raw.get("priceToBook")
+        if isinstance(pbr, (int, float)) and not (isinstance(pbr, float) and pbr != pbr) and 0 < pbr < 100:
+            out_parts.append(f"PBR {pbr:.2f}")
+        # EV/EBITDA
+        evebitda = raw.get("enterpriseToEbitda")
+        if isinstance(evebitda, (int, float)) and not (isinstance(evebitda, float) and evebitda != evebitda) and -100 < evebitda < 1000:
+            out_parts.append(f"EV/EBITDA {evebitda:.1f}")
+    except Exception as exc:
+        _analyst_log.warning("peer multiples fetch failed for %s: %s", ticker, exc)
+    out = " / ".join(out_parts)
+    _PEER_MULTIPLES_CACHE[ticker] = out
+    return out
+
+
 def is_etf(ticker: str) -> bool:
     """True if yfinance reports this ticker as an ETF (or close cousin
     like a 3X leveraged fund). Conservative: when yfinance is unsure,
@@ -731,6 +781,62 @@ def days_until_earnings(ticker: str, curr_date: str) -> int | None:
         return None
 
 
+# Keywords that flag an in-flight corporate action — i.e. a price-affecting
+# event whose ex-date is imminent or just passed, where yfinance's
+# historical price / SMA / MACD / RSI series are likely to be in a
+# mixed adjusted / unadjusted state. Detection in build_instrument_context
+# turns into a HARD GUARD telling every analyst NOT to interpret
+# MA-based technicals (Rule A).
+_KR_CORP_ACTION_KEYWORDS = (
+    "무상증자", "주식분할", "액면분할",   # share count up → price down
+    "주식병합", "감자",                   # share count down → price up
+    "무상감자", "유상감자",
+    "자기주식 소각", "주식 소각",
+)
+_JP_CORP_ACTION_KEYWORDS = (
+    "株式分割", "株式無償割当",            # share count up
+    "株式併合",                            # share count down
+    "自己株式の消却",
+)
+
+
+def _detect_kr_corp_action(disclosures: list[dict]) -> dict | None:
+    """Scan DART recent disclosures (last 30 days from upstream call) for
+    a price-affecting corporate action. Returns {date, event} or None.
+
+    The earlier the event date, the smaller the staleness window — but
+    the historical series can stay corrupted for up to two weeks after
+    ex-date, so we surface ANY hit from the last 30 days. The caller
+    uses this to inject the HARD GUARD directive."""
+    if not disclosures:
+        return None
+    for d in disclosures:
+        title = (d.get("title") or "")
+        for kw in _KR_CORP_ACTION_KEYWORDS:
+            if kw in title:
+                raw_date = (d.get("date") or "")
+                if len(raw_date) == 8 and raw_date.isdigit():
+                    raw_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+                return {"date": raw_date, "event": title.strip()}
+    return None
+
+
+def _detect_jp_corp_action(disclosures: list[dict]) -> dict | None:
+    """JP analogue. EDINET 臨時報告書 carry 株式分割 / 無償割当 / 株式併合
+    headlines in their docDescription field."""
+    if not disclosures:
+        return None
+    for d in disclosures:
+        title = (d.get("description") or "") + " " + (d.get("doc_type_label") or "")
+        for kw in _JP_CORP_ACTION_KEYWORDS:
+            if kw in title:
+                return {
+                    "date": (d.get("date") or "").strip(),
+                    "event": (d.get("description") or "").strip(),
+                }
+    return None
+
+
 def _format_dart_kr_block(
     disclosures: list[dict],
     insiders: list[dict],
@@ -771,19 +877,29 @@ def _format_dart_kr_block(
             if prev is None or (r.get("pct") or 0) > (prev.get("pct") or 0):
                 by_name[name] = r
         top = sorted(by_name.values(), key=lambda r: r.get("pct") or 0, reverse=True)[:5]
-        # State-owned enterprises (한국전력공사, 한국가스공사, 등) have
-        # officers who are civil servants — they hold ~zero stock. The
-        # raw '상위 5 모두 0.00%' list looks broken to a reader. Detect
-        # the all-near-zero pattern and replace with a single explanatory
-        # line so the user doesn't think DART data is broken.
+        # When all reported holdings round to ~0% we can't tell whether
+        # this is a state-owned enterprise (civil-servant officers,
+        # legitimately zero) OR a private company DART happened to
+        # return holdings rows for that exclude the actual major
+        # shareholders. The previous heuristic assumed the SOE case
+        # and emitted "공기업 / 공공 entity — 정부 보유" prose, which
+        # the fundamentals LLM then parroted into reports of
+        # ordinary private firms (코미코 2026-05-17: "산업은행 / 정부
+        # 등 주요 주주 기준으로 분석"). That's worse than admitting
+        # the data is missing, because it fabricates a false
+        # ownership narrative. Replace with neutral phrasing — the
+        # build_instrument_context layer adds an explicit ANTI-
+        # HALLUCINATION directive when the top list is all-zero so
+        # the analyst doesn't backfill a story.
         if top:
             nonzero = [r for r in top if (r.get("pct") or 0) >= 0.01]
             if not nonzero:
                 lines.append(
-                    "- 임원·주요주주 지분: 공기업 / 공공 entity — 임원진은"
-                    " 공직자 신분이라 의미 있는 보유 없음 (정상). 지배"
-                    " 구조는 주요 주주 (산업은행 / 정부 등) 기준으로"
-                    " 분석할 것."
+                    "- 임원·주요주주 지분: DART가 의미 있는 보유 (≥0.01%)를"
+                    " 반환하지 않음 — 공기업 (한국전력공사 등) 의 공직자"
+                    " 임원, 또는 일반 상장사인데 DART 임원지분 row가 비어"
+                    " 있는 경우가 모두 가능. 회사 성격을 추측하지 말 것"
+                    " (지배구조 narrative 금지)."
                 )
             else:
                 lines.append(f"- 임원·주요주주 지분 (상위 {len(top)}):")
@@ -793,6 +909,14 @@ def _format_dart_kr_block(
                     pct = r.get("pct") or 0
                     role_part = f" ({role})" if role else ""
                     lines.append(f"  • {name}{role_part}: {pct:.2f}%")
+    else:
+        # Truly empty list (DART returned no rows at all, or the API
+        # call failed silently). Same anti-hallucination rule applies.
+        lines.append(
+            "- 임원·주요주주 지분: DART 데이터 미수집 (API 빈 응답"
+            " 또는 fetch 실패). 회사 성격을 추측하지 말 것 (지배구조"
+            " narrative 금지)."
+        )
 
     # Next earnings filing window — inferred from KR statutory deadlines.
     if earnings_window:
@@ -927,17 +1051,34 @@ def build_instrument_context(ticker: str) -> str:
             from bot.market import resolve_peer_set
             peers = resolve_peer_set(ticker, industry)
             if peers:
-                peer_lines = "\n".join(f"  • {t}" for t in peers)
+                # Pre-fetch each peer's headline valuation multiples
+                # from yfinance .info so the Comps table actually
+                # carries numbers instead of '— N/A — N/A —' across
+                # every row (코미코 2026-05-17 case: peer set
+                # populated, multiples 0/4 populated, table useless).
+                # Cap at 6 peers to keep the prompt budget bounded.
+                peer_lines = []
+                for t in peers[:6]:
+                    multiples = _fetch_peer_multiples(t)
+                    if multiples:
+                        peer_lines.append(f"  • {t}: {multiples}")
+                    else:
+                        peer_lines.append(f"  • {t}: (multiples 미수집)")
                 base += (
-                    f"\n\n=== MANDATORY COMPS PEER SET ===\n"
+                    f"\n\n=== MANDATORY COMPS PEER SET + MULTIPLES ===\n"
                     f"For industry '{industry}', use EXACTLY these"
                     f" peer tickers in the Comps table — do NOT add,"
-                    f" remove, or substitute any of them:\n"
-                    f"{peer_lines}\n"
+                    f" remove, or substitute any of them. Multiples are"
+                    f" pre-fetched from yfinance; cite them verbatim,"
+                    f" do not call any tool to refetch:\n"
+                    + "\n".join(peer_lines) + "\n"
                     f"This list is curated to match the yfinance"
                     f" 'industry' field. Fabricating different peers"
                     f" (or borrowing from a different industry's"
-                    f" example list) is FORBIDDEN."
+                    f" example list) is FORBIDDEN. Peers with '(multiples"
+                    f" 미수집)' still belong in the table — render them"
+                    f" with explicit 'N/A' cells rather than dropping"
+                    f" the row."
                 )
         except Exception:
             pass
@@ -1214,6 +1355,48 @@ def build_instrument_context(ticker: str) -> str:
                 disclosures = dart.get_recent_disclosures(ticker, days_back=30, limit=8)
                 insiders = dart.get_insider_holdings(ticker)
                 window = dart.next_earnings_window(ticker)
+
+                # CORPORATE ACTION IN-FLIGHT detection (Rule A). A stock
+                # split / bonus issue / reverse split announced in the
+                # last 14 days corrupts yfinance's historical price
+                # series (current price is split-adjusted but SMA / EMA
+                # / MACD / Bollinger still reference unadjusted closes).
+                # 코미코 2026-05-17: 무상증자 + 주식분할 결정 2026-05-12,
+                # currentPrice ₩81,000 vs 50일 SMA ₩129,484 (-37% gap);
+                # market analyst built a full technical thesis on the
+                # corrupted series. The existing PRICE GAP SANITY warning
+                # is too soft — the LLM acknowledged the split then
+                # continued the analysis anyway. Inject a HARD guard
+                # that names the event by date so the analyst can't
+                # rationalize past it.
+                corp_action = _detect_kr_corp_action(disclosures)
+                if corp_action:
+                    base += (
+                        "\n\n=== ⛔ CORPORATE ACTION IN-FLIGHT (HARD GUARD) ===\n"
+                        f"{corp_action['date']} DART 공시: {corp_action['event']}\n"
+                        "이 종목은 현재 분할 / 무상증자 / 감자 / 액면분할 등"
+                        " corporate action이 진행 중이다. yfinance의 historical"
+                        " 가격 시계열은 ex-date 전후로 비조정 또는 부분 조정"
+                        " 상태일 가능성이 매우 크다 — currentPrice는 조정 반영,"
+                        " fiftyDayAverage / twoHundredDayAverage / 일별 close는"
+                        " 미조정인 혼합 상태가 흔하다.\n"
+                        "다음 기술적 분석 요소는 사용 금지 (값이 의미 없음):\n"
+                        "  • 10 EMA / 50 SMA / 200 SMA 비교\n"
+                        "  • MACD / RSI / Bollinger 밴드 / ATR 추세 해석\n"
+                        "  • '과매수 / 과매도 / 단기 모멘텀 약화' 류 결론\n"
+                        "  • 50주·52주 최고/최저 비교\n"
+                        "시장 분석가는 다음 두 항목만 다룬다:\n"
+                        "  (1) corporate action 이벤트 자체의 정성 분석"
+                        " (주주가치 영향, 유통 주식 수 변화, ex-date 시점,"
+                        " 시장의 반응 톤)\n"
+                        "  (2) 분할 이후 가격이 안정화될 때까지"
+                        " (~5-10 거래일) 기술적 추세 분석 보류 명시\n"
+                        "현재가만 'canonical current price' 한 줄로 인용하고"
+                        " 그 이상의 가격 비교는 금지. 펀더멘털 / 결정 노드도"
+                        " 이 가드를 따른다 (밸류에이션은 분할 이후 EPS / 시총"
+                        " 환산본 기준으로만 계산)."
+                    )
+
                 dart_block = _format_dart_kr_block(disclosures, insiders, window)
                 if dart_block:
                     base += (
@@ -1391,6 +1574,30 @@ def build_instrument_context(ticker: str) -> str:
                 jp_disclosures = edinet.get_recent_disclosures(ticker, days_back=30, limit=8)
                 jp_holders = edinet.get_major_holders(ticker, days_back=180)
                 jp_window = edinet.next_earnings_window(ticker)
+
+                # Same corporate-action staleness guard as the KR DART
+                # branch — JP companies announce 株式分割 / 株式併合 /
+                # 株式無償割当 via EDINET 臨時報告書 with the same yfinance
+                # historical-series adjustment lag.
+                jp_corp_action = _detect_jp_corp_action(jp_disclosures)
+                if jp_corp_action:
+                    base += (
+                        "\n\n=== ⛔ CORPORATE ACTION IN-FLIGHT (HARD GUARD) ===\n"
+                        f"{jp_corp_action['date']} EDINET 공시: {jp_corp_action['event']}\n"
+                        "이 종목은 현재 株式分割 / 無償割当 / 株式併合 등"
+                        " corporate action이 진행 중이다. yfinance의 historical"
+                        " 가격 시계열은 ex-date 전후로 비조정 또는 부분 조정"
+                        " 상태일 가능성이 매우 크다.\n"
+                        "다음 기술적 분석 요소는 사용 금지:\n"
+                        "  • 10 EMA / 50 SMA / 200 SMA 비교\n"
+                        "  • MACD / RSI / Bollinger 밴드 / ATR 추세 해석\n"
+                        "  • 52주 최고/최저 비교\n"
+                        "시장 분석가는 (1) corporate action 자체의 정성"
+                        " 분석 (株主価値 영향, 浮動株 변화, ex-date),"
+                        " (2) 안정화 가격이 잡힐 때까지 (~5-10 거래일)"
+                        " 기술적 추세 분석 보류 명시 — 두 항목만 다룬다."
+                    )
+
                 edinet_block = format_edinet_jp_block(jp_disclosures, jp_holders, jp_window)
                 if edinet_block:
                     base += (
