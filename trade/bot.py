@@ -177,6 +177,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-dashboard — HTTP 서버 (포트 8765, gzip on)
 • trade-bot-dashboard-refresh (5분) — store + HTML 재생성
 • trade-bot-health (1시간) — dormancy + 사이클 누락 감지 → ⚠️ 알림
+• trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent)
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 
 <b>10. API endpoints</b>
@@ -184,7 +185,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — 채널 /help · /watch hint에 '봇 1:1 채팅 열기' 인라인 버튼 (탭 한 번에 DM 진입)</i>
+<i>최종 갱신: 2026-05-17 — 매일 00:00 KST 미등록 alert 무결성 체크 (inbox에 있는데 store에 없는 캡션 있을 때만 ⚠️ 채널 알림)</i>
 """
 
 

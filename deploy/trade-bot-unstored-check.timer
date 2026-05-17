@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily integrity check at 00:00 KST (15:00 UTC the previous day)
+
+[Timer]
+# 00:00 KST is 15:00 UTC. Fires once a day at the boundary, exactly
+# when the operator asked for it ('매일 24:00 = 00:00 다음날').
+OnCalendar=*-*-* 15:00:00 UTC
+Unit=trade-bot-unstored-check.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
