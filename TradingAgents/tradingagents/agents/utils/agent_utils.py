@@ -1213,6 +1213,40 @@ def build_instrument_context(ticker: str) -> str:
             _analyst_log.warning(
                 "naver news injection failed for %s: %s", ticker, exc,
             )
+
+        # KR macro from Bank of Korea ECOS (KR-only). yfinance gives us
+        # US 10Y / DXY / etc. but the KR rate environment was missing
+        # entirely. KR equity analysts kept reasoning about "고금리
+        # 환경" from ^TNX alone, which is the wrong frame — what
+        # actually moves KR rate-sensitive sectors (utilities / banks /
+        # consumer discretionary) is the 한국은행 기준금리 + KR 10Y
+        # spread, not the US curve. Three indicators: base rate, KR
+        # 10Y, CPI YoY. Daily / monthly cadence so the 12h cache in
+        # bok_ecos_client absorbs the cost.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "KR":
+                from bot.bok_ecos_client import fetch_kr_macro, format_kr_macro_for_prompt
+                kr_macro = fetch_kr_macro()
+                kr_macro_block = format_kr_macro_for_prompt(kr_macro)
+                if kr_macro_block:
+                    base += (
+                        "\n\n=== Pre-fetched KR macro (한국은행 ECOS,"
+                        " verbatim — KR-specific rate environment) ===\n"
+                        + kr_macro_block
+                        + "\n\n위 KR 거시 지표는 KR equity 분석의"
+                        " 기본 frame이다. ^TNX (미국 10Y)만 보고"
+                        " '고금리 환경' 결론을 내리지 말고, KR"
+                        " 기준금리 + KR 10Y의 절대 수준 + 직전 변동"
+                        " 방향을 같이 인용하라. KR CPI는 한은의"
+                        " 다음 통화정책 회의 방향을 결정하는 핵심"
+                        " 변수이므로 인플레이션 흐름 언급 시 KR CPI"
+                        " 우선."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "ecos macro injection failed for %s: %s", ticker, exc,
+            )
     return base
 
 def create_msg_delete():
