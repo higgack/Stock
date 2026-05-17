@@ -19,10 +19,14 @@ regression even when it compiles.
    `bash -n FILE`; for every changed systemd unit grep for the
    required `[Unit]` plus the matching `[Service]` / `[Timer]`.
 
-3. **Help-text** — if `_HELP_TEXT` (or any user-facing pinned spec)
-   was touched, verify:
-   - UTF-16 length < 4096 (Telegram cap, see Help text maintenance
-     section). Headroom target ≥ 200.
+3. **Help-text** — if the commit changes user-visible behavior,
+   `_HELP_TEXT` MUST be touched in the same commit. Verify:
+   - The diff includes `trade/bot.py` (or `bot/telegram_bot.py` for
+     NOAH) with edits inside `_HELP_TEXT = """..."""`. A commit
+     that ships a user-facing change without touching the help text
+     fails this check — re-do the commit with the help update
+     bundled.
+   - UTF-16 length < 4096 (Telegram cap). Headroom target ≥ 200.
    - The 최종 갱신 line was updated and one-line-summarizes the
      actual change.
    - Every listed feature in the commit message resolves to a
@@ -46,19 +50,41 @@ regression even when it compiles.
 If any check fails, fix forward and re-run all checks; never push
 "will fix after" or "should be fine".
 
-## Default workflow — review first, commit only on request
+## Default workflow — review first, commit only on explicit request
 
-For **any** request (analysis output, feature idea, bug report, refactor):
+For **any** request — analysis output, feature idea, bug report,
+refactor, typo, system patch, follow-up fix — there are no exceptions:
 
 1. **Review and propose** — never edit/commit yet. Surface the diagnosis,
    the proposed change as a **generalized universal rule** (never a
    ticker-specific or one-off patch), and the trade-offs.
-2. **Wait for explicit "커밋"** from the user before staging anything.
-   Until then, the deliverable is the proposal itself, not committed code.
-   The only exception is when the user opens with an explicit instruction
-   to commit ("이대로 커밋", "스캐폴드 만들고 커밋해줘", etc.).
-3. **After explicit commit**: stage, commit, and push to the current
-   `claude/...` branch. Open / update the draft PR if one doesn't exist.
+
+2. **Wait for explicit "커밋" in the user's most recent message** before
+   staging anything. Accepted forms: "커밋", "커밋해", "이거 커밋",
+   "그리고 커밋", "푸쉬해", "적용해줘", "이대로 가자". A question
+   ("이거 가능해?", "왜 안 돼?") or observation ("이상하네") is **not**
+   a commit instruction even when the right answer obviously requires a
+   code change. Propose the fix and wait.
+
+   **Proactive commits are forbidden** — bug fixes the user didn't ask
+   for, "while I'm here" cleanups, follow-ups to issues that surface
+   mid-conversation. These are the most common violation of this rule
+   and the most corrosive to operator trust. Even when the fix is
+   urgent / one-line / obviously correct, propose it and wait for the
+   explicit go-ahead. The user runs the host alone and treats every
+   push as something they signed off on.
+
+3. **Help text update is part of the commit, not a follow-up.** Every
+   commit that adds or changes user-visible behavior MUST update the
+   relevant `_HELP_TEXT` (`bot/telegram_bot.py` for NOAH,
+   `trade/bot.py` for trade-bot) and the trailing `최종 갱신` line in
+   the same commit. "I'll update help next" is the same regression
+   pattern as "will fix after" — push the help update with the change.
+
+4. **After explicit commit**: stage, commit, push to the current
+   `claude/...` branch. Open / update the draft PR if one doesn't
+   exist. State `verified ✓` in the commit message once all pre-push
+   checks pass.
 
 ## Deploy notifications — Telegram on every commit, lifecycle-shaped
 

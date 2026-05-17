@@ -185,7 +185,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — 매일 00:00 KST 미등록 alert 무결성 체크 (inbox에 있는데 store에 없는 캡션 있을 때만 ⚠️ 채널 알림)</i>
+<i>최종 갱신: 2026-05-17 — claude.md 룰 강화 (명시적 '커밋' 없으면 푸쉬 X, 모든 user-visible 변경은 _HELP_TEXT 동시 갱신 필수)</i>
 """
 
 
