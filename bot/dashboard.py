@@ -262,6 +262,12 @@ def _read_memory_full() -> dict:
         log.warning("dashboard: memory log read failed: %s", exc)
         return out
     blocks = text.split("\n\n<!-- ENTRY_END -->\n\n")
+    # Match the format used by memory.py — line-by-line within the
+    # OUTCOMES section of each block, capturing 15d / 30d follow-ups.
+    outcome_line_re = re.compile(
+        r"^\s*(\d+)d\s*\|\s*([+-]?\d+\.?\d*%)\s*\|\s*([+-]?\d+\.?\d*%p?)\s*$",
+        re.MULTILINE,
+    )
     seen: set[tuple[str, str]] = set()  # de-dupe by (date, ticker)
     for block in blocks:
         lines = block.strip().splitlines()
@@ -292,9 +298,27 @@ def _read_memory_full() -> dict:
         else:
             if is_hold:
                 out["resolved_hold"] += 1
+            # Parse long-horizon outcomes from the body's OUTCOMES section.
+            # Iterating finditer over the joined body keeps the scan O(n)
+            # per block; misformatted lines are silently dropped.
+            body = "\n".join(lines[1:])
+            outcomes_extra: list[dict] = []
+            if "OUTCOMES:" in body:
+                # Restrict the scan to the OUTCOMES sub-block so we don't
+                # accidentally match e.g. '15d back-test' in REFLECTION prose.
+                outcomes_idx = body.find("OUTCOMES:")
+                outcomes_body = body[outcomes_idx:]
+                for m in outcome_line_re.finditer(outcomes_body):
+                    outcomes_extra.append({
+                        "days": int(m.group(1)),
+                        "raw": m.group(2),
+                        "alpha": m.group(3),
+                    })
+                outcomes_extra.sort(key=lambda o: o["days"])
             out["resolved"].append({
                 "date": date, "ticker": ticker, "rating": rating,
                 "raw": fields[3], "alpha": fields[4],
+                "outcomes_extra": outcomes_extra,
             })
     return out
 
@@ -1151,76 +1175,87 @@ def _benchmark_label_for(ticker: str) -> str:
 
 
 def _render_outcome_html(resolved: dict | None) -> str:
-    """Render the inline outcome line shown beneath an analysis card once
-    its 5-trading-day window has been resolved. Empty when the entry is
-    still pending or when the realized return couldn't be parsed.
+    """Render outcome lines beneath an analysis card. Stacks 5d / 15d /
+    30d when each is available — the 5d outcome lives in the entry tag
+    (resolved['raw'] / resolved['alpha']) while longer windows live in
+    resolved['outcomes_extra'] (list of {days, raw, alpha}). Empty when
+    the entry is still pending or no realized return is parsed.
 
-    Format (post AMAT/ONTO display review 2026-05-18):
-        📒 5거래일 후 -1.6% (알파 +3.0%p vs SOXX) — 매도 추천 틀림 · 섹터대비 high
+    Each window renders as its own line with independent hit/miss color
+    so a Sell call that scores ✓ at 5d but reverses to ✗ at 30d is
+    visible at a glance.
 
-    Three substitutions vs the previous format:
-      (a) '✗' / '✓' → '매수/매도 추천 맞음/틀림' — explicit Korean text
-          so the reader doesn't have to remember which marker means what.
-      (b) 'vs 섹터' → 'vs <specific ETF symbol>' (SOXX / XLF / KODEX
-          200 / TOPIX 1306 / SPY etc.) — names the actual benchmark
-          alpha was computed against, removes the abstraction.
-      (c) Adds '섹터대비 high / low' so the magnitude direction is
-          stated independently of whether the bot's call matched.
+    Format (per line):
+        📒 Nd 후 -1.6% (알파 +3.0%p vs 반도체 (SOXX)) — 매도 추천 맞음 · 섹터대비 high
 
-    Color cue unchanged: directional calls get hit/miss CSS class
-    depending on whether alpha agreed with the call direction. Hold
-    calls remain neutral (no directional bet to score)."""
+    User-controllable knobs that influence this:
+    - Direction verdict ('매수/매도 추천 맞음/틀림') from rating + alpha sign.
+    - Magnitude ('섹터대비 high/low/동등') from alpha sign alone.
+    - Benchmark label from _benchmark_label_for (sector ETF or broad
+      market fallback per the ticker's industry / market).
+    - CSS hit/miss class for color cue."""
     if not resolved:
         return ""
-    raw = (resolved.get("raw") or "").strip()
-    alpha = (resolved.get("alpha") or "").strip()
     rating = (resolved.get("rating") or "").lower()
     ticker = (resolved.get("ticker") or "").strip()
-    if not raw or raw == "n/a":
+
+    # Collect windows in display order: 5d (from tag) first, then 15d
+    # and 30d (from outcomes_extra). Filter unparseable rows so a
+    # half-written OUTCOMES block doesn't crash the renderer.
+    windows: list[dict] = []
+    raw_5d = (resolved.get("raw") or "").strip()
+    alpha_5d = (resolved.get("alpha") or "").strip()
+    if raw_5d and raw_5d != "n/a":
+        windows.append({"days": 5, "raw": raw_5d, "alpha": alpha_5d})
+    for entry in (resolved.get("outcomes_extra") or []):
+        days = entry.get("days")
+        raw = (entry.get("raw") or "").strip()
+        alpha = (entry.get("alpha") or "").strip()
+        if not isinstance(days, int) or not raw or raw == "n/a":
+            continue
+        windows.append({"days": days, "raw": raw, "alpha": alpha})
+    if not windows:
         return ""
+    windows.sort(key=lambda w: w["days"])  # 5 → 15 → 30
 
-    cls = "outcome"
-    verdict_text = ""
-    alpha_num = _parse_pct(alpha)
-    if alpha_num is not None and ticker:
-        # Direction verdict (방향 맞음/틀림) based on alpha sign.
-        # Magnitude (섹터대비 high/low) describes the stock's alpha
-        # independently of the call — high means the stock outperformed
-        # the sector, low means it underperformed. Magnitude is the same
-        # regardless of the call's direction; only the verdict ('맞음 /
-        # 틀림') flips between Buy and Sell sides.
-        magnitude = "섹터대비 high" if alpha_num > 0 else (
-            "섹터대비 low" if alpha_num < 0 else "섹터대비 동등"
-        )
-        if rating in ("buy", "overweight"):
-            hit = alpha_num > 0
-            cls += " hit" if hit else " miss"
-            direction = "매수 추천 맞음" if hit else "매수 추천 틀림"
-            verdict_text = f"{direction} · {magnitude}"
-        elif rating in ("sell", "underweight"):
-            hit = alpha_num < 0
-            cls += " hit" if hit else " miss"
-            direction = "매도 추천 맞음" if hit else "매도 추천 틀림"
-            verdict_text = f"{direction} · {magnitude}"
-        # Hold gets neutral text describing the magnitude only — no
-        # 'correct/incorrect' since Hold doesn't make a directional bet.
-        elif rating == "hold":
-            verdict_text = f"보유 추천 · {magnitude}"
-
-    # Benchmark symbol — actual ETF used to compute alpha. Cached
-    # per-process to avoid re-calling yfinance on every dashboard regen.
     bench_label = _benchmark_label_for(ticker) if ticker else "섹터"
+    bench_safe = _html.escape(bench_label)
 
-    alpha_part = (
-        f" (알파 {_html.escape(alpha)}p vs {_html.escape(bench_label)})"
-        if alpha and alpha != "n/a"
-        else ""
-    )
-    verdict_part = f" — {_html.escape(verdict_text)}" if verdict_text else ""
-    return (
-        f'<div class="{cls}">📒 5거래일 후 '
-        f'{_html.escape(raw)}{alpha_part}{verdict_part}</div>'
-    )
+    lines: list[str] = []
+    for w in windows:
+        days = w["days"]
+        raw = w["raw"]
+        alpha = w["alpha"]
+        cls = "outcome"
+        verdict_text = ""
+        alpha_num = _parse_pct(alpha)
+        if alpha_num is not None and ticker:
+            magnitude = "섹터대비 high" if alpha_num > 0 else (
+                "섹터대비 low" if alpha_num < 0 else "섹터대비 동등"
+            )
+            if rating in ("buy", "overweight"):
+                hit = alpha_num > 0
+                cls += " hit" if hit else " miss"
+                direction = "매수 추천 맞음" if hit else "매수 추천 틀림"
+                verdict_text = f"{direction} · {magnitude}"
+            elif rating in ("sell", "underweight"):
+                hit = alpha_num < 0
+                cls += " hit" if hit else " miss"
+                direction = "매도 추천 맞음" if hit else "매도 추천 틀림"
+                verdict_text = f"{direction} · {magnitude}"
+            elif rating == "hold":
+                verdict_text = f"보유 추천 · {magnitude}"
+        alpha_part = (
+            f" (알파 {_html.escape(alpha)}p vs {bench_safe})"
+            if alpha and alpha != "n/a"
+            else ""
+        )
+        verdict_part = f" — {_html.escape(verdict_text)}" if verdict_text else ""
+        lines.append(
+            f'<div class="{cls}">📒 {days}거래일 후 '
+            f'{_html.escape(raw)}{alpha_part}{verdict_part}</div>'
+        )
+    return "".join(lines)
 
 
 def _render_index(records: list[dict]) -> str:

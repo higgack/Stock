@@ -13,8 +13,16 @@ class TradingMemoryLog:
     # HTML comment: cannot appear in LLM prose output, safe as a hard delimiter
     _SEPARATOR = "\n\n<!-- ENTRY_END -->\n\n"
     # Precompiled patterns — avoids re-compilation on every load_entries() call
-    _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\nREFLECTION:|\Z)", re.DOTALL)
-    _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)$", re.DOTALL)
+    _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\nREFLECTION:|\nOUTCOMES:|\Z)", re.DOTALL)
+    _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)(?=\nOUTCOMES:|\Z)", re.DOTALL)
+    # OUTCOMES section holds long-horizon (15d / 30d) follow-up returns
+    # written after the initial 5-trading-day resolution. Each line:
+    # `15d | +2.3% | -1.2%p`. The 5d outcome stays in the entry tag for
+    # backward compat — only 15d+ live here.
+    _OUTCOMES_RE = re.compile(r"OUTCOMES:\n(.*?)$", re.DOTALL)
+    _OUTCOME_LINE_RE = re.compile(
+        r"^\s*(\d+)d\s*\|\s*([+-]?\d+\.?\d*%)\s*\|\s*([+-]?\d+\.?\d*%p?)\s*$"
+    )
 
     def __init__(self, config: dict = None):
         cfg = config or {}
@@ -162,6 +170,106 @@ class TradingMemoryLog:
         tmp_path.write_text(new_text, encoding="utf-8")
         tmp_path.replace(self._log_path)
 
+    def batch_append_long_horizon_outcomes(self, updates: List[dict]) -> None:
+        """Append 15d / 30d outcome lines to already-resolved entries.
+
+        Each element of `updates`: {ticker, trade_date, days, raw_return,
+        alpha_return}. `days` is the trading-day horizon (15 or 30).
+
+        Skips entries that already carry an outcome at the given `days`
+        (idempotent — safe to re-run auto_resolve in a tight loop). The
+        existing OUTCOMES section is parsed and rewritten so lines stay
+        sorted ascending by days.
+
+        Used by bot/auto_resolve.py 12h cycle: once a pending entry has
+        its 5d resolved (initial pass), subsequent passes append 15d
+        when the 21-calendar-day gate clears, then 30d at 42 calendar
+        days. Each window is independent — a flaky yfinance fetch at
+        15d doesn't block 30d resolution.
+        """
+        if not self._log_path or not self._log_path.exists() or not updates:
+            return
+
+        text = self._log_path.read_text(encoding="utf-8")
+        blocks = text.split(self._SEPARATOR)
+
+        # Group updates by (trade_date, ticker) → list of {days, raw, alpha}.
+        # Store alpha WITHOUT a trailing 'p' suffix to match the 5d alpha
+        # stored in the entry tag (memory.py update_with_outcome writes
+        # f"{alpha_return:+.1%}" — no 'p'). The renderer adds 'p' once at
+        # display time. Storing 'p' here too caused a double-suffix bug
+        # ('-0.6%pp') visible on the dashboard.
+        update_map: dict[tuple[str, str], list[dict]] = {}
+        for u in updates:
+            key = (u["trade_date"], u["ticker"])
+            update_map.setdefault(key, []).append({
+                "days": int(u["days"]),
+                "raw": f"{u['raw_return']:+.1%}",
+                "alpha": f"{u['alpha_return']:+.1%}",
+            })
+
+        new_blocks: List[str] = []
+        for block in blocks:
+            stripped = block.strip()
+            if not stripped:
+                new_blocks.append(block)
+                continue
+            tag_line = stripped.splitlines()[0].strip()
+            # Only touch resolved entries (skip pending and malformed)
+            if not (tag_line.startswith("[") and tag_line.endswith("]")
+                    and not tag_line.endswith("| pending]")):
+                new_blocks.append(block)
+                continue
+            fields = [f.strip() for f in tag_line[1:-1].split("|")]
+            if len(fields) < 4:
+                new_blocks.append(block)
+                continue
+            key = (fields[0], fields[1])
+            if key not in update_map:
+                new_blocks.append(block)
+                continue
+
+            # Merge existing OUTCOMES (if any) with new updates for this key.
+            body = "\n".join(stripped.splitlines()[1:])
+            existing_outcomes: dict[int, dict] = {}
+            outcomes_match = self._OUTCOMES_RE.search(body)
+            outcomes_text_start = -1
+            if outcomes_match:
+                outcomes_text_start = outcomes_match.start()
+                for line in outcomes_match.group(1).splitlines():
+                    m = self._OUTCOME_LINE_RE.match(line)
+                    if m:
+                        d = int(m.group(1))
+                        existing_outcomes[d] = {
+                            "days": d, "raw": m.group(2), "alpha": m.group(3),
+                        }
+            # Idempotent merge: new updates win over existing at the same
+            # `days` key (e.g. a 15d row gets recomputed with cleaner
+            # benchmark data on a later auto_resolve cycle).
+            for upd in update_map[key]:
+                existing_outcomes[upd["days"]] = upd
+            ordered = sorted(existing_outcomes.values(), key=lambda x: x["days"])
+            outcomes_block = "OUTCOMES:\n" + "\n".join(
+                f"{o['days']}d | {o['raw']} | {o['alpha']}" for o in ordered
+            )
+
+            if outcomes_text_start >= 0:
+                # Replace existing OUTCOMES section in place.
+                new_body = body[:outcomes_text_start].rstrip() + "\n\n" + outcomes_block
+            else:
+                # Append fresh OUTCOMES section at the end of the body.
+                new_body = body.rstrip() + "\n\n" + outcomes_block
+            new_blocks.append(f"{tag_line}\n\n{new_body.lstrip()}")
+            del update_map[key]
+
+        # Rotation logic still applies — long-horizon updates count as
+        # resolved entries (they only happen on resolved entries).
+        new_blocks = self._apply_rotation(new_blocks)
+        new_text = self._SEPARATOR.join(new_blocks)
+        tmp_path = self._log_path.with_suffix(".tmp")
+        tmp_path.write_text(new_text, encoding="utf-8")
+        tmp_path.replace(self._log_path)
+
     def batch_update_with_outcomes(self, updates: List[dict]) -> None:
         """Apply multiple outcome updates in a single read + atomic write.
 
@@ -279,6 +387,24 @@ class TradingMemoryLog:
         reflection_match = self._REFLECTION_RE.search(body)
         entry["decision"] = decision_match.group(1).strip() if decision_match else ""
         entry["reflection"] = reflection_match.group(1).strip() if reflection_match else ""
+
+        # Long-horizon outcomes (15d, 30d, ...) live in an OUTCOMES section
+        # appended after REFLECTION when auto_resolve catches up. The 5d
+        # outcome stays in the tag for backward compat. outcomes_extra is
+        # a list of dicts so the dashboard renderer can iterate in order.
+        outcomes_extra: list[dict] = []
+        outcomes_match = self._OUTCOMES_RE.search(body)
+        if outcomes_match:
+            for line in outcomes_match.group(1).splitlines():
+                m = self._OUTCOME_LINE_RE.match(line)
+                if not m:
+                    continue
+                outcomes_extra.append({
+                    "days": int(m.group(1)),
+                    "raw": m.group(2),
+                    "alpha": m.group(3),
+                })
+        entry["outcomes_extra"] = outcomes_extra
         return entry
 
     def _format_full(self, e: dict) -> str:
@@ -289,6 +415,17 @@ class TradingMemoryLog:
         parts = [tag, f"DECISION:\n{e['decision']}"]
         if e["reflection"]:
             parts.append(f"REFLECTION:\n{e['reflection']}")
+        # Surface long-horizon outcomes (15d / 30d) so the next analysis
+        # sees how the previous call played out beyond the 5d window.
+        # E.g. 'OUTCOMES: 15d +2.3%/-1.2%p · 30d +5.8%/+0.4%p' — a Sell
+        # call that was right at 5d but reversed by 30d is exactly the
+        # signal the next analysis's reflection should weigh.
+        extras = e.get("outcomes_extra") or []
+        if extras:
+            ext_str = " · ".join(
+                f"{o['days']}d {o['raw']}/{o['alpha']}" for o in extras
+            )
+            parts.append(f"OUTCOMES_EXTRA: {ext_str}")
         return "\n\n".join(parts)
 
     def _format_reflection_only(self, e: dict) -> str:

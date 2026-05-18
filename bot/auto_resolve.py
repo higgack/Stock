@@ -1,23 +1,28 @@
-"""Background pending-entry resolver.
+"""Background pending-entry resolver — 5d + 15d + 30d multi-window.
 
 The accuracy card on the dashboard counts only RESOLVED memory-log
-entries. Resolution normally happens at the start of the next analysis
-of the same ticker (TradingAgentsGraph._resolve_pending_entries) — but
-if the user analyzes a ticker once and never returns, that pending
-entry stays pending forever and never enters the accuracy stats.
+entries. Resolution happens in two waves:
 
-This script walks ALL pending entries (across every ticker) and resolves
-any whose 5-trading-day window has elapsed: fetches the realized return
-and SPY-relative alpha via yfinance, writes them back to the memory log,
-and triggers a dashboard regen so the card updates.
+  (1) Initial 5-trading-day resolution. Pending entries enter the
+      resolved set once 5 trading days of price data are available.
+      yfinance fetches the realized return + sector-ETF alpha; both
+      go into the entry tag (backward-compatible schema).
+  (2) Long-horizon follow-up. Each resolved entry then gets 15d and
+      30d outcomes appended once the corresponding window elapses.
+      These live in an OUTCOMES section inside the entry body so the
+      tag schema stays stable. Independent per-window — a flaky
+      yfinance call at 15d doesn't block 30d.
+
+Dashboard card / detail surfaces all three when available, stacked
+in 5 → 15 → 30 order. Top-level accuracy stat stays 5d-only (user's
+explicit choice — long-horizon adds variance the headline shouldn't
+swallow).
 
 Skips the LLM-generated 'reflection' field that the in-graph resolver
 writes — that field exists for the memory feedback loop (the next
 analysis of the same ticker reads past reflections to inform its
 prompt). Auto-resolved entries get a placeholder reflection so the
-schema stays consistent; if the user later re-analyzes that ticker,
-the pre-existing reflection placeholder is fine — past_context just
-sees a less rich entry, no crash.
+schema stays consistent.
 
 Run as `python -m bot.auto_resolve` from the bot host (no arguments).
 Prints a one-line summary to stdout for systemd / parent-process logs.
@@ -41,6 +46,18 @@ log = logging.getLogger("bot.auto_resolve")
 _AUTO_RESOLVED_REFLECTION = (
     "(자동 해소 — 5거래일 윈도 경과로 백그라운드 resolver가 raw / alpha만 기록.)"
 )
+
+# Long-horizon evaluation windows. 5d stays in the entry tag; 15d and
+# 30d are appended to the body's OUTCOMES section by a separate pass.
+# Calendar-day gates: trading_days * ~1.4 + 3 buffer for weekends, so
+# 15 → 21 calendar / 30 → 42 calendar. Gate just decides when to start
+# attempting; the per-fetch readiness check inside _fetch_returns
+# (len(stock) ≥ 2) determines whether to resolve at the attempted day.
+_LONG_HORIZON_WINDOWS = (15, 30)
+_LONG_HORIZON_GATE_CALENDAR_DAYS = {
+    15: 21,
+    30: 42,
+}
 
 
 def _fetch_returns(
@@ -129,43 +146,88 @@ def main() -> int:
 
     cfg = get_config()
     memory = TradingMemoryLog(cfg)
-    pending = memory.get_pending_entries()
-    if not pending:
-        print("auto_resolve: 0 pending entries — nothing to do")
-        return 0
+    all_entries = memory.load_entries()
+    pending = [e for e in all_entries if e.get("pending")]
+    resolved = [e for e in all_entries if not e.get("pending")]
 
-    log.info("auto_resolve: scanning %d pending entries", len(pending))
-    updates = []
+    # ── Pass 1: pending → resolved (5-day window) ──────────────────
+    pass1_updates = []
     for entry in pending:
         ticker = entry.get("ticker") or ""
         trade_date = entry.get("date") or ""
         if not ticker or not trade_date:
             continue
-        raw, alpha, days = _fetch_returns(ticker, trade_date)
+        raw, alpha, days = _fetch_returns(ticker, trade_date, holding_days=5)
         if raw is None:
-            continue  # window not yet elapsed, or yfinance unavailable
-        updates.append({
-            "ticker": ticker,
-            "trade_date": trade_date,
-            "raw_return": raw,
-            "alpha_return": alpha,
-            "holding_days": days,
+            continue
+        pass1_updates.append({
+            "ticker": ticker, "trade_date": trade_date,
+            "raw_return": raw, "alpha_return": alpha, "holding_days": days,
             "reflection": _AUTO_RESOLVED_REFLECTION,
         })
 
-    if not updates:
+    if pending:
+        log.info(
+            "auto_resolve pass1 (5d): scanned %d pending → %d ready",
+            len(pending), len(pass1_updates),
+        )
+    if pass1_updates:
+        memory.batch_update_with_outcomes(pass1_updates)
+
+    # ── Pass 2: resolved → long-horizon (15d, 30d) ─────────────────
+    # Re-load AFTER pass1 so newly-resolved entries get considered for
+    # 15d in the same run (rare — typically a 15d-ready entry already
+    # had its 5d resolved in a prior cycle, but harmless to re-check).
+    resolved_after_p1 = [e for e in memory.load_entries() if not e.get("pending")]
+    pass2_updates = []
+    for entry in resolved_after_p1:
+        ticker = entry.get("ticker") or ""
+        trade_date = entry.get("date") or ""
+        if not ticker or not trade_date:
+            continue
+        existing_days = {o["days"] for o in (entry.get("outcomes_extra") or [])}
+        for window in _LONG_HORIZON_WINDOWS:
+            if window in existing_days:
+                continue  # already resolved at this window
+            # Calendar-day gate per window. Conservative ratio: 1 trading
+            # day ≈ 1.4 calendar days + 3-day buffer for weekends / holidays.
+            try:
+                start = datetime.strptime(trade_date, "%Y-%m-%d")
+            except ValueError:
+                continue
+            gate_days = _LONG_HORIZON_GATE_CALENDAR_DAYS[window]
+            if start + timedelta(days=gate_days) > datetime.now():
+                continue  # window not yet elapsed
+            raw, alpha, days = _fetch_returns(ticker, trade_date, holding_days=window)
+            if raw is None:
+                continue
+            pass2_updates.append({
+                "ticker": ticker, "trade_date": trade_date,
+                "days": window, "raw_return": raw, "alpha_return": alpha,
+            })
+
+    if resolved_after_p1:
+        log.info(
+            "auto_resolve pass2 (15d+30d): scanned %d resolved → %d long-horizon ready",
+            len(resolved_after_p1), len(pass2_updates),
+        )
+    if pass2_updates:
+        memory.batch_append_long_horizon_outcomes(pass2_updates)
+
+    # ── Summary + dashboard regen ──────────────────────────────────
+    if not pass1_updates and not pass2_updates:
         print(
-            f"auto_resolve: scanned {len(pending)} pending — none ready "
-            "(window not elapsed or yfinance unavailable)"
+            f"auto_resolve: scanned {len(pending)} pending + "
+            f"{len(resolved_after_p1)} resolved — nothing ready "
+            "(windows not elapsed or yfinance unavailable)"
         )
         return 0
 
-    memory.batch_update_with_outcomes(updates)
-    log.info("auto_resolve: resolved %d / %d pending entries", len(updates), len(pending))
+    log.info(
+        "auto_resolve: %d pass1 (5d) + %d pass2 (15d/30d) updates applied",
+        len(pass1_updates), len(pass2_updates),
+    )
 
-    # Trigger dashboard regen so the accuracy card shows the new resolutions
-    # immediately. Failure here is non-fatal — the regen will still happen
-    # on the next successful analysis.
     try:
         from bot.dashboard import regenerate_index
         regenerate_index()
@@ -174,7 +236,8 @@ def main() -> int:
         log.warning("auto_resolve: dashboard regen failed: %s", exc)
 
     print(
-        f"auto_resolve: resolved {len(updates)} / {len(pending)} pending entries"
+        f"auto_resolve: {len(pass1_updates)} resolved (5d) + "
+        f"{len(pass2_updates)} long-horizon (15d/30d) updates"
     )
     return 0
 
