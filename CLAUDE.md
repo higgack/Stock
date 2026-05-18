@@ -430,16 +430,21 @@ with market-aware branches over per-market parallel functions.
   HARD GUARD covers this — no fabrication risk in the meantime.
   User confirmed will add when convenient.
 
-- **Hydrator-registry refactor for pre-fetch** (deferred but now urgent).
-  After Phase 3 JP foundation, `build_instrument_context`'s data
-  sources are: yfinance .info, yfinance averages, macro 9-series,
-  risk metrics, sector strength, DART (KR), FnGuide consensus (KR),
-  KRX pykrx flow (KR), KRX 30-day trends (KR), BoK ECOS macro (KR),
-  Naver news (KR), EDINET (JP), Kabutan consensus (JP), Kabutan news
-  (JP), FRED JP macro (JP). 15 sources, all sequential imperative
-  try/except, all per-market gated. The hydrator-registry pattern
-  (xai-org/x-algorithm's `candidate-pipeline` crate) — each source
-  declares its inputs / outputs / market scope / failure mode, the
-  orchestrator handles parallelism + per-stage error isolation — is
-  now overdue. Phase 4 (CN) will push this past 20 sources; refactor
-  before then.
+- **Hydrator-registry refactor for pre-fetch** (deferred until Phase 4).
+  `build_instrument_context` currently has 15 data sources stitched
+  together as sequential imperative try/except blocks: yfinance .info,
+  yfinance averages, macro 9-series, risk metrics, sector strength,
+  DART (KR), FnGuide consensus (KR), KRX pykrx flow (KR), KRX 30-day
+  trends (KR), BoK ECOS macro (KR), Naver news (KR), EDINET (JP),
+  Kabutan consensus (JP), Kabutan news (JP), FRED JP macro (JP).
+  Re-evaluated 2026-05-18: bot works fine today, sequential is OK
+  at 15 sources, parallel would save ~200-400ms out of 3-4 min total
+  analysis time (imperceptible). Adding the abstraction now would
+  violate CLAUDE.md's 'no premature abstraction' rule — three similar
+  lines is better than a registry.
+  Trigger to refactor: Phase 4 (CN expansion) will push the source
+  count past 20 and add Tushare / akshare / CSI-300 / 신화재경 /
+  국가통계국 macro. At that point the readability + parallelism
+  benefits outweigh the abstraction cost, and the framework can be
+  designed around Phase 4's actual requirements rather than guessed
+  ones. Until then: keep the imperative chain.
