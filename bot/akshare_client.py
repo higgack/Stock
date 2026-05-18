@@ -235,19 +235,29 @@ class AkshareClient:
                 # 巨潮资讯 A주 公告 list (1.18.62 actual function name —
                 # the older `_announcement_cninfo` was renamed pre-1.18).
                 # `market="沪深京"` covers SH + SZ + BJ in one call.
+                # Wrapped in _fetch_with_retry (2x backoff) — SMIC
+                # 688981.SS 2026-05-19 04:22 surfaced 'Response ended
+                # prematurely' transient error; 1-shot fetch was silently
+                # dropping disclosure data for the whole analysis.
                 cutoff_dt = date.today() - timedelta(days=days_back)
-                df = ak.stock_zh_a_disclosure_report_cninfo(
-                    symbol=code,
-                    market="沪深京",
-                    start_date=cutoff_dt.strftime("%Y%m%d"),
-                    end_date=date.today().strftime("%Y%m%d"),
+                df = _fetch_with_retry(
+                    lambda: ak.stock_zh_a_disclosure_report_cninfo(
+                        symbol=code,
+                        market="沪深京",
+                        start_date=cutoff_dt.strftime("%Y%m%d"),
+                        end_date=date.today().strftime("%Y%m%d"),
+                    ),
+                    label=f"disclosures for {code}",
                 )
             elif market == "HK":
                 # HK disclosure endpoint — AKShare 1.18.62 doesn't expose
                 # a clean HK-only disclosure wrapper. Best-effort try;
                 # falls through to news block when unavailable.
                 try:
-                    df = ak.stock_zh_h_disclosure_em(symbol=code)
+                    df = _fetch_with_retry(
+                        lambda: ak.stock_zh_h_disclosure_em(symbol=code),
+                        label=f"HK disclosures for {code}",
+                    )
                 except AttributeError:
                     log.info(
                         "akshare: HK disclosure endpoint unavailable in"
@@ -956,7 +966,14 @@ def format_hsgt_flow_for_prompt(flow: Optional[dict]) -> str:
 
 
 def format_cn_macro_for_prompt(macro: dict) -> str:
-    """Render CN macro indicators (LPR / CPI / PMI) for analyst prompt."""
+    """Render CN macro indicators (LPR / CPI / PMI) for analyst prompt.
+
+    Silent-skip 차단 (SMIC 688981.SS 2026-05-19 surfaced): 각 변수가
+    None / nan 일 때 행을 생략하지 않고 '데이터 미수집' 명시. 분석가
+    가 누락을 인지하지 못한 채 '나머지 변수만 인용'하는 패턴 방지.
+    Macro 블록 자체가 비어있을 때만 빈 문자열 반환 (caller 가 섹션
+    헤더 생략하도록).
+    """
     if not macro:
         return ""
     parts: list[str] = ["CN 거시 지표 (AKShare 미러: PBoC / 国家统计局):"]
@@ -964,12 +981,33 @@ def format_cn_macro_for_prompt(macro: dict) -> str:
     lpr_5y = macro.get("lpr_5y")
     cpi = macro.get("cpi_yoy")
     pmi = macro.get("pmi")
+
     if lpr_1y is not None:
         parts.append(f"  • LPR 1Y (대출우대금리): {lpr_1y:.2f}%")
+    else:
+        parts.append("  • LPR 1Y: 데이터 미수집 (이번 실행)")
+
     if lpr_5y is not None:
         parts.append(f"  • LPR 5Y (모기지 앵커 금리): {lpr_5y:.2f}%")
+    else:
+        parts.append("  • LPR 5Y: 데이터 미수집 (이번 실행)")
+
     if cpi is not None:
         parts.append(f"  • CPI YoY: {cpi:.2f}%")
+    else:
+        parts.append("  • CPI YoY: 데이터 미수집 (이번 실행)")
+
     if pmi is not None:
         parts.append(f"  • 제조 PMI: {pmi:.1f}")
-    return "\n".join(parts) if len(parts) > 1 else ""
+    else:
+        parts.append("  • 제조 PMI: 데이터 미수집 (이번 실행)")
+
+    # 모든 변수가 미수집이면 빈 문자열 반환 (Rule A guard 가 별도
+    # 'CN 매크로 데이터 미수집' 안내). 한 개라도 valid 면 block 출력.
+    valid_count = sum(
+        1 for v in (lpr_1y, lpr_5y, cpi, pmi) if v is not None
+    )
+    if valid_count == 0:
+        return ""
+
+    return "\n".join(parts)
