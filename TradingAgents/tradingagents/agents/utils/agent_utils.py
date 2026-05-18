@@ -1219,6 +1219,51 @@ def build_instrument_context(ticker: str) -> str:
             f" awkward '백만' unit — both forbidden."
         )
 
+        # Canonical market cap (Rule B). Without this, each analyst
+        # computed (or fabricated) its own — Toyota 7203.T 2026-05-18:
+        # 펀더멘털 ¥38.40조 (yfinance ground truth) vs 감정·뉴스 ¥45조
+        # (LLM 환각). Same divergence pattern showed up in earlier KR
+        # runs. Inject the yfinance marketCap as canonical with proper
+        # native-unit formatting per market so every analyst quotes the
+        # same number. Currency follows _cfg: KRW → 조 원, JPY → 兆 円
+        # / 조 엔, USD → $XB.
+        market_cap = info.get("marketCap")
+        if isinstance(market_cap, (int, float)) and market_cap > 0:
+            _currency = _cfg.get("currency", "USD")
+            if _currency == "KRW":
+                # KRW values are large; render as 조 원 (≥1조) or 억 원.
+                if market_cap >= 1e12:  # ≥1조
+                    mc_native = f"약 {market_cap / 1e12:,.2f}조 원"
+                else:
+                    mc_native = f"약 {market_cap / 1e8:,.0f}억 원"
+            elif _currency == "JPY":
+                # JPY same scale convention but with 조/억 엔 (Korean
+                # output) — analyst's report is in Korean per JP
+                # currency directive.
+                if market_cap >= 1e12:
+                    mc_native = f"약 {market_cap / 1e12:,.2f}조 엔"
+                else:
+                    mc_native = f"약 {market_cap / 1e8:,.0f}억 엔"
+            else:
+                # USD / fallback: $XB / $XM.
+                if market_cap >= 1e9:
+                    mc_native = f"${market_cap / 1e9:,.2f}B"
+                elif market_cap >= 1e6:
+                    mc_native = f"${market_cap / 1e6:,.1f}M"
+                else:
+                    mc_native = f"${market_cap:,.0f}"
+            base += (
+                f"\n\nCanonical market cap (yfinance .info marketCap,"
+                f" point-in-time — use this single value verbatim for"
+                f" any '시가총액 / market cap' reference; do NOT compute"
+                f" your own from price × shares or quote a different"
+                f" number from memory): {mc_native}\n"
+                f"같은 종목 한 보고서에서 분석가들이 서로 다른 시총을 인용하는"
+                f" 패턴 (Toyota 2026-05-18: 펀더멘털 ¥38.40조 vs 감정·뉴스"
+                f" ¥45조) 방지가 목적이다. 위 값을 모든 섹션 (시장 / 감정 /"
+                f" 뉴스 / 펀더멘털 / 결정) 에서 동일하게 사용하라."
+            )
+
         # Price-gap sanity check. yfinance's 50-day / 200-day averages
         # are computed from historical closes that should be
         # split-adjusted, so a current price that differs from either
@@ -1440,6 +1485,67 @@ def build_instrument_context(ticker: str) -> str:
                 " fundamentals summary table and let the debate / decision"
                 " nodes see them as ground truth) ===\n"
                 + signals
+            )
+
+        # API KEY ABSENCE — anti-hallucination directive (Rule A).
+        # Previously the per-source injection blocks (DART / EDINET /
+        # FRED / Naver / Kabutan) silently no-op'd when the API key was
+        # missing. Result: the entire block was absent from the prompt,
+        # so the LLM had ZERO signal that the data wasn't fetched and
+        # happily fabricated KR-style 공시 + insider holdings (코미코
+        # 2026-05-17 "공기업/산업은행") OR EDINET-style 공시 + 5%+
+        # 대량보유 (Toyota 7203.T 2026-05-18 "BlackRock Japan 5.1%
+        # 2026-05-10" — pure fabrication of specific names + dates +
+        # percentages). The fix: even when no block is injected,
+        # explicitly tell the LLM that the data source is OFFLINE for
+        # this run and forbid invention.
+        import os as _os
+        _missing_keys: list[str] = []
+        if market == "KR":
+            if not _os.getenv("DART_API_KEY", "").strip():
+                _missing_keys.append(
+                    "DART (한국 공시 + 임원·주요주주 지분 + 실적 윈도)"
+                )
+            if not _os.getenv("BOK_ECOS_API_KEY", "").strip():
+                _missing_keys.append(
+                    "BoK ECOS (한국 기준금리 + KR 10Y + CPI)"
+                )
+            if not (_os.getenv("NAVER_CLIENT_ID", "").strip()
+                    and _os.getenv("NAVER_CLIENT_SECRET", "").strip()):
+                _missing_keys.append(
+                    "Naver News (한국어 뉴스 25K/day)"
+                )
+        elif market == "JP":
+            if not _os.getenv("EDINET_API_KEY", "").strip():
+                _missing_keys.append(
+                    "EDINET (일본 공시 + 5%+ 대량보유 + 분기 보고 윈도)"
+                )
+            if not _os.getenv("FRED_API_KEY", "").strip():
+                _missing_keys.append(
+                    "FRED (BoJ 정책금리 + JGB 10Y + JP CPI)"
+                )
+        if _missing_keys:
+            _missing_list = "\n".join(f"  • {k}" for k in _missing_keys)
+            base += (
+                "\n\n=== ⛔ DATA SOURCE OFFLINE (ANTI-HALLUCINATION HARD GUARD) ===\n"
+                "다음 데이터 소스가 이번 실행에서 API 키 부재로 OFFLINE입니다:\n"
+                f"{_missing_list}\n\n"
+                "이 데이터 소스에서 제공해야 할 정보 (예: 최근 공시 / 임원·주요주주"
+                " 지분 / 대량보유 보고 / 자국 기준금리 / 자국어 뉴스 등)를"
+                " 절대 fabrication하지 마라.\n\n"
+                "특히 금지되는 패턴:\n"
+                "  ❌ '최근 공시: YYYY-MM-DD 자사주 매입 / 가이던스 하향 등'"
+                " 형태로 specific 날짜 + 이벤트 만들기\n"
+                "  ❌ '대량보유 공시: BlackRock 5.1% / Vanguard 5.0%' 형태로"
+                " specific 보유자 + 정확한 % 만들기 (대형주는 그럴 가능성이"
+                " 높다는 추정만으로 specific 값 fabrication 금지)\n"
+                "  ❌ '공기업/공공 entity', '재벌 계열사 지배구조', '創業家"
+                " family holdings' 등 generic 소유구조 narrative 만들기\n"
+                "  ❌ '한국은행 기준금리 X.X%, KR 10Y X.X%' 등 self-quote\n"
+                "  ❌ '한국어 뉴스: 최근 ... 보도' / '日経 보도에 따르면 ...' 등\n\n"
+                "올바른 처리: 해당 항목은 보고서에서 한 줄 'X 데이터 미수집 (이번"
+                " 실행)' 로 명시하고 다음 항목으로 진행. 펀더멘털 / 결정 노드도"
+                " 이 가드를 따른다."
             )
 
         # DART (KR-only) — 공시 / 임원지분 / 실적 윈도. yfinance returns

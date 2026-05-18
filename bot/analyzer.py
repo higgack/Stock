@@ -1169,6 +1169,19 @@ def _polish(body: str) -> str:
     for idx, (pat, repl) in enumerate(_KO_LABEL_REPLACEMENTS, 1):
         _step(f"ko-label-{idx}", lambda b, p=pat, r=repl: p.sub(r, b))
     _step("blank-lines",         lambda b: re.sub(r"\n{3,}", "\n\n", b))
+    # 4-digit-comma 'X,XXXX' integers (Japanese 万 / Korean 만 style)
+    # are unreadable when mixed into a Korean prose paragraph. Toyota
+    # 7203.T 2026-05-18 had '매출 (억 엔): FY25: 48,0367' (raw
+    # 480,367 with the comma in the wrong place). We don't try to
+    # auto-relocate the comma (risky — would change the magnitude
+    # silently); instead we strip the misplaced comma so the number
+    # becomes a plain integer that the reader can interpret without
+    # guessing the digit grouping. Replace '\d,\d{4}\b' patterns only.
+    # Won't touch legit 3-digit-grouped numbers (1,234 / 12,345 /
+    # 123,456) or properly-grouped large numbers (1,234,567).
+    _step("strip-4digit-comma", lambda b: re.sub(
+        r"(\d),(\d{4})(?!\d)", r"\1\2", b,
+    ))
     # Conservative dedup for short Korean approximation words that
     # analysts occasionally double-print before a number ("약 약 1776조"
     # — SNG 2026-05-17). Only handles a fixed allowlist; we don't do

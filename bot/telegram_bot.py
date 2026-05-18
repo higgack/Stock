@@ -717,7 +717,7 @@ yfinance (15년 캐시) · Alpha Vantage (영문) · 한국 네이버 뉴스 · 
 
 ━━━━━━━━━
 <b>【7. 안정성 (자동)】</b>
-별도 subprocess · 10분 wall 타임아웃 · LLM 150초 cap · watchdog 12분 재시작 · auto-update 2분 git pull · 진행 메시지 자동 복구 · 펀더멘털 RULE 1~12 (미·한·일 산업정책 변수·자본잠식·중복 차단) · stance 결론우선 · 섹터강도 |25%p|↑ 인용 차단 · 컨센서스 staleness (가격갭 ±20%↑ + 갱신일 30일+) · 코퍼레이트액션 HARD GUARD 3중 (DART/EDINET 공시 + yfinance .splits ex-date) · 소유구조 빈 결과 환각 차단 (DART/EDINET/yfinance) · Comps MANDATORY PEER SET 미·한·일 130+ 산업 + multiples 사전 fetch · PM override discipline (다수 동일 방향 시 trigger 명시 의무)
+별도 subprocess · 10분 타임아웃 · LLM 150초 · watchdog 12분 재시작 · auto-update 2분 git pull · RULE 1~12 (미·한·일 산업정책·4자리 콤마 금지·자본잠식) · stance 결론우선 · 섹터강도 |25%p|↑ 차단 · 컨센서스 staleness · 코퍼레이트액션 HARD GUARD 3중 (DART/EDINET 공시+yfinance .splits) · 소유구조 환각 차단 · Comps PEER SET 130+ 산업+multiples 사전 fetch+subject row 의무 · PM override discipline 코드-강제 (다수 분석가 동일 방향 시 trigger 검증 후 자동 보정) · canonical 시총 강제 · 베타 라벨 (5년 월간/90일+벤치마크) · API 키 부재 시 DATA OFFLINE 환각 차단
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
