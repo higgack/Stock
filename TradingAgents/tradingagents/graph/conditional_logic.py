@@ -14,6 +14,45 @@ _log = logging.getLogger("tradingagents.retry")
 _MAX_ANALYST_RETRIES = 1
 
 
+def _analysts_unanimous(state) -> bool:
+    """Return True when every analyst that produced a readable stance
+    leans the same direction (매수 / 보유 / 매도). Skipped analysts
+    (empty reports) don't vote — same convention bot/analyzer.py uses
+    for the stance bar. Requires at least 2 voting analysts to avoid
+    treating a single-analyst state as 'unanimous'.
+
+    Used by `should_continue_debate` to trim the Bear turn when there
+    is no real disagreement to rebut. Hold-only consensus also counts:
+    a 4-of-4 Hold is still unanimous direction, and Bear's job there
+    is to rebut a bull case that wasn't made.
+    """
+    try:
+        from bot.analyzer import _extract_stance
+        from tradingagents.agents.managers.portfolio_manager import (
+            _stance_to_direction,
+        )
+    except Exception:
+        return False
+
+    report_keys = (
+        "market_report", "sentiment_report",
+        "news_report", "fundamentals_report",
+    )
+    directions: list[str] = []
+    for key in report_keys:
+        body = state.get(key)
+        if not body or not isinstance(body, str):
+            continue
+        stance = _extract_stance(body)
+        if not stance:
+            continue
+        directions.append(_stance_to_direction(stance))
+
+    if len(directions) < 2:
+        return False
+    return len(set(directions)) == 1
+
+
 def _should_retry(state, analyst: str, report_key: str) -> str:
     """Shared body for should_retry_market/social/news/fundamentals.
 
@@ -110,11 +149,34 @@ class ConditionalLogic:
         return "Msg Clear Fundamentals"
 
     def should_continue_debate(self, state: AgentState) -> str:
-        """Determine if debate should continue."""
+        """Determine if debate should continue.
 
-        if (
-            state["investment_debate_state"]["count"] >= 2 * self.max_debate_rounds
-        ):  # 3 rounds of back-and-forth between 2 agents
+        Standard flow: Bull → Bear → Research Manager (count reaches
+        2 * max_debate_rounds, default 2).
+
+        Cost-reduction shortcut (Option 3, 2026-05-18): when the four
+        analyst reports show unanimous direction (all 매수 / 보유 / 매도
+        — counting only analysts that actually ran), skip the Bear
+        rebuttal after the first Bull turn and proceed directly to the
+        Research Manager. Bear's contribution when there's nothing to
+        rebut is mostly boilerplate restating the bull case in reverse;
+        cutting it saves ~1 LLM call per unanimous run with negligible
+        quality impact. Conflict cases (3-1 split, 2-2 split, abstains
+        + disagreement) still get the full Bull/Bear pass — this only
+        trims the unambiguous consensus path.
+
+        Rule applies to all analyses going forward; covers US + KR +
+        JP + TW (+ future CN) equally. No market-specific branching.
+        """
+        count = state["investment_debate_state"]["count"]
+        threshold = 2 * self.max_debate_rounds
+
+        # Shortcut: after first Bull turn, if analysts are unanimous,
+        # skip Bear and go straight to Research Manager.
+        if count >= 1 and _analysts_unanimous(state):
+            return "Research Manager"
+
+        if count >= threshold:  # 3 rounds of back-and-forth between 2 agents
             return "Research Manager"
         if state["investment_debate_state"]["current_response"].startswith("Bull"):
             return "Bear Researcher"

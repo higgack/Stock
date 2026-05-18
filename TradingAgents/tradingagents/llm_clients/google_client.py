@@ -73,7 +73,15 @@ class GoogleClient(BaseLLMClient):
                 # silent thinking overhead by ~70%. If a future case
                 # genuinely needs more thinking, raise the cap rather
                 # than going back to unbounded dynamic.
-                llm_kwargs["thinking_budget"] = 4096
+                #
+                # Per-instance override (Option 4 cost reduction, 2026-
+                # 05-18): callers can pass `thinking_budget_override`
+                # to get a lighter Pro LLM (e.g. 2048 for PM consensus
+                # paths where less synthesis is needed). Default 4096
+                # preserves previous behavior.
+                llm_kwargs["thinking_budget"] = (
+                    self.kwargs.get("thinking_budget_override") or 4096
+                )
             else:
                 # Gemini 2.5 Flash / Flash-Lite: map to thinking_budget
                 llm_kwargs["thinking_budget"] = -1 if thinking_level == "high" else 0

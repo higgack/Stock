@@ -127,7 +127,40 @@ class TradingAgentsGraph:
         else:
             # No dedicated decision tier — fall back to the deep tier.
             self.decision_thinking_llm = self.deep_thinking_llm
-        
+
+        # Light variant of the decision LLM for PM consensus paths
+        # (Option 4 cost reduction, 2026-05-18). thinking_budget=2048
+        # vs the default 4096 — when all four analysts agree on
+        # direction, synthesis is mostly summarisation rather than
+        # conflict resolution, so half the thinking budget suffices.
+        # Conflict cases route to the full decision_thinking_llm
+        # unchanged.  Only the Gemini 2.5 Pro path honours the
+        # override; non-Google providers and Gemini 3 receive the
+        # same LLM object (no quality / cost change).
+        # Rule applies universally — US + KR + JP + TW (+ future CN).
+        decision_light_kwargs = dict(decision_kwargs)
+        decision_light_kwargs["thinking_budget_override"] = (
+            self.config.get("pm_consensus_thinking_budget", 2048)
+        )
+        decision_light_model = (
+            decision_model
+            if decision_model and decision_model != self.config["deep_think_llm"]
+            else self.config["deep_think_llm"]
+        )
+        try:
+            decision_light_client = create_llm_client(
+                provider=self.config["llm_provider"],
+                model=decision_light_model,
+                base_url=self.config.get("backend_url"),
+                **decision_light_kwargs,
+            )
+            self.decision_thinking_llm_light = decision_light_client.get_llm()
+        except Exception:
+            # Provider that doesn't honour the override → reuse the
+            # heavy LLM. PM logic falls back transparently.
+            self.decision_thinking_llm_light = self.decision_thinking_llm
+
+
         self.memory_log = TradingMemoryLog(self.config)
 
         # Create tool nodes
@@ -144,6 +177,7 @@ class TradingAgentsGraph:
             self.tool_nodes,
             self.conditional_logic,
             decision_thinking_llm=self.decision_thinking_llm,
+            decision_thinking_llm_light=self.decision_thinking_llm_light,
         )
 
         self.propagator = Propagator()

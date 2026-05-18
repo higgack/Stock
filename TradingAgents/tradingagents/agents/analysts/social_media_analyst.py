@@ -12,7 +12,7 @@ from tradingagents.dataflows.config import get_config
 def create_social_media_analyst(llm):
     def social_media_analyst_node(state):
         current_date = state["trade_date"]
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        instrument_context = build_instrument_context(state["company_of_interest"], analyst_id="social")
 
         tools = [
             get_news,

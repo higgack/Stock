@@ -1048,9 +1048,58 @@ def _format_dart_kr_block(
     return "\n".join(lines)
 
 
-def build_instrument_context(ticker: str) -> str:
+# Per-analyst exclusion map for build_instrument_context (Option 1 cost
+# reduction, 2026-05-18). Each analyst gets only the sections it actually
+# uses; non-relevant heavy blocks (foreign-language news for market /
+# fundamentals, KR flow data for sentiment, etc.) are dropped from the
+# prompt to cut input tokens by ~25-30% per analyst. Default `None`
+# analyst_id (used by PM / trader / research_manager) sees all sections
+# unchanged — backward-compatible.
+#
+# Rule applies to all analyses going forward, covers US + KR + JP + TW
+# (+ future CN). Universal-by-default: each gated section is the same
+# block across markets, the gate just hides it from analysts that don't
+# need it. No per-market branching introduced.
+_ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
+    # 시장 (technical): doesn't analyze native-language news. Keeps KRX
+    # flow (it IS market-flow data), keeps all macro blocks (rate
+    # environment frames the chart).
+    "market": {"naver_news", "kabutan_news", "cnyes_news"},
+    # 감정 (sentiment): doesn't quantify rates or KRX flow. Keeps news
+    # blocks (sentiment fuel) and peer set (Comps consistency).
+    "social": {
+        "krx_flow",
+        "bok_macro", "fred_jp_macro", "fred_tw_macro",
+    },
+    # 뉴스 (news): keeps everything except KRX flow (numbers without
+    # narrative don't add to news synthesis).
+    "news": {"krx_flow"},
+    # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
+    # need short-horizon flow. Keeps macro (rate-sensitive valuation).
+    "fundamentals": {
+        "naver_news", "kabutan_news", "cnyes_news", "krx_flow",
+    },
+}
+
+
+def _section_allowed(analyst_id: str | None, section: str) -> bool:
+    """Return True when this section should appear in the analyst's
+    prompt. `analyst_id is None` (non-analyst callers — PM, trader,
+    research manager) always sees every section."""
+    if analyst_id is None:
+        return True
+    return section not in _ANALYST_CONTEXT_EXCLUDE.get(analyst_id, set())
+
+
+def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified
-    tickers and adjust their data expectations for non-equity products."""
+    tickers and adjust their data expectations for non-equity products.
+
+    `analyst_id` (optional): one of "market" / "social" / "news" /
+    "fundamentals". When set, heavy sections not relevant to that
+    analyst are excluded (see `_ANALYST_CONTEXT_EXCLUDE`). Non-analyst
+    callers (portfolio manager, trader, research manager) pass None /
+    omit the argument and see the full context — backward-compatible."""
     base = (
         f"The instrument to analyze is `{ticker}`. "
         "Use this exact ticker in every tool call, report, and recommendation, "
@@ -1935,7 +1984,7 @@ def build_instrument_context(ticker: str) -> str:
         # signal entirely.
         try:
             from bot.market import detect_market
-            if detect_market(ticker) == "KR":
+            if detect_market(ticker) == "KR" and _section_allowed(analyst_id, "krx_flow"):
                 from bot.pykrx_client import (
                     get_kr_trading_flow,
                     format_flow_for_prompt,
@@ -2002,7 +2051,7 @@ def build_instrument_context(ticker: str) -> str:
         # have a real KR source to build on.
         try:
             from bot.market import detect_market
-            if detect_market(ticker) == "KR" and kr_name:
+            if detect_market(ticker) == "KR" and kr_name and _section_allowed(analyst_id, "naver_news"):
                 from bot.naver_news_client import fetch_news, format_news_for_prompt
                 news_items = fetch_news(kr_name, days_back=28, max_items=10)
                 if news_items:
@@ -2035,7 +2084,7 @@ def build_instrument_context(ticker: str) -> str:
         # bok_ecos_client absorbs the cost.
         try:
             from bot.market import detect_market
-            if detect_market(ticker) == "KR":
+            if detect_market(ticker) == "KR" and _section_allowed(analyst_id, "bok_macro"):
                 from bot.bok_ecos_client import fetch_kr_macro, format_kr_macro_for_prompt
                 kr_macro = fetch_kr_macro()
                 kr_macro_block = format_kr_macro_for_prompt(kr_macro)
@@ -2158,7 +2207,7 @@ def build_instrument_context(ticker: str) -> str:
         # one per-ticker news listing. Mirrors the Naver KR block.
         try:
             from bot.market import detect_market
-            if detect_market(ticker) == "JP":
+            if detect_market(ticker) == "JP" and _section_allowed(analyst_id, "kabutan_news"):
                 from bot.kabutan_news import fetch_news as fetch_jp_news, format_news_for_prompt as fmt_jp_news
                 jp_news = fetch_jp_news(ticker, days_back=28, max_items=10)
                 if jp_news:
@@ -2183,7 +2232,7 @@ def build_instrument_context(ticker: str) -> str:
         # Mirrors the BoK ECOS KR block.
         try:
             from bot.market import detect_market
-            if detect_market(ticker) == "JP":
+            if detect_market(ticker) == "JP" and _section_allowed(analyst_id, "fred_jp_macro"):
                 from bot.fred_client import fetch_macro, format_macro_for_prompt
                 jp_macro = fetch_macro("JP")
                 jp_macro_block = format_macro_for_prompt(jp_macro, "JP")
@@ -2308,7 +2357,7 @@ def build_instrument_context(ticker: str) -> str:
         # gap with 繁體中文 articles. Mirrors the Naver / Kabutan paths.
         try:
             from bot.market import detect_market
-            if detect_market(ticker) == "TW":
+            if detect_market(ticker) == "TW" and _section_allowed(analyst_id, "cnyes_news"):
                 from bot.cnyes_client import fetch_news as fetch_tw_news, format_news_for_prompt as fmt_tw_news
                 tw_news = fetch_tw_news(ticker, days_back=28, max_items=10)
                 if tw_news:
@@ -2333,7 +2382,7 @@ def build_instrument_context(ticker: str) -> str:
         # FRED API key as JP. Mirrors the BoK ECOS KR + FRED JP blocks.
         try:
             from bot.market import detect_market
-            if detect_market(ticker) == "TW":
+            if detect_market(ticker) == "TW" and _section_allowed(analyst_id, "fred_tw_macro"):
                 from bot.fred_client import fetch_macro, format_macro_for_prompt
                 tw_macro = fetch_macro("TW")
                 tw_macro_block = format_macro_for_prompt(tw_macro, "TW")

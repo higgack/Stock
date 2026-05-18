@@ -282,11 +282,57 @@ def _enforce_pm_override_discipline(
     return adjusted, note
 
 
-def create_portfolio_manager(llm):
+def create_portfolio_manager(llm, llm_light=None):
+    """Create the Portfolio Manager node.
+
+    `llm`: full-budget decision LLM (Gemini 2.5 Pro w/ thinking_budget=4096
+        by default). Used for conflict cases — analysts split or PM
+        verdict opposes analyst majority — where genuine synthesis is
+        required.
+    `llm_light` (optional, Option 4 cost reduction 2026-05-18): lighter
+        decision LLM (thinking_budget=2048 by default). Used when all
+        running analysts lean the same direction, where the PM's job
+        reduces to summarising agreement rather than resolving conflict.
+        Falls back to `llm` when unset — identical to pre-Option-4
+        behaviour."""
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
+    if llm_light is not None and llm_light is not llm:
+        structured_llm_light = bind_structured(
+            llm_light, PortfolioDecision, "Portfolio Manager (consensus)",
+        )
+    else:
+        structured_llm_light = structured_llm
 
     def portfolio_manager_node(state) -> dict:
         instrument_context = build_instrument_context(state["company_of_interest"])
+
+        # Option 4 routing: when the four analysts are unanimous in
+        # direction (매수/보유/매도), use the light LLM (thinking_budget=
+        # 2048) — synthesis is mostly summarisation. Conflict / split
+        # cases keep the heavy LLM (4096) to preserve override-discipline
+        # reasoning quality. Hold-only consensus also routes light: the
+        # PM still has to check the DATA-AVAILABILITY GUARD and the
+        # consistency-of-evidence requirement, but neither demands the
+        # extra thinking budget reserved for split-direction debates.
+        try:
+            majority, voter_count = _analyst_majority_direction(state)
+            use_light = (
+                majority is not None
+                and voter_count >= 2
+                and structured_llm_light is not structured_llm
+            )
+        except Exception as exc:
+            _pm_log.warning(
+                "pm-budget: majority extraction failed (%s) — defaulting to heavy LLM",
+                exc,
+            )
+            use_light = False
+        active_structured_llm = structured_llm_light if use_light else structured_llm
+        if use_light:
+            _pm_log.info(
+                "pm-budget: %d analysts unanimous on %s — using light LLM (thinking_budget=2048)",
+                voter_count, majority,
+            )
 
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
@@ -386,9 +432,9 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
         # we'd be regex-parsing markdown — keep the prompt's text rule
         # as the only guard in that path.
         final_trade_decision: str
-        if structured_llm is not None:
+        if active_structured_llm is not None:
             try:
-                decision: PortfolioDecision = structured_llm.invoke(prompt)
+                decision: PortfolioDecision = active_structured_llm.invoke(prompt)
                 decision, _override_note = _enforce_pm_override_discipline(
                     decision, state,
                 )
@@ -402,7 +448,7 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
                 final_trade_decision = llm.invoke(prompt).content
         else:
             final_trade_decision = invoke_structured_or_freetext(
-                structured_llm,
+                active_structured_llm,
                 llm,
                 prompt,
                 render_pm_decision,

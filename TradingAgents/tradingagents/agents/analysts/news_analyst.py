@@ -15,7 +15,7 @@ def create_news_analyst(llm):
     def news_analyst_node(state):
         current_date = state["trade_date"]
         symbol = state["company_of_interest"]
-        instrument_context = build_instrument_context(symbol)
+        instrument_context = build_instrument_context(symbol, analyst_id="news")
 
         # Pre-fetch macro and inject (same rationale as market_analyst):
         # the LLM was skipping the MANDATORY get_macro_context tool call

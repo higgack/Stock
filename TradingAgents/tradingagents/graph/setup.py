@@ -90,6 +90,7 @@ class GraphSetup:
         tool_nodes: Dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
         decision_thinking_llm: Any = None,
+        decision_thinking_llm_light: Any = None,
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
@@ -99,6 +100,13 @@ class GraphSetup:
         # didn't configure one — behavior identical to before this option
         # existed.
         self.decision_thinking_llm = decision_thinking_llm or deep_thinking_llm
+        # Light variant of the decision LLM (Option 4 cost reduction).
+        # Used by Portfolio Manager when the four analysts are unanimous,
+        # where less synthesis is required. Falls back to the heavy
+        # decision LLM when the caller didn't configure one.
+        self.decision_thinking_llm_light = (
+            decision_thinking_llm_light or self.decision_thinking_llm
+        )
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
 
@@ -168,7 +176,10 @@ class GraphSetup:
         aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
         neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
         conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.decision_thinking_llm)
+        portfolio_manager_node = create_portfolio_manager(
+            self.decision_thinking_llm,
+            llm_light=self.decision_thinking_llm_light,
+        )
 
         # Create workflow
         workflow = StateGraph(AgentState)

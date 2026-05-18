@@ -732,6 +732,39 @@ with market-aware branches over per-market parallel functions.
    • 합계 ~2,400줄, 16-20h (TW의 1.8x)
    • 검증 사이클: 5-8 종목, TW와 유사 (2-3 review/fix cycle 예상)
 
+- **Gemini Context Caching** (deferred, 2026-05-18). Cost-reduction
+  Option 2 from the 2026-05-18 analysis. The instrument_context block
+  (~5-10K tokens per analyst) is identical across the 4 analyst runs
+  for a single ticker; Gemini's explicit-cache API
+  (`cache_content` / `cached_content_id`) lets repeated reads of the
+  same prefix bill at ~25% of the input rate. Implementation requires
+  a Python-side cache lifecycle (create on first analyst, reference on
+  subsequent 3, delete after analysis completes — caches live max 60
+  min) and instrumentation to confirm the cached_content_id propagates
+  through `langchain_google_genai` to the underlying `genai` SDK.
+  Expected saving: -15% total input cost on top of Option 1 + 3 + 4.
+  User chose 2026-05-18 to ship Options B (1+3+4) first and validate
+  before paying the integration cost for caching. Pick this up when
+  Phase 4-CN validation completes — caching ROI scales with the number
+  of markets / analysts, so it gets more valuable after CN.
+
+- **PM Option 4 propagation verification** (post Option B commit, 2026-
+  05-18). Option 4 routes Portfolio Manager to a thinking_budget=2048
+  variant of Gemini 2.5 Pro when the four analysts are unanimous on
+  direction. The `thinking_budget_override` kwarg flows through
+  `GoogleClient.get_llm()` into the `ChatGoogleGenerativeAI`
+  constructor. Verify in production logs that the lighter LLM is
+  actually invoked on consensus runs (look for the 'pm-budget:
+  ... using light LLM' INFO log emitted from portfolio_manager.py).
+  If `langchain_google_genai` ever changes how `thinking_budget` is
+  consumed (e.g. moves it under model_kwargs or generation_config),
+  the override path needs adjustment to keep landing on the API
+  call. Quality regression detection: compare PM verdict distribution
+  on the next 10-20 unanimous-consensus runs vs the pre-Option-B
+  baseline; if Hold-rate or override-discipline triggers shift more
+  than ~5pp, suspect the lighter budget is under-thinking and bump
+  pm_consensus_thinking_budget back up.
+
 - **Hydrator-registry refactor for pre-fetch** (deferred until Phase 4).
   `build_instrument_context` currently has 15 data sources stitched
   together as sequential imperative try/except blocks: yfinance .info,
