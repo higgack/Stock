@@ -2092,6 +2092,106 @@ def build_instrument_context(ticker: str) -> str:
         # call here — get_market_signals_for is already wired upstream
         # and returns the merged consensus line for JP via the same
         # path as KR. (See get_market_signals_for in this module.)
+
+        # ─────────────────────────────────────────────────────────────
+        # TW equity-only injections — same shape as JP, mirror the
+        # KR/JP layout one-for-one. MOPS for disclosures + 內部人持股,
+        # 鉅亨網 for 繁體中文 news, FRED for CBC 重貼現率 + TW 10Y +
+        # CPI. All four sources degrade silently when client modules
+        # or keys are missing.
+        # ─────────────────────────────────────────────────────────────
+
+        # MOPS (TW regulatory disclosures — 重大訊息 + 內部人持股 +
+        # next earnings 윈도). No API key needed; HTML scrape of the
+        # publicly accessible TWSE disclosure platform. Mirrors the
+        # KR DART + JP EDINET injection blocks.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "TW":
+                from bot.mops_client import get_mops, format_mops_tw_block
+                mops = get_mops()
+                tw_disclosures = mops.get_recent_disclosures(ticker, days_back=30, limit=8)
+                tw_insiders = mops.get_insider_holdings(ticker)
+                tw_window = mops.next_earnings_window(ticker)
+                mops_block = format_mops_tw_block(tw_disclosures, tw_insiders, tw_window)
+                if mops_block:
+                    base += (
+                        "\n\n=== Pre-fetched TW market data (MOPS, verbatim —"
+                        " do NOT call any tool for these numbers; use them in"
+                        " the news / fundamentals / risk sections as ground"
+                        " truth) ===\n"
+                        + mops_block
+                        + "\n\nRENDERING RULES for the MOPS block:\n"
+                        " • 重大訊息: render as a bullet list, one per line,"
+                        " with the date prefix preserved. Categories vary"
+                        " (法說會 / 取得處分資產 / 營運狀況 / 董事會 결의)"
+                        " — quote 主旨 verbatim, don't paraphrase.\n"
+                        " • 內部人持股: render with 직책 + 이름 + 보유 주식 수"
+                        " (TW pct는 MOPS가 직접 반환 안 함 — share count로만"
+                        " 표시). KR DART의 % 표시처럼 percentage가 없는 게"
+                        " 정상 — generic '공기업/政府 보유' narrative 절대"
+                        " 만들지 마라.\n"
+                        " • 다음 정기보고서 윈도: one prose sentence. TW 회계"
+                        " 연도 12/31 (KR과 동일, JP 3/31과 다름) — 분기 라벨"
+                        " 1Q=1-3월, 2Q=4-6월 etc."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "mops injection failed for %s: %s", ticker, exc,
+            )
+
+        # 鉅亨網 news (TW-only) — yfinance .news covers TW large-caps in
+        # English with 1-3 day lag for TW-domestic events (法說會 calendar
+        # / 月營收 disclosure / 內部人 transactions). 鉅亨網 fills the
+        # gap with 繁體中文 articles. Mirrors the Naver / Kabutan paths.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "TW":
+                from bot.cnyes_client import fetch_news as fetch_tw_news, format_news_for_prompt as fmt_tw_news
+                tw_news = fetch_tw_news(ticker, days_back=28, max_items=10)
+                if tw_news:
+                    base += (
+                        "\n\n=== Pre-fetched TW news (鉅亨網 스크랩, verbatim) ===\n"
+                        + fmt_tw_news(tw_news)
+                        + "\n\n위 繁體中文 뉴스가 TW 종목 분석의 primary"
+                        " news source이다. 영문 뉴스 (yfinance / Alpha"
+                        " Vantage) 가 비어있거나 다소 lag이 있더라도 위"
+                        " 리스트를 활용해 news / sentiment 분석을 진행."
+                        " TW 종목 분석 시 미국·일본 무관 영문 뉴스 끌어다가"
+                        " 간접 추론으로 메우는 패턴 (호텔신라 2026-05-17 /"
+                        " 두산 2026-05-18 케이스) 금지. 위 리스트가 비어"
+                        " 있는 경우만 繁體中文 뉴스 부재로 인정."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "cnyes news injection failed for %s: %s", ticker, exc,
+            )
+
+        # TW macro from FRED (CBC 重貼現率 / TW 10Y / TW CPI). Same
+        # FRED API key as JP. Mirrors the BoK ECOS KR + FRED JP blocks.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "TW":
+                from bot.fred_client import fetch_macro, format_macro_for_prompt
+                tw_macro = fetch_macro("TW")
+                tw_macro_block = format_macro_for_prompt(tw_macro, "TW")
+                if tw_macro_block:
+                    base += (
+                        "\n\n=== Pre-fetched TW macro (FRED 미러: CBC / OECD,"
+                        " verbatim — TW-specific rate environment) ===\n"
+                        + tw_macro_block
+                        + "\n\n위 TW 거시 지표는 TW equity 분석의 기본"
+                        " frame이다. ^TNX (미국 10Y)만 보고 '고금리 환경'"
+                        " 결론을 내리지 말고, CBC 重貼現率 + TW 10Y의 절대"
+                        " 수준 + 직전 변동 방향을 같이 인용. TW 央行은 美 Fed"
+                        " 대비 보수적으로 움직이는 경향이 있어 (TW는 export-"
+                        " driven 경제라 통화가치 안정 우선), 美 금리와 TW"
+                        " 금리 sync가 1:1이 아님을 인지."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "fred tw macro injection failed for %s: %s", ticker, exc,
+            )
     return base
 
 def create_msg_delete():

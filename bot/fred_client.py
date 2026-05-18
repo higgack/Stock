@@ -65,8 +65,36 @@ _SERIES_JP = {
     },
 }
 
+# TW series: 中央銀行 (CBC) 重貼現率 (discount rate) + 10Y bond yield
+# + CPI YoY. FRED has these via OECD mirror — same key works for TW
+# as JP. Slightly thinner coverage than JP (some TW-specific
+# indicators don't make it to FRED), but the headline policy-rate +
+# yield-curve + inflation triple is enough to ground a JP-quality
+# macro block.
+_SERIES_TW = {
+    "policy_rate": {
+        "series_id": "IRSTCB01TWM156N",
+        "label": "CBC 重貼現率 (TW 정책금리)",
+        "unit": "%",
+        "lookback_days": 365,
+    },
+    "tw10y": {
+        "series_id": "IRLTLT01TWM156N",
+        "label": "TW 10Y 公債 yield",
+        "unit": "%",
+        "lookback_days": 90,
+    },
+    "cpi_yoy": {
+        "series_id": "CPALTT01TWM659N",
+        "label": "TW CPI (전년동월비)",
+        "unit": "%",
+        "lookback_days": 365,
+    },
+}
+
 _MARKETS = {
     "JP": _SERIES_JP,
+    "TW": _SERIES_TW,
 }
 
 
@@ -172,10 +200,12 @@ def format_macro_for_prompt(macro: dict, market: str) -> str:
     market = market.upper()
     header = {
         "JP": "JP 거시 (FRED 미러: BoJ / OECD / IMF):",
+        "TW": "TW 거시 (FRED 미러: CBC / OECD):",
     }.get(market, f"{market} 거시 (FRED):")
 
     order = {
         "JP": ["policy_rate", "jp10y", "cpi_yoy"],
+        "TW": ["policy_rate", "tw10y", "cpi_yoy"],
     }.get(market, list(macro.keys()))
 
     lines = [header]
