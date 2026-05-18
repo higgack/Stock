@@ -1201,6 +1201,15 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["bok_macro"] = lambda: fetch_kr_macro()
         except Exception:
             pass
+        # A2: KRX 시장경보 status — 거래정지 / 관리종목 / 단기과열 /
+        # 투자주의/경고/위험 4 카테고리 통합 lookup. fetch_all 가
+        # process-wide cached (12h) 이라 first call 만 network — 이후
+        # ticker check 는 in-memory set membership.
+        try:
+            from bot.krx_alert_client import get_krx_alert
+            tasks["krx_alert"] = lambda: get_krx_alert().get_status(ticker)
+        except Exception:
+            pass
         # Naver news fetch needs KR corp name (kr_name from DART), which
         # is resolved inside build_instrument_context AFTER this prefetch.
         # Keep Naver as inline sequential fetch — only ~1s anyway.
@@ -2217,6 +2226,28 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 disclosures = prefetched.get("dart_disclosures") or []
                 insiders = prefetched.get("dart_insiders") or []
                 window = prefetched.get("dart_window")
+
+                # B4: KRX 시장경보 HARD GUARD inject. fetch는 prefetch
+                # 단계에서 완료 — 여기는 banner 렌더링만. CN_A/HK 의
+                # ST/*ST/停牌 HARD GUARD 와 동일 shape, KR 시장의 거래
+                # 정지 / 관리종목 / 단기과열 / 투자위험 등 분류 시 5거래
+                # 일 정상 가격 분석 보류 + 펀더멘털 결론에 분류 명시
+                # 의무 directive.
+                try:
+                    from bot.krx_alert_client import format_krx_alert_block
+                    krx_status = prefetched.get("krx_alert") or {}
+                    krx_alert_banner = format_krx_alert_block(krx_status)
+                    if krx_alert_banner:
+                        base += (
+                            "\n\n=== ⚠️ KR 시장경보 (HARD GUARD —"
+                            " 거래정지 / 관리종목 / 단기과열 / 투자경보) ===\n"
+                            + krx_alert_banner
+                        )
+                except Exception as exc:
+                    _analyst_log.warning(
+                        "krx alert banner inject failed for %s: %s",
+                        ticker, exc,
+                    )
 
                 # CORPORATE ACTION IN-FLIGHT detection (Rule A). A stock
                 # split / bonus issue / reverse split announced in the
