@@ -30,7 +30,22 @@ def create_research_manager(llm):
             else ""
         )
 
-        prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
+        # Language instruction issued at BOTH the top and the bottom of
+        # the prompt (2026-05-19 fix). The debate history block below is
+        # long English (Bull/Bear quick_thinking_llm output); Gemini's
+        # language-matching defaults to that surrounding context unless
+        # the directive is loud + repeated. Top placement ensures the
+        # LLM commits to the output language BEFORE reading the English
+        # context. Bottom placement reinforces immediately before
+        # generation. 茅台 600519.SS 2026-05-19 first-CN-run had the
+        # research_manager emit full English ("Okay, let's break this
+        # down...") + mixed phrases ("be 신중함 with sizing") because
+        # only the bottom directive existed.
+        language_directive = get_language_instruction()
+
+        prompt = language_directive + f"""
+
+As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.
 
 {instrument_context}
 
@@ -91,7 +106,7 @@ Calibrate the verdict accordingly:
 ---
 
 **Debate History:**
-{history}""" + get_language_instruction()
+{history}""" + language_directive
 
         investment_plan = invoke_structured_or_freetext(
             structured_llm,

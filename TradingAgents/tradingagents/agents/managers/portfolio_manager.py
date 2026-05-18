@@ -346,7 +346,17 @@ def create_portfolio_manager(llm, llm_light=None):
             else ""
         )
 
-        prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
+        # Language directive at TOP + BOTTOM (same pattern as
+        # research_manager) — risk debate history below is long English
+        # quick_thinking_llm output. Top placement commits LLM to output
+        # language before reading English context. 茅台 600519.SS 2026-
+        # 05-19 surfaced the issue in research_manager; PM applies the
+        # same defensive pattern preemptively.
+        language_directive = get_language_instruction()
+
+        prompt = language_directive + f"""
+
+As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
 
 {instrument_context}
 
@@ -424,7 +434,7 @@ or (d) data-availability HOLD apply.
 
 ---
 
-Be decisive and ground every conclusion in specific evidence from the analysts.{get_language_instruction()}"""
+Be decisive and ground every conclusion in specific evidence from the analysts.{language_directive}"""
 
         # Structured path first so we can inspect the typed decision
         # (rating + investment_thesis) for the override-discipline post

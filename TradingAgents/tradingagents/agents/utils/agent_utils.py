@@ -214,6 +214,17 @@ def get_language_instruction() -> str:
     """Return a prompt instruction for the configured output language.
 
     Returns empty string when English (default), so no extra tokens are used.
+
+    Anti-mixing clause added 2026-05-19 after 茅台 600519.SS first-CN-run
+    surfaced research_manager outputting full English ("Okay, let's break
+    this down. The bull argument carried the day here...") + Korean-English
+    mixing patterns ("be 신중함 with sizing", "Let's move to Overweight").
+    Root cause: research_manager prompt body includes English Bull/Bear
+    debate history; Gemini's language matching defaults to the surrounding
+    context unless the directive is loud + repeated. Even with the language
+    instruction at the end of the prompt, the LLM pattern-matches the long
+    English debate body when generating its synthesis. Strengthen with
+    explicit anti-mixing examples + structural separation.
     """
     from tradingagents.dataflows.config import get_config
     lang = get_config().get("output_language", "English")
@@ -225,6 +236,23 @@ def get_language_instruction() -> str:
         f" Do not include English prose anywhere in the response, even in the conclusion."
         f" Technical symbols (ticker codes, indicator names like RSI, MACD) may stay as-is,"
         f" but every explanatory sentence must be in {lang}."
+        f"\n\nANTI-MIXING RULE (strict): even when the prompt body / debate"
+        f" history / tool outputs are in English, your OUTPUT must be"
+        f" 100% {lang}. Do not mix one or two English words into a {lang}"
+        f" sentence (e.g. 'Let's move to Overweight position' / 'be 신중함"
+        f" with sizing' / 'we are betting the new fundamental inputs').  If"
+        f" you find yourself starting an English phrase, REWRITE it in"
+        f" {lang} before emitting. Allowed exceptions (English OK):"
+        f" rating labels (Buy/Hold/Sell/Overweight/Underweight),"
+        f" ticker symbols, indicator names, currency codes, named entities"
+        f" (Wall Street, FOMC, S&P 500). Everything else — the actual"
+        f" prose, bullet content, conclusions, rationales — MUST be in"
+        f" {lang}.\n"
+        f"❌ WRONG ({lang} + English mix): 'Okay, let's break this down.'"
+        f" / 'The bull argument carried the day here.' / 'we have concrete,"
+        f" positive catalysts'\n"
+        f"✅ RIGHT (clean {lang}): '강세 측 주장이 우세했다.' /"
+        f" '구체적인 긍정 catalyst 가 확인된다.' / '본 5거래일 시점에서는'"
     )
 
 
