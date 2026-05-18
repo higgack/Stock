@@ -134,6 +134,50 @@ def _cache_put(cache_key: str, value) -> None:
         log.warning("akshare: cache write failed for %s: %s", cache_key, exc)
 
 
+def _is_transient_network_error(exc: Exception) -> bool:
+    """True when the exception looks like a one-off Eastmoney / 新浪 / 同花顺
+    rate-limit or transient TCP close — worth retrying. Excludes
+    permanent errors (404, AttributeError) which won't change on retry.
+    """
+    s = str(exc)
+    if "RemoteDisconnected" in s or "ConnectionResetError" in s:
+        return True
+    name = type(exc).__name__
+    if "ConnectionError" in name or "Timeout" in name:
+        return True
+    return False
+
+
+def _fetch_with_retry(ak_fn, label: str, max_retries: int = 2):
+    """Call `ak_fn()` (a zero-arg lambda) and retry transient network
+    failures with exponential backoff (2s, 4s). Permanent failures
+    (AttributeError, ValueError) short-circuit on first try since they
+    won't fix by retrying. Returns the call result or None on full
+    failure (also logs a final warning).
+
+    Mitigates the 'RemoteDisconnected' pattern surfaced by 茅台
+    2026-05-19 first-CN-validation run — Eastmoney endpoints
+    `stock_zh_a_st_em` + `stock_zh_a_stop_em` failed 100% from the
+    bot host (한국 IP) on first attempt, but typically succeed within
+    1-2 retries. Without retry the ST/*ST + 停牌 HARD GUARDs effectively
+    never fired in production.
+    """
+    last_exc = None
+    for attempt in range(max_retries + 1):
+        try:
+            return ak_fn()
+        except Exception as exc:
+            last_exc = exc
+            if not _is_transient_network_error(exc):
+                break
+            if attempt < max_retries:
+                time.sleep(2 ** (attempt + 1))  # 2s, 4s
+                continue
+    log.warning("akshare: %s fetch failed (after %d retries): %s",
+                label, max_retries, last_exc)
+    return None
+
+
 class AkshareClient:
     """Per-call AKShare wrapper. Cheap to construct; reuse via
     `get_akshare()` for the process-wide cached instance.
@@ -188,17 +232,28 @@ class AkshareClient:
         results: list[dict] = []
         try:
             if market in ("CN_A_SH", "CN_A_SZ", "CN_A_BJ"):
-                # 巨潮资讯 A주 公告 list
-                df = ak.stock_zh_a_disclosure_announcement_cninfo(symbol=code)
+                # 巨潮资讯 A주 公告 list (1.18.62 actual function name —
+                # the older `_announcement_cninfo` was renamed pre-1.18).
+                # `market="沪深京"` covers SH + SZ + BJ in one call.
+                cutoff_dt = date.today() - timedelta(days=days_back)
+                df = ak.stock_zh_a_disclosure_report_cninfo(
+                    symbol=code,
+                    market="沪深京",
+                    start_date=cutoff_dt.strftime("%Y%m%d"),
+                    end_date=date.today().strftime("%Y%m%d"),
+                )
             elif market == "HK":
-                # 东方财富 HK 公告 list — AKShare wraps as the H-share
-                # disclosure endpoint. Some versions of AKShare use a
-                # different function name; defensive try.
+                # HK disclosure endpoint — AKShare 1.18.62 doesn't expose
+                # a clean HK-only disclosure wrapper. Best-effort try;
+                # falls through to news block when unavailable.
                 try:
                     df = ak.stock_zh_h_disclosure_em(symbol=code)
                 except AttributeError:
-                    # Older AKShare: fall back to news endpoint
-                    log.info("akshare: stock_zh_h_disclosure_em unavailable; HK disclosure skipped")
+                    log.info(
+                        "akshare: HK disclosure endpoint unavailable in"
+                        " this version — Rule A guard will surface 'HK"
+                        " 공시 데이터 미수집'"
+                    )
                     df = None
             else:
                 df = None
@@ -299,29 +354,77 @@ class AkshareClient:
                 _cache_put(cache_key, [])
                 return []
             cols = list(df.columns)
-            name_col = next((c for c in cols if c in ("股东名称", "名称", "name")), None)
-            shares_col = next((c for c in cols if c in ("持股数量", "持股股数", "股数")), None)
-            pct_col = next((c for c in cols if c in ("占流通股本持股比例", "持股比例", "比例")), None)
+            name_col = next(
+                (c for c in cols if c in ("股东名称", "名称", "name")),
+                None,
+            )
+            shares_col = next(
+                (c for c in cols if c in (
+                    "持股数量", "持股股数", "股数", "持股数量(股)",
+                )),
+                None,
+            )
+            # Column needle list extended after 茅台 2026-05-19 validation:
+            # AKShare 1.18.62 actual column is '占流通股比例' (NOT the
+            # `_本_` longer form I'd guessed). Float-typed value (54.404)
+            # so the old `str().rstrip('%')` parse returned 0.0 for all
+            # 5 holders — 0.00% noise across the report.
+            pct_col = next(
+                (c for c in cols if c in (
+                    "占流通股比例", "占流通股本持股比例",
+                    "持股比例", "持股比例(%)", "流通A股比例", "比例",
+                )),
+                None,
+            )
+            # 股本性质 ('国有股' / '境外法人股' / '境内自然人股' / etc.)
+            # — CN 종목의 SOE / 외국법인 / 자연인 분류 surfacing 용.
+            # 'insider 62%' 가 国有股 모회사 지분이라는 사실을 라벨로
+            # 노출해 reader 가 US 'insider' 컨텍스트와 혼동하지 않게.
+            nature_col = next(
+                (c for c in cols if c in ("股本性质", "性质")),
+                None,
+            )
             if not name_col:
-                log.warning("akshare: holders schema unexpected for %s — cols=%s", code, cols)
+                log.warning(
+                    "akshare: holders schema unexpected for %s — cols=%s",
+                    code, cols,
+                )
                 return []
             for _, row in df.head(10).iterrows():
                 name = str(row[name_col] or "").strip()
                 if not name:
                     continue
                 try:
-                    shares = int(float(str(row[shares_col]).replace(",", "") or 0)) if shares_col else 0
+                    raw_shares = row[shares_col] if shares_col else 0
+                    if isinstance(raw_shares, (int, float)):
+                        shares = int(raw_shares)
+                    else:
+                        shares = int(float(str(raw_shares).replace(",", "") or 0))
                 except Exception:
                     shares = 0
-                try:
-                    pct_raw = str(row[pct_col] or "").strip().rstrip("%") if pct_col else ""
-                    pct = float(pct_raw) if pct_raw else 0.0
-                except Exception:
-                    pct = 0.0
+                # pct parse: handle BOTH float-typed (54.404) and str-typed
+                # ("54.40%") column conventions. AKShare 1.18.62 returns
+                # native float for 占流通股比例 — earlier rstrip("%") path
+                # silently zeroed everything.
+                pct: float = 0.0
+                if pct_col is not None:
+                    raw_pct = row[pct_col]
+                    if isinstance(raw_pct, (int, float)) and raw_pct == raw_pct:
+                        pct = float(raw_pct)
+                    else:
+                        try:
+                            pct_str = str(raw_pct or "").strip().rstrip("%")
+                            pct = float(pct_str) if pct_str else 0.0
+                        except Exception:
+                            pct = 0.0
+                nature = ""
+                if nature_col is not None:
+                    nature = str(row[nature_col] or "").strip()
                 results.append({
                     "name": name,
                     "shares": shares,
                     "pct": pct,
+                    "nature": nature,
                 })
         except Exception as exc:
             log.warning("akshare: holders fetch failed for %s: %s", code, exc)
@@ -353,23 +456,22 @@ class AkshareClient:
             ak = _import_akshare()
             if ak is None:
                 return False
-            try:
-                df = ak.stock_zh_a_st_em()
-                if df is None or len(df) == 0:
+            df = _fetch_with_retry(ak.stock_zh_a_st_em, "ST status")
+            if df is None or len(df) == 0:
+                cached = []
+            else:
+                code_col = next(
+                    (c for c in df.columns if c in ("代码", "code", "股票代码")),
+                    None,
+                )
+                if not code_col:
+                    log.warning(
+                        "akshare: ST schema unexpected — cols=%s",
+                        list(df.columns),
+                    )
                     cached = []
                 else:
-                    code_col = next(
-                        (c for c in df.columns if c in ("代码", "code", "股票代码")),
-                        None,
-                    )
-                    if not code_col:
-                        log.warning("akshare: ST schema unexpected — cols=%s", list(df.columns))
-                        cached = []
-                    else:
-                        cached = [str(c).zfill(6) for c in df[code_col].tolist()]
-            except Exception as exc:
-                log.warning("akshare: ST status fetch failed: %s", exc)
-                return False
+                    cached = [str(c).zfill(6) for c in df[code_col].tolist()]
             _cache_put(cache_key, cached)
 
         return code in cached
@@ -391,22 +493,18 @@ class AkshareClient:
             ak = _import_akshare()
             if ak is None:
                 return False
-            try:
-                df = ak.stock_zh_a_stop_em()
-                if df is None or len(df) == 0:
-                    cached = []
-                else:
-                    code_col = next(
-                        (c for c in df.columns if c in ("代码", "code", "股票代码")),
-                        None,
-                    )
-                    cached = (
-                        [str(c).zfill(6) for c in df[code_col].tolist()]
-                        if code_col else []
-                    )
-            except Exception as exc:
-                log.warning("akshare: 停牌 status fetch failed: %s", exc)
-                return False
+            df = _fetch_with_retry(ak.stock_zh_a_stop_em, "停牌 status")
+            if df is None or len(df) == 0:
+                cached = []
+            else:
+                code_col = next(
+                    (c for c in df.columns if c in ("代码", "code", "股票代码")),
+                    None,
+                )
+                cached = (
+                    [str(c).zfill(6) for c in df[code_col].tolist()]
+                    if code_col else []
+                )
             _cache_put(cache_key, cached)
 
         return code in cached
@@ -444,40 +542,63 @@ class AkshareClient:
         if ak is None:
             return None
 
+        # AKShare 1.18.62 actual endpoint — `stock_hsgt_fund_flow_summary_em`.
+        # The older `stock_hsgt_north_net_flow_em` / `_south_net_flow_em`
+        # don't exist in 1.18.62 (renamed). `stock_hsgt_hist_em` exists
+        # but Eastmoney stopped feeding daily flow data publicly mid-2024
+        # — every flow column comes back as nan. `_fund_flow_summary_em`
+        # gives a market-wide daily breakdown by 4 channels (沪股通 北/南
+        # + 深股通 北/南).
         try:
-            df_north = ak.stock_hsgt_north_net_flow_em(symbol="北上")
-            df_south = ak.stock_hsgt_south_net_flow_em(symbol="南下")
+            df = ak.stock_hsgt_fund_flow_summary_em()
         except Exception as exc:
-            log.warning("akshare: HSGT flow fetch failed: %s", exc)
+            log.warning("akshare: HSGT summary fetch failed: %s", exc)
             return None
 
-        def _last_n_sum(df, n: int) -> Optional[float]:
-            if df is None or len(df) == 0:
-                return None
-            cols = list(df.columns)
-            val_col = next(
-                (c for c in cols if c in ("净流入额", "净买额", "净流入", "value")),
-                None,
-            )
-            if not val_col:
-                log.warning("akshare: HSGT schema unexpected cols=%s", cols)
-                return None
-            try:
-                return float(df[val_col].tail(n).sum())
-            except Exception:
-                return None
+        if df is None or len(df) == 0:
+            return None
 
-        north_5d = _last_n_sum(df_north, days_back)
-        south_5d = _last_n_sum(df_south, days_back)
+        cols = list(df.columns)
+        direction_col = next(
+            (c for c in cols if c in ("资金方向",)), None,
+        )
+        amount_col = next(
+            (c for c in cols if c in ("成交净买额", "净买额", "净流入")),
+            None,
+        )
+        if not direction_col or not amount_col:
+            log.warning("akshare: HSGT summary schema unexpected cols=%s", cols)
+            return None
 
-        if north_5d is None and south_5d is None:
+        # Each trading day produces 4 rows (沪/深 × 北/南). Take the last
+        # `days_back * 4` rows to cover the requested window, then sum
+        # by 资金方向. Conservative window: even if AKShare returns >4
+        # rows for some day (e.g. extra '总计' row), tail() of (N×4) is
+        # close enough — over-summing biases toward zero rather than
+        # toward fabricated values.
+        rows = df.tail(days_back * 4)
+        try:
+            north = float(rows.loc[rows[direction_col] == "北向", amount_col].sum() or 0)
+            south = float(rows.loc[rows[direction_col] == "南向", amount_col].sum() or 0)
+        except Exception as exc:
+            log.warning("akshare: HSGT summary aggregation failed: %s", exc)
+            return None
+
+        # NaN sanity — if Eastmoney returns nan-only flow columns (the
+        # `stock_hsgt_hist_em` regression pattern from 2024-06+), both
+        # sums will be nan. Treat as 'no data' rather than emitting
+        # 'nan억元' to the LLM.
+        if not (north == north) or not (south == south):
+            return None
+        if north == 0 and south == 0:
+            # Likely 휴장 / 거래 정지일 — surfacing '0 净 buy' is misleading.
             return None
 
         result = {
-            "northbound_5d": north_5d,
-            "southbound_5d": south_5d,
-            "north_direction": ("buy" if (north_5d or 0) > 0 else "sell"),
-            "south_direction": ("buy" if (south_5d or 0) > 0 else "sell"),
+            "northbound_5d": north,
+            "southbound_5d": south,
+            "north_direction": ("buy" if north > 0 else "sell"),
+            "south_direction": ("buy" if south > 0 else "sell"),
         }
         _cache_put(cache_key, result)
         return result
@@ -541,40 +662,51 @@ class AkshareClient:
 
         result: dict = {}
 
-        def _latest_row(df, val_col_candidates: list[str]) -> Optional[float]:
+        def _latest_valid_row(df, val_col_candidates: list[str]) -> Optional[float]:
+            """Walk backward from the most-recent row until a non-nan value
+            is found. AKShare macro endpoints include placeholder rows
+            for upcoming-release dates (e.g. 2025-09-10 CPI 今值=nan when
+            release is still pending), which the old `iloc[-1]` path
+            surfaced as 'nan%' raw. 茅台 2026-05-19 first-run case."""
             if df is None or len(df) == 0:
                 return None
             cols = list(df.columns)
             val_col = next((c for c in cols if c in val_col_candidates), None)
             if not val_col:
                 return None
-            try:
-                return float(df.iloc[-1][val_col])
-            except Exception:
-                return None
+            for i in range(len(df) - 1, -1, -1):
+                try:
+                    v = float(df.iloc[i][val_col])
+                    if v == v:  # NaN check (NaN != NaN)
+                        return v
+                except Exception:
+                    continue
+            return None
 
         try:
             df = ak.macro_china_lpr()
-            result["lpr_1y"] = _latest_row(df, ["LPR1Y", "1Y_LPR", "LPR_1Y"])
-            result["lpr_5y"] = _latest_row(df, ["LPR5Y", "5Y_LPR", "LPR_5Y"])
+            result["lpr_1y"] = _latest_valid_row(df, ["LPR1Y", "1Y_LPR", "LPR_1Y"])
+            result["lpr_5y"] = _latest_valid_row(df, ["LPR5Y", "5Y_LPR", "LPR_5Y"])
         except Exception as exc:
             log.warning("akshare: LPR fetch failed: %s", exc)
 
+        # CPI: switched from monthly (MoM, '中国CPI月率报告') to yearly
+        # (YoY) — RULE 13 references 'CPI YoY' and analysts read the
+        # yearly rate as headline inflation. Monthly rate (-0.1, +0.4
+        # 같은 작은 값) is misleading when labeled 'YoY'.
         try:
-            df = ak.macro_china_cpi_monthly()
-            result["cpi_yoy"] = _latest_row(df, ["CPI同比", "今值", "数值", "value"])
+            df = ak.macro_china_cpi_yearly()
+            result["cpi_yoy"] = _latest_valid_row(df, ["今值", "数值", "value"])
         except Exception as exc:
-            log.warning("akshare: CPI fetch failed: %s", exc)
+            log.warning("akshare: CPI yearly fetch failed: %s", exc)
 
         try:
             df = ak.macro_china_pmi_yearly()
-            # macro_china_pmi_yearly may not exist on all versions;
-            # alternative is macro_china_pmi
-            result["pmi"] = _latest_row(df, ["今值", "数值", "value"])
+            result["pmi"] = _latest_valid_row(df, ["今值", "数值", "value"])
         except AttributeError:
             try:
                 df = ak.macro_china_pmi()
-                result["pmi"] = _latest_row(df, ["今值", "数值", "value"])
+                result["pmi"] = _latest_valid_row(df, ["今值", "数值", "value"])
             except Exception as exc:
                 log.warning("akshare: PMI fetch (fallback) failed: %s", exc)
         except Exception as exc:
@@ -778,12 +910,22 @@ def format_akshare_cn_block(
             f" (나머지 {skipped}건은 minor stake, 신호 약함)"
             if skipped > 0 else ""
         )
-        parts.append(f"\n主要 流通股东 (상위 {len(top)}{skipped_note}):")
+        parts.append(
+            f"\n主要 流通股东 / 지배주주 (상위 {len(top)}{skipped_note}):"
+        )
         for r in top:
             name = r.get("name") or "?"
             pct = r.get("pct") or 0
             shares = r.get("shares") or 0
-            parts.append(f"  • {name}: {pct:.2f}% ({shares:,} 주)")
+            # 股本性质 라벨: 国有股 / 境外法人股 / 境内自然人股 / etc.
+            # US 'insider' 컨텍스트와 혼동 차단 — 茅台 2026-05-19 케이스:
+            # 67% 가 中国贵州茅台酒厂集团 (国有股 = SOE 모회사) 인데
+            # 'insider 62%' 라벨이 US 식 임원 지분처럼 읽힘.
+            nature = (r.get("nature") or "").strip()
+            nature_label = f" [{nature}]" if nature else ""
+            parts.append(
+                f"  • {name}{nature_label}: {pct:.2f}% ({shares:,} 주)"
+            )
 
     if earnings_window:
         parts.append(f"\n다음 정기보고서 윈도: {earnings_window}")
