@@ -241,6 +241,84 @@ def _format_value(value: float, suffix: str) -> str:
     return f"{value:,.2f}"
 
 
+# Sanity-check ranges per ticker. yfinance occasionally returns stale /
+# wrong macro snapshots (currency lookup glitch, wrong-day close, etc.)
+# and analysts pattern-match the number into their narrative without
+# verification. 茅台 600519.SS 2026-05-19: WTI $103 + 30D +22.84%
+# surfaced across 3 analysts when WTI was actually ~$60. Range tuples
+# are intentionally wide (cover 90%+ of historical regimes); only
+# clearly-impossible outliers trigger the warning.
+_MACRO_SANITY_RANGES: dict[str, tuple[float, float]] = {
+    "CL=F": (20.0, 200.0),       # WTI: $20-$200 covers 2008-2025 range
+    "BZ=F": (20.0, 200.0),       # Brent
+    "HG=F": (1.5, 8.0),          # Copper futures: $1.5-$8/lb
+    "GC=F": (1000.0, 5000.0),    # Gold futures: broad
+    "^TNX": (3.0, 80.0),         # US 10Y (raw tenths-of-percent): 0.3%-8%
+    "^FVX": (3.0, 80.0),         # US 5Y
+    "^IRX": (0.0, 80.0),         # US 13W bill (can be 0)
+    "^VIX": (5.0, 100.0),        # VIX: 5-100
+    "DX-Y.NYB": (60.0, 130.0),   # DXY
+    "KRW=X": (800.0, 2200.0),    # USD/KRW
+    "JPY=X": (60.0, 200.0),      # USD/JPY
+    "CNY=X": (5.0, 9.0),         # USD/CNY
+    "TWD=X": (25.0, 40.0),       # USD/TWD
+    "HKD=X": (7.6, 8.0),         # USD/HKD (peg band)
+    "^KS11": (1500.0, 4500.0),   # KOSPI
+    "^KQ11": (500.0, 1500.0),    # KOSDAQ
+    "^N225": (15000.0, 50000.0), # Nikkei
+    "^HSI": (15000.0, 35000.0),  # Hang Seng
+    "^TWII": (10000.0, 30000.0), # TAIEX
+    "000300.SS": (3000.0, 6500.0),  # CSI 300
+    "^HSCE": (5000.0, 12000.0),  # HSCEI
+}
+
+
+def _value_is_suspect(ticker: str, value: float) -> bool:
+    """Return True when `value` is outside the conservative sanity range
+    for this ticker. False (no warning) when ticker isn't in the map —
+    don't false-flag tickers without a curated range."""
+    rng = _MACRO_SANITY_RANGES.get(ticker)
+    if not rng:
+        return False
+    lo, hi = rng
+    return value < lo or value > hi
+
+
+# 30D % change beyond these magnitudes is statistically rare for the
+# series and warrants a sanity warning even when the absolute value
+# stays within the wide _MACRO_SANITY_RANGES band. VIX moves wildly
+# by nature (50%+ swings normal during crises) so it stays out of
+# this list. Equity indices can move 20%+ in fast markets too.
+_MACRO_PCT_CHANGE_30D_LIMIT: dict[str, float] = {
+    "CL=F": 25.0,        # WTI: ±25% 30D is a major move (oil shock zone)
+    "BZ=F": 25.0,
+    "HG=F": 20.0,        # Copper
+    "GC=F": 15.0,        # Gold rarely moves 15%+ in 30D
+    "^TNX": 30.0,        # 10Y: 30% raw move = e.g. 4% → 5.2%, big rate shock
+    "^FVX": 30.0,
+    "DX-Y.NYB": 8.0,     # DXY moves ±5%/month, ±8%+ unusual
+    "KRW=X": 8.0,
+    "JPY=X": 8.0,
+    "CNY=X": 5.0,        # CNY tightly managed; ±5% 30D = PBoC reset
+    "TWD=X": 6.0,
+    "HKD=X": 1.5,        # HKD peg band ±0.5%/month
+}
+
+
+def _pct_change_is_suspect(ticker: str, pct: float | None) -> bool:
+    """Return True when 30D % change exceeds the per-series sanity limit.
+    Catches the 茅台 600519.SS 2026-05-19 case where WTI returned
+    $103 + 30D +22.84% — absolute value within range but the 30D move
+    is in oil-shock territory and almost certainly a yfinance data
+    glitch (close-of-different-day ticker swap)."""
+    if pct is None:
+        return False
+    limit = _MACRO_PCT_CHANGE_30D_LIMIT.get(ticker)
+    if limit is None:
+        return False
+    return abs(pct) > limit
+
+
 @tool
 def get_macro_context(
     curr_date: Annotated[str, "current trading date, YYYY-mm-dd"],
@@ -289,13 +367,35 @@ def get_macro_context(
 
     rows: list[str] = []
     missing: list[str] = []
+    suspect: list[str] = []  # tickers whose values fell outside sanity range
     for ticker, label, suffix in series:
         latest, pct = results.get(ticker, (None, None))
         if latest is None:
             missing.append(label)
             continue
         change = "n/a" if pct is None else f"{pct:+.2f}%"
-        rows.append(f"- {label} ({ticker}): {_format_value(latest, suffix)} (30D {change})")
+        # For %-suffixed series the displayed value differs from raw
+        # (^TNX 44.20 → 4.42%). Sanity-check the raw close vs the raw
+        # range we stored — _MACRO_SANITY_RANGES uses raw scale for
+        # consistency (so ^TNX uses 3.0-80.0 = 0.3%-8%).
+        value_suspect = _value_is_suspect(ticker, latest)
+        pct_suspect = _pct_change_is_suspect(ticker, pct)
+        suspect_flag = value_suspect or pct_suspect
+        marker = " ⚠️" if suspect_flag else ""
+        if suspect_flag:
+            reasons = []
+            if value_suspect:
+                reasons.append("abs 값 범위 outside")
+            if pct_suspect:
+                reasons.append(f"30D {change} 변동 과대")
+            suspect.append(
+                f"{label} ({ticker}): {_format_value(latest, suffix)}"
+                f" ({', '.join(reasons)})"
+            )
+        rows.append(
+            f"- {label} ({ticker}): {_format_value(latest, suffix)}"
+            f" (30D {change}){marker}"
+        )
 
     fetched = len(rows)
     total = len(series)
@@ -331,6 +431,29 @@ def get_macro_context(
             log_tool_failure(
                 "get_macro_context",
                 f"partial: {len(missing)}/{total} missing — {','.join(missing)}",
+            )
+        except Exception:
+            pass
+    if suspect:
+        # 茅台 600519.SS 2026-05-19 첫 검증: WTI $103 (실제 ~$60) 같은
+        # yfinance 일시 lookup glitch / 다른 시리즈와 ticker swap 의심
+        # 데이터가 3 분석가 모두에 의해 무비판적으로 인용됨. ⚠️ 마커 옆
+        # 명시적 경고 절을 추가해 LLM 이 그 값을 narrative 에 anchor
+        # 하기 전에 검증 권고.
+        out += (
+            "\n\n⚠️ 의심 데이터 검증 권고: 다음 시리즈가 사전 정의된"
+            " 합리 범위를 벗어났습니다 (yfinance 일시 lookup glitch /"
+            " ticker swap / 단가 단위 오류 의심):\n"
+            + "\n".join(f"  • {s}" for s in suspect)
+            + "\n\n위 값들은 narrative 에 직접 인용하기 전에 별도 검증"
+            " 필요. 분석에서 인용 시 'yfinance 일시 데이터, 검증 권고'"
+            " 한 줄 명시 + 결론 anchor 로 사용 금지."
+        )
+        try:
+            from bot.usage_tracker import log_tool_failure
+            log_tool_failure(
+                "get_macro_context",
+                f"suspect-range: {len(suspect)} values flagged",
             )
         except Exception:
             pass

@@ -509,6 +509,16 @@ def get_sector_relative_strength(
         "지속적으로 양수면 섹터/시장 리더, 음수면 후행. "
         "30D/90D 둘 다 양수이고 차이가 5%p 이상이면 명확한 '리더', "
         "둘 다 음수이고 -5%p 이하면 '후행'."
+        "\n\nTABLE PRESERVATION RULE (mandatory — 茅台 600519.SS 2026-"
+        "05-19 surfaced this): 위 마크다운 표를 본문에 인용할 때 반드시"
+        " **헤더 행 + 구분선 + 데이터 행** 전체 구조를 그대로 유지하라."
+        " 표를 '• 30D: -6.13% — -7.71% — +8.40% — +1.58%p — -14.53%p'"
+        " 식의 dash-separated 한 줄 bullet 로 압축하면 reader 가 어느"
+        " 컬럼이 무엇인지 식별 불가 (subject / 벤치마크 / 광역 / vs섹터 /"
+        " vs광역 5개 컬럼이 dash 만으로 구분되어 의미 소실). 헤더 그대로"
+        " 또는 inline prose 시 'subject -6.13% / 섹터 -7.71% / CSI 300"
+        " +8.40% / vs 섹터 +1.58%p / vs CSI 300 -14.53%p' 식의 라벨 동반"
+        " 표기 필수."
     )
     if max_abs_vs_sector > 25:
         notes += (
