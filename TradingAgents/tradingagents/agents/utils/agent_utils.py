@@ -2653,6 +2653,45 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                         "  (3) 펀더멘털은 지난 분기 数据 기준으로만 진행"
                     )
 
+                # 공시 fetch 실패 (빈 list) 시 reconstruct 금지 guard
+                # (Rule A 강화, 2026-05-19 SMIC 케이스). 분석가가 公告
+                # block 비어있을 때 Eastmoney 뉴스 본문에서 'YYYY-MM-DD
+                # X 공시' specific 날짜 + 정확한 공시 제목 재구성하는
+                # 패턴 차단. SMIC 688981.SS 04:22 분석: AKShare
+                # 'Response ended prematurely' fetch 실패했는데 분석가가
+                # 5월 15일 7건 + 5월 13일 1건 공시 정확히 인용 — news
+                # 출처에서 reconstruct (Eastmoney 뉴스의 '1분기 보고
+                # 발표' 같은 paraphrase 를 분석가가 공시 제목으로 reverse-
+                # engineer). 정확하긴 했지만 fetch 실패 시 같은 패턴이
+                # 사실과 다른 공시를 fabricate 할 위험 동일.
+                if not cn_disclosures:
+                    base += (
+                        "\n\n=== ⛔ CN/HK 공시 fetch 실패 / 빈 결과"
+                        " (HARD GUARD — Rule A 강화) ===\n"
+                        "AKShare get_recent_disclosures 가 빈 리스트"
+                        " 반환 (network transient / endpoint 응답 잘림"
+                        " / 해당 종목 최근 공시 부재 중 하나).\n"
+                        "다음 패턴 절대 금지 (SMIC 688981.SS 2026-05-19"
+                        " 케이스):\n"
+                        "  ❌ Eastmoney 뉴스 본문에서 '1분기 보고서 발표'"
+                        " 같은 paraphrase 를 보고 'YYYY-MM-DD: 2026년"
+                        " 1분기 보고서' 식의 specific 공시 row 재구성.\n"
+                        "  ❌ '5월 15일 회계법인 재선임 공고 / 헤지 업무"
+                        " 개시' 등 정확한 공시 제목 + 날짜 fabricate"
+                        " (뉴스에 이런 내용 paraphrase 있더라도 공시"
+                        " 자체와는 별개).\n"
+                        "  ❌ '최근 공시는 5월 N일에 집중되어 있으며'"
+                        " 같은 reconstruct narrative — 公告 데이터 부재"
+                        " 시 어떤 날짜 cluster 도 claim 금지.\n"
+                        "올바른 처리:\n"
+                        "  ✅ '본 분석 시점 公告 데이터 fetch 실패 — 최근"
+                        " 공시 내역 미수집' 한 줄로 처리.\n"
+                        "  ✅ 뉴스에서 공시 관련 paraphrase 발견 시"
+                        " '뉴스 보도에 따르면 N분기 보고가 발표된 것으로"
+                        " 알려졌다 (공시 자체 데이터 미수집)' 식으로"
+                        " 뉴스 출처와 공시 출처 명확히 분리 표기."
+                    )
+
                 cn_block = format_akshare_cn_block(
                     cn_disclosures, cn_holders, cn_window, cn_st, cn_suspended,
                 )
