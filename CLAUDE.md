@@ -124,6 +124,99 @@ subscribers) and many tickers, but the user only sees one analysis
 at a time. Without this principle, the codebase would accrete N
 ticker-specific shims instead of converging on robust universal rules.
 
+## Per-ticker analysis verification framework
+
+When the user shares an analysis output for review (KR/JP/TW/US — any
+market), audit it against ALL seven axes below before listing issues.
+Skipping an axis silently misses bugs that compound across markets.
+User confirmed this framework 2026-05-18 ("이것도 클로드 엠디에 명시").
+
+**Axis 1: 숫자 정확성 (numbers + system reflection)**
+Check that every system guard fired correctly + data integrity holds:
+- Canonical 현재가 / 시가총액 (Rule B): all sections cite the SAME value.
+  Different analysts producing different 시총 for same stock is FORBIDDEN.
+- PER / PSR / PBR / EV-EBITDA: cross-section consistency. News PER 29.5
+  vs Fundamentals PER 30.43 for same stock = Rule E violation.
+- 분기 합 vs 연간 sanity (RULE 8.1): sum of Q1-Q4 should be within
+  ±10% of annual. >50x divergence = yfinance unit drop, OMIT corrupt row.
+- 베타 라벨 (Rule F): "(90일, vs benchmark)" + "(5년 월간, vs S&P 500)"
+  must be labeled distinctly so reader doesn't see two unlabeled betas.
+- 4자리 콤마 strip + 백만 polish + 부채비율 % unit + Stop Loss 콤마 +
+  통화 prefix (NT$/₩/¥/HK$/$) all applied at output layer.
+
+**Axis 2: 글의 일관성 (text consistency across sections)**
+- Same stock 다른 분석가 사이: 회사명 / 산업 / 시총 / multiples / 현재가
+  / 베타 같은 facts가 일치해야. fabrication / paraphrase 차단.
+- Peer 회사명: yfinance longName 그대로 사용. 2379.TW를 'ASE Tech'로
+  부르고 다른 분석가는 'Realtek'으로 부르면 위반 (MediaTek 2454.TW
+  2026-05-18 케이스).
+- 5거래일 평가 윈도 vs 장기 12개월 narrative: 분석가가 horizon 일관성
+  유지하는지. PM이 "5거래일에서는 ..." 명시하는지.
+- past_outcomes에서 인용된 지난 추천이 현 분석의 thesis와 어긋나는지.
+
+**Axis 3: 형식상 문제 (markdown + formatting)**
+- 빈 표 헤더 ('| col1 | col2 |' + '|---|---|' followed by no data rows)
+  자동 strip 필요. LLM이 표 시작 후 prose로 fallback한 패턴.
+- Inline table merge ('|---|---|---| | row | val |' 한 줄로 합침) —
+  newline 자동 삽입 필요.
+- RULE 1 PERIOD LABELS: 'FY25 X | FY24 Y' 형식 강제, 연도 내림차순.
+- 통화 + 단위 정합성: '주' (shares) vs '元/원' (currency) 혼합 금지.
+  '약 X만 원 주' 같은 leak (MediaTek 2454.TW 2026-05-18 case).
+- ADR 표기: TSMC↔TSM, UMC↔UMC 등 cross-listing은 명시는 OK,
+  multiples 섞기 금지.
+
+**Axis 4: 논리 구조 (logic + RULE adherence)**
+- RULE 1~14 enforcement: 각 RULE이 발화해야 할 케이스에서 발화했는지.
+  특히 RULE 10/11/12/14 dominant variable enforcement — 산업 변수
+  모두 결론에 명시 의무 (TSMC '美 對中 수출규제' 누락 케이스).
+- CORPORATE ACTION HARD GUARD: 감자/분할/병합 detected → 기술 지표
+  분석 자동 차단 (text directive + polish banner).
+- PM override discipline (Rule C): 분석가 다수와 PM 결정 방향이
+  다르면 trigger (RSI>75/<25, 임박 catalyst, mismatch warning,
+  data-availability HOLD) 명시 의무.
+- DATA OFFLINE 가드 (Rule A): API 키 부재 시 LLM이 EDINET/MOPS/
+  DART 형식 data fabrication 차단.
+- HARD GUARD 본인 인지: 분석가가 corp action 인용하고도 MA/MACD/
+  RSI 분석을 진행하는 패턴 (코미코/프로텍 케이스).
+
+**Axis 5: 분석가 간 연결성 (cross-analyst flow)**
+- 시장 → 감정 → 뉴스 → 펀더멘털 → Plan → Trader → PM 순서로 각
+  분석이 앞 분석의 사실을 활용하는지. 끊김 / 모순 / 같은 facts에
+  다른 해석을 다른 곳에 두면 위반.
+- Stance bar (시장:보유·감정:매수·뉴스:매수·펀더멘털:보유) ↔ PM
+  결정 (Overweight) 방향 일관성. 다수와 반대 방향이면 mismatch
+  warning + Rule C trigger 명시.
+- Trader가 Plan에서 받은 entry / stop / position을 그대로 활용하는지
+  (자기 마음대로 변경 금지).
+
+**Axis 6: 데이터 vs LLM fabrication 구분**
+- 회사명 / 티커 / 날짜 / specific 수치가 yfinance / DART / MOPS /
+  EDINET 출처와 일치하는지. 다음 항목 특히 의심:
+  - Peer 회사명 (yfinance longName 비교)
+  - 임원지분 / 내부자 명단 (raw 출력 수 vs LLM 표시 수)
+  - 공시 dates + 사건 (DART/EDINET/MOPS 원본 vs 분석가 paraphrase)
+  - 5%+ 대량보유 BlackRock / Vanguard 등 (specific % + 날짜)
+  - 회계연도 EPS / 시총 (corp action 영향 시 LLM 자체 recalc 금지)
+- "약 X백만 원" / "약 X만 원 주" 등 단위-통화 leak 패턴.
+
+**Axis 7: 5거래일 horizon 적합성**
+- 결론이 "장기 6-12개월 thesis" 가 아닌 "5거래일 가격 방향성" 관점
+  인지. Bull/Bear 사이드 모두 5거래일 horizon 고려하는지.
+- DCF / 밸류에이션 추정치는 reference로만, 5거래일 decision은
+  momentum / catalyst / sector flow 기반.
+- Buffett/Lynch (Bull persona) 가 "10년 보유" 관점 주장하면 PM이
+  "5거래일 평가 horizon" reminder + adjust 의무.
+
+---
+
+When auditing, walk all 7 axes systematically. Don't skip — each axis
+catches a distinct class of bug. Result format:
+- ✅ "작동 확인된 부분" — list what's working per axis
+- ❌ "발견된 문제" — list issues per axis with severity (Critical /
+  Major / Minor)
+- Proposed universal fixes for each ❌ — never ticker-specific
+- Commit only on user's explicit "커밋" signal
+
 ## Pre-commit verification — mandatory
 
 **Every change must be verified before the commit goes out.** No "ship and pray." Concretely, before staging:

@@ -300,25 +300,36 @@ _PEER_MULTIPLES_CACHE: dict[str, str] = {}
 
 
 def _fetch_peer_multiples(ticker: str) -> str:
-    """Pull headline valuation multiples from yfinance .info for a peer
-    ticker in the Comps table. Returns a single-line string like
-    'PER 18.4 / PSR 1.8 / PBR 2.1 / EV/EBITDA 11.2' with the metrics
-    yfinance actually returned populated, or '' when every metric is
-    missing (so the caller can render '(multiples 미수집)').
+    """Pull headline valuation multiples + canonical company name from
+    yfinance .info for a peer ticker. Returns 'Company Name | PER 18.4 /
+    PSR 1.8 / ...' or 'Company Name | (multiples 미수집)' when only the
+    name is available, or '' when both are missing.
 
-    Why a separate fetch: the existing _instrument_info cache filters
-    out valuation ratios — they're only relevant in Comps context.
-    Adding them to _instrument_info would change every other caller's
-    output. A dedicated cache + targeted fetch keeps the two paths
-    independent and bounded to the 4-6 peer tickers we care about per
-    analysis (one extra yfinance .info call per peer, cached per
-    process — total < 1s wall time, network already warm)."""
+    Why include the company name: TW peer review 2026-05-18 surfaced
+    that analysts independently fabricated peer company names when the
+    PEER SET block only injected bare tickers. e.g. 2379.TW (actually
+    Realtek Semiconductor) was labeled 'ASE Tech' / 'Advanced
+    Semiconductor Engineering' by sentiment / news analysts. 3034.TW
+    (actually Novatek Microelectronics) labeled 'GlobalWafers' / 'WIN
+    Semiconductors'. 8299.TWO (actually Phison Electronics) labeled
+    'GUC' / 'CHIPBOND'. Injecting the yfinance longName eliminates the
+    hallucination class — analysts copy the name verbatim.
+
+    A dedicated cache + targeted fetch keeps this independent of the
+    main _instrument_info cache so other callers' output isn't affected.
+    """
     if ticker in _PEER_MULTIPLES_CACHE:
         return _PEER_MULTIPLES_CACHE[ticker]
     out_parts: list[str] = []
+    company_name = ""
     try:
         import yfinance as yf
         raw = yf.Ticker(ticker).info or {}
+        # Canonical company name first — used as the row label so
+        # analysts can't substitute their own guess.
+        nm = raw.get("longName") or raw.get("shortName") or ""
+        if isinstance(nm, str) and nm.strip():
+            company_name = nm.strip()
         # PER (trailing) — most universal multiple
         per = raw.get("trailingPE")
         if isinstance(per, (int, float)) and not (isinstance(per, float) and per != per) and 0 < per < 1000:
@@ -341,7 +352,11 @@ def _fetch_peer_multiples(ticker: str) -> str:
             out_parts.append(f"EV/EBITDA {evebitda:.1f}")
     except Exception as exc:
         _analyst_log.warning("peer multiples fetch failed for %s: %s", ticker, exc)
-    out = " / ".join(out_parts)
+    multiples_str = " / ".join(out_parts) if out_parts else "(multiples 미수집)"
+    if company_name:
+        out = f"{company_name} | {multiples_str}"
+    else:
+        out = multiples_str if out_parts else ""
     _PEER_MULTIPLES_CACHE[ticker] = out
     return out
 
@@ -1162,44 +1177,61 @@ def build_instrument_context(ticker: str) -> str:
                 peer_lines = []
                 # Subject FIRST so analysts copy its row verbatim into
                 # their own Comps tables. Then the curated peers.
+                # Each row now includes the canonical company name from
+                # yfinance .info longName — post MediaTek 2454.TW 2026-
+                # 05-18 review where 3 analysts independently fabricated
+                # different wrong names for 2379.TW / 3034.TW / 8299.TWO
+                # because the PEER SET block only injected bare tickers.
                 subject_multiples = _fetch_peer_multiples(ticker)
                 if subject_multiples:
-                    peer_lines.append(f"  • {ticker} (subject): {subject_multiples}")
+                    peer_lines.append(f"  • {ticker} (subject) — {subject_multiples}")
                 else:
-                    peer_lines.append(f"  • {ticker} (subject): (multiples 미수집)")
+                    peer_lines.append(f"  • {ticker} (subject) — (data 미수집)")
                 for t in peers[:6]:
                     multiples = _fetch_peer_multiples(t)
                     if multiples:
-                        peer_lines.append(f"  • {t}: {multiples}")
+                        peer_lines.append(f"  • {t} — {multiples}")
                     else:
-                        peer_lines.append(f"  • {t}: (multiples 미수집)")
+                        peer_lines.append(f"  • {t} — (data 미수집)")
                 base += (
                     f"\n\n=== MANDATORY COMPS PEER SET + MULTIPLES ===\n"
                     f"For industry '{industry}', use EXACTLY these"
                     f" peer tickers in the Comps table — do NOT add,"
-                    f" remove, or substitute any of them. Multiples are"
-                    f" pre-fetched from yfinance; cite them verbatim,"
-                    f" do not call any tool to refetch:\n"
+                    f" remove, or substitute any of them. Each row's"
+                    f" format is `TICKER — Company Name | PER X.X /"
+                    f" Fwd PER Y.Y / PSR Z.Z / PBR W.W / EV/EBITDA V.V`"
+                    f" with company name + multiples pre-fetched from"
+                    f" yfinance. Cite them verbatim, do not call any"
+                    f" tool to refetch, do NOT substitute your own"
+                    f" guess for the company name (MediaTek 2454.TW"
+                    f" 2026-05-18: analysts mislabeled 2379.TW as 'ASE'"
+                    f" / 'Advanced Semiconductor Engineering' instead"
+                    f" of correct 'Realtek Semiconductor'; same defect"
+                    f" for 3034.TW and 8299.TWO):\n"
                     + "\n".join(peer_lines) + "\n"
                     f"This list is curated to match the yfinance"
                     f" 'industry' field. Fabricating different peers"
                     f" (or borrowing from a different industry's"
-                    f" example list) is FORBIDDEN. Peers with '(multiples"
+                    f" example list) is FORBIDDEN. Peers with '(data"
                     f" 미수집)' still belong in the table — render them"
                     f" with explicit 'N/A' cells rather than dropping"
                     f" the row.\n"
                     f"\n"
                     f"SUBJECT ROW POLICY (Rule E — applies to ALL analysts,"
-                    f" not just fundamentals — TW TSMC 2026-05-18 surfaced"
-                    f" this): when any analyst (시장 / 감정 / 뉴스 /"
-                    f" 펀더멘털) renders a Comps table, the subject's"
-                    f" '{ticker} (subject)' row above MUST be used"
-                    f" verbatim. Different analysts producing different"
+                    f" not just fundamentals — TW TSMC 2026-05-18 +"
+                    f" MediaTek 2026-05-18 surfaced this): when any"
+                    f" analyst (시장 / 감정 / 뉴스 / 펀더멘털) renders a"
+                    f" Comps table, the subject's '{ticker} (subject)'"
+                    f" row above MUST be present AND use the multiples"
+                    f" verbatim. Dropping the subject row entirely"
+                    f" (MediaTek News Comps omitted 2454.TW row) is"
+                    f" FORBIDDEN. Different analysts producing different"
                     f" multiples for the same stock in the same report"
                     f" (TSMC News PER 29.5 / PBR 3.51 vs Fundamentals"
-                    f" PER 30.43 / PBR 9.86) is FORBIDDEN — readers"
+                    f" PER 30.43 / PBR 9.86) is also FORBIDDEN — readers"
                     f" cannot tell which value is canonical. The single"
-                    f" '(subject)' row above is the canonical source."
+                    f" '(subject)' row above is THE canonical source for"
+                    f" every analyst's Comps table."
                 )
         except Exception:
             pass
@@ -2246,9 +2278,19 @@ def build_instrument_context(ticker: str) -> str:
                         " with the date prefix preserved. Categories vary"
                         " (法說會 / 取得處分資產 / 營運狀況 / 董事會 결의)"
                         " — quote 主旨 verbatim, don't paraphrase.\n"
-                        " • 內部人持股: render with 직책 + 이름 + 보유 주식 수"
-                        " (TW pct는 MOPS가 직접 반환 안 함 — share count로만"
-                        " 표시). KR DART의 % 표시처럼 percentage가 없는 게"
+                        " • 內部人持股: 위 block에 명시된 행만 그대로 렌더링."
+                        " 보유 주식 수 상위 N 외 추가 인사 / 經理人 / 董事 row"
+                        " FABRICATION 금지. MediaTek 2454.TW 2026-05-18 케이스:"
+                        " block에 5개만 있는데 분석가가 50+ 추가 行을 100,000"
+                        " 주 수준으로 hallucinate (黃尚凱 / 顧大為 / ... 등"
+                        " 가짜 이름 + 가짜 수치). MOPS가 반환 안 한 인사는"
+                        " 본 보고서에 나타나면 안 됨.\n"
+                        " • 단위 표기: 주식 수는 '주' (예: 1,600,000 주). 절대"
+                        " '약 X만 원 주' / '약 X만 元 주' 같은 통화-단위 혼합"
+                        " 금지. TWD '元' / KRW '원' 은 통화이지 주식 단위가"
+                        " 아니다.\n"
+                        " • TW pct는 MOPS가 직접 반환 안 함 — share count로만"
+                        " 표시. KR DART의 % 표시처럼 percentage가 없는 게"
                         " 정상 — generic '공기업/政府 보유' narrative 절대"
                         " 만들지 마라.\n"
                         " • 다음 정기보고서 윈도: one prose sentence. TW 회계"

@@ -821,6 +821,17 @@ def _format_full(
     parts = [f"📋 {_display_ticker(ticker)} 전체 리포트 ({date_})\n"]
     if past_outcomes:
         parts.append(past_outcomes + "\n")
+    # Ticker-derived currency symbol for polish step. Trader / PM
+    # sections often have zero currency marker in their own body text;
+    # the per-section body-scan in _polish misses them. Pass the
+    # MARKET_CONFIG symbol explicitly so 'Stop Loss 3,150' becomes
+    # 'NT$3,150' for TW tickers regardless of whether Trader's body
+    # mentions NT$.
+    try:
+        from bot.market import get_market_config
+        _section_currency_symbol = get_market_config(ticker).get("currency_symbol", "")
+    except Exception:
+        _section_currency_symbol = ""
     run_selected = set(selected) if selected is not None else set(_SELECTED_ANALYSTS)
     module_default = set(_SELECTED_ANALYSTS)
     for key, label, analyst_id in _REPORT_SECTIONS:
@@ -841,7 +852,9 @@ def _format_full(
             )
             continue
         body = state.get(key) if isinstance(state, dict) else None
-        parts.append(f"\n## {label}\n{_clean_section(body)}")
+        parts.append(
+            f"\n## {label}\n{_clean_section(body, currency_symbol=_section_currency_symbol)}"
+        )
     parts.append(f"\n## ✅ 최종 결정\n{decision}")
     return "\n".join(parts)
 
@@ -1100,7 +1113,7 @@ _POLISH_LENGTH_GUARD = 100_000
 # is currently running. Past hangs in this function happened silently
 # between the propagate log and the timeout — the labels make the
 # culprit obvious in the journal next time.
-def _polish(body: str) -> str:
+def _polish(body: str, currency_symbol: str = "") -> str:
     """Strip noise patterns that agents occasionally leak into their text.
 
     Removes per-section 'FINAL TRANSACTION PROPOSAL' lines (the rating is
@@ -1228,7 +1241,7 @@ def _polish(body: str) -> str:
         # otherwise we'd swallow the trailing space before the next
         # token (e.g. '백만 —' would become '약 XXX만 원—' losing the
         # separator space).
-        # NEGATIVE LOOKAHEAD `(?!\s*[엔円¥$€元])`: don't fire when the
+        # NEGATIVE LOOKAHEAD `(?!\s*[엔円¥$€元주株])`: don't fire when the
         # following token is a non-KRW currency marker. JP / TW / CN /
         # US analysts writing '약 1.6백만 엔' / '약 X백만 元' / '약 X
         # 백만 $' would otherwise be silently corrupted to '약 N0만 원
@@ -1238,11 +1251,11 @@ def _polish(body: str) -> str:
         # uses '元' / '兆 元' / '億 元', CNY uses '元' / '亿元', JPY
         # ALSO uses '円' which is already covered by '円'.
         out = re.sub(
-            r"₩\s*약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€元])",
+            r"₩\s*약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€元주株])",
             repl, b,
         )
         out = re.sub(
-            r"약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€元])",
+            r"약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€元주株])",
             repl, out,
         )
         return out
@@ -1280,21 +1293,25 @@ def _polish(body: str) -> str:
         # English labels (Entry Price / Target Price / Stop Loss) added
         # because Trader emits English here even for KR / JP / TW tickers.
         #
-        # Currency symbol detection: scan the body for the FIRST currency
-        # prefix that appears in a 'price'-like context. 'NT$' before
-        # '₩' before 'HK$' before '¥' before '$' — order matters because
-        # 'NT$' contains '$', 'HK$' contains '$', etc. Detect 2-char
-        # multi-glyph prefixes first.
-        if re.search(r"NT\$\d", b):
+        # Currency symbol priority:
+        # 1. Ticker-derived `currency_symbol` from analyzer caller (most
+        #    reliable — comes from MARKET_CONFIG via detect_market). The
+        #    Trader section often has no currency marker in its own body
+        #    text (MediaTek 2454.TW 2026-05-18: Trader emitted '진입가
+        #    3,350' / 'Stop Loss 3,150' with zero NT$ marker), so per-
+        #    section body scan misses TW/KR/JP/HK Trader output.
+        # 2. Fallback: scan body for first currency prefix. 'NT$' >
+        #    'HK$' > '₩' > '¥' > '$' (multi-glyph prefixes first to
+        #    avoid '$' inside 'NT$' / 'HK$' matching first).
+        if currency_symbol:
+            sym = currency_symbol
+        elif re.search(r"NT\$\d", b):
             sym = "NT$"
         elif re.search(r"HK\$\d", b):
             sym = "HK$"
         elif re.search(r"₩\s*\d|₩\d", b):
             sym = "₩"
         elif re.search(r"¥\s*\d|¥\d", b):
-            # Could be JPY or CNY. Use the broader '元' marker as a
-            # disambiguator: '元' present + '¥' = CNY; otherwise JPY.
-            # CN Phase 4 will refine this; for JP the '¥' alone is fine.
             sym = "¥"
         elif re.search(r"\$\s*\d|\$\d", b):
             sym = "$"
@@ -1418,6 +1435,36 @@ def _polish(body: str) -> str:
                 out.append(line)
         return "\n".join(out)
     _step("rule1-unlabeled-series", _flag_unlabeled_series)
+    # Empty markdown table headers — analyst started a table then fell
+    # back to prose, leaving '| 지표 | 현재 값 | 변화 |' header + ack
+    # separator '|---|---|---|' followed by no data rows. MediaTek
+    # 2454.TW 2026-05-18: both News + Sentiment '요약 테이블' sections
+    # had this pattern. Strip the orphan header so readers don't see a
+    # broken-looking table — the narrative below it carries the data.
+    def _strip_empty_tables(b: str) -> str:
+        # Match: header row '| col1 | col2 | ... |\n| --- | --- | ... |'
+        # NOT followed by a data row (line starts with '|').
+        empty_table_re = re.compile(
+            r"^\s*\|[^\n]+\|\s*\n\s*\|\s*[:\-]+\s*(?:\|\s*[:\-]+\s*)+\|\s*\n"
+            r"(?!\s*\|)",  # next line is NOT a data row
+            re.MULTILINE,
+        )
+        return empty_table_re.sub("", b)
+    _step("strip-empty-tables", _strip_empty_tables)
+    # Markdown table merged onto a single line (e.g. '|---|---|---| |
+    # row1 | val1 |') — the LLM concatenated the separator line with
+    # the first data row. MediaTek 2454.TW 2026-05-18 Market 분석:
+    # '| 지표명 | ... | 해석 |\n|---|---|---| | 종가 | NT$3,260 | ...'.
+    # Insert a newline between the separator and the first row so
+    # markdown parsers can render the table correctly.
+    def _split_inline_tables(b: str) -> str:
+        # Match '|---|---|...| ' (separator) immediately followed by
+        # another '|' (start of data row) on the SAME line.
+        inline_re = re.compile(
+            r"(\|\s*[:\-]+\s*(?:\|\s*[:\-]+\s*)+\|)\s+(\|[^\n]+\|)",
+        )
+        return inline_re.sub(r"\1\n\2", b)
+    _step("split-inline-tables", _split_inline_tables)
     # Conservative dedup for short Korean approximation words that
     # analysts occasionally double-print before a number ("약 약 1776조"
     # — SNG 2026-05-17). Only handles a fixed allowlist; we don't do
@@ -1445,7 +1492,7 @@ def _polish(body: str) -> str:
     return body.strip()
 
 
-def _clean_section(body) -> str:
+def _clean_section(body, currency_symbol: str = "") -> str:
     """Replace empty or obviously-broken agent output with a clear placeholder.
 
     Gemini occasionally emits a JSON error blob, raw tool_code, or no content
@@ -1453,6 +1500,14 @@ def _clean_section(body) -> str:
     so the reader knows the section is missing rather than silently dropping
     it (which used to leave the report header followed by the next section).
     Otherwise pass the body through `_polish` to remove leaked noise.
+
+    currency_symbol: optional market currency from caller's ticker context.
+    Threaded into _polish so Trader output (which often has no currency
+    marker in its own body) still gets the correct ₩ / NT$ / HK$ / ¥ / $
+    prefix on Stop Loss / Entry Price values. MediaTek 2454.TW 2026-05-18
+    surfaced this — Trader emitted '진입가 3,350 / Stop Loss 3,150' bare
+    because Fix 5's body-scan couldn't find any NT$ in the Trader's own
+    section. Ticker-derived symbol bypasses that detection gap.
     """
     if not body or not body.strip():
         return _FAILURE_PLACEHOLDER
@@ -1471,7 +1526,7 @@ def _clean_section(body) -> str:
     head = body.strip()[:500]
     if any(m in head for m in _GARBAGE_MARKERS):
         return _FAILURE_PLACEHOLDER
-    polished = _polish(body)
+    polished = _polish(body, currency_symbol=currency_symbol)
     # If the polished body is mostly headers + empty placeholders ('• :: :',
     # '요약표' alone), treat it as a failed run rather than serving the husk.
     stripped = polished.strip()

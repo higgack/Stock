@@ -341,9 +341,23 @@ def format_mops_tw_block(
             parts.append(f"  • {date_s}: {subject}")
 
     if insiders:
-        # Top 5 by shares (most TW insiders have meaningful holdings).
+        # Top 5 by shares — TW 公司 disclosures often list 30+ junior
+        # 經理人 with identical 100K-share holdings that have zero
+        # signal value. MediaTek 2454.TW 2026-05-18 surfaced this:
+        # MOPS returned 60+ entries, format_mops_tw_block took top 5,
+        # but the news analyst hallucinated 50+ additional rows with
+        # 100,000-share entries each (fake names, fake numbers) to
+        # "complete" what looked like an incomplete table. The text
+        # below explicitly tells the analyst this list is the
+        # complete signal-bearing slice — anything beyond is fabrication.
         top = sorted(insiders, key=lambda r: r.get("shares", 0), reverse=True)[:5]
-        parts.append(f"\n內部人持股 (최근 公告 기준, 상위 {len(top)}):")
+        skipped = max(0, len(insiders) - len(top))
+        skipped_note = (
+            f" — 총 {len(insiders)}건 중 보유 주식 수 상위 {len(top)}만 표시"
+            f" (나머지 {skipped}건은 100K 주 수준의 routine 持股, 신호 없음)"
+            if skipped > 0 else ""
+        )
+        parts.append(f"\n內部人持股 (최근 公告 기준, 상위 {len(top)}{skipped_note}):")
         for r in top:
             name = r.get("name") or "?"
             role = (r.get("role") or "").strip()
