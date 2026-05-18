@@ -2438,6 +2438,49 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 "fred tw macro injection failed for %s: %s", ticker, exc,
             )
 
+        # CN sub-board ±limit awareness (Phase 4-CN-C, 2026-05-18).
+        # STAR / ChiNext / 北交소 / HK GEM have daily price limits that
+        # differ from the mainboard ±10% / HK unrestricted norm. Surface
+        # the sub-board so the market analyst's volatility / momentum
+        # framing is calibrated correctly — RULE 13 텍스트가 정성 인지를
+        # 강제하지만, 런타임 banner 가 누락을 더 확실히 차단.
+        try:
+            from bot.market import detect_cn_sub_market
+            sub = detect_cn_sub_market(ticker)
+            if sub == "CN_A_STAR":
+                base += (
+                    "\n\n=== CN A-share sub-board: 上海 STAR板 (科創板) ===\n"
+                    f"{ticker} 는 上海 STAR板 (688.SS prefix) 상장 종목. 일일"
+                    " 가격 변동 한도가 일반 메인보드 (±10%) 와 다르게 ±20%"
+                    " (신상장 첫 5거래일 ±30%). 5거래일 momentum / volatility"
+                    " 평가 시 이 한도를 반영. 보고서 결론에 sub-board 한 줄"
+                    " 명시 (RULE 13 STAR/ChiNext 보강)."
+                )
+            elif sub == "CN_A_CHINEXT":
+                base += (
+                    "\n\n=== CN A-share sub-board: 深圳 ChiNext (創業板) ===\n"
+                    f"{ticker} 는 深圳 ChiNext (300/301.SZ prefix) 상장 종목."
+                    " 일일 가격 변동 한도 ±20% (신상장 첫 5거래일 ±30%)."
+                    " STAR板 과 동일한 등록제 board, 일반 메인보드 (±10%) 와"
+                    " 다름. 보고서 결론에 sub-board 한 줄 명시 의무."
+                )
+            elif sub == "CN_A_BJSE":
+                base += (
+                    "\n\n=== CN A-share sub-board: 北京 北交소 (BJSE) ===\n"
+                    f"{ticker} 는 北京证券交易所 (.BJ) 상장 종목. 일일 가격"
+                    " 변동 한도 ±30%, yfinance 커버리지 미약 + 유동성 낮음."
+                    " 5거래일 분석 보류 + 정성 평가만 작성 권고."
+                )
+            elif sub == "HK_GEM":
+                base += (
+                    "\n\n=== HK sub-board: GEM (창업판) ===\n"
+                    f"{ticker} 는 HK GEM 보드 (8XXX.HK) 상장 종목. 유동성"
+                    " 낮음 + 일일 거래량 영세 + 본격 분석가 커버리지 매우"
+                    " 제한적. 5거래일 분석은 정성 평가 + 펀더멘털 추이 위주."
+                )
+        except Exception as exc:
+            _analyst_log.warning("cn sub-market detection failed for %s: %s", ticker, exc)
+
         # ─────────────────────────────────────────────────────────────
         # CN_A + HK equity-only injections (Phase 4-CN-B, 2026-05-18).
         # Mirror the KR/JP/TW shape one-for-one:

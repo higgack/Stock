@@ -545,15 +545,34 @@ Phase 4-CN-B AKShare client shipped 2026-05-18:
  • has_recent_news: CN_A/HK fallback 가 AKShare Eastmoney 로 라우팅 —
    yfinance .news 비어있어도 中文 뉴스 fallback 작동.
 
-Foundation + AKShare client only — does NOT include yet:
- • 4-CN-C: RULE 13 (13 산업 정책/매크로 단일 변수 명시) +
-   STAR/ChiNext ±20% RULE 텍스트 + Dual-listing default 명시 +
-   Internet VIE 구조 위험 + ADR 분리 정책.  (ST/*ST + 停牌 HARD
-   GUARD 는 4-CN-B 에서 이미 출시; RULE 13 텍스트 정합화만 남음)
- • 4-CN-D: validation cycle (5-8 종목, 2-3 review/fix iterations 예상)
- • 배포 호스트에 AKShare 설치 필요: `pip install akshare` (~200MB).
-   미설치 상태에서도 봇은 정상 작동 — Rule A guard 가 LLM fabrication
-   차단, CN 종목 분석은 yfinance + RULE 13 텍스트로 진행.
+Phase 4-CN-C RULE 13 + STAR/ChiNext + Dual-listing + VIE shipped 2026-05-18:
+ • fundamentals_analyst.py — RULE 13 신설 (RULE 10 KR / RULE 11 JP /
+   RULE 12 US / RULE 14 TW 와 동일 shape, 13 산업 단일 매크로 / 정책
+   변수 명시 의무): 白酒 茅台 1499元 / 4대 国有 은행 LPR + 三道红线
+   / 부동산 三道红线 + 首套房 LPR / Internet VIE 反독占 + 판호 + 美
+   entity list + VIE 구조 자체 risk / 半導體 国産대체 美 BIS / EV
+   정부 보조금 + 미·EU 관세 / 锂电池 锂가격 + IRA / 光伏 反倾销 +
+   CBAM / 보험 国债 10Y + 港股通 southbound / 통신 5G ARPU + 美 SDN /
+   항공 油价 + 春운 / 석유철강 双碳 限産 / 소비가전 美 관세 + 以旧
+   换新. STAR/ChiNext 일일 한도 ±20% RULE 보강. ST/*ST + Dual-listing
+   + Internet VIE 위험 + 港股통 flow dominant 변수 보강.
+ • DOMINANT VARIABLE ENFORCEMENT 헤더: 'RULE 10/11/12/14' →
+   'RULE 10/11/12/13/14' 로 확장.
+ • build_instrument_context: detect_cn_sub_market() 호출 시 sub-board
+   ±limit 인지 banner 자동 주입 — CN_A_STAR / CN_A_CHINEXT / CN_A_BJSE
+   / HK_GEM 별 일일 한도 명시. 메인보드는 banner 없음 (기본값).
+
+Phase 4-CN remaining (after 4-CN-C):
+ • 4-CN-D: validation cycle (5-8 종목, 2-3 review/fix iterations 예상).
+   추천 검증 종목: 600519.SS 茅台 (白酒 + A주 메인), 1398.HK ICBC
+   (4대 은행 + HK), 002594.SZ BYD (EV + A주 dual-listing default),
+   688981.SS SMIC (STAR + 半導體 国産대체), 0700.HK Tencent (Internet
+   VIE + HK), 300750.SZ CATL (ChiNext + 锂电池), 600048.SS 保利 (부동산),
+   0857.HK CNPC (석유철강).
+ • 배포 호스트 AKShare 설치 (`pip install akshare`, ~200MB). 미설치
+   상태에서도 봇 정상 작동 — Rule A guard fabrication 차단, CN 종목
+   분석은 yfinance + RULE 13 텍스트 + sub-board banner 만으로도 진행
+   가능. 설치 시 lazy import 활성화 + 풀 데이터 주입.
 
 Rule applies to all analyses going forward — Foundation is universal-
 by-default (every analyst sees CN_A/HK as separate first-class markets,
