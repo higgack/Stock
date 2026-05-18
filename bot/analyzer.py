@@ -259,6 +259,12 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
                         f" 양쪽 모두 최근 28일간 {ticker} 기사 0건"
                         " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
                     )
+                elif _market == "TW":
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + 鉅亨網(繁體中文)"
+                        f" 양쪽 모두 최근 28일간 {ticker} 기사 0건"
+                        " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
+                    )
                 else:
                     _skip_msg = (
                         f"📰 뉴스·💬 감정 분석 자동 생략: yfinance에 {ticker} 기사 0건"
@@ -506,6 +512,22 @@ def _display_ticker(ticker: str) -> str:
         if market == "JP":
             # JP: prefer yfinance longName (English / occasionally JP). EDINET
             # Japanese-name lookup will replace this once edinet_client lands.
+            try:
+                from tradingagents.agents.utils.agent_utils import _instrument_info
+                info = _instrument_info(ticker) or {}
+                name = info.get("longName") or info.get("shortName")
+                if name and name.upper() != ticker.upper():
+                    return f"{name} / {ticker}"
+            except Exception:
+                pass
+            return ticker
+        if market == "TW":
+            # TW: yfinance longName usually carries the English corporate
+            # name ('Taiwan Semiconductor Manufacturing Company Limited').
+            # Sometimes the 繁體中文 name comes through ('鴻海精密工業'
+            # for 2317.TW). Either is OK as a display prefix — the
+            # numeric ticker alone (2330.TW / 8299.TWO) is unreadable
+            # at a glance like KR numeric tickers.
             try:
                 from tradingagents.agents.utils.agent_utils import _instrument_info
                 info = _instrument_info(ticker) or {}

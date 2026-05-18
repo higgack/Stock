@@ -60,11 +60,19 @@ MARKET_CONFIG: dict[str, MarketConfig] = {
         "currency_symbol": "¥",
         "trading_hours": "09:30-15:00 CST",
     },
+    "TW": {
+        "name": "대만",
+        "broad_benchmark": "0050.TW",    # 元大台灣50 (TAIEX 50 ETF)
+        "broad_label": "TAIEX 50 (0050)",
+        "currency": "TWD",
+        "currency_symbol": "NT$",
+        "trading_hours": "09:00-13:30 CST (Taipei)",
+    },
 }
 
 
 def detect_market(ticker: str) -> str:
-    """Return one of 'US', 'KR', 'JP', 'CN'. Defaults to 'US' for
+    """Return one of 'US', 'KR', 'JP', 'CN', 'TW'. Defaults to 'US' for
     suffix-less tickers — that's what the help text instructs users to
     type for American listings."""
     t = (ticker or "").upper()
@@ -72,6 +80,8 @@ def detect_market(ticker: str) -> str:
         return "KR"
     if t.endswith(".T"):
         return "JP"
+    if t.endswith(".TW") or t.endswith(".TWO"):
+        return "TW"
     if t.endswith(".SS") or t.endswith(".SZ") or t.endswith(".HK"):
         return "CN"
     return "US"
@@ -112,13 +122,20 @@ def resolve_english_alias(token: str) -> str | None:
     unknown. Returns the canonical ticker for direct routing into the
     analyzer; the caller still applies its own ticker validation.
 
-    Searches both _KR_ENGLISH_ALIAS and _JP_ENGLISH_ALIAS. Each market
-    has its own dict so a clash like 'SUMITOMO' (could be 三井住友 vs
-    住友商事) can be resolved with explicit market-specific keys."""
+    Searches _KR_ENGLISH_ALIAS / _JP_ENGLISH_ALIAS / _TW_ENGLISH_ALIAS in
+    that order. Each market has its own dict so a clash like 'SUMITOMO'
+    (could be 三井住友 vs 住友商事) can be resolved with explicit
+    market-specific keys. KR + JP precedence is historical (those
+    markets were added first); TW added in Phase 4. None of the three
+    dicts share keys today, so order doesn't matter in practice."""
     if not token:
         return None
     upper = token.upper()
-    return _KR_ENGLISH_ALIAS.get(upper) or _JP_ENGLISH_ALIAS.get(upper)
+    return (
+        _KR_ENGLISH_ALIAS.get(upper)
+        or _JP_ENGLISH_ALIAS.get(upper)
+        or _TW_ENGLISH_ALIAS.get(upper)
+    )
 
 
 # Romanized JP company aliases. Same problem as the KR map (NAVER /
@@ -185,6 +202,102 @@ _JP_ENGLISH_ALIAS = {
     "DISCO": "6146.T",
     "LASERTEC": "6920.T",
     "OLYMPUS": "7733.T",
+}
+
+
+# Common TW company names users type in romanized form. TW market has
+# strong English brand recognition (TSMC, MediaTek, Hon Hai / Foxconn,
+# UMC) so we cover both forms — corporate English (TSMC) and brand /
+# foreign-trade names (Foxconn for 鴻海). Unlike KR/JP, many TW names
+# also have well-known ADRs (TSMC→TSM, UMC→UMC, AUO→AUO) — we route
+# the bare alias to the .TW listing by default; users wanting the ADR
+# should type the bare US symbol (/TSM) directly.
+_TW_ENGLISH_ALIAS = {
+    # ─── Semiconductor foundry / IDM
+    "TSMC": "2330.TW",
+    "TAIWANSEMI": "2330.TW",
+    "UMC": "2303.TW",
+    "VANGUARD": "5347.TWO",          # 世界先進 Vanguard International Semi
+    "MOSEL": "2342.TW",              # 茂矽
+    "WIN": "3105.TW",                # 穩懋 WIN Semi (GaAs)
+    # ─── Semiconductor IC design / fabless
+    "MEDIATEK": "2454.TW",
+    "REALTEK": "2379.TW",
+    "NOVATEK": "3034.TW",            # 聯詠
+    "PHISON": "8299.TWO",            # 群聯 Phison Electronics
+    "PARADE": "4966.TW",             # Parade Technologies
+    "EFFICHIPS": "6488.TWO",         # 環球晶 GlobalWafers (silicon wafer)
+    "GLOBALWAFERS": "6488.TWO",
+    # ─── OSAT / packaging-test
+    "ASE": "3711.TW",                # 日月光投控 ASE Technology Holding
+    "ASETECH": "3711.TW",
+    "POWERTECH": "6239.TW",          # 力成
+    "KINGYUAN": "2449.TW",           # 京元電子
+    # ─── EMS / electronics manufacturing services
+    "HONHAI": "2317.TW",
+    "FOXCONN": "2317.TW",
+    "QUANTA": "2382.TW",
+    "PEGATRON": "4938.TW",
+    "COMPAL": "2324.TW",
+    "WISTRON": "3231.TW",
+    "INVENTEC": "2356.TW",
+    # ─── Thermal / AI server cooling (Blackwell-cycle plays)
+    "AURAS": "3324.TW",              # 雙鴻 Auras Technology
+    "ASIAVITAL": "3017.TW",          # 奇鋐 AVC (AI server thermal)
+    "AVC": "3017.TW",
+    "SUNON": "2421.TW",              # 建準 (PC cooling fans)
+    # ─── PCB / 載板
+    "TRIPOD": "3044.TW",             # 健鼎
+    "COMPEQ": "2358.TW",
+    "UNIMICRON": "3037.TW",          # 欣興 (ABF carrier)
+    "NANYAPCB": "8046.TW",           # 南電
+    "GCE": "6213.TWO",
+    # ─── Optical / camera
+    "LARGAN": "3008.TW",             # 大立光
+    "GENIUSOPTICAL": "3406.TW",      # 玉晶光 Genius Electronic Optical
+    "AAC": None,                     # AAC is HK 2018.HK, not TW
+    # ─── Display panel
+    "AUO": "2409.TW",
+    "INNOLUX": "3481.TW",
+    # ─── Financial holdings
+    "FUBON": "2881.TW",              # 富邦金
+    "CATHAY": "2882.TW",             # 國泰金
+    "MEGAFIN": "2886.TW",            # 兆豐金
+    "CTBC": "2891.TW",               # 中信金
+    "EVASUN": "2884.TW",             # 玉山金
+    "ESUN": "2884.TW",
+    "FIRSTFIN": "2892.TW",           # 第一金
+    "SHINKONG": "2888.TW",           # 新光金
+    # ─── Telecom
+    "CHUNGHWA": "2412.TW",           # 中華電
+    "FET": "4904.TW",                # 遠傳
+    "TAIWANMOBILE": "3045.TW",       # 台灣大
+    # ─── Shipping
+    "EVERGREEN": "2603.TW",          # 長榮 (container)
+    "YANGMING": "2609.TW",
+    "WANHAI": "2615.TW",
+    # ─── Petrochemical
+    "FORMOSAPLAS": "1301.TW",        # 台塑
+    "FPC": "1301.TW",
+    "NANYAPLAS": "1303.TW",          # 南亞塑膠
+    "FORMOSACHEM": "1326.TW",        # 台化
+    # ─── Auto / EV (TW has Yulon group)
+    "YULON": "2201.TW",              # 裕隆
+    "HOTAI": "2207.TW",              # 和泰汽車 (Toyota Taiwan distributor)
+    # ─── Steel
+    "CSC": "2002.TW",                # 中鋼
+    # ─── Bio / pharma
+    "PHARMAESSENTIA": "6446.TW",     # 藥華藥
+    "TAIMED": "4147.TWO",            # 中裕新藥
+    # ─── Retail / consumer
+    "PRESIDENT": "2912.TW",          # 統一超 (7-Eleven Taiwan)
+    "UNIPRES": "1216.TW",            # 統一企業
+    "EVASUNAIR": "2618.TW",          # 長榮航
+    "EVAAIR": "2618.TW",
+    "CHINAAIR": "2610.TW",
+    # ─── Ambiguous — multi-entity, force user to specify
+    "TAIWAN": None,
+    "FOREIGN": None,
 }
 
 
@@ -304,10 +417,12 @@ def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:
     Capped at 5 peers for prompt brevity.
 
     Market-aware: picks JP-listed peers for .T tickers, KR-listed for
-    .KS/.KQ, US-listed for bare alpha tickers. Industry strings use
-    yfinance's standardized English vocabulary ('Auto Manufacturers',
-    'Banks - Diversified', etc.) so the same industry key works
-    across markets — the dict choice is what makes it market-specific."""
+    .KS/.KQ, TW-listed for .TW/.TWO, US-listed for bare alpha tickers.
+    Industry strings use yfinance's standardized English vocabulary
+    ('Auto Manufacturers', 'Banks - Diversified', etc.) so the same
+    industry key works across markets — the dict choice is what makes
+    it market-specific. CN (.SS/.SZ/.HK) currently falls through to
+    the US dict; Phase 4-CN will add `_CN_INDUSTRY_PEERS`."""
     if not industry:
         return None
     market = detect_market(ticker)
@@ -315,10 +430,14 @@ def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:
         base = _JP_INDUSTRY_PEERS.get(industry)
     elif market == "KR":
         base = _KR_INDUSTRY_PEERS.get(industry)
+    elif market == "TW":
+        base = _TW_INDUSTRY_PEERS.get(industry)
     else:
-        # Default (US + future CN/EU) goes to the US dict. Phase 4 will
-        # add a CN dict for .HK / .SS tickers; for now the US dict
-        # covers the bulk of mega/large/mid-cap US ticker traffic.
+        # Default (US + CN until Phase 4-CN ships) goes to the US dict.
+        # CN A-share / HK industry-string overlap with US is partial
+        # (yfinance sometimes labels HK ADRs with US-style industries),
+        # so the US dict at least returns SOMETHING for most CN tickers
+        # while we wait for the CN-specific Phase 4 ship.
         base = _US_INDUSTRY_PEERS.get(industry)
     if not base:
         return None
@@ -448,6 +567,122 @@ _JP_INDUSTRY_PEERS = {
 # Pre-fetched peer multiples (Rule C) keep the Comps table populated
 # even when the LLM has nothing else to anchor on.
 #
+# TW industry peer sets — same shape as KR/JP/US. TW market is dominated
+# by tech supply-chain plays so the granular semiconductor + downstream
+# rows here are richer than the equivalent US dict. Mainland CN peers
+# are NOT mixed in (different macro variable, different currency) —
+# CN gets its own dict in Phase 4-CN. ADR cross-listings (TSM ↔
+# 2330.TW, UMC ↔ 2303.TW, AUO ↔ 2409.TW) intentionally NOT mixed in
+# either; they trade in different currencies / time zones so mixing
+# them in a peer table would confuse multiples.
+_TW_INDUSTRY_PEERS = {
+    # ─── Semiconductors (most active TW segment)
+    "Semiconductors": [
+        "2330.TW", "2303.TW", "2454.TW", "2379.TW",  # TSMC/UMC/MTK/Realtek
+        "3034.TW", "8299.TWO",                         # Novatek/Phison
+    ],
+    "Semiconductor Equipment & Materials": [
+        "6488.TWO", "3105.TW", "5347.TWO",            # GlobalWafers/WIN/VIS
+    ],
+    # ─── OSAT / packaging (TW dominates the back-end)
+    "Electronic Components": [
+        "3711.TW", "6239.TW", "2449.TW",              # ASE/Powertech/KingYuan
+        "2329.TW",                                     # 華泰
+    ],
+    # ─── EMS / Electronic Manufacturing Services (TW core export)
+    "Electronic Equipment & Instruments": [
+        "2317.TW", "2382.TW", "4938.TW", "2324.TW",   # HonHai/Quanta/Pegatron/Compal
+        "3231.TW",                                     # Wistron
+    ],
+    # yfinance sometimes tags EMS as 'Computer Hardware' for the same
+    # group; cover both keys.
+    "Computer Hardware": [
+        "2382.TW", "4938.TW", "2324.TW", "2356.TW",   # Quanta/Pegatron/Compal/Inventec
+        "3231.TW", "2317.TW",
+    ],
+    # ─── Thermal / cooling (AI server cycle)
+    "Industrial Machinery": [
+        "3017.TW", "3324.TW", "2421.TW",              # AVC/Auras/Sunon
+    ],
+    # ─── PCB / 載板 (AI substrate cycle)
+    "Electronic Components — PCB": [
+        "3044.TW", "2358.TW", "3037.TW", "8046.TW",   # Tripod/Compeq/Unimicron/NanyaPCB
+    ],
+    # ─── Optical / camera modules
+    "Specialty Industrial Machinery": [
+        "3008.TW", "3406.TW",                          # Largan/GeniusOptical
+    ],
+    # ─── Display panels
+    "Consumer Electronics": [
+        "2330.TW", "2454.TW", "2317.TW", "3008.TW",   # TSMC/MTK/HonHai/Largan
+        "2382.TW",
+    ],
+    # ─── Banks / financial holdings
+    "Banks - Regional": [
+        "2881.TW", "2882.TW", "2886.TW", "2891.TW",   # Fubon/Cathay/Mega/CTBC
+        "2884.TW",                                     # ESun
+    ],
+    "Banks - Diversified": [
+        "2881.TW", "2882.TW", "2886.TW", "2891.TW",
+        "2884.TW",
+    ],
+    "Asset Management": [
+        "2881.TW", "2882.TW", "2891.TW",
+    ],
+    "Insurance - Diversified": [
+        "2881.TW", "2882.TW", "2888.TW", "2885.TW",   # Fubon/Cathay/Shinkong/Yuanta
+    ],
+    # ─── Telecom
+    "Telecom Services": [
+        "2412.TW", "3045.TW", "4904.TW",              # Chunghwa/TWM/FET
+    ],
+    # ─── Shipping (containers + tankers)
+    "Marine Shipping": [
+        "2603.TW", "2609.TW", "2615.TW",              # Evergreen/YangMing/WanHai
+    ],
+    # ─── Airlines
+    "Airlines": [
+        "2610.TW", "2618.TW",                          # ChinaAir/EvaAir
+    ],
+    # ─── Chemicals / petrochemical (Formosa Plastics group)
+    "Specialty Chemicals": [
+        "1301.TW", "1303.TW", "1326.TW",              # FPC/NanyaPlas/FormosaChem
+    ],
+    "Chemicals": [
+        "1301.TW", "1303.TW", "1326.TW",
+    ],
+    # ─── Steel
+    "Steel": [
+        "2002.TW", "2014.TW", "2015.TW",              # CSC/Chung Hung/Feng Hsin
+    ],
+    # ─── Autos / parts (TW has small but present industry)
+    "Auto Manufacturers": [
+        "2201.TW", "2207.TW",                          # Yulon/HoTai (Toyota distrib.)
+    ],
+    "Auto Parts": [
+        "1503.TW", "2231.TW", "2227.TW",
+    ],
+    # ─── Food / beverage / retail
+    "Packaged Foods": [
+        "1216.TW", "1227.TW", "1701.TW",              # UniPres/JiaJia/Yili
+    ],
+    "Specialty Retail": [
+        "2912.TW", "9921.TW",                          # President(7-11)/GiantBike
+    ],
+    # ─── Biotech / pharma (TW small biotech)
+    "Drug Manufacturers - General": [
+        "1707.TW", "1736.TW", "6446.TW",              # XinTaiNeng/JointBio/PharmaEss
+    ],
+    "Biotechnology": [
+        "6446.TW", "4147.TWO", "4736.TW",
+    ],
+    # ─── REITs (TW REIT market thin)
+    "REIT - Diversified": [
+        "01001T.TW",                                   # Cathay REIT 國泰一號
+    ],
+}
+
+
 # Industries below cover ~90% of US ticker traffic the bot sees (S&P
 # 500 mega/large caps + active mid-cap names). Each row: 4-6 peers from
 # the same yfinance 'industry' string. Subject ticker filtered out by

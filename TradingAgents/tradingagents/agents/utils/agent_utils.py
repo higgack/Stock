@@ -423,6 +423,24 @@ def has_recent_news(ticker: str) -> bool:
                 "news availability (kabutan) check failed for %s: %s", ticker, exc,
             )
 
+    # TW fallback: 鉅亨網 (Anue) scrape provides 繁體中文 news for .TW /
+    # .TWO tickers. Same pattern as KR Naver / JP Kabutan. Module ships
+    # in Phase 4-TW-B (next commit) — until then the import will fail
+    # silently and TW news fallback returns False, falling through to
+    # the analyzer's news-skip path which now correctly says 'yfinance
+    # + 鉅亨網 양쪽 모두 0건'.
+    if not has:
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "TW":
+                from bot.cnyes_client import has_recent_taiwanese_news
+                if has_recent_taiwanese_news(ticker):
+                    has = True
+        except Exception as exc:
+            _analyst_log.warning(
+                "news availability (cnyes) check failed for %s: %s", ticker, exc,
+            )
+
     _NEWS_AVAILABILITY_CACHE[ticker] = has
     return has
 
@@ -1144,6 +1162,32 @@ def build_instrument_context(ticker: str) -> str:
         if sector and industry:
             qt = "EQUITY"
 
+    # TW body-text directive — like JP, .TW / .TWO numeric tickers are
+    # unreadable to non-specialists. yfinance longName usually contains
+    # both 繁體中文 + English ('Taiwan Semiconductor Manufacturing Company
+    # Limited' for TSMC, '鴻海精密工業股份有限公司' or 'Hon Hai Precision'
+    # for 2317.TW). We require the analyst to surface a recognizable
+    # name on first mention each section. ADR cross-listings (TSM ↔
+    # 2330.TW, UMC ↔ UMC, AUO ↔ AUO) — when the analyst notices an ADR
+    # exists, MENTION it once but keep all valuation in TWD on the .TW
+    # listing (different time zone + currency, can't blend).
+    if market == "TW" and long_name and long_name.upper() != (ticker or "").upper():
+        base += (
+            f"\n\n=== TW NAMING DIRECTIVE (MANDATORY) ===\n"
+            f"When referring to the company in ANY narrative sentence,"
+            f" use one of these forms — NEVER the bare numeric ticker:\n"
+            f" • '{long_name} ({ticker})' on first mention per section\n"
+            f" • '{long_name}' (name only) on subsequent mentions\n"
+            f"❌ WRONG: '{ticker}는 최근 급락하며...'\n"
+            f"✅ RIGHT: '{long_name} ({ticker})는 최근 급락하며...'\n"
+            f"\nADR CROSS-LISTING NOTE: 다수의 TW 대형주가 NYSE ADR도"
+            f" 발행 (TSMC 2330.TW ↔ TSM, UMC 2303.TW ↔ UMC, AUO 2409.TW"
+            f" ↔ AUO). 분석에서 ADR 존재 자체는 한 줄 인지하되, 모든"
+            f" 펀더멘털 / 시총 / 가격 비교는 .TW 본 상장 (TWD 기준)"
+            f" 으로 통일. ADR과 .TW는 다른 시간대 + 다른 통화 + 다른"
+            f" 유동성이라 multiples를 섞으면 reader가 혼동."
+        )
+
     if market == "JP" and long_name and long_name.upper() != (ticker or "").upper():
         base += (
             f"\n\n=== JP NAMING DIRECTIVE (MANDATORY) ===\n"
@@ -1500,6 +1544,64 @@ def build_instrument_context(ticker: str) -> str:
                 )
     except Exception:
         pass
+
+    # Currency directive for TW tickers. yfinance returns TWSE/TPEx-listed
+    # companies' financial fields in **TWD (NT$)**. TW tickers display
+    # 'NT$' (or '元' in 繁體中文) prefix for prices, '億' / '万元' for
+    # large-scale aggregates. Common LLM error: defaulting to '백만 달러'
+    # for tech names since TSMC's US ADR (TSM) trades in USD — must
+    # distinguish .TW (NT$) from TSM (USD).
+    #
+    # Gotcha: a small number of TW companies report in USD due to global
+    # ops (e.g. some EMS subsidiaries). yfinance financialCurrency check
+    # mirrors the JP / KR / US path.
+    try:
+        if _cfg.get("currency") == "TWD":
+            fin_ccy = (info.get("financialCurrency") or "").upper()
+            base += (
+                "\n\n=== CURRENCY DIRECTIVE (TW ticker, MANDATORY) ===\n"
+                "This is a Taiwan-listed company (TWSE 上市 or TPEx 上櫃)."
+                " Default yfinance .info / financial fields are in **TWD**,"
+                " never USD. When you render the fundamentals summary"
+                " table and body:\n"
+                " • Use Taiwanese scale units '兆 元' (≥1兆 = 10^12),"
+                " '億 元' (1억 ~ 1兆), '万 元' (1만 ~ 1억). Or render as"
+                " 'NT$' + integer (e.g. 'NT$1,234,567'). 한국어 본문에서는"
+                " '조 元 / 억 元 / 만 元' 또는 'NT$ ...' 표기 OK.\n"
+                " • Never '달러' / 'USD' / '백만 달러' for .TW tickers."
+                " TSMC ADR (TSM) 시가총액과 TSMC .TW 시가총액 혼동 금지 —"
+                " TSM은 USD, 2330.TW는 TWD, 환산비율 ~30:1.\n"
+                " • Headline-scale numbers (시가총액, 매출, 순이익, FCF)"
+                " ROUND to two significant figures: '약 25兆 元' or"
+                " '약 25,000億 元' (둘 다 같은 값, 단위만 다름. 일관되게 한"
+                " 단위로).\n"
+                " • EPS / 주당 배당금 stays as integer or 1-decimal TWD:"
+                " 'NT$45.6' 또는 '元45.6'.\n"
+                " • Per-share DCF outputs: 'NT$X,XXX'.\n"
+                "FORBIDDEN — place-by-place spelling. Convert raw"
+                " integers (e.g. 25123456789000) to abbreviated form.\n"
+                " ❌ WRONG: '시가총액: 약 25兆 달러' (불가능)\n"
+                " ❌ WRONG: '총 매출: NT$25兆1,234억5,678만 元' (자리수별 풀스펠)\n"
+                " ✅ RIGHT: '시가총액: 약 25兆 元 (NT$25T)'\n"
+                " ✅ RIGHT: '총 매출 (億 元): FY25 25,123 | FY24 22,500'\n"
+                " ✅ RIGHT: '약 25.1兆 元' for headline prose.\n"
+                "\n"
+                "FISCAL YEAR — TW 상장사는 회계연도 종료 12/31이 표준 (KR과"
+                " 동일). yfinance 분기 라벨 (Q1 = 1-3월) 미국 캘린더 분기와"
+                " 정합. 일부 회사 (특히 中国 자회사 큰 그룹) 는 자체 회계"
+                " 주기 다를 수 있음 — yfinance 의 fiscalYearEnd 확인 후"
+                " 명시. ADR (TSM) 분기 라벨도 .TW와 동일하게 캘린더 분기."
+            )
+            if fin_ccy and fin_ccy not in ("TWD", "NTD", ""):
+                base += (
+                    f"\n\n⚠️ FINANCIAL CURRENCY MISMATCH — yfinance reports"
+                    f" `{ticker}`'s financial statements in **{fin_ccy}**,"
+                    f" not TWD (trading currency). 시가총액과 일치하지"
+                    f" 않을 수 있다. 손익계산서 / 대차대조표 수치 인용 시"
+                    f" '{fin_ccy} 기준' 명시 + 환산하지 말고 그대로 인용."
+                )
+    except Exception:
+        pass
     if qt in ("ETF", "ETN", "MUTUALFUND"):
         # ETFs / leveraged funds have no company news, no executive
         # quotes, no earnings transcripts. The analyst's standard "company
@@ -1574,6 +1676,17 @@ def build_instrument_context(ticker: str) -> str:
             if not _os.getenv("FRED_API_KEY", "").strip():
                 _missing_keys.append(
                     "FRED (BoJ 정책금리 + JGB 10Y + JP CPI)"
+                )
+        elif market == "TW":
+            # TW data sources are all keyless (MOPS HTTP / 鉅亨網 scrape
+            # / FRED keys already covered). FRED is the only API key
+            # involved — same registration / .env entry as JP. MOPS +
+            # 鉅亨網 scrape are part of Phase 4-TW-B (next commit), so
+            # at this point the OFFLINE block lists FRED only and won't
+            # fire until the client modules ship.
+            if not _os.getenv("FRED_API_KEY", "").strip():
+                _missing_keys.append(
+                    "FRED (TW 중앙은행 重貼現率 + CPI — JP와 키 공유)"
                 )
         if _missing_keys:
             _missing_list = "\n".join(f"  • {k}" for k in _missing_keys)

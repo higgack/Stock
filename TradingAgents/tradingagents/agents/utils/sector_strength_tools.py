@@ -169,6 +169,42 @@ _JP_INDUSTRY_OVERRIDES = [
 _JP_BROAD_FALLBACK = ("1306.T", "TOPIX (1306)")
 
 
+# Taiwan market — Yuanta + Fubon sector ETFs that track TW industry
+# baskets. TW market dominated by tech supply chain so granular
+# semi / EMS / financial ETFs available. Broad fallback is 0050.TW
+# (元大台灣50 ETF, tracks TAIEX 50).
+#
+# yfinance industry strings for TW tickers mostly match the US/global
+# vocabulary (Semiconductors, Banks - Regional, Marine Shipping,
+# Telecom Services etc.) since yfinance uses GICS-style labels. We
+# match against those same strings here; needle-based partial match
+# also handles 'semiconductor equipment' / 'semiconductor' overlap.
+_TW_INDUSTRY_OVERRIDES = [
+    # ─── Semiconductor cluster (TW's dominant sector)
+    ("semiconductor", ("00891.TW", "반도체 (元大台灣ESG永續半導體)")),
+    ("semiconductor equipment", ("00891.TW", "반도체 (元大台灣ESG永續半導體)")),
+    # ─── Banks / financial
+    ("bank", ("0055.TW", "MSCI 금융 (元大MSCI金融)")),
+    ("regional bank", ("0055.TW", "MSCI 금융 (元大MSCI金融)")),
+    ("insurance", ("0055.TW", "MSCI 금융 (元大MSCI金融)")),
+    ("asset management", ("0055.TW", "MSCI 금융 (元大MSCI金融)")),
+    # ─── Tech / electronics
+    ("electronic equipment", ("0053.TW", "전자 (元大電子)")),
+    ("electronic components", ("0053.TW", "전자 (元大電子)")),
+    ("consumer electronics", ("0053.TW", "전자 (元大電子)")),
+    ("computer hardware", ("0053.TW", "전자 (元大電子)")),
+    # ─── Telecom
+    ("telecom services", ("0055.TW", "MSCI 금융 (元大MSCI金融)")),
+    # ─── Shipping
+    ("marine shipping", ("0050.TW", "TAIEX 50 (0050)")),
+    ("shipping", ("0050.TW", "TAIEX 50 (0050)")),
+    # ─── Petrochemical / steel — no narrow ETF, use broad fallback
+    # via _TW_BROAD_FALLBACK below.
+]
+
+_TW_BROAD_FALLBACK = ("0050.TW", "TAIEX 50 (0050)")
+
+
 def _resolve_benchmark(ticker: str) -> tuple[str, str] | None:
     """Pick the most specific sector/industry ETF for `ticker`.
 
@@ -210,8 +246,17 @@ def _resolve_benchmark(ticker: str) -> tuple[str, str] | None:
         # No specific TOPIX-17 sector match — use TOPIX broad ETF.
         return _JP_BROAD_FALLBACK
 
-    # CN coverage to come in Phase 3. For now CN falls through to US
-    # logic which probably won't have a useful mapping, returning None.
+    if market == "TW":
+        for needle, etf in _TW_INDUSTRY_OVERRIDES:
+            if needle in industry:
+                return etf
+        # No specific Yuanta sector match — use TAIEX 50 broad ETF.
+        return _TW_BROAD_FALLBACK
+
+    # CN coverage to come in Phase 4-CN. For now CN falls through to
+    # US logic which probably won't have a useful sector match for
+    # mainland-only industries (白酒 etc.) — returns None or a
+    # broad fallback.
     for needle, etf in _INDUSTRY_OVERRIDES:
         if needle in industry:
             return etf

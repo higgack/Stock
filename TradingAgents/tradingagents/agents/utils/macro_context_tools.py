@@ -110,14 +110,45 @@ _MACRO_SERIES_JP = [
 ]
 
 
+# TW-tilted macro 9-series. TW market dominated by tech supply chain,
+# so the picks tilt heavily toward variables that move semiconductor
+# / EMS / shipping cohorts:
+#   - USD/TWD: TSMC + EMS exporters report in NT$, USD weakness =
+#     translation hit; TW central bank actively manages this currency
+#   - TAIEX (^TWII): domestic broad index, primary TW signal
+#   - 美 10Y: TW growth stocks correlate with US yields (esp. AI semis)
+#   - VIX: global risk-on/off carries over directly
+#   - WTI: TW is net oil importer; shipping fuel cost
+#   - Copper: semiconductor manufacturing demand + tech cycle
+#   - USD/JPY: JP competes with TW in semis + autos; weak yen
+#     pressures TW exporters' competitiveness
+#   - USD/CNY: China = TW's largest export market; CNY weakness hits
+#     TW exporters' relative competitiveness same way it hits JP
+#   - 호선 (SOX index ^SOX or proxy 통과 to SOXX): semi cycle directly
+#     drives ~60% of TW market cap via TSMC / MTK / OSAT chain
+_MACRO_SERIES_TW = [
+    ("TWD=X", "대만달러/달러 (USD/TWD)", ""),
+    ("^TWII", "TAIEX 가중지수", ""),
+    ("^TNX", "美 10Y 국채금리", "%"),
+    ("^VIX", "VIX 지수", ""),
+    ("CL=F", "WTI 원유", "$"),
+    ("HG=F", "구리 (선물)", "$"),
+    ("JPY=X", "엔/달러 (USD/JPY)", ""),
+    ("CNY=X", "위안/달러 (USD/CNY)", ""),
+    ("SOXX", "美 반도체 ETF (SOXX)", "$"),
+]
+
+
 def _series_for_market(market: str):
     """Return the macro series list for the given market code. Falls
     back to the US series for unknown markets so CN tickers still
-    get *some* macro context until Phase 3 ships its own set."""
+    get *some* macro context until Phase 4-CN ships its own set."""
     if market == "KR":
         return _MACRO_SERIES_KR
     if market == "JP":
         return _MACRO_SERIES_JP
+    if market == "TW":
+        return _MACRO_SERIES_TW
     return _MACRO_SERIES
 
 
