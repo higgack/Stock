@@ -646,7 +646,75 @@ default to **universal** (no market gate) unless the guard depends on
 a market-specific data source. Even then, prefer a universal helper
 with market-aware branches over per-market parallel functions.
 
+## KR quality enhancement roadmap (Step 2, 2026-05-19)
+
+Step 1 (infra) shipped: F1-MVP Gemini caching + F2 Option 4 verify +
+F3-light parallel prefetch. KR quality 강화 작업은 다음 순서로 진행
+— API 키 필요한 항목은 final batch (위 TODO API-blocked section)
+로 분리:
+
+### Step 2A — no API required (proceed first, ~3.5일):
+ 1. **B1 5-day horizon enforcement** (0.25일, prompt only)
+    펀더멘털 결론이 12개월 thesis 톤으로 흐르는 경향 차단. 시스템
+    프롬프트 + 펀더멘털 RULE 에 5거래일 horizon 강제 directive 강화.
+    surfaced by: 마오타이 / SMIC 펀더멘털 결론 "장기 보유 의견" 패턴.
+ 2. **A2 KRX 시장경보 + 상한가/하한가 + 거래정지 detect** (0.5일)
+    `bot/krx_alert_client.py` 신규 — data.krx.co.kr HTTP scrape.
+    무료, no key. 단기과열/투자경고/투자주의/거래정지 종목 list.
+ 3. **B4 시장경보 HARD GUARD inject** (0.25일, A2 의존)
+    instrument_context 에 banner — 단기과열 종목 분석 시 "5일 정상
+    가격 분석 보류" 자동 directive.
+ 4. **D1 yfinance KR 데이터 quality fallback 강화** (1일)
+    MUTUALFUND misclass / split staleness / 매출 단위 mismatch (Rule
+    G) / financialCurrency=USD 글로벌 자회사 케이스에서 DART /
+    FnGuide 데이터로 자동 cross-check + override.
+ 5. **D2 USD/KRW 영향 자동 계산** (0.5일)
+    수출 의존도 큰 종목 (현대차 / 기아 / LG에너지솔루션 / SK하이닉
+    스 등) 의 USD/KRW 1% 변동 시 영업이익 ±X% 영향 자동 계산 +
+    매크로 분석 inject.
+ 6. **A3 한경 컨센서스 scrape** (0.5일)
+    `bot/hk_consensus_client.py` — consensus.hankyung.com 스크랩.
+    FnGuide 가 mid-cap KOSDAQ 누락하는 영역 보강.
+ 7. **B2 KR ETF analyzer 특화** (0.5일)
+    KODEX / TIGER ETF 종목을 generic fund 모드가 아닌 KR-ETF
+    specific 모드로 처리 — 기초자산 sector 익스포저 / AUM 추이 /
+    추적오차 / 분배금 / 환헤지 여부.
+
+### Step 2B — API-required (final batch after Step 2A):
+ 8. **A1 KIS Open API integration** (1.5일, KIS 키 발급 후)
+ 9. **B3 외인 한도 RULE 10 변수 추가** (0.25일, A1 의존)
+
+Trigger to start Step 2B: KIS_APP_KEY + KIS_APP_SECRET 가 .env 에
+로드된 후. 발급되기 전 까지 Step 2A 모두 완료 가능 — 병렬 가능
+(user 가 KIS 등록 진행하는 동안 bot 은 Step 2A 코드 작업).
+
+Rule applies to all analyses going forward — KR-specific 작업이지만
+infra (D1 fallback / D2 환율 계산) 는 다른 시장 (JP/TW/CN 수출주)
+에도 동일 패턴 적용 검토 가능. Universal-by-default 가 KR 우선
+shipping 후 cross-market parity audit 으로 확장.
+
+
 ## TODO
+
+## 🔐 API-blocked tasks (deferred to final batch per user 2026-05-19)
+
+User policy: tasks that require new external API keys / registration
+are parked here and addressed AT THE END of all other infra work.
+Reason: API registration often blocks (geofence / account approval
+/ payment) and shouldn't gate the rest of the development. Each task
+keeps a clear pickup state so the final batch is easy to resume.
+
+These need new credentials BEFORE work can ship:
+
+- **KIS Open API (한국투자증권)** — KR 외인 지분 한도 / 신용잔고 /
+  대차잔고 / 프로그램 매매 / 시장경보 종목 분류. KR 시장의 가장 큰
+  비어있는 단기 수급 영역 — 5거래일 horizon 가격 동인의 핵심.
+  Required: 한국투자증권 계좌 + KIS Developers portal 가입 →
+  `KIS_APP_KEY` + `KIS_APP_SECRET` 발급 → `.env` 에 추가.
+  Estimated work after keys arrive: 1.5일 (`bot/kis_client.py` +
+  agent_utils 주입 + RULE 10 dominant 변수 보강).
+  Blocks: B3 (외인 한도 RULE 10 변수). Recommend kicking off
+  registration in parallel with non-API work.
 
 - **EDINET API key — pending user registration** (Phase 3 validation
   blocker). EDINET registration portal (disclosure2.edinet-fsa.go.jp)
