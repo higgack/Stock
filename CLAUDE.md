@@ -669,16 +669,36 @@ with market-aware branches over per-market parallel functions.
   + specific 공시 dates without the key. Surface to user once they
   resolve the registration path.
 
-- **FRED API key — pending user `.env` add**. Key was received but
-  user has not yet added to `.env`. JP macro block (BoJ 정책금리 +
-  JGB 10Y + JP CPI) returns empty until key is loaded. Same Rule A
-  HARD GUARD covers this — no fabrication risk in the meantime.
-  Same FRED_API_KEY also drives TW macro (CBC 重貼現率 + TW 10Y +
-  TW CPI) and future CN macro — single key for all three. User
-  confirmed will add when convenient.
+- **FRED API key — loaded** (2026-05-18). User confirmed key is in
+  `.env` (verified via redacted `cat ~/stock/.env | sed 's/=.*$/=***REDACTED***/'`
+  output during MediaTek review session). JP macro block (BoJ 정책금리
+  + JGB 10Y + JP CPI), TW macro (CBC 重貼現率 + TW 10Y + TW CPI), and
+  the FRED slot of CN macro pathways all active. Single key drives all
+  three markets. Resolved; preserved here as a status marker only — no
+  further action needed.
 
-- **Phase 4-CN (China + HK expansion) — deferred until TW validation
-  completes**. User chose 2026-05-18 (Option γ) to ship CN AFTER the
+- **Phase 4-CN-D validation cycle — pending** (2026-05-18). Phase 4-CN-
+  A Foundation + 4-CN-B AKShare client + 4-CN-C RULE 13 all shipped in
+  this session. Remaining: actual analysis runs on 5-8 representative
+  CN_A + HK tickers + 2-3 review/fix iterations to harden RULE 13 +
+  STAR/ChiNext + Dual-listing + Internet VIE rules. Recommended
+  validation set:
+   • /600519.SS 茅台 (백주 + A주 메인, RULE 13.1)
+   • /1398.HK ICBC (4대 은행 + HK default, RULE 13.2)
+   • /002594.SZ BYD (EV + A주 dual-listing default, RULE 13.6)
+   • /688981.SS SMIC (STAR ±20% + 半導體 国産대체, RULE 13.5)
+   • /0700.HK Tencent (Internet VIE + HK, RULE 13.4)
+   • /300750.SZ CATL (ChiNext ±20% + 锂电池, RULE 13.7)
+   • /600048.SS 保利 (부동산 + 三道红线, RULE 13.3)
+   • /0857.HK CNPC (석유철강 + 双碳, RULE 13.12)
+  Each run verified against 7-axis framework (per-ticker analysis
+  verification framework section above). Bot host needs `pip install
+  akshare` on bot/.venv before validation; without it the bot still
+  routes CN tickers correctly but AKShare 公告 / 港股통 flow / LPR
+  blocks return empty (Rule A guard prevents fabrication).
+
+- **Phase 4-CN (China + HK expansion) — original deferred design,
+  preserved**. User chose 2026-05-18 (Option γ) to ship CN AFTER the
   TW validation (Phase 4-TW-D) closes — sequential rollout avoids
   carrying two large in-flight rewrites at once. Re-reviewed CN
   scope at TW-level depth on 2026-05-18 (Option A) and captured
