@@ -517,15 +517,43 @@ defaults. Foundation includes:
  • bot/telegram_bot.py 도움말 — 진행 중/예정 12 섹션의 중국 라인이
    "Foundation 가동" 표기로 업데이트.
 
-Foundation only — does NOT include yet (deferred to subsequent commits):
- • 4-CN-B: AKShare client (~13 endpoints: 공시 + 뉴스 + ticker→name +
-   港股通 flow + LPR/MLF/RRR/CPI/PMI macro + ST 분류 + 펀더멘털)
- • 4-CN-B: 港股通 northbound/southbound flow injection (HSGT 5거래일
-   순매수)
+Phase 4-CN-B AKShare client shipped 2026-05-18:
+ • bot/akshare_client.py — lazy-import wrapper (~600 lines, AKShare
+   ~200MB dep loaded only on first CN_A/HK analysis). 7 endpoint
+   classes wrapped:
+    - 공告: stock_zh_a_disclosure_announcement_cninfo (A주 巨潮资讯)
+      + stock_zh_h_disclosure_em (HK 东方财富), 최근 30일 / 상위 8건
+    - 主要 流通股东: stock_circulate_stock_holder (A주 top-10 분기갱신)
+    - ST/*ST: stock_zh_a_st_em — 거래소 특별처리 분류 (HARD GUARD)
+    - 停牌: stock_zh_a_stop_em — 거래정지 상태 (HARD GUARD, 차트 freeze)
+    - 港股通 flow: stock_hsgt_north_net_flow_em + south_net_flow_em
+      5거래일 净 매수 합계 (KR pykrx flow 등가물)
+    - CN 매크로: macro_china_lpr + macro_china_cpi_monthly +
+      macro_china_pmi/pmi_yearly (LPR 1Y/5Y + CPI YoY + 제조 PMI)
+    - 东方财富 news: stock_news_em — 个股 中文 뉴스 (Naver/Kabutan/
+      cnyes 등가물). HK 종목은 best-effort (Eastmoney HK 커버리지 lag).
+   모든 endpoint 12h disk cache + AKShare ImportError graceful
+   degradation. CN_A 5자리 SH/SZ/BJ prefix + HK 5자리 padded 변환.
+ • agent_utils.py build_instrument_context: CN_A/HK branch 추가 —
+   ST HARD GUARD banner + 停牌 HARD GUARD banner + AKShare 公告/홀더/
+   윈도 block + 港股通 flow block + 东方财富 뉴스 block + CN 매크로
+   block. _section_allowed gate 확장: eastmoney_news (시장+펀더멘털
+   제외), hsgt_flow (시장만 포함), akshare_macro (감정 제외).
+ • Rule A DATA OFFLINE: AKShare 미설치 시 anti-hallucination guard 가
+   '公告 dates / 主要 流通股东 / 港股通 flow / LPR 절대 fabrication 금지'
+   directive 주입.
+ • has_recent_news: CN_A/HK fallback 가 AKShare Eastmoney 로 라우팅 —
+   yfinance .news 비어있어도 中文 뉴스 fallback 작동.
+
+Foundation + AKShare client only — does NOT include yet:
  • 4-CN-C: RULE 13 (13 산업 정책/매크로 단일 변수 명시) +
-   STAR/ChiNext ±20% RULE 텍스트 + ST/*ST 가드 + 停牌 처리 + Dual-
-   listing default 적용 + Internet VIE 구조 위험 명시
+   STAR/ChiNext ±20% RULE 텍스트 + Dual-listing default 명시 +
+   Internet VIE 구조 위험 + ADR 분리 정책.  (ST/*ST + 停牌 HARD
+   GUARD 는 4-CN-B 에서 이미 출시; RULE 13 텍스트 정합화만 남음)
  • 4-CN-D: validation cycle (5-8 종목, 2-3 review/fix iterations 예상)
+ • 배포 호스트에 AKShare 설치 필요: `pip install akshare` (~200MB).
+   미설치 상태에서도 봇은 정상 작동 — Rule A guard 가 LLM fabrication
+   차단, CN 종목 분석은 yfinance + RULE 13 텍스트로 진행.
 
 Rule applies to all analyses going forward — Foundation is universal-
 by-default (every analyst sees CN_A/HK as separate first-class markets,

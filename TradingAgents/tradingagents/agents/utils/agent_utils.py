@@ -456,6 +456,23 @@ def has_recent_news(ticker: str) -> bool:
                 "news availability (cnyes) check failed for %s: %s", ticker, exc,
             )
 
+    # CN_A / HK fallback to AKShare Eastmoney news. Same shape as the
+    # TW cnyes / JP Kabutan paths above. AKShare may not be installed
+    # on the bot host (~200MB dep, lazy install); import failure
+    # silently degrades to False and the analyzer's news-skip path
+    # handles it correctly.
+    if not has:
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) in ("CN_A", "HK"):
+                from bot.akshare_client import has_recent_chinese_news
+                if has_recent_chinese_news(ticker):
+                    has = True
+        except Exception as exc:
+            _analyst_log.warning(
+                "news availability (akshare) check failed for %s: %s", ticker, exc,
+            )
+
     _NEWS_AVAILABILITY_CACHE[ticker] = has
     return has
 
@@ -1063,21 +1080,25 @@ def _format_dart_kr_block(
 _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # 시장 (technical): doesn't analyze native-language news. Keeps KRX
     # flow (it IS market-flow data), keeps all macro blocks (rate
-    # environment frames the chart).
-    "market": {"naver_news", "kabutan_news", "cnyes_news"},
-    # 감정 (sentiment): doesn't quantify rates or KRX flow. Keeps news
+    # environment frames the chart). For CN/HK, HSGT 港股通 flow IS
+    # market-flow data so it stays in the market analyst's set.
+    "market": {
+        "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
+    },
+    # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
     # blocks (sentiment fuel) and peer set (Comps consistency).
     "social": {
-        "krx_flow",
-        "bok_macro", "fred_jp_macro", "fred_tw_macro",
+        "krx_flow", "hsgt_flow",
+        "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
     },
-    # 뉴스 (news): keeps everything except KRX flow (numbers without
+    # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
-    "news": {"krx_flow"},
+    "news": {"krx_flow", "hsgt_flow"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
     "fundamentals": {
-        "naver_news", "kabutan_news", "cnyes_news", "krx_flow",
+        "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
+        "krx_flow", "hsgt_flow",
     },
 }
 
@@ -1858,6 +1879,19 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 _missing_keys.append(
                     "FRED (TW 중앙은행 重貼現率 + CPI — JP와 키 공유)"
                 )
+        elif market in ("CN_A", "HK"):
+            # CN/HK uses AKShare (no API key) — but the ~200MB dep may
+            # not be installed on the bot host. Probe by attempting a
+            # cheap lazy import. ImportError → emit DATA OFFLINE entry
+            # so the LLM doesn't fabricate 公告 dates / 主要 流通股东 /
+            # 港股通 flow numbers / LPR rate that AKShare couldn't fetch.
+            try:
+                import akshare as _akshare_probe  # noqa: F401
+            except Exception:
+                _missing_keys.append(
+                    "AKShare (中国 公告 + 东方财富 뉴스 + 港股通 flow"
+                    " + LPR / CPI / PMI — `pip install akshare` 필요)"
+                )
         if _missing_keys:
             _missing_list = "\n".join(f"  • {k}" for k in _missing_keys)
             base += (
@@ -2403,6 +2437,194 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             _analyst_log.warning(
                 "fred tw macro injection failed for %s: %s", ticker, exc,
             )
+
+        # ─────────────────────────────────────────────────────────────
+        # CN_A + HK equity-only injections (Phase 4-CN-B, 2026-05-18).
+        # Mirror the KR/JP/TW shape one-for-one:
+        #  • AKShare disclosures + holders + earnings window + ST + 停牌
+        #  • Eastmoney news (CN_A) / HK news (via same endpoint, best-effort)
+        #  • 港股通 / 沪股通 / 深股通 flow summary
+        #  • CN macro (LPR / CPI / PMI) via AKShare
+        # All sources degrade silently when AKShare not installed —
+        # Rule A DATA OFFLINE guard above surfaces the absence.
+        # ─────────────────────────────────────────────────────────────
+
+        # AKShare 公告 + 主要 流通股东 + 정기보고서 윈도 + ST/*ST + 停牌
+        try:
+            from bot.market import detect_market
+            mk_cn = detect_market(ticker)
+            if mk_cn in ("CN_A", "HK"):
+                from bot.akshare_client import (
+                    get_akshare, format_akshare_cn_block,
+                )
+                ak_client = get_akshare()
+                cn_disclosures = ak_client.get_recent_disclosures(ticker, days_back=30, limit=8)
+                cn_holders = ak_client.get_major_holders(ticker)
+                cn_window = ak_client.next_earnings_window(ticker)
+                cn_st = ak_client.is_st(ticker)
+                cn_suspended = ak_client.is_suspended(ticker)
+
+                # ST/*ST is a HARD GUARD — surface as separate banner
+                # before the regular AKShare block so the analyst can't
+                # bury it.  Similar to KR/JP/TW corporate-action guards
+                # but the regime change is different (±5% limit + 退市
+                # process vs split-adjustment confusion).
+                if cn_st:
+                    base += (
+                        "\n\n=== ⚠️ ST/*ST 분류 (HARD GUARD — CN A-share) ===\n"
+                        f"{ticker} 는 거래소의 ST 또는 *ST 특별처리 종목이다.\n"
+                        "다음 항목이 일반 종목과 다르다:\n"
+                        "  • 일일 변동 한도: ±5% (일반 ±10% / STAR·ChiNext ±20% 와 다름)\n"
+                        "  • 退市 (delisting) 프로세스 가능성 (특히 *ST)\n"
+                        "  • 자본잠식 / 재무 부실 / 회계감리 의견 거절 가능성\n"
+                        "RULE 13 에 따라 펀더멘털 / 결정 노드는 다음을 명시:\n"
+                        "  (1) ST 분류 자체를 결론에 한 줄로 언급\n"
+                        "  (2) 5거래일 분석에서 退市 timing 변수 + 자본잠식 확률 가산\n"
+                        "  (3) 일반 ±10% 가정 하의 momentum 분석 금지"
+                    )
+
+                if cn_suspended:
+                    base += (
+                        "\n\n=== ⛔ 停牌 (TRADING HALTED — HARD GUARD) ===\n"
+                        f"{ticker} 는 현재 거래 정지 상태이다. yfinance 가격이"
+                        " freeze 상태이고 일별 close 가 갱신되지 않는다.\n"
+                        "다음 항목은 사용 금지 (의미 없음):\n"
+                        "  • 10 EMA / 50 SMA / 200 SMA / MACD / RSI / Bollinger\n"
+                        "  • 5거래일 수익률 / momentum / 추세 분석\n"
+                        "  • Comps 표의 multiples (stale price 기준)\n"
+                        "허용된 분석:\n"
+                        "  (1) 停牌 사유 정성 분석 (실적 / M&A / 규제 / 사건)\n"
+                        "  (2) 復牌 시 가격 갭 시나리오 (Bull / Base / Bear)\n"
+                        "  (3) 펀더멘털은 지난 분기 数据 기준으로만 진행"
+                    )
+
+                cn_block = format_akshare_cn_block(
+                    cn_disclosures, cn_holders, cn_window, cn_st, cn_suspended,
+                )
+                if cn_block:
+                    base += (
+                        "\n\n=== Pre-fetched CN/HK market data (AKShare, verbatim —"
+                        " do NOT call any tool for these numbers; use them in"
+                        " the news / fundamentals / risk sections as ground"
+                        " truth) ===\n"
+                        + cn_block
+                        + "\n\nRENDERING RULES for the AKShare CN block:\n"
+                        " • 公告: render as a bullet list, one filing per line,"
+                        " with the date prefix preserved. 业绩快报 / 重大资产"
+                        " 重组 / 减持 / 增持 / 停牌 / 复牌 등 specific"
+                        " 公告类型 keyword 가 5거래일 가격을 흔드는"
+                        " 직접 신호이므로 paraphrase 금지 — 主旨 verbatim 인용.\n"
+                        " • 主要 流通股东: 위 block 명시 행만 그대로 렌더링."
+                        " 추가 인사 / 기관 / 펀드 row FABRICATION 금지. AKShare"
+                        " 가 반환 안 한 인사는 보고서에 나타나면 안 됨.\n"
+                        " • 단위 표기: A주는 '股' / '股东' / '%'. HK 는 '股'"
+                        " / '%'. 통화 prefix 는 ¥ (CNY, A-share) 또는 HK$"
+                        " (HKD, HK-listed) — 절대 섞지 말 것.\n"
+                        " • Dual-listed names (BYD 002594.SZ / 1211.HK, ICBC"
+                        " 601398.SS / 1398.HK 등): 이 보고서의 default ticker"
+                        " (yfinance 의 .SS/.SZ 또는 .HK) 통화 기준만 인용."
+                        " 다른 listing 의 multiples / 시총 끌어들이지 말 것.\n"
+                        " • 다음 정기보고서 윈도: A주 회계연도 12/31, 분기"
+                        " 마감 4/30 (Q1+Annual), 8/31 (H1), 10/31 (Q3)."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "akshare cn injection failed for %s: %s", ticker, exc,
+            )
+
+        # 港股通 / 沪股通 / 深股통 flow — short-horizon directional signal,
+        # same role as KR pykrx flow. Gate via "hsgt_flow" section tag.
+        try:
+            from bot.market import detect_market
+            if (detect_market(ticker) in ("CN_A", "HK")
+                    and _section_allowed(analyst_id, "hsgt_flow")):
+                from bot.akshare_client import (
+                    get_akshare, format_hsgt_flow_for_prompt,
+                )
+                hsgt = get_akshare().get_hsgt_flow_summary(days_back=5)
+                if hsgt:
+                    base += (
+                        "\n\n=== Pre-fetched CN/HK investor flow"
+                        " (港股通 / 沪股通 / 深股通, AKShare verbatim — quote"
+                        " in 시장 분석 본문) ===\n"
+                        + format_hsgt_flow_for_prompt(hsgt)
+                        + "\n\nINTERPRETATION GUIDE (mandatory):"
+                        " Northbound (海外 자금이 沪股通 + 深股通 통해 본토"
+                        " 매수) 는 KR 외국인 순매수와 동일한 역할 — 본토"
+                        " 종목 분석 시 가장 강력한 5거래일 directional"
+                        " 신호. Southbound (본토 자금이 港股通 통해 HK 매수)"
+                        " 는 HK 종목 분석에서 그 역할. 절대값 (억 元 / 억"
+                        " HKD) 보다 방향 + 강도 추이를 중점 인용. AKShare"
+                        " 가 GFW 영향으로 빈 결과 반환 시 'CN/HK flow"
+                        " 데이터 미수집 (이번 실행)' 명시 + 다음 항목으로."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "hsgt flow injection failed for %s: %s", ticker, exc,
+            )
+
+        # Eastmoney 中文 news (CN_A + HK) — yfinance / Alpha Vantage
+        # don't index 东方财富 / 财新 reliably; Eastmoney aggregates the
+        # 主요 본토 + HK desks under one ticker tag. Mirrors Naver /
+        # Kabutan / cnyes paths. Gate via "eastmoney_news" tag.
+        try:
+            from bot.market import detect_market
+            if (detect_market(ticker) in ("CN_A", "HK")
+                    and _section_allowed(analyst_id, "eastmoney_news")):
+                from bot.akshare_client import (
+                    get_akshare, format_news_for_prompt as fmt_cn_news,
+                )
+                cn_news = get_akshare().fetch_news(ticker, days_back=28, max_items=10)
+                if cn_news:
+                    base += (
+                        "\n\n=== Pre-fetched CN/HK news (东方财富 / AKShare,"
+                        " verbatim) ===\n"
+                        + fmt_cn_news(cn_news)
+                        + "\n\n위 中文 뉴스가 CN/HK 종목 분석의 primary news"
+                        " source이다. 영문 뉴스 (yfinance / Alpha Vantage)"
+                        " 가 비어있거나 1-2일 지연되더라도 위 리스트를 활용해"
+                        " news / sentiment 분석을 진행. 무관 미국 뉴스 끌어다가"
+                        " 간접 추론으로 메우는 패턴 (호텔신라 2026-05-17 /"
+                        " 두산 2026-05-18 케이스) 금지. 위 리스트가 비어"
+                        " 있는 경우만 中文 뉴스 부재로 인정."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "eastmoney news injection failed for %s: %s", ticker, exc,
+            )
+
+        # CN macro from AKShare (LPR 1Y/5Y + CPI YoY + 제조 PMI).
+        # ^TNX is US — 본토 자산 흐름은 LPR + PMI 가 직접 변수.
+        # Gate via "akshare_macro" tag.
+        try:
+            from bot.market import detect_market
+            if (detect_market(ticker) in ("CN_A", "HK")
+                    and _section_allowed(analyst_id, "akshare_macro")):
+                from bot.akshare_client import (
+                    get_akshare, format_cn_macro_for_prompt,
+                )
+                cn_macro = get_akshare().fetch_cn_macro()
+                cn_macro_block = format_cn_macro_for_prompt(cn_macro)
+                if cn_macro_block:
+                    base += (
+                        "\n\n=== Pre-fetched CN macro (AKShare 미러: PBoC /"
+                        " 国家统计局, verbatim — CN-specific rate environment)"
+                        " ===\n"
+                        + cn_macro_block
+                        + "\n\n위 CN 거시 지표는 CN_A / HK equity 분석의 기본"
+                        " frame 이다. ^TNX (美 10Y) 만 보고 '고금리 환경'"
+                        " 결론을 내리지 말고, LPR 1Y + LPR 5Y 의 절대 수준 +"
+                        " 직전 변동 방향을 같이 인용. 부동산 / 银行 / 소비"
+                        " 종목 분석에서는 이 변수가 펀더멘털을 압도하는"
+                        " 단일 매크로. PMI < 50 = 제조업 위축 (수출 +"
+                        " 설비투자 부진 신호), PMI > 50 = 확장 (소비재 +"
+                        " 산업재 우호)."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "akshare cn macro injection failed for %s: %s", ticker, exc,
+            )
+
     return base
 
 def create_msg_delete():
