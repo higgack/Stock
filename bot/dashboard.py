@@ -1120,24 +1120,30 @@ _BENCHMARK_LABEL_CACHE: dict[str, str] = {}
 
 
 def _benchmark_label_for(ticker: str) -> str:
-    """Return the sector ETF symbol used as the alpha benchmark for this
-    ticker — e.g. 'SOXX' for AMAT, 'XLF' for JPM, '069500.KS' for KOSPI
-    blue chips. Falls back to the broad-market ETF (SPY / KOSPI 200 /
-    TOPIX 1306) when no sector mapping is available, then to plain 'SPY'
-    if everything fails.
+    """Return the sector ETF human-readable label for this ticker's alpha
+    benchmark — e.g. '반도체 (SOXX)' for AMAT, '금융 (XLF)' for JPM,
+    'KOSPI 200 (KODEX 200)' for KR blue chips, 'TOPIX (1306)' for JP.
 
-    Resolution mirrors auto_resolve._fetch_returns's benchmark logic so
-    the label shown on the dashboard matches the actual benchmark the
-    alpha was computed against. Cached per process — yfinance .info
-    calls are slow and the dashboard regen iterates many tickers."""
+    Uses `_resolve_benchmark`'s tuple[1] (the Korean label that already
+    has the ETF ticker in parens) rather than tuple[0] (raw ticker
+    only). The richer label is much clearer to Korean readers than
+    bare codes like '069500.KS' — surfaced by the cross-market audit
+    2026-05-18 where KR/JP outcome lines were less informative than
+    US ones due to numeric ticker codes.
+
+    Falls back to 'SPY' when nothing resolves. Process-level cache
+    keeps yfinance .info round-trips bounded across dashboard regens."""
     if ticker in _BENCHMARK_LABEL_CACHE:
         return _BENCHMARK_LABEL_CACHE[ticker]
     label = "SPY"
     try:
         from tradingagents.agents.utils.sector_strength_tools import _resolve_benchmark
         bm = _resolve_benchmark(ticker)
-        if bm and bm[0]:
-            label = bm[0]
+        if bm:
+            # Prefer the Korean label (bm[1]) — already contains the
+            # ETF ticker in parens. Fall back to bare ticker (bm[0])
+            # only if the label slot is empty for some reason.
+            label = bm[1] or bm[0] or "SPY"
     except Exception:
         pass
     _BENCHMARK_LABEL_CACHE[ticker] = label

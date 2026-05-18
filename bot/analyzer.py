@@ -1201,13 +1201,25 @@ def _polish(body: str) -> str:
                 return f"약 {int(man):,}만 원"
             return f"약 {man:,.1f}만 원"
         # Three permitted spellings: '₩약 X.X백만', '약 X.X백만 원',
-        # '약 X.X백만'. The optional '\s+원' tail (NOT '\s*원?') means we
-        # only consume trailing ' 원' when 원 is actually present —
+        # '약 X.X백만'. The optional '(?:\s*원)?' tail means we only
+        # consume trailing ' 원' when 원 is actually present —
         # otherwise we'd swallow the trailing space before the next
         # token (e.g. '백만 —' would become '약 XXX만 원—' losing the
         # separator space).
-        out = re.sub(r"₩\s*약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?", repl, b)
-        out = re.sub(r"약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?", repl, out)
+        # NEGATIVE LOOKAHEAD `(?!\s*[엔円¥$€])`: don't fire when the
+        # following token is a non-KRW currency marker. JP analysts
+        # writing '약 1.6백만 엔' would otherwise be silently corrupted
+        # to '약 160만 원 엔' (KRW unit slapped on a JPY number). The
+        # cross-market audit caught this — '백만' is intended to be
+        # a KR-only fix and the lookahead enforces that scope.
+        out = re.sub(
+            r"₩\s*약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€])",
+            repl, b,
+        )
+        out = re.sub(
+            r"약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€])",
+            repl, out,
+        )
         return out
     _step("convert-baekman", _convert_baekman)
     # Debt-ratio '배' (multiples) unit error. yfinance .info debtToEquity
