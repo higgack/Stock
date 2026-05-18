@@ -1246,16 +1246,79 @@ def _polish(body: str) -> str:
         # Currency symbol prepending is done downstream by the analyst's
         # own directive when possible; here we just fix the missing
         # thousands separator + drop the awkward '.0' trailing zero.
+        #
+        # Markdown-bold support: the Trader's render template emits
+        # '**Stop Loss**: 25000.0' (asterisks around label) — earlier
+        # regex matched the literal 'Stop Loss' text but failed when
+        # the closing '**' came between the label and ':'. The optional
+        # \*{0,2} groups around the label name handle the bold case
+        # while still matching unformatted '진입가: 12345.0' equally.
+        # English labels (Entry Price / Target Price / Stop Loss) added
+        # because Trader emits English here even for KR / JP tickers.
         pattern = re.compile(
-            r"(Stop\s*Loss|손절\s*가|손절매|목표\s*가|진입\s*가|매도\s*가)"
+            r"(\*{0,2})"
+            r"(Stop\s*Loss|손절\s*가|손절매|목표\s*가|진입\s*가|매도\s*가|"
+            r"Entry\s*Price|Target\s*Price)"
+            r"(\*{0,2})"
             r"(\s*[:=]?\s*)"
             r"(\d{4,})\.0+\b"
         )
         def repl(m: re.Match) -> str:
-            label, sep, num = m.group(1), m.group(2), m.group(3)
-            return f"{label}{sep}{int(num):,}"
+            open_b, label, close_b, sep, num = m.groups()
+            return f"{open_b}{label}{close_b}{sep}{int(num):,}"
         return pattern.sub(repl, b)
     _step("format-bare-currency", _format_bare_currency)
+    # Corporate-action HARD GUARD enforcement at the output layer.
+    # Surfaced by 프로텍 053610.KS 2026-05-18: build_instrument_context
+    # injected the HARD GUARD directive (감자완료 2026-05-04 hit our
+    # _detect_kr_corp_action keyword scan) telling the LLM to NOT cite
+    # MA/EMA/MACD/RSI/Bollinger/ATR because yfinance historical was
+    # stale (current ₩26,700 vs 50 SMA ₩65,120 = −59% gap). The market
+    # analyst acknowledged 감자 in prose then went ahead and wrote full
+    # 이동평균선 / MACD 지표 / RSI 지표 / ATR 지표 subsections anyway.
+    # Text-only HARD GUARD is ignored. Output-layer polish prepends a
+    # visible banner so a reader can't miss that the technical analysis
+    # is unreliable, even when the LLM defies the prompt.
+    def _hard_guard_warn(b: str) -> str:
+        # Universal corp-action keyword set — KR (감자/무상증자/분할),
+        # JP (株式分割/併合), US (stock split, reverse split). Detect
+        # presence in body prose; analyst usually mentions the event.
+        has_corp_action = re.search(
+            r"감자(?:결정|완료)?|무상증자|주식분할|액면분할|주식병합|"
+            r"株式分割|株式併合|株式無償割当|"
+            r"stock\s*split|reverse\s*split|forward\s*split",
+            b, re.IGNORECASE,
+        )
+        if not has_corp_action:
+            return b
+        # Detect any technical-indicator subsection. If the LLM is
+        # discussing MA/MACD/RSI/Bollinger/ATR while a corp action is
+        # in flight, the analysis values are corrupt.
+        has_technical = re.search(
+            r"(?:^|\n)\s*(?:이동평균선|단기\s*이동평균|중기\s*이동평균|"
+            r"MACD\s*지표|RSI\s*지표|ATR\s*지표|볼린저\s*밴드|Bollinger|"
+            r"추세\s*지표\s*분석|모멘텀\s*지표\s*분석|변동성\s*지표\s*분석|"
+            r"거래량\s*기반\s*지표)",
+            b,
+        )
+        if not has_technical:
+            return b
+        # Both signals present — prepend a single banner at top of body.
+        # Per-section prepend was considered but a single big banner is
+        # less repetitive and harder to scroll past.
+        banner = (
+            "⛔ **CORPORATE ACTION HARD GUARD 위반 감지** — corp action"
+            " (감자/분할/무상증자/주식병합) 진행 중인 종목인데 본 보고서가"
+            " 기술 지표 (이동평균선 / MACD / RSI / 볼린저 / ATR) 를 인용함."
+            " yfinance historical 시계열이 corp action 이전 가격이라 모든"
+            " MA / 모멘텀 비교 수치는 stale (현재가와 50-200% 괴리 가능)."
+            " 본 보고서의 기술 분석 부분은 신뢰 불가 — 결정은 펀더멘털 +"
+            " corp action 이벤트 분석만 기반해주세요. 프롬프트 룰을 LLM이"
+            " 무시한 케이스이며, 다음 보고 주기에서 가격 시계열이 안정화될"
+            " 때까지는 기술 분석 보류가 정답입니다.\n\n"
+        )
+        return banner + b.lstrip()
+    _step("hard-guard-warn", _hard_guard_warn)
     # RULE 1 (PERIOD LABELS) auto-warn — detect multi-dash time series
     # without period labels (FY25 / Q4 / etc). 두산 000150.KS 2026-05-18:
     #   '순이익: 758억 원 — -2,262억 원 — -3,883억 원 — -6,964억 원 — ...'

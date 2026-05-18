@@ -717,7 +717,7 @@ yfinance (15년 캐시) · Alpha Vantage (영문) · 한국 네이버 뉴스 · 
 
 ━━━━━━━━━
 <b>【7. 안정성 (자동)】</b>
-subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 1~12 (미한일 산업정책·자본잠식·콤마 strict) · 재벌 15곳 자동→RULE 9 강제 · stance 결론우선 · 섹터강도 |25%p|↑ 차단 · 컨센서스 staleness · 코퍼레이트액션 HARD GUARD 3중 (DART/EDINET+yfinance .splits) · 소유구조 환각 차단 · Comps PEER SET 미한일 137 산업+multiples 사전 fetch · PM override discipline 코드-강제 (다수 분석가 동일 방향 시 trigger 검증→자동 보정, Pydantic v1/v2 양립) · 출력 polish (백만→만 원, 부채비율 배→%, Stop Loss 콤마, 4자리 콤마 strip, 라벨 없는 시계열 경고) · canonical 현재가/시총 강제 · 베타 라벨 (윈도+벤치마크) · 영문 cargo-cult 뉴스 차단 · API 키 부재→DATA OFFLINE 환각 차단
+subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 1~12 (산업정책·자본잠식·콤마·연도순·PER 설명·분기합 sanity) · 재벌 15곳 자동→RULE 9 · stance 결론우선 · 섹터강도 차단 · 컨센서스 staleness · 코퍼레이트액션 HARD GUARD 3중 (DART/EDINET+yfinance .splits) + LLM 위반 시 출력 banner 자동 · EPS/PER 재계산 금지 · 소유구조 환각 차단 · Comps PEER SET 137 산업+multiples · PM override discipline 코드-강제 · 출력 polish (백만→만 원·부채비율 배→%·Stop Loss 콤마 bold 포함·4자리 콤마 strip) · canonical 현재가/시총 · 베타 라벨 · cargo-cult 뉴스 차단 · API 키 부재→DATA OFFLINE
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
