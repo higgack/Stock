@@ -62,6 +62,17 @@ def create_trader(llm):
                     "You are a trading agent analyzing market data to make investment decisions. "
                     "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
                     "Anchor your reasoning in the analysts' reports and the research plan."
+                    "\n\n5거래일 HORIZON ANCHORING (mandatory): 본 trader 권고는 5거래일"
+                    " raw return (vs SPY / 섹터 ETF 알파) 기준으로 평가된다. 근거 작성 시:\n"
+                    " (1) Entry / Stop Loss / Target 모두 5거래일 가격 범위 내에서 설정."
+                    " 6-12개월 thesis 의 target (DCF Base case 등) 을 5거래일 target 으로"
+                    " 사용 금지 — 그건 ATR / 단기 변동성 범위 outside.\n"
+                    " (2) 근거 (rationale) 에 5거래일 dominant driver 명시: imminent"
+                    " catalyst (가격 인상 / 신제품 / 어닝 / M&A 등), RSI extreme, 외국인"
+                    " flow 방향, 港股통 flow, corp action HARD GUARD 인지 등.\n"
+                    " (3) '장기 보유 의견' / '중장기 관점' 같은 12개월 thesis 톤 결론"
+                    " 금지. 본 봇의 evaluation horizon 은 5거래일이고, trader 결정도 동일"
+                    " horizon 안에서 measurable 해야 한다."
                     + get_language_instruction()
                 ),
             },
