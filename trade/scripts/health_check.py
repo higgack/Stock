@@ -1,22 +1,23 @@
-"""Periodic health checks for the trade-bot pipeline.
+"""Periodic event-based health check for the trade-bot pipeline.
 
-Runs from systemd timer (trade-bot-health.timer) hourly. Surfaces two
-classes of silent-failure that the dashboard alone wouldn't catch:
+Runs from systemd timer (trade-bot-health.timer) hourly. Sole signal:
 
-  - Dormancy: no new BeOn forward has arrived in the last N hours
-    (default 72) → likely the upstream userbot died or BeOn paused.
-    Posts a ⚠️ Telegram alert to the trade channel once per dormancy
-    window (de-duplicated via a marker file).
+  Cycle gap: today's KST date is past an expected BeOn publication
+  date (11일·21일 잠정 / 익월 1일 잠정 / 익월 15일 확정) by more
+  than TRADE_CYCLE_GAP_DAYS days, but no alert with the matching
+  period_kind landed in the store within ±2 days of that date.
+  → posts a ⚠️ Telegram alert listing the missing publications,
+  de-duplicated per-day so the same gap doesn't re-fire hourly.
 
-  - Cycle gap: today's KST date is past an expected BeOn publication
-    date but no alert for that period has landed yet (e.g. it's
-    5월 23일 KST, BeOn should have published 5월 1-20일 잠정 around
-    5월 21일, but no alert in inbox.jsonl carries period_end >= 5/20
-    posted within 2 days of 5/21). Posts a ⚠️ alert once.
+Why no time-based dormancy: BeOn publishes only ~4 times a month,
+so the ~7-10 day silence between publication dates is normal
+behavior. A 'no forward for N hours' threshold would false-positive
+on every quiet stretch. Tying the alert to specific expected
+publication dates means alerts fire only when a publication that
+should have arrived didn't — exactly what the operator cares about.
 
-Both alerts are best-effort — missing TRADE_BOT_TOKEN /
-TRADE_CHANNEL_CHAT_IDS silently skips so the script also works in
-dev environments without notifications configured.
+Missing TRADE_BOT_TOKEN / TRADE_CHANNEL_CHAT_IDS silently skips
+notifications so the script also works in dev / restore scenarios.
 
 Usage:
     .venv/bin/python -m trade.scripts.health_check
@@ -47,7 +48,6 @@ STORE_PATH = DATA_DIR / "store.db"
 MARKER_DIR = DATA_DIR / ".health-markers"
 MARKER_DIR.mkdir(parents=True, exist_ok=True)
 
-DORMANCY_HOURS = int(os.environ.get("TRADE_DORMANCY_HOURS") or "72")
 CYCLE_GAP_DAYS = int(os.environ.get("TRADE_CYCLE_GAP_DAYS") or "2")
 
 
@@ -91,55 +91,6 @@ def _alert_once_per_window(marker_name: str, window_seconds: int) -> bool:
 
 def _kst_today() -> datetime:
     return datetime.now(timezone.utc) + timedelta(hours=9)
-
-
-def _last_post_dt() -> datetime | None:
-    if not STORE_PATH.exists():
-        return None
-    conn = open_db(STORE_PATH)
-    try:
-        row = conn.execute(
-            "SELECT MAX(posted_at) FROM alerts"
-        ).fetchone()
-    finally:
-        conn.close()
-    if not row or not row[0]:
-        return None
-    raw = row[0]
-    # posted_at is stored as UTC ISO or KST ISO depending on source;
-    # treat naive strings as UTC and add 9h offset for KST comparison.
-    try:
-        if raw.endswith("Z"):
-            return datetime.fromisoformat(raw[:-1]).replace(tzinfo=timezone.utc)
-        if "+" in raw or raw.count("-") > 2:
-            return datetime.fromisoformat(raw)
-        return datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
-    except Exception:
-        return None
-
-
-def check_dormancy() -> None:
-    """⚠️ if no new BeOn forward in the last DORMANCY_HOURS."""
-    last = _last_post_dt()
-    if last is None:
-        log.info("dormancy: store empty, skipping")
-        return
-    now = datetime.now(timezone.utc)
-    age_hours = (now - last).total_seconds() / 3600
-    if age_hours < DORMANCY_HOURS:
-        log.info("dormancy: last post %.1fh ago, ok", age_hours)
-        return
-    if not _alert_once_per_window("dormancy", DORMANCY_HOURS * 3600):
-        log.info("dormancy: alert already sent in this window, skipping")
-        return
-    msg = (
-        f"⚠️ <b>BeOn dormancy 감지</b>\n"
-        f"마지막 게시: {last.strftime('%Y-%m-%d %H:%M UTC')}\n"
-        f"경과: {age_hours:.1f}시간 (임계 {DORMANCY_HOURS}h)\n"
-        f"포워더 / BeOn 채널 상태 점검 필요."
-    )
-    log.warning("dormancy detected: %s", msg.replace("\n", " "))
-    _notify(msg)
 
 
 def _expected_recent_publications(today_kst: datetime) -> list[tuple[str, str]]:
@@ -231,7 +182,6 @@ def check_cycle_gap() -> None:
 
 
 def main() -> int:
-    check_dormancy()
     check_cycle_gap()
     return 0
 
