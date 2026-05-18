@@ -1228,18 +1228,21 @@ def _polish(body: str) -> str:
         # otherwise we'd swallow the trailing space before the next
         # token (e.g. '백만 —' would become '약 XXX만 원—' losing the
         # separator space).
-        # NEGATIVE LOOKAHEAD `(?!\s*[엔円¥$€])`: don't fire when the
-        # following token is a non-KRW currency marker. JP analysts
-        # writing '약 1.6백만 엔' would otherwise be silently corrupted
-        # to '약 160만 원 엔' (KRW unit slapped on a JPY number). The
-        # cross-market audit caught this — '백만' is intended to be
-        # a KR-only fix and the lookahead enforces that scope.
+        # NEGATIVE LOOKAHEAD `(?!\s*[엔円¥$€元])`: don't fire when the
+        # following token is a non-KRW currency marker. JP / TW / CN /
+        # US analysts writing '약 1.6백만 엔' / '약 X백만 元' / '약 X
+        # 백만 $' would otherwise be silently corrupted to '약 N0만 원
+        # X' (KRW unit slapped on a non-KRW number). The cross-market
+        # audit caught this — '백만' is intended to be a KR-only fix
+        # and the lookahead enforces that scope. 元 is critical: TWD
+        # uses '元' / '兆 元' / '億 元', CNY uses '元' / '亿元', JPY
+        # ALSO uses '円' which is already covered by '円'.
         out = re.sub(
-            r"₩\s*약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€])",
+            r"₩\s*약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€元])",
             repl, b,
         )
         out = re.sub(
-            r"약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€])",
+            r"약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?(?!\s*[엔円¥$€元])",
             repl, out,
         )
         return out
@@ -1303,11 +1306,16 @@ def _polish(body: str) -> str:
     # is unreliable, even when the LLM defies the prompt.
     def _hard_guard_warn(b: str) -> str:
         # Universal corp-action keyword set — KR (감자/무상증자/분할),
-        # JP (株式分割/併合), US (stock split, reverse split). Detect
-        # presence in body prose; analyst usually mentions the event.
+        # JP (株式分割/併合), TW (減資/無償配股/股票分割/庫藏股), US
+        # (stock split / reverse split). Detect presence in body prose;
+        # analyst usually mentions the event. Universal-by-default per
+        # CLAUDE.md — keywords for all 4 markets in one alternation so
+        # the same banner fires regardless of which market the subject
+        # belongs to.
         has_corp_action = re.search(
             r"감자(?:결정|완료)?|무상증자|주식분할|액면분할|주식병합|"
             r"株式分割|株式併合|株式無償割当|"
+            r"減資|無償配股|股票分割|股票合併|庫藏股|"
             r"stock\s*split|reverse\s*split|forward\s*split",
             b, re.IGNORECASE,
         )

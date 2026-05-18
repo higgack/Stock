@@ -178,7 +178,7 @@ class MopsClient:
             results.append({
                 "date": d.isoformat(),
                 "subject": subject,
-                "doc_type_label": "重대訊息",
+                "doc_type_label": "重大訊息",
                 "filer_name": filer_name,
             })
 

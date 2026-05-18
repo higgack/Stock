@@ -816,6 +816,15 @@ _JP_CORP_ACTION_KEYWORDS = (
     "株式併合",                            # share count down
     "自己株式の消却",
 )
+_TW_CORP_ACTION_KEYWORDS = (
+    "減資",                                # capital reduction (price up, common in TW)
+    "增資", "增加资本",                    # capital increase (rare price-down)
+    "無償配股",                            # bonus shares / stock dividend (price down)
+    "股票分割", "股票分拆",                # stock split (price down, rare in TW)
+    "股票合併", "股票反向分割",            # reverse split (price up, rare)
+    "減資彌補虧損",                        # loss-offset capital reduction
+    "庫藏股", "庫藏股註銷",                # treasury buyback / cancellation (price impact varies)
+)
 
 
 def _detect_kr_corp_action(disclosures: list[dict]) -> dict | None:
@@ -895,6 +904,31 @@ def _detect_jp_corp_action(disclosures: list[dict]) -> dict | None:
                 return {
                     "date": (d.get("date") or "").strip(),
                     "event": (d.get("description") or "").strip(),
+                }
+    return None
+
+
+def _detect_tw_corp_action(disclosures: list[dict]) -> dict | None:
+    """TW analogue. MOPS 重大訊息 rows carry 減資 / 無償配股 / 股票分割
+    / 庫藏股 keywords in their 'subject' (主旨) free-text field. Same
+    semantic as KR / JP scans but MOPS uses a different field name —
+    the bot.mops_client returns 'subject' (not 'title') from 重大訊息.
+    Universal handling: scan both for safety."""
+    if not disclosures:
+        return None
+    for d in disclosures:
+        title = (
+            (d.get("subject") or "")
+            + " "
+            + (d.get("title") or "")
+            + " "
+            + (d.get("doc_type_label") or "")
+        )
+        for kw in _TW_CORP_ACTION_KEYWORDS:
+            if kw in title:
+                return {
+                    "date": (d.get("date") or "").strip(),
+                    "event": (d.get("subject") or d.get("title") or "").strip(),
                 }
     return None
 
@@ -2113,6 +2147,37 @@ def build_instrument_context(ticker: str) -> str:
                 tw_disclosures = mops.get_recent_disclosures(ticker, days_back=30, limit=8)
                 tw_insiders = mops.get_insider_holdings(ticker)
                 tw_window = mops.next_earnings_window(ticker)
+
+                # Same corporate-action staleness guard as KR DART and JP
+                # EDINET branches — TW MOPS 重大訊息 carry 減資 / 無償配股
+                # / 股票分割 / 庫藏股 in the 主旨 (subject) field. When
+                # any of those hit, inject the universal HARD GUARD banner
+                # so the analyst doesn't anchor on stale SMA/MACD/RSI
+                # comparisons. Universal yfinance .splits layer (Rule A
+                # layer 3) is still wired downstream as backup.
+                tw_corp_action = _detect_tw_corp_action(tw_disclosures)
+                if tw_corp_action:
+                    base += (
+                        "\n\n=== ⛔ CORPORATE ACTION IN-FLIGHT (HARD GUARD) ===\n"
+                        f"{tw_corp_action['date']} MOPS 重大訊息:"
+                        f" {tw_corp_action['event']}\n"
+                        "이 종목은 현재 減資 / 增資 / 無償配股 / 股票分割 /"
+                        " 庫藏股 등 corporate action이 진행 중이다. yfinance"
+                        " 의 historical 가격 시계열은 ex-date 전후로 비조정"
+                        " 또는 부분 조정 상태일 가능성이 매우 크다.\n"
+                        "다음 기술적 분석 요소는 사용 금지:\n"
+                        "  • 10 EMA / 50 SMA / 200 SMA 비교\n"
+                        "  • MACD / RSI / Bollinger 밴드 / ATR 추세 해석\n"
+                        "  • 52주 최고/최저 비교\n"
+                        "시장 분석가는 (1) corporate action 자체의 정성 분석"
+                        " (주주가치 영향, 유통 주식 수 변화, ex-date), (2)"
+                        " 안정화 가격이 잡힐 때까지 (~5-10 거래일) 기술적"
+                        " 추세 분석 보류 명시 — 두 항목만 다룬다.\n"
+                        "추가 금지 (감자/분할 이후 yfinance EPS/PER/시총이"
+                        " transitional해 보여도 본인이 만든 share count로"
+                        " 재계산 금지)."
+                    )
+
                 mops_block = format_mops_tw_block(tw_disclosures, tw_insiders, tw_window)
                 if mops_block:
                     base += (

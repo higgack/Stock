@@ -610,13 +610,14 @@ _DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 def _ticker_display_name(ticker: str) -> str | None:
     """Return the human-readable company name for the ticker, or None.
 
-    Resolves: KR → DART corp_name, JP → yfinance longName, US → None
-    (US tickers are usually recognizable enough that the bare symbol
-    works). Used by card / detail / search rendering so users see
-    '삼성전자' / 'Toyota Motor Corporation' instead of '005930.KS' /
-    '7203.T' in a mixed-market card list. Falls back to None on any
-    lookup miss (KR ETFs not in DART, JP longName missing, etc.) and
-    the caller renders the bare ticker."""
+    Resolves: KR → DART corp_name, JP → yfinance longName, TW →
+    yfinance longName, US → None (US tickers are usually recognizable
+    enough that the bare symbol works). Used by card / detail / search
+    rendering so users see '삼성전자' / 'Toyota Motor Corporation' /
+    'Taiwan Semiconductor Manufacturing Company Limited' instead of
+    '005930.KS' / '7203.T' / '2330.TW' in a mixed-market card list.
+    Falls back to None on any lookup miss (KR ETFs not in DART, JP/TW
+    longName missing, etc.) and the caller renders the bare ticker."""
     try:
         from bot.market import detect_market
         m = detect_market(ticker)
@@ -624,7 +625,13 @@ def _ticker_display_name(ticker: str) -> str | None:
             from bot.dart_client import get_dart
             code = (ticker or "").upper().split(".")[0]
             return get_dart().stock_code_to_name(code)
-        if m == "JP":
+        if m in ("JP", "TW"):
+            # JP / TW both rely on yfinance longName — for JP it's
+            # typically English ('Toyota Motor Corporation') or 漢字 +
+            # English mix; for TW it's typically English corporate name
+            # ('Taiwan Semiconductor Manufacturing Company Limited') with
+            # some entries returning 繁體中文. Either is OK as a display
+            # prefix — anything beats a bare '7203.T' / '2330.TW'.
             from tradingagents.agents.utils.agent_utils import _instrument_info
             info = _instrument_info(ticker) or {}
             name = info.get("longName") or info.get("shortName")
