@@ -490,7 +490,154 @@ with market-aware branches over per-market parallel functions.
   user has not yet added to `.env`. JP macro block (BoJ 정책금리 +
   JGB 10Y + JP CPI) returns empty until key is loaded. Same Rule A
   HARD GUARD covers this — no fabrication risk in the meantime.
-  User confirmed will add when convenient.
+  Same FRED_API_KEY also drives TW macro (CBC 重貼現率 + TW 10Y +
+  TW CPI) and future CN macro — single key for all three. User
+  confirmed will add when convenient.
+
+- **Phase 4-CN (China + HK expansion) — deferred until TW validation
+  completes**. User chose 2026-05-18 (Option γ) to ship CN AFTER the
+  TW validation (Phase 4-TW-D) closes — sequential rollout avoids
+  carrying two large in-flight rewrites at once. Re-reviewed CN
+  scope at TW-level depth on 2026-05-18 (Option A) and captured
+  preserved design notes here so the implementation starts from
+  full context, not from the shallower v1 review.
+
+  Design notes for the actual implementation:
+
+  Sub-market structure (must split, not just '.SS/.SZ/.HK'):
+   • 上海 메인보드 600/601/603/605.SS → ±10% 涨跌停
+   • 上海 STAR 科創板 688.SS → **±20%** (등록제, 신상장 첫 5거래일 ±30%)
+   • 深圳 메인보드 000/001.SZ → ±10%
+   • 深圳 ChiNext 創業板 300/301.SZ → **±20%** (신상장 첫 5거래일 ±30%)
+   • 北京 北交소 .BJ → ±30%, yfinance 커버리지 미약, 분석 보류
+   • HK Main Board 0001-3999/6000-8999.HK → 无 涨跌停
+   • HK GEM 8XXX.HK → 유동성 낮음, 분석 보류
+
+  Required AKShare endpoints (~13):
+   • Disclosure: stock_zh_a_disclosure_announcement_cninfo,
+     stock_zh_a_disclosure_relation_cninfo, stock_zh_h_disclosure_em
+   • News: stock_news_em, stock_news_main_cx
+   • Ticker → name: stock_info_a_code_name, stock_hk_ggt_components_em
+   • **港股通 flow (가장 critical, 이전 v1 리뷰 누락)**:
+     stock_hsgt_north_net_flow_em, stock_hsgt_south_net_flow_em,
+     stock_hsgt_individual_em (KR pykrx flow의 CN 등가물)
+   • 매크로: macro_china_lpr, macro_china_mlf, macro_china_rrr,
+     macro_china_cpi, macro_china_pmi
+   • 상태: stock_zh_a_st_em (ST/*ST 분류), stock_zh_a_stop_em (停牌)
+   • 펀더멘털: stock_a_indicator_lg, stock_circulate_stock_holder,
+     stock_em_jgcg
+
+  AKShare 우려:
+   • ~50 패키지 의존성 (bs4 + tqdm + scipy + openpyxl + pyecharts
+     등). bot/.venv에 추가 install ~200MB
+   • IP-based rate limit (东方财富 / 同花顺 / 新浪) — 단일 분석에서
+     endpoint 5-10 호출 시 403 가능. 12h cache로 보강 필요
+   • 한국 IP에서 일부 endpoint 차단 (특히 stock_hsgt_* GFW 인접)
+   • upstream 사이트 HTML 변경 시 1-2주 lag 후 패치
+
+  통화 분리:
+   • MARKET_CONFIG['CN_A']: CNY ¥, broad 510300.SS (CSI 300)
+   • MARKET_CONFIG['HK']: HKD HK$, broad 2800.HK (Tracker Fund HK)
+   • detect_market: .SS/.SZ → 'CN_A', .HK → 'HK'. 기존 'CN' 사용처
+     검색 + 호환성 유지 필요
+   • HK 본토 자회사 (Tencent, Alibaba 등): **거래 HKD, 재무 CNY**.
+     yfinance financialCurrency mismatch HK > JP 빈도. Canonical
+     시총 directive HKD 강제 + 재무 RMB 별도 인용 명시
+
+  Sector ETFs:
+   • HK broad: 2800.HK (Tracker Fund HK / HSI)
+   • HK 중국기업: 3033.HK (HSCEI), 인터넷 KWEB (US)
+   • A주 broad: 510300.SS (沪深300), 중형 510500.SS
+   • A주 STAR: 588000.SS, ChiNext: 159915.SZ
+   • A주 산업: 512760.SS 반도체, 512170.SS 의료, 512690.SS 백주,
+     512800.SS 银行, 159805.SZ 자동차
+
+  Regulatory vocabulary (RULE 13 작성용):
+   反垄断 (SAMR) · 数据安全 (CAC) · 网络安전审查 · 双减 (Education) ·
+   游戏판호 (NPC) · 三道红线 (Property) · 城投 부채 · 国家集成电路产业
+   投资基金 (Big Fund) · 美 entity list / SDN · 美 IRA EV credit ·
+   一带一路 · 双碳 (2030/2060) · 房贷 LPR · 国资 央企 통합
+
+  RULE 13 (13 산업, RULE 14 TW 수준 깊이):
+   1. 白酒: 600519 茅台, 000858 五粮液, 000568 泸州老窖 etc. →
+      节日 수요 + 反腐 cycle + 茅台 1499元 정책
+   2. 4大 国有 银行 + HSBC: 1398/0939/3988/1288.HK + 0005.HK → PBoC
+      LPR + 三道红线 부실채권 + 城投 부채 + 资本충족율
+   3. Property: 1109/0688/2007/2202/1813.HK + 600048.SS → 三道红线
+      비율 + 一手房 매출 + 토지 经매 价格 + 首套房 LPR
+   4. Internet VIE: 0700/9988/9618/3690/1024/9626/9888/9999.HK →
+      반독占 罰款 + 数据 审查 + 게임 판호 + 美 entity list + VIE
+      구조 자체 위험 (Cayman 법인 ↔ 본토 VIE 단절 risk)
+   5. Semis: 688981.SS SMIC, 603501.SS 韦尔, 300782.SZ 卓胜微,
+      688012.SS 中微, 0981.HK SMIC → 美 export ban + Big Fund +
+      SMIC capacity (28nm/14nm/7nm) + 글로벌 AI 사이클
+   6. EV: 002594.SZ + 1211.HK BYD, 9866 蔚来, 9868 小鹏, 2015
+      理想, 3692 华夏 → 政府 补贴 + 出口 관세 (美 100%/EU 38%) +
+      价格战 + 锂가
+   7. Battery: 300750.SZ CATL, 300014 亿纬, 002460 赣锋 → EV
+      demand + 锂矿가 + 美 IRA 영향 + 새로운 EU 보조금
+   8. Solar: 601012 隆基, 600438 通威, 300274 阳光, 002129 TCL中环
+      → 美/EU 反倾销 + 多晶硅가 + 분산형 보조금
+   9. Insurance: 2318 平安, 1299 友邦 AIA, 1336 新华, 1339 人保 →
+      国债 10Y + A주 시장 시세 + 重疾险 수요 + 港股通 southbound
+  10. Telecom: 0941 中移동, 0728 中电信, 0762 中联通 → 5G capex 회수
+      + ARPU + 国家 数字경제 + 美 SDN
+  11. Airlines: 0753 国航, 0670 东方航, 1055 南方航, 0293 国泰 (HK)
+      → 油가 + 国际线 회복 + 春运
+  12. Petro + Steel: 0857 CNPC, 0386 Sinopec, 0883 CNOOC, 0347/0323
+      鞍钢 → WTI/Brent + 国家 战略石油储备 + 房产/인프라 钢수요 +
+      双碳 限産
+  13. Consumer + Appliance: 600887 伊利, 000333 美的, 000651 格力,
+      002241 歌尔 → 소비자 신뢰지수 + 价格战 + 美 가전 관세
+
+  ST/*ST 처리 (이전 누락):
+   • ST: 2년 연속 적자, 涨跌停 ±5% (RULE 6 자본잠식 연관)
+   • *ST: 3년 연속 적자, 퇴출 위험
+   • ST摘帽 (해제): 거래일 갭 +20% 흔함
+   • 停牌: yfinance 미반영, AKShare stock_zh_a_stop_em 필요
+
+  Dual-listing default 정책 (이전 미정):
+   • BYD: 002594.SZ default, 1211.HK 명시
+   • SMIC: 688981.SS default, 0981.HK 명시
+   • ICBC: 1398.HK default (HK 더 liquid)
+   • Sinopec: 0386.HK default
+   • Tencent: 0700.HK default (본토 미상장)
+   • Alibaba: 9988.HK default (본토 미상장 — VIE)
+
+  영문 alias 60+ (이전 v1 8-10 → 60+ 확장):
+   • Internet/Tech: TENCENT 0700, ALIBABA/BABA 9988, JD 9618,
+     MEITUAN 3690, NIO 9866, XPENG/XPEV 9868, LIAUTO 2015,
+     KUAISHOU 1024, BILIBILI 9626, NETEASE 9999, BAIDU 9888
+   • 银行: ICBC 1398, CCB 0939, BOC 3988, ABC 1288, BOCOM 3328,
+     HSBC 0005, STAN 2888, PINGAN 2318, AIA 1299
+   • 통신/유틸: CHINAMOBILE 0941, CHINATELECOM 0728, POWERASSETS
+     0006, CLP 0002
+   • 항공/석유: AIRCHINA 0753, CATHAY 0293, SINOPEC 0386, CNPC
+     0857, CNOOC 0883
+   • A주 백주: MOUTAI 600519, WULIANGYE 000858, LUZHOU 000568,
+     FENJIU 600809
+   • EV/Battery: BYD 002594, CATL 300750, EVE 300014, GANFENG 002460
+   • Tech: SMIC 688981, WILL-SEMI 603501, LONGI 601012, TONGWEI
+     600438, SUNGROW 300274
+   • Property: POLY 600048, VANKE 000002, COUNTRY-GARDEN 2007,
+     CHINA-OVERSEAS 0688, CR-LAND 1109, EVERGRANDE 3333
+   • 가전: MIDEA 000333, GREE 000651, YILI 600887
+
+  6 User decisions (재검토 추천 — Option α):
+   1. AKShare 설치 정책 → (a) 전체 설치 (~200MB, lazy import)
+   2. 시장 분기 → (a) CN_A + HK 분리
+   3. Dual-listing default → (a) A주 default + HK 명시 (case별 위)
+   4. STAR/ChiNext ±20% 처리 → (a) RULE 13 텍스트 명시
+   5. 港股통 flow priority → (a) High (KR pykrx 패턴 재사용)
+   6. RULE 13 산업 범위 → (a) 13개 모두
+
+  예상 작업량 (재산정):
+   • 4-CN-A Foundation: ~1,000줄, 6-8h (TW 461 + 시장 분기 + dual)
+   • 4-CN-B AKShare client: ~700줄, 5-6h (13 endpoints)
+   • 4-CN-B HKEXnews + 港股통 flow: ~400줄, 3-4h (TW 추가)
+   • 4-CN-C RULE 13 + ST 가드: ~300줄, 2h
+   • 합계 ~2,400줄, 16-20h (TW의 1.8x)
+   • 검증 사이클: 5-8 종목, TW와 유사 (2-3 review/fix cycle 예상)
 
 - **Hydrator-registry refactor for pre-fetch** (deferred until Phase 4).
   `build_instrument_context` currently has 15 data sources stitched
