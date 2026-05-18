@@ -366,6 +366,17 @@ def _compute_stats(records: list[dict]) -> dict:
                 today_cost_usd += cost
 
     # ── recommendation accuracy from memory log ──
+    # Accuracy criterion: ALPHA (raw − sector ETF benchmark), not raw.
+    # Two reasons:
+    #  (1) Consistency with the per-card outcome display (_render_outcome_html
+    #      below) which has been alpha-based all along. The two surfaces
+    #      disagreed under the previous raw-based logic — same recommendation
+    #      could show '✓' on its card while counting as 'miss' in the headline
+    #      accuracy denominator (e.g. Buy + raw +5% / bench SPY +8% → alpha
+    #      −3%p → card miss, stat correct).
+    #  (2) Alpha is the more meaningful "did the bot pick well?" signal.
+    #      Raw-only would mark every Buy 'correct' in a +10% market regardless
+    #      of stock-picking skill; alpha controls for the sector tide.
     mem = _read_memory_full()
     resolved = mem["resolved"]
     correct = 0
@@ -380,18 +391,22 @@ def _compute_stats(records: list[dict]) -> dict:
         if alpha is not None:
             alphas.append(alpha)
         rating = (e.get("rating") or "").lower()
-        if ret is None:
+        # Alpha is the accuracy criterion. If alpha couldn't be computed
+        # (benchmark fetch failed), the entry doesn't count toward accuracy —
+        # same handling we already use for raw when raw is None.
+        if alpha is None:
             continue
         if rating in ("buy", "overweight"):
             evaluated += 1
-            if ret > 0:
+            if alpha > 0:
                 correct += 1
         elif rating in ("sell", "underweight"):
             evaluated += 1
-            if ret < 0:
+            if alpha < 0:
                 correct += 1
         # 'hold' is excluded from the accuracy denominator (no clean
-        # directional bet) but still rolls into the average-return number.
+        # directional bet) but still rolls into the avg_return / avg_alpha
+        # totals — the headline numbers cover Hold + directional picks alike.
     accuracy = correct / evaluated if evaluated else None
     avg_return = sum(returns) / len(returns) if returns else None
     avg_alpha = sum(alphas) / len(alphas) if alphas else None
@@ -537,13 +552,22 @@ def _render_stats_panel(stats: dict) -> str:
     if pending_dir:
         sub_parts.append(f"미해소 {pending_dir}건")
     if hold_total:
-        sub_parts.append(f"Hold {hold_total}건 (분모 제외)")
+        # Clarify that Hold's exclusion is *accuracy-denominator-only* — Hold
+        # picks DO contribute to 평균 수익 / 알파. Previous label '(분모
+        # 제외)' alone misled readers into 'Hold is excluded from every stat'.
+        sub_parts.append(f"Hold {hold_total}건 (정확도 분모만 제외)")
     if stats["avg_return"] is not None:
         sub_parts.append(f"평균 수익 {stats['avg_return']:+.2f}%")
     if stats["avg_alpha"] is not None:
-        sub_parts.append(f"벤치 {stats['avg_alpha']:+.2f}%p")
+        # Rename '벤치 X%p' → '알파 X%p (vs 섹터 ETF)' — '벤치' alone reads
+        # ambiguously as 'benchmark dropped X%p' instead of the intended
+        # 'bot vs benchmark alpha = X%p' (negative = underperformance).
+        sub_parts.append(f"알파 {stats['avg_alpha']:+.2f}%p (vs 섹터 ETF)")
 
-    note = "※ 분석 후 5거래일 경과 시 자동 평가 (백그라운드 12시간마다)"
+    note = (
+        "※ 정확도는 알파(raw 수익 − 섹터 ETF) 기준 · 분석 후 5거래일 경과 시"
+        " 자동 평가 (백그라운드 12시간마다)"
+    )
     acc_sub = " · ".join(sub_parts) + "\n" + note
     card_acc = _stat_card("🎯 추천 정확도", acc_value, acc_sub)
 
@@ -1116,8 +1140,11 @@ def _render_outcome_html(resolved: dict | None) -> str:
             marker = " ✓" if alpha_num < 0 else " ✗"
         # Hold gets no marker — it's an explicit "no directional bet" call.
 
+    # Same '알파 X%p' phrasing as the headline stats card so the two
+    # surfaces use one vocabulary. '(벤치 X%p)' was ambiguous; '(알파 X%p
+    # vs 섹터)' explicitly identifies the metric and its benchmark.
     alpha_part = (
-        f" (벤치 {_html.escape(alpha)}p)"
+        f" (알파 {_html.escape(alpha)}p vs 섹터)"
         if alpha and alpha != "n/a"
         else ""
     )
