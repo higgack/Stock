@@ -205,6 +205,84 @@ _TW_INDUSTRY_OVERRIDES = [
 _TW_BROAD_FALLBACK = ("0050.TW", "TAIEX 50 (0050)")
 
 
+# CN A-share market — mainland 上海 + 深圳 sector ETFs. Mostly 易方达
+# (yifang da) + 华夏 (huaxia) + 国泰 issuers. Industry strings match
+# the same yfinance vocabulary as the US/JP/TW maps. Broad fallback
+# 510300.SS (CSI 300 — 易方达 沪深300 ETF).
+_CN_A_INDUSTRY_OVERRIDES = [
+    # ─── 半導體 / 반도체
+    ("semiconductor", ("512760.SS", "반도체 (国泰CES半导体芯片 ETF)")),
+    ("semiconductor equipment", ("512760.SS", "반도체 (国泰CES半导体芯片 ETF)")),
+    # ─── 银行 (4大 SOE 은행 추적)
+    ("bank", ("512800.SS", "은행 (华宝中证银行 ETF)")),
+    ("regional bank", ("512800.SS", "은행 (华宝中证银行 ETF)")),
+    # ─── 保险 / 金融 broad
+    ("insurance", ("512070.SS", "보험증권 (易方达 中证非银金融 ETF)")),
+    ("capital markets", ("512070.SS", "보험증권 (易方达 中证非银金融 ETF)")),
+    ("asset management", ("512070.SS", "보험증권 (易方达 中证非银金融 ETF)")),
+    # ─── 의료 / 의약
+    ("drug manufacturers", ("512170.SS", "의료 (华宝中证医疗 ETF)")),
+    ("pharmaceutical", ("512170.SS", "의료 (华宝中证医疗 ETF)")),
+    ("biotech", ("512170.SS", "의료 (华宝中证医疗 ETF)")),
+    ("medical devices", ("512170.SS", "의료 (华宝中证医疗 ETF)")),
+    # ─── 백주 / 소비
+    ("beverages - wineries", ("512690.SS", "주류 (鹏华中证酒 ETF)")),
+    ("beverages", ("512690.SS", "주류 (鹏华中证酒 ETF)")),
+    ("packaged foods", ("159928.SZ", "소비 (汇添富中证主要消费 ETF)")),
+    # ─── 자동차 / 신에너지차
+    ("auto manufacturers", ("159805.SZ", "자동차 (国泰中证新能源汽车 ETF)")),
+    ("auto parts", ("159805.SZ", "자동차 (国泰中证新能源汽车 ETF)")),
+    # ─── 锂电池 / 신에너지
+    ("electrical equipment", ("159755.SZ", "신에너지 (易方达 中证新能源 ETF)")),
+    ("solar", ("515790.SS", "광전지 (华泰柏瑞中证光伏产业 ETF)")),
+    # ─── 통신
+    ("telecom services", ("515980.SS", "통신 (华夏中证5G 通信主题 ETF)")),
+    # ─── 부동산
+    ("real estate", ("512200.SS", "부동산 (南方中证全指房地产 ETF)")),
+    # ─── 항공
+    ("airlines", ("510300.SS", "CSI 300 (510300)")),  # 항공 ETF 미약 — 광역 fallback
+    # ─── 석유 / 가스 / 강
+    ("oil & gas", ("159930.SZ", "에너지 (汇添富中证能源 ETF)")),
+    ("steel", ("515210.SS", "강철 (国泰中证钢铁 ETF)")),
+    # ─── 가전 / consumer
+    ("furnishings, fixtures & appliances", ("159996.SZ", "가전 (国泰中证家电 ETF)")),
+    ("consumer electronics", ("159996.SZ", "가전 (国泰中证家电 ETF)")),
+    # ─── Internet (small A-share roster; HK better coverage)
+    ("internet content", ("510300.SS", "CSI 300 (510300)")),
+]
+
+_CN_A_BROAD_FALLBACK = ("510300.SS", "CSI 300 (510300)")
+
+
+# HK market — Hang Seng-aligned + Hang Seng China Enterprise + KraneShares
+# (KWEB) for Internet. Cross-listed China sector ETFs (3033 HSCEI etc.)
+# track 港股 only — they sit cleanly with HK-quoted peers in Comps tables.
+_HK_INDUSTRY_OVERRIDES = [
+    # ─── Internet (KWEB tracks China internet, mostly HK + ADR)
+    ("internet content", ("3033.HK", "Internet (恒生科技 ETF)")),
+    ("internet retail", ("3033.HK", "Internet (恒生科技 ETF)")),
+    # ─── 银行 / 은행
+    ("bank", ("2828.HK", "HSCEI (盈富香港H股 ETF)")),
+    ("regional bank", ("2828.HK", "HSCEI (盈富香港H股 ETF)")),
+    # ─── 保险
+    ("insurance", ("2828.HK", "HSCEI (盈富香港H股 ETF)")),
+    # ─── 부동산 (HK developers + China property)
+    ("real estate", ("2778.HK", "HK 부동산 (沛富恒生地产 ETF)")),
+    # ─── 통신 / 유틸 (HK SOE)
+    ("telecom services", ("2828.HK", "HSCEI (盈富香港H股 ETF)")),
+    ("utilities - regulated electric", ("2800.HK", "Tracker Fund HK (2800)")),
+    # ─── 항공 / 석유 (HK H-shares dominate)
+    ("airlines", ("2828.HK", "HSCEI (盈富香港H股 ETF)")),
+    ("oil & gas", ("2828.HK", "HSCEI (盈富香港H股 ETF)")),
+    # ─── 자동차 (BYD H + NIO + XPeng + LiAuto)
+    ("auto manufacturers", ("3033.HK", "Internet+EV (恒生科技 ETF)")),
+    # ─── 半导体 (SMIC H + Hua Hong, small HK roster)
+    ("semiconductor", ("3033.HK", "Internet+Semi (恒生科技 ETF)")),
+]
+
+_HK_BROAD_FALLBACK = ("2800.HK", "Tracker Fund HK (Hang Seng, 2800)")
+
+
 def _resolve_benchmark(ticker: str) -> tuple[str, str] | None:
     """Pick the most specific sector/industry ETF for `ticker`.
 
@@ -253,10 +331,18 @@ def _resolve_benchmark(ticker: str) -> tuple[str, str] | None:
         # No specific Yuanta sector match — use TAIEX 50 broad ETF.
         return _TW_BROAD_FALLBACK
 
-    # CN coverage to come in Phase 4-CN. For now CN falls through to
-    # US logic which probably won't have a useful sector match for
-    # mainland-only industries (白酒 etc.) — returns None or a
-    # broad fallback.
+    if market == "CN_A":
+        for needle, etf in _CN_A_INDUSTRY_OVERRIDES:
+            if needle in industry:
+                return etf
+        return _CN_A_BROAD_FALLBACK
+
+    if market == "HK":
+        for needle, etf in _HK_INDUSTRY_OVERRIDES:
+            if needle in industry:
+                return etf
+        return _HK_BROAD_FALLBACK
+
     for needle, etf in _INDUSTRY_OVERRIDES:
         if needle in industry:
             return etf

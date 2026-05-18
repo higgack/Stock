@@ -83,7 +83,7 @@ except ImportError:
 # allows plus uppercase enforcement (archive filenames are written in
 # uppercase by bot.archive.save_analysis).
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_TICKER_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,9}$")
 _ARCHIVE_ROOT = ARCHIVE_ROOT.resolve()
 
 _TOKEN = (os.getenv("DASHBOARD_TOKEN") or "").strip()

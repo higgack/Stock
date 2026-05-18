@@ -139,6 +139,41 @@ _MACRO_SERIES_TW = [
 ]
 
 
+# CN A-share macro 9-series (Phase 4-CN). Drivers of mainland equity
+# in 5거래일 horizon: USD/CNY 환율 (수출 / 외국인 자금 흐름), CSI 300
+# 자체, Hang Seng (HSCEI 港股通 자금 sentiment 동조), 美 10Y (글로벌
+# 위험자산 비중), VIX, WTI (중국 = 최대 원유 수입국), 구리 (중국 수요
+# 대표), USD/JPY (수출 경쟁), USD/HKD peg (역외 자금 흐름).
+_MACRO_SERIES_CN_A = [
+    ("CNY=X", "위안/달러 (USD/CNY)", ""),
+    ("000300.SS", "CSI 300 지수", ""),
+    ("^HSI", "항생 지수 (Hang Seng)", ""),
+    ("^TNX", "美 10Y 국채금리", "%"),
+    ("^VIX", "VIX 지수", ""),
+    ("CL=F", "WTI 원유", "$"),
+    ("HG=F", "구리 (선물)", "$"),
+    ("JPY=X", "엔/달러 (USD/JPY)", ""),
+    ("HKD=X", "홍콩달러/달러 (USD/HKD)", ""),
+]
+
+
+# HK macro 9-series — overlaps with CN_A but emphasises 港股 specific
+# drivers: HSI + HSCEI (H-shares), USD/HKD peg, USD/CNY (Internet VIE
+# 본토 사업 영향), 美 10Y (HK 금리는 USD peg 따라 Fed 동조), VIX,
+# WTI, 구리, CSI 300 (Southbound 자금 reaction).
+_MACRO_SERIES_HK = [
+    ("HKD=X", "홍콩달러/달러 (USD/HKD, peg 7.75-7.85)", ""),
+    ("^HSI", "항생 지수 (Hang Seng)", ""),
+    ("^HSCE", "HSCEI 國企指數", ""),
+    ("^TNX", "美 10Y 국채금리 (HK 금리 동조)", "%"),
+    ("^VIX", "VIX 지수", ""),
+    ("CL=F", "WTI 원유", "$"),
+    ("HG=F", "구리 (선물)", "$"),
+    ("CNY=X", "위안/달러 (USD/CNY)", ""),
+    ("000300.SS", "CSI 300 (본토 reference)", ""),
+]
+
+
 def _series_for_market(market: str):
     """Return the macro series list for the given market code. Falls
     back to the US series for unknown markets so CN tickers still
@@ -149,6 +184,10 @@ def _series_for_market(market: str):
         return _MACRO_SERIES_JP
     if market == "TW":
         return _MACRO_SERIES_TW
+    if market == "CN_A":
+        return _MACRO_SERIES_CN_A
+    if market == "HK":
+        return _MACRO_SERIES_HK
     return _MACRO_SERIES
 
 

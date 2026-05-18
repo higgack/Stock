@@ -749,7 +749,7 @@ subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 
  • 한국 — Phase 0~2.5 완료 (KODEX/DART/FnGuide/KRX flow/외국인·공매도 추이/BoK ECOS/Naver)
  • 일본 — Phase 3 가동 (별칭 50+/TOPIX-17/EDINET/Kabutan/FRED/RULE 11). EDINET 키 등록 시 풀가동
  • 대만 — Phase 4-TW 가동 (별칭 60+/Yuanta ETF/MOPS/鉅亨網/FRED TW/RULE 14, ADR cross-listing 인지)
- • 중국 — Phase 4-CN 다음 (HK + A주 대형, AKShare 기반)
+ • 중국 — Phase 4-CN-A Foundation 가동 (시장 분기 CN_A/HK, 별칭 60+/검색·BYD·CATL·텐센트 등, CSI300·항생 ETF, 산업 ETF 매핑, sub-board ±10/±20% 인지). AKShare 클라이언트·RULE 13 후속
 """
 
 

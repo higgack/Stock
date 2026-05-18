@@ -489,7 +489,50 @@ Phase tracking — what's done, what's blocking the next phase:
 - `analyzer._display_ticker` TW branch: longName prefix ("Taiwan
   Semiconductor Manufacturing Company / 2330.TW").
 
-**Phase 4-CN — China + HK expansion (deferred)**
+**Phase 4-CN — China + HK expansion (Foundation shipped 2026-05-18)**
+
+Phase 4-CN-A Foundation shipped 2026-05-18 — all 6 design decisions
+(AKShare 전체 설치 lazy import, CN_A + HK 시장 분기, A주 default + HK
+명시 dual-listing, STAR/ChiNext ±20% RULE 13 명시, 港股通 flow High
+priority, RULE 13 13 산업 모두) user-ratified at recommended Option α
+defaults. Foundation includes:
+ • bot/market.py — MARKET_CONFIG['CN_A']/['HK'] 분리, detect_market
+   .SS/.SZ/.BJ→CN_A + .HK→HK, detect_cn_sub_market() returning
+   CN_A_MAIN/CN_A_STAR/CN_A_CHINEXT/CN_A_BJSE/HK_MAIN/HK_GEM (for
+   RULE 13 ±limit reasoning), _CN_ENGLISH_ALIAS (~60 entries —
+   Tencent/BABA/JD/BYD/CATL/SMIC/Moutai/4대은행/Internet VIE), peer
+   set dicts _CN_A_INDUSTRY_PEERS + _HK_INDUSTRY_PEERS covering all
+   13 RULE 13 industries (백주/은행/부동산/Internet VIE/半導體/EV/배터리/
+   광전지/보험/통신/항공/석유철강/소비가전).
+ • sector_strength_tools.py — _CN_A_INDUSTRY_OVERRIDES (国泰CES半导体/
+   华宝中证银行/医疗/주류/汇添富 소비/国泰 신에너지차/易方达 신에너지/
+   光伏/통신/부동산/에너지/강철/家电 ETFs), _HK_INDUSTRY_OVERRIDES
+   (恒生科技 internet+semi+EV/HSCEI 은행+보험+石油+통신/HK property),
+   broad fallbacks 510300.SS / 2800.HK.
+ • macro_context_tools.py — _MACRO_SERIES_CN_A (9종: USD/CNY + CSI 300
+   + HSI + 美10Y + VIX + WTI + 구리 + USD/JPY + USD/HKD), _MACRO_SERIES_HK
+   (HKD peg + HSI + HSCEI + 美10Y + VIX + WTI + 구리 + USD/CNY + CSI 300).
+ • bot/dashboard_server.py — _TICKER_RE 정규식이 첫 문자 [A-Z0-9]로 완화
+   되어 CN/HK 숫자 시작 ticker 도 대시보드 URL 통과.
+ • bot/telegram_bot.py 도움말 — 진행 중/예정 12 섹션의 중국 라인이
+   "Foundation 가동" 표기로 업데이트.
+
+Foundation only — does NOT include yet (deferred to subsequent commits):
+ • 4-CN-B: AKShare client (~13 endpoints: 공시 + 뉴스 + ticker→name +
+   港股通 flow + LPR/MLF/RRR/CPI/PMI macro + ST 분류 + 펀더멘털)
+ • 4-CN-B: 港股通 northbound/southbound flow injection (HSGT 5거래일
+   순매수)
+ • 4-CN-C: RULE 13 (13 산업 정책/매크로 단일 변수 명시) +
+   STAR/ChiNext ±20% RULE 텍스트 + ST/*ST 가드 + 停牌 처리 + Dual-
+   listing default 적용 + Internet VIE 구조 위험 명시
+ • 4-CN-D: validation cycle (5-8 종목, 2-3 review/fix iterations 예상)
+
+Rule applies to all analyses going forward — Foundation is universal-
+by-default (every analyst sees CN_A/HK as separate first-class markets,
+not as a "CN fallback"). Each Foundation file change covers US + KR +
+JP + TW + CN_A + HK consistently.
+
+**Phase 4-CN — original deferred design (preserved for follow-up commits)**
 - After TW validation lands, start CN expansion. User-confirmed scope
   2026-05-18: HK + A주 대형, AKShare-based data clients, Tushare
   deferred. Expected quality ~70-75% (lower than TW due to GFW +

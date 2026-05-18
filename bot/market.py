@@ -52,13 +52,30 @@ MARKET_CONFIG: dict[str, MarketConfig] = {
         "currency_symbol": "¥",
         "trading_hours": "09:00-15:00 JST",
     },
-    "CN": {
-        "name": "중국/홍콩",
+    # Phase 4-CN split (2026-05-18, user-ratified Option α): CN A-share
+    # mainland market (上海 + 深圳) and HK Hong Kong are STRUCTURALLY
+    # different markets — different currency (CNY ¥ vs HKD HK$),
+    # different daily price limits (A-share ±10% / STAR + ChiNext ±20%
+    # / HK no limit), different regulator (CSRC vs SFC), different
+    # GFW geofence (A-share market data partly geofenced, HK fully
+    # accessible). Treating them as one "CN/HK" market would mix
+    # currencies in the canonical 시총 directive and pick the wrong
+    # benchmark for HK names. Two separate entries below.
+    "CN_A": {
+        "name": "중국 본토",
         "broad_benchmark": "510300.SS",  # CSI 300 ETF (Shanghai)
         "broad_label": "CSI 300 (510300)",
         "currency": "CNY",
         "currency_symbol": "¥",
         "trading_hours": "09:30-15:00 CST",
+    },
+    "HK": {
+        "name": "홍콩",
+        "broad_benchmark": "2800.HK",    # Tracker Fund HK (tracks HSI)
+        "broad_label": "Hang Seng (2800.HK)",
+        "currency": "HKD",
+        "currency_symbol": "HK$",
+        "trading_hours": "09:30-16:00 HKT",
     },
     "TW": {
         "name": "대만",
@@ -72,9 +89,17 @@ MARKET_CONFIG: dict[str, MarketConfig] = {
 
 
 def detect_market(ticker: str) -> str:
-    """Return one of 'US', 'KR', 'JP', 'CN', 'TW'. Defaults to 'US' for
-    suffix-less tickers — that's what the help text instructs users to
-    type for American listings."""
+    """Return one of 'US', 'KR', 'JP', 'CN_A', 'HK', 'TW'. Defaults to
+    'US' for suffix-less tickers — that's what the help text instructs
+    users to type for American listings.
+
+    Phase 4-CN (2026-05-18): split previous single 'CN' market into
+    'CN_A' (.SS / .SZ → CNY ¥, ±10% / ±20% daily limits) and 'HK'
+    (.HK → HKD HK$, no daily limit). Existing 'CN' string never
+    appears as a return value from this commit forward — any
+    downstream callers that still compared against 'CN' have been
+    updated in the same commit.
+    """
     t = (ticker or "").upper()
     if t.endswith(".KS") or t.endswith(".KQ"):
         return "KR"
@@ -82,9 +107,53 @@ def detect_market(ticker: str) -> str:
         return "JP"
     if t.endswith(".TW") or t.endswith(".TWO"):
         return "TW"
-    if t.endswith(".SS") or t.endswith(".SZ") or t.endswith(".HK"):
-        return "CN"
+    if t.endswith(".SS") or t.endswith(".SZ") or t.endswith(".BJ"):
+        return "CN_A"
+    if t.endswith(".HK"):
+        return "HK"
     return "US"
+
+
+def detect_cn_sub_market(ticker: str) -> str | None:
+    """Phase 4-CN sub-market detector (RULE 13 helper). CN_A and HK
+    each have multiple sub-boards with different daily price limits +
+    listing rules — required so the fundamentals analyst can reason
+    correctly about extreme intraday moves.
+
+    Returns one of:
+     • 'CN_A_MAIN'    — 600/601/603/605.SS or 000/001.SZ  (±10%)
+     • 'CN_A_STAR'    — 688.SS  (科創板, ±20%, 신상장 첫 5거래일 ±30%)
+     • 'CN_A_CHINEXT' — 300/301.SZ  (創業板, ±20%, 신상장 첫 5거래일 ±30%)
+     • 'CN_A_BJSE'    — .BJ  (북경증권거래소, ±30%, yfinance 커버리지 미약)
+     • 'HK_MAIN'      — 0001-3999 / 6000-8999.HK  (제한 없음)
+     • 'HK_GEM'       — 8XXX.HK  (창업판, 유동성 낮음)
+
+    Returns None for non-CN/HK tickers. The caller (RULE 13 text)
+    appends the resulting ±limit to the daily-move sanity check.
+    """
+    t = (ticker or "").upper()
+    if t.endswith(".SS"):
+        prefix = t.split(".")[0]
+        if prefix.startswith("688"):
+            return "CN_A_STAR"
+        return "CN_A_MAIN"
+    if t.endswith(".SZ"):
+        prefix = t.split(".")[0]
+        if prefix.startswith("300") or prefix.startswith("301"):
+            return "CN_A_CHINEXT"
+        return "CN_A_MAIN"
+    if t.endswith(".BJ"):
+        return "CN_A_BJSE"
+    if t.endswith(".HK"):
+        prefix = t.split(".")[0]
+        # HK GEM uses 8XXX numeric prefix; main board uses 0001-3999
+        # and 6000-8999 minus the GEM block. yfinance pads to 4 digits
+        # so '8' → '0008' (CNOOC, main board). Need to check ≥ 4 chars
+        # before treating the first '8' as GEM.
+        if len(prefix) == 4 and prefix.startswith("8"):
+            return "HK_GEM"
+        return "HK_MAIN"
+    return None
 
 
 # Common KR company names that users type in romanized form but yfinance
@@ -122,12 +191,20 @@ def resolve_english_alias(token: str) -> str | None:
     unknown. Returns the canonical ticker for direct routing into the
     analyzer; the caller still applies its own ticker validation.
 
-    Searches _KR_ENGLISH_ALIAS / _JP_ENGLISH_ALIAS / _TW_ENGLISH_ALIAS in
-    that order. Each market has its own dict so a clash like 'SUMITOMO'
-    (could be 三井住友 vs 住友商事) can be resolved with explicit
-    market-specific keys. KR + JP precedence is historical (those
-    markets were added first); TW added in Phase 4. None of the three
-    dicts share keys today, so order doesn't matter in practice."""
+    Searches _KR_ENGLISH_ALIAS / _JP_ENGLISH_ALIAS / _TW_ENGLISH_ALIAS /
+    _CN_ENGLISH_ALIAS in that order. Each market has its own dict so a
+    clash like 'SUMITOMO' (could be 三井住友 vs 住友商事) can be resolved
+    with explicit market-specific keys. KR + JP precedence is historical
+    (those markets were added first); TW added in Phase 4-TW; CN added
+    in Phase 4-CN. None of the four dicts share keys today, so order
+    doesn't matter in practice.
+
+    Dual-listing default policy (user-ratified 2026-05-18 Option α):
+    A-share default + HK 명시 case-by-case. BYD → 002594.SZ default
+    (NOT 1211.HK), SMIC → 688981.SS default. ICBC default 1398.HK
+    because HK is much more liquid for SOE banks. Tencent / Alibaba /
+    Meituan / NetEase have no A-share counterpart so default to
+    .HK trivially."""
     if not token:
         return None
     upper = token.upper()
@@ -135,6 +212,7 @@ def resolve_english_alias(token: str) -> str | None:
         _KR_ENGLISH_ALIAS.get(upper)
         or _JP_ENGLISH_ALIAS.get(upper)
         or _TW_ENGLISH_ALIAS.get(upper)
+        or _CN_ENGLISH_ALIAS.get(upper)
     )
 
 
@@ -301,6 +379,105 @@ _TW_ENGLISH_ALIAS = {
 }
 
 
+# Phase 4-CN English alias map (2026-05-18, user-ratified Option α
+# 'A주 default + HK 명시'). Covers ~60 names that channel users
+# routinely type in romanized form. Each entry maps to the canonical
+# yfinance ticker; dual-listed names default to the listing that
+# matters more for the analysis (A-share when liquidity dominates the
+# domestic story, HK when the SOE / Internet VIE story dominates).
+#
+# Ambiguous keys (group conglomerate names mapping to multiple listed
+# entities) resolve to None and the router replies with the
+# 'multiple matches' message instead of guessing — same convention as
+# the KR / JP / TW maps.
+_CN_ENGLISH_ALIAS = {
+    # ─── Internet / Tech (HK-listed VIE structures, no A-share counterpart)
+    "TENCENT": "0700.HK",
+    "ALIBABA": "9988.HK",
+    "BABA": "9988.HK",                 # default HK; the US ADR is BABA on NYSE — user types /BABA directly
+    "JDCOM": "9618.HK",
+    "JD": "9618.HK",
+    "MEITUAN": "3690.HK",
+    "NIO": "9866.HK",
+    "XPENG": "9868.HK",
+    "XPEV": "9868.HK",
+    "LIAUTO": "2015.HK",
+    "LI": "2015.HK",
+    "KUAISHOU": "1024.HK",
+    "BILIBILI": "9626.HK",
+    "NETEASE": "9999.HK",
+    "BAIDU": "9888.HK",
+    # ─── 国有 4大 银行 + foreign banks (HK 더 liquid)
+    "ICBC": "1398.HK",                 # 工商银行
+    "CCB": "0939.HK",                  # 建设银行
+    "BOC": "3988.HK",                  # 中国银行
+    "ABC": "1288.HK",                  # 农业银行
+    "BOCOM": "3328.HK",                # 交通银行
+    "HSBC": "0005.HK",
+    "STANCHART": "2888.HK",
+    "STAN": "2888.HK",
+    "PINGAN": "2318.HK",
+    "PING": "2318.HK",                 # Ping An default HK
+    "AIA": "1299.HK",
+    # ─── 통신 / 유틸 (HK SOE telecom)
+    "CHINAMOBILE": "0941.HK",
+    "CHINATELECOM": "0728.HK",
+    "CHINAUNICOM": "0762.HK",
+    "POWERASSETS": "0006.HK",
+    "CLP": "0002.HK",
+    # ─── 항공 / 석유 (HK SOE energy)
+    "AIRCHINA": "0753.HK",
+    "CATHAY": "0293.HK",               # 國泰航空 (NOT 國泰金 TW 2882)
+    "CATHAYPACIFIC": "0293.HK",
+    "SINOPEC": "0386.HK",
+    "PETROCHINA": "0857.HK",
+    "CNPC": "0857.HK",
+    "CNOOC": "0883.HK",
+    # ─── A주 백주 (mainland-only)
+    "MOUTAI": "600519.SS",
+    "KWEICHOWMOUTAI": "600519.SS",
+    "WULIANGYE": "000858.SZ",
+    "LUZHOU": "000568.SZ",
+    "LUZHOULAOJIAO": "000568.SZ",
+    "FENJIU": "600809.SS",
+    # ─── EV / Battery (A주 default per user policy)
+    "BYD": "002594.SZ",                # 比亚迪 A주 default; HK 1211.HK 명시
+    "CATL": "300750.SZ",               # 寧德時代 ChiNext
+    "EVE": "300014.SZ",                # 億緯鋰能 ChiNext
+    "EVEENERGY": "300014.SZ",
+    "GANFENG": "002460.SZ",            # 贛鋒鋰業
+    # ─── Tech / Semis (A주 默認, mostly STAR/ChiNext)
+    "SMIC": "688981.SS",               # 中芯國際 STAR; HK 0981.HK 명시
+    "HUAHONG": "1347.HK",              # 華虹半導體 — HK only
+    "WILLSEMI": "603501.SS",           # 韋爾股份 — main board
+    "MAXSCEND": "300782.SZ",           # 卓勝微 ChiNext
+    "AMEC": "688012.SS",               # 中微公司 STAR
+    "LONGI": "601012.SS",              # 隆基綠能 main board
+    "TONGWEI": "600438.SS",            # 通威股份 main board
+    "SUNGROW": "300274.SZ",            # 陽光電源 ChiNext
+    "TCL": "002129.SZ",                # TCL中環
+    # ─── Property (HK 主体)
+    "POLY": "600048.SS",               # 保利發展
+    "VANKE": "000002.SZ",              # 萬科
+    "COUNTRYGARDEN": "2007.HK",        # 碧桂園
+    "CHINAOVERSEAS": "0688.HK",
+    "CRLAND": "1109.HK",               # 華潤置地
+    "EVERGRANDE": "3333.HK",
+    # ─── 가전 (A주 main)
+    "MIDEA": "000333.SZ",              # 美的集團
+    "GREE": "000651.SZ",               # 格力電器
+    "YILI": "600887.SS",               # 伊利股份
+    "GOERTEK": "002241.SZ",            # 歌爾股份
+    # ─── 보험 (HK 주, also A주)
+    "AIA1299": "1299.HK",
+    "NCI": "1336.HK",                  # 新華保險
+    "PICC": "1339.HK",                 # 人保
+    # ─── Ambiguous — multi-entity, force user to specify
+    "CHINA": None,
+    "BANKOFCHINA": None,               # ambiguous: BOC (3988.HK) vs BOCHK (2388.HK) vs BOCOM (3328.HK)
+}
+
+
 # Hardcoded peer sets keyed by yfinance 'industry' string. The
 # fundamentals analyst kept cargo-culting peer examples across
 # industries (한국전력공사 → KMI/WMB/ENB; 호텔신라 → 005930/000660)
@@ -417,12 +594,15 @@ def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:
     Capped at 5 peers for prompt brevity.
 
     Market-aware: picks JP-listed peers for .T tickers, KR-listed for
-    .KS/.KQ, TW-listed for .TW/.TWO, US-listed for bare alpha tickers.
-    Industry strings use yfinance's standardized English vocabulary
-    ('Auto Manufacturers', 'Banks - Diversified', etc.) so the same
-    industry key works across markets — the dict choice is what makes
-    it market-specific. CN (.SS/.SZ/.HK) currently falls through to
-    the US dict; Phase 4-CN will add `_CN_INDUSTRY_PEERS`."""
+    .KS/.KQ, TW-listed for .TW/.TWO, CN_A-listed for .SS/.SZ/.BJ,
+    HK-listed for .HK, US-listed for bare alpha tickers. Industry
+    strings use yfinance's standardized English vocabulary ('Auto
+    Manufacturers', 'Banks - Diversified', etc.) so the same industry
+    key works across markets — the dict choice is what makes it
+    market-specific. Phase 4-CN (2026-05-18) adds `_CN_A_INDUSTRY_PEERS`
+    + `_HK_INDUSTRY_PEERS`; dual-listed names appear in both dicts
+    under the same industry key (e.g. BYD 002594.SZ in CN_A '자동차',
+    1211.HK in HK '자동차')."""
     if not industry:
         return None
     market = detect_market(ticker)
@@ -432,12 +612,11 @@ def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:
         base = _KR_INDUSTRY_PEERS.get(industry)
     elif market == "TW":
         base = _TW_INDUSTRY_PEERS.get(industry)
+    elif market == "CN_A":
+        base = _CN_A_INDUSTRY_PEERS.get(industry)
+    elif market == "HK":
+        base = _HK_INDUSTRY_PEERS.get(industry)
     else:
-        # Default (US + CN until Phase 4-CN ships) goes to the US dict.
-        # CN A-share / HK industry-string overlap with US is partial
-        # (yfinance sometimes labels HK ADRs with US-style industries),
-        # so the US dict at least returns SOMETHING for most CN tickers
-        # while we wait for the CN-specific Phase 4 ship.
         base = _US_INDUSTRY_PEERS.get(industry)
     if not base:
         return None
@@ -679,6 +858,174 @@ _TW_INDUSTRY_PEERS = {
     # ─── REITs (TW REIT market thin)
     "REIT - Diversified": [
         "01001T.TW",                                   # Cathay REIT 國泰一號
+    ],
+}
+
+
+# CN A-share industry peer sets — covers 13 RULE 13 industries with
+# ChiNext + STAR + Main Board representatives. Phase 4-CN (2026-05-18).
+# Industry strings mirror yfinance's standardized vocabulary; subject
+# filtered out at resolve time. Mainland peers only — HK SOE / VIE
+# peers live in `_HK_INDUSTRY_PEERS` so dual-listed names (BYD A 002594
+# vs BYD H 1211) don't mix currency / market context in one Comps table.
+_CN_A_INDUSTRY_PEERS = {
+    # ─── 백주 (mainland-only, no HK counterpart)
+    "Beverages - Wineries & Distilleries": [
+        "600519.SS", "000858.SZ", "000568.SZ", "600809.SS",
+        "000596.SZ",                                  # 古井贡酒
+    ],
+    # ─── 4대 国有 银行 (A-share lines; HK lines in _HK_INDUSTRY_PEERS)
+    "Banks - Diversified": [
+        "601398.SS", "601939.SS", "601988.SS", "601288.SS",
+        "601328.SS",                                  # 交通银行 A-share
+    ],
+    "Banks - Regional": [
+        "600036.SS", "601166.SS", "600000.SS", "600015.SS",
+    ],
+    # ─── Property (大型 부동산)
+    "Real Estate - Development": [
+        "600048.SS", "000002.SZ", "001979.SZ", "600340.SS",
+    ],
+    "Real Estate Services": [
+        "600048.SS", "000002.SZ", "001979.SZ",
+    ],
+    # ─── Internet Content (mostly HK-listed VIE; the few A-share players)
+    "Internet Content & Information": [
+        "300059.SZ", "002841.SZ",                     # 东方财富, 视觉中国
+    ],
+    # ─── 半導體 (STAR + ChiNext + Main concentrated)
+    "Semiconductors": [
+        "688981.SS", "603501.SS", "002180.SZ", "300782.SZ",
+        "603160.SS",                                  # 韦尔股份/紫光国微/卓胜微/汇顶
+    ],
+    "Semiconductor Equipment & Materials": [
+        "688012.SS", "002129.SZ", "300598.SZ",        # 中微/TCL中环/诚迈
+    ],
+    # ─── EV (자동차 + 신에너지 차)
+    "Auto Manufacturers": [
+        "002594.SZ",                                  # BYD A
+        "601127.SS",                                  # 賽力斯 (Huawei AITO partner)
+        "600104.SS",                                  # SAIC 上汽集团
+        "601633.SS",                                  # 長城汽車 A
+        "000625.SZ",                                  # 長安汽車
+    ],
+    # ─── 锂电池 (Battery, ChiNext 主체)
+    "Electrical Equipment & Parts": [
+        "300750.SZ", "300014.SZ", "002460.SZ",
+        "300207.SZ",                                  # 欣旺达
+    ],
+    # ─── Solar 光伏 (Main board + ChiNext mix)
+    "Solar": [
+        "601012.SS", "600438.SS", "300274.SZ", "002129.SZ",
+    ],
+    # yfinance also tags some solar names as 'Semiconductor Equipment'
+    # — cross-covered above.
+    # ─── 保险 (A주 ines)
+    "Insurance - Life": [
+        "601318.SS", "601628.SS", "601336.SS",        # 中国平安 A/中国人寿 A/新华保险 A
+    ],
+    "Insurance - Diversified": [
+        "601318.SS", "601601.SS", "601336.SS",        # 平安/太保/新华
+    ],
+    # ─── 通信 (A주 메인)
+    "Telecom Services": [
+        "600050.SS", "600941.SS", "601728.SS",        # 中国联通 A / 中国移动 A / 中国电信 A
+    ],
+    # ─── Airlines (A주)
+    "Airlines": [
+        "601111.SS", "600115.SS", "600029.SS", "601021.SS",
+        # 中国国航/东方航空/南方航空/春秋航空
+    ],
+    # ─── Petro + Steel
+    "Oil & Gas Integrated": [
+        "601857.SS", "600028.SS", "601808.SS",        # 中国石油/中石化/中海油服
+    ],
+    "Steel": [
+        "600019.SS", "000898.SZ", "000932.SZ",        # 宝钢/鞍钢/华菱钢铁
+    ],
+    # ─── Consumer + Appliance
+    "Packaged Foods": [
+        "600887.SS", "600519.SS", "603288.SS",        # 伊利/茅台/海天味业
+    ],
+    "Furnishings, Fixtures & Appliances": [
+        "000333.SZ", "000651.SZ", "600690.SS", "002508.SZ",
+        # 美的/格力/海尔/老板电器
+    ],
+    "Consumer Electronics": [
+        "002241.SZ",                                  # 歌尔股份
+        "000333.SZ", "000651.SZ",
+    ],
+}
+
+
+# HK industry peer sets — focused on the structurally-HK names (4大
+# 国有 银行 H-shares, Internet VIE, property, 항공, 통신, 보험).
+# Mainland A-share peers stay in `_CN_A_INDUSTRY_PEERS` to keep
+# currency consistency in Comps tables (HK row in CNY ¥ would confuse
+# the reader). Dual-listed names appear in both dicts.
+_HK_INDUSTRY_PEERS = {
+    # ─── Internet VIE structures (HK + ADR cross-listings — HK default)
+    "Internet Content & Information": [
+        "0700.HK", "9988.HK", "9618.HK", "3690.HK",
+        "9888.HK", "9999.HK",                         # Tencent/BABA/JD/Meituan/Baidu/NetEase
+    ],
+    "Internet Retail": [
+        "9988.HK", "9618.HK", "3690.HK",              # BABA/JD/Meituan
+    ],
+    # ─── 4대 국유 은행 (H-shares — 더 liquid than A-shares)
+    "Banks - Diversified": [
+        "1398.HK", "0939.HK", "3988.HK", "1288.HK",
+        "3328.HK", "0005.HK",                         # ICBC/CCB/BOC/ABC/BOCOM/HSBC
+    ],
+    "Banks - Regional": [
+        "0005.HK", "2888.HK", "2388.HK", "0023.HK",   # HSBC/StanChart/BOCHK/Bank of E Asia
+    ],
+    # ─── Insurance (HK 주력)
+    "Insurance - Diversified": [
+        "2318.HK", "1299.HK", "2628.HK", "1336.HK",
+        "1339.HK",                                    # PingAn/AIA/China Life/NCI/PICC
+    ],
+    "Insurance - Life": [
+        "1299.HK", "2628.HK", "2318.HK",
+    ],
+    # ─── Property (HK developers + China property)
+    "Real Estate Services": [
+        "1109.HK", "0688.HK", "2007.HK", "1813.HK",
+        "3333.HK",                                    # CR Land/COLI/Country Garden/Kaisa/Evergrande
+    ],
+    "Real Estate - Diversified": [
+        "1109.HK", "0688.HK", "0016.HK", "0012.HK",   # CR Land/COLI/Sun Hung Kai/Henderson
+    ],
+    # ─── 통신 / 유틸 (HK SOE)
+    "Telecom Services": [
+        "0941.HK", "0728.HK", "0762.HK", "0008.HK",   # ChinaMobile/Telecom/Unicom/PCCW
+    ],
+    "Utilities - Regulated Electric": [
+        "0002.HK", "0006.HK", "0003.HK",              # CLP/Power Assets/HK Gas
+    ],
+    # ─── 항공
+    "Airlines": [
+        "0753.HK", "0293.HK", "0670.HK", "1055.HK",   # AirChina/Cathay/EastAir H/SouthAir H
+    ],
+    # ─── 석유 / 가스
+    "Oil & Gas Integrated": [
+        "0857.HK", "0386.HK", "0883.HK",              # CNPC/Sinopec/CNOOC
+    ],
+    # ─── EV / Auto Manufacturers (HK H-shares)
+    "Auto Manufacturers": [
+        "1211.HK", "9866.HK", "9868.HK", "2015.HK",
+        "0175.HK",                                    # BYD H/NIO/XPeng/LiAuto/Geely
+    ],
+    # ─── 半導體 (HK only — SMIC H, Hua Hong)
+    "Semiconductors": [
+        "0981.HK", "1347.HK",                         # SMIC H / Hua Hong
+    ],
+    # ─── 가전 / 소비
+    "Furnishings, Fixtures & Appliances": [
+        "0997.HK",                                    # Haier Smart Home H (limited HK roster)
+    ],
+    "Restaurants": [
+        "9869.HK", "2096.HK",                         # Haidilao etc.
     ],
 }
 
