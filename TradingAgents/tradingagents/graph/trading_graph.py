@@ -400,8 +400,35 @@ class TradingAgentsGraph:
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM.
         past_context = self.memory_log.get_past_context(company_name)
+
+        # F1-MVP Gemini context caching (2026-05-19). Create one
+        # CachedContent containing this ticker's full instrument_context
+        # at analysis start. Pass cache name through AgentState so
+        # decision-tier nodes (RM/Trader/PM) can reference it when
+        # invoking their Pro LLM. Cleanup in finally block.
+        gemini_cache = None
+        gemini_cache_name = ""
+        try:
+            from bot.gemini_cache_manager import maybe_create_cache
+            from tradingagents.agents.utils.agent_utils import (
+                build_instrument_context,
+            )
+            # Decision-tier nodes use the full (non-sliced, analyst_id=None)
+            # instrument_context — same shape they consume during invocation.
+            # Build once here so the cache contents exactly match what the
+            # nodes will see.
+            common_ctx = build_instrument_context(company_name)
+            gemini_cache_name, gemini_cache = maybe_create_cache(
+                company_name, common_ctx,
+            )
+        except Exception as exc:
+            logger.warning("gemini cache setup failed for %s: %s", company_name, exc)
+
         init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date, past_context=past_context
+            company_name,
+            trade_date,
+            past_context=past_context,
+            gemini_cache_name=gemini_cache_name,
         )
         args = self.propagator.get_graph_args()
 
@@ -410,17 +437,23 @@ class TradingAgentsGraph:
             tid = thread_id(company_name, str(trade_date))
             args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = tid
 
-        if self.debug:
-            trace = []
-            for chunk in self.graph.stream(init_agent_state, **args):
-                if len(chunk["messages"]) == 0:
-                    pass
-                else:
-                    chunk["messages"][-1].pretty_print()
-                    trace.append(chunk)
-            final_state = trace[-1]
-        else:
-            final_state = self.graph.invoke(init_agent_state, **args)
+        try:
+            if self.debug:
+                trace = []
+                for chunk in self.graph.stream(init_agent_state, **args):
+                    if len(chunk["messages"]) == 0:
+                        pass
+                    else:
+                        chunk["messages"][-1].pretty_print()
+                        trace.append(chunk)
+                final_state = trace[-1]
+            else:
+                final_state = self.graph.invoke(init_agent_state, **args)
+        finally:
+            # Best-effort cache cleanup. Gemini auto-expires at TTL even
+            # if delete() never runs, so a failure here is harmless.
+            if gemini_cache is not None:
+                gemini_cache.delete()
 
         # Store current state for reflection.
         self.curr_state = final_state

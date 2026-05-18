@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.utils.agent_utils import build_instrument_context, get_language_instruction
 from tradingagents.agents.utils.structured import (
@@ -10,10 +12,34 @@ from tradingagents.agents.utils.structured import (
 )
 
 
+_rm_log = logging.getLogger("tradingagents.research_manager")
+
+
 def create_research_manager(llm):
     structured_llm = bind_structured(llm, ResearchPlan, "Research Manager")
 
     def research_manager_node(state) -> dict:
+        # F1-MVP Gemini context caching (2026-05-19). When analyzer.py
+        # successfully created a CachedContent at run start, state holds
+        # the cache resource name. Bind it to the LLM so this invocation
+        # references cached input tokens (billed at ~25% rate) instead
+        # of re-billing the full instrument_context.
+        cache_name = state.get("gemini_cache_name", "")
+        if cache_name:
+            try:
+                active_llm = llm.bind(cached_content=cache_name)
+                active_structured_llm = bind_structured(
+                    active_llm, ResearchPlan, "Research Manager (cached)",
+                )
+                _rm_log.info("rm-cache: using gemini cache %s", cache_name)
+            except Exception as exc:
+                _rm_log.warning(
+                    "rm-cache: bind(cached_content) failed (%s) — falling back to non-cached",
+                    exc,
+                )
+                active_structured_llm = structured_llm
+        else:
+            active_structured_llm = structured_llm
         instrument_context = build_instrument_context(state["company_of_interest"])
         history = state["investment_debate_state"].get("history", "")
 
@@ -109,7 +135,7 @@ Calibrate the verdict accordingly:
 {history}""" + language_directive
 
         investment_plan = invoke_structured_or_freetext(
-            structured_llm,
+            active_structured_llm,
             llm,
             prompt,
             render_research_plan,

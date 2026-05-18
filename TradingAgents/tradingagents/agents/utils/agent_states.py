@@ -80,3 +80,13 @@ class AgentState(MessagesState):
     social_retry_count: Annotated[int, "Times the social analyst has been retried"]
     news_retry_count: Annotated[int, "Times the news analyst has been retried"]
     fundamentals_retry_count: Annotated[int, "Times the fundamentals analyst has been retried"]
+
+    # F1-MVP Gemini explicit context caching (2026-05-19).
+    # analyzer.py creates a CachedContent at analysis start containing the
+    # full instrument_context (5-10K tokens), gets a cache resource name,
+    # and threads it through here. Decision-tier nodes (research_manager,
+    # trader, portfolio_manager) use this when invoking their Pro LLM —
+    # cached input tokens billed at ~25% rate, saves ~5% per analysis on
+    # the most expensive tier. Empty string when caching disabled / failed.
+    # Lifecycle: analyzer.py deletes the cache after graph completes.
+    gemini_cache_name: Annotated[str, "Gemini CachedContent resource name for decision-tier LLM reuse"]

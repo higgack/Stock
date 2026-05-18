@@ -358,11 +358,34 @@ def create_portfolio_manager(llm, llm_light=None):
             )
             use_light = False
         active_structured_llm = structured_llm_light if use_light else structured_llm
+        active_base_llm = llm_light if (use_light and llm_light is not None) else llm
         if use_light:
             _pm_log.info(
                 "pm-budget: %d analysts unanimous on %s — using light LLM (thinking_budget=2048)",
                 voter_count, majority,
             )
+
+        # F1-MVP Gemini context caching (2026-05-19). Layered on top of
+        # Option 4 (light vs heavy LLM): cache binding applies to whichever
+        # base LLM was chosen. Cached input tokens billed at ~25% rate
+        # — savings layer on top of thinking_budget reduction.
+        cache_name = state.get("gemini_cache_name", "")
+        if cache_name:
+            try:
+                cached_llm = active_base_llm.bind(cached_content=cache_name)
+                label = "PM (cached, light)" if use_light else "PM (cached)"
+                active_structured_llm = bind_structured(
+                    cached_llm, PortfolioDecision, label,
+                )
+                _pm_log.info(
+                    "pm-cache: using gemini cache %s (light=%s)",
+                    cache_name, use_light,
+                )
+            except Exception as exc:
+                _pm_log.warning(
+                    "pm-cache: bind(cached_content) failed (%s) — fallback to non-cached",
+                    exc,
+                )
 
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
