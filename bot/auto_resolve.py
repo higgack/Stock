@@ -55,11 +55,24 @@ def _fetch_returns(
     and background auto-resolves produce identical numbers."""
     try:
         start = datetime.strptime(trade_date, "%Y-%m-%d")
-        # Buffer for weekends / holidays so a 5-trading-day window has 7
-        # calendar days of price data to slice from.
-        end = start + timedelta(days=holding_days + 7)
-        if end > datetime.now():
+        # Readiness gate — tightened from the old `holding_days + 7`
+        # calendar-day buffer (= 12 days for the default 5-trading-day
+        # window). The old gate kept JPM 2026-05-09 in 'pending' through
+        # 5/18 even though all 5 trading days (5/11–5/15) were already
+        # in yfinance — because end_calc = 5/9 + 12 = 5/21 > today (5/18)
+        # so the function bailed before even attempting the fetch.
+        # The +3 calendar-day buffer is the minimum that absorbs a
+        # weekend transition: a Friday-or-Saturday trade_date plus the
+        # subsequent weekend still has 5 trading days settle within
+        # holding_days + 3 calendar days. Past this gate we attempt the
+        # fetch and rely on the per-fetch readiness check below to
+        # determine whether enough closes actually landed.
+        if start + timedelta(days=holding_days + 3) > datetime.now():
             return None, None, None
+        # Fetch end = today + 1 day so we catch closes that just landed.
+        # Bigger windows wasted bandwidth without buying anything — the
+        # readiness check below caps the number of closes we actually use.
+        end = datetime.now() + timedelta(days=1)
         end_str = end.strftime("%Y-%m-%d")
 
         benchmark_symbol = "SPY"
@@ -73,9 +86,20 @@ def _fetch_returns(
 
         stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
         bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
+        # Require at least 2 closes (start + 1 outcome day) — same lenient
+        # minimum the old code used. actual_days below caps at whatever
+        # is available so a 5-trading-day query that only finds 4 closes
+        # returns a 4-day return rather than blocking the entry forever.
+        # JPM 2026-05-09 surfaced this: by 2026-05-18 yfinance has 5
+        # closes (5/11-5/15) but the 6th (5/18) lands only after US close
+        # 04:00 KST 5/19. A 5-day-only requirement keeps the entry pending
+        # for an extra day with no real upside.
         if len(stock) < 2 or len(bench) < 2:
             return None, None, None
-
+        # actual_days = min(holding_days, available - 1) so we cap at
+        # the holding_days target but accept partial windows. The dashboard
+        # outcome line will read 'days=N' from the log if you want to spot
+        # partial-window resolutions later.
         actual_days = min(holding_days, len(stock) - 1, len(bench) - 1)
         raw = float(
             (stock["Close"].iloc[actual_days] - stock["Close"].iloc[0])

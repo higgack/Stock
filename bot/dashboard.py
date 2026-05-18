@@ -1354,6 +1354,20 @@ def _render_detail(rec: dict) -> str:
     kr_name = _ticker_kr_name(ticker)
     h1_label = f"{kr_name} / {ticker}" if kr_name else ticker
 
+    # 5-trading-day outcome — surface here on the detail page too, not
+    # just on the index card list. Users navigating directly to
+    # /<DATE>/<TICKER>.html (e.g. via Telegram link to '📋 전체 리포트')
+    # previously had to bounce back to the index to see if their
+    # analysis got an outcome. Now visible inline right under the
+    # meta line. Empty string when the 5-day window hasn't elapsed
+    # or auto_resolve hasn't caught up yet — same falsy-handling as
+    # the card renderer.
+    try:
+        resolved_entry = _build_resolved_lookup().get((date, ticker))
+    except Exception:
+        resolved_entry = None
+    outcome_html = _render_outcome_html(resolved_entry)
+
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -1375,6 +1389,7 @@ def _render_detail(rec: dict) -> str:
     분석일: {_html.escape(date)} · 실행 시각: {_html.escape(analyzed_at)} ·
     소요: {elapsed:.1f}초
   </div>
+  {outcome_html}
   <section class="report-section">
     <h2>📋 요약</h2>
     {_md_to_html(summary)}
