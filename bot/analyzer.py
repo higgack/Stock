@@ -1267,30 +1267,65 @@ def _polish(body: str) -> str:
     # pattern: any decimal-zero integer immediately preceded by a
     # currency context keyword (Stop Loss / 손절 / 목표 / 진입가).
     def _format_bare_currency(b: str) -> str:
-        # Match '<keyword>: <integer>.0' and re-format integer with commas.
-        # Currency symbol prepending is done downstream by the analyst's
-        # own directive when possible; here we just fix the missing
-        # thousands separator + drop the awkward '.0' trailing zero.
+        # Match '<keyword>: <integer>.0' and re-format integer with commas
+        # + prepend market currency symbol (NT$ / ₩ / HK$ / ¥ / $) when
+        # the body's other text already establishes one. Trader emits
+        # bare integers like 'Stop Loss: 1950' even for TWD/KRW/etc;
+        # readers expect 'NT$1,950' / '₩1,321,500'.
         #
         # Markdown-bold support: the Trader's render template emits
-        # '**Stop Loss**: 25000.0' (asterisks around label) — earlier
-        # regex matched the literal 'Stop Loss' text but failed when
-        # the closing '**' came between the label and ':'. The optional
+        # '**Stop Loss**: 25000.0' (asterisks around label). The optional
         # \*{0,2} groups around the label name handle the bold case
         # while still matching unformatted '진입가: 12345.0' equally.
         # English labels (Entry Price / Target Price / Stop Loss) added
-        # because Trader emits English here even for KR / JP tickers.
+        # because Trader emits English here even for KR / JP / TW tickers.
+        #
+        # Currency symbol detection: scan the body for the FIRST currency
+        # prefix that appears in a 'price'-like context. 'NT$' before
+        # '₩' before 'HK$' before '¥' before '$' — order matters because
+        # 'NT$' contains '$', 'HK$' contains '$', etc. Detect 2-char
+        # multi-glyph prefixes first.
+        if re.search(r"NT\$\d", b):
+            sym = "NT$"
+        elif re.search(r"HK\$\d", b):
+            sym = "HK$"
+        elif re.search(r"₩\s*\d|₩\d", b):
+            sym = "₩"
+        elif re.search(r"¥\s*\d|¥\d", b):
+            # Could be JPY or CNY. Use the broader '元' marker as a
+            # disambiguator: '元' present + '¥' = CNY; otherwise JPY.
+            # CN Phase 4 will refine this; for JP the '¥' alone is fine.
+            sym = "¥"
+        elif re.search(r"\$\s*\d|\$\d", b):
+            sym = "$"
+        else:
+            sym = ""  # no detectable currency context — leave bare
         pattern = re.compile(
             r"(\*{0,2})"
             r"(Stop\s*Loss|손절\s*가|손절매|목표\s*가|진입\s*가|매도\s*가|"
             r"Entry\s*Price|Target\s*Price)"
             r"(\*{0,2})"
             r"(\s*[:=]?\s*)"
-            r"(\d{4,})\.0+\b"
+            r"(\d{4,})(?:\.0+)?\b"
         )
         def repl(m: re.Match) -> str:
             open_b, label, close_b, sep, num = m.groups()
-            return f"{open_b}{label}{close_b}{sep}{int(num):,}"
+            # Skip if the value already has a currency prefix (avoid
+            # double-prepending on re-runs / partial polish).
+            full = m.group(0)
+            already_has_sym = (
+                sym and f"{sep.strip()} {sym}" in full
+                or any(s in full for s in ("NT$", "HK$", "₩", "¥", "$"))
+            )
+            num_fmt = f"{int(num):,}"
+            if already_has_sym or not sym:
+                return f"{open_b}{label}{close_b}{sep}{num_fmt}"
+            # Trim trailing space in sep so '**Stop Loss**:  ' becomes
+            # '**Stop Loss**: ' (single space before currency symbol).
+            sep_clean = sep.rstrip() + " " if sep.endswith(" ") else sep
+            if not sep_clean.endswith(" "):
+                sep_clean = sep_clean + " "
+            return f"{open_b}{label}{close_b}{sep_clean}{sym}{num_fmt}"
         return pattern.sub(repl, b)
     _step("format-bare-currency", _format_bare_currency)
     # Corporate-action HARD GUARD enforcement at the output layer.

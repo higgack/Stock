@@ -1152,8 +1152,21 @@ def build_instrument_context(ticker: str) -> str:
                 # carries numbers instead of '— N/A — N/A —' across
                 # every row (코미코 2026-05-17 case: peer set
                 # populated, multiples 0/4 populated, table useless).
+                # Subject row included explicitly per Rule E extension
+                # (TW TSMC 2026-05-18 surfaced this: News/Sentiment
+                # Comps tables had TSMC row with N/A or fabricated
+                # values like 'PER 29.5 / PBR 3.51' while Fundamentals
+                # quoted 'PER 30.43 / PBR 9.86' from yfinance — same
+                # stock, same report, 2.8x divergence on PBR).
                 # Cap at 6 peers to keep the prompt budget bounded.
                 peer_lines = []
+                # Subject FIRST so analysts copy its row verbatim into
+                # their own Comps tables. Then the curated peers.
+                subject_multiples = _fetch_peer_multiples(ticker)
+                if subject_multiples:
+                    peer_lines.append(f"  • {ticker} (subject): {subject_multiples}")
+                else:
+                    peer_lines.append(f"  • {ticker} (subject): (multiples 미수집)")
                 for t in peers[:6]:
                     multiples = _fetch_peer_multiples(t)
                     if multiples:
@@ -1174,7 +1187,19 @@ def build_instrument_context(ticker: str) -> str:
                     f" example list) is FORBIDDEN. Peers with '(multiples"
                     f" 미수집)' still belong in the table — render them"
                     f" with explicit 'N/A' cells rather than dropping"
-                    f" the row."
+                    f" the row.\n"
+                    f"\n"
+                    f"SUBJECT ROW POLICY (Rule E — applies to ALL analysts,"
+                    f" not just fundamentals — TW TSMC 2026-05-18 surfaced"
+                    f" this): when any analyst (시장 / 감정 / 뉴스 /"
+                    f" 펀더멘털) renders a Comps table, the subject's"
+                    f" '{ticker} (subject)' row above MUST be used"
+                    f" verbatim. Different analysts producing different"
+                    f" multiples for the same stock in the same report"
+                    f" (TSMC News PER 29.5 / PBR 3.51 vs Fundamentals"
+                    f" PER 30.43 / PBR 9.86) is FORBIDDEN — readers"
+                    f" cannot tell which value is canonical. The single"
+                    f" '(subject)' row above is the canonical source."
                 )
         except Exception:
             pass
@@ -1358,6 +1383,36 @@ def build_instrument_context(ticker: str) -> str:
                     mc_native = f"약 {market_cap / 1e12:,.2f}조 엔"
                 else:
                     mc_native = f"약 {market_cap / 1e8:,.0f}억 엔"
+            elif _currency == "TWD":
+                # TWD scale: 兆 元 (≥1兆 = 10^12), 億 元 (1억 ~ 1兆),
+                # 万 元 (1만 ~ 1억). TWD-scale TSMC ~NT$58T = 約 58兆 元.
+                # User's TW analysis 2026-05-18 surfaced this — sentiment
+                # said '약 25兆 元' while fundamentals said '약 58조 元'
+                # for the same stock because this branch was missing and
+                # TWD fell through to the USD '$XB' format which the LLM
+                # ignored, computing its own divergent value.
+                if market_cap >= 1e12:
+                    mc_native = f"약 {market_cap / 1e12:,.2f}兆 元 (NT${market_cap / 1e12:,.1f}T)"
+                else:
+                    mc_native = f"약 {market_cap / 1e8:,.0f}億 元 (NT${market_cap / 1e9:,.1f}B)"
+            elif _currency == "CNY":
+                # CNY same scale as TWD — 亿元 / 兆元. Phase 4-CN will
+                # exercise this branch when CN_A tickers ship; pre-wired
+                # here so the TW + CN fixes land in one commit.
+                if market_cap >= 1e12:
+                    mc_native = f"약 {market_cap / 1e12:,.2f}兆元 (¥{market_cap / 1e12:,.1f}T)"
+                else:
+                    mc_native = f"약 {market_cap / 1e8:,.0f}亿元 (¥{market_cap / 1e9:,.1f}B)"
+            elif _currency == "HKD":
+                # HKD scale: HK$ + B/M (similar to USD). HK market caps
+                # typically rendered in $billions. Tencent ~HK$3.8T,
+                # Alibaba ~HK$1.8T at recent peaks.
+                if market_cap >= 1e12:
+                    mc_native = f"약 HK${market_cap / 1e12:,.2f}T"
+                elif market_cap >= 1e9:
+                    mc_native = f"약 HK${market_cap / 1e9:,.2f}B"
+                else:
+                    mc_native = f"약 HK${market_cap / 1e6:,.1f}M"
             else:
                 # USD / fallback: $XB / $XM.
                 if market_cap >= 1e9:
