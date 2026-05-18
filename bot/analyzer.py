@@ -1182,6 +1182,102 @@ def _polish(body: str) -> str:
     _step("strip-4digit-comma", lambda b: re.sub(
         r"(\d),(\d{4})(?!\d)", r"\1\2", b,
     ))
+    # '백만' / '백만 원' style numbers (e.g. '₩약 1.6백만', '약 1.5백만 원')
+    # are explicitly forbidden by our currency directive — '백만' is a
+    # million-style English unit awkward in Korean. Surface in 두산
+    # 000150.KS 2026-05-18 (₩약 1.6백만 throughout all four analyst
+    # sections + DCF + stop loss) and 삼성전기 2026-05-17 (₩약 1.0백만).
+    # Text directive alone keeps getting ignored; auto-convert at the
+    # polish layer. Maps '₩약 X.XX백만' / '약 X.XX백만 원' → '약 XYZ만 원'
+    # (X.X × 100 = XYZ 만 원). Handles 1-2 decimal places.
+    def _convert_baekman(b: str) -> str:
+        def repl(m: re.Match) -> str:
+            try:
+                val = float(m.group(1))
+            except ValueError:
+                return m.group(0)
+            man = val * 100  # 백만 = 100만
+            if man.is_integer() and man < 100_000:
+                return f"약 {int(man):,}만 원"
+            return f"약 {man:,.1f}만 원"
+        # Three permitted spellings: '₩약 X.X백만', '약 X.X백만 원',
+        # '약 X.X백만'. The optional '\s+원' tail (NOT '\s*원?') means we
+        # only consume trailing ' 원' when 원 is actually present —
+        # otherwise we'd swallow the trailing space before the next
+        # token (e.g. '백만 —' would become '약 XXX만 원—' losing the
+        # separator space).
+        out = re.sub(r"₩\s*약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?", repl, b)
+        out = re.sub(r"약\s*(\d+(?:\.\d+)?)\s*백만(?:\s*원)?", repl, out)
+        return out
+    _step("convert-baekman", _convert_baekman)
+    # Debt-ratio '배' (multiples) unit error. yfinance .info debtToEquity
+    # is a percentage (e.g. 82.77 = 82.77%), but the LLM occasionally
+    # renders it as '부채비율: 82.77배' which would mean debt = 82.77× of
+    # equity — a near-insolvent reading that misleads the reader. 두산
+    # 000150.KS 2026-05-18 fundamentals had this exact error. Convert
+    # the '배' suffix to '%' specifically when the leading label is
+    # 부채비율 (other ratios like 유동비율 1.03배 are legitimately
+    # expressed as multiples and left alone).
+    _step("debt-ratio-unit", lambda b: re.sub(
+        r"(부채비율[:\s]*\d+(?:\.\d+)?)\s*배",
+        r"\1%",
+        b,
+    ))
+    # Currency-symbol + thousands-comma for bare integers in trader /
+    # stop-loss / target-price cells. Toyota / 두산 reports had
+    # 'Stop Loss: 1321500.0' — should be '₩1,321,500'. The polish layer
+    # doesn't know the ticker's market, so we use a context-aware
+    # pattern: any decimal-zero integer immediately preceded by a
+    # currency context keyword (Stop Loss / 손절 / 목표 / 진입가).
+    def _format_bare_currency(b: str) -> str:
+        # Match '<keyword>: <integer>.0' and re-format integer with commas.
+        # Currency symbol prepending is done downstream by the analyst's
+        # own directive when possible; here we just fix the missing
+        # thousands separator + drop the awkward '.0' trailing zero.
+        pattern = re.compile(
+            r"(Stop\s*Loss|손절\s*가|손절매|목표\s*가|진입\s*가|매도\s*가)"
+            r"(\s*[:=]?\s*)"
+            r"(\d{4,})\.0+\b"
+        )
+        def repl(m: re.Match) -> str:
+            label, sep, num = m.group(1), m.group(2), m.group(3)
+            return f"{label}{sep}{int(num):,}"
+        return pattern.sub(repl, b)
+    _step("format-bare-currency", _format_bare_currency)
+    # RULE 1 (PERIOD LABELS) auto-warn — detect multi-dash time series
+    # without period labels (FY25 / Q4 / etc). 두산 000150.KS 2026-05-18:
+    #   '순이익: 758억 원 — -2,262억 원 — -3,883억 원 — -6,964억 원 — ...'
+    # Eight values, zero period labels. RULE 1 forbids this but the
+    # text rule keeps being skipped. We can't auto-relabel (don't know
+    # which value is which FY) but we CAN append a visible warning so
+    # the reader knows the LLM produced an under-labeled series.
+    def _flag_unlabeled_series(b: str) -> str:
+        # Match bullet lines with 4+ ' — ' separators where none of the
+        # values is preceded by a 'FY'/'Q'/'TTM'/'FY25'-style label.
+        # Period-label tokens we tolerate: FY{digits}, Q{digit}, Q{digit} {digits},
+        # TTM, {YYYY}, {YYYY}.{MM}, '연간' / '분기'.
+        period_label_re = re.compile(
+            r"(?:FY\d{2,4}|Q[1-4](?:\s*\d{2,4})?|TTM|연간|분기|"
+            r"\d{4}(?:[./-]\d{1,2})?|\d{4}년)"
+        )
+        lines = b.split("\n")
+        flagged = 0
+        out = []
+        for line in lines:
+            stripped = line.strip()
+            # Bullet line with at least 4 dash separators? KR/JP analysts
+            # use ' — ' or ' - ' as separator; match both.
+            if (
+                stripped.startswith(("•", "*", "-"))
+                and stripped.count(" — ") >= 4
+                and not period_label_re.search(stripped)
+            ):
+                out.append(line + " ⚠️(RULE 1: period labels 누락 — 값 순서 불명확)")
+                flagged += 1
+            else:
+                out.append(line)
+        return "\n".join(out)
+    _step("rule1-unlabeled-series", _flag_unlabeled_series)
     # Conservative dedup for short Korean approximation words that
     # analysts occasionally double-print before a number ("약 약 1776조"
     # — SNG 2026-05-17). Only handles a fixed allowlist; we don't do

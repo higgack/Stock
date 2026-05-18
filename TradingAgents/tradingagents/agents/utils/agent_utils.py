@@ -1170,6 +1170,42 @@ def build_instrument_context(ticker: str) -> str:
             f" or '{kr_name}는 최근 급락하며...'"
         )
 
+        # CHAEBOL AUTO-DETECTION — RULE 9 enforcement (mandatory)
+        # RULE 9 (CHAEBOL GROUP RISK) in fundamentals_analyst.py requires
+        # the analyst to add one explicit line about group-level risks
+        # for chaebol-affiliated names. The rule text alone gets silently
+        # skipped — 두산 000150.KS 2026-05-18 had no chaebol risk line
+        # despite being 두산그룹 지주회사. Detect chaebol prefix from
+        # DART corp_name and inject a mandatory directive so the analyst
+        # cannot route around RULE 9.
+        # Prefix list matches CLAUDE.md '## Per-ticker reviews' RULE 9
+        # exactly: top 15 KR chaebols by 공정거래법 자산 ranking.
+        _CHAEBOL_PREFIXES = (
+            "삼성", "현대", "SK", "LG", "한화", "롯데", "GS", "CJ",
+            "두산", "KT", "효성", "신세계", "포스코", "한진", "영풍",
+        )
+        chaebol_match = next(
+            (p for p in _CHAEBOL_PREFIXES if kr_name.startswith(p)), None,
+        )
+        if chaebol_match:
+            base += (
+                f"\n\n=== CHAEBOL GROUP RISK DIRECTIVE (MANDATORY — RULE 9) ===\n"
+                f"{kr_name} ({ticker})는 {chaebol_match}그룹 계열사 / 지주회사로"
+                f" 분류된다. fundamentals_analyst.py의 RULE 9에 따라, 결론"
+                f" (Conclusion / 6번 섹션) 에 반드시 그룹-level 리스크 한 줄을"
+                f" 포함해야 한다. 다음 중 적용 가능한 변수 최소 1개를 명시:\n"
+                f"  • 그룹 지배구조 개편 / 승계 절차 진행 상황\n"
+                f"  • 그룹 계열사 간 상호채무보증 / 순환출자 변경\n"
+                f"  • 정부의 그룹 차원 압박 (공정위 / 국세청 / 금감원 조사)\n"
+                f"  • 그룹 발 ESG 이슈 (계열사 사고 / 노조 / 환경)\n"
+                f"  • 그룹 핵심 계열사 (예: {chaebol_match}전자 / {chaebol_match}중공업)"
+                f" 의 실적 변동이 지주회사 가치에 미치는 영향\n"
+                f"두산 000150.KS 2026-05-18 같이 분기 실적 + 부채비율만 다루고"
+                f" 그룹 차원 변수를 0줄로 처리하는 패턴 금지 — 단일 종목"
+                f" 펀더멘털과 무관하게 그룹 발 변수가 5거래일 가격을 흔들 수"
+                f" 있는 게 chaebol 패턴의 정의다."
+            )
+
     # US naming directive — soft variant. US tickers like AAPL / NVDA are
     # recognizable on their own, but some symbols (SNDK = SanDisk, AVGO =
     # Broadcom, BRK-B = Berkshire Hathaway, GOOGL = Alphabet) do not

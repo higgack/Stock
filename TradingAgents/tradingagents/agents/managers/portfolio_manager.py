@@ -182,20 +182,48 @@ def _enforce_pm_override_discipline(
     Conservative on missing data: when analyst majority can't be
     determined (no readable stance from any report) we skip the check
     entirely. Better to let one false-negative pass than to incorrectly
-    flip a legitimate PM call."""
-    majority, voter_count = _analyst_majority_direction(state)
+    flip a legitimate PM call.
+
+    Defensive design (post 두산 000150.KS 2026-05-18 silent skip):
+    every step wrapped in try/except with INFO/WARNING logs so a
+    cryptic Pydantic / state-shape / regex bug doesn't degrade silently
+    into 'rule appears not to fire'. journalctl -u stock-bot | grep
+    pm-discipline tells you exactly which path executed."""
+    try:
+        majority, voter_count = _analyst_majority_direction(state)
+    except Exception as exc:
+        _pm_log.warning(
+            "pm-discipline: analyst-majority extraction failed (%s) — skipping check",
+            exc,
+        )
+        return decision, None
     if not majority:
+        _pm_log.info(
+            "pm-discipline: analyst majority indeterminate (no readable stances) — skipping check"
+        )
         return decision, None
 
     pm_dir = _rating_direction(decision.rating)
     if pm_dir == majority:
+        _pm_log.info(
+            "pm-discipline: PM=%s aligns with majority=%s (%d voters) — no adjustment",
+            decision.rating.value, majority, voter_count,
+        )
         return decision, None
     # Hold → Buy/Sell flip is also subject to the discipline (and the
     # other direction). The text covers any "opposite of analyst
     # majority" case.
-    if _override_trigger_present(decision.investment_thesis):
+    try:
+        has_trigger = _override_trigger_present(decision.investment_thesis)
+    except Exception as exc:
+        _pm_log.warning(
+            "pm-discipline: trigger-scan regex failed (%s) — treating as no-trigger to be safe",
+            exc,
+        )
+        has_trigger = False
+    if has_trigger:
         _pm_log.info(
-            "pm-discipline: PM=%s, majority=%s (%d voters), trigger present — no adjustment",
+            "pm-discipline: PM=%s vs majority=%s (%d voters), override trigger present — no adjustment",
             decision.rating.value, majority, voter_count,
         )
         return decision, None
@@ -215,13 +243,42 @@ def _enforce_pm_override_discipline(
         f" discipline' 규칙."
     )
     _pm_log.warning(
-        "pm-discipline: PM=%s overridden to %s — majority=%s (%d voters), no trigger",
+        "pm-discipline: PM=%s OVERRIDDEN to %s — majority=%s (%d voters), no trigger in rationale",
         decision.rating.value, target.value, majority, voter_count,
     )
-    adjusted = decision.copy(update={
+    # Pydantic v1/v2 compatibility: v1 uses .copy(update=...), v2 prefers
+    # .model_copy(update=...) (with .copy still working but deprecated).
+    # 두산 000150.KS 2026-05-18 may have failed silently here if v2's
+    # .copy() raised on the Enum field — try v2 first, fall back to v1.
+    new_fields = {
         "rating": target,
         "investment_thesis": decision.investment_thesis + "\n\n" + note,
-    })
+    }
+    try:
+        adjusted = decision.model_copy(update=new_fields)
+    except (AttributeError, TypeError):
+        try:
+            adjusted = decision.copy(update=new_fields)
+        except Exception as exc:
+            _pm_log.warning(
+                "pm-discipline: both model_copy and copy failed (%s) — falling back to in-place mutation",
+                exc,
+            )
+            # Last resort: mutate fields in-place. PortfolioDecision is a
+            # Pydantic model so setattr works; downstream render_pm_decision
+            # reads .rating and .investment_thesis fresh either way.
+            try:
+                decision.rating = target
+                decision.investment_thesis = (
+                    decision.investment_thesis + "\n\n" + note
+                )
+                adjusted = decision
+            except Exception as exc2:
+                _pm_log.error(
+                    "pm-discipline: in-place mutation failed too (%s) — returning unchanged decision (override NOT applied)",
+                    exc2,
+                )
+                return decision, None
     return adjusted, note
 
 

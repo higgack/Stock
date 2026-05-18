@@ -280,6 +280,20 @@ _KR_INDUSTRY_PEERS = {
     "Resorts & Casinos": [
         "035250.KS", "114090.KS",
     ],
+    # KR 지주회사 / 복합기업 (Industrials → Conglomerates) — surfaced by
+    # 두산 000150.KS 2026-05-18 case where no peer set existed and the
+    # analyst cargo-culted 기아 / 현대차 / 삼성화재 / LG (3 of 4 wrong
+    # industries: 자동차 / 보험). KR major holding companies listed by
+    # mkcap; covers 두산 (this case), 한화, GS, CJ, LG, SK, LS.
+    "Conglomerates": [
+        "000150.KS",  # 두산
+        "000880.KS",  # 한화
+        "078930.KS",  # GS
+        "001040.KS",  # CJ
+        "003550.KS",  # LG
+        "034730.KS",  # SK
+        "006260.KS",  # LS
+    ],
 }
 
 
