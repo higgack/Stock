@@ -56,7 +56,7 @@ from telegram.ext import (
     filters,
 )
 
-from trade import watchlist
+from trade import ignored, watchlist
 from trade.parser import parse_caption
 
 load_dotenv()
@@ -162,13 +162,16 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
   · 합산 ↔ 개별 양방향 링크 (수산화칼륨+탄산칼륨 ↔ 각 개별)
   · 같은 품목 다른 회사 (peer chip — 클릭 시 회사 뷰 자동 필터)
 
-<b>8. 명령어</b> (워치 명령은 봇과 <b>1:1 채팅(DM)</b>에서만 동작)
+<b>8. 명령어</b> (워치·ignore 명령은 봇과 <b>1:1 채팅(DM)</b>에서만 동작)
 /help · /start — 이 안내 (채널·DM 둘 다)
 /watch &lt;검색어&gt; — 품목+관련종목 둘 다 부분일치 시 DM (예: /watch 이오테크닉스)
 /watch item &lt;검색어&gt; — 품목만 매칭하고 싶을 때 (예: /watch item 라면)
 /watch company &lt;검색어&gt; — 관련종목만 매칭 (예: /watch company 삼양식품)
 /watch list — 현재 워치 목록
 /unwatch item|company &lt;검색어&gt; — 워치 제거
+/ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (BeOn 인사이트 등 무관 자료)
+/unignore &lt;msg_id&gt; — ignore 해제
+/ignored — 현재 ignore 목록
 
 <b>9. 자동화 systemd</b>
 • trade-bot — 실시간 메시지 수집
@@ -186,7 +189,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — health check이 시간 기반 dormancy 폐기, BeOn 발표 예정일 기준 사이클 누락만 알림 (자연 침묵 기간 false-alarm 제거)</i>
+<i>최종 갱신: 2026-05-17 — /ignore DM 명령 + 일일 미등록 알림 메시지에 처리 가이드 (새 RULE 요청 vs ignore 선택)</i>
 """
 
 
@@ -378,16 +381,20 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             reply_markup=_dm_keyboard(),
         )
         return
-    if first_word in ("/watch", "/unwatch"):
-        # Watch state is per-Telegram-user; a channel post has no
-        # personal user_id to attach it to. Reply once with the
-        # DM-only hint and a one-tap keyboard button into the bot DM.
+    if first_word in (
+        "/watch", "/unwatch",
+        "/ignore", "/unignore", "/ignored",
+    ):
+        # Per-user / per-operator state has no place in a channel post.
+        # Reply once with the DM-only hint and a one-tap keyboard
+        # button into the bot DM.
         await ctx.bot.send_message(
             chat_id=post.chat.id,
             text=(
-                "⚠️ <b>/watch · /unwatch는 봇과 1:1 채팅(DM)에서만 동작</b>합니다.\n"
+                "⚠️ <b>워치 · ignore 명령은 봇과 1:1 채팅(DM)에서만 동작</b>합니다.\n"
                 "아래 버튼을 누르면 봇과의 채팅이 열립니다 → <b>[START]</b> 누르고 "
-                "<code>/watch 이오테크닉스</code> 같이 입력."
+                "<code>/watch 이오테크닉스</code> 또는 "
+                "<code>/ignore 677</code> 같이 입력."
             ),
             parse_mode=ParseMode.HTML,
             reply_markup=_dm_keyboard(),
@@ -525,6 +532,101 @@ async def cmd_unwatch(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
 
+# ---------------------------------------------------------------------
+# Ignore-list commands (`/ignore`, `/unignore`, `/ignored`)
+# Operator marks msg_ids that aren't export/import data (BeOn 인사이트
+# promos etc.) so the daily 00:00 KST unstored-check stops listing
+# them. inbox.jsonl and media files are never touched — reversal via
+# /unignore is always safe.
+# ---------------------------------------------------------------------
+
+_IGNORE_USAGE = (
+    "사용법:\n"
+    "/ignore &lt;msg_id&gt; — 무관 자료(BeOn 인사이트 등) 일일 검사에서 제외\n"
+    "/unignore &lt;msg_id&gt; — 복구\n"
+    "/ignored — 현재 ignore 목록\n"
+    "예: 일일 검사 알림에서 'msg=677' 보이면 /ignore 677"
+)
+
+
+def _format_ignored_list() -> str:
+    ids = sorted(ignored.load())
+    if not ids:
+        return "📋 현재 ignore 목록: 0건\n\n" + _IGNORE_USAGE
+    header = f"📋 현재 ignore 목록: <b>{len(ids)}</b>건"
+    recent = ids[-10:]
+    lines = [
+        header,
+        "최근 10건: " + ", ".join(f"<code>{x}</code>" for x in recent),
+        "",
+        _IGNORE_USAGE,
+    ]
+    return "\n".join(lines)
+
+
+async def cmd_ignore(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    args = list(ctx.args or [])
+    if not args or args[0].lower() == "list":
+        await update.message.reply_text(
+            _format_ignored_list(), parse_mode=ParseMode.HTML
+        )
+        return
+    try:
+        mid = int(args[0])
+    except ValueError:
+        await update.message.reply_text(
+            f"<code>{_html.escape(args[0])}</code>는 숫자가 아님. "
+            f"msg_id (정수) 형식으로 입력하세요.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    added = ignored.add(mid)
+    if added:
+        msg = (
+            f"✅ msg <code>{mid}</code> ignore — "
+            f"다음 일일 검사부터 알림에서 제외"
+        )
+    else:
+        msg = f"이미 ignore 됨: <code>{mid}</code>"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def cmd_unignore(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    args = list(ctx.args or [])
+    if not args:
+        await update.message.reply_text(
+            _IGNORE_USAGE, parse_mode=ParseMode.HTML
+        )
+        return
+    try:
+        mid = int(args[0])
+    except ValueError:
+        await update.message.reply_text(
+            f"<code>{_html.escape(args[0])}</code>는 숫자가 아님. "
+            f"msg_id (정수) 형식으로 입력하세요.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    removed = ignored.remove(mid)
+    if removed:
+        msg = f"🗑 msg <code>{mid}</code> ignore 해제 — 다음 ingest 사이클에 다시 처리"
+    else:
+        msg = f"ignore 목록에 없음: <code>{mid}</code>"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def cmd_ignored(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    await update.message.reply_text(
+        _format_ignored_list(), parse_mode=ParseMode.HTML
+    )
+
+
 async def _notify_watchers(ctx: ContextTypes.DEFAULT_TYPE, caption_text: str) -> None:
     """Parse the caption with the live trade parser and DM every user
     whose watch pattern matches the resulting item/stocks. Failures
@@ -600,6 +702,9 @@ def main() -> None:
     app.add_handler(CommandHandler(["help", "start"], cmd_help))
     app.add_handler(CommandHandler("watch", cmd_watch))
     app.add_handler(CommandHandler("unwatch", cmd_unwatch))
+    app.add_handler(CommandHandler("ignore", cmd_ignore))
+    app.add_handler(CommandHandler("unignore", cmd_unignore))
+    app.add_handler(CommandHandler("ignored", cmd_ignored))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     log.info(

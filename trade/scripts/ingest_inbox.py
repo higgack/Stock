@@ -27,6 +27,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from trade import ignored as _ignored
 from trade.parser import parse_caption
 from trade.store import (
     alert_to_row,
@@ -110,6 +111,7 @@ def _ingest_group(
     group: list[dict],
     media_root: Path,
     counters: dict,
+    ignored_ids: set[int],
 ) -> None:
     """Resolve one album/solo into a single alert row + media paths."""
     captioned = [r for r in group if r.get("caption_present")]
@@ -123,6 +125,12 @@ def _ingest_group(
         counters["multi_caption_album"] += 1
 
     primary = captioned[0]
+    # Operator-curated ignore list — promo posts ([비온 인사이트] etc.)
+    # that aren't export/import alerts. Never reach store.db, never
+    # surface in the daily integrity check.
+    if primary.get("message_id") in ignored_ids:
+        counters["skipped_ignored"] += 1
+        return
     caption_text = primary.get("caption") or primary.get("text") or ""
     parsed = parse_caption(caption_text)
     if parsed is None:
@@ -190,16 +198,20 @@ def main() -> int:
     groups = _group_messages(rows)
     log.info("grouped into %d send units", len(groups))
 
+    ignored_ids = _ignored.load()
+    log.info("operator ignore list: %d entries", len(ignored_ids))
+
     counters = {
         "inserted": 0,
         "already_present": 0,
         "skipped_no_caption": 0,
+        "skipped_ignored": 0,
         "unparseable": 0,
         "multi_caption_album": 0,
         "with_warnings": 0,
     }
     for grp in groups:
-        _ingest_group(conn, grp, args.media_root, counters)
+        _ingest_group(conn, grp, args.media_root, counters, ignored_ids)
 
     log.info("ingest counters: %s", counters)
     s = stats(conn)

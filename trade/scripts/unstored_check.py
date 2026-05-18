@@ -30,6 +30,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from trade import ignored as _ignored
 from trade.store import open_db
 
 load_dotenv()
@@ -104,6 +105,7 @@ def find_unstored() -> list[dict]:
         finally:
             conn.close()
 
+    ignored_ids = _ignored.load()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=GRACE_HOURS)
     missing: list[dict] = []
     with INBOX_PATH.open(encoding="utf-8") as fh:
@@ -122,6 +124,10 @@ def find_unstored() -> list[dict]:
                 continue
             caption = r.get("caption") or r.get("text") or ""
             if not caption.strip():
+                continue
+            # Operator-curated ignore list — promo / off-topic posts
+            # the operator has chosen to drop with /ignore <msg_id>.
+            if r.get("message_id") in ignored_ids:
                 continue
             try:
                 key = (int(r["chat_id"]), int(r["message_id"]))
@@ -155,10 +161,15 @@ def format_alert(missing: list[dict]) -> str:
     if len(missing) > len(samples):
         lines.append(f"… 외 {len(missing) - len(samples)}건")
         lines.append("")
+    lines.append("→ 처리 방법:")
     lines.append(
-        "→ 이 캡션들을 Claude에 공유 → 새 RULE 추가 → "
-        "<code>rm ~/.trade/store.db && python -m trade.scripts.ingest_inbox</code> "
-        "로 복구."
+        "  • <b>새 포맷 변종</b> (실제 수출입 알림) → 캡션을 Claude에 공유 "
+        "→ 새 RULE 추가 → <code>rm ~/.trade/store.db && "
+        "python -m trade.scripts.ingest_inbox</code> 로 복구"
+    )
+    lines.append(
+        "  • <b>무관 자료</b> ([비온 인사이트] / 공지 등) → 봇 DM에 "
+        "<code>/ignore &lt;msg_id&gt;</code> → 다음부터 알림 제외"
     )
     msg = "\n".join(lines)
     # Telegram cap is 4096 UTF-16 units; truncate defensively.
