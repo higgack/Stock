@@ -430,16 +430,6 @@ with market-aware branches over per-market parallel functions.
   HARD GUARD covers this — no fabrication risk in the meantime.
   User confirmed will add when convenient.
 
-- **KR consensus implementation** (research complete — see Phase 1).
-  yfinance primary for KOSPI Top 100 (already returns `targetMeanPrice`
-  + `numberOfAnalystOpinions` + `recommendationMean` for `.KS`/`.KQ`
-  large/mid-caps); FnGuide CompanyGuide HTML scrape as fallback when
-  yfinance is empty. DART has ZERO sell-side consensus data, confirmed
-  — only regulatory filings, do not waste time querying it for target
-  prices. KIS Developers requires a 한국투자증권 brokerage account
-  (no-go for general users). Alpha Vantage / Finnhub free tiers don't
-  cover `.KS`/`.KQ` analyst aggregates.
-
 - **Hydrator-registry refactor for pre-fetch** (deferred but now urgent).
   After Phase 3 JP foundation, `build_instrument_context`'s data
   sources are: yfinance .info, yfinance averages, macro 9-series,
