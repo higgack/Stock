@@ -115,8 +115,10 @@ def _analyst_majority_direction(state: dict) -> tuple[str | None, int]:
 # (letting through a no-trigger override) is the bug we're trying to
 # fix in the first place. Be slightly inclusive.
 _OVERRIDE_TRIGGERS = [
-    # (a) 5-day technical extreme
-    re.compile(r"RSI[^0-9가-힣\n]*?([0-9]{2,3})"),  # any RSI value mentioned
+    # (a) 5-day technical extreme. Captures int + optional decimal so
+    # the >=75 / <=25 boundary check is accurate (RSI 25.5 must NOT
+    # trigger under Option A, only ≤25 does).
+    re.compile(r"RSI[^0-9가-힣\n]*?([0-9]{1,3}(?:\.[0-9]+)?)"),
     # (b) imminent catalyst — earnings / FOMC / specific regulatory event
     re.compile(
         r"(어닝|실적 발표|earnings)\s*(?:발표)?\s*(?:일정|window)?"
@@ -125,6 +127,21 @@ _OVERRIDE_TRIGGERS = [
     re.compile(r"FOMC|연준\s*금리\s*결정|기준금리\s*결정|BoJ\s*(?:회의|정책)"),
     re.compile(r"가이던스\s*(?:하향|컷|상향)|guide\s*(?:cut|raise)"),
     re.compile(r"승인\s*(?:연기|취소|보류)|규제\s*(?:반려|차단)"),
+    # Corporate-action / capital-return / catalyst keywords (expanded
+    # 2026-05-19 after 茅台 600519.SS surfaced 'price hike + 신제품'
+    # catalysts that the old narrow regex didn't catch). Korean variants
+    # cover KR/JP/TW/CN analyses; English variants cover US; 中文 variants
+    # cover CN_A/HK 出厂价 / 提价 patterns. All these qualify as RULE 13
+    # / RULE 10-14 dominant variable shifts within the 5-day horizon.
+    re.compile(r"가격\s*인상|가격\s*인하|가격\s*조정|가격\s*결정|价格\s*调整|提价|调价|出厂价"),
+    re.compile(r"신제품\s*출시|신제품\s*발표|新产品\s*发布|新品\s*上市|product\s*launch"),
+    re.compile(r"자사주\s*(?:매입|소각|취득)|버이백|share\s*buyback|回购|股票\s*回购"),
+    re.compile(r"배당\s*(?:인상|컷|증액|감액|특별)|special\s*dividend|分红\s*调整|派息\s*提高"),
+    re.compile(r"인수\s*합병|M&A|merger|acquisition|并购|MOU|大额\s*订单|大单"),
+    re.compile(r"FDA\s*승인|FDA\s*approval|판매\s*허가|临床\s*获批|临床\s*成功"),
+    re.compile(r"엔티티\s*리스트|entity\s*list|BIS\s*제재|export\s*control|出口\s*管制|SDN"),
+    re.compile(r"판호\s*발급|游戏\s*版号|NPC\s*版号"),
+    re.compile(r"감자|减资|증자|定增|配股|无偿|无偿配股|股本\s*缩减"),
     # (c) mismatch warning explicit reference
     re.compile(r"stance.?vs.?decision\s*mismatch|stance↔결정\s*mismatch"),
     re.compile(r"분석가\s*stance\s*vs\s*결정"),
@@ -140,7 +157,17 @@ def _override_trigger_present(rationale: str) -> bool:
     Returns True if any pattern matches. Conservative — RSI must be
     accompanied by a numeric value (so a generic 'RSI도 약세' without a
     threshold value doesn't count). This is the exact gap that lets
-    coal-mine '단기 위험 요소' prose flip a consistent analyst signal."""
+    coal-mine '단기 위험 요소' prose flip a consistent analyst signal.
+
+    Option A alignment (2026-05-19): RSI extreme threshold tightened
+    from >=70/<=30 to >=75/<=25 to match CLAUDE.md PM override
+    discipline text ('RSI > 75 for Buy-reverse to Underweight, RSI <
+    25 for Sell-reverse to Overweight'). Old wider gate (30) let
+    茅台 600519.SS RSI 29.85 sneak through as a Buy-side trigger
+    without true 5-day extreme. Tighter gate is more conservative —
+    reduces false-positive overrides, surfaces the additional catalyst
+    triggers (가격 인상 / 신제품 / 자사주 매입 / M&A 등) that were
+    expanded above as the proper Buy-reverse path."""
     if not rationale:
         return False
     text = rationale
@@ -149,12 +176,15 @@ def _override_trigger_present(rationale: str) -> bool:
         if not m:
             continue
         # Special handling for RSI: require a value AND the value must be
-        # in the extreme zone (>= 70 or <= 30) to satisfy "5-day technical
-        # extreme". 'RSI 47.37 중립' should NOT count as a trigger.
+        # in the extreme zone (>= 75 or <= 25) to satisfy "5-day technical
+        # extreme". 'RSI 29.85 oversold' should NOT count as a trigger
+        # under Option A (CLAUDE.md alignment). Catalysts like '가격
+        # 인상 + 신제품 출시' now carry the trigger weight via the new
+        # patterns above.
         if pat.pattern.startswith("RSI"):
             try:
                 val = float(m.group(1))
-                if val >= 70 or val <= 30:
+                if val >= 75 or val <= 25:
                     return True
             except (ValueError, IndexError):
                 pass
