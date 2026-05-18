@@ -1575,6 +1575,78 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 f" 뉴스 / 펀더멘털 / 결정) 에서 동일하게 사용하라."
             )
 
+        # Canonical 50일 / 200일 SMA (Rule F, 2026-05-19 SMIC 688981.SS
+        # surfaced). Same shape as canonical price + market cap above
+        # but for the moving averages. yfinance fiftyDayAverage /
+        # twoHundredDayAverage point-in-time values — analysts were
+        # producing slightly different SMA values (시장 50d ¥107 vs
+        # 펀더멘털 ¥107.49 미세 불일치) because each analyst's tool
+        # call fetched at slightly different timestamps. Inject the
+        # single canonical value so every section quotes the same.
+        sma50 = info.get("fiftyDayAverage")
+        sma200 = info.get("twoHundredDayAverage")
+        if isinstance(sma50, (int, float)) and sma50 > 0 \
+                and isinstance(sma200, (int, float)) and sma200 > 0:
+            base += (
+                f"\n\nCanonical 50일 / 200일 SMA (yfinance, point-in-time"
+                f" — 모든 섹션이 이 단일 값을 인용; 시장 / 펀더멘털 /"
+                f" 결정 노드 사이 SMA 값 mismatch 금지):\n"
+                f"  • 50일 SMA: {_sym}{_fmt.format(sma50)}\n"
+                f"  • 200일 SMA: {_sym}{_fmt.format(sma200)}\n"
+                f"같은 보고서에서 분석가들이 서로 다른 SMA 값 (예:"
+                f" 시장 50d ¥106.99 vs 펀더멘털 ¥107.49 — SMIC"
+                f" 688981.SS 2026-05-19) 을 인용하는 패턴 방지가"
+                f" 목적이다. 본인이 fetch 한 fresh 값보다 위 canonical"
+                f" 값을 우선 인용."
+            )
+
+        # Revenue / market cap sanity (Rule G, 2026-05-19 SMIC surfaced).
+        # yfinance .info totalRevenue 가 일부 .SS / .SZ / .HK 종목에서
+        # 단위 오류 (백만 ¥ 보고 vs 억 ¥ 보고) 발생. SMIC 688981.SS
+        # 케이스: yfinance totalRevenue 93.27억 ¥ — 실제 매출 ~580-700
+        # 억 ¥, 1Q 단독 매출이 176억 ¥ 라는 뉴스와 충돌 (분기 > 연간
+        # 불가능 → 단위 mismatch 확정). 분기-연간 sanity 가 LLM 한테
+        # 강하게 directive 되어야 fundamental multiples 의존 분석
+        # 차단됨.
+        revenue = info.get("totalRevenue")
+        if (revenue and market_cap
+                and isinstance(revenue, (int, float))
+                and revenue > 0):
+            ratio = revenue / market_cap
+            # 일반 종목 ratio 0.02-0.30 범위 (NVDA 0.02 / TSLA 0.07 /
+            # AAPL 0.11 / JPM 0.20). 0.015 이하 = 매출이 시총의 1.5%
+            # 미만 (yfinance 단위 보고가 ~10x 작은 케이스 또는 극단적
+            # 高PSR 종목; 둘 다 scrutiny 가치). 100 초과 = 매출이 시총의
+            # 100배 초과 (yfinance 단위 100x 큰 케이스, 매우 드뭄).
+            # SMIC 688981.SS 2026-05-19 케이스: ratio = 93억 ¥ / 9425억 ¥
+            # = 0.0099 → 정확히 catch.
+            if ratio < 0.015 or ratio > 100:
+                base += (
+                    f"\n\n⚠️ yfinance 매출 단위 의심 (HARD GUARD —"
+                    f" Rule G):\n"
+                    f"yfinance totalRevenue / marketCap 비율이 비정상"
+                    f" ({ratio:.4f}). 일반 종목 0.05-20 범위 outside.\n"
+                    f"가능한 원인:\n"
+                    f"  (a) yfinance 가 매출을 본화 단위 (백만 / 억) 다르게"
+                    f" 보고 — 특히 CN_A / HK 종목 빈도 높음\n"
+                    f"  (b) 회사가 최근 corporate action (대량 자본 변동)"
+                    f" 후 시총 ↔ 매출 일시 mismatch\n"
+                    f"분석에서 다음 금지:\n"
+                    f"  ❌ yfinance 매출 / PSR / EV-EBITDA / Comps의"
+                    f" 매출 기반 multiples 그대로 인용 (잘못된 단위"
+                    f" 기반 = 모두 misleading)\n"
+                    f"  ❌ '매출 X 억 ¥' 단정 표기 (단위 확정 안 됨)\n"
+                    f"올바른 처리:\n"
+                    f"  ✅ 분기 매출 (뉴스 / AKShare / Bloomberg 등 외부)"
+                    f" 과 cross-check. '1Q 매출 > 연간 매출' 모순 발생 시"
+                    f" 단위 mismatch 확정.\n"
+                    f"  ✅ 결론에 '매출 단위 데이터 mismatch — 펀더멘털"
+                    f" multiples 평가 보류, 다음 보고 주기 데이터 대기'"
+                    f" 한 줄 명시. SMIC 688981.SS 2026-05-19 정확히 이"
+                    f" 패턴 — yfinance FY25 매출 93억 ¥ vs 뉴스 1Q 매출"
+                    f" 176억 ¥, 4 분석가 모두 단위 mismatch 감지 못함."
+                )
+
         # Price-gap sanity check. yfinance's 50-day / 200-day averages
         # are computed from historical closes that should be
         # split-adjusted, so a current price that differs from either

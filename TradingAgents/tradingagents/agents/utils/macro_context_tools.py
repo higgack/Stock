@@ -290,18 +290,23 @@ def _value_is_suspect(ticker: str, value: float) -> bool:
 # by nature (50%+ swings normal during crises) so it stays out of
 # this list. Equity indices can move 20%+ in fast markets too.
 _MACRO_PCT_CHANGE_30D_LIMIT: dict[str, float] = {
-    "CL=F": 25.0,        # WTI: ±25% 30D is a major move (oil shock zone)
-    "BZ=F": 25.0,
-    "HG=F": 20.0,        # Copper
-    "GC=F": 15.0,        # Gold rarely moves 15%+ in 30D
-    "^TNX": 30.0,        # 10Y: 30% raw move = e.g. 4% → 5.2%, big rate shock
-    "^FVX": 30.0,
-    "DX-Y.NYB": 8.0,     # DXY moves ±5%/month, ±8%+ unusual
-    "KRW=X": 8.0,
-    "JPY=X": 8.0,
-    "CNY=X": 5.0,        # CNY tightly managed; ±5% 30D = PBoC reset
-    "TWD=X": 6.0,
-    "HKD=X": 1.5,        # HKD peg band ±0.5%/month
+    # 2026-05-19 tightened after 茅台 + SMIC 모두 WTI +21~22% 데이터를
+    # 분석가들이 무비판적으로 인용. 이전 25% threshold 가 너무 wide —
+    # +22% 도 통과해 ⚠️ 마커 안 붙음. 15% = oil shock 진입 임계값으로
+    # 더 보수적, false-positive 감수 가능 (real oil shock 은 흔히
+    # >15% 이고 sanity warning 이 도움 됨).
+    "CL=F": 15.0,        # WTI: 25 → 15 (oil shock zone 더 좁게)
+    "BZ=F": 15.0,        # Brent
+    "HG=F": 12.0,        # Copper: 20 → 12 (구리 1개월 ±12% 도 큰 move)
+    "GC=F": 10.0,        # Gold: 15 → 10 (gold 매월 ±10% = 위기 신호)
+    "^TNX": 25.0,        # 10Y: 30 → 25 (raw 25% = 4%→5% 정도 rate shock)
+    "^FVX": 25.0,
+    "DX-Y.NYB": 6.0,     # DXY: 8 → 6
+    "KRW=X": 6.0,        # USD/KRW: 8 → 6
+    "JPY=X": 6.0,        # USD/JPY: 8 → 6
+    "CNY=X": 4.0,        # CNY: 5 → 4 (tightly managed)
+    "TWD=X": 5.0,        # TWD: 6 → 5
+    "HKD=X": 1.0,        # HKD peg: 1.5 → 1.0 (peg band 깨지면 즉시 의심)
 }
 
 
