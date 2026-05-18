@@ -767,11 +767,16 @@ _INDEX_CSS = _BASE_CSS + """
 }
 .search-bar input:focus { border-color: var(--accent); }
 .search-bar button {
-  padding: 10px 14px; font-size: 14px; cursor: pointer;
-  background: var(--card); color: var(--fg-soft);
-  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 22px; font-size: 14px; font-weight: 500;
+  cursor: pointer; white-space: nowrap;
+  background: #22c55e; color: #ffffff;
+  border: 1px solid transparent; border-radius: 9999px;
+  transition: background 0.12s ease, transform 0.06s ease;
 }
-.search-bar button:hover { color: var(--fg); border-color: var(--accent); }
+.search-bar button:hover { background: #16a34a; }
+.search-bar button:active { transform: scale(0.97); }
+:root[data-theme="dark"] .search-bar button { background: #16a34a; }
+:root[data-theme="dark"] .search-bar button:hover { background: #15803d; }
 .status-line {
   color: var(--fg-soft); font-size: 13px; margin: 0 4px 16px;
 }
@@ -1111,46 +1116,104 @@ def _build_resolved_lookup() -> dict[tuple[str, str], dict]:
     return {(e["date"], e["ticker"]): e for e in mem.get("resolved", [])}
 
 
+_BENCHMARK_LABEL_CACHE: dict[str, str] = {}
+
+
+def _benchmark_label_for(ticker: str) -> str:
+    """Return the sector ETF symbol used as the alpha benchmark for this
+    ticker — e.g. 'SOXX' for AMAT, 'XLF' for JPM, '069500.KS' for KOSPI
+    blue chips. Falls back to the broad-market ETF (SPY / KOSPI 200 /
+    TOPIX 1306) when no sector mapping is available, then to plain 'SPY'
+    if everything fails.
+
+    Resolution mirrors auto_resolve._fetch_returns's benchmark logic so
+    the label shown on the dashboard matches the actual benchmark the
+    alpha was computed against. Cached per process — yfinance .info
+    calls are slow and the dashboard regen iterates many tickers."""
+    if ticker in _BENCHMARK_LABEL_CACHE:
+        return _BENCHMARK_LABEL_CACHE[ticker]
+    label = "SPY"
+    try:
+        from tradingagents.agents.utils.sector_strength_tools import _resolve_benchmark
+        bm = _resolve_benchmark(ticker)
+        if bm and bm[0]:
+            label = bm[0]
+    except Exception:
+        pass
+    _BENCHMARK_LABEL_CACHE[ticker] = label
+    return label
+
+
 def _render_outcome_html(resolved: dict | None) -> str:
     """Render the inline outcome line shown beneath an analysis card once
     its 5-trading-day window has been resolved. Empty when the entry is
     still pending or when the realized return couldn't be parsed.
 
-    Color cue: directional calls (Buy/Sell/Overweight/Underweight) get a
-    ✓ or ✗ marker depending on whether the SPY-relative alpha agreed
-    with the call direction. Hold calls are reported neutrally — there
-    was no directional bet to score."""
+    Format (post AMAT/ONTO display review 2026-05-18):
+        📒 5거래일 후 -1.6% (알파 +3.0%p vs SOXX) — 매도 추천 틀림 · 섹터대비 high
+
+    Three substitutions vs the previous format:
+      (a) '✗' / '✓' → '매수/매도 추천 맞음/틀림' — explicit Korean text
+          so the reader doesn't have to remember which marker means what.
+      (b) 'vs 섹터' → 'vs <specific ETF symbol>' (SOXX / XLF / KODEX
+          200 / TOPIX 1306 / SPY etc.) — names the actual benchmark
+          alpha was computed against, removes the abstraction.
+      (c) Adds '섹터대비 high / low' so the magnitude direction is
+          stated independently of whether the bot's call matched.
+
+    Color cue unchanged: directional calls get hit/miss CSS class
+    depending on whether alpha agreed with the call direction. Hold
+    calls remain neutral (no directional bet to score)."""
     if not resolved:
         return ""
     raw = (resolved.get("raw") or "").strip()
     alpha = (resolved.get("alpha") or "").strip()
     rating = (resolved.get("rating") or "").lower()
+    ticker = (resolved.get("ticker") or "").strip()
     if not raw or raw == "n/a":
         return ""
 
     cls = "outcome"
-    marker = ""
+    verdict_text = ""
     alpha_num = _parse_pct(alpha)
-    if alpha_num is not None:
+    if alpha_num is not None and ticker:
+        # Direction verdict (방향 맞음/틀림) based on alpha sign.
+        # Magnitude (섹터대비 high/low) describes the stock's alpha
+        # independently of the call — high means the stock outperformed
+        # the sector, low means it underperformed. Magnitude is the same
+        # regardless of the call's direction; only the verdict ('맞음 /
+        # 틀림') flips between Buy and Sell sides.
+        magnitude = "섹터대비 high" if alpha_num > 0 else (
+            "섹터대비 low" if alpha_num < 0 else "섹터대비 동등"
+        )
         if rating in ("buy", "overweight"):
-            cls += " hit" if alpha_num > 0 else " miss"
-            marker = " ✓" if alpha_num > 0 else " ✗"
+            hit = alpha_num > 0
+            cls += " hit" if hit else " miss"
+            direction = "매수 추천 맞음" if hit else "매수 추천 틀림"
+            verdict_text = f"{direction} · {magnitude}"
         elif rating in ("sell", "underweight"):
-            cls += " hit" if alpha_num < 0 else " miss"
-            marker = " ✓" if alpha_num < 0 else " ✗"
-        # Hold gets no marker — it's an explicit "no directional bet" call.
+            hit = alpha_num < 0
+            cls += " hit" if hit else " miss"
+            direction = "매도 추천 맞음" if hit else "매도 추천 틀림"
+            verdict_text = f"{direction} · {magnitude}"
+        # Hold gets neutral text describing the magnitude only — no
+        # 'correct/incorrect' since Hold doesn't make a directional bet.
+        elif rating == "hold":
+            verdict_text = f"보유 추천 · {magnitude}"
 
-    # Same '알파 X%p' phrasing as the headline stats card so the two
-    # surfaces use one vocabulary. '(벤치 X%p)' was ambiguous; '(알파 X%p
-    # vs 섹터)' explicitly identifies the metric and its benchmark.
+    # Benchmark symbol — actual ETF used to compute alpha. Cached
+    # per-process to avoid re-calling yfinance on every dashboard regen.
+    bench_label = _benchmark_label_for(ticker) if ticker else "섹터"
+
     alpha_part = (
-        f" (알파 {_html.escape(alpha)}p vs 섹터)"
+        f" (알파 {_html.escape(alpha)}p vs {_html.escape(bench_label)})"
         if alpha and alpha != "n/a"
         else ""
     )
+    verdict_part = f" — {_html.escape(verdict_text)}" if verdict_text else ""
     return (
         f'<div class="{cls}">📒 5거래일 후 '
-        f'{_html.escape(raw)}{alpha_part}{marker}</div>'
+        f'{_html.escape(raw)}{alpha_part}{verdict_part}</div>'
     )
 
 
