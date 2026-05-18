@@ -17,14 +17,97 @@ For **any** request (analysis output, feature idea, bug report, refactor):
 3. **After explicit commit**: stage, commit, and push to the current
    `claude/...` branch. Open / update the draft PR if one doesn't exist.
 
-## Per-ticker reviews are SYSTEM-WIDE rule changes
+## ⛔ UNIVERSAL CHANGES ONLY — every change applies to every market
 
-When the user shares a single analysis output (e.g. 삼성전기 2026-05-17)
-and asks for a review, the resulting fixes are **always universal
-rules**, never ticker-specific patches. The ticker that exposed the
-issue is cited in the commit body for traceability, but the fix
-applies to every future analysis of every ticker that hits the same
-code path. Specifically:
+**This is the single most important rule in this file. Read it first.**
+
+Every change shipped to this codebase — prompt rule, polish step,
+data-source integration, dashboard surface, helper module, schema,
+configuration default — **applies universally to US + KR + JP (+
+future CN/EU) by default**. Market-specific code is an exception
+that requires explicit justification, not the default.
+
+User confirmed this principle 2026-05-18: "모든 변경은 universal
+변경임" — embed it permanently here so no future Claude session
+backslides into ticker-specific or market-specific patches when a
+universal rule would do.
+
+Concretely:
+
+1. **Default behavior**: when in doubt, make the rule apply to all
+   markets. Even when surfaced by a single-market case (e.g. a 두산
+   bug exposed by a KR analysis), the resulting commit should ship
+   the fix in code paths that ALL markets traverse — not branch
+   it behind `if market == "KR"`.
+
+2. **Market-specific code requires a documented data-source reason**:
+   - DART / EDINET / Naver / Kabutan / BoK ECOS / FRED / pykrx
+     are external APIs only one market consumes — code touching
+     them is naturally market-gated.
+   - Korean / Japanese language output (RULE 9 chaebol, 백만 polish,
+     RULE 11 JP keiretsu deferred) is a regional-output specialization,
+     not a different evaluation rule.
+   - Anything else — RULEs 1-8, PM discipline, beta labels, polish
+     steps for unlabeled series, canonical 시가총액, Stop Loss
+     formatting, dashboard accuracy criterion, outcome verdict text,
+     auto_resolve gate, search box behavior, ETF benchmark display
+     — is universal. No `if market ==` gate.
+
+3. **Cross-market parity audit on every commit**: when adding any
+   guard or rule, ask "does this apply to US + KR + JP equally?" If
+   yes, no gate. If no, document WHY in the commit body. The
+   commit 41068ca "universal guard symmetry: 6 gaps closed" is the
+   canonical example — it found 6 US-side asymmetric weaknesses
+   where KR had richer coverage (mandatory peer set, naming
+   directive, RULE 10/11 etc.) and shipped equivalent US support
+   in one commit.
+
+4. **Commit message phrasing**: every commit body MUST contain the
+   phrase "Rule applies to all analyses going forward" (or
+   equivalent — "applies universal-by-default", "covers US + KR +
+   JP", etc.). This is the structural enforcement of rule (1) —
+   if the phrase doesn't fit, the change probably IS too
+   market-specific and needs broadening before commit.
+
+5. **Per-ticker review fixes are system-wide**: when the user
+   shares a single analysis output (코미코 / Toyota / 두산 / JPM
+   /etc.) and asks for review, the resulting fixes are ALWAYS
+   universal — never ticker-specific. The ticker exposing the
+   issue is cited in the commit body for traceability; the fix
+   applies to every future analysis of every ticker that hits the
+   same code path.
+
+6. **What this looks like in practice — recent examples**:
+   - 코미코 2026-05-17 surfaced 5 issues (corp action staleness,
+     peer multiples missing, etc.). Commits c6eeef7 + 41068ca
+     fixed all 5 universally — every market gets the corp-action
+     HARD GUARD (KR DART scan + JP EDINET scan + universal yfinance
+     .splits), every market gets pre-fetched peer multiples, every
+     market gets the canonical 현재가/시가총액 directive.
+   - Toyota 7203.T 2026-05-18 surfaced 6 (EDINET fabrication,
+     market cap divergence, PM override discipline violation,
+     4-digit comma break, Comps subject row, beta label). Commit
+     1612993 fixed all 6 universally — Rule A DATA OFFLINE applies
+     to KR + JP + future CN keys, canonical market cap uses
+     market-aware currency rendering, PM discipline is code-enforced
+     for every analysis regardless of market.
+   - 두산 000150.KS 2026-05-18 surfaced 8 (백만 unit, Conglomerates
+     peer set, chaebol RULE 9 skip, PM discipline silent no-op,
+     부채비율 배 unit, etc.). Commit 7d6824c fixed all 8 with
+     universal-default polish steps + PM discipline hardening
+     applying to US/KR/JP, plus appropriately KR-specific guards
+     (재벌, 백만) with documented reasons.
+
+Without this principle the codebase would accrete N ticker-specific
+shims instead of converging on robust universal rules. The bot is
+consumed by many users (channel subscribers) and many tickers, but
+the user only sees one analysis at a time — each review must produce
+a fix that's seen by the next thousand analyses.
+
+## Per-ticker reviews are SYSTEM-WIDE rule changes (legacy section header — see rule 5 above)
+
+Same content as rule 5 above. Keep the section header so old links
+into this file still resolve. Mechanics:
 
 - A bug surfaced by a US ticker fixes the US + KR + JP + CN code
   path, not just the US one. Phase-3 markets will inherit the fix
