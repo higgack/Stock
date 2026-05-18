@@ -303,7 +303,7 @@ The user has accidentally pasted API keys in chat multiple times. When discussin
 - Never echo or quote the user's real key values back
 - Recommend revocation if a real key was exposed
 
-## Multi-market expansion (US → KR → JP → CN)
+## Multi-market expansion (US → KR → JP → TW → CN)
 
 Phase tracking — what's done, what's blocking the next phase:
 
@@ -345,11 +345,73 @@ Phase tracking — what's done, what's blocking the next phase:
 - Needs user-supplied: `EDINET_API_KEY` (free at https://disclosure2.edinet-fsa.go.jp/), `FRED_API_KEY` (free at https://fredaccount.stlouisfed.org/). Kabutan needs no key.
 - Phase 3 validation: pending — `/7203.T` (Toyota), `/6758.T` (Sony), `/8306.T` (MUFG) will be the first three test cases once keys are loaded.
 
-**Phase 4 — CN expansion** (further out)
-- Same shape: market-specific benchmark mapping + data source adapters
-- CSI 300 sector mapping, Tushare / akshare for filings + news
+**Phase 4-TW — Taiwan expansion (foundation + clients + RULE 14 shipped)**
+- User chose TW as Phase 4 priority 2026-05-18 after comparison vs CN:
+  TW has no GFW / no geofence, yfinance US-quality coverage on large/
+  mid-caps, official MOPS disclosure portal freely accessible, cleaner
+  industry policy variables, ADR cross-listings (TSMC↔TSM etc.) for
+  reader recognition. Expected analysis quality ~90% (JP-level), vs
+  CN ~70%.
+- Ticker / classification: `bot/market.py` has `_TW_ENGLISH_ALIAS`
+  (60+ aliases — TSMC, MediaTek, HonHai / Foxconn, UMC, Quanta,
+  Pegatron, Largan, Fubon, Cathay, Evergreen, AVC, Auras, Tripod,
+  Unimicron, ASE, Powertech, AUO, Innolux, etc.) + `_TW_INDUSTRY_PEERS`
+  (25 industries, tech-heavy). `MARKET_CONFIG['TW']` uses TWD / NT$
+  / 0050.TW broad benchmark.
+- Sector strength: `_TW_INDUSTRY_OVERRIDES` maps yfinance industries
+  to Yuanta + Fubon TW sector ETFs (0053 electronics, 0055 financial,
+  00891 semiconductor ESG, 0050 broad). `_TW_BROAD_FALLBACK = ('0050.TW',
+  'TAIEX 50 (0050)')`.
+- Macro: TW-tilted 9-series in `_MACRO_SERIES_TW` (USD/TWD · TAIEX
+  ^TWII · 美 10Y · VIX · WTI · 구리 · USD/JPY · USD/CNY · SOXX) —
+  SOXX included because TW market cap is ~60% TSMC + MediaTek + OSAT
+  chain, all directly tied to the global semi cycle.
+- FRED client extended with `_SERIES_TW`: CBC 重貼現率 + TW 10Y +
+  TW CPI YoY via OECD mirror. Same FRED_API_KEY as JP.
+- MOPS client (`bot/mops_client.py`) — TWSE/TPEx official disclosure
+  portal. 重大訊息 + 內部人持股 + next-earnings window (TW fiscal-
+  year-end 12/31). No API key. ROC date → Gregorian conversion.
+- 鉅亨網 client (`bot/cnyes_client.py`) — TW's largest 繁體中文
+  financial news portal, per-ticker tag pages. Same schema as Naver
+  / Kabutan. No API key.
+- `build_instrument_context` injections (TW branch): TW naming
+  directive (longName + ticker, ADR cross-listing note), TW currency
+  directive (TWD/NT$, 兆/億/万 元, financialCurrency mismatch warning),
+  MOPS 重大訊息 / 內部人持股 / 次期 보고 윈도 block, 鉅亨網 뉴스
+  block, FRED TW 매크로 block.
+- `get_market_signals_for` TW path: yfinance only (no scrape fallback
+  yet; cnyes consensus scrape would be Phase 4-TW-E expansion if
+  yfinance proves insufficient for mid-cap TW names during validation).
+- `has_recent_news` TW fallback: cnyes when yfinance .news returns 0.
+- `fundamentals_analyst.py` RULE 14 (TW INDUSTRY-SPECIFIC POLICY /
+  MACRO VARIABLES — TW ONLY): 14 industries with single dominant
+  variable (半導體 Foundry → 美 對中 수출규제 + AI capex 사이클 +
+  USD/TWD; IC 設計 → 5G/AI smartphone 사이클; OSAT → CoWoS capacity;
+  EMS → iPhone + AI 서버; 散熱 → NVIDIA Blackwell 채택률; PCB →
+  ABF substrate; 광학 → iPhone camera; 패널 → DSCC index + 한·중
+  panel 가동률; 金融 → CBC 重貼現率 + 생보 USD/TWD 손익; 海運 →
+  SCFI; 通信 → 5G ARPU; 石化 → 油價 + 中国 PE/PP 수요; 自動車 →
+  Toyota brand + USD/TWD; Biotech → FDA + Medicare). ADR / .TW
+  multiples mixing FORBIDDEN.
+- `analyzer._display_ticker` TW branch: longName prefix ("Taiwan
+  Semiconductor Manufacturing Company / 2330.TW").
 
-## Universal guard symmetry (US ↔ KR ↔ JP)
+**Phase 4-CN — China + HK expansion (deferred)**
+- After TW validation lands, start CN expansion. User-confirmed scope
+  2026-05-18: HK + A주 대형, AKShare-based data clients, Tushare
+  deferred. Expected quality ~70-75% (lower than TW due to GFW +
+  weaker free API ecosystem + policy-shock event volatility).
+- Same shape: market-specific benchmark mapping + data source adapters
+- CSI 300 + Hang Seng sector mappings, AKShare for filings + news +
+  consensus (no API key needed), FRED for LPR + CPI (same key as JP/TW).
+- RULE 13 (CN INDUSTRY-SPECIFIC POLICY): 백주 / 4대 은행 / 부동산 /
+  Internet VIE / 半導體 國産代替 / EV 補助金 / 锂电池 / 光伏 / 보험 /
+  통신 / 항공 / 红筹 vs H-share vs ADR vs VIE structure 인지.
+- Need user-supplied: none planned (AKShare key-less; FRED already
+  registered). Tushare deferred unless AKShare reliability issues
+  surface during validation.
+
+## Universal guard symmetry (US ↔ KR ↔ JP ↔ TW)
 
 All structural guards added during KR/JP expansion now also cover US,
 preventing US-side asymmetric weakness. Reflect this in any future

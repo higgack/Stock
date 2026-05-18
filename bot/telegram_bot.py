@@ -717,7 +717,7 @@ yfinance (15년 캐시) · Alpha Vantage (영문) · 한국 네이버 뉴스 · 
 
 ━━━━━━━━━
 <b>【7. 안정성 (자동)】</b>
-subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 1~12 (산업정책·자본잠식·콤마·연도순·PER 설명·분기합 sanity) · 재벌 15곳 자동→RULE 9 · stance 결론우선 · 섹터강도 차단 · 컨센서스 staleness · 코퍼레이트액션 HARD GUARD 3중 (DART/EDINET+yfinance .splits) + LLM 위반 시 출력 banner 자동 · EPS/PER 재계산 금지 · 소유구조 환각 차단 · Comps PEER SET 137 산업+multiples · PM override discipline 코드-강제 · 출력 polish (백만→만 원·부채비율 배→%·Stop Loss 콤마 bold 포함·4자리 콤마 strip) · canonical 현재가/시총 · 베타 라벨 · cargo-cult 뉴스 차단 · API 키 부재→DATA OFFLINE
+subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 1~14 (미한일대 산업정책·자본잠식·콤마·연도순·PER 설명·분기합 sanity) · 재벌 15곳 자동→RULE 9 · stance 결론우선 · 섹터강도 차단 · 컨센서스 staleness · 코퍼레이트액션 HARD GUARD 3중 (DART/EDINET+yfinance .splits) + LLM 위반 시 출력 banner 자동 · EPS/PER 재계산 금지 · 소유구조 환각 차단 · Comps PEER SET 162 산업+multiples · PM override discipline 코드-강제 · 출력 polish · canonical 현재가/시총 · 베타 라벨 · cargo-cult 뉴스 차단 · API 키 부재→DATA OFFLINE
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
@@ -747,8 +747,9 @@ subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
  • 한국 — Phase 0~2.5 완료 (KODEX/DART/FnGuide/KRX flow/외국인·공매도 추이/BoK ECOS/Naver)
- • 일본 — Phase 3 가동 (별칭 50+/TOPIX-17/EDINET/Kabutan 컨센·뉴스/FRED/JPY 디렉티브/RULE 11). EDINET 키 등록 시 풀가동
- • 중국 — Phase 4 예정
+ • 일본 — Phase 3 가동 (별칭 50+/TOPIX-17/EDINET/Kabutan/FRED/RULE 11). EDINET 키 등록 시 풀가동
+ • 대만 — Phase 4-TW 가동 (별칭 60+/Yuanta ETF/MOPS/鉅亨網/FRED TW/RULE 14, ADR cross-listing 인지)
+ • 중국 — Phase 4-CN 다음 (HK + A주 대형, AKShare 기반)
 """
 
 
