@@ -51,13 +51,21 @@ log = logging.getLogger("bot.gemini_cache")
 
 # Gemini explicit caching minimum token threshold (model-dependent).
 # Gemini 2.5 Pro: 4096 tokens minimum for the cached content. Below
-# this threshold, caches.create() returns INVALID_ARGUMENT. We use
-# char-based heuristic (1 token ≈ 3-4 chars for mixed Korean/English)
-# so 4000 chars ≈ 1100-1300 tokens — well above the floor with buffer.
-# (Actually Gemini 2.5 Pro minimum is 4096 tokens which is ~12K-16K
-# chars; we set a conservative 5000 char threshold to avoid attempting
-# cache creation on small contexts that would fail.)
-_MIN_CONTEXT_CHARS = 5000
+# this threshold, caches.create() returns INVALID_ARGUMENT.
+#
+# Char-to-token heuristic for mixed Korean/English: ~2.5-3 chars per
+# token (한국어 1 글자 ≈ 1 토큰, 영어 1 토큰 ≈ 4-5 chars). 4000 chars
+# ≈ 1300-1600 tokens. Gemini 2.5 Pro 의 실제 minimum 은 4096 tokens
+# 인데 이는 ~12-16K chars 정도. 5000 chars threshold (이전) 는 너무
+# 보수적 — 노바렉스 194700.KS 2026-05-19 케이스에서 context 4460 chars
+# 가 threshold 미달로 cache skip → 저커버리지 KR 종목 (뉴스/감정 skip)
+# 이 caching 효과를 못 받음.
+#
+# Fix L (2026-05-19) — threshold 5000 → 4000. Gemini API 호출 자체
+# 가 4096 token 미달 시 INVALID_ARGUMENT 던지므로 우리 threshold 가
+# 정확히 API floor 와 일치할 필요 없음 — 시도하고 실패해도 graceful
+# fallback (None 반환 + 경고 log). 더 많은 종목이 caching 효과 받음.
+_MIN_CONTEXT_CHARS = 4000
 
 # Cache TTL — Gemini hard caps at 60 minutes for explicit caches.
 # Set slightly lower (50 min) so we don't race against expiration

@@ -543,6 +543,36 @@ _KR_INDUSTRY_PEERS = {
     "Drug Manufacturers - General": [
         "207940.KS", "068270.KS", "326030.KS",
     ],
+    # Fix I (2026-05-19 노바렉스 194700.KS surfaced) — KR pharma /
+    # health / nutraceutical 종목들이 yfinance 가 'Specialty Chemicals'
+    # / 'Drug Manufacturers - Specialty & Generic' / 'Personal Products'
+    # / 'Packaged Foods' 중 어디로 분류할 지 예측 불가. 모든 카테고리에
+    # KR health 종목 매핑 추가 → 노바렉스 / 콜마비앤에이치 등이 어느
+    # 분류로 떨어지든 적절한 health peers 받음.
+    "Drug Manufacturers - Specialty & Generic": [
+        "170900.KS",  # 동아ST
+        "271980.KS",  # 제일약품
+        "002310.KS",  # 아세아제지 (대원제약 우선주 등은 일부 매핑 까다로움)
+        "194700.KS",  # 노바렉스 — 자체 OK (subject 필터 됨)
+        "200130.KS",  # 콜마비앤에이치
+        "183490.KQ",  # 엔지켐생명과학
+    ],
+    "Personal Products": [
+        "051900.KS",  # LG생활건강
+        "090430.KS",  # 아모레퍼시픽
+        "192820.KS",  # 코스맥스
+        "200130.KS",  # 콜마비앤에이치
+        "161890.KS",  # 한국콜마
+        "194700.KS",  # 노바렉스 (건기식 ODM)
+    ],
+    "Packaged Foods": [
+        "097950.KS",  # CJ제일제당
+        "004370.KS",  # 농심
+        "007310.KS",  # 오뚜기
+        "049770.KS",  # 동원F&B
+        "005180.KS",  # 빙그레
+        "271560.KS",  # 오리온
+    ],
     "Biotechnology": [
         "207940.KS", "068270.KS", "326030.KS", "REGN", "VRTX",
     ],

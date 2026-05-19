@@ -289,7 +289,28 @@ def get_analyst_directive() -> str:
         " (3) 결론 마지막 verdict 라인은 '5거래일 horizon' 관점 명확히 안고 작성."
         " 펀더멘털 결론에 '장기 보유 의견' / '중장기 관점' 톤 사용 금지 — 그건"
         " 12개월 thesis 이고 본 봇의 evaluation grid 와 무관. 결론에 12개월"
-        " thesis 톤이 섞이면 reader 가 5거래일 vs 12개월 mixed signal 로 오인."
+        " thesis 톤이 섞이면 reader 가 5거래일 vs 12개월 mixed signal 로 오인.\n"
+        " (4) Generic narrative 변수 사용 금지 (Fix K 강화, 2026-05-19 노바렉스"
+        " 194700.KS surfaced): '수요 변동' / '경쟁 심화' / '시장 트렌드 변화' /"
+        " '거시 환경 변화' / '경기 사이클 영향' 같은 abstract / generic 변수만"
+        " 적은 결론은 위 (2) 의 4 카테고리 (산업 dominant / imminent catalyst /"
+        " 단기 수급 / 기술 extreme) 중 어느 것에도 해당 안 됨 → **RULE 위반**."
+        " 노바렉스 케이스: 펀더멘털 결론에 '건강기능식품 시장의 단기적인 수요"
+        " 변동 및 경쟁 심화가 단기 가격 방향을 결정' 만 적혀 specific catalyst"
+        " 부재 — 5거래일 horizon 분석으로 의미 없음.\n"
+        " ✅ 정답 예시 (4 카테고리 중 specific 변수 1개):\n"
+        "  • '6월 정기보고서 발표 D-X 의 어닝 surprise 가능성'\n"
+        "  • '외국인 5거래일 누적 +50억 / -30억 매수 방향'\n"
+        "  • 'RSI 78 과매수 zone — 단기 조정 가능성'\n"
+        "  • 'KRX 시장경보 단기과열 분류 — 5일 정상 가격 분석 보류'\n"
+        "  • '韓 정부 K-바이오 보조금 발표 D-3' (산업 dominant)\n"
+        " ❌ 금지 예시 (generic / 결정 불가):\n"
+        "  • '수요 변동' / '경쟁 심화' / '시장 트렌드'\n"
+        "  • '회사의 견고한 펀더멘털' / '안정적인 성장'\n"
+        "  • '거시 환경 불확실성' (구체적 지표 없으면 RULE 위반)\n"
+        " Specific 변수 1개도 명시 못 하면 'HOLD + 5거래일 horizon 의 dominant"
+        " driver 없음, 추가 모니터링 권고' 한 줄로 결론 마무리 — generic"
+        " narrative 로 fallback 금지."
     )
 
 
@@ -1414,7 +1435,29 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             f" cannot name 3 such tickers from memory, write ONE honest"
             f" sentence ('국내 직접 경쟁사 부재 — 글로벌 비교 보류') and"
             f" skip the Comps section. Fabricated peers worse than no"
-            f" peers."
+            f" peers.\n"
+            f"\n"
+            f"⚠️ INDUSTRY MISCLASSIFICATION CHECK (Fix I 보강, 2026-05-19"
+            f" 노바렉스 194700.KS surfaced): yfinance 의 industry tag 가"
+            f" 회사의 실제 business 와 명확히 불일치할 수 있다 (yfinance"
+            f" 의 GICS-style 분류는 ODM/OEM 회사를 잘못 카테고리로 분류"
+            f" 빈도 높음). 노바렉스 케이스: 회사는 건강기능식품 ODM/OEM"
+            f" 인데 yfinance 가 'Specialty Chemicals' 로 분류 → MANDATORY"
+            f" PEER SET 이 동진쎄미켐 / 솔브레인 등 반도체 소재 회사를"
+            f" 강제 inject. 분석가가 그대로 인용 = misleading.\n"
+            f"  분석가는 회사 longName / 산업 description (instrument_context"
+            f" 의 'company name' 필드 + 본문) 과 위 yfinance industry"
+            f" '{industry}' 가 자명히 다른 카테고리이면 (예: '건강기능식품'"
+            f" longName 인데 industry='Specialty Chemicals'),\n"
+            f"  ❌ 위 MANDATORY PEER SET (아래에 inject 된 ticker 들) 을"
+            f" 그대로 인용 금지\n"
+            f"  ✅ 'yfinance industry 분류 의심 — 회사 실제 business 와"
+            f" 不일치 (longName 기반 판단). Comps peer set 부재로 처리'"
+            f" 한 줄 명시 + Comps 표 자체 omit\n"
+            f"  ✅ 또는 globally-recognized 직접 경쟁사 3개 (예: 노바렉스"
+            f" → 콜마비앤에이치 / 코스맥스엔비티 / 종근당건강) 본인 지식"
+            f" 으로 listing — 단 이 경우 'yfinance industry 미스매치 회피'"
+            f" 명시 의무"
         )
 
         # MANDATORY PEER SET — when we have a curated peer list for
@@ -1797,6 +1840,19 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             if wk_low == 0 or (isinstance(px, (int, float)) and px > 0
                                 and wk_low < px * 0.01):
                 wk_corrupt.append(f"52주 최저: {_sym}{_fmt.format(wk_low)}")
+            # Fix H (2026-05-19 노바렉스 194700.KS surfaced): 52주 최저가
+            # 가 현재가보다 클 수 없음 (자동 갱신 되어야 함). 만약 52w
+            # low > current 면 yfinance 데이터 corruption 또는 corp
+            # action 진행 중 + historical series stale. 노바렉스 케이스:
+            # current ₩10,140 vs 52w low ₩11,500 — 현재가가 52주 최저
+            # 보다 약 12% 낮음. 자동 detect.
+            if (isinstance(px, (int, float)) and px > 0
+                    and wk_low > px * 1.005):  # 0.5% 버퍼 (intraday tick)
+                wk_corrupt.append(
+                    f"52주 최저 {_sym}{_fmt.format(wk_low)} > 현재가"
+                    f" {_sym}{_fmt.format(px)} (어떤 종목도 current <"
+                    f" 52w low 불가능 — 데이터 stale 또는 corp action 의심)"
+                )
         if isinstance(wk_high, (int, float)) and isinstance(px, (int, float)):
             # 52주 최고가 < currentPrice 면 일반적으로 불가 (current 가
             # 새 52주 최고가 갱신 case 만 valid — 그러나 일반적으로
@@ -1913,20 +1969,39 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             if gap <= 0.30:
                 continue
             direction = "below" if px < sma else "above"
+            # Fix J upgrade (2026-05-19 노바렉스 194700.KS surfaced) —
+            # ⚠️ → ⛔ HARD GUARD. 노바렉스 200d gap 36% (current ₩10,140
+            # vs 200d ₩15,958) 였는데 분석가가 banner 를 silent omit 한
+            # 채 MACD/RSI/EMA/Bollinger 모두 매수 신호로 인용. 단순
+            # warning 으로는 약함 — Fix E (macro suspect) 처럼 narrative
+            # cite 자체 금지로 강화.
             base += (
-                f"\n\n⚠️ PRICE GAP SANITY — current price"
-                f" {_sym}{_fmt.format(px)} is {gap*100:.0f}%"
+                f"\n\n=== ⛔ PRICE GAP SANITY (HARD GUARD — Fix J 강화) ===\n"
+                f"current price {_sym}{_fmt.format(px)} is {gap*100:.0f}%"
                 f" {direction} the {window_label}"
-                f" {_sym}{_fmt.format(sma)}. This usually"
-                f" indicates a stock-split adjustment issue in"
-                f" the historical price series (yfinance KR / JP"
-                f" sometimes lags), not a real ~{gap*100:.0f}%"
-                f" intra-window move. DO NOT build a directional"
-                f" thesis on 10-EMA / 50-SMA / 200-SMA / MACD /"
-                f" Bollinger comparisons that hinge on this gap;"
-                f" quote the canonical current price + recent"
-                f" realized volatility instead, and explicitly"
-                f" note the data quality caveat in the report."
+                f" {_sym}{_fmt.format(sma)}. 이 정도 gap 은 stock-split"
+                f" adjustment lag / corp action / 거래정지 후 가격"
+                f" reset 등의 데이터 quality 문제 의심 — 일반적인 추세"
+                f" 변동 아님.\n\n"
+                f"다음 사용 절대 금지 (RULE 위반):\n"
+                f"  ❌ 10 EMA / 50 SMA / 200 SMA 비교 또는 cross 신호"
+                f" (골든/데드 크로스 등) 인용\n"
+                f"  ❌ MACD / RSI / Bollinger 밴드 / ATR 기반 매수/매도"
+                f" 신호 narrative\n"
+                f"  ❌ '단기 상승 모멘텀' / '하락 추세 지속' / '과매수/"
+                f"과매도' 같은 directional 톤 결론 — 데이터 자체가 stale"
+                f" 인데 추세 해석 의미 없음\n\n"
+                f"올바른 처리:\n"
+                f"  ✅ canonical current price ({_sym}{_fmt.format(px)})"
+                f" 한 줄 인용 + '데이터 transitional, 기술 지표 분석 보류'"
+                f" 명시\n"
+                f"  ✅ 펀더멘털 지표 (매출 / 영업이익 / 부채비율 등) 만"
+                f" 분석 진행 — 가격 기반 multiples (PER / PBR / EV-EBITDA)"
+                f" 도 transitional 가능성 인지\n"
+                f"  ✅ KRX 시장경보 / DART 공시 / 거래정지 status 확인"
+                f" 권고 — 노바렉스 194700.KS 2026-05-19 케이스: 200d gap"
+                f" 36% + 52w low > current 가 동반 — corp action 또는"
+                f" 거래정지 진행 가능성 매우 큼"
             )
             break  # one warning per analysis is enough — don't spam both windows
 
