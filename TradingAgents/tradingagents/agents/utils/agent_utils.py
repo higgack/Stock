@@ -3435,6 +3435,24 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 "akshare cn macro injection failed for %s: %s", ticker, exc,
             )
 
+    # Phase B-1 (Step 2A, 2026-05-19): Standard View daily brief inject.
+    # Universal-by-default — every market (US/KR/JP/TW/CN) receives the
+    # brief because Standard View covers global macro variables (Fed /
+    # 유가 / 달러 / 지정학) that drive every market's 5-day price action.
+    # Silent degradation: if the .md is absent (e.g. fresh deploy before
+    # first 08:00 KST timer fire, or non-VM dev environment), bridge
+    # returns '' and the analyst directive is unchanged. See
+    # bot/standardview_bridge.py for source attribution.
+    try:
+        from bot.standardview_bridge import get_standardview_block
+        sv_block = get_standardview_block()
+        if sv_block:
+            base += sv_block
+    except Exception as exc:
+        _analyst_log.warning(
+            "standardview brief injection failed for %s: %s", ticker, exc,
+        )
+
     return base
 
 def create_msg_delete():
