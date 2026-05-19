@@ -2378,24 +2378,40 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             prefetched = {}
 
     if qt in ("ETF", "ETN", "MUTUALFUND"):
-        # ETFs / leveraged funds have no company news, no executive
-        # quotes, no earnings transcripts. The analyst's standard "company
-        # news" and "social sentiment" paths return empty for these,
-        # which previously bled into the report as "데이터 없음" placeholders.
-        # Tell the model up front: this is a fund, analyse the structure
-        # and the underlying instead of inventing company-style narrative.
-        base += (
-            f"\n\nIMPORTANT: `{ticker}` is a {qt} (fund product), not a single"
-            " company. Do NOT search for company-specific news, executive"
-            " statements, earnings, or insider transactions. Instead analyse:"
-            " (1) the fund's structure (leverage, expense ratio, tracking"
-            " target), (2) the macro / sector / country exposure of the"
-            " underlying, (3) recent flow data and price action, and"
-            " (4) leveraged-fund-specific risks like daily-reset volatility"
-            " decay where applicable. If a tool returns no company news or"
-            " social sentiment, that is expected — note it briefly and move"
-            " on. Do NOT apologise or call the tool 'broken'."
-        )
+        # B2 (Step 2A ⑦, 2026-05-19): KR ETF 특화 mode. KODEX / TIGER
+        # 등 KR-listed ETF 가 hardcoded metadata table 에 있으면 generic
+        # fund_product narrative 대신 KR-ETF specific directive 적용 —
+        # 기초자산 / 운용사 / 환헤지 / leverage / 분배금 등 ETF specific
+        # 변수 명시 + 5거래일 horizon 적합성 검토 (leveraged inverse
+        # 변동성 decay 위험 등).
+        kr_etf_meta = None
+        if market == "KR":
+            try:
+                from bot.kr_etf_metadata import (
+                    get_kr_etf_metadata, format_kr_etf_block,
+                )
+                kr_etf_meta = get_kr_etf_metadata(ticker)
+            except Exception as exc:
+                _analyst_log.warning(
+                    "kr_etf_metadata lookup failed for %s: %s", ticker, exc,
+                )
+        if kr_etf_meta:
+            base += format_kr_etf_block(kr_etf_meta, ticker)
+        else:
+            # Generic fund_product directive — KR ETF 미커버 또는
+            # 다른 시장 ETF / MUTUALFUND
+            base += (
+                f"\n\nIMPORTANT: `{ticker}` is a {qt} (fund product), not a single"
+                " company. Do NOT search for company-specific news, executive"
+                " statements, earnings, or insider transactions. Instead analyse:"
+                " (1) the fund's structure (leverage, expense ratio, tracking"
+                " target), (2) the macro / sector / country exposure of the"
+                " underlying, (3) recent flow data and price action, and"
+                " (4) leveraged-fund-specific risks like daily-reset volatility"
+                " decay where applicable. If a tool returns no company news or"
+                " social sentiment, that is expected — note it briefly and move"
+                " on. Do NOT apologise or call the tool 'broken'."
+            )
     else:
         # Equity-only signals: Wall Street consensus, short interest,
         # insider holdings. Pre-fetched from yfinance .info; the analyst
