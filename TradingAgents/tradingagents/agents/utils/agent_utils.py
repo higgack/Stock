@@ -1239,6 +1239,21 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["bok_macro"] = lambda: fetch_kr_macro()
         except Exception:
             pass
+        # D2 (Step 2A item ⑤): USD/KRW 30D % change — KR 수출주 / 수입주
+        # FX sensitivity 자동 추정용. macro_context_tools._fetch_one 재활용
+        # (yfinance internal cache).
+        try:
+            from tradingagents.agents.utils.macro_context_tools import _fetch_one
+            from datetime import date as _date
+            def _fetch_krw_30d():
+                try:
+                    _, pct = _fetch_one("KRW=X", _date.today().isoformat())
+                    return pct
+                except Exception:
+                    return None
+            tasks["krw_30d_pct"] = _fetch_krw_30d
+        except Exception:
+            pass
         # A2: KRX 시장경보 status — 거래정지 / 관리종목 / 단기과열 /
         # 투자주의/경고/위험 4 카테고리 통합 lookup. fetch_all 가
         # process-wide cached (12h) 이라 first call 만 network — 이후
@@ -2727,6 +2742,24 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                         " 다음 통화정책 회의 방향을 결정하는 핵심"
                         " 변수이므로 인플레이션 흐름 언급 시 KR CPI"
                         " 우선."
+                    )
+
+                # D2 (Step 2A ⑤, 2026-05-19): USD/KRW 영향 자동 계산.
+                # 수출 의존도 큰 KR 산업 (반도체 / 자동차 / 배터리 /
+                # 조선 / 해운 등) 의 영업이익 sensitivity 자동 inject —
+                # 분석가들이 generic 'KRW 약세 = 수출주 긍정' narrative
+                # 만 적던 패턴 차단 + specific % 영향 추정 제공.
+                try:
+                    from bot.kr_fx_sensitivity import compute_fx_impact
+                    fx_impact_text = compute_fx_impact(
+                        industry, prefetched.get("krw_30d_pct"),
+                    )
+                    if fx_impact_text:
+                        base += "\n\n" + fx_impact_text
+                except Exception as exc:
+                    _analyst_log.warning(
+                        "kr_fx_sensitivity inject failed for %s: %s",
+                        ticker, exc,
                     )
         except Exception as exc:
             _analyst_log.warning(
