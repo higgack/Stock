@@ -310,7 +310,19 @@ def get_analyst_directive() -> str:
         "  • '거시 환경 불확실성' (구체적 지표 없으면 RULE 위반)\n"
         " Specific 변수 1개도 명시 못 하면 'HOLD + 5거래일 horizon 의 dominant"
         " driver 없음, 추가 모니터링 권고' 한 줄로 결론 마무리 — generic"
-        " narrative 로 fallback 금지."
+        " narrative 로 fallback 금지.\n"
+        "\nMACRO SUSPECT HARD GUARD propagation (Fix N, 2026-05-19 LG생활건강"
+        " 051900.KS surfaced — 거시 블록에 'KOSPI 검증 미완료' 보류 명시"
+        " 있었는데 시장 분석가의 sector primer / 인트로에 'KOSPI 30D +15.94%"
+        " 상승' 그대로 cite 한 케이스):\n"
+        " instrument_context 의 거시 지표 블록에 ⛔ HARD GUARD (Fix E) 가"
+        " 발화한 시리즈 (KOSPI / WTI / DXY / 환율 등 abs/30D 범위 outside)"
+        " 는 본 분석의 거시 블록 외 모든 위치 — sector primer / 거시 배경"
+        " 인트로 / 산업 분석 / 결론 / Comps 표 어디에도 — directional cite"
+        " ('상승세' / '하락세' / '급등' / '강세' / '약세' / '+X%' / '-X%')"
+        " 절대 금지. ⛔ HARD GUARD 가 발화한 시리즈는 본 분석의 거시 frame"
+        " 에서 통째로 omit — 정상 시리즈 (⚠️ 미발화) 만 거시 frame 으로"
+        " 사용. 시장 분석가가 ⛔ 시리즈 한 줄이라도 cite 하면 RULE 위반."
     )
 
 

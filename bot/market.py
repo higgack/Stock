@@ -565,6 +565,18 @@ _KR_INDUSTRY_PEERS = {
         "161890.KS",  # 한국콜마
         "194700.KS",  # 노바렉스 (건기식 ODM)
     ],
+    # Fix M (2026-05-19 LG생활건강 051900.KS surfaced): yfinance 가
+    # 일부 KR 종목을 'Household & Personal Products' (긴 form) 로
+    # 분류 — Fix I 의 'Personal Products' (짧은 form) 와 exact-string
+    # match 실패. 두 형태 모두 같은 peer set 으로 inject.
+    "Household & Personal Products": [
+        "051900.KS",  # LG생활건강
+        "090430.KS",  # 아모레퍼시픽
+        "192820.KS",  # 코스맥스
+        "200130.KS",  # 콜마비앤에이치
+        "161890.KS",  # 한국콜마
+        "194700.KS",  # 노바렉스
+    ],
     "Packaged Foods": [
         "097950.KS",  # CJ제일제당
         "004370.KS",  # 농심
@@ -636,23 +648,67 @@ def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:
     if not industry:
         return None
     market = detect_market(ticker)
+    # Fix M (2026-05-19) — yfinance industry tag aliases. yfinance 가
+    # 종종 같은 카테고리를 다른 형태로 보고 ('Personal Products' vs
+    # 'Household & Personal Products'). Fuzzy alias map 으로 cross-form
+    # match. LG생활건강 051900.KS 케이스 surface.
+    industry_aliases = _INDUSTRY_ALIASES.get(industry, [])
+    industry_candidates = [industry] + industry_aliases
+
     if market == "JP":
-        base = _JP_INDUSTRY_PEERS.get(industry)
+        peer_dict = _JP_INDUSTRY_PEERS
     elif market == "KR":
-        base = _KR_INDUSTRY_PEERS.get(industry)
+        peer_dict = _KR_INDUSTRY_PEERS
     elif market == "TW":
-        base = _TW_INDUSTRY_PEERS.get(industry)
+        peer_dict = _TW_INDUSTRY_PEERS
     elif market == "CN_A":
-        base = _CN_A_INDUSTRY_PEERS.get(industry)
+        peer_dict = _CN_A_INDUSTRY_PEERS
     elif market == "HK":
-        base = _HK_INDUSTRY_PEERS.get(industry)
+        peer_dict = _HK_INDUSTRY_PEERS
     else:
-        base = _US_INDUSTRY_PEERS.get(industry)
+        peer_dict = _US_INDUSTRY_PEERS
+
+    base = None
+    for candidate in industry_candidates:
+        base = peer_dict.get(candidate)
+        if base:
+            break
     if not base:
         return None
     subject = (ticker or "").upper()
     peers = [t for t in base if t.upper() != subject]
     return peers[:5] or None
+
+
+# Fix M (2026-05-19): yfinance industry tag aliases. yfinance 가
+# 같은 카테고리를 다른 형태로 분류하는 경우 (예: 'Personal Products'
+# vs 'Household & Personal Products', 'Drug Manufacturers - General'
+# vs 'Drug Manufacturers - Specialty & Generic'). 종목 검증에서
+# surface 되면 여기 alias map 에 추가. resolve_peer_set 가 양방향
+# fallback — 한 가지 form 으로 peer dict 키 등록되어 있어도 다른
+# form 의 industry tag 도 같은 peer set 받음.
+_INDUSTRY_ALIASES: dict[str, list[str]] = {
+    # Personal Products family
+    "Personal Products": ["Household & Personal Products"],
+    "Household & Personal Products": ["Personal Products"],
+    # Drug Manufacturers family
+    "Drug Manufacturers - General": ["Drug Manufacturers - Specialty & Generic"],
+    "Drug Manufacturers - Specialty & Generic": ["Drug Manufacturers - General"],
+    # Packaged Foods family (yfinance 'Food Distribution' / 'Food Products')
+    "Packaged Foods": ["Food Distribution", "Food Products"],
+    "Food Distribution": ["Packaged Foods"],
+    "Food Products": ["Packaged Foods"],
+    # Specialty Chemicals 와 Chemicals 양방향 (yfinance 가 일부 종목을
+    # 'Chemicals' 로만 분류, 일부는 'Specialty Chemicals' 로 분류)
+    "Specialty Chemicals": ["Chemicals"],
+    "Chemicals": ["Specialty Chemicals"],
+    # Banks family
+    "Banks - Regional": ["Banks - Diversified"],
+    "Banks - Diversified": ["Banks - Regional"],
+    # Insurance family
+    "Insurance - Diversified": ["Insurance - Life", "Insurance - Property & Casualty"],
+    "Insurance - Life": ["Insurance - Diversified"],
+}
 
 
 # JP industry peer sets — Nikkei 225 / TOPIX 100 large caps grouped

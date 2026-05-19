@@ -102,17 +102,58 @@ def _cache_put(cache_key: str, value) -> None:
 def _fetch_krx_json(bld: str, params: dict) -> Optional[dict]:
     """Generic KRX JSON endpoint fetcher. Returns parsed JSON dict or
     None on failure. KRX endpoints use POST form-encoded with a 'bld'
-    parameter identifying the data slice."""
-    payload = {"bld": bld, **params}
+    parameter identifying the data slice.
+
+    Fix O (2026-05-19): KRX endpoints reject mktId='ALL' with 400 Bad
+    Request — production log: 'KRX dbms/MDC/STAT/standard/MDCSTAT09301
+    fetch failed: 400 Client Error'. KRX 의 시장조치 / 거래정지 /
+    관리종목 endpoints 는 mktId 가 'ALL' 미지원 + share / csvxls_isNo
+    / locale 추가 params 요구. 모든 KRX call 에 추가 boilerplate
+    params 자동 inject + 400 시 response body 일부 로그 (다음 schema
+    변경 추적용)."""
+    # KRX defaults — all endpoints expect these (없으면 400)
+    payload = {
+        "bld": bld,
+        "share": "1",
+        "csvxls_isNo": "false",
+        "locale": "ko_KR",
+        **params,
+    }
     try:
         resp = requests.post(
             _BASE, headers=_HEADERS, data=payload, timeout=_HTTP_TIMEOUT,
         )
+        if resp.status_code == 400:
+            # 400 보통 mktId 또는 trdDd format 문제 — 응답 본문 일부
+            # 로그해 다음 디버그 가능. text 짧게 truncate.
+            body_snippet = (resp.text or "")[:200].replace("\n", " ")
+            log.warning(
+                "krx_alert: KRX %s 400 Bad Request — payload=%s — body=%s",
+                bld, payload, body_snippet,
+            )
+            return None
         resp.raise_for_status()
         return resp.json()
     except Exception as exc:
         log.warning("krx_alert: KRX %s fetch failed: %s", bld, exc)
         return None
+
+
+def _fetch_krx_for_markets(bld: str, base_params: dict) -> list:
+    """Fix O: KRX endpoints 가 mktId='ALL' 거부 → 'STK' (KOSPI) +
+    'KSQ' (KOSDAQ) 양 시장 분리 호출 + rows 통합 반환. Returns combined
+    list of rows from both markets."""
+    combined: list = []
+    for mkt_id in ("STK", "KSQ"):
+        params = {**base_params, "mktId": mkt_id}
+        data = _fetch_krx_json(bld, params)
+        if data:
+            for key in ("OutBlock_1", "output", "block1", "OutBlock_2", "OutBlock"):
+                rows = data.get(key)
+                if isinstance(rows, list) and rows:
+                    combined.extend(rows)
+                    break
+    return combined
 
 
 def _today_yyyymmdd() -> str:
@@ -186,22 +227,25 @@ def _fetch_all_classifications() -> dict:
                     return s
         return None
 
+    # Fix O (2026-05-19): KRX 모든 endpoint 가 mktId='ALL' 거부 → 'STK'
+    # (KOSPI) + 'KSQ' (KOSDAQ) 양 시장 분리 호출 + rows 통합.
+
     # 거래정지 — bld MDCSTAT07901. Output rows have 종목코드 + 정지사유.
-    halt_data = _fetch_krx_json(
+    halt_rows = _fetch_krx_for_markets(
         "dbms/MDC/STAT/standard/MDCSTAT07901",
-        {"mktId": "ALL", "trdDd": _today_yyyymmdd()},
+        {"trdDd": _today_yyyymmdd()},
     )
-    for row in _extract_rows(halt_data, "거래정지 MDCSTAT07901"):
+    for row in halt_rows:
         code = _extract_code(row)
         if code:
             result["suspended"].add(code)
 
     # 관리종목 — bld MDCSTAT09001.
-    admin_data = _fetch_krx_json(
+    admin_rows = _fetch_krx_for_markets(
         "dbms/MDC/STAT/standard/MDCSTAT09001",
-        {"mktId": "ALL", "trdDd": _today_yyyymmdd()},
+        {"trdDd": _today_yyyymmdd()},
     )
-    for row in _extract_rows(admin_data, "관리종목 MDCSTAT09001"):
+    for row in admin_rows:
         code = _extract_code(row)
         if code:
             result["admin"].add(code)
@@ -209,11 +253,10 @@ def _fetch_all_classifications() -> dict:
     # 시장경보 (단기과열 + 투자주의/경고/위험) — bld MDCSTAT09301.
     # Single endpoint returns all 4 sub-categories; per-row column
     # identifies which (시장경보종목 or 단기과열 or 주의/경고/위험).
-    warn_data = _fetch_krx_json(
+    warn_rows = _fetch_krx_for_markets(
         "dbms/MDC/STAT/standard/MDCSTAT09301",
-        {"mktId": "ALL", "trdDd": _today_yyyymmdd()},
+        {"trdDd": _today_yyyymmdd()},
     )
-    warn_rows = _extract_rows(warn_data, "시장경보 MDCSTAT09301")
     for row in warn_rows:
         code = _extract_code(row)
         if not code:
