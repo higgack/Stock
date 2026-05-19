@@ -43,6 +43,65 @@ def _normalize_code(ticker: str) -> Optional[str]:
     return code
 
 
+def get_kr_market_cap(ticker: str) -> Optional[dict]:
+    """Fetch KRX official 시가총액 + 최신 close 를 cross-check 용으로
+    반환 (Phase 4-CN-D D1 fallback). yfinance .info marketCap 이 일부
+    KR 종목에 stale / corrupt / missing 한 케이스에 KRX 직접 값으로
+    cross-check + override 가능.
+
+    Returns dict {market_cap: int (원), close: int (원), volume: int,
+    date: str (YYYY-MM-DD)} or None on failure.
+
+    pykrx 의 stock.get_market_cap_by_ticker() 사용 — KRX 공식 데이터.
+    가장 최근 영업일 기준 (오늘이 휴일이면 직전 영업일).
+    """
+    code = _normalize_code(ticker)
+    if not code:
+        return None
+    try:
+        from pykrx import stock
+        import pandas as pd
+        from datetime import datetime, timedelta
+    except Exception as exc:
+        log.warning("pykrx market_cap: import failed: %s", exc)
+        return None
+
+    today = datetime.now()
+    # Try recent ~7 days backward to handle weekends + holidays
+    for days_back in range(0, 10):
+        target = today - timedelta(days=days_back)
+        date_str = target.strftime("%Y%m%d")
+        try:
+            df = stock.get_market_cap_by_ticker(date_str)
+        except Exception as exc:
+            log.warning(
+                "pykrx market_cap: fetch failed for %s: %s",
+                date_str, exc,
+            )
+            continue
+        if df is None or len(df) == 0:
+            continue
+        if code not in df.index:
+            # Code 미상장 또는 KRX 가 반환하지 않음 — try same date 다음 종목
+            continue
+        try:
+            row = df.loc[code]
+            return {
+                "market_cap": int(row.get("시가총액", 0) or 0),
+                "close": int(row.get("종가", 0) or 0),
+                "volume": int(row.get("거래량", 0) or 0),
+                "date": target.strftime("%Y-%m-%d"),
+            }
+        except Exception as exc:
+            log.warning(
+                "pykrx market_cap: row parse failed for %s on %s: %s",
+                code, date_str, exc,
+            )
+            continue
+    log.info("pykrx market_cap: no data found for %s in last 10 days", code)
+    return None
+
+
 def get_kr_trading_flow(ticker: str, days_back: int = 5) -> Optional[dict]:
     """5-day investor-type net purchase summary for a KR ticker.
 

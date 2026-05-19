@@ -1211,10 +1211,15 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
                 get_kr_trading_flow,
                 get_kr_foreign_ownership_trend,
                 get_kr_short_balance_trend,
+                get_kr_market_cap,
             )
             tasks["pykrx_flow"] = lambda: get_kr_trading_flow(ticker, days_back=5)
             tasks["pykrx_foreign_trend"] = lambda: get_kr_foreign_ownership_trend(ticker, days_back=30)
             tasks["pykrx_short_trend"] = lambda: get_kr_short_balance_trend(ticker, days_back=30)
+            # D1: pykrx 시가총액 + 최신 close — yfinance .info marketCap
+            # 및 currentPrice cross-check 용. canonical 시총 directive
+            # 에서 사용.
+            tasks["pykrx_market_cap"] = lambda: get_kr_market_cap(ticker)
         except Exception:
             pass
         try:
@@ -1793,6 +1798,62 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 f" fetch / recompute / paraphrase 모두 금지."
             )
 
+        # D1 (2026-05-19): KR 종목 pykrx 시총 cross-check. yfinance .info
+        # marketCap 가 일부 KR 종목에 stale / corrupt / missing 인 경우
+        # KRX 공식 데이터로 cross-check. 10% 이상 차이 시 ⚠️ alert,
+        # yfinance missing 시 pykrx 값을 canonical 로 사용 (override).
+        if market == "KR":
+            try:
+                pykrx_mc_data = prefetched.get("pykrx_market_cap")
+                if pykrx_mc_data and pykrx_mc_data.get("market_cap"):
+                    pykrx_mc = pykrx_mc_data["market_cap"]
+                    pykrx_close = pykrx_mc_data.get("close", 0)
+                    pykrx_date = pykrx_mc_data.get("date", "")
+                    # KRW 라 일관 단위 (직접 비교 OK)
+                    if isinstance(market_cap, (int, float)) and market_cap > 0:
+                        # cross-check
+                        diff = abs(pykrx_mc - market_cap) / market_cap
+                        if diff > 0.10:
+                            base += (
+                                f"\n\n⚠️ D1 시가총액 cross-check 불일치"
+                                f" (yfinance vs KRX):\n"
+                                f"  • yfinance: 약 {market_cap / 1e8:,.0f}억 원\n"
+                                f"  • KRX (pykrx, {pykrx_date}):"
+                                f" 약 {pykrx_mc / 1e8:,.0f}억 원\n"
+                                f"  • 차이: {diff*100:.1f}% (10% 이상)\n"
+                                f"KRX 값이 공식 — KRX 값을 우선 인용 권고."
+                                f" yfinance 값은 분석에 인용하지 말고 KRX 값"
+                                f" (약 {pykrx_mc / 1e8:,.0f}억 원) 만 사용."
+                            )
+                    else:
+                        # yfinance missing → pykrx override
+                        base += (
+                            f"\n\n✅ D1 시가총액 pykrx fallback (yfinance"
+                            f" missing): KRX 공식 시총 약 {pykrx_mc / 1e8:,.0f}억"
+                            f" 원 ({pykrx_date} 기준). 본 값을 모든 섹션"
+                            f" canonical 시총으로 사용."
+                        )
+                    # pykrx close vs yfinance currentPrice cross-check
+                    if (isinstance(px, (int, float)) and px > 0
+                            and pykrx_close > 0):
+                        px_diff = abs(pykrx_close - px) / px
+                        if px_diff > 0.01:
+                            base += (
+                                f"\n\n⚠️ D1 현재가 cross-check 불일치"
+                                f" (yfinance vs KRX):\n"
+                                f"  • yfinance currentPrice: ₩{px:,.0f}\n"
+                                f"  • KRX close ({pykrx_date}):"
+                                f" ₩{pykrx_close:,}\n"
+                                f"  • 차이: {px_diff*100:.2f}%\n"
+                                f"yfinance 가 intraday 가격 lag 또는 corp"
+                                f" action 영향 가능. KRX 종가가 공식 close"
+                                f" — 분석에서 ₩{pykrx_close:,} 사용 권고."
+                            )
+            except Exception as exc:
+                _analyst_log.warning(
+                    "D1 pykrx cross-check failed for %s: %s", ticker, exc,
+                )
+
         # Canonical 50일 / 200일 SMA (Rule F, 2026-05-19 SMIC 688981.SS
         # surfaced). Same shape as canonical price + market cap above
         # but for the moving averages. yfinance fiftyDayAverage /
@@ -2100,6 +2161,42 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 " ✅ RIGHT: '₩1,010,000' (정확) or '약 101만 원' (반올림)"
                 " for 100만 원~1억 원 range values."
             )
+            # D1 (2026-05-19): financialCurrency=USD KR 종목 강력
+            # directive. 일부 KR 글로벌 자회사 (LG에너지솔루션 / 삼성SDI
+            # 등) 는 KR 상장이지만 financial statements 가 USD 단위로
+            # 보고됨. yfinance 가 financialCurrency='USD' return → 분석가
+            # 가 yfinance 값을 KRW 로 오인해 inflation 1300x 적용.
+            fin_ccy = (info.get("financialCurrency") or "").upper()
+            if fin_ccy and fin_ccy not in ("KRW", "KOR", ""):
+                base += (
+                    f"\n\n⛔ D1 KR ticker financialCurrency MISMATCH"
+                    f" (HARD GUARD):\n"
+                    f"yfinance 가 `{ticker}` 의 financial statements"
+                    f" 를 **{fin_ccy}** 로 보고. 그러나 거래는 KRX 라"
+                    f" 시가총액 / 거래가격 등은 KRW 기준 (이미 위 canonical"
+                    f" 값 KRW). 즉 yfinance 의 매출 / 영업이익 / EPS /"
+                    f" 자본 / 부채 등 모든 financial 데이터가 {fin_ccy}"
+                    f" 단위 — KRW 로 환산 시 ~1,300배 차이.\n\n"
+                    f"다음 절대 금지:\n"
+                    f"  ❌ yfinance 의 매출 / 순이익 / 자본 / 부채 등을"
+                    f" KRW 단위로 인용 — '매출 50,000억 원' 같이 부풀려서"
+                    f" inflated number 발생. 실제 yfinance return 50,000"
+                    f" 는 {fin_ccy} 단위라 ~6.5경 원이라는 비현실 값.\n"
+                    f"  ❌ PER / PBR / PSR / EV-EBITDA 등 multiples 도"
+                    f" 단위 mismatch — 분모 (시총 KRW) ÷ 분자 ({fin_ccy}"
+                    f" financial) 라 multiples 도 ~1,300x off.\n\n"
+                    f"올바른 처리:\n"
+                    f"  ✅ DART 의 한국 회계기준 (K-IFRS) 정기보고서가"
+                    f" 한국어 + KRW 정확한 단위 — 분석가는 DART 공시"
+                    f" 데이터 (위 DART block) 만 인용 + 'yfinance"
+                    f" {fin_ccy} 보고 mismatch 로 yfinance financials"
+                    f" 인용 보류' 한 줄 명시.\n"
+                    f"  ✅ 펀더멘털 결론에 매출 / 순이익 / multiples 명시"
+                    f" 못 한 경우 'KR 글로벌 자회사 financialCurrency"
+                    f" 미스매치 (yfinance {fin_ccy} vs 거래 KRW) — 펀더"
+                    f" 멘털 multiples 평가 보류, DART 정기보고서 인용'"
+                    f" 처리."
+                )
     except Exception:
         pass
 
