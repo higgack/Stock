@@ -736,14 +736,13 @@ subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 
 페르소나 토론 (Buffett/Lynch vs Graham/Marks) · 결정 3노드만 Pro (~₩30 추가로 품질 점프) · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 ground truth 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 (장기 thesis 매도 자제) · 섹터 ETF 알파 · 실패 시 hallucination 대신 명시적 abort
 
 ━━━━━━━━━
-<b>【11. 대시보드】</b> 🦉 영구 보관
- • <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/</a>
- • PC / 폰 / 태블릿 동일 URL. 첫 접속 시 ID/PW 팝업 → "비밀번호 저장" 권장
- • 모바일에서 ID/PW 팝업 안 뜨면: 시크릿 탭 / Firefox / Brave 시도 (Chrome iOS·Android 의 raw IP HTTP Basic Auth 제한 우회)
- • 상단 카드 4개: 📊 총 분석 / 💰 비용·도구 실패율 / ⏱ 평균 시간 / 🎯 정확도 (알파 = raw 수익−섹터 ETF, Hold 는 분모 제외 평균 포함)
- • 본문: 날짜 아코디언 · 5/15/30 거래일 결과 누적 (raw·알파·매수/매도 추천 맞음/틀림·섹터대비 high/low·구체 ETF) 윈도별 hit/miss 독립 색상 · 🗑️ 영구 삭제
- • 검색창: 티커 / 한국·일본·대만 종목명 모두 지원
- • 데이터 경로: <code>~/.tradingagents/{archive,usage.jsonl,memory/}</code>
+<b>【11. 대시보드】</b> 🦉
+ • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/</a> (ID/PW 저장 권장)
+ • <b>Standard View brief</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> · 매크로·MMI·산업트렌드·Deal·오늘NOAH분석 · 평일 12·16시 자동 갱신 · 매일 08:00 텍스트 텔레
+ • 모바일 ID/PW 팝업 X 면 시크릿/Firefox/Brave (raw IP HTTP Basic Auth 우회)
+ • NOAH 상단 카드 4개: 📊 분석수 · 💰 비용·실패율 · ⏱ 시간 · 🎯 정확도 (알파=raw−섹터ETF, Hold 분모 제외)
+ • 본문: 날짜·5/15/30거래일 누적 (raw·알파·맞음/틀림·섹터 high/low)·검색창 (한·일·대 종목명)·🗑️ 삭제
+ • 데이터: <code>~/.tradingagents/{archive,usage.jsonl,memory/}</code>
 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
