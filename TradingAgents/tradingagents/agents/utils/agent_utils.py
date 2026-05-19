@@ -733,6 +733,25 @@ def get_market_signals_for(ticker: str) -> str:
                 "매수": "buy", "보유": "hold", "매도": "sell",
             }.get(fn_rating, "")
 
+    # A3 (Step 2A ⑥, 2026-05-19): 한경 컨센서스 fallback for mid-cap
+    # KOSDAQ that FnGuide 도 누락하는 영역. 3 단계 fallback chain:
+    # yfinance → FnGuide → 한경. yfinance + FnGuide 둘 다 target 또는
+    # n_analysts 가 비어있을 때만 한경 scrape.
+    if market == "KR" and not (target and n_analysts):
+        try:
+            from bot.hk_consensus_client import fetch_consensus as fetch_hk_consensus
+            hk_data = fetch_hk_consensus(ticker)
+            if hk_data:
+                target = target or hk_data.get("target_price")
+                n_analysts = n_analysts or hk_data.get("analyst_count")
+                hk_rating = hk_data.get("rating")
+                if hk_rating and not rec_key:
+                    rec_key = hk_rating  # 이미 buy/sell/hold direction
+        except Exception as exc:
+            _analyst_log.warning(
+                "hk_consensus fetch failed for %s: %s", ticker, exc,
+            )
+
     # Kabutan consensus scrape — JP equivalent of the FnGuide block.
     # Same two-purpose use: fallback for mid/small-caps yfinance missed,
     # and last_report_date for staleness detection. Fetched
