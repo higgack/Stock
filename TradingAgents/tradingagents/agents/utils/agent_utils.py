@@ -2045,6 +2045,71 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                     f" (ratio 23.6 / 현대차 패턴) 정확히 이 패턴."
                 )
 
+                # D1 Phase 2 (2026-05-19): Rule G 발화 시 DART 정규화
+                # 재무 데이터 자동 fetch + override path. StandardView
+                # (StanLee5767, 라이선스 동의) 의 DART 계정과목 정규화
+                # 패턴 차용. yfinance 의 corrupt 값 대신 DART 의 KRW
+                # 단위 정확한 데이터 inject — 분석가가 DART 값 사용 가능.
+                if market == "KR":
+                    try:
+                        from bot.dart_client import get_dart as _get_dart
+                        dart_fin = _get_dart().get_normalized_financials(ticker)
+                        if dart_fin:
+                            f = dart_fin.get("financials") or {}
+                            r = dart_fin.get("ratios") or {}
+                            yr = dart_fin.get("year")
+                            override_lines = [
+                                f"\n\n✅ DART 정규화 재무 데이터 (D1 Phase 2"
+                                f" — yfinance 단위 mismatch 대체용, FY{yr}"
+                                f" {dart_fin.get('fs_div')} K-IFRS):\n"
+                                f"분석가는 위 ⚠️ yfinance corrupt 데이터"
+                                f" 대신 다음 DART 정규화 값 사용 권고:"
+                            ]
+                            for key in (
+                                "매출", "영업이익", "당기순이익", "자산총계",
+                                "부채총계", "자본총계", "유동자산", "유동부채",
+                            ):
+                                v = f.get(key)
+                                if isinstance(v, (int, float)) and v != 0:
+                                    if abs(v) >= 1e12:
+                                        v_str = f"{v / 1e12:,.2f}조 원"
+                                    elif abs(v) >= 1e8:
+                                        v_str = f"{v / 1e8:,.0f}억 원"
+                                    elif abs(v) >= 1e4:
+                                        v_str = f"{v / 1e4:,.0f}만 원"
+                                    else:
+                                        v_str = f"{v:,.0f}원"
+                                    override_lines.append(f"  • {key}: {v_str}")
+                            eps = f.get("EPS")
+                            if isinstance(eps, (int, float)) and eps != 0:
+                                override_lines.append(f"  • EPS: ₩{eps:,.0f}")
+                            for key in (
+                                "영업이익률", "순이익률", "ROE", "ROA",
+                                "부채비율", "유동비율",
+                            ):
+                                v = r.get(key)
+                                if isinstance(v, (int, float)):
+                                    override_lines.append(
+                                        f"  • {key}: {v:+.2f}%"
+                                    )
+                            v = r.get("이자보상배율")
+                            if isinstance(v, (int, float)):
+                                override_lines.append(
+                                    f"  • 이자보상배율: {v:+.2f}배"
+                                )
+                            override_lines.append(
+                                f"\n출처: DART fnlttSinglAcntAll.json (FY{yr}"
+                                f" 사업보고서) 의 K-IFRS 표준 계정과목 정규화."
+                                f" KRW 절대값 정확. yfinance 의 totalRevenue"
+                                f" 단위 mismatch 시 위 값으로 override."
+                            )
+                            base += "\n".join(override_lines)
+                    except Exception as exc:
+                        _analyst_log.warning(
+                            "DART normalized financials override failed for"
+                            " %s: %s", ticker, exc,
+                        )
+
         # Price-gap sanity check. yfinance's 50-day / 200-day averages
         # are computed from historical closes that should be
         # split-adjusted, so a current price that differs from either

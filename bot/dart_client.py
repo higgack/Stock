@@ -67,6 +67,182 @@ def _normalize_name(name: str) -> str:
     return n.strip().lower()
 
 
+# ─────────────────────────────────────────────────────────────────────
+# D1 Phase 2 (2026-05-19): DART 계정과목 정규화 + 재무비율 계산기
+# StandardView (StanLee5767/standardview) 의 CODE_MAP / NAME_MAP /
+# calc_ratios 패턴 차용 (라이선스 동의 받음 2026-05-19).
+# 목적: yfinance 의 KR 종목 totalRevenue / 영업이익 등 단위 mismatch
+# (SMIC 50x / 현대차증권 47x) 또는 financialCurrency=USD glitch 시
+# DART 직접 정규화 데이터로 자동 override.
+# ─────────────────────────────────────────────────────────────────────
+
+# DART API 의 account_id → 통일 용어 매핑. K-IFRS / dart_ / us-gaap
+# 표준 prefix 모두 cover. 같은 항목이 회사마다 다른 account_id 로
+# 보고되므로 multi-source 매핑.
+_DART_CODE_MAP: dict[str, str] = {
+    "ifrs-full_Revenue": "매출",
+    "ifrs-full_RevenueFromContractsWithCustomers": "매출",
+    "dart_Revenue": "매출",
+    "ifrs-full_CostOfSales": "매출원가",
+    "dart_CostOfSales": "매출원가",
+    "ifrs-full_GrossProfit": "매출총이익",
+    "ifrs-full_SellingGeneralAndAdministrativeExpense": "판관비",
+    "dart_SellingGeneralAdministrativeExpenses": "판관비",
+    "ifrs-full_AdministrativeExpense": "판관비",
+    "dart_OperatingIncomeLoss": "영업이익",
+    "ifrs-full_ProfitLossFromOperatingActivities": "영업이익",
+    "ifrs-full_FinanceIncome": "금융수익",
+    "ifrs-full_FinanceCosts": "금융비용",
+    "ifrs-full_ProfitLossBeforeTax": "세전이익",
+    "ifrs-full_IncomeTaxExpenseContinuingOperations": "법인세비용",
+    "ifrs-full_ProfitLoss": "당기순이익",
+    "dart_ProfitLoss": "당기순이익",
+    "us-gaap_NetIncomeLoss": "당기순이익",
+    "ifrs-full_BasicEarningsLossPerShare": "EPS",
+    "ifrs-full_BasicEarningsPerShare": "EPS",
+    "dart_BasicEarningsLossPerShare": "EPS",
+    "ifrs-full_CurrentAssets": "유동자산",
+    "ifrs-full_NoncurrentAssets": "비유동자산",
+    "ifrs-full_Assets": "자산총계",
+    "us-gaap_Assets": "자산총계",
+    "ifrs-full_CurrentLiabilities": "유동부채",
+    "ifrs-full_NoncurrentLiabilities": "비유동부채",
+    "ifrs-full_Liabilities": "부채총계",
+    "ifrs-full_RetainedEarnings": "이익잉여금",
+    "ifrs-full_Equity": "자본총계",
+    "us-gaap_StockholdersEquity": "자본총계",
+    "ifrs-full_EquityAttributableToOwnersOfParent": "자본총계",
+}
+
+# account_id 가 비표준이거나 nullable 시 account_nm (한글 텍스트) 매칭
+# fallback. 회사마다 분기 / 사업보고서 양식 차이로 다른 alias 사용.
+_DART_NAME_MAP: dict[str, str] = {
+    "매출액": "매출", "수익(매출액)": "매출", "영업수익": "매출",
+    "매출": "매출", "도급공사수익": "매출", "분양수익": "매출",
+    "이자수익": "매출",
+    "매출원가": "매출원가", "도급공사원가": "매출원가",
+    "매출총이익": "매출총이익", "매출총이익(손실)": "매출총이익",
+    "매출총손익": "매출총이익",
+    "판매비와관리비": "판관비", "판매비및관리비": "판관비",
+    "판매비와 관리비": "판관비", "영업비용": "판관비",
+    "영업이익": "영업이익", "영업이익(손실)": "영업이익",
+    "영업손익": "영업이익",
+    "금융수익": "금융수익", "이자및배당금수익": "금융수익",
+    "금융비용": "금융비용", "이자비용": "금융비용", "금융원가": "금융비용",
+    "법인세비용차감전순이익": "세전이익",
+    "법인세비용차감전순이익(손실)": "세전이익",
+    "법인세차감전순이익": "세전이익",
+    "법인세비용차감전순손익": "세전이익",
+    "법인세비용": "법인세비용", "법인세수익": "법인세비용",
+    "당기순이익": "당기순이익", "당기순이익(손실)": "당기순이익",
+    "분기순이익": "당기순이익", "반기순이익": "당기순이익",
+    "당기순손익": "당기순이익",
+    "기본주당순이익": "EPS", "기본주당이익": "EPS",
+    "기본주당순이익(손실)": "EPS", "보통주기본주당이익(손실)": "EPS",
+    "유동자산": "유동자산",
+    "비유동자산": "비유동자산", "고정자산": "비유동자산",
+    "자산총계": "자산총계", "자산 합계": "자산총계",
+    "유동부채": "유동부채",
+    "비유동부채": "비유동부채", "고정부채": "비유동부채",
+    "부채총계": "부채총계", "부채 합계": "부채총계",
+    "이익잉여금": "이익잉여금", "이익잉여금(결손금)": "이익잉여금",
+    "미처분이익잉여금": "이익잉여금",
+    "자본총계": "자본총계", "자본 합계": "자본총계",
+}
+
+# EPS 만 float (원 단위 소수점 가능), 나머지 absolute KRW int.
+_EPS_KEYS = {"EPS"}
+
+
+def _parse_dart_amount(raw: str, as_float: bool = False):
+    """DART API 의 thstrm_amount (당기 금액) 파싱.
+
+    DART 는 amount 를 콤마 포함 string 으로 반환 ('1,234,567,890').
+    음수는 '(123,456)' 또는 '-123,456' 형식. 빈 string 또는 '-' 일 때
+    None 반환. EPS 는 소수점 가능 (₩1,234.56) 이라 float 옵션.
+    """
+    s = (raw or "").strip()
+    if not s or s in ("-", "—", "N/A"):
+        return None
+    # 괄호 음수 처리
+    negative = False
+    if s.startswith("(") and s.endswith(")"):
+        negative = True
+        s = s[1:-1]
+    s = s.replace(",", "").strip()
+    if not s:
+        return None
+    try:
+        if as_float:
+            v = float(s)
+        else:
+            # 소수점 있는 case (예: EPS '1234.56') 도 안전 처리
+            v = int(float(s))
+    except (ValueError, TypeError):
+        return None
+    return -v if negative else v
+
+
+def _extract_dart_financials(items: list) -> dict:
+    """DART fnlttSinglAcntAll.json 응답의 list[item] → 정규화 dict.
+
+    Item 각각 account_id (K-IFRS / dart_ / us-gaap 표준) 또는 account_nm
+    (한글 텍스트) 보유. CODE_MAP 우선 매칭, 미매칭 시 NAME_MAP fallback.
+    같은 canonical 키에 여러 row 매칭 시 absolute value 큰 것 선택
+    (parent vs consolidated / 본사 vs 종속 등 표준 row 우선)."""
+    if not items:
+        return {}
+    res: dict = {}
+    for item in items:
+        acct_id = (item.get("account_id") or "").strip()
+        acct_nm = (item.get("account_nm") or "").strip()
+        canonical = _DART_CODE_MAP.get(acct_id) or _DART_NAME_MAP.get(acct_nm)
+        if not canonical:
+            continue
+        v = _parse_dart_amount(
+            item.get("thstrm_amount", ""),
+            as_float=(canonical in _EPS_KEYS),
+        )
+        if v is None:
+            continue
+        # absolute value 큰 row 선택 (consolidated 우선)
+        if canonical not in res or abs(v) > abs(res[canonical]):
+            res[canonical] = v
+    return res
+
+
+def calc_kr_financial_ratios(financials: dict) -> dict:
+    """DART 정규화 dict → 9 재무비율 (영업이익률 / 순이익률 / ROE /
+    ROA / 부채비율 / 유동비율 / 이자보상배율 / 매출총이익률 / 이익잉여금
+    비율). 분모 0 / None 시 해당 row 만 None — graceful.
+
+    StandardView (StanLee5767/standardview) 의 calc_ratios 차용 (license
+    동의 2026-05-19). 단위는 % (백분율).
+    """
+    rev = financials.get("매출") or 0
+    op = financials.get("영업이익")
+    net = financials.get("당기순이익")
+    asset = financials.get("자산총계") or 0
+    eq = financials.get("자본총계") or 0
+    dbt = financials.get("부채총계") or 0
+    ca = financials.get("유동자산") or 0
+    cl = financials.get("유동부채") or 0
+    fc = financials.get("금융비용") or 0
+    gp = financials.get("매출총이익") or 0
+    er = financials.get("이익잉여금") or 0
+    return {
+        "영업이익률": (op / rev * 100) if (op is not None and rev) else None,
+        "순이익률": (net / rev * 100) if (net is not None and rev) else None,
+        "ROE": (net / eq * 100) if (net is not None and eq) else None,
+        "ROA": (net / asset * 100) if (net is not None and asset) else None,
+        "부채비율": (dbt / eq * 100) if eq else None,
+        "유동비율": (ca / cl * 100) if cl else None,
+        "이자보상배율": (op / fc) if (op is not None and fc) else None,
+        "매출총이익률": (gp / rev * 100) if (gp and rev) else None,
+        "이익잉여금비율": (er / asset * 100) if (er and asset) else None,
+    }
+
+
 class DartClient:
     """Single-key DART client. Cheap to instantiate; reuse across calls
     to amortize the corp_code mapping load."""
@@ -339,6 +515,100 @@ class DartClient:
         return out
 
     # ── earnings window estimate ────────────────────────────────────────
+    # ── D1 Phase 2: 정규화 재무제표 + 비율 ───────────────────────────
+
+    def get_normalized_financials(
+        self,
+        ticker: str,
+        year: Optional[int] = None,
+        fs_div: str = "CFS",
+    ) -> Optional[dict]:
+        """yfinance 의 KR 종목 재무 corruption (단위 mismatch / financial
+        Currency=USD glitch / TTM vs FY divergence) 발생 시 DART 의
+        K-IFRS 정기보고서에서 직접 추출한 KRW 단위 재무 데이터로
+        override. D1 Phase 2 (2026-05-19).
+
+        Returns dict like:
+            {
+                "year": 2025,
+                "fs_div": "CFS",  # 연결 (CFS) / 별도 (OFS)
+                "financials": {
+                    "매출": int (원), "영업이익": int, "당기순이익": int,
+                    "자산총계": int, "부채총계": int, "자본총계": int,
+                    "유동자산": int, "유동부채": int, "이익잉여금": int,
+                    "EPS": float (원), ...
+                },
+                "ratios": {
+                    "영업이익률": float (%), "순이익률": float (%),
+                    "ROE": float (%), "ROA": float (%), "부채비율": float (%),
+                    "유동비율": float (%), "이자보상배율": float, ...
+                },
+            }
+        또는 None (DART 키 없음 / 종목 미상장 / 보고서 미발표 등).
+
+        Args:
+            ticker: yfinance ticker (005930.KS / 035720.KQ 등).
+            year: 사업연도. None 시 직전 사업연도 자동 (date.today().year - 1).
+            fs_div: 'CFS' = 연결재무제표 (default), 'OFS' = 별도재무제표.
+        """
+        if not self.api_key:
+            return None
+        code = (ticker or "").upper().split(".")[0]
+        if not (code.isdigit() and len(code) == 6):
+            return None
+        try:
+            corp_map = self._load_corp_code_map()
+        except Exception as exc:
+            log.warning("get_normalized_financials: corp_code map load failed: %s", exc)
+            return None
+        corp_code = corp_map.get(code)
+        if not corp_code:
+            return None
+
+        target_year = year or (date.today().year - 1)
+
+        # fnlttSinglAcntAll.json — 단일 회사 전체 재무제표 (전체 항목)
+        # reprt_code 11011 = 사업보고서 (annual). 분기 보고서가 필요하면
+        # 11013/11012/11014 로 변경 가능 (이번 MVP 는 annual 만).
+        url = "https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json"
+        params = {
+            "crtfc_key": self.api_key,
+            "corp_code": corp_code,
+            "bsns_year": str(target_year),
+            "reprt_code": "11011",
+            "fs_div": fs_div,
+        }
+        try:
+            resp = requests.get(url, params=params, timeout=_HTTP_TIMEOUT)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:
+            log.warning(
+                "get_normalized_financials: fetch failed for %s (%d, %s): %s",
+                code, target_year, fs_div, exc,
+            )
+            return None
+
+        if payload.get("status") != "000":
+            # 013 = 조회된 데이터 없음, 020 = 사용 한도 초과, etc.
+            log.info(
+                "get_normalized_financials: DART status=%s for %s (%d) — skipping",
+                payload.get("status"), code, target_year,
+            )
+            return None
+
+        items = payload.get("list") or []
+        financials = _extract_dart_financials(items)
+        if not financials:
+            return None
+        ratios = calc_kr_financial_ratios(financials)
+        return {
+            "year": target_year,
+            "fs_div": fs_div,
+            "financials": financials,
+            "ratios": ratios,
+        }
+
     def next_earnings_window(self, stock_code: str, today: date | None = None) -> Optional[tuple[date, date]]:
         """Infer the most-likely next KR earnings disclosure window.
 
