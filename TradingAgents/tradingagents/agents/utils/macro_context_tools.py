@@ -446,13 +446,28 @@ def get_macro_context(
         # 명시적 경고 절을 추가해 LLM 이 그 값을 narrative 에 anchor
         # 하기 전에 검증 권고.
         out += (
-            "\n\n⚠️ 의심 데이터 검증 권고: 다음 시리즈가 사전 정의된"
-            " 합리 범위를 벗어났습니다 (yfinance 일시 lookup glitch /"
-            " ticker swap / 단가 단위 오류 의심):\n"
+            "\n\n⛔ 의심 데이터 narrative cite HARD GUARD: 다음 시리즈가"
+            " 사전 정의된 합리 범위를 벗어났습니다 (yfinance 일시 lookup"
+            " glitch / ticker swap / 단가 단위 오류 의심):\n"
             + "\n".join(f"  • {s}" for s in suspect)
-            + "\n\n위 값들은 narrative 에 직접 인용하기 전에 별도 검증"
-            " 필요. 분석에서 인용 시 'yfinance 일시 데이터, 검증 권고'"
-            " 한 줄 명시 + 결론 anchor 로 사용 금지."
+            + "\n\n다음 사용 절대 금지 (2026-05-19 마오타이 + 현대차증권"
+            " 검증에서 WTI $103 / KOSPI +25.56% 같은 의심 데이터가"
+            " narrative 에 그대로 인용되어 분석가들이 'WTI 급등 / KOSPI"
+            " 상승세' 결론으로 anchor 한 패턴 surface):\n"
+            "  ❌ 위 시리즈 값을 narrative 에 directional cite — '상승세'"
+            " / '하락세' / '급등' / '강세' / '약세' 같은 directional"
+            " 표현 절대 금지\n"
+            "  ❌ '30D +X%' 변동을 sentiment 해석에 anchor 사용 ('변동성"
+            " 확대' / '인플레이션 압력' 등 narrative 빌드 금지)\n"
+            "  ❌ 결론 / 펀더멘털 / 시장 분석 의 dominant variable 로"
+            " 사용 — 데이터 자체가 검증 안 됐는데 thesis 의 핵심 anchor"
+            " 가 되면 thesis 가 잘못된 기초 위에 세워짐\n"
+            "올바른 처리:\n"
+            "  ✅ '거시 frame 인용 보류 — 위 시리즈 데이터 검증 미완료'"
+            " 한 줄로 처리. 그 시리즈는 narrative 에서 완전 omit.\n"
+            "  ✅ 나머지 정상 시리즈 (⚠️ 없는 것) 만 거시 frame 으로 사용.\n"
+            "  ✅ 결론에 의심 데이터 cite 금지 — RULE 위반 (Rule E 동일"
+            " enforcement)."
         )
         try:
             from bot.usage_tracker import log_tool_failure

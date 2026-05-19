@@ -1737,8 +1737,17 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 f" number from memory): {mc_native}\n"
                 f"같은 종목 한 보고서에서 분석가들이 서로 다른 시총을 인용하는"
                 f" 패턴 (Toyota 2026-05-18: 펀더멘털 ¥38.40조 vs 감정·뉴스"
-                f" ¥45조) 방지가 목적이다. 위 값을 모든 섹션 (시장 / 감정 /"
-                f" 뉴스 / 펀더멘털 / 결정) 에서 동일하게 사용하라."
+                f" ¥45조 / 현대차증권 001500.KS 2026-05-19: 감정+시장 8,840억"
+                f" vs 펀더멘털 6,542억) 방지가 목적이다. 위 값을 모든 섹션"
+                f" (시장 / 감정 / 뉴스 / 펀더멘털 / 결정) 에서 동일하게"
+                f" 사용하라.\n"
+                f"❌ 위반 패턴 (RULE 위반): 본인이 다른 source 에서 fetch 한"
+                f" 시총 (예: 펀더멘털 분석가가 marketCap field 를 다시 호출"
+                f" 해서 받은 값 / 다른 시점의 cached 값) 을 인용. 분석가"
+                f" 사이에 시총이 ±1% 이상 차이가 나면 reader 가 둘 다"
+                f" 신뢰할 수 없다고 판단.\n"
+                f"✅ 정답: 위 canonical 값 ({mc_native}) 만 인용. fresh"
+                f" fetch / recompute / paraphrase 모두 금지."
             )
 
         # Canonical 50일 / 200일 SMA (Rule F, 2026-05-19 SMIC 688981.SS
@@ -1761,9 +1770,52 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 f"  • 200일 SMA: {_sym}{_fmt.format(sma200)}\n"
                 f"같은 보고서에서 분석가들이 서로 다른 SMA 값 (예:"
                 f" 시장 50d ¥106.99 vs 펀더멘털 ¥107.49 — SMIC"
-                f" 688981.SS 2026-05-19) 을 인용하는 패턴 방지가"
-                f" 목적이다. 본인이 fetch 한 fresh 값보다 위 canonical"
-                f" 값을 우선 인용."
+                f" 688981.SS 2026-05-19 / 시장 ₩10,953.90 vs 펀더멘털"
+                f" ₩11,089.20 — 현대차증권 001500.KS 2026-05-19) 을"
+                f" 인용하는 패턴 방지가 목적이다.\n"
+                f"❌ 위반 패턴 (RULE 위반): get_indicators / get_stock_data"
+                f" tool 호출 결과의 SMA 값을 위 canonical 대신 인용."
+                f" Tool 결과는 다른 시점 / 다른 lookback window 일 가능성"
+                f" 큼 — canonical 값 (yfinance .info 의 fiftyDayAverage /"
+                f" twoHundredDayAverage 단일 fetch) 만 인용.\n"
+                f"✅ 정답: tool 이 fetch 한 SMA 가 위 canonical 과 다르면"
+                f" 무시하고 canonical 만 인용. fresh fetch / recompute"
+                f" 모두 금지. ±1% 이상 차이는 RULE 위반."
+            )
+
+        # Fix C: 52주 최고 / 최저 sanity (2026-05-19 현대차증권 001500.KS
+        # surfaced). yfinance 가 일부 종목에서 fiftyTwoWeekLow=0 또는
+        # nan 반환 — 분석가가 비판 없이 '52주 최저: ₩0' 그대로 인용하는
+        # silent fail 패턴. 어떤 종목도 ₩0 가 historical low 가 될 수
+        # 없으므로 currentPrice 의 1% 미만이면 데이터 corrupt 로 판단.
+        wk_high = info.get("fiftyTwoWeekHigh")
+        wk_low = info.get("fiftyTwoWeekLow")
+        wk_corrupt: list[str] = []
+        if isinstance(wk_low, (int, float)) and wk_low >= 0:
+            # ₩0 / nan / currentPrice 의 1% 미만 (current 의 100분의 1
+            # 보다 작은 historical low 는 split 등 corp action 외 불가)
+            if wk_low == 0 or (isinstance(px, (int, float)) and px > 0
+                                and wk_low < px * 0.01):
+                wk_corrupt.append(f"52주 최저: {_sym}{_fmt.format(wk_low)}")
+        if isinstance(wk_high, (int, float)) and isinstance(px, (int, float)):
+            # 52주 최고가 < currentPrice 면 일반적으로 불가 (current 가
+            # 새 52주 최고가 갱신 case 만 valid — 그러나 일반적으로
+            # yfinance 자동 갱신).
+            if wk_high > 0 and wk_high < px * 0.99:
+                wk_corrupt.append(
+                    f"52주 최고 {_sym}{_fmt.format(wk_high)} < 현재가"
+                    f" {_sym}{_fmt.format(px)}"
+                )
+        if wk_corrupt:
+            base += (
+                f"\n\n⚠️ 52주 최고/최저 데이터 의심 (yfinance silent fail):\n"
+                + "\n".join(f"  • {c}" for c in wk_corrupt)
+                + "\n분석 본문에서 52주 최저 / 최고 값을 narrative 에 인용"
+                f" 금지 — yfinance 가 split / corp action / data gap"
+                f" 영향으로 corrupt 값 반환. '52주 최저 {_sym}0 대비'"
+                f" 같은 표현 절대 금지 (현대차증권 001500.KS 2026-05-19"
+                f" 펀더멘털 사례). '52주 변동폭 데이터 미수집 / 검증 보류'"
+                f" 한 줄로 처리."
             )
 
         # Revenue / market cap sanity (Rule G, 2026-05-19 SMIC surfaced).
@@ -1782,35 +1834,52 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             # 일반 종목 ratio 0.02-0.30 범위 (NVDA 0.02 / TSLA 0.07 /
             # AAPL 0.11 / JPM 0.20). 0.015 이하 = 매출이 시총의 1.5%
             # 미만 (yfinance 단위 보고가 ~10x 작은 케이스 또는 극단적
-            # 高PSR 종목; 둘 다 scrutiny 가치). 100 초과 = 매출이 시총의
-            # 100배 초과 (yfinance 단위 100x 큰 케이스, 매우 드뭄).
-            # SMIC 688981.SS 2026-05-19 케이스: ratio = 93억 ¥ / 9425억 ¥
-            # = 0.0099 → 정확히 catch.
-            if ratio < 0.015 or ratio > 100:
+            # 高PSR 종목). 20 초과 = 매출이 시총의 20배 초과 (yfinance
+            # 단위 100x 큰 케이스, 매우 드뭄). 양방향 모두 sanity flag.
+            # SMIC 688981.SS 2026-05-19: ratio = 0.0099 → catch (낮은 쪽).
+            # 현대차증권 001500.KS 2026-05-19: ratio = 154,321억 ÷ 6,542억
+            # = 23.6 → catch (높은 쪽). yfinance .info totalRevenue 가
+            # TTM 단위로 보고했는데 FY annual 보다 ~47x 큰 케이스.
+            # 이전 threshold (> 100) 가 너무 wide 라 23.6 통과 시킴.
+            if ratio < 0.015 or ratio > 20:
+                direction = (
+                    "매출이 시총보다 작음 (yfinance 단위 100x 작게 보고 의심"
+                    " 또는 高PSR 종목 — SMIC 패턴)"
+                    if ratio < 0.015
+                    else "매출이 시총보다 큼 (yfinance TTM 단위 잘못 또는"
+                         " 분기-연간 mix 의심 — 현대차증권 패턴)"
+                )
                 base += (
                     f"\n\n⚠️ yfinance 매출 단위 의심 (HARD GUARD —"
                     f" Rule G):\n"
                     f"yfinance totalRevenue / marketCap 비율이 비정상"
-                    f" ({ratio:.4f}). 일반 종목 0.05-20 범위 outside.\n"
+                    f" ({ratio:.4f}). 일반 종목 0.02-0.30 범위 outside.\n"
+                    f"방향: {direction}\n"
                     f"가능한 원인:\n"
-                    f"  (a) yfinance 가 매출을 본화 단위 (백만 / 억) 다르게"
-                    f" 보고 — 특히 CN_A / HK 종목 빈도 높음\n"
+                    f"  (a) yfinance 가 매출을 다른 단위 (백만 / 억 / TTM"
+                    f" vs FY annual) 로 보고 — KR / CN_A / HK 종목 빈도"
+                    f" 높음\n"
                     f"  (b) 회사가 최근 corporate action (대량 자본 변동)"
                     f" 후 시총 ↔ 매출 일시 mismatch\n"
+                    f"  (c) TTM 매출 vs FY annual 매출 단위 mix 보고\n"
                     f"분석에서 다음 금지:\n"
                     f"  ❌ yfinance 매출 / PSR / EV-EBITDA / Comps의"
                     f" 매출 기반 multiples 그대로 인용 (잘못된 단위"
                     f" 기반 = 모두 misleading)\n"
                     f"  ❌ '매출 X 억 ¥' 단정 표기 (단위 확정 안 됨)\n"
+                    f"  ❌ TTM 매출이 FY annual 매출보다 ~5배 이상 크면"
+                    f" (현대차증권 케이스 47x) TTM 값 그대로 narrative 인용"
+                    f" 금지 — FY annual 값만 인용\n"
                     f"올바른 처리:\n"
+                    f"  ✅ TTM vs FY annual cross-check. 'TTM 매출 > FY"
+                    f" annual × 5' 모순 발생 시 단위 mismatch 확정.\n"
                     f"  ✅ 분기 매출 (뉴스 / AKShare / Bloomberg 등 외부)"
-                    f" 과 cross-check. '1Q 매출 > 연간 매출' 모순 발생 시"
-                    f" 단위 mismatch 확정.\n"
+                    f" 과 cross-check. '1Q 매출 > 연간 매출' 모순도 마찬가지.\n"
                     f"  ✅ 결론에 '매출 단위 데이터 mismatch — 펀더멘털"
                     f" multiples 평가 보류, 다음 보고 주기 데이터 대기'"
-                    f" 한 줄 명시. SMIC 688981.SS 2026-05-19 정확히 이"
-                    f" 패턴 — yfinance FY25 매출 93억 ¥ vs 뉴스 1Q 매출"
-                    f" 176억 ¥, 4 분석가 모두 단위 mismatch 감지 못함."
+                    f" 한 줄 명시. SMIC 688981.SS 2026-05-19 (ratio 0.0099"
+                    f" / SMIC 패턴), 현대차증권 001500.KS 2026-05-19"
+                    f" (ratio 23.6 / 현대차 패턴) 정확히 이 패턴."
                 )
 
         # Price-gap sanity check. yfinance's 50-day / 200-day averages
@@ -2363,6 +2432,28 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                         " the single most predictive KR-market"
                         " short-term variable and the bot was"
                         " missing it before this commit."
+                    )
+                else:
+                    # Fix F (2026-05-19 현대차증권 001500.KS surfaced):
+                    # pykrx 가 mid-cap 일부 종목 / 일부 trading day 에
+                    # 빈 응답 ('empty trading flow response') 또는 JSON
+                    # parse 실패 반환. 자동 fallback directive — 분석가
+                    # 가 'pykrx 데이터 없음 → 외국인 flow generic narrative
+                    # 만들기' 패턴 차단.
+                    base += (
+                        "\n\n⚠️ KR 외국인 / 기관 / 개인 flow 데이터 미수집"
+                        " (pykrx 빈 응답 또는 KRX endpoint 실패):\n"
+                        "이 종목의 5거래일 투자자 flow 데이터를 fetch 할 수"
+                        " 없었다 (mid-cap 일부 / 일시 KRX rate-limit / 휴장일"
+                        " 등). 다음 패턴 절대 금지:\n"
+                        "  ❌ 'KR 외국인 순매수' / '기관 순매도' generic"
+                        " narrative 만들기 — 데이터 없는 상황에서 추측"
+                        " 금지.\n"
+                        "  ❌ 'KR 시장의 외국인 자금 흐름' 같은 시장 전체"
+                        " 추론도 본 종목의 flow 부재 사실을 모호하게"
+                        " 만듦 — 본 종목 flow 데이터 미수집 명시 우선.\n"
+                        "올바른 처리: 시장 분석에 한 줄로 'pykrx flow 데이터"
+                        " 미수집 — 5일 외국인/기관 수급 평가 보류' 명시."
                     )
 
                 # 30-day positioning trends: foreign ownership pct +

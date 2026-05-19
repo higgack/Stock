@@ -150,27 +150,61 @@ def _fetch_all_classifications() -> dict:
         "warning_level": {},
     }
 
+    def _extract_rows(data: Optional[dict], label: str) -> list:
+        """KRX response 의 rows 추출. 'OutBlock_1' 이 가장 흔하지만 일부
+        endpoint 는 'output' / 'block1' / 'OutBlock_2' 사용. 빈 결과 시
+        response 의 top-level keys log 로 schema 파악 가능."""
+        if not data:
+            return []
+        for key in ("OutBlock_1", "output", "block1", "OutBlock_2", "OutBlock"):
+            rows = data.get(key)
+            if isinstance(rows, list):
+                if rows:
+                    return rows
+                # Empty list — log keys for diagnostic
+                log.info(
+                    "krx_alert: %s returned empty list for key '%s'."
+                    " Top-level keys: %s",
+                    label, key, list(data.keys()),
+                )
+                return []
+        # No known key matched — log full structure for debugging
+        log.warning(
+            "krx_alert: %s response has unexpected schema. Top-level keys: %s",
+            label, list(data.keys()),
+        )
+        return []
+
+    def _extract_code(row: dict) -> Optional[str]:
+        """KRX row 의 종목코드 추출. ISU_SRT_CD 가 가장 흔하지만 일부
+        endpoint 는 SRT_CD / ISU_CD / TICKER 사용."""
+        for key in ("ISU_SRT_CD", "SRT_CD", "ISU_CD", "TICKER", "STK_CD"):
+            v = row.get(key)
+            if v:
+                s = str(v).strip()
+                if s.isdigit() and len(s) == 6:
+                    return s
+        return None
+
     # 거래정지 — bld MDCSTAT07901. Output rows have 종목코드 + 정지사유.
     halt_data = _fetch_krx_json(
         "dbms/MDC/STAT/standard/MDCSTAT07901",
         {"mktId": "ALL", "trdDd": _today_yyyymmdd()},
     )
-    if halt_data and isinstance(halt_data.get("OutBlock_1"), list):
-        for row in halt_data["OutBlock_1"]:
-            code = (row.get("ISU_SRT_CD") or "").strip()
-            if code and code.isdigit() and len(code) == 6:
-                result["suspended"].add(code)
+    for row in _extract_rows(halt_data, "거래정지 MDCSTAT07901"):
+        code = _extract_code(row)
+        if code:
+            result["suspended"].add(code)
 
     # 관리종목 — bld MDCSTAT09001.
     admin_data = _fetch_krx_json(
         "dbms/MDC/STAT/standard/MDCSTAT09001",
         {"mktId": "ALL", "trdDd": _today_yyyymmdd()},
     )
-    if admin_data and isinstance(admin_data.get("OutBlock_1"), list):
-        for row in admin_data["OutBlock_1"]:
-            code = (row.get("ISU_SRT_CD") or "").strip()
-            if code and code.isdigit() and len(code) == 6:
-                result["admin"].add(code)
+    for row in _extract_rows(admin_data, "관리종목 MDCSTAT09001"):
+        code = _extract_code(row)
+        if code:
+            result["admin"].add(code)
 
     # 시장경보 (단기과열 + 투자주의/경고/위험) — bld MDCSTAT09301.
     # Single endpoint returns all 4 sub-categories; per-row column
@@ -179,24 +213,44 @@ def _fetch_all_classifications() -> dict:
         "dbms/MDC/STAT/standard/MDCSTAT09301",
         {"mktId": "ALL", "trdDd": _today_yyyymmdd()},
     )
-    if warn_data and isinstance(warn_data.get("OutBlock_1"), list):
-        for row in warn_data["OutBlock_1"]:
-            code = (row.get("ISU_SRT_CD") or "").strip()
-            if not (code and code.isdigit() and len(code) == 6):
-                continue
-            # 시장경보구분 — '투자주의' / '투자경고' / '투자위험'
-            # 단기과열구분 — '단기과열' / '단기과열예고' (or '단기과열지정')
-            warn_kind = (row.get("ALRT_KND_NM") or row.get("MKT_ALRT_NM") or "").strip()
-            heat_kind = (row.get("HEAT_KND_NM") or "").strip()
-            if "단기과열" in (warn_kind + heat_kind):
-                result["overheating"].add(code)
-            for level in ("위험", "경고", "주의"):
-                if level in warn_kind:
-                    # Higher level wins if both present (위험 > 경고 > 주의)
-                    existing = result["warning_level"].get(code, "")
-                    if not existing or _level_rank(level) > _level_rank(existing):
-                        result["warning_level"][code] = level
-                    break
+    warn_rows = _extract_rows(warn_data, "시장경보 MDCSTAT09301")
+    for row in warn_rows:
+        code = _extract_code(row)
+        if not code:
+            continue
+        # 시장경보구분 — '투자주의' / '투자경고' / '투자위험'
+        # 단기과열구분 — '단기과열' / '단기과열예고' (or '단기과열지정')
+        # Column name varies — try multiple keys.
+        warn_kind = ""
+        heat_kind = ""
+        for k in ("ALRT_KND_NM", "MKT_ALRT_NM", "ALRT_TP_NM", "ALERT_TYPE"):
+            v = row.get(k)
+            if v:
+                warn_kind = str(v).strip()
+                break
+        for k in ("HEAT_KND_NM", "HEAT_TP_NM", "HEATING_TYPE"):
+            v = row.get(k)
+            if v:
+                heat_kind = str(v).strip()
+                break
+        if "단기과열" in (warn_kind + heat_kind):
+            result["overheating"].add(code)
+        for level in ("위험", "경고", "주의"):
+            if level in warn_kind:
+                # Higher level wins if both present (위험 > 경고 > 주의)
+                existing = result["warning_level"].get(code, "")
+                if not existing or _level_rank(level) > _level_rank(existing):
+                    result["warning_level"][code] = level
+                break
+
+    # Diagnostic summary log — helps future debugging when KRX schema
+    # changes silently (response key rename, column rename etc.).
+    log.info(
+        "krx_alert: fetched classifications — suspended=%d, admin=%d,"
+        " overheating=%d, warning_level=%d",
+        len(result["suspended"]), len(result["admin"]),
+        len(result["overheating"]), len(result["warning_level"]),
+    )
 
     _cache_put(cache_key, {
         "suspended": sorted(result["suspended"]),
