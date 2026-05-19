@@ -374,12 +374,30 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
         # one-line per-analyst view, not a separate rebuild.
         _stance_bar = ""
         for ln in summary.splitlines():
-            if "📈" in ln or "💬" in ln or "📰" in ln or "💰" in ln:
-                _stance_bar = ln.strip()
-                break
-        # First meaningful sentence of the decision as the snippet.
-        _snippet = _first_meaningful_sentence(decision) or _first_lines(
-            decision, max_lines=1
+            if "📈" in ln or "💬" in ln or "💰" in ln:
+                if "·" in ln:  # stance bar has at least 2 chunks joined by ' · '
+                    _stance_bar = ln.strip()
+                    break
+        # Snippet priority (richest narrative first — fallback chain):
+        #   1) PM rationale via _extract_decision_rationale(state) —
+        #      pulls last 2 sentences from investment_plan '근거:' block,
+        #      hard-capped at 220 chars; this is the verdict + WHY.
+        #   2) Trader plan first sentence — '거래 액션 + 근거' narrative.
+        #   3) First meaningful sentence of the decision text itself.
+        #   4) Last resort: verdict label only ("Hold" / "Buy" etc.) so
+        #      the snippet is at least non-empty.
+        # Surfaced by: 140860.KS Park Systems 2026-05-20 push, where
+        # decision text was literally just "Hold" and the snippet
+        # showed "Hold" with no narrative — Standard View dashboard
+        # row gave zero context to a reader scanning by ticker.
+        _snippet = (
+            _extract_decision_rationale(state)
+            or _first_meaningful_sentence(
+                (state.get("trader_investment_plan") or "")
+                if isinstance(state, dict) else ""
+            )
+            or _first_meaningful_sentence(decision)
+            or _verdict
         )
         push_analysis(ticker, _market, _verdict, _stance_bar, _snippet)
     except Exception as exc:
