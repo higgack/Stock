@@ -358,6 +358,33 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     # Refresh the static HTML dashboard. Internally swallows errors, so
     # a dashboard hiccup can't break the analysis path.
     _dashboard_regen()
+
+    # Phase B-2 (Step 2A, 2026-05-19): push the completed analysis to
+    # Standard View so it appears in the next 08:00 KST daily brief.
+    # Best-effort, silent fail — runs AFTER cache/archive/dashboard so
+    # even a total Standard View outage can't break the user's result.
+    # Same-host loopback POST; no external network dependency.
+    try:
+        from bot.standardview_push import push_analysis
+        from bot.market import detect_market as _detect_market_for_push
+        _market = _detect_market_for_push(ticker) or "?"
+        _verdict = _extract_rating(decision) or "N/A"
+        # Reuse the same stance bar text already in the summary —
+        # consumers (Standard View HTML / Telegram) want the exact
+        # one-line per-analyst view, not a separate rebuild.
+        _stance_bar = ""
+        for ln in summary.splitlines():
+            if "📈" in ln or "💬" in ln or "📰" in ln or "💰" in ln:
+                _stance_bar = ln.strip()
+                break
+        # First meaningful sentence of the decision as the snippet.
+        _snippet = _first_meaningful_sentence(decision) or _first_lines(
+            decision, max_lines=1
+        )
+        push_analysis(ticker, _market, _verdict, _stance_bar, _snippet)
+    except Exception as exc:
+        log.info("standardview push hook skipped for %s: %s", ticker, exc)
+
     return summary, full
 
 
