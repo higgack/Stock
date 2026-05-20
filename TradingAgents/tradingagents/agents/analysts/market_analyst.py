@@ -171,6 +171,15 @@ Volume-Based Indicators:
             " genuinely came back empty, mention it in one short sentence"
             " (e.g. '리스크 지표는 본 분석에서 미수집') and move on with"
             " the rest of the report."
+            " F1 v3 (Hon Hai 2317.TW 2026-05-20 재발): 시장 분석가의"
+            " 기술 분석 본문에서 '종가 X.X / 최근 종가 Y.Y / 현재가"
+            " Z.Z' 같이 SAME REPORT 안에서 다른 가격 두 개 인용 금지."
+            " yfinance .history Close (전일 종가) 와 .info currentPrice"
+            " (intraday/latest) 가 미세 다른 케이스에도 본 보고서의"
+            " 시작부터 끝까지 build_instrument_context 가 inject 한"
+            " single 'canonical current price' 만 사용. 'Close Price'"
+            " / '종가' / '현재가' / '주가' 모두 같은 값. 시점 다른"
+            " 가격 (5일 전, 4주 전) 인용 시 시점 라벨 동반 의무."
             + get_analyst_directive()
             + get_language_instruction()
         )

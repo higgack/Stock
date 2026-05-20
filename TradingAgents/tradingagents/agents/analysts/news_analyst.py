@@ -107,6 +107,20 @@ def create_news_analyst(llm):
             " 'SNEPS' instead of 'SNPS'); double-check every ticker"
             " mention against the symbol passed in the instrument context"
             " block."
+            " F7 (Hon Hai 2317.TW 2026-05-20 surfaced): NEWS FABRICATION"
+            " HARD GUARD. 정책 / 규제 / 임원 발언 / 거래 승인 같은"
+            " specific claim 인용 시 다음 중 하나 의무:\n"
+            " (a) instrument context 의 DART/EDINET/MOPS/AKShare/Naver/"
+            " Kabutan/cnyes 공시 데이터 그대로 quote — 출처 명시\n"
+            " (b) 또는 yfinance .news / 외부 검색 결과 link / publisher 명시\n"
+            " (c) 위 둘 다 부재면 '정책상 의심 / 출처 미확인' 한 줄로"
+            " 명시 후 분석 진행. ❌ FORBIDDEN — Hon Hai 2317.TW 2026-"
+            "05-20 패턴: 'Nvidia H200 중국 판매 승인 + Hon Hai 유통사'"
+            " 같이 US BIS 제재 정책 (H200 to China 일반 금지) 와 충돌"
+            " 하는 가짜 catalyst, 또는 'Jensen Huang 트럼프 중국 방문"
+            " 인류 역사상 가장 중요한 방문' 같은 출처 없는 임원 발언"
+            " 인용 금지. PM 의 결정 catalyst 가 fabricated 면 thesis"
+            " 전체 invalid. 의심 news 는 인용 안 하는 게 safer."
             + get_analyst_directive()
             + get_language_instruction()
         )
