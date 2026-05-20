@@ -247,6 +247,43 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /sv_cost in channel — Standard View Gemini API cost (별도 process).
+    if first_word == "sv_cost":
+        try:
+            import httpx as _httpx
+            r = _httpx.get(
+                "http://127.0.0.1:8002/api/sv-usage/today", timeout=5
+            )
+            data = r.json() if r.status_code == 200 else {}
+        except Exception as exc:
+            await ctx.bot.send_message(
+                chat_id=post.chat.id,
+                text=(
+                    f"SV 비용 조회 실패: {type(exc).__name__}: {exc}\n"
+                    "backend (~/standardview) 8002 가동 중인지 확인."
+                ),
+            )
+            return
+        today_krw = float(data.get("today_krw", 0) or 0)
+        month_krw = float(data.get("month_krw", 0) or 0)
+        today_calls = int(data.get("today_calls", 0) or 0)
+        month_calls = int(data.get("month_calls", 0) or 0)
+        today_pt = int(data.get("today_prompt_tok", 0) or 0)
+        today_ot = int(data.get("today_output_tok", 0) or 0)
+        text_out = (
+            "💰 <b>Standard View 비용</b> (Gemini API, NOAH /usage 와 별개)\n"
+            f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
+            f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
+            f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
+            "<i>모델: gemini-2.5-flash · 매크로/산업/코멘트 호출</i>"
+        )
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text=text_out,
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     # /compare A B → branch off to the comparison handler.
     cmp_match = COMPARE_RE.match(body)
     if cmp_match:
