@@ -521,20 +521,40 @@ def get_sector_relative_strength(
         " 표기 필수."
     )
     if max_abs_vs_sector > 25:
-        notes += (
-            "\n\n⚠️ DATA-INTEGRITY HOLD — vs 섹터 / vs 시장 차이가"
-            " |25%p| 초과. 이 표의 vs 섹터 / vs SPY-or-broad 수치를"
-            " 본문에 어떤 형태로도 인용하면 안 된다. 한국전력공사"
-            " 2026-05-17 'KOSPI 200 대비 -54.59%p, -111.42%p' 같은"
-            " 수치를 그대로 quote하면 분석가가 '명확한 후행주' /"
-            " 'laggard' / '추세 이탈' 같은 결론으로 빠진다. 둘 중"
-            " 한 케이스: (a) 실제 격렬한 outperformance/underperformance"
-            " — 5거래일 horizon에는 ground-truth이 아닌 노이즈,"
-            " (b) yfinance 벤치마크 fetch 오류 / 분할 staleness —"
-            " 인용 시 잘못된 thesis. 둘 다 인용 가치 없음. 본문"
-            " 섹터 프라이머에는 단 한 줄만 적어라: '섹터 강도 데이터"
-            " 신뢰성 또는 5거래일 horizon 적합성 이슈로 평가 보류.'"
-            " 더 길게 쓰지 말 것. 30D/90D/YTD %p 숫자 인용 금지."
-        )
+        # F5 (Sony 6758.T 2026-05-20 audit): JP TOPIX-17 sector ETFs 의
+        # thin liquidity 가 sparse / stale yfinance data → 25%p 초과
+        # divergence 가 정량 분석 오류 일 수 있음. JP-only 케이스에는
+        # softer wording + 1306.T broad fallback 검토 권고. 다른 시장
+        # 은 기존 strict HOLD 유지 (한국전력 2026-05-17 패턴).
+        _is_jp = symbol.upper().endswith(".T")
+        if _is_jp and max_abs_vs_sector <= 40:
+            notes += (
+                "\n\n⚠️ JP 섹터 ETF DATA-QUALITY WARN — vs 섹터 / vs"
+                " 시장 차이가 |25-40%p| 범위. JP TOPIX-17 sector ETF"
+                " (1617~1633.T 시리즈) 는 거래량이 본 종목 대비 thin"
+                " 해서 yfinance 가격 데이터가 sparse / stale 가능성"
+                " 큼. 본 차이가 (a) 실제 outperformance 인지 (b) ETF"
+                " 데이터 부재로 인한 artifact 인지 구분 어려움.\n"
+                "권고: 30D/90D/YTD %p 수치 인용 시 '근사치, 데이터"
+                " quality 검증 미완료' 명시. 또는 broad 1306.T (TOPIX"
+                " 全市場) 와 비교 더 신뢰. '명확한 리더/후행' 류 단정"
+                " 결론 금지."
+            )
+        else:
+            notes += (
+                "\n\n⚠️ DATA-INTEGRITY HOLD — vs 섹터 / vs 시장 차이가"
+                " |25%p| 초과. 이 표의 vs 섹터 / vs SPY-or-broad 수치를"
+                " 본문에 어떤 형태로도 인용하면 안 된다. 한국전력공사"
+                " 2026-05-17 'KOSPI 200 대비 -54.59%p, -111.42%p' 같은"
+                " 수치를 그대로 quote하면 분석가가 '명확한 후행주' /"
+                " 'laggard' / '추세 이탈' 같은 결론으로 빠진다. 둘 중"
+                " 한 케이스: (a) 실제 격렬한 outperformance/underperformance"
+                " — 5거래일 horizon에는 ground-truth이 아닌 노이즈,"
+                " (b) yfinance 벤치마크 fetch 오류 / 분할 staleness —"
+                " 인용 시 잘못된 thesis. 둘 다 인용 가치 없음. 본문"
+                " 섹터 프라이머에는 단 한 줄만 적어라: '섹터 강도 데이터"
+                " 신뢰성 또는 5거래일 horizon 적합성 이슈로 평가 보류.'"
+                " 더 길게 쓰지 말 것. 30D/90D/YTD %p 숫자 인용 금지."
+            )
 
     return f"{header}\n\n" + "\n".join(rows) + notes
