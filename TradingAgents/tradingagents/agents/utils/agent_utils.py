@@ -1757,7 +1757,17 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             f" but stay close ('약 {_sym}{_fmt.format(round(px, -3) if px > 1000 else px)}'"
             f" or '약 {_sym}{_fmt.format(px)}'). '₩약 1.0백만' style"
             f" (삼성전기 2026-05-17) loses 1% of precision AND uses the"
-            f" awkward '백만' unit — both forbidden."
+            f" awkward '백만' unit — both forbidden.\n"
+            f" • 기술 분석 표 (10 EMA / 50 SMA / Close Price / RSI 입력값)"
+            f" 및 narrative 본문 의 '현재가' / '현재 가격' / 'Close Price'"
+            f" 셀도 같은 canonical 값 ({_sym}{_fmt.format(px)}) 사용. yfinance"
+            f" .history Close (전일 종가) vs .info currentPrice (latest"
+            f" intraday) 가 미세 다른 케이스 (Sony 6758.T 2026-05-20:"
+            f" 시장 분석가 본문에 '¥3,720.00' 와 '¥3,615.00' 두 다른 가격"
+            f" 동시 인용) 가 RULE 위반 — 본 분석가 보고서 시작부터 끝까지"
+            f" 단일 canonical 가격만 인용. 시점 다른 가격 (5일 전, 4주 전"
+            f" 등) 명시 시에는 시점 라벨 ('5일 전 종가 ...', '4주 전 high"
+            f" ...') 동반 의무, 시점 라벨 없는 가격은 canonical 외 금지."
         )
 
         # Canonical market cap (Rule B). Without this, each analyst

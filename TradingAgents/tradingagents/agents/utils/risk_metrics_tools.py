@@ -102,6 +102,18 @@ def _compute_metrics(symbol: str, curr_date: str, look_back_days: int) -> dict:
     except Exception:
         pass  # benchmark missing or merge failed — leave beta as NaN
 
+    # Fix F2 (2026-05-20, Sony 6758.T audit): treat |β| < 0.05 as
+    # "data insufficient" rather than a real 0 reading. Sony output
+    # showed '베타 (90일, vs TOPIX): 0.00' — implausible for a global
+    # consumer-electronics name (true beta ~0.7-1.0). Almost always a
+    # benchmark-overlap shortage that the >=20 row guard missed (e.g.
+    # 21 rows of merged data, but most of them are flat / weekend-
+    # interpolated, giving near-zero covariance numerator). Surface
+    # the gap explicitly so the market analyst quotes 'n/a · 데이터
+    # 부족' instead of fabricating directional momentum from a fake 0.
+    if not np.isnan(beta) and abs(beta) < 0.05:
+        beta = float("nan")
+
     return {
         "trading_days": len(df),
         "annual_vol": _format_pct(sigma_annual),
@@ -110,7 +122,7 @@ def _compute_metrics(symbol: str, curr_date: str, look_back_days: int) -> dict:
         "var_95": _format_pct(var_95),
         "cvar_95": _format_pct(cvar_95),
         "max_drawdown": _format_pct(max_dd),
-        "beta_spy": "n/a" if np.isnan(beta) else f"{beta:.2f}",
+        "beta_spy": "n/a · 데이터 부족" if np.isnan(beta) else f"{beta:.2f}",
         "beta_label": bench_label,
     }
 
