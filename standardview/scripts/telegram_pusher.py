@@ -65,9 +65,14 @@ _args = [a for a in sys.argv[1:] if not a.startswith("--")]
 TARGET = _args[0] if _args else date.today().isoformat()
 
 md_path   = REPORTS / f"{TARGET}.md"
-html_path = REPORTS / f"{TARGET}.html"
+# daily_generator writes timestamped HTML files (e.g. 2026-05-21_0324.html)
+# and maintains latest.html as the symlink/copy of the most recent run.
+# Use latest.html for dashboard-card extraction (산업 / Deal / Comments
+# / Sentiment / Signals) since the un-timestamped {TARGET}.html doesn't
+# exist on disk.
+html_path = REPORTS / "latest.html"
 
-if not html_path.exists() and not md_path.exists():
+if not md_path.exists() and not html_path.exists():
     sys.exit(f"no report files for {TARGET} in {REPORTS}")
 
 API = f"https://api.telegram.org/bot{TOKEN}"
