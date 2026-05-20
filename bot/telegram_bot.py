@@ -738,7 +738,7 @@ subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 
 ━━━━━━━━━
 <b>【11. 대시보드】</b> 🦉
  • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/</a> (ID/PW 저장 권장)
- • <b>Standard View brief</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> · 매크로·MMI·산업트렌드·Deal·오늘NOAH분석 · 평일 12·16시 자동 갱신 · 매일 08:00 텍스트 텔레
+ • <b>Standard View brief</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> (ID/PW 필요) · 매크로·MMI·산업·Deal·NOAH분석 · 평일 12·16시 자동갱신 · 매일 08:00 텍스트 텔레
  • 모바일 ID/PW 팝업 X 면 시크릿/Firefox/Brave (raw IP HTTP Basic Auth 우회)
  • NOAH 상단 카드 4개: 📊 분석수 · 💰 비용·실패율 · ⏱ 시간 · 🎯 정확도 (알파=raw−섹터ETF, Hold 분모 제외)
  • 본문: 날짜·5/15/30거래일 누적 (raw·알파·맞음/틀림·섹터 high/low)·검색창 (한·일·대 종목명)·🗑️ 삭제
