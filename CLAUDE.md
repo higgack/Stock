@@ -699,77 +699,76 @@ shipping 후 cross-market parity audit 으로 확장.
 
 ## TODO
 
-## 📋 Standard View open issues (2026-05-21 1AM session pickup)
+## 📋 Standard View open issues (2026-05-21 session pickup)
 
-User 2026-05-21 새벽 1-2시 세션에서 발견 + 진단까지 마쳤지만 patch
-는 다음 세션으로 이월. 각 항목 picked-up 가능한 상태로 남겨둠.
+User 2026-05-21 새벽 1-5시 세션에서 발견 + 진단 + 일부 patch 진행.
+각 항목 picked-up 가능한 상태로 정리.
 
-- **A. Brief 헤더 `&amp;` + `&quot;` 이중 escape** — brief.report 의
-  `## 5. 금리 & 유동성`, `6. 환율 & 달러`, `7. 물가 & 원자재`,
-  `8. 경기 & 수요`, `9. 크레딧 & 리스크 센티먼트` section 헤더가
-  화면에서 `금리 &amp; 유동성` 형태로 표시됨. 또 News 카드의 article
-  title 에 들어간 `&quot;오픈AI...&quot;` 가 화면에 `&quot;오픈AI...
-  &quot;` 그대로 노출. 2026-05-21 스캔에서 latest.html 전체에 이중
-  escape 15회 (10×`&amp;quot;` + 5×`&amp;amp;`) 발견, 주로 News
-  카드 (6회) 와 brief 헤더에 분포. 원인: 외부 source (cnyes / 뉴스
-  API / `_format_brief_for_telegram`) 가 이미 HTML-escape 된 문자열을
-  반환하는데 daily_generator 가 그것을 BeautifulSoup `.string` 에
-  바로 넣어서 soup 가 또 escape. Universal fix: 모든 외부 텍스트
-  inject site (News, Brief gen-report, Deal Highlights, Comments,
-  MMI) 직전에 `html.unescape()` 한 줄씩 적용. 5-7곳. 검증:
-  `grep -c '&amp;\(amp\|quot\)' latest.html` 가 0 이 돼야 함.
+### 🔴 미해결 (다음 세션 우선)
 
-- **B. 글로벌 매크로 브리프 카드 body 빈 상태** — `<section class=
-  "card macro-brief-card global_">` 카드가 262 bytes header 만 있고
-  자식 0개. 원인: `daily_generator.py` line 783 의 inject 코드는
-  정상 실행되지만 `brief.get("en_articles")` 가 항상 0건. 캐시 row
-  (12405 bytes, fetched 2026-05-21 01:21 KST) 내부 JSON 의 en_articles
-  list 가 비어있음. Backend 의 영문 뉴스 수집 path (Gemini news-brief
-  Python 함수 / Google News RSS / NewsAPI etc.) 가 영문 article 을
-  못 가져오는 상태. 1차 진단: backend `/api/macro/news-brief` 의
-  영문 source aggregator 코드 찾아서 어디서 0 반환하는지 확인.
-  국내 (ko_articles) 는 10건 잘 옴 — 한쪽 (국내 = Naver) 만 작동
-  하고 글로벌 (= 영문 source) path 가 비활성/실패. 임시 fallback:
-  ko_articles 의 영문/외신 (kr 외 source) 분리해서 글로벌 카드에
-  넣는 것도 가능 (BTC/forint/sabah/cfi/coindesk 같은 source 들이
-  실제로 ko_articles 에 섞여있었음 — 이전 curl 결과 참조).
+- **A. `&amp;` / `&quot;` 이중 escape** — 대시보드 본체 (push 가
+  아닌 latest.html 자체). Brief 헤더 (`5. 금리 & 유동성`), News
+  article title (`"오픈AI..."`) 등에서 화면에 `&amp;` / `&quot;`
+  literal 표시. 2026-05-21 스캔 시 15회 발견. push 쪽은 v8 pusher
+  의 `html.unescape()` 호출로 해결됐지만 대시보드 본체는 daily_
+  generator.py 가 BeautifulSoup `.string` 에 inject 하기 직전에도
+  unescape 필요. 5-7 곳 (News inject, Brief gen-report, Deal
+  Highlights, Comments, MMI). 검증: `grep -c '&amp;\(amp\|quot\)'
+  ~/standardview/reports/generated/latest.html` 가 0 되어야 함.
 
-- **C. v3 brief 본문 중복 fix 시각 검증** — 2026-05-21 자정에 cache
-  rollover 가 fresh brief 가져온 후 (08:00 cron 또는 watchdog kick),
-  latest.html 의 `<details>` 12 section 이 한 번씩만 렌더링되고 같은
-  bullet 이 details 밖 inline div 에 중복 없는지 시각 확인. 이미
-  HTML 사이즈 -28KB 로 간접 확인됐지만 실제 화면 차이 보고 close.
+- **B. 글로벌 매크로 브리프 카드 body 빈 상태** — 카드 자체 262 bytes
+  (header 만), 자식 0개. `brief.get("en_articles")` 가 sqlite 캐시
+  에서 항상 0 반환. backend 의 영문 뉴스 aggregator path 가 비활성/
+  실패. 우회: ko_articles 의 영문/외신 source (BTC/forint/sabah/cfi/
+  coindesk 등) 를 분리해서 글로벌 카드에 넣기.
 
-- **D. Mirror commit push 보류** — User VM 에 8cc793e 로컬 commit 만
-  있고 origin 에 미푸시. PAT (1차 leaked → revoked) 재발급 + 등록
-  → `git push origin claude/stock-trading-automation-xqYf7` 후
-  `sv-update.timer` 가 다음 1분 cycle 에 자동 rsync. 또는 SSH key
-  방식 (`~/.ssh/github_higgack` 발급 + `git@github.com:higgack/
-  stock.git` remote 변경) — 토큰 paste 실수 영구 차단. User 2026-
-  05-21 새벽 PAT chat 에 paste → 즉시 revoke 했으므로 다음 PAT 는
-  반드시 화면에 안 보이는 경로 (터미널 paste 만, chat 절대 X) 로.
+- **C. v3 brief 본문 중복 fix 시각 검증** — HTML size -28KB 로 간접
+  확인됐지만 latest.html `<details>` 12 section 이 정상 한 번씩만
+  렌더링되는지 사용자가 직접 확인 필요. 캐시 rollover (00:05 KST)
+  후 fresh brief 가 들어와야 검증 가능.
 
-- **E. daily_generator.py 실행 시간 단축** — 매 호출 5-10분 (산업 8개
-  Gemini sequential 호출이 전체 시간의 80%, sleep(3) × 7 + retry 포함).
-  user 가 watchdog kick / hourly timer / 수동 클릭 시마다 매번 그 시간.
-  3 가지 후보 평가 (예상 효과 순):
-  1. **산업 호출 병렬화** (가장 큰 win, ~7분 → ~2분):
-     asyncio.gather 또는 ThreadPoolExecutor 로 8개 `/api/industry-
-     analysis` Gemini 호출 동시 실행. 단 Gemini RPM (분당 요청수)
-     limit 검토 필수 — 동시 8개가 quota 초과면 throttle 또는 batch
-     크기 4로 분할. fallback cache 도 병렬 path 와 호환되게 재설계.
-  2. **산업 결과 cache TTL** (작은 win, 30분-1시간 TTL 시 30초 평균):
-     같은 산업 brief 가 짧은 시간 안 자주 안 바뀜 (≤4시간 신호로
-     충분). sqlite industry_cache 추가, key=(industry, date_hour),
-     TTL 적용. 첫 새벽 호출만 full Gemini, 그 후 watchdog/hourly
-     는 cache hit.
-  3. **graceful degradation 강화** (작은 win, 산업 fetch 실패
-     케이스 한정): 현재 retry 2회 후 fallback cache 사용. 실패 산업
-     이 많을 때 retry 시간 자체가 누적 — exponential backoff 대신
-     fail-fast + cache 즉시 폴백.
+- **D. PAT + mirror commit push** — User VM 의 local mirror commit
+  8cc793e (canonical SV 파일들) 가 origin 에 미푸시. 매번 inline
+  patch 로 live 만 수정 중. PAT 등록 또는 SSH key 방식 (`~/.ssh/
+  github_higgack` 발급 + `git@github.com:higgack/stock.git` remote
+  변경) 필요. ⚠️ User 2026-05-21 새벽 PAT chat 에 paste 사고 → 즉시
+  revoke. 다음 PAT 는 반드시 터미널 paste 만, chat 절대 X.
 
-  추천: Option 1 (병렬화) 부터. 가장 큰 영향. Gemini quota 1차 검증
-  필요 (현재 호출 빈도 vs Tier limit). 2/3 는 1 이후 marginal.
+- **E. daily_generator.py 실행 시간 단축** — 현재 5-10분/회 (산업
+  8개 Gemini sequential 호출이 시간의 80%). 추천 우선순위:
+  1. 산업 호출 병렬화 (asyncio.gather, ~7분→2분, 가장 큰 win,
+     Gemini RPM quota 검증 선행)
+  2. 산업 결과 sqlite cache + TTL (30분-1시간) — 첫 호출만 full,
+     watchdog/hourly 는 cache hit
+  3. graceful degradation 강화 (retry 시간 누적 차단)
+
+- **F. SV 자동화 패치 영구화** — 오늘 세션의 inline Python patches
+  (sv_telegram_button.py endpoint mount-order fix, alert syntax fix,
+  pusher v8) 가 모두 LIVE 파일에만 적용. canonical 미러 (D 해결
+  필요) 후 자동 배포 (sv-update.timer) 로 영속화 필요. 그 전엔 backend
+  restart 시 endpoint 위치가 다시 mount 뒤로 갈 위험 있음 (현재 main.py
+  에 적용된 상태 유지 중이지만 다음 install.sh 재실행 시 되돌릴 수
+  있음).
+
+- **G. 통합 sv_pusher_install.py v8 반영** — 현재 sv_pusher_install.py
+  는 v2 시점 canonical 만 mirror. v8 (section 12 skip + 마커 제거 +
+  Deal/Comment/Signal 카드 구조 파싱 + grid 기반 산업 트렌드 추출)
+  반영 후 새 installer 로 commit. D 해결 후 sv-update.timer 가 자동
+  배포 처리.
+
+### ✅ 오늘 (2026-05-21 새벽) 완료
+
+- F8/F4 v4/F9 NOAH audit (BYD 002594.SZ 7-axis)
+- SV v3 dedup (brief 중복, 회사명 dedup, section shift)
+- SV 자동화 인프라 (sv-update 1분, cache-rollover 00:05 KST,
+  watchdog 30분)
+- NOAH update timer 2분 → 1분
+- Send to Telegram 버튼 작동 (endpoint mount order + alert syntax
+  fix)
+- Brief sections 기본 펼침 (`is_open=True`)
+- telegram_pusher v8: HTML 첨부 제거, 모바일 친화 텍스트, 뉴스 URL
+  클릭 가능, 산업 트렌드 grid 파싱, Deal/Comment/Signal 카드 분리,
+  • 마커 제거, section 12 push 제외
 
 각 fix 는 universal (모든 brief 출력 / 모든 분석 / 모든 시장) 패턴
 으로 적용. Per-ticker / per-market 가드는 부재.
