@@ -260,18 +260,21 @@ def _strip_title_prefix(body: str, title: str) -> str:
 if html_path.exists():
     soup = BeautifulSoup(html_path.read_text(), "html.parser")
 
-    # ----- 산업 트렌드 8개 -----
-    # Single card with title '🏭 산업 트렌드 (8개 산업)', body ~1820 chars.
-    # Inside, each industry is typically wrapped in a div with h4/h5 title.
+    # ----- 산업 트렌드 8개 — 각 산업별로 별도 메시지 -----
+    # Body 패턴 per industry:
+    #   '{name} (뉴스 KO=N / EN=M) {summary} — {b1} · {b2} · {b3}
+    #    — {b1} · {b2} · {b3}'
+    # — 로 split: [summary, section1 bullets, section2 bullets]
+    # · 로 split section1/2 each into bullet list.
     ind_card = _find_card_by_title(soup, "산업 트렌드", "🏭")
     if ind_card:
-        lines = ["<b>🏭 산업 트렌드 (8개)</b>"]
-        # Try to find industry sub-items by h4/h5 boundaries
+        # Header card
+        dashboard_parts.append("<b>🏭 산업 트렌드 (8개)</b>")
         headers = ind_card.find_all(["h4", "h5"])
+        # If h4/h5 미존재 → 전체 body 를 단일 메시지로
         if headers:
             for h in headers[:8]:
-                title = _text(h)
-                # Body = text until next h4/h5
+                title_raw = _text(h)
                 body_parts = []
                 node = h.next_sibling
                 while node is not None and (
@@ -287,76 +290,113 @@ if html_path.exists():
                             body_parts.append(s)
                     node = node.next_sibling
                 body = _html.unescape(" ".join(body_parts))
-                if len(body) > 220:
-                    body = body[:200] + "…"
-                lines.append(f"\n<b>{_esc(title)}</b>")
-                if body:
-                    lines.append(_esc(body))
+                # 산업명 + metadata 분리
+                m = re.match(
+                    r"^\s*(?:•\s*)?([^()]+?)\s*\(([^)]*)\)\s*(.*)$",
+                    body or title_raw,
+                    re.DOTALL,
+                )
+                if m:
+                    name = m.group(1).strip()
+                    meta = m.group(2).strip()
+                    rest = m.group(3).strip()
+                else:
+                    name = title_raw.strip("• \n")
+                    meta = ""
+                    rest = body.strip()
+                # rest 를 ' — ' 또는 ' - ' 로 split → [summary, sec1, sec2]
+                sections = [
+                    s.strip() for s in re.split(r"\s+[—–-]\s+", rest)
+                    if s.strip()
+                ]
+                lines = [f"<b>🏭 {_esc(name)}</b>"]
+                if meta:
+                    lines.append(f"<i>{_esc(meta)}</i>")
+                if sections:
+                    summary = sections[0]
+                    bullet_sections = sections[1:]
+                    if summary:
+                        lines.append("")
+                        lines.append(_esc(summary))
+                    for i, sec in enumerate(bullet_sections):
+                        bullets = [
+                            b.strip() for b in re.split(r"\s+·\s+|\s+•\s+", sec)
+                            if b.strip()
+                        ]
+                        if not bullets:
+                            continue
+                        lines.append("")
+                        for b in bullets:
+                            lines.append(f"• {_esc(b)}")
+                dashboard_parts.append("\n".join(lines))
         else:
-            # Fallback: dump whole card body trimmed
             body = _strip_title_prefix(_text(ind_card), "🏭 산업 트렌드 (8개 산업)")
-            if len(body) > 3000:
-                body = body[:2900] + "…"
-            lines.append(_esc(body))
-        if len(lines) > 1:
-            dashboard_parts.append("\n".join(lines))
+            if len(body) > 3500:
+                body = body[:3400] + "…"
+            dashboard_parts.append(_esc(body))
 
-    # ----- Deal Highlights -----
+    # ----- Deal Highlights — 각 deal 별 메시지 -----
     deal_card = _find_card_by_title(soup, "Deal Highlights", "💼")
     if deal_card:
-        lines = ["<b>💼 Deal Highlights</b>"]
-        # Inside the card, items are usually h4/h5 + description
+        dashboard_parts.append("<b>💼 Deal Highlights</b>")
         headers = deal_card.find_all(["h4", "h5"])
         if headers:
             for h in headers[:5]:
                 title = _text(h)
-                # Find nearby category/score by sibling text
-                badge = ""
+                # Body 직후 sibling 들에서 텍스트 추출 (다음 h4/h5 까지)
+                body_parts = []
+                node = h.next_sibling
+                while node is not None and (
+                    getattr(node, "name", None) not in ("h4", "h5")
+                ):
+                    if hasattr(node, "get_text"):
+                        t = node.get_text(separator=" ", strip=True)
+                        if t:
+                            body_parts.append(t)
+                    elif isinstance(node, str):
+                        s = node.strip()
+                        if s:
+                            body_parts.append(s)
+                    node = node.next_sibling
+                body = _html.unescape(" ".join(body_parts))
+                # score 패턴 추출
                 score = ""
-                for sib in (h.parent or h).find_all(string=True, recursive=True):
-                    s = str(sib).strip()
-                    if not s:
-                        continue
-                    if re.match(r"^score\s*[:=]?\s*\d+", s, re.I):
-                        score = s
-                    if re.match(r"^\[?[A-Z]+\]?$", s) and s != title:
-                        badge = s
-                line = f"• {_esc(title)}"
-                if badge:
-                    line = f"• [{_esc(badge)}] {_esc(title)}"
+                m = re.search(r"score\s*[:=]?\s*(\d+)", body, re.I)
+                if m:
+                    score = f"score {m.group(1)}"
+                    body = re.sub(r"score\s*[:=]?\s*\d+", "", body, flags=re.I)
+                body = body.strip().strip("·-—")
+                msg = f"<b>💼 {_esc(title)}</b>"
                 if score:
-                    line += f" ({_esc(score)})"
-                lines.append(line)
+                    msg += f"\n<i>{_esc(score)}</i>"
+                if body:
+                    msg += f"\n\n{_esc(body)}"
+                dashboard_parts.append(msg)
         else:
             body = _strip_title_prefix(_text(deal_card), "Deal Highlights")
-            # Split by 5 score markers if present
-            items = re.split(r"score\s*\d+", body, flags=re.I)
-            for it in items[:5]:
-                it = it.strip().strip("·-—")
-                if it:
-                    lines.append(f"• {_esc(it[:160])}")
-        if len(lines) > 1:
-            dashboard_parts.append("\n".join(lines))
+            if body:
+                items = re.split(r"score\s*\d+", body, flags=re.I)
+                for it in items[:5]:
+                    it = it.strip().strip("·-—")
+                    if it:
+                        dashboard_parts.append(f"<b>💼 Deal</b>\n{_esc(it[:280])}")
 
-    # ----- Comments 4개 (Market / Policy / Sector / Risk) -----
+    # ----- Comments — 각 코멘트별 별도 메시지 -----
     comment_cards = [
         sec for sec in soup.find_all("section")
         if "comment-card" in " ".join(sec.get("class") or [])
     ]
     if comment_cards:
-        lines = ["<b>💬 전문가 코멘트</b>"]
+        dashboard_parts.append("<b>💬 전문가 코멘트</b>")
         for c in comment_cards[:4]:
             title_n = c.select_one(".panel-title, h3, h4")
             title = _text(title_n) or "(unknown)"
             body = _strip_title_prefix(_text(c), title)
-            if len(body) > 280:
-                body = body[:260] + "…"
             if not body:
                 continue
-            lines.append(f"\n<b>{_esc(title)}</b>")
-            lines.append(_esc(body))
-        if len(lines) > 1:
-            dashboard_parts.append("\n".join(lines))
+            if len(body) > 400:
+                body = body[:380] + "…"
+            dashboard_parts.append(f"<b>💬 {_esc(title)}</b>\n\n{_esc(body)}")
 
     # ----- 시장 센티먼트 (gauge-card) -----
     gauge = None
