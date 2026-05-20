@@ -749,6 +749,28 @@ User 2026-05-21 새벽 1-2시 세션에서 발견 + 진단까지 마쳤지만 pa
   05-21 새벽 PAT chat 에 paste → 즉시 revoke 했으므로 다음 PAT 는
   반드시 화면에 안 보이는 경로 (터미널 paste 만, chat 절대 X) 로.
 
+- **E. daily_generator.py 실행 시간 단축** — 매 호출 5-10분 (산업 8개
+  Gemini sequential 호출이 전체 시간의 80%, sleep(3) × 7 + retry 포함).
+  user 가 watchdog kick / hourly timer / 수동 클릭 시마다 매번 그 시간.
+  3 가지 후보 평가 (예상 효과 순):
+  1. **산업 호출 병렬화** (가장 큰 win, ~7분 → ~2분):
+     asyncio.gather 또는 ThreadPoolExecutor 로 8개 `/api/industry-
+     analysis` Gemini 호출 동시 실행. 단 Gemini RPM (분당 요청수)
+     limit 검토 필수 — 동시 8개가 quota 초과면 throttle 또는 batch
+     크기 4로 분할. fallback cache 도 병렬 path 와 호환되게 재설계.
+  2. **산업 결과 cache TTL** (작은 win, 30분-1시간 TTL 시 30초 평균):
+     같은 산업 brief 가 짧은 시간 안 자주 안 바뀜 (≤4시간 신호로
+     충분). sqlite industry_cache 추가, key=(industry, date_hour),
+     TTL 적용. 첫 새벽 호출만 full Gemini, 그 후 watchdog/hourly
+     는 cache hit.
+  3. **graceful degradation 강화** (작은 win, 산업 fetch 실패
+     케이스 한정): 현재 retry 2회 후 fallback cache 사용. 실패 산업
+     이 많을 때 retry 시간 자체가 누적 — exponential backoff 대신
+     fail-fast + cache 즉시 폴백.
+
+  추천: Option 1 (병렬화) 부터. 가장 큰 영향. Gemini quota 1차 검증
+  필요 (현재 호출 빈도 vs Tier limit). 2/3 는 1 이후 marginal.
+
 각 fix 는 universal (모든 brief 출력 / 모든 분석 / 모든 시장) 패턴
 으로 적용. Per-ticker / per-market 가드는 부재.
 
