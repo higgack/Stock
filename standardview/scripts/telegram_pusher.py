@@ -104,6 +104,13 @@ except Exception as exc:
 if not report_md and md_path.exists():
     report_md = md_path.read_text()
 
+# Drop section 12 (Due Diligence Questions) — too verbose for Telegram
+# push per user 2026-05-21. Keep on dashboard, skip in push only.
+if report_md:
+    report_md = re.sub(
+        r"##\s*12\.[\s\S]*?(?=\n##\s|\Z)", "", report_md
+    ).rstrip()
+
 
 # ==================================================================
 # 2. Header (macro indicators) from .md file
