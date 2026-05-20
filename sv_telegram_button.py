@@ -156,8 +156,20 @@ def patch_gen(p: Path):
     if GEN_MARKER in src:
         print(f"gen: {p} already patched — skip")
         return False
-    # Append function definition.
-    new_src = src.rstrip() + "\n" + GEN_INSERT + "\n"
+    # Inject function definition BEFORE `def main(` (must precede the
+    # callsite which lives inside main(); appending to file end caused
+    # NameError when `if __name__=='__main__': main()` runs before the
+    # appended def is reached — fixed 2026-05-21).
+    import re as _re
+    main_def = _re.search(r"\ndef main\(", src)
+    if not main_def:
+        print(f"gen: SKIP — def main() not found in {p}")
+        return False
+    new_src = (
+        src[:main_def.start()]
+        + "\n" + GEN_INSERT.strip() + "\n"
+        + src[main_def.start():]
+    )
 
     # Also need to CALL the function. Find a stable callsite: the soup
     # object should be in scope right before the HTML is written. Look
