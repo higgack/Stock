@@ -704,16 +704,20 @@ shipping 후 cross-market parity audit 으로 확장.
 User 2026-05-21 새벽 1-2시 세션에서 발견 + 진단까지 마쳤지만 patch
 는 다음 세션으로 이월. 각 항목 picked-up 가능한 상태로 남겨둠.
 
-- **A. Brief 헤더 `&amp;` 이중 escape** — brief.report 의 `## 5. 금리
-  & 유동성`, `6. 환율 & 달러`, `7. 물가 & 원자재`, `8. 경기 & 수요`,
-  `9. 크레딧 & 리스크 센티먼트` section 헤더가 화면에서 `금리 &amp;
-  유동성` 형태로 표시됨. 원인: `_format_brief_for_telegram` 가 `&`
-  → `&amp;` HTML escape 한 결과를 BeautifulSoup 으로 다시 insert →
-  soup 가 추가로 escape → 화면에 `&amp;` 그대로 출력. Universal fix:
-  formatter 출력에서 entity escape 제거하고 soup 의 자동 escape 에
-  맡기거나, soup.new_string(decode=True) 사용. 영향: 모든 brief 출력
-  헤더. 패치 후 검증: latest.html `grep -c "&amp;amp;\|&amp;"` 0 이
-  돼야 함.
+- **A. Brief 헤더 `&amp;` + `&quot;` 이중 escape** — brief.report 의
+  `## 5. 금리 & 유동성`, `6. 환율 & 달러`, `7. 물가 & 원자재`,
+  `8. 경기 & 수요`, `9. 크레딧 & 리스크 센티먼트` section 헤더가
+  화면에서 `금리 &amp; 유동성` 형태로 표시됨. 또 News 카드의 article
+  title 에 들어간 `&quot;오픈AI...&quot;` 가 화면에 `&quot;오픈AI...
+  &quot;` 그대로 노출. 2026-05-21 스캔에서 latest.html 전체에 이중
+  escape 15회 (10×`&amp;quot;` + 5×`&amp;amp;`) 발견, 주로 News
+  카드 (6회) 와 brief 헤더에 분포. 원인: 외부 source (cnyes / 뉴스
+  API / `_format_brief_for_telegram`) 가 이미 HTML-escape 된 문자열을
+  반환하는데 daily_generator 가 그것을 BeautifulSoup `.string` 에
+  바로 넣어서 soup 가 또 escape. Universal fix: 모든 외부 텍스트
+  inject site (News, Brief gen-report, Deal Highlights, Comments,
+  MMI) 직전에 `html.unescape()` 한 줄씩 적용. 5-7곳. 검증:
+  `grep -c '&amp;\(amp\|quot\)' latest.html` 가 0 이 돼야 함.
 
 - **B. 글로벌 매크로 브리프 카드 body 빈 상태** — `<section class=
   "card macro-brief-card global_">` 카드가 262 bytes header 만 있고
