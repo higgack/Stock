@@ -260,18 +260,15 @@ def _strip_title_prefix(body: str, title: str) -> str:
 if html_path.exists():
     soup = BeautifulSoup(html_path.read_text(), "html.parser")
 
-    # ----- 산업 트렌드 8개 — 각 산업별로 별도 메시지 -----
-    # Body 패턴 per industry:
+    # ----- 산업 트렌드 8개 — 1 메시지에 정리된 줄바꿈으로 -----
+    # 각 산업 body 패턴:
     #   '{name} (뉴스 KO=N / EN=M) {summary} — {b1} · {b2} · {b3}
     #    — {b1} · {b2} · {b3}'
-    # — 로 split: [summary, section1 bullets, section2 bullets]
-    # · 로 split section1/2 each into bullet list.
+    # 산업 사이는 빈 줄로 구분, 각 산업 내부도 줄바꿈으로 가독성 확보.
     ind_card = _find_card_by_title(soup, "산업 트렌드", "🏭")
     if ind_card:
-        # Header card
-        dashboard_parts.append("<b>🏭 산업 트렌드 (8개)</b>")
+        lines = ["<b>🏭 산업 트렌드 (8개)</b>"]
         headers = ind_card.find_all(["h4", "h5"])
-        # If h4/h5 미존재 → 전체 body 를 단일 메시지로
         if headers:
             for h in headers[:8]:
                 title_raw = _text(h)
@@ -290,7 +287,6 @@ if html_path.exists():
                             body_parts.append(s)
                     node = node.next_sibling
                 body = _html.unescape(" ".join(body_parts))
-                # 산업명 + metadata 분리
                 m = re.match(
                     r"^\s*(?:•\s*)?([^()]+?)\s*\(([^)]*)\)\s*(.*)$",
                     body or title_raw,
@@ -304,46 +300,44 @@ if html_path.exists():
                     name = title_raw.strip("• \n")
                     meta = ""
                     rest = body.strip()
-                # rest 를 ' — ' 또는 ' - ' 로 split → [summary, sec1, sec2]
                 sections = [
                     s.strip() for s in re.split(r"\s+[—–-]\s+", rest)
                     if s.strip()
                 ]
-                lines = [f"<b>🏭 {_esc(name)}</b>"]
+                # 빈 줄 + 산업 헤더
+                lines.append("")
+                hdr_line = f"▸ <b>{_esc(name)}</b>"
                 if meta:
-                    lines.append(f"<i>{_esc(meta)}</i>")
+                    hdr_line += f" <i>({_esc(meta)})</i>"
+                lines.append(hdr_line)
                 if sections:
                     summary = sections[0]
                     bullet_sections = sections[1:]
                     if summary:
-                        lines.append("")
                         lines.append(_esc(summary))
-                    for i, sec in enumerate(bullet_sections):
+                    for sec in bullet_sections:
                         bullets = [
                             b.strip() for b in re.split(r"\s+·\s+|\s+•\s+", sec)
                             if b.strip()
                         ]
-                        if not bullets:
-                            continue
-                        lines.append("")
                         for b in bullets:
-                            lines.append(f"• {_esc(b)}")
-                dashboard_parts.append("\n".join(lines))
+                            lines.append(f"  • {_esc(b)}")
+            dashboard_parts.append("\n".join(lines))
         else:
             body = _strip_title_prefix(_text(ind_card), "🏭 산업 트렌드 (8개 산업)")
             if len(body) > 3500:
                 body = body[:3400] + "…"
-            dashboard_parts.append(_esc(body))
+            lines.append(_esc(body))
+            dashboard_parts.append("\n".join(lines))
 
-    # ----- Deal Highlights — 각 deal 별 메시지 -----
+    # ----- Deal Highlights — 1 메시지, 항목별 줄바꿈 -----
     deal_card = _find_card_by_title(soup, "Deal Highlights", "💼")
     if deal_card:
-        dashboard_parts.append("<b>💼 Deal Highlights</b>")
+        lines = ["<b>💼 Deal Highlights</b>"]
         headers = deal_card.find_all(["h4", "h5"])
         if headers:
             for h in headers[:5]:
                 title = _text(h)
-                # Body 직후 sibling 들에서 텍스트 추출 (다음 h4/h5 까지)
                 body_parts = []
                 node = h.next_sibling
                 while node is not None and (
@@ -359,19 +353,37 @@ if html_path.exists():
                             body_parts.append(s)
                     node = node.next_sibling
                 body = _html.unescape(" ".join(body_parts))
-                # score 패턴 추출
-                score = ""
-                m = re.search(r"score\s*[:=]?\s*(\d+)", body, re.I)
-                if m:
-                    score = f"score {m.group(1)}"
-                    body = re.sub(r"score\s*[:=]?\s*\d+", "", body, flags=re.I)
-                body = body.strip().strip("·-—")
-                msg = f"<b>💼 {_esc(title)}</b>"
-                if score:
-                    msg += f"\n<i>{_esc(score)}</i>"
-                if body:
-                    msg += f"\n\n{_esc(body)}"
-                dashboard_parts.append(msg)
+                # score / category 추출
+                category = ""
+                cat_m = re.search(
+                    r"(IPO[^·\s]*|M&A|구조조정|투자유치|기술이전|"
+                    r"대출|MOU|JV|상장폐지|inception|seed|series\s*[A-Z])",
+                    title + " " + body,
+                    re.I,
+                )
+                if cat_m:
+                    category = cat_m.group(1)
+                # 본문에서 카테고리 / score 텍스트 제거
+                body = re.sub(r"score\s*[:=]?\s*\d+", "", body, flags=re.I)
+                if category:
+                    body = body.replace(category, "")
+                body = body.strip().strip("·-—| ")
+                # title 안의 카테고리 텍스트 제거
+                clean_title = title.replace(category, "").strip() if category else title
+                clean_title = re.sub(r"\(.*?dedup.*?\)", "", clean_title).strip()
+                if not clean_title and body:
+                    clean_title = body
+                    body = ""
+                lines.append("")
+                if category:
+                    lines.append(f"▸ <i>{_esc(category)}</i>")
+                lines.append(f"<b>{_esc(clean_title)}</b>")
+                if body and body != clean_title:
+                    if len(body) > 200:
+                        body = body[:180] + "…"
+                    lines.append(_esc(body))
+            if len(lines) > 1:
+                dashboard_parts.append("\n".join(lines))
         else:
             body = _strip_title_prefix(_text(deal_card), "Deal Highlights")
             if body:
@@ -379,15 +391,17 @@ if html_path.exists():
                 for it in items[:5]:
                     it = it.strip().strip("·-—")
                     if it:
-                        dashboard_parts.append(f"<b>💼 Deal</b>\n{_esc(it[:280])}")
+                        lines.append(f"• {_esc(it[:200])}")
+                if len(lines) > 1:
+                    dashboard_parts.append("\n".join(lines))
 
-    # ----- Comments — 각 코멘트별 별도 메시지 -----
+    # ----- Comments — 1 메시지, 4개 코멘트 줄바꿈으로 구분 -----
     comment_cards = [
         sec for sec in soup.find_all("section")
         if "comment-card" in " ".join(sec.get("class") or [])
     ]
     if comment_cards:
-        dashboard_parts.append("<b>💬 전문가 코멘트</b>")
+        lines = ["<b>💬 전문가 코멘트</b>"]
         for c in comment_cards[:4]:
             title_n = c.select_one(".panel-title, h3, h4")
             title = _text(title_n) or "(unknown)"
@@ -396,7 +410,11 @@ if html_path.exists():
                 continue
             if len(body) > 400:
                 body = body[:380] + "…"
-            dashboard_parts.append(f"<b>💬 {_esc(title)}</b>\n\n{_esc(body)}")
+            lines.append("")
+            lines.append(f"▸ <b>{_esc(title)}</b>")
+            lines.append(_esc(body))
+        if len(lines) > 1:
+            dashboard_parts.append("\n".join(lines))
 
     # ----- 시장 센티먼트 (gauge-card) -----
     gauge = None
@@ -427,16 +445,28 @@ if html_path.exists():
                 line += f" · {_esc(label)}"
             dashboard_parts.append(line)
 
-    # ----- 국내외 공통 시그널 (small card with title) -----
+    # ----- 국내외 공통 시그널 — 항목별 줄바꿈 -----
     common = _find_card_by_title(soup, "공통 시그널")
     if common:
-        body = _strip_title_prefix(_text(common), "국내외 공통 시그널")
-        if body:
-            if len(body) > 600:
-                body = body[:580] + "…"
-            dashboard_parts.append(
-                f"<b>🔄 국내외 공통 시그널</b>\n{_esc(body)}"
+        # Prefer <li> structure if present
+        items = [_text(li) for li in common.find_all("li") if _text(li)]
+        if not items:
+            # Fall back: 한 줄 body 를 ' — ' / ' • ' / 마침표 기준으로 분리
+            body = _strip_title_prefix(_text(common), "국내외 공통 시그널")
+            parts = re.split(
+                r"(?<=[다음형성성됨화나용유로음세적가환로])\s+(?=[가-힣A-Z])",
+                body,
             )
+            if len(parts) < 2:
+                parts = [s.strip() for s in re.split(r"\s+—\s+|\s+•\s+", body) if s.strip()]
+            items = [p.strip() for p in parts if p.strip()]
+        if items:
+            lines = ["<b>🔄 국내외 공통 시그널</b>", ""]
+            for it in items[:6]:
+                if len(it) > 400:
+                    it = it[:380] + "…"
+                lines.append(f"• {_esc(it)}")
+            dashboard_parts.append("\n".join(lines))
 
 
 # ==================================================================
