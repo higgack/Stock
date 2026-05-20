@@ -260,74 +260,56 @@ def _strip_title_prefix(body: str, title: str) -> str:
 if html_path.exists():
     soup = BeautifulSoup(html_path.read_text(), "html.parser")
 
-    # ----- 산업 트렌드 8개 — 1 메시지에 정리된 줄바꿈으로 -----
-    # 각 산업 body 패턴:
-    #   '{name} (뉴스 KO=N / EN=M) {summary} — {b1} · {b2} · {b3}
-    #    — {b1} · {b2} · {b3}'
-    # 산업 사이는 빈 줄로 구분, 각 산업 내부도 줄바꿈으로 가독성 확보.
+    # ----- 산업 트렌드 8개 — 실제 구조: grid > [outer-div × 8] -----
+    # Each outer-div has 2 inner divs: [0]=title, [1]=body
     ind_card = _find_card_by_title(soup, "산업 트렌드", "🏭")
     if ind_card:
         lines = ["<b>🏭 산업 트렌드 (8개)</b>"]
-        headers = ind_card.find_all(["h4", "h5"])
-        if headers:
-            for h in headers[:8]:
-                title_raw = _text(h)
-                body_parts = []
-                node = h.next_sibling
-                while node is not None and (
-                    getattr(node, "name", None) not in ("h4", "h5")
-                ):
-                    if hasattr(node, "get_text"):
-                        t = node.get_text(separator=" ", strip=True)
-                        if t:
-                            body_parts.append(t)
-                    elif isinstance(node, str):
-                        s = node.strip()
-                        if s:
-                            body_parts.append(s)
-                    node = node.next_sibling
-                body = _html.unescape(" ".join(body_parts))
-                m = re.match(
-                    r"^\s*(?:•\s*)?([^()]+?)\s*\(([^)]*)\)\s*(.*)$",
-                    body or title_raw,
-                    re.DOTALL,
-                )
-                if m:
-                    name = m.group(1).strip()
-                    meta = m.group(2).strip()
-                    rest = m.group(3).strip()
-                else:
-                    name = title_raw.strip("• \n")
-                    meta = ""
-                    rest = body.strip()
-                sections = [
-                    s.strip() for s in re.split(r"\s+[—–-]\s+", rest)
-                    if s.strip()
-                ]
-                # 빈 줄 + 산업 헤더
-                lines.append("")
-                hdr_line = f"▸ <b>{_esc(name)}</b>"
-                if meta:
-                    hdr_line += f" <i>({_esc(meta)})</i>"
-                lines.append(hdr_line)
-                if sections:
-                    summary = sections[0]
-                    bullet_sections = sections[1:]
-                    if summary:
-                        lines.append(_esc(summary))
-                    for sec in bullet_sections:
-                        bullets = [
-                            b.strip() for b in re.split(r"\s+·\s+|\s+•\s+", sec)
-                            if b.strip()
-                        ]
-                        for b in bullets:
-                            lines.append(f"  • {_esc(b)}")
-            dashboard_parts.append("\n".join(lines))
-        else:
-            body = _strip_title_prefix(_text(ind_card), "🏭 산업 트렌드 (8개 산업)")
-            if len(body) > 3500:
-                body = body[:3400] + "…"
-            lines.append(_esc(body))
+        # 직접 자식 div 들 (grid container 안의 outer-divs)
+        grid = ind_card.find(
+            "div", attrs={"style": re.compile(r"grid")},
+        )
+        items = []
+        if grid:
+            for outer in grid.find_all("div", recursive=False):
+                inners = outer.find_all("div", recursive=False)
+                if len(inners) >= 2:
+                    items.append((inners[0], inners[1]))
+        for title_div, body_div in items[:8]:
+            title_raw = _text(title_div)
+            body_raw = _html.unescape(_text(body_div))
+            m = re.match(
+                r"^\s*[•·]?\s*([^()]+?)\s*\(([^)]*)\)\s*$",
+                title_raw,
+            )
+            if m:
+                name = m.group(1).strip()
+                meta = m.group(2).strip()
+            else:
+                name = title_raw.lstrip("• ·").strip()
+                meta = ""
+            sections = [
+                s.strip() for s in re.split(r"\s+[—–]\s+|\s+-\s+", body_raw)
+                if s.strip()
+            ]
+            lines.append("")
+            hdr = f"▸ <b>{_esc(name)}</b>"
+            if meta:
+                hdr += f"  <i>{_esc(meta)}</i>"
+            lines.append(hdr)
+            if sections:
+                summary = sections[0]
+                bullet_sections = sections[1:]
+                if summary:
+                    lines.append(_esc(summary))
+                for sec in bullet_sections:
+                    bullets = [
+                        b.strip() for b in re.split(r"\s+·\s+", sec)
+                        if b.strip()
+                    ]
+                    for b in bullets:
+                        lines.append(f"  • {_esc(b)}")
+        if len(lines) > 1:
             dashboard_parts.append("\n".join(lines))
 
     # ----- Deal Highlights — 1 메시지, 항목별 줄바꿈 -----
