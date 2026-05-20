@@ -672,8 +672,8 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
-<b>【1. 명령어】</b> (탭하면 자동 입력)
-/start /help /usage — 도움말·비용
+<b>【1. 명령어】</b> (탭 자동입력)
+/start /help /usage /sv_cost — 도움말 · 비용 (NOAH+SV)
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
@@ -740,7 +740,7 @@ subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 
  • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/...</a> (ID/PW)
  • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> (ID/PW) · 매크로·MMI·산업·Deal·NOAH · 평일 12·16시 갱신 · 매일 08:00 텔레
  • <b>StockNewsViewer</b>: <a href="https://supply-waviness-popcorn.ngrok-free.dev/">supply-waviness-popcorn.ngrok-free.dev</a> · 미국주식 실시간 뉴스·감성·한글번역
- • 모바일 popup X → Safari/Firefox/Brave (raw IP HTTP Basic Auth 우회)
+ • 모바일 ID/PW popup 안 뜨면 Safari/Firefox/Brave
  • NOAH 카드: 📊분석 · 💰비용 · ⏱시간 · 🎯정확도 (알파=raw−섹터ETF)
  • 본문: 날짜·5/15/30거래일 누적·검색창 (한·일·대 종목명)·🗑️
  • 데이터: <code>~/.tradingagents/{archive,usage.jsonl,memory/}</code>
@@ -1009,6 +1009,45 @@ async def cmd_usage(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     await update.message.reply_text(_build_usage_report(), parse_mode=ParseMode.HTML)
+
+
+async def cmd_sv_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/sv_cost — show Standard View Gemini API cost. /usage 는 NOAH 의
+    cost 만 잡으므로 별도. SV backend (~/standardview) 가 같은 host
+    에서 띄워져 있을 때 동작 — 127.0.0.1:8002/api/sv-usage/today 조회."""
+    if update.message is None:
+        return
+    try:
+        import httpx as _httpx
+        r = _httpx.get(
+            "http://127.0.0.1:8002/api/sv-usage/today", timeout=5
+        )
+        if r.status_code != 200:
+            await update.message.reply_text(
+                f"SV 비용 endpoint 응답 {r.status_code} — backend down?"
+            )
+            return
+        data = r.json()
+    except Exception as exc:
+        await update.message.reply_text(
+            f"SV 비용 조회 실패: {type(exc).__name__}: {exc}\n"
+            f"backend (~/standardview) 가 8002 에서 가동 중인지 확인."
+        )
+        return
+    today_krw = float(data.get("today_krw", 0) or 0)
+    month_krw = float(data.get("month_krw", 0) or 0)
+    today_calls = int(data.get("today_calls", 0) or 0)
+    month_calls = int(data.get("month_calls", 0) or 0)
+    today_pt = int(data.get("today_prompt_tok", 0) or 0)
+    today_ot = int(data.get("today_output_tok", 0) or 0)
+    text = (
+        "💰 <b>Standard View 비용</b> (Gemini API, NOAH /usage 와 별개)\n"
+        f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
+        f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
+        f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
+        "<i>모델: gemini-2.5-flash · 매크로 brief + 산업 분석 + 코멘트 카드 호출</i>"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def cmd_compare_hint(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1313,6 +1352,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", cmd_help))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("usage", cmd_usage))
+    app.add_handler(CommandHandler("sv_cost", cmd_sv_cost))
     # Catch /compare typed in DM and redirect — actual compare runs only
     # via on_channel_post inside the registered channel.
     app.add_handler(CommandHandler("compare", cmd_compare_hint))
