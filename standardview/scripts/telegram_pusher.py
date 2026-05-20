@@ -131,7 +131,8 @@ def md_to_tg_html(md: str) -> str:
     txt = re.sub(r"(?m)^##\s*(\d+\.[^\n]+)$", r"<b>\1</b>", txt)
     txt = re.sub(r"(?m)^#\s+([^\n]+)$",       r"<b>\1</b>", txt)
     txt = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", txt)
-    txt = re.sub(r"(?m)^\*\s+", "• ", txt)
+    # Markdown list bullet '*   ' → 줄바꿈만 유지, 마커 제거
+    txt = re.sub(r"(?m)^\*\s+", "", txt)
     return txt
 
 
@@ -312,70 +313,46 @@ if html_path.exists():
         if len(lines) > 1:
             dashboard_parts.append("\n".join(lines))
 
-    # ----- Deal Highlights — 1 메시지, 항목별 줄바꿈 -----
+    # ----- Deal Highlights — 1 메시지, 항목별 줄바꿈, 마커 없음 -----
     deal_card = _find_card_by_title(soup, "Deal Highlights", "💼")
     if deal_card:
-        lines = ["<b>💼 Deal Highlights</b>"]
-        headers = deal_card.find_all(["h4", "h5"])
-        if headers:
-            for h in headers[:5]:
-                title = _text(h)
-                body_parts = []
-                node = h.next_sibling
-                while node is not None and (
-                    getattr(node, "name", None) not in ("h4", "h5")
-                ):
-                    if hasattr(node, "get_text"):
-                        t = node.get_text(separator=" ", strip=True)
-                        if t:
-                            body_parts.append(t)
-                    elif isinstance(node, str):
-                        s = node.strip()
-                        if s:
-                            body_parts.append(s)
-                    node = node.next_sibling
-                body = _html.unescape(" ".join(body_parts))
-                # score / category 추출
-                category = ""
-                cat_m = re.search(
-                    r"(IPO[^·\s]*|M&A|구조조정|투자유치|기술이전|"
-                    r"대출|MOU|JV|상장폐지|inception|seed|series\s*[A-Z])",
-                    title + " " + body,
-                    re.I,
-                )
-                if cat_m:
-                    category = cat_m.group(1)
-                # 본문에서 카테고리 / score 텍스트 제거
-                body = re.sub(r"score\s*[:=]?\s*\d+", "", body, flags=re.I)
-                if category:
-                    body = body.replace(category, "")
-                body = body.strip().strip("·-—| ")
-                # title 안의 카테고리 텍스트 제거
-                clean_title = title.replace(category, "").strip() if category else title
-                clean_title = re.sub(r"\(.*?dedup.*?\)", "", clean_title).strip()
-                if not clean_title and body:
-                    clean_title = body
-                    body = ""
-                lines.append("")
-                if category:
-                    lines.append(f"▸ <i>{_esc(category)}</i>")
-                lines.append(f"<b>{_esc(clean_title)}</b>")
-                if body and body != clean_title:
-                    if len(body) > 200:
-                        body = body[:180] + "…"
-                    lines.append(_esc(body))
-            if len(lines) > 1:
-                dashboard_parts.append("\n".join(lines))
+        lines = ["<b>💼 Deal Highlights</b>", ""]
+        # 카드 안의 grid > outer-div > inner divs 구조 동일 추정
+        grid = deal_card.find("div", attrs={"style": re.compile(r"grid")})
+        items_html = []
+        if grid:
+            for outer in grid.find_all("div", recursive=False):
+                items_html.append(outer)
+        if not items_html:
+            # h4/h5 boundary fallback
+            headers = deal_card.find_all(["h4", "h5"])
+            items_html = headers
+        if items_html:
+            for it in items_html[:5]:
+                text = _html.unescape(_text(it))
+                # 카드 title noise 필터
+                if "Deal Highlights" in text and "dedup" in text:
+                    continue
+                if not text:
+                    continue
+                # score 제거
+                text = re.sub(r"score\s*[:=]?\s*\d+", "", text, flags=re.I)
+                text = text.strip().strip("·-—| ")
+                if len(text) > 220:
+                    text = text[:200] + "…"
+                lines.append(_esc(text))
         else:
             body = _strip_title_prefix(_text(deal_card), "Deal Highlights")
-            if body:
-                items = re.split(r"score\s*\d+", body, flags=re.I)
-                for it in items[:5]:
-                    it = it.strip().strip("·-—")
-                    if it:
-                        lines.append(f"• {_esc(it[:200])}")
-                if len(lines) > 1:
-                    dashboard_parts.append("\n".join(lines))
+            body = re.sub(r"\([^)]*dedup[^)]*\)", "", body).strip()
+            items = re.split(r"score\s*\d+", body, flags=re.I)
+            for it in items[:5]:
+                it = it.strip().strip("·-—| ")
+                if it and "dedup" not in it:
+                    if len(it) > 220:
+                        it = it[:200] + "…"
+                    lines.append(_esc(it))
+        if len(lines) > 2:
+            dashboard_parts.append("\n".join(lines))
 
     # ----- Comments — 1 메시지, 4개 코멘트 줄바꿈으로 구분 -----
     comment_cards = [
@@ -427,28 +404,27 @@ if html_path.exists():
                 line += f" · {_esc(label)}"
             dashboard_parts.append(line)
 
-    # ----- 국내외 공통 시그널 — 항목별 줄바꿈 -----
+    # ----- 국내외 공통 시그널 — 항목별 줄바꿈 (마커 없음) -----
     common = _find_card_by_title(soup, "공통 시그널")
     if common:
-        # Prefer <li> structure if present
         items = [_text(li) for li in common.find_all("li") if _text(li)]
         if not items:
-            # Fall back: 한 줄 body 를 ' — ' / ' • ' / 마침표 기준으로 분리
             body = _strip_title_prefix(_text(common), "국내외 공통 시그널")
-            parts = re.split(
-                r"(?<=[다음형성성됨화나용유로음세적가환로])\s+(?=[가-힣A-Z])",
-                body,
-            )
+            parts = [
+                s.strip() for s in re.split(r"\s+(?=글로벌|지정학|외국인|국내|미국|중국|반도체|환율|금리)\s*", body)
+                if s.strip()
+            ]
             if len(parts) < 2:
                 parts = [s.strip() for s in re.split(r"\s+—\s+|\s+•\s+", body) if s.strip()]
-            items = [p.strip() for p in parts if p.strip()]
+            items = parts
         if items:
             lines = ["<b>🔄 국내외 공통 시그널</b>", ""]
             for it in items[:6]:
                 if len(it) > 400:
                     it = it[:380] + "…"
-                lines.append(f"• {_esc(it)}")
-            dashboard_parts.append("\n".join(lines))
+                lines.append(_esc(it))
+                lines.append("")  # 빈 줄로 항목 구분
+            dashboard_parts.append("\n".join(lines).rstrip())
 
 
 # ==================================================================
