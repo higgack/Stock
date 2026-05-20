@@ -699,6 +699,55 @@ shipping 후 cross-market parity audit 으로 확장.
 
 ## TODO
 
+## 📋 Standard View open issues (2026-05-21 1AM session pickup)
+
+User 2026-05-21 새벽 1-2시 세션에서 발견 + 진단까지 마쳤지만 patch
+는 다음 세션으로 이월. 각 항목 picked-up 가능한 상태로 남겨둠.
+
+- **A. Brief 헤더 `&amp;` 이중 escape** — brief.report 의 `## 5. 금리
+  & 유동성`, `6. 환율 & 달러`, `7. 물가 & 원자재`, `8. 경기 & 수요`,
+  `9. 크레딧 & 리스크 센티먼트` section 헤더가 화면에서 `금리 &amp;
+  유동성` 형태로 표시됨. 원인: `_format_brief_for_telegram` 가 `&`
+  → `&amp;` HTML escape 한 결과를 BeautifulSoup 으로 다시 insert →
+  soup 가 추가로 escape → 화면에 `&amp;` 그대로 출력. Universal fix:
+  formatter 출력에서 entity escape 제거하고 soup 의 자동 escape 에
+  맡기거나, soup.new_string(decode=True) 사용. 영향: 모든 brief 출력
+  헤더. 패치 후 검증: latest.html `grep -c "&amp;amp;\|&amp;"` 0 이
+  돼야 함.
+
+- **B. 글로벌 매크로 브리프 카드 body 빈 상태** — `<section class=
+  "card macro-brief-card global_">` 카드가 262 bytes header 만 있고
+  자식 0개. 원인: `daily_generator.py` line 783 의 inject 코드는
+  정상 실행되지만 `brief.get("en_articles")` 가 항상 0건. 캐시 row
+  (12405 bytes, fetched 2026-05-21 01:21 KST) 내부 JSON 의 en_articles
+  list 가 비어있음. Backend 의 영문 뉴스 수집 path (Gemini news-brief
+  Python 함수 / Google News RSS / NewsAPI etc.) 가 영문 article 을
+  못 가져오는 상태. 1차 진단: backend `/api/macro/news-brief` 의
+  영문 source aggregator 코드 찾아서 어디서 0 반환하는지 확인.
+  국내 (ko_articles) 는 10건 잘 옴 — 한쪽 (국내 = Naver) 만 작동
+  하고 글로벌 (= 영문 source) path 가 비활성/실패. 임시 fallback:
+  ko_articles 의 영문/외신 (kr 외 source) 분리해서 글로벌 카드에
+  넣는 것도 가능 (BTC/forint/sabah/cfi/coindesk 같은 source 들이
+  실제로 ko_articles 에 섞여있었음 — 이전 curl 결과 참조).
+
+- **C. v3 brief 본문 중복 fix 시각 검증** — 2026-05-21 자정에 cache
+  rollover 가 fresh brief 가져온 후 (08:00 cron 또는 watchdog kick),
+  latest.html 의 `<details>` 12 section 이 한 번씩만 렌더링되고 같은
+  bullet 이 details 밖 inline div 에 중복 없는지 시각 확인. 이미
+  HTML 사이즈 -28KB 로 간접 확인됐지만 실제 화면 차이 보고 close.
+
+- **D. Mirror commit push 보류** — User VM 에 8cc793e 로컬 commit 만
+  있고 origin 에 미푸시. PAT (1차 leaked → revoked) 재발급 + 등록
+  → `git push origin claude/stock-trading-automation-xqYf7` 후
+  `sv-update.timer` 가 다음 1분 cycle 에 자동 rsync. 또는 SSH key
+  방식 (`~/.ssh/github_higgack` 발급 + `git@github.com:higgack/
+  stock.git` remote 변경) — 토큰 paste 실수 영구 차단. User 2026-
+  05-21 새벽 PAT chat 에 paste → 즉시 revoke 했으므로 다음 PAT 는
+  반드시 화면에 안 보이는 경로 (터미널 paste 만, chat 절대 X) 로.
+
+각 fix 는 universal (모든 brief 출력 / 모든 분석 / 모든 시장) 패턴
+으로 적용. Per-ticker / per-market 가드는 부재.
+
 ## 🔐 API-blocked tasks (deferred to final batch per user 2026-05-19)
 
 User policy: tasks that require new external API keys / registration
