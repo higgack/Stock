@@ -278,11 +278,14 @@ runtime drives itself. Examples of what's already automated and the
 pattern to follow:
 
 - Bot lifecycle → systemd (`stock-bot.service`)
-- Code updates → `stock-bot-update.service` polls git every 2 min and redeploys without manual intervention
+- Code updates → `stock-bot-update.service` polls git every 1 min and redeploys without manual intervention (was 2 min; tightened 2026-05-21 with SV automation rollout)
 - Stale process recovery → `stock-bot-watchdog.service` restarts if main loop hangs 12 min
 - Memory pending-entry resolution → `_periodic_auto_resolve` asyncio task, 12 h cycle
 - Daily dashboard regen → `_periodic_dashboard_refresh` asyncio task, 00:01 KST
 - Journal log size → `SystemMaxUse=500M` in `journald.conf` (auto-trim)
+- Standard View code updates → `sv-update.service` polls git every 1 min, rsyncs `standardview/scripts` + `standardview/backend` into live tree, restarts backend if changed, defers when daily_generator is running. Same pattern as `stock-bot-update`.
+- Standard View cache rollover → `sv-cache-rollover.service` runs 00:05 KST daily, flushes `macro_news_cache` so the first news-brief call of the new date regenerates from scratch (fixes the 2026-05-21 midnight stub-cache bug).
+- Standard View watchdog → `sv-watchdog.service` runs every 30 min; if `latest.html` is >90 min stale during 08:00-22:00 KST and the BUSY_MARKER is clear, re-kicks `daily_generator.py` in the background.
 
 **Acceptable manual steps** (rare, one-time):
 - Initial systemd unit installation

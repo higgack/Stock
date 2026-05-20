@@ -1,0 +1,12 @@
+[Unit]
+Description=Pull latest Standard View code and redeploy if changed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+ExecStart=/home/higgack/stock/standardview/deploy/sv-update.sh
+StandardOutput=journal
+StandardError=journal

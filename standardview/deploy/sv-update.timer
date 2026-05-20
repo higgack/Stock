@@ -1,10 +1,10 @@
 [Unit]
-Description=Run stock-bot-update every 1 minute
+Description=Run sv-update every 1 minute
 
 [Timer]
 OnBootSec=1min
 OnUnitActiveSec=1min
-Unit=stock-bot-update.service
+Unit=sv-update.service
 Persistent=true
 
 [Install]

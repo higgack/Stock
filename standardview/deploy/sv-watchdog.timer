@@ -1,0 +1,11 @@
+[Unit]
+Description=Run sv-watchdog every 30 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+Unit=sv-watchdog.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily SV macro_news_cache flush at 00:05 KST
+
+[Timer]
+# 00:05 KST = 15:05 UTC the previous day. Use timer's Unit=...
+# with OnCalendar in KST timezone (systemd 220+).
+OnCalendar=*-*-* 00:05:00 Asia/Seoul
+Persistent=true
+Unit=sv-cache-rollover.service
+
+[Install]
+WantedBy=timers.target

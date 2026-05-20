@@ -1,0 +1,10 @@
+[Unit]
+Description=Flush Standard View macro_news_cache at midnight rollover
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+ExecStart=/usr/bin/python3 /home/higgack/stock/standardview/tools/cache_rollover.py
+StandardOutput=journal
+StandardError=journal
