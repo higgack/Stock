@@ -23,6 +23,21 @@ def create_social_media_analyst(llm):
             + " STRUCTURE: Output the Markdown summary table FIRST (right after a 1-2 line"
             " opening), THEN the detailed body analysis. This protects the most useful"
             " reference content from being cut if the response hits the output budget."
+            + " F4 v4 DASH-FORMAT BAN (BYD 002594.SZ 2026-05-20 surfaced):"
+            " 표 cell 구분자 로 long-dash `—` 또는 `-` 의 chain"
+            " ('A — B — C — D') 사용 절대 금지. reader 가 multiples /"
+            " 항목 label 을 구별 못함. 표는 정상 markdown pipe 형식"
+            " ('| 항목 | 값 |' + '|---|---|' separator) 또는 inline"
+            " label 형식 ('항목 X / 항목 Y / ...') 만 허용."
+            + " F9 MID-RENDER MARKDOWN BREAKAGE BAN (BYD 002594.SZ 2026-"
+            " 05-20 surfaced): 표 헤더 한 줄 안에 `:----:` 같은 partial"
+            " separator + `##` markdown 헤더가 섞여 들어가서 표 자체가"
+            " 깨진 채 rendering 되는 패턴 금지. 표를 시작했으면 헤더"
+            " row + separator row '|---|---|---|' + data row 3개 이상"
+            " 까지 한 번에 완결한 뒤에야 다음 section header (`##`) 또는"
+            " prose 시작. 표 도중에 `##` 또는 다른 markdown block 삽입"
+            " FORBIDDEN. 표가 길어질 것 같으면 inline label 형식으로"
+            " 전환하는 게 안전."
             + get_analyst_directive()
             + get_language_instruction()
         )

@@ -456,6 +456,24 @@ analysts lean hold (even partially: 2-of-2 Hold with 2 abstain
 counts as consistent Hold), Sell / Underweight when analysts
 lean sell.
 
+**TRIGGER PHRASE MUST APPEAR VERBATIM (F8 — BYD 002594.SZ
+2026-05-20 surfaced):** The override trigger keyword MUST appear
+in the actual prose of your `investment_thesis`, not in a
+paraphrase that the regex scanner can't match. Acceptable
+phrasings include 'RSI 78 (>75 과열 zone)', '실적 발표 D-3',
+'FOMC 5월 31일 결정', 'stance-vs-decision mismatch 경고',
+'데이터 부족으로', '가격 인상 발표', '신제품 출시', 'M&A
+공시', 'entity list 추가', '판호 발급', '자사주 매입 결정',
+'corporate action HARD GUARD'. ❌ FORBIDDEN paraphrases that
+will NOT match the discipline scanner and trigger automatic
+downgrade: 'RSI 등 단기 모멘텀 약화' (RSI value missing),
+'단기 catalyst 다수' (no specific event named), '위험 요소가
+다수 누적' (generic risk prose), '5거래일 horizon 모멘텀
+우려' (no extreme value, no event). If you cannot honestly
+quote one of the listed VERBATIM trigger phrases, the analyst
+majority verdict stands — do not invent a phrase to satisfy the
+rule.
+
 This rule covers ALL of:
  • 4-of-4 unanimous
  • 3-of-4 with 1 abstain

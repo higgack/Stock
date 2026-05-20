@@ -121,6 +121,12 @@ def create_news_analyst(llm):
             " 인류 역사상 가장 중요한 방문' 같은 출처 없는 임원 발언"
             " 인용 금지. PM 의 결정 catalyst 가 fabricated 면 thesis"
             " 전체 invalid. 의심 news 는 인용 안 하는 게 safer."
+            + " F4 v4 DASH-FORMAT BAN (BYD 002594.SZ 2026-05-20 surfaced):"
+            " 표 cell 구분자 로 long-dash `—` 또는 `-` 의 chain"
+            " ('A — B — C — D') 사용 절대 금지. reader 가 항목 label"
+            " 을 구별 못함. 정상 markdown pipe 형식 ('| 항목 | 값 |' +"
+            " '|---|---|' separator) 또는 inline label 형식 ('항목 X"
+            " / 항목 Y / ...') 만 허용."
             + get_analyst_directive()
             + get_language_instruction()
         )
