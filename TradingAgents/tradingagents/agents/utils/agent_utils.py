@@ -1201,17 +1201,17 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
     # blocks (sentiment fuel) and peer set (Comps consistency).
     "social": {
-        "krx_flow", "hsgt_flow",
+        "krx_flow", "hsgt_flow", "kis_supply",
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
-    "news": {"krx_flow", "hsgt_flow"},
+    "news": {"krx_flow", "hsgt_flow", "kis_supply"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
     "fundamentals": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
-        "krx_flow", "hsgt_flow",
+        "krx_flow", "hsgt_flow", "kis_supply",
     },
 }
 
@@ -1293,6 +1293,20 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
         try:
             from bot.krx_alert_client import get_krx_alert
             tasks["krx_alert"] = lambda: get_krx_alert().get_status(ticker)
+        except Exception:
+            pass
+        # Step 2B A1: KIS 7종 수급 데이터 (현재가 / 외인+기관+개인 flow /
+        # 기관 주체별 / 외인 한도소진율 / 신용+대차 / 프로그램 / 공매도).
+        # KIS_APP_KEY / KIS_APP_SECRET 미설정 시 graceful skip.
+        try:
+            from bot.kis_client import get_kis
+            _kis = get_kis()
+            tasks["kis_price"]         = lambda: _kis.get_current_price(ticker)
+            tasks["kis_investor_flow"] = lambda: _kis.get_investor_flow(ticker)
+            tasks["kis_foreign_limit"] = lambda: _kis.get_foreign_limit(ticker)
+            tasks["kis_credit_short"]  = lambda: _kis.get_credit_short_balance(ticker)
+            tasks["kis_program_trade"] = lambda: _kis.get_program_trade(ticker)
+            tasks["kis_short_sale"]    = lambda: _kis.get_short_sale(ticker)
         except Exception:
             pass
         # Naver news fetch needs KR corp name (kr_name from DART), which
@@ -2839,6 +2853,51 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         except Exception as exc:
             _analyst_log.warning(
                 "pykrx flow / trend injection failed for %s: %s", ticker, exc,
+            )
+
+        # Step 2B A1: KIS 7종 수급 데이터 inject (시장 분석가 전용).
+        # pykrx flow (KRX 공개 데이터) 보다 상세 — 기관 주체별 / 공매도 /
+        # 프로그램 / 외인 한도소진율이 추가됨. 두 소스 동시 주입 OK:
+        # pykrx = 5일 누적 외인/기관/개인, KIS = 당일 + 5일 + 기관세분화.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "KR" and _section_allowed(analyst_id, "kis_supply"):
+                from bot.kis_client import format_kis_block, KIS_INTERP_GUIDE
+                kis_data = {
+                    "price":         prefetched.get("kis_price"),
+                    "investor_flow": prefetched.get("kis_investor_flow"),
+                    "foreign_limit": prefetched.get("kis_foreign_limit"),
+                    "credit_short":  prefetched.get("kis_credit_short"),
+                    "program_trade": prefetched.get("kis_program_trade"),
+                    "short_sale":    prefetched.get("kis_short_sale"),
+                }
+                has_any = any(v for v in kis_data.values() if v)
+                if has_any:
+                    block = format_kis_block(kis_data)
+                    if block:
+                        base += (
+                            "\n\n=== KIS 단기 수급 데이터 (7종, verbatim —"
+                            " 이 수치를 그대로 본문에 인용할 것) ===\n"
+                            + block
+                            + "\n\n" + KIS_INTERP_GUIDE
+                        )
+                else:
+                    # KIS 키 있지만 전체 fetch 실패 → fabrication 차단
+                    import os as _os
+                    if _os.environ.get("KIS_APP_KEY"):
+                        base += (
+                            "\n\n⚠️ KIS 단기 수급 데이터 미수집"
+                            " (API 오류 또는 장 마감 시간 외):\n"
+                            "다음 패턴 금지:\n"
+                            "  ❌ '외국인 순매수 지속' / '기관 매수세' 등"
+                            " generic KR 수급 narrative 생성.\n"
+                            "  ❌ 공매도 비율 / 신용잔고 수치 추정 또는 인용.\n"
+                            "올바른 처리: 'KIS 수급 데이터 미수집 —"
+                            " 5거래일 수급 평가 보류' 한 줄로 명시."
+                        )
+        except Exception as exc:
+            _analyst_log.warning(
+                "kis supply inject failed for %s: %s", ticker, exc,
             )
 
         # Korean news via Naver search (KR-only). Alpha Vantage and

@@ -662,9 +662,9 @@ F3-light parallel prefetch. KR quality 강화 작업은 다음 순서로 진행
  6. ✅ **A3** 한경 컨센서스 scrape (`bot/hk_consensus_client.py`) — commit `6d1714d`
  7. ✅ **B2** KR ETF analyzer 특화 (KODEX/TIGER metadata) — commit `c7e3f43`
 
-### Step 2B — API-required (final batch after Step 2A):
- 8. **A1 KIS Open API integration** (1.5일, KIS 키 발급 후)
- 9. **B3 외인 한도 RULE 10 변수 추가** (0.25일, A1 의존)
+### ✅ Step 2B — 완료 (2026-05-22):
+ 8. ✅ **A1** KIS Open API 7종 (`bot/kis_client.py`) — 현재가·외인flow·기관주체별·한도소진율·신용·프로그램·공매도
+ 9. ✅ **B3** RULE 10 KIS 수급 dominant variable 4종 추가 (외인±100억/연기금/한도95%/신용4%/공매도15%)
 
 Trigger to start Step 2B: KIS_APP_KEY + KIS_APP_SECRET 가 .env 에
 로드된 후. 발급되기 전 까지 Step 2A 모두 완료 가능 — 병렬 가능

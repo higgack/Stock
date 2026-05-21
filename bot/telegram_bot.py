@@ -735,7 +735,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 미·한·일·대·중) · ECOS/FRED (KR·JP·TW 금리·CPI) · 섹터 ETF (SPDR/KODEX/NEXT TOPIX-17) · 리스크 6종 · 컨센서스 (yfinance+FnGuide/Kabutan) · 공매도+DTC · 내부자/기관 · 실적 ±10일 · DART/EDINET (공시·5%대량보유) · KRX (5일 외인·공매도 30일) · Forward EPS sanity · 컨센서스 staleness · Standard View 일일 브리프 (08:00 KST 매크로 보조)
+yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 미·한·일·대·중) · ECOS/FRED (KR·JP·TW 금리·CPI) · 섹터 ETF (SPDR/KODEX/NEXT TOPIX-17) · 리스크 6종 · 컨센서스 (yfinance+FnGuide/Kabutan) · 공매도+DTC · 내부자/기관 · 실적 ±10일 · DART/EDINET (공시·5%대량보유) · KRX (5일 외인·공매도 30일) · KIS 7종 KR수급 (외인flow·연기금·한도소진율·신용·프로그램·공매도) · Forward EPS sanity · 컨센서스 staleness · SV 브리프 (08:00 KST)
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -785,7 +785,7 @@ subprocess 격리·10분 타임아웃·watchdog 12분·auto-update <b>1분</b> �
 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
- • 한국 — Phase 0~2.5 + Step 2A 완료 (KRX 경보·USD/KRW·ETF 메타·한경). Step 2B (KIS API) 키 발급 대기
+ • 한국 — Phase 0~2.5 + Step 2A 완료 + Step 2B 완료 (KIS 7종 수급: 외인·기관주체별·한도소진율·신용·프로그램·공매도)
  • 일본 — Phase 3 가동. EDINET 키 발급 대기 (Akamai geofence)
  • 대만 — Phase 4-TW 가동 (별칭 60+/MOPS/鉅亨網/RULE 14)
  • 중국 — Phase 4-CN-C 가동 + RULE 13. AKShare 설치 후 8종목 validation 대기
