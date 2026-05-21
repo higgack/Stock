@@ -1,0 +1,18 @@
+[Unit]
+Description=BeOn 수출입 데이터 정기 동기화 타이머
+After=network-online.target
+
+[Timer]
+# BeOn publication days:
+#   매월 11일경 — 1-10일 잠정
+#   매월 21일경 — 1-20일 잠정
+#   익월  1일경 — 전월 전체 잠정
+#   익월 15일경 — 전월 전체 확정
+# Fire at 03:00 UTC (= 12:00 KST) on each date.
+OnCalendar=*-*-1,11,15,21 03:00:00 UTC
+# If the server was down during a scheduled run, catch up once on next boot.
+Persistent=true
+Unit=trade-bot-beon-sync.service
+
+[Install]
+WantedBy=timers.target

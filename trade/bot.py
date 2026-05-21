@@ -181,6 +181,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-dashboard-refresh (5분) — store + HTML 재생성
 • trade-bot-health (1시간) — BeOn 발표 예정일 (11/21/익월1/익월15) 기준 사이클 누락 감지 → ⚠️ 알림 (이벤트 기반, 침묵 기간엔 silent)
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent)
+• trade-bot-beon-sync (매월 1/11/15/21일 12:00 KST) — BeOn 신규 발표 자동 동기화 (40일 룩백, idempotent)
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 
@@ -189,7 +190,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-17 — /ignore DM 명령 + 일일 미등록 알림 메시지에 처리 가이드 (새 RULE 요청 vs ignore 선택)</i>
+<i>최종 갱신: 2026-05-21 — trade-bot-beon-sync.timer 추가 (매월 1/11/15/21일 BeOn 자동 동기화)</i>
 """
 
 

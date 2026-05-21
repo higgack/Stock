@@ -1,9 +1,10 @@
-"""One-shot Telethon backfill: forward historical BeOn_BeClear posts
-into the private trade channel so trade-bot can ingest them like live
-forwards.
+"""Telethon sync: forward BeOn_BeClear posts into the private trade
+channel so trade-bot can ingest them like live forwards.
 
-Run once after setup. Idempotent — scans inbox.jsonl and skips any
-BeOn message_id that's already been ingested, so re-running is safe
+Works both as a one-off catch-up and as a periodic sync driven by
+trade-bot-beon-sync.timer (fires on BeOn publication days: 1/11/15/21
+of each month at 12:00 KST). Idempotent — scans inbox.jsonl and skips
+any BeOn message_id that's already been ingested, so re-running is safe
 (picks up where it left off after a FloodWait abort, disk-low pause,
 or accidental Ctrl+C).
 
@@ -31,11 +32,17 @@ Setup (one-time):
   # add TRADE_TELETHON_API_ID + TRADE_TELETHON_API_HASH to .env
   # (issue them at https://my.telegram.org/apps — keep them in .env only)
 
-Run:
+Run manually:
   .backfill-venv/bin/python trade/scripts/backfill_beon.py --since 2026-05-01
-  # optional: --to 2026-05-16, --dry-run
+  .backfill-venv/bin/python trade/scripts/backfill_beon.py  # default: 40-day lookback
+  # optional: --to 2026-05-16, --dry-run, --lookback-days N
 
-After it finishes you can remove the temp venv and session file:
+Run by systemd (trade-bot-beon-sync.timer):
+  Invoked without --since; defaults to 40-day lookback which covers
+  the widest gap between BeOn publication dates plus ample buffer.
+
+After a one-off backfill you can remove the temp venv (the periodic
+service reuses it, so keep it if beon-sync.timer is active):
   rm -rf .backfill-venv .backfill-session*
 """
 
@@ -48,7 +55,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -369,7 +376,16 @@ def main() -> None:
         description="Backfill BeOn_BeClear → private trade channel via Telethon."
     )
     ap.add_argument(
-        "--since", required=True, help="YYYY-MM-DD (UTC), inclusive lower bound"
+        "--since",
+        default=None,
+        help="YYYY-MM-DD (UTC), inclusive lower bound. Default: today minus --lookback-days.",
+    )
+    ap.add_argument(
+        "--lookback-days",
+        type=int,
+        default=40,
+        metavar="N",
+        help="Days to look back when --since is omitted (default: 40).",
     )
     ap.add_argument(
         "--to", help="YYYY-MM-DD (UTC), inclusive upper bound. Default: now."
@@ -381,9 +397,17 @@ def main() -> None:
     )
     args = ap.parse_args()
 
+    if args.since:
+        since_date = _parse_date(args.since)
+    else:
+        since_date = (
+            datetime.now(timezone.utc) - timedelta(days=args.lookback_days)
+        ).date()
+        log.info("--since not given; using %d-day lookback → %s", args.lookback_days, since_date)
+
     rc = asyncio.run(
         run(
-            _parse_date(args.since),
+            since_date,
             _parse_date(args.to) if args.to else None,
             args.dry_run,
         )

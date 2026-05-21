@@ -1,0 +1,20 @@
+[Unit]
+Description=BeOn 수출입 데이터 정기 동기화 (backfill_beon)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+Group=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+# Runs without --since: defaults to 40-day lookback, covering the
+# widest gap between BeOn publication dates (max ~15 days) with margin.
+# The script is idempotent — already-forwarded message_ids are skipped.
+ExecStart=/home/higgack/stock-trade/.backfill-venv/bin/python \
+    -m trade.scripts.backfill_beon
+StandardOutput=journal
+StandardError=journal
+# Allow up to 2 hours for a large BeOn burst with adaptive pacing.
+TimeoutStartSec=7200
