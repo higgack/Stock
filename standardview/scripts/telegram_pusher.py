@@ -140,7 +140,7 @@ def md_to_tg_html(md: str) -> str:
     txt = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", txt)
     # Markdown list bullet '*   ' → 줄바꿈만 유지, 마커 제거
     # Markdown bullet (* X) → 빈 줄 추가
-    txt = re.sub(r"(?m)^\*\s+(.+)$", r"\1\n", txt)
+    txt = re.sub(r"(?m)^\*\s+(.+)$", r"\1", txt)
     # Numbered list (1. X / 2. X) → 번호 제거 + 빈 줄
     txt = re.sub(r"(?m)^(\d+)\.\s+(.+)$", r"\2\n", txt)
     # Label list (VC: X / PE: X / M&A: X / CFO: X) → 빈 줄
