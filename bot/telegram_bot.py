@@ -719,13 +719,13 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 <b>【2. 분석 흐름】</b> (~3분, ~₩100~150/회)
  1) 채널에 <code>/티커</code> → 즉시 진행 메시지
  2) <b>사전 fetch (Python, 결정적·스킵 불가)</b>
-    매크로 9개 / 리스크 (σ·Sharpe·VaR·MDD·β) / 섹터 ETF / Wall Street 컨센서스 / 공매도·내부자·기관 / 실적 일정
-    ETF·뉴스 0건 종목은 해당 분석가 자동 스킵
- 3) 분석가 4명 (~2분, Flash) — 📈시장 💬감정 📰뉴스 💰펀더멘털
-    빈/사과형 응답 → 1회 retry → 실패 시 토론 스킵 + 알림 (hallucination 차단)
+    매크로 9개 / 리스크 (σ·Sharpe·VaR·MDD·β) / 섹터 ETF / 컨센서스 / 공매도·내부자·기관 / 실적 일정
+    ETF·뉴스 0건 → 해당 분석가 자동 스킵
+ 3) 분석가 4명 (~2분, Flash + <b>Gemini cache</b>) — 📈시장 💬감정 📰뉴스 💰펀더멘털
+    빈/사과형 응답 → 1회 retry → 실패 시 토론 스킵 + 알림
  4) Bull/Bear 페르소나 토론 (Flash-Lite)
     Bull: 버핏(해자) + 린치(PEG) / Bear: 그레이엄(안전마진) + 막스(사이클)
- 5) Trader → Risk 3인 → Portfolio Manager 최종 (Pro, thinking cap 4096)
+ 5) Trader → Risk 3인 → Portfolio Manager (Pro, thinking 4096)
     5거래일 평가 윈도 인지 → valuation-only 매도 자제
  6) 채널에 요약 + [📋 전체 리포트]
 
@@ -749,12 +749,13 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
 <b>【6. 캐시 &amp; 비용】</b>
  • 오늘 같은 종목 재분석 → 디스크 캐시 즉시 반환 (무료)
  • 새 분석 ~₩100~150 / /compare 둘 다 새거 ~₩200~300
+ • <b>Gemini context cache</b>: 4분석가 instrument_context 공유 → input token ~75%↓
  • 일일 캐시 자정 KST 만료, 15년 가격 데이터는 영구 캐시
  • /usage → 모델별 분포 + 7일 차트
 
 ━━━━━━━━━
 <b>【7. 안정성 (자동)】</b>
-subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 1~14 (미한일대 산업정책·자본잠식·콤마·연도순·PER 설명·분기합 sanity) · 재벌 15곳 자동→RULE 9 · stance 결론우선 · 섹터강도 차단 · 컨센서스 staleness · 코퍼레이트액션 HARD GUARD 3중 (DART/EDINET+yfinance .splits) + LLM 위반 시 출력 banner 자동 · EPS/PER 재계산 금지 · 소유구조 환각 차단 · Comps PEER SET 162 산업+multiples · PM override discipline 코드-강제 · 출력 polish · canonical 현재가/시총 · 베타 라벨 · cargo-cult 뉴스 차단 · API 키 부재→DATA OFFLINE
+subprocess 격리·10분 타임아웃·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 (미한일대중 산업정책·자본잠식·콤마·PER 설명·분기합 sanity) · 재벌 15곳 자동→RULE 9 · stance 결론우선 · 섹터강도 차단 · 컨센서스 staleness · 코퍼레이트액션 HARD GUARD 3중 + LLM 위반 시 banner · EPS/PER 재계산 금지 · 소유구조 환각 차단 · Comps PEER SET 162 산업+multiples · PM override discipline 코드-강제 · canonical 현재가/시총 · 베타 라벨 · KRX 시장경보·USD/KRW 감응도·ETF 메타·12개월 thesis 금지구 · API 키 부재→DATA OFFLINE
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
@@ -775,7 +776,7 @@ subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 
 ━━━━━━━━━
 <b>【11. 대시보드】</b> 🦉
  • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/...</a> (ID/PW)
- • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> (ID/PW) · 매크로·MMI·산업·Deal·NOAH · 평일 12·16시 갱신 · 매일 08:00 텔레
+ • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> (ID/PW) · 매크로·MMI·산업·Deal·NOAH · 평일 12/16시·매일 08:00 텔레 (분할+URL) · auto-deploy 1분·cache rollover 00:05·watchdog 30분
  • <b>StockNewsViewer</b>: <a href="https://supply-waviness-popcorn.ngrok-free.dev/">supply-waviness-popcorn.ngrok-free.dev</a> · 미국주식 실시간 뉴스·감성·한글번역
  • 모바일 ID/PW popup 안 뜨면 Safari/Firefox/Brave
  • NOAH 카드: 📊분석 · 💰비용 · ⏱시간 · 🎯정확도 (알파=raw−섹터ETF)
@@ -784,10 +785,10 @@ subprocess 격리·10분 타임아웃·watchdog 12분·auto-update 2분 · RULE 
 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
- • 한국 — Phase 0~2.5 + Step 2A (DART/FnGuide/KRX flow/BoK ECOS/Naver + KRX 시장경보·시총·종가·financialCurrency mismatch HARD GUARD)
- • 일본 — Phase 3 (별칭 50+/TOPIX-17/EDINET/Kabutan/FRED/RULE 11). EDINET 키 등록 시 풀가동
- • 대만 — Phase 4-TW (별칭 60+/Yuanta ETF/MOPS/鉅亨網/FRED TW/RULE 14, ADR 인지)
- • 중국 — Phase 4-CN-C 가동 (CN_A/HK 분리·60+ 별칭·AKShare 公告/뉴스/港股통 flow/LPR·CPI·PMI·ST·停牌 HARD GUARD + RULE 13 13산업+STAR/ChiNext ±20%+Dual-listing+Internet VIE 위험). 5-8종목 validation 다음
+ • 한국 — Phase 0~2.5 + Step 2A 완료 (KRX 경보·USD/KRW·ETF 메타·한경). Step 2B (KIS API) 키 발급 대기
+ • 일본 — Phase 3 가동. EDINET 키 발급 대기 (Akamai geofence)
+ • 대만 — Phase 4-TW 가동 (별칭 60+/MOPS/鉅亨網/RULE 14)
+ • 중국 — Phase 4-CN-C 가동 + RULE 13. AKShare 설치 후 8종목 validation 대기
 """
 
 

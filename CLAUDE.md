@@ -948,21 +948,14 @@ These need new credentials BEFORE work can ship:
    • 합계 ~2,400줄, 16-20h (TW의 1.8x)
    • 검증 사이클: 5-8 종목, TW와 유사 (2-3 review/fix cycle 예상)
 
-- **Gemini Context Caching** (deferred, 2026-05-18). Cost-reduction
-  Option 2 from the 2026-05-18 analysis. The instrument_context block
-  (~5-10K tokens per analyst) is identical across the 4 analyst runs
-  for a single ticker; Gemini's explicit-cache API
-  (`cache_content` / `cached_content_id`) lets repeated reads of the
-  same prefix bill at ~25% of the input rate. Implementation requires
-  a Python-side cache lifecycle (create on first analyst, reference on
-  subsequent 3, delete after analysis completes — caches live max 60
-  min) and instrumentation to confirm the cached_content_id propagates
-  through `langchain_google_genai` to the underlying `genai` SDK.
-  Expected saving: -15% total input cost on top of Option 1 + 3 + 4.
-  User chose 2026-05-18 to ship Options B (1+3+4) first and validate
-  before paying the integration cost for caching. Pick this up when
-  Phase 4-CN validation completes — caching ROI scales with the number
-  of markets / analysts, so it gets more valuable after CN.
+- **Gemini Context Caching** — ✅ SHIPPED 2026-05-21 (commit 6ac0041).
+  Decision-tier (research_manager / trader / portfolio_manager) +
+  4 analysts (market / news / sentiment / fundamentals) 모두
+  `cached_content=cache_name` 바인딩. instrument_context 5-10K tokens
+  공유 → 4 analysts input bill ~75% 절감 (cache hit 시). Cache 미생성
+  시 자동 fallback. bot/gemini_cache_manager.py + AgentState.gemini_
+  cache_name + graph/trading_graph.py maybe_create_cache() 인프라
+  그대로 사용.
 
 - **PM Option 4 propagation verification** (post Option B commit, 2026-
   05-18). Option 4 routes Portfolio Manager to a thinking_budget=2048
@@ -981,21 +974,3 @@ These need new credentials BEFORE work can ship:
   than ~5pp, suspect the lighter budget is under-thinking and bump
   pm_consensus_thinking_budget back up.
 
-- **Hydrator-registry refactor for pre-fetch** (deferred until Phase 4).
-  `build_instrument_context` currently has 15 data sources stitched
-  together as sequential imperative try/except blocks: yfinance .info,
-  yfinance averages, macro 9-series, risk metrics, sector strength,
-  DART (KR), FnGuide consensus (KR), KRX pykrx flow (KR), KRX 30-day
-  trends (KR), BoK ECOS macro (KR), Naver news (KR), EDINET (JP),
-  Kabutan consensus (JP), Kabutan news (JP), FRED JP macro (JP).
-  Re-evaluated 2026-05-18: bot works fine today, sequential is OK
-  at 15 sources, parallel would save ~200-400ms out of 3-4 min total
-  analysis time (imperceptible). Adding the abstraction now would
-  violate CLAUDE.md's 'no premature abstraction' rule — three similar
-  lines is better than a registry.
-  Trigger to refactor: Phase 4 (CN expansion) will push the source
-  count past 20 and add Tushare / akshare / CSI-300 / 신화재경 /
-  국가통계국 macro. At that point the readability + parallelism
-  benefits outweigh the abstraction cost, and the framework can be
-  designed around Phase 4's actual requirements rather than guessed
-  ones. Until then: keep the imperative chain.
