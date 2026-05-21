@@ -435,7 +435,6 @@ if html_path.exists():
                 if len(it) > 400:
                     it = it[:380] + "…"
                 lines.append(_esc(it))
-                lines.append("")  # 빈 줄로 항목 구분
             dashboard_parts.append("\n".join(lines).rstrip())
 
 
