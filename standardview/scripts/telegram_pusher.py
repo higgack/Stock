@@ -138,12 +138,11 @@ def md_to_tg_html(md: str) -> str:
     txt = re.sub(r"(?m)^##\s*(\d+\.[^\n]+)$", r"<b>\1</b>", txt)
     txt = re.sub(r"(?m)^#\s+([^\n]+)$",       r"<b>\1</b>", txt)
     txt = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", txt)
-    # Markdown list bullet '*   ' → 줄바꿈만 유지, 마커 제거
-    # Markdown bullet (* X) → 빈 줄 추가
-    txt = re.sub(r"(?m)^\*\s+(.+)$", r"\1", txt)
-    # Numbered list (1. X / 2. X) → 번호 제거, 줄바꿈만 (blank line 없음)
-    txt = re.sub(r"(?m)^(\d+)\.\s+(.+)$", r"\2", txt)
-    # Label list (VC: X / PE: X / M&A: X / CFO: X) → 빈 줄
+    # Markdown bullet (* X) → 항목 사이 빈 줄 (가독성)
+    txt = re.sub(r"(?m)^\*\s+(.+)$", r"\1\n", txt)
+    # Numbered list (1. X / 2. X) → 번호 제거 + 빈 줄
+    txt = re.sub(r"(?m)^(\d+)\.\s+(.+)$", r"\2\n", txt)
+    # Label list (VC: X / PE: X / M&A: X / CFO: X) — 영문 label + 빈 줄
     txt = re.sub(r"(?m)^([A-Z][A-Za-z& ]{1,15}):\s+(.+)$", r"\1: \2\n", txt)
     return txt
 
@@ -215,6 +214,7 @@ def news_block(label: str, articles: list, top_n: int = 8) -> str:
             lines.append(f"• <a href=\"{u_esc}\">{t_clean}</a>")
         else:
             lines.append(f"• {t_clean}")
+        lines.append("")
         count += 1
         if count >= top_n:
             break
@@ -353,6 +353,7 @@ if html_path.exists():
                 if len(text) > 220:
                     text = text[:200] + "…"
                 lines.append(_esc(text))
+                lines.append("")
         else:
             body = _strip_title_prefix(_text(deal_card), "Deal Highlights")
             body = re.sub(r"\([^)]*dedup[^)]*\)", "", body).strip()
@@ -363,6 +364,7 @@ if html_path.exists():
                     if len(it) > 220:
                         it = it[:200] + "…"
                     lines.append(_esc(it))
+                    lines.append("")
         if len(lines) > 2:
             dashboard_parts.append("\n".join(lines))
 
@@ -384,6 +386,7 @@ if html_path.exists():
             lines.append("")
             lines.append(f"▸ <b>{_esc(title)}</b>")
             lines.append(_esc(body))
+            lines.append("")
         if len(lines) > 1:
             dashboard_parts.append("\n".join(lines))
 
@@ -435,6 +438,7 @@ if html_path.exists():
                 if len(it) > 400:
                     it = it[:380] + "…"
                 lines.append(_esc(it))
+                lines.append("")
             dashboard_parts.append("\n".join(lines).rstrip())
 
 
