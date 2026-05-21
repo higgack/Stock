@@ -1,0 +1,11 @@
+[Unit]
+Description=Trigger Standard View daily_generator at 07:30 + 20:30 Asia/Seoul
+
+[Timer]
+OnCalendar=*-*-* 07:30:00 Asia/Seoul
+OnCalendar=*-*-* 20:30:00 Asia/Seoul
+Unit=standardview-daily.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

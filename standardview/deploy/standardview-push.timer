@@ -1,0 +1,11 @@
+[Unit]
+Description=Trigger Standard View Telegram push at 08:00 + 21:00 Asia/Seoul
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Asia/Seoul
+OnCalendar=*-*-* 21:00:00 Asia/Seoul
+Unit=standardview-push.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
