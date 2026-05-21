@@ -571,18 +571,9 @@ Phase 4-CN-C RULE 13 + STAR/ChiNext + Dual-listing + VIE shipped 2026-05-18:
    ±limit 인지 banner 자동 주입 — CN_A_STAR / CN_A_CHINEXT / CN_A_BJSE
    / HK_GEM 별 일일 한도 명시. 메인보드는 banner 없음 (기본값).
 
-Phase 4-CN remaining (after 4-CN-C):
- • 4-CN-D: validation cycle (5-8 종목, 2-3 review/fix iterations 예상).
-   추천 검증 종목: 600519.SS 茅台 (白酒 + A주 메인), 1398.HK ICBC
-   (4대 은행 + HK), 002594.SZ BYD (EV + A주 dual-listing default),
-   688981.SS SMIC (STAR + 半導體 国産대체), 0700.HK Tencent (Internet
-   VIE + HK), 300750.SZ CATL (ChiNext + 锂电池), 600048.SS 保利 (부동산),
-   0857.HK CNPC (석유철강).
- • 배포 호스트 AKShare 설치 (`pip install akshare`, ~200MB). 미설치
-   상태에서도 봇 정상 작동 — Rule A guard fabrication 차단, CN 종목
-   분석은 yfinance + RULE 13 텍스트 + sub-board banner 만으로도 진행
-   가능. 설치 시 lazy import 활성화 + 풀 데이터 주입.
-
+✅ Phase 4-CN-D validation — 완료 (fix#1~#11, commits 91427a9~925f926):
+ CN/HK + TW/JP/KR 크로스-마켓 검증 포함. BYD/Tencent/현대차증권/
+ 노바렉스/LG생활건강 등 11개 fix batch 완료.
 Rule applies to all analyses going forward — Foundation is universal-
 by-default (every analyst sees CN_A/HK as separate first-class markets,
 not as a "CN fallback"). Each Foundation file change covers US + KR +
@@ -771,26 +762,7 @@ These need new credentials BEFORE work can ship:
   three markets. Resolved; preserved here as a status marker only — no
   further action needed.
 
-- **Phase 4-CN-D validation cycle — pending** (2026-05-18). Phase 4-CN-
-  A Foundation + 4-CN-B AKShare client + 4-CN-C RULE 13 all shipped in
-  this session. Remaining: actual analysis runs on 5-8 representative
-  CN_A + HK tickers + 2-3 review/fix iterations to harden RULE 13 +
-  STAR/ChiNext + Dual-listing + Internet VIE rules. Recommended
-  validation set:
-   • /600519.SS 茅台 (백주 + A주 메인, RULE 13.1)
-   • /1398.HK ICBC (4대 은행 + HK default, RULE 13.2)
-   • /002594.SZ BYD (EV + A주 dual-listing default, RULE 13.6)
-   • /688981.SS SMIC (STAR ±20% + 半導體 国産대체, RULE 13.5)
-   • /0700.HK Tencent (Internet VIE + HK, RULE 13.4)
-   • /300750.SZ CATL (ChiNext ±20% + 锂电池, RULE 13.7)
-   • /600048.SS 保利 (부동산 + 三道红线, RULE 13.3)
-   • /0857.HK CNPC (석유철강 + 双碳, RULE 13.12)
-  Each run verified against 7-axis framework (per-ticker analysis
-  verification framework section above). Bot host needs `pip install
-  akshare` on bot/.venv before validation; without it the bot still
-  routes CN tickers correctly but AKShare 公告 / 港股통 flow / LPR
-  blocks return empty (Rule A guard prevents fabrication).
-
+- **Phase 4-CN-D validation cycle — ✅ 완료** (2026-05-21). fix#1~#11 (commits 91427a9~925f926), CN/HK + TW/JP/KR 크로스-마켓 검증 완료.
 - **Phase 4-CN (China + HK expansion) — original deferred design,
   preserved**. User chose 2026-05-18 (Option γ) to ship CN AFTER the
   TW validation (Phase 4-TW-D) closes — sequential rollout avoids
