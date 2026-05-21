@@ -51,11 +51,18 @@ REMOTE=$(git rev-parse "origin/${BRANCH}")
 # 으로 발생했을 가능성. notify + 모든 sub 강제 sync.
 DRIFT_RESYNC=0
 if [ "$LOCAL" = "$REMOTE" ]; then
+    # rsync --dry-run 으로 canonical → LIVE 방향만 검사 (LIVE 에만
+    # 있는 파일 — *.bak / .env.bak / 로그 — 은 무시. 이전 'diff -r
+    # --brief' 가 LIVE-only file 도 drift 로 잡아서 무한 루프 발생
+    # 2026-05-21 fix).
     for sub in scripts backend; do
         if [ -d "$REPO/standardview/$sub" ] && [ -d "$LIVE/$sub" ]; then
-            if ! diff -r --brief "$REPO/standardview/$sub" "$LIVE/$sub" \
-                --exclude='__pycache__' --exclude='*.pyc' \
-                >/dev/null 2>&1; then
+            CHANGES=$(rsync -avc --dry-run --itemize-changes \
+                --exclude='__pycache__/' --exclude='*.pyc' \
+                --exclude='*.bak.*' --exclude='*.bak' \
+                "$REPO/standardview/$sub/" "$LIVE/$sub/" 2>/dev/null \
+                | grep -E '^[<>ch]f' || true)
+            if [ -n "$CHANGES" ]; then
                 DRIFT_RESYNC=1
                 break
             fi
