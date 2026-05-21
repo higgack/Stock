@@ -3,19 +3,11 @@ Description=BeOn 수출입 데이터 정기 동기화 타이머
 After=network-online.target
 
 [Timer]
-# BeOn publication days:
-#   매월 11일경 — 1-10일 잠정
-#   매월 21일경 — 1-20일 잠정
-#   익월  1일경 — 전월 전체 잠정
-#   익월 15일경 — 전월 전체 확정
-# Fire at 03:00 UTC (= 12:00 KST) on each date.
-# First-pass on each BeOn publication day at 12:00 KST (03:00 UTC),
-# before the typical morning release window.
-OnCalendar=*-*-1,11,15,21 03:00:00 UTC
-# Daily evening run at 20:00 KST (11:00 UTC) — catches publications
-# that arrive after 12:00 KST and keeps non-publication days in sync.
-# On publication days this acts as a second-pass safety net.
-OnCalendar=*-*-* 11:00:00 UTC
+# Run every 2 hours (00/02/04/.../22:00 UTC) so new BeOn posts are
+# forwarded within ≤2 h of publication regardless of when they arrive.
+# Cost: negligible — runs with no new messages only do a read-only
+# iter_messages scan and exit silently (idempotent, no forward calls).
+OnCalendar=*-*-* 00/2:00:00 UTC
 # If the server was down during a scheduled run, catch up once on next boot.
 Persistent=true
 Unit=trade-bot-beon-sync.service
