@@ -3,6 +3,58 @@
 Operational rules for working in this repo. Apply to **every subproject** in
 this repo (currently: `bot/` NOAH stock-bot, `trade/` Korea import/export bot).
 
+## Defaults and blast radius — ask before changing either ⚠️
+
+NEVER unilaterally pick a default value or change one the operator
+has been using. Especially for parameters that govern how much
+external work the script does on first run:
+
+- **Lookback / time windows** (`--since`, `--days`, retention,
+  cleanup thresholds) — these directly control how many records get
+  processed / forwarded / deleted on a fresh execution.
+- **Schedule cadence** (cron / `OnCalendar`) — tightening "for safety"
+  can flood downstream channels with notifications.
+- **Scope filters** (which channels, which users, which tickers) —
+  silently broadening scope blasts everyone.
+
+Concrete example of what NOT to do (this happened, do not repeat):
+the operator had been running a backfill with `--since 2026-05-01`.
+Claude added a `--lookback-days` default of **40** without asking,
+which expanded the window to Apr 11 on the next timer fire and
+forwarded ~2900 first-time messages into the live channel. Operator
+had to kill it mid-run. The number 40 was not pulled from operator
+practice — it was Claude's guess at "what feels safe".
+
+Before committing any default value, do all three:
+
+1. **Search history first.** Grep the conversation, CLAUDE.md,
+   recent commits, and the actual host state (last `--since` arg,
+   inbox.jsonl date range, existing cron entries) for what the
+   operator has been using. The new default is the operator's value,
+   not your guess. If you can't find an operator value, that's a
+   signal to ask, not to invent one.
+
+2. **Estimate first-run blast radius.** Do the math:
+   `lookback_days × messages_per_day × (1 - dedup_hit_rate) =
+   first-run forwards`. If that number could exceed **~100** in any
+   plausible scenario (or if you don't know the channel's volume),
+   the change is NOT safe to commit as-is. Propose one of:
+   - A smaller default matching operator history
+   - A `--max-candidates N` (or equivalent) hard cap that aborts
+     with ⚠️ notify above threshold instead of silently flooding
+   - An explicit confirmation gate
+
+3. **Ask before typing it in.** Surface the proposed default in
+   chat: "operator was using `--since 2026-05-01` — I'd keep that as
+   the default; 40-day lookback would forward ~2900 messages on first
+   run — OK?" — and wait for an answer. "It seemed reasonable" is
+   not a substitute for operator confirmation.
+
+This rule is **deploy-blocking**. A change that silently widens scope
+fails pre-push verification even when tests pass and the code is
+correct, because correctness here means matching operator intent, not
+just "the function executes without error".
+
 ## Pre-push verification — mandatory
 
 Before pushing **any** commit, run every applicable check below and

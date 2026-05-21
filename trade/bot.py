@@ -182,7 +182,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-health (1시간) — BeOn 발표 예정일 (11/21/익월1/익월15) 기준 사이클 누락 감지 → ⚠️ 알림 (이벤트 기반, 침묵 기간엔 silent)
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent)
 • trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
-• trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (40일 룩백, idempotent)
+• trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일 룩백 + 200개 cap, 초과 시 ⚠️ abort)
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 
@@ -191,7 +191,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-22 — beon-listener 실시간 추가 (앨범 debounce), backfill 타입버그 fix</i>
+<i>최종 갱신: 2026-05-22 — backfill 룩백 2일/200개 cap 안전장치, 리스너 [Unit] 경고 fix</i>
 """
 
 

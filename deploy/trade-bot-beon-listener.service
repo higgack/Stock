@@ -2,6 +2,10 @@
 Description=BeOn 수출입 채널 실시간 리스너 (Telethon NewMessage)
 After=network-online.target
 Wants=network-online.target
+# StartLimit* belong in [Unit] (warned about in journal when placed
+# under [Service] — systemd silently ignored them there).
+StartLimitBurst=5
+StartLimitIntervalSec=600
 
 [Service]
 Type=simple
@@ -17,10 +21,6 @@ RestartSec=30
 # on a config error — operator must rerun --auth interactively then
 # `sudo systemctl restart trade-bot-beon-listener`.
 RestartPreventExitStatus=78
-# Give up after 5 fast failures in 10 min — beyond that the operator
-# should investigate (likely Telegram outage or bad creds).
-StartLimitBurst=5
-StartLimitIntervalSec=600
 StandardOutput=journal
 StandardError=journal
 

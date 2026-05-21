@@ -105,6 +105,14 @@ PAUSE_MAX_S = float(os.environ.get("TRADE_PAUSE_MAX_S") or "3.0")
 # we left off (idempotent).
 MAX_FLOOD_WAIT_S = int(os.environ.get("TRADE_MAX_FLOOD_WAIT_S") or "600")
 
+# --- Candidate cap (anti-flood) --------------------------------------
+# Listener handles realtime forwarding; this script is the safety net
+# for short downtime windows. If iter_messages returns more candidates
+# than the cap, abort with ⚠️ notify instead of silently flooding the
+# dest channel. Operator overrides with --max-candidates for explicit
+# wide catch-ups they actually want.
+MAX_CANDIDATES_DEFAULT = int(os.environ.get("TRADE_MAX_CANDIDATES") or "200")
+
 # --- Disk guard -------------------------------------------------------
 MIN_FREE_GB = float(os.environ.get("TRADE_MIN_FREE_GB") or "2.0")
 DISK_RESUME_BUFFER_GB = float(
@@ -281,7 +289,12 @@ async def _forward_unit(client, source, unit: list[Message], dest) -> bool:
     return False
 
 
-async def run(since: datetime, until: datetime | None, dry_run: bool) -> int:
+async def run(
+    since: datetime,
+    until: datetime | None,
+    dry_run: bool,
+    max_candidates: int,
+) -> int:
     existing = _load_existing_beon_ids()
     log.info("already ingested: %d BeOn messages", len(existing))
 
@@ -315,6 +328,19 @@ async def run(since: datetime, until: datetime | None, dry_run: bool) -> int:
             len(candidates),
             skipped_existing,
         )
+
+        if len(candidates) > max_candidates:
+            log.error(
+                "candidates %d > max_candidates %d — aborting to prevent flood",
+                len(candidates), max_candidates,
+            )
+            _notify(
+                f"⚠️ <b>BeOn 동기화 중단 (안전장치)</b>\n"
+                f"후보 {len(candidates)}개가 cap {max_candidates}개 초과.\n"
+                f"의도된 wide 백필이면 명시 실행:\n"
+                f"<code>--since YYYY-MM-DD --max-candidates {len(candidates)+100}</code>"
+            )
+            return 2
 
         units = _group_by_album(candidates)
         log.info(
@@ -394,12 +420,28 @@ def main() -> None:
     ap.add_argument(
         "--lookback-days",
         type=int,
-        default=40,
+        default=2,
         metavar="N",
-        help="Days to look back when --since is omitted (default: 40).",
+        help=(
+            "Days to look back when --since is omitted (default: 2). "
+            "Listener handles realtime; this is the safety net for short "
+            "downtime windows. For wider historical catch-ups use "
+            "explicit --since."
+        ),
     )
     ap.add_argument(
         "--to", help="YYYY-MM-DD (UTC), inclusive upper bound. Default: now."
+    )
+    ap.add_argument(
+        "--max-candidates",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            f"Abort with ⚠️ notify if candidates exceed N (default: "
+            f"TRADE_MAX_CANDIDATES env = {MAX_CANDIDATES_DEFAULT}). "
+            f"Set high for intentional wide catch-ups."
+        ),
     )
     ap.add_argument(
         "--dry-run",
@@ -407,6 +449,11 @@ def main() -> None:
         help="enumerate candidates without forwarding",
     )
     args = ap.parse_args()
+    max_candidates = (
+        args.max_candidates
+        if args.max_candidates is not None
+        else MAX_CANDIDATES_DEFAULT
+    )
 
     if args.since:
         since_date = _parse_date(args.since)
@@ -425,6 +472,7 @@ def main() -> None:
             since_date,
             _parse_date(args.to) if args.to else None,
             args.dry_run,
+            max_candidates,
         )
     )
     sys.exit(rc)
