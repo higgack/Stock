@@ -662,32 +662,14 @@ F3-light parallel prefetch. KR quality 강화 작업은 다음 순서로 진행
 — API 키 필요한 항목은 final batch (위 TODO API-blocked section)
 로 분리:
 
-### Step 2A — no API required (proceed first, ~3.5일):
- 1. **B1 5-day horizon enforcement** (0.25일, prompt only)
-    펀더멘털 결론이 12개월 thesis 톤으로 흐르는 경향 차단. 시스템
-    프롬프트 + 펀더멘털 RULE 에 5거래일 horizon 강제 directive 강화.
-    surfaced by: 마오타이 / SMIC 펀더멘털 결론 "장기 보유 의견" 패턴.
- 2. **A2 KRX 시장경보 + 상한가/하한가 + 거래정지 detect** (0.5일)
-    `bot/krx_alert_client.py` 신규 — data.krx.co.kr HTTP scrape.
-    무료, no key. 단기과열/투자경고/투자주의/거래정지 종목 list.
- 3. **B4 시장경보 HARD GUARD inject** (0.25일, A2 의존)
-    instrument_context 에 banner — 단기과열 종목 분석 시 "5일 정상
-    가격 분석 보류" 자동 directive.
- 4. **D1 yfinance KR 데이터 quality fallback 강화** (1일)
-    MUTUALFUND misclass / split staleness / 매출 단위 mismatch (Rule
-    G) / financialCurrency=USD 글로벌 자회사 케이스에서 DART /
-    FnGuide 데이터로 자동 cross-check + override.
- 5. **D2 USD/KRW 영향 자동 계산** (0.5일)
-    수출 의존도 큰 종목 (현대차 / 기아 / LG에너지솔루션 / SK하이닉
-    스 등) 의 USD/KRW 1% 변동 시 영업이익 ±X% 영향 자동 계산 +
-    매크로 분석 inject.
- 6. **A3 한경 컨센서스 scrape** (0.5일)
-    `bot/hk_consensus_client.py` — consensus.hankyung.com 스크랩.
-    FnGuide 가 mid-cap KOSDAQ 누락하는 영역 보강.
- 7. **B2 KR ETF analyzer 특화** (0.5일)
-    KODEX / TIGER ETF 종목을 generic fund 모드가 아닌 KR-ETF
-    specific 모드로 처리 — 기초자산 sector 익스포저 / AUM 추이 /
-    추적오차 / 분배금 / 환헤지 여부.
+### ✅ Step 2A — 전체 완료 (2026-05-21 이전 세션):
+ 1. ✅ **B1** 5-day horizon enforcement — commit `3294cfd`
+ 2. ✅ **A2** KRX 시장경보 + 거래정지 detect (`bot/krx_alert_client.py`) — commit `c08c612`
+ 3. ✅ **B4** 시장경보 HARD GUARD inject in build_instrument_context — commit `c08c612`
+ 4. ✅ **D1** yfinance KR fallback (pykrx 시총·종가 + financialCurrency HARD GUARD + DART Rule G override) — commits `bfe9237`, `f72847c`
+ 5. ✅ **D2** USD/KRW 영향 자동 계산 (수출주 sensitivity) — commit `e0bede7`
+ 6. ✅ **A3** 한경 컨센서스 scrape (`bot/hk_consensus_client.py`) — commit `6d1714d`
+ 7. ✅ **B2** KR ETF analyzer 특화 (KODEX/TIGER metadata) — commit `c7e3f43`
 
 ### Step 2B — API-required (final batch after Step 2A):
  8. **A1 KIS Open API integration** (1.5일, KIS 키 발급 후)
