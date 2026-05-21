@@ -233,8 +233,22 @@ Pattern (mirror `deploy/install-trade-units.sh`):
   After that, every commit that introduces or modifies a unit file
   is applied automatically on the next auto-update tick. The
   ✅ deploy notification appends a SUMMARY line ('changed=N
-  new_timers=M restarted=K') so the operator can verify from
-  Telegram alone.
+  new_timers=M new_services=K restarted=L sudoers_installed=P') so
+  the operator can verify from Telegram alone.
+- The installer also owns `/etc/sudoers.d/higgack-<project>-services`,
+  which lists every `sudo -n` command the auto-update script needs
+  (e.g. `restart trade-bot-dashboard`). When a new sibling service is
+  introduced that requires its own NOPASSWD entry, append to the
+  `SUDOERS_LINES` array in the installer; the next deploy tick
+  re-renders the file (validated via `visudo -cf` before move) so
+  there is **no manual `/etc/sudoers.d/` edit per service**. The
+  installer's own bootstrap sudoers (the one-time entry above)
+  remains the only operator-managed sudoers line.
+- The auto-update trigger regex MUST include the installer script
+  itself (`install-<project>-units\.sh`) so that updating only the
+  installer (e.g. adding a sudoers line) applies on the next tick.
+  Restricting the trigger to `.service`/`.timer` files alone makes
+  installer-only commits silently skip the install step.
 
 ## One-shot maintenance scripts — required safety pattern
 

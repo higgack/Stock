@@ -89,7 +89,11 @@ fi
 # restarts running services with changed unit files. Requires a sudoers
 # entry (one-time, see trade/README.md); gracefully degrades when missing.
 INSTALL_NOTE=""
-UNIT_FILES_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^deploy/trade-bot[^/]*\.(service|timer)$' || true)
+# install-trade-units.sh itself is in the trigger set so that updating
+# the installer (e.g. adding a new sudoers line or auto-enable rule)
+# applies on the next deploy tick without needing to also touch a unit
+# file.
+UNIT_FILES_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^deploy/(trade-bot[^/]*\.(service|timer)|install-trade-units\.sh)$' || true)
 if [ -n "$UNIT_FILES_CHANGED" ]; then
     if INSTALL_OUTPUT=$(sudo -n "$REPO/deploy/install-trade-units.sh" 2>&1); then
         echo "$INSTALL_OUTPUT"

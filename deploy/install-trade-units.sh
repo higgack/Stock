@@ -20,6 +20,13 @@ set -euo pipefail
 REPO="${TRADE_REPO:-/home/higgack/stock-trade}"
 DEPLOY="$REPO/deploy"
 SYSTEMD_DIR="/etc/systemd/system"
+SUDOERS_DEST="/etc/sudoers.d/higgack-trade-services"
+# Lines this script owns in $SUDOERS_DEST. Each must independently pass
+# `visudo -cf` to land. Extend the array when a new sibling restart
+# needs to run via `sudo -n` from trade-auto-update.sh.
+SUDOERS_LINES=(
+    "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-dashboard"
+)
 
 if [ ! -d "$DEPLOY" ]; then
     echo "install-trade-units: $DEPLOY not found" >&2
@@ -30,6 +37,31 @@ CHANGED_FILES=()
 CHANGED_SERVICES=()
 NEW_TIMERS=()
 NEW_SERVICES=()
+SUDOERS_INSTALLED=0
+
+# Idempotent sudoers self-management. install-trade-units.sh itself is
+# bootstrapped via an operator-installed sudoers entry, but once running
+# as root it owns the entries needed for trade-auto-update.sh to do
+# `sudo -n /bin/systemctl restart trade-bot-dashboard` etc. Adding a new
+# sibling-service restart now means appending to SUDOERS_LINES — no more
+# manual /etc/sudoers.d edits per deploy.
+SUDOERS_DESIRED=$(printf '%s\n' "${SUDOERS_LINES[@]}")
+SUDOERS_CURRENT=""
+if [ -f "$SUDOERS_DEST" ]; then
+    SUDOERS_CURRENT=$(cat "$SUDOERS_DEST")
+fi
+if [ "$SUDOERS_CURRENT" != "$SUDOERS_DESIRED" ]; then
+    printf '%s\n' "${SUDOERS_LINES[@]}" > "${SUDOERS_DEST}.tmp"
+    chmod 440 "${SUDOERS_DEST}.tmp"
+    if visudo -cf "${SUDOERS_DEST}.tmp" > /dev/null 2>&1; then
+        mv "${SUDOERS_DEST}.tmp" "$SUDOERS_DEST"
+        SUDOERS_INSTALLED=1
+        echo "install-trade-units: sudoers updated at $SUDOERS_DEST"
+    else
+        rm -f "${SUDOERS_DEST}.tmp"
+        echo "install-trade-units: sudoers content failed visudo -c — skipped" >&2
+    fi
+fi
 
 shopt -s nullglob
 for src in "$DEPLOY"/trade-bot*.service "$DEPLOY"/trade-bot*.timer; do
@@ -63,8 +95,13 @@ for src in "$DEPLOY"/trade-bot*.service "$DEPLOY"/trade-bot*.timer; do
 done
 shopt -u nullglob
 
-if [ ${#CHANGED_FILES[@]} -eq 0 ]; then
+if [ ${#CHANGED_FILES[@]} -eq 0 ] && [ "$SUDOERS_INSTALLED" -eq 0 ]; then
     echo "install-trade-units: no changes"
+    exit 0
+fi
+
+if [ ${#CHANGED_FILES[@]} -eq 0 ]; then
+    echo "install-trade-units: SUMMARY changed=0 new_timers=0 new_services=0 restarted=0 sudoers_installed=$SUDOERS_INSTALLED"
     exit 0
 fi
 
@@ -100,4 +137,4 @@ for s in "${CHANGED_SERVICES[@]:-}"; do
     echo "install-trade-units: restarted $s"
 done
 
-echo "install-trade-units: SUMMARY changed=${#CHANGED_FILES[@]} new_timers=${#NEW_TIMERS[@]} new_services=${#NEW_SERVICES[@]} restarted=${#CHANGED_SERVICES[@]}"
+echo "install-trade-units: SUMMARY changed=${#CHANGED_FILES[@]} new_timers=${#NEW_TIMERS[@]} new_services=${#NEW_SERVICES[@]} restarted=${#CHANGED_SERVICES[@]} sudoers_installed=$SUDOERS_INSTALLED"

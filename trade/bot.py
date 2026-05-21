@@ -191,7 +191,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-22 — backfill 룩백 2일/200개 cap 안전장치, 리스너 [Unit] 경고 fix</i>
+<i>최종 갱신: 2026-05-22 — sudoers 자동 관리 (대쉬보드 재시작 권한 install-trade-units 셀프 설치)</i>
 """
 
 
