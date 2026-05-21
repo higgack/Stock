@@ -701,74 +701,50 @@ shipping 후 cross-market parity audit 으로 확장.
 
 ## 📋 Standard View open issues (2026-05-21 session pickup)
 
-User 2026-05-21 새벽 1-5시 세션에서 발견 + 진단 + 일부 patch 진행.
-각 항목 picked-up 가능한 상태로 정리.
+User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
+완료. 다음 세션 pickup 항목 정리.
 
-### 🔴 미해결 (다음 세션 우선)
+### ✅ 2026-05-21 완료된 Phase
 
-- **A. `&amp;` / `&quot;` 이중 escape** — 대시보드 본체 (push 가
-  아닌 latest.html 자체). Brief 헤더 (`5. 금리 & 유동성`), News
-  article title (`"오픈AI..."`) 등에서 화면에 `&amp;` / `&quot;`
-  literal 표시. 2026-05-21 스캔 시 15회 발견. push 쪽은 v8 pusher
-  의 `html.unescape()` 호출로 해결됐지만 대시보드 본체는 daily_
-  generator.py 가 BeautifulSoup `.string` 에 inject 하기 직전에도
-  unescape 필요. 5-7 곳 (News inject, Brief gen-report, Deal
-  Highlights, Comments, MMI). 검증: `grep -c '&amp;\(amp\|quot\)'
-  ~/standardview/reports/generated/latest.html` 가 0 되어야 함.
+- **Phase 1 A**: `&amp;` / `&quot;` 이중 escape — daily_generator
+  최종 HTML write 직전 `re.sub(r'&amp;(amp|quot|apos|lt|gt|#\d+|nbsp);',
+  r'&\1;', _html_out)` post-process. 이중 escape 15회 → 0회.
+- **Phase 2 E**: 산업 호출 ThreadPoolExecutor(max_workers=4) 병렬화.
+  7-10분 → 4분 10초 (50% 단축). Gemini RPM 안전 범위.
+- **Phase 3 B**: en_articles 0건 fallback — NewsAPI/GDELT 둘 다
+  rate-limit 시 ko_articles 의 외신 source (source_language!=ko 또는
+  coindesk/reuters/bloomberg/etc.) 자동 분리. 0건 → 10건. + backend
+  wait_for timeout 20s→60s, NEWSAPI_KEY ↔ NEWS_API_KEY fallback.
+- **Phase F**: Live SV 파일 → canonical stock repo mirror commit
+  (156cd5d). sv-update.timer 가 1분마다 origin 에서 rsync → live tree
+  자동 배포 활성화.
+- **Phase D**: PAT 등록 + push 성공. 이제 stock repo commit 만 하면
+  자동 배포.
+- **Phase G**: sv_pusher_install.py 가 canonical telegram_pusher.py
+  v8 reflect (재실행 시 v8 deploy).
+- **TimeoutStartSec=1200**: standardview-daily.service / hourly.service
+  의 timeout 10분 → 20분 (산업 4분 + brief retry + comment 등 여유).
 
-- **B. 글로벌 매크로 브리프 카드 body 빈 상태** — 카드 자체 262 bytes
-  (header 만), 자식 0개. `brief.get("en_articles")` 가 sqlite 캐시
-  에서 항상 0 반환. backend 의 영문 뉴스 aggregator path 가 비활성/
-  실패. 우회: ko_articles 의 영문/외신 source (BTC/forint/sabah/cfi/
-  coindesk 등) 를 분리해서 글로벌 카드에 넣기.
+### 🔴 남은 항목 (다음 세션 pickup)
 
-- **C. v3 brief 본문 중복 fix 시각 검증** — HTML size -28KB 로 간접
-  확인됐지만 latest.html `<details>` 12 section 이 정상 한 번씩만
-  렌더링되는지 사용자가 직접 확인 필요. 캐시 rollover (00:05 KST)
-  후 fresh brief 가 들어와야 검증 가능.
+- **C. v3 brief 본문 중복 시각 검증** — HTML size + grep 카운트로
+  간접 확인됐지만 실제 latest.html `<details>` 12 section 이 한
+  번씩만 렌더링되는지 시각 확인 필요.
 
-- **D. PAT + mirror commit push** — User VM 의 local mirror commit
-  8cc793e (canonical SV 파일들) 가 origin 에 미푸시. 매번 inline
-  patch 로 live 만 수정 중. PAT 등록 또는 SSH key 방식 (`~/.ssh/
-  github_higgack` 발급 + `git@github.com:higgack/stock.git` remote
-  변경) 필요. ⚠️ User 2026-05-21 새벽 PAT chat 에 paste 사고 → 즉시
-  revoke. 다음 PAT 는 반드시 터미널 paste 만, chat 절대 X.
+- **E 보강**: 4분 → 2분 추가 단축 가능 — brief news-brief 호출의
+  retry 가 시간 비중 큼. backend `_fetch_en` 의 newsapi sequential
+  대신 newsapi/gdelt 동시 호출 + 첫 응답 사용 패턴으로 변경하면
+  추가 단축.
 
-- **E. daily_generator.py 실행 시간 단축** — 현재 5-10분/회 (산업
-  8개 Gemini sequential 호출이 시간의 80%). 추천 우선순위:
-  1. 산업 호출 병렬화 (asyncio.gather, ~7분→2분, 가장 큰 win,
-     Gemini RPM quota 검증 선행)
-  2. 산업 결과 sqlite cache + TTL (30분-1시간) — 첫 호출만 full,
-     watchdog/hourly 는 cache hit
-  3. graceful degradation 강화 (retry 시간 누적 차단)
+- **G 보강**: sv_pusher_install.py 는 telegram_pusher.py 만 mirror
+  함. daily_generator.py + backend/main.py 까지 mirror 하는 통합
+  installer 작성하면 fresh deploy 시 한 번에 모든 patch 반영.
 
-- **F. SV 자동화 패치 영구화** — 오늘 세션의 inline Python patches
-  (sv_telegram_button.py endpoint mount-order fix, alert syntax fix,
-  pusher v8) 가 모두 LIVE 파일에만 적용. canonical 미러 (D 해결
-  필요) 후 자동 배포 (sv-update.timer) 로 영속화 필요. 그 전엔 backend
-  restart 시 endpoint 위치가 다시 mount 뒤로 갈 위험 있음 (현재 main.py
-  에 적용된 상태 유지 중이지만 다음 install.sh 재실행 시 되돌릴 수
-  있음).
+### Outstanding minor items
 
-- **G. 통합 sv_pusher_install.py v8 반영** — 현재 sv_pusher_install.py
-  는 v2 시점 canonical 만 mirror. v8 (section 12 skip + 마커 제거 +
-  Deal/Comment/Signal 카드 구조 파싱 + grid 기반 산업 트렌드 추출)
-  반영 후 새 installer 로 commit. D 해결 후 sv-update.timer 가 자동
-  배포 처리.
-
-### ✅ 오늘 (2026-05-21 새벽) 완료
-
-- F8/F4 v4/F9 NOAH audit (BYD 002594.SZ 7-axis)
-- SV v3 dedup (brief 중복, 회사명 dedup, section shift)
-- SV 자동화 인프라 (sv-update 1분, cache-rollover 00:05 KST,
-  watchdog 30분)
-- NOAH update timer 2분 → 1분
-- Send to Telegram 버튼 작동 (endpoint mount order + alert syntax
-  fix)
-- Brief sections 기본 펼침 (`is_open=True`)
-- telegram_pusher v8: HTML 첨부 제거, 모바일 친화 텍스트, 뉴스 URL
-  클릭 가능, 산업 트렌드 grid 파싱, Deal/Comment/Signal 카드 분리,
-  • 마커 제거, section 12 push 제외
+- 텔레그램 push 의 산업 트렌드 카드 — grid > outer-div 구조
+  parsing 이 모든 산업에서 잘 작동하는지 시각 검증.
+- 12:00 KST hourly timer 의 실제 실행 결과 확인.
 
 각 fix 는 universal (모든 brief 출력 / 모든 분석 / 모든 시장) 패턴
 으로 적용. Per-ticker / per-market 가드는 부재.
