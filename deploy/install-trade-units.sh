@@ -29,6 +29,7 @@ fi
 CHANGED_FILES=()
 CHANGED_SERVICES=()
 NEW_TIMERS=()
+NEW_SERVICES=()
 
 shopt -s nullglob
 for src in "$DEPLOY"/trade-bot*.service "$DEPLOY"/trade-bot*.timer; do
@@ -45,10 +46,17 @@ for src in "$DEPLOY"/trade-bot*.service "$DEPLOY"/trade-bot*.timer; do
             fi
         elif [[ "$name" == *.service ]]; then
             base="${name%.service}"
-            # Only restart currently-active services. New services are
-            # picked up by their corresponding timer (if any).
             if systemctl is-active --quiet "$base" 2>/dev/null; then
+                # Already running → restart so new unit content takes effect.
                 CHANGED_SERVICES+=("$base")
+            elif [ ! -e "$DEPLOY/${base}.timer" ] && [[ "$base" != "trade-bot-update" ]]; then
+                # Brand-new standalone service (no driving timer, not self) —
+                # auto-enable. Long-running daemons like beon-listener live
+                # here. Services that need manual setup (e.g. Telethon session
+                # auth) should exit with code 78 + ❌ notify so systemd's
+                # RestartPreventExitStatus=78 stops the loop and the operator
+                # gets one clear alert.
+                NEW_SERVICES+=("$base")
             fi
         fi
     fi
@@ -70,6 +78,15 @@ for t in "${NEW_TIMERS[@]:-}"; do
     echo "install-trade-units: enabled+started $t"
 done
 
+for s in "${NEW_SERVICES[@]:-}"; do
+    [ -z "$s" ] && continue
+    # Use `|| true` so a config-error exit (e.g. listener needs --auth)
+    # doesn't fail the whole deploy. The service's own ❌ notify tells
+    # the operator what to do.
+    systemctl enable --now "$s" || true
+    echo "install-trade-units: enabled+started new service $s"
+done
+
 for s in "${CHANGED_SERVICES[@]:-}"; do
     [ -z "$s" ] && continue
     # Don't restart trade-bot-update mid-run (we're literally inside it
@@ -83,4 +100,4 @@ for s in "${CHANGED_SERVICES[@]:-}"; do
     echo "install-trade-units: restarted $s"
 done
 
-echo "install-trade-units: SUMMARY changed=${#CHANGED_FILES[@]} new_timers=${#NEW_TIMERS[@]} restarted=${#CHANGED_SERVICES[@]}"
+echo "install-trade-units: SUMMARY changed=${#CHANGED_FILES[@]} new_timers=${#NEW_TIMERS[@]} new_services=${#NEW_SERVICES[@]} restarted=${#CHANGED_SERVICES[@]}"

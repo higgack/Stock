@@ -411,10 +411,14 @@ def main() -> None:
     if args.since:
         since_date = _parse_date(args.since)
     else:
-        since_date = (
-            datetime.now(timezone.utc) - timedelta(days=args.lookback_days)
-        ).date()
-        log.info("--since not given; using %d-day lookback → %s", args.lookback_days, since_date)
+        since_date = datetime.now(timezone.utc) - timedelta(
+            days=args.lookback_days
+        )
+        log.info(
+            "--since not given; using %d-day lookback → %s",
+            args.lookback_days,
+            since_date.date().isoformat(),
+        )
 
     rc = asyncio.run(
         run(

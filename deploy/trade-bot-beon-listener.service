@@ -1,0 +1,28 @@
+[Unit]
+Description=BeOn 수출입 채널 실시간 리스너 (Telethon NewMessage)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=higgack
+Group=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/.backfill-venv/bin/python \
+    -m trade.scripts.listen_beon
+Restart=on-failure
+RestartSec=30
+# Exit 78 = EX_CONFIG (session unauthorized). systemd shouldn't hot-loop
+# on a config error — operator must rerun --auth interactively then
+# `sudo systemctl restart trade-bot-beon-listener`.
+RestartPreventExitStatus=78
+# Give up after 5 fast failures in 10 min — beyond that the operator
+# should investigate (likely Telegram outage or bad creds).
+StartLimitBurst=5
+StartLimitIntervalSec=600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
