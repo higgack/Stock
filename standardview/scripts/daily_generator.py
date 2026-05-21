@@ -288,6 +288,18 @@ def _format_brief_for_telegram(text: str) -> str:
     text = _re.sub(r"^##\s+(\d+\.\s*[^\n]+)$", r"<b>\1</b>", text, flags=_re.MULTILINE)
     # 4) ## plain → ▸ <b>Heading</b> (subsection arrow)
     text = _re.sub(r"^##\s+([^\n]+)$", r"▸ <b>\1</b>", text, flags=_re.MULTILINE)
+    # dashboard br 줄바꿈 (2026-05-21)
+    # Markdown bullet/numbered/label list 를 각 줄 시작에 <br> 추가
+    # 해서 dashboard HTML 에서 vertical layout 으로 stack.
+    # `*   X` → `<br>• X`
+    text = _re.sub(r"(?m)^\*\s+(.+)$", r"<br>• \1", text)
+    # `1. X` numbered → `<br>X` (번호 제거 + 줄바꿈)
+    text = _re.sub(r"(?m)^(\d+)\.\s+(.+)$", r"<br>\2", text)
+    # `Label: X` → `<br><b>Label:</b> X`
+    text = _re.sub(
+        r"(?m)^([A-Z][A-Za-z& ](1, 15)):\s+(.+)$",
+        r"<br><b>\1:</b> \2", text
+    )
     # 5) Bullet asterisks at line start: '*   text' or '* text' → '• text'
     text = _re.sub(r"^\s*\*\s+", "• ", text, flags=_re.MULTILINE)
     # 6) **bold** → <b>bold</b>
@@ -1531,22 +1543,37 @@ def main():
                 # B-3.2 (2026-05-20): /api/industry-analysis 응답의
                 # sector_overview (str) + recent_trends (list[3]) +
                 # growth_drivers (list[3]) 합쳐서 표시.
-                parts_text = []
-                v = entry.get("sector_overview")
-                if isinstance(v, str) and v.strip():
-                    parts_text.append(v.strip())
-                for f in ("recent_trends", "growth_drivers"):
-                    v = entry.get(f)
+                # industry card multi-div 줄바꿈 (2026-05-21)
+                # sector_overview (1 line) + recent_trends + growth_drivers
+                # 각각 별도 div 로 vertical layout.
+                base_style = "color:var(--text);font-size:13px;line-height:1.6;margin-top:4px"
+                overview = entry.get("sector_overview")
+                if isinstance(overview, str) and overview.strip():
+                    ov_div = soup.new_tag("div", attrs={"style": base_style})
+                    ov_div.string = overview.strip()[:400]
+                    row.append(ov_div)
+                for label, fkey in [("핵심 동향", "recent_trends"),
+                                     ("성장 요인", "growth_drivers")]:
+                    v = entry.get(fkey)
                     if isinstance(v, list) and v:
-                        parts_text.append(" · ".join(str(x) for x in v[:3]))
-                summary_text = " — ".join(parts_text)
-                if summary_text:
-                    body = soup.new_tag(
-                        "div",
-                        attrs={"style": "color:var(--text);font-size:13px;line-height:1.6;margin-top:4px"},
-                    )
-                    body.string = summary_text[:700]
-                    row.append(body)
+                        sec_div = soup.new_tag(
+                            "div",
+                            attrs={"style": base_style + ";margin-top:8px"},
+                        )
+                        lbl_b = soup.new_tag(
+                            "div",
+                            attrs={"style": "color:var(--muted);font-size:12px;font-weight:600;margin-bottom:2px"},
+                        )
+                        lbl_b.string = label
+                        sec_div.append(lbl_b)
+                        from bs4 import BeautifulSoup as _BS
+                        bullet_html = "<br>".join(
+                            f"• {str(x).strip()}" for x in v[:3] if str(x).strip()
+                        )
+                        bullet_frag = _BS(bullet_html, "html.parser")
+                        for el in list(bullet_frag.contents):
+                            sec_div.append(el)
+                        row.append(sec_div)
                 indu_inner.append(row)
             anchor.insert_after(indu_sec)
             log.info("산업 트렌드 section inserted: %d industries", len(industries_data))
