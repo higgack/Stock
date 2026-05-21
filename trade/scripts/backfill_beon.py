@@ -357,11 +357,22 @@ async def run(since: datetime, until: datetime | None, dry_run: bool) -> int:
             forwarded_msgs,
             total_msgs,
         )
-        _notify(
-            f"✅ <b>백필 완료</b>\n"
-            f"forwarded: {forwarded_msgs}/{total_msgs} msgs\n"
-            f"units: {len(units)}"
-        )
+        if forwarded_msgs > 0:
+            _notify(
+                f"✅ <b>BeOn 동기화 완료</b>\n"
+                f"신규 forwarded: {forwarded_msgs}/{total_msgs} msgs\n"
+                f"units: {len(units)}"
+            )
+        elif len(candidates) == 0 and skipped_existing == 0:
+            # 40-day window produced no messages at all — unexpected for
+            # an active channel; suggests session/connectivity issue.
+            _notify(
+                "⚠️ <b>BeOn 동기화 — 후보 0건</b>\n"
+                f"lookback {since.date().isoformat()} ~ 오늘 범위에서 메시지 없음.\n"
+                "Telethon 세션 만료 또는 채널 접근 불가 확인."
+            )
+        else:
+            log.info("sync: nothing new (all %d messages already in inbox)", skipped_existing)
         return 0
     finally:
         await client.disconnect()
