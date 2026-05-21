@@ -43,15 +43,34 @@ notify() {
 git fetch --quiet origin "$BRANCH"
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "origin/${BRANCH}")
+
+# VM 직접 push edge case (auto-update.sh 와 동일 패턴, 2026-05-21):
+# LOCAL==REMOTE 라도 canonical (REPO/standardview/*) 과 LIVE
+# (~/standardview/*) 의 directory diff 검사해서 다르면 force re-sync.
+# Drift 가 user 의 수동 sed / 이전 timer 우회 / git push 외의 변경
+# 으로 발생했을 가능성. notify + 모든 sub 강제 sync.
+DRIFT_RESYNC=0
 if [ "$LOCAL" = "$REMOTE" ]; then
-    exit 0
+    for sub in scripts backend; do
+        if [ -d "$REPO/standardview/$sub" ] && [ -d "$LIVE/$sub" ]; then
+            if ! diff -r --brief "$REPO/standardview/$sub" "$LIVE/$sub" \
+                --exclude='__pycache__' --exclude='*.pyc' \
+                >/dev/null 2>&1; then
+                DRIFT_RESYNC=1
+                break
+            fi
+        fi
+    done
+    if [ "$DRIFT_RESYNC" = "0" ]; then
+        exit 0
+    fi
+    echo "sv-update: LOCAL==REMOTE but live↔canonical drift — re-syncing"
 fi
 
 # Only proceed if the new commits actually touched standardview/* paths.
-# Other commits (bot/ TradingAgents/) are NOAH-only — let NOAH's own
-# update service handle them, not this one.
+# DRIFT_RESYNC=1 이면 git diff 가 empty 여도 rsync 강행.
 CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE" -- standardview/ 2>/dev/null || true)
-if [ -z "$CHANGED_FILES" ]; then
+if [ -z "$CHANGED_FILES" ] && [ "$DRIFT_RESYNC" = "0" ]; then
     # NOAH-only commit; just fast-forward git (no SV redeploy) so the
     # next SV-touching commit sees a clean diff.
     git reset --hard "origin/${BRANCH}" --quiet
@@ -82,9 +101,17 @@ fi
 BACKEND_CHANGED=0
 SCRIPTS_CHANGED=0
 DEPLOY_CHANGED=0
-echo "$CHANGED_FILES" | grep -q '^standardview/backend/' && BACKEND_CHANGED=1
-echo "$CHANGED_FILES" | grep -q '^standardview/scripts/' && SCRIPTS_CHANGED=1
-echo "$CHANGED_FILES" | grep -qE '^standardview/deploy/.*\.(service|timer|sh)$' && DEPLOY_CHANGED=1
+if [ "$DRIFT_RESYNC" = "1" ]; then
+    # Drift detected — force rsync all subtrees + run install.sh.
+    BACKEND_CHANGED=1
+    SCRIPTS_CHANGED=1
+    DEPLOY_CHANGED=1
+    notify "🔁 <b>SV drift re-sync</b>: live↔canonical 불일치 → 전체 rsync"
+else
+    echo "$CHANGED_FILES" | grep -q '^standardview/backend/' && BACKEND_CHANGED=1
+    echo "$CHANGED_FILES" | grep -q '^standardview/scripts/' && SCRIPTS_CHANGED=1
+    echo "$CHANGED_FILES" | grep -qE '^standardview/deploy/.*\.(service|timer|sh)$' && DEPLOY_CHANGED=1
+fi
 
 # Rsync canonical files into live tree. Each subtree only if present
 # in repo + actually changed; --checksum guards against false-positive

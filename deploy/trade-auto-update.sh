@@ -45,7 +45,20 @@ git fetch --quiet origin "$BRANCH"
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "origin/${BRANCH}")
 
+# VM 직접 push edge case (auto-update.sh 와 동일 패턴, 2026-05-21).
+# LOCAL==REMOTE 인데 봇이 commit 보다 먼저 실행됐으면 재시작.
 if [ "$LOCAL" = "$REMOTE" ]; then
+    HEAD_TS=$(git log -1 --format=%ct HEAD 2>/dev/null || echo "")
+    BOT_START_STR=$(systemctl show trade-bot --property=ExecMainStartTimestamp --value 2>/dev/null)
+    BOT_TS=""
+    if [ -n "$BOT_START_STR" ]; then
+        BOT_TS=$(date -d "$BOT_START_STR" +%s 2>/dev/null || echo "")
+    fi
+    if [ -n "$HEAD_TS" ] && [ -n "$BOT_TS" ] && [ "$HEAD_TS" -gt "$BOT_TS" ]; then
+        echo "trade-bot-update: LOCAL==REMOTE but HEAD newer than bot start — restarting"
+        sudo /bin/systemctl restart trade-bot && sleep 3
+        exit 0
+    fi
     exit 0
 fi
 

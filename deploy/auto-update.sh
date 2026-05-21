@@ -53,7 +53,32 @@ git fetch --quiet origin "$BRANCH"
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "origin/${BRANCH}")
 
+# Edge case: user pushed directly from VM (with PAT) so LOCAL == REMOTE
+# already, but the running bot was started BEFORE this commit. Detect
+# by comparing bot's process start time vs HEAD commit time — if HEAD
+# is newer, restart the bot even though no git pull is needed.
+# 2026-05-21 user reported: 53bc3cc pushed from VM → local already at
+# HEAD → auto-update exited with 'nothing to do' → bot ran stale code.
 if [ "$LOCAL" = "$REMOTE" ]; then
+    HEAD_TS=$(git log -1 --format=%ct HEAD 2>/dev/null || echo "")
+    BOT_START_STR=$(systemctl show stock-bot --property=ExecMainStartTimestamp --value 2>/dev/null)
+    BOT_TS=""
+    if [ -n "$BOT_START_STR" ]; then
+        BOT_TS=$(date -d "$BOT_START_STR" +%s 2>/dev/null || echo "")
+    fi
+    if [ -n "$HEAD_TS" ] && [ -n "$BOT_TS" ] && [ "$HEAD_TS" -gt "$BOT_TS" ]; then
+        echo "stock-bot-update: LOCAL==REMOTE but HEAD ($HEAD_TS) newer than bot start ($BOT_TS) — restarting"
+        notify "🔁 <b>봇 재시작</b>: VM 직접 push 감지 (HEAD $(git rev-parse --short HEAD) 이 봇 실행 후 commit). 코드 새로고침."
+        if sudo /bin/systemctl restart stock-bot; then
+            sleep 3
+            if systemctl is-active --quiet stock-bot; then
+                notify "✅ <b>봇 재시작 완료</b>"
+            else
+                notify "❌ <b>봇 재시작 실패</b>"
+            fi
+        fi
+        exit 0
+    fi
     exit 0  # nothing to do
 fi
 
