@@ -821,7 +821,8 @@ def main():
     if not brief or not brief.get("report"):
         import time as _t_brief
         for attempt in range(2):
-            _t_brief.sleep(10 + attempt * 10)
+            # E-2 brief retry sleep 단축
+            _t_brief.sleep(3 + attempt * 3)  # 10s/20s → 3s/6s
             log.info("brief retry %d", attempt + 1)
             brief = _fetch(
                 "/api/macro/news-brief",
