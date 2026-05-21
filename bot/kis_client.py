@@ -189,6 +189,11 @@ def _get(path: str, tr_id: str, params: dict) -> Optional[dict]:
             log.warning("kis: %s rt_cd=%s msg=%s", tr_id, rt_cd, data.get("msg1", ""))
             return None
         return data
+    except requests.exceptions.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "?"
+        log_fn = log.debug if status == 404 else log.warning
+        log_fn("kis: %s http %s: %s", tr_id, status, exc)
+        return None
     except Exception as exc:
         log.warning("kis: %s failed: %s", tr_id, exc)
         return None
@@ -260,30 +265,38 @@ class KisClient:
         )
         if not data:
             return None
-        out = data.get("output") or {}
+        # FHKST01010900 output is a LIST of daily rows: [0]=today, up to 5 days
+        raw_out = data.get("output")
+        if not raw_out:
+            return None
+        rows = raw_out if isinstance(raw_out, list) else [raw_out]
+        if not rows:
+            return None
+        today_r = rows[0]
 
-        def _wanwon(v) -> int:
-            """KIS investor flow 단위는 만원."""
-            return _int(v)
+        def _sum_rows(field: str) -> Optional[int]:
+            vals = [_int(r.get(field)) for r in rows]
+            vals = [v for v in vals if v is not None]
+            return sum(vals) if vals else None
 
         result = {
             "today": {
-                "foreign":     _wanwon(out.get("frgn_ntby_qty")),
-                "institution": _wanwon(out.get("orgn_ntby_qty")),
-                "individual":  _wanwon(out.get("indv_ntby_qty")),
+                "foreign":     _int(today_r.get("frgn_ntby_qty")),
+                "institution": _int(today_r.get("orgn_ntby_qty")),
+                "individual":  _int(today_r.get("indv_ntby_qty")),
             },
             "5d": {
-                "foreign":     _wanwon(out.get("frgn_ntby_tr_pbmn")),
-                "institution": _wanwon(out.get("orgn_ntby_tr_pbmn")),
-                "individual":  _wanwon(out.get("indv_ntby_tr_pbmn")),
+                "foreign":     _sum_rows("frgn_ntby_tr_pbmn"),
+                "institution": _sum_rows("orgn_ntby_tr_pbmn"),
+                "individual":  _sum_rows("indv_ntby_tr_pbmn"),
             },
             "inst_breakdown": {
-                "pension":    _wanwon(out.get("pnsn_ntby_tr_pbmn")),   # 연기금
-                "trust":      _wanwon(out.get("itrn_ntby_tr_pbmn")),   # 투신
-                "bank":       _wanwon(out.get("bank_ntby_tr_pbmn")),   # 은행
-                "insurance":  _wanwon(out.get("insu_ntby_tr_pbmn")),   # 보험
-                "etc_inst":   _wanwon(out.get("etcg_ntby_tr_pbmn")),   # 기타기관
-                "private_eq": _wanwon(out.get("samo_ntby_tr_pbmn")),   # 사모
+                "pension":    _sum_rows("pnsn_ntby_tr_pbmn"),   # 연기금
+                "trust":      _sum_rows("itrn_ntby_tr_pbmn"),   # 투신
+                "bank":       _sum_rows("bank_ntby_tr_pbmn"),   # 은행
+                "insurance":  _sum_rows("insu_ntby_tr_pbmn"),   # 보험
+                "etc_inst":   _sum_rows("etcg_ntby_tr_pbmn"),   # 기타기관
+                "private_eq": _sum_rows("samo_ntby_tr_pbmn"),   # 사모
             },
         }
         _cache_put(cache_key, result)
@@ -377,13 +390,19 @@ class KisClient:
         arb_sell = _int(out.get("pgtr_shnu_amt1"))
         nb_buy   = _int(out.get("pgtr_seln_amt2"))
         nb_sell  = _int(out.get("pgtr_shnu_amt2"))
+
+        def _net(a: Optional[int], b: Optional[int]) -> Optional[int]:
+            if a is None and b is None:
+                return None
+            return (a or 0) - (b or 0)
+
         result = {
             "arb_buy":    arb_buy,
             "arb_sell":   arb_sell,
-            "arb_net":    arb_buy - arb_sell,
+            "arb_net":    _net(arb_buy, arb_sell),
             "nonarb_buy":  nb_buy,
             "nonarb_sell": nb_sell,
-            "nonarb_net":  nb_buy - nb_sell,
+            "nonarb_net":  _net(nb_buy, nb_sell),
         }
         _cache_put(cache_key, result)
         return result
