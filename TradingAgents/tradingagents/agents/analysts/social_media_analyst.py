@@ -64,7 +64,17 @@ def create_social_media_analyst(llm):
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(instrument_context=instrument_context)
 
-        chain = prompt | llm.bind_tools(tools)
+        # F1-MVP Gemini context caching propagation (B1-bn, 2026-05-21):
+        # instrument_context 가 4 분석가 호출 모두 동일 → cached_content 로
+        # ~75% input token bill 절감. cache_name 미설정 시 fallback.
+        cache_name = state.get("gemini_cache_name", "")
+        active_llm = llm
+        if cache_name:
+            try:
+                active_llm = llm.bind(cached_content=cache_name)
+            except Exception:
+                active_llm = llm
+        chain = prompt | active_llm.bind_tools(tools)
 
         result = chain.invoke(state["messages"])
 

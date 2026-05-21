@@ -206,7 +206,15 @@ Volume-Based Indicators:
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(instrument_context=instrument_context)
 
-        chain = prompt | llm.bind_tools(tools)
+        # F1-MVP Gemini context caching propagation (B1-bn, 2026-05-21)
+        cache_name = state.get("gemini_cache_name", "")
+        active_llm = llm
+        if cache_name:
+            try:
+                active_llm = llm.bind(cached_content=cache_name)
+            except Exception:
+                active_llm = llm
+        chain = prompt | active_llm.bind_tools(tools)
 
         result = chain.invoke(state["messages"])
 
