@@ -776,7 +776,7 @@ subprocess 격리·10분 타임아웃·watchdog 12분·auto-update <b>1분</b> �
 ━━━━━━━━━
 <b>【11. 대시보드】</b> 🦉
  • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/...</a> (ID/PW)
- • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> (ID/PW) · 매크로·MMI·산업·Deal·NOAH · 평일 12/16시·매일 08:00 텔레 (분할+URL) · auto-deploy 1분·cache rollover 00:05·watchdog 30분
+ • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> (ID/PW) · 매크로·MMI·산업·Deal·NOAH · 매일 07:30/20:30 refresh + 08:00/21:00 텔레 (분할+URL) · auto-deploy 1분·cache rollover 00:05·watchdog 30분
  • <b>StockNewsViewer</b>: <a href="https://supply-waviness-popcorn.ngrok-free.dev/">supply-waviness-popcorn.ngrok-free.dev</a> · 미국주식 실시간 뉴스·감성·한글번역
  • 모바일 ID/PW popup 안 뜨면 Safari/Firefox/Brave
  • NOAH 카드: 📊분석 · 💰비용 · ⏱시간 · 🎯정확도 (알파=raw−섹터ETF)
