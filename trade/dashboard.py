@@ -133,6 +133,7 @@ def _build_html(
         # Two extra lines populated by JS on render(): the next BeOn
         # announcement countdown and today's activity stats. Hidden via
         # CSS when empty so first paint stays clean.
+        f'<div class="meta meta-status" id="meta-status"></div>'
         f'<div class="meta meta-next" id="meta-next"></div>'
         f'<div class="meta meta-today" id="meta-today"></div>'
         f"</header>"
@@ -221,8 +222,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Ne
 header{background:var(--surface);padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
 h1{margin:0 0 4px;font-size:18px}
 .meta{font-size:11px;color:var(--text-sub);line-height:1.5}
-.meta-next,.meta-today{margin-top:2px}
-.meta-next:empty,.meta-today:empty{display:none}
+.meta-status,.meta-next,.meta-today{margin-top:2px}
+.meta-status:empty,.meta-next:empty,.meta-today:empty{display:none}
+.meta-status strong{color:var(--text);font-weight:600}
 .meta-next strong{color:var(--accent);font-weight:600}
 .meta-today strong{color:var(--text);font-weight:600}
 .tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:60px;z-index:9}
@@ -409,6 +411,38 @@ function nextAnnouncement(){
   if(!future.length)return null;
   const f=future[0];
   return {date:f.date, kind:f.kind, daysUntil:daysBetween(today,f.date)};
+}
+
+// Period label for the current-data-status header line. Returns just
+// the coverage period (no status word), e.g. "5월 1-20일", "4월 전체".
+function latestPeriodStr(a){
+  const ps=a.period_start||'';
+  const m=parseInt(ps.slice(5,7));
+  if(!m)return '';
+  if(a.period_kind==='monthly')return m+'월 전체';
+  if(a.period_kind==='decadal_10')return m+'월 1-10일';
+  if(a.period_kind==='decadal_20')return m+'월 1-20일';
+  const dEnd=(a.period_end||'').slice(8,10).replace(/^0/,'');
+  return m+'월 '+dEnd+'일까지';
+}
+
+// Find the latest (by period_end) preliminary and final alert among the
+// currently-latest revisions so the header can show "현재 잠정: X · 확정: Y".
+function currentDataStatus(){
+  let latestPrelim=null,latestFinal=null;
+  ALERTS.forEach(a=>{
+    if(!isLatest(a))return;
+    const pe=a.period_end||a.period_start||'';
+    if(!pe)return;
+    if(a.status==='preliminary'){
+      const cur=latestPrelim?latestPrelim.period_end||latestPrelim.period_start||'':'';
+      if(pe>cur)latestPrelim=a;
+    }else if(a.status==='final'){
+      const cur=latestFinal?latestFinal.period_end||latestFinal.period_start||'':'';
+      if(pe>cur)latestFinal=a;
+    }
+  });
+  return {prelim:latestPrelim,final:latestFinal};
 }
 
 // 'Today's activity' summary. Counts the latest-visible alerts whose
@@ -857,6 +891,12 @@ function buildCompaniesView(filtered){
 }
 
 function renderHeaderMeta(){
+  const st=currentDataStatus();
+  const ms=document.getElementById('meta-status');
+  const sp=[];
+  if(st.prelim)sp.push('잠정 <strong>'+esc(latestPeriodStr(st.prelim))+'</strong>');
+  if(st.final)sp.push('확정 <strong>'+esc(latestPeriodStr(st.final))+'</strong>');
+  ms.innerHTML=sp.length?'📊 현재 '+sp.join(' · '):'';
   const next=nextAnnouncement();
   const mn=document.getElementById('meta-next');
   if(next){
