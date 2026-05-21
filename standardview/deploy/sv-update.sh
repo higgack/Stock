@@ -81,8 +81,10 @@ fi
 # Track whether backend changed (restart needed) vs scripts only (no restart).
 BACKEND_CHANGED=0
 SCRIPTS_CHANGED=0
+DEPLOY_CHANGED=0
 echo "$CHANGED_FILES" | grep -q '^standardview/backend/' && BACKEND_CHANGED=1
 echo "$CHANGED_FILES" | grep -q '^standardview/scripts/' && SCRIPTS_CHANGED=1
+echo "$CHANGED_FILES" | grep -qE '^standardview/deploy/.*\.(service|timer|sh)$' && DEPLOY_CHANGED=1
 
 # Rsync canonical files into live tree. Each subtree only if present
 # in repo + actually changed; --checksum guards against false-positive
@@ -134,6 +136,20 @@ if [ "$BACKEND_CHANGED" = "1" ]; then
         fi
     else
         notify "⚠️ <b>SV 백엔드 서비스 미탐지</b> — backend 변경됐지만 재시작 안 함"
+    fi
+fi
+
+# systemd unit files (deploy/*.{service,timer,sh}) — sudo install.sh
+# 로 재설치 + daemon-reload + enable. user 가 install.sh 에 NOPASSWD
+# 부여한 경우에만 작동 (없으면 silent skip).
+if [ "$DEPLOY_CHANGED" = "1" ]; then
+    INSTALL_SH="$REPO/standardview/deploy/install.sh"
+    if [ -x "$INSTALL_SH" ]; then
+        if sudo -n "$INSTALL_SH" >/tmp/sv-install.log 2>&1; then
+            notify "✅ <b>SV systemd 자동 재설치</b>: install.sh 성공"
+        else
+            notify "⚠️ <b>SV systemd 재설치 실패</b> (NOPASSWD 미설정 또는 install.sh error). 로그: /tmp/sv-install.log"
+        fi
     fi
 fi
 
