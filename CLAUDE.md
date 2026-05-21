@@ -704,47 +704,32 @@ shipping 후 cross-market parity audit 으로 확장.
 User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
 완료. 다음 세션 pickup 항목 정리.
 
-### ✅ 2026-05-21 완료된 Phase
+### ✅ 2026-05-21 완료 — SV major work CLOSED
 
-- **Phase 1 A**: `&amp;` / `&quot;` 이중 escape — daily_generator
-  최종 HTML write 직전 `re.sub(r'&amp;(amp|quot|apos|lt|gt|#\d+|nbsp);',
-  r'&\1;', _html_out)` post-process. 이중 escape 15회 → 0회.
-- **Phase 2 E**: 산업 호출 ThreadPoolExecutor(max_workers=4) 병렬화.
-  7-10분 → 4분 10초 (50% 단축). Gemini RPM 안전 범위.
-- **Phase 3 B**: en_articles 0건 fallback — NewsAPI/GDELT 둘 다
-  rate-limit 시 ko_articles 의 외신 source (source_language!=ko 또는
-  coindesk/reuters/bloomberg/etc.) 자동 분리. 0건 → 10건. + backend
-  wait_for timeout 20s→60s, NEWSAPI_KEY ↔ NEWS_API_KEY fallback.
-- **Phase F**: Live SV 파일 → canonical stock repo mirror commit
-  (156cd5d). sv-update.timer 가 1분마다 origin 에서 rsync → live tree
-  자동 배포 활성화.
-- **Phase D**: PAT 등록 + push 성공. 이제 stock repo commit 만 하면
-  자동 배포.
-- **Phase G**: sv_pusher_install.py 가 canonical telegram_pusher.py
-  v8 reflect (재실행 시 v8 deploy).
-- **TimeoutStartSec=1200**: standardview-daily.service / hourly.service
-  의 timeout 10분 → 20분 (산업 4분 + brief retry + comment 등 여유).
+- **A**: `&amp;` / `&quot;` 이중 escape (15회 → 0). daily_generator
+  최종 HTML write 직전 post-process `re.sub(r'&amp;(amp|quot|...);'
+  → r'&\1;')`.
+- **E**: 산업 호출 ThreadPoolExecutor(max_workers=4) 병렬화 (7-10분
+  → 4분 10초). + news-brief retry sleep 10s/20s → 3s/6s.
+- **B**: en_articles fallback (0 → 10). NewsAPI/GDELT rate-limit 시
+  ko_articles 의 외신 source 자동 분리. + backend wait_for 20s→60s,
+  NEWSAPI_KEY ↔ NEWS_API_KEY fallback.
+- **C**: brief 중복 시각 검증 — user 2026-05-21 12시 확인, 문제 없음.
+- **D**: PAT 등록 + push 성공.
+- **F**: Live → canonical mirror (156cd5d, 5add8d0).
+- **G**: sv-update.timer 가 canonical 변경 시 1분 내 LIVE rsync
+  → 별도 통합 installer 불필요.
+- **TimeoutStartSec=1200**: daily/hourly service timeout 10→20분.
+- **bullet/numbered/label 가독성**: pusher md_to_tg_html 가 markdown
+  bullet (`* X`) / numbered (`1. X`) / label (`VC:`, `PE:`, `CFO:` 등)
+  모두 빈 줄 separator 추가.
 
-### 🔴 남은 항목 (다음 세션 pickup)
+### 🟢 SV 잔여 항목 — 다음 자동 push 시 시각 확인만
 
-- **C. v3 brief 본문 중복 시각 검증** — HTML size + grep 카운트로
-  간접 확인됐지만 실제 latest.html `<details>` 12 section 이 한
-  번씩만 렌더링되는지 시각 확인 필요.
-
-- **E 보강**: 4분 → 2분 추가 단축 가능 — brief news-brief 호출의
-  retry 가 시간 비중 큼. backend `_fetch_en` 의 newsapi sequential
-  대신 newsapi/gdelt 동시 호출 + 첫 응답 사용 패턴으로 변경하면
-  추가 단축.
-
-- **G 보강**: sv_pusher_install.py 는 telegram_pusher.py 만 mirror
-  함. daily_generator.py + backend/main.py 까지 mirror 하는 통합
-  installer 작성하면 fresh deploy 시 한 번에 모든 patch 반영.
-
-### Outstanding minor items
-
-- 텔레그램 push 의 산업 트렌드 카드 — grid > outer-div 구조
-  parsing 이 모든 산업에서 잘 작동하는지 시각 검증.
-- 12:00 KST hourly timer 의 실제 실행 결과 확인.
+- 16:00 KST hourly push 캡쳐로 새 가독성 포맷 확인. 필요 시 fine-tune
+  은 다음 세션 optional task.
+- E-3 추가 단축 (사실상 micro-optimization): news-brief 호출 자체
+  async parallel 변환. 효과 ~10초, 우선순위 낮음.
 
 각 fix 는 universal (모든 brief 출력 / 모든 분석 / 모든 시장) 패턴
 으로 적용. Per-ticker / per-market 가드는 부재.
