@@ -286,6 +286,12 @@ pattern to follow:
 - Standard View code updates → `sv-update.service` polls git every 1 min, rsyncs `standardview/scripts` + `standardview/backend` into live tree, restarts backend if changed, defers when daily_generator is running. Same pattern as `stock-bot-update`.
 - Standard View cache rollover → `sv-cache-rollover.service` runs 00:05 KST daily, flushes `macro_news_cache` so the first news-brief call of the new date regenerates from scratch (fixes the 2026-05-21 midnight stub-cache bug).
 - Standard View watchdog → `sv-watchdog.service` runs every 30 min; if `latest.html` is >90 min stale during 08:00-22:00 KST and the BUSY_MARKER is clear, re-kicks `daily_generator.py` in the background.
+- Standard View systemd units 자동 배포 → `sv-update.sh` 가 `standardview/deploy/*.{service,timer,sh}` 변경 감지 시 `sudo /home/higgack/stock/standardview/deploy/install.sh` 자동 호출 → systemd unit 재설치 + daemon-reload + enable + Telegram 알림. 사용자 1회 setup (NOPASSWD line + 첫 install.sh) 이후 SSH 영원히 미진입 — stock repo push 만으로 timer/service 변경까지 1분 내 자동 적용.
+- Standard View 스케줄 (2026-05-21):
+  • `standardview-daily.timer` — 07:30 + 20:30 KST 매일, `daily_generator.py` 만 (refresh)
+  • `standardview-push.timer` — 08:00 + 21:00 KST 매일, `telegram_pusher.py` 만 (push)
+  • 30분 gap 으로 generator 가 완료된 latest.html 을 pusher 가 사용
+  • legacy `standardview-hourly.timer` (Mon-Fri 12/16시 push) disabled
 
 **Acceptable manual steps** (rare, one-time):
 - Initial systemd unit installation
