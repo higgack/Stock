@@ -590,39 +590,31 @@ def _display_ticker(ticker: str) -> str:
 def _extract_stance(body: str | None) -> str:
     """Pick the analyst's bottom-line stance from its report body.
 
-    Two-pass scan:
+    Three-pass scan (priority order):
 
-    1. Look for EXPLICIT recommendation patterns first — "HOLD 의견을
-       제시", "보유 (HOLD)", "FINAL TRANSACTION PROPOSAL: BUY", etc.
-       These mean "this is the verdict", not "this word appears in
-       passing". Take the rightmost explicit match.
-    2. Only if no explicit pattern matches, fall back to the rightmost
-       bare keyword.
-
-    Why two passes: with the old rightmost-bare-keyword approach, AAPL
-    2026-05-13 mislabelled two analysts because their conclusions had
-    "보유(HOLD) 전략을 유지하며 ... 매수 또는 매도 결정을 내리는 것이
-    현명" (Sell wins as rightmost) and "HOLD 의견을 제시합니다 ... 단기
-    조정 시 매수 기회를 모색" (Buy wins as rightmost). The actual
-    recommendations were both Hold. Explicit patterns + priority fixes
-    this class of false positives.
-
-    Length-aware to avoid substring collisions: when "strong buy"
-    appears, naïve rfind("buy") would find the "buy" inside it. We
-    process keywords longest-first and skip matches that fall inside
-    an already-accepted range.
+    1. CONCLUSION-ZONE explicit patterns: scan the last 800 characters for
+       explicit recommendation patterns. Analysts write the verdict in the
+       conclusion section near the end; any trailing prose that mentions
+       "매도" or "매수" in passing (e.g. "단기 매도 압력을 시사합니다") is
+       earlier in the document and loses to the conclusion-zone pattern.
+       Fixes 경동나비엔 009450.KS 2026-05-22: market analyst concluded
+       "HOLD 의견을 제시합니다" but trailing "매도 압력을 시사합니다" text
+       caused rightmost-full-body scan to return "매도" instead of "보유".
+    2. Full-body explicit patterns (fallback when conclusion zone has no
+       explicit pattern — rare; covers analysts whose verdict appears early).
+    3. Rightmost bare keyword (last resort).
     """
     if not body:
         return ""
     lower = body.lower()
 
-    def _rightmost_match(keyword_list):
+    def _rightmost_match_in(text_lower: str, keyword_list):
         by_len = sorted(keyword_list, key=lambda kv: -len(kv[0]))
         accepted: list[tuple[int, int]] = []
         candidates: list[tuple[int, str]] = []
         for keyword, label in by_len:
             kw = keyword.lower()
-            pos = lower.rfind(kw)
+            pos = text_lower.rfind(kw)
             while pos >= 0:
                 end = pos + len(kw)
                 inside = any(s <= pos and end <= e for s, e in accepted)
@@ -630,13 +622,27 @@ def _extract_stance(body: str | None) -> str:
                     accepted.append((pos, end))
                     candidates.append((pos, label))
                     break
-                pos = lower.rfind(kw, 0, pos)
+                pos = text_lower.rfind(kw, 0, pos)
         if not candidates:
             return ""
         candidates.sort(key=lambda kv: -kv[0])
         return candidates[0][1]
 
-    return _rightmost_match(_STANCE_EXPLICIT_KEYWORDS) or _rightmost_match(_STANCE_KEYWORDS)
+    # Pass 1: explicit patterns in conclusion zone (last 800 chars)
+    _CONCLUSION_ZONE = 800
+    zone_lower = lower[-_CONCLUSION_ZONE:] if len(lower) > _CONCLUSION_ZONE else lower
+    zone_hit = _rightmost_match_in(zone_lower, _STANCE_EXPLICIT_KEYWORDS)
+    if zone_hit:
+        return zone_hit
+
+    # Pass 2: explicit patterns full body
+    full_hit = _rightmost_match_in(lower, _STANCE_EXPLICIT_KEYWORDS)
+    if full_hit:
+        return full_hit
+
+    # Pass 3: bare keyword fallback
+    return _rightmost_match_in(lower, _STANCE_KEYWORDS)
+
 
 
 _DECISION_DIRECTION = {

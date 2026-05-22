@@ -1694,7 +1694,8 @@ def _build_ratios_block(ticker: str, info: dict, _cfg: dict, market: str) -> str
       순이익률   = Net Income / Total Revenue × 100
       ROE        = Net Income / Common Stock Equity × 100
       ROA        = Net Income / Total Assets × 100
-      부채비율   = Total Debt / Common Stock Equity × 100
+      차입금비율 = Total Debt / Common Stock Equity × 100   (US-style)
+      총부채비율 = Total Liabilities / Common Stock Equity × 100  (KR standard)
       유동비율   = Current Assets / Current Liabilities × 100
     """
     try:
@@ -1736,8 +1737,10 @@ def _build_ratios_block(ticker: str, info: dict, _cfg: dict, market: str) -> str
                         "Total Equity Gross Minority Interest"])
         assets = _bal(["Total Assets"])
         curr_a = _bal(["Current Assets"])
-        curr_l = _bal(["Current Liabilities"])
-        debt   = _bal(["Total Debt"])
+        curr_l    = _bal(["Current Liabilities"])
+        debt      = _bal(["Total Debt"])
+        tot_liab  = _bal(["Total Liabilities Net Minority Interest",
+                          "Total Liabilities"])
 
         # TTM income from last 4 quarters
         ttm_rev = ttm_oi = ttm_ni = None
@@ -1813,18 +1816,24 @@ def _build_ratios_block(ticker: str, info: dict, _cfg: dict, market: str) -> str
                     if r:
                         roa_parts.append(f"{lbl} {r}")
 
-        de_parts: list[str] = []
+        de_parts: list[str] = []   # 차입금비율 = Total Debt / Equity
+        tl_parts: list[str] = []   # 총부채비율 = Total Liabilities / Equity (KR std)
         cr_parts: list[str] = []
         for col in bal_cols:
-            dv = debt.get(col)
-            ev = equity.get(col)
-            av = curr_a.get(col)
-            lv = curr_l.get(col)
+            dv  = debt.get(col)
+            tlv = tot_liab.get(col)
+            ev  = equity.get(col)
+            av  = curr_a.get(col)
+            lv  = curr_l.get(col)
             lbl = _fy_label(col)
             if dv is not None and ev and ev > 0:
                 r = _pct(dv, ev)
                 if r:
                     de_parts.append(f"{lbl} {r}")
+            if tlv is not None and ev and ev > 0:
+                r = _pct(tlv, ev)
+                if r:
+                    tl_parts.append(f"{lbl} {r}")
             if av is not None and lv and lv > 0:
                 cr = float(av) / float(lv) * 100
                 cr_parts.append(f"{lbl} {cr:.0f}%")
@@ -1836,7 +1845,8 @@ def _build_ratios_block(ticker: str, info: dict, _cfg: dict, market: str) -> str
             f"  ROA:       {' | '.join(roa_parts[:4])}" if roa_parts else "",
         ] if p]
         leverage = [p for p in [
-            f"  부채비율:   {' | '.join(de_parts[:3])}" if de_parts else "",
+            f"  차입금비율: {' | '.join(de_parts[:3])}" if de_parts else "",
+            f"  총부채비율: {' | '.join(tl_parts[:3])}" if tl_parts else "",
             f"  유동비율:   {' | '.join(cr_parts[:3])}" if cr_parts else "",
         ] if p]
 
@@ -1846,7 +1856,8 @@ def _build_ratios_block(ticker: str, info: dict, _cfg: dict, market: str) -> str
         lines = [
             "=== PRE-COMPUTED 수익성·안정성 비율 (시스템 직접 산출 — 수치 절대 변경 금지) ===",
             "분析가 지시: 아래 비율을 RULE 5/6 수익성·안정성 분析에 그대로 복사."
-            " 비율 재계산 절대 금지.",
+            " 비율 재계산 절대 금지. 차입금비율 = Total Debt/Equity (US 차입금),"
+            " 총부채비율 = Total Liabilities/Equity (KR 표준 부채비율).",
             "",
         ]
         lines.extend(profitability)
@@ -3063,6 +3074,61 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                     f" 않을 수 있다. 손익계산서 / 대차대조표 수치 인용 시"
                     f" '{fin_ccy} 기준' 명시 + 환산하지 말고 그대로 인용."
                 )
+    except Exception:
+        pass
+
+    # USD currency directive — mirrors KR/JP/TW directives above.
+    # Without this, the LLM sometimes outputs Korean-scale units for US
+    # stocks (e.g. "약 426.17억 달러" for a $42.6B market cap — ON
+    # Semiconductor 2026-05-22 review). The FACTUAL ANCHOR already injects
+    # "$42.6B" but some models revert to place-value Korean reading.
+    try:
+        if _cfg.get("currency", "USD") == "USD" and market == "US":
+            base += (
+                "\n\n=== CURRENCY DIRECTIVE (US ticker, MANDATORY) ===\n"
+                "This is a US-listed company. All monetary values are in"
+                " **USD**. When you render any dollar amount:\n"
+                " • Use '$XB' (billions) or '$XM' (millions) or '$X.XX'"
+                " (single value). E.g. '$42.6B', '$820M', '$3.14'.\n"
+                " • NEVER use Korean scale units ('억 달러', '조 달러',"
+                " '백만 달러', '만 달러') for USD amounts. Korean readers"
+                " of US stock analyses expect '$XB' notation, not '426억"
+                " 달러'.\n"
+                " ❌ WRONG: '시가총액: 약 426.17억 달러' (Korean scale + 달러)\n"
+                " ✅ RIGHT: '시가총액: $42.6B'\n"
+                " ❌ WRONG: '매출: 약 82,000만 달러' → '시가총액: $820M'\n"
+                " ✅ RIGHT: '매출: $820M'\n"
+                "BETA LABEL (fundamentals, 5년 월간): yfinance .info beta"
+                " for US-listed stocks is computed vs **S&P 500**. Label it"
+                " '베타 (5년 월간, vs S&P 500): X.XX'. The market analyst's"
+                " 90-day beta uses SPY as benchmark — both are S&P 500 for"
+                " US, so label both accordingly."
+            )
+    except Exception:
+        pass
+
+    # Non-US markets: inject market-aware beta label override for the
+    # fundamentals analyst, which otherwise hardcodes 'vs S&P 500' for
+    # all markets. yfinance .info beta for KR/JP/TW is computed against
+    # the local broad index, not S&P 500. Without this override, KR
+    # analyses show '베타 (5년 월간, vs S&P 500)' — a meaningless frame
+    # for a KOSDAQ/KRX stock (경동나비엔 009450.KS 2026-05-22 review).
+    # Rule applies to all non-US analyses going forward.
+    try:
+        _bench_label = _cfg.get("broad_label", "")
+        if _bench_label and market not in ("US", ""):
+            base += (
+                f"\n\nBETA LABEL OVERRIDE (MANDATORY — overrides any"
+                f" hardcoded 'vs S&P 500' instruction): yfinance .info"
+                f" beta for `{ticker}` ({market} market) is computed vs"
+                f" **{_bench_label}**, NOT S&P 500. In ALL sections:\n"
+                f" • 펀더멘털 (5년 월간): '베타 (5년 월간, vs"
+                f" {_bench_label}): X.XX'\n"
+                f" • 시장 (90일): '베타 (90일, vs {_bench_label}): X.XX'\n"
+                f" ❌ FORBIDDEN: '베타 (5년 월간, vs S&P 500)' for a"
+                f" {market} ticker — S&P 500 is the wrong benchmark.\n"
+                f" ✅ RIGHT: '베타 (5년 월간, vs {_bench_label}): X.XX'"
+            )
     except Exception:
         pass
 

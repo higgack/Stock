@@ -500,12 +500,15 @@ def format_kis_block(data: dict) -> str:
         inst_bd = flow.get("inst_breakdown") or {}
 
         def _fmt_wanwon(v) -> str:
+            # Always render in 억원 to prevent LLM unit-conversion errors.
+            # Raw API values are in 만원; divide by 100,000 to get 억원.
+            # 경동나비엔 2026-05-22: "+11,730만원" was misread as "117억원"
+            # (100x error) by the PM because 만원 unit was left for the LLM
+            # to convert. Now Python does it: 11,730만원 → +0.12억원.
             if v is None:
                 return "N/A"
             sign = "+" if v >= 0 else ""
-            if abs(v) >= 100_000:  # 10억원 이상 → 억원
-                return f"{sign}{v/100_000:.1f}억원"
-            return f"{sign}{v:,}만원"
+            return f"{sign}{v / 100_000:.2f}억원"
 
         if any(today.values()):
             lines.append(
@@ -514,11 +517,22 @@ def format_kis_block(data: dict) -> str:
                 f" 개인 {_fmt_wanwon(today.get('individual'))}"
             )
         if any(five_d.values()):
+            five_d_foreign = five_d.get("foreign") or 0
+            five_d_inst    = five_d.get("institution") or 0
             lines.append(
                 f"• 5일 누적: 외인 {_fmt_wanwon(five_d.get('foreign'))} /"
                 f" 기관 {_fmt_wanwon(five_d.get('institution'))} /"
                 f" 개인 {_fmt_wanwon(five_d.get('individual'))}"
             )
+            # RULE 10 threshold check: ±100억 미만은 noise — dominant variable 인용 불가.
+            # Python pre-computes this so the LLM doesn't have to convert units.
+            for label_k, val_k in (("외인", five_d_foreign), ("기관", five_d_inst)):
+                if abs(val_k) < 10_000_000:  # < 100억 (10,000,000만원)
+                    lines.append(
+                        f"  ⚠️ RULE 10: {label_k} 5일 누적"
+                        f" {_fmt_wanwon(val_k)} — ±100억 미만이므로"
+                        f" dominant variable 인용 불가 (noise level)"
+                    )
         # 기관 주체별 — 의미있는 값만 출력
         bd_parts = []
         label_map = {
