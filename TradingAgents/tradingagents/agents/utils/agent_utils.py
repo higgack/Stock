@@ -1197,18 +1197,19 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # market-flow data so it stays in the market analyst's set.
     "market": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
-        "rule1_skeleton",   # RULE 1 재무표 뼈대는 펀더멘털 전용
+        "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
     # blocks (sentiment fuel) and peer set (Comps consistency).
     "social": {
         "krx_flow", "hsgt_flow", "kis_supply",
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
-        "rule1_skeleton",
+        "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
-    "news": {"krx_flow", "hsgt_flow", "kis_supply", "rule1_skeleton"},
+    "news": {"krx_flow", "hsgt_flow", "kis_supply",
+             "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
     # rule1_skeleton is NOT excluded — fundamentals analyst gets the table.
@@ -1550,6 +1551,312 @@ def _build_rule1_skeleton(
         return "\n".join(lines)
     except Exception as exc:
         _analyst_log.warning("rule1_skeleton failed for %s: %s", ticker, exc)
+        return ""
+
+
+def _build_cashflow_block(ticker: str, info: dict, _cfg: dict, market: str) -> str:
+    """Pre-computed cash flow table. FCF = OpCF + CapEx (CapEx is negative in yfinance).
+    Returns '' on failure."""
+    try:
+        import yfinance as yf
+        obj = yf.Ticker(ticker.upper())
+        annual = obj.cashflow
+    except Exception:
+        return ""
+    try:
+        if annual is None or (hasattr(annual, "empty") and annual.empty):
+            return ""
+        currency = _cfg.get("currency", "USD")
+        sym = _cfg.get("currency_symbol", "$")
+        fy_cols = list(annual.columns[:4])
+
+        def _get(field):
+            if field in annual.index:
+                return {col: annual.loc[field, col] for col in fy_cols
+                        if col in annual.columns}
+            return {}
+
+        opcf = _get("Operating Cash Flow")
+        capex = _get("Capital Expenditure")
+        ivcf = _get("Investing Cash Flow")
+        fncf = _get("Financing Cash Flow")
+
+        if not any(opcf.values()):
+            return ""
+
+        lines = [
+            "=== PRE-COMPUTED 현금흐름표 (시스템 직접 산출 — 수치 절대 변경 금지) ===",
+            "분석가 지시: 아래 수치를 RULE 2 현금흐름 분석에 그대로 복사."
+            " get_cashflow 재호출·수치 재계산 절대 금지.",
+            "",
+        ]
+
+        def _row(kr_label, data_dict):
+            parts = []
+            for col in fy_cols:
+                v = data_dict.get(col)
+                if v is not None and v == v:
+                    parts.append(f"{_fy_label(col)} {_fmt_native_val(float(v), currency, sym)}")
+            if parts:
+                lines.append(f"  {kr_label}: {' | '.join(parts)}")
+
+        _row("영업현금흐름", opcf)
+        _row("설비투자(CapEx)", capex)
+
+        # FCF = OpCF + CapEx (CapEx stored as negative)
+        fcf_data: dict = {}
+        for col in fy_cols:
+            ov = opcf.get(col)
+            cv = capex.get(col)
+            if (ov is not None and ov == ov and cv is not None and cv == cv):
+                fcf_data[col] = float(ov) + float(cv)
+        _row("잉여현금흐름(FCF)", fcf_data)
+        _row("투자현금흐름", ivcf)
+        _row("재무현금흐름", fncf)
+
+        if len(lines) <= 3:
+            return ""
+
+        lines += ["", "위 값 우선. 도구 결과로 재계산 금지."]
+        return "\n".join(lines)
+    except Exception as exc:
+        _analyst_log.warning("cashflow_block failed for %s: %s", ticker, exc)
+        return ""
+
+
+def _build_balance_block(ticker: str, info: dict, _cfg: dict, market: str) -> str:
+    """Pre-computed balance sheet table. Returns '' on failure."""
+    try:
+        import yfinance as yf
+        obj = yf.Ticker(ticker.upper())
+        annual = obj.balance_sheet
+    except Exception:
+        return ""
+    try:
+        if annual is None or (hasattr(annual, "empty") and annual.empty):
+            return ""
+        currency = _cfg.get("currency", "USD")
+        sym = _cfg.get("currency_symbol", "$")
+        fy_cols = list(annual.columns[:3])
+
+        def _get_first(candidates):
+            for field in candidates:
+                if field in annual.index:
+                    return {col: annual.loc[field, col] for col in fy_cols
+                            if col in annual.columns}
+            return {}
+
+        rows = [
+            ("총자산",   _get_first(["Total Assets"])),
+            ("총부채",   _get_first(["Total Liabilities Net Minority Interest",
+                                      "Total Liabilities"])),
+            ("자기자본", _get_first(["Common Stock Equity", "Stockholders Equity",
+                                      "Total Equity Gross Minority Interest"])),
+            ("유동자산", _get_first(["Current Assets"])),
+            ("유동부채", _get_first(["Current Liabilities"])),
+            ("총차입금", _get_first(["Total Debt"])),
+        ]
+
+        if not any(rows[0][1].values()):
+            return ""
+
+        lines = [
+            "=== PRE-COMPUTED 재무상태표 (시스템 직접 산출 — 수치 절대 변경 금지) ===",
+            "분석가 지시: 아래 수치를 RULE 3/4/6 부채·자본 분석에 그대로 복사."
+            " get_balance_sheet 재호출·수치 재계산 절대 금지.",
+            "",
+        ]
+        for kr_label, data_dict in rows:
+            parts = []
+            for col in fy_cols:
+                v = data_dict.get(col)
+                if v is not None and v == v:
+                    parts.append(f"{_fy_label(col)} {_fmt_native_val(float(v), currency, sym)}")
+            if parts:
+                lines.append(f"  {kr_label}: {' | '.join(parts)}")
+
+        if len(lines) <= 3:
+            return ""
+
+        lines += ["", "위 값 우선. 도구 결과로 재계산 금지."]
+        return "\n".join(lines)
+    except Exception as exc:
+        _analyst_log.warning("balance_block failed for %s: %s", ticker, exc)
+        return ""
+
+
+def _build_ratios_block(ticker: str, info: dict, _cfg: dict, market: str) -> str:
+    """Pre-compute profitability + leverage ratios Python-side so the LLM
+    never has to do unit conversions or cross-table arithmetic.
+
+    Ratios computed:
+      영업이익률 = Operating Income / Total Revenue × 100
+      순이익률   = Net Income / Total Revenue × 100
+      ROE        = Net Income / Common Stock Equity × 100
+      ROA        = Net Income / Total Assets × 100
+      부채비율   = Total Debt / Common Stock Equity × 100
+      유동비율   = Current Assets / Current Liabilities × 100
+    """
+    try:
+        import yfinance as yf
+        obj = yf.Ticker(ticker.upper())
+        inc = obj.income_stmt
+        bal = obj.balance_sheet
+        qi  = obj.quarterly_income_stmt
+    except Exception:
+        return ""
+    try:
+        if inc is None or (hasattr(inc, "empty") and inc.empty):
+            return ""
+
+        fy_cols = list(inc.columns[:4])
+
+        def _inc(field):
+            if field in inc.index:
+                return {col: inc.loc[field, col] for col in fy_cols
+                        if col in inc.columns and
+                        inc.loc[field, col] is not None and
+                        inc.loc[field, col] == inc.loc[field, col]}
+            return {}
+
+        def _bal(candidates):
+            if bal is None or (hasattr(bal, "empty") and bal.empty):
+                return {}
+            for field in candidates:
+                if field in bal.index:
+                    return {col: bal.loc[field, col] for col in bal.columns[:3]
+                            if bal.loc[field, col] is not None and
+                            bal.loc[field, col] == bal.loc[field, col]}
+            return {}
+
+        rev = _inc("Total Revenue")
+        oi  = _inc("Operating Income")
+        ni  = _inc("Net Income")
+        equity = _bal(["Common Stock Equity", "Stockholders Equity",
+                        "Total Equity Gross Minority Interest"])
+        assets = _bal(["Total Assets"])
+        curr_a = _bal(["Current Assets"])
+        curr_l = _bal(["Current Liabilities"])
+        debt   = _bal(["Total Debt"])
+
+        # TTM income from last 4 quarters
+        ttm_rev = ttm_oi = ttm_ni = None
+        if qi is not None and not (hasattr(qi, "empty") and qi.empty):
+            last4 = qi.iloc[:, :4]
+            def _ttm(field):
+                if field in last4.index:
+                    vals = [float(v) for v in last4.loc[field]
+                            if v is not None and v == v]
+                    return sum(vals) if vals else None
+                return None
+            ttm_rev = _ttm("Total Revenue")
+            ttm_oi  = _ttm("Operating Income")
+            ttm_ni  = _ttm("Net Income")
+
+        def _pct(num, den):
+            if (isinstance(num, (int, float)) and isinstance(den, (int, float))
+                    and den and den == den and num == num):
+                r = num / den * 100
+                return f"{r:.1f}%" if abs(r) < 10000 else None
+            return None
+
+        opm_parts: list[str] = []
+        npm_parts: list[str] = []
+        roe_parts: list[str] = []
+        roa_parts: list[str] = []
+
+        # TTM row first
+        if ttm_rev and ttm_rev > 0:
+            if ttm_oi is not None:
+                r = _pct(ttm_oi, ttm_rev)
+                if r:
+                    opm_parts.append(f"TTM {r}")
+            if ttm_ni is not None:
+                r = _pct(ttm_ni, ttm_rev)
+                if r:
+                    npm_parts.append(f"TTM {r}")
+
+        # Annual rows — match income col to nearest balance col
+        bal_cols = list(bal.columns[:3]) if bal is not None and not (
+            hasattr(bal, "empty") and bal.empty) else []
+
+        def _nearest_bal(col, bal_dict):
+            if col in bal_dict:
+                return bal_dict[col]
+            if bal_dict:
+                return list(bal_dict.values())[0]
+            return None
+
+        for col in fy_cols:
+            rv = rev.get(col)
+            ov = oi.get(col)
+            nv = ni.get(col)
+            lbl = _fy_label(col)
+            if rv and rv > 0:
+                if ov is not None:
+                    r = _pct(ov, rv)
+                    if r:
+                        opm_parts.append(f"{lbl} {r}")
+                if nv is not None:
+                    r = _pct(nv, rv)
+                    if r:
+                        npm_parts.append(f"{lbl} {r}")
+            if nv is not None:
+                eq_v = _nearest_bal(col, equity)
+                if eq_v:
+                    r = _pct(nv, eq_v)
+                    if r:
+                        roe_parts.append(f"{lbl} {r}")
+                as_v = _nearest_bal(col, assets)
+                if as_v:
+                    r = _pct(nv, as_v)
+                    if r:
+                        roa_parts.append(f"{lbl} {r}")
+
+        de_parts: list[str] = []
+        cr_parts: list[str] = []
+        for col in bal_cols:
+            dv = debt.get(col)
+            ev = equity.get(col)
+            av = curr_a.get(col)
+            lv = curr_l.get(col)
+            lbl = _fy_label(col)
+            if dv is not None and ev and ev > 0:
+                r = _pct(dv, ev)
+                if r:
+                    de_parts.append(f"{lbl} {r}")
+            if av is not None and lv and lv > 0:
+                cr = float(av) / float(lv) * 100
+                cr_parts.append(f"{lbl} {cr:.0f}%")
+
+        profitability = [p for p in [
+            f"  영업이익률: {' | '.join(opm_parts[:4])}" if opm_parts else "",
+            f"  순이익률:   {' | '.join(npm_parts[:4])}" if npm_parts else "",
+            f"  ROE:       {' | '.join(roe_parts[:4])}" if roe_parts else "",
+            f"  ROA:       {' | '.join(roa_parts[:4])}" if roa_parts else "",
+        ] if p]
+        leverage = [p for p in [
+            f"  부채비율:   {' | '.join(de_parts[:3])}" if de_parts else "",
+            f"  유동비율:   {' | '.join(cr_parts[:3])}" if cr_parts else "",
+        ] if p]
+
+        if not profitability and not leverage:
+            return ""
+
+        lines = [
+            "=== PRE-COMPUTED 수익성·안정성 비율 (시스템 직접 산출 — 수치 절대 변경 금지) ===",
+            "분析가 지시: 아래 비율을 RULE 5/6 수익성·안정성 분析에 그대로 복사."
+            " 비율 재계산 절대 금지.",
+            "",
+        ]
+        lines.extend(profitability)
+        if leverage:
+            lines.append("")
+            lines.extend(leverage)
+        lines += ["", "위 값 우선. 재계산 금지."]
+        return "\n".join(lines)
+    except Exception as exc:
+        _analyst_log.warning("ratios_block failed for %s: %s", ticker, exc)
         return ""
 
 
@@ -3833,18 +4140,26 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             "standardview brief injection failed for %s: %s", ticker, exc,
         )
 
-    # RULE 1 skeleton: fundamentals analyst only. Pre-computes매출/영업이익/
-    # 순이익 table from yfinance income_stmt so the LLM copies numbers
-    # verbatim instead of re-fetching and potentially misreading units.
-    if _section_allowed(analyst_id, "rule1_skeleton"):
-        try:
-            skeleton = _build_rule1_skeleton(ticker, info, _cfg, market)
-            if skeleton:
-                base += "\n\n" + skeleton
-        except Exception as exc:
-            _analyst_log.warning(
-                "rule1_skeleton injection failed for %s: %s", ticker, exc,
-            )
+    # System-generated financial tables: fundamentals analyst only.
+    # Python computes numbers from yfinance directly so the LLM never
+    # has to do unit conversions (the source of most number errors).
+    # Each block degrades silently on yfinance failure.
+    _fin_blocks = [
+        ("rule1_skeleton",  _build_rule1_skeleton,   (ticker, info, _cfg, market)),
+        ("cashflow_block",  _build_cashflow_block,   (ticker, info, _cfg, market)),
+        ("balance_block",   _build_balance_block,    (ticker, info, _cfg, market)),
+        ("ratios_block",    _build_ratios_block,     (ticker, info, _cfg, market)),
+    ]
+    for _key, _builder, _args in _fin_blocks:
+        if _section_allowed(analyst_id, _key):
+            try:
+                _block = _builder(*_args)
+                if _block:
+                    base += "\n\n" + _block
+            except Exception as exc:
+                _analyst_log.warning(
+                    "%s injection failed for %s: %s", _key, ticker, exc,
+                )
 
     return base
 
