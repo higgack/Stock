@@ -72,5 +72,53 @@ class TestIgnored(unittest.TestCase):
         self.assertEqual(body, "200\n300\n")
 
 
+class TestPrefixMatching(unittest.TestCase):
+    def test_beon_insight_prefix_matches(self):
+        self.assertTrue(
+            ignored.matches_prefix(
+                "[비온 인사이트] 파두 추가 수주! 올해 최소 매출 1,900억 확보"
+            )
+        )
+        self.assertTrue(
+            ignored.matches_prefix(
+                "[비온 인사이트] 파두 수주잔고 2,624억 원 기록"
+            )
+        )
+
+    def test_legit_export_alert_does_not_match(self):
+        # Real export/import alerts have a totally different shape —
+        # never start with a bracketed promo tag.
+        self.assertFalse(
+            ignored.matches_prefix(
+                "4월 수출입 동향 — 반도체 +35%, 자동차 +12%"
+            )
+        )
+        self.assertFalse(
+            ignored.matches_prefix("📊 5월 1-20일 잠정")
+        )
+
+    def test_leading_whitespace_does_not_bypass(self):
+        # Stray newline / space before the tag must still match.
+        self.assertTrue(ignored.matches_prefix("   [비온 인사이트] 종목분석"))
+        self.assertTrue(ignored.matches_prefix("\n[비온 인사이트] 종목분석"))
+
+    def test_empty_and_none_return_false(self):
+        self.assertFalse(ignored.matches_prefix(""))
+        self.assertFalse(ignored.matches_prefix(None))
+
+    def test_prefix_in_middle_does_not_match(self):
+        # Only a true prefix counts — body mentions don't.
+        self.assertFalse(
+            ignored.matches_prefix(
+                "오늘의 수출입 동향 — 참고: [비온 인사이트] 글도 함께 발행"
+            )
+        )
+
+    def test_prefixes_constant_is_tuple(self):
+        # Guard against accidental mutation to a list.
+        self.assertIsInstance(ignored.IGNORED_PREFIXES, tuple)
+        self.assertIn("[비온 인사이트]", ignored.IGNORED_PREFIXES)
+
+
 if __name__ == "__main__":
     unittest.main()

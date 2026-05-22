@@ -132,6 +132,12 @@ def _ingest_group(
         counters["skipped_ignored"] += 1
         return
     caption_text = primary.get("caption") or primary.get("text") or ""
+    # Recurring promo prefixes (currently '[비온 인사이트]') — silently
+    # dropped without needing per-msg_id /ignore. Same downstream effect
+    # as the msg_id list but covers the whole series at once.
+    if _ignored.matches_prefix(caption_text):
+        counters["skipped_prefix"] += 1
+        return
     parsed = parse_caption(caption_text)
     if parsed is None:
         counters["unparseable"] += 1
@@ -206,6 +212,7 @@ def main() -> int:
         "already_present": 0,
         "skipped_no_caption": 0,
         "skipped_ignored": 0,
+        "skipped_prefix": 0,
         "unparseable": 0,
         "multi_caption_album": 0,
         "with_warnings": 0,

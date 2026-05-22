@@ -169,9 +169,10 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /watch company &lt;검색어&gt; — 관련종목만 매칭 (예: /watch company 삼양식품)
 /watch list — 현재 워치 목록
 /unwatch item|company &lt;검색어&gt; — 워치 제거
-/ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (BeOn 인사이트 등 무관 자료)
+/ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (일회성 공지 등)
 /unignore &lt;msg_id&gt; — ignore 해제
 /ignored — 현재 ignore 목록
+※ <b>[비온 인사이트]</b> 시리즈는 자동 skip (코드 상수, msg_id 불필요)
 
 <b>9. 자동화 systemd</b>
 • trade-bot — 실시간 메시지 수집
@@ -191,7 +192,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-22 — sudoers 자동 관리 (대쉬보드 재시작 권한 install-trade-units 셀프 설치)</i>
+<i>최종 갱신: 2026-05-22 — [비온 인사이트] 시리즈 자동 skip (IGNORED_PREFIXES 상수)</i>
 """
 
 

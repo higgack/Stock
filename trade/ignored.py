@@ -6,16 +6,25 @@ State lives in plain text at `~/.trade/ignored.txt`, one Telegram
 message_id per line. Comments (`#`) and blank lines are skipped, so
 the operator can hand-edit if they want.
 
+Also exposes `IGNORED_PREFIXES` — a hard-coded tuple of caption
+prefixes that are silently dropped at ingest time without needing
+per-msg_id curation. Use this for recurring promo series the operator
+has confirmed are off-topic (currently just `[비온 인사이트]`).
+New prefixes are added by appending to the tuple; reversal is the
+opposite. msg_id-based ignoring still works for one-off posts that
+don't fit a prefix.
+
 Used by:
-  - trade/scripts/ingest_inbox.py — skips ignored msg_ids so they
-    never reach store.db
-  - trade/scripts/unstored_check.py — skips ignored msg_ids so the
-    daily 00:00 KST integrity alert doesn't keep listing them
+  - trade/scripts/ingest_inbox.py — skips ignored msg_ids AND
+    prefix-matched captions so neither reaches store.db
+  - trade/scripts/unstored_check.py — skips both so the daily
+    00:00 KST integrity alert stays quiet on known off-topic posts
   - bot DM commands /ignore, /unignore, /ignored
 
 Reversal is always safe: `/unignore <msg_id>` (or remove the line
-from the file) brings the message back into the next ingest cycle.
-inbox.jsonl and media files are never touched.
+from the file) brings the message back into the next ingest cycle;
+removing a prefix from `IGNORED_PREFIXES` does the same for the
+series. inbox.jsonl and media files are never touched.
 """
 
 from __future__ import annotations
@@ -26,6 +35,28 @@ from pathlib import Path
 
 _DEFAULT_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 DEFAULT_PATH = _DEFAULT_DIR / "ignored.txt"
+
+# Recurring promo / commentary series that BeOn occasionally posts on
+# the same channel as the export/import data alerts. Captions starting
+# with any of these (after stripping) are silently dropped at ingest —
+# no store.db row, no daily ⚠️ integrity alert. Append to extend;
+# the comparison is exact prefix match on the stripped caption.
+IGNORED_PREFIXES: tuple[str, ...] = (
+    "[비온 인사이트]",
+)
+
+
+def matches_prefix(caption: str | None) -> bool:
+    """True if `caption` starts with any IGNORED_PREFIXES entry.
+
+    Leading whitespace is stripped before matching so a stray space
+    or newline doesn't bypass the filter. Empty / None captions
+    return False — they're handled by the no-caption path elsewhere.
+    """
+    if not caption:
+        return False
+    head = caption.lstrip()
+    return any(head.startswith(p) for p in IGNORED_PREFIXES)
 
 
 def _ensure(path: Path | str) -> Path:

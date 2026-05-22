@@ -129,6 +129,11 @@ def find_unstored() -> list[dict]:
             # the operator has chosen to drop with /ignore <msg_id>.
             if r.get("message_id") in ignored_ids:
                 continue
+            # Hard-coded recurring promo prefixes (e.g. '[비온 인사이트]').
+            # Same off-topic class as the msg_id list but covers a whole
+            # series so the daily alert doesn't keep re-listing them.
+            if _ignored.matches_prefix(caption):
+                continue
             try:
                 key = (int(r["chat_id"]), int(r["message_id"]))
             except (KeyError, TypeError, ValueError):
@@ -168,8 +173,13 @@ def format_alert(missing: list[dict]) -> str:
         "python -m trade.scripts.ingest_inbox</code> 로 복구"
     )
     lines.append(
-        "  • <b>무관 자료</b> ([비온 인사이트] / 공지 등) → 봇 DM에 "
+        "  • <b>무관 자료</b> (공지 / 일회성 promo) → 봇 DM에 "
         "<code>/ignore &lt;msg_id&gt;</code> → 다음부터 알림 제외"
+    )
+    lines.append(
+        "  • <b>반복 promo 시리즈</b> ([비온 인사이트] 등) → "
+        "<code>trade/ignored.py</code>의 <code>IGNORED_PREFIXES</code>에 "
+        "접두어 추가 → 시리즈 전체 자동 skip"
     )
     msg = "\n".join(lines)
     # Telegram cap is 4096 UTF-16 units; truncate defensively.
