@@ -120,5 +120,52 @@ class TestPrefixMatching(unittest.TestCase):
         self.assertIn("[비온 인사이트]", ignored.IGNORED_PREFIXES)
 
 
+class TestContainsMatching(unittest.TestCase):
+    """Body-substring filter for series where the line-1 ticker
+    varies per post but a stable marker lives elsewhere in the
+    body (DART 공시 릴레이 etc.)."""
+
+    DART_SAMPLE = (
+        "📌 파두(시가총액: 6조 1,569억) #A440110\n"
+        "📁 단일판매ㆍ공급계약체결\n"
+        "2026.05.22 10:59:21 (현재가 : 122,900원, +5.31%)\n"
+        "\n"
+        "계약상대 : 해외 Nand Flash Memory 제조사\n"
+        "계약금액 : 287억\n"
+        "\n"
+        "공시링크: https://dart.fss.or.kr/dsaf001/main.do?rcpNo=20260522900209\n"
+        "회사정보: https://finance.naver.com/item/main.nhn?code=440110"
+    )
+
+    def test_dart_disclosure_matches(self):
+        self.assertTrue(ignored.matches_contains(self.DART_SAMPLE))
+
+    def test_dart_works_for_any_company(self):
+        # Substring filter is company-agnostic — different ticker,
+        # same DART relay format → still skipped.
+        other = self.DART_SAMPLE.replace("파두", "삼양식품").replace(
+            "440110", "003230"
+        )
+        self.assertTrue(ignored.matches_contains(other))
+
+    def test_legit_export_caption_does_not_match(self):
+        # Real BeOn export/import data never carries a dart.fss.or.kr
+        # link, so the substring filter is safe.
+        self.assertFalse(
+            ignored.matches_contains(
+                "4월 수출입 동향 — 반도체 +35%, 자동차 +12%"
+            )
+        )
+        self.assertFalse(ignored.matches_contains("📊 5월 1-20일 잠정"))
+
+    def test_empty_and_none_return_false(self):
+        self.assertFalse(ignored.matches_contains(""))
+        self.assertFalse(ignored.matches_contains(None))
+
+    def test_contains_constant_is_tuple(self):
+        self.assertIsInstance(ignored.IGNORED_CONTAINS, tuple)
+        self.assertIn("dart.fss.or.kr", ignored.IGNORED_CONTAINS)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -134,6 +134,10 @@ def find_unstored() -> list[dict]:
             # series so the daily alert doesn't keep re-listing them.
             if _ignored.matches_prefix(caption):
                 continue
+            # Body-marker filter (DART 공시 릴레이 etc.) — varying line 1
+            # but a stable substring elsewhere in the message.
+            if _ignored.matches_contains(caption):
+                continue
             try:
                 key = (int(r["chat_id"]), int(r["message_id"]))
             except (KeyError, TypeError, ValueError):
@@ -177,9 +181,10 @@ def format_alert(missing: list[dict]) -> str:
         "<code>/ignore &lt;msg_id&gt;</code> → 다음부터 알림 제외"
     )
     lines.append(
-        "  • <b>반복 promo 시리즈</b> ([비온 인사이트] 등) → "
-        "<code>trade/ignored.py</code>의 <code>IGNORED_PREFIXES</code>에 "
-        "접두어 추가 → 시리즈 전체 자동 skip"
+        "  • <b>반복 promo 시리즈</b> ([비온 인사이트] / DART 공시 등) → "
+        "<code>trade/ignored.py</code>의 <code>IGNORED_PREFIXES</code> "
+        "(접두어) 또는 <code>IGNORED_CONTAINS</code> (본문 substring)에 "
+        "추가 → 시리즈 전체 자동 skip"
     )
     msg = "\n".join(lines)
     # Telegram cap is 4096 UTF-16 units; truncate defensively.

@@ -45,6 +45,16 @@ IGNORED_PREFIXES: tuple[str, ...] = (
     "[비온 인사이트]",
 )
 
+# Substring markers that disqualify a caption regardless of where in
+# the message they appear. Use for series whose first line varies
+# (e.g. DART 공시 릴레이 — the line 1 ticker / company changes per
+# post so prefix matching can't catch them, but `dart.fss.or.kr` in
+# the body uniquely identifies the format). Match is plain `in`
+# substring, case-sensitive.
+IGNORED_CONTAINS: tuple[str, ...] = (
+    "dart.fss.or.kr",  # DART 공시 릴레이 (단일판매, 주요사항보고 등 전체)
+)
+
 
 def matches_prefix(caption: str | None) -> bool:
     """True if `caption` starts with any IGNORED_PREFIXES entry.
@@ -57,6 +67,15 @@ def matches_prefix(caption: str | None) -> bool:
         return False
     head = caption.lstrip()
     return any(head.startswith(p) for p in IGNORED_PREFIXES)
+
+
+def matches_contains(caption: str | None) -> bool:
+    """True if `caption` contains any IGNORED_CONTAINS substring
+    anywhere in the body. Empty / None return False.
+    """
+    if not caption:
+        return False
+    return any(needle in caption for needle in IGNORED_CONTAINS)
 
 
 def _ensure(path: Path | str) -> Path:

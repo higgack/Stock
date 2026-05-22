@@ -172,7 +172,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (일회성 공지 등)
 /unignore &lt;msg_id&gt; — ignore 해제
 /ignored — 현재 ignore 목록
-※ <b>[비온 인사이트]</b> 시리즈는 자동 skip (코드 상수, msg_id 불필요)
+※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
 
 <b>9. 자동화 systemd</b>
 • trade-bot — 실시간 메시지 수집
@@ -192,7 +192,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-22 — [비온 인사이트] 시리즈 자동 skip (IGNORED_PREFIXES 상수)</i>
+<i>최종 갱신: 2026-05-22 — DART 공시 릴레이 자동 skip (IGNORED_CONTAINS, dart.fss.or.kr)</i>
 """
 
 

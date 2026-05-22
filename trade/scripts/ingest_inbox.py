@@ -138,6 +138,12 @@ def _ingest_group(
     if _ignored.matches_prefix(caption_text):
         counters["skipped_prefix"] += 1
         return
+    # Body-marker filter (currently 'dart.fss.or.kr' for DART 공시 릴레이
+    # — line 1 ticker varies per post so prefix matching can't catch it,
+    # but the DART link in the body is a reliable marker).
+    if _ignored.matches_contains(caption_text):
+        counters["skipped_contains"] += 1
+        return
     parsed = parse_caption(caption_text)
     if parsed is None:
         counters["unparseable"] += 1
@@ -213,6 +219,7 @@ def main() -> int:
         "skipped_no_caption": 0,
         "skipped_ignored": 0,
         "skipped_prefix": 0,
+        "skipped_contains": 0,
         "unparseable": 0,
         "multi_caption_album": 0,
         "with_warnings": 0,
