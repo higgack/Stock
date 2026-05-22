@@ -596,7 +596,11 @@ _KR_INDUSTRY_PEERS = {
         "005490.KS", "004020.KS", "002380.KS",
     ],
     "Shipbuilding": [
-        "010140.KS", "009540.KS", "042660.KS",
+        "010140.KS",  # 삼성중공업
+        "009540.KS",  # HD한국조선해양 (지주사)
+        "329180.KS",  # HD현대중공업
+        "042660.KS",  # 한화오션
+        "010620.KS",  # 현대미포조선
     ],
     "Aerospace & Defense": [
         "047810.KS", "012450.KS", "079550.KS", "LMT", "RTX",
@@ -631,6 +635,144 @@ _KR_INDUSTRY_PEERS = {
         "006260.KS",  # LS
     ],
 }
+
+
+# KSIC (한국표준산업분류) → yfinance industry tag mapping. KSIC codes
+# returned by DART's /api/company.json `induty_code` field are 5-digit
+# strings (no 'C' / 'K' prefix). This is the authoritative industry
+# classification for KR-listed companies — yfinance industry tags are
+# often wrong (010140.KS 삼성중공업 surfaced 2026-05-23 as 'Aerospace
+# & Defense' when its KSIC C31111 강선건조업 = Shipbuilding).
+#
+# Longest-prefix matching: '31111' (강선건조) wins over '3111' fallback,
+# so specific subcodes get specific tags. Unmapped codes fall through
+# to yfinance industry (preserves prior behavior — never blocks an
+# analysis). Mapping intentionally partial — covers the ~25 industries
+# we have curated peer sets / sector ETFs for; new KSIC codes can be
+# added as we surface more mis-tags in production.
+#
+# Rule applies to all analyses going forward — KR-specific data source
+# but the override hooks into the universal info-dict patch pipeline,
+# so all downstream (Comps peer set, sector ETF, RULE 10 dominant
+# variable inference) inherits the corrected industry automatically.
+_KSIC_PREFIX_TO_INDUSTRY: list[tuple[str, str]] = [
+    # 조선 / 해양플랜트 (KSIC C31xxx)
+    ("31111", "Shipbuilding"),
+    ("31112", "Shipbuilding"),
+    ("31120", "Shipbuilding"),
+    ("3111",  "Shipbuilding"),
+    ("3112",  "Shipbuilding"),
+    # 항공우주 (KSIC C31313 / C31321)
+    ("31311", "Aerospace & Defense"),
+    ("31321", "Aerospace & Defense"),
+    ("31322", "Aerospace & Defense"),
+    # 자동차 완성차 (KSIC C30xxx)
+    ("30110", "Auto Manufacturers"),
+    ("30121", "Auto Manufacturers"),
+    ("30122", "Auto Manufacturers"),
+    ("30199", "Auto Manufacturers"),
+    ("30201", "Auto Parts"),
+    ("30203", "Auto Parts"),
+    ("30310", "Auto Parts"),
+    ("30391", "Auto Parts"),
+    ("30399", "Auto Parts"),
+    # 반도체 (KSIC C26)
+    ("26110", "Semiconductors"),
+    ("26111", "Semiconductors"),
+    ("26112", "Semiconductors"),
+    ("26120", "Semiconductors"),
+    ("26121", "Semiconductors"),
+    # 반도체 장비 / 재료
+    ("29280", "Semiconductor Equipment & Materials"),
+    # 전자부품
+    ("26211", "Electronic Components"),
+    ("26221", "Electronic Components"),
+    ("26222", "Electronic Components"),
+    ("26299", "Electronic Components"),
+    # 디스플레이 / consumer electronics
+    ("26410", "Consumer Electronics"),
+    ("26421", "Consumer Electronics"),
+    # 철강 (KSIC C24)
+    ("24111", "Steel"),
+    ("24112", "Steel"),
+    ("24190", "Steel"),
+    ("24210", "Steel"),
+    ("2411",  "Steel"),
+    # 화학 (KSIC C20)
+    ("20111", "Specialty Chemicals"),
+    ("20112", "Specialty Chemicals"),
+    ("20119", "Specialty Chemicals"),
+    ("20211", "Specialty Chemicals"),
+    ("20299", "Specialty Chemicals"),
+    # 2차전지 / 배터리
+    ("28202", "Specialty Chemicals"),
+    # 제약 / 바이오
+    ("21100", "Drug Manufacturers - General"),
+    ("21210", "Drug Manufacturers - General"),
+    ("21300", "Drug Manufacturers - General"),
+    # 식품
+    ("10301", "Packaged Foods"),
+    ("10711", "Packaged Foods"),
+    ("10712", "Packaged Foods"),
+    ("10499", "Packaged Foods"),
+    # 화장품
+    ("20423", "Personal Products"),
+    # 백화점 / 소매
+    ("47111", "Department Stores"),
+    ("47190", "Specialty Retail"),
+    # 건설
+    ("41122", "Engineering & Construction"),
+    ("41129", "Engineering & Construction"),
+    ("41210", "Engineering & Construction"),
+    # 전력 / 가스
+    ("35111", "Utilities - Regulated Electric"),
+    ("35112", "Utilities - Regulated Electric"),
+    ("35200", "Utilities - Regulated Gas"),
+    # 해운 / 항공
+    ("50111", "Marine Shipping"),
+    ("50112", "Marine Shipping"),
+    ("51100", "Airlines"),
+    # 은행 / 보험 / 증권
+    ("64191", "Banks - Diversified"),
+    ("64192", "Banks - Regional"),
+    ("65111", "Insurance - Diversified"),
+    ("65120", "Insurance - Diversified"),
+    ("66120", "Capital Markets"),
+    # 인터넷 / SW / 게임
+    ("58211", "Electronic Gaming & Multimedia"),
+    ("58221", "Software - Application"),
+    ("58222", "Software - Application"),
+    ("63111", "Internet Content & Information"),
+    ("63112", "Internet Content & Information"),
+    # 통신
+    ("61210", "Telecom Services"),
+    ("61220", "Telecom Services"),
+]
+
+
+def resolve_ksic_industry(induty_code: str | None) -> str | None:
+    """Map a 5-digit KSIC code (DART `induty_code`) to a yfinance-style
+    industry tag. Longest-prefix wins so a specific subcode (e.g.
+    '31111' 강선건조업) matches the specific tag (Shipbuilding) over a
+    generic family prefix. Returns None when no prefix matches —
+    callers should keep whatever yfinance returned.
+
+    Rule applies to all KR analyses going forward — surfaced by
+    삼성중공업 010140.KS 2026-05-23 review (yfinance industry
+    'Aerospace & Defense' overrode the correct Shipbuilding peer set
+    + dominant-variable mapping)."""
+    if not induty_code:
+        return None
+    code = str(induty_code).strip()
+    if not code:
+        return None
+    best_len = 0
+    best_industry: str | None = None
+    for prefix, industry in _KSIC_PREFIX_TO_INDUSTRY:
+        if code.startswith(prefix) and len(prefix) > best_len:
+            best_len = len(prefix)
+            best_industry = industry
+    return best_industry
 
 
 def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:

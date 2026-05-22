@@ -443,6 +443,11 @@ def get_sector_relative_strength(
     # bad price. Flag anything beyond ±25%p so the LLM doesn't quote
     # the broken number verbatim.
     max_abs_vs_sector = 0.0
+    max_abs_vs_broad = 0.0  # 2026-05-23 (010140.KS): broad-benchmark
+    # divergence (vs KOSPI 200 -74.22%p over 90D) was un-tracked — the
+    # existing HARD GUARD only watched vs SECTOR. Track both so the
+    # > 50%p physical-strip below fires regardless of which column is
+    # corrupt.
     stock_returns_collected = 0
     for days, label in horizons:
         stock_pct = _pct_return(symbol, curr_date, days)
@@ -452,6 +457,8 @@ def get_sector_relative_strength(
         spy_pct = _pct_return(broad, curr_date, days)
         if stock_pct is not None and bench_pct is not None:
             max_abs_vs_sector = max(max_abs_vs_sector, abs(stock_pct - bench_pct))
+        if stock_pct is not None and spy_pct is not None:
+            max_abs_vs_broad = max(max_abs_vs_broad, abs(stock_pct - spy_pct))
         rows.append(
             "| "
             + " | ".join(
@@ -569,5 +576,27 @@ def get_sector_relative_strength(
                 " 금지 (표 안의 % 숫자 또한 본인 결론 cite 시 추론"
                 " baseline 으로 사용 금지)."
             )
+
+    # |>50%p| PHYSICAL STRIP (2026-05-23 삼성중공업 010140.KS surfaced):
+    # 분석가가 HARD GUARD 텍스트를 무시하고 표 안의 -34.97%p / -74.22%p
+    # 숫자를 그대로 본문 인용한 패턴. text-level directive 만으로는
+    # 차단 부족 — 표 데이터 행 자체를 출력에서 제거해 LLM 이 물리적
+    # 으로 인용할 숫자가 없게 만든다. 50%p 는 5거래일 horizon 분석에서
+    # 실제로 의미 있는 데이터의 상한선 (그 이상은 fetch 오류 / 분할
+    # 미반영 / corp action 영향 거의 확실). Rule applies to all
+    # analyses (US/KR/JP/TW/CN_A/HK) going forward — surfaced by KR
+    # case but the underlying yfinance fetch error is market-agnostic.
+    if max_abs_vs_sector > 50 or max_abs_vs_broad > 50:
+        stripped_notes = (
+            f"\n\n⛔ DATA-CORRUPT — 표 데이터 행 자동 strip (max |vs"
+            f" 섹터| {max_abs_vs_sector:.1f}%p, max |vs 광역|"
+            f" {max_abs_vs_broad:.1f}%p — 둘 중 하나가 50%p 초과).\n"
+            f"분석가에게: 섹터 강도 평가 불가. 본문 섹터 프라이머에"
+            f" 단 한 줄 — '섹터 강도 데이터 신뢰성 또는 5거래일"
+            f" horizon 적합성 이슈로 평가 보류.' 그 외 어떤 %p 수치도"
+            f" 인용 금지. yfinance 벤치마크 fetch 오류 / 분할 미반영"
+            f" / corp action 영향 가능성 큼."
+        )
+        return f"{header}\n\n표 데이터 자동 strip — 50%p 초과 divergence." + stripped_notes
 
     return f"{header}\n\n" + "\n".join(rows) + notes

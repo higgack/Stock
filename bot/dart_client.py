@@ -403,6 +403,56 @@ class DartClient:
             }
         return self._stock_to_name.get(code)
 
+    # ── /api/company.json — corp info incl. KSIC industry code ─────────
+    def get_company_info(self, stock_code: str) -> Optional[dict]:
+        """Return DART company info dict for the listed entity. The most
+        useful field is `induty_code` — 5-digit KSIC (한국표준산업분류)
+        code identifying the company's primary line of business. This is
+        the authoritative industry classification (vs yfinance's English
+        industry tag which is often wrong for KR stocks — 010140.KS
+        삼성중공업 surfaced 2026-05-23 as 'Aerospace & Defense' when
+        the actual KSIC is C31111 강선건조업 = Shipbuilding).
+
+        Disk-cached 30 days at ~/.tradingagents/cache/dart_company_{corp_code}.json
+        because companies rarely change industry classification.
+
+        Returns None on key missing / network failure / corp_code
+        unresolved / DART error response. Never raises — callers should
+        fall back to whatever they were using before (yfinance industry)."""
+        if not self.api_key:
+            return None
+        corp_code = self.stock_code_to_corp_code(stock_code)
+        if not corp_code:
+            return None
+        cache_path = _CACHE_DIR / f"dart_company_{corp_code}.json"
+        if cache_path.exists():
+            age_days = (time.time() - cache_path.stat().st_mtime) / 86400
+            if age_days < 30:
+                try:
+                    return json.loads(cache_path.read_text("utf-8"))
+                except Exception:
+                    pass
+        try:
+            resp = requests.get(
+                f"{_DART_BASE}/company.json",
+                params={"crtfc_key": self.api_key, "corp_code": corp_code},
+                timeout=_HTTP_TIMEOUT,
+            )
+            payload = resp.json()
+        except Exception as exc:
+            log.warning("dart: company.json for %s failed: %s", stock_code, exc)
+            return None
+        if payload.get("status") not in ("000",):
+            return None
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+            )
+        except Exception:
+            pass
+        return payload
+
     # ── /api/list.json — recent disclosures ─────────────────────────────
     def get_recent_disclosures(
         self, stock_code: str, days_back: int = 30, limit: int = 20

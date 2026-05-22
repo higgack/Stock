@@ -189,6 +189,96 @@ def get_kr_ohlcv_stats(ticker: str) -> Optional[dict]:
     return result
 
 
+def get_kr_beta_60m(ticker: str) -> Optional[float]:
+    """60-month monthly beta of a KR stock vs KOSPI 200 (pykrx index
+    code 1028). yfinance .info["beta"] for KR tickers is computed
+    against US benchmarks (typically S&P 500) regardless of the labeled
+    benchmark — 010140.KS 2026-05-23 펀더 박스 quoted '베타 1.83 (vs
+    KOSPI 200)' but the underlying value was actually vs S&P 500.
+    Recompute against the correct KR market index.
+
+    Monthly resampling: take last business-day close of each month for
+    both the stock and the index, compute monthly returns, then
+    beta = Cov(stock_ret, market_ret) / Var(market_ret). Requires at
+    least 36 months of overlap; returns None below that.
+
+    Disk-cached per (ticker, today) at 12h TTL.
+
+    Rule applies to all KR analyses going forward — surfaced by
+    삼성중공업 010140.KS 2026-05-23 review.
+    """
+    code = _normalize_code(ticker)
+    if not code:
+        return None
+    today_str = date.today().isoformat()
+    cache_file = _CACHE_DIR / f"beta60m_{code}_{today_str}.json"
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < _CACHE_TTL_HOURS:
+                cached = json.loads(cache_file.read_text())
+                return cached.get("beta")
+        except Exception:
+            pass
+
+    try:
+        from pykrx import stock
+    except ImportError:
+        return None
+
+    end = date.today()
+    # 5년 + 6개월 buffer (휴장일 / 신규 상장 등 흡수)
+    start = end - timedelta(days=int(365.25 * 5.5))
+    start_str = start.strftime("%Y%m%d")
+    end_str = end.strftime("%Y%m%d")
+
+    try:
+        stock_df = stock.get_market_ohlcv_by_date(start_str, end_str, code)
+        idx_df = stock.get_index_ohlcv_by_date(start_str, end_str, "1028")
+    except Exception as exc:
+        log.warning("pykrx: beta60m fetch failed for %s: %s", code, exc)
+        return None
+
+    if (stock_df is None or stock_df.empty
+            or idx_df is None or idx_df.empty):
+        return None
+
+    try:
+        s_close = stock_df["종가"].astype(float)
+        i_close = idx_df["종가"].astype(float)
+        # 월별 마지막 영업일 종가로 resample
+        s_monthly = s_close.resample("ME").last()
+        i_monthly = i_close.resample("ME").last()
+        s_ret = s_monthly.pct_change().dropna()
+        i_ret = i_monthly.pct_change().dropna()
+        # 공통 인덱스만 사용
+        common = s_ret.index.intersection(i_ret.index)
+        if len(common) < 36:
+            return None
+        s_r = s_ret.loc[common]
+        i_r = i_ret.loc[common]
+        var_m = float(i_r.var())
+        if var_m <= 0:
+            return None
+        cov_sm = float(s_r.cov(i_r))
+        beta = cov_sm / var_m
+    except Exception as exc:
+        log.warning("pykrx: beta60m compute failed for %s: %s", code, exc)
+        return None
+
+    if beta != beta or beta is None:
+        return None
+    beta = round(float(beta), 3)
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps({"beta": beta, "n": len(common)}))
+    except Exception:
+        pass
+
+    return beta
+
+
 def get_kr_trading_flow(ticker: str, days_back: int = 5) -> Optional[dict]:
     """5-day investor-type net purchase summary for a KR ticker.
 

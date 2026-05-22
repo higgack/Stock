@@ -1194,7 +1194,11 @@ def _magnitude_check(body: str, canonical: dict) -> str:
     if currency not in ("KRW", "JPY"):
         return body
 
-    _val_re = re.compile(r'(\d[\d,\.]*)\s*(조|억)')
+    # Capture optional leading minus so adverse periods (FY22 -8,544억)
+    # don't get silently flipped to positive in the normalized companion
+    # line. Preceded by lookbehind for word-boundary-ish char so we don't
+    # accidentally grab the dash in '|—|' table separators.
+    _val_re = re.compile(r'(-?\d[\d,\.]*)\s*(조|억)')
 
     def _to_raw(num_str: str, unit: str) -> float:
         try:
@@ -1205,8 +1209,9 @@ def _magnitude_check(body: str, canonical: dict) -> str:
     result: list[str] = []
     for line in body.split("\n"):
         result.append(line)
+        matches = list(_val_re.finditer(line))
         vals = [(_to_raw(m.group(1), m.group(2)), m.group(2))
-                for m in _val_re.finditer(line)]
+                for m in matches]
         if len(vals) >= 2:
             for i in range(len(vals) - 1):
                 v1, u1 = vals[i]
@@ -1214,12 +1219,49 @@ def _magnitude_check(body: str, canonical: dict) -> str:
                 # Any 조/억 unit mix within the same series line is suspicious.
                 # LG전자 case: 'FY24 ₩89,201억 | FY23 ₩90.19조' — both
                 # represent similar revenue scales but expressed inconsistently.
-                if v1 > 0 and v2 > 0 and u1 != u2:
-                    result.append(
-                        f"  ⚠️ [단위 오류 의심: 동일 항목 내 {u1} / {u2} 혼용"
-                        f" — 같은 시계열에는 단일 단위 사용 필요."
-                        f" 원본 데이터 확인 후 통일 표기 요망]"
+                if abs(v1) > 0 and abs(v2) > 0 and u1 != u2:
+                    # 2026-05-23 (010140.KS surfaced): the warning alone
+                    # was leaking through to reader 6+ times in one
+                    # analysis. Add a normalized companion line so the
+                    # reader sees the corrected series alongside the
+                    # warning, without disturbing the LLM's original
+                    # text (transparency). Pick the larger unit (조 if
+                    # any value ≥ 1조 in magnitude, else 억) as the
+                    # canonical so decimals stay sane. Use abs() in the
+                    # magnitude pick so a series with -8.5조 still
+                    # renders in 조.
+                    raw_vals = [v for v, _ in vals if v != 0]
+                    use_jo = any(abs(v) >= 1e12 for v in raw_vals)
+                    unit_label = "조 원" if currency == "KRW" else (
+                        "兆 円" if currency == "JPY" else None
                     )
+                    scale = 1e12 if use_jo else 1e8
+                    if not use_jo:
+                        unit_label = "억 원" if currency == "KRW" else (
+                            "億 円" if currency == "JPY" else None
+                        )
+                    if unit_label:
+                        normalized = [
+                            (f"-{abs(v) / scale:,.2f}{unit_label[0]}"
+                             if v < 0
+                             else f"{v / scale:,.2f}{unit_label[0]}")
+                            for v in raw_vals
+                        ]
+                        result.append(
+                            f"  ⚠️ [단위 오류 의심: 동일 항목 내 {u1} / {u2} 혼용"
+                            f" — 같은 시계열에는 단일 단위 사용 필요."
+                            f" 원본 데이터 확인 후 통일 표기 요망]"
+                        )
+                        result.append(
+                            f"  ↳ 정규화 ({unit_label} 단일 기준): "
+                            + " — ".join(normalized)
+                        )
+                    else:
+                        result.append(
+                            f"  ⚠️ [단위 오류 의심: 동일 항목 내 {u1} / {u2} 혼용"
+                            f" — 같은 시계열에는 단일 단위 사용 필요."
+                            f" 원본 데이터 확인 후 통일 표기 요망]"
+                        )
                     break
     return "\n".join(result)
 

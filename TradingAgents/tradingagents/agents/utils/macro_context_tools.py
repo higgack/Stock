@@ -217,6 +217,37 @@ def _fetch_one(ticker: str, curr_date: str) -> tuple[float | None, float | None]
         return None, None
 
     if df is None or df.empty or "Close" not in df.columns:
+        # 2026-05-23 (010140.KS surfaced): yfinance ^KS11 / ^KQ11 KR
+        # index symbols frequently return empty df — analyses then quote
+        # 'KOSPI 종합 데이터 검증 미완료로 거시 프레임 인용 보류'. Use
+        # pykrx official KRX index data as fallback for these symbols
+        # (1001=KOSPI 종합, 2001=KOSDAQ 종합). Same shape (latest, pct).
+        # Rule applies to all KR analyses going forward.
+        if ticker in ("^KS11", "^KQ11"):
+            try:
+                from pykrx import stock as _krx_stock
+                idx_code = "1001" if ticker == "^KS11" else "2001"
+                start_str = start.strftime("%Y%m%d")
+                end_str = end.strftime("%Y%m%d")
+                idx_df = _krx_stock.get_index_ohlcv_by_date(
+                    start_str, end_str, idx_code,
+                )
+                if idx_df is not None and not idx_df.empty and "종가" in idx_df.columns:
+                    closes_kr = idx_df["종가"].dropna()
+                    if len(closes_kr) >= 2:
+                        latest_kr = float(closes_kr.iloc[-1])
+                        ref_idx_kr = -22 if len(closes_kr) > 22 else 0
+                        ref_kr = float(closes_kr.iloc[ref_idx_kr])
+                        pct_kr = (
+                            (latest_kr - ref_kr) / ref_kr * 100
+                            if ref_kr != 0 else None
+                        )
+                        return latest_kr, pct_kr
+            except Exception as exc:
+                logger.warning(
+                    "pykrx KOSPI/KOSDAQ fallback failed for %s: %s",
+                    ticker, exc,
+                )
         return None, None
 
     closes = df["Close"].dropna()

@@ -226,6 +226,17 @@ class KisClient:
         if not data:
             return None
         out = data.get("output") or {}
+        # 2026-05-23 (010140.KS): expose 시가총액 / EPS / BPS / 상장주수
+        # so the D1 Phase 3 yfinance-fallback chain in agent_utils can
+        # use KIS as a 3rd fallback after yfinance + pykrx miss. KIS
+        # `hts_avls` is 시가총액 in 억 원 (string); convert to KRW (int).
+        # Rule applies to all KR analyses going forward — surfaced by
+        # 010140 펀더 박스 '시가총액 N/A, PER N/A, PBR N/A' cascade.
+        try:
+            mc_eok = _float(out.get("hts_avls"))
+            market_cap_krw = int(mc_eok * 1e8) if mc_eok else None
+        except Exception:
+            market_cap_krw = None
         result = {
             "price":      _int(out.get("stck_prpr")),
             "change_pct": _float(out.get("prdy_ctrt")),
@@ -234,6 +245,10 @@ class KisClient:
             "low_52w":    _int(out.get("w52_lwpr")),
             "per":        _float(out.get("per")),
             "pbr":        _float(out.get("pbr")),
+            "eps":        _float(out.get("eps")),
+            "bps":        _float(out.get("bps")),
+            "market_cap": market_cap_krw,
+            "shares":     _int(out.get("lstn_stcn")),
         }
         _cache_put(cache_key, result)
         return result

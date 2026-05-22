@@ -2070,6 +2070,97 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 "D1 Phase 3 pykrx info patch failed for %s: %s", ticker, exc,
             )
 
+        # D1 Phase 3.5 (2026-05-23 010140.KS surfaced): pykrx 60-month
+        # 월간 베타 vs KOSPI 200 — yfinance .info['beta'] 가 KR 종목도
+        # S&P 500 기준으로 계산 (010140.KS '베타 1.83 vs KOSPI 200'
+        # 라벨 vs 실제 vs S&P 500 mismatch). pykrx 시계열로 직접 산출해
+        # info['beta'] override. Rule applies to all KR analyses.
+        try:
+            from bot.pykrx_client import get_kr_beta_60m
+            kr_beta = get_kr_beta_60m(ticker)
+            if kr_beta is not None and isinstance(kr_beta, (int, float)):
+                info["beta"] = kr_beta
+        except Exception as exc:
+            _analyst_log.warning(
+                "KR beta 60M recompute failed for %s: %s", ticker, exc,
+            )
+
+        # D1 Phase 4 (2026-05-23 010140.KS surfaced): KIS price block as
+        # 3rd fallback after yfinance + pykrx. KIS inquire-price returns
+        # 시가총액 (hts_avls) + PER + PBR + EPS + BPS + 상장주수 — when
+        # both yfinance .info and pykrx miss, KIS is the last source
+        # before N/A. Without this 010140.KS 펀더 박스 showed '시가총액
+        # N/A, PER N/A, PBR N/A, EPS N/A' even though KIS block had
+        # PER 47.6, PBR 6.07 — the KIS data sat in the prefetched dict
+        # but was scope-guarded out of canonical / fundamentals reach.
+        # Rule applies to all KR analyses going forward.
+        try:
+            from bot.kis_client import get_kis
+            kis_price = get_kis().get_price(ticker)
+            if kis_price:
+                if not (isinstance(info.get("marketCap"), (int, float))
+                        and info.get("marketCap")):
+                    if kis_price.get("market_cap"):
+                        info["marketCap"] = int(kis_price["market_cap"])
+                if not (isinstance(info.get("trailingPE"), (int, float))
+                        and info.get("trailingPE")):
+                    if kis_price.get("per") and kis_price["per"] > 0:
+                        info["trailingPE"] = kis_price["per"]
+                if not (isinstance(info.get("priceToBook"), (int, float))
+                        and info.get("priceToBook")):
+                    if kis_price.get("pbr") and kis_price["pbr"] > 0:
+                        info["priceToBook"] = kis_price["pbr"]
+                if not (isinstance(info.get("trailingEps"), (int, float))
+                        and info.get("trailingEps")):
+                    if kis_price.get("eps"):
+                        info["trailingEps"] = kis_price["eps"]
+                if not (isinstance(info.get("bookValue"), (int, float))
+                        and info.get("bookValue")):
+                    if kis_price.get("bps"):
+                        info["bookValue"] = kis_price["bps"]
+                if not (isinstance(info.get("sharesOutstanding"), (int, float))
+                        and info.get("sharesOutstanding")):
+                    if kis_price.get("shares"):
+                        info["sharesOutstanding"] = kis_price["shares"]
+                if not (isinstance(info.get("fiftyTwoWeekHigh"), (int, float))
+                        and info.get("fiftyTwoWeekHigh")):
+                    if kis_price.get("high_52w"):
+                        info["fiftyTwoWeekHigh"] = kis_price["high_52w"]
+                if not (isinstance(info.get("fiftyTwoWeekLow"), (int, float))
+                        and info.get("fiftyTwoWeekLow")):
+                    if kis_price.get("low_52w"):
+                        info["fiftyTwoWeekLow"] = kis_price["low_52w"]
+        except Exception as exc:
+            _analyst_log.warning(
+                "D1 Phase 4 KIS info patch failed for %s: %s", ticker, exc,
+            )
+
+        # KSIC industry override (2026-05-23 삼성중공업 010140.KS surfaced).
+        # yfinance industry tag for KR stocks is often wrong (010140 KSIC
+        # C31111 강선건조업 mis-tagged as 'Aerospace & Defense' → Comps
+        # peer set wrong, sector ETF wrong, RULE 10 dominant variable
+        # wrong). DART /api/company.json `induty_code` is the authoritative
+        # KR industry classification. Override info["industry"] BEFORE
+        # downstream code (peer set / sector / Comps) reads it.
+        try:
+            from bot.dart_client import get_dart
+            from bot.market import resolve_ksic_industry
+            company_info = get_dart().get_company_info(ticker)
+            if company_info:
+                ksic = company_info.get("induty_code")
+                mapped = resolve_ksic_industry(ksic)
+                if mapped and mapped != info.get("industry"):
+                    original = info.get("industry")
+                    info["industry"] = mapped
+                    _analyst_log.info(
+                        "DART KSIC override for %s: '%s' → '%s' (induty_code=%s)",
+                        ticker, original, mapped, ksic,
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "DART KSIC industry override failed for %s: %s", ticker, exc,
+            )
+
     # FACTUAL ANCHOR: compact canonical-number box at the very top so the
     # LLM sees 현재가 / 시총 / 52w / PER / PBR / EPS before any other text.
     # Corrupt values (52w = 0, current < low, etc.) are pre-flagged here
