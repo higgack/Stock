@@ -182,6 +182,10 @@ _KR_ENGLISH_ALIAS = {
     "SK": None,
     "HYUNDAI": None,
     "LOTTE": None,
+    "CJ": "001040.KS",           # CJ주식회사 (지주사); 제일제당→097950.KS
+    "CJFOOD": "097950.KS",       # CJ제일제당
+    "CJENM": "035760.KS",        # CJ ENM
+    "CJLOGISTICS": "000120.KS",  # CJ대한통운
 }
 
 

@@ -2566,7 +2566,8 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         # yfinance missing 시 pykrx 값을 canonical 로 사용 (override).
         if market == "KR":
             try:
-                pykrx_mc_data = prefetched.get("pykrx_market_cap")
+                from bot.pykrx_client import get_kr_market_cap as _d1_gmc
+                pykrx_mc_data = _d1_gmc(ticker)
                 if pykrx_mc_data and pykrx_mc_data.get("market_cap"):
                     pykrx_mc = pykrx_mc_data["market_cap"]
                     pykrx_close = pykrx_mc_data.get("close", 0)
@@ -2631,7 +2632,11 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         # fallback. 빈 자리를 LLM 이 채우려고 fabrication 시도하는 패턴
         # (PM "PER 94.8" case) 차단. Same pattern for fiftyTwoWeek* below.
         if market == "KR":
-            ohlcv_stats = prefetched.get("pykrx_ohlcv_stats")
+            try:
+                from bot.pykrx_client import get_kr_ohlcv_stats as _d1_sma
+                ohlcv_stats = _d1_sma(ticker)
+            except Exception:
+                ohlcv_stats = None
             if ohlcv_stats:
                 if (not isinstance(sma50, (int, float)) or not sma50 or sma50 != sma50):
                     if ohlcv_stats.get("sma50"):
@@ -2682,7 +2687,11 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         # OHLCV 252-day window 로 fallback. 307950.KS 2026-05-23: 펀더
         # 표 '52주 최고/최저: N/A / N/A' 그대로 노출 → fabrication 유발.
         if market == "KR":
-            ohlcv_stats = prefetched.get("pykrx_ohlcv_stats")
+            try:
+                from bot.pykrx_client import get_kr_ohlcv_stats as _d1_52w
+                ohlcv_stats = _d1_52w(ticker)
+            except Exception:
+                ohlcv_stats = None
             if ohlcv_stats:
                 if (not isinstance(wk_high, (int, float))
                         or not wk_high or wk_high != wk_high
