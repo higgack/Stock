@@ -1197,18 +1197,21 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # market-flow data so it stays in the market analyst's set.
     "market": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
+        "rule1_skeleton",   # RULE 1 재무표 뼈대는 펀더멘털 전용
     },
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
     # blocks (sentiment fuel) and peer set (Comps consistency).
     "social": {
         "krx_flow", "hsgt_flow", "kis_supply",
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
+        "rule1_skeleton",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
-    "news": {"krx_flow", "hsgt_flow", "kis_supply"},
+    "news": {"krx_flow", "hsgt_flow", "kis_supply", "rule1_skeleton"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
+    # rule1_skeleton is NOT excluded — fundamentals analyst gets the table.
     "fundamentals": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
         "krx_flow", "hsgt_flow", "kis_supply",
@@ -1396,6 +1399,251 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
     return results
 
 
+# ── RULE 1 skeleton helpers ──────────────────────────────────────────────────
+
+_RULE1_FIELDS: dict[str, str] = {
+    "Total Revenue":    "매출",
+    "Gross Profit":     "매출총이익",
+    "Operating Income": "영업이익",
+    "Net Income":       "순이익",
+    "EBITDA":           "EBITDA",
+}
+
+
+def _fmt_native_val(v: float, currency: str, sym: str) -> str:
+    """Format a raw financial value (absolute, in local currency) to the
+    market's idiomatic short form (조/억 for KRW/JPY, $B/$M for USD, etc.)."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "N/A"
+    if currency in ("KRW", "JPY"):
+        unit_str = "조" if currency == "KRW" else "조"
+        unit_small = "억"
+        if abs(v) >= 1e12:
+            return f"{sym}{v / 1e12:,.2f}{unit_str}"
+        elif abs(v) >= 1e8:
+            return f"{sym}{v / 1e8:,.0f}{unit_small}"
+        else:
+            return f"{sym}{v:,.0f}"
+    elif currency == "TWD":
+        if abs(v) >= 1e12:
+            return f"NT${v / 1e12:,.2f}兆"
+        elif abs(v) >= 1e8:
+            return f"NT${v / 1e8:,.0f}億"
+        else:
+            return f"NT${v:,.2f}"
+    elif currency in ("CNY",):
+        if abs(v) >= 1e12:
+            return f"¥{v / 1e12:,.2f}兆"
+        elif abs(v) >= 1e8:
+            return f"¥{v / 1e8:,.0f}亿"
+        else:
+            return f"¥{v:,.2f}"
+    elif currency == "HKD":
+        if abs(v) >= 1e9:
+            return f"HK${v / 1e9:,.2f}B"
+        elif abs(v) >= 1e6:
+            return f"HK${v / 1e6:,.1f}M"
+        else:
+            return f"HK${v:,.2f}"
+    else:  # USD / fallback
+        if abs(v) >= 1e9:
+            return f"${v / 1e9:,.2f}B"
+        elif abs(v) >= 1e6:
+            return f"${v / 1e6:,.0f}M"
+        else:
+            return f"${v:,.2f}"
+
+
+def _fy_label(col_date) -> str:
+    """Convert a yfinance income_stmt column (Timestamp/date) to a FY label.
+    e.g. 2024-12-31 → 'FY24', 2025-03-31 → 'FY25'."""
+    try:
+        year = getattr(col_date, "year", None)
+        if year is None:
+            import datetime
+            d = datetime.datetime.fromisoformat(str(col_date))
+            year = d.year
+        return f"FY{year % 100:02d}"
+    except Exception:
+        return str(col_date)[:7]
+
+
+def _build_rule1_skeleton(
+    ticker: str, info: dict, _cfg: dict, market: str
+) -> str:
+    """Fetch annual + quarterly income_stmt from yfinance and return a
+    pre-formatted RULE 1 financial table skeleton for the fundamentals
+    analyst. The analyst copies the skeleton verbatim and only adds
+    growth rates / margins — never recomputes the base numbers.
+
+    Returns '' on any failure (silent degradation).
+    """
+    try:
+        import yfinance as yf
+        obj = yf.Ticker(ticker.upper())
+        annual = obj.income_stmt
+        qtrly  = obj.quarterly_income_stmt
+    except Exception:
+        return ""
+
+    try:
+        if annual is None or (hasattr(annual, "empty") and annual.empty):
+            return ""
+
+        currency = _cfg.get("currency", "USD")
+        sym      = _cfg.get("currency_symbol", "$")
+
+        # ── TTM: sum of most-recent 4 quarters ──────────────────────
+        ttm: dict[str, float | None] = {}
+        if qtrly is not None and not (hasattr(qtrly, "empty") and qtrly.empty):
+            last4 = qtrly.iloc[:, :4]
+            for field in _RULE1_FIELDS:
+                if field in last4.index:
+                    vals = [float(v) for v in last4.loc[field]
+                            if v is not None and v == v]
+                    ttm[field] = sum(vals) if vals else None
+
+        # ── Annual: up to 4 most-recent fiscal years ────────────────
+        fy_cols = list(annual.columns[:4])
+
+        # Verify we actually have data to show
+        has_data = any(
+            field in annual.index and any(
+                (v is not None and v == v)
+                for v in (annual.loc[field, col] for col in fy_cols
+                          if col in annual.columns)
+            )
+            for field in _RULE1_FIELDS
+        )
+        if not has_data:
+            return ""
+
+        lines = [
+            "=== PRE-COMPUTED RULE 1 TABLE (시스템 직접 산출 — 수치 절대 변경 금지) ===",
+            "분석가 지시: 아래 수치를 RULE 1 요약표에 그대로 복사하고,"
+            " YoY 성장률(%)·이익률만 추가. 수치 재계산·재호출 절대 금지.",
+            "",
+        ]
+        for field, kr_label in _RULE1_FIELDS.items():
+            parts: list[str] = []
+            ttm_v = ttm.get(field)
+            if ttm_v is not None:
+                parts.append(f"TTM {_fmt_native_val(ttm_v, currency, sym)}")
+            for col in fy_cols:
+                if field in annual.index:
+                    v = annual.loc[field, col]
+                    if v is not None and v == v:
+                        parts.append(f"{_fy_label(col)} {_fmt_native_val(float(v), currency, sym)}")
+            if parts:
+                lines.append(f"  {kr_label}: {' | '.join(parts)}")
+
+        if len(lines) <= 3:
+            return ""
+
+        lines += [
+            "",
+            "위 값이 get_income_statement 도구 결과와 다른 경우:"
+            " 위 시스템 산출값 우선. 도구 결과로 재계산 금지.",
+        ]
+        return "\n".join(lines)
+    except Exception as exc:
+        _analyst_log.warning("rule1_skeleton failed for %s: %s", ticker, exc)
+        return ""
+
+
+def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
+    """Compact FACTUAL ANCHOR injected at the very top of every analyst
+    prompt. Shows 현재가 / 시총 / 52w high-low / PER / PBR / EPS in a
+    single glanceable block so the LLM sees canonical numbers first.
+
+    Corrupt values (52w ≤ 0, current < 52w-low, etc.) are flagged
+    inline so the LLM cannot silently copy them.
+    Returns '' when no price data is available.
+    """
+    try:
+        currency = _cfg.get("currency", "USD")
+        sym      = _cfg.get("currency_symbol", "$")
+        _fmt_p   = "{:,.0f}" if currency == "KRW" else "{:,.2f}"
+
+        px         = info.get("currentPrice") or info.get("regularMarketPrice")
+        market_cap = info.get("marketCap")
+        wk_high    = info.get("fiftyTwoWeekHigh")
+        wk_low     = info.get("fiftyTwoWeekLow")
+        per        = info.get("trailingPE")
+        pbr        = info.get("priceToBook")
+        eps        = info.get("trailingEps")
+
+        if not (isinstance(px, (int, float)) and px == px and px > 0):
+            return ""
+
+        px_str = f"{sym}{_fmt_p.format(px)}"
+
+        # 시가총액
+        mc_str = "N/A"
+        if isinstance(market_cap, (int, float)) and market_cap > 0:
+            if currency in ("KRW", "JPY"):
+                unit_word = "원" if currency == "KRW" else "엔"
+                if market_cap >= 1e12:
+                    mc_str = f"약 {market_cap / 1e12:,.2f}조 {unit_word}"
+                else:
+                    mc_str = f"약 {market_cap / 1e8:,.0f}억 {unit_word}"
+            elif currency == "TWD":
+                if market_cap >= 1e12:
+                    mc_str = f"약 NT${market_cap / 1e12:,.2f}兆"
+                else:
+                    mc_str = f"약 NT${market_cap / 1e8:,.0f}億"
+            elif currency in ("CNY", "HKD"):
+                pfx = "¥" if currency == "CNY" else "HK$"
+                mc_str = (f"약 {pfx}{market_cap / 1e12:,.2f}兆"
+                          if market_cap >= 1e12
+                          else f"약 {pfx}{market_cap / 1e9:,.2f}B")
+            else:
+                mc_str = (f"${market_cap / 1e9:,.2f}B"
+                          if market_cap >= 1e9
+                          else f"${market_cap / 1e6:,.0f}M")
+
+        # 52주 고저 — corrupt 값 자동 감지
+        def _52w(v, is_low: bool) -> str:
+            label = "52주 최저" if is_low else "52주 최고"
+            if not isinstance(v, (int, float)) or v != v:
+                return f"{label}: N/A"
+            if v <= 0 or (px > 0 and v < px * 0.01):
+                return f"{label}: ⚠️데이터오류(0금지)"
+            if is_low and px > 0 and v > px * 1.005:
+                return f"{label}: ⚠️데이터오류(최저>현재가)"
+            if not is_low and px > 0 and v < px * 0.99:
+                return f"{label}: ⚠️데이터오류(최고<현재가)"
+            return f"{label}: {sym}{_fmt_p.format(v)}"
+
+        wk_high_str = _52w(wk_high, is_low=False)
+        wk_low_str  = _52w(wk_low,  is_low=True)
+
+        per_str = (f"{per:.1f}" if isinstance(per, (int, float))
+                   and per == per and 0 < per < 10000 else "N/A")
+        pbr_str = (f"{pbr:.2f}" if isinstance(pbr, (int, float))
+                   and pbr == pbr and -100 < pbr < 1000 else "N/A")
+        eps_str = (f"{sym}{_fmt_p.format(eps)}" if isinstance(eps, (int, float))
+                   and eps == eps else "N/A")
+
+        sep = "━" * 56
+        return "\n".join([
+            sep,
+            "⚡ FACTUAL ANCHOR — 시스템 직접 산출 (절대 재계산 금지)",
+            sep,
+            f"현재가:   {px_str:<20}  시가총액: {mc_str}",
+            f"{wk_high_str:<30}  {wk_low_str}",
+            f"PER: {per_str:<10}  PBR: {pbr_str:<10}  EPS: {eps_str}",
+            sep,
+            "❌ HARD RULE: 위 값은 yfinance .info 원본. 재계산·재호출·근사화 절대 금지.",
+            "   모든 섹션에서 위 값 그대로 복사·인용. ⚠️데이터오류 항목은 인용 자체 금지.",
+            sep,
+        ])
+    except Exception:
+        return ""
+
+
 def _section_allowed(analyst_id: str | None, section: str) -> bool:
     """Return True when this section should appear in the analyst's
     prompt. `analyst_id is None` (non-analyst callers — PM, trader,
@@ -1414,11 +1662,10 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
     analyst are excluded (see `_ANALYST_CONTEXT_EXCLUDE`). Non-analyst
     callers (portfolio manager, trader, research manager) pass None /
     omit the argument and see the full context — backward-compatible."""
-    base = (
-        f"The instrument to analyze is `{ticker}`. "
-        "Use this exact ticker in every tool call, report, and recommendation, "
-        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."
-    )
+    # Fetch instrument data first — needed by FACTUAL ANCHOR and all
+    # downstream sections. Previously `base` was built before `info` was
+    # fetched; moving `info` + market detection above `base` construction
+    # lets us prepend the anchor without a second pass.
     info = _instrument_info(ticker)
     qt = (info.get("quoteType") or info.get("typeDisp") or "").upper()
 
@@ -1433,6 +1680,19 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
     except Exception:
         market = "US"
         _cfg = {"currency": "USD", "currency_symbol": "$"}
+
+    # FACTUAL ANCHOR: compact canonical-number box at the very top so the
+    # LLM sees 현재가 / 시총 / 52w / PER / PBR / EPS before any other text.
+    # Corrupt values (52w = 0, current < low, etc.) are pre-flagged here
+    # so the LLM cannot silently copy them. Silent degradation: if info
+    # has no price, anchor is '' and base is unchanged.
+    _anchor = _build_factual_anchor(ticker, info, _cfg)
+    base = (
+        f"The instrument to analyze is `{ticker}`. "
+        "Use this exact ticker in every tool call, report, and recommendation, "
+        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."
+        + ("\n\n" + _anchor if _anchor else "")
+    )
 
     kr_name: str | None = None
     if market == "KR":
@@ -3572,6 +3832,19 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         _analyst_log.warning(
             "standardview brief injection failed for %s: %s", ticker, exc,
         )
+
+    # RULE 1 skeleton: fundamentals analyst only. Pre-computes매출/영업이익/
+    # 순이익 table from yfinance income_stmt so the LLM copies numbers
+    # verbatim instead of re-fetching and potentially misreading units.
+    if _section_allowed(analyst_id, "rule1_skeleton"):
+        try:
+            skeleton = _build_rule1_skeleton(ticker, info, _cfg, market)
+            if skeleton:
+                base += "\n\n" + skeleton
+        except Exception as exc:
+            _analyst_log.warning(
+                "rule1_skeleton injection failed for %s: %s", ticker, exc,
+            )
 
     return base
 

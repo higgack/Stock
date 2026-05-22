@@ -849,6 +849,32 @@ _REPORT_SECTIONS = [
 ]
 
 
+def _extract_canonical(ticker: str) -> dict:
+    """Pull key numeric facts for post-processing validation.
+
+    Used by _clean_section → _polish to cross-check analyst output numbers
+    against yfinance ground truth. Returns {} on any failure.
+    """
+    try:
+        from tradingagents.agents.utils.agent_utils import _instrument_info
+        from bot.market import get_market_config
+        info = _instrument_info(ticker)
+        cfg  = get_market_config(ticker)
+        result: dict = {
+            "currency":        cfg.get("currency", "USD"),
+            "currency_symbol": cfg.get("currency_symbol", "$"),
+        }
+        mc = info.get("marketCap")
+        px = info.get("currentPrice") or info.get("regularMarketPrice")
+        if isinstance(mc, (int, float)) and mc > 0:
+            result["market_cap"] = mc
+        if isinstance(px, (int, float)) and px > 0:
+            result["current_price"] = px
+        return result
+    except Exception:
+        return {}
+
+
 def _format_full(
     state: dict,
     decision: str,
@@ -877,6 +903,9 @@ def _format_full(
         _section_currency_symbol = get_market_config(ticker).get("currency_symbol", "")
     except Exception:
         _section_currency_symbol = ""
+    # Pre-extract canonical numbers once for the whole report so every
+    # section's post-processing validator can cross-check against ground truth.
+    _canonical = _extract_canonical(ticker)
     run_selected = set(selected) if selected is not None else set(_SELECTED_ANALYSTS)
     module_default = set(_SELECTED_ANALYSTS)
     for key, label, analyst_id in _REPORT_SECTIONS:
@@ -898,7 +927,7 @@ def _format_full(
             continue
         body = state.get(key) if isinstance(state, dict) else None
         parts.append(
-            f"\n## {label}\n{_clean_section(body, currency_symbol=_section_currency_symbol)}"
+            f"\n## {label}\n{_clean_section(body, currency_symbol=_section_currency_symbol, canonical=_canonical)}"
         )
     parts.append(f"\n## ✅ 최종 결정\n{decision}")
     return "\n".join(parts)
@@ -1147,6 +1176,92 @@ def _drop_repeated_section(body: str) -> str:
     return body
 
 
+def _magnitude_check(body: str, canonical: dict) -> str:
+    """Scan RULE 1 financial series for unit-magnitude jumps within the
+    same line (e.g. 'FY24 ₩89,201억 | FY23 ₩90.19조' — 10,000x gap
+    = 조/억 mix). Inserts a ⚠️ warning line immediately after any
+    financial series line where adjacent KRW/JPY values differ by > 500x.
+
+    Only applies to KRW / JPY output (large-unit languages).
+    """
+    currency = canonical.get("currency", "USD") if canonical else "USD"
+    if currency not in ("KRW", "JPY"):
+        return body
+
+    _val_re = re.compile(r'(\d[\d,\.]*)\s*(조|억)')
+
+    def _to_raw(num_str: str, unit: str) -> float:
+        try:
+            return float(num_str.replace(",", "")) * (1e12 if unit == "조" else 1e8)
+        except ValueError:
+            return 0.0
+
+    result: list[str] = []
+    for line in body.split("\n"):
+        result.append(line)
+        vals = [(_to_raw(m.group(1), m.group(2)), m.group(2))
+                for m in _val_re.finditer(line)]
+        if len(vals) >= 2:
+            for i in range(len(vals) - 1):
+                v1, u1 = vals[i]
+                v2, u2 = vals[i + 1]
+                # Any 조/억 unit mix within the same series line is suspicious.
+                # LG전자 case: 'FY24 ₩89,201억 | FY23 ₩90.19조' — both
+                # represent similar revenue scales but expressed inconsistently.
+                if v1 > 0 and v2 > 0 and u1 != u2:
+                    result.append(
+                        f"  ⚠️ [단위 오류 의심: 동일 항목 내 {u1} / {u2} 혼용"
+                        f" — 같은 시계열에는 단일 단위 사용 필요."
+                        f" 원본 데이터 확인 후 통일 표기 요망]"
+                    )
+                    break
+    return "\n".join(result)
+
+
+def _canonical_crosscheck(body: str, canonical: dict) -> str:
+    """Check 시가총액 mentions in the output against the canonical value.
+
+    If canonical 시총 is ₩5.83조 but the text mentions ₩58조 or ₩0.58조
+    (> ±30% off), inserts a correction banner so the reader can spot the
+    discrepancy. Only applied for KRW / JPY markets where 조/억 confusion
+    is the primary failure mode.
+    """
+    mc = canonical.get("market_cap") if canonical else None
+    currency = canonical.get("currency", "USD") if canonical else "USD"
+    if not mc or currency not in ("KRW", "JPY"):
+        return body
+
+    _mc_kw_re  = re.compile(r'시가총액|시총')
+    _val_re    = re.compile(r'약\s*(\d[\d,\.]*)\s*(조|억)')
+    unit_word  = "원" if currency == "KRW" else "엔"
+    mc_disp    = (f"약 {mc / 1e12:,.2f}조 {unit_word}"
+                  if mc >= 1e12 else f"약 {mc / 1e8:,.0f}억 {unit_word}")
+
+    def _norm(num_str: str, unit: str) -> float:
+        try:
+            return float(num_str.replace(",", "")) * (1e12 if unit == "조" else 1e8)
+        except ValueError:
+            return 0.0
+
+    result: list[str] = []
+    for line in body.split("\n"):
+        result.append(line)
+        if not _mc_kw_re.search(line):
+            continue
+        for m in _val_re.finditer(line):
+            found = _norm(m.group(1), m.group(2))
+            if found <= 0:
+                continue
+            ratio = max(found, mc) / min(found, mc)
+            if ratio > 1.3:
+                result.append(
+                    f"  ⚠️ [시가총액 불일치: 위 값이 시스템 canonical ({mc_disp}) 대비"
+                    f" {ratio:.1f}배 차이 — canonical 값 우선 사용]"
+                )
+                break
+    return "\n".join(result)
+
+
 # If a section body is longer than this, skip the polish-pass regexes
 # entirely and serve the raw content. Polishing a 100K+ char Korean
 # response can hit catastrophic backtracking on _INSTRUMENT_CTX_RE /
@@ -1158,7 +1273,7 @@ _POLISH_LENGTH_GUARD = 100_000
 # is currently running. Past hangs in this function happened silently
 # between the propagate log and the timeout — the labels make the
 # culprit obvious in the journal next time.
-def _polish(body: str, currency_symbol: str = "") -> str:
+def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None) -> str:
     """Strip noise patterns that agents occasionally leak into their text.
 
     Removes per-section 'FINAL TRANSACTION PROPOSAL' lines (the rating is
@@ -1534,10 +1649,17 @@ def _polish(body: str, currency_symbol: str = "") -> str:
             return _match.group(0) if count == 1 else ""
         return pattern.sub(repl, b)
     _step("dup-summary-table-header", _dedup_summary_table)
+    # Post-generation numeric validators — run after all cosmetic passes
+    # so they inspect the final text the user will actually see.
+    if canonical:
+        _step("magnitude-check",
+              lambda b: _magnitude_check(b, canonical))
+        _step("canonical-crosscheck",
+              lambda b: _canonical_crosscheck(b, canonical))
     return body.strip()
 
 
-def _clean_section(body, currency_symbol: str = "") -> str:
+def _clean_section(body, currency_symbol: str = "", canonical: dict | None = None) -> str:
     """Replace empty or obviously-broken agent output with a clear placeholder.
 
     Gemini occasionally emits a JSON error blob, raw tool_code, or no content
@@ -1571,7 +1693,7 @@ def _clean_section(body, currency_symbol: str = "") -> str:
     head = body.strip()[:500]
     if any(m in head for m in _GARBAGE_MARKERS):
         return _FAILURE_PLACEHOLDER
-    polished = _polish(body, currency_symbol=currency_symbol)
+    polished = _polish(body, currency_symbol=currency_symbol, canonical=canonical)
     # If the polished body is mostly headers + empty placeholders ('• :: :',
     # '요약표' alone), treat it as a failed run rather than serving the husk.
     stripped = polished.strip()
