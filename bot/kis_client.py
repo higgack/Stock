@@ -302,32 +302,60 @@ class KisClient:
         _cache_put(cache_key, result)
         return result
 
-    # 4. 외인 한도소진율
+    # 4. 외인 한도소진율 — KIS Open API 미제공
     def get_foreign_limit(self, ticker: str) -> Optional[dict]:
         """외국인 보유 한도 + 소진율.
 
-        TODO: KIS Developers portal (apiportal.koreainvestment.com) 에서
-        외국인 한도소진율 조회의 정확한 tr_id + URL path 확인 필요.
-        FHKST01010600 = inquire-member (회원사) 이므로 기존 경로 오류.
+        KIS Open API 는 외국인 한도소진율 endpoint 를 제공하지 않음 (2026-05-22
+        확인). 해당 데이터는 KRX (한국거래소) 데이터마켓에서 직접 조회 가능.
+        대안: pykrx 또는 KRX MDC API 별도 통합 필요 (Step 2C 후속 작업).
 
-        Returns: {limit_shares: int, held_shares: int, exhaustion_pct: float}
+        Returns: None (KIS API 미제공)
         """
-        log.debug("kis: get_foreign_limit — endpoint path not verified, skipping")
         return None
 
-    # 5. 신용잔고 + 대차잔고
+    # 5. 신용잔고 일별추이 (daily-credit-balance)
     def get_credit_short_balance(self, ticker: str) -> Optional[dict]:
-        """신용매수잔고 + 대차잔고 (당일).
+        """신용잔고 일별추이. tr_id FHPST04760000.
 
-        TODO: KIS Developers portal 에서 신용잔고/대차잔고 조회의
-        정확한 tr_id + URL path 확인 필요.
-        FHKST01010700 경로 미검증 (404 반환 확인됨 2026-05-22).
-
-        Returns: {credit_balance_shares: int, credit_balance_pct: float,
-                  loan_balance_shares: int}
+        Returns: {credit_balance_shares: int, credit_balance_amt: int,
+                  credit_balance_pct: float, loan_balance_shares: int}
         """
-        log.debug("kis: get_credit_short_balance — endpoint path not verified, skipping")
-        return None
+        code = _ticker_to_code(ticker)
+        if not code:
+            return None
+        cache_key = f"credit_{code}.json"
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        data = _get(
+            "/uapi/domestic-stock/v1/quotations/daily-credit-balance",
+            "FHPST04760000",
+            {
+                "FID_COND_MRKT_DIV_CODE": _mkt_div(ticker),
+                "FID_COND_SCR_DIV_CODE": "20476",
+                "FID_INPUT_ISCD": code,
+                "FID_INPUT_DATE_1": "",
+            },
+        )
+        if not data:
+            return None
+        raw_out = data.get("output")
+        if not raw_out:
+            return None
+        rows = raw_out if isinstance(raw_out, list) else [raw_out]
+        if not rows:
+            return None
+        today_r = rows[0]
+        result = {
+            "credit_balance_shares": _int(today_r.get("whol_loan_rmnd_stcn")),
+            "credit_balance_amt":    _int(today_r.get("whol_loan_rmnd_amt")),
+            "credit_balance_pct":    _float(today_r.get("whol_loan_rmnd_rate")),
+            "loan_balance_shares":   _int(today_r.get("stln_rmnd_qty")),
+        }
+        _cache_put(cache_key, result)
+        return result
 
     # 6. 프로그램 매매
     def get_program_trade(self, ticker: str) -> Optional[dict]:
@@ -373,20 +401,51 @@ class KisClient:
         _cache_put(cache_key, result)
         return result
 
-    # 7. 공매도
+    # 7. 공매도 일별추이 (daily-short-sale)
     def get_short_sale(self, ticker: str) -> Optional[dict]:
-        """당일 공매도 현황.
+        """공매도 일별추이. tr_id FHPST04830000.
 
-        TODO: KIS Developers portal 에서 공매도 조회의 정확한
-        tr_id + URL path 확인 필요.
-        FHKST01010400 = inquire-daily-price (일자별) 이므로 기존 경로 오류.
-        공매도 데이터는 별도 카테고리 (국내주식 > 공매도) 에 있을 가능성.
+        Response output1 = 단일 요약 row, output2 = 일별 list.
 
         Returns: {short_qty: int, short_amt: int, short_ratio_pct: float,
-                  short_balance_qty: int, short_balance_amt: int}
+                  avg_price: float}
         """
-        log.debug("kis: get_short_sale — endpoint path not verified, skipping")
-        return None
+        code = _ticker_to_code(ticker)
+        if not code:
+            return None
+        cache_key = f"short_{code}.json"
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+        data = _get(
+            "/uapi/domestic-stock/v1/quotations/daily-short-sale",
+            "FHPST04830000",
+            {
+                "FID_COND_MRKT_DIV_CODE": _mkt_div(ticker),
+                "FID_INPUT_ISCD": code,
+                "FID_INPUT_DATE_1": "",
+                "FID_INPUT_DATE_2": "",
+            },
+        )
+        if not data:
+            return None
+        # output2 = 일별 행 list; [0] = 가장 최근 영업일
+        raw_out2 = data.get("output2")
+        if not raw_out2:
+            return None
+        rows = raw_out2 if isinstance(raw_out2, list) else [raw_out2]
+        if not rows:
+            return None
+        today_r = rows[0]
+        result = {
+            "short_qty":          _int(today_r.get("ssts_cntg_qty")),
+            "short_amt":          _int(today_r.get("ssts_tr_pbmn")),
+            "short_ratio_pct":    _float(today_r.get("ssts_vol_rlim")),
+            "avg_price":          _float(today_r.get("avrg_prc")),
+        }
+        _cache_put(cache_key, result)
+        return result
 
     def get_all(self, ticker: str) -> dict:
         """7종 모든 데이터를 한 dict로. 각 필드가 None이면 해당 endpoint 실패."""
@@ -516,8 +575,8 @@ def format_kis_block(data: dict) -> str:
         sr = ss["short_ratio_pct"]
         warn = " ⚠️ 공매도 압력 높음" if sr >= 15 else ""
         lines.append(f"• 공매도 비율: {sr:.1f}%{warn}")
-        if ss.get("short_balance_qty"):
-            lines.append(f"• 공매도 잔고: {ss['short_balance_qty']:,}주")
+        if ss.get("short_qty"):
+            lines.append(f"• 공매도 거래량: {ss['short_qty']:,}주")
 
     return "\n".join(lines)
 
@@ -529,13 +588,13 @@ KIS 단기 수급 해석 가이드 (5거래일 horizon):
 • 외인 5일 누적 순매수 방향이 단기 가격 방향의 최우선 예측 변수.
   +100억 이상 = 단기 매수 압력 dominant / -100억 이하 = 단기 매도 압력.
 • 연기금 5일 순매수 양수 = 중기 지지 신호 (연기금은 저점 분할 매수 패턴).
-• 외인 한도소진율 95% 이상 → 추가 외인 매수 물리적 불가 — 신규 매수 상단 제한.
 • 신용잔고율 4% 이상 → 반대매매 청산 압력 risk 5거래일 내 현실화 가능.
-• 공매도 비율 15% 이상 + 대차잔고 증가 → 숏 압력 dominant, 결론에 명시 의무.
+• 공매도 비율 15% 이상 → 숏 압력 dominant, 결론에 명시 의무.
 • 프로그램 차익 매도 큰 날 (-500억 이상) → 인덱스 편입/편출 또는 파생 만기
   효과 — 펀더멘털 무관한 수급 왜곡, 단기 매도 공백 후 반등 가능성.
 이 데이터는 KIS API에서 직접 수신한 수치이므로 그대로 인용하라.
-다음 패턴 금지: 수치가 없으면 'KR 외국인 매수세 지속' 같은 generic 추측 금지.\
+다음 패턴 금지: 수치가 없으면 'KR 외국인 매수세 지속' 같은 generic 추측 금지.
+외국인 한도소진율은 KIS API 미제공 — KRX 직접 데이터 필요 (현재 미통합).\
 """
 
 
