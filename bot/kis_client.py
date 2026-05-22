@@ -304,64 +304,30 @@ class KisClient:
 
     # 4. 외인 한도소진율
     def get_foreign_limit(self, ticker: str) -> Optional[dict]:
-        """외국인 보유 한도 + 소진율. tr_id FHKST01010600.
+        """외국인 보유 한도 + 소진율.
+
+        TODO: KIS Developers portal (apiportal.koreainvestment.com) 에서
+        외국인 한도소진율 조회의 정확한 tr_id + URL path 확인 필요.
+        FHKST01010600 = inquire-member (회원사) 이므로 기존 경로 오류.
 
         Returns: {limit_shares: int, held_shares: int, exhaustion_pct: float}
         """
-        code = _ticker_to_code(ticker)
-        if not code:
-            return None
-        cache_key = f"forlimit_{code}.json"
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return cached
-
-        data = _get(
-            "/uapi/domestic-stock/v1/quotations/inquire-foreign-investor",
-            "FHKST01010600",
-            {"FID_COND_MRKT_DIV_CODE": _mkt_div(ticker), "FID_INPUT_ISCD": code},
-        )
-        if not data:
-            return None
-        out = data.get("output") or {}
-        result = {
-            "limit_shares":    _int(out.get("frgn_hldn_qty_lmit_mxmm")),
-            "held_shares":     _int(out.get("frgn_hldn_qty")),
-            "exhaustion_pct":  _float(out.get("frgn_hldn_qty_lmit_exhs_rt")),
-        }
-        _cache_put(cache_key, result)
-        return result
+        log.debug("kis: get_foreign_limit — endpoint path not verified, skipping")
+        return None
 
     # 5. 신용잔고 + 대차잔고
     def get_credit_short_balance(self, ticker: str) -> Optional[dict]:
-        """신용매수잔고 + 대차잔고 (당일). tr_id FHKST01010700.
+        """신용매수잔고 + 대차잔고 (당일).
+
+        TODO: KIS Developers portal 에서 신용잔고/대차잔고 조회의
+        정확한 tr_id + URL path 확인 필요.
+        FHKST01010700 경로 미검증 (404 반환 확인됨 2026-05-22).
 
         Returns: {credit_balance_shares: int, credit_balance_pct: float,
                   loan_balance_shares: int}
         """
-        code = _ticker_to_code(ticker)
-        if not code:
-            return None
-        cache_key = f"credit_{code}.json"
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return cached
-
-        data = _get(
-            "/uapi/domestic-stock/v1/quotations/inquire-credit-balance",
-            "FHKST01010700",
-            {"FID_COND_MRKT_DIV_CODE": _mkt_div(ticker), "FID_INPUT_ISCD": code},
-        )
-        if not data:
-            return None
-        out = data.get("output") or {}
-        result = {
-            "credit_balance_shares": _int(out.get("crdt_rmnd_qty")),
-            "credit_balance_pct":    _float(out.get("crdt_rmnd_ratem")),
-            "loan_balance_shares":   _int(out.get("stln_rmnd_qty")),
-        }
-        _cache_put(cache_key, result)
-        return result
+        log.debug("kis: get_credit_short_balance — endpoint path not verified, skipping")
+        return None
 
     # 6. 프로그램 매매
     def get_program_trade(self, ticker: str) -> Optional[dict]:
@@ -409,36 +375,18 @@ class KisClient:
 
     # 7. 공매도
     def get_short_sale(self, ticker: str) -> Optional[dict]:
-        """당일 공매도 현황. tr_id FHKST01010400.
+        """당일 공매도 현황.
+
+        TODO: KIS Developers portal 에서 공매도 조회의 정확한
+        tr_id + URL path 확인 필요.
+        FHKST01010400 = inquire-daily-price (일자별) 이므로 기존 경로 오류.
+        공매도 데이터는 별도 카테고리 (국내주식 > 공매도) 에 있을 가능성.
 
         Returns: {short_qty: int, short_amt: int, short_ratio_pct: float,
                   short_balance_qty: int, short_balance_amt: int}
         """
-        code = _ticker_to_code(ticker)
-        if not code:
-            return None
-        cache_key = f"short_{code}.json"
-        cached = _cache_get(cache_key)
-        if cached is not None:
-            return cached
-
-        data = _get(
-            "/uapi/domestic-stock/v1/quotations/inquire-short-selling",
-            "FHKST01010400",
-            {"FID_COND_MRKT_DIV_CODE": _mkt_div(ticker), "FID_INPUT_ISCD": code},
-        )
-        if not data:
-            return None
-        out = data.get("output") or {}
-        result = {
-            "short_qty":          _int(out.get("seln_qty")),
-            "short_amt":          _int(out.get("seln_amt")),
-            "short_ratio_pct":    _float(out.get("seln_qty_icdc_rt")),
-            "short_balance_qty":  _int(out.get("stln_slng_qty")),
-            "short_balance_amt":  _int(out.get("stln_slng_amt")),
-        }
-        _cache_put(cache_key, result)
-        return result
+        log.debug("kis: get_short_sale — endpoint path not verified, skipping")
+        return None
 
     def get_all(self, ticker: str) -> dict:
         """7종 모든 데이터를 한 dict로. 각 필드가 None이면 해당 endpoint 실패."""

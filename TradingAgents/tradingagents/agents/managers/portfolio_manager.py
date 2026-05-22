@@ -193,6 +193,48 @@ def _override_trigger_present(rationale: str) -> bool:
     return False
 
 
+def _override_trigger_directional(rationale: str, pm_dir: str) -> bool:
+    """Direction-aware override trigger check (2026-05-22, LG전자 surfaced).
+
+    RSI triggers are DIRECTIONAL per CLAUDE.md:
+      • RSI > 75 → valid only for Sell-side override (Hold/Buy → Sell/Underweight)
+      • RSI < 25 → valid only for Buy-side override (Hold/Sell → Buy/Overweight)
+    Using RSI 78 to justify a Buy-side override (Hold → Overweight) is a
+    direction mismatch — the overbought signal should BLOCK a bullish flip,
+    not justify it. Previous code checked RSI extreme value only, not direction,
+    allowing exactly this false pass.
+
+    All non-RSI triggers (catalyst, M&A, FOMC, mismatch warning, data-
+    availability HOLD, corporate action HARD GUARD) are direction-agnostic
+    — they qualify regardless of which way the PM is overriding.
+
+    Applies to all markets (US + KR + JP + TW + CN_A + HK) — RSI
+    direction semantics are universal.
+    """
+    if not rationale:
+        return False
+    for pat in _OVERRIDE_TRIGGERS:
+        m = pat.search(rationale)
+        if not m:
+            continue
+        if pat.pattern.startswith("RSI"):
+            try:
+                val = float(m.group(1))
+                # RSI extreme present — check direction consistency
+                if val >= 75 and pm_dir == "sell":
+                    return True  # overbought → valid sell-side trigger
+                if val <= 25 and pm_dir == "buy":
+                    return True  # oversold → valid buy-side trigger
+                # RSI extreme but wrong direction: RSI>75 used to justify
+                # Buy-side override (or RSI<25 for Sell-side) — not valid
+            except (ValueError, IndexError):
+                pass
+            continue
+        # Non-RSI trigger: direction-agnostic
+        return True
+    return False
+
+
 def _enforce_pm_override_discipline(
     decision: PortfolioDecision, state: dict,
 ) -> tuple[PortfolioDecision, str | None]:
@@ -244,7 +286,7 @@ def _enforce_pm_override_discipline(
     # other direction). The text covers any "opposite of analyst
     # majority" case.
     try:
-        has_trigger = _override_trigger_present(decision.investment_thesis)
+        has_trigger = _override_trigger_directional(decision.investment_thesis, pm_dir)
     except Exception as exc:
         _pm_log.warning(
             "pm-discipline: trigger-scan regex failed (%s) — treating as no-trigger to be safe",

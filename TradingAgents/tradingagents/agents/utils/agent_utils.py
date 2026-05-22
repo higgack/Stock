@@ -2049,12 +2049,11 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             base += (
                 f"\n\n⚠️ 52주 최고/최저 데이터 의심 (yfinance silent fail):\n"
                 + "\n".join(f"  • {c}" for c in wk_corrupt)
-                + "\n분석 본문에서 52주 최저 / 최고 값을 narrative 에 인용"
-                f" 금지 — yfinance 가 split / corp action / data gap"
-                f" 영향으로 corrupt 값 반환. '52주 최저 {_sym}0 대비'"
-                f" 같은 표현 절대 금지 (현대차증권 001500.KS 2026-05-19"
-                f" 펀더멘털 사례). '52주 변동폭 데이터 미수집 / 검증 보류'"
-                f" 한 줄로 처리."
+                + f"\n❌ HARD RULE: 위 corrupt 값을 요약표·본문·DCF 입력 어디에도"
+                f" 인용 금지. '52주 최고/최저: {_sym}266,500 / {_sym}0' 같은"
+                f" 표기 절대 금지 (LG전자 2026-05-22 펀더멘털 사례). 요약표"
+                f" 해당 행 전체를 '52주 변동폭 데이터 미수집 / 검증 보류' 한"
+                f" 줄로 대체하라. Narrative 인용도 동일하게 금지."
             )
 
         # Revenue / market cap sanity (Rule G, 2026-05-19 SMIC surfaced).
