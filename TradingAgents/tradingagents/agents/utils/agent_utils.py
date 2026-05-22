@@ -1260,6 +1260,7 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
                 get_kr_foreign_ownership_trend,
                 get_kr_short_balance_trend,
                 get_kr_market_cap,
+                get_kr_ohlcv_stats,
             )
             tasks["pykrx_flow"] = lambda: get_kr_trading_flow(ticker, days_back=5)
             tasks["pykrx_foreign_trend"] = lambda: get_kr_foreign_ownership_trend(ticker, days_back=30)
@@ -1268,6 +1269,10 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             # 및 currentPrice cross-check 용. canonical 시총 directive
             # 에서 사용.
             tasks["pykrx_market_cap"] = lambda: get_kr_market_cap(ticker)
+            # D1 Phase 3 (307950.KS 2026-05-23 surfaced): 52주 최고/최저
+            # + 50/200일 SMA pykrx fallback. yfinance .info 가 빈 자리를
+            # 남기면 PM 이 fabrication 시도 (현대오토에버 PER 94.8 case).
+            tasks["pykrx_ohlcv_stats"] = lambda: get_kr_ohlcv_stats(ticker)
         except Exception:
             pass
         try:
@@ -1999,6 +2004,72 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         market = "US"
         _cfg = {"currency": "USD", "currency_symbol": "$"}
 
+    # D1 Phase 3 (307950.KS 2026-05-23 surfaced): KR 종목 yfinance .info
+    # 결측 (시총 / 52w / 50d-200d SMA / PER / EPS) 시 pykrx OHLCV + 시총
+    # + financial statements 로 Python 자체 산출 fallback. 빈 자리를 LLM
+    # 이 fabricate 시도하는 패턴 (PM "KIS PER 94.8") 차단. 인라인 호출
+    # 이지만 동일 cache 키 사용하므로 downstream prefetch 가 hit 한다.
+    if market == "KR":
+        try:
+            from bot.pykrx_client import get_kr_market_cap, get_kr_ohlcv_stats
+            mc_data = get_kr_market_cap(ticker)
+            if mc_data and mc_data.get("market_cap"):
+                if not (isinstance(info.get("marketCap"), (int, float))
+                        and info.get("marketCap")):
+                    info["marketCap"] = int(mc_data["market_cap"])
+                if not (isinstance(info.get("currentPrice"), (int, float))
+                        and info.get("currentPrice")):
+                    info["currentPrice"] = int(mc_data["close"])
+            stats = get_kr_ohlcv_stats(ticker)
+            if stats:
+                for key_y, key_p in [
+                    ("fiftyTwoWeekHigh",     "wk_high"),
+                    ("fiftyTwoWeekLow",      "wk_low"),
+                    ("fiftyDayAverage",      "sma50"),
+                    ("twoHundredDayAverage", "sma200"),
+                ]:
+                    if not (isinstance(info.get(key_y), (int, float))
+                            and info.get(key_y)
+                            and info[key_y] == info[key_y]):
+                        if stats.get(key_p):
+                            info[key_y] = stats[key_p]
+            # PER / EPS Python 자체 산출 (trailing): 시총 + Net Income TTM
+            # → PER = 시총 / 순이익 TTM. yfinance .info trailingPE 가 비어도
+            # income_stmt 가 있으면 산출 가능.
+            if not (isinstance(info.get("trailingPE"), (int, float))
+                    and info.get("trailingPE")):
+                try:
+                    import yfinance as yf
+                    qi = yf.Ticker(ticker.upper()).quarterly_income_stmt
+                    if qi is not None and not (hasattr(qi, "empty") and qi.empty):
+                        last4 = qi.iloc[:, :4]
+                        if "Net Income" in last4.index:
+                            ni_vals = [float(v) for v in last4.loc["Net Income"]
+                                       if v is not None and v == v]
+                            ni_ttm = sum(ni_vals) if ni_vals else None
+                            mc = info.get("marketCap")
+                            if (ni_ttm and ni_ttm > 0
+                                    and isinstance(mc, (int, float)) and mc > 0):
+                                info["trailingPE"] = round(mc / ni_ttm, 2)
+                                # EPS = Net Income TTM / shares outstanding
+                                shares = info.get("sharesOutstanding")
+                                if isinstance(shares, (int, float)) and shares > 0:
+                                    info["trailingEps"] = round(ni_ttm / shares, 2)
+                                elif isinstance(info.get("currentPrice"), (int, float)):
+                                    # shares = mc / current_price (rough)
+                                    approx_shares = mc / info["currentPrice"]
+                                    if approx_shares > 0:
+                                        info["trailingEps"] = round(ni_ttm / approx_shares, 2)
+                except Exception as exc:
+                    _analyst_log.warning(
+                        "D1 Phase 3 PER/EPS compute failed for %s: %s",
+                        ticker, exc,
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "D1 Phase 3 pykrx info patch failed for %s: %s", ticker, exc,
+            )
+
     # FACTUAL ANCHOR: compact canonical-number box at the very top so the
     # LLM sees 현재가 / 시총 / 52w / PER / PBR / EPS before any other text.
     # Corrupt values (52w = 0, current < low, etc.) are pre-flagged here
@@ -2555,6 +2626,19 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         # single canonical value so every section quotes the same.
         sma50 = info.get("fiftyDayAverage")
         sma200 = info.get("twoHundredDayAverage")
+        # D1 Phase 3 (307950.KS 2026-05-23): yfinance .info 가 SMA / 52w
+        # 를 비워서 반환하는 KR 종목 — pykrx OHLCV 시계열로 직접 계산해
+        # fallback. 빈 자리를 LLM 이 채우려고 fabrication 시도하는 패턴
+        # (PM "PER 94.8" case) 차단. Same pattern for fiftyTwoWeek* below.
+        if market == "KR":
+            ohlcv_stats = prefetched.get("pykrx_ohlcv_stats")
+            if ohlcv_stats:
+                if (not isinstance(sma50, (int, float)) or not sma50 or sma50 != sma50):
+                    if ohlcv_stats.get("sma50"):
+                        sma50 = ohlcv_stats["sma50"]
+                if (not isinstance(sma200, (int, float)) or not sma200 or sma200 != sma200):
+                    if ohlcv_stats.get("sma200"):
+                        sma200 = ohlcv_stats["sma200"]
         if isinstance(sma50, (int, float)) and sma50 > 0 \
                 and isinstance(sma200, (int, float)) and sma200 > 0:
             base += (
@@ -2594,6 +2678,22 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         # 없으므로 currentPrice 의 1% 미만이면 데이터 corrupt 로 판단.
         wk_high = info.get("fiftyTwoWeekHigh")
         wk_low = info.get("fiftyTwoWeekLow")
+        # D1 Phase 3: KR 종목 yfinance fiftyTwoWeek* missing 시 pykrx
+        # OHLCV 252-day window 로 fallback. 307950.KS 2026-05-23: 펀더
+        # 표 '52주 최고/최저: N/A / N/A' 그대로 노출 → fabrication 유발.
+        if market == "KR":
+            ohlcv_stats = prefetched.get("pykrx_ohlcv_stats")
+            if ohlcv_stats:
+                if (not isinstance(wk_high, (int, float))
+                        or not wk_high or wk_high != wk_high
+                        or wk_high <= 0):
+                    if ohlcv_stats.get("wk_high"):
+                        wk_high = ohlcv_stats["wk_high"]
+                if (not isinstance(wk_low, (int, float))
+                        or not wk_low or wk_low != wk_low
+                        or wk_low <= 0):
+                    if ohlcv_stats.get("wk_low"):
+                        wk_low = ohlcv_stats["wk_low"]
         wk_corrupt: list[str] = []
         if isinstance(wk_low, (int, float)) and wk_low >= 0:
             # ₩0 / nan / currentPrice 의 1% 미만 (current 의 100분의 1
@@ -3512,6 +3612,20 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                             " 이 수치를 그대로 본문에 인용할 것) ===\n"
                             + block
                             + "\n\n" + KIS_INTERP_GUIDE
+                            + "\n\n⛔ KIS API SCOPE — HARD GUARD"
+                              " (현대오토에버 307950.KS 2026-05-23 surfaced):\n"
+                              "KIS 는 단기 수급 데이터 (현재가 · 외인/기관/개인"
+                              " flow · 한도소진율 · 신용/대차 · 프로그램매매 ·"
+                              " 공매도) 만 제공. **PER · PBR · PSR · EV/EBITDA"
+                              " · EPS · 시가총액 · 매출 · 순이익 · 영업이익 등"
+                              " valuation/펀더멘털 지표는 KIS 가 제공하지 않음**.\n"
+                              "❌ FORBIDDEN: 'KIS 데이터 기준 PER 94.8배' /"
+                              " 'KIS 시가총액' / 'KIS EPS' 같은 인용 — fabrication."
+                              " PM/Trader/모든 분석가가 위반 시 thesis invalid.\n"
+                              "✅ 정답: valuation 은 FACTUAL ANCHOR / Canonical"
+                              " market cap / PRE-COMPUTED 비율 블록에서만 인용."
+                              " 해당 블록에서 'N/A' 면 데이터 미수집으로 명시,"
+                              " KIS 또는 다른 source 로 채우려 시도 금지."
                         )
                 else:
                     # KIS 키 있지만 전체 fetch 실패 → fabrication 차단

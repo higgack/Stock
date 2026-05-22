@@ -102,6 +102,93 @@ def get_kr_market_cap(ticker: str) -> Optional[dict]:
     return None
 
 
+def get_kr_ohlcv_stats(ticker: str) -> Optional[dict]:
+    """260 거래일 OHLCV 기반 52주 최고/최저 + 50일/200일 SMA 산출 (D1
+    Phase 3 fallback, 307950.KS 2026-05-23 surfaced). yfinance .info 가
+    일부 KR 종목에서 fiftyTwoWeekHigh/Low + fiftyDayAverage/
+    twoHundredDayAverage 를 비워서 반환 — pykrx 일봉 시계열에서 직접
+    계산해 채운다.
+
+    Returns dict {wk_high, wk_low, sma50, sma200, last_close, days, date}
+    in KRW (원). None when pykrx 미설치 / 미상장 / 시계열 empty.
+
+    Cached on disk per (ticker, today) — KRX OHLCV 가 daily close 후
+    갱신되므로 12h TTL 충분.
+    """
+    code = _normalize_code(ticker)
+    if not code:
+        return None
+
+    today_str = date.today().isoformat()
+    cache_file = _CACHE_DIR / f"ohlcv_stats_{code}_{today_str}.json"
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < _CACHE_TTL_HOURS:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    try:
+        from pykrx import stock
+    except ImportError:
+        log.warning("pykrx not installed; KR OHLCV stats unavailable")
+        return None
+
+    end = date.today()
+    # 52주 = 252 거래일 → 캘린더 ~370일 buffer (주말 + 공휴일 포함)
+    start = end - timedelta(days=380)
+    try:
+        df = stock.get_market_ohlcv_by_date(
+            start.strftime("%Y%m%d"),
+            end.strftime("%Y%m%d"),
+            code,
+        )
+    except Exception as exc:
+        log.warning("pykrx: OHLCV fetch failed for %s: %s", code, exc)
+        return None
+
+    if df is None or df.empty or len(df) < 50:
+        return None
+
+    try:
+        # 마지막 252 거래일로 52w 윈도 산정
+        recent_252 = df.tail(252)
+        wk_high = int(recent_252["고가"].max())
+        wk_low  = int(recent_252["저가"].min())
+        # SMA — 마지막 N 거래일 종가 평균
+        sma50_vals  = df["종가"].tail(50).astype(float)
+        sma200_vals = df["종가"].tail(200).astype(float)
+        sma50  = float(sma50_vals.mean())  if len(sma50_vals)  >= 50  else None
+        sma200 = float(sma200_vals.mean()) if len(sma200_vals) >= 200 else None
+        last_close = int(df["종가"].iloc[-1])
+        last_date = df.index[-1]
+        try:
+            last_date_str = last_date.strftime("%Y-%m-%d")
+        except Exception:
+            last_date_str = str(last_date)[:10]
+        result = {
+            "wk_high":    wk_high,
+            "wk_low":     wk_low,
+            "sma50":      sma50,
+            "sma200":     sma200,
+            "last_close": last_close,
+            "days":       int(len(df)),
+            "date":       last_date_str,
+        }
+    except Exception as exc:
+        log.warning("pykrx: OHLCV stats parse failed for %s: %s", code, exc)
+        return None
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(result))
+    except Exception:
+        pass
+
+    return result
+
+
 def get_kr_trading_flow(ticker: str, days_back: int = 5) -> Optional[dict]:
     """5-day investor-type net purchase summary for a KR ticker.
 
