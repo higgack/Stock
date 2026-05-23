@@ -62,9 +62,12 @@ def _parse_float(text: str | None) -> Optional[float]:
 
 
 def get_naver_valuation(ticker: str) -> Optional[dict]:
-    """Return {per, eps, pbr, bps} from Naver Finance for a KR ticker.
+    """Return {per, eps, pbr, bps, shares} from Naver Finance for a KR ticker.
 
     ticker: '005930.KS' or '005930' — both accepted.
+    shares (상장주식수) extracted from the company-info side panel — useful
+    as a 4th-pass fallback for sharesOutstanding when yfinance/pykrx/KIS
+    all miss it (root cause of 047810.KS N/A cascade 2026-05-23).
     Returns None on network / parse failure so callers can fall to N/A.
     24h disk cache keyed by (code, today-ISO).
     """
@@ -122,6 +125,29 @@ def get_naver_valuation(ticker: str) -> Optional[dict]:
     if bps is not None:
         result["bps"] = bps
 
+    # 상장주식수 — Naver Finance side panel renders this as
+    # "상장주식수<...>...</...><...>97,475,107</...>". The label-value
+    # distance varies (table cell or definition-list), so match the
+    # label anywhere and capture the next number with commas.
+    shares = None
+    m = re.search(
+        r"상장주식수[\s\S]{0,200}?([\d,]{6,20})",
+        html,
+    )
+    if m:
+        raw = m.group(1).replace(",", "")
+        try:
+            sh = int(raw)
+            # Sanity: KR listed share counts range from ~1M to ~10B.
+            if 100_000 <= sh <= 100_000_000_000:
+                shares = sh
+                result["shares"] = sh
+        except ValueError:
+            pass
+
     _save_cache(code, today, result)
-    _log.info("Naver Finance %s → per=%s eps=%s pbr=%s bps=%s", code, per, eps, pbr, bps)
+    _log.info(
+        "Naver Finance %s → per=%s eps=%s pbr=%s bps=%s shares=%s",
+        code, per, eps, pbr, bps, shares,
+    )
     return result if result else None

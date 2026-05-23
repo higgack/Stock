@@ -2020,6 +2020,13 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 if not (isinstance(info.get("currentPrice"), (int, float))
                         and info.get("currentPrice")):
                     info["currentPrice"] = int(mc_data["close"])
+                # 상장주식수 — root cause of 047810.KS N/A cascade.
+                # yfinance .info sharesOutstanding 가 비어있어도 KRX 공식
+                # 상장주식수 가 들어오면 EPS/PER 등 1주당 지표 산출 가능.
+                if not (isinstance(info.get("sharesOutstanding"), (int, float))
+                        and info.get("sharesOutstanding")):
+                    if mc_data.get("shares"):
+                        info["sharesOutstanding"] = int(mc_data["shares"])
             stats = get_kr_ohlcv_stats(ticker)
             if stats:
                 for key_y, key_p in [
@@ -2132,9 +2139,38 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                         and info.get("bookValue")):
                     if nav.get("bps"):
                         info["bookValue"] = nav["bps"]
+                if not (isinstance(info.get("sharesOutstanding"), (int, float))
+                        and info.get("sharesOutstanding")):
+                    if nav.get("shares"):
+                        info["sharesOutstanding"] = int(nav["shares"])
         except Exception as exc:
             _analyst_log.warning(
                 "D1 Phase 5 Naver Finance patch failed for %s: %s", ticker, exc,
+            )
+
+        # D1 Phase 6 (2026-05-23): sharesOutstanding 역산 fallback. 모든
+        # primary source (yfinance/pykrx/KIS/Naver) 가 비어있고 marketCap +
+        # currentPrice 둘 다 있으면 shares = mc / price 로 역산. 047810.KS
+        # 외부 검증 (97,475,107 주) surface: shares 단일 변수만 채우면 EPS/
+        # PER/PBR 1주당 지표 cascade 해결. Universal — KR/JP/TW/CN/HK 모두
+        # marketCap/currentPrice 채워진 후 마지막 안전망으로 적용.
+        try:
+            mc = info.get("marketCap")
+            px = info.get("currentPrice") or info.get("regularMarketPrice")
+            if (not (isinstance(info.get("sharesOutstanding"), (int, float))
+                     and info.get("sharesOutstanding"))
+                and isinstance(mc, (int, float)) and mc > 0
+                and isinstance(px, (int, float)) and px > 0):
+                approx = int(mc / px)
+                if approx > 0:
+                    info["sharesOutstanding"] = approx
+                    _analyst_log.info(
+                        "D1 Phase 6 shares 역산 for %s: marketCap=%s / price=%s → %s",
+                        ticker, mc, px, approx,
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "D1 Phase 6 shares 역산 failed for %s: %s", ticker, exc,
             )
 
         # KSIC industry override (2026-05-23 삼성중공업 010140.KS surfaced).

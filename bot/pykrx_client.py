@@ -50,7 +50,7 @@ def get_kr_market_cap(ticker: str) -> Optional[dict]:
     cross-check + override 가능.
 
     Returns dict {market_cap: int (원), close: int (원), volume: int,
-    date: str (YYYY-MM-DD)} or None on failure.
+    shares: int (상장주식수), date: str (YYYY-MM-DD)} or None on failure.
 
     pykrx 의 stock.get_market_cap_by_ticker() 사용 — KRX 공식 데이터.
     가장 최근 영업일 기준 (오늘이 휴일이면 직전 영업일).
@@ -90,6 +90,10 @@ def get_kr_market_cap(ticker: str) -> Optional[dict]:
                 "market_cap": int(row.get("시가총액", 0) or 0),
                 "close": int(row.get("종가", 0) or 0),
                 "volume": int(row.get("거래량", 0) or 0),
+                # 상장주식수 — root cause of 047810.KS N/A cascade
+                # (yfinance .info sharesOutstanding missing for many KR
+                # tickers, KIS lstn_stcn occasionally 0). KRX 공식값.
+                "shares": int(row.get("상장주식수", 0) or 0),
                 "date": target.strftime("%Y-%m-%d"),
             }
         except Exception as exc:
