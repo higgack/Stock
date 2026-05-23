@@ -60,6 +60,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
+from telethon import utils as _tutils
 from telethon.errors import FloodWaitError
 from telethon.tl.custom.message import Message
 
@@ -210,28 +211,75 @@ def _current_pause(forwarded: int) -> float:
 # ---------------------------------------------------------------------
 # inbox.jsonl scan
 # ---------------------------------------------------------------------
-def _load_existing_beon_ids() -> set[int]:
-    """Collect BeOn message IDs that trade-bot has already ingested.
+def _load_existing_keys() -> set[tuple[int, int]]:
+    """Collect (chat_id, msg_id) pairs of every forward already
+    represented in inbox.jsonl, regardless of whether BeOn originated
+    the post or relayed it from another channel.
 
-    Both live forwards and prior backfill runs land in inbox.jsonl with
-    forward_origin_chat_username = "BeOn_BeClear" and the original
-    message_id in forward_origin_message_id. Skipping these makes
-    repeated backfill runs additive instead of duplicating posts.
+    Telegram preserves the ORIGINAL forward chain when a message is
+    re-forwarded, so a BeOn relay of, say, AWAKE 플러스 lands in
+    trade-bot's inbox.jsonl with `forward_origin_chat_id` = AWAKE's
+    chat id (not BeOn's). The old version of this scanner filtered on
+    `forward_origin_chat_username == "BeOn_BeClear"` and silently
+    dropped every relayed entry — which made every 2-hour backfill
+    tick re-forward those messages forever.
+
+    Returning a tuple-set keyed on (chat_id, msg_id) lets the iter
+    side compare against the SAME identity it has access to:
+        - BeOn-originated (msg.fwd_from is None) → (source.id, msg.id)
+        - BeOn-relayed    (msg.fwd_from is set)  → (orig.chat, orig.msg_id)
+    Both paths now dedup correctly.
+
+    chat_id is the Bot-API 'marked' form (-100… for channels) — that's
+    what trade-bot writes, and what `telethon.utils.get_peer_id` returns
+    on the iter side.
     """
     if not INBOX_PATH.exists():
         return set()
-    ids: set[int] = set()
+    keys: set[tuple[int, int]] = set()
     with INBOX_PATH.open(encoding="utf-8") as fh:
         for line in fh:
             try:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("forward_origin_chat_username") == SOURCE_USERNAME:
-                mid = rec.get("forward_origin_message_id")
-                if mid is not None:
-                    ids.add(int(mid))
-    return ids
+            cid = rec.get("forward_origin_chat_id")
+            mid = rec.get("forward_origin_message_id")
+            if cid is None or mid is None:
+                continue
+            try:
+                keys.add((int(cid), int(mid)))
+            except (TypeError, ValueError):
+                continue
+    return keys
+
+
+def _msg_key(msg: Message, source_chat_id: int) -> tuple[int, int]:
+    """Return (chat_id, msg_id) identity for dedup vs. inbox.jsonl.
+
+    Mirrors what trade-bot would record for the SAME message when
+    Telegram forwards it to the trade channel:
+      - msg.fwd_from set → original sender's (chat_id, channel_post)
+        because Telegram preserves the head of the forward chain.
+      - msg.fwd_from None → BeOn's own (source_chat_id, msg.id) since
+        BeOn is the originator.
+
+    Falls back to (source_chat_id, msg.id) when fwd_from is present
+    but the chat or post-id can't be extracted (hidden user forwards,
+    legacy chat peers without channel_post, etc.). That fallback may
+    miss true dedup in rare hidden-source cases but is strictly safer
+    than skipping a real new BeOn-originated post.
+    """
+    fwd = getattr(msg, "fwd_from", None)
+    if fwd is not None:
+        from_peer = getattr(fwd, "from_id", None)
+        channel_post = getattr(fwd, "channel_post", None)
+        if from_peer is not None and channel_post is not None:
+            try:
+                return (_tutils.get_peer_id(from_peer), int(channel_post))
+            except (TypeError, ValueError):
+                pass
+    return (source_chat_id, msg.id)
 
 
 def _group_by_album(messages: list[Message]) -> list[list[Message]]:
@@ -295,8 +343,8 @@ async def run(
     dry_run: bool,
     max_candidates: int,
 ) -> int:
-    existing = _load_existing_beon_ids()
-    log.info("already ingested: %d BeOn messages", len(existing))
+    existing = _load_existing_keys()
+    log.info("already ingested: %d forward keys", len(existing))
 
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
     await client.start()
@@ -304,7 +352,13 @@ async def run(
     try:
         source = await client.get_entity(SOURCE_USERNAME)
         dest = await client.get_entity(DEST_ID)
-        log.info("source=%s dest=%s", source.id, dest.id)
+        # Marked form (-100… for channels) so it matches what trade-bot
+        # records via the Bot API for forward_origin_chat_id.
+        source_chat_id = _tutils.get_peer_id(source)
+        log.info(
+            "source=%s (marked=%s) dest=%s",
+            source.id, source_chat_id, dest.id,
+        )
 
         # reverse=True means iterate oldest-first starting from
         # offset_date. Caps with our own date check on `until`.
@@ -315,7 +369,7 @@ async def run(
         ):
             if until is not None and msg.date > until:
                 break
-            if msg.id in existing:
+            if _msg_key(msg, source_chat_id) in existing:
                 skipped_existing += 1
                 continue
             candidates.append(msg)
