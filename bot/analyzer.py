@@ -333,18 +333,38 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     # decision built on missing inputs.
     _check_reports_or_raise(state, selected)
 
+    # Fix F + G: PM Override Discipline code-enforcement.
+    # Must run before formatting so override_rating drives the summary card
+    # and override_note surfaces in the full report's PM section.
+    _override_rating: str | None = None
+    _override_note: str = ""
+    try:
+        _override_rating, _override_note = _check_pm_override_required(state, decision)
+        if _override_note:
+            log.info(
+                "analyze: PM override blocked for %s — forcing Hold "
+                "(no trigger keyword found in PM rationale)",
+                ticker,
+            )
+    except Exception as exc:
+        log.warning("analyze: PM override check failed for %s: %s", ticker, exc)
+
     # Surface the last few resolved recommendations for this ticker as a
     # short Korean header line — gives the reader an immediate sense of
     # whether the bot has been right or wrong on this name lately.
     past_outcomes = _format_past_outcomes(ta.memory_log, ticker)
     log.info("analyze: past_outcomes done — building full report")
 
-    full = _format_full(state, decision, ticker, target_date, past_outcomes, selected)
+    full = _format_full(
+        state, decision, ticker, target_date, past_outcomes, selected,
+        override_note=_override_note or None,
+    )
     log.info("analyze: full report done (%d chars) — building summary", len(full))
 
     summary = _format_summary(
         state, decision, ticker, target_date, past_outcomes,
         notes=pre_flight_notes,
+        override_rating=_override_rating,
     )
     log.info("analyze: summary done (%d chars) — writing cache", len(summary))
 
@@ -368,7 +388,7 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
         from bot.standardview_push import push_analysis
         from bot.market import detect_market as _detect_market_for_push
         _market = _detect_market_for_push(ticker) or "?"
-        _verdict = _extract_rating(decision) or "N/A"
+        _verdict = _override_rating or _extract_rating(decision) or "N/A"
         # Reuse the same stance bar text already in the summary —
         # consumers (Standard View HTML / Telegram) want the exact
         # one-line per-analyst view, not a separate rebuild.
@@ -682,6 +702,137 @@ _STANCE_DIRECTION_KEYWORDS = (
 _DIRECTION_KR = {"buy": "매수", "sell": "매도", "hold": "보유"}
 
 
+# ── Fix F + G (2026-05-23, FORM US 7-axis + 외부 검증자 3차 피드백) ─────────
+# PM Override Discipline code-enforcement.
+# FORM case: 4/4 unanimous Hold + Trader Hold → PM Overweight without trigger
+# → system must force HOLD. CLAUDE.md rule: RSI ≥75/≤25 수치, catalyst D-N일,
+# HARD GUARD keyword 중 하나가 PM rationale에 명시돼야 unanimous override 허용.
+# Rule applies to all analyses going forward — US + KR + JP + TW + CN/HK.
+
+_PM_TRIGGER_KEYWORDS = (
+    "과매수", "과매도", "기술적 극단",
+    "시장경보", "거래정지", "주식분할", "감자", "무상증자",
+    "corp action", "corporate action", "hard guard",
+    "데이터 없음", "데이터 부재", "데이터를 사용할 수 없",
+    "어닝 발표", "실적 발표", "fomc", "가격 인상",
+    "이벤트 리스크", "event risk", "catalyst",
+    "st/*st", "정지", "停牌",
+)
+
+
+def _has_pm_override_trigger(text: str) -> bool:
+    """Return True if text contains a valid PM override trigger keyword."""
+    low = text.lower()
+    # RSI extreme with a concrete number
+    for m in re.finditer(r'rsi\s*[\(（]?\d*[\)）]?\s*[:：\s]\s*(\d+\.?\d*)', low):
+        try:
+            val = float(m.group(1))
+            if val >= 70 or val <= 30:
+                return True
+        except Exception:
+            pass
+    # D-N catalyst countdown phrase
+    if re.search(r'd[-\s]*[1-9]\d?\s*일?|\b[1-9]\d?\s*일\s*(이내|후|이후)', low):
+        return True
+    # Generic trigger keywords
+    if any(kw in low for kw in _PM_TRIGGER_KEYWORDS):
+        return True
+    return False
+
+
+def _get_unanimous_analyst_direction(state: dict) -> str | None:
+    """Return 'buy'/'hold'/'sell' if ALL voted analysts unanimously agree.
+    Returns None when fewer than 2 analysts voted or they disagree.
+    """
+    counts = {"buy": 0, "sell": 0, "hold": 0}
+    total_voted = 0
+    for key, _, _ in _SECTION_LABELS_FOR_SUMMARY:
+        body = state.get(key) if isinstance(state, dict) else None
+        if not body or not body.strip():
+            continue
+        stance = _extract_stance(body)
+        if not stance:
+            continue
+        total_voted += 1
+        for kw, direction in _STANCE_DIRECTION_KEYWORDS:
+            if kw in stance:
+                counts[direction] += 1
+                break
+    if total_voted < 2:
+        return None
+    for direction, count in counts.items():
+        if count == total_voted:
+            return direction
+    return None
+
+
+def _check_pm_override_required(
+    state: dict, decision: str
+) -> tuple[str | None, str]:
+    """Check PM Override Discipline (Fix F) and Trader consistency (Fix G).
+
+    Returns (override_rating, override_note):
+      override_rating = 'Hold' when system forces HOLD; None otherwise.
+      override_note   = explanation string (empty when PM is legitimate).
+
+    Fix F: if ALL voted analysts unanimously disagree with PM direction AND
+    PM rationale contains no trigger (RSI ≥75/≤25 / catalyst D-N일 / HARD
+    GUARD), → auto-force HOLD.
+
+    Fix G: if Trader says HOLD but PM says BUY/Overweight and no trigger
+    → also auto-force HOLD.
+    """
+    pm_rating = _extract_rating(decision)
+    if pm_rating is None:
+        return None, ""
+    final_dir = _DECISION_DIRECTION.get(pm_rating, "")
+    if not final_dir:
+        return None, ""
+
+    # Build combined text for trigger check (PM rationale + investment plan)
+    combined = " ".join([
+        decision,
+        (state.get("investment_plan") or "") if isinstance(state, dict) else "",
+    ])
+
+    # Fix F: Unanimous analyst direction check
+    unanimous_dir = _get_unanimous_analyst_direction(state)
+    if unanimous_dir and unanimous_dir != final_dir:
+        if _has_pm_override_trigger(combined):
+            return None, ""  # trigger present — PM override is legitimate
+        analyst_kr = _DIRECTION_KR.get(unanimous_dir, unanimous_dir)
+        note = (
+            f"⛔ **PM OVERRIDE 자동 차단** (시스템 강제 HOLD):\n"
+            f"분석가 전원 '{analyst_kr}' 합의 → PM {pm_rating} override 시도\n"
+            f"RSI ≥75/≤25 수치 미인용 · 임박 catalyst D-N일 미명시 · HARD GUARD 없음\n"
+            f"→ 시스템이 자동으로 **HOLD** 로 변환. PM 원문은 아래 참고."
+        )
+        return "Hold", note
+
+    # Fix G: Trader → Final consistency check
+    trader_body = (state.get("trader_investment_plan") or "") if isinstance(state, dict) else ""
+    if trader_body:
+        trader_stance = _extract_stance(trader_body)
+        if trader_stance:
+            for kw, trader_dir in _STANCE_DIRECTION_KEYWORDS:
+                if kw in trader_stance:
+                    if trader_dir == "hold" and final_dir in ("buy", "sell"):
+                        if not _has_pm_override_trigger(combined):
+                            note = (
+                                f"⛔ **PM-Trader 불일치 자동 차단** (시스템 강제 HOLD):\n"
+                                f"Trader '{trader_stance}' → PM {pm_rating} — 방향 상충,"
+                                f" trigger(RSI/catalyst/HARD GUARD) 미인용\n"
+                                f"→ 시스템이 자동으로 **HOLD** 로 변환. PM 원문은 아래 참고."
+                            )
+                            return "Hold", note
+                    break
+
+    return None, ""
+
+
+# ── End Fix F + G ────────────────────────────────────────────────────────────
+
+
 def _detect_stance_decision_mismatch(state: dict, final_rating: str) -> str:
     """Return a one-line warning when the analyst-section stance majority
     disagrees with the final BUY/HOLD/SELL direction. Empty string when
@@ -785,8 +936,9 @@ def _format_summary(
     date_: str,
     past_outcomes: str = "",
     notes: list[str] | None = None,
+    override_rating: str | None = None,  # Fix F — PM override enforcement
 ) -> str:
-    rating = _extract_rating(decision) or "N/A"
+    rating = override_rating or _extract_rating(decision) or "N/A"
     display = _display_ticker(ticker)
     parts = [
         f"📊 **{display}** ({date_})",
@@ -912,6 +1064,7 @@ def _format_full(
     date_: str,
     past_outcomes: str = "",
     selected: list[str] | None = None,
+    override_note: str | None = None,  # Fix F — PM override note
 ) -> str:
     """Render the long-form report. `selected` is the per-run list of
     analyst ids that actually ran — when the pre-flight pruning drops
@@ -959,7 +1112,10 @@ def _format_full(
         parts.append(
             f"\n## {label}\n{_clean_section(body, currency_symbol=_section_currency_symbol, canonical=_canonical)}"
         )
-    parts.append(f"\n## ✅ 최종 결정\n{decision}")
+    _pm_section = (
+        f"{override_note}\n\n---\n{decision}" if override_note else decision
+    )
+    parts.append(f"\n## ✅ 최종 결정\n{_pm_section}")
     return "\n".join(parts)
 
 

@@ -2057,6 +2057,24 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
                     f" (ratio {ratio:.2f}x) — 분할 / BPS 재계산 시점 차이"
                 )
 
+        # Fix H (2026-05-23, FORM US 7-axis + 외부 검증자 제언): forwardEps /
+        # trailingEps > 2.5x ratio is a red flag — spin-off, large one-time
+        # item, or yfinance serving a stale/cached forward estimate. Threshold
+        # 2.5x vs existing 3x in _get_market_signals_for gives earlier warning.
+        # Universal — applies to US + KR + JP + TW + CN/HK.
+        # Rule applies to all analyses going forward.
+        fwd_eps = info.get("forwardEps")
+        if (isinstance(fwd_eps, (int, float)) and fwd_eps == fwd_eps
+                and isinstance(eps, (int, float)) and eps == eps and eps != 0):
+            eps_ratio = fwd_eps / eps
+            if abs(eps_ratio) >= 2.5 or (eps > 0 and fwd_eps < 0):
+                inconsistency_lines.append(
+                    f"⚠️ Forward EPS {sym}{_fmt_p.format(fwd_eps)} vs TTM EPS"
+                    f" {sym}{_fmt_p.format(eps)} (비율 {eps_ratio:.1f}x) —"
+                    f" 통상 범위 초과. spin-off/일회성 항목/데이터 오류 가능."
+                    f" Forward PER 사용 전 EPS 추세 검증 필수."
+                )
+
         # Fix ② (2026-05-23, 외부 검증자 제언): US dual-class shares
         # directive. GOOG/GOOGL, BRK.A/BRK.B 등은 yfinance 가 특정
         # share class 기준으로 sharesOutstanding 을 반환 — 전체 시총
@@ -2122,6 +2140,108 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
             sep,
         ])
         return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _compute_technical_snapshot(ticker: str) -> str:
+    """Single Source of Truth for RSI(14), MACD(12,26,9), Bollinger(20,2σ).
+
+    Injected into every analyst prompt so ALL analysts share the same
+    pre-computed technical values. Prevents cross-analyst RSI/MACD
+    divergence (FORM 2026-05-23: 시장 analyst RSI 49.37 vs 감정 analyst
+    RSI 78 fabrication). Analysts MUST cite these values; fabricating
+    different values is FORBIDDEN.
+    Rule applies to all analyses going forward — US + KR + JP + TW + CN/HK.
+    """
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="3mo", auto_adjust=True)
+        if hist is None or len(hist) < 20:
+            return ""
+        close = hist["Close"].dropna()
+        if len(close) < 20:
+            return ""
+
+        # RSI(14) — Wilder exponential smoothing
+        rsi_str = "N/A"
+        rsi_val_num: float | None = None
+        if len(close) >= 15:
+            delta = close.diff()
+            gain = delta.clip(lower=0)
+            loss = (-delta).clip(lower=0)
+            avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+            last_loss = float(avg_loss.iloc[-1])
+            if last_loss == 0:
+                rsi_val_num = 100.0
+            else:
+                rs = float(avg_gain.iloc[-1]) / last_loss
+                rsi_val_num = 100 - 100 / (1 + rs)
+            rsi_str = f"{rsi_val_num:.1f}"
+
+        # MACD(12, 26, 9)
+        macd_str = "N/A"
+        if len(close) >= 27:
+            ema12 = close.ewm(span=12, adjust=False).mean()
+            ema26 = close.ewm(span=26, adjust=False).mean()
+            macd_line = ema12 - ema26
+            macd_sig = macd_line.ewm(span=9, adjust=False).mean()
+            macd_hist_s = macd_line - macd_sig
+            macd_str = (
+                f"MACD {macd_line.iloc[-1]:.3f}"
+                f" / Signal {macd_sig.iloc[-1]:.3f}"
+                f" / Hist {macd_hist_s.iloc[-1]:.3f}"
+            )
+
+        # Bollinger Bands(20, 2σ)
+        bb_str = "N/A"
+        if len(close) >= 20:
+            try:
+                from bot.market import get_market_config as _gcfg
+                _c = _gcfg(ticker)
+                _sym_bb = _c.get("currency_symbol", "$")
+                _fmt_bb: str = "{:,.0f}" if _c.get("currency") in ("KRW", "JPY") else "{:,.2f}"
+            except Exception:
+                _sym_bb, _fmt_bb = "$", "{:,.2f}"
+            bb_mid = close.rolling(20).mean()
+            bb_std = close.rolling(20).std()
+            bb_u = bb_mid + 2 * bb_std
+            bb_l = bb_mid - 2 * bb_std
+            bb_str = (
+                f"상단 {_sym_bb}{_fmt_bb.format(float(bb_u.iloc[-1]))}"
+                f" / 중단 {_sym_bb}{_fmt_bb.format(float(bb_mid.iloc[-1]))}"
+                f" / 하단 {_sym_bb}{_fmt_bb.format(float(bb_l.iloc[-1]))}"
+            )
+
+        # RSI zone label for PM override trigger context
+        rsi_zone = ""
+        if rsi_val_num is not None:
+            if rsi_val_num >= 75:
+                rsi_zone = " ⚠️ [과매수 ≥75 — PM override 허용 trigger]"
+            elif rsi_val_num <= 25:
+                rsi_zone = " ⚠️ [과매도 ≤25 — PM override 허용 trigger]"
+            elif rsi_val_num >= 70:
+                rsi_zone = " [과매수 접근 구간 ≥70]"
+            elif rsi_val_num <= 30:
+                rsi_zone = " [과매도 접근 구간 ≤30]"
+
+        sep = "━" * 56
+        return "\n".join([
+            sep,
+            "📐 TECHNICAL SNAPSHOT — 백엔드 단 1회 계산값 (재계산·재인용 금지)",
+            sep,
+            f"RSI(14): {rsi_str}{rsi_zone}",
+            f"{macd_str}",
+            f"볼린저(20,2σ): {bb_str}",
+            sep,
+            "⛔ SINGLE SOURCE OF TRUTH 강제 적용 (FORM 2026-05-23 RSI hallucination 방지):",
+            "   • 위 RSI(14) / MACD / 볼린저 수치가 이 분석의 유일한 canonical 값.",
+            "   • 위와 다른 RSI / MACD / 볼린저 값을 독자 계산·추정·인용하는 것 FORBIDDEN.",
+            f"   • '과매수' 언급 조건: 위 RSI(14) [{rsi_str}] ≥ 75 인 경우에만 허용.",
+            f"   • '과매도' 언급 조건: 위 RSI(14) [{rsi_str}] ≤ 25 인 경우에만 허용.",
+            sep,
+        ])
     except Exception:
         return ""
 
@@ -2692,6 +2812,32 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 )
         except Exception:
             pass
+
+    # Fix L (2026-05-23, FORM RSI hallucination 차단): Technical Indicators
+    # Single Source of Truth. Pre-compute RSI(14)/MACD/Bollinger here so
+    # ALL analysts share the same canonical values. Each analyst sees these
+    # numbers in the context and MUST NOT produce different values.
+    # No _section_allowed gate — every analyst must see the SSoT.
+    _tech_snap = _compute_technical_snapshot(ticker)
+    if _tech_snap:
+        base += "\n\n" + _tech_snap
+
+    # Fix K (2026-05-23, FORM US 7-axis): US 종목 분석에서 KR/JP/TW/CN
+    # 매크로 인용 차단. FORM 감정 분석가가 "USD/KRW 환율 + BoK 금리" 를
+    # US 종목 분석에 인용한 패턴 차단. Rule applies to all US analyses.
+    if market == "US":
+        base += (
+            "\n\n=== US 종목 매크로 GATE (MANDATORY) ===\n"
+            "이 분석 대상은 미국 상장 종목입니다. 아래 항목 인용 FORBIDDEN:\n"
+            "  ❌ KR 매크로: USD/KRW 환율, BoK 기준금리, KOSPI/KOSDAQ,\n"
+            "     KRX 수급 flow, 한국 CPI, 한국 GDP, 한국 수출입 지표.\n"
+            "  ❌ JP 매크로: USD/JPY, BoJ 정책금리, Nikkei 225, TOPIX.\n"
+            "  ❌ TW 매크로: USD/TWD, CBC 중취금리, TAIEX.\n"
+            "  ❌ CN 매크로: USD/CNY, LPR, PMI, CSI 300 (예외: 중국 매출 비중\n"
+            "     30%+ 명시 시 USD/CNY 1건만 허용).\n"
+            "  ✅ ALLOWED: Fed Fund Rate, 美 10Y 국채, USD Index (DXY),\n"
+            "     S&P 500, NASDAQ, VIX, WTI (에너지주), 미국 CPI/GDP/고용.\n"
+        )
 
     # JP body-text directive — same shape as the KR one below. Readers
     # can't parse '7203.T' alone; force every analyst to surface a
