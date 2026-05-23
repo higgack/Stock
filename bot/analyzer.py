@@ -1420,23 +1420,16 @@ def _magnitude_check(body: str, canonical: dict) -> str:
                         unit_label = "억 원" if currency == "KRW" else (
                             "億 円" if currency == "JPY" else None
                         )
-                    if unit_label:
-                        normalized = [
-                            (f"-{abs(v) / scale:,.2f}{unit_label[0]}"
-                             if v < 0
-                             else f"{v / scale:,.2f}{unit_label[0]}")
-                            for v in raw_vals
-                        ]
-                        # Fix D (2026-05-23, 207940.KS 외부 검증 surface):
-                        # 이전에는 "⚠️ [단위 오류 의심...]" 알람 행 + 정규화 행
-                        # 2줄을 출력했는데, 외부 검증자가 "내부 디버깅용 프롬프트
-                        # 가 UI 에 그대로 노출" 이라 지적. 정규화된 companion 행
-                        # 만 남기고 alarm 행은 제거 — 독자가 한 줄로 정정된
-                        # 값을 자연스럽게 볼 수 있도록.
-                        result.append(
-                            f"  ↳ 단위 정규화 ({unit_label} 기준): "
-                            + " — ".join(normalized)
-                        )
+                    # Fix O (2026-05-24, 현대모비스 012330.KS 외부 검증 surface):
+                    # 폐기된 "↳ 단위 정규화 (...)" companion 행. 외부 검증자
+                    # 보고: "내부 디버깅 노트가 사용자 UI 에 그대로 노출".
+                    # body 본문은 LLM 이 이미 올바른 단위 (조 원 / 億 円) 로
+                    # 출력하는 경우가 대부분 — 중복 normalization 행은
+                    # noise. 단위 mismatch 가 실제 발생한 경우는 별도
+                    # _canonical_crosscheck 가 잡고, in-line 으로 정정
+                    # banner 를 출력. 본 polish 단계는 silent — 더 이상
+                    # companion 행을 emit 하지 않는다. Universal — US +
+                    # KR + JP + TW + CN/HK 모든 시장 동일.
                     break
     return "\n".join(result)
 

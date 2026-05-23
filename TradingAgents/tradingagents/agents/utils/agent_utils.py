@@ -510,31 +510,54 @@ def _fetch_peer_multiples(ticker: str) -> str:
         nm = raw.get("longName") or raw.get("shortName") or ""
         if isinstance(nm, str) and nm.strip():
             company_name = nm.strip()
-        # PER (trailing) — most universal multiple. KR fallback first if yfinance miss.
+
+        # Fix Q (2026-05-24, 현대모비스 012330.KS 외부 검증 surface):
+        # peer multiple sanity range 강화 — DENSO Corporation 케이스에서
+        # PSR 0.00 / EV/EBITDA -0.1 같은 명백한 데이터 오류가 노출.
+        # 범위: PER 0~500, PBR -50~100, PSR 0.05~50, EV/EBITDA -500~500.
+        # PSR < 0.05 는 정수 truncation 후 0.00 으로 표시되는 stale 데이터
+        # 의심. PBR negative 는 자본잠식 (legitimate) 으로 허용. Universal.
+        def _valid(v, lo: float, hi: float) -> bool:
+            return (isinstance(v, (int, float))
+                    and not (isinstance(v, float) and v != v)
+                    and lo < v < hi)
+
+        # PER (trailing) — KR fallback first if yfinance miss. 적자 (eps<0)
+        # 케이스는 별도 처리 — "N/M(적자)" 로 명시.
         per = raw.get("trailingPE")
-        if not (isinstance(per, (int, float)) and per == per and 0 < per < 1000):
-            if kr_per and 0 < kr_per < 1000:
+        eps_for_per = raw.get("trailingEps")
+        if not _valid(per, 0, 500):
+            if kr_per and 0 < kr_per < 500:
                 per = kr_per
-        if isinstance(per, (int, float)) and not (isinstance(per, float) and per != per) and 0 < per < 1000:
+            else:
+                per = None
+        if _valid(per, 0, 500):
             out_parts.append(f"PER {per:.1f}")
-        # Forward PER — useful when TTM is distorted by one-offs
+        elif isinstance(eps_for_per, (int, float)) and eps_for_per == eps_for_per and eps_for_per < 0:
+            # Fix R (2026-05-24): 적자 기업의 PER N/A → "N/M(적자)" substitute.
+            # LLM 이 "데이터 없음" 으로 오해하지 않고 "적자라 PER 산출 불가"
+            # 로 정성 분석 가능하게 함. Universal — 모든 시장 공통.
+            out_parts.append("PER N/M(적자)")
+        # Forward PER
         fper = raw.get("forwardPE")
-        if isinstance(fper, (int, float)) and not (isinstance(fper, float) and fper != fper) and 0 < fper < 1000:
+        if _valid(fper, 0, 500):
             out_parts.append(f"Fwd PER {fper:.1f}")
-        # PSR
+        # PSR — 0.05 미만은 stale/truncated 의심 (실제 0 인 회사 없음)
         psr = raw.get("priceToSalesTrailing12Months")
-        if isinstance(psr, (int, float)) and not (isinstance(psr, float) and psr != psr) and 0 < psr < 100:
+        if _valid(psr, 0.05, 50):
             out_parts.append(f"PSR {psr:.2f}")
-        # PBR — KR fallback first if yfinance miss.
+        # PBR — KR fallback first. -50~100 (자본잠식 시 negative 허용)
         pbr = raw.get("priceToBook")
-        if not (isinstance(pbr, (int, float)) and pbr == pbr and 0 < pbr < 100):
-            if kr_pbr and 0 < kr_pbr < 100:
+        if not _valid(pbr, -50, 100):
+            if kr_pbr and -50 < kr_pbr < 100:
                 pbr = kr_pbr
-        if isinstance(pbr, (int, float)) and not (isinstance(pbr, float) and pbr != pbr) and 0 < pbr < 100:
+            else:
+                pbr = None
+        if _valid(pbr, -50, 100):
             out_parts.append(f"PBR {pbr:.2f}")
-        # EV/EBITDA
+        # EV/EBITDA — -500~500 (적자 EBITDA legitimate negative 허용)
         evebitda = raw.get("enterpriseToEbitda")
-        if isinstance(evebitda, (int, float)) and not (isinstance(evebitda, float) and evebitda != evebitda) and -100 < evebitda < 1000:
+        if _valid(evebitda, -500, 500):
             out_parts.append(f"EV/EBITDA {evebitda:.1f}")
     except Exception as exc:
         _analyst_log.warning("peer multiples fetch failed for %s: %s", ticker, exc)
@@ -909,7 +932,29 @@ def get_market_signals_for(ticker: str) -> str:
         # truth — institutions think it's overpriced" and over-weights
         # the bear case. Threshold mirrors the magnitude where staleness
         # dominates real disagreement.
-        if upside <= -20:
+        # Fix P (2026-05-24, 현대모비스 012330.KS 외부 검증 surface):
+        # 더 강력한 staleness 신호 — target < current (any upside < 0)
+        # AND 등급이 buy/strong_buy (rec_mean ≤ 2.0 또는 rec_key in
+        # buy/strong_buy). 통상 목표가가 현재가보다 낮으면 등급도 hold/
+        # sell 이어야 정합 — 강매수 등급은 가격 급등을 컨센서스가
+        # 따라잡지 못한 stale 신호. 현대모비스 -11.6% (>-20% 기존
+        # threshold 미달) 인데 강매수 등급 잡음. Universal — US/KR/JP/
+        # TW/CN/HK 공통.
+        _is_buy_rating = (
+            (isinstance(rec_mean, (int, float)) and rec_mean == rec_mean
+                and 0 < rec_mean <= 2.0)
+            or rec_key in ("strong_buy", "buy")
+        )
+        if upside < 0 and _is_buy_rating:
+            lines.append(
+                f"  ⛔ STALE 컨센서스 (HARD): 목표가가 현재가보다"
+                f" {-upside:.1f}% 낮은데 등급은 강매수/매수. 가격 급등을"
+                f" 애널리스트들이 아직 따라잡지 못한 stale 신호. 5거래일"
+                f" horizon dominant variable 로 컨센서스 사용 금지 — 단순"
+                f" reference 로만 cite. 본문의 개별 상향 뉴스로 catch-up"
+                f" 여부 확인 후 판단."
+            )
+        elif upside <= -20:
             lines.append(
                 f"  ⚠️ 현재가가 컨센서스 목표가보다 {-upside:.0f}% 높음 — 최근 랠리로"
                 f" 다수 애널리스트가 목표가를 아직 업데이트하지 않았을 가능성이 큼."
@@ -2035,8 +2080,15 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
         wk_high_str = _52w(wk_high, is_low=False)
         wk_low_str  = _52w(wk_low,  is_low=True)
 
-        per_str = (f"{per:.1f}" if isinstance(per, (int, float))
-                   and per == per and 0 < per < 10000 else "N/A")
+        # Fix R (2026-05-24): 적자 기업의 PER → "N/M(적자)" substitute
+        # 대신 "N/A" 표기 시 LLM 이 "데이터 없음" 으로 오인식. EPS 가
+        # 음수이면 PER 산출 불가능 — 자명한 상태이므로 명시. Universal.
+        if isinstance(per, (int, float)) and per == per and 0 < per < 10000:
+            per_str = f"{per:.1f}"
+        elif isinstance(eps, (int, float)) and eps == eps and eps < 0:
+            per_str = "N/M(적자)"
+        else:
+            per_str = "N/A"
         pbr_str = (f"{pbr:.2f}" if isinstance(pbr, (int, float))
                    and pbr == pbr and -100 < pbr < 1000 else "N/A")
         eps_str = (f"{sym}{_fmt_p.format(eps)}" if isinstance(eps, (int, float))
@@ -3473,6 +3525,15 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         # -62% gap both stay caught. The 200-day check covers cases
         # where the 50d SMA happens to track current closely but the
         # longer window reveals an outlier.
+        # Fix N (2026-05-24, 현대모비스 012330.KS 외부 검증 surface):
+        # 이격도 단독으로 HARD GUARD 발동하면 진짜 급등 (short squeeze /
+        # 호재 catalyst / M&A 등) 도 "데이터 transitional" 로 오인식하여
+        # 매매 기회를 놓침. 진짜 corp action / 거래정지 / shares 정합성
+        # 위반이면 외부 source 가 evidence 를 줌. 외부 evidence 없이
+        # 이격도만으로 분석 포기는 over-defensive. Multi-signal
+        # confirmation 으로 변경 — universal (US/KR/JP/TW/CN/HK 공통).
+        sma_gap_signals: list[str] = []
+        sma_gap_info: dict | None = None
         for window_label, key in [("50일 SMA", "fiftyDayAverage"),
                                   ("200일 SMA", "twoHundredDayAverage")]:
             sma = info.get(key)
@@ -3481,42 +3542,117 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             gap = abs(px - sma) / sma
             if gap <= 0.30:
                 continue
-            direction = "below" if px < sma else "above"
-            # Fix J upgrade (2026-05-19 노바렉스 194700.KS surfaced) —
-            # ⚠️ → ⛔ HARD GUARD. 노바렉스 200d gap 36% (current ₩10,140
-            # vs 200d ₩15,958) 였는데 분석가가 banner 를 silent omit 한
-            # 채 MACD/RSI/EMA/Bollinger 모두 매수 신호로 인용. 단순
-            # warning 으로는 약함 — Fix E (macro suspect) 처럼 narrative
-            # cite 자체 금지로 강화.
-            base += (
-                f"\n\n=== ⛔ PRICE GAP SANITY (HARD GUARD — Fix J 강화) ===\n"
-                f"current price {_sym}{_fmt.format(px)} is {gap*100:.0f}%"
-                f" {direction} the {window_label}"
-                f" {_sym}{_fmt.format(sma)}. 이 정도 gap 은 stock-split"
-                f" adjustment lag / corp action / 거래정지 후 가격"
-                f" reset 등의 데이터 quality 문제 의심 — 일반적인 추세"
-                f" 변동 아님.\n\n"
-                f"다음 사용 절대 금지 (RULE 위반):\n"
-                f"  ❌ 10 EMA / 50 SMA / 200 SMA 비교 또는 cross 신호"
-                f" (골든/데드 크로스 등) 인용\n"
-                f"  ❌ MACD / RSI / Bollinger 밴드 / ATR 기반 매수/매도"
-                f" 신호 narrative\n"
-                f"  ❌ '단기 상승 모멘텀' / '하락 추세 지속' / '과매수/"
-                f"과매도' 같은 directional 톤 결론 — 데이터 자체가 stale"
-                f" 인데 추세 해석 의미 없음\n\n"
-                f"올바른 처리:\n"
-                f"  ✅ canonical current price ({_sym}{_fmt.format(px)})"
-                f" 한 줄 인용 + '데이터 transitional, 기술 지표 분석 보류'"
-                f" 명시\n"
-                f"  ✅ 펀더멘털 지표 (매출 / 영업이익 / 부채비율 등) 만"
-                f" 분석 진행 — 가격 기반 multiples (PER / PBR / EV-EBITDA)"
-                f" 도 transitional 가능성 인지\n"
-                f"  ✅ KRX 시장경보 / DART 공시 / 거래정지 status 확인"
-                f" 권고 — 노바렉스 194700.KS 2026-05-19 케이스: 200d gap"
-                f" 36% + 52w low > current 가 동반 — corp action 또는"
-                f" 거래정지 진행 가능성 매우 큼"
-            )
-            break  # one warning per analysis is enough — don't spam both windows
+            sma_gap_info = {
+                "window_label": window_label,
+                "gap": gap,
+                "sma": sma,
+                "direction": "below" if px < sma else "above",
+            }
+            break  # first window above threshold is enough
+
+        if sma_gap_info:
+            # Collect external evidence of a real data-quality issue.
+            # Any single confirming signal → HARD GUARD. None → SOFT
+            # WARNING (technical indicators still cite-able, but flag
+            # overbought/oversold risk).
+            try:
+                _yf_ca = _detect_yf_corp_action(ticker, lookback_days=14)
+                if _yf_ca:
+                    sma_gap_signals.append(
+                        f"yfinance .splits ex-date: {_yf_ca.get('date')} "
+                        f"({_yf_ca.get('event')})"
+                    )
+            except Exception:
+                pass
+            # shares × price vs marketCap divergence — universal data
+            # integrity check. yfinance occasionally serves a stale
+            # marketCap (computed from pre-split shares) while shares
+            # / price are post-split. If |implied_mc - reported_mc|
+            # / reported_mc > 5% → strong evidence of corp action lag.
+            try:
+                _mc_chk = info.get("marketCap")
+                _sh_chk = info.get("sharesOutstanding")
+                if (isinstance(_mc_chk, (int, float)) and _mc_chk > 0
+                        and isinstance(_sh_chk, (int, float)) and _sh_chk > 0
+                        and isinstance(px, (int, float)) and px > 0):
+                    _implied = _sh_chk * px
+                    if abs(_implied - _mc_chk) / _mc_chk > 0.05:
+                        sma_gap_signals.append(
+                            f"shares × price ({_sym}{_fmt.format(_implied)}) "
+                            f"vs reported marketCap ({_sym}{_fmt.format(_mc_chk)}) "
+                            f"divergence > 5%"
+                        )
+            except Exception:
+                pass
+            # KRX 시장경보 / 거래정지 — KR 한정. prefetched 가 함수 scope
+            # 에서 사용 가능한 시점 (KR branch 안) 이면 활용, 아니면 skip.
+            try:
+                if market == "KR":
+                    from bot.krx_alert_client import get_krx_alert
+                    _krx = get_krx_alert().get_status(ticker)
+                    if _krx and (_krx.get("alert_type") or _krx.get("halted")):
+                        sma_gap_signals.append(
+                            f"KRX 시장경보 / 거래정지: "
+                            f"{_krx.get('alert_type') or '거래정지'}"
+                        )
+            except Exception:
+                pass
+
+            _gap_pct = sma_gap_info["gap"] * 100
+            _dir = sma_gap_info["direction"]
+            _wl = sma_gap_info["window_label"]
+            _sma = sma_gap_info["sma"]
+
+            if sma_gap_signals:
+                # External evidence present → HARD GUARD (existing behavior)
+                base += (
+                    f"\n\n=== ⛔ PRICE GAP SANITY (HARD GUARD — Fix J/N 강화) ===\n"
+                    f"current price {_sym}{_fmt.format(px)} is {_gap_pct:.0f}%"
+                    f" {_dir} the {_wl} {_sym}{_fmt.format(_sma)},"
+                    f" AND 다음 외부 신호가 동반:\n"
+                )
+                for _sig in sma_gap_signals:
+                    base += f"  ⛔ {_sig}\n"
+                base += (
+                    "\n이는 stock-split adjustment lag / corp action /"
+                    " 거래정지 등의 데이터 quality 문제로 확정.\n\n"
+                    "다음 사용 절대 금지 (RULE 위반):\n"
+                    "  ❌ 10 EMA / 50 SMA / 200 SMA 비교 또는 cross 신호 인용\n"
+                    "  ❌ MACD / RSI / Bollinger 밴드 / ATR 기반 매수/매도"
+                    " 신호 narrative\n"
+                    "  ❌ '단기 상승 모멘텀' / '하락 추세 지속' / '과매수/"
+                    "과매도' 같은 directional 톤 결론\n\n"
+                    "올바른 처리:\n"
+                    f"  ✅ canonical current price ({_sym}{_fmt.format(px)})"
+                    " 한 줄 인용 + '데이터 transitional, 기술 지표 분석"
+                    " 보류' 명시\n"
+                    "  ✅ 펀더멘털 지표 (매출 / 영업이익 / 부채비율 등) 만"
+                    " 분석 진행"
+                )
+            else:
+                # No external evidence — genuine momentum / catalyst-driven
+                # move. SOFT WARNING only: flag overbought/oversold risk
+                # but don't ban technical indicator analysis. 현대모비스
+                # 012330.KS 2026-05-24 surfaced: 28일 사이 +50% 정상 급등
+                # 인데 HARD GUARD 가 발화해 분석가가 분석 포기.
+                base += (
+                    f"\n\n=== ⚠️ PRICE GAP NOTICE (SOFT — Fix N 신설) ===\n"
+                    f"current price {_sym}{_fmt.format(px)} is {_gap_pct:.0f}%"
+                    f" {_dir} the {_wl} {_sym}{_fmt.format(_sma)}.\n"
+                    "외부 corp action / 거래정지 / shares 정합성 신호 없음"
+                    " — 실제 강한 추세 (호재 catalyst / short squeeze /"
+                    " M&A 기대 등) 일 가능성이 높음. 데이터 오류로 결론짓지"
+                    " 말 것.\n\n"
+                    "권고 처리:\n"
+                    "  ✅ 기술 지표 (RSI / MACD / 볼린저 / EMA) 정상 인용"
+                    " 허용\n"
+                    f"  ⚠️ 단 {_gap_pct:.0f}% 이격은 통계적으로 비정상 —"
+                    " overbought (above) 또는 oversold (below) 위험 명시"
+                    " + 5거래일 단기 mean-reversion 가능성 고려\n"
+                    "  ⚠️ 가능하면 catalyst (실적 / 공시 / 뉴스) 로 급등락"
+                    " 사유를 narrative 로 설명 — '왜 이격이 벌어졌는지'"
+                    " 가 단기 dominant variable"
+                )
 
     # Universal corporate-action scan via yfinance .splits — catches the
     # ex-date event for ANY market (US/KR/JP/CN). This is the only

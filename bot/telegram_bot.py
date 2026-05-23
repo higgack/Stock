@@ -755,7 +755,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
 
 ━━━━━━━━━
 <b>【7. 안정성 (자동)】</b>
-subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 (미한일대중 산업정책·자본잠식·콤마·PER·분기합 sanity) · 재벌 15곳→RULE 9 · stance 결론우선 · 섹터강도 ±50%p strip · 컨센서스 staleness · 코퍼레이트액션 HARD GUARD 3중+banner · EPS/PER 재계산 금지 · 소유구조 환각 차단 · Comps PEER SET 162 산업+multiples · PM 코드-강제 · canonical 현재가/시총/SMA · DART KSIC override · KIS+pykrx (시총/PER/^KS11/60M베타) fallback · 단위 자동 정규화 · KRX 시장경보·USD/KRW 감응도·ETF 메타·12개월 thesis 금지구 · API 키 부재→DATA OFFLINE
+subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 · 재벌→RULE9 · stance 결론우선 · 섹터강도 ±50%p · 컨센서스 staleness (tgt&lt;cur+매수=⛔) · 코퍼레이트액션 HARD GUARD 3중 · SMA gap multi-signal (외부 evidence시 ⛔, 단독시 ⚠️ overbought) · 적자 PER→N/M · Peer multiple sanity · 소유구조 환각 차단 · Comps PEER SET 162 산업 · PM 코드-강제 · canonical 현재가/시총/SMA · DART KSIC override · KIS+pykrx fallback · 단위 silent 정규화 · KRX 시장경보·USD/KRW 감응도·ETF 메타·12개월 thesis 금지 · API 키 부재→DATA OFFLINE
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
