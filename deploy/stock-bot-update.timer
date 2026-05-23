@@ -1,9 +1,9 @@
 [Unit]
-Description=Run stock-bot-update every 2 minutes
+Description=Run stock-bot-update every 1 minute
 
 [Timer]
-OnBootSec=2min
-OnUnitActiveSec=2min
+OnBootSec=1min
+OnUnitActiveSec=1min
 Unit=stock-bot-update.service
 Persistent=true
 

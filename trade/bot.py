@@ -176,7 +176,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 
 <b>9. 자동화 systemd</b>
 • trade-bot — 실시간 메시지 수집
-• trade-bot-update (2분) — git pull + 재배포
+• trade-bot-update (1분) — git pull + 재배포
 • trade-bot-watchdog (1분) — 폴링 hang 감지 + 자동 재시작
 • trade-bot-dashboard — HTTP 서버 (포트 8765, gzip on)
 • trade-bot-dashboard-refresh (5분) — ingest → purge_ignored (filter 회귀 정리) → HTML 재생성
@@ -192,7 +192,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-23 — beon-sync dedup fix (relay된 글 재forward 중단)</i>
+<i>최종 갱신: 2026-05-23 — auto-update 1분 간격으로 단축</i>
 """
 
 
