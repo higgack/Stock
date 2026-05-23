@@ -416,6 +416,41 @@ def _fetch_peer_multiples(ticker: str) -> str:
         return _PEER_MULTIPLES_CACHE[ticker]
     out_parts: list[str] = []
     company_name = ""
+    # KR peer values — Fix E (2026-05-23, 207940.KS 외부 검증 surface):
+    # yfinance 가 셀트리온 068270.KS / SK바이오팜 326030.KS 등 KR mid-cap
+    # peer 의 trailingPE / priceToBook / EV-EBITDA 를 N/A 로 던지는 패턴.
+    # Naver Finance + KIS 로 보강해 Comps 표 빈 칸 메움. KR ticker 만
+    # 적용 — US/JP/TW/CN 은 yfinance peer multiples 가 일반적으로 양호.
+    kr_per = kr_pbr = kr_eps = kr_bps = None
+    try:
+        from bot.market import detect_market
+        if detect_market(ticker) == "KR":
+            try:
+                from bot.naver_finance_client import get_naver_valuation
+                nav_peer = get_naver_valuation(ticker)
+                if nav_peer:
+                    kr_per = nav_peer.get("per")
+                    kr_pbr = nav_peer.get("pbr")
+                    kr_eps = nav_peer.get("eps")
+                    kr_bps = nav_peer.get("bps")
+            except Exception:
+                pass
+            # KIS PER/PBR as secondary KR peer source (Naver 가 비어있는
+            # 일부 mid-cap 케이스)
+            if not (kr_per or kr_pbr):
+                try:
+                    from bot.kis_client import get_kis
+                    kis_peer = get_kis().get_price(ticker)
+                    if kis_peer:
+                        if not kr_per and kis_peer.get("per") and kis_peer["per"] > 0:
+                            kr_per = kis_peer["per"]
+                        if not kr_pbr and kis_peer.get("pbr") and kis_peer["pbr"] > 0:
+                            kr_pbr = kis_peer["pbr"]
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     try:
         import yfinance as yf
         raw = yf.Ticker(ticker).info or {}
@@ -424,8 +459,11 @@ def _fetch_peer_multiples(ticker: str) -> str:
         nm = raw.get("longName") or raw.get("shortName") or ""
         if isinstance(nm, str) and nm.strip():
             company_name = nm.strip()
-        # PER (trailing) — most universal multiple
+        # PER (trailing) — most universal multiple. KR fallback first if yfinance miss.
         per = raw.get("trailingPE")
+        if not (isinstance(per, (int, float)) and per == per and 0 < per < 1000):
+            if kr_per and 0 < kr_per < 1000:
+                per = kr_per
         if isinstance(per, (int, float)) and not (isinstance(per, float) and per != per) and 0 < per < 1000:
             out_parts.append(f"PER {per:.1f}")
         # Forward PER — useful when TTM is distorted by one-offs
@@ -436,8 +474,11 @@ def _fetch_peer_multiples(ticker: str) -> str:
         psr = raw.get("priceToSalesTrailing12Months")
         if isinstance(psr, (int, float)) and not (isinstance(psr, float) and psr != psr) and 0 < psr < 100:
             out_parts.append(f"PSR {psr:.2f}")
-        # PBR
+        # PBR — KR fallback first if yfinance miss.
         pbr = raw.get("priceToBook")
+        if not (isinstance(pbr, (int, float)) and pbr == pbr and 0 < pbr < 100):
+            if kr_pbr and 0 < kr_pbr < 100:
+                pbr = kr_pbr
         if isinstance(pbr, (int, float)) and not (isinstance(pbr, float) and pbr != pbr) and 0 < pbr < 100:
             out_parts.append(f"PBR {pbr:.2f}")
         # EV/EBITDA
@@ -1956,6 +1997,13 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
         # adjusted, 다른 source 가 unadjusted 일 때 ratio 가 깨짐. Universal
         # — US/KR/JP/TW/CN/HK 모두 동일. 위반 시 HARD GUARD 자동 주입.
         inconsistency_lines: list[str] = []
+        # Fix A (2026-05-23, 207940.KS 외부 검증 surface): KRX shares override
+        # 가 발생했으면 (yfinance shares != KRX shares > 5%), 사용자에게
+        # 명시적으로 알린다. PER × EPS check 는 yfinance 내부 정합성이라
+        # 자기참조 통과 가능 — 외부 anchor 위반은 별도 surface 필요.
+        sh_override = info.get("_shares_override_warning")
+        if sh_override:
+            inconsistency_lines.append(sh_override)
         if (isinstance(per, (int, float)) and per == per and 0 < per < 10000
                 and isinstance(eps, (int, float)) and eps == eps and eps != 0
                 and isinstance(px, (int, float)) and px > 0):
@@ -1979,6 +2027,26 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
                     f"⚠️ PBR × BPS 불일치: {pbr:.2f} × {sym}{_fmt_p.format(bps)}"
                     f" = {sym}{_fmt_p.format(implied_p)}, 현재가 {px_str}"
                     f" (ratio {ratio:.2f}x) — 분할 / BPS 재계산 시점 차이"
+                )
+
+        # Fix C (2026-05-23, 207940.KS surface): non-tautology external anchor
+        # — shares × price 로 mc 재계산해서 info["marketCap"] 과 비교. yfinance
+        # 내부 정합성(EPS=NI/sh, BPS=Eq/sh, mc=px×sh 모두 같은 sh로 도출)
+        # 만으로는 shares 자체 오류를 잡을 수 없음. info["sharesOutstanding"]
+        # 가 Fix A 로 KRX shares 로 정정된 후, mc = canonical_shares × price
+        # vs info["marketCap"] 비교. 차이 > 5% 면 mc 도 의심.
+        canonical_sh = info.get("sharesOutstanding")
+        if (isinstance(canonical_sh, (int, float)) and canonical_sh > 0
+                and isinstance(market_cap, (int, float)) and market_cap > 0
+                and isinstance(px, (int, float)) and px > 0):
+            implied_mc = canonical_sh * px
+            if implied_mc > 0 and abs(implied_mc - market_cap) / market_cap > 0.05:
+                ratio_mc = implied_mc / market_cap
+                inconsistency_lines.append(
+                    f"⚠️ MC 외부 anchor 불일치: shares × 현재가"
+                    f" = {sym}{_fmt_p.format(implied_mc)} vs 보고 시총"
+                    f" {mc_str} (ratio {ratio_mc:.2f}x) — yfinance shares"
+                    f" 또는 marketCap 한쪽이 stale."
                 )
 
         sep = "━" * 56
@@ -2057,19 +2125,84 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             from bot.pykrx_client import get_kr_market_cap, get_kr_ohlcv_stats
             mc_data = get_kr_market_cap(ticker)
             if mc_data and mc_data.get("market_cap"):
+                # Fix A (2026-05-23, 207940.KS 외부 검증 surface): KR shares
+                # always-override (not on-miss). yfinance 한국 종목 발행
+                # 주식수가 non-zero but wrong 으로 던져지는 패턴 — 삼성바이오
+                # 207940 yfinance shares 46.29M vs 실제 KRX 71.17M (35% 누락)
+                # → 시총 65.5조 (실제 100.7조) + PBR 8.78 (실제 13.5) 왜곡.
+                # 047810.KS shares=0 cascade 와 같은 root cause 의 다른 양상.
+                # KRX 공식 상장주식수가 canonical — drift > 5% 시 override
+                # 후 mc/BPS/PBR 모두 일관 재계산. Rule applies to all KR
+                # analyses going forward.
+                canonical_shares = mc_data.get("shares") or 0
+                yf_shares = info.get("sharesOutstanding") or 0
+                px_for_recalc = (
+                    info.get("currentPrice")
+                    or info.get("regularMarketPrice")
+                    or mc_data.get("close")
+                )
+                shares_override_warning = ""
+                if canonical_shares > 0:
+                    sh_drift = (
+                        abs(canonical_shares - yf_shares) / canonical_shares
+                        if (isinstance(yf_shares, (int, float)) and yf_shares > 0)
+                        else 1.0  # yfinance missing — canonical replaces
+                    )
+                    if sh_drift > 0.05:
+                        old_shares = yf_shares if yf_shares else 0
+                        info["sharesOutstanding"] = int(canonical_shares)
+                        # marketCap: KRX 공식 시총 또는 price × canonical shares
+                        krx_mc = int(mc_data["market_cap"])
+                        if isinstance(px_for_recalc, (int, float)) and px_for_recalc > 0:
+                            # KRX market_cap_by_ticker 가 같은 close 기준이므로
+                            # 두 값은 거의 일치해야 함. 차이 < 1% 면 KRX mc 채택.
+                            recalc_mc = int(px_for_recalc * canonical_shares)
+                            info["marketCap"] = max(krx_mc, recalc_mc)
+                        else:
+                            info["marketCap"] = krx_mc
+                        # BPS / PBR 재계산: 기존 BPS 가 잘못된 shares 로 도출
+                        # 됐으면 PBR 도 왜곡. 자기자본 추정값 (yf BPS × yf
+                        # shares) 을 canonical shares 로 다시 나눠 보정.
+                        old_bps = info.get("bookValue")
+                        if (isinstance(old_bps, (int, float)) and old_bps > 0
+                                and old_shares > 0):
+                            equity_est = old_bps * old_shares
+                            new_bps = equity_est / canonical_shares
+                            info["bookValue"] = new_bps
+                            if (isinstance(px_for_recalc, (int, float))
+                                    and px_for_recalc > 0 and new_bps > 0):
+                                info["priceToBook"] = px_for_recalc / new_bps
+                        # EPS 도 같은 원리: NI/shares. EPS × old_shares = NI,
+                        # ÷ canonical_shares 로 정정.
+                        old_eps = info.get("trailingEps")
+                        if (isinstance(old_eps, (int, float)) and old_eps != 0
+                                and old_shares > 0):
+                            ni_est = old_eps * old_shares
+                            new_eps = ni_est / canonical_shares
+                            info["trailingEps"] = new_eps
+                            if (isinstance(px_for_recalc, (int, float))
+                                    and px_for_recalc > 0 and new_eps > 0):
+                                info["trailingPE"] = px_for_recalc / new_eps
+                        shares_override_warning = (
+                            f"⚠️ KRX SHARES OVERRIDE: yfinance 발행주식수"
+                            f" {old_shares:,} → KRX 공식 {canonical_shares:,}"
+                            f" (drift {sh_drift * 100:.1f}%). 시총·PBR·EPS·PER"
+                            f" 모두 KRX shares 기준으로 정정."
+                        )
+                        info["_shares_override_warning"] = shares_override_warning
+                        _analyst_log.info(
+                            "Fix A KRX shares override for %s: %s → %s (drift %.1f%%)",
+                            ticker, old_shares, canonical_shares, sh_drift * 100,
+                        )
+                    elif yf_shares == 0 and canonical_shares > 0:
+                        # yfinance missing — pure fallback (이전 0d3afcf 패턴)
+                        info["sharesOutstanding"] = int(canonical_shares)
                 if not (isinstance(info.get("marketCap"), (int, float))
                         and info.get("marketCap")):
                     info["marketCap"] = int(mc_data["market_cap"])
                 if not (isinstance(info.get("currentPrice"), (int, float))
                         and info.get("currentPrice")):
                     info["currentPrice"] = int(mc_data["close"])
-                # 상장주식수 — root cause of 047810.KS N/A cascade.
-                # yfinance .info sharesOutstanding 가 비어있어도 KRX 공식
-                # 상장주식수 가 들어오면 EPS/PER 등 1주당 지표 산출 가능.
-                if not (isinstance(info.get("sharesOutstanding"), (int, float))
-                        and info.get("sharesOutstanding")):
-                    if mc_data.get("shares"):
-                        info["sharesOutstanding"] = int(mc_data["shares"])
             stats = get_kr_ohlcv_stats(ticker)
             if stats:
                 for key_y, key_p in [

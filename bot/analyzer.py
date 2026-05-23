@@ -1271,20 +1271,15 @@ def _magnitude_check(body: str, canonical: dict) -> str:
                              else f"{v / scale:,.2f}{unit_label[0]}")
                             for v in raw_vals
                         ]
+                        # Fix D (2026-05-23, 207940.KS 외부 검증 surface):
+                        # 이전에는 "⚠️ [단위 오류 의심...]" 알람 행 + 정규화 행
+                        # 2줄을 출력했는데, 외부 검증자가 "내부 디버깅용 프롬프트
+                        # 가 UI 에 그대로 노출" 이라 지적. 정규화된 companion 행
+                        # 만 남기고 alarm 행은 제거 — 독자가 한 줄로 정정된
+                        # 값을 자연스럽게 볼 수 있도록.
                         result.append(
-                            f"  ⚠️ [단위 오류 의심: 동일 항목 내 {u1} / {u2} 혼용"
-                            f" — 같은 시계열에는 단일 단위 사용 필요."
-                            f" 원본 데이터 확인 후 통일 표기 요망]"
-                        )
-                        result.append(
-                            f"  ↳ 정규화 ({unit_label} 단일 기준): "
+                            f"  ↳ 단위 정규화 ({unit_label} 기준): "
                             + " — ".join(normalized)
-                        )
-                    else:
-                        result.append(
-                            f"  ⚠️ [단위 오류 의심: 동일 항목 내 {u1} / {u2} 혼용"
-                            f" — 같은 시계열에는 단일 단위 사용 필요."
-                            f" 원본 데이터 확인 후 통일 표기 요망]"
                         )
                     break
     return "\n".join(result)
