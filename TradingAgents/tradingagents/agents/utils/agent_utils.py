@@ -391,21 +391,44 @@ def _instrument_info(ticker: str) -> dict:
             v = raw.get(key)
             if isinstance(v, (int, float)) and not (isinstance(v, float) and v != v):
                 out[key] = v
-        # Fix ① — override currentPrice with fast_info.last_price for
-        # near-real-time freshness. .info price can be stale during
-        # volatile sessions (yfinance internal cache lag). fast_info
-        # hits a lightweight quote endpoint updated more frequently.
-        # Only overrides when fast_info returns a valid positive value.
+        # Fix ① — fast_info fallback for price + structural fields.
+        # fast_info hits a lightweight quote endpoint updated more frequently
+        # than .info (which has cache lag). Also fills in marketCap /
+        # fiftyTwoWeekHigh / fiftyTwoWeekLow when .info returns None for
+        # mid-cap US tickers like FORM (FormFactor 2026-05-23 N/A case).
+        # Rule applies to all analyses going forward (US/KR/JP/TW/CN/HK).
         try:
-            last_px = yf_ticker.fast_info.last_price
+            fi = yf_ticker.fast_info
+            # currentPrice — always prefer fast_info (fresher)
+            last_px = fi.last_price
             if isinstance(last_px, (int, float)) and last_px == last_px and last_px > 0:
                 out["currentPrice"] = last_px
                 out["regularMarketPrice"] = last_px
                 _analyst_log.debug(
                     "fast_info.last_price override for %s: %.4f", ticker, last_px,
                 )
+            # marketCap fallback — fast_info.market_cap when .info misses it
+            if "marketCap" not in out:
+                fi_mc = getattr(fi, "market_cap", None)
+                if isinstance(fi_mc, (int, float)) and fi_mc == fi_mc and fi_mc > 0:
+                    out["marketCap"] = fi_mc
+                    _analyst_log.debug("fast_info.market_cap fallback for %s: %g", ticker, fi_mc)
+            # 52-week high/low fallback
+            if "fiftyTwoWeekHigh" not in out:
+                fi_yh = getattr(fi, "year_high", None)
+                if isinstance(fi_yh, (int, float)) and fi_yh == fi_yh and fi_yh > 0:
+                    out["fiftyTwoWeekHigh"] = fi_yh
+            if "fiftyTwoWeekLow" not in out:
+                fi_yl = getattr(fi, "year_low", None)
+                if isinstance(fi_yl, (int, float)) and fi_yl == fi_yl and fi_yl > 0:
+                    out["fiftyTwoWeekLow"] = fi_yl
+            # sharesOutstanding fallback — needed for market cap cross-check
+            if "sharesOutstanding" not in out:
+                fi_sh = getattr(fi, "shares", None)
+                if isinstance(fi_sh, (int, float)) and fi_sh == fi_sh and fi_sh > 0:
+                    out["sharesOutstanding"] = fi_sh
         except Exception:
-            pass  # fast_info unavailable — fall through to .info price
+            pass  # fast_info unavailable — fall through to .info values
     except Exception as exc:
         _analyst_log.warning("instrument info lookup failed for %s: %s", ticker, exc)
     _INSTRUMENT_INFO_CACHE[ticker] = out
