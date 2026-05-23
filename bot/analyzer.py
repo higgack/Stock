@@ -532,6 +532,30 @@ _STANCE_EXPLICIT_KEYWORDS = [
     ("투자 제안: 매수", "매수"),
     ("투자 제안: 매도", "매도"),
     ("투자 제안: 보유", "보유"),
+    # Horizon-based conclusion patterns — LLM sometimes writes
+    # "5거래일 horizon에서는 HOLD를 권고합니다" without a "의견" keyword.
+    # Also covers bare-verb forms: "결론: HOLD", "HOLD를 권고" etc.
+    ("horizon에서는 hold", "보유"),
+    ("horizon에서는 buy", "매수"),
+    ("horizon에서는 sell", "매도"),
+    ("에서는 hold를", "보유"),
+    ("에서는 buy를", "매수"),
+    ("에서는 sell를", "매도"),
+    ("결론: hold", "보유"),
+    ("결론: buy", "매수"),
+    ("결론: sell", "매도"),
+    ("결론은 hold", "보유"),
+    ("결론은 buy", "매수"),
+    ("결론은 sell", "매도"),
+    ("권고: hold", "보유"),
+    ("권고: buy", "매수"),
+    ("권고: sell", "매도"),
+    ("hold를 권고", "보유"),
+    ("buy를 권고", "매수"),
+    ("sell을 권고", "매도"),
+    ("hold를 제시", "보유"),
+    ("buy를 제시", "매수"),
+    ("sell을 제시", "매도"),
 ]
 
 

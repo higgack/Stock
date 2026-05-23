@@ -2033,38 +2033,10 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                             and info[key_y] == info[key_y]):
                         if stats.get(key_p):
                             info[key_y] = stats[key_p]
-            # PER / EPS Python 자체 산출 (trailing): 시총 + Net Income TTM
-            # → PER = 시총 / 순이익 TTM. yfinance .info trailingPE 가 비어도
-            # income_stmt 가 있으면 산출 가능.
-            if not (isinstance(info.get("trailingPE"), (int, float))
-                    and info.get("trailingPE")):
-                try:
-                    import yfinance as yf
-                    qi = yf.Ticker(ticker.upper()).quarterly_income_stmt
-                    if qi is not None and not (hasattr(qi, "empty") and qi.empty):
-                        last4 = qi.iloc[:, :4]
-                        if "Net Income" in last4.index:
-                            ni_vals = [float(v) for v in last4.loc["Net Income"]
-                                       if v is not None and v == v]
-                            ni_ttm = sum(ni_vals) if ni_vals else None
-                            mc = info.get("marketCap")
-                            if (ni_ttm and ni_ttm > 0
-                                    and isinstance(mc, (int, float)) and mc > 0):
-                                info["trailingPE"] = round(mc / ni_ttm, 2)
-                                # EPS = Net Income TTM / shares outstanding
-                                shares = info.get("sharesOutstanding")
-                                if isinstance(shares, (int, float)) and shares > 0:
-                                    info["trailingEps"] = round(ni_ttm / shares, 2)
-                                elif isinstance(info.get("currentPrice"), (int, float)):
-                                    # shares = mc / current_price (rough)
-                                    approx_shares = mc / info["currentPrice"]
-                                    if approx_shares > 0:
-                                        info["trailingEps"] = round(ni_ttm / approx_shares, 2)
-                except Exception as exc:
-                    _analyst_log.warning(
-                        "D1 Phase 3 PER/EPS compute failed for %s: %s",
-                        ticker, exc,
-                    )
+            # Python-compute PER removed (2026-05-23): computing mc/ni_ttm
+            # from quarterly income_stmt produces inaccurate KR values due
+            # to yfinance unit inconsistencies (백만 ↔ 억 mix). Naver Finance
+            # (D1 Phase 5 below) fetches the authoritative consensus figure.
         except Exception as exc:
             _analyst_log.warning(
                 "D1 Phase 3 pykrx info patch failed for %s: %s", ticker, exc,
@@ -2133,6 +2105,36 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
         except Exception as exc:
             _analyst_log.warning(
                 "D1 Phase 4 KIS info patch failed for %s: %s", ticker, exc,
+            )
+
+        # D1 Phase 5 (2026-05-23): Naver Finance PER/PBR/EPS/BPS as 4th
+        # fallback (yfinance → pykrx → KIS → Naver Finance). Naver Finance
+        # carries QuantiWise/FnGuide consensus valuation — more accurate for
+        # KR equities than Python-computed mc/ni_ttm. Only fills fields still
+        # missing after Phase 4. Rule applies to all KR analyses going forward.
+        try:
+            from bot.naver_finance_client import get_naver_valuation
+            nav = get_naver_valuation(ticker)
+            if nav:
+                if not (isinstance(info.get("trailingPE"), (int, float))
+                        and info.get("trailingPE")):
+                    if nav.get("per") and nav["per"] > 0:
+                        info["trailingPE"] = nav["per"]
+                if not (isinstance(info.get("priceToBook"), (int, float))
+                        and info.get("priceToBook")):
+                    if nav.get("pbr") and nav["pbr"] > 0:
+                        info["priceToBook"] = nav["pbr"]
+                if not (isinstance(info.get("trailingEps"), (int, float))
+                        and info.get("trailingEps")):
+                    if nav.get("eps"):
+                        info["trailingEps"] = nav["eps"]
+                if not (isinstance(info.get("bookValue"), (int, float))
+                        and info.get("bookValue")):
+                    if nav.get("bps"):
+                        info["bookValue"] = nav["bps"]
+        except Exception as exc:
+            _analyst_log.warning(
+                "D1 Phase 5 Naver Finance patch failed for %s: %s", ticker, exc,
             )
 
         # KSIC industry override (2026-05-23 삼성중공업 010140.KS surfaced).

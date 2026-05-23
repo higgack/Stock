@@ -294,11 +294,11 @@ _MACRO_SANITY_RANGES: dict[str, tuple[float, float]] = {
     "CNY=X": (5.0, 9.0),         # USD/CNY
     "TWD=X": (25.0, 40.0),       # USD/TWD
     "HKD=X": (7.6, 8.0),         # USD/HKD (peg band)
-    "^KS11": (1500.0, 4500.0),   # KOSPI
-    "^KQ11": (500.0, 1500.0),    # KOSDAQ
-    "^N225": (15000.0, 50000.0), # Nikkei
+    "^KS11": (1500.0, 15000.0),   # KOSPI — expanded 2026-05 (index at ~7,847)
+    "^KQ11": (500.0, 3000.0),    # KOSDAQ — expanded 2026-05
+    "^N225": (15000.0, 80000.0), # Nikkei — expanded 2026-05
     "^HSI": (15000.0, 35000.0),  # Hang Seng
-    "^TWII": (10000.0, 30000.0), # TAIEX
+    "^TWII": (10000.0, 40000.0), # TAIEX — expanded 2026-05
     "000300.SS": (3000.0, 6500.0),  # CSI 300
     "^HSCE": (5000.0, 12000.0),  # HSCEI
 }
