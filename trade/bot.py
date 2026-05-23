@@ -192,7 +192,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-23 — auto-update 1분 간격으로 단축</i>
+<i>최종 갱신: 2026-05-23 — backfill에서 IGNORED 메시지 forward 차단 (재forward 루프 종결)</i>
 """
 
 

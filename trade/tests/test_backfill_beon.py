@@ -252,5 +252,43 @@ class TestDedupRoundtrip(unittest.TestCase):
                 )
 
 
+class TestForwardTimeIgnoredFilter(unittest.TestCase):
+    """Backfill must skip IGNORED-matching messages BEFORE forwarding,
+    not just at ingest. Reason: trade-bot's is_from_beon() filter drops
+    messages whose forward_origin ≠ BeOn (e.g. BeOn relays of AWAKE
+    플러스 DART notices land in trade channel as AWAKE-origin and get
+    rejected), so the inbox never records them — every subsequent
+    backfill tick sees the BeOn-side message as 'new' and re-forwards
+    it. Filtering at forward-time breaks that loop.
+
+    These tests use the helper directly (no telethon needed) — they
+    pin the contract: prefix-match or contains-match → skip."""
+
+    def test_dart_link_caption_is_filtered(self):
+        from trade import ignored
+        cap = (
+            "📌 파두(시가총액: 6조 1,569억) #A440110\n"
+            "📁 단일판매ㆍ공급계약체결\n"
+            "공시링크: https://dart.fss.or.kr/dsaf001/main.do?rcpNo=..."
+        )
+        self.assertTrue(
+            ignored.matches_contains(cap),
+            "DART link must trigger contains filter — exact case that "
+            "caused the re-forward loop on 2026-05-22 파두 message",
+        )
+
+    def test_beon_insight_prefix_is_filtered(self):
+        from trade import ignored
+        cap = "[비온 인사이트] 파두 수주잔고 분석"
+        self.assertTrue(ignored.matches_prefix(cap))
+
+    def test_plain_beon_alert_is_not_filtered(self):
+        # Sanity: a regular BeOn export/import alert must pass through.
+        from trade import ignored
+        cap = "📊 4월 수출입 동향 — 화장품 정상 잠정"
+        self.assertFalse(ignored.matches_prefix(cap))
+        self.assertFalse(ignored.matches_contains(cap))
+
+
 if __name__ == "__main__":
     unittest.main()

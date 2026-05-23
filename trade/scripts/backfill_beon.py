@@ -64,6 +64,8 @@ from telethon import utils as _tutils
 from telethon.errors import FloodWaitError
 from telethon.tl.custom.message import Message
 
+from trade import ignored as _ignored
+
 load_dotenv()
 
 logging.basicConfig(
@@ -362,8 +364,20 @@ async def run(
 
         # reverse=True means iterate oldest-first starting from
         # offset_date. Caps with our own date check on `until`.
+        #
+        # IGNORED filter at forward-time (not just ingest-time):
+        # trade-bot's is_from_beon() rejects messages whose
+        # forward_origin ≠ BeOn. So when BeOn relays AWAKE 플러스
+        # (DART 공시 등), our forward lands in the trade channel with
+        # forward_origin = AWAKE, trade-bot drops it, inbox.jsonl never
+        # records it → next backfill tick sees the BeOn-side message
+        # again and re-forwards → infinite loop. Filtering here breaks
+        # the loop at the source: the relay never enters the trade
+        # channel in the first place. Same constants as ingest /
+        # purge so the three layers stay in sync.
         candidates: list[Message] = []
         skipped_existing = 0
+        skipped_ignored = 0
         async for msg in client.iter_messages(
             source, offset_date=since, reverse=True
         ):
@@ -372,15 +386,28 @@ async def run(
             if _msg_key(msg, source_chat_id) in existing:
                 skipped_existing += 1
                 continue
+            caption = msg.text or ""
+            if (
+                _ignored.matches_prefix(caption)
+                or _ignored.matches_contains(caption)
+            ):
+                skipped_ignored += 1
+                log.info(
+                    "skip ignored msg=%d caption=%r",
+                    msg.id, caption[:60],
+                )
+                continue
             candidates.append(msg)
 
         until_label = (until or datetime.now(timezone.utc)).date().isoformat()
         log.info(
-            "range %s → %s — candidates=%d skipped_existing=%d",
+            "range %s → %s — candidates=%d skipped_existing=%d "
+            "skipped_ignored=%d",
             since.date().isoformat(),
             until_label,
             len(candidates),
             skipped_existing,
+            skipped_ignored,
         )
 
         if len(candidates) > max_candidates:
