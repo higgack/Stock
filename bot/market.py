@@ -970,6 +970,34 @@ _JP_INDUSTRY_PEERS = {
 }
 
 
+# US dual-class share structures — Fix ② (2026-05-23, 외부 검증자 제언).
+# yfinance 가 GOOG vs GOOGL, BRK.A vs BRK.B 등 차등의결권(dual-class)
+# 종목의 발행주식수를 한쪽 class 기준으로 반환해 시총/EPS 계산이 왜곡되는
+# 패턴. BRK.B shares가 BRK.A × 1500 인데 yfinance 가 BRK.A 기준으로
+# shares 반환하면 시총이 1/1500 수준으로 잡힘. GOOG/GOOGL는 동일 모회사
+# (Alphabet) 의 다른 class — total mc 는 같지만 각 class shares 는 다름.
+# Rule applies to all US analyses going forward.
+_US_DUAL_CLASS_TICKERS: set[str] = {
+    # Alphabet (Class C no-vote = GOOG, Class A = GOOGL)
+    "GOOG", "GOOGL",
+    # Berkshire Hathaway (A = $600K+/share, B = A/1500)
+    "BRK-A", "BRK-B", "BRK.A", "BRK.B",
+    # Meta Platforms — Class A public, Class B Mark Zuckerberg
+    "META",
+    # Snap — Class A public, Class B/C founder super-voting
+    "SNAP",
+    # Lyft, Palantir — dual-class on IPO
+    "LYFT", "PLTR",
+    # Roblox, Robinhood
+    "RBLX", "HOOD",
+    # News Corp, Fox Corp — Murdoch dual-class
+    "NWS", "NWSA", "FOX", "FOXA",
+    # Comcast
+    "CMCSA",
+    # Viacom/Paramount
+    "PARA", "PARAA",
+}
+
 # US industry peer sets — same shape and intent as the KR / JP dicts.
 # Without this, US Comps tables had no MANDATORY PEER SET injection and
 # the fundamentals analyst cargo-culted whatever 4-5 names sounded peer-

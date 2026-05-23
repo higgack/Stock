@@ -353,13 +353,21 @@ def _instrument_info(ticker: str) -> dict:
     or empty dict when the lookup fails. Single network call per ticker
     per process; downstream callers (is_etf, _quote_type, sector/industry
     injection, market-signals injection, earnings warning) all share
-    the same fetch."""
+    the same fetch.
+
+    Fix ① (2026-05-23, 외부 검증자 제언): yfinance .info의 currentPrice
+    는 내부 캐시 lag 이 있을 수 있음. fast_info.last_price 는 별도의
+    경량 API 엔드포인트를 통해 거의 실시간 가격을 제공 — currentPrice
+    를 override 해 가격 데이터 freshness 보장. Rule applies to all
+    analyses going forward (US/KR/JP/TW/CN/HK).
+    """
     if ticker in _INSTRUMENT_INFO_CACHE:
         return _INSTRUMENT_INFO_CACHE[ticker]
     out: dict = {}
     try:
         import yfinance as yf
-        raw = yf.Ticker(ticker).info or {}
+        yf_ticker = yf.Ticker(ticker)
+        raw = yf_ticker.info or {}
         # Strings — keep only when non-empty
         for key in ("quoteType", "typeDisp", "sector", "industry", "longName",
                     "recommendationKey"):
@@ -373,11 +381,31 @@ def _instrument_info(ticker: str) -> dict:
                     "sharesShort", "shortRatio", "shortPercentOfFloat",
                     "heldPercentInsiders", "heldPercentInstitutions",
                     "earningsTimestamp", "earningsTimestampStart",
-                    "earningsTimestampEnd"):
+                    "earningsTimestampEnd",
+                    "trailingPE", "forwardPE", "priceToBook",
+                    "priceToSalesTrailing12Months", "enterpriseToEbitda",
+                    "trailingEps", "bookValue", "sharesOutstanding",
+                    "marketCap", "beta",
+                    "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
+                    "fiftyDayAverage", "twoHundredDayAverage"):
             v = raw.get(key)
             if isinstance(v, (int, float)) and not (isinstance(v, float) and v != v):
-                # exclude NaN
                 out[key] = v
+        # Fix ① — override currentPrice with fast_info.last_price for
+        # near-real-time freshness. .info price can be stale during
+        # volatile sessions (yfinance internal cache lag). fast_info
+        # hits a lightweight quote endpoint updated more frequently.
+        # Only overrides when fast_info returns a valid positive value.
+        try:
+            last_px = yf_ticker.fast_info.last_price
+            if isinstance(last_px, (int, float)) and last_px == last_px and last_px > 0:
+                out["currentPrice"] = last_px
+                out["regularMarketPrice"] = last_px
+                _analyst_log.debug(
+                    "fast_info.last_price override for %s: %.4f", ticker, last_px,
+                )
+        except Exception:
+            pass  # fast_info unavailable — fall through to .info price
     except Exception as exc:
         _analyst_log.warning("instrument info lookup failed for %s: %s", ticker, exc)
     _INSTRUMENT_INFO_CACHE[ticker] = out
@@ -2029,6 +2057,26 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
                     f" (ratio {ratio:.2f}x) — 분할 / BPS 재계산 시점 차이"
                 )
 
+        # Fix ② (2026-05-23, 외부 검증자 제언): US dual-class shares
+        # directive. GOOG/GOOGL, BRK.A/BRK.B 등은 yfinance 가 특정
+        # share class 기준으로 sharesOutstanding 을 반환 — 전체 시총
+        # 대비 EPS/PBR 계산이 왜곡될 수 있음. 독자에게 명시. Universal
+        # 관점에서 US 전용 (KR Fix A 가 covers KR, JP/TW/CN 은 Fix C).
+        try:
+            from bot.market import _US_DUAL_CLASS_TICKERS
+            ticker_bare = (ticker or "").upper().split(".")[0]
+            if ticker_bare in _US_DUAL_CLASS_TICKERS:
+                inconsistency_lines.append(
+                    f"⚠️ DUAL-CLASS SHARES: {ticker_bare} 는 차등의결권(다중"
+                    f" class) 구조. yfinance sharesOutstanding 이 특정 class"
+                    f" 기준일 수 있음 (예: BRK.A vs BRK.B × 1500, GOOG Class"
+                    f" C vs GOOGL Class A). 시총은 yfinance marketCap(전체"
+                    f" 가중 mc) 을 canonical 로 사용. EPS = NI / total_shares"
+                    f" 기준이므로 이 class 의 PER 계산이 의도한 값인지 확인 권고."
+                )
+        except Exception:
+            pass
+
         # Fix C (2026-05-23, 207940.KS surface): non-tautology external anchor
         # — shares × price 로 mc 재계산해서 info["marketCap"] 과 비교. yfinance
         # 내부 정합성(EPS=NI/sh, BPS=Eq/sh, mc=px×sh 모두 같은 sh로 도출)
@@ -2929,11 +2977,40 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                             f" 원 ({pykrx_date} 기준). 본 값을 모든 섹션"
                             f" canonical 시총으로 사용."
                         )
-                    # pykrx close vs yfinance currentPrice cross-check
+                    # pykrx close vs yfinance currentPrice cross-check.
+                    # Fix ③ (2026-05-23, 외부 검증자 제언): 단순 경고가
+                    # 아닌 divergence 수준에 따라 severity 를 2단계로 분리.
+                    # 15% 이상 → CRITICAL (수정주가 미반영 의심, PM HOLD 강제).
+                    # 1% ~ 15% → 기존 minor ⚠️ 유지. Rule applies to all
+                    # analyses going forward.
                     if (isinstance(px, (int, float)) and px > 0
                             and pykrx_close > 0):
                         px_diff = abs(pykrx_close - px) / px
-                        if px_diff > 0.01:
+                        if px_diff > 0.15:
+                            # CRITICAL — corp action 당일~수일 내 수정주가
+                            # 미반영 패턴. 319660.KS 같은 분할 직후 케이스.
+                            info["_price_critical_divergence"] = {
+                                "src1": "yfinance",
+                                "px1": px,
+                                "src2": f"KRX ({pykrx_date})",
+                                "px2": pykrx_close,
+                                "diff_pct": px_diff * 100,
+                            }
+                            base += (
+                                f"\n\n🔴 PRICE CRITICAL DIVERGENCE —"
+                                f" 가격 데이터 source 간 {px_diff*100:.1f}%"
+                                f" 괴리 감지 (Fix ③):\n"
+                                f"  • yfinance: ₩{px:,.0f}\n"
+                                f"  • KRX close ({pykrx_date}):"
+                                f" ₩{pykrx_close:,}\n"
+                                f"수정주가(split-adjusted) 미반영 의심 —"
+                                f" 모든 기술 지표(SMA/EMA/MACD/RSI/볼린저)"
+                                f" INVALID. valuation(PER/PBR) cite 보류.\n"
+                                f"⛔ PM 결론 강제: 데이터 정합성 확인 완료 전"
+                                f" 매수/매도 금지. 최종 권고를 반드시 HOLD"
+                                f" (보유/관망) 로 고정할 것."
+                            )
+                        elif px_diff > 0.01:
                             base += (
                                 f"\n\n⚠️ D1 현재가 cross-check 불일치"
                                 f" (yfinance vs KRX):\n"
@@ -3964,18 +4041,34 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                                 and isinstance(anchor_px, (int, float)) and anchor_px > 0):
                             ratio = max(kis_px, anchor_px) / min(kis_px, anchor_px)
                             if ratio > 1.30:
+                                # Fix ③ upgrade: KIS ratio > 1.30x 는
+                                # 이미 CRITICAL — pykrx 15% 와 동일 severity.
+                                # PM HOLD lock + CRITICAL banner.
+                                info["_price_critical_divergence"] = {
+                                    "src1": "KIS",
+                                    "px1": kis_px,
+                                    "src2": "FACTUAL ANCHOR",
+                                    "px2": anchor_px,
+                                    "diff_pct": (ratio - 1) * 100,
+                                }
                                 corp_action_warning = (
-                                    f"\n\n⛔ CORP ACTION HARD GUARD — KIS vs"
+                                    f"\n\n🔴 PRICE CRITICAL DIVERGENCE +"
+                                    f" CORP ACTION HARD GUARD — KIS vs"
                                     f" FACTUAL ANCHOR 가격 불일치 자동 감지"
                                     f" (319660.KS 2026-05-23 surfaced):\n"
                                     f"KIS 현재가 ₩{int(kis_px):,} vs FACTUAL"
                                     f" ANCHOR 현재가 ₩{int(anchor_px):,} → ratio"
-                                    f" {ratio:.2f}x. yfinance/KIS 한쪽이 분할-"
-                                    f" 조정 (split-adjusted), 다른 쪽이 unadjusted"
-                                    f" 일 때 발생. **SMA/EMA/MACD/RSI/Bollinger"
-                                    f" 비교 + PER/PBR cite 보류**. 결론은 데이터"
-                                    f" 정합성 확인 후 재평가. DART 분할 공시 또는"
-                                    f" yfinance .splits 확인 권고.\n"
+                                    f" {ratio:.2f}x ({(ratio-1)*100:.1f}%"
+                                    f" 괴리). yfinance/KIS 한쪽이 분할-"
+                                    f" 조정(split-adjusted), 다른 쪽이 unadjusted"
+                                    f" 일 때 발생.\n"
+                                    f"⛔ 기술 지표(SMA/EMA/MACD/RSI/볼린저) +"
+                                    f" PER/PBR cite 모두 INVALID.\n"
+                                    f"⛔ PM 결론 강제: 데이터 정합성 확인 완료 전"
+                                    f" 매수/매도 금지. 최종 권고를 반드시 HOLD"
+                                    f" (보유/관망) 로 고정할 것.\n"
+                                    f"DART 분할 공시 또는 yfinance .splits 확인"
+                                    f" 권고.\n"
                                 )
                     except Exception:
                         pass
