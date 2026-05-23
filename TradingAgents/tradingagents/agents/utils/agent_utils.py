@@ -1950,19 +1950,62 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
         eps_str = (f"{sym}{_fmt_p.format(eps)}" if isinstance(eps, (int, float))
                    and eps == eps else "N/A")
 
+        # Cross-anchor consistency check (319660.KS 2026-05-23 surfaced).
+        # 외부 검증 framework (047810.KS) 의 수식을 코드화: PER × EPS ≈ price
+        # (within ±15%). 분할 (split) 등 corp action 으로 일부 source 가
+        # adjusted, 다른 source 가 unadjusted 일 때 ratio 가 깨짐. Universal
+        # — US/KR/JP/TW/CN/HK 모두 동일. 위반 시 HARD GUARD 자동 주입.
+        inconsistency_lines: list[str] = []
+        if (isinstance(per, (int, float)) and per == per and 0 < per < 10000
+                and isinstance(eps, (int, float)) and eps == eps and eps != 0
+                and isinstance(px, (int, float)) and px > 0):
+            implied = per * eps
+            if implied > 0 and abs(implied - px) / px > 0.15:
+                ratio = implied / px
+                inconsistency_lines.append(
+                    f"⚠️ PER × EPS 불일치: {per:.1f} × {sym}{_fmt_p.format(eps)}"
+                    f" = {sym}{_fmt_p.format(implied)}, 현재가 {px_str}"
+                    f" (ratio {ratio:.2f}x) — 분할 / corp action 가능"
+                )
+        # PBR consistency: PBR × BPS ≈ currentPrice (within ±15%)
+        bps = info.get("bookValue")
+        if (isinstance(pbr, (int, float)) and pbr == pbr and 0 < pbr < 1000
+                and isinstance(bps, (int, float)) and bps == bps and bps > 0
+                and isinstance(px, (int, float)) and px > 0):
+            implied_p = pbr * bps
+            if implied_p > 0 and abs(implied_p - px) / px > 0.15:
+                ratio = implied_p / px
+                inconsistency_lines.append(
+                    f"⚠️ PBR × BPS 불일치: {pbr:.2f} × {sym}{_fmt_p.format(bps)}"
+                    f" = {sym}{_fmt_p.format(implied_p)}, 현재가 {px_str}"
+                    f" (ratio {ratio:.2f}x) — 분할 / BPS 재계산 시점 차이"
+                )
+
         sep = "━" * 56
-        return "\n".join([
+        lines = [
             sep,
             "⚡ FACTUAL ANCHOR — 시스템 직접 산출 (절대 재계산 금지)",
             sep,
             f"현재가:   {px_str:<20}  시가총액: {mc_str}",
             f"{wk_high_str:<30}  {wk_low_str}",
             f"PER: {per_str:<10}  PBR: {pbr_str:<10}  EPS: {eps_str}",
+        ]
+        if inconsistency_lines:
+            lines.append(sep)
+            lines.extend(inconsistency_lines)
+            lines.append(
+                "⛔ CROSS-ANCHOR HARD GUARD: 위 inconsistency 가 detected."
+                " PER / PBR / SMA / 기술지표 cite 시 반드시 '데이터 transitional"
+                " (corp action 의심)' 명시. 5거래일 horizon dominant variable"
+                " 로 valuation/기술지표 사용 금지 — corp action 정정 전 보류."
+            )
+        lines.extend([
             sep,
             "❌ HARD RULE: 위 값은 yfinance .info 원본. 재계산·재호출·근사화 절대 금지.",
             "   모든 섹션에서 위 값 그대로 복사·인용. ⚠️데이터오류 항목은 인용 자체 금지.",
             sep,
         ])
+        return "\n".join(lines)
     except Exception:
         return ""
 
@@ -2148,29 +2191,43 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 "D1 Phase 5 Naver Finance patch failed for %s: %s", ticker, exc,
             )
 
-        # D1 Phase 6 (2026-05-23): sharesOutstanding 역산 fallback. 모든
-        # primary source (yfinance/pykrx/KIS/Naver) 가 비어있고 marketCap +
-        # currentPrice 둘 다 있으면 shares = mc / price 로 역산. 047810.KS
-        # 외부 검증 (97,475,107 주) surface: shares 단일 변수만 채우면 EPS/
-        # PER/PBR 1주당 지표 cascade 해결. Universal — KR/JP/TW/CN/HK 모두
-        # marketCap/currentPrice 채워진 후 마지막 안전망으로 적용.
+        # D1 Phase 6 (2026-05-23): sharesOutstanding ↔ marketCap 양방향
+        # 역산 fallback. 047810.KS 외부 검증 surface: shares 단일 변수만
+        # 채우면 EPS/PER/PBR 1주당 지표 cascade 해결. 319660.KS 검증 추가:
+        # shares 만 있고 marketCap 이 비어있는 case 도 역방향으로 채워야
+        # 시총 N/A 가 0d3afcf 단독 으로도 사라짐. Universal — KR/JP/TW/CN/HK
+        # 모두 적용.
         try:
             mc = info.get("marketCap")
+            sh = info.get("sharesOutstanding")
             px = info.get("currentPrice") or info.get("regularMarketPrice")
-            if (not (isinstance(info.get("sharesOutstanding"), (int, float))
-                     and info.get("sharesOutstanding"))
-                and isinstance(mc, (int, float)) and mc > 0
-                and isinstance(px, (int, float)) and px > 0):
+            mc_ok = isinstance(mc, (int, float)) and mc and mc > 0
+            sh_ok = isinstance(sh, (int, float)) and sh and sh > 0
+            px_ok = isinstance(px, (int, float)) and px and px > 0
+
+            # Forward: shares = mc / price (when mc + price 있고 shares 없음)
+            if not sh_ok and mc_ok and px_ok:
                 approx = int(mc / px)
                 if approx > 0:
                     info["sharesOutstanding"] = approx
                     _analyst_log.info(
-                        "D1 Phase 6 shares 역산 for %s: marketCap=%s / price=%s → %s",
+                        "D1 Phase 6 shares 역산 for %s: mc=%s / px=%s → %s",
                         ticker, mc, px, approx,
+                    )
+            # Reverse: mc = shares × price (when shares + price 있고 mc 없음)
+            # 319660.KS surface: pykrx 가 shares 만 채우고 mc 가 비어있는
+            # 케이스. 외부 검증 framework (047810): mc = price × shares.
+            elif not mc_ok and sh_ok and px_ok:
+                approx_mc = int(sh * px)
+                if approx_mc > 0:
+                    info["marketCap"] = approx_mc
+                    _analyst_log.info(
+                        "D1 Phase 6 mc 역산 for %s: shares=%s × px=%s → %s",
+                        ticker, sh, px, approx_mc,
                     )
         except Exception as exc:
             _analyst_log.warning(
-                "D1 Phase 6 shares 역산 failed for %s: %s", ticker, exc,
+                "D1 Phase 6 양방향 역산 failed for %s: %s", ticker, exc,
             )
 
         # KSIC industry override (2026-05-23 삼성중공업 010140.KS surfaced).
@@ -2371,7 +2428,21 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                     f" / 'Advanced Semiconductor Engineering' instead"
                     f" of correct 'Realtek Semiconductor'; same defect"
                     f" for 3034.TW and 8299.TWO):\n"
+                    f"  • [컬럼 라벨] 티커 — 회사명 | PER | Fwd PER | PSR | PBR | EV/EBITDA\n"
                     + "\n".join(peer_lines) + "\n"
+                    f"\n⛔ COMPS 출력 HEADER 의무 (319660.KS 2026-05-23"
+                    f" surfaced): 펀더멘털 리포트의 '동종업계 비교 (Comps)'"
+                    f" 섹션 출력 시 데이터 행 보다 먼저 헤더 행을 반드시"
+                    f" 출력. 예시:\n"
+                    f"  | 티커 | 회사명 | PER | Fwd PER | PSR | PBR | EV/EBITDA |\n"
+                    f"  | --- | --- | --- | --- | --- | --- | --- |\n"
+                    f"  | 319660.KS | 피에스케이 | 43.1 | N/A | N/A | 6.28 | N/A |\n"
+                    f"❌ FORBIDDEN (피에스케이 319660.KS 2026-05-23 패턴):"
+                    f" `'319660.KS: 피에스케이 — 43.1 — N/A — N/A — 6.28 — N/A'`"
+                    f" — 헤더 없이 em-dash 로만 컬럼 분리. 사용자가 무슨"
+                    f" 컬럼인지 모름. 위 markdown table 형식 OR 위 inline"
+                    f" `| PER X / Fwd PER Y / PSR Z / PBR W / EV/EBITDA V`"
+                    f" 형식 둘 중 하나만 허용.\n"
                     f"This list is curated to match the yfinance"
                     f" 'industry' field. Fabricating different peers"
                     f" (or borrowing from a different industry's"
@@ -3744,11 +3815,43 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 has_any = any(v for v in kis_data.values() if v)
                 if has_any:
                     block = format_kis_block(kis_data)
+                    # KIS price vs FACTUAL ANCHOR price ratio mismatch detector
+                    # (319660.KS 2026-05-23 surfaced). KIS ₩116,900 vs ANCHOR
+                    # ₩32,300 = 3.62x — 분명한 분할 signature 였으나 corp
+                    # action HARD GUARD 발화 없이 분석가가 "데이터 transitional"
+                    # 텍스트로만 인지. yfinance .splits 14일 lookback + DART
+                    # 30일 window 둘 다 놓치는 case (분할결의→ex-date 갭).
+                    # 이 가드는 두 source 가 동시에 현재가 를 cite 할 때 자동
+                    # 비율 비교로 corp action 을 잡아냄.
+                    corp_action_warning = ""
+                    try:
+                        kis_px = (kis_data.get("price") or {}).get("price")
+                        anchor_px = info.get("currentPrice") or info.get("regularMarketPrice")
+                        if (isinstance(kis_px, (int, float)) and kis_px > 0
+                                and isinstance(anchor_px, (int, float)) and anchor_px > 0):
+                            ratio = max(kis_px, anchor_px) / min(kis_px, anchor_px)
+                            if ratio > 1.30:
+                                corp_action_warning = (
+                                    f"\n\n⛔ CORP ACTION HARD GUARD — KIS vs"
+                                    f" FACTUAL ANCHOR 가격 불일치 자동 감지"
+                                    f" (319660.KS 2026-05-23 surfaced):\n"
+                                    f"KIS 현재가 ₩{int(kis_px):,} vs FACTUAL"
+                                    f" ANCHOR 현재가 ₩{int(anchor_px):,} → ratio"
+                                    f" {ratio:.2f}x. yfinance/KIS 한쪽이 분할-"
+                                    f" 조정 (split-adjusted), 다른 쪽이 unadjusted"
+                                    f" 일 때 발생. **SMA/EMA/MACD/RSI/Bollinger"
+                                    f" 비교 + PER/PBR cite 보류**. 결론은 데이터"
+                                    f" 정합성 확인 후 재평가. DART 분할 공시 또는"
+                                    f" yfinance .splits 확인 권고.\n"
+                                )
+                    except Exception:
+                        pass
                     if block:
                         base += (
                             "\n\n=== KIS 단기 수급 데이터 (7종, verbatim —"
                             " 이 수치를 그대로 본문에 인용할 것) ===\n"
                             + block
+                            + corp_action_warning
                             + "\n\n" + KIS_INTERP_GUIDE
                             + "\n\n⛔ KIS API SCOPE — HARD GUARD"
                               " (현대오토에버 307950.KS 2026-05-23 surfaced):\n"

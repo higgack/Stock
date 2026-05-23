@@ -34,6 +34,13 @@ def _format_pct(x: float) -> str:
     return f"{x * 100:+.2f}%"
 
 
+def _format_pct_unsigned(x: float) -> str:
+    """Format a non-directional percentage (volatility / σ). 음/양 부호가
+    의미 없는 magnitude 지표에 사용 — 변동성은 항상 0 이상이므로 "+98.65%"
+    같은 leading "+" 가 부적절. 319660.KS 2026-05-23 surfaced."""
+    return f"{x * 100:.2f}%"
+
+
 def _compute_metrics(symbol: str, curr_date: str, look_back_days: int) -> dict:
     """Compute the risk metric bundle. Returns a dict with strings ready
     for prose embedding so the LLM doesn't have to reformat numbers."""
@@ -116,7 +123,7 @@ def _compute_metrics(symbol: str, curr_date: str, look_back_days: int) -> dict:
 
     return {
         "trading_days": len(df),
-        "annual_vol": _format_pct(sigma_annual),
+        "annual_vol": _format_pct_unsigned(sigma_annual),
         "sharpe": f"{sharpe:.2f}",
         "sortino": "n/a" if np.isnan(sortino) else f"{sortino:.2f}",
         "var_95": _format_pct(var_95),
