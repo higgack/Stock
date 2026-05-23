@@ -102,7 +102,12 @@ def _analyst_majority_direction(state: dict) -> tuple[str | None, int]:
         return "buy", len(directions)
     if sells > buys and sells >= holds:
         return "sell", len(directions)
-    # Holds dominate, or buys == sells (true split) — both go to Hold.
+    # Genuine two-sided split (e.g. 1 buy + 1 sell, holds ≤ either side):
+    # there is no consensus to protect, so discipline enforcement and
+    # Option-4 LLM routing both skip — PM verdict stands as-is.
+    if buys > 0 and buys == sells and holds <= buys:
+        return None, len(directions)
+    # Holds dominate.
     return "hold", len(directions)
 
 
