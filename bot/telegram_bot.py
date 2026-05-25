@@ -284,6 +284,16 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /sites in channel — external reference sites bookmark list.
+    if first_word == "sites":
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text=_SITES_TEXT,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+
     # /compare A B → branch off to the comparison handler.
     cmp_match = COMPARE_RE.match(body)
     if cmp_match:
@@ -710,7 +720,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/start /help /usage /sv_cost — 도움말 · 비용 (NOAH+SV)
+/start /help /usage /sv_cost /sites — 도움말 · 비용 (NOAH+SV) · 참고 사이트
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
@@ -777,7 +787,6 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 <b>【11. 대시보드】</b> 🦉
  • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/...</a> (ID/PW)
  • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> (ID/PW) · 매크로·MMI·산업·Deal·NOAH · 매일 07:30/20:30 refresh + 08:00/21:00 텔레 (분할+URL) · auto-deploy 1분·cache rollover 00:05·watchdog 30분
- • <b>StockNewsViewer</b>: <a href="https://supply-waviness-popcorn.ngrok-free.dev/">supply-waviness-popcorn.ngrok-free.dev</a> · 미국주식 실시간 뉴스·감성·한글번역
  • 모바일 ID/PW popup 안 뜨면 Safari/Firefox/Brave
  • NOAH 카드: 📊분석 · 💰비용 · ⏱시간 · 🎯정확도 (알파=raw−섹터ETF)
  • 본문: 날짜·5/15/30거래일 누적·검색창 (한·일·대 종목명)·🗑️
@@ -790,6 +799,17 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
  • 대만 — Phase 4-TW 가동 (별칭 60+/MOPS/鉅亨網/RULE 14)
  • 중국 — Phase 4-CN-C 가동 + RULE 13. AKShare 설치 후 8종목 validation 대기
 """
+
+
+_SITES_TEXT = """🔗 <b>참고 사이트</b>
+
+ • <a href="https://stockeasy.intellio.kr/">Stockeasy</a>
+ • <a href="https://stockhub.kr/">Stockhub</a>
+ • <a href="https://jusikbot.com/">Jusikbot — Real-time Stock Dashboard</a>
+ • <a href="https://tebi.raoni.xyz/">트비 주식뉴스 어그리게이터 리포트</a>
+ • <a href="https://www.tradeodds.io/">Stop guessing. See what history did next.</a>
+ • <a href="https://aibottlenecks.app/">AI Bottlenecks</a>
+ • <a href="https://analytics.blancwm.com/amc_ai_infra_commitment.html">The Picks &amp; Shovels of Artificial Intelligence</a>"""
 
 
 def _chunk_help_text() -> list[str]:
@@ -1088,6 +1108,19 @@ async def cmd_sv_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
+async def cmd_sites(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/sites — external reference dashboards / tools bookmark list.
+    Channel /sites is handled in on_channel_post (PTB CommandHandler
+    doesn't fire on channel_post updates)."""
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        _SITES_TEXT,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
 async def cmd_compare_hint(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """/compare in DM doesn't run — analysis happens in the registered
     channel. Point the user at the right place instead of staying silent."""
@@ -1344,6 +1377,7 @@ async def _on_startup(application) -> None:
             BotCommand("start", "사용법 안내"),
             BotCommand("help", "사용법 안내"),
             BotCommand("usage", "사용량 / 비용 / 7일 차트"),
+            BotCommand("sites", "참고 사이트"),
             BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
         ])
     except Exception as exc:
@@ -1391,6 +1425,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("sv_cost", cmd_sv_cost))
+    app.add_handler(CommandHandler("sites", cmd_sites))
     # Catch /compare typed in DM and redirect — actual compare runs only
     # via on_channel_post inside the registered channel.
     app.add_handler(CommandHandler("compare", cmd_compare_hint))
