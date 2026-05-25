@@ -56,7 +56,30 @@ if [ "$LOCAL" = "$REMOTE" ]; then
     fi
     if [ -n "$HEAD_TS" ] && [ -n "$BOT_TS" ] && [ "$HEAD_TS" -gt "$BOT_TS" ]; then
         echo "trade-bot-update: LOCAL==REMOTE but HEAD newer than bot start — restarting"
-        sudo /bin/systemctl restart trade-bot && sleep 3
+        # VM 직접 push 라 pull range (old → new) 가 없으므로 HEAD SHA 단일
+        # 표기. 일반 pull 배포와 동일한 '배포 시작/완료 + 커밋 subject' 형식
+        # (auto-update.sh 와 동일 패턴).
+        HEAD_SHORT="$(git rev-parse --short HEAD)"
+        SUBJECT="$(git log -1 --format='%s' HEAD 2>/dev/null || echo '')"
+        start_msg="🚀 <b>배포 시작</b>: <code>${HEAD_SHORT}</code> (VM 직접 push)"
+        if [ -n "$SUBJECT" ]; then
+            start_msg="${start_msg}"$'\n'"${SUBJECT}"
+        fi
+        notify "$start_msg"
+        if sudo /bin/systemctl restart trade-bot; then
+            sleep 3
+            if systemctl is-active --quiet trade-bot; then
+                done_msg="✅ <b>배포 완료</b>: <code>${HEAD_SHORT}</code> (VM 직접 push)"
+                if [ -n "$SUBJECT" ]; then
+                    done_msg="${done_msg}"$'\n'"${SUBJECT}"
+                fi
+                notify "$done_msg"
+            else
+                notify "❌ <b>배포 실패</b>: 재시작 후 active 아님 (${HEAD_SHORT})"
+            fi
+        else
+            notify "❌ <b>배포 실패</b>: systemctl restart (${HEAD_SHORT})"
+        fi
         exit 0
     fi
     exit 0
