@@ -812,11 +812,31 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://analytics.blancwm.com/amc_ai_infra_commitment.html">The Picks &amp; Shovels of Artificial Intelligence</a>"""
 
 
+# Section divider used throughout _HELP_TEXT. Must match the literal
+# string in the help body exactly — a mismatch silently disables chunking
+# and the whole text goes out as a single message (the pre-2026-05-25 bug:
+# the body used 9 bars but the splitter looked for 14).
+_HELP_DIVIDER = "━" * 9
+
+
+def _help_utf16_len(text: str) -> int:
+    """Telegram counts message length in UTF-16 code units, not Python
+    code points. Emoji / surrogate pairs count as 2. Use this (not len)
+    when comparing against the 4096 cap."""
+    return len(text.encode("utf-16-le")) // 2
+
+
 def _chunk_help_text() -> list[str]:
-    """Split _HELP_TEXT at section dividers (━━━ lines) into chunks
-    ≤3500 chars — well under Telegram's 4096-char message cap. Sections
-    stay grouped when they fit; otherwise each becomes its own chunk."""
-    sections = _HELP_TEXT.split("━━━━━━━━━━━━━━")
+    """Return _HELP_TEXT as Telegram-sized chunks.
+
+    If the whole text fits inside Telegram's 4096 UTF-16 cap (with a small
+    margin) it is returned as ONE chunk, so /help stays a single pinned
+    announcement. Only when it grows past the cap do we split at the
+    section dividers into chunks ≤3500 chars."""
+    if _help_utf16_len(_HELP_TEXT) <= 4000:
+        return [_HELP_TEXT]
+
+    sections = _HELP_TEXT.split(_HELP_DIVIDER)
     chunks: list[str] = []
     current = ""
     for i, section in enumerate(sections):
@@ -825,7 +845,7 @@ def _chunk_help_text() -> list[str]:
             continue
         # The first non-empty section carries the title; later sections
         # get the divider prepended to keep the visual structure intact.
-        piece = section if i == 0 else "━━━━━━━━━━━━━━\n" + section
+        piece = section if i == 0 else _HELP_DIVIDER + "\n" + section
         if current and len(current) + len(piece) + 2 > 3500:
             chunks.append(current)
             current = piece
