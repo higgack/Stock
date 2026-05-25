@@ -229,12 +229,19 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         # actually hit, since `cmd_help`'s CommandHandler only fires on
         # Update.message, not channel_post.
         chat_id = post.chat.id
+        try:
+            uname = ctx.bot.username
+        except Exception:
+            uname = None
         await _send_help(
-            send_html=lambda t: ctx.bot.send_message(
-                chat_id=chat_id, text=t, parse_mode=ParseMode.HTML
+            send_html=lambda t, rm=None: ctx.bot.send_message(
+                chat_id=chat_id, text=t, parse_mode=ParseMode.HTML, reply_markup=rm
             ),
-            send_plain=lambda t: ctx.bot.send_message(chat_id=chat_id, text=t),
+            send_plain=lambda t, rm=None: ctx.bot.send_message(
+                chat_id=chat_id, text=t, reply_markup=rm
+            ),
             label="channel_help",
+            reply_markup=_help_keyboard(uname),
         )
         return
 
@@ -857,20 +864,44 @@ def _chunk_help_text() -> list[str]:
     return chunks
 
 
-async def _send_help(send_html, send_plain, label: str) -> None:
+def _help_keyboard(bot_username: str | None) -> InlineKeyboardMarkup | None:
+    """Inline button for the pinned help/announcement.
+
+    A channel subscriber cannot post to the channel, so a plain ``/sites``
+    command text isn't tap-to-run for them. A deep-link URL button is — it
+    opens a 1:1 chat with the bot whose START payload (`sites`) routes to
+    the external-sites list (handled in `cmd_help`). Returns None when the
+    bot username isn't known yet (button is then simply omitted)."""
+    if not bot_username:
+        return None
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "🔗 외부 참조 대쉬보드사이트 모음",
+            url=f"https://t.me/{bot_username}?start=sites",
+        )
+    ]])
+
+
+async def _send_help(send_html, send_plain, label: str, reply_markup=None) -> None:
     """Send the chunked help via the two callables (HTML + plain fallback).
-    `send_html(text)` and `send_plain(text)` are awaitables the caller
-    binds to either `update.message.reply_text` or `bot.send_message` so
-    this works for both DM (`cmd_help`) and channel post paths.
+    `send_html(text, reply_markup)` and `send_plain(text, reply_markup)` are
+    awaitables the caller binds to either `update.message.reply_text` or
+    `bot.send_message` so this works for both DM (`cmd_help`) and channel
+    post paths.
+
+    `reply_markup`, when given, is attached to the LAST chunk only so the
+    inline button rides along with the (single, pinned) help message.
 
     Defensive fallback: if Telegram rejects an HTML chunk (entity parse
     error or oversize) the chunk is re-sent as plain text with tags
     stripped — the user never sees nothing at all."""
     chunks = _chunk_help_text()
     log.info("%s: sending %d chunk(s)", label, len(chunks))
+    last = len(chunks)
     for idx, chunk in enumerate(chunks, 1):
+        rm = reply_markup if idx == last else None
         try:
-            await send_html(chunk)
+            await send_html(chunk, rm)
         except Exception as exc:
             log.warning(
                 "%s chunk %d/%d HTML send failed (%s) — retrying as plain text",
@@ -878,7 +909,7 @@ async def _send_help(send_html, send_plain, label: str) -> None:
             )
             plain = re.sub(r"<[^>]+>", "", chunk)
             try:
-                await send_plain(plain)
+                await send_plain(plain, rm)
             except Exception:
                 log.exception(
                     "%s chunk %d/%d plain fallback also failed",
@@ -887,13 +918,30 @@ async def _send_help(send_html, send_plain, label: str) -> None:
         await asyncio.sleep(0.5)
 
 
-async def cmd_help(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """DM /start or /help — comprehensive bot usage guide. See
-    `_send_help` for the chunking + fallback logic."""
+    `_send_help` for the chunking + fallback logic.
+
+    Deep-link `/start sites` (the pinned-announcement button target) shows
+    the external reference sites instead of the full help."""
+    if update.message is None:
+        return
+    if ctx.args and ctx.args[0].lower() == "sites":
+        await update.message.reply_text(
+            _SITES_TEXT, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+        )
+        return
+    try:
+        uname = ctx.bot.username
+    except Exception:
+        uname = None
     await _send_help(
-        send_html=lambda t: update.message.reply_text(t, parse_mode=ParseMode.HTML),
-        send_plain=lambda t: update.message.reply_text(t),
+        send_html=lambda t, rm=None: update.message.reply_text(
+            t, parse_mode=ParseMode.HTML, reply_markup=rm
+        ),
+        send_plain=lambda t, rm=None: update.message.reply_text(t, reply_markup=rm),
         label="cmd_help",
+        reply_markup=_help_keyboard(uname),
     )
 
 
