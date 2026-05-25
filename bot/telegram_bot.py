@@ -791,7 +791,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
  • NOAH 카드: 📊분석 · 💰비용 · ⏱시간 · 🎯정확도 (알파=raw−섹터ETF)
  • 본문: 날짜·5/15/30거래일 누적·검색창 (한·일·대 종목명)·🗑️
  • 데이터: <code>~/.tradingagents/{archive,usage.jsonl,memory/}</code>
- • 외부 참고 사이트 7종 → <code>/sites</code>
+ • 외부 참조 대쉬보드사이트 모음 → /sites
 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
