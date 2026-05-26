@@ -1,6 +1,7 @@
 # TradingAgents/graph/trading_graph.py
 
 import logging
+import math
 import os
 from pathlib import Path
 import json
@@ -310,6 +311,11 @@ class TradingAgentsGraph:
                 / bench["Close"].iloc[0]
             )
             alpha = raw - bench_ret
+            if math.isnan(raw) or math.isnan(bench_ret):
+                logger.warning(
+                    "fetch_returns: %s/%s — NaN in Close (yfinance data gap)", ticker, trade_date
+                )
+                return None, None, None
             logger.info(
                 "fetch_returns: %s/%s — raw=%.4f bench=%s ret=%.4f alpha=%.4f days=%d",
                 ticker, trade_date, raw, benchmark_symbol, bench_ret, alpha, actual_days,

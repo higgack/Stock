@@ -324,11 +324,15 @@ def _read_memory_full() -> dict:
 
 
 def _parse_pct(s: str) -> float | None:
-    """Parse '+5.0%' / '-3.2%' / 'n/a' → float (5.0 / -3.2 / None)."""
+    """Parse '+5.0%' / '-3.2%' / 'n/a' → float (5.0 / -3.2 / None).
+    Returns None for NaN/inf — yfinance occasionally produces NaN Close
+    values for non-US ETFs, which propagates as '+nan%' into the log."""
+    import math
     if not s or s == "n/a":
         return None
     try:
-        return float(s.rstrip("%").replace("+", ""))
+        v = float(s.rstrip("%").replace("+", ""))
+        return None if (math.isnan(v) or math.isinf(v)) else v
     except ValueError:
         return None
 
@@ -1212,13 +1216,14 @@ def _render_outcome_html(resolved: dict | None) -> str:
     windows: list[dict] = []
     raw_5d = (resolved.get("raw") or "").strip()
     alpha_5d = (resolved.get("alpha") or "").strip()
-    if raw_5d and raw_5d != "n/a":
+    # Use _parse_pct as the validity gate — rejects "n/a", "+nan%", "+inf%"
+    if _parse_pct(raw_5d) is not None:
         windows.append({"days": 5, "raw": raw_5d, "alpha": alpha_5d})
     for entry in (resolved.get("outcomes_extra") or []):
         days = entry.get("days")
         raw = (entry.get("raw") or "").strip()
         alpha = (entry.get("alpha") or "").strip()
-        if not isinstance(days, int) or not raw or raw == "n/a":
+        if not isinstance(days, int) or _parse_pct(raw) is None:
             continue
         windows.append({"days": days, "raw": raw, "alpha": alpha})
     if not windows:

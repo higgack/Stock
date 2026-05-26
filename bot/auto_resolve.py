@@ -31,6 +31,7 @@ Prints a one-line summary to stdout for systemd / parent-process logs.
 from __future__ import annotations
 
 import logging
+import math
 import sys
 from datetime import datetime, timedelta
 from typing import Optional
@@ -126,6 +127,9 @@ def _fetch_returns(
             (bench["Close"].iloc[actual_days] - bench["Close"].iloc[0])
             / bench["Close"].iloc[0]
         )
+        if math.isnan(raw) or math.isnan(bench_ret):
+            log.warning("fetch_returns: %s/%s — NaN in Close (yfinance data gap)", ticker, trade_date)
+            return None, None, None
         log.info(
             "fetch_returns: %s/%s — raw=%.4f bench=%s ret=%.4f alpha=%.4f days=%d",
             ticker, trade_date, raw, benchmark_symbol, bench_ret, raw - bench_ret,
