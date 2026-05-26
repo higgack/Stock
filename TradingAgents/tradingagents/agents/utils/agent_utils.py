@@ -2749,6 +2749,42 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
             f" 명시 의무"
         )
 
+        # ⛔ INTERNET VIE HARD GUARD (Fix C, 9988.HK / Alibaba 2026-05-27).
+        # Chinese internet platforms (Tencent / Alibaba / JD / Meituan / …)
+        # are held by foreign + HK investors only through a Cayman holdco
+        # that contracts with the mainland operating entity — the VIE
+        # structure the PRC could invalidate (2021 滴滴 precedent). RULE 13.4
+        # in fundamentals_analyst already demands this be named, but the LLM
+        # routinely falls back to a generic '中国 규제 위험' (9988.HK
+        # 2026-05-27: the market primer AND the fundamentals conclusion both
+        # omitted the VIE-specific dominant variable). A prominent context-
+        # level HARD GUARD seen by EVERY analyst — not just fundamentals —
+        # raises compliance the way the CORPORATE ACTION guard does.
+        # Market-gated to CN_A/HK Internet names for a data-structure reason
+        # (VIE is a PRC-specific construct); applies universally to every
+        # such ticker going forward.
+        if market in ("CN_A", "HK") and industry in (
+            "Internet Content & Information", "Internet Retail",
+        ):
+            base += (
+                f"\n\n=== ⛔ INTERNET VIE HARD GUARD (MANDATORY) ===\n"
+                f"{ticker} 는 中国 인터넷 플랫폼으로 VIE 구조입니다. 외국인 /"
+                f" HK 투자자는 본토 운영 entity 지분을 직접 보유하지 못하고"
+                f" Cayman 지주사 ↔ 본토 VIE 계약으로 우회 보유합니다 — PRC 가"
+                f" VIE 구조 자체를 무효화할 tail risk (2021 滴滴 선례).\n"
+                f"  시장 sector primer 와 펀더멘털 / 뉴스 결론 중 최소 1곳"
+                f" 에서 아래 dominant 변수 ≥1개를 반드시 명시 (generic '中国"
+                f" 규제 위험' / '미중 갈등' 으로 대체 금지): (a) VIE 구조"
+                f" 자체 무효화 risk, (b) 反독점 (SAMR) 罰款, (c) 게임 / 콘텐츠"
+                f" 판호 발급 추이, (d) 美 entity list / SDN / HFCAA 상장폐지"
+                f" 압력.\n"
+                f"  ❌ FORBIDDEN (9988.HK 2026-05-27 패턴): '중국 정부의"
+                f" 인터넷 산업 규제' / '미중 기술 갈등' 같은 막연한 서술만으로"
+                f" 종결.\n"
+                f"  ✅ RIGHT: '판호 발급 재개 추이' 또는 'VIE 구조 무효화 tail"
+                f" risk' 등 구체 변수 1개 이상 인용 후 5거래일 가격 영향 연결."
+            )
+
         # MANDATORY PEER SET — when we have a curated peer list for
         # this industry (bot/market._KR_INDUSTRY_PEERS), inject it
         # directly so the analyst has no choice. Text-only rules

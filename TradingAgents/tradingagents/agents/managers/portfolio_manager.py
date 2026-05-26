@@ -94,13 +94,26 @@ def _analyst_majority_direction(state: dict) -> tuple[str | None, int]:
     # Hold counts as a vote for the Hold direction. If ANY analyst leans
     # buy and the rest are Hold, the majority is still ambiguous between
     # Buy and Hold — we default to Hold (more conservative) unless the
-    # buy side is the plurality. Same logic for sell.
+    # buy side is the strict plurality. Same logic for sell.
+    #
+    # STRICT plurality (buys > holds, not >=): a buy==hold TIE is NOT a
+    # buy consensus — it must fall through to Hold. The old `>=` returned
+    # "buy" on a 2-buy-2-hold tie, contradicting the "default to Hold
+    # unless buy is the plurality" intent above. 9988.HK (Alibaba)
+    # 2026-05-27 surfaced the cost: stance mis-extraction produced a
+    # 2-buy/2-hold split, the `>=` tie-break elected a "buy" majority, and
+    # _enforce_pm_override_discipline then FORCE-corrected a bearish PM
+    # (RM Sell + Trader Sell) up to Buy to match the false majority. With
+    # strict `>`, a buy/hold (or sell/hold) tie returns Hold, so the
+    # discipline can at worst force Hold — never an aggressive Buy/Sell off
+    # a tie. Genuine pluralities (3-1, 2-1, 4-0) are unaffected.
+    # Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
     buys = directions.count("buy")
     sells = directions.count("sell")
     holds = directions.count("hold")
-    if buys > sells and buys >= holds:
+    if buys > sells and buys > holds:
         return "buy", len(directions)
-    if sells > buys and sells >= holds:
+    if sells > buys and sells > holds:
         return "sell", len(directions)
     # Genuine two-sided split (e.g. 1 buy + 1 sell, holds ≤ either side):
     # there is no consensus to protect, so discipline enforcement and

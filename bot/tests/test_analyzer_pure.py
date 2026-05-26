@@ -292,6 +292,58 @@ class TestExtractStance:
         body = "투자 의견은 매도입니다. 다만 과매수 해소 시 반등 가능."
         assert _a._extract_stance(body) == "매도"
 
+    # ── Fix A: cited third-party IB ratings must NOT count as own stance ──
+    # (9988.HK / Alibaba 2026-05-27: news analyst concluded HOLD but cited
+    #  multiple IB "'매수' 등급" lines → mislabeled 매수 → false buy-majority)
+    def test_cited_buy_rating_does_not_flip_hold(self):
+        body = (
+            "9988.HK는 5거래일 horizon에서 HOLD 의견을 제시합니다. 남향자금 "
+            "순매도가 악재이나, 다만 애널리스트들은 클라우드/AI 잠재력을 높이 "
+            "평가하며 '매수' 등급을 유지하고 있어 펀더멘털 기대감은 존재합니다."
+        )
+        assert _a._extract_stance(body) == "보유"
+
+    def test_cited_buy_rating_colon_verdict(self):
+        body = (
+            "결론\n9988.HK에 대한 5거래일 투자 의견은 HOLD입니다. 중신증권과 "
+            "골드만삭스는 '매수' 등급을 유지하고, 초상증권은 강력 매수 등급을 "
+            "제시했습니다."
+        )
+        assert _a._extract_stance(body) == "보유"
+
+    def test_own_sell_verdict_wins_over_cited_buy_rating(self):
+        body = "최종 의견: 매도. 골드만은 매수 등급을 유지하나 단기 급락 위험."
+        assert _a._extract_stance(body) == "매도"
+
+    def test_genuine_buy_verdict_still_detected(self):
+        # Masking cited ratings must not suppress a genuine BUY verdict.
+        assert _a._extract_stance("결론: 투자 의견은 매수입니다.") == "매수"
+
+
+# ── Fix D: Comps dash-chain → inline-label polish (9988.HK 2026-05-27) ──────
+class TestCompsDashChainPolish:
+    def test_dash_chain_relabeled(self):
+        body = "• 9988.HK: Alibaba Group Holding Limited — 20.1 — 13.2 — 2.39 — 1.94 — 21.8"
+        out = _a._polish(body)
+        assert "PER 20.1" in out
+        assert "Fwd PER 13.2" in out
+        assert "PSR 2.39" in out
+        assert "PBR 1.94" in out
+        assert "EV/EBITDA 21.8" in out
+
+    def test_dash_chain_with_nm_and_negative(self):
+        body = "• 3690.HK: Meituan — N/M(적자) — 14.8 — 1.33 — 2.76 — -17.3"
+        out = _a._polish(body)
+        assert "PER N/M(적자)" in out
+        assert "EV/EBITDA -17.3" in out
+
+    def test_indicator_bullet_not_touched(self):
+        # Em-dash prose with non-numeric cells must NOT be relabeled.
+        body = "• 현재가: HK$127.60 — 하락 — 볼린저 밴드 하단에 근접"
+        out = _a._polish(body)
+        assert "PER" not in out
+        assert "하락 — 볼린저" in out or "하락" in out
+
 
 # ── _get_unanimous_analyst_direction + cascade (ALAB 2026-05-26) ───────────
 # Validates that the stance fix restores correct unanimity detection — the

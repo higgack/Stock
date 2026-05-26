@@ -521,6 +521,42 @@ _STANCE_FALSE_FRIENDS = (
 )
 
 
+# Cited third-party analyst RATINGS ("골드만 '매수' 등급을 유지", "중신증권
+# 매도 레이팅") are NOT the analyst's own verdict — they are evidence the
+# analyst quotes. The bare-keyword fallback (pass 3) would otherwise rfind
+# the 매수/매도 inside a cited rating and mislabel the whole report.
+# 9988.HK (Alibaba) 2026-05-27: the news analyst concluded HOLD but the body
+# cited 4-5 IB "'매수' 등급" lines; the rightmost cited 매수 won the bare
+# scan → 뉴스 mislabeled 매수 → false buy-majority → PM force-corrected to
+# Buy. We neutralise the rating-citation forms (매수/매도 + 등급/레이팅/콜,
+# with optional surrounding quotes) BEFORE the keyword scans. The analyst's
+# OWN verdict never uses '등급/레이팅' (it uses '투자 의견/보유 의견/HOLD'),
+# so masking these is safe. Rule applies to all analyses going forward
+# (US + KR + JP + TW + CN_A + HK — IB rating citations appear in every market).
+_CITED_RATING_RE = re.compile(
+    r"['\"‘’“”]?(?:매수|매도)['\"‘’“”]?"
+    r"\s*(?:등급|레이팅|콜)"
+)
+
+# Conclusion VERDICT DECLARATION — the analyst's own bottom-line, written as
+# "투자 의견: HOLD" / "투자 의견은 매수" / "최종 의견 보유" / "결론: SELL".
+# These colon/은-는 forms were NOT covered by the literal explicit-keyword
+# list (which only matched the "HOLD 의견" value-first form), so a body that
+# phrased its verdict this way fell through to the fragile bare-keyword pass.
+# This regex (pass 0, highest priority, conclusion-zone only) captures the
+# verdict the analyst DECLARES, ignoring cited ratings (which lack the
+# '투자 의견/결론/판단' prefix). Rule applies to all analyses going forward.
+_VERDICT_DECL_RE = re.compile(
+    r"(?:투자\s*의견|최종\s*의견|투자\s*판단|최종\s*판단|결론)\s*[은는:]*\s*"
+    r"['\"‘’“”]?\s*(매수|매도|보유|hold|buy|sell)",
+    re.IGNORECASE,
+)
+_VERDICT_WORD_TO_LABEL = {
+    "매수": "매수", "매도": "매도", "보유": "보유",
+    "hold": "보유", "buy": "매수", "sell": "매도",
+}
+
+
 # Explicit recommendation patterns — these mean "this is the verdict",
 # not "this keyword appears in passing". _extract_stance scans these
 # FIRST and prefers their rightmost match over the bare-keyword pass,
@@ -695,6 +731,12 @@ def _extract_stance(body: str | None) -> str:
     if not body:
         return ""
     lower = body.lower()
+    # Neutralise cited third-party IB ratings ("'매수' 등급", "매도 레이팅")
+    # BEFORE the compound/keyword scans so a quoted rating the analyst is
+    # merely reporting can't win the bare-keyword fallback as if it were the
+    # analyst's own verdict (9988.HK 2026-05-27 news analyst). Regex, not
+    # literal, because the quote/space between 매수 and 등급 varies.
+    lower = _CITED_RATING_RE.sub("○○", lower)
     # Neutralise technical / order-flow compounds (과매수 overbought, 순매도
     # net-sell, 매수세 buying-pressure, …) that embed 매수/매도 as a substring
     # so the bare-keyword fallback can't rfind them as a buy/sell verdict.
@@ -724,9 +766,20 @@ def _extract_stance(body: str | None) -> str:
         candidates.sort(key=lambda kv: -kv[0])
         return candidates[0][1]
 
-    # Pass 1: explicit patterns in conclusion zone (last 800 chars)
+    # Pass 0: verdict DECLARATION in conclusion zone ("투자 의견: HOLD",
+    # "결론은 매수"). Highest priority — this is the analyst explicitly
+    # naming its own bottom-line, which the value-first explicit-keyword
+    # list ("HOLD 의견") doesn't cover. Take the rightmost declaration so a
+    # late "최종 결론" wins over an earlier "초기 투자 의견".
     _CONCLUSION_ZONE = 800
     zone_lower = lower[-_CONCLUSION_ZONE:] if len(lower) > _CONCLUSION_ZONE else lower
+    decl = None
+    for m in _VERDICT_DECL_RE.finditer(zone_lower):
+        decl = m.group(1)
+    if decl:
+        return _VERDICT_WORD_TO_LABEL[decl.lower()]
+
+    # Pass 1: explicit patterns in conclusion zone (last 800 chars)
     zone_hit = _rightmost_match_in(zone_lower, _STANCE_EXPLICIT_KEYWORDS)
     if zone_hit:
         return zone_hit
@@ -1269,6 +1322,21 @@ _INSTRUMENT_CTX_RE = re.compile(
 # trailing '— -' placeholders (e.g. '시가총액: $36.94B — - — - — -').
 # Collapse to just the value(s) actually present.
 _DASH_PADDING_RE = re.compile(r"(?: [—\-]{1,5} -){2,15}\s*$", re.MULTILINE)
+
+# Comps dash-chain detector (Fix D, 9988.HK 2026-05-27). A multiple-value
+# cell is a number (optional sign/decimal), N/M (optional parenthetical),
+# N/A, or 적자. A line whose trailing 5 cells are all such values separated
+# by ' — ' is a Comps row that dropped its PER/Fwd PER/PSR/PBR/EV-EBITDA
+# labels; the polish step re-attaches them. Name part excludes the em-dash
+# so a hyphenated company name still parses. Compiled once at module load.
+_COMPS_CELL = r"(?:-?\d+(?:\.\d+)?|N/M(?:\([^)\n]*\))?|N/A|적자)"
+_COMPS_DASH_RE = re.compile(
+    r"^([ \t]*[•·*\-]?[ \t]*\S[^\n—]*?)[ \t]*—[ \t]*(" + _COMPS_CELL +
+    r")[ \t]*—[ \t]*(" + _COMPS_CELL + r")[ \t]*—[ \t]*(" + _COMPS_CELL +
+    r")[ \t]*—[ \t]*(" + _COMPS_CELL + r")[ \t]*—[ \t]*(" + _COMPS_CELL +
+    r")[ \t]*$",
+    re.MULTILINE,
+)
 
 # English structured-field labels that the research_manager / trader / risk
 # debators emit even under a Korean directive. The patterns tolerate
@@ -1952,6 +2020,27 @@ def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None)
         )
         return inline_re.sub(r"\1\n\2", b)
     _step("split-inline-tables", _split_inline_tables)
+    # Comps row emitted as a dash-chain ("9988.HK: Alibaba — 20.1 — 13.2 —
+    # 2.39 — 1.94 — 21.8") strips the PER/Fwd PER/PSR/PBR/EV-EBITDA labels,
+    # so the reader (and the downstream Trader/PM LLMs that re-cite the
+    # multiples) must guess which number is which. build_instrument_context
+    # forbids this format, but the LLM ignores the directive (9988.HK
+    # 2026-05-27 news analyst re-emitted the banned dash-chain). Re-attach
+    # the canonical labels deterministically: a line whose trailing 5 cells
+    # are all multiple-values separated by ' — ' is a Comps row; rewrite to
+    # the inline-label '/' form. Exactly-5 numeric-ish cells is the guard so
+    # ordinary em-dash prose ('현재가 X — 하락 — 볼린저…') can't match. The
+    # column order is the fixed Comps order injected by the context. Rule
+    # applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    def _comps_dash_to_inline(b: str) -> str:
+        def _sub(m):
+            name = m.group(1).rstrip()
+            return (
+                f"{name} | PER {m.group(2)} / Fwd PER {m.group(3)} /"
+                f" PSR {m.group(4)} / PBR {m.group(5)} / EV/EBITDA {m.group(6)}"
+            )
+        return _COMPS_DASH_RE.sub(_sub, b)
+    _step("comps-dash-to-inline", _comps_dash_to_inline)
     # Broken-table separator residue — a table whose header row was dropped
     # (or bulletised by the renderer) leaving only the alignment-separator
     # line, e.g. 자이에스앤디 317400.KS 2026-05-26 펀더멘털 emitted
