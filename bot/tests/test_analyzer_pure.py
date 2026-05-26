@@ -89,20 +89,20 @@ class TestAbbrevKorean:
 
 # ── _has_pm_override_trigger ───────────────────────────────────────────────
 # CLAUDE.md: PM override discipline — trigger must be explicitly named.
-# Tests seed from FORM 2026-05-23 unanimous Hold → PM Overweight case.
+# Tests seed from FORM 2026-05-23 unanimous Hold → PM Overweight case and
+# ALAB 2026-05-26 (overbought trigger must NOT bless a Hold→Buy override).
 
 class TestHasPmOverrideTrigger:
-    # ── RSI extreme (numeric, ≥70 or ≤30) ──
+    # ── RSI extreme (numeric, ≥75 or ≤25 — aligned to CLAUDE.md) ──
     def test_rsi_above_75(self):
         assert _a._has_pm_override_trigger("RSI: 78.3 — 과매수 구간") is True
 
-    def test_rsi_exactly_70(self):
-        assert _a._has_pm_override_trigger("현재 RSI: 70 진입") is True
+    def test_rsi_70_not_extreme(self):
+        # Threshold tightened to ≥75/≤25 (CLAUDE.md + in-graph). RSI 70 is
+        # no longer an extreme — must NOT trigger.
+        assert _a._has_pm_override_trigger("현재 RSI: 70 진입") is False
 
-    def test_rsi_below_30(self):
-        # The RSI regex matches "RSI: <number>" / "RSI(<label>): <number>" forms.
-        # "RSI 지표: 22.1" has non-numeric/non-paren text between RSI and colon
-        # → not matched by the regex. Use the canonical colon form instead.
+    def test_rsi_below_25(self):
         assert _a._has_pm_override_trigger("RSI: 22.1") is True
 
     def test_rsi_moderate_not_triggered(self):
@@ -113,6 +113,36 @@ class TestHasPmOverrideTrigger:
         # RSI mention without a numeric value should NOT trigger
         # (the function looks for RSI + numeric pattern)
         assert _a._has_pm_override_trigger("RSI 분석 참조") is False
+
+    # ── Direction-aware RSI (Fix 2 — ALAB 2026-05-26 root of the cascade) ──
+    def test_overbought_blesses_sell_not_buy(self):
+        # RSI 79 overbought: valid trigger for a sell-side override, but
+        # must NOT validate a buy-side (Hold→Buy) override.
+        assert _a._has_pm_override_trigger("RSI: 79.2 과매수", "sell") is True
+        assert _a._has_pm_override_trigger("RSI: 79.2 과매수", "buy") is False
+
+    def test_oversold_blesses_buy_not_sell(self):
+        assert _a._has_pm_override_trigger("RSI: 18.0 과매도", "buy") is True
+        assert _a._has_pm_override_trigger("RSI: 18.0 과매도", "sell") is False
+
+    def test_overbought_keyword_direction(self):
+        # 과매수 textual keyword follows the same direction semantics.
+        assert _a._has_pm_override_trigger("현재 과매수 영역", "sell") is True
+        assert _a._has_pm_override_trigger("현재 과매수 영역", "buy") is False
+
+    def test_oversold_keyword_direction(self):
+        assert _a._has_pm_override_trigger("현재 과매도 영역", "buy") is True
+        assert _a._has_pm_override_trigger("현재 과매도 영역", "sell") is False
+
+    def test_event_trigger_direction_agnostic(self):
+        # Non-technical events (FOMC, corp action) qualify for any direction.
+        assert _a._has_pm_override_trigger("FOMC D-2 결정", "buy") is True
+        assert _a._has_pm_override_trigger("주식분할 HARD GUARD", "sell") is True
+
+    def test_none_dir_permissive(self):
+        # pm_dir=None preserves the old permissive behaviour (any extreme).
+        assert _a._has_pm_override_trigger("RSI: 79.2", None) is True
+        assert _a._has_pm_override_trigger("RSI: 18.0", None) is True
 
     # ── Catalyst countdown (D-N format) ──
     def test_d1_countdown(self):
@@ -220,3 +250,79 @@ class TestExtractStance:
         # Report with no stance keyword → empty string
         result = _a._extract_stance("펀더멘털 분석 결과 PER 25배 수준입니다.")
         assert result == ""
+
+    # ── Fix 1: 과매수/과매도 false-friend masking (ALAB 2026-05-26 root cause) ──
+    def test_alab_sentiment_hold_not_buy(self):
+        # The exact ALAB failure: "투자 의견은 HOLD" conclusion polluted by a
+        # trailing 과매수 (overbought) — pre-fix returned 매수 (the 매수 inside
+        # 과매수), corrupting the analyst-majority vote and letting PM Buy pass.
+        body = "ALAB에 대한 투자 의견은 HOLD입니다. 단기 과매수 신호가 존재합니다."
+        assert _a._extract_stance(body) == "보유"
+
+    def test_과매수_alone_not_buy(self):
+        # 과매수 (overbought) must never read as a 매수 (buy) verdict.
+        assert _a._extract_stance("현재 RSI는 과매수 구간입니다.") == ""
+
+    def test_과매도_alone_not_sell(self):
+        assert _a._extract_stance("현재 RSI는 과매도 구간입니다.") == ""
+
+    def test_순매도_not_sell_verdict(self):
+        # 순매도 (net selling, a flow term) must not override a buy verdict.
+        body = "외국인 순매도가 이어졌으나 결론: 매수 의견을 유지합니다."
+        assert _a._extract_stance(body) == "매수"
+
+    def test_매수세_does_not_force_buy_over_hold(self):
+        # 매수세 (buying pressure) is flow, not a verdict; the HOLD conclusion wins.
+        body = "매수세가 강했지만 투자 의견은 보유입니다."
+        assert _a._extract_stance(body) == "보유"
+
+    def test_강매수_preserved(self):
+        # 강매수 (strong buy) is a genuine verdict and must NOT be masked.
+        assert _a._extract_stance("최종 결론은 강매수입니다.") == "매수"
+
+    # ── Fix 1b: '투자 의견은/의견:' explicit verdict patterns ──
+    def test_투자의견은_hold(self):
+        assert _a._extract_stance("종합 투자 의견은 HOLD입니다.") == "보유"
+
+    def test_투자의견_colon_보유(self):
+        assert _a._extract_stance("최종 투자 의견: 보유") == "보유"
+
+    def test_투자의견은_매도_over_trailing_과매수(self):
+        # Explicit verdict (pass 1) wins even with a trailing 과매수.
+        body = "투자 의견은 매도입니다. 다만 과매수 해소 시 반등 가능."
+        assert _a._extract_stance(body) == "매도"
+
+
+# ── _get_unanimous_analyst_direction + cascade (ALAB 2026-05-26) ───────────
+# Validates that the stance fix restores correct unanimity detection — the
+# input to both the in-graph PM discipline and analyzer.py Fix F.
+
+class TestUnanimousAnalystDirection:
+    def _state(self, market, senti, news, fund):
+        return {
+            "market_report": market,
+            "sentiment_report": senti,
+            "news_report": news,
+            "fundamentals_report": fund,
+        }
+
+    def test_alab_four_hold_consensus(self):
+        # All four conclude HOLD (some with trailing 과매수). Pre-fix the
+        # 과매수 substring flipped market+senti to 매수, breaking unanimity
+        # and disabling the PM override guard. Post-fix → unanimous 'hold'.
+        state = self._state(
+            "기술적으로 강세이나 과매수. 결론: 투자 의견은 HOLD입니다.",
+            "AI 모멘텀 강하나 과매수 부담. 투자 의견은 HOLD입니다.",
+            "5거래일 horizon에서는 HOLD 의견을 제시합니다.",
+            "결론적으로 본 종목에 대해 보유 의견을 제시합니다.",
+        )
+        assert _a._get_unanimous_analyst_direction(state) == "hold"
+
+    def test_genuine_split_returns_none(self):
+        state = self._state(
+            "결론: 매수 의견을 제시합니다.",
+            "결론: 매도 의견을 제시합니다.",
+            "HOLD 의견을 제시합니다.",
+            "보유 의견을 제시합니다.",
+        )
+        assert _a._get_unanimous_analyst_direction(state) is None

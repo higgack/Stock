@@ -500,6 +500,27 @@ _STANCE_KEYWORDS = [
 ]
 
 
+# Technical / order-flow compounds that EMBED 매수/매도 as a substring but
+# are NOT a buy/sell verdict. The bare-keyword fallback (pass 3 of
+# _extract_stance) does an rfind for "매수"/"매도" and would otherwise match
+# the 매수 inside 과매수 (overbought) or the 매도 inside 순매도 (net-sell),
+# mislabelling a HOLD/opposite conclusion. We neutralise these to a token
+# with no stance substring BEFORE the bare scan. 강매수/강매도 (strong
+# buy/sell) are genuine verdicts and intentionally NOT listed here.
+# Surfaced: ALAB 2026-05-26 감정 body "투자 의견은 HOLD … 과매수 …" → 매수,
+# which cascaded into _analyst_majority_direction electing a false buy
+# majority and the PM Buy slipping past the override discipline.
+# Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+_STANCE_FALSE_FRIENDS = (
+    "과매수", "과매도", "순매수", "순매도",
+    "매수세", "매도세", "매수벽", "매도벽",
+    "매수호가", "매도호가", "매수우위", "매도우위",
+    "매수자", "매도자", "매수량", "매도량",
+    "매수잔량", "매도잔량", "매수주문", "매도주문",
+    "매수강도", "매도강도",
+)
+
+
 # Explicit recommendation patterns — these mean "this is the verdict",
 # not "this keyword appears in passing". _extract_stance scans these
 # FIRST and prefers their rightmost match over the bare-keyword pass,
@@ -552,6 +573,29 @@ _STANCE_EXPLICIT_KEYWORDS = [
     ("투자 제안: 매수", "매수"),
     ("투자 제안: 매도", "매도"),
     ("투자 제안: 보유", "보유"),
+    # '투자 의견은/의견:' verdict forms. ALAB 2026-05-26 감정 body wrote
+    # "투자 의견은 HOLD입니다" which was NOT in this explicit list, so it
+    # fell through to the bare-keyword fallback and matched 매수 inside a
+    # nearby 과매수 — labelling a HOLD conclusion as 매수. Cover spaced +
+    # unspaced (투자의견) and '은'/':' separators.
+    ("투자 의견은 BUY", "매수"),
+    ("투자 의견은 SELL", "매도"),
+    ("투자 의견은 HOLD", "보유"),
+    ("투자 의견은 매수", "매수"),
+    ("투자 의견은 매도", "매도"),
+    ("투자 의견은 보유", "보유"),
+    ("투자 의견: BUY", "매수"),
+    ("투자 의견: SELL", "매도"),
+    ("투자 의견: HOLD", "보유"),
+    ("투자 의견: 매수", "매수"),
+    ("투자 의견: 매도", "매도"),
+    ("투자 의견: 보유", "보유"),
+    ("투자의견은 BUY", "매수"),
+    ("투자의견은 SELL", "매도"),
+    ("투자의견은 HOLD", "보유"),
+    ("투자의견: BUY", "매수"),
+    ("투자의견: SELL", "매도"),
+    ("투자의견: HOLD", "보유"),
     # Horizon-based conclusion patterns — LLM sometimes writes
     # "5거래일 horizon에서는 HOLD를 권고합니다" without a "의견" keyword.
     # Also covers bare-verb forms: "결론: HOLD", "HOLD를 권고" etc.
@@ -651,6 +695,14 @@ def _extract_stance(body: str | None) -> str:
     if not body:
         return ""
     lower = body.lower()
+    # Neutralise technical / order-flow compounds (과매수 overbought, 순매도
+    # net-sell, 매수세 buying-pressure, …) that embed 매수/매도 as a substring
+    # so the bare-keyword fallback can't rfind them as a buy/sell verdict.
+    # Explicit verdict keywords never contain these compounds, so masking the
+    # whole scan text is safe for all three passes.
+    for _ff in _STANCE_FALSE_FRIENDS:
+        if _ff in lower:
+            lower = lower.replace(_ff, "○○")
 
     def _rightmost_match_in(text_lower: str, keyword_list):
         by_len = sorted(keyword_list, key=lambda kv: -len(kv[0]))
@@ -709,8 +761,16 @@ _DIRECTION_KR = {"buy": "매수", "sell": "매도", "hold": "보유"}
 # HARD GUARD keyword 중 하나가 PM rationale에 명시돼야 unanimous override 허용.
 # Rule applies to all analyses going forward — US + KR + JP + TW + CN/HK.
 
+# Technical-extreme triggers are DIRECTIONAL (mirrors the in-graph
+# _override_trigger_directional, LG전자 2026-05-22): 과매수/overbought only
+# justifies a DOWNWARD (sell-side) override, 과매도/oversold only an UPWARD
+# (buy-side) override. Using an overbought signal to bless a Hold→Buy
+# override is a direction mismatch — the ALAB 2026-05-26 failure mode.
+_PM_TRIGGER_OVERBOUGHT = ("과매수", "overbought")
+_PM_TRIGGER_OVERSOLD = ("과매도", "oversold")
+# Direction-agnostic event triggers — qualify regardless of override direction.
 _PM_TRIGGER_KEYWORDS = (
-    "과매수", "과매도", "기술적 극단",
+    "기술적 극단",
     "시장경보", "거래정지", "주식분할", "감자", "무상증자",
     "corp action", "corporate action", "hard guard",
     "데이터 없음", "데이터 부재", "데이터를 사용할 수 없",
@@ -720,21 +780,36 @@ _PM_TRIGGER_KEYWORDS = (
 )
 
 
-def _has_pm_override_trigger(text: str) -> bool:
-    """Return True if text contains a valid PM override trigger keyword."""
+def _has_pm_override_trigger(text: str, pm_dir: str | None = None) -> bool:
+    """Return True if text contains a valid PM override trigger.
+
+    When pm_dir ('buy'/'sell'/'hold') is supplied, technical-extreme triggers
+    are direction-checked: RSI≥75 / 과매수 only validate a sell-side override,
+    RSI≤25 / 과매도 only a buy-side override. With pm_dir=None the check is
+    permissive (any extreme counts) — preserves the old call-site behaviour.
+    Threshold aligned to CLAUDE.md + in-graph discipline (≥75/≤25).
+    Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    """
     low = text.lower()
-    # RSI extreme with a concrete number
+    # RSI extreme with a concrete number — direction-aware.
     for m in re.finditer(r'rsi\s*[\(（]?\d*[\)）]?\s*[:：\s]\s*(\d+\.?\d*)', low):
         try:
             val = float(m.group(1))
-            if val >= 70 or val <= 30:
-                return True
+            if val >= 75 and pm_dir in (None, "sell"):
+                return True  # overbought → valid sell-side trigger only
+            if val <= 25 and pm_dir in (None, "buy"):
+                return True  # oversold → valid buy-side trigger only
         except Exception:
             pass
-    # D-N catalyst countdown phrase
+    # Textual technical extreme — same direction semantics as RSI.
+    if any(kw in low for kw in _PM_TRIGGER_OVERBOUGHT) and pm_dir in (None, "sell"):
+        return True
+    if any(kw in low for kw in _PM_TRIGGER_OVERSOLD) and pm_dir in (None, "buy"):
+        return True
+    # D-N catalyst countdown phrase — direction-agnostic.
     if re.search(r'd[-\s]*[1-9]\d?\s*일?|\b[1-9]\d?\s*일\s*(이내|후|이후)', low):
         return True
-    # Generic trigger keywords
+    # Direction-agnostic event keywords.
     if any(kw in low for kw in _PM_TRIGGER_KEYWORDS):
         return True
     return False
@@ -798,7 +873,7 @@ def _check_pm_override_required(
     # Fix F: Unanimous analyst direction check
     unanimous_dir = _get_unanimous_analyst_direction(state)
     if unanimous_dir and unanimous_dir != final_dir:
-        if _has_pm_override_trigger(combined):
+        if _has_pm_override_trigger(combined, final_dir):
             return None, ""  # trigger present — PM override is legitimate
         analyst_kr = _DIRECTION_KR.get(unanimous_dir, unanimous_dir)
         note = (
@@ -817,7 +892,7 @@ def _check_pm_override_required(
             for kw, trader_dir in _STANCE_DIRECTION_KEYWORDS:
                 if kw in trader_stance:
                     if trader_dir == "hold" and final_dir in ("buy", "sell"):
-                        if not _has_pm_override_trigger(combined):
+                        if not _has_pm_override_trigger(combined, final_dir):
                             note = (
                                 f"⛔ **PM-Trader 불일치 자동 차단** (시스템 강제 HOLD):\n"
                                 f"Trader '{trader_stance}' → PM {pm_rating} — 방향 상충,"
