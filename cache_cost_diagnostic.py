@@ -120,6 +120,35 @@ def section_bot_cost() -> None:
     print("        real Google bill is lower wherever the Pro cache actually hits.")
 
 
+def section_failures() -> None:
+    """Dump recent failure reasons. THE decisive read for whether the
+    Pro-cache-bound-to-Flash analysts are CAUSING failures (reason mentions
+    INVALID_ARGUMENT / CachedContent / 'has to be the same') vs the binding
+    being a harmless langchain no-op (reasons are timeouts / empty responses
+    unrelated to caching)."""
+    _bar("1b. Recent FAILURE reasons (~/.tradingagents/usage.jsonl)")
+    path = Path(os.path.expanduser("~/.tradingagents/usage.jsonl"))
+    rows = [r for r in _read_jsonl(path) if r.get("type") == "failure"]
+    if not rows:
+        print("  (no failure records)")
+        return
+    cache_kw = ("invalid_argument", "cachedcontent", "has to be the same",
+                "cached_content", "400")
+    hits = 0
+    for r in rows[-25:]:
+        ts = r.get("ts")
+        when = datetime.fromtimestamp(ts).strftime("%m-%d %H:%M") if isinstance(ts, (int, float)) else "?"
+        reason = str(r.get("reason", ""))
+        flag = "  <-- cache-mismatch?" if any(k in reason.lower() for k in cache_kw) else ""
+        if flag:
+            hits += 1
+        print(f"  [{when}] {r.get('ticker','?'):<14} {reason[:120]}{flag}")
+    print(f"\n  {len(rows)} failure(s) total; {hits} look cache-mismatch related.")
+    print("  → if most failures are cache-mismatch, the analyst binding is")
+    print("    CAUSING failures (fixing it cuts the failure rate). If none are,")
+    print("    the binding is a harmless no-op and failures have other causes.")
+
+
 # ───────────────────────── Section 2: SV cost ───────────────────────────
 
 def section_sv_cost() -> None:
@@ -294,6 +323,7 @@ def section_live_probe() -> None:
 def main() -> int:
     print("Gemini cache + cost diagnostic — READ ONLY (except opt-in live probe).")
     section_bot_cost()
+    section_failures()
     section_sv_cost()
     section_cache_logs()
     if "--live-probe" in sys.argv:
