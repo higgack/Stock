@@ -707,8 +707,11 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
 
 - 16:00 KST hourly push 캡쳐로 새 가독성 포맷 확인. 필요 시 fine-tune
   은 다음 세션 optional task.
-- E-3 추가 단축 (사실상 micro-optimization): news-brief 호출 자체
-  async parallel 변환. 효과 ~10초, 우선순위 낮음.
+- ✅ E-3 완료 (2026-05-27): news-brief 호출을 main() 시작 시 background
+  thread 로 submit → macro-snapshot fetch + DOM swap 와 병렬 실행, section 3
+  에서 future.result() 로 join. 두 독립 느린 호출 (analyze + news-brief)
+  중첩 → ~10초 단축. 출력 무변경, retry 경로 보존. `_fetch_brief()` 헬퍼
+  로 초기 호출 + retry 중복 제거.
 
 각 fix 는 universal (모든 brief 출력 / 모든 분석 / 모든 시장) 패턴
 으로 적용. Per-ticker / per-market 가드는 부재.

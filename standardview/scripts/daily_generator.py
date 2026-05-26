@@ -73,6 +73,28 @@ def _fetch(path: str, method: str = "GET", json_body=None, timeout: int = 180):
         return None
 
 
+# E-3 (2026-05-27): the macro news-brief call (~10s+) is independent of the
+# macro-snapshot fetch + DOM swap, so main() kicks it off in a background
+# thread up front and joins the result at section 3 — overlapping the two
+# slow API calls trims ~10s off total generation. Factored out here so the
+# initial submission and the retry path share one definition (was duplicated
+# inline). Applies to every daily/hourly Standard View generation run.
+def _fetch_brief() -> dict | None:
+    return _fetch(
+        "/api/macro/news-brief",
+        method="POST",
+        json_body={
+            "scope": "both",
+            "topics": ["interest_rate", "fx", "inflation", "growth", "policy"],
+            "date_range": "7d",
+            "keywords": [],
+            "max_results": 20,
+            "force_refresh": True,
+        },
+        timeout=240,
+    )
+
+
 _MMI_NEG_KEYWORDS = (
     "하락", "추락", "급락", "폭락", "위기", "우려", "공포", "충격",
     "리스크", "악화", "매파", "긴축", "둔화", "위축", "축소", "탈출",
@@ -713,6 +735,14 @@ def main():
     log.info("base template: %s", base)
     soup = BeautifulSoup(base.read_text(), "html.parser")
 
+    # E-3: launch the news-brief fetch now, in the background, so it runs
+    # concurrently with the macro-snapshot fetch + DOM swap below. The result
+    # is joined at section 3. Independent calls, independent backend paths —
+    # the snapshot uses /api/macro/analyze, the brief /api/macro/news-brief.
+    from concurrent.futures import ThreadPoolExecutor as _BriefTPE
+    _brief_pool = _BriefTPE(max_workers=1)
+    _brief_future = _brief_pool.submit(_fetch_brief)
+
     # ─── 1. Header date / title ────────────────────────────────────
     if (t := soup.find("title")):
         t.string = f"Standard View — Daily Macro Brief · {KOREAN_DATE}"
@@ -815,19 +845,16 @@ def main():
     # 정적 bullets fallback 유지 (decompose 안 함).
 
     # ─── 3. Macro News-brief (domestic + global) ──────────────────
-    brief = _fetch(
-        "/api/macro/news-brief",
-        method="POST",
-        json_body={
-            "scope": "both",
-            "topics": ["interest_rate", "fx", "inflation", "growth", "policy"],
-            "date_range": "7d",
-            "keywords": [],
-            "max_results": 20,
-            "force_refresh": True,
-        },
-        timeout=240,
-    )
+    # E-3: join the background brief fetch launched at the top of main().
+    # By now the snapshot fetch + DOM swap have run, so the brief's ~10s is
+    # already (partly) elapsed in parallel.
+    try:
+        brief = _brief_future.result()
+    except Exception as e:
+        log.warning("brief future failed: %s", e)
+        brief = None
+    finally:
+        _brief_pool.shutdown(wait=False)
     # B-3.8: brief fetch 실패 시 2회 재시도 — 산업 과부하 시 backend
     # ThreadPoolExecutor 가 timeout 으로 500 반환 가능, retry 로 recover.
     if not brief or not brief.get("report"):
@@ -836,19 +863,7 @@ def main():
             # E-2 brief retry sleep 단축
             _t_brief.sleep(3 + attempt * 3)  # 10s/20s → 3s/6s
             log.info("brief retry %d", attempt + 1)
-            brief = _fetch(
-                "/api/macro/news-brief",
-                method="POST",
-                json_body={
-                    "scope": "both",
-                    "topics": ["interest_rate", "fx", "inflation", "growth", "policy"],
-                    "date_range": "7d",
-                    "keywords": [],
-                    "max_results": 20,
-                    "force_refresh": True,
-                },
-                timeout=240,
-            )
+            brief = _fetch_brief()
             if brief and brief.get("report"):
                 log.info("brief retry %d succeeded", attempt + 1)
                 break
