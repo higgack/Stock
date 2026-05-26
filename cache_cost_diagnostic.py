@@ -248,41 +248,47 @@ def section_live_probe() -> None:
         return
     print(f"  created Pro cache: {cache.cache_name}")
 
+    # Probe via the google-genai SDK directly (already importable — the cache
+    # was just created with it). The bot's analyst path uses langchain's
+    # .bind(cached_content=...), which forwards this SAME cached_content to the
+    # API, so the API-level result here reflects the bot's behavior. Reuse the
+    # cache's authenticated client.
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-    except Exception as exc:
-        print(f"  langchain_google_genai not importable: {exc}")
+        from google.genai import types as gt
+        client = cache._client
+
+        def _probe(model: str) -> None:
+            print(f"\n  -- referencing this Pro cache from {model} generate_content --")
+            try:
+                resp = client.models.generate_content(
+                    model=model,
+                    contents="Reply with the single word OK.",
+                    config=gt.GenerateContentConfig(cached_content=cache.cache_name),
+                )
+                um = getattr(resp, "usage_metadata", None)
+                prompt_tok = getattr(um, "prompt_token_count", 0) or 0
+                cached_tok = getattr(um, "cached_content_token_count", 0) or 0
+                print(f"     SUCCEEDED. prompt_token_count={prompt_tok}, "
+                      f"cached_content_token_count={cached_tok}")
+                if cached_tok:
+                    print(f"     ✅ {cached_tok} tokens BILLED AS CACHED → caching WORKS for {model}.")
+                else:
+                    print(f"     ⚠️ cached_content_token_count=0 → cache had NO effect on {model} (no-op).")
+            except Exception as exc:
+                print(f"     generate_content RAISED: {type(exc).__name__}: {str(exc)[:240]}")
+                print(f"     → referencing a Pro cache from {model} ERRORS (not a silent no-op).")
+
+        _probe("gemini-2.5-pro")    # control — should show cached tokens
+        _probe("gemini-2.5-flash")  # the suspected mismatch (analyst path)
+    finally:
         cache.delete()
-        return
+        print("\n  temporary probe cache deleted.")
 
-    def _probe(model: str) -> None:
-        print(f"\n  -- binding this Pro cache to {model} (bot's exact mechanism) --")
-        try:
-            llm = ChatGoogleGenerativeAI(model=model, temperature=0)
-            bound = llm.bind(cached_content=cache.cache_name)
-            resp = bound.invoke("Reply with the single word OK.")
-            um = getattr(resp, "usage_metadata", None)
-            print(f"     invoke SUCCEEDED. usage_metadata = {um}")
-            details = (um or {}).get("input_token_details") if isinstance(um, dict) else None
-            cache_read = (details or {}).get("cache_read") if isinstance(details, dict) else None
-            if cache_read:
-                print(f"     ✅ {cache_read} input tokens were BILLED AS CACHED → caching WORKS for {model}.")
-            else:
-                print(f"     ⚠️ no cache_read tokens reported → cache had NO effect on {model} (no-op).")
-        except Exception as exc:
-            print(f"     invoke RAISED: {type(exc).__name__}: {str(exc)[:240]}")
-            print(f"     → binding a Pro cache to {model} ERRORS (not a silent no-op).")
-
-    _probe("gemini-2.5-pro")    # control — should show cached tokens
-    _probe("gemini-2.5-flash")  # the suspected mismatch (analyst path)
-
-    cache.delete()
-    print("\n  temporary probe cache deleted.")
     print("\n  VERDICT GUIDE:")
-    print("   • Pro shows cache_read, Flash shows none → analyst caching is a NO-OP;")
+    print("   • Pro shows cached tokens, Flash shows 0 → analyst caching is a NO-OP;")
     print("     decision-tier caching works. (Lever 5: give analysts a Flash cache.)")
     print("   • Flash RAISES → the analyst binding is actively dangerous; must guard.")
-    print("   • Both show cache_read → caching already works everywhere (rare).")
+    print("   • Both show cached tokens → caching already works everywhere (rare).")
 
 
 def main() -> int:
