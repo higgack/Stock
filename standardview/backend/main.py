@@ -385,7 +385,9 @@ def call_claude_cli(prompt: str, timeout: int = 120) -> str | None:
             if um is not None:
                 pt = getattr(um, "prompt_token_count", 0) or 0
                 ot = getattr(um, "candidates_token_count", 0) or 0
-                cost = (pt * 0.075 + ot * 0.30) / 1e6 * 1330.0
+                # gemini-2.5-flash real pricing: $0.30 in / $2.50 out per 1M
+                # (was a stale 0.075/0.30 gemini-1.5 constant → undercounted ~7.5x).
+                cost = (pt * 0.30 + ot * 2.50) / 1e6 * 1330.0
                 _log_sv_usage(pt, ot, cost)
         except Exception:
             pass

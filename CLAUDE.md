@@ -908,14 +908,19 @@ These need new credentials BEFORE work can ship:
    • 합계 ~2,400줄, 16-20h (TW의 1.8x)
    • 검증 사이클: 5-8 종목, TW와 유사 (2-3 review/fix cycle 예상)
 
-- **Gemini Context Caching** — ✅ SHIPPED 2026-05-21 (commit 6ac0041).
-  Decision-tier (research_manager / trader / portfolio_manager) +
-  4 analysts (market / news / sentiment / fundamentals) 모두
-  `cached_content=cache_name` 바인딩. instrument_context 5-10K tokens
-  공유 → 4 analysts input bill ~75% 절감 (cache hit 시). Cache 미생성
-  시 자동 fallback. bot/gemini_cache_manager.py + AgentState.gemini_
-  cache_name + graph/trading_graph.py maybe_create_cache() 인프라
-  그대로 사용.
+- **Gemini Context Caching** — ✅ SHIPPED 2026-05-21 (commit 6ac0041),
+  ⚠️ CORRECTED 2026-05-26. Cache 는 `model="gemini-2.5-pro"` 로 생성되며
+  (gemini_cache_manager.py / trading_graph.py maybe_create_cache) **오직
+  decision-tier (research_manager / trader / portfolio_manager, Pro) 에서만
+  실제 작동** — live probe 2026-05-26 로 Pro 호출이 ~12K 토큰 cache hit
+  확인. 분석가 4명은 Flash 라 Pro 캐시 바인딩이 **model-mismatch no-op**
+  (Gemini API 가 모델 일치를 요구; langchain 이 mismatch 를 조용히 drop
+  해 에러는 안 나지만 절감도 0). 따라서 이전의 "4 analysts input ~75%
+  절감" 기술은 **사실이 아니었고**, 분석가 측 cached_content 바인딩은
+  2026-05-26 제거됨 (절감 0 + future langchain 버전업 시 hard error 로
+  돌변할 latent 위험 차단). Cache 미생성 시 자동 fallback. 분석가 input
+  을 실제로 캐싱하려면 별도 Flash-model 캐시가 필요 (절감 ~5%, 미적용
+  — 분석가 context 가 sliced→full 로 바뀌어 품질 무손실 보장 안 됨).
 
 - **PM Option 4 propagation verification** (post Option B commit, 2026-
   05-18). Option 4 routes Portfolio Manager to a thinking_budget=2048

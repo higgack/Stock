@@ -766,7 +766,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
 <b>【6. 캐시 &amp; 비용】</b>
  • 오늘 같은 종목 재분석 → 디스크 캐시 즉시 반환 (무료)
  • 새 분석 ~₩100~150 / /compare 둘 다 새거 ~₩200~300
- • <b>Gemini context cache</b>: 4분석가 instrument_context 공유 → input token ~75%↓
+ • <b>Gemini context cache</b>: 결정 3노드(Pro) instrument_context 공유 → input ~75%↓
  • 일일 캐시 자정 KST 만료, 15년 가격 데이터는 영구 캐시
  • /usage → 모델별 분포 + 7일 차트
 
