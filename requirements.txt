@@ -6,4 +6,8 @@ python-dotenv>=1.0.0
 # pykrx — KRX trading data (가격 정합성 + 외국인/기관/개인 일별 수급).
 # KR-only; pure-Python wrapper, no native deps.
 pykrx>=1.0.45
+# akshare — CN A-share + HK market data (공告·港股통 flow·ST·LPR·CPI·PMI).
+# CN/HK-only; key-less scraper. Heavy dep (~200MB, ~50 transitive packages).
+# Lazy-imported inside bot/akshare_client.py — non-CN analyses unaffected.
+akshare>=1.16.0
 -e ./TradingAgents
