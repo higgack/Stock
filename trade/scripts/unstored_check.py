@@ -45,6 +45,15 @@ DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 INBOX_PATH = DATA_DIR / "inbox.jsonl"
 STORE_PATH = DATA_DIR / "store.db"
 
+# Durable record of every caption that parse_caption couldn't turn
+# into a store.db row. The daily ⚠️ alert scrolls away in the channel;
+# this file is the accumulating regression backlog so an unhandled
+# BeOn format becomes a test fixture instead of a problem we
+# re-diagnose from scratch each time it recurs weeks later. Append-only,
+# deduped on (chat_id, message_id) — a miss that persists across daily
+# runs (operator hasn't added a RULE yet) is logged exactly once.
+EVAL_MISS_PATH = DATA_DIR / "eval_misses.jsonl"
+
 GRACE_HOURS = int(os.environ.get("TRADE_UNSTORED_GRACE_HOURS") or "2")
 SAMPLE_COUNT = int(os.environ.get("TRADE_UNSTORED_SAMPLE") or "5")
 
@@ -152,6 +161,67 @@ def find_unstored() -> list[dict]:
     return missing
 
 
+def _load_logged_miss_keys(path: Path) -> set[tuple[int, int]]:
+    """(chat_id, message_id) keys already present in the eval-miss
+    log. Malformed / partial lines are skipped so a stray edit can't
+    abort the scan."""
+    if not path.exists():
+        return set()
+    keys: set[tuple[int, int]] = set()
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+                keys.add((int(rec["chat_id"]), int(rec["message_id"])))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+    return keys
+
+
+def log_eval_misses(missing: list[dict], path: Path | None = None) -> int:
+    """Append never-before-seen unstored captions to the eval-miss log.
+
+    Idempotent on (chat_id, message_id): re-running on a miss that's
+    still unresolved doesn't duplicate it. Returns the count of
+    newly-appended rows so the caller can log how much the backlog
+    grew this cycle.
+
+    Each row carries the raw caption verbatim — that's the fixture an
+    operator (or Claude) lifts straight into trade/tests/test_parser.py
+    when adding the RULE that finally parses the format.
+    """
+    if path is None:
+        path = EVAL_MISS_PATH
+    if not missing:
+        return 0
+    seen = _load_logged_miss_keys(path)
+    detected_at = datetime.now(timezone.utc).isoformat()
+    new = 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        for r in missing:
+            try:
+                key = (int(r["chat_id"]), int(r["message_id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            rec = {
+                "detected_at": detected_at,
+                "chat_id": key[0],
+                "message_id": key[1],
+                "ingested_at": r.get("ingested_at"),
+                "caption": r.get("caption") or r.get("text") or "",
+            }
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            new += 1
+    return new
+
+
 def format_alert(missing: list[dict]) -> str:
     samples = missing[:SAMPLE_COUNT]
     lines = [
@@ -202,6 +272,11 @@ def main() -> int:
         "found %d unstored captioned rows older than %dh",
         len(missing),
         GRACE_HOURS,
+    )
+    newly_logged = log_eval_misses(missing)
+    log.info(
+        "eval-miss log: %d new appended to %s (misses this run: %d)",
+        newly_logged, EVAL_MISS_PATH, len(missing),
     )
     _notify(format_alert(missing))
     return 0
