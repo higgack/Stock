@@ -252,6 +252,39 @@ class TestDedupRoundtrip(unittest.TestCase):
                 )
 
 
+@unittest.skipUnless(_HAVE_TELETHON, "telethon not installed")
+class TestSyncOutcome(unittest.TestCase):
+    """The ⚠️ '후보 0건 / 세션 만료' alert must fire ONLY when
+    iter_messages returned nothing at all — never just because the
+    candidate list is empty. Regression: the forward-time IGNORED
+    filter routes DART 공시 / [비온 인사이트] posts to skipped_ignored,
+    so a quiet window of all-off-topic posts yields zero candidates yet
+    a perfectly healthy session. _sync_outcome keys on iterated, not
+    candidate count, to keep that case silent."""
+
+    def _outcome(self, forwarded, iterated):
+        from trade.scripts import backfill_beon as bb
+        return bb._sync_outcome(forwarded, iterated)
+
+    def test_forwarded_when_any_relayed(self):
+        self.assertEqual(self._outcome(3, 10), "forwarded")
+        self.assertEqual(self._outcome(1, 1), "forwarded")
+
+    def test_empty_iter_only_when_nothing_iterated(self):
+        # Truly empty iteration → session/access alert.
+        self.assertEqual(self._outcome(0, 0), "empty_iter")
+
+    def test_all_ignored_window_is_quiet_not_alert(self):
+        # The exact false-positive case: messages existed (iterated>0)
+        # but all were filtered out (forwarded=0, candidates=0). Must
+        # be 'quiet', NOT 'empty_iter' — no ⚠️ session alarm.
+        self.assertEqual(self._outcome(0, 12), "quiet")
+
+    def test_all_already_ingested_is_quiet(self):
+        # Window where every post was already in inbox → quiet.
+        self.assertEqual(self._outcome(0, 5), "quiet")
+
+
 class TestForwardTimeIgnoredFilter(unittest.TestCase):
     """Backfill must skip IGNORED-matching messages BEFORE forwarding,
     not just at ingest. Reason: trade-bot's is_from_beon() filter drops

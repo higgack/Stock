@@ -192,7 +192,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여
 
-<i>최종 갱신: 2026-05-26 — 미파싱 캡션 eval_misses.jsonl 누적 (회귀 fixture)</i>
+<i>최종 갱신: 2026-05-26 — beon-sync 0건 세션경보를 iter 빈손일 때만 발사 (전부 ignored면 조용)</i>
 """
 
 

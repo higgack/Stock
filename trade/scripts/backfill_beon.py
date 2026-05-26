@@ -284,6 +284,28 @@ def _msg_key(msg: Message, source_chat_id: int) -> tuple[int, int]:
     return (source_chat_id, msg.id)
 
 
+def _sync_outcome(forwarded_msgs: int, iterated: int) -> str:
+    """Classify a finished sync run for notification purposes.
+
+      'forwarded'  → new messages were relayed → ✅
+      'empty_iter' → iter_messages returned NOTHING at all → ⚠️
+                     (likely session expiry / lost channel access)
+      'quiet'      → messages existed but every one was already
+                     ingested or filtered out as off-topic → silent
+
+    The ⚠️ path keys ONLY on iterated == 0, never on candidate count.
+    A window full of DART 공시 / [비온 인사이트] relays legitimately
+    produces zero candidates (all routed to skipped_ignored) and must
+    NOT be mistaken for a dead session — that misfire is the regression
+    this function guards against.
+    """
+    if forwarded_msgs > 0:
+        return "forwarded"
+    if iterated == 0:
+        return "empty_iter"
+    return "quiet"
+
+
 def _group_by_album(messages: list[Message]) -> list[list[Message]]:
     """Walk chronological messages and return a list of send-units:
     each unit is one standalone message OR one full album (same
@@ -378,11 +400,13 @@ async def run(
         candidates: list[Message] = []
         skipped_existing = 0
         skipped_ignored = 0
+        iterated = 0
         async for msg in client.iter_messages(
             source, offset_date=since, reverse=True
         ):
             if until is not None and msg.date > until:
                 break
+            iterated += 1
             if _msg_key(msg, source_chat_id) in existing:
                 skipped_existing += 1
                 continue
@@ -464,22 +488,25 @@ async def run(
             forwarded_msgs,
             total_msgs,
         )
-        if forwarded_msgs > 0:
+        outcome = _sync_outcome(forwarded_msgs, iterated)
+        if outcome == "forwarded":
             _notify(
                 f"✅ <b>BeOn 동기화 완료</b>\n"
                 f"신규 forwarded: {forwarded_msgs}/{total_msgs} msgs\n"
                 f"units: {len(units)}"
             )
-        elif len(candidates) == 0 and skipped_existing == 0:
-            # 40-day window produced no messages at all — unexpected for
-            # an active channel; suggests session/connectivity issue.
+        elif outcome == "empty_iter":
             _notify(
                 "⚠️ <b>BeOn 동기화 — 후보 0건</b>\n"
                 f"lookback {since.date().isoformat()} ~ 오늘 범위에서 메시지 없음.\n"
                 "Telethon 세션 만료 또는 채널 접근 불가 확인."
             )
         else:
-            log.info("sync: nothing new (all %d messages already in inbox)", skipped_existing)
+            log.info(
+                "sync: nothing new (iterated=%d skipped_existing=%d "
+                "skipped_ignored=%d)",
+                iterated, skipped_existing, skipped_ignored,
+            )
         return 0
     finally:
         await client.disconnect()
