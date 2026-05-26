@@ -195,10 +195,39 @@ def section_cache_logs() -> None:
 
 # ──────────────────── Section 4: live probe (opt-in) ────────────────────
 
+def _ensure_api_key() -> bool:
+    """The interactive shell doesn't export GOOGLE_API_KEY (it lives in the
+    bot's .env / systemd env). Read it from the usual .env locations so the
+    probe runs with a single command. The key is loaded into this process
+    only and never printed."""
+    if os.getenv("GOOGLE_API_KEY", "").strip():
+        return True
+    here = Path(__file__).resolve().parent
+    for env_path in (here / ".env",
+                     Path(os.path.expanduser("~/stock/.env")),
+                     Path(os.path.expanduser("~/.env"))):
+        if not env_path.exists():
+            continue
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("export "):
+                    line = line[len("export "):]
+                if line.startswith("GOOGLE_API_KEY="):
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if val:
+                        os.environ["GOOGLE_API_KEY"] = val
+                        print(f"  (loaded GOOGLE_API_KEY from {env_path})")
+                        return True
+        except Exception:
+            continue
+    return False
+
+
 def section_live_probe() -> None:
     _bar("4. LIVE PROBE — does a Pro cache actually bind to Flash? (~2 API calls)")
-    if not os.getenv("GOOGLE_API_KEY", "").strip():
-        print("  GOOGLE_API_KEY not set — cannot run the live probe.")
+    if not _ensure_api_key():
+        print("  GOOGLE_API_KEY not set and not found in ~/stock/.env — cannot probe.")
         return
 
     # Build a >4096-token filler so cache creation clears Gemini's floor.
