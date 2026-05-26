@@ -52,6 +52,16 @@ def create_market_analyst(llm):
                 " VaR/CVaR, max drawdown, beta come from this snapshot."
                 " Do NOT claim the data is unavailable, do NOT call any"
                 f" risk tool) ===\n{risk_snapshot}"
+                "\n\nSECTOR-NEUTRAL RISK PROSE (자이에스앤디 317400.KS"
+                " 2026-05-26 surfaced): when interpreting the volatility"
+                " number, describe it relative to THIS instrument's ACTUAL"
+                " sector (read it from the instrument context). Do NOT"
+                " generalise to an unrelated sector — e.g. do NOT write"
+                " '고성장 기술주 섹터에서 흔히 볼 수 있는 변동성' for a Real"
+                " Estate / 금융 / 소재 name. If unsure of the sector framing,"
+                " state the level plainly ('연환산 변동성 X%는 높은/보통/낮은"
+                " 수준') without invoking an unrelated sector. Applies to all"
+                " markets (US + KR + JP + TW + CN_A + HK)."
             )
         else:
             instrument_context += (

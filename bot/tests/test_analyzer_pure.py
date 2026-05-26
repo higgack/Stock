@@ -326,3 +326,63 @@ class TestUnanimousAnalystDirection:
             "보유 의견을 제시합니다.",
         )
         assert _a._get_unanimous_analyst_direction(state) is None
+
+
+# ── Fix ①: broken table-separator residue strip (자이에스앤디 2026-05-26) ──
+# A fundamentals table whose header dropped left '• :---------------: :' under
+# '요약 재무 정보'. _strip_empty_tables only catches pipe tables, so the
+# bullet/colon residue rendered as a broken table. _polish must strip it while
+# preserving genuine '---' horizontal rules and real table data rows.
+
+class TestSeparatorResidueStrip:
+    def test_strips_bullet_colon_residue(self):
+        body = "요약 재무 정보\n\n• :---------------: :\n\n부채비율 개선."
+        out = _a._polish(body)
+        assert ":---" not in out
+        assert "•" not in out
+        assert "부채비율 개선" in out      # real prose preserved
+        assert "요약 재무 정보" in out      # header preserved
+
+    def test_strips_colon_pipe_residue(self):
+        body = "표\n:---:|:---:\n끝."
+        out = _a._polish(body)
+        assert ":---" not in out
+        assert "끝." in out
+
+    def test_preserves_horizontal_rule(self):
+        # '---' has no colon → it's a valid HR, must NOT be stripped.
+        body = "섹션 A\n\n---\n\n섹션 B"
+        out = _a._polish(body)
+        assert "---" in out
+
+    def test_preserves_real_table(self):
+        body = "| 항목 | 값 |\n|---|---|\n| 매출 | 100 |"
+        out = _a._polish(body)
+        assert "| 매출 | 100 |" in out  # data row kept (table is complete)
+
+
+# ── Fix ③B: trader → final divergence transparency note ────────────────────
+
+class TestTraderDecisionDivergence:
+    def test_trader_sell_final_hold_flags(self):
+        # 자이에스앤디 2026-05-26: Trader Sell but final Hold — must surface.
+        state = {"trader_investment_plan": "거래 액션: Sell\n근거: 하락 추세."}
+        note = _a._detect_trader_decision_divergence(state, "Hold")
+        assert note != ""
+        assert "트레이더 매도" in note and "최종 보유" in note
+
+    def test_trader_buy_final_sell_flags(self):
+        state = {"trader_investment_plan": "거래 액션: Buy"}
+        assert _a._detect_trader_decision_divergence(state, "Sell") != ""
+
+    def test_aligned_is_silent(self):
+        state = {"trader_investment_plan": "거래 액션: Sell"}
+        assert _a._detect_trader_decision_divergence(state, "Sell") == ""
+        assert _a._detect_trader_decision_divergence(state, "Underweight") == ""
+
+    def test_no_trader_body_silent(self):
+        assert _a._detect_trader_decision_divergence({}, "Hold") == ""
+
+    def test_unparseable_rating_silent(self):
+        state = {"trader_investment_plan": "거래 액션: Sell"}
+        assert _a._detect_trader_decision_divergence(state, "N/A") == ""

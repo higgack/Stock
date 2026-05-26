@@ -279,6 +279,23 @@ def _enforce_pm_override_discipline(
             "pm-discipline: analyst majority indeterminate (no readable stances) — skipping check"
         )
         return decision, None
+    # Minimum voter floor. CLAUDE.md PM override discipline names "2-of-2 with
+    # 2 abstain" as the smallest enforceable consensus, and the Option-4 light-
+    # LLM routing already gates on voter_count >= 2 — but the forcing path had
+    # no floor, so a SINGLE readable analyst stance could force-correct the PM.
+    # 자이에스앤디 317400.KS 2026-05-26: fundamentals' summary table broke →
+    # no readable fundamentals verdict → only the market analyst voted (1×Hold)
+    # → a sell-side PM/Trader (RM Underweight, Trader Sell) was force-corrected
+    # to Hold off that single vote. A lone stance is not a consensus; below the
+    # floor we respect the PM's synthesis. Aligns the forcing path with the
+    # documented minimum and the use_light gate. Universal — all markets.
+    if voter_count < 2:
+        _pm_log.info(
+            "pm-discipline: only %d analyst stance(s) readable (< 2 floor) — "
+            "respecting PM verdict %s, skipping override-discipline check",
+            voter_count, decision.rating.value,
+        )
+        return decision, None
 
     pm_dir = _rating_direction(decision.rating)
     if pm_dir == majority:

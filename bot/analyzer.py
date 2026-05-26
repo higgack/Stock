@@ -963,6 +963,37 @@ def _detect_stance_decision_mismatch(state: dict, final_rating: str) -> str:
     return "\n".join(lines)
 
 
+def _detect_trader_decision_divergence(state: dict, final_rating: str) -> str:
+    """One-line transparency note when the FINAL rating direction diverges
+    from the Trader's action direction. The Trader is the last synthesis node
+    before the PM, so a Trader Sell → final Hold (자이에스앤디 317400.KS
+    2026-05-26: Trader Sell / RM Underweight, final Hold) reads as an
+    unexplained reversal on the card. The PM landing more conservatively than
+    the Trader is legitimate (e.g. an oversold bounce risk argues against a
+    fresh Sell), but the reader deserves a pointer to the decision rationale
+    rather than a silent contradiction. Empty when they align or the Trader
+    produced no readable stance. Universal — all markets."""
+    final_dir = _DECISION_DIRECTION.get(final_rating)
+    if not final_dir:
+        return ""
+    trader_body = (state.get("trader_investment_plan") or "") if isinstance(state, dict) else ""
+    trader_stance = _extract_stance(trader_body)
+    if not trader_stance:
+        return ""
+    trader_dir = ""
+    for kw, direction in _STANCE_DIRECTION_KEYWORDS:
+        if kw in trader_stance:
+            trader_dir = direction
+            break
+    if not trader_dir or trader_dir == final_dir:
+        return ""
+    return (
+        f"⚠️ 트레이더 {_DIRECTION_KR.get(trader_dir, trader_dir)} → 최종 "
+        f"{_DIRECTION_KR.get(final_dir, final_dir)} (방향 상충 — PM이 트레이더와"
+        f" 다른 결론. 결정 근거 참고)"
+    )
+
+
 _RATIONALE_BLOCK_RE = re.compile(
     r"근거\s*:\s*(.+?)(?=\s*전략\s*실행\s*:|\s*거래\s*액션\s*:|$)",
     re.DOTALL,
@@ -1052,6 +1083,11 @@ def _format_summary(
     mismatch = _detect_stance_decision_mismatch(state, rating)
     if mismatch:
         parts.append(mismatch)
+    # Trader → final divergence (e.g. Trader Sell, final Hold) gets its own
+    # transparency line so the synthesis chain doesn't look self-contradictory.
+    trader_divergence = _detect_trader_decision_divergence(state, rating)
+    if trader_divergence:
+        parts.append(trader_divergence)
     parts.append("")
     # One key sentence per analyst section, so the summary tells the user
     # WHY without forcing them to expand the full report.
@@ -1916,6 +1952,23 @@ def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None)
         )
         return inline_re.sub(r"\1\n\2", b)
     _step("split-inline-tables", _split_inline_tables)
+    # Broken-table separator residue — a table whose header row was dropped
+    # (or bulletised by the renderer) leaving only the alignment-separator
+    # line, e.g. 자이에스앤디 317400.KS 2026-05-26 펀더멘털 emitted
+    # '• :---------------: :' under '요약 재무 정보'. _strip_empty_tables only
+    # catches pipe-delimited '| col |\n|---|---|' headers, so a bullet/colon
+    # residue slips through and renders as a broken table. Strip any line that
+    # is ONLY separator characters (optional leading bullet/dash, then dashes /
+    # colons / pipes / spaces) AND contains at least one colon — the colon is
+    # a table-alignment marker, so a legitimate '---' horizontal rule (no
+    # colon) is preserved. Requires ≥3 consecutive dashes so short prose like
+    # ':)' can't match. Rule applies to all analyses (US + KR + JP + TW + CN/HK).
+    _separator_residue_re = re.compile(
+        r"^[ \t]*[•·*\-]?[ \t]*(?=[-:|\s]*:)(?=[-:|\s]*-{3})[-:|\s]+$\n?",
+        re.MULTILINE,
+    )
+    _step("strip-separator-residue",
+          lambda b: _separator_residue_re.sub("", b))
     # Conservative dedup for short Korean approximation words that
     # analysts occasionally double-print before a number ("약 약 1776조"
     # — SNG 2026-05-17). Only handles a fixed allowlist; we don't do
