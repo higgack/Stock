@@ -284,28 +284,6 @@ def _msg_key(msg: Message, source_chat_id: int) -> tuple[int, int]:
     return (source_chat_id, msg.id)
 
 
-def _sync_outcome(forwarded_msgs: int, iterated: int) -> str:
-    """Classify a finished sync run for notification purposes.
-
-      'forwarded'  → new messages were relayed → ✅
-      'empty_iter' → iter_messages returned NOTHING at all → ⚠️
-                     (likely session expiry / lost channel access)
-      'quiet'      → messages existed but every one was already
-                     ingested or filtered out as off-topic → silent
-
-    The ⚠️ path keys ONLY on iterated == 0, never on candidate count.
-    A window full of DART 공시 / [비온 인사이트] relays legitimately
-    produces zero candidates (all routed to skipped_ignored) and must
-    NOT be mistaken for a dead session — that misfire is the regression
-    this function guards against.
-    """
-    if forwarded_msgs > 0:
-        return "forwarded"
-    if iterated == 0:
-        return "empty_iter"
-    return "quiet"
-
-
 def _group_by_album(messages: list[Message]) -> list[list[Message]]:
     """Walk chronological messages and return a list of send-units:
     each unit is one standalone message OR one full album (same
@@ -370,15 +348,39 @@ async def run(
     existing = _load_existing_keys()
     log.info("already ingested: %d forward keys", len(existing))
 
+    # Session startup + entity resolution is the ONLY reliable signal
+    # of a healthy Telethon session / channel access. A real expiry or
+    # access loss raises here (start() can't re-auth non-interactively,
+    # get_entity() fails on a lost channel) — that's when the operator
+    # genuinely needs to act, so it's the right place for the ⚠️.
+    # A successful resolve followed by an empty iter is NOT a failure:
+    # it just means the channel was quiet since the last tick, which is
+    # the normal case for a 2-hourly safety net behind the realtime
+    # listener.
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
-    await client.start()
-    log.info("Telethon session ready")
     try:
+        await client.start()
+        log.info("Telethon session ready")
         source = await client.get_entity(SOURCE_USERNAME)
         dest = await client.get_entity(DEST_ID)
         # Marked form (-100… for channels) so it matches what trade-bot
         # records via the Bot API for forward_origin_chat_id.
         source_chat_id = _tutils.get_peer_id(source)
+    except Exception as exc:
+        log.exception("session/access failure during startup")
+        _notify(
+            "⚠️ <b>BeOn 동기화 — 세션/접근 실패</b>\n"
+            f"{html.escape(type(exc).__name__)}: "
+            f"{html.escape(str(exc)[:200])}\n"
+            "Telethon 세션 만료 또는 채널 접근 불가 — 재인증 확인."
+        )
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+        return 1
+
+    try:
         log.info(
             "source=%s (marked=%s) dest=%s",
             source.id, source_chat_id, dest.id,
@@ -488,20 +490,18 @@ async def run(
             forwarded_msgs,
             total_msgs,
         )
-        outcome = _sync_outcome(forwarded_msgs, iterated)
-        if outcome == "forwarded":
+        if forwarded_msgs > 0:
             _notify(
                 f"✅ <b>BeOn 동기화 완료</b>\n"
                 f"신규 forwarded: {forwarded_msgs}/{total_msgs} msgs\n"
                 f"units: {len(units)}"
             )
-        elif outcome == "empty_iter":
-            _notify(
-                "⚠️ <b>BeOn 동기화 — 후보 0건</b>\n"
-                f"lookback {since.date().isoformat()} ~ 오늘 범위에서 메시지 없음.\n"
-                "Telethon 세션 만료 또는 채널 접근 불가 확인."
-            )
         else:
+            # Empty / all-already-ingested / all-ignored window — the
+            # normal quiet state for a safety net behind the realtime
+            # listener. Silent: session health was already proven by the
+            # successful startup above, and a genuine failure would have
+            # raised there. No ⚠️ here (that was a false-positive source).
             log.info(
                 "sync: nothing new (iterated=%d skipped_existing=%d "
                 "skipped_ignored=%d)",
