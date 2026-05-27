@@ -299,7 +299,86 @@ def _weekly_headlines(mds: dict[str, str], top_n: int = 5) -> list[str]:
     return results
 
 
-# ── 6. Assemble + push ────────────────────────────────────────────────────────
+# ── 6. Archive HTML renderer ─────────────────────────────────────────────────
+
+_ARCHIVE_CSS = (
+    ":root{--bg:#060A14;--surface:rgba(20,28,48,0.8);"
+    "--border:rgba(255,255,255,0.08);--text:#E8ECF4;"
+    "--text-muted:#94A3B8;--accent:#3B82F6}"
+    "body{background:var(--bg);color:var(--text);"
+    "font-family:-apple-system,'IBM Plex Sans','Noto Sans KR',sans-serif;"
+    "max-width:700px;margin:0 auto;padding:24px 16px}"
+    "h1{font-size:20px;margin-bottom:4px}"
+    ".sub{color:var(--text-muted);font-size:13px;margin-bottom:24px}"
+    ".blk{background:var(--surface);border:1px solid var(--border);"
+    "border-radius:8px;padding:16px 20px;margin-bottom:12px;"
+    "white-space:pre-wrap;font-size:14px;line-height:1.7}"
+    "b{color:#93C5FD}"
+    ".nav{margin-bottom:16px}"
+    ".nav a{color:var(--accent);text-decoration:none;font-size:13px}"
+)
+
+
+def _to_archive_html(messages: list[str], title: str, subtitle: str) -> str:
+    blocks = "\n".join(
+        f'<div class="blk">{m.strip()}</div>'
+        for m in messages if m.strip()
+    )
+    return (
+        '<!DOCTYPE html>\n<html lang="ko"><head>\n'
+        '<meta charset="UTF-8">\n'
+        '<meta name="viewport" content="width=device-width,initial-scale=1.0">\n'
+        f'<title>{_esc(title)}</title>\n'
+        f'<style>{_ARCHIVE_CSS}</style>\n'
+        '</head><body>\n'
+        '<div class="nav"><a href="/dashboard/archive">▸ 아카이브</a></div>\n'
+        f'<h1>{_esc(title)}</h1>\n'
+        f'<p class="sub">{_esc(subtitle)}</p>\n'
+        f'{blocks}\n'
+        '</body></html>'
+    )
+
+
+def _save_weekly_archive(
+    messages: list[str], sector_block: str, today: "date", week_label: str
+) -> None:
+    REPORTS.mkdir(parents=True, exist_ok=True)
+    hhmm = "2200"
+
+    brief_path = REPORTS / f"{today.isoformat()}_{hhmm}_weekly.html"
+    try:
+        brief_path.write_text(
+            _to_archive_html(
+                messages,
+                title=f"Standard View 주간 브리프  {week_label}",
+                subtitle=f"생성: {today.isoformat()} KST",
+            ),
+            encoding="utf-8",
+        )
+        print(f"weekly_pusher: archive saved → {brief_path.name}")
+    except Exception as e:
+        print(f"weekly_pusher: archive write failed: {e}")
+
+    if sector_block:
+        sec_path = REPORTS / f"{today.isoformat()}_{hhmm}_sectors.html"
+        try:
+            sec_path.write_text(
+                _to_archive_html(
+                    [sector_block],
+                    title=f"섹터 로테이션 히트맵  {week_label}",
+                    subtitle=(
+                        f"생성: {today.isoformat()} KST"
+                        "  |  US·KR·JP 5거래일 수익률"
+                    ),
+                ),
+                encoding="utf-8",
+            )
+            print(f"weekly_pusher: archive saved → {sec_path.name}")
+        except Exception as e:
+            print(f"weekly_pusher: sectors archive write failed: {e}")
+
+
+# ── 7. Assemble + push ────────────────────────────────────────────────────────
 
 def main():
     today = date.today()
@@ -403,6 +482,9 @@ def main():
                 _send(chat_id, chunk)
 
     print(f"weekly_pusher: sent {len(messages)} message(s) to {len(CHAT_IDS)} channel(s)")
+
+    # ── Save to dashboard archive (weekly brief + sector heatmap)
+    _save_weekly_archive(messages, sector_block, today, week_label)
 
 
 if __name__ == "__main__":

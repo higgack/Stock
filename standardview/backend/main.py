@@ -3593,21 +3593,26 @@ async def dashboard_archive(_: str = _Dep_dash(_verify_dashboard_auth)):
     if not base.exists():
         return _HTMLResp_arch("<html><body>no archives</body></html>")
 
-    # Collect {date}_{HHMM}.html files
+    # Collect {date}_{HHMM}[_{type}].html files
     entries = []
     for f in sorted(base.glob("*.html"), reverse=True):
         if f.name == "latest.html":
             continue
-        m = _re_arch.match(r"(\d{4}-\d{2}-\d{2})(?:_(\d{4}))?\.html$", f.name)
+        m = _re_arch.match(
+            r"(\d{4}-\d{2}-\d{2})(?:_(\d{4})(?:_(weekly|sectors))?)?\.html$",
+            f.name,
+        )
         if not m:
             continue
         date_str = m.group(1)
         hhmm = m.group(2) or "0000"  # legacy {date}.html → 0000
+        entry_type = m.group(3) or "daily"  # "weekly", "sectors", or "daily"
         entries.append({
             "date": date_str,
             "hhmm": hhmm,
             "filename": f.name,
             "size_kb": f.stat().st_size // 1024,
+            "type": entry_type,
         })
 
     # Group by month → date → entries
@@ -3648,6 +3653,10 @@ details details { margin-left: 16px; margin-top: 8px; background: transparent;
 .entry-size { color: var(--text-muted); font-size: 11px; }
 .nav { margin-bottom: 16px; }
 .nav a { color: var(--accent); text-decoration: none; font-size: 13px; }
+.badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+.badge-daily { background: rgba(59,130,246,0.15); color: #93C5FD; }
+.badge-weekly { background: rgba(16,185,129,0.15); color: #6EE7B7; }
+.badge-sectors { background: rgba(245,158,11,0.15); color: #FCD34D; }
 </style></head><body>
 <div class="nav"><a href="/dashboard">▸ 최신 brief 보기</a></div>
 <h1>📚 Standard View — Archive</h1>
@@ -3680,9 +3689,16 @@ details details { margin-left: 16px; margin-top: 8px; background: transparent;
                     if e["hhmm"] != "0000"
                     else "(legacy)"
                 )
+                _badge_label = {
+                    "weekly": "주간브리프", "sectors": "섹터히트맵",
+                }.get(e.get("type", "daily"), "브리프")
+                _badge_cls = {
+                    "weekly": "badge-weekly", "sectors": "badge-sectors",
+                }.get(e.get("type", "daily"), "badge-daily")
                 html_parts.append(
                     f'<div class="entry">'
                     f'<span class="entry-time">{t_label}</span>'
+                    f'<span class="badge {_badge_cls}">{_badge_label}</span>'
                     f'<a class="entry-link" href="/dashboard/view/{e["filename"]}">'
                     f'{e["filename"]}</a>'
                     f'<span class="entry-size">{e["size_kb"]}KB</span>'
@@ -3708,8 +3724,10 @@ async def dashboard_view(
     _: str = _Dep_dash(_verify_dashboard_auth),
 ):
     """Serve a specific archived brief. filename must match pattern
-    YYYY-MM-DD[_HHMM].html to prevent path traversal."""
-    if not _re_arch.match(r"^\d{4}-\d{2}-\d{2}(?:_\d{4})?\.html$", filename):
+    YYYY-MM-DD[_HHMM[_(weekly|sectors)]].html to prevent path traversal."""
+    if not _re_arch.match(
+        r"^\d{4}-\d{2}-\d{2}(?:_\d{4}(?:_(weekly|sectors))?)?\.html$", filename
+    ):
         return {"ok": False, "error": "invalid filename pattern"}
     path = _Path_dash.home() / "standardview" / "reports" / "generated" / filename
     if path.exists():
@@ -3728,7 +3746,9 @@ async def dashboard_delete(
     """Delete archived brief (POST form). latest.html 보호."""
     if filename == "latest.html":
         return {"ok": False, "error": "latest.html protected"}
-    if not _re_arch.match(r"^\d{4}-\d{2}-\d{2}(?:_\d{4})?\.html$", filename):
+    if not _re_arch.match(
+        r"^\d{4}-\d{2}-\d{2}(?:_\d{4}(?:_(weekly|sectors))?)?\.html$", filename
+    ):
         return {"ok": False, "error": "invalid filename pattern"}
     path = _Path_dash.home() / "standardview" / "reports" / "generated" / filename
     if path.exists():
