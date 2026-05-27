@@ -339,13 +339,19 @@ _gemini_client = None
 _GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 
+def _kst_now():
+    """Current datetime in KST (UTC+9). Cost 집계의 '오늘/이번 달' 경계가
+    서버 타임존(UTC)이 아닌 한국시간 자정 기준이 되도록 명시 고정."""
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    return _dt.now(_tz(_td(hours=9)))
+
+
 def _log_sv_usage(prompt_tok, output_tok, cost_krw, endpoint=""):
     import json as _json, os as _os
-    from datetime import datetime as _dt
     try:
         path = Path(_os.path.expanduser("~/standardview/sv_usage.jsonl"))
         path.parent.mkdir(parents=True, exist_ok=True)
-        now = _dt.now()
+        now = _kst_now()
         rec = {
             "ts": now.isoformat(timespec="seconds"),
             "date": now.date().isoformat(),
@@ -3767,9 +3773,8 @@ async def dashboard_delete(
 @app.get("/api/sv-usage/today")
 async def sv_usage_today():
     import json as _json, os as _os
-    from datetime import date as _d
     path = Path(_os.path.expanduser("~/standardview/sv_usage.jsonl"))
-    today = _d.today().isoformat()
+    today = _kst_now().date().isoformat()
     month = today[:7]
     out = {"today_krw": 0.0, "month_krw": 0.0, "today_calls": 0, "month_calls": 0,
            "today_prompt_tok": 0, "today_output_tok": 0}
