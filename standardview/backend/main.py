@@ -3544,54 +3544,6 @@ from pathlib import Path as _Path_dash
 import secrets as _sec_dash
 import os as _os_dash
 
-# ── SV theme injection ────────────────────────────────────────────────────────
-# Light/dark auto-switch: 19:00–07:00 KST → dark, rest → light.
-# Same timing as NOAH dashboard. Injected into every SV HTML page at serve time
-# so the base.html template stays untouched.
-_SV_THEME_CSS_LIGHT = """\
-<style>
-:root[data-theme="light"]{
-  --bg:#f8fafc;--text:#1f2937;--text-muted:#6b7280;
-  --accent:#2563eb;--accent-soft:rgba(37,99,235,0.1);
-  --border:#e2e8f0;--surface:rgba(255,255,255,0.92);
-  --surface-2:rgba(248,250,252,0.9);--cyan:#0891b2;--muted:#6b7280;
-}
-:root[data-theme="light"] details{background:rgba(255,255,255,0.85)}
-:root[data-theme="light"] .badge-daily{background:rgba(37,99,235,0.12);color:#1d4ed8}
-:root[data-theme="light"] .badge-weekly{background:rgba(5,150,105,0.12);color:#065f46}
-:root[data-theme="light"] .badge-sectors{background:rgba(180,83,9,0.12);color:#92400e}
-</style>"""
-
-_SV_THEME_JS = """\
-<script>
-(function(){
-  function apply(){
-    var h=parseInt(new Intl.DateTimeFormat('en-US',{
-      timeZone:'Asia/Seoul',hour:'numeric',hour12:false
-    }).format(new Date()),10)%24;
-    document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';
-  }
-  apply();setInterval(apply,60000);
-})();
-</script>"""
-
-
-def _sv_inject_theme(html: str) -> str:
-    """Inject light/dark theme CSS + JS — case-insensitive head/body search."""
-    inject = _SV_THEME_CSS_LIGHT + "\n" + _SV_THEME_JS + "\n"
-    lower = html.lower()
-    # 1st choice: before </head> (any case)
-    idx = lower.find("</head>")
-    if idx >= 0:
-        return html[:idx] + inject + html[idx:]
-    # 2nd choice: right after opening <body ...> tag
-    body_start = lower.find("<body")
-    if body_start >= 0:
-        body_end = html.find(">", body_start)
-        return html[:body_end + 1] + "\n" + inject + html[body_end + 1:]
-    # Last resort: prepend
-    return inject + html
-
 # ─────────────────────────────────────────────────────────────────────────────
 
 _dash_security = _HB_dash()
@@ -3621,8 +3573,7 @@ def _verify_dashboard_auth(
 async def dashboard_latest(_: str = _Dep_dash(_verify_dashboard_auth)):
     latest = _Path_dash.home() / "standardview" / "reports" / "generated" / "latest.html"
     if latest.exists():
-        html = latest.read_text(encoding="utf-8")
-        return _HTMLResp_arch(_sv_inject_theme(html))
+        return _FileResp_dash(latest, media_type="text/html")
     return {"ok": False, "error": "dashboard not yet generated; wait for hourly timer"}
 
 
@@ -3708,27 +3659,7 @@ details details { margin-left: 16px; margin-top: 8px; background: transparent;
 .badge-daily { background: rgba(59,130,246,0.15); color: #93C5FD; }
 .badge-weekly { background: rgba(16,185,129,0.15); color: #6EE7B7; }
 .badge-sectors { background: rgba(245,158,11,0.15); color: #FCD34D; }
-</style>
-<style>
-:root[data-theme="light"]{
-  --bg:#f8fafc;--text:#1f2937;--text-muted:#6b7280;
-  --accent:#2563eb;--border:#e2e8f0;--surface:rgba(255,255,255,0.9);
-}
-:root[data-theme="light"] details{background:rgba(255,255,255,0.85)}
-:root[data-theme="light"] .badge-daily{background:rgba(37,99,235,0.12);color:#1d4ed8}
-:root[data-theme="light"] .badge-weekly{background:rgba(5,150,105,0.12);color:#065f46}
-:root[data-theme="light"] .badge-sectors{background:rgba(180,83,9,0.12);color:#92400e}
-</style>
-<script>
-(function(){
-  function a(){var h=parseInt(new Intl.DateTimeFormat('en-US',{
-    timeZone:'Asia/Seoul',hour:'numeric',hour12:false
-  }).format(new Date()),10)%24;
-  document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';}
-  a();setInterval(a,60000);
-})();
-</script>
-</head><body>
+</style></head><body>
 <div class="nav"><a href="/dashboard">▸ 최신 brief 보기</a></div>
 <h1>📚 Standard View — Archive</h1>
 """]
@@ -3802,8 +3733,7 @@ async def dashboard_view(
         return {"ok": False, "error": "invalid filename pattern"}
     path = _Path_dash.home() / "standardview" / "reports" / "generated" / filename
     if path.exists():
-        html = path.read_text(encoding="utf-8")
-        return _HTMLResp_arch(_sv_inject_theme(html))
+        return _FileResp_dash(path, media_type="text/html")
     return {"ok": False, "error": f"{filename} not found"}
 
 
