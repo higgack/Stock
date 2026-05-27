@@ -801,11 +801,10 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
  • 외부 참조 대쉬보드사이트 모음 → /sites
 
 ━━━━━━━━━
-<b>【12. 진행 중 / 예정】</b>
- • 한국 — Phase 0~2.5 + Step 2A 완료 + Step 2B 완료 (KIS 7종 수급: 외인·기관주체별·한도소진율·신용·프로그램·공매도)
- • 일본 — Phase 3 가동. EDINET 연동 완료 (2026-05-27, 대량보유·공시 live)
- • 대만 — Phase 4-TW 가동 (별칭 60+/MOPS/鉅亨網/RULE 14)
- • 중국 — Phase 4-CN-C 가동 + RULE 13 + VIE 구조 가드. AKShare 가동·validation 진행 중
+<b>【12. 예정 작업】</b>
+ • JP — Keiretsu 교차보유 RULE 11 보강
+ • SV — 섹터 로테이션 히트맵 · 워치리스트 tracker
+ • PM — Option 4 consensus 경량 LLM production 검증
 """
 
 
