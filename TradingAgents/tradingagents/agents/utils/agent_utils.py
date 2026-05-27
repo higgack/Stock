@@ -4276,7 +4276,14 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 if _section_allowed(analyst_id, "options_signals"):
                     from bot.options_client import format_options_block
                     opt = prefetched.get("options_signals")
-                    opt_block = format_options_block(opt)
+                    try:
+                        import datetime as _d2e_dt
+                        _d2e = days_until_earnings(
+                            ticker, _d2e_dt.date.today().isoformat()
+                        )
+                    except Exception:
+                        _d2e = None
+                    opt_block = format_options_block(opt, days_to_earnings=_d2e)
                     if opt_block:
                         base += "\n\n" + opt_block
             except Exception as exc:
