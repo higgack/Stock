@@ -329,42 +329,50 @@ if html_path.exists():
     deal_card = _find_card_by_title(soup, "Deal Highlights", "💼")
     if deal_card:
         lines = ["<b>💼 Deal Highlights</b>", ""]
-        # 카드 안의 grid > outer-div > inner divs 구조 동일 추정
-        grid = deal_card.find("div", attrs={"style": re.compile(r"grid")})
-        items_html = []
-        if grid:
-            for outer in grid.find_all("div", recursive=False):
-                items_html.append(outer)
-        if not items_html:
-            # h4/h5 boundary fallback
-            headers = deal_card.find_all(["h4", "h5"])
-            items_html = headers
-        if items_html:
-            for it in items_html[:5]:
-                text = _html.unescape(_text(it))
-                # 카드 title noise 필터
-                if "Deal Highlights" in text and "dedup" in text:
-                    continue
-                if not text:
-                    continue
-                # score 제거
-                text = re.sub(r"score\s*[:=]?\s*\d+", "", text, flags=re.I)
-                text = text.strip().strip("·-—| ")
-                if len(text) > 220:
-                    text = text[:200] + "…"
-                lines.append(_esc(text))
-                lines.append("")
-        else:
+        # Primary: extract rows by border-bottom style (deal row structure from
+        # daily_generator: div[flex-direction:column] > span[cyan] + div[title]).
+        row_divs = deal_card.find_all("div", style=re.compile(r"border-bottom"))
+        items_found = 0
+        for row in row_divs:
+            if items_found >= 5:
+                break
+            type_span = row.find("span", style=re.compile(r"cyan"))
+            deal_type = _text(type_span).strip() if type_span else ""
+            anchor = row.find("a")
+            if anchor:
+                title = _html.unescape(anchor.get_text(separator=" ", strip=True))
+            else:
+                inner_divs = row.find_all("div", recursive=False)
+                title_div = next(
+                    (d for d in inner_divs
+                     if "display:flex" not in (d.get("style") or "")),
+                    None,
+                )
+                title = _html.unescape(_text(title_div)).strip() if title_div else ""
+            title = title.strip()
+            if not title or "dedup" in title.lower() or len(title) < 5:
+                continue
+            text = f"[{deal_type}]  {title}" if deal_type else title
+            if len(text) > 220:
+                text = text[:200] + "…"
+            lines.append(_esc(text))
+            lines.append("")
+            items_found += 1
+        # Fallback: plain-text line split (score 제거 후 줄 단위)
+        if items_found == 0:
             body = _strip_title_prefix(_text(deal_card), "Deal Highlights")
             body = re.sub(r"\([^)]*dedup[^)]*\)", "", body).strip()
-            items = re.split(r"score\s*\d+", body, flags=re.I)
-            for it in items[:5]:
+            body = re.sub(r"score\s*[:=]?\s*\d+", "", body, flags=re.I)
+            for it in body.splitlines():
                 it = it.strip().strip("·-—| ")
-                if it and "dedup" not in it:
+                if it and "dedup" not in it and len(it) >= 10:
                     if len(it) > 220:
                         it = it[:200] + "…"
                     lines.append(_esc(it))
                     lines.append("")
+                    items_found += 1
+                    if items_found >= 5:
+                        break
         if len(lines) > 2:
             dashboard_parts.append("\n".join(lines))
 

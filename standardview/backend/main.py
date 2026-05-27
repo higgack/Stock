@@ -2284,6 +2284,14 @@ _ECOS_MAP: dict = {
     "kr_unemploy":("901Y027","000","M"),
 }
 
+# Indicators that need units=pc1 (percent change from year ago) from FRED.
+# CPIAUCSL returns index level (~330) — units=pc1 returns actual YoY% (~2-3%).
+_FRED_PC1_INDICATORS: set = {"us_cpi"}
+
+# ECOS indicators that return index levels but are labeled %(YoY).
+# We fetch 14 months and compute (current/12ago - 1)*100 ourselves.
+_ECOS_YOY_INDICATORS: set = {"kr_cpi", "kr_ppi"}
+
 # FRED series map: id → series_id
 _FRED_MAP: dict = {
     "us_rate":    "FEDFUNDS",
@@ -2336,18 +2344,21 @@ def _fetch_ecos(indicator_id: str, api_key: str) -> dict | None:
         return None
     stat, item, period = _ECOS_MAP[indicator_id]
     today = _d.today()
+    need_yoy = indicator_id in _ECOS_YOY_INDICATORS
+    limit = 14 if need_yoy else 5
     if period == "Q":
         start = f"{today.year-1}Q1"; end = f"{today.year}Q2"
     elif period == "D":
-        # 일별: YYYYMMDD 형식, 최근 30일
         from datetime import timedelta as _td
         d_start = today - _td(days=30)
         start = d_start.strftime("%Y%m%d"); end = today.strftime("%Y%m%d")
     else:
-        start = f"{(today.year-1)*100+today.month:06d}"
-        end   = f"{today.year*100+today.month:06d}"
+        # For YoY indicators fetch 2 years back to ensure 13+ months
+        start = (f"{(today.year-2)*100+1:06d}" if need_yoy
+                 else f"{(today.year-1)*100+today.month:06d}")
+        end = f"{today.year*100+today.month:06d}"
     url = (f"https://ecos.bok.or.kr/api/StatisticSearch/{api_key}/json/kr"
-           f"/1/5/{stat}/{period}/{start}/{end}/{item}")
+           f"/1/{limit}/{stat}/{period}/{start}/{end}/{item}")
     try:
         resp = _r.get(url, timeout=8)
         rows = resp.json().get("StatisticSearch",{}).get("row",[])
@@ -2357,8 +2368,17 @@ def _fetch_ecos(indicator_id: str, api_key: str) -> dict | None:
         latest = rows[0]; prev = rows[1] if len(rows)>1 else None
         v = float(latest.get("DATA_VALUE","0").replace(",",""))
         pv = float(prev.get("DATA_VALUE","0").replace(",","")) if prev else None
+        if need_yoy and len(rows) >= 13:
+            # rows[0]=current month, rows[12]=same month last year
+            v_12ago = float(rows[12].get("DATA_VALUE","0").replace(",",""))
+            value = round((v / v_12ago - 1) * 100, 2) if v_12ago else None
+            mom_pct = round((v / pv - 1) * 100, 4) if pv else None
+            trend = "↑" if (value or 0) > 0 else ("↓" if (value or 0) < 0 else "→")
+            return {"value": value, "date": latest.get("TIME",""),
+                    "mom": mom_pct, "yoy": None, "trend": trend, "source": "ECOS"}
         mom = round(v - pv, 4) if pv is not None else None
-        return {"value":v,"date":latest.get("TIME",""),"mom":mom,"yoy":None,"trend":"→","source":"ECOS"}
+        return {"value": v, "date": latest.get("TIME",""), "mom": mom,
+                "yoy": None, "trend": "→", "source": "ECOS"}
     except Exception:
         return None
 
@@ -2368,22 +2388,30 @@ def _fetch_fred(indicator_id: str, api_key: str) -> dict | None:
     if indicator_id not in _FRED_MAP:
         return None
     series = _FRED_MAP[indicator_id]
+    use_pc1 = indicator_id in _FRED_PC1_INDICATORS
+    units_param = "&units=pc1" if use_pc1 else ""
     url = (f"https://api.stlouisfed.org/fred/series/observations"
-           f"?series_id={series}&api_key={api_key}&sort_order=desc&limit=14&file_type=json")
+           f"?series_id={series}&api_key={api_key}&sort_order=desc"
+           f"&limit=14{units_param}&file_type=json")
     try:
         resp = _r.get(url, timeout=8)
         obs = [o for o in resp.json().get("observations",[]) if o.get("value",".") != "."]
         if not obs:
             return None
         latest = obs[0]; prev = obs[1] if len(obs)>1 else None
-        yoy_obs = obs[12] if len(obs)>12 else None
         v = float(latest["value"])
         pv = float(prev["value"]) if prev else None
-        yv = float(yoy_obs["value"]) if yoy_obs else None
-        mom = round(v-pv,4) if pv is not None else None
-        yoy = round(v-yv,4) if yv is not None else None
-        trend = "↑" if (mom or 0)>0 else ("↓" if (mom or 0)<0 else "→")
-        return {"value":v,"date":latest["date"],"mom":mom,"yoy":yoy,"trend":trend,"source":"FRED"}
+        mom = round(v - pv, 4) if pv is not None else None
+        if use_pc1:
+            # v is already the YoY% (FRED computed); no separate yoy needed
+            yoy = None
+        else:
+            yoy_obs = obs[12] if len(obs) > 12 else None
+            yv = float(yoy_obs["value"]) if yoy_obs else None
+            yoy = round(v - yv, 4) if yv is not None else None
+        trend = "↑" if (mom or 0) > 0 else ("↓" if (mom or 0) < 0 else "→")
+        return {"value": v, "date": latest["date"], "mom": mom,
+                "yoy": yoy, "trend": trend, "source": "FRED"}
     except Exception:
         return None
 
