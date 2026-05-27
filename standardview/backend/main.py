@@ -3577,11 +3577,19 @@ _SV_THEME_JS = """\
 
 
 def _sv_inject_theme(html: str) -> str:
-    """Inject light/dark theme CSS + JS before </head>."""
+    """Inject light/dark theme CSS + JS — case-insensitive head/body search."""
     inject = _SV_THEME_CSS_LIGHT + "\n" + _SV_THEME_JS + "\n"
-    if "</head>" in html:
-        return html.replace("</head>", inject + "</head>", 1)
-    # Fallback: prepend to body
+    lower = html.lower()
+    # 1st choice: before </head> (any case)
+    idx = lower.find("</head>")
+    if idx >= 0:
+        return html[:idx] + inject + html[idx:]
+    # 2nd choice: right after opening <body ...> tag
+    body_start = lower.find("<body")
+    if body_start >= 0:
+        body_end = html.find(">", body_start)
+        return html[:body_end + 1] + "\n" + inject + html[body_end + 1:]
+    # Last resort: prepend
     return inject + html
 
 # ─────────────────────────────────────────────────────────────────────────────
