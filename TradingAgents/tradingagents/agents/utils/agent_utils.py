@@ -904,6 +904,28 @@ def get_market_signals_for(ticker: str) -> str:
                 "매수": "buy", "보유": "hold", "매도": "sell",
             }.get(kabu_rating, "")
 
+    # 鉅亨網 consensus scrape — TW equivalent of the FnGuide (KR) and
+    # Kabutan (JP) blocks. Same two-purpose use: fallback for mid/small-
+    # cap TW names yfinance misses, and last_report_date for staleness.
+    cnyes_data: dict | None = None
+    if market == "TW":
+        try:
+            from bot.cnyes_consensus import fetch_consensus as fetch_tw_consensus
+            cnyes_data = fetch_tw_consensus(ticker)
+        except Exception as exc:
+            _analyst_log.warning(
+                "cnyes_consensus fetch failed for %s: %s", ticker, exc,
+            )
+
+    if market == "TW" and not target and cnyes_data:
+        target = target or cnyes_data.get("target_mean")
+        n_analysts = n_analysts or cnyes_data.get("n_analysts")
+        cnyes_rating = cnyes_data.get("rating")
+        if cnyes_rating and not rec_key:
+            rec_key = {
+                "매수": "buy", "보유": "hold", "매도": "sell",
+            }.get(cnyes_rating, "")
+
     if target and current:
         upside = (target - current) / current * 100
         rec_kr = _RECOMMENDATION_KR.get(rec_key, rec_key or "")
@@ -1343,11 +1365,13 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
         "krx_flow", "hsgt_flow", "kis_supply",
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
         "edgar_8k", "edgar_form4",
+        "options_signals",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
     "news": {"krx_flow", "hsgt_flow", "kis_supply",
+             "options_signals",
              "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
@@ -1432,6 +1456,30 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
                 except Exception:
                     return None
             tasks["krw_30d_pct"] = _fetch_krw_30d
+        except Exception:
+            pass
+        # US overnight futures — S&P 500 (ES=F) + NASDAQ 100 (NQ=F).
+        # KR 개장 전 미국 선물 방향성을 KR 분석 컨텍스트에 주입.
+        # fast_info 재활용 (별도 HTTP 최소화).
+        try:
+            import yfinance as _yf_fut
+            def _fetch_us_futures():
+                result = {}
+                for sym, label in [("ES=F", "S&P500 선물"), ("NQ=F", "NASDAQ100 선물")]:
+                    try:
+                        fi = _yf_fut.Ticker(sym).fast_info
+                        cur = getattr(fi, "last_price", None)
+                        prev = getattr(fi, "previous_close", None)
+                        if cur and prev and prev != 0:
+                            result[sym] = {
+                                "label": label,
+                                "price": round(cur, 2),
+                                "pct": round((cur - prev) / prev * 100, 2),
+                            }
+                    except Exception:
+                        pass
+                return result or None
+            tasks["us_futures"] = _fetch_us_futures
         except Exception:
             pass
         # A2: KRX 시장경보 status — 거래정지 / 관리종목 / 단기과열 /
@@ -1521,6 +1569,11 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             from bot.edgar_client import get_recent_8k, get_recent_form4
             tasks["edgar_8k"] = lambda: get_recent_8k(ticker, days=30)
             tasks["edgar_form4"] = lambda: get_recent_form4(ticker, days=30)
+        except Exception:
+            pass
+        try:
+            from bot.options_client import get_options_signals
+            tasks["options_signals"] = lambda: get_options_signals(ticker)
         except Exception:
             pass
 
@@ -1648,15 +1701,38 @@ def _build_rule1_skeleton(
         currency = _cfg.get("currency", "USD")
         sym      = _cfg.get("currency_symbol", "$")
 
-        # ── TTM: sum of most-recent 4 quarters ──────────────────────
+        # ── TTM: sum of most-recent quarters ────────────────────────
+        # RULE 8.1 guard: (1) label "Q{n}합 (불완전)" when <4 quarters
+        # available; (2) >50x divergence vs annual → unit drop → OMIT.
         ttm: dict[str, float | None] = {}
+        ttm_label = "TTM"
         if qtrly is not None and not (hasattr(qtrly, "empty") and qtrly.empty):
-            last4 = qtrly.iloc[:, :4]
+            n_qtrs = min(4, qtrly.shape[1])
+            last4 = qtrly.iloc[:, :n_qtrs]
+            if n_qtrs < 4:
+                ttm_label = f"Q{n_qtrs}합 (불완전)"
             for field in _RULE1_FIELDS:
-                if field in last4.index:
-                    vals = [float(v) for v in last4.loc[field]
-                            if v is not None and v == v]
-                    ttm[field] = sum(vals) if vals else None
+                if field not in last4.index:
+                    continue
+                vals = [float(v) for v in last4.loc[field]
+                        if v is not None and v == v]
+                raw_sum = sum(vals) if vals else None
+                # RULE 8.1: cross-check vs most-recent annual value
+                if (raw_sum is not None
+                        and field in annual.index
+                        and not annual.empty):
+                    try:
+                        ann_col = annual.columns[0]
+                        ann_v = annual.loc[field, ann_col]
+                        if ann_v is not None and ann_v == ann_v:
+                            ann_f = float(ann_v)
+                            if ann_f != 0:
+                                ratio = abs(raw_sum) / abs(ann_f)
+                                if ratio > 50 or ratio < 0.02:
+                                    raw_sum = None  # unit mismatch — OMIT
+                    except Exception:
+                        pass
+                ttm[field] = raw_sum
 
         # ── Annual: up to 4 most-recent fiscal years ────────────────
         fy_cols = list(annual.columns[:4])
@@ -1683,7 +1759,7 @@ def _build_rule1_skeleton(
             parts: list[str] = []
             ttm_v = ttm.get(field)
             if ttm_v is not None:
-                parts.append(f"TTM {_fmt_native_val(ttm_v, currency, sym)}")
+                parts.append(f"{ttm_label} {_fmt_native_val(ttm_v, currency, sym)}")
             for col in fy_cols:
                 if field in annual.index:
                     v = annual.loc[field, col]
@@ -4196,6 +4272,17 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 _analyst_log.warning(
                     "edgar form4 injection failed for %s: %s", ticker, exc,
                 )
+            try:
+                if _section_allowed(analyst_id, "options_signals"):
+                    from bot.options_client import format_options_block
+                    opt = prefetched.get("options_signals")
+                    opt_block = format_options_block(opt)
+                    if opt_block:
+                        base += "\n\n" + opt_block
+            except Exception as exc:
+                _analyst_log.warning(
+                    "options injection failed for %s: %s", ticker, exc,
+                )
 
         # DART (KR-only) — 공시 / 임원지분 / 실적 윈도. yfinance returns
         # nothing useful for these on KRX-listed names; DART is the
@@ -4231,6 +4318,31 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                     _analyst_log.warning(
                         "krx alert banner inject failed for %s: %s",
                         ticker, exc,
+                    )
+
+                # US overnight futures (KR context) — ES=F + NQ=F 방향성.
+                # KR 개장 전 미국 선물 변동률 주입 (전일 close 대비).
+                # gate: market analyst only (기술적 방향성 signal).
+                try:
+                    if _section_allowed(analyst_id, "us_futures"):
+                        us_fut = prefetched.get("us_futures") or {}
+                        if us_fut:
+                            fut_lines = ["=== 미국 선물 (KR 개장 전 참고) ==="]
+                            for sym_key, d in us_fut.items():
+                                sign = "+" if d["pct"] >= 0 else ""
+                                fut_lines.append(
+                                    f"  {d['label']} ({sym_key}):"
+                                    f" {d['price']:,.0f}"
+                                    f" ({sign}{d['pct']:.2f}%)"
+                                )
+                            fut_lines.append(
+                                "▶ 전일 미국 시장 마감 이후 선물 방향성."
+                                " KR 시장 갭 오픈 / 외국인 수급 방향 예측에 활용."
+                            )
+                            base += "\n\n" + "\n".join(fut_lines)
+                except Exception as exc:
+                    _analyst_log.warning(
+                        "us_futures injection failed for %s: %s", ticker, exc,
                     )
 
                 # CORPORATE ACTION IN-FLIGHT detection (Rule A). A stock
