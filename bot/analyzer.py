@@ -1678,6 +1678,15 @@ def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None)
     headers, and collapses leftover literal '\\n\\n' escape sequences and
     runs of blank lines.
     """
+    # Normalize CRLF → LF before ALL regex passes.  Many MULTILINE
+    # patterns use [ \t]*$ which does not match \r, causing silent misses
+    # on LLM outputs that use Windows line endings.  The Comps dash-chain
+    # transform (_COMPS_DASH_RE / Fix D) was confirmed non-firing in
+    # production against 8306.T 2026-05-27 because Gemini emitted \r\n.
+    # Normalization here makes every subsequent step CRLF-safe.
+    # Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
+
     # Cheap, high-impact passes ALWAYS run, even before the length guard.
     # When a fundamentals analyst response goes off the rails and emits a
     # 50K-char run of dashes, the body can balloon past the polish-length
