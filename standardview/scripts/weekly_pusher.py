@@ -6,7 +6,7 @@ Sections pushed:
   2. NOAH 워치리스트 성과 — this week's memory log entries (pending + resolved)
   3. 주간 딜 하이라이트 — top articles from daily briefs aggregated
 
-Runs every Friday 08:00 KST via standardview-weekly.service.
+Runs every Sunday 22:00 KST via standardview-weekly.service.
 Applies universally: US + KR + JP + TW + CN_A + HK analyses all surface here.
 """
 from __future__ import annotations
