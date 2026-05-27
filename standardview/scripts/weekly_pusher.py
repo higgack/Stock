@@ -204,7 +204,78 @@ def _gemini_weekly_summary(mds: dict[str, str]) -> str:
         return ""
 
 
-# ── 4. Deal highlights aggregation ───────────────────────────────────────────
+
+# ── 4. Sector rotation heatmap ───────────────────────────────────────────────
+
+# US SPDR 11 sectors + KR KODEX 4 key sectors + JP TOPIX-17 reps
+_SECTOR_ETFS: list[tuple[str, str, str]] = [
+    ("XLK",    "IT",          "US"),
+    ("XLC",    "통신",        "US"),
+    ("XLY",    "임의소비재",  "US"),
+    ("XLF",    "금융",        "US"),
+    ("XLV",    "헬스케어",    "US"),
+    ("XLI",    "산업재",      "US"),
+    ("XLE",    "에너지",      "US"),
+    ("XLP",    "필수소비재",  "US"),
+    ("XLRE",   "리츠",        "US"),
+    ("XLU",    "유틸리티",    "US"),
+    ("XLB",    "소재",        "US"),
+    ("091160.KS", "반도체",   "KR"),
+    ("139270.KS", "IT",       "KR"),
+    ("091170.KS", "자동차",   "KR"),
+    ("091180.KS", "소비재",   "KR"),
+    ("1628.T", "반도체·전자", "JP"),
+    ("1615.T", "銀行",        "JP"),
+    ("1617.T", "食品",        "JP"),
+]
+
+
+def _sector_rotation_block(week_label: str) -> str:
+    """Compute 5-trading-day % return for sector ETFs → Telegram HTML."""
+    try:
+        import yfinance as yf
+    except ImportError:
+        return ""
+
+    from collections import defaultdict
+    results: list[tuple[float, str, str, str]] = []
+    for tkr, label, mkt in _SECTOR_ETFS:
+        try:
+            hist = yf.Ticker(tkr).history(period="10d", auto_adjust=True)
+            if hist.empty or len(hist) < 2:
+                continue
+            close = hist["Close"]
+            ref = float(close.iloc[max(0, len(close) - 6)])
+            cur = float(close.iloc[-1])
+            if ref == 0:
+                continue
+            results.append(((cur - ref) / ref * 100, tkr, label, mkt))
+        except Exception:
+            continue
+
+    if not results:
+        return ""
+
+    by_market: dict[str, list] = defaultdict(list)
+    for item in results:
+        by_market[item[3]].append(item)
+    for mkt in by_market:
+        by_market[mkt].sort(key=lambda x: x[0], reverse=True)
+
+    lines = [f"<b>📊 섹터 로테이션  {week_label}</b>", ""]
+    for mkt in ("US", "KR", "JP"):
+        rows = by_market.get(mkt)
+        if not rows:
+            continue
+        lines.append(f"<b>▸ {mkt}</b>")
+        for pct, tkr, label, _ in rows:
+            icon = "🟢" if pct > 2 else ("🔼" if pct > 0 else ("🔽" if pct > -2 else "🔴"))
+            sign = "+" if pct >= 0 else ""
+            lines.append(f"  {icon} {label} ({tkr}): {sign}{pct:.1f}%")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+# ── 5. Deal highlights aggregation ───────────────────────────────────────────
 
 def _weekly_headlines(mds: dict[str, str], top_n: int = 5) -> list[str]:
     """Extract top article titles from daily briefs (simple bullet parsing)."""
@@ -228,7 +299,7 @@ def _weekly_headlines(mds: dict[str, str], top_n: int = 5) -> list[str]:
     return results
 
 
-# ── 5. Assemble + push ────────────────────────────────────────────────────────
+# ── 6. Assemble + push ────────────────────────────────────────────────────────
 
 def main():
     today = date.today()
@@ -310,6 +381,11 @@ def main():
 
         if len(lines) > 2:
             messages.append("\n".join(lines))
+
+    # ── Sector rotation heatmap (US/KR/JP 섹터 ETF 주간 수익률)
+    sector_block = _sector_rotation_block(week_label)
+    if sector_block:
+        messages.append(sector_block)
 
     # ── Top headlines from the week (deal highlights supplement)
     headlines = _weekly_headlines(mds) if mds else []
