@@ -2050,6 +2050,19 @@ def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None)
             )
         return _COMPS_DASH_RE.sub(_sub, b)
     _step("comps-dash-to-inline", _comps_dash_to_inline)
+    # Strip trailing "— N/A" repetitions from Comps rows whose first cell
+    # already carries inline labels (PER / Fwd PER / PSR / PBR / EV/EBITDA).
+    # Fundamentals LLM sometimes emits the pre-fetched inline-labeled first
+    # cell followed by 3-4 empty N/A columns it invented (8306.T 2026-05-27:
+    # "PER 14.4 / Fwd PER 20.2 / PSR 4.06 / PBR 1.55 — N/A — N/A — N/A").
+    # Anchor: line must contain at least one '/ PBR' or '/ PSR' so we don't
+    # strip meaningful N/A entries from other bullet types.
+    # Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+    _comps_trailing_na_re = re.compile(
+        r"((?:PER|PSR|PBR|Fwd PER|EV/EBITDA)[^\n]*?)(?:\s*—\s*N/A)+(\s*)$",
+        re.MULTILINE,
+    )
+    _step("comps-trailing-na", lambda b: _comps_trailing_na_re.sub(r"\1\2", b))
     # Broken-table separator residue — a table whose header row was dropped
     # (or bulletised by the renderer) leaving only the alignment-separator
     # line, e.g. 자이에스앤디 317400.KS 2026-05-26 펀더멘털 emitted

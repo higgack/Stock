@@ -86,7 +86,16 @@ def create_trader(llm):
                     " flow 방향, 港股통 flow, corp action HARD GUARD 인지 등.\n"
                     " (3) '장기 보유 의견' / '중장기 관점' 같은 12개월 thesis 톤 결론"
                     " 금지. 본 봇의 evaluation horizon 은 5거래일이고, trader 결정도 동일"
-                    " horizon 안에서 measurable 해야 한다."
+                    " horizon 안에서 measurable 해야 한다.\n"
+                    " PLAN ALIGNMENT — STOP LOSS (8306.T 2026-05-27 surfaced): 투자"
+                    " 계획(Research Manager Plan)에 명시된 Stop Loss 기준값을 Trader"
+                    " 제안의 출발점으로 사용. Plan stop 과 ±5% 이상 차이나는 값으로"
+                    " 임의 변경 금지 — Plan 이 200일 SMA 기반 stop 을 제시했다면"
+                    " Trader 도 동일 수준(±5% 내 미세조정)만 허용. Plan stop 과 현저히"
+                    " 다른 수준을 사용하려면 반드시 한 문장으로 이유를 명시 (예:"
+                    " '52주 고점 근접 — Plan stop 보다 타이트하게 ¥X 로 조정함')."
+                    " Entry Price 와 Position Size 도 동일 원칙 적용. Rule applies"
+                    " to all analyses going forward (US + KR + JP + TW + CN_A + HK)."
                     + get_language_instruction()
                 ),
             },

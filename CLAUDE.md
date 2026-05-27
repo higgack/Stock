@@ -736,26 +736,13 @@ These need new credentials BEFORE work can ship:
   Blocks: B3 (외인 한도 RULE 10 변수). Recommend kicking off
   registration in parallel with non-API work.
 
-- **EDINET API key — pending user registration** (Phase 3 validation
-  blocker). EDINET registration portal (disclosure2.edinet-fsa.go.jp)
-  is behind Akamai geofencing — blocks all non-Japan IPs with "The
-  request is blocked" + tracking ID. User attempted ProtonVPN Free
-  (Japan moved to paid tier), Windscribe Free (same — Japan paid),
-  TunnelBear Free (same — Japan paid). All mainstream free VPNs have
-  recently moved Japan/Singapore to paid-only tiers. Working options:
-  (a) ProtonVPN VPN Plus 1 month ₩9,990, cancel after registration;
-  (b) Oracle Cloud Always Free Tokyo VM + SSH SOCKS5 tunnel (~45 min
-  setup, free forever); (c) Japan-based contact who can register on
-  user's behalf. Until key is loaded, JP analysis runs at ~80% capacity
-  — Kabutan consensus + Kabutan news + FRED macro + yfinance .splits
-  corp-action layer 3 + RULE 11 + JP COMPS PEER SET + currency
-  directive all work. Missing: EDINET 공시 list, 5%+ 대량보유 변동,
-  사전 announcement scan, next-earnings-window inference. Rule A
-  (DATA SOURCE OFFLINE HARD GUARD, this commit) prevents the LLM from
-  fabricating EDINET output when the key is absent — Toyota 7203.T
-  2026-05-18 fabricated `BlackRock 5.1% / Vanguard 5.0%` 대량보유
-  + specific 공시 dates without the key. Surface to user once they
-  resolve the registration path.
+- **EDINET API key — ✅ loaded (2026-05-27)**. User registered via
+  ProtonVPN Japan paid tier (one-day refund path). Key format: 32-char
+  hex UUID without dashes. Stored as `EDINET_API_KEY` in `~/stock/.env`.
+  JP Phase 3 validation started: 8306.T (MUFG) confirmed EDINET 공시
+  블록 실데이터 출력 (대량보유보고서 5/18·5/8 등). 사전 announcement
+  scan + 5%+ 대량보유 변동 + next-earnings-window 전부 live.
+  Remaining: /7203.T (Toyota) + /6758.T (Sony) validation runs.
 
 - **FRED API key — loaded** (2026-05-18). User confirmed key is in
   `.env` (verified via redacted `cat ~/stock/.env | sed 's/=.*$/=***REDACTED***/'`

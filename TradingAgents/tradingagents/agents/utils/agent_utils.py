@@ -3866,7 +3866,16 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 " (4월–익년 3월). yfinance의 'fiscalYearEnd' / 분기 라벨"
                 " (Q1=4–6월, Q2=7–9월, Q3=10–12월, Q4=1–3월) 인용 시"
                 " 미국 캘린더 분기로 착각하지 말 것. 최근 분기 실적 인용"
-                " 시 '2026년 3월기 1Q (4-6월)' 식으로 표기."
+                " 시 '2026년 3월기 1Q (4-6월)' 식으로 표기.\n"
+                "FISCAL YEAR LABEL MISMATCH — yfinance는 회계연도 종료"
+                " 연도를 FY 라벨로 사용함: 2026년 3월 종료 = yfinance 'FY26'."
+                " 일본 기업 IR·뉴스에서는 동일 회계연도를 '2025年度' 또는"
+                " 'FY2025'로 표기. 따라서 뉴스에서 'FY2025 순이익 2.43조'"
+                " = yfinance 'FY26 순이익 2.43조' — 같은 수치, 다른 라벨."
+                " 리포트 내에서 yfinance 기준(FY26 등)으로 통일하고"
+                " '3월 결산 기준' 을 괄호에 명시할 것. 뉴스 인용 시"
+                " 'IR 발표 기준 2025年度 = yfinance FY26' 으로 매핑 명시."
+                " 동일 수치를 두 가지 라벨로 혼용하면 독자 혼란 유발 금지."
             )
             if fin_ccy and fin_ccy not in ("JPY", ""):
                 base += (
