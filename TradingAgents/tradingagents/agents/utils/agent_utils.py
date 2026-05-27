@@ -1334,6 +1334,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # market-flow data so it stays in the market analyst's set.
     "market": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
+        "edgar_form4",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
@@ -1341,6 +1342,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     "social": {
         "krx_flow", "hsgt_flow", "kis_supply",
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
+        "edgar_8k", "edgar_form4",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
@@ -1375,8 +1377,8 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
     AttributeError / etc.) doesn't poison the dict — the tag just maps
     to None and the downstream block treats it like an empty result.
 
-    Returns empty dict for `market in ("US",)` — no extra fetches
-    needed (yfinance .info already cached in _INSTRUMENT_INFO_CACHE).
+    For market == "US", prefetches EDGAR 8-K events + Form 4 insider
+    trades in parallel (no API key required).
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -1511,6 +1513,14 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["akshare_hsgt_flow"] = lambda: ak_client.get_hsgt_flow_summary(days_back=5)
             tasks["akshare_news"] = lambda: ak_client.fetch_news(ticker, days_back=28, max_items=10)
             tasks["akshare_macro"] = lambda: ak_client.fetch_cn_macro()
+        except Exception:
+            pass
+
+    elif market == "US":
+        try:
+            from bot.edgar_client import get_recent_8k, get_recent_form4
+            tasks["edgar_8k"] = lambda: get_recent_8k(ticker, days=30)
+            tasks["edgar_form4"] = lambda: get_recent_form4(ticker, days=30)
         except Exception:
             pass
 
@@ -4006,7 +4016,7 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
     # 'edinet_holders', 'akshare_macro'). Each downstream try-block
     # below uses prefetched.get(tag) instead of re-fetching, eliminating
     # sequential I/O wait. Empty dict for US / ETF / unknown markets.
-    if qt in ("ETF", "ETN", "MUTUALFUND") or market == "US":
+    if qt in ("ETF", "ETN", "MUTUALFUND"):
         prefetched: dict = {}
     else:
         try:
@@ -4157,6 +4167,35 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                 " 실행)' 로 명시하고 다음 항목으로 진행. 펀더멘털 / 결정 노드도"
                 " 이 가드를 따른다."
             )
+
+        # EDGAR (US-only) — SEC 8-K material events + Form 4 insider
+        # trades. No API key required; rate-limit + User-Agent enforced
+        # in bot/edgar_client.py. Parallel-prefetched by
+        # _prefetch_market_io (US branch). Gate both via _section_allowed
+        # so social analyst doesn't see irrelevant blocks.
+        if market == "US":
+            try:
+                if _section_allowed(analyst_id, "edgar_8k"):
+                    from bot.edgar_client import format_edgar_8k_block
+                    filings_8k = prefetched.get("edgar_8k") or []
+                    block_8k = format_edgar_8k_block(filings_8k)
+                    if block_8k:
+                        base += "\n\n" + block_8k
+            except Exception as exc:
+                _analyst_log.warning(
+                    "edgar 8k injection failed for %s: %s", ticker, exc,
+                )
+            try:
+                if _section_allowed(analyst_id, "edgar_form4"):
+                    from bot.edgar_client import format_edgar_form4_block
+                    filings_f4 = prefetched.get("edgar_form4") or []
+                    block_f4 = format_edgar_form4_block(filings_f4)
+                    if block_f4:
+                        base += "\n\n" + block_f4
+            except Exception as exc:
+                _analyst_log.warning(
+                    "edgar form4 injection failed for %s: %s", ticker, exc,
+                )
 
         # DART (KR-only) — 공시 / 임원지분 / 실적 윈도. yfinance returns
         # nothing useful for these on KRX-listed names; DART is the
