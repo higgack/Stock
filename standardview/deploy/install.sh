@@ -7,8 +7,9 @@
 #   • sv-update.{service,timer}          — git auto-deploy (1 min)
 #   • sv-cache-rollover.{service,timer}  — macro_news_cache flush 00:05
 #   • sv-watchdog.{service,timer}        — stale latest.html kick (30 min)
-#   • standardview-daily.{service,timer} — daily_generator 07:30 + 20:30
-#   • standardview-push.{service,timer}  — telegram_pusher 08:00 + 21:00
+#   • standardview-daily.{service,timer}  — daily_generator 07:30 + 20:30
+#   • standardview-push.{service,timer}   — telegram_pusher 08:00 + 21:00
+#   • standardview-weekly.{service,timer} — weekly_pusher 금 08:00
 #
 # Side-effects:
 #   • Disables standardview-hourly.timer (legacy Mon-Fri 12/16시 push)
@@ -35,7 +36,8 @@ for unit in \
     sv-cache-rollover.service  sv-cache-rollover.timer \
     sv-watchdog.service        sv-watchdog.timer \
     standardview-daily.timer \
-    standardview-push.service  standardview-push.timer ;
+    standardview-push.service  standardview-push.timer \
+    standardview-weekly.service standardview-weekly.timer ;
 do
     if [ -f "$DEPLOY_DIR/$unit" ]; then
         install -m 0644 "$DEPLOY_DIR/$unit" /etc/systemd/system/
@@ -59,6 +61,7 @@ systemctl enable --now sv-update.timer
 systemctl enable --now sv-cache-rollover.timer
 systemctl enable --now sv-watchdog.timer
 systemctl enable --now standardview-push.timer
+systemctl enable --now standardview-weekly.timer
 systemctl restart standardview-daily.timer  # pick up new 07:30/20:30 schedule
 
 # Disable legacy hourly timer (12/16시 push 제거)

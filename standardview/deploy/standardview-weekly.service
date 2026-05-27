@@ -1,0 +1,13 @@
+[Unit]
+Description=Standard View weekly brief Telegram push (Friday)
+After=network.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/standardview
+Environment="PYTHONUNBUFFERED=1"
+TimeoutStartSec=600
+ExecStart=/home/higgack/standardview/.venv/bin/python /home/higgack/standardview/scripts/weekly_pusher.py
+StandardOutput=journal
+StandardError=journal

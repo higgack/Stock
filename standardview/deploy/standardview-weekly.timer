@@ -1,0 +1,10 @@
+[Unit]
+Description=Trigger Standard View weekly brief every Friday at 08:00 Asia/Seoul
+
+[Timer]
+OnCalendar=Fri *-*-* 08:00:00 Asia/Seoul
+Unit=standardview-weekly.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
