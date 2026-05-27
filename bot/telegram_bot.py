@@ -796,7 +796,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
  • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> (ID/PW) · 매크로·MMI·산업·Deal·NOAH · 매일 07:30/20:30 refresh + 08:00/21:00 텔레 (분할+URL) · 일 22:00 주간 브리프·섹터히트맵 텔레+아카이브 저장 · auto-deploy 1분·cache rollover 00:05·watchdog 30분
  • 모바일 ID/PW popup 안 뜨면 Safari/Firefox/Brave
  • NOAH 카드: 📊분석 · 💰비용 · ⏱시간 · 🎯정확도 (알파=raw−섹터ETF)
- • 본문: 날짜·5/15/30거래일 누적·검색창 (한·일·대 종목명)·🗑️
+ • 본문: 날짜·5/15/30거래일 누적·검색창·🗑️
  • 데이터: <code>~/.tradingagents/{archive,usage.jsonl,memory/}</code>
  • 외부 참조 대쉬보드사이트 모음 → /sites
 
