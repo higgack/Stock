@@ -325,18 +325,30 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # /screener in channel — Bottleneck Screener Phase α MVP (AI Data Center).
-    # ~3-5 minute Pro call; send a progress note first so the channel knows
-    # work is in flight before the master table arrives.
+    # /screener [domain] in channel — Wave 1 registry: bottleneck (default,
+    # AI Data Center) / ev / defense / pharma / solar (+aliases). Unknown
+    # domain → friendly error with available list; otherwise progress
+    # message names the resolved domain so the channel sees which theme
+    # is in flight before the master table arrives ~5-10 min later.
     if first_word == "screener":
+        from bot.screener_themes import resolve as _scr_resolve, available_summary as _scr_avail
         chat_id = post.chat.id
+        raw_domain = body[len("screener"):].strip().lower()
+        theme = _scr_resolve(raw_domain)
+        if theme is None:
+            await ctx.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ '<code>{raw_domain or '(empty)'}</code>' 도메인을 찾을 수 없습니다.\n사용 가능: <code>{_scr_avail()}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
         await ctx.bot.send_message(
             chat_id=chat_id,
             text=(
-                "📊 <b>Bottleneck Screener</b> 시작 — AI 데이터센터 도메인 "
-                "(Phase β · 실시간 데이터)\n⏱ <b>5-10분 소요</b> — "
-                "Phase 1·2 (Pro 후보 식별) → Phase 3 (병렬 실시간 fetch) "
-                "→ Phase 4·5 (Pro 분석)\n"
+                f"📊 <b>Bottleneck Screener</b> 시작 — <b>{theme['domain']}</b> "
+                f"({theme.get('horizon','')} 관점, Phase β · 실시간 데이터)\n"
+                "⏱ <b>5-10분 소요</b> — Phase 1·2 (Pro 후보 식별) → "
+                "Phase 3 (병렬 실시간 fetch) → Phase 4·5 (Pro 분석)\n"
                 "💡 데이터 fetch hung 시 120s 후 partial 결과로 자동 진행"
             ),
             parse_mode=ParseMode.HTML,
@@ -346,7 +358,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             ),
-            domain=body[len("screener"):].strip().lower(),
+            domain=raw_domain or "bottleneck",
         )
         return
 
@@ -776,7 +788,8 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/start /help /usage /sv_cost /screener_cost /screener /sites — 도움말 · 비용 (통합/SV/Screener) · Bottleneck 종목 발굴 · 사이트
+/start /help /usage /sv_cost /screener_cost /sites — 도움말·비용·사이트
+/screener [ev|defense|pharma|solar] — Bottleneck (기본=AI 데이터센터, 별칭 전기차/방산/바이오/신재생)
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
@@ -850,7 +863,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【12. 예정 작업】</b>
- • Bottleneck Screener Wave 1 — AI 데이터센터 외 EV·방산·바이오·신재생 등 추가 도메인 확장 예정 (theme registry 분리)
+ • Screener Wave 2 — 럭셔리·핀테크·rare earth·우라늄·농업 + 24h 캐시 + 자유텍스트 도메인
 """
 
 
@@ -1349,6 +1362,7 @@ async def _run_screener_and_send(send, domain: str) -> None:
     Used by both DM cmd_screener and the channel /screener path."""
     import asyncio
     from bot.screener import run_screener, format_for_telegram
+    from bot.screener_themes import available_summary as _scr_avail
     loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(None, run_screener, domain or "bottleneck")
@@ -1358,8 +1372,8 @@ async def _run_screener_and_send(send, domain: str) -> None:
         return
     if result is None:
         await send(
-            "⚠️ Screener 실행 실패 — GOOGLE_API_KEY 누락 또는 Pro 응답 없음."
-            " 로그 확인 권장."
+            "⚠️ Screener 실행 실패 — GOOGLE_API_KEY 누락 / 미상 도메인 / "
+            f"Pro 응답 없음.\n사용 가능 도메인: <code>{_scr_avail()}</code>"
         )
         return
     for chunk in format_for_telegram(result):
@@ -1367,23 +1381,34 @@ async def _run_screener_and_send(send, domain: str) -> None:
 
 
 async def cmd_screener(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """/screener [domain] — Bottleneck Screener Phase α MVP.
+    """/screener [domain] — Bottleneck Screener Wave 1.
 
-    Phase α: AI Data Center domain only. Wave 1 will extend to ev / pharma
-    / solar / defense etc. via theme registry in bot/screener_themes/.
-    See CLAUDE.md 'Bottleneck Screener' section for full design.
+    Domains: bottleneck (default, AI Data Center) / ev / defense / pharma
+    / solar — plus aliases (전기차 / 방산 / 바이오 / 신재생 etc.). Theme
+    registry in bot/screener_themes/. See CLAUDE.md 'Bottleneck Screener'
+    section for full design.
     """
     if update.message is None:
         return
+    from bot.screener_themes import resolve as _scr_resolve, available_summary as _scr_avail
+    raw_domain = (" ".join(ctx.args).strip().lower() if ctx.args else "")
+    theme = _scr_resolve(raw_domain)
+    if theme is None:
+        await update.message.reply_text(
+            f"⚠️ '<code>{raw_domain or '(empty)'}</code>' 도메인을 찾을 수 없습니다.\n"
+            f"사용 가능: <code>{_scr_avail()}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
     await update.message.reply_text(
-        "📊 <b>Bottleneck Screener</b> 시작 — AI 데이터센터 도메인 "
-        "(Phase β · 실시간 데이터 + 웹 검색)\n"
+        f"📊 <b>Bottleneck Screener</b> 시작 — <b>{theme['domain']}</b> "
+        f"({theme.get('horizon','')} 관점, Phase β · 실시간 데이터 + 웹 검색)\n"
         "⏱ <b>6-12분 소요</b> — Phase 1·2 (Pro+웹 검색 후보 식별) → "
         "Phase 3 (병렬 실시간 fetch) → Phase 4·5 (Pro+웹 검색 분석)\n"
         "💡 fetch hung 시 120s 후 partial 결과로 자동 진행",
         parse_mode=ParseMode.HTML,
     )
-    domain = " ".join(ctx.args).strip().lower() if ctx.args else "bottleneck"
+    domain = raw_domain or "bottleneck"
     chat_id = update.message.chat_id
     await _run_screener_and_send(
         send=lambda t: ctx.bot.send_message(

@@ -726,13 +726,25 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
 각 fix 는 universal (모든 brief 출력 / 모든 분석 / 모든 시장) 패턴
 으로 적용. Per-ticker / per-market 가드는 부재.
 
-## Bottleneck Screener — 운영 중 (Phase β LIVE · 2026-05-29 현재)
+## Bottleneck Screener — 운영 중 (Phase β + Wave 1 LIVE · 2026-05-29)
 
 **현재 가동 상태 (변경 시 본 섹션 즉시 업데이트 의무 — 사용자 정책
 2026-05-29):**
 
 - `/screener` (= `/screener bottleneck` 디폴트) 텔레그램 명령 LIVE.
-  AI 데이터센터 도메인 inline (`bot/screener.py _AI_DATACENTER_THEME`).
+  Wave 1 (2026-05-29 ✅): theme registry 패키지 `bot/screener_themes/`
+  로 분리, **5 도메인 동시 운영** — Python dict 기반 (YAML 미사용,
+  CLAUDE.md 의 design 메모리는 historical reference). 각 모듈은 top-
+  level `THEME` dict 를 export:
+  - `bottleneck.py` — AI Data Center Buildout (별칭 ai · 데이터센터)
+  - `ev.py` — EV & Battery (별칭 전기차 · 배터리 · 이차전지)
+  - `defense.py` — Defense, Aerospace & Space (별칭 방산 · 우주)
+  - `pharma.py` — Biotech & Pharma · GLP-1/CDMO/Biosimilar (별칭 바이오 · 제약 · glp1)
+  - `solar.py` — Solar, Wind, ESS & Grid (별칭 신재생 · 태양광 · 풍력 · ess)
+  Registry `__init__.py` 가 `pkgutil.iter_modules` 로 자동 discover +
+  import-time validate (5 필수키 · layer/catalyst 최소 길이). 새 도메인
+  추가 = 새 모듈 한 파일 drop, orchestrator 수정 0 — Wave 2 (럭셔리·
+  핀테크·rare earth·우라늄·농업) 도 동일 패턴.
 - `/screener_cost` 텔레그램 명령 LIVE — 별도 비용 카드 (sv_cost 패턴).
 - Phase β orchestration: Pro Phase 1·2 (JSON 후보) → ticker 검증 +
   yfinance mcap-based tier 강제 → Phase 3 build_instrument_context
@@ -766,16 +778,16 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   - Liquidity 경고 (S-tier ~$100M micro-cap)
   - Markdown 금지 (`**`, `*`, `##` literal noise 차단 — HTML 만)
 
-**다음 작업 — Wave 1 도메인 확장 (theme registry 분리):**
-- `bot/screener_themes/*.yaml` 디렉토리에 도메인별 config 분리
-  (binding_layer_taxonomy / catalyst_types / data_sources /
-  regional_concentration / horizon).
-- `/screener ev` (EV·배터리), `/screener defense` (방산·우주),
-  `/screener solar` (신재생), `/screener pharma` (바이오 · GLP-1 ·
-  CDMO) 추가. 각 theme 의 `domain` 필드가 대시보드 카드 헤더에 자동
-  반영 (Wave 1 코드 변경 없이 config 만 추가).
+**다음 작업 — Wave 2 + 캐시 + 자유텍스트:**
+- Wave 2 도메인 확장: 럭셔리 (LVMH/Hermès/Kering supply chain),
+  핀테크 (V/MA/PYPL/Adyen/SQ + 한국 결제망), rare earth (MP Mat ·
+  Lynas · 미·중·호주 mining), 우라늄 (Cameco · Kazatomprom · BWXT
+  SMR), 농업 (Deere · ADM · Bunge · 비료). 각 도메인 1 모듈 drop.
+- 도메인별 24h 캐시: `~/.tradingagents/screener_cache/{slug}_YYYY
+  -MM-DD.json` 으로 같은 도메인 24시간 내 재호출 시 Pro skip + ₩0
+  반환. 별도 `/screener {slug} fresh` flag 로 강제 재실행.
 - Wave ∞: `/screener <freetext>` 자유 입력 → Pro 가 on-the-fly theme
-  생성.
+  dict 생성 후 registry 에 ad-hoc 등록.
 
 ## Bottleneck Screener — 설계 메모리 (origin 2026-05-28, kept for reference)
 

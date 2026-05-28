@@ -31,40 +31,13 @@ from typing import Optional
 
 log = logging.getLogger("bot.screener")
 
-# ── Theme registry — Phase α inlines AI Data Center only. ────────────────
-# Phase β / Wave 1 will extract to bot/screener_themes/*.yaml. Keeping
-# inline now so the orchestrator + telegram wiring are validated first.
-
-_AI_DATACENTER_THEME = {
-    "domain": "AI Data Center Buildout",
-    "horizon": "6-18 months",
-    "binding_layer_taxonomy": [
-        "HBM / 첨단 패키징 (CoWoS / ABF substrate)",
-        "액체냉각 (Quick disconnect / TIM / Vapor chamber)",
-        "전력 (Transformer / Busbar / GaN / SiC)",
-        "광통신 (CPO / Co-packaged optics / Fiber)",
-        "특수가스 / Wet chemistry",
-        "Test / Burn-in / Probe card",
-        "수동소자 (MLCC / 저항 / 인덕터)",
-        "EMS / AI server 조립",
-    ],
-    "catalyst_types": [
-        "하이퍼스케일러 capex 가이드 (Microsoft / Meta / Google / Amazon)",
-        "TSMC / SK Hynix / Samsung HBM·CoWoS 캐파 expansion 발표",
-        "美 BIS 對中 수출규제 / entity list 변경",
-        "NVIDIA Blackwell / Rubin 채택률 데이터",
-        "전력 인프라 grid 병목 + 데이터센터 부지 승인",
-    ],
-    "regional_concentration": {
-        "HBM": "KR (Samsung 005930.KS / SK Hynix 000660.KS), US (Micron MU)",
-        "ABF substrate": "JP (Ibiden 4062.T / Shinko 5703.T)",
-        "Cooling": "TW (Auras 3324.TW / AVC 3017.TW), JP (Sunon 2421.TW)",
-        "CoWoS": "TW (TSMC 2330.TW)",
-        "Power": "EU (Siemens Energy ENR.DE / Schneider SU.PA), US (Eaton ETN / Vertiv VRT)",
-        "Optical": "TW (Hon Hai 2317.TW), US (Coherent COHR / Lumentum LITE)",
-        "Specialty gas": "JP (Air Water 4088.T), KR (SK Materials)",
-    },
-}
+# ── Theme registry — Wave 1 (2026-05-29) ────────────────────────────────
+# 5 domains live in bot/screener_themes/{bottleneck,ev,defense,pharma,solar}.py
+# Each module exports a top-level THEME dict; the registry auto-discovers
+# them on import. /screener with no argument routes to 'bottleneck' (AI
+# Data Center), preserving Phase α/β default behavior. New Wave 2/3
+# domains are added by dropping another module — no edits here required.
+from bot.screener_themes import resolve as _resolve_theme, available_summary
 
 # ── Pricing for Gemini cost tracking (per 1M tokens, USD → KRW @ 1330) ─
 _PRO_INPUT_USD_PER_M = 1.25      # gemini-2.5-pro input
@@ -1173,17 +1146,23 @@ def run_screener(domain: str = "bottleneck") -> Optional[ScreenerResult]:
     path. On Phase β failure (JSON parse / 0 validated tickers / Pro crash)
     the orchestrator falls back to Phase α automatically.
 
-    Phase α: only AI Data Center inline theme. Wave 1 will extend domains
-    via bot/screener_themes/*.yaml registry.
+    Wave 1 (2026-05-29): theme registry under bot/screener_themes/ —
+    bottleneck (AI Data Center) / ev / defense / pharma / solar. Unknown
+    domain → None with available domains logged for the telegram caller
+    to surface in the error message.
     """
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         log.error("screener: GOOGLE_API_KEY missing")
         return None
 
-    if domain not in ("bottleneck", "ai", "ai_datacenter", ""):
-        log.warning("screener: domain '%s' not in Phase α — falling back to bottleneck", domain)
-    theme = _AI_DATACENTER_THEME
+    theme = _resolve_theme(domain)
+    if theme is None:
+        log.warning(
+            "screener: domain '%s' unknown — available: %s",
+            domain, available_summary(),
+        )
+        return None
     started = time.time()
 
     forced_alpha = os.environ.get("SCREENER_PHASE", "beta").strip().lower() == "alpha"
