@@ -2833,9 +2833,15 @@ def _render_screener_domains_page() -> str:
     금지' rule (2026-05-29), this page is the canonical user-facing
     surface for the domain catalog. Future Wave 2-B / Wave 3 / Wave ∞
     domain additions = module drop only — this page + /screener_list
-    auto-update; _HELP_TEXT never grows."""
+    auto-update; _HELP_TEXT never grows.
+
+    2026-05-29 follow-up: append a '📜 변경 이력' section so the user
+    can see when each Wave shipped + what was added/removed at each
+    step. Sourced from `bot.screener_history.load_history()`.
+    """
     import html as _html
     from bot.screener_themes import list_domains
+    from bot.screener_history import load_history
     ds = list_domains()
     items: list[str] = []
     for d in ds:
@@ -2848,10 +2854,13 @@ def _render_screener_domains_page() -> str:
                 f'<span class="alias">{_html.escape(a)}</span>' for a in aliases
             )
             alias_html = f'<div class="aliases">{chips}</div>'
+        # Per-slug shortcut commands (`/screener_<slug>`) are clickable
+        # in Telegram — single tap fires the right domain run, no manual
+        # typing of the slug needed. Same pattern as /find_all etc.
         items.append(
             f'<div class="dom-card">'
             f'<div class="dom-head">'
-            f'<code class="slug">/screener {_html.escape(slug)}</code>'
+            f'<code class="slug">/screener_{_html.escape(slug)}</code>'
             f'<span class="dom-name">{domain}</span>'
             f'</div>'
             f'{alias_html}'
@@ -2860,6 +2869,49 @@ def _render_screener_domains_page() -> str:
     body = "\n".join(items) if items else (
         '<div class="empty">아직 등록된 도메인이 없습니다.</div>'
     )
+
+    # 변경 이력 — newest first. Each entry shows ts (KST) + added /
+    # removed slugs. The initial-seed entry is labeled distinctly.
+    history = load_history()
+    history_html = ""
+    if history:
+        hrows: list[str] = []
+        for e in history:
+            ts = _html.escape(str(e.get("ts", ""))[:19].replace("T", " "))
+            label = "🌱 초기 등록" if e.get("initial") else "🆕 변경"
+            added = e.get("added") or []
+            removed = e.get("removed") or []
+            names = e.get("added_with_names") or {}
+            added_html = ""
+            if added:
+                chips = "".join(
+                    f'<span class="hist-add" title="{_html.escape(names.get(s, ""))}">'
+                    f'<code>/screener_{_html.escape(s)}</code></span>'
+                    for s in added
+                )
+                added_html = f'<div class="hist-row"><b>추가</b>: {chips}</div>'
+            removed_html = ""
+            if removed:
+                chips = "".join(
+                    f'<span class="hist-rem"><code>{_html.escape(s)}</code></span>'
+                    for s in removed
+                )
+                removed_html = f'<div class="hist-row"><b>제거</b>: {chips}</div>'
+            hrows.append(
+                f'<div class="hist-entry">'
+                f'<div class="hist-head"><span class="hist-label">{label}</span>'
+                f'<span class="hist-ts">{ts}</span>'
+                f'<span class="hist-total">→ 총 {e.get("total_after", 0)}개</span>'
+                f'</div>{added_html}{removed_html}</div>'
+            )
+        history_html = (
+            '<h2 style="margin-top:36px;padding-top:16px;border-top:1px solid var(--border)">'
+            '📜 변경 이력</h2>'
+            '<p class="sub">새 도메인이 추가/제거될 때마다 자동 기록. '
+            '대시보드 재생성 시 (분석 직후 / auto_resolve 12h / 봇 시작 시) '
+            '체크 → 변화 감지 시 entry append.</p>'
+            + "\n".join(hrows)
+        )
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -2881,6 +2933,22 @@ def _render_screener_domains_page() -> str:
 .alias {{ background:rgba(255,255,255,0.04); color:var(--fg-soft);
   padding:2px 8px; border-radius:4px; font-size:11px;
   font-family:'IBM Plex Mono',monospace; }}
+.hist-entry {{ background:var(--card); border:1px solid var(--border);
+  border-radius:8px; padding:10px 14px; margin-bottom:8px; }}
+.hist-head {{ display:flex; gap:12px; align-items:center;
+  flex-wrap:wrap; font-size:12px; color:var(--fg-soft); margin-bottom:6px; }}
+.hist-label {{ font-weight:600; color:var(--fg); }}
+.hist-ts {{ font-family:'IBM Plex Mono',monospace; }}
+.hist-total {{ margin-left:auto; color:var(--accent); font-weight:600; }}
+.hist-row {{ font-size:12px; margin:4px 0; line-height:1.7; }}
+.hist-row b {{ color:var(--fg-soft); font-weight:500;
+  margin-right:6px; font-size:11px; }}
+.hist-add, .hist-rem {{ display:inline-block; margin:2px 4px 2px 0; }}
+.hist-add code {{ background:rgba(16,185,129,0.12); color:#10B981;
+  padding:2px 8px; border-radius:4px; font-size:11px; }}
+.hist-rem code {{ background:rgba(239,68,68,0.12); color:#EF4444;
+  padding:2px 8px; border-radius:4px; font-size:11px;
+  text-decoration:line-through; }}
 </style>
 </head>
 <body>
@@ -2890,12 +2958,12 @@ def _render_screener_domains_page() -> str:
     <a href="screener.html">📊 Bottleneck Screener Archive</a>
   </p>
   <h1>📊 Screener 도메인 목록 <span style="color:var(--fg-soft);font-size:16px;font-weight:400">({len(ds)}개 · auto-discovered)</span></h1>
-  <p class="sub">텔레그램: <code>/screener &lt;도메인 또는 별칭&gt;</code>
-  · 예: <code>/screener ev</code> · <code>/screener 전기차</code>
-  · <code>/screener healthcare</code>. 동일 목록 텔레그램 = <code>/screener_list</code>.</p>
+  <p class="sub">텔레그램: <code>/screener_&lt;슬러그&gt;</code> 클릭 한 번으로 즉시 실행 · 별칭은 <code>/screener &lt;별칭&gt;</code> 으로 지원
+  · 동일 목록 텔레그램 = <code>/screener_list</code>.</p>
   <p class="sub"><b>3-layer 도메인 모델</b> — L1 Trend (좁은 cycle 베팅) · L2 Sector (Finviz broad) · L3 Industry (예정).
-  새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지에 자동 반영.</p>
+  새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지 + 변경 이력에 자동 반영.</p>
   {body}
+  {history_html}
 </div>
 </body>
 </html>
@@ -2918,7 +2986,14 @@ def regenerate_screener_index() -> None:
     except Exception as exc:
         log.warning("dashboard: screener regen failed: %s", exc)
     # Domain registry page — separate try so a render error here doesn't
-    # block the main screener archive write above.
+    # block the main screener archive write above. Records a history
+    # snapshot BEFORE rendering so any new domains land in the page's
+    # '📜 변경 이력' section on the same regen pass.
+    try:
+        from bot.screener_history import record_snapshot
+        record_snapshot()
+    except Exception as exc:
+        log.warning("dashboard: screener_history record failed: %s", exc)
     try:
         domains_html = _render_screener_domains_page()
         (ARCHIVE_ROOT / "screener_domains.html").write_text(

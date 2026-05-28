@@ -249,6 +249,21 @@ TENSE DISCIPLINE (시제 규율 — 2026-05-29 surfaced):
   '곧 발표될 예정' / '예상' 추측 금지.
 - 'Catalyst+시기' 컬럼은 오로지 오늘 이후 future event 만 (예: '2026-H2',
   '2027-Q1'). 오늘 이전 event 를 catalyst 로 cite 금지.
+- ❌ FORBIDDEN (강화 — 2026-05-29 pharma review): 외부 source 의 'YYYY
+  완공 목표', 'YYYY 가동 개시', 'YYYY 출시 예정', 'YYYY 양산 시작' 등
+  과거 target date 가 포함된 prose 를 그대로 cite 금지. 검증 의무:
+  (a) target date > 오늘 → '예정' 유지 가능 (외부 source 의 'sourced
+      YYYY-MM-DD' 와 별개로 target 자체가 미래 기준이므로 안전)
+  (b) target date ≤ 오늘 → 실제 완공·가동·출시 여부 web search 재
+      검증 의무. 검증 결과 (verify 성공/실패) 에 따라:
+      - 성공 (가동 확인): PAST tense 로 '실제 YYYY-MM 가동 완료 확인'
+      - 실패 (가동 미확정): 'YYYY 목표였으나 {today} 시점 가동 미확정'
+        또는 OMIT
+  - 위반 예시 (Pharma 2026-05-29): 300037.SZ Tinci '2025년 완공 목표로
+    미국 및 모로코에 신규 생산기지 건설 중 (sourced 2026-05-29)' — 'sourced
+    2026-05-29' 라 source 자체는 fresh 이지만 target date 2025 가 이미
+    과거. 실제 완공/지연 여부 verify 없이 '건설 중' 그대로 출력 = 시제
+    leak.
 
 WEB SEARCH MANDATORY (2026-05-29 enabled — google_search tool wired):
 - 현재 날짜 기준 (2026년) 최신 데이터를 web search 로 적극 fetch:
@@ -796,17 +811,33 @@ def _correct_top3_json_tiers(
 
 
 _MT_TIER_COUNT_RE = re.compile(r"\[[^\]\n]+\]\s*·\s*([LMS])\s*·")
+# Theme-aware version — captures theme/binding-layer name + tier letter
+# so per-theme distribution drift can be logged (Pharma 2026-05-29 review:
+# 'CDMO 탈중국' theme had 2 L 0 M, 'ADC 플랫폼 기술' theme had only 1 L
+# — domain-level total looked fine but per-theme S/M/L mandate violated).
+_MT_TIER_THEME_RE = re.compile(r"\[([^\]\n]+?)\]\s*·\s*([LMS])\s*·")
 
 
 def _log_tier_distribution(domain: str, text: str) -> None:
     """Count S/M/L tier letters in Master Table rows; log distribution.
     Block 은 안 함 — defense 같이 micro-cap 부재한 도메인은 L-skew 가
     구조적 합리. 시간 누적 추세 모니터링 용도 (Fix #6, 2026-05-29).
-    Wave 2 도메인 (럭셔리 / 핀테크 / rare earth / 우라늄 / 농업) 추가 시
-    distribution drift 비교 anchor 로 활용."""
+
+    2026-05-29 pharma review 추가: per-theme tier 분포도 logging — Pro
+    가 도메인 전체 S/M/L 채워도 theme/binding-layer 단위로 보면 한 layer
+    에 L 2 + M 0 (예: 'CDMO 탈중국' L=2/M=0/S=1) 처럼 'theme 별 S/M/L
+    1행 의무' mandate violation 가능. WARNING 로깅 → 추세 모니터링.
+    """
+    from collections import defaultdict
     counts = {"L": 0, "M": 0, "S": 0}
-    for m in _MT_TIER_COUNT_RE.finditer(text or ""):
-        counts[m.group(1)] += 1
+    per_theme: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"L": 0, "M": 0, "S": 0}
+    )
+    for m in _MT_TIER_THEME_RE.finditer(text or ""):
+        theme_name = m.group(1).strip()
+        tier = m.group(2)
+        counts[tier] += 1
+        per_theme[theme_name][tier] += 1
     total = sum(counts.values())
     if total == 0:
         return
@@ -816,6 +847,23 @@ def _log_tier_distribution(domain: str, text: str) -> None:
         domain, counts["L"], counts["M"], counts["S"], total,
         f" — missing {','.join(missing)}" if missing else "",
     )
+    # Per-theme — warn when a theme has 2+ rows but missing S or M.
+    # Single-row themes can't violate distribution (Pro may have run out
+    # of candidates for that niche layer). 2+ rows with missing S/M =
+    # L-skew that prompt mandate explicitly forbids.
+    for theme, tc in per_theme.items():
+        theme_total = sum(tc.values())
+        if theme_total < 2:
+            continue
+        theme_missing = [k for k, v in tc.items() if v == 0]
+        if theme_missing:
+            log.warning(
+                "screener theme tier skew [%s / %s]: L=%d M=%d S=%d "
+                "— missing %s (theme total %d)",
+                domain, theme[:50],
+                tc["L"], tc["M"], tc["S"],
+                ",".join(theme_missing), theme_total,
+            )
 
 
 def _extract_top3_json(output: str) -> tuple[list[dict], str]:

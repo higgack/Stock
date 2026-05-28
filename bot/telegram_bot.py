@@ -338,6 +338,43 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /screener_<slug> shortcut in channel — single-tap per-domain
+    # commands (registered dynamically for DM via _register_dynamic_
+    # screener_handlers). Same dispatch path so behavior matches.
+    # Excludes 'screener_cost' and 'screener_list' which have dedicated
+    # branches above.
+    if first_word.startswith("screener_") and first_word not in (
+        "screener_cost", "screener_list",
+    ):
+        from bot.screener_themes import resolve as _scr_resolve, available_summary as _scr_avail
+        chat_id = post.chat.id
+        raw_domain = first_word[len("screener_"):]
+        theme = _scr_resolve(raw_domain)
+        if theme is None:
+            await ctx.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ '<code>{raw_domain}</code>' 도메인을 찾을 수 없습니다.\n사용 가능: <code>{_scr_avail()}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await ctx.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"📊 <b>Bottleneck Screener</b> 시작 — <b>{theme['domain']}</b> "
+                f"({theme.get('horizon','')} 관점, Phase β · 실시간 데이터)\n"
+                "⏱ <b>5-10분 소요</b> · Phase 1·2 → Phase 3 (병렬 fetch) → Phase 4·5"
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+        await _run_screener_and_send(
+            send=lambda t: ctx.bot.send_message(
+                chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            ),
+            domain=raw_domain,
+        )
+        return
+
     # /screener [domain] in channel — Wave 1 registry: bottleneck (default,
     # AI Data Center) / ev / defense / pharma / solar (+aliases). Unknown
     # domain → friendly error with available list; otherwise progress
@@ -1301,29 +1338,41 @@ def _format_screener_domains_list() -> str:
     Per CLAUDE.md 'Screener 도메인 목록은 _HELP_TEXT inline 금지' rule
     (2026-05-29): future Wave 2-B / Wave 3 / Wave ∞ 도메인 추가는 모듈
     drop 만으로 본 함수 출력 + dashboard `screener_domains.html` 양쪽
-    자동 갱신. help text 변경 불필요."""
+    자동 갱신.
+
+    Output format: 각 도메인을 ``/screener_<slug>`` 형태로 출력 (예:
+    ``/screener_healthcare``) — 텔레그램이 자동으로 hyperlink 처리해
+    클릭 한 번에 입력창에 prefill, 엔터 한 번에 실행. 사용자 예시
+    (/guide_lookup / /find_all 패턴) 와 동일 UX. 핸들러는 ``register_
+    dynamic_screener_handlers()`` 에서 일괄 등록."""
     from bot.screener_themes import list_domains
     ds = list_domains()
     lines = [
         f"📊 <b>Bottleneck Screener — 도메인 목록</b> ({len(ds)}개)",
         "",
-        "사용: <code>/screener &lt;도메인 또는 별칭&gt;</code>",
-        "예: <code>/screener ev</code>, <code>/screener 전기차</code>, "
-        "<code>/screener healthcare</code>",
+        "각 줄의 명령어 클릭 → 입력창 prefill → 엔터 1회로 즉시 실행.",
+        "별칭은 <code>/screener &lt;별칭&gt;</code> 로 지원 "
+        "(예: <code>/screener 전기차</code>, <code>/screener 의료기기</code>).",
         "",
     ]
     for d in ds:
         slug = d["slug"]
         domain = d["domain"]
         aliases = [a for a in d["aliases"] if a.lower() != slug]
-        alias_str = (f" · 별칭: {', '.join(aliases[:8])}"
-                     + (f" 외 {len(aliases)-8}개" if len(aliases) > 8 else "")
-                     if aliases else "")
-        lines.append(f"• <b>/screener {slug}</b> — {domain}{alias_str}")
+        alias_str = ""
+        if aliases:
+            alias_str = f"\n   별칭: {', '.join(aliases[:8])}" + (
+                f" 외 {len(aliases)-8}개" if len(aliases) > 8 else ""
+            )
+        # /screener_<slug> 는 Telegram client 가 자동 hyperlink 인식 →
+        # 클릭 시 input 에 prefill, 엔터로 실행.
+        lines.append(f"/screener_{slug} — <b>{domain}</b>{alias_str}")
+        lines.append("")
     lines += [
-        "",
         "<i>3-layer 도메인 모델 — L1 Trend (좁은 cycle 베팅) / "
         "L2 Sector (Finviz broad) / L3 Industry (예정).</i>",
+        "",
+        "📜 변경 이력 전체: <code>archive/screener_domains.html</code>",
     ]
     return "\n".join(lines)
 
@@ -1442,18 +1491,15 @@ async def _run_screener_and_send(send, domain: str) -> None:
         await send(chunk)
 
 
-async def cmd_screener(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """/screener [domain] — Bottleneck Screener Wave 1.
-
-    Domains: bottleneck (default, AI Data Center) / ev / defense / pharma
-    / solar — plus aliases (전기차 / 방산 / 바이오 / 신재생 etc.). Theme
-    registry in bot/screener_themes/. See CLAUDE.md 'Bottleneck Screener'
-    section for full design.
-    """
+async def _screener_dispatch(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, raw_domain: str,
+) -> None:
+    """Common implementation for /screener arg-based + /screener_<slug>
+    per-domain shortcut commands. Resolves the theme, sends a progress
+    message, then dispatches to ``_run_screener_and_send``."""
     if update.message is None:
         return
     from bot.screener_themes import resolve as _scr_resolve, available_summary as _scr_avail
-    raw_domain = (" ".join(ctx.args).strip().lower() if ctx.args else "")
     theme = _scr_resolve(raw_domain)
     if theme is None:
         await update.message.reply_text(
@@ -1479,6 +1525,44 @@ async def cmd_screener(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ),
         domain=domain,
     )
+
+
+async def cmd_screener(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/screener [domain] — Bottleneck Screener.
+
+    Per-domain shortcuts (`/screener_bottleneck`, `/screener_healthcare`
+    etc.) registered separately via ``_register_dynamic_screener_
+    handlers`` so clicks fire single-tap from /screener_list output.
+    Theme registry in bot/screener_themes/. See CLAUDE.md 'Bottleneck
+    Screener' section for full design.
+    """
+    raw_domain = (" ".join(ctx.args).strip().lower() if ctx.args else "")
+    await _screener_dispatch(update, ctx, raw_domain)
+
+
+def _register_dynamic_screener_handlers(app) -> None:
+    """Register one CommandHandler per discovered screener domain so
+    `/screener_<slug>` works as a single-tap command in Telegram (matches
+    the /find_all / /papers_guide pattern the user referenced 2026-05-29).
+    Re-runs at bot boot; new domains added between restarts won't show
+    up until the next deploy cycle (~1 min via stock-bot-update.service)."""
+    try:
+        from bot.screener_themes import list_domains
+        for d in list_domains():
+            slug = d["slug"]
+
+            # Bind slug into the closure via default argument — without
+            # this all handlers would capture the last-iterated slug.
+            async def _h(update, ctx, _slug=slug):
+                await _screener_dispatch(update, ctx, _slug)
+
+            app.add_handler(CommandHandler(f"screener_{slug}", _h))
+        log.info(
+            "screener: registered %d per-domain shortcut commands",
+            len(list_domains()),
+        )
+    except Exception as exc:
+        log.warning("screener: dynamic handler registration failed: %s", exc)
 
 
 async def cmd_compare_hint(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1803,6 +1887,12 @@ def main() -> None:
     app.add_handler(CommandHandler("screener_list", cmd_screener_list))
     app.add_handler(CommandHandler("sites", cmd_sites))
     app.add_handler(CommandHandler("screener", cmd_screener))
+    # Per-domain shortcut commands — `/screener_bottleneck`, `/screener_
+    # healthcare` 등. Telegram client 가 자동 hyperlink → 클릭으로 입력
+    # prefill, 엔터 1회로 실행. 사용자 ref 예시 (/find_all / /papers_
+    # guide 패턴) 와 동일 UX. 등록은 boot 시 1회, 새 도메인 추가 시
+    # 봇 재시작 (auto-deploy 1분) 후 자동 노출.
+    _register_dynamic_screener_handlers(app)
     # Catch /compare typed in DM and redirect — actual compare runs only
     # via on_channel_post inside the registered channel.
     app.add_handler(CommandHandler("compare", cmd_compare_hint))

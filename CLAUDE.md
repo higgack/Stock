@@ -826,11 +826,36 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
     별도 선언 → 검증 단의 primary source. regex 추출은 cross-check
     만 사용 (mismatch INFO 로그). Wave 2 도메인 추가 시도 blacklist
     의존 없이 noise 0 자동 유지.
-  - TIER 분포 nudge + monitoring (2026-05-29 defense review #6):
-    Phase 1·2 프롬프트에 layer 별 S/M/L 모두 시도 + 구조적 부재
-    layer 는 'tier_unavailable_reason' 명시 의무. Post-Pro 통계
-    `screener tier distribution [domain]: L=N M=N S=N` INFO 로그
-    (block 안 함 — defense 같이 합리적 L-skew 케이스 허용).
+  - TIER 분포 nudge + monitoring (2026-05-29 defense review #6 +
+    pharma review 후속): Phase 1·2 프롬프트에 layer 별 S/M/L 모두 시도
+    + 구조적 부재 layer 는 'tier_unavailable_reason' 명시 의무. Post-
+    Pro 통계 2개 로그 — (a) 도메인 전체 `screener tier distribution
+    [domain]: L=N M=N S=N` INFO, (b) per-theme `screener theme tier
+    skew [domain / theme_name]: L=N M=N S=N — missing X` WARNING (2+
+    행 있는 theme 에 한해). Pharma 2026-05-29 review 가 도메인 전체
+    L=4/M=2/S=3 으로 OK 보였지만 'CDMO 탈중국' theme 만 보면 L=2/M=0
+    /S=1 violation 캐치 못 한 것 fix. Block 안 함 — defense / 우라늄
+    같이 industry-wide micro-cap 부재 케이스 차단 안 됨.
+  - TENSE DISCIPLINE 강화 (2026-05-29 pharma review): 외부 source 의
+    'YYYY 완공 목표' / 'YYYY 가동 개시' / 'YYYY 출시 예정' prose 중
+    YYYY < 오늘 (target date 이미 지남) 인 경우 실제 가동 상태 web
+    search 재검증 의무. 검증 실패 시 OMIT 또는 'YYYY 목표였으나 미확정'
+    재작성. 'sourced 2026-05-29' source 가 fresh 라고 안전한 게 아님 —
+    source 의 prose 가 stale target date 그대로 cite 한 경우 (300037.SZ
+    Tinci '2025 완공 목표 건설 중' surfaced) blocked.
+  - 도메인 변경 자동 기록 (사용자 정책 2026-05-29): `bot/screener_
+    history.py` 가 매 `regenerate_screener_index()` 호출 시 registry
+    snapshot 비교 → 차이 시 `~/.tradingagents/screener_domain_history.
+    jsonl` append. `archive/screener_domains.html` 페이지 하단 '📜 변경
+    이력' 섹션에 chronological 표시. 사용자가 help 에서 /screener_list
+    클릭 → 페이지 진입 → 어느 도메인이 언제 추가됐는지 한눈에 확인.
+  - `/screener_<slug>` 단일-탭 명령 (사용자 ref `/find_all`·`/papers_
+    guide` 패턴 2026-05-29): `_register_dynamic_screener_handlers` 가
+    boot 시 registered 도메인 모두에 대해 `screener_<slug>` 명령
+    핸들러 등록. `/screener_list` 출력에 각 줄이 `/screener_bottleneck`
+    / `/screener_healthcare` 형태로 노출 → 텔레그램 자동 hyperlink →
+    클릭 1회 prefill + 엔터 1회 실행. 새 도메인 추가 시 봇 재시작 후
+    자동 노출 (auto-deploy 1분).
   - Liquidity 경고 (S-tier ~$100M micro-cap)
   - TIER 강제 (2026-05-29 EV review): Pro 의 자체 분류를 Python mcap
     기반 결과로 자동 치환 (Master Table 행 + Top-3 picks parenthetical
