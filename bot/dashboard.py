@@ -795,6 +795,23 @@ _THEME_JS = """
 """
 
 
+# Inline 태극기 SVG — 14×10 px. 🇰🇷 regional-indicator pair 는 일부 OS
+# (특히 Linux Chromium 기본 폰트) 에서 'KR' 글자로 fallback 렌더되어
+# 사용자가 "국기처럼" 인식 못 함. 인라인 SVG 로 환경 무관 보장. 4 괘
+# 는 시각적 노이즈가 되어 생략 — 단색 흰 배경 + 청홍 태극 원으로 인식
+# 충분 (14px 폭에서 4괘는 어차피 잡티). vertical-align:middle 로 텍스트
+# baseline 정렬.
+_KR_FLAG_SVG = (
+    '<svg width="16" height="11" viewBox="0 0 60 40" '
+    'style="vertical-align:-1px;display:inline-block" aria-label="한국 국기">'
+    '<rect width="60" height="40" fill="#fff" stroke="#d0d0d0" stroke-width="0.5"/>'
+    '<circle cx="30" cy="20" r="9" fill="#cd2e3a"/>'
+    '<path d="M21 20 A9 4.5 0 0 1 39 20 A4.5 4.5 0 0 0 30 20 '
+    'A4.5 4.5 0 0 1 21 20 Z" fill="#0047a0"/>'
+    '</svg>'
+)
+
+
 _BASE_CSS = """
 :root {
   --fg: #1f2937; --fg-soft: #6b7280; --bg: #f8fafc; --card: #ffffff;
@@ -808,7 +825,8 @@ _BASE_CSS = """
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
-    "Pretendard", "Helvetica Neue", "Segoe UI", sans-serif;
+    "Pretendard", "Helvetica Neue", "Segoe UI", "Apple Color Emoji",
+    "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
   color: var(--fg); background: var(--bg); line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
@@ -1446,9 +1464,11 @@ def _render_index(records: list[dict]) -> str:
     issue_count = _count_total_issues(records, _read_hard_failures())
     # External dashboards live at known LAN addresses; rel=noopener on the
     # external links prevents window.opener leakage to the third-party tab.
+    # 🇰🇷 regional-indicator pair은 일부 OS (특히 Linux Chromium) 에서 'KR'
+    # 글자로 fallback 렌더되므로 inline SVG 태극기로 대체 — 어디서나 보장.
     _external_links = (
         ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
-        ' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">🇰🇷 한국 수출입 데이터</a>'
+        f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>'
     )
     if issue_count > 0:
         errors_link = (
@@ -1811,7 +1831,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
-    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">🇰🇷 한국 수출입 데이터</a>
+    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
   </div>
   <h1>📊 Bottleneck Screener — Archive</h1>
   <p class="sub">테마별 다종목 idea generation · 6-18M thesis (NOAH /ticker 5거래일 평가와 별개 horizon)</p>
@@ -1894,7 +1914,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                     pieces.append(
                         f'<div class="analysis-sec"><div class="analysis-h">'
                         f'📍 현재 binding constraint</div>'
-                        f'<div class="analysis-b">{_html.escape(binding)}</div></div>'
+                        f'<div class="analysis-b" data-section="binding">{_html.escape(binding)}</div></div>'
                     )
                 if master_table_txt:
                     # Master Table 은 11행 처럼 길어서 nested collapsible
@@ -1912,7 +1932,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                         f'<details class="analysis-mt"><summary>'
                         f'📊 Master Table 펼치기 (검증된 {tickers_n}개 ticker 전체 — 테마별 Tier A/B/C 신호 + 가격 반영도 + catalyst + kill trigger)'
                         f'</summary>'
-                        f'<div class="analysis-sec"><div class="analysis-b">'
+                        f'<div class="analysis-sec"><div class="analysis-b" data-section="master_table">'
                         f'{mt_bolded}</div></div>'
                         f'</details>'
                     )
@@ -1920,13 +1940,13 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                     pieces.append(
                         f'<div class="analysis-sec"><div class="analysis-h">'
                         f'🏆 Top 3 conviction picks (추천 근거)</div>'
-                        f'<div class="analysis-b">{_html.escape(top3_section_txt)}</div></div>'
+                        f'<div class="analysis-b" data-section="top3">{_html.escape(top3_section_txt)}</div></div>'
                     )
                 if bottom_line:
                     pieces.append(
                         f'<div class="analysis-sec"><div class="analysis-h">'
                         f'💡 Bottom line</div>'
-                        f'<div class="analysis-b">{_html.escape(bottom_line)}</div></div>'
+                        f'<div class="analysis-b" data-section="bottom">{_html.escape(bottom_line)}</div></div>'
                     )
                 analysis_html = (
                     f'<details class="analysis">'
@@ -2132,6 +2152,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     snp.style.display = 'none';
     snp.innerHTML = '';
     emp.style.display = 'none';
+    clearInlineHighlight();
     for (const c of cards) {
       c.style.display = '';
       c.open = (c.dataset.defaultOpen === 'true');
@@ -2180,7 +2201,8 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
       const domainTxt = domainEl ? domainEl.textContent.trim() : '';
       const secLabel = SECTION_LABELS[h.sec] || h.sec;
       parts.push(
-        '<div class="snippet" data-target="' + cid + '">' +
+        '<div class="snippet" data-target="' + cid +
+          '" data-section="' + escapeHtml(h.sec) + '">' +
           '<div class="snippet-meta">' +
             '<span class="snippet-sec">' + escapeHtml(secLabel) + '</span>' +
             '<span class="snippet-card">' + escapeHtml(domainTxt) +
@@ -2204,8 +2226,59 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     showSnippetsMode(q);
   }
 
-  // Snippet click → restore source card to view, open it, scroll to it,
-  // brief highlight pulse so the user sees where the match lives.
+  // Walk text nodes inside an element, wrap the first occurrence of q
+  // with <mark.snippet-target> so the user can both see + scroll to the
+  // exact phrase. Returns the mark element (or null when no match landed).
+  // Prior calls' marks are cleared so a second snippet click doesn't
+  // accumulate highlights. Text-node walking preserves existing inline
+  // structure (e.g. Master Table 의 <b class="mt-section">[전력: 변압기]</b>
+  // bolding) — a naive innerHTML replace would wipe that.
+  function clearInlineHighlight() {
+    document.querySelectorAll('mark.snippet-target').forEach(function(m) {
+      const parent = m.parentNode;
+      if (!parent) return;
+      parent.replaceChild(document.createTextNode(m.textContent), m);
+      parent.normalize();
+    });
+  }
+  function highlightInElement(el, q) {
+    if (!el || !q) return null;
+    const ql = q.toLowerCase();
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(node) {
+        // Skip text nodes that are already inside a mark (shouldn't
+        // happen after clearInlineHighlight, but defensive).
+        if (node.parentNode && node.parentNode.tagName === 'MARK') {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    let node;
+    while ((node = walker.nextNode())) {
+      const text = node.textContent;
+      const idx = text.toLowerCase().indexOf(ql);
+      if (idx >= 0) {
+        const parent = node.parentNode;
+        const before = text.slice(0, idx);
+        const match = text.slice(idx, idx + q.length);
+        const after = text.slice(idx + q.length);
+        if (before) parent.insertBefore(document.createTextNode(before), node);
+        const mk = document.createElement('mark');
+        mk.className = 'snippet-target';
+        mk.textContent = match;
+        parent.insertBefore(mk, node);
+        if (after) parent.insertBefore(document.createTextNode(after), node);
+        parent.removeChild(node);
+        return mk;
+      }
+    }
+    return null;
+  }
+
+  // Snippet click → restore source card to view, open it AND its nested
+  // details so the matched section is actually rendered, wrap the exact
+  // match in <mark.snippet-target>, and scroll that mark into view.
   snp.addEventListener('click', function(ev) {
     const sn = ev.target.closest('.snippet');
     if (!sn) return;
@@ -2213,11 +2286,14 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     if (!tgt) return;
     const card = document.getElementById(tgt);
     if (!card) return;
-    // Reveal everything (the search filter had hidden non-matching cards
-    // + day groups). Then open just the target card + its day group.
+    clearInlineHighlight();
+    // Reveal everything that was hidden by the search filter, then open
+    // ONLY the target card + its day group so the user lands somewhere
+    // calm rather than every card expanding.
     for (const c of cards) {
       c.style.display = '';
       c.open = false;
+      c.classList.remove('hit-flash');
     }
     for (const d of dayGroups) {
       d.style.display = '';
@@ -2226,11 +2302,36 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     const dayG = card.closest('details.day');
     if (dayG) dayG.open = true;
     card.open = true;
-    card.classList.add('hit-flash');
+    // Open the analysis details (top-level) + master-table nested details
+    // when needed, otherwise the data-section element is still display:
+    // none inside its closed <details> and scrollIntoView misses.
+    const analysisEl = card.querySelector('details.analysis');
+    if (analysisEl) analysisEl.open = true;
+    const sec = sn.dataset.section || '';
+    if (sec === 'master_table') {
+      const mtEl = card.querySelector('details.analysis-mt');
+      if (mtEl) mtEl.open = true;
+    }
     snp.style.display = 'none';
+
+    // Locate the section's analysis-b and wrap the exact match. Domain
+    // matches (synthetic 'domain' line) don't have a body element, so
+    // fall back to scrolling the card header.
+    let scrollTarget = null;
+    if (sec && sec !== 'domain') {
+      const bodyEl = card.querySelector('.analysis-b[data-section="' + sec + '"]');
+      if (bodyEl) {
+        const q = (inp.value || '').trim();
+        scrollTarget = highlightInElement(bodyEl, q) || bodyEl;
+      }
+    }
+    if (!scrollTarget) {
+      scrollTarget = card.querySelector('.card-h') || card;
+    }
+    card.classList.add('hit-flash');
     setTimeout(function() {
-      card.scrollIntoView({behavior: 'smooth', block: 'start'});
-    }, 30);
+      scrollTarget.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }, 50);
     setTimeout(function() {
       card.classList.remove('hit-flash');
     }, 2400);
@@ -2295,7 +2396,8 @@ _SCREENER_CSS = """<!DOCTYPE html>
   --neu:#6B7280; --pending:#F59E0B; }
 * { box-sizing: border-box; }
 body { background:var(--bg); color:var(--text); margin:0;
-  font-family:-apple-system,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;
+  font-family:-apple-system,'Apple SD Gothic Neo','Noto Sans KR',
+    'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji','Twemoji Mozilla',sans-serif;
   line-height:1.55; -webkit-font-smoothing:antialiased; }
 .wrap { max-width:1100px; margin:0 auto; padding:24px 16px 64px; }
 .nav { margin-bottom:12px; }
@@ -2426,6 +2528,15 @@ details.analysis-mt .analysis-sec { margin-top:8px; }
   white-space:pre-wrap; word-break:break-word; }
 mark { background:rgba(245,158,11,0.35); color:#FCD34D; padding:1px 3px;
   border-radius:3px; font-weight:600; }
+/* In-body highlight when a snippet is clicked — stronger than the
+   snippet-panel mark so the user's eye finds the match after the
+   smooth-scroll lands. Pulses briefly then settles. */
+mark.snippet-target { background:rgba(245,158,11,0.55); color:#fff;
+  box-shadow:0 0 0 2px rgba(245,158,11,0.4); animation:markPulse 1.8s ease-out; }
+@keyframes markPulse {
+  0%   { background:rgba(245,158,11,0.95); box-shadow:0 0 0 4px rgba(245,158,11,0.6); }
+  100% { background:rgba(245,158,11,0.55); box-shadow:0 0 0 2px rgba(245,158,11,0.4); }
+}
 /* Brief pulse when a snippet click scrolls to a card — fades after 2s
    so the user immediately sees which card the match came from. */
 @keyframes hitFlash {
