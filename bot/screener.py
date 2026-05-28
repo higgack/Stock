@@ -204,6 +204,50 @@ DEPTH REQUIREMENTS — Pro capacity 충분히 활용 의무 (2026-05-29 첫
   한 calendar date 명시. 'recent' / '최근' 같은 모호한 시제 금지 —
   반드시 specific date or quarter window.
 
+WEB SEARCH MANDATORY (2026-05-29 enabled — google_search tool wired):
+- 현재 날짜 기준 (2026년) 최신 데이터를 web search 로 적극 fetch:
+  hyperscaler 최근 capex 가이드 / 분기 실적 발표 (지난 30-90일) /
+  sell-side notes 의 estimate revisions / IR · press release /
+  industry reports (TrendForce / SEMI / DigiTimes / Nikkei Asia 등).
+- 학습 cutoff (2024-Q2) 데이터는 stale — 동일 내용을 2026년 최신
+  소스로 web search 해 confirm 또는 update 의무.
+- 검색 결과는 publication date + URL 인용 — 'Bloomberg, 2026-04-12'
+  형식. 2024-2025년 데이터를 2026년 인용처럼 위장 금지.
+- 검색 결과가 학습 메모리와 충돌 시 web 결과 우선.
+
+OUTPUT FORMATTING (2026-05-29 가독성 fix):
+- Markdown 문법 (`**bold**`, `*italic*`, `_underline_`, `~strike~`)
+  **절대 금지** — Telegram HTML 만 (`<b>...</b>`, `<i>...</i>`,
+  `<code>...</code>`). 강조 시 `<b>` 사용.
+- 종목 행 인라인 `│` 가로 구분자 금지 — 모바일에서 줄바꿈 깨짐.
+  각 신호 항목 (Tier A · B · C · 가격 반영도 · catalyst · kill
+  trigger · 유동성 경고) 은 **반드시 별도 줄**로 분리. 형식 예시:
+    <b>[고압 변압기]</b> · L · <code>ETN</code> · Eaton Corp
+      • A (Catalyst): 데이터센터향 수주잔고 +50% YoY (Q1 2026 IR,
+        2026-04-30, sourced via web)
+      • B (실적): 변압기 리드타임 70-100주 심화 (TrendForce 2026-05-15)
+      • C (시황): IRA 기반 전력망 투자 확대 직접 수혜 (sourced)
+      • 가격 반영도: 반영 중 — PER 25x (5년 median 18x)
+      • Catalyst+시기: FY26 Q2/Q3 실적 데이터센터 매출 가속 (2026-07/10)
+      • Kill Trigger: 글로벌 침체로 산업 Capex 삭감
+- '*' / '-' / '1.' markdown list 마커 금지. 줄 시작 inline bullet 은
+  `•` 또는 `▪` 만 사용. 강조는 `<b>`.
+
+DATA INTEGRITY (불일치 종목 OMIT):
+- yfinance 가 반환한 company_name 이 Pro 가 식별한 회사와 다르면
+  (예: 103660.KS yfinance=씨앗, 기대=일진전기 / 3161.T yfinance=
+  AZEARTH Corporation Textile, 기대=JITEC) 그 종목 row 를 **전체
+  OMIT**. 'Low Confidence — 데이터 불일치' 섹션에 넣지 말 것 —
+  reader 혼란 가중. 같은 테마 다른 ticker 로 대체하거나 'no clean
+  public name' 선언.
+- Pro 가 cite 한 sell-side report / earnings call quote / industry
+  forecast 가 학습 메모리 (cutoff 2024-Q2) 만으로 작성된 경우:
+  - web search 로 2026년 최신 데이터 verify 시도
+  - verify 성공 → 'sourced (Bloomberg 2026-04-12)' 정상 cite
+  - verify 실패 / 2024년 이전 데이터만 있음 → 반드시 'inferred
+    (training data, 2024-Q2 cutoff — verify 권장)' 명시. 'sourced'
+    라벨 절대 사용 금지.
+
 LANGUAGE — 출력 전체를 **한국어**로 작성. 산문·근거 설명·평가·결론·
 narrative·disclaimer 모두 한국어. 영어 paragraph / 영어 intro 문구
 ('Alright', 'Let's cut the noise', 'My job is to ...' 등) 절대 금지.
@@ -335,11 +379,54 @@ def _log_usage(prompt_tok: int, output_tok: int, cost_krw: float, domain: str) -
 
 # ── Phase β: 2-pass orchestration (Pro 1·2 + 병렬 context fetch + Pro 4·5) ─
 
-def _call_pro(api_key: str, prompt: str, model: str = "gemini-2.5-pro") -> tuple[str, int, int]:
-    """Helper: call Gemini Pro, return (text, prompt_tokens, output_tokens)."""
+def _call_pro(api_key: str, prompt: str, model: str = "gemini-2.5-pro",
+              enable_grounding: bool = True) -> tuple[str, int, int]:
+    """Helper: call Gemini Pro, return (text, prompt_tokens, output_tokens).
+
+    WEB GROUNDING (2026-05-29 enabled): When `enable_grounding` is True
+    (default), the Pro call wires google_search tool so it can fetch
+    real-time data from the web. Critical for screener freshness — Pro's
+    training cutoff (2024-Q2) makes sell-side reports / earnings call
+    commentary / industry forecasts stale by 2 years. Grounding turns
+    those into current 2026 data with cited URLs.
+
+    Cost: +~$0.035 per grounded request (Gemini pricing). Falls back to
+    non-grounded call if the SDK version doesn't support the grounding API
+    (try/except on types import).
+    """
     from google import genai
     client = genai.Client(api_key=api_key)
-    resp = client.models.generate_content(model=model, contents=prompt)
+
+    grounding_config = None
+    if enable_grounding:
+        try:
+            from google.genai import types as _genai_types
+            grounding_config = _genai_types.GenerateContentConfig(
+                tools=[_genai_types.Tool(
+                    google_search=_genai_types.GoogleSearch()
+                )]
+            )
+        except (ImportError, AttributeError) as exc:
+            log.warning("screener: google_search grounding unavailable: %s — "
+                        "falling back to non-grounded Pro call (stale data risk)", exc)
+            grounding_config = None
+
+    try:
+        if grounding_config is not None:
+            resp = client.models.generate_content(
+                model=model, contents=prompt, config=grounding_config,
+            )
+        else:
+            resp = client.models.generate_content(model=model, contents=prompt)
+    except Exception as exc:
+        # If grounded call fails (e.g., quota / tool config rejected),
+        # retry once without grounding to preserve user-visible output.
+        if grounding_config is not None:
+            log.warning("screener: grounded Pro call failed (%s) — retry without grounding", exc)
+            resp = client.models.generate_content(model=model, contents=prompt)
+        else:
+            raise
+
     text = (resp.text or "").strip()
     pt = ot = 0
     try:
