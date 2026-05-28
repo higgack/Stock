@@ -549,10 +549,15 @@ _CITED_RATING_RE = re.compile(
 # 매수 등급 bug, via 의견 instead of 등급. We require a third-party-attribution
 # token within ~25 chars BEFORE 매수/매도 의견 so the analyst's own
 # "매수 의견을 제시합니다" (no preceding attribution) is preserved.
+# 300750.SZ 2026-05-28: regex initially used [^.\n] which blocked traversal
+# across mid-sentence decimal points ("32.3%" inside the attribution-to-verdict
+# span). Switched to (?:[^.\n]|\.(?!\s)) — allow period only when NOT followed
+# by whitespace (decimals like 32.3 / 1.31/5 pass; sentence terminators '. ' or
+# '.\n' still block). Preserves both fixes (CATL decimal + 2382.TW boundary).
 # Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
 _CITED_OPINION_RE = re.compile(
     r"(?:애널리스트|analyst|컨센서스|consensus|투자은행|증권가|증권사|"
-    r"월가|wall\s*street|\d+\s*명)[^.\n]{0,25}?(?:매수|매도)\s*의견"
+    r"월가|wall\s*street|\d+\s*명)(?:[^.\n]|\.(?!\s)){0,25}?(?:매수|매도)\s*의견"
 )
 
 # Conclusion VERDICT DECLARATION — the analyst's own bottom-line, written as
@@ -1780,6 +1785,12 @@ def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None)
     _step("dash-padding",        lambda b: _DASH_PADDING_RE.sub("", b))
     _step("escaped-newlines",    lambda b: _ESCAPED_NEWLINES_RE.sub("\n\n", b))
     _step("literal-bs-n",        lambda b: b.replace("\\n", "\n"))
+    # Gemini 토크나이저가 특정 음절을 두 번 분절하는 quirk — CRM 2026-05-28
+    # 과 300750.SZ 2026-05-28 둘 다 "영향을 미 미칠 수 있습니다" 동일 오타
+    # 발현. 일반 패턴 (가-힣 + 공백 + 동일 음절)으로 잡으면 '이 이번' / '그
+    # 그리고' 같은 합법 한국어 시퀀스도 오류 처리될 수 있어, 관찰된 정확한
+    # 패턴만 좁게 치환. 새로운 패턴 발견 시 한 줄씩 추가.
+    _step("ko-typo-fix",         lambda b: b.replace("미 미칠", "미칠"))
     _step("runaway-char",        lambda b: _RUNAWAY_CHAR_RE.sub("", b))
     _step("drop-repeated",       _drop_repeated_section)
     _step("large-num",           lambda b: _LARGE_NUM_RE.sub(_abbrev_match, b))
