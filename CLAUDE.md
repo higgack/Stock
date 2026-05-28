@@ -760,12 +760,17 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   `pkgutil.iter_modules` 로 자동 discover + import-time validate. 새
   도메인 추가 = 새 모듈 1 파일 drop, orchestrator 수정 0.
 
-  **Wave 1 trend themes** (좁은 cycle lens — 2026-05-29 ✅):
+  **Wave 1 trend themes** (좁은 cycle lens — 2026-05-29 ✅, +robot 2026-05-29 추가):
   - `bottleneck.py` — AI Data Center Buildout (별칭 ai · 데이터센터)
   - `ev.py` — EV & Battery (별칭 전기차 · 배터리 · 이차전지)
   - `defense.py` — Defense, Aerospace & Space (별칭 방산 · 우주)
   - `pharma.py` — Biotech & Pharma · GLP-1/CDMO/Biosimilar
   - `solar.py` — Solar, Wind, ESS & Grid (별칭 신재생 · 태양광)
+  - `robot.py` — Robotics & Humanoid Buildout (별칭 로봇 · 휴머노이드 ·
+    협동로봇 · 자동화 · optimus · 감속기). Humanoid 본사 + 감속기 (가장
+    명확한 binding) + servo + 산업로봇 + cobot + AMR + 센서 + Edge AI
+    VLA model 8 layer. 사용자 prioritization "딴것보다 로봇 먼저"
+    2026-05-29 — Wave 2-B 보다 우선 ship.
 
   **Wave 2-A Finviz broad sectors** (2026-05-29 ✅ — batch 1):
   - `healthcare.py` — Drug Mfg · Biotech · Devices · Diagnostics · Plans · Care (별칭 헬스케어 · 의료기기 · 의료 · biotech · medical_devices · diagnostics)
