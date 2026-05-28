@@ -2661,14 +2661,49 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {
     return "".join(parts)
 
 
-_SCREENER_CSS = """<!DOCTYPE html>
+_SCREENER_CSS = (
+    """<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Bottleneck Screener — Archive</title>
+<script>""" + _THEME_JS + """</script>
 <style>
-:root { --bg:#0F1219; --card:#1A1F2B; --border:#2A3142; --text:#E8ECF4;
-  --muted:#94A3B8; --accent:#3B82F6; --pos:#10B981; --neg:#EF4444;
-  --neu:#6B7280; --pending:#F59E0B; }
+/* Time-based light/dark theme (Asia/Seoul) — _THEME_JS toggles
+   `data-theme="dark"` on the <html> element between 19:00-07:00.
+   Mirrors the NOAH index/detail pages. Variables below adapt: light
+   defaults at `:root`, dark overrides at `:root[data-theme="dark"]`. */
+:root {
+  --bg:#f8fafc; --card:#ffffff; --border:#e5e7eb;
+  --text:#1f2937; --muted:#6b7280; --accent:#0ea5e9;
+  --pos:#059669; --neg:#dc2626; --neu:#6b7280; --pending:#d97706;
+  --accent-soft:rgba(14,165,233,0.07);
+  --accent-soft2:rgba(14,165,233,0.14);
+  --surface-tint:rgba(0,0,0,0.05);
+  --surface-tint-strong:rgba(0,0,0,0.07);
+  --row-border:rgba(0,0,0,0.05);
+  --tier-l-bg:rgba(14,165,233,0.12); --tier-l-fg:#0369a1;
+  --tier-m-bg:rgba(16,185,129,0.14); --tier-m-fg:#047857;
+  --tier-s-bg:rgba(245,158,11,0.18); --tier-s-fg:#b45309;
+  --search-btn-bg:#16a34a; --search-btn-hover:#15803d;
+  --mark-bg:rgba(245,158,11,0.45); --mark-fg:#7c2d12;
+  --mark-target-bg:rgba(245,158,11,0.7); --mark-target-fg:#1f2937;
+}
+:root[data-theme="dark"] {
+  --bg:#0F1219; --card:#1A1F2B; --border:#2A3142;
+  --text:#E8ECF4; --muted:#94A3B8; --accent:#3B82F6;
+  --pos:#10B981; --neg:#EF4444; --neu:#6B7280; --pending:#F59E0B;
+  --accent-soft:rgba(59,130,246,0.06);
+  --accent-soft2:rgba(59,130,246,0.15);
+  --surface-tint:rgba(255,255,255,0.04);
+  --surface-tint-strong:rgba(255,255,255,0.06);
+  --row-border:rgba(255,255,255,0.04);
+  --tier-l-bg:rgba(59,130,246,0.15); --tier-l-fg:#93C5FD;
+  --tier-m-bg:rgba(16,185,129,0.15); --tier-m-fg:#6EE7B7;
+  --tier-s-bg:rgba(245,158,11,0.15); --tier-s-fg:#FCD34D;
+  --search-btn-bg:#16a34a; --search-btn-hover:#15803d;
+  --mark-bg:rgba(245,158,11,0.35); --mark-fg:#FCD34D;
+  --mark-target-bg:rgba(245,158,11,0.55); --mark-target-fg:#fff;
+}
 * { box-sizing: border-box; }
 body { background:var(--bg); color:var(--text); margin:0;
   font-family:-apple-system,'Apple SD Gothic Neo','Noto Sans KR',
@@ -2690,7 +2725,7 @@ details.day summary.day-head::-webkit-details-marker { display:none; }
 details.day summary.day-head::before { content:"▸"; color:var(--accent);
   margin-right:8px; transition:transform 0.15s; }
 details.day[open] summary.day-head::before { content:"▾"; }
-details.day summary.day-head:hover { background:rgba(59,130,246,0.04); }
+details.day summary.day-head:hover { background:var(--accent-soft); }
 details.day .count { color:var(--muted); font-size:12px; font-weight:normal; }
 details.day .day-body { padding-top:14px; }
 .sub { color:var(--muted); font-size:13px; margin:0 0 24px; }
@@ -2720,34 +2755,34 @@ details.card .card-body { padding:14px 18px 18px; }
 .del-btn { background:none; border:none; cursor:pointer;
   color:var(--muted); font-size:16px; padding:4px 8px; border-radius:6px;
   margin-left:auto; }
-.del-btn:hover { color:var(--neg); background:rgba(239,68,68,0.08); }
+.del-btn:hover { color:var(--neg); background:rgba(239,68,68,0.10); }
 .del-btn:disabled { opacity:0.5; cursor:wait; }
 .search-bar { display:flex; gap:8px; margin-bottom:14px; }
 .search-bar input { flex:1; background:var(--card);
   border:1px solid var(--border); border-radius:8px; padding:10px 14px;
   color:var(--text); font-size:14px; font-family:inherit; outline:none; }
 .search-bar input:focus { border-color:var(--accent); }
-.search-bar button { background:#16a34a; color:white; border:none;
+.search-bar button { background:var(--search-btn-bg); color:white; border:none;
   border-radius:8px; padding:0 18px; font-size:13px; font-weight:600;
-  cursor:pointer; transition:transform 0.05s; }
-.search-bar button:hover { background:#15803d; }
+  cursor:pointer; transition:transform 0.05s, background 0.1s; }
+.search-bar button:hover { background:var(--search-btn-hover); }
 .search-bar button:active { transform:scale(0.97); }
 .status-line { color:var(--muted); font-size:12px; margin:0 0 12px; }
 table.picks { width:100%; border-collapse:collapse; font-size:13px; }
 table.picks th { text-align:left; color:var(--muted); font-weight:500;
   padding:8px 6px; border-bottom:1px solid var(--border); font-size:11px;
   text-transform:uppercase; letter-spacing:0.3px; }
-table.picks td { padding:8px 6px; border-bottom:1px solid rgba(255,255,255,0.04); }
+table.picks td { padding:8px 6px; border-bottom:1px solid var(--row-border); }
 table.picks tr:last-child td { border-bottom:none; }
 td.rank { font-weight:600; color:var(--accent); width:36px; }
 td.co { color:var(--muted); }
-td code { background:rgba(255,255,255,0.05); padding:2px 6px;
+td code { background:var(--surface-tint); padding:2px 6px;
   border-radius:4px; font-size:12px; }
-td .tier-L { background:rgba(59,130,246,0.15); color:#93C5FD;
+td .tier-L { background:var(--tier-l-bg); color:var(--tier-l-fg);
   padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
-td .tier-M { background:rgba(16,185,129,0.15); color:#6EE7B7;
+td .tier-M { background:var(--tier-m-bg); color:var(--tier-m-fg);
   padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
-td .tier-S { background:rgba(245,158,11,0.15); color:#FCD34D;
+td .tier-S { background:var(--tier-s-bg); color:var(--tier-s-fg);
   padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
 td.pos { color:var(--pos); font-weight:600; }
 td.neg { color:var(--neg); font-weight:600; }
@@ -2756,18 +2791,18 @@ td.neu { color:var(--muted); }
 .empty { background:var(--card); border:1px solid var(--border);
   border-radius:10px; padding:30px; text-align:center; color:var(--muted);
   font-size:14px; }
-.empty code { background:rgba(255,255,255,0.06); padding:2px 8px;
+.empty code { background:var(--surface-tint-strong); padding:2px 8px;
   border-radius:4px; }
 details.analysis { margin:10px 0 14px; }
 details.analysis summary { cursor:pointer; color:var(--accent);
-  font-size:13px; padding:6px 10px; background:rgba(59,130,246,0.06);
+  font-size:13px; padding:6px 10px; background:var(--accent-soft);
   border-radius:6px; user-select:none; list-style:none; }
 details.analysis summary::-webkit-details-marker { display:none; }
 details.analysis summary::before { content:"▸ "; margin-right:4px; }
 details.analysis[open] summary::before { content:"▾ "; }
-details.analysis summary:hover { background:rgba(59,130,246,0.12); }
+details.analysis summary:hover { background:var(--accent-soft2); }
 .analysis-sec { margin:12px 4px 0; padding:10px 12px;
-  background:rgba(255,255,255,0.02); border-left:2px solid var(--border);
+  background:var(--surface-tint); border-left:2px solid var(--border);
   border-radius:0 6px 6px 0; }
 .analysis-h { color:var(--muted); font-size:12px; font-weight:600;
   margin-bottom:6px; text-transform:none; letter-spacing:0; }
@@ -2777,12 +2812,12 @@ details.analysis summary:hover { background:rgba(59,130,246,0.12); }
 .ticker-chip:hover { color:var(--accent); }
 details.analysis-mt { margin:12px 4px 0; }
 details.analysis-mt summary { cursor:pointer; color:var(--accent);
-  font-size:12px; padding:6px 10px; background:rgba(59,130,246,0.08);
+  font-size:12px; padding:6px 10px; background:var(--accent-soft2);
   border-radius:6px; list-style:none; user-select:none; }
 details.analysis-mt summary::-webkit-details-marker { display:none; }
 details.analysis-mt summary::before { content:"▸ "; margin-right:4px; }
 details.analysis-mt[open] summary::before { content:"▾ "; }
-details.analysis-mt summary:hover { background:rgba(59,130,246,0.15); }
+details.analysis-mt summary:hover { background:var(--accent-soft2); }
 details.analysis-mt .analysis-sec { margin-top:8px; }
 .mt-section { color:var(--accent); font-weight:700; font-size:13.5px;
   display:inline-block; padding:2px 0; margin-top:4px; }
@@ -2793,24 +2828,24 @@ details.analysis-mt .analysis-sec { margin-top:8px; }
   border-left:3px solid var(--accent); border-radius:8px;
   padding:10px 14px; cursor:pointer; transition:background 0.1s,
   border-color 0.1s; }
-.snippet:hover { background:rgba(59,130,246,0.08); border-left-color:#60A5FA; }
+.snippet:hover { background:var(--accent-soft); border-left-color:var(--accent); }
 .snippet-meta { display:flex; gap:10px; font-size:11px; color:var(--muted);
   margin-bottom:4px; align-items:center; }
-.snippet-sec { background:rgba(59,130,246,0.12); color:#93C5FD;
+.snippet-sec { background:var(--tier-l-bg); color:var(--tier-l-fg);
   padding:2px 8px; border-radius:4px; font-weight:600; }
 .snippet-card { font-family:'IBM Plex Mono',monospace; }
 .snippet-text { color:var(--text); font-size:13px; line-height:1.55;
   white-space:pre-wrap; word-break:break-word; }
-mark { background:rgba(245,158,11,0.35); color:#FCD34D; padding:1px 3px;
+mark { background:var(--mark-bg); color:var(--mark-fg); padding:1px 3px;
   border-radius:3px; font-weight:600; }
 /* In-body highlight when a snippet is clicked — stronger than the
    snippet-panel mark so the user's eye finds the match after the
    smooth-scroll lands. Pulses briefly then settles. */
-mark.snippet-target { background:rgba(245,158,11,0.55); color:#fff;
+mark.snippet-target { background:var(--mark-target-bg); color:var(--mark-target-fg);
   box-shadow:0 0 0 2px rgba(245,158,11,0.4); animation:markPulse 1.8s ease-out; }
 @keyframes markPulse {
   0%   { background:rgba(245,158,11,0.95); box-shadow:0 0 0 4px rgba(245,158,11,0.6); }
-  100% { background:rgba(245,158,11,0.55); box-shadow:0 0 0 2px rgba(245,158,11,0.4); }
+  100% { background:var(--mark-target-bg); box-shadow:0 0 0 2px rgba(245,158,11,0.4); }
 }
 /* Brief pulse when a snippet click scrolls to a card — fades after 2s
    so the user immediately sees which card the match came from. */
@@ -2822,6 +2857,7 @@ mark.snippet-target { background:rgba(245,158,11,0.55); color:#fff;
 details.card.hit-flash { animation:hitFlash 2.4s ease-out; }
 </style></head><body>
 """
+)
 
 
 def _render_screener_domains_page() -> str:
@@ -2930,7 +2966,7 @@ def _render_screener_domains_page() -> str:
   font-family:'IBM Plex Mono',monospace; }}
 .dom-name {{ font-size:14px; color:var(--fg); flex:1; min-width:200px; }}
 .aliases {{ margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }}
-.alias {{ background:rgba(255,255,255,0.04); color:var(--fg-soft);
+.alias {{ background:rgba(127,127,127,0.10); color:var(--fg-soft);
   padding:2px 8px; border-radius:4px; font-size:11px;
   font-family:'IBM Plex Mono',monospace; }}
 .hist-entry {{ background:var(--card); border:1px solid var(--border);
