@@ -291,6 +291,30 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /screener_cost in channel — Bottleneck Screener Pro cost (parallel
+    # to /sv_cost). Reads ~/.tradingagents/screener_usage.jsonl directly.
+    if first_word == "screener_cost":
+        data = _read_screener_cost_today_month()
+        today_krw = float(data.get("today_krw", 0) or 0)
+        month_krw = float(data.get("month_krw", 0) or 0)
+        today_calls = int(data.get("today_calls", 0) or 0)
+        month_calls = int(data.get("month_calls", 0) or 0)
+        today_pt = int(data.get("today_prompt_tok", 0) or 0)
+        today_ot = int(data.get("today_output_tok", 0) or 0)
+        text_out = (
+            "💰 <b>Bottleneck Screener 비용</b> (Gemini Pro · 웹 검색 grounding)\n"
+            f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
+            f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
+            f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
+            "<i>모델: gemini-2.5-pro · Phase β 2-pass + Phase 3 후보별 실시간 fetch</i>"
+        )
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text=text_out,
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
     # /sites in channel — external reference sites bookmark list.
     if first_word == "sites":
         await ctx.bot.send_message(
@@ -752,7 +776,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/start /help /usage /sv_cost /sites — 도움말 · 비용 (NOAH+SV) · 참고 사이트
+/start /help /usage /sv_cost /screener_cost /screener /sites — 도움말 · 비용 (통합/SV/Screener) · Bottleneck 종목 발굴 · 사이트
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
@@ -817,17 +841,15 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【11. 대시보드】</b> 🦉
- • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/...</a> (ID/PW)
- • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">http://34.50.23.221:8002/dashboard</a> (ID/PW) · 매크로·MMI·산업·Deal·NOAH · 매일 07:30/20:30 refresh + 08:00/21:00 텔레 (분할+URL) · 일 22:00 주간 브리프·섹터히트맵 텔레+아카이브 저장 · auto-deploy 1분·cache rollover 00:05·watchdog 30분
- • 모바일 ID/PW popup 안 뜨면 Safari/Firefox/Brave
- • NOAH 카드: 📊분석 · 💰비용 · ⏱시간 · 🎯정확도 (알파=raw−섹터ETF)
- • 본문: 날짜·5/15/30거래일 누적·검색창·🗑️
- • 데이터: <code>~/.tradingagents/{archive,usage.jsonl,memory/}</code>
- • 외부 참조 대쉬보드사이트 모음 → /sites
+ • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/...</a> (ID/PW). 💰비용=NOAH+Screener+SV 통합
+ • <b>Bottleneck Screener</b>: 위 archive의 screener.html — 날짜별 run · 분석 collapsible · Top-3 5/15/30d · 🗑️
+ • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">8002/dashboard</a> · 매크로·산업·Deal · 07:30/20:30 refresh + 텔레 · 일 22:00 주간·섹터 · auto-deploy 1분
+ • NOAH 카드: 📊분석 · 💰비용 · ⏱시간 · 🎯정확도(알파) · 5/15/30거래일·검색·🗑️
+ • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · 외부 → /sites
 
 ━━━━━━━━━
 <b>【12. 예정 작업】</b>
- • Bottleneck Screener Phase β — <code>/screener</code> AI 데이터센터 (실시간 데이터 + 웹 검색 + Top-3 5/15/30일 추적, 6-18M thesis · 대시보드 screener.html). Wave 1 도메인 확장 (EV/방산/바이오/신재생) 예정
+ • Bottleneck Screener Wave 1 — AI 데이터센터 외 EV·방산·바이오·신재생 등 추가 도메인 확장 예정 (theme registry 분리)
 """
 
 
@@ -1090,6 +1112,46 @@ def _build_usage_report() -> str:
     def krw(usd: float) -> str:
         return f"₩{int(round(usd * fx)):,}"
 
+    # Subsystem cost split (분석 / Screener) — from usage.jsonl's
+    # subsystem='screener' tag. Plus SV cost (separate file).
+    today_cost_screener = sum(
+        r.get("cost_usd", 0) for r in today_calls
+        if r.get("subsystem") == "screener"
+    )
+    month_cost_screener = sum(
+        r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "screener"
+    )
+    today_cost_analysis = today_cost - today_cost_screener
+    month_cost_analysis = month_cost - month_cost_screener
+
+    # Standard View cost — read sv_usage.jsonl directly (KST date tagged).
+    sv_today_krw = sv_month_krw = 0.0
+    try:
+        import json as _j_sv
+        sv_path = Path.home() / "standardview" / "sv_usage.jsonl"
+        if sv_path.exists():
+            today_str_kst = datetime.now(_KST).date().isoformat()
+            month_str_kst = today_str_kst[:7]
+            with open(sv_path, encoding="utf-8") as _sf:
+                for _line in _sf:
+                    try:
+                        _r = _j_sv.loads(_line)
+                    except Exception:
+                        continue
+                    if _r.get("date") == today_str_kst:
+                        sv_today_krw += _r.get("cost_krw", 0) or 0
+                    if _r.get("month") == month_str_kst:
+                        sv_month_krw += _r.get("cost_krw", 0) or 0
+    except Exception as _exc:
+        log.warning("usage: SV cost read failed: %s", _exc)
+    # Express SV in USD for combined display arithmetic (then back to KRW
+    # via krw() for consistency with other rows).
+    sv_today_usd = sv_today_krw / fx
+    sv_month_usd = sv_month_krw / fx
+
+    today_total_usd = today_cost + sv_today_usd
+    month_total_usd = month_cost + sv_month_usd
+
     lines = [
         "📊 <b>NOAH 봇 사용 현황</b> (KST)",
         "",
@@ -1098,12 +1160,19 @@ def _build_usage_report() -> str:
         f"  • 7일:  {len(week_runs)}건",
         f"  • 30일: {len(month_runs)}건",
         "",
-        f"💰 <b>추정 비용</b> (Gemini API, ₩{fx}/$)",
-        f"  • 오늘: {krw(today_cost)}  (${today_cost:.2f})",
-        f"  • 7일:  {krw(week_cost)}  (${week_cost:.2f})",
-        f"  • 30일: {krw(month_cost)}  (${month_cost:.2f})",
+        f"💰 <b>총 비용 (NOAH 분석 + Screener + SV)</b> (₩{fx}/$)",
+        f"  • 오늘: <b>{krw(today_total_usd)}</b>  (${today_total_usd:.2f})",
+        f"  • 30일: <b>{krw(month_total_usd)}</b>  (${month_total_usd:.2f})",
         "",
-        "🤖 <b>모델별 (오늘)</b>",
+        "📐 <b>월간 subsystem 분포</b>",
+        f"  • NOAH 분석:        {krw(month_cost_analysis)}",
+        f"  • Bottleneck Screener: {krw(month_cost_screener)}  ← /screener_cost",
+        f"  • Standard View:     {krw(sv_month_usd)}  ← /sv_cost",
+        "",
+        f"💰 <b>NOAH 분석 단독 (참고)</b>",
+        f"  • 7일:  {krw(week_cost)}  (${week_cost:.2f})",
+        "",
+        "🤖 <b>모델별 (오늘 · NOAH 분석)</b>",
     ]
     if by_model:
         for model in sorted(by_model, key=lambda m: -by_model[m]["cost"]):
@@ -1158,6 +1227,67 @@ async def cmd_usage(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None:
         return
     await update.message.reply_text(_build_usage_report(), parse_mode=ParseMode.HTML)
+
+
+def _read_screener_cost_today_month() -> dict:
+    """Aggregate Bottleneck Screener cost from ~/.tradingagents/screener_
+    usage.jsonl (KST date-tagged). Returns {today_krw, month_krw,
+    today_calls, month_calls, today_pt, today_ot}. Empty dict on
+    failure. Mirror of /api/sv-usage/today shape."""
+    from pathlib import Path as _P
+    import json as _j
+    path = _P.home() / ".tradingagents" / "screener_usage.jsonl"
+    out = {"today_krw": 0.0, "month_krw": 0.0, "today_calls": 0,
+           "month_calls": 0, "today_prompt_tok": 0, "today_output_tok": 0}
+    if not path.exists():
+        return out
+    today = datetime.now(_KST).date().isoformat()
+    month = today[:7]
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _j.loads(line)
+                except Exception:
+                    continue
+                if rec.get("date") == today:
+                    out["today_krw"] += rec.get("cost_krw", 0) or 0
+                    out["today_calls"] += 1
+                    out["today_prompt_tok"] += rec.get("prompt_tok", 0) or 0
+                    out["today_output_tok"] += rec.get("output_tok", 0) or 0
+                if rec.get("month") == month:
+                    out["month_krw"] += rec.get("cost_krw", 0) or 0
+                    out["month_calls"] += 1
+    except Exception as exc:
+        log.warning("screener_cost: read failed: %s", exc)
+    return out
+
+
+async def cmd_screener_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/screener_cost — show Bottleneck Screener Gemini Pro cost (parallel
+    to /sv_cost). Reads ~/.tradingagents/screener_usage.jsonl directly —
+    no backend HTTP call needed."""
+    if update.message is None:
+        return
+    data = _read_screener_cost_today_month()
+    today_krw = float(data.get("today_krw", 0) or 0)
+    month_krw = float(data.get("month_krw", 0) or 0)
+    today_calls = int(data.get("today_calls", 0) or 0)
+    month_calls = int(data.get("month_calls", 0) or 0)
+    today_pt = int(data.get("today_prompt_tok", 0) or 0)
+    today_ot = int(data.get("today_output_tok", 0) or 0)
+    text = (
+        "💰 <b>Bottleneck Screener 비용</b> (Gemini Pro · 웹 검색 grounding)\n"
+        f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
+        f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
+        f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
+        "<i>모델: gemini-2.5-pro · Phase β 2-pass 호출 + Phase 3 후보별"
+        " 실시간 fetch · Top-3 5/15/30d outcome resolver feed</i>"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def cmd_sv_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1518,7 +1648,8 @@ async def _on_startup(application) -> None:
         await application.bot.set_my_commands([
             BotCommand("start", "사용법 안내"),
             BotCommand("help", "사용법 안내"),
-            BotCommand("usage", "사용량 / 비용 / 7일 차트"),
+            BotCommand("usage", "사용량 / 통합 비용 / 7일 차트"),
+            BotCommand("screener_cost", "Bottleneck Screener 비용 (Pro)"),
             BotCommand("sites", "참고 사이트"),
             BotCommand("screener", "Bottleneck 종목 발굴 (AI 데이터센터)"),
             BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
@@ -1568,6 +1699,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("sv_cost", cmd_sv_cost))
+    app.add_handler(CommandHandler("screener_cost", cmd_screener_cost))
     app.add_handler(CommandHandler("sites", cmd_sites))
     app.add_handler(CommandHandler("screener", cmd_screener))
     # Catch /compare typed in DM and redirect — actual compare runs only

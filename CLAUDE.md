@@ -252,7 +252,17 @@ Whenever a change ships that is user-visible (new command, new data
 source, new RULE, new analyst, new dashboard feature, removed
 behavior, etc.), `_HELP_TEXT` MUST be updated in the SAME commit. The
 help is pinned as a channel announcement; out-of-sync help is treated
-as a public spec bug. The two surfaces it must keep current are spelled
+as a public spec bug.
+
+**Bottleneck Screener 변경도 동일 적용 (사용자 정책 2026-05-29):**
+새로운 도메인 (`/screener ev` / `defense` / `pharma` 등) · 새로운
+대시보드 surface · 새로운 가드 룰 · 새로운 outcome 지표 · 새로운
+trash/edit 기능 등 무엇이든 user-visible 인 screener 변경은 `_HELP_TEXT`
+section 1 (commands) + section 11 (대시보드) + section 12 (예정) 의
+관련 줄을 동시에 갱신 의무. "이번에 생긴 변경도 help 에 넣어줘 — 앞으로
+변경 있을 때마다 계속" — 사용자 강조 2026-05-29. 본 CLAUDE.md 의
+'Bottleneck Screener — 운영 중' 섹션도 같은 commit 에서 함께 갱신해
+다음 세션 Claude 가 현재 상태를 정확히 파악할 수 있게 할 것. The two surfaces it must keep current are spelled
 out under "Help text maintenance" below (current-state sections 2-11
 + '진행 중 / 예정' section 12).
 
@@ -716,7 +726,58 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
 각 fix 는 universal (모든 brief 출력 / 모든 분석 / 모든 시장) 패턴
 으로 적용. Per-ticker / per-market 가드는 부재.
 
-## Bottleneck Screener — 설계 메모리 (Phase α MVP 구현 대기, 2026-05-28)
+## Bottleneck Screener — 운영 중 (Phase β LIVE · 2026-05-29 현재)
+
+**현재 가동 상태 (변경 시 본 섹션 즉시 업데이트 의무 — 사용자 정책
+2026-05-29):**
+
+- `/screener` (= `/screener bottleneck` 디폴트) 텔레그램 명령 LIVE.
+  AI 데이터센터 도메인 inline (`bot/screener.py _AI_DATACENTER_THEME`).
+- `/screener_cost` 텔레그램 명령 LIVE — 별도 비용 카드 (sv_cost 패턴).
+- Phase β orchestration: Pro Phase 1·2 (JSON 후보) → ticker 검증 +
+  yfinance mcap-based tier 강제 → Phase 3 build_instrument_context
+  병렬 (120s hard timeout, hung-thread protection) → Pro Phase 4·5
+  (web search grounding + 한국어 출력) → Top-3 JSON tail 추출.
+- 트래킹 인프라:
+  - 비용 → `~/.tradingagents/screener_usage.jsonl` (screener-specific) +
+    `~/.tradingagents/usage.jsonl` (NOAH 통합, subsystem='screener').
+    `/usage` 가 NOAH+Screener+SV 합산 + subsystem 분포 표시.
+  - 아카이브 → `~/.tradingagents/screener_archive/YYYY-MM-DD/HHMMSS_
+    {slug}.json` (raw_output + binding_constraint + top3_section +
+    bottom_line 섹션 분리 저장).
+  - 메모리 로그 → `~/.tradingagents/memory/screener_memory.md` (NOAH
+    `_TAG_RE` 호환 포맷, `auto_resolve.py` 가 5d→15d→30d outcome 자동
+    채움).
+  - 대시보드 → NOAH archive 의 `screener.html` (link in main index).
+    각 run 카드: 도메인 헤더 (Wave 1 확장 시 EV/방산/바이오 등으로
+    자동 교체) + 분석 collapsible (binding/Top-3/bottom_line) + Top-3
+    mini-table (5/15/30d + α vs sector) + 🗑️.
+  - 휴지통 → `/api/screener_delete` (date+filename POST, filename
+    regex `^\d{6}_[a-zA-Z0-9_]{1,60}\.json$` path traversal guard).
+- 가드:
+  - TENSE DISCIPLINE (오늘 < 이전 사건 "전망" 금지)
+  - CORP ACTION 환각 차단 (yfinance EPS/PER 누락 → "기업 분할 의심"
+    소설 금지)
+  - VALUATION DISTORTION (PER>100x cyclical bottom + PER N/M 적자 →
+    PBR/Fwd EV/EBITDA 대체 지표 + 턴어라운드 stage 명시 의무)
+  - Wildcard 금지 (날짜 `2026-01-_` → quarter `2026-Q1`)
+  - DATA INTEGRITY (yfinance company_name mismatch 종목 OMIT)
+  - Ticker scope 격리 (최종 본문 기준 reject 표시)
+  - Liquidity 경고 (S-tier ~$100M micro-cap)
+  - Markdown 금지 (`**`, `*`, `##` literal noise 차단 — HTML 만)
+
+**다음 작업 — Wave 1 도메인 확장 (theme registry 분리):**
+- `bot/screener_themes/*.yaml` 디렉토리에 도메인별 config 분리
+  (binding_layer_taxonomy / catalyst_types / data_sources /
+  regional_concentration / horizon).
+- `/screener ev` (EV·배터리), `/screener defense` (방산·우주),
+  `/screener solar` (신재생), `/screener pharma` (바이오 · GLP-1 ·
+  CDMO) 추가. 각 theme 의 `domain` 필드가 대시보드 카드 헤더에 자동
+  반영 (Wave 1 코드 변경 없이 config 만 추가).
+- Wave ∞: `/screener <freetext>` 자유 입력 → Pro 가 on-the-fly theme
+  생성.
+
+## Bottleneck Screener — 설계 메모리 (origin 2026-05-28, kept for reference)
 
 다종목 idea 발굴 모듈. 기존 NOAH `/ticker` 는 사용자 지정 단일 종목
 deep dive — screener 는 그 funnel 의 top: **테마 → 후보 종목군 발굴**.
