@@ -2922,22 +2922,47 @@ def _render_screener_domains_page() -> str:
         "L2_SECTOR": "l2",
         "L3_INDUSTRY": "l3",
     }
+    # Per-layer collapsible — L1 (6) default open since smallest, L2/L3
+    # (11/48) default closed so initial paint stays light on mobile.
+    # User taps the section header to expand. The /domain-search input
+    # below applies cross-layer so collapsed sections still surface in
+    # the filtered view.
+    _layer_default_open = {
+        "L1_TREND": True,
+        "L2_SECTOR": False,
+        "L3_INDUSTRY": False,
+    }
     for layer_key, layer_label, layer_desc in _LAYER_META:
         cards = by_layer.get(layer_key, [])
         if not cards:
             continue
         cards_html = "\n".join(_render_card(d) for d in cards)
         css_class = _layer_css_class.get(layer_key, "")
+        open_attr = " open" if _layer_default_open.get(layer_key, False) else ""
         sections.append(
-            f'<div class="layer-section {css_class}">'
+            f'<details class="layer-details {css_class}"{open_attr}>'
+            f'<summary class="layer-section {css_class}">'
             f'<h2 class="layer-h">{layer_label} '
             f'<span class="layer-count">({len(cards)}개)</span></h2>'
             f'<p class="layer-desc">{_html.escape(layer_desc)}</p>'
-            f'</div>'
-            f'{cards_html}'
+            f'</summary>'
+            f'<div class="layer-body">{cards_html}</div>'
+            f'</details>'
         )
     body = "\n".join(sections) if sections else (
         '<div class="empty">아직 등록된 도메인이 없습니다.</div>'
+    )
+    # Filter input — instant client-side filtering across all layers.
+    # Forces every <details> open while filter is active so matches in
+    # collapsed sections still surface. Clearing the input restores the
+    # default open/closed state per layer.
+    filter_html = (
+        '<div class="filter-bar">'
+        '<input id="dom-filter" type="text" '
+        'placeholder="🔍 도메인/별칭 검색 (예: 반도체, banks, 휴머노이드)" '
+        'autocomplete="off" spellcheck="false">'
+        '<button id="dom-filter-clear" type="button" title="초기화">×</button>'
+        '</div>'
     )
 
     # 변경 이력 footer — single line summary (사용자 요청 2026-05-29
@@ -3073,6 +3098,41 @@ def _render_screener_domains_page() -> str:
   font-size:11px; font-weight:600; }}
 :root[data-theme="dark"] .history-footer code {{
   background:rgba(16,185,129,0.18); color:#34d399; }}
+/* Collapsible layer sections — L1 default open, L2/L3 closed so
+   initial paint stays light on mobile (48 L3 cards 한꺼번에 펼치니
+   느리다는 사용자 보고 2026-05-29). 헤더 탭 시 펼침. */
+details.layer-details {{ margin:0; }}
+details.layer-details summary {{ cursor:pointer; list-style:none;
+  user-select:none; }}
+details.layer-details summary::-webkit-details-marker {{ display:none; }}
+details.layer-details summary::after {{ content:"▾";
+  position:absolute; right:18px; top:18px;
+  color:var(--fg-soft); font-size:14px;
+  transition:transform 0.15s; }}
+details.layer-details:not([open]) summary::after {{
+  content:"▸"; }}
+details.layer-details summary {{ position:relative; }}
+.layer-body {{ padding-top:6px; }}
+/* Quick filter — instant client-side search across all layer cards.
+   Forces every <details open> while typing so matches in collapsed
+   sections still surface. */
+.filter-bar {{ display:flex; gap:8px; margin:20px 0 16px;
+  position:sticky; top:0; z-index:10;
+  background:var(--bg); padding:12px 0;
+  border-bottom:1px solid var(--border); }}
+.filter-bar input {{ flex:1; padding:10px 14px; font-size:14px;
+  color:var(--fg); background:var(--card);
+  border:1px solid var(--border); border-radius:8px;
+  outline:none; transition:border-color 0.12s; }}
+.filter-bar input:focus {{ border-color:var(--accent); }}
+.filter-bar button {{ padding:10px 16px; font-size:14px;
+  background:var(--card); color:var(--fg-soft);
+  border:1px solid var(--border); border-radius:8px;
+  cursor:pointer; transition:color 0.1s, border-color 0.1s; }}
+.filter-bar button:hover {{ color:var(--fg);
+  border-color:var(--accent); }}
+.dom-card.hidden {{ display:none; }}
+.layer-details.hidden {{ display:none; }}
 </style>
 </head>
 <body>
@@ -3085,10 +3145,56 @@ def _render_screener_domains_page() -> str:
   <p class="sub">텔레그램: <code>/screener_&lt;슬러그&gt;</code> 클릭 한 번으로 즉시 실행 · 별칭은 <code>/screener &lt;별칭&gt;</code> 으로 지원
   · 동일 목록 텔레그램 = <code>/screener_list</code>.</p>
   <p class="sub"><b>3-layer 도메인 모델</b> — L1 Trend (cross-cutting cycle 베팅) · L2 Sector (미국 GICS-like 정식 분류) · L3 Industry (각 L2 sector 의 sub-industry).
-  새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지에 자동 반영. 페이지 하단에 최근 변경 1줄 요약.</p>
+  새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지에 자동 반영.</p>
+  {filter_html}
   {body}
   {history_html}
 </div>
+<script>
+(function() {{
+  var inp = document.getElementById('dom-filter');
+  var clr = document.getElementById('dom-filter-clear');
+  if (!inp) return;
+  var cards = Array.from(document.querySelectorAll('.dom-card'));
+  var details = Array.from(document.querySelectorAll('details.layer-details'));
+  // Cache the original default-open state so clearing the filter
+  // restores L1 open / L2 L3 closed (instead of leaving them all open).
+  var defaultOpen = details.map(function(d) {{ return d.hasAttribute('open'); }});
+  // Pre-extract searchable text per card so each keystroke is O(N).
+  var cardText = cards.map(function(c) {{
+    return (c.textContent || '').toLowerCase().replace(/\\s+/g, ' ');
+  }});
+  function applyFilter() {{
+    var q = (inp.value || '').trim().toLowerCase();
+    if (!q) {{
+      cards.forEach(function(c) {{ c.classList.remove('hidden'); }});
+      details.forEach(function(d, i) {{
+        d.classList.remove('hidden');
+        if (defaultOpen[i]) d.setAttribute('open', '');
+        else d.removeAttribute('open');
+      }});
+      return;
+    }}
+    cards.forEach(function(c, i) {{
+      var match = cardText[i].indexOf(q) >= 0;
+      c.classList.toggle('hidden', !match);
+    }});
+    // Open every <details> with at least one visible card; hide ones
+    // that have no match at all so the user can scan results faster.
+    details.forEach(function(d) {{
+      var any = d.querySelectorAll('.dom-card:not(.hidden)').length > 0;
+      d.classList.toggle('hidden', !any);
+      if (any) d.setAttribute('open', '');
+    }});
+  }}
+  inp.addEventListener('input', applyFilter);
+  clr.addEventListener('click', function() {{
+    inp.value = '';
+    applyFilter();
+    inp.focus();
+  }});
+}})();
+</script>
 </body>
 </html>
 """
