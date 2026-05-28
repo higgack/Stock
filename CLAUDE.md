@@ -716,6 +716,188 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
 각 fix 는 universal (모든 brief 출력 / 모든 분석 / 모든 시장) 패턴
 으로 적용. Per-ticker / per-market 가드는 부재.
 
+## Bottleneck Screener — 설계 메모리 (Phase α MVP 구현 대기, 2026-05-28)
+
+다종목 idea 발굴 모듈. 기존 NOAH `/ticker` 는 사용자 지정 단일 종목
+deep dive — screener 는 그 funnel 의 top: **테마 → 후보 종목군 발굴**.
+사용자 vision: AI bottleneck 도메인부터 시작해 **궁극적으로 전 산업
+커버** (EV / 방산 / 바이오 / 신재생 / 럭셔리 / rare earth / 우라늄 ...
+무제한 확장). 별도 명령·별도 파이프라인 — NOAH 메인 분석과 분리.
+
+### 핵심 철학 (원본: 2026-05-28 Singularity Research 'ruthless bottleneck')
+
+1. **Ruthless buy-side analyst persona** — 충성심·내러티브 무시, 수익만.
+2. **Theory of Constraints (TOC)** — 공급망 한 단계가 binding, choke
+   point owner 가 rent 독식. 모든 산업에 보편적 (어휘만 다름).
+3. **Rerate focus** — 단순 earnings beat 가 아니라 multiple expansion;
+   제약 해소 시 동일 폭의 de-rate 위험 동시 인지.
+4. **Niche 2-3 layers down** — GPU·전력 같은 1차 헤드라인 X. Substrates
+   / quick disconnects / vapor chambers / TIMs / busbars / 특수가스 /
+   test-burn-in 같은 sub-layer.
+5. **Global mandate** — US 편향 금지. KR/JP/TW + EU(독일·프랑스·스위스·
+   네덜란드·북유럽) + CN A/H 적극 포함. 진짜 pure-play 들이 offshore.
+6. **3티어 size** — ~$100M micro (가장 pure) / ~$1B mid / ~$10B 유동성.
+   USD 환산 후 분류. clean public name 없으면 "no clean public name".
+
+### 신호 무게 결정 (사용자 통찰 2026-05-28 — lagging 재무는 sanity only)
+
+**Bottleneck rerating 은 forward signal 이 결정**. 재무제표는 lagging.
+점수 배분:
+
+- **Tier A — Catalyst 신호 (50%)**: 신제품·신기술 발표 (30-90일) /
+  신규 고객·계약·qual 통과 / 경쟁사 stumble (recall·지연·미스) /
+  정책 변경 (IRA·BIS·보조금·CBAM·관세) / 캐파 확장 + online date /
+  sell-side PT·rating 변경 (30일 momentum).
+- **Tier B — 실적 발표 Content (25%)**: forward guidance / 본인의
+  constraint 인용 ("limited by X" → 한 단계 아래 진짜 수익자 표지) /
+  backlog QoQ + RPO / 가격 인상 + 효력 시점 / utilization tightness.
+  (= RULE 15 EARNINGS-CALL CONSTRAINT EXTRACTION 의 6개 신호 모두 활용)
+- **Tier C — 시황 펄스 (15%)**: 30/90일 sector 상대 강도 / 옵션 IV
+  (이벤트 임박) / 외인·기관·港股통 flow / 단기 모멘텀 / short interest.
+- **Tier D — 재무 sanity (10%)**: 시총·PER·PSR (밸류에이션 baseline,
+  "이미 priced in" 평가용) / 매출 YoY 가속·둔화 / 적자기업 의도된 투자
+  vs 무너지는 모델 구분만.
+
+→ Tier D 는 dominant 신호 아님. screener 출력 상단에 반드시 명시.
+
+### 데이터 인프라 — 이미 모두 wired (재사용)
+
+| Forward Signal | 데이터 소스 (구축 완료) |
+|---|---|
+| 신제품·M&A·material events | EDGAR 8-K (US, 2026-05-28 신규) / DART / EDINET / MOPS / AKShare 公告 |
+| 회사별 뉴스·계약·가격 인상 | yfinance .news / Naver / Kabutan / cnyes / AKShare 东方财富 / NewsAPI / GDELT |
+| 정책 변경 | RULE 12·13·14 의 산업별 dominant 변수 (fundamentals_analyst 내) |
+| 캐파 확장 + 실적 transcript | 위 공시 + build_instrument_context 의 실적 윈도 |
+| Sell-side revisions | 컨센서스 (yfinance + FnGuide + Kabutan + cnyes_consensus) — 30일 비교 추가 필요 |
+| 시황 펄스 | sector_strength + risk_metrics + options_signals (US) + KRX flow (KR) |
+
+→ screener 는 fetch 인프라 거의 새로 짤 게 없음. 후보 N개에 대해
+`build_instrument_context` 병렬 호출하는 게 핵심.
+
+### 6단계 Method (재정렬, 사용자 통찰 반영)
+
+1. **Map the Stack** — 도메인 의존성 chain (hyperscaler → 말단 공급사),
+   SPOF / 지리적 집중도 마킹.
+2. **Locate Choke Point** — 공급자 집중도 + qual 시간 + switching cost
+   점수화 (구조 점수, Tier 외 별도 15%).
+3. **Extract FORWARD Signals** — Tier A·B·C 메인 비중. instrument
+   context 병렬 호출 + 30일 sell-side delta 추가.
+4. **Sanity-check Financials** — Tier D. 적자기업 의도된 투자 vs 망함만
+   구분.
+5. **Score "What's priced in"** — 현재 multiple vs 자기 5년 + 컨센
+   PT 갭 + 30일 PT 변화 (= edge 측정).
+6. **Catalyst + Kill Trigger** — 시기 + 선행지표 + 디레이팅 트리거
+   (kill_trigger 필드, 2026-05-28 schemas.py 도입).
+
+### 5-Phase Orchestrator (실행 흐름)
+
+```
+사용자: /screener bottleneck (또는 /screener <freetext>)
+        ↓
+Phase 1·2 (Gemini Pro + web search) — Theme & Candidate Discovery
+        - 도메인 binding layer 4-6개 식별 (Map the Stack)
+        - 각 layer × 3 size tier 후보 ticker 후보군 (Global)
+        - 모든 ticker yfinance fetch 검증 — 가짜 ticker 즉시 reject
+        ↓
+Phase 3 (Flash, 병렬) — Forward Signal Extraction
+        - 후보 종목별 build_instrument_context 호출
+        - Tier A/B/C/D 신호 분리 추출
+        - RULE 15 6개 신호 모두 추출
+        ↓
+Phase 4 (Pro) — Scoring
+        - 5축: constraint severity / durability / supplier concentration
+               / revenue exposure / what's priced in
+        - 0-10 점, theme 내 + 전체 랭킹
+        ↓
+Phase 5 (Pro) — Master Table + Top-3 Narrative
+        - master table (theme × tier × ticker × Tier A/B/C/D summary)
+        - top-3 conviction + 접근 경로 (ADR/local/illiquid)
+        - one-line bottom line
+        - 출력 추론/팩트 분리 ("source" vs "inferred" 컬럼/태그)
+        - disclaimer (6-18개월 thesis, 5거래일 트레이드 아님)
+```
+
+### Theme Registry (전 산업 확장의 핵심)
+
+`bot/screener_themes/` 디렉토리에 산업별 YAML/JSON config.
+공통 스키마:
+
+```yaml
+domain: "<도메인명>"
+binding_layer_taxonomy:        # 4-6 layers
+  - <layer 1>
+  - <layer 2>
+catalyst_types:                # 도메인 특정 catalyst
+  - <catalyst kind>
+data_sources:
+  earnings: [<리딩 종목 list>]
+  industry_reports: [<출처 list>]
+regional_concentration:        # SPOF 지리적
+  <layer>: <region/회사>
+horizon: "<6-18 months 등>"
+```
+
+확장 로드맵:
+
+| Wave | 도메인 | 우선순위 근거 |
+|---|---|---|
+| MVP α | AI Data Center | 원 프롬프트 검증 + 데이터 풍부 |
+| Wave 1 | EV/배터리 · 신재생(solar/wind) · 방산/우주 | 데이터 풍부, regional concentration 명확 |
+| Wave 2 | 바이오 (GLP-1/CDMO/CRO) · 헬스케어 · 진단 | 임상 단계 binary catalyst |
+| Wave 3 | 럭셔리/소비재 cycle · 핀테크/결제망 · rare earth · 우라늄 · 농업 | 데이터 sparser, thematic gap 큼 |
+| Wave ∞ | `/screener <freetext>` 자유 입력 — on-the-fly registry 생성 | 무제한 확장 |
+
+### 비용·시간·아카이브
+
+- 1회 실행 예상 비용: **~$0.25 (~₩330)** — Phase 1·4·5 Pro + Phase 3
+  Flash 병렬 (~15종목)
+- 소요 시간: **~3-5분** (Phase 3 병렬 + Pro 순차)
+- 캐시: 같은 날 같은 도메인 24h TTL (`~/.tradingagents/screener_cache/`)
+- 아카이브: dashboard 에 영구 저장 + URL link → 추천 추적·accuracy 측정
+  - Wave β 이후: 분기마다 screener 추천 종목 6-18개월 후 성과 평가
+    (NOAH 5거래일 평가와 별도 horizon 트랙)
+
+### 위험·완화
+
+| 위험 | 완화 |
+|---|---|
+| 환각 (가짜 ticker / catalyst) | 모든 ticker yfinance fetch 검증 필수, 실패 시 "no clean public name". 출처 link / publisher 필수 (RULE 15 + F7 NEWS FABRICATION 가드 재활용). |
+| 5거래일 horizon 미스매치 | 매 출력에 disclaimer — "6-18개월 thesis, 5거래일 트레이드 아님". /TICKER deep dive 권유. |
+| 데이터 sparse 도메인 (rare earth 등) | 도메인별 confidence score. Sparse 시 "데이터 한계, 추론 기반" 명시. |
+| 비용 scaling | 도메인별 24h 캐시 + 사용자 명령 시만 trigger. 월 1-2회/도메인 가정 ₩30-50K. |
+| PM Override Discipline | screener 는 idea generation, 최종 verdict 아님 — override 발화 안 함. /TICKER follow-up 시에만. |
+| 법적 면책 | 매 출력에 "교육 목적 / 추천 아님" disclaimer 필수. |
+
+### Phase α MVP 구현 (다음 세션 착수)
+
+신규 파일:
+- `bot/screener.py` — 5-phase orchestrator
+- `bot/screener_themes.py` (또는 `screener_themes/*.yaml`) — registry
+- `bot/screener_score.py` — 5축 scoring
+
+기존 파일 수정:
+- `bot/telegram_bot.py` — `cmd_screener` + `/screener` handler 등록 +
+  `_HELP_TEXT` 12 섹션에 "screener Phase α 진행 중"
+- `bot/dashboard.py` — screener archive 카드 + URL endpoint
+
+MVP 범위:
+- `/screener` (= `/screener bottleneck` 디폴트) AI Data Center 도메인만
+- 5-phase 전체 작동, Tier A/B/C/D 정렬, master table 출력
+- 텔레그램 분할 + dashboard 아카이브
+- 다른 도메인은 Wave 1 별도 commit
+
+### 보존 핵심 결정 (사용자 합의 2026-05-28)
+
+1. ✅ 도메인 자유입력 (`/screener <freetext>`) — Wave ∞
+2. ✅ 글로벌 web search 활용 (Option B) — Pro 에게 위임
+3. ✅ Dashboard 아카이브 영구 저장 (Option B)
+4. ✅ 24h 캐시 (Option A)
+5. ✅ NOAH /ticker 연계 deep link (Option A)
+6. ✅ Phase 3 Flash 병렬 / 나머지 Pro (Option B)
+
+이 6개 + forward signal weighting + 6-step method 재정렬은 사용자
+확인됨 — Phase α 구현 시 그대로 따를 것.
+
 ## 🔐 API-blocked tasks (deferred to final batch per user 2026-05-19)
 
 User policy: tasks that require new external API keys / registration
