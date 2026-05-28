@@ -296,13 +296,15 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     # carries a link here so future domain additions don't pressure
     # the 4096 UTF-16 cap (CLAUDE.md rule, 2026-05-29).
     if first_word == "screener_list":
-        await ctx.bot.send_message(
-            chat_id=post.chat.id,
-            text=_format_screener_domains_list(),
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            reply_markup=_screener_list_keyboard(),
-        )
+        async def _send_ch(t, rm=None):
+            await ctx.bot.send_message(
+                chat_id=post.chat.id,
+                text=t,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=rm,
+            )
+        await _send_screener_domains_list(_send_ch, _screener_list_keyboard())
         return
 
     # /screener_cost in channel — Bottleneck Screener Pro cost (parallel
@@ -1058,12 +1060,14 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if arg == "screener_list":
             # Deep-link from the help message's '📊 Screener 도메인 목록'
             # button. Same content + button keyboard as DM /screener_list.
-            await update.message.reply_text(
-                _format_screener_domains_list(),
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-                reply_markup=_screener_list_keyboard(),
-            )
+            async def _send_dl(t, rm=None):
+                await update.message.reply_text(
+                    t,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    reply_markup=rm,
+                )
+            await _send_screener_domains_list(_send_dl, _screener_list_keyboard())
             return
         if arg.startswith("screener_"):
             # Deep-link from the screener_list panel's per-domain button
@@ -1362,53 +1366,56 @@ def _read_screener_cost_today_month() -> dict:
     return out
 
 
-def _format_screener_domains_list() -> str:
-    """Render the current screener domain registry as a Telegram HTML
-    block. Reads from bot.screener_themes.list_domains() so the list
-    auto-updates when modules are added — no _HELP_TEXT touches needed.
+def _format_screener_domains_list() -> list[str]:
+    """Render the current screener domain registry as one OR MORE Telegram
+    HTML chunks (each ≤ 4096 UTF-16 cap). Reads from
+    ``bot.screener_themes.list_domains()`` so the list auto-updates when
+    modules are added — no _HELP_TEXT touches needed.
 
     Per CLAUDE.md 'Screener 도메인 목록은 _HELP_TEXT inline 금지' rule
     (2026-05-29): future Wave 2-B / Wave 3 / Wave ∞ 도메인 추가는 모듈
     drop 만으로 본 함수 출력 + dashboard `screener_domains.html` 양쪽
     자동 갱신.
 
-    Output format: 각 도메인을 ``/screener_<slug>`` 형태로 출력 (예:
-    ``/screener_healthcare``) — 텔레그램이 자동으로 hyperlink 처리해
-    클릭 한 번에 입력창에 prefill, 엔터 한 번에 실행. 사용자 예시
-    (/guide_lookup / /find_all 패턴) 와 동일 UX. 핸들러는 ``register_
-    dynamic_screener_handlers()`` 에서 일괄 등록."""
+    Output strategy (2026-05-29 cap fix): L1 + L2 detailed (별칭 포함)
+    in chunk 1, L3 compact (1 line per slug) in chunk 2 — 65 도메인
+    × 별칭 포함 형식은 단일 메시지 4096 UTF-16 cap 을 항상 초과하므로
+    layer-by-layer chunk packing. Callers send each chunk as a separate
+    message, attaching the inline keyboard to the FIRST chunk only.
+    """
     from collections import defaultdict
     from bot.screener_themes import list_domains
     ds = list_domains()
     by_layer: dict[str, list[dict]] = defaultdict(list)
     for d in ds:
         by_layer[d.get("layer") or "L1_TREND"].append(d)
-    _layer_meta = [
-        ("L1_TREND",
-         "📈 L1 Trend",
-         "Cross-cutting cycle 베팅"),
-        ("L2_SECTOR",
-         "🏢 L2 Sector",
-         "11 공식 sector (미국 GICS-like)"),
-        ("L3_INDUSTRY",
-         "🔬 L3 Industry",
-         "각 L2 아래 sub-industry"),
-    ]
+    n_l1 = len(by_layer.get("L1_TREND", []))
+    n_l2 = len(by_layer.get("L2_SECTOR", []))
     n_l3 = len(by_layer.get("L3_INDUSTRY", []))
-    lines = [
+
+    def _utf16(s: str) -> int:
+        return len(s.encode("utf-16-le")) // 2
+
+    chunks: list[str] = []
+
+    # Chunk 1 — header + L1 trend + L2 sector detailed (with aliases).
+    head = [
         f"📊 <b>Bottleneck Screener — 도메인 목록</b> ({len(ds)}개)",
         "",
-        "메시지 하단 버튼: L1 trend + L2 sector 17개 (즉시 클릭).",
-        f"L3 industry {n_l3}개는 본문 텍스트 — <code>/screener_&lt;슬러그&gt;</code> 직접 타이핑 또는 별칭 사용.",
-        "별칭은 <code>/screener &lt;별칭&gt;</code> 로 지원.",
+        f"L1 trend {n_l1} + L2 sector {n_l2} + L3 industry {n_l3}.",
+        "하단 버튼: L1+L2 17개 즉시 클릭. L3 는 <code>/screener_&lt;슬러그&gt;</code>"
+        " 직접 타이핑 또는 별칭 사용 (<code>/screener &lt;별칭&gt;</code>).",
         "",
     ]
-    for layer_key, layer_label, layer_desc in _layer_meta:
+    for layer_key, layer_label, layer_desc in [
+        ("L1_TREND", "📈 L1 Trend", "Cross-cutting cycle 베팅"),
+        ("L2_SECTOR", "🏢 L2 Sector", "11 공식 sector (미국 GICS-like)"),
+    ]:
         items = by_layer.get(layer_key, [])
         if not items:
             continue
-        lines.append(f"━━━ <b>{layer_label}</b> ({len(items)}개) — {layer_desc} ━━━")
-        lines.append("")
+        head.append(f"━━━ <b>{layer_label}</b> ({len(items)}개) — {layer_desc} ━━━")
+        head.append("")
         for d in items:
             slug = d["slug"]
             domain = d["domain"]
@@ -1418,15 +1425,53 @@ def _format_screener_domains_list() -> str:
                 alias_str = f"\n   별칭: {', '.join(aliases[:6])}" + (
                     f" 외 {len(aliases) - 6}개" if len(aliases) > 6 else ""
                 )
-            lines.append(f"/screener_{slug} — <b>{domain}</b>{alias_str}")
-            lines.append("")
-    lines += [
-        "<i>L3 industry 도메인은 점진 추가 예정 (우선순위 12 산업 →</i>"
-        " <i>나머지 36 산업).</i>",
-        "",
-        "📜 변경 이력: <code>archive/screener_domains.html</code> 페이지 하단 footer",
-    ]
-    return "\n".join(lines)
+            head.append(f"/screener_{slug} — <b>{domain}</b>{alias_str}")
+            head.append("")
+    chunks.append("\n".join(head).rstrip())
+
+    # Chunk(s) 2+ — L3 industry compact (1 line per slug). Pack into
+    # ≤ 3800 UTF-16 units per chunk for headroom under the 4096 cap.
+    l3_items = by_layer.get("L3_INDUSTRY", [])
+    if l3_items:
+        l3_header = f"━━━ <b>🔬 L3 Industry</b> ({len(l3_items)}개) — 각 L2 아래 sub-industry ━━━"
+        footer = (
+            "\n\n📜 변경 이력: <code>archive/screener_domains.html</code>"
+            " 페이지 하단 footer"
+        )
+        cur = [l3_header, ""]
+        cur_len = _utf16("\n".join(cur))
+        footer_len = _utf16(footer)
+        cap = 3800
+        for d in l3_items:
+            slug = d["slug"]
+            domain = d["domain"]
+            line = f"/screener_{slug} — {domain}"
+            add_len = _utf16(line) + 1  # +1 for the join '\n'
+            if cur_len + add_len + footer_len > cap and len(cur) > 2:
+                chunks.append("\n".join(cur).rstrip())
+                cur = [f"{l3_header} (계속)", ""]
+                cur_len = _utf16("\n".join(cur))
+            cur.append(line)
+            cur_len += add_len
+        # Attach footer only to the final L3 chunk.
+        cur.append(footer)
+        chunks.append("\n".join(cur).rstrip())
+
+    return chunks
+
+
+async def _send_screener_domains_list(
+    send_html,
+    keyboard,
+) -> None:
+    """Send the screener domains list as multiple messages, attaching the
+    inline keyboard to the FIRST chunk only. ``send_html`` is an async
+    callable ``(text, reply_markup=None) -> awaitable`` — caller-side
+    bound to the right destination (DM reply / channel post / etc.).
+    """
+    chunks = _format_screener_domains_list()
+    for i, ch in enumerate(chunks):
+        await send_html(ch, keyboard if i == 0 else None)
 
 
 def _screener_list_keyboard() -> InlineKeyboardMarkup | None:
@@ -1486,12 +1531,14 @@ async def cmd_screener_list(update: Update, _: ContextTypes.DEFAULT_TYPE) -> Non
     tap-to-fire behavior across all clients."""
     if update.message is None:
         return
-    await update.message.reply_text(
-        _format_screener_domains_list(),
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-        reply_markup=_screener_list_keyboard(),
-    )
+    async def _send_dm(t, rm=None):
+        await update.message.reply_text(
+            t,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            reply_markup=rm,
+        )
+    await _send_screener_domains_list(_send_dm, _screener_list_keyboard())
 
 
 async def cmd_screener_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
