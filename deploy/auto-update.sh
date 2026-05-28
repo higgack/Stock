@@ -121,9 +121,37 @@ notify "$start_msg"
 # Force-sync to origin. Any local edits (e.g. an admin running 'sed -i'
 # on a deploy script) get overwritten — auto-deploy assumes origin is
 # the source of truth and we never want a half-applied state.
+# Detect deploy/*.{service,timer,sh} changes BEFORE git reset so we
+# can decide whether install.sh needs to re-deploy systemd units.
+# 사용자 정책 2026-05-29: SV 패턴 mirror — sudo install.sh NOPASSWD 1회
+# 설정 후 deploy/ 변경 시도 SSH 진입 없이 자동 install + daemon-reload
+# + enable. Quiet skip when install.sh missing NOPASSWD (legacy bot
+# 호환).
+DEPLOY_CHANGED=0
+if echo "$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)" \
+        | grep -qE '^deploy/.*\.(service|timer|sh)$'; then
+    DEPLOY_CHANGED=1
+fi
+
 if ! git reset --hard "origin/${BRANCH}" --quiet; then
     notify "❌ <b>배포 실패</b>: git reset --hard (${LOCAL_SHORT} → ${REMOTE_SHORT})"
     exit 1
+fi
+
+# systemd unit / shell-script 자동 재설치 — install.sh 가 idempotent.
+# user 가 sudoers NOPASSWD line 1회 추가 (`higgack ALL=(root) NOPASSWD:
+# /home/higgack/stock/deploy/install.sh`) 한 경우에만 작동, 미설정 시
+# silent skip. 로그 파일 (/tmp/stock-bot-install.log) 에 install.sh 출력
+# 저장.
+if [ "$DEPLOY_CHANGED" = "1" ]; then
+    INSTALL_SH="$REPO/deploy/install.sh"
+    if [ -x "$INSTALL_SH" ]; then
+        if sudo -n "$INSTALL_SH" >/tmp/stock-bot-install.log 2>&1; then
+            notify "✅ <b>stock-bot systemd 자동 재설치</b>: install.sh 성공 (deploy/* 변경 감지)"
+        else
+            notify "⚠️ <b>stock-bot systemd 재설치 실패</b> (NOPASSWD 미설정 또는 install.sh error). 로그: /tmp/stock-bot-install.log"
+        fi
+    fi
 fi
 
 if ! sudo /bin/systemctl restart stock-bot; then
