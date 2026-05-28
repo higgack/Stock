@@ -301,6 +301,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             text=_format_screener_domains_list(),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
+            reply_markup=_screener_list_keyboard(),
         )
         return
 
@@ -973,21 +974,34 @@ def _chunk_help_text() -> list[str]:
 
 
 def _help_keyboard(bot_username: str | None) -> InlineKeyboardMarkup | None:
-    """Inline button for the pinned help/announcement.
+    """Inline buttons for the pinned help/announcement.
 
     A channel subscriber cannot post to the channel, so a plain ``/sites``
-    command text isn't tap-to-run for them. A deep-link URL button is — it
-    opens a 1:1 chat with the bot whose START payload (`sites`) routes to
-    the external-sites list (handled in `cmd_help`). Returns None when the
-    bot username isn't known yet (button is then simply omitted)."""
+    or ``/screener_list`` command text isn't tap-to-run for them — and
+    even in DM channels, Telegram's auto-detection of inline ``/cmd``
+    text into a clickable bot command is inconsistent across mobile
+    client versions (2026-05-29 user feedback: `/screener_list` in
+    section 11 still rendered as plain text on mobile despite the
+    `set_my_commands` registration fix). Inline keyboard URL buttons
+    bypass that — Telegram guarantees the tap behavior on all clients.
+
+    Each button uses a deep link `https://t.me/<bot>?start=<payload>`
+    routed via `cmd_help`'s `/start <payload>` argument handling.
+    Returns None when the bot username isn't known yet."""
     if not bot_username:
         return None
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton(
-            "🔗 외부 참조 대쉬보드사이트 모음",
-            url=f"https://t.me/{bot_username}?start=sites",
-        )
-    ]])
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📊 Screener 도메인 목록",
+                url=f"https://t.me/{bot_username}?start=screener_list",
+            ),
+            InlineKeyboardButton(
+                "🔗 외부 참조 사이트",
+                url=f"https://t.me/{bot_username}?start=sites",
+            ),
+        ],
+    ])
 
 
 async def _send_help(send_html, send_plain, label: str, reply_markup=None) -> None:
@@ -1034,11 +1048,29 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     the external reference sites instead of the full help."""
     if update.message is None:
         return
-    if ctx.args and ctx.args[0].lower() == "sites":
-        await update.message.reply_text(
-            _SITES_TEXT, parse_mode=ParseMode.HTML, disable_web_page_preview=True
-        )
-        return
+    if ctx.args:
+        arg = ctx.args[0].lower()
+        if arg == "sites":
+            await update.message.reply_text(
+                _SITES_TEXT, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+            )
+            return
+        if arg == "screener_list":
+            # Deep-link from the help message's '📊 Screener 도메인 목록'
+            # button. Same content + button keyboard as DM /screener_list.
+            await update.message.reply_text(
+                _format_screener_domains_list(),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                reply_markup=_screener_list_keyboard(),
+            )
+            return
+        if arg.startswith("screener_"):
+            # Deep-link from the screener_list panel's per-domain button
+            # (`?start=screener_<slug>`). Routes to the screener with
+            # that domain in the DM (the destination chat for deep links).
+            await _screener_dispatch(update, ctx, arg[len("screener_"):])
+            return
     try:
         uname = ctx.bot.username
     except Exception:
@@ -1377,17 +1409,64 @@ def _format_screener_domains_list() -> str:
     return "\n".join(lines)
 
 
+def _screener_list_keyboard() -> InlineKeyboardMarkup | None:
+    """Inline keyboard with one URL button per registered domain. The
+    text body of /screener_list output also shows /screener_<slug> at
+    line starts (auto-detected by some clients), but the keyboard is
+    the guaranteed-clickable path — Telegram client auto-detection of
+    `/cmd` inside HTML messages is inconsistent on mobile, so every
+    domain gets a tap-to-fire button. Layout: 3 buttons per row, sorted
+    by slug. URL deep links via `?start=screener_<slug>` route through
+    `cmd_help` arg handling → `_screener_dispatch` for the actual run.
+
+    Returns None when the bot username isn't yet known (button URLs
+    require it). In that case the text body alone is sent."""
+    try:
+        from bot.screener_themes import list_domains
+    except Exception:
+        return None
+    uname = _BOT_USERNAME_CACHE.get("name")
+    if not uname:
+        return None
+    rows: list[list[InlineKeyboardButton]] = []
+    cur: list[InlineKeyboardButton] = []
+    for d in sorted(list_domains(), key=lambda x: x["slug"]):
+        slug = d["slug"]
+        cur.append(InlineKeyboardButton(
+            f"/{slug}",
+            url=f"https://t.me/{uname}?start=screener_{slug}",
+        ))
+        if len(cur) == 3:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
+# Bot username is only available after Application.initialize() — cache
+# it at _on_startup so synchronous helpers (called from sync render
+# paths) can read it without hitting the API every time.
+_BOT_USERNAME_CACHE: dict[str, str] = {}
+
+
 async def cmd_screener_list(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """/screener_list — auto-generated list of registered screener domains.
     Sourced from bot.screener_themes registry; _HELP_TEXT only carries
     a link to this command so domain additions don't pressure the
-    4096 UTF-16 cap."""
+    4096 UTF-16 cap.
+
+    Output: HTML body + inline keyboard with one button per domain.
+    Telegram client auto-detection of `/screener_<slug>` text inside
+    messages is inconsistent on mobile, so the keyboard guarantees
+    tap-to-fire behavior across all clients."""
     if update.message is None:
         return
     await update.message.reply_text(
         _format_screener_domains_list(),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
+        reply_markup=_screener_list_keyboard(),
     )
 
 
@@ -1835,6 +1914,16 @@ async def _on_startup(application) -> None:
     # 로 등록하면 모든 클라이언트에서 자동 hyperlink + autocomplete +
     # menu 노출. Telegram cap 은 scope 당 100개 → 정적 7 + 동적 도메인
     # 10 = 17개, Wave 2-B/3 까지 확장해도 안전.
+    # Cache bot username — _screener_list_keyboard etc need it to build
+    # deep-link URLs but they're called from sync render paths.
+    try:
+        me = await application.bot.get_me()
+        if me and me.username:
+            _BOT_USERNAME_CACHE["name"] = me.username
+            log.info("bot username cached: @%s", me.username)
+    except Exception as exc:
+        log.warning("get_me failed (deep-link URLs unavailable): %s", exc)
+
     try:
         commands = [
             BotCommand("start", "사용법 안내"),
