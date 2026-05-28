@@ -30,6 +30,7 @@ from __future__ import annotations
 
 THEME = {
     "domain": "Solar, Wind, ESS & Grid",
+    "layer": "L1_TREND",
     "aliases": [
         "solar",
         "wind",

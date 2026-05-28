@@ -760,36 +760,71 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   `pkgutil.iter_modules` 로 자동 discover + import-time validate. 새
   도메인 추가 = 새 모듈 1 파일 drop, orchestrator 수정 0.
 
-  **Wave 1 trend themes** (좁은 cycle lens — 2026-05-29 ✅, +robot 2026-05-29 추가):
+  **3-layer 도메인 모델** (2026-05-29 사용자 정식 분류 = 미국 GICS-like,
+  Finviz 폐기): 각 모듈 THEME dict 에 `layer="L1_TREND"|"L2_SECTOR"|
+  "L3_INDUSTRY"` 필드 명시. registry `list_domains()` 가 layer 포함
+  반환. 대시보드 페이지 + `/screener_list` Telegram 출력 모두 layer
+  별 그룹핑 (📈 L1 / 🏢 L2 / 🔬 L3).
+
+  **L1 Trend themes (6, 좁은 cycle 베팅)**:
   - `bottleneck.py` — AI Data Center Buildout (별칭 ai · 데이터센터)
   - `ev.py` — EV & Battery (별칭 전기차 · 배터리 · 이차전지)
   - `defense.py` — Defense, Aerospace & Space (별칭 방산 · 우주)
   - `pharma.py` — Biotech & Pharma · GLP-1/CDMO/Biosimilar
   - `solar.py` — Solar, Wind, ESS & Grid (별칭 신재생 · 태양광)
   - `robot.py` — Robotics & Humanoid Buildout (별칭 로봇 · 휴머노이드 ·
-    협동로봇 · 자동화 · optimus · 감속기). Humanoid 본사 + 감속기 (가장
-    명확한 binding) + servo + 산업로봇 + cobot + AMR + 센서 + Edge AI
-    VLA model 8 layer. 사용자 prioritization "딴것보다 로봇 먼저"
-    2026-05-29 — Wave 2-B 보다 우선 ship.
+    협동로봇 · 자동화 · optimus · 감속기)
 
-  **Wave 2-A Finviz broad sectors** (2026-05-29 ✅ — batch 1):
-  - `healthcare.py` — Drug Mfg · Biotech · Devices · Diagnostics · Plans · Care (별칭 헬스케어 · 의료기기 · 의료 · biotech · medical_devices · diagnostics)
-  - `financial.py` — Banks · Insurance · Asset Mgmt · Exchanges · Cards · Fintech (별칭 금융 · 은행 · 보험 · 자산운용 · fintech · 핀테크 · 결제)
-  - `energy.py` — Oil & Gas · Midstream · Refining · Services · Uranium · Coal (별칭 에너지 · 석유 · 원유 · lng · 우라늄 · smr · 원자력 · 원전 · 석탄)
-  - `technology.py` — Semi · Software · Hardware · IT Services · Comm Equip (별칭 기술 · 반도체 · 소프트웨어 · saas · cloud · cybersecurity · 하드웨어)
-  - `industrials.py` — A&D · Machinery · HVAC · Rail · Trucking · Airlines · Shipping (별칭 산업재 · 기계 · 건설 · 항공 · 철도 · 운송 · 해운 · hvac · 물류)
+  **L2 Sector themes (11, 미국 GICS-like 공식 분류)** — domain 표기는
+  "Industrials (산업재)" 형태 (영문 정식 + 한국어 보조). binding_layer_
+  taxonomy 는 각 sector 의 L3 sub-industry 정식 명칭. 각 모듈 ~150-
+  200 lines, regional_concentration 은 cross-market (US/KR/JP/TW/HK/CN/
+  EU) 종목 분포 명시.
+  - `industrials.py` — Industrials. L3 8: Aerospace & Defense / Airlines /
+    Building Products / Electrical Equipment / Commercial & Professional
+    Services / Machinery / Transportation & Logistics / Waste &
+    Environmental Services
+  - `healthcare.py` — Health Care. L3 3: Pharma & Biotech / Health Care
+    Equipment & Supplies / Health Care Providers & Services
+  - `financial.py` — Financials. L3 6: Banks / Capital Markets &
+    Investment / Consumer Finance / Insurance / BDCs / Digital Assets &
+    Cryptocurrency
+  - `energy.py` — Energy. L3 2: Oil/Gas/Consumable Fuels / Energy
+    Equipment & Services
+  - `technology.py` — Technology. L3 4: Software / Hardware & Equipment /
+    Semiconductors & Equipment / IT Services & Fintech
+  - `basic_materials.py` — Basic Materials. L3 5: Chemicals / Construction
+    Materials / Containers & Packaging / Metals & Mining / Forest & Paper
+  - `communication.py` — Communication Services. L3 4: Interactive Media
+    & Services / Entertainment / Gaming / Telecommunication Services
+  - `consumer_cyclical.py` — Consumer Discretionary. L3 6: Automotive /
+    Apparel Luxury / Hospitality & Leisure / Retail / Homebuilding /
+    Education Services
+  - `consumer_defensive.py` — Consumer Staples. L3 5: Beverages / Food
+    Retailing / Food Products / Household & Personal / Tobacco
+  - `real_estate.py` — Real Estate. L3 2: Real Estate Services / REITs
+  - `utilities.py` — Utilities. L3 3: Electric & Multi-Utilities /
+    Independent Power & Renewable / Gas & Water
 
-  3-layer 도메인 모델:
-  - L1 (Wave 1): cross-cutting trend cycle 베팅 — 좁고 niche binding layer
-  - L2 (Wave 2): Finviz 11 broad sector lens — 산업 전체 ToC 분석
-  - L3 (Wave 3 예정): Finviz ~150 industry 슬라이스 — 우선순위 ~30 부터
+  L1 ↔ L2 중복 허용 정책: `/screener defense` (L1 재무장 cycle niche) 와
+  `/screener industrials` (L2 산업재 sector 전체) 양쪽 동작. 사용자가
+  의도에 맞는 lens 선택. `/screener pharma` (L1 GLP-1/CDMO cycle) vs
+  `/screener healthcare` (L2 헬스케어 전체) 도 동일 패턴.
 
-  Wave 1 ↔ Wave 2 중복 허용 정책: `/screener defense` (Wave 1 재무장 cycle)
-  와 `/screener industrials` (Wave 2 산업재 sector 전체) 양쪽 동작. 사용자
-  의도에 맞는 lens 선택. Wave 2 모듈은 Finviz sector/industry 명칭 따름.
+  registry `_VALID_LAYERS = ("L1_TREND", "L2_SECTOR", "L3_INDUSTRY")`.
+  Layer 누락 → default `L1_TREND` (back-compat). `_validate()` 가 layer
+  값 + binding_layer_taxonomy/regional_concentration 최소 2개 (Energy/
+  Real Estate L2 가 공식 L3 2개씩) 체크.
 
-  **Wave 2-B 예정**: basic_materials · communication · consumer_cyclical ·
-  consumer_defensive · real_estate · utilities (6 모듈).
+  **Phase B 예정** — L3 industry 점진 add (우선순위 12 산업 batch1):
+  Semiconductors / Banks Diversified / Banks Regional / Major Pharma /
+  Biotechnology / Medical Devices / Oil Gas E&P / Oil Gas Midstream /
+  Software Infrastructure / Aerospace & Defense / Auto Manufacturers /
+  Health Insurance. 나머지 36 산업 후속 batches.
+
+  대시보드 페이지 + Telegram `/screener_list` 모두 L1/L2/L3 layer 별
+  그룹핑. 변경 이력은 footer 한 줄 (`📜 최근 변경 (ts) — 추가 ... → 총
+  N개`) — 사용자 요청 "변경이력으로 남기지 말고 그냥 3-layer 기준" 반영.
 - `/screener_cost` 텔레그램 명령 LIVE — 별도 비용 카드 (sv_cost 패턴).
 - Phase β orchestration: Pro Phase 1·2 (JSON 후보) → ticker 검증 +
   yfinance mcap-based tier 강제 → Phase 3 build_instrument_context
@@ -875,25 +910,19 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
     overlay (`_instrument_info` 단일 지점, downstream 전체 혜택)
   - Markdown 금지 (`**`, `*`, `##` literal noise 차단 — HTML 만)
 
-**다음 작업 — Wave 2-B + Wave 3 + 캐시 + 자유텍스트:**
-- Wave 2-B (Finviz 잔여 6 sector): basic_materials · communication ·
-  consumer_cyclical · consumer_defensive · real_estate · utilities.
-  - basic_materials: 구리·금 mining + 화학 specialty + rare earth +
-    농업 inputs + 철강/알루미늄 (rare earth/농업이 여기로 흡수)
-  - consumer_cyclical: Auto + 호텔·항공 + Retail + 럭셔리 + 주택건설
-    (럭셔리가 여기로 흡수)
-  - consumer_defensive: 식음료 + Tobacco/Alcohol + 슈퍼마켓
-  - communication: Telecom + 미디어/광고 + 인터넷·소셜 + 스트리밍
-  - real_estate: REIT (Industrial · Data Center · Office · Hotel)
-  - utilities: Electric Regulated + Gas + Water + Renewable IPP
-- Wave 3 (Finviz industry split): ~30 high-volume industry 부터 점진 add
-  (semiconductors · banks_regional · oil_gas_midstream · medical_devices
-  · auto_manufacturers · insurance_p_and_c 등). 좁은 sub-industry lens.
+**다음 작업 — Phase B L3 industry + 캐시 + 자유텍스트:**
+- Phase B L3 batch1 (12 우선순위 산업): Semiconductors · Banks
+  Diversified · Banks Regional · Major Pharma · Biotechnology · Medical
+  Devices · Oil Gas E&P · Oil Gas Midstream · Software Infrastructure ·
+  Aerospace & Defense · Auto Manufacturers · Health Insurance. 각 module
+  은 좁고 깊은 sub-industry binding constraint focus.
+- Phase B batch2~4: 나머지 36 L3 산업 점진 add. 총 48 L3 + 11 L2 +
+  6 L1 = 65 도메인 (Telegram cap 100/scope 안전).
 - 도메인별 24h 캐시: `~/.tradingagents/screener_cache/{slug}_YYYY
   -MM-DD.json` 으로 같은 도메인 24h 내 재호출 시 Pro skip + ₩0 반환.
   `/screener {slug} fresh` flag 로 강제 재실행.
-- Wave ∞: `/screener <freetext>` 자유 입력 → Pro 가 on-the-fly theme
-  dict 생성 후 registry 에 ad-hoc 등록.
+- 자유텍스트 도메인: `/screener <freetext>` 자유 입력 → Pro 가
+  on-the-fly theme dict 생성 후 registry 에 ad-hoc 등록.
 
 ## Bottleneck Screener — 설계 메모리 (origin 2026-05-28, kept for reference)
 

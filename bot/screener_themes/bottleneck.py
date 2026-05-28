@@ -15,6 +15,7 @@ from __future__ import annotations
 
 THEME = {
     "domain": "AI Data Center Buildout",
+    "layer": "L1_TREND",
     "aliases": [
         "bottleneck",
         "ai",

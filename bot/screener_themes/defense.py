@@ -20,6 +20,7 @@ from __future__ import annotations
 
 THEME = {
     "domain": "Defense, Aerospace & Space",
+    "layer": "L1_TREND",
     "aliases": [
         "defense",
         "defence",

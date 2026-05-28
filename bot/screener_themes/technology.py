@@ -1,32 +1,20 @@
-"""Technology — Wave 2 broad sector (Finviz Technology).
+"""Technology — L2 Sector (미국 정식 분류 GICS-like).
 
-Finviz Technology industries: Semiconductors · Semiconductor Equipment &
-Materials · Software - Infrastructure · Software - Application · IT Services
-· Communication Equipment · Computer Hardware · Consumer Electronics ·
-Electronic Components · Scientific & Technical Instruments.
+L3 sub-industries (4):
+ 1. Software (Infrastructure + Application)
+ 2. Hardware & Equipment (Tech Hardware + Storage + Comm Equipment)
+ 3. Semiconductors & Equipment (Design + Equipment + EDA + IP)
+ 4. IT Services & Fintech (IT Services + Consulting + Fintech + Data Processing)
 
-ToC 관점 — Wave 1 bottleneck (AI Data Center 니치 lens) 보다 광범위:
- 1) Semiconductor cyclical recovery — DRAM/NAND 가격 bottom 통과 (2026
-    H1), HBM/AI logic 은 ASP premium 유지. Foundry capacity 는 TSMC N2/A16
-    가속 + Samsung 3나 yield 우려.
- 2) Semi Equipment - ASML High-NA 도입 + Lam/AMAT/KLAC 에쳐/CVD/계측
-    선행지표. 美 BIS 對中 수출규제 4차 라운드 (2025-12) 이후 EU/JP 동조
-    여부.
- 3) Software Infrastructure - Cybersecurity (PANW/CRWD/NET) 합병 wave
-    + Data Cloud (SNOW/DDOG/MDB) + Database (MSFT Fabric / Oracle Cloud).
- 4) Software Application - SaaS 가격 인상 사이클 + AI agent SaaS layer
-    (Salesforce Agentforce / Microsoft Copilot Studio).
- 5) Hardware (DELL/HPE/PSTG/NTAP) - 서버 OEM 이 GPU 매출 의존, NIM
-    margin 낮음. Storage 는 AI training/inference 수요로 회복.
- 6) Communication Equipment (CSCO/ANET/JNPR) - AI fabric switch 수혜
-    (ANET dominant) vs 일반 ethernet 둔화.
- 7) IT Services (ACN/IBM/INFY) - GenAI 가 인력 outsourcing 모델 disrupt.
+Wave 1 trend `bottleneck.py` (AI Data Center niche) 보다 광범위 — sector
+전체. 다국적 종목 (US/TW/KR/JP/CN/EU) 분포 명시.
 """
 
 from __future__ import annotations
 
 THEME = {
-    "domain": "Technology (Finviz Sector — Semi · Software · Hardware · IT Services · Comm Equipment)",
+    "domain": "Technology (기술)",
+    "layer": "L2_SECTOR",
     "aliases": [
         "technology",
         "tech",
@@ -48,39 +36,25 @@ THEME = {
     ],
     "horizon": "6-18 months",
     "binding_layer_taxonomy": [
-        "Semiconductors — Logic (TSMC/Samsung/Intel · AI accelerator)",
-        "Semiconductors — Memory (HBM · DRAM · NAND)",
-        "Semiconductor Equipment & Materials (ASML/AMAT/LRCX/KLAC)",
-        "Software — Infrastructure (Cybersec · Data Cloud · DB · Observability)",
-        "Software — Application (SaaS · AI agent layer)",
-        "IT Services (ACN/IBM/INFY · GenAI disruption)",
-        "Communication Equipment (AI fabric switch · 5G RAN)",
-        "Computer Hardware (Server OEM · Storage · Networking)",
-        "Consumer Electronics (Apple · Sony · Samsung Electronics)",
-        "Electronic Components + Distribution",
+        "Software (소프트웨어 — Infrastructure + Application)",
+        "Hardware & Equipment (하드웨어 및 장비 — Tech Hardware + Storage + Comm Equipment)",
+        "Semiconductors & Equipment (반도체 및 장비 — Design + Equipment + EDA + IP)",
+        "IT Services & Fintech (IT 서비스 및 핀테크)",
     ],
     "catalyst_types": [
-        "NVIDIA Blackwell/Rubin 출하량 + Hyperscaler AI capex 가이드",
-        "DRAM/NAND spot 가격 + HBM3E/HBM4 양산 비중",
+        "NVIDIA Blackwell/Rubin 출하량 + Hyperscaler AI capex 가이드 (MSFT/META/GOOG/AMZN)",
+        "DRAM/NAND spot 가격 + HBM3E/HBM4 양산 비중 (Samsung/SK Hynix/Micron)",
         "ASML High-NA EUV 첫 양산 도입 + TSMC N2/A16 + Samsung 3나 yield",
         "美 BIS 對中 수출규제 4차 + EU/JP 동조 + entity list 확장",
         "Software 분기 net revenue retention + AI agent 채택률 데이터",
-        "SaaS 가격 인상 사이클 + Salesforce/MSFT/Oracle 신규 product",
-        "Cybersecurity 합병 wave (Palo Alto Platform-ization)",
+        "SaaS 가격 인상 사이클 + Salesforce Agentforce / MSFT Copilot Studio 매출",
+        "Cybersecurity 합병 wave (Palo Alto Platform-ization · CRWD M&A)",
         "Apple iPhone 16/17 사이클 + Vision Pro 채택 + AAPL AI 후행 risk",
     ],
     "regional_concentration": {
-        "Semiconductors — Logic / Foundry": "TW (TSMC 2330.TW / UMC 2303.TW), KR (Samsung 005930.KS), US (Intel INTC / GlobalFoundries GFS / Micron MU), CN (SMIC 0981.HK / 688981.SS)",
-        "Semiconductors — Memory (HBM/DRAM/NAND)": "KR (Samsung 005930.KS / SK Hynix 000660.KS), US (Micron MU), JP (Kioxia 비상장)",
-        "Semiconductors — Fabless Logic": "US (NVIDIA NVDA / AMD AMD / Broadcom AVGO / Qualcomm QCOM / Marvell MRVL / Texas Instruments TXN / Analog Devices ADI / NXP NXPI / Microchip MCHP / Lattice LSCC / onsemi ON / Cirrus CRUS), TW (MediaTek 2454.TW / Realtek 2379.TW / Novatek 3034.TW), KR (LX세미콘 108320.KQ)",
-        "Semiconductor Equipment & Materials": "NL (ASML ASML / ASM International ASM), US (Applied Materials AMAT / Lam Research LRCX / KLA KLAC / Onto Innovation ONTO / Axcelis ACLS / Veeco VECO / Entegris ENTG / Photronics PLAB), JP (Tokyo Electron 8035.T / Disco 6146.T / Advantest 6857.T / Screen 7735.T / Lasertec 6920.T), KR (한미반도체 042700.KS / 원익IPS 240810.KQ / 주성엔지니어링 036930.KQ / 동진쎄미켐 005290.KS)",
-        "Software — Infrastructure (Cybersec)": "US (Palo Alto Networks PANW / CrowdStrike CRWD / Fortinet FTNT / Zscaler ZS / Cloudflare NET / Okta OKTA / SentinelOne S / Rapid7 RPD / Tenable TENB / Qualys QLYS / CyberArk CYBR), IL (Check Point CHKP)",
-        "Software — Infrastructure (Data Cloud / DB)": "US (Snowflake SNOW / Datadog DDOG / MongoDB MDB / Confluent CFLT / Elastic ESTC / HashiCorp HCP / GitLab GTLB / JFrog FROG / Dynatrace DT / New Relic NEWR), DE (SAP SAP)",
-        "Software — Application (SaaS + AI agent)": "US (Salesforce CRM / Microsoft MSFT / Oracle ORCL / Adobe ADBE / Intuit INTU / ServiceNow NOW / Workday WDAY / Atlassian TEAM / HubSpot HUBS / Shopify SHOP / Asana ASAN / monday.com MNDY / Smartsheet SMAR)",
-        "IT Services": "US (Accenture ACN / IBM IBM / Cognizant CTSH / DXC DXC / EPAM EPAM), IN (Infosys INFY / Wipro WIT / TCS TCS.NS / HCL Tech HCLTECH.NS / Tech Mahindra TECHM.NS), JP (NTT Data 9613.T / Nomura Research 4307.T)",
-        "Communication Equipment": "US (Cisco CSCO / Arista ANET — AI fabric leader / Juniper JNPR / Motorola Solutions MSI / F5 FFIV / Ciena CIEN / NetGear NTGR / Lumentum LITE / Coherent COHR), CN (ZTE 0763.HK / Huawei 비상장)",
-        "Computer Hardware + Storage": "US (Apple AAPL / Dell DELL / HP Inc HPQ / HPE HPE / NetApp NTAP / Pure Storage PSTG / Super Micro SMCI / Western Digital WDC / Seagate STX), TW (Hon Hai 2317.TW / Quanta 2382.TW / Wistron 3231.TW)",
-        "Consumer Electronics": "US (Apple AAPL / GoPro GPRO / Sonos SONO / Roku ROKU), JP (Sony 6758.T / Panasonic 6752.T / Nintendo 7974.T), KR (Samsung Electronics 005930.KS / LG Electronics 066570.KS), CN (Xiaomi 1810.HK / Lenovo 0992.HK)",
-        "Electronic Components + Distribution": "US (Amphenol APH / TE Connectivity TEL / Corning GLW / CDW CDW / Arrow ARW / Avnet AVT / Belden BDC / Vishay VSH), JP (Murata 6981.T / TDK 6762.T / Kyocera 6971.T / Hirose 6806.T)",
+        "Software": "Infrastructure US (Microsoft MSFT · Oracle ORCL · Snowflake SNOW · Datadog DDOG · MongoDB MDB · Splunk SPLK · CrowdStrike CRWD · Palo Alto PANW · Fortinet FTNT · Zscaler ZS · Okta OKTA · Cloudflare NET · Atlassian TEAM · GitLab GTLB · HashiCorp HCP · Confluent CFLT · Elastic ESTC · Dynatrace DT · JFrog FROG), Application US (Salesforce CRM · Adobe ADBE · Intuit INTU · ServiceNow NOW · Workday WDAY · Autodesk ADSK · Zoom ZM · Palantir PLTR · HubSpot HUBS · Trade Desk TTD · DocuSign DOCU · Twilio TWLO · Shopify SHOP · Asana ASAN · monday MNDY), EU (SAP SAP · Dassault DSY.PA), IL (Check Point CHKP), KR (네이버 035420.KS · 카카오 035720.KS · 한글과컴퓨터 030520.KQ · 더존비즈온 012510.KS)",
+        "Hardware & Equipment": "Tech Hardware & Storage (Apple AAPL · HP HPQ · Dell DELL · HPE HPE · NetApp NTAP · Western Digital WDC · Seagate STX · Super Micro SMCI · Pure Storage PSTG), Communications Equipment (Cisco CSCO · Arista ANET · Juniper JNPR · Motorola Solutions MSI · Ciena CIEN · F5 FFIV · Coherent COHR · Lumentum LITE), TW (Hon Hai 2317.TW · Quanta 2382.TW · Wistron 3231.TW · Compal 2324.TW · Inventec 2356.TW · Pegatron 4938.TW · Asustek 2357.TW), KR (Samsung Electronics 005930.KS · LG Electronics 066570.KS), JP (Sony 6758.T · Panasonic 6752.T · Nintendo 7974.T · Fujitsu 6702.T · NEC 6701.T), CN (Lenovo 0992.HK · Xiaomi 1810.HK · ZTE 0763.HK · Huawei 비상장)",
+        "Semiconductors & Equipment": "Design & Manufacturing (NVIDIA NVDA · Broadcom AVGO · TSMC TSM · AMD AMD · Intel INTC · Qualcomm QCOM · Texas Instruments TXN · Micron MU · Analog Devices ADI · NXP NXPI · Microchip MCHP · Marvell MRVL · Skyworks SWKS · Lattice LSCC · onsemi ON · Cirrus CRUS), Memory (Samsung 005930.KS · SK Hynix 000660.KS · Micron MU · Kioxia 비상장), Foundry (TSMC 2330.TW · UMC 2303.TW · Samsung 005930.KS · GlobalFoundries GFS · SMIC 0981.HK · 688981.SS), Fabless TW (MediaTek 2454.TW · Realtek 2379.TW · Novatek 3034.TW), Equipment (ASML ASML · Applied Materials AMAT · Lam Research LRCX · KLA KLAC · Onto ONTO · Axcelis ACLS · Entegris ENTG · Photronics PLAB · Tokyo Electron 8035.T · Disco 6146.T · Advantest 6857.T · Lasertec 6920.T · 한미반도체 042700.KS · 원익IPS 240810.KQ · 주성엔지니어링 036930.KQ), EDA (Synopsys SNPS · Cadence CDNS · Ansys ANSS), IP (Arm Holdings ARM)",
+        "IT Services & Fintech": "IT Services (Accenture ACN · IBM IBM · Cognizant CTSH · DXC DXC · EPAM EPAM), IN (Infosys INFY · Wipro WIT · TCS TCS.NS · HCL Tech HCLTECH.NS · Tech Mahindra TECHM.NS), JP (NTT Data 9613.T · Nomura Research 4307.T), Fintech & Data Processing (Visa V · Mastercard MA · PayPal PYPL · Block SQ · Fiserv FISV · Global Payments GPN · Adyen ADYEY · Robinhood HOOD · SoFi SOFI · Affirm AFRM), EU (Worldline WLN.PA · Nexi NEXI.MI), KR (NHN KCP 060250.KQ · KG이니시스 035600.KQ · 다날 064260.KQ)",
     },
 }

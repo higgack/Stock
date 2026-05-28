@@ -1377,34 +1377,52 @@ def _format_screener_domains_list() -> str:
     클릭 한 번에 입력창에 prefill, 엔터 한 번에 실행. 사용자 예시
     (/guide_lookup / /find_all 패턴) 와 동일 UX. 핸들러는 ``register_
     dynamic_screener_handlers()`` 에서 일괄 등록."""
+    from collections import defaultdict
     from bot.screener_themes import list_domains
     ds = list_domains()
+    by_layer: dict[str, list[dict]] = defaultdict(list)
+    for d in ds:
+        by_layer[d.get("layer") or "L1_TREND"].append(d)
+    _layer_meta = [
+        ("L1_TREND",
+         "📈 L1 Trend",
+         "Cross-cutting cycle 베팅"),
+        ("L2_SECTOR",
+         "🏢 L2 Sector",
+         "11 공식 sector (미국 GICS-like)"),
+        ("L3_INDUSTRY",
+         "🔬 L3 Industry",
+         "각 L2 아래 sub-industry"),
+    ]
     lines = [
         f"📊 <b>Bottleneck Screener — 도메인 목록</b> ({len(ds)}개)",
         "",
         "각 줄의 명령어 클릭 → 입력창 prefill → 엔터 1회로 즉시 실행.",
-        "별칭은 <code>/screener &lt;별칭&gt;</code> 로 지원 "
-        "(예: <code>/screener 전기차</code>, <code>/screener 의료기기</code>).",
+        "별칭은 <code>/screener &lt;별칭&gt;</code> 로 지원.",
         "",
     ]
-    for d in ds:
-        slug = d["slug"]
-        domain = d["domain"]
-        aliases = [a for a in d["aliases"] if a.lower() != slug]
-        alias_str = ""
-        if aliases:
-            alias_str = f"\n   별칭: {', '.join(aliases[:8])}" + (
-                f" 외 {len(aliases)-8}개" if len(aliases) > 8 else ""
-            )
-        # /screener_<slug> 는 Telegram client 가 자동 hyperlink 인식 →
-        # 클릭 시 input 에 prefill, 엔터로 실행.
-        lines.append(f"/screener_{slug} — <b>{domain}</b>{alias_str}")
+    for layer_key, layer_label, layer_desc in _layer_meta:
+        items = by_layer.get(layer_key, [])
+        if not items:
+            continue
+        lines.append(f"━━━ <b>{layer_label}</b> ({len(items)}개) — {layer_desc} ━━━")
         lines.append("")
+        for d in items:
+            slug = d["slug"]
+            domain = d["domain"]
+            aliases = [a for a in d["aliases"] if a.lower() != slug]
+            alias_str = ""
+            if aliases:
+                alias_str = f"\n   별칭: {', '.join(aliases[:6])}" + (
+                    f" 외 {len(aliases) - 6}개" if len(aliases) > 6 else ""
+                )
+            lines.append(f"/screener_{slug} — <b>{domain}</b>{alias_str}")
+            lines.append("")
     lines += [
-        "<i>3-layer 도메인 모델 — L1 Trend (좁은 cycle 베팅) / "
-        "L2 Sector (Finviz broad) / L3 Industry (예정).</i>",
+        "<i>L3 industry 도메인은 점진 추가 예정 (우선순위 12 산업 →</i>"
+        " <i>나머지 36 산업).</i>",
         "",
-        "📜 변경 이력 전체: <code>archive/screener_domains.html</code>",
+        "📜 변경 이력: <code>archive/screener_domains.html</code> 페이지 하단 footer",
     ]
     return "\n".join(lines)
 

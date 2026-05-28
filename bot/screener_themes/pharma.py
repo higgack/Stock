@@ -30,6 +30,7 @@ from __future__ import annotations
 
 THEME = {
     "domain": "Biotech & Pharma (GLP-1 / CDMO / Biosimilar)",
+    "layer": "L1_TREND",
     "aliases": [
         "pharma",
         "biotech",

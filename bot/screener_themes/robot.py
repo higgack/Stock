@@ -34,6 +34,7 @@ from __future__ import annotations
 
 THEME = {
     "domain": "Robotics & Humanoid Buildout",
+    "layer": "L1_TREND",
     "aliases": [
         "robot",
         "robots",

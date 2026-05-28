@@ -52,6 +52,19 @@ _REQUIRED_KEYS = (
     "regional_concentration",
 )
 
+# 3-layer 도메인 모델 (2026-05-29 사용자 정식 분류 = 미국 GICS-like):
+#  - L1_TREND   : cross-cutting cycle 베팅, 공식 sector 분류 외 (AI DC /
+#                 EV / 방산 / 바이오 cycle / 신재생 / 로봇 등).
+#  - L2_SECTOR  : 11 공식 sector (Industrials / Health Care / Financials
+#                 / Consumer Discretionary / Consumer Staples / Energy /
+#                 Basic Materials / Real Estate / Utilities / Communication
+#                 Services / Technology).
+#  - L3_INDUSTRY: 각 L2 아래 sub-industry (예: Industrials → Aerospace
+#                 & Defense / Airlines / Building Products ...). 더
+#                 깊이는 없음 (L4 미사용).
+# Layer 표기 누락은 default L1_TREND 로 fallback (back-compat).
+_VALID_LAYERS = ("L1_TREND", "L2_SECTOR", "L3_INDUSTRY")
+
 
 def _validate(slug: str, theme: dict) -> None:
     """Fail-fast import-time check. Catches typos in dict keys before they
@@ -60,12 +73,24 @@ def _validate(slug: str, theme: dict) -> None:
     for k in _REQUIRED_KEYS:
         if k not in theme:
             raise ValueError(f"theme '{slug}' missing required key: {k}")
-    if not isinstance(theme["binding_layer_taxonomy"], list) or len(theme["binding_layer_taxonomy"]) < 3:
-        raise ValueError(f"theme '{slug}' binding_layer_taxonomy must be a list of ≥3 layers")
+    # Min 2 layers (Energy + Real Estate L2 in user's official taxonomy
+    # each have only 2 L3 sub-industries — Oil/Gas + Energy Equipment;
+    # Real Estate Services + REITs). 2026-05-29 user taxonomy update
+    # relaxed from min 3 to accommodate the official sector structure.
+    if not isinstance(theme["binding_layer_taxonomy"], list) or len(theme["binding_layer_taxonomy"]) < 2:
+        raise ValueError(f"theme '{slug}' binding_layer_taxonomy must be a list of ≥2 layers")
     if not isinstance(theme["catalyst_types"], list) or len(theme["catalyst_types"]) < 3:
         raise ValueError(f"theme '{slug}' catalyst_types must be a list of ≥3 catalysts")
-    if not isinstance(theme["regional_concentration"], dict) or len(theme["regional_concentration"]) < 3:
-        raise ValueError(f"theme '{slug}' regional_concentration must be a dict of ≥3 SPOF entries")
+    # Min 2 SPOF entries — Energy/Real Estate L2 each have 2 L3 sub-
+    # industries and a matching 2-entry regional map. Relaxed alongside
+    # binding_layer_taxonomy 2026-05-29.
+    if not isinstance(theme["regional_concentration"], dict) or len(theme["regional_concentration"]) < 2:
+        raise ValueError(f"theme '{slug}' regional_concentration must be a dict of ≥2 SPOF entries")
+    layer = theme.get("layer")
+    if layer is not None and layer not in _VALID_LAYERS:
+        raise ValueError(
+            f"theme '{slug}' layer={layer!r} not in {_VALID_LAYERS}"
+        )
 
 
 def _discover() -> None:
@@ -138,6 +163,7 @@ def list_domains() -> list[dict]:
             "slug": slug,
             "domain": theme.get("domain", slug),
             "aliases": list(theme.get("aliases", []) or []),
+            "layer": theme.get("layer", "L1_TREND"),
         })
     return out
 

@@ -2876,11 +2876,25 @@ def _render_screener_domains_page() -> str:
     step. Sourced from `bot.screener_history.load_history()`.
     """
     import html as _html
+    from collections import defaultdict
     from bot.screener_themes import list_domains
     from bot.screener_history import load_history
     ds = list_domains()
-    items: list[str] = []
+
+    # Group by layer (L1_TREND / L2_SECTOR / L3_INDUSTRY) per user request
+    # 2026-05-29: dashboard reorganized by 3-layer model; previous full
+    # change-history section collapsed into a single footer line ("최근
+    # 추가 N개" — actionable summary instead of chronological log).
+    _LAYER_META = [
+        ("L1_TREND",    "📈 L1 Trend",   "Cross-cutting cycle 베팅 — 공식 sector 분류 외"),
+        ("L2_SECTOR",   "🏢 L2 Sector",  "11 공식 sector (미국 GICS-like)"),
+        ("L3_INDUSTRY", "🔬 L3 Industry","각 L2 아래 sub-industry"),
+    ]
+    by_layer: dict[str, list[dict]] = defaultdict(list)
     for d in ds:
+        by_layer[d.get("layer") or "L1_TREND"].append(d)
+
+    def _render_card(d: dict) -> str:
         slug = d["slug"]
         domain = _html.escape(d["domain"])
         aliases = [a for a in d["aliases"] if a.lower() != slug]
@@ -2890,10 +2904,9 @@ def _render_screener_domains_page() -> str:
                 f'<span class="alias">{_html.escape(a)}</span>' for a in aliases
             )
             alias_html = f'<div class="aliases">{chips}</div>'
-        # Per-slug shortcut commands (`/screener_<slug>`) are clickable
-        # in Telegram — single tap fires the right domain run, no manual
-        # typing of the slug needed. Same pattern as /find_all etc.
-        items.append(
+        # Per-slug shortcut commands (`/screener_<slug>`) — single tap
+        # fires the right domain run.
+        return (
             f'<div class="dom-card">'
             f'<div class="dom-head">'
             f'<code class="slug">/screener_{_html.escape(slug)}</code>'
@@ -2902,52 +2915,65 @@ def _render_screener_domains_page() -> str:
             f'{alias_html}'
             f'</div>'
         )
-    body = "\n".join(items) if items else (
+
+    sections: list[str] = []
+    for layer_key, layer_label, layer_desc in _LAYER_META:
+        cards = by_layer.get(layer_key, [])
+        if not cards:
+            continue
+        cards_html = "\n".join(_render_card(d) for d in cards)
+        sections.append(
+            f'<h2 class="layer-h">{layer_label} '
+            f'<span class="layer-count">({len(cards)}개)</span></h2>'
+            f'<p class="sub layer-desc">{_html.escape(layer_desc)}</p>'
+            f'{cards_html}'
+        )
+    body = "\n".join(sections) if sections else (
         '<div class="empty">아직 등록된 도메인이 없습니다.</div>'
     )
 
-    # 변경 이력 — newest first. Each entry shows ts (KST) + added /
-    # removed slugs. The initial-seed entry is labeled distinctly.
+    # 변경 이력 footer — single line summary (사용자 요청 2026-05-29
+    # "변경이력으로 남기지 말고 그냥 3-layer 기준으로 나눠져 ... 추가,
+    # 변경, 제거가 있으면 그걸 반영"). Full chronological log replaced
+    # by a tight summary of the most recent change: latest ts + added
+    # slugs. Initial seed entry suppressed from the footer.
     history = load_history()
     history_html = ""
     if history:
-        hrows: list[str] = []
-        for e in history:
-            ts = _html.escape(str(e.get("ts", ""))[:19].replace("T", " "))
-            label = "🌱 초기 등록" if e.get("initial") else "🆕 변경"
-            added = e.get("added") or []
-            removed = e.get("removed") or []
-            names = e.get("added_with_names") or {}
-            added_html = ""
-            if added:
-                chips = "".join(
-                    f'<span class="hist-add" title="{_html.escape(names.get(s, ""))}">'
-                    f'<code>/screener_{_html.escape(s)}</code></span>'
-                    for s in added
-                )
-                added_html = f'<div class="hist-row"><b>추가</b>: {chips}</div>'
-            removed_html = ""
-            if removed:
-                chips = "".join(
-                    f'<span class="hist-rem"><code>{_html.escape(s)}</code></span>'
-                    for s in removed
-                )
-                removed_html = f'<div class="hist-row"><b>제거</b>: {chips}</div>'
-            hrows.append(
-                f'<div class="hist-entry">'
-                f'<div class="hist-head"><span class="hist-label">{label}</span>'
-                f'<span class="hist-ts">{ts}</span>'
-                f'<span class="hist-total">→ 총 {e.get("total_after", 0)}개</span>'
-                f'</div>{added_html}{removed_html}</div>'
-            )
-        history_html = (
-            '<h2 style="margin-top:36px;padding-top:16px;border-top:1px solid var(--border)">'
-            '📜 변경 이력</h2>'
-            '<p class="sub">새 도메인이 추가/제거될 때마다 자동 기록. '
-            '대시보드 재생성 시 (분석 직후 / auto_resolve 12h / 봇 시작 시) '
-            '체크 → 변화 감지 시 entry append.</p>'
-            + "\n".join(hrows)
+        recent_change = next(
+            (e for e in history if not e.get("initial")),
+            None,
         )
+        if recent_change:
+            ts = _html.escape(
+                str(recent_change.get("ts", ""))[:16].replace("T", " ")
+            )
+            added = recent_change.get("added") or []
+            removed = recent_change.get("removed") or []
+            parts: list[str] = []
+            if added:
+                parts.append(
+                    "추가 "
+                    + ", ".join(
+                        f'<code>/screener_{_html.escape(s)}</code>' for s in added[:5]
+                    )
+                    + (f" 외 {len(added) - 5}개" if len(added) > 5 else "")
+                )
+            if removed:
+                parts.append(
+                    "제거 "
+                    + ", ".join(
+                        f'<code>{_html.escape(s)}</code>' for s in removed[:5]
+                    )
+                    + (f" 외 {len(removed) - 5}개" if len(removed) > 5 else "")
+                )
+            history_html = (
+                '<p class="sub history-footer" style="margin-top:24px;'
+                'padding-top:12px;border-top:1px solid var(--border)">'
+                f'📜 최근 변경 ({ts} KST) — '
+                + " · ".join(parts) +
+                f' → 총 {recent_change.get("total_after", 0)}개</p>'
+            )
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -2985,6 +3011,17 @@ def _render_screener_domains_page() -> str:
 .hist-rem code {{ background:rgba(239,68,68,0.12); color:#EF4444;
   padding:2px 8px; border-radius:4px; font-size:11px;
   text-decoration:line-through; }}
+/* 3-layer grouping (L1 / L2 / L3) — section headers between domain
+   card stacks. 2026-05-29 사용자 요청 reorganization. */
+.layer-h {{ font-size:18px; margin:32px 0 4px;
+  padding-top:18px; border-top:1px solid var(--border); }}
+.layer-h:first-of-type {{ margin-top:24px; border-top:none; padding-top:0; }}
+.layer-count {{ color:var(--fg-soft); font-size:14px; font-weight:400;
+  margin-left:6px; }}
+.layer-desc {{ margin:0 0 16px; }}
+.history-footer code {{ background:rgba(16,185,129,0.10);
+  color:var(--accent); padding:1px 6px; border-radius:4px;
+  font-size:11px; }}
 </style>
 </head>
 <body>
