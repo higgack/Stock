@@ -169,6 +169,26 @@ OUTPUT FORMAT — Telegram HTML 호환. 다음 순서로 출력:
    thesis. 5거래일 트레이드 아님. NOAH /TICKER 로 deep dive 권장. 교육
    목적, 추천 아님.'
 
+6. 🤖 <b>TOP_3 MACHINE-PARSEABLE TAIL</b> — 출력의 **맨 마지막 줄에** 다음
+   JSON 블록 추가 (백엔드 outcome 추적용 — 5/15/30일 알파 자동 계산
+   파이프라인에 feed. 사용자에게는 화면에서 strip 처리):
+
+   <TOP_3_JSON>
+   [
+     {{"rank": 1, "ticker": "267260.KS", "tier": "M", "company": "HD Hyundai Electric", "thesis_line": "변압기 공급 부족 핵심 수혜주 — 3년+ 수주잔고"}},
+     {{"rank": 2, "ticker": "VRT", "tier": "L", "company": "Vertiv Holdings", "thesis_line": "..."}},
+     {{"rank": 3, "ticker": "089030.KQ", "tier": "S", "company": "Techwing", "thesis_line": "..."}}
+   ]
+   </TOP_3_JSON>
+
+   - ticker 는 yfinance 정확한 심볼 (예: '267260.KS', 'VRT', '0700.HK',
+     'TPRO.MI', 'MRN.PA') — 백엔드가 가격 fetch 에 그대로 사용.
+   - tier 는 AUTHORITATIVE TIER 값 (S/M/L).
+   - rank 1/2/3 만, 정확히 3개.
+   - thesis_line 은 한국어 1줄 (~80자 이내).
+   - 이 JSON block 은 본문 paragraph 도, master table 도 아니라 별도
+     machine-parseable tail. Disclaimer 후 출력.
+
 RULES — 절대:
 - 모든 외부 figure 에 날짜 stamp + FX stamp.
 - 추론과 sourced fact 분리.
@@ -507,8 +527,22 @@ def _validate_with_yfinance(tickers: set[str]) -> tuple[list[str], list[str]]:
 
 # ── Cost logging (KST-based, mirrors SV pattern) ──────────────────────────
 
+_NOAH_USAGE_LOG = os.path.expanduser("~/.tradingagents/usage.jsonl")
+_SCREENER_ARCHIVE_DIR = os.path.expanduser("~/.tradingagents/screener_archive")
+_SCREENER_MEMORY_LOG = os.path.expanduser(
+    "~/.tradingagents/memory/screener_memory.md"
+)
+
+
 def _log_usage(prompt_tok: int, output_tok: int, cost_krw: float, domain: str) -> None:
+    """Dual-log: screener_usage.jsonl (KST date-tagged, screener-specific)
+    + ~/.tradingagents/usage.jsonl (NOAH llm_call format) so screener Pro
+    calls flow into /usage aggregation alongside analyzer/researcher costs.
+    """
     from datetime import datetime, timezone, timedelta
+    import time
+
+    # (a) Screener-specific log
     try:
         os.makedirs(os.path.dirname(_USAGE_LOG), exist_ok=True)
         now = datetime.now(timezone(timedelta(hours=9)))
@@ -524,7 +558,126 @@ def _log_usage(prompt_tok: int, output_tok: int, cost_krw: float, domain: str) -
         with open(_USAGE_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as exc:
-        log.warning("screener: usage log failed: %s", exc)
+        log.warning("screener: screener_usage.jsonl write failed: %s", exc)
+
+    # (b) NOAH usage.jsonl in llm_call format — picked up by /usage and
+    # bot/dashboard cost card automatically.
+    try:
+        os.makedirs(os.path.dirname(_NOAH_USAGE_LOG), exist_ok=True)
+        cost_usd = cost_krw / _USD_TO_KRW
+        rec_noah = {
+            "ts": time.time(),
+            "type": "llm_call",
+            "model": "gemini-2.5-pro",
+            "prompt_tokens": prompt_tok,
+            "completion_tokens": output_tok,
+            "cost_usd": round(cost_usd, 6),
+            "subsystem": "screener",
+            "domain": domain,
+        }
+        with open(_NOAH_USAGE_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec_noah, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.warning("screener: NOAH usage.jsonl write failed: %s", exc)
+
+
+# ── Top-3 extraction + archive + memory log ──────────────────────────────
+
+_TOP3_TAG_RE = re.compile(
+    r"<TOP_3_JSON>\s*(\[.*?\])\s*</TOP_3_JSON>", re.DOTALL
+)
+
+
+def _extract_top3_json(output: str) -> tuple[list[dict], str]:
+    """Extract Top-3 JSON tail from Pro Phase 4·5 output. Returns
+    (top3_list, output_cleaned) where the cleaned output has the tag
+    stripped for user-visible display. Empty list + original output on
+    parse failure (Pro may have skipped the tail)."""
+    m = _TOP3_TAG_RE.search(output)
+    if not m:
+        return [], output
+    try:
+        top3 = json.loads(m.group(1))
+        if not isinstance(top3, list):
+            top3 = []
+    except json.JSONDecodeError as exc:
+        log.warning("screener: TOP_3_JSON parse failed: %s", exc)
+        top3 = []
+    cleaned = (output[:m.start()].rstrip()
+               + "\n"
+               + output[m.end():].lstrip()).strip()
+    return top3, cleaned
+
+
+def _save_screener_archive(
+    result: "ScreenerResult", top3: list[dict],
+) -> Optional[str]:
+    """Save the screener run to ~/.tradingagents/screener_archive/
+    YYYY-MM-DD/HHMMSS_{domain_slug}.json. Returns the saved path or None
+    on failure. Mirrors NOAH bot/archive.py pattern but date-grouped
+    instead of ticker-grouped."""
+    from datetime import datetime, timezone, timedelta
+    try:
+        now = datetime.now(timezone(timedelta(hours=9)))
+        date_dir = os.path.join(_SCREENER_ARCHIVE_DIR, now.date().isoformat())
+        os.makedirs(date_dir, exist_ok=True)
+        slug = re.sub(r"[^a-zA-Z0-9]+", "_", result.domain).strip("_").lower()[:40]
+        fname = f"{now.strftime('%H%M%S')}_{slug}.json"
+        path = os.path.join(date_dir, fname)
+        rec = {
+            "ts": now.isoformat(timespec="seconds"),
+            "domain": result.domain,
+            "raw_output": result.raw_output,
+            "validated_tickers": result.validated_tickers,
+            "rejected_tickers": result.rejected_tickers,
+            "elapsed_sec": round(result.elapsed_sec, 2),
+            "cost_krw": round(result.cost_krw, 4),
+            "top_3_picks": top3,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False, indent=2)
+        log.info("screener: archived to %s", path)
+        return path
+    except Exception as exc:
+        log.warning("screener: archive save failed: %s", exc)
+        return None
+
+
+def _log_screener_memory(domain: str, top3: list[dict]) -> None:
+    """Append Top-3 picks to screener_memory.md in NOAH-compatible TAG_RE
+    format so the outcome resolver (auto_resolve.py) can pick them up at
+    5/15/30 trading-day windows. Each line:
+        [YYYY-MM-DD | TICKER | screener·{domain_slug}·{tier}·rank{N} | pending]
+    """
+    if not top3:
+        return
+    from datetime import datetime, timezone, timedelta
+    try:
+        today = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+        slug = re.sub(r"[^a-zA-Z0-9]+", "_", domain).strip("_").lower()[:20]
+        os.makedirs(os.path.dirname(_SCREENER_MEMORY_LOG), exist_ok=True)
+        written = 0
+        with open(_SCREENER_MEMORY_LOG, "a", encoding="utf-8") as f:
+            for p in top3:
+                if not isinstance(p, dict):
+                    continue
+                ticker = (p.get("ticker") or "").strip().upper()
+                tier = (p.get("tier") or "?").strip()[:1].upper()
+                rank = p.get("rank")
+                company = (p.get("company") or "").strip()[:60]
+                thesis = (p.get("thesis_line") or "").strip()[:140]
+                if not ticker or rank not in (1, 2, 3):
+                    continue
+                rating = f"screener·{slug}·{tier}·rank{rank}"
+                f.write(f"[{today} | {ticker} | {rating} | pending]\n")
+                if company or thesis:
+                    line = company + (" — " + thesis if thesis else "")
+                    f.write(f"{line}\n")
+                f.write("<!-- ENTRY_END -->\n\n")
+                written += 1
+        log.info("screener: memory log appended (%d picks)", written)
+    except Exception as exc:
+        log.warning("screener: memory log append failed: %s", exc)
 
 
 # ── Phase β: 2-pass orchestration (Pro 1·2 + 병렬 context fetch + Pro 4·5) ─
@@ -903,14 +1056,31 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
     cost_krw = cost_usd * _USD_TO_KRW
     _log_usage(total_pt, total_ot, cost_krw, theme["domain"] + " (Phase β)")
 
-    return ScreenerResult(
+    # Extract Top-3 JSON tail before user display (strip from raw_output)
+    top3, p45_cleaned = _extract_top3_json(p45_text)
+    log.info("screener phase β/Top-3: %d picks extracted", len(top3))
+
+    result = ScreenerResult(
         domain=theme["domain"] + " (Phase β · 실시간 데이터)",
-        raw_output=p45_text,
+        raw_output=p45_cleaned,
         validated_tickers=validated,
         rejected_tickers=rejected,
         elapsed_sec=time.time() - started,
         cost_krw=cost_krw,
     )
+
+    # Archive + memory log (after successful run only). Both are best-effort
+    # — failure here doesn't block the user-visible result.
+    try:
+        _save_screener_archive(result, top3)
+    except Exception as exc:
+        log.warning("screener: archive write failed: %s", exc)
+    try:
+        _log_screener_memory(theme["domain"], top3)
+    except Exception as exc:
+        log.warning("screener: memory log failed: %s", exc)
+
+    return result
 
 
 def run_screener(domain: str = "bottleneck") -> Optional[ScreenerResult]:
