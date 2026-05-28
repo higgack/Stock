@@ -175,6 +175,35 @@ RULES — 절대:
   하면서 유동성 경고 미명시 시 reader 가 동일 size weight 로 오해
   가능 — 2026-05-29 외부 리뷰 surfaced).
 
+DEPTH REQUIREMENTS — Pro capacity 충분히 활용 의무 (2026-05-29 첫
+런이 ₩39 / ~3분 = capacity 의 ~12% 만 사용. 시장이 깊이를 요구한다):
+
+- **Master Table 행 수 하한 — 15행 이상**: 4-6 테마 × 3 티어 가 floor.
+  niche 가 부족하다 싶으면 sub-layer 더 깊게 (예: '액체냉각' 을 'QD
+  커넥터' + 'manifold' + 'TIM compound' 3개 sub-theme 으로 분해).
+  output 단축 절대 금지.
+
+- **각 행에 정량 수치 의무**: 추상 형용사 ('strong', 'leading') 만으로
+  rationale 작성 금지. months / units / MW / kW / dollars / % 같은
+  measurable 단위로 cite. 예시:
+    ❌ 'leading market share' / 'strong demand growth'
+    ✅ '시장 점유율 ~70% (FY24)' / 'backlog $2.4B (+45% QoQ)' /
+       '리드타임 38-week → 52-week' / 'ASP +28% (Q1 24 → Q1 25)'
+
+- **각 행에 sourced citation ≥2개**: Tier A·B·C 신호 중 최소 2개는
+  publisher + date 명시 ('Bloomberg 2026-04-12', 'TSMC Q1 24 call,
+  2024-04-18'). 모두 inferred 인 행은 conviction 낮음으로 강등 +
+  하단 별도 'low confidence — sourced data 부재' 섹션으로 격리.
+
+- **단락당 depth**: 'binding constraint' 단락 (Section 1) 최소 4문장 —
+  현 binding 어디 / why / 다음 binding 후보 layer + timing / 시장이
+  아직 못 잡은 신호. 'Top 3 conviction' 각 항목 2-3문장 (왜 지금 +
+  티어 + 접근 경로). 'Bottom line' 단일 종목 핵심 한 단락 (3-4문장).
+
+- **Date stamping rigor**: 모든 'as of' / 'FY' / 'Q' / 'H' 인용에 정확
+  한 calendar date 명시. 'recent' / '최근' 같은 모호한 시제 금지 —
+  반드시 specific date or quarter window.
+
 LANGUAGE — 출력 전체를 **한국어**로 작성. 산문·근거 설명·평가·결론·
 narrative·disclaimer 모두 한국어. 영어 paragraph / 영어 intro 문구
 ('Alright', 'Let's cut the noise', 'My job is to ...' 등) 절대 금지.
