@@ -105,6 +105,20 @@ def create_trader(llm):
                     " '52주 고점 근접 — Plan stop 보다 타이트하게 ¥X 로 조정함')."
                     " Entry Price 와 Position Size 도 동일 원칙 적용. Rule applies"
                     " to all analyses going forward (US + KR + JP + TW + CN_A + HK)."
+                    "\n\n STOP LOSS DIRECTION — LONG-ONLY (2382.TW 2026-05-28"
+                    " surfaced): 본 봇 사용자는 long-only 로 가정한다. 거래"
+                    " 액션이 'Sell(매도)' 일 때 이는 공매도(Short) 신규 진입이"
+                    " 아니라 '기존 롱 포지션 청산/축소' 를 의미한다. 따라서"
+                    " 어떤 액션(Buy/Hold/Sell)이든 Stop Loss 는 현재가보다"
+                    " 반드시 **낮은** 가격 — 즉 하방 지지선 이탈 시 손실을"
+                    " 막는 트리거 — 으로 제시해야 한다. 현재가보다 **높은**"
+                    " Stop (공매도 진입자 관점의 손절) 제시 절대 금지."
+                    " ❌ FORBIDDEN — 2382.TW 2026-05-28: 현재가 NT$312 인데"
+                    " 액션 Sell + Stop Loss NT$322 (현재가보다 높음) = 공매도"
+                    " 손절 관점으로 방향이 뒤집힌 모순. ✅ RIGHT: Sell 이면"
+                    " Stop 은 현재가 아래 지지선 (예: 50일 SMA / 직전 저점"
+                    " 하향 이탈가 NT$300 부근). Target 만 thesis 방향에 따라"
+                    " 위/아래로 두고, Stop 은 항상 현재가 아래로 고정."
                     + get_language_instruction()
                 ),
             },

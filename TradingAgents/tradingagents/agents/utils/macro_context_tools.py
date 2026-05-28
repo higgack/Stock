@@ -294,13 +294,23 @@ _MACRO_SANITY_RANGES: dict[str, tuple[float, float]] = {
     "CNY=X": (5.0, 9.0),         # USD/CNY
     "TWD=X": (25.0, 40.0),       # USD/TWD
     "HKD=X": (7.6, 8.0),         # USD/HKD (peg band)
-    "^KS11": (1500.0, 15000.0),   # KOSPI — expanded 2026-05 (index at ~7,847)
-    "^KQ11": (500.0, 3000.0),    # KOSDAQ — expanded 2026-05
-    "^N225": (15000.0, 80000.0), # Nikkei — expanded 2026-05
-    "^HSI": (15000.0, 35000.0),  # Hang Seng
-    "^TWII": (10000.0, 40000.0), # TAIEX — expanded 2026-05
-    "000300.SS": (3000.0, 6500.0),  # CSI 300
-    "^HSCE": (5000.0, 12000.0),  # HSCEI
+    # Equity-index ABSOLUTE ceilings are deliberately VERY wide (loose outer
+    # bound only — catch a zero / negative / 10x unit error). They are NOT the
+    # primary anomaly discriminator: hardcoded ceilings can't track secular
+    # bull-market drift (KOSPI / TAIEX / Nikkei all needed repeated manual
+    # bumps — 2382.TW 2026-05-28 TAIEX 43,525 false-flagged a legitimately
+    # high index). The scale-free 30D %-change guard below is the real
+    # doubling/halving catch (a yfinance 2x artifact = +100%, way past any
+    # real fast-market move). DO NOT re-tighten these to chase a specific
+    # index level — raise headroom generously and let the %-change guard
+    # catch true corruption. Rule applies to all markets going forward.
+    "^KS11": (1000.0, 30000.0),   # KOSPI
+    "^KQ11": (300.0, 8000.0),     # KOSDAQ
+    "^N225": (10000.0, 150000.0), # Nikkei
+    "^HSI": (8000.0, 80000.0),    # Hang Seng
+    "^TWII": (8000.0, 120000.0),  # TAIEX
+    "000300.SS": (1500.0, 20000.0),  # CSI 300
+    "^HSCE": (3000.0, 30000.0),   # HSCEI
 }
 
 
@@ -338,6 +348,13 @@ _MACRO_PCT_CHANGE_30D_LIMIT: dict[str, float] = {
     "CNY=X": 4.0,        # CNY: 5 → 4 (tightly managed)
     "TWD=X": 5.0,        # TWD: 6 → 5
     "HKD=X": 1.0,        # HKD peg: 1.5 → 1.0 (peg band 깨지면 즉시 의심)
+    # Equity indices: scale-free doubling/halving catch (2382.TW 2026-05-28).
+    # A yfinance 2x artifact = +100% 30D, far past any real fast-market move
+    # (even crash/melt-up months stay <~35%). 50% threshold passes legitimate
+    # bull-market drift but flags a corrupt doubled/halved print — this is the
+    # PRIMARY index sanity guard now that absolute ceilings are loose.
+    "^KS11": 50.0, "^KQ11": 50.0, "^N225": 50.0, "^HSI": 50.0,
+    "^TWII": 50.0, "000300.SS": 50.0, "^HSCE": 50.0,
 }
 
 

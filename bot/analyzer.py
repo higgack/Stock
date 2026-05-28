@@ -538,6 +538,23 @@ _CITED_RATING_RE = re.compile(
     r"\s*(?:등급|레이팅|콜)"
 )
 
+# Cited third-party analyst OPINIONS phrased as "...매수 의견" / "...매도 의견"
+# where the subject is a third-party (애널리스트 / 컨센서스 / N명 / 투자은행 /
+# 월가), NOT the analyst's own verdict. The bare "매수 의견" / "매도 의견" form
+# is in _STANCE_EXPLICIT_KEYWORDS as a strong own-verdict signal, so a cited
+# consensus opinion would be mislabeled as the analyst's stance.
+# 2382.TW 2026-05-28: the sentiment analyst's OWN conclusion was 관망(HOLD)
+# ("관망세 유지가 합리적") but the body said "애널리스트들의 ... 매수 의견은
+# 향후 주가 상승 ..." → stance mislabeled 매수. Same class as the 9988.HK
+# 매수 등급 bug, via 의견 instead of 등급. We require a third-party-attribution
+# token within ~25 chars BEFORE 매수/매도 의견 so the analyst's own
+# "매수 의견을 제시합니다" (no preceding attribution) is preserved.
+# Rule applies to all analyses going forward (US + KR + JP + TW + CN_A + HK).
+_CITED_OPINION_RE = re.compile(
+    r"(?:애널리스트|analyst|컨센서스|consensus|투자은행|증권가|증권사|"
+    r"월가|wall\s*street|\d+\s*명)[^.\n]{0,25}?(?:매수|매도)\s*의견"
+)
+
 # Conclusion VERDICT DECLARATION — the analyst's own bottom-line, written as
 # "투자 의견: HOLD" / "투자 의견은 매수" / "최종 의견 보유" / "결론: SELL".
 # These colon/은-는 forms were NOT covered by the literal explicit-keyword
@@ -737,6 +754,10 @@ def _extract_stance(body: str | None) -> str:
     # analyst's own verdict (9988.HK 2026-05-27 news analyst). Regex, not
     # literal, because the quote/space between 매수 and 등급 varies.
     lower = _CITED_RATING_RE.sub("○○", lower)
+    # Neutralise cited third-party "매수/매도 의견" (애널리스트들의 매수 의견 …)
+    # so a quoted consensus opinion can't win the explicit-keyword scan as if
+    # it were the analyst's own verdict (2382.TW 2026-05-28 sentiment analyst).
+    lower = _CITED_OPINION_RE.sub("○○", lower)
     # Neutralise technical / order-flow compounds (과매수 overbought, 순매도
     # net-sell, 매수세 buying-pressure, …) that embed 매수/매도 as a substring
     # so the bare-keyword fallback can't rfind them as a buy/sell verdict.

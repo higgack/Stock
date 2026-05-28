@@ -2399,6 +2399,12 @@ def _compute_technical_snapshot(ticker: str) -> str:
             "⛔ SINGLE SOURCE OF TRUTH 강제 적용 (FORM 2026-05-23 RSI hallucination 방지):",
             "   • 위 RSI(14) / MACD / 볼린저 수치가 이 분석의 유일한 canonical 값.",
             "   • 위와 다른 RSI / MACD / 볼린저 값을 독자 계산·추정·인용하는 것 FORBIDDEN.",
+            "   • 시장 분석가 전용: get_indicators / get_stock_data 툴은 추세 해석"
+            " (크로스오버·다이버전스 방향·지지/저항) 용도로만 사용하고, 요약표·본문에"
+            " 인용하는 RSI / MACD / 볼린저 '수치'는 반드시 위 canonical 값을 사용."
+            " 툴 재계산값이 위와 달라도 위 snapshot 이 우선 (2382.TW 2026-05-28:"
+            " 시장 MACD -1.61 vs 감정/뉴스 -1.792 불일치 — 시장 분석가가"
+            " get_indicators 재계산값을 인용한 cross-section 모순 케이스).",
             f"   • '과매수' 언급 조건: 위 RSI(14) [{rsi_str}] ≥ 75 인 경우에만 허용.",
             f"   • '과매도' 언급 조건: 위 RSI(14) [{rsi_str}] ≤ 25 인 경우에만 허용.",
             sep,
@@ -2926,12 +2932,15 @@ def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
                     f" / 'Advanced Semiconductor Engineering' instead"
                     f" of correct 'Realtek Semiconductor'; same defect"
                     f" for 3034.TW and 8299.TWO):\n"
-                    f"  • [컬럼 라벨] 티커 — 회사명 | PER | Fwd PER | PSR | PBR | EV/EBITDA\n"
+                    f"  • 행 포맷: `티커 — 회사명 | PER X.X / Fwd PER Y.Y /"
+                    f" PSR Z.Z / PBR W.W / EV/EBITDA V.V` (각 값에 라벨 부착)\n"
                     + "\n".join(peer_lines) + "\n"
                     f"\n⛔ COMPS 출력 HEADER 의무 (319660.KS 2026-05-23"
-                    f" surfaced): 펀더멘털 리포트의 '동종업계 비교 (Comps)'"
-                    f" 섹션 출력 시 데이터 행 보다 먼저 헤더 행을 반드시"
-                    f" 출력. 예시:\n"
+                    f" surfaced, 2382.TW 2026-05-28 재발 — 시장/감정/뉴스"
+                    f" 섹션에서 라벨 없는 — 체인 재출현): 이 규칙은 펀더멘털"
+                    f" 뿐 아니라 **모든 분석가(시장/감정/뉴스/펀더멘털)**의"
+                    f" '동종업계 비교 (Comps)' 섹션에 적용. 데이터 행 보다"
+                    f" 먼저 헤더 행을 반드시 출력. 예시:\n"
                     f"  | 티커 | 회사명 | PER | Fwd PER | PSR | PBR | EV/EBITDA |\n"
                     f"  | --- | --- | --- | --- | --- | --- | --- |\n"
                     f"  | 319660.KS | 피에스케이 | 43.1 | N/A | N/A | 6.28 | N/A |\n"
