@@ -166,6 +166,21 @@ RULES — 절대:
 - ticker 가짜 생성 금지 (yfinance 검증됨).
 - niche layer 우선, 1차 헤드라인 (NVDA/AAPL 등) 후순위.
 - 5거래일 horizon 언급 금지 — 본 출력은 6-18개월 thesis.
+
+LANGUAGE — 출력 전체를 **한국어**로 작성. 산문·근거 설명·평가·결론·
+narrative·disclaimer 모두 한국어. 영어 paragraph / 영어 intro 문구
+('Alright', 'Let's cut the noise', 'My job is to ...' 등) 절대 금지.
+아래만 영어 원어 유지 허용:
+- Ticker symbol (ROG, 2330.TW, 005930.KS, MRN.PA, 0700.HK 등)
+- 회사명 영문 (Technoprobe, Parker-Hannifin) — 필요시 한국어 약칭 병기
+- 기술 약어 (HBM, CoWoS, ABF, TIM, QD, CPO, MLCC, EMS, GaN, SiC, RPO,
+  ASP, IRA, BIS, FOMC, FDA, CBAM, BMS, EV, AI, ML)
+- 인덱스명 (S&P 500, NASDAQ, KOSPI, KOSDAQ, Hang Seng, Nikkei 225, TAIEX)
+- 통화 코드 (USD, KRW, JPY, TWD, HKD, EUR, CNY)
+- 출처 publisher 명 (Bloomberg, Reuters, 鉅亨網, 第一财经 등)
+- 표 라벨 (Tier A·B·C / Priced-in / Catalyst+시기 / Kill Trigger)
+그 외 모든 분석 문장 (예: "현재 binding constraint 는 ...", "관전 포인트
+는 ...", "본 종목의 강점은 ..." 등) 은 반드시 한국어 자연문으로 작성.
 """
 
 
@@ -174,6 +189,9 @@ RULES — 절대:
 _TICKER_RE = re.compile(r"\b([A-Z0-9]{1,6}(?:[.\-][A-Z0-9]{1,4})?)\b")
 
 # Common false-positive tokens that look like tickers but aren't.
+# 2026-05-28 first /screener run reject noise added: NYSE, ST, H1, FX, MJC
+# (exchange names / period designators / company abbreviations that aren't
+# the actual listed ticker).
 _TICKER_BLACKLIST = {
     "USD", "EUR", "JPY", "KRW", "CNY", "TWD", "HKD", "GBP", "CHF",
     "AI", "USA", "EU", "UK", "TSE", "KRX", "TPEx", "TWSE", "ADR",
@@ -182,6 +200,17 @@ _TICKER_BLACKLIST = {
     "CEO", "CFO", "CTO", "GPU", "HBM", "MLCC", "ASP", "RPO", "TIM",
     "BIS", "IRA", "CBAM", "FOMC", "DRAM", "NAND", "SSD", "PCIE",
     "FAB", "OEM", "ODM", "EMS", "GAN", "SIC", "EUV", "DUV",
+    # Exchange / market identifiers — frequently appear in screener prose
+    "NYSE", "NASDAQ", "AMEX", "LSE", "TSX", "ASX", "JSE", "SEHK",
+    # Period / time designators
+    "H1", "H2", "YTD", "YOY", "QOQ", "FY24", "FY25", "FY26", "FY27",
+    # Misc finance acronyms
+    "FX", "PT", "RM", "MOQ", "BOM", "BTO", "JV", "LBO", "SPAC",
+    "AOP", "OPEX", "CAPEX", "SAR", "RSU", "ESG",
+    # Company-name abbreviations that appear NEXT to real tickers in
+    # narrative ('2396.T MJC', 'Shinsung ST', etc.) — the real ticker
+    # is the .T / .KQ neighbor, the abbrev itself is not listed.
+    "MJC", "ST", "SKC",
 }
 
 
@@ -190,18 +219,31 @@ def _extract_candidate_tickers(text: str) -> set[str]:
 
     yfinance accepts patterns like 'AAPL', 'TSM', '005930.KS', '2330.TW',
     '8306.T', '0700.HK', 'BRK-B', 'ENR.DE'. Use a permissive regex then
-    filter against an obvious-non-ticker blacklist.
+    filter aggressively to avoid year / FX / random-number false positives
+    (2026-05-28 first run flagged 35 reject incl. '12', '155', '1355',
+    '2024', '2025', '2026', '2027' — all noise from FX/date stamps).
+
+    Rules:
+      - Must contain at least one ALPHA char OR have a market suffix
+        (.KS / .KQ / .T / .TWO / .TW / .HK / .DE / .PA / .AS / .SW /
+        .SS / .SZ / .BJ / .MI / .L / .ST / .OL / .HE / .CO).
+      - Pure-digit tokens without a suffix are rejected (years, FX rates).
+      - Base part (before . or -) must be ≥2 chars.
     """
     candidates: set[str] = set()
     for m in _TICKER_RE.finditer(text):
         sym = m.group(1)
         if sym in _TICKER_BLACKLIST:
             continue
-        # Single-letter tokens are rarely real tickers (X, F, T exist
-        # but are dominated by random capitals). Require ≥2 chars before
-        # the optional suffix.
         base = sym.split(".")[0].split("-")[0]
         if len(base) < 2:
+            continue
+        has_alpha = any(c.isalpha() for c in sym)
+        has_market_suffix = "." in sym and not sym.split(".")[-1].isdigit()
+        # Pure-digit token without a real market suffix = year / FX / count
+        # (e.g. '2026', '1355', '155'). Reject before yfinance call to
+        # avoid 35-row reject noise in the validation summary.
+        if not has_alpha and not has_market_suffix:
             continue
         candidates.add(sym)
     return candidates
