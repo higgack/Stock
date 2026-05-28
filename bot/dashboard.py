@@ -1660,12 +1660,24 @@ def _load_screener_runs() -> list[dict]:
                     rec["_path"] = str(json_file)
                     rec["_date"] = date_dir.name
                     rec["_filename"] = json_file.name
-                    # Migrate old archives without parsed sections
-                    if not rec.get("binding_constraint") and rec.get("raw_output"):
+                    # Migrate old archives without parsed sections — or
+                    # re-parse if previous migration produced empty strings
+                    # (regex couldn't anchor because Pro emitted <b>...</b>
+                    # around the section headers). Always re-parse when the
+                    # stored fields are blank but raw_output exists.
+                    need_parse = (
+                        rec.get("raw_output")
+                        and (not rec.get("binding_constraint")
+                             or not rec.get("top3_section")
+                             or not rec.get("bottom_line"))
+                    )
+                    if need_parse:
                         sections = _parse_screener_sections_local(rec["raw_output"])
-                        rec.setdefault("binding_constraint", sections["binding_constraint"])
-                        rec.setdefault("top3_section", sections["top3_section"])
-                        rec.setdefault("bottom_line", sections["bottom_line"])
+                        # Use parsed value when stored is empty; preserve
+                        # stored value when it's non-empty (already migrated).
+                        for k in ("binding_constraint", "top3_section", "bottom_line"):
+                            if not rec.get(k) and sections.get(k):
+                                rec[k] = sections[k]
                     # Strip legacy Phase β suffix from domain for display
                     raw_domain = rec.get("domain", "") or ""
                     rec["domain"] = re.sub(
@@ -1682,23 +1694,34 @@ def _load_screener_runs() -> list[dict]:
 def _parse_screener_sections_local(raw: str) -> dict:
     """Mirror of bot.screener._parse_screener_sections — duplicated here so
     dashboard.py doesn't import from screener.py at module-load time.
-    Extracts 📍 binding constraint / 🏆 Top 3 / 💡 Bottom line."""
+    Extracts 📍 binding constraint / 🏆 Top 3 / 💡 Bottom line.
+
+    Tolerates Pro's `<b>...</b>` / markdown formatting around the section
+    headers (2026-05-29 surfaced: Pro emits '<b>📍 현재 binding
+    constraint</b>' so anchoring on plain '📍 현재 binding constraint\n'
+    failed → sections came back empty, lazy migration produced nothing).
+    Fix: strip HTML tags + markdown bold + markdown headers before regex."""
     out = {"binding_constraint": "", "top3_section": "", "bottom_line": ""}
     if not raw:
         return out
+    # Normalise away noise that breaks header anchoring
+    clean = raw
+    clean = re.sub(r"<\/?[a-zA-Z]+[^>]*>", "", clean)   # <b>, </b>, <i>, etc.
+    clean = re.sub(r"\*\*([^*]+)\*\*", r"\1", clean)    # **bold** → bold
+    clean = re.sub(r"^#+\s*", "", clean, flags=re.MULTILINE)  # ## headers
     m = re.search(
         r"📍\s*현재\s*binding\s*constraint\s*\n+(.*?)(?=\n+(?:📊|🏆|💡|⚠️)|\Z)",
-        raw, re.DOTALL,
+        clean, re.DOTALL,
     )
     if m: out["binding_constraint"] = m.group(1).strip()
     m = re.search(
         r"🏆\s*Top\s*3\s*conviction\s*picks\s*\n+(.*?)(?=\n+(?:💡|⚠️)|\Z)",
-        raw, re.DOTALL,
+        clean, re.DOTALL,
     )
     if m: out["top3_section"] = m.group(1).strip()
     m = re.search(
         r"💡\s*Bottom\s*line\s*\n+(.*?)(?=\n+(?:⚠️|🤖)|\Z)",
-        raw, re.DOTALL,
+        clean, re.DOTALL,
     )
     if m: out["bottom_line"] = m.group(1).strip()
     return out
@@ -1796,8 +1819,22 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
 </div>""")
         return "".join(parts)
 
+    # Sort dates newest-first; expand only today's group by default so the
+    # archive stays compact once many days accumulate (NOAH index.html
+    # uses the same pattern). Pre-resolve `today` once outside the loop.
+    from datetime import datetime as _dt_sc, timezone as _tz_sc, timedelta as _td_sc
+    _today_kst = _dt_sc.now(_tz_sc(_td_sc(hours=9))).date().isoformat()
     for date in sorted(by_date.keys(), reverse=True):
-        parts.append(f'<h2 class="date">{_html.escape(date)}</h2>')
+        day_open = " open" if date == _today_kst else ""
+        day_count = len(by_date[date])
+        parts.append(
+            f'<details class="day"{day_open}>'
+            f'<summary class="day-head">'
+            f'<span>📅 {_html.escape(date)}</span>'
+            f'<span class="count">{day_count}건</span>'
+            f'</summary>'
+            f'<div class="day-body">'
+        )
         for r in by_date[date]:
             domain = _html.escape(r.get("domain", "Unknown"))
             ts = _html.escape(r.get("ts", "")[-8:-3] if r.get("ts") else "")  # HH:MM
@@ -1900,6 +1937,8 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                     )
                 parts.append('</tbody></table>')
             parts.append('  </div>\n')
+        # Close the date's details + body wrapper
+        parts.append('</div></details>')
 
     parts.append("</div>")
     # JS — delete button POSTs to /api/screener_delete (mirror of NOAH
@@ -1917,7 +1956,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
   const sts = document.getElementById('scr-status');
   const emp = document.getElementById('scr-empty');
   const cards = Array.from(document.querySelectorAll('.card'));
-  const dateHeaders = Array.from(document.querySelectorAll('h2.date'));
+  const dayGroups = Array.from(document.querySelectorAll('details.day'));
   if (!inp) return;
   const total = cards.length;
 
@@ -1930,17 +1969,15 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
       c.style.display = vis ? '' : 'none';
       if (vis) matched++;
     }
-    // Hide date headers whose subsequent cards are all hidden
-    for (const h of dateHeaders) {
+    // Auto-expand day group containing a match; hide groups with 0 matches.
+    for (const d of dayGroups) {
+      const visibleCards = d.querySelectorAll('.card');
       let any = false;
-      let n = h.nextElementSibling;
-      while (n && !n.matches('h2.date')) {
-        if (n.classList.contains('card') && n.style.display !== 'none') {
-          any = true; break;
-        }
-        n = n.nextElementSibling;
+      for (const c of visibleCards) {
+        if (c.style.display !== 'none') { any = true; break; }
       }
-      h.style.display = any ? '' : 'none';
+      d.style.display = any ? '' : 'none';
+      if (any && q) d.open = true;  // auto-open matched groups
     }
     if (q) {
       sts.textContent = matched + '건 매칭 (검색: "' + (inp.value || '').trim() + '")';
@@ -2018,6 +2055,18 @@ body { background:var(--bg); color:var(--text); margin:0;
 h1 { font-size:22px; margin:0 0 4px; }
 h2.date { font-size:14px; color:var(--muted); margin:28px 0 12px;
   padding-bottom:6px; border-bottom:1px solid var(--border); }
+details.day { margin:24px 0 0; }
+details.day summary.day-head { cursor:pointer; font-size:15px;
+  font-weight:600; padding:10px 4px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; justify-content:space-between;
+  list-style:none; color:var(--text); user-select:none; }
+details.day summary.day-head::-webkit-details-marker { display:none; }
+details.day summary.day-head::before { content:"▸"; color:var(--accent);
+  margin-right:8px; transition:transform 0.15s; }
+details.day[open] summary.day-head::before { content:"▾"; }
+details.day summary.day-head:hover { background:rgba(59,130,246,0.04); }
+details.day .count { color:var(--muted); font-size:12px; font-weight:normal; }
+details.day .day-body { padding-top:14px; }
 .sub { color:var(--muted); font-size:13px; margin:0 0 24px; }
 .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
   gap:10px; margin-bottom:24px; }

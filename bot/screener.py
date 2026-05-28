@@ -630,28 +630,35 @@ def _parse_screener_sections(raw: str) -> dict:
     """Extract narrative sections from Pro Phase 4·5 output. Used by the
     archive writer + dashboard renderer so each run preserves the prose
     (binding constraint paragraph, Top-3 picks rationale, bottom line)
-    alongside the structured mini-table. Empty strings when missing."""
+    alongside the structured mini-table. Empty strings when missing.
+
+    Tolerates Pro's `<b>...</b>` HTML + markdown bold/headers around the
+    section markers (2026-05-29 surfaced: 'Pro emits `<b>📍 현재
+    binding constraint</b>` → plain regex anchor failed → sections came
+    back empty). Strips formatting noise before regex."""
     out = {"binding_constraint": "", "top3_section": "", "bottom_line": ""}
     if not raw:
         return out
-    # 📍 binding constraint (until master table or next header)
+    # Normalise away formatting noise that breaks emoji-marker anchoring
+    clean = raw
+    clean = re.sub(r"<\/?[a-zA-Z]+[^>]*>", "", clean)   # <b>, </b>, <i>, etc.
+    clean = re.sub(r"\*\*([^*]+)\*\*", r"\1", clean)    # **bold** → bold
+    clean = re.sub(r"^#+\s*", "", clean, flags=re.MULTILINE)  # ## headers
     m = re.search(
         r"📍\s*현재\s*binding\s*constraint\s*\n+(.*?)(?=\n+(?:📊|🏆|💡|⚠️)|\Z)",
-        raw, re.DOTALL,
+        clean, re.DOTALL,
     )
     if m:
         out["binding_constraint"] = m.group(1).strip()
-    # 🏆 Top 3 conviction picks
     m = re.search(
         r"🏆\s*Top\s*3\s*conviction\s*picks\s*\n+(.*?)(?=\n+(?:💡|⚠️)|\Z)",
-        raw, re.DOTALL,
+        clean, re.DOTALL,
     )
     if m:
         out["top3_section"] = m.group(1).strip()
-    # 💡 Bottom line
     m = re.search(
         r"💡\s*Bottom\s*line\s*\n+(.*?)(?=\n+(?:⚠️|🤖)|\Z)",
-        raw, re.DOTALL,
+        clean, re.DOTALL,
     )
     if m:
         out["bottom_line"] = m.group(1).strip()
