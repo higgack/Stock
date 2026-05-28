@@ -1079,6 +1079,13 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
         _log_screener_memory(theme["domain"], top3)
     except Exception as exc:
         log.warning("screener: memory log failed: %s", exc)
+    # Refresh the static screener.html so the dashboard reflects this run
+    # immediately (5/15/30d columns stay '⏳' until auto_resolve fills them).
+    try:
+        from bot.dashboard import regenerate_screener_index
+        regenerate_screener_index()
+    except Exception as exc:
+        log.warning("screener: dashboard regen failed: %s", exc)
 
     return result
 

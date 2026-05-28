@@ -1393,9 +1393,13 @@ def _render_index(records: list[dict]) -> str:
     if issue_count > 0:
         errors_link = (
             f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
+            f' · <a href="screener.html">📊 Bottleneck Screener</a>'
         )
     else:
-        errors_link = ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
+        errors_link = (
+            ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
+            ' · <a href="screener.html">📊 Bottleneck Screener</a>'
+        )
 
     return f"""<!doctype html>
 <html lang="ko">
@@ -1557,3 +1561,269 @@ def regenerate_index() -> None:
         log.info("dashboard: regenerated with %d entries", len(records))
     except Exception as exc:
         log.warning("dashboard: regenerate failed: %s", exc)
+
+
+# ── Screener archive view ────────────────────────────────────────────────
+# Separate from the per-ticker /analysis dashboard. Screener picks are
+# multi-stock theme generation (6-18M thesis), so the rendering is a
+# date-grouped run list with Top-3 mini-tables showing 5/15/30d outcomes
+# (alpha vs sector ETF). Outcomes come from screener_memory.md via
+# auto_resolve.py 's screener pass.
+
+_SCREENER_ARCHIVE_DIR = Path.home() / ".tradingagents" / "screener_archive"
+_SCREENER_MEMORY_PATH = (
+    Path.home() / ".tradingagents" / "memory" / "screener_memory.md"
+)
+
+
+def _load_screener_runs() -> list[dict]:
+    """Scan ~/.tradingagents/screener_archive/YYYY-MM-DD/*.json and return
+    a list of run dicts (newest first). Each run has {ts, domain,
+    raw_output, validated_tickers, rejected_tickers, elapsed_sec,
+    cost_krw, top_3_picks, _path, _date}."""
+    import json as _json
+    runs: list[dict] = []
+    if not _SCREENER_ARCHIVE_DIR.exists():
+        return runs
+    try:
+        for date_dir in sorted(_SCREENER_ARCHIVE_DIR.iterdir(), reverse=True):
+            if not date_dir.is_dir():
+                continue
+            for json_file in sorted(date_dir.iterdir(), reverse=True):
+                if not json_file.name.endswith(".json"):
+                    continue
+                try:
+                    with open(json_file, encoding="utf-8") as f:
+                        rec = _json.load(f)
+                    rec["_path"] = str(json_file)
+                    rec["_date"] = date_dir.name
+                    rec["_filename"] = json_file.name
+                    runs.append(rec)
+                except Exception as exc:
+                    log.warning("dashboard: screener load %s failed: %s", json_file, exc)
+    except Exception as exc:
+        log.warning("dashboard: screener archive scan failed: %s", exc)
+    return runs
+
+
+def _load_screener_outcomes() -> dict[tuple[str, str], dict]:
+    """Parse screener_memory.md → dict keyed by (date, ticker). Each value
+    has the TradingMemoryLog parsed entry shape — raw/alpha (5d) in the
+    tag + outcomes_extra list for 15d/30d. auto_resolve.py keeps this
+    current at 12h cadence."""
+    out: dict[tuple[str, str], dict] = {}
+    if not _SCREENER_MEMORY_PATH.exists():
+        return out
+    try:
+        from tradingagents.agents.utils.memory import TradingMemoryLog
+        cfg = {"memory_log_path": str(_SCREENER_MEMORY_PATH)}
+        memory = TradingMemoryLog(cfg)
+        for e in memory.load_entries():
+            key = (e.get("date", ""), (e.get("ticker") or "").upper())
+            if key[0] and key[1]:
+                out[key] = e
+    except Exception as exc:
+        log.warning("dashboard: screener memory load failed: %s", exc)
+    return out
+
+
+def _fmt_pct_signed(s: str | None) -> str:
+    """'+2.3%' → '+2.3%' (pass-through with sign coloring done via CSS class)."""
+    if not s:
+        return "—"
+    return s.strip()
+
+
+def _outcome_class(s: str | None) -> str:
+    """CSS class for a return string: positive / negative / neutral."""
+    if not s:
+        return "neu"
+    s = s.strip()
+    if s.startswith("+") and not s.startswith("+0.0"):
+        return "pos"
+    if s.startswith("-") and not s.startswith("-0.0"):
+        return "neg"
+    return "neu"
+
+
+def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
+    """Render screener.html — date-grouped run cards with Top-3 mini-tables
+    showing 5/15/30d outcomes (alpha vs sector ETF). Self-contained HTML
+    with embedded CSS matching NOAH dashboard dark-on-light palette."""
+    import html as _html
+    from collections import defaultdict
+
+    # Group runs by date
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for r in runs:
+        by_date[r.get("_date", "")].append(r)
+
+    # Build summary stats
+    total_runs = len(runs)
+    total_cost_krw = sum(r.get("cost_krw", 0) or 0 for r in runs)
+    total_picks = sum(len(r.get("top_3_picks", []) or []) for r in runs)
+    resolved_count = sum(
+        1 for r in runs for p in (r.get("top_3_picks") or [])
+        if outcomes.get((r.get("_date", ""), (p.get("ticker") or "").upper()), {}).get("raw")
+    )
+
+    parts: list[str] = [_SCREENER_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav"><a href="index.html">← NOAH 종목 분석</a></div>
+  <h1>📊 Bottleneck Screener — Archive</h1>
+  <p class="sub">테마별 다종목 idea generation · 6-18M thesis (NOAH /ticker 5거래일 평가와 별개 horizon)</p>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 실행</div></div>
+    <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
+    <div class="stat"><div class="stat-v">{total_picks}</div><div class="stat-l">Top-3 picks</div></div>
+    <div class="stat"><div class="stat-v">{resolved_count}</div><div class="stat-l">5d resolved</div></div>
+  </div>
+""")
+
+    if not runs:
+        parts.append("""
+  <div class="empty">
+    아직 screener 실행 기록이 없습니다. 텔레그램 채널에서
+    <code>/screener</code> 를 실행하세요.
+  </div>
+</div>""")
+        return "".join(parts)
+
+    for date in sorted(by_date.keys(), reverse=True):
+        parts.append(f'<h2 class="date">{_html.escape(date)}</h2>')
+        for r in by_date[date]:
+            domain = _html.escape(r.get("domain", "Unknown"))
+            ts = _html.escape(r.get("ts", "")[-8:-3] if r.get("ts") else "")  # HH:MM
+            cost = r.get("cost_krw", 0) or 0
+            elapsed = r.get("elapsed_sec", 0) or 0
+            tickers_n = len(r.get("validated_tickers", []) or [])
+            picks = r.get("top_3_picks", []) or []
+
+            parts.append(f"""
+  <div class="card">
+    <div class="card-h">
+      <span class="domain">{domain}</span>
+      <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s · ✅ {tickers_n}개 ticker</span>
+    </div>
+""")
+            if picks:
+                parts.append('    <table class="picks"><thead><tr>'
+                             '<th>#</th><th>Ticker</th><th>Tier</th><th>Company</th>'
+                             '<th>5d</th><th>15d</th><th>30d</th><th>α vs sector</th>'
+                             '</tr></thead><tbody>')
+                for pick in picks:
+                    if not isinstance(pick, dict):
+                        continue
+                    rank = pick.get("rank", "?")
+                    ticker = (pick.get("ticker") or "").upper()
+                    tier = pick.get("tier", "?")
+                    company = _html.escape(pick.get("company", "")[:50])
+                    # Look up resolved outcomes
+                    out = outcomes.get((r.get("_date", ""), ticker), {}) or {}
+                    raw5 = out.get("raw")
+                    alpha5 = out.get("alpha")
+                    extras = {o["days"]: o for o in (out.get("outcomes_extra") or [])}
+                    raw15 = extras.get(15, {}).get("raw")
+                    raw30 = extras.get(30, {}).get("raw")
+                    pending_cell = '<span class="pending">⏳</span>'
+                    cell_5d  = _fmt_pct_signed(raw5)  if raw5  else pending_cell
+                    cell_15d = _fmt_pct_signed(raw15) if raw15 else "—"
+                    cell_30d = _fmt_pct_signed(raw30) if raw30 else "—"
+                    cell_alpha = _fmt_pct_signed(alpha5) if alpha5 else "—"
+                    parts.append(
+                        f'<tr>'
+                        f'<td class="rank">#{rank}</td>'
+                        f'<td><code>{_html.escape(ticker)}</code></td>'
+                        f'<td><span class="tier-{tier}">{tier}</span></td>'
+                        f'<td class="co">{company}</td>'
+                        f'<td class="{_outcome_class(raw5)}">{cell_5d}</td>'
+                        f'<td class="{_outcome_class(raw15)}">{cell_15d}</td>'
+                        f'<td class="{_outcome_class(raw30)}">{cell_30d}</td>'
+                        f'<td class="{_outcome_class(alpha5)}">{cell_alpha}</td>'
+                        f'</tr>'
+                    )
+                parts.append('</tbody></table>')
+            parts.append('  </div>\n')
+
+    parts.append("</div>")
+    return "".join(parts)
+
+
+_SCREENER_CSS = """<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bottleneck Screener — Archive</title>
+<style>
+:root { --bg:#0F1219; --card:#1A1F2B; --border:#2A3142; --text:#E8ECF4;
+  --muted:#94A3B8; --accent:#3B82F6; --pos:#10B981; --neg:#EF4444;
+  --neu:#6B7280; --pending:#F59E0B; }
+* { box-sizing: border-box; }
+body { background:var(--bg); color:var(--text); margin:0;
+  font-family:-apple-system,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;
+  line-height:1.55; -webkit-font-smoothing:antialiased; }
+.wrap { max-width:1100px; margin:0 auto; padding:24px 16px 64px; }
+.nav { margin-bottom:12px; }
+.nav a { color:var(--accent); text-decoration:none; font-size:13px; }
+.nav a:hover { text-decoration:underline; }
+h1 { font-size:22px; margin:0 0 4px; }
+h2.date { font-size:14px; color:var(--muted); margin:28px 0 12px;
+  padding-bottom:6px; border-bottom:1px solid var(--border); }
+.sub { color:var(--muted); font-size:13px; margin:0 0 24px; }
+.stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  gap:10px; margin-bottom:24px; }
+.stat { background:var(--card); border:1px solid var(--border);
+  border-radius:10px; padding:14px 16px; }
+.stat-v { font-size:20px; font-weight:600; }
+.stat-l { color:var(--muted); font-size:11px; margin-top:2px;
+  text-transform:uppercase; letter-spacing:0.5px; }
+.card { background:var(--card); border:1px solid var(--border);
+  border-radius:12px; padding:16px 18px; margin-bottom:14px; }
+.card-h { display:flex; justify-content:space-between; align-items:center;
+  gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+.domain { font-weight:600; font-size:15px; }
+.meta { color:var(--muted); font-size:12px; font-family:'IBM Plex Mono',monospace; }
+table.picks { width:100%; border-collapse:collapse; font-size:13px; }
+table.picks th { text-align:left; color:var(--muted); font-weight:500;
+  padding:8px 6px; border-bottom:1px solid var(--border); font-size:11px;
+  text-transform:uppercase; letter-spacing:0.3px; }
+table.picks td { padding:8px 6px; border-bottom:1px solid rgba(255,255,255,0.04); }
+table.picks tr:last-child td { border-bottom:none; }
+td.rank { font-weight:600; color:var(--accent); width:36px; }
+td.co { color:var(--muted); }
+td code { background:rgba(255,255,255,0.05); padding:2px 6px;
+  border-radius:4px; font-size:12px; }
+td .tier-L { background:rgba(59,130,246,0.15); color:#93C5FD;
+  padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+td .tier-M { background:rgba(16,185,129,0.15); color:#6EE7B7;
+  padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+td .tier-S { background:rgba(245,158,11,0.15); color:#FCD34D;
+  padding:2px 8px; border-radius:4px; font-size:11px; font-weight:600; }
+td.pos { color:var(--pos); font-weight:600; }
+td.neg { color:var(--neg); font-weight:600; }
+td.neu { color:var(--muted); }
+.pending { color:var(--pending); }
+.empty { background:var(--card); border:1px solid var(--border);
+  border-radius:10px; padding:30px; text-align:center; color:var(--muted);
+  font-size:14px; }
+.empty code { background:rgba(255,255,255,0.06); padding:2px 8px;
+  border-radius:4px; }
+</style></head><body>
+"""
+
+
+def regenerate_screener_index() -> None:
+    """Scan screener archive + memory, write screener.html under ARCHIVE_ROOT.
+    Called from screener.py after a successful run AND from
+    auto_resolve.py after the 5/15/30d outcome pass. All errors swallowed."""
+    try:
+        runs = _load_screener_runs()
+        outcomes = _load_screener_outcomes()
+        html = _render_screener_page(runs, outcomes)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "screener.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: screener.html regenerated (%d runs, %d outcomes)",
+                 len(runs), len(outcomes))
+    except Exception as exc:
+        log.warning("dashboard: screener regen failed: %s", exc)

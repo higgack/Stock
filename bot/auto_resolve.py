@@ -34,6 +34,7 @@ import logging
 import math
 import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 import yfinance as yf
@@ -42,6 +43,15 @@ from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import get_config
 
 log = logging.getLogger("bot.auto_resolve")
+
+# Screener uses a separate memory log (~/.tradingagents/memory/screener_
+# memory.md) so its 6-18M thesis picks don't pollute the NOAH /ticker
+# 5-day evaluator dashboard. Same TAG_RE format → TradingMemoryLog with
+# overridden path resolves it with identical 5d/15d/30d window logic.
+# Sector ETF alpha (_resolve_benchmark) used as-is per ticker.
+_SCREENER_MEMORY_PATH = (
+    Path.home() / ".tradingagents" / "memory" / "screener_memory.md"
+)
 
 
 _AUTO_RESOLVED_REFLECTION = (
@@ -218,8 +228,77 @@ def main() -> int:
     if pass2_updates:
         memory.batch_append_long_horizon_outcomes(pass2_updates)
 
+    # ── Screener pass: identical 5d → 15d → 30d on screener_memory.md ──
+    # Idempotent. Skipped if the screener memory log doesn't exist yet
+    # (no /screener runs landed in this Phase).
+    scr_pass1_updates: list[dict] = []
+    scr_pass2_updates: list[dict] = []
+    if _SCREENER_MEMORY_PATH.exists():
+        log.info("auto_resolve: scanning screener_memory.md")
+        scr_cfg = dict(cfg)
+        scr_cfg["memory_log_path"] = str(_SCREENER_MEMORY_PATH)
+        scr_memory = TradingMemoryLog(scr_cfg)
+        scr_entries = scr_memory.load_entries()
+        scr_pending = [e for e in scr_entries if e.get("pending")]
+        # Pass 1 (5d)
+        for entry in scr_pending:
+            ticker = entry.get("ticker") or ""
+            trade_date = entry.get("date") or ""
+            if not ticker or not trade_date:
+                continue
+            raw, alpha, days = _fetch_returns(ticker, trade_date, holding_days=5)
+            if raw is None:
+                continue
+            scr_pass1_updates.append({
+                "ticker": ticker, "trade_date": trade_date,
+                "raw_return": raw, "alpha_return": alpha, "holding_days": days,
+                "reflection": _AUTO_RESOLVED_REFLECTION,
+            })
+        if scr_pending:
+            log.info(
+                "auto_resolve screener pass1 (5d): scanned %d pending → %d ready",
+                len(scr_pending), len(scr_pass1_updates),
+            )
+        if scr_pass1_updates:
+            scr_memory.batch_update_with_outcomes(scr_pass1_updates)
+
+        # Pass 2 (15d, 30d) for screener
+        scr_resolved_after_p1 = [
+            e for e in scr_memory.load_entries() if not e.get("pending")
+        ]
+        for entry in scr_resolved_after_p1:
+            ticker = entry.get("ticker") or ""
+            trade_date = entry.get("date") or ""
+            if not ticker or not trade_date:
+                continue
+            existing_days = {o["days"] for o in (entry.get("outcomes_extra") or [])}
+            for window in _LONG_HORIZON_WINDOWS:
+                if window in existing_days:
+                    continue
+                try:
+                    start = datetime.strptime(trade_date, "%Y-%m-%d")
+                except ValueError:
+                    continue
+                gate_days = _LONG_HORIZON_GATE_CALENDAR_DAYS[window]
+                if start + timedelta(days=gate_days) > datetime.now():
+                    continue
+                raw, alpha, days = _fetch_returns(ticker, trade_date, holding_days=window)
+                if raw is None:
+                    continue
+                scr_pass2_updates.append({
+                    "ticker": ticker, "trade_date": trade_date,
+                    "days": window, "raw_return": raw, "alpha_return": alpha,
+                })
+        if scr_resolved_after_p1:
+            log.info(
+                "auto_resolve screener pass2 (15d+30d): scanned %d resolved → %d ready",
+                len(scr_resolved_after_p1), len(scr_pass2_updates),
+            )
+        if scr_pass2_updates:
+            scr_memory.batch_append_long_horizon_outcomes(scr_pass2_updates)
+
     # ── Summary + dashboard regen ──────────────────────────────────
-    if not pass1_updates and not pass2_updates:
+    if not pass1_updates and not pass2_updates and not scr_pass1_updates and not scr_pass2_updates:
         print(
             f"auto_resolve: scanned {len(pending)} pending + "
             f"{len(resolved_after_p1)} resolved — nothing ready "
@@ -228,13 +307,16 @@ def main() -> int:
         return 0
 
     log.info(
-        "auto_resolve: %d pass1 (5d) + %d pass2 (15d/30d) updates applied",
+        "auto_resolve: %d pass1 (5d) + %d pass2 (15d/30d) updates applied "
+        "(+ screener: %d pass1 + %d pass2)",
         len(pass1_updates), len(pass2_updates),
+        len(scr_pass1_updates), len(scr_pass2_updates),
     )
 
     try:
-        from bot.dashboard import regenerate_index
+        from bot.dashboard import regenerate_index, regenerate_screener_index
         regenerate_index()
+        regenerate_screener_index()
         log.info("auto_resolve: dashboard regenerated")
     except Exception as exc:
         log.warning("auto_resolve: dashboard regen failed: %s", exc)

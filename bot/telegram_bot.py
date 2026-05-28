@@ -827,7 +827,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【12. 예정 작업】</b>
- • Bottleneck Screener Phase α — <code>/screener</code> AI 데이터센터 (TOC choke point + 3티어 size + Tier A/B/C/D, 6-18M thesis). Wave 1 EV/방산/바이오/신재생 등 도메인 확장 예정
+ • Bottleneck Screener Phase β — <code>/screener</code> AI 데이터센터 (실시간 데이터 + 웹 검색 + Top-3 5/15/30일 추적, 6-18M thesis · 대시보드 screener.html). Wave 1 도메인 확장 (EV/방산/바이오/신재생) 예정
 """
 
 
