@@ -1054,14 +1054,14 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
     total_ot = p12_ot + p45_ot
     cost_usd = (total_pt * _PRO_INPUT_USD_PER_M + total_ot * _PRO_OUTPUT_USD_PER_M) / 1e6
     cost_krw = cost_usd * _USD_TO_KRW
-    _log_usage(total_pt, total_ot, cost_krw, theme["domain"] + " (Phase β)")
+    _log_usage(total_pt, total_ot, cost_krw, theme["domain"])
 
     # Extract Top-3 JSON tail before user display (strip from raw_output)
     top3, p45_cleaned = _extract_top3_json(p45_text)
     log.info("screener phase β/Top-3: %d picks extracted", len(top3))
 
     result = ScreenerResult(
-        domain=theme["domain"] + " (Phase β · 실시간 데이터)",
+        domain=theme["domain"],
         raw_output=p45_cleaned,
         validated_tickers=validated,
         rejected_tickers=rejected,
