@@ -816,11 +816,31 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   값 + binding_layer_taxonomy/regional_concentration 최소 2개 (Energy/
   Real Estate L2 가 공식 L3 2개씩) 체크.
 
-  **Phase B 예정** — L3 industry 점진 add (우선순위 12 산업 batch1):
-  Semiconductors / Banks Diversified / Banks Regional / Major Pharma /
-  Biotechnology / Medical Devices / Oil Gas E&P / Oil Gas Midstream /
-  Software Infrastructure / Aerospace & Defense / Auto Manufacturers /
-  Health Insurance. 나머지 36 산업 후속 batches.
+  **L3 Industry themes (48, 사용자 정식 분류 sub-industry 전체)** —
+  Phase B 2026-05-29 ✅ 한 batch 로 전체 ship. 각 L3 모듈 ~100-150 줄,
+  binding_layer_taxonomy = 좁고 깊은 niche sub-categories (L4 가 없으
+  므로 L3 안에서 catalyst + regional 로 cover). slug 는 sector prefix
+  없이 unique (`/screener_aerospace_defense`, `/screener_banks` 등 — 다른
+  module 의 alias 와 conflict 시 slug self-mapping 우선).
+  - Industrials (8 L3): aerospace_defense / airlines / building_products /
+    electrical_equipment / commercial_services / machinery /
+    transport_logistics / waste_management
+  - Health Care (3): pharma_biotech / medical_equipment / healthcare_providers
+  - Financials (6): banks / capital_markets / consumer_finance /
+    insurance / bdc / digital_assets
+  - Consumer Discretionary (6): automotive / apparel_luxury / hospitality
+    / retail / homebuilding / education_services
+  - Consumer Staples (5): beverages / food_retailing / food_products /
+    household_personal / tobacco
+  - Energy (2): oil_gas / energy_services
+  - Basic Materials (5): chemicals / construction_materials / packaging /
+    metals_mining / forest_paper
+  - Real Estate (2): real_estate_services / reits
+  - Utilities (3): electric_utility / ipp_renewable / gas_water
+  - Communication Services (4): interactive_media / entertainment /
+    gaming / telecom
+  - Technology (4): software / hardware_storage / semiconductors /
+    it_fintech
 
   대시보드 페이지 + Telegram `/screener_list` 모두 L1/L2/L3 layer 별
   그룹핑. 변경 이력은 footer 한 줄 (`📜 최근 변경 (ts) — 추가 ... → 총
@@ -910,19 +930,17 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
     overlay (`_instrument_info` 단일 지점, downstream 전체 혜택)
   - Markdown 금지 (`**`, `*`, `##` literal noise 차단 — HTML 만)
 
-**다음 작업 — Phase B L3 industry + 캐시 + 자유텍스트:**
-- Phase B L3 batch1 (12 우선순위 산업): Semiconductors · Banks
-  Diversified · Banks Regional · Major Pharma · Biotechnology · Medical
-  Devices · Oil Gas E&P · Oil Gas Midstream · Software Infrastructure ·
-  Aerospace & Defense · Auto Manufacturers · Health Insurance. 각 module
-  은 좁고 깊은 sub-industry binding constraint focus.
-- Phase B batch2~4: 나머지 36 L3 산업 점진 add. 총 48 L3 + 11 L2 +
-  6 L1 = 65 도메인 (Telegram cap 100/scope 안전).
-- 도메인별 24h 캐시: `~/.tradingagents/screener_cache/{slug}_YYYY
-  -MM-DD.json` 으로 같은 도메인 24h 내 재호출 시 Pro skip + ₩0 반환.
+**다음 작업 — 캐시 + 자유텍스트 + Sanity Check:**
+- 65 도메인 (6 L1 + 11 L2 + 48 L3) Sanity check — 각 L3 모듈을
+  실제 `/screener_<slug>` 호출로 binding constraint quality + tier 분포
+  + region coverage 검증. 우선순위 / 결함 발견 시 fix batch.
+- 도메인별 24h 캐시: `~/.tradingagents/screener_cache/{slug}_YYYY-
+  MM-DD.json` 으로 같은 도메인 24h 내 재호출 시 Pro skip + ₩0 반환.
   `/screener {slug} fresh` flag 로 강제 재실행.
 - 자유텍스트 도메인: `/screener <freetext>` 자유 입력 → Pro 가
   on-the-fly theme dict 생성 후 registry 에 ad-hoc 등록.
+- Telegram set_my_commands cap 100/scope — 현재 65 도메인 + 9 정적 =
+  74, 안전. 자유텍스트 활성 시 dynamic 등록 회피 (메뉴 자체 노출 X).
 
 ## Bottleneck Screener — 설계 메모리 (origin 2026-05-28, kept for reference)
 
