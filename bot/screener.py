@@ -333,69 +333,334 @@ def _log_usage(prompt_tok: int, output_tok: int, cost_krw: float, domain: str) -
         log.warning("screener: usage log failed: %s", exc)
 
 
+# ── Phase β: 2-pass orchestration (Pro 1·2 + 병렬 context fetch + Pro 4·5) ─
+
+def _call_pro(api_key: str, prompt: str, model: str = "gemini-2.5-pro") -> tuple[str, int, int]:
+    """Helper: call Gemini Pro, return (text, prompt_tokens, output_tokens)."""
+    from google import genai
+    client = genai.Client(api_key=api_key)
+    resp = client.models.generate_content(model=model, contents=prompt)
+    text = (resp.text or "").strip()
+    pt = ot = 0
+    try:
+        um = getattr(resp, "usage_metadata", None)
+        if um is not None:
+            pt = int(getattr(um, "prompt_token_count", 0) or 0)
+            ot = int(getattr(um, "candidates_token_count", 0) or 0)
+    except Exception:
+        pass
+    return text, pt, ot
+
+
+def _build_phase_12_prompt(theme: dict) -> str:
+    """Phase 1·2 Pro prompt: identify binding + candidate tickers as JSON.
+    Trimmed prompt — no full master table yet; that's Phase 4·5's job after
+    we inject real per-ticker data."""
+    layers = "\n".join(f"  - {l}" for l in theme["binding_layer_taxonomy"])
+    regions = "\n".join(
+        f"  - {layer}: {region}"
+        for layer, region in theme["regional_concentration"].items()
+    )
+    return f"""너는 냉혹한 buy-side 애널리스트. Theory of Constraints anchor.
+충성심·내러티브 없음. 오직 수익. 도메인 "{theme['domain']}" ({theme['horizon']})
+의 binding constraint 와 choke point owner 식별.
+
+이 도메인의 binding layer (참고):
+{layers}
+
+지리적 집중 (참고):
+{regions}
+
+GLOBAL MANDATE — US/KR/JP/TW/EU/CN A·H 모두 포함. niche 2-3 layers down.
+SIZE TIERS — ~$100M micro / ~$1B mid / ~$10B large (USD 환산 후 분류).
+가짜 ticker 절대 금지 (사후 yfinance 검증). clean public name 부재 시
+'NO_PUBLIC' 명시.
+
+출력은 **JSON ONLY** (코드블록 ```json 안에 포함). 다른 prose 금지.
+다음 schema 정확히 준수:
+
+```json
+{{
+  "binding_constraint": "현재 binding layer + 다음 binding 후보 layer 한국어
+                         3-4 문장 (timing + 시장이 미반영한 신호 포함)",
+  "candidates": [
+    {{
+      "theme": "binding layer 이름 (한국어, 예: 'HBM 프로브 카드')",
+      "tier": "L|M|S",
+      "ticker": "ROG | 2330.TW | 005930.KS | MRN.PA | 0700.HK | NO_PUBLIC",
+      "company_name": "Rogers Corp / Technoprobe SpA / SK하이닉스 등",
+      "listing": "NYSE | TWSE | KRX | Borsa Italiana | KRX-KOSDAQ 등",
+      "currency": "USD | TWD | KRW | EUR | HKD 등",
+      "exposure_pct_estimate": 40,
+      "reasoning_seed": "왜 이 종목이 이 layer 의 choke point owner 인가 (한국어 1문장)"
+    }}
+  ]
+}}
+```
+
+목표: 4-6 niche 테마 × 3 티어 = **12-18 candidates**. 각 테마의 S 티어는
+KOSDAQ / TPEx / Mothers 같은 small-cap exchange 적극 활용.
+"""
+
+
+def _parse_phase_12_response(text: str) -> Optional[tuple[str, list[dict]]]:
+    """Extract JSON {binding_constraint, candidates} from Pro Phase 1·2.
+    Returns (binding_summary, candidates_list) or None on parse failure."""
+    # Extract first ```json``` block, then fall back to first {...} block
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if not m:
+        m = re.search(r"(\{[\s\S]*\})", text)
+    if not m:
+        log.warning("screener phase 1·2: no JSON block found in Pro response")
+        return None
+    try:
+        data = json.loads(m.group(1))
+    except json.JSONDecodeError as exc:
+        log.warning("screener phase 1·2: JSON parse failed: %s", exc)
+        return None
+    binding = (data.get("binding_constraint") or "").strip()
+    candidates = data.get("candidates") or []
+    if not isinstance(candidates, list) or not candidates:
+        log.warning("screener phase 1·2: no candidates in JSON")
+        return None
+    # Clean each candidate: ensure required keys, drop NO_PUBLIC entries
+    cleaned: list[dict] = []
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        ticker = (c.get("ticker") or "").strip().upper()
+        if not ticker or ticker == "NO_PUBLIC":
+            continue
+        cleaned.append({
+            "theme": str(c.get("theme") or "").strip(),
+            "tier": str(c.get("tier") or "").strip().upper()[:1] or "M",
+            "ticker": ticker,
+            "company_name": str(c.get("company_name") or "").strip(),
+            "listing": str(c.get("listing") or "").strip(),
+            "currency": str(c.get("currency") or "").strip(),
+            "exposure_pct": c.get("exposure_pct_estimate") or c.get("exposure_pct"),
+            "reasoning_seed": str(c.get("reasoning_seed") or "").strip(),
+        })
+    if not cleaned:
+        return None
+    return binding, cleaned
+
+
+def _fetch_contexts_parallel(tickers: list[str], max_workers: int = 8) -> dict[str, str]:
+    """Phase 3: parallel build_instrument_context per ticker. Returns
+    {ticker: context_text} dict; tickers that timeout / fail come back ''.
+    build_instrument_context is the SAME function NOAH /ticker analysts use,
+    so the screener sees identical real-time forward-signal data."""
+    try:
+        from tradingagents.agents.utils.agent_utils import build_instrument_context
+    except ImportError:
+        log.warning("screener phase 3: build_instrument_context unavailable")
+        return {}
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: dict[str, str] = {}
+    # analyst_id='news' yields the broadest mix (macro+news+technical+공시)
+    # — best fit for forward-signal screening.
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="screener") as ex:
+        futures = {
+            ex.submit(build_instrument_context, t, "news"): t
+            for t in tickers
+        }
+        for fut in as_completed(futures, timeout=180):
+            t = futures[fut]
+            try:
+                ctx = fut.result(timeout=60)
+                results[t] = ctx or ""
+            except Exception as exc:
+                log.warning("screener phase 3: %s fetch failed: %s", t, exc)
+                results[t] = ""
+    return results
+
+
+def _build_phase_45_prompt(
+    theme: dict,
+    binding_summary: str,
+    candidates: list[dict],
+    contexts: dict[str, str],
+) -> str:
+    """Phase 4·5 Pro prompt: full master table + top 3 + bottom line with
+    real per-ticker data injected. Reuses every directive from the Phase α
+    _build_prompt — LANGUAGE / DEPTH / liquidity warning / format rules."""
+
+    # Inject real-data context blocks (trim each to keep input bound)
+    ctx_block = ""
+    for c in candidates:
+        t = c["ticker"]
+        ctx = contexts.get(t, "")
+        if not ctx:
+            ctx_block += (
+                f"\n\n=== {t} ({c.get('company_name', '')}) — 실시간 데이터 부재"
+                f" (fetch 실패 또는 yfinance 미커버) ===\n"
+                f"테마: {c.get('theme')} · 티어: {c.get('tier')} · 시장: {c.get('listing')}\n"
+                f"reasoning_seed: {c.get('reasoning_seed')}\n"
+            )
+            continue
+        # Trim verbose context to ~2500 chars per ticker (token budget control)
+        trimmed = ctx if len(ctx) <= 2500 else ctx[:2500] + "\n... (trimmed)"
+        ctx_block += (
+            f"\n\n=== {t} ({c.get('company_name', '')}) — 실시간 forward-signal 데이터 ===\n"
+            f"테마: {c.get('theme')} · 티어: {c.get('tier')} · 시장: {c.get('listing')}\n"
+            f"{trimmed}\n"
+        )
+
+    # Reuse the full base prompt directives by extracting from _build_prompt
+    base = _build_prompt(theme)
+    # Replace the front "OBJECTIVE" + theme intro with Phase β framing.
+    # Keep all RULES / DEPTH REQUIREMENTS / LANGUAGE / output format intact.
+    phase_b_intro = f"""너는 냉혹한 buy-side 애널리스트. Theory of Constraints anchor.
+도메인: "{theme['domain']}" ({theme['horizon']}).
+
+Phase 1·2 에서 식별된 binding constraint:
+{binding_summary}
+
+아래는 Phase 1·2 후보 종목 {len(candidates)}개의 **실시간 fetch 데이터**
+(yfinance + 공시 + 뉴스 + 매크로 + 기술 지표 — NOAH /ticker 와 동일
+파이프라인). 각 종목의 현재가·시총·peer·최근 catalyst 가 이미 포함되어
+있다. **반드시 이 실시간 수치를 verbatim cite 하라** — LLM 메모리/추정치
+사용 금지. 데이터 부재 종목은 'inferred' 명시 + low confidence 격리.
+
+REAL-TIME CONTEXTS:
+{ctx_block}
+
+이제 위 데이터를 기반으로 다음을 생성:"""
+
+    # Find where the OBJECTIVE block ends and append from "OUTPUT FORMAT" onward
+    output_idx = base.find("OUTPUT FORMAT")
+    if output_idx < 0:
+        log.warning("screener: OUTPUT FORMAT marker missing — falling back to whole base")
+        return phase_b_intro + "\n\n" + base
+    tail = base[output_idx:]
+    return phase_b_intro + "\n\n" + tail
+
+
 # ── Orchestrator ─────────────────────────────────────────────────────────
 
+def _run_phase_alpha(api_key: str, theme: dict, started: float) -> Optional[ScreenerResult]:
+    """Legacy single-Pro-call path. Kept as fallback when Phase β fails
+    JSON parse or build_instrument_context is unavailable."""
+    prompt = _build_prompt(theme)
+    try:
+        text, pt, ot = _call_pro(api_key, prompt)
+    except Exception as exc:
+        log.exception("screener phase α: Pro call failed: %s", exc)
+        return None
+    if not text:
+        log.error("screener phase α: empty Pro response")
+        return None
+    cost_usd = (pt * _PRO_INPUT_USD_PER_M + ot * _PRO_OUTPUT_USD_PER_M) / 1e6
+    cost_krw = cost_usd * _USD_TO_KRW
+    _log_usage(pt, ot, cost_krw, theme["domain"])
+    cands = _extract_candidate_tickers(text)
+    validated, rejected = _validate_with_yfinance(cands)
+    log.info("screener phase α: %d candidates → %d validated / %d rejected",
+             len(cands), len(validated), len(rejected))
+    return ScreenerResult(
+        domain=theme["domain"],
+        raw_output=text,
+        validated_tickers=validated,
+        rejected_tickers=rejected,
+        elapsed_sec=time.time() - started,
+        cost_krw=cost_krw,
+    )
+
+
+def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[ScreenerResult]:
+    """Phase β: 2-pass orchestration with real-time forward-signal fetch.
+       Phase 1·2 (Pro JSON) → Phase 3 (parallel build_instrument_context)
+       → Phase 4·5 (Pro synthesis with real data).
+    Returns None to signal caller to fall back to Phase α."""
+    # Phase 1·2: discover binding + candidates
+    p12_prompt = _build_phase_12_prompt(theme)
+    try:
+        p12_text, p12_pt, p12_ot = _call_pro(api_key, p12_prompt)
+    except Exception as exc:
+        log.warning("screener phase β/1·2: Pro call failed: %s", exc)
+        return None
+    parsed = _parse_phase_12_response(p12_text)
+    if not parsed:
+        return None
+    binding, candidates = parsed
+    log.info("screener phase β/1·2: %d candidates discovered", len(candidates))
+
+    # Validate every ticker
+    raw_tickers = {c["ticker"] for c in candidates}
+    validated, rejected = _validate_with_yfinance(raw_tickers)
+    log.info("screener phase β/yf-validate: %d/%d candidates passed",
+             len(validated), len(raw_tickers))
+    if not validated:
+        log.warning("screener phase β: 0 validated tickers — falling back")
+        return None
+    candidates = [c for c in candidates if c["ticker"] in set(validated)]
+
+    # Phase 3: parallel context fetch (NOAH-equivalent forward-signal data)
+    phase3_start = time.time()
+    contexts = _fetch_contexts_parallel(validated)
+    log.info("screener phase β/3: %d/%d contexts fetched in %.1fs",
+             sum(1 for v in contexts.values() if v), len(validated),
+             time.time() - phase3_start)
+
+    # Phase 4·5: synthesize with real-data context injection
+    p45_prompt = _build_phase_45_prompt(theme, binding, candidates, contexts)
+    try:
+        p45_text, p45_pt, p45_ot = _call_pro(api_key, p45_prompt)
+    except Exception as exc:
+        log.warning("screener phase β/4·5: Pro call failed: %s", exc)
+        return None
+    if not p45_text:
+        log.warning("screener phase β/4·5: empty Pro response")
+        return None
+
+    total_pt = p12_pt + p45_pt
+    total_ot = p12_ot + p45_ot
+    cost_usd = (total_pt * _PRO_INPUT_USD_PER_M + total_ot * _PRO_OUTPUT_USD_PER_M) / 1e6
+    cost_krw = cost_usd * _USD_TO_KRW
+    _log_usage(total_pt, total_ot, cost_krw, theme["domain"] + " (Phase β)")
+
+    return ScreenerResult(
+        domain=theme["domain"] + " (Phase β · 실시간 데이터)",
+        raw_output=p45_text,
+        validated_tickers=validated,
+        rejected_tickers=rejected,
+        elapsed_sec=time.time() - started,
+        cost_krw=cost_krw,
+    )
+
+
 def run_screener(domain: str = "bottleneck") -> Optional[ScreenerResult]:
-    """Run the screener for the given domain. Phase α supports 'bottleneck'
-    only — Wave 1 will extend to ev / solar / pharma / defense etc.
+    """Run the screener for the given domain. Phase β (real-time data) is
+    the default; SCREENER_PHASE=alpha env var forces the legacy single-Pro
+    path. On Phase β failure (JSON parse / 0 validated tickers / Pro crash)
+    the orchestrator falls back to Phase α automatically.
+
+    Phase α: only AI Data Center inline theme. Wave 1 will extend domains
+    via bot/screener_themes/*.yaml registry.
     """
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         log.error("screener: GOOGLE_API_KEY missing")
         return None
 
-    # Phase α: only the AI Data Center domain is wired.
     if domain not in ("bottleneck", "ai", "ai_datacenter", ""):
         log.warning("screener: domain '%s' not in Phase α — falling back to bottleneck", domain)
     theme = _AI_DATACENTER_THEME
-
     started = time.time()
-    prompt = _build_prompt(theme)
 
-    try:
-        from google import genai
-        client = genai.Client(api_key=api_key)
-        resp = client.models.generate_content(
-            model="gemini-2.5-pro",
-            contents=prompt,
-        )
-        raw = (resp.text or "").strip()
-        if not raw:
-            log.error("screener: empty Pro response")
-            return None
-
-        # Cost accounting
-        pt = ot = 0
+    forced_alpha = os.environ.get("SCREENER_PHASE", "beta").strip().lower() == "alpha"
+    if not forced_alpha:
         try:
-            um = getattr(resp, "usage_metadata", None)
-            if um is not None:
-                pt = int(getattr(um, "prompt_token_count", 0) or 0)
-                ot = int(getattr(um, "candidates_token_count", 0) or 0)
-        except Exception:
-            pass
-        cost_usd = (pt * _PRO_INPUT_USD_PER_M + ot * _PRO_OUTPUT_USD_PER_M) / 1e6
-        cost_krw = cost_usd * _USD_TO_KRW
-        _log_usage(pt, ot, cost_krw, theme["domain"])
-
-        # yfinance ticker validation
-        candidates = _extract_candidate_tickers(raw)
-        validated, rejected = _validate_with_yfinance(candidates)
-        log.info(
-            "screener: %d candidate tickers → %d validated / %d rejected",
-            len(candidates), len(validated), len(rejected),
-        )
-
-        return ScreenerResult(
-            domain=theme["domain"],
-            raw_output=raw,
-            validated_tickers=validated,
-            rejected_tickers=rejected,
-            elapsed_sec=time.time() - started,
-            cost_krw=cost_krw,
-        )
-    except Exception as exc:
-        log.exception("screener: orchestration failed: %s", exc)
-        return None
+            result = _run_phase_beta(api_key, theme, started)
+            if result is not None:
+                return result
+            log.warning("screener: Phase β returned None — falling back to Phase α")
+        except Exception as exc:
+            log.exception("screener: Phase β crashed (%s) — falling back to Phase α", exc)
+    return _run_phase_alpha(api_key, theme, started)
 
 
 # ── Output formatting for Telegram ────────────────────────────────────────
