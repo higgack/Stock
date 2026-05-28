@@ -2228,7 +2228,20 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
         if (isinstance(fwd_eps, (int, float)) and fwd_eps == fwd_eps
                 and isinstance(eps, (int, float)) and eps == eps and eps != 0):
             eps_ratio = fwd_eps / eps
-            if abs(eps_ratio) >= 2.5 or (eps > 0 and fwd_eps < 0):
+            # Same-sign extreme ratio = real anomaly (spin-off / one-time /
+            # stale forward estimate). Sign-flip deterioration (eps>0 →
+            # fwd_eps<0) = profit collapse, also anomaly worth flagging.
+            # Sign-flip TURNAROUND (eps<0 → fwd_eps>0 = loss to profit)
+            # is LEGITIMATE business recovery, NOT a data error or corp
+            # action. Meituan 3690.HK 2026-05-28: TTM EPS HK$-4.52 + Fwd
+            # EPS HK$~+positive triggered abs(ratio)≥2.5 → injected
+            # "데이터 transitional (corp action 의심)" guard text into a
+            # report about a legitimate turnaround story. Exempt this case.
+            same_sign_extreme = (
+                eps * fwd_eps > 0 and abs(eps_ratio) >= 2.5
+            )
+            deterioration = (eps > 0 and fwd_eps < 0)
+            if same_sign_extreme or deterioration:
                 inconsistency_lines.append(
                     f"⚠️ Forward EPS {sym}{_fmt_p.format(fwd_eps)} vs TTM EPS"
                     f" {sym}{_fmt_p.format(eps)} (비율 {eps_ratio:.1f}x) —"

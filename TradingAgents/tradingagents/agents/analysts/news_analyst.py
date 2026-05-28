@@ -148,6 +148,20 @@ def create_news_analyst(llm):
             " 시 paraphrase 충분히 변화시키거나 한 번만 사용. summary"
             " 표 / 결론 section 에서는 압축형 재인용 OK 지만 본문 paragraph"
             " 중복은 금지."
+            " F13 FLOW TIMELINE COHERENCE (Meituan 3690.HK 2026-05-28 surfaced):"
+            " instrument context 에 港股통 / KRX 수급 / KIS 외인-기관 flow 등"
+            " '최근 5거래일 net buy/sell' LIVE API 수치가 주입돼 있으면, 그"
+            " 수치가 종목의 단기 수급 진실. 4주간 뉴스 헤드라인의 정성적"
+            " flow 코멘트 ('순매도 지속', '매수세 둔화' 등) 가 LIVE 수치와"
+            " 방향이 다르면 ❌ 둘 다 그대로 cite 금지 — reader 가 '자금이"
+            " 들어오는지 빠지는지' 모름. ✅ 반드시 transition 으로 명시:"
+            " '5/13-5/15 N억 순매도 → 최근 5거래일 LIVE 수치 +M억 net buy'"
+            " 같은 시계열 reversal 또는 acceleration 한 줄 추가. ❌ FORBIDDEN"
+            " — Meituan 2026-05-28: 뉴스가 5/13 + 5/15 net SELL 헤드라인을"
+            " 인용하면서 같은 리포트의 시장 섹션은 港股통 +96억 HKD net BUY"
+            " 5거래일 연속 (LIVE) 을 인용 — 동일 자금에 대해 두 시점 둘 다"
+            " 그대로 두고 transition 명시 안 함 = reader 혼란. 두 시점 모두"
+            " 유효하면 '중순 매도 → 후반 매수 전환' 같이 reversal narrative."
             + get_analyst_directive()
             + get_language_instruction()
         )

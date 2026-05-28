@@ -518,6 +518,17 @@ _STANCE_FALSE_FRIENDS = (
     "매수자", "매도자", "매수량", "매도량",
     "매수잔량", "매도잔량", "매수주문", "매도주문",
     "매수강도", "매도강도",
+    # Position / entry / opportunity compounds — typically appear in
+    # CONDITIONAL or HYPOTHETICAL phrasing ("적극적인 매수 포지션을 취하기에는
+    # 리스크가 큽니다" = sell/hold reasoning that EMBEDS the 매수 keyword).
+    # Meituan 3690.HK 2026-05-28: market analyst's own verdict was HOLD
+    # ("5거래일 전망은 HOLD입니다") but rightmost-rfind picked up "매수" inside
+    # the very next sentence "적극적인 매수 포지션을 취하기에는 리스크가 큼" →
+    # stance mislabeled 매수. Same class as 9988.HK '매수 등급' + 2382.TW
+    # '매수 의견' bugs, new surface form via position/entry compounds.
+    "매수 포지션", "매도 포지션", "매수포지션", "매도포지션",
+    "매수 진입", "매도 진입", "매수진입", "매도진입",
+    "매수 기회", "매도 시점", "매수기회", "매도시점",
 )
 
 
