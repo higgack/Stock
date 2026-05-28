@@ -152,6 +152,18 @@ class TraderProposal(BaseModel):
         default=None,
         description="Optional sizing guidance, e.g. '5% of portfolio'.",
     )
+    kill_trigger: Optional[str] = Field(
+        default=None,
+        description=(
+            "Thesis-breaking event/data (NOT a price level — stop_loss covers "
+            "price). One short line naming the specific news, guidance, or "
+            "macro datum that would invalidate the case and warrant immediate "
+            "exit/reverse regardless of price. Examples: 'Q1 revenue miss vs "
+            "guide', '美 對中 수출규제 발표', '50일 SMA 데드크로스 + 거래량 "
+            "급증', '경쟁사 qual 통과 공식 발표'. Distinct from stop_loss "
+            "(price-based) and Plan catalyst (positive trigger)."
+        ),
+    )
 
 
 def render_trader_proposal(proposal: TraderProposal) -> str:
@@ -172,6 +184,8 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
         parts.extend(["", f"**Stop Loss**: {proposal.stop_loss}"])
     if proposal.position_sizing:
         parts.extend(["", f"**Position Sizing**: {proposal.position_sizing}"])
+    if proposal.kill_trigger:
+        parts.extend(["", f"**Kill Trigger**: {proposal.kill_trigger}"])
     parts.extend([
         "",
         f"FINAL TRANSACTION PROPOSAL: **{proposal.action.value.upper()}**",

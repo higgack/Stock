@@ -119,6 +119,19 @@ def create_trader(llm):
                     " Stop 은 현재가 아래 지지선 (예: 50일 SMA / 직전 저점"
                     " 하향 이탈가 NT$300 부근). Target 만 thesis 방향에 따라"
                     " 위/아래로 두고, Stop 은 항상 현재가 아래로 고정."
+                    "\n\n KILL TRIGGER MANDATORY — thesis 파괴 시그널 (가격 stop"
+                    " 과 별개): 모든 Trader 제안은 kill_trigger 필드에 'thesis 를"
+                    " 무효화하는 구체적 사건/데이터' 한 줄 명시 의무. 가격 stop"
+                    " 과 다른 차원 — 가격은 그대로지만 thesis 가 무너지는 catalyst"
+                    " (실적 가이드 하회 / 수출규제 발표 / 경쟁사 qual 통과 / 핵심"
+                    " 공급계약 취소 등) 발생 시 즉시 청산/반대 포지션 검토. 모호한"
+                    " 정성 문구 금지. 측정 가능한 사건만: ✅ 'Q1 매출 가이드 하회"
+                    " (예상 6/1 발표)' / ✅ '美 BIS 추가 entity list 발표' / ✅"
+                    " '50일 SMA 데드크로스 + 거래량 평소 1.5× 동반' / ✅ '주요"
+                    " 고객 분기 발주량 -20% 공시'. ❌ 모호 금지: 'AI 사이클 둔화"
+                    " 시', '거시 환경 악화 시'. Buy/Hold/Sell 모든 액션에 적용 —"
+                    " Hold 도 'Hold 를 깰 사건' 명시 (예: 'RSI 25 이하 + 양봉 ="
+                    " 매수 전환 트리거')."
                     + get_language_instruction()
                 ),
             },
