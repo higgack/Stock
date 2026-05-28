@@ -232,6 +232,11 @@ DEPTH REQUIREMENTS — Pro capacity 충분히 활용 의무 (2026-05-29 첫
 - **Date stamping rigor**: 모든 'as of' / 'FY' / 'Q' / 'H' 인용에 정확
   한 calendar date 명시. 'recent' / '최근' 같은 모호한 시제 금지 —
   반드시 specific date or quarter window.
+- **Wildcard 금지** (2026-05-29 외부 리뷰 surfaced): 날짜 인용 시 정확한
+  YYYY-MM-DD 형식 또는 quarter / half window (YYYY-Q1/Q2/Q3/Q4, YYYY-H1/H2)
+  중 하나만 허용. underscore (`2026-01-_`), `?` (`2026-?-?`), `XX`
+  (`2026-XX-15`) 같은 wildcard 절대 금지. 정확한 day/month 모르면 quarter
+  단위로 반올림: '2026-01-_' → '2026-Q1', '2026-05-?' → '2026-Q2'.
 
 TENSE DISCIPLINE (시제 규율 — 2026-05-29 surfaced):
 **프롬프트 최상단의 '오늘 (today, KST)' 날짜를 anchor 로 모든 시제 판단.**
@@ -321,6 +326,18 @@ VALUATION DISTORTION 가드 (cyclical bottom 인지 — 2026-05-29 외부
 - Forward PER 이 정상 범위 (10-40x) 면 cyclical recovery 기대 신호로
   해석. Forward PER 도 비정상 (>100x or 음수) 이면 'thesis 무효, 종목
   OMIT 검토' 명시.
+- **PER N/M (적자 기업) 가이드** (2026-05-29 외부 리뷰 surfaced): PER 이
+  'N/M' / 음수 / 'N/A' (적자) 인 종목은 한 문장 더 명시 의무:
+  (1) 적자 배경 — 'FY[YYYY] 영업 적자 (cyclical bottom / 일회성 비용 /
+      신규 사업 투자 단계 등)', web verify 시 sourced cite, 미확정 시
+      'inferred' 명시.
+  (2) 턴어라운드 stage — '[YYYY]-Q[N] 흑자 전환 [기대 / 진행 / 확인됨]
+      (catalyst: HBM 수요 / 신규 capa / 가격 인상 등 구체적)', 또는
+      catalyst 미확정 시 'web verify 권장'.
+  (3) 대체 valuation 지표 — PBR + PSR + EV/Sales 중 2개 이상.
+  예시: '유니테스트 (086390.KQ) PER N/M(적자) — FY2025 적자 (HBM 라인
+  투자 단계, sourced via web), 2026-Q4 흑자 전환 기대 (SK하이닉스 HBM4
+  핸들러 공급, inferred). PBR 3.46x, PSR 2.1x 기준 valuation 평가.'
 
 DATA INTEGRITY (불일치 종목 OMIT):
 - yfinance 가 반환한 company_name 이 Pro 가 식별한 회사와 다르면
@@ -609,6 +626,38 @@ def _extract_top3_json(output: str) -> tuple[list[dict], str]:
     return top3, cleaned
 
 
+def _parse_screener_sections(raw: str) -> dict:
+    """Extract narrative sections from Pro Phase 4·5 output. Used by the
+    archive writer + dashboard renderer so each run preserves the prose
+    (binding constraint paragraph, Top-3 picks rationale, bottom line)
+    alongside the structured mini-table. Empty strings when missing."""
+    out = {"binding_constraint": "", "top3_section": "", "bottom_line": ""}
+    if not raw:
+        return out
+    # 📍 binding constraint (until master table or next header)
+    m = re.search(
+        r"📍\s*현재\s*binding\s*constraint\s*\n+(.*?)(?=\n+(?:📊|🏆|💡|⚠️)|\Z)",
+        raw, re.DOTALL,
+    )
+    if m:
+        out["binding_constraint"] = m.group(1).strip()
+    # 🏆 Top 3 conviction picks
+    m = re.search(
+        r"🏆\s*Top\s*3\s*conviction\s*picks\s*\n+(.*?)(?=\n+(?:💡|⚠️)|\Z)",
+        raw, re.DOTALL,
+    )
+    if m:
+        out["top3_section"] = m.group(1).strip()
+    # 💡 Bottom line
+    m = re.search(
+        r"💡\s*Bottom\s*line\s*\n+(.*?)(?=\n+(?:⚠️|🤖)|\Z)",
+        raw, re.DOTALL,
+    )
+    if m:
+        out["bottom_line"] = m.group(1).strip()
+    return out
+
+
 def _save_screener_archive(
     result: "ScreenerResult", top3: list[dict],
 ) -> Optional[str]:
@@ -624,10 +673,14 @@ def _save_screener_archive(
         slug = re.sub(r"[^a-zA-Z0-9]+", "_", result.domain).strip("_").lower()[:40]
         fname = f"{now.strftime('%H%M%S')}_{slug}.json"
         path = os.path.join(date_dir, fname)
+        sections = _parse_screener_sections(result.raw_output)
         rec = {
             "ts": now.isoformat(timespec="seconds"),
             "domain": result.domain,
             "raw_output": result.raw_output,
+            "binding_constraint": sections["binding_constraint"],
+            "top3_section": sections["top3_section"],
+            "bottom_line": sections["bottom_line"],
             "validated_tickers": result.validated_tickers,
             "rejected_tickers": result.rejected_tickers,
             "elapsed_sec": round(result.elapsed_sec, 2),
@@ -1060,11 +1113,20 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
     top3, p45_cleaned = _extract_top3_json(p45_text)
     log.info("screener phase β/Top-3: %d picks extracted", len(top3))
 
+    # Ticker scope 격리 (2026-05-29 외부 리뷰 surfaced): Phase 1·2 candidate
+    # 검증 결과 (validated / rejected) 를 사용자에게 그대로 노출하면, Pro
+    # 가 본문(Phase 4·5)에서 제외한 후보까지 'reject 카운트' 로 보여 reader
+    # 혼란. 037530.KQ / 452420.KQ / HDELY 가 본문에 없는데 reject 표시된 케
+    # 이스. Fix: 최종 본문 (p45_cleaned) 에서 ticker 재추출 → 그 결과만
+    # 사용자에게 표시. Phase 1·2 검증은 internal scope.
+    body_tickers = _extract_candidate_tickers(p45_cleaned)
+    body_validated, body_rejected = _validate_with_yfinance(body_tickers)
+
     result = ScreenerResult(
         domain=theme["domain"],
         raw_output=p45_cleaned,
-        validated_tickers=validated,
-        rejected_tickers=rejected,
+        validated_tickers=body_validated,
+        rejected_tickers=body_rejected,
         elapsed_sec=time.time() - started,
         cost_krw=cost_krw,
     )

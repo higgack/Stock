@@ -1701,12 +1701,49 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
             tickers_n = len(r.get("validated_tickers", []) or [])
             picks = r.get("top_3_picks", []) or []
 
+            # Narrative sections (binding constraint / Top 3 rationale /
+            # bottom line) — collapsed by default; user clicks summary to
+            # expand. NOAH index.html uses similar <details> pattern for
+            # past-outcomes accordions, kept visual parity here.
+            binding = (r.get("binding_constraint") or "").strip()
+            top3_section_txt = (r.get("top3_section") or "").strip()
+            bottom_line = (r.get("bottom_line") or "").strip()
+            has_analysis = bool(binding or top3_section_txt or bottom_line)
+            analysis_html = ""
+            if has_analysis:
+                pieces = []
+                if binding:
+                    pieces.append(
+                        f'<div class="analysis-sec"><div class="analysis-h">'
+                        f'📍 현재 binding constraint</div>'
+                        f'<div class="analysis-b">{_html.escape(binding)}</div></div>'
+                    )
+                if top3_section_txt:
+                    pieces.append(
+                        f'<div class="analysis-sec"><div class="analysis-h">'
+                        f'🏆 Top 3 conviction picks (추천 근거)</div>'
+                        f'<div class="analysis-b">{_html.escape(top3_section_txt)}</div></div>'
+                    )
+                if bottom_line:
+                    pieces.append(
+                        f'<div class="analysis-sec"><div class="analysis-h">'
+                        f'💡 Bottom line</div>'
+                        f'<div class="analysis-b">{_html.escape(bottom_line)}</div></div>'
+                    )
+                analysis_html = (
+                    f'<details class="analysis">'
+                    f'<summary>📖 분석 내용 펼치기 (binding constraint · Top 3 근거 · bottom line)</summary>'
+                    + "".join(pieces) +
+                    f'</details>'
+                )
+
             parts.append(f"""
   <div class="card">
     <div class="card-h">
       <span class="domain">{domain}</span>
       <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s · ✅ {tickers_n}개 ticker</span>
     </div>
+    {analysis_html}
 """)
             if picks:
                 parts.append('    <table class="picks"><thead><tr>'
@@ -1809,6 +1846,21 @@ td.neu { color:var(--muted); }
   font-size:14px; }
 .empty code { background:rgba(255,255,255,0.06); padding:2px 8px;
   border-radius:4px; }
+details.analysis { margin:10px 0 14px; }
+details.analysis summary { cursor:pointer; color:var(--accent);
+  font-size:13px; padding:6px 10px; background:rgba(59,130,246,0.06);
+  border-radius:6px; user-select:none; list-style:none; }
+details.analysis summary::-webkit-details-marker { display:none; }
+details.analysis summary::before { content:"▸ "; margin-right:4px; }
+details.analysis[open] summary::before { content:"▾ "; }
+details.analysis summary:hover { background:rgba(59,130,246,0.12); }
+.analysis-sec { margin:12px 4px 0; padding:10px 12px;
+  background:rgba(255,255,255,0.02); border-left:2px solid var(--border);
+  border-radius:0 6px 6px 0; }
+.analysis-h { color:var(--muted); font-size:12px; font-weight:600;
+  margin-bottom:6px; text-transform:none; letter-spacing:0; }
+.analysis-b { color:var(--text); font-size:13px; line-height:1.6;
+  white-space:pre-wrap; }
 </style></head><body>
 """
 
