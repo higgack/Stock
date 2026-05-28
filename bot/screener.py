@@ -636,7 +636,8 @@ def _parse_screener_sections(raw: str) -> dict:
     section markers (2026-05-29 surfaced: 'Pro emits `<b>📍 현재
     binding constraint</b>` → plain regex anchor failed → sections came
     back empty). Strips formatting noise before regex."""
-    out = {"binding_constraint": "", "top3_section": "", "bottom_line": ""}
+    out = {"binding_constraint": "", "master_table": "",
+           "top3_section": "", "bottom_line": ""}
     if not raw:
         return out
     # Normalise away formatting noise that breaks emoji-marker anchoring
@@ -650,6 +651,12 @@ def _parse_screener_sections(raw: str) -> dict:
     )
     if m:
         out["binding_constraint"] = m.group(1).strip()
+    m = re.search(
+        r"📊\s*Master\s*Table\s*\n+(.*?)(?=\n+(?:🏆|💡|⚠️)|\Z)",
+        clean, re.DOTALL,
+    )
+    if m:
+        out["master_table"] = m.group(1).strip()
     m = re.search(
         r"🏆\s*Top\s*3\s*conviction\s*picks\s*\n+(.*?)(?=\n+(?:💡|⚠️)|\Z)",
         clean, re.DOTALL,
@@ -686,6 +693,7 @@ def _save_screener_archive(
             "domain": result.domain,
             "raw_output": result.raw_output,
             "binding_constraint": sections["binding_constraint"],
+            "master_table": sections["master_table"],
             "top3_section": sections["top3_section"],
             "bottom_line": sections["bottom_line"],
             "validated_tickers": result.validated_tickers,

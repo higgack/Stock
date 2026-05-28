@@ -1668,6 +1668,7 @@ def _load_screener_runs() -> list[dict]:
                     need_parse = (
                         rec.get("raw_output")
                         and (not rec.get("binding_constraint")
+                             or not rec.get("master_table")
                              or not rec.get("top3_section")
                              or not rec.get("bottom_line"))
                     )
@@ -1675,7 +1676,8 @@ def _load_screener_runs() -> list[dict]:
                         sections = _parse_screener_sections_local(rec["raw_output"])
                         # Use parsed value when stored is empty; preserve
                         # stored value when it's non-empty (already migrated).
-                        for k in ("binding_constraint", "top3_section", "bottom_line"):
+                        for k in ("binding_constraint", "master_table",
+                                  "top3_section", "bottom_line"):
                             if not rec.get(k) and sections.get(k):
                                 rec[k] = sections[k]
                     # Strip legacy Phase β suffix from domain for display
@@ -1701,7 +1703,8 @@ def _parse_screener_sections_local(raw: str) -> dict:
     constraint</b>' so anchoring on plain '📍 현재 binding constraint\n'
     failed → sections came back empty, lazy migration produced nothing).
     Fix: strip HTML tags + markdown bold + markdown headers before regex."""
-    out = {"binding_constraint": "", "top3_section": "", "bottom_line": ""}
+    out = {"binding_constraint": "", "master_table": "",
+           "top3_section": "", "bottom_line": ""}
     if not raw:
         return out
     # Normalise away noise that breaks header anchoring
@@ -1714,6 +1717,12 @@ def _parse_screener_sections_local(raw: str) -> dict:
         clean, re.DOTALL,
     )
     if m: out["binding_constraint"] = m.group(1).strip()
+    # Master Table 전체 (4단계 결과 — 검증된 모든 ticker 행)
+    m = re.search(
+        r"📊\s*Master\s*Table\s*\n+(.*?)(?=\n+(?:🏆|💡|⚠️)|\Z)",
+        clean, re.DOTALL,
+    )
+    if m: out["master_table"] = m.group(1).strip()
     m = re.search(
         r"🏆\s*Top\s*3\s*conviction\s*picks\s*\n+(.*?)(?=\n+(?:💡|⚠️)|\Z)",
         clean, re.DOTALL,
@@ -1837,10 +1846,23 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
         )
         for r in by_date[date]:
             domain = _html.escape(r.get("domain", "Unknown"))
-            ts = _html.escape(r.get("ts", "")[-8:-3] if r.get("ts") else "")  # HH:MM
+            # Extract HH:MM from ISO 'YYYY-MM-DDTHH:MM:SS+09:00'. Previous
+            # slice ts[-8:-3] returned ':00+09' (suffix of timezone), not
+            # the clock — 2026-05-29 surfaced. Use 'T' split for safety.
+            raw_ts = r.get("ts") or ""
+            ts_clock = ""
+            if "T" in raw_ts:
+                ts_clock = raw_ts.split("T", 1)[1][:5]  # 'HH:MM'
+            ts = _html.escape(ts_clock)
             cost = r.get("cost_krw", 0) or 0
             elapsed = r.get("elapsed_sec", 0) or 0
-            tickers_n = len(r.get("validated_tickers", []) or [])
+            validated_list = r.get("validated_tickers", []) or []
+            tickers_n = len(validated_list)
+            # Tooltip: full ticker list on hover over '11개 ticker' chip
+            tickers_title = (
+                "Master Table 종목: " + ", ".join(validated_list)
+                if validated_list else "검증된 종목 없음"
+            )
             picks = r.get("top_3_picks", []) or []
 
             # Narrative sections (binding constraint / Top 3 rationale /
@@ -1848,9 +1870,10 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
             # expand. NOAH index.html uses similar <details> pattern for
             # past-outcomes accordions, kept visual parity here.
             binding = (r.get("binding_constraint") or "").strip()
+            master_table_txt = (r.get("master_table") or "").strip()
             top3_section_txt = (r.get("top3_section") or "").strip()
             bottom_line = (r.get("bottom_line") or "").strip()
-            has_analysis = bool(binding or top3_section_txt or bottom_line)
+            has_analysis = bool(binding or master_table_txt or top3_section_txt or bottom_line)
             analysis_html = ""
             if has_analysis:
                 pieces = []
@@ -1859,6 +1882,17 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                         f'<div class="analysis-sec"><div class="analysis-h">'
                         f'📍 현재 binding constraint</div>'
                         f'<div class="analysis-b">{_html.escape(binding)}</div></div>'
+                    )
+                if master_table_txt:
+                    # Master Table 은 11행 처럼 길어서 nested collapsible
+                    # (디폴트 접힘) — 사용자가 클릭해 모든 ticker 행 펼침.
+                    pieces.append(
+                        f'<details class="analysis-mt"><summary>'
+                        f'📊 Master Table 펼치기 (검증된 {tickers_n}개 ticker 전체 — 테마별 Tier A/B/C 신호 + 가격 반영도 + catalyst + kill trigger)'
+                        f'</summary>'
+                        f'<div class="analysis-sec"><div class="analysis-b">'
+                        f'{_html.escape(master_table_txt)}</div></div>'
+                        f'</details>'
                     )
                 if top3_section_txt:
                     pieces.append(
@@ -1874,7 +1908,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                     )
                 analysis_html = (
                     f'<details class="analysis">'
-                    f'<summary>📖 분석 내용 펼치기 (binding constraint · Top 3 근거 · bottom line)</summary>'
+                    f'<summary>📖 분석 내용 펼치기 (binding · Master Table · Top 3 · bottom line)</summary>'
                     + "".join(pieces) +
                     f'</details>'
                 )
@@ -1894,7 +1928,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
   <div class="card" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}">
     <div class="card-h">
       <span class="domain">{domain}</span>
-      <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s · ✅ {tickers_n}개 ticker</span>
+      <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s · <span class="ticker-chip" title="{_html.escape(tickers_title)}">✅ {tickers_n}개 ticker</span></span>
       <button class="del-btn" type="button" title="이 screener 기록 삭제">🗑️</button>
     </div>
     {analysis_html}
@@ -2137,6 +2171,17 @@ details.analysis summary:hover { background:rgba(59,130,246,0.12); }
   margin-bottom:6px; text-transform:none; letter-spacing:0; }
 .analysis-b { color:var(--text); font-size:13px; line-height:1.6;
   white-space:pre-wrap; }
+.ticker-chip { cursor:help; border-bottom:1px dotted var(--muted); }
+.ticker-chip:hover { color:var(--accent); }
+details.analysis-mt { margin:12px 4px 0; }
+details.analysis-mt summary { cursor:pointer; color:var(--accent);
+  font-size:12px; padding:6px 10px; background:rgba(59,130,246,0.08);
+  border-radius:6px; list-style:none; user-select:none; }
+details.analysis-mt summary::-webkit-details-marker { display:none; }
+details.analysis-mt summary::before { content:"▸ "; margin-right:4px; }
+details.analysis-mt[open] summary::before { content:"▾ "; }
+details.analysis-mt summary:hover { background:rgba(59,130,246,0.15); }
+details.analysis-mt .analysis-sec { margin-top:8px; }
 </style></head><body>
 """
 
