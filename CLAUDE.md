@@ -776,7 +776,7 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   반환. 대시보드 페이지 + `/screener_list` Telegram 출력 모두 layer
   별 그룹핑 (📈 L1 / 🏢 L2 / 🔬 L3).
 
-  **L1 Trend themes (6, 좁은 cycle 베팅)**:
+  **L1 Trend themes (8, 좁은 cycle 베팅)**:
   - `bottleneck.py` — AI Data Center Buildout (별칭 ai · 데이터센터)
   - `ev.py` — EV & Battery (별칭 전기차 · 배터리 · 이차전지)
   - `defense.py` — Defense, Aerospace & Space (별칭 방산 · 우주)
@@ -784,6 +784,10 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   - `solar.py` — Solar, Wind, ESS & Grid (별칭 신재생 · 태양광)
   - `robot.py` — Robotics & Humanoid Buildout (별칭 로봇 · 휴머노이드 ·
     협동로봇 · 자동화 · optimus · 감속기)
+  - `quantum.py` — Quantum Computing (별칭 양자 · 큐비트 · pqc). GICS
+    check 2026-05-29 식별 → 사용자 add 결정 후 ship.
+  - `carbon_capture.py` — Carbon Capture, Utilization & Storage (CCUS)
+    (별칭 탄소포집 · ccs · dac · 블루수소). GICS check 2026-05-29 식별.
 
   **L2 Sector themes (11, 미국 GICS-like 공식 분류)** — domain 표기는
   "Industrials (산업재)" 형태 (영문 정식 + 한국어 보조). binding_layer_

@@ -1394,10 +1394,12 @@ def _format_screener_domains_list() -> str:
          "🔬 L3 Industry",
          "각 L2 아래 sub-industry"),
     ]
+    n_l3 = len(by_layer.get("L3_INDUSTRY", []))
     lines = [
         f"📊 <b>Bottleneck Screener — 도메인 목록</b> ({len(ds)}개)",
         "",
-        "각 줄의 명령어 클릭 → 입력창 prefill → 엔터 1회로 즉시 실행.",
+        "메시지 하단 버튼: L1 trend + L2 sector 17개 (즉시 클릭).",
+        f"L3 industry {n_l3}개는 본문 텍스트 — <code>/screener_&lt;슬러그&gt;</code> 직접 타이핑 또는 별칭 사용.",
         "별칭은 <code>/screener &lt;별칭&gt;</code> 로 지원.",
         "",
     ]
@@ -1428,14 +1430,12 @@ def _format_screener_domains_list() -> str:
 
 
 def _screener_list_keyboard() -> InlineKeyboardMarkup | None:
-    """Inline keyboard with one URL button per registered domain. The
-    text body of /screener_list output also shows /screener_<slug> at
-    line starts (auto-detected by some clients), but the keyboard is
-    the guaranteed-clickable path — Telegram client auto-detection of
-    `/cmd` inside HTML messages is inconsistent on mobile, so every
-    domain gets a tap-to-fire button. Layout: 3 buttons per row, sorted
-    by slug. URL deep links via `?start=screener_<slug>` route through
-    `cmd_help` arg handling → `_screener_dispatch` for the actual run.
+    """Inline keyboard with URL buttons — limited to L1 trend (6) + L2
+    sector (11) = 17 buttons (4 rows of 3 + last row of 2). L3 industry
+    48개는 키보드에서 제외 — 65 버튼 22 행은 모바일 렌더 무거움 (사용자
+    보고 2026-05-29 "스크리너 list 안나오는 수준"). L3 도메인은 텍스트
+    본문 의 `/screener_<slug>` 직접 입력 또는 별칭 사용. 별도 명령
+    `/screener_list_l3` 가 L3 만 별도 페이지로 노출 가능 (추후 add 시).
 
     Returns None when the bot username isn't yet known (button URLs
     require it). In that case the text body alone is sent."""
@@ -1446,9 +1446,15 @@ def _screener_list_keyboard() -> InlineKeyboardMarkup | None:
     uname = _BOT_USERNAME_CACHE.get("name")
     if not uname:
         return None
+    # Keyboard 에는 L1 + L2 만 (자주 쓰이는 broad lens). L3 는 본문 텍스트
+    # 안내. 65 → 17 버튼으로 줄여 모바일 렌더 즉시.
+    short_list = [
+        d for d in list_domains()
+        if d.get("layer") in ("L1_TREND", "L2_SECTOR")
+    ]
     rows: list[list[InlineKeyboardButton]] = []
     cur: list[InlineKeyboardButton] = []
-    for d in sorted(list_domains(), key=lambda x: x["slug"]):
+    for d in sorted(short_list, key=lambda x: x["slug"]):
         slug = d["slug"]
         cur.append(InlineKeyboardButton(
             f"/{slug}",
