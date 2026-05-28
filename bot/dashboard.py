@@ -1886,12 +1886,21 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                 if master_table_txt:
                     # Master Table 은 11행 처럼 길어서 nested collapsible
                     # (디폴트 접힘) — 사용자가 클릭해 모든 ticker 행 펼침.
+                    # Section title `[전력: 변압기]` / `[냉각: 액체냉각 CDU]`
+                    # 같이 대괄호로 감싼 줄을 굵은 글씨로 강조 — 11개 ticker
+                    # 가 4-6개 테마 그룹으로 시각적 구분되게.
+                    mt_safe = _html.escape(master_table_txt)
+                    mt_bolded = re.sub(
+                        r"(^|\n)(\[[^\]\n]+\])",
+                        r'\1<b class="mt-section">\2</b>',
+                        mt_safe,
+                    )
                     pieces.append(
                         f'<details class="analysis-mt"><summary>'
                         f'📊 Master Table 펼치기 (검증된 {tickers_n}개 ticker 전체 — 테마별 Tier A/B/C 신호 + 가격 반영도 + catalyst + kill trigger)'
                         f'</summary>'
                         f'<div class="analysis-sec"><div class="analysis-b">'
-                        f'{_html.escape(master_table_txt)}</div></div>'
+                        f'{mt_bolded}</div></div>'
                         f'</details>'
                     )
                 if top3_section_txt:
@@ -2228,6 +2237,8 @@ details.analysis-mt summary::before { content:"▸ "; margin-right:4px; }
 details.analysis-mt[open] summary::before { content:"▾ "; }
 details.analysis-mt summary:hover { background:rgba(59,130,246,0.15); }
 details.analysis-mt .analysis-sec { margin-top:8px; }
+.mt-section { color:var(--accent); font-weight:700; font-size:13.5px;
+  display:inline-block; padding:2px 0; margin-top:4px; }
 </style></head><body>
 """
 
