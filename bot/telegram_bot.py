@@ -1639,7 +1639,19 @@ async def _periodic_dashboard_refresh() -> None:
 async def _on_startup(application) -> None:
     """Bot init: register the slash-command menu, then handle any orphan
     progress message left behind by a previous instance that died
-    mid-analysis (otherwise it would stay 'VICR 분석 시작…' forever)."""
+    mid-analysis (otherwise it would stay 'VICR 분석 시작…' forever).
+
+    Also regenerates screener.html on each restart — after a dashboard
+    code change ships (휴지통 / 검색창 / collapsible 등), the next bot
+    restart immediately re-renders the static HTML so existing archives
+    pick up the new UI without waiting for the next /screener call or
+    12h auto_resolve cycle."""
+    try:
+        from bot.dashboard import regenerate_screener_index
+        regenerate_screener_index()
+        log.info("startup: screener.html regenerated with current code")
+    except Exception as exc:
+        log.warning("startup: screener.html regen failed: %s", exc)
     # Populates the 'Menu' button beside the input area + the '/' typing
     # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
     # registered (the universe is too large) — Telegram still recognises

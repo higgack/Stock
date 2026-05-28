@@ -1634,7 +1634,15 @@ def _load_screener_runs() -> list[dict]:
     """Scan ~/.tradingagents/screener_archive/YYYY-MM-DD/*.json and return
     a list of run dicts (newest first). Each run has {ts, domain,
     raw_output, validated_tickers, rejected_tickers, elapsed_sec,
-    cost_krw, top_3_picks, _path, _date}."""
+    cost_krw, top_3_picks, _path, _date}.
+
+    Lazy migration (2026-05-29): old JSONs (saved before commit 01b3957)
+    lack binding_constraint / top3_section / bottom_line fields, and old
+    JSONs (saved before d9ddd25) carry the legacy '(Phase β · 실시간
+    데이터)' suffix in their domain string. We parse sections from
+    raw_output on the fly + strip the suffix at load time so the
+    dashboard renders consistently for ALL runs without a separate
+    migration job. Cost is negligible (~5 regex passes per file)."""
     import json as _json
     runs: list[dict] = []
     if not _SCREENER_ARCHIVE_DIR.exists():
@@ -1652,12 +1660,48 @@ def _load_screener_runs() -> list[dict]:
                     rec["_path"] = str(json_file)
                     rec["_date"] = date_dir.name
                     rec["_filename"] = json_file.name
+                    # Migrate old archives without parsed sections
+                    if not rec.get("binding_constraint") and rec.get("raw_output"):
+                        sections = _parse_screener_sections_local(rec["raw_output"])
+                        rec.setdefault("binding_constraint", sections["binding_constraint"])
+                        rec.setdefault("top3_section", sections["top3_section"])
+                        rec.setdefault("bottom_line", sections["bottom_line"])
+                    # Strip legacy Phase β suffix from domain for display
+                    raw_domain = rec.get("domain", "") or ""
+                    rec["domain"] = re.sub(
+                        r"\s*\(Phase\s*β[^)]*\)", "", raw_domain
+                    ).strip() or raw_domain
                     runs.append(rec)
                 except Exception as exc:
                     log.warning("dashboard: screener load %s failed: %s", json_file, exc)
     except Exception as exc:
         log.warning("dashboard: screener archive scan failed: %s", exc)
     return runs
+
+
+def _parse_screener_sections_local(raw: str) -> dict:
+    """Mirror of bot.screener._parse_screener_sections — duplicated here so
+    dashboard.py doesn't import from screener.py at module-load time.
+    Extracts 📍 binding constraint / 🏆 Top 3 / 💡 Bottom line."""
+    out = {"binding_constraint": "", "top3_section": "", "bottom_line": ""}
+    if not raw:
+        return out
+    m = re.search(
+        r"📍\s*현재\s*binding\s*constraint\s*\n+(.*?)(?=\n+(?:📊|🏆|💡|⚠️)|\Z)",
+        raw, re.DOTALL,
+    )
+    if m: out["binding_constraint"] = m.group(1).strip()
+    m = re.search(
+        r"🏆\s*Top\s*3\s*conviction\s*picks\s*\n+(.*?)(?=\n+(?:💡|⚠️)|\Z)",
+        raw, re.DOTALL,
+    )
+    if m: out["top3_section"] = m.group(1).strip()
+    m = re.search(
+        r"💡\s*Bottom\s*line\s*\n+(.*?)(?=\n+(?:⚠️|🤖)|\Z)",
+        raw, re.DOTALL,
+    )
+    if m: out["bottom_line"] = m.group(1).strip()
+    return out
 
 
 def _load_screener_outcomes() -> dict[tuple[str, str], dict]:
@@ -1734,6 +1778,13 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     <div class="stat"><div class="stat-v">{total_picks}</div><div class="stat-l">Top-3 picks</div></div>
     <div class="stat"><div class="stat-v">{resolved_count}</div><div class="stat-l">5d resolved</div></div>
   </div>
+
+  <div class="search-bar">
+    <input id="scr-search" type="text" placeholder="ticker / 회사명 / 테마 검색 (예: ETN, Eaton, 변압기)" autocomplete="off" spellcheck="false">
+    <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
+  </div>
+  <p id="scr-status" class="status-line">총 {total_runs}건의 screener 실행</p>
+  <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
 """)
 
     if not runs:
@@ -1792,8 +1843,18 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                 )
 
             filename = _html.escape(r.get("_filename", ""))
+            # Build searchable haystack: domain + all top-3 tickers + companies.
+            # Lowercased upfront so JS just does case-insensitive includes().
+            search_parts: list[str] = [domain.lower()]
+            for pick in picks:
+                if not isinstance(pick, dict):
+                    continue
+                search_parts.append((pick.get("ticker") or "").lower())
+                search_parts.append((pick.get("company") or "").lower())
+                search_parts.append((pick.get("theme") or "").lower())
+            search_attr = _html.escape(" ".join(p for p in search_parts if p))
             parts.append(f"""
-  <div class="card" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}">
+  <div class="card" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}">
     <div class="card-h">
       <span class="domain">{domain}</span>
       <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s · ✅ {tickers_n}개 ticker</span>
@@ -1846,6 +1907,57 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     # regen rewrites screener.html so a later reload picks up everything.
     parts.append("""
 <script>
+// Search filter — ticker / company / theme / domain all matched (case
+// insensitive). Each card has data-search lowercased upfront so JS just
+// does includes(). 매칭되는 카드 0건 시 빈 메시지 표시. NOAH index.html
+// 검색창과 visual/UX parity.
+(function() {
+  const inp = document.getElementById('scr-search');
+  const clr = document.getElementById('scr-clear');
+  const sts = document.getElementById('scr-status');
+  const emp = document.getElementById('scr-empty');
+  const cards = Array.from(document.querySelectorAll('.card'));
+  const dateHeaders = Array.from(document.querySelectorAll('h2.date'));
+  if (!inp) return;
+  const total = cards.length;
+
+  function applyFilter() {
+    const q = (inp.value || '').trim().toLowerCase();
+    let matched = 0;
+    for (const c of cards) {
+      const hay = c.dataset.search || '';
+      const vis = !q || hay.includes(q);
+      c.style.display = vis ? '' : 'none';
+      if (vis) matched++;
+    }
+    // Hide date headers whose subsequent cards are all hidden
+    for (const h of dateHeaders) {
+      let any = false;
+      let n = h.nextElementSibling;
+      while (n && !n.matches('h2.date')) {
+        if (n.classList.contains('card') && n.style.display !== 'none') {
+          any = true; break;
+        }
+        n = n.nextElementSibling;
+      }
+      h.style.display = any ? '' : 'none';
+    }
+    if (q) {
+      sts.textContent = matched + '건 매칭 (검색: "' + (inp.value || '').trim() + '")';
+      emp.style.display = matched === 0 ? 'block' : 'none';
+    } else {
+      sts.textContent = '총 ' + total + '건의 screener 실행';
+      emp.style.display = 'none';
+    }
+  }
+  inp.addEventListener('input', applyFilter);
+  clr.addEventListener('click', function() {
+    inp.value = '';
+    applyFilter();
+    inp.focus();
+  });
+})();
+
 document.querySelectorAll('.del-btn').forEach(function(btn) {
   btn.addEventListener('click', function(ev) {
     ev.stopPropagation();
@@ -1925,6 +2037,17 @@ h2.date { font-size:14px; color:var(--muted); margin:28px 0 12px;
   margin-left:auto; }
 .del-btn:hover { color:var(--neg); background:rgba(239,68,68,0.08); }
 .del-btn:disabled { opacity:0.5; cursor:wait; }
+.search-bar { display:flex; gap:8px; margin-bottom:14px; }
+.search-bar input { flex:1; background:var(--card);
+  border:1px solid var(--border); border-radius:8px; padding:10px 14px;
+  color:var(--text); font-size:14px; font-family:inherit; outline:none; }
+.search-bar input:focus { border-color:var(--accent); }
+.search-bar button { background:#16a34a; color:white; border:none;
+  border-radius:8px; padding:0 18px; font-size:13px; font-weight:600;
+  cursor:pointer; transition:transform 0.05s; }
+.search-bar button:hover { background:#15803d; }
+.search-bar button:active { transform:scale(0.97); }
+.status-line { color:var(--muted); font-size:12px; margin:0 0 12px; }
 table.picks { width:100%; border-collapse:collapse; font-size:13px; }
 table.picks th { text-align:left; color:var(--muted); font-weight:500;
   padding:8px 6px; border-bottom:1px solid var(--border); font-size:11px;
