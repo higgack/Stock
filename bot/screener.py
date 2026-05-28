@@ -166,6 +166,14 @@ RULES — 절대:
 - ticker 가짜 생성 금지 (yfinance 검증됨).
 - niche layer 우선, 1차 헤드라인 (NVDA/AAPL 등) 후순위.
 - 5거래일 horizon 언급 금지 — 본 출력은 6-18개월 thesis.
+- **유동성 경고 의무 (S 티어 ~$100M micro-cap)**: 모든 S 티어 행은
+  Kill Trigger 다음 줄에 다음 형식으로 유동성 caveat 명시 — '⚠️ 시총
+  ~$XXM 소형주 — 일일 거래대금/유동성 제한 + 단기 변동성 ±10-20%
+  정상 범위 + 기관 진입 어려움 (한국 KOSDAQ S/T tier · TPEx 등 illiquid
+  로컬 라인 동일 적용)'. 시총 USD 추정치 명시. M/L tier 는 생략.
+  (416180.KQ Shinsung ST, 131290.KQ TSE 같은 KOSDAQ S 티어를 거론
+  하면서 유동성 경고 미명시 시 reader 가 동일 size weight 로 오해
+  가능 — 2026-05-29 외부 리뷰 surfaced).
 
 LANGUAGE — 출력 전체를 **한국어**로 작성. 산문·근거 설명·평가·결론·
 narrative·disclaimer 모두 한국어. 영어 paragraph / 영어 intro 문구
