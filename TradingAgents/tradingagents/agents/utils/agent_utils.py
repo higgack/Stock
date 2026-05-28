@@ -431,6 +431,44 @@ def _instrument_info(ticker: str) -> dict:
             pass  # fast_info unavailable — fall through to .info values
     except Exception as exc:
         _analyst_log.warning("instrument info lookup failed for %s: %s", ticker, exc)
+
+    # 2026-05-29 EV screener review fix: yfinance 가 CN A-share 의
+    # trailingPE / priceToBook / priceToSalesTrailing12Months 를 자주
+    # None 으로 던짐 (300037.SZ / 002812.SZ / 688275.SS 등 EV 도메인
+    # 11종 중 3종이 모두 None). 마지막 단계에서 AKShare
+    # 'stock_a_indicator_lg' (PE/PB/PS daily 시계열) 의 latest row 로
+    # 빈 슬롯 overlay. KR 의 Naver/KIS 폴백과 동일 의도, 단 _instrument_
+    # info 한 곳에서 처리하므로 _build_factual_anchor / canonical price
+    # block / _assemble_multiples_block 모두 자동 혜택. Universal —
+    # 시장 == CN_A 일 때만 작동, 다른 시장은 no-op.
+    try:
+        from bot.market import detect_market
+        if detect_market(ticker) == "CN_A" and not all(
+            isinstance(out.get(k), (int, float)) and out.get(k) == out.get(k)
+            for k in ("trailingPE", "priceToBook")
+        ):
+            try:
+                from bot.akshare_client import get_akshare
+                cn_val = get_akshare().get_valuation(ticker)
+                if cn_val:
+                    if cn_val.get("per") and "trailingPE" not in out:
+                        out["trailingPE"] = float(cn_val["per"])
+                    if cn_val.get("pbr") and "priceToBook" not in out:
+                        out["priceToBook"] = float(cn_val["pbr"])
+                    if cn_val.get("psr") and "priceToSalesTrailing12Months" not in out:
+                        out["priceToSalesTrailing12Months"] = float(cn_val["psr"])
+                    _analyst_log.info(
+                        "akshare CN_A multiples overlay for %s: PER=%s PBR=%s PSR=%s",
+                        ticker,
+                        cn_val.get("per"), cn_val.get("pbr"), cn_val.get("psr"),
+                    )
+            except Exception as exc:
+                _analyst_log.debug(
+                    "akshare CN_A overlay failed for %s: %s", ticker, exc,
+                )
+    except Exception:
+        pass
+
     _INSTRUMENT_INFO_CACHE[ticker] = out
     return out
 
@@ -473,9 +511,14 @@ def _fetch_peer_multiples(ticker: str) -> str:
     # Naver Finance + KIS 로 보강해 Comps 표 빈 칸 메움. KR ticker 만
     # 적용 — US/JP/TW/CN 은 yfinance peer multiples 가 일반적으로 양호.
     kr_per = kr_pbr = kr_eps = kr_bps = None
+    # CN A-share fallback values (set when market == CN_A and yfinance
+    # multiples miss). Mirror of the KR fallback shape — same per/pbr/psr
+    # naming so the resolution chain below is symmetric.
+    cn_per = cn_pbr = cn_psr = None
     try:
         from bot.market import detect_market
-        if detect_market(ticker) == "KR":
+        _mkt = detect_market(ticker)
+        if _mkt == "KR":
             try:
                 from bot.naver_finance_client import get_naver_valuation
                 nav_peer = get_naver_valuation(ticker)
@@ -499,6 +542,21 @@ def _fetch_peer_multiples(ticker: str) -> str:
                             kr_pbr = kis_peer["pbr"]
                 except Exception:
                     pass
+        elif _mkt == "CN_A":
+            # 2026-05-29 EV screener review fix: yfinance 가 CN A-share
+            # PER/PBR/PSR 를 모두 None 으로 던지는 케이스 (300037.SZ /
+            # 002812.SZ / 688275.SS) 가 잦음. AKShare 'stock_a_indicator_
+            # _lg' (daily PE/PB/PS 시계열) 의 가장 최근 행으로 폴백 →
+            # KR 의 Naver/KIS 폴백과 동일 패턴.
+            try:
+                from bot.akshare_client import get_akshare
+                cn_val = get_akshare().get_valuation(ticker)
+                if cn_val:
+                    cn_per = cn_val.get("per")
+                    cn_pbr = cn_val.get("pbr")
+                    cn_psr = cn_val.get("psr")
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -522,13 +580,15 @@ def _fetch_peer_multiples(ticker: str) -> str:
                     and not (isinstance(v, float) and v != v)
                     and lo < v < hi)
 
-        # PER (trailing) — KR fallback first if yfinance miss. 적자 (eps<0)
-        # 케이스는 별도 처리 — "N/M(적자)" 로 명시.
+        # PER (trailing) — KR fallback first if yfinance miss, then CN
+        # AKShare fallback. 적자 (eps<0) 케이스는 별도 "N/M(적자)" 로 명시.
         per = raw.get("trailingPE")
         eps_for_per = raw.get("trailingEps")
         if not _valid(per, 0, 500):
             if kr_per and 0 < kr_per < 500:
                 per = kr_per
+            elif cn_per and 0 < cn_per < 500:
+                per = cn_per
             else:
                 per = None
         if _valid(per, 0, 500):
@@ -542,15 +602,25 @@ def _fetch_peer_multiples(ticker: str) -> str:
         fper = raw.get("forwardPE")
         if _valid(fper, 0, 500):
             out_parts.append(f"Fwd PER {fper:.1f}")
-        # PSR — 0.05 미만은 stale/truncated 의심 (실제 0 인 회사 없음)
+        # PSR — 0.05 미만은 stale/truncated 의심 (실제 0 인 회사 없음).
+        # CN AKShare PSR 폴백 — yfinance priceToSalesTrailing12Months 가
+        # CN A-share 에서 자주 None.
         psr = raw.get("priceToSalesTrailing12Months")
+        if not _valid(psr, 0.05, 50):
+            if cn_psr and 0.05 < cn_psr < 50:
+                psr = cn_psr
+            else:
+                psr = None
         if _valid(psr, 0.05, 50):
             out_parts.append(f"PSR {psr:.2f}")
-        # PBR — KR fallback first. -50~100 (자본잠식 시 negative 허용)
+        # PBR — KR fallback first, then CN AKShare. -50~100 (자본잠식 시
+        # negative 허용)
         pbr = raw.get("priceToBook")
         if not _valid(pbr, -50, 100):
             if kr_pbr and -50 < kr_pbr < 100:
                 pbr = kr_pbr
+            elif cn_pbr and -50 < cn_pbr < 100:
+                pbr = cn_pbr
             else:
                 pbr = None
         if _valid(pbr, -50, 100):

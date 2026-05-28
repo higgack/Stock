@@ -519,6 +519,83 @@ class AkshareClient:
 
         return code in cached
 
+    # ---- 个股 估值 (per-ticker valuation: PE / PB / PS) -----------------
+
+    def get_valuation(self, ticker: str) -> Optional[dict]:
+        """Latest A-share PE / PB / PS multiples via AKShare
+        ``stock_a_indicator_lg``. yfinance ``trailingPE`` / ``forwardPE``
+        / ``priceToBook`` / ``priceToSalesTrailing12Months`` 는 CN A-share
+        커버리지가 sparse — 2026-05-29 EV screener review 에서 300037.SZ
+        / 002812.SZ / 688275.SS 등 PER/PBR 모두 None 으로 출력에 "(inferred
+        data)" 잔존. 본 메서드가 yfinance 빈 슬롯의 폴백 (KR 의 pykrx
+        폴백과 동일 패턴).
+
+        Returns:
+          ``{"per": float, "pbr": float, "psr": float, "date": "YYYY-MM-DD"}``
+          (각 키는 N/A 시 None) 또는 전체 실패 시 None.
+
+        Cache: 12h disk (per-ticker key). 일중 multiple 변동은 미세 — 매
+        screener 호출마다 fetch 할 가치 없음. HK / BJ tickers 는 미지원
+        (AKShare 의 stock_a_indicator_lg 는 SH/SZ 메인보드 + STAR +
+        ChiNext 만 커버).
+        """
+        code, market = _ticker_to_cn_code(ticker)
+        if not code or market not in ("CN_A_SH", "CN_A_SZ"):
+            return None
+
+        cache_key = f"valuation_{code}_{market}_{date.today().isoformat()}.json"
+        cached = _cache_get(cache_key, ttl_hours=12)
+        if cached is not None:
+            return cached if cached else None
+
+        ak = _import_akshare()
+        if ak is None:
+            return None
+
+        try:
+            df = _fetch_with_retry(
+                lambda: ak.stock_a_indicator_lg(symbol=code),
+                f"valuation {code}",
+            )
+            if df is None or len(df) == 0:
+                _cache_put(cache_key, {})
+                return None
+            # Pick the most recent row. Column casing varies between
+            # AKShare versions ('trade_date' vs 'date'; 'pe' vs 'pe_ttm').
+            cols = list(df.columns)
+            date_col = next(
+                (c for c in cols if c in ("trade_date", "date", "日期")),
+                None,
+            )
+            if date_col:
+                df = df.sort_values(date_col)
+            row = df.iloc[-1]
+            def _pick(*names):
+                for n in names:
+                    if n in row.index:
+                        v = row.get(n)
+                        try:
+                            f = float(v)
+                            if f == f and 0 < f < 1000:  # NaN-safe + sanity
+                                return f
+                        except (TypeError, ValueError):
+                            continue
+                return None
+            result = {
+                "per": _pick("pe", "pe_ttm", "PE", "市盈率(TTM)"),
+                "pbr": _pick("pb", "PB", "市净率"),
+                "psr": _pick("ps", "ps_ttm", "PS", "市销率"),
+                "date": str(row.get(date_col)) if date_col else None,
+            }
+            if all(v is None for k, v in result.items() if k != "date"):
+                _cache_put(cache_key, {})
+                return None
+            _cache_put(cache_key, result)
+            return result
+        except Exception as exc:
+            log.warning("akshare: valuation fetch failed for %s: %s", code, exc)
+            return None
+
     # ---- 港股通 / 沪股通 / 深股통 flow -----------------------------------
 
     def get_hsgt_flow_summary(self, days_back: int = 5) -> Optional[dict]:

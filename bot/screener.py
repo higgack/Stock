@@ -266,14 +266,18 @@ OUTPUT FORMATTING (2026-05-29 가독성 fix):
   `•` 또는 `▪` 만 사용. 강조는 `<b>`.
 
 TIER 분류 사용 규율 (2026-05-29 surfaced — NVTS $6.77B / Kinsus $11B
-가 S-Tier 로 잘못 분류된 모순):
+가 S-Tier 로 잘못 분류된 모순 + EV 도메인 review 에서 AMPX 가 시총 ~수억
+달러인데 L-Tier 분류된 재발):
 - 각 종목 context 상단에 'AUTHORITATIVE TIER:' 라벨 명시 — Python 백엔드
   가 yfinance 시가총액을 USD 환산해 분류 완료. S=<$300M / M=$300M-$3B /
   L=>$3B. Pro 임의 재분류 절대 금지.
 - 'Master Table' 의 티어 컬럼 + Top-3 picks 의 'Tier:' 표기 + S-Tier
-  유동성 경고 발화 조건 = 모두 AUTHORITATIVE TIER 그대로 사용.
+  유동성 경고 발화 조건 = 모두 AUTHORITATIVE TIER 그대로 사용. 매출 규모
+  / 적자 여부 / 성장률 / 인지도 등 다른 휴리스틱 으로 tier 재추정 금지.
 - 시총 표기는 'mcap' 필드 값 그대로 cite ('$6.77B USD' / '$420M USD' 등).
   Pro 가 자체 시총 추정·환산 금지.
+- 위반 시 백엔드 post-process pass 가 자동 치환 + 로그 — 잘못된 tier 는
+  사용자 출력 단에서 안 보이지만, 위반 횟수 누적은 모니터링 됨.
 
 CORP ACTION 환각 차단 (058470.KS 리노공업 2026-05-29 surfaced):
 - yfinance / 주입된 instrument context 의 EPS/PER 비정상값 (예: PER >
@@ -352,6 +356,9 @@ _TICKER_RE = re.compile(r"\b([A-Z0-9]{1,6}(?:[.\-][A-Z0-9]{1,4})?)\b")
 # 2026-05-28 first /screener run reject noise added: NYSE, ST, H1, FX, MJC
 # (exchange names / period designators / company abbreviations that aren't
 # the actual listed ticker).
+# 2026-05-29 EV 도메인 review: EBITDA/FEC/DLE/CATL/GAAP/ROIC 등 도메인
+# 약어 + 화학식 + 상장명-아닌-기업명 약자 추가. CATL 은 텍스트 약자이고
+# 실제 상장은 300750.SZ — 'CATL' 만 잡히면 yfinance reject 노이즈.
 _TICKER_BLACKLIST = {
     "USD", "EUR", "JPY", "KRW", "CNY", "TWD", "HKD", "GBP", "CHF",
     "AI", "USA", "EU", "UK", "TSE", "KRX", "TPEx", "TWSE", "ADR",
@@ -364,9 +371,20 @@ _TICKER_BLACKLIST = {
     "NYSE", "NASDAQ", "AMEX", "LSE", "TSX", "ASX", "JSE", "SEHK",
     # Period / time designators
     "H1", "H2", "YTD", "YOY", "QOQ", "FY24", "FY25", "FY26", "FY27",
-    # Misc finance acronyms
+    # Misc finance acronyms — Wave 1 review 추가
     "FX", "PT", "RM", "MOQ", "BOM", "BTO", "JV", "LBO", "SPAC",
     "AOP", "OPEX", "CAPEX", "SAR", "RSU", "ESG",
+    "EBITDA", "GAAP", "ROIC", "ROE", "ROA", "FCF", "IRR", "NPV",
+    "WACC", "DCF", "PEG", "EPS", "BPS", "DPS", "CAGR", "LBO", "MBO",
+    # Domain acronyms — EV / pharma / defense / solar / AI 데이터센터
+    # 모두 cover. 본문에서 약어로 자주 등장하지만 실제 상장명 아님.
+    "CATL", "LFP", "NCM", "NCA", "LMFP", "BMS", "VC", "FEC", "DLE",
+    "ESS", "GLP", "CRO", "CDMO", "ADC", "DCT", "HRT", "PCT", "EUA",
+    "MOSFET", "IGBT", "OLED", "AMOLED", "QLED", "LCD", "TFT", "QD",
+    "CPU", "DPU", "TPU", "FPGA", "ASIC", "SoC", "PCB", "TSV", "SIP",
+    "AAV", "VIE", "SPV", "PLC", "LLC", "LLP", "GP", "LP", "PE", "VC",
+    "DoD", "FAA", "NATO", "BOEM", "AESO", "ERCOT", "CAISO", "PJM",
+    "CHIPS", "FDA", "EMA", "CHMP", "NICE", "OFAC", "SAMR", "CAC", "BIS",
     # Company-name abbreviations that appear NEXT to real tickers in
     # narrative ('2396.T MJC', 'Shinsung ST', etc.) — the real ticker
     # is the .T / .KQ neighbor, the abbrev itself is not listed.
@@ -404,6 +422,15 @@ def _extract_candidate_tickers(text: str) -> set[str]:
         # (e.g. '2026', '1355', '155'). Reject before yfinance call to
         # avoid 35-row reject noise in the validation summary.
         if not has_alpha and not has_market_suffix:
+            continue
+        # 2026-05-29 Wave 1 review fix: digit-LED base without a market
+        # suffix is a quantity / period designator, not a ticker. Catches
+        # 150M ($150M 시총), 800V (high-voltage spec), 92M ($92M revenue),
+        # 2026-H2 (period — base '2026' after split('-'), no '.' suffix),
+        # 2027-Q4 등. Real CN/KR/JP/TW/HK digit tickers ALWAYS carry a
+        # market suffix (`.SS`, `.SZ`, `.KS`, `.T`, `.TW`, `.HK`) so this
+        # rule is safe to apply universally.
+        if base and base[0].isdigit() and not has_market_suffix:
             continue
         candidates.add(sym)
     return candidates
@@ -576,6 +603,123 @@ def _log_usage(prompt_tok: int, output_tok: int, cost_krw: float, domain: str) -
 _TOP3_TAG_RE = re.compile(
     r"<TOP_3_JSON>\s*(\[.*?\])\s*</TOP_3_JSON>", re.DOTALL
 )
+
+
+# Master Table row: '[테마] · L · TICKER · ...' — captures theme prefix,
+# tier letter, ticker (USD-letter / digit-suffix forms both). Multiline
+# DOTALL not needed; tier line is always single-line in current format.
+_MT_TIER_ROW_RE = re.compile(
+    r"(\[[^\]\n]+\]\s*·\s*)([LMS?])(\s*·\s*)([A-Z0-9][A-Z0-9.\-]{0,12})",
+)
+# Top-3 parenthetical: '(Tier: L, 접근 경로: ...)' — captures just the
+# letter for in-place substitution.
+_TOP3_TIER_PAREN_RE = re.compile(r"\(Tier:\s*([LMS?])(\s*[,\)])")
+
+
+def _correct_tiers_post_pro(
+    text: str, candidates: list[dict]
+) -> tuple[str, int]:
+    """Belt-and-suspenders enforcement of AUTHORITATIVE TIER values in the
+    Pro Phase 4·5 output. Walks the rendered Master Table + Top-3 picks
+    for `[theme] · X · TICKER` and `(Tier: X)` occurrences; when the X
+    letter disagrees with the Python-computed tier for TICKER, substitute.
+
+    Returns (corrected_text, n_fixes). Logs each correction so monitoring
+    can spot when Pro discipline drifts at scale (EV 2026-05-29 review
+    surfaced AMPX shown as L despite Python-assigned tier from mcap).
+
+    Master Table rows are the primary surface — substitution is safe even
+    when the row format varies slightly (tier letter is always the first
+    `·`-separated field after the theme bracket). Top-3 picks pick up
+    `(Tier: X` parenthetical via a separate line walk so the ticker
+    context can be derived from the same line.
+    """
+    if not text or not candidates:
+        return text, 0
+    by_ticker: dict[str, str] = {}
+    for c in candidates:
+        tk = (c.get("ticker") or "").upper()
+        tier = (c.get("tier") or "").upper()[:1]
+        if tk and tier in ("L", "M", "S"):
+            by_ticker[tk] = tier
+    if not by_ticker:
+        return text, 0
+    n_fixes = 0
+
+    # Pass 1 — Master Table rows.
+    def _mt_sub(m: re.Match) -> str:
+        nonlocal n_fixes
+        prefix, cur_tier, sep, ticker = m.groups()
+        tk = ticker.upper()
+        true_tier = by_ticker.get(tk)
+        if true_tier and cur_tier != true_tier:
+            log.warning(
+                "screener tier correction (MT row): %s %s → %s",
+                tk, cur_tier, true_tier,
+            )
+            n_fixes += 1
+            return f"{prefix}{true_tier}{sep}{ticker}"
+        return m.group(0)
+    text = _MT_TIER_ROW_RE.sub(_mt_sub, text)
+
+    # Pass 2 — Top-3 picks. Match line-by-line because each pick is a
+    # single line and we need ticker context (preceding `(TICKER)` form).
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        m = _TOP3_TIER_PAREN_RE.search(ln)
+        if not m:
+            continue
+        cur_tier = m.group(1)
+        # Use the last `(TICKER)` token before the (Tier: ...) marker.
+        before = ln[: m.start()]
+        tk_matches = list(re.finditer(r"\(([A-Z0-9][A-Z0-9.\-]{0,12})\)", before))
+        if not tk_matches:
+            continue
+        tk = tk_matches[-1].group(1).upper()
+        true_tier = by_ticker.get(tk)
+        if true_tier and cur_tier != true_tier:
+            lines[i] = (
+                ln[: m.start(1)] + true_tier + ln[m.end(1):]
+            )
+            n_fixes += 1
+            log.warning(
+                "screener tier correction (Top-3): %s %s → %s",
+                tk, cur_tier, true_tier,
+            )
+    text = "\n".join(lines)
+    return text, n_fixes
+
+
+def _correct_top3_json_tiers(
+    top3: list[dict], candidates: list[dict]
+) -> int:
+    """Fix tier letters inside the TOP_3_JSON tail too. Same Python truth
+    as _correct_tiers_post_pro but applied to the parsed JSON dict so the
+    dashboard archive + telegram top-3 display surface stays in sync.
+    Returns n_fixes."""
+    if not top3 or not candidates:
+        return 0
+    by_ticker: dict[str, str] = {}
+    for c in candidates:
+        tk = (c.get("ticker") or "").upper()
+        tier = (c.get("tier") or "").upper()[:1]
+        if tk and tier in ("L", "M", "S"):
+            by_ticker[tk] = tier
+    n_fixes = 0
+    for p in top3:
+        if not isinstance(p, dict):
+            continue
+        tk = (p.get("ticker") or "").upper()
+        cur = (p.get("tier") or "").upper()[:1]
+        true_tier = by_ticker.get(tk)
+        if true_tier and cur and cur != true_tier:
+            log.warning(
+                "screener tier correction (JSON tail): %s %s → %s",
+                tk, cur, true_tier,
+            )
+            p["tier"] = true_tier
+            n_fixes += 1
+    return n_fixes
 
 
 def _extract_top3_json(output: str) -> tuple[list[dict], str]:
@@ -1097,8 +1241,20 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
     cost_krw = cost_usd * _USD_TO_KRW
     _log_usage(total_pt, total_ot, cost_krw, theme["domain"])
 
+    # Tier 보정 (2026-05-29 EV review fix #3): Pro 가 AUTHORITATIVE TIER
+    # 디렉티브를 무시하고 자체 분류 (예: AMPX L 로 출력하지만 mcap 기반
+    # Python 분류 결과는 M 또는 S) 한 경우, 본문 + JSON tail 모두 Python
+    # 진실로 자동 치환. Master Table 행 + Top-3 picks 의 (Tier: X) +
+    # TOP_3_JSON 의 "tier" 필드 모두 동기화.
+    p45_text, n_body_fixes = _correct_tiers_post_pro(p45_text, candidates)
+    if n_body_fixes:
+        log.info("screener: %d tier corrections applied to Pro body", n_body_fixes)
+
     # Extract Top-3 JSON tail before user display (strip from raw_output)
     top3, p45_cleaned = _extract_top3_json(p45_text)
+    n_json_fixes = _correct_top3_json_tiers(top3, candidates)
+    if n_json_fixes:
+        log.info("screener: %d tier corrections applied to Top-3 JSON", n_json_fixes)
     log.info("screener phase β/Top-3: %d picks extracted", len(top3))
 
     # Ticker scope 격리 (2026-05-29 외부 리뷰 surfaced): Phase 1·2 candidate

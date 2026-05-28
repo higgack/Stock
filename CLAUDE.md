@@ -775,7 +775,17 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   - Wildcard 금지 (날짜 `2026-01-_` → quarter `2026-Q1`)
   - DATA INTEGRITY (yfinance company_name mismatch 종목 OMIT)
   - Ticker scope 격리 (최종 본문 기준 reject 표시)
+  - Ticker noise reject (2026-05-29 EV review): `150M` / `800V` /
+    `2026-H2` / `EBITDA` / `FEC` / `DLE` / `LFP` / `NCM` / `OLED` /
+    `BMS` / `GLP` / `CRO` / `CDMO` 등 도메인 약어 + 숫자-LED 토큰
+    blacklist 또는 regex 룰로 yfinance reject 노이즈 차단
   - Liquidity 경고 (S-tier ~$100M micro-cap)
+  - TIER 강제 (2026-05-29 EV review): Pro 의 자체 분류를 Python mcap
+    기반 결과로 자동 치환 (Master Table 행 + Top-3 picks parenthetical
+    + TOP_3_JSON tail). AMPX 등 Pro 가 무시한 케이스 모니터링 로그.
+  - CN A-share multiples 폴백 (2026-05-29 EV review): yfinance PER/PBR/
+    PSR None 시 AKShare `stock_a_indicator_lg` 의 latest row 로 자동
+    overlay (`_instrument_info` 단일 지점, downstream 전체 혜택)
   - Markdown 금지 (`**`, `*`, `##` literal noise 차단 — HTML 만)
 
 **다음 작업 — Wave 2 + 캐시 + 자유텍스트:**
