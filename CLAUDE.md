@@ -255,16 +255,38 @@ help is pinned as a channel announcement; out-of-sync help is treated
 as a public spec bug.
 
 **Bottleneck Screener 변경도 동일 적용 (사용자 정책 2026-05-29):**
-새로운 도메인 (`/screener ev` / `defense` / `pharma` 등) · 새로운
-대시보드 surface · 새로운 가드 룰 · 새로운 outcome 지표 · 새로운
-trash/edit 기능 등 무엇이든 user-visible 인 screener 변경은 `_HELP_TEXT`
-section 1 (commands) + section 11 (대시보드) + section 12 (예정) 의
-관련 줄을 동시에 갱신 의무. "이번에 생긴 변경도 help 에 넣어줘 — 앞으로
-변경 있을 때마다 계속" — 사용자 강조 2026-05-29. 본 CLAUDE.md 의
-'Bottleneck Screener — 운영 중' 섹션도 같은 commit 에서 함께 갱신해
-다음 세션 Claude 가 현재 상태를 정확히 파악할 수 있게 할 것. The two surfaces it must keep current are spelled
-out under "Help text maintenance" below (current-state sections 2-11
-+ '진행 중 / 예정' section 12).
+새로운 대시보드 surface · 새로운 가드 룰 · 새로운 outcome 지표 ·
+새로운 trash/edit 기능 등 무엇이든 user-visible 인 screener 변경은
+`_HELP_TEXT` section 1 (commands) + section 11 (대시보드) + section 12
+(예정) 의 관련 줄을 동시에 갱신 의무. "이번에 생긴 변경도 help 에
+넣어줘 — 앞으로 변경 있을 때마다 계속" — 사용자 강조 2026-05-29. 본
+CLAUDE.md 의 'Bottleneck Screener — 운영 중' 섹션도 같은 commit 에서
+함께 갱신해 다음 세션 Claude 가 현재 상태를 정확히 파악할 수 있게 할
+것. The two surfaces it must keep current are spelled out under "Help
+text maintenance" below (current-state sections 2-11 + '진행 중 / 예정'
+section 12).
+
+**⛔ Screener 도메인 목록은 `_HELP_TEXT` inline 금지 (사용자 정책
+2026-05-29 후속):** Wave 1/2/3 + Wave ∞ 까지 도메인이 무한 확장될 예정
+이므로 모든 도메인을 help text 에 나열하면 4096 UTF-16 cap 압박이
+영구화 됨. 도메인 목록은 두 surface 에 자동 generation:
+
+  1. **텔레그램 `/screener_list` 명령** — `bot.screener_themes.list_
+     domains()` 결과를 형식화. `_format_screener_domains_list()` 단일
+     helper, DM 핸들러 (`cmd_screener_list`) + 채널 핸들러 (channel
+     post `screener_list`) 양쪽에서 호출.
+  2. **대시보드 페이지** — `archive/screener_domains.html`,
+     `regenerate_screener_index()` 가 `screener.html` 옆에 자동 생성.
+     NOAH 메인 헤더 + screener.html nav 양쪽에서 링크.
+
+새 도메인 추가 = `bot/screener_themes/<slug>.py` 모듈 1개 drop 만.
+`_HELP_TEXT` 변경 불필요. 위 두 surface 가 registry 에서 즉시 auto-
+update. `_HELP_TEXT` 섹션 1 은 "/screener [도메인] — 전체 도메인 →
+/screener_list" 라인 1개만 유지, 도메인명 inline 금지.
+
+이 규칙이 깨지면 (예: 다음 세션 Claude 가 새 도메인 추가하며 help text
+에 `/screener xxx|yyy|zzz` 인라인 형태로 나열) cap 압박이 다시 시작되
+므로 review 단계에서 반드시 차단할 것.
 
 **If the new content cannot fit inside the 4096 UTF-16 cap after
 reasonable prose compression, STOP and REPORT to the user.** Specifically:

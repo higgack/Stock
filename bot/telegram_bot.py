@@ -291,6 +291,19 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /screener_list in channel — auto-generated registry listing.
+    # Single source of truth = bot.screener_themes; _HELP_TEXT only
+    # carries a link here so future domain additions don't pressure
+    # the 4096 UTF-16 cap (CLAUDE.md rule, 2026-05-29).
+    if first_word == "screener_list":
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text=_format_screener_domains_list(),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+
     # /screener_cost in channel — Bottleneck Screener Pro cost (parallel
     # to /sv_cost). Reads ~/.tradingagents/screener_usage.jsonl directly.
     if first_word == "screener_cost":
@@ -788,8 +801,8 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/start /help /usage /sv_cost /screener_cost /sites — 도움말·비용·사이트
-/screener [도메인] — Bottleneck 기본 AI DC. 트렌드: ev·defense·pharma·solar · 섹터: healthcare·financial·energy·technology·industrials
+/start /help /usage /sv_cost /screener_cost /screener_list /sites — 도움말·비용·도메인목록·사이트
+/screener [도메인] — Bottleneck (기본 AI 데이터센터). 도메인 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
@@ -814,7 +827,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance·AlphaVantage·매크로 9종(시장별)·ECOS/FRED 금리·CPI·섹터 ETF·리스크 6종·컨센서스(yfinance+FnGuide/Kabutan/鉅亨)·공매도+DTC·내부자/기관·실적 ±10일·DART/EDINET/MOPS/AKShare 공시+5%대량보유·SEC EDGAR 8-K·Form4·US옵션 IV/PCR·KR 美선물·KRX 5d 외인+공매도 30d·KIS 7종 수급·Forward EPS sanity·SV 브리프
+yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 미·한·일·대·중) · ECOS/FRED (KR·JP·TW 금리·CPI) · 섹터 ETF (SPDR/KODEX/NEXT TOPIX-17) · 리스크 6종 · 컨센서스 (yfinance+FnGuide/Kabutan) · 공매도+DTC · 내부자/기관 · 실적 ±10일 · DART/EDINET/MOPS (공시·5%대량보유) · SEC EDGAR (8-K·Form4) · US옵션 IV·P/C비율 · KR개장전 미국선물 · TW鉅亨컨센서스 · KRX (5일 외인·공매도 30일) · KIS 7종 KR수급 (외인flow·연기금·한도소진율·신용·프로그램·공매도) · Forward EPS sanity · 컨센서스 staleness · SV 브리프 (08:00 KST)
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -855,7 +868,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 ━━━━━━━━━
 <b>【11. 대시보드】</b> 🦉
  • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">8081/...</a> (ID/PW). 💰비용=NOAH+Screener+SV. 헤더에서 Screener/SV/🇰🇷수출입 이동
- • <b>Screener</b>: archive/screener.html — 날짜별 run·분석·Top-3 5/15/30d·본문 스니펫 검색(🟡하이라이트→클릭 펼침)·🗑️
+ • <b>Screener</b>: archive/screener.html — 날짜별 run·분석·Top-3 5/15/30d·본문 스니펫 검색·🗑️. 도메인 = /screener_list
  • <b>SV</b>: <a href="http://34.50.23.221:8002/dashboard">8002/dashboard</a> · 매크로·산업·Deal · 07:30/20:30 + 텔레 · 22:00 주간·섹터 · auto-deploy 1분
  • <b>🇰🇷 수출입</b>: <a href="http://34.50.23.221:8765/dashboard/">8765/dashboard</a> · 외부 보조 (자동 갱신)
  • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 본문 스니펫 검색(🟡하이라이트→클릭시 분석 페이지로 이동·매치 위치 자동 스크롤)
@@ -863,7 +876,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【12. 예정 작업】</b>
- • Screener Wave 2-B (소비재·통신·부동산·유틸·소재) · Wave 3 산업별 split · 24h 캐시 · 자유텍스트
+ • Screener Wave 2-B (소비재·통신·부동산·유틸·소재) · Wave 3 산업별 split · 24h 캐시 · 자유텍스트 도메인
 """
 
 
@@ -1278,6 +1291,55 @@ def _read_screener_cost_today_month() -> dict:
     except Exception as exc:
         log.warning("screener_cost: read failed: %s", exc)
     return out
+
+
+def _format_screener_domains_list() -> str:
+    """Render the current screener domain registry as a Telegram HTML
+    block. Reads from bot.screener_themes.list_domains() so the list
+    auto-updates when modules are added — no _HELP_TEXT touches needed.
+
+    Per CLAUDE.md 'Screener 도메인 목록은 _HELP_TEXT inline 금지' rule
+    (2026-05-29): future Wave 2-B / Wave 3 / Wave ∞ 도메인 추가는 모듈
+    drop 만으로 본 함수 출력 + dashboard `screener_domains.html` 양쪽
+    자동 갱신. help text 변경 불필요."""
+    from bot.screener_themes import list_domains
+    ds = list_domains()
+    lines = [
+        f"📊 <b>Bottleneck Screener — 도메인 목록</b> ({len(ds)}개)",
+        "",
+        "사용: <code>/screener &lt;도메인 또는 별칭&gt;</code>",
+        "예: <code>/screener ev</code>, <code>/screener 전기차</code>, "
+        "<code>/screener healthcare</code>",
+        "",
+    ]
+    for d in ds:
+        slug = d["slug"]
+        domain = d["domain"]
+        aliases = [a for a in d["aliases"] if a.lower() != slug]
+        alias_str = (f" · 별칭: {', '.join(aliases[:8])}"
+                     + (f" 외 {len(aliases)-8}개" if len(aliases) > 8 else "")
+                     if aliases else "")
+        lines.append(f"• <b>/screener {slug}</b> — {domain}{alias_str}")
+    lines += [
+        "",
+        "<i>3-layer 도메인 모델 — L1 Trend (좁은 cycle 베팅) / "
+        "L2 Sector (Finviz broad) / L3 Industry (예정).</i>",
+    ]
+    return "\n".join(lines)
+
+
+async def cmd_screener_list(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/screener_list — auto-generated list of registered screener domains.
+    Sourced from bot.screener_themes registry; _HELP_TEXT only carries
+    a link to this command so domain additions don't pressure the
+    4096 UTF-16 cap."""
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        _format_screener_domains_list(),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 async def cmd_screener_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1738,6 +1800,7 @@ def main() -> None:
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("sv_cost", cmd_sv_cost))
     app.add_handler(CommandHandler("screener_cost", cmd_screener_cost))
+    app.add_handler(CommandHandler("screener_list", cmd_screener_list))
     app.add_handler(CommandHandler("sites", cmd_sites))
     app.add_handler(CommandHandler("screener", cmd_screener))
     # Catch /compare typed in DM and redirect — actual compare runs only

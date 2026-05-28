@@ -1666,12 +1666,14 @@ def _render_index(records: list[dict]) -> str:
         errors_link = (
             f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
             f' · <a href="screener.html">📊 Bottleneck Screener</a>'
+            f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             + _external_links
         )
     else:
         errors_link = (
             ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
             ' · <a href="screener.html">📊 Bottleneck Screener</a>'
+            ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             + _external_links
         )
 
@@ -2102,6 +2104,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="screener_domains.html">🗂️ 도메인 목록</a>
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
   </div>
@@ -2821,10 +2824,89 @@ details.card.hit-flash { animation:hitFlash 2.4s ease-out; }
 """
 
 
+def _render_screener_domains_page() -> str:
+    """Generate a self-contained HTML page listing all registered screener
+    domains (auto-discovered from bot.screener_themes). Renders the same
+    info as the /screener_list Telegram command but as a browseable page
+    so users can click and see the full taxonomy alongside the run
+    archive. Per CLAUDE.md 'Screener 도메인 목록은 _HELP_TEXT inline
+    금지' rule (2026-05-29), this page is the canonical user-facing
+    surface for the domain catalog. Future Wave 2-B / Wave 3 / Wave ∞
+    domain additions = module drop only — this page + /screener_list
+    auto-update; _HELP_TEXT never grows."""
+    import html as _html
+    from bot.screener_themes import list_domains
+    ds = list_domains()
+    items: list[str] = []
+    for d in ds:
+        slug = d["slug"]
+        domain = _html.escape(d["domain"])
+        aliases = [a for a in d["aliases"] if a.lower() != slug]
+        alias_html = ""
+        if aliases:
+            chips = "".join(
+                f'<span class="alias">{_html.escape(a)}</span>' for a in aliases
+            )
+            alias_html = f'<div class="aliases">{chips}</div>'
+        items.append(
+            f'<div class="dom-card">'
+            f'<div class="dom-head">'
+            f'<code class="slug">/screener {_html.escape(slug)}</code>'
+            f'<span class="dom-name">{domain}</span>'
+            f'</div>'
+            f'{alias_html}'
+            f'</div>'
+        )
+    body = "\n".join(items) if items else (
+        '<div class="empty">아직 등록된 도메인이 없습니다.</div>'
+    )
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>📊 Screener 도메인 목록</title>
+<script>{_THEME_JS}</script>
+<style>{_INDEX_CSS}
+.dom-card {{ background:var(--card); border:1px solid var(--border);
+  border-left:3px solid var(--accent); border-radius:8px;
+  padding:12px 16px; margin-bottom:10px; }}
+.dom-head {{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }}
+.slug {{ background:rgba(14,165,233,0.12); color:var(--accent);
+  padding:3px 10px; border-radius:6px; font-size:13px; font-weight:600;
+  font-family:'IBM Plex Mono',monospace; }}
+.dom-name {{ font-size:14px; color:var(--fg); flex:1; min-width:200px; }}
+.aliases {{ margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }}
+.alias {{ background:rgba(255,255,255,0.04); color:var(--fg-soft);
+  padding:2px 8px; border-radius:4px; font-size:11px;
+  font-family:'IBM Plex Mono',monospace; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="sub">
+    <a href="index.html">← NOAH 종목 분석</a> ·
+    <a href="screener.html">📊 Bottleneck Screener Archive</a>
+  </p>
+  <h1>📊 Screener 도메인 목록 <span style="color:var(--fg-soft);font-size:16px;font-weight:400">({len(ds)}개 · auto-discovered)</span></h1>
+  <p class="sub">텔레그램: <code>/screener &lt;도메인 또는 별칭&gt;</code>
+  · 예: <code>/screener ev</code> · <code>/screener 전기차</code>
+  · <code>/screener healthcare</code>. 동일 목록 텔레그램 = <code>/screener_list</code>.</p>
+  <p class="sub"><b>3-layer 도메인 모델</b> — L1 Trend (좁은 cycle 베팅) · L2 Sector (Finviz broad) · L3 Industry (예정).
+  새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지에 자동 반영.</p>
+  {body}
+</div>
+</body>
+</html>
+"""
+
+
 def regenerate_screener_index() -> None:
-    """Scan screener archive + memory, write screener.html under ARCHIVE_ROOT.
-    Called from screener.py after a successful run AND from
-    auto_resolve.py after the 5/15/30d outcome pass. All errors swallowed."""
+    """Scan screener archive + memory, write screener.html + screener_
+    domains.html under ARCHIVE_ROOT. Called from screener.py after a
+    successful run AND from auto_resolve.py after the 5/15/30d outcome
+    pass. All errors swallowed."""
     try:
         runs = _load_screener_runs()
         outcomes = _load_screener_outcomes()
@@ -2835,3 +2917,13 @@ def regenerate_screener_index() -> None:
                  len(runs), len(outcomes))
     except Exception as exc:
         log.warning("dashboard: screener regen failed: %s", exc)
+    # Domain registry page — separate try so a render error here doesn't
+    # block the main screener archive write above.
+    try:
+        domains_html = _render_screener_domains_page()
+        (ARCHIVE_ROOT / "screener_domains.html").write_text(
+            domains_html, encoding="utf-8"
+        )
+        log.info("dashboard: screener_domains.html regenerated")
+    except Exception as exc:
+        log.warning("dashboard: screener_domains regen failed: %s", exc)
