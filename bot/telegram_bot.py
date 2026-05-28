@@ -789,7 +789,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
 /start /help /usage /sv_cost /screener_cost /sites — 도움말·비용·사이트
-/screener [ev|defense|pharma|solar] — Bottleneck (기본=AI 데이터센터, 별칭 전기차/방산/바이오/신재생)
+/screener [도메인] — Bottleneck 기본 AI DC. 트렌드: ev·defense·pharma·solar · 섹터: healthcare·financial·energy·technology·industrials
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
@@ -814,7 +814,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 미·한·일·대·중) · ECOS/FRED (KR·JP·TW 금리·CPI) · 섹터 ETF (SPDR/KODEX/NEXT TOPIX-17) · 리스크 6종 · 컨센서스 (yfinance+FnGuide/Kabutan) · 공매도+DTC · 내부자/기관 · 실적 ±10일 · DART/EDINET/MOPS (공시·5%대량보유) · SEC EDGAR (8-K·Form4) · US옵션 IV·P/C비율 · KR개장전 미국선물 · TW鉅亨컨센서스 · KRX (5일 외인·공매도 30일) · KIS 7종 KR수급 (외인flow·연기금·한도소진율·신용·프로그램·공매도) · Forward EPS sanity · 컨센서스 staleness · SV 브리프 (08:00 KST)
+yfinance·AlphaVantage·매크로 9종(시장별)·ECOS/FRED 금리·CPI·섹터 ETF·리스크 6종·컨센서스(yfinance+FnGuide/Kabutan/鉅亨)·공매도+DTC·내부자/기관·실적 ±10일·DART/EDINET/MOPS/AKShare 공시+5%대량보유·SEC EDGAR 8-K·Form4·US옵션 IV/PCR·KR 美선물·KRX 5d 외인+공매도 30d·KIS 7종 수급·Forward EPS sanity·SV 브리프
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -863,7 +863,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【12. 예정 작업】</b>
- • Screener Wave 2 — 럭셔리·핀테크·rare earth·우라늄·농업 + 24h 캐시 + 자유텍스트 도메인
+ • Screener Wave 2-B (소비재·통신·부동산·유틸·소재) · Wave 3 산업별 split · 24h 캐시 · 자유텍스트
 """
 
 

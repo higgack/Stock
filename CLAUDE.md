@@ -732,19 +732,37 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
 2026-05-29):**
 
 - `/screener` (= `/screener bottleneck` 디폴트) 텔레그램 명령 LIVE.
-  Wave 1 (2026-05-29 ✅): theme registry 패키지 `bot/screener_themes/`
-  로 분리, **5 도메인 동시 운영** — Python dict 기반 (YAML 미사용,
-  CLAUDE.md 의 design 메모리는 historical reference). 각 모듈은 top-
-  level `THEME` dict 를 export:
+  Theme registry 패키지 `bot/screener_themes/` 분리, **10 도메인 동시
+  운영** (Wave 1 trend 5 + Wave 2-A Finviz sector 5). Python dict 기반.
+  각 모듈은 top-level `THEME` dict export. Registry `__init__.py` 가
+  `pkgutil.iter_modules` 로 자동 discover + import-time validate. 새
+  도메인 추가 = 새 모듈 1 파일 drop, orchestrator 수정 0.
+
+  **Wave 1 trend themes** (좁은 cycle lens — 2026-05-29 ✅):
   - `bottleneck.py` — AI Data Center Buildout (별칭 ai · 데이터센터)
   - `ev.py` — EV & Battery (별칭 전기차 · 배터리 · 이차전지)
   - `defense.py` — Defense, Aerospace & Space (별칭 방산 · 우주)
-  - `pharma.py` — Biotech & Pharma · GLP-1/CDMO/Biosimilar (별칭 바이오 · 제약 · glp1)
-  - `solar.py` — Solar, Wind, ESS & Grid (별칭 신재생 · 태양광 · 풍력 · ess)
-  Registry `__init__.py` 가 `pkgutil.iter_modules` 로 자동 discover +
-  import-time validate (5 필수키 · layer/catalyst 최소 길이). 새 도메인
-  추가 = 새 모듈 한 파일 drop, orchestrator 수정 0 — Wave 2 (럭셔리·
-  핀테크·rare earth·우라늄·농업) 도 동일 패턴.
+  - `pharma.py` — Biotech & Pharma · GLP-1/CDMO/Biosimilar
+  - `solar.py` — Solar, Wind, ESS & Grid (별칭 신재생 · 태양광)
+
+  **Wave 2-A Finviz broad sectors** (2026-05-29 ✅ — batch 1):
+  - `healthcare.py` — Drug Mfg · Biotech · Devices · Diagnostics · Plans · Care (별칭 헬스케어 · 의료기기 · 의료 · biotech · medical_devices · diagnostics)
+  - `financial.py` — Banks · Insurance · Asset Mgmt · Exchanges · Cards · Fintech (별칭 금융 · 은행 · 보험 · 자산운용 · fintech · 핀테크 · 결제)
+  - `energy.py` — Oil & Gas · Midstream · Refining · Services · Uranium · Coal (별칭 에너지 · 석유 · 원유 · lng · 우라늄 · smr · 원자력 · 원전 · 석탄)
+  - `technology.py` — Semi · Software · Hardware · IT Services · Comm Equip (별칭 기술 · 반도체 · 소프트웨어 · saas · cloud · cybersecurity · 하드웨어)
+  - `industrials.py` — A&D · Machinery · HVAC · Rail · Trucking · Airlines · Shipping (별칭 산업재 · 기계 · 건설 · 항공 · 철도 · 운송 · 해운 · hvac · 물류)
+
+  3-layer 도메인 모델:
+  - L1 (Wave 1): cross-cutting trend cycle 베팅 — 좁고 niche binding layer
+  - L2 (Wave 2): Finviz 11 broad sector lens — 산업 전체 ToC 분석
+  - L3 (Wave 3 예정): Finviz ~150 industry 슬라이스 — 우선순위 ~30 부터
+
+  Wave 1 ↔ Wave 2 중복 허용 정책: `/screener defense` (Wave 1 재무장 cycle)
+  와 `/screener industrials` (Wave 2 산업재 sector 전체) 양쪽 동작. 사용자
+  의도에 맞는 lens 선택. Wave 2 모듈은 Finviz sector/industry 명칭 따름.
+
+  **Wave 2-B 예정**: basic_materials · communication · consumer_cyclical ·
+  consumer_defensive · real_estate · utilities (6 모듈).
 - `/screener_cost` 텔레그램 명령 LIVE — 별도 비용 카드 (sv_cost 패턴).
 - Phase β orchestration: Pro Phase 1·2 (JSON 후보) → ticker 검증 +
   yfinance mcap-based tier 강제 → Phase 3 build_instrument_context
@@ -800,14 +818,23 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
     overlay (`_instrument_info` 단일 지점, downstream 전체 혜택)
   - Markdown 금지 (`**`, `*`, `##` literal noise 차단 — HTML 만)
 
-**다음 작업 — Wave 2 + 캐시 + 자유텍스트:**
-- Wave 2 도메인 확장: 럭셔리 (LVMH/Hermès/Kering supply chain),
-  핀테크 (V/MA/PYPL/Adyen/SQ + 한국 결제망), rare earth (MP Mat ·
-  Lynas · 미·중·호주 mining), 우라늄 (Cameco · Kazatomprom · BWXT
-  SMR), 농업 (Deere · ADM · Bunge · 비료). 각 도메인 1 모듈 drop.
+**다음 작업 — Wave 2-B + Wave 3 + 캐시 + 자유텍스트:**
+- Wave 2-B (Finviz 잔여 6 sector): basic_materials · communication ·
+  consumer_cyclical · consumer_defensive · real_estate · utilities.
+  - basic_materials: 구리·금 mining + 화학 specialty + rare earth +
+    농업 inputs + 철강/알루미늄 (rare earth/농업이 여기로 흡수)
+  - consumer_cyclical: Auto + 호텔·항공 + Retail + 럭셔리 + 주택건설
+    (럭셔리가 여기로 흡수)
+  - consumer_defensive: 식음료 + Tobacco/Alcohol + 슈퍼마켓
+  - communication: Telecom + 미디어/광고 + 인터넷·소셜 + 스트리밍
+  - real_estate: REIT (Industrial · Data Center · Office · Hotel)
+  - utilities: Electric Regulated + Gas + Water + Renewable IPP
+- Wave 3 (Finviz industry split): ~30 high-volume industry 부터 점진 add
+  (semiconductors · banks_regional · oil_gas_midstream · medical_devices
+  · auto_manufacturers · insurance_p_and_c 등). 좁은 sub-industry lens.
 - 도메인별 24h 캐시: `~/.tradingagents/screener_cache/{slug}_YYYY
-  -MM-DD.json` 으로 같은 도메인 24시간 내 재호출 시 Pro skip + ₩0
-  반환. 별도 `/screener {slug} fresh` flag 로 강제 재실행.
+  -MM-DD.json` 으로 같은 도메인 24h 내 재호출 시 Pro skip + ₩0 반환.
+  `/screener {slug} fresh` flag 로 강제 재실행.
 - Wave ∞: `/screener <freetext>` 자유 입력 → Pro 가 on-the-fly theme
   dict 생성 후 registry 에 ad-hoc 등록.
 
