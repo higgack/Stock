@@ -852,10 +852,15 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   - `/screener_<slug>` 단일-탭 명령 (사용자 ref `/find_all`·`/papers_
     guide` 패턴 2026-05-29): `_register_dynamic_screener_handlers` 가
     boot 시 registered 도메인 모두에 대해 `screener_<slug>` 명령
-    핸들러 등록. `/screener_list` 출력에 각 줄이 `/screener_bottleneck`
-    / `/screener_healthcare` 형태로 노출 → 텔레그램 자동 hyperlink →
-    클릭 1회 prefill + 엔터 1회 실행. 새 도메인 추가 시 봇 재시작 후
-    자동 노출 (auto-deploy 1분).
+    핸들러 등록 + `set_my_commands` 호출로 텔레그램 BotFather 측에도
+    같은 list 등록 → 모든 클라이언트 (특히 mobile) 에서 messages body
+    안의 `/screener_<slug>` 자동 hyperlink + autocomplete + menu 노출
+    보장. 정적 9 (`/start /help /usage /sv_cost /screener_cost /screener
+    _list /sites /screener /compare`) + 동적 N (도메인 수) = 자동.
+    Telegram cap 100/scope — Wave 3 ~30 도메인까지 안전. 새 도메인
+    추가 시 봇 재시작 (auto-deploy 1분) 후 텔레그램 측 명령 list 자동
+    갱신. ⚠️ set_my_commands 호출 누락 시 mobile 클라이언트에서 모든
+    `/cmd` 가 plain text 가 됨 (사용자 ref 2026-05-29 mobile UX 확인).
   - Liquidity 경고 (S-tier ~$100M micro-cap)
   - TIER 강제 (2026-05-29 EV review): Pro 의 자체 분류를 Python mcap
     기반 결과로 자동 치환 (Master Table 행 + Top-3 picks parenthetical

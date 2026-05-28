@@ -1828,16 +1828,38 @@ async def _on_startup(application) -> None:
     # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
     # registered (the universe is too large) — Telegram still recognises
     # them as tappable commands when typed in plain text.
+    #
+    # 2026-05-29 fix: mobile 클라이언트가 `/screener_list` + `/screener_
+    # <slug>` 같은 미등록 명령을 messages body 안에서 클릭-hyperlink
+    # 자동 인식 안 함 (데스크탑은 하지만 mobile 보장 X). set_my_commands
+    # 로 등록하면 모든 클라이언트에서 자동 hyperlink + autocomplete +
+    # menu 노출. Telegram cap 은 scope 당 100개 → 정적 7 + 동적 도메인
+    # 10 = 17개, Wave 2-B/3 까지 확장해도 안전.
     try:
-        await application.bot.set_my_commands([
+        commands = [
             BotCommand("start", "사용법 안내"),
             BotCommand("help", "사용법 안내"),
             BotCommand("usage", "사용량 / 통합 비용 / 7일 차트"),
+            BotCommand("sv_cost", "Standard View 비용"),
             BotCommand("screener_cost", "Bottleneck Screener 비용 (Pro)"),
+            BotCommand("screener_list", "Screener 도메인 목록 (전체)"),
             BotCommand("sites", "참고 사이트"),
-            BotCommand("screener", "Bottleneck 종목 발굴 (AI 데이터센터)"),
+            BotCommand("screener", "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
             BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
-        ])
+        ]
+        # Per-domain shortcut commands. Description = theme display name
+        # (capped at 100 chars to leave headroom under Telegram's 256-char
+        # description limit). Sorted by slug for stable ordering in the
+        # client autocomplete menu.
+        try:
+            from bot.screener_themes import list_domains
+            for d in sorted(list_domains(), key=lambda x: x["slug"]):
+                desc = (d.get("domain") or d["slug"])[:100]
+                commands.append(BotCommand(f"screener_{d['slug']}", desc))
+        except Exception as exc:
+            log.warning("set_my_commands: dynamic domain registration failed: %s", exc)
+        await application.bot.set_my_commands(commands)
+        log.info("set_my_commands: registered %d commands", len(commands))
     except Exception as exc:
         log.warning("set_my_commands failed: %s", exc)
 
