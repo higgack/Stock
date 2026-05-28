@@ -1914,23 +1914,52 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                 )
 
             filename = _html.escape(r.get("_filename", ""))
-            # Build searchable haystack: domain + all top-3 tickers + companies.
-            # Lowercased upfront so JS just does case-insensitive includes().
-            search_parts: list[str] = [domain.lower()]
+            # Build searchable haystack: include ALL narrative content so
+            # '변압기' search hits any card whose master_table / binding
+            # paragraph / Top-3 thesis mentions it. Previous version only
+            # covered domain + top-3 ticker/company → 0 matches for terms
+            # appearing only in Master Table (2026-05-29 사용자 surfaced).
+            # Lowercased upfront so JS just does case-insensitive includes.
+            search_parts: list[str] = [
+                domain.lower(),
+                binding.lower()[:1500],
+                master_table_txt.lower()[:3000],
+                top3_section_txt.lower()[:1000],
+                bottom_line.lower()[:500],
+            ]
             for pick in picks:
                 if not isinstance(pick, dict):
                     continue
                 search_parts.append((pick.get("ticker") or "").lower())
                 search_parts.append((pick.get("company") or "").lower())
                 search_parts.append((pick.get("theme") or "").lower())
+                search_parts.append((pick.get("thesis_line") or "").lower()[:300])
+            for vt in validated_list:
+                search_parts.append(vt.lower())
             search_attr = _html.escape(" ".join(p for p in search_parts if p))
+
+            # Card itself collapsible — when multiple domains accumulate
+            # per day (AI 데이터센터 / 화학 / 기계 / 방산 ...) each one
+            # collapses to just the header. Default open ONLY when this is
+            # the only card on the date AND it's today; otherwise closed
+            # for compactness. NOAH index.html has flat cards (per-ticker
+            # cards live inside day groups), but screener cards carry rich
+            # multi-section content so individual collapse is needed.
+            day_card_count = len(by_date[date])
+            card_default_open = (
+                date == _today_kst and day_card_count == 1
+            )
+            card_open_attr = " open" if card_default_open else ""
+
             parts.append(f"""
-  <div class="card" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}">
-    <div class="card-h">
+  <details class="card"{card_open_attr} data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-default-open="{'true' if card_default_open else 'false'}">
+    <summary class="card-h">
+      <span class="card-toggle">▸</span>
       <span class="domain">{domain}</span>
       <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s · <span class="ticker-chip" title="{_html.escape(tickers_title)}">✅ {tickers_n}개 ticker</span></span>
       <button class="del-btn" type="button" title="이 screener 기록 삭제">🗑️</button>
-    </div>
+    </summary>
+    <div class="card-body">
     {analysis_html}
 """)
             if picks:
@@ -1970,7 +1999,8 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                         f'</tr>'
                     )
                 parts.append('</tbody></table>')
-            parts.append('  </div>\n')
+            # Close card-body + card details
+            parts.append('  </div></details>\n')
         # Close the date's details + body wrapper
         parts.append('</div></details>')
 
@@ -2002,10 +2032,16 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
       const vis = !q || hay.includes(q);
       c.style.display = vis ? '' : 'none';
       if (vis) matched++;
+      // Auto-expand matched cards; restore default state when cleared.
+      if (q && vis) {
+        c.open = true;
+      } else if (!q) {
+        c.open = (c.dataset.defaultOpen === 'true');
+      }
     }
     // Auto-expand day group containing a match; hide groups with 0 matches.
     for (const d of dayGroups) {
-      const visibleCards = d.querySelectorAll('.card');
+      const visibleCards = d.querySelectorAll('details.card, .card');
       let any = false;
       for (const c of visibleCards) {
         if (c.style.display !== 'none') { any = true; break; }
@@ -2109,8 +2145,18 @@ details.day .day-body { padding-top:14px; }
 .stat-v { font-size:20px; font-weight:600; }
 .stat-l { color:var(--muted); font-size:11px; margin-top:2px;
   text-transform:uppercase; letter-spacing:0.5px; }
-.card { background:var(--card); border:1px solid var(--border);
+.card, details.card { background:var(--card); border:1px solid var(--border);
   border-radius:12px; padding:16px 18px; margin-bottom:14px; }
+details.card { padding:0; }
+details.card summary.card-h { cursor:pointer; list-style:none;
+  padding:16px 18px; user-select:none; border-radius:12px; }
+details.card[open] summary.card-h {
+  border-bottom:1px solid var(--border); border-radius:12px 12px 0 0; }
+details.card summary.card-h::-webkit-details-marker { display:none; }
+details.card .card-toggle { color:var(--accent); font-weight:600;
+  margin-right:2px; transition:transform 0.15s; }
+details.card[open] .card-toggle { transform:rotate(90deg); display:inline-block; }
+details.card .card-body { padding:14px 18px 18px; }
 .card-h { display:flex; justify-content:space-between; align-items:center;
   gap:12px; flex-wrap:wrap; margin-bottom:12px; }
 .domain { font-weight:600; font-size:15px; flex:1; min-width:200px; }
