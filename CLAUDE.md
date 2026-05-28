@@ -775,10 +775,22 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   - Wildcard 금지 (날짜 `2026-01-_` → quarter `2026-Q1`)
   - DATA INTEGRITY (yfinance company_name mismatch 종목 OMIT)
   - Ticker scope 격리 (최종 본문 기준 reject 표시)
-  - Ticker noise reject (2026-05-29 EV review): `150M` / `800V` /
-    `2026-H2` / `EBITDA` / `FEC` / `DLE` / `LFP` / `NCM` / `OLED` /
-    `BMS` / `GLP` / `CRO` / `CDMO` 등 도메인 약어 + 숫자-LED 토큰
-    blacklist 또는 regex 룰로 yfinance reject 노이즈 차단
+  - Ticker noise reject (2026-05-29 EV + defense review): `150M` /
+    `800V` / `2026-H2` / `EBITDA` / `FEC` / `DLE` / `LFP` / `NCM` /
+    `OLED` / `BMS` / `GLP` / `CRO` / `CDMO` / `AESA` / `AUKUS` /
+    `ICBM` / `K9` / `K2` / `THAAD` / `SRM` / `HIMARS` / `JDAM` /
+    `NGAD` / `LRHW` / `HACM` / `CoWoS` / `HBM3` / `HBM4` 등 도메인
+    약어 + 숫자-LED 토큰 blacklist + regex 룰로 차단
+  - TICKERS_USED_JSON tail (2026-05-29 defense review #5, 구조적
+    해결): Phase 4·5 출력 끝에 Pro 가 본문 cite ticker 만 JSON 배열로
+    별도 선언 → 검증 단의 primary source. regex 추출은 cross-check
+    만 사용 (mismatch INFO 로그). Wave 2 도메인 추가 시도 blacklist
+    의존 없이 noise 0 자동 유지.
+  - TIER 분포 nudge + monitoring (2026-05-29 defense review #6):
+    Phase 1·2 프롬프트에 layer 별 S/M/L 모두 시도 + 구조적 부재
+    layer 는 'tier_unavailable_reason' 명시 의무. Post-Pro 통계
+    `screener tier distribution [domain]: L=N M=N S=N` INFO 로그
+    (block 안 함 — defense 같이 합리적 L-skew 케이스 허용).
   - Liquidity 경고 (S-tier ~$100M micro-cap)
   - TIER 강제 (2026-05-29 EV review): Pro 의 자체 분류를 Python mcap
     기반 결과로 자동 치환 (Master Table 행 + Top-3 picks parenthetical

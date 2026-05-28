@@ -162,6 +162,23 @@ OUTPUT FORMAT — Telegram HTML 호환. 다음 순서로 출력:
    - 이 JSON block 은 본문 paragraph 도, master table 도 아니라 별도
      machine-parseable tail. Disclaimer 후 출력.
 
+7. 🤖 <b>TICKERS_USED MACHINE-PARSEABLE TAIL</b> — TOP_3_JSON 바로 뒤에
+   본문에서 cite 한 **모든** ticker 를 정확히 한 번씩 포함한 JSON 배열
+   별도 출력 (검증 noise 차단 — 2026-05-29 defense review 에서 AESA /
+   AUKUS / K9 / ICBM 등 텍스트 약어가 regex ticker 추출에 오인된 사례):
+
+   <TICKERS_USED_JSON>
+   ["RHM.DE", "NOC", "012450.KS", "RTX", "2340.TW", "BWXT", "HII",
+    "DRO.AX", "ESLT", "PLTR"]
+   </TICKERS_USED_JSON>
+
+   - 본문 Master Table 행 + Top-3 picks 에 실제 등장한 ticker 만 포함.
+   - 누락 금지 (백엔드가 이 list 의 ticker 만 yfinance 검증). 본문에
+     없는 ticker 추가 금지 (가짜 검증 통과 차단).
+   - yfinance 정확 심볼 (suffix 포함) — yfinance 가 인식하지 못하는
+     로컬 약어 (CATL · K9 · ICBM 등) 절대 포함 금지.
+   - 이 JSON 도 화면에서는 strip — 백엔드 ticker 검증의 primary source.
+
 RULES — 절대:
 - 모든 외부 figure 에 날짜 stamp + FX stamp.
 - 추론과 sourced fact 분리.
@@ -385,6 +402,27 @@ _TICKER_BLACKLIST = {
     "AAV", "VIE", "SPV", "PLC", "LLC", "LLP", "GP", "LP", "PE", "VC",
     "DoD", "FAA", "NATO", "BOEM", "AESO", "ERCOT", "CAISO", "PJM",
     "CHIPS", "FDA", "EMA", "CHMP", "NICE", "OFAC", "SAMR", "CAC", "BIS",
+    # 2026-05-29 defense screener review 추가 — 도메인-specific 무기/
+    # 시스템 약어가 본문 binding layer 에 자연 등장 → ticker 오인 차단.
+    "AESA", "AUKUS", "ICBM", "ATGM", "SLBM", "MRBM", "IRBM", "BMD",
+    "K2", "K2A", "K9", "K10", "K11", "KSS", "KF21", "KF16", "FA50",
+    "F35", "F22", "F18", "F16", "F15", "B21", "B2", "B1",
+    "THAAD", "SRM", "HIMARS", "GMLRS", "JDAM", "JASSM", "LRASM",
+    "NGAD", "LRHW", "HACM", "GCAP", "FCAS", "JADC2", "OPIR", "SDA",
+    "HBTSS", "RAM", "ESSM", "VLS", "SAM", "ABM", "MAD", "ROE",
+    "ISR", "C5ISR", "SIGINT", "ELINT", "EW", "CUAS", "UAS",
+    # Pharma 추가 — FDA / EMA 프로세스 약어
+    "PDUFA", "sBLA", "BLA", "NDA", "IND", "EUA", "HTA", "GxP",
+    "DMD", "GBM", "TNBC", "HCC", "RCC", "CRC", "AML", "CLL", "MDS",
+    # AI 데이터센터 추가 — HBM/패키징/인터커넥트 세대 명
+    "CoWoS", "HBM3", "HBM3E", "HBM4", "CXL", "NVLink", "GDDR",
+    "PCIe", "InfiniBand", "DDR", "GDDR6", "GDDR7", "LPDDR",
+    # Solar / grid / energy 추가
+    "BOS", "PCS", "GIS", "HVDC", "HVAC", "FACTS", "STATCOM", "FCEV",
+    "BESS", "CCUS", "DAC", "PEM", "AEM", "SOFC", "PEMFC",
+    # 일반 finance + 시장 약어 보강
+    "NPV", "IRR", "WACC", "DCF", "PEG", "CAGR", "GAAP", "GAAP",
+    "TAM", "SAM", "SOM", "CAC", "LTV", "MRR", "ARR", "GMV", "GTV",
     # Company-name abbreviations that appear NEXT to real tickers in
     # narrative ('2396.T MJC', 'Shinsung ST', etc.) — the real ticker
     # is the .T / .KQ neighbor, the abbrev itself is not listed.
@@ -603,6 +641,41 @@ def _log_usage(prompt_tok: int, output_tok: int, cost_krw: float, domain: str) -
 _TOP3_TAG_RE = re.compile(
     r"<TOP_3_JSON>\s*(\[.*?\])\s*</TOP_3_JSON>", re.DOTALL
 )
+_TICKERS_USED_RE = re.compile(
+    r"<TICKERS_USED_JSON>\s*(\[.*?\])\s*</TICKERS_USED_JSON>", re.DOTALL
+)
+
+
+def _extract_tickers_used_json(output: str) -> tuple[list[str], str]:
+    """Pull the TICKERS_USED_JSON tail (Fix #5, 2026-05-29 defense review).
+    Returns (ticker_list, output_cleaned). Empty list + original output
+    when the tail is absent (caller falls back to regex extraction).
+
+    Pro 의 self-declared ticker list 가 yfinance 검증의 primary source.
+    regex 추출은 K9 / AESA / ICBM 같은 도메인 약어 false-positive 가
+    구조적으로 발생 → blacklist 가 영원히 따라가야 했음. JSON tail 은
+    Pro 가 실제 cite 한 ticker 만 선언하므로 noise 0 보장."""
+    m = _TICKERS_USED_RE.search(output)
+    if not m:
+        return [], output
+    try:
+        raw = json.loads(m.group(1))
+        if not isinstance(raw, list):
+            return [], output
+        tickers = []
+        seen: set[str] = set()
+        for t in raw:
+            sym = str(t).strip().upper()
+            if sym and sym not in seen:
+                seen.add(sym)
+                tickers.append(sym)
+    except json.JSONDecodeError as exc:
+        log.warning("screener: TICKERS_USED_JSON parse failed: %s", exc)
+        return [], output
+    cleaned = (output[: m.start()].rstrip()
+               + "\n"
+               + output[m.end():].lstrip()).strip()
+    return tickers, cleaned
 
 
 # Master Table row: '[테마] · L · TICKER · ...' — captures theme prefix,
@@ -720,6 +793,29 @@ def _correct_top3_json_tiers(
             p["tier"] = true_tier
             n_fixes += 1
     return n_fixes
+
+
+_MT_TIER_COUNT_RE = re.compile(r"\[[^\]\n]+\]\s*·\s*([LMS])\s*·")
+
+
+def _log_tier_distribution(domain: str, text: str) -> None:
+    """Count S/M/L tier letters in Master Table rows; log distribution.
+    Block 은 안 함 — defense 같이 micro-cap 부재한 도메인은 L-skew 가
+    구조적 합리. 시간 누적 추세 모니터링 용도 (Fix #6, 2026-05-29).
+    Wave 2 도메인 (럭셔리 / 핀테크 / rare earth / 우라늄 / 농업) 추가 시
+    distribution drift 비교 anchor 로 활용."""
+    counts = {"L": 0, "M": 0, "S": 0}
+    for m in _MT_TIER_COUNT_RE.finditer(text or ""):
+        counts[m.group(1)] += 1
+    total = sum(counts.values())
+    if total == 0:
+        return
+    missing = [k for k, v in counts.items() if v == 0]
+    log.info(
+        "screener tier distribution [%s]: L=%d M=%d S=%d (total=%d)%s",
+        domain, counts["L"], counts["M"], counts["S"], total,
+        f" — missing {','.join(missing)}" if missing else "",
+    )
 
 
 def _extract_top3_json(output: str) -> tuple[list[dict], str]:
@@ -977,7 +1073,20 @@ SIZE TIERS — ~$100M micro / ~$1B mid / ~$10B large (USD 환산 후 분류).
 ```
 
 목표: 4-6 niche 테마 × 3 티어 = **12-18 candidates**. 각 테마의 S 티어는
-KOSDAQ / TPEx / Mothers 같은 small-cap exchange 적극 활용.
+KOSDAQ / TPEx / Mothers / ASX small-cap / NEO 같은 small-cap exchange
+적극 활용 — 글로벌 web search 로 후보 확보 의무.
+
+TIER 분포 강제 (2026-05-29 defense review 누락 surfaced):
+- 각 binding layer 마다 mcap 분포 의식적으로 S/M/L 모두 채우려 시도.
+  '방산 = 대부분 대형' 같은 사전 학습 편향 으로 L 만 채우는 패턴 금지.
+- 구조적으로 micro-cap 부재한 layer (예: defense 잠수함 원자로 = BWXT/
+  HII 외 micro-cap 없음, 우라늄 enrichment = Cameco / Urenco 외 부재)
+  는 candidates 항목에 'tier_unavailable_reason' 필드 추가해 명시:
+  "S-Tier unavailable — industry-wide micro-cap 부재 (subscale operator
+   부재 + 정부 인증 진입장벽)". 임의로 L 만 채우지 말 것.
+- 그 외 layer 는 S 후보 적극 탐색 — KOSDAQ Mothers / TPEx · ASX small-
+  cap · NEO Exchange · 인도 SME · 영국 AIM · 독일 Scale 등 모든 글로벌
+  small-cap 거래소 web search 동원.
 """
 
 
@@ -1250,7 +1359,10 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
     if n_body_fixes:
         log.info("screener: %d tier corrections applied to Pro body", n_body_fixes)
 
-    # Extract Top-3 JSON tail before user display (strip from raw_output)
+    # Extract machine-parseable JSON tails (TICKERS_USED first so the
+    # subsequent body parsing doesn't include it). Order: TICKERS_USED →
+    # TOP_3 → body. Both tails are stripped from user-visible output.
+    used_tickers, p45_text = _extract_tickers_used_json(p45_text)
     top3, p45_cleaned = _extract_top3_json(p45_text)
     n_json_fixes = _correct_top3_json_tiers(top3, candidates)
     if n_json_fixes:
@@ -1263,8 +1375,43 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
     # 혼란. 037530.KQ / 452420.KQ / HDELY 가 본문에 없는데 reject 표시된 케
     # 이스. Fix: 최종 본문 (p45_cleaned) 에서 ticker 재추출 → 그 결과만
     # 사용자에게 표시. Phase 1·2 검증은 internal scope.
-    body_tickers = _extract_candidate_tickers(p45_cleaned)
+    #
+    # Fix #5 (2026-05-29 defense review): TICKERS_USED_JSON tail 이 있으면
+    # Pro 의 self-declared ticker list 를 primary 로 사용 — regex 추출이
+    # K9/AESA/ICBM/AUKUS 같은 도메인 약어 false-positive 를 만들었던 패턴
+    # 영구 차단. Tail 누락 시 regex 폴백.
+    if used_tickers:
+        body_tickers = set(used_tickers)
+        # Cross-check: regex 가 추가로 잡은 ticker (Pro 가 tail 에 누락한
+        # 케이스) 가 있는지 보고 — 보강 가능. Pro 가 reasonable 한 경우
+        # used_tickers 가 정확 — 보강 비활성. mismatch 만 INFO 로깅.
+        regex_set = _extract_candidate_tickers(p45_cleaned)
+        only_in_regex = regex_set - body_tickers
+        only_in_json = body_tickers - regex_set
+        if only_in_regex:
+            log.info(
+                "screener: regex found %d tickers not in TICKERS_USED tail: %s "
+                "(noise filtered out)",
+                len(only_in_regex), ", ".join(sorted(only_in_regex))[:200],
+            )
+        if only_in_json:
+            log.info(
+                "screener: TICKERS_USED has %d tickers not in body regex: %s "
+                "(body may have new mentions)",
+                len(only_in_json), ", ".join(sorted(only_in_json))[:200],
+            )
+    else:
+        log.warning(
+            "screener: TICKERS_USED_JSON tail missing — falling back to regex"
+            " extraction (may include domain-acronym noise)"
+        )
+        body_tickers = _extract_candidate_tickers(p45_cleaned)
     body_validated, body_rejected = _validate_with_yfinance(body_tickers)
+
+    # Fix #6 (2026-05-29 defense review): tier 분포 모니터링 — block 안 함.
+    # defense 같이 구조적으로 micro-cap 부재한 도메인은 L-skew 가 합리적.
+    # 시간 누적 추세로 distribution drift 추적용 INFO 로깅.
+    _log_tier_distribution(theme["domain"], p45_cleaned)
 
     result = ScreenerResult(
         domain=theme["domain"],
