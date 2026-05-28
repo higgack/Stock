@@ -1688,7 +1688,7 @@ def _render_index(records: list[dict]) -> str:
 <body>
 <div class="wrap">
   <h1>🦉 NOAH 주식분석 아카이브</h1>
-  <p class="sub">카드 클릭 시 전체 리포트 · 검색창에 종목/본문 키워드 → 매칭 스니펫 클릭 시 해당 분석으로 이동{errors_link}</p>
+  <p class="sub">카드 클릭 시 전체 리포트{errors_link}</p>
   {stats_panel}
   <div class="search-bar">
     <input id="search" type="text" placeholder="종목 / 본문 검색 (예: NVDA, 삼성전자, 변압기, GLP-1, CHIPS Act)" autocomplete="off" spellcheck="false">
