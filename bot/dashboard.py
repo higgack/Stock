@@ -56,6 +56,49 @@ _FAILURE_PLACEHOLDER = (
     "_(이번 분석은 모델 응답 오류로 미완성. 다른 티커로 재시도해보세요.)_"
 )
 _SECTION_HEADER_RE = re.compile(r"^##\s+([^\n]+)$", re.MULTILINE)
+# Markdown header (## / ### / #### ...) for section-label tracking in the
+# index-page snippet search. _SECTION_HEADER_RE itself is `##`-only because
+# the issues detector needs the analyst-level grouping; the index search
+# walks h3+ too so '### 결론' style sub-headers also attach context.
+_ANY_HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*$")
+
+
+def _index_lines_from_full_report(
+    full: str, max_lines: int = 200, max_line_chars: int = 200
+) -> list[dict]:
+    """Walk a saved analysis's full_report markdown, return a compact
+    line index for the index-page snippet search. Each entry =
+    ``{"sec": <last seen section header>, "txt": <line, stripped + capped>}``.
+
+    Empty lines + header lines themselves are excluded — the section
+    header rides along as ``sec`` on subsequent body lines. Lines shorter
+    than 3 chars are dropped (table separators, bullet markers alone).
+
+    When total exceeds ``max_lines`` we take front half + back half so
+    BOTH the market-analyst block (early in the report) and the
+    Portfolio Manager verdict (late) stay searchable. The middle gets
+    dropped silently — the search hit rate on Trader / Risk debate text
+    is rarely the deciding factor, while a missing PM verdict makes the
+    search look broken to the user.
+    """
+    lines: list[dict] = []
+    current_section = ""
+    for raw in (full or "").splitlines():
+        s = raw.strip()
+        m = _ANY_HEADER_RE.match(s)
+        if m:
+            # Strip leading bullet/marker noise + cap at 60 so very long
+            # h3 lines don't bloat the JSON attribute.
+            current_section = m.group(2).strip()[:60]
+            continue
+        if len(s) < 3:
+            continue
+        lines.append({"sec": current_section, "txt": s[:max_line_chars]})
+    if len(lines) > max_lines:
+        front = max_lines // 2
+        back = max_lines - front
+        lines = lines[:front] + lines[-back:]
+    return lines
 _ISSUE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"리스크 지표 계산 실패"),
      "리스크 지표 계산 실패 (도구)"),
@@ -957,55 +1000,188 @@ summary.day-head .count {
   border-top: 1px solid var(--border);
   text-align: center; color: var(--fg-soft); font-size: 12px;
 }
+/* Snippet-highlight search panel (mirrors Bottleneck Screener pattern).
+   Each snippet is an <a> wrapping section label + highlighted line; click
+   navigates to the per-analysis detail page with #mark= so the detail
+   page JS can scroll-to + highlight the source paragraph. */
+.snippets {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 0 0 24px;
+}
+.snippet {
+  background: var(--card); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent); border-radius: 8px;
+  padding: 10px 14px; text-decoration: none; color: inherit;
+  transition: background 0.1s, border-color 0.1s;
+  display: block;
+}
+.snippet:hover {
+  background: rgba(14, 165, 233, 0.06);
+  border-left-color: #38bdf8;
+}
+.snippet-meta {
+  display: flex; gap: 10px; font-size: 11px;
+  color: var(--fg-soft); margin-bottom: 4px; align-items: center;
+  flex-wrap: wrap;
+}
+.snippet-sec {
+  background: rgba(14, 165, 233, 0.12); color: var(--accent);
+  padding: 2px 8px; border-radius: 4px; font-weight: 600;
+  white-space: nowrap;
+}
+.snippet-card {
+  font-family: 'IBM Plex Mono', 'JetBrains Mono', monospace;
+  word-break: break-all;
+}
+.snippet-text {
+  color: var(--fg); font-size: 13px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+}
+mark {
+  background: rgba(245, 158, 11, 0.35); color: inherit;
+  padding: 1px 3px; border-radius: 3px; font-weight: 600;
+}
 """
 
 
 _INDEX_JS = """
 (function() {
+  // Snippet-highlight search across BOTH card metadata (ticker / 한국명 /
+  // stance / 평가 등) AND analyst body content (full_report indexed at
+  // render time). Matches '변압기' / 'GLP-1' etc that live deep inside an
+  // analysis surface as clickable snippets; clicking navigates to the
+  // detail page with a #mark= hash so the detail-page JS scrolls to +
+  // highlights the same line. Empty query restores the default card
+  // list (full archive view); same UX as the Bottleneck Screener page.
   const searchEl = document.getElementById('search');
   const clearBtn = document.getElementById('clear-btn');
   const statusEl = document.getElementById('status');
   const emptyEl = document.getElementById('empty-search');
+  const snp = document.getElementById('snippets');
   const cards = Array.from(document.querySelectorAll('.card'));
   const days = Array.from(document.querySelectorAll('details.day'));
   const total = cards.length;
+  const MAX_SNIPPETS = 80;
+
+  // Parse each card's body line index once. Synthetic 'metadata' line
+  // adds the visible card-row text (ticker chip + stance + rating)
+  // so a plain ticker query like 'NVDA' still surfaces the card as
+  // a snippet rather than 0 matches when the body section labels
+  // don't contain 'NVDA' literally.
+  const cardData = cards.map(function(c) {
+    let lines = [];
+    try { lines = JSON.parse(c.dataset.lines || '[]'); } catch (e) {}
+    const tk = (c.dataset.ticker || '').trim();
+    const nm = (c.dataset.name || '').trim();
+    const rowEl = c.querySelector('.card-row');
+    const rowTxt = rowEl ? rowEl.textContent.replace(/\\s+/g, ' ').trim() : '';
+    if (tk || nm || rowTxt) {
+      lines.unshift({sec: '카드', txt: ((nm ? nm + ' · ' : '') + tk + ' · ' + rowTxt).trim()});
+    }
+    return {card: c, lines: lines};
+  });
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, function(ch) {
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+    });
+  }
+  function escapeReg(s) {
+    return s.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+  }
+  function highlight(text, q) {
+    if (!q) return escapeHtml(text);
+    const re = new RegExp(escapeReg(q), 'gi');
+    const safe = escapeHtml(text);
+    let out = '', last = 0, m;
+    while ((m = re.exec(safe)) !== null) {
+      out += safe.slice(last, m.index);
+      out += '<mark>' + safe.slice(m.index, m.index + m[0].length) + '</mark>';
+      last = m.index + m[0].length;
+      if (m.index === re.lastIndex) re.lastIndex++;
+    }
+    out += safe.slice(last);
+    return out;
+  }
+
+  function showCardsMode() {
+    snp.style.display = 'none';
+    snp.innerHTML = '';
+    emptyEl.style.display = 'none';
+    for (const c of cards) c.style.display = '';
+    for (const d of days) {
+      d.style.display = '';
+      d.open = true;
+    }
+    statusEl.textContent = '총 ' + total + '건의 분석 기록';
+  }
+
+  function showSnippetsMode(q) {
+    // Hide cards + day groups; snippet list becomes primary view.
+    for (const c of cards) c.style.display = 'none';
+    for (const d of days) d.style.display = 'none';
+
+    const ql = q.toLowerCase();
+    const hits = [];
+    for (const cd of cardData) {
+      for (const ln of cd.lines) {
+        if ((ln.txt || '').toLowerCase().indexOf(ql) >= 0) {
+          hits.push({card: cd.card, sec: ln.sec, txt: ln.txt});
+          if (hits.length >= MAX_SNIPPETS) break;
+        }
+      }
+      if (hits.length >= MAX_SNIPPETS) break;
+    }
+
+    if (hits.length === 0) {
+      snp.style.display = 'none';
+      emptyEl.style.display = 'block';
+      statusEl.textContent = '0건 매칭 (검색: "' + q + '")';
+      return;
+    }
+    emptyEl.style.display = 'none';
+
+    const cardHitCounts = new Map();
+    const parts = [];
+    for (const h of hits) {
+      const cid = h.card.id;
+      cardHitCounts.set(cid, (cardHitCounts.get(cid) || 0) + 1);
+      const ticker = h.card.dataset.ticker || '';
+      const name = h.card.dataset.name || '';
+      const date = h.card.dataset.date || '';
+      const href = h.card.dataset.href || '#';
+      const cardLabel = (name ? name + ' / ' : '') + ticker;
+      const sec = h.sec || '본문';
+      parts.push(
+        '<a class="snippet" href="' + href +
+          '#mark=' + encodeURIComponent(q) +
+          '" data-target="' + cid + '">' +
+          '<div class="snippet-meta">' +
+            '<span class="snippet-sec">' + escapeHtml(sec) + '</span>' +
+            '<span class="snippet-card">' + escapeHtml(cardLabel) +
+            ' · ' + escapeHtml(date) + '</span>' +
+          '</div>' +
+          '<div class="snippet-text">' + highlight(h.txt, q) + '</div>' +
+        '</a>'
+      );
+    }
+    snp.innerHTML = parts.join('');
+    snp.style.display = 'flex';
+    const uniq = cardHitCounts.size;
+    const cap = hits.length >= MAX_SNIPPETS ? ' (상위 ' + MAX_SNIPPETS + '건 표시)' : '';
+    statusEl.textContent = hits.length + '개 라인 · ' + uniq + '개 분석 매칭' + cap +
+                            ' (검색: "' + q + '")';
+  }
 
   function applyFilter() {
     const raw = (searchEl.value || '').trim();
-    const q = raw.toLowerCase();
-    let matched = 0;
-    for (const c of cards) {
-      // Lowercase both sides so '005930' / 'NVDA' / '삼성전자' /
-      // 'SK하이닉스' (mixed alpha + hangul) all match case-insensitively.
-      // data-name is only set for KR tickers with a DART name match;
-      // bare US/JP/CN tickers fall back to ticker-only search.
-      const tk = (c.dataset.ticker || '').toLowerCase();
-      const nm = (c.dataset.name || '').toLowerCase();
-      const visible = !q || tk.includes(q) || (nm && nm.includes(q));
-      c.style.display = visible ? '' : 'none';
-      if (visible) matched++;
-    }
-    for (const d of days) {
-      const anyVisible = Array.from(d.querySelectorAll('.card'))
-        .some(c => c.style.display !== 'none');
-      d.style.display = anyVisible ? '' : 'none';
-      // Auto-expand days that match — easier to spot the result
-      if (anyVisible && q) d.open = true;
-    }
-    if (q) {
-      statusEl.textContent = matched + '건 매칭 (검색: "' + raw + '")';
-      emptyEl.style.display = matched === 0 ? 'block' : 'none';
-    } else {
-      statusEl.textContent = '총 ' + total + '건의 분석 기록';
-      emptyEl.style.display = 'none';
-    }
+    if (!raw) { showCardsMode(); return; }
+    showSnippetsMode(raw);
   }
 
   function syncFromHash() {
     const m = (location.hash || '').match(/^#ticker=([A-Za-z0-9.]+)/);
-    if (m) {
-      searchEl.value = m[1].toUpperCase();
-    }
+    if (m) searchEl.value = m[1].toUpperCase();
     applyFilter();
   }
 
@@ -1389,8 +1565,24 @@ def _render_index(records: list[dict]) -> str:
                 data_name_attr = (
                     f' data-name="{_html.escape(kr_name)}"' if kr_name else ""
                 )
+                # Snippet-search line index — built from full_report at
+                # render time so '변압기' / 'GLP-1' / 'CHIPS Act' etc.
+                # match anywhere in the analyst body, not just card
+                # metadata. JSON-encoded then HTML-escaped so quotes /
+                # angle brackets inside analyst text can't break the
+                # data attribute. Lines list capped at 200 (front 100 +
+                # back 100 when overflow) per card; ~50 KB / card max.
+                _idx_lines = _index_lines_from_full_report(
+                    rec.get("full_report") or ""
+                )
+                _idx_lines.append(
+                    {"sec": "요약", "txt": (rec.get("summary") or "").strip()[:600]}
+                )
+                _lines_attr = _html.escape(
+                    json.dumps(_idx_lines, ensure_ascii=False)
+                )
                 cards.append(f"""
-                <div class="card" data-ticker="{_html.escape(ticker)}"{data_name_attr} data-date="{_html.escape(date)}">
+                <div class="card" id="card-{_html.escape(date)}-{_html.escape(ticker).replace('.','_')}" data-ticker="{_html.escape(ticker)}"{data_name_attr} data-date="{_html.escape(date)}" data-href="{href}" data-lines="{_lines_attr}">
                   <div class="card-row">
                     <a class="ticker" href="{href}">📊 {_html.escape(label)}</a>
                     {_badge_html(rating)}
@@ -1496,13 +1688,14 @@ def _render_index(records: list[dict]) -> str:
 <body>
 <div class="wrap">
   <h1>🦉 NOAH 주식분석 아카이브</h1>
-  <p class="sub">카드 클릭 시 전체 리포트 · 검색창에서 종목 필터{errors_link}</p>
+  <p class="sub">카드 클릭 시 전체 리포트 · 검색창에 종목/본문 키워드 → 매칭 스니펫 클릭 시 해당 분석으로 이동{errors_link}</p>
   {stats_panel}
   <div class="search-bar">
-    <input id="search" type="text" placeholder="종목 검색 (예: NVDA, AMD, GOOGL)" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    <input id="search" type="text" placeholder="종목 / 본문 검색 (예: NVDA, 삼성전자, 변압기, GLP-1, CHIPS Act)" autocomplete="off" spellcheck="false">
     <button id="clear-btn" type="button" title="검색 초기화">초기화</button>
   </div>
   <p id="status" class="status-line">총 {len(records)}건의 분석 기록</p>
+  <div id="snippets" class="snippets" style="display:none"></div>
   <div id="empty-search" class="empty-search">검색 결과가 없습니다.</div>
   {body}
   {footer_html}
@@ -1537,6 +1730,84 @@ pre.report strong { color: var(--fg); }
 pre.report h3, pre.report h4, pre.report h5, pre.report h6 {
   margin: 12px 0 4px; font-size: 14px;
 }
+/* Deep-link mark — index-page snippet click navigates here with
+   #mark=<phrase>; JS below wraps the first occurrence and pulses. */
+mark.snippet-target {
+  background: rgba(245, 158, 11, 0.6); color: #ffffff;
+  padding: 1px 4px; border-radius: 3px;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.45);
+  animation: markPulse 1.8s ease-out;
+}
+@keyframes markPulse {
+  0%   { background: rgba(245, 158, 11, 0.95);
+         box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.6); }
+  100% { background: rgba(245, 158, 11, 0.6);
+         box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.45); }
+}
+"""
+
+
+# Deep-link snippet scroll: when navigating from the index page's snippet
+# panel, the URL carries #mark=<URL-encoded query>. This script walks the
+# report-section text nodes, wraps the first occurrence with
+# <mark.snippet-target>, scrolls it into view, and lets the CSS pulse run.
+# Bails silently when the query no longer matches (analysis regenerated /
+# stale link). Runs in DOMContentLoaded so the markdown render has settled.
+_DETAIL_DEEP_LINK_JS = """
+(function() {
+  function run() {
+    const m = (location.hash || '').match(/^#mark=(.+)$/);
+    if (!m) return;
+    let q;
+    try { q = decodeURIComponent(m[1]); } catch (e) { return; }
+    q = (q || '').trim();
+    if (!q) return;
+    const root = document.querySelector('.report-section + .report-section')
+              || document.querySelector('.report-section')
+              || document.body;
+    const ql = q.toLowerCase();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: function(node) {
+        if (!node.parentNode) return NodeFilter.FILTER_REJECT;
+        const tag = node.parentNode.tagName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK') {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    let node;
+    while ((node = walker.nextNode())) {
+      const text = node.textContent;
+      const idx = text.toLowerCase().indexOf(ql);
+      if (idx >= 0) {
+        const parent = node.parentNode;
+        const before = text.slice(0, idx);
+        const match = text.slice(idx, idx + q.length);
+        const after = text.slice(idx + q.length);
+        if (before) parent.insertBefore(document.createTextNode(before), node);
+        const mk = document.createElement('mark');
+        mk.className = 'snippet-target';
+        mk.textContent = match;
+        parent.insertBefore(mk, node);
+        if (after) parent.insertBefore(document.createTextNode(after), node);
+        parent.removeChild(node);
+        setTimeout(function() {
+          mk.scrollIntoView({behavior: 'smooth', block: 'center'});
+        }, 60);
+        return;
+      }
+    }
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', run);
+  } else {
+    run();
+  }
+  // Also re-run on hash change so the user can re-trigger by clicking a
+  // different snippet within the same tab via browser back/forward.
+  window.addEventListener('hashchange', run);
+})();
 """
 
 
@@ -1601,6 +1872,7 @@ def _render_detail(rec: dict) -> str:
     {_md_to_html(full)}
   </section>
 </div>
+<script>{_DETAIL_DEEP_LINK_JS}</script>
 </body>
 </html>
 """

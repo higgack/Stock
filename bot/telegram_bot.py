@@ -858,7 +858,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
  • <b>Screener</b>: archive/screener.html — 날짜별 run·분석·Top-3 5/15/30d·본문 스니펫 검색(🟡하이라이트→클릭 펼침)·🗑️
  • <b>SV</b>: <a href="http://34.50.23.221:8002/dashboard">8002/dashboard</a> · 매크로·산업·Deal · 07:30/20:30 + 텔레 · 22:00 주간·섹터 · auto-deploy 1분
  • <b>🇰🇷 수출입</b>: <a href="http://34.50.23.221:8765/dashboard/">8765/dashboard</a> · 외부 보조 (자동 갱신)
- • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·검색·🗑️
+ • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 본문 스니펫 검색(🟡하이라이트→클릭시 분석 페이지로 이동·매치 위치 자동 스크롤)
  • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
 
 ━━━━━━━━━
