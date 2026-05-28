@@ -2917,15 +2917,23 @@ def _render_screener_domains_page() -> str:
         )
 
     sections: list[str] = []
+    _layer_css_class = {
+        "L1_TREND": "l1",
+        "L2_SECTOR": "l2",
+        "L3_INDUSTRY": "l3",
+    }
     for layer_key, layer_label, layer_desc in _LAYER_META:
         cards = by_layer.get(layer_key, [])
         if not cards:
             continue
         cards_html = "\n".join(_render_card(d) for d in cards)
+        css_class = _layer_css_class.get(layer_key, "")
         sections.append(
+            f'<div class="layer-section {css_class}">'
             f'<h2 class="layer-h">{layer_label} '
             f'<span class="layer-count">({len(cards)}개)</span></h2>'
-            f'<p class="sub layer-desc">{_html.escape(layer_desc)}</p>'
+            f'<p class="layer-desc">{_html.escape(layer_desc)}</p>'
+            f'</div>'
             f'{cards_html}'
         )
     body = "\n".join(sections) if sections else (
@@ -2985,16 +2993,33 @@ def _render_screener_domains_page() -> str:
 <style>{_INDEX_CSS}
 .dom-card {{ background:var(--card); border:1px solid var(--border);
   border-left:3px solid var(--accent); border-radius:8px;
-  padding:12px 16px; margin-bottom:10px; }}
+  padding:12px 16px; margin-bottom:10px;
+  transition:border-left-width 0.1s, box-shadow 0.1s; }}
+.dom-card:hover {{ border-left-width:5px;
+  box-shadow:0 1px 4px rgba(0,0,0,0.06); }}
+:root[data-theme="dark"] .dom-card:hover {{
+  box-shadow:0 1px 4px rgba(0,0,0,0.3); }}
 .dom-head {{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }}
-.slug {{ background:rgba(14,165,233,0.12); color:var(--accent);
-  padding:3px 10px; border-radius:6px; font-size:13px; font-weight:600;
-  font-family:'IBM Plex Mono',monospace; }}
-.dom-name {{ font-size:14px; color:var(--fg); flex:1; min-width:200px; }}
-.aliases {{ margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }}
-.alias {{ background:rgba(127,127,127,0.10); color:var(--fg-soft);
-  padding:2px 8px; border-radius:4px; font-size:11px;
-  font-family:'IBM Plex Mono',monospace; }}
+.slug {{ background:rgba(14,165,233,0.15); color:var(--accent);
+  padding:4px 11px; border-radius:6px; font-size:13px; font-weight:700;
+  font-family:'IBM Plex Mono',monospace;
+  border:1px solid rgba(14,165,233,0.25); }}
+:root[data-theme="dark"] .slug {{
+  background:rgba(59,130,246,0.18);
+  border-color:rgba(59,130,246,0.3); }}
+.dom-name {{ font-size:14px; color:var(--fg); flex:1; min-width:200px;
+  font-weight:500; }}
+.aliases {{ margin-top:10px; display:flex; gap:6px; flex-wrap:wrap; }}
+/* Alias chips — explicit colors per theme so contrast holds on both
+   light (washed-out gray on white) and dark (subtle gray on charcoal).
+   2026-05-29 사용자 가독성 fix: 라이트 모드에서 alias 가 거의 안 보
+   여서 chip 배경 #f1f5f9 (slate-100) + 본문 색 #475569 (slate-600)
+   으로 명도 대비 확보. */
+.alias {{ background:#e2e8f0; color:#475569;
+  padding:3px 9px; border-radius:4px; font-size:11px;
+  font-family:'IBM Plex Mono',monospace; font-weight:500; }}
+:root[data-theme="dark"] .alias {{ background:rgba(255,255,255,0.07);
+  color:#cbd5e1; }}
 .hist-entry {{ background:var(--card); border:1px solid var(--border);
   border-radius:8px; padding:10px 14px; margin-bottom:8px; }}
 .hist-head {{ display:flex; gap:12px; align-items:center;
@@ -3012,16 +3037,42 @@ def _render_screener_domains_page() -> str:
   padding:2px 8px; border-radius:4px; font-size:11px;
   text-decoration:line-through; }}
 /* 3-layer grouping (L1 / L2 / L3) — section headers between domain
-   card stacks. 2026-05-29 사용자 요청 reorganization. */
-.layer-h {{ font-size:18px; margin:32px 0 4px;
-  padding-top:18px; border-top:1px solid var(--border); }}
-.layer-h:first-of-type {{ margin-top:24px; border-top:none; padding-top:0; }}
-.layer-count {{ color:var(--fg-soft); font-size:14px; font-weight:400;
-  margin-left:6px; }}
-.layer-desc {{ margin:0 0 16px; }}
-.history-footer code {{ background:rgba(16,185,129,0.10);
-  color:var(--accent); padding:1px 6px; border-radius:4px;
-  font-size:11px; }}
+   card stacks. Each layer has its own accent strip on the left so the
+   user can visually distinguish L1 (sky) / L2 (emerald) / L3 (purple)
+   as they scroll. 2026-05-29 가독성 fix. */
+.layer-section {{ margin:36px 0 16px;
+  padding:18px 0 6px 16px;
+  border-top:1px solid var(--border);
+  border-left:3px solid var(--accent);
+  background:linear-gradient(90deg,
+    rgba(14,165,233,0.05) 0%,
+    transparent 240px); }}
+.layer-section:first-of-type {{ margin-top:24px; border-top:none; padding-top:8px; }}
+.layer-section.l1 {{ border-left-color:#0ea5e9; }}
+.layer-section.l1 {{ background:linear-gradient(90deg,
+  rgba(14,165,233,0.07) 0%, transparent 280px); }}
+.layer-section.l2 {{ border-left-color:#10b981; }}
+.layer-section.l2 {{ background:linear-gradient(90deg,
+  rgba(16,185,129,0.07) 0%, transparent 280px); }}
+.layer-section.l3 {{ border-left-color:#8b5cf6; }}
+.layer-section.l3 {{ background:linear-gradient(90deg,
+  rgba(139,92,246,0.07) 0%, transparent 280px); }}
+:root[data-theme="dark"] .layer-section.l1 {{
+  background:linear-gradient(90deg, rgba(59,130,246,0.10) 0%, transparent 280px); }}
+:root[data-theme="dark"] .layer-section.l2 {{
+  background:linear-gradient(90deg, rgba(16,185,129,0.10) 0%, transparent 280px); }}
+:root[data-theme="dark"] .layer-section.l3 {{
+  background:linear-gradient(90deg, rgba(167,139,250,0.10) 0%, transparent 280px); }}
+.layer-h {{ font-size:20px; margin:0 0 4px;
+  color:var(--fg); font-weight:700; }}
+.layer-count {{ color:var(--fg-soft); font-size:14px; font-weight:500;
+  margin-left:8px; }}
+.layer-desc {{ margin:0 0 14px; color:var(--fg-soft); font-size:13px; }}
+.history-footer code {{ background:rgba(16,185,129,0.12);
+  color:#059669; padding:1px 6px; border-radius:4px;
+  font-size:11px; font-weight:600; }}
+:root[data-theme="dark"] .history-footer code {{
+  background:rgba(16,185,129,0.18); color:#34d399; }}
 </style>
 </head>
 <body>
@@ -3033,8 +3084,8 @@ def _render_screener_domains_page() -> str:
   <h1>📊 Screener 도메인 목록 <span style="color:var(--fg-soft);font-size:16px;font-weight:400">({len(ds)}개 · auto-discovered)</span></h1>
   <p class="sub">텔레그램: <code>/screener_&lt;슬러그&gt;</code> 클릭 한 번으로 즉시 실행 · 별칭은 <code>/screener &lt;별칭&gt;</code> 으로 지원
   · 동일 목록 텔레그램 = <code>/screener_list</code>.</p>
-  <p class="sub"><b>3-layer 도메인 모델</b> — L1 Trend (좁은 cycle 베팅) · L2 Sector (Finviz broad) · L3 Industry (예정).
-  새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지 + 변경 이력에 자동 반영.</p>
+  <p class="sub"><b>3-layer 도메인 모델</b> — L1 Trend (cross-cutting cycle 베팅) · L2 Sector (미국 GICS-like 정식 분류) · L3 Industry (각 L2 sector 의 sub-industry).
+  새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지에 자동 반영. 페이지 하단에 최근 변경 1줄 요약.</p>
   {body}
   {history_html}
 </div>
