@@ -1444,15 +1444,23 @@ def _render_index(records: list[dict]) -> str:
     # Headline link to the errors page; count includes hard failures
     # (usage.jsonl) plus archive entries with placeholder/tool issues.
     issue_count = _count_total_issues(records, _read_hard_failures())
+    # External dashboards live at known LAN addresses; rel=noopener on the
+    # external links prevents window.opener leakage to the third-party tab.
+    _external_links = (
+        ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
+        ' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">🇰🇷 한국 수출입 데이터</a>'
+    )
     if issue_count > 0:
         errors_link = (
             f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
             f' · <a href="screener.html">📊 Bottleneck Screener</a>'
+            + _external_links
         )
     else:
         errors_link = (
             ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
             ' · <a href="screener.html">📊 Bottleneck Screener</a>'
+            + _external_links
         )
 
     return f"""<!doctype html>
@@ -1800,7 +1808,11 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
 <div class="wrap">
-  <div class="nav"><a href="index.html">← NOAH 종목 분석</a></div>
+  <div class="nav">
+    <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
+    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">🇰🇷 한국 수출입 데이터</a>
+  </div>
   <h1>📊 Bottleneck Screener — Archive</h1>
   <p class="sub">테마별 다종목 idea generation · 6-18M thesis (NOAH /ticker 5거래일 평가와 별개 horizon)</p>
 
@@ -1812,10 +1824,11 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
   </div>
 
   <div class="search-bar">
-    <input id="scr-search" type="text" placeholder="ticker / 회사명 / 테마 검색 (예: ETN, Eaton, 변압기)" autocomplete="off" spellcheck="false">
+    <input id="scr-search" type="text" placeholder="ticker / 회사명 / 테마 / 본문 검색 (예: 변압기, 액체냉각, ETN, Eaton)" autocomplete="off" spellcheck="false">
     <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
   </div>
   <p id="scr-status" class="status-line">총 {total_runs}건의 screener 실행</p>
+  <div id="scr-snippets" class="snippets" style="display:none"></div>
   <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
 """)
 
@@ -1923,12 +1936,35 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                 )
 
             filename = _html.escape(r.get("_filename", ""))
-            # Build searchable haystack: include ALL narrative content so
-            # '변압기' search hits any card whose master_table / binding
-            # paragraph / Top-3 thesis mentions it. Previous version only
-            # covered domain + top-3 ticker/company → 0 matches for terms
-            # appearing only in Master Table (2026-05-29 사용자 surfaced).
-            # Lowercased upfront so JS just does case-insensitive includes.
+            # Build per-line snippet index: search matches show the
+            # specific line containing the term, with surrounding context
+            # tightly capped (200-char single line) so the snippet panel
+            # stays readable. SV dashboard pattern — typing '변압기'
+            # surfaces the master-table row that mentions it; clicking the
+            # snippet jumps to the card and opens it in place. Falls back
+            # to whole-card filter via card-level hay below when content
+            # is empty (legacy archive entries without parsed sections).
+            def _lines(label: str, text: str, cap: int = 300) -> list[dict]:
+                out = []
+                for ln in (text or "").splitlines():
+                    s = ln.strip()
+                    if len(s) >= 3:
+                        out.append({"sec": label, "txt": s[:cap]})
+                return out
+            card_lines: list[dict] = []
+            card_lines.extend(_lines("binding", binding))
+            card_lines.extend(_lines("master_table", master_table_txt))
+            card_lines.extend(_lines("top3", top3_section_txt))
+            card_lines.extend(_lines("bottom", bottom_line))
+            # Cap per-card lines to stop pathological archives from
+            # bloating the page; 200 lines per card covers full Master
+            # Table (11 rows × ~10 fields) + binding + Top-3 + bottom_line
+            # with margin.
+            if len(card_lines) > 200:
+                card_lines = card_lines[:200]
+
+            # Card-level haystack as fallback (legacy/empty cards or
+            # short-token matches inside the domain header).
             search_parts: list[str] = [
                 domain.lower(),
                 binding.lower()[:1500],
@@ -1946,6 +1982,11 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
             for vt in validated_list:
                 search_parts.append(vt.lower())
             search_attr = _html.escape(" ".join(p for p in search_parts if p))
+            # JSON-encode line index for data attribute. Use json.dumps
+            # with ensure_ascii=False then HTML-escape so quotes / angle
+            # brackets in master_table content can't break the attribute.
+            import json as _json_sc
+            lines_attr = _html.escape(_json_sc.dumps(card_lines, ensure_ascii=False))
 
             # Card itself collapsible — when multiple domains accumulate
             # per day (AI 데이터센터 / 화학 / 기계 / 방산 ...) each one
@@ -1960,8 +2001,12 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
             )
             card_open_attr = " open" if card_default_open else ""
 
+            # Stable card id used by snippet click handlers to scroll +
+            # open the source card. `_filename` is unique within a date,
+            # and `_date` disambiguates across days.
+            card_id = f"card-{_html.escape(r.get('_date',''))}-{filename}".replace(".", "_")
             parts.append(f"""
-  <details class="card"{card_open_attr} data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-default-open="{'true' if card_default_open else 'false'}">
+  <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
       <span class="domain">{domain}</span>
@@ -2019,57 +2064,182 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     # regen rewrites screener.html so a later reload picks up everything.
     parts.append("""
 <script>
-// Search filter — ticker / company / theme / domain all matched (case
-// insensitive). Each card has data-search lowercased upfront so JS just
-// does includes(). 매칭되는 카드 0건 시 빈 메시지 표시. NOAH index.html
-// 검색창과 visual/UX parity.
+// Snippet-highlight search (SV dashboard pattern). Typing '변압기' surfaces
+// the specific lines mentioning it from binding / master_table / Top-3 /
+// bottom_line content, with the match wrapped in <mark>. Clicking a
+// snippet jumps to + opens the source card with a transient highlight.
+// Empty query restores the default card view.
 (function() {
   const inp = document.getElementById('scr-search');
   const clr = document.getElementById('scr-clear');
   const sts = document.getElementById('scr-status');
   const emp = document.getElementById('scr-empty');
+  const snp = document.getElementById('scr-snippets');
   const cards = Array.from(document.querySelectorAll('.card'));
   const dayGroups = Array.from(document.querySelectorAll('details.day'));
   if (!inp) return;
   const total = cards.length;
 
-  function applyFilter() {
-    const q = (inp.value || '').trim().toLowerCase();
-    let matched = 0;
-    for (const c of cards) {
-      const hay = c.dataset.search || '';
-      const vis = !q || hay.includes(q);
-      c.style.display = vis ? '' : 'none';
-      if (vis) matched++;
-      // Auto-expand matched cards; restore default state when cleared.
-      if (q && vis) {
-        c.open = true;
-      } else if (!q) {
-        c.open = (c.dataset.defaultOpen === 'true');
-      }
-    }
-    // Auto-expand day group containing a match; hide groups with 0 matches.
-    for (const d of dayGroups) {
-      const visibleCards = d.querySelectorAll('details.card, .card');
-      let any = false;
-      for (const c of visibleCards) {
-        if (c.style.display !== 'none') { any = true; break; }
-      }
-      d.style.display = any ? '' : 'none';
-      if (any && q) d.open = true;  // auto-open matched groups
-    }
-    if (q) {
-      sts.textContent = matched + '건 매칭 (검색: "' + (inp.value || '').trim() + '")';
-      emp.style.display = matched === 0 ? 'block' : 'none';
-    } else {
-      sts.textContent = '총 ' + total + '건의 screener 실행';
-      emp.style.display = 'none';
-    }
+  const SECTION_LABELS = {
+    'binding': '📍 binding',
+    'master_table': '📊 Master Table',
+    'top3': '🏆 Top-3',
+    'bottom': '💡 Bottom line',
+  };
+  const MAX_SNIPPETS = 80;  // soft cap to keep panel rendering fast
+
+  // Pre-parse each card's line index once (JSON.parse is the hot path
+  // on every keystroke otherwise). Domain header included as a synthetic
+  // 'domain' entry so typing 'AI 데이터센터' returns at least one snippet.
+  const cardData = cards.map(function(c) {
+    let lines = [];
+    try { lines = JSON.parse(c.dataset.lines || '[]'); } catch (e) {}
+    const domainEl = c.querySelector('.domain');
+    const domainTxt = domainEl ? domainEl.textContent.trim() : '';
+    if (domainTxt) lines.unshift({sec: 'domain', txt: domainTxt});
+    return {card: c, lines: lines, hay: (c.dataset.search || '')};
+  });
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, function(ch) {
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+    });
   }
+  function escapeReg(s) {
+    return s.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+  }
+  function highlight(text, q) {
+    if (!q) return escapeHtml(text);
+    const re = new RegExp(escapeReg(q), 'gi');
+    let out = '';
+    let last = 0;
+    let m;
+    const safe = escapeHtml(text);
+    // Re-derive match positions against the escaped string (HTML escape
+    // preserves byte-for-byte ordering for the chars we search over —
+    // CJK / latin / digit — so positions line up).
+    while ((m = re.exec(safe)) !== null) {
+      out += safe.slice(last, m.index);
+      out += '<mark>' + safe.slice(m.index, m.index + m[0].length) + '</mark>';
+      last = m.index + m[0].length;
+      if (m.index === re.lastIndex) re.lastIndex++;  // safety for empty match
+    }
+    out += safe.slice(last);
+    return out;
+  }
+
+  function showCardsMode() {
+    snp.style.display = 'none';
+    snp.innerHTML = '';
+    emp.style.display = 'none';
+    for (const c of cards) {
+      c.style.display = '';
+      c.open = (c.dataset.defaultOpen === 'true');
+      c.classList.remove('hit-flash');
+    }
+    for (const d of dayGroups) {
+      d.style.display = '';
+    }
+    sts.textContent = '총 ' + total + '건의 screener 실행';
+  }
+
+  function showSnippetsMode(q) {
+    // Hide all cards + day groups while in search mode — snippet list
+    // becomes the primary view. Card visibility is restored on snippet
+    // click (only the clicked card) or on clear.
+    for (const c of cards) c.style.display = 'none';
+    for (const d of dayGroups) d.style.display = 'none';
+
+    const ql = q.toLowerCase();
+    const hits = [];
+    for (const cd of cardData) {
+      for (const ln of cd.lines) {
+        if ((ln.txt || '').toLowerCase().indexOf(ql) >= 0) {
+          hits.push({card: cd.card, sec: ln.sec, txt: ln.txt});
+          if (hits.length >= MAX_SNIPPETS) break;
+        }
+      }
+      if (hits.length >= MAX_SNIPPETS) break;
+    }
+
+    if (hits.length === 0) {
+      snp.style.display = 'none';
+      emp.style.display = 'block';
+      sts.textContent = '0건 매칭 (검색: "' + q + '")';
+      return;
+    }
+    emp.style.display = 'none';
+
+    const cardHitCounts = new Map();
+    const parts = [];
+    for (const h of hits) {
+      const cid = h.card.id;
+      cardHitCounts.set(cid, (cardHitCounts.get(cid) || 0) + 1);
+      const dateAttr = h.card.dataset.date || '';
+      const domainEl = h.card.querySelector('.domain');
+      const domainTxt = domainEl ? domainEl.textContent.trim() : '';
+      const secLabel = SECTION_LABELS[h.sec] || h.sec;
+      parts.push(
+        '<div class="snippet" data-target="' + cid + '">' +
+          '<div class="snippet-meta">' +
+            '<span class="snippet-sec">' + escapeHtml(secLabel) + '</span>' +
+            '<span class="snippet-card">' + escapeHtml(domainTxt) +
+            ' · ' + escapeHtml(dateAttr) + '</span>' +
+          '</div>' +
+          '<div class="snippet-text">' + highlight(h.txt, q) + '</div>' +
+        '</div>'
+      );
+    }
+    snp.innerHTML = parts.join('');
+    snp.style.display = 'block';
+    const uniq = cardHitCounts.size;
+    const cap = hits.length >= MAX_SNIPPETS ? ' (상위 ' + MAX_SNIPPETS + '건 표시)' : '';
+    sts.textContent = hits.length + '개 라인 · ' + uniq + '개 카드 매칭' + cap +
+                      ' (검색: "' + q + '")';
+  }
+
+  function applyFilter() {
+    const q = (inp.value || '').trim();
+    if (!q) { showCardsMode(); return; }
+    showSnippetsMode(q);
+  }
+
+  // Snippet click → restore source card to view, open it, scroll to it,
+  // brief highlight pulse so the user sees where the match lives.
+  snp.addEventListener('click', function(ev) {
+    const sn = ev.target.closest('.snippet');
+    if (!sn) return;
+    const tgt = sn.dataset.target;
+    if (!tgt) return;
+    const card = document.getElementById(tgt);
+    if (!card) return;
+    // Reveal everything (the search filter had hidden non-matching cards
+    // + day groups). Then open just the target card + its day group.
+    for (const c of cards) {
+      c.style.display = '';
+      c.open = false;
+    }
+    for (const d of dayGroups) {
+      d.style.display = '';
+      d.open = false;
+    }
+    const dayG = card.closest('details.day');
+    if (dayG) dayG.open = true;
+    card.open = true;
+    card.classList.add('hit-flash');
+    snp.style.display = 'none';
+    setTimeout(function() {
+      card.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }, 30);
+    setTimeout(function() {
+      card.classList.remove('hit-flash');
+    }, 2400);
+  });
+
   inp.addEventListener('input', applyFilter);
   clr.addEventListener('click', function() {
     inp.value = '';
-    applyFilter();
+    showCardsMode();
     inp.focus();
   });
 })();
@@ -2239,6 +2409,31 @@ details.analysis-mt summary:hover { background:rgba(59,130,246,0.15); }
 details.analysis-mt .analysis-sec { margin-top:8px; }
 .mt-section { color:var(--accent); font-weight:700; font-size:13.5px;
   display:inline-block; padding:2px 0; margin-top:4px; }
+/* Snippet-highlight search panel (SV dashboard pattern). Shown only
+   when a query is active; clicking a snippet jumps to its source card. */
+.snippets { display:flex; flex-direction:column; gap:8px; margin:12px 0 24px; }
+.snippet { background:var(--card); border:1px solid var(--border);
+  border-left:3px solid var(--accent); border-radius:8px;
+  padding:10px 14px; cursor:pointer; transition:background 0.1s,
+  border-color 0.1s; }
+.snippet:hover { background:rgba(59,130,246,0.08); border-left-color:#60A5FA; }
+.snippet-meta { display:flex; gap:10px; font-size:11px; color:var(--muted);
+  margin-bottom:4px; align-items:center; }
+.snippet-sec { background:rgba(59,130,246,0.12); color:#93C5FD;
+  padding:2px 8px; border-radius:4px; font-weight:600; }
+.snippet-card { font-family:'IBM Plex Mono',monospace; }
+.snippet-text { color:var(--text); font-size:13px; line-height:1.55;
+  white-space:pre-wrap; word-break:break-word; }
+mark { background:rgba(245,158,11,0.35); color:#FCD34D; padding:1px 3px;
+  border-radius:3px; font-weight:600; }
+/* Brief pulse when a snippet click scrolls to a card — fades after 2s
+   so the user immediately sees which card the match came from. */
+@keyframes hitFlash {
+  0%   { box-shadow:0 0 0 2px rgba(245,158,11,0.7); }
+  60%  { box-shadow:0 0 0 2px rgba(245,158,11,0.35); }
+  100% { box-shadow:0 0 0 0 rgba(245,158,11,0); }
+}
+details.card.hit-flash { animation:hitFlash 2.4s ease-out; }
 </style></head><body>
 """
 

@@ -841,11 +841,12 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【11. 대시보드】</b> 🦉
- • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">http://34.50.23.221:8081/...</a> (ID/PW). 💰비용=NOAH+Screener+SV 통합
- • <b>Bottleneck Screener</b>: 위 archive의 screener.html — 날짜별 run · 분석 collapsible · Top-3 5/15/30d · 🗑️
- • <b>Standard View</b>: <a href="http://34.50.23.221:8002/dashboard">8002/dashboard</a> · 매크로·산업·Deal · 07:30/20:30 refresh + 텔레 · 일 22:00 주간·섹터 · auto-deploy 1분
- • NOAH 카드: 📊분석 · 💰비용 · ⏱시간 · 🎯정확도(알파) · 5/15/30거래일·검색·🗑️
- • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · 외부 → /sites
+ • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">8081/...</a> (ID/PW). 💰비용=NOAH+Screener+SV. 헤더에서 Screener/SV/🇰🇷수출입 이동
+ • <b>Screener</b>: archive/screener.html — 날짜별 run·분석·Top-3 5/15/30d·본문 스니펫 검색(🟡하이라이트→클릭 펼침)·🗑️
+ • <b>SV</b>: <a href="http://34.50.23.221:8002/dashboard">8002/dashboard</a> · 매크로·산업·Deal · 07:30/20:30 + 텔레 · 22:00 주간·섹터 · auto-deploy 1분
+ • <b>🇰🇷 수출입</b>: <a href="http://34.50.23.221:8765/dashboard/">8765/dashboard</a> · 외부 보조 (자동 갱신)
+ • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·검색·🗑️
+ • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
 
 ━━━━━━━━━
 <b>【12. 예정 작업】</b>
