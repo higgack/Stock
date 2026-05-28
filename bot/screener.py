@@ -85,6 +85,12 @@ class ScreenerResult:
 
 # ── Phase 1·2·4·5 orchestration prompt (Phase α: single Pro call) ──────
 
+def _today_kst_iso() -> str:
+    """오늘 (KST) YYYY-MM-DD 문자열 — Pro 의 시제 기준 anchor."""
+    from datetime import datetime, timezone, timedelta
+    return datetime.now(timezone(timedelta(hours=9))).date().isoformat()
+
+
 def _build_prompt(theme: dict) -> str:
     """Construct the ruthless-buy-side prompt for the given theme.
 
@@ -98,8 +104,11 @@ def _build_prompt(theme: dict) -> str:
         f"  - {layer}: {region}"
         for layer, region in theme["regional_concentration"].items()
     )
+    today = _today_kst_iso()
 
-    return f"""너는 냉혹한 buy-side 애널리스트다. 어떤 종목·섹터·서사·과거
+    return f"""오늘 (today, KST): {today}
+
+너는 냉혹한 buy-side 애널리스트다. 어떤 종목·섹터·서사·과거
 콜에도 충성심 없음. 오직 수익. 컨센서스에 제값 주는 건 알레르기. choke
 point owner 가 rent 독식한다는 Theory of Constraints 가 작업 anchor.
 
@@ -203,6 +212,28 @@ DEPTH REQUIREMENTS — Pro capacity 충분히 활용 의무 (2026-05-29 첫
 - **Date stamping rigor**: 모든 'as of' / 'FY' / 'Q' / 'H' 인용에 정확
   한 calendar date 명시. 'recent' / '최근' 같은 모호한 시제 금지 —
   반드시 specific date or quarter window.
+
+TENSE DISCIPLINE (시제 규율 — 2026-05-29 surfaced):
+**프롬프트 최상단의 '오늘 (today, KST)' 날짜를 anchor 로 모든 시제 판단.**
+- 오늘 이전 (PAST) 사건은 반드시 과거형: '발생', '실적 공시됨',
+  '실적 발표됨', '수주 확정', '실적 확인됨', '공시됨', '진행됨'.
+- 오늘 이후 (FUTURE) 사건만 '전망' / '기대' / '예상' / 'expected' /
+  'forecast' 허용.
+- ❌ FORBIDDEN — 오늘 이전 사건에 '전망' / '기대' 사용:
+  - 오늘이 2026-05-28 인데 '2025년 하반기부터 턴어라운드 전망' → 2025-H2
+    는 이미 종료, '실적 공시됨' / '이미 진행' 으로 cite.
+  - 오늘이 2026-05-28 인데 '2026 Q1 실적 기대' → Q1 (1-3월) 은 이미
+    공시됨, web search 로 실 결과 verify + 'sourced (publisher 2026-MM-DD,
+    매출 ±X%)' 형식.
+  - 오늘이 2026-05-28 인데 '2025년 적자 → 2026년 흑자 전환 기대' →
+    FY2025 결산 완료, FY2026 H1 진행 중. 'FY2025 적자 공시 (Q4 결산,
+    2026-02-XX) + FY2026 Q1 흑자 전환 진행 (Q1 실적, 2026-04-XX)' 식
+    각 분기 sourced cite.
+- 학습 cutoff (2024-Q2) 기준 미래로 보이는 사건이라도 오늘 기준 과거이면
+  반드시 web search 로 실 결과 verify 후 PAST tense + sourced 인용.
+  '곧 발표될 예정' / '예상' 추측 금지.
+- 'Catalyst+시기' 컬럼은 오로지 오늘 이후 future event 만 (예: '2026-H2',
+  '2027-Q1'). 오늘 이전 event 를 catalyst 로 cite 금지.
 
 WEB SEARCH MANDATORY (2026-05-29 enabled — google_search tool wired):
 - 현재 날짜 기준 (2026년) 최신 데이터를 web search 로 적극 fetch:
@@ -448,7 +479,10 @@ def _build_phase_12_prompt(theme: dict) -> str:
         f"  - {layer}: {region}"
         for layer, region in theme["regional_concentration"].items()
     )
-    return f"""너는 냉혹한 buy-side 애널리스트. Theory of Constraints anchor.
+    today = _today_kst_iso()
+    return f"""오늘 (today, KST): {today}
+
+너는 냉혹한 buy-side 애널리스트. Theory of Constraints anchor.
 충성심·내러티브 없음. 오직 수익. 도메인 "{theme['domain']}" ({theme['horizon']})
 의 binding constraint 와 choke point owner 식별.
 
@@ -624,7 +658,10 @@ def _build_phase_45_prompt(
     base = _build_prompt(theme)
     # Replace the front "OBJECTIVE" + theme intro with Phase β framing.
     # Keep all RULES / DEPTH REQUIREMENTS / LANGUAGE / output format intact.
-    phase_b_intro = f"""너는 냉혹한 buy-side 애널리스트. Theory of Constraints anchor.
+    today = _today_kst_iso()
+    phase_b_intro = f"""오늘 (today, KST): {today}
+
+너는 냉혹한 buy-side 애널리스트. Theory of Constraints anchor.
 도메인: "{theme['domain']}" ({theme['horizon']}).
 
 Phase 1·2 에서 식별된 binding constraint:
