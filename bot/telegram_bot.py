@@ -310,7 +310,10 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             chat_id=chat_id,
             text=(
                 "📊 <b>Bottleneck Screener</b> 시작 — AI 데이터센터 도메인 "
-                "(Phase α MVP)\n⏱ 3-5분 소요 (Gemini Pro · web reasoning)"
+                "(Phase β · 실시간 데이터)\n⏱ <b>5-10분 소요</b> — "
+                "Phase 1·2 (Pro 후보 식별) → Phase 3 (병렬 실시간 fetch) "
+                "→ Phase 4·5 (Pro 분석)\n"
+                "💡 데이터 fetch hung 시 120s 후 partial 결과로 자동 진행"
             ),
             parse_mode=ParseMode.HTML,
         )
@@ -1243,7 +1246,10 @@ async def cmd_screener(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await update.message.reply_text(
         "📊 <b>Bottleneck Screener</b> 시작 — AI 데이터센터 도메인 "
-        "(Phase α MVP)\n⏱ 3-5분 소요 (Gemini Pro · web reasoning)",
+        "(Phase β · 실시간 데이터)\n⏱ <b>5-10분 소요</b> — "
+        "Phase 1·2 (Pro 후보 식별) → Phase 3 (병렬 실시간 fetch) "
+        "→ Phase 4·5 (Pro 분석)\n"
+        "💡 데이터 fetch hung 시 120s 후 partial 결과로 자동 진행",
         parse_mode=ParseMode.HTML,
     )
     domain = " ".join(ctx.args).strip().lower() if ctx.args else "bottleneck"

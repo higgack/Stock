@@ -446,35 +446,59 @@ def _parse_phase_12_response(text: str) -> Optional[tuple[str, list[dict]]]:
     return binding, cleaned
 
 
-def _fetch_contexts_parallel(tickers: list[str], max_workers: int = 8) -> dict[str, str]:
+def _fetch_contexts_parallel(tickers: list[str], max_workers: int = 8,
+                              hard_timeout_sec: int = 120) -> dict[str, str]:
     """Phase 3: parallel build_instrument_context per ticker. Returns
     {ticker: context_text} dict; tickers that timeout / fail come back ''.
     build_instrument_context is the SAME function NOAH /ticker analysts use,
-    so the screener sees identical real-time forward-signal data."""
+    so the screener sees identical real-time forward-signal data.
+
+    HUNG-THREAD PROTECTION (2026-05-29 surfaced): Python ThreadPoolExecutor
+    cannot kill running threads, and `with ThreadPoolExecutor(...)` calls
+    shutdown(wait=True) on exit — so a hung HTTP call inside
+    build_instrument_context (yfinance/DART/EDINET without internal timeout)
+    blocked the whole orchestrator indefinitely (user's /screener stuck
+    >15 min). Fix: hard `hard_timeout_sec` cap via as_completed timeout +
+    explicit shutdown(wait=False, cancel_futures=True) so hung threads
+    finish in background while we return with partial data.
+    """
     try:
         from tradingagents.agents.utils.agent_utils import build_instrument_context
     except ImportError:
         log.warning("screener phase 3: build_instrument_context unavailable")
         return {}
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import (
+        ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout,
+    )
 
     results: dict[str, str] = {}
-    # analyst_id='news' yields the broadest mix (macro+news+technical+공시)
-    # — best fit for forward-signal screening.
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="screener") as ex:
+    ex = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="screener")
+    try:
         futures = {
             ex.submit(build_instrument_context, t, "news"): t
             for t in tickers
         }
-        for fut in as_completed(futures, timeout=180):
-            t = futures[fut]
-            try:
-                ctx = fut.result(timeout=60)
-                results[t] = ctx or ""
-            except Exception as exc:
-                log.warning("screener phase 3: %s fetch failed: %s", t, exc)
-                results[t] = ""
+        try:
+            for fut in as_completed(futures, timeout=hard_timeout_sec):
+                t = futures[fut]
+                try:
+                    ctx = fut.result(timeout=30)
+                    results[t] = ctx or ""
+                except Exception as exc:
+                    log.warning("screener phase 3: %s fetch failed: %s", t, exc)
+                    results[t] = ""
+        except FuturesTimeout:
+            done = len(results)
+            log.warning(
+                "screener phase 3: hard timeout %ds — proceeding with %d/%d "
+                "tickers (hung fetches finish in background)",
+                hard_timeout_sec, done, len(tickers),
+            )
+    finally:
+        # Don't wait for hung threads — let them finish naturally in
+        # background. cancel_futures=True cancels pending (not running) ones.
+        ex.shutdown(wait=False, cancel_futures=True)
     return results
 
 
