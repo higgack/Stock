@@ -247,9 +247,12 @@ WEB SEARCH MANDATORY (2026-05-29 enabled — google_search tool wired):
 - 검색 결과가 학습 메모리와 충돌 시 web 결과 우선.
 
 OUTPUT FORMATTING (2026-05-29 가독성 fix):
-- Markdown 문법 (`**bold**`, `*italic*`, `_underline_`, `~strike~`)
-  **절대 금지** — Telegram HTML 만 (`<b>...</b>`, `<i>...</i>`,
-  `<code>...</code>`). 강조 시 `<b>` 사용.
+- Markdown 문법 (`**bold**`, `*italic*`, `_underline_`, `~strike~`,
+  `## 헤더`, `# 헤더`, `### 헤더`) **절대 금지** — Telegram HTML 만
+  (`<b>...</b>`, `<i>...</i>`, `<code>...</code>`). 강조 시 `<b>` 사용.
+  섹션 헤더는 markdown `##` 대신 `<b>` + 줄바꿈 으로 (예: `<b>📊 Master
+  Table</b>` + 빈 줄). 2026-05-29 surfaced — Pro 가 출력 상단에 `## AI
+  데이터센터 구축 투자 전략` 같은 markdown 헤더 노출.
 - 종목 행 인라인 `│` 가로 구분자 금지 — 모바일에서 줄바꿈 깨짐.
   각 신호 항목 (Tier A · B · C · 가격 반영도 · catalyst · kill
   trigger · 유동성 경고) 은 **반드시 별도 줄**로 분리. 형식 예시:
@@ -263,6 +266,41 @@ OUTPUT FORMATTING (2026-05-29 가독성 fix):
       • Kill Trigger: 글로벌 침체로 산업 Capex 삭감
 - '*' / '-' / '1.' markdown list 마커 금지. 줄 시작 inline bullet 은
   `•` 또는 `▪` 만 사용. 강조는 `<b>`.
+
+TIER 분류 사용 규율 (2026-05-29 surfaced — NVTS $6.77B / Kinsus $11B
+가 S-Tier 로 잘못 분류된 모순):
+- 각 종목 context 상단에 'AUTHORITATIVE TIER:' 라벨 명시 — Python 백엔드
+  가 yfinance 시가총액을 USD 환산해 분류 완료. S=<$300M / M=$300M-$3B /
+  L=>$3B. Pro 임의 재분류 절대 금지.
+- 'Master Table' 의 티어 컬럼 + Top-3 picks 의 'Tier:' 표기 + S-Tier
+  유동성 경고 발화 조건 = 모두 AUTHORITATIVE TIER 그대로 사용.
+- 시총 표기는 'mcap' 필드 값 그대로 cite ('$6.77B USD' / '$420M USD' 등).
+  Pro 가 자체 시총 추정·환산 금지.
+
+CORP ACTION 환각 차단 (058470.KS 리노공업 2026-05-29 surfaced):
+- yfinance / 주입된 instrument context 의 EPS/PER 비정상값 (예: PER >
+  500x · EPS 음수 + 시총 정상 · 현재가 vs 52주 최고가 30%+ 차이) 을
+  발견해도 '기업 분할' / 'corp action' / '합병' / '액면분할' 같은 corp
+  event 발생 추측 절대 금지.
+- 추측 대신 둘 중 하나: (a) 'yfinance 데이터 stale — 거래소 공시 verify
+  필요 (DART/EDINET/MOPS)' 명시 + 그 종목 PER/EPS 인용 자제 + PBR /
+  PSR 같은 다른 valuation 지표 사용, (b) 그 종목 row 자체 OMIT.
+- 'corp action 의심' / '데이터 transitional' 문구는 NOAH /ticker 가
+  실시간 공시 fetch 결과로만 발화하는 가드 — screener 는 공시 fetch
+  안 함 → 이 문구 그대로 인용 절대 금지.
+
+VALUATION DISTORTION 가드 (cyclical bottom 인지 — 2026-05-29 외부
+리뷰 ② 반영):
+- 현재 PER > 100x 종목은 '단순 고평가' 결론 금지. 일시적 이익 훼손
+  (cyclical bottom / 적자 전환 직후 / 분기 일회성 손실) 에 의한 PER
+  왜곡 가능성 명시 의무.
+- 대체 valuation 지표 cite 의무: PBR · Fwd EV/EBITDA · PSR · EV/Sales
+  중 2개 이상. 예시: 'Techwing PER 417x — FY26 적자 직후 cyclical
+  bottom 에 의한 왜곡, PBR 4.2x / Fwd EV/EBITDA 18x 가 더 적절한
+  valuation 렌즈'.
+- Forward PER 이 정상 범위 (10-40x) 면 cyclical recovery 기대 신호로
+  해석. Forward PER 도 비정상 (>100x or 음수) 이면 'thesis 무효, 종목
+  OMIT 검토' 명시.
 
 DATA INTEGRITY (불일치 종목 OMIT):
 - yfinance 가 반환한 company_name 이 Pro 가 식별한 회사와 다르면
@@ -358,6 +396,87 @@ def _extract_candidate_tickers(text: str) -> set[str]:
         if not has_alpha and not has_market_suffix:
             continue
         candidates.add(sym)
+    return candidates
+
+
+def _classify_tier_by_mcap_usd(mcap_usd: float) -> str:
+    """Hardcode tier from USD market cap.
+    S = micro (< $300M, centroid ~$100M)
+    M = mid   ($300M-$3B, centroid ~$1B)
+    L = large (> $3B, centroid ~$10B)
+    Reviewer 2026-05-29: NVTS ($6.77B) + Kinsus ($11B) 가 S-Tier 분류된
+    수학적 모순 → Pro 자율 분류 신뢰 불가, Python 강제 분류 필요."""
+    if mcap_usd is None or mcap_usd <= 0:
+        return "?"
+    if mcap_usd < 300e6:
+        return "S"
+    if mcap_usd < 3e9:
+        return "M"
+    return "L"
+
+
+_FX_RATE_CACHE: dict[str, float] = {}
+
+
+def _fx_to_usd(amount: float, currency: str) -> float | None:
+    """Convert local-currency amount to USD via yfinance FX rate. Returns
+    None on failure. Caches FX rates per-process to avoid duplicate calls."""
+    if not amount or amount <= 0:
+        return None
+    cur = (currency or "").upper().strip()
+    if cur in ("USD", "", "USDOLLAR"):
+        return float(amount)
+    fx_sym = f"{cur}=X"
+    if fx_sym in _FX_RATE_CACHE:
+        return float(amount) / _FX_RATE_CACHE[fx_sym]
+    try:
+        import yfinance as yf
+        fi = yf.Ticker(fx_sym).fast_info
+        rate = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
+        if rate and rate > 0:
+            _FX_RATE_CACHE[fx_sym] = float(rate)
+            return float(amount) / float(rate)
+    except Exception as exc:
+        log.debug("screener: FX rate fetch failed for %s: %s", fx_sym, exc)
+    return None
+
+
+def _override_tiers_from_mcap(candidates: list[dict]) -> list[dict]:
+    """For each candidate, fetch real-time market cap from yfinance,
+    convert to USD, and OVERRIDE Pro's tier classification with the
+    hardcoded Python rule. Mutates candidate dicts in place — adds
+    `mcap_usd` and overrides `tier`. Logs disagreements for audit.
+    Reviewer 2026-05-29 #1 fix."""
+    try:
+        import yfinance as yf
+    except ImportError:
+        log.warning("screener: yfinance unavailable — tier override skipped")
+        return candidates
+    for c in candidates:
+        t = c.get("ticker", "")
+        if not t:
+            continue
+        try:
+            info = yf.Ticker(t).info or {}
+            mcap_native = info.get("marketCap")
+            currency = info.get("currency") or c.get("currency") or "USD"
+            if not mcap_native or mcap_native <= 0:
+                continue
+            mcap_usd = _fx_to_usd(mcap_native, currency)
+            if mcap_usd is None:
+                continue
+            new_tier = _classify_tier_by_mcap_usd(mcap_usd)
+            old_tier = (c.get("tier") or "").upper()[:1]
+            c["tier"] = new_tier
+            c["mcap_usd"] = mcap_usd
+            if old_tier and old_tier != new_tier:
+                log.info(
+                    "screener: tier override %s: Pro=%s → Python=%s "
+                    "(mcap $%.2fB %s)",
+                    t, old_tier, new_tier, mcap_usd / 1e9, currency,
+                )
+        except Exception as exc:
+            log.debug("screener: tier override failed for %s: %s", t, exc)
     return candidates
 
 
@@ -638,11 +757,19 @@ def _build_phase_45_prompt(
     for c in candidates:
         t = c["ticker"]
         ctx = contexts.get(t, "")
+        mcap = c.get("mcap_usd")
+        mcap_str = (
+            f"${mcap/1e9:.2f}B USD" if mcap is not None and mcap >= 1e9
+            else f"${mcap/1e6:.0f}M USD" if mcap is not None and mcap > 0
+            else "N/A (시총 fetch 실패)"
+        )
         if not ctx:
             ctx_block += (
                 f"\n\n=== {t} ({c.get('company_name', '')}) — 실시간 데이터 부재"
                 f" (fetch 실패 또는 yfinance 미커버) ===\n"
-                f"테마: {c.get('theme')} · 티어: {c.get('tier')} · 시장: {c.get('listing')}\n"
+                f"테마: {c.get('theme')} · 시장: {c.get('listing')}\n"
+                f"AUTHORITATIVE TIER (Python 하드코드, mcap 기반):"
+                f" {c.get('tier', '?')} · 시총 {mcap_str}\n"
                 f"reasoning_seed: {c.get('reasoning_seed')}\n"
             )
             continue
@@ -650,7 +777,9 @@ def _build_phase_45_prompt(
         trimmed = ctx if len(ctx) <= 2500 else ctx[:2500] + "\n... (trimmed)"
         ctx_block += (
             f"\n\n=== {t} ({c.get('company_name', '')}) — 실시간 forward-signal 데이터 ===\n"
-            f"테마: {c.get('theme')} · 티어: {c.get('tier')} · 시장: {c.get('listing')}\n"
+            f"테마: {c.get('theme')} · 시장: {c.get('listing')}\n"
+            f"AUTHORITATIVE TIER (Python 하드코드, mcap 기반):"
+            f" {c.get('tier', '?')} · 시총 {mcap_str}\n"
             f"{trimmed}\n"
         )
 
@@ -745,6 +874,10 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
         log.warning("screener phase β: 0 validated tickers — falling back")
         return None
     candidates = [c for c in candidates if c["ticker"] in set(validated)]
+
+    # Override Pro's tier classification with Python-computed tier based on
+    # actual yfinance market cap (USD-converted). Reviewer 2026-05-29 fix #1.
+    candidates = _override_tiers_from_mcap(candidates)
 
     # Phase 3: parallel context fetch (NOAH-equivalent forward-signal data)
     phase3_start = time.time()
