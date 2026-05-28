@@ -1,0 +1,13 @@
+[Unit]
+Description=Quarterly GICS / emerging industry trend check (사용자 정책 2026-05-29)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.screener_gics_check
+StandardOutput=journal
+StandardError=journal

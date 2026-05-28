@@ -1,0 +1,13 @@
+[Unit]
+Description=Quarterly GICS / emerging industry check trigger — 3·6·9·12월 1일 09:00 KST
+
+[Timer]
+# 4x/year. KST 09:00 = 00:00 UTC. Asia/Seoul TZ requires systemd 220+.
+# Persistent=true so a missed boot (서버 다운) still triggers when bot
+# comes back online. 사용자 직접 확인 후 신규 모듈 add 결정.
+OnCalendar=Mar,Jun,Sep,Dec *-*-01 09:00:00 Asia/Seoul
+Persistent=true
+Unit=screener-gics-check.service
+
+[Install]
+WantedBy=timers.target

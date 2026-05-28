@@ -324,6 +324,16 @@ pattern to follow:
   • `standardview-push.timer` — 08:00 + 21:00 KST 매일, `telegram_pusher.py` 만 (push)
   • 30분 gap 으로 generator 가 완료된 latest.html 을 pusher 가 사용
   • legacy `standardview-hourly.timer` (Mon-Fri 12/16시 push) disabled
+- Screener GICS 분기 점검 (2026-05-29 사용자 정책):
+  • `screener-gics-check.timer` — 3·6·9·12월 1일 09:00 KST (4x/year)
+  • `bot/screener_gics_check.py` 가 Pro + web search 로 (a) S&P GICS /
+    MSCI 공식 분류 변경 + (b) 신규 emerging industry trend (시총 $50B+
+    pure-play 5+ 종목) 식별 → 기존 65 도메인과 비교 → 신규 후보만
+    텔레그램 알림 → 사용자 직접 검증 후 모듈 add 결정
+  • 비용 ~₩300/quarter (Pro web search 1 call) ≈ ₩1.2K/year
+  • Raw 응답 audit log `~/.tradingagents/gics_check_audit.jsonl` 에
+    저장 — 환각 의심 시 참조. Pro 의 false-positive tolerance 가 정책
+    (놓치는 것보다 noise 가 나음). 사용자 직접 확인 정책 명시.
 
 **Acceptable manual steps** (rare, one-time):
 - Initial systemd unit installation
