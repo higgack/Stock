@@ -301,6 +301,28 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /screener in channel — Bottleneck Screener Phase α MVP (AI Data Center).
+    # ~3-5 minute Pro call; send a progress note first so the channel knows
+    # work is in flight before the master table arrives.
+    if first_word == "screener":
+        chat_id = post.chat.id
+        await ctx.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "📊 <b>Bottleneck Screener</b> 시작 — AI 데이터센터 도메인 "
+                "(Phase α MVP)\n⏱ 3-5분 소요 (Gemini Pro · web reasoning)"
+            ),
+            parse_mode=ParseMode.HTML,
+        )
+        await _run_screener_and_send(
+            send=lambda t: ctx.bot.send_message(
+                chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            ),
+            domain=body[len("screener"):].strip().lower(),
+        )
+        return
+
     # /compare A B → branch off to the comparison handler.
     cmp_match = COMPARE_RE.match(body)
     if cmp_match:
@@ -802,7 +824,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【12. 예정 작업】</b>
- • 없음 (모든 항목 완료)
+ • Bottleneck Screener Phase α — <code>/screener</code> AI 데이터센터 (TOC choke point + 3티어 size + Tier A/B/C/D, 6-18M thesis). Wave 1 EV/방산/바이오/신재생 등 도메인 확장 예정
 """
 
 
@@ -1187,6 +1209,54 @@ async def cmd_sites(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def _run_screener_and_send(send, domain: str) -> None:
+    """Run the screener in a thread (it's a synchronous Pro call that
+    blocks for ~3-5 minutes) and stream chunks back through `send`.
+    Used by both DM cmd_screener and the channel /screener path."""
+    import asyncio
+    from bot.screener import run_screener, format_for_telegram
+    loop = asyncio.get_running_loop()
+    try:
+        result = await loop.run_in_executor(None, run_screener, domain or "bottleneck")
+    except Exception as exc:
+        log.exception("screener: orchestrator threw: %s", exc)
+        await send(f"⚠️ Screener 오류 — {exc.__class__.__name__}")
+        return
+    if result is None:
+        await send(
+            "⚠️ Screener 실행 실패 — GOOGLE_API_KEY 누락 또는 Pro 응답 없음."
+            " 로그 확인 권장."
+        )
+        return
+    for chunk in format_for_telegram(result):
+        await send(chunk)
+
+
+async def cmd_screener(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/screener [domain] — Bottleneck Screener Phase α MVP.
+
+    Phase α: AI Data Center domain only. Wave 1 will extend to ev / pharma
+    / solar / defense etc. via theme registry in bot/screener_themes/.
+    See CLAUDE.md 'Bottleneck Screener' section for full design.
+    """
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        "📊 <b>Bottleneck Screener</b> 시작 — AI 데이터센터 도메인 "
+        "(Phase α MVP)\n⏱ 3-5분 소요 (Gemini Pro · web reasoning)",
+        parse_mode=ParseMode.HTML,
+    )
+    domain = " ".join(ctx.args).strip().lower() if ctx.args else "bottleneck"
+    chat_id = update.message.chat_id
+    await _run_screener_and_send(
+        send=lambda t: ctx.bot.send_message(
+            chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        ),
+        domain=domain,
+    )
+
+
 async def cmd_compare_hint(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """/compare in DM doesn't run — analysis happens in the registered
     channel. Point the user at the right place instead of staying silent."""
@@ -1444,6 +1514,7 @@ async def _on_startup(application) -> None:
             BotCommand("help", "사용법 안내"),
             BotCommand("usage", "사용량 / 비용 / 7일 차트"),
             BotCommand("sites", "참고 사이트"),
+            BotCommand("screener", "Bottleneck 종목 발굴 (AI 데이터센터)"),
             BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
         ])
     except Exception as exc:
@@ -1492,6 +1563,7 @@ def main() -> None:
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("sv_cost", cmd_sv_cost))
     app.add_handler(CommandHandler("sites", cmd_sites))
+    app.add_handler(CommandHandler("screener", cmd_screener))
     # Catch /compare typed in DM and redirect — actual compare runs only
     # via on_channel_post inside the registered channel.
     app.add_handler(CommandHandler("compare", cmd_compare_hint))
