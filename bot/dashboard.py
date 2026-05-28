@@ -378,6 +378,12 @@ def _compute_stats(records: list[dict]) -> dict:
     today_cost_usd = 0.0
     month_cost_usd = 0.0
     month_cost_by_model: dict[str, float] = {}
+    # Per-subsystem breakdown (분석 / Screener / SV) so the main dashboard
+    # surfaces where the total bill is coming from. Screener Pro calls
+    # land in usage.jsonl with subsystem='screener'; SV calls live in
+    # ~/standardview/sv_usage.jsonl (separate file, KST-date tagged).
+    today_cost_by_sub_usd: dict[str, float] = {"분석": 0.0, "Screener": 0.0, "SV": 0.0}
+    month_cost_by_sub_usd: dict[str, float] = {"분석": 0.0, "Screener": 0.0, "SV": 0.0}
     for r in usage:
         if r.get("type") != "llm_call":
             continue
@@ -386,12 +392,49 @@ def _compute_stats(records: list[dict]) -> dict:
             continue
         rec_day = datetime.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d")
         cost = r.get("cost_usd", 0) or 0
+        sub = "Screener" if r.get("subsystem") == "screener" else "분석"
         if rec_day.startswith(month_prefix):
             month_cost_usd += cost
             m = r.get("model") or "unknown"
             month_cost_by_model[m] = month_cost_by_model.get(m, 0.0) + cost
+            month_cost_by_sub_usd[sub] += cost
             if rec_day == today_str:
                 today_cost_usd += cost
+                today_cost_by_sub_usd[sub] += cost
+
+    # Standard View cost — read ~/standardview/sv_usage.jsonl which stores
+    # cost_krw directly (KST date pre-tagged). Convert KRW → USD via the
+    # same 1330 rate the dashboard uses for KRW display. Failure here is
+    # silent — SV may be running on a separate host without local file.
+    _sv_usage_path = Path.home() / "standardview" / "sv_usage.jsonl"
+    if _sv_usage_path.exists():
+        try:
+            import json as _j
+            with open(_sv_usage_path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        rec = _j.loads(line)
+                    except Exception:
+                        continue
+                    cost_krw_sv = rec.get("cost_krw", 0) or 0
+                    if cost_krw_sv <= 0:
+                        continue
+                    cost_usd_sv = cost_krw_sv / 1330.0
+                    rec_day_sv = rec.get("date") or ""
+                    if rec_day_sv.startswith(month_prefix):
+                        month_cost_usd += cost_usd_sv
+                        month_cost_by_sub_usd["SV"] += cost_usd_sv
+                        # Roll SV into the gemini-2.5-flash bucket so the
+                        # by-model breakdown stays accurate (SV uses flash).
+                        month_cost_by_model["gemini-2.5-flash"] = (
+                            month_cost_by_model.get("gemini-2.5-flash", 0.0)
+                            + cost_usd_sv
+                        )
+                        if rec_day_sv == today_str:
+                            today_cost_usd += cost_usd_sv
+                            today_cost_by_sub_usd["SV"] += cost_usd_sv
+        except Exception as exc:
+            log.warning("dashboard: SV usage read failed: %s", exc)
 
     # ── recommendation accuracy from memory log ──
     # Accuracy criterion: ALPHA (raw − sector ETF benchmark), not raw.
@@ -451,6 +494,8 @@ def _compute_stats(records: list[dict]) -> dict:
         "today_cost_usd": today_cost_usd,
         "month_cost_usd": month_cost_usd,
         "month_cost_by_model": month_cost_by_model,
+        "today_cost_by_sub_usd": today_cost_by_sub_usd,
+        "month_cost_by_sub_usd": month_cost_by_sub_usd,
         "today_label": now_kst.strftime("%-m월 %-d일"),
         "month_label": now_kst.strftime("%Y년 %-m월"),
         "tool_failures_24h": _read_tool_failures(window_hours=24),
@@ -528,6 +573,15 @@ def _render_stats_panel(stats: dict) -> str:
     cost_sub_parts = [f"{stats['today_label']} / {stats['month_label']}"]
     if cost_label_parts:
         cost_sub_parts.append(" / ".join(cost_label_parts))
+    # Per-subsystem breakdown (분석 / Screener / SV). Surface only buckets
+    # with non-zero this-month cost — keeps the sub-label compact.
+    sub_parts: list[str] = []
+    for key, label in [("분석", "분석"), ("Screener", "screener"), ("SV", "SV")]:
+        m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
+        if m_usd > 0:
+            sub_parts.append(f"{label} {_krw(m_usd)}")
+    if sub_parts:
+        cost_sub_parts.append("월 합산: " + " · ".join(sub_parts))
     # Surface upstream tool health on the same card. A persistent
     # yfinance / alpha vantage outage shows up here BEFORE it cascades
     # into analyst failures on the errors page, so the operator can
@@ -1737,11 +1791,13 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                     f'</details>'
                 )
 
+            filename = _html.escape(r.get("_filename", ""))
             parts.append(f"""
-  <div class="card">
+  <div class="card" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}">
     <div class="card-h">
       <span class="domain">{domain}</span>
       <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s · ✅ {tickers_n}개 ticker</span>
+      <button class="del-btn" type="button" title="이 screener 기록 삭제">🗑️</button>
     </div>
     {analysis_html}
 """)
@@ -1785,6 +1841,49 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
             parts.append('  </div>\n')
 
     parts.append("</div>")
+    # JS — delete button POSTs to /api/screener_delete (mirror of NOAH
+    # /api/delete pattern). On success, fade + remove the card. Server
+    # regen rewrites screener.html so a later reload picks up everything.
+    parts.append("""
+<script>
+document.querySelectorAll('.del-btn').forEach(function(btn) {
+  btn.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    ev.preventDefault();
+    const card = btn.closest('.card');
+    if (!card) return;
+    const date = card.dataset.date;
+    const filename = card.dataset.filename;
+    if (!date || !filename) return;
+    if (!confirm('📊 ' + date + ' / ' + filename + ' screener 기록을 삭제할까요?')) return;
+    btn.disabled = true;
+    btn.textContent = '⏳';
+    fetch('api/screener_delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({date: date, filename: filename})
+    }).then(function(r) {
+      return r.json().then(function(d) { return {status: r.status, body: d}; });
+    }).then(function(res) {
+      if (res.status === 200 && res.body && res.body.ok) {
+        card.style.transition = 'opacity 0.2s';
+        card.style.opacity = '0';
+        setTimeout(function() { card.remove(); }, 200);
+      } else {
+        alert('삭제 실패: ' + (res.body && res.body.error || res.status));
+        btn.disabled = false;
+        btn.textContent = '🗑️';
+      }
+    }).catch(function(err) {
+      alert('삭제 실패: ' + err);
+      btn.disabled = false;
+      btn.textContent = '🗑️';
+    });
+  });
+});
+</script>
+</body></html>
+""")
     return "".join(parts)
 
 
@@ -1819,8 +1918,13 @@ h2.date { font-size:14px; color:var(--muted); margin:28px 0 12px;
   border-radius:12px; padding:16px 18px; margin-bottom:14px; }
 .card-h { display:flex; justify-content:space-between; align-items:center;
   gap:12px; flex-wrap:wrap; margin-bottom:12px; }
-.domain { font-weight:600; font-size:15px; }
+.domain { font-weight:600; font-size:15px; flex:1; min-width:200px; }
 .meta { color:var(--muted); font-size:12px; font-family:'IBM Plex Mono',monospace; }
+.del-btn { background:none; border:none; cursor:pointer;
+  color:var(--muted); font-size:16px; padding:4px 8px; border-radius:6px;
+  margin-left:auto; }
+.del-btn:hover { color:var(--neg); background:rgba(239,68,68,0.08); }
+.del-btn:disabled { opacity:0.5; cursor:wait; }
 table.picks { width:100%; border-collapse:collapse; font-size:13px; }
 table.picks th { text-align:left; color:var(--muted); font-weight:500;
   padding:8px 6px; border-bottom:1px solid var(--border); font-size:11px;
