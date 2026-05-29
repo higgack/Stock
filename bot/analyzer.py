@@ -1385,9 +1385,14 @@ def _format_full(
             )
             continue
         body = state.get(key) if isinstance(state, dict) else None
-        parts.append(
-            f"\n## {label}\n{_clean_section(body, currency_symbol=_section_currency_symbol, canonical=_canonical)}"
+        _section_cleaned = _clean_section(
+            body, currency_symbol=_section_currency_symbol, canonical=_canonical,
         )
+        if key == "trader_investment_plan":
+            _section_cleaned = _flag_trader_price_hallucination(
+                _section_cleaned, canonical=_canonical,
+            )
+        parts.append(f"\n## {label}\n{_section_cleaned}")
     _pm_section = (
         f"{override_note}\n\n---\n{decision}" if override_note else decision
     )
@@ -2230,6 +2235,76 @@ def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None)
         _step("canonical-crosscheck",
               lambda b: _canonical_crosscheck(b, canonical))
     return body.strip()
+
+
+def _flag_trader_price_hallucination(
+    body: str, canonical: dict | None = None, tol: float = 0.15,
+) -> str:
+    """Backstop for the Trader price-hallucination class (2026-05-29 SK
+    하이닉스 000660.KS surfaced — Trader cited training-cutoff 2024-Q2
+    ~₩20만 prices for Entry/Stop while the actual current price was
+    ₩2,333,000, an order of magnitude off, making the proposed trade
+    impossible to execute).
+
+    Extracts the numeric Entry Price / Stop Loss values from the rendered
+    trader markdown, compares each against the canonical currentPrice (the
+    same yfinance source the FACTUAL ANCHOR / summary card already use),
+    and prepends a ⚠️ warning line when either is outside ±tol of current
+    price. The trader's text body is left intact — we don't auto-correct
+    (a legitimate price move into that range is possible), only surface
+    the discrepancy so the reader knows the entry/stop can't be acted on
+    as written. Universal — every market (US/KR/JP/TW/CN/HK).
+
+    Pairs with the prompt-side absolute-anchor directive in trader.py; the
+    prompt asks Pro to stay within ±15% but Pro ignored it on the SK live
+    case → this Python check is the backstop. tol matches the prompt
+    threshold so the two layers stay consistent."""
+    if not isinstance(canonical, dict):
+        return body
+    cur = canonical.get("current_price")
+    if not isinstance(cur, (int, float)) or cur <= 0:
+        return body
+    if not body or not isinstance(body, str):
+        return body
+    # Match labels we render (Entry Price, Stop Loss) plus the
+    # localized Korean forms the Trader sometimes uses (진입가, 손절).
+    # Tolerate **bold** wrappers and "Loss" -> "Loss". Number is the
+    # first numeric token after the colon, comma-separated allowed.
+    import re
+    _LABEL_RE = re.compile(
+        r"\*{0,2}\s*"
+        r"(Entry\s*Price|Stop\s*Loss|진입\s*가격?|손절\s*가격?|Target\s*Price|목표\s*가격?)"
+        r"\s*\*{0,2}\s*[:：]\s*[^\d\-]*([\d,]+(?:\.\d+)?)",
+        re.IGNORECASE,
+    )
+    flags: list[str] = []
+    for m in _LABEL_RE.finditer(body):
+        label = m.group(1)
+        try:
+            val = float(m.group(2).replace(",", ""))
+        except ValueError:
+            continue
+        if val <= 0:
+            continue
+        ratio = val / cur
+        if ratio < (1 - tol) or ratio > (1 + tol):
+            flags.append(
+                f"{label} {m.group(2)} (현재가 대비 {(ratio - 1) * 100:+.0f}%)"
+            )
+    if not flags:
+        return body
+    # One-line warning + suggested execution-range so the reader has a
+    # concrete fallback instead of just being told something's wrong.
+    low = cur * 0.97
+    high = cur * 1.03
+    suggest = f"{low:,.0f}–{high:,.0f}"
+    note = (
+        f"⚠️ <b>가격 환각 의심</b> (학습 cutoff 이후 가격 변동 큰 종목 — Trader"
+        f" 가 과거 가격 인용 가능): {' · '.join(flags)}. 현재가 {cur:,.0f}"
+        f" 기준 5거래일 horizon entry 권장 범위 ≈ {suggest}. Trader 출력"
+        f" 그대로 실행 금지, 수동 검증 필요.\n\n"
+    )
+    return note + body
 
 
 def _clean_section(body, currency_symbol: str = "", canonical: dict | None = None) -> str:
