@@ -968,15 +968,15 @@ summary.day-head .count {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 }
 .ticker {
-  font-weight: 700; font-size: 15px; color: var(--fg);
+  font-weight: 700; font-size: 17px; color: var(--fg);
   text-decoration: none; min-width: 70px;
 }
 .ticker:hover { color: var(--accent); text-decoration: none; }
 .stance {
-  color: var(--fg-soft); font-size: 13px; flex: 1; min-width: 0;
+  color: var(--fg-soft); font-size: 15px; flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.time { color: var(--fg-soft); font-size: 12px; min-width: 38px; text-align: right; }
+.time { color: var(--fg-soft); font-size: 13px; min-width: 38px; text-align: right; }
 .del-btn {
   background: none; border: none; cursor: pointer; padding: 4px 6px;
   color: #f87171; font-size: 14px; line-height: 1;
@@ -985,8 +985,8 @@ summary.day-head .count {
 .del-btn:hover { color: #ef4444; }
 :root[data-theme="dark"] .del-btn { color: #f87171; }
 :root[data-theme="dark"] .del-btn:hover { color: #fca5a5; }
-.past { color: var(--fg-soft); font-size: 12px; margin-top: 6px; }
-.outcome { font-size: 12px; margin-top: 4px; color: var(--fg-soft); }
+.past { color: var(--fg-soft); font-size: 13px; margin-top: 6px; }
+.outcome { font-size: 13px; margin-top: 4px; color: var(--fg-soft); }
 .outcome.hit { color: #10b981; }       /* directional call matched alpha */
 .outcome.miss { color: #ef4444; }      /* directional call missed */
 :root[data-theme="dark"] .outcome.hit { color: #34d399; }
@@ -2766,8 +2766,8 @@ details.card[open] .card-toggle { transform:rotate(90deg); display:inline-block;
 details.card .card-body { padding:14px 18px 18px; }
 .card-h { display:flex; justify-content:space-between; align-items:center;
   gap:12px; flex-wrap:wrap; margin-bottom:12px; }
-.domain { font-weight:600; font-size:15px; flex:1; min-width:200px; }
-.meta { color:var(--muted); font-size:12px; font-family:'IBM Plex Mono',monospace; }
+.domain { font-weight:600; font-size:17px; flex:1; min-width:200px; }
+.meta { color:var(--muted); font-size:13px; font-family:'IBM Plex Mono',monospace; }
 .del-btn { background:none; border:none; cursor:pointer;
   color:var(--muted); font-size:16px; padding:4px 8px; border-radius:6px;
   margin-left:auto; }
@@ -2784,9 +2784,9 @@ details.card .card-body { padding:14px 18px 18px; }
 .search-bar button:hover { background:var(--search-btn-hover); }
 .search-bar button:active { transform:scale(0.97); }
 .status-line { color:var(--muted); font-size:12px; margin:0 0 12px; }
-table.picks { width:100%; border-collapse:collapse; font-size:13px; }
+table.picks { width:100%; border-collapse:collapse; font-size:15px; }
 table.picks th { text-align:left; color:var(--muted); font-weight:500;
-  padding:8px 6px; border-bottom:1px solid var(--border); font-size:11px;
+  padding:8px 6px; border-bottom:1px solid var(--border); font-size:12px;
   text-transform:uppercase; letter-spacing:0.3px; }
 table.picks td { padding:8px 6px; border-bottom:1px solid var(--row-border); }
 table.picks tr:last-child td { border-bottom:none; }
@@ -2811,7 +2811,7 @@ td.neu { color:var(--muted); }
   border-radius:4px; }
 details.analysis { margin:10px 0 14px; }
 details.analysis summary { cursor:pointer; color:var(--accent);
-  font-size:13px; padding:6px 10px; background:var(--accent-soft);
+  font-size:14px; padding:7px 11px; background:var(--accent-soft);
   border-radius:6px; user-select:none; list-style:none; }
 details.analysis summary::-webkit-details-marker { display:none; }
 details.analysis summary::before { content:"▸ "; margin-right:4px; }
@@ -2820,15 +2820,18 @@ details.analysis summary:hover { background:var(--accent-soft2); }
 .analysis-sec { margin:12px 4px 0; padding:10px 12px;
   background:var(--surface-tint); border-left:2px solid var(--border);
   border-radius:0 6px 6px 0; }
-.analysis-h { color:var(--muted); font-size:12px; font-weight:600;
+.analysis-h { color:var(--muted); font-size:13px; font-weight:600;
   margin-bottom:6px; text-transform:none; letter-spacing:0; }
-.analysis-b { color:var(--text); font-size:13px; line-height:1.6;
+/* 카드 본문 (Screener Top-3 근거·binding·bottom_line + Daily Byte 브리프).
+   13px 는 모바일에서 작음 → 15px + line-height 1.65 (SV 본문 수준).
+   2026-05-29 사용자 요청. */
+.analysis-b { color:var(--text); font-size:15px; line-height:1.65;
   white-space:pre-wrap; }
 .ticker-chip { cursor:help; border-bottom:1px dotted var(--muted); }
 .ticker-chip:hover { color:var(--accent); }
 details.analysis-mt { margin:12px 4px 0; }
 details.analysis-mt summary { cursor:pointer; color:var(--accent);
-  font-size:12px; padding:6px 10px; background:var(--accent-soft2);
+  font-size:13px; padding:6px 10px; background:var(--accent-soft2);
   border-radius:6px; list-style:none; user-select:none; }
 details.analysis-mt summary::-webkit-details-marker { display:none; }
 details.analysis-mt summary::before { content:"▸ "; margin-right:4px; }
@@ -3055,7 +3058,7 @@ def _render_screener_domains_page() -> str:
 :root[data-theme="dark"] .slug {{
   background:rgba(59,130,246,0.18);
   border-color:rgba(59,130,246,0.3); }}
-.dom-name {{ font-size:14px; color:var(--fg); flex:1; min-width:200px;
+.dom-name {{ font-size:16px; color:var(--fg); flex:1; min-width:200px;
   font-weight:500; }}
 .aliases {{ margin-top:10px; display:flex; gap:6px; flex-wrap:wrap; }}
 /* Alias chips — explicit colors per theme so contrast holds on both
@@ -3071,11 +3074,11 @@ def _render_screener_domains_page() -> str:
 .hist-entry {{ background:var(--card); border:1px solid var(--border);
   border-radius:8px; padding:10px 14px; margin-bottom:8px; }}
 .hist-head {{ display:flex; gap:12px; align-items:center;
-  flex-wrap:wrap; font-size:12px; color:var(--fg-soft); margin-bottom:6px; }}
+  flex-wrap:wrap; font-size:13px; color:var(--fg-soft); margin-bottom:6px; }}
 .hist-label {{ font-weight:600; color:var(--fg); }}
 .hist-ts {{ font-family:'IBM Plex Mono',monospace; }}
 .hist-total {{ margin-left:auto; color:var(--accent); font-weight:600; }}
-.hist-row {{ font-size:12px; margin:4px 0; line-height:1.7; }}
+.hist-row {{ font-size:14px; margin:4px 0; line-height:1.7; }}
 .hist-row b {{ color:var(--fg-soft); font-weight:500;
   margin-right:6px; font-size:11px; }}
 .hist-add, .hist-rem {{ display:inline-block; margin:2px 4px 2px 0; }}
