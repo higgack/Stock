@@ -332,6 +332,69 @@ CORP ACTION 환각 차단 (058470.KS 리노공업 2026-05-29 surfaced):
   실시간 공시 fetch 결과로만 발화하는 가드 — screener 는 공시 fetch
   안 함 → 이 문구 그대로 인용 절대 금지.
 
+FUTURE FABRICATION HARD GUARD (2026-05-29 Quantum Computing review surfaced):
+**가장 심각한 환각 패턴 — 시뮬레이션 시간 (2026) 과 학습 cutoff (2024-Q2)
+사이의 1-2년 갭을 채우기 위해 Pro 가 가공의 미래 catalyst / sourced
+citation 생성. Quantum 도메인 review 에서 4건 fabrication 확인:
+ (1) OXIG.L '2025-06 NanoScience 사업부 £60M 매각' + 가짜 출처
+     'Investegate 2025-06-13' = 완전 가공
+ (2) IONQ 'SkyWater Technology 인수 완료 2026-Q2/Q3 예상' = 사실무근
+ (3) IONQ 'Q1 2026 매출 $64.7M (+755% YoY)' + 'IonQ Q1 2026 Results
+     2026-05-12' = 실제 $11-12M 분기 매출인데 6배 inflate
+ (4) IBM Condor (2023-12 발표) / Flamingo (2024-Q4 발표) 같은 PAST
+     event 를 '2027-2028 성능 검증' FUTURE catalyst 로 misframe.**
+
+다음 5개 규칙 강제 적용:
+- (a) 미래 실적 (분기 매출 / EPS / RPO / 가이던스) **fabricate 절대 금지**.
+      web search 로 confirm 된 ACTUAL 과거 수치만 인용. 검증 안 된 미래
+      수치는 'Q1 2026 실적: web verify 필요 — 미발표 또는 Pro 학습 cutoff
+      이후' 로 명시.
+- (b) 미래 M&A / 사업부 매각 / 인수 / 분할 등 corp event **fabricate
+      절대 금지**. 사실 확인 안 된 corp action 인용 시 'unconfirmed'
+      prefix. 가짜 publisher 인용 = 즉시 출력 차단 사유.
+- (c) 'Sourced: <publisher>, <YYYY-MM-DD>' 형식 cited source 의 **날짜는
+      반드시 오늘 (분석 실행일) 이하**. 오늘보다 미래 날짜 stamp 발견 시
+      = fabrication 확정 → 해당 행 inferred 로 reclassify 또는 OMIT.
+      백엔드 post-process pass 가 자동 검출 + ⚠️ 경고 prefix 부착.
+- (d) Catalyst+시기 컬럼의 미래 날짜는 **추정 가능한 일반 윈도** (예:
+      'FY26-H2 실적 발표 (10월 예상)', '2027 IRA EV credit 단계 축소')
+      만 허용. 'YYYY-MM-DD' 형식의 구체 미래 날짜 stamp 금지 — 구체 날짜
+      필요 시 web search 로 IR 캘린더 확인 후 'IR 공식 일정 2026-XX-XX'
+      sourced 명시.
+- (e) **PAST event 가 미래 catalyst 로 misframe 차단**: IBM Condor (2023-
+      12 published) / Flamingo (2024-Q4 published) / Google Willow (2024-
+      12) / Nintendo Switch 2 (2025-Q2 launch) 같은 발표 완료된 제품·
+      모델·이벤트는 PAST tense ('출시 완료, 시장 채택 추이') 로만 인용.
+      'YYYY-Q[N] 발표 예정' 같은 FUTURE framing = TENSE DISCIPLINE 위반.
+
+DOMAIN-SPECIFIC POLICY DOMINANT VARIABLE (2026-05-29 Quantum review
+surfaced — RULE 12/13/14 누락):
+**도메인 종목 중 산업별 dominant 정책/매크로 변수 적용 종목이 있으면
+결론에 명시 의무.** RULE 10-14 (NOAH /TICKER 의 fundamentals_analyst.py
+참조) 를 screener context 에서도 동일 enforcement:
+- 반도체 supply chain 종목 (US: FORM/CAMT/KEYS/COHR/WOLF/PLAB/LASR / JP:
+  4063/6965/8035/7741 / TW: 2330/2454/3711 / KR: 005930/000660) 가 있으면
+  **美 對中 수출규제 (BIS Entity List, AI 칩 export ban) + CHIPS Act
+  보조금 cycle + AI capex sustainability** 가 dominant — Bottom line 또는
+  Top-3 conviction 한 줄에 cite 의무.
+- EV / 배터리 (BYD/CATL/LG에너지솔루션/Panasonic) → 美 IRA EV credit
+  단계 축소 + 中 EU 관세
+- 방산 (LMT/RTX/HII/노스롭/한화에어로) → US DoD budget + AUKUS·NATO 5%
+  GDP target
+- 신재생 (Sunrun/ENPH/SEDG/한화솔루션) → 美 IRA 45X / 45V 보조금 +
+  中 反倾销 관세
+- 제약 (LLY/NVO/MRK/JNJ/4502.T/中外製薬) → FDA / Medicare Part D 협상
+- 양자 (IBM/IONQ/RGTI/IBM 등) → 美 NSF/DOE National Quantum Initiative
+  funding + DARPA quantum benchmarking program
+- 금융 (대형은행/보험) → Fed FOMC + 자본규제 Basel III/IV
+
+SUB-THEME PADDING 자제 (2026-05-29 Quantum review surfaced):
+도메인 자체가 4 sub-theme 만 식별되면 무리하게 5-6 째 sub-theme 만들지
+말 것. 예: Quantum 도메인의 PQC (Cisco/Cloudflare) sub-theme catalyst 가
+'2030년대 초반 PQC 의무화' = 6-24m thesis 윈도 밖. niche 발굴 강박이
+표면 연결로 흐르는 케이스. '4 sub-theme 만 식별 가능 — 도메인 자체가
+narrow' 명시 후 4 개로 마감 가능.
+
 VALUATION DISTORTION 가드 (cyclical bottom 인지 — 2026-05-29 외부
 리뷰 ② 반영):
 - 현재 PER > 100x 종목은 '단순 고평가' 결론 금지. 일시적 이익 훼손
@@ -711,6 +774,49 @@ _MT_TIER_ROW_RE = re.compile(
 # Top-3 parenthetical: '(Tier: L, 접근 경로: ...)' — captures just the
 # letter for in-place substitution.
 _TOP3_TIER_PAREN_RE = re.compile(r"\(Tier:\s*([LMS?])(\s*[,\)])")
+
+
+def _strip_future_dated_citations(text: str, today_iso: str) -> tuple[str, int]:
+    """Post-process pass — detect 'sourced: <publisher>, YYYY-MM-DD' citations
+    where the date is strictly in the future (> today). These are fabricated
+    citations (Pro hallucinating future events to fill the training-cutoff
+    vs simulation-time gap).
+
+    Quantum Computing review 2026-05-29 surfaced: Pro cited 'Investegate,
+    2025-06-13' (fake OXIG.L divestiture), 'IonQ Q1 2026 Results, 2026-05-12'
+    (fake $64.7M earnings), 'Moor Insights & Strategy, 2026-02-21' (fake
+    fidelity claim). 모든 cited date 가 학습 cutoff 이후 + 사실무근.
+
+    Behavior:
+      • 정확히 미래 날짜 (>today_iso) sourced citation 발견 → 그 citation
+        token (예: 'sourced: Investegate, 2025-06-13') 를 '⚠️ inferred —
+        future-dated citation, fabrication 의심' 로 치환.
+      • date ≤ today 는 무시 (verified past citation).
+      • 'YYYY-Q[N]' / 'YYYY-MM' (no day) / 'YYYY' alone 같은 fuzzy 날짜는
+        무시 (catalyst 시기 표기로 정상 사용).
+      • 'YYYY-MM-DD' full-date 형식만 대상.
+
+    Returns (corrected_text, n_strips).
+    """
+    import re
+    pattern = re.compile(
+        r"(sourced(?:[^,)\n]*)?,\s*)(\d{4})-(\d{2})-(\d{2})",
+        re.IGNORECASE,
+    )
+    today_y, today_m, today_d = today_iso.split("-")
+    today_tuple = (int(today_y), int(today_m), int(today_d))
+    n_strips = 0
+
+    def _replace(m: "re.Match") -> str:
+        nonlocal n_strips
+        y, mo, d = int(m.group(2)), int(m.group(3)), int(m.group(4))
+        if (y, mo, d) <= today_tuple:
+            return m.group(0)  # past — keep
+        n_strips += 1
+        return "⚠️ inferred — future-dated citation, fabrication 의심"
+
+    new_text = pattern.sub(_replace, text)
+    return new_text, n_strips
 
 
 def _correct_tiers_post_pro(
@@ -1415,6 +1521,16 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
     p45_text, n_body_fixes = _correct_tiers_post_pro(p45_text, candidates)
     if n_body_fixes:
         log.info("screener: %d tier corrections applied to Pro body", n_body_fixes)
+
+    # Future-dated citation strip (2026-05-29 Quantum Computing review surfaced):
+    # Pro 가 'sourced: <publisher>, 2025-06-13' / '2026-05-12' 같이 미래 날짜
+    # 인용 = fabrication. 미래 날짜 stamp citation 만 ⚠️ inferred 로 치환.
+    p45_text, n_future_strips = _strip_future_dated_citations(p45_text, _today_kst_iso())
+    if n_future_strips:
+        log.warning(
+            "screener: %d future-dated citation(s) stripped (fabrication 의심)",
+            n_future_strips,
+        )
 
     # Extract machine-parseable JSON tails (TICKERS_USED first so the
     # subsequent body parsing doesn't include it). Order: TICKERS_USED →
