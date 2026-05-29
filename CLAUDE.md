@@ -697,6 +697,74 @@ review:
   card list now show "Toyota Motor Corporation / 7203.T" instead of
   bare "7203.T". Search filter's `data-name` attribute covers both KR
   and JP names automatically.
+- **GBp (London pence) normalization** — `_instrument_info()` 단일
+  지점에서 currency='GBp'/'GBX' 라벨 + heuristic fallback (.L suffix +
+  px > 1000) 으로 pence→pounds 변환. cross-anchor check (Fix A/B/C/H)
+  100x mismatch false-fire 차단. WEIR.L (Metals & Mining 2026-05-29 review)
+  + BA.L (Space Launch 2026-05-29 review) surfaced. Commits `4254da0`,
+  `1abf2bf`. Rule applies to all LSE 종목 universally.
+- **EU dual-class (Wallenberg 패밀리 A/B + 독일 Vz/St)** — `_EU_DUAL_
+  CLASS_TICKERS` set (Sweden 17쌍 + Denmark 4 + Norway 1 + Germany 9 Vz).
+  Fix C (shares × price vs marketCap > 5%) auto-suppress for these
+  tickers — yfinance 가 한 class shares 만 반환하지만 marketCap 은
+  양 class 합산이라 구조적 mismatch. EPI-A.ST (Epiroc Class A) 2026-
+  05-29 surfaced. Commit `4254da0`.
+- **Nano-cap (<$50M USD) 경고 강화** — bot/screener.py 의 S 티어 유동성
+  경고 directive 가 시총 segment 별 분리: Micro-cap ($50M-$300M) =
+  기존 ⚠️ 메시지, Nano-cap (<$50M) = NANO-CAP LIQUIDITY WARNING (일일
+  거래대금 <$1M, 호가 공백, 슬리피지 ±5%+, 기관 진입 사실상 불가).
+  AQMS ($14M) 2026-05-29 Metals & Mining review surfaced. Commit
+  `4254da0`.
+- **RULE 11 半導體/化学 소재 카테고리** (JP) — fundamentals_analyst.py
+  의 RULE 11 에 9 산업 (자동차/은행/부동산/제약/상사/반도체장비/통신/
+  철강/전력) + 半導體 소재/化学 신설 (4063 신에쓰 / 3436 SUMCO / 6963
+  ROHM / 4631 DIC / 7741 HOYA). 글로벌 wafer/포토레지스트/SiC/EUV 마스크
+  substrate 점유율 dominant 종목. Dominant 변수: 美 對中 수출규제 BIS +
+  AI capex sustainability + TSMC/Samsung wafer 발주 cycle + USD/JPY.
+  4063.T 2026-05-29 review (USD/JPY 단일 변수만 단조 fire) surfaced.
+  Commit `1721eeb`.
+
+## Universal screener guards (Bottleneck Screener Pro 출력 검증)
+
+Screener Pro Phase 4·5 출력은 NOAH /TICKER 와 별도 post-process pass
+를 거친다. 2026-05-29 외부 리뷰 batch (EV / Quantum / Space Launch /
+Metals & Mining) 가 surfaced 한 universal 결함을 prompt + Python 양면
+에 fix:
+
+- **FUTURE FABRICATION HARD GUARD** (prompt) — `bot/screener.py`. Pro
+  가 시뮬레이션 시간 (2026) 과 학습 cutoff (2024-Q2) 사이 1-2년 갭을
+  채우려 미래 실적/M&A/citation 가공하는 패턴 차단. 5 규칙:
+  (a) 미래 실적 (매출/EPS/RPO/가이던스) fabricate 금지,
+  (b) 미래 M&A/사업부 매각/인수 fabricate 금지,
+  (c) sourced citation 날짜 ≤ 오늘 강제,
+  (d) Catalyst+시기 구체 YYYY-MM-DD stamp 금지 (fuzzy window 만),
+  (e) PAST event (IBM Condor / Switch 2) 의 FUTURE framing 차단.
+  Quantum review 가 IONQ $64.7M Q1 2026 매출 + OXIG.L 2025-06 매각 +
+  IBM 2027-2028 Condor 등 4건 fabrication surfaced. Commit `6f9d01a`.
+- **Future-dated citation Python strip** — `_strip_future_dated_
+  citations()` 가 'sourced: <pub>, YYYY-MM-DD' regex 매칭 후 date >
+  today_kst 면 '⚠️ inferred — future-dated citation' 치환. egregious
+  케이스 backstop (Pro 의 prompt 위반). Commit `6f9d01a`.
+- **Transitional / corp action 의심 tag strip** — `_strip_
+  transitional_tags()` 가 '(데이터 transitional)' / '(corp action 의심)'
+  인라인 phrase strip. screener 는 공시 fetch 안 함 → 이 phrase 인용
+  금지 (CLAUDE.md line 331-333). VOYG / 017960.KQ / BA.L (Space Launch
+  2026-05-29) 위반 surfaced. Commit `1abf2bf`.
+- **RULE 12-14 dominant variable enforcement (screener prompt)** —
+  screener 도메인 종목 중 반도체 supply chain / EV / 방산 / 신재생 /
+  제약 / 양자 / 금융 종목이 있으면 산업 dominant 정책/매크로 변수
+  명시 의무. Quantum review 가 반도체 supply chain 8종 (FORM/CAMT/
+  COHR/KEYS/WOLF/PLAB/LASR/Hamamatsu) 에 美 對中 수출규제 + CHIPS Act
+  한 번도 cite 안 함 surfaced. Commit `6f9d01a`.
+- **Sub-theme padding 자제** — 도메인 자체가 4 sub-theme 만 식별되면
+  무리하게 5-6 째 만들지 말 것. Quantum PQC (Cisco/Cloudflare) catalyst
+  '2030년대 초반 PQC 의무화' 가 6-24m thesis 윈도 밖 케이스. Commit
+  `6f9d01a`.
+- **MACD 글자 단위 copy 강제** (NOAH /ticker — `_compute_technical_
+  snapshot`) — TECHNICAL SNAPSHOT 의 SINGLE SOURCE OF TRUTH 항목에
+  글자 단위 copy 의무 추가. 4063.T review (시장 'Hist 7.476' vs 뉴스
+  'Hist 7.986' 0.5 mismatch) surfaced. paraphrase / 반올림 금지.
+  모든 분석가 같은 문자열 copy 의무. Commit `1721eeb`.
 
 The rule of thumb: when adding any structural guard going forward,
 default to **universal** (no market gate) unless the guard depends on
@@ -722,6 +790,15 @@ F3-light parallel prefetch. KR quality 강화 작업은 다음 순서로 진행
 ### ✅ Step 2B — 완료 (2026-05-22):
  8. ✅ **A1** KIS Open API 7종 (`bot/kis_client.py`) — 현재가·외인flow·기관주체별·한도소진율·신용·프로그램·공매도
  9. ✅ **B3** RULE 10 KIS 수급 dominant variable 4종 추가 (외인±100억/연기금/한도95%/신용4%/공매도15%)
+
+### ✅ Step 2C — 완료 (2026-05-29, commit `5946213`):
+ 10. ✅ RULE 10 KIS 수급 dominant variable 4종 추가:
+    - 외인 한도소진율 ≥95% → ceiling impact (buy flow 무효)
+    - 개인 5일 +100억 + 외인/기관 5일 -100억 → Retail 떠받침 (KR classic 약세)
+    - 투신 5일 -50억 → 펀드 환매 leading indicator
+    - 프로그램 비차익 ±200억 → 알고리즘 systematic flow dominant
+ 11. ✅ `format_kis_block` ⚠️ 자동 발화 (Python contrast 계산, LLM 누락 차단)
+ RULE 10 KR 변수 총 8개 (Step 2B 4 + Step 2C 4). ₩0 비용 — 기존 fetch 활용.
 
 Trigger to start Step 2B: KIS_APP_KEY + KIS_APP_SECRET 가 .env 에
 로드된 후. 발급되기 전 까지 Step 2A 모두 완료 가능 — 병렬 가능
@@ -959,17 +1036,37 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
     overlay (`_instrument_info` 단일 지점, downstream 전체 혜택)
   - Markdown 금지 (`**`, `*`, `##` literal noise 차단 — HTML 만)
 
-**다음 작업 — 캐시 + 자유텍스트 + Sanity Check:**
+**✅ 자유텍스트 도메인 — 완료 (2026-05-29, commits `1a0d15c` + `37138cd`):**
+- `/screener <자유어>` — alias miss 자동 fallback, Pro Phase 0 가 30초
+  내 theme dict 생성 (~₩50-80, google_search grounding).
+- `bot/screener_freetext.py` 단일 모듈. fuzzy redirect (token coverage
+  ≥0.7) → existing 도메인 자동 라우팅. 24h disk cache
+  (`~/.tradingagents/freetext_themes/{sha256[:12]}.json`).
+- REJECT 룰 — "주식 추천" / "좋은 종목" 같이 vague 입력은 Pro 가
+  reject reason 반환.
+- Daily soft cap 5회 — 초과 시 ⚠️ 비용 reminder (블록 X).
+- Audit log `~/.tradingagents/freetext_audit.jsonl` — input · cache_key
+  · cost · outcome.
+- **자동 promotion** (`promote_to_module()`): 같은 자유어 5회+ 사용 시
+  `bot/screener_themes/<slug>.py` 정식 모듈 자동 생성. Slug 우선순위:
+  (1) ASCII alias → (2) domain ASCII 조각 → (3) `freetext_<hash[:8]>`.
+  layer=AD_HOC 보존 (사용자 수동 reclassify). 다음 봇 재시작 후 registry
+  자동 픽업 → /screener <slug> 정적 라우팅. Idempotent (os.path.exists
+  guard).
+- Telegram set_my_commands cap 100/scope — 현재 65 도메인 + 9 정적 +
+  자유어 (dynamic 등록 안 됨, set_my_commands 노출 X) = 안전.
+
+**다음 작업 — 캐시 + Sanity Check:**
 - 65 도메인 (6 L1 + 11 L2 + 48 L3) Sanity check — 각 L3 모듈을
   실제 `/screener_<slug>` 호출로 binding constraint quality + tier 분포
   + region coverage 검증. 우선순위 / 결함 발견 시 fix batch.
-- 도메인별 24h 캐시: `~/.tradingagents/screener_cache/{slug}_YYYY-
-  MM-DD.json` 으로 같은 도메인 24h 내 재호출 시 Pro skip + ₩0 반환.
-  `/screener {slug} fresh` flag 로 강제 재실행.
-- 자유텍스트 도메인: `/screener <freetext>` 자유 입력 → Pro 가
-  on-the-fly theme dict 생성 후 registry 에 ad-hoc 등록.
-- Telegram set_my_commands cap 100/scope — 현재 65 도메인 + 9 정적 =
-  74, 안전. 자유텍스트 활성 시 dynamic 등록 회피 (메뉴 자체 노출 X).
+- 도메인별 24h 캐시 (정적 도메인): `~/.tradingagents/screener_cache/
+  {slug}_YYYY-MM-DD.json` 으로 같은 도메인 24h 내 재호출 시 Pro skip +
+  ₩0 반환. `/screener {slug} fresh` flag 로 강제 재실행. 자유어는 이미
+  shipped (위 freetext_themes/).
+- AD_HOC layer 대시보드 display — promoted 모듈이 `archive/screener_
+  domains.html` 의 layer 그룹 (현재 L1/L2/L3 만) 에 보이도록 새 섹션
+  '🆕 자유어 promoted' 추가.
 
 ## Bottleneck Screener — 설계 메모리 (origin 2026-05-28, kept for reference)
 
