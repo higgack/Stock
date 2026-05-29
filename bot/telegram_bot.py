@@ -336,6 +336,28 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /daily_byte_cost in channel — Daily Byte Pro cost (parallel to
+    # /screener_cost · /sv_cost). Reads daily_byte_usage.jsonl directly.
+    if first_word == "daily_byte_cost":
+        data = _read_daily_byte_cost_today_month()
+        today_krw = float(data.get("today_krw", 0) or 0)
+        month_krw = float(data.get("month_krw", 0) or 0)
+        today_calls = int(data.get("today_calls", 0) or 0)
+        month_calls = int(data.get("month_calls", 0) or 0)
+        today_pt = int(data.get("today_prompt_tok", 0) or 0)
+        today_ot = int(data.get("today_output_tok", 0) or 0)
+        text_out = (
+            "💰 <b>Daily Byte 비용</b> (Gemini Pro · 웹 검색 grounding)\n"
+            f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
+            f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
+            f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
+            "<i>모델: gemini-2.5-pro · 평일 19:00 Daily + 일 22:00 Weekly</i>"
+        )
+        await ctx.bot.send_message(
+            chat_id=post.chat.id, text=text_out, parse_mode=ParseMode.HTML,
+        )
+        return
+
     # /sites in channel — external reference sites bookmark list.
     if first_word == "sites":
         await ctx.bot.send_message(
@@ -832,7 +854,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/start /help /usage /sv_cost /screener_cost /screener_list /sites — 도움말·비용·도메인목록·사이트
+/start /help /usage /sv_cost /screener_cost /daily_byte_cost /screener_list /sites — 도움말·비용·목록
 /screener [도메인 | 자유어] — Bottleneck (65 도메인 + 미상시 Pro 즉석 생성). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
@@ -858,7 +880,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 미·한·일·대·중) · ECOS/FRED (KR·JP·TW 금리·CPI) · 섹터 ETF (SPDR/KODEX/NEXT TOPIX-17) · 리스크 6종 · 컨센서스 (yfinance+FnGuide/Kabutan) · 공매도+DTC · 내부자/기관 · 실적 ±10일 · DART/EDINET/MOPS (공시·5%대량보유) · SEC EDGAR (8-K·Form4) · US옵션 IV·P/C비율 · KR개장전 미국선물 · TW鉅亨컨센서스 · KRX (5일 외인·공매도 30일) · KIS 7종 KR수급 (외인flow·연기금·한도소진율·신용·프로그램·공매도) · Forward EPS sanity · 컨센서스 staleness · SV 브리프 (08:00 KST)
+yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 미·한·일·대·중) · ECOS/FRED (KR·JP·TW 금리·CPI) · 섹터 ETF (SPDR/KODEX/NEXT TOPIX-17) · 리스크 6종 · 컨센서스 (yfinance+FnGuide/Kabutan) · 공매도+DTC · 내부자/기관 · 실적 ±10일 · DART/EDINET/MOPS (공시·5%대량보유) · SEC EDGAR (8-K·Form4) · US옵션 IV·P/C비율 · KR개장전 미국선물 · TW鉅亨컨센서스 · KRX (5일 외인·공매도 30일) · KIS 7종 KR수급 · Forward EPS sanity · 컨센서스 staleness · SV 브리프 (08:00 KST)
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -882,7 +904,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일 19:00 KR 수급 브리프)
+🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly KR수급, 대시보드 아카이브)
 
 ━━━━━━━━━
 <b>【9. 트러블슈팅】</b>
@@ -1212,8 +1234,17 @@ def _build_usage_report() -> str:
     month_cost_screener = sum(
         r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "screener"
     )
-    today_cost_analysis = today_cost - today_cost_screener
-    month_cost_analysis = month_cost - month_cost_screener
+    # Daily Byte (subsystem='daily_byte') — break out so it isn't folded
+    # into NOAH 분석 (which is total − screener − daily_byte − ...).
+    today_cost_daily_byte = sum(
+        r.get("cost_usd", 0) for r in today_calls
+        if r.get("subsystem") == "daily_byte"
+    )
+    month_cost_daily_byte = sum(
+        r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "daily_byte"
+    )
+    today_cost_analysis = today_cost - today_cost_screener - today_cost_daily_byte
+    month_cost_analysis = month_cost - month_cost_screener - month_cost_daily_byte
 
     # Standard View cost — read sv_usage.jsonl directly (KST date tagged).
     sv_today_krw = sv_month_krw = 0.0
@@ -1258,6 +1289,7 @@ def _build_usage_report() -> str:
         "📐 <b>월간 subsystem 분포</b>",
         f"  • NOAH 분석:        {krw(month_cost_analysis)}",
         f"  • Bottleneck Screener: {krw(month_cost_screener)}  ← /screener_cost",
+        f"  • Daily Byte:        {krw(month_cost_daily_byte)}  ← /daily_byte_cost",
         f"  • Standard View:     {krw(sv_month_usd)}  ← /sv_cost",
         "",
         f"💰 <b>NOAH 분석 단독 (참고)</b>",
@@ -1354,6 +1386,41 @@ def _read_screener_cost_today_month() -> dict:
                     out["month_calls"] += 1
     except Exception as exc:
         log.warning("screener_cost: read failed: %s", exc)
+    return out
+
+
+def _read_daily_byte_cost_today_month() -> dict:
+    """Aggregate Daily Byte cost from ~/.tradingagents/daily_byte_usage.jsonl
+    (KST date-tagged). Same shape as _read_screener_cost_today_month."""
+    from pathlib import Path as _P
+    import json as _j
+    path = _P.home() / ".tradingagents" / "daily_byte_usage.jsonl"
+    out = {"today_krw": 0.0, "month_krw": 0.0, "today_calls": 0,
+           "month_calls": 0, "today_prompt_tok": 0, "today_output_tok": 0}
+    if not path.exists():
+        return out
+    today = datetime.now(_KST).date().isoformat()
+    month = today[:7]
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _j.loads(line)
+                except Exception:
+                    continue
+                if rec.get("date") == today:
+                    out["today_krw"] += rec.get("cost_krw", 0) or 0
+                    out["today_calls"] += 1
+                    out["today_prompt_tok"] += rec.get("prompt_tok", 0) or 0
+                    out["today_output_tok"] += rec.get("output_tok", 0) or 0
+                if rec.get("month") == month:
+                    out["month_krw"] += rec.get("cost_krw", 0) or 0
+                    out["month_calls"] += 1
+    except Exception as exc:
+        log.warning("daily_byte_cost: read failed: %s", exc)
     return out
 
 
@@ -1562,6 +1629,29 @@ async def cmd_screener_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> Non
         f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
         "<i>모델: gemini-2.5-pro · Phase β 2-pass 호출 + Phase 3 후보별"
         " 실시간 fetch · Top-3 5/15/30d outcome resolver feed</i>"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_daily_byte_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/daily_byte_cost — show Daily Byte Gemini Pro cost (parallel to
+    /screener_cost · /sv_cost). Reads ~/.tradingagents/daily_byte_usage.jsonl."""
+    if update.message is None:
+        return
+    data = _read_daily_byte_cost_today_month()
+    today_krw = float(data.get("today_krw", 0) or 0)
+    month_krw = float(data.get("month_krw", 0) or 0)
+    today_calls = int(data.get("today_calls", 0) or 0)
+    month_calls = int(data.get("month_calls", 0) or 0)
+    today_pt = int(data.get("today_prompt_tok", 0) or 0)
+    today_ot = int(data.get("today_output_tok", 0) or 0)
+    text = (
+        "💰 <b>Daily Byte 비용</b> (Gemini Pro · 웹 검색 grounding)\n"
+        f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
+        f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
+        f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
+        "<i>모델: gemini-2.5-pro · 평일 19:00 Daily + 일 22:00 Weekly · "
+        "수치는 pykrx 정확값, Pro 는 섹터/로테이션/catalyst narrative</i>"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -2108,8 +2198,9 @@ async def _periodic_dashboard_refresh() -> None:
         sleep_secs = max(60.0, (target - now_kst).total_seconds())
         await asyncio.sleep(sleep_secs)
         try:
-            from bot.dashboard import regenerate_index
+            from bot.dashboard import regenerate_index, regenerate_daily_byte_index
             regenerate_index()
+            regenerate_daily_byte_index()
             log.info("midnight dashboard regen: ok")
         except Exception:
             log.exception("midnight dashboard regen failed")
@@ -2131,6 +2222,12 @@ async def _on_startup(application) -> None:
         log.info("startup: screener.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: screener.html regen failed: %s", exc)
+    try:
+        from bot.dashboard import regenerate_daily_byte_index
+        regenerate_daily_byte_index()
+        log.info("startup: daily_byte.html regenerated with current code")
+    except Exception as exc:
+        log.warning("startup: daily_byte.html regen failed: %s", exc)
     # Populates the 'Menu' button beside the input area + the '/' typing
     # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
     # registered (the universe is too large) — Telegram still recognises
@@ -2159,6 +2256,7 @@ async def _on_startup(application) -> None:
             BotCommand("usage", "사용량 / 통합 비용 / 7일 차트"),
             BotCommand("sv_cost", "Standard View 비용"),
             BotCommand("screener_cost", "Bottleneck Screener 비용 (Pro)"),
+            BotCommand("daily_byte_cost", "Daily Byte 비용 (KR 수급 브리프)"),
             BotCommand("screener_list", "Screener 도메인 목록 (전체)"),
             BotCommand("sites", "참고 사이트"),
             BotCommand("screener", "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
@@ -2222,6 +2320,7 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("sv_cost", cmd_sv_cost))
+    app.add_handler(CommandHandler("daily_byte_cost", cmd_daily_byte_cost))
     app.add_handler(CommandHandler("screener_cost", cmd_screener_cost))
     app.add_handler(CommandHandler("screener_list", cmd_screener_list))
     app.add_handler(CommandHandler("sites", cmd_sites))

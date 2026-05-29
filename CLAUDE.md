@@ -375,6 +375,23 @@ pattern to follow:
     ≥1.2.8. creds 가 `.env` 에 들어오면 코드 변경 0 으로 즉시 작동.
     → 상세 + 가입 절차는 '🔐 API-blocked tasks' 의 KRX Data Marketplace
     항목 참조. 그때까지 timer 는 매일 fire 하되 조용히 skip.
+  • 대시보드 (2026-05-29): `archive/daily_byte.html` — screener.html 패턴
+    mirror (date-그룹 카드 + 검색창 scr-* + 🗑️ 휴지통 `/api/daily_byte_
+    delete` + 기존 _THEME_JS light/dark + _SCREENER_CSS 재사용). 메인
+    index.html nav 최상단 "📊 Daily Byte" 링크. `_save_daily_byte_archive`
+    가 run 마다 `~/.tradingagents/daily_byte_archive/YYYY-MM-DD/HHMMSS_
+    daily_byte[_weekly].json` 기록 → `regenerate_daily_byte_index()` (startup
+    + 자정 periodic + delete 후). dashboard.py `_load/_render_daily_byte_*`.
+  • Weekly 종합 (2026-05-29): `bot/daily_kr_weekly.py` (SV weekly_pusher
+    mirror) — 이번 주 daily 아카이브 본문 모아 Pro 종합 → push + 아카이브
+    (kind="weekly"). `daily-byte-weekly.timer` **일 22:00 KST** (SV
+    standardview-weekly 동일 시각). install.sh 등록.
+  • 비용 통합 (2026-05-29): `_log_daily_byte_usage` 가 **subsystem=
+    "daily_byte"** 로 usage.jsonl 기록 (screener._log_usage 는 screener
+    하드코딩이라 별도) + daily_byte_usage.jsonl. → 메인 대시보드 cost 카드
+    총합 자동 합산 + subsystem 분포에 "Daily Byte" 행, `/usage` 분포 + 총합
+    포함(분석에서 분리), `/daily_byte_cost` 전용 카드 (screener_cost mirror,
+    DM+채널). help §1 명령 + §8 알림 갱신.
 
 **Acceptable manual steps** (rare, one-time):
 - Initial systemd unit installation

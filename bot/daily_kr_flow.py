@@ -292,9 +292,90 @@ def _iso_dot(yyyymmdd: str) -> str:
     return f"{yyyymmdd[:4]}.{yyyymmdd[4:6]}.{yyyymmdd[6:]}"
 
 
+# ── 비용 로깅 + 아카이브 (screener 패턴 mirror) ───────────────────────────
+_HOME = os.path.expanduser("~")
+_DAILY_BYTE_ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "daily_byte_archive")
+_DAILY_BYTE_USAGE_LOG = os.path.join(_HOME, ".tradingagents", "daily_byte_usage.jsonl")
+_NOAH_USAGE_LOG = os.path.join(_HOME, ".tradingagents", "usage.jsonl")
+_USD_TO_KRW_FALLBACK = 1330.0
+
+
+def _log_daily_byte_usage(pt: int, ot: int, cost_krw: float) -> None:
+    """Dual-log: daily_byte_usage.jsonl (KST date/month tagged — /daily_byte_
+    cost 용) + ~/.tradingagents/usage.jsonl (NOAH llm_call, **subsystem=
+    'daily_byte'**). 후자로 /usage 합산 + 메인 대시보드 cost 카드 subsystem
+    분포가 자동 갱신된다. screener._log_usage 는 subsystem='screener' 하드
+    코딩이라 재사용 불가 — 별도 로거."""
+    import json as _json
+    import time as _time
+    try:
+        os.makedirs(os.path.dirname(_DAILY_BYTE_USAGE_LOG), exist_ok=True)
+        now = _now_kst()
+        rec = {
+            "ts": now.isoformat(timespec="seconds"),
+            "date": now.date().isoformat(),
+            "month": now.date().isoformat()[:7],
+            "prompt_tok": pt, "output_tok": ot,
+            "cost_krw": round(cost_krw, 4),
+        }
+        with open(_DAILY_BYTE_USAGE_LOG, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.warning("daily_byte: usage log write failed: %s", exc)
+    try:
+        os.makedirs(os.path.dirname(_NOAH_USAGE_LOG), exist_ok=True)
+        try:
+            from bot.screener import _USD_TO_KRW as _fx
+        except Exception:
+            _fx = _USD_TO_KRW_FALLBACK
+        rec_noah = {
+            "ts": _time.time(), "type": "llm_call", "model": "gemini-2.5-pro",
+            "prompt_tokens": pt, "completion_tokens": ot,
+            "cost_usd": round(cost_krw / _fx, 6), "subsystem": "daily_byte",
+        }
+        with open(_NOAH_USAGE_LOG, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(rec_noah, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.warning("daily_byte: NOAH usage log write failed: %s", exc)
+
+
+def _save_daily_byte_archive(body: str, cost_krw: float, date_yyyymmdd: str,
+                             elapsed_sec: float = 0.0, kind: str = "daily") -> str | None:
+    """Write run → ~/.tradingagents/daily_byte_archive/YYYY-MM-DD/HHMMSS_
+    daily_byte[_weekly].json (screener archive mirror) → regenerate
+    daily_byte.html. body = post-processed 브리프 (Python 제목/부제 제외 —
+    카드 헤더가 date·kind 표시). 실패 시 None."""
+    import json as _json
+    try:
+        now = _now_kst()
+        date_iso = f"{date_yyyymmdd[:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:]}"
+        day_dir = os.path.join(_DAILY_BYTE_ARCHIVE_DIR, date_iso)
+        os.makedirs(day_dir, exist_ok=True)
+        slug = "daily_byte_weekly" if kind == "weekly" else "daily_byte"
+        path = os.path.join(day_dir, f"{now:%H%M%S}_{slug}.json")
+        rec = {
+            "ts": now.isoformat(timespec="seconds"), "date": date_iso,
+            "kind": kind, "body": body, "cost_krw": round(cost_krw, 4),
+            "elapsed_sec": round(elapsed_sec, 1),
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            _json.dump(rec, f, ensure_ascii=False)
+    except Exception as exc:
+        log.warning("daily_byte: archive write failed: %s", exc)
+        return None
+    try:
+        from bot.dashboard import regenerate_daily_byte_index
+        regenerate_daily_byte_index()
+    except Exception as exc:
+        log.warning("daily_byte: dashboard regen failed: %s", exc)
+    return path
+
+
 def generate() -> tuple[str, float] | None:
-    """수급 fetch → Pro narrate → guard → (제목 포함 본문, cost_krw).
-    데이터 전무 시 None (graceful skip + 호출측 알림)."""
+    """수급 fetch → Pro narrate → guard → archive → (제목 포함 본문,
+    cost_krw). 데이터 전무 시 None (graceful skip + 호출측 알림)."""
+    import time as _time
+    _t0 = _time.monotonic()
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         log.error("daily_byte: GOOGLE_API_KEY missing")
@@ -342,11 +423,12 @@ def generate() -> tuple[str, float] | None:
 
     body = _post_process(raw, _iso_dot(date).replace(".", "-"))
     cost_krw = (pt * _PRO_IN + ot * _PRO_OUT) / 1e6 * _USD_TO_KRW
-    try:
-        from bot.screener import _log_usage
-        _log_usage(pt, ot, cost_krw, "daily_byte")
-    except Exception:
-        pass
+    _log_daily_byte_usage(pt, ot, cost_krw)
+
+    # 아카이브 (대시보드 카드용 — Python 제목/부제 제외한 브리프 본문) +
+    # daily_byte.html regenerate. push 와 무관하게 항상 기록.
+    _save_daily_byte_archive(body, cost_krw, date,
+                             elapsed_sec=_time.monotonic() - _t0, kind="daily")
 
     title = f"📊 <b>Daily Byte - {_iso_dot(date)}</b>"
     full = f"{title}\n<i>장 마감 후 KR 수급 브리프 · 생성 {_now_kst():%H:%M} KST</i>\n\n{body}"

@@ -425,8 +425,8 @@ def _compute_stats(records: list[dict]) -> dict:
     # surfaces where the total bill is coming from. Screener Pro calls
     # land in usage.jsonl with subsystem='screener'; SV calls live in
     # ~/standardview/sv_usage.jsonl (separate file, KST-date tagged).
-    today_cost_by_sub_usd: dict[str, float] = {"분석": 0.0, "Screener": 0.0, "SV": 0.0}
-    month_cost_by_sub_usd: dict[str, float] = {"분석": 0.0, "Screener": 0.0, "SV": 0.0}
+    today_cost_by_sub_usd: dict[str, float] = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0, "SV": 0.0}
+    month_cost_by_sub_usd: dict[str, float] = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0, "SV": 0.0}
     for r in usage:
         if r.get("type") != "llm_call":
             continue
@@ -435,7 +435,10 @@ def _compute_stats(records: list[dict]) -> dict:
             continue
         rec_day = datetime.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d")
         cost = r.get("cost_usd", 0) or 0
-        sub = "Screener" if r.get("subsystem") == "screener" else "분석"
+        _subsys = r.get("subsystem")
+        sub = ("Screener" if _subsys == "screener"
+               else "Daily Byte" if _subsys == "daily_byte"
+               else "분석")
         if rec_day.startswith(month_prefix):
             month_cost_usd += cost
             m = r.get("model") or "unknown"
@@ -619,7 +622,7 @@ def _render_stats_panel(stats: dict) -> str:
     # Per-subsystem breakdown (분석 / Screener / SV). Surface only buckets
     # with non-zero this-month cost — keeps the sub-label compact.
     sub_parts: list[str] = []
-    for key, label in [("분석", "분석"), ("Screener", "screener"), ("SV", "SV")]:
+    for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"), ("SV", "SV")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
         if m_usd > 0:
             sub_parts.append(f"{label} {_krw(m_usd)}")
@@ -1665,6 +1668,7 @@ def _render_index(records: list[dict]) -> str:
     if issue_count > 0:
         errors_link = (
             f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
+            f' · <a href="daily_byte.html">📊 Daily Byte</a>'
             f' · <a href="screener.html">📊 Bottleneck Screener</a>'
             f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             + _external_links
@@ -1672,6 +1676,7 @@ def _render_index(records: list[dict]) -> str:
     else:
         errors_link = (
             ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
+            ' · <a href="daily_byte.html">📊 Daily Byte</a>'
             ' · <a href="screener.html">📊 Bottleneck Screener</a>'
             ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             + _external_links
@@ -1930,6 +1935,12 @@ _SCREENER_ARCHIVE_DIR = Path.home() / ".tradingagents" / "screener_archive"
 _SCREENER_MEMORY_PATH = (
     Path.home() / ".tradingagents" / "memory" / "screener_memory.md"
 )
+
+# Daily Byte (장 마감 후 KR 수급 브리프) archive — mirrors the screener
+# archive layout: ~/.tradingagents/daily_byte_archive/YYYY-MM-DD/HHMMSS_
+# daily_byte.json. Rendered to daily_byte.html with the same theme + search
+# + trash UX as screener.html (reuses _SCREENER_CSS).
+_DAILY_BYTE_ARCHIVE_DIR = Path.home() / ".tradingagents" / "daily_byte_archive"
 
 
 def _load_screener_runs() -> list[dict]:
@@ -3244,3 +3255,314 @@ def regenerate_screener_index() -> None:
         log.info("dashboard: screener_domains.html regenerated")
     except Exception as exc:
         log.warning("dashboard: screener_domains regen failed: %s", exc)
+
+
+# ── Daily Byte archive view ──────────────────────────────────────────────
+# 장 마감 후 KR 수급 브리프 (bot/daily_kr_flow.py). Daily(평일 19:00) +
+# Weekly(일 22:00, SV weekly 와 동일 시각) run 을 한 페이지에 date-그룹
+# 카드로 렌더. screener.html 의 theme(_SCREENER_CSS)·검색창·🗑️ 휴지통
+# UX 를 그대로 mirror — 차이는 카드가 단일 브리프 본문(섹션 분리 없음)
+# 이라는 점 + Daily/Weekly kind 뱃지.
+
+_DAILY_BYTE_JS = """
+<script>
+// Snippet-highlight search + 🗑️ delete (mirrors Bottleneck Screener UX).
+// Reuses scr-* element ids + .card/.day classes from _SCREENER_CSS. Daily
+// Byte cards carry a single 'brief' section, so the search indexes brief
+// lines; clicking a snippet opens + scrolls to the source card.
+(function() {
+  const inp = document.getElementById('scr-search');
+  const clr = document.getElementById('scr-clear');
+  const sts = document.getElementById('scr-status');
+  const emp = document.getElementById('scr-empty');
+  const snp = document.getElementById('scr-snippets');
+  const cards = Array.from(document.querySelectorAll('.card'));
+  const dayGroups = Array.from(document.querySelectorAll('details.day'));
+  if (!inp) return;
+  const total = cards.length;
+  const MAX_SNIPPETS = 80;
+
+  const cardData = cards.map(function(c) {
+    let lines = [];
+    try { lines = JSON.parse(c.dataset.lines || '[]'); } catch (e) {}
+    const t = c.querySelector('.domain');
+    const titleTxt = t ? t.textContent.trim() : '';
+    if (titleTxt) lines.unshift({sec: 'title', txt: titleTxt});
+    return {card: c, lines: lines};
+  });
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>"']/g, function(ch) {
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+    });
+  }
+  function highlight(text, q) {
+    const safe = escapeHtml(text);
+    if (!q) return safe;
+    const lt = text.toLowerCase(), lq = q.toLowerCase();
+    let out = '', last = 0, idx;
+    while ((idx = lt.indexOf(lq, last)) >= 0) {
+      out += escapeHtml(text.slice(last, idx));
+      out += '<mark>' + escapeHtml(text.slice(idx, idx + q.length)) + '</mark>';
+      last = idx + q.length;
+    }
+    out += escapeHtml(text.slice(last));
+    return out;
+  }
+
+  function showCardsMode() {
+    snp.style.display = 'none'; snp.innerHTML = ''; emp.style.display = 'none';
+    for (const c of cards) { c.style.display = ''; c.open = (c.dataset.defaultOpen === 'true'); c.classList.remove('hit-flash'); }
+    for (const d of dayGroups) d.style.display = '';
+    sts.textContent = '총 ' + total + '건의 Daily Byte 브리프';
+  }
+
+  function showSnippetsMode(q) {
+    for (const c of cards) c.style.display = 'none';
+    for (const d of dayGroups) d.style.display = 'none';
+    const ql = q.toLowerCase();
+    const hits = [];
+    for (const cd of cardData) {
+      for (const ln of cd.lines) {
+        if ((ln.txt || '').toLowerCase().indexOf(ql) >= 0) {
+          hits.push({card: cd.card, txt: ln.txt});
+          if (hits.length >= MAX_SNIPPETS) break;
+        }
+      }
+      if (hits.length >= MAX_SNIPPETS) break;
+    }
+    if (hits.length === 0) {
+      snp.style.display = 'none'; emp.style.display = 'block';
+      sts.textContent = '0건 매칭 (검색: "' + q + '")';
+      return;
+    }
+    emp.style.display = 'none';
+    const counts = new Map(); const parts = [];
+    for (const h of hits) {
+      const cid = h.card.id; counts.set(cid, (counts.get(cid) || 0) + 1);
+      const dateAttr = h.card.dataset.date || '';
+      const tEl = h.card.querySelector('.domain');
+      const tTxt = tEl ? tEl.textContent.trim() : '';
+      parts.push('<div class="snippet" data-target="' + cid + '">' +
+        '<div class="snippet-meta"><span class="snippet-card">' +
+        escapeHtml(tTxt) + ' · ' + escapeHtml(dateAttr) + '</span></div>' +
+        '<div class="snippet-text">' + highlight(h.txt, q) + '</div></div>');
+    }
+    snp.innerHTML = parts.join(''); snp.style.display = 'block';
+    const cap = hits.length >= MAX_SNIPPETS ? ' (상위 ' + MAX_SNIPPETS + '건)' : '';
+    sts.textContent = hits.length + '개 라인 · ' + counts.size + '개 카드 매칭' + cap + ' (검색: "' + q + '")';
+  }
+
+  function applyFilter() {
+    const q = (inp.value || '').trim();
+    if (!q) { showCardsMode(); return; }
+    showSnippetsMode(q);
+  }
+
+  snp.addEventListener('click', function(ev) {
+    const sn = ev.target.closest('.snippet'); if (!sn) return;
+    const tgt = sn.dataset.target; const card = document.getElementById(tgt); if (!card) return;
+    for (const c of cards) { c.style.display = ''; c.open = false; c.classList.remove('hit-flash'); }
+    for (const d of dayGroups) { d.style.display = ''; d.open = false; }
+    const dayG = card.closest('details.day'); if (dayG) dayG.open = true;
+    card.open = true; snp.style.display = 'none';
+    card.classList.add('hit-flash');
+    const tgtEl = card.querySelector('.card-h') || card;
+    setTimeout(function() { tgtEl.scrollIntoView({behavior: 'smooth', block: 'center'}); }, 50);
+    setTimeout(function() { card.classList.remove('hit-flash'); }, 2400);
+  });
+
+  inp.addEventListener('input', applyFilter);
+  clr.addEventListener('click', function() { inp.value = ''; showCardsMode(); inp.focus(); });
+})();
+
+document.querySelectorAll('.del-btn').forEach(function(btn) {
+  btn.addEventListener('click', function(ev) {
+    ev.stopPropagation(); ev.preventDefault();
+    const card = btn.closest('.card'); if (!card) return;
+    const date = card.dataset.date; const filename = card.dataset.filename;
+    if (!date || !filename) return;
+    if (!confirm('📊 ' + date + ' / ' + filename + ' Daily Byte 기록을 삭제할까요?')) return;
+    btn.disabled = true; btn.textContent = '⏳';
+    fetch('api/daily_byte_delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({date: date, filename: filename})
+    }).then(function(r) { return r.json().then(function(d) { return {status: r.status, body: d}; }); })
+      .then(function(res) {
+        if (res.status === 200 && res.body && res.body.ok) {
+          card.style.transition = 'opacity 0.2s'; card.style.opacity = '0';
+          setTimeout(function() { card.remove(); }, 200);
+        } else {
+          alert('삭제 실패: ' + (res.body && res.body.error || res.status));
+          btn.disabled = false; btn.textContent = '🗑️';
+        }
+      }).catch(function(err) {
+        alert('삭제 실패: ' + err); btn.disabled = false; btn.textContent = '🗑️';
+      });
+  });
+});
+</script>
+</body></html>
+"""
+
+
+def _load_daily_byte_runs() -> list[dict]:
+    """Scan ~/.tradingagents/daily_byte_archive/YYYY-MM-DD/*.json → run
+    dicts newest-first. Each: {ts, date, body, cost_krw, elapsed_sec,
+    kind, _path, _date, _filename}. All errors swallowed per-file."""
+    import json as _json
+    runs: list[dict] = []
+    if not _DAILY_BYTE_ARCHIVE_DIR.exists():
+        return runs
+    try:
+        for date_dir in sorted(_DAILY_BYTE_ARCHIVE_DIR.iterdir(), reverse=True):
+            if not date_dir.is_dir():
+                continue
+            for json_file in sorted(date_dir.iterdir(), reverse=True):
+                if not json_file.name.endswith(".json"):
+                    continue
+                try:
+                    with open(json_file, encoding="utf-8") as f:
+                        rec = _json.load(f)
+                    rec["_path"] = str(json_file)
+                    rec["_date"] = date_dir.name
+                    rec["_filename"] = json_file.name
+                    runs.append(rec)
+                except Exception as exc:
+                    log.warning("dashboard: daily_byte load %s failed: %s", json_file, exc)
+    except Exception as exc:
+        log.warning("dashboard: daily_byte archive scan failed: %s", exc)
+    return runs
+
+
+def _render_daily_byte_page(runs: list[dict]) -> str:
+    """Render daily_byte.html — date-grouped brief cards. Reuses
+    _SCREENER_CSS (theme + card + search-bar + snippet styles) and the
+    same scr-* element ids so the look matches the screener archive."""
+    import html as _html
+    import json as _json_db
+    from collections import defaultdict
+    from datetime import datetime as _dt_db, timezone as _tz_db, timedelta as _td_db
+
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for r in runs:
+        by_date[r.get("_date", "")].append(r)
+
+    total_runs = len(runs)
+    total_cost_krw = sum(r.get("cost_krw", 0) or 0 for r in runs)
+    weekly_n = sum(1 for r in runs if r.get("kind") == "weekly")
+
+    parts: list[str] = [_SCREENER_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="screener.html">📊 Bottleneck Screener</a>
+    · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
+    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
+  </div>
+  <h1>📊 Daily Byte — Archive</h1>
+  <p class="sub">장 마감 후 KR 수급 브리프 · 평일 19:00 Daily + 일 22:00 Weekly (KST) · 수급 데이터 관찰(교육·정보), 투자 권유 아님</p>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 브리프</div></div>
+    <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
+    <div class="stat"><div class="stat-v">{weekly_n}</div><div class="stat-l">Weekly 종합</div></div>
+  </div>
+
+  <div class="search-bar">
+    <input id="scr-search" type="text" placeholder="종목 / 섹터 / 본문 검색 (예: 삼성전자, 외국인, 원전, 로테이션)" autocomplete="off" spellcheck="false">
+    <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
+  </div>
+  <p id="scr-status" class="status-line">총 {total_runs}건의 Daily Byte 브리프</p>
+  <div id="scr-snippets" class="snippets" style="display:none"></div>
+  <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
+""")
+
+    if not runs:
+        parts.append("""
+  <div class="empty">
+    아직 Daily Byte 기록이 없습니다. 평일 19:00 KST 자동 생성됩니다.
+  </div>
+</div></body></html>""")
+        return "".join(parts)
+
+    _today_kst = _dt_db.now(_tz_db(_td_db(hours=9))).date().isoformat()
+    for date in sorted(by_date.keys(), reverse=True):
+        day_open = " open" if date == _today_kst else ""
+        day_count = len(by_date[date])
+        parts.append(
+            f'<details class="day"{day_open}>'
+            f'<summary class="day-head">'
+            f'<span>📅 {_html.escape(date)}</span>'
+            f'<span class="count">{day_count}건</span>'
+            f'</summary>'
+            f'<div class="day-body">'
+        )
+        for r in by_date[date]:
+            raw_ts = r.get("ts") or ""
+            ts_clock = raw_ts.split("T", 1)[1][:5] if "T" in raw_ts else ""
+            ts = _html.escape(ts_clock)
+            cost = r.get("cost_krw", 0) or 0
+            elapsed = r.get("elapsed_sec", 0) or 0
+            kind = r.get("kind", "daily")
+            is_weekly = kind == "weekly"
+            kind_badge = "📅 Weekly" if is_weekly else "📊 Daily"
+            title = f"{kind_badge} · {_html.escape(date)}"
+            # Body is already Telegram-safe HTML (<b>/<i> only) from
+            # daily_kr_flow._post_process. Strip the leading title line
+            # (Python adds '📊 <b>Daily Byte - ...</b>' + <i>subtitle</i>)
+            # so the card doesn't double up on the heading.
+            body = (r.get("body") or "").strip()
+
+            # Per-line snippet index for search (sec='brief'). Strip tags
+            # for the searchable text so '<b>' noise doesn't pollute hits.
+            plain = re.sub(r"<[^>]+>", "", body)
+            card_lines: list[dict] = []
+            for ln in plain.splitlines():
+                s = ln.strip()
+                if len(s) >= 3:
+                    card_lines.append({"sec": "brief", "txt": s[:300]})
+            if len(card_lines) > 200:
+                card_lines = card_lines[:200]
+            search_attr = _html.escape(plain.lower()[:6000])
+            lines_attr = _html.escape(_json_db.dumps(card_lines, ensure_ascii=False))
+
+            filename = _html.escape(r.get("_filename", ""))
+            day_card_count = len(by_date[date])
+            card_default_open = (date == _today_kst and day_card_count == 1)
+            card_open_attr = " open" if card_default_open else ""
+            card_id = f"card-{_html.escape(r.get('_date',''))}-{filename}".replace(".", "_")
+
+            parts.append(f"""
+  <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
+    <summary class="card-h">
+      <span class="card-toggle">▸</span>
+      <span class="domain">{title}</span>
+      <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s</span>
+      <button class="del-btn" type="button" title="이 Daily Byte 기록 삭제">🗑️</button>
+    </summary>
+    <div class="card-body">
+      <div class="analysis-sec"><div class="analysis-b" data-section="brief">{body}</div></div>
+    </div>
+  </details>
+""")
+        parts.append('</div></details>')
+
+    parts.append("</div>")
+    parts.append(_DAILY_BYTE_JS)
+    return "".join(parts)
+
+
+def regenerate_daily_byte_index() -> None:
+    """Scan daily_byte archive → write daily_byte.html under ARCHIVE_ROOT.
+    Called from daily_kr_flow after a run + from _periodic_dashboard_refresh.
+    All errors swallowed."""
+    try:
+        runs = _load_daily_byte_runs()
+        html = _render_daily_byte_page(runs)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "daily_byte.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: daily_byte.html regenerated (%d runs)", len(runs))
+    except Exception as exc:
+        log.warning("dashboard: daily_byte regen failed: %s", exc)

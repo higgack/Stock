@@ -180,6 +180,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if self.path == "/api/screener_delete":
             return self._handle_screener_delete()
+        if self.path == "/api/daily_byte_delete":
+            return self._handle_daily_byte_delete()
         if self.path != "/api/delete":
             self.send_error(404, "Not Found")
             return
@@ -278,6 +280,51 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(400, {"ok": False, "error": str(exc)})
         except Exception as exc:
             log.exception("screener_delete: unexpected failure")
+            self._reply_json(500, {"ok": False, "error": str(exc)})
+
+    def _handle_daily_byte_delete(self) -> None:
+        """POST /api/daily_byte_delete body: {"date": "YYYY-MM-DD",
+        "filename": "HHMMSS_daily_byte.json"}. Removes the archive JSON and
+        regenerates daily_byte.html. Mirror of /api/screener_delete."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 1024:
+                raise ValueError("missing or oversized request body")
+            payload = json.loads(self.rfile.read(length))
+            date = payload.get("date") or ""
+            filename = payload.get("filename") or ""
+            if not _DATE_RE.match(date):
+                raise ValueError(f"invalid date: {date!r}")
+            import re as _re_db
+            if not _re_db.match(r"^\d{6}_[a-zA-Z0-9_]{1,60}\.json$", filename):
+                raise ValueError(f"invalid filename: {filename!r}")
+
+            from pathlib import Path as _P
+            archive_root = _P.home() / ".tradingagents" / "daily_byte_archive"
+            date_dir = (archive_root / date).resolve()
+            try:
+                date_dir.relative_to(archive_root.resolve())
+            except ValueError:
+                raise ValueError("path escape attempt")
+
+            target = date_dir / filename
+            if not target.exists() or not target.is_file():
+                raise ValueError(f"no daily_byte entry for {date}/{filename}")
+            target.unlink()
+
+            try:
+                from bot.dashboard import regenerate_daily_byte_index
+                regenerate_daily_byte_index()
+            except Exception as exc:
+                log.warning("daily_byte_delete: regen failed (file removal still applied): %s", exc)
+
+            log.info("daily_byte_delete: %s/%s removed", date, filename)
+            self._reply_json(200, {"ok": True, "deleted": [filename]})
+        except ValueError as exc:
+            log.warning("daily_byte_delete: bad request — %s", exc)
+            self._reply_json(400, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            log.exception("daily_byte_delete: unexpected failure")
             self._reply_json(500, {"ok": False, "error": str(exc)})
 
     def _reply_json(self, status: int, body: dict) -> None:
