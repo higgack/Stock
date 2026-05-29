@@ -367,9 +367,16 @@ def _log_sv_usage(prompt_tok, output_tok, cost_krw, endpoint=""):
         pass
 
 
-def call_claude_cli(prompt: str, timeout: int = 120) -> str | None:
+def call_claude_cli(prompt: str, timeout: int = 120, endpoint: str = "") -> str | None:
     """Patched 2026-05-19/20: Claude Code CLI -> google-genai SDK +
-    token usage cost logging to ~/standardview/sv_usage.jsonl."""
+    token usage cost logging to ~/standardview/sv_usage.jsonl.
+
+    2026-05-29 SV audit:
+     • `timeout` is now ENFORCED (was a dead param — a hung Gemini request
+       previously relied only on the daily_generator's outer httpx timeout,
+       so each retry burned the full 240s). Bounded via a worker thread.
+     • `endpoint` label flows into _log_sv_usage so sv_usage.jsonl carries
+       per-endpoint cost attribution (was always empty → cost-hotspot blind)."""
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key or not prompt or not prompt.strip():
         return None
@@ -381,10 +388,16 @@ def call_claude_cli(prompt: str, timeout: int = 120) -> str | None:
         except Exception:
             return None
     try:
-        resp = _gemini_client.models.generate_content(
-            model=_GEMINI_MODEL,
-            contents=prompt,
-        )
+        import concurrent.futures as _cf
+        _ex = _cf.ThreadPoolExecutor(max_workers=1)
+        try:
+            resp = _ex.submit(
+                lambda: _gemini_client.models.generate_content(
+                    model=_GEMINI_MODEL, contents=prompt,
+                )
+            ).result(timeout=timeout)
+        finally:
+            _ex.shutdown(wait=False, cancel_futures=True)
         text = (resp.text or "").strip()
         try:
             um = getattr(resp, "usage_metadata", None)
@@ -394,7 +407,7 @@ def call_claude_cli(prompt: str, timeout: int = 120) -> str | None:
                 # gemini-2.5-flash real pricing: $0.30 in / $2.50 out per 1M
                 # (was a stale 0.075/0.30 gemini-1.5 constant → undercounted ~7.5x).
                 cost = (pt * 0.30 + ot * 2.50) / 1e6 * 1330.0
-                _log_sv_usage(pt, ot, cost)
+                _log_sv_usage(pt, ot, cost, endpoint)
         except Exception:
             pass
         return text or None
@@ -1158,7 +1171,7 @@ def generate_industry_analysis_claude(industry: str, news: list, text_input: str
     news_text = _fmt_news_for_claude(news, text_input)
     if news_text == "뉴스/본문 데이터 없음": return None
     prompt = INDUSTRY_ANALYSIS_PROMPT.format(industry=industry, news_text=news_text)
-    response = call_claude_cli(prompt, timeout=120)
+    response = call_claude_cli(prompt, timeout=120, endpoint="industry-analysis")
     if not response: return None
     raw = _extract_json(response)
     if not raw: return None
@@ -1776,7 +1789,7 @@ def translate_articles_if_needed(articles: list) -> list:
     try:
         import json as _json
         prompt = TRANSLATE_PROMPT.format(articles_json=_json.dumps(batch, ensure_ascii=False))
-        response = call_claude_cli(prompt, timeout=150)
+        response = call_claude_cli(prompt, timeout=150, endpoint="translate")
         if not response:
             raise ValueError("empty response")
         parsed = _extract_json(response)
@@ -2014,7 +2027,7 @@ def generate_deal_highlights_claude(deal_articles: list, sector: str = '') -> li
             sector=sector or '해당 산업',
             articles_json=json.dumps(batch, ensure_ascii=False)
         )
-        response = call_claude_cli(prompt, timeout=90)
+        response = call_claude_cli(prompt, timeout=90, endpoint="deal-highlights")
         if not response:
             return deal_articles
         parsed = _extract_json(response)
@@ -2646,7 +2659,7 @@ async def macro_analyze(body: MacroAnalyzeReq):
         )
 
         if check_claude_cli():
-            report = call_claude_cli(prompt, timeout=220)
+            report = call_claude_cli(prompt, timeout=220, endpoint="macro-snapshot")
         else:
             report = None
 
@@ -3347,7 +3360,8 @@ async def macro_news_brief(body: MacroNewsBriefReq):
 
         report = None
         if check_claude_cli():
-            report = call_claude_cli(prompt, timeout=230)
+            report = call_claude_cli(prompt, timeout=230, endpoint="news-brief")
+        report_is_mock = not report
         if not report:
             report = _mock_mnb_report(body, ko_articles, en_articles)
 
@@ -3364,8 +3378,16 @@ async def macro_news_brief(body: MacroNewsBriefReq):
             "has_real_news": len(all_articles) > 0,
             "sector":        body.sector or None,
             "from_cache":    False,
+            "degraded":      report_is_mock or len(all_articles) == 0,
         }
-        _mnb_cache_set(cache_key, result)
+        # C-A (2026-05-29 SV audit): do NOT cache a degraded brief — a mock
+        # report (Gemini timeout/failure) or an empty-news outage would
+        # otherwise poison the 6h cache, serving the "AI 연동 시 분석 생성"
+        # placeholder to interactive users + the pusher until the next 00:05
+        # flush. Only cache a real Gemini brief built from real news; a
+        # degraded run re-generates next time instead of pinning the stub.
+        if not result["degraded"]:
+            _mnb_cache_set(cache_key, result)
         return result
 
     return await loop.run_in_executor(_pool, _run)

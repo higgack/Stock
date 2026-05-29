@@ -46,6 +46,24 @@ GEN_AT = datetime.now().strftime("%Y-%m-%d %H:%M KST")
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "base.html"
 
+# C-C (2026-05-29 SV audit): the busy marker is checked by sv-update.sh
+# (defer redeploy) + sv-watchdog.sh (defer re-kick), but was only ever SET
+# by the watchdog's self-kick — scheduled 07:30/20:30 runs left it unset,
+# so both deferrals were blind to a scheduled run (→ watchdog double-kick
+# + mid-run redeploy races). main() now sets it for the whole run.
+_BUSY_MARKER = Path.home() / ".standardview" / ".daily_generator_busy"
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """C-B (2026-05-29 SV audit): write atomically (temp in same dir +
+    os.replace) so a reader — the /dashboard FileResponse, the pusher's
+    BeautifulSoup(read_text), or the canonical→live rsync — can never
+    observe a 0-byte or half-written latest.html/latest.md. Plain
+    write_text() truncates-then-writes in place, exposing that window."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
 
 def _pick_template() -> Path:
     """Fixed scaffold at scripts/templates/base.html — copied from friend's
@@ -731,6 +749,27 @@ function svPushTelegram(el) {
             body.append(script)
 
 def main():
+    """C-C (2026-05-29 SV audit): hold the busy marker for the WHOLE run so
+    sv-update defers redeploy + sv-watchdog defers its re-kick while a
+    scheduled / on-demand generation is in flight. Removed in finally so a
+    crash can't pin it (sv-watchdog also clears stale >30min markers)."""
+    try:
+        _BUSY_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _BUSY_MARKER.touch()
+    except Exception as exc:
+        log.warning("busy marker set failed: %s", exc)
+    try:
+        _main_impl()
+    finally:
+        try:
+            _BUSY_MARKER.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            log.warning("busy marker clear failed: %s", exc)
+
+
+def _main_impl():
     base = _pick_template()
     log.info("base template: %s", base)
     soup = BeautifulSoup(base.read_text(), "html.parser")
@@ -1729,14 +1768,14 @@ def main():
 
     _html_str = re.sub(r'&amp;(amp|quot|apos|lt|gt|#\d+|nbsp);', r'&\1;', _html_str)
 
-    timestamped.write_text(_html_str)
+    _atomic_write(timestamped, _html_str)
     log.info("wrote %s (%d bytes)", timestamped, timestamped.stat().st_size)
     # Also write 'latest.html' for the FastAPI /dashboard mount.
     latest_html = REPORTS / "latest.html"
     # A-1 entity unescape (2026-05-21)
     _html_out = str(soup)
     _html_out = re.sub(r'&amp;(amp|quot|apos|lt|gt|#\d+|nbsp);', r'&\1;', _html_out)
-    latest_html.write_text(_html_out)
+    _atomic_write(latest_html, _html_out)
 
     # ─── Write MD for Telegram body ──────────────────────────────
     # Telegram HTML 형식 — pusher 가 parse_mode='HTML' 사용.
@@ -1787,10 +1826,11 @@ def main():
     md.append(f"<i>Standard View · {TODAY} · 08:00 KST</i>")
 
     out_md = REPORTS / f"{TODAY}.md"
-    out_md.write_text("\n".join(md))
+    _md_text = "\n".join(md)
+    _atomic_write(out_md, _md_text)
     log.info("wrote %s (%d bytes)", out_md, out_md.stat().st_size)
     latest_md = REPORTS / "latest.md"
-    latest_md.write_text("\n".join(md))
+    _atomic_write(latest_md, _md_text)
 
 
 if __name__ == "__main__":
