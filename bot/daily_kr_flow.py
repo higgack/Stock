@@ -241,8 +241,9 @@ _PROMPT = """당신은 한국 주식시장 수급 전문 buy-side 애널리스�
    🏆 주목 종목 (수급 근거 + catalyst, 중립)
    ⚠️ 경고 시그널 (양→음 전환 종목)
    🎯 한 줄 결론
-6. **HTML 형식만** (`<b>`, `<i>`) — markdown `**`/`##` 금지. 모바일 가독성
-   위해 각 항목 줄바꿈.
+6. **본문은 일반 텍스트** + 섹션마다 위 지정 이모지로 시작하는 헤더 한 줄.
+   강조는 `**굵게**` 표기 (HTML 태그·`<br>`·`<ul>` 금지 — 서식 변환은
+   시스템이 담당). 모바일 가독성 위해 각 항목 줄바꿈.
 7. 분량: 핵심 위주 간결하게. 데이터에 있는 종목만 다룰 것.
 
 면책: 출력 끝에 "본 브리프는 수급 데이터 관찰 (교육·정보 목적), 투자 권유
@@ -255,18 +256,35 @@ def build_prompt(data: dict) -> str:
 
 
 def _post_process(text: str, date_iso: str) -> str:
-    """오늘 audit 가드 재사용: 미래 날짜 citation strip + invalid 날짜
-    validator + markdown noise 제거."""
+    """오늘 audit 가드(미래 날짜 citation strip + invalid 날짜 validator)
+    재사용 후 Telegram-safe HTML 로 변환.
+
+    Gemini 가 내는 HTML 은 이스케이프 안 된 &/< 나 미지원 태그(<br>,<ul>,
+    <li>)를 섞어 sendMessage 가 400 → 태그 통째로 strip 한 plain-text
+    fallback 으로 전송되며 <b> 제목·헤더 서식이 전부 날아간다 (2026-05-29
+    첫 실데이터 실행 surfaced). 따라서 (1) 모든 태그/엔티티를 먼저
+    중화(strip+escape)해 400 을 구조적으로 차단하고, (2) 프롬프트가 정의한
+    이모지 섹션 헤더 8개 + **bold** 만 <b> 로 재적용한다."""
     try:
         from bot.screener import _strip_future_dated_citations, _strip_invalid_dates
         text, _ = _strip_future_dated_citations(text, date_iso)
         text, _ = _strip_invalid_dates(text)
     except Exception as exc:
         log.debug("daily_byte: post-process guard failed: %s", exc)
+    import html as _html
     import re
-    # markdown bold/header leak → strip (HTML 만 사용)
-    text = re.sub(r"(?m)^\s*#{1,6}\s*", "", text)
-    text = text.replace("**", "")
+    # 1) Gemini emit 태그 제거 + 엔티티 정규화 → escape (이후 400 불가).
+    #    실제 태그(<b> <br> <ul> ...)만 제거 — 'P<10' 같은 부등호는 보존.
+    text = _html.unescape(text)
+    text = re.sub(r"</?[a-zA-Z][^>\n]*?>", "", text)
+    text = _html.escape(text, quote=False)
+    # 2) markdown 강조/리스트/헤더 정리
+    text = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", text)         # **x** → 볼드
+    text = re.sub(r"(?m)^\s*[\*\-]\s+", "• ", text)                 # 불릿 → •
+    text = re.sub(r"(?m)^\s*#{1,6}\s*([^\n]+)$", r"<b>\1</b>", text)  # ## 헤더
+    # 3) 이모지 섹션 헤더 줄(프롬프트 정의 8개) → 볼드
+    _hdr = "|".join(("📊", "🔥", "🔄", "💰", "📈", "🏆", "⚠️", "🎯"))
+    text = re.sub(rf"(?m)^((?:{_hdr})[^\n]*)$", r"<b>\1</b>", text)
     return text.strip()
 
 
@@ -394,6 +412,10 @@ def push_telegram(text: str) -> bool:
 def main() -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
+    # httpx 가 sendMessage URL(봇 토큰 포함)을 INFO 로 찍어 journald 에
+    # 토큰이 평문으로 쌓이는 상시 노출 차단 (2026-05-29 surfaced).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     try:
         from dotenv import load_dotenv
         from pathlib import Path

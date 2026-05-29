@@ -45,6 +45,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     level=logging.INFO,
 )
+# httpx 는 모든 요청 URL 을 INFO 로 찍는다 — api.telegram.org/bot<TOKEN>/...
+# 호출 시 봇 토큰이 journald 에 평문으로 쌓이는 상시 노출 (2026-05-29
+# surfaced). WARNING 으로 올려 차단 (요청 실패는 여전히 로깅됨).
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("stock-bot")
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
