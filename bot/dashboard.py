@@ -2761,7 +2761,7 @@ details.card[open] .card-toggle { transform:rotate(90deg); display:inline-block;
 details.card .card-body { padding:14px 18px 18px; }
 .card-h { display:flex; justify-content:space-between; align-items:center;
   gap:12px; flex-wrap:wrap; margin-bottom:12px; }
-.domain { font-weight:600; font-size:16px; flex:1; min-width:200px; }
+.domain { font-weight:600; font-size:15px; flex:1; min-width:200px; }
 .meta { color:var(--muted); font-size:13px; font-family:'IBM Plex Mono',monospace; }
 .del-btn { background:none; border:none; cursor:pointer;
   color:var(--muted); font-size:16px; padding:4px 8px; border-radius:6px;
