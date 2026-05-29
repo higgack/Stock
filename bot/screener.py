@@ -482,6 +482,22 @@ VALUATION DISTORTION 가드 (cyclical bottom 인지 — 2026-05-29 외부
   투자 단계, sourced via web), 2026-Q4 흑자 전환 기대 (SK하이닉스 HBM4
   핸들러 공급, inferred). PBR 3.46x, PSR 2.1x 기준 valuation 평가.'
 
+DATA INTEGRITY ABSOLUTE RULE (API 데이터 = 절대적 사실):
+- 외부 API (yfinance / Finviz / KRX / DART / EDINET / MOPS / AKShare)
+  가 반환한 ticker · company name · 시가총액 · 등락률 · 통화는
+  **절대적 사실**. 너의 사전 지식(학습 cutoff 2024-Q2)으로 자의적
+  으로 수정 · 부정 · 경고문 부착 **절대 금지**.
+- ⛔ 금지 표현 (위반 시 row 자체가 reject 됨):
+  • "yfinance 상 'X' 로 표기되나, 해당 종목 코드는 'Y' 이므로
+    데이터 해석에 주의" (Oil/Gas 2026-05-29 100130.KQ 동국S&C
+    surfaced — KRX 공식이 맞고 LLM 사전지식이 stale 했음)
+  • "실제로는 다른 회사" / "종목명 오류 의심" / "데이터 해석 주의"
+    / "이름 표기가 다름" 류 자의적 수정 경고
+- 원칙: **API 가 맞다, 너의 기억이 stale 한 것**. 사전지식과 API
+  가 불일치하면 API 를 신뢰하고 본문은 회사 정체성(business
+  description / 산업) 으로 검증. 만약 정말 회사 정체성과 산업이
+  도메인과 어긋나면 → 그 row 를 **OMIT** (경고 부착 금지).
+
 DATA INTEGRITY (불일치 종목 OMIT):
 - yfinance 가 반환한 company_name 이 Pro 가 식별한 회사와 다르면
   (예: 103660.KS yfinance=씨앗, 기대=일진전기 / 3161.T yfinance=
@@ -918,18 +934,22 @@ _SUFFIX_TO_SYMBOL = {
 
 
 def _fix_currency_symbols(text: str) -> tuple[str, int]:
-    """Replace '$X.XX' parenthesized prices inside non-US ticker rows
-    with the correct local currency symbol. Line-by-line state machine:
-    each Master Table row header (e.g. '• L · TPRO.MI · Technoprobe S.p.A.'
-    or '[theme] · L · TPRO.MI · ...') resets `current_symbol` based on
+    """Replace '$X.XX' prices inside non-US ticker rows with the correct
+    local currency symbol. Line-by-line state machine: each Master Table
+    row header (e.g. '• L · TPRO.MI · Technoprobe S.p.A.' or
+    '[theme] · L · TPRO.MI · ...') resets `current_symbol` based on
     ticker suffix. Subsequent body lines inherit until next header.
 
-    Match pattern '(\\$DDD.DD)' (2-decimal price stamp) — high-precision
-    52주 hi/lo / 현재가 표기. Catches the Hardware review violations:
+    Match: '$' + 숫자(천단위 ',' 가능) + 소수 2자리, 뒤에 영문/숫자 없음.
+    소수 2자리 의무 → '52주 hi/lo · 현재가' price stamp 만 매칭. 뒤
+    `[a-zA-Z]` 없어야 → '$1B' / '$8.4B' 같은 글로벌 시장사이징 보존.
+    괄호 안/밖 둘 다 매칭 (이전엔 괄호 필수라 prose '현재가 $305.00' 류
+    누수 — Oil/Gas review 2026-05-29 SUBC.OL '$305.00'/MCE.AX '$0.39'
+    surfaced). 잡히는 케이스:
       • TPRO.MI '$34.00' → '€34.00'
       • 3231.TW '$161.00' → 'NT$161.00'
-    Skips '$1B', '$8.4B' style global market sizing (no 2-decimal) so
-    Broadcom-style mega-cap mentions in non-US rows stay valid.
+      • SUBC.OL '$305.00' → 'kr305.00'
+      • MCE.AX '$0.39' → 'A$0.39'
 
     Returns (corrected_text, n_fixes).
     """
@@ -937,7 +957,8 @@ def _fix_currency_symbols(text: str) -> tuple[str, int]:
     header_re = re.compile(
         r"(?:\[[^\]]+\]|•)[\s·]+[LMS][\s·]+[`'\"]*([A-Z0-9][A-Z0-9.\-_]*)[`'\"]*"
     )
-    price_re = re.compile(r"\(\$(\d[\d,]*\.\d{2})\)")
+    # 괄호 선택 (있어도 없어도 매칭, 치환 시 제거)
+    price_re = re.compile(r"\(?\$(\d[\d,]*\.\d{2})\)?(?![a-zA-Z\d])")
     n_fixes = 0
     current_symbol = "$"
 
@@ -956,7 +977,7 @@ def _fix_currency_symbols(text: str) -> tuple[str, int]:
             def _price_replace(pm: "re.Match", _sym=current_symbol) -> str:
                 nonlocal n_fixes
                 n_fixes += 1
-                return f"({_sym}{pm.group(1)})"
+                return f"{_sym}{pm.group(1)}"
             line = price_re.sub(_price_replace, line)
         out_lines.append(line)
 

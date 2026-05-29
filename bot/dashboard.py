@@ -880,12 +880,7 @@ body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 h1 { font-size: 22px; margin: 0 0 4px; }
-/* .sub 는 메인 헤더의 nav 링크(📊 Bottleneck Screener · 🗂️ 도메인 목록 ·
-   📊 Daily Byte · SV · 🇰🇷) 를 감싼다. 13px 는 모바일에서 탭하기 작아 SV
-   대시보드 수준의 16px + line-height 1.55 로 상향 (2026-05-29 사용자 요청).
-   링크는 시각적으로 더 두드러지도록 약간 굵게. */
-.sub { color: var(--fg-soft); font-size: 16px; line-height: 1.55; margin: 0 0 24px; }
-.sub a { font-weight: 600; }
+.sub { color: var(--fg-soft); font-size: 13px; margin: 0 0 24px; }
 .badge {
   font-size: 11px; padding: 2px 9px; border-radius: 999px;
   color: white; font-weight: 600; white-space: nowrap;

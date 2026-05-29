@@ -874,9 +874,19 @@ Metals & Mining) 가 surfaced 한 universal 결함을 prompt + Python 양면
   pykrx flow / KIS 수급 / KRX 시장경보 silent miss 차단. Commit pending.
 - **Local currency symbol** (`_fix_currency_symbols`) — ticker suffix
   → 통화 기호 state machine. TPRO.MI '$34.00' → '€34.00', 3231.TW
-  '$161.00' → 'NT$161.00' 자동 fix. `(\$\d+\.\d{2})` 패턴만 매칭
-  ($1B 같은 글로벌 시장 사이징 보존). prompt 단에서도 의무화.
-  Hardware review 2026-05-29 surfaced. Commit pending.
+  '$161.00' → 'NT$161.00', SUBC.OL '$305.00' → 'kr305.00', MCE.AX
+  '$0.39' → 'A$0.39' 자동 fix. 정규식 `\$(\d[\d,]*\.\d{2})(?![a-zA-Z\d])`
+  (괄호 선택 + 소수 2자리 의무 + 뒤 영문 없음 → '$1B'/'$8.4B' 시장사이징
+  보존, 괄호 없는 prose '현재가 $305.00' 도 매칭 — Oil/Gas 2026-05-29
+  surfaced 누수 해소). prompt 단에서도 의무화. Hardware + Oil/Gas review
+  2026-05-29 surfaced.
+- **DATA INTEGRITY ABSOLUTE RULE** (prompt) — 외부 API(yfinance/Finviz/
+  KRX/DART/EDINET/MOPS/AKShare)가 반환한 ticker · company name · 시총 ·
+  등락률 · 통화는 절대적 사실. "yfinance 상 'X' 로 표기되나 해당 코드는
+  'Y'이므로 데이터 해석 주의" 같은 자의적 수정·경고문 절대 금지. Oil/Gas
+  2026-05-29 review 100130.KQ 동국S&C 케이스 — LLM 사전지식(cutoff 2024-
+  Q2)이 stale, KRX 공식이 맞았음. 원칙: API 가 맞다 · 사전지식이 stale
+  하다. 정말 회사 정체성이 도메인과 어긋나면 OMIT (경고 부착 금지).
 - **STALE QUARTERLY DATA** (prompt) — TODAY 기준 6mo+ 과거 quarterly
   데이터를 '최근' 부사와 함께 cite 금지. Vertiv '2025 Q3 (3 분기
   전) 수주 +60% 최근 보고' 위반 (Hardware review 2026-05-29) surfaced.
