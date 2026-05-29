@@ -75,6 +75,22 @@ html_path = REPORTS / "latest.html"
 if not md_path.exists() and not html_path.exists():
     sys.exit(f"no report files for {TARGET} in {REPORTS}")
 
+# C-D (2026-05-29 SV audit): freshness gate. The generator (07:30/20:30) and
+# pusher (08:00/21:00) are decoupled with only a 30-min gap; if the
+# generator overran or failed, latest.html is yesterday's run and pushing it
+# would mislabel stale cards as today. (Half-written reads are already
+# eliminated by the generator's atomic write — 1차 C-B.) If latest.html is
+# > 6h stale, skip the push rather than broadcast a stale brief; the
+# watchdog will re-kick the generator.
+if html_path.exists():
+    import time as _t
+    _age_h = (_t.time() - html_path.stat().st_mtime) / 3600
+    if _age_h > 6:
+        sys.exit(
+            f"latest.html is {_age_h:.1f}h stale (>6h) — generator likely "
+            f"didn't complete this slot; skipping push to avoid stale broadcast"
+        )
+
 API = f"https://api.telegram.org/bot{TOKEN}"
 
 
@@ -178,7 +194,12 @@ def chunk_html(text: str, max_len: int = CHUNK_TARGET) -> list:
             while len(b) > max_len:
                 split_at = b.rfind("\n", 0, max_len)
                 if split_at < 800:
-                    split_at = max_len
+                    # M2 (2026-05-29 SV audit): a raw max_len cut can land
+                    # INSIDE an <a href=…>/<b> tag → Telegram 400 'can't
+                    # parse entities'. Fall back to the last tag-close '>'
+                    # before max_len so the split never severs a tag.
+                    gt = b.rfind(">", 0, max_len)
+                    split_at = (gt + 1) if gt >= 800 else max_len
                 chunks.append(b[:split_at].rstrip())
                 b = b[split_at:].lstrip()
             current = b
@@ -495,8 +516,9 @@ for chat in CHAT_IDS:
                     f"sendMessage [{i+1}/{len(final_messages)}] HTML →"
                     f" {r.status_code} {_safe(r.text)[:240]}"
                 )
-                # Fallback: plain text
+                # Fallback: plain text (also drop link preview)
                 params.pop("parse_mode", None)
+                params["disable_web_page_preview"] = True
                 params["text"] = re.sub(
                     r'<a [^>]*>([^<]*)</a>', r'\1', params["text"]
                 )
@@ -504,7 +526,16 @@ for chat in CHAT_IDS:
                 r = httpx.post(
                     f"{API}/sendMessage", json=params, timeout=20,
                 )
-            r.raise_for_status()
+            # M2 (2026-05-29 SV audit): if even the plain-text fallback fails,
+            # log + skip THIS chunk and continue — don't let one bad chunk
+            # (raise_for_status) abort the remaining chunks for this chat,
+            # silently dropping the tail of a long brief.
+            if r.status_code != 200:
+                print(
+                    f"sendMessage [{i+1}/{len(final_messages)}] fallback also"
+                    f" failed → {r.status_code} {_safe(r.text)[:160]}; skipping chunk"
+                )
+                continue
         print(f"OK → {chat}  ({len(final_messages)} messages, no HTML attach)")
     except Exception as e:
         fail += 1

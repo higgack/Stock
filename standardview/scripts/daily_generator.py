@@ -1766,7 +1766,7 @@ def _main_impl():
 
     _html_str = str(soup)
 
-    _html_str = re.sub(r'&amp;(amp|quot|apos|lt|gt|#\d+|nbsp);', r'&\1;', _html_str)
+    _html_str = re.sub(r'&amp;(#x[0-9A-Fa-f]+|#\d+|[A-Za-z][A-Za-z0-9]{1,31});', r'&\1;', _html_str)
 
     _atomic_write(timestamped, _html_str)
     log.info("wrote %s (%d bytes)", timestamped, timestamped.stat().st_size)
@@ -1774,7 +1774,7 @@ def _main_impl():
     latest_html = REPORTS / "latest.html"
     # A-1 entity unescape (2026-05-21)
     _html_out = str(soup)
-    _html_out = re.sub(r'&amp;(amp|quot|apos|lt|gt|#\d+|nbsp);', r'&\1;', _html_out)
+    _html_out = re.sub(r'&amp;(#x[0-9A-Fa-f]+|#\d+|[A-Za-z][A-Za-z0-9]{1,31});', r'&\1;', _html_out)
     _atomic_write(latest_html, _html_out)
 
     # ─── Write MD for Telegram body ──────────────────────────────

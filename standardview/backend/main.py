@@ -3282,7 +3282,14 @@ async def macro_news_brief(body: MacroNewsBriefReq):
         import json as _j, hashlib as _hs
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        # date cache-key (2026-05-29 SV audit): include the KST date so the
+        # cache is date-scoped at the SOURCE, not solely via the external
+        # 00:05 cache_rollover flush. Previously a date-less key + 6h TTL
+        # could serve yesterday's brief across midnight (00:00–00:05 KST) or
+        # any time the rollover timer missed. Makes the flush belt-and-
+        # suspenders rather than the only daily-freshness guard.
         cache_key = _hs.md5(_j.dumps({
+            "kst_date": _kst_now().date().isoformat(),
             "scope": body.scope, "topics": sorted(body.topics),
             "date_range": body.date_range, "keywords": sorted(body.keywords),
             "max_results": body.max_results,
