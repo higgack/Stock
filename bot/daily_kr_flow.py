@@ -141,6 +141,58 @@ def _top(flows: dict, n: int, reverse: bool = True) -> list:
     return items[:n]
 
 
+def _fetch_price_change(date: str) -> dict:
+    """per-ticker 등락률(%) {ticker: pct}. KOSPI+KOSDAQ 합산. 실패 시 {}."""
+    try:
+        from pykrx import stock
+    except Exception:
+        return {}
+    out: dict[str, float] = {}
+    for market in ("KOSPI", "KOSDAQ"):
+        try:
+            df = stock.get_market_price_change(date, date, market=market)
+        except Exception as exc:
+            log.debug("daily_byte: price_change %s %s failed: %s", market, date, exc)
+            continue
+        if df is None or df.empty:
+            continue
+        col = next((c for c in df.columns if "등락" in str(c)), None)
+        if col is None:
+            continue
+        for tkr in df.index:
+            try:
+                out[str(tkr)] = float(df.loc[tkr, col])
+            except Exception:
+                pass
+    return out
+
+
+def _fetch_mcap_eok(date: str) -> dict:
+    """per-ticker 시가총액(억원) {ticker: 억}. KOSPI+KOSDAQ. 실패 시 {}."""
+    try:
+        from pykrx import stock
+    except Exception:
+        return {}
+    out: dict[str, float] = {}
+    for market in ("KOSPI", "KOSDAQ"):
+        try:
+            df = stock.get_market_cap_by_ticker(date, market=market)
+        except Exception as exc:
+            log.debug("daily_byte: mcap %s %s failed: %s", market, date, exc)
+            continue
+        if df is None or df.empty:
+            continue
+        col = next((c for c in df.columns if "시가총액" in str(c)), None)
+        if col is None:
+            continue
+        for tkr in df.index:
+            try:
+                out[str(tkr)] = float(df.loc[tkr, col]) / _EOK
+            except Exception:
+                pass
+    return out
+
+
 def collect_flow_data(date: str) -> dict:
     """모든 pykrx fetch 를 모아 구조화 dict 반환. 수치는 전부 정확값."""
     d5 = _prev_bday(date, 4)  # 5거래일 윈도 (당일 포함)
@@ -151,6 +203,9 @@ def collect_flow_data(date: str) -> dict:
         "today": {},   # investor → {top_buy:[...], top_sell:[...]}
         "cum5d": {},    # investor → top_buy:[...]
     }
+    d20 = _prev_bday(date, 19)  # 20거래일 윈도
+    data["date_20d_from"] = d20
+    data["cum20d"] = {}
     for inv in _PER_STOCK_INVESTORS:
         today_flows = _fetch_stock_net(date, date, inv)
         if today_flows:
@@ -161,7 +216,13 @@ def collect_flow_data(date: str) -> dict:
             }
         cum_flows = _fetch_stock_net(d5, date, inv)
         if cum_flows:
-            data["cum5d"][inv] = {"top_buy": _top(cum_flows, _TOP_N_BUY, reverse=True)}
+            data["cum5d"][inv] = {"top_buy": _top(cum_flows, _TOP_N_BUY, reverse=True),
+                                  "_raw": cum_flows}
+    # 20일 누적 — 핵심 2주체(외국인·기관합계)만 (call 볼륨 절약)
+    for inv in ("외국인", "기관합계"):
+        cum20 = _fetch_stock_net(d20, date, inv)
+        if cum20:
+            data["cum20d"][inv] = {"top_buy": _top(cum20, _TOP_N_BUY, reverse=True)}
     # 양→음 전환: 5일 누적 강매수인데 당일 순매도인 종목 (외국인/기관)
     reversals = []
     for inv in ("외국인", "기관합계", "투신"):
@@ -172,19 +233,57 @@ def collect_flow_data(date: str) -> dict:
             if cum_net > 50 and t_net is not None and t_net < -30:
                 reversals.append((inv, tkr, today_raw[tkr]["name"], cum_net, t_net))
     data["reversals"] = reversals[:8]
+
+    # 등락률 + 시총 (per-ticker enrich) — 실패 시 빈 dict (graceful)
+    data["chg"] = _fetch_price_change(date)
+    data["mcap_eok"] = _fetch_mcap_eok(date)
+
+    # breadth: 외국인+기관합계 합산 net 기준 순매수종목 비율
+    fg_raw = data["today"].get("외국인", {}).get("_raw", {})
+    in_raw = data["today"].get("기관합계", {}).get("_raw", {})
+    if fg_raw or in_raw:
+        combined: dict[str, float] = {}
+        for t, v in fg_raw.items():
+            combined[t] = combined.get(t, 0.0) + v["net"]
+        for t, v in in_raw.items():
+            combined[t] = combined.get(t, 0.0) + v["net"]
+        total_n = len(combined)
+        net_buy_n = sum(1 for n in combined.values() if n > 0)
+        if total_n:
+            data["breadth"] = {
+                "pct": round(net_buy_n / total_n * 100, 1),
+                "net_buy_n": net_buy_n, "total_n": total_n,
+            }
     return data
 
 
-def _fmt_top(rows: list) -> str:
-    return "\n".join(
-        f"    {nm} ({t}) {('+' if net >= 0 else '')}{net:,.0f}억"
-        for t, nm, net in rows
-    ) or "    (데이터 없음)"
+def _fmt_top(rows: list, data: dict | None = None) -> str:
+    """각 행에 등락률 + 시총 + net/시총 비중을 가능 시 병기 (강화)."""
+    chg = (data or {}).get("chg") or {}
+    mcap = (data or {}).get("mcap_eok") or {}
+    out = []
+    for t, nm, net in rows:
+        line = f"    {nm} ({t}) {('+' if net >= 0 else '')}{net:,.0f}억"
+        c = chg.get(str(t))
+        if isinstance(c, (int, float)):
+            line += f"  등락 {c:+.1f}%"
+        mc = mcap.get(str(t))
+        if isinstance(mc, (int, float)) and mc > 0:
+            wt = abs(net) / mc * 100
+            mc_disp = f"{mc/10000:.1f}조" if mc >= 10000 else f"{mc:,.0f}억"
+            line += f"  시총 {mc_disp} (net/시총 {wt:.2f}%)"
+        out.append(line)
+    return "\n".join(out) or "    (데이터 없음)"
 
 
 def build_data_summary(data: dict) -> str:
     """Pro 에 주입할 구조화 데이터 텍스트. 모든 수치 = pykrx 정확값."""
-    lines = [f"[거래일] {data['date']}  ([5일 윈도] {data['date_5d_from']}~{data['date']})"]
+    lines = [f"[거래일] {data['date']}  ([5일 윈도] {data['date_5d_from']}~{data['date']}"
+             f"  [20일 윈도] {data.get('date_20d_from','?')}~{data['date']})"]
+    b = data.get("breadth")
+    if b:
+        lines.append(f"[시장 폭] 순매수종목 비율(외인+기관 합산) {b['pct']}% "
+                     f"({b['net_buy_n']}/{b['total_n']}종목 순매수)")
     lines.append("\n[시장 전체 투자주체별 순매수 (억원, KOSPI+KOSDAQ 합산)]")
     t = data.get("totals", {})
     if t:
@@ -198,13 +297,17 @@ def build_data_summary(data: dict) -> str:
         td = data["today"].get(inv)
         if td:
             lines.append(f"\n[{inv} 당일 순매수 상위]")
-            lines.append(_fmt_top(td["top_buy"]))
+            lines.append(_fmt_top(td["top_buy"], data))
             lines.append(f"[{inv} 당일 순매도 상위]")
-            lines.append(_fmt_top(td["top_sell"]))
+            lines.append(_fmt_top(td["top_sell"], data))
         cd = data["cum5d"].get(inv)
         if cd:
             lines.append(f"[{inv} 5일 누적 순매수 상위]")
-            lines.append(_fmt_top(cd["top_buy"]))
+            lines.append(_fmt_top(cd["top_buy"], data))
+        c20 = data.get("cum20d", {}).get(inv)
+        if c20:
+            lines.append(f"[{inv} 20일 누적 순매수 상위]")
+            lines.append(_fmt_top(c20["top_buy"], data))
     if data.get("reversals"):
         lines.append("\n[양→음 전환 의심 (5일 누적 매수 vs 당일 매도)]")
         for inv, tkr, nm, cum_net, t_net in data["reversals"]:
@@ -222,29 +325,35 @@ _PROMPT = """당신은 한국 주식시장 수급 전문 buy-side 애널리스�
 
 작성 규칙:
 1. **수치는 위 데이터를 글자 그대로 인용** — 재계산·반올림·창작 절대 금지.
-   위에 없는 종목/수치를 지어내지 말 것.
-2. **섹터 그룹핑 + 로테이션**: 위 종목들을 산업/테마로 묶어 (반도체/AI·SW/
-   2차전지/전기차/원전·전력/바이오 등) 자금 흐름 방향을 서술. 종목→섹터
-   분류는 당신의 지식 + web search 로.
-3. **catalyst 맥락 (web search 활용)**: 상위 종목의 최근 공시/실적/뉴스
-   (예: 수주, 실적 발표, M&A) 를 web search 로 확인해 "왜 이 자금이
-   들어왔나" 맥락 제공. **출처 날짜는 반드시 {date} 이하** — 미래 날짜
-   citation 금지. 확인 안 되면 '맥락 미확인' 명시, 추측 catalyst 창작 금지.
-4. **중립 표현**: "주목 종목" 은 수급 관찰일 뿐 BUY/SELL 권고가 아님.
+   위에 없는 종목/수치를 지어내지 말 것. 등락률·시총·net/시총 비중·breadth
+   도 위 값 그대로 사용.
+2. **다중 시간축 해석 (당일 vs 5일 vs 20일)**: 같은 종목이 당일·5일·20일
+   누적에서 모두 상위면 "**가속 국면**", 20일엔 상위였으나 당일 빠지면
+   "차익실현/둔화"로 구분. 단순 당일 나열이 아니라 시간축 추세로 서술.
+3. **섹터 그룹핑 + 로테이션**: 위 종목들을 산업/테마로 묶어 (반도체/AI·SW/
+   2차전지/전기차/원전·전력/바이오 등) 자금 흐름 방향을 서술. 유출→유입
+   섹터를 명시. 종목→섹터 분류는 당신의 지식 + web search 로.
+4. **시총 대비 비중 강조**: net/시총 비중이 높은 소형·중형주(시총 대비 큰
+   매집)는 "시총 대비 압도적 매집"으로 별도 표시 — 대형주 절대금액과 구분.
+5. **catalyst 맥락 (web search 활용)**: 상위 종목의 최근 공시/실적/뉴스
+   (수주·실적·M&A)를 web search 로 확인해 "왜 이 자금이 들어왔나" 맥락 +
+   구체 날짜 제공. **출처 날짜는 반드시 {date} 이하** — 미래 날짜 citation
+   금지. 확인 안 되면 '맥락 미확인' 명시, 추측 catalyst 창작 금지.
+6. **중립 표현**: "주목 종목" 은 수급 관찰일 뿐 BUY/SELL 권고가 아님.
    '매수 추천' / '목표가' 같은 직접 투자권유 표현 금지.
-5. **구조** (각 섹션 <b> 헤더):
-   📊 시장 수급 총평 (외인 vs 기관 디커플링, breadth)
-   🔥 지금 강한 섹터·종목 (4대 주체 동시매수 우선)
-   🔄 섹터 로테이션 (유출 섹터 → 유입 섹터)
-   💰 당일 기관(투신+사모) 합산 상위
-   📈 주목할 수급 패턴 (꾸준한 매집 / 첫 대량출현 / 5일누적 강도)
-   🏆 주목 종목 (수급 근거 + catalyst, 중립)
-   ⚠️ 경고 시그널 (양→음 전환 종목)
-   🎯 한 줄 결론
-6. **본문은 일반 텍스트** + 섹션마다 위 지정 이모지로 시작하는 헤더 한 줄.
+7. **구조** (각 섹션 지정 이모지로 시작하는 헤더 한 줄):
+   📊 시장 수급 총평 (외인 vs 기관 디커플링 + breadth % 해석)
+   🔥 지금 강한 섹터·종목 (4대 주체 동시매수 + 당일/5일/20일 가속 우선)
+   🔄 섹터 로테이션 (유출 섹터 → 유입 섹터, 규모 명시)
+   💰 당일 기관(투신+사모) 합산 상위 (등락률 병기)
+   📈 주목할 수급 패턴 (꾸준한 매집 / 첫 대량출현 / 시총대비 강한 매집)
+   🏆 주목 종목 5선 (각 종목: 주체별 net + 등락률 + catalyst, 중립)
+   ⚠️ 경고 시그널 (양→음 전환 + 가격·수급 다이버전스)
+   🎯 한 줄 결론 (포지셔닝 관점, 중립)
+8. **본문은 일반 텍스트** + 섹션마다 위 지정 이모지로 시작하는 헤더 한 줄.
    강조는 `**굵게**` 표기 (HTML 태그·`<br>`·`<ul>` 금지 — 서식 변환은
    시스템이 담당). 모바일 가독성 위해 각 항목 줄바꿈.
-7. 분량: 핵심 위주 간결하게. 데이터에 있는 종목만 다룰 것.
+9. 분량: 벤치마크 수준의 정보 밀도로 충실하게. 데이터에 있는 종목만 다룰 것.
 
 면책: 출력 끝에 "본 브리프는 수급 데이터 관찰 (교육·정보 목적), 투자 권유
 아님" 1줄.
@@ -371,9 +480,9 @@ def _save_daily_byte_archive(body: str, cost_krw: float, date_yyyymmdd: str,
     return path
 
 
-def generate() -> tuple[str, float] | None:
-    """수급 fetch → Pro narrate → guard → archive → (제목 포함 본문,
-    cost_krw). 데이터 전무 시 None (graceful skip + 호출측 알림)."""
+def generate() -> tuple[str, float, str | None] | None:
+    """수급 fetch → Pro narrate → guard → archive + 인포그래픽 →
+    (제목 포함 본문, cost_krw, png_path|None). 데이터 전무 시 None."""
     import time as _time
     _t0 = _time.monotonic()
     api_key = os.environ.get("GOOGLE_API_KEY")
@@ -430,9 +539,20 @@ def generate() -> tuple[str, float] | None:
     _save_daily_byte_archive(body, cost_krw, date,
                              elapsed_sec=_time.monotonic() - _t0, kind="daily")
 
+    # 인포그래픽 PNG (수급 데이터 = pykrx 정확값 직접 주입, 환각 0).
+    # NanumGothic 부재 시 render_infographic → None → 텍스트만 push.
+    png_path = None
+    try:
+        from bot.daily_byte_infographic import render_infographic
+        out = os.path.join(_DAILY_BYTE_ARCHIVE_DIR, "_png",
+                           f"{date}_{_now_kst():%H%M%S}.png")
+        png_path = render_infographic(data, _iso_dot(date), out)
+    except Exception as exc:
+        log.warning("daily_byte: infographic render failed: %s", exc)
+
     title = f"📊 <b>Daily Byte - {_iso_dot(date)}</b>"
     full = f"{title}\n<i>장 마감 후 KR 수급 브리프 · 생성 {_now_kst():%H:%M} KST</i>\n\n{body}"
-    return full, cost_krw
+    return full, cost_krw, png_path
 
 
 # ── Telegram push (SV pusher 패턴 mirror) ─────────────────────────────────
@@ -491,6 +611,41 @@ def push_telegram(text: str) -> bool:
     return ok_all
 
 
+def push_telegram_photo(png_path: str, caption: str = "") -> bool:
+    """인포그래픽 PNG 를 채널에 사진으로 push (sendPhoto). 실패해도 텍스트
+    push 는 별개로 진행되므로 best-effort."""
+    if not png_path or not os.path.exists(png_path):
+        return False
+    import httpx
+    token = (
+        os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        or os.environ.get("STANDARDVIEW_TELEGRAM_TOKEN", "").strip()
+    )
+    raw_ids = os.environ.get("CHANNEL_CHAT_IDS", "").strip()
+    chat_ids = [c.strip() for c in raw_ids.split(",") if c.strip()]
+    if not token or not chat_ids:
+        return False
+    api = f"https://api.telegram.org/bot{token}"
+    ok_all = True
+    for chat in chat_ids:
+        try:
+            with open(png_path, "rb") as f:
+                r = httpx.post(
+                    f"{api}/sendPhoto",
+                    data={"chat_id": chat, "caption": caption[:1024],
+                          "parse_mode": "HTML"},
+                    files={"photo": ("daily_byte.png", f, "image/png")},
+                    timeout=40,
+                )
+            if r.status_code != 200:
+                log.warning("daily_byte: sendPhoto → %d %s", r.status_code, r.text[:160])
+                ok_all = False
+        except Exception as exc:
+            log.warning("daily_byte: sendPhoto failed: %s", exc)
+            ok_all = False
+    return ok_all
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
@@ -508,8 +663,13 @@ def main() -> int:
     if result is None:
         log.error("daily_byte: generation failed / no data — skipping push")
         return 1
-    body, cost = result
-    log.info("daily_byte: generated (₩%.1f) — pushing", cost)
+    body, cost, png = result
+    log.info("daily_byte: generated (₩%.1f, infographic=%s) — pushing",
+             cost, "yes" if png else "no")
+    # 인포그래픽 먼저(사진) → 텍스트 브리프. 사진 실패해도 텍스트는 진행.
+    if png:
+        if push_telegram_photo(png, "📊 Daily Byte — KR 수급 인포그래픽"):
+            log.info("daily_byte: infographic photo pushed")
     ok = push_telegram(body)
     log.info("daily_byte: push %s", "OK" if ok else "with failures")
     return 0 if ok else 1

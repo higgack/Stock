@@ -392,6 +392,19 @@ pattern to follow:
     총합 자동 합산 + subsystem 분포에 "Daily Byte" 행, `/usage` 분포 + 총합
     포함(분석에서 분리), `/daily_byte_cost` 전용 카드 (screener_cost mirror,
     DM+채널). help §1 명령 + §8 알림 갱신.
+  • 내용 강화 (2026-05-29, 벤치마크 수준): `collect_flow_data` 가 (a) 20일
+    누적(외인·기관), (b) breadth(외인+기관 합산 순매수종목 비율 %),
+    (c) per-ticker 등락률(`_fetch_price_change`), (d) 시총(`_fetch_mcap_eok`)
+    + net/시총 비중 추가. `build_data_summary` 가 행마다 등락률·시총·비중
+    병기, 프롬프트는 당일/5일/20일 다중 시간축 가속 판단 + 시총대비 강한
+    매집 + 5선 catalyst 의무화.
+  • 인포그래픽 (2026-05-29): `bot/daily_byte_infographic.py` — matplotlib 로
+    수급 데이터(정확값 직접 주입, 환각 0)를 전문 PNG 렌더 (헤더/주체별 막대/
+    breadth/당일 TOP/경고). `generate()` 가 렌더 → `push_telegram_photo`
+    (sendPhoto) 로 텍스트 브리프 앞에 사진 push. **한글 렌더는 VM 에
+    NanumGothic 필요**: `sudo apt install -y fonts-nanum` (없으면 `_font_
+    ready()` False → 인포그래픽만 skip, 텍스트 정상). 이모지는 NanumGothic
+    미지원이라 컬러 탭으로 대체, 음수는 ASCII '-'(U+2212 미지원).
 
 **Acceptable manual steps** (rare, one-time):
 - Initial systemd unit installation

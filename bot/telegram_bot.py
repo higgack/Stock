@@ -904,7 +904,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly KR수급, 대시보드 아카이브)
+🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly KR수급, 인포그래픽+대시보드)
 
 ━━━━━━━━━
 <b>【9. 트러블슈팅】</b>
