@@ -54,6 +54,9 @@ class ScreenerResult:
     rejected_tickers: list[str]
     elapsed_sec: float
     cost_krw: float
+    # 24h 디스크 캐시에서 hit 으로 반환된 결과면 True. format_for_telegram
+    # 가 header 에 '💾 캐시 (오늘 첫 실행 비용 그대로)' 한 줄 표시.
+    was_cached: bool = False
 
 
 # ── Phase 1·2·4·5 orchestration prompt (Phase α: single Pro call) ──────
@@ -1658,7 +1661,8 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
     return result
 
 
-def run_screener(domain: str = "bottleneck") -> Optional[ScreenerResult]:
+def run_screener(domain: str = "bottleneck",
+                 force_fresh: bool = False) -> Optional[ScreenerResult]:
     """Run the screener for the given domain. Phase β (real-time data) is
     the default; SCREENER_PHASE=alpha env var forces the legacy single-Pro
     path. On Phase β failure (JSON parse / 0 validated tickers / Pro crash)
@@ -1673,6 +1677,9 @@ def run_screener(domain: str = "bottleneck") -> Optional[ScreenerResult]:
     miss 시 ``bot.screener_freetext.resolve_freetext()`` 로 Phase 0 theme
     생성 → ``run_screener_with_theme()`` 호출. 본 함수는 정적 도메인 전용
     legacy path 로 유지 (back-compat).
+
+    24h 캐시 (2026-05-29): cache_key = domain slug. 같은 KST 일자 재호출
+    시 Pro skip + ₩0 반환. `force_fresh=True` 로 우회.
     """
     theme = _resolve_theme(domain)
     if theme is None:
@@ -1681,30 +1688,58 @@ def run_screener(domain: str = "bottleneck") -> Optional[ScreenerResult]:
             domain, available_summary(),
         )
         return None
-    return run_screener_with_theme(theme)
+    # 정적 도메인의 cache_key 는 slug — _resolve_theme 가 normalize 한
+    # 값이므로 alias 입력도 같은 cache 행으로 collapse 됨.
+    cache_key = (domain or "bottleneck").strip().lower()
+    return run_screener_with_theme(theme, cache_key=cache_key, force_fresh=force_fresh)
 
 
-def run_screener_with_theme(theme: dict) -> Optional[ScreenerResult]:
+def run_screener_with_theme(
+    theme: dict,
+    cache_key: Optional[str] = None,
+    force_fresh: bool = False,
+) -> Optional[ScreenerResult]:
     """Phase α/β 본 분석 전용 entry — 사전 resolve 된 theme dict 를
     그대로 받음. 정적 도메인 (registry) + 자유텍스트 (Phase 0 generated)
     공용. ``run_screener(domain)`` 는 본 함수의 alias-lookup wrapper.
+
+    cache_key 가 주어지면 24h 디스크 캐시 (`bot.screener_cache`) 로
+    load/save. cache hit 시 Pro skip + 즉시 반환 (₩0). force_fresh=True
+    면 캐시 무시하고 새로 실행 + save.
     """
+    from bot import screener_cache as _cache
+
+    if cache_key and not force_fresh:
+        cached = _cache.get(cache_key)
+        if cached is not None:
+            log.info(
+                "screener: cache hit for %r (domain=%r) — Pro skip, ₩0",
+                cache_key, cached.domain,
+            )
+            return cached
+
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         log.error("screener: GOOGLE_API_KEY missing")
         return None
     started = time.time()
 
+    result: Optional[ScreenerResult] = None
     forced_alpha = os.environ.get("SCREENER_PHASE", "beta").strip().lower() == "alpha"
     if not forced_alpha:
         try:
             result = _run_phase_beta(api_key, theme, started)
-            if result is not None:
-                return result
-            log.warning("screener: Phase β returned None — falling back to Phase α")
+            if result is None:
+                log.warning("screener: Phase β returned None — falling back to Phase α")
         except Exception as exc:
             log.exception("screener: Phase β crashed (%s) — falling back to Phase α", exc)
-    return _run_phase_alpha(api_key, theme, started)
+            result = None
+    if result is None:
+        result = _run_phase_alpha(api_key, theme, started)
+
+    if result is not None and cache_key:
+        _cache.save(cache_key, result)
+    return result
 
 
 # ── Output formatting for Telegram ────────────────────────────────────────
@@ -1715,11 +1750,15 @@ _CHUNK_TARGET = 3800
 
 def format_for_telegram(result: ScreenerResult) -> list[str]:
     """Split the Pro output into Telegram-sized chunks with a header card."""
+    cache_note = (
+        " · 💾 <b>오늘 캐시</b> (재실행 ₩0, fresh flag 로 우회)"
+        if getattr(result, "was_cached", False) else ""
+    )
     header = (
         f"📊 <b>Bottleneck Screener — {result.domain}</b>\n"
         f"⏱ {result.elapsed_sec:.0f}초 · 💰 ₩{result.cost_krw:.1f}"
         f" · ✅ ticker 검증: {len(result.validated_tickers)}개 통과 /"
-        f" {len(result.rejected_tickers)}개 reject\n\n"
+        f" {len(result.rejected_tickers)}개 reject{cache_note}\n\n"
     )
 
     if result.rejected_tickers:

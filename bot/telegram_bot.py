@@ -390,10 +390,15 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
-        mode, payload = await _resolve_screener_target(_ch_send, raw_domain)
-        if mode == "error":
+        resolved = await _resolve_screener_target(_ch_send, raw_domain)
+        if resolved.get("mode") == "error":
             return
-        await _run_screener_and_send(send=_ch_send, theme=payload)
+        await _run_screener_and_send(
+            send=_ch_send,
+            theme=resolved.get("theme"),
+            cache_key=resolved.get("cache_key"),
+            force_fresh=resolved.get("force_fresh", False),
+        )
         return
 
     # /compare A B → branch off to the comparison handler.
@@ -1599,23 +1604,32 @@ async def cmd_sites(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _run_screener_and_send(send, *, domain: str | None = None,
-                                  theme: dict | None = None) -> None:
+                                  theme: dict | None = None,
+                                  cache_key: str | None = None,
+                                  force_fresh: bool = False) -> None:
     """Run the screener in a thread (it's a synchronous Pro call that
     blocks for ~3-5 minutes) and stream chunks back through `send`.
     Used by both DM cmd_screener and the channel /screener path.
 
     Pass exactly one of ``domain`` (legacy static-registry alias) or
     ``theme`` (pre-resolved dict — used by free-text Phase 0 path).
+
+    24h 디스크 캐시: ``cache_key`` 가 주어지면 today's KST cache 를 우선
+    조회. ``force_fresh=True`` 면 캐시 무시 + 새 실행 + save.
     """
     import asyncio
+    from functools import partial
     from bot.screener import run_screener, run_screener_with_theme, format_for_telegram
     from bot.screener_themes import available_summary as _scr_avail
     loop = asyncio.get_running_loop()
     try:
         if theme is not None:
-            result = await loop.run_in_executor(None, run_screener_with_theme, theme)
+            fn = partial(run_screener_with_theme, theme,
+                         cache_key=cache_key, force_fresh=force_fresh)
         else:
-            result = await loop.run_in_executor(None, run_screener, domain or "bottleneck")
+            fn = partial(run_screener, domain or "bottleneck",
+                         force_fresh=force_fresh)
+        result = await loop.run_in_executor(None, fn)
     except Exception as exc:
         log.exception("screener: orchestrator threw: %s", exc)
         await send(f"⚠️ Screener 오류 — {exc.__class__.__name__}")
@@ -1630,37 +1644,56 @@ async def _run_screener_and_send(send, *, domain: str | None = None,
         await send(chunk)
 
 
+def _strip_fresh_flag(raw_domain: str) -> tuple[str, bool]:
+    """Detect and strip 'fresh' override flag from raw_domain. Returns
+    (cleaned_domain, force_fresh). Recognized forms (case-insensitive):
+    'bottleneck fresh' / 'ev fresh' / 'carbon nanotube fresh' / standalone
+    'fresh' (= bottleneck fresh)."""
+    parts = (raw_domain or "").strip().split()
+    if parts and parts[-1].lower() == "fresh":
+        return " ".join(parts[:-1]).strip().lower(), True
+    return raw_domain, False
+
+
 async def _resolve_screener_target(send, raw_domain: str):
     """Common resolver for /screener arg paths — handles alias hit /
     fuzzy redirect to existing domain / free-text Phase 0 generation.
     Sends the appropriate progress message via ``send`` callable.
 
-    Returns (mode, payload):
-      • ('theme', theme_dict) — caller passes theme to _run_screener_and_send
-      • ('domain', slug_str)  — caller passes slug to _run_screener_and_send
-      • ('error', None)       — already sent error message; caller aborts
+    Returns dict: {mode, theme?, cache_key?, force_fresh}
+      • mode='theme' — caller passes theme + cache_key + force_fresh to
+        _run_screener_and_send
+      • mode='error' — already sent error message; caller aborts
     """
-    from bot.screener_themes import resolve as _scr_resolve
+    from bot.screener_themes import resolve as _scr_resolve, resolve_slug as _scr_slug
+
+    # Parse 'fresh' override flag (e.g. '/screener bottleneck fresh').
+    raw_domain, force_fresh = _strip_fresh_flag(raw_domain)
+    fresh_note = " · ⏭️ fresh flag (캐시 무시)" if force_fresh else ""
 
     # 1) Empty input → default bottleneck (back-compat).
     if not raw_domain:
         theme = _scr_resolve("")
         if theme is not None:
-            await send(_screener_start_banner(theme))
-            return ("theme", theme)
-        return ("error", None)  # shouldn't happen — bottleneck always registered
+            await send(_screener_start_banner(theme) + fresh_note)
+            return {"mode": "theme", "theme": theme,
+                    "cache_key": "bottleneck", "force_fresh": force_fresh}
+        return {"mode": "error"}  # shouldn't happen — bottleneck always registered
 
     # 2) Static registry hit.
     theme = _scr_resolve(raw_domain)
     if theme is not None:
-        await send(_screener_start_banner(theme))
-        return ("theme", theme)
+        slug = _scr_slug(raw_domain) or raw_domain.strip().lower()
+        await send(_screener_start_banner(theme) + fresh_note)
+        return {"mode": "theme", "theme": theme,
+                "cache_key": slug, "force_fresh": force_fresh}
 
     # 3) Free-text path — fuzzy redirect or Phase 0 generation.
     from bot.screener_freetext import (
         resolve_freetext as _resolve_freetext,
         count_today_freetext as _ft_count_today,
         count_text_uses as _ft_count_uses,
+        _cache_key as _ft_cache_key,
     )
 
     # Daily soft-cap notice (non-blocking — user can /screener_cost to monitor).
@@ -1693,8 +1726,9 @@ async def _resolve_screener_target(send, raw_domain: str):
                 f"💡 입력 '<code>{raw_domain}</code>' 이 기존 도메인 "
                 f"<b>{target_theme['domain']}</b> 와 일치 — 자동 라우팅."
             )
-            await send(_screener_start_banner(target_theme))
-            return ("theme", target_theme)
+            await send(_screener_start_banner(target_theme) + fresh_note)
+            return {"mode": "theme", "theme": target_theme,
+                    "cache_key": target_slug, "force_fresh": force_fresh}
 
     # 3b) Phase 0 reject / hard error.
     if ft_theme is None:
@@ -1702,7 +1736,7 @@ async def _resolve_screener_target(send, raw_domain: str):
             f"⚠️ 자유텍스트 도메인 생성 실패 — {err or 'Unknown'}\n"
             f"기존 65 도메인 목록: /screener_list"
         )
-        return ("error", None)
+        return {"mode": "error"}
 
     # 3c) Success — show generated theme summary + start banner.
     cache_hint = "(24h 캐시 사용)" if was_cached else f"(Phase 0 비용 ₩{cost_krw:.1f})"
@@ -1736,8 +1770,12 @@ async def _resolve_screener_target(send, raw_domain: str):
         f"  • ⚠️ 자유텍스트 도메인 — Pro 즉석 생성, 정적 도메인 대비 깊이 ±20%."
         f"{promote_hint}"
     )
-    await send(_screener_start_banner(ft_theme))
-    return ("theme", ft_theme)
+    await send(_screener_start_banner(ft_theme) + fresh_note)
+    # 자유어는 freetext cache_key (sha256[:12]) 로 캐싱 — 같은 자유어 24h 내
+    # 재호출 시 본 분석 (5-phase) 도 skip + ₩0. promote 직후의 freetext
+    # 입력도 정식 모듈로 라우팅되기 전까지는 freetext key 캐시 활용.
+    return {"mode": "theme", "theme": ft_theme,
+            "cache_key": _ft_cache_key(raw_domain), "force_fresh": force_fresh}
 
 
 def _screener_start_banner(theme: dict) -> str:
@@ -1765,15 +1803,20 @@ async def _screener_dispatch(
         await update.message.reply_text(
             t, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
         )
-    mode, payload = await _resolve_screener_target(_send, raw_domain)
-    if mode == "error":
+    resolved = await _resolve_screener_target(_send, raw_domain)
+    if resolved.get("mode") == "error":
         return
     chat_id = update.message.chat_id
     send_chunk = lambda t: ctx.bot.send_message(
         chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
-    await _run_screener_and_send(send=send_chunk, theme=payload)
+    await _run_screener_and_send(
+        send=send_chunk,
+        theme=resolved.get("theme"),
+        cache_key=resolved.get("cache_key"),
+        force_fresh=resolved.get("force_fresh", False),
+    )
 
 
 async def cmd_screener(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

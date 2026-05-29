@@ -153,6 +153,25 @@ def resolve(name: str) -> Optional[dict]:
     return None
 
 
+def resolve_slug(name: str) -> Optional[str]:
+    """Same resolution rules as ``resolve()`` but returns the canonical
+    slug instead of the theme dict. Used by ``bot.screener_cache`` so
+    alias inputs ('/screener AI 데이터센터', '/screener ai_datacenter') 가
+    같은 cache 행 (bottleneck) 으로 collapse 된다."""
+    _discover()
+    if not name:
+        name = "bottleneck"
+    key = name.strip().lower()
+    slug = _ALIAS_TO_SLUG.get(key)
+    if slug:
+        return slug
+    hits = [s for k, s in _ALIAS_TO_SLUG.items() if key in k]
+    uniq = set(hits)
+    if len(uniq) == 1:
+        return next(iter(uniq))
+    return None
+
+
 def list_domains() -> list[dict]:
     """Return a list of ``{"slug", "domain", "aliases"}`` for each
     registered theme, sorted by slug. Used by /screener error messages
