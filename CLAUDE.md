@@ -943,21 +943,45 @@ M2 통합 구현 안 함** — 이론적 충돌이 실측 비존재, 추측 통�
   자동 포착, 분기 재실행으로 재확인. 비용 0 (충돌 시에만 write).
 - baseline 데이터포인트: Hold-rate 53.3% (향후 PM 분포 회귀 감지 기준).
 
-### 🔜 SV audit — 별도 세션 예정 (다음 세션 pickup)
-2026-05-29 audit 은 stock-bot **/ticker + screener** scope. SV
-(`standardview/`) 는 별도 subsystem 이라 다음 세션에서 동일 3-agent 방식
-으로 dedicated audit 예정. 사용자 확정 2026-05-29.
-- **scope**: SV-특화 실패 모드 — HTML 생성/escape, 뉴스 brief 병렬·retry,
-  push 스케줄 타이밍 (daily/push/weekly timer), cache rollover, watchdog
-  stale-detection. /ticker 의 LLM-pipeline 버그 클래스와 다름.
-- **현 상태**: 2026-05-21 세션에서 major 8건 (A-G + 가독성) 전부 close
-  (위 'Standard View open issues' 섹션 참조). audit 은 그 이후 회귀 +
-  미점검 영역 (telegram_pusher / daily_generator / backend) 커버.
-- **방법**: 비용 (Gemini Flash 호출 구조) / 데이터 (NewsAPI/GDELT/매크로
-  fetch 병렬·캐시) / 견고성 (timer race, busy-marker, drift re-sync) 3축.
-- screener 는 별도 구조 audit **불필요** 확정 — /ticker 인프라 fix
-  (F1/F5/F6/GBp) 를 build_instrument_context 공유로 자동 상속 + 출력
-  품질은 외부 리뷰 reactive 로 충분.
+### ✅ SV audit — 완료 (2026-05-29, 3-agent + 직접 정독, 3-tier 적용)
+SV (`standardview/`) 는 **Gemini 2.5 Flash** (call_claude_cli 는 misnomer,
+2026-05-19 패치). LLM 비용 작음 → 핵심은 correctness/reliability. 1~3차
+적용 완료 (commits 아래). screener 별도 audit 불필요 (/ticker 인프라 상속).
+
+**1차 — correctness/reliability (위험 0):**
+- C-A: news-brief stub/mock 6h 캐시 → outage 시 빈 placeholder serve (3
+  agent 모두 지목, 2026-05-21 midnight 버그 root cause). degraded 시
+  `_mnb_cache_set` skip.
+- C-B: latest.html/md 비원자적 write → half-write read. `_atomic_write`
+  (temp+os.replace) 4 지점.
+- C-C: busy-marker 를 watchdog 만 set → 스케줄 run 에 sv-update/watchdog
+  blind (double-kick + 중간 redeploy). daily_generator.main() 가 marker
+  touch+finally unlink (main 본체 → _main_impl 분리).
+- timeout 무시: call_claude_cli(timeout=N) 이 genai 에 미전달 → worker
+  thread .result(timeout) 로 enforce.
+- B5: _log_sv_usage endpoint 라벨 (call_claude_cli endpoint 파라미터 +
+  daily 고볼륨 4 호출처).
+
+**2차 — 견고성 (위험 낮음):**
+- C-D: pusher freshness gate (latest.html >6h stale 시 push skip).
+- M1: `&amp;amp;` regex 가 hex `&#x;` + named entity 미커버 → `(#x[0-9A-Fa-f]+
+  |#\d+|[A-Za-z][A-Za-z0-9]{1,31})` 확장 (2 지점).
+- M2: chunker hard-cut 이 태그 중간 split → tag-close '>' fallback +
+  fallback POST 실패 시 raise 대신 continue (batch tail 보존).
+- date cache-key: news-brief cache_key 에 `kst_date` → flush 의존 제거.
+
+**3차 — latency/cost (위험 낮음):**
+- 매크로 지표 fetch 병렬화 (15×8s 순차 → ThreadPool 8).
+- Naver KO 뉴스 병렬화 (5×10s 순차 → ThreadPool, map 순서 보존 dedup).
+- `_pool` 6→12 (daily run 중 interactive starve 방지).
+- news-brief force_refresh True→False (date-key + degraded-skip + 6h TTL
+  로 안전, watchdog re-kick double-spend 회피; macro 는 intraday FX
+  freshness 위해 True 유지).
+
+**미적용 (의도)**: 산업 8→1 batch (cost 최대지만 JSON 1개 실패 시 8개
+손실 = M2-analog 품질 tradeoff, Flash 라 절감<위험) · cosmetic m1-m4
+(label regex 오타/중복 정의/HTTP 200/weekly silent). NewsAPI 100/day cap
++ UTC/KST 불일치는 별도 검토 (정책/키 영역).
 
 ### ⏸ 신중 (위험 중간, A/B 검증 권장):
 - M2 PM override 이중 레이어 (in-graph 분석가 다수 보정 ↔ analyzer

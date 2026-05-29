@@ -1378,7 +1378,11 @@ app.add_middleware(
 _dart      = DART()
 _dart_lock = threading.Lock()
 _dart_ready = False
-_pool      = concurrent.futures.ThreadPoolExecutor(max_workers=6)
+# 3차 (2026-05-29 SV audit): 6→12. During the daily run, 4 concurrent
+# /api/industry-analysis jobs + the news-brief + the macro snapshot can
+# occupy all 6 workers, starving any interactive dashboard request behind
+# multi-LLM jobs. 12 leaves headroom for interactive traffic during batches.
+_pool      = concurrent.futures.ThreadPoolExecutor(max_workers=12)
 
 
 def _ensure_dart():
@@ -2618,8 +2622,18 @@ async def macro_analyze(body: MacroAnalyzeReq):
         indicator_data = {}
         any_mock = False      # API 매핑은 있지만 호출 실패 (키/네트워크 문제)
         any_no_source = False # 무료 실시간 소스 자체가 없는 지표 (kospi 등)
+        # 3차 (2026-05-29 SV audit): fetch indicators in PARALLEL (was a
+        # sequential `for iid` loop — up to 15 × 8s ECOS/FRED = ~120s cold).
+        # Each _get_indicator is independent; processing stays sequential
+        # below to preserve ordering + the any_mock/any_no_source flags.
+        import concurrent.futures as _ind_cf
+        with _ind_cf.ThreadPoolExecutor(max_workers=min(len(ids) or 1, 8)) as _ind_ex:
+            _ind_fetched = dict(zip(
+                ids,
+                _ind_ex.map(lambda _iid: _get_indicator(_iid, force=body.force_refresh), ids),
+            ))
         for iid in ids:
-            d = _get_indicator(iid, force=body.force_refresh)
+            d = _ind_fetched[iid]
             # 카탈로그에서 name/unit 보강
             meta = {}
             for cat in MACRO_CATALOG.values():
@@ -3309,8 +3323,18 @@ async def macro_news_brief(body: MacroNewsBriefReq):
         # Domestic news
         if body.scope in ("domestic", "both") and NAVER_CLIENT_ID:
             per_q = max(3, body.max_results // max(len(ko_queries[:5]), 1))
-            for q in ko_queries[:5]:
-                for a in search_naver_news(q, display=per_q):
+            # 3차 (2026-05-29 SV audit): fetch the ≤5 Naver queries in
+            # PARALLEL (was sequential — 5 × 10s = ~50s worst case before
+            # the EN block even started). Mirrors the global-news pattern
+            # below. Results merged in query order to keep dedup deterministic.
+            import concurrent.futures as _ko_cf
+            _ko_qs = ko_queries[:5]
+            with _ko_cf.ThreadPoolExecutor(max_workers=max(len(_ko_qs), 1)) as _ko_ex:
+                _ko_results = list(_ko_ex.map(
+                    lambda _q: search_naver_news(_q, display=per_q), _ko_qs,
+                ))
+            for _arts in _ko_results:
+                for a in _arts:
                     url = a.get("url","")
                     if url and url not in seen_urls:
                         seen_urls.add(url); ko_articles.append(a)

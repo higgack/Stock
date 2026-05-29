@@ -107,7 +107,13 @@ def _fetch_brief() -> dict | None:
             "date_range": "7d",
             "keywords": [],
             "max_results": 20,
-            "force_refresh": True,
+            # 3차 (2026-05-29 SV audit): force_refresh False — now SAFE given
+            # the date-scoped cache key (2차) + degraded-skip (1차 C-A) + 6h
+            # TTL. Lets a watchdog re-kick or a close-together run reuse a
+            # fresh same-slot brief instead of double-paying for regeneration;
+            # the 6h TTL still forces a fresh brief for the 13h-later evening
+            # slot, so morning/evening briefs stay distinct.
+            "force_refresh": False,
         },
         timeout=240,
     )
