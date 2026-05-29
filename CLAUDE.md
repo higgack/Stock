@@ -765,6 +765,28 @@ Metals & Mining) 가 surfaced 한 universal 결함을 prompt + Python 양면
   글자 단위 copy 의무 추가. 4063.T review (시장 'Hist 7.476' vs 뉴스
   'Hist 7.986' 0.5 mismatch) surfaced. paraphrase / 반올림 금지.
   모든 분석가 같은 문자열 copy 의무. Commit `1721eeb`.
+- **Calendar validator** (`_strip_invalid_dates`) — datetime.date(y,m,d)
+  validate. 2026-02-29 (non-leap Feb 29) / 2025-04-31 / 2026-13-01
+  같은 invalid 날짜 fabrication 자동 '⚠️ inferred — invalid date' 치환.
+  Semiconductors review 2026-05-29 디아이 003160.KS '2026-02-29 공급
+  계약' surfaced. Commit `7380b05`.
+- **Single-ticker-per-row** (prompt) — Master Table 한 행 = 정확히 한
+  ticker (또는 `(inferred)` + 단일 회사 OR 'no clean public name').
+  '글로벌 파운드리 (TSMC, Tower Semi)' 같은 multi-ticker mixed 라벨
+  금지. Commit `7380b05`.
+- **KR suffix normalization** (`_normalize_kr_suffix`) — pykrx KOSPI /
+  KOSDAQ ticker list cache 로 잘못된 .KS↔.KQ suffix 자동 정정. GST
+  083450.KS → .KQ (Hardware review 2026-05-29) surfaced. 다운스트림
+  pykrx flow / KIS 수급 / KRX 시장경보 silent miss 차단. Commit pending.
+- **Local currency symbol** (`_fix_currency_symbols`) — ticker suffix
+  → 통화 기호 state machine. TPRO.MI '$34.00' → '€34.00', 3231.TW
+  '$161.00' → 'NT$161.00' 자동 fix. `(\$\d+\.\d{2})` 패턴만 매칭
+  ($1B 같은 글로벌 시장 사이징 보존). prompt 단에서도 의무화.
+  Hardware review 2026-05-29 surfaced. Commit pending.
+- **STALE QUARTERLY DATA** (prompt) — TODAY 기준 6mo+ 과거 quarterly
+  데이터를 '최근' 부사와 함께 cite 금지. Vertiv '2025 Q3 (3 분기
+  전) 수주 +60% 최근 보고' 위반 (Hardware review 2026-05-29) surfaced.
+  Newer Q web verify 또는 'past data' 명시 의무. Commit pending.
 
 The rule of thumb: when adding any structural guard going forward,
 default to **universal** (no market gate) unless the guard depends on

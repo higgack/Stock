@@ -398,6 +398,42 @@ SUB-THEME PADDING 자제 (2026-05-29 Quantum review surfaced):
 표면 연결로 흐르는 케이스. '4 sub-theme 만 식별 가능 — 도메인 자체가
 narrow' 명시 후 4 개로 마감 가능.
 
+LOCAL EXCHANGE CURRENCY SYMBOL (2026-05-29 Hardware & Equipment review):
+ticker 접미사 별 통화 기호 매핑 의무. 52주 high/low / 현재가 / 시총 같이
+local price 인용 시 다음 기호 사용 (Python post-process 가 백스톱
+auto-fix 하지만 prompt 단에서도 의무):
+ • .T / .OS (JP) → ¥ (엔)
+ • .KS / .KQ / .KN (KR) → ₩ (원)
+ • .TW / .TWO (TW) → NT$ (대만 달러)
+ • .HK (HK) → HK$ (홍콩 달러)
+ • .SS / .SZ / .BJ (CN A) → ¥ (人民币)
+ • .L (UK, GBp → GBP 정규화 후) → £
+ • .MI / .PA / .DE / .F / .AS / .MC / .BR / .LS / .VI / .HE (EU) → €
+ • .AX (AU) → A$
+ • .TO / .V / .NE (CA) → C$
+ • .ST (SE) / .OL (NO) / .CO (DK) → kr
+ • .SW (CH) → CHF
+ • bare / .OQ / .N / .NYQ (US) → $
+US ticker 행 안에서 글로벌 시장 규모 cite (예: 'Broadcom 시총 $2T') 는 $
+허용 — 단 본주의 local price (52w hi/lo, 시가) 는 반드시 위 매핑 적용.
+
+위반 예시 (Hardware & Equipment 2026-05-29):
+ • TPRO.MI '52주 최고가 ($34.00)' = 실제 €34.00 (이탈리아 EUR)
+ • 3231.TW Wistron '52주 최고가 ($161.00)' = 실제 NT$161.00 (TWD)
+
+STALE QUARTERLY DATA 차단 (2026-05-29 Hardware & Equipment review):
+TODAY 기준 6개월 이상 과거의 quarterly 데이터를 '최근' / 'recent' /
+'recently' 부사와 함께 cite 금지. 6mo+ past quarter 인용 필요 시:
+ (a) Web search 로 newer quarter (TODAY 기준 ≤6mo) 데이터 verify 후
+     newer 분기 데이터 cite, 또는
+ (b) 'FY[YYYY] Q[N] 실적 (past data, newer Q web verify 권장)' 형태로
+     past 명시 + '최근' 부사 제거.
+
+위반 예시 (Hardware & Equipment 2026-05-29):
+ • Vertiv VRT '2025 Q3 (3 분기 전) 유기적 수주 +60%' 를 '최근 보고'
+   로 cite. TODAY=2026-05-29 기준 FY26 Q1 이미 발표되었을 가능성
+   high — web search 로 newer Q verify 의무.
+
 SINGLE-TICKER-PER-ROW (2026-05-29 Semiconductors review surfaced):
 **Master Table 의 한 행 = 정확히 한 ticker (또는 `(inferred)` 플레이스
 홀더 + 단일 회사명 OR 'no clean public name' 라벨).** 실제 상장사
@@ -800,6 +836,131 @@ _MT_TIER_ROW_RE = re.compile(
 # Top-3 parenthetical: '(Tier: L, 접근 경로: ...)' — captures just the
 # letter for in-place substitution.
 _TOP3_TIER_PAREN_RE = re.compile(r"\(Tier:\s*([LMS?])(\s*[,\)])")
+
+
+_KR_TICKER_EXCHANGE_CACHE: dict[str, str] = {}
+
+
+def _load_kr_ticker_map() -> dict[str, str]:
+    """One-time per-process load of pykrx KOSPI / KOSDAQ ticker lists.
+    Returns map of 6-digit code → 'KS'/'KQ'. Failure (pykrx unavailable
+    or network) returns empty dict — caller treats as no-op."""
+    if _KR_TICKER_EXCHANGE_CACHE:
+        return _KR_TICKER_EXCHANGE_CACHE
+    try:
+        from pykrx import stock as _krx_stock
+        for code in _krx_stock.get_market_ticker_list(market="KOSPI"):
+            _KR_TICKER_EXCHANGE_CACHE[str(code)] = "KS"
+        for code in _krx_stock.get_market_ticker_list(market="KOSDAQ"):
+            _KR_TICKER_EXCHANGE_CACHE[str(code)] = "KQ"
+        log.info("screener: KR ticker map loaded — %d codes",
+                 len(_KR_TICKER_EXCHANGE_CACHE))
+    except Exception as exc:
+        log.warning("screener: pykrx KR ticker map load failed: %s", exc)
+    return _KR_TICKER_EXCHANGE_CACHE
+
+
+def _normalize_kr_suffix(text: str) -> tuple[str, int]:
+    """KR ticker '.KS' / '.KQ' suffix 잘못 매핑 정정 (2026-05-29 Hardware
+    review surfaced — GST 083450.KS 가 실제 .KQ KOSDAQ 상장).
+
+    Pro 가 web search 결과로 ticker 생성 시 KOSPI / KOSDAQ 구분이 종종
+    틀린다. 잘못된 .KS 가 다운스트림 (pykrx flow / KIS 수급 / KRX 시장
+    경보 / Naver Finance redirect) 에서 silent miss 유발. pykrx 의
+    KOSPI / KOSDAQ ticker list 로 canonical 거래소 확인 + suffix 자동
+    정정. pykrx 미설치 시 no-op.
+
+    Returns (corrected_text, n_fixes).
+    """
+    import re
+    kr_map = _load_kr_ticker_map()
+    if not kr_map:
+        return text, 0
+    pattern = re.compile(r"\b(\d{6})\.(KS|KQ)\b")
+    n_fixes = 0
+
+    def _replace(m: "re.Match") -> str:
+        nonlocal n_fixes
+        code = m.group(1)
+        current = m.group(2)
+        canonical = kr_map.get(code)
+        if canonical and canonical != current:
+            n_fixes += 1
+            return f"{code}.{canonical}"
+        return m.group(0)
+
+    return pattern.sub(_replace, text), n_fixes
+
+
+# Ticker suffix → local currency symbol. US default '$' / bare ticker
+# implicit. JP / CN A-share 모두 ¥ (kanji 公용), 단 CN 본토는 人民币 ¥
+# (NT$ / HK$ 같은 별도 prefix 不要). EU 다중 거래소 (.MI / .PA / .DE /
+# .AS / .MC / .BR / .LS / .VI) 모두 € (Eurozone). 2026-05-29 Hardware
+# review surfaced TPRO.MI 'TIPO $34.00' (실제 €) + 3231.TW '$161'
+# (실제 NT$). 사용자 가시 high-confidence price 패턴만 자동 교체.
+_SUFFIX_TO_SYMBOL = {
+    "T": "¥", "OS": "¥",                          # JP
+    "KS": "₩", "KQ": "₩", "KN": "₩",              # KR
+    "TW": "NT$", "TWO": "NT$",                    # TW
+    "HK": "HK$",                                  # HK
+    "SS": "¥", "SZ": "¥", "BJ": "¥",              # CN A-share
+    "L": "£",                                     # UK (GBp → GBP 정규화 후)
+    "MI": "€", "PA": "€", "DE": "€", "F": "€",    # EU
+    "AS": "€", "MC": "€", "BR": "€", "LS": "€", "VI": "€",
+    "AX": "A$",                                   # AU
+    "TO": "C$", "V": "C$", "NE": "C$",            # CA
+    "ST": "kr",                                   # SE
+    "OL": "kr",                                   # NO
+    "CO": "kr",                                   # DK
+    "HE": "€",                                    # FI (€ since 2002)
+    "SW": "CHF", "SE": "CHF",                     # CH
+}
+
+
+def _fix_currency_symbols(text: str) -> tuple[str, int]:
+    """Replace '$X.XX' parenthesized prices inside non-US ticker rows
+    with the correct local currency symbol. Line-by-line state machine:
+    each Master Table row header (e.g. '• L · TPRO.MI · Technoprobe S.p.A.'
+    or '[theme] · L · TPRO.MI · ...') resets `current_symbol` based on
+    ticker suffix. Subsequent body lines inherit until next header.
+
+    Match pattern '(\\$DDD.DD)' (2-decimal price stamp) — high-precision
+    52주 hi/lo / 현재가 표기. Catches the Hardware review violations:
+      • TPRO.MI '$34.00' → '€34.00'
+      • 3231.TW '$161.00' → 'NT$161.00'
+    Skips '$1B', '$8.4B' style global market sizing (no 2-decimal) so
+    Broadcom-style mega-cap mentions in non-US rows stay valid.
+
+    Returns (corrected_text, n_fixes).
+    """
+    import re
+    header_re = re.compile(
+        r"(?:\[[^\]]+\]|•)[\s·]+[LMS][\s·]+[`'\"]*([A-Z0-9][A-Z0-9.\-_]*)[`'\"]*"
+    )
+    price_re = re.compile(r"\(\$(\d[\d,]*\.\d{2})\)")
+    n_fixes = 0
+    current_symbol = "$"
+
+    out_lines: list[str] = []
+    for line in text.split("\n"):
+        m = header_re.search(line)
+        if m:
+            ticker_raw = m.group(1).strip("`'\"")
+            if "." in ticker_raw:
+                suffix = ticker_raw.split(".")[-1]
+                current_symbol = _SUFFIX_TO_SYMBOL.get(suffix, "$")
+            else:
+                current_symbol = "$"  # US bare ticker
+
+        if current_symbol != "$":
+            def _price_replace(pm: "re.Match", _sym=current_symbol) -> str:
+                nonlocal n_fixes
+                n_fixes += 1
+                return f"({_sym}{pm.group(1)})"
+            line = price_re.sub(_price_replace, line)
+        out_lines.append(line)
+
+    return "\n".join(out_lines), n_fixes
 
 
 def _strip_invalid_dates(text: str) -> tuple[str, int]:
@@ -1646,6 +1807,27 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
         log.warning(
             "screener: %d invalid date(s) stripped (chronological fabrication)",
             n_invalid_dates,
+        )
+
+    # KR ticker '.KS' vs '.KQ' suffix 정정 (2026-05-29 Hardware review).
+    # GST 083450.KS (잘못) → 083450.KQ (KOSDAQ 정답). pykrx canonical map
+    # 으로 자동 fix. pykrx 미설치 시 no-op.
+    p45_text, n_kr_fixes = _normalize_kr_suffix(p45_text)
+    if n_kr_fixes:
+        log.warning(
+            "screener: %d KR ticker suffix(es) auto-corrected (.KS↔.KQ)",
+            n_kr_fixes,
+        )
+
+    # Local currency symbol 정정 (2026-05-29 Hardware review):
+    # TPRO.MI '$34.00' → '€34.00', 3231.TW '$161.00' → 'NT$161.00' 등.
+    # ticker suffix 기반 row state machine, '$X.XX' 파라네시스 패턴만
+    # 매칭 → '$1B' 같은 글로벌 시장 사이징 표기는 보존.
+    p45_text, n_curr_fixes = _fix_currency_symbols(p45_text)
+    if n_curr_fixes:
+        log.warning(
+            "screener: %d currency symbol(s) auto-corrected (local exchange)",
+            n_curr_fixes,
         )
 
     # Extract machine-parseable JSON tails (TICKERS_USED first so the
