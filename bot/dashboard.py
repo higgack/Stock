@@ -1729,13 +1729,13 @@ section.report-section > h2 {
 }
 pre.report {
   white-space: pre-wrap; word-wrap: break-word; font-family: inherit;
-  font-size: 16px; line-height: 1.7; margin: 0; color: var(--fg);
+  font-size: 15px; line-height: 1.7; margin: 0; color: var(--fg);
   background: var(--card); padding: 16px; border: 1px solid var(--border);
   border-radius: 8px;
 }
 pre.report strong { color: var(--fg); }
 pre.report h3, pre.report h4, pre.report h5, pre.report h6 {
-  margin: 12px 0 4px; font-size: 16px;
+  margin: 12px 0 4px; font-size: 15px;
 }
 /* Deep-link mark — index-page snippet click navigates here with
    #mark=<phrase>; JS below wraps the first occurrence and pulses. */
