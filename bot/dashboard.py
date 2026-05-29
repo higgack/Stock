@@ -2806,7 +2806,7 @@ td.neu { color:var(--muted); }
   border-radius:4px; }
 details.analysis { margin:10px 0 14px; }
 details.analysis summary { cursor:pointer; color:var(--accent);
-  font-size:14px; padding:7px 11px; background:var(--accent-soft);
+  font-size:15px; padding:7px 11px; background:var(--accent-soft);
   border-radius:6px; user-select:none; list-style:none; }
 details.analysis summary::-webkit-details-marker { display:none; }
 details.analysis summary::before { content:"▸ "; margin-right:4px; }
@@ -2820,7 +2820,7 @@ details.analysis summary:hover { background:var(--accent-soft2); }
 /* 카드 본문 (Screener Top-3 근거·binding·bottom_line + Daily Byte 브리프).
    13px 는 모바일에서 작음 → 15px + line-height 1.65 (SV 본문 수준).
    2026-05-29 사용자 요청. */
-.analysis-b { color:var(--text); font-size:15px; line-height:1.65;
+.analysis-b { color:var(--text); font-size:14px; line-height:1.65;
   white-space:pre-wrap; }
 .ticker-chip { cursor:help; border-bottom:1px dotted var(--muted); }
 .ticker-chip:hover { color:var(--accent); }
