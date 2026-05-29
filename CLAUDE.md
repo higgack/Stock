@@ -1056,18 +1056,28 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
 - Telegram set_my_commands cap 100/scope — 현재 65 도메인 + 9 정적 +
   자유어 (dynamic 등록 안 됨, set_my_commands 노출 X) = 안전.
 
-**다음 작업 — 캐시 + Sanity Check:**
+**✅ 24h 디스크 캐시 — 완료 (2026-05-29, commit `b953de2`):**
+- `bot/screener_cache.py` 단일 모듈. ScreenerResult 를 `~/.tradingagents/
+  screener_cache/{slug}_YYYY-MM-DD.json` 로 저장. KST 자정 만료.
+- Cache key = canonical slug (resolve_slug 가 alias 통일 → `/screener
+  AI 데이터센터` + `/screener bottleneck` 같은 cache 행 collapse).
+  자유어는 freetext cache_key (sha256[:12]). 정적 + 자유어 모두 동일
+  cache 인프라.
+- `/screener {slug} fresh` flag = 캐시 무시 + 강제 재실행. case-
+  insensitive, alias 우선.
+- Header '💾 오늘 캐시' 표시 (hit 시). cost_krw / elapsed_sec 은 원본
+  (첫 실행값) 그대로 보존.
+- Audit `~/.tradingagents/screener_cache_audit.jsonl` (event='cache_
+  hit' / 'cache_save').
+- 보안: _SAFE_KEY_RE (`^[a-zA-Z0-9_-]{1,80}$`) path traversal 차단.
+
+**다음 작업 — Sanity Check 만 남음:**
 - 65 도메인 (6 L1 + 11 L2 + 48 L3) Sanity check — 각 L3 모듈을
   실제 `/screener_<slug>` 호출로 binding constraint quality + tier 분포
-  + region coverage 검증. 우선순위 / 결함 발견 시 fix batch.
-- 도메인별 24h 캐시 (정적 도메인): `~/.tradingagents/screener_cache/
-  {slug}_YYYY-MM-DD.json` 으로 같은 도메인 24h 내 재호출 시 Pro skip +
-  ₩0 반환. `/screener {slug} fresh` flag 로 강제 재실행. 자유어는 이미
-  shipped (위 freetext_themes/).
-- ~~AD_HOC layer 대시보드 display~~ ✅ 완료 (commit pending) — promoted
-  모듈이 `archive/screener_domains.html` 에 '🆕 자유어 promoted' 섹션
-  으로 노출 (L1/L2/L3 와 동일 collapsible + 색상 strip 주황 #f59e0b).
-  Default open (소수 expected, promote 흐름 추적용).
+  + region coverage 검증. 우선순위 / 결함 발견 시 fix batch. 24h
+  캐시 덕에 같은 도메인 반복 호출 시 ₩0 — sanity check 비용 절감.
+- ~~AD_HOC layer 대시보드 display~~ ✅ 완료 (commit `2640c00`)
+- ~~정적 도메인 24h 캐시~~ ✅ 완료 (commit `b953de2`)
 
 ## Bottleneck Screener — 설계 메모리 (origin 2026-05-28, kept for reference)
 

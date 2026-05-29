@@ -902,7 +902,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
- • Screener 65 도메인 + 자유어 즉석 생성 (24h 캐시) · 분기 GICS 점검 06-01 · 예정: 모듈 promotion 자동화
+ • Screener 65 도메인 + 자유어 + 24h 캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기 GICS 06-01 · 예정: L3 sanity check
 """
 
 
