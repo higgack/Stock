@@ -2126,7 +2126,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 실행</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
     <div class="stat"><div class="stat-v">{total_picks}</div><div class="stat-l">Top-3 picks</div></div>
-    <div class="stat"><div class="stat-v">{resolved_count}</div><div class="stat-l">5d resolved</div></div>
+    <div class="stat"><div class="stat-v">{resolved_count}</div><div class="stat-l">1m resolved</div></div>
   </div>
 
   <div class="search-bar">
@@ -2325,7 +2325,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
             if picks:
                 parts.append('    <table class="picks"><thead><tr>'
                              '<th>#</th><th>Ticker</th><th>Tier</th><th>Company</th>'
-                             '<th>5d</th><th>15d</th><th>30d</th><th>α vs sector</th>'
+                             '<th>1개월</th><th>3개월</th><th>6개월</th><th>α vs sector</th>'
                              '</tr></thead><tbody>')
                 for pick in picks:
                     if not isinstance(pick, dict):
@@ -2336,26 +2336,28 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
                     company = _html.escape(pick.get("company", "")[:50])
                     # Look up resolved outcomes
                     out = outcomes.get((r.get("_date", ""), ticker), {}) or {}
-                    raw5 = out.get("raw")
-                    alpha5 = out.get("alpha")
+                    # Screener pass1 = 1개월(30 캘린더일), pass2 = 3개월
+                    # (90)·6개월(180). 변수명은 1m/3m/6m 의미.
+                    raw_1m  = out.get("raw")
+                    alpha1m = out.get("alpha")
                     extras = {o["days"]: o for o in (out.get("outcomes_extra") or [])}
-                    raw15 = extras.get(15, {}).get("raw")
-                    raw30 = extras.get(30, {}).get("raw")
+                    raw_3m  = extras.get(90,  {}).get("raw")
+                    raw_6m  = extras.get(180, {}).get("raw")
                     pending_cell = '<span class="pending">⏳</span>'
-                    cell_5d  = _fmt_pct_signed(raw5)  if raw5  else pending_cell
-                    cell_15d = _fmt_pct_signed(raw15) if raw15 else "—"
-                    cell_30d = _fmt_pct_signed(raw30) if raw30 else "—"
-                    cell_alpha = _fmt_pct_signed(alpha5) if alpha5 else "—"
+                    cell_1m = _fmt_pct_signed(raw_1m) if raw_1m else pending_cell
+                    cell_3m = _fmt_pct_signed(raw_3m) if raw_3m else "—"
+                    cell_6m = _fmt_pct_signed(raw_6m) if raw_6m else "—"
+                    cell_alpha = _fmt_pct_signed(alpha1m) if alpha1m else "—"
                     parts.append(
                         f'<tr>'
                         f'<td class="rank">#{rank}</td>'
                         f'<td><code>{_html.escape(ticker)}</code></td>'
                         f'<td><span class="tier-{tier}">{tier}</span></td>'
                         f'<td class="co">{company}</td>'
-                        f'<td class="{_outcome_class(raw5)}">{cell_5d}</td>'
-                        f'<td class="{_outcome_class(raw15)}">{cell_15d}</td>'
-                        f'<td class="{_outcome_class(raw30)}">{cell_30d}</td>'
-                        f'<td class="{_outcome_class(alpha5)}">{cell_alpha}</td>'
+                        f'<td class="{_outcome_class(raw_1m)}">{cell_1m}</td>'
+                        f'<td class="{_outcome_class(raw_3m)}">{cell_3m}</td>'
+                        f'<td class="{_outcome_class(raw_6m)}">{cell_6m}</td>'
+                        f'<td class="{_outcome_class(alpha1m)}">{cell_alpha}</td>'
                         f'</tr>'
                     )
                 parts.append('</tbody></table>')

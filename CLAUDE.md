@@ -1140,6 +1140,17 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
 
 ## Bottleneck Screener — 운영 중 (Phase β + Wave 1 LIVE · 2026-05-29)
 
+**Outcome 측정 horizon (사용자 정책 2026-05-29)**: screener Top-3 picks 의
+5/15/30d (trading days) outcome 컬럼은 **1개월/3개월/6개월 (캘린더)** 로
+변경. screener 는 6-18M thesis 라 NOAH /ticker 5거래일과 별개 horizon.
+`bot/auto_resolve.py:_fetch_returns_calendar(ticker, trade_date, calendar_
+days)` — target = trade_date + N캘린더일, yfinance 가 영업일만 반환하므로
+target 이 weekend/holiday 면 자동으로 **다음 영업일 close** 가 사용된다.
+windows: pass1 = 30(1m) · pass2 = (90,180) = (3m,6m). gate +3 buffer.
+대시보드: `<th>1개월</th><th>3개월</th><th>6개월</th>` + "1m resolved" 통계.
+NOAH /ticker 의 `_fetch_returns` 는 5거래일 그대로 유지 (정책 분리).
+
+
 **현재 가동 상태 (변경 시 본 섹션 즉시 업데이트 의무 — 사용자 정책
 2026-05-29):**
 

@@ -70,6 +70,87 @@ _LONG_HORIZON_GATE_CALENDAR_DAYS = {
     30: 42,
 }
 
+# Screener 전용 horizon (캘린더 일수, 사용자 정책 2026-05-29):
+# screener 는 6-18M thesis 라 NOAH /ticker 5거래일과 별개. 측정 기간을
+# 한달/3달/6개월 (캘린더) 로. target_date 가 영업일이 아니면 yfinance 가
+# 영업일만 반환하므로 자동으로 그 다음 영업일 close 가 사용된다.
+_SCREENER_PASS1_CALENDAR_DAYS = 30   # 1개월
+_SCREENER_LONG_HORIZON_WINDOWS = (90, 180)   # 3개월, 6개월
+_SCREENER_GATE_CALENDAR_DAYS = {
+    90: 93,    # +3 buffer (target+다음 영업일이 today 이하)
+    180: 183,
+}
+
+
+def _fetch_returns_calendar(
+    ticker: str, trade_date: str, calendar_days: int,
+) -> tuple[Optional[float], Optional[float], Optional[int]]:
+    """Calendar-day variant of `_fetch_returns` for screener (long-horizon
+    thesis). target = trade_date + calendar_days. yfinance 가 영업일만
+    반환하므로, target 이 weekend/holiday 면 그 다음 영업일 close 가
+    자동으로 첫 매칭 row 가 된다. raw/alpha = (close_target - close_start)
+    / close_start, alpha 는 sector ETF 또는 SPY 대비.
+
+    Returns (raw, alpha, actual_calendar_days) — actual_days 는 trade_date
+    부터 사용된 close 까지의 캘린더 일수 (영업일 fallback 포함, 실제 측정
+    구간). None on insufficient data."""
+    try:
+        start = datetime.strptime(trade_date, "%Y-%m-%d")
+        # +3 calendar-day buffer 로 target+next-bday 가 today 안에 들어왔는지
+        if start + timedelta(days=calendar_days + 3) > datetime.now():
+            return None, None, None
+        end = datetime.now() + timedelta(days=1)
+        end_str = end.strftime("%Y-%m-%d")
+
+        benchmark_symbol = "SPY"
+        try:
+            from tradingagents.agents.utils.sector_strength_tools import _resolve_benchmark
+            bm = _resolve_benchmark(ticker)
+            if bm and bm[0]:
+                benchmark_symbol = bm[0]
+        except Exception:
+            pass
+
+        stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
+        bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
+        if len(bench) < 2 and benchmark_symbol != "SPY":
+            benchmark_symbol = "SPY"
+            bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
+        if len(stock) < 2 or len(bench) < 2:
+            return None, None, None
+
+        target = start + timedelta(days=calendar_days)
+        # tz-naive 비교를 위해 stock.index 를 date 로
+        def _first_idx_on_or_after(df, t):
+            for i, ts in enumerate(df.index):
+                d = ts.date() if hasattr(ts, "date") else ts
+                if d >= t.date():
+                    return i
+            return len(df) - 1  # target 이 미래면 마지막 close
+
+        s_i = _first_idx_on_or_after(stock, target)
+        b_i = _first_idx_on_or_after(bench, target)
+        if s_i == 0 or b_i == 0:
+            return None, None, None  # 시작 close 와 동일 → 측정 불가
+
+        raw = float(
+            (stock["Close"].iloc[s_i] - stock["Close"].iloc[0])
+            / stock["Close"].iloc[0]
+        )
+        bench_ret = float(
+            (bench["Close"].iloc[b_i] - bench["Close"].iloc[0])
+            / bench["Close"].iloc[0]
+        )
+        alpha = raw - bench_ret
+        used_date = stock.index[s_i]
+        used = (used_date.date() if hasattr(used_date, "date") else used_date)
+        actual_cal = (used - start.date()).days
+        return raw, alpha, actual_cal
+    except Exception as exc:
+        log.warning("fetch_returns_calendar: %s %s+%dd failed: %s",
+                    ticker, trade_date, calendar_days, exc)
+        return None, None, None
+
 
 def _fetch_returns(
     ticker: str, trade_date: str, holding_days: int = 5
@@ -238,9 +319,11 @@ def main() -> int:
     if pass2_updates:
         memory.batch_append_long_horizon_outcomes(pass2_updates)
 
-    # ── Screener pass: identical 5d → 15d → 30d on screener_memory.md ──
-    # Idempotent. Skipped if the screener memory log doesn't exist yet
-    # (no /screener runs landed in this Phase).
+    # ── Screener pass: 1개월 → 3개월 → 6개월 (캘린더, screener_memory.md)
+    # screener 는 6-18M thesis (사용자 정책 2026-05-29) — NOAH /ticker 5거래일
+    # 과 별개 horizon. _fetch_returns_calendar 가 target = trade_date +
+    # N캘린더일 의 첫 영업일 close 를 사용 (weekend/holiday 자동 fallback).
+    # Idempotent. screener 메모리 미존재 시 skip.
     scr_pass1_updates: list[dict] = []
     scr_pass2_updates: list[dict] = []
     if _SCREENER_MEMORY_PATH.exists():
@@ -250,13 +333,15 @@ def main() -> int:
         scr_memory = TradingMemoryLog(scr_cfg)
         scr_entries = scr_memory.load_entries()
         scr_pending = [e for e in scr_entries if e.get("pending")]
-        # Pass 1 (5d)
+        # Pass 1: 1개월 (30 캘린더일)
         for entry in scr_pending:
             ticker = entry.get("ticker") or ""
             trade_date = entry.get("date") or ""
             if not ticker or not trade_date:
                 continue
-            raw, alpha, days = _fetch_returns(ticker, trade_date, holding_days=5)
+            raw, alpha, days = _fetch_returns_calendar(
+                ticker, trade_date, _SCREENER_PASS1_CALENDAR_DAYS,
+            )
             if raw is None:
                 continue
             scr_pass1_updates.append({
@@ -266,13 +351,13 @@ def main() -> int:
             })
         if scr_pending:
             log.info(
-                "auto_resolve screener pass1 (5d): scanned %d pending → %d ready",
+                "auto_resolve screener pass1 (1m): scanned %d pending → %d ready",
                 len(scr_pending), len(scr_pass1_updates),
             )
         if scr_pass1_updates:
             scr_memory.batch_update_with_outcomes(scr_pass1_updates)
 
-        # Pass 2 (15d, 30d) for screener
+        # Pass 2: 3개월(90 캘린더) + 6개월(180 캘린더)
         scr_resolved_after_p1 = [
             e for e in scr_memory.load_entries() if not e.get("pending")
         ]
@@ -282,17 +367,19 @@ def main() -> int:
             if not ticker or not trade_date:
                 continue
             existing_days = {o["days"] for o in (entry.get("outcomes_extra") or [])}
-            for window in _LONG_HORIZON_WINDOWS:
+            for window in _SCREENER_LONG_HORIZON_WINDOWS:
                 if window in existing_days:
                     continue
                 try:
                     start = datetime.strptime(trade_date, "%Y-%m-%d")
                 except ValueError:
                     continue
-                gate_days = _LONG_HORIZON_GATE_CALENDAR_DAYS[window]
+                gate_days = _SCREENER_GATE_CALENDAR_DAYS[window]
                 if start + timedelta(days=gate_days) > datetime.now():
                     continue
-                raw, alpha, days = _fetch_returns(ticker, trade_date, holding_days=window)
+                raw, alpha, days = _fetch_returns_calendar(
+                    ticker, trade_date, window,
+                )
                 if raw is None:
                     continue
                 scr_pass2_updates.append({
@@ -301,7 +388,7 @@ def main() -> int:
                 })
         if scr_resolved_after_p1:
             log.info(
-                "auto_resolve screener pass2 (15d+30d): scanned %d resolved → %d ready",
+                "auto_resolve screener pass2 (3m+6m): scanned %d resolved → %d ready",
                 len(scr_resolved_after_p1), len(scr_pass2_updates),
             )
         if scr_pass2_updates:
@@ -318,7 +405,7 @@ def main() -> int:
 
     log.info(
         "auto_resolve: %d pass1 (5d) + %d pass2 (15d/30d) updates applied "
-        "(+ screener: %d pass1 + %d pass2)",
+        "(+ screener: %d pass1 (1m) + %d pass2 (3m/6m))",
         len(pass1_updates), len(pass2_updates),
         len(scr_pass1_updates), len(scr_pass2_updates),
     )
