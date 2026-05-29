@@ -1668,17 +1668,17 @@ def _render_index(records: list[dict]) -> str:
     if issue_count > 0:
         errors_link = (
             f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
-            f' · <a href="daily_byte.html">📊 Daily Byte</a>'
             f' · <a href="screener.html">📊 Bottleneck Screener</a>'
             f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
+            f' · <a href="daily_byte.html">📊 Daily Byte</a>'
             + _external_links
         )
     else:
         errors_link = (
             ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
-            ' · <a href="daily_byte.html">📊 Daily Byte</a>'
             ' · <a href="screener.html">📊 Bottleneck Screener</a>'
             ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
+            ' · <a href="daily_byte.html">📊 Daily Byte</a>'
             + _external_links
         )
 
@@ -3533,6 +3533,14 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
             card_default_open = (date == _today_kst and day_card_count == 1)
             card_open_attr = " open" if card_default_open else ""
             card_id = f"card-{_html.escape(r.get('_date',''))}-{filename}".replace(".", "_")
+            # 인포그래픽 이미지 (archive/ 기준 상대경로) — 있으면 카드 상단 임베드
+            png_rel = (r.get("png") or "").strip()
+            img_html = ""
+            if png_rel and re.match(r"^daily_byte_img/[\w.\-]+\.png$", png_rel):
+                img_html = (f'<img class="db-info" src="{_html.escape(png_rel)}" '
+                            f'alt="Daily Byte 인포그래픽" loading="lazy" '
+                            f'style="width:100%;max-width:520px;border-radius:10px;'
+                            f'margin:4px 0 12px;display:block">')
 
             parts.append(f"""
   <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
@@ -3543,6 +3551,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
       <button class="del-btn" type="button" title="이 Daily Byte 기록 삭제">🗑️</button>
     </summary>
     <div class="card-body">
+      {img_html}
       <div class="analysis-sec"><div class="analysis-b" data-section="brief">{body}</div></div>
     </div>
   </details>

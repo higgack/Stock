@@ -406,6 +406,10 @@ _HOME = os.path.expanduser("~")
 _DAILY_BYTE_ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "daily_byte_archive")
 _DAILY_BYTE_USAGE_LOG = os.path.join(_HOME, ".tradingagents", "daily_byte_usage.jsonl")
 _NOAH_USAGE_LOG = os.path.join(_HOME, ".tradingagents", "usage.jsonl")
+# 인포그래픽 PNG 는 대시보드 HTTP 서버가 서빙하는 archive/ 아래에 저장 →
+# daily_byte.html 카드에서 <img src="daily_byte_img/..."> 로 임베드.
+_DASH_ARCHIVE_ROOT = os.path.join(_HOME, ".tradingagents", "archive")
+_DBYTE_IMG_DIR = os.path.join(_DASH_ARCHIVE_ROOT, "daily_byte_img")
 _USD_TO_KRW_FALLBACK = 1330.0
 
 
@@ -449,11 +453,13 @@ def _log_daily_byte_usage(pt: int, ot: int, cost_krw: float) -> None:
 
 
 def _save_daily_byte_archive(body: str, cost_krw: float, date_yyyymmdd: str,
-                             elapsed_sec: float = 0.0, kind: str = "daily") -> str | None:
+                             elapsed_sec: float = 0.0, kind: str = "daily",
+                             png_rel: str | None = None) -> str | None:
     """Write run → ~/.tradingagents/daily_byte_archive/YYYY-MM-DD/HHMMSS_
     daily_byte[_weekly].json (screener archive mirror) → regenerate
     daily_byte.html. body = post-processed 브리프 (Python 제목/부제 제외 —
-    카드 헤더가 date·kind 표시). 실패 시 None."""
+    카드 헤더가 date·kind 표시). png_rel = archive/ 기준 인포그래픽 상대경로
+    (대시보드 카드 <img> 임베드용). 실패 시 None."""
     import json as _json
     try:
         now = _now_kst()
@@ -465,7 +471,7 @@ def _save_daily_byte_archive(body: str, cost_krw: float, date_yyyymmdd: str,
         rec = {
             "ts": now.isoformat(timespec="seconds"), "date": date_iso,
             "kind": kind, "body": body, "cost_krw": round(cost_krw, 4),
-            "elapsed_sec": round(elapsed_sec, 1),
+            "elapsed_sec": round(elapsed_sec, 1), "png": png_rel,
         }
         with open(path, "w", encoding="utf-8") as f:
             _json.dump(rec, f, ensure_ascii=False)
@@ -534,21 +540,26 @@ def generate() -> tuple[str, float, str | None] | None:
     cost_krw = (pt * _PRO_IN + ot * _PRO_OUT) / 1e6 * _USD_TO_KRW
     _log_daily_byte_usage(pt, ot, cost_krw)
 
-    # 아카이브 (대시보드 카드용 — Python 제목/부제 제외한 브리프 본문) +
-    # daily_byte.html regenerate. push 와 무관하게 항상 기록.
-    _save_daily_byte_archive(body, cost_krw, date,
-                             elapsed_sec=_time.monotonic() - _t0, kind="daily")
-
     # 인포그래픽 PNG (수급 데이터 = pykrx 정확값 직접 주입, 환각 0).
-    # NanumGothic 부재 시 render_infographic → None → 텍스트만 push.
+    # 대시보드가 서빙하는 archive/daily_byte_img/ 에 저장 → 카드 <img> 임베드
+    # + 텔레그램 사진 push. NanumGothic 부재 시 None → 텍스트만.
     png_path = None
+    png_rel = None
     try:
         from bot.daily_byte_infographic import render_infographic
-        out = os.path.join(_DAILY_BYTE_ARCHIVE_DIR, "_png",
-                           f"{date}_{_now_kst():%H%M%S}.png")
+        fname = f"{date}_{_now_kst():%H%M%S}.png"
+        out = os.path.join(_DBYTE_IMG_DIR, fname)
         png_path = render_infographic(data, _iso_dot(date), out)
+        if png_path:
+            png_rel = f"daily_byte_img/{fname}"
     except Exception as exc:
         log.warning("daily_byte: infographic render failed: %s", exc)
+
+    # 아카이브 (대시보드 카드용 — Python 제목/부제 제외 본문 + 인포그래픽
+    # 상대경로) + daily_byte.html regenerate. push 와 무관하게 항상 기록.
+    _save_daily_byte_archive(body, cost_krw, date,
+                             elapsed_sec=_time.monotonic() - _t0,
+                             kind="daily", png_rel=png_rel)
 
     title = f"📊 <b>Daily Byte - {_iso_dot(date)}</b>"
     full = f"{title}\n<i>장 마감 후 KR 수급 브리프 · 생성 {_now_kst():%H:%M} KST</i>\n\n{body}"

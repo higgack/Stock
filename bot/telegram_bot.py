@@ -907,20 +907,13 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly KR수급, 인포그래픽+대시보드)
 
 ━━━━━━━━━
-<b>【9. 트러블슈팅】</b>
- • 동시 분석 1건 (lock 직렬화), /compare 2종목까지
- • "캐시 없음" → 자정 만료, 재입력
- • "10분 타임아웃" → 1~2분 후 재시도 (Gemini 503 가능)
- • "분석가 응답 누락" → retry 후 실패. 다른 종목 시도
- • "봇 재시작으로 중단" → 자동 복구 메시지, 다시 입력
-
-━━━━━━━━━
-<b>【10. 차별화 포인트】</b>
+<b>【9. 차별화 포인트】</b>
 페르소나 토론 (Buffett/Lynch vs Graham/Marks) · 결정 3노드만 Pro (~₩30 추가로 품질 점프) · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 ground truth 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 (장기 thesis 매도 자제) · 섹터 ETF 알파 · 실패 시 hallucination 대신 명시적 abort
 
 ━━━━━━━━━
-<b>【11. 대시보드】</b> 🦉
- • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">8081/...</a> (ID/PW). 💰비용=NOAH+Screener+SV. 헤더에서 Screener/SV/🇰🇷수출입 이동
+<b>【10. 대시보드】</b> 🦉
+ • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">8081/...</a> (ID/PW). 💰비용=NOAH+Screener+DailyByte+SV. 헤더에서 Screener/도메인/Daily Byte/SV/🇰🇷수출입 이동
+ • <b>Daily Byte</b>: archive/daily_byte.html (헤더 📊 Daily Byte) — 평일19:00·일22:00 Weekly KR수급, 인포그래픽 사진+본문, 날짜별 누적·스니펫 검색·🗑️
  • <b>Screener</b>: archive/screener.html — 날짜별 run·분석·Top-3 5/15/30d·본문 스니펫 검색·🗑️. 도메인 = /screener_list
  • <b>SV</b>: <a href="http://34.50.23.221:8002/dashboard">8002/dashboard</a> · 매크로·산업·Deal · 07:30/20:30 + 텔레 · 22:00 주간·섹터 · auto-deploy 1분
  • <b>🇰🇷 수출입</b>: <a href="http://34.50.23.221:8765/dashboard/">8765/dashboard</a> · 외부 보조 (자동 갱신)
@@ -928,7 +921,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
  • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
 
 ━━━━━━━━━
-<b>【12. 진행 중 / 예정】</b>
+<b>【11. 진행 중 / 예정】</b>
  • Screener 65 도메인 + 자유어 + 24h 캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기 GICS 06-01 · 예정: L3 sanity check
 """
 

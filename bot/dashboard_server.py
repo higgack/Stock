@@ -310,6 +310,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             target = date_dir / filename
             if not target.exists() or not target.is_file():
                 raise ValueError(f"no daily_byte entry for {date}/{filename}")
+            # 임베드 인포그래픽 PNG 도 함께 삭제 (orphan 방지). JSON 의 png
+            # 상대경로(archive/ 기준)를 읽어 검증 후 unlink.
+            try:
+                rec = json.loads(target.read_text(encoding="utf-8"))
+                png_rel = (rec.get("png") or "").strip()
+                if _re_db.match(r"^daily_byte_img/[\w.\-]+\.png$", png_rel):
+                    png_file = (_ARCHIVE_ROOT / png_rel).resolve()
+                    if png_file.relative_to(_ARCHIVE_ROOT.resolve()) and png_file.is_file():
+                        png_file.unlink()
+            except Exception as exc:
+                log.warning("daily_byte_delete: png cleanup skipped: %s", exc)
             target.unlink()
 
             try:

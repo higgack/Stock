@@ -405,6 +405,19 @@ pattern to follow:
     NanumGothic 필요**: `sudo apt install -y fonts-nanum` (없으면 `_font_
     ready()` False → 인포그래픽만 skip, 텍스트 정상). 이모지는 NanumGothic
     미지원이라 컬러 탭으로 대체, 음수는 ASCII '-'(U+2212 미지원).
+  • 인포그래픽 대시보드 임베드 (2026-05-29): PNG 를 대시보드가 서빙하는
+    `archive/daily_byte_img/{date}_{HHMMSS}.png` 에 저장 → JSON `png` 필드
+    (archive/ 상대경로) → `_render_daily_byte_page` 카드에 `<img>` 임베드
+    (regex 검증 `^daily_byte_img/[\w.\-]+\.png$`). 텔레그램은 sendPhoto 로
+    같은 PNG push. delete 시 `_handle_daily_byte_delete` 가 png 도 함께 unlink.
+  • 폰트 자동 설치 (2026-05-29): `deploy/install.sh` 가 `fc-list | grep nanum`
+    부재 시 `apt-get install -y fonts-nanum` + `fc-cache -f` (idempotent,
+    `|| true`). auto-update 가 deploy/* 변경 감지 시 install.sh 자동 호출 →
+    SSH 없이 폰트 설치. 실패해도 텍스트 브리프 정상.
+  • 메인 대시보드 nav 순서 (사용자 2026-05-29): errors → Bottleneck Screener
+    → 도메인 목록 → **Daily Byte** → 외부(SV/🇰🇷). help §10(대시보드)에 Daily
+    Byte 링크+설명 추가, §9(트러블슈팅) 삭제로 4096 cap 확보(섹션 1~11 재번호,
+    트러블슈팅 내용은 본 CLAUDE.md 보존).
 
 **Acceptable manual steps** (rare, one-time):
 - Initial systemd unit installation

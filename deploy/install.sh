@@ -66,6 +66,17 @@ done
 
 systemctl daemon-reload
 
+# Daily Byte 인포그래픽 한글 렌더용 NanumGothic 폰트 — idempotent.
+# 이미 설치돼 있으면 apt 가 no-op. 실패해도(네트워크/오프라인) install 전체를
+# 막지 않도록 || true. 폰트 부재 시 인포그래픽만 graceful skip(텍스트 정상).
+if ! fc-list 2>/dev/null | grep -qi nanum; then
+    echo "→ installing fonts-nanum (Daily Byte 인포그래픽 한글)"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y fonts-nanum >/dev/null 2>&1 \
+        && fc-cache -f >/dev/null 2>&1 \
+        && echo "  fonts-nanum installed" \
+        || echo "  fonts-nanum install skipped (apt 불가 — 텍스트 브리프는 정상)"
+fi
+
 echo "→ enabling timers + dashboard"
 # Timers — enable --now is idempotent (no-op when already enabled+active)
 systemctl enable --now stock-bot-update.timer
