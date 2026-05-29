@@ -2826,7 +2826,7 @@ details.analysis summary:hover { background:var(--accent-soft2); }
 .ticker-chip:hover { color:var(--accent); }
 details.analysis-mt { margin:12px 4px 0; }
 details.analysis-mt summary { cursor:pointer; color:var(--accent);
-  font-size:13px; padding:6px 10px; background:var(--accent-soft2);
+  font-size:15px; padding:6px 10px; background:var(--accent-soft2);
   border-radius:6px; list-style:none; user-select:none; }
 details.analysis-mt summary::-webkit-details-marker { display:none; }
 details.analysis-mt summary::before { content:"▸ "; margin-right:4px; }
