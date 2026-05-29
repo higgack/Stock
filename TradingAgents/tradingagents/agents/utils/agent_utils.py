@@ -444,7 +444,26 @@ def _instrument_info(ticker: str) -> dict:
     # 모든 LSE 종목 + 향후 GBp 단위 거래소 (남아공 ZAc 등 동일 패턴)
     # 확장 가능. yfinance 가 currency='GBp' 외에 'GBX' 도 간헐 사용.
     # Rule applies to all analyses going forward.
-    if (out.get("currency") or "").strip() in ("GBp", "GBX"):
+    # Detection: yfinance 가 currency='GBp' / 'GBX' 로 명시 반환하는 케이스
+    # (primary) + 라벨이 'GBP' 인데 prices 가 pence 단위인 inconsistent
+    # 케이스 (heuristic fallback). 후자는 2026-05-29 Space Launch review
+    # surfaced — BA.L (LSE) cross-anchor fire 가 4254da0 commit 후에도
+    # 발생. 가설: yfinance 가 currency='GBP' (대문자) 로 반환하면서 prices
+    # 는 pence — 라벨 기반 detection 만으로는 못 잡음.
+    raw_currency = (out.get("currency") or "").strip()
+    needs_norm = raw_currency in ("GBp", "GBX")
+    is_heuristic = False
+    if not needs_norm:
+        # Heuristic — .L (LSE) suffix + currentPrice > 1000 단위 패턴 =
+        # pence 단위 강한 의심. £1,000+ 본주는 GBP 종목 중 극히 드물고
+        # (Berkshire-style price 거의 없음), 일반 LSE blue-chip 은 £5-£60
+        # 범위. 1000+ 면 pence (£10+ 환산) 가 압도적으로 자연스러움.
+        if (ticker or "").upper().endswith(".L"):
+            px = out.get("currentPrice") or out.get("regularMarketPrice")
+            if isinstance(px, (int, float)) and px > 1000:
+                needs_norm = True
+                is_heuristic = True
+    if needs_norm:
         for _k in ("currentPrice", "regularMarketPrice",
                    "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
                    "fiftyDayAverage", "twoHundredDayAverage",
@@ -455,8 +474,16 @@ def _instrument_info(ticker: str) -> dict:
             if isinstance(v, (int, float)) and v == v:
                 out[_k] = v / 100.0
         out["currency"] = "GBP"
-        out["_gbp_normalized"] = True
-        _analyst_log.info("GBp→GBP normalization applied for %s", ticker)
+        if is_heuristic:
+            out["_gbp_normalized_heuristic"] = True
+            _analyst_log.warning(
+                "GBp heuristic normalization applied for %s (currency label was %r, "
+                "px > 1000) — yfinance label-price inconsistency suspected",
+                ticker, raw_currency or "(empty)",
+            )
+        else:
+            out["_gbp_normalized"] = True
+            _analyst_log.info("GBp→GBP normalization applied for %s", ticker)
 
     # 2026-05-29 EV screener review fix: yfinance 가 CN A-share 의
     # trailingPE / priceToBook / priceToSalesTrailing12Months 를 자주

@@ -776,6 +776,37 @@ _MT_TIER_ROW_RE = re.compile(
 _TOP3_TIER_PAREN_RE = re.compile(r"\(Tier:\s*([LMS?])(\s*[,\)])")
 
 
+def _strip_transitional_tags(text: str) -> tuple[str, int]:
+    """Post-process — strip Pro's hallucinated '(데이터 transitional: corp
+    action 의심)' / '(corp action 의심)' inline tags. CLAUDE.md screener
+    rule (lines 331-333): these phrases are NOAH /TICKER's runtime guards
+    that fire only when real-time DART/EDINET/MOPS filings are fetched.
+    Screener doesn't fetch filings → quoting these phrases is forbidden.
+
+    Space Launch Vehicle review 2026-05-29 surfaced 3 violations:
+      • VOYG (NYSE, recent IPO) — hallucinated phrase, no upstream fire
+      • 017960.KQ (KOSDAQ small-cap) — KRX shares override may trigger
+        real cross-anchor warning, but phrase quote still forbidden
+      • BA.L (LSE) — possibly real GBp false-fire, phrase still forbidden
+
+    Strip removes the inline parenthesized phrase, preserving the rest of
+    the sentence. Returns (cleaned_text, n_strips).
+    """
+    import re
+    pattern = re.compile(
+        r"\s*\(\s*(?:데이터\s*)?transitional[^)]*\)|\s*\(\s*corp\s*action\s*의심[^)]*\)",
+        re.IGNORECASE,
+    )
+    n = 0
+
+    def _replace(_m: "re.Match") -> str:
+        nonlocal n
+        n += 1
+        return ""
+
+    return pattern.sub(_replace, text), n
+
+
 def _strip_future_dated_citations(text: str, today_iso: str) -> tuple[str, int]:
     """Post-process pass — detect 'sourced: <publisher>, YYYY-MM-DD' citations
     where the date is strictly in the future (> today). These are fabricated
@@ -1530,6 +1561,17 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
         log.warning(
             "screener: %d future-dated citation(s) stripped (fabrication 의심)",
             n_future_strips,
+        )
+
+    # Transitional / corp action 의심 tag strip (2026-05-29 Space Launch review):
+    # CLAUDE.md screener rule (line 331-333) — '(데이터 transitional)' /
+    # '(corp action 의심)' 문구는 NOAH /ticker 실시간 공시 fetch 결과로만
+    # 발화. Screener 가 이 phrase quote = 위반. Pro 가 prompt 무시 시 backstop.
+    p45_text, n_trans_strips = _strip_transitional_tags(p45_text)
+    if n_trans_strips:
+        log.warning(
+            "screener: %d transitional/corp-action tag(s) stripped (CLAUDE.md rule)",
+            n_trans_strips,
         )
 
     # Extract machine-parseable JSON tails (TICKERS_USED first so the
