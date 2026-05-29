@@ -900,8 +900,30 @@ shipping 후 cross-market parity audit 으로 확장.
   은 unitless ratio 라 alpha 산술 정상 (broad-market 벤치, sector 관련성만
   ↓). 무한 block 보다 우월.
 
-### ✅ audit 3-tier 전체 완료 (commits 5e45caf / de900a1 / 본 commit).
-잔여: M2 (PM override 이중 레이어 통합) 만 A/B 검증 후 별도 — 위험 중간.
+### ✅ audit 3-tier 전체 완료 (commits 5e45caf / de900a1 / e8cbc91).
+
+### 🔬 M2 — 측정 인프라 완료, 데이터 대기 (위험 중간이라 측정-우선):
+M2 (PM override 이중 레이어 충돌) 는 버그가 아니라 **정책 결정** — 분석가
+만장일치 Buy + Trader Hold 시 최종이 뭐여야 하는가. 추측 통합 = quality
+회귀 위험 (Trader 신중함 상실 / free-text 백스톱 상실 / Hold-rate 급변).
+그래서 데이터로 결정하는 측정 인프라부터 구축 (Phase 0+1, 위험 0):
+- **충돌 구조**: in-graph `_enforce_pm_override_discipline` 는 분석가 다수로
+  PM 정렬 (Buy/Sell) ↔ analyzer Fix G 는 Trader=Hold 시 Hold 강제. 둘 다
+  발화 시 in-graph 정렬을 Fix G 가 되돌림 (sentinel `[PM override discipline
+  자동 보정]` + Fix 발화 = 충돌 signature).
+- **Phase 0** (analyzer `_log_pm_override_conflict`): 충돌 케이스를
+  `~/.tradingagents/pm_override_audit.jsonl` 에 기록. **동작 무변경** —
+  override 는 현재대로 적용, 기록만.
+- **Phase 1** (`bot/pm_override_audit.py`): state log (full_states_log_*)
+  replay → 충돌 set → 메모리 resolved 5d return join → policyA(분석가
+  우선, sentinel 시 Fix G skip) vs legacy(현행) 의 mean P&L / hit-rate /
+  Hold-rate 비교. read-only. VM 에서 `.venv/bin/python -m bot.pm_override_
+  audit` 실행.
+- **결정 gate** (CLAUDE.md): policyA 채택은 (a) mean P&L ↑ (b) hit-rate ↑
+  (c) |Hold-rate Δ| ≤ 5pp **3개 모두 충족 시에만**. 미충족 또는 충돌 희소
+  시 현행 유지 (over-engineering 방지).
+- **다음**: VM 에서 backtest 실행 → 결과 보고 → 정책 확정 → (채택 시)
+  feature flag 뒤 Phase 2 shadow + Phase 3 gated rollout.
 
 ### ⏸ 신중 (위험 중간, A/B 검증 권장):
 - M2 PM override 이중 레이어 (in-graph 분석가 다수 보정 ↔ analyzer

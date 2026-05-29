@@ -346,6 +346,15 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
                 "(no trigger keyword found in PM rationale)",
                 ticker,
             )
+            # Phase 0 M2 audit — record the in-graph↔analyzer conflict case
+            # (sentinel present + analyzer forcing Hold). No behavior change.
+            _trade_date = ""
+            if isinstance(state, dict):
+                _trade_date = str(state.get("trade_date") or "")
+            _log_pm_override_conflict(
+                ticker, _trade_date or str(target_date or ""),
+                state, decision, _override_note,
+            )
     except Exception as exc:
         log.warning("analyze: PM override check failed for %s: %s", ticker, exc)
 
@@ -1012,6 +1021,53 @@ def _check_pm_override_required(
                     break
 
     return None, ""
+
+
+_PM_INGRAPH_SENTINEL = "[PM override discipline 자동 보정]"
+
+
+def _log_pm_override_conflict(
+    ticker: str, trade_date: str, state: dict, decision: str, override_note: str
+) -> None:
+    """Phase 0 M2 audit (2026-05-29): record the cases where the analyzer-
+    layer Fix F/G forces HOLD on a decision the IN-GRAPH discipline had
+    ALREADY aligned to the analyst majority (sentinel present in the
+    rendered decision). That co-occurrence IS the M2 two-layer conflict —
+    in-graph trusts the analyst majority (aligns PM up to Buy/Sell), then
+    the analyzer layer (Fix G Trader-veto, usually) drags it back to Hold.
+
+    ZERO behavior change: the override is still applied exactly as today.
+    This only appends a JSONL audit line so bot/pm_override_audit.py can
+    quantify how often the conflict fires + (joined with resolved 5d
+    outcomes) whether following the analyst-aligned verdict or the forced
+    Hold produced better calls — i.e. decide the policy from data, not
+    guesswork. Best-effort; never raises into the analysis path."""
+    if not override_note or _PM_INGRAPH_SENTINEL not in (decision or ""):
+        return
+    try:
+        m = re.search(r"PM 1차 판단 \(([^)]+)\)", decision)
+        rec = {
+            "ts": time.time(),
+            "event": "pm_override_conflict",
+            "ticker": ticker,
+            "trade_date": trade_date,
+            "analyst_unanimous": _get_unanimous_analyst_direction(state),
+            "pm_1cha_rating": m.group(1) if m else "",
+            "in_graph_aligned_rating": _extract_rating(decision),
+            "analyzer_forced": "Hold",
+            "fix": "G" if "PM-Trader" in override_note else "F",
+            "note_head": override_note[:100],
+        }
+        path = Path.home() / ".tradingagents" / "pm_override_audit.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        log.info(
+            "pm-override-conflict [M2]: %s %s — in-graph aligned→%s, analyzer Fix %s forced Hold",
+            ticker, trade_date, rec["in_graph_aligned_rating"], rec["fix"],
+        )
+    except Exception as exc:
+        log.debug("pm_override_audit log failed: %s", exc)
 
 
 # ── End Fix F + G ────────────────────────────────────────────────────────────
