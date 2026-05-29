@@ -2563,6 +2563,14 @@ def _compute_technical_snapshot(ticker: str) -> str:
             "⛔ SINGLE SOURCE OF TRUTH 강제 적용 (FORM 2026-05-23 RSI hallucination 방지):",
             "   • 위 RSI(14) / MACD / 볼린저 수치가 이 분석의 유일한 canonical 값.",
             "   • 위와 다른 RSI / MACD / 볼린저 값을 독자 계산·추정·인용하는 것 FORBIDDEN.",
+            "   • **글자 단위 copy 의무** (2026-05-29 4063.T 신에쓰화학 review"
+            " surfaced): 본문 / 요약 / 결론에서 specific 수치 (예: MACD Hist"
+            " 7.476, RSI 62.8, 볼린저 상단 ¥7,768) 를 인용할 때 위 snapshot"
+            " 의 값을 글자 단위로 정확히 copy. 반올림 / 자릿수 축약 / 0.5"
+            " 단위 paraphrase 금지. 시장 'Hist 7.476' vs 뉴스 'Hist 7.986'"
+            " 같은 0.5 mismatch = Pro 가 snapshot 무시하고 paraphrase 한"
+            " hallucination 사례 — 모든 분석가가 같은 문자열을 copy 해야"
+            " cross-section 일관성 보장.",
             "   • 시장 분석가 전용: get_indicators / get_stock_data 툴은 추세 해석"
             " (크로스오버·다이버전스 방향·지지/저항) 용도로만 사용하고, 요약표·본문에"
             " 인용하는 RSI / MACD / 볼린저 '수치'는 반드시 위 canonical 값을 사용."
