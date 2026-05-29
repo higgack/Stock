@@ -282,6 +282,23 @@ def generate() -> tuple[str, float] | None:
         log.error("daily_byte: GOOGLE_API_KEY missing")
         return None
 
+    # KRX 로그인 자격증명 preflight — KRX 가 2025-12-27 부터 'KRX Data
+    # Marketplace' 로그인 필수로 전환. KRX_ID/KRX_PW 미설정 시 모든 pykrx
+    # fetch 가 JSONDecodeError + 내부 logging 버그로 실패·로그 폭주하므로
+    # 호출 전 차단하고 조용히 skip (creds 추가되면 즉시 작동).
+    try:
+        from bot.pykrx_client import krx_login_ready, _quiet_pykrx_logging
+        _quiet_pykrx_logging()
+        if not krx_login_ready():
+            log.warning(
+                "daily_byte: KRX_ID/KRX_PW 미설정 — pykrx 수급 fetch 불가, "
+                "Daily Byte skip. KRX Data Marketplace 무료 가입(Naver/Kakao) "
+                "후 .env 에 KRX_ID/KRX_PW 추가 필요."
+            )
+            return None
+    except Exception:
+        pass
+
     date = _resolve_trading_date()
     data = collect_flow_data(date)
     # 데이터 부재 (공휴일 등) → 하루씩 walk-back 최대 4회

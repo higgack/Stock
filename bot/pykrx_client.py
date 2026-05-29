@@ -34,6 +34,50 @@ log = logging.getLogger("bot.pykrx")
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "pykrx"
 _CACHE_TTL_HOURS = 12  # KRX flow updates once a day; 12h is generous
 
+# KRX 가 2025-12-27 부터 'KRX Data Marketplace' 로 전환되며 로그인이
+# 필수가 됐다 (AI 봇 무단 수집 차단 목적, 데이터 조회는 여전히 무료).
+# pykrx (≥1.2.x) 는 KRX_ID/KRX_PW 환경변수로 인증한다. 미설정 시 모든
+# fetch 가 anonymous 경로로 빠져 JSONDecodeError + pykrx 내부 logging
+# 버그(comm/util.py 의 logging.info(args, kwargs))로 stderr 트레이스백
+# 폭주를 일으킨다. 호출 전 krx_login_ready() 로 차단해 단 한 번만
+# actionable 경고를 남기고 graceful skip → None.
+import os as _os
+
+_KRX_CRED_WARNED = False
+
+
+def krx_login_ready() -> bool:
+    """KRX_ID/KRX_PW 둘 다 .env 에 있으면 True. 미설정 시 최초 1회만
+    가입 안내 경고를 남기고 False. pykrx 를 호출하는 모든 함수의 preflight
+    gate — universal (main /ticker KR 수급 + Daily Byte 양쪽 적용)."""
+    global _KRX_CRED_WARNED
+    ready = bool(_os.environ.get("KRX_ID") and _os.environ.get("KRX_PW"))
+    if not ready and not _KRX_CRED_WARNED:
+        log.warning(
+            "pykrx: KRX_ID/KRX_PW 미설정 — KRX 가 2025-12-27 부터 로그인 "
+            "필수(KRX Data Marketplace, 무료). Naver/Kakao 로 가입 후 .env "
+            "에 KRX_ID/KRX_PW 추가 필요. 그때까지 KR pykrx 수급 데이터 skip."
+        )
+        _KRX_CRED_WARNED = True
+    return ready
+
+
+def _quiet_pykrx_logging() -> None:
+    """pykrx 내부의 logging.info(args, kwargs) 호출(comm/util.py)이 실패
+    경로마다 'Logging error' 트레이스백을 stderr 로 도배한다 — 해당
+    네임드 로거 레벨을 CRITICAL 로 올려 record 생성 자체를 차단. 자격
+    증명이 없어 fetch 가 실패하는 케이스는 krx_login_ready() gate 가
+    1차로 막고, 이 함수는 creds 가 있어도 발생하는 transient 실패의
+    backstop. best-effort (예외 무시)."""
+    try:
+        for name in ("pykrx", "pykrx.website", "pykrx.website.comm"):
+            logging.getLogger(name).setLevel(logging.CRITICAL)
+    except Exception:
+        pass
+
+
+_quiet_pykrx_logging()
+
 
 def _normalize_code(ticker: str) -> Optional[str]:
     """Strip .KS/.KQ suffix, validate as 6-digit KRX code."""
@@ -57,6 +101,8 @@ def get_kr_market_cap(ticker: str) -> Optional[dict]:
     """
     code = _normalize_code(ticker)
     if not code:
+        return None
+    if not krx_login_ready():
         return None
     try:
         from pykrx import stock
@@ -121,6 +167,8 @@ def get_kr_ohlcv_stats(ticker: str) -> Optional[dict]:
     """
     code = _normalize_code(ticker)
     if not code:
+        return None
+    if not krx_login_ready():
         return None
 
     today_str = date.today().isoformat()
@@ -214,6 +262,8 @@ def get_kr_beta_60m(ticker: str) -> Optional[float]:
     code = _normalize_code(ticker)
     if not code:
         return None
+    if not krx_login_ready():
+        return None
     today_str = date.today().isoformat()
     cache_file = _CACHE_DIR / f"beta60m_{code}_{today_str}.json"
     if cache_file.exists():
@@ -302,6 +352,8 @@ def get_kr_trading_flow(ticker: str, days_back: int = 5) -> Optional[dict]:
     """
     code = _normalize_code(ticker)
     if not code:
+        return None
+    if not krx_login_ready():
         return None
 
     # Cache check — flow data is daily, key by today's date.
@@ -428,6 +480,8 @@ def get_kr_foreign_ownership_trend(ticker: str, days_back: int = 30) -> Optional
     code = _normalize_code(ticker)
     if not code:
         return None
+    if not krx_login_ready():
+        return None
 
     today_str = date.today().isoformat()
     cache_file = _CACHE_DIR / f"foreign_own_{code}_{today_str}_{days_back}.json"
@@ -505,6 +559,8 @@ def get_kr_short_balance_trend(ticker: str, days_back: int = 30) -> Optional[dic
     up in the daily net-purchase data. Returns None on any failure."""
     code = _normalize_code(ticker)
     if not code:
+        return None
+    if not krx_login_ready():
         return None
 
     today_str = date.today().isoformat()

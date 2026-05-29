@@ -5,7 +5,11 @@ python-telegram-bot>=21.0
 python-dotenv>=1.0.0
 # pykrx — KRX trading data (가격 정합성 + 외국인/기관/개인 일별 수급).
 # KR-only; pure-Python wrapper, no native deps.
-pykrx>=1.0.45
+# ≥1.2.8 필요: KRX 가 2025-12-27 'KRX Data Marketplace' 로 전환되며 로그인
+# 필수가 됐고, 이 버전부터 KRX_ID/KRX_PW 환경변수 인증을 지원한다.
+# (무료 가입 — Naver/Kakao. .env 에 KRX_ID/KRX_PW 미설정 시 pykrx 수급
+# 데이터 전체 skip, krx_login_ready() gate 가 graceful 처리.)
+pykrx>=1.2.8
 # akshare — CN A-share + HK market data (공告·港股통 flow·ST·LPR·CPI·PMI).
 # CN/HK-only; key-less scraper. Heavy dep (~200MB, ~50 transitive packages).
 # Lazy-imported inside bot/akshare_client.py — non-CN analyses unaffected.

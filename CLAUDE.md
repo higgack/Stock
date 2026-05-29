@@ -365,11 +365,16 @@ pattern to follow:
     catalyst 차단.
   • 비용 ~₩70/일 (Pro 1 call) ≈ 월 ₩2K. 제목 "Daily Byte - YYYY.MM.DD"
     (거래일 자동). 데이터 부재(공휴일) 시 walk-back 4회 후 graceful skip.
-  • ⚠️ VM 검증 필요 (sandbox pykrx 데이터 없음) — 첫 19:00 run 또는 수동
-    `.venv/bin/python -m bot.daily_kr_flow` 으로 pykrx 투자자 라벨
-    (투신/사모/연기금 per-stock 지원 여부) + EOD 타이밍 확인. per-stock
-    investor 라벨 미지원 시 try/except graceful skip (시장 총평 + 외인/
-    기관은 항상 작동).
+  • ⛔ **현재 DORMANT — KRX_ID/KRX_PW 대기 중** (2026-05-29 VM 검증 결과).
+    VM 첫 run 이 전부 실패: KRX 가 **2025-12-27 부터 'KRX Data
+    Marketplace' 로그인 필수**로 전환 → pykrx 가 creds 없이는 모든 fetch
+    JSONDecodeError + 내부 logging 버그로 로그 폭주. 같은 pykrx 를 쓰는
+    main /ticker KR 수급도 동일 (SK Hynix 리뷰 'pykrx flow 미수집').
+    **fix 완료**: `krx_login_ready()` preflight gate (creds 없으면 1회
+    경고 + clean skip, 폭주 차단) + `_quiet_pykrx_logging()` + pykrx 핀
+    ≥1.2.8. creds 가 `.env` 에 들어오면 코드 변경 0 으로 즉시 작동.
+    → 상세 + 가입 절차는 '🔐 API-blocked tasks' 의 KRX Data Marketplace
+    항목 참조. 그때까지 timer 는 매일 fire 하되 조용히 skip.
 
 **Acceptable manual steps** (rare, one-time):
 - Initial systemd unit installation
@@ -1475,6 +1480,26 @@ Reason: API registration often blocks (geofence / account approval
 keeps a clear pickup state so the final batch is easy to resume.
 
 These need new credentials BEFORE work can ship:
+
+- **🆕 KRX Data Marketplace 로그인 (KRX_ID / KRX_PW)** — ⚠️ NEW BLOCKER
+  surfaced 2026-05-29 (Daily Byte 검증). KRX 가 **2025-12-27 부터**
+  데이터 포털을 회원제 'KRX Data Marketplace' 로 전환하며 **로그인을
+  필수**로 만들었다 (AI 봇 무단 수집 차단 목적; 데이터 조회는 여전히
+  무료, Naver/Kakao 소셜 로그인 가능). pykrx (≥1.2.8, requirements 핀
+  상향 완료) 는 `KRX_ID`/`KRX_PW` 환경변수로 인증한다.
+  **영향 범위 (universal)**: pykrx 를 쓰는 **모든** 경로가 creds 없으면
+  dormant — (a) Daily Byte 일일 수급 브리프 (`bot/daily_kr_flow.py`,
+  현재 19:00 timer 가 매일 fire 하지만 creds 없어 graceful skip), (b)
+  main `/ticker` 의 KR 수급/시총/52주/베타/외인지분/공매도 fallback
+  (`bot/pykrx_client.py`) — SK Hynix 2026-05-29 리뷰의 'pykrx flow
+  데이터 미수집' 이 바로 이것. KIS API 가 per-ticker 는 메꿔주지만
+  시장 전체 종목 랭킹(Daily Byte)은 pykrx 가 유일.
+  **코드는 ready**: `krx_login_ready()` gate (creds 미설정 시 1회 경고
+  + None) + `_quiet_pykrx_logging()` (pykrx 내부 logging.info 버그 도배
+  차단) shipped — creds 가 `.env` 에 들어오는 즉시 두 경로 자동 작동,
+  코드 변경 0.
+  Required: KRX Data Marketplace (data.krx.co.kr) 무료 가입 →
+  `.env` 에 `KRX_ID` + `KRX_PW` 추가. 작업량 0 (코드 완료, 등록만).
 
 - **KIS Open API (한국투자증권)** — KR 외인 지분 한도 / 신용잔고 /
   대차잔고 / 프로그램 매매 / 시장경보 종목 분류. KR 시장의 가장 큰
