@@ -377,5 +377,95 @@ class TestDashboardRenderer(unittest.TestCase):
             self.assertIn("총 0건", html)
 
 
+class TestEvalMissBacklogCard(unittest.TestCase):
+    """unstored_check's eval_misses.jsonl backlog must surface in the
+    dashboard header so a growing backlog is visible between the daily
+    ⚠️ alerts (which scroll out of the channel). Empty / missing file
+    must render NO line so the operator's view stays clean after the
+    last RULE was added.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "store.db"
+        _seed_store(self.db_path)
+        self.miss_path = Path(self.tmpdir.name) / "eval_misses.jsonl"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _write_misses(self, recs):
+        with self.miss_path.open("w", encoding="utf-8") as fh:
+            for rec in recs:
+                fh.write(json.dumps(rec) + "\n")
+
+    def test_no_eval_miss_path_renders_no_backlog_line(self):
+        html = render_html(self.db_path)
+        # Empty div is fine (CSS :empty hides it) — but no header text.
+        self.assertNotIn("미파싱 백로그", html)
+
+    def test_missing_eval_miss_file_renders_no_backlog_line(self):
+        html = render_html(
+            self.db_path,
+            eval_miss_path=self.tmpdir.name + "/does_not_exist.jsonl",
+        )
+        self.assertNotIn("미파싱 백로그", html)
+
+    def test_empty_eval_miss_file_renders_no_backlog_line(self):
+        self.miss_path.touch()
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertNotIn("미파싱 백로그", html)
+
+    def test_non_empty_backlog_shows_count_and_oldest_age(self):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        self._write_misses([
+            {"detected_at": old, "chat_id": 1, "message_id": 100,
+             "caption": "a"},
+            {"detected_at": recent, "chat_id": 1, "message_id": 101,
+             "caption": "b"},
+            {"detected_at": recent, "chat_id": 1, "message_id": 102,
+             "caption": "c"},
+        ])
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertIn("미파싱 백로그", html)
+        # The strong tag shows the count …
+        self.assertIn("<strong>3건</strong>", html)
+        # … and the oldest age comes from the 7-day-old row, not the
+        # 1-day-old one.
+        self.assertIn("7일째", html)
+        # The eval_misses.jsonl filename is referenced so operators
+        # know where to look on disk.
+        self.assertIn("eval_misses.jsonl", html)
+
+    def test_malformed_lines_are_skipped_but_valid_rows_count(self):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        self.miss_path.write_text(
+            json.dumps({"detected_at": old, "chat_id": 1,
+                        "message_id": 1, "caption": "x"}) + "\n"
+            + "not-json\n"
+            + json.dumps({"detected_at": old, "chat_id": 1,
+                          "message_id": 2, "caption": "y"}) + "\n",
+            encoding="utf-8",
+        )
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertIn("<strong>2건</strong>", html)
+
+    def test_rows_without_detected_at_still_count_but_no_age(self):
+        # Older eval_misses rows (pre-detected_at era) should still count
+        # toward the backlog total so they don't silently disappear.
+        self._write_misses([
+            {"chat_id": 1, "message_id": 1, "caption": "x"},
+            {"chat_id": 1, "message_id": 2, "caption": "y"},
+        ])
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertIn("<strong>2건</strong>", html)
+        # No age suffix when we couldn't parse any detected_at.
+        self.assertNotIn("일째", html)
+
+
 if __name__ == "__main__":
     unittest.main()

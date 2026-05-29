@@ -211,6 +211,100 @@ class TestMsgKey(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAVE_TELETHON, "telethon not installed")
+class TestMsgKeyWithOrigin(unittest.TestCase):
+    """_msg_key_with_origin extends _msg_key with a per-call origin
+    label so run() can count fallback hits. The key itself must match
+    _msg_key exactly (asserted indirectly via TestMsgKey above); these
+    tests pin which path produced the key, since that's what the new
+    fwd_fallback counter reads.
+
+    Why the counter exists: when fwd_from is present but channel_post
+    or from_id is missing (hidden user forwards, legacy chat peers),
+    we key on (source_chat_id, msg.id) — which is NOT the same key
+    the listener would have recorded for the same message. Every
+    backfill tick could then re-forward such messages. The counter
+    lets us measure the real-world rate before deciding what to do.
+    """
+
+    @staticmethod
+    def _fake_get_peer_id(peer):
+        cid = getattr(peer, "channel_id", None)
+        if cid is not None:
+            return int(f"-100{cid}")
+        uid = getattr(peer, "user_id", None)
+        if uid is not None:
+            return int(uid)
+        raise ValueError(f"unmappable peer: {peer!r}")
+
+    def _origin(self, msg, source_chat_id):
+        from trade.scripts import backfill_beon as bb
+        with mock.patch.object(
+            bb._tutils, "get_peer_id", side_effect=self._fake_get_peer_id
+        ):
+            _key, origin = bb._msg_key_with_origin(msg, source_chat_id)
+            return origin
+
+    def test_native_when_no_fwd_from(self):
+        from trade.scripts import backfill_beon as bb
+        msg = SimpleNamespace(id=4500, fwd_from=None)
+        self.assertEqual(
+            self._origin(msg, -1001234567890), bb._ORIGIN_NATIVE
+        )
+
+    def test_forward_when_fwd_from_has_chat_and_post(self):
+        from trade.scripts import backfill_beon as bb
+        msg = SimpleNamespace(
+            id=4876,
+            fwd_from=SimpleNamespace(
+                from_id=SimpleNamespace(channel_id=9999999999),
+                channel_post=777,
+            ),
+        )
+        self.assertEqual(
+            self._origin(msg, -1001234567890), bb._ORIGIN_FORWARD
+        )
+
+    def test_fallback_when_channel_post_missing(self):
+        from trade.scripts import backfill_beon as bb
+        msg = SimpleNamespace(
+            id=10,
+            fwd_from=SimpleNamespace(
+                from_id=SimpleNamespace(user_id=42),
+                channel_post=None,
+            ),
+        )
+        self.assertEqual(
+            self._origin(msg, -1001234567890), bb._ORIGIN_FALLBACK
+        )
+
+    def test_fallback_when_from_id_missing(self):
+        from trade.scripts import backfill_beon as bb
+        msg = SimpleNamespace(
+            id=20,
+            fwd_from=SimpleNamespace(from_id=None, channel_post=100),
+        )
+        self.assertEqual(
+            self._origin(msg, -1001234567890), bb._ORIGIN_FALLBACK
+        )
+
+    def test_fallback_key_equals_legacy_msg_key(self):
+        # Belt and braces — the FALLBACK key must equal what _msg_key
+        # has always returned so existing inbox.jsonl rows still match.
+        from trade.scripts import backfill_beon as bb
+        msg = SimpleNamespace(
+            id=20,
+            fwd_from=SimpleNamespace(from_id=None, channel_post=100),
+        )
+        with mock.patch.object(
+            bb._tutils, "get_peer_id", side_effect=self._fake_get_peer_id
+        ):
+            key, origin = bb._msg_key_with_origin(msg, -1001234567890)
+            self.assertEqual(origin, bb._ORIGIN_FALLBACK)
+            self.assertEqual(key, (-1001234567890, 20))
+            self.assertEqual(bb._msg_key(msg, -1001234567890), key)
+
+
+@unittest.skipUnless(_HAVE_TELETHON, "telethon not installed")
 class TestDedupRoundtrip(unittest.TestCase):
     """End-to-end: a relayed post in inbox.jsonl is correctly recognised
     as 'seen' on a subsequent backfill iteration. This is the regression

@@ -129,7 +129,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 <b>2. 대쉬보드</b>
 <a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
 모바일 OK · 5분마다 자동 갱신 · BasicAuth 보호 · 다크모드 자동 (19~07 KST)
-헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) 자동 표시
+헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) + 🧪 미파싱 백로그 (있을 때만, 가장 오래된 N일째) 자동 표시
 
 <b>3. BeOn 발표 사이클 (KST)</b>
 • 매월 11일경 — 1-10일 잠정
@@ -190,9 +190,9 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 <b>10. API endpoints</b>
 • /api/alerts.json — 전체 alert 덤프 (latest + history)
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
-• /api/health — alert 수, 마지막 게시, 디스크 잔여
+• /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-05-26 — beon-sync 빈 창은 조용히, 세션/접근 실패(예외)만 ⚠️ 알림</i>
+<i>최종 갱신: 2026-05-29 — 헤더 미파싱 백로그 카드 + /api/health 대쉬보드 freshness + backfill fwd_fallback 관측</i>
 """
 
 

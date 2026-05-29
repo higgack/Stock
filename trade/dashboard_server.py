@@ -44,6 +44,7 @@ _AUTH_PASSWORD = (os.environ.get("TRADE_DASHBOARD_PASSWORD") or "").strip()
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 _STORE_PATH = _DATA_DIR / "store.db"
 _INBOX_PATH = _DATA_DIR / "inbox.jsonl"
+_DASHBOARD_HTML = _DATA_DIR / "dashboard" / "index.html"
 
 # Compress text responses larger than this. JPEG/PNG already
 # pre-compressed; gzipping again wastes CPU for no win.
@@ -172,6 +173,21 @@ def _api_health() -> dict:
             )
         else:
             out["inbox_mtime"] = None
+        # Dashboard freshness — the regen oneshot fires from a 5-minute
+        # timer, so dashboard_html_mtime should be < ~300s old in healthy
+        # state. Exposing both the absolute mtime AND a derived
+        # 'seconds since' lets an external monitor alert on staleness
+        # without re-parsing the timestamp. None when the file isn't
+        # rendered yet (first boot / fresh restore).
+        if _DASHBOARD_HTML.exists():
+            mtime = _DASHBOARD_HTML.stat().st_mtime
+            out["dashboard_html_mtime"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(mtime)
+            )
+            out["dashboard_stale_seconds"] = max(0, int(time.time() - mtime))
+        else:
+            out["dashboard_html_mtime"] = None
+            out["dashboard_stale_seconds"] = None
         usage = shutil.disk_usage("/")
         out["disk_free_gb"] = round(usage.free / (1024 ** 3), 2)
     except Exception as e:

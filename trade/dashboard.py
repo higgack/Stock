@@ -39,6 +39,7 @@ def render_html(
     db_path: Path | str,
     *,
     media_url_prefix: str = "../",
+    eval_miss_path: Path | str | None = None,
 ) -> str:
     """Render the dashboard HTML from store.db.
 
@@ -46,6 +47,14 @@ def render_html(
     (e.g. 'media/2026-05-15/abc.jpg' → '../media/2026-05-15/abc.jpg'),
     so callers can place the HTML wherever and adjust the prefix to
     point at the media tree.
+
+    eval_miss_path optionally points at eval_misses.jsonl (the durable
+    backlog of un-parseable BeOn captions written by
+    unstored_check.log_eval_misses). When given AND non-empty, the
+    header gets a small '🧪 미파싱 백로그' line so the backlog is
+    visible at a glance instead of only appearing in the daily ⚠️.
+    None / missing file / empty file render nothing — the meta line
+    is hidden by the `:empty` CSS rule.
     """
     conn = open_db(db_path)
     try:
@@ -64,7 +73,63 @@ def render_html(
         if key not in seen:
             seen.add(key)
             latest_ids.append(a["id"])
-    return _build_html(all_alerts, latest_ids, s, media_url_prefix)
+    backlog = _load_eval_miss_summary(eval_miss_path)
+    return _build_html(all_alerts, latest_ids, s, media_url_prefix, backlog)
+
+
+def _load_eval_miss_summary(
+    path: Path | str | None,
+) -> dict | None:
+    """Read eval_misses.jsonl → {count, oldest_age_days} or None.
+
+    Returns None when the file is missing / empty / unreadable so the
+    dashboard renders without the backlog meta line. Malformed JSONL
+    lines are skipped (same fault-tolerance as unstored_check), so a
+    stray hand-edit can't blank the card.
+    """
+    if path is None:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    count = 0
+    oldest: datetime | None = None
+    try:
+        with p.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                count += 1
+                detected = rec.get("detected_at")
+                if not detected:
+                    continue
+                try:
+                    if detected.endswith("Z"):
+                        dt = datetime.fromisoformat(detected[:-1]).replace(
+                            tzinfo=timezone.utc
+                        )
+                    else:
+                        dt = datetime.fromisoformat(detected)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                if oldest is None or dt < oldest:
+                    oldest = dt
+    except OSError:
+        return None
+    if count == 0:
+        return None
+    age_days: int | None = None
+    if oldest is not None:
+        delta = datetime.now(timezone.utc) - oldest
+        age_days = max(0, delta.days)
+    return {"count": count, "oldest_age_days": age_days}
 
 
 def _alert_to_payload(a: dict, media_prefix: str) -> dict:
@@ -110,6 +175,7 @@ def _build_html(
     latest_ids: list[int],
     s: dict,
     media_prefix: str,
+    backlog: dict | None = None,
 ) -> str:
     payload = [_alert_to_payload(a, media_prefix) for a in alerts]
     payload_json = json.dumps(
@@ -121,6 +187,20 @@ def _build_html(
     by_status = s.get("by_status", {})
     by_dir = s.get("by_direction", {})
 
+    # Server-rendered backlog line. unstored_check appends one row per
+    # unhandled BeOn caption to eval_misses.jsonl; surfacing the count
+    # here keeps the regression backlog visible between daily ⚠️
+    # alerts. Empty / missing file → empty div → :empty CSS hides it.
+    backlog_inner = ""
+    if backlog and backlog.get("count"):
+        age = backlog.get("oldest_age_days")
+        age_str = f" (가장 오래된 {age}일째)" if isinstance(age, int) else ""
+        backlog_inner = (
+            f"🧪 미파싱 백로그 <strong>{backlog['count']}건</strong>"
+            f"{escape(age_str)}"
+            f" — <code>eval_misses.jsonl</code>에 누적"
+        )
+
     head = (
         f'<header><h1>🇰🇷 한국 수출입 데이터</h1>'
         f'<div class="meta">'
@@ -130,12 +210,14 @@ def _build_html(
         f"잠정 {by_status.get('preliminary', 0)} / 확정 {by_status.get('final', 0)} · "
         f"품목 {s.get('distinct_items', 0)}"
         f"</div>"
-        # Two extra lines populated by JS on render(): the next BeOn
-        # announcement countdown and today's activity stats. Hidden via
-        # CSS when empty so first paint stays clean.
+        # Three JS-populated lines (status / next / today) plus the
+        # server-rendered backlog line. All hidden via :empty when empty
+        # so first paint stays clean and the backlog disappears the
+        # moment the operator adds a RULE that empties eval_misses.
         f'<div class="meta meta-status" id="meta-status"></div>'
         f'<div class="meta meta-next" id="meta-next"></div>'
         f'<div class="meta meta-today" id="meta-today"></div>'
+        f'<div class="meta meta-backlog">{backlog_inner}</div>'
         f"</header>"
     )
 
@@ -222,11 +304,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Ne
 header{background:var(--surface);padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
 h1{margin:0 0 4px;font-size:18px}
 .meta{font-size:11px;color:var(--text-sub);line-height:1.5}
-.meta-status,.meta-next,.meta-today{margin-top:2px}
-.meta-status:empty,.meta-next:empty,.meta-today:empty{display:none}
+.meta-status,.meta-next,.meta-today,.meta-backlog{margin-top:2px}
+.meta-status:empty,.meta-next:empty,.meta-today:empty,.meta-backlog:empty{display:none}
 .meta-status strong{color:var(--text);font-weight:600}
 .meta-next strong{color:var(--accent);font-weight:600}
 .meta-today strong{color:var(--text);font-weight:600}
+.meta-backlog{color:var(--text-sub)}
+.meta-backlog strong{color:var(--b-import-fg);font-weight:600}
+.meta-backlog code{font-size:10.5px;background:var(--surface-2);padding:0 4px;border-radius:3px}
 .tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:60px;z-index:9}
 .tab{flex:1;padding:13px 0;background:none;border:none;font-size:14px;font-weight:600;color:var(--text-sub);cursor:pointer;border-bottom:2px solid transparent}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
@@ -1155,10 +1240,25 @@ def main() -> int:
         help="prefix prepended to each media path (default '../' suits "
              "~/.trade/dashboard/index.html browsing the local file)",
     )
+    ap.add_argument(
+        "--eval-miss-path",
+        type=Path,
+        default=default_data / "eval_misses.jsonl",
+        help=(
+            "Path to eval_misses.jsonl (unstored_check's backlog of "
+            "un-parseable BeOn captions). When the file exists and "
+            "is non-empty, a header line shows the count + age of the "
+            "oldest entry. Missing / empty file → no line rendered."
+        ),
+    )
     args = ap.parse_args()
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    html = render_html(args.db, media_url_prefix=args.media_url)
+    html = render_html(
+        args.db,
+        media_url_prefix=args.media_url,
+        eval_miss_path=args.eval_miss_path,
+    )
     args.out.write_text(html, encoding="utf-8")
     size_kb = len(html.encode("utf-8")) / 1024
     print(f"wrote {args.out} ({size_kb:.0f} KB)")

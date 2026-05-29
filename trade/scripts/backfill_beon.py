@@ -256,32 +256,56 @@ def _load_existing_keys() -> set[tuple[int, int]]:
     return keys
 
 
+# Origin labels for _msg_key_with_origin. NATIVE = the msg was posted
+# by BeOn itself (no fwd_from). FORWARD = msg.fwd_from carries a clean
+# (origin chat, origin post) pair so dedup is reliable. FALLBACK = the
+# msg HAS fwd_from but channel_post / from_id is missing or unmappable
+# (hidden user forwards, legacy chat peers without channel_post). The
+# fallback path keys on (source_chat_id, msg.id), which is NOT what
+# trade-bot's listener would have recorded for the same message — that
+# means every backfill tick will see the message as 'new' and re-forward
+# it. Rare in practice but worth measuring before we decide whether
+# to skip such messages or accept the duplicate risk.
+_ORIGIN_NATIVE = "native"
+_ORIGIN_FORWARD = "forward"
+_ORIGIN_FALLBACK = "fallback"
+
+
+def _msg_key_with_origin(
+    msg: Message, source_chat_id: int
+) -> tuple[tuple[int, int], str]:
+    """Like _msg_key but also reports which path produced the key.
+
+    Returned origin label is used by run() to count fallback hits per
+    backfill cycle — see _ORIGIN_FALLBACK above for why that's worth
+    tracking. The key itself matches _msg_key exactly so dedup
+    semantics are unchanged.
+    """
+    fwd = getattr(msg, "fwd_from", None)
+    if fwd is None:
+        return (source_chat_id, msg.id), _ORIGIN_NATIVE
+    from_peer = getattr(fwd, "from_id", None)
+    channel_post = getattr(fwd, "channel_post", None)
+    if from_peer is not None and channel_post is not None:
+        try:
+            return (
+                (_tutils.get_peer_id(from_peer), int(channel_post)),
+                _ORIGIN_FORWARD,
+            )
+        except (TypeError, ValueError):
+            pass
+    return (source_chat_id, msg.id), _ORIGIN_FALLBACK
+
+
 def _msg_key(msg: Message, source_chat_id: int) -> tuple[int, int]:
     """Return (chat_id, msg_id) identity for dedup vs. inbox.jsonl.
 
-    Mirrors what trade-bot would record for the SAME message when
-    Telegram forwards it to the trade channel:
-      - msg.fwd_from set → original sender's (chat_id, channel_post)
-        because Telegram preserves the head of the forward chain.
-      - msg.fwd_from None → BeOn's own (source_chat_id, msg.id) since
-        BeOn is the originator.
-
-    Falls back to (source_chat_id, msg.id) when fwd_from is present
-    but the chat or post-id can't be extracted (hidden user forwards,
-    legacy chat peers without channel_post, etc.). That fallback may
-    miss true dedup in rare hidden-source cases but is strictly safer
-    than skipping a real new BeOn-originated post.
+    Thin wrapper kept for backwards compatibility with existing tests.
+    New call sites should use _msg_key_with_origin so they can count
+    fallback hits and react if the rate is non-trivial.
     """
-    fwd = getattr(msg, "fwd_from", None)
-    if fwd is not None:
-        from_peer = getattr(fwd, "from_id", None)
-        channel_post = getattr(fwd, "channel_post", None)
-        if from_peer is not None and channel_post is not None:
-            try:
-                return (_tutils.get_peer_id(from_peer), int(channel_post))
-            except (TypeError, ValueError):
-                pass
-    return (source_chat_id, msg.id)
+    key, _origin = _msg_key_with_origin(msg, source_chat_id)
+    return key
 
 
 def _group_by_album(messages: list[Message]) -> list[list[Message]]:
@@ -402,6 +426,14 @@ async def run(
         candidates: list[Message] = []
         skipped_existing = 0
         skipped_ignored = 0
+        # fwd_fallback_count: msgs whose fwd_from chain is present but
+        # missing channel_post / from_id, so we fell back to keying on
+        # (source_chat_id, msg.id). The listener wouldn't have recorded
+        # the same key, so each fallback message is at non-zero risk of
+        # being re-forwarded every cycle. We're measuring only — a
+        # later commit decides whether to skip such messages outright,
+        # based on the observed rate in journal.
+        fwd_fallback_count = 0
         iterated = 0
         async for msg in client.iter_messages(
             source, offset_date=since, reverse=True
@@ -409,7 +441,17 @@ async def run(
             if until is not None and msg.date > until:
                 break
             iterated += 1
-            if _msg_key(msg, source_chat_id) in existing:
+            key, origin = _msg_key_with_origin(msg, source_chat_id)
+            if origin == _ORIGIN_FALLBACK:
+                fwd_fallback_count += 1
+                log.warning(
+                    "fwd fallback msg=%d — fwd_from present but "
+                    "channel_post/from_id missing; keying on "
+                    "(source, msg.id) — listener-recorded key may "
+                    "differ → potential re-forward on next tick",
+                    msg.id,
+                )
+            if key in existing:
                 skipped_existing += 1
                 continue
             caption = msg.text or ""
@@ -428,12 +470,13 @@ async def run(
         until_label = (until or datetime.now(timezone.utc)).date().isoformat()
         log.info(
             "range %s → %s — candidates=%d skipped_existing=%d "
-            "skipped_ignored=%d",
+            "skipped_ignored=%d fwd_fallback=%d",
             since.date().isoformat(),
             until_label,
             len(candidates),
             skipped_existing,
             skipped_ignored,
+            fwd_fallback_count,
         )
 
         if len(candidates) > max_candidates:
@@ -504,8 +547,9 @@ async def run(
             # raised there. No ⚠️ here (that was a false-positive source).
             log.info(
                 "sync: nothing new (iterated=%d skipped_existing=%d "
-                "skipped_ignored=%d)",
+                "skipped_ignored=%d fwd_fallback=%d)",
                 iterated, skipped_existing, skipped_ignored,
+                fwd_fallback_count,
             )
         return 0
     finally:
