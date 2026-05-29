@@ -109,7 +109,7 @@ def render_infographic(data: dict, date_iso: str, out_path: str) -> str | None:
     H = _WARN_TOP + (_WARN_H + 6 if n_rev else 6)
     fig_w = 11.6
     fig_h = fig_w * (H / W)                      # landscape (W > H)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=124)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=150)
     fig.patch.set_facecolor(_BG)
     ax.set_xlim(0, W); ax.set_ylim(0, H); ax.invert_yaxis()
     ax.axis("off")

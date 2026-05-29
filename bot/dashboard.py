@@ -3514,6 +3514,11 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
             # (Python adds '📊 <b>Daily Byte - ...</b>' + <i>subtitle</i>)
             # so the card doesn't double up on the heading.
             body = (r.get("body") or "").strip()
+            # 수평선/구분선 줄 제거 (render 시점 — strip-fix 이전에 아카이브된
+            # 옛 run 의 '---' / '--- / ---' 도 소급 정리). 단어문자 없이 대시류
+            # 2+ 만 있는 줄 + 그로 인한 연속 빈 줄.
+            body = re.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
+            body = re.sub(r"\n{3,}", "\n\n", body).strip()
 
             # Per-line snippet index for search (sec='brief'). Strip tags
             # for the searchable text so '<b>' noise doesn't pollute hits.
@@ -3539,8 +3544,8 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
             if png_rel and re.match(r"^daily_byte_img/[\w.\-]+\.png$", png_rel):
                 img_html = (f'<img class="db-info" src="{_html.escape(png_rel)}" '
                             f'alt="Daily Byte 인포그래픽" loading="lazy" '
-                            f'style="width:100%;max-width:100%;border-radius:10px;'
-                            f'margin:4px 0 12px;display:block">')
+                            f'style="width:100%;max-width:680px;border-radius:10px;'
+                            f'margin:8px auto 14px;display:block">')
 
             parts.append(f"""
   <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">

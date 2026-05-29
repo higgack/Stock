@@ -434,6 +434,11 @@ pattern to follow:
     flow 는 oneshot·watchdog 무관이라 WARNING 억제 유지 OK.)
   • help §10 대시보드: 모든 URL 을 full bare URL 로 표기 (Telegram 자동
     하이퍼링크 → 클릭 가능 + 전체 주소 표시). Daily Byte 링크 포함. slack 112.
+  • 다듬기 2차 (2026-05-29): (a) separator strip 정규식 확대 `^[^\w\n]*[-*_]
+    {2,}[^\w\n]*$` — '--- / ---' 슬래시 혼합형까지 차단. `_render_daily_byte_
+    page` 도 render 시점 strip (strip-fix 이전 아카이브된 옛 run 소급 정리).
+    (b) 인포그래픽 dpi 124→150 (선명도), 대시보드 `<img>` max-width 100%→680px
+    + margin auto (크기 축소 + 중앙 배치) — 사용자 '너무 크고 화질 별로'.
   • 비용 (2026-05-29 검토): Pro 1콜, ₩29.7→**₩53.4** (내용 강화로 output
     증가 — output $10/M 이 dominant, input enrich 는 $1.25/M 소액). 인포그래픽
     은 matplotlib 라 ₩0. 월 ~₩1.6K — Pro 유지가 품질-최적 (Flash 전환 시
