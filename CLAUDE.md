@@ -943,6 +943,22 @@ M2 통합 구현 안 함** — 이론적 충돌이 실측 비존재, 추측 통�
   자동 포착, 분기 재실행으로 재확인. 비용 0 (충돌 시에만 write).
 - baseline 데이터포인트: Hold-rate 53.3% (향후 PM 분포 회귀 감지 기준).
 
+### 🔜 SV audit — 별도 세션 예정 (다음 세션 pickup)
+2026-05-29 audit 은 stock-bot **/ticker + screener** scope. SV
+(`standardview/`) 는 별도 subsystem 이라 다음 세션에서 동일 3-agent 방식
+으로 dedicated audit 예정. 사용자 확정 2026-05-29.
+- **scope**: SV-특화 실패 모드 — HTML 생성/escape, 뉴스 brief 병렬·retry,
+  push 스케줄 타이밍 (daily/push/weekly timer), cache rollover, watchdog
+  stale-detection. /ticker 의 LLM-pipeline 버그 클래스와 다름.
+- **현 상태**: 2026-05-21 세션에서 major 8건 (A-G + 가독성) 전부 close
+  (위 'Standard View open issues' 섹션 참조). audit 은 그 이후 회귀 +
+  미점검 영역 (telegram_pusher / daily_generator / backend) 커버.
+- **방법**: 비용 (Gemini Flash 호출 구조) / 데이터 (NewsAPI/GDELT/매크로
+  fetch 병렬·캐시) / 견고성 (timer race, busy-marker, drift re-sync) 3축.
+- screener 는 별도 구조 audit **불필요** 확정 — /ticker 인프라 fix
+  (F1/F5/F6/GBp) 를 build_instrument_context 공유로 자동 상속 + 출력
+  품질은 외부 리뷰 reactive 로 충분.
+
 ### ⏸ 신중 (위험 중간, A/B 검증 권장):
 - M2 PM override 이중 레이어 (in-graph 분석가 다수 보정 ↔ analyzer
   Fix-G Trader 불일치 Hold 강제) 상반 정책 → 단일 지점 통합 필요.
