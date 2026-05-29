@@ -925,6 +925,24 @@ M2 (PM override 이중 레이어 충돌) 는 버그가 아니라 **정책 결정
 - **다음**: VM 에서 backtest 실행 → 결과 보고 → 정책 확정 → (채택 시)
   feature flag 뒤 Phase 2 shadow + Phase 3 gated rollout.
 
+### ✅ M2 — 종결: 통합 불필요 (2026-05-29 backtest 데이터 결정)
+VM backtest 결과 (실데이터 107 evaluated runs):
+```
+M2 conflicts : 0 (0.0% of runs)
+Hold-rate    : legacy 53.3% = policyA 53.3% (Δ +0.0pp)
+```
+**107 분석 중 M2 충돌 0건** — in-graph 가 PM 을 분석가 다수로 정렬한 뒤
+analyzer Fix F/G 가 Hold 로 되돌린 케이스가 실데이터에 존재하지 않음.
+이유: in-graph discipline 발화 자체가 드물고, 발화해 Buy/Sell 정렬 시
+Trader 도 대개 동의 (같은 research plan 참조) → Fix G 미발화. **결정:
+M2 통합 구현 안 함** — 이론적 충돌이 실측 비존재, 추측 통합은 복잡도 +
+회귀 위험만 추가. 측정-우선 원칙이 정확히 검증됨 (blind 통합 회피).
+- Phase 0 instrumentation (`_log_pm_override_conflict`) + Phase 1
+  backtest (`bot/pm_override_audit.py`) 는 **forward tripwire 로 유지** —
+  PM 프롬프트 / discipline 로직 변경 후 M2 충돌이 새로 생기면 jsonl 에
+  자동 포착, 분기 재실행으로 재확인. 비용 0 (충돌 시에만 write).
+- baseline 데이터포인트: Hold-rate 53.3% (향후 PM 분포 회귀 감지 기준).
+
 ### ⏸ 신중 (위험 중간, A/B 검증 권장):
 - M2 PM override 이중 레이어 (in-graph 분석가 다수 보정 ↔ analyzer
   Fix-G Trader 불일치 Hold 강제) 상반 정책 → 단일 지점 통합 필요.
