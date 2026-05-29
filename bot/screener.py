@@ -398,6 +398,29 @@ SUB-THEME PADDING 자제 (2026-05-29 Quantum review surfaced):
 표면 연결로 흐르는 케이스. '4 sub-theme 만 식별 가능 — 도메인 자체가
 narrow' 명시 후 4 개로 마감 가능.
 
+SINGLE-TICKER-PER-ROW (2026-05-29 Semiconductors review surfaced):
+**Master Table 의 한 행 = 정확히 한 ticker (또는 `(inferred)` 플레이스
+홀더 + 단일 회사명 OR 'no clean public name' 라벨).** 실제 상장사
+2개 이상을 한 행의 `(inferred)` 슬롯에 묶어 인용 금지.
+
+위반 예시 (Semiconductors 2026-05-29): `• L · ``(inferred)`` · 글로벌
+파운드리 (TSMC, Tower Semi)` — '글로벌 파운드리' 일반 명사 라벨 + TSMC
+(TSM) + Tower Semi (TSEM) 두 실 상장사 묶음. 'GlobalFoundries' 도 실제
+NYSE 상장사 (티커 GFS) 라 더 혼란.
+
+올바른 처리:
+ (a) 각 회사 별도 행으로 분리: `• L · TSM · ...` + `• M · TSEM · ...`
+     + 필요시 `• L · GFS · GlobalFoundries Inc.`
+ (b) 또는 일반 산업 동학으로 서술하면서 ticker 행은 omit:
+     `• L · ``(no clean public name)`` · 실리콘 포토닉스 파운드리 시장
+     동학 — TSMC/TSEM/GFS 점유율 ...`
+ (c) sub-theme 자체가 약하면 SUB-THEME PADDING 자제 rule 로 omit.
+
+Row 라벨에 '글로벌 X' / '주요 X' / 'X 진영' 같은 generic Korean 용어
+사용 시 ticker 슬롯이 단일 회사 또는 (no clean public name) 만 허용.
+'X, Y, Z' 처럼 콤마 구분 multiple tickers/회사명 = SINGLE-TICKER-PER-ROW
+위반.
+
 VALUATION DISTORTION 가드 (cyclical bottom 인지 — 2026-05-29 외부
 리뷰 ② 반영):
 - 현재 PER > 100x 종목은 '단순 고평가' 결론 금지. 일시적 이익 훼손
@@ -777,6 +800,42 @@ _MT_TIER_ROW_RE = re.compile(
 # Top-3 parenthetical: '(Tier: L, 접근 경로: ...)' — captures just the
 # letter for in-place substitution.
 _TOP3_TIER_PAREN_RE = re.compile(r"\(Tier:\s*([LMS?])(\s*[,\)])")
+
+
+def _strip_invalid_dates(text: str) -> tuple[str, int]:
+    """Post-process — detect calendar-invalid 'YYYY-MM-DD' tokens (e.g.
+    '2026-02-29' when 2026 is not a leap year, '2025-04-31' since April
+    has 30 days). These are chronological hallucinations — Pro fabricating
+    a precise contract / earnings date that can't physically exist.
+
+    Semiconductors 도메인 review 2026-05-29 surfaced 디아이 003160.KS
+    공급 계약 'sourced 2026-02-29' — 2026 non-leap, Feb only has 28 days
+    → impossible. Pro 가 시뮬레이션 시기 채우려 가공한 케이스.
+
+    Behavior:
+      • 정확한 'YYYY-MM-DD' 패턴 발견 → datetime.date(y,m,d) 시도
+      • ValueError (invalid date) → '⚠️ inferred — invalid date (YYYY-
+        MM-DD)' 로 치환
+      • 유효 날짜 (과거/미래 무관) 는 그대로 보존 — future-date strip 은
+        별도 pass
+
+    Returns (corrected_text, n_strips).
+    """
+    import datetime
+    import re
+    pattern = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+    n_strips = 0
+
+    def _replace(m: "re.Match") -> str:
+        nonlocal n_strips
+        try:
+            datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return m.group(0)
+        except ValueError:
+            n_strips += 1
+            return f"⚠️ inferred — invalid date ({m.group(0)})"
+
+    return pattern.sub(_replace, text), n_strips
 
 
 def _strip_transitional_tags(text: str) -> tuple[str, int]:
@@ -1575,6 +1634,18 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
         log.warning(
             "screener: %d transitional/corp-action tag(s) stripped (CLAUDE.md rule)",
             n_trans_strips,
+        )
+
+    # Invalid-date strip (2026-05-29 Semiconductors review surfaced):
+    # Pro 가 '2026-02-29' (non-leap year), '2025-04-31' 같은 달력상 불가능
+    # 날짜 fabrication. datetime.date(y,m,d) validate → ValueError 시
+    # '⚠️ inferred — invalid date' 로 치환. future-date strip 과 별개 pass
+    # (과거이지만 invalid 케이스 별도 cover).
+    p45_text, n_invalid_dates = _strip_invalid_dates(p45_text)
+    if n_invalid_dates:
+        log.warning(
+            "screener: %d invalid date(s) stripped (chronological fabrication)",
+            n_invalid_dates,
         )
 
     # Extract machine-parseable JSON tails (TICKERS_USED first so the
