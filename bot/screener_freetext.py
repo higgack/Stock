@@ -163,6 +163,131 @@ def count_text_uses(text: str) -> int:
     return n
 
 
+# ── Auto-promotion to static module ──────────────────────────────────────
+
+
+_PROMOTE_THRESHOLD = 5  # 누적 호출 횟수 (count_text_uses 단위)
+_THEMES_PKG_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "screener_themes",
+)
+
+
+def _slugify(text: str, theme: dict, existing: set[str]) -> str:
+    """Pick a valid Python identifier slug for the promoted module.
+    Preference order:
+      1) First ASCII-only alias that's a clean slug
+      2) ASCII fragment of the ``domain`` field
+      3) Hash-based fallback ``freetext_<hash[:8]>``
+
+    Result is always unique against ``existing`` (registry slug set) +
+    safe to use as a module filename + Python identifier.
+    """
+    import re
+
+    def _norm(s: str) -> str:
+        s = re.sub(r"[^a-z0-9_]+", "_", s.lower()).strip("_")
+        # Collapse repeats + length cap (Python import-friendly).
+        s = re.sub(r"_+", "_", s)
+        return s[:30]
+
+    # 1) Aliases — first ASCII-clean one wins.
+    for alias in theme.get("aliases") or []:
+        s = _norm(str(alias))
+        if s and s not in existing and not s[0].isdigit():
+            return s
+
+    # 2) Domain ASCII fragment ("탄소나노튜브 (Carbon Nanotube — CNT)" →
+    # "carbon nanotube cnt" → "carbon_nanotube_cnt").
+    domain = str(theme.get("domain") or "")
+    en = re.findall(r"[A-Za-z][A-Za-z0-9\s\-]+", domain)
+    if en:
+        s = _norm(" ".join(en))
+        if s and s not in existing and not s[0].isdigit():
+            return s
+
+    # 3) Hash fallback — always unique.
+    base = f"freetext_{_cache_key(text)[:8]}"
+    s = base
+    n = 2
+    while s in existing:
+        s = f"{base}_{n}"
+        n += 1
+    return s
+
+
+def _format_theme_literal(theme: dict) -> str:
+    """Pretty-print theme dict as a Python literal suitable for module
+    file. Uses json.dumps for stable ordering + readable line wrapping,
+    then converts JSON null/true/false → Python None/True/False."""
+    body = json.dumps(theme, ensure_ascii=False, indent=4)
+    # JSON → Python literal substitutions. Safe because these tokens only
+    # appear as bare literals (not inside any string we generate).
+    body = body.replace(": null", ": None")
+    body = body.replace(": true", ": True")
+    body = body.replace(": false", ": False")
+    return body
+
+
+def promote_to_module(text: str, theme: dict) -> Optional[str]:
+    """Write the cached theme dict to ``bot/screener_themes/<slug>.py``
+    as a permanent module. Returns the chosen slug on success, None if
+    the target file already exists (idempotent — same text triggering
+    promotion repeatedly is a no-op after first write).
+
+    The new module is picked up by ``_discover()`` on the next bot
+    restart (auto-update 1-min cycle will catch it next time the user
+    pushes any commit). Until then the freetext cache continues serving
+    the same theme so behavior is unchanged.
+
+    Layer stays ``AD_HOC`` to flag it as auto-promoted — user can
+    manually edit to L1_TREND/L2_SECTOR/L3_INDUSTRY after review.
+    """
+    from bot.screener_themes import list_domains
+
+    existing = {d["slug"] for d in list_domains()}
+    slug = _slugify(text, theme, existing)
+
+    target = os.path.join(_THEMES_PKG_DIR, f"{slug}.py")
+    if os.path.exists(target):
+        return None  # already promoted on a prior run
+
+    # Mark for traceability — generated_from + cache_key embedded so the
+    # user can locate the audit + cache files when reviewing.
+    promote_ts = _kst_now().isoformat(timespec="seconds")
+    header = f'''"""Auto-promoted from `/screener <자유어>` — {_PROMOTE_THRESHOLD}+ uses surfaced {promote_ts}.
+
+User input that triggered promotion: "{text}"
+Cache key:    {_cache_key(text)}
+Cached theme: ~/.tradingagents/freetext_themes/{_cache_key(text)}.json
+Audit log:    ~/.tradingagents/freetext_audit.jsonl
+
+Layer = AD_HOC (auto-promoted). Manually edit to L1_TREND / L2_SECTOR /
+L3_INDUSTRY after review if appropriate. Same shape as static modules —
+``THEME`` dict at module top level, registry auto-discovers next bot
+restart.
+"""
+
+from __future__ import annotations
+
+THEME = {_format_theme_literal(theme)}
+'''
+    try:
+        with open(target, "w", encoding="utf-8") as f:
+            f.write(header)
+        write_audit({
+            "event": "promotion",
+            "input": text,
+            "cache_key": _cache_key(text),
+            "slug": slug,
+            "target_path": target,
+        })
+        log.info("freetext promoted to module: %s → %s", text, slug)
+        return slug
+    except Exception as exc:
+        log.exception("freetext promote_to_module failed: %s", exc)
+        return None
+
+
 # ── Existing-domain fuzzy match ──────────────────────────────────────────
 
 

@@ -1709,10 +1709,23 @@ async def _resolve_screener_target(send, raw_domain: str):
     uses = _ft_count_uses(raw_domain)
     promote_hint = ""
     if uses >= 5:
-        promote_hint = (
-            f"\n📌 이 자유어 누적 {uses}회 사용 — 정식 모듈 promotion 후보. "
-            f"<code>bot/screener_themes/&lt;slug&gt;.py</code> 로 promote 검토."
-        )
+        # Auto-promote to static module on 5th+ use. First-time hit writes
+        # the file; subsequent calls return None (already promoted) so
+        # the message degrades gracefully. Module activates next bot
+        # restart (auto-update timer picks up within 1 min of any push).
+        from bot.screener_freetext import promote_to_module as _ft_promote
+        promoted_slug = _ft_promote(raw_domain, ft_theme)
+        if promoted_slug:
+            promote_hint = (
+                f"\n📌 누적 {uses}회 사용 — 정식 모듈로 promote 완료: "
+                f"<code>bot/screener_themes/{promoted_slug}.py</code>. "
+                f"다음 봇 재시작 후 <code>/screener {promoted_slug}</code> 직접 라우팅."
+            )
+        else:
+            promote_hint = (
+                f"\n📌 누적 {uses}회 사용 — 정식 모듈 이미 promoted 됨 "
+                f"(같은 slug 의 모듈 존재). 봇 재시작 후 정적 도메인으로 라우팅."
+            )
     layer_count = len(ft_theme.get("binding_layer_taxonomy", []))
     catalyst_count = len(ft_theme.get("catalyst_types", []))
     region_count = len(ft_theme.get("regional_concentration", {}))
