@@ -783,21 +783,40 @@ def _extract_stance(body: str | None) -> str:
         if _ff in lower:
             lower = lower.replace(_ff, "○○")
 
+    def _match_positions(text_lower: str, kw: str) -> list[int]:
+        """All start positions of `kw` in `text_lower`, rightmost first.
+
+        m7 (2026-05-29 audit): ASCII keywords ('buy'/'sell'/'hold') are
+        matched with WORD BOUNDARIES so they don't fire inside 'buyback' /
+        'household' / 'threshold' / 'seller' / 'stronghold'. Korean keywords
+        have no word boundaries (and their substring false-friends — 과매수
+        / 순매도 — are pre-masked into ○○ above), so they keep plain rfind.
+        Previously the bare-keyword fallback (pass 3) rfind'd 'hold' etc.
+        with no boundary, a latent member of the stance-extraction bug class
+        that cascades into _analyst_majority_direction → PM discipline."""
+        if kw.isascii() and kw.isalpha():
+            return [m.start() for m in
+                    reversed(list(re.finditer(r"\b" + re.escape(kw) + r"\b", text_lower)))]
+        out: list[int] = []
+        pos = text_lower.rfind(kw)
+        while pos >= 0:
+            out.append(pos)
+            pos = text_lower.rfind(kw, 0, pos)
+        return out
+
     def _rightmost_match_in(text_lower: str, keyword_list):
         by_len = sorted(keyword_list, key=lambda kv: -len(kv[0]))
         accepted: list[tuple[int, int]] = []
         candidates: list[tuple[int, str]] = []
         for keyword, label in by_len:
             kw = keyword.lower()
-            pos = text_lower.rfind(kw)
-            while pos >= 0:
+            for pos in _match_positions(text_lower, kw):
                 end = pos + len(kw)
                 inside = any(s <= pos and end <= e for s, e in accepted)
                 if not inside:
                     accepted.append((pos, end))
                     candidates.append((pos, label))
                     break
-                pos = text_lower.rfind(kw, 0, pos)
         if not candidates:
             return ""
         candidates.sort(key=lambda kv: -kv[0])

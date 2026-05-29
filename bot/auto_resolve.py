@@ -114,6 +114,16 @@ def _fetch_returns(
 
         stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
         bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
+        # m9 (2026-05-29 audit): thin sector ETF (<2 closes) → SPY fallback
+        # so a sparsely-traded benchmark can't block an otherwise-resolvable
+        # entry forever. raw return is a unitless ratio → alpha stays valid
+        # (broad-market instead of sector benchmark). Mirrors the in-graph
+        # _fetch_returns copy in trading_graph.py.
+        if len(bench) < 2 and benchmark_symbol != "SPY":
+            log.info("fetch_returns: %s benchmark %s thin (<2 closes) — SPY fallback",
+                     ticker, benchmark_symbol)
+            benchmark_symbol = "SPY"
+            bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
         # Require at least 2 closes (start + 1 outcome day) — same lenient
         # minimum the old code used. actual_days below caps at whatever
         # is available so a 5-trading-day query that only finds 4 closes

@@ -277,7 +277,14 @@ class TradingAgentsGraph:
         """
         try:
             start = datetime.strptime(trade_date, "%Y-%m-%d")
-            end = start + timedelta(days=holding_days + 7)  # buffer for weekends/holidays
+            # m8 (2026-05-29 audit): align with bot/auto_resolve.py's tightened
+            # +3 gate (was +7 here). The two copies independently resolve the
+            # same pending entry; a 7 vs 3 divergence let them settle it on
+            # different days with different partial-window actual_days. +3 is
+            # the minimum that absorbs a weekend transition (5 trading days
+            # settle within holding_days + 3 calendar days); the per-fetch
+            # ≥2-close readiness check below caps partial windows.
+            end = start + timedelta(days=holding_days + 3)
             # If the holding window hasn't elapsed yet there are no returns to
             # score. Bailing here also stops yfinance from logging '$TICKER:
             # possibly delisted' for a forward range it can't possibly serve.
@@ -297,6 +304,19 @@ class TradingAgentsGraph:
 
             stock = yf.Ticker(ticker).history(start=trade_date, end=end_str)
             bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
+
+            # m9 (2026-05-29 audit): a thin sector ETF (<2 closes in the
+            # window) would otherwise block an otherwise-resolvable entry
+            # forever. Fall back to SPY (always liquid). raw return is a
+            # unitless ratio so the alpha stays arithmetically valid — just
+            # benchmarked against the broad US market instead of the sector.
+            if len(bench) < 2 and benchmark_symbol != "SPY":
+                logger.info(
+                    "fetch_returns: %s benchmark %s thin (<2 closes) — SPY fallback",
+                    ticker, benchmark_symbol,
+                )
+                benchmark_symbol = "SPY"
+                bench = yf.Ticker(benchmark_symbol).history(start=trade_date, end=end_str)
 
             if len(stock) < 2 or len(bench) < 2:
                 return None, None, None

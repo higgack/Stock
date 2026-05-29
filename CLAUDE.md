@@ -886,10 +886,22 @@ shipping 후 cross-market parity audit 으로 확장.
   `(ticker, today)` 12h 디스크 캐시 wrapper (`_compute_options_signals`
   분리), non-None 만 캐시. IV/PCR intraday drift 는 5일 horizon 허용.
 
-### 🔜 3차 (예정, 정확성 hygiene):
-- m7 `_extract_stance` 영어 pass-3 word-boundary 없음 (household→hold).
-- m8 auto-resolve gate in-graph 7일 vs background 3일 불일치 통일.
-- m9 sector ETF <2 closes 시 entry 영구 skip (SPY fallback 없음).
+### ✅ 3차 — 완료 (정확성 hygiene):
+- **m7** `_extract_stance` bare-keyword fallback 이 ASCII 'buy/sell/hold'
+  를 word-boundary 없이 rfind → household / buyback / seller / threshold
+  / stronghold substring 오매칭. `_match_positions` 헬퍼: ASCII 키워드는
+  `\bkw\b` regex, 한국어는 plain rfind (false-friend 는 이미 ○○ mask).
+  smoke: household/buyback/seller → "" , 'strong buy'/'hold' → 정상.
+- **m8** auto-resolve readiness gate in-graph(trading_graph) +7 vs
+  background(auto_resolve) +3 불일치 → 같은 entry 가 다른 actual_days 로
+  해소 가능. in-graph 를 +3 으로 통일 (auto_resolve 의 JPM rationale 따름).
+- **m9** sector ETF <2 closes 시 entry 영구 skip → 양쪽 _fetch_returns
+  copy 에 SPY fallback (benchmark thin + != SPY 시 SPY 재조회). raw return
+  은 unitless ratio 라 alpha 산술 정상 (broad-market 벤치, sector 관련성만
+  ↓). 무한 block 보다 우월.
+
+### ✅ audit 3-tier 전체 완료 (commits 5e45caf / de900a1 / 본 commit).
+잔여: M2 (PM override 이중 레이어 통합) 만 A/B 검증 후 별도 — 위험 중간.
 
 ### ⏸ 신중 (위험 중간, A/B 검증 권장):
 - M2 PM override 이중 레이어 (in-graph 분석가 다수 보정 ↔ analyzer
