@@ -418,6 +418,16 @@ pattern to follow:
     → 도메인 목록 → **Daily Byte** → 외부(SV/🇰🇷). help §10(대시보드)에 Daily
     Byte 링크+설명 추가, §9(트러블슈팅) 삭제로 4096 cap 확보(섹션 1~11 재번호,
     트러블슈팅 내용은 본 CLAUDE.md 보존).
+  • 다듬기 (2026-05-29 실데이터 1차 review): (a) 인포그래픽 **landscape
+    3-column** 재설계 (헤더 전폭+breadth 우측 / 시장수급·외국인TOP·기관TOP
+    3열 / 경고 전폭) — 기존 세로형이 화면 반절만 채우던 것 해결. 대시보드
+    `<img>` max-width 520px→100% (카드 full-width). (b) `_post_process` 가
+    markdown 수평선(`---`/`***`/`___`) 줄 제거 + 연속 빈 줄 정리. (c) 프롬프트:
+    굵게(`**`)는 헤더·핵심 수치만, catalyst·맥락 문장은 일반 텍스트.
+  • 비용 (2026-05-29 검토): Pro 1콜, ₩29.7→**₩53.4** (내용 강화로 output
+    증가 — output $10/M 이 dominant, input enrich 는 $1.25/M 소액). 인포그래픽
+    은 matplotlib 라 ₩0. 월 ~₩1.6K — Pro 유지가 품질-최적 (Flash 전환 시
+    ~4x 절감되나 narrative/grounding 품질 저하, 일 1회 ₩53 는 무시 가능).
 
 **Acceptable manual steps** (rare, one-time):
 - Initial systemd unit installation

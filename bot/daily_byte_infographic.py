@@ -98,14 +98,18 @@ def render_infographic(data: dict, date_iso: str, out_path: str) -> str | None:
     # 기관: totals 의 '기관' 은 기관합계, per-stock 은 '기관합계' 키
     inst_rows = _top_rows("기관합계") or _top_rows("기관")
 
-    # ── 레이아웃 (좌표계 0..100 x, 0..H y, 위→아래) ──────────────────
+    # ── 레이아웃: landscape 3-column. 헤더(전폭, breadth 우측) / 시장총평·
+    #    외국인 TOP·기관 TOP 3열 / 경고(전폭). 좌표계 0..100 x, 0..H y.
     W = 100.0
-    # 동적 높이: 헤더 + 총평 + TOP(5행×2) + 경고 + 면책
     n_rev = min(len(reversals), 4)
-    H = 150.0 + n_rev * 5.5
-    fig_w = 8.6
-    fig_h = fig_w * (H / W)
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=132)
+    _MAIN_TOP = 25.0
+    _MAIN_H = 30.0
+    _WARN_TOP = _MAIN_TOP + _MAIN_H + 4         # 59
+    _WARN_H = (7.0 + n_rev * 5.2) if n_rev else 0.0
+    H = _WARN_TOP + (_WARN_H + 6 if n_rev else 6)
+    fig_w = 11.6
+    fig_h = fig_w * (H / W)                      # landscape (W > H)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=124)
     fig.patch.set_facecolor(_BG)
     ax.set_xlim(0, W); ax.set_ylim(0, H); ax.invert_yaxis()
     ax.axis("off")
@@ -124,92 +128,85 @@ def render_infographic(data: dict, date_iso: str, out_path: str) -> str | None:
         ax.add_patch(Rectangle((x, y - 1.6), 1.1, 3.4, facecolor=color, edgecolor="none"))
         txt(x + 3, y, s, size=size, weight="bold")
 
-    y = 4.0
-    # ── 헤더 ───────────────────────────────────────────────────────
-    panel(3, y, 94, 18, fc=_ACCENT, ec=_ACCENT, rad=2.6)
-    panel(3, y, 94, 18, fc="#1d4ed8", ec="#1d4ed8", rad=2.6)
-    txt(7, y + 4.5, "DAILY BYTE · KR MARKET FLOW", size=9.5, color="#cfe3ff", weight="bold")
-    txt(7, y + 10, "장 마감 후 투자주체별 수급 브리프", size=16, color="white", weight="bold")
-    txt(7, y + 15, f"{date_iso} · KOSPI + KOSDAQ · pykrx EOD (KRX 공식)",
+    # ── 헤더 (전폭) + breadth (우측) ───────────────────────────────
+    panel(2.5, 3, 95, 17, fc="#1d4ed8", ec="#1d4ed8", rad=2.6)
+    txt(6, 7, "DAILY BYTE · KR MARKET FLOW", size=10, color="#cfe3ff", weight="bold")
+    txt(6, 12.3, "장 마감 후 투자주체별 수급 브리프", size=17, color="white", weight="bold")
+    txt(6, 17.3, f"{date_iso} · KOSPI + KOSDAQ · pykrx EOD (KRX 공식)",
         size=9.5, color="#dbe9ff")
-    y += 22
-
-    # ── 시장 수급 총평 (막대) ──────────────────────────────────────
-    section(4, y + 2, "시장 수급 총평 (당일 순매수, 억원)")
-    y += 6
-    bar_h = 6.0
-    maxabs = max((abs(v) for _, v in inv_vals), default=1.0) or 1.0
-    bx0 = 26.0          # 막대 시작 x
-    bx_w = 56.0         # 막대 최대 폭
-    for label, v in inv_vals:
-        panel(4, y, 92, bar_h, fc=_PANEL, ec=_LINE, rad=1.4)
-        txt(7, y + bar_h / 2, label, size=10.5, color=_MUTED, weight="bold")
-        w = max(0.6, abs(v) / maxabs * bx_w)
-        col = _POS if v >= 0 else _NEG
-        ax.add_patch(Rectangle((bx0, y + bar_h / 2 - 1.3), w, 2.6,
-                               facecolor=col, edgecolor="none"))
-        txt(bx0 + w + 1.5, y + bar_h / 2, _eok(v), size=10.5, color=col, weight="bold")
-        y += bar_h + 1.6
-    y += 1
-
-    # ── breadth ────────────────────────────────────────────────────
     if breadth.get("pct") is not None:
-        panel(4, y, 92, 11, fc=_PANEL2, ec=_LINE, rad=1.8)
         pct = breadth.get("pct", 0)
-        txt(9, y + 5.5, f"{pct:.0f}%", size=20, color=_ACCENT, weight="bold", ha="center")
-        txt(20, y + 4, "순매수종목 비율 (breadth)", size=10.5, weight="bold")
+        txt(94, 8.5, f"{pct:.0f}%", size=23, color="white", weight="bold", ha="right")
+        txt(94, 13.5, "순매수종목 비율 (breadth)", size=9, color="#dbe9ff", ha="right")
         nb = breadth.get("net_buy_n"); tot = breadth.get("total_n")
-        sub = f"{nb}/{tot}종목 순매수" if nb and tot else "시장 폭 지표"
-        narrow = " · 자금 소수 대형주 응축" if pct and pct < 45 else ""
-        txt(20, y + 8, sub + narrow, size=9.5, color=_MUTED)
-        y += 13
-    else:
-        y += 1
+        if nb and tot:
+            txt(94, 17, f"{nb}/{tot}종목 · 자금 소수 대형주 응축"
+                if pct < 45 else f"{nb}/{tot}종목 순매수",
+                size=8.3, color="#cfe3ff", ha="right")
 
-    # ── 당일 순매수 TOP (2열: 외국인 / 기관) ────────────────────────
-    section(4, y + 2, "당일 순매수 TOP 5", color=_ACCENTW)
-    y += 6
-    col_w = 45.0
-    cols = [("외국인", fg_rows, 4.0), ("기관", inst_rows, 51.0)]
-    block_h = 5 * 6.4 + 6
-    for cname, rows, cx in cols:
-        panel(cx, y, col_w, block_h, fc=_PANEL, ec=_LINE, rad=1.8)
-        txt(cx + 3, y + 4, cname, size=10.5, color=_ACCENTW, weight="bold")
-        ry = y + 9
+    # ── 3열 헤더 ───────────────────────────────────────────────────
+    C1, C1W = 2.5, 30.0
+    C2, C2W = 34.5, 30.0
+    C3, C3W = 66.5, 31.0
+    section(C1, 23, "시장 수급 (당일, 억원)", size=10.5)
+    section(C2, 23, "외국인 순매수 TOP 5", _ACCENTW, size=10.5)
+    section(C3, 23, "기관 순매수 TOP 5", _ACCENTW, size=10.5)
+
+    # ── COL1: 시장 총평 막대 ───────────────────────────────────────
+    panel(C1, _MAIN_TOP, C1W, _MAIN_H, fc=_PANEL, ec=_LINE, rad=1.8)
+    maxabs = max((abs(v) for _, v in inv_vals), default=1.0) or 1.0
+    bx0 = C1 + 9.0
+    bx_w = C1W - 17.0
+    ry = _MAIN_TOP + (_MAIN_H - 5 * 5.2) / 2 + 2.6
+    for label, v in inv_vals:
+        txt(C1 + 2, ry, label, size=9, color=_MUTED, weight="bold")
+        w = max(0.5, abs(v) / maxabs * bx_w)
+        col = _POS if v >= 0 else _NEG
+        ax.add_patch(Rectangle((bx0, ry - 1.0), w, 2.0, facecolor=col, edgecolor="none"))
+        txt(C1 + C1W - 1.5, ry, _eok(v), size=8.5, color=col, weight="bold", ha="right")
+        ry += 5.2
+
+    # ── COL2/COL3: TOP 5 (종목 / net / 등락률) ─────────────────────
+    def _render_top(cx, cw, rows):
+        panel(cx, _MAIN_TOP, cw, _MAIN_H, fc=_PANEL, ec=_LINE, rad=1.8)
+        ry2 = _MAIN_TOP + (_MAIN_H - 5 * 5.2) / 2 + 2.6
         if not rows:
-            txt(cx + 3, ry, "(데이터 없음)", size=9.5, color=_MUTED)
+            txt(cx + 2.5, ry2, "(데이터 없음)", size=9, color=_MUTED)
+            return
         for t, nm, net in rows:
-            nm_s = (nm or t)[:9]
-            txt(cx + 3, ry, nm_s, size=10, weight="bold")
+            txt(cx + 2.5, ry2, (nm or t)[:9], size=9.5, weight="bold")
+            txt(cx + cw - 2.5, ry2 - 0.9, _eok(net), size=9, color=_POS,
+                weight="bold", ha="right")
             cpct = chg.get(str(t))
-            cp_s = f"  {cpct:+.1f}%" if isinstance(cpct, (int, float)) else ""
-            cp_col = _POS if (isinstance(cpct, (int, float)) and cpct >= 0) else _NEG
-            txt(cx + col_w - 3, ry, f"{_eok(net)}", size=10, color=_POS, weight="bold", ha="right")
-            if cp_s:
-                txt(cx + col_w - 3, ry + 2.7, cp_s.strip(), size=8.2, color=cp_col, ha="right")
-            ry += 6.4
-        y_end = ry
-    y += block_h + 2
+            if isinstance(cpct, (int, float)):
+                cp_col = _POS if cpct >= 0 else _NEG
+                txt(cx + cw - 2.5, ry2 + 2.1, f"{cpct:+.1f}%", size=7.6,
+                    color=cp_col, ha="right")
+            ry2 += 5.2
+    _render_top(C2, C2W, fg_rows)
+    _render_top(C3, C3W, inst_rows)
 
-    # ── 경고: 양→음 전환 ───────────────────────────────────────────
+    # ── 경고 (전폭) ────────────────────────────────────────────────
     if n_rev:
-        wh = 6 + n_rev * 5.5
-        panel(4, y, 92, wh, fc="#1f1320", ec="#5b2540", rad=1.8)
-        ax.add_patch(Rectangle((7, y + 2.4), 1.1, 3.2, facecolor=_NEG, edgecolor="none"))
-        txt(9.5, y + 4, "경고 시그널 — 양→음 전환 (5일 누적 매수 → 당일 매도)",
-            size=11, color=_NEG, weight="bold")
-        ry = y + 9
+        panel(C1, _WARN_TOP, (C3 + C3W) - C1, _WARN_H, fc="#1f1320",
+              ec="#5b2540", rad=1.8)
+        ax.add_patch(Rectangle((C1 + 3, _WARN_TOP + 2.4), 1.1, 3.0,
+                               facecolor=_NEG, edgecolor="none"))
+        txt(C1 + 5.5, _WARN_TOP + 4,
+            "경고 시그널 — 양→음 전환 (5일 누적 매수 → 당일 매도)",
+            size=10.5, color=_NEG, weight="bold")
+        ry = _WARN_TOP + 9
         for inv, tkr, nm, cum_net, t_net in reversals[:n_rev]:
-            nm_s = (nm or tkr)[:10]
-            txt(7, ry, f"{nm_s} ({tkr}) [{inv}]", size=9.8, weight="bold")
-            txt(93, ry, f"5일 {_eok(cum_net)} → 당일 {_eok(t_net)}",
-                size=9.8, color=_MUTED, ha="right")
-            ry += 5.5
-        y += wh + 2
+            txt(C1 + 3, ry, f"{(nm or tkr)[:10]} ({tkr}) [{inv}]",
+                size=9.5, weight="bold")
+            txt(C3 + C3W - 1.5, ry, f"5일 {_eok(cum_net)} → 당일 {_eok(t_net)}",
+                size=9.5, color=_MUTED, ha="right")
+            ry += 5.2
 
     # ── 면책 ───────────────────────────────────────────────────────
-    txt(4, H - 3, "수치: pykrx EOD (KRX 공식) · 환각 0", size=8.5, color=_MUTED)
-    txt(96, H - 3, "수급 관찰 (교육·정보), 투자 권유 아님", size=8.5, color=_MUTED, ha="right")
+    txt(C1, H - 2.5, "수치: pykrx EOD (KRX 공식) · 환각 0", size=8.5, color=_MUTED)
+    txt(C3 + C3W, H - 2.5, "수급 관찰 (교육·정보), 투자 권유 아님",
+        size=8.5, color=_MUTED, ha="right")
 
     try:
         os.makedirs(os.path.dirname(out_path), exist_ok=True)

@@ -3539,7 +3539,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
             if png_rel and re.match(r"^daily_byte_img/[\w.\-]+\.png$", png_rel):
                 img_html = (f'<img class="db-info" src="{_html.escape(png_rel)}" '
                             f'alt="Daily Byte 인포그래픽" loading="lazy" '
-                            f'style="width:100%;max-width:520px;border-radius:10px;'
+                            f'style="width:100%;max-width:100%;border-radius:10px;'
                             f'margin:4px 0 12px;display:block">')
 
             parts.append(f"""
