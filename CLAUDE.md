@@ -365,16 +365,16 @@ pattern to follow:
     catalyst 차단.
   • 비용 ~₩70/일 (Pro 1 call) ≈ 월 ₩2K. 제목 "Daily Byte - YYYY.MM.DD"
     (거래일 자동). 데이터 부재(공휴일) 시 walk-back 4회 후 graceful skip.
-  • ⛔ **현재 DORMANT — KRX_ID/KRX_PW 대기 중** (2026-05-29 VM 검증 결과).
-    VM 첫 run 이 전부 실패: KRX 가 **2025-12-27 부터 'KRX Data
-    Marketplace' 로그인 필수**로 전환 → pykrx 가 creds 없이는 모든 fetch
-    JSONDecodeError + 내부 logging 버그로 로그 폭주. 같은 pykrx 를 쓰는
-    main /ticker KR 수급도 동일 (SK Hynix 리뷰 'pykrx flow 미수집').
-    **fix 완료**: `krx_login_ready()` preflight gate (creds 없으면 1회
-    경고 + clean skip, 폭주 차단) + `_quiet_pykrx_logging()` + pykrx 핀
-    ≥1.2.8. creds 가 `.env` 에 들어오면 코드 변경 0 으로 즉시 작동.
-    → 상세 + 가입 절차는 '🔐 API-blocked tasks' 의 KRX Data Marketplace
-    항목 참조. 그때까지 timer 는 매일 fire 하되 조용히 skip.
+  • ✅ **LIVE (2026-05-29)** — KRX_ID/KRX_PW 가 `.env` 에 로드됨. 수동
+    검증 run 에서 `KRX 로그인 완료 (ID higgack)` → 수급 fetch → Pro 종합
+    → 채널 push 확인 (₩29.7, 실데이터: 기관 +20,548억 등). 배경: KRX 가
+    **2025-12-27 부터 'KRX Data Marketplace' 로그인 필수**로 전환 →
+    pykrx≥1.2.8 가 KRX_ID/KRX_PW 인증. 같은 pykrx 를 쓰는 main /ticker KR
+    수급(`pykrx_client.py`)도 이 creds 로 동시 부활 (외인/기관 flow · 시총
+    fallback · 52주/SMA · 베타60m · 외인지분/공매도 추이).
+    가드: `krx_login_ready()` preflight (creds 없으면 1회 경고 + clean
+    skip) + `_quiet_pykrx_logging()` (내부 logging 버그 폭주 차단). creds
+    제거 시 자동 graceful skip 으로 복귀.
   • 대시보드 (2026-05-29): `archive/daily_byte.html` — screener.html 패턴
     mirror (date-그룹 카드 + 검색창 scr-* + 🗑️ 휴지통 `/api/daily_byte_
     delete` + 기존 _THEME_JS light/dark + _SCREENER_CSS 재사용). 메인
@@ -1498,7 +1498,10 @@ keeps a clear pickup state so the final batch is easy to resume.
 
 These need new credentials BEFORE work can ship:
 
-- **🆕 KRX Data Marketplace 로그인 (KRX_ID / KRX_PW)** — ⚠️ NEW BLOCKER
+- **KRX Data Marketplace 로그인 (KRX_ID / KRX_PW) — ✅ loaded (2026-05-29)**.
+  User registered + `.env` 에 KRX_ID/KRX_PW 추가, 검증 run 에서 `KRX 로그인
+  완료` 확인. Daily Byte + main /ticker KR pykrx 수급 모두 LIVE. 이하 배경은
+  기록 보존용. ⚠️ 노출된 KRX 비밀번호는 회전 권고 (채팅 노출).
   surfaced 2026-05-29 (Daily Byte 검증). KRX 가 **2025-12-27 부터**
   데이터 포털을 회원제 'KRX Data Marketplace' 로 전환하며 **로그인을
   필수**로 만들었다 (AI 봇 무단 수집 차단 목적; 데이터 조회는 여전히
