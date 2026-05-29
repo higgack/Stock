@@ -349,6 +349,27 @@ pattern to follow:
   • Raw 응답 audit log `~/.tradingagents/gics_check_audit.jsonl` 에
     저장 — 환각 의심 시 참조. Pro 의 false-positive tolerance 가 정책
     (놓치는 것보다 noise 가 나음). 사용자 직접 확인 정책 명시.
+- Daily Byte — 장 마감 후 KR 수급 브리프 (2026-05-29 사용자 요청):
+  • `daily-byte.timer` — 평일(Mon-Fri) 19:00 KST oneshot → `bot/daily_
+    kr_flow.py`. pykrx EOD 수급 (~17-18시 갱신) 안정 후 19:00 실행.
+  • 설계: A=pykrx 단일(무료) · B=Pro+google_search grounding ON ·
+    C=KOSPI+KOSDAQ 전체 net-buy 랭킹 · D=기존 NOAH 채널 push · E=구조화
+    long-form · F=수급 중심 "주목 종목" 중립(BUY/SELL 권고 아님).
+  • 원칙: **수치는 Python 이 pykrx 에서 정확 산출 (환각 0)** — 시장
+    총평 (get_market_trading_value_by_investor) + per-stock 랭킹
+    (get_market_net_purchases_of_equities, 외인/기관/연기금/투신/사모
+    당일+5일누적) + 양→음 전환 감지. Pro 는 섹터 그룹핑 + 로테이션
+    narrative + catalyst (web search) 만, 수치는 anchor copy.
+  • 가드 재사용: audit 의 _strip_future_dated_citations + _strip_invalid_
+    dates + markdown strip post-process. 미래 날짜 citation / 가공
+    catalyst 차단.
+  • 비용 ~₩70/일 (Pro 1 call) ≈ 월 ₩2K. 제목 "Daily Byte - YYYY.MM.DD"
+    (거래일 자동). 데이터 부재(공휴일) 시 walk-back 4회 후 graceful skip.
+  • ⚠️ VM 검증 필요 (sandbox pykrx 데이터 없음) — 첫 19:00 run 또는 수동
+    `.venv/bin/python -m bot.daily_kr_flow` 으로 pykrx 투자자 라벨
+    (투신/사모/연기금 per-stock 지원 여부) + EOD 타이밍 확인. per-stock
+    investor 라벨 미지원 시 try/except graceful skip (시장 총평 + 외인/
+    기관은 항상 작동).
 
 **Acceptable manual steps** (rare, one-time):
 - Initial systemd unit installation

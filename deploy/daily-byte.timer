@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily Byte trigger — 평일 19:00 KST (장 마감 후 pykrx EOD 수급 안정화 후)
+
+[Timer]
+# 평일(월-금) 19:00 KST. pykrx 투자주체별 EOD 데이터는 통상 ~17-18시
+# 갱신 완료 → 19:00 이면 안정적. OnCalendar 의 요일은 Mon..Fri (day-of-
+# week 자리), 월 숫자 자리와 구분. Asia/Seoul TZ 는 systemd 226+ 지원.
+# Persistent=true 로 서버 다운 후 미실행 trigger 부팅 시 1회 fire.
+OnCalendar=Mon..Fri *-*-* 19:00:00 Asia/Seoul
+Persistent=true
+Unit=daily-byte.service
+
+[Install]
+WantedBy=timers.target

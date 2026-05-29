@@ -48,7 +48,8 @@ for unit in \
     trade-bot.service \
     trade-bot-update.service        trade-bot-update.timer \
     trade-bot-watchdog.service      trade-bot-watchdog.timer \
-    screener-gics-check.service     screener-gics-check.timer ;
+    screener-gics-check.service     screener-gics-check.timer \
+    daily-byte.service              daily-byte.timer ;
 do
     if [ -f "$DEPLOY_DIR/$unit" ]; then
         install -m 0644 "$DEPLOY_DIR/$unit" /etc/systemd/system/
@@ -70,6 +71,9 @@ systemctl enable --now stock-bot-update.timer
 systemctl enable --now stock-bot-watchdog.timer
 if [ -f "$DEPLOY_DIR/screener-gics-check.timer" ]; then
     systemctl enable --now screener-gics-check.timer
+fi
+if [ -f "$DEPLOY_DIR/daily-byte.timer" ]; then
+    systemctl enable --now daily-byte.timer
 fi
 if [ -f "$DEPLOY_DIR/trade-bot-update.timer" ]; then
     systemctl enable --now trade-bot-update.timer
