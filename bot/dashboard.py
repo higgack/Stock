@@ -963,12 +963,12 @@ summary.day-head .count {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 }
 .ticker {
-  font-weight: 700; font-size: 16px; color: var(--fg);
+  font-weight: 700; font-size: 15px; color: var(--fg);
   text-decoration: none; min-width: 70px;
 }
 .ticker:hover { color: var(--accent); text-decoration: none; }
 .stance {
-  color: var(--fg-soft); font-size: 14px; flex: 1; min-width: 0;
+  color: var(--fg-soft); font-size: 13px; flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .time { color: var(--fg-soft); font-size: 12px; min-width: 38px; text-align: right; }
@@ -1729,13 +1729,13 @@ section.report-section > h2 {
 }
 pre.report {
   white-space: pre-wrap; word-wrap: break-word; font-family: inherit;
-  font-size: 15px; line-height: 1.7; margin: 0; color: var(--fg);
+  font-size: 14px; line-height: 1.7; margin: 0; color: var(--fg);
   background: var(--card); padding: 16px; border: 1px solid var(--border);
   border-radius: 8px;
 }
 pre.report strong { color: var(--fg); }
 pre.report h3, pre.report h4, pre.report h5, pre.report h6 {
-  margin: 12px 0 4px; font-size: 15px;
+  margin: 12px 0 4px; font-size: 14px;
 }
 /* Deep-link mark — index-page snippet click navigates here with
    #mark=<phrase>; JS below wraps the first occurrence and pulses. */
