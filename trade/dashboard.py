@@ -303,7 +303,7 @@ body.dark{
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;margin:0;padding:0;background:var(--bg);color:var(--text);line-height:1.4;transition:background .25s,color .25s}
 header{background:var(--surface);padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
 h1{margin:0 0 4px;font-size:18px}
-.meta{font-size:11px;color:var(--text-sub);line-height:1.5}
+.meta{font-size:12px;color:var(--text-sub);line-height:1.5}
 .meta-status,.meta-next,.meta-today,.meta-backlog{margin-top:2px}
 .meta-status:empty,.meta-next:empty,.meta-today:empty,.meta-backlog:empty{display:none}
 .meta-status strong{color:var(--text);font-weight:600}
@@ -326,15 +326,15 @@ h1{margin:0 0 4px;font-size:18px}
 .view.active{display:block}
 .section{background:var(--surface);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
 .section-header{padding:13px 14px;background:var(--surface-2);border-bottom:1px solid var(--border-soft)}
-.section-header h2{margin:0;font-size:15px}
-.section-header .sub-line{margin-top:4px;font-size:12px;color:var(--text-sub);word-break:keep-all;line-height:1.4}
+.section-header h2{margin:0;font-size:15.5px}
+.section-header .sub-line{margin-top:4px;font-size:12.5px;color:var(--text-sub);word-break:keep-all;line-height:1.4}
 .section-items{padding:8px;display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
 .mini-card{border:1px solid var(--border-soft);border-radius:8px;overflow:hidden;cursor:pointer;transition:transform .1s;background:var(--surface);position:relative}
 .mini-card:hover{transform:translateY(-1px)}
 .mini-card .mini-img{height:90px;background:var(--img-placeholder);background-size:cover;background-position:center}
-.mini-card .mini-text{padding:8px 10px;font-size:12px;line-height:1.35}
-.mini-card .mini-text strong{display:block;margin-bottom:2px;font-size:12.5px;font-weight:600;word-break:keep-all;color:var(--text)}
-.mini-card .mini-text span{color:var(--text-sub);font-size:11.5px}
+.mini-card .mini-text{padding:8px 10px;font-size:13px;line-height:1.35}
+.mini-card .mini-text strong{display:block;margin-bottom:2px;font-size:13.5px;font-weight:600;word-break:keep-all;color:var(--text)}
+.mini-card .mini-text span{color:var(--text-sub);font-size:12.5px}
 .mini-card .dot{position:absolute;top:6px;right:6px;width:8px;height:8px;border-radius:4px;background:#999}
 .mini-card .mini-new{position:absolute;top:5px;left:5px;padding:1px 6px;font-size:9px;font-weight:700;letter-spacing:.5px;background:#ff3b30;color:#fff;border-radius:3px;z-index:1;box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .section-header .section-new{display:inline-block;margin-left:6px;padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.5px;background:#ff3b30;color:#fff;border-radius:3px;vertical-align:middle}
@@ -387,13 +387,13 @@ h1{margin:0 0 4px;font-size:18px}
 .modal-head{padding:18px 22px;border-bottom:1px solid var(--border-soft)}
 .modal-head h2{margin:0 0 8px;font-size:18px;word-break:keep-all;padding-right:40px}
 .modal-head .period-label{margin-top:8px;font-size:13px;color:var(--text);font-weight:500}
-.modal-head .sub{margin-top:4px;font-size:12px;color:var(--text-sub)}
+.modal-head .sub{margin-top:4px;font-size:12.5px;color:var(--text-sub)}
 .stocks{margin-top:10px;font-size:12px}
 .stocks .label{color:var(--text-sub);margin-right:5px}
 .stock{display:inline-block;padding:3px 8px;margin:2px 3px 0 0;background:var(--chip-bg);color:var(--text);border-radius:4px;font-size:11px}
 .modal-images{display:flex;flex-direction:column;gap:1px;background:var(--bg)}
 .modal-images img{width:100%;display:block;background:var(--img-placeholder)}
-.modal-text{padding:14px 22px;font-size:12px;color:var(--text-sub);white-space:pre-wrap;border-top:1px solid var(--border-soft);background:var(--surface-2)}
+.modal-text{padding:14px 22px;font-size:13px;color:var(--text-sub);white-space:pre-wrap;border-top:1px solid var(--border-soft);background:var(--surface-2)}
 .modal-toolbar{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap}
 .tool-btn{padding:5px 11px;font-size:12px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;cursor:pointer}
 .tool-btn:hover:not(:disabled){background:var(--surface-2)}
@@ -414,6 +414,18 @@ h1{margin:0 0 4px;font-size:18px}
   header{padding:12px 14px}.filters{padding:10px 14px}.view{padding:8px}
   .section-items{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px}
   .modal-content{margin:0;border-radius:0;max-height:100vh}
+  /* Mobile readability — bump body text by ~1px over the desktop
+     base. Badges / chips / matrix cells are intentionally NOT
+     resized: they're short tokens that already read fine at 10-12px
+     and enlarging them breaks the card grid / matrix cell layout. */
+  .meta{font-size:12.5px}
+  .section-header h2{font-size:16px}
+  .section-header .sub-line{font-size:13px}
+  .mini-card .mini-text{font-size:13.5px}
+  .mini-card .mini-text strong{font-size:14px}
+  .mini-card .mini-text span{font-size:13px}
+  .modal-head .sub{font-size:13px}
+  .modal-text{font-size:13.5px}
 }
 """
 
