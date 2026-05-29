@@ -53,13 +53,27 @@ MODEL_PURPOSE: dict[str, str] = {
 KRW_PER_USD = 1380
 
 
-def estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float:
-    """USD cost of a single LLM call. Returns 0 for unrecognised models."""
+def estimate_cost_usd(
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int = 0,
+) -> float:
+    """USD cost of a single LLM call. Returns 0 for unrecognised models.
+
+    `cached_tokens` (BUG3, 2026-05-29 audit): the portion of `prompt_tokens`
+    served from a Gemini explicit context cache. Gemini bills cached input
+    at ~25% of the normal input rate, so the cached tokens are discounted
+    75%. `prompt_tokens` from usage_metadata is the TOTAL input (cached +
+    fresh), so we subtract 0.75×cached to get the effective billable input.
+    Defaults to 0 → identical to the previous behaviour when no cache hit."""
     rate = _PRICING.get(model)
     if not rate:
         return 0.0
+    cached_tokens = max(0, min(cached_tokens, prompt_tokens))
+    effective_input = prompt_tokens - 0.75 * cached_tokens
     return (
-        prompt_tokens * rate["in"] + completion_tokens * rate["out"]
+        effective_input * rate["in"] + completion_tokens * rate["out"]
     ) / 1_000_000
 
 
@@ -120,6 +134,18 @@ def _extract_token_usage(response) -> tuple[str, int, int]:
         or usage.get("candidates_token_count")
         or 0
     )
+    # BUG3 (2026-05-29 audit): cached input tokens (Gemini explicit cache
+    # hit) are reported separately and billed at ~25%. langchain surfaces
+    # them under input_token_details.cache_read on the message usage, or
+    # cached_content_token_count in the raw genai usage_metadata. Capture
+    # for cost discounting + cache-effectiveness visibility.
+    details = usage.get("input_token_details") or {}
+    cached_tokens = (
+        (details.get("cache_read") if isinstance(details, dict) else 0)
+        or usage.get("cached_content_token_count")
+        or usage.get("cache_read_input_tokens")
+        or 0
+    )
 
     if not model:
         # Last-resort: scan generation kwargs for a model field.
@@ -132,7 +158,12 @@ def _extract_token_usage(response) -> tuple[str, int, int]:
             if model:
                 break
 
-    return model or "unknown", int(prompt_tokens or 0), int(completion_tokens or 0)
+    return (
+        model or "unknown",
+        int(prompt_tokens or 0),
+        int(completion_tokens or 0),
+        int(cached_tokens or 0),
+    )
 
 
 class UsageCallback(BaseCallbackHandler):
@@ -143,16 +174,21 @@ class UsageCallback(BaseCallbackHandler):
 
     def on_llm_end(self, response, **kwargs) -> None:  # type: ignore[override]
         try:
-            model, p_tokens, c_tokens = _extract_token_usage(response)
-            cost = estimate_cost_usd(model, p_tokens, c_tokens)
-            _append({
+            model, p_tokens, c_tokens, cached_tokens = _extract_token_usage(response)
+            cost = estimate_cost_usd(model, p_tokens, c_tokens, cached_tokens)
+            record = {
                 "ts": time.time(),
                 "type": "llm_call",
                 "model": model,
                 "prompt_tokens": p_tokens,
                 "completion_tokens": c_tokens,
                 "cost_usd": cost,
-            })
+            }
+            # Only emit cached_tokens when non-zero — keeps legacy log lines
+            # unchanged + makes cache hits greppable for effectiveness checks.
+            if cached_tokens:
+                record["cached_tokens"] = cached_tokens
+            _append(record)
         except Exception as exc:
             log.warning("usage_tracker: on_llm_end failed: %s", exc)
 

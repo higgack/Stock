@@ -832,6 +832,66 @@ infra (D1 fallback / D2 환율 계산) 는 다른 시장 (JP/TW/CN 수출주)
 shipping 후 cross-market parity audit 으로 확장.
 
 
+## 2026-05-29 모델 audit (cost / quality / robustness) — 3-tier 적용 중
+
+전체 파이프라인 audit (3 병렬 agent + 직접 정독). 위험성 평가 포함, 3축
+(문제점 / 개선 / 비용) 으로 분류. 1차 (위험 0, 고가치) → 2차 (견고성) →
+3차 (정확성 hygiene) 순서 적용.
+
+### ✅ 1차 — 완료 (위험 0, deterministic):
+- **C1 [Critical]** `_extract_rating` (bot/analyzer.py) 가 고정 키워드
+  우선순위 스캔 → PM thesis 에 'overweight/underweight' 단어 (특히
+  override note 의 pre-correction rating) 있으면 카드에 반대 등급 표시
+  + 메모리(`parse_rating`)와 split-brain. Fix: canonical `rating.
+  parse_rating` (라벨 우선) 로 라우팅, None-on-absent 보존.
+- **BUG1 [High cost]** Gemini 캐시 이중청구 — RM/Trader/PM 가
+  `cached_content` bind **+** 같은 instrument_context inline 주입
+  (research_manager:76 / trader:142 / portfolio_manager:499). context
+  2회 전송 → 캐시 없을 때보다 비쌈. Fix: `cache_active` flag, 캐시
+  bind 성공 시 inline context "" 로 (캐시 prefix 로 전달). ~5-12% 절감.
+- **F1 [High latency]** `build_instrument_context` 분석당 8회 (캐시
+  seed + 분석가 4 + 결정 3) + 분석가 tool-round 재진입마다 재실행, 매번
+  ~20-task prefetch fan-out. Fix: `(ticker, analyst_id, KST-date)`
+  memoize (`_INSTRUMENT_CONTEXT_CACHE`, 256 cap) + `clear_instrument_
+  caches()` 를 trading_graph._run_graph 시작 시 호출 (run 간 fresh +
+  F7 intraday staleness 동시 해결: `_INSTRUMENT_INFO_CACHE` /
+  `_PEER_MULTIPLES_CACHE` 도 run 시작 시 clear). screener 는 clear
+  안 함 (24h 캐시 철학 + Phase-3 intra-run reuse 이득).
+- **BUG3 [observability]** `usage_tracker` 가 `cached_content_token_
+  count` 미추적 → 캐시 효과 검증 불가. Fix: `_extract_token_usage`
+  4-tuple (cached 추가), `estimate_cost_usd(... cached_tokens=0)` 가
+  cached 75% 할인 (Gemini 캐시 input ~25% 청구), log 에 non-zero 시
+  `cached_tokens` emit. BUG1 fix 검증 가능케 함.
+
+### 🔜 2차 (예정, 견고성):
+- M3 PM structured-output 실패 fallback 이 discipline 우회 + 원시
+  `.content` (멀티파트 list 시 AttributeError). → fallback 후 discipline
+  재적용 + `_content_to_str` 경유.
+- M4 토론/리스크 5노드 bare `llm.invoke` → 503 하나가 전체 graph crash
+  (분석가 4 리포트 폐기). → try/except placeholder degrade.
+- F3 DART hot 3종 (`get_recent_disclosures`/`get_insider_holdings`/
+  `next_earnings_window`) 캐시 0 → KR 분석당 ~21 중복 HTTP, 429 위험.
+  → `(stock_code, today)` 12h 디스크 캐시.
+- F5/F6 AKShare overlay + options chain inline 호출 timeout 0 →
+  "stuck >15min" 클래스 (screener 만 band-aid, /ticker 무방비).
+  → bounded executor 또는 socket timeout + options `(ticker,today)` 캐시.
+
+### 🔜 3차 (예정, 정확성 hygiene):
+- m7 `_extract_stance` 영어 pass-3 word-boundary 없음 (household→hold).
+- m8 auto-resolve gate in-graph 7일 vs background 3일 불일치 통일.
+- m9 sector ETF <2 closes 시 entry 영구 skip (SPY fallback 없음).
+
+### ⏸ 신중 (위험 중간, A/B 검증 권장):
+- M2 PM override 이중 레이어 (in-graph 분석가 다수 보정 ↔ analyzer
+  Fix-G Trader 불일치 Hold 강제) 상반 정책 → 단일 지점 통합 필요.
+
+### ✅ 이미 최적화됨 (건드리지 말 것):
+분석가 thinking_budget=0, per-analyst context slicing (~25-30%↓),
+Bear-skip + PM light-LLM 만장일치 단축, output cap (deep/decision 16384
+/ quick 2000), signal_processing LLM 호출 0 (deterministic parse_rating),
+screener 2-Pro + 병렬 fetch + 24h 캐시, 분석가 캐시 bind 제거 (model-
+mismatch no-op 였음), 병렬 prefetch + 디스크 캐시 TTL 일관.
+
 ## TODO
 
 ## 📋 Standard View open issues (2026-05-21 session pickup)

@@ -23,17 +23,18 @@ def create_trader(llm):
 
     def trader_node(state, name):
         company_name = state["company_of_interest"]
-        instrument_context = build_instrument_context(company_name)
 
         # F1-MVP Gemini context caching (2026-05-19). Same shape as
         # research_manager — use cached_content when available.
         cache_name = state.get("gemini_cache_name", "")
+        cache_active = False
         if cache_name:
             try:
                 active_llm = llm.bind(cached_content=cache_name)
                 active_structured_llm = bind_structured(
                     active_llm, TraderProposal, "Trader (cached)",
                 )
+                cache_active = True
                 _trader_log.info("trader-cache: using gemini cache %s", cache_name)
             except Exception as exc:
                 _trader_log.warning(
@@ -43,6 +44,13 @@ def create_trader(llm):
                 active_structured_llm = structured_llm
         else:
             active_structured_llm = structured_llm
+        # BUG1 (2026-05-29 audit): omit inline instrument_context when the
+        # Gemini cache is bound — it's already delivered as the cached
+        # prefix. Inlining would double-send it (cached @~25% + inline
+        # @100%) and negate the cache. Build + inline only when not cached.
+        instrument_context = (
+            "" if cache_active else build_instrument_context(company_name)
+        )
         investment_plan = state["investment_plan"]
         past_context = state.get("past_context", "")
         lessons_block = (

@@ -25,12 +25,14 @@ def create_research_manager(llm):
         # references cached input tokens (billed at ~25% rate) instead
         # of re-billing the full instrument_context.
         cache_name = state.get("gemini_cache_name", "")
+        cache_active = False
         if cache_name:
             try:
                 active_llm = llm.bind(cached_content=cache_name)
                 active_structured_llm = bind_structured(
                     active_llm, ResearchPlan, "Research Manager (cached)",
                 )
+                cache_active = True
                 _rm_log.info("rm-cache: using gemini cache %s", cache_name)
             except Exception as exc:
                 _rm_log.warning(
@@ -40,7 +42,15 @@ def create_research_manager(llm):
                 active_structured_llm = structured_llm
         else:
             active_structured_llm = structured_llm
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        # BUG1 (2026-05-29 audit): when the Gemini cache is bound, the full
+        # instrument_context is already delivered as the cached prefix.
+        # Inlining it again here would send it TWICE (cached @~25% + inline
+        # @100%), defeating the cache and inflating Pro input cost. Omit the
+        # inline copy when cache is active; build + inline only when not.
+        instrument_context = (
+            "" if cache_active
+            else build_instrument_context(state["company_of_interest"])
+        )
         history = state["investment_debate_state"].get("history", "")
 
         investment_debate_state = state["investment_debate_state"]

@@ -411,8 +411,6 @@ def create_portfolio_manager(llm, llm_light=None):
         structured_llm_light = structured_llm
 
     def portfolio_manager_node(state) -> dict:
-        instrument_context = build_instrument_context(state["company_of_interest"])
-
         # Option 4 routing: when the four analysts are unanimous in
         # direction (매수/보유/매도), use the light LLM (thinking_budget=
         # 2048) — synthesis is mostly summarisation. Conflict / split
@@ -447,6 +445,7 @@ def create_portfolio_manager(llm, llm_light=None):
         # base LLM was chosen. Cached input tokens billed at ~25% rate
         # — savings layer on top of thinking_budget reduction.
         cache_name = state.get("gemini_cache_name", "")
+        cache_active = False
         if cache_name:
             try:
                 cached_llm = active_base_llm.bind(cached_content=cache_name)
@@ -454,6 +453,7 @@ def create_portfolio_manager(llm, llm_light=None):
                 active_structured_llm = bind_structured(
                     cached_llm, PortfolioDecision, label,
                 )
+                cache_active = True
                 _pm_log.info(
                     "pm-cache: using gemini cache %s (light=%s)",
                     cache_name, use_light,
@@ -463,6 +463,14 @@ def create_portfolio_manager(llm, llm_light=None):
                     "pm-cache: bind(cached_content) failed (%s) — fallback to non-cached",
                     exc,
                 )
+
+        # BUG1 (2026-05-29 audit): omit inline instrument_context when the
+        # Gemini cache is bound — already delivered as the cached prefix.
+        # Double-sending (cached @~25% + inline @100%) negated the cache.
+        instrument_context = (
+            "" if cache_active
+            else build_instrument_context(state["company_of_interest"])
+        )
 
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]

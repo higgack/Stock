@@ -404,6 +404,19 @@ class TradingAgentsGraph:
 
     def _run_graph(self, company_name, trade_date):
         """Execute the graph and write the resulting state to disk and memory log."""
+        # F1 + F7 (2026-05-29 audit): drop per-run instrument caches so this
+        # analysis re-fetches fresh intraday data, and so the context memo
+        # starts empty (the up-to-8 build_instrument_context calls this run
+        # then share one build per distinct shape instead of re-fanning out
+        # ~20 prefetch tasks each time).
+        try:
+            from tradingagents.agents.utils.agent_utils import (
+                clear_instrument_caches,
+            )
+            clear_instrument_caches()
+        except Exception as exc:
+            logger.warning("clear_instrument_caches failed: %s", exc)
+
         # Initialize state — inject memory log context for PM.
         past_context = self.memory_log.get_past_context(company_name)
 

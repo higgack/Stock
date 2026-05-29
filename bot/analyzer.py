@@ -2204,11 +2204,34 @@ def _clean_section(body, currency_symbol: str = "", canonical: dict | None = Non
 
 
 def _extract_rating(decision: str) -> str | None:
-    upper = decision.upper()
-    for kw in ("OVERWEIGHT", "UNDERWEIGHT", "BUY", "SELL", "HOLD"):
-        if kw in upper:
-            return kw.title()
-    return None
+    """Extract the 5-tier rating from a rendered decision.
+
+    Routes through the canonical, label-aware ``rating.parse_rating`` (which
+    reads the ``**Rating**: X`` header line FIRST, then falls back to the
+    first whitespace-delimited 5-tier word) so the user-facing summary card
+    headline can never diverge from the memory log / signal processor that
+    already use ``parse_rating``.
+
+    The previous implementation scanned a FIXED keyword priority
+    (OVERWEIGHT → UNDERWEIGHT → BUY → SELL → HOLD) regardless of position,
+    so any decision whose thesis prose merely mentioned 'overweight' /
+    'underweight' — most importantly the PM override-discipline note that
+    names the PRE-correction rating ("PM 1차 판단 (Underweight)이 ... Buy로
+    보정됨") — was mis-read as that word, showing the user the OPPOSITE of
+    the rendered Rating line while the memory log stored the correct value
+    (split-brain). 2026-05-29 audit C1.
+
+    Returns the Title-cased rating, or None when no rating appears (callers
+    fall back to ``override_rating`` / 'N/A')."""
+    if not isinstance(decision, str) or not decision.strip():
+        return None
+    try:
+        from tradingagents.agents.utils.rating import parse_rating
+    except Exception:
+        return None
+    _sentinel = "__NO_RATING__"
+    result = parse_rating(decision, default=_sentinel)
+    return None if result == _sentinel else result
 
 
 def _first_lines(text: str, max_lines: int = 8) -> str:

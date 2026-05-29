@@ -534,6 +534,30 @@ def _quote_type(ticker: str) -> str | None:
 
 _PEER_MULTIPLES_CACHE: dict[str, str] = {}
 
+# F1 (2026-05-29 audit): build_instrument_context is called up to 8× per
+# analysis (cache-seed + 4 analysts + RM/Trader/PM) and re-entered on every
+# analyst tool round, each call re-running _prefetch_market_io's ~20-task
+# thread-pool fan-out. The output is deterministic for a given
+# (ticker, analyst_id) within one analysis, so memoize. Key includes the
+# KST date as a backstop for callers that don't clear between runs (the
+# screener's Phase-3 parallel fetch — desirable there, matching its 24h
+# cache). The NOAH /ticker path calls clear_instrument_caches() at run
+# start (trading_graph._run_graph) so each analysis sees fresh intraday
+# data (also closes the F7 intraday-staleness gap on the two caches below).
+_INSTRUMENT_CONTEXT_CACHE: dict[tuple, str] = {}
+
+
+def clear_instrument_caches() -> None:
+    """Drop the per-run instrument caches so the next analysis re-fetches
+    fresh data. Called at analysis start. Clears the context memo plus the
+    two long-lived .info / peer-multiple caches (previously bare-ticker
+    keyed and never cleared → an AAPL analysis at 16:00 reused the 09:00
+    price; F7). Screener does NOT call this — its Phase-3 fetch benefits
+    from intra-run reuse and it has a separate 24h result cache."""
+    _INSTRUMENT_CONTEXT_CACHE.clear()
+    _INSTRUMENT_INFO_CACHE.clear()
+    _PEER_MULTIPLES_CACHE.clear()
+
 
 def _fetch_peer_multiples(ticker: str) -> str:
     """Pull headline valuation multiples + canonical company name from
@@ -2595,6 +2619,28 @@ def _section_allowed(analyst_id: str | None, section: str) -> bool:
 
 
 def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
+    """Memoizing wrapper around `_build_instrument_context_impl` (F1, 2026-
+    05-29 audit). Keyed by (ticker, analyst_id, KST-date) so the up-to-8
+    builds per analysis collapse to one per distinct shape. Bounded:
+    cleared wholesale when it grows past 256 entries (screener can touch
+    many tickers/day). The NOAH /ticker path additionally calls
+    clear_instrument_caches() at run start for intraday freshness."""
+    import datetime as _ctx_dt
+    _today_kst = _ctx_dt.datetime.now(
+        _ctx_dt.timezone(_ctx_dt.timedelta(hours=9))
+    ).date().isoformat()
+    _key = (ticker, analyst_id, _today_kst)
+    _hit = _INSTRUMENT_CONTEXT_CACHE.get(_key)
+    if _hit is not None:
+        return _hit
+    _result = _build_instrument_context_impl(ticker, analyst_id)
+    if len(_INSTRUMENT_CONTEXT_CACHE) > 256:
+        _INSTRUMENT_CONTEXT_CACHE.clear()
+    _INSTRUMENT_CONTEXT_CACHE[_key] = _result
+    return _result
+
+
+def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified
     tickers and adjust their data expectations for non-equity products.
 
