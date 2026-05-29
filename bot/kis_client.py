@@ -532,8 +532,9 @@ def format_kis_block(data: dict) -> str:
                 f" 개인 {_fmt_wanwon(today.get('individual'))}"
             )
         if any(five_d.values()):
-            five_d_foreign = five_d.get("foreign") or 0
-            five_d_inst    = five_d.get("institution") or 0
+            five_d_foreign    = five_d.get("foreign") or 0
+            five_d_inst       = five_d.get("institution") or 0
+            five_d_individual = five_d.get("individual") or 0
             lines.append(
                 f"• 5일 누적: 외인 {_fmt_wanwon(five_d.get('foreign'))} /"
                 f" 기관 {_fmt_wanwon(five_d.get('institution'))} /"
@@ -548,6 +549,20 @@ def format_kis_block(data: dict) -> str:
                         f" {_fmt_wanwon(val_k)} — ±100억 미만이므로"
                         f" dominant variable 인용 불가 (noise level)"
                     )
+            # Step 2C: 개인 떠받침 패턴 (개인 +100억 + 외인/기관 한쪽 -100억).
+            # 한국 시장 classic 약세 동학 — Python 계산으로 LLM 누락 방지.
+            if (five_d_individual >= 10_000_000 and
+                    (five_d_foreign <= -10_000_000 or five_d_inst <= -10_000_000)):
+                contrast = []
+                if five_d_foreign <= -10_000_000:
+                    contrast.append(f"외인 {_fmt_wanwon(five_d_foreign)}")
+                if five_d_inst <= -10_000_000:
+                    contrast.append(f"기관 {_fmt_wanwon(five_d_inst)}")
+                lines.append(
+                    f"  ⚠️ RULE 10 [Step 2C]: Retail 떠받침 패턴 — 개인"
+                    f" {_fmt_wanwon(five_d_individual)} vs {' + '.join(contrast)}."
+                    f" 5거래일+α 하방 risk dominant"
+                )
         # 기관 주체별 — 의미있는 값만 출력
         bd_parts = []
         label_map = {
@@ -564,6 +579,13 @@ def format_kis_block(data: dict) -> str:
                 bd_parts.append(f"{label} {_fmt_wanwon(v)}")
         if bd_parts:
             lines.append("• 기관 주체별 5일: " + " / ".join(bd_parts))
+            # Step 2C: 투신 5일 -50억 = 펀드 환매 신호 (외인 매도 5일 선행 패턴).
+            trust_val = inst_bd.get("trust") or 0
+            if trust_val <= -5_000_000:  # ≤ -50억 (5,000,000만원)
+                lines.append(
+                    f"  ⚠️ RULE 10 [Step 2C]: 투신 5일 {_fmt_wanwon(trust_val)} —"
+                    f" 펀드 환매 dominant, 외인 sell-off 선행 leading indicator"
+                )
 
     # 외인 한도소진율
     fl = data.get("foreign_limit") or {}
@@ -597,6 +619,17 @@ def format_kis_block(data: dict) -> str:
             f"• 프로그램: 차익 {_fmt_prog(pt.get('arb_net'))} /"
             f" 비차익 {_fmt_prog(pt.get('nonarb_net'))}"
         )
+        # Step 2C: 비차익 ±200억 = 알고리즘 systematic flow dominant.
+        # 차익(arb)은 선물-현물 베이시스 hedging 으로 단기 방향 신호 약함 —
+        # 비차익(nonarb)이 외인/기관 systematic buy/sell 의 합산.
+        nonarb = pt.get("nonarb_net")
+        if isinstance(nonarb, (int, float)) and abs(nonarb) >= 20_000_000:  # ±200억
+            direction = "매수" if nonarb > 0 else "매도"
+            lines.append(
+                f"  ⚠️ RULE 10 [Step 2C]: 프로그램 비차익 {_fmt_prog(nonarb)} —"
+                f" 알고리즘 systematic {direction} dominant, 단기 momentum"
+                f" {'강화' if nonarb > 0 else '가속'}"
+            )
 
     # 공매도
     ss = data.get("short_sale") or {}
@@ -619,11 +652,19 @@ KIS 단기 수급 해석 가이드 (5거래일 horizon):
 • 연기금 5일 순매수 양수 = 중기 지지 신호 (연기금은 저점 분할 매수 패턴).
 • 신용잔고율 4% 이상 → 반대매매 청산 압력 risk 5거래일 내 현실화 가능.
 • 공매도 비율 15% 이상 → 숏 압력 dominant, 결론에 명시 의무.
+• [Step 2C] 외인 한도소진율 95% 이상 → 외인 추가 매수 ceiling impact,
+  buy flow +값이어도 신규 매수 여력 없음, 외인 dominant 매수 신호 무효.
+• [Step 2C] 개인 +100억 동시에 외인/기관 -100억 → Retail 떠받침 패턴,
+  외인/기관 차익실현 vs 개인 매수, 한국 시장 classic 약세 동학.
+• [Step 2C] 투신 5일 -50억 이상 → 펀드 환매 dominant, 외인 sell-off
+  선행 leading indicator (한국 mutual fund redemption cycle).
+• [Step 2C] 프로그램 비차익 ±200억 → 외인/기관 알고리즘 systematic flow
+  합산. 비차익(nonarb)이 방향성 신호 — 차익(arb)은 헤징이라 신호 약함.
 • 프로그램 차익 매도 큰 날 (-500억 이상) → 인덱스 편입/편출 또는 파생 만기
   효과 — 펀더멘털 무관한 수급 왜곡, 단기 매도 공백 후 반등 가능성.
 이 데이터는 KIS API에서 직접 수신한 수치이므로 그대로 인용하라.
 다음 패턴 금지: 수치가 없으면 'KR 외국인 매수세 지속' 같은 generic 추측 금지.
-외국인 한도소진율은 KIS API 미제공 — KRX 직접 데이터 필요 (현재 미통합).\
+외인 한도소진율은 KIS API foreign_limit endpoint 로 fetch 완료 (Step 2B).\
 """
 
 
