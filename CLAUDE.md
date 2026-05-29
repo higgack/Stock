@@ -424,6 +424,16 @@ pattern to follow:
     `<img>` max-width 520px→100% (카드 full-width). (b) `_post_process` 가
     markdown 수평선(`---`/`***`/`___`) 줄 제거 + 연속 빈 줄 정리. (c) 프롬프트:
     굵게(`**`)는 헤더·핵심 수치만, catalyst·맥락 문장은 일반 텍스트.
+  • ⚠️ **watchdog↔httpx 결합 (회귀 주의)**: `deploy/watchdog.sh` 는
+    journald 의 `getUpdates` INFO 로그 유무로 polling 생존을 감지한다.
+    토큰 누출 막겠다고 httpx 로거를 WARNING 으로 **억제하면 getUpdates
+    로그가 사라져 watchdog 가 매 사이클 오탐 → 봇 무한 재시작**(2026-05-29
+    실제 발생). 해결: telegram_bot 은 httpx 를 INFO 유지하되 `_TokenRedact
+    Filter` 로 토큰 문자열만 마스킹 (getUpdates 보존 + 누출 차단). **앞으로
+    httpx/httpcore 로거를 telegram_bot 에서 절대 억제하지 말 것.** (daily_kr_
+    flow 는 oneshot·watchdog 무관이라 WARNING 억제 유지 OK.)
+  • help §10 대시보드: 모든 URL 을 full bare URL 로 표기 (Telegram 자동
+    하이퍼링크 → 클릭 가능 + 전체 주소 표시). Daily Byte 링크 포함. slack 112.
   • 비용 (2026-05-29 검토): Pro 1콜, ₩29.7→**₩53.4** (내용 강화로 output
     증가 — output $10/M 이 dominant, input enrich 는 $1.25/M 소액). 인포그래픽
     은 matplotlib 라 ₩0. 월 ~₩1.6K — Pro 유지가 품질-최적 (Flash 전환 시

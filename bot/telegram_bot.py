@@ -45,14 +45,35 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     level=logging.INFO,
 )
-# httpx 는 모든 요청 URL 을 INFO 로 찍는다 — api.telegram.org/bot<TOKEN>/...
-# 호출 시 봇 토큰이 journald 에 평문으로 쌓이는 상시 노출 (2026-05-29
-# surfaced). WARNING 으로 올려 차단 (요청 실패는 여전히 로깅됨).
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
 log = logging.getLogger("stock-bot")
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+
+
+# httpx 는 매 요청 URL 을 INFO 로 찍는다 — api.telegram.org/bot<TOKEN>/...
+# 에 봇 토큰이 평문 노출된다. 그러나 stock-bot-watchdog.sh 는 journald 의
+# 'getUpdates' INFO 로그 유무로 polling 생존을 감지하므로 httpx 를 WARNING
+# 으로 **억제하면 watchdog 가 매 사이클 오탐 → 봇 무한 재시작**(2026-05-29
+# 회귀). 따라서 레벨은 INFO 유지하되, 토큰 문자열만 마스킹하는 필터를 httpx/
+# httpcore 로거에 부착 → 'getUpdates' 는 보존(watchdog 정상) + 토큰 누출 차단.
+class _TokenRedactFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if TOKEN:
+                if record.args:
+                    record.args = tuple(
+                        a.replace(TOKEN, "BOT_TOKEN") if isinstance(a, str) else a
+                        for a in record.args
+                    )
+                if isinstance(record.msg, str) and TOKEN in record.msg:
+                    record.msg = record.msg.replace(TOKEN, "BOT_TOKEN")
+        except Exception:
+            pass
+        return True
+
+
+for _ln in ("httpx", "httpcore"):
+    logging.getLogger(_ln).addFilter(_TokenRedactFilter())
 
 # Comma-separated numeric channel IDs the bot should respond to.
 # Example: CHANNEL_CHAT_IDS=-1001234567890
@@ -912,12 +933,17 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【10. 대시보드】</b> 🦉
- • <b>NOAH archive</b>: <a href="http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/">8081/...</a> (ID/PW). 💰비용=NOAH+Screener+DailyByte+SV. 헤더에서 Screener/도메인/Daily Byte/SV/🇰🇷수출입 이동
- • <b>Daily Byte</b>: archive/daily_byte.html (헤더 📊 Daily Byte) — 평일19:00·일22:00 Weekly KR수급, 인포그래픽 사진+본문, 날짜별 누적·스니펫 검색·🗑️
- • <b>Screener</b>: archive/screener.html — 날짜별 run·분석·Top-3 5/15/30d·본문 스니펫 검색·🗑️. 도메인 = /screener_list
- • <b>SV</b>: <a href="http://34.50.23.221:8002/dashboard">8002/dashboard</a> · 매크로·산업·Deal · 07:30/20:30 + 텔레 · 22:00 주간·섹터 · auto-deploy 1분
- • <b>🇰🇷 수출입</b>: <a href="http://34.50.23.221:8765/dashboard/">8765/dashboard</a> · 외부 보조 (자동 갱신)
- • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 본문 스니펫 검색(🟡하이라이트→클릭시 분석 페이지로 이동·매치 위치 자동 스크롤)
+ • <b>NOAH archive</b> (ID/PW) — 헤더에서 Daily Byte/Screener/도메인/SV/🇰🇷 이동. 💰비용=NOAH+Screener+DailyByte+SV
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
+ • <b>Daily Byte</b> — 평일19:00·일22:00 Weekly KR수급 인포그래픽(사진)+본문, 날짜별 누적·검색·🗑️
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
+ • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
+ • <b>SV</b> — 매크로·산업·Deal·07:30/20:30+텔레·22:00 주간
+   http://34.50.23.221:8002/dashboard
+ • <b>🇰🇷 수출입</b> — 외부 보조(자동 갱신)
+   http://34.50.23.221:8765/dashboard/
+ • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 본문 스니펫 검색(🟡→클릭시 분석 페이지 이동)
  • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
 
 ━━━━━━━━━
