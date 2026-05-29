@@ -915,8 +915,8 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
  • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
 
 ━━━━━━━━━
-<b>【12. 예정 작업】</b>
- • Screener Wave 2-B (소비재·통신·부동산·유틸·소재) · Wave 3 산업별 split · 24h 캐시 · 자유텍스트 도메인
+<b>【12. 진행 중 / 예정】</b>
+ • Screener 65 도메인 가동 (6 L1 + 11 L2 + 48 L3) · 분기 GICS 자동 점검 06-01 · 예정: 24h 캐시 · 자유텍스트 도메인
 """
 
 

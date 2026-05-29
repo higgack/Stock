@@ -185,14 +185,23 @@ RULES — 절대:
 - ticker 가짜 생성 금지 (yfinance 검증됨).
 - niche layer 우선, 1차 헤드라인 (NVDA/AAPL 등) 후순위.
 - 5거래일 horizon 언급 금지 — 본 출력은 6-18개월 thesis.
-- **유동성 경고 의무 (S 티어 ~$100M micro-cap)**: 모든 S 티어 행은
-  Kill Trigger 다음 줄에 다음 형식으로 유동성 caveat 명시 — '⚠️ 시총
-  ~$XXM 소형주 — 일일 거래대금/유동성 제한 + 단기 변동성 ±10-20%
-  정상 범위 + 기관 진입 어려움 (한국 KOSDAQ S/T tier · TPEx 등 illiquid
-  로컬 라인 동일 적용)'. 시총 USD 추정치 명시. M/L tier 는 생략.
-  (416180.KQ Shinsung ST, 131290.KQ TSE 같은 KOSDAQ S 티어를 거론
-  하면서 유동성 경고 미명시 시 reader 가 동일 size weight 로 오해
-  가능 — 2026-05-29 외부 리뷰 surfaced).
+- **유동성 경고 의무 (S 티어 ~$100M micro-cap + Nano-cap <$50M)**: 모든
+  S 티어 행은 Kill Trigger 다음 줄에 다음 형식으로 유동성 caveat 명시:
+
+  • **Micro-cap ($50M ≤ 시총 < $300M)**: '⚠️ 시총 ~$XXM 소형주 — 일일
+    거래대금/유동성 제한 + 단기 변동성 ±10-20% 정상 범위 + 기관 진입
+    어려움 (한국 KOSDAQ S/T tier · TPEx 등 illiquid 로컬 라인 동일 적용)'.
+
+  • **Nano-cap (시총 < $50M USD)**: 더 강한 경고 의무 — '⚠️ NANO-CAP
+    LIQUIDITY WARNING: 시총 ~$XXM 극초소형주. 일일 거래대금 < $1M
+    수준, 호가 공백 + 슬리피지 ±5%+ + 기관 진입 사실상 불가. 자동매매
+    / 대규모 entry 시 시장가 swing 위험. 1-3% 보유로 분할 매집 권장'.
+    AQMS (~$14M), Aqua Metals 같은 케이스 2026-05-29 review surfaced.
+
+  • 시총 USD 추정치 (모든 시장 통화 → USD 환산) 명시 의무. M/L tier 는
+    생략. (416180.KQ Shinsung ST, 131290.KQ TSE 같은 KOSDAQ S 티어를
+    거론하면서 유동성 경고 미명시 시 reader 가 동일 size weight 로
+    오해 가능 — 2026-05-29 외부 리뷰 surfaced).
 
 DEPTH REQUIREMENTS — Pro capacity 충분히 활용 의무 (2026-05-29 첫
 런이 ₩39 / ~3분 = capacity 의 ~12% 만 사용. 시장이 깊이를 요구한다):

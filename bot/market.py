@@ -998,6 +998,56 @@ _US_DUAL_CLASS_TICKERS: set[str] = {
     "PARA", "PARAA",
 }
 
+# EU dual-class share tickers — full Yahoo ticker form (SUFFIX 포함) since
+# class A/B 는 suffix 단위로 분리 (`EPI-A.ST` vs `EPI-B.ST`). 2026-05-29
+# Metals & Mining screener review surfaced: EPI-A.ST (Epiroc Class A)
+# fired Fix C (shares × price vs marketCap > 5%) because yfinance
+# sharesOutstanding 이 Class A 만 (~485M) 반환했으나 marketCap 은 A+B
+# 합산 (~1217M × px) 기준 → 40% mismatch → false 'corp action 의심'.
+# 스웨덴 A/B 차등의결권 (Investor·Volvo·Ericsson·Wallenberg 계열) +
+# 덴마크 A/B (Carlsberg·Novo Nordisk) + 노르웨이 (Schibsted A/B) +
+# 독일 Vz/St (Henkel·Porsche·VW preferred) 모두 동일 패턴.
+# Rule applies to all analyses going forward.
+_EU_DUAL_CLASS_TICKERS: set[str] = {
+    # Sweden — Wallenberg + entrepreneur families. .ST 거래소. A 통상
+    # 1주 1표, B 통상 1주 0.1표 (또는 1/10). 일부 종목은 C class 도 존재.
+    "EPI-A.ST", "EPI-B.ST",          # Epiroc
+    "ATCO-A.ST", "ATCO-B.ST",        # Atlas Copco
+    "VOLV-A.ST", "VOLV-B.ST",        # Volvo
+    "ERIC-A.ST", "ERIC-B.ST",        # Ericsson
+    "HM-B.ST",                       # H&M (B 만 public, A 비공개)
+    "INVE-A.ST", "INVE-B.ST",        # Investor AB
+    "SKF-A.ST", "SKF-B.ST",          # SKF
+    "SCA-A.ST", "SCA-B.ST",          # SCA
+    "SAAB-B.ST",                     # Saab (B 만 public)
+    "KINV-A.ST", "KINV-B.ST",        # Kinnevik
+    "LATO-A.ST", "LATO-B.ST",        # Investment Latour
+    "INDU-A.ST", "INDU-C.ST",        # Industrivärden
+    "SSAB-A.ST", "SSAB-B.ST",        # SSAB
+    "TEL2-A.ST", "TEL2-B.ST",        # Tele2
+    "ELUX-A.ST", "ELUX-B.ST",        # Electrolux
+    "HOLM-A.ST", "HOLM-B.ST",        # Holmen
+    # Denmark — .CO 거래소. Foundation-controlled.
+    "CARL-A.CO", "CARL-B.CO",        # Carlsberg
+    "NOVO-B.CO",                     # Novo Nordisk (B 만 public, A 재단)
+    "MAERSK-A.CO", "MAERSK-B.CO",    # A.P. Moller-Maersk
+    "ROCK-A.CO", "ROCK-B.CO",        # Rockwool
+    # Norway — .OL 거래소.
+    "SCHA.OL", "SCHB.OL",            # Schibsted
+    # Germany — Vz (Vorzugsaktien preferred non-voting) vs St
+    # (Stammaktien voting). yfinance 가 Vz 만 ticker 로 등록한 경우
+    # marketCap 은 종종 두 class 합산이라 동일 mismatch 패턴.
+    "HEN3.DE",                       # Henkel Vz
+    "PAH3.DE",                       # Porsche Automobil Holding Vz
+    "VOW3.DE",                       # Volkswagen Vz (VOW.DE = St)
+    "FIE.DE",                        # Fielmann
+    "BMW3.DE",                       # BMW Vz (BMW.DE = St)
+    "RWE3.DE",                       # RWE Vz
+    "MEO.DE",                        # Metro Vz
+    "DRW3.DE",                       # Drägerwerk Vz
+    "SDF3.DE",                       # K+S preferred (historical)
+}
+
 # US industry peer sets — same shape and intent as the KR / JP dicts.
 # Without this, US Comps tables had no MANDATORY PEER SET injection and
 # the fundamentals analyst cargo-culted whatever 4-5 names sounded peer-

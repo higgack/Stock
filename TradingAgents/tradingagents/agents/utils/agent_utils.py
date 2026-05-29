@@ -370,7 +370,7 @@ def _instrument_info(ticker: str) -> dict:
         raw = yf_ticker.info or {}
         # Strings — keep only when non-empty
         for key in ("quoteType", "typeDisp", "sector", "industry", "longName",
-                    "recommendationKey"):
+                    "recommendationKey", "currency", "financialCurrency"):
             v = raw.get(key)
             if isinstance(v, str) and v.strip():
                 out[key] = v.strip()
@@ -431,6 +431,32 @@ def _instrument_info(ticker: str) -> dict:
             pass  # fast_info unavailable — fall through to .info values
     except Exception as exc:
         _analyst_log.warning("instrument info lookup failed for %s: %s", ticker, exc)
+
+    # GBp (London pence) → GBP normalization. yfinance 는 LSE 종목의
+    # currentPrice / fiftyDayAverage / fiftyTwoWeek* / bookValue /
+    # marketCap 을 펜스 단위로, trailingEps 등 일부 필드를 파운드
+    # 단위로 혼재 반환 → 하위 cross-anchor check (PER×EPS≈px Fix A,
+    # PBR×BPS≈px Fix B, shares×px≈mc Fix C, forwardEps/trailingEps
+    # Fix H) 가 100x 스케일 mismatch 로 false 'corp action 의심' 발화.
+    # 2026-05-29 Metals & Mining 도메인 review (WEIR.L) surfaced. 단일
+    # 지점 normalization 으로 다운스트림 _build_factual_anchor / 멀티플
+    # block / tier 분류 / SMA divergence 모두 자동 혜택. Universal —
+    # 모든 LSE 종목 + 향후 GBp 단위 거래소 (남아공 ZAc 등 동일 패턴)
+    # 확장 가능. yfinance 가 currency='GBp' 외에 'GBX' 도 간헐 사용.
+    # Rule applies to all analyses going forward.
+    if (out.get("currency") or "").strip() in ("GBp", "GBX"):
+        for _k in ("currentPrice", "regularMarketPrice",
+                   "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
+                   "fiftyDayAverage", "twoHundredDayAverage",
+                   "bookValue", "targetMeanPrice",
+                   "targetHighPrice", "targetLowPrice",
+                   "trailingEps", "marketCap"):
+            v = out.get(_k)
+            if isinstance(v, (int, float)) and v == v:
+                out[_k] = v / 100.0
+        out["currency"] = "GBP"
+        out["_gbp_normalized"] = True
+        _analyst_log.info("GBp→GBP normalization applied for %s", ticker)
 
     # 2026-05-29 EV screener review fix: yfinance 가 CN A-share 의
     # trailingPE / priceToBook / priceToSalesTrailing12Months 를 자주
@@ -2319,22 +2345,33 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
                     f" Forward PER 사용 전 EPS 추세 검증 필수."
                 )
 
-        # Fix ② (2026-05-23, 외부 검증자 제언): US dual-class shares
-        # directive. GOOG/GOOGL, BRK.A/BRK.B 등은 yfinance 가 특정
-        # share class 기준으로 sharesOutstanding 을 반환 — 전체 시총
-        # 대비 EPS/PBR 계산이 왜곡될 수 있음. 독자에게 명시. Universal
-        # 관점에서 US 전용 (KR Fix A 가 covers KR, JP/TW/CN 은 Fix C).
+        # Fix ② (2026-05-23, 외부 검증자 제언): dual-class shares
+        # directive. GOOG/GOOGL, BRK.A/BRK.B (US) + EPI-A.ST, VOLV-B.ST,
+        # CARL-B.CO, VOW3.DE 등 (EU) 은 yfinance 가 특정 share class
+        # 기준으로 sharesOutstanding 을 반환 — 전체 시총 대비 EPS/PBR
+        # 계산이 왜곡될 수 있음. EU 확장 2026-05-29 (Metals & Mining
+        # 도메인 review surfaced EPI-A.ST). US 셋은 ticker bare (점 앞)
+        # 매칭, EU 셋은 suffix 포함 full-ticker 매칭 — Wallenberg 패밀리의
+        # A/B class 분리 등.
         try:
-            from bot.market import _US_DUAL_CLASS_TICKERS
-            ticker_bare = (ticker or "").upper().split(".")[0]
-            if ticker_bare in _US_DUAL_CLASS_TICKERS:
+            from bot.market import (
+                _US_DUAL_CLASS_TICKERS, _EU_DUAL_CLASS_TICKERS,
+            )
+            ticker_upper = (ticker or "").upper()
+            ticker_bare = ticker_upper.split(".")[0]
+            is_dual_class = (
+                ticker_bare in _US_DUAL_CLASS_TICKERS
+                or ticker_upper in _EU_DUAL_CLASS_TICKERS
+            )
+            if is_dual_class:
                 inconsistency_lines.append(
-                    f"⚠️ DUAL-CLASS SHARES: {ticker_bare} 는 차등의결권(다중"
+                    f"⚠️ DUAL-CLASS SHARES: {ticker_upper} 는 차등의결권(다중"
                     f" class) 구조. yfinance sharesOutstanding 이 특정 class"
                     f" 기준일 수 있음 (예: BRK.A vs BRK.B × 1500, GOOG Class"
-                    f" C vs GOOGL Class A). 시총은 yfinance marketCap(전체"
-                    f" 가중 mc) 을 canonical 로 사용. EPS = NI / total_shares"
-                    f" 기준이므로 이 class 의 PER 계산이 의도한 값인지 확인 권고."
+                    f" C vs GOOGL Class A, EPI-A vs EPI-B). 시총은 yfinance"
+                    f" marketCap(전체 가중 mc) 을 canonical 로 사용. EPS"
+                    f" = NI / total_shares 기준이므로 이 class 의 PER"
+                    f" 계산이 의도한 값인지 확인 권고."
                 )
         except Exception:
             pass
@@ -2346,7 +2383,24 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
         # 가 Fix A 로 KRX shares 로 정정된 후, mc = canonical_shares × price
         # vs info["marketCap"] 비교. 차이 > 5% 면 mc 도 의심.
         canonical_sh = info.get("sharesOutstanding")
-        if (isinstance(canonical_sh, (int, float)) and canonical_sh > 0
+        # Dual-class skip — yfinance 가 한 class shares 만 반환하지만
+        # marketCap 은 양 class 합산이라 구조적 mismatch (Epiroc A: 485M
+        # shares vs 합산 1217M → ratio 0.4) 가 항상 발생. 위 dual-class
+        # banner 가 이미 reader 에게 고지하므로 추가 'corp action 의심'
+        # 발화 차단. 2026-05-29 Metals & Mining review surfaced EPI-A.ST.
+        skip_mc_check = False
+        try:
+            from bot.market import (
+                _US_DUAL_CLASS_TICKERS, _EU_DUAL_CLASS_TICKERS,
+            )
+            _tu = (ticker or "").upper()
+            if (_tu.split(".")[0] in _US_DUAL_CLASS_TICKERS
+                    or _tu in _EU_DUAL_CLASS_TICKERS):
+                skip_mc_check = True
+        except Exception:
+            pass
+        if (not skip_mc_check
+                and isinstance(canonical_sh, (int, float)) and canonical_sh > 0
                 and isinstance(market_cap, (int, float)) and market_cap > 0
                 and isinstance(px, (int, float)) and px > 0):
             implied_mc = canonical_sh * px
