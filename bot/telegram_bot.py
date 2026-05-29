@@ -1378,24 +1378,32 @@ def _format_screener_domains_list() -> list[str]:
     n_l1 = len(by_layer.get("L1_TREND", []))
     n_l2 = len(by_layer.get("L2_SECTOR", []))
     n_l3 = len(by_layer.get("L3_INDUSTRY", []))
+    n_adhoc = len(by_layer.get("AD_HOC", []))
 
     def _utf16(s: str) -> int:
         return len(s.encode("utf-16-le")) // 2
 
     chunks: list[str] = []
 
-    # Chunk 1 — header + L1 trend + L2 sector detailed (with aliases).
+    # Chunk 1 — header + L1 trend + L2 sector + AD_HOC promoted detailed
+    # (with aliases). AD_HOC = '/screener <자유어>' 5회+ 사용 후 자동
+    # promoted 모듈 (commit 37138cd). 빈 layer 면 자동 skip — 0 promoted
+    # 일 때는 chunk 1 에 줄이 추가되지 않음.
     head = [
         f"📊 <b>Bottleneck Screener — 도메인 목록</b> ({len(ds)}개)",
         "",
-        f"L1 trend {n_l1} + L2 sector {n_l2} + L3 industry {n_l3}.",
-        "하단 버튼: L1+L2 17개 즉시 클릭. L3 는 <code>/screener_&lt;슬러그&gt;</code>"
+        f"L1 trend {n_l1} + L2 sector {n_l2} + L3 industry {n_l3}"
+        + (f" + 🆕 AD_HOC {n_adhoc}" if n_adhoc else ""),
+        ".",
+        "하단 버튼: L1+L2+AD_HOC 즉시 클릭. L3 는 <code>/screener_&lt;슬러그&gt;</code>"
         " 직접 타이핑 또는 별칭 사용 (<code>/screener &lt;별칭&gt;</code>).",
         "",
     ]
     for layer_key, layer_label, layer_desc in [
         ("L1_TREND", "📈 L1 Trend", "Cross-cutting cycle 베팅"),
         ("L2_SECTOR", "🏢 L2 Sector", "11 공식 sector (미국 GICS-like)"),
+        ("AD_HOC",    "🆕 자유어 promoted",
+                      "/screener &lt;자유어&gt; 5회+ 사용 → 자동 모듈"),
     ]:
         items = by_layer.get(layer_key, [])
         if not items:
@@ -1477,11 +1485,13 @@ def _screener_list_keyboard() -> InlineKeyboardMarkup | None:
     uname = _BOT_USERNAME_CACHE.get("name")
     if not uname:
         return None
-    # Keyboard 에는 L1 + L2 만 (자주 쓰이는 broad lens). L3 는 본문 텍스트
-    # 안내. 65 → 17 버튼으로 줄여 모바일 렌더 즉시.
+    # Keyboard 에는 L1 + L2 + AD_HOC promoted 만 (자주 쓰이는 broad lens
+    # + 사용자가 직접 promote 한 자유어). L3 는 본문 텍스트 안내. 65 →
+    # 17 + AD_HOC 버튼으로 줄여 모바일 렌더 즉시. AD_HOC 가 다수 누적되어
+    # 100 cap 압박 시 후속 fix 검토 (현재 expected 소수).
     short_list = [
         d for d in list_domains()
-        if d.get("layer") in ("L1_TREND", "L2_SECTOR")
+        if d.get("layer") in ("L1_TREND", "L2_SECTOR", "AD_HOC")
     ]
     rows: list[list[InlineKeyboardButton]] = []
     cur: list[InlineKeyboardButton] = []
