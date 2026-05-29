@@ -1510,18 +1510,30 @@ def run_screener(domain: str = "bottleneck") -> Optional[ScreenerResult]:
     bottleneck (AI Data Center) / ev / defense / pharma / solar. Unknown
     domain → None with available domains logged for the telegram caller
     to surface in the error message.
-    """
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        log.error("screener: GOOGLE_API_KEY missing")
-        return None
 
+    Free-text domain support (2026-05-29): `_screener_dispatch` 가 alias
+    miss 시 ``bot.screener_freetext.resolve_freetext()`` 로 Phase 0 theme
+    생성 → ``run_screener_with_theme()`` 호출. 본 함수는 정적 도메인 전용
+    legacy path 로 유지 (back-compat).
+    """
     theme = _resolve_theme(domain)
     if theme is None:
         log.warning(
             "screener: domain '%s' unknown — available: %s",
             domain, available_summary(),
         )
+        return None
+    return run_screener_with_theme(theme)
+
+
+def run_screener_with_theme(theme: dict) -> Optional[ScreenerResult]:
+    """Phase α/β 본 분석 전용 entry — 사전 resolve 된 theme dict 를
+    그대로 받음. 정적 도메인 (registry) + 자유텍스트 (Phase 0 generated)
+    공용. ``run_screener(domain)`` 는 본 함수의 alias-lookup wrapper.
+    """
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        log.error("screener: GOOGLE_API_KEY missing")
         return None
     started = time.time()
 

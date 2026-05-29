@@ -378,41 +378,22 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # /screener [domain] in channel — Wave 1 registry: bottleneck (default,
-    # AI Data Center) / ev / defense / pharma / solar (+aliases). Unknown
-    # domain → friendly error with available list; otherwise progress
-    # message names the resolved domain so the channel sees which theme
-    # is in flight before the master table arrives ~5-10 min later.
+    # /screener [domain] in channel — static registry (6 L1 + 11 L2 + 48
+    # L3 = 65 domains) + free-text Phase 0 fallback (2026-05-29). Unknown
+    # alias → Pro generates theme dict on-the-fly. Resolver/progress logic
+    # shared with the DM /screener path via `_resolve_screener_target`.
     if first_word == "screener":
-        from bot.screener_themes import resolve as _scr_resolve, available_summary as _scr_avail
         chat_id = post.chat.id
         raw_domain = body[len("screener"):].strip().lower()
-        theme = _scr_resolve(raw_domain)
-        if theme is None:
+        async def _ch_send(t: str) -> None:
             await ctx.bot.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ '<code>{raw_domain or '(empty)'}</code>' 도메인을 찾을 수 없습니다.\n사용 가능: <code>{_scr_avail()}</code>",
-                parse_mode=ParseMode.HTML,
-            )
-            return
-        await ctx.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"📊 <b>Bottleneck Screener</b> 시작 — <b>{theme['domain']}</b> "
-                f"({theme.get('horizon','')} 관점, Phase β · 실시간 데이터)\n"
-                "⏱ <b>5-10분 소요</b> — Phase 1·2 (Pro 후보 식별) → "
-                "Phase 3 (병렬 실시간 fetch) → Phase 4·5 (Pro 분석)\n"
-                "💡 데이터 fetch hung 시 120s 후 partial 결과로 자동 진행"
-            ),
-            parse_mode=ParseMode.HTML,
-        )
-        await _run_screener_and_send(
-            send=lambda t: ctx.bot.send_message(
                 chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
-            ),
-            domain=raw_domain or "bottleneck",
-        )
+            )
+        mode, payload = await _resolve_screener_target(_ch_send, raw_domain)
+        if mode == "error":
+            return
+        await _run_screener_and_send(send=_ch_send, theme=payload)
         return
 
     # /compare A B → branch off to the comparison handler.
@@ -842,7 +823,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
 /start /help /usage /sv_cost /screener_cost /screener_list /sites — 도움말·비용·도메인목록·사이트
-/screener [도메인] — Bottleneck (기본 AI 데이터센터). 도메인 전체 → /screener_list
+/screener [도메인 | 자유어] — Bottleneck (65 도메인 + 미상시 Pro 즉석 생성). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
@@ -916,7 +897,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
 
 ━━━━━━━━━
 <b>【12. 진행 중 / 예정】</b>
- • Screener 65 도메인 가동 (6 L1 + 11 L2 + 48 L3) · 분기 GICS 자동 점검 06-01 · 예정: 24h 캐시 · 자유텍스트 도메인
+ • Screener 65 도메인 + 자유어 즉석 생성 (24h 캐시) · 분기 GICS 점검 06-01 · 예정: 모듈 promotion 자동화
 """
 
 
@@ -1617,16 +1598,24 @@ async def cmd_sites(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def _run_screener_and_send(send, domain: str) -> None:
+async def _run_screener_and_send(send, *, domain: str | None = None,
+                                  theme: dict | None = None) -> None:
     """Run the screener in a thread (it's a synchronous Pro call that
     blocks for ~3-5 minutes) and stream chunks back through `send`.
-    Used by both DM cmd_screener and the channel /screener path."""
+    Used by both DM cmd_screener and the channel /screener path.
+
+    Pass exactly one of ``domain`` (legacy static-registry alias) or
+    ``theme`` (pre-resolved dict — used by free-text Phase 0 path).
+    """
     import asyncio
-    from bot.screener import run_screener, format_for_telegram
+    from bot.screener import run_screener, run_screener_with_theme, format_for_telegram
     from bot.screener_themes import available_summary as _scr_avail
     loop = asyncio.get_running_loop()
     try:
-        result = await loop.run_in_executor(None, run_screener, domain or "bottleneck")
+        if theme is not None:
+            result = await loop.run_in_executor(None, run_screener_with_theme, theme)
+        else:
+            result = await loop.run_in_executor(None, run_screener, domain or "bottleneck")
     except Exception as exc:
         log.exception("screener: orchestrator threw: %s", exc)
         await send(f"⚠️ Screener 오류 — {exc.__class__.__name__}")
@@ -1641,40 +1630,137 @@ async def _run_screener_and_send(send, domain: str) -> None:
         await send(chunk)
 
 
-async def _screener_dispatch(
-    update: Update, ctx: ContextTypes.DEFAULT_TYPE, raw_domain: str,
-) -> None:
-    """Common implementation for /screener arg-based + /screener_<slug>
-    per-domain shortcut commands. Resolves the theme, sends a progress
-    message, then dispatches to ``_run_screener_and_send``."""
-    if update.message is None:
-        return
-    from bot.screener_themes import resolve as _scr_resolve, available_summary as _scr_avail
+async def _resolve_screener_target(send, raw_domain: str):
+    """Common resolver for /screener arg paths — handles alias hit /
+    fuzzy redirect to existing domain / free-text Phase 0 generation.
+    Sends the appropriate progress message via ``send`` callable.
+
+    Returns (mode, payload):
+      • ('theme', theme_dict) — caller passes theme to _run_screener_and_send
+      • ('domain', slug_str)  — caller passes slug to _run_screener_and_send
+      • ('error', None)       — already sent error message; caller aborts
+    """
+    from bot.screener_themes import resolve as _scr_resolve
+
+    # 1) Empty input → default bottleneck (back-compat).
+    if not raw_domain:
+        theme = _scr_resolve("")
+        if theme is not None:
+            await send(_screener_start_banner(theme))
+            return ("theme", theme)
+        return ("error", None)  # shouldn't happen — bottleneck always registered
+
+    # 2) Static registry hit.
     theme = _scr_resolve(raw_domain)
-    if theme is None:
-        await update.message.reply_text(
-            f"⚠️ '<code>{raw_domain or '(empty)'}</code>' 도메인을 찾을 수 없습니다.\n"
-            f"사용 가능: <code>{_scr_avail()}</code>",
-            parse_mode=ParseMode.HTML,
+    if theme is not None:
+        await send(_screener_start_banner(theme))
+        return ("theme", theme)
+
+    # 3) Free-text path — fuzzy redirect or Phase 0 generation.
+    from bot.screener_freetext import (
+        resolve_freetext as _resolve_freetext,
+        count_today_freetext as _ft_count_today,
+        count_text_uses as _ft_count_uses,
+    )
+
+    # Daily soft-cap notice (non-blocking — user can /screener_cost to monitor).
+    used_today = _ft_count_today()
+    soft_cap_note = ""
+    if used_today >= 5:
+        soft_cap_note = (
+            f"\n⚠️ 오늘 자유어 {used_today + 1}회째 — 비용 누적 주의."
+            " /screener_cost 로 확인 가능."
         )
-        return
-    await update.message.reply_text(
+
+    await send(
+        f"🔍 도메인 '<code>{raw_domain}</code>' 자동 생성 중...\n"
+        f"Phase 0: Pro 가 binding layer + catalyst + 지역 분포 식별 (~30초, ~₩50-80)"
+        f"{soft_cap_note}"
+    )
+
+    import asyncio
+    loop = asyncio.get_running_loop()
+    ft_theme, err, cost_krw, was_cached = await loop.run_in_executor(
+        None, _resolve_freetext, raw_domain,
+    )
+
+    # 3a) Fuzzy redirect to existing static domain.
+    if err and err.startswith("__REDIRECT__:"):
+        target_slug = err[len("__REDIRECT__:"):]
+        target_theme = _scr_resolve(target_slug)
+        if target_theme is not None:
+            await send(
+                f"💡 입력 '<code>{raw_domain}</code>' 이 기존 도메인 "
+                f"<b>{target_theme['domain']}</b> 와 일치 — 자동 라우팅."
+            )
+            await send(_screener_start_banner(target_theme))
+            return ("theme", target_theme)
+
+    # 3b) Phase 0 reject / hard error.
+    if ft_theme is None:
+        await send(
+            f"⚠️ 자유텍스트 도메인 생성 실패 — {err or 'Unknown'}\n"
+            f"기존 65 도메인 목록: /screener_list"
+        )
+        return ("error", None)
+
+    # 3c) Success — show generated theme summary + start banner.
+    cache_hint = "(24h 캐시 사용)" if was_cached else f"(Phase 0 비용 ₩{cost_krw:.1f})"
+    uses = _ft_count_uses(raw_domain)
+    promote_hint = ""
+    if uses >= 5:
+        promote_hint = (
+            f"\n📌 이 자유어 누적 {uses}회 사용 — 정식 모듈 promotion 후보. "
+            f"<code>bot/screener_themes/&lt;slug&gt;.py</code> 로 promote 검토."
+        )
+    layer_count = len(ft_theme.get("binding_layer_taxonomy", []))
+    catalyst_count = len(ft_theme.get("catalyst_types", []))
+    region_count = len(ft_theme.get("regional_concentration", {}))
+    await send(
+        f"✅ <b>{ft_theme['domain']}</b> 도메인 즉석 생성 완료 {cache_hint}\n"
+        f"  • binding layer {layer_count}개 / catalyst {catalyst_count}개 / "
+        f"region {region_count}개\n"
+        f"  • ⚠️ 자유텍스트 도메인 — Pro 즉석 생성, 정적 도메인 대비 깊이 ±20%."
+        f"{promote_hint}"
+    )
+    await send(_screener_start_banner(ft_theme))
+    return ("theme", ft_theme)
+
+
+def _screener_start_banner(theme: dict) -> str:
+    """Common Phase β progress banner — emitted right before the long
+    Pro pipeline so the user sees which theme + horizon is in flight."""
+    return (
         f"📊 <b>Bottleneck Screener</b> 시작 — <b>{theme['domain']}</b> "
         f"({theme.get('horizon','')} 관점, Phase β · 실시간 데이터 + 웹 검색)\n"
         "⏱ <b>6-12분 소요</b> — Phase 1·2 (Pro+웹 검색 후보 식별) → "
         "Phase 3 (병렬 실시간 fetch) → Phase 4·5 (Pro+웹 검색 분석)\n"
-        "💡 fetch hung 시 120s 후 partial 결과로 자동 진행",
-        parse_mode=ParseMode.HTML,
+        "💡 fetch hung 시 120s 후 partial 결과로 자동 진행"
     )
-    domain = raw_domain or "bottleneck"
+
+
+async def _screener_dispatch(
+    update: Update, ctx: ContextTypes.DEFAULT_TYPE, raw_domain: str,
+) -> None:
+    """Common implementation for /screener arg-based + /screener_<slug>
+    per-domain shortcut commands. Resolves the theme (static registry +
+    fuzzy redirect + free-text Phase 0), sends a progress message, then
+    dispatches to ``_run_screener_and_send``."""
+    if update.message is None:
+        return
+    async def _send(t: str) -> None:
+        await update.message.reply_text(
+            t, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        )
+    mode, payload = await _resolve_screener_target(_send, raw_domain)
+    if mode == "error":
+        return
     chat_id = update.message.chat_id
-    await _run_screener_and_send(
-        send=lambda t: ctx.bot.send_message(
-            chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        ),
-        domain=domain,
+    send_chunk = lambda t: ctx.bot.send_message(
+        chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
     )
+    await _run_screener_and_send(send=send_chunk, theme=payload)
 
 
 async def cmd_screener(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

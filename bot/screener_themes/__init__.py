@@ -62,8 +62,11 @@ _REQUIRED_KEYS = (
 #  - L3_INDUSTRY: 각 L2 아래 sub-industry (예: Industrials → Aerospace
 #                 & Defense / Airlines / Building Products ...). 더
 #                 깊이는 없음 (L4 미사용).
+#  - AD_HOC     : `/screener <자유어>` Phase 0 즉석 생성 도메인. 캐시
+#                 24h, audit log, 정식 모듈 promote 는 user 수동. 2026-
+#                 05-29 신설.
 # Layer 표기 누락은 default L1_TREND 로 fallback (back-compat).
-_VALID_LAYERS = ("L1_TREND", "L2_SECTOR", "L3_INDUSTRY")
+_VALID_LAYERS = ("L1_TREND", "L2_SECTOR", "L3_INDUSTRY", "AD_HOC")
 
 
 def _validate(slug: str, theme: dict) -> None:
