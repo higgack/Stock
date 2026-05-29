@@ -2889,6 +2889,10 @@ def _render_screener_domains_page() -> str:
         ("L1_TREND",    "📈 L1 Trend",   "Cross-cutting cycle 베팅 — 공식 sector 분류 외"),
         ("L2_SECTOR",   "🏢 L2 Sector",  "11 공식 sector (미국 GICS-like)"),
         ("L3_INDUSTRY", "🔬 L3 Industry","각 L2 아래 sub-industry"),
+        # AD_HOC = `/screener <자유어>` 5회+ 사용 후 자동 promoted 정식 모듈
+        # (bot/screener_freetext.promote_to_module). 사용자 수동 reclassify
+        # 전까지 별도 layer 로 노출.
+        ("AD_HOC",      "🆕 자유어 promoted", "자유어 5회+ 사용 → 정식 모듈 자동 생성 (수동 reclassify 대기)"),
     ]
     by_layer: dict[str, list[dict]] = defaultdict(list)
     for d in ds:
@@ -2921,6 +2925,7 @@ def _render_screener_domains_page() -> str:
         "L1_TREND": "l1",
         "L2_SECTOR": "l2",
         "L3_INDUSTRY": "l3",
+        "AD_HOC": "ad_hoc",
     }
     # Per-layer collapsible — L1 (6) default open since smallest, L2/L3
     # (11/48) default closed so initial paint stays light on mobile.
@@ -2931,6 +2936,8 @@ def _render_screener_domains_page() -> str:
         "L1_TREND": True,
         "L2_SECTOR": False,
         "L3_INDUSTRY": False,
+        # AD_HOC default open (보통 소수 — 사용자가 promote 흐름 추적 중)
+        "AD_HOC": True,
     }
     for layer_key, layer_label, layer_desc in _LAYER_META:
         cards = by_layer.get(layer_key, [])
@@ -3082,12 +3089,17 @@ def _render_screener_domains_page() -> str:
 .layer-section.l3 {{ border-left-color:#8b5cf6; }}
 .layer-section.l3 {{ background:linear-gradient(90deg,
   rgba(139,92,246,0.07) 0%, transparent 280px); }}
+.layer-section.ad_hoc {{ border-left-color:#f59e0b; }}
+.layer-section.ad_hoc {{ background:linear-gradient(90deg,
+  rgba(245,158,11,0.08) 0%, transparent 280px); }}
 :root[data-theme="dark"] .layer-section.l1 {{
   background:linear-gradient(90deg, rgba(59,130,246,0.10) 0%, transparent 280px); }}
 :root[data-theme="dark"] .layer-section.l2 {{
   background:linear-gradient(90deg, rgba(16,185,129,0.10) 0%, transparent 280px); }}
 :root[data-theme="dark"] .layer-section.l3 {{
   background:linear-gradient(90deg, rgba(167,139,250,0.10) 0%, transparent 280px); }}
+:root[data-theme="dark"] .layer-section.ad_hoc {{
+  background:linear-gradient(90deg, rgba(251,191,36,0.12) 0%, transparent 280px); }}
 .layer-h {{ font-size:20px; margin:0 0 4px;
   color:var(--fg); font-weight:700; }}
 .layer-count {{ color:var(--fg-soft); font-size:14px; font-weight:500;

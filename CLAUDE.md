@@ -1064,9 +1064,10 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
   {slug}_YYYY-MM-DD.json` 으로 같은 도메인 24h 내 재호출 시 Pro skip +
   ₩0 반환. `/screener {slug} fresh` flag 로 강제 재실행. 자유어는 이미
   shipped (위 freetext_themes/).
-- AD_HOC layer 대시보드 display — promoted 모듈이 `archive/screener_
-  domains.html` 의 layer 그룹 (현재 L1/L2/L3 만) 에 보이도록 새 섹션
-  '🆕 자유어 promoted' 추가.
+- ~~AD_HOC layer 대시보드 display~~ ✅ 완료 (commit pending) — promoted
+  모듈이 `archive/screener_domains.html` 에 '🆕 자유어 promoted' 섹션
+  으로 노출 (L1/L2/L3 와 동일 collapsible + 색상 strip 주황 #f59e0b).
+  Default open (소수 expected, promote 흐름 추적용).
 
 ## Bottleneck Screener — 설계 메모리 (origin 2026-05-28, kept for reference)
 
