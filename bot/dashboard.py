@@ -963,15 +963,15 @@ summary.day-head .count {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
 }
 .ticker {
-  font-weight: 700; font-size: 17px; color: var(--fg);
+  font-weight: 700; font-size: 16px; color: var(--fg);
   text-decoration: none; min-width: 70px;
 }
 .ticker:hover { color: var(--accent); text-decoration: none; }
 .stance {
-  color: var(--fg-soft); font-size: 15px; flex: 1; min-width: 0;
+  color: var(--fg-soft); font-size: 14px; flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.time { color: var(--fg-soft); font-size: 13px; min-width: 38px; text-align: right; }
+.time { color: var(--fg-soft); font-size: 12px; min-width: 38px; text-align: right; }
 .del-btn {
   background: none; border: none; cursor: pointer; padding: 4px 6px;
   color: #f87171; font-size: 14px; line-height: 1;
@@ -980,8 +980,8 @@ summary.day-head .count {
 .del-btn:hover { color: #ef4444; }
 :root[data-theme="dark"] .del-btn { color: #f87171; }
 :root[data-theme="dark"] .del-btn:hover { color: #fca5a5; }
-.past { color: var(--fg-soft); font-size: 13px; margin-top: 6px; }
-.outcome { font-size: 13px; margin-top: 4px; color: var(--fg-soft); }
+.past { color: var(--fg-soft); font-size: 12px; margin-top: 6px; }
+.outcome { font-size: 12px; margin-top: 4px; color: var(--fg-soft); }
 .outcome.hit { color: #10b981; }       /* directional call matched alpha */
 .outcome.miss { color: #ef4444; }      /* directional call missed */
 :root[data-theme="dark"] .outcome.hit { color: #34d399; }
