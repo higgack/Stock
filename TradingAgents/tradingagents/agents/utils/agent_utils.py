@@ -140,6 +140,57 @@ def _content_to_str(result) -> str:
     return content or ""
 
 
+def safe_invoke_text(llm, prompt, label: str) -> str:
+    """Invoke an LLM for a free-text argument, returning normalized text or
+    a short Korean placeholder on failure (M4, 2026-05-29 audit).
+
+    Used by the ADVISORY debate / risk nodes (bull, bear, aggressive,
+    neutral, conservative) which previously called `llm.invoke(prompt)`
+    bare + read raw `.content`. A single transient Gemini 503 / timeout in
+    any one of those turns propagated out of `graph.invoke`, killed the
+    analysis subprocess, and discarded the already-computed 4 analyst
+    reports (checkpoint_enabled=False → no resume). These voices are
+    advisory — the Portfolio Manager can still synthesize from the analyst
+    reports + research plan if one debate voice degrades — so failing one
+    turn to a placeholder is strictly better than crashing the run. Also
+    normalizes multi-part list `.content` (the `_content_to_str` fix)."""
+    try:
+        return _content_to_str(llm.invoke(prompt))
+    except Exception as exc:
+        _analyst_log.warning(
+            "%s llm.invoke failed (%s) — degrading to placeholder", label, exc,
+        )
+        return (
+            f"({label} 생성 실패 — 일시적 LLM 오류로 이 턴은 건너뜀."
+            " 나머지 분석가 근거 기반으로 합성 진행.)"
+        )
+
+
+def _call_with_timeout(fn, timeout_sec: float, label: str, default=None):
+    """Run ``fn()`` with a hard wall-clock timeout via a throwaway thread.
+    Returns fn()'s result, or ``default`` on timeout / exception (F5,
+    2026-05-29 audit).
+
+    AKShare wraps ``requests`` with no socket timeout + 2s/4s retry backoff,
+    so a hung Eastmoney / Sina endpoint could block build_instrument_context
+    — and therefore the whole NOAH /ticker analysis — indefinitely (the same
+    'stuck >15min' class the screener already band-aids at the orchestrator
+    level, bot/screener.py:1560+). Bounding the inline call here protects the
+    /ticker path too. A timed-out thread finishes in the background and its
+    result is discarded."""
+    import concurrent.futures as _cf
+    ex = _cf.ThreadPoolExecutor(max_workers=1)
+    try:
+        return ex.submit(fn).result(timeout=timeout_sec)
+    except Exception as exc:
+        _analyst_log.debug(
+            "%s timed out/failed (%ss cap): %s", label, timeout_sec, exc,
+        )
+        return default
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+
+
 def finalize_analyst_result(prompt, llm, messages, result, analyst_name: str):
     """Extract a non-empty report string from an analyst's chain invocation.
 
@@ -502,7 +553,13 @@ def _instrument_info(ticker: str) -> dict:
         ):
             try:
                 from bot.akshare_client import get_akshare
-                cn_val = get_akshare().get_valuation(ticker)
+                # F5 (2026-05-29 audit): bound this inline AKShare call —
+                # no internal socket timeout, runs outside the prefetch
+                # executor's 15/30s guard.
+                cn_val = _call_with_timeout(
+                    lambda: get_akshare().get_valuation(ticker),
+                    15, f"akshare get_valuation {ticker}",
+                )
                 if cn_val:
                     if cn_val.get("per") and "trailingPE" not in out:
                         out["trailingPE"] = float(cn_val["per"])
@@ -627,7 +684,13 @@ def _fetch_peer_multiples(ticker: str) -> str:
             # KR 의 Naver/KIS 폴백과 동일 패턴.
             try:
                 from bot.akshare_client import get_akshare
-                cn_val = get_akshare().get_valuation(ticker)
+                # F5 (2026-05-29 audit): bound this inline AKShare call —
+                # no internal socket timeout, runs outside the prefetch
+                # executor's 15/30s guard.
+                cn_val = _call_with_timeout(
+                    lambda: get_akshare().get_valuation(ticker),
+                    15, f"akshare get_valuation {ticker}",
+                )
                 if cn_val:
                     cn_per = cn_val.get("per")
                     cn_pbr = cn_val.get("pbr")

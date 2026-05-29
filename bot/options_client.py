@@ -58,6 +58,39 @@ def _dte(expiry: str) -> Optional[int]:
 
 
 def get_options_signals(ticker: str) -> Optional[dict]:
+    """Disk-cached (ticker, today; 12h TTL) wrapper around the option-chain
+    computation. F6 (2026-05-29 audit): the full option-chain download is
+    among the heaviest yfinance endpoints and was re-run on every
+    build_instrument_context call (up to 8× per analysis) with no cache and
+    no explicit timeout. Intraday IV / PCR drift is tolerable at the 5-day
+    horizon (same rationale as the cnyes 4h news TTL). Only non-None results
+    are cached so a transient failure isn't pinned for 12h."""
+    import json as _json
+    import time as _time
+    from pathlib import Path as _Path
+    _path = (
+        _Path.home() / ".tradingagents" / "cache"
+        / f"options_{ticker}_{_dt.date.today().isoformat()}.json"
+    )
+    if _path.exists():
+        try:
+            if (_time.time() - _path.stat().st_mtime) / 3600 < 12:
+                return _json.loads(_path.read_text("utf-8"))
+        except Exception:
+            pass
+    result = _compute_options_signals(ticker)
+    if result:
+        try:
+            _path.parent.mkdir(parents=True, exist_ok=True)
+            _path.write_text(
+                _json.dumps(result, ensure_ascii=False), encoding="utf-8",
+            )
+        except Exception:
+            pass
+    return result
+
+
+def _compute_options_signals(ticker: str) -> Optional[dict]:
     """Compute front-expiry ATM IV + put/call ratios + 30-day baseline IV.
 
     Returns dict with keys iv_atm, dte, iv_atm_30d, expiry_30d, pcr_volume,

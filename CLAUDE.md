@@ -863,18 +863,28 @@ shipping 후 cross-market parity audit 으로 확장.
   cached 75% 할인 (Gemini 캐시 input ~25% 청구), log 에 non-zero 시
   `cached_tokens` emit. BUG1 fix 검증 가능케 함.
 
-### 🔜 2차 (예정, 견고성):
-- M3 PM structured-output 실패 fallback 이 discipline 우회 + 원시
-  `.content` (멀티파트 list 시 AttributeError). → fallback 후 discipline
-  재적용 + `_content_to_str` 경유.
-- M4 토론/리스크 5노드 bare `llm.invoke` → 503 하나가 전체 graph crash
-  (분석가 4 리포트 폐기). → try/except placeholder degrade.
-- F3 DART hot 3종 (`get_recent_disclosures`/`get_insider_holdings`/
-  `next_earnings_window`) 캐시 0 → KR 분석당 ~21 중복 HTTP, 429 위험.
-  → `(stock_code, today)` 12h 디스크 캐시.
-- F5/F6 AKShare overlay + options chain inline 호출 timeout 0 →
-  "stuck >15min" 클래스 (screener 만 band-aid, /ticker 무방비).
-  → bounded executor 또는 socket timeout + options `(ticker,today)` 캐시.
+### ✅ 2차 — 완료 (견고성, 위험 낮음):
+- **M3** structured-output 실패 fallback 의 원시 `.content` (멀티파트 list
+  → downstream parse_rating AttributeError) → `structured.py:72` +
+  `portfolio_manager.py:611` 모두 `_content_to_str` 경유. (free-text 의
+  override-discipline 은 analyzer Fix F/G 가 backstop — 의도적 유지.)
+- **M4** 토론/리스크 5노드 (bull/bear/aggressive/neutral/conservative) bare
+  `llm.invoke` → 503 하나가 전체 graph crash (분석가 4 리포트 폐기). →
+  `safe_invoke_text(llm, prompt, label)` 헬퍼 (agent_utils) 로 통일:
+  try/except → 한국어 placeholder degrade + `_content_to_str` 정규화.
+  advisory 노드라 1턴 실패해도 PM 이 분석가 리포트로 합성 가능.
+- **F3** DART `get_recent_disclosures` / `get_insider_holdings` 캐시 0 →
+  KR 분석당 ~16-21 중복 HTTP (429 위험). → `_disk_cache_daily` 데코레이터
+  (`(stock_code, args, today)` key, 12h, **truthy-only** 캐시 — transient
+  실패 미pin). `next_earnings_window` 는 순수 날짜 계산 (네트워크 0) 라
+  캐시 불요 — agent 가 over-flag, 직접 확인 정정.
+- **F5** AKShare inline 호출 (`_instrument_info` CN_A overlay +
+  `_fetch_peer_multiples` fallback) timeout 0 → `_call_with_timeout(fn,
+  15s, label)` 헬퍼로 bound (throwaway thread + cancel_futures). "stuck
+  >15min" 클래스를 /ticker 경로에서도 차단.
+- **F6** options chain (`get_options_signals`) 캐시·timeout 0 →
+  `(ticker, today)` 12h 디스크 캐시 wrapper (`_compute_options_signals`
+  분리), non-None 만 캐시. IV/PCR intraday drift 는 5일 horizon 허용.
 
 ### 🔜 3차 (예정, 정확성 hygiene):
 - m7 `_extract_stance` 영어 pass-3 word-boundary 없음 (household→hold).

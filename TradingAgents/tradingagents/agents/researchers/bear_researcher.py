@@ -1,4 +1,7 @@
-from tradingagents.agents.utils.agent_utils import get_language_instruction
+from tradingagents.agents.utils.agent_utils import (
+    get_language_instruction,
+    safe_invoke_text,
+)
 
 
 def create_bear_researcher(llm):
@@ -46,9 +49,9 @@ Last bull argument: {current_response}
 Deliver a compelling bear argument that explicitly invokes BOTH personas (label which lens each paragraph is using), rebuts the bull's claims point-by-point, and ends with a downside-quantified one-liner verdict.
 """ + get_language_instruction()
 
-        response = llm.invoke(prompt)
-
-        argument = f"Bear Analyst: {response.content}"
+        argument = "Bear Analyst: " + safe_invoke_text(
+            llm, prompt, "Bear researcher",
+        )
 
         new_investment_debate_state = {
             "history": history + "\n" + argument,

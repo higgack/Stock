@@ -21,6 +21,7 @@ from tradingagents.agents.schemas import (
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_language_instruction,
+    _content_to_str,
 )
 from tradingagents.agents.utils.structured import (
     bind_structured,
@@ -611,7 +612,12 @@ Be decisive and ground every conclusion in specific evidence from the analysts.{
                     " falling back to free-text without discipline check",
                     exc,
                 )
-                final_trade_decision = llm.invoke(prompt).content
+                # M3 (2026-05-29 audit): normalize .content (multi-part list
+                # → str) so downstream parse_rating doesn't AttributeError.
+                # The analyzer-layer Fix F/G is the override-discipline
+                # backstop on this free-text path (no PortfolioDecision to
+                # re-check here).
+                final_trade_decision = _content_to_str(llm.invoke(prompt))
         else:
             final_trade_decision = invoke_structured_or_freetext(
                 active_structured_llm,

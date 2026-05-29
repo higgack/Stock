@@ -54,6 +54,54 @@ _CACHE_DIR = Path.home() / ".tradingagents" / "cache"
 _CORPCODE_CACHE = _CACHE_DIR / "dart_corpcode_v2.json"
 _CORPCODE_TTL_DAYS = 30
 _HTTP_TIMEOUT = 10  # seconds — keep tight so a slow DART doesn't stall analysis
+_HOT_CACHE_TTL_HOURS = 12  # disclosures / insider holdings change at most daily
+
+
+def _disk_cache_daily(fn):
+    """F3 (2026-05-29 audit): per-(stock_code, today) 12h disk cache for the
+    DART network methods that previously hit the network on EVERY call.
+
+    build_instrument_context runs up to 8× per analysis + the inline KR D1
+    block, so `get_recent_disclosures` / `get_insider_holdings` were each
+    fetched ~8× over the network per KR analysis — while every sibling KR
+    client (pykrx, naver, krx_alert, kis) is already disk-cached. DART was
+    the lone uncached outlier and the most likely 429 / stall point
+    (CLAUDE.md warns of 'DART 429 / rate limits').
+
+    Only caches TRUTHY results — an empty list (key missing / corp_code
+    unresolved / transient DART error) is NOT cached, so a temporary
+    failure doesn't get pinned for 12h and recovery is immediate.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(self, stock_code, *args, **kwargs):
+        arg_sig = "_".join(str(a) for a in args)
+        if kwargs:
+            arg_sig += "_" + "_".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
+        cache_path = _CACHE_DIR / (
+            f"dart_{fn.__name__}_{stock_code}_{arg_sig}_{date.today().isoformat()}.json"
+        )
+        if cache_path.exists():
+            age_h = (time.time() - cache_path.stat().st_mtime) / 3600
+            if age_h < _HOT_CACHE_TTL_HOURS:
+                try:
+                    return json.loads(cache_path.read_text("utf-8"))
+                except Exception:
+                    pass
+        result = fn(self, stock_code, *args, **kwargs)
+        if result:  # only cache non-empty (don't pin transient failures)
+            try:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    json.dumps(result, ensure_ascii=False, default=str),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+        return result
+
+    return wrapper
 
 
 def _normalize_name(name: str) -> str:
@@ -454,6 +502,7 @@ class DartClient:
         return payload
 
     # ── /api/list.json — recent disclosures ─────────────────────────────
+    @_disk_cache_daily
     def get_recent_disclosures(
         self, stock_code: str, days_back: int = 30, limit: int = 20
     ) -> list[dict]:
@@ -501,6 +550,7 @@ class DartClient:
         return out
 
     # ── /api/elestock.json — insider / major shareholder holdings ──────
+    @_disk_cache_daily
     def get_insider_holdings(self, stock_code: str) -> list[dict]:
         """Return rows of officer / major shareholder current holdings.
         Each row: 'name', 'role', 'shares', 'pct', 'changed_on'. Empty
