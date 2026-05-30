@@ -1140,6 +1140,21 @@ User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증
 
 ## Bottleneck Screener — 운영 중 (Phase β + Wave 1 LIVE · 2026-05-29)
 
+**내용 강화 (2026-05-29 사용자 요청 — A+C)**:
+- **A. MANDATORY QUANT EXTRACTION** (Phase 4·5 prompt) — 각 candidate 행
+  에 5개 정량 신호 의무 추출: (1) 컨센서스 PT %upside + analyst 수 +
+  recommendationKey, (2) Next earnings ±5일 (⚡), (3) Quarterly YoY 가속/
+  둔화 라벨, (4) Peer multiples 대비 valuation % 위치, (5) insider/옵션
+  IV 등 위치성 신호. 누락 시 'N/A' 명시(=low-coverage 그 자체 신호) 또는
+  reject. build_instrument_context 가 이미 끌어오는 데이터를 LLM 이 묻어
+  두던 것을 명시 노출 — 추가 fetch 0, 추가 비용 ~₩0 (input token 소액).
+- **C. Past-outcomes memory feedback** — `_format_past_outcomes_for_domain
+  (domain)` (screener.py): 같은 도메인의 screener_memory.md resolved 항목
+  에서 1m/3m/6m mean·hit-rate·α 통계 자동 추출 → Phase 4·5 prompt 헤더에
+  주입. self-correcting (LNG layer 6개월 +22% / hit 100% → 같은 layer
+  재추천 강화, S-tier micro-cap 1m -15% → 신중). 표본 <2 시 빈 문자열
+  (noise 회피). 통계 smoke 100% 정확.
+
 **Outcome 측정 horizon (사용자 정책 2026-05-29)**: screener Top-3 picks 의
 5/15/30d (trading days) outcome 컬럼은 **1개월/3개월/6개월 (캘린더)** 로
 변경. screener 는 6-18M thesis 라 NOAH /ticker 5거래일과 별개 horizon.

@@ -67,6 +67,93 @@ def _today_kst_iso() -> str:
     return datetime.now(timezone(timedelta(hours=9))).date().isoformat()
 
 
+def _format_past_outcomes_for_domain(domain: str) -> str:
+    """Past-outcomes memory feedback (사용자 정책 2026-05-29 Option C) —
+    이 도메인의 지난 1-6개월 추천 outcome 통계를 1단락으로 요약해 Phase
+    4·5 프롬프트에 주입. self-correcting: hit-rate 가 누적되면 Pro 가 같은
+    layer 재추천 강화/약화 자율 조정.
+
+    Reads ~/.tradingagents/memory/screener_memory.md via TradingMemoryLog.
+    Same domain entries (resolved + outcomes_extra 90/180) 만 집계. 데이터
+    0건 시 빈 문자열 (over-engineering 회피 — 첫 cycle 부터 자연 발화).
+
+    Returns 형식 (예시):
+      "\n📜 이 도메인 과거 추천 outcome (screener_memory.md):\n"
+      "  • 누적 8 picks · 1m mean +5.2% · 3m mean +14.1% · 6m mean +21.3%\n"
+      "  • 1m hit-rate 62% (raw>0 비율) · 평균 α vs sector +3.8%\n"
+      "참고하여 이 도메인의 유효 layer / Tier 분포 / S-tier micro-cap
+      적정성 재평가 후 picks 구성하라.\n"
+    """
+    try:
+        from tradingagents.agents.utils.memory import TradingMemoryLog
+        cfg = {"memory_log_path": _SCREENER_MEMORY_LOG}
+        memory = TradingMemoryLog(cfg)
+        entries = memory.load_entries()
+    except Exception as exc:
+        log.debug("screener: past outcomes load failed: %s", exc)
+        return ""
+    # Domain 매칭 (대소문자 무시, 부분 일치) — 'LNG (액화 인프라)' / 'LNG'
+    # 같은 동일 도메인 별칭 흡수.
+    d_norm = (domain or "").strip().lower()
+    if not d_norm:
+        return ""
+    same_domain = [
+        e for e in entries
+        if d_norm in (e.get("domain", "") or "").strip().lower()
+        or (e.get("domain", "") or "").strip().lower() in d_norm
+    ]
+    # Resolved (pending=False) + raw 값 존재 — outcome 측정 완료 항목만
+    resolved = [
+        e for e in same_domain
+        if not e.get("pending") and e.get("raw")
+    ]
+    if len(resolved) < 2:
+        return ""  # 표본 2개 미만은 신호 부족, noise 회피
+
+    def _pct_to_float(s: str) -> Optional[float]:
+        try:
+            return float((s or "").strip("+%")) / 100.0
+        except Exception:
+            return None
+
+    raw1m = [_pct_to_float(e.get("raw")) for e in resolved]
+    raw1m = [v for v in raw1m if v is not None]
+    alpha1m = [_pct_to_float(e.get("alpha")) for e in resolved]
+    alpha1m = [v for v in alpha1m if v is not None]
+    raw3m, raw6m = [], []
+    for e in resolved:
+        for o in (e.get("outcomes_extra") or []):
+            v = _pct_to_float(o.get("raw"))
+            if v is None:
+                continue
+            if o.get("days") == 90:
+                raw3m.append(v)
+            elif o.get("days") == 180:
+                raw6m.append(v)
+
+    def _stat(arr: list) -> str:
+        if not arr:
+            return "—"
+        mean = sum(arr) / len(arr)
+        hit = sum(1 for v in arr if v > 0) / len(arr)
+        return f"mean {mean:+.1%} · hit {hit:.0%} (n={len(arr)})"
+
+    lines = ["", "📜 이 도메인 과거 추천 outcome (screener_memory.md 누적):"]
+    lines.append(f"  • 1개월: {_stat(raw1m)}")
+    if raw3m:
+        lines.append(f"  • 3개월: {_stat(raw3m)}")
+    if raw6m:
+        lines.append(f"  • 6개월: {_stat(raw6m)}")
+    if alpha1m:
+        mean_a = sum(alpha1m) / len(alpha1m)
+        lines.append(f"  • 1m α vs sector ETF: mean {mean_a:+.1%}")
+    lines.append("참고: 이 도메인의 유효 layer + Tier 분포 + S-tier micro-cap")
+    lines.append("적정성을 재평가해 picks 구성하라. hit-rate 낮은 layer 는")
+    lines.append("over-weight 회피, mean α 높은 layer 는 다른 ticker 도 발굴.")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _build_prompt(theme: dict) -> str:
     """Construct the ruthless-buy-side prompt for the given theme.
 
@@ -1673,6 +1760,14 @@ def _build_phase_45_prompt(
     # Replace the front "OBJECTIVE" + theme intro with Phase β framing.
     # Keep all RULES / DEPTH REQUIREMENTS / LANGUAGE / output format intact.
     today = _today_kst_iso()
+
+    # (A) Past-outcomes memory feedback (사용자 정책 2026-05-29) — 이 도메인의
+    # 지난 1-6개월 추천이 실제로 어땠는지 통계 자동 주입. self-correcting:
+    # LNG layer 가 6개월 평균 +15% / hit 75% 면 Pro 가 같은 layer 우선 추천
+    # 강화, micro-cap S-tier 가 1개월 평균 -8% / hit 30% 면 신중. 데이터
+    # 0건 시 빈 문자열(over-engineering 회피).
+    past_outcomes_block = _format_past_outcomes_for_domain(theme.get("domain", ""))
+
     phase_b_intro = f"""오늘 (today, KST): {today}
 
 너는 냉혹한 buy-side 애널리스트. Theory of Constraints anchor.
@@ -1680,12 +1775,34 @@ def _build_phase_45_prompt(
 
 Phase 1·2 에서 식별된 binding constraint:
 {binding_summary}
-
+{past_outcomes_block}
 아래는 Phase 1·2 후보 종목 {len(candidates)}개의 **실시간 fetch 데이터**
 (yfinance + 공시 + 뉴스 + 매크로 + 기술 지표 — NOAH /ticker 와 동일
 파이프라인). 각 종목의 현재가·시총·peer·최근 catalyst 가 이미 포함되어
 있다. **반드시 이 실시간 수치를 verbatim cite 하라** — LLM 메모리/추정치
 사용 금지. 데이터 부재 종목은 'inferred' 명시 + low confidence 격리.
+
+★ MANDATORY QUANT EXTRACTION (Tier A·B·C·D 신호 강화) ★
+각 종목의 REAL-TIME CONTEXT 에서 아래 5개 정량 신호를 **반드시** 추출
+하여 Master Table 의 해당 행에 명시하라 (데이터 부재 시 'N/A'):
+  1. **컨센서스 PT vs 현재가**: targetMeanPrice / currentPrice 비교 →
+     '%upside' 와 numberOfAnalystOpinions (커버리지 깊이) 동시 표기.
+     예: 'PT $X.XX (+12%, 18 analysts, recommendationKey=buy)'.
+     N/A 명시는 low-coverage 신호 그 자체로 가치 있음.
+  2. **Next earnings 윈도**: context 의 next_earnings / earnings 일자 →
+     ±5일 내면 '⚡ earnings 임박 (YYYY-MM-DD)' 로 catalyst 강조.
+  3. **Quarterly trend 가속/둔화**: 최근 분기 매출/EPS YoY 가 직전
+     분기 대비 가속 (+pp) / 둔화 (-pp) / 유지 → 한 단어 라벨.
+     예: '매출 YoY 가속 (+18% vs 이전 분기 +11%, 7pp 가속)'.
+  4. **Peer multiples 대비 valuation**: peer_multiples 블록의 median
+     PER/PSR/EV-EBITDA 대비 현재 종목 위치 → 'PER 18.5 vs peer median
+     22 (-16% 디스카운트)' 또는 '+프리미엄' 명시.
+  5. **공시·내부자·옵션 신호**: insider 매수/매도, 5%+ 대량보유, US
+     종목은 옵션 IV / put-call ratio 가 context 에 있으면 'IV 45%
+     (이벤트 임박 시그널)' 로 인용.
+
+이 5개 신호가 누락된 row 는 '데이터 깊이 부족' → reject 대상. 출력
+풍부도의 정량 기준.
 
 REAL-TIME CONTEXTS:
 {ctx_block}
