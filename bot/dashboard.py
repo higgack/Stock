@@ -2104,6 +2104,13 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     # Build summary stats
     total_runs = len(runs)
     total_cost_krw = sum(r.get("cost_krw", 0) or 0 for r in runs)
+    # 오늘(KST) 비용 — 다른 대시보드처럼 '오늘 / 누적' 동시 표기 (사용자
+    # 2026-05-30). run 의 _date (YYYY-MM-DD, 아카이브 날짜 디렉토리) 기준.
+    from datetime import datetime as _dt_tc, timezone as _tz_tc, timedelta as _td_tc
+    _today_kst_str = _dt_tc.now(_tz_tc(_td_tc(hours=9))).date().isoformat()
+    today_cost_krw = sum(
+        r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today_kst_str
+    )
     total_picks = sum(len(r.get("top_3_picks", []) or []) for r in runs)
     resolved_count = sum(
         1 for r in runs for p in (r.get("top_3_picks") or [])
@@ -2124,6 +2131,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 실행</div></div>
+    <div class="stat"><div class="stat-v">₩{today_cost_krw:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
     <div class="stat"><div class="stat-v">{total_picks}</div><div class="stat-l">Top-3 picks</div></div>
     <div class="stat"><div class="stat-v">{resolved_count}</div><div class="stat-l">1m resolved</div></div>
@@ -3455,6 +3463,11 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 
     total_runs = len(runs)
     total_cost_krw = sum(r.get("cost_krw", 0) or 0 for r in runs)
+    from datetime import datetime as _dt_dbc, timezone as _tz_dbc, timedelta as _td_dbc
+    _today_kst_db = _dt_dbc.now(_tz_dbc(_td_dbc(hours=9))).date().isoformat()
+    today_cost_krw = sum(
+        r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today_kst_db
+    )
     weekly_n = sum(1 for r in runs if r.get("kind") == "weekly")
 
     parts: list[str] = [_SCREENER_CSS]
@@ -3471,6 +3484,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 브리프</div></div>
+    <div class="stat"><div class="stat-v">₩{today_cost_krw:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
     <div class="stat"><div class="stat-v">{weekly_n}</div><div class="stat-l">Weekly 종합</div></div>
   </div>
