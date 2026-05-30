@@ -162,6 +162,16 @@ def create_news_analyst(llm):
             " 5거래일 연속 (LIVE) 을 인용 — 동일 자금에 대해 두 시점 둘 다"
             " 그대로 두고 transition 명시 안 함 = reader 혼란. 두 시점 모두"
             " 유효하면 '중순 매도 → 후반 매수 전환' 같이 reversal narrative."
+            + " F7 v3 PRICE-CLAIM RECONCILE (NOK 2026-05-30 surfaced): 뉴스에"
+            " '52주 최고가 경신' · 'X% 급등/폭등/급락' 같은 가격 수준·변동률"
+            " claim 인용 시, instrument context 의 canonical 현재가 + 52주"
+            " 최고/최저 + 50일 SMA 이격도와 **반드시 대조**. 모순 시 ❌ 그대로"
+            " 복창 금지 — 뉴스의 과장을 지적하고 실제 수치로 정정. ❌ FORBIDDEN"
+            " — NOK 2026-05-30: 현재가 $14.84 (52주 최고 $16.63, 50일 SMA 대비"
+            " +31%) 인데 '52주 최고가 경신 + AI 수요로 140% 급등' 서술 (다른"
+            " AI 테마주 NVDA/MU 헤드라인을 본 종목에 전가한 환각). 존재하지"
+            " 않는 수익률·신고가를 본 종목에 갖다 붙이지 말 것. 뉴스 헤드라인"
+            " 의 수치는 반드시 본 종목 canonical 가격 팩트로 교차검증."
             + get_analyst_directive()
             + get_language_instruction()
         )

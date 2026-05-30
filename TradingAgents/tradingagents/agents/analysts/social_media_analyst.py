@@ -57,6 +57,14 @@ def create_social_media_analyst(llm):
             " 출력하고, 가능하면 기술적 지표 / 컨센서스 등 실제 주입된"
             " 데이터로만 분석을 이어가라. 확인 불가한 사건의 날짜 / 방향"
             " 단정 금지."
+            + " PRICE-CLAIM RECONCILE (NOK 2026-05-30 surfaced): 소셜/뉴스에"
+            " '52주 최고가 경신' · 'X% 급등/폭등' 같은 가격 수준·변동률 claim"
+            " 인용 시, instrument context 의 canonical 현재가 + 52주 최고/최저"
+            " + 50일 SMA 이격도와 **반드시 대조**. 모순 시 그대로 복창 금지 —"
+            " 뉴스 과장 지적 + 실제 수치 정정. ❌ FORBIDDEN — NOK 2026-05-30:"
+            " 현재가 $14.84 (52주 최고 $16.63) 인데 '52주 최고가 경신 + 140%"
+            " 급등' (타 AI 테마주 헤드라인 전가 환각). 존재하지 않는 수익률·"
+            " 신고가를 본 종목에 갖다 붙이지 말 것."
             + get_analyst_directive()
             + get_language_instruction()
         )
