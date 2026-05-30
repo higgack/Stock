@@ -891,6 +891,20 @@ Metals & Mining) 가 surfaced 한 universal 결함을 prompt + Python 양면
   데이터를 '최근' 부사와 함께 cite 금지. Vertiv '2025 Q3 (3 분기
   전) 수주 +60% 최근 보고' 위반 (Hardware review 2026-05-29) surfaced.
   Newer Q web verify 또는 'past data' 명시 의무. Commit pending.
+- **현재가 출력 의무 + 로컬 통화 기호** (Phase 4·5 prompt) — 통화
+  정규화 가드 추가 후 LLM 이 'safe-fallback' 으로 가격을 아예 적지
+  않는 회피 기동 발생 (NPL/RegTech 2026-05-30 PRAA/CSGP/TEMN.SW/
+  NCNO/BX 케이스). directive 추가: '가격 반영도'/'Valuation' 섹션
+  서술 시 instrument context 의 canonical 현재가를 시장별 통화 기호
+  ($/₩/¥/€/A$/kr/NT$/HK$) 와 함께 명시 의무. 백엔드 _fix_currency_
+  symbols 가 후처리하므로 누락만 피하면 됨 — 회피 절대 금지.
+- **티어 비대칭 — 빈 티어 사유 명시** (Phase 4·5 prompt) — 한 layer
+  의 L/M/S 중 누락이 있으면 빈칸 아닌 1줄 사유 명시 의무 ('S-tier
+  부재 사유: 글로벌 oligopoly 구조 pure-play micro-cap 부재' 등).
+  강제 채우기 lock 은 적용 X (가짜 종목 회피 정책 — defense·우라늄
+  처럼 industry-wide 대형주 도메인은 S-tier 가 구조적으로 없음).
+  reader 가 '찾기 귀찮음 vs 구조적 부재' 구분 가능. NPL/RegTech
+  2026-05-30 surfaced.
 
 The rule of thumb: when adding any structural guard going forward,
 default to **universal** (no market gate) unless the guard depends on

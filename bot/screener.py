@@ -1804,6 +1804,34 @@ Phase 1·2 에서 식별된 binding constraint:
 이 5개 신호가 누락된 row 는 '데이터 깊이 부족' → reject 대상. 출력
 풍부도의 정량 기준.
 
+★ 현재가 + 로컬 통화 기호 의무 (NPL/RegTech 2026-05-30 surfaced) ★
+각 종목의 '가격 반영도' / 'Valuation' 섹션을 서술할 때, 반드시 instrument
+context 의 canonical 현재가를 **로컬 통화 기호와 함께** 명시:
+  • US:  '현재가 $226.57'           (NYSE / NASDAQ — '$')
+  • KR:  '현재가 ₩107,400'         (.KS / .KQ — '₩')
+  • JP:  '현재가 ¥3,604.00'         (.T / .OS — '¥')
+  • EU:  '현재가 €34.00'            (.MI / .PA / .DE / .AS 등 — '€')
+  • AU:  '현재가 A$0.39'            (.AX — 'A$')
+  • NO/SE/DK: '현재가 kr305.00'     (.OL / .ST / .CO — 'kr')
+  • TW/HK/CN: NT$ / HK$ / ¥        (.TW / .HK / .SS / .SZ)
+통화 정규화 백엔드(_fix_currency_symbols) 가 후처리하므로 누락만 피하면 됨.
+가격을 '회피' 의도로 생략 절대 금지 — 백엔드가 잘못 변환할 위험보다
+reader 에게 가격 정보 자체가 없는 것이 더 큰 손실. 통화 가드가 강화된
+이후 LLM 이 'safe-fallback' 으로 가격을 적지 않는 회피 기동 (NPL/RegTech
+2026-05-30 PRAA/CSGP/TEMN.SW/NCNO/BX 케이스) 차단.
+
+★ 티어 비대칭 — 빈 티어 사유 명시 (NPL/RegTech 2026-05-30 surfaced) ★
+한 layer 의 L/M/S 중 일부가 누락된 경우, **빈칸으로 넘기지 말고** 그
+layer 의 마지막 row 다음에 한 줄로 사유 명시:
+  • "[layer 명] · S-tier 부재 사유: 글로벌 oligopoly 구조라 pure-play
+    micro-cap 부재 (강제 채우면 관련성 낮은 종목·가짜 ticker 끼어듦)"
+  • "[layer 명] · L-tier 부재 사유: 대형주는 conglomerate 안에 묻혀
+    있어 pure-play 부재 — 직접 노출은 mid/small 만 가능"
+강제 채우기 lock 은 적용하지 않음 (가짜 종목 회피 정책 — CLAUDE.md
+"L-Tier 편식" 논의 결론). reader 가 '찾기 귀찮음 vs 구조적 부재' 구분
+가능하도록 사유만 의무화. NPL/RegTech 2026-05-30 케이스: NPL layer M·M
+만 / 바젤 III layer L 만 → 사유 1줄로 보강.
+
 REAL-TIME CONTEXTS:
 {ctx_block}
 
