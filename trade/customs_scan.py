@@ -80,9 +80,18 @@ def fetch_chapter(
     """All leaf rows under a 2-digit `chapter` over [start, end], paged.
 
     customs.fetch only grabs page 1 (fine for a narrow pinned prefix);
-    a chapter rolls up hundreds–thousands of leaves × months, so we
-    page until a short page (< numOfRows) or max_pages. Reuses
-    customs.parse_response so the XML shape stays in one place.
+    a chapter rolls up hundreds–thousands of leaf×month rows, so we page.
+
+    CRITICAL pagination guard: data.go.kr's Itemtrade endpoint can ignore
+    pageNo and return page 1 for every request. The naive "stop when a
+    page is short" never triggers for a full chapter (every page is 1000
+    rows), so we'd refetch the same page up to max_pages times — and since
+    build_series SUMS by (leaf, month), that inflates every figure by the
+    page count (observed: 디램 $9.2B × 60 pages = $554B). So we dedup by
+    (hs_code, year_month) — each leaf-month is one national row — and stop
+    as soon as a page introduces NO new (hs_code, year_month) key. This is
+    correct whether the API truly paginates (new keys each page until
+    exhausted) or ignores pageNo (page 2 adds nothing → stop).
 
     `fetcher` resolves to customs._http_get at CALL time (not def time)
     so a test can monkeypatch customs._http_get and have it take."""
@@ -90,7 +99,7 @@ def fetch_chapter(
     key = key or os.environ.get("TRADE_DATA_GO_KR_KEY") or ""
     if not key:
         raise customs.CustomsAPIError("TRADE_DATA_GO_KR_KEY not set")
-    rows: list[dict] = []
+    by_key: dict[tuple[str, str], dict] = {}
     for page in range(1, max_pages + 1):
         qs = urllib.parse.urlencode({
             "serviceKey": key,
@@ -103,10 +112,17 @@ def fetch_chapter(
         page_rows = customs.parse_response(fetcher(f"{customs.ENDPOINT}?{qs}"))
         if not page_rows:
             break
-        rows.extend(page_rows)
+        before = len(by_key)
+        for r in page_rows:
+            by_key[(r["hs_code"], r["year_month"])] = r
+        # No new (leaf, month) keys → the API isn't actually advancing
+        # (pageNo ignored, or we've seen everything). Stop to avoid
+        # summing duplicate pages.
+        if len(by_key) == before:
+            break
         if len(page_rows) < customs._DEFAULT_ROWS:
             break
-    return rows
+    return list(by_key.values())
 
 
 # ───────────────────────── pure ranking ─────────────────────────
@@ -125,12 +141,21 @@ def build_series(rows: list[dict]) -> dict[str, dict]:
         ym = r["year_month"]
         if not ym or len(ym) < 6:
             continue
-        node = leaves.setdefault(hs, {"name": r.get("name") or hs, "months": {}})
-        if r.get("name"):
-            node["name"] = r["name"]
-        acc = node["months"].setdefault(ym, {"exp_dlr": 0, "imp_dlr": 0})
-        acc["exp_dlr"] += r.get("exp_dlr") or 0
-        acc["imp_dlr"] += r.get("imp_dlr") or 0
+        # parse_response emits the Korean name under 'stat_kor' (e.g.
+        # '디램'), not 'name'; reading the wrong key made every label fall
+        # back to the bare HS code. Keep the latest non-empty name.
+        name = r.get("stat_kor") or r.get("name")
+        node = leaves.setdefault(hs, {"name": name or hs, "months": {}})
+        if name:
+            node["name"] = name
+        # ASSIGN, not sum: a 10-digit leaf has exactly one national figure
+        # per month, so the latest row for (leaf, month) wins. (Summing was
+        # how duplicate pages inflated figures ~60× before fetch_chapter's
+        # dedup; assignment is a second line of defence.)
+        node["months"][ym] = {
+            "exp_dlr": r.get("exp_dlr") or 0,
+            "imp_dlr": r.get("imp_dlr") or 0,
+        }
     return leaves
 
 

@@ -117,5 +117,64 @@ class PersistenceTests(unittest.TestCase):
         self.assertIn("1111111111", arch_codes)       # but archived
 
 
+class FetchChapterTests(unittest.TestCase):
+    """Regression for the ~60× inflation bug: data.go.kr could ignore
+    pageNo and return page 1 forever; fetch_chapter must dedup by
+    (hs_code, year_month) and stop when a page adds no new keys."""
+
+    @staticmethod
+    def _item(hs, nm, ym, e):
+        return (f"<item><hsCode>{hs}</hsCode><statKor>{nm}</statKor>"
+                f"<year>{ym[:4]}.{ym[4:]}</year><expDlr>{e}</expDlr>"
+                f"<impDlr>0</impDlr><balPayments>0</balPayments>"
+                f"<expWgt>0</expWgt><impWgt>0</impWgt></item>")
+
+    def _resp(self, items):
+        return ("<response><header><resultCode>00</resultCode></header>"
+                "<body><items>" + "".join(items) + "</items></body></response>")
+
+    def test_ignores_pageno_no_inflation(self):
+        # Every page returns the SAME rows (API ignores pageNo).
+        page = self._resp([
+            self._item("8542321010", "디램", "202604", 9_248_046_034),
+            self._item("8542321010", "디램", "202605", 9_000_000_000),
+        ])
+        calls = {"n": 0}
+        def fake(url):
+            calls["n"] += 1
+            return page
+        rows = cs.fetch_chapter("85", "202604", "202605",
+                                fetcher=fake, max_pages=60)
+        # 2 unique (leaf, month) rows, NOT 2×60; stops after the 2nd page.
+        self.assertEqual(len(rows), 2)
+        self.assertLessEqual(calls["n"], 3)
+        leaves = cs.build_series(rows)
+        self.assertEqual(
+            leaves["8542321010"]["months"]["2026-04"]["exp_dlr"], 9_248_046_034)
+        self.assertEqual(leaves["8542321010"]["name"], "디램")
+
+    def test_real_pagination_accumulates(self):
+        # API truly paginates: distinct full pages until a short one.
+        full = [self._item(f"85{i:08d}", f"item{i}", "202604", 1_000_000 + i)
+                for i in range(1000)]
+        page2 = [self._item("8599999999", "마지막", "202604", 5_000_000)]
+        pages = [self._resp(full), self._resp(page2), self._resp([])]
+        seq = {"i": 0}
+        def fake(url):
+            r = pages[min(seq["i"], len(pages) - 1)]
+            seq["i"] += 1
+            return r
+        rows = cs.fetch_chapter("85", "202604", "202604",
+                                fetcher=fake, max_pages=60)
+        codes = {r["hs_code"] for r in rows}
+        self.assertEqual(len(rows), 1001)
+        self.assertIn("8599999999", codes)
+
+    def test_name_from_stat_kor(self):
+        rows = [{"hs_code": "1234567890", "stat_kor": "황산",
+                 "year_month": "2026-04", "exp_dlr": 1, "imp_dlr": 0}]
+        self.assertEqual(cs.build_series(rows)["1234567890"]["name"], "황산")
+
+
 if __name__ == "__main__":
     unittest.main()
