@@ -269,6 +269,9 @@ if __name__ == "__main__":
         print(f"=== R-ONE 통계표 전체 {len(allt)}개 ===\n")
         _dump("'아파트' + '매매지수'", list_tables("아파트", "매매지수"))
         _dump("'아파트' + '전세지수'", list_tables("아파트", "전세지수"))
+        # 공급 파이프라인 후보 — 미분양/인허가/착공/준공/공급
+        for kw in ("미분양", "인허가", "착공", "준공", "공급", "분양"):
+            _dump(f"'{kw}'", list_tables(kw))
         raise SystemExit(0)
 
     # 데이터 probe — 확정 통계표의 실제 응답 + 지역 라벨 + 추세
