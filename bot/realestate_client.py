@@ -189,6 +189,7 @@ def collect_realestate_data() -> dict:
         return {}
     ymd = _latest_deal_ymd()
     data: dict = {"ymd": ymd, "regions": {}}
+    rent_enabled = True   # 전월세 API 미승인 시 첫 실패 후 skip (500 도배 방지)
     for lawd, name in _REGIONS.items():
         xml = _fetch_xml("trade", lawd, ymd)
         if not xml:
@@ -208,8 +209,12 @@ def collect_realestate_data() -> dict:
             "avg_per_pyeong": round(sum(ppp) / len(ppp)) if ppp else None,
             "max_manwon": max(amts),
         }
-        # 전월세 — 전세(월세 0) 평균 보증금 + 전세가율 (전세평균/매매평균)
-        rxml = _fetch_xml("rent", lawd, ymd)
+        # 전월세 — 전세(월세 0) 평균 보증금 + 전세가율 (전세평균/매매평균).
+        # 전월세 API 미승인(500/403) 시 첫 실패 후 나머지 지역 skip.
+        rxml = _fetch_xml("rent", lawd, ymd) if rent_enabled else None
+        if rent_enabled and not rxml:
+            rent_enabled = False
+            log.info("realestate: 전월세 API 비활성 (활용신청 필요) — 매매만 진행")
         if rxml:
             rents = _parse_rents(rxml)
             jeonse = [r["deposit"] for r in rents if r["is_jeonse"] and r["deposit"] > 0]

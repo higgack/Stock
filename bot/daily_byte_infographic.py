@@ -26,17 +26,23 @@ _POS = "#34d399"; _NEG = "#f87171"; _GOLD = "#fbbf24"
 _INVESTOR_ORDER = ["외국인", "기관", "투신", "연기금", "개인"]
 
 
+# NanumGothic 디스크 경로 (matplotlib 폰트캐시 stale 대응 — 직접 등록)
+_NANUM_PATHS = (
+    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+    "/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf",
+    "/usr/share/fonts/opentype/nanum/NanumGothic.ttf",
+)
+
+
 def _font_ready() -> bool:
-    """NanumGothic(또는 Nanum 계열) 가용 여부. 없으면 한글이 깨지므로
-    렌더를 skip 한다."""
+    """NanumGothic(또는 Nanum 계열) 가용 여부 — 캐시 또는 디스크 경로."""
     try:
         import matplotlib.font_manager as fm
-        for f in fm.fontManager.ttflist:
-            if "Nanum" in f.name:
-                return True
+        if any("Nanum" in f.name for f in fm.fontManager.ttflist):
+            return True
     except Exception:
         pass
-    return False
+    return any(os.path.exists(p) for p in _NANUM_PATHS)
 
 
 def _setup_font() -> bool:
@@ -45,11 +51,18 @@ def _setup_font() -> bool:
         matplotlib.use("Agg")
         import matplotlib.font_manager as fm
         from matplotlib import rcParams
-        # 등록된 Nanum 계열 중 NanumGothic 우선
         names = {f.name for f in fm.fontManager.ttflist}
         for cand in ("NanumGothic", "NanumBarunGothic", "NanumSquare"):
             if cand in names:
                 rcParams["font.family"] = cand
+                rcParams["axes.unicode_minus"] = False
+                return True
+        # 캐시에 없으면 디스크에서 직접 등록 (fonts-nanum 설치 후 matplotlib
+        # 폰트캐시 미갱신 — realestate 2026-05-31 surfaced, daily_byte 도 동일)
+        for p in _NANUM_PATHS:
+            if os.path.exists(p):
+                fm.fontManager.addfont(p)
+                rcParams["font.family"] = fm.FontProperties(fname=p).get_name()
                 rcParams["axes.unicode_minus"] = False
                 return True
     except Exception as exc:
