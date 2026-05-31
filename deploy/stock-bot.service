@@ -10,6 +10,14 @@ WorkingDirectory=/home/higgack/stock
 ExecStart=/home/higgack/stock/.venv/bin/python -m bot.telegram_bot
 Restart=always
 RestartSec=10
+# Screener / KR 분석은 5-15분 blocking — 기본 90s TimeoutStopSec 안에 깔끔히
+# 종료 못 해 systemd 가 SIGKILL → 진행 중 작업 살해(2026-06-01 surfaced:
+# Screener 가 Phase 4·5 중 stop-sigterm timeout → 결과 안 나옴). 15분으로
+# 상향해 ThreadPoolExecutor 워커가 끝나고 정상 shutdown 할 시간 확보.
+TimeoutStopSec=900
+# KillMode=mixed: main 프로세스에만 SIGTERM, 나머지는 cgroup 으로 정리.
+# 기본 control-group 은 워커 전체에 동시 SIGTERM 보내 정상 정리 방해.
+KillMode=mixed
 StandardOutput=journal
 StandardError=journal
 
