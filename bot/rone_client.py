@@ -181,6 +181,8 @@ def fetch_index(statbl_id: str, n_months: int = 8, cycle: str = "MM") -> list[di
             val = None
         out.append({
             "period": str(r.get("WRTTIME_IDTFR_ID") or r.get("WRTTIME_IDTFR") or ""),
+            "grp_nm": (r.get("GRP_NM") or "").strip(),
+            "grp_fullnm": (r.get("GRP_FULLNM") or "").strip(),
             "cls_id": r.get("CLS_ID") or "",
             "cls_nm": (r.get("CLS_NM") or "").strip(),
             "cls_fullnm": (r.get("CLS_FULLNM") or "").strip(),
@@ -288,13 +290,13 @@ if __name__ == "__main__":
                            ("신규분양세대수", STATBL_NEWSALE)):
             print(f"\n=== {label}  {sid} ===")
             rows = fetch_index(sid, n_months=6)
-            print(f"수신 {len(rows)}행. 앞 10행 (period · cls_nm · itm_nm · value):")
+            print(f"수신 {len(rows)}행. 앞 10행 (period·grp·cls·itm·value):")
             for r in rows[:10]:
-                print(f"  {r['period']:<8} {r['cls_nm']!r:<10} {r['itm_nm']!r:<14} {r['value']}")
+                print(f"  {r['period']:<8} grp={r['grp_nm']!r:<10} cls={r['cls_nm']!r:<14} {r['value']}")
+            grp = sorted({r["grp_nm"] for r in rows if r["grp_nm"]})
             cls = sorted({r["cls_nm"] for r in rows if r["cls_nm"]})
-            itm = sorted({r["itm_nm"] for r in rows if r["itm_nm"]})
-            print(f"  지역(cls) {len(cls)}종: {cls[:20]}")
-            print(f"  항목(itm) {len(itm)}종: {itm[:20]}")
+            print(f"  그룹(grp,지역?) {len(grp)}종: {grp[:25]}")
+            print(f"  분류(cls) {len(cls)}종: {cls[:25]}")
         print("\n→ 각 표의 전국 행 + 적절한 itm(부문/유형) 확인되면 공급 band 통합.")
         raise SystemExit(0)
 
