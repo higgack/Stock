@@ -160,7 +160,7 @@ def fetch_index(statbl_id: str, n_months: int = 8, cycle: str = "MM") -> list[di
     if not rone_key_ready() or not statbl_id:
         return []
     start, end = _period_range(n_months)
-    data = _get("StatisticSearch.do", {
+    data = _get("SttsApiTblData.do", {
         "STATBL_ID": statbl_id, "DTACYCLE_CD": cycle,
         "START_WRTTIME": start, "END_WRTTIME": end, "pSize": 1000,
     })
@@ -255,17 +255,18 @@ if __name__ == "__main__":
         _dump("'아파트' + '전세지수'", list_tables("아파트", "전세지수"))
         raise SystemExit(0)
 
-    # StatisticSearch.do 원시 응답 — 필드명/에러 메시지 확인
+    # 데이터/항목 엔드포인트 원시 응답 — 정확한 op 이름·필드명 확인
     import json as _json
-    print("=== RAW: StatisticSearch.do (기간 파라미터 포함) ===")
-    raw1 = _get("StatisticSearch.do", {
-        "STATBL_ID": STATBL_SALE, "DTACYCLE_CD": "MM",
-        "START_WRTTIME": "202501", "END_WRTTIME": "202605", "pSize": 50})
-    print(_json.dumps(raw1, ensure_ascii=False)[:1800] if raw1 else "(없음)")
-    print("\n=== RAW: StatisticSearch.do (기간 파라미터 없이) ===")
-    raw2 = _get("StatisticSearch.do", {"STATBL_ID": STATBL_SALE, "pSize": 50})
-    print(_json.dumps(raw2, ensure_ascii=False)[:1800] if raw2 else "(없음)")
-    print()
+    for ep, params in (
+        ("SttsApiTblData.do", {"STATBL_ID": STATBL_SALE, "DTACYCLE_CD": "MM",
+                               "START_WRTTIME": "202501", "END_WRTTIME": "202605", "pSize": 50}),
+        ("SttsApiTblData.do", {"STATBL_ID": STATBL_SALE, "pSize": 50}),
+        ("SttsApiTblItm.do", {"STATBL_ID": STATBL_SALE, "pSize": 50}),
+    ):
+        print(f"=== RAW: {ep}  {params} ===")
+        raw = _get(ep, params)
+        print(_json.dumps(raw, ensure_ascii=False)[:1600] if raw else "(없음)")
+        print()
 
     # 데이터 probe — 확정 통계표의 실제 응답 스키마 + 추세 확인
     for label, sid in (("매매지수", STATBL_SALE), ("전세지수", STATBL_JEONSE)):
