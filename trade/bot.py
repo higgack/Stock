@@ -56,7 +56,7 @@ from telegram.ext import (
     filters,
 )
 
-from trade import ignored, watchlist
+from trade import hs_map, ignored, watchlist
 from trade.parser import parse_caption
 
 load_dotenv()
@@ -172,6 +172,8 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (일회성 공지 등)
 /unignore &lt;msg_id&gt; — ignore 해제
 /ignored — 현재 ignore 목록
+/hs &lt;품목&gt; &lt;HS코드&gt; — 품목에 HS코드 핀 → 관세청 월 수출입금액 수집 (예: /hs 라면 1902301010)
+/unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록
 ※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
 
 <b>9. 자동화 systemd</b>
@@ -193,7 +195,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-05-31 — 관세청 수출입실적 수집(customs-fetch, 핀 품목·월 확정·알림 0) 인프라 추가</i>
+<i>최종 갱신: 2026-05-31 — /hs·/unhs·/hslist (품목→HS 핀) 명령 추가 · 관세청 수출입실적 수집 인프라</i>
 """
 
 
@@ -388,6 +390,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if first_word in (
         "/watch", "/unwatch",
         "/ignore", "/unignore", "/ignored",
+        "/hs", "/unhs", "/hslist",
     ):
         # Per-user / per-operator state has no place in a channel post.
         # Reply once with the DM-only hint and a one-tap keyboard
@@ -631,6 +634,96 @@ async def cmd_ignored(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# ---------------------------------------------------------------------
+# HS-code pin commands (`/hs`, `/unhs`, `/hslist`)
+# Operator maps a BeOn 품목명 → 관세청 HS코드 so trade-bot-customs-fetch
+# can pull official monthly figures for it. Opt-in: only pinned items are
+# fetched. Mirrors the /ignore family (plain-file state, DM-only). See
+# trade/hs_map.py.
+# ---------------------------------------------------------------------
+
+_HS_USAGE = (
+    "사용법:\n"
+    "/hs &lt;품목&gt; &lt;HS코드&gt; — 품목에 HS코드 핀 (관세청 월 수출입금액 수집 대상)\n"
+    "/unhs &lt;품목&gt; — 핀 해제\n"
+    "/hslist — 현재 핀 목록\n"
+    "HS코드는 2·4·6·10자리 숫자. 정확한 10자리가 가장 깔끔 "
+    "(예: 라면 <code>1902301010</code>).\n"
+    "예: <code>/hs 라면 1902301010</code> · <code>/hs 음극재 (천연흑연) 850720</code>"
+)
+
+
+def _format_hs_list() -> str:
+    pins = hs_map.entries()
+    if not pins:
+        return "📋 현재 HS 핀: 0건\n\n" + _HS_USAGE
+    lines = [f"📋 <b>현재 HS 핀: {len(pins)}건</b>"]
+    for item, code in pins:
+        lines.append(f"• <code>{_html.escape(item)}</code> → <code>{code}</code>")
+    lines.append("")
+    lines.append(_HS_USAGE)
+    return "\n".join(lines)
+
+
+async def cmd_hs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    args = list(ctx.args or [])
+    if not args or args[0].lower() == "list":
+        await update.message.reply_text(
+            _format_hs_list(), parse_mode=ParseMode.HTML
+        )
+        return
+    if len(args) < 2:
+        await update.message.reply_text(_HS_USAGE, parse_mode=ParseMode.HTML)
+        return
+    # Last token = HS code; everything before = the item name (may contain
+    # spaces / parens, e.g. '음극재 (천연흑연)').
+    code = args[-1]
+    item = " ".join(args[:-1]).strip()
+    try:
+        changed = hs_map.add(item, code)
+    except ValueError:
+        await update.message.reply_text(
+            f"<code>{_html.escape(code)}</code>는 올바른 HS코드가 아님 "
+            f"(2·4·6·10자리 숫자만). 예: <code>1902301010</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    if changed:
+        msg = (
+            f"✅ 핀: <code>{_html.escape(item)}</code> → <code>{code}</code>\n"
+            f"<i>다음 customs-fetch(매일 01:30 KST)부터 관세청 월 금액 수집</i>"
+        )
+    else:
+        msg = f"이미 동일 핀: <code>{_html.escape(item)}</code> → <code>{code}</code>"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def cmd_unhs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    args = list(ctx.args or [])
+    if not args:
+        await update.message.reply_text(_HS_USAGE, parse_mode=ParseMode.HTML)
+        return
+    item = " ".join(args).strip()
+    removed = hs_map.remove(item)
+    if removed:
+        msg = f"🗑 핀 해제: <code>{_html.escape(item)}</code>"
+    else:
+        msg = f"핀 목록에 없음: <code>{_html.escape(item)}</code>"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def cmd_hslist(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    await update.message.reply_text(
+        _format_hs_list(), parse_mode=ParseMode.HTML
+    )
+
+
 async def _notify_watchers(ctx: ContextTypes.DEFAULT_TYPE, caption_text: str) -> None:
     """Parse the caption with the live trade parser and DM every user
     whose watch pattern matches the resulting item/stocks. Failures
@@ -709,6 +802,9 @@ def main() -> None:
     app.add_handler(CommandHandler("ignore", cmd_ignore))
     app.add_handler(CommandHandler("unignore", cmd_unignore))
     app.add_handler(CommandHandler("ignored", cmd_ignored))
+    app.add_handler(CommandHandler("hs", cmd_hs))
+    app.add_handler(CommandHandler("unhs", cmd_unhs))
+    app.add_handler(CommandHandler("hslist", cmd_hslist))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     log.info(
