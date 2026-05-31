@@ -605,11 +605,20 @@ class DartClient:
                 pct = float(pct_raw)
             except ValueError:
                 pct = 0.0
+            # ⚠️ pct sanity (Samsung 005930 2026-05-31 review): DART
+            # elestock 의 sp_stock_lmp_rate 는 가끔 100.0 (해당 임원 본인
+            # 보유분 중 특정증권 비율 = 항상 100%) 으로 와, 이를 "회사 전체
+            # 지분율" 로 오인하면 "이종민 부사장 100% 지분" 같은 금융정보
+            # 파괴 발생. 시총 2,000조 회사의 회사 지분 100% 를 개인이 가질
+            # 수 없음. ≥50% 는 회사 지분율이 아닌 본인 보유분 비율로 판단,
+            # pct 를 None 처리 (표시단에서 '회사 지분율 N/A' 로 렌더).
+            pct_is_company = pct < 50.0
             out.append({
                 "name": (r.get("repror") or "").strip(),
                 "role": (r.get("isu_exctv_ofcps") or "").strip(),
                 "shares": shares,
-                "pct": pct,
+                "pct": pct if pct_is_company else None,
+                "pct_suspect": not pct_is_company,
                 "changed_on": (r.get("rcept_dt") or "").strip(),
             })
         return out

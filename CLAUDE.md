@@ -966,6 +966,28 @@ review:
   tickers — yfinance 가 한 class shares 만 반환하지만 marketCap 은
   양 class 합산이라 구조적 mismatch. EPI-A.ST (Epiroc Class A) 2026-
   05-29 surfaced. Commit `4254da0`.
+- **KR 우선주 false transitional (Samsung 005930 2026-05-31 review)** —
+  보통주(005930)에 상장 우선주(005935)가 있으면 yfinance sharesOutstanding
+  (보통주)×price vs marketCap(보통주+우선주 합산) 이 ~10% 괴리 → cross-
+  anchor MC check 가 'corp action 의심/transitional' false fire → 전체
+  리포트 기술지표 분석 보류 난장판. EU dual-class 와 동일 클래스 버그.
+  `bot/market.has_kr_preferred_shares` 가 우선주 코드(끝자리 0→5/7/K)가
+  pykrx 상장목록에 있으면 자동 감지 → skip_mc_check + info_lines(정보성,
+  ⛔ HARD GUARD 미발화). 시총은 marketCap canonical, 기술지표 정상 진행.
+  하드코딩 리스트 불필요(우선주 페어 자동 감지). 우선주 부재 종목은 진짜
+  corp-action 정상 발화(보수적).
+- **DART 임원지분 100% 환각 (Samsung 005930 2026-05-31 review)** — DART
+  elestock 의 sp_stock_lmp_rate(특정증권 소유비율)가 가끔 100.0(본인
+  보유분 비율=항상 100%)으로 와, 이를 회사 전체 지분율로 오인 → "이종민
+  부사장 100% 지분" 같은 금융정보 파괴. dart_client 가 pct≥50% → None +
+  pct_suspect 플래그, build_instrument_context 가 '회사 지분율 N/A (N주)'
+  로 렌더 + "개인 보유분 비율 ≠ 회사 지분율" 가드. 시총 2,000조 회사 개인
+  100% 보유 불가.
+- **pykrx 5일 누적 수급 단위 혼동 (Samsung 005930 2026-05-31 review)** —
+  LLM 이 5일 누적 +2조(기관)를 RULE 10 의 '당일 ±100억 noise' 기준에 잘못
+  적용해 "2조 순매수 → 노이즈 수준" 모순 서술. format_flow_for_prompt 가
+  ±1,000억 이상 누적은 Python 이 '강한 dominant 수급, 노이즈 아님' 가드
+  라인 박음 (KIS 패턴 mirror) + '당일 아닌 5거래일 누적' 명시.
 - **Nano-cap (<$50M USD) 경고 강화** — bot/screener.py 의 S 티어 유동성
   경고 directive 가 시총 segment 별 분리: Micro-cap ($50M-$300M) =
   기존 ⚠️ 메시지, Nano-cap (<$50M) = NANO-CAP LIQUIDITY WARNING (일일

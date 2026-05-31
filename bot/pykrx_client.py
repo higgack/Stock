@@ -482,11 +482,26 @@ def format_flow_for_prompt(flow: dict) -> str:
     inst = flow.get("institutional_net", 0)
     indiv = flow.get("individual_net", 0)
 
-    return (
-        f"- 외국인 {days}거래일 누적: {_fmt_krw(foreign)} ({_label(foreign)})\n"
-        f"- 기관 {days}거래일 누적: {_fmt_krw(inst)} ({_label(inst)})\n"
-        f"- 개인 {days}거래일 누적: {_fmt_krw(indiv)} ({_label(indiv)})"
-    )
+    out = [
+        f"- 외국인 {days}거래일 누적: {_fmt_krw(foreign)} ({_label(foreign)})",
+        f"- 기관 {days}거래일 누적: {_fmt_krw(inst)} ({_label(inst)})",
+        f"- 개인 {days}거래일 누적: {_fmt_krw(indiv)} ({_label(indiv)})",
+    ]
+    # 단위 혼동 가드 (Samsung 005930 2026-05-31 review): LLM 이 5일 누적
+    # ±수천억~조 단위 수급을 RULE 10 의 '당일 ±100억 noise' 기준에 잘못
+    # 적용해 "기관 +2조 순매수" 를 "±100억 미만 노이즈" 로 둔갑시킨 모순
+    # 발생. Python 이 5일 누적 magnitude 를 미리 판정해 박는다 (KIS 패턴
+    # mirror). 위 숫자는 모두 '5거래일 누적' 이며 '당일' 이 아님.
+    _strong = [lab for lab, v in (("외국인", foreign), ("기관", inst),
+                                  ("개인", indiv)) if abs(v) >= 1e11]  # ≥1,000억
+    if _strong:
+        out.append(
+            "  ⚠️ 위 수치는 모두 **5거래일 누적**(당일 아님). "
+            + " / ".join(_strong)
+            + " 은 ±1,000억 이상의 강한 누적 수급으로 '노이즈'가 아니라"
+            " 5거래일 horizon 의 dominant 수급 신호다. RULE 10 의 '당일"
+            " ±100억 noise' 기준을 5일 누적값에 적용 금지.")
+    return "\n".join(out)
 
 
 def get_kr_foreign_ownership_trend(ticker: str, days_back: int = 30) -> Optional[dict]:

@@ -1546,12 +1546,28 @@ def _format_dart_kr_block(
                 )
             else:
                 lines.append(f"- 임원·주요주주 지분 (상위 {len(top)}):")
+                _has_suspect = False
                 for r in top:
                     name = r.get("name") or "?"
                     role = (r.get("role") or "").strip()
-                    pct = r.get("pct") or 0
+                    pct = r.get("pct")
                     role_part = f" ({role})" if role else ""
-                    lines.append(f"  • {name}{role_part}: {pct:.2f}%")
+                    if r.get("pct_suspect") or pct is None:
+                        # pct ≥50% = 본인 보유분 비율(항상 100%)을 회사
+                        # 지분율로 오인한 DART 필드 — 회사 지분율 미상.
+                        _has_suspect = True
+                        sh = r.get("shares") or 0
+                        sh_part = f" ({sh:,}주)" if sh else ""
+                        lines.append(f"  • {name}{role_part}: 회사 지분율 N/A"
+                                     f"{sh_part}")
+                    else:
+                        lines.append(f"  • {name}{role_part}: {pct:.2f}%")
+                if _has_suspect:
+                    lines.append(
+                        "  ⚠️ '회사 지분율 N/A' = DART 소유보고서의 비율 필드가"
+                        " 본인 보유분 100% 로 와 회사 전체 지분율로 쓸 수 없는"
+                        " 행. 절대 '이 임원이 회사 지분 100% 보유' 식으로"
+                        " 서술 금지 (개인 보유분 비율 ≠ 회사 지분율).")
     else:
         # Truly empty list (DART returned no rows at all, or the API
         # call failed silently). Same anti-hallucination rule applies.
@@ -2429,6 +2445,7 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
         # adjusted, 다른 source 가 unadjusted 일 때 ratio 가 깨짐. Universal
         # — US/KR/JP/TW/CN/HK 모두 동일. 위반 시 HARD GUARD 자동 주입.
         inconsistency_lines: list[str] = []
+        info_lines: list[str] = []  # 정보성(우선주 등) — HARD GUARD 미발화
         # Fix A (2026-05-23, 207940.KS 외부 검증 surface): KRX shares override
         # 가 발생했으면 (yfinance shares != KRX shares > 5%), 사용자에게
         # 명시적으로 알린다. PER × EPS check 는 yfinance 내부 정합성이라
@@ -2539,11 +2556,28 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
         try:
             from bot.market import (
                 _US_DUAL_CLASS_TICKERS, _EU_DUAL_CLASS_TICKERS,
+                has_kr_preferred_shares,
             )
             _tu = (ticker or "").upper()
             if (_tu.split(".")[0] in _US_DUAL_CLASS_TICKERS
                     or _tu in _EU_DUAL_CLASS_TICKERS):
                 skip_mc_check = True
+            # KR 우선주 자동 감지 (삼성 005930↔005935 등) — yfinance shares
+            # 는 보통주만, marketCap 은 보통주+우선주 합산이라 구조적 괴리.
+            # corp-action false transitional 의 root cause (2026-05-31 review).
+            elif _tu.endswith((".KS", ".KQ")) and has_kr_preferred_shares(_tu):
+                skip_mc_check = True
+                # 정보성 라인 — inconsistency_lines 가 아닌 info_lines 로
+                # (⛔ CROSS-ANCHOR HARD GUARD transitional 강제를 트리거하면
+                # 안 됨; 우선주는 정상 구조).
+                info_lines.append(
+                    f"ℹ️ KR 우선주 존재: {_tu} 는 보통주+상장 우선주 구조."
+                    f" yfinance sharesOutstanding(보통주) × 현재가 vs"
+                    f" marketCap(보통주+우선주 합산) 은 구조적으로 괴리하는 게"
+                    f" 정상이므로 'corp action 의심'/transitional 발화 안 함."
+                    f" 시총은 yfinance marketCap 을 canonical 로 사용 —"
+                    f" 기술지표(SMA/RSI/MACD/볼린저) 분석은 정상 진행."
+                )
         except Exception:
             pass
         if (not skip_mc_check
@@ -2569,6 +2603,9 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
             f"{wk_high_str:<30}  {wk_low_str}",
             f"PER: {per_str:<10}  PBR: {pbr_str:<10}  EPS: {eps_str}",
         ]
+        if info_lines:
+            lines.append(sep)
+            lines.extend(info_lines)
         if inconsistency_lines:
             lines.append(sep)
             lines.extend(inconsistency_lines)

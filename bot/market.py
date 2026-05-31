@@ -1048,6 +1048,32 @@ _EU_DUAL_CLASS_TICKERS: set[str] = {
     "SDF3.DE",                       # K+S preferred (historical)
 }
 
+
+def has_kr_preferred_shares(ticker: str) -> bool:
+    """KR 보통주에 상장 우선주(코드 끝 5/7)가 존재하면 True.
+
+    삼성전자 005930(보통) ↔ 005935(우선) 처럼 KR 우선주가 별도 코드로
+    상장된 경우, yfinance sharesOutstanding 은 보통주만 반환하지만
+    marketCap 은 보통주+우선주 합산이라 shares×price vs marketCap 가
+    구조적으로 5-15% 괴리 → corp-action 'transitional' false fire 의 원인
+    (Samsung 005930 2026-05-31 review surfaced). EU dual-class 와 동일
+    클래스 버그.
+
+    KR 우선주 코드 규칙: 보통주 6자리 끝자리가 0 → 우선주는 +5 (005930
+    →005935), 2·3우선주는 +7/+K. pykrx 상장목록에 해당 코드가 있으면
+    True. pykrx 부재/실패 시 False (보수적 — 진짜 corp-action 은 놓치지
+    않음). 네트워크 호출 없이 캐시된 상장목록만 사용."""
+    code = (ticker or "").upper().split(".")[0]
+    if not (code.isdigit() and len(code) == 6 and code.endswith("0")):
+        return False
+    pref_candidates = [code[:5] + "5", code[:5] + "7", code[:5] + "K"]
+    try:
+        from bot.screener import _load_kr_ticker_map
+        kr_map = _load_kr_ticker_map()  # 6-digit code → 'KS'/'KQ', 캐시됨
+        return any(pc in kr_map for pc in pref_candidates)
+    except Exception:
+        return False
+
 # US industry peer sets — same shape and intent as the KR / JP dicts.
 # Without this, US Comps tables had no MANDATORY PEER SET injection and
 # the fundamentals analyst cargo-culted whatever 4-5 names sounded peer-
