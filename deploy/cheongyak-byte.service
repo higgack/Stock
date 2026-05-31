@@ -1,0 +1,14 @@
+[Unit]
+Description=청약 Byte — 신규 아파트 분양 모집공고 피드 텔레그램 푸시 (평일 10:00 KST)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.cheongyak_brief
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600

@@ -426,7 +426,7 @@ def _compute_stats(records: list[dict]) -> dict:
     # land in usage.jsonl with subsystem='screener'; SV calls live in
     # ~/standardview/sv_usage.jsonl (separate file, KST-date tagged).
     _sub_keys = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
-                 "부동산": 0.0, "블로그": 0.0, "SV": 0.0}
+                 "청약": 0.0, "부동산": 0.0, "블로그": 0.0, "SV": 0.0}
     today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     month_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     for r in usage:
@@ -439,7 +439,8 @@ def _compute_stats(records: list[dict]) -> dict:
         cost = r.get("cost_usd", 0) or 0
         _subsys = r.get("subsystem")
         sub = ({"screener": "Screener", "daily_byte": "Daily Byte",
-                "realestate": "부동산", "blog": "블로그"}.get(_subsys, "분석"))
+                "cheongyak": "청약", "realestate": "부동산",
+                "blog": "블로그"}.get(_subsys, "분석"))
         if rec_day.startswith(month_prefix):
             month_cost_usd += cost
             m = r.get("model") or "unknown"
@@ -624,7 +625,7 @@ def _render_stats_panel(stats: dict) -> str:
     # with non-zero this-month cost — keeps the sub-label compact.
     sub_parts: list[str] = []
     for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
-                       ("부동산", "부동산"), ("블로그", "블로그"), ("SV", "SV")]:
+                       ("청약", "청약"), ("부동산", "부동산"), ("블로그", "블로그"), ("SV", "SV")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
         if m_usd > 0:
             sub_parts.append(f"{label} {_krw(m_usd)}")
@@ -1674,6 +1675,7 @@ def _render_index(records: list[dict]) -> str:
             f' · <a href="screener.html">📊 Bottleneck Screener</a>'
             f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             f' · <a href="daily_byte.html">📊 Daily Byte</a>'
+            f' · <a href="cheongyak.html">🎟️ 청약</a>'
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
         )
@@ -1683,6 +1685,7 @@ def _render_index(records: list[dict]) -> str:
             ' · <a href="screener.html">📊 Bottleneck Screener</a>'
             ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             ' · <a href="daily_byte.html">📊 Daily Byte</a>'
+            ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
         )
@@ -3739,3 +3742,130 @@ def regenerate_realestate_index() -> None:
         log.info("dashboard: realestate.html regenerated (%d runs)", len(runs))
     except Exception as exc:
         log.warning("dashboard: realestate regen failed: %s", exc)
+
+
+# ── 청약 Byte archive view (신규 분양 모집공고 daily 피드) ────────────────
+_CHEONGYAK_ARCHIVE_DIR = Path.home() / ".tradingagents" / "cheongyak_archive"
+_CHEONGYAK_JS = _DAILY_BYTE_JS.replace("api/daily_byte_delete", "api/cheongyak_delete").replace(
+    "Daily Byte 브리프", "청약 Byte").replace("Daily Byte 기록", "청약 Byte 기록")
+
+
+def _load_cheongyak_runs() -> list[dict]:
+    import json as _json
+    runs: list[dict] = []
+    if not _CHEONGYAK_ARCHIVE_DIR.exists():
+        return runs
+    try:
+        for date_dir in sorted(_CHEONGYAK_ARCHIVE_DIR.iterdir(), reverse=True):
+            if not date_dir.is_dir():
+                continue
+            for jf in sorted(date_dir.iterdir(), reverse=True):
+                if not jf.name.endswith(".json"):
+                    continue
+                try:
+                    with open(jf, encoding="utf-8") as f:
+                        rec = _json.load(f)
+                    rec["_date"] = date_dir.name
+                    rec["_filename"] = jf.name
+                    runs.append(rec)
+                except Exception as exc:
+                    log.warning("dashboard: cheongyak load %s failed: %s", jf, exc)
+    except Exception as exc:
+        log.warning("dashboard: cheongyak scan failed: %s", exc)
+    return runs
+
+
+def _render_cheongyak_page(runs: list[dict]) -> str:
+    """Render cheongyak.html — 청약 Byte 아카이브 (신규 분양 피드 카드)."""
+    import html as _html
+    import json as _json_r
+    import re as _re_r
+    from collections import defaultdict
+    from datetime import datetime as _dt_r, timezone as _tz_r, timedelta as _td_r
+
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for r in runs:
+        by_date[r.get("_date", "")].append(r)
+    total = len(runs)
+    total_cost = sum(r.get("cost_krw", 0) or 0 for r in runs)
+    _today = _dt_r.now(_tz_r(_td_r(hours=9))).date().isoformat()
+    today_cost = sum(r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today)
+
+    parts: list[str] = [_SCREENER_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="daily_byte.html">📊 Daily Byte</a>
+    · <a href="realestate.html">🏠 부동산</a>
+  </div>
+  <h1>🎟️ 청약 Byte — Archive</h1>
+  <p class="sub">신규 아파트 분양 모집공고(청약홈) daily 피드 · ticker·5거래일과 별개 · 공공데이터 관찰(청약 권유 아님)</p>
+  <div class="stats">
+    <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 피드</div></div>
+    <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
+    <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
+  </div>
+  <div class="search-bar">
+    <input id="scr-search" type="text" placeholder="지역 / 단지명 검색 (예: 강남, 동탄, 신혼희망)" autocomplete="off" spellcheck="false">
+    <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
+  </div>
+  <p id="scr-status" class="status-line">총 {total}건의 청약 피드</p>
+  <div id="scr-snippets" class="snippets" style="display:none"></div>
+  <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
+""")
+    if not runs:
+        parts.append("""
+  <div class="empty">아직 기록이 없습니다. 평일 10:00 KST 자동 생성 (DATA_GO_KR_API_KEY 필요).</div>
+</div></body></html>""")
+        return "".join(parts)
+
+    for date in sorted(by_date.keys(), reverse=True):
+        day_open = " open" if date == _today else ""
+        parts.append(
+            f'<details class="day"{day_open}><summary class="day-head">'
+            f'<span>📅 {_html.escape(date)}</span>'
+            f'<span class="count">{len(by_date[date])}건</span></summary>'
+            f'<div class="day-body">')
+        for r in by_date[date]:
+            body = (r.get("body") or "").strip()
+            body = _re_r.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
+            cnt = r.get("count", 0) or 0
+            title = f"🎟️ 신규 분양 {cnt}건 · {_html.escape(date)}"
+            cost = r.get("cost_krw", 0) or 0
+            ts_clock = (r.get("ts") or "").split("T", 1)[-1][:5] if "T" in (r.get("ts") or "") else ""
+            filename = _html.escape(r.get("_filename", ""))
+            plain = _re_r.sub(r"<[^>]+>", "", body)
+            lines = [{"sec": "feed", "txt": s.strip()} for s in plain.splitlines() if len(s.strip()) >= 3][:300]
+            search_attr = _html.escape(plain.lower()[:6000])
+            lines_attr = _html.escape(_json_r.dumps(lines, ensure_ascii=False))
+            card_id = f"card-{_html.escape(r.get('_date',''))}-{filename}".replace(".", "_")
+            parts.append(f"""
+  <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
+    <summary class="card-h">
+      <span class="card-toggle">▸</span>
+      <span class="domain">{title}</span>
+      <span class="meta">⏱ {_html.escape(ts_clock)} · ₩{cost:,.1f}</span>
+      <button class="del-btn" type="button" title="이 피드 삭제">🗑️</button>
+    </summary>
+    <div class="card-body">
+      <div class="analysis-sec"><div class="analysis-b" data-section="feed">{body}</div></div>
+    </div>
+  </details>
+""")
+        parts.append('</div></details>')
+    parts.append("</div>")
+    parts.append(_CHEONGYAK_JS)
+    return "".join(parts)
+
+
+def regenerate_cheongyak_index() -> None:
+    """Scan cheongyak archive → write cheongyak.html under ARCHIVE_ROOT."""
+    try:
+        runs = _load_cheongyak_runs()
+        html = _render_cheongyak_page(runs)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "cheongyak.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: cheongyak.html regenerated (%d runs)", len(runs))
+    except Exception as exc:
+        log.warning("dashboard: cheongyak regen failed: %s", exc)

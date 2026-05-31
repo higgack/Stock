@@ -1,0 +1,12 @@
+[Unit]
+Description=청약 Byte trigger — 평일 10:00 KST (신규 분양 모집공고)
+
+[Timer]
+# 평일(Mon-Fri) 10:00 KST. 청약홈 분양 모집공고는 평일 게시. 신규 공고만
+# seen-set 으로 push (중복 차단), 신규 없으면 graceful skip — 비용 0.
+OnCalendar=Mon..Fri *-*-* 10:00:00 Asia/Seoul
+Persistent=true
+Unit=cheongyak-byte.service
+
+[Install]
+WantedBy=timers.target

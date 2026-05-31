@@ -186,6 +186,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_simple_delete(
                 "realestate_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
                 "regenerate_realestate_index")
+        if self.path == "/api/cheongyak_delete":
+            return self._handle_simple_delete(
+                "cheongyak_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
+                "regenerate_cheongyak_index")
         if self.path != "/api/delete":
             self.send_error(404, "Not Found")
             return

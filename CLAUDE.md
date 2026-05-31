@@ -389,6 +389,21 @@ pattern to follow:
   monthly), `/realestate_cost` 명령(DM+채널) + /usage·메인 대시보드 cost
   subsystem '부동산'. 블로그는 subsystem '블로그' 로 cost 만 합산(전용 명령
   없음 — 사용자 정책상 채널 포워드 surface).
+- 청약 Byte — 신규 아파트 분양 모집공고 daily 피드 (2026-05-31 사용자 요청,
+  ticker·5거래일 독립). **부동산 Byte 와 별도 surface** — 분양 모집공고는
+  매일 신규로 뜨고 청약 일정이 임박 이벤트라 주간 가격 브리프와 성격이
+  다름 (사용자 정책 "청약은 Daily"). `bot/cheongyak_client.py` (청약홈
+  **odcloud.kr** API — apis.data.go.kr 실거래가와 호출 방식 다름, page/
+  perPage/JSON, 동일 DATA_GO_KR_API_KEY 공유. 엔드포인트 `getAPTLttotPblanc
+  Detail`, 필드 HOUSE_NM/SUBSCRPT_AREA_CODE_NM/TOT_SUPLY_HSHLDCO/RCRIT_
+  PBLANC_DE/RCEPT_BGNDE·ENDDE/PRZWNER_PRESNATN_DE/PBLANC_URL) + `bot/
+  cheongyak_brief.py` (Pro 1-2줄 맥락 narrate + 단지 목록 구조화). seen-set
+  (`cheongyak_seen.json`, PBLANC_NO) 중복 차단 + 최근 3일 내 신규만 push,
+  신규 없으면 graceful skip(비용 0). `cheongyak-byte.timer` 평일 10:00 KST.
+  채널 push + `cheongyak.html` 대시보드 (Daily Byte 패턴 mirror, 오늘/누적
+  비용·검색·🗑️ `/api/cheongyak_delete`) + `/cheongyak_cost` 명령(DM+채널)
+  + /usage·메인 대시보드 cost subsystem '청약'. 인포그래픽 없음(피드 성격).
+  nav 위치: Daily Byte 뒤(daily 그룹). 경쟁률(수요측)은 별도 API — 미구현.
 - Daily Byte — 장 마감 후 KR 수급 브리프 (2026-05-29 사용자 요청):
   • `daily-byte.timer` — 평일(Mon-Fri) 19:00 KST oneshot → `bot/daily_
     kr_flow.py`. pykrx EOD 수급 (~17-18시 갱신) 안정 후 19:00 실행.

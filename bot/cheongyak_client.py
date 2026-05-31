@@ -108,6 +108,7 @@ def recent_announcements(per_page: int = 200) -> list[dict]:
         if not isinstance(r, dict):
             continue
         out.append({
+            "pblanc_no": _g(r, "PBLANC_NO", "HOUSE_MANAGE_NO", "pblancNo"),
             "name": _g(r, "HOUSE_NM", "houseNm", "주택명"),
             "region": _g(r, "SUBSCRPT_AREA_CODE_NM", "subscrptAreaCodeNm", "공급지역명"),
             "addr": _g(r, "HSSPLY_ADRES", "hssplyAdres", "공급위치"),
