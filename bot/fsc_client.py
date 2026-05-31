@@ -229,6 +229,63 @@ def rights_for(ticker: str, lookback_days: int = 21) -> list[dict]:
     return out
 
 
+# ── 4) 금융투자협회 종합통계 (시장 전체 수급·심리, ticker 무관) ───────────
+# 15094809. 예탁금(dry powder) + 신용융자(레버리지) = KR 시장 internal
+# sentiment. 시장 전체값 → 1회 fetch 12h 캐시로 전 KR 분석·Daily Byte 공유.
+# Base URL 미확정 — env override 또는 후보 자동탐색.
+_KOFIA_BASE = os.environ.get(
+    "FSC_KOFIA_BASE", f"{_HOST}/service/GetFinaInveStmtTotStaInfoService")
+_KOFIA_BASE_CANDIDATES = (
+    f"{_HOST}/service/GetFinaInveStmtTotStaInfoService",
+    f"{_HOST}/service/GetFinanInvmtAssoInfoService",
+    f"{_HOST}/service/GetKofiaInfoService",
+    f"{_HOST}/GetFinaInveStmtTotStaInfoService_V2",
+)
+_OP_DEPOSIT = "getSecuritiesMarketTotalCapitalInfo"   # 증시자금추이
+_OP_CREDIT = "getGrantingOfCreditBalanceInfo"         # 신용공여잔고추이
+
+
+def _kofia_series(op: str, field: str, n: int = 30) -> list[tuple[str, float]]:
+    """협회통계 op 의 (basDt, field값) 시계열 (오름차순). 캐시 12h."""
+    ck = f"kofia_{op}_{field}_{_now():%Y%m%d}"
+    c = _cache_get(ck)
+    if c is not None:
+        return [tuple(x) for x in c]
+    raw = _fetch(_KOFIA_BASE, op, {"numOfRows": n})
+    series = {}
+    for it in raw:
+        d = str(it.get("basDt") or "")
+        v = _f(it.get(field))
+        if d and v is not None:
+            series[d] = v
+    out = sorted(series.items())
+    _cache_put(ck, out)
+    return out
+
+
+def _trend(series: list[tuple[str, float]]) -> dict | None:
+    if len(series) < 2:
+        return None
+    periods = [p for p, _ in series]
+    vals = [v for _, v in series]
+    latest, prev = vals[-1], vals[-2]
+    wow = (latest / prev - 1.0) * 100.0 if prev else None
+    mom = (latest / vals[-22] - 1.0) * 100.0 if len(vals) >= 22 and vals[-22] else None
+    return {"date": periods[-1], "latest": latest,
+            "wow_pct": round(wow, 2) if wow is not None else None,
+            "mom_pct": round(mom, 2) if mom is not None else None}
+
+
+def market_deposit() -> dict | None:
+    """투자자예탁금(invrDpsgAmt) 최신 + WoW/MoM 추세. 대기매수 자금."""
+    return _trend(_kofia_series(_OP_DEPOSIT, "invrDpsgAmt"))
+
+
+def margin_balance() -> dict | None:
+    """신용융자 전체잔고(crdTrFingWhl) 최신 + WoW/MoM 추세. 빚투 레버리지."""
+    return _trend(_kofia_series(_OP_CREDIT, "crdTrFingWhl"))
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO,
@@ -240,6 +297,29 @@ if __name__ == "__main__":
         load_dotenv(Path.home() / "stock" / ".env")
     except Exception:
         pass
+    if "--market" in sys.argv:
+        # 협회 종합통계 Base URL 자동탐색 (증시자금추이 op 로 200 확인)
+        print("=== 금융투자협회 종합통계 Base URL 탐색 ===")
+        global _KOFIA_BASE
+        hit = None
+        for base in _KOFIA_BASE_CANDIDATES:
+            _KOFIA_BASE = base
+            raw = _fetch(base, _OP_DEPOSIT, {"numOfRows": 2})
+            ok = bool(raw)
+            print(f"  [{'OK' if ok else '  '}] {base.split('/1160100')[-1]}"
+                  f"  → {len(raw)}행")
+            if ok and not hit:
+                hit = base
+        if hit:
+            _KOFIA_BASE = hit
+            print(f"\n✅ Base 확정: {hit}")
+            print("예탁금 추세:", json.dumps(market_deposit(), ensure_ascii=False))
+            print("신용잔고 추세:", json.dumps(margin_balance(), ensure_ascii=False))
+        else:
+            print("\n→ 후보 모두 실패. Swagger 맨 위 '[ Base URL: ... ]' 한 줄을")
+            print("  붙여주시면 확정합니다 (또는 .env FSC_KOFIA_BASE=...).")
+        raise SystemExit(0)
+
     tk = sys.argv[1] if len(sys.argv) > 1 else "005930.KS"
     print(f"=== {tk} ===")
     print("item_info:", json.dumps(item_info(tk), ensure_ascii=False))
