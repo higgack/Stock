@@ -29,9 +29,16 @@ class TestHsMap(unittest.TestCase):
     # --- validation ---
 
     def test_valid_hs_lengths(self):
-        for good in ("09", "0902", "190230", "1902300000"):
+        # 2–10 digits all valid. The 관세청 file has 7/8/9-digit leaves
+        # too (~1,142 of them), so odd lengths must pass — the old
+        # {2,4,6,10} whitelist wrongly rejected them at button-click time.
+        for good in (
+            "09", "0902", "190230", "1902300000",  # even granularities
+            "0207603", "01029090", "020760320",     # 7 / 8 / 9-digit leaves
+        ):
             self.assertTrue(hs_map.is_valid_hs(good), good)
-        for bad in ("", "abc", "1902.30", "190", "19023", "LENOVO", "12345678901"):
+        for bad in ("", "abc", "1902.30", "0", "1", "LENOVO", "12345678901"):
+            # empty, non-digit, dotted, 1-digit (too short), 11-digit (too long)
             self.assertFalse(hs_map.is_valid_hs(bad), bad)
 
     # --- add / get round-trip ---

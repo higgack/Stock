@@ -38,11 +38,16 @@ from pathlib import Path
 _DEFAULT_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 DEFAULT_PATH = _DEFAULT_DIR / "hs_map.tsv"
 
-# 관세청 HS codes are published at 2 / 4 / 6 / 10-digit granularity. We
-# accept any of those lengths; the 수출입실적 API takes the prefix and
-# aggregates accordingly. Stored as a STRING so leading zeros survive
-# (e.g. '0902' tea) — never coerce to int.
-_VALID_HS_LENGTHS = (2, 4, 6, 10)
+# 관세청 HS codes: the international HS is 2/4/6-digit, Korea's HSK adds
+# up to 10. But the published 관세청_HS부호 file (15049722) ALSO lists
+# many 7-, 8- and 9-digit leaf codes (verified: 7=52, 8=918, 9=172,
+# 10=11327) for items that only subdivide that far. The 수출입실적 API
+# takes any of these as a prefix and aggregates accordingly, so we accept
+# the full 2–10 digit range rather than a fixed whitelist — the old
+# {2,4,6,10} set wrongly rejected ~1,142 valid codes at button-click /
+# pin time. Stored as a STRING so leading zeros survive (e.g. '0902' tea).
+_HS_MIN_LEN = 2
+_HS_MAX_LEN = 10
 _HS_RE = re.compile(r"^\d+$")
 
 
@@ -58,12 +63,14 @@ def _norm(item: str) -> str:
 
 
 def is_valid_hs(code: str) -> bool:
-    """True if `code` is a plausible HS code: digits only, length in
-    {2,4,6,10}. Rejects company names, partial codes, dotted forms
-    ('1902.30') — the operator must supply the bare digit string."""
+    """True if `code` is a plausible HS code: digits only, 2–10 digits.
+    Rejects company names, dotted forms ('1902.30'), >10 digits — the
+    operator (or a button callback) must supply a bare digit string.
+    The 2–10 range covers every granularity in the 관세청 HS file,
+    including the 7/8/9-digit leaves that {2,4,6,10} used to reject."""
     if not code:
         return False
-    return bool(_HS_RE.match(code)) and len(code) in _VALID_HS_LENGTHS
+    return bool(_HS_RE.match(code)) and _HS_MIN_LEN <= len(code) <= _HS_MAX_LEN
 
 
 def _ensure(path: Path | str) -> Path:
