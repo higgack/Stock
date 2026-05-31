@@ -683,11 +683,15 @@ def _format_hs_search(hits, total: int, query: str):
 
     rows = []
     for h in hits:
-        label = h.ko_name
-        if len(label) > 32:
-            label = label[:31] + "…"
+        name = h.ko_name if len(h.ko_name) <= 22 else h.ko_name[:21] + "…"
+        # 성질통합분류코드명 disambiguates leaves that share a generic name
+        # (e.g. '반도체 제조용' → 무기화합물 / 사진용화합물 / 정밀화학).
+        nature = ""
+        if h.nature:
+            nat = h.nature if len(h.nature) <= 12 else h.nature[:11] + "…"
+            nature = f" [{nat}]"
         rows.append([InlineKeyboardButton(
-            f"{label}  · {h.hs_code}",
+            f"{name}{nature} · {h.hs_code}",
             callback_data=f"hs_pin:{h.hs_code}",
         )])
     return head, InlineKeyboardMarkup(rows)

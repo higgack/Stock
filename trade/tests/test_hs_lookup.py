@@ -17,18 +17,18 @@ from pathlib import Path
 from trade import hs_lookup
 
 
-_HEADERS = ["HS부호", "적용종료일자", "한글품목명", "영문품목명"]
+_HEADERS = ["HS부호", "적용종료일자", "한글품목명", "영문품목명", "성질통합분류코드명"]
 # Far-future end date so rows are 'active' under any test 'today'.
 _FUTURE = str((date(2099, 1, 1) - date(1899, 12, 30)).days)
 _ROWS = [
-    ["1902301010", _FUTURE, "라면", "Instant noodles"],
-    ["1902301090", _FUTURE, "기타", "Other"],
-    ["8542310000", _FUTURE, "프로세서ㆍ제어기", "Processors and controllers"],
-    ["8542320000", _FUTURE, "메모리(DRAM 등)", "Memories"],
-    ["8542390000", _FUTURE, "기타 집적회로", "Other integrated circuits"],
-    ["8541100000", _FUTURE, "다이오드", "Diodes"],
-    ["9999999999", _FUTURE, "", "Empty"],          # blank name → skip
-    ["BAD-CODE", _FUTURE, "잘못된", "Bad"],          # non-digit → skip
+    ["1902301010", _FUTURE, "라면", "Instant noodles", "(곡물가공품)"],
+    ["1902301090", _FUTURE, "기타", "Other", "(곡물가공품)"],
+    ["8542310000", _FUTURE, "프로세서ㆍ제어기", "Processors and controllers", "(반도체소자)"],
+    ["8542320000", _FUTURE, "메모리(DRAM 등)", "Memories", "(반도체소자)"],
+    ["8542390000", _FUTURE, "기타 집적회로", "Other integrated circuits", "(반도체소자)"],
+    ["8541100000", _FUTURE, "다이오드", "Diodes", "(반도체소자)"],
+    ["9999999999", _FUTURE, "", "Empty", "(없음)"],          # blank name → skip
+    ["BAD-CODE", _FUTURE, "잘못된", "Bad", "(없음)"],          # non-digit → skip
 ]
 
 
@@ -94,6 +94,11 @@ class TestLoadCsv(unittest.TestCase):
         _write_csv(self.path)
         mem = next(r for r in hs_lookup.load(self.path) if r.hs_code == "8542320000")
         self.assertEqual(mem.ko_name, "메모리(DRAM 등)")
+
+    def test_nature_parsed_parens_stripped(self):
+        _write_csv(self.path)
+        mem = next(r for r in hs_lookup.load(self.path) if r.hs_code == "8542320000")
+        self.assertEqual(mem.nature, "반도체소자")   # '(반도체소자)' → stripped
 
 
 class TestLoadXlsx(unittest.TestCase):

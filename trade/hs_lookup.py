@@ -51,6 +51,11 @@ _HS_HEADERS = ("HS부호", "HS코드", "HSCD", "hs_code")
 _KO_HEADERS = ("한글품목명", "품목명", "한글명", "ko_name")
 _EN_HEADERS = ("영문품목명", "영문명", "en_name")
 _END_HEADERS = ("적용종료일자", "종료일자")
+# Nature/material category — disambiguates generic leaf names. Many leaves
+# share an identical 한글품목명 (e.g. '반도체 제조용') but differ by this
+# field: (무기화합물) vs (사진용화합물) vs (기타 정밀화학제품). Surfacing it
+# on the button label is what lets the operator tell candidate codes apart.
+_NATURE_HEADERS = ("성질통합분류코드명", "성질명")
 
 _HS_RE = re.compile(r"^\d+$")
 _XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -64,6 +69,7 @@ class HsCode:
     hs_code: str       # 10-digit (the file's leaf granularity)
     ko_name: str
     en_name: str = ""
+    nature: str = ""   # 성질통합분류코드명, parens stripped (e.g. '무기화합물')
 
 
 class HsCodeFileMissing(FileNotFoundError):
@@ -196,6 +202,7 @@ def _build(
     i_ko = _pick(headers, _KO_HEADERS)
     i_en = _pick(headers, _EN_HEADERS)
     i_end = _pick(headers, _END_HEADERS)
+    i_nat = _pick(headers, _NATURE_HEADERS)
     if i_hs is None or i_ko is None:
         return []
     out: list[HsCode] = []
@@ -214,7 +221,10 @@ def _build(
             if end is not None and end < today:
                 continue
         en = (row[i_en] or "").strip() if i_en is not None and i_en < len(row) else ""
-        out.append(HsCode(hs_code=hs, ko_name=ko, en_name=en))
+        nat = ""
+        if i_nat is not None and i_nat < len(row):
+            nat = (row[i_nat] or "").strip().strip("()").strip()
+        out.append(HsCode(hs_code=hs, ko_name=ko, en_name=en, nature=nat))
     return out
 
 
