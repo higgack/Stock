@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily 관세청 customs figures fetch for pinned items
+
+[Timer]
+# Data is monthly and refreshes ~the 15th; a daily idempotent poll
+# reflects the new confirmed month within a day of publication. Same-day
+# re-fetches are free refreshes. 16:30 UTC = 01:30 KST — off-peak, away
+# from the 00:00 KST unstored-check and the deploy cadence.
+OnCalendar=*-*-* 16:30:00 UTC
+Unit=trade-bot-customs-fetch.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
