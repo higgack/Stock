@@ -437,6 +437,11 @@ h1{margin:0 0 4px;font-size:18px}
 .customs-table .num.up{color:var(--tone-export)}
 .customs-table .num.down{color:var(--tone-import)}
 .customs-table tr.nodata td{color:var(--text-sub);font-style:italic}
+.archive-month{border-top:1px solid var(--border-soft)}
+.archive-month summary{padding:6px 14px;cursor:pointer;font-weight:600;font-size:12px;color:var(--text-sub);background:var(--surface)}
+.archive-month ul{margin:0;padding:4px 14px 8px 26px;font-size:13px;line-height:1.6;list-style:none}
+.archive-month li{margin:1px 0}
+.archive-month .muted{font-size:11px;color:var(--text-sub)}
 .tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:60px;z-index:9}
 .tab{flex:1;padding:13px 0;background:none;border:none;font-size:14px;font-weight:600;color:var(--text-sub);cursor:pointer;border-bottom:2px solid transparent}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
