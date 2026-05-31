@@ -600,6 +600,13 @@ DATA INTEGRITY (불일치 종목 OMIT):
   OMIT**. 'Low Confidence — 데이터 불일치' 섹션에 넣지 말 것 —
   reader 혼란 가중. 같은 테마 다른 ticker 로 대체하거나 'no clean
   public name' 선언.
+- ⛔ 회사명 verbatim 의무 (Hospitality 2026-06-01: 099440.KQ 'SMEC' 을
+  'KORNECT' 로 영문 사명 환각): 각 종목 REAL-TIME CONTEXT 헤더
+  '=== TICKER (회사명) ===' 의 괄호 안 회사명은 백엔드가 yfinance longName
+  / FSC 법인명으로 주입한 정식 명칭이다. Master Table·Top-3 의 회사명은
+  이 값을 글자 단위 그대로 사용 — 영문 사명을 임의로 번역·축약·창작 금지.
+  한국어 통칭 병기는 OK ('SMEC Co., Ltd. (에스맥)'). context 사명이 비어
+  있을 때만 알려진 통칭 + '(추정 사명)' 표기.
 - Pro 가 cite 한 sell-side report / earnings call quote / industry
   forecast 가 학습 메모리 (cutoff 2024-Q2) 만으로 작성된 경우:
   - web search 로 2026년 최신 데이터 verify 시도
@@ -798,6 +805,28 @@ def _override_tiers_from_mcap(candidates: list[dict]) -> list[dict]:
             mcap_usd = None
             if mcap_native and mcap_native > 0:
                 mcap_usd = _fx_to_usd(mcap_native, currency)
+            # AUTHORITATIVE company name override (Hospitality 2026-06-01
+            # review: 099440.KQ 'SMEC' 을 Pro 가 'KORNECT' 로 영문 사명
+            # 환각). Pro 의 self-declared company_name 대신 yfinance
+            # longName/shortName 을 정식 명칭으로 덮어쓴다 (DATA INTEGRITY
+            # ABSOLUTE RULE — API 사명이 절대 사실). 추가 fetch 0 (이미
+            # 위에서 .info 호출). 빈 경우만 기존값 유지. 전 시장 universal.
+            auth_name = (info.get("longName") or info.get("shortName") or "").strip()
+            if not auth_name and t.upper().endswith((".KS", ".KQ")):
+                # yfinance KR 사명 빈약 시 FSC 법인명(corpNm) 2차 fallback.
+                try:
+                    from bot.fsc_client import item_info as _fsc_item
+                    _it = _fsc_item(t)
+                    if _it and _it.get("corpNm"):
+                        auth_name = str(_it["corpNm"]).strip()
+                except Exception as _exc:
+                    log.debug("screener: FSC corpNm fallback failed %s: %s", t, _exc)
+            if auth_name:
+                old_name = c.get("company_name") or ""
+                c["company_name"] = auth_name
+                if old_name and old_name != auth_name:
+                    log.info("screener: company_name override %s: Pro=%r → "
+                             "API=%r", t, old_name, auth_name)
             # KR (.KS/.KQ) yfinance mcap 실패 시 FSC 주식시세 fallback (무료,
             # KRX-login-free). Machinery review 2026-05-31: 058610.KQ 같은
             # KOSDAQ 종목이 yfinance mcap None → tier override 미작동 → 본문
@@ -1157,6 +1186,19 @@ def _strip_transitional_tags(text: str) -> tuple[str, int]:
         r"\s*\(\s*(?:데이터\s*)?transitional[^)]*\)|\s*\(\s*corp\s*action\s*의심[^)]*\)",
         re.IGNORECASE,
     )
+    # bare-phrase (괄호 없는) 형태도 strip. Hospitality 2026-06-01 review:
+    # H(Hyatt)/FOUR 가 '데이터 transitional 명시.' / '데이터 transitional.'
+    # 처럼 괄호 없이 valuation 회피 핑계로 악용 (이전 '데이터 미수집' 차단
+    # 후 진화). screener 는 공시 fetch 안 함 → transitional 인용은 항상
+    # 부적격 (CLAUDE.md 331-333) → 무조건 strip. 인접 고정 토큰만 (quantifier
+    # 중첩 금지 — 2026-06-01 catastrophic backtracking 교훈).
+    # 'transitional' 단독은 영어 단어라 정상 prose 에 등장 가능 → false
+    # positive 방지 위해 '데이터' 접두를 의무화. 실제 회피 케이스(H/FOUR)는
+    # 전부 '데이터 transitional [명시]' 형태.
+    bare = re.compile(
+        r"\s*데이터\s*transitional(?:\s*명시)?\s*[.:)]?",
+        re.IGNORECASE,
+    )
     n = 0
 
     def _replace(_m: "re.Match") -> str:
@@ -1164,7 +1206,9 @@ def _strip_transitional_tags(text: str) -> tuple[str, int]:
         n += 1
         return ""
 
-    return pattern.sub(_replace, text), n
+    out = pattern.sub(_replace, text)
+    out = bare.sub(_replace, out)
+    return out, n
 
 
 def _strip_meta_commentary(text: str) -> tuple[str, int]:
