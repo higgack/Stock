@@ -262,11 +262,14 @@ def minority_holders(ticker: str) -> dict | None:
     return out or None
 
 
-# dilution 공시 3종 — (op, 주식수 field, 가격 field, kind label).
+# dilution 공시 — (op, 주식수 field, 가격 field, kind label).
+# ⚠️ 유상증자는 제외: corp-action HARD GUARD 키워드(_KR_CORP_ACTION_KEYWORDS)
+# 에 '유상증자' 가 이미 있어 DART/권리일정 가드가 잡음 → 중복 배너 방지.
+# CB/BW(전환사채·신주인수권)는 corp-action 키워드에 없는 별개 잠재희석이라
+# 여기서만 잡는다 (사용자 '중복 없이' 원칙, 2026-05-31 review).
 _DILUTION_OPS = (
     ("getCbRighIssuDiscInfo_V2", "cpbdCnvrStckCnt", "cbCnvrPrc", "전환사채(CB)"),
     ("getBwRighIssuDiscInfo_V2", "prmrIssuStckCnt", "bwrExertPrc", "신주인수권부사채(BW)"),
-    ("getCapiIncrWithConsDiscInfo_V2", "onskNstCnt", "onskIssuSchPric", "유상증자"),
 )
 
 

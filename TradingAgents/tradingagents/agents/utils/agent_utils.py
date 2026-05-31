@@ -4582,8 +4582,8 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
             except Exception as exc:
                 _analyst_log.debug("KR minority block skipped %s: %s", ticker, exc)
 
-        # KR dilution 공시 (CB/BW/유상증자 발행결정) — DART scan 보강. 잠재
-        # 희석 이벤트를 corp-action 배너와 동일한 수급 경고로(기술지표 차단 X).
+        # KR dilution 공시 (CB/BW 발행결정) — 잠재 희석 수급 경고(기술지표
+        # 차단 X). 유상증자는 corp-action 키워드에 있어 제외(중복 방지).
         if market == "KR":
             try:
                 from bot.fsc_client import dilution_events
@@ -4597,11 +4597,12 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
                         prtxt = f" @₩{int(pr):,}" if pr else ""
                         _lines.append(f"  {r['date']} · {r['kind']} · 신주 {shtxt}{prtxt}")
                     base += (
-                        "\n\n=== 📉 잠재 희석 이벤트 (FSC 공시 — CB/BW/유상증자) ===\n"
+                        "\n\n=== 📉 잠재 희석 이벤트 (FSC 공시 — 전환사채/BW) ===\n"
                         + "\n".join(_lines)
-                        + "\nCB/BW 전환·행사 또는 유상증자 신주 = 주식수 증가(EPS·"
-                        "지분 희석). 발행결정 직후~전환청구기간 단기 공급 부담."
-                        " DART 공시 scan 보강. 출처: 금융위 (T+1)."
+                        + "\nCB/BW 전환·행사 시 신주 발행 = 주식수 증가(EPS·지분"
+                        " 희석). 발행결정 직후~전환청구기간 단기 공급 부담."
+                        " (유상증자/무상증자/감자는 corp-action 가드가 별도 처리)"
+                        " 출처: 금융위 (T+1)."
                     )
             except Exception as exc:
                 _analyst_log.debug("KR dilution block skipped %s: %s", ticker, exc)

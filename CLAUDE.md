@@ -919,13 +919,16 @@ review:
   smamSthdRto(소액주주비율)·smamSthdCnt·whlSthdCnt·holdStckCnt. free
   float 근사 ("소액주주현황" 블록: 비율↑=유통물량 많음/변동성↑, 비율↓=
   최대주주 집중·품절 취약). 연/분기 공시라 정적.
-  (dilution) GetDiscInfoService_V2 3 op → `dilution_events` — CB
+  (dilution) GetDiscInfoService_V2 2 op → `dilution_events` — CB
   (getCbRighIssuDiscInfo_V2, cpbdCnvrStckCnt/cbCnvrPrc) + BW
-  (getBwRighIssuDiscInfo_V2, prmrIssuStckCnt/bwrExertPrc) + 유상증자
-  (getCapiIncrWithConsDiscInfo_V2, onskNstCnt/onskIssuSchPric). "📉 잠재
-  희석 이벤트" 배너(DART scan 보강, 기술지표 차단 X, 수급 경고만). 나머지
-  29 op(무상증자/감자/합병 등)은 corp-action 가드·DART·뉴스와 중복이라
-  미통합(사용자 "중복 없이" 원칙). probe: `--minor` / `--lockup`.
+  (getBwRighIssuDiscInfo_V2, prmrIssuStckCnt/bwrExertPrc). "📉 잠재 희석
+  이벤트" 배너(기술지표 차단 X, 수급 경고만). ⚠️ **유상증자는 제외** —
+  corp-action HARD GUARD 키워드(_KR_CORP_ACTION_KEYWORDS)에 '유상증자'
+  이미 존재 → 중복 배너 방지(2026-05-31 review). CB/BW 는 corp-action
+  키워드에 없는 별개 잠재희석이라 dilution_events 전담. 나머지 30 op(무상
+  증자/감자/합병 등)은 corp-action·DART·뉴스 중복이라 미통합. probe:
+  `--minor` / `--lockup`. ⚠️ 소액주주(getCGSmamInfo)는 `금융위원회_기업
+  지배구조 공시정보` 활용신청 필요 — 미승인 시 null(graceful 생략).
 - **소유구조 빈 결과 환각 차단** — KR branch (DART insider holdings empty
   → "임원지분 데이터 미수집" prose, no fabricated 공기업/정부 narrative),
   JP branch (EDINET 大量保有 + yfinance heldPercentInsiders both empty
