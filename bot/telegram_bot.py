@@ -935,8 +935,6 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
  • <b>부동산 Byte</b> — 금09:00 아파트 실거래(MOLIT) 주간 브리프 · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
- • <b>블로그</b> — '변화하는 기업을 찾아서' 새글 30분 polling 자동 포워드·아카이브
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/blog.html
  • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
  • <b>SV</b> — 매크로·산업·Deal·07:30/20:30+텔레·22:00 주간
@@ -2231,10 +2229,9 @@ async def _periodic_dashboard_refresh() -> None:
         await asyncio.sleep(sleep_secs)
         try:
             from bot.dashboard import (regenerate_index, regenerate_daily_byte_index,
-                                       regenerate_blog_index, regenerate_realestate_index)
+                                       regenerate_realestate_index)
             regenerate_index()
             regenerate_daily_byte_index()
-            regenerate_blog_index()
             regenerate_realestate_index()
             log.info("midnight dashboard regen: ok")
         except Exception:
@@ -2263,12 +2260,6 @@ async def _on_startup(application) -> None:
         log.info("startup: daily_byte.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: daily_byte.html regen failed: %s", exc)
-    try:
-        from bot.dashboard import regenerate_blog_index
-        regenerate_blog_index()
-        log.info("startup: blog.html regenerated with current code")
-    except Exception as exc:
-        log.warning("startup: blog.html regen failed: %s", exc)
     try:
         from bot.dashboard import regenerate_realestate_index
         regenerate_realestate_index()

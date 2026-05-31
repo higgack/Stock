@@ -217,9 +217,17 @@ OUTPUT FORMAT — Telegram HTML 호환. 다음 순서로 출력:
    binding 중이고 다음에 binding 할 layer 는 어디인지.
 
 2. <b>📊 Master Table</b> — 4-6 테마 × 3 티어 = 12-18 행. 각 행:
-   • <b>[테마]</b> · 티어 · <code>TICKER</code> (+ADR/시장) · 회사명
+   • <b>[테마]</b> · 티어 · <code>TICKER</code> · <b>(거래소·국가)</b> · 회사명
      │ Tier A 신호 1줄 │ Tier B 신호 1줄 │ Tier C 신호 1줄 │ 가격에
      반영도 1줄 │ catalyst+시기 │ kill trigger
+   ★ 거래소·국가 표기 **모든 행 의무** (전 세계 종목 섞이므로 reader 가
+     어느 시장인지 즉시 알게) — ticker suffix 기준 명시:
+       .ST→(스톡홀름·스웨덴) · .OL→(오슬로·노르웨이) · .HK→(홍콩) ·
+       .T/.OS→(도쿄·일본) · .KS/.KQ→(한국·KOSPI/KOSDAQ) · .TW→(타이베이·대만) ·
+       .L→(런던·영국) · .MI→(밀라노·이탈리아) · .PA→(파리·프랑스) ·
+       .DE→(프랑크푸르트·독일) · .AS→(암스테르담·네덜란드) · .AX→(시드니·호주) ·
+       .NS/.BO→(인도·NSE/BSE) · .TO→(토론토·캐나다) · .SS/.SZ→(중국 본토) ·
+       suffix 없음→(뉴욕/나스닥·미국). 외국 법인 미국 ADR 은 '(뉴욕·미국 ADR)'.
    각 신호는 'sourced' (출처 publisher/date) 또는 'inferred' (LLM 추론)
    명시. 추론을 사실로 위장 금지.
 

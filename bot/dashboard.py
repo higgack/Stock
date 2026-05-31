@@ -1672,7 +1672,6 @@ def _render_index(records: list[dict]) -> str:
             f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             f' · <a href="daily_byte.html">📊 Daily Byte</a>'
             f' · <a href="realestate.html">🏠 부동산</a>'
-            f' · <a href="blog.html">📝 블로그</a>'
             + _external_links
         )
     else:
@@ -1682,7 +1681,6 @@ def _render_index(records: list[dict]) -> str:
             ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             ' · <a href="daily_byte.html">📊 Daily Byte</a>'
             ' · <a href="realestate.html">🏠 부동산</a>'
-            ' · <a href="blog.html">📝 블로그</a>'
             + _external_links
         )
 
@@ -3605,138 +3603,6 @@ def regenerate_daily_byte_index() -> None:
         log.warning("dashboard: daily_byte regen failed: %s", exc)
 
 
-# ── Blog watcher archive view (변화하는 기업을 찾아서) ────────────────────
-_BLOG_ARCHIVE_DIR = Path.home() / ".tradingagents" / "blog_archive"
-
-
-def _load_blog_runs() -> list[dict]:
-    """Scan ~/.tradingagents/blog_archive/YYYY-MM-DD/*.json → post dicts
-    newest-first. {ts, date, title, link, summary, desc, _date, _filename}."""
-    import json as _json
-    runs: list[dict] = []
-    if not _BLOG_ARCHIVE_DIR.exists():
-        return runs
-    try:
-        for date_dir in sorted(_BLOG_ARCHIVE_DIR.iterdir(), reverse=True):
-            if not date_dir.is_dir():
-                continue
-            for jf in sorted(date_dir.iterdir(), reverse=True):
-                if not jf.name.endswith(".json"):
-                    continue
-                try:
-                    with open(jf, encoding="utf-8") as f:
-                        rec = _json.load(f)
-                    rec["_date"] = date_dir.name
-                    rec["_filename"] = jf.name
-                    runs.append(rec)
-                except Exception as exc:
-                    log.warning("dashboard: blog load %s failed: %s", jf, exc)
-    except Exception as exc:
-        log.warning("dashboard: blog archive scan failed: %s", exc)
-    return runs
-
-
-def _render_blog_page(runs: list[dict]) -> str:
-    """Render blog.html — 네이버 블로그 새 글 아카이브. screener.html 패턴
-    mirror (date 그룹 카드 + scr-* 검색 + 🗑️). 각 카드 = 제목 + 요약 +
-    원문 링크."""
-    import html as _html
-    import json as _json_b
-    from collections import defaultdict
-    from datetime import datetime as _dt_b, timezone as _tz_b, timedelta as _td_b
-
-    by_date: dict[str, list[dict]] = defaultdict(list)
-    for r in runs:
-        by_date[r.get("_date", "")].append(r)
-    total = len(runs)
-
-    parts: list[str] = [_SCREENER_CSS]
-    parts.append(f"""
-<div class="wrap">
-  <div class="nav">
-    <a href="index.html">← NOAH 종목 분석</a>
-    · <a href="screener.html">📊 Bottleneck Screener</a>
-    · <a href="daily_byte.html">📊 Daily Byte</a>
-  </div>
-  <h1>📝 변화하는 기업을 찾아서 — Archive</h1>
-  <p class="sub">네이버 블로그 (beatthemkt) 새 글 자동 포워드·아카이브 · 30분 polling · 정보 요약(투자 권유 아님)</p>
-  <div class="stats">
-    <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 글</div></div>
-  </div>
-  <div class="search-bar">
-    <input id="scr-search" type="text" placeholder="제목 / 요약 / 본문 검색 (예: 반도체, 실적, 기업명)" autocomplete="off" spellcheck="false">
-    <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
-  </div>
-  <p id="scr-status" class="status-line">총 {total}건의 블로그 글</p>
-  <div id="scr-snippets" class="snippets" style="display:none"></div>
-  <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
-""")
-    if not runs:
-        parts.append("""
-  <div class="empty">아직 수집된 글이 없습니다. 새 글이 올라오면 자동 포워드됩니다.</div>
-</div></body></html>""")
-        return "".join(parts)
-
-    _today = _dt_b.now(_tz_b(_td_b(hours=9))).date().isoformat()
-    for date in sorted(by_date.keys(), reverse=True):
-        day_open = " open" if date == _today else ""
-        parts.append(
-            f'<details class="day"{day_open}><summary class="day-head">'
-            f'<span>📅 {_html.escape(date)}</span>'
-            f'<span class="count">{len(by_date[date])}건</span></summary>'
-            f'<div class="day-body">'
-        )
-        for r in by_date[date]:
-            title = _html.escape(r.get("title", "(제목 없음)"))
-            link = _html.escape(r.get("link", ""))
-            summary = _html.escape((r.get("summary") or "").strip())
-            ts_clock = (r.get("ts") or "").split("T", 1)[-1][:5] if "T" in (r.get("ts") or "") else ""
-            filename = _html.escape(r.get("_filename", ""))
-            plain = f"{title} {summary} {_html.escape(r.get('desc','')[:500])}".lower()
-            search_attr = _html.escape(plain[:3000])
-            lines = [{"sec": "blog", "txt": s} for s in
-                     [title] + [ln.strip() for ln in summary.splitlines() if ln.strip()]]
-            lines_attr = _html.escape(_json_b.dumps(lines, ensure_ascii=False))
-            card_id = f"card-{_html.escape(r.get('_date',''))}-{filename}".replace(".", "_")
-            link_html = (f'<a href="{link}" target="_blank" rel="noopener" '
-                         f'style="color:var(--accent);word-break:break-all">🔗 원문 보기</a>') if link else ""
-            parts.append(f"""
-  <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
-    <summary class="card-h">
-      <span class="card-toggle">▸</span>
-      <span class="domain">{title}</span>
-      <span class="meta">⏱ {_html.escape(ts_clock)}</span>
-      <button class="del-btn" type="button" title="이 글 기록 삭제">🗑️</button>
-    </summary>
-    <div class="card-body">
-      <div class="analysis-sec"><div class="analysis-b" data-section="blog">{summary or '(요약 없음 — 원문 확인)'}</div></div>
-      <div style="margin-top:8px">{link_html}</div>
-    </div>
-  </details>
-""")
-        parts.append('</div></details>')
-    parts.append("</div>")
-    parts.append(_BLOG_JS)
-    return "".join(parts)
-
-
-# blog.html 검색/삭제 JS — daily_byte 와 동일 패턴 (scr-* + api/blog_delete)
-_BLOG_JS = _DAILY_BYTE_JS.replace("api/daily_byte_delete", "api/blog_delete").replace(
-    "Daily Byte 브리프", "블로그 글").replace("Daily Byte 기록", "블로그 기록")
-
-
-def regenerate_blog_index() -> None:
-    """Scan blog archive → write blog.html under ARCHIVE_ROOT."""
-    try:
-        runs = _load_blog_runs()
-        html = _render_blog_page(runs)
-        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
-        (ARCHIVE_ROOT / "blog.html").write_text(html, encoding="utf-8")
-        log.info("dashboard: blog.html regenerated (%d posts)", len(runs))
-    except Exception as exc:
-        log.warning("dashboard: blog regen failed: %s", exc)
-
-
 # ── 부동산 Byte archive view ──────────────────────────────────────────────
 _REALESTATE_ARCHIVE_DIR = Path.home() / ".tradingagents" / "realestate_archive"
 _REALESTATE_JS = _DAILY_BYTE_JS.replace("api/daily_byte_delete", "api/realestate_delete").replace(
@@ -3791,7 +3657,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
-    · <a href="blog.html">📝 블로그</a>
+    · <a href="screener.html">📊 Bottleneck Screener</a>
   </div>
   <h1>🏠 부동산 Byte — Archive</h1>
   <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>

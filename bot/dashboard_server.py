@@ -182,10 +182,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_screener_delete()
         if self.path == "/api/daily_byte_delete":
             return self._handle_daily_byte_delete()
-        if self.path == "/api/blog_delete":
-            return self._handle_simple_delete(
-                "blog_archive", r"^\d{6}_[a-zA-Z0-9]{1,40}\.json$",
-                "regenerate_blog_index")
         if self.path == "/api/realestate_delete":
             return self._handle_simple_delete(
                 "realestate_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
@@ -247,7 +243,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         """Generic per-run JSON archive delete under ~/.tradingagents/<subdir>/
         YYYY-MM-DD/<filename>. Validates date + filename (path-traversal
         guard) then unlinks + calls bot.dashboard.<regen_fn>(). Used by
-        /api/blog_delete (and future archive surfaces)."""
+        /api/realestate_delete (and future archive surfaces)."""
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length <= 0 or length > 1024:

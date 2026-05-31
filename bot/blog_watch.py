@@ -159,12 +159,14 @@ def _summarize(item: dict) -> str:
 
 # ── 아카이브 + 대시보드 ───────────────────────────────────────────────────
 def _save_archive(item: dict, summary: str) -> None:
+    """Ingest 저장 — 봇이 나중에 참조 가능하도록 새 글 raw 를 JSON 보관.
+    대시보드 surface 는 사용자 정책(2026-05-31)으로 없음 (채널 자동 포워드
+    처럼만 다룸). 검색/분석 재료용 적층."""
     try:
         now = _now_kst()
         date_iso = now.date().isoformat()
         day_dir = os.path.join(_ARCHIVE_DIR, date_iso)
         os.makedirs(day_dir, exist_ok=True)
-        # 파일명: HHMMSS_<guid hash>.json (path-traversal-safe)
         import hashlib
         h = hashlib.sha256((item.get("guid") or "").encode()).hexdigest()[:10]
         path = os.path.join(day_dir, f"{now:%H%M%S}_{h}.json")
@@ -175,13 +177,7 @@ def _save_archive(item: dict, summary: str) -> None:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(rec, f, ensure_ascii=False)
     except Exception as exc:
-        log.warning("blog_watch: archive write failed: %s", exc)
-        return
-    try:
-        from bot.dashboard import regenerate_blog_index
-        regenerate_blog_index()
-    except Exception as exc:
-        log.warning("blog_watch: dashboard regen failed: %s", exc)
+        log.warning("blog_watch: archive(ingest) write failed: %s", exc)
 
 
 # ── Telegram push ─────────────────────────────────────────────────────────
