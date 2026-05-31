@@ -12,6 +12,7 @@ safety rails are what these tests pin:
 
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -148,6 +149,86 @@ class TestCustomsAlert(unittest.TestCase):
         rc = self._run([], c)
         self.assertEqual(rc, 0)
         self.assertEqual(c.msgs, [])
+
+
+class TestHsReferenceFreshness(unittest.TestCase):
+    """The annual-update reminder. Has to silently no-op when fresh /
+    missing / recently-alerted — anything else nags."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.ref = self.dir / "hs_codes.xlsx"
+        self.marker = self.dir / ".hs_ref_alert_seen"
+        self._patches = [
+            mock.patch.object(customs_alert, "_HS_REF_PATHS",
+                              (self.ref, self.dir / "hs_codes.csv")),
+            mock.patch.object(customs_alert, "_HS_REF_MARKER", self.marker),
+        ]
+        for p in self._patches:
+            p.start()
+        os.environ["TRADE_OPERATOR_CHAT_ID"] = "555"
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+        os.environ.pop("TRADE_OPERATOR_CHAT_ID", None)
+        self.tmp.cleanup()
+
+    def test_missing_file_returns_none(self):
+        self.assertIsNone(customs_alert._check_hs_reference_freshness())
+
+    def test_fresh_file_returns_none(self):
+        self.ref.write_bytes(b"x")
+        os.utime(self.ref, (time.time(), time.time()))
+        self.assertIsNone(customs_alert._check_hs_reference_freshness())
+
+    def test_stale_file_returns_alert(self):
+        self.ref.write_bytes(b"x")
+        old = time.time() - 200 * 86400  # 200 days old > 180-day threshold
+        os.utime(self.ref, (old, old))
+        msg = customs_alert._check_hs_reference_freshness()
+        self.assertIsNotNone(msg)
+        self.assertIn("개정", msg)
+        self.assertIn("200", msg)
+        self.assertIn("15049722", msg)
+
+    def test_recent_marker_blocks_realert(self):
+        self.ref.write_bytes(b"x")
+        old = time.time() - 200 * 86400
+        os.utime(self.ref, (old, old))
+        self.marker.touch()  # alerted recently → suppressed
+        self.assertIsNone(customs_alert._check_hs_reference_freshness())
+
+    def test_old_marker_allows_realert(self):
+        self.ref.write_bytes(b"x")
+        old = time.time() - 200 * 86400
+        os.utime(self.ref, (old, old))
+        self.marker.touch()
+        # Marker older than HS_REF_REALERT_DAYS → re-alert allowed
+        far = time.time() - 60 * 86400
+        os.utime(self.marker, (far, far))
+        self.assertIsNotNone(customs_alert._check_hs_reference_freshness())
+
+    def test_run_sends_freshness_then_touches_marker(self):
+        self.ref.write_bytes(b"x")
+        old = time.time() - 200 * 86400
+        os.utime(self.ref, (old, old))
+        c = _Collector(ok=True)
+        with mock.patch.object(customs_alert.hs_map, "entries", return_value=[]):
+            customs_alert.run(db_path=self.dir / "customs.db", notify=c)
+        self.assertEqual(len(c.msgs), 1)
+        self.assertIn("관세청 HS부호 개정", c.msgs[0][1])
+        self.assertTrue(self.marker.exists())
+
+    def test_run_does_not_touch_marker_on_send_failure(self):
+        self.ref.write_bytes(b"x")
+        old = time.time() - 200 * 86400
+        os.utime(self.ref, (old, old))
+        fail = _Collector(ok=False)
+        with mock.patch.object(customs_alert.hs_map, "entries", return_value=[]):
+            customs_alert.run(db_path=self.dir / "customs.db", notify=fail)
+        self.assertFalse(self.marker.exists())  # retry next tick
 
 
 if __name__ == "__main__":

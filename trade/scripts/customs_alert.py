@@ -32,6 +32,8 @@ import os
 import subprocess
 import sqlite3
 import sys
+import time
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -48,6 +50,17 @@ log = logging.getLogger("customs-alert")
 THRESHOLD_PCT = float(os.environ.get("TRADE_CUSTOMS_ALERT_PCT") or "30")
 CAP = int(os.environ.get("TRADE_CUSTOMS_ALERT_MAX") or "10")
 TEASER = 3  # how many biggest movers to show when over cap
+
+# HS reference freshness — the operator asked 'how do I even know the
+# data changed?'. 관세청 HS부호 is revised ~annually (Jan 1). 180 days
+# catches a missed annual update with margin; 30-day re-alert lockout
+# stops nagging when the operator hasn't gotten to it yet.
+HS_REF_STALE_DAYS = int(os.environ.get("TRADE_HS_REF_STALE_DAYS") or "180")
+HS_REF_REALERT_DAYS = int(os.environ.get("TRADE_HS_REF_REALERT_DAYS") or "30")
+
+_DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
+_HS_REF_PATHS = (_DATA_DIR / "hs_codes.xlsx", _DATA_DIR / "hs_codes.csv")
+_HS_REF_MARKER = _DATA_DIR / ".hs_ref_alert_seen"
 
 _SEEN_SQL = """
 CREATE TABLE IF NOT EXISTS customs_alert_seen (
@@ -79,6 +92,46 @@ def _mark(conn: sqlite3.Connection, hs_code: str, ym: str) -> None:
         "VALUES (?, ?)",
         (hs_code, ym),
     )
+
+
+def _check_hs_reference_freshness(now: float | None = None) -> str | None:
+    """Return an alert body when ~/.trade/hs_codes.{xlsx,csv} is older
+    than HS_REF_STALE_DAYS — or None when fresh, missing (caller skips),
+    or recently re-alerted.
+
+    Marker file at .hs_ref_alert_seen records the last alert time so
+    successive runs don't nag the operator daily. The marker is touched
+    only after the alert text is returned to a successful send path —
+    that's the caller's responsibility (mirrors how seen-marker timing
+    works for the ±30% path)."""
+    now = now if now is not None else time.time()
+    ref = next((p for p in _HS_REF_PATHS if p.exists()), None)
+    if ref is None:
+        return None  # no file → /hs search already shows a download hint
+    age_days = (now - ref.stat().st_mtime) / 86400.0
+    if age_days < HS_REF_STALE_DAYS:
+        return None
+    if _HS_REF_MARKER.exists():
+        since = (now - _HS_REF_MARKER.stat().st_mtime) / 86400.0
+        if since < HS_REF_REALERT_DAYS:
+            return None
+    return (
+        "📅 <b>관세청 HS부호 개정 확인</b>\n"
+        f"현재 호스트 파일이 <b>{int(age_days)}일</b> 전 것 "
+        f"(<code>{html.escape(ref.name)}</code>).\n"
+        "1월 1일자 연 1회 개정. 새 파일을 받아 같은 경로에 덮어쓰면 "
+        "다음 검색부터 자동 반영.\n"
+        "<a href=\"https://www.data.go.kr/data/15049722/fileData.do\">"
+        "dataset 15049722</a>"
+    )
+
+
+def _touch_hs_marker() -> None:
+    try:
+        _HS_REF_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _HS_REF_MARKER.touch()
+    except OSError:
+        pass
 
 
 def _send(chat_id: int, text: str) -> bool:
@@ -131,6 +184,22 @@ def _format(candidates: list[dict]) -> str:
 
 def run(db_path=None, notify=None) -> int:
     notify = notify or _send
+
+    # HS reference freshness check — independent of the ±30% path and
+    # of whether the operator has pinned anything yet. Marker is updated
+    # only on a successful send so a notify outage retries next tick.
+    fresh_msg = _check_hs_reference_freshness()
+    if fresh_msg:
+        chat = operator.get()
+        if chat and notify(chat, fresh_msg):
+            _touch_hs_marker()
+            log.info("HS reference staleness alert sent")
+        else:
+            log.info(
+                "HS reference stale but operator chat missing or send "
+                "failed — will retry next tick"
+            )
+
     pins = hs_map.entries()
     if not pins:
         log.info("no HS pins — nothing to evaluate")
