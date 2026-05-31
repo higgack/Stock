@@ -29,22 +29,20 @@ _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
 
 _KEY_WARNED = False
 
-# 후보 (base, endpoint, kind) — discovery 가 200+data 첫 매치 채택.
-# 'kind'=auth(인허가)/strt(착공), 'shape'=odcloud(JSON page/perPage)/xml(numOfRows)
-_CANDIDATES = (
-    # odcloud 패턴
-    ("https://api.odcloud.kr/api/HouseLicensingService/v1",
-     "getHouseLicensing", "auth", "odcloud"),
-    ("https://api.odcloud.kr/api/BldPrmsService/v1",
-     "getBldPrms", "auth", "odcloud"),
-    ("https://api.odcloud.kr/api/HouseStrtService/v1",
-     "getHouseStrt", "strt", "odcloud"),
-    # apis.data.go.kr 패턴 (1613000 = 국토부)
-    ("https://apis.data.go.kr/1613000/HouseLicensingService/v1",
-     "getHouseLicensing", "auth", "xml"),
-    ("https://apis.data.go.kr/1613000/HouseStrtService/v1",
-     "getHouseStrt", "strt", "xml"),
+# 활용신청 상세에서 확정된 op 이름 (건축HUB_건축인허가 17개 중 핵심 3개) —
+# /getApBasisOulnInfo (기본개요·종합) · /getApHoOulnInfo (호별) ·
+# /getApHsTpInfo (주택유형). service path 가 빠져 있어 후보 base 6종 brute-force.
+_AUTH_OPS = ("getApBasisOulnInfo", "getApHoOulnInfo", "getApHsTpInfo")
+_AUTH_BASES = (
+    "https://apis.data.go.kr/1613000/ArchPmsHubService",
+    "https://apis.data.go.kr/1613000/ArchPmsHubSvc",
+    "https://apis.data.go.kr/1613000/ArchPmsService",
+    "https://apis.data.go.kr/1613000/BldhsService",
+    "https://apis.data.go.kr/1613000/ApBasisOulnInfoService",
+    "https://apis.data.go.kr/1613000/getApBasisOulnInfo",  # service-as-op fallback
 )
+# 1613000 (국토부 건축HUB) 는 XML 응답이 기본 — sigunguCd 필수(서울 강남구=11680).
+_AUTH_PARAMS = {"sigunguCd": "11680", "numOfRows": 3, "pageNo": 1, "_type": "json"}
 
 
 def buildperm_key_ready() -> bool:
@@ -92,17 +90,27 @@ if __name__ == "__main__":
         print("DATA_GO_KR_API_KEY 미설정 — .env 확인")
         raise SystemExit(1)
 
-    print("=== 건축HUB 인허가/착공 엔드포인트 탐색 (status + body) ===")
-    print("    (활용신청 미승인이면 HTTP 401 '인증키' / op 오류면 'SERVICE')")
-    for base, ep, kind, shape in _CANDIDATES:
-        url = f"{base}/{ep}"
-        if shape == "odcloud":
-            params = {"page": 1, "perPage": 3, "returnType": "JSON"}
-        else:
-            params = {"numOfRows": 3, "pageNo": 1, "type": "json"}
-        status, body = _http_get(url, params, accept_xml=(shape == "xml"))
-        print(f"\n--- [{kind}/{shape}] {ep}\n    {base}\n    HTTP {status} · {body[:400]}")
+    print("=== 건축HUB 인허가 엔드포인트 탐색 (sigunguCd=11680/강남) ===")
+    print("    200+resultCode 00 = 확정. 'SERVICE' = base 오답, 'NODATA' = base OK·인자")
+    hits = []
+    for base in _AUTH_BASES:
+        for op in _AUTH_OPS:
+            url = f"{base}/{op}"
+            status, body = _http_get(url, _AUTH_PARAMS, accept_xml=True)
+            ok = (status == 200 and ("resultCode" in (body or "")
+                                     or "<item>" in (body or "")
+                                     or '"items"' in (body or "")))
+            tag = "✅" if ok else "  "
+            if ok:
+                hits.append((base, op))
+            print(f"{tag} [{status}] {op}\n     {base}\n     {body[:240]}\n")
 
-    print("\n→ HTTP 200 + 'data'/'response' 가 보이는 (base, endpoint) 와 첫 행")
-    print("  필드명을 붙여주세요. 전부 401/SERVICE 면 활용신청이 별도 필요합니다.")
-    print("  (data.go.kr 검색어: '건축HUB 인허가' / '주택 착공').")
+    if hits:
+        print(f"\n→ HIT {len(hits)}건. 첫 후보로 데이터 dump:")
+        base, op = hits[0]
+        s, b = _http_get(f"{base}/{op}", _AUTH_PARAMS, accept_xml=True)
+        print(b[:1500])
+    else:
+        print("\n→ 모두 실패. base path 가 위 6 후보 밖이라는 뜻 — data.go.kr")
+        print("  활용신청 상세에서 '참고문서' 또는 '미리보기' 의 example URL 한")
+        print("  줄을 알려주시면 후보를 정확히 1개로 좁힙니다.")
