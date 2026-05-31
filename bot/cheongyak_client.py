@@ -193,12 +193,28 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     if "--compet" in sys.argv:
-        # 경쟁률 엔드포인트 discovery — 후보 (base, endpoint) 별 raw 응답
-        print("=== 청약 경쟁률 엔드포인트 탐색 ===")
+        # 경쟁률 엔드포인트 discovery — 후보별 HTTP 상태 + 본문 직접 출력
+        # (404=경로오류 vs 미등록서비스=활용신청 필요 를 구분하기 위함)
+        import httpx as _hx
+        _key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
+        print("=== 청약 경쟁률 엔드포인트 탐색 (status + body) ===")
         for base, ep in _COMPET_CANDIDATES:
-            print(f"\n--- {base}/{ep} (perPage=3) ---")
-            raw = _get(ep, per_page=3, base=base)
-            print(json.dumps(raw, ensure_ascii=False)[:1500] if raw else "(없음/오류)")
+            url = f"{base}/{ep}"
+            try:
+                if "%" in _key:
+                    from urllib.parse import urlencode
+                    rr = _hx.get(f"{url}?serviceKey={_key}&"
+                                 f"{urlencode({'page':1,'perPage':3,'returnType':'JSON'})}",
+                                 headers={"User-Agent": _UA}, timeout=_TIMEOUT,
+                                 follow_redirects=True)
+                else:
+                    rr = _hx.get(url, params={"serviceKey": _key, "page": 1,
+                                              "perPage": 3, "returnType": "JSON"},
+                                 headers={"User-Agent": _UA}, timeout=_TIMEOUT,
+                                 follow_redirects=True)
+                print(f"\n--- {ep}\n    {base}\n    HTTP {rr.status_code} · {rr.text[:400]}")
+            except Exception as _e:
+                print(f"\n--- {ep}\n    {base}\n    호출 실패: {_e}")
         print("\n=== recent_competition() 파싱 결과 (앞 8건) ===")
         comp = recent_competition(per_page=50)
         print(f"총 {len(comp)}건")
