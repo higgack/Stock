@@ -65,8 +65,40 @@ def build_summary(data: dict) -> str:
     return "\n".join(lines)
 
 
+def _fmt_pct(v) -> str:
+    if v is None:
+        return "—"
+    return f"{'+' if v >= 0 else ''}{v:.2f}%"
+
+
+def build_trend_block(trend: dict) -> str:
+    """R-ONE 월간 지수 추세 → 텍스트 블록. 비어있으면 ''."""
+    if not trend:
+        return ""
+    order = ("전국", "수도권", "지방", "서울")
+    lines = ["[R-ONE 월간 아파트 가격지수 추세 (한국부동산원 공식 · 개별 실거래 "
+             "노이즈와 별개의 매끄러운 시장 추세)]"]
+    for key, ko in (("sale", "매매지수"), ("jeonse", "전세지수")):
+        regs = trend.get(key) or {}
+        if not regs:
+            continue
+        parts, period = [], ""
+        for reg in order:
+            t = regs.get(reg)
+            if not t:
+                continue
+            period = t.get("latest_period") or period
+            parts.append(f"{reg} {_fmt_pct(t.get('mom_pct'))} MoM/"
+                         f"{_fmt_pct(t.get('m3_pct'))} 3M")
+        if parts:
+            pstr = f" ({period[:4]}.{period[4:6]})" if len(period) >= 6 else ""
+            lines.append(f"  {ko}{pstr}: " + " · ".join(parts))
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 _PROMPT = """당신은 한국 부동산 시장 전문 애널리스트입니다. 아래는 {ymd} 국토
-교통부(MOLIT) 아파트 매매 실거래가에서 직접 집계한 **정확한 수치**입니다.
+교통부(MOLIT) 아파트 매매 실거래가에서 직접 집계한 **정확한 수치**이며,
+한국부동산원(R-ONE) 월간 가격지수 추세가 함께 제공됩니다 (있는 경우).
 이를 바탕으로 '부동산 Byte' 주간 브리프를 작성하세요.
 
 {summary}
@@ -77,18 +109,22 @@ _PROMPT = """당신은 한국 부동산 시장 전문 애널리스트입니다. 
 2. 지역별 가격대 비교 (강남권 고가 vs 외곽/지방), 거래량으로 본 매수
    심리(거래 활발/위축), 평당가 격차, **전세가율**(데이터에 있으면) 서술.
    전세가율 높음(>70%) = 갭투자 유인·매매 전환 압력, 낮음 = 매매 관망.
-3. **매크로 연계**: 기준금리·주담대 금리를 web search 로 확인해 가격
+3. **R-ONE 지수 추세 우선 인용** (블록 있으면): 개별 실거래 평균은 표본·
+   단지 구성에 따라 출렁이므로, **방향성 시그널은 R-ONE 월간 지수의
+   MoM/3M 변화율을 1차 근거로** 삼는다 (매매·전세 / 전국·수도권·지방).
+   실거래 평균과 지수 추세가 어긋나면 그 괴리를 짚어준다.
+4. **매크로 연계**: 기준금리·주담대 금리를 web search 로 확인해 가격
    방향성 맥락 제공 (출처 날짜 {ymd} 이하, 미확인 시 명시). 전세가율은
    위 데이터의 정확값을 우선 사용 (web search 추정치로 덮지 말 것).
-4. **섹터 함의 (중립)**: 건설(시공)·부동산(디벨로퍼/리츠)·은행(부동산 PF
+5. **섹터 함의 (중립)**: 건설(시공)·부동산(디벨로퍼/리츠)·은행(부동산 PF
    부실) 에 미치는 영향을 정보 차원에서 서술. 특정 종목 매수 권유 금지.
-5. **구조** (각 섹션 지정 이모지 헤더 한 줄):
-   🏠 시장 총평 (거래량·가격 방향)
+6. **구조** (각 섹션 지정 이모지 헤더 한 줄):
+   🏠 시장 총평 (거래량·가격 방향 · R-ONE 지수 추세)
    📍 지역별 온도차 (고가권 vs 외곽/지방)
    💰 매크로 연계 (금리·전세가율)
    🏗️ 섹터 함의 (건설/부동산/은행, 중립)
    🎯 한 줄 결론
-6. **본문 일반 텍스트** + 이모지 헤더. 강조는 **굵게**. HTML 태그·`---`
+7. **본문 일반 텍스트** + 이모지 헤더. 강조는 **굵게**. HTML 태그·`---`
    수평선 금지. 각 항목 줄바꿈.
 면책: 끝에 "본 브리프는 공공데이터 관찰 (교육·정보 목적), 투자 권유 아님" 1줄.
 """
@@ -165,8 +201,22 @@ def generate() -> tuple[str, float, str | None] | None:
         log.warning("realestate: 실거래 데이터 0건 — skip")
         return None
 
+    # R-ONE 월간 지수 추세 (선행지표, 키 없으면 graceful skip)
+    trend = {}
+    try:
+        from bot.rone_client import realestate_trend, rone_key_ready
+        if rone_key_ready():
+            trend = realestate_trend()
+    except Exception as exc:
+        log.warning("realestate: R-ONE trend fetch failed: %s", exc)
+
+    summary = build_summary(data)
+    trend_block = build_trend_block(trend)
+    if trend_block:
+        summary = f"{summary}\n\n{trend_block}"
+
     from bot.screener import _call_pro
-    prompt = _PROMPT.format(ymd=data["ymd"], summary=build_summary(data))
+    prompt = _PROMPT.format(ymd=data["ymd"], summary=summary)
     try:
         raw, pt, ot = _call_pro(api_key, prompt, enable_grounding=True)
     except Exception as exc:

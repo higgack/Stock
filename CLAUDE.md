@@ -368,7 +368,20 @@ pattern to follow:
   push + `realestate.html` 대시보드 (오늘/누적 비용·검색·🗑️) + subsystem=
   "realestate". **DATA_GO_KR_API_KEY 무료 키 필요** (data.go.kr 가입 →
   '국토교통부 아파트 실거래가' 활용신청 → .env). `realestate_key_ready()`
-  gate 로 키 없으면 graceful skip. **현재 키 대기 중 — scaffold ready.**
+  gate 로 키 없으면 graceful skip. **DATA_GO_KR_API_KEY LIVE (2026-05-31)** —
+  아파트 매매 + 전월세 + 오피스텔 + 연립다세대 실거래 모두 작동
+  (브리프 ₩17.2, 인포그래픽 yes 확인). 7개 data.go.kr API 활용신청 완료
+  (매매/전월세/오피스텔/연립/건축인허가/청약/통계리스트).
+  **R-ONE 추세 통합 LIVE (2026-05-31)** — `bot/rone_client.py` (한국부동산원
+  reb.or.kr 자체 OpenAPI, 별도 키 `REB_RONE_API_KEY` 발급 완료). R-ONE 은
+  **주간 동향 미개방**(보도자료 only) → **월간 지역별 아파트 지수**(매매
+  A_2024_00178 / 전세 A_2024_00182) 의 MoM/3M 추세를 실거래(개별 노이즈)
+  대비 매끄러운 방향성 시그널로 brief 에 주입. 엔드포인트 `SttsApiTblData.do`
+  (KOSIS 식 StatisticSearch.do 아님 — ERROR-310), 기간 필수
+  (START/END_WRTTIME), 필드 WRTTIME_IDTFR_ID/CLS_NM/DTA_VAL. `realestate_
+  trend()` (전국·수도권·지방·서울, 표당 1 fetch) → `build_trend_block`.
+  probe: `python -m bot.rone_client` / 통계표 재탐색 `--tables`. 청약홈
+  분양정보 + 건축인허가/착공 client 는 다음 작업(활용신청 완료, 미구현).
   완전 미러링 (2026-05-31): Daily Byte 와 동등 — `realestate_infographic.py`
   (지역별 평균가/거래량 막대 + 평당가 matplotlib PNG, 사진 push + 카드
   임베드), `realestate_monthly.py` (매월 1일 09:00 `realestate-byte-monthly.

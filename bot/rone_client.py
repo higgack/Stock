@@ -174,54 +174,70 @@ def fetch_index(statbl_id: str, n_months: int = 8, cycle: str = "MM") -> list[di
         except (TypeError, ValueError):
             val = None
         out.append({
-            "period": str(r.get("WRTTIME_IDTFR") or r.get("WRTTIME_DESC") or ""),
-            "cls_id": r.get("CLS_ID") or r.get("CLS_FULLNM") or "",
-            "cls_nm": r.get("CLS_NM") or r.get("CLS_FULLNM") or "",
+            "period": str(r.get("WRTTIME_IDTFR_ID") or r.get("WRTTIME_IDTFR") or ""),
+            "cls_id": r.get("CLS_ID") or "",
+            "cls_nm": (r.get("CLS_NM") or "").strip(),
+            "cls_fullnm": (r.get("CLS_FULLNM") or "").strip(),
             "itm_nm": r.get("ITM_NM") or "",
             "value": val,
         })
     return out
 
 
-def _pick_region(rows: list[dict], region: str) -> list[tuple[str, float]]:
-    """특정 지역(cls_nm 부분일치) 의 (period, value) 시계열 (period 오름차순)."""
+def _series_for(rows: list[dict], region: str) -> list[tuple[str, float]]:
+    """지역(cls_nm 정확일치) 의 (period, value) 시계열 (period 오름차순)."""
     series = {}
     for r in rows:
         if r["value"] is None or not r["period"]:
             continue
-        if region in (r.get("cls_nm") or ""):
+        if r["cls_nm"] == region:
             series[r["period"]] = r["value"]
     return sorted(series.items())
 
 
-def index_trend(statbl_id: str, region: str = "전국") -> dict | None:
-    """지역 지수 시계열에서 최신·전월·3개월전 + MoM/3M 변화율(%).
-    region 미존재 시 None (호출측이 graceful skip)."""
-    rows = fetch_index(statbl_id)
-    series = _pick_region(rows, region)
+def _trend(series: list[tuple[str, float]], region: str) -> dict | None:
+    """(period, value) 시계열 → 최신·MoM·3M 변화율(%). <2pt 면 None."""
     if len(series) < 2:
         return None
     periods = [p for p, _ in series]
     vals = [v for _, v in series]
     latest, prev = vals[-1], vals[-2]
     mom = (latest / prev - 1.0) * 100.0 if prev else None
-    m3 = None
-    if len(vals) >= 4 and vals[-4]:
-        m3 = (latest / vals[-4] - 1.0) * 100.0
+    m3 = (latest / vals[-4] - 1.0) * 100.0 if len(vals) >= 4 and vals[-4] else None
     return {
-        "region": region, "latest_period": periods[-1],
-        "latest": round(latest, 2), "mom_pct": round(mom, 2) if mom is not None else None,
+        "region": region, "latest_period": periods[-1], "latest": round(latest, 2),
+        "mom_pct": round(mom, 2) if mom is not None else None,
         "m3_pct": round(m3, 2) if m3 is not None else None,
     }
 
 
-def realestate_trend(region: str = "전국") -> dict:
-    """부동산 Byte 용 — 매매·전세 지수 추세 한 번에. 실패 항목은 빠짐."""
+def index_trend(statbl_id: str, region: str = "전국") -> dict | None:
+    """단일 지역 추세 (probe/단건용). region 미존재 시 None."""
+    return _trend(_series_for(fetch_index(statbl_id), region), region)
+
+
+def index_trends(statbl_id: str, regions: tuple[str, ...]) -> dict:
+    """표 1회 fetch 로 여러 지역 추세 한꺼번에. {region: trenddict} (≥2pt 만)."""
+    rows = fetch_index(statbl_id)
     out = {}
-    sale = index_trend(STATBL_SALE, region)
+    for reg in regions:
+        t = _trend(_series_for(rows, reg), reg)
+        if t:
+            out[reg] = t
+    return out
+
+
+_DEFAULT_REGIONS = ("전국", "수도권", "지방", "서울")
+
+
+def realestate_trend(regions: tuple[str, ...] = _DEFAULT_REGIONS) -> dict:
+    """부동산 Byte 용 — 매매·전세 지수 추세 (지역별). 빈 항목은 빠짐.
+    {'sale': {region: {...}}, 'jeonse': {region: {...}}}."""
+    out = {}
+    sale = index_trends(STATBL_SALE, regions)
     if sale:
         out["sale"] = sale
-    jeonse = index_trend(STATBL_JEONSE, region)
+    jeonse = index_trends(STATBL_JEONSE, regions)
     if jeonse:
         out["jeonse"] = jeonse
     return out
@@ -255,33 +271,16 @@ if __name__ == "__main__":
         _dump("'아파트' + '전세지수'", list_tables("아파트", "전세지수"))
         raise SystemExit(0)
 
-    # 데이터/항목 엔드포인트 원시 응답 — 정확한 op 이름·필드명 확인
-    import json as _json
-    for ep, params in (
-        ("SttsApiTblData.do", {"STATBL_ID": STATBL_SALE, "DTACYCLE_CD": "MM",
-                               "START_WRTTIME": "202501", "END_WRTTIME": "202605", "pSize": 50}),
-        ("SttsApiTblData.do", {"STATBL_ID": STATBL_SALE, "pSize": 50}),
-        ("SttsApiTblItm.do", {"STATBL_ID": STATBL_SALE, "pSize": 50}),
-    ):
-        print(f"=== RAW: {ep}  {params} ===")
-        raw = _get(ep, params)
-        print(_json.dumps(raw, ensure_ascii=False)[:1600] if raw else "(없음)")
-        print()
-
-    # 데이터 probe — 확정 통계표의 실제 응답 스키마 + 추세 확인
+    # 데이터 probe — 확정 통계표의 실제 응답 + 지역 라벨 + 추세
     for label, sid in (("매매지수", STATBL_SALE), ("전세지수", STATBL_JEONSE)):
-        print(f"\n=== {label}  STATBL_ID={sid} — StatisticSearch.do 샘플 ===")
+        print(f"\n=== {label}  STATBL_ID={sid} — SttsApiTblData.do 샘플 ===")
         rows = fetch_index(sid)
-        print(f"수신 행 {len(rows)}개. 앞 12행:")
-        for r in rows[:12]:
-            print(f"  period={r['period']:<8} cls_nm={r['cls_nm']!r:<14} "
-                  f"itm={r['itm_nm']!r:<14} value={r['value']}")
-        # 등장하는 지역(cls_nm) 라벨 — region 매핑 확인용
+        print(f"수신 행 {len(rows)}개. 앞 8행:")
+        for r in rows[:8]:
+            print(f"  {r['period']:<8} {r['cls_nm']!r:<10} {r['value']}")
         labels = sorted({r["cls_nm"] for r in rows if r["cls_nm"]})
-        print(f"  지역 라벨 {len(labels)}종: {labels[:25]}")
-        for reg in ("전국", "서울"):
-            t = index_trend(sid, reg)
-            print(f"  [{reg}] trend → {t}")
+        print(f"  지역 라벨 {len(labels)}종: {labels[:30]}")
 
-    print("\n→ 위 'value' 가 채워지고 [전국]/[서울] trend 가 나오면 통합 준비 완료.")
-    print("  value 가 전부 None 이거나 행 0 이면 응답 앞부분을 붙여주세요 (필드명 조정).")
+    print("\n=== realestate_trend() — 부동산 Byte 통합 출력 ===")
+    import json as _json
+    print(_json.dumps(realestate_trend(), ensure_ascii=False, indent=2))
