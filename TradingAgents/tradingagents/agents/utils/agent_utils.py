@@ -2751,29 +2751,36 @@ def _section_allowed(analyst_id: str | None, section: str) -> bool:
     return section not in _ANALYST_CONTEXT_EXCLUDE.get(analyst_id, set())
 
 
-def build_instrument_context(ticker: str, analyst_id: str | None = None) -> str:
+def build_instrument_context(ticker: str, analyst_id: str | None = None,
+                             screener_mode: bool = False) -> str:
     """Memoizing wrapper around `_build_instrument_context_impl` (F1, 2026-
-    05-29 audit). Keyed by (ticker, analyst_id, KST-date) so the up-to-8
-    builds per analysis collapse to one per distinct shape. Bounded:
-    cleared wholesale when it grows past 256 entries (screener can touch
-    many tickers/day). The NOAH /ticker path additionally calls
-    clear_instrument_caches() at run start for intraday freshness."""
+    05-29 audit). Keyed by (ticker, analyst_id, screener_mode, KST-date) so
+    the up-to-8 builds per analysis collapse to one per distinct shape.
+    Bounded: cleared wholesale when it grows past 256 entries (screener can
+    touch many tickers/day). The NOAH /ticker path additionally calls
+    clear_instrument_caches() at run start for intraday freshness.
+
+    screener_mode=True: KR 무거운 per-ticker FSC(lock-up/소액주주/dilution)
+    skip — 5거래일 deep-dive 신호라 /ticker 전용. Screener(6-18M 발굴)는
+    시세·시총만 필요 → KR 종목당 ~15 HTTP → ~2 (2026-06-01 perf)."""
     import datetime as _ctx_dt
     _today_kst = _ctx_dt.datetime.now(
         _ctx_dt.timezone(_ctx_dt.timedelta(hours=9))
     ).date().isoformat()
-    _key = (ticker, analyst_id, _today_kst)
+    _key = (ticker, analyst_id, screener_mode, _today_kst)
     _hit = _INSTRUMENT_CONTEXT_CACHE.get(_key)
     if _hit is not None:
         return _hit
-    _result = _build_instrument_context_impl(ticker, analyst_id)
+    _result = _build_instrument_context_impl(
+        ticker, analyst_id, screener_mode=screener_mode)
     if len(_INSTRUMENT_CONTEXT_CACHE) > 256:
         _INSTRUMENT_CONTEXT_CACHE.clear()
     _INSTRUMENT_CONTEXT_CACHE[_key] = _result
     return _result
 
 
-def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -> str:
+def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
+                                   *, screener_mode: bool = False) -> str:
     """Describe the exact instrument so agents preserve exchange-qualified
     tickers and adjust their data expectations for non-equity products.
 

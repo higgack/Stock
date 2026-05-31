@@ -1757,7 +1757,9 @@ def _fetch_contexts_parallel(tickers: list[str], max_workers: int = 8,
     ex = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="screener")
     try:
         futures = {
-            ex.submit(build_instrument_context, t, "news"): t
+            # screener_mode=True → KR 무거운 per-ticker FSC(lock-up/소액주주/
+            # dilution) skip (2026-06-01 perf). 시세·시총만 fetch.
+            ex.submit(build_instrument_context, t, "news", True): t
             for t in tickers
         }
         try:
