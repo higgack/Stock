@@ -175,7 +175,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /ignored — 현재 ignore 목록
 /hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭으로 즉시 핀(✅ 토글), 여러 개 선택 후 맨 아래 <b>완료</b> (예: /hs 반도체, /hs 8542). 직접 등록도 가능: /hs &lt;품목&gt; &lt;HS코드&gt;
 /unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록 (검색은 ~/.trade/hs_codes.xlsx 필요 — 관세청 15049722 파일 다운로드, 개정 시 덮어쓰기)
-/customs — 핀 품목 관세청 월 금액 비교 (수출·전월비·무역수지). 대쉬보드 헤더 📦 패널과 동일
+/customs — 관세청 수출입: 📌내 핀 + 📈급등률 TOP + 💵급증액 TOP + 🗄아카이브. 대쉰보드 📦 패널과 동일
 /cost — 비용·자원 현황 (외부 API 전부 무료 · 디스크 사용 · 관세청 일 호출/한도)
 ※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
 
@@ -189,7 +189,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent) + 미파싱 캡션을 eval_misses.jsonl에 누적 (회귀 fixture용, 키별 1회)
 • trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
 • trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일 룩백 + 200개 cap, 초과 시 ⚠️ abort)
-• trade-bot-customs-fetch (매일 01:30 KST) — 핀된 품목의 관세청 월 확정 금액 수집(12개월, 알림 0) → 이어서 급변 평가: 새 달 수출 전월비 ±30% 초과 시 <b>운영자 DM</b> 1건 (첫 실행·신규 핀 baseline 무음, cap 10건·초과 시 요약, 채널 X). HS부호 파일(~/.trade/hs_codes.xlsx)이 180일 이상 묵으면 ⚠️ 개정 안내 DM (30일 lockout)
+• trade-bot-customs-fetch (매일 01:30 KST) — 전 chapter(01~97) 급변 스캔 → 📈급등률(+30%)·💵급증액 TOP30 자동발굴(매일 갱신, 과거 🗄아카이브 무제한), 신규 진입 <b>운영자 DM</b>(첫 스캔 무음, cap 10). 수동 핀도 수집. 최초 1회 핀 백업·초기화
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 
@@ -198,7 +198,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-05-31 — /hs 다중 선택(✅ 토글 + 완료 버튼) · /cost 비용·자원 · /hs 물질명 표시 · 관세청 급변 알림</i>
+<i>최종 갱신: 2026-05-31 — 관세청 전 chapter 급변 자동발굴(📈·💵 TOP30·🗄아카이브) · /hs 다중선택</i>
 """
 
 
@@ -965,43 +965,53 @@ async def cmd_hslist(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def _format_customs() -> str:
-    """Text comparison of pinned items' latest 관세청 monthly figures —
-    the DM twin of the dashboard panel. Reads the same customs.db +
-    hs_map, so DM and dashboard never drift."""
-    from trade import customs
+    """Body for the /customs DM — DM twin of the dashboard 관세청 패널.
+    📌 내 핀(수동, 영구) + 📈 급등률 / 💵 급증액 (자동 발굴, 매일 갱신). Reads
+    the same customs.db the dashboard panel uses so the two never drift."""
+    from trade import customs, customs_scan
+
+    db = customs.DEFAULT_DB
+    parts: list[str] = []
 
     pins = hs_map.entries()
-    if not pins:
-        return (
-            "📦 핀된 품목 없음.\n\n핀을 추가하면 관세청 월 수출입금액을 비교합니다:\n"
-            + _HS_USAGE
-        )
-    db = customs.DEFAULT_DB
-    if not Path(db).exists():
-        rows = [{"item": it, "hs_code": hs, "has_data": False} for it, hs in pins]
-    else:
-        with customs.session(db) as conn:
-            rows = customs.summary_rows(conn, pins)
+    if pins and db.exists():
+        rows: list[dict] = []
+        try:
+            with customs.session(db) as conn:
+                rows = customs.summary_rows(conn, pins)
+        except Exception:
+            rows = []
+        pin_lines = []
+        for r in rows:
+            if not r.get("has_data"):
+                pin_lines.append(f"• <b>{r['item']}</b>: 수집 대기")
+                continue
+            pin_lines.append(
+                f"• <b>{r['item']}</b>  수출 {customs.fmt_usd(r.get('exp_dlr'))} "
+                f"({customs.fmt_pct(r.get('exp_mom'))})  "
+                f"· 수입 {customs.fmt_usd(r.get('imp_dlr'))} "
+                f"· 무역수지 {customs.fmt_usd(r.get('bal_payments'))}"
+            )
+        if pin_lines:
+            parts.append("📌 <b>내 핀</b> (%d개)" % len(rows))
+            parts.extend(pin_lines)
 
-    latest = max(
-        (r.get("year_month", "") for r in rows if r.get("has_data")),
-        default="",
-    )
-    head = f"📦 <b>관세청 수출입</b> (핀 {len(rows)}개"
-    head += f" · 최신 {latest})" if latest else ")"
-    lines = [head, "<i>월 확정 금액(공식) · BeOn과 별개</i>", ""]
-    for r in rows:
-        item = _html.escape(r.get("item", ""))
-        if not r.get("has_data"):
-            lines.append(f"• {item} — <i>수집 대기</i>")
-            continue
-        lines.append(
-            f"• <b>{item}</b>  수출 {customs.fmt_usd(r.get('exp_dlr'))} "
-            f"({customs.fmt_pct(r.get('exp_mom'))})  "
-            f"· 수입 {customs.fmt_usd(r.get('imp_dlr'))} "
-            f"· 무역수지 {customs.fmt_usd(r.get('bal_payments'))}"
+    try:
+        surge = customs_scan.render_surge_text(db)
+    except Exception:
+        surge = ""
+    if surge:
+        if parts:
+            parts.append("")
+        parts.append(surge)
+
+    if not parts:
+        return (
+            "📦 관세청 수출입\n\n아직 수집된 데이터가 없습니다.\n"
+            "매일 01:30 KST 전체 스캔 후 +30% 급변 품목이 자동 등록됩니다 "
+            "(첫 스캔은 baseline 무음). 수동 추적은 /hs 로 품목을 핀하세요."
         )
-    return "\n".join(lines)
+    return "📦 <b>관세청 수출입</b>\n" + "\n".join(parts)
 
 
 async def cmd_customs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

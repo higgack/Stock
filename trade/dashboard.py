@@ -214,60 +214,64 @@ def _cost_line_html() -> str:
 
 
 def _customs_panel_html(rows: list[dict]) -> str:
-    """Collapsible 관세청 comparison panel (server-rendered, no JS, no
-    chart — table only, per the agreed scope). Returns '' when there are
-    no pins so nothing renders. Sits under the header.
-
-    Each row: 품목 · 최신월 수출/수입 금액 · 전월비. Pins with no cached
-    month yet show '수집 대기'. Numbers are official 관세청 confirmed
-    monthly figures (dataset 15101609) — not BeOn's.
-    """
-    if not rows:
-        return ""
+    """관세청 패널 묶음 — 📌 내 핀(수동, 영구) + 자동 발굴(📈 급등률 / 💵 급증액,
+    매일 갱신) + 🗄 급변 아카이브(무제한). `rows`는 서버가 미리 로드한 핀 요약;
+    자동 섹션은 customs.db에서 직접 읽는다. 핀이 없어도 자동 섹션은 렌더되며,
+    모두 비면 '' 반환 → 섹션 생략."""
     from trade.customs import fmt_pct, fmt_usd
 
-    with_data = [r for r in rows if r.get("has_data")]
-    latest_ym = ""
-    for r in with_data:
-        if r.get("year_month", "") > latest_ym:
-            latest_ym = r["year_month"]
-    ym_label = f" · 최신 {escape(latest_ym)}" if latest_ym else ""
+    pins_block = ""
+    if rows:
+        with_data = [r for r in rows if r.get("has_data")]
+        latest_ym = ""
+        for r in with_data:
+            if r.get("year_month", "") > latest_ym:
+                latest_ym = r["year_month"]
+        ym_label = f" · 최신 {escape(latest_ym)}" if latest_ym else ""
 
-    body = [
-        '<table class="customs-table"><thead><tr>'
-        '<th>품목</th><th>수출</th><th>전월비</th>'
-        '<th>수입</th><th>무역수지</th>'
-        '</tr></thead><tbody>'
-    ]
-    for r in rows:
-        item = escape(r.get("item", ""))
-        hs = escape(r.get("hs_code", ""))
-        if not r.get("has_data"):
+        body = [
+            '<table class="customs-table"><thead><tr>'
+            '<th>품목</th><th>수출</th><th>전월비</th>'
+            '<th>수입</th><th>무역수지</th>'
+            '</tr></thead><tbody>'
+        ]
+        for r in rows:
+            item = escape(r.get("item", ""))
+            hs = escape(r.get("hs_code", ""))
+            if not r.get("has_data"):
+                body.append(
+                    f'<tr class="nodata"><td>{item} '
+                    f'<span class="hs">{hs}</span></td>'
+                    f'<td colspan="4">수집 대기</td></tr>'
+                )
+                continue
+            mom = r.get("exp_mom")
+            mom_cls = "up" if (mom or 0) > 0 else ("down" if (mom or 0) < 0 else "")
             body.append(
-                f'<tr class="nodata"><td>{item} '
-                f'<span class="hs">{hs}</span></td>'
-                f'<td colspan="4">수집 대기</td></tr>'
+                f'<tr><td>{item} <span class="hs">{hs}</span></td>'
+                f'<td class="num">{escape(fmt_usd(r.get("exp_dlr")))}</td>'
+                f'<td class="num {mom_cls}">{escape(fmt_pct(mom))}</td>'
+                f'<td class="num">{escape(fmt_usd(r.get("imp_dlr")))}</td>'
+                f'<td class="num">{escape(fmt_usd(r.get("bal_payments")))}</td></tr>'
             )
-            continue
-        mom = r.get("exp_mom")
-        mom_cls = "up" if (mom or 0) > 0 else ("down" if (mom or 0) < 0 else "")
-        body.append(
-            f'<tr><td>{item} <span class="hs">{hs}</span></td>'
-            f'<td class="num">{escape(fmt_usd(r.get("exp_dlr")))}</td>'
-            f'<td class="num {mom_cls}">{escape(fmt_pct(mom))}</td>'
-            f'<td class="num">{escape(fmt_usd(r.get("imp_dlr")))}</td>'
-            f'<td class="num">{escape(fmt_usd(r.get("bal_payments")))}</td></tr>'
-        )
-    body.append("</tbody></table>")
+        body.append("</tbody></table>")
 
-    return (
-        '<details class="customs-panel">'
-        f'<summary>📦 관세청 수출입 (핀 {len(rows)}개{ym_label})</summary>'
-        '<div class="customs-note">관세청 월 확정 금액(공식, dataset 15101609) · '
-        'BeOn 데이터와 별개 · 핀 품목만</div>'
-        + "".join(body)
-        + "</details>"
-    )
+        pins_block = (
+            '<details class="customs-panel">'
+            f'<summary>📌 내 핀 ({len(rows)}개{ym_label})</summary>'
+            '<div class="customs-note">관세청 월 확정 금액(공식, dataset 15101609) · '
+            'BeOn 데이터와 별개 · 수동 핀만</div>'
+            + "".join(body)
+            + "</details>"
+        )
+
+    try:
+        from trade import customs_scan
+        surge_block = customs_scan.render_surge_html()
+    except Exception:
+        surge_block = ""
+
+    return pins_block + surge_block
 
 
 def _build_html(

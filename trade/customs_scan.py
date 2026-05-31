@@ -1,0 +1,466 @@
+"""전 chapter 관세청 급변 스캐너 — auto-discovery of surging HS items.
+
+Unlike fetch_customs (which pulls ONLY operator-pinned HS codes), this
+module sweeps the whole HS table (chapters 01~97) once, computes each
+10-digit leaf's month-over-month export move, and ranks two views the
+operator asked for:
+
+  📈 급등률 TOP — 전월비 +PCT% 이상 '상승만', % 내림차순, 상위 N
+  💵 급증액 TOP — 변화 금액($) 내림차순 (가장 많이 늘어난 순), 상위 N
+
+Design notes / blast-radius guards (see CLAUDE.md):
+  - Cost 0: 관세청 data.go.kr is free; a full sweep is ~chapters × pages
+    calls/day, well under the 10,000/day free quota.
+  - Hard cap: only top-N per section land — blast radius ≤ 2·N by
+    construction, independent of any value floor.
+  - First-run baseline-silent: the very first sweep marks every current
+    top item 'seen' WITHOUT alerting, so enabling the feature never
+    blasts a wall of historical surges. Only items NEW to a later
+    sweep alert.
+  - Refresh + archive: the two live sections are REPLACED each run
+    (latest snapshot only). Items that drop out are NOT lost — they
+    persist forever in customs_surge_archive, surfaced on the dashboard
+    so past surges stay inspectable (retention: unlimited, per operator).
+
+The customs API requires an hsSgn, so the "whole table" is covered by
+querying each 2-digit chapter (which returns all leaves under it) with
+pagination. Pure ranking is separated from I/O so tests exercise it
+against recorded rows.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import sqlite3
+import time
+import urllib.parse
+from pathlib import Path
+from typing import Callable, Optional
+
+from trade import customs
+
+log = logging.getLogger("customs-scan")
+
+# HS chapters 01~97 (98/99 are special/■ not used for goods trade).
+CHAPTERS = [f"{i:02d}" for i in range(1, 98)]
+
+# Tunables (env-overridable so the operator never edits code).
+TOP_N = int(os.environ.get("TRADE_CUSTOMS_SURGE_TOP_N") or "30")
+PCT_THRESHOLD = float(os.environ.get("TRADE_CUSTOMS_ALERT_PCT") or "30")
+# Safety: max pages per chapter so a runaway never hammers the quota.
+MAX_PAGES = int(os.environ.get("TRADE_CUSTOMS_SCAN_MAX_PAGES") or "60")
+# Alert cap (shared shape with customs_alert).
+ALERT_CAP = int(os.environ.get("TRADE_CUSTOMS_ALERT_CAP") or "10")
+TEASER = 3
+
+SECTION_RATE = "rate"      # 📈 급등률
+SECTION_AMOUNT = "amount"  # 💵 급증액
+
+
+# ───────────────────────── I/O: paged chapter fetch ─────────────────────────
+
+def fetch_chapter(
+    chapter: str,
+    start_yymm: str,
+    end_yymm: str,
+    *,
+    key: Optional[str] = None,
+    fetcher: Optional[Callable[[str], str]] = None,
+    max_pages: int = MAX_PAGES,
+) -> list[dict]:
+    """All leaf rows under a 2-digit `chapter` over [start, end], paged.
+
+    customs.fetch only grabs page 1 (fine for a narrow pinned prefix);
+    a chapter rolls up hundreds–thousands of leaves × months, so we
+    page until a short page (< numOfRows) or max_pages. Reuses
+    customs.parse_response so the XML shape stays in one place.
+
+    `fetcher` resolves to customs._http_get at CALL time (not def time)
+    so a test can monkeypatch customs._http_get and have it take."""
+    fetcher = fetcher or customs._http_get
+    key = key or os.environ.get("TRADE_DATA_GO_KR_KEY") or ""
+    if not key:
+        raise customs.CustomsAPIError("TRADE_DATA_GO_KR_KEY not set")
+    rows: list[dict] = []
+    for page in range(1, max_pages + 1):
+        qs = urllib.parse.urlencode({
+            "serviceKey": key,
+            "strtYymm": start_yymm,
+            "endYymm": end_yymm,
+            "hsSgn": chapter,
+            "numOfRows": customs._DEFAULT_ROWS,
+            "pageNo": page,
+        })
+        page_rows = customs.parse_response(fetcher(f"{customs.ENDPOINT}?{qs}"))
+        if not page_rows:
+            break
+        rows.extend(page_rows)
+        if len(page_rows) < customs._DEFAULT_ROWS:
+            break
+    return rows
+
+
+# ───────────────────────── pure ranking ─────────────────────────
+
+def build_series(rows: list[dict]) -> dict[str, dict]:
+    """Group raw leaf rows into {hs_code: {name, months:{ym: figures}}}.
+
+    Only true 10-digit leaves are kept (a chapter response can echo the
+    chapter aggregate row); aggregation guarantees one figure per
+    (leaf, month)."""
+    leaves: dict[str, dict] = {}
+    for r in rows:
+        hs = r["hs_code"]
+        if len(hs) != 10 or not hs.isdigit():
+            continue
+        ym = r["year_month"]
+        if not ym or len(ym) < 6:
+            continue
+        node = leaves.setdefault(hs, {"name": r.get("name") or hs, "months": {}})
+        if r.get("name"):
+            node["name"] = r["name"]
+        acc = node["months"].setdefault(ym, {"exp_dlr": 0, "imp_dlr": 0})
+        acc["exp_dlr"] += r.get("exp_dlr") or 0
+        acc["imp_dlr"] += r.get("imp_dlr") or 0
+    return leaves
+
+
+def _latest_move(months: dict) -> Optional[dict]:
+    """From {ym: figures} return latest vs previous export move, or None
+    when < 2 months. delta is always defined; pct is None when prev=0."""
+    if len(months) < 2:
+        return None
+    yms = sorted(months)
+    cur_ym, prev_ym = yms[-1], yms[-2]
+    curr = months[cur_ym].get("exp_dlr") or 0
+    prev = months[prev_ym].get("exp_dlr") or 0
+    pct = ((curr - prev) / prev * 100.0) if prev else None
+    return {
+        "year_month": cur_ym,
+        "prev": prev,
+        "curr": curr,
+        "delta": curr - prev,
+        "pct": pct,
+    }
+
+
+def rank(
+    leaves: dict[str, dict],
+    *,
+    top_n: int = TOP_N,
+    pct_threshold: float = PCT_THRESHOLD,
+) -> dict[str, list[dict]]:
+    """Two ranked lists from the scanned leaves.
+
+    rate   — pct >= +pct_threshold (상승만), sorted by pct desc.
+    amount — sorted by export Δ$ desc (가장 많이 늘어난 순).
+    Each row: hs_code, name, year_month, prev, curr, delta, pct."""
+    moves = []
+    for hs, node in leaves.items():
+        mv = _latest_move(node["months"])
+        if mv is None:
+            continue
+        mv = dict(mv)
+        mv["hs_code"] = hs
+        mv["name"] = node["name"]
+        moves.append(mv)
+
+    rate = [m for m in moves if m["pct"] is not None and m["pct"] >= pct_threshold]
+    rate.sort(key=lambda m: m["pct"], reverse=True)
+
+    amount = sorted(moves, key=lambda m: m["delta"], reverse=True)
+
+    return {
+        SECTION_RATE: rate[:top_n],
+        SECTION_AMOUNT: amount[:top_n],
+    }
+
+
+def floor_histogram(leaves: dict[str, dict], pct_threshold: float = PCT_THRESHOLD) -> dict:
+    """For --dry-run: count how many +PCT% surges survive at each export
+    value floor, so a floor (if ever wanted) is chosen from data not a
+    guess. Returns {floor_usd: count}."""
+    floors = [1_000_000, 10_000_000, 50_000_000, 100_000_000]
+    counts = {f: 0 for f in floors}
+    for node in leaves.values():
+        mv = _latest_move(node["months"])
+        if mv is None or mv["pct"] is None or mv["pct"] < pct_threshold:
+            continue
+        for f in floors:
+            if mv["curr"] >= f:
+                counts[f] += 1
+    return counts
+
+
+# ───────────────────────── persistence ─────────────────────────
+
+def init_db(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS customs_surge_live (
+            section TEXT NOT NULL, rank INTEGER NOT NULL,
+            hs_code TEXT NOT NULL, name TEXT,
+            year_month TEXT, prev INTEGER, curr INTEGER,
+            pct REAL, delta INTEGER,
+            PRIMARY KEY (section, rank)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS customs_surge_archive (
+            hs_code TEXT NOT NULL, year_month TEXT NOT NULL, section TEXT NOT NULL,
+            name TEXT, prev INTEGER, curr INTEGER, pct REAL, delta INTEGER,
+            first_ts REAL, last_ts REAL,
+            PRIMARY KEY (hs_code, year_month, section)
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS customs_surge_seen (
+            hs_code TEXT NOT NULL, year_month TEXT NOT NULL, section TEXT NOT NULL,
+            PRIMARY KEY (hs_code, year_month, section)
+        )"""
+    )
+    conn.commit()
+
+
+def store_live(conn: sqlite3.Connection, ranked: dict[str, list[dict]]) -> None:
+    """Replace the live snapshot (refresh) — old top items vanish from
+    the live view but survive in the archive (upsert_archive)."""
+    conn.execute("DELETE FROM customs_surge_live")
+    for section, rows in ranked.items():
+        for i, m in enumerate(rows):
+            conn.execute(
+                "INSERT INTO customs_surge_live "
+                "(section, rank, hs_code, name, year_month, prev, curr, pct, delta) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (section, i, m["hs_code"], m["name"], m["year_month"],
+                 m["prev"], m["curr"], m["pct"], m["delta"]),
+            )
+    conn.commit()
+
+
+def upsert_archive(conn: sqlite3.Connection, ranked: dict[str, list[dict]],
+                   now: float | None = None) -> int:
+    """Append every current top item to the permanent archive. Keyed by
+    (hs_code, year_month, section) so re-runs within the same month
+    refresh last_ts without duplicating. Returns rows touched."""
+    now = now if now is not None else time.time()
+    n = 0
+    for section, rows in ranked.items():
+        for m in rows:
+            conn.execute(
+                """INSERT INTO customs_surge_archive
+                   (hs_code, year_month, section, name, prev, curr, pct, delta, first_ts, last_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(hs_code, year_month, section) DO UPDATE SET
+                     name=excluded.name, prev=excluded.prev, curr=excluded.curr,
+                     pct=excluded.pct, delta=excluded.delta, last_ts=excluded.last_ts""",
+                (m["hs_code"], m["year_month"], section, m["name"],
+                 m["prev"], m["curr"], m["pct"], m["delta"], now, now),
+            )
+            n += 1
+    conn.commit()
+    return n
+
+
+def eval_new_entrants(conn: sqlite3.Connection, ranked: dict[str, list[dict]]) -> list[dict]:
+    """Return items NEW to the live snapshot since last run (for the DM).
+
+    Baseline-silent: if the seen table is empty (first ever run), mark
+    everything seen and return [] — no alert flood on enable. Dedup key
+    is (hs_code, year_month, section)."""
+    cur = conn.execute("SELECT COUNT(*) FROM customs_surge_seen")
+    is_baseline = (cur.fetchone()[0] == 0)
+    new_entrants: list[dict] = []
+    for section, rows in ranked.items():
+        for m in rows:
+            seen = conn.execute(
+                "SELECT 1 FROM customs_surge_seen WHERE hs_code=? AND year_month=? AND section=?",
+                (m["hs_code"], m["year_month"], section),
+            ).fetchone()
+            if not seen:
+                conn.execute(
+                    "INSERT OR IGNORE INTO customs_surge_seen "
+                    "(hs_code, year_month, section) VALUES (?,?,?)",
+                    (m["hs_code"], m["year_month"], section),
+                )
+                if not is_baseline:
+                    e = dict(m)
+                    e["section"] = section
+                    new_entrants.append(e)
+    conn.commit()
+    return new_entrants
+
+
+# ───────────────────────── read helpers (UI) ─────────────────────────
+
+def get_live(conn: sqlite3.Connection, section: str) -> list[dict]:
+    cur = conn.execute(
+        "SELECT * FROM customs_surge_live WHERE section=? ORDER BY rank ASC",
+        (section,),
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+def get_archive(conn: sqlite3.Connection, section: str | None = None,
+                limit: int = 200) -> list[dict]:
+    """Archive newest-month first. Optional section filter."""
+    if section:
+        cur = conn.execute(
+            "SELECT * FROM customs_surge_archive WHERE section=? "
+            "ORDER BY year_month DESC, delta DESC LIMIT ?",
+            (section, limit),
+        )
+    else:
+        cur = conn.execute(
+            "SELECT * FROM customs_surge_archive "
+            "ORDER BY year_month DESC, delta DESC LIMIT ?",
+            (limit,),
+        )
+    return [dict(r) for r in cur.fetchall()]
+
+
+# ───────────────────────── alert formatting ─────────────────────────
+
+def format_alert(new_entrants: list[dict]) -> str:
+    thr = f"{PCT_THRESHOLD:.0f}"
+    head = f"🆕 <b>관세청 급변 신규 진입</b> (TOP{TOP_N} 갱신)"
+    lines = [head, ""]
+    rate = [e for e in new_entrants if e["section"] == SECTION_RATE]
+    amount = [e for e in new_entrants if e["section"] == SECTION_AMOUNT]
+
+    def _line(e: dict) -> str:
+        return (
+            f"• <b>{e['name']}</b> ({e['hs_code']})  "
+            f"{customs.fmt_usd(e['prev'])} → {customs.fmt_usd(e['curr'])} "
+            f"({customs.fmt_pct(e['pct'])}, Δ{customs.fmt_usd(e['delta'])})"
+        )
+
+    shown = 0
+    if rate:
+        lines.append(f"📈 <b>급등률 +{thr}%</b>")
+        for e in rate[:ALERT_CAP - shown]:
+            lines.append(_line(e)); shown += 1
+    if amount and shown < ALERT_CAP:
+        lines.append("💵 <b>급증액</b>")
+        for e in amount[:ALERT_CAP - shown]:
+            lines.append(_line(e)); shown += 1
+    overflow = len(new_entrants) - shown
+    if overflow > 0:
+        lines.append(f"… 외 {overflow}건 더 (cap {ALERT_CAP}) — 대쉬보드에서 전체 확인")
+    return "\n".join(lines)
+
+
+# ───────────────────────── rendering (dashboard + DM) ─────────────────────────
+
+def _esc(s) -> str:
+    import html
+    return html.escape(str(s if s is not None else ""))
+
+
+def render_surge_html(db_path=None) -> str:
+    """HTML cards for the dashboard: 📈 급등률 / 💵 급증액 (live, refreshed
+    each run) + 🗄 급변 아카이브 (collapsible, unlimited history). Returns
+    '' when there's no scan data yet so the dashboard omits the section."""
+    db = Path(db_path) if db_path else customs.DEFAULT_DB
+    if not db.exists():
+        return ""
+    try:
+        with customs.session(db) as conn:
+            init_db(conn)
+            rate = get_live(conn, SECTION_RATE)
+            amount = get_live(conn, SECTION_AMOUNT)
+            archive = get_archive(conn, limit=300)
+    except Exception:
+        return ""
+    if not rate and not amount and not archive:
+        return ""
+
+    def _live_card(title: str, rows: list[dict], metric: str) -> str:
+        if not rows:
+            return ""
+        body = []
+        for m in rows:
+            cls = "up" if (m.get("delta") or 0) > 0 else ("down" if (m.get("delta") or 0) < 0 else "")
+            highlight = (
+                f"<td class='{cls}'>{customs.fmt_pct(m.get('pct'))}</td>"
+                if metric == "pct" else
+                f"<td class='{cls}'>{customs.fmt_usd(m.get('delta'))}</td>"
+            )
+            body.append(
+                f"<tr><td>{_esc(m.get('name'))}</td>"
+                f"<td>{_esc(m.get('hs_code'))}</td>"
+                f"<td>{_esc(m.get('year_month'))}</td>"
+                f"<td>{customs.fmt_usd(m.get('prev'))}→{customs.fmt_usd(m.get('curr'))}</td>"
+                f"{highlight}</tr>"
+            )
+        metric_th = "전월비" if metric == "pct" else "증감액"
+        return (
+            "<details class='customs-panel' open>"
+            f"<summary>{title} ({len(rows)})</summary>"
+            "<table class='customs-table'><thead><tr>"
+            f"<th>품목</th><th>HS</th><th>월</th><th>수출($)</th><th>{metric_th}</th>"
+            "</tr></thead><tbody>" + "".join(body) + "</tbody></table></details>"
+        )
+
+    def _archive_card(rows: list[dict]) -> str:
+        if not rows:
+            return ""
+        # group by month desc, rate then amount within month
+        by_month: dict[str, list[dict]] = {}
+        for r in rows:
+            by_month.setdefault(r.get("year_month") or "?", []).append(r)
+        blocks = []
+        for ym in sorted(by_month, reverse=True):
+            items = by_month[ym]
+            lis = []
+            for r in items:
+                marker = "📈" if r.get("section") == SECTION_RATE else "💵"
+                lis.append(
+                    f"<li>{marker} {_esc(r.get('name'))} "
+                    f"<span class='muted'>({_esc(r.get('hs_code'))})</span> "
+                    f"{customs.fmt_pct(r.get('pct'))} · Δ{customs.fmt_usd(r.get('delta'))}</li>"
+                )
+            blocks.append(f"<h3>{_esc(ym)}</h3><ul>" + "".join(lis) + "</ul>")
+        return (
+            "<details class='customs-panel'>"
+            f"<summary>🗄 급변 아카이브 ({len(rows)}건 · 무제한 보관)</summary>"
+            + "".join(blocks) + "</details>"
+        )
+
+    return (
+        _live_card("📈 급등률 TOP", rate, "pct")
+        + _live_card("💵 급증액 TOP", amount, "amount")
+        + _archive_card(archive)
+    )
+
+
+def render_surge_text(db_path=None, limit: int = 10) -> str:
+    """Compact DM body for /customs — top of each live section. Returns
+    '' when there's no scan data."""
+    db = Path(db_path) if db_path else customs.DEFAULT_DB
+    if not db.exists():
+        return ""
+    try:
+        with customs.session(db) as conn:
+            init_db(conn)
+            rate = get_live(conn, SECTION_RATE)[:limit]
+            amount = get_live(conn, SECTION_AMOUNT)[:limit]
+    except Exception:
+        return ""
+    if not rate and not amount:
+        return ""
+    out = []
+    if rate:
+        out.append(f"📈 <b>급등률 TOP</b> (전월비 +{PCT_THRESHOLD:.0f}%)")
+        for m in rate:
+            out.append(
+                f"  ▲ {m['name']} ({m['hs_code']}) "
+                f"{customs.fmt_usd(m['curr'])} ({customs.fmt_pct(m['pct'])})"
+            )
+    if amount:
+        out.append("💵 <b>급증액 TOP</b> (증감액)")
+        for m in amount:
+            out.append(
+                f"  Δ{customs.fmt_usd(m['delta'])} {m['name']} ({m['hs_code']}) "
+                f"→ {customs.fmt_usd(m['curr'])}"
+            )
+    return "\n".join(out)
