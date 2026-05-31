@@ -154,18 +154,43 @@ async def _busy_release() -> None:
             clear_busy()
 
 
-async def _busy_keepalive(interval: float = 60.0) -> None:
-    """장기 실행(Screener 5-20분 등) 동안 .busy marker 를 주기적으로 re-touch
-    → mtime 항상 fresh → watchdog 의 12분 stale 체크가 절대 발화 안 함.
-    한 번만 touch 하면 12분 초과 작업이 stale 로 살해되는 문제 해결
-    (2026-06-01 Screener 반복 살해). 호출측이 작업 종료 시 cancel 한다."""
-    from bot.analyzer import mark_busy
-    try:
-        while True:
-            await asyncio.sleep(interval)
-            mark_busy()  # mtime refresh (refcount 무관, 단순 touch)
-    except asyncio.CancelledError:
-        pass
+class _BusyKeepalive:
+    """장기 실행(Screener 6-12분 등) 동안 .busy marker 를 주기적으로 re-touch
+    → mtime 항상 fresh → watchdog 의 12분 stale 체크가 발화 안 함.
+
+    ⚠️ asyncio task 가 아니라 **OS 데몬 스레드** 로 동작한다. Screener 는
+    run_in_executor 워커가 무거운 Python 연산 구간에서 GIL 을 장시간 점유
+    → 같은 이벤트 루프의 asyncio keepalive 가 starve 되어 touch 못 함
+    (2026-06-01 .busy 4.5분 고정 surfaced). 별도 스레드는 threading.Event
+    .wait() 중 GIL 을 놓으므로 워커가 GIL 을 쥐어도 정확히 interval 마다
+    깨어나 touch 한다. stop() 은 멱등."""
+
+    def __init__(self, interval: float = 45.0):
+        import threading
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self) -> None:
+        from bot.analyzer import mark_busy
+        while not self._stop.wait(self._interval):
+            try:
+                mark_busy()  # mtime refresh (단순 touch, refcount 무관)
+            except Exception:
+                pass
+
+    def start(self) -> "_BusyKeepalive":
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        # set + join → 스레드가 release 이후 touch 해서 .busy 가 orphan 으로
+        # 되살아나는 race 차단. wait() 가 즉시 깨어나 loop 종료하므로 빠름.
+        self._stop.set()
+        try:
+            self._thread.join(timeout=2.0)
+        except Exception:
+            pass
 
 
 async def _run_analysis_subprocess(
@@ -1913,10 +1938,10 @@ async def _run_screener_and_send(send, *, domain: str | None = None,
     # & Leisure run 유실). /ticker 분석과 동일하게 _busy_acquire 로 보호하면
     # watchdog 가 .busy fresh(<12분) 동안 재시작 skip. release 는 finally.
     await _busy_acquire()
-    # keepalive: Screener 가 12분 넘어도 .busy 를 60초마다 refresh 해
-    # watchdog stale-restart 를 원천 차단. 종료 시 반드시 cancel→await
-    # (release 후 race touch 로 .busy 가 영구 남는 것 방지).
-    _keepalive = asyncio.ensure_future(_busy_keepalive())
+    # keepalive: OS 데몬 스레드로 .busy 를 주기적 refresh (asyncio task 는
+    # 워커 GIL 점유 시 starve 됨 — 2026-06-01 surfaced). Screener 가 12분
+    # 넘어도 watchdog stale-restart 원천 차단. 종료 시 stop() 후 release.
+    _keepalive = _BusyKeepalive().start()
     try:
         if theme is not None:
             fn = partial(run_screener_with_theme, theme,
@@ -1930,11 +1955,7 @@ async def _run_screener_and_send(send, *, domain: str | None = None,
         await send(f"⚠️ Screener 오류 — {exc.__class__.__name__}")
         return
     finally:
-        _keepalive.cancel()
-        try:
-            await _keepalive
-        except asyncio.CancelledError:
-            pass
+        _keepalive.stop()
         await _busy_release()
     if result is None:
         await send(
