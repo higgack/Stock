@@ -961,9 +961,9 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
  • <b>Daily Byte</b> — 평일19:00·일22:00 Weekly KR수급 인포그래픽(사진)+본문, 날짜별 누적·검색·🗑️
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
- • <b>청약 Byte</b> — 평일10:00 신규 분양 모집공고(청약홈) 피드 · ticker 무관
+ • <b>청약 Byte</b> — 평일10:00 신규 분양 모집공고+경쟁률(청약홈) · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/cheongyak.html
- • <b>부동산 Byte</b> — 금09:00 아파트 실거래(MOLIT) 주간 브리프 · ticker 무관
+ • <b>부동산 Byte</b> — 금09:00 실거래(MOLIT 매매·전월세·오피스텔·연립)+R-ONE 가격추세+공급(인허가·착공·미분양) · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
  • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
