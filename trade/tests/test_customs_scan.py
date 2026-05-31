@@ -35,14 +35,26 @@ class RankingTests(unittest.TestCase):
         self.assertEqual(len(leaves), 5)
 
     def test_rate_is_increases_above_threshold(self):
-        ranked = cs.rank(cs.build_series(self.rows), top_n=30, pct_threshold=30)
+        # rate_min_usd=0 isolates the pct/threshold logic from the value floor.
+        ranked = cs.rank(cs.build_series(self.rows), top_n=30,
+                         pct_threshold=30, rate_min_usd=0)
         codes = {m["hs_code"] for m in ranked[cs.SECTION_RATE]}
         # +30 and +80 qualify; +5, -50, prev0 do not
         self.assertEqual(codes, {"1111111111", "3333333333"})
 
     def test_rate_sorted_by_pct_desc(self):
-        ranked = cs.rank(cs.build_series(self.rows))
+        ranked = cs.rank(cs.build_series(self.rows), rate_min_usd=0)
         self.assertEqual(ranked[cs.SECTION_RATE][0]["hs_code"], "3333333333")
+
+    def test_rate_floor_excludes_small_lines(self):
+        # 'tiny' (+80% but curr=$900) must be filtered by the export floor,
+        # while 'big' (+30%, curr=$130M) survives. The 💵 amount section is
+        # NOT floored, so 'tiny' can still appear there if its Δ ranked —
+        # here it won't (Δ$400 is last), but the point is rate excludes it.
+        ranked = cs.rank(cs.build_series(self.rows), rate_min_usd=50_000_000)
+        rate_codes = {m["hs_code"] for m in ranked[cs.SECTION_RATE]}
+        self.assertIn("1111111111", rate_codes)       # $130M survives
+        self.assertNotIn("3333333333", rate_codes)    # $900 floored out
 
     def test_amount_sorted_by_delta_desc(self):
         ranked = cs.rank(cs.build_series(self.rows))

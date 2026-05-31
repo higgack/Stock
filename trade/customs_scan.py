@@ -47,6 +47,15 @@ CHAPTERS = [f"{i:02d}" for i in range(1, 98)]
 # Tunables (env-overridable so the operator never edits code).
 TOP_N = int(os.environ.get("TRADE_CUSTOMS_SURGE_TOP_N") or "30")
 PCT_THRESHOLD = float(os.environ.get("TRADE_CUSTOMS_ALERT_PCT") or "30")
+# Export-value floor for the 📈 급등률 (rate) section ONLY. Monthly customs
+# figures are noisy: a dry-run on 2026-05 data showed 940 items above +30%
+# at a $1M floor, mostly tiny lines where one shipment doubles a $300 base.
+# Ranking by % would let those crowd out meaningful surges, so the rate
+# section requires this minimum latest-month export value. The 💵 급증액
+# (amount) section needs NO floor — ranking by Δ$ already buries small
+# lines. $50M chosen from the operator's read of that histogram (260 items
+# survive → top-30 are real, stock-relevant movers). Env-tunable.
+RATE_MIN_USD = int(os.environ.get("TRADE_CUSTOMS_RATE_MIN_USD") or "50000000")
 # Safety: max pages per chapter so a runaway never hammers the quota.
 MAX_PAGES = int(os.environ.get("TRADE_CUSTOMS_SCAN_MAX_PAGES") or "60")
 # Alert cap (shared shape with customs_alert).
@@ -149,11 +158,14 @@ def rank(
     *,
     top_n: int = TOP_N,
     pct_threshold: float = PCT_THRESHOLD,
+    rate_min_usd: int = RATE_MIN_USD,
 ) -> dict[str, list[dict]]:
     """Two ranked lists from the scanned leaves.
 
-    rate   — pct >= +pct_threshold (상승만), sorted by pct desc.
-    amount — sorted by export Δ$ desc (가장 많이 늘어난 순).
+    rate   — pct >= +pct_threshold (상승만) AND latest export ≥ rate_min_usd
+             (noise floor — small lines double easily), sorted by pct desc.
+    amount — sorted by export Δ$ desc (가장 많이 늘어난 순), NO floor
+             (Δ$ ranking already buries small lines).
     Each row: hs_code, name, year_month, prev, curr, delta, pct."""
     moves = []
     for hs, node in leaves.items():
@@ -165,7 +177,12 @@ def rank(
         mv["name"] = node["name"]
         moves.append(mv)
 
-    rate = [m for m in moves if m["pct"] is not None and m["pct"] >= pct_threshold]
+    rate = [
+        m for m in moves
+        if m["pct"] is not None
+        and m["pct"] >= pct_threshold
+        and (m["curr"] or 0) >= rate_min_usd
+    ]
     rate.sort(key=lambda m: m["pct"], reverse=True)
 
     amount = sorted(moves, key=lambda m: m["delta"], reverse=True)
@@ -426,8 +443,9 @@ def render_surge_html(db_path=None) -> str:
             + "".join(blocks) + "</details>"
         )
 
+    floor_lbl = customs.fmt_usd(RATE_MIN_USD)
     return (
-        _live_card("📈 급등률 TOP", rate, "pct")
+        _live_card(f"📈 급등률 TOP <small>(수출 ≥{floor_lbl})</small>", rate, "pct")
         + _live_card("💵 급증액 TOP", amount, "amount")
         + _archive_card(archive)
     )
@@ -450,7 +468,10 @@ def render_surge_text(db_path=None, limit: int = 10) -> str:
         return ""
     out = []
     if rate:
-        out.append(f"📈 <b>급등률 TOP</b> (전월비 +{PCT_THRESHOLD:.0f}%)")
+        out.append(
+            f"📈 <b>급등률 TOP</b> (전월비 +{PCT_THRESHOLD:.0f}%, "
+            f"수출 ≥{customs.fmt_usd(RATE_MIN_USD)})"
+        )
         for m in rate:
             out.append(
                 f"  ▲ {m['name']} ({m['hs_code']}) "
