@@ -2430,6 +2430,18 @@ async def _on_startup(application) -> None:
     restart immediately re-renders the static HTML so existing archives
     pick up the new UI without waiting for the next /screener call or
     12h auto_resolve cycle."""
+    # Orphan .busy 청소 — 직전 인스턴스가 분석/Screener 도중 watchdog 에
+    # 살해되면 clear_busy 가 안 불려 .busy 가 stale 로 남는다. 그러면
+    # watchdog 가 '분석 중' 으로 오인해 진짜 hang 일 때도 재시작을 skip
+    # (2026-06-01 surfaced). 재시작된 이 인스턴스는 분석을 들고 있지
+    # 않으므로 startup 시 무조건 청소 (refcount 도 0 으로 fresh).
+    try:
+        global _busy_refcount
+        _busy_refcount = 0
+        clear_busy()
+        log.info("startup: orphan .busy marker cleared")
+    except Exception as exc:
+        log.warning("startup: .busy cleanup failed: %s", exc)
     try:
         from bot.dashboard import regenerate_screener_index
         regenerate_screener_index()
