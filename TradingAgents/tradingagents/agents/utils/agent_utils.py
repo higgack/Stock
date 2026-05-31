@@ -4531,6 +4531,36 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
             except Exception as exc:
                 _analyst_log.debug("KR liquidity block skipped %s: %s", ticker, exc)
 
+        # KR 의무보호예수 해제(lock-up release) — 단기 공급 overhang soft 경고.
+        # 임박/최근 해제일(rsrnDt) 물량 = 매도 가능 물량 출회. 기술지표 차단은
+        # 안 하고(corp action 가드와 별개) 수급 경고만. 실패 시 생략.
+        if market == "KR":
+            try:
+                from bot.fsc_client import lockup_releases
+                import datetime as _dt_lk
+                _today = _dt_lk.date.today()
+                _lk = [r for r in lockup_releases(ticker)
+                       if r.get("release_date")
+                       and -7 <= (_dt_lk.date.fromisoformat(r["release_date"])
+                                  - _today).days <= 90]
+                if _lk:
+                    _lines = []
+                    for r in _lk[:6]:
+                        sh = r.get("shares")
+                        shtxt = f"{int(sh):,}주" if sh else "?주"
+                        _lines.append(f"  {r['release_date']} · {shtxt}"
+                                      f" ({r.get('reason', '')})")
+                    base += (
+                        "\n\n=== 📌 의무보호예수 해제 예정 (FSC, 단기 공급) ===\n"
+                        + "\n".join(_lines)
+                        + "\n보호예수 해제 = 최대주주/기관 매도 가능 물량 출회 →"
+                        " 해당일 전후 단기 공급 압력. 5거래일 horizon 에서 해제일이"
+                        " 윈도 내면 수급 부담으로 반영(기술지표 무효화는 아님)."
+                        " 출처: 금융위/KSD (T+1)."
+                    )
+            except Exception as exc:
+                _analyst_log.debug("KR lockup block skipped %s: %s", ticker, exc)
+
         # API KEY ABSENCE — anti-hallucination directive (Rule A).
         # Previously the per-source injection blocks (DART / EDINET /
         # FRED / Naver / Kabutan) silently no-op'd when the API key was

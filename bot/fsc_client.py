@@ -229,6 +229,51 @@ def rights_for(ticker: str, lookback_days: int = 21) -> list[dict]:
     return out
 
 
+# ── 3.7) 의무보호예수 반환 (lock-up 해제 = 단기 공급 overhang) ────────────
+# 금융위 주식발행정보 V3 (GetStocIssuInfoService_V3). basDt 필수 + crno 필터.
+# rsrnDt=반환일(해제일), rsrnStckCnt=반환주식수(출회 물량).
+_LOCKUP = (f"{_HOST}/GetStocIssuInfoService_V3", "getLockUpRetuInfo_V3")
+
+
+def lockup_releases(ticker: str, lookback_days: int = 7) -> list[dict]:
+    """ticker 의 의무보호예수 반환(lock-up 해제) 일정. 최근 영업일 basDt 로
+    스냅샷 조회(첫 non-empty 채택) + crno 필터. 각 행: {release_date(YYYY-MM-DD),
+    shares(반환주식수), remaining(반환후잔량), reason, total_shares}. 없으면 []."""
+    info = item_info(ticker)
+    crno = (info or {}).get("crno")
+    if not crno:
+        return []
+    today = _now().date()
+    for i in range(lookback_days + 1):
+        d = today - timedelta(days=i)
+        if d.weekday() >= 5:
+            continue
+        bas = d.strftime("%Y%m%d")
+        ck = f"lockup_{crno}_{bas}"
+        c = _cache_get(ck)
+        if c is None:
+            c = _fetch(_LOCKUP[0], _LOCKUP[1],
+                       {"basDt": bas, "crno": crno, "numOfRows": 100})
+            _cache_put(ck, c)
+        if not c:
+            continue
+        out = {}
+        for it in c:
+            rd = str(it.get("rsrnDt") or "").strip()
+            if len(rd) != 8 or not rd.isdigit():
+                continue
+            iso = f"{rd[:4]}-{rd[4:6]}-{rd[6:]}"
+            out[(iso, str(it.get("rsrnStckCnt") or ""))] = {
+                "release_date": iso,
+                "shares": _f(it.get("rsrnStckCnt")),
+                "remaining": _f(it.get("afrsRsqtCnt")),
+                "reason": (it.get("stckLblHoldRcdNm") or "").strip(),
+                "total_shares": _f(it.get("lblProtTsumIssuStckCnt")),
+            }
+        return sorted(out.values(), key=lambda r: r["release_date"])
+    return []
+
+
 # ── 3.6) 주식발행 공시정보 (유통주식수=free float) — crno 키 ──────────────
 # Base 는 /service/ 없는 패턴 (권리일정 V2 처럼). crno(법인등록번호)로 조회
 # → Phase1 item_info 의 crno 연결. 유통주식수 필드 key 는 probe 로 확정.
@@ -383,6 +428,16 @@ if __name__ == "__main__":
         load_dotenv(Path.home() / "stock" / ".env")
     except Exception:
         pass
+    if "--lockup" in sys.argv:
+        tk2 = next((a for a in sys.argv[1:] if not a.startswith("--")), "005930.KS")
+        print(f"=== 의무보호예수 반환(lock-up) — {tk2} ===")
+        rel = lockup_releases(tk2)
+        print(f"수신 {len(rel)}건:")
+        for r in rel[:15]:
+            print(f"  {r['release_date']} · {r['shares']} 주 · {r['reason']}"
+                  f" · 잔량 {r['remaining']}")
+        raise SystemExit(0)
+
     if "--issu" in sys.argv:
         # 주식발행 공시(유통주식수) raw 필드 확인 — 유통주식수/자기주식수 key 확정
         tk2 = next((a for a in sys.argv[1:] if not a.startswith("--")), "005930.KS")

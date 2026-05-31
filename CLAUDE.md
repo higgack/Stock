@@ -902,7 +902,16 @@ review:
   분석·Daily Byte 공유**(per-ticker 부담 0). 주입 2곳: Daily Byte 시장총평
   (build_data_summary) + KR equity build_instrument_context "KR 시장 유동성"
   블록(시장분석가가 retail 자금·레버리지 frame 으로 해석). 예탁금↑=대기매수,
-  신용융자↑=레버리지 과열. 미통합 FSC API(배당/발행/대차)는 Phase 3+.
+  신용융자↑=레버리지 과열. 미통합 FSC API(배당/대차)는 Phase 4+.
+- **FSC Phase 3 — 의무보호예수(lock-up) (2026-05-31)** — 단기 공급 overhang
+  신호(우리 모델에 전무했던 gap). 금융위 주식발행정보 V3
+  (GetStocIssuInfoService_V3/getLockUpRetuInfo_V3, basDt 필수+crno 필터).
+  `fsc_client.lockup_releases(ticker)` → rsrnDt(반환일=해제일)·rsrnStckCnt
+  (반환주식수)·afrsRsqtCnt(잔량)·사유. build_instrument_context KR equity
+  브랜치에 "📌 의무보호예수 해제 예정" soft 배너(해제일 -7~+90일 윈도).
+  corp-action HARD GUARD 와 별개 — 기술지표 무효화 X, 수급 압력만. additive·
+  실패 시 생략. crno=item_info 연결(Phase 1). 유통주식수(같은 V3 주식발행현황
+  op)는 후속.
 - **소유구조 빈 결과 환각 차단** — KR branch (DART insider holdings empty
   → "임원지분 데이터 미수집" prose, no fabricated 공기업/정부 narrative),
   JP branch (EDINET 大量保有 + yfinance heldPercentInsiders both empty
