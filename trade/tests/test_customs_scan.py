@@ -144,7 +144,7 @@ class FetchChapterTests(unittest.TestCase):
             calls["n"] += 1
             return page
         rows = cs.fetch_chapter("85", "202604", "202605",
-                                fetcher=fake, max_pages=60)
+                                key="dummy", fetcher=fake, max_pages=60)
         # 2 unique (leaf, month) rows, NOT 2×60; stops after the 2nd page.
         self.assertEqual(len(rows), 2)
         self.assertLessEqual(calls["n"], 3)
@@ -165,7 +165,7 @@ class FetchChapterTests(unittest.TestCase):
             seq["i"] += 1
             return r
         rows = cs.fetch_chapter("85", "202604", "202604",
-                                fetcher=fake, max_pages=60)
+                                key="dummy", fetcher=fake, max_pages=60)
         codes = {r["hs_code"] for r in rows}
         self.assertEqual(len(rows), 1001)
         self.assertIn("8599999999", codes)
