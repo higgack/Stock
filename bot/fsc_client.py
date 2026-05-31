@@ -300,7 +300,6 @@ if __name__ == "__main__":
     if "--market" in sys.argv:
         # 협회 종합통계 Base URL 자동탐색 (증시자금추이 op 로 200 확인)
         print("=== 금융투자협회 종합통계 Base URL 탐색 ===")
-        global _KOFIA_BASE
         hit = None
         for base in _KOFIA_BASE_CANDIDATES:
             _KOFIA_BASE = base
