@@ -154,6 +154,20 @@ async def _busy_release() -> None:
             clear_busy()
 
 
+async def _busy_keepalive(interval: float = 60.0) -> None:
+    """장기 실행(Screener 5-20분 등) 동안 .busy marker 를 주기적으로 re-touch
+    → mtime 항상 fresh → watchdog 의 12분 stale 체크가 절대 발화 안 함.
+    한 번만 touch 하면 12분 초과 작업이 stale 로 살해되는 문제 해결
+    (2026-06-01 Screener 반복 살해). 호출측이 작업 종료 시 cancel 한다."""
+    from bot.analyzer import mark_busy
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            mark_busy()  # mtime refresh (refcount 무관, 단순 touch)
+    except asyncio.CancelledError:
+        pass
+
+
 async def _run_analysis_subprocess(
     ticker: str, target_date: str
 ) -> tuple[str, str]:
@@ -1899,6 +1913,10 @@ async def _run_screener_and_send(send, *, domain: str | None = None,
     # & Leisure run 유실). /ticker 분석과 동일하게 _busy_acquire 로 보호하면
     # watchdog 가 .busy fresh(<12분) 동안 재시작 skip. release 는 finally.
     await _busy_acquire()
+    # keepalive: Screener 가 12분 넘어도 .busy 를 60초마다 refresh 해
+    # watchdog stale-restart 를 원천 차단. 종료 시 반드시 cancel→await
+    # (release 후 race touch 로 .busy 가 영구 남는 것 방지).
+    _keepalive = asyncio.ensure_future(_busy_keepalive())
     try:
         if theme is not None:
             fn = partial(run_screener_with_theme, theme,
@@ -1912,6 +1930,11 @@ async def _run_screener_and_send(send, *, domain: str | None = None,
         await send(f"⚠️ Screener 오류 — {exc.__class__.__name__}")
         return
     finally:
+        _keepalive.cancel()
+        try:
+            await _keepalive
+        except asyncio.CancelledError:
+            pass
         await _busy_release()
     if result is None:
         await send(
