@@ -1,5 +1,5 @@
 [Unit]
-Description=Fetch 관세청 monthly figures for pinned items into customs.db (silent)
+Description=관세청 customs fetch (pins) + 전 chapter 급변 스캔 + ±30%% DM (gated)
 After=network-online.target
 
 [Service]
@@ -8,16 +8,21 @@ User=higgack
 Group=higgack
 WorkingDirectory=/home/higgack/stock-trade
 EnvironmentFile=-/home/higgack/stock-trade/.env
-# Two passes per daily tick:
-#   1. fetch_customs — pull official monthly figures for pinned items
-#      into customs.db. SILENT (journal only).
-#   2. customs_alert — evaluate the months just cached; DM the operator
-#      only when a NEW month's export 전월비 exceeds ±TRADE_CUSTOMS_ALERT_PCT
-#      (default 30). Baseline-silent on first run / new pins, hard-capped,
-#      operator DM only — never the channel. Quiet days send nothing.
-# Both idempotent; ordering matters (alert reads what fetch wrote), hence
-# two ExecStart lines in one oneshot rather than two racing timers.
+# Three passes per tick (ordering matters — each reads what the prior wrote):
+#   1. fetch_customs — pull official monthly figures for operator-PINNED
+#      items into customs.db. SILENT (journal only).
+#   2. customs_alert — evaluate the pinned months just cached; DM the
+#      operator only when a NEW month's export 전월비 exceeds
+#      ±TRADE_CUSTOMS_ALERT_PCT (default 30). Baseline-silent on first run /
+#      new pins, hard-capped, operator DM only — never the channel.
+#   3. scan_customs — sweep ALL HS chapters 01~97, rank 📈급등률 / 💵급증액
+#      TOP30, refresh the live snapshot + append to the permanent archive,
+#      DM only NEW entrants (baseline-silent first run). This is the
+#      auto-discovery layer; the pins above are the manual layer.
+# All idempotent; runs 4×/day (see .timer) so a publication is caught
+# within ~6h. Quiet ticks send nothing.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_customs
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.customs_alert
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.scan_customs
 StandardOutput=journal
 StandardError=journal
