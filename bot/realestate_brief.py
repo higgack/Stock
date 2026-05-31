@@ -46,12 +46,16 @@ def build_summary(data: dict) -> str:
     regs = data.get("regions", {})
     if not regs:
         return "\n".join(lines + ["  (실거래 데이터 미수집)"])
-    lines.append("\n[지역별 평균 거래가 / 거래량 / 평당가]")
+    lines.append("\n[지역별 평균 매매가 / 거래량 / 평당가 / 전세가율]")
     for name, r in regs.items():
         ppp = f" · 평당 {r['avg_per_pyeong']:,}만원" if r.get("avg_per_pyeong") else ""
+        jeonse = ""
+        if r.get("jeonse_avg_manwon"):
+            jr = f", 전세가율 {r['jeonse_ratio']}%" if r.get("jeonse_ratio") else ""
+            jeonse = f" · 전세평균 {_fmt_eok(r['jeonse_avg_manwon'])}{jr}"
         lines.append(
-            f"  {name}: 평균 {_fmt_eok(r['avg_manwon'])} ({r['n_deals']}건"
-            f"{ppp} · 최고 {_fmt_eok(r['max_manwon'])})"
+            f"  {name}: 매매평균 {_fmt_eok(r['avg_manwon'])} ({r['n_deals']}건"
+            f"{ppp} · 최고 {_fmt_eok(r['max_manwon'])}){jeonse}"
         )
     return "\n".join(lines)
 
@@ -66,9 +70,11 @@ _PROMPT = """당신은 한국 부동산 시장 전문 애널리스트입니다. 
 작성 규칙:
 1. **수치는 위 데이터 글자 그대로 인용** — 재계산·창작 금지.
 2. 지역별 가격대 비교 (강남권 고가 vs 외곽/지방), 거래량으로 본 매수
-   심리(거래 활발/위축), 평당가 격차 서술.
-3. **매크로 연계**: 기준금리·주담대 금리·전세가율 추세를 web search 로
-   확인해 가격 방향성 맥락 제공 (출처 날짜 {ymd} 이하, 미확인 시 명시).
+   심리(거래 활발/위축), 평당가 격차, **전세가율**(데이터에 있으면) 서술.
+   전세가율 높음(>70%) = 갭투자 유인·매매 전환 압력, 낮음 = 매매 관망.
+3. **매크로 연계**: 기준금리·주담대 금리를 web search 로 확인해 가격
+   방향성 맥락 제공 (출처 날짜 {ymd} 이하, 미확인 시 명시). 전세가율은
+   위 데이터의 정확값을 우선 사용 (web search 추정치로 덮지 말 것).
 4. **섹터 함의 (중립)**: 건설(시공)·부동산(디벨로퍼/리츠)·은행(부동산 PF
    부실) 에 미치는 영향을 정보 차원에서 서술. 특정 종목 매수 권유 금지.
 5. **구조** (각 섹션 지정 이모지 헤더 한 줄):

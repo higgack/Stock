@@ -56,22 +56,45 @@ def _latest_deal_ymd() -> str:
     return d.strftime("%Y%m")
 
 
+def _result_msg(text: str) -> str:
+    """data.go.kr 응답에서 resultCode/resultMsg/returnAuthMsg 추출 (진단용)."""
+    bits = []
+    for tag in ("resultCode", "resultMsg", "returnReasonCode",
+                "returnAuthMsg", "errMsg", "cmmMsgHeader"):
+        m = re.search(rf"<{tag}>(.*?)</{tag}>", text, re.DOTALL)
+        if m and m.group(1).strip():
+            bits.append(f"{tag}={m.group(1).strip()[:80]}")
+    return " · ".join(bits) or text[:160].replace("\n", " ")
+
+
 def _fetch_xml(path: str, lawd_cd: str, deal_ymd: str) -> str | None:
+    """data.go.kr 호출. serviceKey 인코딩 자동 처리 (Encoding 키는 '%' 포함
+    → URL 직삽입·재인코딩 금지, Decoding 키는 httpx params 로 인코딩). 실패
+    시 resultMsg 를 로그로 노출 (진단)."""
     import httpx
-    key = os.environ.get("DATA_GO_KR_API_KEY", "")
+    key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
+    base_params = {"LAWD_CD": lawd_cd, "DEAL_YMD": deal_ymd,
+                   "numOfRows": 1000, "pageNo": 1}
     try:
-        r = httpx.get(
-            f"{_BASE}/{path}",
-            params={"serviceKey": key, "LAWD_CD": lawd_cd,
-                    "DEAL_YMD": deal_ymd, "numOfRows": 1000, "pageNo": 1},
-            timeout=_TIMEOUT,
-        )
-        if r.status_code != 200 or "<item>" not in r.text:
-            # data.go.kr 는 키 오류 시에도 200 + resultCode 로 응답
-            if "SERVICE_KEY_IS_NOT_REGISTERED" in r.text or "SERVICE ERROR" in r.text:
-                log.warning("realestate: data.go.kr 키 미승인 (활용신청 확인): %s", r.text[:160])
+        if "%" in key:
+            # Encoding 키 (이미 URL-encoded) → 직접 URL 에 넣고 재인코딩 방지
+            from urllib.parse import urlencode
+            qs = urlencode(base_params)
+            r = httpx.get(f"{_BASE}/{path}?serviceKey={key}&{qs}", timeout=_TIMEOUT)
+        else:
+            # Decoding 키 (raw) → httpx 가 한 번만 인코딩
+            r = httpx.get(f"{_BASE}/{path}",
+                          params={"serviceKey": key, **base_params}, timeout=_TIMEOUT)
+        if r.status_code != 200:
+            log.warning("realestate: %s %s HTTP %d", path, lawd_cd, r.status_code)
             return None
-        return r.text
+        if "<item>" in r.text:
+            return r.text
+        # 200 인데 item 없음 → 인증 실패 / totalCount 0 / 잘못된 service.
+        # 실제 사유를 로그로 (다음 run 에서 원인 즉시 파악).
+        log.warning("realestate: %s %s %s item 0 — %s",
+                    path.split('/')[-1], lawd_cd, deal_ymd, _result_msg(r.text))
+        return None
     except Exception as exc:
         log.warning("realestate: fetch %s %s %s failed: %s", path, lawd_cd, deal_ymd, exc)
         return None
@@ -103,10 +126,35 @@ def _parse_trades(xml: str) -> list[dict]:
     return out
 
 
+def _parse_rents(xml: str) -> list[dict]:
+    """전월세 실거래 item 파싱 → [{deposit(보증금 만원), monthly(월세 만원),
+    area, is_jeonse}]. 전세 = 월세 0."""
+    out: list[dict] = []
+    for block in re.findall(r"<item>(.*?)</item>", xml, re.DOTALL):
+        def _t(tag: str) -> str:
+            m = re.search(rf"<{tag}>(.*?)</{tag}>", block, re.DOTALL)
+            return (m.group(1).strip() if m else "")
+        try:
+            dep = int((_t("보증금액") or _t("deposit")).replace(",", "") or 0)
+        except Exception:
+            continue
+        try:
+            mon = int((_t("월세금액") or _t("monthlyRent")).replace(",", "") or 0)
+        except Exception:
+            mon = 0
+        try:
+            area = float(_t("전용면적") or _t("excluUseAr") or 0)
+        except Exception:
+            area = 0.0
+        out.append({"deposit": dep, "monthly": mon, "area": area,
+                    "is_jeonse": mon == 0})
+    return out
+
+
 def collect_realestate_data() -> dict:
-    """대표 지역별 직전월 아파트 매매 실거래 집계. 수치는 MOLIT 정확값.
-    {ymd, regions:{name:{n_deals, avg_manwon, avg_per_pyeong}}}. 키 없으면
-    빈 dict."""
+    """대표 지역별 직전월 아파트 매매 + 전월세 실거래 집계. 수치는 MOLIT
+    정확값. {ymd, regions:{name:{n_deals, avg_manwon, avg_per_pyeong, max,
+    jeonse_avg_manwon, jeonse_ratio}}}. 키 없으면 빈 dict."""
     if not realestate_key_ready():
         return {}
     ymd = _latest_deal_ymd()
@@ -120,15 +168,28 @@ def collect_realestate_data() -> dict:
         if not trades:
             continue
         amts = [t["amount_manwon"] for t in trades if t["amount_manwon"] > 0]
-        # 평당가 (만원/평) — 전용면적 → 평(÷3.3058)
         ppp = [t["amount_manwon"] / (t["area"] / 3.3058)
                for t in trades if t["area"] > 0]
         if not amts:
             continue
-        data["regions"][name] = {
+        avg_sale = sum(amts) / len(amts)
+        reg = {
             "n_deals": len(amts),
-            "avg_manwon": round(sum(amts) / len(amts)),
+            "avg_manwon": round(avg_sale),
             "avg_per_pyeong": round(sum(ppp) / len(ppp)) if ppp else None,
             "max_manwon": max(amts),
         }
+        # 전월세 — 전세(월세 0) 평균 보증금 + 전세가율 (전세평균/매매평균)
+        rxml = _fetch_xml(
+            "RTMSDataSvcAptRentDev/getRTMSDataSvcAptRentDev", lawd, ymd)
+        if rxml:
+            rents = _parse_rents(rxml)
+            jeonse = [r["deposit"] for r in rents if r["is_jeonse"] and r["deposit"] > 0]
+            if jeonse:
+                avg_j = sum(jeonse) / len(jeonse)
+                reg["jeonse_avg_manwon"] = round(avg_j)
+                reg["jeonse_n"] = len(jeonse)
+                if avg_sale > 0:
+                    reg["jeonse_ratio"] = round(avg_j / avg_sale * 100, 1)
+        data["regions"][name] = reg
     return data
