@@ -35,11 +35,27 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from trade import customs, customs_scan, hs_map
+
+# Load host .env so a manual run (e.g. --dry-run from a shell) sees
+# TRADE_DATA_GO_KR_KEY. systemd injects it via EnvironmentFile, but the
+# sibling scripts (fetch_customs / customs_alert) load_dotenv too so an
+# operator can run any of them by hand; this one was missing it.
+load_dotenv()
 
 log = logging.getLogger("scan-customs")
 
-LOOKBACK_MONTHS_DEFAULT = int(os.environ.get("TRADE_CUSTOMS_LOOKBACK_MONTHS") or "12")
+# Scan only needs the latest-vs-previous month (customs_scan._latest_move
+# looks at the last 2 months), so a short window is enough — 3 gives one
+# month of slack. Decoupled from fetch_customs' 12-month window (which
+# feeds the pin panel's history) via its OWN env var so tuning one never
+# silently widens the other. A 3-month scan is ~1/4 the API calls of 12,
+# which is what makes a 4×/day cadence fit under the daily quota.
+LOOKBACK_MONTHS_DEFAULT = int(
+    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "3"
+)
 _MIGRATE_MARKER = Path.home() / ".trade" / ".surge_migrated"
 
 

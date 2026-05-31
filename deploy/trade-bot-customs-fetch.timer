@@ -1,12 +1,21 @@
 [Unit]
-Description=Daily 관세청 customs figures fetch for pinned items
+Description=관세청 customs figures fetch (pins) + 전 chapter 급변 스캔 — 4×/day
 
 [Timer]
-# Data is monthly and refreshes ~the 15th; a daily idempotent poll
-# reflects the new confirmed month within a day of publication. Same-day
-# re-fetches are free refreshes. 16:30 UTC = 01:30 KST — off-peak, away
-# from the 00:00 KST unstored-check and the deploy cadence.
+# 관세청 confirmed data refreshes ~the 15th of each month during KST
+# business hours, so a single 01:30 poll could lag the publication by
+# ~24h. Four ticks across the day catch it within ~6h. Every run is
+# idempotent + baseline-silent (re-reading the same month writes nothing
+# new and alerts nothing), so the extra ticks cost only API calls.
+# Quota math: scan ≈ 600 calls × 4 + pin fetch ≪ 10,000/day free quota
+# (the 3-month scan window — TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS — keeps
+# each scan ~1/4 the calls of the old 12-month window).
+# UTC ↔ KST: 16:30→01:30, 00:30→09:30, 04:30→13:30, 08:30→17:30 KST,
+# spanning KST business hours where data.go.kr updates land.
 OnCalendar=*-*-* 16:30:00 UTC
+OnCalendar=*-*-* 00:30:00 UTC
+OnCalendar=*-*-* 04:30:00 UTC
+OnCalendar=*-*-* 08:30:00 UTC
 Unit=trade-bot-customs-fetch.service
 Persistent=true
 
