@@ -4571,7 +4571,8 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
         # KR 의무보호예수 해제(lock-up release) — 단기 공급 overhang soft 경고.
         # 임박/최근 해제일(rsrnDt) 물량 = 매도 가능 물량 출회. 기술지표 차단은
         # 안 하고(corp action 가드와 별개) 수급 경고만. 실패 시 생략.
-        if market == "KR":
+        # screener_mode 면 skip (per-ticker 6콜 — /ticker deep-dive 전용).
+        if market == "KR" and not screener_mode:
             try:
                 from bot.fsc_client import lockup_releases
                 import datetime as _dt_lk
@@ -4600,7 +4601,8 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
 
         # KR 소액주주현황 (free float·유통물량) — 작전주/유동성 판단. 시총
         # cross-check 보조. 연/분기 공시라 정적이지만 유통물량 frame. 실패 시 생략.
-        if market == "KR":
+        # screener_mode 면 skip (/ticker deep-dive 전용).
+        if market == "KR" and not screener_mode:
             try:
                 from bot.fsc_client import minority_holders
                 _mh = minority_holders(ticker)
@@ -4621,7 +4623,8 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
 
         # KR dilution 공시 (CB/BW 발행결정) — 잠재 희석 수급 경고(기술지표
         # 차단 X). 유상증자는 corp-action 키워드에 있어 제외(중복 방지).
-        if market == "KR":
+        # screener_mode 면 skip (per-ticker 최대 12콜 — /ticker deep-dive 전용).
+        if market == "KR" and not screener_mode:
             try:
                 from bot.fsc_client import dilution_events
                 _dl = dilution_events(ticker)
