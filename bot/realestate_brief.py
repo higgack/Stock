@@ -96,23 +96,28 @@ def build_trend_block(trend: dict) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-def build_permit_block(agg: dict) -> str:
-    """건축인허가 집계 → 공급 파이프라인 텍스트 블록. 비어있으면 ''."""
-    if not agg or not agg.get("by_region"):
+def build_supply_block(supply: dict) -> str:
+    """R-ONE 전국 공급 통계(인허가·착공·미분양) → 공급 파이프라인 블록.
+    비어있으면 ''."""
+    if not supply:
         return ""
-    tot = agg.get("total", {})
-    months = agg.get("months", 12)
-    since = agg.get("since", "")
-    since_fmt = f"{since[:4]}.{since[4:6]}" if len(since) >= 6 else ""
-    lines = [f"[건축인허가 — 공급 파이프라인 선행지표] 최근 {months}개월"
-             f"({since_fmt}~) · 표본 법정동 {len(agg['by_region'])}곳",
-             f"  합계: 주거 인허가 {tot.get('n_permits',0)}건 · "
-             f"{tot.get('hhld_sum',0):,}세대 · 연면적 {tot.get('tot_area',0):,}㎡"]
-    for name, r in sorted(agg["by_region"].items(),
-                          key=lambda kv: kv[1].get("hhld_sum", 0), reverse=True):
-        lines.append(f"  {name}: {r['n_permits']}건 · {r['hhld_sum']:,}세대 · "
-                     f"연면적 {r['tot_area']:,}㎡")
-    return "\n".join(lines)
+    lines = ["[전국 주택 공급 파이프라인 (한국부동산원 R-ONE 월간, 단위 호)]"]
+    meta = {
+        "인허가": "선행 2-3년 후 입주",
+        "착공": "선행 12-18개월 후 입주",
+        "미분양": "실현된 공급과잉·수요 약세 신호",
+    }
+    for name in ("인허가", "착공", "미분양"):
+        t = supply.get(name)
+        if not t:
+            continue
+        p = t.get("latest_period", "")
+        pstr = f"{p[:4]}.{p[4:6]}" if len(p) >= 6 else ""
+        yoy = f" · YoY {_fmt_pct(t.get('yoy_pct'))}" if t.get("yoy_pct") is not None else ""
+        mom = f" · MoM {_fmt_pct(t.get('mom_pct'))}" if t.get("mom_pct") is not None else ""
+        lines.append(f"  {name} ({pstr}): {t.get('latest',0):,}호{mom}{yoy}"
+                     f"  — {meta[name]}")
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 _PROMPT = """당신은 한국 부동산 시장 전문 애널리스트입니다. 아래는 {ymd} 국토
@@ -132,11 +137,11 @@ _PROMPT = """당신은 한국 부동산 시장 전문 애널리스트입니다. 
    단지 구성에 따라 출렁이므로, **방향성 시그널은 R-ONE 월간 지수의
    MoM/3M 변화율을 1차 근거로** 삼는다 (매매·전세 / 전국·수도권·지방).
    실거래 평균과 지수 추세가 어긋나면 그 괴리를 짚어준다.
-4. **공급 파이프라인** ([건축인허가] 블록 있으면): 인허가는 2-3년 후
-   입주로 이어지는 **공급 선행지표**. 최근 N개월 주거 인허가 세대수·
-   연면적이 늘면 미래 공급↑(중장기 가격 하방), 줄면 공급 절벽(상방).
-   현재 실거래·지수와 시간축이 다름을 명시 (지금 가격 ≠ 미래 공급).
-   표본 법정동 기준임을 1줄 언급.
+4. **공급 파이프라인** ([전국 주택 공급] 블록 있으면): 전국 인허가·착공
+   (선행지표, 2-3년/12-18개월 후 입주) + 미분양(실현된 공급과잉)을 해석.
+   인허가·착공 YoY↑ = 미래 공급↑(중장기 가격 하방), YoY↓ = 공급 절벽
+   (중장기 상방). 미분양↑ = 수요 약세·할인압력. 현재 실거래·지수와
+   시간축이 다름을 명시 (지금 가격 ≠ 미래 공급).
 5. **매크로 연계**: 기준금리·주담대 금리를 web search 로 확인해 가격
    방향성 맥락 제공 (출처 날짜 {ymd} 이하, 미확인 시 명시). 전세가율은
    위 데이터의 정확값을 우선 사용 (web search 추정치로 덮지 말 것).
@@ -235,23 +240,22 @@ def generate() -> tuple[str, float, str | None] | None:
     except Exception as exc:
         log.warning("realestate: R-ONE trend fetch failed: %s", exc)
 
-    # 건축인허가 공급 파이프라인 (선행지표, 키 없으면 graceful skip)
-    permit_agg = {}
+    # 전국 주택 공급 파이프라인 (R-ONE 인허가·착공·미분양, 키 없으면 skip)
+    supply = {}
     try:
-        from bot.buildperm_client import (permits_aggregate, _PERMIT_REGIONS,
-                                          buildperm_key_ready)
-        if buildperm_key_ready():
-            permit_agg = permits_aggregate(_PERMIT_REGIONS, months=12)
+        from bot.rone_client import supply_summary, rone_key_ready
+        if rone_key_ready():
+            supply = supply_summary()
     except Exception as exc:
-        log.warning("realestate: 건축인허가 fetch failed: %s", exc)
+        log.warning("realestate: R-ONE 공급통계 fetch failed: %s", exc)
 
     summary = build_summary(data)
     trend_block = build_trend_block(trend)
     if trend_block:
         summary = f"{summary}\n\n{trend_block}"
-    permit_block = build_permit_block(permit_agg)
-    if permit_block:
-        summary = f"{summary}\n\n{permit_block}"
+    supply_block = build_supply_block(supply)
+    if supply_block:
+        summary = f"{summary}\n\n{supply_block}"
 
     from bot.screener import _call_pro
     prompt = _PROMPT.format(ymd=data["ymd"], summary=summary)

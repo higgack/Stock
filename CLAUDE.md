@@ -386,13 +386,23 @@ pattern to follow:
   동일 DATA_GO_KR_API_KEY, sigunguCd+bjdongCd 필수). 필드 archPmsDay(허가일)
   /totArea(연면적)/hhldCnt(세대)/mainPurpsCdNm(주용도). `permits_for_region`
   가 archPmsDay 로 최근 N개월 주거 인허가 필터·집계, `permits_aggregate`
-  가 표본 법정동(_PERMIT_REGIONS 8곳) 합산 → `build_permit_block` 로 brief
-  에 "📐 공급 파이프라인" band 주입 (인허가↑=2-3년후 공급↑ 선행지표,
-  현재 실거래·지수와 시간축 다름 명시). 시간축 3-band 완성: R-ONE 추세
-  (현재 방향)·MOLIT 실거래(현재 거래)·인허가(미래 공급). 표본 법정동은
-  검증된 코드만 — 추가 시 _PERMIT_REGIONS 확장. probe: `python -m
-  bot.buildperm_client` (집계) / `--raw` (단일 필드). 착공(realStcnsDay)은
-  같은 API 필드라 차후 확장 가능. 청약홈 분양정보+경쟁률은 별도 surface(위).
+  (건물 단위 raw). ⚠️ **공급 band 는 건축HUB 가 아니라 R-ONE 전국 집계
+  통계로 통합** (사용자 결정 2026-05-31): per-법정동 건축HUB 기본개요는
+  희소·상업동 편향(역삼/서초=오피스, 주거 인허가 0)·hhldCnt 0 으로
+  공급 추세 지표 부적합 판명. `buildperm_client.py` 는 코드 보관(향후 동
+  단위 상세용), brief 비연결. **R-ONE 공급 통계 LIVE (2026-05-31)** —
+  discovery 로 4 표 확인: 주택건설인허가실적 T235263129553687 / 주택착공
+  실적 T233033129823134 / 미분양주택현황 T237973129847263 (+ 신규분양세대
+  T244633134443498 은 0행, 미사용). 핵심: **지역이 cls_fullnm 첫 세그먼트**
+  ("전국>합계(가구수기준)"·"서울>계"), GRP_NM 은 빈값. `_region_of` 가
+  split('>')[0] 로 전국 추출, `supply_summary()` 가 인허가(합계 가구수기준)
+  ·착공(총계)·미분양(계) 전국 최신·MoM·YoY 산출 → `build_supply_block`
+  로 "📐 공급 파이프라인" band (단위 호). fetch_index 페이지네이션(8p×
+  1000) 로 큰 표 truncation 방지 — 안 하면 옛날 1000행만 와 최근 잘림.
+  시간축 3-band 완성: R-ONE 가격추세(현재 방향)·MOLIT 실거래(현재 거래)
+  ·R-ONE 인허가/착공/미분양(미래 공급). probe `python -m bot.rone_client
+  --supply` / 통계표 재탐색 `--tables`. 청약홈 분양정보+경쟁률은 별도
+  surface(위).
   완전 미러링 (2026-05-31): Daily Byte 와 동등 — `realestate_infographic.py`
   (지역별 평균가/거래량 막대 + 평당가 matplotlib PNG, 사진 push + 카드
   임베드), `realestate_monthly.py` (매월 1일 09:00 `realestate-byte-monthly.

@@ -166,29 +166,39 @@ def fetch_index(statbl_id: str, n_months: int = 8, cycle: str = "MM") -> list[di
     if not rone_key_ready() or not statbl_id:
         return []
     start, end = _period_range(n_months)
-    data = _get("SttsApiTblData.do", {
-        "STATBL_ID": statbl_id, "DTACYCLE_CD": cycle,
-        "START_WRTTIME": start, "END_WRTTIME": end, "pSize": 1000,
-    })
-    if not data:
-        return []
     out = []
-    for r in _walk_rows(data, key="DTA_VAL"):
-        raw = r.get("DTA_VAL")
-        try:
-            val = float(str(raw).replace(",", "")) if raw not in (None, "") else None
-        except (TypeError, ValueError):
-            val = None
-        out.append({
-            "period": str(r.get("WRTTIME_IDTFR_ID") or r.get("WRTTIME_IDTFR") or ""),
-            "grp_nm": (r.get("GRP_NM") or "").strip(),
-            "grp_fullnm": (r.get("GRP_FULLNM") or "").strip(),
-            "cls_id": r.get("CLS_ID") or "",
-            "cls_nm": (r.get("CLS_NM") or "").strip(),
-            "cls_fullnm": (r.get("CLS_FULLNM") or "").strip(),
-            "itm_nm": r.get("ITM_NM") or "",
-            "value": val,
+    # 페이지네이션 — 큰 표(인허가/착공/미분양: 지역×유형×개월 >1000행)는
+    # 단일 페이지면 잘림. pSize 미만 반환될 때까지 누적 (cap max_pages).
+    page_size, max_pages = 1000, 8
+    for page in range(1, max_pages + 1):
+        data = _get("SttsApiTblData.do", {
+            "STATBL_ID": statbl_id, "DTACYCLE_CD": cycle,
+            "START_WRTTIME": start, "END_WRTTIME": end,
+            "pSize": page_size, "pIndex": page,
         })
+        if not data:
+            break
+        rows = _walk_rows(data, key="DTA_VAL")
+        if not rows:
+            break
+        for r in rows:
+            raw = r.get("DTA_VAL")
+            try:
+                val = float(str(raw).replace(",", "")) if raw not in (None, "") else None
+            except (TypeError, ValueError):
+                val = None
+            out.append({
+                "period": str(r.get("WRTTIME_IDTFR_ID") or r.get("WRTTIME_IDTFR") or ""),
+                "grp_nm": (r.get("GRP_NM") or "").strip(),
+                "grp_fullnm": (r.get("GRP_FULLNM") or "").strip(),
+                "cls_id": r.get("CLS_ID") or "",
+                "cls_nm": (r.get("CLS_NM") or "").strip(),
+                "cls_fullnm": (r.get("CLS_FULLNM") or "").strip(),
+                "itm_nm": r.get("ITM_NM") or "",
+                "value": val,
+            })
+        if len(rows) < page_size:
+            break
     return out
 
 
@@ -248,6 +258,68 @@ def realestate_trend(regions: tuple[str, ...] = _DEFAULT_REGIONS) -> dict:
     jeonse = index_trends(STATBL_JEONSE, regions)
     if jeonse:
         out["jeonse"] = jeonse
+    return out
+
+
+# ── 공급 통계 (인허가/착공/미분양) — 지역은 cls_fullnm 첫 세그먼트 ──────
+# 인허가/착공: cls_fullnm "전국>합계(가구수기준)" 등. 미분양: "서울>계" 등.
+_SUPPLY_SPECS = (
+    ("인허가", STATBL_PERMIT, ("합계(가구수기준)", "합계(동수기준)")),
+    ("착공", STATBL_START, ("총계",)),
+    ("미분양", STATBL_UNSOLD, ("계",)),
+)
+
+
+def _region_of(r: dict) -> str:
+    """cls_fullnm 의 첫 세그먼트 = 지역 (예 '전국>합계' → '전국')."""
+    full = r.get("cls_fullnm") or ""
+    return full.split(">")[0].strip() if full else ""
+
+
+def _supply_series(statbl_id: str, leaf_candidates: tuple[str, ...],
+                   region: str = "전국") -> tuple[str, list]:
+    """전국(또는 region) + leaf(합계 종류) 의 (period,value) 시계열.
+    leaf 후보를 순서대로 시도, 첫 ≥2pt 매치 반환. (leaf, series)."""
+    rows = fetch_index(statbl_id, n_months=18)
+    for leaf in leaf_candidates:
+        series = {}
+        for r in rows:
+            if r["value"] is None or not r["period"]:
+                continue
+            if _region_of(r) == region and r["cls_nm"] == leaf:
+                series[r["period"]] = r["value"]
+        if len(series) >= 2:
+            return leaf, sorted(series.items())
+    return "", []
+
+
+def supply_trend_one(statbl_id: str, leaf_candidates: tuple[str, ...]) -> dict | None:
+    """전국 공급 시계열 → 최신·MoM·YoY (호). <2pt 면 None."""
+    leaf, series = _supply_series(statbl_id, leaf_candidates)
+    if len(series) < 2:
+        return None
+    periods = [p for p, _ in series]
+    vals = [v for _, v in series]
+    latest, prev = vals[-1], vals[-2]
+    mom = (latest / prev - 1.0) * 100.0 if prev else None
+    yoy = None
+    if len(vals) >= 13 and vals[-13]:
+        yoy = (latest / vals[-13] - 1.0) * 100.0
+    return {
+        "leaf": leaf, "latest_period": periods[-1], "latest": round(latest),
+        "mom_pct": round(mom, 1) if mom is not None else None,
+        "yoy_pct": round(yoy, 1) if yoy is not None else None,
+    }
+
+
+def supply_summary() -> dict:
+    """부동산 Byte 공급 band — 인허가·착공·미분양 전국 추세. 빈 항목 빠짐.
+    {'인허가': {...}, '착공': {...}, '미분양': {...}}."""
+    out = {}
+    for name, sid, leafs in _SUPPLY_SPECS:
+        t = supply_trend_one(sid, leafs)
+        if t:
+            out[name] = t
     return out
 
 
