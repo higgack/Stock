@@ -380,8 +380,19 @@ pattern to follow:
   (KOSIS 식 StatisticSearch.do 아님 — ERROR-310), 기간 필수
   (START/END_WRTTIME), 필드 WRTTIME_IDTFR_ID/CLS_NM/DTA_VAL. `realestate_
   trend()` (전국·수도권·지방·서울, 표당 1 fetch) → `build_trend_block`.
-  probe: `python -m bot.rone_client` / 통계표 재탐색 `--tables`. 청약홈
-  분양정보 + 건축인허가/착공 client 는 다음 작업(활용신청 완료, 미구현).
+  probe: `python -m bot.rone_client` / 통계표 재탐색 `--tables`.
+  **건축인허가 공급 파이프라인 LIVE (2026-05-31)** — `bot/buildperm_client.py`
+  (건축HUB `apis.data.go.kr/1613000/ArchPmsHubService/getApBasisOulnInfo`,
+  동일 DATA_GO_KR_API_KEY, sigunguCd+bjdongCd 필수). 필드 archPmsDay(허가일)
+  /totArea(연면적)/hhldCnt(세대)/mainPurpsCdNm(주용도). `permits_for_region`
+  가 archPmsDay 로 최근 N개월 주거 인허가 필터·집계, `permits_aggregate`
+  가 표본 법정동(_PERMIT_REGIONS 8곳) 합산 → `build_permit_block` 로 brief
+  에 "📐 공급 파이프라인" band 주입 (인허가↑=2-3년후 공급↑ 선행지표,
+  현재 실거래·지수와 시간축 다름 명시). 시간축 3-band 완성: R-ONE 추세
+  (현재 방향)·MOLIT 실거래(현재 거래)·인허가(미래 공급). 표본 법정동은
+  검증된 코드만 — 추가 시 _PERMIT_REGIONS 확장. probe: `python -m
+  bot.buildperm_client` (집계) / `--raw` (단일 필드). 착공(realStcnsDay)은
+  같은 API 필드라 차후 확장 가능. 청약홈 분양정보+경쟁률은 별도 surface(위).
   완전 미러링 (2026-05-31): Daily Byte 와 동등 — `realestate_infographic.py`
   (지역별 평균가/거래량 막대 + 평당가 matplotlib PNG, 사진 push + 카드
   임베드), `realestate_monthly.py` (매월 1일 09:00 `realestate-byte-monthly.

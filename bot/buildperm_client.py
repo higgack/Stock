@@ -42,6 +42,20 @@ _AUTH_PARAMS = {"sigunguCd": "11680", "bjdongCd": "10100",
                 "numOfRows": 5, "pageNo": 1, "_type": "json"}
 
 
+# 공급 파이프라인 표본 법정동 (name, sigunguCd, bjdongCd) — discovery 로
+# 데이터 반환 확인된 코드. 부동산 Byte 의 시군구와 정합. 코드 추가 시 확장.
+_PERMIT_REGIONS = [
+    ("서울 강남(역삼)", "11680", "10100"),
+    ("서울 강남(논현)", "11680", "10800"),
+    ("서울 서초(서초)", "11650", "10800"),
+    ("서울 송파(잠실)", "11710", "10100"),
+    ("서울 마포(아현)", "11440", "10100"),
+    ("경기 성남분당(서현)", "41135", "11000"),
+    ("인천 서구(검단)", "28245", "10300"),
+    ("부산 해운대(우동)", "26350", "10500"),
+]
+
+
 def buildperm_key_ready() -> bool:
     global _KEY_WARNED
     ready = bool(os.environ.get("DATA_GO_KR_API_KEY"))
@@ -49,6 +63,91 @@ def buildperm_key_ready() -> bool:
         log.warning("buildperm: DATA_GO_KR_API_KEY 미설정 — 건축인허가/착공 skip.")
         _KEY_WARNED = True
     return ready
+
+
+def _get_json(op: str, sigungu: str, bjdong: str, rows: int = 200) -> list[dict]:
+    """ArchPmsHubService op 호출 → item 리스트 (JSON). 실패 시 []."""
+    import json as _json
+    status, body = _http_get(
+        f"{_AUTH_BASE}/{op}",
+        {"sigunguCd": sigungu, "bjdongCd": bjdong, "numOfRows": rows,
+         "pageNo": 1, "_type": "json"}, accept_xml=False)
+    if status != 200 or not body:
+        return []
+    try:
+        items = _json.loads(body)["response"]["body"]["items"]["item"]
+    except Exception:
+        return []
+    if isinstance(items, dict):
+        items = [items]
+    return [it for it in items if isinstance(it, dict)]
+
+
+def _to_float(v) -> float:
+    try:
+        return float(str(v or "").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _to_int(v) -> int:
+    try:
+        return int(str(v or "0").replace(",", "").strip() or "0")
+    except (TypeError, ValueError):
+        return 0
+
+
+def permits_for_region(sigungu: str, bjdong: str, months: int = 12,
+                       residential_only: bool = True) -> dict:
+    """한 법정동의 최근 months개월 건축인허가 집계 (공급 파이프라인).
+    archPmsDay 기준 필터. 반환:
+    {n_permits, hhld_sum(세대), tot_area(연면적㎡), housing_n, since}."""
+    if not buildperm_key_ready():
+        return {}
+    from datetime import datetime, timedelta, timezone
+    today = datetime.now(timezone(timedelta(hours=9))).date()
+    y, m = today.year, today.month - (months - 1)
+    while m <= 0:
+        m += 12
+        y -= 1
+    since = f"{y}{m:02d}01"
+    items = _get_json("getApBasisOulnInfo", sigungu, bjdong)
+    n = hhld = housing = 0
+    area = 0.0
+    for it in items:
+        pms = str(it.get("archPmsDay") or "").strip()
+        if len(pms) < 8 or pms < since:
+            continue
+        purps = str(it.get("mainPurpsCdNm") or "")
+        is_house = any(t in purps for t in
+                       ("주택", "아파트", "주거", "연립", "다세대", "도시형"))
+        if residential_only and not is_house:
+            continue
+        n += 1
+        hhld += _to_int(it.get("hhldCnt"))
+        area += _to_float(it.get("totArea"))
+        if is_house:
+            housing += 1
+    return {"n_permits": n, "hhld_sum": hhld, "tot_area": round(area),
+            "housing_n": housing, "since": since}
+
+
+def permits_aggregate(regions: list[tuple[str, str, str]],
+                      months: int = 12) -> dict:
+    """여러 (이름, sigunguCd, bjdongCd) 의 인허가 합산 → 공급 파이프라인 요약.
+    반환 {total: {...}, by_region: {name: {...}}, months, since}."""
+    by_region, tot = {}, {"n_permits": 0, "hhld_sum": 0, "tot_area": 0}
+    since = ""
+    for name, sgg, bjd in regions:
+        r = permits_for_region(sgg, bjd, months=months)
+        if not r:
+            continue
+        since = r.get("since", since)
+        if r["n_permits"] > 0:
+            by_region[name] = r
+        for k in tot:
+            tot[k] += r.get(k, 0)
+    return {"total": tot, "by_region": by_region, "months": months, "since": since}
 
 
 def _http_get(url: str, params: dict, accept_xml: bool = False):
@@ -87,51 +186,33 @@ if __name__ == "__main__":
         print("DATA_GO_KR_API_KEY 미설정 — .env 확인")
         raise SystemExit(1)
 
-    op = "getApBasisOulnInfo"
-    print(f"=== 건축HUB {op} 파라미터 조합 탐색 (base 확정) ===")
-    print(f"    {_AUTH_BASE}/{op}\n")
-    # 빈 <body/> 해소 — 어떤 인자 조합에서 <item> 이 나오는지 탐색.
-    # 강남구 역삼동(11680/10100) 기준 다양한 조합 + 다른 법정동.
-    combos = [
-        {"sigunguCd": "11680", "bjdongCd": "10100"},
-        {"sigunguCd": "11680", "bjdongCd": "10100", "platGbCd": "0"},
-        {"sigunguCd": "11680", "bjdongCd": "10800"},   # 대치동
-        {"sigunguCd": "11650", "bjdongCd": "10800"},   # 서초구 서초동
-        {"sigunguCd": "11680"},
-        {"sigunguCd": "11680", "bjdongCd": "10100", "startDate": "20250101"},
-    ]
-    for c in combos:
-        params = {**c, "numOfRows": 5, "pageNo": 1, "_type": "json"}
-        status, body = _http_get(f"{_AUTH_BASE}/{op}", params, accept_xml=True)
-        has_item = "<item>" in (body or "") or '"item"' in (body or "")
-        cnt = ""
-        import re as _re
-        m = _re.search(r"<totalCount>(\d+)</totalCount>", body or "")
-        if m:
-            cnt = f" totalCount={m.group(1)}"
-        tag = "✅" if has_item else "  "
-        print(f"{tag} {c}{cnt}\n     {body[:300]}\n")
-    # item 전체 필드(키) 덤프 — 연면적/세대수/허가일 정확한 키 확정
-    print("\n=== item[0] 전체 필드 (강남 역삼동) ===")
-    import json as _json
-    status, body = _http_get(
-        f"{_AUTH_BASE}/{op}",
-        {"sigunguCd": "11680", "bjdongCd": "10100", "numOfRows": 5,
-         "pageNo": 1, "_type": "json"}, accept_xml=False)
-    try:
-        items = (_json.loads(body)["response"]["body"]["items"]["item"])
-        it0 = items[0] if isinstance(items, list) else items
-        for k in sorted(it0.keys()):
-            print(f"  {k} = {it0[k]!r}")
-        # 공급 관련 후보 키만 추출
-        cand = {k: it0[k] for k in it0
-                if any(t in k.lower() for t in
-                       ("area", "hhld", "ho", "fmly", "flr", "pms", "use",
-                        "stcns", "tot", "main", "purps", "dong"))}
-        print("\n  [공급 관련 후보 키]")
-        for k, v in cand.items():
-            print(f"    {k} = {v!r}")
-    except Exception as e:
-        print("JSON 파싱 실패 — body head:")
-        print((body or "")[:1200])
-    print("\n→ 위 키 목록에서 연면적/세대수/허가일/착공일/주용도 키를 확인했습니다.")
+    if "--raw" in sys.argv:
+        # 단일 법정동 item 전체 필드 덤프 (필드 재확인용)
+        import json as _json
+        status, body = _http_get(
+            f"{_AUTH_BASE}/getApBasisOulnInfo",
+            {"sigunguCd": "11680", "bjdongCd": "10100", "numOfRows": 3,
+             "pageNo": 1, "_type": "json"}, accept_xml=False)
+        try:
+            it0 = _json.loads(body)["response"]["body"]["items"]["item"][0]
+            for k in sorted(it0):
+                print(f"  {k} = {it0[k]!r}")
+        except Exception:
+            print((body or "")[:1200])
+        raise SystemExit(0)
+
+    # 기본: 표본 법정동 공급 파이프라인 집계 (실데이터 검증)
+    print("=== 건축인허가 공급 파이프라인 (표본 법정동, 최근 12개월) ===")
+    agg = permits_aggregate(_PERMIT_REGIONS, months=12)
+    tot = agg.get("total", {})
+    print(f"기간: {agg.get('since','')}~  ·  합계 주거인허가 "
+          f"{tot.get('n_permits',0)}건 / {tot.get('hhld_sum',0):,}세대 / "
+          f"연면적 {tot.get('tot_area',0):,}㎡\n")
+    for name, r in sorted(agg.get("by_region", {}).items(),
+                          key=lambda kv: kv[1].get("hhld_sum", 0), reverse=True):
+        print(f"  {name:<20} {r['n_permits']:>3}건 · {r['hhld_sum']:>6,}세대 · "
+              f"연면적 {r['tot_area']:>10,}㎡")
+    empty = [n for n, _, _ in _PERMIT_REGIONS if n not in agg.get("by_region", {})]
+    if empty:
+        print(f"\n  (데이터 없음/0건: {', '.join(empty)})")
+    print("\n→ 숫자가 채워지면 부동산 Byte 공급 band 통합 완료. 단일 필드 재확인: --raw")

@@ -96,6 +96,25 @@ def build_trend_block(trend: dict) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+def build_permit_block(agg: dict) -> str:
+    """건축인허가 집계 → 공급 파이프라인 텍스트 블록. 비어있으면 ''."""
+    if not agg or not agg.get("by_region"):
+        return ""
+    tot = agg.get("total", {})
+    months = agg.get("months", 12)
+    since = agg.get("since", "")
+    since_fmt = f"{since[:4]}.{since[4:6]}" if len(since) >= 6 else ""
+    lines = [f"[건축인허가 — 공급 파이프라인 선행지표] 최근 {months}개월"
+             f"({since_fmt}~) · 표본 법정동 {len(agg['by_region'])}곳",
+             f"  합계: 주거 인허가 {tot.get('n_permits',0)}건 · "
+             f"{tot.get('hhld_sum',0):,}세대 · 연면적 {tot.get('tot_area',0):,}㎡"]
+    for name, r in sorted(agg["by_region"].items(),
+                          key=lambda kv: kv[1].get("hhld_sum", 0), reverse=True):
+        lines.append(f"  {name}: {r['n_permits']}건 · {r['hhld_sum']:,}세대 · "
+                     f"연면적 {r['tot_area']:,}㎡")
+    return "\n".join(lines)
+
+
 _PROMPT = """당신은 한국 부동산 시장 전문 애널리스트입니다. 아래는 {ymd} 국토
 교통부(MOLIT) 아파트 매매 실거래가에서 직접 집계한 **정확한 수치**이며,
 한국부동산원(R-ONE) 월간 가격지수 추세가 함께 제공됩니다 (있는 경우).
@@ -113,18 +132,24 @@ _PROMPT = """당신은 한국 부동산 시장 전문 애널리스트입니다. 
    단지 구성에 따라 출렁이므로, **방향성 시그널은 R-ONE 월간 지수의
    MoM/3M 변화율을 1차 근거로** 삼는다 (매매·전세 / 전국·수도권·지방).
    실거래 평균과 지수 추세가 어긋나면 그 괴리를 짚어준다.
-4. **매크로 연계**: 기준금리·주담대 금리를 web search 로 확인해 가격
+4. **공급 파이프라인** ([건축인허가] 블록 있으면): 인허가는 2-3년 후
+   입주로 이어지는 **공급 선행지표**. 최근 N개월 주거 인허가 세대수·
+   연면적이 늘면 미래 공급↑(중장기 가격 하방), 줄면 공급 절벽(상방).
+   현재 실거래·지수와 시간축이 다름을 명시 (지금 가격 ≠ 미래 공급).
+   표본 법정동 기준임을 1줄 언급.
+5. **매크로 연계**: 기준금리·주담대 금리를 web search 로 확인해 가격
    방향성 맥락 제공 (출처 날짜 {ymd} 이하, 미확인 시 명시). 전세가율은
    위 데이터의 정확값을 우선 사용 (web search 추정치로 덮지 말 것).
-5. **섹터 함의 (중립)**: 건설(시공)·부동산(디벨로퍼/리츠)·은행(부동산 PF
+6. **섹터 함의 (중립)**: 건설(시공)·부동산(디벨로퍼/리츠)·은행(부동산 PF
    부실) 에 미치는 영향을 정보 차원에서 서술. 특정 종목 매수 권유 금지.
-6. **구조** (각 섹션 지정 이모지 헤더 한 줄):
+7. **구조** (각 섹션 지정 이모지 헤더 한 줄):
    🏠 시장 총평 (거래량·가격 방향 · R-ONE 지수 추세)
    📍 지역별 온도차 (고가권 vs 외곽/지방)
+   📐 공급 파이프라인 (건축인허가 선행지표, 블록 있을 때만)
    💰 매크로 연계 (금리·전세가율)
    🏗️ 섹터 함의 (건설/부동산/은행, 중립)
    🎯 한 줄 결론
-7. **본문 일반 텍스트** + 이모지 헤더. 강조는 **굵게**. HTML 태그·`---`
+8. **본문 일반 텍스트** + 이모지 헤더. 강조는 **굵게**. HTML 태그·`---`
    수평선 금지. 각 항목 줄바꿈.
 면책: 끝에 "본 브리프는 공공데이터 관찰 (교육·정보 목적), 투자 권유 아님" 1줄.
 """
@@ -210,10 +235,23 @@ def generate() -> tuple[str, float, str | None] | None:
     except Exception as exc:
         log.warning("realestate: R-ONE trend fetch failed: %s", exc)
 
+    # 건축인허가 공급 파이프라인 (선행지표, 키 없으면 graceful skip)
+    permit_agg = {}
+    try:
+        from bot.buildperm_client import (permits_aggregate, _PERMIT_REGIONS,
+                                          buildperm_key_ready)
+        if buildperm_key_ready():
+            permit_agg = permits_aggregate(_PERMIT_REGIONS, months=12)
+    except Exception as exc:
+        log.warning("realestate: 건축인허가 fetch failed: %s", exc)
+
     summary = build_summary(data)
     trend_block = build_trend_block(trend)
     if trend_block:
         summary = f"{summary}\n\n{trend_block}"
+    permit_block = build_permit_block(permit_agg)
+    if permit_block:
+        summary = f"{summary}\n\n{permit_block}"
 
     from bot.screener import _call_pro
     prompt = _PROMPT.format(ymd=data["ymd"], summary=summary)
