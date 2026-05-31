@@ -178,5 +178,66 @@ class TestCache(unittest.TestCase):
         self.assertGreater(customs.month_over_month(series), 0)
 
 
+class TestFormat(unittest.TestCase):
+    def test_fmt_usd(self):
+        self.assertEqual(customs.fmt_usd(129673809), "$129.7M")
+        self.assertEqual(customs.fmt_usd(3417443000), "$3.42B")
+        self.assertEqual(customs.fmt_usd(-5364818), "-$5.4M")
+        self.assertEqual(customs.fmt_usd(304), "$304")
+        self.assertEqual(customs.fmt_usd(None), "$0")
+
+    def test_fmt_pct(self):
+        self.assertEqual(customs.fmt_pct(30.25), "+30.2%")
+        self.assertEqual(customs.fmt_pct(-12.0), "-12.0%")
+        self.assertEqual(customs.fmt_pct(None), "—")
+
+
+class TestSummaryRows(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self.tmp.name) / "customs.db"
+        agg = customs.aggregate_by_month(
+            customs.parse_response(_XML_OK), "1902301010"
+        )
+        with customs.session(self.db) as conn:
+            for ym, a in sorted(agg.items()):
+                customs.upsert_month(conn, "1902301010", ym, a)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_pinned_with_data_has_latest_and_mom(self):
+        with customs.session(self.db) as conn:
+            rows = customs.summary_rows(conn, [("라면", "1902301010")])
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertTrue(r["has_data"])
+        self.assertEqual(r["year_month"], "2026-02")  # latest
+        self.assertEqual(r["exp_dlr"], 141000000)
+        self.assertIsNotNone(r["exp_mom"])             # 2 months → computable
+
+    def test_pin_without_data_marked(self):
+        with customs.session(self.db) as conn:
+            rows = customs.summary_rows(conn, [("미수집품목", "8501")])
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["has_data"])
+
+    def test_sort_data_first_then_value_desc(self):
+        # Add a smaller-export pin and a no-data pin; order must be
+        # big-export, small-export, then no-data last.
+        small = customs.aggregate_by_month(
+            customs.parse_response(_XML_OK), "1902301090"
+        )
+        with customs.session(self.db) as conn:
+            for ym, a in sorted(small.items()):
+                customs.upsert_month(conn, "1902301090", ym, a)
+            rows = customs.summary_rows(conn, [
+                ("기타", "1902301090"),
+                ("라면", "1902301010"),
+                ("없음", "9999"),
+            ])
+        self.assertEqual([r["item"] for r in rows], ["라면", "기타", "없음"])
+
+
 if __name__ == "__main__":
     unittest.main()

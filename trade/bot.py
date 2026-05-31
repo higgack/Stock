@@ -129,7 +129,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 <b>2. 대쉬보드</b>
 <a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
 모바일 OK · 5분마다 자동 갱신 · BasicAuth 보호 · 다크모드 자동 (19~07 KST)
-헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) + 🧪 미파싱 백로그 (있을 때만, 가장 오래된 N일째) 자동 표시
+헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) + 🧪 미파싱 백로그 + 📦 관세청 핀 품목 비교 패널 (핀 있을 때만) 자동 표시
 
 <b>3. BeOn 발표 사이클 (KST)</b>
 • 매월 11일경 — 1-10일 잠정
@@ -174,6 +174,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /ignored — 현재 ignore 목록
 /hs &lt;품목&gt; &lt;HS코드&gt; — 품목에 HS코드 핀 → 관세청 월 수출입금액 수집 (예: /hs 라면 1902301010)
 /unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록
+/customs — 핀 품목 관세청 월 금액 비교 (수출·전월비·무역수지). 대쉬보드 헤더 📦 패널과 동일
 ※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
 
 <b>9. 자동화 systemd</b>
@@ -195,7 +196,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-05-31 — /hs·/unhs·/hslist (품목→HS 핀) 명령 추가 · 관세청 수출입실적 수집 인프라</i>
+<i>최종 갱신: 2026-05-31 — 관세청 핀 품목 비교 (/customs DM + 대쉬보드 📦 패널) · /hs 핀 명령</i>
 """
 
 
@@ -390,7 +391,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if first_word in (
         "/watch", "/unwatch",
         "/ignore", "/unignore", "/ignored",
-        "/hs", "/unhs", "/hslist",
+        "/hs", "/unhs", "/hslist", "/customs",
     ):
         # Per-user / per-operator state has no place in a channel post.
         # Reply once with the DM-only hint and a one-tap keyboard
@@ -724,6 +725,55 @@ async def cmd_hslist(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def _format_customs() -> str:
+    """Text comparison of pinned items' latest 관세청 monthly figures —
+    the DM twin of the dashboard panel. Reads the same customs.db +
+    hs_map, so DM and dashboard never drift."""
+    from trade import customs
+
+    pins = hs_map.entries()
+    if not pins:
+        return (
+            "📦 핀된 품목 없음.\n\n핀을 추가하면 관세청 월 수출입금액을 비교합니다:\n"
+            + _HS_USAGE
+        )
+    db = customs.DEFAULT_DB
+    if not Path(db).exists():
+        rows = [{"item": it, "hs_code": hs, "has_data": False} for it, hs in pins]
+    else:
+        with customs.session(db) as conn:
+            rows = customs.summary_rows(conn, pins)
+
+    latest = max(
+        (r.get("year_month", "") for r in rows if r.get("has_data")),
+        default="",
+    )
+    head = f"📦 <b>관세청 수출입</b> (핀 {len(rows)}개"
+    head += f" · 최신 {latest})" if latest else ")"
+    lines = [head, "<i>월 확정 금액(공식) · BeOn과 별개</i>", ""]
+    for r in rows:
+        item = _html.escape(r.get("item", ""))
+        if not r.get("has_data"):
+            lines.append(f"• {item} — <i>수집 대기</i>")
+            continue
+        lines.append(
+            f"• <b>{item}</b>  수출 {customs.fmt_usd(r.get('exp_dlr'))} "
+            f"({customs.fmt_pct(r.get('exp_mom'))})  "
+            f"· 수입 {customs.fmt_usd(r.get('imp_dlr'))} "
+            f"· 무역수지 {customs.fmt_usd(r.get('bal_payments'))}"
+        )
+    return "\n".join(lines)
+
+
+async def cmd_customs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    await update.message.reply_text(
+        _format_customs(), parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
 async def _notify_watchers(ctx: ContextTypes.DEFAULT_TYPE, caption_text: str) -> None:
     """Parse the caption with the live trade parser and DM every user
     whose watch pattern matches the resulting item/stocks. Failures
@@ -805,6 +855,7 @@ def main() -> None:
     app.add_handler(CommandHandler("hs", cmd_hs))
     app.add_handler(CommandHandler("unhs", cmd_unhs))
     app.add_handler(CommandHandler("hslist", cmd_hslist))
+    app.add_handler(CommandHandler("customs", cmd_customs))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     log.info(

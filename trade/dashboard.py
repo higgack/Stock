@@ -40,6 +40,8 @@ def render_html(
     *,
     media_url_prefix: str = "../",
     eval_miss_path: Path | str | None = None,
+    customs_db_path: Path | str | None = None,
+    hs_map_path: Path | str | None = None,
 ) -> str:
     """Render the dashboard HTML from store.db.
 
@@ -74,7 +76,37 @@ def render_html(
             seen.add(key)
             latest_ids.append(a["id"])
     backlog = _load_eval_miss_summary(eval_miss_path)
-    return _build_html(all_alerts, latest_ids, s, media_url_prefix, backlog)
+    customs_rows = _load_customs_summary(customs_db_path, hs_map_path)
+    return _build_html(
+        all_alerts, latest_ids, s, media_url_prefix, backlog, customs_rows
+    )
+
+
+def _load_customs_summary(
+    customs_db_path: Path | str | None,
+    hs_map_path: Path | str | None,
+) -> list[dict]:
+    """Build the pinned-item comparison rows for the dashboard panel.
+
+    Returns [] (panel hidden) when no DB/pins exist or anything fails —
+    the customs feature is purely additive, so a hiccup here must never
+    break the main dashboard render. customs_db_path None → use the
+    module default; hs_map_path None → hs_map's own default.
+    """
+    try:
+        from trade import customs, hs_map
+        pins = hs_map.entries() if hs_map_path is None else hs_map.entries(hs_map_path)
+        if not pins:
+            return []
+        db = customs_db_path if customs_db_path is not None else customs.DEFAULT_DB
+        if not Path(db).exists():
+            # Pins exist but fetch hasn't created the cache yet — still
+            # show the panel so the operator sees '수집 대기' rows.
+            return [{"item": it, "hs_code": hs, "has_data": False} for it, hs in pins]
+        with customs.session(db) as conn:
+            return customs.summary_rows(conn, pins)
+    except Exception:
+        return []
 
 
 def _load_eval_miss_summary(
@@ -170,12 +202,70 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
     }
 
 
+def _customs_panel_html(rows: list[dict]) -> str:
+    """Collapsible 관세청 comparison panel (server-rendered, no JS, no
+    chart — table only, per the agreed scope). Returns '' when there are
+    no pins so nothing renders. Sits under the header.
+
+    Each row: 품목 · 최신월 수출/수입 금액 · 전월비. Pins with no cached
+    month yet show '수집 대기'. Numbers are official 관세청 confirmed
+    monthly figures (dataset 15101609) — not BeOn's.
+    """
+    if not rows:
+        return ""
+    from trade.customs import fmt_pct, fmt_usd
+
+    with_data = [r for r in rows if r.get("has_data")]
+    latest_ym = ""
+    for r in with_data:
+        if r.get("year_month", "") > latest_ym:
+            latest_ym = r["year_month"]
+    ym_label = f" · 최신 {escape(latest_ym)}" if latest_ym else ""
+
+    body = [
+        '<table class="customs-table"><thead><tr>'
+        '<th>품목</th><th>수출</th><th>전월비</th>'
+        '<th>수입</th><th>무역수지</th>'
+        '</tr></thead><tbody>'
+    ]
+    for r in rows:
+        item = escape(r.get("item", ""))
+        hs = escape(r.get("hs_code", ""))
+        if not r.get("has_data"):
+            body.append(
+                f'<tr class="nodata"><td>{item} '
+                f'<span class="hs">{hs}</span></td>'
+                f'<td colspan="4">수집 대기</td></tr>'
+            )
+            continue
+        mom = r.get("exp_mom")
+        mom_cls = "up" if (mom or 0) > 0 else ("down" if (mom or 0) < 0 else "")
+        body.append(
+            f'<tr><td>{item} <span class="hs">{hs}</span></td>'
+            f'<td class="num">{escape(fmt_usd(r.get("exp_dlr")))}</td>'
+            f'<td class="num {mom_cls}">{escape(fmt_pct(mom))}</td>'
+            f'<td class="num">{escape(fmt_usd(r.get("imp_dlr")))}</td>'
+            f'<td class="num">{escape(fmt_usd(r.get("bal_payments")))}</td></tr>'
+        )
+    body.append("</tbody></table>")
+
+    return (
+        '<details class="customs-panel">'
+        f'<summary>📦 관세청 수출입 (핀 {len(rows)}개{ym_label})</summary>'
+        '<div class="customs-note">관세청 월 확정 금액(공식, dataset 15101609) · '
+        'BeOn 데이터와 별개 · 핀 품목만</div>'
+        + "".join(body)
+        + "</details>"
+    )
+
+
 def _build_html(
     alerts: list[dict],
     latest_ids: list[int],
     s: dict,
     media_prefix: str,
     backlog: dict | None = None,
+    customs_rows: list[dict] | None = None,
 ) -> str:
     payload = [_alert_to_payload(a, media_prefix) for a in alerts]
     payload_json = json.dumps(
@@ -221,6 +311,8 @@ def _build_html(
         f"</header>"
     )
 
+    customs_panel = _customs_panel_html(customs_rows or [])
+
     return (
         '<!DOCTYPE html>\n'
         '<html lang="ko"><head>'
@@ -230,6 +322,7 @@ def _build_html(
         f"<style>{_CSS}</style>"
         '</head><body>'
         + head
+        + customs_panel
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
@@ -312,6 +405,20 @@ h1{margin:0 0 4px;font-size:18px}
 .meta-backlog{color:var(--text-sub)}
 .meta-backlog strong{color:var(--b-import-fg);font-weight:600}
 .meta-backlog code{font-size:10.5px;background:var(--surface-2);padding:0 4px;border-radius:3px}
+.customs-panel{background:var(--surface);border-bottom:1px solid var(--border);padding:8px 18px}
+.customs-panel summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--text);list-style:none}
+.customs-panel summary::-webkit-details-marker{display:none}
+.customs-panel summary::before{content:"▸ ";color:var(--text-sub)}
+.customs-panel[open] summary::before{content:"▾ "}
+.customs-note{font-size:11px;color:var(--text-sub);margin:6px 0 8px}
+.customs-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.customs-table th,.customs-table td{padding:5px 8px;border-bottom:1px solid var(--border-soft);text-align:left}
+.customs-table th{font-size:11px;color:var(--text-sub);font-weight:600}
+.customs-table td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.customs-table .hs{font-size:10px;color:var(--text-sub)}
+.customs-table .num.up{color:var(--tone-export)}
+.customs-table .num.down{color:var(--tone-import)}
+.customs-table tr.nodata td{color:var(--text-sub);font-style:italic}
 .tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:60px;z-index:9}
 .tab{flex:1;padding:13px 0;background:none;border:none;font-size:14px;font-weight:600;color:var(--text-sub);cursor:pointer;border-bottom:2px solid transparent}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
@@ -1270,6 +1377,8 @@ def main() -> int:
         args.db,
         media_url_prefix=args.media_url,
         eval_miss_path=args.eval_miss_path,
+        # customs_db_path / hs_map_path default to None → render_html uses
+        # the module defaults (~/.trade/customs.db, ~/.trade/hs_map.tsv).
     )
     args.out.write_text(html, encoding="utf-8")
     size_kb = len(html.encode("utf-8")) / 1024

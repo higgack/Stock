@@ -280,3 +280,72 @@ def get_series(conn: sqlite3.Connection, hs_code: str) -> list[dict]:
             (hs_code,),
         )
     ]
+
+
+# ---------------------------------------------------------------------
+# Comparison view — shared by the dashboard panel and the /customs DM
+# ---------------------------------------------------------------------
+
+def fmt_usd(n: int | None) -> str:
+    """Compact USD: 129673809 → '$129.7M', -5364818 → '-$5.4M'. The API
+    returns raw dollars, so amounts are large — abbreviate for a one-line
+    cell."""
+    n = n or 0
+    sign = "-" if n < 0 else ""
+    a = abs(n)
+    if a >= 1_000_000_000:
+        return f"{sign}${a / 1_000_000_000:.2f}B"
+    if a >= 1_000_000:
+        return f"{sign}${a / 1_000_000:.1f}M"
+    if a >= 1_000:
+        return f"{sign}${a / 1_000:.0f}K"
+    return f"{sign}${a}"
+
+
+def fmt_pct(p: float | None) -> str:
+    """전월비 → '+30.2%' / '-12.0%' / '—' when undefined (first month or
+    prior value 0)."""
+    if p is None:
+        return "—"
+    return f"{p:+.1f}%"
+
+
+def summary_rows(
+    conn: sqlite3.Connection,
+    pins: list[tuple[str, str]],
+) -> list[dict]:
+    """One comparison row per pinned (item, hs_code).
+
+    Each row: item, hs_code, has_data, and — when cached data exists —
+    year_month (latest), exp_dlr / imp_dlr / bal_payments (latest month)
+    and exp_mom / imp_mom (% vs previous cached month).
+
+    Pins with no cached month yet (just added, fetch hasn't run) come back
+    has_data=False so the UI can show '수집 대기' instead of dropping them.
+    Sorted data-first, then by latest export value desc — the operator's
+    biggest export lines lead.
+    """
+    out: list[dict] = []
+    for item, hs in pins:
+        series = get_series(conn, hs)
+        if not series:
+            out.append({"item": item, "hs_code": hs, "has_data": False})
+            continue
+        latest = series[-1]
+        out.append({
+            "item": item,
+            "hs_code": hs,
+            "has_data": True,
+            "year_month": latest["year_month"],
+            "exp_dlr": latest["exp_dlr"],
+            "imp_dlr": latest["imp_dlr"],
+            "bal_payments": latest["bal_payments"],
+            "exp_mom": month_over_month(series, "exp_dlr"),
+            "imp_mom": month_over_month(series, "imp_dlr"),
+            "months": len(series),
+        })
+    out.sort(
+        key=lambda r: (r["has_data"], r.get("exp_dlr") or 0),
+        reverse=True,
+    )
+    return out

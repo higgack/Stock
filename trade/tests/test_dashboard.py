@@ -467,5 +467,61 @@ class TestEvalMissBacklogCard(unittest.TestCase):
         self.assertNotIn("일째", html)
 
 
+class TestCustomsPanel(unittest.TestCase):
+    """The 관세청 comparison panel is server-rendered under the header.
+    Hidden entirely when there are no pins; shows '수집 대기' for pins
+    with no cached month yet; shows numbers + 전월비 once data exists.
+    Must never break the main render (additive feature)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "store.db"
+        _seed_store(self.db_path)
+        self.customs_db = Path(self.tmp.name) / "customs.db"
+        self.hs_map = Path(self.tmp.name) / "hs_map.tsv"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_no_pins_hides_panel(self):
+        self.hs_map.write_text("", encoding="utf-8")
+        html = render_html(
+            self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
+        )
+        self.assertNotIn("관세청 수출입", html)
+
+    def test_pin_without_data_shows_waiting(self):
+        self.hs_map.write_text("라면\t1902301010\n", encoding="utf-8")
+        # customs_db doesn't exist yet → panel shows but row is 수집 대기
+        html = render_html(
+            self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
+        )
+        self.assertIn("관세청 수출입", html)
+        self.assertIn("수집 대기", html)
+        self.assertIn("1902301010", html)
+
+    def test_pin_with_data_shows_numbers(self):
+        from trade import customs
+        self.hs_map.write_text("라면\t1902301010\n", encoding="utf-8")
+        with customs.session(self.customs_db) as conn:
+            customs.upsert_month(conn, "1902301010", "2026-01", {
+                "exp_dlr": 129673809, "imp_dlr": 1236615,
+                "bal_payments": 128437194, "exp_wgt": 0, "imp_wgt": 0,
+            })
+        html = render_html(
+            self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
+        )
+        self.assertIn("관세청 수출입", html)
+        self.assertIn("$129.7M", html)       # formatted export
+        self.assertNotIn("수집 대기", html)
+
+    def test_default_paths_no_crash(self):
+        # render_html with no customs args must still work (uses module
+        # defaults; on a machine with no pins the panel is just hidden).
+        html = render_html(self.db_path)
+        self.assertIn("<!DOCTYPE html>", html)
+
+
 if __name__ == "__main__":
     unittest.main()
