@@ -435,8 +435,10 @@ def render_surge_html(db_path=None) -> str:
                 f"{highlight}</tr>"
             )
         metric_th = "전월비" if metric == "pct" else "증감액"
+        # No 'open' — start collapsed so the operator expands on click
+        # (the panel can be long; default-closed keeps the page compact).
         return (
-            "<details class='customs-panel' open>"
+            "<details class='customs-panel'>"
             f"<summary>{title} ({len(rows)})</summary>"
             "<table class='customs-table'><thead><tr>"
             f"<th>품목</th><th>HS</th><th>월</th><th>수출($)</th><th>{metric_th}</th>"
