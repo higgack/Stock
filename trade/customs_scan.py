@@ -446,25 +446,60 @@ def render_surge_html(db_path=None) -> str:
     def _archive_card(rows: list[dict]) -> str:
         if not rows:
             return ""
-        # group by month desc, rate then amount within month
-        by_month: dict[str, list[dict]] = {}
+        # Group by month (newest first). Within a month, MERGE the two
+        # sections so one item that surged on both 📈 and 💵 shows as a
+        # single line with both markers (was two separate rows before).
+        by_month: dict[str, dict[str, dict]] = {}
         for r in rows:
-            by_month.setdefault(r.get("year_month") or "?", []).append(r)
+            ym = r.get("year_month") or "?"
+            code = r.get("hs_code")
+            merged = by_month.setdefault(ym, {})
+            cur = merged.get(code)
+            if cur is None:
+                cur = {
+                    "name": r.get("name"), "hs_code": code,
+                    "pct": r.get("pct"), "delta": r.get("delta"),
+                    "sections": set(),
+                }
+                merged[code] = cur
+            cur["sections"].add(r.get("section"))
+            # keep the larger |delta| / defined pct if rows differ
+            if (r.get("delta") or 0) and abs(r.get("delta") or 0) > abs(cur.get("delta") or 0):
+                cur["delta"] = r.get("delta")
+            if cur.get("pct") is None and r.get("pct") is not None:
+                cur["pct"] = r.get("pct")
+
+        months = sorted(by_month, reverse=True)
+        month_count = len(months)
         blocks = []
-        for ym in sorted(by_month, reverse=True):
-            items = by_month[ym]
+        for idx, ym in enumerate(months):
+            # newest month expanded; older months collapsed (volume grows
+            # ~60 rows/month, so default-open only the latest).
+            open_attr = " open" if idx == 0 else ""
+            items = sorted(
+                by_month[ym].values(),
+                key=lambda m: abs(m.get("delta") or 0), reverse=True,
+            )
             lis = []
-            for r in items:
-                marker = "📈" if r.get("section") == SECTION_RATE else "💵"
+            for m in items:
+                mk = ""
+                if SECTION_RATE in m["sections"]:
+                    mk += "📈"
+                if SECTION_AMOUNT in m["sections"]:
+                    mk += "💵"
                 lis.append(
-                    f"<li>{marker} {_esc(r.get('name'))} "
-                    f"<span class='muted'>({_esc(r.get('hs_code'))})</span> "
-                    f"{customs.fmt_pct(r.get('pct'))} · Δ{customs.fmt_usd(r.get('delta'))}</li>"
+                    f"<li>{mk} {_esc(m.get('name'))} "
+                    f"<span class='muted'>({_esc(m.get('hs_code'))})</span> "
+                    f"{customs.fmt_pct(m.get('pct'))} · Δ{customs.fmt_usd(m.get('delta'))}</li>"
                 )
-            blocks.append(f"<h3>{_esc(ym)}</h3><ul>" + "".join(lis) + "</ul>")
+            blocks.append(
+                f"<details class='archive-month'{open_attr}>"
+                f"<summary>{_esc(ym)} ({len(items)})</summary>"
+                "<ul>" + "".join(lis) + "</ul></details>"
+            )
         return (
             "<details class='customs-panel'>"
-            f"<summary>🗄 급변 아카이브 ({len(rows)}건 · 무제한 보관)</summary>"
+            f"<summary>🗄 급변 아카이브 ({month_count}개월 · 무제한 보관)</summary>"
             + "".join(blocks) + "</details>"
         )
 
