@@ -157,11 +157,34 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         hist = customs_scan.floor_histogram(leaves, pct_threshold=args.pct)
         print(f"[dry-run] leaves={len(leaves)} "
-              f"rate(+{args.pct:.0f}%)={len(ranked[customs_scan.SECTION_RATE])} "
+              f"rate(+{args.pct:.0f}%, ≥{customs.fmt_usd(customs_scan.RATE_MIN_USD)})"
+              f"={len(ranked[customs_scan.SECTION_RATE])} "
               f"amount={len(ranked[customs_scan.SECTION_AMOUNT])}")
         print("[dry-run] +%.0f%% surges surviving each export floor:" % args.pct)
         for floor, cnt in sorted(hist.items()):
             print(f"  ≥ {customs.fmt_usd(floor)}: {cnt}건")
+
+        # Preview the ACTUAL top items that would be registered this run —
+        # dry-run writes nothing, but this shows what the live panel would
+        # contain so the operator can sanity-check before enabling.
+        def _preview(title: str, rows: list[dict], metric: str) -> None:
+            print(f"\n[dry-run] {title} — 실제 등록 예정 (상위 {len(rows)}):")
+            if not rows:
+                print("  (해당 없음)")
+                return
+            for i, m in enumerate(rows, 1):
+                move = (
+                    customs.fmt_pct(m["pct"]) if metric == "pct"
+                    else "Δ" + customs.fmt_usd(m["delta"])
+                )
+                print(
+                    f"  {i:2d}. {m['name']} ({m['hs_code']}) "
+                    f"{customs.fmt_usd(m['prev'])}→{customs.fmt_usd(m['curr'])} "
+                    f"[{move}]"
+                )
+
+        _preview("📈 급등률 TOP", ranked[customs_scan.SECTION_RATE], "pct")
+        _preview("💵 급증액 TOP", ranked[customs_scan.SECTION_AMOUNT], "amount")
         return 0
 
     db = Path(args.db) if args.db else customs.DEFAULT_DB
