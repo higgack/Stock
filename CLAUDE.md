@@ -644,6 +644,13 @@ ARCHIVE_ROOT 정적 서빙). 적용:
 DASHBOARD_USER=higgack
 DASHBOARD_PASSWORD=<.env 에만>
 ```
+**Nav 순서 정책 (사용자 2026-05-31):** NOAH archive 헤더 nav 에서 새로
+추가되는 대시보드는 **항상 제일 끝(마지막)에 append**. 현재 순서:
+errors → Bottleneck Screener → 도메인 목록 → Daily Byte → (external:
+Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약. 앞으로 만드는
+대시보드(예: 신규 surface)는 이 줄 맨 끝에 붙일 것 — 기존 항목 사이에
+끼워넣지 말 것. (`bot/dashboard.py` errors_link 두 분기 모두 갱신.)
+
 .env 변경 후 `sudo systemctl restart dashboard` (env 는 import 시 1회 읽음).
 **향후 별도 포트로 새 대시보드 서버를 만들면 동일하게 `DASHBOARD_USER`/
 `DASHBOARD_PASSWORD` 를 읽어 같은 기본 자격증명으로 보호할 것** — 이것이

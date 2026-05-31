@@ -1675,9 +1675,9 @@ def _render_index(records: list[dict]) -> str:
             f' · <a href="screener.html">📊 Bottleneck Screener</a>'
             f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             f' · <a href="daily_byte.html">📊 Daily Byte</a>'
-            f' · <a href="cheongyak.html">🎟️ 청약</a>'
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
+            + ' · <a href="cheongyak.html">🎟️ 청약</a>'
         )
     else:
         errors_link = (
@@ -1685,9 +1685,9 @@ def _render_index(records: list[dict]) -> str:
             ' · <a href="screener.html">📊 Bottleneck Screener</a>'
             ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
             ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-            ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
+            + ' · <a href="cheongyak.html">🎟️ 청약</a>'
         )
 
     return f"""<!doctype html>
