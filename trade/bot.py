@@ -694,10 +694,13 @@ def _hs_search_keyboard(hits, pinned_codes: set[str]):
         )])
     # Trailing 'done' row — closes the picker without un-doing anything
     # (toggling already wrote to hs_map). callback_data 'hs_done' has its
-    # own handler / pattern so it doesn't collide with 'hs_pin:'.
+    # own handler / pattern so it doesn't collide with 'hs_pin:'. The
+    # counter is informational, NOT a cap — the operator can keep
+    # selecting; phrasing avoids '… 6개 핀' wording that mis-reads as a
+    # 6-item limit.
     pin_n = sum(1 for h in hits if h.hs_code in pinned_codes)
     rows.append([InlineKeyboardButton(
-        f"✓ 완료 (이 화면에서 {pin_n}개 핀)",
+        f"✓ 완료  ·  ✅ {pin_n}개 선택 (제한 없음)",
         callback_data="hs_done",
     )])
     return InlineKeyboardMarkup(rows)
@@ -713,8 +716,8 @@ def _format_hs_search(hits, total: int, query: str):
     if total > len(hits):
         head += f" — 상위 {len(hits)}개만 표시 (더 좁혀보세요)"
     head += (
-        "\n버튼을 누를 때마다 즉시 핀 등록/해제됩니다 (✅ = 핀됨)."
-        "\n여러 개 선택 가능 — 끝나면 맨 아래 <b>완료</b>."
+        "\n버튼을 누를 때마다 즉시 핀 등록/해제 (✅ = 핀됨). "
+        "<b>선택 개수 제한 없음</b> — 원하는 만큼 누르고 맨 아래 <b>완료</b>."
     )
     pinned = {code for _item, code in hs_map.entries()}
     return head, _hs_search_keyboard(hits, pinned)
