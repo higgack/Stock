@@ -229,6 +229,47 @@ def rights_for(ticker: str, lookback_days: int = 21) -> list[dict]:
     return out
 
 
+# ── 3.5) 증권상품시세 (ETF/ETN) — yfinance KR ETF 빈약 보완 + 괴리율 ──────
+_SECPROD = f"{_HOST}/service/GetSecuritiesProductInfoService"
+
+
+def securities_product_quote(ticker: str) -> dict | None:
+    """ETF/ETN 최신 시세 + 괴리율(가격 vs NAV/지표가치). ELW 제외(옵션성).
+    ETF 먼저, 없으면 ETN 시도. {type, basDt, clpr, nav, premium_pct(%),
+    trqu, mrktTotAmt, nav_total, bssIdx}. 일반 주식이면 None."""
+    code = _kr_code(ticker)
+    if not code:
+        return None
+    ck = f"secprod_{code}_{_now():%Y%m%d}"
+    c = _cache_get(ck)
+    if c is not None:
+        return c or None
+    out = None
+    begin = (_now().date() - timedelta(days=10)).strftime("%Y%m%d")
+    for op, ind_field, tot_field, kind in (
+            ("getETFPriceInfo", "nav", "nPptTotAmt", "ETF"),
+            ("getETNPriceInfo", "indcVal", "indcValTotAmt", "ETN")):
+        raw = _fetch(_SECPROD, op,
+                     {"likeSrtnCd": code, "beginBasDt": begin, "numOfRows": 20})
+        rows = [r for r in raw if _kr_code(r.get("srtnCd", "")) == code]
+        if not rows:
+            continue
+        rows.sort(key=lambda r: str(r.get("basDt") or ""))
+        it = rows[-1]
+        clpr, ind = _f(it.get("clpr")), _f(it.get(ind_field))
+        prem = round((clpr / ind - 1) * 100, 2) if clpr and ind else None
+        out = {
+            "type": kind, "basDt": str(it.get("basDt") or ""),
+            "clpr": clpr, "nav": ind, "premium_pct": prem,
+            "trqu": _f(it.get("trqu")), "mrktTotAmt": _f(it.get("mrktTotAmt")),
+            "nav_total": _f(it.get(tot_field)),
+            "bssIdx": it.get("bssIdxIdxNm") or "",
+        }
+        break
+    _cache_put(ck, out or {})
+    return out
+
+
 # ── 4) 금융투자협회 종합통계 (시장 전체 수급·심리, ticker 무관) ───────────
 # 15094809. 예탁금(dry powder) + 신용융자(레버리지) = KR 시장 internal
 # sentiment. 시장 전체값 → 1회 fetch 12h 캐시로 전 KR 분석·Daily Byte 공유.
