@@ -27,6 +27,12 @@ _ROWS = [
     ["8542320000", _FUTURE, "메모리(DRAM 등)", "Memories", "(반도체소자)"],
     ["8542390000", _FUTURE, "기타 집적회로", "Other integrated circuits", "(반도체소자)"],
     ["8541100000", _FUTURE, "다이오드", "Diodes", "(반도체소자)"],
+    # parent (8-digit) carries the real substance; the 10-digit leaf is
+    # generic '반도체 제조용' → context must resolve to the parent name.
+    ["28070010", _FUTURE, "황산", "Sulphuric acid", "(무기화합물)"],
+    ["2807001010", _FUTURE, "반도체 제조용", "For making semiconductor", "(무기화합물)"],
+    # no parent row present → must fall back to HS chapter floor (29=유기화학품).
+    ["2915331000", _FUTURE, "반도체 제조용", "For making semiconductor", "(유기화합물)"],
     ["9999999999", _FUTURE, "", "Empty", "(없음)"],          # blank name → skip
     ["BAD-CODE", _FUTURE, "잘못된", "Bad", "(없음)"],          # non-digit → skip
 ]
@@ -80,7 +86,7 @@ class TestLoadCsv(unittest.TestCase):
         _write_csv(self.path)
         rows = hs_lookup.load(self.path)
         codes = {r.hs_code for r in rows}
-        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(rows), 9)
         self.assertIn("1902301010", codes)
         self.assertNotIn("9999999999", codes)
         self.assertNotIn("BAD-CODE", codes)
@@ -100,6 +106,29 @@ class TestLoadCsv(unittest.TestCase):
         mem = next(r for r in hs_lookup.load(self.path) if r.hs_code == "8542320000")
         self.assertEqual(mem.nature, "반도체소자")   # '(반도체소자)' → stripped
 
+    def test_context_resolves_to_parent_substance(self):
+        # 2807001010 '반도체 제조용' has parent 28070010 '황산' in-file →
+        # context must be the parent substance, and label leads with it.
+        _write_csv(self.path)
+        leaf = next(r for r in hs_lookup.load(self.path) if r.hs_code == "2807001010")
+        self.assertEqual(leaf.context, "황산")
+        self.assertEqual(leaf.label, "황산 · 반도체 제조용")
+
+    def test_context_falls_back_to_chapter(self):
+        # 2915331000 '반도체 제조용' has NO parent row in-file → context
+        # falls back to the HS chapter floor (29 = 유기화학품).
+        _write_csv(self.path)
+        leaf = next(r for r in hs_lookup.load(self.path) if r.hs_code == "2915331000")
+        self.assertEqual(leaf.context, "유기화학품")
+        self.assertEqual(leaf.label, "유기화학품 · 반도체 제조용")
+
+    def test_specific_leaf_label_is_plain(self):
+        # A leaf whose own name is already specific shouldn't get an
+        # awkward duplicate; chapter context is appended in parens only.
+        _write_csv(self.path)
+        diode = next(r for r in hs_lookup.load(self.path) if r.hs_code == "8541100000")
+        self.assertTrue(diode.label.startswith("다이오드"))
+
 
 class TestLoadXlsx(unittest.TestCase):
     """The real download is .xlsx — read it directly (stdlib, no openpyxl)."""
@@ -115,7 +144,7 @@ class TestLoadXlsx(unittest.TestCase):
     def test_reads_xlsx_rows(self):
         rows = hs_lookup.load(self.path)
         codes = {r.hs_code for r in rows}
-        self.assertEqual(len(rows), 6)
+        self.assertEqual(len(rows), 9)
         self.assertIn("8542320000", codes)
         self.assertNotIn("BAD-CODE", codes)
 

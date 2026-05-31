@@ -60,6 +60,33 @@ _NATURE_HEADERS = ("성질통합분류코드명", "성질명")
 _HS_RE = re.compile(r"^\d+$")
 _XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
+# Generic leaf names that carry no material information on their own —
+# when a leaf's 한글품목명 is one of these we walk up to an ancestor row
+# (e.g. '반도체 제조용' → its 8-digit parent '황산') to recover the actual
+# substance. Kept as a frozenset; extend if new filler phrases appear.
+_GENERIC_NAMES = frozenset({
+    "반도체 제조용", "기타", "그 밖의 것", "기타의 것",
+    "따로 분류되지 않은 것", "기타의 것으로 한정한다", "",
+})
+
+# HS 2-digit chapter (類) names — international HS standard, stable, so we
+# can supply a category floor even when the file has no usable ancestor
+# row. This is reference data (not a guess): chapter 28 IS 무기화학품
+# worldwide. Covered range focuses on the chemicals / metals / machinery
+# chapters that dominate Korean trade + the semiconductor supply chain;
+# chapters outside the map fall back to the 성질통합분류 nature field.
+_HS_CHAPTERS = {
+    "28": "무기화학품", "29": "유기화학품", "30": "의료용품", "31": "비료",
+    "32": "염료·안료·페인트·잉크", "33": "정유·화장품", "34": "비누·계면활성제·왁스",
+    "35": "단백질·변성전분·효소", "36": "화약류", "37": "사진·영화용 재료",
+    "38": "각종 화학공업 생산품", "39": "플라스틱 제품", "40": "고무 제품",
+    "70": "유리 제품", "71": "귀금속·보석", "72": "철강", "73": "철강 제품",
+    "74": "구리 제품", "75": "니켈 제품", "76": "알루미늄 제품", "78": "납 제품",
+    "79": "아연 제품", "80": "주석 제품", "81": "기타 비금속", "82": "비금속 공구",
+    "83": "비금속 각종 제품", "84": "기계·기계류", "85": "전기기기·전자",
+    "90": "광학·정밀기기",
+}
+
 # mtime-keyed cache: {resolved_path: (mtime_ns, [HsCode, ...])}
 _cache: dict[str, tuple[int, list]] = {}
 
@@ -70,6 +97,22 @@ class HsCode:
     ko_name: str
     en_name: str = ""
     nature: str = ""   # 성질통합분류코드명, parens stripped (e.g. '무기화합물')
+    context: str = ""  # most specific material/category hint (see _compute_context)
+
+    @property
+    def label(self) -> str:
+        """Display name combining the leaf name with its best context.
+
+        '반도체 제조용' + context '황산' → '황산 (반도체 제조용)' so the
+        operator sees the actual substance first. When the leaf name is
+        already specific (not generic), it's shown as-is with the context
+        appended only if it adds info."""
+        ko = self.ko_name
+        if self.context and self.context != ko:
+            if ko in _GENERIC_NAMES or ko == "반도체 제조용":
+                return f"{self.context} · {ko}"
+            return f"{ko} ({self.context})"
+        return ko
 
 
 class HsCodeFileMissing(FileNotFoundError):
@@ -225,7 +268,47 @@ def _build(
         if i_nat is not None and i_nat < len(row):
             nat = (row[i_nat] or "").strip().strip("()").strip()
         out.append(HsCode(hs_code=hs, ko_name=ko, en_name=en, nature=nat))
-    return out
+
+    # Second pass: fill `context` for generic-named leaves using the most
+    # specific source available — a non-generic ancestor row's name (e.g.
+    # '황산'), else the HS 2-digit chapter (e.g. '무기화학품'), else the
+    # 성질통합분류 nature. Needs the full code→name map, hence a 2nd pass.
+    name_by_code = {c.hs_code: c.ko_name for c in out}
+    resolved: list[HsCode] = []
+    for c in out:
+        ctx = _compute_context(c, name_by_code)
+        resolved.append(
+            HsCode(hs_code=c.hs_code, ko_name=c.ko_name,
+                   en_name=c.en_name, nature=c.nature, context=ctx)
+            if ctx else c
+        )
+    return resolved
+
+
+def _compute_context(c: HsCode, name_by_code: dict[str, str]) -> str:
+    """Most specific material/category hint for a leaf.
+
+    Priority (most → least specific):
+      1) longest non-generic ANCESTOR row name in the file
+         (10-digit '반도체 제조용' under 8-digit '황산' → '황산')
+      2) HS 2-digit chapter name (international standard floor)
+      3) 성질통합분류코드명 nature
+
+    Returns '' when the leaf name is already specific AND no extra context
+    helps, so .label can decide whether to append anything."""
+    code = c.hs_code
+    # 1) walk DOWN prefix lengths, longest first, for a real ancestor name.
+    for L in (9, 8, 7, 6, 5, 4):
+        if L < len(code):
+            nm = name_by_code.get(code[:L], "")
+            if nm and nm not in _GENERIC_NAMES:
+                return nm
+    # 2) HS chapter floor.
+    chap = _HS_CHAPTERS.get(code[:2])
+    if chap:
+        return chap
+    # 3) nature fallback.
+    return c.nature
 
 
 def load(path: Path | str | None = None, today: date | None = None) -> list[HsCode]:

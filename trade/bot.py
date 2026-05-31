@@ -683,15 +683,14 @@ def _format_hs_search(hits, total: int, query: str):
 
     rows = []
     for h in hits:
-        name = h.ko_name if len(h.ko_name) <= 22 else h.ko_name[:21] + "…"
-        # 성질통합분류코드명 disambiguates leaves that share a generic name
-        # (e.g. '반도체 제조용' → 무기화합물 / 사진용화합물 / 정밀화학).
-        nature = ""
-        if h.nature:
-            nat = h.nature if len(h.nature) <= 12 else h.nature[:11] + "…"
-            nature = f" [{nat}]"
+        # h.label puts the most specific material first — a non-generic
+        # ancestor (황산/인산/포토레지스트), else HS chapter, else nature —
+        # so '반도체 제조용' rows become e.g. '황산 · 반도체 제조용'.
+        label = h.label
+        if len(label) > 40:
+            label = label[:39] + "…"
         rows.append([InlineKeyboardButton(
-            f"{name}{nature} · {h.hs_code}",
+            f"{label} · {h.hs_code}",
             callback_data=f"hs_pin:{h.hs_code}",
         )])
     return head, InlineKeyboardMarkup(rows)
@@ -800,7 +799,10 @@ async def on_hs_pin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
         rows = hs_lookup.load()
         for r in rows:
             if r.hs_code == code:
-                name = r.ko_name
+                # Pin under the rich label (e.g. '황산 · 반도체 제조용') so
+                # the pin list / customs panel name is self-explanatory,
+                # not a bare '반도체 제조용'.
+                name = r.label
                 break
     except hs_lookup.HsCodeFileMissing:
         pass
