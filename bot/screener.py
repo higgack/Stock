@@ -1011,6 +1011,7 @@ _SUFFIX_TO_SYMBOL = {
     "MI": "€", "PA": "€", "DE": "€", "F": "€",    # EU
     "AS": "€", "MC": "€", "BR": "€", "LS": "€", "VI": "€",
     "AX": "A$",                                   # AU
+    "NS": "₹", "BO": "₹",                         # IN (NSE / BSE) — Tobacco 2026-05-31 surfaced
     "TO": "C$", "V": "C$", "NE": "C$",            # CA
     "ST": "kr",                                   # SE
     "OL": "kr",                                   # NO
@@ -1803,6 +1804,26 @@ Phase 1·2 에서 식별된 binding constraint:
 
 이 5개 신호가 누락된 row 는 '데이터 깊이 부족' → reject 대상. 출력
 풍부도의 정량 기준.
+
+★ 회피성 문구 금지 — 'N/A' / 'N/M' 명시 (Tobacco 2026-05-31 surfaced) ★
+특정 멀티플(PER/PBR/PSR/EV-EBITDA)이 context 에 부재 시 본문에 '데이터
+깊이 부족' / '확인된 바 없음' / '데이터 미수집' 같은 **회피성 문구 창작
+금지**. 대신 (1) **'N/A'** 명시 (지표 자체 부재), (2) 적자 종목은
+**'N/M (적자)'**, (3) PER 부재 시 **PSR/PBR/EV-EBITDA 등 가용 지표로
+대체** 연산하여 valuation 평가 진행. 누락 자체를 회피하지 말고 **정확히
+무엇이 N/A 인지** 명시 → reader 가 '없음' vs '모름' 구분 가능.
+
+★ ADR 라벨링 정확성 (Tobacco 2026-05-31 surfaced) ★
+'Top 3 conviction picks' 의 '접근 경로' 표기 시:
+  • **미국 본사 법인** (PM·MSFT·NVDA·CSCO 등 S&P500 구성 + 미국 SEC
+    1차 등록) → 'NYSE 상장' 또는 'NASDAQ 상장' (절대 'ADR' 금지).
+  • **외국 본사 법인의 미국 예탁증서** (BTI 영국·NVO 덴마크·TSM 대만
+    ·BABA 케이맨 등) → 'NYSE 상장 ADR' / 'NASDAQ 상장 ADR' OK.
+  • **non-US 상장** (.KS / .T / .HK / .L / .AS 등) → '한국거래소 직접
+    투자' / 'TYO 상장' / 'HKEX 상장' 처럼 해당 거래소 명시.
+PMI(2008년 Altria 분사·코네티컷 본사) 같은 美 법인을 'NYSE ADR' 로
+오인하지 말 것 — 해외 사업만 영위한다는 내러티브에 휘둘리지 말고
+**ticker 의 1차 상장 SEC 등록 유형** 기준.
 
 ★ 현재가 + 로컬 통화 기호 의무 (NPL/RegTech 2026-05-30 surfaced) ★
 각 종목의 '가격 반영도' / 'Valuation' 섹션을 서술할 때, 반드시 instrument

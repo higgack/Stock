@@ -875,7 +875,8 @@ Metals & Mining) 가 surfaced 한 universal 결함을 prompt + Python 양면
 - **Local currency symbol** (`_fix_currency_symbols`) — ticker suffix
   → 통화 기호 state machine. TPRO.MI '$34.00' → '€34.00', 3231.TW
   '$161.00' → 'NT$161.00', SUBC.OL '$305.00' → 'kr305.00', MCE.AX
-  '$0.39' → 'A$0.39' 자동 fix. 정규식 `\$(\d[\d,]*\.\d{2})(?![a-zA-Z\d])`
+  '$0.39' → 'A$0.39', ITC.NS '$286.90' → '₹286.90' 자동 fix (Tobacco
+  2026-05-31 surfaced — 인도 NS/BO 매핑 누락이었음). 정규식 `\$(\d[\d,]*\.\d{2})(?![a-zA-Z\d])`
   (괄호 선택 + 소수 2자리 의무 + 뒤 영문 없음 → '$1B'/'$8.4B' 시장사이징
   보존, 괄호 없는 prose '현재가 $305.00' 도 매칭 — Oil/Gas 2026-05-29
   surfaced 누수 해소). prompt 단에서도 의무화. Hardware + Oil/Gas review
@@ -898,6 +899,18 @@ Metals & Mining) 가 surfaced 한 universal 결함을 prompt + Python 양면
   서술 시 instrument context 의 canonical 현재가를 시장별 통화 기호
   ($/₩/¥/€/A$/kr/NT$/HK$) 와 함께 명시 의무. 백엔드 _fix_currency_
   symbols 가 후처리하므로 누락만 피하면 됨 — 회피 절대 금지.
+- **회피성 문구 금지 — N/A·N/M 명시** (Phase 4·5 prompt) — Tobacco
+  2026-05-31 surfaced (6969.HK·ISPR·PRGO 등 6종목이 '데이터 깊이 부족'
+  회피문 사용, 멀티플 누락). directive: 멀티플 부재 시 'N/A' 또는 적자면
+  'N/M (적자)' 명시, PER 부재 시 PSR/PBR 등 가용 지표로 대체 연산. 누락
+  자체를 회피하지 말고 정확히 무엇이 N/A 인지 명시 → reader 가 '없음' vs
+  '모름' 구분.
+- **ADR 라벨링 정확성** (Phase 4·5 prompt) — Tobacco 2026-05-31 surfaced
+  (PM 美 본사 법인 S&P500 구성을 'NYSE 상장 ADR' 로 오인). directive:
+  미국 본사 법인 (SEC 1차 등록) → 'NYSE/NASDAQ 상장' (ADR 금지), 외국
+  본사 법인 미국 상장 (BTI 영국·NVO 덴마크·TSM 대만·BABA 케이맨) →
+  'NYSE/NASDAQ 상장 ADR' OK, non-US (.KS·.T·.HK·.L·.AS) → 해당 거래소
+  명시. ticker 1차 상장 SEC 등록 유형 기준 (해외 사업 영위 여부 무관).
 - **티어 비대칭 — 빈 티어 사유 명시** (Phase 4·5 prompt) — 한 layer
   의 L/M/S 중 누락이 있으면 빈칸 아닌 1줄 사유 명시 의무 ('S-tier
   부재 사유: 글로벌 oligopoly 구조 pure-play micro-cap 부재' 등).
