@@ -33,16 +33,13 @@ _KEY_WARNED = False
 # /getApBasisOulnInfo (기본개요·종합) · /getApHoOulnInfo (호별) ·
 # /getApHsTpInfo (주택유형). service path 가 빠져 있어 후보 base 6종 brute-force.
 _AUTH_OPS = ("getApBasisOulnInfo", "getApHoOulnInfo", "getApHsTpInfo")
-_AUTH_BASES = (
-    "https://apis.data.go.kr/1613000/ArchPmsHubService",
-    "https://apis.data.go.kr/1613000/ArchPmsHubSvc",
-    "https://apis.data.go.kr/1613000/ArchPmsService",
-    "https://apis.data.go.kr/1613000/BldhsService",
-    "https://apis.data.go.kr/1613000/ApBasisOulnInfoService",
-    "https://apis.data.go.kr/1613000/getApBasisOulnInfo",  # service-as-op fallback
-)
-# 1613000 (국토부 건축HUB) 는 XML 응답이 기본 — sigunguCd 필수(서울 강남구=11680).
-_AUTH_PARAMS = {"sigunguCd": "11680", "numOfRows": 3, "pageNo": 1, "_type": "json"}
+# discovery 2026-05-31 확정 base (3 op 모두 resultCode 00).
+_AUTH_BASE = "https://apis.data.go.kr/1613000/ArchPmsHubService"
+_AUTH_BASES = (_AUTH_BASE,)  # (legacy probe 호환)
+# 건축HUB 는 sigunguCd(5) + bjdongCd(5) + 조회기간이 필요. 강남구=11680,
+# 역삼동=10100. <body/> 빈 응답은 인자 부족 신호 → 파라미터 조합 탐색.
+_AUTH_PARAMS = {"sigunguCd": "11680", "bjdongCd": "10100",
+                "numOfRows": 5, "pageNo": 1, "_type": "json"}
 
 
 def buildperm_key_ready() -> bool:
@@ -90,27 +87,29 @@ if __name__ == "__main__":
         print("DATA_GO_KR_API_KEY 미설정 — .env 확인")
         raise SystemExit(1)
 
-    print("=== 건축HUB 인허가 엔드포인트 탐색 (sigunguCd=11680/강남) ===")
-    print("    200+resultCode 00 = 확정. 'SERVICE' = base 오답, 'NODATA' = base OK·인자")
-    hits = []
-    for base in _AUTH_BASES:
-        for op in _AUTH_OPS:
-            url = f"{base}/{op}"
-            status, body = _http_get(url, _AUTH_PARAMS, accept_xml=True)
-            ok = (status == 200 and ("resultCode" in (body or "")
-                                     or "<item>" in (body or "")
-                                     or '"items"' in (body or "")))
-            tag = "✅" if ok else "  "
-            if ok:
-                hits.append((base, op))
-            print(f"{tag} [{status}] {op}\n     {base}\n     {body[:240]}\n")
-
-    if hits:
-        print(f"\n→ HIT {len(hits)}건. 첫 후보로 데이터 dump:")
-        base, op = hits[0]
-        s, b = _http_get(f"{base}/{op}", _AUTH_PARAMS, accept_xml=True)
-        print(b[:1500])
-    else:
-        print("\n→ 모두 실패. base path 가 위 6 후보 밖이라는 뜻 — data.go.kr")
-        print("  활용신청 상세에서 '참고문서' 또는 '미리보기' 의 example URL 한")
-        print("  줄을 알려주시면 후보를 정확히 1개로 좁힙니다.")
+    op = "getApBasisOulnInfo"
+    print(f"=== 건축HUB {op} 파라미터 조합 탐색 (base 확정) ===")
+    print(f"    {_AUTH_BASE}/{op}\n")
+    # 빈 <body/> 해소 — 어떤 인자 조합에서 <item> 이 나오는지 탐색.
+    # 강남구 역삼동(11680/10100) 기준 다양한 조합 + 다른 법정동.
+    combos = [
+        {"sigunguCd": "11680", "bjdongCd": "10100"},
+        {"sigunguCd": "11680", "bjdongCd": "10100", "platGbCd": "0"},
+        {"sigunguCd": "11680", "bjdongCd": "10800"},   # 대치동
+        {"sigunguCd": "11650", "bjdongCd": "10800"},   # 서초구 서초동
+        {"sigunguCd": "11680"},
+        {"sigunguCd": "11680", "bjdongCd": "10100", "startDate": "20250101"},
+    ]
+    for c in combos:
+        params = {**c, "numOfRows": 5, "pageNo": 1, "_type": "json"}
+        status, body = _http_get(f"{_AUTH_BASE}/{op}", params, accept_xml=True)
+        has_item = "<item>" in (body or "") or '"item"' in (body or "")
+        cnt = ""
+        import re as _re
+        m = _re.search(r"<totalCount>(\d+)</totalCount>", body or "")
+        if m:
+            cnt = f" totalCount={m.group(1)}"
+        tag = "✅" if has_item else "  "
+        print(f"{tag} {c}{cnt}\n     {body[:300]}\n")
+    print("→ <item> 나온 조합의 응답 본문을 붙여주세요 — 필드명(연면적/세대수/")
+    print("  착공·사용승인일 등) 확인 후 부동산 Byte 공급 band 로 통합합니다.")
