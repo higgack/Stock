@@ -4561,6 +4561,51 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
             except Exception as exc:
                 _analyst_log.debug("KR lockup block skipped %s: %s", ticker, exc)
 
+        # KR 소액주주현황 (free float·유통물량) — 작전주/유동성 판단. 시총
+        # cross-check 보조. 연/분기 공시라 정적이지만 유통물량 frame. 실패 시 생략.
+        if market == "KR":
+            try:
+                from bot.fsc_client import minority_holders
+                _mh = minority_holders(ticker)
+                if _mh and _mh.get("smam_ratio") is not None:
+                    _yr = f" ({_mh['biz_year']})" if _mh.get("biz_year") else ""
+                    _cnt = ""
+                    if _mh.get("smam_cnt") and _mh.get("whole_cnt"):
+                        _cnt = (f" · 소액주주수 {int(_mh['smam_cnt']):,}명"
+                                f" (전체 {int(_mh['whole_cnt']):,}명)")
+                    base += (
+                        f"\n\n=== 소액주주현황 (FSC 기업지배구조{_yr}) ===\n"
+                        f"소액주주 비율 {_mh['smam_ratio']}%{_cnt}\n"
+                        "소액주주 비율↑ = 유통물량 많음(유동성·변동성↑), 비율↓ ="
+                        " 최대주주/기관 집중(품절·작전 취약). 출처: 금융위(연/분기)."
+                    )
+            except Exception as exc:
+                _analyst_log.debug("KR minority block skipped %s: %s", ticker, exc)
+
+        # KR dilution 공시 (CB/BW/유상증자 발행결정) — DART scan 보강. 잠재
+        # 희석 이벤트를 corp-action 배너와 동일한 수급 경고로(기술지표 차단 X).
+        if market == "KR":
+            try:
+                from bot.fsc_client import dilution_events
+                _dl = dilution_events(ticker)
+                if _dl:
+                    _lines = []
+                    for r in _dl[:6]:
+                        sh = r.get("new_shares")
+                        shtxt = f"{int(sh):,}주" if sh else "?주"
+                        pr = r.get("price")
+                        prtxt = f" @₩{int(pr):,}" if pr else ""
+                        _lines.append(f"  {r['date']} · {r['kind']} · 신주 {shtxt}{prtxt}")
+                    base += (
+                        "\n\n=== 📉 잠재 희석 이벤트 (FSC 공시 — CB/BW/유상증자) ===\n"
+                        + "\n".join(_lines)
+                        + "\nCB/BW 전환·행사 또는 유상증자 신주 = 주식수 증가(EPS·"
+                        "지분 희석). 발행결정 직후~전환청구기간 단기 공급 부담."
+                        " DART 공시 scan 보강. 출처: 금융위 (T+1)."
+                    )
+            except Exception as exc:
+                _analyst_log.debug("KR dilution block skipped %s: %s", ticker, exc)
+
         # API KEY ABSENCE — anti-hallucination directive (Rule A).
         # Previously the per-source injection blocks (DART / EDINET /
         # FRED / Naver / Kabutan) silently no-op'd when the API key was

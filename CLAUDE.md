@@ -912,6 +912,20 @@ review:
   corp-action HARD GUARD 와 별개 — 기술지표 무효화 X, 수급 압력만. additive·
   실패 시 생략. crno=item_info 연결(Phase 1). 유통주식수(같은 V3 주식발행현황
   op)는 후속.
+- **FSC Phase 4 — 소액주주현황 + dilution 공시 (2026-05-31)** — 사용자
+  "소액주주+CB/BW까지, 재벌 제외" 결정. 둘 다 crno 조회·KR equity context
+  주입·additive·실패 시 생략.
+  (소액주주) GetCGDiscInfoService/getCGSmamInfo → `minority_holders` —
+  smamSthdRto(소액주주비율)·smamSthdCnt·whlSthdCnt·holdStckCnt. free
+  float 근사 ("소액주주현황" 블록: 비율↑=유통물량 많음/변동성↑, 비율↓=
+  최대주주 집중·품절 취약). 연/분기 공시라 정적.
+  (dilution) GetDiscInfoService_V2 3 op → `dilution_events` — CB
+  (getCbRighIssuDiscInfo_V2, cpbdCnvrStckCnt/cbCnvrPrc) + BW
+  (getBwRighIssuDiscInfo_V2, prmrIssuStckCnt/bwrExertPrc) + 유상증자
+  (getCapiIncrWithConsDiscInfo_V2, onskNstCnt/onskIssuSchPric). "📉 잠재
+  희석 이벤트" 배너(DART scan 보강, 기술지표 차단 X, 수급 경고만). 나머지
+  29 op(무상증자/감자/합병 등)은 corp-action 가드·DART·뉴스와 중복이라
+  미통합(사용자 "중복 없이" 원칙). probe: `--minor` / `--lockup`.
 - **소유구조 빈 결과 환각 차단** — KR branch (DART insider holdings empty
   → "임원지분 데이터 미수집" prose, no fabricated 공기업/정부 narrative),
   JP branch (EDINET 大量保有 + yfinance heldPercentInsiders both empty

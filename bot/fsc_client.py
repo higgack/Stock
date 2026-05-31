@@ -229,6 +229,82 @@ def rights_for(ticker: str, lookback_days: int = 21) -> list[dict]:
     return out
 
 
+# ── 3.8) 소액주주현황 (free float·유통물량) + dilution 공시 (CB/BW/유증) ──
+_CGDISC = (f"{_HOST}/GetCGDiscInfoService", "getCGSmamInfo")
+_DISC_BASE = f"{_HOST}/service/GetDiscInfoService_V2"
+
+
+def minority_holders(ticker: str) -> dict | None:
+    """소액주주현황 — free float 근사. crno 조회, 최신 사업연도. {smam_cnt(소액
+    주주수), whole_cnt(전체주주수), smam_ratio(%), hold_shares(보유주식수),
+    biz_year}. 없으면 None."""
+    info = item_info(ticker)
+    crno = (info or {}).get("crno")
+    if not crno:
+        return None
+    ck = f"minor_{crno}_{_now():%Y%m}"
+    c = _cache_get(ck)
+    if c is not None:
+        return c or None
+    raw = _fetch(_CGDISC[0], _CGDISC[1], {"crno": crno, "numOfRows": 20})
+    best = None
+    for it in raw:
+        if best is None or str(it.get("bizYear", "")) > str(best.get("bizYear", "")):
+            best = it
+    out = {} if not best else {
+        "smam_cnt": _f(best.get("smamSthdCnt")),
+        "whole_cnt": _f(best.get("whlSthdCnt")),
+        "smam_ratio": _f(best.get("smamSthdRto")),
+        "hold_shares": _f(best.get("holdStckCnt")),
+        "biz_year": str(best.get("bizYear") or ""),
+    }
+    _cache_put(ck, out)
+    return out or None
+
+
+# dilution 공시 3종 — (op, 주식수 field, 가격 field, kind label).
+_DILUTION_OPS = (
+    ("getCbRighIssuDiscInfo_V2", "cpbdCnvrStckCnt", "cbCnvrPrc", "전환사채(CB)"),
+    ("getBwRighIssuDiscInfo_V2", "prmrIssuStckCnt", "bwrExertPrc", "신주인수권부사채(BW)"),
+    ("getCapiIncrWithConsDiscInfo_V2", "onskNstCnt", "onskIssuSchPric", "유상증자"),
+)
+
+
+def dilution_events(ticker: str, lookback_days: int = 10) -> list[dict]:
+    """CB/BW/유상증자 발행결정 공시 — 잠재 희석 이벤트. 최근 영업일 basDt
+    스냅샷(첫 non-empty)·crno 필터. 각 행: {kind, date(bodRsolDt 또는 basDt),
+    new_shares, price, ratio}. 없으면 []."""
+    info = item_info(ticker)
+    crno = (info or {}).get("crno")
+    if not crno:
+        return []
+    today = _now().date()
+    out = []
+    for op, sh_f, pr_f, kind in _DILUTION_OPS:
+        for i in range(lookback_days + 1):
+            d = today - timedelta(days=i)
+            if d.weekday() >= 5:
+                continue
+            bas = d.strftime("%Y%m%d")
+            ck = f"dilu_{op}_{crno}_{bas}"
+            c = _cache_get(ck)
+            if c is None:
+                c = _fetch(_DISC_BASE, op, {"basDt": bas, "crno": crno, "numOfRows": 20})
+                _cache_put(ck, c)
+            if not c:
+                continue
+            for it in c:
+                rd = str(it.get("bodRsolDt") or it.get("basDt") or "").strip()
+                iso = (f"{rd[:4]}-{rd[4:6]}-{rd[6:]}"
+                       if len(rd) == 8 and rd.isdigit() else rd)
+                out.append({
+                    "kind": kind, "date": iso,
+                    "new_shares": _f(it.get(sh_f)), "price": _f(it.get(pr_f)),
+                })
+            break  # 이 op 의 첫 non-empty basDt 만
+    return out
+
+
 # ── 3.7) 의무보호예수 반환 (lock-up 해제 = 단기 공급 overhang) ────────────
 # 금융위 주식발행정보 V3 (GetStocIssuInfoService_V3). basDt 필수 + crno 필터.
 # rsrnDt=반환일(해제일), rsrnStckCnt=반환주식수(출회 물량).
@@ -428,6 +504,14 @@ if __name__ == "__main__":
         load_dotenv(Path.home() / "stock" / ".env")
     except Exception:
         pass
+    if "--minor" in sys.argv:
+        tk2 = next((a for a in sys.argv[1:] if not a.startswith("--")), "005930.KS")
+        print(f"=== 소액주주현황 — {tk2} ===")
+        print(json.dumps(minority_holders(tk2), ensure_ascii=False))
+        print(f"=== 잠재 희석(CB/BW/유증) — {tk2} ===")
+        print(json.dumps(dilution_events(tk2), ensure_ascii=False)[:800])
+        raise SystemExit(0)
+
     if "--lockup" in sys.argv:
         tk2 = next((a for a in sys.argv[1:] if not a.startswith("--")), "005930.KS")
         print(f"=== 의무보호예수 반환(lock-up) — {tk2} ===")
