@@ -349,6 +349,24 @@ pattern to follow:
   • Raw 응답 audit log `~/.tradingagents/gics_check_audit.jsonl` 에
     저장 — 환각 의심 시 참조. Pro 의 false-positive tolerance 가 정책
     (놓치는 것보다 noise 가 나음). 사용자 직접 확인 정책 명시.
+- 블로그 Watcher — 네이버 '변화하는 기업을 찾아서'(beatthemkt) 새 글 자동
+  포워드+ingest (2026-05-31 사용자 요청). `bot/blog_watch.py` — RSS
+  (rss.blog.naver.com/<id>.xml, 브라우저 UA+Referer) 30분 polling
+  (`blog-watch.timer`) → 새 GUID 감지 → Gemini Flash 3줄 요약(grounding off,
+  발췌 기반 환각 0) → 채널 push + `blog_archive/` JSON 아카이브. state 파일
+  (`blog_watch_state.json`) 중복 차단 + 첫 run 은 기존 글 seen 처리만(폭주
+  방지). 대시보드 `blog.html` (screener mirror, 검색·🗑️ `/api/blog_delete`).
+  비용 subsystem="blog" (글당 ~₩10 Flash). 키 불필요. ⚠️ VM 네이버 접근은
+  되나 RSS 403 시 헤더/대체 endpoint 점검 (news client 는 작동 중).
+- 부동산 Byte — 아파트 실거래가 주간 브리프 (2026-05-31 사용자 요청,
+  ticker·5거래일 완전 독립). `bot/realestate_client.py` (MOLIT 아파트 매매
+  실거래 data.go.kr, 대표 10개 법정동) + `bot/realestate_brief.py` (Pro
+  narrate: 지역 가격대·거래량·금리 연계·건설/부동산/은행 섹터 함의 중립).
+  `realestate-byte.timer` 금 09:00 KST (R-ONE 주간동향 목 발표 후). 채널
+  push + `realestate.html` 대시보드 (오늘/누적 비용·검색·🗑️) + subsystem=
+  "realestate". **DATA_GO_KR_API_KEY 무료 키 필요** (data.go.kr 가입 →
+  '국토교통부 아파트 실거래가' 활용신청 → .env). `realestate_key_ready()`
+  gate 로 키 없으면 graceful skip. **현재 키 대기 중 — scaffold ready.**
 - Daily Byte — 장 마감 후 KR 수급 브리프 (2026-05-29 사용자 요청):
   • `daily-byte.timer` — 평일(Mon-Fri) 19:00 KST oneshot → `bot/daily_
     kr_flow.py`. pykrx EOD 수급 (~17-18시 갱신) 안정 후 19:00 실행.

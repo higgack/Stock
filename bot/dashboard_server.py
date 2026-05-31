@@ -182,6 +182,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_screener_delete()
         if self.path == "/api/daily_byte_delete":
             return self._handle_daily_byte_delete()
+        if self.path == "/api/blog_delete":
+            return self._handle_simple_delete(
+                "blog_archive", r"^\d{6}_[a-zA-Z0-9]{1,40}\.json$",
+                "regenerate_blog_index")
+        if self.path == "/api/realestate_delete":
+            return self._handle_simple_delete(
+                "realestate_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
+                "regenerate_realestate_index")
         if self.path != "/api/delete":
             self.send_error(404, "Not Found")
             return
@@ -232,6 +240,50 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(400, {"ok": False, "error": str(exc)})
         except Exception as exc:
             log.exception("delete: unexpected failure")
+            self._reply_json(500, {"ok": False, "error": str(exc)})
+
+    def _handle_simple_delete(self, subdir: str, filename_re: str,
+                              regen_fn: str) -> None:
+        """Generic per-run JSON archive delete under ~/.tradingagents/<subdir>/
+        YYYY-MM-DD/<filename>. Validates date + filename (path-traversal
+        guard) then unlinks + calls bot.dashboard.<regen_fn>(). Used by
+        /api/blog_delete (and future archive surfaces)."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 1024:
+                raise ValueError("missing or oversized request body")
+            payload = json.loads(self.rfile.read(length))
+            date = payload.get("date") or ""
+            filename = payload.get("filename") or ""
+            if not _DATE_RE.match(date):
+                raise ValueError(f"invalid date: {date!r}")
+            import re as _re_g
+            if not _re_g.match(filename_re, filename):
+                raise ValueError(f"invalid filename: {filename!r}")
+            from pathlib import Path as _P
+            archive_root = _P.home() / ".tradingagents" / subdir
+            date_dir = (archive_root / date).resolve()
+            try:
+                date_dir.relative_to(archive_root.resolve())
+            except ValueError:
+                raise ValueError("path escape attempt")
+            target = date_dir / filename
+            if not target.exists() or not target.is_file():
+                raise ValueError(f"no entry for {date}/{filename}")
+            target.unlink()
+            try:
+                import importlib
+                _dash = importlib.import_module("bot.dashboard")
+                getattr(_dash, regen_fn)()
+            except Exception as exc:
+                log.warning("%s: regen failed (file removed): %s", regen_fn, exc)
+            log.info("simple_delete[%s]: %s/%s removed", subdir, date, filename)
+            self._reply_json(200, {"ok": True, "deleted": [filename]})
+        except ValueError as exc:
+            log.warning("simple_delete[%s]: bad request — %s", subdir, exc)
+            self._reply_json(400, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            log.exception("simple_delete[%s]: unexpected failure", subdir)
             self._reply_json(500, {"ok": False, "error": str(exc)})
 
     def _handle_screener_delete(self) -> None:

@@ -1,0 +1,14 @@
+[Unit]
+Description=부동산 Byte — 아파트 실거래가 주간 브리프 텔레그램 푸시 (금 09:00 KST)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.realestate_brief
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600

@@ -1,0 +1,12 @@
+[Unit]
+Description=부동산 Byte trigger — 금요일 09:00 KST (R-ONE 주간 동향 발표 후)
+
+[Timer]
+# 금요일 09:00 KST. R-ONE 주간 아파트 가격동향이 매주 목요일 발표되므로
+# 그 다음날 아침. 부동산은 월/주 단위로 느려 주간 cadence 로 충분.
+OnCalendar=Fri *-*-* 09:00:00 Asia/Seoul
+Persistent=true
+Unit=realestate-byte.service
+
+[Install]
+WantedBy=timers.target

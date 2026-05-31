@@ -50,7 +50,9 @@ for unit in \
     trade-bot-watchdog.service      trade-bot-watchdog.timer \
     screener-gics-check.service     screener-gics-check.timer \
     daily-byte.service              daily-byte.timer \
-    daily-byte-weekly.service       daily-byte-weekly.timer ;
+    daily-byte-weekly.service       daily-byte-weekly.timer \
+    blog-watch.service              blog-watch.timer \
+    realestate-byte.service         realestate-byte.timer ;
 do
     if [ -f "$DEPLOY_DIR/$unit" ]; then
         install -m 0644 "$DEPLOY_DIR/$unit" /etc/systemd/system/
@@ -89,6 +91,12 @@ if [ -f "$DEPLOY_DIR/daily-byte.timer" ]; then
 fi
 if [ -f "$DEPLOY_DIR/daily-byte-weekly.timer" ]; then
     systemctl enable --now daily-byte-weekly.timer
+fi
+if [ -f "$DEPLOY_DIR/blog-watch.timer" ]; then
+    systemctl enable --now blog-watch.timer
+fi
+if [ -f "$DEPLOY_DIR/realestate-byte.timer" ]; then
+    systemctl enable --now realestate-byte.timer
 fi
 if [ -f "$DEPLOY_DIR/trade-bot-update.timer" ]; then
     systemctl enable --now trade-bot-update.timer

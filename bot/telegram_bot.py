@@ -920,23 +920,23 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
  • /usage → 모델별 분포 + 7일 차트
 
 ━━━━━━━━━
-<b>【7. 안정성 (자동)】</b>
-subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 · 재벌→RULE9 · stance 결론우선 · 섹터강도 ±50%p · 컨센서스 staleness (tgt&lt;cur+매수=⛔) · 코퍼레이트액션 HARD GUARD 3중 · SMA gap multi-signal (외부 evidence시 ⛔, 단독시 ⚠️ overbought) · 적자 PER→N/M · Peer multiple sanity · 소유구조 환각 차단 · Comps PEER SET 162 산업 · PM 코드-강제 · canonical 현재가/시총/SMA · DART KSIC override · KIS+pykrx fallback · 단위 silent 정규화 · KRX 시장경보·USD/KRW 감응도·ETF 메타·12개월 thesis 금지 · API 키 부재→DATA OFFLINE · 분석가1:1→PM보존
+<b>【7. 채널 알림】</b>
+🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly KR수급) · 🏠 부동산 Byte (금09:00 실거래) · 📝 블로그 새글 자동포워드(30분)
 
 ━━━━━━━━━
-<b>【8. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly KR수급, 인포그래픽+대시보드)
-
-━━━━━━━━━
-<b>【9. 차별화 포인트】</b>
+<b>【8. 차별화 포인트】</b>
 페르소나 토론 (Buffett/Lynch vs Graham/Marks) · 결정 3노드만 Pro (~₩30 추가로 품질 점프) · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 ground truth 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 (장기 thesis 매도 자제) · 섹터 ETF 알파 · 실패 시 hallucination 대신 명시적 abort
 
 ━━━━━━━━━
-<b>【10. 대시보드】</b> 🦉
+<b>【9. 대시보드】</b> 🦉
  • <b>NOAH archive</b> (ID/PW) — 헤더에서 Daily Byte/Screener/도메인/SV/🇰🇷 이동. 💰비용=NOAH+Screener+DailyByte+SV
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
  • <b>Daily Byte</b> — 평일19:00·일22:00 Weekly KR수급 인포그래픽(사진)+본문, 날짜별 누적·검색·🗑️
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
+ • <b>부동산 Byte</b> — 금09:00 아파트 실거래(MOLIT) 주간 브리프 · ticker 무관
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
+ • <b>블로그</b> — '변화하는 기업을 찾아서' 새글 30분 polling 자동 포워드·아카이브
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/blog.html
  • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
  • <b>SV</b> — 매크로·산업·Deal·07:30/20:30+텔레·22:00 주간
@@ -947,7 +947,7 @@ subprocess 격리·10분·watchdog 12분·auto-update <b>1분</b> · RULE 1~14 �
  • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
 
 ━━━━━━━━━
-<b>【11. 진행 중 / 예정】</b>
+<b>【10. 진행 중 / 예정】</b>
  • Screener 65 도메인 + 자유어 + 24h 캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기 GICS 06-01 · 예정: L3 sanity check
 """
 
@@ -2230,9 +2230,12 @@ async def _periodic_dashboard_refresh() -> None:
         sleep_secs = max(60.0, (target - now_kst).total_seconds())
         await asyncio.sleep(sleep_secs)
         try:
-            from bot.dashboard import regenerate_index, regenerate_daily_byte_index
+            from bot.dashboard import (regenerate_index, regenerate_daily_byte_index,
+                                       regenerate_blog_index, regenerate_realestate_index)
             regenerate_index()
             regenerate_daily_byte_index()
+            regenerate_blog_index()
+            regenerate_realestate_index()
             log.info("midnight dashboard regen: ok")
         except Exception:
             log.exception("midnight dashboard regen failed")
@@ -2260,6 +2263,18 @@ async def _on_startup(application) -> None:
         log.info("startup: daily_byte.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: daily_byte.html regen failed: %s", exc)
+    try:
+        from bot.dashboard import regenerate_blog_index
+        regenerate_blog_index()
+        log.info("startup: blog.html regenerated with current code")
+    except Exception as exc:
+        log.warning("startup: blog.html regen failed: %s", exc)
+    try:
+        from bot.dashboard import regenerate_realestate_index
+        regenerate_realestate_index()
+        log.info("startup: realestate.html regenerated with current code")
+    except Exception as exc:
+        log.warning("startup: realestate.html regen failed: %s", exc)
     # Populates the 'Menu' button beside the input area + the '/' typing
     # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
     # registered (the universe is too large) — Telegram still recognises
