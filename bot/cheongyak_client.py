@@ -113,8 +113,11 @@ def recent_announcements(per_page: int = 200) -> list[dict]:
             "addr": _g(r, "HSSPLY_ADRES", "hssplyAdres", "공급위치"),
             "total_units": _g(r, "TOT_SUPLY_HSHLDCO", "totSuplyHshldco", "공급규모"),
             "notice_date": _g(r, "RCRIT_PBLANC_DE", "rcritPblancDe", "모집공고일"),
-            "subscript_begin": _g(r, "SUBSCRPT_RCEPT_BGNDE", "subscrptRceptBgnde"),
-            "subscript_end": _g(r, "SUBSCRPT_RCEPT_ENDDE", "subscrptRceptEndde"),
+            "subscript_begin": _g(r, "RCEPT_BGNDE", "SUBSCRPT_RCEPT_BGNDE", "rceptBgnde"),
+            "subscript_end": _g(r, "RCEPT_ENDDE", "SUBSCRPT_RCEPT_ENDDE", "rceptEndde"),
+            "winner_date": _g(r, "PRZWNER_PRESNATN_DE", "przwnerPresnatnDe"),
+            "url": _g(r, "PBLANC_URL", "HMPG_ADRES", "pblancUrl"),
+            "builder": _g(r, "CNSTRCT_ENTRPS_NM", "BSNS_MBY_NM", "cnstrctEntrpsNm"),
             "kind": _g(r, "HOUSE_SECD_NM", "RENT_SECD_NM", "houseSecdNm"),
         })
     return out
