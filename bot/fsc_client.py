@@ -229,6 +229,24 @@ def rights_for(ticker: str, lookback_days: int = 21) -> list[dict]:
     return out
 
 
+# ── 3.6) 주식발행 공시정보 (유통주식수=free float) — crno 키 ──────────────
+# Base 는 /service/ 없는 패턴 (권리일정 V2 처럼). crno(법인등록번호)로 조회
+# → Phase1 item_info 의 crno 연결. 유통주식수 필드 key 는 probe 로 확정.
+_STKISSU = (f"{_HOST}/GetStkIssuInfoService", "getStkIssuInfo")
+
+
+def stock_issue_raw(ticker: str, biz_year: str | None = None) -> list[dict]:
+    """주식발행 공시(주식총수현황) raw 행 — crno 로 조회. probe/내부용."""
+    info = item_info(ticker)
+    crno = (info or {}).get("crno")
+    if not crno:
+        return []
+    params = {"crno": crno, "numOfRows": 20}
+    if biz_year:
+        params["bizYear"] = biz_year
+    return _fetch(_STKISSU[0], _STKISSU[1], params)
+
+
 # ── 3.5) 증권상품시세 (ETF/ETN) — yfinance KR ETF 빈약 보완 + 괴리율 ──────
 _SECPROD = f"{_HOST}/service/GetSecuritiesProductInfoService"
 
@@ -365,6 +383,16 @@ if __name__ == "__main__":
         load_dotenv(Path.home() / "stock" / ".env")
     except Exception:
         pass
+    if "--issu" in sys.argv:
+        # 주식발행 공시(유통주식수) raw 필드 확인 — 유통주식수/자기주식수 key 확정
+        tk2 = next((a for a in sys.argv[1:] if not a.startswith("--")), "005930.KS")
+        print(f"=== 주식발행 공시정보 raw — {tk2} ===")
+        rows = stock_issue_raw(tk2)
+        print(f"수신 {len(rows)}행.")
+        for r in rows[:2]:
+            print(json.dumps(r, ensure_ascii=False))
+        raise SystemExit(0)
+
     if "--market" in sys.argv:
         # 협회 종합통계 Base URL 자동탐색 (증시자금추이 op 로 200 확인)
         print("=== 금융투자협회 종합통계 Base URL 탐색 ===")
