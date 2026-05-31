@@ -425,8 +425,10 @@ def _compute_stats(records: list[dict]) -> dict:
     # surfaces where the total bill is coming from. Screener Pro calls
     # land in usage.jsonl with subsystem='screener'; SV calls live in
     # ~/standardview/sv_usage.jsonl (separate file, KST-date tagged).
-    today_cost_by_sub_usd: dict[str, float] = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0, "SV": 0.0}
-    month_cost_by_sub_usd: dict[str, float] = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0, "SV": 0.0}
+    _sub_keys = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
+                 "부동산": 0.0, "블로그": 0.0, "SV": 0.0}
+    today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
+    month_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     for r in usage:
         if r.get("type") != "llm_call":
             continue
@@ -436,9 +438,8 @@ def _compute_stats(records: list[dict]) -> dict:
         rec_day = datetime.datetime.fromtimestamp(ts, kst).strftime("%Y-%m-%d")
         cost = r.get("cost_usd", 0) or 0
         _subsys = r.get("subsystem")
-        sub = ("Screener" if _subsys == "screener"
-               else "Daily Byte" if _subsys == "daily_byte"
-               else "분석")
+        sub = ({"screener": "Screener", "daily_byte": "Daily Byte",
+                "realestate": "부동산", "blog": "블로그"}.get(_subsys, "분석"))
         if rec_day.startswith(month_prefix):
             month_cost_usd += cost
             m = r.get("model") or "unknown"
@@ -622,7 +623,8 @@ def _render_stats_panel(stats: dict) -> str:
     # Per-subsystem breakdown (분석 / Screener / SV). Surface only buckets
     # with non-zero this-month cost — keeps the sub-label compact.
     sub_parts: list[str] = []
-    for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"), ("SV", "SV")]:
+    for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
+                       ("부동산", "부동산"), ("블로그", "블로그"), ("SV", "SV")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
         if m_usd > 0:
             sub_parts.append(f"{label} {_krw(m_usd)}")
@@ -3700,6 +3702,12 @@ def _render_realestate_page(runs: list[dict]) -> str:
             search_attr = _html.escape(plain.lower()[:5000])
             lines_attr = _html.escape(_json_r.dumps(lines, ensure_ascii=False))
             card_id = f"card-{_html.escape(r.get('_date',''))}-{filename}".replace(".", "_")
+            png_rel = (r.get("png") or "").strip()
+            img_html = ""
+            if png_rel and _re_r.match(r"^realestate_img/[\w.\-]+\.png$", png_rel):
+                img_html = (f'<img src="{_html.escape(png_rel)}" alt="부동산 인포그래픽" '
+                            f'loading="lazy" style="width:100%;max-width:680px;'
+                            f'border-radius:10px;margin:8px auto 14px;display:block">')
             parts.append(f"""
   <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
     <summary class="card-h">
@@ -3709,6 +3717,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
       <button class="del-btn" type="button" title="이 브리프 삭제">🗑️</button>
     </summary>
     <div class="card-body">
+      {img_html}
       <div class="analysis-sec"><div class="analysis-b" data-section="brief">{body}</div></div>
     </div>
   </details>

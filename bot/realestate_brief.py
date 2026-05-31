@@ -25,6 +25,8 @@ _HOME = os.path.expanduser("~")
 _ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "realestate_archive")
 _USAGE_LOG = os.path.join(_HOME, ".tradingagents", "realestate_usage.jsonl")
 _NOAH_USAGE_LOG = os.path.join(_HOME, ".tradingagents", "usage.jsonl")
+# 인포그래픽 PNG — 대시보드가 서빙하는 archive/ 아래 (카드 <img> 임베드)
+_IMG_DIR = os.path.join(_HOME, ".tradingagents", "archive", "realestate_img")
 _USD_TO_KRW = 1330.0
 _PRO_IN, _PRO_OUT = 1.25, 10.00
 
@@ -112,17 +114,21 @@ def _log_usage(pt: int, ot: int, cost_krw: float) -> None:
             log.warning("realestate: usage log failed: %s", exc)
 
 
-def _save_archive(body: str, cost_krw: float, ymd: str, elapsed: float) -> None:
+def _save_archive(body: str, cost_krw: float, ymd: str, elapsed: float,
+                  kind: str = "weekly", png_rel: str | None = None) -> None:
     try:
         now = _now_kst()
         date_iso = now.date().isoformat()
         day_dir = os.path.join(_ARCHIVE_DIR, date_iso)
         os.makedirs(day_dir, exist_ok=True)
-        path = os.path.join(day_dir, f"{now:%H%M%S}_realestate.json")
+        slug = "realestate_monthly" if kind == "monthly" else "realestate"
+        path = os.path.join(day_dir, f"{now:%H%M%S}_{slug}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump({"ts": now.isoformat(timespec="seconds"), "date": date_iso,
-                       "ymd": ymd, "body": body, "cost_krw": round(cost_krw, 4),
-                       "elapsed_sec": round(elapsed, 1)}, f, ensure_ascii=False)
+                       "ymd": ymd, "kind": kind, "body": body,
+                       "cost_krw": round(cost_krw, 4),
+                       "elapsed_sec": round(elapsed, 1), "png": png_rel},
+                      f, ensure_ascii=False)
     except Exception as exc:
         log.warning("realestate: archive write failed: %s", exc)
         return
@@ -133,7 +139,7 @@ def _save_archive(body: str, cost_krw: float, ymd: str, elapsed: float) -> None:
         log.warning("realestate: dashboard regen failed: %s", exc)
 
 
-def generate() -> tuple[str, float] | None:
+def generate() -> tuple[str, float, str | None] | None:
     import time as _time
     _t0 = _time.monotonic()
     api_key = os.environ.get("GOOGLE_API_KEY")
@@ -160,11 +166,25 @@ def generate() -> tuple[str, float] | None:
     body = _post_process(raw)
     cost_krw = (pt * _PRO_IN + ot * _PRO_OUT) / 1e6 * _USD_TO_KRW
     _log_usage(pt, ot, cost_krw)
-    _save_archive(body, cost_krw, data["ymd"], _time.monotonic() - _t0)
+
+    # 인포그래픽 PNG (MOLIT 정확값 직접 주입, 환각 0) — archive/realestate_img/
+    png_path = None
+    png_rel = None
+    try:
+        from bot.realestate_infographic import render_infographic
+        fname = f"{data['ymd']}_{_now_kst():%H%M%S}.png"
+        png_path = render_infographic(data, os.path.join(_IMG_DIR, fname))
+        if png_path:
+            png_rel = f"realestate_img/{fname}"
+    except Exception as exc:
+        log.warning("realestate: infographic render failed: %s", exc)
+
+    _save_archive(body, cost_krw, data["ymd"], _time.monotonic() - _t0,
+                  kind="weekly", png_rel=png_rel)
     ymd = data["ymd"]
     title = f"🏠 <b>부동산 Byte - {ymd[:4]}.{ymd[4:6]}</b>"
     full = f"{title}\n<i>아파트 실거래 주간 브리프 · 생성 {_now_kst():%m.%d %H:%M} KST</i>\n\n{body}"
-    return full, cost_krw
+    return full, cost_krw, png_path
 
 
 def main() -> int:
@@ -182,9 +202,12 @@ def main() -> int:
     if result is None:
         log.error("realestate: generation failed / no data — skipping push")
         return 1
-    body, cost = result
-    log.info("realestate: generated (₩%.1f) — pushing", cost)
-    from bot.daily_kr_flow import push_telegram
+    body, cost, png = result
+    log.info("realestate: generated (₩%.1f, infographic=%s) — pushing",
+             cost, "yes" if png else "no")
+    from bot.daily_kr_flow import push_telegram, push_telegram_photo
+    if png:
+        push_telegram_photo(png, "🏠 부동산 Byte — 지역별 실거래 인포그래픽")
     ok = push_telegram(body)
     log.info("realestate: push %s", "OK" if ok else "with failures")
     return 0 if ok else 1

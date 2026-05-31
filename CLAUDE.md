@@ -369,6 +369,13 @@ pattern to follow:
   "realestate". **DATA_GO_KR_API_KEY 무료 키 필요** (data.go.kr 가입 →
   '국토교통부 아파트 실거래가' 활용신청 → .env). `realestate_key_ready()`
   gate 로 키 없으면 graceful skip. **현재 키 대기 중 — scaffold ready.**
+  완전 미러링 (2026-05-31): Daily Byte 와 동등 — `realestate_infographic.py`
+  (지역별 평균가/거래량 막대 + 평당가 matplotlib PNG, 사진 push + 카드
+  임베드), `realestate_monthly.py` (매월 1일 09:00 `realestate-byte-monthly.
+  timer` — 주간이 이미 weekly 라 Daily Byte 의 Weekly 에 대응하는 위계는
+  monthly), `/realestate_cost` 명령(DM+채널) + /usage·메인 대시보드 cost
+  subsystem '부동산'. 블로그는 subsystem '블로그' 로 cost 만 합산(전용 명령
+  없음 — 사용자 정책상 채널 포워드 surface).
 - Daily Byte — 장 마감 후 KR 수급 브리프 (2026-05-29 사용자 요청):
   • `daily-byte.timer` — 평일(Mon-Fri) 19:00 KST oneshot → `bot/daily_
     kr_flow.py`. pykrx EOD 수급 (~17-18시 갱신) 안정 후 19:00 실행.

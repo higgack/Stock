@@ -379,6 +379,20 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /realestate_cost in channel
+    if first_word == "realestate_cost":
+        data = _read_realestate_cost_today_month()
+        text_out = (
+            "💰 <b>부동산 Byte 비용</b> (Gemini Pro · 웹 검색 grounding)\n"
+            f"오늘: <b>₩{float(data.get('today_krw',0)):,.1f}</b> · {int(data.get('today_calls',0))}회\n"
+            f"이번 달: <b>₩{float(data.get('month_krw',0)):,.0f}</b> · {int(data.get('month_calls',0))}회\n"
+            "<i>모델: gemini-2.5-pro · 금 09:00 주간 + 매월 1일 Monthly</i>"
+        )
+        await ctx.bot.send_message(
+            chat_id=post.chat.id, text=text_out, parse_mode=ParseMode.HTML,
+        )
+        return
+
     # /sites in channel — external reference sites bookmark list.
     if first_word == "sites":
         await ctx.bot.send_message(
@@ -875,7 +889,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/start /help /usage /sv_cost /screener_cost /daily_byte_cost /screener_list /sites — 도움말·비용·목록
+/start /help /usage /sv_cost /screener_cost /daily_byte_cost /realestate_cost /screener_list /sites — 도움말·비용·목록
 /screener [도메인 | 자유어] — Bottleneck (65 도메인 + 미상시 Pro 즉석 생성). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
@@ -921,7 +935,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
 
 ━━━━━━━━━
 <b>【7. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly KR수급) · 🏠 부동산 Byte (금09:00 실거래) · 📝 블로그 새글 자동포워드(30분)
+🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly, 인포그래픽) · 🏠 부동산 Byte (금09:00·1일 Monthly, 인포그래픽) · 📝 블로그 새글 자동포워드(30분)
 
 ━━━━━━━━━
 <b>【8. 차별화 포인트】</b>
@@ -1260,8 +1274,16 @@ def _build_usage_report() -> str:
     month_cost_daily_byte = sum(
         r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "daily_byte"
     )
-    today_cost_analysis = today_cost - today_cost_screener - today_cost_daily_byte
-    month_cost_analysis = month_cost - month_cost_screener - month_cost_daily_byte
+    # 부동산 Byte + 블로그 (subsystem='realestate'/'blog') break out.
+    month_cost_realestate = sum(
+        r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "realestate")
+    month_cost_blog = sum(
+        r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "blog")
+    today_cost_analysis = (today_cost - today_cost_screener - today_cost_daily_byte
+                           - sum(r.get("cost_usd", 0) for r in today_calls
+                                 if r.get("subsystem") in ("realestate", "blog")))
+    month_cost_analysis = (month_cost - month_cost_screener - month_cost_daily_byte
+                           - month_cost_realestate - month_cost_blog)
 
     # Standard View cost — read sv_usage.jsonl directly (KST date tagged).
     sv_today_krw = sv_month_krw = 0.0
@@ -1307,6 +1329,8 @@ def _build_usage_report() -> str:
         f"  • NOAH 분석:        {krw(month_cost_analysis)}",
         f"  • Bottleneck Screener: {krw(month_cost_screener)}  ← /screener_cost",
         f"  • Daily Byte:        {krw(month_cost_daily_byte)}  ← /daily_byte_cost",
+        f"  • 부동산 Byte:       {krw(month_cost_realestate)}  ← /realestate_cost",
+        f"  • 블로그:            {krw(month_cost_blog)}",
         f"  • Standard View:     {krw(sv_month_usd)}  ← /sv_cost",
         "",
         f"💰 <b>NOAH 분석 단독 (참고)</b>",
@@ -1438,6 +1462,40 @@ def _read_daily_byte_cost_today_month() -> dict:
                     out["month_calls"] += 1
     except Exception as exc:
         log.warning("daily_byte_cost: read failed: %s", exc)
+    return out
+
+
+def _read_realestate_cost_today_month() -> dict:
+    """Aggregate 부동산 Byte cost from ~/.tradingagents/realestate_usage.jsonl."""
+    from pathlib import Path as _P
+    import json as _j
+    path = _P.home() / ".tradingagents" / "realestate_usage.jsonl"
+    out = {"today_krw": 0.0, "month_krw": 0.0, "today_calls": 0,
+           "month_calls": 0, "today_prompt_tok": 0, "today_output_tok": 0}
+    if not path.exists():
+        return out
+    today = datetime.now(_KST).date().isoformat()
+    month = today[:7]
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = _j.loads(line)
+                except Exception:
+                    continue
+                if rec.get("date") == today:
+                    out["today_krw"] += rec.get("cost_krw", 0) or 0
+                    out["today_calls"] += 1
+                    out["today_prompt_tok"] += rec.get("prompt_tok", 0) or 0
+                    out["today_output_tok"] += rec.get("output_tok", 0) or 0
+                if rec.get("month") == month:
+                    out["month_krw"] += rec.get("cost_krw", 0) or 0
+                    out["month_calls"] += 1
+    except Exception as exc:
+        log.warning("realestate_cost: read failed: %s", exc)
     return out
 
 
@@ -1669,6 +1727,22 @@ async def cmd_daily_byte_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> N
         f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
         "<i>모델: gemini-2.5-pro · 평일 19:00 Daily + 일 22:00 Weekly · "
         "수치는 pykrx 정확값, Pro 는 섹터/로테이션/catalyst narrative</i>"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def cmd_realestate_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/realestate_cost — show 부동산 Byte Gemini Pro cost."""
+    if update.message is None:
+        return
+    data = _read_realestate_cost_today_month()
+    text = (
+        "💰 <b>부동산 Byte 비용</b> (Gemini Pro · 웹 검색 grounding)\n"
+        f"오늘: <b>₩{float(data.get('today_krw',0)):,.1f}</b> · {int(data.get('today_calls',0))}회\n"
+        f"이번 달: <b>₩{float(data.get('month_krw',0)):,.0f}</b> · {int(data.get('month_calls',0))}회\n"
+        f"오늘 tokens: in {int(data.get('today_prompt_tok',0)):,} / out {int(data.get('today_output_tok',0)):,}\n"
+        "<i>모델: gemini-2.5-pro · 금 09:00 주간 + 매월 1일 Monthly · "
+        "수치는 MOLIT 실거래 정확값</i>"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -2295,6 +2369,7 @@ async def _on_startup(application) -> None:
             BotCommand("sv_cost", "Standard View 비용"),
             BotCommand("screener_cost", "Bottleneck Screener 비용 (Pro)"),
             BotCommand("daily_byte_cost", "Daily Byte 비용 (KR 수급 브리프)"),
+            BotCommand("realestate_cost", "부동산 Byte 비용 (실거래 브리프)"),
             BotCommand("screener_list", "Screener 도메인 목록 (전체)"),
             BotCommand("sites", "참고 사이트"),
             BotCommand("screener", "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
@@ -2359,6 +2434,7 @@ def main() -> None:
     app.add_handler(CommandHandler("usage", cmd_usage))
     app.add_handler(CommandHandler("sv_cost", cmd_sv_cost))
     app.add_handler(CommandHandler("daily_byte_cost", cmd_daily_byte_cost))
+    app.add_handler(CommandHandler("realestate_cost", cmd_realestate_cost))
     app.add_handler(CommandHandler("screener_cost", cmd_screener_cost))
     app.add_handler(CommandHandler("screener_list", cmd_screener_list))
     app.add_handler(CommandHandler("sites", cmd_sites))
