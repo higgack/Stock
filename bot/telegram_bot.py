@@ -58,22 +58,30 @@ TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 # httpcore 로거에 부착 → 'getUpdates' 는 보존(watchdog 정상) + 토큰 누출 차단.
 class _TokenRedactFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
+        # httpx 는 URL 을 record.args 에 **httpx.URL 객체**(str 아님)로 넣어
+        # 'HTTP Request: %s %s ...' 로 찍는다. 기존 isinstance(a,str) 필터는
+        # URL 객체를 건너뛰어 토큰이 journald 에 평문 노출됐다 (2026-06-01
+        # surfaced). 해결: record.getMessage() 로 args 까지 합쳐 완성된
+        # 문자열을 만든 뒤 토큰 마스킹, args 를 비워 재포맷 방지. 객체 타입
+        # 무관하게 최종 출력이 마스킹된다. getUpdates 텍스트는 보존(watchdog).
         try:
             if TOKEN:
-                if record.args:
-                    record.args = tuple(
-                        a.replace(TOKEN, "BOT_TOKEN") if isinstance(a, str) else a
-                        for a in record.args
-                    )
-                if isinstance(record.msg, str) and TOKEN in record.msg:
-                    record.msg = record.msg.replace(TOKEN, "BOT_TOKEN")
+                msg = record.getMessage()
+                if TOKEN in msg:
+                    record.msg = msg.replace(TOKEN, "BOT_TOKEN")
+                    record.args = None
         except Exception:
             pass
         return True
 
 
+# httpx/httpcore 로거에 부착 — 레코드가 이 로거에서 발생하므로 filter()가
+# 실행돼 마스킹 후 root 핸들러로 전파된다 (propagate 시 상위 로거 필터는
+# 재실행 안 되므로 발생 로거에 다는 게 정답). 토큰 URL 을 찍는 라이브러리는
+# 사실상 httpx 뿐 — google-genai/telegram 도 내부 httpx 사용.
+_redact = _TokenRedactFilter()
 for _ln in ("httpx", "httpcore"):
-    logging.getLogger(_ln).addFilter(_TokenRedactFilter())
+    logging.getLogger(_ln).addFilter(_redact)
 
 # Comma-separated numeric channel IDs the bot should respond to.
 # Example: CHANNEL_CHAT_IDS=-1001234567890
