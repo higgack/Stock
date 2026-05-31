@@ -42,14 +42,15 @@ def cheongyak_key_ready() -> bool:
 
 
 def _get(endpoint: str, per_page: int = 100, page: int = 1,
-         extra: dict | None = None) -> dict | None:
-    """odcloud GET → JSON dict. serviceKey 인코딩 자동 처리, 실패 시 None."""
+         extra: dict | None = None, base: str | None = None) -> dict | None:
+    """odcloud GET → JSON dict. serviceKey 인코딩 자동 처리, 실패 시 None.
+    base 미지정 시 분양정보 서비스(_BASE)."""
     import httpx
     key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
     params = {"page": page, "perPage": per_page, "returnType": "JSON",
               **(extra or {})}
     _h = {"User-Agent": _UA, "Accept": "application/json, */*"}
-    url = f"{_BASE}/{endpoint}"
+    url = f"{base or _BASE}/{endpoint}"
     try:
         if "%" in key:
             from urllib.parse import urlencode
@@ -124,8 +125,61 @@ def recent_announcements(per_page: int = 200) -> list[dict]:
     return out
 
 
+# ── 청약 경쟁률 (수요 측) — odcloud 별도 서비스 (discovery 필요) ──────────
+# 경쟁률은 청약 접수 종료 후 집계되며 분양정보(ApplyhomeInfoDetailSvc)와
+# 다른 서비스(ApplyhomeInfoCmpetRtSvc 추정)일 수 있어 후보를 넓게 둔다.
+_COMPET_CANDIDATES = (
+    ("https://api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1", "getAPTLttotPblancCmpet"),
+    ("https://api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1", "getAPTLttotPblancMdlCmpet"),
+    ("https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1", "getAPTLttotPblancCmpet"),
+    ("https://api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1", "getAPTReqstAreaCmpet"),
+)
+_COMPET_RESOLVED: dict[str, tuple[str, str]] = {}
+
+
+def _compet_combo() -> tuple[str, str] | None:
+    """200 + data 반환하는 경쟁률 (base, endpoint) 자동 선택 (캐시)."""
+    if "c" in _COMPET_RESOLVED:
+        return _COMPET_RESOLVED["c"]
+    for base, ep in _COMPET_CANDIDATES:
+        data = _get(ep, per_page=3, base=base)
+        if data and isinstance(data.get("data"), list) and data["data"]:
+            _COMPET_RESOLVED["c"] = (base, ep)
+            return base, ep
+    return None
+
+
+def recent_competition(per_page: int = 200) -> list[dict]:
+    """최근 청약 경쟁률 → [{name, region, model, supply, applicants, rate,
+    pblanc_no}]. 엔드포인트/필드 미해결 시 []."""
+    if not cheongyak_key_ready():
+        return []
+    combo = _compet_combo()
+    if not combo:
+        log.info("cheongyak: 경쟁률 엔드포인트 미해결 (활용신청/op 명 확인 필요)")
+        return []
+    base, ep = combo
+    data = _get(ep, per_page=per_page, base=base)
+    rows = (data or {}).get("data") or []
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        out.append({
+            "pblanc_no": _g(r, "PBLANC_NO", "HOUSE_MANAGE_NO"),
+            "name": _g(r, "HOUSE_NM", "houseNm", "주택명"),
+            "region": _g(r, "SUBSCRPT_AREA_CODE_NM", "REGION", "공급지역명"),
+            "model": _g(r, "HOUSE_TY", "MODEL_NO", "주택형"),
+            "supply": _g(r, "SUPLY_HSHLDCO", "공급세대수"),
+            "applicants": _g(r, "REQ_CNT", "RECEPT_CNT", "청약자수", "접수건수"),
+            "rate": _g(r, "CMPET_RATE", "경쟁률", "RATE"),
+        })
+    return out
+
+
 if __name__ == "__main__":
     import json
+    import sys
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
     try:
@@ -137,6 +191,23 @@ if __name__ == "__main__":
     if not cheongyak_key_ready():
         print("DATA_GO_KR_API_KEY 미설정 — .env 확인")
         raise SystemExit(1)
+
+    if "--compet" in sys.argv:
+        # 경쟁률 엔드포인트 discovery — 후보 (base, endpoint) 별 raw 응답
+        print("=== 청약 경쟁률 엔드포인트 탐색 ===")
+        for base, ep in _COMPET_CANDIDATES:
+            print(f"\n--- {base}/{ep} (perPage=3) ---")
+            raw = _get(ep, per_page=3, base=base)
+            print(json.dumps(raw, ensure_ascii=False)[:1500] if raw else "(없음/오류)")
+        print("\n=== recent_competition() 파싱 결과 (앞 8건) ===")
+        comp = recent_competition(per_page=50)
+        print(f"총 {len(comp)}건")
+        for c in comp[:8]:
+            print(f"  [{c['region']:<6}] {c['name']} {c['model']} "
+                  f"· 공급 {c['supply']} · 접수 {c['applicants']} · 경쟁률 {c['rate']}")
+        print("\n→ 200+data 인 (base, endpoint) 와 data[0] 필드명을 붙여주세요.")
+        print("  전부 SERVICE/404 면 '청약경쟁률' API 활용신청이 별도로 필요합니다.")
+        raise SystemExit(0)
 
     for ep in _DETAIL_ENDPOINTS:
         print(f"\n=== RAW: {ep} (perPage=3) ===")

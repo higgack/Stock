@@ -611,6 +611,26 @@ The user has accidentally pasted API keys in chat multiple times. When discussin
 - Never echo or quote the user's real key values back
 - Recommend revocation if a real key was exposed
 
+### Dashboard 인증 — 기본 정책 (사용자 정책 2026-05-31)
+
+**우리가 만드는 모든 대시보드는 HTTP Basic Auth 기본 적용.** 기본 사용자
+ID = `higgack`, 비밀번호는 **`.env` 의 `DASHBOARD_PASSWORD` 에만 보관**
+(literal 값을 코드·CLAUDE.md·git 어디에도 적지 말 것 — gitignored `.env`
+전용). NOAH archive 서버(`bot/dashboard_server.py`)가 `DASHBOARD_USER` +
+`DASHBOARD_PASSWORD` 둘 다 set 이면 모든 경로에 Basic Auth 강제 →
+screener / daily_byte / realestate / cheongyak / 향후 추가 surface 가
+**단일 서버·단일 자격증명으로 자동 일괄 보호** (대시보드는 전부 같은
+ARCHIVE_ROOT 정적 서빙). 적용:
+```
+DASHBOARD_USER=higgack
+DASHBOARD_PASSWORD=<.env 에만>
+```
+.env 변경 후 `sudo systemctl restart dashboard` (env 는 import 시 1회 읽음).
+**향후 별도 포트로 새 대시보드 서버를 만들면 동일하게 `DASHBOARD_USER`/
+`DASHBOARD_PASSWORD` 를 읽어 같은 기본 자격증명으로 보호할 것** — 이것이
+default. (SV·한국수출입 등 외부 앱은 자체 인증 env 보유.) ⚠️ 비번이
+채팅에 노출되면 회전 권고.
+
 ## Multi-market expansion (US → KR → JP → TW → CN)
 
 Phase tracking — what's done, what's blocking the next phase:
