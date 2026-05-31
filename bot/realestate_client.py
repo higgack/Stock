@@ -81,6 +81,16 @@ _RENT_PATHS = [
     "RTMSDataSvcAptRent/getRTMSDataSvcAptRent",
     "RTMSDataSvcAptRentDev/getRTMSDataSvcAptRentDev",
 ]
+_OFFI_PATHS = [
+    "RTMSDataSvcOffiTrade/getRTMSDataSvcOffiTrade",
+    "RTMSDataSvcOffiTradeDev/getRTMSDataSvcOffiTradeDev",
+]
+_RH_PATHS = [   # 연립다세대 매매
+    "RTMSDataSvcRHTrade/getRTMSDataSvcRHTrade",
+    "RTMSDataSvcRHTradeDev/getRTMSDataSvcRHTradeDev",
+]
+_KIND_PATHS = {"trade": _TRADE_PATHS, "rent": _RENT_PATHS,
+               "offi": _OFFI_PATHS, "rh": _RH_PATHS}
 _RESOLVED: dict[str, str] = {}
 
 
@@ -110,23 +120,25 @@ def _fetch_xml(kind: str, lawd_cd: str, deal_ymd: str) -> str | None:
     """kind='trade'|'rent'. 후보 경로 자동 탐색 + 캐시. 첫 HTTP 200 경로
     확정. 200+item → text, 200+무데이터 → None(경로는 맞음), 전부 403 →
     None + 진단 로그."""
-    candidates = [_RESOLVED[kind]] if kind in _RESOLVED else (
-        _TRADE_PATHS if kind == "trade" else _RENT_PATHS)
+    candidates = [_RESOLVED[kind]] if kind in _RESOLVED else _KIND_PATHS.get(kind, [])
     last_status = None
+    last_body = ""
     for path in candidates:
         status, text = _call(path, lawd_cd, deal_ymd)
         last_status = status
+        last_body = text or ""
         if status == 200:
             _RESOLVED[kind] = path           # 경로 확정 (auth+endpoint OK)
             if "<item>" in text:
                 return text
-            # 200 인데 item 0 → 인증 실패 메시지 또는 해당 월 무데이터
             log.warning("realestate[%s] %s %s item 0 — %s",
                         kind, lawd_cd, deal_ymd, _result_msg(text))
             return None
-        # 403/404 → 다음 후보
-    log.warning("realestate[%s] %s 모든 엔드포인트 실패 (last HTTP %s) — "
-                "활용신청 서비스명 확인 필요", kind, lawd_cd, last_status)
+        # 403/404/500 → 다음 후보
+    # 전부 실패 — 응답 본문 일부를 노출해 정확한 원인(잘못된 서비스명 /
+    # 미승인 / 서버오류 메시지) 진단 가능케.
+    log.warning("realestate[%s] %s 모든 엔드포인트 실패 (last HTTP %s) — body: %s",
+                kind, lawd_cd, last_status, _result_msg(last_body))
     return None
 
 
@@ -189,7 +201,21 @@ def collect_realestate_data() -> dict:
         return {}
     ymd = _latest_deal_ymd()
     data: dict = {"ymd": ymd, "regions": {}}
-    rent_enabled = True   # 전월세 API 미승인 시 첫 실패 후 skip (500 도배 방지)
+    # API 별 per-run enable (미승인/오류 시 첫 실패 후 skip — 도배 방지)
+    enabled = {"rent": True, "offi": True, "rh": True}
+
+    def _avg_trade(kind: str, lawd: str) -> int | None:
+        if not enabled[kind]:
+            return None
+        xml = _fetch_xml(kind, lawd, ymd)
+        if not xml:
+            enabled[kind] = False
+            log.info("realestate: %s API 비활성 (활용신청/엔드포인트 확인)", kind)
+            return None
+        tr = _parse_trades(xml)
+        amts = [t["amount_manwon"] for t in tr if t["amount_manwon"] > 0]
+        return round(sum(amts) / len(amts)) if amts else None
+
     for lawd, name in _REGIONS.items():
         xml = _fetch_xml("trade", lawd, ymd)
         if not xml:
@@ -209,12 +235,18 @@ def collect_realestate_data() -> dict:
             "avg_per_pyeong": round(sum(ppp) / len(ppp)) if ppp else None,
             "max_manwon": max(amts),
         }
+        # 오피스텔 / 연립다세대 매매 평균 (주거유형 확대)
+        offi = _avg_trade("offi", lawd)
+        if offi:
+            reg["offi_avg_manwon"] = offi
+        rh = _avg_trade("rh", lawd)
+        if rh:
+            reg["rh_avg_manwon"] = rh
         # 전월세 — 전세(월세 0) 평균 보증금 + 전세가율 (전세평균/매매평균).
-        # 전월세 API 미승인(500/403) 시 첫 실패 후 나머지 지역 skip.
-        rxml = _fetch_xml("rent", lawd, ymd) if rent_enabled else None
-        if rent_enabled and not rxml:
-            rent_enabled = False
-            log.info("realestate: 전월세 API 비활성 (활용신청 필요) — 매매만 진행")
+        rxml = _fetch_xml("rent", lawd, ymd) if enabled["rent"] else None
+        if enabled["rent"] and not rxml:
+            enabled["rent"] = False
+            log.info("realestate: rent API 비활성 (활용신청/엔드포인트 확인)")
         if rxml:
             rents = _parse_rents(rxml)
             jeonse = [r["deposit"] for r in rents if r["is_jeonse"] and r["deposit"] > 0]

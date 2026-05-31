@@ -53,9 +53,14 @@ def build_summary(data: dict) -> str:
         if r.get("jeonse_avg_manwon"):
             jr = f", 전세가율 {r['jeonse_ratio']}%" if r.get("jeonse_ratio") else ""
             jeonse = f" · 전세평균 {_fmt_eok(r['jeonse_avg_manwon'])}{jr}"
+        extra = ""
+        if r.get("offi_avg_manwon"):
+            extra += f" · 오피스텔 {_fmt_eok(r['offi_avg_manwon'])}"
+        if r.get("rh_avg_manwon"):
+            extra += f" · 연립다세대 {_fmt_eok(r['rh_avg_manwon'])}"
         lines.append(
-            f"  {name}: 매매평균 {_fmt_eok(r['avg_manwon'])} ({r['n_deals']}건"
-            f"{ppp} · 최고 {_fmt_eok(r['max_manwon'])}){jeonse}"
+            f"  {name}: 아파트 매매평균 {_fmt_eok(r['avg_manwon'])} ({r['n_deals']}건"
+            f"{ppp} · 최고 {_fmt_eok(r['max_manwon'])}){jeonse}{extra}"
         )
     return "\n".join(lines)
 
