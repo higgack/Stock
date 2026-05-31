@@ -1,44 +1,43 @@
 """금융위원회(FSC) 금융공공데이터 client — KR 증권 데이터 (KRX 로그인 불필요).
 
-data.go.kr 금융위원회 OpenAPI (base apis.data.go.kr/1160100/service, 동일
-무료 키 DATA_GO_KR_API_KEY 공유, 활용신청 별도). pykrx 가 2025-12 KRX
-유료화로 KRX_ID 의존이 된 뒤의 **KRX-login-free fallback 백본** + corp
-action 권리일정.
+data.go.kr 금융위원회 OpenAPI, 동일 무료 키 DATA_GO_KR_API_KEY. pykrx 가
+2025-12 KRX 유료화로 KRX_ID 의존이 된 뒤의 **KRX-login-free fallback 백본**
++ corp action 권리일정.
 
-Phase 1 대상 3종:
-  주식시세정보      (15094808) — 전종목 일별 OHLCV·시총·거래량
-  KRX상장종목정보   (15094775) — 종목 master (코드·명·시장·업종)
-  주식권리일정정보  (15059609) — 증자·배당락·액면분할·감자 ex-date
+확정 엔드포인트 (discovery 2026-05-31, 전부 HTTP 200 검증):
+  시세    /service/GetStockSecuritiesInfoService/getStockPriceInfo
+  종목    /service/GetKrxListedInfoService/getItemInfo
+  권리일정 /GetStocRighScheService_V2/getRighExerReasSche_V2 (신형 V2)
 
-⚠️ FSC 데이터는 실시간 아님 — 기준일 익영업일 13시 이후 갱신(금→월).
-5거래일 horizon 엔 충분, intraday 엔 부적합.
+⚠️ 실시간 아님 — 기준일 익영업일 13시 갱신(금→월). 5거래일 horizon OK.
+⚠️ 권리일정은 공공누리 2유형(출처표시+상업적이용금지, 출처 KSD) — NOAH
+   비상업·교육 용도로 출처표시 하에 사용.
 
-엔드포인트/필드는 응답으로 확인 (discovery-first):
-    cd ~/stock && .venv/bin/python -m bot.fsc_client      # probe
-키 없으면 fsc_key_ready() gate 가 graceful skip.
+키 없으면 fsc_key_ready() gate 가 graceful skip. 12h 디스크 캐시.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("bot.fsc")
 
-_BASE_HOST = "https://apis.data.go.kr/1160100"
+_HOST = "https://apis.data.go.kr/1160100"
+_PRICE = (f"{_HOST}/service/GetStockSecuritiesInfoService", "getStockPriceInfo")
+_ITEM = (f"{_HOST}/service/GetKrxListedInfoService", "getItemInfo")
+_RIGHT = (f"{_HOST}/GetStocRighScheService_V2", "getRighExerReasSche_V2")
 _TIMEOUT = 20
+_KST = timezone(timedelta(hours=9))
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 _KEY_WARNED = False
-
-# (라벨 → (full_base, op)). FSC 는 구형 '/service/GetXxxService' 와 신형
-# '/GetXxxService_V2' 두 패턴 혼재 — Swagger 'Base URL' 로 확정.
-#  권리일정: discovery 2026-05-31 확정 (Swagger Base + GET op).
-#  시세/KRX: 구형 후보 (403=활용신청 필요. 승인 후에도 404 면 V2 경로 확인).
-_RIGHT = (f"{_BASE_HOST}/GetStocRighScheService_V2", "getRighExerReasSche_V2")
-_PRICE = (f"{_BASE_HOST}/service/GetStockSecuritiesInfoService", "getStockPriceInfo")
-_KRX = (f"{_BASE_HOST}/service/GetKrxListedInfoService", "getItemInfo")
+_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".tradingagents", "fsc_cache")
+_CACHE_TTL = 12 * 3600
 
 
 def fsc_key_ready() -> bool:
@@ -50,12 +49,46 @@ def fsc_key_ready() -> bool:
     return ready
 
 
-def _http(base: str, op: str, params: dict):
-    """FSC GET → (status, text). serviceKey 인코딩 자동(% raw URL / 그 외 params).
-    resultType=json 강제. base = full service base (호스트+서비스경로)."""
+def _kr_code(ticker: str) -> str:
+    """'005930.KS' / '005930' / 'A005930' → 6자리 숫자 코드."""
+    t = (ticker or "").split(".")[0].strip().upper()
+    if t.startswith("A") and t[1:].isdigit():
+        t = t[1:]
+    return t
+
+
+def _now() -> datetime:
+    return datetime.now(_KST)
+
+
+# ── 디스크 캐시 (truthy-only, 12h) ────────────────────────────────────────
+def _cache_get(key: str):
+    try:
+        p = os.path.join(_CACHE_DIR, key + ".json")
+        if os.path.exists(p) and (time.time() - os.path.getmtime(p)) < _CACHE_TTL:
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def _cache_put(key: str, val) -> None:
+    try:
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        with open(os.path.join(_CACHE_DIR, key + ".json"), "w", encoding="utf-8") as f:
+            json.dump(val, f, ensure_ascii=False)
+    except Exception as exc:
+        log.debug("fsc: cache put failed: %s", exc)
+
+
+def _fetch(base: str, op: str, params: dict) -> list[dict]:
+    """FSC GET → items 리스트. serviceKey 인코딩 자동, 실패 시 []."""
+    if not fsc_key_ready():
+        return []
     import httpx
     key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
-    q = {"resultType": "json", "numOfRows": params.pop("numOfRows", 10),
+    q = {"resultType": "json", "numOfRows": params.pop("numOfRows", 100),
          "pageNo": 1, **params}
     url = f"{base}/{op}"
     h = {"User-Agent": _UA, "Accept": "application/json, */*"}
@@ -67,18 +100,133 @@ def _http(base: str, op: str, params: dict):
         else:
             r = httpx.get(url, params={"serviceKey": key, **q},
                           headers=h, timeout=_TIMEOUT, follow_redirects=True)
-        return r.status_code, r.text
+        if r.status_code != 200:
+            log.warning("fsc: %s HTTP %d — %s", op, r.status_code, r.text[:160])
+            return []
+        body = (r.json() or {}).get("response", {}).get("body", {}) or {}
+        items = (body.get("items") or {}).get("item")
+        if items is None:
+            return []
+        return items if isinstance(items, list) else [items]
     except Exception as exc:
-        log.warning("fsc: %s/%s 호출 실패: %s", service, op, exc)
-        return None, ""
+        log.warning("fsc: %s 호출 실패: %s", op, exc)
+        return []
 
 
-def _probe(label: str, base: str, op: str, extra: dict | None = None) -> None:
-    """(base, op) status + body head 출력 — 경로/필드 확정용."""
-    print(f"\n=== {label} ===")
-    params = {"numOfRows": 3, **(extra or {})}
-    status, body = _http(base, op, params)
-    print(f"--- {base.split('/1160100')[-1]}/{op}\n    HTTP {status} · {(body or '')[:600]}\n")
+def _f(v):
+    try:
+        return float(str(v).replace(",", "")) if v not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+# ── 1) 주식시세 (KRX-login-free 시총/종가/거래량 fallback) ─────────────────
+def price_series(ticker: str, days: int = 15) -> list[dict]:
+    """최근 days일 일별 시세 (basDt 오름차순). 캐시 12h.
+    각 행: basDt, clpr, mkp, hipr, lopr, trqu, trPrc, fltRt, lstgStCnt, mrktTotAmt."""
+    code = _kr_code(ticker)
+    if not code:
+        return []
+    ck = f"price_{code}_{_now():%Y%m%d}"
+    c = _cache_get(ck)
+    if c is not None:
+        return c
+    begin = (_now().date() - timedelta(days=days + 7)).strftime("%Y%m%d")
+    raw = _fetch(_PRICE[0], _PRICE[1],
+                 {"likeSrtnCd": code, "beginBasDt": begin, "numOfRows": 60})
+    rows = []
+    for it in raw:
+        if _kr_code(it.get("srtnCd", "")) != code:
+            continue
+        rows.append({
+            "basDt": str(it.get("basDt") or ""),
+            "clpr": _f(it.get("clpr")), "mkp": _f(it.get("mkp")),
+            "hipr": _f(it.get("hipr")), "lopr": _f(it.get("lopr")),
+            "trqu": _f(it.get("trqu")), "trPrc": _f(it.get("trPrc")),
+            "fltRt": _f(it.get("fltRt")), "vs": _f(it.get("vs")),
+            "lstgStCnt": _f(it.get("lstgStCnt")), "mrktTotAmt": _f(it.get("mrktTotAmt")),
+        })
+    rows.sort(key=lambda r: r["basDt"])
+    _cache_put(ck, rows)
+    return rows
+
+
+def latest_price(ticker: str) -> dict | None:
+    """가장 최근 영업일 시세 1행 (시총·종가·거래량). 없으면 None."""
+    s = price_series(ticker)
+    return s[-1] if s else None
+
+
+# ── 2) KRX 종목정보 (코드↔법인등록번호 매핑, DART 연결키) ──────────────────
+def item_info(ticker: str) -> dict | None:
+    """종목 master: srtnCd, isinCd, mrktCtg, itmsNm, crno(법인등록번호), corpNm."""
+    code = _kr_code(ticker)
+    if not code:
+        return None
+    ck = f"item_{code}_{_now():%Y%m%d}"
+    c = _cache_get(ck)
+    if c is not None:
+        return c or None
+    raw = _fetch(_ITEM[0], _ITEM[1], {"likeSrtnCd": code, "numOfRows": 10})
+    best = None
+    for it in raw:
+        if _kr_code(it.get("srtnCd", "")) == code:
+            if best is None or str(it.get("basDt", "")) > str(best.get("basDt", "")):
+                best = it
+    out = {} if best is None else {
+        "srtnCd": best.get("srtnCd"), "isinCd": best.get("isinCd"),
+        "mrktCtg": best.get("mrktCtg"), "itmsNm": best.get("itmsNm"),
+        "crno": best.get("crno"), "corpNm": best.get("corpNm"),
+    }
+    _cache_put(ck, out)
+    return out or None
+
+
+# ── 3) 주식권리일정 (corp action — 증자/감자/분할/배당 ex-date) ────────────
+# 권리일정은 ticker 직접 필터 param 이 없어(basDt/KSD고객번호/발행회사명) crno
+# 로 응답을 Python 필터. 최근 basDt window 를 받아 캐시 후 crno 매칭.
+def rights_by_basdt(bas_dt: str) -> list[dict]:
+    """특정 기준일자(basDt, YYYYMMDD) 의 전체 권리일정 raw (캐시 12h)."""
+    ck = f"rights_{bas_dt}"
+    c = _cache_get(ck)
+    if c is not None:
+        return c
+    raw = _fetch(_RIGHT[0], _RIGHT[1], {"basDt": bas_dt, "numOfRows": 2000})
+    rows = []
+    for it in raw:
+        rows.append({
+            "basDt": str(it.get("basDt") or ""), "crno": str(it.get("crno") or ""),
+            "cmpyNm": it.get("stckIssuCmpyNm") or "",
+            "rcdNm": it.get("stckIssuRcdNm") or "",        # 사유 (배당/무상증자/감자/임시총회…)
+            "rgtNm": it.get("rgtExertRcdNm") or "",        # 권리구분 (기준일 등)
+            "rgtSttgDt": str(it.get("rgtExertSttgDt") or ""),  # 권리행사 시작
+            "rgtEdDt": str(it.get("rgtExertEdDt") or ""),      # 권리행사 종료
+            "lckSttgDt": str(it.get("nmlsLckSttgDt") or ""),   # 명부폐쇄 시작
+            "lckEdDt": str(it.get("nmlsLckEdDt") or ""),
+            "parPrc": it.get("stckParPrc") or "",
+        })
+    _cache_put(ck, rows)
+    return rows
+
+
+def rights_for(ticker: str, lookback_days: int = 21) -> list[dict]:
+    """ticker 의 최근 lookback_days 기준일자 권리일정 (crno 매칭). corp action
+    가드용. crno 는 item_info 로 조회."""
+    info = item_info(ticker)
+    crno = (info or {}).get("crno")
+    if not crno:
+        return []
+    out = []
+    today = _now().date()
+    # 영업일만: 주말 skip, lookback 기간 일자별 조회 (각 basDt 캐시됨)
+    for i in range(lookback_days + 1):
+        d = today - timedelta(days=i)
+        if d.weekday() >= 5:
+            continue
+        for r in rights_by_basdt(d.strftime("%Y%m%d")):
+            if r["crno"] == str(crno):
+                out.append(r)
+    return out
 
 
 if __name__ == "__main__":
@@ -92,23 +240,11 @@ if __name__ == "__main__":
         load_dotenv(Path.home() / "stock" / ".env")
     except Exception:
         pass
-    if not fsc_key_ready():
-        print("DATA_GO_KR_API_KEY 미설정 — .env 확인")
-        raise SystemExit(1)
-
-    # 최근 영업일(기준일) — 일부 op 는 basDt 필수일 수 있어 함께 시도
-    from datetime import datetime, timedelta, timezone
-    d = datetime.now(timezone(timedelta(hours=9))).date()
-    while d.weekday() >= 5:  # 주말 walk-back
-        d -= timedelta(days=1)
-    bas = d.strftime("%Y%m%d")
-    print(f"기준일(basDt) 시도값: {bas}")
-
-    # 삼성전자(005930) 로 시세 필터, 권리일정은 기준일 기준
-    _probe("주식시세정보 15094808", _PRICE[0], _PRICE[1], {"likeSrtnCd": "005930", "basDt": bas})
-    _probe("KRX상장종목정보 15094775", _KRX[0], _KRX[1], {"likeSrtnCd": "005930"})
-    _probe("주식권리일정정보 15059609 (확정 V2)", _RIGHT[0], _RIGHT[1], {"basDt": bas})
-
-    print("→ HTTP 200 + items 나오는 것 + 첫 행 필드명을 붙여주세요.")
-    print("  권리일정 200 = corp action 가드 통합 준비 완료.")
-    print("  시세/KRX 403 = 활용신청 필요 / 404 = V2 경로(Swagger Base URL) 확인 필요.")
+    tk = sys.argv[1] if len(sys.argv) > 1 else "005930.KS"
+    print(f"=== {tk} ===")
+    print("item_info:", json.dumps(item_info(tk), ensure_ascii=False))
+    s = price_series(tk)
+    print(f"price_series: {len(s)}행")
+    if s:
+        print("  latest:", json.dumps(s[-1], ensure_ascii=False))
+    print("rights_for (최근 21영업일):", json.dumps(rights_for(tk), ensure_ascii=False)[:600])
