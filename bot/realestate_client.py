@@ -21,8 +21,11 @@ from datetime import datetime, timedelta, timezone
 log = logging.getLogger("bot.realestate")
 
 _KST = timezone(timedelta(hours=9))
-_BASE = "http://apis.data.go.kr/1613000"
+# HTTPS 필수 — data.go.kr RTMS API 가 2025-07-04 갱신되며 평문 HTTP 는 403.
+_BASE = "https://apis.data.go.kr/1613000"
 _TIMEOUT = 20
+_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 # 대표 지역 (법정동 5자리) — 고가/중가/외곽 mix 로 전국 가격대 스펙트럼.
 _REGIONS = {
@@ -76,15 +79,18 @@ def _fetch_xml(path: str, lawd_cd: str, deal_ymd: str) -> str | None:
     base_params = {"LAWD_CD": lawd_cd, "DEAL_YMD": deal_ymd,
                    "numOfRows": 1000, "pageNo": 1}
     try:
+        _h = {"User-Agent": _UA, "Accept": "application/xml, text/xml, */*"}
         if "%" in key:
             # Encoding 키 (이미 URL-encoded) → 직접 URL 에 넣고 재인코딩 방지
             from urllib.parse import urlencode
             qs = urlencode(base_params)
-            r = httpx.get(f"{_BASE}/{path}?serviceKey={key}&{qs}", timeout=_TIMEOUT)
+            r = httpx.get(f"{_BASE}/{path}?serviceKey={key}&{qs}",
+                          headers=_h, timeout=_TIMEOUT, follow_redirects=True)
         else:
             # Decoding 키 (raw) → httpx 가 한 번만 인코딩
             r = httpx.get(f"{_BASE}/{path}",
-                          params={"serviceKey": key, **base_params}, timeout=_TIMEOUT)
+                          params={"serviceKey": key, **base_params},
+                          headers=_h, timeout=_TIMEOUT, follow_redirects=True)
         if r.status_code != 200:
             log.warning("realestate: %s %s HTTP %d", path, lawd_cd, r.status_code)
             return None
