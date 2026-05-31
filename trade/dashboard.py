@@ -202,6 +202,17 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
     }
 
 
+def _cost_line_html() -> str:
+    """Compact 'cost/resource' line for the header — every external API is
+    free; surfaces customs API-quota headroom + disk usage. Returns '' on
+    any failure so a stat hiccup never breaks the render."""
+    try:
+        from trade import cost
+        return escape(cost.format_dashboard_line())
+    except Exception:
+        return ""
+
+
 def _customs_panel_html(rows: list[dict]) -> str:
     """Collapsible 관세청 comparison panel (server-rendered, no JS, no
     chart — table only, per the agreed scope). Returns '' when there are
@@ -308,6 +319,7 @@ def _build_html(
         f'<div class="meta meta-next" id="meta-next"></div>'
         f'<div class="meta meta-today" id="meta-today"></div>'
         f'<div class="meta meta-backlog">{backlog_inner}</div>'
+        f'<div class="meta meta-cost">{_cost_line_html()}</div>'
         f"</header>"
     )
 
@@ -405,6 +417,8 @@ h1{margin:0 0 4px;font-size:18px}
 .meta-backlog{color:var(--text-sub)}
 .meta-backlog strong{color:var(--b-import-fg);font-weight:600}
 .meta-backlog code{font-size:10.5px;background:var(--surface-2);padding:0 4px;border-radius:3px}
+.meta-cost{margin-top:2px;color:var(--text-sub)}
+.meta-cost:empty{display:none}
 .customs-panel{background:var(--surface);border-bottom:1px solid var(--border);padding:8px 18px}
 .customs-panel summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--text);list-style:none}
 .customs-panel summary::-webkit-details-marker{display:none}

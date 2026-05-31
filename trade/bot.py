@@ -57,7 +57,7 @@ from telegram.ext import (
     filters,
 )
 
-from trade import hs_lookup, hs_map, ignored, operator, watchlist
+from trade import cost, hs_lookup, hs_map, ignored, operator, watchlist
 from trade.parser import parse_caption
 
 load_dotenv()
@@ -130,7 +130,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 <b>2. 대쉬보드</b>
 <a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
 모바일 OK · 5분마다 자동 갱신 · BasicAuth 보호 · 다크모드 자동 (19~07 KST)
-헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) + 🧪 미파싱 백로그 + 📦 관세청 핀 품목 비교 패널 (핀 있을 때만) 자동 표시
+헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) + 🧪 미파싱 백로그 + 💰 비용·자원 (외부 API 무료·디스크·관세청 호출) + 📦 관세청 핀 품목 비교 패널 (핀 있을 때만) 자동 표시
 
 <b>3. BeOn 발표 사이클 (KST)</b>
 • 매월 11일경 — 1-10일 잠정
@@ -176,6 +176,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭으로 핀 (예: /hs 반도체, /hs 8542). 직접 등록도 가능: /hs &lt;품목&gt; &lt;HS코드&gt;
 /unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록 (검색은 ~/.trade/hs_codes.xlsx 필요 — 관세청 15049722 파일 다운로드, 개정 시 덮어쓰기)
 /customs — 핀 품목 관세청 월 금액 비교 (수출·전월비·무역수지). 대쉬보드 헤더 📦 패널과 동일
+/cost — 비용·자원 현황 (외부 API 전부 무료 · 디스크 사용 · 관세청 일 호출/한도)
 ※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
 
 <b>9. 자동화 systemd</b>
@@ -197,7 +198,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-05-31 — /hs xlsx 검색·버튼등록 (15049722) + HS부호 180일 묵음 시 개정 안내 DM · 관세청 급변 알림</i>
+<i>최종 갱신: 2026-05-31 — /cost 비용·자원 현황(외부 API 전부 무료·디스크·호출량) 명령+헤더 · /hs 물질명 표시 · 관세청 급변 알림</i>
 """
 
 
@@ -392,7 +393,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     if first_word in (
         "/watch", "/unwatch",
         "/ignore", "/unignore", "/ignored",
-        "/hs", "/unhs", "/hslist", "/customs",
+        "/hs", "/unhs", "/hslist", "/customs", "/cost",
     ):
         # Per-user / per-operator state has no place in a channel post.
         # Reply once with the DM-only hint and a one-tap keyboard
@@ -902,6 +903,19 @@ async def cmd_customs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_cost(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/cost — honest cost/resource view. Every external dep is free;
+    shows that plus disk growth + customs API-quota headroom (the real
+    things to watch). No dollar figures because there are none."""
+    if update.message is None or update.effective_user is None:
+        return
+    operator.remember(update.effective_user.id)
+    await update.message.reply_text(
+        cost.format_telegram(), parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
 async def _notify_watchers(ctx: ContextTypes.DEFAULT_TYPE, caption_text: str) -> None:
     """Parse the caption with the live trade parser and DM every user
     whose watch pattern matches the resulting item/stocks. Failures
@@ -984,6 +998,7 @@ def main() -> None:
     app.add_handler(CommandHandler("unhs", cmd_unhs))
     app.add_handler(CommandHandler("hslist", cmd_hslist))
     app.add_handler(CommandHandler("customs", cmd_customs))
+    app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CallbackQueryHandler(on_hs_pin_callback, pattern=r"^hs_pin:"))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
