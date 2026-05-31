@@ -255,7 +255,19 @@ if __name__ == "__main__":
         _dump("'아파트' + '전세지수'", list_tables("아파트", "전세지수"))
         raise SystemExit(0)
 
-    # 기본: 데이터 probe — 확정 통계표의 실제 응답 스키마 + 추세 확인
+    # StatisticSearch.do 원시 응답 — 필드명/에러 메시지 확인
+    import json as _json
+    print("=== RAW: StatisticSearch.do (기간 파라미터 포함) ===")
+    raw1 = _get("StatisticSearch.do", {
+        "STATBL_ID": STATBL_SALE, "DTACYCLE_CD": "MM",
+        "START_WRTTIME": "202501", "END_WRTTIME": "202605", "pSize": 50})
+    print(_json.dumps(raw1, ensure_ascii=False)[:1800] if raw1 else "(없음)")
+    print("\n=== RAW: StatisticSearch.do (기간 파라미터 없이) ===")
+    raw2 = _get("StatisticSearch.do", {"STATBL_ID": STATBL_SALE, "pSize": 50})
+    print(_json.dumps(raw2, ensure_ascii=False)[:1800] if raw2 else "(없음)")
+    print()
+
+    # 데이터 probe — 확정 통계표의 실제 응답 스키마 + 추세 확인
     for label, sid in (("매매지수", STATBL_SALE), ("전세지수", STATBL_JEONSE)):
         print(f"\n=== {label}  STATBL_ID={sid} — StatisticSearch.do 샘플 ===")
         rows = fetch_index(sid)
