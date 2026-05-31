@@ -65,13 +65,14 @@ def buildperm_key_ready() -> bool:
     return ready
 
 
-def _get_json(op: str, sigungu: str, bjdong: str, rows: int = 200) -> list[dict]:
-    """ArchPmsHubService op 호출 → item 리스트 (JSON). 실패 시 []."""
+def _get_json(op: str, sigungu: str, bjdong: str, rows: int = 200,
+              page: int = 1) -> list[dict]:
+    """ArchPmsHubService op 단일 페이지 호출 → item 리스트. 실패 시 []."""
     import json as _json
     status, body = _http_get(
         f"{_AUTH_BASE}/{op}",
         {"sigunguCd": sigungu, "bjdongCd": bjdong, "numOfRows": rows,
-         "pageNo": 1, "_type": "json"}, accept_xml=False)
+         "pageNo": page, "_type": "json"}, accept_xml=False)
     if status != 200 or not body:
         return []
     try:
@@ -81,6 +82,34 @@ def _get_json(op: str, sigungu: str, bjdong: str, rows: int = 200) -> list[dict]
     if isinstance(items, dict):
         items = [items]
     return [it for it in items if isinstance(it, dict)]
+
+
+def _get_total_count(op: str, sigungu: str, bjdong: str) -> int:
+    """totalCount 만 빠르게 — numOfRows=1 1 call."""
+    import json as _json
+    status, body = _http_get(
+        f"{_AUTH_BASE}/{op}",
+        {"sigunguCd": sigungu, "bjdongCd": bjdong, "numOfRows": 1,
+         "pageNo": 1, "_type": "json"}, accept_xml=False)
+    if status != 200 or not body:
+        return 0
+    try:
+        return int(_json.loads(body)["response"]["body"].get("totalCount", 0))
+    except Exception:
+        return 0
+
+
+def fetch_recent_permits(sigungu: str, bjdong: str,
+                         rows: int = 1000) -> list[dict]:
+    """최근 인허가 행. API 가 mgmPmsrgstPk 오름차순(=대략 허가일 오름차순) 으로
+    반환 → totalCount 로 마지막 페이지를 계산해 그 페이지만 가져옴
+    (대부분 법정동의 최근 N개월 인허가 < rows=1000 안에 포함)."""
+    op = "getApBasisOulnInfo"
+    total = _get_total_count(op, sigungu, bjdong)
+    if total <= 0:
+        return []
+    last_page = max(1, (total + rows - 1) // rows)
+    return _get_json(op, sigungu, bjdong, rows=rows, page=last_page)
 
 
 def _to_float(v) -> float:
@@ -111,7 +140,7 @@ def permits_for_region(sigungu: str, bjdong: str, months: int = 12,
         m += 12
         y -= 1
     since = f"{y}{m:02d}01"
-    items = _get_json("getApBasisOulnInfo", sigungu, bjdong)
+    items = fetch_recent_permits(sigungu, bjdong, rows=1000)
     n = hhld = housing = 0
     area = 0.0
     for it in items:
@@ -203,6 +232,19 @@ if __name__ == "__main__":
 
     # 기본: 표본 법정동 공급 파이프라인 집계 (실데이터 검증)
     print("=== 건축인허가 공급 파이프라인 (표본 법정동, 최근 12개월) ===")
+    # 진단 — 각 지역 totalCount + 마지막 페이지 최신 archPmsDay
+    print("[진단] 지역별 totalCount + 마지막 페이지 최신 허가일")
+    for name, sgg, bjd in _PERMIT_REGIONS:
+        total = _get_total_count("getApBasisOulnInfo", sgg, bjd)
+        latest = ""
+        if total > 0:
+            recent = fetch_recent_permits(sgg, bjd, rows=1000)
+            days = [str(it.get("archPmsDay") or "") for it in recent]
+            days = [d for d in days if len(d) >= 8]
+            if days:
+                latest = max(days)
+        print(f"  {name:<22} total={total:>6}  latest={latest or '—'}  ({sgg}/{bjd})")
+    print()
     agg = permits_aggregate(_PERMIT_REGIONS, months=12)
     tot = agg.get("total", {})
     print(f"기간: {agg.get('since','')}~  ·  합계 주거인허가 "
