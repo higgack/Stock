@@ -25,26 +25,20 @@ import os
 
 log = logging.getLogger("bot.fsc")
 
-_BASE = "https://apis.data.go.kr/1160100/service"
+_BASE_HOST = "https://apis.data.go.kr/1160100"
 _TIMEOUT = 20
 _UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 _KEY_WARNED = False
 
-# (라벨, service, op) 후보 — discovery 가 200+items 첫 매치 확정.
-# FSC 금융공공데이터 명명 규칙 추정 + 대체 후보. probe 로 실제 경로 확인.
-_PRICE_CANDIDATES = (
-    ("GetStockSecuritiesInfoService", "getStockPriceInfo"),
-)
-_KRX_CANDIDATES = (
-    ("GetKrxListedInfoService", "getItemInfo"),
-)
-_RIGHT_CANDIDATES = (
-    ("GetStockRightScheduleInfoService", "getStockRightScheduleInfo"),
-    ("GetStockRightsScheduleInfoService", "getStockRightsScheduleInfo"),
-    ("GetStockRightScheduleService", "getStockRightScheduleInfo"),
-)
+# (라벨 → (full_base, op)). FSC 는 구형 '/service/GetXxxService' 와 신형
+# '/GetXxxService_V2' 두 패턴 혼재 — Swagger 'Base URL' 로 확정.
+#  권리일정: discovery 2026-05-31 확정 (Swagger Base + GET op).
+#  시세/KRX: 구형 후보 (403=활용신청 필요. 승인 후에도 404 면 V2 경로 확인).
+_RIGHT = (f"{_BASE_HOST}/GetStocRighScheService_V2", "getRighExerReasSche_V2")
+_PRICE = (f"{_BASE_HOST}/service/GetStockSecuritiesInfoService", "getStockPriceInfo")
+_KRX = (f"{_BASE_HOST}/service/GetKrxListedInfoService", "getItemInfo")
 
 
 def fsc_key_ready() -> bool:
@@ -56,14 +50,14 @@ def fsc_key_ready() -> bool:
     return ready
 
 
-def _http(service: str, op: str, params: dict):
+def _http(base: str, op: str, params: dict):
     """FSC GET → (status, text). serviceKey 인코딩 자동(% raw URL / 그 외 params).
-    resultType=json 강제."""
+    resultType=json 강제. base = full service base (호스트+서비스경로)."""
     import httpx
     key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
     q = {"resultType": "json", "numOfRows": params.pop("numOfRows", 10),
          "pageNo": 1, **params}
-    url = f"{_BASE}/{service}/{op}"
+    url = f"{base}/{op}"
     h = {"User-Agent": _UA, "Accept": "application/json, */*"}
     try:
         if "%" in key:
@@ -79,13 +73,12 @@ def _http(service: str, op: str, params: dict):
         return None, ""
 
 
-def _probe(label: str, candidates: tuple, extra: dict | None = None) -> None:
-    """후보 (service, op) 별 status + body head 출력 — 경로/필드 확정용."""
+def _probe(label: str, base: str, op: str, extra: dict | None = None) -> None:
+    """(base, op) status + body head 출력 — 경로/필드 확정용."""
     print(f"\n=== {label} ===")
-    for service, op in candidates:
-        params = {"numOfRows": 2, **(extra or {})}
-        status, body = _http(service, op, params)
-        print(f"--- {service}/{op}\n    HTTP {status} · {(body or '')[:500]}\n")
+    params = {"numOfRows": 3, **(extra or {})}
+    status, body = _http(base, op, params)
+    print(f"--- {base.split('/1160100')[-1]}/{op}\n    HTTP {status} · {(body or '')[:600]}\n")
 
 
 if __name__ == "__main__":
@@ -111,11 +104,11 @@ if __name__ == "__main__":
     bas = d.strftime("%Y%m%d")
     print(f"기준일(basDt) 시도값: {bas}")
 
-    # 삼성전자(005930) 로 시세/권리일정 필터 시도
-    _probe("주식시세정보 15094808 (basDt 없이)", _PRICE_CANDIDATES, {"likeSrtnCd": "005930"})
-    _probe("주식시세정보 15094808 (basDt)", _PRICE_CANDIDATES, {"basDt": bas, "likeSrtnCd": "005930"})
-    _probe("KRX상장종목정보 15094775", _KRX_CANDIDATES, {"likeSrtnCd": "005930"})
-    _probe("주식권리일정정보 15059609", _RIGHT_CANDIDATES, {"numOfRows": 5})
+    # 삼성전자(005930) 로 시세 필터, 권리일정은 기준일 기준
+    _probe("주식시세정보 15094808", _PRICE[0], _PRICE[1], {"likeSrtnCd": "005930", "basDt": bas})
+    _probe("KRX상장종목정보 15094775", _KRX[0], _KRX[1], {"likeSrtnCd": "005930"})
+    _probe("주식권리일정정보 15059609 (확정 V2)", _RIGHT[0], _RIGHT[1], {"basDt": bas})
 
-    print("→ HTTP 200 + items 나오는 (service/op) + 첫 행 필드명을 붙여주세요.")
-    print("  401 '인증키' = 해당 API 활용신청 필요 / 03 NODATA = 경로 OK·인자 조정.")
+    print("→ HTTP 200 + items 나오는 것 + 첫 행 필드명을 붙여주세요.")
+    print("  권리일정 200 = corp action 가드 통합 준비 완료.")
+    print("  시세/KRX 403 = 활용신청 필요 / 404 = V2 경로(Swagger Base URL) 확인 필요.")
