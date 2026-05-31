@@ -509,10 +509,21 @@ if __name__ == "__main__":
         pass
     if "--minor" in sys.argv:
         tk2 = next((a for a in sys.argv[1:] if not a.startswith("--")), "005930.KS")
-        print(f"=== 소액주주현황 — {tk2} ===")
-        print(json.dumps(minority_holders(tk2), ensure_ascii=False))
-        print(f"=== 잠재 희석(CB/BW/유증) — {tk2} ===")
-        print(json.dumps(dilution_events(tk2), ensure_ascii=False)[:800])
+        print(f"=== 소액주주 RAW 진단 — {tk2} ===")
+        _info = item_info(tk2)
+        _crno = (_info or {}).get("crno")
+        print(f"crno = {_crno}")
+        # (a) crno 필터 / (b) corpNm 필터 / (c) 무필터 — 어느 게 200+items 인지
+        for label, params in (
+                ("crno", {"crno": _crno, "numOfRows": 5}),
+                ("corpNm", {"corpNm": (_info or {}).get("corpNm", ""), "numOfRows": 5}),
+                ("bizYear+crno", {"crno": _crno, "bizYear": "2024", "numOfRows": 5}),
+                ("no-filter", {"numOfRows": 3})):
+            raw = _fetch(_CGDISC[0], _CGDISC[1], dict(params))
+            print(f"  [{label}] {len(raw)}행"
+                  + (f" · {json.dumps(raw[0], ensure_ascii=False)[:300]}" if raw else ""))
+        print("\nminority_holders():", json.dumps(minority_holders(tk2), ensure_ascii=False))
+        print("dilution_events():", json.dumps(dilution_events(tk2), ensure_ascii=False)[:400])
         raise SystemExit(0)
 
     if "--lockup" in sys.argv:
