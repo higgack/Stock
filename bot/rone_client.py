@@ -36,6 +36,12 @@ _KEY_WARNED = False
 STATBL_SALE = os.environ.get("RONE_STATBL_SALE", "A_2024_00178")    # (월) 지역별 매매지수_아파트
 STATBL_JEONSE = os.environ.get("RONE_STATBL_JEONSE", "A_2024_00182")  # (월) 지역별 전세지수_아파트
 
+# 공급 통계표 (월간, discovery 2026-05-31) — 시간축 미래 공급 band.
+STATBL_PERMIT = "T235263129553687"   # 주택건설인허가실적 (선행 2-3년)
+STATBL_START = "T233033129823134"    # 주택착공실적 (선행 12-18개월)
+STATBL_UNSOLD = "T237973129847263"   # 미분양주택현황 (실현된 공급과잉)
+STATBL_NEWSALE = "T244633134443498"  # 지역별 신규 분양세대수
+
 
 def rone_key_ready() -> bool:
     global _KEY_WARNED
@@ -272,6 +278,24 @@ if __name__ == "__main__":
         # 공급 파이프라인 후보 — 미분양/인허가/착공/준공/공급
         for kw in ("미분양", "인허가", "착공", "준공", "공급", "분양"):
             _dump(f"'{kw}'", list_tables(kw))
+        raise SystemExit(0)
+
+    if "--supply" in sys.argv:
+        # 공급 통계표 스키마 — 지역(cls)·항목(itm) 차원 + 최근 값 확인
+        for label, sid in (("주택인허가실적", STATBL_PERMIT),
+                           ("주택착공실적", STATBL_START),
+                           ("미분양주택현황", STATBL_UNSOLD),
+                           ("신규분양세대수", STATBL_NEWSALE)):
+            print(f"\n=== {label}  {sid} ===")
+            rows = fetch_index(sid, n_months=6)
+            print(f"수신 {len(rows)}행. 앞 10행 (period · cls_nm · itm_nm · value):")
+            for r in rows[:10]:
+                print(f"  {r['period']:<8} {r['cls_nm']!r:<10} {r['itm_nm']!r:<14} {r['value']}")
+            cls = sorted({r["cls_nm"] for r in rows if r["cls_nm"]})
+            itm = sorted({r["itm_nm"] for r in rows if r["itm_nm"]})
+            print(f"  지역(cls) {len(cls)}종: {cls[:20]}")
+            print(f"  항목(itm) {len(itm)}종: {itm[:20]}")
+        print("\n→ 각 표의 전국 행 + 적절한 itm(부문/유형) 확인되면 공급 band 통합.")
         raise SystemExit(0)
 
     # 데이터 probe — 확정 통계표의 실제 응답 + 지역 라벨 + 추세
