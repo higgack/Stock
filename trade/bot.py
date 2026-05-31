@@ -50,13 +50,14 @@ from telegram.constants import ParseMode
 from telegram.error import RetryAfter, TelegramError
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
 )
 
-from trade import hs_map, ignored, operator, watchlist
+from trade import hs_lookup, hs_map, ignored, operator, watchlist
 from trade.parser import parse_caption
 
 load_dotenv()
@@ -172,8 +173,8 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (일회성 공지 등)
 /unignore &lt;msg_id&gt; — ignore 해제
 /ignored — 현재 ignore 목록
-/hs &lt;품목&gt; &lt;HS코드&gt; — 품목에 HS코드 핀 → 관세청 월 수출입금액 수집 (예: /hs 라면 1902301010)
-/unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록
+/hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭으로 핀 (예: /hs 반도체, /hs 8542). 직접 등록도 가능: /hs &lt;품목&gt; &lt;HS코드&gt;
+/unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록 (검색은 ~/.trade/hs_codes.xlsx 필요 — 관세청 15049722 파일 다운로드, 개정 시 덮어쓰기)
 /customs — 핀 품목 관세청 월 금액 비교 (수출·전월비·무역수지). 대쉬보드 헤더 📦 패널과 동일
 ※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
 
@@ -196,7 +197,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-05-31 — 관세청 수출 급변 ±30% 운영자 DM 알림 (baseline무음·cap10·채널X) · /customs 비교 · /hs 핀</i>
+<i>최종 갱신: 2026-05-31 — /hs 한글/숫자 검색 + 버튼 클릭 등록 (15049722 CSV) · 관세청 급변 알림</i>
 """
 
 
@@ -645,13 +646,51 @@ async def cmd_ignored(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HS_USAGE = (
     "사용법:\n"
-    "/hs &lt;품목&gt; &lt;HS코드&gt; — 품목에 HS코드 핀 (관세청 월 수출입금액 수집 대상)\n"
+    "/hs &lt;검색어&gt; — 한글 또는 숫자(prefix)로 HS코드 검색 → 버튼 클릭으로 핀\n"
+    "  예: <code>/hs 반도체</code>, <code>/hs 메모리</code>, <code>/hs 8542</code>\n"
+    "/hs &lt;품목&gt; &lt;HS코드&gt; — 직접 핀 (검색 없이)\n"
+    "  예: <code>/hs 라면 1902301010</code>\n"
     "/unhs &lt;품목&gt; — 핀 해제\n"
     "/hslist — 현재 핀 목록\n"
-    "HS코드는 2·4·6·10자리 숫자. 정확한 10자리가 가장 깔끔 "
-    "(예: 라면 <code>1902301010</code>).\n"
-    "예: <code>/hs 라면 1902301010</code> · <code>/hs 음극재 (천연흑연) 850720</code>"
+    "HS코드는 2·4·6·10자리 숫자. 정확한 10자리가 가장 깔끔."
 )
+
+_HS_SEARCH_LIMIT = 20
+_HS_CODES_DOWNLOAD_HINT = (
+    "🔎 HS코드 검색 데이터가 없습니다.\n"
+    "관세청 HS부호 파일(<a href=\"https://www.data.go.kr/data/15049722/fileData.do\">"
+    "dataset 15049722</a>, .xlsx)을 받아 호스트의 "
+    "<code>~/.trade/hs_codes.xlsx</code> 경로에 저장 후 다시 시도. "
+    "(개정 시 같은 경로에 덮어쓰면 자동 반영)\n"
+    "검색 없이 직접 등록은 가능: <code>/hs 라면 1902301010</code>"
+)
+
+
+def _format_hs_search(hits, total: int, query: str):
+    """Build the search-result message + inline keyboard.
+
+    Returns (text, InlineKeyboardMarkup). Truncates each row's 한글품목명 to
+    keep the button label under Telegram's ~64-char hard limit and readable
+    on mobile. callback_data = 'hs_pin:<10-digit>' — HS-code-only so it
+    fits Telegram's 64-byte cap with margin (item name is re-looked-up at
+    click time from the same authoritative CSV)."""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    head = f"🔎 <b>'{_html.escape(query)}'</b> 검색 결과 {total}건"
+    if total > len(hits):
+        head += f" — 상위 {len(hits)}개만 표시 (더 좁혀보세요)"
+    head += "\n클릭하면 그 코드로 핀 등록됩니다."
+
+    rows = []
+    for h in hits:
+        label = h.ko_name
+        if len(label) > 32:
+            label = label[:31] + "…"
+        rows.append([InlineKeyboardButton(
+            f"{label}  · {h.hs_code}",
+            callback_data=f"hs_pin:{h.hs_code}",
+        )])
+    return head, InlineKeyboardMarkup(rows)
 
 
 def _format_hs_list() -> str:
@@ -676,30 +715,109 @@ async def cmd_hs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             _format_hs_list(), parse_mode=ParseMode.HTML
         )
         return
-    if len(args) < 2:
-        await update.message.reply_text(_HS_USAGE, parse_mode=ParseMode.HTML)
+
+    # Two modes:
+    #   1) /hs <품목> <HS코드>   — direct pin (last token is digits AND is a
+    #      valid 2/4/6/10-digit HS code). Preserves the original UX so
+    #      muscle memory keeps working.
+    #   2) /hs <검색어>           — anything else: 한글 keyword, mixed text,
+    #      or a numeric prefix (e.g. '8542'). Searches the reference CSV
+    #      and returns inline buttons; clicking one pins via the callback.
+    if len(args) >= 2 and hs_map.is_valid_hs(args[-1]):
+        code = args[-1]
+        item = " ".join(args[:-1]).strip()
+        try:
+            changed = hs_map.add(item, code)
+        except ValueError:
+            await update.message.reply_text(
+                f"<code>{_html.escape(code)}</code>는 올바른 HS코드가 아님 "
+                f"(2·4·6·10자리 숫자만). 예: <code>1902301010</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if changed:
+            msg = (
+                f"✅ 핀: <code>{_html.escape(item)}</code> → <code>{code}</code>\n"
+                f"<i>다음 customs-fetch(매일 01:30 KST)부터 관세청 월 금액 수집</i>"
+            )
+        else:
+            msg = f"이미 동일 핀: <code>{_html.escape(item)}</code> → <code>{code}</code>"
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
         return
-    # Last token = HS code; everything before = the item name (may contain
-    # spaces / parens, e.g. '음극재 (천연흑연)').
-    code = args[-1]
-    item = " ".join(args[:-1]).strip()
+
+    # Search mode.
+    query = " ".join(args).strip()
     try:
-        changed = hs_map.add(item, code)
-    except ValueError:
+        hits, total = hs_lookup.search(query, limit=_HS_SEARCH_LIMIT)
+    except hs_lookup.HsCodeFileMissing:
         await update.message.reply_text(
-            f"<code>{_html.escape(code)}</code>는 올바른 HS코드가 아님 "
-            f"(2·4·6·10자리 숫자만). 예: <code>1902301010</code>",
+            _HS_CODES_DOWNLOAD_HINT,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+    if not hits:
+        await update.message.reply_text(
+            f"🔎 '<b>{_html.escape(query)}</b>' 검색 결과 0건.\n"
+            "다른 키워드(예: 메모리·DRAM·8542) 또는 직접 등록: "
+            "<code>/hs 라면 1902301010</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    text, keyboard = _format_hs_search(hits, total, query)
+    await update.message.reply_text(
+        text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
+    )
+
+
+async def on_hs_pin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inline-keyboard click handler for hs_pin:<10-digit> buttons.
+
+    Re-looks-up the Korean name from hs_lookup so the pin name is always
+    the authoritative 한글품목명, never whatever was in the button label
+    (which gets truncated for display). Acknowledges via callback_query
+    first so Telegram clears the spinner."""
+    q = update.callback_query
+    if q is None or q.data is None:
+        return
+    await q.answer()
+    if not q.data.startswith("hs_pin:"):
+        return
+    code = q.data.split(":", 1)[1]
+    if not hs_map.is_valid_hs(code):
+        await q.edit_message_text("⚠️ 잘못된 콜백 데이터.")
+        return
+    if update.effective_user is not None:
+        operator.remember(update.effective_user.id)
+    # Resolve the official name. If the CSV vanished between search and
+    # click, fall back to the bare code so the pin still lands.
+    name = code
+    try:
+        rows = hs_lookup.load()
+        for r in rows:
+            if r.hs_code == code:
+                name = r.ko_name
+                break
+    except hs_lookup.HsCodeFileMissing:
+        pass
+    try:
+        changed = hs_map.add(name, code)
+    except ValueError:
+        await q.edit_message_text(
+            f"⚠️ 핀 실패: <code>{_html.escape(code)}</code>",
             parse_mode=ParseMode.HTML,
         )
         return
     if changed:
-        msg = (
-            f"✅ 핀: <code>{_html.escape(item)}</code> → <code>{code}</code>\n"
-            f"<i>다음 customs-fetch(매일 01:30 KST)부터 관세청 월 금액 수집</i>"
+        body = (
+            f"✅ 핀: <code>{_html.escape(name)}</code> → <code>{code}</code>\n"
+            f"<i>다음 customs-fetch(매일 01:30 KST)부터 수집</i>"
         )
     else:
-        msg = f"이미 동일 핀: <code>{_html.escape(item)}</code> → <code>{code}</code>"
-    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        body = (
+            f"이미 동일 핀: <code>{_html.escape(name)}</code> → <code>{code}</code>"
+        )
+    await q.edit_message_text(body, parse_mode=ParseMode.HTML)
 
 
 async def cmd_unhs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -860,6 +978,7 @@ def main() -> None:
     app.add_handler(CommandHandler("unhs", cmd_unhs))
     app.add_handler(CommandHandler("hslist", cmd_hslist))
     app.add_handler(CommandHandler("customs", cmd_customs))
+    app.add_handler(CallbackQueryHandler(on_hs_pin_callback, pattern=r"^hs_pin:"))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     log.info(
