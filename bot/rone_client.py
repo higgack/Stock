@@ -263,10 +263,12 @@ def realestate_trend(regions: tuple[str, ...] = _DEFAULT_REGIONS) -> dict:
 
 # ── 공급 통계 (인허가/착공/미분양) — 지역은 cls_fullnm 첫 세그먼트 ──────
 # 인허가/착공: cls_fullnm "전국>합계(가구수기준)" 등. 미분양: "서울>계" 등.
+# (name, statbl_id, leaf 후보, allow_sum) — allow_sum=True 면 전국 행 부재 시
+# 시도 합산으로 전국 산출 (미분양: '전국>계' 없고 '서울>계' 등 시도만 존재).
 _SUPPLY_SPECS = (
-    ("인허가", STATBL_PERMIT, ("합계(가구수기준)", "합계(동수기준)")),
-    ("착공", STATBL_START, ("총계",)),
-    ("미분양", STATBL_UNSOLD, ("계",)),
+    ("인허가", STATBL_PERMIT, ("합계(가구수기준)", "합계(동수기준)"), False),
+    ("착공", STATBL_START, ("총계",), False),
+    ("미분양", STATBL_UNSOLD, ("계",), True),
 )
 
 
@@ -277,9 +279,10 @@ def _region_of(r: dict) -> str:
 
 
 def _supply_series(statbl_id: str, leaf_candidates: tuple[str, ...],
-                   region: str = "전국") -> tuple[str, list]:
+                   region: str = "전국", allow_sum: bool = False) -> tuple[str, list]:
     """전국(또는 region) + leaf(합계 종류) 의 (period,value) 시계열.
-    leaf 후보를 순서대로 시도, 첫 ≥2pt 매치 반환. (leaf, series)."""
+    leaf 후보를 순서대로 시도, 첫 ≥2pt 매치 반환. allow_sum=True 면 전국 행
+    부재 시 시도(전국 외) leaf 행 합산으로 전국 산출. (leaf, series)."""
     rows = fetch_index(statbl_id, n_months=18)
     for leaf in leaf_candidates:
         series = {}
@@ -290,12 +293,23 @@ def _supply_series(statbl_id: str, leaf_candidates: tuple[str, ...],
                 series[r["period"]] = r["value"]
         if len(series) >= 2:
             return leaf, sorted(series.items())
+    if allow_sum:
+        for leaf in leaf_candidates:
+            summed = {}
+            for r in rows:
+                if r["value"] is None or not r["period"]:
+                    continue
+                if r["cls_nm"] == leaf and _region_of(r) != "전국":
+                    summed[r["period"]] = summed.get(r["period"], 0) + r["value"]
+            if len(summed) >= 2:
+                return leaf, sorted(summed.items())
     return "", []
 
 
-def supply_trend_one(statbl_id: str, leaf_candidates: tuple[str, ...]) -> dict | None:
+def supply_trend_one(statbl_id: str, leaf_candidates: tuple[str, ...],
+                     allow_sum: bool = False) -> dict | None:
     """전국 공급 시계열 → 최신·MoM·YoY (호). <2pt 면 None."""
-    leaf, series = _supply_series(statbl_id, leaf_candidates)
+    leaf, series = _supply_series(statbl_id, leaf_candidates, allow_sum=allow_sum)
     if len(series) < 2:
         return None
     periods = [p for p, _ in series]
@@ -316,8 +330,8 @@ def supply_summary() -> dict:
     """부동산 Byte 공급 band — 인허가·착공·미분양 전국 추세. 빈 항목 빠짐.
     {'인허가': {...}, '착공': {...}, '미분양': {...}}."""
     out = {}
-    for name, sid, leafs in _SUPPLY_SPECS:
-        t = supply_trend_one(sid, leafs)
+    for name, sid, leafs, allow_sum in _SUPPLY_SPECS:
+        t = supply_trend_one(sid, leafs, allow_sum=allow_sum)
         if t:
             out[name] = t
     return out
