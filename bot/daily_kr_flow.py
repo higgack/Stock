@@ -284,6 +284,15 @@ def build_data_summary(data: dict) -> str:
     if b:
         lines.append(f"[시장 폭] 순매수종목 비율(외인+기관 합산) {b['pct']}% "
                      f"({b['net_buy_n']}/{b['total_n']}종목 순매수)")
+    # 시장 유동성 (예탁금·신용융자) — 금융투자협회 종합통계, 실패 시 생략.
+    try:
+        from bot.fsc_client import market_liquidity_line
+        _liq = market_liquidity_line()
+        if _liq:
+            lines.append(f"[시장 유동성 (금융투자협회 종합통계)] {_liq} "
+                         "— 예탁금↑=대기매수, 신용융자↑=레버리지 과열")
+    except Exception as exc:
+        log.debug("daily_byte: liquidity line skipped: %s", exc)
     lines.append("\n[시장 전체 투자주체별 순매수 (억원, KOSPI+KOSDAQ 합산)]")
     t = data.get("totals", {})
     if t:

@@ -888,7 +888,21 @@ review:
   FSC 는 T+1 지연이라 5거래일 horizon·시총 cross-check 무해. 무료·동일
   DATA_GO_KR_API_KEY·12h 디스크캐시. item_info 의 crno 는 향후 DART corp
   매핑 연결키. 시세/종목=공공누리 제한없음, 권리일정=2유형(출처표시+비상업,
-  출처 KSD) — NOAH 비상업 OK. 미통합 FSC API(대차/배당/발행)는 Phase 2.
+  출처 KSD) — NOAH 비상업 OK.
+- **FSC Phase 2 통합 (2026-05-31)** — `bot/fsc_client.py` 3개 신규 + 3지점
+  통합 (전부 additive·try/except·12h 캐시·실패 시 블록 생략):
+  (A) **증권상품시세 ETF/ETN** (GetSecuritiesProductInfoService 15094806,
+  제한없음) `securities_product_quote` → 종가·NAV·**괴리율**·순자산·기초지수.
+  build_instrument_context KR ETF/ETN 브랜치(B2)에 "공식 시세" 블록 주입
+  (yfinance KR ETF 빈약 보완, KODEX200 괴리율 -0.06% 검증).
+  (B+C) **금융투자협회 종합통계** (GetKofiaStatisticsInfoService 15094809,
+  제한없음) `market_deposit`(투자자예탁금 invrDpsgAmt)·`margin_balance`
+  (신용융자 crdTrFingWhl) → `market_liquidity_line` 한 줄(조 단위·WoW/MoM,
+  LLM 에 raw 원 미노출=환각 방지). **시장 전체값→1 fetch 12h 캐시로 전 KR
+  분석·Daily Byte 공유**(per-ticker 부담 0). 주입 2곳: Daily Byte 시장총평
+  (build_data_summary) + KR equity build_instrument_context "KR 시장 유동성"
+  블록(시장분석가가 retail 자금·레버리지 frame 으로 해석). 예탁금↑=대기매수,
+  신용융자↑=레버리지 과열. 미통합 FSC API(배당/발행/대차)는 Phase 3+.
 - **소유구조 빈 결과 환각 차단** — KR branch (DART insider holdings empty
   → "임원지분 데이터 미수집" prose, no fabricated 공기업/정부 narrative),
   JP branch (EDINET 大量保有 + yfinance heldPercentInsiders both empty

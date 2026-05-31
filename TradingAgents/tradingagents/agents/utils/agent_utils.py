@@ -4457,7 +4457,29 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
                 )
         if kr_etf_meta:
             base += format_kr_etf_block(kr_etf_meta, ticker)
-        else:
+        # 공식 ETF/ETN 시세 (FSC 증권상품) — 괴리율·NAV·순자산·기초지수.
+        # yfinance KR ETF 빈약 보완. 모든 KR ETF/ETN 적용(meta 유무 무관).
+        if market == "KR":
+            try:
+                from bot.fsc_client import securities_product_quote
+                _sp = securities_product_quote(ticker)
+                if _sp and _sp.get("clpr"):
+                    _prem = _sp.get("premium_pct")
+                    _premtxt = (f"{'+' if (_prem or 0) >= 0 else ''}{_prem}%"
+                                if _prem is not None else "N/A")
+                    base += (
+                        f"\n\n=== {_sp['type']} 공식 시세 (FSC 증권상품, KRX, "
+                        f"{_sp.get('basDt', '')}) ===\n"
+                        f"종가 ₩{int(_sp['clpr']):,} · NAV/지표가치 "
+                        f"₩{int(_sp['nav']):,} · 괴리율 {_premtxt}"
+                        + (f" · 기초지수 {_sp['bssIdx']}" if _sp.get("bssIdx") else "")
+                        + "\n괴리율(+면 고평가 프리미엄, -면 디스카운트)은 유동성·"
+                        "추종오차 신호. ±1% 초과 지속 시 호가 스프레드/유동성"
+                        " 주의. 출처: 금융위원회/KRX (T+1)."
+                    )
+            except Exception as exc:
+                _analyst_log.debug("FSC ETF quote skipped %s: %s", ticker, exc)
+        if not kr_etf_meta:
             # Generic fund_product directive — KR ETF 미커버 또는
             # 다른 시장 ETF / MUTUALFUND
             base += (
@@ -4490,6 +4512,24 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
                 " nodes see them as ground truth) ===\n"
                 + signals
             )
+
+        # KR 시장 유동성 (예탁금·신용융자) — 금융투자협회 종합통계. 시장
+        # 전체값(종목 무관·12h 캐시 공유). 시장 분석가가 retail 자금·
+        # 레버리지 frame 으로 개별 종목 수급을 해석하도록. 실패 시 생략.
+        if market == "KR":
+            try:
+                from bot.fsc_client import market_liquidity_line
+                _liq = market_liquidity_line()
+                if _liq:
+                    base += (
+                        "\n\n=== KR 시장 유동성 (금융투자협회 종합통계, T+1) ===\n"
+                        f"{_liq}\n"
+                        "투자자예탁금↑ = 대기매수 자금 유입(상방 지지), 신용융자↑"
+                        " = 레버리지 누적(과열·반대매매 위험). 개별 종목 수급을"
+                        " 이 시장 전체 유동성 frame 안에서 해석. 출처: 금융투자협회."
+                    )
+            except Exception as exc:
+                _analyst_log.debug("KR liquidity block skipped %s: %s", ticker, exc)
 
         # API KEY ABSENCE — anti-hallucination directive (Rule A).
         # Previously the per-source injection blocks (DART / EDINET /

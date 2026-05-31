@@ -325,6 +325,35 @@ def margin_balance() -> dict | None:
     return _trend(_kofia_series(_OP_CREDIT, "crdTrFingWhl"))
 
 
+def _fmt_jo(won) -> str:
+    """원 → 조/억 한국어 단위 (LLM 에 raw 원 미노출, 환각 방지)."""
+    if won is None:
+        return "—"
+    if abs(won) >= 1e12:
+        return f"{won / 1e12:.1f}조"
+    if abs(won) >= 1e8:
+        return f"{won / 1e8:.0f}억"
+    return f"{won:,.0f}원"
+
+
+def _pct(v) -> str:
+    return "—" if v is None else f"{'+' if v >= 0 else ''}{v:.1f}%"
+
+
+def market_liquidity_line() -> str | None:
+    """예탁금+신용융자 한 줄 요약 (조 단위 · WoW/MoM). 둘 다 실패면 None.
+    Daily Byte 시장총평 + KR 시장분석가 context 공용 — 시장 전체값·12h 캐시."""
+    dep, mgn = market_deposit(), margin_balance()
+    parts = []
+    if dep:
+        parts.append(f"투자자예탁금 {_fmt_jo(dep['latest'])}"
+                     f"(WoW {_pct(dep['wow_pct'])}/MoM {_pct(dep['mom_pct'])})")
+    if mgn:
+        parts.append(f"신용융자 {_fmt_jo(mgn['latest'])}"
+                     f"(WoW {_pct(mgn['wow_pct'])}/MoM {_pct(mgn['mom_pct'])})")
+    return " · ".join(parts) if parts else None
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO,
