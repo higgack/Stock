@@ -125,14 +125,12 @@ def recent_announcements(per_page: int = 200) -> list[dict]:
     return out
 
 
-# ── 청약 경쟁률 (수요 측) — odcloud 별도 서비스 (discovery 필요) ──────────
+# ── 청약 경쟁률 (수요 측) — odcloud ApplyhomeInfoCmpetRtSvc ────────────
 # 경쟁률은 청약 접수 종료 후 집계되며 분양정보(ApplyhomeInfoDetailSvc)와
-# 다른 서비스(ApplyhomeInfoCmpetRtSvc 추정)일 수 있어 후보를 넓게 둔다.
+# 별도 서비스. discovery 2026-05-31 로 경로 확정 (HTTP 401=경로 OK·키
+# 미등록 → 별도 활용신청 필요. 신청 후 같은 DATA_GO_KR_API_KEY 로 작동).
 _COMPET_CANDIDATES = (
     ("https://api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1", "getAPTLttotPblancCmpet"),
-    ("https://api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1", "getAPTLttotPblancMdlCmpet"),
-    ("https://api.odcloud.kr/api/ApplyhomeInfoDetailSvc/v1", "getAPTLttotPblancCmpet"),
-    ("https://api.odcloud.kr/api/ApplyhomeInfoCmpetRtSvc/v1", "getAPTReqstAreaCmpet"),
 )
 _COMPET_RESOLVED: dict[str, tuple[str, str]] = {}
 
