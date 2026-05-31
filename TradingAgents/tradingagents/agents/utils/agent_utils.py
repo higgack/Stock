@@ -1406,6 +1406,39 @@ def _detect_yf_corp_action(ticker: str, lookback_days: int = 14) -> dict | None:
         return None
 
 
+# FSC 권리일정(getRighExerReasSche) rcdNm 중 가격영향 corp action 사유.
+# 정기 "기준일 / 명부폐쇄 / 배당 / 총회 / 기타" 는 제외 (기술지표 무효화 X).
+_FSC_RIGHTS_CORP_ACTION_KW = (
+    "무상증자", "유상증자", "감자", "무상감자", "유상감자",
+    "액면분할", "주식분할", "액면병합", "주식병합", "주식교환", "주식이전",
+)
+
+
+def _detect_fsc_corp_action(ticker: str, lookback_days: int = 14) -> dict | None:
+    """금융위 FSC 권리일정(KSD) 기반 KR corp action 탐지 — DART scan 의
+    백업/보강. rcdNm 이 증자/감자/분할/병합/교환 사유인 행만 필터하고 정기
+    기준일·배당은 제외. crno 는 fsc item_info 로 매핑. {date, event, source}
+    or None. 네트워크/키 실패 시 None (호출측 안전)."""
+    try:
+        from bot.fsc_client import rights_for
+        rows = rights_for(ticker, lookback_days=lookback_days)
+    except Exception:
+        return None
+    for r in rows or []:
+        name = f"{r.get('rcdNm', '')} {r.get('rgtNm', '')}"
+        if not any(kw in name for kw in _FSC_RIGHTS_CORP_ACTION_KW):
+            continue
+        raw = (r.get("rgtSttgDt") or r.get("basDt") or "").strip()
+        date = (f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+                if len(raw) == 8 and raw.isdigit() else raw)
+        ev = (r.get("rcdNm") or "").strip()
+        if r.get("rgtNm"):
+            ev = f"{ev} ({r['rgtNm'].strip()})".strip()
+        return {"date": date, "event": ev or name.strip(),
+                "source": "FSC 권리일정(KSD)"}
+    return None
+
+
 def _detect_jp_corp_action(disclosures: list[dict]) -> dict | None:
     """JP analogue. EDINET 臨時報告書 carry 株式分割 / 無償割当 / 株式併合
     headlines in their docDescription field."""
@@ -4665,10 +4698,15 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None) -
                 # that names the event by date so the analyst can't
                 # rationalize past it.
                 corp_action = _detect_kr_corp_action(disclosures)
+                if not corp_action:
+                    # DART scan miss → FSC 권리일정(KSD) 백업 (키 없거나 키워드
+                    # 변형으로 DART 가 놓친 경우). 정기 기준일·배당은 제외됨.
+                    corp_action = _detect_fsc_corp_action(ticker)
                 if corp_action:
+                    _ca_src = corp_action.get("source", "DART 공시")
                     base += (
                         "\n\n=== ⛔ CORPORATE ACTION IN-FLIGHT (HARD GUARD) ===\n"
-                        f"{corp_action['date']} DART 공시: {corp_action['event']}\n"
+                        f"{corp_action['date']} {_ca_src}: {corp_action['event']}\n"
                         "이 종목은 현재 분할 / 무상증자 / 감자 / 액면분할 등"
                         " corporate action이 진행 중이다. yfinance의 historical"
                         " 가격 시계열은 ex-date 전후로 비조정 또는 부분 조정"

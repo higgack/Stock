@@ -868,15 +868,27 @@ review:
   JP→`_JP_*`, default→`_US_*`. Peer multiples pre-fetch (Rule C in
   agent_utils._fetch_peer_multiples) runs for any market once a peer
   set is returned.
-- **CORPORATE ACTION HARD GUARD — 3-source** in build_instrument_context:
+- **CORPORATE ACTION HARD GUARD — 4-source** in build_instrument_context:
   (1) DART scan for 무상증자/주식분할/액면분할/주식병합/감자 (KR),
   (2) EDINET scan for 株式分割/株式無償割当/株式併合 (JP),
   (3) universal yfinance `.splits` ex-date scan (`_detect_yf_corp_action`,
-  any market, 14-day lookback). All three emit the same "ban
-  SMA/EMA/MACD/RSI/Bollinger comparisons" HARD GUARD body. US gets
-  layer (3) only; KR/JP get (1)+(3) or (2)+(3). DART/EDINET catch
-  the ANNOUNCEMENT (before ex-date, more useful), yfinance catches
-  the EX-DATE (universal fallback).
+  any market, 14-day lookback),
+  (4) **FSC 권리일정 백업 (KR, `_detect_fsc_corp_action`, 2026-05-31)** —
+  DART scan miss 시 금융위 권리일정(getRighExerReasSche_V2, KSD) 의
+  rcdNm 이 증자/감자/분할/병합/교환 인 행 필터(정기 기준일·배당 제외),
+  crno(fsc item_info)로 매핑. DART 키 부재/키워드 변형으로 놓친 케이스
+  백업. All four emit the same "ban SMA/EMA/MACD/RSI/Bollinger" HARD
+  GUARD body. US gets (3); KR gets (1)+(3)+(4); JP gets (2)+(3).
+- **KRX-login-free 시세 백본 (FSC, `bot/fsc_client.py`, Phase 1 2026-05-31)** —
+  pykrx 가 2025-12 KRX 유료화로 KRX_ID 의존 → creds 부재/장애 시 KR 시총·
+  종가·거래량 dormant 였던 취약점 해소. `pykrx_client.get_kr_market_cap`
+  이 None(creds 없음 OR 무데이터) 일 때 `fsc_client.latest_price`(금융위
+  주식시세 getStockPriceInfo)로 자동 fallback — 동일 shape(market_cap=
+  mrktTotAmt/close=clpr/volume=trqu/shares=lstgStCnt), `_source:"fsc"` 태그.
+  FSC 는 T+1 지연이라 5거래일 horizon·시총 cross-check 무해. 무료·동일
+  DATA_GO_KR_API_KEY·12h 디스크캐시. item_info 의 crno 는 향후 DART corp
+  매핑 연결키. 시세/종목=공공누리 제한없음, 권리일정=2유형(출처표시+비상업,
+  출처 KSD) — NOAH 비상업 OK. 미통합 FSC API(대차/배당/발행)는 Phase 2.
 - **소유구조 빈 결과 환각 차단** — KR branch (DART insider holdings empty
   → "임원지분 데이터 미수집" prose, no fabricated 공기업/정부 narrative),
   JP branch (EDINET 大量保有 + yfinance heldPercentInsiders both empty

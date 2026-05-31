@@ -87,6 +87,30 @@ def _normalize_code(ticker: str) -> Optional[str]:
     return code
 
 
+def _fsc_market_cap(ticker: str) -> Optional[dict]:
+    """KRX-login-free fallback (금융위 FSC 주식시세) — pykrx 가 creds 부재/
+    무데이터로 None 일 때 동일 shape 으로 시총·종가·거래량·상장주식수 반환.
+    FSC 는 T+1 지연이라 5거래일 horizon·시총 cross-check 에 무해. 실패 시 None."""
+    try:
+        from bot.fsc_client import latest_price
+        p = latest_price(ticker)
+    except Exception as exc:
+        log.debug("pykrx market_cap: FSC fallback failed: %s", exc)
+        return None
+    if not p or not p.get("mrktTotAmt"):
+        return None
+    bas = str(p.get("basDt") or "")
+    date = f"{bas[:4]}-{bas[4:6]}-{bas[6:]}" if len(bas) == 8 else bas
+    log.info("pykrx market_cap: FSC fallback used for %s (basDt %s)", ticker, bas)
+    return {
+        "market_cap": int(p.get("mrktTotAmt") or 0),
+        "close": int(p.get("clpr") or 0),
+        "volume": int(p.get("trqu") or 0),
+        "shares": int(p.get("lstgStCnt") or 0),
+        "date": date, "_source": "fsc",
+    }
+
+
 def get_kr_market_cap(ticker: str) -> Optional[dict]:
     """Fetch KRX official 시가총액 + 최신 close 를 cross-check 용으로
     반환 (Phase 4-CN-D D1 fallback). yfinance .info marketCap 이 일부
@@ -103,14 +127,14 @@ def get_kr_market_cap(ticker: str) -> Optional[dict]:
     if not code:
         return None
     if not krx_login_ready():
-        return None
+        return _fsc_market_cap(ticker)  # KRX creds 부재 → FSC 백본
     try:
         from pykrx import stock
         import pandas as pd
         from datetime import datetime, timedelta
     except Exception as exc:
         log.warning("pykrx market_cap: import failed: %s", exc)
-        return None
+        return _fsc_market_cap(ticker)
 
     today = datetime.now()
     # Try recent ~7 days backward to handle weekends + holidays
@@ -149,6 +173,7 @@ def get_kr_market_cap(ticker: str) -> Optional[dict]:
             )
             continue
     log.info("pykrx market_cap: no data found for %s in last 10 days", code)
+    return _fsc_market_cap(ticker)  # pykrx 무데이터 → FSC 백본
     return None
 
 
