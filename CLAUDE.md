@@ -403,7 +403,15 @@ pattern to follow:
   채널 push + `cheongyak.html` 대시보드 (Daily Byte 패턴 mirror, 오늘/누적
   비용·검색·🗑️ `/api/cheongyak_delete`) + `/cheongyak_cost` 명령(DM+채널)
   + /usage·메인 대시보드 cost subsystem '청약'. 인포그래픽 없음(피드 성격).
-  nav 위치: Daily Byte 뒤(daily 그룹). 경쟁률(수요측)은 별도 API — 미구현.
+  nav 위치: Daily Byte 뒤(daily 그룹). **경쟁률(수요 측) LIVE (2026-05-31)** —
+  별도 활용신청 (`한국부동산원_청약홈 청약접수 경쟁률 및 특별공급 신청현황`)
+  승인 후 `ApplyhomeInfoCmpetRtSvc/v1/getAPTLttotPblancCmpet` 작동. raw 행은
+  (해당지역/기타)×(1·2순위)로 분할 → `aggregate_competition_by_unit` 가
+  단지·주택형 단위 합산(총접수/총공급 = 진짜 경쟁률, 미달 세대수 산출).
+  `recent_competition_enriched` 가 PBLANC_NO 로 announcements 와 join 해
+  단지명·지역 enrich. brief 본문에 [최근 마감 청약 경쟁률] 섹션 자동
+  부록(미달 우선·경쟁률 내림차순 TOP 8). graceful skip — 경쟁률 미등록/
+  비어있어도 신규 공고 push 는 정상.
 - Daily Byte — 장 마감 후 KR 수급 브리프 (2026-05-29 사용자 요청):
   • `daily-byte.timer` — 평일(Mon-Fri) 19:00 KST oneshot → `bot/daily_
     kr_flow.py`. pykrx EOD 수급 (~17-18시 갱신) 안정 후 19:00 실행.

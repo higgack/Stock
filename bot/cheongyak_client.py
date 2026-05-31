@@ -148,13 +148,13 @@ def _compet_combo() -> tuple[str, str] | None:
 
 
 def recent_competition(per_page: int = 200) -> list[dict]:
-    """최근 청약 경쟁률 → [{name, region, model, supply, applicants, rate,
-    pblanc_no}]. 엔드포인트/필드 미해결 시 []."""
+    """최근 청약 경쟁률 (raw 행 — 같은 단지·주택형이 거주구분/순위별로 분할).
+    집계는 aggregate_competition_by_unit / recent_competition_enriched 사용."""
     if not cheongyak_key_ready():
         return []
     combo = _compet_combo()
     if not combo:
-        log.info("cheongyak: 경쟁률 엔드포인트 미해결 (활용신청/op 명 확인 필요)")
+        log.info("cheongyak: 경쟁률 엔드포인트 미해결 (활용신청 필요)")
         return []
     base, ep = combo
     data = _get(ep, per_page=per_page, base=base)
@@ -165,13 +165,72 @@ def recent_competition(per_page: int = 200) -> list[dict]:
             continue
         out.append({
             "pblanc_no": _g(r, "PBLANC_NO", "HOUSE_MANAGE_NO"),
-            "name": _g(r, "HOUSE_NM", "houseNm", "주택명"),
-            "region": _g(r, "SUBSCRPT_AREA_CODE_NM", "REGION", "공급지역명"),
-            "model": _g(r, "HOUSE_TY", "MODEL_NO", "주택형"),
-            "supply": _g(r, "SUPLY_HSHLDCO", "공급세대수"),
-            "applicants": _g(r, "REQ_CNT", "RECEPT_CNT", "청약자수", "접수건수"),
-            "rate": _g(r, "CMPET_RATE", "경쟁률", "RATE"),
+            "model": _g(r, "HOUSE_TY", "MODEL_NO"),
+            "supply": _g(r, "SUPLY_HSHLDCO"),
+            "applicants": _g(r, "REQ_CNT", "RECEPT_CNT"),
+            "rate_raw": _g(r, "CMPET_RATE"),
+            "reside": _g(r, "RESIDE_SENM"),
+            "rank": _g(r, "SUBSCRPT_RANK_CODE"),
         })
+    return out
+
+
+def _to_int(s) -> int:
+    try:
+        return int(str(s or "0").replace(",", "").strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+def aggregate_competition_by_unit(rows: list[dict]) -> list[dict]:
+    """raw 경쟁률 행을 단지(pblanc_no)·주택형(model) 단위로 합산.
+    같은 단위가 (해당지역/기타)×(1·2순위)=4-8행 으로 분할돼 있어 sum 필요.
+    결과: {pblanc_no, model, supply, applicants, rate(=apps/supply 또는 None),
+    shortage(미달세대), is_short}."""
+    from collections import defaultdict
+    agg: dict = defaultdict(lambda: {"supply": 0, "applicants": 0})
+    for r in rows:
+        key = (r.get("pblanc_no", ""), r.get("model", ""))
+        if not key[0]:
+            continue
+        agg[key]["supply"] = max(agg[key]["supply"], _to_int(r.get("supply")))
+        agg[key]["applicants"] += _to_int(r.get("applicants"))
+    out = []
+    for (pblanc_no, model), s in agg.items():
+        sup, apps = s["supply"], s["applicants"]
+        if sup <= 0:
+            continue
+        rate = round(apps / sup, 2) if apps >= sup else None
+        out.append({
+            "pblanc_no": pblanc_no, "model": model,
+            "supply": sup, "applicants": apps, "rate": rate,
+            "shortage": max(0, sup - apps), "is_short": apps < sup,
+        })
+    return out
+
+
+def recent_competition_enriched(per_page_compet: int = 200,
+                                per_page_anns: int = 300) -> list[dict]:
+    """경쟁률 단지·주택형 단위 + 분양정보(announcements) PBLANC_NO join 으로
+    단지명·지역 enrich. join 미매칭 단지는 빠짐(이름 없으면 의미없음)."""
+    raw = recent_competition(per_page=per_page_compet)
+    units = aggregate_competition_by_unit(raw)
+    if not units:
+        return []
+    anns = {a["pblanc_no"]: a for a in recent_announcements(per_page=per_page_anns)
+            if a.get("pblanc_no")}
+    out = []
+    for u in units:
+        m = anns.get(u["pblanc_no"])
+        if not m:
+            continue
+        u["name"] = m.get("name", "")
+        u["region"] = m.get("region", "")
+        u["notice_date"] = m.get("notice_date", "")
+        u["winner_date"] = m.get("winner_date", "")
+        out.append(u)
+    out.sort(key=lambda u: (u.get("notice_date", ""), u.get("pblanc_no", "")),
+             reverse=True)
     return out
 
 

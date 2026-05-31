@@ -81,6 +81,29 @@ def build_summary(anns: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def build_competition_block(comps: list[dict], top: int = 8) -> str:
+    """최근 마감 단지 경쟁률 (단지·주택형 단위 합산) → 텍스트 블록.
+    is_short=True 면 미달 표기. 빈 리스트면 ''."""
+    if not comps:
+        return ""
+    short_cnt = sum(1 for c in comps if c.get("is_short"))
+    lines = [f"[최근 마감 청약 경쟁률] 단지·주택형 {len(comps)}건 (미달 {short_cnt}건)"]
+    # 미달이 의미있으므로 미달 먼저, 그 다음 경쟁률 내림차순
+    comps_sorted = sorted(
+        comps,
+        key=lambda c: (0 if c.get("is_short") else 1, -(c.get("rate") or 0)),
+    )[:top]
+    for c in comps_sorted:
+        if c.get("is_short"):
+            tag = f"⚠️ 미달 {c['shortage']}세대"
+        else:
+            tag = f"경쟁률 {c['rate']:.2f}:1"
+        lines.append(
+            f"  [{c.get('region','')}] {c.get('name','')} {c.get('model','')} "
+            f"· 공급 {c['supply']} · 접수 {c['applicants']} · {tag}")
+    return "\n".join(lines)
+
+
 _PROMPT = """당신은 한국 분양·청약 시장 전문 애널리스트입니다. 아래는 청약홈
 (한국부동산원) 에서 직접 추출한 **신규 아파트 분양 모집공고**입니다 (정확한
 수치). 이를 '청약 Byte' daily 피드의 도입 맥락으로 요약하세요.
@@ -92,9 +115,12 @@ _PROMPT = """당신은 한국 분양·청약 시장 전문 애널리스트입니
 1. **수치·단지명·일정은 위 데이터 글자 그대로** — 창작·재계산 금지.
 2. 맨 위에 **1-2문장 맥락**만: 신규 공고의 지역 분포(수도권 vs 지방),
    공급 규모(총 세대), 청약 접수 임박 단지 여부. 중립 정보 서술.
-3. 이어서 **단지 목록을 그대로 정리** (지역·단지명·세대·청약일정 줄단위).
-   목록은 위 데이터 순서 유지.
-4. 본문 일반 텍스트 + 줄바꿈. 강조는 **굵게** (단지명·임박일정 정도).
+3. 이어서 **신규 공고 목록을 그대로 정리** (지역·단지명·세대·청약일정
+   줄단위). 목록은 위 데이터 순서 유지.
+4. [최근 마감 청약 경쟁률] 블록이 있으면 그 아래에 별도 섹션으로 그대로
+   정리 (단지·주택형·공급·접수·경쟁률 또는 ⚠️ 미달). 미달 다수면 수요
+   위축, 두자릿수 경쟁률 다수면 수요 견조 — 1줄 중립 코멘트.
+5. 본문 일반 텍스트 + 줄바꿈. 강조는 **굵게** (단지명·임박일정·미달 정도).
    HTML 태그·`---` 수평선 금지. 특정 단지 청약 권유 금지.
 면책: 끝에 "본 피드는 청약홈 공공데이터 관찰 (교육·정보 목적), 청약 권유 아님" 1줄.
 """
@@ -158,13 +184,21 @@ def generate() -> tuple[str, float, int] | None:
     if not api_key:
         log.error("cheongyak: GOOGLE_API_KEY missing")
         return None
-    from bot.cheongyak_client import recent_announcements, cheongyak_key_ready
+    from bot.cheongyak_client import (recent_announcements,
+                                       recent_competition_enriched,
+                                       cheongyak_key_ready)
     if not cheongyak_key_ready():
         return None
     anns = recent_announcements(per_page=200)
     if not anns:
         log.warning("cheongyak: 분양 공고 0건 — skip")
         return None
+    # 경쟁률 (별도 활용신청 — 미등록이면 빈 리스트 graceful skip)
+    try:
+        comps = recent_competition_enriched(per_page_compet=200, per_page_anns=300)
+    except Exception as exc:
+        log.warning("cheongyak: 경쟁률 fetch 실패: %s", exc)
+        comps = []
 
     seen, initialized = _load_seen()
     # 신규 = 미열람 + 최근 N일 공고 (최초 run 도 최근 N일 batch 만 push)
@@ -179,7 +213,11 @@ def generate() -> tuple[str, float, int] | None:
     new.sort(key=lambda a: a.get("notice_date", ""), reverse=True)
 
     from bot.screener import _call_pro
-    prompt = _PROMPT.format(summary=build_summary(new))
+    summary = build_summary(new)
+    comp_block = build_competition_block(comps)
+    if comp_block:
+        summary = f"{summary}\n\n{comp_block}"
+    prompt = _PROMPT.format(summary=summary)
     try:
         raw, pt, ot = _call_pro(api_key, prompt, enable_grounding=False)
     except Exception as exc:
