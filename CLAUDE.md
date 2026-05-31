@@ -1532,9 +1532,20 @@ NOAH /ticker 의 `_fetch_returns` 는 5거래일 그대로 유지 (정책 분리
     갱신. ⚠️ set_my_commands 호출 누락 시 mobile 클라이언트에서 모든
     `/cmd` 가 plain text 가 됨 (사용자 ref 2026-05-29 mobile UX 확인).
   - Liquidity 경고 (S-tier ~$100M micro-cap)
-  - TIER 강제 (2026-05-29 EV review): Pro 의 자체 분류를 Python mcap
-    기반 결과로 자동 치환 (Master Table 행 + Top-3 picks parenthetical
-    + TOP_3_JSON tail). AMPX 등 Pro 가 무시한 케이스 모니터링 로그.
+  - TIER 강제 (2026-05-29 EV review + 2026-05-31 Machinery review): Pro
+    의 자체 분류를 Python mcap 기반 결과로 자동 치환 (Master Table 행 +
+    Top-3 picks parenthetical + TOP_3_JSON tail). AMPX 등 모니터링 로그.
+    **Machinery review 2개 보강**: (1) `_MT_TIER_ROW_RE` 에 본문 bullet
+    '• X · TICKER' 형식 추가 — bullet 뒤는 '·' 아닌 공백이라 기존 bracket
+    -only regex 가 058610.KQ(에스피지, $1.9B=M 인데 S 로 출력) prose 행을
+    놓침. (2) `_override_tiers_from_mcap` 가 KR(.KS/.KQ) yfinance mcap
+    None 시 FSC `latest_price.mrktTotAmt`(원→USD) fallback — KOSDAQ mcap
+    누락으로 override 자체 미작동하던 케이스 해소.
+  - 메타-코멘터리(핑계) strip (2026-05-31 Machinery review): `_strip_meta_
+    commentary` — '데이터 미수집'/'현재가 확인 필요'/'데이터 깊이 부족'/
+    '정량 데이터 추가 확인 필요' 등 데이터 부재 변명을 'N/A' 로 치환(정성
+    catalyst 서술·web verify 권고는 보존). IFX.DE/SKF-B.ST/6472.T 에서
+    남발 surfaced. 프롬프트 § 회피성 문구 금지 강화 + Python backstop.
   - CN A-share multiples 폴백 (2026-05-29 EV review): yfinance PER/PBR/
     PSR None 시 AKShare `stock_a_indicator_lg` 의 latest row 로 자동
     overlay (`_instrument_info` 단일 지점, downstream 전체 혜택)

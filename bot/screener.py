@@ -795,10 +795,26 @@ def _override_tiers_from_mcap(candidates: list[dict]) -> list[dict]:
             info = yf.Ticker(t).info or {}
             mcap_native = info.get("marketCap")
             currency = info.get("currency") or c.get("currency") or "USD"
-            if not mcap_native or mcap_native <= 0:
-                continue
-            mcap_usd = _fx_to_usd(mcap_native, currency)
+            mcap_usd = None
+            if mcap_native and mcap_native > 0:
+                mcap_usd = _fx_to_usd(mcap_native, currency)
+            # KR (.KS/.KQ) yfinance mcap 실패 시 FSC 주식시세 fallback (무료,
+            # KRX-login-free). Machinery review 2026-05-31: 058610.KQ 같은
+            # KOSDAQ 종목이 yfinance mcap None → tier override 미작동 → 본문
+            # S-tier 살아남음. FSC mrktTotAmt(원) → USD 환산.
+            if mcap_usd is None and t.upper().endswith((".KS", ".KQ")):
+                try:
+                    from bot.fsc_client import latest_price
+                    _fp = latest_price(t)
+                    if _fp and _fp.get("mrktTotAmt"):
+                        mcap_usd = _fx_to_usd(float(_fp["mrktTotAmt"]), "KRW")
+                        if mcap_usd:
+                            log.info("screener: KR mcap via FSC for %s "
+                                     "($%.2fB)", t, mcap_usd / 1e9)
+                except Exception as _exc:
+                    log.debug("screener: FSC mcap fallback failed %s: %s", t, _exc)
             if mcap_usd is None:
+                log.debug("screener: no mcap for %s — tier override skipped", t)
                 continue
             new_tier = _classify_tier_by_mcap_usd(mcap_usd)
             old_tier = (c.get("tier") or "").upper()[:1]
@@ -941,8 +957,12 @@ def _extract_tickers_used_json(output: str) -> tuple[list[str], str]:
 # Master Table row: '[테마] · L · TICKER · ...' — captures theme prefix,
 # tier letter, ticker (USD-letter / digit-suffix forms both). Multiline
 # DOTALL not needed; tier line is always single-line in current format.
+# tier row 2종 — Master Table '[theme] · X · TICKER' (bracket 뒤 ·) +
+# 본문 bullet '• X · TICKER' (bullet 뒤 공백). Machinery review 2026-05-31:
+# bullet 형식이 '•·' 가 아니라 '• ' (공백) 라 기존 regex 미스 → 두 prefix
+# 형태를 OR 로. group: (prefix)(tier)(sep)(ticker).
 _MT_TIER_ROW_RE = re.compile(
-    r"(\[[^\]\n]+\]\s*·\s*)([LMS?])(\s*·\s*)([A-Z0-9][A-Z0-9.\-]{0,12})",
+    r"((?:\[[^\]\n]+\]\s*·|[•\-\*])\s*)([LMS?])(\s*·\s*)([A-Z0-9][A-Z0-9.\-]{0,12})",
 )
 # Top-3 parenthetical: '(Tier: L, 접근 경로: ...)' — captures just the
 # letter for in-place substitution.
@@ -1145,6 +1165,46 @@ def _strip_transitional_tags(text: str) -> tuple[str, int]:
         return ""
 
     return pattern.sub(_replace, text), n
+
+
+def _strip_meta_commentary(text: str) -> tuple[str, int]:
+    """Post-process — replace LLM '핑계(meta-commentary)' phrases with 'N/A'.
+
+    Machinery review 2026-05-31 surfaced: IFX.DE/SKF-B.ST/6472.T 등 일부 종목
+    에서 데이터가 Null 로 와도 Pro 가 본문에 '현재가 확인 필요', 'Web verify
+    필요 — 데이터 미수집', '데이터 깊이 부족' 같은 시스템 상태 변명을 노출 →
+    리포트 전문성·몰입도 저하. 프롬프트 룰(§ 회피성 문구 금지)이 있으나 Pro
+    가 무시 → Python backstop.
+
+    회피 phrase 만 'N/A' 로 치환 (문장 전체 strip 하면 정성 catalyst 서술까지
+    날아가므로 phrase-level). 'web verify 권장/필요' 처럼 정당한 출처-검증
+    권고는 살리되, 데이터 부재 변명형 ('데이터 미수집', '확인 필요',
+    '데이터 깊이 부족', '확인된 바 없음', '파악되지 않음', '수집되지 않음')
+    만 타겟. Returns (cleaned_text, n_subs).
+    """
+    import re
+    # 데이터 부재 변명형 phrase (web verify 권고는 제외 — 정당한 출처 검증).
+    patterns = (
+        r"(?:[가-힣A-Za-z]+\s*,?\s*)*정량\s*데이터\s*추가\s*확인\s*필요",
+        r"데이터\s*깊이\s*부족",
+        r"데이터\s*미수집",
+        r"(?:현재가|컨센서스\s*PT|목표가|실적)\s*확인\s*필요",
+        r"확인\s*필요\s*[—\-]\s*데이터\s*미수집",
+        r"확인된\s*바\s*없[음다]",
+        r"파악되지\s*않[음았][음다]?",
+        r"수집되지\s*않[음았][음다]?",
+    )
+    n = 0
+
+    def _sub(_m: "re.Match") -> str:
+        nonlocal n
+        n += 1
+        return "N/A"
+
+    for pat in patterns:
+        text = re.sub(pat, _sub, text)
+    # 'Web verify 필요/권장/권고' 등 정당한 출처-검증 권고는 보존 (변명 아님).
+    return text, n
 
 
 def _strip_future_dated_citations(text: str, today_iso: str) -> tuple[str, int]:
@@ -1815,11 +1875,16 @@ Phase 1·2 에서 식별된 binding constraint:
 
 ★ 회피성 문구 금지 — 'N/A' / 'N/M' 명시 (Tobacco 2026-05-31 surfaced) ★
 특정 멀티플(PER/PBR/PSR/EV-EBITDA)이 context 에 부재 시 본문에 '데이터
-깊이 부족' / '확인된 바 없음' / '데이터 미수집' 같은 **회피성 문구 창작
-금지**. 대신 (1) **'N/A'** 명시 (지표 자체 부재), (2) 적자 종목은
-**'N/M (적자)'**, (3) PER 부재 시 **PSR/PBR/EV-EBITDA 등 가용 지표로
-대체** 연산하여 valuation 평가 진행. 누락 자체를 회피하지 말고 **정확히
-무엇이 N/A 인지** 명시 → reader 가 '없음' vs '모름' 구분 가능.
+깊이 부족' / '확인된 바 없음' / '데이터 미수집' / '현재가 확인 필요' /
+'정량 데이터 추가 확인 필요' 같은 **회피성 메타-코멘터리(시스템 상태를
+독자에게 변명하는 문구) 절대 금지** (Machinery review 2026-05-31 재확인 —
+IFX.DE/SKF-B.ST/6472.T 에서 남발). 데이터가 Null 이어도 독자에게 "나
+데이터 못 찾았음" 식 서술 금지. 대신 (1) **'N/A'** 명시 (지표 자체 부재),
+(2) 적자 종목은 **'N/M (적자)'**, (3) PER 부재 시 **PSR/PBR/EV-EBITDA 등
+가용 지표로 대체** 연산, (4) 정량 데이터가 없으면 그 종목의 **정성적 기술
+경쟁력·Catalyst 서술에 집중**. 누락 자체를 회피하지 말고 **정확히 무엇이
+N/A 인지** 명시 → reader 가 '없음' vs '모름' 구분 가능. (단, 'web verify
+권장' 같은 출처-검증 권고는 변명이 아니므로 허용.)
 
 ★ ADR 라벨링 정확성 (Tobacco 2026-05-31 surfaced) ★
 'Top 3 conviction picks' 의 '접근 경로' 표기 시:
@@ -1990,6 +2055,17 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
         log.warning(
             "screener: %d transitional/corp-action tag(s) stripped (CLAUDE.md rule)",
             n_trans_strips,
+        )
+
+    # 메타-코멘터리(핑계) strip (2026-05-31 Machinery review surfaced):
+    # '데이터 미수집' / '확인 필요' / '데이터 깊이 부족' 등 데이터 부재 변명을
+    # 'N/A' 로 치환 (정성 catalyst 서술은 보존). 프롬프트 § 회피성 문구 금지
+    # 를 Pro 가 무시한 경우 backstop. web verify 권고형은 보존.
+    p45_text, n_meta_strips = _strip_meta_commentary(p45_text)
+    if n_meta_strips:
+        log.warning(
+            "screener: %d meta-commentary(핑계) phrase(s) → N/A (Machinery review)",
+            n_meta_strips,
         )
 
     # Invalid-date strip (2026-05-29 Semiconductors review surfaced):
