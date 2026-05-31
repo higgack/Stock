@@ -274,13 +274,11 @@ def securities_product_quote(ticker: str) -> dict | None:
 # 15094809. 예탁금(dry powder) + 신용융자(레버리지) = KR 시장 internal
 # sentiment. 시장 전체값 → 1회 fetch 12h 캐시로 전 KR 분석·Daily Byte 공유.
 # Base URL 미확정 — env override 또는 후보 자동탐색.
+# discovery 2026-05-31 확정 (Swagger Base URL).
 _KOFIA_BASE = os.environ.get(
-    "FSC_KOFIA_BASE", f"{_HOST}/service/GetFinaInveStmtTotStaInfoService")
+    "FSC_KOFIA_BASE", f"{_HOST}/service/GetKofiaStatisticsInfoService")
 _KOFIA_BASE_CANDIDATES = (
-    f"{_HOST}/service/GetFinaInveStmtTotStaInfoService",
-    f"{_HOST}/service/GetFinanInvmtAssoInfoService",
-    f"{_HOST}/service/GetKofiaInfoService",
-    f"{_HOST}/GetFinaInveStmtTotStaInfoService_V2",
+    f"{_HOST}/service/GetKofiaStatisticsInfoService",
 )
 _OP_DEPOSIT = "getSecuritiesMarketTotalCapitalInfo"   # 증시자금추이
 _OP_CREDIT = "getGrantingOfCreditBalanceInfo"         # 신용공여잔고추이
