@@ -484,12 +484,13 @@ class TestCustomsPanel(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_no_pins_hides_panel(self):
+    def test_no_pins_hides_pin_panel(self):
+        # No pins AND no surge scan data → the whole 관세청 panel is absent.
         self.hs_map.write_text("", encoding="utf-8")
         html = render_html(
             self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
         )
-        self.assertNotIn("관세청 수출입", html)
+        self.assertNotIn("📌 내 핀", html)
 
     def test_pin_without_data_shows_waiting(self):
         self.hs_map.write_text("라면\t1902301010\n", encoding="utf-8")
@@ -497,7 +498,7 @@ class TestCustomsPanel(unittest.TestCase):
         html = render_html(
             self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
         )
-        self.assertIn("관세청 수출입", html)
+        self.assertIn("📌 내 핀", html)
         self.assertIn("수집 대기", html)
         self.assertIn("1902301010", html)
 
@@ -512,7 +513,7 @@ class TestCustomsPanel(unittest.TestCase):
         html = render_html(
             self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
         )
-        self.assertIn("관세청 수출입", html)
+        self.assertIn("📌 내 핀", html)
         self.assertIn("$129.7M", html)       # formatted export
         self.assertNotIn("수집 대기", html)
 
