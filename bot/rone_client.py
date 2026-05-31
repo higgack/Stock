@@ -282,6 +282,20 @@ if __name__ == "__main__":
             _dump(f"'{kw}'", list_tables(kw))
         raise SystemExit(0)
 
+    if "--supplyraw" in sys.argv:
+        # 공급 표 행의 전체 raw 키 — 지역 차원이 어느 필드인지 확정
+        import json as _jr
+        for label, sid in (("주택인허가실적", STATBL_PERMIT),
+                           ("미분양주택현황", STATBL_UNSOLD)):
+            print(f"\n=== {label}  {sid} — raw 행 앞 4개 ===")
+            start, end = _period_range(3)
+            data = _get("SttsApiTblData.do", {
+                "STATBL_ID": sid, "DTACYCLE_CD": "MM",
+                "START_WRTTIME": start, "END_WRTTIME": end, "pSize": 8})
+            for row in _walk_rows(data, key="DTA_VAL")[:4]:
+                print("  " + _jr.dumps(row, ensure_ascii=False))
+        raise SystemExit(0)
+
     if "--supply" in sys.argv:
         # 공급 통계표 스키마 — 지역(cls)·항목(itm) 차원 + 최근 값 확인
         for label, sid in (("주택인허가실적", STATBL_PERMIT),
