@@ -2166,6 +2166,33 @@ def run_screener_with_theme(
 _TELEGRAM_LIMIT = 4096
 _CHUNK_TARGET = 3800
 
+# Telegram HTML 허용 태그 (screener 는 주로 <b> 사용). 본문에 이스케이프
+# 안 된 '<' (예: '거래대금 < $1M') / '&' (예: 'R&D') 가 있으면 Telegram
+# sendMessage 가 400 → push 가 중간에 끊긴다 (Tobacco 2026-05-31 surfaced:
+# 6969.HK 다음 chunk 의 '< $1M' 가 400 유발 → 이후 종목 전부 누락).
+_TG_ALLOWED_TAGS = ("b", "strong", "i", "em", "u", "s", "code", "pre")
+
+
+def _sanitize_telegram_html(text: str) -> str:
+    """허용 태그(<b> 등)는 보존하고 나머지 '<'/'>'/'&' 는 escape 하여 항상
+    valid Telegram HTML 로 만든다. 본문의 stray '<'/'&' 로 인한 400 방지."""
+    import html as _html
+    import re as _re
+    placeholders: dict[str, str] = {}
+
+    def _stash(m: "re.Match") -> str:
+        key = f"\x00{len(placeholders)}\x00"
+        placeholders[key] = m.group(0)
+        return key
+
+    tag_re = _re.compile(r"</?(?:" + "|".join(_TG_ALLOWED_TAGS) + r")>", _re.I)
+    text = tag_re.sub(_stash, text)
+    text = _html.escape(text, quote=False)   # & < > → 엔티티 (placeholder 는 \x00 라 무영향)
+    for k, v in placeholders.items():
+        text = text.replace(k, v)
+    return text
+
+
 
 def format_for_telegram(result: ScreenerResult) -> list[str]:
     """Split the Pro output into Telegram-sized chunks with a header card."""
@@ -2188,7 +2215,8 @@ def format_for_telegram(result: ScreenerResult) -> list[str]:
             f"⚠️ <b>yfinance 검증 실패</b> (가짜 ticker 가능, 본문에서 확인 권장): {rejected_str}\n\n"
         )
 
-    full = header + result.raw_output
+    # raw_output 만 sanitize (header 는 이미 valid HTML — 우리가 생성).
+    full = header + _sanitize_telegram_html(result.raw_output)
 
     # Telegram message chunking
     if len(full) <= _CHUNK_TARGET:

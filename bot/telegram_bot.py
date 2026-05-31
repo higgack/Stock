@@ -1764,8 +1764,21 @@ async def _run_screener_and_send(send, *, domain: str | None = None,
             f"Pro 응답 없음.\n사용 가능 도메인: <code>{_scr_avail()}</code>"
         )
         return
+    # chunk별 실패 격리 — 한 chunk 가 HTML 400 (이스케이프 안 된 < / & 등)
+    # 으로 실패해도 나머지 chunk 는 계속 전송 (Tobacco 2026-05-31: 6969.HK
+    # 다음 chunk 의 '< $1M' 가 400 → 이후 전부 누락됐던 버그). 실패 시
+    # 태그 제거한 plain-text 로 1회 재시도.
+    import re as _re_scr
     for chunk in format_for_telegram(result):
-        await send(chunk)
+        try:
+            await send(chunk)
+        except Exception as exc:
+            log.warning("screener: chunk HTML send 실패 (%s) — plain-text 재시도",
+                        exc.__class__.__name__)
+            try:
+                await send(_re_scr.sub(r"<[^>]+>", "", chunk))
+            except Exception as exc2:
+                log.warning("screener: chunk plain-text 재시도도 실패: %s", exc2)
 
 
 def _strip_fresh_flag(raw_domain: str) -> tuple[str, bool]:
