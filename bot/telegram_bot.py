@@ -1894,6 +1894,11 @@ async def _run_screener_and_send(send, *, domain: str | None = None,
     from bot.screener import run_screener, run_screener_with_theme, format_for_telegram
     from bot.screener_themes import available_summary as _scr_avail
     loop = asyncio.get_running_loop()
+    # .busy marker — Screener 는 5-10분 blocking 이라 watchdog 의 180초
+    # polling-hang 체크가 실행 중 재시작 → 분석 살해(2026-06-01 Hospitality
+    # & Leisure run 유실). /ticker 분석과 동일하게 _busy_acquire 로 보호하면
+    # watchdog 가 .busy fresh(<12분) 동안 재시작 skip. release 는 finally.
+    await _busy_acquire()
     try:
         if theme is not None:
             fn = partial(run_screener_with_theme, theme,
@@ -1906,6 +1911,8 @@ async def _run_screener_and_send(send, *, domain: str | None = None,
         log.exception("screener: orchestrator threw: %s", exc)
         await send(f"⚠️ Screener 오류 — {exc.__class__.__name__}")
         return
+    finally:
+        await _busy_release()
     if result is None:
         await send(
             "⚠️ Screener 실행 실패 — GOOGLE_API_KEY 누락 / 미상 도메인 / "

@@ -311,7 +311,7 @@ pattern to follow:
 
 - Bot lifecycle → systemd (`stock-bot.service`)
 - Code updates → `stock-bot-update.service` polls git every 1 min and redeploys without manual intervention (was 2 min; tightened 2026-05-21 with SV automation rollout)
-- Stale process recovery → `stock-bot-watchdog.service` restarts if main loop hangs 12 min
+- Stale process recovery → `stock-bot-watchdog.service` restarts if main loop hangs 12 min. ⚠️ watchdog 는 180초 polling-hang(getUpdates 부재) + `.busy` marker(분석 중이면 12분까지 skip) 두 체크. **무거운 작업(Screener 5-10분, /ticker)은 반드시 `_busy_acquire()`/`_busy_release()` 로 감싸야** watchdog 가 실행 중 재시작해 작업을 살해하지 않음. 2026-06-01 Screener 가 busy marker 미사용으로 Hospitality & Leisure run 이 watchdog 재시작에 살해됨 → `_run_screener_and_send` 에 busy wrap 추가. 새 long-running 핸들러 추가 시 동일 패턴 필수.
 - Memory pending-entry resolution → `_periodic_auto_resolve` asyncio task, 12 h cycle
 - Daily dashboard regen → `_periodic_dashboard_refresh` asyncio task, 00:01 KST
 - Journal log size → `SystemMaxUse=500M` in `journald.conf` (auto-trim)
