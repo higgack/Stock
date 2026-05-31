@@ -787,9 +787,19 @@ async def on_hs_pin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> 
     await q.answer()
     if not q.data.startswith("hs_pin:"):
         return
-    code = q.data.split(":", 1)[1]
+    # Defensive parse: strip whitespace and keep only digits. Telegram
+    # round-trips callback_data verbatim, but an older message, a copied
+    # button, or any stray char would otherwise fail is_valid_hs even
+    # though the underlying code is fine.
+    raw = q.data.split(":", 1)[1]
+    code = "".join(ch for ch in raw.strip() if ch.isdigit())
     if not hs_map.is_valid_hs(code):
-        await q.edit_message_text("⚠️ 잘못된 콜백 데이터.")
+        log.warning("hs_pin callback rejected: raw=%r parsed=%r", q.data, code)
+        await q.edit_message_text(
+            "⚠️ 핀 실패 — 잘못된 코드. 직접 등록: "
+            f"<code>/hs &lt;품목&gt; {_html.escape(code or raw[:12])}</code>",
+            parse_mode=ParseMode.HTML,
+        )
         return
     if update.effective_user is not None:
         operator.remember(update.effective_user.id)
