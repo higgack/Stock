@@ -8,10 +8,16 @@ User=higgack
 Group=higgack
 WorkingDirectory=/home/higgack/stock-trade
 EnvironmentFile=-/home/higgack/stock-trade/.env
-# Pulls official monthly export/import figures for the items pinned via
-# hs_map and caches them. Sends NO Telegram messages — journal only. The
-# ±30% change alert is a separate (later) script, so this daily poll is
-# silent on quiet days.
+# Two passes per daily tick:
+#   1. fetch_customs — pull official monthly figures for pinned items
+#      into customs.db. SILENT (journal only).
+#   2. customs_alert — evaluate the months just cached; DM the operator
+#      only when a NEW month's export 전월비 exceeds ±TRADE_CUSTOMS_ALERT_PCT
+#      (default 30). Baseline-silent on first run / new pins, hard-capped,
+#      operator DM only — never the channel. Quiet days send nothing.
+# Both idempotent; ordering matters (alert reads what fetch wrote), hence
+# two ExecStart lines in one oneshot rather than two racing timers.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_customs
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.customs_alert
 StandardOutput=journal
 StandardError=journal

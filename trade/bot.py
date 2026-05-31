@@ -56,7 +56,7 @@ from telegram.ext import (
     filters,
 )
 
-from trade import hs_map, ignored, watchlist
+from trade import hs_map, ignored, operator, watchlist
 from trade.parser import parse_caption
 
 load_dotenv()
@@ -187,7 +187,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent) + 미파싱 캡션을 eval_misses.jsonl에 누적 (회귀 fixture용, 키별 1회)
 • trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
 • trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일 룩백 + 200개 cap, 초과 시 ⚠️ abort)
-• trade-bot-customs-fetch (매일 01:30 KST) — 핀된 품목의 관세청 월 확정 금액을 customs.db에 수집 (12개월 룩백, idempotent, <b>Telegram 알림 0 — journal만</b>)
+• trade-bot-customs-fetch (매일 01:30 KST) — 핀된 품목의 관세청 월 확정 금액 수집(12개월, 알림 0) → 이어서 급변 평가: 새 달 수출 전월비 ±30% 초과 시 <b>운영자 DM</b> 1건 (첫 실행·신규 핀 baseline 무음, cap 10건·초과 시 요약, 채널 X)
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 
@@ -196,7 +196,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-05-31 — 관세청 핀 품목 비교 (/customs DM + 대쉬보드 📦 패널) · /hs 핀 명령</i>
+<i>최종 갱신: 2026-05-31 — 관세청 수출 급변 ±30% 운영자 DM 알림 (baseline무음·cap10·채널X) · /customs 비교 · /hs 핀</i>
 """
 
 
@@ -669,6 +669,7 @@ def _format_hs_list() -> str:
 async def cmd_hs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
+    operator.remember(update.effective_user.id)
     args = list(ctx.args or [])
     if not args or args[0].lower() == "list":
         await update.message.reply_text(
@@ -704,6 +705,7 @@ async def cmd_hs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_unhs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
+    operator.remember(update.effective_user.id)
     args = list(ctx.args or [])
     if not args:
         await update.message.reply_text(_HS_USAGE, parse_mode=ParseMode.HTML)
@@ -720,6 +722,7 @@ async def cmd_unhs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_hslist(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
+    operator.remember(update.effective_user.id)
     await update.message.reply_text(
         _format_hs_list(), parse_mode=ParseMode.HTML
     )
@@ -768,6 +771,7 @@ def _format_customs() -> str:
 async def cmd_customs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
+    operator.remember(update.effective_user.id)
     await update.message.reply_text(
         _format_customs(), parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
