@@ -111,5 +111,27 @@ if __name__ == "__main__":
             cnt = f" totalCount={m.group(1)}"
         tag = "✅" if has_item else "  "
         print(f"{tag} {c}{cnt}\n     {body[:300]}\n")
-    print("→ <item> 나온 조합의 응답 본문을 붙여주세요 — 필드명(연면적/세대수/")
-    print("  착공·사용승인일 등) 확인 후 부동산 Byte 공급 band 로 통합합니다.")
+    # item 전체 필드(키) 덤프 — 연면적/세대수/허가일 정확한 키 확정
+    print("\n=== item[0] 전체 필드 (강남 역삼동) ===")
+    import json as _json
+    status, body = _http_get(
+        f"{_AUTH_BASE}/{op}",
+        {"sigunguCd": "11680", "bjdongCd": "10100", "numOfRows": 5,
+         "pageNo": 1, "_type": "json"}, accept_xml=False)
+    try:
+        items = (_json.loads(body)["response"]["body"]["items"]["item"])
+        it0 = items[0] if isinstance(items, list) else items
+        for k in sorted(it0.keys()):
+            print(f"  {k} = {it0[k]!r}")
+        # 공급 관련 후보 키만 추출
+        cand = {k: it0[k] for k in it0
+                if any(t in k.lower() for t in
+                       ("area", "hhld", "ho", "fmly", "flr", "pms", "use",
+                        "stcns", "tot", "main", "purps", "dong"))}
+        print("\n  [공급 관련 후보 키]")
+        for k, v in cand.items():
+            print(f"    {k} = {v!r}")
+    except Exception as e:
+        print("JSON 파싱 실패 — body head:")
+        print((body or "")[:1200])
+    print("\n→ 위 키 목록에서 연면적/세대수/허가일/착공일/주용도 키를 확인했습니다.")
