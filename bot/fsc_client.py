@@ -147,7 +147,8 @@ def price_series(ticker: str, days: int = 15) -> list[dict]:
             "lstgStCnt": _f(it.get("lstgStCnt")), "mrktTotAmt": _f(it.get("mrktTotAmt")),
         })
     rows.sort(key=lambda r: r["basDt"])
-    _cache_put(ck, rows)
+    if rows:  # truthy-only — transient 빈 결과 미캐시(fallback dormant 방지)
+        _cache_put(ck, rows)
     return rows
 
 
@@ -165,21 +166,23 @@ def item_info(ticker: str) -> dict | None:
         return None
     ck = f"item_{code}_{_now():%Y%m%d}"
     c = _cache_get(ck)
-    if c is not None:
-        return c or None
+    if c:  # truthy-only — 빈 결과 미캐시(crno 부재 시 downstream 전체 cascade 방지)
+        return c
     raw = _fetch(_ITEM[0], _ITEM[1], {"likeSrtnCd": code, "numOfRows": 10})
     best = None
     for it in raw:
         if _kr_code(it.get("srtnCd", "")) == code:
             if best is None or str(it.get("basDt", "")) > str(best.get("basDt", "")):
                 best = it
-    out = {} if best is None else {
+    if best is None:
+        return None
+    out = {
         "srtnCd": best.get("srtnCd"), "isinCd": best.get("isinCd"),
         "mrktCtg": best.get("mrktCtg"), "itmsNm": best.get("itmsNm"),
         "crno": best.get("crno"), "corpNm": best.get("corpNm"),
     }
     _cache_put(ck, out)
-    return out or None
+    return out
 
 
 # ── 3) 주식권리일정 (corp action — 증자/감자/분할/배당 ex-date) ────────────
@@ -205,7 +208,8 @@ def rights_by_basdt(bas_dt: str) -> list[dict]:
             "lckEdDt": str(it.get("nmlsLckEdDt") or ""),
             "parPrc": it.get("stckParPrc") or "",
         })
-    _cache_put(ck, rows)
+    if rows:  # truthy-only (transient 빈 응답 미캐시)
+        _cache_put(ck, rows)
     return rows
 
 
@@ -244,22 +248,24 @@ def minority_holders(ticker: str) -> dict | None:
         return None
     ck = f"minor_{crno}_{_now():%Y%m}"
     c = _cache_get(ck)
-    if c is not None:
-        return c or None
+    if c:  # truthy-only — 빈 결과는 캐시하지 않으므로 falsy 면 재조회
+        return c
     raw = _fetch(_CGDISC[0], _CGDISC[1], {"crno": crno, "numOfRows": 20})
     best = None
     for it in raw:
         if best is None or str(it.get("bizYear", "")) > str(best.get("bizYear", "")):
             best = it
-    out = {} if not best else {
+    if not best:
+        return None
+    out = {
         "smam_cnt": _f(best.get("smamSthdCnt")),
         "whole_cnt": _f(best.get("whlSthdCnt")),
         "smam_ratio": _f(best.get("smamSthdRto")),
         "hold_shares": _f(best.get("holdStckCnt")),
         "biz_year": str(best.get("bizYear") or ""),
     }
-    _cache_put(ck, out)
-    return out or None
+    _cache_put(ck, out)  # truthy 만 도달
+    return out
 
 
 # dilution 공시 — (op, 주식수 field, 가격 field, kind label).
@@ -291,9 +297,10 @@ def dilution_events(ticker: str, lookback_days: int = 10) -> list[dict]:
             bas = d.strftime("%Y%m%d")
             ck = f"dilu_{op}_{crno}_{bas}"
             c = _cache_get(ck)
-            if c is None:
+            if not c:
                 c = _fetch(_DISC_BASE, op, {"basDt": bas, "crno": crno, "numOfRows": 20})
-                _cache_put(ck, c)
+                if c:  # truthy-only (transient 빈 응답 미캐시)
+                    _cache_put(ck, c)
             if not c:
                 continue
             for it in c:
@@ -330,10 +337,11 @@ def lockup_releases(ticker: str, lookback_days: int = 7) -> list[dict]:
         bas = d.strftime("%Y%m%d")
         ck = f"lockup_{crno}_{bas}"
         c = _cache_get(ck)
-        if c is None:
+        if not c:
             c = _fetch(_LOCKUP[0], _LOCKUP[1],
                        {"basDt": bas, "crno": crno, "numOfRows": 100})
-            _cache_put(ck, c)
+            if c:  # truthy-only (transient 빈 응답 미캐시)
+                _cache_put(ck, c)
         if not c:
             continue
         out = {}
@@ -384,8 +392,8 @@ def securities_product_quote(ticker: str) -> dict | None:
         return None
     ck = f"secprod_{code}_{_now():%Y%m%d}"
     c = _cache_get(ck)
-    if c is not None:
-        return c or None
+    if c:  # truthy-only — 빈 결과(일반주식/transient)는 미캐시
+        return c
     out = None
     begin = (_now().date() - timedelta(days=10)).strftime("%Y%m%d")
     for op, ind_field, tot_field, kind in (
@@ -408,7 +416,8 @@ def securities_product_quote(ticker: str) -> dict | None:
             "bssIdx": it.get("bssIdxIdxNm") or "",
         }
         break
-    _cache_put(ck, out or {})
+    if out:
+        _cache_put(ck, out)
     return out
 
 
@@ -440,7 +449,8 @@ def _kofia_series(op: str, field: str, n: int = 30) -> list[tuple[str, float]]:
         if d and v is not None:
             series[d] = v
     out = sorted(series.items())
-    _cache_put(ck, out)
+    if out:  # truthy-only (transient 빈 응답 미캐시)
+        _cache_put(ck, out)
     return out
 
 
