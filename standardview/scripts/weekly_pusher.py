@@ -207,7 +207,9 @@ def _gemini_weekly_summary(mds: dict[str, str]) -> str:
 
 # ── 4. Sector rotation heatmap ───────────────────────────────────────────────
 
-# US SPDR 11 sectors + KR KODEX 4 key sectors + JP TOPIX-17 reps
+# US SPDR 11 + KR KODEX 4 + JP TOPIX-17 reps 3 + TW 4 + CN 4 + HK 2
+# (NOAH 커버리지 US/KR/JP/TW/CN/HK 와 일치, 2026-05-31). yfinance 5d
+# 히스토리 빈약한 ETF 는 _sector_rotation_block 가 graceful skip.
 _SECTOR_ETFS: list[tuple[str, str, str]] = [
     ("XLK",    "IT",          "US"),
     ("XLC",    "통신",        "US"),
@@ -227,6 +229,16 @@ _SECTOR_ETFS: list[tuple[str, str, str]] = [
     ("1628.T", "반도체·전자", "JP"),
     ("1615.T", "銀行",        "JP"),
     ("1617.T", "食品",        "JP"),
+    ("0050.TW",  "TAIEX 50",   "TW"),
+    ("0053.TW",  "전자",       "TW"),
+    ("0055.TW",  "금융",       "TW"),
+    ("00891.TW", "반도체",     "TW"),
+    ("512760.SS", "반도체",    "CN"),
+    ("512800.SS", "은행",      "CN"),
+    ("512690.SS", "백주",      "CN"),
+    ("159928.SZ", "소비",      "CN"),
+    ("2800.HK",  "항셍 대표",  "HK"),
+    ("3033.HK",  "항셍테크",   "HK"),
 ]
 
 
@@ -263,7 +275,7 @@ def _sector_rotation_block(week_label: str) -> str:
         by_market[mkt].sort(key=lambda x: x[0], reverse=True)
 
     lines = [f"<b>📊 섹터 로테이션  {week_label}</b>", ""]
-    for mkt in ("US", "KR", "JP"):
+    for mkt in ("US", "KR", "JP", "TW", "CN", "HK"):
         rows = by_market.get(mkt)
         if not rows:
             continue
@@ -368,7 +380,7 @@ def _save_weekly_archive(
                     title=f"섹터 로테이션 히트맵  {week_label}",
                     subtitle=(
                         f"생성: {today.isoformat()} KST"
-                        "  |  US·KR·JP 5거래일 수익률"
+                        "  |  US·KR·JP·TW·CN·HK 5거래일 수익률"
                     ),
                 ),
                 encoding="utf-8",
