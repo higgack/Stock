@@ -173,7 +173,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (일회성 공지 등)
 /unignore &lt;msg_id&gt; — ignore 해제
 /ignored — 현재 ignore 목록
-/hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭으로 핀 (예: /hs 반도체, /hs 8542). 직접 등록도 가능: /hs &lt;품목&gt; &lt;HS코드&gt;
+/hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭으로 즉시 핀(✅ 토글), 여러 개 선택 후 맨 아래 <b>완료</b> (예: /hs 반도체, /hs 8542). 직접 등록도 가능: /hs &lt;품목&gt; &lt;HS코드&gt;
 /unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록 (검색은 ~/.trade/hs_codes.xlsx 필요 — 관세청 15049722 파일 다운로드, 개정 시 덮어쓰기)
 /customs — 핀 품목 관세청 월 금액 비교 (수출·전월비·무역수지). 대쉬보드 헤더 📦 패널과 동일
 /cost — 비용·자원 현황 (외부 API 전부 무료 · 디스크 사용 · 관세청 일 호출/한도)
@@ -198,7 +198,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-05-31 — /cost 비용·자원 현황(외부 API 전부 무료·디스크·호출량) 명령+헤더 · /hs 물질명 표시 · 관세청 급변 알림</i>
+<i>최종 갱신: 2026-05-31 — /hs 다중 선택(✅ 토글 + 완료 버튼) · /cost 비용·자원 · /hs 물질명 표시 · 관세청 급변 알림</i>
 """
 
 
@@ -667,20 +667,17 @@ _HS_CODES_DOWNLOAD_HINT = (
 )
 
 
-def _format_hs_search(hits, total: int, query: str):
-    """Build the search-result message + inline keyboard.
+def _hs_search_keyboard(hits, pinned_codes: set[str]):
+    """Inline keyboard for a search-result message.
 
-    Returns (text, InlineKeyboardMarkup). Truncates each row's 한글품목명 to
-    keep the button label under Telegram's ~64-char hard limit and readable
-    on mobile. callback_data = 'hs_pin:<10-digit>' — HS-code-only so it
-    fits Telegram's 64-byte cap with margin (item name is re-looked-up at
-    click time from the same authoritative CSV)."""
+    Each row is one HS-code button; clicking it toggles the pin (즉시
+    등록/해제) and the keyboard is rebuilt by the callback. A trailing
+    '완료' row closes the picker. Pinned codes get a ✅ prefix so the
+    operator can see what's already in at a glance — the source of
+    truth is hs_map.tsv, re-read each time the keyboard rebuilds, so
+    pins/unpins made elsewhere stay consistent.
+    """
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-    head = f"🔎 <b>'{_html.escape(query)}'</b> 검색 결과 {total}건"
-    if total > len(hits):
-        head += f" — 상위 {len(hits)}개만 표시 (더 좁혀보세요)"
-    head += "\n클릭하면 그 코드로 핀 등록됩니다."
 
     rows = []
     for h in hits:
@@ -688,13 +685,39 @@ def _format_hs_search(hits, total: int, query: str):
         # ancestor (황산/인산/포토레지스트), else HS chapter, else nature —
         # so '반도체 제조용' rows become e.g. '황산 · 반도체 제조용'.
         label = h.label
-        if len(label) > 40:
-            label = label[:39] + "…"
+        if len(label) > 38:
+            label = label[:37] + "…"
+        prefix = "✅ " if h.hs_code in pinned_codes else ""
         rows.append([InlineKeyboardButton(
-            f"{label} · {h.hs_code}",
+            f"{prefix}{label} · {h.hs_code}",
             callback_data=f"hs_pin:{h.hs_code}",
         )])
-    return head, InlineKeyboardMarkup(rows)
+    # Trailing 'done' row — closes the picker without un-doing anything
+    # (toggling already wrote to hs_map). callback_data 'hs_done' has its
+    # own handler / pattern so it doesn't collide with 'hs_pin:'.
+    pin_n = sum(1 for h in hits if h.hs_code in pinned_codes)
+    rows.append([InlineKeyboardButton(
+        f"✓ 완료 (이 화면에서 {pin_n}개 핀)",
+        callback_data="hs_done",
+    )])
+    return InlineKeyboardMarkup(rows)
+
+
+def _format_hs_search(hits, total: int, query: str):
+    """Build the search-result message + inline keyboard.
+
+    Returns (text, InlineKeyboardMarkup). callback_data = 'hs_pin:<code>'
+    so it fits Telegram's 64-byte cap with margin (item name is
+    re-looked-up at click time from the same authoritative CSV)."""
+    head = f"🔎 <b>'{_html.escape(query)}'</b> 검색 결과 {total}건"
+    if total > len(hits):
+        head += f" — 상위 {len(hits)}개만 표시 (더 좁혀보세요)"
+    head += (
+        "\n버튼을 누를 때마다 즉시 핀 등록/해제됩니다 (✅ = 핀됨)."
+        "\n여러 개 선택 가능 — 끝나면 맨 아래 <b>완료</b>."
+    )
+    pinned = {code for _item, code in hs_map.entries()}
+    return head, _hs_search_keyboard(hits, pinned)
 
 
 def _format_hs_list() -> str:
@@ -774,67 +797,142 @@ async def cmd_hs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def on_hs_pin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    """Inline-keyboard click handler for hs_pin:<10-digit> buttons.
+def _codes_from_keyboard(reply_markup) -> list[str]:
+    """Recover the search hits' HS codes from a message's keyboard so we
+    can rebuild it after a toggle WITHOUT re-running the search.
+    `callback_data` carries the code as 'hs_pin:<code>' for every hit
+    row; the trailing 'hs_done' row is skipped."""
+    codes: list[str] = []
+    if reply_markup is None:
+        return codes
+    for row in reply_markup.inline_keyboard:
+        for btn in row:
+            data = btn.callback_data or ""
+            if data.startswith("hs_pin:"):
+                c = "".join(ch for ch in data.split(":", 1)[1].strip() if ch.isdigit())
+                if c:
+                    codes.append(c)
+    return codes
 
-    Re-looks-up the Korean name from hs_lookup so the pin name is always
-    the authoritative 한글품목명, never whatever was in the button label
-    (which gets truncated for display). Acknowledges via callback_query
-    first so Telegram clears the spinner."""
+
+async def on_hs_pin_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inline-keyboard click handler for hs_pin:<code> buttons.
+
+    Toggles the pin (즉시 핀 등록/해제) and rebuilds the keyboard so the
+    operator can keep selecting more items from the same message. The
+    pin name uses hs_lookup's authoritative label (예: '황산 · 반도체
+    제조용'), never the truncated button label.
+    """
     q = update.callback_query
     if q is None or q.data is None:
         return
     await q.answer()
     if not q.data.startswith("hs_pin:"):
         return
-    # Defensive parse: strip whitespace and keep only digits. Telegram
-    # round-trips callback_data verbatim, but an older message, a copied
-    # button, or any stray char would otherwise fail is_valid_hs even
-    # though the underlying code is fine.
+    # Defensive parse: strip + digits-only. Belt-and-braces against any
+    # stray character that ever sneaks into callback_data; the real fix
+    # was widening is_valid_hs to 2~10 digits (02539b0).
     raw = q.data.split(":", 1)[1]
     code = "".join(ch for ch in raw.strip() if ch.isdigit())
     if not hs_map.is_valid_hs(code):
         log.warning("hs_pin callback rejected: raw=%r parsed=%r", q.data, code)
-        await q.edit_message_text(
-            "⚠️ 핀 실패 — 잘못된 코드. 직접 등록: "
-            f"<code>/hs &lt;품목&gt; {_html.escape(code or raw[:12])}</code>",
-            parse_mode=ParseMode.HTML,
-        )
+        await q.answer("잘못된 코드", show_alert=True)
         return
     if update.effective_user is not None:
         operator.remember(update.effective_user.id)
-    # Resolve the official name. If the CSV vanished between search and
-    # click, fall back to the bare code so the pin still lands.
+
+    # Resolve the rich label. Fall back to the bare code if the CSV
+    # vanished between search and click (a pin still lands).
     name = code
     try:
-        rows = hs_lookup.load()
-        for r in rows:
+        for r in hs_lookup.load():
             if r.hs_code == code:
-                # Pin under the rich label (e.g. '황산 · 반도체 제조용') so
-                # the pin list / customs panel name is self-explanatory,
-                # not a bare '반도체 제조용'.
                 name = r.label
                 break
     except hs_lookup.HsCodeFileMissing:
         pass
+
+    # TOGGLE: if already pinned at this code, unpin; else pin. Find the
+    # existing entry by code (not name) so the toggle is symmetric even
+    # if labels differ between two release years.
+    pinned_by_code = {c: it for it, c in hs_map.entries()}
+    already = code in pinned_by_code
     try:
-        changed = hs_map.add(name, code)
+        if already:
+            hs_map.remove(pinned_by_code[code])
+            toast = f"해제: {code}"
+        else:
+            hs_map.add(name, code)
+            toast = f"핀: {code}"
     except ValueError:
-        await q.edit_message_text(
-            f"⚠️ 핀 실패: <code>{_html.escape(code)}</code>",
-            parse_mode=ParseMode.HTML,
-        )
+        await q.answer("핀 실패", show_alert=True)
         return
-    if changed:
+
+    # Toast on the spinner button so the operator gets confirmation
+    # without losing the picker.
+    try:
+        await q.answer(toast)
+    except Exception:
+        pass
+
+    # Rebuild the keyboard against the same hits + the now-updated pin
+    # set so the toggled row visibly flips its ✅ marker.
+    codes = _codes_from_keyboard(q.message.reply_markup if q.message else None)
+    hits: list = []
+    try:
+        ref = hs_lookup.load()
+        by_code = {r.hs_code: r for r in ref}
+        hits = [by_code[c] for c in codes if c in by_code]
+    except hs_lookup.HsCodeFileMissing:
+        pass
+    pinned_now = {c for _it, c in hs_map.entries()}
+    try:
+        await q.edit_message_reply_markup(
+            reply_markup=_hs_search_keyboard(hits, pinned_now)
+        )
+    except Exception as exc:
+        # 'Message is not modified' from Telegram when nothing visible
+        # changed (e.g. the keyboard ended up identical) — ignore.
+        log.debug("hs_pin keyboard edit skipped: %s", exc)
+
+
+async def on_hs_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """'완료' button handler — closes the picker by replacing the message
+    body with a summary of what landed in hs_map during this session.
+    Pins themselves are already written (toggle handler did it), so this
+    is purely a UI close + recap."""
+    q = update.callback_query
+    if q is None:
+        return
+    await q.answer()
+    codes = _codes_from_keyboard(q.message.reply_markup if q.message else None)
+    pinned_codes = {c for _it, c in hs_map.entries()}
+    selected = [c for c in codes if c in pinned_codes]
+    if not selected:
         body = (
-            f"✅ 핀: <code>{_html.escape(name)}</code> → <code>{code}</code>\n"
-            f"<i>다음 customs-fetch(매일 01:30 KST)부터 수집</i>"
+            "✓ 완료 — 이번 화면에서 새로 핀한 항목 없음.\n"
+            "<code>/hslist</code>로 전체 핀 목록 확인."
         )
     else:
-        body = (
-            f"이미 동일 핀: <code>{_html.escape(name)}</code> → <code>{code}</code>"
-        )
-    await q.edit_message_text(body, parse_mode=ParseMode.HTML)
+        # Re-look-up labels for a tidy summary.
+        labels: dict[str, str] = {}
+        try:
+            for r in hs_lookup.load():
+                if r.hs_code in selected:
+                    labels[r.hs_code] = r.label
+        except hs_lookup.HsCodeFileMissing:
+            pass
+        lines = [f"✅ <b>핀 등록: {len(selected)}건</b>"]
+        for c in selected:
+            lab = labels.get(c, c)
+            lines.append(f"• <code>{_html.escape(lab)}</code> → <code>{c}</code>")
+        lines.append("")
+        lines.append("<i>다음 customs-fetch(매일 01:30 KST)부터 관세청 월 금액 수집</i>")
+        body = "\n".join(lines)
+    try:
+        await q.edit_message_text(body, parse_mode=ParseMode.HTML)
+    except Exception as exc:
+        log.debug("hs_done edit skipped: %s", exc)
 
 
 async def cmd_unhs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1010,6 +1108,7 @@ def main() -> None:
     app.add_handler(CommandHandler("customs", cmd_customs))
     app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CallbackQueryHandler(on_hs_pin_callback, pattern=r"^hs_pin:"))
+    app.add_handler(CallbackQueryHandler(on_hs_done_callback, pattern=r"^hs_done$"))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     log.info(
