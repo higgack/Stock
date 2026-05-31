@@ -70,40 +70,64 @@ def _result_msg(text: str) -> str:
     return " · ".join(bits) or text[:160].replace("\n", " ")
 
 
-def _fetch_xml(path: str, lawd_cd: str, deal_ymd: str) -> str | None:
-    """data.go.kr 호출. serviceKey 인코딩 자동 처리 (Encoding 키는 '%' 포함
-    → URL 직삽입·재인코딩 금지, Decoding 키는 httpx params 로 인코딩). 실패
-    시 resultMsg 를 로그로 노출 (진단)."""
+# 엔드포인트 후보 — 사용자가 승인한 서비스명이 non-Dev 일 수도 Dev 일 수도
+# 있어 자동 탐색 (첫 HTTP 200 응답 경로를 캐시해 이후 재사용). 403 = 미승인/
+# 잘못된 서비스 → 다음 후보 시도.
+_TRADE_PATHS = [
+    "RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade",
+    "RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev",
+]
+_RENT_PATHS = [
+    "RTMSDataSvcAptRent/getRTMSDataSvcAptRent",
+    "RTMSDataSvcAptRentDev/getRTMSDataSvcAptRentDev",
+]
+_RESOLVED: dict[str, str] = {}
+
+
+def _call(path: str, lawd_cd: str, deal_ymd: str):
+    """단일 호출 → (status_code, text). serviceKey 인코딩 자동 처리."""
     import httpx
     key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
     base_params = {"LAWD_CD": lawd_cd, "DEAL_YMD": deal_ymd,
                    "numOfRows": 1000, "pageNo": 1}
+    _h = {"User-Agent": _UA, "Accept": "application/xml, text/xml, */*"}
     try:
-        _h = {"User-Agent": _UA, "Accept": "application/xml, text/xml, */*"}
         if "%" in key:
-            # Encoding 키 (이미 URL-encoded) → 직접 URL 에 넣고 재인코딩 방지
             from urllib.parse import urlencode
-            qs = urlencode(base_params)
-            r = httpx.get(f"{_BASE}/{path}?serviceKey={key}&{qs}",
+            r = httpx.get(f"{_BASE}/{path}?serviceKey={key}&{urlencode(base_params)}",
                           headers=_h, timeout=_TIMEOUT, follow_redirects=True)
         else:
-            # Decoding 키 (raw) → httpx 가 한 번만 인코딩
             r = httpx.get(f"{_BASE}/{path}",
                           params={"serviceKey": key, **base_params},
                           headers=_h, timeout=_TIMEOUT, follow_redirects=True)
-        if r.status_code != 200:
-            log.warning("realestate: %s %s HTTP %d", path, lawd_cd, r.status_code)
-            return None
-        if "<item>" in r.text:
-            return r.text
-        # 200 인데 item 없음 → 인증 실패 / totalCount 0 / 잘못된 service.
-        # 실제 사유를 로그로 (다음 run 에서 원인 즉시 파악).
-        log.warning("realestate: %s %s %s item 0 — %s",
-                    path.split('/')[-1], lawd_cd, deal_ymd, _result_msg(r.text))
-        return None
+        return r.status_code, r.text
     except Exception as exc:
-        log.warning("realestate: fetch %s %s %s failed: %s", path, lawd_cd, deal_ymd, exc)
-        return None
+        log.warning("realestate: call %s %s failed: %s", path, lawd_cd, exc)
+        return None, ""
+
+
+def _fetch_xml(kind: str, lawd_cd: str, deal_ymd: str) -> str | None:
+    """kind='trade'|'rent'. 후보 경로 자동 탐색 + 캐시. 첫 HTTP 200 경로
+    확정. 200+item → text, 200+무데이터 → None(경로는 맞음), 전부 403 →
+    None + 진단 로그."""
+    candidates = [_RESOLVED[kind]] if kind in _RESOLVED else (
+        _TRADE_PATHS if kind == "trade" else _RENT_PATHS)
+    last_status = None
+    for path in candidates:
+        status, text = _call(path, lawd_cd, deal_ymd)
+        last_status = status
+        if status == 200:
+            _RESOLVED[kind] = path           # 경로 확정 (auth+endpoint OK)
+            if "<item>" in text:
+                return text
+            # 200 인데 item 0 → 인증 실패 메시지 또는 해당 월 무데이터
+            log.warning("realestate[%s] %s %s item 0 — %s",
+                        kind, lawd_cd, deal_ymd, _result_msg(text))
+            return None
+        # 403/404 → 다음 후보
+    log.warning("realestate[%s] %s 모든 엔드포인트 실패 (last HTTP %s) — "
+                "활용신청 서비스명 확인 필요", kind, lawd_cd, last_status)
+    return None
 
 
 def _parse_trades(xml: str) -> list[dict]:
@@ -166,8 +190,7 @@ def collect_realestate_data() -> dict:
     ymd = _latest_deal_ymd()
     data: dict = {"ymd": ymd, "regions": {}}
     for lawd, name in _REGIONS.items():
-        xml = _fetch_xml(
-            "RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev", lawd, ymd)
+        xml = _fetch_xml("trade", lawd, ymd)
         if not xml:
             continue
         trades = _parse_trades(xml)
@@ -186,8 +209,7 @@ def collect_realestate_data() -> dict:
             "max_manwon": max(amts),
         }
         # 전월세 — 전세(월세 0) 평균 보증금 + 전세가율 (전세평균/매매평균)
-        rxml = _fetch_xml(
-            "RTMSDataSvcAptRentDev/getRTMSDataSvcAptRentDev", lawd, ymd)
+        rxml = _fetch_xml("rent", lawd, ymd)
         if rxml:
             rents = _parse_rents(rxml)
             jeonse = [r["deposit"] for r in rents if r["is_jeonse"] and r["deposit"] > 0]
