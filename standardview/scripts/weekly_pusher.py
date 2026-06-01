@@ -566,7 +566,11 @@ def main():
     print(f"weekly_pusher: sent {len(messages)} message(s) to {len(CHAT_IDS)} channel(s)")
 
     # ── Save to dashboard archive (weekly brief + sector heatmap)
-    _save_weekly_archive(messages, sector_block, today, week_label)
+    # 섹터 블록은 별도 sectors.html 카드로 저장되므로, weekly.html 본문
+    # 에서는 제외(중복 차단) — 사용자 정책 2026-06-01 "섹터는 따로 오니까
+    # 주간브리프 대시보드에는 빼줘". 텔레 push 는 messages 그대로(섹터 포함).
+    brief_messages = [m for m in messages if m != sector_block]
+    _save_weekly_archive(brief_messages, sector_block, today, week_label)
 
 
 if __name__ == "__main__":
