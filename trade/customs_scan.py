@@ -511,7 +511,11 @@ def render_surge_html(db_path=None) -> str:
                 cur["pct"] = r.get("pct")
 
         months = sorted(by_month, reverse=True)
-        month_count = len(months)
+        # Total distinct items across all months (after merging a品목's
+        # 📈/💵 rows). The header used to say 'N개월' = number of distinct
+        # months, which read like a 'N-month retention cap' — misleading,
+        # since retention is unlimited. Count items instead.
+        item_count = sum(len(v) for v in by_month.values())
         blocks = []
         for idx, ym in enumerate(months):
             # newest month expanded; older months collapsed (volume grows
@@ -540,7 +544,7 @@ def render_surge_html(db_path=None) -> str:
             )
         return (
             "<details class='customs-panel'>"
-            f"<summary>🗄 급변 아카이브 ({month_count}개월 · 무제한 보관)</summary>"
+            f"<summary>🗄 급변 아카이브 ({item_count}건 · 무제한 보관)</summary>"
             + "".join(blocks) + "</details>"
         )
 
