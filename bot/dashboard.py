@@ -2097,6 +2097,53 @@ def _outcome_class(s: str | None) -> str:
     return "neu"
 
 
+def _month_kr(ym: str) -> str:
+    """'YYYY-MM' → 'YYYY년 M월'. Fallback to raw on parse error."""
+    try:
+        y, m = ym.split("-")[:2]
+        return f"{int(y)}년 {int(m)}월"
+    except Exception:
+        return ym
+
+
+def _month_transition(
+    parts: list[str], prev_month: str | None, date: str,
+    this_month: str, month_counts: dict[str, int],
+) -> str:
+    """Emit month-group <details> open/close transitions into `parts` as a
+    date loop iterates newest-first. Call once at the top of each iteration
+    BEFORE the day <details>. Returns the new prev_month to thread forward.
+
+    Wraps date groups in '📆 YYYY년 M월' collapsibles (this month open, past
+    months collapsed) — universal across all date-grouped dashboards
+    (사용자 2026-06-01: Daily Byte 와 동일 형식을 월 collapse 없는 모든
+    대시보드에 적용). When the loop finishes call `_month_close(parts,
+    prev_month)` to shut the final open month.
+
+    month_counts: {YYYY-MM: 총 건수} precomputed by caller for the badge.
+    """
+    cur_month = (date or "")[:7]
+    if cur_month != prev_month:
+        if prev_month is not None:
+            parts.append("</div></details>")  # close previous month
+        m_open = " open" if cur_month == this_month else ""
+        parts.append(
+            f'<details class="month"{m_open}>'
+            f'<summary class="month-head">'
+            f'<span>📆 {_month_kr(cur_month)}</span>'
+            f'<span class="count">{month_counts.get(cur_month, 0)}건</span>'
+            f'</summary>'
+            f'<div class="month-body">'
+        )
+    return cur_month
+
+
+def _month_close(parts: list[str], prev_month: str | None) -> None:
+    """Close the final open month group (no-op if none was opened)."""
+    if prev_month is not None:
+        parts.append("</div></details>")
+
+
 def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     """Render screener.html — date-grouped run cards with Top-3 mini-tables
     showing 5/15/30d outcomes (alpha vs sector ETF). Self-contained HTML
@@ -2168,7 +2215,14 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     # uses the same pattern). Pre-resolve `today` once outside the loop.
     from datetime import datetime as _dt_sc, timezone as _tz_sc, timedelta as _td_sc
     _today_kst = _dt_sc.now(_tz_sc(_td_sc(hours=9))).date().isoformat()
+    _this_month = _today_kst[:7]
+    _month_counts: dict[str, int] = defaultdict(int)
+    for d in by_date:
+        _month_counts[(d or "")[:7]] += len(by_date[d])
+    _prev_month: str | None = None
     for date in sorted(by_date.keys(), reverse=True):
+        _prev_month = _month_transition(
+            parts, _prev_month, date, _this_month, _month_counts)
         day_open = " open" if date == _today_kst else ""
         day_count = len(by_date[date])
         parts.append(
@@ -2381,6 +2435,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
             parts.append('  </div></details>\n')
         # Close the date's details + body wrapper
         parts.append('</div></details>')
+    _month_close(parts, _prev_month)
 
     parts.append("</div>")
     # JS — delete button POSTs to /api/screener_delete (mirror of NOAH
@@ -2401,6 +2456,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
   const snp = document.getElementById('scr-snippets');
   const cards = Array.from(document.querySelectorAll('.card'));
   const dayGroups = Array.from(document.querySelectorAll('details.day'));
+  const monthGroups = Array.from(document.querySelectorAll('details.month'));
   if (!inp) return;
   const total = cards.length;
 
@@ -2465,6 +2521,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     for (const d of dayGroups) {
       d.style.display = '';
     }
+    for (const m of monthGroups) m.style.display = '';
     sts.textContent = '총 ' + total + '건의 screener 실행';
   }
 
@@ -2474,6 +2531,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     // click (only the clicked card) or on clear.
     for (const c of cards) c.style.display = 'none';
     for (const d of dayGroups) d.style.display = 'none';
+    for (const m of monthGroups) m.style.display = 'none';
 
     const ql = q.toLowerCase();
     const hits = [];
@@ -2603,6 +2661,9 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
       d.style.display = '';
       d.open = false;
     }
+    for (const m of monthGroups) { m.style.display = ''; m.open = false; }
+    const monthG = card.closest('details.month');
+    if (monthG) monthG.open = true;
     const dayG = card.closest('details.day');
     if (dayG) dayG.open = true;
     card.open = true;
@@ -3734,7 +3795,14 @@ def _render_realestate_page(runs: list[dict]) -> str:
 </div></body></html>""")
         return "".join(parts)
 
+    _this_month = _today[:7]
+    _month_counts: dict[str, int] = defaultdict(int)
+    for d in by_date:
+        _month_counts[(d or "")[:7]] += len(by_date[d])
+    _prev_month: str | None = None
     for date in sorted(by_date.keys(), reverse=True):
+        _prev_month = _month_transition(
+            parts, _prev_month, date, _this_month, _month_counts)
         day_open = " open" if date == _today else ""
         parts.append(
             f'<details class="day"{day_open}><summary class="day-head">'
@@ -3775,6 +3843,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
   </details>
 """)
         parts.append('</div></details>')
+    _month_close(parts, _prev_month)
     parts.append("</div>")
     parts.append(_REALESTATE_JS)
     return "".join(parts)
@@ -3868,7 +3937,14 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
 </div></body></html>""")
         return "".join(parts)
 
+    _this_month = _today[:7]
+    _month_counts: dict[str, int] = defaultdict(int)
+    for d in by_date:
+        _month_counts[(d or "")[:7]] += len(by_date[d])
+    _prev_month: str | None = None
     for date in sorted(by_date.keys(), reverse=True):
+        _prev_month = _month_transition(
+            parts, _prev_month, date, _this_month, _month_counts)
         day_open = " open" if date == _today else ""
         parts.append(
             f'<details class="day"{day_open}><summary class="day-head">'
@@ -3902,6 +3978,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
   </details>
 """)
         parts.append('</div></details>')
+    _month_close(parts, _prev_month)
     parts.append("</div>")
     parts.append(_CHEONGYAK_JS)
     return "".join(parts)
