@@ -47,14 +47,16 @@ load_dotenv()
 
 log = logging.getLogger("scan-customs")
 
-# Scan only needs the latest-vs-previous month (customs_scan._latest_move
-# looks at the last 2 months), so a short window is enough — 3 gives one
-# month of slack. Decoupled from fetch_customs' 12-month window (which
-# feeds the pin panel's history) via its OWN env var so tuning one never
-# silently widens the other. A 3-month scan is ~1/4 the API calls of 12,
-# which is what makes a 4×/day cadence fit under the daily quota.
+# Scan compares the latest two CONFIRMED months. 관세청 confirms a month
+# ~the 15th of the following month, so early in any month the freshest
+# confirmed data is ~2 months back (on 2026-06-01 the newest was 4월, and
+# 5·6월 had no rows at all). A 3-month window then yields only ONE real
+# month → no comparison → empty ranking (the bug that wiped live on
+# 6/1). 6 months guarantees ≥2 confirmed months year-round with slack.
+# Decoupled from fetch_customs' 12-month history window via its OWN env
+# var. Cost: ~1,200 calls/scan × 4/day ≈ 4,800 « 10,000 free quota.
 LOOKBACK_MONTHS_DEFAULT = int(
-    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "3"
+    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "6"
 )
 _MIGRATE_MARKER = Path.home() / ".trade" / ".surge_migrated"
 
