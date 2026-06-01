@@ -125,6 +125,53 @@ def fetch_chapter(
     return list(by_key.values())
 
 
+def _yymm_minus(yymm: str, months: int) -> str:
+    """'202606' minus N months → 'YYYYMM'."""
+    y, m = int(yymm[:4]), int(yymm[4:6])
+    total = y * 12 + (m - 1) - months
+    return f"{total // 12:04d}{total % 12 + 1:02d}"
+
+
+def _split_windows(start_yymm: str, end_yymm: str, max_span: int = 12) -> list[tuple[str, str]]:
+    """Split [start, end] into sub-windows each spanning ≤ max_span months.
+
+    관세청 Itemtrade rejects any range wider than 1 year (resultCode 99:
+    '조회기간은 1년이내'). YoY needs ≥13 months, so a single request can't
+    cover it — we chunk into ≤12-month windows and the caller merges
+    (build_series dedups by (hs, month), so overlap is harmless).
+    Windows returned oldest-first."""
+    def _idx(yymm):
+        return int(yymm[:4]) * 12 + int(yymm[4:6]) - 1
+    s, e = _idx(start_yymm), _idx(end_yymm)
+    out = []
+    cur = s
+    while cur <= e:
+        win_end = min(cur + max_span - 1, e)
+        out.append((f"{cur // 12:04d}{cur % 12 + 1:02d}",
+                    f"{win_end // 12:04d}{win_end % 12 + 1:02d}"))
+        cur = win_end + 1
+    return out
+
+
+def fetch_chapter_range(
+    chapter: str,
+    start_yymm: str,
+    end_yymm: str,
+    *,
+    key: Optional[str] = None,
+    fetcher: Optional[Callable[[str], str]] = None,
+    max_pages: int = MAX_PAGES,
+) -> list[dict]:
+    """fetch_chapter over a span wider than the API's 1-year limit, by
+    splitting into ≤12-month windows and concatenating. Rows may repeat a
+    boundary month across windows; build_series dedups by (hs, month)."""
+    rows: list[dict] = []
+    for s, e in _split_windows(start_yymm, end_yymm, 12):
+        rows.extend(fetch_chapter(chapter, s, e, key=key,
+                                  fetcher=fetcher, max_pages=max_pages))
+    return rows
+
+
 # ───────────────────────── pure ranking ─────────────────────────
 
 def build_series(rows: list[dict]) -> dict[str, dict]:

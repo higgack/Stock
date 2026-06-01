@@ -61,11 +61,13 @@ def main(argv: list[str] | None = None) -> int:
         back -= 1
     start, end = f"{y:04d}{m:02d}", now.strftime("%Y%m")
 
+    # 관세청 API caps a single query at 1 year; fetch_chapter_range splits
+    # the 24-month YoY window into ≤12-month sub-windows automatically.
     all_rows: list[dict] = []
     ok = fail = 0
     for ch in customs_scan.CHAPTERS[: args.max_chapters]:
         try:
-            all_rows.extend(customs_scan.fetch_chapter(ch, start, end, key=key))
+            all_rows.extend(customs_scan.fetch_chapter_range(ch, start, end, key=key))
             ok += 1
         except Exception as exc:
             fail += 1

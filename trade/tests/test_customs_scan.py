@@ -255,6 +255,52 @@ class LatestMoveTests(unittest.TestCase):
         self.assertNotIn("2222222222", codes)
 
 
+class WindowSplitTests(unittest.TestCase):
+    """관세청 API rejects >1-year ranges (resultCode 99). _split_windows
+    must chunk a YoY-width span into ≤12-month windows."""
+
+    def test_split_under_12_months_single_window(self):
+        # 6 months → one window
+        w = cs._split_windows("202601", "202606", 12)
+        self.assertEqual(w, [("202601", "202606")])
+
+    def test_split_exactly_12_months_single_window(self):
+        # Jan..Dec = 12 months inclusive → still one window
+        w = cs._split_windows("202601", "202612", 12)
+        self.assertEqual(w, [("202601", "202612")])
+
+    def test_split_24_months_two_windows(self):
+        w = cs._split_windows("202407", "202606", 12)
+        self.assertEqual(len(w), 2)
+        # contiguous, no gap/overlap, covers the full span
+        self.assertEqual(w[0][0], "202407")
+        self.assertEqual(w[-1][1], "202606")
+        self.assertEqual(cs._yymm_minus(w[1][0], 1), w[0][1])  # adjacent
+
+    def test_yymm_minus_crosses_year(self):
+        self.assertEqual(cs._yymm_minus("202602", 3), "202511")
+        self.assertEqual(cs._yymm_minus("202606", 12), "202506")
+
+    def test_fetch_range_merges_windows(self):
+        # 13-month span → 2 windows; rows from both returned, deduped.
+        seen = []
+        def fake(url):
+            import urllib.parse
+            q = dict(urllib.parse.parse_qsl(url.split("?", 1)[1]))
+            seen.append((q["strtYymm"], q["endYymm"]))
+            item = (f"<item><hsCode>8542321010</hsCode><statKor>x</statKor>"
+                    f"<year>{q['strtYymm'][:4]}.{q['strtYymm'][4:]}</year>"
+                    f"<expDlr>100</expDlr><impDlr>0</impDlr>"
+                    f"<balPayments>0</balPayments><expWgt>0</expWgt>"
+                    f"<impWgt>0</impWgt></item>")
+            return ("<response><header><resultCode>00</resultCode></header>"
+                    f"<body><items>{item}</items></body></response>")
+        rows = cs.fetch_chapter_range("85", "202506", "202606",
+                                      key="k", fetcher=fake)
+        self.assertEqual(len(set(seen)), 2)   # two sub-windows queried
+        self.assertTrue(rows)
+
+
 class CoverageGuardTests(unittest.TestCase):
     """Regression for 2026-06-01 17:59: a scan with ok=9 fail=88 (most
     chapters down) ranked only the survivors and overwrote a complete
