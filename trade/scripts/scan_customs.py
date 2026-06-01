@@ -104,14 +104,20 @@ def _reset_pins_once() -> str | None:
 
 
 def _send_alert(body: str) -> bool:
-    """Reuse customs_alert's sender + operator recipients."""
+    """Reuse customs_alert's sender + the recorded operator chat.
+
+    operator.get() returns the single recorded operator chat_id (or None
+    before the operator has DM'd the bot). The earlier all_ids() call did
+    not exist and crashed _send_alert with AttributeError whenever a scan
+    produced new entrants (seen 2026-06-01 17:59). Mirror customs_alert,
+    which also targets operator.get()."""
     from trade import operator
     from trade.scripts import customs_alert
-    sent = False
-    for cid in operator.all_ids():
-        if customs_alert._send(cid, body):
-            sent = True
-    return sent
+    chat = operator.get()
+    if not chat:
+        log.info("no operator chat recorded — skipping surge alert")
+        return False
+    return customs_alert._send(chat, body)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,6 +131,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=None)
     parser.add_argument("--max-chapters", type=int, default=len(customs_scan.CHAPTERS),
                         help="limit chapters scanned (testing/throttling)")
+    parser.add_argument(
+        "--min-coverage", type=float,
+        default=float(os.environ.get("TRADE_CUSTOMS_SCAN_MIN_COVERAGE") or "0.9"),
+        help="min fraction of chapters that must succeed before the scan "
+             "may overwrite the live snapshot (default 0.9; a partial scan "
+             "below this keeps the last good snapshot)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -149,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     log.info("scan: chapters ok=%d fail=%d rows=%d", ok, fail, len(all_rows))
     if ok == 0:
         return 1
+    coverage = ok / (ok + fail) if (ok + fail) else 0.0
 
     leaves = customs_scan.build_series(all_rows)
     ranked = customs_scan.rank(leaves, top_n=args.top_n, pct_threshold=args.pct)
@@ -196,6 +209,20 @@ def main(argv: list[str] | None = None) -> int:
         note = _reset_pins_once()
         if note:
             log.info("migration: %s", note)
+
+    # Coverage guard: a partial scan (many chapters failed — API outage or
+    # FloodWait storm) ranks only the chapters that DID respond, which then
+    # overwrites a complete prior snapshot, dropping every item from the
+    # missing chapters. Observed 2026-06-01 17:59: ok=9 fail=88 → live went
+    # 24→4 items (only ch 90/93 survived) AND mis-fired 27 'new entrant'
+    # alerts. Below the coverage floor, keep the last good snapshot.
+    if coverage < args.min_coverage:
+        log.warning(
+            "chapter coverage %.0f%% (ok=%d fail=%d) < %.0f%% floor — "
+            "partial scan, keeping previous live snapshot (no store/alert)",
+            coverage * 100, ok, fail, args.min_coverage * 100,
+        )
+        return 0
 
     empty = not (ranked[customs_scan.SECTION_RATE]
                  or ranked[customs_scan.SECTION_AMOUNT])

@@ -255,5 +255,80 @@ class LatestMoveTests(unittest.TestCase):
         self.assertNotIn("2222222222", codes)
 
 
+class CoverageGuardTests(unittest.TestCase):
+    """Regression for 2026-06-01 17:59: a scan with ok=9 fail=88 (most
+    chapters down) ranked only the survivors and overwrote a complete
+    24-item snapshot with 4 items. A partial scan must keep the last good
+    snapshot instead of replacing it with a hole."""
+
+    def setUp(self):
+        import os, tempfile
+        from pathlib import Path
+        from trade import customs
+        from trade.scripts import scan_customs as sc
+        self._tmp = tempfile.TemporaryDirectory()
+        home = self._tmp.name
+        os.environ["TRADE_DATA_GO_KR_KEY"] = "k"
+        self.db = Path(home) / "customs.db"
+        self.customs = customs
+        self.sc = sc
+        # skip the one-time pin migration in these runs
+        self._orig_marker = sc._MIGRATE_MARKER
+        sc._MIGRATE_MARKER = Path(home) / ".surge_migrated"
+        sc._MIGRATE_MARKER.write_text("done")
+        self._orig_send = sc._send_alert
+        sc._send_alert = lambda body: True
+        self._orig_http = customs._http_get
+
+    def tearDown(self):
+        self.customs._http_get = self._orig_http
+        self.sc._send_alert = self._orig_send
+        self.sc._MIGRATE_MARKER = self._orig_marker
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _good_fetch(url):
+        import re
+        ch = re.search(r"hsSgn=(\d+)", url).group(1)
+        if "pageNo=1" in url:
+            def it(ym, e):
+                return (f"<item><hsCode>{ch}01010101</hsCode><statKor>품목{ch}"
+                        f"</statKor><year>{ym[:4]}.{ym[4:]}</year><expDlr>{e}"
+                        f"</expDlr><impDlr>0</impDlr><balPayments>0</balPayments>"
+                        f"<expWgt>0</expWgt><impWgt>0</impWgt></item>")
+            body = it("202603", 100_000_000) + it("202604", 200_000_000)
+            return ("<response><header><resultCode>00</resultCode></header>"
+                    f"<body><items>{body}</items></body></response>")
+        return ("<response><header><resultCode>00</resultCode></header>"
+                "<body><items></items></body></response>")
+
+    def _live_count(self):
+        with self.customs.session(self.db) as conn:
+            return len(cs.get_live(conn, cs.SECTION_AMOUNT))
+
+    def test_partial_scan_keeps_previous_snapshot(self):
+        # seed a full snapshot
+        self.customs._http_get = self._good_fetch
+        self.sc.main(["--max-chapters", "20", "--db", str(self.db), "--keep-pins"])
+        before = self._live_count()
+        self.assertGreaterEqual(before, 10)
+
+        # partial scan: only ch 01 responds, rest 503
+        def partial(url):
+            import re
+            if re.search(r"hsSgn=(\d+)", url).group(1) == "01":
+                return self._good_fetch(url)
+            raise RuntimeError("HTTP 503")
+        self.customs._http_get = partial
+        self.sc.main(["--max-chapters", "20", "--db", str(self.db), "--keep-pins"])
+        # live must be unchanged (guard kept the good snapshot)
+        self.assertEqual(self._live_count(), before)
+
+        # explicit low --min-coverage lets the partial scan through
+        self.sc.main(["--max-chapters", "20", "--db", str(self.db),
+                      "--keep-pins", "--min-coverage", "0.01"])
+        self.assertLess(self._live_count(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
