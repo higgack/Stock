@@ -1018,6 +1018,8 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
    http://34.50.23.221:8002/dashboard
  • <b>🇰🇷 수출입</b> — 외부 보조(자동 갱신)
    http://34.50.23.221:8765/dashboard/
+ • <b>📝 report summary</b> — 외부 사이트
+   https://reports.blueming.net/dashboard
  • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 본문 스니펫 검색(🟡→클릭시 분석 페이지 이동)
  • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
 
