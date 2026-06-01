@@ -2745,6 +2745,18 @@ body { background:var(--bg); color:var(--text); margin:0;
 h1 { font-size:22px; margin:0 0 4px; }
 h2.date { font-size:14px; color:var(--muted); margin:28px 0 12px;
   padding-bottom:6px; border-bottom:1px solid var(--border); }
+details.month { margin:28px 0 0; }
+details.month summary.month-head { cursor:pointer; font-size:16px;
+  font-weight:700; padding:12px 4px; border-bottom:2px solid var(--accent-soft);
+  display:flex; align-items:center; justify-content:space-between;
+  list-style:none; color:var(--text); user-select:none; }
+details.month summary.month-head::-webkit-details-marker { display:none; }
+details.month summary.month-head::before { content:"▸"; color:var(--accent);
+  margin-right:8px; transition:transform 0.15s; }
+details.month[open] summary.month-head::before { content:"▾"; }
+details.month summary.month-head:hover { background:var(--accent-soft); }
+details.month .count { color:var(--muted); font-size:12px; font-weight:normal; }
+details.month .month-body { padding-top:4px; padding-left:6px; }
 details.day { margin:24px 0 0; }
 details.day summary.day-head { cursor:pointer; font-size:15px;
   font-weight:600; padding:10px 4px; border-bottom:1px solid var(--border);
@@ -3301,6 +3313,7 @@ _DAILY_BYTE_JS = """
   const snp = document.getElementById('scr-snippets');
   const cards = Array.from(document.querySelectorAll('.card'));
   const dayGroups = Array.from(document.querySelectorAll('details.day'));
+  const monthGroups = Array.from(document.querySelectorAll('details.month'));
   if (!inp) return;
   const total = cards.length;
   const MAX_SNIPPETS = 80;
@@ -3337,12 +3350,14 @@ _DAILY_BYTE_JS = """
     snp.style.display = 'none'; snp.innerHTML = ''; emp.style.display = 'none';
     for (const c of cards) { c.style.display = ''; c.open = (c.dataset.defaultOpen === 'true'); c.classList.remove('hit-flash'); }
     for (const d of dayGroups) d.style.display = '';
+    for (const m of monthGroups) m.style.display = '';
     sts.textContent = '총 ' + total + '건의 Daily Byte 브리프';
   }
 
   function showSnippetsMode(q) {
     for (const c of cards) c.style.display = 'none';
     for (const d of dayGroups) d.style.display = 'none';
+    for (const m of monthGroups) m.style.display = 'none';
     const ql = q.toLowerCase();
     const hits = [];
     for (const cd of cardData) {
@@ -3387,6 +3402,8 @@ _DAILY_BYTE_JS = """
     const tgt = sn.dataset.target; const card = document.getElementById(tgt); if (!card) return;
     for (const c of cards) { c.style.display = ''; c.open = false; c.classList.remove('hit-flash'); }
     for (const d of dayGroups) { d.style.display = ''; d.open = false; }
+    for (const m of monthGroups) { m.style.display = ''; m.open = false; }
+    const monthG = card.closest('details.month'); if (monthG) monthG.open = true;
     const dayG = card.closest('details.day'); if (dayG) dayG.open = true;
     card.open = true; snp.style.display = 'none';
     card.classList.add('hit-flash');
@@ -3517,80 +3534,109 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
         return "".join(parts)
 
     _today_kst = _dt_db.now(_tz_db(_td_db(hours=9))).date().isoformat()
+    _this_month = _today_kst[:7]  # 'YYYY-MM'
+
+    # 날짜를 월(YYYY-MM)로 묶어 month → [dates] 구조 생성. 이번 달은
+    # 펼침, 나머지는 접힘 (사용자 요청 2026-06-01 — 일별뿐 아니라 월별
+    # collapse). 날짜·월 모두 내림차순.
+    months: dict[str, list[str]] = defaultdict(list)
     for date in sorted(by_date.keys(), reverse=True):
-        day_open = " open" if date == _today_kst else ""
-        day_count = len(by_date[date])
+        months[(date or "")[:7]].append(date)
+
+    def _format_month_kr(ym: str) -> str:
+        try:
+            y, m = ym.split("-")
+            return f"{int(y)}년 {int(m)}월"
+        except Exception:
+            return ym
+
+    for month in sorted(months.keys(), reverse=True):
+        month_dates = months[month]
+        month_open = " open" if month == _this_month else ""
+        month_count = sum(len(by_date[d]) for d in month_dates)
         parts.append(
-            f'<details class="day"{day_open}>'
-            f'<summary class="day-head">'
-            f'<span>📅 {_html.escape(date)}</span>'
-            f'<span class="count">{day_count}건</span>'
+            f'<details class="month"{month_open}>'
+            f'<summary class="month-head">'
+            f'<span>📆 {_html.escape(_format_month_kr(month))}</span>'
+            f'<span class="count">{month_count}건</span>'
             f'</summary>'
-            f'<div class="day-body">'
+            f'<div class="month-body">'
         )
-        for r in by_date[date]:
-            raw_ts = r.get("ts") or ""
-            ts_clock = raw_ts.split("T", 1)[1][:5] if "T" in raw_ts else ""
-            ts = _html.escape(ts_clock)
-            cost = r.get("cost_krw", 0) or 0
-            elapsed = r.get("elapsed_sec", 0) or 0
-            kind = r.get("kind", "daily")
-            is_weekly = kind == "weekly"
-            kind_badge = "📅 Weekly" if is_weekly else "📊 Daily"
-            title = f"{kind_badge} · {_html.escape(date)}"
-            # Body is already Telegram-safe HTML (<b>/<i> only) from
-            # daily_kr_flow._post_process. Strip the leading title line
-            # (Python adds '📊 <b>Daily Byte - ...</b>' + <i>subtitle</i>)
-            # so the card doesn't double up on the heading.
-            body = (r.get("body") or "").strip()
-            # 수평선/구분선 줄 제거 (render 시점 — strip-fix 이전에 아카이브된
-            # 옛 run 의 '---' / '--- / ---' 도 소급 정리). 단어문자 없이 대시류
-            # 2+ 만 있는 줄 + 그로 인한 연속 빈 줄.
-            body = re.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
-            body = re.sub(r"\n{3,}", "\n\n", body).strip()
+        for date in month_dates:
+            day_open = " open" if date == _today_kst else ""
+            day_count = len(by_date[date])
+            parts.append(
+                f'<details class="day"{day_open}>'
+                f'<summary class="day-head">'
+                f'<span>📅 {_html.escape(date)}</span>'
+                f'<span class="count">{day_count}건</span>'
+                f'</summary>'
+                f'<div class="day-body">'
+            )
+            for r in by_date[date]:
+                raw_ts = r.get("ts") or ""
+                ts_clock = raw_ts.split("T", 1)[1][:5] if "T" in raw_ts else ""
+                ts = _html.escape(ts_clock)
+                cost = r.get("cost_krw", 0) or 0
+                elapsed = r.get("elapsed_sec", 0) or 0
+                kind = r.get("kind", "daily")
+                is_weekly = kind == "weekly"
+                kind_badge = "📅 Weekly" if is_weekly else "📊 Daily"
+                title = f"{kind_badge} · {_html.escape(date)}"
+                # Body is already Telegram-safe HTML (<b>/<i> only) from
+                # daily_kr_flow._post_process. Strip the leading title line
+                # (Python adds '📊 <b>Daily Byte - ...</b>' + <i>subtitle</i>)
+                # so the card doesn't double up on the heading.
+                body = (r.get("body") or "").strip()
+                # 수평선/구분선 줄 제거 (render 시점 — strip-fix 이전에 아카이브된
+                # 옛 run 의 '---' / '--- / ---' 도 소급 정리). 단어문자 없이 대시류
+                # 2+ 만 있는 줄 + 그로 인한 연속 빈 줄.
+                body = re.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
+                body = re.sub(r"\n{3,}", "\n\n", body).strip()
 
-            # Per-line snippet index for search (sec='brief'). Strip tags
-            # for the searchable text so '<b>' noise doesn't pollute hits.
-            plain = re.sub(r"<[^>]+>", "", body)
-            card_lines: list[dict] = []
-            for ln in plain.splitlines():
-                s = ln.strip()
-                if len(s) >= 3:
-                    card_lines.append({"sec": "brief", "txt": s[:300]})
-            if len(card_lines) > 200:
-                card_lines = card_lines[:200]
-            search_attr = _html.escape(plain.lower()[:6000])
-            lines_attr = _html.escape(_json_db.dumps(card_lines, ensure_ascii=False))
+                # Per-line snippet index for search (sec='brief'). Strip tags
+                # for the searchable text so '<b>' noise doesn't pollute hits.
+                plain = re.sub(r"<[^>]+>", "", body)
+                card_lines: list[dict] = []
+                for ln in plain.splitlines():
+                    s = ln.strip()
+                    if len(s) >= 3:
+                        card_lines.append({"sec": "brief", "txt": s[:300]})
+                if len(card_lines) > 200:
+                    card_lines = card_lines[:200]
+                search_attr = _html.escape(plain.lower()[:6000])
+                lines_attr = _html.escape(_json_db.dumps(card_lines, ensure_ascii=False))
 
-            filename = _html.escape(r.get("_filename", ""))
-            day_card_count = len(by_date[date])
-            card_default_open = (date == _today_kst and day_card_count == 1)
-            card_open_attr = " open" if card_default_open else ""
-            card_id = f"card-{_html.escape(r.get('_date',''))}-{filename}".replace(".", "_")
-            # 인포그래픽 이미지 (archive/ 기준 상대경로) — 있으면 카드 상단 임베드
-            png_rel = (r.get("png") or "").strip()
-            img_html = ""
-            if png_rel and re.match(r"^daily_byte_img/[\w.\-]+\.png$", png_rel):
-                img_html = (f'<img class="db-info" src="{_html.escape(png_rel)}" '
-                            f'alt="Daily Byte 인포그래픽" loading="lazy" '
-                            f'style="width:100%;max-width:680px;border-radius:10px;'
-                            f'margin:8px auto 14px;display:block">')
+                filename = _html.escape(r.get("_filename", ""))
+                day_card_count = len(by_date[date])
+                card_default_open = (date == _today_kst and day_card_count == 1)
+                card_open_attr = " open" if card_default_open else ""
+                card_id = f"card-{_html.escape(r.get('_date',''))}-{filename}".replace(".", "_")
+                # 인포그래픽 이미지 (archive/ 기준 상대경로) — 있으면 카드 상단 임베드
+                png_rel = (r.get("png") or "").strip()
+                img_html = ""
+                if png_rel and re.match(r"^daily_byte_img/[\w.\-]+\.png$", png_rel):
+                    img_html = (f'<img class="db-info" src="{_html.escape(png_rel)}" '
+                                f'alt="Daily Byte 인포그래픽" loading="lazy" '
+                                f'style="width:100%;max-width:680px;border-radius:10px;'
+                                f'margin:8px auto 14px;display:block">')
 
-            parts.append(f"""
-  <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
-    <summary class="card-h">
-      <span class="card-toggle">▸</span>
-      <span class="domain">{title}</span>
-      <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s</span>
-      <button class="del-btn" type="button" title="이 Daily Byte 기록 삭제">🗑️</button>
-    </summary>
-    <div class="card-body">
-      {img_html}
-      <div class="analysis-sec"><div class="analysis-b" data-section="brief">{body}</div></div>
-    </div>
-  </details>
-""")
-        parts.append('</div></details>')
+                parts.append(f"""
+      <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
+        <summary class="card-h">
+          <span class="card-toggle">▸</span>
+          <span class="domain">{title}</span>
+          <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s</span>
+          <button class="del-btn" type="button" title="이 Daily Byte 기록 삭제">🗑️</button>
+        </summary>
+        <div class="card-body">
+          {img_html}
+          <div class="analysis-sec"><div class="analysis-b" data-section="brief">{body}</div></div>
+        </div>
+      </details>
+    """)
+            parts.append('</div></details>')  # close day
+        parts.append('</div></details>')  # close month
 
     parts.append("</div>")
     parts.append(_DAILY_BYTE_JS)
