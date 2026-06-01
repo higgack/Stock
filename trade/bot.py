@@ -156,7 +156,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 
 <b>7. 부가 기능</b>
 • 검색: 품목/회사/국가 부분일치 (회사명 정확 일치 시 회사 뷰 자동 좁힘)
-• 칩 필터: 수출/수입, 잠정/확정
+• 칩 필터: 수출/수입, 잠정/확정, 🆕 오늘(오늘 게시된 카드만)
 • 📥 CSV — 현재 필터 결과 풀필드 다운로드 (id·dedup_key·item·item_raw·title_kind·is_composite·composite_parts·region(s)·country(s)·stocks·stocks_meta·has_etc·period_*·expected_final_date·days_to_final·posted_at·ingested_at·commentary·parse_warnings·media_urls 절대경로)
 • 모달 — 카드 클릭 시 같은 dedup 키 과거 발표 인라인 비교 (전번 확정 ↔ 이번 잠정 시각 비교)
   · 🔗 URL 복사 (#a/&lt;id&gt; 딥링크) · 🖼 이미지 저장
@@ -198,7 +198,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-01 — 🗄아카이브 헤더 '개월'→'건' · 📈/💵 동일 기준월 통일 · 라이브 카드 기본 접힘 · 월초 빈랭킹 버그 수정</i>
+<i>최종 갱신: 2026-06-01 — 대쉬보드 🆕 오늘 필터 추가 · 🗄아카이브 건수 표기 · 📈/💵 동일 기준월 통일 · 라이브 카드 기본 접힘</i>
 """
 
 

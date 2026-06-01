@@ -360,6 +360,10 @@ def _build_html(
         '<button class="chip" data-val="preliminary">잠정</button>'
         '<button class="chip" data-val="final">확정</button>'
         '</span>'
+        '<span class="chip-group" data-key="onlynew">'
+        '<button class="chip active" data-val="">전체</button>'
+        '<button class="chip" data-val="new">🆕 오늘</button>'
+        '</span>'
         '</div>'
         f'<div class="count"><span id="visible-count">{len(latest_ids)}</span> / {len(latest_ids)} 표시 중</div>'
         '</section>'
@@ -937,11 +941,12 @@ function hideModal(){
 }
 
 // --- state + filter ---
-const state={dir:'',status:'',q:''};
+const state={dir:'',status:'',q:'',onlynew:''};
 function matches(a){
   if(!isLatest(a))return false;  // views render the latest of each dedup_key
   if(state.dir&&a.dir!==state.dir)return false;
   if(state.status&&a.status!==state.status)return false;
+  if(state.onlynew&&!isAlertNew(a))return false;  // 🆕 오늘 게시된 카드만
   if(state.q){
     const q=state.q.toLowerCase();
     const hay=(a.item+' '+a.region+' '+a.country+' '+(a.stocks||[]).join(' ')).toLowerCase();
