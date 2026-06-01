@@ -4198,7 +4198,7 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
                        if not it.get("already_covered")]
 
         parts.append(f"""
-<details class="run-wrap" open>
+<details class="run-wrap">
   <summary class="run-summary">
     <span class="run-date">{ts},</span>
     <span class="run-meta">{win_start} ~ {win_end} 윈도우, ₩{cost:,}
