@@ -1678,7 +1678,6 @@ def _render_index(records: list[dict]) -> str:
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
-            + ' · <a href="gics_candidates.html">🧬 GICS 후보</a>'
         )
     else:
         errors_link = (
@@ -1689,7 +1688,6 @@ def _render_index(records: list[dict]) -> str:
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
-            + ' · <a href="gics_candidates.html">🧬 GICS 후보</a>'
         )
 
     return f"""<!doctype html>
@@ -3185,13 +3183,15 @@ details.layer-details summary {{ position:relative; }}
 <div class="wrap">
   <p class="sub">
     <a href="index.html">← NOAH 종목 분석</a> ·
-    <a href="screener.html">📊 Bottleneck Screener Archive</a>
+    <a href="screener.html">📊 Bottleneck Screener Archive</a> ·
+    <a href="gics_candidates.html">🧬 분기 GICS / 신규 산업 후보</a>
   </p>
   <h1>📊 Screener 도메인 목록 <span style="color:var(--fg-soft);font-size:16px;font-weight:400">({len(ds)}개 · auto-discovered)</span></h1>
   <p class="sub">텔레그램: <code>/screener_&lt;슬러그&gt;</code> 클릭 한 번으로 즉시 실행 · 별칭은 <code>/screener &lt;별칭&gt;</code> 으로 지원
   · 동일 목록 텔레그램 = <code>/screener_list</code>.</p>
   <p class="sub"><b>3-layer 도메인 모델</b> — L1 Trend (cross-cutting cycle 베팅) · L2 Sector (미국 GICS-like 정식 분류) · L3 Industry (각 L2 sector 의 sub-industry).
-  새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지에 자동 반영.</p>
+  새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지에 자동 반영.
+  분기마다(3·6·9·12월 1일) Pro+web search 가 신규 산업 후보를 식별 → <a href="gics_candidates.html">🧬 GICS 후보 페이지</a> 에 누적, 사용자 검증 후 모듈 add 결정.</p>
   {filter_html}
   {body}
   {history_html}

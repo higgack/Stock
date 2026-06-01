@@ -1012,10 +1012,8 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/cheongyak.html
  • <b>부동산 Byte</b> — 금09:00 실거래(MOLIT 매매·전월세·오피스텔·연립)+R-ONE 가격추세+공급(인허가·착공·미분양) · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
- • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list
+ • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list (분기 GICS 후보는 도메인 목록 페이지 상단에서)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
- • <b>GICS 후보</b> — 분기 점검(3·6·9·12월 1일) 신규 산업 후보 누적·채택 상태
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/gics_candidates.html
  • <b>SV</b> — 매크로·산업·Deal·07:30/20:30+텔레·22:00 주간
    http://34.50.23.221:8002/dashboard
  • <b>🇰🇷 수출입</b> — 외부 보조(자동 갱신)
