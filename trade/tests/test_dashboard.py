@@ -107,10 +107,13 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn('data-val="import"', html)
         self.assertIn('data-val="preliminary"', html)
         self.assertIn('data-val="final"', html)
-        # 🆕 오늘 filter — last chip group, gated by isAlertNew in matches()
+        # 🆕 신규 filter — last chip group, gated by isAlertNew in matches()
         self.assertIn('data-key="onlynew"', html)
         self.assertIn('data-val="new"', html)
         self.assertIn("state.onlynew&&!isAlertNew(a)", html)
+        # alert-NEW spans 7 days (was 'today only') so the badge/filter
+        # persist across the ≥10-day 관세청 cycle gap.
+        self.assertIn("function isAlertNew(a){return withinDays(a.posted_at||'',7)}", html)
 
     def test_embedded_payload_parses_and_carries_all_alerts(self):
         html = render_html(self.db_path)

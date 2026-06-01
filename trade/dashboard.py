@@ -362,7 +362,7 @@ def _build_html(
         '</span>'
         '<span class="chip-group" data-key="onlynew">'
         '<button class="chip active" data-val="">전체</button>'
-        '<button class="chip" data-val="new">🆕 오늘</button>'
+        '<button class="chip" data-val="new">🆕 신규</button>'
         '</span>'
         '</div>'
         f'<div class="count"><span id="visible-count">{len(latest_ids)}</span> / {len(latest_ids)} 표시 중</div>'
@@ -721,12 +721,17 @@ function withinDays(dateStr,n){
 }
 
 // NEW badges:
-//   alert-NEW   = the latest alert for this dedup_key was posted today
-//                 (i.e. fresh from this cycle, < 24h old in KST)
+//   alert-NEW   = the latest alert for this dedup_key was posted within
+//                 the last 7 days (KST). Was 'today only', but 관세청
+//                 잠정/확정 cycles are ≥10 days apart, so a 1-day window
+//                 made a fresh card lose its NEW badge the next morning
+//                 even though nothing newer had arrived. 7 days keeps a
+//                 card flagged NEW for the whole inter-cycle gap. The
+//                 '🆕 신규' filter chip shares this, so both move together.
 //   item-NEW    = this item's earliest alert ever is within 7 days
 //                 (the item itself debuted recently in our corpus)
 //   company-NEW = same rule for a company name
-function isAlertNew(a){return a.posted_at===kstTodayString()}
+function isAlertNew(a){return withinDays(a.posted_at||'',7)}
 function isItemNew(item){return withinDays(EARLIEST_ITEM_DATE[item]||'',7)}
 function isCompanyNew(name){return withinDays(EARLIEST_COMPANY_DATE[name]||'',7)}
 
@@ -946,7 +951,7 @@ function matches(a){
   if(!isLatest(a))return false;  // views render the latest of each dedup_key
   if(state.dir&&a.dir!==state.dir)return false;
   if(state.status&&a.status!==state.status)return false;
-  if(state.onlynew&&!isAlertNew(a))return false;  // 🆕 오늘 게시된 카드만
+  if(state.onlynew&&!isAlertNew(a))return false;  // 🆕 최근 7일 게시 카드만
   if(state.q){
     const q=state.q.toLowerCase();
     const hay=(a.item+' '+a.region+' '+a.country+' '+(a.stocks||[]).join(' ')).toLowerCase();
