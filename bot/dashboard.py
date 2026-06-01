@@ -940,6 +940,23 @@ _INDEX_CSS = _BASE_CSS + """
   color: var(--fg-soft); font-size: 14px; padding: 32px 0;
   text-align: center; display: none;
 }
+details.month { margin-bottom: 22px; }
+summary.month-head {
+  font-size: 17px; font-weight: 700; padding: 12px 4px; cursor: pointer;
+  border-bottom: 2px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  list-style: none;
+}
+summary.month-head::-webkit-details-marker { display: none; }
+summary.month-head::before {
+  content: "▶"; display: inline-block; margin-right: 8px;
+  transition: transform 0.15s; font-size: 11px; color: var(--fg-soft);
+}
+details.month[open] > summary.month-head::before { transform: rotate(90deg); }
+summary.month-head .count {
+  font-size: 12px; color: var(--fg-soft); font-weight: 400;
+}
+.month-body { padding-left: 6px; }
 details.day { margin-bottom: 18px; }
 summary.day-head {
   font-size: 16px; font-weight: 600; padding: 10px 4px; cursor: pointer;
@@ -952,7 +969,7 @@ summary.day-head::before {
   content: "▶"; display: inline-block; margin-right: 8px;
   transition: transform 0.15s; font-size: 11px; color: var(--fg-soft);
 }
-details[open] summary.day-head::before { transform: rotate(90deg); }
+details.day[open] > summary.day-head::before { transform: rotate(90deg); }
 summary.day-head .count {
   font-size: 12px; color: var(--fg-soft); font-weight: 400;
 }
@@ -1066,6 +1083,7 @@ _INDEX_JS = """
   const snp = document.getElementById('snippets');
   const cards = Array.from(document.querySelectorAll('.card'));
   const days = Array.from(document.querySelectorAll('details.day'));
+  const monthsG = Array.from(document.querySelectorAll('details.month'));
   const total = cards.length;
   const MAX_SNIPPETS = 80;
 
@@ -1119,13 +1137,15 @@ _INDEX_JS = """
       d.style.display = '';
       d.open = true;
     }
+    for (const m of monthsG) m.style.display = '';
     statusEl.textContent = '총 ' + total + '건의 분석 기록';
   }
 
   function showSnippetsMode(q) {
-    // Hide cards + day groups; snippet list becomes primary view.
+    // Hide cards + day/month groups; snippet list becomes primary view.
     for (const c of cards) c.style.display = 'none';
     for (const d of days) d.style.display = 'none';
+    for (const m of monthsG) m.style.display = 'none';
 
     const ql = q.toLowerCase();
     const hits = [];
@@ -1535,7 +1555,31 @@ def _render_index(records: list[dict]) -> str:
         # One memory-log read per index render; reused across every card.
         resolved_lookup = _build_resolved_lookup()
         sections = []
+        # 월(YYYY-MM) 그룹 collapse (사용자 2026-06-01 — 모든 date-group
+        # 대시보드 통일). 이번 달 펼침, 과거 달 접힘. day 그룹을 month
+        # <details> 안에 nest. orphan 그룹은 월 밖(아래)에 유지.
+        _kst_idx = datetime.timezone(datetime.timedelta(hours=9))
+        _this_month_idx = datetime.datetime.now(_kst_idx).date().isoformat()[:7]
+        _month_counts_idx: dict[str, int] = {}
+        for _d in by_date:
+            _ym = (_d or "")[:7]
+            _month_counts_idx[_ym] = _month_counts_idx.get(_ym, 0) + len(by_date[_d])
+        _prev_month_idx = None
         for date in sorted(by_date.keys(), reverse=True):
+            _cur_month_idx = (date or "")[:7]
+            if _cur_month_idx != _prev_month_idx:
+                if _prev_month_idx is not None:
+                    sections.append("</div></details>")  # close prev month
+                _m_open = " open" if _cur_month_idx == _this_month_idx else ""
+                sections.append(f"""
+            <details class="month"{_m_open}>
+              <summary class="month-head">
+                <span>📆 {_month_kr(_cur_month_idx)}</span>
+                <span class="count">{_month_counts_idx.get(_cur_month_idx, 0)}건</span>
+              </summary>
+              <div class="month-body">
+            """)
+                _prev_month_idx = _cur_month_idx
             day_records = sorted(
                 by_date[date],
                 key=lambda r: r.get("analyzed_at", ""),
@@ -1609,6 +1653,8 @@ def _render_index(records: list[dict]) -> str:
               <div class="cards">{"".join(cards)}</div>
             </details>
             """)
+        if _prev_month_idx is not None:
+            sections.append("</div></details>")  # close final month
         # Orphan resolved entries: in the memory log but with no matching
         # archive record (typically analyses that predate the archive
         # system rollout). Surface them in a small footer so the
