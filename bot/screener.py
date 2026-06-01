@@ -283,23 +283,13 @@ RULES — 절대:
 - ticker 가짜 생성 금지 (yfinance 검증됨).
 - niche layer 우선, 1차 헤드라인 (NVDA/AAPL 등) 후순위.
 - 5거래일 horizon 언급 금지 — 본 출력은 6-18개월 thesis.
-- **유동성 경고 의무 (S 티어 ~$100M micro-cap + Nano-cap <$50M)**: 모든
-  S 티어 행은 Kill Trigger 다음 줄에 다음 형식으로 유동성 caveat 명시:
+- 유동성 경고 (S 티어 micro/nano-cap) 는 백엔드가 mcap 기반으로 row
+  끝에 자동 append (LLM 작성 금지 — 2026-06-01 합성생물학 review 에서
+  Bioneer 064550.KQ 의 LLM 이 우리 inject 문자열을 따옴표로 감싸고
+  prefix 덧붙이는 nested-wrapping 버그 surfaced 후 backend 전담).
+  LLM 은 Kill Trigger 까지만 쓰고, 유동성 경고 라인을 직접 만들지
+  말 것.
 
-  • **Micro-cap ($50M ≤ 시총 < $300M)**: '⚠️ 시총 ~$XXM 소형주 — 일일
-    거래대금/유동성 제한 + 단기 변동성 ±10-20% 정상 범위 + 기관 진입
-    어려움 (한국 KOSDAQ S/T tier · TPEx 등 illiquid 로컬 라인 동일 적용)'.
-
-  • **Nano-cap (시총 < $50M USD)**: 더 강한 경고 의무 — '⚠️ NANO-CAP
-    LIQUIDITY WARNING: 시총 ~$XXM 극초소형주. 일일 거래대금 < $1M
-    수준, 호가 공백 + 슬리피지 ±5%+ + 기관 진입 사실상 불가. 자동매매
-    / 대규모 entry 시 시장가 swing 위험. 1-3% 보유로 분할 매집 권장'.
-    AQMS (~$14M), Aqua Metals 같은 케이스 2026-05-29 review surfaced.
-
-  • 시총 USD 추정치 (모든 시장 통화 → USD 환산) 명시 의무. M/L tier 는
-    생략. (416180.KQ Shinsung ST, 131290.KQ TSE 같은 KOSDAQ S 티어를
-    거론하면서 유동성 경고 미명시 시 reader 가 동일 size weight 로
-    오해 가능 — 2026-05-29 외부 리뷰 surfaced).
 
 DEPTH REQUIREMENTS — Pro capacity 충분히 활용 의무 (2026-05-29 첫
 런이 ₩39 / ~3분 = capacity 의 ~12% 만 사용. 시장이 깊이를 요구한다):
@@ -1211,6 +1201,109 @@ def _strip_transitional_tags(text: str) -> tuple[str, int]:
     return out, n
 
 
+def _append_liquidity_warnings(
+    text: str, candidates: list[dict]
+) -> tuple[str, int, int]:
+    """Post-process — S-tier row 끝에 backend-canonical 유동성 경고 append
+    (LLM bypass). 합성생물학 2026-06-01 review surfaced: prompt directive
+    로 LLM 에게 warning 문자열을 쓰게 시키면 일부 종목(Bioneer 064550.KQ)
+    에서 우리 inject 문자열을 따옴표로 감싸고 prefix 를 덧붙이는 nested
+    wrapping (예: ⚠️ Micro-cap ($50M ≤ 시총 < $300M): '⚠️ 시총 ~$147M
+    소형주 — ...').
+
+    Fix (universal): (1) 기존 LLM 생성 warning 라인 strip (defensive,
+    nested 포함), (2) 각 S-tier row 의 bullet block 끝에 mcap_usd 기반
+    canonical warning 1줄 append. Nano-cap (<$50M) 은 더 강한 문구, micro
+    -cap ($50M ≤ < $300M) 은 표준 문구. M/L tier 는 skip.
+
+    Returns (text, n_stripped, n_appended). mcap_usd 미상인 S-tier 는
+    warning 못 붙임 (Pro 가 tier 만 알고 mcap 모르는 케이스) — 안전상
+    skip 하고 audit log 만 남김.
+    """
+    import re
+    by_ticker: dict[str, dict] = {}
+    for c in candidates or []:
+        tk = (c.get("ticker") or "").upper()
+        tier = (c.get("tier") or "").upper()[:1]
+        mcap = c.get("mcap_usd")
+        if tk and tier == "S" and mcap and mcap > 0:
+            by_ticker[tk] = c
+
+    # Step 1 — strip any LLM-emitted liquidity warning line (idempotent
+    # on re-run + cleans up nested-wrapping bug). Catches both the
+    # original 'Micro-cap' / 'NANO-CAP' headers and the bare '시총 ~$XM
+    # 소형주' / '시총 ~$XM 극초소형주' variants.
+    warning_re = re.compile(
+        r"^\s*•\s*⚠️\s*(?:Micro-cap|NANO-CAP|시총\s*~?\$?[\d,]+M)"
+    )
+    cleaned_lines: list[str] = []
+    n_stripped = 0
+    for ln in text.split("\n"):
+        if warning_re.match(ln):
+            n_stripped += 1
+            continue
+        cleaned_lines.append(ln)
+
+    # Step 2 — walk lines, find each S-tier row, append canonical warning
+    # at end of that ticker's bullet block. Row-header detection mirrors
+    # _MT_TIER_ROW_RE bullet form '• [LMS?] · TICKER ·'.
+    s_row_re = re.compile(
+        r"^•\s+S\s*·\s*([A-Z0-9][A-Z0-9.\-]{0,12})\s*·"
+    )
+    any_row_re = re.compile(r"^•\s+[LMS?]\s*·\s*[A-Z0-9]")
+    out: list[str] = []
+    n_appended = 0
+    i = 0
+    while i < len(cleaned_lines):
+        ln = cleaned_lines[i]
+        m = s_row_re.match(ln)
+        if not m:
+            out.append(ln)
+            i += 1
+            continue
+        ticker = m.group(1).upper()
+        cand = by_ticker.get(ticker)
+        # Collect this row's bullet block (header + subsequent '• ...'
+        # lines until blank / next row-header / non-bullet line).
+        block = [ln]
+        j = i + 1
+        while j < len(cleaned_lines):
+            nxt = cleaned_lines[j]
+            if not nxt.strip():
+                break
+            if any_row_re.match(nxt):
+                break
+            if not nxt.lstrip().startswith("•"):
+                break
+            block.append(nxt)
+            j += 1
+        if cand:
+            mcap = float(cand["mcap_usd"])
+            if mcap < 50e6:
+                warn = (
+                    f"• ⚠️ NANO-CAP LIQUIDITY WARNING: 시총 ~${mcap/1e6:.0f}M"
+                    f" 극초소형주. 일일 거래대금 < $1M 수준, 호가 공백 +"
+                    f" 슬리피지 ±5%+ + 기관 진입 사실상 불가. 자동매매 /"
+                    f" 대규모 entry 시 시장가 swing 위험. 1-3% 보유로"
+                    f" 분할 매집 권장."
+                )
+            else:
+                warn = (
+                    f"• ⚠️ 시총 ~${mcap/1e6:.0f}M 소형주 — 일일 거래대금/"
+                    f"유동성 제한 + 단기 변동성 ±10-20% 정상 범위 + 기관"
+                    f" 진입 어려움 (한국 KOSDAQ S/T tier · TPEx 등 illiquid"
+                    f" 로컬 라인 동일 적용)."
+                )
+            block.append(warn)
+            n_appended += 1
+        else:
+            log.info("screener: S-tier %s mcap unknown — liquidity "
+                     "warning skipped", ticker)
+        out.extend(block)
+        i = j
+    return "\n".join(out), n_stripped, n_appended
+
+
 def _strip_meta_commentary(text: str) -> tuple[str, int]:
     """Post-process — replace LLM '핑계(meta-commentary)' phrases with 'N/A'.
 
@@ -2106,6 +2199,17 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
             "screener: %d transitional/corp-action tag(s) stripped (CLAUDE.md rule)",
             n_trans_strips,
         )
+
+    # 유동성 경고 backend append (2026-06-01 합성생물학 review surfaced):
+    # LLM 이 우리 inject warning 을 따옴표로 감싸고 prefix 덧붙이는 nested
+    # wrapping 버그 차단. Prompt directive 제거 + backend 가 mcap_usd 기반
+    # 으로 S-tier row 끝에 canonical warning 직접 append.
+    p45_text, n_lq_strip, n_lq_append = _append_liquidity_warnings(
+        p45_text, candidates
+    )
+    if n_lq_strip or n_lq_append:
+        log.info("screener: liquidity warnings — %d stripped (LLM-emit) /"
+                 " %d appended (backend canonical)", n_lq_strip, n_lq_append)
 
     # 메타-코멘터리(핑계) strip (2026-05-31 Machinery review surfaced):
     # '데이터 미수집' / '확인 필요' / '데이터 깊이 부족' 등 데이터 부재 변명을
