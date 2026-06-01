@@ -1014,7 +1014,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
  • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list (분기 GICS 후보는 도메인 목록 페이지 상단에서)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
- • <b>SV</b> — 매크로·산업·Deal·07:30/20:30+텔레·22:00 주간
+ • <b>SV</b> — 매크로·산업·Deal·07:30/20:30 매일·평일 08:00/21:00 push·일 22:00 주간
    http://34.50.23.221:8002/dashboard
  • <b>🇰🇷 수출입</b> — 외부 보조(자동 갱신)
    http://34.50.23.221:8765/dashboard/

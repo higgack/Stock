@@ -336,7 +336,7 @@ pattern to follow:
   내 적용. NOPASSWD 미설정 시 silent skip (legacy bot 호환).
 - Standard View 스케줄 (2026-05-21):
   • `standardview-daily.timer` — 07:30 + 20:30 KST 매일, `daily_generator.py` 만 (refresh)
-  • `standardview-push.timer` — 08:00 + 21:00 KST 매일, `telegram_pusher.py` 만 (push)
+  • `standardview-push.timer` — 08:00 + 21:00 KST **평일만(Mon-Fri)**, `telegram_pusher.py` 만 (push). 주말 무음(사용자 2026-06-01 "주말에는 빼줘"). daily_generator 는 매일 유지 — HTML 대시보드는 주말에도 신선.
   • 30분 gap 으로 generator 가 완료된 latest.html 을 pusher 가 사용
   • legacy `standardview-hourly.timer` (Mon-Fri 12/16시 push) disabled
 - Screener GICS 분기 점검 (2026-05-29 사용자 정책):
