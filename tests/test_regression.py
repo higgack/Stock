@@ -284,3 +284,81 @@ class TestScreenerPostProcessIdempotent:
         out2, n2 = _strip_transitional_tags(bad_text)
         assert n2 >= 1
         assert "데이터 transitional" not in out2
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 5) PM override discipline forced-HOLD 배너 정확성 (IBM 2026-06-02)
+#    배경: PM=Overweight + Trader=Buy(둘 다 매수)인데 분석가 전원 보유 +
+#    trigger 없음으로 Fix F 가 HOLD 강제. 옛 배너가 '트레이더 매수 →
+#    최종 보유 (PM이 트레이더와 다른 결론)' 로 오독 유발. discipline 강제
+#    HOLD 시 정확한 배너 띄우는지.
+# ─────────────────────────────────────────────────────────────────────────
+class TestPMOverrideDisciplineBanner:
+    """fix: IBM 2026-06-02 review (배너 문구 정확화)."""
+
+    def test_discipline_banner_function_exists_and_accurate(self):
+        src = open("bot/analyzer.py", encoding="utf-8").read()
+        # 배선: override_rating == 'Hold' 일 때 discipline 배너 호출
+        assert 'if override_rating == "Hold":' in src
+        assert (
+            "trader_divergence = _detect_discipline_forced_hold_banner"
+            in src
+        ), "discipline 배너 배선 누락"
+        assert "def _detect_discipline_forced_hold_banner" in src
+
+    def test_discipline_banner_no_misleading_phrase(self):
+        """discipline 배너는 'PM이 트레이더와 다른 결론' 오해 문구 미사용."""
+        import re
+
+        src = open("bot/analyzer.py", encoding="utf-8").read()
+        m = re.search(
+            r"def _detect_discipline_forced_hold_banner.*?(?=\n\n\n|\ndef )",
+            src, re.DOTALL,
+        )
+        assert m, "discipline 배너 함수 못 찾음"
+        fn = m.group(0)
+        assert "PM이 트레이더와 다른 결론" not in fn, (
+            "discipline 배너가 오해 문구 사용 — IBM 회귀"
+        )
+        # 정확한 메커니즘 명시
+        assert "시스템 강제 보유" in fn
+        assert "시스템 보정 결과" in fn
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 6) Technical snapshot SSoT — 현재가/EMA/SMA 동일 series 통합
+#    배경: IBM 2026-06-02 10 EMA 266 vs 현재가 325 (22% 격차). EMA/SMA 가
+#    별도 경로(stockstats)라 stale. _compute_technical_snapshot 에 현재가
+#    + 10 EMA + 50 SMA + 200 SMA 가 같은 close series 에서 계산돼 SSoT 에
+#    포함되는지 (코드 레벨 — 네트워크 없이 정적 검증).
+# ─────────────────────────────────────────────────────────────────────────
+class TestTechnicalSnapshotSSoT:
+    """fix: IBM 2026-06-02 review (EMA/SMA SSoT 통합)."""
+
+    def test_snapshot_includes_ma_lines(self):
+        src = open(
+            "TradingAgents/tradingagents/agents/utils/agent_utils.py",
+            encoding="utf-8",
+        ).read()
+        m = re.search(
+            r"def _compute_technical_snapshot.*?(?=\ndef )", src, re.DOTALL
+        )
+        assert m, "_compute_technical_snapshot 못 찾음"
+        fn = m.group(0)
+        # 현재가 + 10 EMA + 50 SMA + 200 SMA 가 같은 close series 에서
+        assert "ema10 = close.ewm(span=10" in fn, "10 EMA 누락"
+        assert "close.rolling(50).mean()" in fn, "50 SMA 누락"
+        assert "close.rolling(200).mean()" in fn, "200 SMA 누락"
+        assert "ma_lines" in fn and "*ma_lines" in fn, "MA 라인 미주입"
+        # 200 SMA 가능하도록 1y 윈도
+        assert 'period="1y"' in fn, "200 SMA 위해 1y fetch 필요"
+
+    def test_macro_ssot_directive_present(self):
+        """매크로 스냅샷에 글자단위 copy 강제 directive (IBM drift)."""
+        src = open(
+            "TradingAgents/tradingagents/agents/utils/macro_context_tools.py",
+            encoding="utf-8",
+        ).read()
+        assert "SINGLE SOURCE OF TRUTH" in src
+        assert "글자 단위로" in src
+        assert "IBM 2026-06-02" in src

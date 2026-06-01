@@ -1159,6 +1159,37 @@ def _detect_trader_decision_divergence(state: dict, final_rating: str) -> str:
     )
 
 
+def _detect_discipline_forced_hold_banner(state: dict, decision: str) -> str:
+    """Banner for the case where final HOLD was FORCED by PM override
+    discipline (Fix F/G), not by a genuine PM-vs-Trader disagreement.
+
+    IBM 2026-06-02 surfaced the misread: PM=Overweight, Trader=Buy (둘 다
+    매수) but 분석가 4명 전원 보유 + PM rationale 에 RSI≥75 sell-side trigger
+    도 D-N일 임박 catalyst 도 없어 Fix F 가 HOLD 강제. The old trader-
+    divergence banner said '트레이더 매수 → 최종 보유 (PM이 트레이더와 다른
+    결론)' which falsely implies the PM landed on Hold — when the PM actually
+    voted matching the Trader and the SYSTEM overrode both to HOLD.
+
+    Surfaces the real mechanism: 분석가 합의 방향 + PM 원래 등급 + discipline
+    강제 HOLD. Universal — all markets. Empty when the inputs aren't readable.
+    """
+    pm_rating = _extract_rating(decision)
+    pm_dir = _DECISION_DIRECTION.get(pm_rating or "", "")
+    unanimous = _get_unanimous_analyst_direction(state)
+    if not pm_rating or not pm_dir or not unanimous:
+        # Fall back to the generic divergence note if we can't reconstruct
+        # the discipline context (defensive — banner should still inform).
+        return _detect_trader_decision_divergence(state, "Hold")
+    analyst_kr = _DIRECTION_KR.get(unanimous, unanimous)
+    pm_kr = _DIRECTION_KR.get(pm_dir, pm_dir)
+    return (
+        f"⚠️ 시스템 강제 보유 (PM override discipline): 분석가 전원 "
+        f"'{analyst_kr}' 합의인데 PM '{pm_rating}({pm_kr})' override 시도 → "
+        f"RSI≥75/≤25 또는 임박 catalyst(D-N일) 미인용으로 자동 HOLD 변환. "
+        f"PM·트레이더 의견이 아닌 시스템 보정 결과. 결정 근거 참고."
+    )
+
+
 _RATIONALE_BLOCK_RE = re.compile(
     r"근거\s*:\s*(.+?)(?=\s*전략\s*실행\s*:|\s*거래\s*액션\s*:|$)",
     re.DOTALL,
@@ -1250,7 +1281,17 @@ def _format_summary(
         parts.append(mismatch)
     # Trader → final divergence (e.g. Trader Sell, final Hold) gets its own
     # transparency line so the synthesis chain doesn't look self-contradictory.
-    trader_divergence = _detect_trader_decision_divergence(state, rating)
+    # When override_rating is set, the final HOLD was FORCED by PM override
+    # discipline (Fix F/G) — NOT a PM-vs-Trader disagreement. The default
+    # divergence banner ('PM이 트레이더와 다른 결론') misreads that case:
+    # IBM 2026-06-02 had PM=Overweight + Trader=Buy (둘 다 매수) but Fix F
+    # forced HOLD (분석가 4명 전원 보유 + trigger 없음). Showing '트레이더
+    # 매수 → 최종 보유 (PM이 트레이더와 다른 결론)' falsely implies the PM
+    # disagreed. Replace with an accurate discipline-forced banner.
+    if override_rating == "Hold":
+        trader_divergence = _detect_discipline_forced_hold_banner(state, decision)
+    else:
+        trader_divergence = _detect_trader_decision_divergence(state, rating)
     if trader_divergence:
         parts.append(trader_divergence)
     parts.append("")

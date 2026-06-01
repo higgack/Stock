@@ -601,6 +601,29 @@ ACTION IN-FLIGHT (HARD GUARD), the standard technical triggers
 override triggers; only the imminent-catalyst or data-availability
 HOLD triggers apply.
 
+**배너 정확성 (IBM 2026-06-02 review)** — Fix F/G 가 강제 HOLD 하면
+(분석가 전원 합의 ↔ PM override + trigger 없음), 최종 등급은 PM 의견이
+아닌 시스템 보정 결과다. 옛 배너 '⚠️ 트레이더 매수 → 최종 보유 (방향
+상충 — PM이 트레이더와 다른 결론)' 는 오독을 부른다: IBM 은 PM=Overweight
++ Trader=Buy (둘 다 매수) 였으나 분석가 4명 전원 보유 + RSI≥75 sell-side
+trigger 도 D-N일 임박 catalyst 도 PM rationale 에 없어 Fix F 가 HOLD 강제
+한 케이스. PM 이 트레이더와 다른 결론을 낸 게 아니라 시스템이 양쪽을
+모두 HOLD 로 보정한 것. `analyzer._format_summary` 가 `override_rating ==
+"Hold"` 일 때 `_detect_discipline_forced_hold_banner` 로 분기해 '⚠️ 시스템
+강제 보유 (PM override discipline): 분석가 전원 X 합의인데 PM Y override
+시도 → trigger 미인용 자동 HOLD. PM·트레이더 의견이 아닌 시스템 보정 결과'
+정확 배너 출력. enum lock(Overweight→BUY 무조건 매핑)은 거부 — discipline
+자체가 현대모비스/호텔신라/코미코 클러스터 방지 정책이므로 우회 불가.
+
+**기술 지표 SSoT 확장 (IBM 2026-06-02)** — `_compute_technical_snapshot`
+이 RSI/MACD/볼린저만 SSoT 였고 10 EMA/50 SMA/200 SMA 는 별도 경로
+(stockstats/alpha_vantage)라 시점 어긋남 → IBM 10 EMA 266 vs 현재가 325
+(22% 격차) stale 출력. fix: 현재가 + 10 EMA + 50 SMA + 200 SMA 를 같은
+yfinance close series(1y 윈도)에서 계산해 snapshot 에 함께 박고 '현재가
+대비 %' 병기 + 글자단위 copy 강제. 매크로(`get_macro_context`)도 (market,
+date) 단일 캐시지만 본문 재서술 시 paraphrase drift (IBM 뉴스 '10Y 4.51%'
+vs 매크로 '4.45%') → SSoT 글자단위 copy directive 추가.
+
 ## Help text maintenance (`_HELP_TEXT` in `bot/telegram_bot.py`)
 
 The help text is **pinned as a channel announcement**. Treat it as a public-facing spec.

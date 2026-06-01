@@ -2638,7 +2638,10 @@ def _compute_technical_snapshot(ticker: str) -> str:
     """
     try:
         import yfinance as yf
-        hist = yf.Ticker(ticker).history(period="3mo", auto_adjust=True)
+        # 1y 윈도 — RSI/MACD/볼린저(최대 26일) 충족 + 200 SMA(200거래일)도
+        # 같은 series 에서 계산 가능하게 확장 (IBM 2026-06-02: 200 SMA 가
+        # SSoT 에 들어가려면 3mo 로는 부족). 추가 fetch 0 (한 번에 1y).
+        hist = yf.Ticker(ticker).history(period="1y", auto_adjust=True)
         if hist is None or len(hist) < 20:
             return ""
         close = hist["Close"].dropna()
@@ -2708,18 +2711,69 @@ def _compute_technical_snapshot(ticker: str) -> str:
             elif rsi_val_num <= 30:
                 rsi_zone = " [과매도 접근 구간 ≤30]"
 
+        # 현재가 + 이동평균 (10 EMA / 50 SMA / 200 SMA) — RSI/MACD/볼린저와
+        # 동일 close 시리즈에서 계산해 SSoT 에 함께 박는다. IBM 2026-06-02
+        # surfaced: 10 EMA 가 별도 경로(stockstats/alpha_vantage)에서 와
+        # current price 와 시점이 어긋나 266 vs 325(22% 격차) stale 출력.
+        # 같은 series 로 통일해 시공간 왜곡 영구 차단. 통화 포맷은 볼린저와
+        # 동일 (_sym_bb / _fmt_bb 재사용 — KRW/JPY 정수, 그 외 소수 2자리).
+        try:
+            from bot.market import get_market_config as _gcfg_ma
+            _cma = _gcfg_ma(ticker)
+            _sym_ma = _cma.get("currency_symbol", "$")
+            _fmt_ma: str = "{:,.0f}" if _cma.get("currency") in ("KRW", "JPY") else "{:,.2f}"
+        except Exception:
+            _sym_ma, _fmt_ma = "$", "{:,.2f}"
+        _cur_px = float(close.iloc[-1])
+        ma_lines: list[str] = [
+            f"현재가: {_sym_ma}{_fmt_ma.format(_cur_px)} (이 series 종가 — "
+            f"아래 MA 와 동일 출처)"
+        ]
+        ema10 = close.ewm(span=10, adjust=False).mean()
+        _ema10v = float(ema10.iloc[-1])
+        _gap10 = (_cur_px - _ema10v) / _ema10v * 100 if _ema10v else 0.0
+        ma_lines.append(
+            f"10 EMA: {_sym_ma}{_fmt_ma.format(_ema10v)} (현재가 대비 "
+            f"{_gap10:+.1f}%)"
+        )
+        if len(close) >= 50:
+            _sma50 = float(close.rolling(50).mean().iloc[-1])
+            _g50 = (_cur_px - _sma50) / _sma50 * 100 if _sma50 else 0.0
+            ma_lines.append(
+                f"50 SMA: {_sym_ma}{_fmt_ma.format(_sma50)} (현재가 대비 "
+                f"{_g50:+.1f}%)"
+            )
+        if len(close) >= 200:
+            _sma200 = float(close.rolling(200).mean().iloc[-1])
+            _g200 = (_cur_px - _sma200) / _sma200 * 100 if _sma200 else 0.0
+            ma_lines.append(
+                f"200 SMA: {_sym_ma}{_fmt_ma.format(_sma200)} (현재가 대비 "
+                f"{_g200:+.1f}%)"
+            )
+        else:
+            ma_lines.append(
+                "200 SMA: N/A (3mo 윈도 — 200거래일 미만, 일부 신규 상장)"
+            )
+
         sep = "━" * 56
         return "\n".join([
             sep,
             "📐 TECHNICAL SNAPSHOT — 백엔드 단 1회 계산값 (재계산·재인용 금지)",
             sep,
+            *ma_lines,
             f"RSI(14): {rsi_str}{rsi_zone}",
             f"{macd_str}",
             f"볼린저(20,2σ): {bb_str}",
             sep,
             "⛔ SINGLE SOURCE OF TRUTH 강제 적용 (FORM 2026-05-23 RSI hallucination 방지):",
-            "   • 위 RSI(14) / MACD / 볼린저 수치가 이 분석의 유일한 canonical 값.",
-            "   • 위와 다른 RSI / MACD / 볼린저 값을 독자 계산·추정·인용하는 것 FORBIDDEN.",
+            "   • 위 현재가 / 10 EMA / 50 SMA / 200 SMA / RSI(14) / MACD /"
+            " 볼린저 수치가 이 분석의 유일한 canonical 값.",
+            "   • 위와 다른 현재가 / EMA / SMA / RSI / MACD / 볼린저 값을 독자"
+            " 계산·추정·인용하는 것 FORBIDDEN. 특히 10 EMA / 50 SMA / 200 SMA"
+            " 는 위 '현재가 대비 %' 와 함께 그대로 인용 — 별도 툴(stockstats/"
+            " alpha_vantage) 재계산값이 위와 달라도 위 snapshot 우선 (IBM"
+            " 2026-06-02: 10 EMA 266 vs 현재가 325 의 22% 시공간 왜곡 = 별도"
+            " 경로 stale 값 인용 사례).",
             "   • **글자 단위 copy 의무** (2026-05-29 4063.T 신에쓰화학 review"
             " surfaced): 본문 / 요약 / 결론에서 specific 수치 (예: MACD Hist"
             " 7.476, RSI 62.8, 볼린저 상단 ¥7,768) 를 인용할 때 위 snapshot"
