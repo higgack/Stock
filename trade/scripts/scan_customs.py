@@ -195,8 +195,19 @@ def main(argv: list[str] | None = None) -> int:
         if note:
             log.info("migration: %s", note)
 
+    empty = not (ranked[customs_scan.SECTION_RATE]
+                 or ranked[customs_scan.SECTION_AMOUNT])
     with customs.session(db) as conn:
         customs_scan.init_db(conn)
+        if empty:
+            # Defensive: an all-empty ranking (e.g. a transient API hiccup,
+            # or early in a month before any month has confirmed figures)
+            # must NOT wipe the last good live snapshot. Skip store_live so
+            # the panel keeps showing the most recent real ranking until a
+            # non-empty scan replaces it. Archive/alerts also no-op here.
+            log.warning("ranking empty (rate=0 amount=0) — keeping previous "
+                        "live snapshot, skipping store/archive")
+            return 0
         customs_scan.store_live(conn, ranked)
         archived = customs_scan.upsert_archive(conn, ranked)
         new_entrants = customs_scan.eval_new_entrants(conn, ranked)

@@ -176,5 +176,63 @@ class FetchChapterTests(unittest.TestCase):
         self.assertEqual(cs.build_series(rows)["1234567890"]["name"], "황산")
 
 
+class LatestMoveTests(unittest.TestCase):
+    """Regression for the 2026-06-01 'live wiped' bug: data.go.kr returns
+    future/current months with expDlr=0 before they confirm, so the move
+    must compare the latest two months that actually HAVE data, not the
+    two calendar-latest."""
+
+    def test_skips_zero_export_future_months(self):
+        # 3·4월 confirmed; 5·6월 returned but still zero (not yet confirmed).
+        months = {
+            "2026-03": {"exp_dlr": 100_000_000, "imp_dlr": 0},
+            "2026-04": {"exp_dlr": 130_000_000, "imp_dlr": 0},
+            "2026-05": {"exp_dlr": 0, "imp_dlr": 0},
+            "2026-06": {"exp_dlr": 0, "imp_dlr": 0},
+        }
+        mv = cs._latest_move(months)
+        self.assertIsNotNone(mv)
+        # compares 4월 vs 3월, NOT 6월(0) vs 5월(0)
+        self.assertEqual(mv["year_month"], "2026-04")
+        self.assertEqual(mv["curr"], 130_000_000)
+        self.assertEqual(mv["prev"], 100_000_000)
+        self.assertAlmostEqual(mv["pct"], 30.0)
+
+    def test_only_trailing_zeros_returns_none(self):
+        # All-zero (or only one real month then trailing zeros) → no move.
+        months = {
+            "2026-04": {"exp_dlr": 100_000_000, "imp_dlr": 0},
+            "2026-05": {"exp_dlr": 0, "imp_dlr": 0},
+            "2026-06": {"exp_dlr": 0, "imp_dlr": 0},
+        }
+        # trailing 5·6월 trimmed → only 4월 left → < 2 months → None
+        self.assertIsNone(cs._latest_move(months))
+
+    def test_new_export_in_latest_month_ranks(self):
+        # 0 → $50M with the value in the NEWEST month (not trailing zero)
+        # is a real new-export surge and must rank (prev=0 → pct None,
+        # delta=+50M).
+        months = {
+            "2026-05": {"exp_dlr": 0, "imp_dlr": 0},
+            "2026-06": {"exp_dlr": 50_000_000, "imp_dlr": 0},
+        }
+        mv = cs._latest_move(months)
+        self.assertIsNotNone(mv)
+        self.assertEqual(mv["delta"], 50_000_000)
+        self.assertIsNone(mv["pct"])
+
+    def test_month_rollover_keeps_real_surge(self):
+        # The exact 2026-06-01 scenario: a real April surge must survive
+        # ranking even when the scan window also pulled empty 5·6월.
+        rows = []
+        for ym, e in [("2026-03", 100_000_000), ("2026-04", 200_000_000),
+                      ("2026-05", 0), ("2026-06", 0)]:
+            rows.append({"hs_code": "1111111111", "stat_kor": "디램",
+                         "year_month": ym, "exp_dlr": e, "imp_dlr": 0})
+        ranked = cs.rank(cs.build_series(rows), rate_min_usd=0)
+        codes = {m["hs_code"] for m in ranked[cs.SECTION_AMOUNT]}
+        self.assertIn("1111111111", codes)
+
+
 if __name__ == "__main__":
     unittest.main()

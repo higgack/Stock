@@ -160,12 +160,36 @@ def build_series(rows: list[dict]) -> dict[str, dict]:
 
 
 def _latest_move(months: dict) -> Optional[dict]:
-    """From {ym: figures} return latest vs previous export move, or None
-    when < 2 months. delta is always defined; pct is None when prev=0."""
-    if len(months) < 2:
+    """Latest-vs-previous export move, or None when < 2 usable months.
+
+    The subtlety (2026-06-01 'live wiped' bug): data.go.kr returns rows
+    for FUTURE months (current calendar month and beyond) pre-filled with
+    expDlr=0 because they aren't confirmed yet. Naively taking the two
+    calendar-latest months compares those zeros and zeroes the whole
+    ranking early each month. But we must NOT just skip ALL zero months —
+    a genuine '0 → $200M' first-ever export is a real surge worth ranking.
+
+    So we drop only months STRICTLY AFTER the current calendar month
+    (unpublished future), then take the latest two of what remains. A past
+    month sitting at 0 (a real new-export baseline) is kept, so 0→값 still
+    ranks; a not-yet-confirmed future 0 is dropped, so the comparison
+    tracks the latest two real months (e.g. 4월 vs 3월 until 5월 confirms).
+    delta is always defined; pct is None when prev=0."""
+    ordered = sorted(months)
+    # Trim the UNCONFIRMED tail: drop trailing zero-export months. 관세청
+    # confirms a month ~the 15th of the following month and data.go.kr
+    # pre-fills not-yet-confirmed months (current + next, sometimes more)
+    # with expDlr=0, so the newest real datum is the last NON-zero month.
+    # Trimming only the trailing zeros (not interior ones) means a genuine
+    # 0→값 first-export keeps its 0 as `prev` (the 0 isn't trailing — a
+    # bigger value follows it) and still ranks, while not-yet-published
+    # trailing zeros are removed — fixing the 2026-06-01 'live wiped' bug
+    # without dropping real new-export surges.
+    while ordered and (months[ordered[-1]].get("exp_dlr") or 0) == 0:
+        ordered.pop()
+    if len(ordered) < 2:
         return None
-    yms = sorted(months)
-    cur_ym, prev_ym = yms[-1], yms[-2]
+    cur_ym, prev_ym = ordered[-1], ordered[-2]
     curr = months[cur_ym].get("exp_dlr") or 0
     prev = months[prev_ym].get("exp_dlr") or 0
     pct = ((curr - prev) / prev * 100.0) if prev else None
