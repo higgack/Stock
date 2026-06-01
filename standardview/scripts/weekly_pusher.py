@@ -287,7 +287,28 @@ _SECTOR_ETFS: list[tuple[str, str, str]] = [
     ("2800.HK",  "항셍 대표",  "HK"),
     ("3033.HK",  "항셍테크",   "HK"),
     ("2828.HK",  "H주 (HSCEI)", "HK"),
-    ("2778.HK",  "부동산",     "HK"),
+    # ── EU: iShares STOXX Europe 600 섹터 ETF (Xetra .DE). 라벨은 yfinance
+    # longName 기준 — 2026-06-01 VM 검증으로 18개 sector-distinct 확정
+    # (EURO STOXX Banks 30-15 EXX1 은 EXV1 은행 중복이라 제외). STOXX 600
+    # 이 미국 SPDR 처럼 섹터별 완비라 EU 가 '전 증시 섹터 동향' 의 큰 조각.
+    ("EXV1.DE", "은행",       "EU"),
+    ("EXV3.DE", "테크",       "EU"),
+    ("EXV4.DE", "헬스케어",   "EU"),
+    ("EXV5.DE", "자동차",     "EU"),
+    ("EXV6.DE", "기초자원",   "EU"),
+    ("EXV7.DE", "화학",       "EU"),
+    ("EXH1.DE", "에너지",     "EU"),
+    ("EXH2.DE", "금융서비스", "EU"),
+    ("EXH3.DE", "음식료",     "EU"),
+    ("EXH4.DE", "산업재",     "EU"),
+    ("EXH5.DE", "보험",       "EU"),
+    ("EXH6.DE", "미디어",     "EU"),
+    ("EXH7.DE", "생활용품",   "EU"),
+    ("EXH8.DE", "리테일",     "EU"),
+    ("EXH9.DE", "유틸리티",   "EU"),
+    ("EXI5.DE", "부동산",     "EU"),
+    ("EXV8.DE", "건설자재",   "EU"),
+    ("EXSA.DE", "STOXX 600",  "EU"),
 ]
 
 
@@ -324,7 +345,7 @@ def _sector_rotation_block(week_label: str) -> str:
         by_market[mkt].sort(key=lambda x: x[0], reverse=True)
 
     lines = [f"<b>📊 섹터 로테이션  {week_label}</b>", ""]
-    for mkt in ("US", "KR", "JP", "TW", "CN", "HK"):
+    for mkt in ("US", "EU", "KR", "JP", "TW", "CN", "HK"):
         rows = by_market.get(mkt)
         if not rows:
             continue
@@ -429,7 +450,7 @@ def _save_weekly_archive(
                     title=f"섹터 로테이션 히트맵  {week_label}",
                     subtitle=(
                         f"생성: {today.isoformat()} KST"
-                        "  |  US·KR·JP·TW·CN·HK 5거래일 수익률"
+                        "  |  US·EU·KR·JP·TW·CN·HK 5거래일 수익률"
                     ),
                 ),
                 encoding="utf-8",
