@@ -207,10 +207,15 @@ def _gemini_weekly_summary(mds: dict[str, str]) -> str:
 
 # ── 4. Sector rotation heatmap ───────────────────────────────────────────────
 
-# US SPDR 11 + KR KODEX 4 + JP TOPIX-17 reps 3 + TW 4 + CN 4 + HK 2
-# (NOAH 커버리지 US/KR/JP/TW/CN/HK 와 일치, 2026-05-31). yfinance 5d
-# 히스토리 빈약한 ETF 는 _sector_rotation_block 가 graceful skip.
+# 전 시장 가용 섹터 ETF 최대 커버 (사용자 정책 2026-06-01 "가능한 한 모든
+# 비교 ETF"). NOAH sector_strength_tools.py 의 production-검증 override
+# ETF 심볼을 그대로 차용 (NOAH /ticker 가 매주 쓰는 심볼이라 yfinance
+# 인식 보장). 시장별 unique ticker 만 dedup. 라벨은 전부 한글 (한자/영문
+# 제거 — 사용자 정책). yfinance 5d 히스토리 빈약 ETF 는 _sector_rotation_
+# block 이 graceful skip (조용히 제외 — 사용자 정책 2026-06-01).
+# US SPDR 11 + KR KODEX 17 + JP TOPIX-17 전체 + TW 4 + CN 16 + HK 4.
 _SECTOR_ETFS: list[tuple[str, str, str]] = [
+    # ── US: SPDR GICS 11 섹터 완비
     ("XLK",    "IT",          "US"),
     ("XLC",    "통신",        "US"),
     ("XLY",    "임의소비재",  "US"),
@@ -222,23 +227,67 @@ _SECTOR_ETFS: list[tuple[str, str, str]] = [
     ("XLRE",   "리츠",        "US"),
     ("XLU",    "유틸리티",    "US"),
     ("XLB",    "소재",        "US"),
-    ("091160.KS", "반도체",   "KR"),
-    ("139270.KS", "IT",       "KR"),
-    ("091170.KS", "자동차",   "KR"),
-    ("091180.KS", "소비재",   "KR"),
-    ("1628.T", "반도체·전자", "JP"),
-    ("1615.T", "銀行",        "JP"),
-    ("1617.T", "食品",        "JP"),
+    # ── KR: KODEX 섹터 ETF (sector_strength_tools _KR_INDUSTRY_OVERRIDES)
+    ("091160.KS", "반도체",     "KR"),
+    ("266370.KS", "IT",         "KR"),
+    ("091180.KS", "자동차",     "KR"),
+    ("091170.KS", "은행",       "KR"),
+    ("140700.KS", "보험",       "KR"),
+    ("102970.KS", "증권",       "KR"),
+    ("244580.KS", "바이오",     "KR"),
+    ("266420.KS", "헬스케어",   "KR"),
+    ("117700.KS", "건설",       "KR"),
+    ("117680.KS", "철강",       "KR"),
+    ("102710.KS", "화학",       "KR"),
+    ("305720.KS", "2차전지",    "KR"),
+    ("300950.KS", "게임",       "KR"),
+    ("266360.KS", "미디어",     "KR"),
+    ("140710.KS", "운송",       "KR"),
+    ("102960.KS", "기계",       "KR"),
+    ("117460.KS", "에너지화학", "KR"),
+    # ── JP: NEXT FUNDS TOPIX-17 전체 (1617~1633)
+    ("1617.T", "식품",        "JP"),
+    ("1618.T", "에너지",      "JP"),
+    ("1619.T", "건설·자재",   "JP"),
+    ("1620.T", "소재·화학",   "JP"),
+    ("1621.T", "제약",        "JP"),
+    ("1622.T", "자동차",      "JP"),
+    ("1623.T", "철강·비철",   "JP"),
+    ("1624.T", "기계",        "JP"),
+    ("1625.T", "전기·정밀",   "JP"),
+    ("1626.T", "IT·서비스",   "JP"),
+    ("1627.T", "전력·가스",   "JP"),
+    ("1628.T", "운수·물류",   "JP"),
+    ("1629.T", "상사·도매",   "JP"),
+    ("1630.T", "소매",        "JP"),
+    ("1631.T", "은행",        "JP"),
+    ("1632.T", "금융",        "JP"),
+    ("1633.T", "부동산",      "JP"),
+    # ── TW: Yuanta 섹터 ETF (_TW_INDUSTRY_OVERRIDES)
     ("0050.TW",  "TAIEX 50",   "TW"),
     ("0053.TW",  "전자",       "TW"),
     ("0055.TW",  "금융",       "TW"),
     ("00891.TW", "반도체",     "TW"),
+    # ── CN A주: 上海/深圳 섹터 ETF (_CN_A_INDUSTRY_OVERRIDES)
     ("512760.SS", "반도체",    "CN"),
     ("512800.SS", "은행",      "CN"),
-    ("512690.SS", "백주",      "CN"),
+    ("512070.SS", "보험증권",  "CN"),
+    ("512170.SS", "의료",      "CN"),
+    ("512690.SS", "주류",      "CN"),
     ("159928.SZ", "소비",      "CN"),
+    ("159805.SZ", "자동차",    "CN"),
+    ("159755.SZ", "신에너지",  "CN"),
+    ("515790.SS", "광전지",    "CN"),
+    ("515980.SS", "통신",      "CN"),
+    ("512200.SS", "부동산",    "CN"),
+    ("159930.SZ", "에너지",    "CN"),
+    ("515210.SS", "강철",      "CN"),
+    ("159996.SZ", "가전",      "CN"),
+    # ── HK: 항셍 정렬 섹터 ETF (_HK_INDUSTRY_OVERRIDES)
     ("2800.HK",  "항셍 대표",  "HK"),
     ("3033.HK",  "항셍테크",   "HK"),
+    ("2828.HK",  "H주 (HSCEI)", "HK"),
+    ("2778.HK",  "부동산",     "HK"),
 ]
 
 
