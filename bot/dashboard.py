@@ -1667,7 +1667,6 @@ def _render_index(records: list[dict]) -> str:
     _external_links = (
         ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
         f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>'
-        ' · <a href="https://reports.blueming.net/dashboard" target="_blank" rel="noopener">📝 report summary</a>'
     )
     # 부동산은 주간(느린) surface 라 nav 제일 뒤 (사용자 정책 2026-05-31)
     if issue_count > 0:

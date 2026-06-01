@@ -661,6 +661,19 @@ Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약. 앞으
 대시보드(예: 신규 surface)는 이 줄 맨 끝에 붙일 것 — 기존 항목 사이에
 끼워넣지 말 것. (`bot/dashboard.py` errors_link 두 분기 모두 갱신.)
 
+**⛔ 외부 사이트(우리가 운영하지 않는 third-party URL) surface 정책
+(사용자 2026-06-01):** Standard View / 한국 수출입 처럼 우리가 같은 VM
+에서 운영하는 보조 대시보드는 메인 nav `_external_links` 에 유지.
+그 외 외부 third-party 사이트(Stockeasy / Jusikbot / aibottlenecks.app
+/ analytics.blancwm.com / reports.blueming.net 등 사용자가 참고용으로
+모아두는 링크)는 **오직 `/sites` 명령 (`bot/telegram_bot.py` `_SITES_
+TEXT`) 한 곳에만 추가**. 메인 대시보드 nav `_external_links` 추가 금지
++ `_HELP_TEXT` §9 대시보드 절 추가 금지. 이유: 메인 nav 와 help 는
+우리 시스템 surface 만 깔끔히 유지 (사용자가 nav 클릭으로 외부 사이트
+가는 혼란 방지), 외부 참고 모음은 `/sites` 가 전담 단일 source. 새 외부
+사이트 추가 시 `_SITES_TEXT` 의 `<li>` 줄 하나만 추가하면 끝 — 다른
+파일/섹션 동기화 불필요.
+
 .env 변경 후 `sudo systemctl restart dashboard` (env 는 import 시 1회 읽음).
 **향후 별도 포트로 새 대시보드 서버를 만들면 동일하게 `DASHBOARD_USER`/
 `DASHBOARD_PASSWORD` 를 읽어 같은 기본 자격증명으로 보호할 것** — 이것이
