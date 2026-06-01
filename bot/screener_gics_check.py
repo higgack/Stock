@@ -450,6 +450,15 @@ def main() -> int:
         return 0
 
     _write_audit(report, text, cost_krw)
+    # Regen dashboard page so the new candidate(s) appear immediately
+    # (not only at midnight). Audit log is the source of truth; this
+    # is a re-render of the same data. Errors swallowed — the alert
+    # already shipped, page can catch up at next periodic refresh.
+    try:
+        from bot.dashboard import regenerate_gics_candidates_index
+        regenerate_gics_candidates_index()
+    except Exception as exc:
+        log.warning("gics_candidates.html regen failed: %s", exc)
 
     sent = _send_telegram(tg_token, chat_ids[0], msg)
     if not sent:

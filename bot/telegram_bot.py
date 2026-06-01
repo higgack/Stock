@@ -1014,6 +1014,8 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
  • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
+ • <b>GICS 후보</b> — 분기 점검(3·6·9·12월 1일) 신규 산업 후보 누적·채택 상태
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/gics_candidates.html
  • <b>SV</b> — 매크로·산업·Deal·07:30/20:30+텔레·22:00 주간
    http://34.50.23.221:8002/dashboard
  • <b>🇰🇷 수출입</b> — 외부 보조(자동 갱신)
@@ -2431,11 +2433,13 @@ async def _periodic_dashboard_refresh() -> None:
         try:
             from bot.dashboard import (regenerate_index, regenerate_daily_byte_index,
                                        regenerate_realestate_index,
-                                       regenerate_cheongyak_index)
+                                       regenerate_cheongyak_index,
+                                       regenerate_gics_candidates_index)
             regenerate_index()
             regenerate_daily_byte_index()
             regenerate_realestate_index()
             regenerate_cheongyak_index()
+            regenerate_gics_candidates_index()
             log.info("midnight dashboard regen: ok")
         except Exception:
             log.exception("midnight dashboard regen failed")
@@ -2487,6 +2491,12 @@ async def _on_startup(application) -> None:
         log.info("startup: cheongyak.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: cheongyak.html regen failed: %s", exc)
+    try:
+        from bot.dashboard import regenerate_gics_candidates_index
+        regenerate_gics_candidates_index()
+        log.info("startup: gics_candidates.html regenerated with current code")
+    except Exception as exc:
+        log.warning("startup: gics_candidates.html regen failed: %s", exc)
     # Populates the 'Menu' button beside the input area + the '/' typing
     # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
     # registered (the universe is too large) — Telegram still recognises

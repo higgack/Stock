@@ -1678,6 +1678,7 @@ def _render_index(records: list[dict]) -> str:
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
+            + ' · <a href="gics_candidates.html">🧬 GICS 후보</a>'
         )
     else:
         errors_link = (
@@ -1688,6 +1689,7 @@ def _render_index(records: list[dict]) -> str:
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
+            + ' · <a href="gics_candidates.html">🧬 GICS 후보</a>'
         )
 
     return f"""<!doctype html>
@@ -3869,3 +3871,206 @@ def regenerate_cheongyak_index() -> None:
         log.info("dashboard: cheongyak.html regenerated (%d runs)", len(runs))
     except Exception as exc:
         log.warning("dashboard: cheongyak regen failed: %s", exc)
+
+
+# ── 분기 GICS / 신규 산업 점검 — 후보 트래킹 (2026-06-01) ────────────────
+# bot/screener_gics_check.py 가 분기마다 Pro+web search 로 (a) 공식 GICS
+# 분류 변경 + (b) 신규 emerging industry trend 식별 → Telegram 알림 +
+# ~/.tradingagents/gics_check_audit.jsonl append. 단순 알림이라 사용자가
+# 채택 결정을 잊을 위험 → 본 페이지가 chronological 누적 surface 로 기능.
+# 각 candidate 의 suggested_slug 가 registry(list_domains)에 있으면
+# '✅ 채택됨' badge, 아니면 '⏳ 미정'. 새 quarterly run 자동 누적 — 추가
+# 인프라 0 (jsonl 만 읽음).
+_GICS_AUDIT_LOG = Path.home() / ".tradingagents" / "gics_check_audit.jsonl"
+
+
+def _load_gics_check_runs() -> list[dict]:
+    """Read the jsonl audit log written by bot.screener_gics_check.
+    Returns newest-first list of entries. Empty list when file missing."""
+    if not _GICS_AUDIT_LOG.exists():
+        return []
+    runs: list[dict] = []
+    try:
+        with _GICS_AUDIT_LOG.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    runs.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception as exc:
+        log.warning("dashboard: gics audit load failed: %s", exc)
+    runs.sort(key=lambda r: r.get("ts") or "", reverse=True)
+    return runs
+
+
+def _render_gics_candidates_page(runs: list[dict]) -> str:
+    """Render gics_candidates.html — quarterly Pro check 결과 누적 surface.
+    각 candidate 의 suggested_slug 가 registry 에 이미 있으면 '✅ 채택됨'
+    badge. 사용자가 채택/거부 결정을 잊지 않도록 chronological 누적."""
+    import html as _html
+
+    # Registry 의 현재 slug set — 채택 여부 판정용. import 실패 시 빈 set
+    # (모두 '⏳ 미정' 으로 표시 — graceful degrade).
+    try:
+        from bot.screener_themes import list_domains
+        adopted_slugs = {(d.get("slug") or "").lower() for d in list_domains()}
+    except Exception:
+        adopted_slugs = set()
+
+    def _norm_slug(s: str) -> str:
+        return (s or "").lower().strip()
+
+    def _status_badge(slug: str) -> str:
+        if _norm_slug(slug) in adopted_slugs:
+            return ('<span style="color:#2ca44b;font-weight:600">'
+                    '✅ 채택됨</span>')
+        return ('<span style="color:var(--fg-soft)">⏳ 미정</span>')
+
+    # 상단 stats
+    total_runs = len(runs)
+    total_cost_krw = sum(r.get("cost_krw", 0) or 0 for r in runs)
+    last_ts = runs[0].get("ts", "")[:10] if runs else "—"
+    # 미채택 candidate 누적 카운트 (사용자가 행동해야 할 항목 수)
+    pending_count = 0
+    for r in runs:
+        rep = r.get("report") or {}
+        for it in (rep.get("official_gics_changes") or []):
+            if not it.get("already_covered") and _norm_slug(
+                it.get("suggested_slug")
+            ) not in adopted_slugs:
+                pending_count += 1
+        for it in (rep.get("emerging_trends") or []):
+            if not it.get("already_covered") and _norm_slug(
+                it.get("suggested_slug")
+            ) not in adopted_slugs:
+                pending_count += 1
+
+    parts: list[str] = [_SCREENER_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="screener.html">📊 Bottleneck Screener</a>
+    · <a href="screener_domains.html">🗂️ 도메인 목록</a>
+  </div>
+  <h1>🧬 분기 GICS / 신규 산업 점검</h1>
+  <p class="sub">
+    bot/screener_gics_check.py 가 분기마다 (3·6·9·12월 1일 09:00 KST)
+    Pro+web search 로 식별한 후보. 사용자 검증 후 모듈 add 결정 — 본 페이지
+    가 결정 트래킹 surface (Telegram 알림은 휘발성).
+  </p>
+  <div class="stats">
+    <div class="stat"><div class="stat-num">{total_runs}</div>
+      <div class="stat-lbl">총 점검 횟수</div></div>
+    <div class="stat"><div class="stat-num">₩{int(total_cost_krw):,}</div>
+      <div class="stat-lbl">누적 비용</div></div>
+    <div class="stat"><div class="stat-num">{last_ts}</div>
+      <div class="stat-lbl">마지막 점검일</div></div>
+    <div class="stat"><div class="stat-num">{pending_count}</div>
+      <div class="stat-lbl">⏳ 미결정 후보</div></div>
+  </div>
+""")
+
+    if not runs:
+        parts.append('<p class="sub" style="margin-top:24px">'
+                     '아직 점검 기록이 없습니다. 다음 분기(3·6·9·12월 1일) '
+                     '09:00 KST 에 첫 entry 가 추가됩니다.</p>')
+        parts.append("</div>")
+        return "".join(parts)
+
+    def _render_item(it: dict, kind: str) -> str:
+        name = _html.escape(str(it.get("name") or "?"))
+        kr = _html.escape(str(it.get("korean_name") or ""))
+        slug = _html.escape(str(it.get("suggested_slug") or "?"))
+        layer = _html.escape(str(it.get("suggested_layer") or "?"))
+        rationale = _html.escape(str(it.get("rationale") or ""))
+        badge = _status_badge(it.get("suggested_slug") or "")
+        if kind == "trend":
+            mc = it.get("estimated_market_cap_usd_billion") or 0
+            tickers = ", ".join(it.get("key_tickers") or [])
+            meta = (f"시총 ~${mc}B · 종목: {_html.escape(tickers)}")
+        else:
+            kind_txt = _html.escape(str(it.get("type") or ""))
+            parent = _html.escape(str(it.get("parent_sector") or ""))
+            eff = _html.escape(str(it.get("effective_date") or ""))
+            src = _html.escape(str(it.get("source") or ""))
+            meta = (f"유형: {kind_txt} · 상위: {parent} · 효력: {eff}"
+                    f" · 출처: {src}")
+        return (
+            f'<div class="run-card" style="margin:10px 0;padding:12px 14px">'
+            f'<div style="display:flex;align-items:center;gap:10px;'
+            f'flex-wrap:wrap"><b>{name}</b>'
+            f'<span style="color:var(--fg-soft)">({kr})</span>'
+            f'{badge}</div>'
+            f'<div class="sub" style="margin-top:4px">{meta}</div>'
+            f'<div class="sub" style="margin-top:4px">제안: '
+            f'<code>{slug}</code> ({layer})</div>'
+            f'<div style="margin-top:6px">{rationale}</div>'
+            f'</div>'
+        )
+
+    for r in runs:
+        ts = _html.escape((r.get("ts") or "")[:19].replace("T", " "))
+        cost = int(r.get("cost_krw", 0) or 0)
+        rep = r.get("report") or {}
+        win_start = _html.escape(str(rep.get("window_start") or "?"))
+        win_end = _html.escape(str(rep.get("window_end") or "?"))
+        summary = _html.escape(str(rep.get("summary") or ""))
+        gics_items = [it for it in (rep.get("official_gics_changes") or [])
+                      if not it.get("already_covered")]
+        trend_items = [it for it in (rep.get("emerging_trends") or [])
+                       if not it.get("already_covered")]
+
+        parts.append(f"""
+<details class="run-wrap" open>
+  <summary class="run-summary">
+    <span class="run-date">{ts}</span>
+    <span class="run-meta">윈도 {win_start} ~ {win_end} · ₩{cost:,}
+      · GICS 변경 {len(gics_items)} · 신규 trend {len(trend_items)}</span>
+  </summary>
+  <div class="run-body">
+""")
+        if summary:
+            parts.append(f'<div class="sub" style="margin:8px 0 14px 0">'
+                         f'{summary}</div>')
+        if gics_items:
+            parts.append('<h3 style="margin:14px 0 6px 0">━━━ 공식 GICS '
+                         '변경 ━━━</h3>')
+            for it in gics_items:
+                parts.append(_render_item(it, "gics"))
+        else:
+            parts.append('<p class="sub">공식 GICS 변경 없음.</p>')
+        if trend_items:
+            parts.append('<h3 style="margin:14px 0 6px 0">━━━ 신규 industry '
+                         'trend ━━━</h3>')
+            for it in trend_items:
+                parts.append(_render_item(it, "trend"))
+        else:
+            parts.append('<p class="sub">신규 trend candidate 없음.</p>')
+        parts.append('</div></details>')
+
+    parts.append('<p class="sub" style="margin-top:24px">'
+                 'raw 응답 audit log: '
+                 f'<code>{_GICS_AUDIT_LOG}</code></p>')
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def regenerate_gics_candidates_index() -> None:
+    """Scan ~/.tradingagents/gics_check_audit.jsonl → write
+    gics_candidates.html under ARCHIVE_ROOT. Called from
+    _periodic_dashboard_refresh + _on_startup. Errors swallowed."""
+    try:
+        runs = _load_gics_check_runs()
+        html = _render_gics_candidates_page(runs)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "gics_candidates.html").write_text(
+            html, encoding="utf-8"
+        )
+        log.info("dashboard: gics_candidates.html regenerated (%d runs)",
+                 len(runs))
+    except Exception as exc:
+        log.warning("dashboard: gics_candidates regen failed: %s", exc)
