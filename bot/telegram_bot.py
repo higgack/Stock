@@ -1023,7 +1023,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
 
 ━━━━━━━━━
 <b>【10. 진행 중 / 예정】</b>
- • Screener 65 도메인 + 자유어 + 24h 캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기 GICS 06-01 · 예정: L3 sanity check
+ • Screener 65 도메인 + 자유어 + 24h 캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기 GICS 3·6·9·12월 5일 · 예정: L3 sanity check
 """
 
 

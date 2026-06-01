@@ -3310,7 +3310,7 @@ details.layer-details summary {{ position:relative; }}
   · 동일 목록 텔레그램 = <code>/screener_list</code>.</p>
   <p class="sub"><b>3-layer 도메인 모델</b> — L1 Trend (cross-cutting cycle 베팅) · L2 Sector (미국 GICS-like 정식 분류) · L3 Industry (각 L2 sector 의 sub-industry).
   새 도메인 추가는 <code>bot/screener_themes/&lt;slug&gt;.py</code> 모듈 1 개 drop 만으로 본 페이지에 자동 반영.
-  분기마다(3·6·9·12월 1일) Pro+web search 가 신규 산업 후보를 식별 → <a href="gics_candidates.html">🧬 GICS 후보 페이지</a> 에 누적, 사용자 검증 후 모듈 add 결정.</p>
+  분기마다(3·6·9·12월 5일) Pro+web search 가 신규 산업 후보를 식별 → <a href="gics_candidates.html">🧬 GICS 후보 페이지</a> 에 누적, 사용자 검증 후 모듈 add 결정.</p>
   {filter_html}
   {body}
   {history_html}
@@ -4127,7 +4127,7 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
   </div>
   <h1>🧬 분기 GICS / 신규 산업 점검</h1>
   <p class="sub">
-    bot/screener_gics_check.py 가 분기마다 (3·6·9·12월 1일 09:00 KST)
+    bot/screener_gics_check.py 가 분기마다 (3·6·9·12월 5일 09:00 KST)
     Pro+web search 로 식별한 후보. 사용자 검증 후 모듈 add 결정 — 본 페이지
     가 결정 트래킹 surface (Telegram 알림은 휘발성).
   </p>
@@ -4145,7 +4145,7 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
 
     if not runs:
         parts.append('<p class="sub" style="margin-top:24px">'
-                     '아직 점검 기록이 없습니다. 다음 분기(3·6·9·12월 1일) '
+                     '아직 점검 기록이 없습니다. 다음 분기(3·6·9·12월 5일) '
                      '09:00 KST 에 첫 entry 가 추가됩니다.</p>')
         parts.append("</div>")
         return "".join(parts)

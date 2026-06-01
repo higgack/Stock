@@ -1,6 +1,6 @@
 """Quarterly GICS / sector classification change check (사용자 정책 2026-05-29).
 
-Runs 4x/year via systemd timer (3월·6월·9월·12월 1일 09:00 KST):
+Runs 4x/year via systemd timer (3월·6월·9월·12월 5일 09:00 KST):
   1. Pro call (gemini-2.5-pro + web search grounding) — surveys the
      last 3 months for: (a) S&P Dow Jones GICS / MSCI Industry
      Classification 의 sector/industry 추가·변경·재분류 announcement,

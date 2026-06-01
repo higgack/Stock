@@ -340,7 +340,10 @@ pattern to follow:
   • 30분 gap 으로 generator 가 완료된 latest.html 을 pusher 가 사용
   • legacy `standardview-hourly.timer` (Mon-Fri 12/16시 push) disabled
 - Screener GICS 분기 점검 (2026-05-29 사용자 정책):
-  • `screener-gics-check.timer` — 3·6·9·12월 1일 09:00 KST (4x/year)
+  • `screener-gics-check.timer` — 3·6·9·12월 5일 09:00 KST (4x/year, 사용자
+    정책 2026-06-01 — 1일→5일 변경 사유: 한국이 미국 대비 시차 앞서므로
+    1일 09:00 KST 면 미국 시장/공시 마감 데이터가 충분히 반영되지 않은
+    시점. 5일이면 미국 4일 close 데이터까지 확보 → 분기 정리 안정.)
   • `bot/screener_gics_check.py` 가 Pro + web search 로 (a) S&P GICS /
     MSCI 공식 분류 변경 + (b) 신규 emerging industry trend (시총 $50B+
     pure-play 5+ 종목) 식별 → 기존 65 도메인과 비교 → 신규 후보만
