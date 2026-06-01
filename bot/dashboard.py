@@ -4013,7 +4013,10 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
         )
 
     for r in runs:
-        ts = _html.escape((r.get("ts") or "")[:19].replace("T", " "))
+        # 헤더 포맷 (사용자 정책 2026-06-01): 'YYYY-MM-DD, START ~ END 윈도우,
+        # ₩cost · GICS 변경 N · 신규 trend N'. 시간(HH:MM:SS) 은 분기 단위
+        # 점검이라 부정확해 부담만 — 날짜만으로 충분.
+        ts = _html.escape((r.get("ts") or "")[:10])
         cost = int(r.get("cost_krw", 0) or 0)
         rep = r.get("report") or {}
         win_start = _html.escape(str(rep.get("window_start") or "?"))
@@ -4027,8 +4030,8 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
         parts.append(f"""
 <details class="run-wrap" open>
   <summary class="run-summary">
-    <span class="run-date">{ts}</span>
-    <span class="run-meta">윈도 {win_start} ~ {win_end} · ₩{cost:,}
+    <span class="run-date">{ts},</span>
+    <span class="run-meta">{win_start} ~ {win_end} 윈도우, ₩{cost:,}
       · GICS 변경 {len(gics_items)} · 신규 trend {len(trend_items)}</span>
   </summary>
   <div class="run-body">
