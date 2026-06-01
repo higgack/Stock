@@ -674,6 +674,13 @@ TEXT`) 한 곳에만 추가**. 메인 대시보드 nav `_external_links` 추가 
 사이트 추가 시 `_SITES_TEXT` 의 `<li>` 줄 하나만 추가하면 끝 — 다른
 파일/섹션 동기화 불필요.
 
+**⛔ `_SITES_TEXT` 항목은 이모지 없이 plain text 만 (사용자 정책
+2026-06-01):** 새 외부 사이트 추가 시 `📝` `📊` `🔗` 등 이모지 prefix
+금지. 기존 항목 (Stockeasy / Stockhub / Jusikbot 등) 전부 plain text
+형식 유지 중이며 일관성 보존이 사용자 명시 요청. anchor text 는 원본
+사이트 이름 그대로 (필요 시 한국어 부제 병기 OK). 이 규칙은 향후 모든
+외부 사이트 추가에 영구 적용.
+
 .env 변경 후 `sudo systemctl restart dashboard` (env 는 import 시 1회 읽음).
 **향후 별도 포트로 새 대시보드 서버를 만들면 동일하게 `DASHBOARD_USER`/
 `DASHBOARD_PASSWORD` 를 읽어 같은 기본 자격증명으로 보호할 것** — 이것이
