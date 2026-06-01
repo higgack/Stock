@@ -215,7 +215,16 @@ def rank(
              (noise floor — small lines double easily), sorted by pct desc.
     amount — sorted by export Δ$ desc (가장 많이 늘어난 순), NO floor
              (Δ$ ranking already buries small lines).
-    Each row: hs_code, name, year_month, prev, curr, delta, pct."""
+    Each row: hs_code, name, year_month, prev, curr, delta, pct.
+
+    All ranked rows share ONE reference month: the latest confirmed month
+    across the whole scan (global max year_month among per-leaf moves).
+    Items whose freshest confirmed month is older (e.g. an intermittent
+    line last shipped 2 months ago) are excluded so the panel never mixes
+    '2026-04' and '2026-03' rows — every row compares the same month vs
+    its prior. Operator chose this (uniform reference) over per-item latest;
+    the trade-off is that a surge in a lagging-month item won't show until
+    that item reports the current month."""
     moves = []
     for hs, node in leaves.items():
         mv = _latest_move(node["months"])
@@ -225,6 +234,12 @@ def rank(
         mv["hs_code"] = hs
         mv["name"] = node["name"]
         moves.append(mv)
+
+    # Unify the reference month: keep only items whose latest confirmed
+    # month is THE latest across all items.
+    if moves:
+        ref_ym = max(m["year_month"] for m in moves)
+        moves = [m for m in moves if m["year_month"] == ref_ym]
 
     rate = [
         m for m in moves

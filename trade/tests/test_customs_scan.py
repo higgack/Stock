@@ -233,6 +233,27 @@ class LatestMoveTests(unittest.TestCase):
         codes = {m["hs_code"] for m in ranked[cs.SECTION_AMOUNT]}
         self.assertIn("1111111111", codes)
 
+    def test_rank_unifies_reference_month(self):
+        # Item A confirmed through 4월, item B only through 3월. The panel
+        # must show ONE reference month (the global latest, 2026-04) and
+        # drop B so rows don't mix 4월/3월.
+        rows = []
+        for ym, e in [("2026-02", 100_000_000), ("2026-03", 100_000_000),
+                      ("2026-04", 200_000_000)]:
+            rows.append({"hs_code": "1111111111", "stat_kor": "A",
+                         "year_month": ym, "exp_dlr": e, "imp_dlr": 0})
+        # B has no 4월 data → its latest move is 3월
+        for ym, e in [("2026-02", 50_000_000), ("2026-03", 90_000_000)]:
+            rows.append({"hs_code": "2222222222", "stat_kor": "B",
+                         "year_month": ym, "exp_dlr": e, "imp_dlr": 0})
+        ranked = cs.rank(cs.build_series(rows), rate_min_usd=0)
+        all_rows = ranked[cs.SECTION_AMOUNT] + ranked[cs.SECTION_RATE]
+        # every ranked row is 2026-04; B (3월-latest) excluded
+        self.assertTrue(all(m["year_month"] == "2026-04" for m in all_rows))
+        codes = {m["hs_code"] for m in ranked[cs.SECTION_AMOUNT]}
+        self.assertIn("1111111111", codes)
+        self.assertNotIn("2222222222", codes)
+
 
 if __name__ == "__main__":
     unittest.main()
