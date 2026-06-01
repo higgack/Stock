@@ -19,10 +19,16 @@ EnvironmentFile=-/home/higgack/stock-trade/.env
 #      TOP30, refresh the live snapshot + append to the permanent archive,
 #      DM only NEW entrants (baseline-silent first run). This is the
 #      auto-discovery layer; the pins above are the manual layer.
+#   4. trade.dashboard — re-render index.html immediately so the new
+#      surge snapshot shows without waiting for the next 5-min
+#      dashboard-refresh tick (otherwise the panel can lag a scan by up
+#      to 5 min — visible after a manual scan). Reads store.db only;
+#      cheap (~1 s). The 5-min refresh still runs independently.
 # All idempotent; runs 4×/day (see .timer) so a publication is caught
 # within ~6h. Quiet ticks send nothing.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_customs
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.customs_alert
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.scan_customs
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard
 StandardOutput=journal
 StandardError=journal
