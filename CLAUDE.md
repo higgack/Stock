@@ -420,7 +420,9 @@ pattern to follow:
   PBLANC_DE/RCEPT_BGNDE·ENDDE/PRZWNER_PRESNATN_DE/PBLANC_URL) + `bot/
   cheongyak_brief.py` (Pro 1-2줄 맥락 narrate + 단지 목록 구조화). seen-set
   (`cheongyak_seen.json`, PBLANC_NO) 중복 차단 + 최근 3일 내 신규만 push,
-  신규 없으면 graceful skip(비용 0). `cheongyak-byte.timer` 평일 10:00 KST.
+  신규 없으면 graceful skip(비용 0). `cheongyak-byte.timer` 평일 10:00 +
+  14:00 KST 2회(사용자 2026-06-01 — 청약홈 오전·오후 갱신 대응, 같은 공고
+  는 seen-set 으로 2회 push 안 됨).
   채널 push + `cheongyak.html` 대시보드 (Daily Byte 패턴 mirror, 오늘/누적
   비용·검색·🗑️ `/api/cheongyak_delete`) + `/cheongyak_cost` 명령(DM+채널)
   + /usage·메인 대시보드 cost subsystem '청약'. 인포그래픽 없음(피드 성격).

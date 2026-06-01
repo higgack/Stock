@@ -447,7 +447,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             "💰 <b>청약 Byte 비용</b> (Gemini Pro · 신규 분양 피드)\n"
             f"오늘: <b>₩{float(data.get('today_krw',0)):,.1f}</b> · {int(data.get('today_calls',0))}회\n"
             f"이번 달: <b>₩{float(data.get('month_krw',0)):,.0f}</b> · {int(data.get('month_calls',0))}회\n"
-            "<i>모델: gemini-2.5-pro · 평일 10:00 신규 분양 모집공고</i>"
+            "<i>모델: gemini-2.5-pro · 평일 10:00·14:00 신규 분양 모집공고</i>"
         )
         await ctx.bot.send_message(
             chat_id=post.chat.id, text=text_out, parse_mode=ParseMode.HTML,
@@ -996,7 +996,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
 
 ━━━━━━━━━
 <b>【7. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly, 인포그래픽) · 🎟️ 청약 Byte (평일10:00 신규분양) · 🏠 부동산 Byte (금09:00·1일 Monthly, 인포그래픽) · 📝 블로그 새글 자동포워드(30분)
+🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly, 인포그래픽) · 🎟️ 청약 Byte (평일10:00·14:00 신규분양) · 🏠 부동산 Byte (금09:00·1일 Monthly, 인포그래픽) · 📝 블로그 새글 자동포워드(30분)
 
 ━━━━━━━━━
 <b>【8. 차별화 포인트】</b>
@@ -1008,7 +1008,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
  • <b>Daily Byte</b> — 평일19:00·일22:00 Weekly KR수급 인포그래픽(사진)+본문, 날짜별 누적·검색·🗑️
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
- • <b>청약 Byte</b> — 평일10:00 신규 분양 모집공고+경쟁률(청약홈) · ticker 무관
+ • <b>청약 Byte</b> — 평일10:00·14:00 신규 분양 모집공고+경쟁률(청약홈) · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/cheongyak.html
  • <b>부동산 Byte</b> — 금09:00 실거래(MOLIT 매매·전월세·오피스텔·연립)+R-ONE 가격추세+공급(인허가·착공·미분양) · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
@@ -1858,7 +1858,7 @@ async def cmd_cheongyak_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> No
         f"오늘: <b>₩{float(data.get('today_krw',0)):,.1f}</b> · {int(data.get('today_calls',0))}회\n"
         f"이번 달: <b>₩{float(data.get('month_krw',0)):,.0f}</b> · {int(data.get('month_calls',0))}회\n"
         f"오늘 tokens: in {int(data.get('today_prompt_tok',0)):,} / out {int(data.get('today_output_tok',0)):,}\n"
-        "<i>모델: gemini-2.5-pro · 평일 10:00 신규 분양 모집공고 (청약홈)</i>"
+        "<i>모델: gemini-2.5-pro · 평일 10:00·14:00 신규 분양 모집공고 (청약홈)</i>"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
