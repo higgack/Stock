@@ -1135,7 +1135,10 @@ _INDEX_JS = """
     for (const c of cards) c.style.display = '';
     for (const d of days) {
       d.style.display = '';
-      d.open = true;
+      // orphan-day (archive 이전 평가 결과) 는 진입 시 접힘 유지 — 사용자
+      // 2026-06-01 "대시보드 진입 시 이 부분도 접혀있게". 일반 day 그룹만
+      // 강제 펼침. 검색 해제 시에도 orphan 의 직전 open 상태(false) 보존.
+      if (!d.classList.contains('orphan-day')) d.open = true;
     }
     for (const m of monthsG) m.style.display = '';
     statusEl.textContent = '총 ' + total + '건의 분석 기록';
