@@ -97,5 +97,49 @@ class ClassifyTests(unittest.TestCase):
                          "데이터부족")
 
 
+class StoreRenderTests(unittest.TestCase):
+    def setUp(self):
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _series_13mo(self, base, latest):
+        d = {}
+        for mth in range(4, 13):
+            d[f"2025-{mth:02d}"] = base
+        d["2026-01"] = base
+        d["2026-02"] = base
+        d["2026-03"] = base
+        d["2026-04"] = latest
+        return d
+
+    def test_store_load_roundtrip(self):
+        by = {"반도체": self._series_13mo(11_000_000_000, 31_000_000_000),
+              "자동차": self._series_13mo(6_000_000_000, 5_700_000_000)}
+        n = industry.store(self.conn, by)
+        self.assertEqual(n, 2)
+        back = industry.load_stored(self.conn)
+        self.assertEqual(back["반도체"]["2026-04"], 31_000_000_000)
+
+    def test_store_empty_is_noop(self):
+        industry.store(self.conn, {"x": {"2026-04": 5}})
+        n = industry.store(self.conn, {})       # empty must not wipe
+        self.assertEqual(n, 0)
+        self.assertEqual(len(industry.load_stored(self.conn)), 1)
+
+    def test_render_has_chart_and_groups(self):
+        by = {"반도체": self._series_13mo(11_000_000_000, 31_000_000_000)}
+        html = industry.render_industry_html(by)
+        self.assertIn("반도체", html)
+        self.assertIn("ind-value-line", html)       # SVG export line
+        self.assertIn("초고성장", html)               # classified hot (YoY huge)
+        self.assertIn("<svg", html)
+
+    def test_render_empty_returns_blank(self):
+        self.assertEqual(industry.render_industry_html({}), "")
+
+
 if __name__ == "__main__":
     unittest.main()

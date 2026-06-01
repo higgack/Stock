@@ -37,6 +37,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lookback-months", type=int, default=24,
                     help="window (YoY needs ≥13 months; 24 = 1 full YoY series)")
     ap.add_argument("--max-chapters", type=int, default=len(customs_scan.CHAPTERS))
+    ap.add_argument("--store", action="store_true",
+                    help="persist the aggregated series to customs.db for the dashboard")
+    ap.add_argument("--min-coverage", type=float, default=0.9,
+                    help="min chapter success fraction before --store overwrites")
     args = ap.parse_args(argv)
 
     key = os.environ.get("TRADE_DATA_GO_KR_KEY") or ""
@@ -80,6 +84,18 @@ def main(argv: list[str] | None = None) -> int:
     leaves = customs_scan.build_series(all_rows)
     by_ind = industry.aggregate_by_industry(leaves)
     series = industry.industry_series(by_ind)
+
+    # Coverage guard (mirror scan_customs): a partial scan must not store a
+    # holey snapshot over a good one.
+    coverage = ok / (ok + fail) if (ok + fail) else 0.0
+    if args.store:
+        if coverage < args.min_coverage:
+            log.warning("coverage %.0f%% < %.0f%% — not storing (partial scan)",
+                        coverage * 100, args.min_coverage * 100)
+        else:
+            with customs.session() as conn:
+                n = industry.store(conn, by_ind)
+            log.info("stored %d industries to customs.db", n)
 
     if args.industry:
         pts = series.get(args.industry)

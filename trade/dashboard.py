@@ -77,9 +77,31 @@ def render_html(
             latest_ids.append(a["id"])
     backlog = _load_eval_miss_summary(eval_miss_path)
     customs_rows = _load_customs_summary(customs_db_path, hs_map_path)
+    industry_html = _load_industry_html(customs_db_path)
     return _build_html(
-        all_alerts, latest_ids, s, media_url_prefix, backlog, customs_rows
+        all_alerts, latest_ids, s, media_url_prefix, backlog, customs_rows,
+        industry_html,
     )
+
+
+def _load_industry_html(customs_db_path: Path | str | None) -> str:
+    """Server-rendered 산업트렌드 panel from the stored aggregation.
+
+    Reads the precomputed per-industry series (industry_report --store
+    writes it) and renders SVG trend cards. Returns '' on any failure or
+    when nothing's stored yet, so the tab is simply absent — purely
+    additive, never breaks the main render.
+    """
+    try:
+        from trade import customs, industry
+        db = customs_db_path if customs_db_path is not None else customs.DEFAULT_DB
+        if not Path(db).exists():
+            return ""
+        with customs.session(db) as conn:
+            by_ind = industry.load_stored(conn)
+        return industry.render_industry_html(by_ind)
+    except Exception:
+        return ""
 
 
 def _load_customs_summary(
@@ -281,6 +303,7 @@ def _build_html(
     media_prefix: str,
     backlog: dict | None = None,
     customs_rows: list[dict] | None = None,
+    industry_html: str = "",
 ) -> str:
     payload = [_alert_to_payload(a, media_prefix) for a in alerts]
     payload_json = json.dumps(
@@ -343,7 +366,9 @@ def _build_html(
         '<button class="tab active" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
         '<button class="tab" data-tab="matrix">매트릭스</button>'
-        '</nav>'
+        + (f'<button class="tab" data-tab="industry">📈 산업트렌드</button>'
+           if industry_html else '')
+        + '</nav>'
         '<section class="filters">'
         '<div class="top-row">'
         '<input type="search" id="q" placeholder="검색: 품목 / 회사 / 국가" autocomplete="off">'
@@ -370,7 +395,9 @@ def _build_html(
         '<main id="items-view" class="view active"></main>'
         '<main id="companies-view" class="view"></main>'
         '<main id="matrix-view" class="view"></main>'
-        '<div id="modal" class="modal" hidden>'
+        + (f'<main id="industry-view" class="view">{industry_html}</main>'
+           if industry_html else '')
+        + '<div id="modal" class="modal" hidden>'
         '<div class="modal-backdrop"></div>'
         '<div class="modal-content">'
         '<button class="modal-close" type="button" aria-label="닫기">×</button>'
@@ -446,6 +473,33 @@ h1{margin:0 0 4px;font-size:18px}
 .archive-month ul{margin:0;padding:4px 14px 8px 26px;font-size:13px;line-height:1.6;list-style:none}
 .archive-month li{margin:1px 0}
 .archive-month .muted{font-size:11px;color:var(--text-sub)}
+/* 산업트렌드 탭 */
+.ind-note{font-size:12px;color:var(--text-sub);padding:10px 16px}
+.ind-group{font-size:15px;font-weight:700;margin:14px 16px 6px;padding-left:8px;border-left:3px solid var(--border)}
+.ind-group-hot{border-left-color:#34c759}
+.ind-group-turn{border-left-color:#ff9500}
+.ind-group-down{border-left-color:#ff3b30}
+.ind-group-na{border-left-color:var(--border)}
+.ind-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;padding:0 16px 8px}
+.ind-card{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:12px;box-shadow:var(--shadow)}
+.ind-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.ind-head h3{margin:0;font-size:15px}
+.ind-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;color:#fff}
+.ind-badge-hot{background:#34c759}
+.ind-badge-turn{background:#ff9500}
+.ind-badge-down{background:#ff3b30}
+.ind-badge-na{background:#9b9b9f}
+.ind-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:4px 8px;margin:0 0 8px}
+.ind-stats div{display:flex;flex-direction:column}
+.ind-stats dt{font-size:10px;color:var(--text-sub)}
+.ind-stats dd{margin:0;font-size:13px;font-weight:600}
+.ind-stats dd.pos{color:var(--tone-export)}
+.ind-stats dd.neg{color:var(--tone-import)}
+.ind-chart{width:100%;height:auto;display:block}
+.ind-grid{stroke:var(--border-soft);stroke-width:1}
+.ind-value-line{fill:none;stroke:var(--accent);stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
+.ind-ma-line{fill:none;stroke:#34c759;stroke-width:2;stroke-dasharray:5 4;stroke-linejoin:round;stroke-linecap:round}
+.ind-latest-dot{fill:var(--accent);stroke:#fff;stroke-width:1.5}
 .tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:60px;z-index:9}
 .tab{flex:1;padding:13px 0;background:none;border:none;font-size:14px;font-weight:600;color:var(--text-sub);cursor:pointer;border-bottom:2px solid transparent}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
