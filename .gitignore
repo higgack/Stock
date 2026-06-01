@@ -5,3 +5,4 @@ __pycache__/
 .tradingagents/
 .codegraph/
 .mcp.json
+.pytest_cache/

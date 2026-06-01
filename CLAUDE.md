@@ -242,6 +242,17 @@ catches a distinct class of bug. Result format:
    verification result to the user; only continue when they signal
    "OK / 다음" or no objection arrives. Don't batch four items into
    one commit when the user asked for sequential validation.
+6. **Regression suite** (사용자 정책 2026-06-01): `tests/test_regression.
+   py` 가 실제 surfaced 버그 클래스(`_strip_meta_commentary` catastrophic
+   regex / dashboard `<details>` open-close 균형 / `_SECTOR_ETFS` dedup·
+   한자·시장 누락 / screener post-process idempotency) 영구 차단. 매
+   commit 전 실행 의무:
+   ```bash
+   python3 -m pytest tests/ -v
+   ```
+   0.08초 소요. 새 회귀 패턴이 surfaced 되면 `tests/test_regression.py`
+   에 영구 테스트로 추가 (ad-hoc smoke test 한 번 쓰고 버리지 말 것).
+   본 슈트가 fail 하면 commit 금지 — 사용자/Claude 무관.
 
 Skipping verification is treated the same as skipping the explicit-
 commit-request rule — never do it.
