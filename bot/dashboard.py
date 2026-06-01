@@ -3081,17 +3081,15 @@ def _render_screener_domains_page() -> str:
         "L3_INDUSTRY": "l3",
         "AD_HOC": "ad_hoc",
     }
-    # Per-layer collapsible — L1 (6) default open since smallest, L2/L3
-    # (11/48) default closed so initial paint stays light on mobile.
-    # User taps the section header to expand. The /domain-search input
-    # below applies cross-layer so collapsed sections still surface in
-    # the filtered view.
+    # Per-layer collapsible — 전부 default 접힘 (사용자 정책 2026-06-01
+    # "애도 똑같이 접혀있게" — index/Daily Byte/screener/realestate/cheongyak
+    # 의 orphan/과거 그룹 접힘 정책과 일관). 사용자가 헤더 클릭으로 펼침.
+    # 검색 시 매칭 layer 만 자동 펼침 (showFilter 로직 유지).
     _layer_default_open = {
-        "L1_TREND": True,
+        "L1_TREND": False,
         "L2_SECTOR": False,
         "L3_INDUSTRY": False,
-        # AD_HOC default open (보통 소수 — 사용자가 promote 흐름 추적 중)
-        "AD_HOC": True,
+        "AD_HOC": False,
     }
     for layer_key, layer_label, layer_desc in _LAYER_META:
         cards = by_layer.get(layer_key, [])
