@@ -19,4 +19,9 @@ matplotlib>=3.8.0
 # CN/HK-only; key-less scraper. Heavy dep (~200MB, ~50 transitive packages).
 # Lazy-imported inside bot/akshare_client.py — non-CN analyses unaffected.
 akshare>=1.16.0
+# pytest — tests/test_regression.py 회귀 슈트 (사용자 정책 2026-06-01
+# pre-commit verification §6 의무). 매 commit 전 `make test` 또는
+# `.venv/bin/python -m pytest tests/ -v` 한 줄 실행. dev 의존성이지만
+# 별도 requirements-dev 안 두는 게 사용자 정책(VM 1대 운영, 별 의미 없음).
+pytest>=8.0
 -e ./TradingAgents

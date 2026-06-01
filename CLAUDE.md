@@ -248,11 +248,15 @@ catches a distinct class of bug. Result format:
    한자·시장 누락 / screener post-process idempotency) 영구 차단. 매
    commit 전 실행 의무:
    ```bash
-   python3 -m pytest tests/ -v
+   make test
+   # 또는 venv 직접: .venv/bin/python -m pytest tests/ -v
    ```
-   0.08초 소요. 새 회귀 패턴이 surfaced 되면 `tests/test_regression.py`
-   에 영구 테스트로 추가 (ad-hoc smoke test 한 번 쓰고 버리지 말 것).
-   본 슈트가 fail 하면 commit 금지 — 사용자/Claude 무관.
+   VM 실 환경 ~37초 (bot.dashboard import 시 langgraph 등 무거운 의존성
+   로드). 0.08초가 아닌 이유 인지. 새 회귀 패턴이 surfaced 되면
+   `tests/test_regression.py` 에 영구 테스트로 추가 (ad-hoc smoke test 한
+   번 쓰고 버리지 말 것). 본 슈트가 fail 하면 commit 금지 — 사용자/Claude
+   무관. Makefile 도 `make syntax` (4 핵심 파일 ast.parse) / `make
+   help-len` (_HELP_TEXT UTF-16 cap 확인) shortcut 제공.
 
 Skipping verification is treated the same as skipping the explicit-
 commit-request rule — never do it.
