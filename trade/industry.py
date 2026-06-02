@@ -612,7 +612,21 @@ def store(conn, by_industry: dict[str, dict[str, int]],
           now: float | None = None) -> int:
     """Replace the stored series with the latest aggregation (export +
     optional import). Returns rows written. Empty export is ignored
-    (never wipes a good snapshot)."""
+    (never wipes a good snapshot).
+
+    TODO(아카이브): 현재 industry_series·mti_series는 '최신 스냅샷만'
+    DELETE+INSERT로 갱신해 과거 추이를 직접 보관하지 않는다(매 호출
+    by_industry에 들어온 months_json이 그대로 마지막 본 24개월). 운영자
+    요청(2026-06): 산업트렌드/하위품목의 '월별 변천 아카이브'를 별도
+    저장해 시점별 비교(예: 5월 확정치 발표 전후 산업 순위 변화, 잠정→
+    확정 보정 추이)를 가능케 할 것. 설계 스케치:
+      - industry_series_archive(industry, snapshot_ym, months_json, ts)
+      - mti_series_archive(mti6, snapshot_ym, payload_json, import_json, ts)
+      - 디스크/쓰기 폭증 방지: refresh_signals에서 fingerprint 변동
+        틱에만 append, snapshot_ym 동일 시 UPSERT(달당 1행). cost.py 디스크
+        라인이 자동 반영.
+      - 대시보드 산업트렌드에 '🗄 월별 변천' 탐색 UI(snapshot 선택).
+    customs_surge_archive(라이브 강등 → 무제한 보관)의 산업판 — 같은 패턴."""
     import time
     if not by_industry:
         return 0
