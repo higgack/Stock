@@ -437,10 +437,18 @@ def render_industry_html(by_industry: dict[str, dict[str, int]]) -> str:
     for _, pts in series.items():
         if pts and pts[-1]["ym"] > latest_ym:
             latest_ym = pts[-1]["ym"]
+    # Label spells out WHY the latest month lags ~1 month: this API is
+    # 관세청 CONFIRMED-only, published ~the 15th of the following month, so
+    # early in any month the freshest confirmed data is the month before
+    # last. Daily 4× polling reflects a new confirmed month within hours of
+    # its ~15th publication.
+    # TODO(잠정치): 산업부 수출입동향 보도자료(매월 1일, 전월 잠정치)를 별도
+    # 소스로 붙이면 최신월을 한 달 앞당길 수 있음. data.go.kr엔 산업분류
+    # 잠정 OpenAPI가 없어 파싱/수집 설계 필요 — 보강 마무리 후 별도 작업.
     out.append(
         f"<div class='ind-note'>산업분류별 월 수출액 · YoY/ΔYoY/12M 이동평균 "
-        f"(HSK-MTI 연계표 기준, 최신 {_html.escape(latest_ym)}) · "
-        f"관세청 확정치</div>"
+        f"(HSK-MTI 연계표 기준) · 최신 <b>{_html.escape(latest_ym)}</b> "
+        f"관세청 확정치(익월 ~15일 발표·매일 갱신)</div>"
     )
     for label, cls in _GROUPS:
         items = buckets.get(label) or []
