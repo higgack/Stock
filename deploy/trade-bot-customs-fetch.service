@@ -25,15 +25,21 @@ EnvironmentFile=-/home/higgack/stock-trade/.env
 #      its OWN 24-month fetch (split into ≤12-month windows) since YoY
 #      needs ≥13 months, unlike scan's 6-month surge window. Coverage-
 #      guarded (won't store a partial sweep).
-#   5. trade.dashboard — re-render index.html immediately so the new
-#      surge snapshot + industry tab show without waiting for the next
-#      5-min dashboard-refresh tick. Reads store.db + customs.db; cheap.
+#   5. refresh_signals — fingerprint the freshly-stored 산업/하위품목 집계
+#      vs the last tick. ONLY when it changed (= a new confirmed month
+#      landed, ~monthly): DM the operator '✅ 관세청 데이터 갱신' [+ B단계
+#      LLM 추가신호 생성]. Quiet ticks send nothing; first run records a
+#      silent baseline. This is why a 4×/day cadence doesn't spam.
+#   6. trade.dashboard — re-render index.html immediately so the new
+#      surge snapshot + industry tab (+ 🔍 추가신호 박스) show without
+#      waiting for the next 5-min refresh tick. Reads store.db + customs.db.
 # All idempotent; runs 4×/day (see .timer) so a publication is caught
 # within ~6h. Quiet ticks send nothing.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_customs
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.customs_alert
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.scan_customs
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.industry_report --store
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.refresh_signals
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard
 StandardOutput=journal
 StandardError=journal

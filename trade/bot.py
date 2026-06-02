@@ -190,7 +190,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent) + 미파싱 캡션을 eval_misses.jsonl에 누적 (회귀 fixture용, 키별 1회)
 • trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
 • trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일룩백+200cap, 초과시 ⚠️abort)
-• trade-bot-customs-fetch (1일 4회, 01:30 KST 등) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 발굴 + 🗄아카이브 무제한, 신규진입 <b>운영자 DM</b>(첫스캔 무음·cap10). 수동핀 수집. 발표~15일 6h내감지
+• trade-bot-customs-fetch (1일 4회, 01:30 KST 등) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 발굴 + 🗄아카이브 무제한, 신규진입 운영자 DM(첫스캔 무음·cap10). 수동핀 수집. 데이터 변동시 ✅갱신 DM(변동틱만). ~15일 6h감지
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 
@@ -199,7 +199,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-02 — 하위품목 급등률 MoM 상위(+30%컷 제거)·급증액도 수출 하한 2억</i>
+<i>최종 갱신: 2026-06-02 — 관세청 데이터 변동시 ✅갱신 DM(운영자, 변동틱만)</i>
 """
 
 
