@@ -501,15 +501,17 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-bar-pos{fill:#34c759}
 .ind-bar-neg{fill:#ff3b30}
 .ind-zero-line{stroke:var(--text-sub);stroke-width:1}
-.ind-raw{margin-top:10px}
-.ind-raw summary{cursor:pointer;font-size:12px;color:var(--text-sub);font-weight:600}
-.ind-raw-scroll{overflow-x:auto;margin-top:6px}
-.ind-table{border-collapse:collapse;font-size:11px;white-space:nowrap}
-.ind-table th,.ind-table td{padding:3px 8px;border:1px solid var(--border-soft);text-align:right}
-.ind-table thead th{background:var(--surface-2);position:sticky;left:0}
-.ind-table tbody th{text-align:left;background:var(--surface-2);position:sticky;left:0}
+.ind-raw{margin-top:14px;border-top:1px solid var(--border-soft);padding-top:10px}
+.ind-raw-title{font-size:12px;color:var(--text-sub);margin-bottom:6px;font-weight:600}
+.ind-raw-scroll{overflow-x:auto}
+.ind-table{border-collapse:separate;border-spacing:0;font-size:11px;line-height:1.35;white-space:nowrap;width:max-content;min-width:100%}
+.ind-table th,.ind-table td{border-top:1px solid var(--border-soft);border-right:1px solid var(--border-soft);padding:5px 8px;text-align:right;background:var(--surface)}
+.ind-table thead th{background:var(--surface-2);color:var(--text-sub);font-weight:650}
+.ind-table th:first-child{position:sticky;left:0;z-index:1;min-width:72px;text-align:left;background:var(--surface-2);box-shadow:1px 0 0 var(--border-soft)}
 .ind-table td.pos{color:var(--tone-export)}
 .ind-table td.neg{color:var(--tone-import)}
+.ind-ttm-yoy-line{fill:none;stroke:#6d5bd0;stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
+.ind-ttm-yoy-dot{fill:#6d5bd0;stroke:#fff;stroke-width:1.5}
 .ind-head h3{margin:0;font-size:15px}
 .ind-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;color:#fff}
 .ind-badge-hot{background:#34c759}

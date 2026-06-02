@@ -250,10 +250,21 @@ def _pct(p, suffix="%") -> str:
     return f"{p:+.1f}{suffix}" if p is not None else "—"
 
 
+def _dot_ym(ym: str) -> str:
+    """'2026-04' → '2026.4' (drops month leading zero), matching the
+    reference axis-label style."""
+    if "-" not in ym:
+        return ym
+    y, m = ym.split("-", 1)
+    return f"{y}.{int(m)}"
+
+
 def _line_svg(series: list[tuple[int, float]], titles: list[str], *,
               dashed_second=None, label="",
               x_first="", x_last="", y_hi_lbl="", y_lo_lbl="",
-              callouts: list[tuple[int, float, str, str]] | None = None) -> str:
+              callouts: list[tuple[int, float, str, str]] | None = None,
+              main_class: str = "ind-value-line",
+              dot_class: str = "ind-latest-dot") -> str:
     """Generic 1-or-2 line SVG with axis labels.
 
     series       — [(i, value)] PRIMARY line (solid).
@@ -284,13 +295,13 @@ def _line_svg(series: list[tuple[int, float]], titles: list[str], *,
         for f in (0.0, 0.5, 1.0)
     )
     main = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in series)
-    main_line = f'<polyline points="{main}" class="ind-value-line"/>'
+    main_line = f'<polyline points="{main}" class="{main_class}"/>'
     second = ""
     if dashed_second and len(dashed_second) >= 2:
         sp = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in dashed_second)
         second = f'<polyline points="{sp}" class="ind-ma-line"/>'
     li, lv = series[-1]
-    dot = f'<circle cx="{x(li):.1f}" cy="{y(lv):.1f}" r="3.2" class="ind-latest-dot"/>'
+    dot = f'<circle cx="{x(li):.1f}" cy="{y(lv):.1f}" r="3.2" class="{dot_class}"/>'
     tip = "".join(
         f'<circle cx="{x(i):.1f}" cy="{y(v):.1f}" r="3.5" fill="transparent">'
         f'<title>{_html.escape(titles[k])}</title></circle>'
@@ -340,7 +351,7 @@ def _monthly_chart(pts: list[dict]) -> str:
         callouts.append((mi, mv, f"MA {_eokusd(mv)}", "ind-cl-ma"))
     return _line_svg(
         vs, titles, dashed_second=ma, label="수출액 추이와 12개월 이동평균",
-        x_first=pts[0]["ym"], x_last=pts[-1]["ym"],
+        x_first=_dot_ym(pts[0]["ym"]), x_last=_dot_ym(pts[-1]["ym"]),
         y_hi_lbl=_eokusd(hi), y_lo_lbl=_eokusd(lo), callouts=callouts,
     )
 
@@ -357,9 +368,27 @@ def _ttm_chart(pts: list[dict]) -> str:
     li, lv = vs[-1]
     return _line_svg(
         vs, titles, label="12개월 TTM 수출액 추이",
-        x_first=tps[0]["ym"], x_last=tps[-1]["ym"],
+        x_first=_dot_ym(tps[0]["ym"]), x_last=_dot_ym(tps[-1]["ym"]),
         y_hi_lbl=_eokusd(max(vals)), y_lo_lbl=_eokusd(min(vals)),
         callouts=[(li, lv, f"최신 {_eokusd(lv)}", "ind-cl")],
+    )
+
+
+def _ttm_yoy_chart(pts: list[dict]) -> str:
+    """12M TTM YoY 성장률 line (violet, matches reference). Needs ≥24 mo."""
+    vs = [(i, p["ttm_yoy"]) for i, p in enumerate(pts) if p.get("ttm_yoy") is not None]
+    if len(vs) < 2:
+        return ""
+    tps = [p for p in pts if p.get("ttm_yoy") is not None]
+    titles = [f"{p['ym']} | TTM YoY {_pct(p.get('ttm_yoy'))}" for p in tps]
+    vals = [v for _, v in vs]
+    li, lv = vs[-1]
+    return _line_svg(
+        vs, titles, label="12개월 TTM YoY 성장률",
+        x_first=_dot_ym(tps[0]["ym"]), x_last=_dot_ym(tps[-1]["ym"]),
+        y_hi_lbl=f"{max(vals):.0f}%", y_lo_lbl=f"{min(vals):.0f}%",
+        callouts=[(li, lv, f"{_pct(lv)}", "ind-cl")],
+        main_class="ind-ttm-yoy-line", dot_class="ind-ttm-yoy-dot",
     )
 
 
@@ -373,7 +402,7 @@ def _stat_row(points: list[dict]) -> str:
     def cls(v): return "pos" if (v or 0) > 0 else "neg"
     return (
         "<dl class='ind-stats'>"
-        f"<div><dt>최신월</dt><dd>{_html.escape(latest['ym'])}</dd></div>"
+        f"<div><dt>최신월</dt><dd>{_html.escape(_dot_ym(latest['ym']))}</dd></div>"
         f"<div><dt>수출액</dt><dd>{_eokusd(exp)}</dd></div>"
         f"<div><dt>YoY</dt><dd class='{cls(latest.get('yoy'))}'>{_pct(latest.get('yoy'))}</dd></div>"
         f"<div><dt>ΔYoY</dt><dd class='{cls(latest.get('dyoy'))}'>{_pct(latest.get('dyoy'),'%p')}</dd></div>"
@@ -424,9 +453,9 @@ def _yoy_bar_svg(pts: list[dict]) -> str:
     axes = (
         f'<text x="2" y="{_PAD_T+4:.0f}" class="ind-axis">+{hi:.0f}%</text>'
         f'<text x="2" y="{_PAD_T+plot_h:.0f}" class="ind-axis">{lo:.0f}%</text>'
-        f'<text x="{_PAD_L}" y="{_VH-3}" class="ind-axis">{_html.escape(pts[0]["ym"])}</text>'
+        f'<text x="{_PAD_L}" y="{_VH-3}" class="ind-axis">{_html.escape(_dot_ym(pts[0]["ym"]))}</text>'
         f'<text x="{_VW-_PAD_R}" y="{_VH-3}" class="ind-axis" text-anchor="end">'
-        f'{_html.escape(pts[-1]["ym"])}</text>'
+        f'{_html.escape(_dot_ym(pts[-1]["ym"]))}</text>'
         f'<text x="{x(li):.0f}" y="{max(y(lv)-4,9):.0f}" class="ind-cl" '
         f'text-anchor="end">{_pct(lv)}</text>'
     )
@@ -447,16 +476,22 @@ def _raw_table(pts: list[dict]) -> str:
     def cls(v):
         return "pos" if (v or 0) > 0 else ("neg" if (v or 0) < 0 else "")
     head = "<tr><th>구분</th>" + "".join(
-        f"<th>{_html.escape(m)}</th>" for m in months) + "</tr>"
+        f"<th>{_html.escape(_dot_ym(m))}</th>" for m in months) + "</tr>"
     body = (
         row("수출액", lambda p: _eokusd(p["exp"]))
         + row("YoY", lambda p: _pct(p.get("yoy")), lambda p: cls(p.get("yoy")))
         + row("ΔYoY", lambda p: _pct(p.get("dyoy"), "%p"), lambda p: cls(p.get("dyoy")))
         + row("12M MA", lambda p: _eokusd(p.get("ma12")))
+        + row("MA 대비", lambda p: _pct(
+            ((p["exp"] - p["ma12"]) / p["ma12"] * 100.0) if p.get("ma12") else None),
+            lambda p: cls(((p["exp"] - p["ma12"]) / p["ma12"] * 100.0)
+                          if p.get("ma12") else None))
     )
-    return (f"<details class='ind-raw'><summary>월별 원자료</summary>"
+    # Always-visible (no details) matching the reference. Horizontal scroll
+    # for the wide month range, sticky first column.
+    return (f"<div class='ind-raw'><div class='ind-raw-title'>월별 원자료</div>"
             f"<div class='ind-raw-scroll'><table class='ind-table'>"
-            f"<thead>{head}</thead><tbody>{body}</tbody></table></div></details>")
+            f"<thead>{head}</thead><tbody>{body}</tbody></table></div></div>")
 
 
 def _card_body(pts: list[dict]) -> str:
@@ -489,13 +524,21 @@ def _card_body(pts: list[dict]) -> str:
         + "</div>"
     )
     ttm = _ttm_chart(pts)
-    ttm_panel = (
-        f"<div class='ind-panel ind-ttm' hidden>"
-        f"<div class='ind-chart-cell'><div class='ind-chart-title'>12개월 TTM 수출액</div>{ttm}</div></div>"
-        if ttm else
-        "<div class='ind-panel ind-ttm' hidden>"
-        "<div class='ind-na'>TTM YoY는 24개월 이상 데이터가 필요합니다.</div></div>"
-    )
+    ttm_yoy = _ttm_yoy_chart(pts)
+    if ttm:
+        ttm_inner = (
+            f"<div class='ind-chart-cell'><div class='ind-chart-title'>"
+            f"12개월 TTM 수출액</div>{ttm}</div>"
+            + (f"<div class='ind-chart-cell'><div class='ind-chart-title'>"
+               f"12개월 TTM YoY 성장률</div>{ttm_yoy}</div>"
+               if ttm_yoy else
+               "<div class='ind-chart-cell'>"
+               "<div class='ind-na'>TTM YoY는 24개월 이상 데이터가 필요합니다.</div></div>")
+        )
+        ttm_panel = f"<div class='ind-panel ind-ttm' hidden>{ttm_inner}</div>"
+    else:
+        ttm_panel = ("<div class='ind-panel ind-ttm' hidden>"
+                     "<div class='ind-na'>TTM은 12개월 이상 데이터가 필요합니다.</div></div>")
     charts = f"<div class='ind-charts'>{monthly_panel}{ttm_panel}</div>"
     return f"<div class='ind-body'>{meta}{charts}</div>{_raw_table(pts)}"
 
