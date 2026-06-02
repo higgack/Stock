@@ -115,6 +115,25 @@ class StoreRenderTests(unittest.TestCase):
         d["2026-04"] = latest
         return d
 
+    def _series_25mo(self, base, latest):
+        # 24 months 2024 + jump in 2026-04 → YoY defined
+        d = {}
+        for i in range(24):
+            y = 2024 + (i // 12); m = (i % 12) + 1
+            d[f"{y}-{m:02d}"] = base
+        d["2026-04"] = latest
+        return d
+
+    def test_summary_board(self):
+        # 반도체 huge YoY → 초고성장 box; board chips present
+        by = {"반도체": self._series_25mo(11_000_000_000, 31_000_000_000)}
+        html = industry.render_industry_html(by)
+        self.assertIn("ind-summary-grid", html)      # 분류 보드
+        self.assertIn("ind-sbox-hot", html)          # 초고성장 박스
+        self.assertIn("ind-mini-chip", html)         # %칩
+        self.assertIn("분류 기준", html)              # explainer
+        self.assertIn("ind-deriv-grid", html)        # 가속/둔화 미분 보드
+
     def test_store_load_roundtrip(self):
         by = {"반도체": self._series_13mo(11_000_000_000, 31_000_000_000),
               "자동차": self._series_13mo(6_000_000_000, 5_700_000_000)}

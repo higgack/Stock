@@ -590,9 +590,68 @@ def load_stored(conn) -> dict[str, dict[str, int]]:
     return out
 
 
+def _summary_board(series: dict[str, list[dict]]) -> str:
+    """Top-of-tab summary board mirroring the reference header:
+      - 4 classification boxes (초고성장/턴어라운드/부진 with %YoY chips,
+        + a 분류 기준 explainer)
+      - 2 derivative boxes (가속 확대 / 고성장 둔화·기울기 하락, ΔYoY chips)
+    Pure presentation over the already-computed series. As 하위품목(B)/
+    수입(C) land, their entries flow into the same series dict and appear
+    here automatically — no board change needed."""
+    rows = [(ind, pts[-1]) for ind, pts in series.items() if pts]
+
+    def chip(name, val, suffix="%"):
+        cl = "pos" if (val or 0) > 0 else "neg"
+        return (f"<span class='ind-mini-chip'><b>{_html.escape(name)}</b> "
+                f"<span class='{cl}'>{_pct(val, suffix)}</span></span>")
+
+    # classification boxes — chips sorted by latest YoY desc
+    by_cls: dict[str, list[tuple[str, float]]] = {}
+    for ind, pts in series.items():
+        if not pts:
+            continue
+        by_cls.setdefault(classify(pts), []).append((ind, pts[-1].get("yoy")))
+    boxes = []
+    for label, cls in _GROUPS:
+        items = [t for t in by_cls.get(label, []) if t[1] is not None]
+        if not items and label != "데이터부족":
+            items = by_cls.get(label, [])
+        if not items:
+            continue
+        items.sort(key=lambda t: (t[1] if t[1] is not None else -9e9), reverse=True)
+        chips = "".join(chip(n, v) for n, v in items)
+        boxes.append(
+            f"<div class='ind-sbox ind-sbox-{cls}'><h3>{label}</h3>"
+            f"<div class='ind-chip-wrap'>{chips}</div></div>"
+        )
+    # 분류 기준 explainer (verbatim from reference)
+    boxes.append(
+        "<div class='ind-sbox ind-sbox-info'><h3>분류 기준</h3>"
+        "<p>최신 YoY · 3개월 평균 ΔYoY(가속도)로 분류합니다. YoY가 높아도 "
+        "ΔYoY가 마이너스로 꺾이면 기대의 가속이 둔화되는 신호로 봅니다.</p></div>"
+    )
+
+    # derivative boxes — by latest ΔYoY (가속 vs 둔화)
+    dyoy = [(ind, pts[-1].get("dyoy")) for ind, pts in series.items()
+            if pts and pts[-1].get("dyoy") is not None]
+    accel = sorted([t for t in dyoy if t[1] > 0], key=lambda t: t[1], reverse=True)[:6]
+    decel = sorted([t for t in dyoy if t[1] < 0], key=lambda t: t[1])[:6]
+    deriv = ""
+    if accel:
+        deriv += ("<div class='ind-sbox ind-sbox-accel'><h3>가속 확대</h3>"
+                  f"<div class='ind-chip-wrap'>"
+                  f"{''.join(chip(n,v,'%p') for n,v in accel)}</div></div>")
+    if decel:
+        deriv += ("<div class='ind-sbox ind-sbox-decel'><h3>고성장 둔화/기울기 하락</h3>"
+                  f"<div class='ind-chip-wrap'>"
+                  f"{''.join(chip(n,v,'%p') for n,v in decel)}</div></div>")
+    return (f"<div class='ind-summary-grid'>{''.join(boxes)}</div>"
+            f"<div class='ind-deriv-grid'>{deriv}</div>")
+
+
 def render_industry_html(by_industry: dict[str, dict[str, int]]) -> str:
-    """Full 산업트렌드 panel: cards grouped by classification. Returns ''
-    when there's no data (so the dashboard omits the tab body)."""
+    """Full 산업트렌드 panel: summary board + cards grouped by
+    classification. Returns '' when there's no data."""
     if not by_industry:
         return ""
     series = industry_series(by_industry)
@@ -629,6 +688,8 @@ def render_industry_html(by_industry: dict[str, dict[str, int]]) -> str:
         "<span><i class='ind-lg-m'></i>12M MA</span></div>"
         "</div>"
     )
+    # A: summary board (분류·미분 칩 보드) — mirrors reference header
+    out.append(_summary_board(series))
     for label, cls in _GROUPS:
         items = buckets.get(label) or []
         if not items:

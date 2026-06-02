@@ -475,6 +475,17 @@ h1{margin:0 0 4px;font-size:18px}
 .archive-month .muted{font-size:11px;color:var(--text-sub)}
 /* 산업트렌드 탭 */
 .ind-panel[hidden]{display:none !important}
+.ind-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;padding:4px 16px 0}
+.ind-deriv-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;padding:12px 16px 4px}
+.ind-sbox{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:12px 14px;box-shadow:var(--shadow)}
+.ind-sbox h3{margin:0 0 8px;font-size:14px}
+.ind-sbox-hot h3{color:#1f7a32}.ind-sbox-turn h3{color:#8a5a00}.ind-sbox-down h3{color:#8a2020}
+.ind-sbox-accel h3{color:#1f7a32}.ind-sbox-decel h3{color:#8a2020}
+.ind-sbox-info p{margin:0;font-size:12px;color:var(--text-sub);line-height:1.5}
+.ind-chip-wrap{display:flex;flex-wrap:wrap;gap:6px}
+.ind-mini-chip{font-size:12px;background:var(--chip-bg);border-radius:999px;padding:3px 9px}
+.ind-mini-chip .pos{color:var(--tone-export);font-weight:600}
+.ind-mini-chip .neg{color:var(--tone-import);font-weight:600}
 .ind-topbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px}
 .ind-note{font-size:12px;color:var(--text-sub)}
 .ind-legend{display:flex;gap:12px;font-size:12px;color:var(--text-sub)}
