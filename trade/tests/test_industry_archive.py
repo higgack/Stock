@@ -114,6 +114,19 @@ class FrozenSnapshotTests(unittest.TestCase):
         self.assertIn("../industry_archive.html", h)
         self.assertIn("../index.html", h)
 
+    def test_write_export_creates_served_file(self):
+        import tempfile as _t
+        from pathlib import Path as _P
+        d = _t.mkdtemp()
+        out = _P(d) / "industry_export.html"
+        ok = industry_archive.write_export(
+            self.conn, [{"title": "AI", "body": "x"}], out_path=out)
+        self.assertTrue(ok)
+        self.assertTrue(out.exists())
+        h = out.read_text(encoding="utf-8")
+        self.assertIn("ind-card", h)
+        self.assertNotIn("industry_archive.html", h)   # 공유용: 깨진 링크 없음
+
     def test_render_export_none_when_empty(self):
         empty = sqlite3.connect(":memory:")
         self.assertIsNone(industry_archive.render_export(empty, []))

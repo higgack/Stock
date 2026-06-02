@@ -112,9 +112,12 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         ins_html = llm_insights.render_html(cards if isinstance(cards, list) else [])
         # 🗄 월별 아카이브로 가는 별도 링크 섹션(별도 self-contained 페이지)
         archive_link = (
-            '<div class="ind-archive"><a href="industry_archive.html">'
-            '🗄 월별 아카이브 — 과거 산업트렌드(분류·수입급증·🔍신호) 변천 보기 →'
-            '</a></div>'
+            '<div class="ind-archive">'
+            '<a href="industry_archive.html">'
+            '🗄 월별 아카이브 — 과거 산업트렌드(분류·수입급증·🔍신호) 변천 보기 →</a>'
+            '<a href="industry_export.html" style="margin-left:16px">'
+            '📥 공유용 파일 (폰에서 열어 공유)</a>'
+            '</div>'
         )
         return (ins_html + archive_link
                 + industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp))
@@ -1575,11 +1578,15 @@ def main() -> int:
     args.out.write_text(html, encoding="utf-8")
     size_kb = len(html.encode("utf-8")) / 1024
     print(f"wrote {args.out} ({size_kb:.0f} KB)")
-    # 산업트렌드 탭의 🗄 아카이브 링크가 404 안 나게 페이지 보장(빈 상태 OK).
-    # 실제 내용 갱신은 refresh_signals(데이터 변동 시)가 담당.
+    # 산업트렌드 탭의 🗄 아카이브 + 📥 공유 export 링크가 404 안 나게 보장.
+    # (아카이브 내용 갱신은 refresh_signals가 담당; 여기선 존재 보장 + export 최신화)
     try:
-        from trade import industry_archive
+        import json as _json
+        from trade import customs as _customs, industry_archive, insights
         industry_archive.ensure_exists()
+        with _customs.session() as conn:
+            cards = _json.loads(insights.get_state(conn, "llm_insight_cards") or "[]")
+            industry_archive.write_export(conn, cards if isinstance(cards, list) else [])
     except Exception:
         pass
     return 0

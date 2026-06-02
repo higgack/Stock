@@ -130,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             industry_archive.record_snapshot(conn, cards, cost_krw=cost_krw or None)
             industry_archive.regenerate()
+            industry_archive.write_export(conn, cards)     # 폰 공유용 export 최신화
         except Exception as exc:           # 아카이브 실패가 갱신을 막지 않게
             log.warning("industry archive update failed: %s", exc)
         sent = _send_dm(_dm_body(latest, n_ind, len(cards)))

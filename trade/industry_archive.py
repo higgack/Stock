@@ -35,6 +35,7 @@ _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 ARCHIVE_JSONL = _DATA_DIR / "industry_archive.jsonl"
 ARCHIVE_HTML = _DATA_DIR / "dashboard" / "industry_archive.html"
 SNAP_DIR = _DATA_DIR / "dashboard" / "archive"          # 동결 페이지 디렉토리
+EXPORT_HTML = _DATA_DIR / "dashboard" / "industry_export.html"   # 폰 공유용(서빙)
 
 _FM = FieldMap(date="_date", ts="ts", body="body", title="title",
                cost="cost_krw", elapsed=None, kind="kind")
@@ -266,6 +267,21 @@ def regenerate(out_path: Path | None = None) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
     return out
+
+
+def write_export(conn, cards, out_path: Path | None = None) -> bool:
+    """공유용 export를 대시보드 서빙 경로(EXPORT_HTML)에 기록 — 폰에서
+    📥 링크/공유용. best-effort(실패해도 메인 렌더 안 막음)."""
+    try:
+        html = render_export(conn, cards)
+        if not html:
+            return False
+        out = out_path or EXPORT_HTML
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html, encoding="utf-8")
+        return True
+    except Exception:
+        return False
 
 
 def ensure_exists() -> None:

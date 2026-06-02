@@ -130,7 +130,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 <b>2. 대쉬보드</b>
 <a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
 모바일 OK · 5분마다 자동 갱신 · BasicAuth 보호 · 다크모드 자동 (19~07 KST)
-헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) + 🧪 미파싱 백로그 + 💰 비용·자원 (관세청 무료·LLM 비용·디스크) + 📦 관세청 수출입 (📌내 핀 + 📈급등률·💵급증액 TOP30 발굴 + 🗄아카이브 무제한) 자동 표시
+헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 + 🧪 미파싱 백로그 + 💰 비용·자원 + 📦 관세청 수출입 (📌내 핀 + 📈급등률·💵급증액 TOP30 발굴 + 🗄아카이브 무제한) 자동 표시
 
 <b>3. BeOn 발표 사이클 (KST)</b>
 • 매월 11일경 — 1-10일 잠정
@@ -177,7 +177,8 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭으로 즉시 핀(✅ 토글), 여러 개 선택 후 맨 아래 <b>완료</b> (예: /hs 반도체, /hs 8542). 직접 등록도 가능: /hs &lt;품목&gt; &lt;HS코드&gt;
 /unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록 (검색은 ~/.trade/hs_codes.xlsx 필요 — 관세청 15049722 파일 다운로드, 개정 시 덮어쓰기)
 /customs — 관세청 수출입: 📌내 핀 + 📈급등률 TOP(≥$50M) + 💵급증액 TOP + 🗄아카이브. 카드는 기본 접힘(클릭 펼침). 대쉬보드 📦 패널과 동일
-/cost — 비용·자원 현황 (외부 API 전부 무료 · 디스크 · 관세청 일 호출 추정=4회×(핀+스캔+산업)/한도)
+/cost — 비용·자원(외부 API 무료·LLM·디스크·관세청 호출 추정)
+/export — 산업트렌드 공유용 단일파일 전송(지인 전달·폰만, 랩탑 불필요). 대쉬보드 📥도 동일
 ※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
 
 <b>9. 자동화 systemd</b>
@@ -199,7 +200,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-02 — 수입 모멘텀: 괴리 정렬·동행/⚡선행후보 태그</i>
+<i>최종 갱신: 2026-06-02 — /export + 대쉬보드 📥 (폰만으로 산업트렌드 공유)</i>
 """
 
 
@@ -1038,6 +1039,40 @@ async def cmd_cost(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/export — 산업트렌드 공유용 단일 HTML을 문서 파일로 전송. 받은 파일을
+    지인에게 전달(forward)하거나 공유 시트로 카톡/메일로 넘기면 됨(랩탑 불필요).
+    내용은 산업트렌드 데이터뿐이라 외부 공유 안전. LLM 0콜(저장 카드 재사용)."""
+    if update.message is None or update.effective_user is None:
+        return
+    operator.remember(update.effective_user.id)
+    from io import BytesIO
+
+    html = None
+    try:
+        from trade import customs, industry_archive, insights
+        with customs.session() as conn:
+            try:
+                cards = json.loads(insights.get_state(conn, "llm_insight_cards") or "[]")
+            except Exception:
+                cards = []
+            html = industry_archive.render_export(
+                conn, cards if isinstance(cards, list) else [])
+    except Exception as exc:
+        log.warning("/export failed: %s", exc)
+    if not html:
+        await update.message.reply_text(
+            "아직 산업트렌드 데이터가 없습니다 — 다음 확정월(매월 ~15일) 유입 후 다시 시도하세요.")
+        return
+    bio = BytesIO(html.encode("utf-8"))
+    bio.name = "한국수출_산업트렌드.html"
+    await update.message.reply_document(
+        document=bio, filename="한국수출_산업트렌드.html",
+        caption="📈 산업트렌드 공유용 — 이 파일을 지인에게 전달하면 그대로 열립니다"
+                "(서버·인터넷·로그인 불필요).",
+    )
+
+
 async def _notify_watchers(ctx: ContextTypes.DEFAULT_TYPE, caption_text: str) -> None:
     """Parse the caption with the live trade parser and DM every user
     whose watch pattern matches the resulting item/stocks. Failures
@@ -1121,6 +1156,7 @@ def main() -> None:
     app.add_handler(CommandHandler("hslist", cmd_hslist))
     app.add_handler(CommandHandler("customs", cmd_customs))
     app.add_handler(CommandHandler("cost", cmd_cost))
+    app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CallbackQueryHandler(on_hs_pin_callback, pattern=r"^hs_pin:"))
     app.add_handler(CallbackQueryHandler(on_hs_done_callback, pattern=r"^hs_done$"))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
