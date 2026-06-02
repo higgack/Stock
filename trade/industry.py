@@ -278,15 +278,16 @@ _GROUPS = [
 
 
 def _eokusd(n) -> str:
-    """USD → '억 달러' label matching the reference (e.g. 11.18B → '112억',
-    TTM 131B → '1,310억'). 1억 USD = 1e8. The reference uses 억 throughout
-    (no 조 unit), so big TTM sums just get a thousands separator."""
+    """USD → '억 달러' label (e.g. 11.18B → '112억$', TTM 131B → '1,310억$').
+    1억$ = 1e8 USD = $100M. '$' 접미사로 억 원이 아니라 억 '달러'임을 모든
+    셀에서 명확히 한다(과거 단위 오해 방지). 원본처럼 조 단위 없이 억만 쓰며,
+    큰 TTM 합계는 천단위 구분만 붙인다."""
     if n is None:
         return "—"
     eok = n / 1e8
     if abs(eok) >= 100:
-        return f"{eok:,.0f}억"
-    return f"{eok:.1f}억"
+        return f"{eok:,.0f}억$"
+    return f"{eok:.1f}억$"
 
 
 def _pct(p, suffix="%") -> str:
@@ -992,7 +993,8 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
         "<div class='ind-topbar'>"
         f"<div class='ind-note'>산업분류별 월 수출액 · YoY/ΔYoY/12M 이동평균 "
         f"(HSK-MTI 연계표 기준) · 최신 <b>{_html.escape(latest_ym)}</b> "
-        f"관세청 확정치(익월 ~15일 발표·매일 갱신)</div>"
+        f"관세청 확정치(익월 ~15일 발표·매일 갱신) · "
+        f"<b>금액 단위: 억 달러(1억$ = $100M)</b></div>"
         "<div class='ind-legend'><span><i class='ind-lg-v'></i>수출액</span>"
         "<span><i class='ind-lg-m'></i>12M MA</span></div>"
         "</div>"
