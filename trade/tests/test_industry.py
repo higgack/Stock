@@ -293,23 +293,32 @@ class SubitemTests(unittest.TestCase):
         self.assertIn("반도체", html)        # 산업 컬럼
 
     def test_subitem_mom_ranking_and_floor(self):
-        # 급등률은 MoM(전월대비) 기준 · 수출 하한 $200M(2.0억)
+        # 급등률은 MoM(전월대비) 상위 · 수출 하한 $200M(2.0억), 두 표 공통 하한
         by = industry.aggregate_by_mti(
             self._leaves("8542321010", 1_000_000_000, 3_000_000_000))
         html = industry.render_subitem_html(by)
-        self.assertIn("MoM ≥+30%", html)        # 급등률 헤더가 MoM 기준
-        self.assertIn("2.0억", html)             # 새 수출 하한 $200M
+        self.assertIn("MoM↑ 상위", html)         # 급등률 헤더가 MoM 상위(고정컷 없음)
+        self.assertIn("수출 ≥2.0억", html)         # 새 수출 하한 $200M (양 표 공통)
         self.assertIn("전월대비", html)           # 급증액 제목/컬럼 MoM
         self.assertIn("+200.0%", html)           # 3B vs 전월 1B = +200% MoM
         # 랭킹표 컬럼 헤더는 '전월대비'(MoM)여야 하고 'YoY' 컬럼은 없어야 함
         self.assertNotIn("<th>전월비YoY</th>", html)
 
+    def test_subitem_no_fixed_rate_cut(self):
+        # 고정 +30%컷 제거 — MoM +10%여도 수출 ≥2억이면 급등률에 노출
+        by = industry.aggregate_by_mti(
+            self._leaves("8542321010", 10_000_000_000, 11_000_000_000))
+        html = industry.render_subitem_html(by)
+        self.assertIn("📈 급등률", html)
+        self.assertIn("+10.0%", html)            # (11B-10B)/10B = +10% MoM도 등장
+
     def test_subitem_floor_excludes_small_base(self):
-        # 전월대비 +200%지만 수출이 하한($200M) 미만 → 급등률 제외
+        # 전월대비 +200%지만 수출이 하한($200M) 미만 → 급등률·급증액 둘 다 제외
         by = industry.aggregate_by_mti(
             self._leaves("8542321010", 10_000_000, 30_000_000))  # 0.3억 < 2.0억
-        rate_only = industry.render_subitem_html(by)
-        self.assertNotIn("📈 급등률", rate_only)   # 하한 미달로 급등률표 자체 없음
+        html = industry.render_subitem_html(by)
+        self.assertNotIn("📈 급등률", html)        # 하한 미달로 급등률표 없음
+        self.assertNotIn("💵 급증액", html)        # 급증액도 이제 수출 하한 적용
 
     def test_mti_store_load(self):
         import sqlite3

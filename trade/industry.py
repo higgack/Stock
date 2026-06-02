@@ -843,7 +843,8 @@ def render_subitem_html(by_mti: dict[str, dict],
                         rate_min_usd: int = 200_000_000) -> str:
     """하위품목 TOP (MTI6 단위) — one level below industry, ranked by
     MoM(전월대비, 최근 모멘텀) so 기저효과에 휘둘리지 않음:
-    📈급등률(MoM% desc, 수출 ≥하한) + 💵급증액(전월대비 Δ$ desc).
+    📈급등률(MoM% 양수 상위 30, 수출 ≥하한) + 💵급증액(전월대비 Δ$ 상위
+    30, 수출 ≥하한). 두 표 모두 수출 하한 적용.
     Each row: 품목명(산업) · 수출 · 전월대비. Returns '' when no data."""
     if not by_mti:
         return ""
@@ -885,13 +886,18 @@ def render_subitem_html(by_mti: dict[str, dict],
                 f"<td class='{cl}'>{val}</td></tr>")
         return "".join(out)
 
-    # 급등률: 전월대비(MoM)% desc, 수출 ≥ 하한
+    # 급등률: 수출 ≥ 하한 + 전월대비(MoM) 양수 중 MoM% 내림차순 상위 30.
+    # 고정 %컷(예전 +30%)은 두지 않음 — MoM에선 +30%가 과도하게 빡빡해
+    # 표가 거의 비어버려서. '가장 빨리 오른 것 순'으로 항상 채움.
     rate = sorted([r for r in rows
-                   if r["mom"] is not None and r["mom"] >= 30.0
+                   if r["mom"] is not None and r["mom"] > 0
                    and (r["exp"] or 0) >= rate_min_usd],
                   key=lambda r: r["mom"], reverse=True)[:30]
-    # 급증액: 전월대비 Δ$ desc
-    amount = sorted([r for r in rows if r["mom_delta"] is not None],
+    # 급증액: 수출 ≥ 하한(급등률과 동일) + 전월대비 Δ$ 내림차순 상위 30.
+    # 소액 기저 품목이 큰 변화율로 끼는 것을 막기 위해 같은 하한 적용.
+    amount = sorted([r for r in rows
+                     if r["mom_delta"] is not None
+                     and (r["exp"] or 0) >= rate_min_usd],
                     key=lambda r: r["mom_delta"], reverse=True)[:30]
 
     def tbl(title, items, metric):
@@ -929,8 +935,8 @@ def render_subitem_html(by_mti: dict[str, dict],
         "산업이 가려버리는 '산업 안의 스타 품목'을 발굴.</div>"
         + cards_html
         + "<div class='ind-sub-wrap'>"
-        + tbl("📈 급등률 (MoM ≥+30%, 수출 ≥" + _eokusd(rate_min_usd) + ")", rate, "mom")
-        + tbl("💵 급증액 (전월대비)", amount, "amount")
+        + tbl("📈 급등률 (MoM↑ 상위, 수출 ≥" + _eokusd(rate_min_usd) + ")", rate, "mom")
+        + tbl("💵 급증액 (전월대비, 수출 ≥" + _eokusd(rate_min_usd) + ")", amount, "amount")
         + "</div>"
     )
 
