@@ -114,18 +114,31 @@ class FrozenSnapshotTests(unittest.TestCase):
         self.assertIn("../industry_archive.html", h)
         self.assertIn("../index.html", h)
 
-    def test_write_export_creates_served_file(self):
+    def test_write_export_month_stamped_snapshot(self):
         import tempfile as _t
         from pathlib import Path as _P
-        d = _t.mkdtemp()
-        out = _P(d) / "industry_export.html"
-        ok = industry_archive.write_export(
-            self.conn, [{"title": "AI", "body": "x"}], out_path=out)
-        self.assertTrue(ok)
-        self.assertTrue(out.exists())
-        h = out.read_text(encoding="utf-8")
-        self.assertIn("ind-card", h)
-        self.assertNotIn("industry_archive.html", h)   # 공유용: 깨진 링크 없음
+        with mock.patch.object(industry_archive, "SHARE_DIR",
+                               _P(_t.mkdtemp()) / "share"):
+            ym = industry_archive.write_export(self.conn, [{"title": "AI", "body": "x"}])
+            self.assertEqual(ym, "2026-04")                 # 최신 확정월로 동결
+            snap = industry_archive.SHARE_DIR / "2026-04.html"
+            self.assertTrue(snap.exists())
+            h = snap.read_text(encoding="utf-8")
+            self.assertIn("ind-card", h)
+            self.assertNotIn("industry_archive.html", h)    # 공유용: 깨진 링크 없음
+
+    def test_public_share_url_needs_token_and_host(self):
+        with mock.patch.object(industry_archive, "_PUBLIC_TOKEN_PATH",
+                               industry_archive.SHARE_DIR.parent / ".tok"):
+            # 토큰/호스트 둘 다 없으면 None
+            with mock.patch.dict("os.environ", {}, clear=True):
+                self.assertIsNone(industry_archive.public_share_url("2026-04"))
+            with mock.patch.dict("os.environ",
+                                 {"TRADE_DASHBOARD_PUBLIC_TOKEN": "TK",
+                                  "TRADE_PUBLIC_HOST": "http://h:8765"}):
+                self.assertEqual(industry_archive.public_share_url("2026-04"),
+                                 "http://h:8765/share/TK/2026-04.html")
+                self.assertIsNone(industry_archive.public_share_url(None))  # 월 없으면 None
 
     def test_render_export_none_when_empty(self):
         empty = sqlite3.connect(":memory:")

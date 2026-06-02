@@ -178,7 +178,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록 (검색은 ~/.trade/hs_codes.xlsx 필요 — 관세청 15049722 파일 다운로드, 개정 시 덮어쓰기)
 /customs — 관세청 수출입: 📌내 핀 + 📈급등률 TOP(≥$50M) + 💵급증액 TOP + 🗄아카이브. 카드는 기본 접힘(클릭 펼침). 대쉬보드 📦 패널과 동일
 /cost — 비용·자원(외부 API 무료·LLM·디스크·관세청 호출 추정)
-/export — 산업트렌드 공유용 파일 + 🔗공개 링크(인증 없음·외부). 대쉬보드 📥와 동일
+/export — 산업트렌드 공유: 그 시점 월 스냅샷 파일 + 🔗공개 링크(인증 없음). 대쉬보드 🔗버튼과 동일
 ※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
 
 <b>9. 자동화 systemd</b>
@@ -200,7 +200,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-02 — 외부 공유 전용 공개 URL(인증 없음, 토큰 prefix) 추가</i>
+<i>최종 갱신: 2026-06-02 — 외부 공유 링크 = 월 스냅샷(동결), 라이브는 본인만</i>
 """
 
 
@@ -1049,6 +1049,7 @@ async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     from io import BytesIO
 
     html = None
+    purl = None
     try:
         from trade import customs, industry_archive, insights
         with customs.session() as conn:
@@ -1056,8 +1057,10 @@ async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
                 cards = json.loads(insights.get_state(conn, "llm_insight_cards") or "[]")
             except Exception:
                 cards = []
-            html = industry_archive.render_export(
-                conn, cards if isinstance(cards, list) else [])
+            cards = cards if isinstance(cards, list) else []
+            html = industry_archive.render_export(conn, cards)
+            ym = industry_archive.write_export(conn, cards)   # 월별 스냅샷 동결
+            purl = industry_archive.public_share_url(ym)
     except Exception as exc:
         log.warning("/export failed: %s", exc)
     if not html:
@@ -1066,14 +1069,8 @@ async def cmd_export(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     bio = BytesIO(html.encode("utf-8"))
     bio.name = "한국수출_산업트렌드.html"
-    # 인증 없는 공개 URL이 설정돼 있으면 같이 안내(폰에서 카톡/메일에 그대로 붙여넣기).
-    purl = None
-    try:
-        from trade import industry_archive
-        purl = industry_archive.public_share_url()
-    except Exception:
-        pass
-    extra = (f"\n\n🔗 또는 이 공개 링크를 보내도 됩니다(인증 없음·외부 공유용):\n{purl}"
+    # 공개 스냅샷 URL(인증 없음·그 시점 동결)이 있으면 같이 안내.
+    extra = (f"\n\n🔗 또는 이 공개 링크(그 시점 스냅샷·인증 없음):\n{purl}"
              if purl else "")
     await update.message.reply_document(
         document=bio, filename="한국수출_산업트렌드.html",

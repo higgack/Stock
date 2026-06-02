@@ -21,9 +21,9 @@ class PublicShareGateTests(unittest.TestCase):
     def setUpClass(cls):
         cls._tmp = TemporaryDirectory()
         data = Path(cls._tmp.name)
-        (data / "dashboard").mkdir()
-        (data / "dashboard" / "industry_export.html").write_text(
-            "<html>EXPORT</html>", encoding="utf-8")
+        (data / "dashboard" / "share").mkdir(parents=True)
+        (data / "dashboard" / "share" / "2026-04.html").write_text(
+            "<html>SNAPSHOT-2026-04</html>", encoding="utf-8")
         (data / "dashboard" / "index.html").write_text(
             "<html>LIVE</html>", encoding="utf-8")
         cls._old_env = {k: os.environ.get(k) for k in [
@@ -72,16 +72,18 @@ class PublicShareGateTests(unittest.TestCase):
         except urllib.error.HTTPError as e:
             return e.code, ""
 
-    def test_public_share_serves_export_without_auth(self):
-        code, body = self._get("/share/TESTTOKEN/")
+    def test_public_share_serves_month_snapshot_without_auth(self):
+        code, body = self._get("/share/TESTTOKEN/2026-04.html")
         self.assertEqual(code, 200)
-        self.assertIn("EXPORT", body)
+        self.assertIn("SNAPSHOT-2026-04", body)
 
     def test_public_share_other_paths_404(self):
-        # 공개 prefix 안이어도 허용 파일 외엔 차단(라이브 경로 노출 방지)
-        for p in ("/share/TESTTOKEN/index.html",
+        # 'YYYY-MM.html' 월 스냅샷 외엔 전부 차단(라이브/임의 경로 노출 방지)
+        for p in ("/share/TESTTOKEN/",
+                  "/share/TESTTOKEN/index.html",
                   "/share/TESTTOKEN/dashboard/index.html",
-                  "/share/TESTTOKEN/store.db"):
+                  "/share/TESTTOKEN/store.db",
+                  "/share/TESTTOKEN/2099-99.html"):  # 없는 월 → 404(파일 부재)
             code, _ = self._get(p)
             self.assertEqual(code, 404, f"path={p}")
 

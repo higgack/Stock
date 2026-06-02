@@ -23,6 +23,7 @@ import http.server
 import json
 import logging
 import os
+import re
 import shutil
 import socketserver
 import sys
@@ -68,9 +69,10 @@ def _public_share_token() -> str:
 
 
 _PUBLIC_TOKEN = _public_share_token()
-# 공개 prefix(=토큰을 모르면 못 들어옴). 공개되는 단 한 개 파일:
+# 공개 prefix(=토큰을 모르면 못 들어옴). 그 안에서도 월별 스냅샷
+# 'YYYY-MM.html'만 서빙 — 라이브 대쉬보드/다른 파일은 절대 노출 안 됨.
 _PUBLIC_PREFIX = f"/share/{_PUBLIC_TOKEN}/"
-_PUBLIC_FILE = "industry_export.html"        # ~/.trade/dashboard/ 안의 파일명
+_SHARE_FILE_RE = re.compile(r"^\d{4}-\d{2}\.html$")
 _STORE_PATH = _DATA_DIR / "store.db"
 _INBOX_PATH = _DATA_DIR / "inbox.jsonl"
 _DASHBOARD_HTML = _DATA_DIR / "dashboard" / "index.html"
@@ -350,15 +352,15 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
 
     def _gates_pass(self) -> bool:
-        # 공개 export 경로(/share/<token>/...)는 BasicAuth·운영 토큰 면제.
-        # 단 그 prefix 안에서도 허용된 1개 파일(industry_export.html)만 서빙
-        # — 그 외 경로 시도(예: /share/<token>/index.html)는 404로 차단해
-        # 토큰 노출만으로 라이브 대시보드가 새지 않게 한다.
+        # 공개 스냅샷 경로(/share/<token>/YYYY-MM.html)는 BasicAuth·운영 토큰
+        # 면제. 단 그 prefix 안에서도 'YYYY-MM.html' 월별 스냅샷만 서빙 — 그 외
+        # 경로(예: /share/<token>/index.html)는 404로 차단해 토큰 노출만으로
+        # 라이브 대시보드가 새지 않게 한다.
         path = self.path.split("?", 1)[0]
         if path.startswith(_PUBLIC_PREFIX):
             rest = path[len(_PUBLIC_PREFIX):].lstrip("/")
-            if rest in ("", _PUBLIC_FILE):
-                self.path = f"/dashboard/{_PUBLIC_FILE}"   # 경로 rewrite
+            if _SHARE_FILE_RE.match(rest):                 # 'YYYY-MM.html'만
+                self.path = f"/dashboard/share/{rest}"     # 월별 스냅샷으로 rewrite
                 return True
             self.send_error(404)
             return False

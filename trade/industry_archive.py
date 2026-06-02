@@ -35,28 +35,45 @@ _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 ARCHIVE_JSONL = _DATA_DIR / "industry_archive.jsonl"
 ARCHIVE_HTML = _DATA_DIR / "dashboard" / "industry_archive.html"
 SNAP_DIR = _DATA_DIR / "dashboard" / "archive"          # 동결 페이지 디렉토리
-EXPORT_HTML = _DATA_DIR / "dashboard" / "industry_export.html"   # 폰 공유용(서빙)
+SHARE_DIR = _DATA_DIR / "dashboard" / "share"           # 공개 월별 스냅샷(서빙)
 _PUBLIC_TOKEN_PATH = _DATA_DIR / ".public_token"
 
 
-def public_share_url(host_hint: str | None = None) -> str | None:
-    """공개 export URL(인증 없음). dashboard_server가 처음 뜰 때 ~/.trade/
-    .public_token에 토큰을 저장 — 그 값 + TRADE_PUBLIC_HOST 또는 인자로 구성.
-    토큰/호스트 모르면 None(URL 미표시). 외부 공유의 핵심 — 이 URL을 모르면
-    아무도 못 들어오고, 공개 prefix 안에서도 industry_export.html만 서빙됨."""
+def _public_token() -> str | None:
     token = (os.environ.get("TRADE_DASHBOARD_PUBLIC_TOKEN") or "").strip()
-    if not token:
-        try:
-            token = _PUBLIC_TOKEN_PATH.read_text().strip()
-        except OSError:
-            return None
-    if not token:
+    if token:
+        return token
+    try:
+        token = _PUBLIC_TOKEN_PATH.read_text().strip()
+    except OSError:
         return None
-    host = host_hint or os.environ.get("TRADE_PUBLIC_HOST") or ""
-    host = host.strip().rstrip("/")
+    return token or None
+
+
+def latest_stored_ym(conn) -> str | None:
+    """저장된 산업 데이터의 최신 확정월('YYYY-MM'). 없으면 None."""
+    by_ind = industry.load_stored(conn)
+    if not by_ind:
+        return None
+    ym = ""
+    for pts in industry.industry_series(by_ind).values():
+        if pts and pts[-1]["ym"] > ym:
+            ym = pts[-1]["ym"]
+    return ym or None
+
+
+def public_share_url(ym: str | None, host_hint: str | None = None) -> str | None:
+    """공개 스냅샷 URL(인증 없음) — 그 확정월 시점 동결본. 토큰
+    (~/.trade/.public_token 또는 env) + TRADE_PUBLIC_HOST + 월. 하나라도
+    없으면 None. 외부 공유의 핵심: URL을 모르면 못 보고, 공개 prefix 안에서도
+    'YYYY-MM.html' 월별 스냅샷만 서빙된다(라이브 대쉬보드 비노출)."""
+    token = _public_token()
+    if not token or not ym:
+        return None
+    host = (host_hint or os.environ.get("TRADE_PUBLIC_HOST") or "").strip().rstrip("/")
     if not host:
         return None
-    return f"{host}/share/{token}/"
+    return f"{host}/share/{token}/{ym}.html"
 
 _FM = FieldMap(date="_date", ts="ts", body="body", title="title",
                cost="cost_krw", elapsed=None, kind="kind")
@@ -290,19 +307,23 @@ def regenerate(out_path: Path | None = None) -> Path:
     return out
 
 
-def write_export(conn, cards, out_path: Path | None = None) -> bool:
-    """공유용 export를 대시보드 서빙 경로(EXPORT_HTML)에 기록 — 폰에서
-    📥 링크/공유용. best-effort(실패해도 메인 렌더 안 막음)."""
+def write_export(conn, cards) -> str | None:
+    """공개 스냅샷을 확정월별 파일(SHARE_DIR/<YYYY-MM>.html)로 기록 →
+    /share/<token>/<ym>.html 로 서빙. 새 확정월이 오면 새 파일이 생기고
+    지난달 파일은 그대로 동결돼, 이미 보낸 링크는 그 시점 스냅샷을 유지한다
+    (운영자 라이브 대쉬보드만 계속 갱신). 반환=ym(없으면 None). best-effort."""
     try:
+        ym = latest_stored_ym(conn)
+        if not ym:
+            return None
         html = render_export(conn, cards)
         if not html:
-            return False
-        out = out_path or EXPORT_HTML
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(html, encoding="utf-8")
-        return True
+            return None
+        SHARE_DIR.mkdir(parents=True, exist_ok=True)
+        (SHARE_DIR / f"{ym}.html").write_text(html, encoding="utf-8")
+        return ym
     except Exception:
-        return False
+        return None
 
 
 def ensure_exists() -> None:

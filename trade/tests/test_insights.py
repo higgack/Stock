@@ -171,7 +171,7 @@ class DashboardInsightBoxTests(unittest.TestCase):
         self.assertIn("AI 인프라", html)           # 카드 내용
         self.assertIn("반도체", html)              # 산업 카드도 함께
         self.assertIn("industry_archive.html", html)   # 🗄 월별 아카이브 링크
-        self.assertIn("industry_export.html", html)     # 📥 공유용 파일 링크
+        self.assertIn("공유 링크", html)                # 🔗 공유(공개 URL 미설정 시 안내)
 
 
 if __name__ == "__main__":

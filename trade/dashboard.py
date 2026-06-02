@@ -105,6 +105,7 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             return ""
         from trade import insights, llm_insights
         import json as _json
+        from trade import industry_archive
         with customs.session(db) as conn:
             by_ind = industry.load_stored(conn)
             by_imp = industry.load_stored_imports(conn)
@@ -115,25 +116,22 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
                 cards = _json.loads(insights.get_state(conn, "llm_insight_cards") or "[]")
             except Exception:
                 cards = []
+            share_ym = industry_archive.latest_stored_ym(conn)
         ins_html = llm_insights.render_html(cards if isinstance(cards, list) else [])
-        # 📥 공유: 공개 URL(인증 없음)이 있으면 그 쪽으로(외부 공유 핵심).
-        # 없으면 같은 파일 내부 상대경로 fallback(인증 필요·내부용).
-        from trade.industry_archive import public_share_url as _share_url
-        purl = _share_url()
-        share_href = purl or "industry_export.html"
+        # 🔗 공유: 그 확정월 시점 '스냅샷' 공개 URL(인증 없음)을 클립보드로 복사.
+        # 새 확정월이 오면 버튼이 새 URL을 주지만, 이미 보낸 옛 링크는 그 달 동결.
+        purl = industry_archive.public_share_url(share_ym)
         if purl:
             from html import escape as _esc
             share_btn = (
                 '<button type="button" class="ind-share-btn" '
                 f'data-share-url="{_esc(purl)}">'
-                '🔗 공유 링크 복사 (인증 없음·외부 공유용)</button>'
-                f' <a href="{_esc(purl)}" target="_blank" rel="noopener" '
-                'class="ind-share-open">↗ 열기</a>'
+                f'🔗 공유 링크 복사 ({_esc(share_ym or "")} 스냅샷·인증 없음)</button>'
             )
         else:
             share_btn = (
-                f'<a href="{share_href}" target="_blank" rel="noopener" '
-                'style="margin-left:16px">📥 공유용 파일 (인증 필요·내부)</a>'
+                '<span style="margin-left:16px;color:var(--text-sub);font-size:12px">'
+                '🔗 공유 링크: .env에 TRADE_PUBLIC_HOST 설정 필요</span>'
             )
         archive_link = (
             '<div class="ind-archive">'
