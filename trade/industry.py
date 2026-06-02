@@ -180,6 +180,8 @@ def momentum(points: list[dict]) -> dict:
 # parameters). YoY in %, ΔYoY in %p.
 _HIGH_GROWTH_YOY = 20.0     # 초고성장/강세: strong & (still) accelerating
 _TURNAROUND_DYOY = 0.0      # 턴어라운드: YoY accelerating (ΔYoY > 0)
+# 수입 모멘텀 박스: 산업 월 수입 하한($100M) — 소규모 산업 기저효과 노이즈 차단
+_IMP_MIN_USD = 100_000_000
 
 
 def classify(points: list[dict]) -> str:
@@ -878,25 +880,42 @@ def _summary_board(series: dict[str, list[dict]]) -> str:
             if ind not in driver or y > driver[ind][1]:
                 driver[ind] = (nm, y)
 
-        imp_yoy = []
+        # 산업별 수출 YoY(괴리·동행/선행후보 판정용)
+        exp_yoy = {ind: (pts[-1].get("yoy") if pts else None)
+                   for ind, pts in series.items()}
+        # 선택: 산업 수입 ≥ 하한 AND 수입 YoY ≥ +20% → 괴리(수입YoY−수출YoY)
+        # 내림차순. 이미 수출 강한 산업의 수입↑(동행)보다, 수출은 약한데 수입이
+        # 먼저 튀는 산업(⚡선행후보)을 위로 올린다.
+        cand = []
         for ind, ipts in _import_series.items():
-            if ipts and ipts[-1].get("yoy") is not None:
-                imp_yoy.append((ind, ipts[-1]["yoy"]))
-        surges = sorted([t for t in imp_yoy if t[1] >= 20.0],
-                        key=lambda t: t[1], reverse=True)[:8]
+            if not ipts:
+                continue
+            iy = ipts[-1].get("yoy")
+            ival = ipts[-1].get("exp") or 0
+            if iy is None or iy < 20.0 or ival < _IMP_MIN_USD:
+                continue
+            ey = exp_yoy.get(ind)
+            div = iy - (ey if ey is not None else 0.0)
+            lead = (ey is None) or (ey < _HIGH_GROWTH_YOY)   # 수출 안 강함 → 선행후보
+            cand.append((div, ind, iy, lead))
+        cand.sort(key=lambda t: t[0], reverse=True)
+        surges = cand[:8]
         if surges:
             rows_html = []
-            for ind, v in surges:
+            for _div, ind, iy, lead in surges:
+                tcls, ttxt = ("lead", "⚡선행후보") if lead else ("coin", "동행")
+                tag = (f"<span class='ind-imp-tag ind-imp-tag-{tcls}'>{ttxt}</span>")
                 drv = driver.get(ind)
                 sub = (f"<span class='ind-imp-drv'>← {_html.escape(drv[0])} "
                        f"{_pct(drv[1])}</span>" if drv else "")
                 rows_html.append(
-                    f"<div class='ind-imp-row'>{chip(ind, v)}{sub}</div>")
+                    f"<div class='ind-imp-row'>{chip(ind, iy)}{tag}{sub}</div>")
             imp_box = (
-                "<div class='ind-sbox ind-sbox-imp'><h3>📥 수입 급증 (생산·투자 선행신호)</h3>"
-                "<p class='ind-sbox-sub'>원자재·설비 수입 YoY 급증은 향후 생산/수출 확대의 "
-                "선행지표일 수 있습니다. <b>← 표기</b>는 그 산업 수입을 가장 끌어올린 "
-                "세부품목(MTI).</p>"
+                "<div class='ind-sbox ind-sbox-imp'><h3>📥 수입 모멘텀 (수출 대비 앞서가는 순)</h3>"
+                "<p class='ind-sbox-sub'><b>⚡선행후보</b>=수출은 아직 약한데 수입이 먼저 급증"
+                "(수출 차트에 안 보이는 선행 가능). <b>동행</b>=수출이 이미 강해 현재 생산 견인"
+                "(수요견인). 자본재↑는 선행·원자재는 동행·완제품은 수요. <b>←</b>는 그 산업 "
+                "수입을 가장 끌어올린 세부품목(MTI).</p>"
                 f"<div class='ind-imp-list'>{''.join(rows_html)}</div></div>")
     return (f"<div class='ind-summary-grid'>{''.join(boxes)}</div>"
             f"<div class='ind-deriv-grid'>{deriv}</div>"

@@ -144,10 +144,29 @@ class StoreRenderTests(unittest.TestCase):
             industry.load_stored_imports(self.conn)["반도체"]["2026-04"],
             3_000_000_000)
         html = industry.render_industry_html(exp, imp)
-        self.assertIn("ind-sbox-imp", html)        # 수입 급증 박스
-        self.assertIn("수입 급증", html)
+        self.assertIn("ind-sbox-imp", html)        # 수입 모멘텀 박스
+        self.assertIn("수입 모멘텀", html)
         # backward compat: no imports → no box
         self.assertNotIn("ind-sbox-imp", industry.render_industry_html(exp))
+
+    def test_import_box_divergence_ranks_lead_first(self):
+        # 디스플레이(수입↑·수출↓)=⚡선행후보가, 반도체(둘다↑)=동행보다 위.
+        exp = {"반도체": self._series_25mo(11_000_000_000, 31_000_000_000),       # 수출 강
+               "디스플레이": self._series_25mo(5_000_000_000, 4_800_000_000)}      # 수출 약(−4%)
+        imp = {"반도체": self._series_25mo(1_000_000_000, 3_000_000_000),          # 수입 +200%
+               "디스플레이": self._series_25mo(1_000_000_000, 1_300_000_000)}       # 수입 +30%
+        html = industry.render_industry_html(exp, imp)
+        self.assertIn("⚡선행후보", html)
+        self.assertIn("동행", html)
+        # 괴리 큰 순 → 선행후보가 동행보다 먼저(태그는 수입박스에만 등장)
+        self.assertLess(html.index("⚡선행후보"), html.index("동행"))
+
+    def test_import_box_floor_excludes_small_import(self):
+        # 산업 월 수입이 하한(1억$) 미만이면 수입 모멘텀 박스에서 제외 → 박스 없음
+        exp = {"반도체": self._series_25mo(11_000_000_000, 31_000_000_000)}
+        imp = {"반도체": self._series_25mo(20_000_000, 50_000_000)}   # 0.5억$ < 1억$
+        html = industry.render_industry_html(exp, imp)
+        self.assertNotIn("ind-sbox-imp", html)
 
     def test_import_box_shows_mti_driver(self):
         # 수입 급증 산업(반도체) 옆에 그 수입을 끌어올린 세부품목(MTI) 드라이버

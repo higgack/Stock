@@ -503,6 +503,10 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-imp-list{display:flex;flex-direction:column;gap:6px}
 .ind-imp-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ind-imp-drv{font-size:11px;color:var(--text-sub)}
+.ind-imp-tag{font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;white-space:nowrap}
+.ind-imp-tag-lead{background:rgba(245,158,11,.18);color:#b45309}
+.ind-imp-tag-coin{background:var(--surface-2);color:var(--text-sub)}
+body.dark .ind-imp-tag-lead{background:rgba(245,158,11,.22);color:#fcd34d}
 .ind-sbox-info p,.ind-sbox-sub{margin:0 0 6px;font-size:12px;color:var(--text-sub);line-height:1.5}
 .ind-chip-wrap{display:flex;flex-wrap:wrap;gap:6px}
 .ind-mini-chip{font-size:12px;background:var(--chip-bg);border-radius:999px;padding:3px 9px}
