@@ -27,8 +27,9 @@ EnvironmentFile=-/home/higgack/stock-trade/.env
 #      guarded (won't store a partial sweep).
 #   5. refresh_signals — fingerprint the freshly-stored 산업/하위품목 집계
 #      vs the last tick. ONLY when it changed (= a new confirmed month
-#      landed, ~monthly): generate 🔍 LLM 추가신호, append a 월별 아카이브
-#      snapshot (industry_archive.html), and DM '✅ 관세청 데이터 갱신'.
+#      landed, ~monthly): generate 🔍 LLM 추가신호, FREEZE the full 산업트렌드
+#      view as a standalone archive/{ym}.html snapshot (+ index), and DM
+#      '✅ 관세청 데이터 갱신'.
 #      Quiet ticks send nothing; first run records a silent baseline.
 #      This is why a 4×/day cadence doesn't spam.
 #   6. trade.dashboard — re-render index.html immediately so the new
