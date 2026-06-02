@@ -1608,15 +1608,19 @@ def main() -> int:
     args.out.write_text(html, encoding="utf-8")
     size_kb = len(html.encode("utf-8")) / 1024
     print(f"wrote {args.out} ({size_kb:.0f} KB)")
-    # 산업트렌드 탭의 🗄 아카이브 + 📥 공유 export 링크가 404 안 나게 보장.
-    # (아카이브 내용 갱신은 refresh_signals가 담당; 여기선 존재 보장 + export 최신화)
+    # 산업트렌드 탭의 🗄 아카이브 + 📥 공유 링크가 404 안 나게 보장 + 현재 확정월
+    # 동결본을 라이브와 함께 갱신(같은 달이면 차트·뷰 수정이 아카이브에도 반영;
+    # 메타·과거달은 보존). 저장 카드 재사용이라 LLM 0콜.
     try:
         import json as _json
         from trade import customs as _customs, industry_archive, insights
         industry_archive.ensure_exists()
         with _customs.session() as conn:
             cards = _json.loads(insights.get_state(conn, "llm_insight_cards") or "[]")
-            industry_archive.write_export(conn, cards if isinstance(cards, list) else [])
+            cards = cards if isinstance(cards, list) else []
+            industry_archive.write_export(conn, cards)        # 공유 스냅샷(현재월)
+            industry_archive.record_snapshot(conn, cards)     # 아카이브 현재월 = 라이브 추적
+            industry_archive.regenerate()                     # 색인 재생성
     except Exception:
         pass
     return 0

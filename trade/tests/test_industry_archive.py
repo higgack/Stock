@@ -71,6 +71,25 @@ class FrozenSnapshotTests(unittest.TestCase):
         self.assertIn("반도체 생태계 활황", body)           # 🔍 신호 제목
         self.assertIn("공급망 허브", body)                  # 🔍 신호 본문(전문)
 
+    def test_rerecord_same_month_refreshes_content_keeps_meta(self):
+        # 같은 확정월 재기록 = 현재월 라이브 추적: 본문(내용)은 갱신되되
+        # 최초 기록일·비용은 보존(메타 churn 방지).
+        import time
+        industry_archive.record_snapshot(
+            self.conn, [{"title": "v1", "body": "x"}], cost_krw=42)
+        r1 = industry_archive.load_runs()[0]
+        time.sleep(0.01)
+        industry_archive.record_snapshot(
+            self.conn, [{"title": "v2", "body": "y"}])   # cost 없이 재기록
+        runs = industry_archive.load_runs()
+        self.assertEqual(len(runs), 1)                   # 여전히 1건(같은 달)
+        r2 = runs[0]
+        self.assertEqual(r2["_date"], r1["_date"])       # 기록일 보존
+        self.assertEqual(r2["ts"], r1["ts"])             # ts 보존
+        self.assertEqual(r2.get("cost_krw"), 42)         # 최초 비용 보존
+        self.assertIn("v2", r2["body"])                  # 내용은 최신으로 갱신
+        self.assertNotIn("v1", r2["body"])
+
     def test_idempotent_by_confirmed_month(self):
         industry_archive.record_snapshot(self.conn, [])
         industry_archive.record_snapshot(self.conn, [])   # 같은 확정월 재기록

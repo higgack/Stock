@@ -270,17 +270,23 @@ def record_snapshot(conn, cards, *, cost_krw=None, now=None) -> str | None:
         '🔗 이 시점 산업트렌드 전체 화면 보기 →</a>'
     )
     body = (summary + "\n\n" + link) if summary else link
+    # 같은 확정월이 이미 기록돼 있으면(=현재월 재렌더) 최초 기록일·비용은 보존하고
+    # 내용(body·page)만 갱신 → '같은 달이면 라이브 따라 업데이트, 메타는 첫 기록값'.
+    prev = next((r for r in load_runs() if r.get("key") == latest), None)
+    _date = (prev or {}).get("_date") or now.date().isoformat()
+    _ts = (prev or {}).get("ts") or now.isoformat(timespec="seconds")
+    keep_cost = (prev or {}).get("cost_krw") or cost_krw
     rec = {
         "key": latest,
-        "_date": now.date().isoformat(),
-        "ts": now.isoformat(timespec="seconds"),
+        "_date": _date,
+        "ts": _ts,
         "title": f"{latest} 확정 산업트렌드",
         "kind": "📊 월간 스냅샷",
         "body": body,
         "file": f"archive/{fname}",
     }
-    if cost_krw:
-        rec["cost_krw"] = cost_krw
+    if keep_cost:
+        rec["cost_krw"] = keep_cost
     _upsert(rec)
     return latest
 
