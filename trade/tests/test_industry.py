@@ -156,6 +156,12 @@ class StoreRenderTests(unittest.TestCase):
         self.assertIn("ind-ttm", html)
         self.assertIn("ind-summary", html)       # 요약문
         self.assertIn("ind-signal", html)        # ΔYoY 신호
+        # reference-style full layout: 2-up charts + YoY bars + raw table
+        self.assertIn("ind-body", html)          # meta | charts 2-column
+        self.assertIn("ind-bar-pos", html)       # YoY 성장률 막대
+        self.assertIn("YoY 성장률", html)
+        self.assertIn("월별 원자료", html)         # raw-data table
+        self.assertIn("ind-table", html)
 
 
 class IndicatorExtraTests(unittest.TestCase):
