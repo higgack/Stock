@@ -287,19 +287,18 @@ def get_series(conn: sqlite3.Connection, hs_code: str) -> list[dict]:
 # ---------------------------------------------------------------------
 
 def fmt_usd(n: int | None) -> str:
-    """Compact USD: 129673809 → '$129.7M', -5364818 → '-$5.4M'. The API
-    returns raw dollars, so amounts are large — abbreviate for a one-line
-    cell."""
+    """USD → 억 달러 한국어 라벨: 3417443000 → '34.2억$', 129673809 →
+    '1.3억$', 50000000 → '0.50억$'. 1억$ = $100M. 산업트렌드 _eokusd와
+    동일 스킴으로 대시보드·DM·CLI를 통일하고, '$'로 억 '달러'(억 원 아님)임을
+    명시한다(과거 단위 오해 방지)."""
     n = n or 0
     sign = "-" if n < 0 else ""
-    a = abs(n)
-    if a >= 1_000_000_000:
-        return f"{sign}${a / 1_000_000_000:.2f}B"
-    if a >= 1_000_000:
-        return f"{sign}${a / 1_000_000:.1f}M"
-    if a >= 1_000:
-        return f"{sign}${a / 1_000:.0f}K"
-    return f"{sign}${a}"
+    eok = abs(n) / 1e8
+    if eok >= 100:
+        return f"{sign}{eok:,.0f}억$"
+    if eok >= 1:
+        return f"{sign}{eok:.1f}억$"
+    return f"{sign}{eok:.2f}억$"
 
 
 def fmt_pct(p: float | None) -> str:

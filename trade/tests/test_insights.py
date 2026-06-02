@@ -66,7 +66,7 @@ class RefreshSignalsGateTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def _run(self):
+    def _run(self, argv=None, cards=None):
         from trade.scripts import refresh_signals
 
         @contextmanager
@@ -75,10 +75,11 @@ class RefreshSignalsGateTests(unittest.TestCase):
 
         with mock.patch.object(refresh_signals.customs, "session", fake_session), \
              mock.patch.object(refresh_signals.llm_insights, "generate",
-                               return_value=[]), \
+                               return_value=cards or []) as gen, \
              mock.patch.object(refresh_signals, "_send_dm",
                                return_value=True) as send:
-            refresh_signals.main([])
+            refresh_signals.main(argv or [])
+        self._gen = gen
         return send
 
     def test_first_run_is_baseline_silent(self):
@@ -101,6 +102,15 @@ class RefreshSignalsGateTests(unittest.TestCase):
         # 다시 돌리면 또 안 옴(fingerprint 전진됨)
         send2 = self._run()
         send2.assert_not_called()
+
+    def test_force_runs_even_when_unchanged(self):
+        self._run()                                    # baseline 기록
+        send = self._run()                             # 동일 데이터 → 평소엔 무음
+        send.assert_not_called()
+        # --force는 변동 없어도 LLM 생성 + DM 강제(프리뷰)
+        send_f = self._run(["--force"], cards=[{"title": "t", "body": "b"}])
+        self._gen.assert_called_once()
+        send_f.assert_called_once()
 
 
 class DashboardInsightBoxTests(unittest.TestCase):

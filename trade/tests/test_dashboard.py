@@ -521,7 +521,7 @@ class TestCustomsPanel(unittest.TestCase):
             self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
         )
         self.assertIn("📌 내 핀", html)
-        self.assertIn("$129.7M", html)       # formatted export
+        self.assertIn("1.3억$", html)        # formatted export (억 달러 통일)
         self.assertNotIn("수집 대기", html)
 
     def test_default_paths_no_crash(self):

@@ -285,9 +285,12 @@ def _eokusd(n) -> str:
     if n is None:
         return "—"
     eok = n / 1e8
-    if abs(eok) >= 100:
+    a = abs(eok)
+    if a >= 100:
         return f"{eok:,.0f}억$"
-    return f"{eok:.1f}억$"
+    if a >= 1:
+        return f"{eok:.1f}억$"
+    return f"{eok:.2f}억$"
 
 
 def _pct(p, suffix="%") -> str:

@@ -12,6 +12,7 @@ silent 패턴 미러.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import sys
@@ -74,24 +75,32 @@ def _dm_body(latest: str, n_ind: int, n_cards: int) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--force", action="store_true",
+                    help="fingerprint 무시하고 즉시 LLM 추가신호 생성·저장·DM "
+                         "(첫 배포 후 🔍 박스 프리뷰용). baseline-silent도 건너뜀.")
+    args = ap.parse_args(argv)
+
     with customs.session() as conn:
         fp = insights.data_fingerprint(conn)
         last = insights.get_state(conn, _FP_KEY)
 
-        if last is None:
-            insights.set_state(conn, _FP_KEY, fp)
-            log.info("baseline fingerprint recorded — silent (no DM)")
-            return 0
-        if fp == last:
-            log.info("no data change since last tick — silent")
-            return 0
+        if not args.force:
+            if last is None:
+                insights.set_state(conn, _FP_KEY, fp)
+                log.info("baseline fingerprint recorded — silent (no DM)")
+                return 0
+            if fp == last:
+                log.info("no data change since last tick — silent")
+                return 0
 
-        # 데이터 변동 감지 → LLM 추가신호 생성·저장 → 완료 DM → fingerprint 전진
+        # 변동 감지(또는 --force) → LLM 추가신호 생성·저장 → 완료 DM → fingerprint 전진
         latest, n_ind = _latest_ym(conn)
         n_cards = _refresh_llm_cards(conn)
         sent = _send_dm(_dm_body(latest, n_ind, n_cards))
         insights.set_state(conn, _FP_KEY, fp)
-        log.info("data changed (latest=%s) — %d LLM cards, DM %s, fingerprint advanced",
+        log.info("%s (latest=%s) — %d LLM cards, DM %s, fingerprint advanced",
+                 "forced" if args.force else "data changed",
                  latest or "—", n_cards, "sent" if sent else "skipped")
     return 0
 

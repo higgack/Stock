@@ -180,11 +180,12 @@ class TestCache(unittest.TestCase):
 
 class TestFormat(unittest.TestCase):
     def test_fmt_usd(self):
-        self.assertEqual(customs.fmt_usd(129673809), "$129.7M")
-        self.assertEqual(customs.fmt_usd(3417443000), "$3.42B")
-        self.assertEqual(customs.fmt_usd(-5364818), "-$5.4M")
-        self.assertEqual(customs.fmt_usd(304), "$304")
-        self.assertEqual(customs.fmt_usd(None), "$0")
+        # 억 달러($) 한국어 통일 — 1억$ = $100M
+        self.assertEqual(customs.fmt_usd(129673809), "1.3억$")
+        self.assertEqual(customs.fmt_usd(3417443000), "34.2억$")
+        self.assertEqual(customs.fmt_usd(-5364818), "-0.05억$")
+        self.assertEqual(customs.fmt_usd(304), "0.00억$")
+        self.assertEqual(customs.fmt_usd(None), "0.00억$")
 
     def test_fmt_pct(self):
         self.assertEqual(customs.fmt_pct(30.25), "+30.2%")
