@@ -58,12 +58,21 @@ class TestCollect(unittest.TestCase):
         self.assertEqual(snap["media_bytes"], 4000)
         self.assertEqual(snap["data_total_bytes"], 1000 + 2000 + 500 + 4000)
 
-    def test_api_calls_track_pins(self):
+    def test_api_calls_estimate_includes_sweeps(self):
+        # daily calls = 4 ticks × (pins + scan + industry sweep). Pins flow
+        # into the per-tick total; the chapter sweeps dominate.
         with mock.patch.object(cost.hs_map, "entries",
                                return_value=[("a", "1"), ("b", "22"), ("c", "333")]):
             snap = cost.collect()
         self.assertEqual(snap["pins"], 3)
-        self.assertEqual(snap["api_calls_per_day"], 3)
+        bd = snap["api_calls_breakdown"]
+        self.assertEqual(bd["pins_per_tick"], 3)
+        self.assertGreater(bd["scan_per_tick"], 90)        # ~97 chapters
+        self.assertGreater(bd["industry_per_tick"], bd["scan_per_tick"])  # 2 windows
+        expect = (bd["pins_per_tick"] + bd["scan_per_tick"]
+                  + bd["industry_per_tick"]) * bd["ticks_per_day"]
+        self.assertEqual(snap["api_calls_per_day"], expect)
+        self.assertLess(snap["api_calls_per_day"], snap["api_quota"])  # under cap
 
     def test_missing_files_zero(self):
         with mock.patch.object(cost, "_WATCHED",
@@ -73,7 +82,9 @@ class TestCollect(unittest.TestCase):
             snap = cost.collect()
         self.assertEqual(snap["files"]["store.db"], 0)
         self.assertEqual(snap["media_bytes"], 0)
-        self.assertEqual(snap["api_calls_per_day"], 0)
+        self.assertEqual(snap["pins"], 0)                  # no pins
+        # sweeps still counted even with 0 pins
+        self.assertGreater(snap["api_calls_per_day"], 0)
 
 
 class TestFormatters(unittest.TestCase):
@@ -95,7 +106,7 @@ class TestFormatters(unittest.TestCase):
         self.assertIn("LLM: 없음", out)
         self.assertIn("store.db", out)
         self.assertIn("디스크 잔여", out)
-        self.assertIn("핀 2개", out)
+        self.assertIn("추정", out)        # API 호출은 추정치 표기
 
     def test_dashboard_line_compact(self):
         line = cost.format_dashboard_line(self._snap())

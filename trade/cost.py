@@ -98,13 +98,26 @@ def collect() -> dict:
     except OSError:
         disk_free = disk_total = 0
 
-    # API daily calls ≈ pinned items (customs-fetch makes one call per pin
-    # per day; the window is a single ranged request). HS map missing /
-    # empty → 0.
     try:
         pins = len(hs_map.entries())
     except Exception:
         pins = 0
+
+    # Daily 관세청 API call estimate. customs-fetch.timer fires 4×/day and
+    # each tick runs:
+    #   - fetch_customs   : 1 call per pinned item
+    #   - scan_customs    : full chapter sweep (97 chapters, +pagination on
+    #                       heavy chapters → ~1.3× calls)
+    #   - industry_report : same sweep split into 2 ≤12-month windows (YoY)
+    # so a tick ≈ pins + 97×1.3 + 97×2×1.3 calls. ×4 ticks/day. This is an
+    # estimate (page counts vary by chapter), labelled as such in the UI.
+    _TICKS = 4
+    _CHAPTERS = 97
+    _PAGE_FACTOR = 1.3          # avg pages per chapter (most 1, heavy ones >1)
+    scan_calls = round(_CHAPTERS * _PAGE_FACTOR)
+    industry_calls = round(_CHAPTERS * 2 * _PAGE_FACTOR)   # 2 windows
+    per_tick = pins + scan_calls + industry_calls
+    api_calls_per_day = per_tick * _TICKS
 
     return {
         "files": files,            # {label: bytes}
@@ -113,7 +126,13 @@ def collect() -> dict:
         "disk_free_bytes": disk_free,
         "disk_total_bytes": disk_total,
         "pins": pins,
-        "api_calls_per_day": pins,
+        "api_calls_per_day": api_calls_per_day,   # estimate (sweeps + pins)
+        "api_calls_breakdown": {
+            "ticks_per_day": _TICKS,
+            "pins_per_tick": pins,
+            "scan_per_tick": scan_calls,
+            "industry_per_tick": industry_calls,
+        },
         "api_quota": API_DAILY_QUOTA,
     }
 
@@ -127,8 +146,12 @@ def format_telegram(snap: dict | None = None) -> str:
         "",
         "<b>외부 API — 전부 무료</b>",
         "• 관세청 data.go.kr: 무료 (공공데이터, 과금 없음)",
-        f"  └ 일 호출 ≈ <b>{s['api_calls_per_day']}</b>회 / 한도 "
-        f"{s['api_quota']:,} (핀 {s['pins']}개)",
+        f"  └ 일 호출 ≈ <b>{s['api_calls_per_day']:,}</b>회 / 한도 "
+        f"{s['api_quota']:,} (추정)",
+        (f"     4회×(핀 {s['api_calls_breakdown']['pins_per_tick']} + 스캔 "
+         f"{s['api_calls_breakdown']['scan_per_tick']} + 산업 "
+         f"{s['api_calls_breakdown']['industry_per_tick']})"
+         if s.get("api_calls_breakdown") else ""),
         "• Telegram · HS부호 파일: 무료",
         "• LLM: 없음 (trade 봇은 토큰 과금 0)",
         "",
@@ -152,7 +175,7 @@ def format_dashboard_line(snap: dict | None = None) -> str:
     s = snap or collect()
     parts = [
         "💰 외부 API 무료",
-        f"관세청 일 {s['api_calls_per_day']}/{s['api_quota']:,}콜",
+        f"관세청 일 ~{s['api_calls_per_day']:,}/{s['api_quota']:,}콜",
         f"데이터 {fmt_bytes(s['data_total_bytes'])}",
     ]
     if s["disk_total_bytes"]:
