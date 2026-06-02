@@ -36,6 +36,27 @@ ARCHIVE_JSONL = _DATA_DIR / "industry_archive.jsonl"
 ARCHIVE_HTML = _DATA_DIR / "dashboard" / "industry_archive.html"
 SNAP_DIR = _DATA_DIR / "dashboard" / "archive"          # 동결 페이지 디렉토리
 EXPORT_HTML = _DATA_DIR / "dashboard" / "industry_export.html"   # 폰 공유용(서빙)
+_PUBLIC_TOKEN_PATH = _DATA_DIR / ".public_token"
+
+
+def public_share_url(host_hint: str | None = None) -> str | None:
+    """공개 export URL(인증 없음). dashboard_server가 처음 뜰 때 ~/.trade/
+    .public_token에 토큰을 저장 — 그 값 + TRADE_PUBLIC_HOST 또는 인자로 구성.
+    토큰/호스트 모르면 None(URL 미표시). 외부 공유의 핵심 — 이 URL을 모르면
+    아무도 못 들어오고, 공개 prefix 안에서도 industry_export.html만 서빙됨."""
+    token = (os.environ.get("TRADE_DASHBOARD_PUBLIC_TOKEN") or "").strip()
+    if not token:
+        try:
+            token = _PUBLIC_TOKEN_PATH.read_text().strip()
+        except OSError:
+            return None
+    if not token:
+        return None
+    host = host_hint or os.environ.get("TRADE_PUBLIC_HOST") or ""
+    host = host.strip().rstrip("/")
+    if not host:
+        return None
+    return f"{host}/share/{token}/"
 
 _FM = FieldMap(date="_date", ts="ts", body="body", title="title",
                cost="cost_krw", elapsed=None, kind="kind")

@@ -42,6 +42,35 @@ _TOKEN = (os.environ.get("TRADE_DASHBOARD_TOKEN") or "").strip()
 _AUTH_USER = (os.environ.get("TRADE_DASHBOARD_USER") or "").strip()
 _AUTH_PASSWORD = (os.environ.get("TRADE_DASHBOARD_PASSWORD") or "").strip()
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
+
+
+def _public_share_token() -> str:
+    """공개 export용 랜덤 토큰. 환경변수 우선, 없으면 파일에 영구 저장된 값
+    재사용(없으면 신규 생성). 외부에 공개되는 단 하나의 경로 prefix."""
+    env = (os.environ.get("TRADE_DASHBOARD_PUBLIC_TOKEN") or "").strip()
+    if env:
+        return env
+    f = _DATA_DIR / ".public_token"
+    try:
+        v = f.read_text().strip()
+        if v:
+            return v
+    except OSError:
+        pass
+    import secrets
+    v = secrets.token_urlsafe(24)
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(v)
+    except OSError:
+        pass
+    return v
+
+
+_PUBLIC_TOKEN = _public_share_token()
+# 공개 prefix(=토큰을 모르면 못 들어옴). 공개되는 단 한 개 파일:
+_PUBLIC_PREFIX = f"/share/{_PUBLIC_TOKEN}/"
+_PUBLIC_FILE = "industry_export.html"        # ~/.trade/dashboard/ 안의 파일명
 _STORE_PATH = _DATA_DIR / "store.db"
 _INBOX_PATH = _DATA_DIR / "inbox.jsonl"
 _DASHBOARD_HTML = _DATA_DIR / "dashboard" / "index.html"
@@ -321,6 +350,18 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
 
     def _gates_pass(self) -> bool:
+        # 공개 export 경로(/share/<token>/...)는 BasicAuth·운영 토큰 면제.
+        # 단 그 prefix 안에서도 허용된 1개 파일(industry_export.html)만 서빙
+        # — 그 외 경로 시도(예: /share/<token>/index.html)는 404로 차단해
+        # 토큰 노출만으로 라이브 대시보드가 새지 않게 한다.
+        path = self.path.split("?", 1)[0]
+        if path.startswith(_PUBLIC_PREFIX):
+            rest = path[len(_PUBLIC_PREFIX):].lstrip("/")
+            if rest in ("", _PUBLIC_FILE):
+                self.path = f"/dashboard/{_PUBLIC_FILE}"   # 경로 rewrite
+                return True
+            self.send_error(404)
+            return False
         if not self._check_auth():
             return False
         if not self._check_token():

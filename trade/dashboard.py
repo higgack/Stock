@@ -110,13 +110,30 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             except Exception:
                 cards = []
         ins_html = llm_insights.render_html(cards if isinstance(cards, list) else [])
-        # 🗄 월별 아카이브로 가는 별도 링크 섹션(별도 self-contained 페이지)
+        # 📥 공유: 공개 URL(인증 없음)이 있으면 그 쪽으로(외부 공유 핵심).
+        # 없으면 같은 파일 내부 상대경로 fallback(인증 필요·내부용).
+        from trade.industry_archive import public_share_url as _share_url
+        purl = _share_url()
+        share_href = purl or "industry_export.html"
+        if purl:
+            from html import escape as _esc
+            share_btn = (
+                '<button type="button" class="ind-share-btn" '
+                f'data-share-url="{_esc(purl)}">'
+                '🔗 공유 링크 복사 (인증 없음·외부 공유용)</button>'
+                f' <a href="{_esc(purl)}" target="_blank" rel="noopener" '
+                'class="ind-share-open">↗ 열기</a>'
+            )
+        else:
+            share_btn = (
+                f'<a href="{share_href}" target="_blank" rel="noopener" '
+                'style="margin-left:16px">📥 공유용 파일 (인증 필요·내부)</a>'
+            )
         archive_link = (
             '<div class="ind-archive">'
             '<a href="industry_archive.html">'
             '🗄 월별 아카이브 — 과거 산업트렌드(분류·수입급증·🔍신호) 변천 보기 →</a>'
-            '<a href="industry_export.html" style="margin-left:16px">'
-            '📥 공유용 파일 (폰에서 열어 공유)</a>'
+            f'<span style="margin-left:16px">{share_btn}</span>'
             '</div>'
         )
         return (ins_html + archive_link
@@ -531,6 +548,9 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-archive{margin:8px 16px 0;padding:9px 14px;border:1px dashed var(--border-soft);border-radius:10px;background:var(--surface)}
 .ind-archive a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}
 .ind-archive a:hover{text-decoration:underline}
+.ind-share-btn{background:var(--accent);color:#fff;border:0;padding:6px 12px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer}
+.ind-share-btn.copied{background:#10b981}
+.ind-share-open{margin-left:6px;font-size:12px;color:var(--accent)}
 .ind-legend{display:flex;gap:12px;font-size:12px;color:var(--text-sub)}
 .ind-legend i{display:inline-block;width:14px;height:0;vertical-align:middle;margin-right:4px}
 .ind-legend .ind-lg-v{border-top:3px solid var(--accent)}
@@ -1312,6 +1332,15 @@ function render(){
   document.getElementById('matrix-view').innerHTML=buildMatrixView(filtered);
   renderHeaderMeta();
 }
+
+// --- 공유 링크 복사 버튼 (산업트렌드 아카이브줄) ---
+document.addEventListener('click',function(e){
+  var b=e.target.closest('.ind-share-btn'); if(!b) return;
+  var url=b.dataset.shareUrl||'';
+  function done(){var t=b.textContent; b.classList.add('copied'); b.textContent='✓ 복사됨! 카톡/메일에 붙여넣기'; setTimeout(function(){b.classList.remove('copied'); b.textContent=t;}, 2200);}
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(url).then(done,function(){window.prompt('이 URL을 복사해 보내세요:', url);});}
+  else{window.prompt('이 URL을 복사해 보내세요:', url);}
+});
 
 // --- 산업트렌드 월별/TTM toggle (delegated; cards are server-rendered) ---
 document.addEventListener('click',function(e){
