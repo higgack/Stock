@@ -56,13 +56,20 @@ class FrozenSnapshotTests(unittest.TestCase):
         self.assertIn("확정 스냅샷", h)                      # 동결 헤더
         self.assertIn("반도체", h)
 
-    def test_index_record_links_to_frozen_page(self):
-        industry_archive.record_snapshot(self.conn, [{"title": "AI", "body": "x"}])
+    def test_index_body_is_searchable_full_text_plus_link(self):
+        # 본문은 그 달 '전체 텍스트'(검색 인덱스) + 동결 페이지 링크.
+        # 일년치가 쌓여도 색인 검색이 의미를 갖도록 모든 산업/신호가 본문에.
+        industry_archive.record_snapshot(
+            self.conn, [{"title": "반도체 생태계 활황", "body": "공급망 허브"}])
         runs = industry_archive.load_runs()
         self.assertEqual(len(runs), 1)
+        body = runs[0]["body"]
         self.assertEqual(runs[0]["file"], "archive/2026-04.html")
-        self.assertIn("archive/2026-04.html", runs[0]["body"])   # 링크
-        self.assertIn("AI", runs[0]["body"])                     # 캡션(🔍 신호명)
+        self.assertIn("archive/2026-04.html", body)        # 동결 페이지 링크
+        self.assertIn("반도체", body)                       # 산업명(검색 대상)
+        self.assertIn("초고성장", body)                     # 분류(검색 대상)
+        self.assertIn("반도체 생태계 활황", body)           # 🔍 신호 제목
+        self.assertIn("공급망 허브", body)                  # 🔍 신호 본문(전문)
 
     def test_idempotent_by_confirmed_month(self):
         industry_archive.record_snapshot(self.conn, [])

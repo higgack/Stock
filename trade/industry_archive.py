@@ -108,8 +108,14 @@ def render_standalone(inner_html: str, *, latest: str) -> str:
     )
 
 
-def _caption(by_ind, by_imp, cards) -> str:
-    """색인 카드용 짧은 검색 인덱스 캡션(산업·신호 이름) — 본문 전체 아님."""
+def _pct(v, suf="%") -> str:
+    return "—" if v is None else f"{v:+.0f}{suf}"
+
+
+def _summary_text(by_ind, by_imp, cards) -> str:
+    """색인 카드 본문 = 그 달 '전체 텍스트 내용'(검색 인덱스). 모든 산업의
+    분류·YoY + 수입급증 + 🔍신호 전문을 텔레그램풍 HTML로. 동결 페이지는
+    시각, 이 본문은 검색용 — 일년치가 쌓여도 '반도체' 검색이 의미를 갖게."""
     series = industry.industry_series(by_ind) if by_ind else {}
     imp_series = industry.industry_series(by_imp) if by_imp else {}
     buckets: dict[str, list] = {}
@@ -117,25 +123,28 @@ def _caption(by_ind, by_imp, cards) -> str:
         if pts:
             buckets.setdefault(industry.classify(pts), []).append((ind, pts[-1]))
 
-    def names(label, n):
+    blocks: list[str] = []
+    for label in ("초고성장/강세", "턴어라운드 후보", "부진/재하락"):
         items = buckets.get(label) or []
+        if not items:
+            continue
         items.sort(key=lambda t: (t[1].get("yoy") if t[1].get("yoy") is not None
                                   else -9e9), reverse=True)
-        return [i for i, _ in items[:n]]
+        chips = " · ".join(f"{i} {_pct(p.get('yoy'))}" for i, p in items)   # 전체
+        blocks.append(f"<b>{_GROUP_EMOJI.get(label, '')} {label}</b>\n{chips}")
 
-    parts = []
-    hot = names("초고성장/강세", 5)
-    if hot:
-        parts.append("🚀 " + " · ".join(hot))
     imp = sorted([(i, ip[-1].get("yoy")) for i, ip in imp_series.items()
                   if ip and ip[-1].get("yoy") is not None and ip[-1]["yoy"] >= 20.0],
-                 key=lambda t: t[1], reverse=True)[:4]
+                 key=lambda t: t[1], reverse=True)
     if imp:
-        parts.append("📥 " + " · ".join(i for i, _ in imp))
-    sigs = [c.get("title", "") for c in (cards or []) if c.get("title")]
+        blocks.append("<b>📥 수입 급증(생산·투자 선행)</b>\n"
+                      + " · ".join(f"{i} {_pct(v)}" for i, v in imp))
+
+    sigs = [c for c in (cards or []) if c.get("title") and c.get("body")]
     if sigs:
-        parts.append("🔍 " + " · ".join(sigs))
-    return "  |  ".join(parts)
+        body = "\n".join(f"• <b>{c['title']}</b> — {c['body']}" for c in sigs)
+        blocks.append(f"<b>🔍 데이터가 말하는 추가 신호</b>\n{body}")
+    return "\n\n".join(blocks)
 
 
 def record_snapshot(conn, cards, *, cost_krw=None, now=None) -> str | None:
@@ -164,16 +173,16 @@ def record_snapshot(conn, cards, *, cost_krw=None, now=None) -> str | None:
     fname = f"{latest}.html"
     (SNAP_DIR / fname).write_text(page, encoding="utf-8")
 
-    # 2) 색인 레코드(짧은 캡션 + 동결 페이지 링크)
+    # 2) 색인 레코드: 본문 = 그 달 전체 텍스트(검색 인덱스) + 동결 페이지 링크
     now = now or datetime.now(_KST)
-    caption = _caption(by_ind, by_imp, cards)
-    body = (
-        (f"{caption}\n" if caption else "")
-        + f'<a href="archive/{fname}" style="display:inline-block;margin-top:8px;'
+    summary = _summary_text(by_ind, by_imp, cards)
+    link = (
+        f'<a href="archive/{fname}" style="display:inline-block;margin-top:8px;'
         'padding:8px 14px;background:var(--accent);color:#fff;border-radius:8px;'
         'text-decoration:none;font-weight:600">'
         '🔗 이 시점 산업트렌드 전체 화면 보기 →</a>'
     )
+    body = (summary + "\n\n" + link) if summary else link
     rec = {
         "key": latest,
         "_date": now.date().isoformat(),
