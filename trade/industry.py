@@ -778,13 +778,16 @@ def render_subitem_html(by_mti: dict[str, dict],
     if not by_mti:
         return ""
     rows = []
+    pts_by_mti: dict[str, list[dict]] = {}
     for mti6, node in by_mti.items():
         months = node["months"]
         pts = industry_series({mti6: months}).get(mti6) or []
         if not pts:
             continue
+        pts_by_mti[mti6] = pts
         latest = pts[-1]
         rows.append({
+            "mti6": mti6,
             "name": node["name"], "industry": node["industry"],
             "exp": latest["exp"], "yoy": latest.get("yoy"),
             "delta": latest["exp"] - (
@@ -825,11 +828,32 @@ def render_subitem_html(by_mti: dict[str, dict],
                 f"<tr><th>품목(MTI)</th><th>산업</th><th>수출</th><th>{th}</th></tr></thead>"
                 f"<tbody>{chip_rows(items, metric)}</tbody></table></div></details>")
 
+    # TOP 10 풀 카드 (수출액 큰 순) — 산업 카드와 완전히 동일한 형식
+    # (_card_body 재사용: 차트+TTM 토글+8지표+해석문+원자료표). 이름은
+    # '품목 (산업)'으로 출처를 보임.
+    top10 = sorted(rows, key=lambda r: r["exp"], reverse=True)[:10]
+    cards = []
+    for r in top10:
+        pts = pts_by_mti[r["mti6"]]
+        cls = {"초고성장/강세": "hot", "턴어라운드 후보": "turn",
+               "부진/재하락": "down"}.get(classify(pts), "na")
+        label = classify(pts)
+        title = f"{r['name']} <small class='ind-sub-ind'>({r['industry']})</small>"
+        cards.append(
+            "<section class='ind-card'>"
+            f"<div class='ind-head'><h3>{title}</h3>"
+            f"<span class='ind-badge ind-badge-{cls}'>{label}</span></div>"
+            + _card_body(pts) + "</section>"
+        )
+    cards_html = ("<div class='ind-cards'>" + "".join(cards) + "</div>") if cards else ""
+
     return (
-        "<h2 class='ind-group ind-group-hot'>하위품목 TOP (MTI 세분)</h2>"
+        "<h2 class='ind-group ind-group-hot'>하위품목 (MTI 세분)</h2>"
         "<div class='ind-sub-note'>20개 산업 아래 세부 품목(D램·낸드·웨이퍼 등 "
-        "MTI 6자리)을 YoY·증감액으로 랭킹. 산업이 가려버리는 '산업 안의 스타 품목'을 발굴.</div>"
-        "<div class='ind-sub-wrap'>"
+        "MTI 6자리). 수출액 TOP 10은 풀 카드로, 전체는 급등률·증감액 랭킹표로 — "
+        "산업이 가려버리는 '산업 안의 스타 품목'을 발굴.</div>"
+        + cards_html
+        + "<div class='ind-sub-wrap'>"
         + tbl("📈 급등률 (YoY ≥+30%, 수출 ≥" + _eokusd(rate_min_usd) + ")", rate, "yoy")
         + tbl("💵 급증액 (YoY 증감)", amount, "amount")
         + "</div>"

@@ -261,9 +261,10 @@ class SubitemTests(unittest.TestCase):
         by = industry.aggregate_by_mti(
             self._leaves("8542321010", 11_000_000_000, 31_000_000_000))
         html = industry.render_subitem_html(by)
-        self.assertIn("하위품목 TOP", html)
-        self.assertIn("급등률", html)
+        self.assertIn("하위품목 (MTI 세분)", html)
+        self.assertIn("급등률", html)        # 랭킹표
         self.assertIn("급증액", html)
+        self.assertIn("ind-card", html)      # TOP10 풀 카드
         self.assertIn("D램", html)
         self.assertIn("반도체", html)        # 산업 컬럼
 
