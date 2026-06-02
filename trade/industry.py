@@ -183,6 +183,12 @@ _TURNAROUND_DYOY = 0.0      # 턴어라운드: YoY accelerating (ΔYoY > 0)
 # 수입 모멘텀 박스: 산업 월 수입 하한($100M) — 소규모 산업 기저효과 노이즈 차단
 _IMP_MIN_USD = 100_000_000
 
+# 산업 내부 동학(세부-상대 뷰) 기준: 세부품목 월 수출 하한($50M, 신흥 엔진까지
+# 잡되 노이즈 차단) · 견인 최소 격차(세부YoY−산업YoY ≥ +30%p) · 교체 승자/패자.
+_SUB_REL_MIN_USD = 50_000_000
+_LEAD_GAP = 30.0
+_ROT_WIN, _ROT_LOSS = 20.0, -10.0
+
 # 자본재(설비·장비) 키워드 — 수입 드라이버가 자본재면 진짜 capex '선행'. 완제품/
 # 원자재 풀 분류는 품목명만으론 오분류가 많아 보류, 고정확·고가치인 자본재만 태깅.
 _CAPITAL_KW = ("장비", "기계", "설비", "장치", "제조용", "공작")
@@ -1049,6 +1055,87 @@ def render_subitem_html(by_mti: dict[str, dict],
     )
 
 
+def _intra_views(series: dict[str, list[dict]], by_mti: dict[str, dict] | None) -> str:
+    """산업 내부 동학 — 대산업군 평균이 가리는 세부품목 신호.
+      A) 🚀 견인 품목 — 세부 YoY가 소속 산업 YoY를 크게 앞섬(반등 엔진).
+      B) 🔄 교체·잠식 — 같은 산업 안에서 한 세부 ↑ · 다른 세부 ↓(점유율 전환).
+    industry_series로 산업/세부 YoY를 구해 비교. by_mti 없으면 ''."""
+    if not by_mti:
+        return ""
+    ind_yoy = {ind: (pts[-1].get("yoy") if pts else None) for ind, pts in series.items()}
+    ind_cls = {ind: classify(pts) for ind, pts in series.items() if pts}
+
+    by_ind_subs: dict[str, list[tuple[str, float, float]]] = {}
+    subs: list[tuple[str, str, float, float]] = []
+    for mti6, node in by_mti.items():
+        pts = industry_series({mti6: node["months"]}).get(mti6) or []
+        if not pts:
+            continue
+        y = pts[-1].get("yoy")
+        e = pts[-1].get("exp") or 0
+        if y is None or e < _SUB_REL_MIN_USD:
+            continue
+        ind, nm = node.get("industry", ""), node.get("name", mti6)
+        subs.append((ind, nm, y, e))
+        by_ind_subs.setdefault(ind, []).append((nm, y, e))
+
+    # A) 견인 품목: 세부 YoY − 산업 YoY ≥ 격차. 산업 부진/턴어라운드인데 세부
+    #    초고성장이면 '반등엔진'.
+    lead = []
+    for ind, nm, y, _e in subs:
+        iy = ind_yoy.get(ind)
+        if iy is None:
+            continue
+        gap = y - iy
+        if gap >= _LEAD_GAP:
+            engine = (ind_cls.get(ind) != "초고성장/강세") and (y >= _HIGH_GROWTH_YOY)
+            lead.append((gap, ind, nm, y, iy, engine))
+    lead.sort(reverse=True)
+    lead = lead[:10]
+
+    # B) 교체·잠식: 한 산업 안에서 승자(↑) + 패자(↓) 공존 → 분산 큰 순.
+    rot = []
+    for ind, items in by_ind_subs.items():
+        wins = [t for t in items if t[1] >= _ROT_WIN]
+        loss = [t for t in items if t[1] <= _ROT_LOSS]
+        if wins and loss:
+            w = max(wins, key=lambda t: t[1])
+            l = min(loss, key=lambda t: t[1])
+            rot.append((w[1] - l[1], ind, w, l))
+    rot.sort(reverse=True)
+    rot = rot[:8]
+
+    if not lead and not rot:
+        return ""
+    boxes = ""
+    if lead:
+        rows = "".join(
+            f"<div class='ind-imp-row'><span class='ind-mini-chip'>"
+            f"<b>{_html.escape(nm)}</b> <span class='pos'>{_pct(y)}</span></span>"
+            f"<span class='ind-imp-drv'>{_html.escape(ind)} {_pct(iy)} · Δ{_pct(gap, '%p')}</span>"
+            + ("<span class='ind-imp-cap'>반등엔진</span>" if engine else "")
+            + "</div>"
+            for gap, ind, nm, y, iy, engine in lead)
+        boxes += ("<div class='ind-sbox ind-sbox-accel'><h3>🚀 산업 내 견인 품목</h3>"
+                  "<p class='ind-sbox-sub'>세부품목이 소속 산업 평균보다 크게 앞서는 순"
+                  "(세부 YoY − 산업 YoY ≥ +30%p). 산업이 부진/턴어라운드인데 세부가 "
+                  "초고성장이면 <b>반등엔진</b> — 산업 숫자가 가린 진짜 동력.</p>"
+                  f"<div class='ind-imp-list'>{rows}</div></div>")
+    if rot:
+        rows = "".join(
+            f"<div class='ind-imp-row'><span class='ind-mini-chip'><b>{_html.escape(ind)}</b></span>"
+            f"<span class='ind-imp-drv'>{_html.escape(w[0])} <span class='pos'>{_pct(w[1])}</span> ↑ "
+            f"vs {_html.escape(l[0])} <span class='neg'>{_pct(l[1])}</span> ↓</span></div>"
+            for _disp, ind, w, l in rot)
+        boxes += ("<div class='ind-sbox ind-sbox-decel'><h3>🔄 산업 내 교체·잠식</h3>"
+                  "<p class='ind-sbox-sub'>같은 산업 안에서 한 세부품목은 강세(↑)인데 다른 "
+                  "세부품목은 약세(↓) — 점유율 전환·잠식. 산업 총액이 정체여도 내부 구조가 "
+                  "바뀌는 신호.</p>"
+                  f"<div class='ind-imp-list'>{rows}</div></div>")
+    return ("<h2 class='ind-group ind-group-turn'>산업 내부 동학 (세부품목 상대)</h2>"
+            f"<div class='ind-deriv-grid'>{boxes}</div>")
+
+
 def render_industry_html(by_industry: dict[str, dict[str, int]],
                          by_import: dict[str, dict[str, int]] | None = None,
                          by_mti: dict[str, dict] | None = None,
@@ -1108,6 +1195,7 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
     )
     # A: summary board (분류·미분 칩 보드) — mirrors reference header
     out.append(_summary_board(series))
+    out.append(_intra_views(series, by_mti))
     for label, cls in _GROUPS:
         items = buckets.get(label) or []
         if not items:

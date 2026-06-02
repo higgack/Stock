@@ -168,6 +168,24 @@ class StoreRenderTests(unittest.TestCase):
         html = industry.render_industry_html(exp, imp)
         self.assertNotIn("ind-sbox-imp", html)
 
+    def test_intra_views_engine_and_rotation(self):
+        # 디스플레이 산업 부진(−4%)인데 OLED ↑(+150%)·LCD ↓(−50%):
+        # → 견인(OLED 반등엔진) + 교체·잠식(OLED↑ vs LCD↓)
+        by_ind = {"디스플레이": self._series_25mo(5_000_000_000, 4_800_000_000)}
+        by_mti = {
+            "OLED": {"name": "OLED", "industry": "디스플레이",
+                     "months": self._series_25mo(1_000_000_000, 2_500_000_000)},
+            "LCD": {"name": "LCD", "industry": "디스플레이",
+                    "months": self._series_25mo(3_000_000_000, 1_500_000_000)},
+        }
+        html = industry.render_industry_html(by_ind, None, by_mti)
+        self.assertIn("산업 내부 동학", html)
+        self.assertIn("산업 내 견인 품목", html)
+        self.assertIn("산업 내 교체·잠식", html)
+        self.assertIn("OLED", html)
+        self.assertIn("LCD", html)
+        self.assertIn("반등엔진", html)        # 산업 부진인데 OLED 초고성장
+
     def test_import_box_capital_good_badge(self):
         # 드라이버가 자본재(설비·장비)면 [자본재] 배지, 아니면 없음
         exp = {"반도체": self._series_25mo(11_000_000_000, 12_000_000_000)}
