@@ -82,20 +82,25 @@ def _upsert(rec: dict) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
-def render_standalone(inner_html: str, *, latest: str) -> str:
-    """산업트렌드 HTML 전체를 dashboard CSS로 감싼 독립 동결 페이지."""
-    title = f"산업트렌드 · {latest} 확정 스냅샷"
+def render_standalone(inner_html: str, *, latest: str,
+                      title: str | None = None,
+                      nav_links: str = "", subnote: str = "") -> str:
+    """산업트렌드 HTML 전체를 dashboard CSS로 감싼 독립 페이지.
+
+    nav_links — 헤더 우측 HTML(동결 아카이브용 back-link 등). 빈 문자열이면
+                링크 미표시(공유 export용 — 받는 사람에게 404 안 나게).
+    subnote   — 제목 아래 회색 한 줄(출처/단위/생성일 등, 공유용)."""
+    title = title or f"산업트렌드 · {latest} 확정 스냅샷"
+    right = (f"<div style=\"font-size:13px\">{nav_links}</div>"
+             if nav_links else "")
+    sub = (f"<div style=\"font-size:12px;color:var(--text-sub);"
+           f"padding:0 16px 6px\">{subnote}</div>" if subnote else "")
     head = (
-        "<div style=\"padding:14px 16px;border-bottom:1px solid var(--border);"
+        "<div style=\"padding:14px 16px 6px;border-bottom:1px solid var(--border);"
         "display:flex;justify-content:space-between;align-items:center;"
         "flex-wrap:wrap;gap:8px\">"
-        f"<div style=\"font-size:18px;font-weight:700\">📈 산업트렌드 · "
-        f"{_html.escape(latest)} 확정 스냅샷</div>"
-        "<div style=\"font-size:13px\">"
-        "<a href=\"../industry_archive.html\" style=\"color:var(--accent);"
-        "text-decoration:none\">← 아카이브 색인</a> · "
-        "<a href=\"../index.html\" style=\"color:var(--accent);text-decoration:none\">"
-        "대시보드</a></div></div>"
+        f"<div style=\"font-size:18px;font-weight:700\">📈 {_html.escape(title)}</div>"
+        + right + "</div>" + sub
     )
     return (
         "<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
@@ -106,6 +111,49 @@ def render_standalone(inner_html: str, *, latest: str) -> str:
         + f"<main class='view' style='display:block'>{inner_html}</main>"
         + f"<script>{_STANDALONE_JS}</script></body></html>"
     )
+
+
+_ARCHIVE_NAV = (
+    "<a href=\"../industry_archive.html\" style=\"color:var(--accent);"
+    "text-decoration:none\">← 아카이브 색인</a> · "
+    "<a href=\"../index.html\" style=\"color:var(--accent);text-decoration:none\">"
+    "대시보드</a>"
+)
+
+
+def build_industry_inner(conn, cards) -> tuple[str, str]:
+    """(latest_ym, 산업트렌드 전체 HTML inner). 동결·export 공용 — 🔍박스 +
+    분류보드 + 산업/하위품목 카드 + 차트 전부. 데이터 없으면 ('', '')."""
+    by_ind = industry.load_stored(conn)
+    if not by_ind:
+        return "", ""
+    by_imp = industry.load_stored_imports(conn)
+    by_mti = industry.load_mti_stored(conn)
+    by_mti_imp = industry.load_mti_imports(conn)
+    series = industry.industry_series(by_ind)
+    latest = ""
+    for pts in series.values():
+        if pts and pts[-1]["ym"] > latest:
+            latest = pts[-1]["ym"]
+    inner = (llm_insights.render_html(cards or [])
+             + industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp))
+    return latest, inner
+
+
+def render_export(conn, cards, *, now=None) -> str | None:
+    """지인에게 보낼 공유용 단일 self-contained HTML. 깨지는 nav 없음 +
+    제목/출처/단위/생성일 한 줄. 데이터 없으면 None. (LLM 호출 없음 — 전달된
+    cards 그대로 사용)."""
+    latest, inner = build_industry_inner(conn, cards)
+    if not latest:
+        return None
+    gen = (now or datetime.now(_KST)).date().isoformat()
+    subnote = (f"관세청 확정치 {latest} 기준 · HSK-MTI 연계표 · "
+               f"금액 단위 억 달러(1억$ = $100M) · 생성 {gen}")
+    return render_standalone(
+        inner, latest=latest,
+        title=f"한국 수출 산업트렌드 · {latest} 확정",
+        nav_links="", subnote=subnote)
 
 
 def _pct(v, suf="%") -> str:
@@ -168,7 +216,7 @@ def record_snapshot(conn, cards, *, cost_krw=None, now=None) -> str | None:
     # 1) 동결 페이지: 산업트렌드 뷰 '전체'(🔍박스 + 산업/하위품목 전부)
     inner = (llm_insights.render_html(cards or [])
              + industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp))
-    page = render_standalone(inner, latest=latest)
+    page = render_standalone(inner, latest=latest, nav_links=_ARCHIVE_NAV)
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
     fname = f"{latest}.html"
     (SNAP_DIR / fname).write_text(page, encoding="utf-8")

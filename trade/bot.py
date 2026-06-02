@@ -199,7 +199,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-02 — 🔍 추가신호·아카이브 링크 색 블루(--accent)로 통일(다크 가독성)</i>
+<i>최종 갱신: 2026-06-02 — 산업트렌드 공유용 단일파일 export(export_industry, 깨진링크 없음)</i>
 """
 
 

@@ -93,6 +93,32 @@ class FrozenSnapshotTests(unittest.TestCase):
         self.assertIn("아직 동결된 스냅샷이 없습니다",
                       out.read_text(encoding="utf-8"))
 
+    def test_render_export_is_clean_shareable(self):
+        # 공유용 export: 산업트렌드 전체 + 출처/단위, 깨지는 back-link 없음.
+        html = industry_archive.render_export(
+            self.conn, [{"title": "AI 인프라", "body": "수요 확대"}])
+        self.assertIsNotNone(html)
+        self.assertIn("ind-card", html)                    # 산업 카드
+        self.assertIn("ins-box", html)                     # 🔍 박스
+        self.assertIn("억 달러", html)                      # 단위/출처 한 줄
+        self.assertIn("생성", html)                         # 생성일
+        self.assertEqual(html.lower().count("<!doctype"), 1)
+        # 받는 사람에게 404날 서버 상대링크가 없어야 함
+        self.assertNotIn("industry_archive.html", html)
+        self.assertNotIn("../index.html", html)
+
+    def test_frozen_page_keeps_back_links(self):
+        # 동결 아카이브 페이지는 여전히 색인/대시보드 back-link 유지(공유용과 구분)
+        industry_archive.record_snapshot(self.conn, [])
+        h = (industry_archive.SNAP_DIR / "2026-04.html").read_text(encoding="utf-8")
+        self.assertIn("../industry_archive.html", h)
+        self.assertIn("../index.html", h)
+
+    def test_render_export_none_when_empty(self):
+        empty = sqlite3.connect(":memory:")
+        self.assertIsNone(industry_archive.render_export(empty, []))
+        empty.close()
+
     def test_ensure_exists(self):
         self.assertFalse(industry_archive.ARCHIVE_HTML.exists())
         industry_archive.ensure_exists()
