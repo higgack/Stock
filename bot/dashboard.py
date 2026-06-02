@@ -21,6 +21,7 @@ import datetime
 import html as _html
 import json
 import logging
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -426,7 +427,8 @@ def _compute_stats(records: list[dict]) -> dict:
     # land in usage.jsonl with subsystem='screener'; SV calls live in
     # ~/standardview/sv_usage.jsonl (separate file, KST-date tagged).
     _sub_keys = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
-                 "청약": 0.0, "부동산": 0.0, "블로그": 0.0, "SV": 0.0}
+                 "청약": 0.0, "부동산": 0.0, "블로그": 0.0, "SV": 0.0,
+                 "수출입": 0.0}
     today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     month_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     for r in usage:
@@ -483,6 +485,59 @@ def _compute_stats(records: list[dict]) -> dict:
                             today_cost_by_sub_usd["SV"] += cost_usd_sv
         except Exception as exc:
             log.warning("dashboard: SV usage read failed: %s", exc)
+
+    # 한국 수출입(trade) cost — 별도 repo(stock-trade)가 남기는 usage.jsonl
+    # 을 읽어 메인 합산에 포함 (사용자 정책 2026-06-02 — nav 에 링크된 비용
+    # -발생 surface 는 메인 대시보드 총합에 합산). 경로: $TRADE_DATA_DIR/
+    # usage.jsonl, 미설정 시 ~/.trade/usage.jsonl. SV 와 달리 그 repo 의
+    # 스키마를 우리가 100% 통제하지 못하므로 방어적으로 cost_usd / cost_krw
+    # 양쪽 + ts(epoch) / date(YYYY-MM-DD str) 양쪽 tolerant. 파일 부재·다른
+    # 호스트 시 silent skip. 모델 분포는 미상이라 by_model 에 미합산(총합·
+    # subsystem 분포만 — SV 가 flash 로 roll 하는 것과 달리 trade 모델 불명).
+    _trade_dir = os.environ.get("TRADE_DATA_DIR", "").strip()
+    _trade_usage_path = (
+        Path(_trade_dir) / "usage.jsonl" if _trade_dir
+        else Path.home() / ".trade" / "usage.jsonl"
+    )
+    if _trade_usage_path.exists():
+        try:
+            import json as _jt
+            with open(_trade_usage_path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        rec = _jt.loads(line)
+                    except Exception:
+                        continue
+                    # cost: USD 우선, 없으면 KRW→USD 환산.
+                    _cu = rec.get("cost_usd")
+                    if _cu is not None and _cu > 0:
+                        cost_usd_tr = float(_cu)
+                    else:
+                        _ck = rec.get("cost_krw", 0) or 0
+                        cost_usd_tr = float(_ck) / 1330.0 if _ck > 0 else 0.0
+                    if cost_usd_tr <= 0:
+                        continue
+                    # date: 'date'(YYYY-MM-DD str) 우선, 없으면 ts(epoch)→KST.
+                    _rd = rec.get("date")
+                    if isinstance(_rd, str) and _rd:
+                        rec_day_tr = _rd
+                    else:
+                        _ts = rec.get("ts")
+                        if not _ts:
+                            continue
+                        try:
+                            rec_day_tr = datetime.datetime.fromtimestamp(
+                                float(_ts), kst).strftime("%Y-%m-%d")
+                        except Exception:
+                            continue
+                    if rec_day_tr.startswith(month_prefix):
+                        month_cost_usd += cost_usd_tr
+                        month_cost_by_sub_usd["수출입"] += cost_usd_tr
+                        if rec_day_tr == today_str:
+                            today_cost_usd += cost_usd_tr
+                            today_cost_by_sub_usd["수출입"] += cost_usd_tr
+        except Exception as exc:
+            log.warning("dashboard: trade usage read failed: %s", exc)
 
     # ── recommendation accuracy from memory log ──
     # Accuracy criterion: ALPHA (raw − sector ETF benchmark), not raw.
@@ -625,7 +680,8 @@ def _render_stats_panel(stats: dict) -> str:
     # with non-zero this-month cost — keeps the sub-label compact.
     sub_parts: list[str] = []
     for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
-                       ("청약", "청약"), ("부동산", "부동산"), ("블로그", "블로그"), ("SV", "SV")]:
+                       ("청약", "청약"), ("부동산", "부동산"), ("블로그", "블로그"), ("SV", "SV"),
+                       ("수출입", "수출입")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
         if m_usd > 0:
             sub_parts.append(f"{label} {_krw(m_usd)}")

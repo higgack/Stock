@@ -704,6 +704,24 @@ Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약. 앞으
 대시보드(예: 신규 surface)는 이 줄 맨 끝에 붙일 것 — 기존 항목 사이에
 끼워넣지 말 것. (`bot/dashboard.py` errors_link 두 분기 모두 갱신.)
 
+**💰 비용 합산 정책 (사용자 2026-06-02):** 메인 NOAH 대시보드 비용 카드
+(+ `/usage`)는 **nav 에 링크된 비용-발생 surface 전부의 cost 를 합산**해
+총합을 표시하고, 각 surface 는 개별 비용을 자기 카드 / 전용 명령에서
+표시. 현재 합산 대상 8개 subsystem:
+  - usage.jsonl (subsystem 태그): 분석 / Screener / Daily Byte / 청약 /
+    부동산 / 블로그 — `_compute_stats` 가 subsystem 매핑으로 분리 합산.
+  - sv_usage.jsonl: Standard View (cost_krw + date 스키마).
+  - **한국 수출입(trade)**: 별도 repo(stock-trade) 의 usage.jsonl.
+    경로 `$TRADE_DATA_DIR/usage.jsonl`, 미설정 시 `~/.trade/usage.jsonl`.
+    그 repo 스키마를 우리가 100% 통제 못 하므로 **방어적 reader** —
+    cost_usd / cost_krw 양쪽 + date(YYYY-MM-DD str) / ts(epoch) 양쪽
+    tolerant. 파일 부재·다른 호스트 시 silent skip. 모델 분포 미상이라
+    by_model 미합산(총합·subsystem 분포만). subsystem 키 "수출입".
+  새 비용-발생 대시보드를 nav 에 추가하면 **반드시** (a) `_compute_stats`
+  의 `_sub_keys` + 합산 루프 + `_render_stats_panel` 의 sub_parts 순서,
+  (b) `telegram_bot.cmd_usage` 의 합산·분포 라인 두 곳을 동시 갱신.
+  breakdown 은 `if m_usd > 0` 으로 이번 달 0 인 surface 는 숨김(compact).
+
 **⛔ 외부 사이트(우리가 운영하지 않는 third-party URL) surface 정책
 (사용자 2026-06-01):** Standard View / 한국 수출입 처럼 우리가 같은 VM
 에서 운영하는 보조 대시보드는 메인 nav `_external_links` 에 유지.
@@ -1548,7 +1566,8 @@ NOAH /ticker 의 `_fetch_returns` 는 5거래일 그대로 유지 (정책 분리
 - 트래킹 인프라:
   - 비용 → `~/.tradingagents/screener_usage.jsonl` (screener-specific) +
     `~/.tradingagents/usage.jsonl` (NOAH 통합, subsystem='screener').
-    `/usage` 가 NOAH+Screener+SV 합산 + subsystem 분포 표시.
+    `/usage` 가 전체 surface(분석+Screener+Daily Byte+청약+부동산+블로그+
+    SV+한국수출입) 합산 + subsystem 분포 표시.
   - 아카이브 → `~/.tradingagents/screener_archive/YYYY-MM-DD/HHMMSS_
     {slug}.json` (raw_output + binding_constraint + top3_section +
     bottom_line 섹션 분리 저장).

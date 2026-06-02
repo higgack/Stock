@@ -1376,8 +1376,52 @@ def _build_usage_report() -> str:
     sv_today_usd = sv_today_krw / fx
     sv_month_usd = sv_month_krw / fx
 
-    today_total_usd = today_cost + sv_today_usd
-    month_total_usd = month_cost + sv_month_usd
+    # 한국 수출입(trade) cost — 별도 repo usage.jsonl (사용자 정책 2026-06-02).
+    # $TRADE_DATA_DIR/usage.jsonl, 미설정 시 ~/.trade/usage.jsonl. cost_usd /
+    # cost_krw + date / ts 양쪽 tolerant (dashboard._compute_stats 와 동일 로직).
+    tr_today_usd = tr_month_usd = 0.0
+    try:
+        import json as _j_tr
+        import os as _os_tr
+        _tdir = _os_tr.environ.get("TRADE_DATA_DIR", "").strip()
+        tr_path = (Path(_tdir) / "usage.jsonl" if _tdir
+                   else Path.home() / ".trade" / "usage.jsonl")
+        if tr_path.exists():
+            today_str_kst = datetime.now(_KST).date().isoformat()
+            month_str_kst = today_str_kst[:7]
+            with open(tr_path, encoding="utf-8") as _tf:
+                for _line in _tf:
+                    try:
+                        _r = _j_tr.loads(_line)
+                    except Exception:
+                        continue
+                    _cu = _r.get("cost_usd")
+                    if _cu is not None and _cu > 0:
+                        _usd = float(_cu)
+                    else:
+                        _ck = _r.get("cost_krw", 0) or 0
+                        _usd = float(_ck) / fx if _ck > 0 else 0.0
+                    if _usd <= 0:
+                        continue
+                    _rd = _r.get("date")
+                    if not (isinstance(_rd, str) and _rd):
+                        _ts2 = _r.get("ts")
+                        if not _ts2:
+                            continue
+                        try:
+                            _rd = datetime.fromtimestamp(
+                                float(_ts2), _KST).date().isoformat()
+                        except Exception:
+                            continue
+                    if _rd.startswith(month_str_kst):
+                        tr_month_usd += _usd
+                        if _rd == today_str_kst:
+                            tr_today_usd += _usd
+    except Exception as _exc:
+        log.warning("usage: trade cost read failed: %s", _exc)
+
+    today_total_usd = today_cost + sv_today_usd + tr_today_usd
+    month_total_usd = month_cost + sv_month_usd + tr_month_usd
 
     lines = [
         "📊 <b>NOAH 봇 사용 현황</b> (KST)",
@@ -1387,7 +1431,7 @@ def _build_usage_report() -> str:
         f"  • 7일:  {len(week_runs)}건",
         f"  • 30일: {len(month_runs)}건",
         "",
-        f"💰 <b>총 비용 (NOAH 분석 + Screener + SV)</b> (₩{fx}/$)",
+        f"💰 <b>총 비용 (전체 surface 합산)</b> (₩{fx}/$)",
         f"  • 오늘: <b>{krw(today_total_usd)}</b>  (${today_total_usd:.2f})",
         f"  • 30일: <b>{krw(month_total_usd)}</b>  (${month_total_usd:.2f})",
         "",
@@ -1399,6 +1443,7 @@ def _build_usage_report() -> str:
         f"  • 부동산 Byte:       {krw(month_cost_realestate)}  ← /realestate_cost",
         f"  • 블로그:            {krw(month_cost_blog)}",
         f"  • Standard View:     {krw(sv_month_usd)}  ← /sv_cost",
+        f"  • 한국 수출입:       {krw(tr_month_usd)}",
         "",
         f"💰 <b>NOAH 분석 단독 (참고)</b>",
         f"  • 7일:  {krw(week_cost)}  (${week_cost:.2f})",
