@@ -101,7 +101,8 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             by_ind = industry.load_stored(conn)
             by_imp = industry.load_stored_imports(conn)
             by_mti = industry.load_mti_stored(conn)
-        return industry.render_industry_html(by_ind, by_imp, by_mti)
+            by_mti_imp = industry.load_mti_imports(conn)
+        return industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp)
     except Exception:
         return ""
 
@@ -484,6 +485,9 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-sbox-hot h3{color:#1f7a32}.ind-sbox-turn h3{color:#8a5a00}.ind-sbox-down h3{color:#8a2020}
 .ind-sbox-accel h3{color:#1f7a32}.ind-sbox-decel h3{color:#8a2020}
 .ind-sbox-imp h3{color:#6d5bd0}
+.ind-imp-list{display:flex;flex-direction:column;gap:6px}
+.ind-imp-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ind-imp-drv{font-size:11px;color:var(--text-sub)}
 .ind-sbox-info p,.ind-sbox-sub{margin:0 0 6px;font-size:12px;color:var(--text-sub);line-height:1.5}
 .ind-chip-wrap{display:flex;flex-wrap:wrap;gap:6px}
 .ind-mini-chip{font-size:12px;background:var(--chip-bg);border-radius:999px;padding:3px 9px}

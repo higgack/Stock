@@ -84,7 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     leaves = customs_scan.build_series(all_rows)
     by_ind = industry.aggregate_by_industry(leaves)               # exports
     by_imp = industry.aggregate_by_industry(leaves, field="imp_dlr")  # imports
-    by_mti = industry.aggregate_by_mti(leaves)                    # MTI6 하위품목
+    by_mti = industry.aggregate_by_mti(leaves)                    # MTI6 하위품목(수출)
+    by_mti_imp = industry.aggregate_by_mti(leaves, field="imp_dlr")  # MTI6 수입
     series = industry.industry_series(by_ind)
 
     # Coverage guard (mirror scan_customs): a partial scan must not store a
@@ -97,8 +98,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             with customs.session() as conn:
                 n = industry.store(conn, by_ind, by_imp)
-                nm = industry.store_mti(conn, by_mti)
-            log.info("stored %d industries + %d MTI subitems to customs.db", n, nm)
+                nm = industry.store_mti(conn, by_mti, by_mti_imp)
+            log.info("stored %d industries + %d MTI subitems (export+import)", n, nm)
 
     if args.industry:
         pts = series.get(args.industry)

@@ -631,22 +631,34 @@ def load_stored(conn) -> dict[str, dict[str, int]]:
     return out
 
 
-def store_mti(conn, by_mti: dict[str, dict], now: float | None = None) -> int:
-    """Store MTI6 하위품목 series (name+industry+months as one JSON blob
-    per MTI6). Separate table from industry_series. Empty input ignored."""
+def store_mti(conn, by_mti: dict[str, dict],
+              by_mti_import: dict[str, dict] | None = None,
+              now: float | None = None) -> int:
+    """Store MTI6 하위품목 export series + optional import series (each a
+    JSON blob per MTI6). Separate table from industry_series. Empty export
+    input ignored."""
     import time
     if not by_mti:
         return 0
+    by_mti_import = by_mti_import or {}
     now = now if now is not None else time.time()
     conn.execute(
         "CREATE TABLE IF NOT EXISTS mti_series ("
-        "mti6 TEXT PRIMARY KEY, payload_json TEXT NOT NULL, updated_ts REAL)"
+        "mti6 TEXT PRIMARY KEY, payload_json TEXT NOT NULL, "
+        "import_json TEXT, updated_ts REAL)"
     )
+    try:
+        conn.execute("ALTER TABLE mti_series ADD COLUMN import_json TEXT")
+    except Exception:
+        pass
     conn.execute("DELETE FROM mti_series")
     for mti6, node in by_mti.items():
+        imp = by_mti_import.get(mti6)
         conn.execute(
-            "INSERT INTO mti_series (mti6, payload_json, updated_ts) VALUES (?,?,?)",
-            (mti6, _json.dumps(node, ensure_ascii=False), now),
+            "INSERT INTO mti_series (mti6, payload_json, import_json, updated_ts) "
+            "VALUES (?,?,?,?)",
+            (mti6, _json.dumps(node, ensure_ascii=False),
+             _json.dumps(imp, ensure_ascii=False) if imp else None, now),
         )
     conn.commit()
     return len(by_mti)
@@ -662,6 +674,24 @@ def load_mti_stored(conn) -> dict[str, dict]:
     for mti6, pj in cur.fetchall():
         try:
             out[mti6] = _json.loads(pj)
+        except Exception:
+            continue
+    return out
+
+
+def load_mti_imports(conn) -> dict[str, dict]:
+    """{mti6: {name,industry,months}} import series, or {} when absent/old
+    schema (import_json NULL)."""
+    try:
+        cur = conn.execute("SELECT mti6, import_json FROM mti_series")
+    except Exception:
+        return {}
+    out: dict[str, dict] = {}
+    for mti6, ij in cur.fetchall():
+        if not ij:
+            continue
+        try:
+            out[mti6] = _json.loads(ij)
         except Exception:
             continue
     return out
@@ -740,25 +770,47 @@ def _summary_board(series: dict[str, list[dict]]) -> str:
         deriv += ("<div class='ind-sbox ind-sbox-decel'><h3>고성장 둔화/기울기 하락</h3>"
                   f"<div class='ind-chip-wrap'>"
                   f"{''.join(chip(n,v,'%p') for n,v in decel)}</div></div>")
-    # C: import-surge box — 수입 YoY 급증 = 생산/투자 선행신호 (e.g.
-    # 반도체장비·원자재 수입↑ precedes 수출↑). Only when import data was
-    # stored (new schema); silently absent otherwise.
+    # C: import-surge box — 수입 YoY 급증 = 생산/투자 선행신호. Each surging
+    # industry is annotated with its TOP DRIVER MTI subitem (어떤 세부품목
+    # 수입이 끌었나, e.g. 반도체 ← 반도체제조용장비 +120%) computed from
+    # the per-MTI import series. No extra API calls — same scan leaves.
     imp_box = ""
     if _import_series:
+        # top import-YoY driver MTI per industry
+        driver: dict[str, tuple[str, float]] = {}
+        for mti6, mpts in _import_mti_series.items():
+            if not mpts or mpts[-1].get("yoy") is None:
+                continue
+            ind = _import_mti_industry.get(mti6, "")
+            nm = _import_mti_name.get(mti6, mti6)
+            y = mpts[-1]["yoy"]
+            cur = mpts[-1].get("exp") or 0
+            # require a non-trivial import base so a tiny line doesn't 'drive'
+            if cur < 10_000_000:
+                continue
+            if ind not in driver or y > driver[ind][1]:
+                driver[ind] = (nm, y)
+
         imp_yoy = []
         for ind, ipts in _import_series.items():
             if ipts and ipts[-1].get("yoy") is not None:
-                imp_yoy.append((ind, ipts[-1]["yoy"], ipts[-1]["exp"]))
-        # rank by import YoY; show meaningful surges (≥ +20%)
+                imp_yoy.append((ind, ipts[-1]["yoy"]))
         surges = sorted([t for t in imp_yoy if t[1] >= 20.0],
                         key=lambda t: t[1], reverse=True)[:8]
         if surges:
-            chips = "".join(chip(n, v) for n, v, _ in surges)
+            rows_html = []
+            for ind, v in surges:
+                drv = driver.get(ind)
+                sub = (f"<span class='ind-imp-drv'>← {_html.escape(drv[0])} "
+                       f"{_pct(drv[1])}</span>" if drv else "")
+                rows_html.append(
+                    f"<div class='ind-imp-row'>{chip(ind, v)}{sub}</div>")
             imp_box = (
                 "<div class='ind-sbox ind-sbox-imp'><h3>📥 수입 급증 (생산·투자 선행신호)</h3>"
                 "<p class='ind-sbox-sub'>원자재·설비 수입 YoY 급증은 향후 생산/수출 확대의 "
-                "선행지표일 수 있습니다 (예: 반도체장비).</p>"
-                f"<div class='ind-chip-wrap'>{chips}</div></div>")
+                "선행지표일 수 있습니다. <b>← 표기</b>는 그 산업 수입을 가장 끌어올린 "
+                "세부품목(MTI).</p>"
+                f"<div class='ind-imp-list'>{''.join(rows_html)}</div></div>")
     return (f"<div class='ind-summary-grid'>{''.join(boxes)}</div>"
             f"<div class='ind-deriv-grid'>{deriv}</div>"
             f"<div class='ind-deriv-grid'>{imp_box}</div>")
@@ -768,6 +820,11 @@ def _summary_board(series: dict[str, list[dict]]) -> str:
 # before calling _summary_board — keeps _summary_board's signature stable
 # while B/C grow what flows into it).
 _import_series: dict[str, list[dict]] = {}
+# per-MTI import series + lookups, for annotating each import-surge
+# industry with its top driver subitem.
+_import_mti_series: dict[str, list[dict]] = {}
+_import_mti_industry: dict[str, str] = {}
+_import_mti_name: dict[str, str] = {}
 
 
 def render_subitem_html(by_mti: dict[str, dict],
@@ -862,11 +919,21 @@ def render_subitem_html(by_mti: dict[str, dict],
 
 def render_industry_html(by_industry: dict[str, dict[str, int]],
                          by_import: dict[str, dict[str, int]] | None = None,
-                         by_mti: dict[str, dict] | None = None) -> str:
-    """Full 산업트렌드 panel: summary board (+ 수입 급증 신호) + cards
-    grouped by classification. Returns '' when there's no data."""
-    global _import_series
+                         by_mti: dict[str, dict] | None = None,
+                         by_mti_import: dict[str, dict] | None = None) -> str:
+    """Full 산업트렌드 panel: summary board (+ 수입 급증 신호 with per-MTI
+    driver) + cards grouped by classification. Returns '' when no data."""
+    global _import_series, _import_mti_series, _import_mti_industry, _import_mti_name
     _import_series = industry_series(by_import) if by_import else {}
+    # per-MTI import series for the 수입 급증 driver annotation
+    _import_mti_series, _import_mti_industry, _import_mti_name = {}, {}, {}
+    if by_mti_import:
+        for mti6, node in by_mti_import.items():
+            s = industry_series({mti6: node["months"]}).get(mti6)
+            if s:
+                _import_mti_series[mti6] = s
+                _import_mti_industry[mti6] = node.get("industry", "")
+                _import_mti_name[mti6] = node.get("name", mti6)
     if not by_industry:
         return ""
     series = industry_series(by_industry)
