@@ -499,7 +499,7 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-sbox h3{margin:0 0 8px;font-size:14px}
 .ind-sbox-hot h3{color:#1f7a32}.ind-sbox-turn h3{color:#8a5a00}.ind-sbox-down h3{color:#8a2020}
 .ind-sbox-accel h3{color:#1f7a32}.ind-sbox-decel h3{color:#8a2020}
-.ind-sbox-imp h3{color:#6d5bd0}
+.ind-sbox-imp h3{color:var(--accent)}
 .ind-imp-list{display:flex;flex-direction:column;gap:6px}
 .ind-imp-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ind-imp-drv{font-size:11px;color:var(--text-sub)}
@@ -511,8 +511,8 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-topbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px}
 .ind-note{font-size:12px;color:var(--text-sub)}
 /* 🔍 LLM 추가신호 박스 */
-.ins-box{margin:8px 16px 4px;padding:14px 16px;border:1px solid var(--border-soft);border-left:4px solid #6d5bd0;border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}
-.ins-box>h3{margin:0 0 2px;font-size:16px;color:#5a47c0}
+.ins-box{margin:8px 16px 4px;padding:14px 16px;border:1px solid var(--border-soft);border-left:4px solid var(--accent);border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}
+.ins-box>h3{margin:0 0 2px;font-size:16px;color:var(--accent)}
 .ins-sub{font-size:12px;color:var(--text-sub);margin-bottom:10px}
 .ins-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
 .ins-card{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
@@ -520,7 +520,7 @@ h1{margin:0 0 4px;font-size:18px}
 .ins-card p{margin:0;font-size:12px;color:var(--text-sub);line-height:1.55}
 /* 🗄 월별 아카이브 링크 섹션 */
 .ind-archive{margin:8px 16px 0;padding:9px 14px;border:1px dashed var(--border-soft);border-radius:10px;background:var(--surface)}
-.ind-archive a{color:#5a47c0;text-decoration:none;font-size:13px;font-weight:600}
+.ind-archive a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}
 .ind-archive a:hover{text-decoration:underline}
 .ind-legend{display:flex;gap:12px;font-size:12px;color:var(--text-sub)}
 .ind-legend i{display:inline-block;width:14px;height:0;vertical-align:middle;margin-right:4px}

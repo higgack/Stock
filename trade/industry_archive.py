@@ -92,9 +92,9 @@ def render_standalone(inner_html: str, *, latest: str) -> str:
         f"<div style=\"font-size:18px;font-weight:700\">📈 산업트렌드 · "
         f"{_html.escape(latest)} 확정 스냅샷</div>"
         "<div style=\"font-size:13px\">"
-        "<a href=\"../industry_archive.html\" style=\"color:#5a47c0;"
+        "<a href=\"../industry_archive.html\" style=\"color:var(--accent);"
         "text-decoration:none\">← 아카이브 색인</a> · "
-        "<a href=\"../index.html\" style=\"color:#5a47c0;text-decoration:none\">"
+        "<a href=\"../index.html\" style=\"color:var(--accent);text-decoration:none\">"
         "대시보드</a></div></div>"
     )
     return (
