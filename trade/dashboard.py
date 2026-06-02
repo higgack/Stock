@@ -32,7 +32,13 @@ from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from trade.store import latest_per_dedup_key, list_all_alerts, open_db, stats
+
+# 수동 실행(`python -m trade.dashboard`)에서도 TRADE_PUBLIC_HOST 등 .env 값을
+# 보도록 로드. systemd refresh는 EnvironmentFile로 주입되지만 수동 렌더는 아님.
+load_dotenv()
 
 
 def render_html(
