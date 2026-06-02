@@ -125,6 +125,16 @@ class RefreshSignalsGateTests(unittest.TestCase):
         self._gen.assert_not_called()                  # 재사용 — API 0콜
         send.assert_called_once()                      # 아카이브·DM은 갱신
 
+    def test_force_reuses_even_when_data_changed(self):
+        self._run()                                    # baseline (fp=D1)
+        # 데이터가 바뀌어도(+카드 캐시 존재) --force 단독은 재사용 → 0콜
+        _put_industry(self.conn, '{"2026-04": 999}', 1.0)
+        insights.set_state(self.conn, "llm_insight_cards",
+                           '[{"title": "t", "body": "b"}]')
+        send = self._run(["--force"])
+        self._gen.assert_not_called()                  # 변동에도 재사용(0콜)
+        send.assert_called_once()
+
     def test_regen_llm_forces_api_even_with_cache(self):
         self._run()                                    # baseline
         insights.set_state(self.conn, "llm_insight_cards",

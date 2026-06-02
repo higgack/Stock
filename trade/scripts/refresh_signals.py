@@ -119,7 +119,10 @@ def main(argv: list[str] | None = None) -> int:
         #  --force 단독은 재사용) → 월별 아카이브 기록 → 완료 DM → fingerprint 전진
         from trade import industry_archive, llm_usage
 
-        regen = args.regen_llm or data_changed   # 실제 변동·명시 요청 때만 1 콜
+        # LLM 새 호출 조건: 명시적 --regen-llm, 또는 (무인) 타이머가 실제
+        # 데이터 변동을 감지한 경우. --force(수동 재렌더/재동결)는 데이터가
+        # 바뀌어 있어도 저장 카드를 재사용 → 항상 0콜(과금 예측 가능).
+        regen = args.regen_llm or (data_changed and not args.force)
         latest, n_ind = _latest_ym(conn)
         before = llm_usage.summary()["d30"]["cost_krw"]
         cards, called_api = _cards_for(conn, regen=regen)
