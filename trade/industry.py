@@ -977,8 +977,11 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
     # last. Daily 4× polling reflects a new confirmed month within hours of
     # its ~15th publication.
     # TODO(잠정치): 산업부 수출입동향 보도자료(매월 1일, 전월 잠정치)를 별도
-    # 소스로 붙이면 최신월을 한 달 앞당길 수 있음. data.go.kr엔 산업분류
-    # 잠정 OpenAPI가 없어 파싱/수집 설계 필요 — 보강 마무리 후 별도 작업.
+    # 소스로 붙이면 최신월을 한 달 앞당길 수 있음.
+    # 조사결론(2026-06): data.go.kr엔 접근 가능한 산업분류 잠정 OpenAPI가
+    # 없음 — 확정됨. 202605 조회는 code 00 정상이나 0건, nitemtrade도 0건,
+    # 모든 관세청 OpenAPI가 GW(확정치)뿐. 잠정치는 산업부 보도자료(PDF/HWP)
+    # 비정형 소스에만 존재 → 별도 파서/수집 설계 필요. 보강 마무리 후 작업.
     out.append(
         "<div class='ind-topbar'>"
         f"<div class='ind-note'>산업분류별 월 수출액 · YoY/ΔYoY/12M 이동평균 "

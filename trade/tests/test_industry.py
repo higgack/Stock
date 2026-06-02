@@ -149,6 +149,27 @@ class StoreRenderTests(unittest.TestCase):
         # backward compat: no imports → no box
         self.assertNotIn("ind-sbox-imp", industry.render_industry_html(exp))
 
+    def test_import_box_shows_mti_driver(self):
+        # 수입 급증 산업(반도체) 옆에 그 수입을 끌어올린 세부품목(MTI) 드라이버
+        # '← 기타 메모리반도체'가 붙어야 함. 배포 경로 그대로 store→load→render
+        # 라운드트립으로 검증 — '드라이버 사라진 듯' 혼선(실은 stale HTML) 재발 방지.
+        exp = {"반도체": self._series_25mo(11_000_000_000, 31_000_000_000)}
+        imp = {"반도체": self._series_25mo(1_000_000_000, 3_000_000_000)}
+        # store_mti는 by_mti(수출) 키 행에만 import_json을 붙이므로 둘 다 필요
+        mti = {"831190": {"name": "기타 메모리반도체", "industry": "반도체",
+                          "months": self._series_25mo(800_000_000, 1_000_000_000)}}
+        mti_imp = {"831190": {"name": "기타 메모리반도체", "industry": "반도체",
+                              "months": self._series_25mo(700_000_000, 2_200_000_000)}}
+        industry.store(self.conn, exp, imp)
+        industry.store_mti(self.conn, mti, mti_imp)
+        html = industry.render_industry_html(
+            industry.load_stored(self.conn),
+            industry.load_stored_imports(self.conn),
+            industry.load_mti_stored(self.conn),
+            industry.load_mti_imports(self.conn))
+        self.assertIn("ind-imp-drv", html)        # 드라이버 주석 wrapper
+        self.assertIn("기타 메모리반도체", html)    # 산업 수입을 끌어올린 세부품목
+
     def test_store_load_roundtrip(self):
         by = {"반도체": self._series_13mo(11_000_000_000, 31_000_000_000),
               "자동차": self._series_13mo(6_000_000_000, 5_700_000_000)}
