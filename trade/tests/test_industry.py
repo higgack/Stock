@@ -168,6 +168,19 @@ class StoreRenderTests(unittest.TestCase):
         html = industry.render_industry_html(exp, imp)
         self.assertNotIn("ind-sbox-imp", html)
 
+    def test_import_box_capital_good_badge(self):
+        # 드라이버가 자본재(설비·장비)면 [자본재] 배지, 아니면 없음
+        exp = {"반도체": self._series_25mo(11_000_000_000, 12_000_000_000)}
+        imp = {"반도체": self._series_25mo(1_000_000_000, 3_000_000_000)}
+        cap = {"732100": {"name": "반도체제조용장비", "industry": "반도체",
+                          "months": self._series_25mo(500_000_000, 2_000_000_000)}}
+        self.assertIn("ind-imp-cap",
+                      industry.render_industry_html(exp, imp, None, cap))
+        noncap = {"831190": {"name": "기타 메모리반도체", "industry": "반도체",
+                             "months": self._series_25mo(500_000_000, 2_000_000_000)}}
+        self.assertNotIn("ind-imp-cap",
+                         industry.render_industry_html(exp, imp, None, noncap))
+
     def test_import_box_shows_mti_driver(self):
         # 수입 급증 산업(반도체) 옆에 그 수입을 끌어올린 세부품목(MTI) 드라이버
         # '← 기타 메모리반도체'가 붙어야 함. 배포 경로 그대로 store→load→render

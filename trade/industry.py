@@ -183,6 +183,14 @@ _TURNAROUND_DYOY = 0.0      # 턴어라운드: YoY accelerating (ΔYoY > 0)
 # 수입 모멘텀 박스: 산업 월 수입 하한($100M) — 소규모 산업 기저효과 노이즈 차단
 _IMP_MIN_USD = 100_000_000
 
+# 자본재(설비·장비) 키워드 — 수입 드라이버가 자본재면 진짜 capex '선행'. 완제품/
+# 원자재 풀 분류는 품목명만으론 오분류가 많아 보류, 고정확·고가치인 자본재만 태깅.
+_CAPITAL_KW = ("장비", "기계", "설비", "장치", "제조용", "공작")
+
+
+def _is_capital_good(name: str) -> bool:
+    return any(k in (name or "") for k in _CAPITAL_KW)
+
 
 def classify(points: list[dict]) -> str:
     """Bucket an industry by its latest YoY + ΔYoY:
@@ -906,16 +914,22 @@ def _summary_board(series: dict[str, list[dict]]) -> str:
                 tcls, ttxt = ("lead", "⚡선행후보") if lead else ("coin", "동행")
                 tag = (f"<span class='ind-imp-tag ind-imp-tag-{tcls}'>{ttxt}</span>")
                 drv = driver.get(ind)
-                sub = (f"<span class='ind-imp-drv'>← {_html.escape(drv[0])} "
-                       f"{_pct(drv[1])}</span>" if drv else "")
+                if drv:
+                    cap = ("<span class='ind-imp-cap'>자본재</span>"
+                           if _is_capital_good(drv[0]) else "")
+                    sub = (f"<span class='ind-imp-drv'>← {_html.escape(drv[0])} "
+                           f"{_pct(drv[1])}{cap}</span>")
+                else:
+                    sub = ""
                 rows_html.append(
                     f"<div class='ind-imp-row'>{chip(ind, iy)}{tag}{sub}</div>")
             imp_box = (
                 "<div class='ind-sbox ind-sbox-imp'><h3>📥 수입 모멘텀 (수출 대비 앞서가는 순)</h3>"
-                "<p class='ind-sbox-sub'><b>⚡선행후보</b>=수출은 아직 약한데 수입이 먼저 급증"
-                "(수출 차트에 안 보이는 선행 가능). <b>동행</b>=수출이 이미 강해 현재 생산 견인"
-                "(수요견인). 자본재↑는 선행·원자재는 동행·완제품은 수요. <b>←</b>는 그 산업 "
-                "수입을 가장 끌어올린 세부품목(MTI).</p>"
+                "<p class='ind-sbox-sub'><b>산정</b>: 수입 YoY≥+20%·수입≥1억$ 산업을 "
+                "(수입YoY − 수출YoY) 큰 순. <b>⚡선행후보</b>=수출은 아직 약한데 수입이 먼저 "
+                "급증(수출 차트에 안 보이는 선행 가능). <b>동행</b>=수출이 이미 강해 현재 생산 "
+                "견인(수요견인). <b>자본재</b> 배지=설비·장비 수입(진짜 capex 선행). <b>←</b>는 "
+                "그 산업 수입을 가장 끌어올린 세부품목(MTI).</p>"
                 f"<div class='ind-imp-list'>{''.join(rows_html)}</div></div>")
     return (f"<div class='ind-summary-grid'>{''.join(boxes)}</div>"
             f"<div class='ind-deriv-grid'>{deriv}</div>"

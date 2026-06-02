@@ -510,6 +510,8 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-imp-tag-lead{background:rgba(245,158,11,.18);color:#b45309}
 .ind-imp-tag-coin{background:var(--surface-2);color:var(--text-sub)}
 body.dark .ind-imp-tag-lead{background:rgba(245,158,11,.22);color:#fcd34d}
+.ind-imp-cap{margin-left:5px;font-size:9px;font-weight:700;padding:1px 5px;border-radius:8px;background:rgba(16,185,129,.16);color:#047857}
+body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-sbox-info p,.ind-sbox-sub{margin:0 0 6px;font-size:12px;color:var(--text-sub);line-height:1.5}
 .ind-chip-wrap{display:flex;flex-wrap:wrap;gap:6px}
 .ind-mini-chip{font-size:12px;background:var(--chip-bg);border-radius:999px;padding:3px 9px}
