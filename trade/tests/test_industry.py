@@ -242,6 +242,15 @@ class StoreRenderTests(unittest.TestCase):
         self.assertIn("초고성장", html)               # classified hot (YoY huge)
         self.assertIn("<svg", html)
 
+    def test_motie_provisional_link_banner(self):
+        # 산업부 잠정 보도자료 '링크 배너' — 데이터는 안 긁고 원문 링크만, 산업 집계와 분리
+        by = {"반도체": self._series_13mo(11_000_000_000, 31_000_000_000)}
+        html = industry.render_industry_html(by)
+        self.assertIn("ind-motie", html)
+        self.assertIn("motie.go.kr", html)
+        self.assertIn("더 빠른 잠정치", html)
+        self.assertIn("관세청 확정", html)   # 우리 트렌드는 확정 기준임을 명시
+
     def test_render_empty_returns_blank(self):
         self.assertEqual(industry.render_industry_html({}), "")
 

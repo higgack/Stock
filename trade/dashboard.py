@@ -544,6 +544,10 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-mini-chip .neg{color:var(--tone-import);font-weight:600}
 .ind-topbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px}
 .ind-note{font-size:12px;color:var(--text-sub)}
+.ind-motie{margin:0 16px 6px;padding:8px 12px;border:1px solid var(--border-soft);border-left:3px solid var(--accent);border-radius:8px;background:var(--surface);font-size:12.5px}
+.ind-motie a{color:var(--accent);text-decoration:none;font-weight:600}
+.ind-motie a:hover{text-decoration:underline}
+.ind-motie-note{color:var(--text-sub)}
 /* 🔍 LLM 추가신호 박스 */
 .ins-box{margin:8px 16px 4px;padding:14px 16px;border:1px solid var(--border-soft);border-left:4px solid var(--accent);border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}
 .ins-box>h3{margin:0 0 2px;font-size:16px;color:var(--accent)}

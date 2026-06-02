@@ -193,6 +193,12 @@ _ROT_WIN, _ROT_LOSS = 20.0, -10.0
 # 원자재 풀 분류는 품목명만으론 오분류가 많아 보류, 고정확·고가치인 자본재만 태깅.
 _CAPITAL_KW = ("장비", "기계", "설비", "장치", "제조용", "공작")
 
+# 산업부 수출입동향 보도자료(매월 1일 잠정) 바로가기 — 구조화 잠정 소스가 없어
+# 데이터는 안 긁고 공식 원문 링크만 얹는다. URL 변경 시 env로 덮어쓰기.
+import os as _os
+_MOTIE_URL = (_os.environ.get("TRADE_MOTIE_URL")
+              or "https://www.motie.go.kr/kor/article/ATCL3f49a5a8c")
+
 
 def _is_capital_good(name: str) -> bool:
     return any(k in (name or "") for k in _CAPITAL_KW)
@@ -1191,6 +1197,15 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
         f"<b>금액 단위: 억 달러(1억$ = $100M)</b></div>"
         "<div class='ind-legend'><span><i class='ind-lg-v'></i>수출액</span>"
         "<span><i class='ind-lg-m'></i>12M MA</span></div>"
+        "</div>"
+    )
+    # 📋 산업부 잠정 원문 링크 배너 — 우리 산업트렌드는 관세청 '확정'(익월 ~15일)
+    # 기준이라, 더 빠른 '잠정'(매월 1일, 산업부 20대 품목)은 공식 원문으로 안내.
+    # 데이터는 안 긁고(파싱 0·깨질 것 0) 링크만 — 산업 집계와 완전 분리.
+    out.append(
+        "<div class='ind-motie'>📋 <b>더 빠른 잠정치</b>(매월 1일·산업부 20대 품목)는 "
+        f"<a href='{_MOTIE_URL}' target='_blank' rel='noopener'>산업부 수출입동향 원문 →</a>"
+        "<span class='ind-motie-note'> · 본 산업트렌드는 관세청 확정(익월 ~15일) 기준</span>"
         "</div>"
     )
     # A: summary board (분류·미분 칩 보드) — mirrors reference header
