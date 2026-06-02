@@ -74,6 +74,8 @@ class RefreshSignalsGateTests(unittest.TestCase):
             yield self.conn
 
         with mock.patch.object(refresh_signals.customs, "session", fake_session), \
+             mock.patch.object(refresh_signals.llm_insights, "generate",
+                               return_value=[]), \
              mock.patch.object(refresh_signals, "_send_dm",
                                return_value=True) as send:
             refresh_signals.main([])
@@ -99,6 +101,35 @@ class RefreshSignalsGateTests(unittest.TestCase):
         # 다시 돌리면 또 안 옴(fingerprint 전진됨)
         send2 = self._run()
         send2.assert_not_called()
+
+
+class DashboardInsightBoxTests(unittest.TestCase):
+    """대시보드 산업트렌드 로더가 저장된 LLM 카드로 🔍 박스를 렌더하는지."""
+
+    def test_box_rendered_from_stored_cards(self):
+        import json as _json
+        import tempfile
+        from pathlib import Path
+
+        from trade import customs, dashboard, industry
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = Path(tmp.name) / "customs.db"
+        months = {}
+        for i in range(13):
+            y = 2025 + (i // 12); mo = (i % 12) + 1
+            months[f"{y}-{mo:02d}"] = 11_000_000_000
+        months["2026-04"] = 31_000_000_000
+        with customs.session(db) as conn:
+            industry.store(conn, {"반도체": months})
+            insights.set_state(conn, "llm_insight_cards",
+                               _json.dumps([{"title": "AI 인프라", "body": "수요 확대"}],
+                                           ensure_ascii=False))
+        html = dashboard._load_industry_html(db)
+        self.assertIn("ins-box", html)            # 🔍 박스 존재
+        self.assertIn("AI 인프라", html)           # 카드 내용
+        self.assertIn("반도체", html)              # 산업 카드도 함께
 
 
 if __name__ == "__main__":

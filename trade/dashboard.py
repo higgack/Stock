@@ -97,12 +97,20 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         db = customs_db_path if customs_db_path is not None else customs.DEFAULT_DB
         if not Path(db).exists():
             return ""
+        from trade import insights, llm_insights
+        import json as _json
         with customs.session(db) as conn:
             by_ind = industry.load_stored(conn)
             by_imp = industry.load_stored_imports(conn)
             by_mti = industry.load_mti_stored(conn)
             by_mti_imp = industry.load_mti_imports(conn)
-        return industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp)
+            # 🔍 LLM 추가신호 카드(refresh_signals가 데이터 변동 시 저장)
+            try:
+                cards = _json.loads(insights.get_state(conn, "llm_insight_cards") or "[]")
+            except Exception:
+                cards = []
+        ins_html = llm_insights.render_html(cards if isinstance(cards, list) else [])
+        return ins_html + industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp)
     except Exception:
         return ""
 
@@ -495,6 +503,14 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-mini-chip .neg{color:var(--tone-import);font-weight:600}
 .ind-topbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px}
 .ind-note{font-size:12px;color:var(--text-sub)}
+/* 🔍 LLM 추가신호 박스 */
+.ins-box{margin:8px 16px 4px;padding:14px 16px;border:1px solid var(--border-soft);border-left:4px solid #6d5bd0;border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}
+.ins-box>h3{margin:0 0 2px;font-size:16px;color:#5a47c0}
+.ins-sub{font-size:12px;color:var(--text-sub);margin-bottom:10px}
+.ins-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
+.ins-card{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
+.ins-card h4{margin:0 0 4px;font-size:13px;color:var(--text)}
+.ins-card p{margin:0;font-size:12px;color:var(--text-sub);line-height:1.55}
 .ind-legend{display:flex;gap:12px;font-size:12px;color:var(--text-sub)}
 .ind-legend i{display:inline-block;width:14px;height:0;vertical-align:middle;margin-right:4px}
 .ind-legend .ind-lg-v{border-top:3px solid var(--accent)}

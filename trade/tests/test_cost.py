@@ -103,10 +103,25 @@ class TestFormatters(unittest.TestCase):
     def test_telegram_says_free_and_shows_resources(self):
         out = cost.format_telegram(self._snap())
         self.assertIn("무료", out)
-        self.assertIn("LLM: 없음", out)
+        self.assertIn("LLM", out)           # LLM 비용 라인(호출 0 또는 집계)
         self.assertIn("store.db", out)
         self.assertIn("디스크 잔여", out)
         self.assertIn("추정", out)        # API 호출은 추정치 표기
+
+    def test_telegram_shows_llm_cost_when_used(self):
+        snap = self._snap()
+        snap["llm"] = {
+            "today": {"calls": 1, "in_tok": 100, "out_tok": 50,
+                      "cost_usd": 0.001, "cost_krw": 2},
+            "d7": {"calls": 1, "in_tok": 100, "out_tok": 50,
+                   "cost_usd": 0.001, "cost_krw": 2},
+            "d30": {"calls": 2, "in_tok": 200, "out_tok": 100,
+                    "cost_usd": 0.003, "cost_krw": 4},
+            "total_calls": 2,
+        }
+        out = cost.format_telegram(snap)
+        self.assertIn("Gemini", out)
+        self.assertIn("원", out)              # 원화 비용 표기
 
     def test_dashboard_line_compact(self):
         line = cost.format_dashboard_line(self._snap())

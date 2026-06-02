@@ -12,12 +12,13 @@ silent 패턴 미러.
 """
 from __future__ import annotations
 
+import json
 import logging
 import sys
 
 from dotenv import load_dotenv
 
-from trade import customs, industry, insights
+from trade import customs, industry, insights, llm_insights
 
 load_dotenv()
 
@@ -25,6 +26,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("refresh-signals")
 
 _FP_KEY = "data_fp"
+_CARDS_KEY = "llm_insight_cards"
 
 
 def _send_dm(body: str) -> bool:
@@ -39,20 +41,36 @@ def _send_dm(body: str) -> bool:
     return customs_alert._send(chat, body)
 
 
-def _summary(conn) -> tuple[str, str]:
-    """(최신 확정월, 산업 수)를 읽어 완료 DM 본문을 만든다."""
+def _latest_ym(conn) -> tuple[str, int]:
     by_ind = industry.load_stored(conn)
     series = industry.industry_series(by_ind) if by_ind else {}
     latest = ""
     for pts in series.values():
         if pts and pts[-1]["ym"] > latest:
             latest = pts[-1]["ym"]
-    body = (
+    return latest, len(series)
+
+
+def _refresh_llm_cards(conn) -> int:
+    """변동 시 LLM 추가신호 카드 생성·저장(pipeline_state). 비활성/키없음/
+    오류면 generate()가 []를 주고 박스는 미표시. 반환=카드 수."""
+    by_ind = industry.load_stored(conn)
+    by_imp = industry.load_stored_imports(conn)
+    by_mti = industry.load_mti_stored(conn)
+    by_mti_imp = industry.load_mti_imports(conn)
+    digest = llm_insights.build_digest(by_ind, by_imp, by_mti, by_mti_imp)
+    cards = llm_insights.generate(digest)
+    insights.set_state(conn, _CARDS_KEY, json.dumps(cards, ensure_ascii=False))
+    return len(cards)
+
+
+def _dm_body(latest: str, n_ind: int, n_cards: int) -> str:
+    sig = f"\n🔍 추가신호 {n_cards}개 생성" if n_cards else ""
+    return (
         "✅ <b>관세청 데이터 갱신</b>\n"
-        f"최신 확정월 <code>{latest or '—'}</code> · 산업 {len(series)}개\n"
-        "급등률·급증액·산업트렌드 갱신됨"
+        f"최신 확정월 <code>{latest or '—'}</code> · 산업 {n_ind}개\n"
+        f"급등률·급증액·산업트렌드 갱신됨{sig}"
     )
-    return body, latest
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,12 +86,13 @@ def main(argv: list[str] | None = None) -> int:
             log.info("no data change since last tick — silent")
             return 0
 
-        # 데이터 변동 감지 — 완료 DM (B단계에서 LLM 신호 생성이 이 사이에 들어감)
-        body, latest = _summary(conn)
-        sent = _send_dm(body)
+        # 데이터 변동 감지 → LLM 추가신호 생성·저장 → 완료 DM → fingerprint 전진
+        latest, n_ind = _latest_ym(conn)
+        n_cards = _refresh_llm_cards(conn)
+        sent = _send_dm(_dm_body(latest, n_ind, n_cards))
         insights.set_state(conn, _FP_KEY, fp)
-        log.info("data changed (latest=%s) — update DM %s, fingerprint advanced",
-                 latest or "—", "sent" if sent else "skipped")
+        log.info("data changed (latest=%s) — %d LLM cards, DM %s, fingerprint advanced",
+                 latest or "—", n_cards, "sent" if sent else "skipped")
     return 0
 
 

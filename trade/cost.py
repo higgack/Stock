@@ -119,6 +119,12 @@ def collect() -> dict:
     per_tick = pins + scan_calls + industry_calls
     api_calls_per_day = per_tick * _TICKS
 
+    try:
+        from trade import llm_usage
+        llm = llm_usage.summary()
+    except Exception:
+        llm = None
+
     return {
         "files": files,            # {label: bytes}
         "media_bytes": media,
@@ -126,6 +132,7 @@ def collect() -> dict:
         "disk_free_bytes": disk_free,
         "disk_total_bytes": disk_total,
         "pins": pins,
+        "llm": llm,                # None or {today/d7/d30, total_calls}
         "api_calls_per_day": api_calls_per_day,   # estimate (sweeps + pins)
         "api_calls_breakdown": {
             "ticks_per_day": _TICKS,
@@ -153,7 +160,17 @@ def format_telegram(snap: dict | None = None) -> str:
          f"{s['api_calls_breakdown']['industry_per_tick']})"
          if s.get("api_calls_breakdown") else ""),
         "• Telegram · HS부호 파일: 무료",
-        "• LLM: 없음 (trade 봇은 토큰 과금 0)",
+    ]
+    llm = s.get("llm")
+    if llm and llm.get("total_calls"):
+        d30, td = llm["d30"], llm["today"]
+        lines.append(
+            f"• LLM (Gemini, 🔍산업 추가신호): 30일 <b>{d30['calls']}</b>콜 · "
+            f"<b>{d30['cost_krw']:,}</b>원 (오늘 {td['calls']}콜), 데이터 변동 시만"
+        )
+    else:
+        lines.append("• LLM (Gemini, 🔍추가신호): 호출 0 — 데이터 변동 시만, 사실상 무료")
+    lines += [
         "",
         "<b>실제 자원 (로컬 디스크)</b>",
     ]
