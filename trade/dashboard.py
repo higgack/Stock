@@ -123,10 +123,17 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         purl = industry_archive.public_share_url(share_ym)
         if purl:
             from html import escape as _esc
+            u = _esc(purl)
+            # 복사 버튼(execCommand, http에서도 동작) + 길게-눌러-복사 되는 실제
+            # 링크(iOS Safari 확실). http=비보안이라 navigator.clipboard 불가 →
+            # 두 경로 모두 제공해 모바일에서 무조건 복사되게.
             share_btn = (
-                '<button type="button" class="ind-share-btn" '
-                f'data-share-url="{_esc(purl)}">'
-                f'🔗 공유 링크 복사 ({_esc(share_ym or "")} 스냅샷·인증 없음)</button>'
+                '<span class="ind-share">'
+                f'<button type="button" class="ind-share-btn" data-share-url="{u}">'
+                f'🔗 공유 링크 복사 ({_esc(share_ym or "")} 스냅샷)</button>'
+                f'<a class="ind-share-link" href="{u}" target="_blank" rel="noopener">'
+                '안 되면 ↗ 이 링크 <b>길게 눌러 복사</b></a>'
+                '</span>'
             )
         else:
             share_btn = (
@@ -552,9 +559,10 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-archive{margin:8px 16px 0;padding:9px 14px;border:1px dashed var(--border-soft);border-radius:10px;background:var(--surface)}
 .ind-archive a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}
 .ind-archive a:hover{text-decoration:underline}
-.ind-share-btn{background:var(--accent);color:#fff;border:0;padding:6px 12px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer}
+.ind-share{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ind-share-btn{background:var(--accent);color:#fff;border:0;padding:7px 14px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer}
 .ind-share-btn.copied{background:#10b981}
-.ind-share-open{margin-left:6px;font-size:12px;color:var(--accent)}
+.ind-share-link{font-size:12px;color:var(--accent);word-break:break-all}
 .ind-legend{display:flex;gap:12px;font-size:12px;color:var(--text-sub)}
 .ind-legend i{display:inline-block;width:14px;height:0;vertical-align:middle;margin-right:4px}
 .ind-legend .ind-lg-v{border-top:3px solid var(--accent)}
@@ -1338,12 +1346,32 @@ function render(){
 }
 
 // --- 공유 링크 복사 버튼 (산업트렌드 아카이브줄) ---
+// http(비보안)에선 navigator.clipboard가 막히므로 execCommand+contentEditable로
+// 복사(iOS Safari 포함 동작). 실패 시 옆의 실제 링크를 길게 눌러 복사하라고 안내.
 document.addEventListener('click',function(e){
   var b=e.target.closest('.ind-share-btn'); if(!b) return;
   var url=b.dataset.shareUrl||'';
-  function done(){var t=b.textContent; b.classList.add('copied'); b.textContent='✓ 복사됨! 카톡/메일에 붙여넣기'; setTimeout(function(){b.classList.remove('copied'); b.textContent=t;}, 2200);}
-  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(url).then(done,function(){window.prompt('이 URL을 복사해 보내세요:', url);});}
-  else{window.prompt('이 URL을 복사해 보내세요:', url);}
+  if(!b.dataset.label) b.dataset.label=b.textContent;
+  var orig=b.dataset.label;
+  function flash(msg){ b.classList.add('copied'); b.textContent=msg; setTimeout(function(){b.classList.remove('copied'); b.textContent=orig;}, 2600); }
+  function hint(){ var lk=b.parentNode&&b.parentNode.querySelector('.ind-share-link'); if(lk){lk.style.fontWeight='700'; lk.style.color='#dc2626';} b.textContent='👉 옆 링크 길게 눌러 복사'; setTimeout(function(){b.textContent=orig;},3000); }
+  function legacy(){
+    try{
+      var ta=document.createElement('textarea');
+      ta.value=url; ta.contentEditable='true'; ta.readOnly=false;
+      ta.style.cssText='position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;font-size:16px';
+      document.body.appendChild(ta);
+      var r=document.createRange(); r.selectNodeContents(ta);
+      var s=window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      ta.setSelectionRange(0, url.length);
+      var ok=document.execCommand('copy');
+      document.body.removeChild(ta);
+      ok ? flash('✓ 복사됨! 카톡/메일에 붙여넣기') : hint();
+    }catch(err){ hint(); }
+  }
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(url).then(function(){flash('✓ 복사됨! 카톡/메일에 붙여넣기');}, legacy);
+  } else { legacy(); }
 });
 
 // --- 산업트렌드 월별/TTM toggle (delegated; cards are server-rendered) ---
