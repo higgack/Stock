@@ -111,10 +111,26 @@ class RefreshSignalsGateTests(unittest.TestCase):
         self._run()                                    # baseline 기록
         send = self._run()                             # 동일 데이터 → 평소엔 무음
         send.assert_not_called()
-        # --force는 변동 없어도 LLM 생성 + DM 강제(프리뷰)
+        # 캐시 없을 때 --force는 1회 생성 + DM(프리뷰)
         send_f = self._run(["--force"], cards=[{"title": "t", "body": "b"}])
         self._gen.assert_called_once()
         send_f.assert_called_once()
+
+    def test_force_reuses_cached_cards_no_api(self):
+        self._run()                                    # baseline
+        # 저장된 카드가 있으면 --force는 LLM 미호출(재사용·0 콜)
+        insights.set_state(self.conn, "llm_insight_cards",
+                           '[{"title": "t", "body": "b"}]')
+        send = self._run(["--force"])
+        self._gen.assert_not_called()                  # 재사용 — API 0콜
+        send.assert_called_once()                      # 아카이브·DM은 갱신
+
+    def test_regen_llm_forces_api_even_with_cache(self):
+        self._run()                                    # baseline
+        insights.set_state(self.conn, "llm_insight_cards",
+                           '[{"title": "old", "body": "b"}]')
+        self._run(["--force", "--regen-llm"], cards=[{"title": "new", "body": "x"}])
+        self._gen.assert_called_once()                 # 명시적 재생성 — 새 콜
 
 
 class DashboardInsightBoxTests(unittest.TestCase):
