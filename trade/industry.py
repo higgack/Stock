@@ -30,9 +30,11 @@ def aggregate_by_industry(
     leaves: dict[str, dict],
     *,
     path=mti_map.DEFAULT_PATH,
+    field: str = "exp_dlr",
 ) -> dict[str, dict[str, int]]:
-    """{industry: {ym: exp_dlr_total}} summing each industry's member
-    HS leaves per month. Unmapped / '기타' leaves are excluded.
+    """{industry: {ym: total}} summing each industry's member HS leaves
+    per month for `field` ('exp_dlr' exports / 'imp_dlr' imports).
+    Unmapped / '기타' leaves are excluded.
 
     leaves is customs_scan.build_series() output:
         {hs_code: {"name": str, "months": {ym: {"exp_dlr", "imp_dlr"}}}}
@@ -48,7 +50,7 @@ def aggregate_by_industry(
             continue
         bucket = out.setdefault(industry, {})
         for ym, fig in node["months"].items():
-            bucket[ym] = bucket.get(ym, 0) + (fig.get("exp_dlr") or 0)
+            bucket[ym] = bucket.get(ym, 0) + (fig.get(field) or 0)
     return out
 
 
@@ -544,45 +546,73 @@ def _card_body(pts: list[dict]) -> str:
 
 
 def init_db(conn) -> None:
-    """One-row-per-industry store of the aggregated monthly series. The
-    24-month chapter fetch is too heavy for render time, so the scan job
-    precomputes & stores; the dashboard reads this."""
+    """One-row-per-industry store of the aggregated monthly series (export
+    + import). The 24-month chapter fetch is too heavy for render time, so
+    the scan job precomputes & stores; the dashboard reads this."""
     conn.execute(
         "CREATE TABLE IF NOT EXISTS industry_series ("
         "industry TEXT PRIMARY KEY, months_json TEXT NOT NULL, "
-        "updated_ts REAL)"
+        "imports_json TEXT, updated_ts REAL)"
     )
+    # backward-compat: add imports_json to a pre-existing table
+    try:
+        conn.execute("ALTER TABLE industry_series ADD COLUMN imports_json TEXT")
+    except Exception:
+        pass
     conn.commit()
 
 
-def store(conn, by_industry: dict[str, dict[str, int]], now: float | None = None) -> int:
-    """Replace the stored series with the latest aggregation. Returns rows
-    written. Empty input is ignored (never wipes a good snapshot)."""
+def store(conn, by_industry: dict[str, dict[str, int]],
+          by_import: dict[str, dict[str, int]] | None = None,
+          now: float | None = None) -> int:
+    """Replace the stored series with the latest aggregation (export +
+    optional import). Returns rows written. Empty export is ignored
+    (never wipes a good snapshot)."""
     import time
     if not by_industry:
         return 0
+    by_import = by_import or {}
     now = now if now is not None else time.time()
     init_db(conn)
     conn.execute("DELETE FROM industry_series")
     for ind, months in by_industry.items():
+        imp = by_import.get(ind)
         conn.execute(
-            "INSERT INTO industry_series (industry, months_json, updated_ts) "
-            "VALUES (?,?,?)",
-            (ind, _json.dumps(months, ensure_ascii=False), now),
+            "INSERT INTO industry_series "
+            "(industry, months_json, imports_json, updated_ts) VALUES (?,?,?,?)",
+            (ind, _json.dumps(months, ensure_ascii=False),
+             _json.dumps(imp, ensure_ascii=False) if imp else None, now),
         )
     conn.commit()
     return len(by_industry)
 
 
 def load_stored(conn) -> dict[str, dict[str, int]]:
-    """{industry: {ym: exp}} from the store, or {} when the table is
-    absent/empty."""
+    """{industry: {ym: exp}} from the store, or {} when absent/empty."""
     try:
         cur = conn.execute("SELECT industry, months_json FROM industry_series")
     except Exception:
         return {}
     out: dict[str, dict[str, int]] = {}
     for ind, mj in cur.fetchall():
+        try:
+            out[ind] = _json.loads(mj)
+        except Exception:
+            continue
+    return out
+
+
+def load_stored_imports(conn) -> dict[str, dict[str, int]]:
+    """{industry: {ym: imp}} from the store, or {} when absent/empty/old
+    schema (imports_json NULL)."""
+    try:
+        cur = conn.execute("SELECT industry, imports_json FROM industry_series")
+    except Exception:
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    for ind, mj in cur.fetchall():
+        if not mj:
+            continue
         try:
             out[ind] = _json.loads(mj)
         except Exception:
@@ -645,13 +675,42 @@ def _summary_board(series: dict[str, list[dict]]) -> str:
         deriv += ("<div class='ind-sbox ind-sbox-decel'><h3>고성장 둔화/기울기 하락</h3>"
                   f"<div class='ind-chip-wrap'>"
                   f"{''.join(chip(n,v,'%p') for n,v in decel)}</div></div>")
+    # C: import-surge box — 수입 YoY 급증 = 생산/투자 선행신호 (e.g.
+    # 반도체장비·원자재 수입↑ precedes 수출↑). Only when import data was
+    # stored (new schema); silently absent otherwise.
+    imp_box = ""
+    if _import_series:
+        imp_yoy = []
+        for ind, ipts in _import_series.items():
+            if ipts and ipts[-1].get("yoy") is not None:
+                imp_yoy.append((ind, ipts[-1]["yoy"], ipts[-1]["exp"]))
+        # rank by import YoY; show meaningful surges (≥ +20%)
+        surges = sorted([t for t in imp_yoy if t[1] >= 20.0],
+                        key=lambda t: t[1], reverse=True)[:8]
+        if surges:
+            chips = "".join(chip(n, v) for n, v, _ in surges)
+            imp_box = (
+                "<div class='ind-sbox ind-sbox-imp'><h3>📥 수입 급증 (생산·투자 선행신호)</h3>"
+                "<p class='ind-sbox-sub'>원자재·설비 수입 YoY 급증은 향후 생산/수출 확대의 "
+                "선행지표일 수 있습니다 (예: 반도체장비).</p>"
+                f"<div class='ind-chip-wrap'>{chips}</div></div>")
     return (f"<div class='ind-summary-grid'>{''.join(boxes)}</div>"
-            f"<div class='ind-deriv-grid'>{deriv}</div>")
+            f"<div class='ind-deriv-grid'>{deriv}</div>"
+            f"<div class='ind-deriv-grid'>{imp_box}</div>")
 
 
-def render_industry_html(by_industry: dict[str, dict[str, int]]) -> str:
-    """Full 산업트렌드 panel: summary board + cards grouped by
-    classification. Returns '' when there's no data."""
+# module-level handoff for the import series (set by render_industry_html
+# before calling _summary_board — keeps _summary_board's signature stable
+# while B/C grow what flows into it).
+_import_series: dict[str, list[dict]] = {}
+
+
+def render_industry_html(by_industry: dict[str, dict[str, int]],
+                         by_import: dict[str, dict[str, int]] | None = None) -> str:
+    """Full 산업트렌드 panel: summary board (+ 수입 급증 신호) + cards
+    grouped by classification. Returns '' when there's no data."""
+    global _import_series
+    _import_series = industry_series(by_import) if by_import else {}
     if not by_industry:
         return ""
     series = industry_series(by_industry)

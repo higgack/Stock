@@ -82,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     leaves = customs_scan.build_series(all_rows)
-    by_ind = industry.aggregate_by_industry(leaves)
+    by_ind = industry.aggregate_by_industry(leaves)               # exports
+    by_imp = industry.aggregate_by_industry(leaves, field="imp_dlr")  # imports
     series = industry.industry_series(by_ind)
 
     # Coverage guard (mirror scan_customs): a partial scan must not store a
@@ -94,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                         coverage * 100, args.min_coverage * 100)
         else:
             with customs.session() as conn:
-                n = industry.store(conn, by_ind)
+                n = industry.store(conn, by_ind, by_imp)
             log.info("stored %d industries to customs.db", n)
 
     if args.industry:

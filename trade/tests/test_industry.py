@@ -134,6 +134,21 @@ class StoreRenderTests(unittest.TestCase):
         self.assertIn("분류 기준", html)              # explainer
         self.assertIn("ind-deriv-grid", html)        # 가속/둔화 미분 보드
 
+    def test_import_signal_box(self):
+        # 수입 YoY 급증 → 생산 선행신호 박스
+        exp = {"반도체": self._series_25mo(11_000_000_000, 31_000_000_000)}
+        imp = {"반도체": self._series_25mo(1_000_000_000, 3_000_000_000)}
+        # store/load imports roundtrip
+        industry.store(self.conn, exp, imp)
+        self.assertEqual(
+            industry.load_stored_imports(self.conn)["반도체"]["2026-04"],
+            3_000_000_000)
+        html = industry.render_industry_html(exp, imp)
+        self.assertIn("ind-sbox-imp", html)        # 수입 급증 박스
+        self.assertIn("수입 급증", html)
+        # backward compat: no imports → no box
+        self.assertNotIn("ind-sbox-imp", industry.render_industry_html(exp))
+
     def test_store_load_roundtrip(self):
         by = {"반도체": self._series_13mo(11_000_000_000, 31_000_000_000),
               "자동차": self._series_13mo(6_000_000_000, 5_700_000_000)}
