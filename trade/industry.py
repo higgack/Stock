@@ -90,6 +90,18 @@ def _prev_year_month(ym: str) -> str:
     return f"{y - 1:04d}-{m:02d}"
 
 
+def _prev_month(ym: str) -> str:
+    """'2026-04' → '2026-03', '2026-01' → '2025-12' (for MoM/전월대비).
+    Accepts 'YYYY-MM' or 'YYYYMM'."""
+    s = ym.replace("-", "")
+    y, m = int(s[:4]), int(s[4:6])
+    m -= 1
+    if m == 0:
+        m = 12
+        y -= 1
+    return f"{y:04d}-{m:02d}"
+
+
 def _ma(values: list[int], window: int = 12) -> Optional[float]:
     """Moving average of the last `window` values, or None when fewer
     than `window` points exist (so a half-formed MA isn't shown)."""
@@ -828,10 +840,11 @@ _import_mti_name: dict[str, str] = {}
 
 
 def render_subitem_html(by_mti: dict[str, dict],
-                        rate_min_usd: int = 50_000_000) -> str:
-    """하위품목 TOP (MTI6 단위) — one level below industry, ranked like
-    the surge panel: 📈급등률(YoY desc, 수출 ≥하한) + 💵급증액(Δ$ desc).
-    Each row: 품목명(산업) · 수출 · YoY. Returns '' when no data."""
+                        rate_min_usd: int = 200_000_000) -> str:
+    """하위품목 TOP (MTI6 단위) — one level below industry, ranked by
+    MoM(전월대비, 최근 모멘텀) so 기저효과에 휘둘리지 않음:
+    📈급등률(MoM% desc, 수출 ≥하한) + 💵급증액(전월대비 Δ$ desc).
+    Each row: 품목명(산업) · 수출 · 전월대비. Returns '' when no data."""
     if not by_mti:
         return ""
     rows = []
@@ -843,14 +856,18 @@ def render_subitem_html(by_mti: dict[str, dict],
             continue
         pts_by_mti[mti6] = pts
         latest = pts[-1]
+        # MoM = 최신 확정월 vs 달력상 직전월. 직전월 포인트가 없으면(데이터
+        # 공백) MoM 미정의 → 두 랭킹표에서 제외. 미래 미발표월은 애초에
+        # 포인트로 생기지 않으므로 latest는 항상 최신 확정월.
+        prev_exp = next((p["exp"] for p in pts
+                         if p["ym"] == _prev_month(latest["ym"])), None)
+        mom = (((latest["exp"] - prev_exp) / prev_exp * 100.0)
+               if (prev_exp and prev_exp > 0) else None)
+        mom_delta = (latest["exp"] - prev_exp) if prev_exp is not None else None
         rows.append({
             "mti6": mti6,
             "name": node["name"], "industry": node["industry"],
-            "exp": latest["exp"], "yoy": latest.get("yoy"),
-            "delta": latest["exp"] - (
-                # Δ vs same month last year (export change YoY)
-                next((p["exp"] for p in pts
-                      if p["ym"] == _prev_year_month(latest["ym"])), latest["exp"])),
+            "exp": latest["exp"], "mom": mom, "mom_delta": mom_delta,
         })
     if not rows:
         return ""
@@ -858,9 +875,9 @@ def render_subitem_html(by_mti: dict[str, dict],
     def chip_rows(items, metric):
         out = []
         for r in items:
-            val = (_pct(r["yoy"]) if metric == "yoy"
-                   else "Δ" + _eokusd(r["delta"]))
-            cl = "pos" if ((r["yoy"] if metric == "yoy" else r["delta"]) or 0) > 0 else "neg"
+            raw = r["mom"] if metric == "mom" else r["mom_delta"]
+            val = _pct(raw) if metric == "mom" else "Δ" + _eokusd(raw)
+            cl = "pos" if (raw or 0) > 0 else "neg"
             out.append(
                 f"<tr><td>{_html.escape(r['name'])}</td>"
                 f"<td class='ind-sub-ind'>{_html.escape(r['industry'])}</td>"
@@ -868,18 +885,19 @@ def render_subitem_html(by_mti: dict[str, dict],
                 f"<td class='{cl}'>{val}</td></tr>")
         return "".join(out)
 
-    # 급등률: YoY desc, 수출 ≥ 하한
+    # 급등률: 전월대비(MoM)% desc, 수출 ≥ 하한
     rate = sorted([r for r in rows
-                   if r["yoy"] is not None and r["yoy"] >= 30.0
+                   if r["mom"] is not None and r["mom"] >= 30.0
                    and (r["exp"] or 0) >= rate_min_usd],
-                  key=lambda r: r["yoy"], reverse=True)[:30]
-    # 급증액: Δ$ desc
-    amount = sorted(rows, key=lambda r: r["delta"], reverse=True)[:30]
+                  key=lambda r: r["mom"], reverse=True)[:30]
+    # 급증액: 전월대비 Δ$ desc
+    amount = sorted([r for r in rows if r["mom_delta"] is not None],
+                    key=lambda r: r["mom_delta"], reverse=True)[:30]
 
     def tbl(title, items, metric):
         if not items:
             return ""
-        th = "전월비YoY" if metric == "yoy" else "증감액"
+        th = "전월대비" if metric == "mom" else "증감액"
         return (f"<details class='ind-sub-card' open><summary>{title} ({len(items)})</summary>"
                 f"<div class='ind-raw-scroll'><table class='ind-table'><thead>"
                 f"<tr><th>품목(MTI)</th><th>산업</th><th>수출</th><th>{th}</th></tr></thead>"
@@ -911,8 +929,8 @@ def render_subitem_html(by_mti: dict[str, dict],
         "산업이 가려버리는 '산업 안의 스타 품목'을 발굴.</div>"
         + cards_html
         + "<div class='ind-sub-wrap'>"
-        + tbl("📈 급등률 (YoY ≥+30%, 수출 ≥" + _eokusd(rate_min_usd) + ")", rate, "yoy")
-        + tbl("💵 급증액 (YoY 증감)", amount, "amount")
+        + tbl("📈 급등률 (MoM ≥+30%, 수출 ≥" + _eokusd(rate_min_usd) + ")", rate, "mom")
+        + tbl("💵 급증액 (전월대비)", amount, "amount")
         + "</div>"
     )
 

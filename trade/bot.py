@@ -130,7 +130,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 <b>2. 대쉬보드</b>
 <a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
 모바일 OK · 5분마다 자동 갱신 · BasicAuth 보호 · 다크모드 자동 (19~07 KST)
-헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) + 🧪 미파싱 백로그 + 💰 비용·자원 (외부 API 무료·디스크·관세청 호출) + 📦 관세청 수출입 (📌내 핀 + 📈급등률·💵급증액 TOP30 자동발굴 + 🗄아카이브 무제한) 자동 표시
+헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 (신규/확정 도착/첫 등장 품목) + 🧪 미파싱 백로그 + 💰 비용·자원 (외부 API 무료·디스크·관세청 호출) + 📦 관세청 수출입 (📌내 핀 + 📈급등률·💵급증액 TOP30 발굴 + 🗄아카이브 무제한) 자동 표시
 
 <b>3. BeOn 발표 사이클 (KST)</b>
 • 매월 11일경 — 1-10일 잠정
@@ -142,7 +142,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • <b>품목별</b> — 품목당 1 섹션 (다중 variant 섹션엔 국가 mix 막대 자동)
 • <b>회사별</b> — 회사당 1 섹션, 관련 (품목·지역) 미니카드
 • <b>매트릭스</b> — 품목 × 국가 heatmap (셀 = 알림 수, 셀 클릭 시 최신 alert)
-• <b>📈 산업트렌드</b> — 산업 20개+하위품목(반도체·D램·낸드…): 분류 요약보드(초고성장/턴어라운드/부진·가속/둔화·📥수입급증) + 품목 카드(수출+12M MA·YoY막대·TTM 2차트·8지표·해석문·원자료표) + 하위품목 TOP(MTI6 급등률·급증액). HSK-MTI 연계표 기준
+• <b>📈 산업트렌드</b> — 산업 20개+하위품목(반도체·D램·낸드…): 분류 요약보드(초고성장/턴어라운드/부진·가속/둔화·📥수입급증) + 품목 카드(수출+12M MA·YoY막대·TTM 2차트·8지표·해석문·원자료표) + 하위품목 TOP(MTI6 급등률·급증액 MoM·수출≥2억). HSK-MTI 연계표 기준
 
 <b>5. 카드 정렬</b>
 같은 섹션 안에서:
@@ -189,8 +189,8 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-health (1시간) — BeOn 발표 예정일 (11/21/익월1/익월15) 기준 사이클 누락 감지 → ⚠️ 알림 (이벤트 기반, 침묵 기간엔 silent)
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent) + 미파싱 캡션을 eval_misses.jsonl에 누적 (회귀 fixture용, 키별 1회)
 • trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
-• trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일 룩백 + 200개 cap, 초과 시 ⚠️ abort)
-• trade-bot-customs-fetch (1일 4회, 01:30 등 KST) — 전 chapter 스캔 → 📈급등률(+30%, ≥$50M)·💵급증액 TOP30 자동발굴 + 🗄아카이브 무제한, 신규 진입 <b>운영자 DM</b>(첫 스캔 무음, cap 10). 수동 핀도 수집. 발표(~매월15일) 6h내 감지
+• trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일룩백+200cap, 초과시 ⚠️abort)
+• trade-bot-customs-fetch (1일 4회, 01:30 KST 등) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 발굴 + 🗄아카이브 무제한, 신규진입 <b>운영자 DM</b>(첫스캔 무음·cap10). 수동핀 수집. 발표~15일 6h내감지
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 
@@ -199,7 +199,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-02 — /cost 관세청 호출 추정 정확화(스캔+산업 sweep 반영) · 수입급증 드라이버</i>
+<i>최종 갱신: 2026-06-02 — 하위품목 TOP 랭킹 전월대비(MoM) 기준 전환 · 수출 하한 2억 상향</i>
 """
 
 
