@@ -306,6 +306,38 @@ def _dot_ym(ym: str) -> str:
     return f"{y}.{int(m)}"
 
 
+_LBL_H = 11.0   # approx text line height (viewBox units) for label de-collision
+
+
+def _est_w(text: str) -> float:
+    """Rough SVG text width (viewBox units) — CJK/심볼은 넓게, ASCII는 좁게.
+    콜아웃이 겹치는지 판정할 때만 쓰는 근사값."""
+    w = 0.0
+    for ch in text:
+        w += 6.6 if ord(ch) > 0x2000 else 3.4
+    return w
+
+
+def _place_labels(cands_per_label, occupied):
+    """각 라벨의 후보 y들 중, 이미 점유된 박스(occupied: [(xl,xr,y)])와
+    x겹침+y근접(<_LBL_H)이 없는 첫 y를 골라 배치. 못 고르면 첫 후보.
+    반환=각 라벨의 최종 y. occupied는 진행하며 갱신(뒤 라벨이 앞 라벨 회피)."""
+    out = []
+    for xl, xr, cands in cands_per_label:
+        chosen = None
+        for cy in cands:
+            cy = min(max(cy, 9.0), _VH - 3.0)
+            if all(not (xl < pr and pl < xr and abs(cy - py) < _LBL_H)
+                   for pl, pr, py in occupied):
+                chosen = cy
+                break
+        if chosen is None:
+            chosen = min(max(cands[0], 9.0), _VH - 3.0)
+        occupied.append((xl, xr, chosen))
+        out.append(chosen)
+    return out
+
+
 def _line_svg(series: list[tuple[int, float]], titles: list[str], *,
               dashed_second=None, label="",
               x_first="", x_last="", y_hi_lbl="", y_lo_lbl="",
@@ -364,13 +396,38 @@ def _line_svg(series: list[tuple[int, float]], titles: list[str], *,
         axes += f'<text x="{_PAD_L}" y="{_VH-3}" class="ind-axis">{_html.escape(x_first)}</text>'
     if x_last:
         axes += f'<text x="{_VW-_PAD_R}" y="{_VH-3}" class="ind-axis" text-anchor="end">{_html.escape(x_last)}</text>'
-    # in-chart callouts (최신/저점/MA)
+    # in-chart callouts (최신/저점/MA) — 서로/축라벨과 겹치지 않게 y를 분산.
+    # 값이 비슷해 라벨이 한 점에 몰리면(예: 최신 16.2억$ vs MA 15.8억$) 뒤
+    # 라벨을 점 위→아래→더 위/아래로 밀어 가독성 확보.
     co = ""
-    for ci, cv, ctext, ccls in (callouts or []):
-        cx = x(ci); cy = y(cv)
-        anchor = "end" if cx > _VW * 0.6 else "start"
-        co += (f'<text x="{cx:.0f}" y="{max(cy-4,9):.0f}" class="{ccls}" '
-               f'text-anchor="{anchor}">{_html.escape(ctext)}</text>')
+    cos = callouts or []
+    if cos:
+        # 축 라벨 박스를 먼저 점유시켜 콜아웃이 이를 피하도록.
+        occupied: list[tuple[float, float, float]] = []
+        if y_hi_lbl:
+            occupied.append((2, 2 + _est_w(y_hi_lbl), _PAD_T + 4))
+        if y_lo_lbl:
+            occupied.append((2, 2 + _est_w(y_lo_lbl), _PAD_T + plot_h))
+        if x_first:
+            occupied.append((_PAD_L, _PAD_L + _est_w(x_first), _VH - 3))
+        if x_last:
+            occupied.append((_VW - _PAD_R - _est_w(x_last), _VW - _PAD_R, _VH - 3))
+        meta = []          # (cx, anchor, text, cls)
+        cands_per_label = []
+        for ci, cv, ctext, ccls in cos:
+            cx = x(ci); cy = y(cv)
+            anchor = "end" if cx > _VW * 0.6 else "start"
+            w = _est_w(ctext)
+            xl, xr = (cx - w, cx) if anchor == "end" else (cx, cx + w)
+            base = cy - 4
+            cands_per_label.append((xl, xr, [
+                base, cy + _LBL_H, base - _LBL_H, cy + 2 * _LBL_H, base - 2 * _LBL_H,
+            ]))
+            meta.append((cx, anchor, ctext, ccls))
+        ys = _place_labels(cands_per_label, occupied)
+        for (cx, anchor, ctext, ccls), ty in zip(meta, ys):
+            co += (f'<text x="{cx:.0f}" y="{ty:.0f}" class="{ccls}" '
+                   f'text-anchor="{anchor}">{_html.escape(ctext)}</text>')
     return (
         f'<svg viewBox="0 0 {_VW} {_VH}" role="img" aria-label="{label}" '
         f'class="ind-chart">{grid}{axes}{main_line}{second}{dot}{co}{tip}</svg>'
