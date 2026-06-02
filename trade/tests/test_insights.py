@@ -73,9 +73,13 @@ class RefreshSignalsGateTests(unittest.TestCase):
         def fake_session(*a, **k):
             yield self.conn
 
+        from trade import industry_archive
         with mock.patch.object(refresh_signals.customs, "session", fake_session), \
              mock.patch.object(refresh_signals.llm_insights, "generate",
                                return_value=cards or []) as gen, \
+             mock.patch.object(industry_archive, "record_snapshot",
+                               return_value="2026-04"), \
+             mock.patch.object(industry_archive, "regenerate"), \
              mock.patch.object(refresh_signals, "_send_dm",
                                return_value=True) as send:
             refresh_signals.main(argv or [])
@@ -140,6 +144,7 @@ class DashboardInsightBoxTests(unittest.TestCase):
         self.assertIn("ins-box", html)            # 🔍 박스 존재
         self.assertIn("AI 인프라", html)           # 카드 내용
         self.assertIn("반도체", html)              # 산업 카드도 함께
+        self.assertIn("industry_archive.html", html)   # 🗄 월별 아카이브 링크
 
 
 if __name__ == "__main__":

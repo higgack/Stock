@@ -52,9 +52,9 @@ def _latest_ym(conn) -> tuple[str, int]:
     return latest, len(series)
 
 
-def _refresh_llm_cards(conn) -> int:
+def _refresh_llm_cards(conn) -> list[dict]:
     """변동 시 LLM 추가신호 카드 생성·저장(pipeline_state). 비활성/키없음/
-    오류면 generate()가 []를 주고 박스는 미표시. 반환=카드 수."""
+    오류면 generate()가 []를 주고 박스는 미표시. 반환=카드 리스트."""
     by_ind = industry.load_stored(conn)
     by_imp = industry.load_stored_imports(conn)
     by_mti = industry.load_mti_stored(conn)
@@ -62,7 +62,7 @@ def _refresh_llm_cards(conn) -> int:
     digest = llm_insights.build_digest(by_ind, by_imp, by_mti, by_mti_imp)
     cards = llm_insights.generate(digest)
     insights.set_state(conn, _CARDS_KEY, json.dumps(cards, ensure_ascii=False))
-    return len(cards)
+    return cards
 
 
 def _dm_body(latest: str, n_ind: int, n_cards: int) -> str:
@@ -94,14 +94,24 @@ def main(argv: list[str] | None = None) -> int:
                 log.info("no data change since last tick — silent")
                 return 0
 
-        # 변동 감지(또는 --force) → LLM 추가신호 생성·저장 → 완료 DM → fingerprint 전진
+        # 변동 감지(또는 --force) → LLM 추가신호 생성·저장 → 월별 아카이브 기록
+        #  → 완료 DM → fingerprint 전진
+        from trade import industry_archive, llm_usage
+
         latest, n_ind = _latest_ym(conn)
-        n_cards = _refresh_llm_cards(conn)
-        sent = _send_dm(_dm_body(latest, n_ind, n_cards))
+        before = llm_usage.summary()["d30"]["cost_krw"]
+        cards = _refresh_llm_cards(conn)
+        cost_krw = max(0, llm_usage.summary()["d30"]["cost_krw"] - before)
+        try:
+            industry_archive.record_snapshot(conn, cards, cost_krw=cost_krw or None)
+            industry_archive.regenerate()
+        except Exception as exc:           # 아카이브 실패가 갱신을 막지 않게
+            log.warning("industry archive update failed: %s", exc)
+        sent = _send_dm(_dm_body(latest, n_ind, len(cards)))
         insights.set_state(conn, _FP_KEY, fp)
-        log.info("%s (latest=%s) — %d LLM cards, DM %s, fingerprint advanced",
+        log.info("%s (latest=%s) — %d LLM cards, archive updated, DM %s, fp advanced",
                  "forced" if args.force else "data changed",
-                 latest or "—", n_cards, "sent" if sent else "skipped")
+                 latest or "—", len(cards), "sent" if sent else "skipped")
     return 0
 
 

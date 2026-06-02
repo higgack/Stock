@@ -110,7 +110,14 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             except Exception:
                 cards = []
         ins_html = llm_insights.render_html(cards if isinstance(cards, list) else [])
-        return ins_html + industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp)
+        # 🗄 월별 아카이브로 가는 별도 링크 섹션(별도 self-contained 페이지)
+        archive_link = (
+            '<div class="ind-archive"><a href="industry_archive.html">'
+            '🗄 월별 아카이브 — 과거 산업트렌드(분류·수입급증·🔍신호) 변천 보기 →'
+            '</a></div>'
+        )
+        return (ins_html + archive_link
+                + industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp))
     except Exception:
         return ""
 
@@ -511,6 +518,10 @@ h1{margin:0 0 4px;font-size:18px}
 .ins-card{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
 .ins-card h4{margin:0 0 4px;font-size:13px;color:var(--text)}
 .ins-card p{margin:0;font-size:12px;color:var(--text-sub);line-height:1.55}
+/* 🗄 월별 아카이브 링크 섹션 */
+.ind-archive{margin:8px 16px 0;padding:9px 14px;border:1px dashed var(--border-soft);border-radius:10px;background:var(--surface)}
+.ind-archive a{color:#5a47c0;text-decoration:none;font-size:13px;font-weight:600}
+.ind-archive a:hover{text-decoration:underline}
 .ind-legend{display:flex;gap:12px;font-size:12px;color:var(--text-sub)}
 .ind-legend i{display:inline-block;width:14px;height:0;vertical-align:middle;margin-right:4px}
 .ind-legend .ind-lg-v{border-top:3px solid var(--accent)}
@@ -1560,6 +1571,13 @@ def main() -> int:
     args.out.write_text(html, encoding="utf-8")
     size_kb = len(html.encode("utf-8")) / 1024
     print(f"wrote {args.out} ({size_kb:.0f} KB)")
+    # 산업트렌드 탭의 🗄 아카이브 링크가 404 안 나게 페이지 보장(빈 상태 OK).
+    # 실제 내용 갱신은 refresh_signals(데이터 변동 시)가 담당.
+    try:
+        from trade import industry_archive
+        industry_archive.ensure_exists()
+    except Exception:
+        pass
     return 0
 
 
