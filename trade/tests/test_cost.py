@@ -125,10 +125,26 @@ class TestFormatters(unittest.TestCase):
 
     def test_dashboard_line_compact(self):
         line = cost.format_dashboard_line(self._snap())
-        self.assertIn("외부 API 무료", line)
+        self.assertIn("관세청 API 무료", line)
         self.assertIn("2/10,000", line)
+        self.assertIn("LLM 0원", line)        # 미사용 시 0원 표기
         self.assertIn("디스크 잔여", line)
         # single-line: no newlines
+        self.assertNotIn("\n", line)
+
+    def test_dashboard_line_shows_llm_cost_when_used(self):
+        snap = self._snap()
+        snap["llm"] = {
+            "today": {"calls": 1, "cost_krw": 45, "cost_usd": 0.03,
+                      "in_tok": 0, "out_tok": 0},
+            "d7": {"calls": 1, "cost_krw": 45, "cost_usd": 0.03,
+                   "in_tok": 0, "out_tok": 0},
+            "d30": {"calls": 1, "cost_krw": 45, "cost_usd": 0.03,
+                    "in_tok": 0, "out_tok": 0},
+            "total_calls": 1,
+        }
+        line = cost.format_dashboard_line(snap)
+        self.assertIn("LLM 30일 45원", line)
         self.assertNotIn("\n", line)
 
 

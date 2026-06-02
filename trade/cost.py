@@ -191,10 +191,16 @@ def format_dashboard_line(snap: dict | None = None) -> str:
     escapes / wraps). Empty string only if collect() truly failed."""
     s = snap or collect()
     parts = [
-        "💰 외부 API 무료",
-        f"관세청 일 ~{s['api_calls_per_day']:,}/{s['api_quota']:,}콜",
-        f"데이터 {fmt_bytes(s['data_total_bytes'])}",
+        f"💰 관세청 API 무료 ~{s['api_calls_per_day']:,}/{s['api_quota']:,}콜",
     ]
+    # LLM(Gemini 🔍추가신호)은 변동 시에만 — 무료 아님이라 비용을 함께 노출
+    llm = s.get("llm")
+    if llm and llm.get("total_calls"):
+        d30 = llm["d30"]
+        parts.append(f"LLM 30일 {d30['cost_krw']:,}원({d30['calls']}콜)")
+    else:
+        parts.append("LLM 0원(변동시만)")
+    parts.append(f"데이터 {fmt_bytes(s['data_total_bytes'])}")
     if s["disk_total_bytes"]:
         parts.append(f"디스크 잔여 {fmt_bytes(s['disk_free_bytes'])}")
     return " · ".join(parts)
