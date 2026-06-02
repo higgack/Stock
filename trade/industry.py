@@ -250,15 +250,20 @@ def _pct(p, suffix="%") -> str:
     return f"{p:+.1f}{suffix}" if p is not None else "—"
 
 
-def _line_svg(series: list[tuple[int, float]], main_pairs: list[tuple[int, float]],
-              titles: list[str], *, dashed_second=None, label="", pct_axis=False) -> str:
-    """Generic 1-or-2 line SVG over an index axis.
+def _line_svg(series: list[tuple[int, float]], titles: list[str], *,
+              dashed_second=None, label="",
+              x_first="", x_last="", y_hi_lbl="", y_lo_lbl="",
+              callouts: list[tuple[int, float, str, str]] | None = None) -> str:
+    """Generic 1-or-2 line SVG with axis labels.
 
-    series       — [(i, value)] the PRIMARY line (solid).
-    dashed_second— optional [(i, value)] secondary line (dashed) sharing
-                   the same y-scale (e.g. 12M MA on the monthly chart).
-    titles       — hover <title> text per primary point (len == len(series)).
-    Auto-scales y to the combined min/max. Returns '' if < 2 points."""
+    series       — [(i, value)] PRIMARY line (solid).
+    dashed_second— optional [(i, value)] secondary line (dashed; 12M MA).
+    titles       — hover <title> per primary point.
+    x_first/x_last — X-axis date labels (e.g. '2024.1' / '2026.5').
+    y_hi_lbl/y_lo_lbl — Y-axis top/bottom tick labels (e.g. '394' / '72').
+    callouts     — [(i, value, text, cls)] in-chart text labels anchored at
+                   a point (e.g. (last, exp, '최신 372억', 'ind-cl')).
+    Returns '' if < 2 points."""
     if len(series) < 2:
         return ""
     n_max = max(i for i, _ in series)
@@ -291,27 +296,71 @@ def _line_svg(series: list[tuple[int, float]], main_pairs: list[tuple[int, float
         f'<title>{_html.escape(titles[k])}</title></circle>'
         for k, (i, v) in enumerate(series) if k < len(titles)
     )
+    # axis tick labels
+    axes = ""
+    if y_hi_lbl:
+        axes += f'<text x="2" y="{_PAD_T+4:.0f}" class="ind-axis">{_html.escape(y_hi_lbl)}</text>'
+    if y_lo_lbl:
+        axes += f'<text x="2" y="{_PAD_T+plot_h:.0f}" class="ind-axis">{_html.escape(y_lo_lbl)}</text>'
+    if x_first:
+        axes += f'<text x="{_PAD_L}" y="{_VH-3}" class="ind-axis">{_html.escape(x_first)}</text>'
+    if x_last:
+        axes += f'<text x="{_VW-_PAD_R}" y="{_VH-3}" class="ind-axis" text-anchor="end">{_html.escape(x_last)}</text>'
+    # in-chart callouts (최신/저점/MA)
+    co = ""
+    for ci, cv, ctext, ccls in (callouts or []):
+        cx = x(ci); cy = y(cv)
+        anchor = "end" if cx > _VW * 0.6 else "start"
+        co += (f'<text x="{cx:.0f}" y="{max(cy-4,9):.0f}" class="{ccls}" '
+               f'text-anchor="{anchor}">{_html.escape(ctext)}</text>')
     return (
         f'<svg viewBox="0 0 {_VW} {_VH}" role="img" aria-label="{label}" '
-        f'class="ind-chart">{grid}{main_line}{second}{dot}{tip}</svg>'
+        f'class="ind-chart">{grid}{axes}{main_line}{second}{dot}{co}{tip}</svg>'
     )
 
 
 def _monthly_chart(pts: list[dict]) -> str:
-    """수출액 + 12M MA (the default view)."""
+    """수출액 + 12M MA, with axis labels + 최신/저점/MA callouts (reference)."""
     vs = [(i, p["exp"]) for i, p in enumerate(pts) if p.get("exp") is not None]
     ma = [(i, p["ma12"]) for i, p in enumerate(pts) if p.get("ma12") is not None]
     titles = [f"{p['ym']} | {_eokusd(p['exp'])} | YoY {_pct(p.get('yoy'))}" for p in pts]
-    return _line_svg(vs, vs, titles, dashed_second=ma,
-                     label="수출액 추이와 12개월 이동평균")
+    if len(vs) < 2:
+        return ""
+    exps = [v for _, v in vs]
+    hi, lo = max(exps), min(exps)
+    # callouts: latest value, trough, and the latest MA
+    li, lv = vs[-1]
+    lo_i, lo_v = min(vs, key=lambda t: t[1])
+    callouts = [
+        (li, lv, f"최신 {_eokusd(lv)}", "ind-cl"),
+        (lo_i, lo_v, f"저점 {_eokusd(lo_v)}", "ind-cl"),
+    ]
+    if ma:
+        mi, mv = ma[-1]
+        callouts.append((mi, mv, f"MA {_eokusd(mv)}", "ind-cl-ma"))
+    return _line_svg(
+        vs, titles, dashed_second=ma, label="수출액 추이와 12개월 이동평균",
+        x_first=pts[0]["ym"], x_last=pts[-1]["ym"],
+        y_hi_lbl=_eokusd(hi), y_lo_lbl=_eokusd(lo), callouts=callouts,
+    )
 
 
 def _ttm_chart(pts: list[dict]) -> str:
     """12M TTM 수출액 line (only where TTM defined)."""
     vs = [(i, p["ttm"]) for i, p in enumerate(pts) if p.get("ttm") is not None]
+    if len(vs) < 2:
+        return ""
+    tps = [p for p in pts if p.get("ttm") is not None]
     titles = [f"{p['ym']} | TTM {_eokusd(p['ttm'])} | TTM YoY {_pct(p.get('ttm_yoy'))}"
-              for p in pts if p.get("ttm") is not None]
-    return _line_svg(vs, vs, titles, label="12개월 TTM 수출액 추이")
+              for p in tps]
+    vals = [v for _, v in vs]
+    li, lv = vs[-1]
+    return _line_svg(
+        vs, titles, label="12개월 TTM 수출액 추이",
+        x_first=tps[0]["ym"], x_last=tps[-1]["ym"],
+        y_hi_lbl=_eokusd(max(vals)), y_lo_lbl=_eokusd(min(vals)),
+        callouts=[(li, lv, f"최신 {_eokusd(lv)}", "ind-cl")],
+    )
 
 
 def _stat_row(points: list[dict]) -> str:
@@ -370,8 +419,19 @@ def _yoy_bar_svg(pts: list[dict]) -> str:
         )
     zero = (f'<line x1="{_PAD_L}" y1="{zero_y:.1f}" x2="{_VW-_PAD_R}" '
             f'y2="{zero_y:.1f}" class="ind-zero-line"/>')
+    # axis labels: top=+hi%, bottom=lo%, X dates, latest YoY callout
+    li, lv = ys[-1]
+    axes = (
+        f'<text x="2" y="{_PAD_T+4:.0f}" class="ind-axis">+{hi:.0f}%</text>'
+        f'<text x="2" y="{_PAD_T+plot_h:.0f}" class="ind-axis">{lo:.0f}%</text>'
+        f'<text x="{_PAD_L}" y="{_VH-3}" class="ind-axis">{_html.escape(pts[0]["ym"])}</text>'
+        f'<text x="{_VW-_PAD_R}" y="{_VH-3}" class="ind-axis" text-anchor="end">'
+        f'{_html.escape(pts[-1]["ym"])}</text>'
+        f'<text x="{x(li):.0f}" y="{max(y(lv)-4,9):.0f}" class="ind-cl" '
+        f'text-anchor="end">{_pct(lv)}</text>'
+    )
     return (f'<svg viewBox="0 0 {_VW} {_VH}" role="img" aria-label="전년동월 대비 성장률" '
-            f'class="ind-chart">{zero}{"".join(bars)}</svg>')
+            f'class="ind-chart">{zero}{axes}{"".join(bars)}</svg>')
 
 
 def _raw_table(pts: list[dict]) -> str:
@@ -518,9 +578,13 @@ def render_industry_html(by_industry: dict[str, dict[str, int]]) -> str:
     # 소스로 붙이면 최신월을 한 달 앞당길 수 있음. data.go.kr엔 산업분류
     # 잠정 OpenAPI가 없어 파싱/수집 설계 필요 — 보강 마무리 후 별도 작업.
     out.append(
+        "<div class='ind-topbar'>"
         f"<div class='ind-note'>산업분류별 월 수출액 · YoY/ΔYoY/12M 이동평균 "
         f"(HSK-MTI 연계표 기준) · 최신 <b>{_html.escape(latest_ym)}</b> "
         f"관세청 확정치(익월 ~15일 발표·매일 갱신)</div>"
+        "<div class='ind-legend'><span><i class='ind-lg-v'></i>수출액</span>"
+        "<span><i class='ind-lg-m'></i>12M MA</span></div>"
+        "</div>"
     )
     for label, cls in _GROUPS:
         items = buckets.get(label) or []
