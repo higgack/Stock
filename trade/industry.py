@@ -526,8 +526,11 @@ def _raw_table(pts: list[dict]) -> str:
 
 
 def _card_body(pts: list[dict]) -> str:
-    """Reference layout: left meta(stats+text) | right charts(2-up monthly:
-    수출액+MA & YoY bars / ttm: TTM line) with toggle, + raw-data table."""
+    """Reference layout — a flat 3-column row: meta | chart-1 | chart-2.
+    Each chart cell holds a monthly panel and a ttm panel; the toggle
+    swaps which is visible (chart-1: 수출액+MA ↔ TTM 수출액; chart-2:
+    YoY 막대 ↔ TTM YoY). Wide charts, compact meta — matches the original
+    (meta 0.95fr : chart1 1.25fr : chart2 1fr)."""
     interp = interpret(pts)
     note = ""
     if interp["signal_label"]:
@@ -543,35 +546,32 @@ def _card_body(pts: list[dict]) -> str:
     )
     meta = f"<div class='ind-meta'>{toggle}{_stat_row(pts)}{summary}{note}</div>"
 
-    # monthly panel = 수출액+MA chart  +  YoY bar chart (2-up)
     monthly = _monthly_chart(pts)
     bars = _yoy_bar_svg(pts)
-    monthly_panel = (
-        "<div class='ind-panel ind-monthly'>"
-        "<div class='ind-chart-cell'><div class='ind-chart-title'>수출액 및 12개월 이동평균</div>"
-        f"{monthly}</div>"
-        + (f"<div class='ind-chart-cell'><div class='ind-chart-title'>YoY 성장률</div>{bars}</div>"
-           if bars else "")
-        + "</div>"
-    )
     ttm = _ttm_chart(pts)
     ttm_yoy = _ttm_yoy_chart(pts)
-    if ttm:
-        ttm_inner = (
-            f"<div class='ind-chart-cell'><div class='ind-chart-title'>"
-            f"12개월 TTM 수출액</div>{ttm}</div>"
-            + (f"<div class='ind-chart-cell'><div class='ind-chart-title'>"
-               f"12개월 TTM YoY 성장률</div>{ttm_yoy}</div>"
-               if ttm_yoy else
-               "<div class='ind-chart-cell'>"
-               "<div class='ind-na'>TTM YoY는 24개월 이상 데이터가 필요합니다.</div></div>")
-        )
-        ttm_panel = f"<div class='ind-panel ind-ttm' hidden>{ttm_inner}</div>"
-    else:
-        ttm_panel = ("<div class='ind-panel ind-ttm' hidden>"
-                     "<div class='ind-na'>TTM은 12개월 이상 데이터가 필요합니다.</div></div>")
-    charts = f"<div class='ind-charts'>{monthly_panel}{ttm_panel}</div>"
-    return f"<div class='ind-body'>{meta}{charts}</div>{_raw_table(pts)}"
+
+    def cell(title_m, svg_m, title_t, svg_t, na_t):
+        """One chart column: monthly panel + ttm panel (toggle-swapped)."""
+        m = (f"<div class='ind-panel ind-monthly'>"
+             f"<div class='ind-chart-title'>{title_m}</div>{svg_m}</div>"
+             if svg_m else "<div class='ind-panel ind-monthly'></div>")
+        if svg_t:
+            t = (f"<div class='ind-panel ind-ttm' hidden>"
+                 f"<div class='ind-chart-title'>{title_t}</div>{svg_t}</div>")
+        else:
+            t = (f"<div class='ind-panel ind-ttm' hidden>"
+                 f"<div class='ind-na'>{na_t}</div></div>")
+        return f"<div class='ind-chart-cell'>{m}{t}</div>"
+
+    cell1 = cell("수출액 및 12개월 이동평균", monthly,
+                 "12개월 TTM 수출액", ttm,
+                 "TTM은 24개월 이상 데이터가 필요합니다.")
+    cell2 = cell("YoY 성장률", bars,
+                 "12개월 TTM YoY 성장률", ttm_yoy,
+                 "TTM YoY는 24개월 이상 데이터가 필요합니다.")
+    return (f"<div class='ind-row'>{meta}{cell1}{cell2}</div>"
+            f"{_raw_table(pts)}")
 
 
 def init_db(conn) -> None:

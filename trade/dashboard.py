@@ -505,12 +505,11 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-group-na{border-left-color:var(--border)}
 .ind-cards{display:flex;flex-direction:column;gap:12px;padding:0 16px 8px}
 .ind-card{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:14px;box-shadow:var(--shadow)}
-.ind-body{display:grid;grid-template-columns:minmax(220px,300px) 1fr;gap:16px;align-items:start}
-.ind-charts{min-width:0}
-.ind-charts .ind-panel{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.ind-charts .ind-ttm{grid-template-columns:1fr}
+.ind-row{display:grid;grid-template-columns:minmax(230px,0.95fr) minmax(300px,1.25fr) minmax(240px,1fr);gap:14px;align-items:start}
+.ind-meta{min-width:0}
 .ind-chart-cell{min-width:0}
-@media(max-width:720px){.ind-body{grid-template-columns:1fr}.ind-charts .ind-panel{grid-template-columns:1fr}}
+.ind-chart-cell .ind-chart{width:100%;height:auto}
+@media(max-width:900px){.ind-row{grid-template-columns:1fr}}
 .ind-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .ind-bar-pos{fill:#34c759}
 .ind-bar-neg{fill:#ff3b30}
