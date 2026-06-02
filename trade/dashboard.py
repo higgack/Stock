@@ -500,6 +500,14 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-value-line{fill:none;stroke:var(--accent);stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
 .ind-ma-line{fill:none;stroke:#34c759;stroke-width:2;stroke-dasharray:5 4;stroke-linejoin:round;stroke-linecap:round}
 .ind-latest-dot{fill:var(--accent);stroke:#fff;stroke-width:1.5}
+.ind-summary{font-size:12px;color:var(--text);margin:2px 0 4px}
+.ind-signal{font-size:12px;color:var(--text-sub);margin:0 0 8px;padding:5px 8px;background:var(--surface-2);border-radius:6px}
+.ind-signal b{color:var(--text)}
+.ind-toggle{display:inline-flex;gap:0;margin-bottom:6px;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+.ind-tg-btn{padding:4px 12px;background:var(--surface);border:none;font-size:11px;font-weight:600;color:var(--text-sub);cursor:pointer}
+.ind-tg-btn.is-active{background:var(--accent);color:#fff}
+.ind-chart-title{font-size:11px;color:var(--text-sub);margin-bottom:2px}
+.ind-na{font-size:12px;color:var(--text-sub);padding:24px 8px;text-align:center}
 .tabs{display:flex;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:60px;z-index:9}
 .tab{flex:1;padding:13px 0;background:none;border:none;font-size:14px;font-weight:600;color:var(--text-sub);cursor:pointer;border-bottom:2px solid transparent}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
@@ -1215,6 +1223,19 @@ function render(){
   document.getElementById('matrix-view').innerHTML=buildMatrixView(filtered);
   renderHeaderMeta();
 }
+
+// --- 산업트렌드 월별/TTM toggle (delegated; cards are server-rendered) ---
+document.addEventListener('click',function(e){
+  const b=e.target.closest('.ind-tg-btn');
+  if(!b)return;
+  const card=b.closest('.ind-card');
+  if(!card)return;
+  const view=b.dataset.indView;
+  card.querySelectorAll('.ind-tg-btn').forEach(x=>x.classList.toggle('is-active',x===b));
+  const mo=card.querySelector('.ind-monthly'), tt=card.querySelector('.ind-ttm');
+  if(mo)mo.hidden=(view!=='monthly');
+  if(tt)tt.hidden=(view!=='ttm');
+});
 
 // --- tab / chip / search / modal events (delegated) ---
 document.querySelectorAll('.tab').forEach(btn=>{

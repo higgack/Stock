@@ -87,23 +87,49 @@ def industry_series(
         points: list[dict] = []
         exp_running: list[int] = []
         prev_yoy: Optional[float] = None
+        ttm_hist: dict[str, float] = {}   # ym → trailing-12-mo sum (for TTM YoY)
         for k in keys:
             exp = norm[k] or 0
             exp_running.append(exp)
             ago = norm.get(_prev_year_month(k))
             yoy = ((exp - ago) / ago * 100.0) if ago else None
             dyoy = (yoy - prev_yoy) if (yoy is not None and prev_yoy is not None) else None
+            # TTM = trailing 12-month export sum (only once 12 months exist).
+            ttm = sum(exp_running[-12:]) if len(exp_running) >= 12 else None
+            if ttm is not None:
+                ttm_hist[k] = ttm
+            # TTM YoY needs this TTM and the one 12 months earlier (=24 mo data)
+            ttm_ago = ttm_hist.get(_prev_year_month(k))
+            ttm_yoy = ((ttm - ttm_ago) / ttm_ago * 100.0) if (ttm and ttm_ago) else None
             points.append({
                 "ym": k,
                 "exp": exp,
                 "yoy": yoy,
                 "dyoy": dyoy,
                 "ma12": _ma(exp_running, 12),
+                "ttm": ttm,
+                "ttm_yoy": ttm_yoy,
             })
             if yoy is not None:
                 prev_yoy = yoy
         out[industry] = points
     return out
+
+
+def _avg(vals: list) -> Optional[float]:
+    v = [x for x in vals if x is not None]
+    return sum(v) / len(v) if v else None
+
+
+def momentum(points: list[dict]) -> dict:
+    """Latest-state momentum metrics used by the interpretation text:
+    3-month average YoY / ΔYoY (the reference card shows these)."""
+    last3 = points[-3:]
+    return {
+        "yoy3": _avg([p.get("yoy") for p in last3]),
+        "dyoy3": _avg([p.get("dyoy") for p in last3]),
+    }
+
 
 
 # Classification thresholds (mirror the reference dashboard's buckets;
@@ -134,6 +160,58 @@ def classify(points: list[dict]) -> str:
     return "부진/재하락"
 
 
+def interpret(points: list[dict]) -> dict:
+    """Plain-language reading of an industry's latest state, mirroring the
+    reference dashboard's two lines:
+
+      summary    — overall level (3-month avg YoY based)
+      signal     — momentum label + ΔYoY explanation (가속/둔화/반등 …)
+
+    Sentences are taken verbatim from the reference so the tone matches.
+    Returns {summary, signal_label, signal_text} (signal_* '' when N/A)."""
+    if not points:
+        return {"summary": "", "signal_label": "", "signal_text": ""}
+    latest = points[-1]
+    yoy = latest.get("yoy")
+    dyoy = latest.get("dyoy")
+    m = momentum(points)
+    yoy3 = m["yoy3"]
+
+    # summary — level (matches reference phrasing)
+    if yoy is None:
+        summary = "YoY 계산에 필요한 전년동월 데이터가 아직 부족합니다."
+    elif yoy3 is not None and yoy3 >= 50:
+        summary = "최근 3개월 YoY 평균이 매우 높고 최신월도 압도적입니다."
+    elif yoy >= 0 and yoy3 is not None and yoy3 >= 10:
+        summary = "양의 성장률이 이어지고 최근 평균도 두 자릿수입니다."
+    elif yoy >= 0 and (dyoy is not None and dyoy > 0):
+        summary = "최근 마이너스 구간을 지나 양의 성장률로 돌아섰습니다."
+    elif yoy >= 0:
+        summary = "성장은 유지되지만 직전월 대비 속도가 둔화했습니다."
+    else:
+        summary = "최근 성장률이 마이너스에 머물러 있습니다."
+
+    # signal — ΔYoY (1차 미분) momentum
+    label, text = "", ""
+    if dyoy is not None:
+        if yoy is not None and yoy >= _HIGH_GROWTH_YOY and dyoy < 0:
+            label = "고성장 둔화"
+            text = "절대 성장률은 높지만 YoY의 1차 미분이 마이너스로 꺾였습니다."
+        elif dyoy >= 5:
+            label = "가속 확대"
+            text = "YoY의 1차 미분이 큰 폭의 플러스입니다."
+        elif dyoy > 0:
+            label = "가속 유지"
+            text = "YoY가 전월보다 더 높아졌습니다."
+        elif dyoy < 0 and yoy is not None and yoy < 0:
+            label = "재하락"
+            text = "직전월 플러스 이후 다시 마이너스로 내려왔습니다."
+        else:
+            label = "둔화"
+            text = "YoY가 전월보다 낮아졌습니다."
+    return {"summary": summary, "signal_label": label, "signal_text": text}
+
+
 # ───────────────────────── rendering (SVG trend cards) ─────────────────────────
 # Self-contained SVG (no chart lib), mirroring the reference dashboard:
 # export-value line + 12-month MA line + markers + grid, one card per
@@ -157,15 +235,14 @@ _GROUPS = [
 
 
 def _eokusd(n) -> str:
-    """USD → '억 달러' label matching the reference (e.g. 11.18B → '112억').
-    1억 USD = 1e8. Keeps one decimal under 1000억."""
+    """USD → '억 달러' label matching the reference (e.g. 11.18B → '112억',
+    TTM 131B → '1,310억'). 1억 USD = 1e8. The reference uses 억 throughout
+    (no 조 unit), so big TTM sums just get a thousands separator."""
     if n is None:
         return "—"
     eok = n / 1e8
-    if abs(eok) >= 1000:
-        return f"{eok/10000:.2f}조억"  # extremely rare; keep sane
     if abs(eok) >= 100:
-        return f"{eok:.0f}억"
+        return f"{eok:,.0f}억"
     return f"{eok:.1f}억"
 
 
@@ -173,75 +250,121 @@ def _pct(p, suffix="%") -> str:
     return f"{p:+.1f}{suffix}" if p is not None else "—"
 
 
-def _svg_chart(points: list[dict]) -> str:
-    """Line chart: export value (solid) + 12M MA (dashed) over the series.
-    Scales y to [min,max] of exports. Returns an <svg> string."""
-    pts = [p for p in points if p.get("exp") is not None]
-    if len(pts) < 2:
+def _line_svg(series: list[tuple[int, float]], main_pairs: list[tuple[int, float]],
+              titles: list[str], *, dashed_second=None, label="", pct_axis=False) -> str:
+    """Generic 1-or-2 line SVG over an index axis.
+
+    series       — [(i, value)] the PRIMARY line (solid).
+    dashed_second— optional [(i, value)] secondary line (dashed) sharing
+                   the same y-scale (e.g. 12M MA on the monthly chart).
+    titles       — hover <title> text per primary point (len == len(series)).
+    Auto-scales y to the combined min/max. Returns '' if < 2 points."""
+    if len(series) < 2:
         return ""
-    exps = [p["exp"] for p in pts]
-    mas = [p["ma12"] for p in pts if p.get("ma12") is not None]
-    lo = min(exps + mas) if mas else min(exps)
-    hi = max(exps + mas) if mas else max(exps)
+    n_max = max(i for i, _ in series)
+    allv = [v for _, v in series] + [v for _, v in (dashed_second or [])]
+    lo, hi = min(allv), max(allv)
     span = (hi - lo) or 1
-    n = len(pts)
     plot_w = _VW - _PAD_L - _PAD_R
     plot_h = _VH - _PAD_T - _PAD_B
 
     def x(i):
-        return _PAD_L + (plot_w * i / (n - 1)) if n > 1 else _PAD_L
+        return _PAD_L + (plot_w * i / n_max) if n_max else _PAD_L
     def y(v):
         return _PAD_T + plot_h * (1 - (v - lo) / span)
 
-    # grid (3 horizontal lines)
     grid = "".join(
         f'<line x1="{_PAD_L}" y1="{_PAD_T + plot_h*f:.1f}" '
         f'x2="{_VW-_PAD_R}" y2="{_PAD_T + plot_h*f:.1f}" class="ind-grid"/>'
         for f in (0.0, 0.5, 1.0)
     )
-    # value polyline
-    vpts = " ".join(f"{x(i):.1f},{y(p['exp']):.1f}" for i, p in enumerate(pts))
-    value_line = f'<polyline points="{vpts}" class="ind-value-line"/>'
-    # MA polyline (only where ma12 defined; contiguous from first non-None)
-    ma_seq = [(i, p["ma12"]) for i, p in enumerate(pts) if p.get("ma12") is not None]
-    ma_line = ""
-    if len(ma_seq) >= 2:
-        mpts = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in ma_seq)
-        ma_line = f'<polyline points="{mpts}" class="ind-ma-line"/>'
-    # latest dot
-    last = pts[-1]
-    dot = (f'<circle cx="{x(n-1):.1f}" cy="{y(last["exp"]):.1f}" r="3.2" '
-           f'class="ind-latest-dot"/>')
-    # tooltips (title per point) — hover shows month/value/YoY
-    titles = "".join(
-        f'<circle cx="{x(i):.1f}" cy="{y(p["exp"]):.1f}" r="3.5" '
-        f'fill="transparent"><title>{_html.escape(p["ym"])} | '
-        f'{_eokusd(p["exp"])} | YoY {_pct(p["yoy"])}</title></circle>'
-        for i, p in enumerate(pts)
+    main = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in series)
+    main_line = f'<polyline points="{main}" class="ind-value-line"/>'
+    second = ""
+    if dashed_second and len(dashed_second) >= 2:
+        sp = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in dashed_second)
+        second = f'<polyline points="{sp}" class="ind-ma-line"/>'
+    li, lv = series[-1]
+    dot = f'<circle cx="{x(li):.1f}" cy="{y(lv):.1f}" r="3.2" class="ind-latest-dot"/>'
+    tip = "".join(
+        f'<circle cx="{x(i):.1f}" cy="{y(v):.1f}" r="3.5" fill="transparent">'
+        f'<title>{_html.escape(titles[k])}</title></circle>'
+        for k, (i, v) in enumerate(series) if k < len(titles)
     )
     return (
-        f'<svg viewBox="0 0 {_VW} {_VH}" role="img" '
-        f'aria-label="수출액 추이와 12개월 이동평균" class="ind-chart">'
-        f'{grid}{value_line}{ma_line}{dot}{titles}</svg>'
+        f'<svg viewBox="0 0 {_VW} {_VH}" role="img" aria-label="{label}" '
+        f'class="ind-chart">{grid}{main_line}{second}{dot}{tip}</svg>'
     )
+
+
+def _monthly_chart(pts: list[dict]) -> str:
+    """수출액 + 12M MA (the default view)."""
+    vs = [(i, p["exp"]) for i, p in enumerate(pts) if p.get("exp") is not None]
+    ma = [(i, p["ma12"]) for i, p in enumerate(pts) if p.get("ma12") is not None]
+    titles = [f"{p['ym']} | {_eokusd(p['exp'])} | YoY {_pct(p.get('yoy'))}" for p in pts]
+    return _line_svg(vs, vs, titles, dashed_second=ma,
+                     label="수출액 추이와 12개월 이동평균")
+
+
+def _ttm_chart(pts: list[dict]) -> str:
+    """12M TTM 수출액 line (only where TTM defined)."""
+    vs = [(i, p["ttm"]) for i, p in enumerate(pts) if p.get("ttm") is not None]
+    titles = [f"{p['ym']} | TTM {_eokusd(p['ttm'])} | TTM YoY {_pct(p.get('ttm_yoy'))}"
+              for p in pts if p.get("ttm") is not None]
+    return _line_svg(vs, vs, titles, label="12개월 TTM 수출액 추이")
 
 
 def _stat_row(points: list[dict]) -> str:
-    """The <dl> stat block: 최신월·수출액·YoY·ΔYoY·12M MA·MA대비."""
+    """<dl>: 최신월·수출액·YoY·ΔYoY·3M평균YoY·3M평균ΔYoY·12M MA·MA대비
+    (mirrors the reference card)."""
     latest = points[-1]
     exp, ma = latest["exp"], latest.get("ma12")
     ma_rel = ((exp - ma) / ma * 100.0) if ma else None
-    yoy_cls = "pos" if (latest.get("yoy") or 0) > 0 else "neg"
-    dyoy_cls = "pos" if (latest.get("dyoy") or 0) > 0 else "neg"
+    m = momentum(points)
+    def cls(v): return "pos" if (v or 0) > 0 else "neg"
     return (
         "<dl class='ind-stats'>"
         f"<div><dt>최신월</dt><dd>{_html.escape(latest['ym'])}</dd></div>"
         f"<div><dt>수출액</dt><dd>{_eokusd(exp)}</dd></div>"
-        f"<div><dt>YoY</dt><dd class='{yoy_cls}'>{_pct(latest.get('yoy'))}</dd></div>"
-        f"<div><dt>ΔYoY</dt><dd class='{dyoy_cls}'>{_pct(latest.get('dyoy'),'%p')}</dd></div>"
+        f"<div><dt>YoY</dt><dd class='{cls(latest.get('yoy'))}'>{_pct(latest.get('yoy'))}</dd></div>"
+        f"<div><dt>ΔYoY</dt><dd class='{cls(latest.get('dyoy'))}'>{_pct(latest.get('dyoy'),'%p')}</dd></div>"
+        f"<div><dt>3개월 평균 YoY</dt><dd class='{cls(m['yoy3'])}'>{_pct(m['yoy3'])}</dd></div>"
+        f"<div><dt>3개월 평균 ΔYoY</dt><dd class='{cls(m['dyoy3'])}'>{_pct(m['dyoy3'],'%p')}</dd></div>"
         f"<div><dt>12M MA</dt><dd>{_eokusd(ma)}</dd></div>"
         f"<div><dt>MA대비</dt><dd>{_pct(ma_rel)}</dd></div>"
         "</dl>"
+    )
+
+
+def _card_body(pts: list[dict]) -> str:
+    """Interpretation text + monthly/TTM toggle + both chart panels."""
+    interp = interpret(pts)
+    note = ""
+    if interp["signal_label"]:
+        note = (f"<p class='ind-signal'><b>{_html.escape(interp['signal_label'])}</b>"
+                f" · {_html.escape(interp['signal_text'])}</p>")
+    summary = (f"<p class='ind-summary'>{_html.escape(interp['summary'])}</p>"
+               if interp["summary"] else "")
+    monthly = _monthly_chart(pts)
+    ttm = _ttm_chart(pts)
+    ttm_panel = (
+        f"<div class='ind-panel ind-ttm' hidden>"
+        f"<div class='ind-chart-title'>12개월 TTM 수출액</div>{ttm}</div>"
+        if ttm else
+        "<div class='ind-panel ind-ttm' hidden>"
+        "<div class='ind-na'>TTM YoY는 24개월 이상 데이터가 필요합니다.</div></div>"
+    )
+    toggle = (
+        "<div class='ind-toggle' role='group'>"
+        "<button type='button' class='ind-tg-btn is-active' data-ind-view='monthly'>월별</button>"
+        "<button type='button' class='ind-tg-btn' data-ind-view='ttm'>12M TTM</button>"
+        "</div>"
+    )
+    return (
+        summary + note + toggle
+        + f"<div class='ind-panel ind-monthly'>"
+          f"<div class='ind-chart-title'>수출액 및 12개월 이동평균</div>{monthly}</div>"
+        + ttm_panel
     )
 
 
@@ -331,7 +454,7 @@ def render_industry_html(by_industry: dict[str, dict[str, int]]) -> str:
                 f"<div class='ind-head'><h3>{_html.escape(ind)}</h3>"
                 f"<span class='ind-badge ind-badge-{cls}'>{label}</span></div>"
                 + _stat_row(pts)
-                + _svg_chart(pts)
+                + _card_body(pts)
                 + "</section>"
             )
         out.append("</div>")

@@ -140,6 +140,61 @@ class StoreRenderTests(unittest.TestCase):
     def test_render_empty_returns_blank(self):
         self.assertEqual(industry.render_industry_html({}), "")
 
+    def test_render_has_toggle_and_panels(self):
+        # 14+ months so YoY exists for ≥2 months → ΔYoY (and thus a signal)
+        months = {}
+        for i in range(15):
+            y = 2024 + (i // 12); m = (i % 12) + 1
+            months[f"{y}-{m:02d}"] = 11_000_000_000
+        # latest two months grow → YoY rises both → ΔYoY defined
+        months["2025-03"] = 20_000_000_000
+        months["2025-04"] = 31_000_000_000
+        html = industry.render_industry_html({"반도체": months})
+        self.assertIn("data-ind-view='monthly'", html)
+        self.assertIn("data-ind-view='ttm'", html)
+        self.assertIn("ind-monthly", html)
+        self.assertIn("ind-ttm", html)
+        self.assertIn("ind-summary", html)       # 요약문
+        self.assertIn("ind-signal", html)        # ΔYoY 신호
+
+
+class IndicatorExtraTests(unittest.TestCase):
+    def _mk(self, vals):
+        # vals: list of (ym, exp) → dict
+        return {ym: v for ym, v in vals}
+
+    def test_ttm_and_ttm_yoy_need_24_months(self):
+        # 25 months so the latest has TTM and TTM-YoY (needs 24 prior).
+        months = {}
+        for i in range(25):
+            y = 2024 + (i // 12)
+            mth = (i % 12) + 1
+            months[f"{y}-{mth:02d}"] = 100
+        s = industry.industry_series({"x": months})["x"]
+        latest = s[-1]
+        self.assertIsNotNone(latest["ttm"])       # 12-mo sum exists
+        self.assertEqual(latest["ttm"], 1200)     # 100×12
+        self.assertIsNotNone(latest["ttm_yoy"])   # 24+ months → defined
+        self.assertAlmostEqual(latest["ttm_yoy"], 0.0)  # flat → 0%
+
+    def test_momentum_3month_avg(self):
+        by = {"x": {f"2025-{m:02d}": 100 for m in range(1, 13)}}
+        by["x"]["2026-01"] = 130   # YoY +30
+        s = industry.industry_series(by)["x"]
+        mo = industry.momentum(s)
+        self.assertIsNotNone(mo["yoy3"])
+
+    def test_interpret_high_growth_decel(self):
+        # latest YoY high but ΔYoY negative → 고성장 둔화 signal
+        pts = [{"yoy": 60, "dyoy": 5}, {"yoy": 55, "dyoy": -5}]
+        r = industry.interpret(pts)
+        self.assertEqual(r["signal_label"], "고성장 둔화")
+
+    def test_interpret_no_yoy(self):
+        r = industry.interpret([{"yoy": None, "dyoy": None}])
+        self.assertIn("부족", r["summary"])
+        self.assertEqual(r["signal_label"], "")
+
 
 if __name__ == "__main__":
     unittest.main()
