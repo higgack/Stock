@@ -100,7 +100,8 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         with customs.session(db) as conn:
             by_ind = industry.load_stored(conn)
             by_imp = industry.load_stored_imports(conn)
-        return industry.render_industry_html(by_ind, by_imp)
+            by_mti = industry.load_mti_stored(conn)
+        return industry.render_industry_html(by_ind, by_imp, by_mti)
     except Exception:
         return ""
 
@@ -525,6 +526,13 @@ h1{margin:0 0 4px;font-size:18px}
 .ind-table td.neg{color:var(--tone-import)}
 .ind-ttm-yoy-line{fill:none;stroke:#6d5bd0;stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
 .ind-ttm-yoy-dot{fill:#6d5bd0;stroke:#fff;stroke-width:1.5}
+.ind-sub-note{font-size:12px;color:var(--text-sub);padding:0 16px 8px}
+.ind-sub-wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 16px 8px}
+@media(max-width:860px){.ind-sub-wrap{grid-template-columns:1fr}}
+.ind-sub-card{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px;box-shadow:var(--shadow)}
+.ind-sub-card summary{cursor:pointer;font-size:13px;font-weight:600;margin-bottom:6px}
+.ind-sub-ind{color:var(--text-sub)}
+.ind-table td.pos{color:var(--tone-export)}.ind-table td.neg{color:var(--tone-import)}
 .ind-head h3{margin:0;font-size:15px}
 .ind-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;color:#fff}
 .ind-badge-hot{background:#34c759}

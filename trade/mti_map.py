@@ -87,6 +87,45 @@ def industry_of(hsk: str, path: Path | str = DEFAULT_PATH) -> str | None:
     return load(path).get(str(hsk).strip())
 
 
+@lru_cache(maxsize=4)
+def _load_mti(path_str: str) -> dict[str, tuple[str, str, str]]:
+    """{hsk: (mti6, industry, mti_name)} from the 4-column TSV. The 4th
+    column (MTI 품목명, e.g. 'D램','낸드') powers the 하위품목 view; rows
+    from an older 3-column TSV get name=''."""
+    path = Path(path_str)
+    if not path.exists():
+        raise HskMtiFileMissing(str(path))
+    out: dict[str, tuple[str, str, str]] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        hsk = parts[0].strip()
+        mti6 = parts[1].strip()
+        industry = parts[2].strip()
+        name = parts[3].strip() if len(parts) >= 4 else ""
+        if hsk and industry:
+            out[hsk] = (mti6, industry, name)
+    return out
+
+
+def load_mti(path: Path | str = DEFAULT_PATH) -> dict[str, tuple[str, str, str]]:
+    """{HSK(10): (MTI6, 산업, MTI품목명)}. Raises HskMtiFileMissing."""
+    return _load_mti(str(path))
+
+
+def mti_names(path: Path | str = DEFAULT_PATH) -> dict[str, tuple[str, str]]:
+    """{MTI6: (품목명, 산업)} for the 하위품목 view's labels."""
+    out: dict[str, tuple[str, str]] = {}
+    for _hsk, (mti6, industry, name) in load_mti(path).items():
+        if mti6 and mti6 not in out:
+            out[mti6] = (name or mti6, industry)
+    return out
+
+
 def industries(path: Path | str = DEFAULT_PATH,
                include_catch_all: bool = False) -> list[str]:
     """Sorted unique industry labels. Excludes '기타' by default."""

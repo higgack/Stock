@@ -54,6 +54,35 @@ def aggregate_by_industry(
     return out
 
 
+def aggregate_by_mti(
+    leaves: dict[str, dict],
+    *,
+    path=mti_map.DEFAULT_PATH,
+    field: str = "exp_dlr",
+) -> dict[str, dict]:
+    """{mti6: {"name","industry","months":{ym:total}}} summing member HS
+    leaves per month. The 하위품목 view ranks these (D램·낸드·웨이퍼 …)
+    one level below industry. Unmapped/'기타' excluded."""
+    try:
+        hsk_map = mti_map.load_mti(path)
+        names = mti_map.mti_names(path)
+    except mti_map.HskMtiFileMissing:
+        return {}
+    out: dict[str, dict] = {}
+    for hs, node in leaves.items():
+        rec = hsk_map.get(hs)
+        if not rec:
+            continue
+        mti6, industry, _ = rec
+        if not mti6 or industry == mti_map.CATCH_ALL:
+            continue
+        nm, ind = names.get(mti6, (mti6, industry))
+        bucket = out.setdefault(mti6, {"name": nm, "industry": ind, "months": {}})
+        for ym, fig in node["months"].items():
+            bucket["months"][ym] = bucket["months"].get(ym, 0) + (fig.get(field) or 0)
+    return out
+
+
 def _prev_year_month(ym: str) -> str:
     """'2026-04' → '2025-04'. Accepts 'YYYY-MM' or 'YYYYMM'."""
     s = ym.replace("-", "")
@@ -602,6 +631,42 @@ def load_stored(conn) -> dict[str, dict[str, int]]:
     return out
 
 
+def store_mti(conn, by_mti: dict[str, dict], now: float | None = None) -> int:
+    """Store MTI6 하위품목 series (name+industry+months as one JSON blob
+    per MTI6). Separate table from industry_series. Empty input ignored."""
+    import time
+    if not by_mti:
+        return 0
+    now = now if now is not None else time.time()
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS mti_series ("
+        "mti6 TEXT PRIMARY KEY, payload_json TEXT NOT NULL, updated_ts REAL)"
+    )
+    conn.execute("DELETE FROM mti_series")
+    for mti6, node in by_mti.items():
+        conn.execute(
+            "INSERT INTO mti_series (mti6, payload_json, updated_ts) VALUES (?,?,?)",
+            (mti6, _json.dumps(node, ensure_ascii=False), now),
+        )
+    conn.commit()
+    return len(by_mti)
+
+
+def load_mti_stored(conn) -> dict[str, dict]:
+    """{mti6: {name,industry,months}} or {} when absent/empty."""
+    try:
+        cur = conn.execute("SELECT mti6, payload_json FROM mti_series")
+    except Exception:
+        return {}
+    out: dict[str, dict] = {}
+    for mti6, pj in cur.fetchall():
+        try:
+            out[mti6] = _json.loads(pj)
+        except Exception:
+            continue
+    return out
+
+
 def load_stored_imports(conn) -> dict[str, dict[str, int]]:
     """{industry: {ym: imp}} from the store, or {} when absent/empty/old
     schema (imports_json NULL)."""
@@ -705,8 +770,75 @@ def _summary_board(series: dict[str, list[dict]]) -> str:
 _import_series: dict[str, list[dict]] = {}
 
 
+def render_subitem_html(by_mti: dict[str, dict],
+                        rate_min_usd: int = 50_000_000) -> str:
+    """하위품목 TOP (MTI6 단위) — one level below industry, ranked like
+    the surge panel: 📈급등률(YoY desc, 수출 ≥하한) + 💵급증액(Δ$ desc).
+    Each row: 품목명(산업) · 수출 · YoY. Returns '' when no data."""
+    if not by_mti:
+        return ""
+    rows = []
+    for mti6, node in by_mti.items():
+        months = node["months"]
+        pts = industry_series({mti6: months}).get(mti6) or []
+        if not pts:
+            continue
+        latest = pts[-1]
+        rows.append({
+            "name": node["name"], "industry": node["industry"],
+            "exp": latest["exp"], "yoy": latest.get("yoy"),
+            "delta": latest["exp"] - (
+                # Δ vs same month last year (export change YoY)
+                next((p["exp"] for p in pts
+                      if p["ym"] == _prev_year_month(latest["ym"])), latest["exp"])),
+        })
+    if not rows:
+        return ""
+
+    def chip_rows(items, metric):
+        out = []
+        for r in items:
+            val = (_pct(r["yoy"]) if metric == "yoy"
+                   else "Δ" + _eokusd(r["delta"]))
+            cl = "pos" if ((r["yoy"] if metric == "yoy" else r["delta"]) or 0) > 0 else "neg"
+            out.append(
+                f"<tr><td>{_html.escape(r['name'])}</td>"
+                f"<td class='ind-sub-ind'>{_html.escape(r['industry'])}</td>"
+                f"<td>{_eokusd(r['exp'])}</td>"
+                f"<td class='{cl}'>{val}</td></tr>")
+        return "".join(out)
+
+    # 급등률: YoY desc, 수출 ≥ 하한
+    rate = sorted([r for r in rows
+                   if r["yoy"] is not None and r["yoy"] >= 30.0
+                   and (r["exp"] or 0) >= rate_min_usd],
+                  key=lambda r: r["yoy"], reverse=True)[:30]
+    # 급증액: Δ$ desc
+    amount = sorted(rows, key=lambda r: r["delta"], reverse=True)[:30]
+
+    def tbl(title, items, metric):
+        if not items:
+            return ""
+        th = "전월비YoY" if metric == "yoy" else "증감액"
+        return (f"<details class='ind-sub-card' open><summary>{title} ({len(items)})</summary>"
+                f"<div class='ind-raw-scroll'><table class='ind-table'><thead>"
+                f"<tr><th>품목(MTI)</th><th>산업</th><th>수출</th><th>{th}</th></tr></thead>"
+                f"<tbody>{chip_rows(items, metric)}</tbody></table></div></details>")
+
+    return (
+        "<h2 class='ind-group ind-group-hot'>하위품목 TOP (MTI 세분)</h2>"
+        "<div class='ind-sub-note'>20개 산업 아래 세부 품목(D램·낸드·웨이퍼 등 "
+        "MTI 6자리)을 YoY·증감액으로 랭킹. 산업이 가려버리는 '산업 안의 스타 품목'을 발굴.</div>"
+        "<div class='ind-sub-wrap'>"
+        + tbl("📈 급등률 (YoY ≥+30%, 수출 ≥" + _eokusd(rate_min_usd) + ")", rate, "yoy")
+        + tbl("💵 급증액 (YoY 증감)", amount, "amount")
+        + "</div>"
+    )
+
+
 def render_industry_html(by_industry: dict[str, dict[str, int]],
-                         by_import: dict[str, dict[str, int]] | None = None) -> str:
+                         by_import: dict[str, dict[str, int]] | None = None,
+                         by_mti: dict[str, dict] | None = None) -> str:
     """Full 산업트렌드 panel: summary board (+ 수입 급증 신호) + cards
     grouped by classification. Returns '' when there's no data."""
     global _import_series
@@ -764,5 +896,8 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
                 + "</section>"
             )
         out.append("</div>")
+    # B: 하위품목 TOP (MTI6) — appended below the industry cards
+    if by_mti:
+        out.append(render_subitem_html(by_mti))
     return "".join(out)
 

@@ -236,5 +236,49 @@ class IndicatorExtraTests(unittest.TestCase):
         self.assertEqual(r["signal_label"], "")
 
 
+class SubitemTests(unittest.TestCase):
+    """B: MTI6 하위품목(D램·낸드 등) 집계 + 하위품목 TOP 섹션."""
+
+    def _leaves(self, hs, base, latest):
+        from trade import customs_scan
+        rows = []
+        for i in range(24):
+            y = 2024 + (i // 12); m = (i % 12) + 1
+            rows.append({"hs_code": hs, "stat_kor": "x",
+                         "year_month": f"{y}-{m:02d}", "exp_dlr": base, "imp_dlr": 0})
+        rows.append({"hs_code": hs, "stat_kor": "x",
+                     "year_month": "2026-04", "exp_dlr": latest, "imp_dlr": 0})
+        return customs_scan.build_series(rows)
+
+    def test_aggregate_by_mti(self):
+        # 디램 8542321010 → MTI 831110 'D램' under 반도체
+        by = industry.aggregate_by_mti(self._leaves("8542321010", 1, 1))
+        self.assertIn("831110", by)
+        self.assertEqual(by["831110"]["name"], "D램")
+        self.assertEqual(by["831110"]["industry"], "반도체")
+
+    def test_subitem_section_ranks(self):
+        by = industry.aggregate_by_mti(
+            self._leaves("8542321010", 11_000_000_000, 31_000_000_000))
+        html = industry.render_subitem_html(by)
+        self.assertIn("하위품목 TOP", html)
+        self.assertIn("급등률", html)
+        self.assertIn("급증액", html)
+        self.assertIn("D램", html)
+        self.assertIn("반도체", html)        # 산업 컬럼
+
+    def test_mti_store_load(self):
+        import sqlite3
+        by = industry.aggregate_by_mti(self._leaves("8542321010", 1, 1))
+        conn = sqlite3.connect(":memory:")
+        industry.store_mti(conn, by)
+        back = industry.load_mti_stored(conn)
+        self.assertEqual(back["831110"]["name"], "D램")
+        conn.close()
+
+    def test_empty_subitem_blank(self):
+        self.assertEqual(industry.render_subitem_html({}), "")
+
+
 if __name__ == "__main__":
     unittest.main()
