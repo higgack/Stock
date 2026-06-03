@@ -1837,6 +1837,14 @@ _DETAIL_CSS = _BASE_CSS + """
 }
 .title-row h1 { margin: 0; font-size: 24px; }
 .meta { color: var(--fg-soft); font-size: 13px; margin-bottom: 24px; }
+.price-chart { width: 100%; height: 360px; }
+.chart-legend { color: var(--fg-soft); font-size: 12px; margin-top: 8px; }
+.chart-legend .lg { margin-right: 10px; font-weight: 600; }
+.chart-legend .lg-close { color: #4c9aff; }
+.chart-legend .lg-ema   { color: #f5a623; }
+.chart-legend .lg-s50   { color: #3ec46d; }
+.chart-legend .lg-s200  { color: #e2574c; }
+.chart-fallback { color: var(--fg-soft); padding: 1em; font-size: 13px; }
 section.report-section { margin-top: 24px; }
 section.report-section > h2 {
   font-size: 16px; margin: 0 0 10px; padding: 6px 0;
@@ -1933,6 +1941,132 @@ _DETAIL_DEEP_LINK_JS = """
 """
 
 
+# ── Price chart (lightweight-charts) ─────────────────────────────────────
+# Self-hosted: _ensure_chart_lib() downloads the standalone bundle into
+# ARCHIVE_ROOT once (VM has internet), so detail pages reference a local
+# file — no per-page CDN dependency, works offline after the first fetch.
+# Pinned to v4.2.0 (addLineSeries API; v5 renamed to addSeries).
+_LWC_LIB_NAME = "lightweight-charts.standalone.production.js"
+_LWC_CDN_URL = (
+    "https://unpkg.com/lightweight-charts@4.2.0/dist/"
+    "lightweight-charts.standalone.production.js"
+)
+
+
+def _ensure_chart_lib() -> bool:
+    """Vendor the lightweight-charts standalone JS into ARCHIVE_ROOT once.
+    Idempotent (skips when already present + non-trivial size). Returns
+    True if the file is present afterwards. Non-fatal — a failure just
+    means detail-page charts don't render (text stays intact)."""
+    import urllib.request
+
+    dest = ARCHIVE_ROOT / _LWC_LIB_NAME
+    try:
+        if dest.exists() and dest.stat().st_size > 10000:
+            return True
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(
+            _LWC_CDN_URL, headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = resp.read()
+        if len(data) < 10000:
+            log.warning(
+                "dashboard: chart lib download too small (%d bytes) — skipping",
+                len(data),
+            )
+            return dest.exists()
+        tmp = dest.with_suffix(".js.tmp")
+        tmp.write_bytes(data)
+        tmp.replace(dest)
+        log.info("dashboard: chart lib vendored (%d bytes)", len(data))
+        return True
+    except Exception as exc:
+        log.warning("dashboard: chart lib ensure failed: %s", exc)
+        return dest.exists()
+
+
+def _render_chart_section(rec: dict) -> str:
+    """Emit the price-chart <section> when the record carries a price_chart
+    payload (schema v2+). The JSON rides in a <script type=application/json>
+    block (not an attribute) to avoid escaping bloat; _CHART_JS reads it and
+    renders client-side. Empty string for older v1 entries (graceful)."""
+    pc = rec.get("price_chart")
+    if not isinstance(pc, dict) or not pc.get("times") or not pc.get("close"):
+        return ""
+    import json as _json
+
+    # Defuse any stray '</' so the JSON can't terminate the <script> block.
+    payload = _json.dumps(pc, ensure_ascii=False, separators=(",", ":"))
+    payload = payload.replace("</", "<\\/")
+    return f"""
+  <section class="report-section">
+    <h2>📈 가격 차트 (1년)</h2>
+    <div id="price-chart" class="price-chart"></div>
+    <script type="application/json" id="chart-data">{payload}</script>
+    <div class="chart-legend">
+      <span class="lg lg-close">종가</span>
+      <span class="lg lg-ema">10 EMA</span>
+      <span class="lg lg-s50">50 SMA</span>
+      <span class="lg lg-s200">200 SMA</span>
+      · 본문 TECHNICAL SNAPSHOT 과 동일 series
+    </div>
+  </section>"""
+
+
+_CHART_JS = """
+(function(){
+  function init(){
+    var el = document.getElementById('price-chart');
+    var dataEl = document.getElementById('chart-data');
+    if (!el || !dataEl) return;
+    if (typeof LightweightCharts === 'undefined') {
+      el.innerHTML = '<div class="chart-fallback">차트 라이브러리를 불러오지 못했습니다 (텍스트 분석은 아래 그대로).</div>';
+      return;
+    }
+    var d;
+    try { d = JSON.parse(dataEl.textContent); } catch (e) { return; }
+    if (!d || !d.times || !d.close) return;
+    function isDark(){ return document.documentElement.dataset.theme === 'dark'; }
+    function txtColor(){ return isDark() ? '#cbd5e1' : '#334155'; }
+    function gridColor(){ return isDark() ? 'rgba(148,163,184,0.12)' : 'rgba(100,116,139,0.12)'; }
+    var chart = LightweightCharts.createChart(el, {
+      height: 360,
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit' },
+      grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } },
+      rightPriceScale: { borderVisible: false },
+      timeScale: { borderVisible: false, timeVisible: false },
+      crosshair: { mode: 0 }
+    });
+    function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
+    var prec = (d.decimals === 0) ? 0 : 2;
+    var pf = { precision: prec, minMove: (prec === 0) ? 1 : 0.01 };
+    chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, title: '종가' }).setData(zip(d.close));
+    if (d.ema10)  chart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: pf, title: '10 EMA' }).setData(zip(d.ema10));
+    if (d.sma50)  chart.addLineSeries({ color: '#3ec46d', lineWidth: 1, priceFormat: pf, title: '50 SMA' }).setData(zip(d.sma50));
+    if (d.sma200) chart.addLineSeries({ color: '#e2574c', lineWidth: 1, priceFormat: pf, title: '200 SMA' }).setData(zip(d.sma200));
+    chart.timeScale().fitContent();
+    function resize(){ chart.applyOptions({ width: el.clientWidth }); }
+    resize();
+    window.addEventListener('resize', resize);
+    var last = document.documentElement.dataset.theme;
+    setInterval(function(){
+      var t = document.documentElement.dataset.theme;
+      if (t !== last) {
+        last = t;
+        chart.applyOptions({
+          layout: { textColor: txtColor() },
+          grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } }
+        });
+      }
+    }, 60000);
+  }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', init); }
+  else { init(); }
+})();
+"""
+
+
 def _render_detail(rec: dict) -> str:
     ticker = rec.get("ticker", "?")
     date = rec.get("trade_date", "")
@@ -1962,6 +2096,13 @@ def _render_detail(rec: dict) -> str:
     except Exception:
         resolved_entry = None
     outcome_html = _render_outcome_html(resolved_entry)
+    chart_html = _render_chart_section(rec)
+    # Only pull in the (vendored) chart library + init JS when this record
+    # actually has a chart — older v1 entries skip the script entirely.
+    chart_scripts = (
+        f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
+        if chart_html else ""
+    )
 
     return f"""<!doctype html>
 <html lang="ko">
@@ -1985,6 +2126,7 @@ def _render_detail(rec: dict) -> str:
     소요: {elapsed:.1f}초
   </div>
   {outcome_html}
+  {chart_html}
   <section class="report-section">
     <h2>📋 요약</h2>
     {_md_to_html(summary)}
@@ -1995,6 +2137,7 @@ def _render_detail(rec: dict) -> str:
   </section>
 </div>
 <script>{_DETAIL_DEEP_LINK_JS}</script>
+{chart_scripts}
 </body>
 </html>
 """
@@ -2016,6 +2159,9 @@ def regenerate_index() -> None:
             reverse=True,
         )
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        # Vendor the chart library once (idempotent) so detail pages can
+        # self-host it. Non-fatal: a miss just means charts don't render.
+        _ensure_chart_lib()
         (ARCHIVE_ROOT / "index.html").write_text(
             _render_index(records), encoding="utf-8"
         )

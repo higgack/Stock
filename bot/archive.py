@@ -21,7 +21,10 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 ARCHIVE_ROOT = Path.home() / ".tradingagents" / "archive"
-SCHEMA_VERSION = 1
+# v2 (2026-06-03): added optional "price_chart" field — compact close +
+# 10 EMA / 50 SMA / 200 SMA series for the detail-page lightweight-charts
+# render. Older v1 entries lack it and render text-only (graceful).
+SCHEMA_VERSION = 2
 _KST = timezone(timedelta(hours=9))
 
 
@@ -51,6 +54,17 @@ def save_analysis(
             "summary": summary,
             "full_report": full_report,
         }
+        # Price-chart payload (close + 10 EMA / 50 SMA / 200 SMA) for the
+        # detail-page chart. Non-fatal: a fetch failure just omits the
+        # field and the page renders text-only. Computed here (one extra
+        # yfinance call) since the graph run's series isn't threaded back.
+        try:
+            from bot.chart_data import build_price_chart
+            chart = build_price_chart(ticker)
+            if chart:
+                record["price_chart"] = chart
+        except Exception as exc:
+            log.warning("archive: price_chart build skipped for %s: %s", ticker, exc)
         path = day_dir / f"{ticker}.json"
         # Use a tmp+rename so a partial write can't corrupt an existing
         # archive entry (e.g. concurrent reads from the dashboard).

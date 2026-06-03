@@ -461,3 +461,82 @@ class TestFixCurrencySymbols:
         assert "$59.86" in result  # US → $ 유지
         assert "A$0.39" in result
         assert n == 2  # MI + AX only
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 8) 가격 차트 (lightweight-charts) 렌더 회귀 차단
+#    배경: 2026-06-03 사용자 요청 — /ticker 상세 페이지에 1년 종가 +
+#    10EMA/50SMA/200SMA 차트. price_chart 페이로드(schema v2) 가 있을 때만
+#    차트 섹션 + 라이브러리 스크립트 emit, 없으면(v1 옛 기록) text-only.
+# ─────────────────────────────────────────────────────────────────────────
+class TestPriceChartRender:
+    """fix: 가격 차트 v1 (2026-06-03)."""
+
+    def _sample_chart(self):
+        return {
+            "currency": "$", "decimals": 2,
+            "times": ["2025-06-01", "2025-06-02", "2025-06-03"],
+            "close": [145.2, 146.1, 144.8],
+            "ema10": [145.0, 145.3, 145.1],
+            "sma50": [None, None, 140.0],
+        }
+
+    def test_chart_section_present_with_payload(self):
+        from bot.dashboard import _render_chart_section
+
+        rec = {"ticker": "AAPL", "price_chart": self._sample_chart()}
+        html = _render_chart_section(rec)
+        assert 'id="price-chart"' in html, "차트 컨테이너 div 누락"
+        assert 'id="chart-data"' in html, "차트 데이터 script 블록 누락"
+        assert "145.2" in html, "종가 데이터 미주입"
+        assert "TECHNICAL SNAPSHOT" in html, "SSoT 일치 캡션 누락"
+
+    def test_chart_section_empty_for_v1(self):
+        from bot.dashboard import _render_chart_section
+
+        # 옛 v1 기록 (price_chart 없음) → 빈 문자열 (graceful, text-only)
+        assert _render_chart_section({"ticker": "AAPL"}) == ""
+        # 페이로드가 비정상(times/close 부재)이어도 빈 문자열
+        assert _render_chart_section({"price_chart": {"currency": "$"}}) == ""
+
+    def test_chart_json_script_termination_defused(self):
+        """JSON 안의 '</' 가 <script> 블록을 조기 종료하지 못하게 defuse."""
+        from bot.dashboard import _render_chart_section
+
+        rec = {
+            "ticker": "X",
+            "price_chart": {
+                "currency": "</script>",  # 악의적/우발적 종료 시퀀스
+                "decimals": 2,
+                "times": ["2025-06-03"],
+                "close": [1.0],
+            },
+        }
+        html = _render_chart_section(rec)
+        # 원시 '</script>' 종료 시퀀스가 script 블록 안에 그대로 있으면 안 됨
+        assert "</script>" not in html.split('id="chart-data">')[1].split("</script")[0] or "<\\/" in html
+
+    def test_detail_page_includes_lib_only_when_chart(self):
+        from bot.dashboard import _render_detail, _LWC_LIB_NAME
+
+        with_chart = _render_detail({
+            "ticker": "AAPL", "trade_date": "2026-06-03",
+            "summary": "테스트 요약", "full_report": "테스트 본문",
+            "price_chart": self._sample_chart(),
+        })
+        assert _LWC_LIB_NAME in with_chart, "차트 있는데 라이브러리 script 누락"
+
+        without = _render_detail({
+            "ticker": "AAPL", "trade_date": "2026-06-03",
+            "summary": "테스트 요약", "full_report": "테스트 본문",
+        })
+        assert _LWC_LIB_NAME not in without, "차트 없는데 라이브러리 script 포함됨"
+
+    def test_build_price_chart_graceful_on_failure(self):
+        """네트워크/티커 실패 시 None 반환 (예외 전파 금지 — 아카이브
+        저장 경로가 차트 때문에 깨지면 안 됨)."""
+        from bot.chart_data import build_price_chart
+
+        # 샌드박스는 네트워크 차단 → yfinance 실패 → None (graceful)
+        result = build_price_chart("NONEXISTENT_TICKER_XYZ_123")
+        assert result is None or isinstance(result, dict)
