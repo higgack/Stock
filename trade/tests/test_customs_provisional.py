@@ -442,7 +442,8 @@ class MomentumArchiveHtmlTests(unittest.TestCase):
 
 
 class SortToggleTests(unittest.TestCase):
-    """라이브 모멘텀 토글: 절대액/모멘텀/|YoY| 3 모드, JS가 data-* 키로 재정렬."""
+    """라이브 모멘텀 토글: 절대액/모멘텀/YoY 3 모드, JS가 data-* 키로 재정렬.
+    YoY·모멘텀은 부호 구분(signed) 정렬(성장 높은 순→하락 큰 순)."""
 
     def _rows(self):
         def amt(t, *r):
@@ -464,7 +465,7 @@ class SortToggleTests(unittest.TestCase):
         self.assertIn("ind-prov-sort", html)
         self.assertIn("data-sort='usd'", html)
         self.assertIn("data-sort='mom'", html)
-        self.assertIn("data-sort='yoyabs'", html)
+        self.assertIn("data-sort='yoy'", html)
         # 기본 활성=절대액
         self.assertIn("is-active' data-sort='usd'", html)
 
@@ -472,8 +473,25 @@ class SortToggleTests(unittest.TestCase):
         html = prov.render_momentum(self._rows())
         self.assertIn("data-usd=", html)
         self.assertIn("data-mom=", html)
-        self.assertIn("data-yoyabs=", html)
+        self.assertIn("data-yoy=", html)
         self.assertIn('data-pin="1"', html)         # 전체 행 고정 마커
+
+    def test_yoy_data_attr_is_signed_not_absolute(self):
+        # 부호 구분: 음수 YoY는 data-yoy에 마이너스 그대로(절댓값 아님).
+        # imp_item 가스(03)=YoY 음수가 나오게 구성.
+        def amt(t, *r):
+            base = [5_000_000_000] * 10
+            for i, v in enumerate(r):
+                base[i] = v
+            return [t] + base
+        rows = {"imp_item": [
+            {"ym": "2025-05", "priod_dt": "01~31", "decile": "FULL",
+             "amt": amt(110e9, 10e9, 10e9, 20e9)},
+            {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL",
+             "amt": amt(150e9, 18e9, 12e9, 10e9)},  # 03(기계류)=20→10 = -50%
+        ]}
+        html = prov.render_momentum(rows)
+        self.assertIn('data-yoy="-50', html)        # 마이너스 보존(절댓값이면 "50")
 
     def test_archive_inline_also_has_data_attrs_but_no_toggle(self):
         # 아카이브(inline=True)는 시점 동결 기록이라 토글 미노출 — data-* 만.

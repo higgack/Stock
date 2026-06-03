@@ -481,11 +481,13 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
             # 전체(합계)는 data-pin="1"로 항상 맨 위 고정. 누락값은 0/-inf 처리는
             # JS에서.
             usd_attr = str(it["usd"] or 0)
-            yoy_abs_attr = (str(abs(it["yoy"])) if it["yoy"] is not None else "")
+            # YoY는 부호 구분(signed) 정렬 — 성장 높은 순→하락 큰 순. None은
+            # 빈 값(JS에서 -Infinity로 맨 아래). 모멘텀도 signed라 일관.
+            yoy_attr = (str(it["yoy"]) if it["yoy"] is not None else "")
             mom_attr = (str(it["momentum"]) if it["momentum"] is not None else "")
             pin_attr = ' data-pin="1"' if it["idx"] == 0 else ''
             data_attrs = (f' data-usd="{usd_attr}" data-mom="{mom_attr}" '
-                          f'data-yoyabs="{yoy_abs_attr}"{pin_attr}')
+                          f'data-yoy="{yoy_attr}"{pin_attr}')
             if inline:
                 tot_style = (";font-weight:700;background:#f4f4f4"
                              if it["idx"] == 0 else "")
@@ -580,7 +582,7 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
         "<button type='button' class='ind-prov-sort-btn' "
         "data-sort='mom'>모멘텀</button>"
         "<button type='button' class='ind-prov-sort-btn' "
-        "data-sort='yoyabs'>|YoY|</button>"
+        "data-sort='yoy'>YoY</button>"
         "</div>"
     )
     note = (
