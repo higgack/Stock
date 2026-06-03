@@ -597,6 +597,9 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-prov-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .ind-prov-trtot td{font-weight:700;background:var(--surface-2)}
 .ind-prov-cap-warn{font-size:11px;font-weight:500;color:var(--tone-import);margin-left:6px}
+.ind-prov-sort{grid-column:1/-1;display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-sub);margin-bottom:2px}
+.ind-prov-sort-btn{padding:3px 10px;border-radius:999px;border:1px solid var(--border-soft);background:var(--bg);color:var(--text-sub);font-size:11.5px;font-weight:600;cursor:pointer}
+.ind-prov-sort-btn.is-active{background:var(--tone-export);color:#fff;border-color:var(--tone-export)}
 /* 🗄 월별 아카이브 링크 섹션 */
 .ind-archive{margin:8px 16px 0;padding:9px 14px;border:1px dashed var(--border-soft);border-radius:10px;background:var(--surface)}
 .ind-archive a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}
@@ -1397,6 +1400,27 @@ document.addEventListener('click',function(e){
   const mo=card.querySelector('.ind-monthly'), tt=card.querySelector('.ind-ttm');
   if(mo)mo.hidden=(view!=='monthly');
   if(tt)tt.hidden=(view!=='ttm');
+});
+
+// --- 잠정 모멘텀 정렬 토글 (절대액/모멘텀/|YoY|) — 4 테이블 동시 재정렬 ---
+document.addEventListener('click',function(e){
+  const b=e.target.closest('.ind-prov-sort-btn');
+  if(!b)return;
+  const panel=b.closest('.ind-prov-mom'); if(!panel)return;
+  const mode=b.dataset.sort;
+  panel.querySelectorAll('.ind-prov-sort-btn').forEach(x=>x.classList.toggle('is-active',x===b));
+  panel.querySelectorAll('.ind-prov-tbl').forEach(tbl=>{
+    const tb=tbl.querySelector('tbody'); if(!tb)return;
+    const rows=Array.from(tb.querySelectorAll('tr'));
+    const pinned=rows.filter(r=>r.dataset.pin==='1');
+    const rest=rows.filter(r=>r.dataset.pin!=='1');
+    rest.sort((a,b)=>{
+      const av=parseFloat(a.dataset[mode]); const bv=parseFloat(b.dataset[mode]);
+      const ax=isNaN(av)?-Infinity:av; const bx=isNaN(bv)?-Infinity:bv;
+      return bx-ax;  // 내림차순
+    });
+    [...pinned,...rest].forEach(r=>tb.appendChild(r));
+  });
 });
 
 // --- tab / chip / search / modal events (delegated) ---

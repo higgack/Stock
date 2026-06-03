@@ -477,6 +477,15 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
         for it in [total, *items]:
             is_capex = kind == "imp_item" and "반도체제조용장비" in it["name"]
             nm = _esc(it["name"]) + (" ⚡" if is_capex else "")
+            # 데이터 속성 — 라이브 토글(절대액/모멘텀/|YoY|)에서 정렬 키로 사용.
+            # 전체(합계)는 data-pin="1"로 항상 맨 위 고정. 누락값은 0/-inf 처리는
+            # JS에서.
+            usd_attr = str(it["usd"] or 0)
+            yoy_abs_attr = (str(abs(it["yoy"])) if it["yoy"] is not None else "")
+            mom_attr = (str(it["momentum"]) if it["momentum"] is not None else "")
+            pin_attr = ' data-pin="1"' if it["idx"] == 0 else ''
+            data_attrs = (f' data-usd="{usd_attr}" data-mom="{mom_attr}" '
+                          f'data-yoyabs="{yoy_abs_attr}"{pin_attr}')
             if inline:
                 tot_style = (";font-weight:700;background:#f4f4f4"
                              if it["idx"] == 0 else "")
@@ -490,7 +499,7 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
                 yoy_html = _yoy_span_inline(it["yoy"])
                 mom_html = _mom_span_inline(it["momentum"])
                 body_rows.append(
-                    f"<tr style='{tot_style}'>"
+                    f"<tr style='{tot_style}'{data_attrs}>"
                     f"<td style='{lbl_td}'>{nm}</td>"
                     f"<td style='{num_td}'>{fmt_usd(it['usd'])}</td>"
                     f"<td style='{num_td}'>{yoy_html}</td>"
@@ -499,7 +508,7 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
             else:
                 tr_cls = " class='ind-prov-trtot'" if it["idx"] == 0 else ""
                 body_rows.append(
-                    f"<tr{tr_cls}><td>{nm}</td>"
+                    f"<tr{tr_cls}{data_attrs}><td>{nm}</td>"
                     f"<td class='ind-prov-num'>{fmt_usd(it['usd'])}</td>"
                     f"<td class='ind-prov-num'>{_yoy_span(it['yoy'])}</td>"
                     f"<td class='ind-prov-num'>{_mom_span(it['momentum'])}</td></tr>"
@@ -562,14 +571,26 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
     _, tables = _momentum_tables(rows_by_kind, inline=False)
     if not tables:
         return ""
+    # 라이브 토글 — 4 테이블 동시 재정렬(JS는 dashboard._JS에). 기본=절대액.
+    # 아카이브(inline=True)는 동결 기록이라 토글 없음 — 시점 기준 절대액 고정.
+    sort_ui = (
+        "<div class='ind-prov-sort'>정렬:"
+        "<button type='button' class='ind-prov-sort-btn is-active' "
+        "data-sort='usd'>절대액</button>"
+        "<button type='button' class='ind-prov-sort-btn' "
+        "data-sort='mom'>모멘텀</button>"
+        "<button type='button' class='ind-prov-sort-btn' "
+        "data-sort='yoyabs'>|YoY|</button>"
+        "</div>"
+    )
     note = (
         "<div class='ind-prov-mom-note'>모멘텀 = 최신창 YoY − 직전 풀월 YoY "
-        "(▲가속/▼둔화) · 절대액 큰 순 정렬 · 수출 절대액 ⚠️ 추세 참고</div>"
+        "(▲가속/▼둔화) · 전체 행 고정 · 수출 절대액 ⚠️ 추세 참고</div>"
     )
     return (
         "<details class='ind-prov-more'>"
-        "<summary>🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열 (절대액순)</summary>"
-        f"<div class='ind-prov-mom'>{note}{tables}</div>"
+        "<summary>🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열</summary>"
+        f"<div class='ind-prov-mom'>{sort_ui}{note}{tables}</div>"
         "</details>"
     )
 

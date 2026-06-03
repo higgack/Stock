@@ -441,5 +441,46 @@ class MomentumArchiveHtmlTests(unittest.TestCase):
         self.assertEqual(prov.momentum_archive_html({}), "")
 
 
+class SortToggleTests(unittest.TestCase):
+    """라이브 모멘텀 토글: 절대액/모멘텀/|YoY| 3 모드, JS가 data-* 키로 재정렬."""
+
+    def _rows(self):
+        def amt(t, *r):
+            base = [5_000_000_000] * 10
+            for i, v in enumerate(r):
+                base[i] = v
+            return [t] + base
+        return {"imp_item": [
+            {"ym": "2025-05", "priod_dt": "01~31", "decile": "FULL",
+             "amt": amt(110e9, 45e9, 8e9, 9e9, 7e9, 1.3e9)},
+            {"ym": "2026-04", "priod_dt": "01~30", "decile": "FULL",
+             "amt": amt(120e9, 55e9, 8e9, 9e9, 7e9, 1.9e9)},
+            {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL",
+             "amt": amt(150e9, 72e9, 8e9, 9e9, 7e9, 2.94e9)},
+        ]}
+
+    def test_panel_has_three_mode_toggle(self):
+        html = prov.render_momentum(self._rows())
+        self.assertIn("ind-prov-sort", html)
+        self.assertIn("data-sort='usd'", html)
+        self.assertIn("data-sort='mom'", html)
+        self.assertIn("data-sort='yoyabs'", html)
+        # 기본 활성=절대액
+        self.assertIn("is-active' data-sort='usd'", html)
+
+    def test_rows_carry_data_attrs_for_js_sort(self):
+        html = prov.render_momentum(self._rows())
+        self.assertIn("data-usd=", html)
+        self.assertIn("data-mom=", html)
+        self.assertIn("data-yoyabs=", html)
+        self.assertIn('data-pin="1"', html)         # 전체 행 고정 마커
+
+    def test_archive_inline_also_has_data_attrs_but_no_toggle(self):
+        # 아카이브(inline=True)는 시점 동결 기록이라 토글 미노출 — data-* 만.
+        html = prov.momentum_archive_html(self._rows())
+        self.assertIn("data-usd=", html)
+        self.assertNotIn("ind-prov-sort-btn", html)
+
+
 if __name__ == "__main__":
     unittest.main()
