@@ -2064,6 +2064,8 @@ def _render_chart_section(rec: dict) -> str:
       </span>
       <span class="chart-tf-sep">·</span>
       <span class="chart-tf-group">
+        <button class="chart-tf-btn" data-kind="range" data-val="1mo">1개월</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="3mo">3개월</button>
         <button class="chart-tf-btn" data-kind="range" data-val="6mo">6개월</button>
         <button class="chart-tf-btn" data-kind="range" data-val="1y">1년</button>
         <button class="chart-tf-btn" data-kind="range" data-val="3y">3년</button>
