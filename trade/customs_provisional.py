@@ -437,10 +437,10 @@ def _mom_span(m: Optional[float]) -> str:
 
 
 def render_momentum(rows_by_kind: dict[str, list]) -> str:
-    """🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열을 가속순으로 펼치는 패널.
+    """🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열을 절대액 큰 순으로 펼치는 패널.
 
     각 그룹 테이블: 항목 | 최신창 절대액(수출 ⚠️) | 창 YoY | 모멘텀(▲가속/▼둔화).
-    전체(합계)는 맨 위 고정, 나머지는 모멘텀 내림차순(=가속순). 데이터 없으면
+    전체(합계)는 맨 위 고정, 나머지는 최신창 절대액 내림차순. 데이터 없으면
     '' (헤드라인 박스만 뜨고 펼치기는 사라짐). JS 없는 <details>라 자체완결.
     """
     if not rows_by_kind:
@@ -459,12 +459,7 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
             continue
         win_label = f"{mv['ym']} {mv['window']}"
         total = mv["items"][0]
-        items = sorted(
-            mv["items"][1:],
-            key=lambda r: (r["momentum"] is not None,
-                           r["momentum"] if r["momentum"] is not None else 0.0),
-            reverse=True,
-        )
+        items = sorted(mv["items"][1:], key=lambda r: r["usd"] or 0, reverse=True)
         body_rows: list[str] = []
         for it in [total, *items]:
             is_capex = kind == "imp_item" and "반도체제조용장비" in it["name"]
@@ -487,11 +482,11 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
         return ""
     note = (
         "<div class='ind-prov-mom-note'>모멘텀 = 최신창 YoY − 직전 풀월 YoY "
-        "(▲가속/▼둔화) · 가속순 정렬 · 수출 절대액 ⚠️ 추세 참고</div>"
+        "(▲가속/▼둔화) · 절대액 큰 순 정렬 · 수출 절대액 ⚠️ 추세 참고</div>"
     )
     return (
         "<details class='ind-prov-more'>"
-        "<summary>🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열 (가속순)</summary>"
+        "<summary>🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열 (절대액순)</summary>"
         f"<div class='ind-prov-mom'>{note}{''.join(tables)}</div>"
         "</details>"
     )

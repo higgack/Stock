@@ -345,23 +345,21 @@ class MomentumRenderTests(unittest.TestCase):
         self.assertIn("⚡", html)                          # capex 강조
         self.assertIn("⚠️", html)                          # 수출 절대액 경고
 
-    def test_sorted_by_momentum_accel_first(self):
-        # imp_item 라벨에서 품목 매핑이 아니라 실제 LABELS이므로, 가속 항목이
-        # 둔화 항목보다 앞서는지 위치로 확인(02=원유 가속, 03=기계류 둔화 설정).
+    def test_sorted_by_absolute_value_desc(self):
+        # 정렬은 최신창 절대액 큰 순. 01=반도체(작게), 02=원유(크게) 설정 →
+        # 원유가 반도체보다 먼저. 전체(합계)는 맨 위 고정.
         def amt(t, *rest):
             base = [5] * 10
             for i, v in enumerate(rest):
                 base[i] = v
             return [t] + base
         rows = [
-            {"ym": "2025-04", "priod_dt": "01~30", "decile": "FULL", "amt": amt(100, 5, 10, 10)},
-            {"ym": "2025-05", "priod_dt": "01~31", "decile": "FULL", "amt": amt(110, 5, 11, 11)},
-            {"ym": "2026-04", "priod_dt": "01~30", "decile": "FULL", "amt": amt(120, 5, 12, 20)},
-            {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL", "amt": amt(150, 5, 30, 21)},
+            {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL", "amt": amt(150, 9, 40)},
         ]
         html = prov.render_momentum({"imp_item": rows})
-        # 원유(02, 가속)가 기계류(03, 둔화)보다 먼저 등장
-        self.assertLess(html.index("원유"), html.index("기계류"))
+        # 전체(150) 맨 위, 그 다음 절대액 큰 원유(40) → 반도체(9)
+        self.assertLess(html.index("전체"), html.index(">원유"))
+        self.assertLess(html.index(">원유"), html.index(">반도체</td"))
 
     def test_empty_when_no_rows(self):
         self.assertEqual(prov.render_momentum({}), "")
