@@ -71,6 +71,28 @@ done
 
 systemctl daemon-reload
 
+# Provision NOPASSWD sudoers for the systemctl restarts that auto-update.sh
+# needs — so the user's single install.sh NOPASSWD grant self-extends to
+# cover stock-bot + dashboard restarts (no extra manual sudoers step).
+# 2026-06-03: dashboard 서버 코드 변경(Cache-Control 등) 자동 배포를 위해
+# stock-bot-dashboard restart 권한 추가. visudo -c 로 검증 후에만 설치 →
+# 문법 오류로 sudo 잠기는 사고 방지. Idempotent (동일 내용이면 no-op).
+SUDOERS_DROPIN=/etc/sudoers.d/higgack-stock-restart
+SUDOERS_TMP="$(mktemp)"
+cat > "$SUDOERS_TMP" <<'SUDOERS'
+higgack ALL=(root) NOPASSWD: /bin/systemctl restart stock-bot
+higgack ALL=(root) NOPASSWD: /bin/systemctl restart stock-bot-dashboard
+SUDOERS
+if visudo -cf "$SUDOERS_TMP" >/dev/null 2>&1; then
+    if ! cmp -s "$SUDOERS_TMP" "$SUDOERS_DROPIN" 2>/dev/null; then
+        install -m 0440 -o root -g root "$SUDOERS_TMP" "$SUDOERS_DROPIN"
+        echo "  sudoers drop-in installed: $SUDOERS_DROPIN"
+    fi
+else
+    echo "  ⚠️ sudoers drop-in failed visudo validation — skipped"
+fi
+rm -f "$SUDOERS_TMP"
+
 # Daily Byte 인포그래픽 한글 렌더용 NanumGothic 폰트 — idempotent.
 # 이미 설치돼 있으면 apt 가 no-op. 실패해도(네트워크/오프라인) install 전체를
 # 막지 않도록 || true. 폰트 부재 시 인포그래픽만 graceful skip(텍스트 정상).

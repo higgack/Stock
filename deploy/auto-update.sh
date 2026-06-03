@@ -48,6 +48,27 @@ notify() {
     echo "stock-bot-update: notify response: ${response:0:200}"
 }
 
+# Restart the dashboard HTTP server. auto-update only restarts stock-bot
+# by default; dashboard server-layer code (bot/dashboard_server.py /
+# bot/dashboard.py / bot/archive.py) changes need a dashboard cycle to
+# take effect (e.g. Cache-Control header, /api delete endpoints, regen
+# imports). 2026-06-03 사용자 요청 — Cache-Control no-cache 적용이 서버
+# 코드라 자동 배포 대상에 포함. Graceful skip when the NOPASSWD sudoers
+# line is absent (install.sh provisions it; legacy setups fall back to
+# the daily RuntimeMaxSec cycle).
+restart_dashboard() {
+    if sudo -n /bin/systemctl restart stock-bot-dashboard 2>/dev/null; then
+        sleep 2
+        if systemctl is-active --quiet stock-bot-dashboard; then
+            notify "✅ <b>대시보드 재시작</b>: 서버 코드 변경 반영 (Cache-Control 등)"
+        else
+            notify "⚠️ <b>대시보드 재시작 후 active 아님</b> — 확인 필요"
+        fi
+    else
+        echo "stock-bot-update: dashboard restart skipped (NOPASSWD 미설정 또는 권한 없음)"
+    fi
+}
+
 git fetch --quiet origin "$BRANCH"
 
 LOCAL=$(git rev-parse HEAD)
@@ -86,6 +107,10 @@ if [ "$LOCAL" = "$REMOTE" ]; then
                     done_msg="${done_msg}"$'\n'"${SUBJECT}"
                 fi
                 notify "$done_msg"
+                # VM 직접 push 는 diff range 가 없어 대시보드 파일 변경 여부를
+                # 가릴 수 없음 → 비용 거의 0 인 stateless 재시작을 항상 동반해
+                # 서버-레이어 변경(예: Cache-Control)도 확실히 반영.
+                restart_dashboard
             else
                 notify "❌ <b>배포 실패</b>: 재시작 후 active 아님 (${HEAD_SHORT})"
             fi
@@ -133,6 +158,14 @@ if echo "$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)" \
     DEPLOY_CHANGED=1
 fi
 
+# Dashboard server-layer files — restart the dashboard service when these
+# change (must compute BEFORE git reset, since reset makes LOCAL==REMOTE).
+DASHBOARD_CHANGED=0
+if echo "$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)" \
+        | grep -qE '^bot/(dashboard_server|dashboard|archive)\.py$'; then
+    DASHBOARD_CHANGED=1
+fi
+
 if ! git reset --hard "origin/${BRANCH}" --quiet; then
     notify "❌ <b>배포 실패</b>: git reset --hard (${LOCAL_SHORT} → ${REMOTE_SHORT})"
     exit 1
@@ -168,6 +201,13 @@ if systemctl is-active --quiet stock-bot; then
     fi
     notify "$msg"
     echo "stock-bot-update: restart complete"
+    # Dashboard server-layer change → cycle the dashboard too (gated on
+    # bot/dashboard*.py / archive.py diff to avoid a needless blip on
+    # pure bot-only deploys).
+    if [ "$DASHBOARD_CHANGED" = "1" ]; then
+        echo "stock-bot-update: dashboard files changed — restarting dashboard"
+        restart_dashboard
+    fi
 else
     notify "❌ <b>배포 실패</b>: stock-bot 서비스가 재시작 후 active 상태가 아님 (${REMOTE_SHORT})"
     exit 1
