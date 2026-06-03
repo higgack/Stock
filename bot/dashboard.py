@@ -1856,6 +1856,7 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-legend .lg-s50   { color: #3ec46d; }
 .chart-legend .lg-s200  { color: #e2574c; }
 .chart-markers-legend { margin-top: 3px; }
+.chart-legend .lg-asof   { color: #94a3b8; }
 .chart-legend .lg-entry  { color: #9b59b6; }
 .chart-legend .lg-stop   { color: #e2574c; }
 .chart-legend .lg-target { color: #3ec46d; }
@@ -2022,9 +2023,18 @@ def _render_chart_section(rec: dict) -> str:
         )
     except Exception:
         markers = {}
+    pc = dict(pc)  # don't mutate the cached/loaded record
     if markers:
-        pc = dict(pc)  # don't mutate the cached/loaded record
         pc["markers"] = markers
+    # 시점가 = 분석일 종가 (stored series 의 마지막 종가). 차트 메인 라인은
+    # 클라이언트가 /api/chart 로 '오늘까지(현재가)' 를 다시 받아 그리되,
+    # 이 값은 분석 시점 기준선으로 항상 수평선 표시.
+    _closes = [c for c in (pc.get("close") or []) if c is not None]
+    if _closes:
+        pc["as_of_close"] = _closes[-1]
+    _times = pc.get("times") or []
+    if _times:
+        pc["as_of_date"] = _times[-1]
 
     # Defuse any stray '</' so the JSON can't terminate the <script> block.
     payload = _json.dumps(pc, ensure_ascii=False, separators=(",", ":"))
@@ -2052,17 +2062,18 @@ def _render_chart_section(rec: dict) -> str:
     <div id="price-chart" class="price-chart" data-ticker="{tkr}"></div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div class="chart-legend">
-      <span class="lg lg-close">종가</span>
+      <span class="lg lg-close">현재가</span>
       <span class="lg lg-ema">10 EMA</span>
       <span class="lg lg-s50">50 SMA</span>
       <span class="lg lg-s200">200 SMA</span>
-      · 본문 TECHNICAL SNAPSHOT 과 동일 series
+      · 현재가=최근 거래일 종가
     </div>
     <div class="chart-legend chart-markers-legend">
+      <span class="lg lg-asof">— 시점가(분석일)</span>
       <span class="lg lg-entry">— 진입</span>
       <span class="lg lg-stop">— 손절</span>
       <span class="lg lg-target">— 목표</span>
-      · 트레이드 플랜 (있을 때만)
+      · 시점가=분석일 종가 · 진입/손절/목표=트레이드 플랜 (있을 때만)
     </div>
   </section>"""
 
@@ -2076,9 +2087,11 @@ _CHART_JS = """
   try { initial = JSON.parse(dataEl.textContent); } catch (e) { return; }
   if (!initial || !initial.times || !initial.close) return;
   var ticker = el.getAttribute('data-ticker') || '';
-  // Trade-plan levels are price lines (valid on any interval) — keep from
-  // the embedded payload and re-apply on every (re)render.
+  // Trade-plan levels + 시점가(분석일 종가) are price lines (valid on any
+  // interval) — kept from the embedded payload and re-applied on every
+  // (re)render. The main line itself is re-fetched to-today (현재가).
   var markers = initial.markers || null;
+  var asOfClose = (initial && initial.as_of_close != null) ? initial.as_of_close : null;
   var chart = null;
   var curInterval = '1d', curRange = '1y';
 
@@ -2105,16 +2118,19 @@ _CHART_JS = """
     function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
     var prec = (d.decimals === 0) ? 0 : 2;
     var pf = { precision: prec, minMove: (prec === 0) ? 1 : 0.01 };
-    var closeS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, title: '종가' });
+    // Main line = 현재가 (오늘까지 fetch 된 series). 우측 축 라벨 '현재가'.
+    var closeS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, title: '현재가' });
     closeS.setData(zip(d.close));
     if (d.ema10)  chart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: pf, title: '10 EMA' }).setData(zip(d.ema10));
     if (d.sma50)  chart.addLineSeries({ color: '#3ec46d', lineWidth: 1, priceFormat: pf, title: '50 SMA' }).setData(zip(d.sma50));
     if (d.sma200) chart.addLineSeries({ color: '#e2574c', lineWidth: 1, priceFormat: pf, title: '200 SMA' }).setData(zip(d.sma200));
+    function priceLine(p, color, title, style) {
+      if (p === null || p === undefined) return;
+      closeS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: true, title: title });
+    }
+    // 시점가 = 분석일 종가 (분석 시점 기준선, 회색 점선).
+    priceLine(asOfClose, '#94a3b8', '시점가', 3);
     if (markers) {
-      function priceLine(p, color, title) {
-        if (p === null || p === undefined) return;
-        closeS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: title });
-      }
       priceLine(markers.entry,  '#9b59b6', '진입');
       priceLine(markers.stop,   '#e2574c', '손절');
       priceLine(markers.target, '#3ec46d', '목표');
@@ -2137,8 +2153,9 @@ _CHART_JS = """
 
   function load(){
     setActive();
-    // Default view = the embedded payload (instant, offline, SSoT-matching).
-    if (curInterval === '1d' && curRange === '1y') { status(''); render(initial); return; }
+    // 모든 뷰가 '오늘까지(현재가)' 를 서버에서 다시 받아 그린다 (기본 1년
+    // 일봉 포함). 저장된 embedded payload 는 분석일까지라 즉시 placeholder
+    // (start 에서 1회) + 시점가/마커 기준선으로만 사용.
     status('⏳ 불러오는 중…');
     el.style.opacity = '0.5';
     fetch('../api/chart?ticker=' + encodeURIComponent(ticker) + '&interval=' + curInterval + '&range=' + curRange,
@@ -2152,7 +2169,7 @@ _CHART_JS = """
       .catch(function(err){
         el.style.opacity = '';
         var m = (err && err.message) ? err.message : 'error';
-        status('⚠️ 불러오기 실패 (' + m + ') — 대시보드 서버 재시작 필요할 수 있음');
+        status('⚠️ 현재가 불러오기 실패 (' + m + ') — 분석일까지 표시 중');
       });
   }
 
@@ -2168,8 +2185,9 @@ _CHART_JS = """
 
   function start(){
     document.addEventListener('click', onClick);
-    render(initial);
+    render(initial);   // 즉시 placeholder (분석일까지) — 깜빡임 방지
     setActive();
+    load();            // 곧바로 '오늘까지(현재가)' 를 받아 교체
     window.addEventListener('resize', function(){ if (chart) chart.applyOptions({ width: el.clientWidth }); });
     var last = document.documentElement.dataset.theme;
     setInterval(function(){

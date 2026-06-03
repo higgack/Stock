@@ -489,7 +489,9 @@ class TestPriceChartRender:
         assert 'id="price-chart"' in html, "차트 컨테이너 div 누락"
         assert 'id="chart-data"' in html, "차트 데이터 script 블록 누락"
         assert "145.2" in html, "종가 데이터 미주입"
-        assert "TECHNICAL SNAPSHOT" in html, "SSoT 일치 캡션 누락"
+        assert "현재가" in html and "시점가" in html, "현재가/시점가 라벨 누락"
+        # 시점가 = 분석일 종가 = stored close 의 마지막 값
+        assert '"as_of_close":144.8' in html, "시점가(분석일 종가) 미주입"
 
     def test_chart_section_empty_for_v1(self):
         from bot.dashboard import _render_chart_section
