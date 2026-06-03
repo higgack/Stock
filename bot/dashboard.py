@@ -2268,8 +2268,13 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     # 2026-05-30). run 의 _date (YYYY-MM-DD, 아카이브 날짜 디렉토리) 기준.
     from datetime import datetime as _dt_tc, timezone as _tz_tc, timedelta as _td_tc
     _today_kst_str = _dt_tc.now(_tz_tc(_td_tc(hours=9))).date().isoformat()
+    _month_kst_str = _today_kst_str[:7]  # 'YYYY-MM'
     today_cost_krw = sum(
         r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today_kst_str
+    )
+    month_cost_krw = sum(
+        r.get("cost_krw", 0) or 0 for r in runs
+        if (r.get("_date") or "").startswith(_month_kst_str)
     )
     total_picks = sum(len(r.get("top_3_picks", []) or []) for r in runs)
     resolved_count = sum(
@@ -2292,6 +2297,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 실행</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost_krw:,.0f}</div><div class="stat-l">오늘 비용</div></div>
+    <div class="stat"><div class="stat-v">₩{month_cost_krw:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
     <div class="stat"><div class="stat-v">{total_picks}</div><div class="stat-l">Top-3 picks</div></div>
     <div class="stat"><div class="stat-v">{resolved_count}</div><div class="stat-l">1m resolved</div></div>
@@ -3656,8 +3662,13 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
     total_cost_krw = sum(r.get("cost_krw", 0) or 0 for r in runs)
     from datetime import datetime as _dt_dbc, timezone as _tz_dbc, timedelta as _td_dbc
     _today_kst_db = _dt_dbc.now(_tz_dbc(_td_dbc(hours=9))).date().isoformat()
+    _month_kst_db = _today_kst_db[:7]
     today_cost_krw = sum(
         r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today_kst_db
+    )
+    month_cost_krw = sum(
+        r.get("cost_krw", 0) or 0 for r in runs
+        if (r.get("_date") or "").startswith(_month_kst_db)
     )
     weekly_n = sum(1 for r in runs if r.get("kind") == "weekly")
 
@@ -3676,6 +3687,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 브리프</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost_krw:,.0f}</div><div class="stat-l">오늘 비용</div></div>
+    <div class="stat"><div class="stat-v">₩{month_cost_krw:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
     <div class="stat"><div class="stat-v">{weekly_n}</div><div class="stat-l">Weekly 종합</div></div>
   </div>
@@ -3867,7 +3879,10 @@ def _render_realestate_page(runs: list[dict]) -> str:
     total = len(runs)
     total_cost = sum(r.get("cost_krw", 0) or 0 for r in runs)
     _today = _dt_r.now(_tz_r(_td_r(hours=9))).date().isoformat()
+    _month = _today[:7]
     today_cost = sum(r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today)
+    month_cost = sum(r.get("cost_krw", 0) or 0 for r in runs
+                     if (r.get("_date") or "").startswith(_month))
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -3882,6 +3897,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
   <div class="stats">
     <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 브리프</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
+    <div class="stat"><div class="stat-v">₩{month_cost:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
   </div>
   <div class="search-bar">
@@ -4009,7 +4025,10 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
     total = len(runs)
     total_cost = sum(r.get("cost_krw", 0) or 0 for r in runs)
     _today = _dt_r.now(_tz_r(_td_r(hours=9))).date().isoformat()
+    _month = _today[:7]
     today_cost = sum(r.get("cost_krw", 0) or 0 for r in runs if r.get("_date") == _today)
+    month_cost = sum(r.get("cost_krw", 0) or 0 for r in runs
+                     if (r.get("_date") or "").startswith(_month))
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -4024,6 +4043,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
   <div class="stats">
     <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 피드</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
+    <div class="stat"><div class="stat-v">₩{month_cost:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
   </div>
   <div class="search-bar">
