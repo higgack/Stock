@@ -72,7 +72,8 @@ def build_price_chart(ticker: str, as_of: str | None = None) -> dict | None:
             return None
 
         currency, decimals = _currency_for(ticker)
-        return _series_payload(close, currency, decimals)
+        vol = hist["Volume"].reindex(close.index) if "Volume" in hist else None
+        return _series_payload(close, currency, decimals, vol)
     except Exception as exc:
         log.warning("chart_data: build failed for %s: %s", ticker, exc)
         return None
@@ -92,22 +93,24 @@ def _currency_for(ticker: str) -> tuple[str, int]:
         return "$", 2
 
 
-def _series_payload(close, currency: str, decimals: int) -> dict:
+def _series_payload(close, currency: str, decimals: int, volume=None) -> dict:
     """Build the parallel-array chart payload (close + 10 EMA / 50 SMA /
-    200 SMA) from a pandas close Series. SMA50/200 omitted when the series
-    is shorter than the window (graceful — short weekly/monthly ranges)."""
+    200 SMA + RSI(14) + volume) from a pandas close Series. SMA50/200 omitted
+    when the series is shorter than the window. RSI/volume are 보조지표
+    (secondary indicators) for the lower panes. Graceful — short weekly/
+    monthly ranges just omit what they can't compute."""
     import math
 
     ema10 = close.ewm(span=10, adjust=False).mean()
     sma50 = close.rolling(50).mean() if len(close) >= 50 else None
     sma200 = close.rolling(200).mean() if len(close) >= 200 else None
 
-    def _round(v) -> float | None:
+    def _round(v, nd=decimals) -> float | None:
         try:
             f = float(v)
             if math.isnan(f):
                 return None
-            return round(f, decimals)
+            return round(f, nd)
         except Exception:
             return None
 
@@ -122,6 +125,30 @@ def _series_payload(close, currency: str, decimals: int) -> dict:
         payload["sma50"] = [_round(v) for v in sma50.values]
     if sma200 is not None:
         payload["sma200"] = [_round(v) for v in sma200.values]
+
+    # RSI(14) — Wilder exponential smoothing (same as _compute_technical_
+    # snapshot SSoT). Null until enough bars. Lower pane, 0-100 scale.
+    if len(close) >= 15:
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = (-delta).clip(lower=0)
+        avg_gain = gain.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1 / 14, min_periods=14, adjust=False).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - 100 / (1 + rs)
+        payload["rsi"] = [_round(v, 1) for v in rsi.values]
+
+    # Volume — histogram in the price pane bottom. Integer counts.
+    if volume is not None:
+        def _vol(v):
+            try:
+                f = float(v)
+                if math.isnan(f):
+                    return None
+                return int(f)
+            except Exception:
+                return None
+        payload["volume"] = [_vol(v) for v in volume.values]
     return payload
 
 
@@ -168,7 +195,8 @@ def fetch_chart_payload(
         if len(close) < 2:
             return None
         currency, decimals = _currency_for(ticker)
-        payload = _series_payload(close, currency, decimals)
+        vol = hist["Volume"].reindex(close.index) if "Volume" in hist else None
+        payload = _series_payload(close, currency, decimals, vol)
         payload["interval"] = interval
         payload["period"] = period
         return payload

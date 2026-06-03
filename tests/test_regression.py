@@ -534,6 +534,41 @@ class TestPriceChartRender:
         })
         assert _LWC_LIB_NAME not in without, "차트 없는데 라이브러리 script 포함됨"
 
+    def test_chart_has_volume_and_rsi_indicators(self):
+        """보조지표 — 거래량 히스토그램 + RSI(14) 하단 pane 배선 (2026-06-04)."""
+        from bot.dashboard import _CHART_JS, _render_chart_section
+
+        # JS: 거래량 히스토그램 + RSI 별도 차트 + 시간축 동기화
+        assert "addHistogramSeries" in _CHART_JS, "거래량 히스토그램 누락"
+        assert "priceScaleId: 'vol'" in _CHART_JS, "거래량 overlay 스케일 누락"
+        assert "rsiChart = LightweightCharts.createChart" in _CHART_JS, "RSI pane 누락"
+        assert "syncTime(chart, rsiChart)" in _CHART_JS, "시간축 동기화 누락"
+        assert "price: 70" in _CHART_JS and "price: 30" in _CHART_JS, "RSI 70/30 기준선 누락"
+        # HTML: RSI 컨테이너
+        html = _render_chart_section({
+            "ticker": "AAPL",
+            "price_chart": {"currency": "$", "decimals": 2,
+                            "times": ["2025-06-01"], "close": [1.0]},
+        })
+        assert 'id="rsi-chart"' in html, "RSI 차트 컨테이너 누락"
+
+    def test_series_payload_rsi_volume_shape(self):
+        """_series_payload 가 rsi/volume 키를 추가 (pandas 있을 때만 실행)."""
+        try:
+            import pandas as pd
+        except Exception:
+            import pytest
+            pytest.skip("pandas 미설치 — VM 에서 검증")
+        from bot.chart_data import _series_payload
+        idx = pd.date_range("2025-01-01", periods=30, freq="D")
+        close = pd.Series([100 + i for i in range(30)], index=idx)
+        vol = pd.Series([1000 + i for i in range(30)], index=idx, dtype="float64")
+        p = _series_payload(close, "$", 2, vol)
+        assert "rsi" in p and len(p["rsi"]) == 30
+        assert "volume" in p and all(isinstance(v, int) for v in p["volume"])
+        last_rsi = [x for x in p["rsi"] if x is not None][-1]
+        assert 0 <= last_rsi <= 100
+
     def test_build_price_chart_graceful_on_failure(self):
         """네트워크/티커 실패 시 None 반환 (예외 전파 금지 — 아카이브
         저장 경로가 차트 때문에 깨지면 안 됨)."""

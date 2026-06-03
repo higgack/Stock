@@ -1849,7 +1849,9 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-tf-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
 .chart-tf-status { color: var(--fg-soft); font-size: 12px; margin-left: 6px; }
 .chart-row { display: flex; gap: 10px; align-items: stretch; }
-.price-chart { flex: 1 1 auto; height: 440px; min-width: 0; }
+.chart-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.price-chart { width: 100%; height: 440px; }
+.rsi-chart { width: 100%; height: 120px; }
 .chart-values {
   flex: 0 0 110px; display: flex; flex-direction: column; gap: 6px;
   padding-top: 4px; font-size: 12px;
@@ -2075,12 +2077,15 @@ def _render_chart_section(rec: dict) -> str:
       <span class="chart-tf-status" id="chart-status"></span>
     </div>
     <div class="chart-row">
-      <div id="price-chart" class="price-chart" data-ticker="{tkr}"></div>
+      <div class="chart-main">
+        <div id="price-chart" class="price-chart" data-ticker="{tkr}"></div>
+        <div id="rsi-chart" class="rsi-chart"></div>
+      </div>
       <div id="chart-values" class="chart-values"></div>
     </div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div class="chart-legend">
-      현재가=최근 거래일 종가 · 시점가=분석일 종가 · 진입/손절/목표=트레이드 플랜 (있을 때만)
+      현재가=최근 거래일 종가 · 시점가=분석일 종가 · 진입/손절/목표=트레이드 플랜 (있을 때만) · 하단 거래량 + RSI(14, 70/30)
     </div>
   </section>"""
 
@@ -2099,12 +2104,25 @@ _CHART_JS = """
   // (re)render. The main line itself is re-fetched to-today (현재가).
   var markers = initial.markers || null;
   var asOfClose = (initial && initial.as_of_close != null) ? initial.as_of_close : null;
-  var chart = null;
+  var chart = null, rsiChart = null;
   var curInterval = '1d', curRange = '1y';
 
   function isDark(){ return document.documentElement.dataset.theme === 'dark'; }
   function txtColor(){ return isDark() ? '#cbd5e1' : '#334155'; }
   function gridColor(){ return isDark() ? 'rgba(148,163,184,0.12)' : 'rgba(100,116,139,0.12)'; }
+
+  // 두 차트(가격 + RSI)의 시간축을 동기화 — 한쪽 줌/팬이 다른쪽에 반영.
+  function syncTime(a, b){
+    var lock = false;
+    function pair(src, dst){
+      src.timeScale().subscribeVisibleLogicalRangeChange(function(r){
+        if (lock || !r) return; lock = true;
+        try { dst.timeScale().setVisibleLogicalRange(r); } catch(e){}
+        lock = false;
+      });
+    }
+    pair(a, b); pair(b, a);
+  }
 
   function render(d){
     if (typeof LightweightCharts === 'undefined') {
@@ -2113,32 +2131,48 @@ _CHART_JS = """
     }
     if (!d || !d.times || !d.close) return;
     if (chart) { try { chart.remove(); } catch(e){} chart = null; }
+    if (rsiChart) { try { rsiChart.remove(); } catch(e){} rsiChart = null; }
     el.innerHTML = '';
+    var rsiEl = document.getElementById('rsi-chart');
+    if (rsiEl) rsiEl.innerHTML = '';
+    var layout = { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit' };
+    var grid = { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } };
     chart = LightweightCharts.createChart(el, {
       height: 440,
-      layout: { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit' },
-      grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } },
-      rightPriceScale: { borderVisible: false },
+      layout: layout, grid: grid,
+      rightPriceScale: { borderVisible: false, minimumWidth: 72, scaleMargins: { top: 0.06, bottom: 0.26 } },
       timeScale: { borderVisible: false, timeVisible: false },
       crosshair: { mode: 0 }
     });
     function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
     var prec = (d.decimals === 0) ? 0 : 2;
     var pf = { precision: prec, minMove: (prec === 0) ? 1 : 0.01 };
-    // 현재가 + 분석가격(시점가/진입/손절/목표) 은 차트 안 축 라벨로 둔다
-    // (실제 가격 대비 우리가 분석한 가격 위치를 바로 확인 — 사용자 2026-06-04).
-    // 이동평균(10EMA/50SMA/200SMA)만 우측 패널로 빼서 라벨 겹침을 막는다
-    // (겹침의 주범이었음 — 현재가/시점가/10EMA 가 근접).
+    // 현재가 + 분석가격(시점가/진입/손절/목표) 은 차트 안 축 라벨. 이동평균
+    // 은 우측 패널(겹침 방지). 거래량은 하단 히스토그램, RSI 는 아래 별도 pane.
     var closeS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
     closeS.setData(zip(d.close));
     if (d.ema10)  chart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.ema10));
     if (d.sma50)  chart.addLineSeries({ color: '#3ec46d', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.sma50));
     if (d.sma200) chart.addLineSeries({ color: '#e2574c', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.sma200));
+    // 거래량 — 가격 pane 하단 18% (상승일 초록 / 하락일 빨강).
+    if (d.volume) {
+      var volS = chart.addHistogramSeries({ priceScaleId: 'vol', priceFormat: { type: 'volume' }, lastValueVisible: false, priceLineVisible: false });
+      chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+      var vd = [], prevC = null;
+      for (var i = 0; i < d.times.length; i++) {
+        var vv = d.volume[i]; var c = d.close[i];
+        if (vv !== null && vv !== undefined) {
+          var up = (prevC === null || c === null || c === undefined) ? true : (c >= prevC);
+          vd.push({ time: d.times[i], value: vv, color: up ? 'rgba(76,175,80,0.45)' : 'rgba(229,87,76,0.45)' });
+        }
+        if (c !== null && c !== undefined) prevC = c;
+      }
+      volS.setData(vd);
+    }
     function priceLine(p, color, title, style) {
       if (p === null || p === undefined) return;
       closeS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: true, title: title });
     }
-    // 시점가 = 분석일 종가 (회색 점선) + 트레이드 플랜 라인 (축 라벨 표시).
     priceLine(asOfClose, '#94a3b8', '시점가', 2);
     if (markers) {
       priceLine(markers.entry,  '#9b59b6', '진입');
@@ -2147,6 +2181,24 @@ _CHART_JS = """
     }
     chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });
+
+    // RSI(14) 하단 별도 pane — 0~100, 70/30 기준선.
+    if (d.rsi && rsiEl) {
+      rsiChart = LightweightCharts.createChart(rsiEl, {
+        height: 120,
+        layout: layout, grid: grid,
+        rightPriceScale: { borderVisible: false, minimumWidth: 72, scaleMargins: { top: 0.12, bottom: 0.12 } },
+        timeScale: { borderVisible: false, timeVisible: false, visible: false },
+        crosshair: { mode: 0 }
+      });
+      var rsiS = rsiChart.addLineSeries({ color: '#b07cff', lineWidth: 1, priceFormat: { precision: 1, minMove: 0.1 }, lastValueVisible: true, priceLineVisible: false, title: 'RSI' });
+      rsiS.setData(zip(d.rsi));
+      rsiS.createPriceLine({ price: 70, color: 'rgba(229,87,76,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '70' });
+      rsiS.createPriceLine({ price: 30, color: 'rgba(76,175,80,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '30' });
+      rsiChart.timeScale().fitContent();
+      rsiChart.applyOptions({ width: rsiEl.clientWidth });
+      syncTime(chart, rsiChart);
+    }
     buildValues(d);
   }
 
@@ -2160,16 +2212,19 @@ _CHART_JS = """
     var vEl = document.getElementById('chart-values');
     if (!vEl) return;
     var dec = (d.decimals === 0) ? 0 : 2;
-    // 이동평균만 패널에 (현재가/시점가/진입/손절/목표 는 차트 안 축 라벨).
+    // 이동평균 + RSI + 거래량 (현재가/시점가/진입/손절/목표 는 차트 안 축 라벨).
+    // [이름, 값, 색, 소수자릿수]
     var items = [];
-    if (d.ema10)  items.push(['10 EMA', lastNonNull(d.ema10), '#f5a623']);
-    if (d.sma50)  items.push(['50 SMA', lastNonNull(d.sma50), '#3ec46d']);
-    if (d.sma200) items.push(['200 SMA', lastNonNull(d.sma200), '#e2574c']);
+    if (d.ema10)  items.push(['10 EMA', lastNonNull(d.ema10), '#f5a623', dec]);
+    if (d.sma50)  items.push(['50 SMA', lastNonNull(d.sma50), '#3ec46d', dec]);
+    if (d.sma200) items.push(['200 SMA', lastNonNull(d.sma200), '#e2574c', dec]);
+    if (d.rsi)    items.push(['RSI', lastNonNull(d.rsi), '#b07cff', 1]);
+    if (d.volume) items.push(['거래량', lastNonNull(d.volume), '#94a3b8', 0]);
     var html = '';
     for (var i = 0; i < items.length; i++) {
       html += '<div class="cv-item"><span class="cv-dot" style="background:' + items[i][2] + '"></span>'
             + '<span class="cv-name">' + items[i][0] + '</span>'
-            + '<span class="cv-val">' + fmtNum(items[i][1], dec) + '</span></div>';
+            + '<span class="cv-val">' + fmtNum(items[i][1], items[i][3]) + '</span></div>';
     }
     vEl.innerHTML = html;
   }
@@ -2223,13 +2278,19 @@ _CHART_JS = """
     render(initial);   // 즉시 placeholder (분석일까지) — 깜빡임 방지
     setActive();
     load();            // 곧바로 '오늘까지(현재가)' 를 받아 교체
-    window.addEventListener('resize', function(){ if (chart) chart.applyOptions({ width: el.clientWidth }); });
+    window.addEventListener('resize', function(){
+      if (chart) chart.applyOptions({ width: el.clientWidth });
+      var re = document.getElementById('rsi-chart');
+      if (rsiChart && re) rsiChart.applyOptions({ width: re.clientWidth });
+    });
     var last = document.documentElement.dataset.theme;
     setInterval(function(){
       var th = document.documentElement.dataset.theme;
       if (th !== last) {
         last = th;
-        if (chart) chart.applyOptions({ layout: { textColor: txtColor() }, grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } } });
+        var opts = { layout: { textColor: txtColor() }, grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } } };
+        if (chart) chart.applyOptions(opts);
+        if (rsiChart) rsiChart.applyOptions(opts);
       }
     }, 60000);
   }
