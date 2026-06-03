@@ -367,6 +367,20 @@ pattern to follow:
   • Raw 응답 audit log `~/.tradingagents/gics_check_audit.jsonl` 에
     저장 — 환각 의심 시 참조. Pro 의 false-positive tolerance 가 정책
     (놓치는 것보다 noise 가 나음). 사용자 직접 확인 정책 명시.
+- 미국 레딧 게시물 분석 Watcher — t.me/insidertracking 채널의 '미국 레딧
+  게시물 분석' 제목 메시지만 자동 forward+archive (사용자 요청 2026-06-03).
+  `bot/reddit_insider_watch.py` — Telethon **userbot**(봇은 남의 채널 멤버
+  불가 → 사용자 본인 계정 client) 5분 polling (`reddit-insider-watch.timer`)
+  → 제목 매칭 + seen-set (msg_id) 중복 차단 + 첫 run 기존 메시지 seen 처리
+  (폭주 방지, blog_watch mirror) → 우리 NOAH 채널 원본 그대로 forward + 
+  `reddit_insider_archive/YYYY-MM-DD/HHMMSS_<msg_id>.json` 저장 →
+  `reddit_insider.html` 대시보드 (Daily Byte 패턴: 월/일 collapse + 검색 +
+  카드). **비용 ₩0** (LLM 가공 0 — 원본이 이미 한국어 + 구조화). 사전 준비:
+  사용자 본인 계정으로 https://my.telegram.org 가입 → API_ID/API_HASH 발급,
+  `.env` 에 `TG_USER_API_ID` + `TG_USER_API_HASH` + `TG_INSIDER_CHANNEL`
+  (기본 'insidertracking') 추가, 첫 실행 시 본인 전화번호 + 인증코드 1회 입력
+  (`~/.tradingagents/reddit_user.session` 저장 후 무인). nav '📨 미국 레딧'
+  맨 끝, help §7 알림 + §9 대시보드 동기 추가.
 - 블로그 Watcher — 네이버 '변화하는 기업을 찾아서'(beatthemkt) 새 글 자동
   포워드+ingest (2026-05-31 사용자 요청). `bot/blog_watch.py` — RSS
   (rss.blog.naver.com/<id>.xml, 브라우저 UA+Referer) 30분 polling

@@ -24,4 +24,10 @@ akshare>=1.16.0
 # `.venv/bin/python -m pytest tests/ -v` 한 줄 실행. dev 의존성이지만
 # 별도 requirements-dev 안 두는 게 사용자 정책(VM 1대 운영, 별 의미 없음).
 pytest>=8.0
+# Telethon — userbot client for reading public Telegram channels we don't
+# operate (bot/reddit_insider_watch.py reads t.me/insidertracking for
+# "미국 레딧 게시물 분석" posts). 사용자 본인 계정 인증 1회 (TG_USER_API_ID
+# + TG_USER_API_HASH from my.telegram.org). 세션 파일 .session 에 저장,
+# 이후 무인 운영. python-telegram-bot 과 별개 (그건 봇 계정 전용).
+telethon>=1.34
 -e ./TradingAgents

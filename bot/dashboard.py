@@ -1783,6 +1783,7 @@ def _render_index(records: list[dict]) -> str:
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
+            + ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         )
     else:
         errors_link = (
@@ -1793,6 +1794,7 @@ def _render_index(records: list[dict]) -> str:
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
+            + ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         )
 
     return f"""<!doctype html>
@@ -4117,6 +4119,212 @@ def regenerate_cheongyak_index() -> None:
         log.info("dashboard: cheongyak.html regenerated (%d runs)", len(runs))
     except Exception as exc:
         log.warning("dashboard: cheongyak regen failed: %s", exc)
+
+
+# ── 미국 레딧 게시물 분석 — t.me/insidertracking forward archive ─────────
+# bot/reddit_insider_watch.py 가 5분 폴링으로 '미국 레딧 게시물 분석' 제목
+# 메시지만 수집 → 우리 채널 forward + archive 저장. 본 페이지는 그 archive
+# 를 Daily Byte 와 같은 형식(월/일 collapse + 검색 + 카드)으로 surface.
+# 비용 ₩0 (LLM 없음, 원본 그대로 forward).
+_REDDIT_INSIDER_ARCHIVE_DIR = (
+    Path.home() / ".tradingagents" / "reddit_insider_archive"
+)
+
+
+def _load_reddit_insider_runs() -> list[dict]:
+    """Scan ~/.tradingagents/reddit_insider_archive/YYYY-MM-DD/*.json →
+    record dicts newest-first. 각 dict: {ts, _date, msg_id, title, body,
+    source, _path, _filename}. 모든 per-file 에러 swallow."""
+    import json as _json
+    runs: list[dict] = []
+    if not _REDDIT_INSIDER_ARCHIVE_DIR.exists():
+        return runs
+    try:
+        for date_dir in sorted(
+            _REDDIT_INSIDER_ARCHIVE_DIR.iterdir(), reverse=True
+        ):
+            if not date_dir.is_dir():
+                continue
+            for json_file in sorted(date_dir.iterdir(), reverse=True):
+                if not json_file.name.endswith(".json"):
+                    continue
+                try:
+                    with open(json_file, encoding="utf-8") as f:
+                        rec = _json.load(f)
+                    rec["_path"] = str(json_file)
+                    rec["_date"] = rec.get("_date") or date_dir.name
+                    rec["_filename"] = json_file.name
+                    runs.append(rec)
+                except Exception as exc:
+                    log.warning(
+                        "dashboard: reddit_insider load %s failed: %s",
+                        json_file, exc,
+                    )
+    except Exception as exc:
+        log.warning("dashboard: reddit_insider scan failed: %s", exc)
+    return runs
+
+
+def _render_reddit_insider_page(runs: list[dict]) -> str:
+    """Render reddit_insider.html — Daily Byte 패턴 mirror (월/일 collapse +
+    검색 + 카드). cost 미사용(LLM 없음 → 항상 ₩0)이라 stat 은 총건수 / 가장
+    최근 only. body 는 원본 그대로(plain text) — Telegram 첫 줄을 카드 제목,
+    전체를 카드 본문으로."""
+    import html as _html
+    import json as _json_ri
+    from collections import defaultdict
+    from datetime import datetime as _dt_ri, timezone as _tz_ri, timedelta as _td_ri
+
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for r in runs:
+        by_date[r.get("_date", "")].append(r)
+
+    total_runs = len(runs)
+    last_ts = ""
+    if runs:
+        # runs 는 newest-first 정렬돼 들어옴
+        last_ts = (runs[0].get("ts") or "")[:16].replace("T", " ")
+
+    parts: list[str] = [_SCREENER_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="daily_byte.html">📊 Daily Byte</a>
+    · <a href="screener.html">📊 Bottleneck Screener</a>
+  </div>
+  <h1>📨 미국 레딧 게시물 분석 — Archive</h1>
+  <p class="sub">t.me/insidertracking 자동 포워드 · 제목 '미국 레딧 게시물 분석' 필터 · ₩0 (LLM 없음, 원본 그대로) · 정보 관찰(투자 권유 아님)</p>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 포워드</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수신 (KST)</div></div>
+    <div class="stat"><div class="stat-v">₩0</div><div class="stat-l">누적 비용</div></div>
+  </div>
+
+  <div class="search-bar">
+    <input id="scr-search" type="text" placeholder="제목 / 본문 / 종목 검색 (예: SPCE, 광기, bagholder)" autocomplete="off" spellcheck="false">
+    <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
+  </div>
+  <p id="scr-status" class="status-line">총 {total_runs}건의 포워드</p>
+  <div id="scr-snippets" class="snippets" style="display:none"></div>
+  <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
+""")
+
+    if not runs:
+        parts.append("""
+  <div class="empty">
+    아직 포워드 기록이 없습니다. t.me/insidertracking 채널의 '미국 레딧 게시물 분석' 게시물이 올라오면 5분 내 자동 수집됩니다.
+  </div>
+</div></body></html>""")
+        return "".join(parts)
+
+    _today_kst_ri = _dt_ri.now(_tz_ri(_td_ri(hours=9))).date().isoformat()
+    _this_month_ri = _today_kst_ri[:7]
+
+    # 월 → 일 → 카드 (Daily Byte 와 동일 구조).
+    months: dict[str, list[str]] = defaultdict(list)
+    for date in sorted(by_date.keys(), reverse=True):
+        months[(date or "")[:7]].append(date)
+
+    def _format_month_ri(ym: str) -> str:
+        try:
+            y, m = ym.split("-")
+            return f"{int(y)}년 {int(m)}월"
+        except Exception:
+            return ym
+
+    for month in sorted(months.keys(), reverse=True):
+        month_dates = months[month]
+        month_open = " open" if month == _this_month_ri else ""
+        month_count = sum(len(by_date[d]) for d in month_dates)
+        parts.append(
+            f'<details class="month"{month_open}>'
+            f'<summary class="month-head">'
+            f'<span>📆 {_html.escape(_format_month_ri(month))}</span>'
+            f'<span class="count">{month_count}건</span>'
+            f'</summary>'
+            f'<div class="month-body">'
+        )
+        for date in month_dates:
+            day_open = " open" if date == _today_kst_ri else ""
+            day_count = len(by_date[date])
+            parts.append(
+                f'<details class="day"{day_open}>'
+                f'<summary class="day-head">'
+                f'<span>📅 {_html.escape(date)}</span>'
+                f'<span class="count">{day_count}건</span>'
+                f'</summary>'
+                f'<div class="day-body">'
+            )
+            for r in by_date[date]:
+                raw_ts = r.get("ts") or ""
+                ts_clock = raw_ts.split("T", 1)[1][:5] if "T" in raw_ts else ""
+                ts_html = _html.escape(ts_clock)
+                title = _html.escape(r.get("title") or "미국 레딧 게시물 분석")
+                body_raw = (r.get("body") or "").strip()
+                # plain text (Telegram body 가 HTML 아님) → escape + <br>.
+                body_html = _html.escape(body_raw).replace("\n", "<br>")
+                plain = body_raw
+                card_lines: list[dict] = []
+                for ln in plain.splitlines():
+                    s = ln.strip()
+                    if len(s) >= 3:
+                        card_lines.append({"sec": "brief", "txt": s[:300]})
+                if len(card_lines) > 200:
+                    card_lines = card_lines[:200]
+                search_attr = _html.escape(plain.lower()[:6000])
+                lines_attr = _html.escape(
+                    _json_ri.dumps(card_lines, ensure_ascii=False)
+                )
+
+                filename = _html.escape(r.get("_filename", ""))
+                card_default_open = (
+                    date == _today_kst_ri and day_count == 1
+                )
+                card_open_attr = " open" if card_default_open else ""
+                card_id = (
+                    f"card-{_html.escape(r.get('_date', ''))}-{filename}"
+                    .replace(".", "_")
+                )
+
+                parts.append(f"""
+  <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date', ''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
+    <summary class="card-h">
+      <span class="card-toggle">▸</span>
+      <span class="domain">📨 {title}</span>
+      <span class="meta">⏱ {ts_html}</span>
+    </summary>
+    <div class="card-body">
+      <div class="analysis-sec"><div class="analysis-b" data-section="brief">{body_html}</div></div>
+    </div>
+  </details>
+""")
+            parts.append('</div></details>')  # close day
+        parts.append('</div></details>')  # close month
+
+    parts.append("</div>")
+    parts.append(_DAILY_BYTE_JS)
+    return "".join(parts)
+
+
+def regenerate_reddit_insider_index() -> None:
+    """Scan reddit_insider archive → write reddit_insider.html under
+    ARCHIVE_ROOT. Called from bot.reddit_insider_watch after new forwards
+    + from periodic dashboard refresh + on startup."""
+    try:
+        runs = _load_reddit_insider_runs()
+        html = _render_reddit_insider_page(runs)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "reddit_insider.html").write_text(
+            html, encoding="utf-8"
+        )
+        log.info(
+            "dashboard: reddit_insider.html regenerated (%d runs)",
+            len(runs),
+        )
+    except Exception as exc:
+        log.warning("dashboard: reddit_insider regen failed: %s", exc)
 
 
 # ── 분기 GICS / 신규 산업 점검 — 후보 트래킹 (2026-06-01) ────────────────

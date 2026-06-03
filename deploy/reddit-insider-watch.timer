@@ -1,0 +1,15 @@
+[Unit]
+Description=Trigger 미국 레딧 게시물 분석 watcher every 5 min
+
+[Timer]
+# 5분 간격. 사용자 정책 2026-06-03 — t.me/insidertracking 채널의 '미국
+# 레딧 게시물 분석' 제목 메시지가 올라오면 5분 내 자동 forward + archive.
+# Telethon 폴링이라 텔레그램 API rate-limit 안전 (실제 호출 = 1회 fetch
+# 최근 30개). Persistent=true 로 서버 다운 후 부팅 시 즉시 한 번 fire.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=reddit-insider-watch.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

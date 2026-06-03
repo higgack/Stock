@@ -996,7 +996,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
 
 ━━━━━━━━━
 <b>【7. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly, 인포그래픽) · 🎟️ 청약 Byte (평일10:00·14:00 신규분양) · 🏠 부동산 Byte (금09:00·1일 Monthly, 인포그래픽) · 📝 블로그 새글 자동포워드(30분)
+🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly) · 🎟️ 청약 (평일10·14시) · 🏠 부동산 (금09:00·1일 Monthly) · 📝 블로그(30분) · 📨 미국 레딧(5분, ₩0)
 
 ━━━━━━━━━
 <b>【8. 차별화 포인트】</b>
@@ -1006,7 +1006,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
 <b>【9. 대시보드】</b> 🦉
  • <b>NOAH archive</b> (ID/PW) — 헤더에서 Daily Byte/Screener/도메인/SV/🇰🇷 이동. 💰비용=NOAH+Screener+DailyByte+SV
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
- • <b>Daily Byte</b> — 평일19:00·일22:00 Weekly KR수급 인포그래픽(사진)+본문, 날짜별 누적·검색·🗑️
+ • <b>Daily Byte</b> — 평일19:00·일22:00 KR수급 인포그래픽+본문·검색·🗑️
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
  • <b>청약 Byte</b> — 평일10:00·14:00 신규 분양 모집공고+경쟁률(청약홈) · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/cheongyak.html
@@ -1014,6 +1014,8 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
  • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list (분기 GICS 후보는 도메인 목록 페이지 상단에서)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
+ • <b>📨 미국 레딧</b> — t.me/insidertracking '미국 레딧 게시물 분석' 자동포워드(5분·₩0)
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/reddit_insider.html
  • <b>SV</b> — 매크로·산업·Deal·07:30/20:30 매일·평일 08:00/21:00 push·일 22:00 주간
    http://34.50.23.221:8002/dashboard
  • <b>🇰🇷 수출입</b> — 외부 보조(자동 갱신)
@@ -2479,12 +2481,14 @@ async def _periodic_dashboard_refresh() -> None:
             from bot.dashboard import (regenerate_index, regenerate_daily_byte_index,
                                        regenerate_realestate_index,
                                        regenerate_cheongyak_index,
-                                       regenerate_gics_candidates_index)
+                                       regenerate_gics_candidates_index,
+                                       regenerate_reddit_insider_index)
             regenerate_index()
             regenerate_daily_byte_index()
             regenerate_realestate_index()
             regenerate_cheongyak_index()
             regenerate_gics_candidates_index()
+            regenerate_reddit_insider_index()
             log.info("midnight dashboard regen: ok")
         except Exception:
             log.exception("midnight dashboard regen failed")
@@ -2542,6 +2546,12 @@ async def _on_startup(application) -> None:
         log.info("startup: gics_candidates.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: gics_candidates.html regen failed: %s", exc)
+    try:
+        from bot.dashboard import regenerate_reddit_insider_index
+        regenerate_reddit_insider_index()
+        log.info("startup: reddit_insider.html regenerated with current code")
+    except Exception as exc:
+        log.warning("startup: reddit_insider.html regen failed: %s", exc)
     # Populates the 'Menu' button beside the input area + the '/' typing
     # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
     # registered (the universe is too large) — Telegram still recognises

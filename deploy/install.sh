@@ -54,7 +54,8 @@ for unit in \
     blog-watch.service              blog-watch.timer \
     realestate-byte.service         realestate-byte.timer \
     realestate-byte-monthly.service realestate-byte-monthly.timer \
-    cheongyak-byte.service          cheongyak-byte.timer ;
+    cheongyak-byte.service          cheongyak-byte.timer \
+    reddit-insider-watch.service    reddit-insider-watch.timer ;
 do
     if [ -f "$DEPLOY_DIR/$unit" ]; then
         install -m 0644 "$DEPLOY_DIR/$unit" /etc/systemd/system/
@@ -105,6 +106,9 @@ if [ -f "$DEPLOY_DIR/realestate-byte-monthly.timer" ]; then
 fi
 if [ -f "$DEPLOY_DIR/cheongyak-byte.timer" ]; then
     systemctl enable --now cheongyak-byte.timer
+fi
+if [ -f "$DEPLOY_DIR/reddit-insider-watch.timer" ]; then
+    systemctl enable --now reddit-insider-watch.timer
 fi
 if [ -f "$DEPLOY_DIR/trade-bot-update.timer" ]; then
     systemctl enable --now trade-bot-update.timer
