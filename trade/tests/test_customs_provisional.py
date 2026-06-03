@@ -181,6 +181,21 @@ class RenderTests(unittest.TestCase):
         self.assertIn("반도체 수출", html)
         self.assertIn("억$", html)                   # 단위 표기
 
+    def test_export_cells_warned_with_caveat(self):
+        # B안: 수출 절대액 ⚠️ 표식 + 캡션(확정 시 조정 가능).
+        html = prov.render_box(self._signals())
+        self.assertIn("⚠️", html)
+        self.assertIn("ind-prov-warn", html)         # 수출 셀 경고 테두리
+        self.assertIn("ind-prov-cav", html)          # 캡션
+        self.assertIn("추세로 참고", html)
+
+    def test_no_export_no_caveat(self):
+        # 수입만 있으면 수출 ⚠️ 캡션은 안 뜬다.
+        sig = self._signals()
+        html = prov.render_box({"imp_item": sig["imp_item"]})
+        self.assertNotIn("ind-prov-cav", html)
+        self.assertNotIn("ind-prov-warn", html)
+
     def test_box_yoy_sign_classes(self):
         html = prov.render_box(self._signals())
         self.assertIn("ind-prov-pos", html)          # 양수 YoY(녹색)

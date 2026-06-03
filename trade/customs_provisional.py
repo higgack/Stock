@@ -285,13 +285,17 @@ def _yoy_span(yoy: Optional[float]) -> str:
     return f"<span class='ind-prov-{cls}'>{fmt_pct(yoy)}</span>"
 
 
-def _metric(label: str, item: Optional[dict], *, lead: bool = False) -> str:
+def _metric(label: str, item: Optional[dict], *,
+            lead: bool = False, warn: bool = False) -> str:
     from trade.customs import fmt_usd
     if not item:
         return ""
     tag = " ⚡선행" if lead else ""
+    if warn:
+        tag += " ⚠️"
+    cls = "ind-prov-cell ind-prov-warn" if warn else "ind-prov-cell"
     return (
-        "<div class='ind-prov-cell'>"
+        f"<div class='{cls}'>"
         f"<div class='ind-prov-k'>{label}{tag}</div>"
         f"<div class='ind-prov-v'>{fmt_usd(item.get('usd'))} "
         f"{_yoy_span(item.get('yoy'))}</div>"
@@ -304,6 +308,10 @@ def render_box(signals: dict[str, dict]) -> str:
 
     헤드라인: 전체 수출/수입 잠정 YoY + ⚡반도체제조용장비 수입(capex 선행)
     + 반도체 수출. 산업 집계와 분리된 독립 박스.
+
+    수출 잠정 절대액(전체 수출·반도체 수출)은 과거 대비 이례적으로 높게
+    나오는 경향이 있어 ⚠️ 표식 + 캡션을 단다(운영자 확인 B안): 확정 시
+    조정 가능하므로 절대액보다 추세로 참고. 수입·capex는 실측 검증됨.
     """
     if not signals:
         return ""
@@ -321,16 +329,25 @@ def render_box(signals: dict[str, dict]) -> str:
     if exp_item:
         cells.append(_metric(
             "전체 수출",
-            {"usd": exp_item.get("total_usd"), "yoy": exp_item.get("total_yoy")}))
+            {"usd": exp_item.get("total_usd"), "yoy": exp_item.get("total_yoy")},
+            warn=True))
     if imp_item:
         cells.append(_metric(
             "전체 수입",
             {"usd": imp_item.get("total_usd"), "yoy": imp_item.get("total_yoy")}))
     cells.append(_metric("반도체제조용장비 수입", capex, lead=True))
-    cells.append(_metric("반도체 수출", semi_exp))
+    cells.append(_metric("반도체 수출", semi_exp, warn=True))
     body = "".join(c for c in cells if c)
     if not body:
         return ""
+
+    # 수출 ⚠️ 캡션 — 수출 셀이 실제로 그려질 때만(데이터 있을 때) 노출.
+    has_export = bool(exp_item) or bool(semi_exp)
+    caveat = (
+        "<div class='ind-prov-cav'>⚠️ 수출 잠정 절대액이 과거 대비 이례적으로 "
+        "높게 나옴 — 확정 시 조정 가능, 절대액보다 추세로 참고</div>"
+        if has_export else ""
+    )
 
     from html import escape as _esc
     ym = _esc(ref.get("ym") or "")
@@ -342,5 +359,6 @@ def render_box(signals: dict[str, dict]) -> str:
         "최대 ~한 달 선행 · 작년 동월·동순 YoY · 단위 억$ "
         "<b>(산업 집계와 분리·참고용)</b></div>"
         f"<div class='ind-prov-grid'>{body}</div>"
+        f"{caveat}"
         "</div>"
     )

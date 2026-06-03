@@ -572,6 +572,8 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-prov-pos{color:var(--tone-export);font-size:13px;font-weight:600}
 .ind-prov-neg{color:var(--tone-import);font-size:13px;font-weight:600}
 .ind-prov-flat{color:var(--text-sub);font-size:13px}
+.ind-prov-warn{border-color:var(--tone-import)}
+.ind-prov-cav{margin-top:8px;font-size:11.5px;color:var(--tone-import);line-height:1.4}
 /* 🗄 월별 아카이브 링크 섹션 */
 .ind-archive{margin:8px 16px 0;padding:9px 14px;border:1px dashed var(--border-soft);border-radius:10px;background:var(--surface)}
 .ind-archive a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}
