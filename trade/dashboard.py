@@ -105,7 +105,7 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             return ""
         from trade import insights, llm_insights
         import json as _json
-        from trade import industry_archive
+        from trade import industry_archive, customs_provisional
         with customs.session(db) as conn:
             by_ind = industry.load_stored(conn)
             by_imp = industry.load_stored_imports(conn)
@@ -117,6 +117,10 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             except Exception:
                 cards = []
             share_ym = industry_archive.latest_stored_ym(conn)
+            # 🟢 잠정 속보(관세청 10일 단위) — fetch_provisional가 저장한
+            # 스냅샷만 읽음(렌더는 API 미접속). 비면 '' → motie 배너 폴백.
+            prov_signals = customs_provisional.load_signals(conn)
+        prov_html = customs_provisional.render_box(prov_signals)
         ins_html = llm_insights.render_html(cards if isinstance(cards, list) else [])
         # 🔗 공유: 그 확정월 시점 '스냅샷' 공개 URL(인증 없음)을 클립보드로 복사.
         # 새 확정월이 오면 버튼이 새 URL을 주지만, 이미 보낸 옛 링크는 그 달 동결.
@@ -144,7 +148,7 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             f'{share_btn}'
             '</div>'
         )
-        return (ins_html + archive_link
+        return (prov_html + ins_html + archive_link
                 + industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp))
     except Exception:
         return ""
@@ -556,6 +560,18 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ins-card{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
 .ins-card h4{margin:0 0 4px;font-size:13px;color:var(--text)}
 .ins-card p{margin:0;font-size:12px;color:var(--text-sub);line-height:1.55}
+/* 🟢 잠정 속보(관세청 10일 단위) 박스 — 산업 집계와 분리된 선행 신호 */
+.ind-prov{margin:8px 16px 4px;padding:14px 16px;border:1px solid var(--border-soft);border-left:4px solid var(--tone-export);border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}
+.ind-prov>h3{margin:0 0 2px;font-size:16px;color:var(--tone-export)}
+.ind-prov-tag{font-size:11px;font-weight:600;color:var(--text-sub);border:1px solid var(--border-soft);border-radius:999px;padding:1px 8px;margin-left:6px;vertical-align:middle}
+.ind-prov-sub{font-size:12px;color:var(--text-sub);margin-bottom:10px}
+.ind-prov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
+.ind-prov-cell{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
+.ind-prov-k{font-size:12px;color:var(--text-sub);margin-bottom:3px}
+.ind-prov-v{font-size:15px;font-weight:700;color:var(--text)}
+.ind-prov-pos{color:var(--tone-export);font-size:13px;font-weight:600}
+.ind-prov-neg{color:var(--tone-import);font-size:13px;font-weight:600}
+.ind-prov-flat{color:var(--text-sub);font-size:13px}
 /* 🗄 월별 아카이브 링크 섹션 */
 .ind-archive{margin:8px 16px 0;padding:9px 14px;border:1px dashed var(--border-soft);border-radius:10px;background:var(--surface)}
 .ind-archive a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}

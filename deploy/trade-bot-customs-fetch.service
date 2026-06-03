@@ -32,9 +32,14 @@ EnvironmentFile=-/home/higgack/stock-trade/.env
 #      '✅ 관세청 데이터 갱신'.
 #      Quiet ticks send nothing; first run records a silent baseline.
 #      This is why a 4×/day cadence doesn't spam.
-#   6. trade.dashboard — re-render index.html immediately so the new
-#      surge snapshot + industry tab (+ 🔍 추가신호 박스) show without
-#      waiting for the next 5-min refresh tick. Reads store.db + customs.db.
+#   6. fetch_provisional — pull 관세청 10일 단위 잠정치 4종(수출/수입 ×
+#      품목/국가) → '🟢 잠정 속보' 스냅샷. 산업 집계와 분리된 선행 신호
+#      (확정치보다 최대 ~한 달 빠름, 특히 수입 반도체제조용장비=capex 선행).
+#      SILENT(journal only), 무료 API 16콜/일, per-kind 실패는 건너뜀.
+#   7. trade.dashboard — re-render index.html immediately so the new
+#      surge snapshot + industry tab (+ 🔍 추가신호 + 🟢 잠정 속보) show
+#      without waiting for the next 5-min refresh tick. Reads store.db +
+#      customs.db.
 # All idempotent; runs 4×/day (see .timer) so a publication is caught
 # within ~6h. Quiet ticks send nothing.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_customs
@@ -42,6 +47,7 @@ ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.customs_al
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.scan_customs
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.industry_report --store
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.refresh_signals
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_provisional
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard
 StandardOutput=journal
 StandardError=journal
