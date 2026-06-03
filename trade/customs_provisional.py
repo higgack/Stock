@@ -477,18 +477,22 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
         for it in [total, *items]:
             is_capex = kind == "imp_item" and "반도체제조용장비" in it["name"]
             nm = _esc(it["name"]) + (" ⚡" if is_capex else "")
-            warn_mark = " ⚠️" if warn else ""
             if inline:
                 tot_style = (";font-weight:700;background:#f4f4f4"
                              if it["idx"] == 0 else "")
-                num_td = "padding:4px 8px;text-align:right;white-space:nowrap;border-bottom:1px solid #eee"
-                lbl_td = "padding:4px 8px;border-bottom:1px solid #eee"
+                # 항목명(1차 식별자): 진한 본문색·굵게.
+                # 절대액: 본문색·tabular-nums(자릿수 정렬)·우측 정렬.
+                lbl_td = ("padding:4px 8px;border-bottom:1px solid #eee;"
+                          "color:#1d1d1f;font-weight:600")
+                num_td = ("padding:4px 8px;text-align:right;white-space:nowrap;"
+                          "border-bottom:1px solid #eee;color:#1d1d1f;"
+                          "font-variant-numeric:tabular-nums")
                 yoy_html = _yoy_span_inline(it["yoy"])
                 mom_html = _mom_span_inline(it["momentum"])
                 body_rows.append(
                     f"<tr style='{tot_style}'>"
                     f"<td style='{lbl_td}'>{nm}</td>"
-                    f"<td style='{num_td}'>{fmt_usd(it['usd'])}{warn_mark}</td>"
+                    f"<td style='{num_td}'>{fmt_usd(it['usd'])}</td>"
                     f"<td style='{num_td}'>{yoy_html}</td>"
                     f"<td style='{num_td}'>{mom_html}</td></tr>"
                 )
@@ -496,16 +500,25 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
                 tr_cls = " class='ind-prov-trtot'" if it["idx"] == 0 else ""
                 body_rows.append(
                     f"<tr{tr_cls}><td>{nm}</td>"
-                    f"<td class='ind-prov-num'>{fmt_usd(it['usd'])}{warn_mark}</td>"
+                    f"<td class='ind-prov-num'>{fmt_usd(it['usd'])}</td>"
                     f"<td class='ind-prov-num'>{_yoy_span(it['yoy'])}</td>"
                     f"<td class='ind-prov-num'>{_mom_span(it['momentum'])}</td></tr>"
                 )
+        # 수출 그룹은 ⚠️ 배지를 캡션에 1회만(셀 반복은 시각 노이즈).
+        if inline:
+            cap_warn = (" <span style='font-size:11px;font-weight:500;"
+                        "color:#ff9500;margin-left:6px'>"
+                        "⚠️ 잠정 — 확정 전 수치</span>") if warn else ""
+        else:
+            cap_warn = (" <span class='ind-prov-cap-warn'>"
+                        "⚠️ 잠정 — 확정 전 수치</span>") if warn else ""
         if inline:
             tables.append(
                 "<table style='width:100%;border-collapse:collapse;font-size:12px;"
                 "background:#fff;border:1px solid #ddd;border-radius:8px;margin:6px 0'>"
-                f"<caption style='caption-side:top;text-align:left;font-weight:600;"
-                f"padding:6px 8px'>{_esc(title)} · {_esc(win_label)}</caption>"
+                "<caption style='caption-side:top;text-align:left;font-weight:600;"
+                "padding:6px 8px;color:#1d1d1f'>"
+                f"{_esc(title)} · {_esc(win_label)}{cap_warn}</caption>"
                 "<thead><tr>"
                 "<th style='text-align:left;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>항목</th>"
                 "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>절대액</th>"
@@ -516,7 +529,7 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
         else:
             tables.append(
                 "<table class='ind-prov-tbl'>"
-                f"<caption>{_esc(title)} · {_esc(win_label)}</caption>"
+                f"<caption>{_esc(title)} · {_esc(win_label)}{cap_warn}</caption>"
                 "<thead><tr><th>항목</th><th>절대액</th><th>YoY</th><th>모멘텀</th>"
                 f"</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
             )

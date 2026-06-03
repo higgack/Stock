@@ -414,6 +414,29 @@ class MomentumArchiveHtmlTests(unittest.TestCase):
         # ind-prov-* 클래스는 안 씀(다른 컨텍스트라)
         self.assertNotIn("class='ind-prov-tbl'", html)
 
+    def test_archive_html_readability_dark_text_and_tabular(self):
+        # 핸드오프 ①: 항목명·절대액이 진하게(본문색·tabular-nums) 보이게.
+        html = prov.momentum_archive_html(self._rows())
+        self.assertIn("color:#1d1d1f", html)          # 항목·절대액 본문 진한색
+        self.assertIn("font-weight:600", html)        # 항목명 굵게
+        self.assertIn("tabular-nums", html)           # 자릿수 정렬
+
+    def test_archive_html_warn_in_caption_not_per_cell(self):
+        # 핸드오프 ②: ⚠️는 셀마다 반복 안 하고 캡션 배지로 1회만.
+        # 수출 그룹(exp_item)이 있을 때 캡션 배지가 나오고, 셀 ⚠️ 마커는 없음.
+        rows_with_exp = {"exp_item": self._rows()["imp_item"]}  # warn 그룹
+        html = prov.momentum_archive_html(rows_with_exp)
+        self.assertIn("잠정 — 확정 전 수치", html)    # 캡션 배지
+        # 셀(td) 안에 ⚠️ 반복 없음
+        import re
+        cell_warns = re.findall(r"<td[^>]*>[^<]*⚠️", html)
+        self.assertEqual(cell_warns, [])
+
+    def test_archive_html_no_warn_when_only_imports(self):
+        # 수입 그룹만이면(warn=False) 캡션 배지도 안 뜬다.
+        html = prov.momentum_archive_html(self._rows())
+        self.assertNotIn("잠정 — 확정 전 수치", html)
+
     def test_archive_html_empty_when_no_rows(self):
         self.assertEqual(prov.momentum_archive_html({}), "")
 

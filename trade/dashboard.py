@@ -592,9 +592,11 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-prov-tbl caption{caption-side:top;text-align:left;font-weight:600;font-size:12.5px;padding:6px 8px;color:var(--text)}
 .ind-prov-tbl th{text-align:right;font-weight:500;color:var(--text-sub);padding:4px 8px;border-bottom:1px solid var(--border-soft)}
 .ind-prov-tbl th:first-child{text-align:left}
-.ind-prov-tbl td{padding:4px 8px;border-bottom:1px solid var(--border-soft)}
-.ind-prov-num{text-align:right;white-space:nowrap}
+.ind-prov-tbl td{padding:4px 8px;border-bottom:1px solid var(--border-soft);color:var(--text)}
+.ind-prov-tbl td:first-child{font-weight:600}
+.ind-prov-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
 .ind-prov-trtot td{font-weight:700;background:var(--surface-2)}
+.ind-prov-cap-warn{font-size:11px;font-weight:500;color:var(--tone-import);margin-left:6px}
 /* 🗄 월별 아카이브 링크 섹션 */
 .ind-archive{margin:8px 16px 0;padding:9px 14px;border:1px dashed var(--border-soft);border-radius:10px;background:var(--surface)}
 .ind-archive a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}
