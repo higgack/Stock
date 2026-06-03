@@ -436,15 +436,28 @@ def _mom_span(m: Optional[float]) -> str:
     return f"<span class='ind-prov-neg'>▼ {m:.0f}%p</span>"
 
 
-def render_momentum(rows_by_kind: dict[str, list]) -> str:
-    """🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열을 절대액 큰 순으로 펼치는 패널.
+def _mom_span_inline(m: Optional[float]) -> str:
+    """모멘텀 셀(인라인 스타일판) — 아카이브 페이지처럼 dashboard CSS가 없는
+    문맥에서도 색·표식이 그대로 보이게."""
+    if m is None:
+        return "<span style='color:#999'>—</span>"
+    if m >= 0:
+        return f"<span style='color:#34c759;font-weight:600'>▲ +{m:.0f}%p</span>"
+    return f"<span style='color:#ff9500;font-weight:600'>▼ {m:.0f}%p</span>"
 
-    각 그룹 테이블: 항목 | 최신창 절대액(수출 ⚠️) | 창 YoY | 모멘텀(▲가속/▼둔화).
-    전체(합계)는 맨 위 고정, 나머지는 최신창 절대액 내림차순. 데이터 없으면
-    '' (헤드라인 박스만 뜨고 펼치기는 사라짐). JS 없는 <details>라 자체완결.
-    """
-    if not rows_by_kind:
-        return ""
+
+def _yoy_span_inline(yoy: Optional[float]) -> str:
+    from trade.customs import fmt_pct
+    if yoy is None:
+        return "<span style='color:#999'>—</span>"
+    cls = "#34c759" if yoy >= 0 else "#ff9500"
+    return f"<span style='color:{cls};font-weight:600'>{fmt_pct(yoy)}</span>"
+
+
+def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
+                     ) -> tuple[str, str]:
+    """(win_label, tables_html). render_momentum / archive 공용 — inline=True면
+    클래스 대신 인라인 스타일을 써서 dashboard CSS 없는 페이지에서도 정상."""
     from html import escape as _esc
     from trade.customs import fmt_usd
 
@@ -465,19 +478,75 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
             is_capex = kind == "imp_item" and "반도체제조용장비" in it["name"]
             nm = _esc(it["name"]) + (" ⚡" if is_capex else "")
             warn_mark = " ⚠️" if warn else ""
-            tr_cls = " class='ind-prov-trtot'" if it["idx"] == 0 else ""
-            body_rows.append(
-                f"<tr{tr_cls}><td>{nm}</td>"
-                f"<td class='ind-prov-num'>{fmt_usd(it['usd'])}{warn_mark}</td>"
-                f"<td class='ind-prov-num'>{_yoy_span(it['yoy'])}</td>"
-                f"<td class='ind-prov-num'>{_mom_span(it['momentum'])}</td></tr>"
+            if inline:
+                tot_style = (";font-weight:700;background:#f4f4f4"
+                             if it["idx"] == 0 else "")
+                num_td = "padding:4px 8px;text-align:right;white-space:nowrap;border-bottom:1px solid #eee"
+                lbl_td = "padding:4px 8px;border-bottom:1px solid #eee"
+                yoy_html = _yoy_span_inline(it["yoy"])
+                mom_html = _mom_span_inline(it["momentum"])
+                body_rows.append(
+                    f"<tr style='{tot_style}'>"
+                    f"<td style='{lbl_td}'>{nm}</td>"
+                    f"<td style='{num_td}'>{fmt_usd(it['usd'])}{warn_mark}</td>"
+                    f"<td style='{num_td}'>{yoy_html}</td>"
+                    f"<td style='{num_td}'>{mom_html}</td></tr>"
+                )
+            else:
+                tr_cls = " class='ind-prov-trtot'" if it["idx"] == 0 else ""
+                body_rows.append(
+                    f"<tr{tr_cls}><td>{nm}</td>"
+                    f"<td class='ind-prov-num'>{fmt_usd(it['usd'])}{warn_mark}</td>"
+                    f"<td class='ind-prov-num'>{_yoy_span(it['yoy'])}</td>"
+                    f"<td class='ind-prov-num'>{_mom_span(it['momentum'])}</td></tr>"
+                )
+        if inline:
+            tables.append(
+                "<table style='width:100%;border-collapse:collapse;font-size:12px;"
+                "background:#fff;border:1px solid #ddd;border-radius:8px;margin:6px 0'>"
+                f"<caption style='caption-side:top;text-align:left;font-weight:600;"
+                f"padding:6px 8px'>{_esc(title)} · {_esc(win_label)}</caption>"
+                "<thead><tr>"
+                "<th style='text-align:left;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>항목</th>"
+                "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>절대액</th>"
+                "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>YoY</th>"
+                "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>모멘텀</th>"
+                f"</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
             )
-        tables.append(
-            "<table class='ind-prov-tbl'>"
-            f"<caption>{_esc(title)} · {_esc(win_label)}</caption>"
-            "<thead><tr><th>항목</th><th>절대액</th><th>YoY</th><th>모멘텀</th>"
-            f"</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
-        )
+        else:
+            tables.append(
+                "<table class='ind-prov-tbl'>"
+                f"<caption>{_esc(title)} · {_esc(win_label)}</caption>"
+                "<thead><tr><th>항목</th><th>절대액</th><th>YoY</th><th>모멘텀</th>"
+                f"</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+            )
+    return win_label, "".join(tables)
+
+
+def momentum_archive_html(rows_by_kind: dict[str, list]) -> str:
+    """아카이브 카드 본문에 넣을 모멘텀 4그룹 테이블(인라인 스타일).
+    dashboard CSS 없이도 색·표식이 그대로 보임. 데이터 없으면 ''."""
+    if not rows_by_kind:
+        return ""
+    _, tables = _momentum_tables(rows_by_kind, inline=True)
+    if not tables:
+        return ""
+    note = ("<div style='font-size:11.5px;color:#666;line-height:1.4;margin-top:6px'>"
+            "모멘텀 = 최신창 YoY − 직전 풀월 YoY (▲가속/▼둔화) · 절대액 큰 순 · "
+            "수출 절대액 ⚠️ 추세 참고</div>")
+    return f"<div style='margin-top:8px'>{note}{tables}</div>"
+
+
+def render_momentum(rows_by_kind: dict[str, list]) -> str:
+    """🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열을 절대액 큰 순으로 펼치는 패널.
+
+    각 그룹 테이블: 항목 | 최신창 절대액(수출 ⚠️) | 창 YoY | 모멘텀(▲가속/▼둔화).
+    전체(합계)는 맨 위 고정, 나머지는 최신창 절대액 내림차순. 데이터 없으면
+    '' (헤드라인 박스만 뜨고 펼치기는 사라짐). JS 없는 <details>라 자체완결.
+    """
+    if not rows_by_kind:
+        return ""
+    _, tables = _momentum_tables(rows_by_kind, inline=False)
     if not tables:
         return ""
     note = (
@@ -487,7 +556,7 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
     return (
         "<details class='ind-prov-more'>"
         "<summary>🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열 (절대액순)</summary>"
-        f"<div class='ind-prov-mom'>{note}{''.join(tables)}</div>"
+        f"<div class='ind-prov-mom'>{note}{tables}</div>"
         "</details>"
     )
 
@@ -557,7 +626,7 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
         "<b>(산업 집계와 분리·참고용)</b></div>"
         f"<div class='ind-prov-grid'>{body}</div>"
         f"{caveat}"
-        f"{timeline}"
         f"{momentum_html}"
+        f"{timeline}"
         "</div>"
     )

@@ -376,6 +376,47 @@ class MomentumRenderTests(unittest.TestCase):
         self.assertIn("MOMENTUM", box)
         self.assertIn("ind-prov", box)
 
+    def test_box_order_momentum_before_timeline(self):
+        # 운영자 요청: 모멘텀이 위, 🗄 타임라인이 아래.
+        box = prov.render_box(
+            {"imp_item": {"ym": "2026-05", "window": "전월(1~말일)",
+                          "total_usd": 1, "total_yoy": 1.0,
+                          "items": [{"name": "반도체", "usd": 1, "yoy": 1.0}]}},
+            momentum_html="<details>MOMENTUM_MARKER</details>")
+        self.assertLess(box.index("MOMENTUM_MARKER"), box.index("잠정 타임라인"))
+
+
+class MomentumArchiveHtmlTests(unittest.TestCase):
+    def _rows(self):
+        def amt(t, *r):
+            base = [5_000_000_000] * 10
+            for i, v in enumerate(r):
+                base[i] = v
+            return [t] + base
+        return {"imp_item": [
+            {"ym": "2025-05", "priod_dt": "01~31", "decile": "FULL",
+             "amt": amt(110e9, 45e9, 8e9, 9e9, 7e9, 1.3e9)},
+            {"ym": "2026-04", "priod_dt": "01~30", "decile": "FULL",
+             "amt": amt(120e9, 55e9, 8e9, 9e9, 7e9, 1.9e9)},
+            {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL",
+             "amt": amt(150e9, 72e9, 8e9, 9e9, 7e9, 2.94e9)},
+        ]}
+
+    def test_archive_html_uses_inline_styles(self):
+        # dashboard CSS 없는 컨텍스트(아카이브 페이지)용 인라인 스타일판
+        html = prov.momentum_archive_html(self._rows())
+        self.assertIn("<table", html)
+        self.assertIn("border-collapse", html)        # 인라인 스타일
+        self.assertIn("color:#34c759", html)          # 양수 녹색 인라인
+        self.assertIn("반도체제조용장비", html)
+        self.assertIn("▲", html)
+        self.assertIn("⚡", html)                      # capex 강조 유지
+        # ind-prov-* 클래스는 안 씀(다른 컨텍스트라)
+        self.assertNotIn("class='ind-prov-tbl'", html)
+
+    def test_archive_html_empty_when_no_rows(self):
+        self.assertEqual(prov.momentum_archive_html({}), "")
+
 
 if __name__ == "__main__":
     unittest.main()

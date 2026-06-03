@@ -91,10 +91,12 @@ def _summary_text(signals: dict) -> str:
     return "\n".join(lines)
 
 
-def record(signals: dict, *, now=None) -> str | None:
-    """그 시점 잠정 헤드라인을 (ym, window) 키로 타임라인에 적립.
-    같은 창 재기록 = 현행화 반영(값 갱신), 최초 기록일·시각은 보존.
-    반환=key(데이터 없으면 None). best-effort — 예외는 삼킴."""
+def record(signals: dict, *, rows_by_kind: dict | None = None,
+           now=None) -> str | None:
+    """그 시점 잠정 헤드라인 + 🔟 10일 모멘텀(품목·국가 40)을 (ym, window) 키로
+    타임라인에 적립. 같은 창 재기록 = 현행화 반영(값 갱신), 최초 기록일·시각은
+    보존. rows_by_kind를 주면 모멘텀 4그룹 테이블이 본문에 동봉돼 그 시점의
+    전체 시계열까지 동결된다. 반환=key. best-effort — 예외는 삼킴."""
     try:
         ref = (signals.get("exp_item") or signals.get("imp_item")
                or signals.get("exp_cnty") or signals.get("imp_cnty"))
@@ -107,6 +109,13 @@ def record(signals: dict, *, now=None) -> str | None:
         body = _summary_text(signals)
         if not body:
             return None
+        # 🔟 10일 모멘텀 4그룹 테이블 동봉(인라인 스타일이라 dashboard CSS
+        # 없는 아카이브 페이지에서도 색·표식 정상). 운영자 요청: 아카이브에
+        # 모멘텀까지 다 들어가야 됨.
+        if rows_by_kind:
+            mom_html = prov.momentum_archive_html(rows_by_kind)
+            if mom_html:
+                body = body + "\n\n" + mom_html
         key = f"{ym} · {window}"
         now = now or datetime.now(_KST)
         prev = next((r for r in load_runs() if r.get("key") == key), None)

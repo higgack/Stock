@@ -72,6 +72,7 @@ def run(if_stale: bool = False, max_age_h: float = MAX_AGE_H_DEFAULT) -> int:
     ok = 0
     failed = 0
     sigs: dict = {}
+    rows_by_kind: dict = {}
     with customs.session() as conn:
         prov.ensure_schema(conn)
         for kind, labels in prov.LABELS.items():
@@ -88,6 +89,7 @@ def run(if_stale: bool = False, max_age_h: float = MAX_AGE_H_DEFAULT) -> int:
             # 헤드라인 신호 + 전체 시계열(10일 모멘텀 뷰용) 둘 다 저장.
             prov.store_signal(conn, kind, sig, rows=rows)
             sigs[kind] = sig
+            rows_by_kind[kind] = rows
             ok += 1
             log.info(
                 "%s: stored %s %s (전체 %s, YoY %s)",
@@ -100,7 +102,7 @@ def run(if_stale: bool = False, max_age_h: float = MAX_AGE_H_DEFAULT) -> int:
     # (같은 창 재기록은 현행화 반영). best-effort.
     if sigs:
         from trade import provisional_archive
-        key = provisional_archive.record(sigs)
+        key = provisional_archive.record(sigs, rows_by_kind=rows_by_kind)
         if key:
             log.info("provisional timeline: recorded %s", key)
             try:
