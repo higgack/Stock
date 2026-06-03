@@ -1039,7 +1039,8 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://aibottlenecks.app/">AI Bottlenecks</a>
  • <a href="https://analytics.blancwm.com/">Analytics Portal</a>
  • <a href="https://reports.blueming.net/dashboard">report summary</a>
- • <a href="https://junresearch.com/jensenHuangKRTracker">젠슨황의 발자취</a>"""
+ • <a href="https://junresearch.com/jensenHuangKRTracker">젠슨황의 발자취</a>
+ • <a href="https://www.ooooo.law/">ooooo.law</a>"""
 
 
 # Section divider used throughout _HELP_TEXT. Must match the literal
