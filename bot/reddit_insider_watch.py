@@ -110,6 +110,16 @@ def _extract_short_title(text: str) -> str:
     return first[:200]
 
 
+def _strip_md_bold(text: str) -> str:
+    """소스 채널의 '**bold**' 마크다운 마커 제거 (사용자 요청 2026-06-04).
+    우리 forward 는 plain text 라 '**' 가 렌더 안 되고 그대로 노출됨 →
+    제목/본문에서 '**' 만 제거 (내용·단일 '*'·'·' 불릿은 보존). forward +
+    archive 양쪽에 동일 적용해 텔레그램·대시보드 표시 일관성 유지."""
+    if not text:
+        return text
+    return text.replace("**", "")
+
+
 # ── archive ───────────────────────────────────────────────────────────────
 def _save_archive(msg_id: int, ts_iso: str, text: str) -> None:
     """ingest 저장 — 대시보드 + 향후 재참조용. body 는 원본 그대로 보관."""
@@ -265,7 +275,7 @@ async def _run_async() -> int:
             mid = int(m.id)
             if mid in seen_ids or mid <= last_msg_id:
                 continue
-            text = (m.text or m.message or "").strip()
+            text = _strip_md_bold((m.text or m.message or "").strip())
             # 모든 메시지 ID 를 seen 에 추가 (필터 통과 못한 것도) →
             # 다음 폴링에서 다시 검사 안 함.
             seen_ids.add(mid)
