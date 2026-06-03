@@ -82,3 +82,60 @@ def save_analysis(
         log.warning(
             "archive: save failed for %s/%s: %s", ticker, trade_date, exc,
         )
+
+
+def backfill_price_charts(limit: int | None = None) -> int:
+    """One-time backfill: add the `price_chart` field to older archive
+    entries (schema v1) that predate the chart feature. Fetches each
+    ticker's price series AS OF its analysis date (no look-ahead — the
+    moving averages match that day's TECHNICAL SNAPSHOT). Idempotent:
+    skips entries that already have a chart. Returns the count filled.
+
+    Triggered once per install via a marker file (see telegram_bot
+    startup). Free — yfinance only, no LLM / paid API.
+    """
+    filled = 0
+    try:
+        from bot.chart_data import build_price_chart
+    except Exception as exc:
+        log.warning("archive: backfill import failed: %s", exc)
+        return 0
+    if not ARCHIVE_ROOT.exists():
+        return 0
+    for day_dir in sorted(ARCHIVE_ROOT.iterdir()):
+        if not day_dir.is_dir():
+            continue
+        for jf in sorted(day_dir.glob("*.json")):
+            try:
+                rec = json.loads(jf.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if rec.get("price_chart"):
+                continue
+            ticker = rec.get("ticker")
+            date = rec.get("trade_date")
+            if not ticker or not date:
+                continue
+            chart = build_price_chart(ticker, as_of=date)
+            if not chart:
+                continue
+            rec["price_chart"] = chart
+            rec["schema_version"] = SCHEMA_VERSION
+            try:
+                tmp = jf.with_suffix(".json.tmp")
+                tmp.write_text(
+                    json.dumps(rec, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                tmp.replace(jf)
+                filled += 1
+                log.info("archive: backfilled chart for %s/%s", date, ticker)
+            except Exception as exc:
+                log.warning(
+                    "archive: backfill write failed for %s/%s: %s",
+                    date, ticker, exc,
+                )
+                continue
+            if limit and filled >= limit:
+                return filled
+    return filled

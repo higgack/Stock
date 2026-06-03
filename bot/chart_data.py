@@ -17,12 +17,19 @@ failure — the detail page then renders text-only (graceful).
 from __future__ import annotations
 
 import logging
+import re
 
 log = logging.getLogger(__name__)
 
 
-def build_price_chart(ticker: str) -> dict | None:
+def build_price_chart(ticker: str, as_of: str | None = None) -> dict | None:
     """Return a compact chart payload for `ticker`, or None on failure.
+
+    `as_of` (YYYY-MM-DD): when given, fetch the 1y window ENDING at that
+    date (for backfilling old archive entries — no look-ahead, and the
+    moving averages match the analysis-date TECHNICAL SNAPSHOT). When
+    None (live path at analysis time), use period='1y' (ends today ≈
+    analysis date).
 
     Shape (parallel arrays aligned to `times`):
         {
@@ -39,7 +46,25 @@ def build_price_chart(ticker: str) -> dict | None:
         import yfinance as yf
 
         # Mirror _compute_technical_snapshot: 1y window, auto-adjusted.
-        hist = yf.Ticker(ticker).history(period="1y", auto_adjust=True)
+        if as_of:
+            from datetime import datetime, timedelta
+            try:
+                end_d = datetime.strptime(as_of, "%Y-%m-%d") + timedelta(days=1)
+            except ValueError:
+                end_d = None
+            if end_d is not None:
+                # ~400 calendar days ≈ 275 trading days — enough for a
+                # trailing 200 SMA at the window's end + visible context.
+                start_d = end_d - timedelta(days=400)
+                hist = yf.Ticker(ticker).history(
+                    start=start_d.strftime("%Y-%m-%d"),
+                    end=end_d.strftime("%Y-%m-%d"),
+                    auto_adjust=True,
+                )
+            else:
+                hist = yf.Ticker(ticker).history(period="1y", auto_adjust=True)
+        else:
+            hist = yf.Ticker(ticker).history(period="1y", auto_adjust=True)
         if hist is None or len(hist) < 20:
             return None
         close = hist["Close"].dropna()
@@ -86,3 +111,65 @@ def build_price_chart(ticker: str) -> dict | None:
     except Exception as exc:
         log.warning("chart_data: build failed for %s: %s", ticker, exc)
         return None
+
+
+# Trade-plan price levels emitted in full_report by the Trader / PM:
+#   **Entry Price**: ₩12,345   /   **Stop Loss**: ...   /   **Price Target**: ...
+# plus Korean variants (진입가 / 손절가·손절매 / 목표가). Number may carry a
+# currency prefix (₩/$/¥/€/NT$/A$) + thousands commas + optional decimals.
+_LEVEL_PATTERNS = {
+    "entry": re.compile(
+        r"(?:Entry\s*Price|진입\s*가격?|매수\s*가)\s*\*{0,2}\s*[:：=]\s*"
+        r"[^\d\n]{0,6}?([\d][\d,]*(?:\.\d+)?)",
+        re.IGNORECASE,
+    ),
+    "stop": re.compile(
+        r"(?:Stop\s*Loss|손절\s*가격?|손절매|매도\s*가)\s*\*{0,2}\s*[:：=]\s*"
+        r"[^\d\n]{0,6}?([\d][\d,]*(?:\.\d+)?)",
+        re.IGNORECASE,
+    ),
+    "target": re.compile(
+        r"(?:Price\s*Target|Target\s*Price|목표\s*가격?|익절)\s*\*{0,2}\s*[:：=]\s*"
+        r"[^\d\n]{0,6}?([\d][\d,]*(?:\.\d+)?)",
+        re.IGNORECASE,
+    ),
+}
+
+
+def parse_trade_levels(
+    full_report: str, close_values: list | None = None
+) -> dict:
+    """Extract entry / stop / target price levels from a saved full_report.
+
+    Returns a dict with only the PLAUSIBLE levels present, e.g.
+    ``{"entry": 145.0, "stop": 138.0, "target": 160.0}``. A parsed value
+    is kept only when it falls within a sane band relative to the chart's
+    close series (0.2x–5x of the last close) — this rejects mis-parses /
+    unit slips so the chart never draws a misleading horizontal line
+    (the exact risk that kept markers out of chart v1). Empty close_values
+    → no plausibility filter possible → return {} (conservative).
+    """
+    if not full_report or not close_values:
+        return {}
+    try:
+        last = float(close_values[-1])
+        lo, hi = last * 0.2, last * 5.0
+    except Exception:
+        return {}
+    out: dict = {}
+    for key, pat in _LEVEL_PATTERNS.items():
+        m = pat.search(full_report)
+        if not m:
+            continue
+        try:
+            val = float(m.group(1).replace(",", ""))
+        except (ValueError, AttributeError):
+            continue
+        if lo <= val <= hi:
+            out[key] = round(val, 2)
+        else:
+            log.info(
+                "chart_data: %s level %.2f implausible vs last close %.2f — skipped",
+                key, val, last,
+            )
+    return out

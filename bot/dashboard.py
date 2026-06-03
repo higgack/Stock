@@ -1844,6 +1844,10 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-legend .lg-ema   { color: #f5a623; }
 .chart-legend .lg-s50   { color: #3ec46d; }
 .chart-legend .lg-s200  { color: #e2574c; }
+.chart-markers-legend { margin-top: 3px; }
+.chart-legend .lg-entry  { color: #9b59b6; }
+.chart-legend .lg-stop   { color: #e2574c; }
+.chart-legend .lg-target { color: #3ec46d; }
 .chart-fallback { color: var(--fg-soft); padding: 1em; font-size: 13px; }
 section.report-section { margin-top: 24px; }
 section.report-section > h2 {
@@ -1996,6 +2000,21 @@ def _render_chart_section(rec: dict) -> str:
         return ""
     import json as _json
 
+    # Parse entry/stop/target from the report text at render time (not
+    # stored) — so parser improvements + backfilled old entries both pick
+    # up markers. Plausibility-filtered vs the close series so a mis-parse
+    # can't draw a misleading line.
+    try:
+        from bot.chart_data import parse_trade_levels
+        markers = parse_trade_levels(
+            rec.get("full_report") or "", pc.get("close") or []
+        )
+    except Exception:
+        markers = {}
+    if markers:
+        pc = dict(pc)  # don't mutate the cached/loaded record
+        pc["markers"] = markers
+
     # Defuse any stray '</' so the JSON can't terminate the <script> block.
     payload = _json.dumps(pc, ensure_ascii=False, separators=(",", ":"))
     payload = payload.replace("</", "<\\/")
@@ -2010,6 +2029,12 @@ def _render_chart_section(rec: dict) -> str:
       <span class="lg lg-s50">50 SMA</span>
       <span class="lg lg-s200">200 SMA</span>
       · 본문 TECHNICAL SNAPSHOT 과 동일 series
+    </div>
+    <div class="chart-legend chart-markers-legend">
+      <span class="lg lg-entry">— 진입</span>
+      <span class="lg lg-stop">— 손절</span>
+      <span class="lg lg-target">— 목표</span>
+      · 트레이드 플랜 (있을 때만)
     </div>
   </section>"""
 
@@ -2041,10 +2066,22 @@ _CHART_JS = """
     function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
     var prec = (d.decimals === 0) ? 0 : 2;
     var pf = { precision: prec, minMove: (prec === 0) ? 1 : 0.01 };
-    chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, title: '종가' }).setData(zip(d.close));
+    var closeS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, title: '종가' });
+    closeS.setData(zip(d.close));
     if (d.ema10)  chart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: pf, title: '10 EMA' }).setData(zip(d.ema10));
     if (d.sma50)  chart.addLineSeries({ color: '#3ec46d', lineWidth: 1, priceFormat: pf, title: '50 SMA' }).setData(zip(d.sma50));
     if (d.sma200) chart.addLineSeries({ color: '#e2574c', lineWidth: 1, priceFormat: pf, title: '200 SMA' }).setData(zip(d.sma200));
+    // Trade-plan horizontal lines (dashed). Only the plausibility-filtered
+    // levels arrive in d.markers, so no misleading line is ever drawn.
+    if (d.markers) {
+      function priceLine(p, color, title) {
+        if (p === null || p === undefined) return;
+        closeS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: title });
+      }
+      priceLine(d.markers.entry,  '#9b59b6', '진입');
+      priceLine(d.markers.stop,   '#e2574c', '손절');
+      priceLine(d.markers.target, '#3ec46d', '목표');
+    }
     chart.timeScale().fitContent();
     function resize(){ chart.applyOptions({ width: el.clientWidth }); }
     resize();

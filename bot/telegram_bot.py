@@ -2553,6 +2553,34 @@ async def _on_startup(application) -> None:
         log.info("startup: reddit_insider.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: reddit_insider.html regen failed: %s", exc)
+    # One-time price-chart backfill for pre-chart (schema v1) archive
+    # entries. Marker-gated so it runs once per install, not every restart.
+    # Background thread — ~N yfinance fetches shouldn't block startup. Free
+    # (yfinance only). After filling, regenerate detail pages so the old
+    # analyses render their new charts.
+    try:
+        import threading
+        from pathlib import Path as _Path
+
+        _bf_marker = _Path.home() / ".tradingagents" / ".charts_backfilled"
+        if not _bf_marker.exists():
+            def _run_backfill():
+                try:
+                    from bot.archive import backfill_price_charts
+                    from bot.dashboard import regenerate_index
+                    n = backfill_price_charts()
+                    _bf_marker.parent.mkdir(parents=True, exist_ok=True)
+                    _bf_marker.write_text("done", encoding="utf-8")
+                    if n:
+                        regenerate_index()
+                    log.info("startup: price-chart backfill filled %d entries", n)
+                except Exception as exc:
+                    log.warning("startup: price-chart backfill failed: %s", exc)
+
+            threading.Thread(target=_run_backfill, daemon=True).start()
+            log.info("startup: price-chart backfill thread launched")
+    except Exception as exc:
+        log.warning("startup: backfill launch failed: %s", exc)
     # Populates the 'Menu' button beside the input area + the '/' typing
     # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
     # registered (the universe is too large) — Telegram still recognises

@@ -540,3 +540,65 @@ class TestPriceChartRender:
         # 샌드박스는 네트워크 차단 → yfinance 실패 → None (graceful)
         result = build_price_chart("NONEXISTENT_TICKER_XYZ_123")
         assert result is None or isinstance(result, dict)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 9) 트레이드 마커 (entry/stop/target) 파싱 + 비현실값 차단
+#    배경: 2026-06-03 Phase 2 — full_report 의 진입/손절/목표가를 차트에
+#    수평선으로. 핵심 안전장치: 종가 series 대비 비현실적(0.2x~5x 밖)인
+#    파싱값은 버려서 잘못된 라인이 절대 안 그려지게 (v1 마커 제외 사유 해소).
+# ─────────────────────────────────────────────────────────────────────────
+class TestTradeLevelParser:
+    """fix: 차트 마커 (2026-06-03)."""
+
+    def test_us_labels_extracted(self):
+        from bot.chart_data import parse_trade_levels
+
+        report = "**Entry Price**: $145.50\n**Stop Loss**: $138.00\n**Price Target**: $162.00"
+        out = parse_trade_levels(report, [140.0, 145.0, 146.0])
+        assert out == {"entry": 145.5, "stop": 138.0, "target": 162.0}
+
+    def test_korean_labels_with_krw_commas(self):
+        from bot.chart_data import parse_trade_levels
+
+        report = "진입가: ₩71,500\n손절가: ₩68,000\n목표가: ₩85,000"
+        out = parse_trade_levels(report, [70000, 71000, 72000])
+        assert out == {"entry": 71500.0, "stop": 68000.0, "target": 85000.0}
+
+    def test_implausible_value_rejected(self):
+        from bot.chart_data import parse_trade_levels
+
+        # 목표가에 날짜 '2026' 오파싱 — last close 146 기준 밴드 밖 → drop
+        report = "**Entry Price**: $145.00\n**Stop Loss**: $138.00\n목표가: 2026"
+        out = parse_trade_levels(report, [140.0, 145.0, 146.0])
+        assert "target" not in out, "비현실값이 마커로 그려지면 안 됨"
+        assert out.get("entry") == 145.0 and out.get("stop") == 138.0
+
+    def test_no_series_conservative_empty(self):
+        from bot.chart_data import parse_trade_levels
+
+        report = "**Entry Price**: $145.00"
+        # close series 없으면 plausibility 판정 불가 → 보수적으로 {}
+        assert parse_trade_levels(report, []) == {}
+        assert parse_trade_levels(report, None) == {}
+
+    def test_no_levels_in_report(self):
+        from bot.chart_data import parse_trade_levels
+
+        assert parse_trade_levels("아무 플랜도 없는 본문", [100.0, 101.0]) == {}
+
+    def test_markers_injected_into_chart_section(self):
+        from bot.dashboard import _render_chart_section
+
+        rec = {
+            "ticker": "AAPL",
+            "full_report": "**Entry Price**: $145.50\n**Stop Loss**: $138.00",
+            "price_chart": {
+                "currency": "$", "decimals": 2,
+                "times": ["2025-06-01", "2025-06-02", "2025-06-03"],
+                "close": [144.0, 145.0, 146.0],
+            },
+        }
+        html = _render_chart_section(rec)
+        assert '"markers"' in html, "마커 페이로드가 차트 JSON 에 주입되어야"
+        assert "145.5" in html and "138" in html
