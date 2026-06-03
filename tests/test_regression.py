@@ -362,3 +362,102 @@ class TestTechnicalSnapshotSSoT:
         assert "SINGLE SOURCE OF TRUTH" in src
         assert "글자 단위로" in src
         assert "IBM 2026-06-02" in src
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 7) _fix_currency_symbols 로컬 통화 기호 변환 회귀 차단
+#    배경: CCUS 2026-06-03 screener 에서 .OL/.AX 종목의 '$' 가 로컬 통화로
+#    치환되지 않는 누수 surfaced. 또한 '$1B' 시장 사이징 보존, US bare
+#    ticker '$226.57' 미변환 확인.
+# ─────────────────────────────────────────────────────────────────────────
+class TestFixCurrencySymbols:
+    """fix commit: 4254da0 (2026-05-29) + CCUS 2026-06-03 확인."""
+
+    def test_eu_suffix_mi(self):
+        from bot.screener import _fix_currency_symbols
+
+        text = "• L · TPRO.MI · Technoprobe S.p.A.\n현재가 $34.00 으로"
+        result, n = _fix_currency_symbols(text)
+        assert "€34.00" in result, f"MI suffix → € 변환 실패: {result}"
+        assert n == 1
+
+    def test_nordic_suffix_ol(self):
+        from bot.screener import _fix_currency_symbols
+
+        text = "• M · SUBC.OL · Subsea 7 SA\nValuation: $305.00"
+        result, n = _fix_currency_symbols(text)
+        assert "kr305.00" in result, f"OL suffix → kr 변환 실패: {result}"
+        assert "$305.00" not in result
+        assert n == 1
+
+    def test_au_suffix_ax(self):
+        from bot.screener import _fix_currency_symbols
+
+        text = "• S · MCE.AX · Matrix Composites\n$0.39 주변"
+        result, n = _fix_currency_symbols(text)
+        assert "A$0.39" in result, f"AX suffix → A$ 변환 실패: {result}"
+        assert n == 1
+
+    def test_tw_suffix(self):
+        from bot.screener import _fix_currency_symbols
+
+        text = "• M · 3231.TW · Wistron NeWeb\n$161.00 수준"
+        result, n = _fix_currency_symbols(text)
+        assert "NT$161.00" in result, f"TW suffix → NT$ 변환 실패: {result}"
+        assert n == 1
+
+    def test_india_suffix_ns(self):
+        from bot.screener import _fix_currency_symbols
+
+        text = "• L · ITC.NS · ITC Limited\n$286.90"
+        result, n = _fix_currency_symbols(text)
+        assert "₹286.90" in result, f"NS suffix → ₹ 변환 실패: {result}"
+        assert n == 1
+
+    def test_us_bare_ticker_no_change(self):
+        from bot.screener import _fix_currency_symbols
+
+        text = "• L · OXY · Occidental Petroleum\n$59.86 저평가"
+        result, n = _fix_currency_symbols(text)
+        assert "$59.86" in result, "US bare ticker 는 $ 유지"
+        assert n == 0
+
+    def test_market_sizing_preserved(self):
+        from bot.screener import _fix_currency_symbols
+
+        text = "• M · SUBC.OL · Subsea 7\n해저 시장 $8.4B 규모, 현재가 $305.00"
+        result, n = _fix_currency_symbols(text)
+        assert "$8.4B" in result, "시장 사이징 '$8.4B' 보존 실패"
+        assert "kr305.00" in result
+        assert n == 1
+
+    def test_kr_suffix_ks(self):
+        from bot.screener import _fix_currency_symbols
+
+        text = "• L · 005930.KS · Samsung Electronics\n$71,200.00"
+        result, n = _fix_currency_symbols(text)
+        assert "₩71,200.00" in result, f"KS suffix → ₩ 변환 실패: {result}"
+        assert n == 1
+
+    def test_jp_suffix_t(self):
+        from bot.screener import _fix_currency_symbols
+
+        text = "• M · 7203.T · Toyota Motor\n현재가 $3,604.00"
+        result, n = _fix_currency_symbols(text)
+        assert "¥3,604.00" in result, f"T suffix → ¥ 변환 실패: {result}"
+        assert n == 1
+
+    def test_multiple_tickers_state_reset(self):
+        """State machine 이 ticker row 마다 올바르게 reset 되는지."""
+        from bot.screener import _fix_currency_symbols
+
+        text = (
+            "• L · TPRO.MI · Technoprobe\n가격 $34.00\n"
+            "• M · OXY · Occidental\n가격 $59.86\n"
+            "• S · MCE.AX · Matrix\n가격 $0.39"
+        )
+        result, n = _fix_currency_symbols(text)
+        assert "€34.00" in result
+        assert "$59.86" in result  # US → $ 유지
+        assert "A$0.39" in result
+        assert n == 2  # MI + AX only

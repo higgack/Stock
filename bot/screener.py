@@ -2016,6 +2016,22 @@ Phase 1·2 에서 식별된 binding constraint:
 이 5개 신호가 누락된 row 는 '데이터 깊이 부족' → reject 대상. 출력
 풍부도의 정량 기준.
 
+★ TIER A/B/C 기계적 N/A 금지 (CCUS 2026-06-03 surfaced) ★
+Master Table 의 'Tier A 신호' · 'Tier B 신호' · 'Tier C 신호' 칸에
+**기계적으로 'N/A' 를 채우는 lazy-fill 절대 금지**. REAL-TIME CONTEXT
+에 종목별 컨센서스·뉴스·매크로·기술지표가 이미 포함돼 있다. 구체적으로:
+  • **Tier A (Catalyst 50%)**: context 에 'Wall Street 컨센서스: 목표가
+    $X.XX ... 등급 ... analysts' / 뉴스 headline / 정책 이벤트가 있으면
+    **반드시 인용** — 컨센서스 PT upside% + 최근 뉴스 1줄 요약.
+    PT 데이터가 context 에 있는데 'N/A' 기재 = **출력 거부 사유**.
+  • **Tier B (실적 25%)**: PER/PSR/EV-EBITDA/EPS/매출 등 context 에
+    있으면 verbatim cite. forward guidance 가 없어도 직전 분기 실적
+    YoY 는 산출 가능 → 'N/A' 는 진짜 0개 데이터일 때만.
+  • **Tier C (시황 15%)**: 30일 등락률·RSI·MACD·sector 상대강도가
+    context 에 있으면 1줄 요약. 기술 지표가 있는데 'N/A' = 위반.
+전 행 Tier A/B/C 가 모두 'N/A' 인 출력은 **데이터 파이프라인 낭비**
+이자 reader 기만. context 를 꼼꼼히 읽고 추출하라.
+
 ★ 회피성 문구 금지 — 'N/A' / 'N/M' 명시 (Tobacco 2026-05-31 surfaced) ★
 특정 멀티플(PER/PBR/PSR/EV-EBITDA)이 context 에 부재 시 본문에 '데이터
 깊이 부족' / '확인된 바 없음' / '데이터 미수집' / '현재가 확인 필요' /
@@ -2253,6 +2269,18 @@ def _run_phase_beta(api_key: str, theme: dict, started: float) -> Optional[Scree
         log.warning(
             "screener: %d currency symbol(s) auto-corrected (local exchange)",
             n_curr_fixes,
+        )
+
+    # Tier A/B/C N/A rate monitoring (CCUS 2026-06-03 surfaced)
+    _na_pat = re.compile(r"Tier [ABC][^│\n]*?N/?A", re.IGNORECASE)
+    _tier_field_pat = re.compile(r"Tier [ABC]\s*(?:신호|[\(（]|:|\s*[│|])")
+    tier_total = max(len(_tier_field_pat.findall(p45_text)), 1)
+    tier_na = len(_na_pat.findall(p45_text))
+    if tier_total > 0 and tier_na / tier_total > 0.5:
+        log.warning(
+            "screener: Tier A/B/C N/A rate %.0f%% (%d/%d) — "
+            "Pro may be lazy-filling (CCUS pattern)",
+            100 * tier_na / tier_total, tier_na, tier_total,
         )
 
     # Extract machine-parseable JSON tails (TICKERS_USED first so the

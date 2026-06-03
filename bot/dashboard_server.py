@@ -164,6 +164,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def _authorize(self) -> bool:
         return self._strip_token_or_404() and self._check_basic_auth_or_401()
 
+    def end_headers(self):
+        path_lower = self.path.lower().split("?")[0]
+        if path_lower.endswith((".html", "/")) or path_lower == "":
+            self.send_header("Cache-Control", "no-cache, must-revalidate")
+        super().end_headers()
+
     # ── Request handlers ─────────────────────────────────────────────
     def do_GET(self):
         if not self._authorize():
