@@ -165,3 +165,24 @@ def ensure_exists() -> None:
             regenerate()
     except Exception:
         pass
+
+
+def refresh(conn) -> str | None:
+    """저장된 잠정 스냅샷(customs_provisional)에서 타임라인을 재빌드 + 색인
+    재생성. **API 0콜** — 매 대시보드 렌더에서 호출돼, 렌더 코드(가독성·모멘텀
+    포맷 등) 변경이 fetch를 기다리지 않고 ~5분 내 아카이브에도 반영된다.
+    record는 (ym, window) idempotent라 같은 창은 본문만 현행화(최초 기록일
+    보존). 데이터 없으면 빈 색인 보장만. best-effort — 예외는 삼킴."""
+    try:
+        signals = prov.load_signals(conn)
+        if not signals:
+            ensure_exists()
+            return None
+        rows = prov.load_rows(conn)
+        key = record(signals, rows_by_kind=rows)
+        regenerate()
+        return key
+    except Exception:
+        ensure_exists()
+        return None
+

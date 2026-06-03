@@ -157,6 +157,36 @@ class TimelineTests(unittest.TestCase):
         pa.ensure_exists()
         self.assertTrue(pa.PROV_ARCHIVE_HTML.exists())
 
+    def test_refresh_rebuilds_from_stored_snapshot_no_api(self):
+        # 대시보드 렌더 경로: 저장된 customs_provisional에서 타임라인 재빌드
+        # (API 0콜). 렌더 코드 변경이 fetch 없이도 반영되는 핵심.
+        import sqlite3
+        from trade import customs_provisional as cp
+        conn = sqlite3.connect(":memory:")
+        for k, labels in cp.LABELS.items():
+            rows = self._rows().get(k) or [
+                {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL",
+                 "amt": [1e9] * 11}]
+            sig = cp.latest_signal(rows, labels)
+            cp.store_signal(conn, k, sig, rows=rows)
+        key = pa.refresh(conn)
+        self.assertEqual(key, "2026-05 · 전월(1~말일)")
+        runs = pa.load_runs()
+        self.assertEqual(len(runs), 1)
+        self.assertIn("<table", runs[0]["body"])      # 모멘텀 동봉(저장 rows 사용)
+        self.assertTrue(pa.PROV_ARCHIVE_HTML.exists())  # 색인도 재생성
+        # 재호출은 같은 창이라 1건 유지(idempotent 현행화)
+        pa.refresh(conn)
+        self.assertEqual(len(pa.load_runs()), 1)
+        conn.close()
+
+    def test_refresh_empty_store_safe(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        self.assertIsNone(pa.refresh(conn))
+        self.assertTrue(pa.PROV_ARCHIVE_HTML.exists())  # 빈 색인 보장
+        conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()

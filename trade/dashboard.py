@@ -1668,10 +1668,13 @@ def main() -> int:
             industry_archive.regenerate()                     # 색인 재생성
     except Exception:
         pass
-    # 🟢 잠정 타임라인 색인이 404 안 나게 보장(적립은 fetch_provisional이 담당).
+    # 🟢 잠정 타임라인 — 저장된 잠정 스냅샷에서 매 렌더마다 재빌드(API 0콜).
+    # fetch가 아니라 렌더가 아카이브 HTML을 소유 → 렌더 코드 변경이 ~5분 내
+    # 반영(6h stale-fetch 대기 불필요). 데이터 없으면 빈 색인 보장만.
     try:
-        from trade import provisional_archive
-        provisional_archive.ensure_exists()
+        from trade import provisional_archive, customs as _customs2
+        with _customs2.session() as conn:
+            provisional_archive.refresh(conn)
     except Exception:
         pass
     return 0
