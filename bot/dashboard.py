@@ -1779,22 +1779,22 @@ def _render_index(records: list[dict]) -> str:
             f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
             f' · <a href="screener.html">📊 Bottleneck Screener</a>'
             f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
+            f' · <a href="reddit_insider.html">📨 미국 레딧</a>'
             f' · <a href="daily_byte.html">📊 Daily Byte</a>'
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
-            + ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         )
     else:
         errors_link = (
             ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
             ' · <a href="screener.html">📊 Bottleneck Screener</a>'
             ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
+            ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
             ' · <a href="daily_byte.html">📊 Daily Byte</a>'
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
-            + ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         )
 
     return f"""<!doctype html>

@@ -713,10 +713,12 @@ DASHBOARD_PASSWORD=<.env 에만>
 ```
 **Nav 순서 정책 (사용자 2026-05-31):** NOAH archive 헤더 nav 에서 새로
 추가되는 대시보드는 **항상 제일 끝(마지막)에 append**. 현재 순서:
-errors → Bottleneck Screener → 도메인 목록 → Daily Byte → (external:
-Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약. 앞으로 만드는
-대시보드(예: 신규 surface)는 이 줄 맨 끝에 붙일 것 — 기존 항목 사이에
-끼워넣지 말 것. (`bot/dashboard.py` errors_link 두 분기 모두 갱신.)
+errors → Bottleneck Screener → 도메인 목록 → 📨 미국 레딧 → Daily Byte
+→ (external: Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약. 앞으로
+만드는 대시보드(예: 신규 surface)는 기본적으로 이 줄 맨 끝에 붙일 것 —
+사용자가 명시 위치를 지정하면 그에 따름(미국 레딧은 사용자 2026-06-03
+요청으로 도메인 목록 다음으로 이동). (`bot/dashboard.py` errors_link 두
+분기 모두 갱신.)
 
 **💰 비용 합산 정책 (사용자 2026-06-02):** 메인 NOAH 대시보드 비용 카드
 (+ `/usage`)는 **nav 에 링크된 비용-발생 surface 전부의 cost 를 합산**해
