@@ -233,6 +233,115 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(prov.load_signals(conn), {})
         conn.close()
 
+    def test_store_load_rows_roundtrip(self):
+        conn = sqlite3.connect(":memory:")
+        rows = [{"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL",
+                 "amt": [1] * 11}]
+        prov.store_signal(conn, "imp_item", {"ym": "2026-05"}, rows=rows)
+        self.assertEqual(prov.load_rows(conn)["imp_item"], rows)
+        # signal도 같이 저장돼 박스는 그대로
+        self.assertIn("imp_item", prov.load_signals(conn))
+        conn.close()
+
+    def test_load_rows_migrates_old_table(self):
+        # series_json 컬럼 없는 구버전 테이블도 ensure_schema가 마이그레이션
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE TABLE customs_provisional (kind TEXT PRIMARY KEY, "
+                     "payload TEXT NOT NULL, fetched_at TEXT NOT NULL)")
+        conn.execute("INSERT INTO customs_provisional VALUES ('imp_item','{}','t')")
+        self.assertEqual(prov.load_rows(conn), {})        # 옛 행은 series 없음
+        rows = [{"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL",
+                 "amt": [2] * 11}]
+        prov.store_signal(conn, "imp_item", {"ym": "x"}, rows=rows)
+        self.assertEqual(prov.load_rows(conn)["imp_item"], rows)
+        conn.close()
+
+
+class MomentumTests(unittest.TestCase):
+    def _rows(self):
+        # 두 해 풀월. item1=가속, item2=둔화 → 정렬·모멘텀 검증.
+        def amt(t, a, b):
+            return [t, a, b] + [5] * 8
+        return [
+            {"ym": "2025-04", "priod_dt": "01~30", "decile": "FULL", "amt": amt(100, 10, 10)},
+            {"ym": "2025-05", "priod_dt": "01~31", "decile": "FULL", "amt": amt(110, 11, 11)},
+            {"ym": "2026-04", "priod_dt": "01~30", "decile": "FULL", "amt": amt(120, 12, 20)},
+            {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL", "amt": amt(150, 18, 21)},
+        ]
+
+    def test_momentum_values(self):
+        mv = prov.momentum_rows(self._rows(), tuple(f"품목{i}" for i in range(1, 11)))
+        self.assertEqual(mv["ym"], "2026-05")
+        by = {it["name"]: it for it in mv["items"]}
+        # 전체: 최신 YoY 36.4 − 직전 풀월(4월) YoY 20 = +16.4
+        self.assertAlmostEqual(by["전체"]["momentum"], 40 / 110 * 100 - 20.0, places=1)
+        # 품목1 가속(▲ 큰 양수), 품목2 둔화(▼ 음수)
+        self.assertGreater(by["품목1"]["momentum"], 30)
+        self.assertLess(by["품목2"]["momentum"], 0)
+
+    def test_momentum_none_without_history(self):
+        rows = [{"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL",
+                 "amt": [1] * 11}]
+        mv = prov.momentum_rows(rows, tuple(f"품목{i}" for i in range(1, 11)))
+        self.assertIsNone(mv["items"][0]["momentum"])     # 직전 풀월 없음
+        self.assertIsNone(prov.momentum_rows([], ("a",)))
+
+
+class MomentumRenderTests(unittest.TestCase):
+    def _rows_by_kind(self):
+        def amt(t, a, b):
+            return [t, a, b] + [5] * 8
+        base = [
+            {"ym": "2025-05", "priod_dt": "01~31", "decile": "FULL", "amt": amt(110, 11, 11)},
+            {"ym": "2026-04", "priod_dt": "01~30", "decile": "FULL", "amt": amt(120, 12, 20)},
+            {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL", "amt": amt(150, 18, 21)},
+            {"ym": "2025-04", "priod_dt": "01~30", "decile": "FULL", "amt": amt(100, 10, 10)},
+        ]
+        return {"imp_item": base, "exp_item": base}
+
+    def test_details_panel_markers(self):
+        html = prov.render_momentum(self._rows_by_kind())
+        self.assertIn("<details", html)
+        self.assertIn("10일 모멘텀 속보", html)
+        self.assertIn("수출 품목", html)
+        self.assertIn("수입 품목", html)
+        self.assertIn("▲", html)                          # 가속 표식
+        self.assertIn("ind-prov-tbl", html)
+        self.assertIn("반도체제조용장비", html)            # 수입 품목 05 라벨
+        self.assertIn("⚡", html)                          # capex 강조
+        self.assertIn("⚠️", html)                          # 수출 절대액 경고
+
+    def test_sorted_by_momentum_accel_first(self):
+        # imp_item 라벨에서 품목 매핑이 아니라 실제 LABELS이므로, 가속 항목이
+        # 둔화 항목보다 앞서는지 위치로 확인(02=원유 가속, 03=기계류 둔화 설정).
+        def amt(t, *rest):
+            base = [5] * 10
+            for i, v in enumerate(rest):
+                base[i] = v
+            return [t] + base
+        rows = [
+            {"ym": "2025-04", "priod_dt": "01~30", "decile": "FULL", "amt": amt(100, 5, 10, 10)},
+            {"ym": "2025-05", "priod_dt": "01~31", "decile": "FULL", "amt": amt(110, 5, 11, 11)},
+            {"ym": "2026-04", "priod_dt": "01~30", "decile": "FULL", "amt": amt(120, 5, 12, 20)},
+            {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL", "amt": amt(150, 5, 30, 21)},
+        ]
+        html = prov.render_momentum({"imp_item": rows})
+        # 원유(02, 가속)가 기계류(03, 둔화)보다 먼저 등장
+        self.assertLess(html.index("원유"), html.index("기계류"))
+
+    def test_empty_when_no_rows(self):
+        self.assertEqual(prov.render_momentum({}), "")
+        self.assertEqual(prov.render_momentum({"imp_item": []}), "")
+
+    def test_render_box_appends_momentum(self):
+        box = prov.render_box(
+            {"imp_item": {"ym": "2026-05", "window": "전월(1~말일)",
+                          "total_usd": 1, "total_yoy": 1.0,
+                          "items": [{"name": "반도체", "usd": 1, "yoy": 1.0}]}},
+            momentum_html="<details>MOMENTUM</details>")
+        self.assertIn("MOMENTUM", box)
+        self.assertIn("ind-prov", box)
+
 
 if __name__ == "__main__":
     unittest.main()

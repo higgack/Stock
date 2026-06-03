@@ -219,13 +219,70 @@ def latest_signal(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------
+# 10일 모멘텀 — 최신창 YoY vs 직전 풀월 YoY = 가속/둔화
+# ---------------------------------------------------------------------
+
+def momentum_rows(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
+    """전체(0)+품목/국가(1..10) 각각에 대해 최신창 YoY와 '모멘텀'을 계산.
+
+    모멘텀(idx) = 최신창 YoY − 직전 '풀월' YoY (퍼센트포인트).
+      · 양수 = 추세 가속(▲), 음수 = 둔화(▼).
+      · 최신창이 부분누적(01~10/01~20)이면 확정보다 ~20일 빠른 선행 가속신호,
+        풀월이면 ΔYoY(전월 풀 대비 가속도).
+    반환 items는 입력 순서 그대로(정렬은 렌더에서). 데이터 없으면 None.
+    """
+    if not rows:
+        return None
+    latest_ym = max(r["ym"] for r in rows)
+    month_rows = [r for r in rows if r["ym"] == latest_ym]
+    cur = max(month_rows, key=lambda r: (_DECILE_ORDER.get(r["decile"], 0), r["amt"][0]))
+
+    def _find(ym: str, decile: str) -> Optional[dict]:
+        return next((r for r in rows if r["ym"] == ym and r["decile"] == decile), None)
+
+    def _py(ym: str) -> str:
+        return f"{int(ym[:4]) - 1}-{ym[5:7]}"
+
+    cur_prev = _find(_py(latest_ym), cur["decile"])
+    # 최신월보다 앞선 가장 최근 '풀월'(직전 마감월)과 그 작년 동월 풀월.
+    full_months = sorted({r["ym"] for r in rows
+                          if r["decile"] == "FULL" and r["ym"] < latest_ym})
+    pf_ym = full_months[-1] if full_months else None
+    prev_full = _find(pf_ym, "FULL") if pf_ym else None
+    prev_full_py = _find(_py(pf_ym), "FULL") if pf_ym else None
+
+    def _yoy(base: Optional[dict], prev: Optional[dict], i: int) -> Optional[float]:
+        if base is None or prev is None:
+            return None
+        p = prev["amt"][i]
+        if not p:
+            return None
+        return (base["amt"][i] - p) / p * 100.0
+
+    out = []
+    for i, name in enumerate(["전체", *labels]):
+        cy = _yoy(cur, cur_prev, i)
+        pf = _yoy(prev_full, prev_full_py, i)
+        mom = (cy - pf) if (cy is not None and pf is not None) else None
+        out.append({"idx": i, "name": name, "usd": cur["amt"][i],
+                    "yoy": cy, "momentum": mom})
+    return {
+        "ym": latest_ym,
+        "decile": cur["decile"],
+        "window": _DECILE_LABEL.get(cur["decile"], cur["priod_dt"]),
+        "items": out,
+    }
+
+
+# ---------------------------------------------------------------------
 # Persistence — customs.db 내 작은 스냅샷 테이블(렌더가 4×/일 fetch와 분리)
 # ---------------------------------------------------------------------
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS customs_provisional (
   kind TEXT PRIMARY KEY,         -- imp_item / exp_item / imp_cnty / exp_cnty
-  payload TEXT NOT NULL,         -- latest_signal() JSON
+  payload TEXT NOT NULL,         -- latest_signal() JSON (헤드라인 박스)
+  series_json TEXT,              -- parse_response() 전체 rows JSON (10일 모멘텀)
   fetched_at TEXT NOT NULL
 );
 """
@@ -233,15 +290,24 @@ CREATE TABLE IF NOT EXISTS customs_provisional (
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+    # series_json 컬럼이 생기기 전 만들어진 테이블 마이그레이션(호스트는 이미
+    # 박스만 저장하는 버전으로 테이블을 만들었을 수 있음).
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(customs_provisional)")]
+    if "series_json" not in cols:
+        conn.execute("ALTER TABLE customs_provisional ADD COLUMN series_json TEXT")
 
 
-def store_signal(conn: sqlite3.Connection, kind: str, signal: dict) -> None:
+def store_signal(conn: sqlite3.Connection, kind: str, signal: dict,
+                 rows: Optional[list] = None) -> None:
+    """헤드라인 신호(payload) + 전체 시계열(series_json)을 함께 저장.
+    rows를 주면 10일 모멘텀 뷰가 품목·국가별 월별·창별 추이를 그릴 수 있다."""
     import json as _json
     ensure_schema(conn)
     conn.execute(
-        "INSERT OR REPLACE INTO customs_provisional (kind, payload, fetched_at) "
-        "VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO customs_provisional "
+        "(kind, payload, series_json, fetched_at) VALUES (?, ?, ?, ?)",
         (kind, _json.dumps(signal, ensure_ascii=False),
+         _json.dumps(rows, ensure_ascii=False) if rows is not None else None,
          datetime.now(timezone.utc).isoformat()),
     )
 
@@ -255,6 +321,26 @@ def load_signals(conn: sqlite3.Connection) -> dict[str, dict]:
         for row in conn.execute("SELECT kind, payload FROM customs_provisional"):
             try:
                 out[row[0]] = _json.loads(row[1])
+            except Exception:
+                continue
+        return out
+    except Exception:
+        return {}
+
+
+def load_rows(conn: sqlite3.Connection) -> dict[str, list]:
+    """{kind: rows} — 저장된 전체 시계열. 없거나 비면 {} (구버전 행은 series_json
+    NULL이라 다음 fetch 전까지는 빈 채로 → 모멘텀 뷰만 비고 박스는 정상)."""
+    import json as _json
+    try:
+        ensure_schema(conn)
+        out: dict[str, list] = {}
+        for kind, payload in conn.execute(
+                "SELECT kind, series_json FROM customs_provisional"):
+            if not payload:
+                continue
+            try:
+                out[kind] = _json.loads(payload)
             except Exception:
                 continue
         return out
@@ -303,11 +389,90 @@ def _metric(label: str, item: Optional[dict], *,
     )
 
 
-def render_box(signals: dict[str, dict]) -> str:
+# 모멘텀 뷰 그룹: (제목, kind, 수출이라 ⚠️ 표식)
+_MOM_GROUPS = (
+    ("수출 품목", "exp_item", True),
+    ("수입 품목", "imp_item", False),
+    ("수출 국가", "exp_cnty", True),
+    ("수입 국가", "imp_cnty", False),
+)
+
+
+def _mom_span(m: Optional[float]) -> str:
+    if m is None:
+        return "<span class='ind-prov-flat'>—</span>"
+    if m >= 0:
+        return f"<span class='ind-prov-pos'>▲ +{m:.0f}%p</span>"
+    return f"<span class='ind-prov-neg'>▼ {m:.0f}%p</span>"
+
+
+def render_momentum(rows_by_kind: dict[str, list]) -> str:
+    """🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열을 가속순으로 펼치는 패널.
+
+    각 그룹 테이블: 항목 | 최신창 절대액(수출 ⚠️) | 창 YoY | 모멘텀(▲가속/▼둔화).
+    전체(합계)는 맨 위 고정, 나머지는 모멘텀 내림차순(=가속순). 데이터 없으면
+    '' (헤드라인 박스만 뜨고 펼치기는 사라짐). JS 없는 <details>라 자체완결.
+    """
+    if not rows_by_kind:
+        return ""
+    from html import escape as _esc
+    from trade.customs import fmt_usd
+
+    tables: list[str] = []
+    win_label = ""
+    for title, kind, warn in _MOM_GROUPS:
+        rows = rows_by_kind.get(kind)
+        if not rows:
+            continue
+        mv = momentum_rows(rows, LABELS[kind])
+        if not mv:
+            continue
+        win_label = f"{mv['ym']} {mv['window']}"
+        total = mv["items"][0]
+        items = sorted(
+            mv["items"][1:],
+            key=lambda r: (r["momentum"] is not None,
+                           r["momentum"] if r["momentum"] is not None else 0.0),
+            reverse=True,
+        )
+        body_rows: list[str] = []
+        for it in [total, *items]:
+            is_capex = kind == "imp_item" and "반도체제조용장비" in it["name"]
+            nm = _esc(it["name"]) + (" ⚡" if is_capex else "")
+            warn_mark = " ⚠️" if warn else ""
+            tr_cls = " class='ind-prov-trtot'" if it["idx"] == 0 else ""
+            body_rows.append(
+                f"<tr{tr_cls}><td>{nm}</td>"
+                f"<td class='ind-prov-num'>{fmt_usd(it['usd'])}{warn_mark}</td>"
+                f"<td class='ind-prov-num'>{_yoy_span(it['yoy'])}</td>"
+                f"<td class='ind-prov-num'>{_mom_span(it['momentum'])}</td></tr>"
+            )
+        tables.append(
+            "<table class='ind-prov-tbl'>"
+            f"<caption>{_esc(title)} · {_esc(win_label)}</caption>"
+            "<thead><tr><th>항목</th><th>절대액</th><th>YoY</th><th>모멘텀</th>"
+            f"</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
+        )
+    if not tables:
+        return ""
+    note = (
+        "<div class='ind-prov-mom-note'>모멘텀 = 최신창 YoY − 직전 풀월 YoY "
+        "(▲가속/▼둔화) · 가속순 정렬 · 수출 절대액 ⚠️ 추세 참고</div>"
+    )
+    return (
+        "<details class='ind-prov-more'>"
+        "<summary>🔟 10일 모멘텀 속보 — 품목·국가 40개 시계열 (가속순)</summary>"
+        f"<div class='ind-prov-mom'>{note}{''.join(tables)}</div>"
+        "</details>"
+    )
+
+
+def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
     """4종 신호 → '🟢 잠정 속보' 박스. 데이터 없으면 '' (motie 배너가 폴백).
 
     헤드라인: 전체 수출/수입 잠정 YoY + ⚡반도체제조용장비 수입(capex 선행)
-    + 반도체 수출. 산업 집계와 분리된 독립 박스.
+    + 반도체 수출. 산업 집계와 분리된 독립 박스. momentum_html을 주면 박스
+    안쪽에 🔟 10일 모멘텀 속보 펼치기(<details>)를 덧붙인다.
 
     수출 잠정 절대액(전체 수출·반도체 수출)은 과거 대비 이례적으로 높게
     나오는 경향이 있어 ⚠️ 표식 + 캡션을 단다(운영자 확인 B안): 확정 시
@@ -360,5 +525,6 @@ def render_box(signals: dict[str, dict]) -> str:
         "<b>(산업 집계와 분리·참고용)</b></div>"
         f"<div class='ind-prov-grid'>{body}</div>"
         f"{caveat}"
+        f"{momentum_html}"
         "</div>"
     )

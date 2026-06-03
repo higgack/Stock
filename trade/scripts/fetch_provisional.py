@@ -71,7 +71,8 @@ def run() -> int:
             if not sig:
                 log.info("%s: no rows in window", kind)
                 continue
-            prov.store_signal(conn, kind, sig)
+            # 헤드라인 신호 + 전체 시계열(10일 모멘텀 뷰용) 둘 다 저장.
+            prov.store_signal(conn, kind, sig, rows=rows)
             ok += 1
             log.info(
                 "%s: stored %s %s (전체 %s, YoY %s)",

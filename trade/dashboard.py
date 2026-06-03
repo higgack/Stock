@@ -119,8 +119,12 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             share_ym = industry_archive.latest_stored_ym(conn)
             # 🟢 잠정 속보(관세청 10일 단위) — fetch_provisional가 저장한
             # 스냅샷만 읽음(렌더는 API 미접속). 비면 '' → motie 배너 폴백.
+            # 헤드라인 박스(signals) + 🔟 10일 모멘텀 펼치기(전체 시계열 rows).
             prov_signals = customs_provisional.load_signals(conn)
-        prov_html = customs_provisional.render_box(prov_signals)
+            prov_rows = customs_provisional.load_rows(conn)
+        prov_html = customs_provisional.render_box(
+            prov_signals,
+            momentum_html=customs_provisional.render_momentum(prov_rows))
         ins_html = llm_insights.render_html(cards if isinstance(cards, list) else [])
         # 🔗 공유: 그 확정월 시점 '스냅샷' 공개 URL(인증 없음)을 클립보드로 복사.
         # 새 확정월이 오면 버튼이 새 URL을 주지만, 이미 보낸 옛 링크는 그 달 동결.
@@ -574,6 +578,20 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-prov-flat{color:var(--text-sub);font-size:13px}
 .ind-prov-warn{border-color:var(--tone-import)}
 .ind-prov-cav{margin-top:8px;font-size:11.5px;color:var(--tone-import);line-height:1.4}
+.ind-prov-more{margin-top:10px}
+.ind-prov-more>summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--tone-export);list-style:none;padding:6px 0}
+.ind-prov-more>summary::-webkit-details-marker{display:none}
+.ind-prov-more>summary::before{content:'▸ ';color:var(--text-sub)}
+.ind-prov-more[open]>summary::before{content:'▾ '}
+.ind-prov-mom{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:6px}
+.ind-prov-mom-note{grid-column:1/-1;font-size:11.5px;color:var(--text-sub);line-height:1.4}
+.ind-prov-tbl{width:100%;border-collapse:collapse;font-size:12px;background:var(--bg);border:1px solid var(--border-soft);border-radius:8px;overflow:hidden}
+.ind-prov-tbl caption{caption-side:top;text-align:left;font-weight:600;font-size:12.5px;padding:6px 8px;color:var(--text)}
+.ind-prov-tbl th{text-align:right;font-weight:500;color:var(--text-sub);padding:4px 8px;border-bottom:1px solid var(--border-soft)}
+.ind-prov-tbl th:first-child{text-align:left}
+.ind-prov-tbl td{padding:4px 8px;border-bottom:1px solid var(--border-soft)}
+.ind-prov-num{text-align:right;white-space:nowrap}
+.ind-prov-trtot td{font-weight:700;background:var(--surface-2)}
 /* 🗄 월별 아카이브 링크 섹션 */
 .ind-archive{margin:8px 16px 0;padding:9px 14px;border:1px dashed var(--border-soft);border-radius:10px;background:var(--surface)}
 .ind-archive a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}
