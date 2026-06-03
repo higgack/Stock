@@ -144,6 +144,9 @@ fi
 systemctl enable stock-bot.service
 if [ -f "$DEPLOY_DIR/stock-bot-dashboard.service" ]; then
     systemctl enable --now stock-bot-dashboard.service
+    # try-restart so a changed unit (e.g. ExecStart venv switch) actually
+    # takes effect — enable --now is a no-op when already running.
+    systemctl try-restart stock-bot-dashboard.service || true
 fi
 if [ -f "$DEPLOY_DIR/trade-bot.service" ]; then
     systemctl enable trade-bot.service

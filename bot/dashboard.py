@@ -1847,6 +1847,7 @@ _DETAIL_CSS = _BASE_CSS + """
 }
 .chart-tf-btn:hover { color: var(--fg); border-color: var(--accent); }
 .chart-tf-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.chart-tf-status { color: var(--fg-soft); font-size: 12px; margin-left: 6px; }
 .price-chart { width: 100%; height: 360px; }
 .chart-legend { color: var(--fg-soft); font-size: 12px; margin-top: 8px; }
 .chart-legend .lg { margin-right: 10px; font-weight: 600; }
@@ -2046,6 +2047,7 @@ def _render_chart_section(rec: dict) -> str:
         <button class="chart-tf-btn" data-kind="range" data-val="5y">5년</button>
         <button class="chart-tf-btn" data-kind="range" data-val="max">전체</button>
       </span>
+      <span class="chart-tf-status" id="chart-status"></span>
     </div>
     <div id="price-chart" class="price-chart" data-ticker="{tkr}"></div>
     <script type="application/json" id="chart-data">{payload}</script>
@@ -2131,16 +2133,27 @@ _CHART_JS = """
     }
   }
 
+  function status(msg){ var st = document.getElementById('chart-status'); if (st) st.textContent = msg || ''; }
+
   function load(){
     setActive();
     // Default view = the embedded payload (instant, offline, SSoT-matching).
-    if (curInterval === '1d' && curRange === '1y') { render(initial); return; }
+    if (curInterval === '1d' && curRange === '1y') { status(''); render(initial); return; }
+    status('⏳ 불러오는 중…');
     el.style.opacity = '0.5';
     fetch('../api/chart?ticker=' + encodeURIComponent(ticker) + '&interval=' + curInterval + '&range=' + curRange,
           { headers: { 'Accept': 'application/json' } })
-      .then(function(r){ return r.json(); })
-      .then(function(j){ el.style.opacity = ''; if (j && j.ok && j.chart) render(j.chart); })
-      .catch(function(){ el.style.opacity = ''; });
+      .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(j){
+        el.style.opacity = '';
+        if (j && j.ok && j.chart) { status(''); render(j.chart); }
+        else { status('⚠️ 데이터 없음 (' + ((j && j.error) || 'no data') + ')'); }
+      })
+      .catch(function(err){
+        el.style.opacity = '';
+        var m = (err && err.message) ? err.message : 'error';
+        status('⚠️ 불러오기 실패 (' + m + ') — 대시보드 서버 재시작 필요할 수 있음');
+      });
   }
 
   function onClick(e){

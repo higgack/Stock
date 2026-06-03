@@ -440,7 +440,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             from bot.chart_data import fetch_chart_payload
             payload = fetch_chart_payload(ticker, interval=interval, period=rng)
             if not payload:
-                self._reply_json(404, {"ok": False, "error": "no data"})
+                # 200 (not 404) so the client can distinguish "endpoint exists
+                # but no data" from "endpoint missing (old server) → static 404".
+                self._reply_json(200, {"ok": False, "error": "no data"})
                 return
             body = {"ok": True, "chart": payload}
             try:
