@@ -71,45 +71,96 @@ def build_price_chart(ticker: str, as_of: str | None = None) -> dict | None:
         if len(close) < 20:
             return None
 
-        # Market-aware currency symbol / decimals (same source as the
-        # text snapshot's Bollinger / MA formatting).
-        try:
-            from bot.market import get_market_config as _gcfg
-            _c = _gcfg(ticker)
-            currency = _c.get("currency_symbol", "$")
-            decimals = 0 if _c.get("currency") in ("KRW", "JPY") else 2
-        except Exception:
-            currency, decimals = "$", 2
-
-        ema10 = close.ewm(span=10, adjust=False).mean()
-        sma50 = close.rolling(50).mean() if len(close) >= 50 else None
-        sma200 = close.rolling(200).mean() if len(close) >= 200 else None
-
-        def _round(v) -> float | None:
-            try:
-                import math
-                f = float(v)
-                if math.isnan(f):
-                    return None
-                return round(f, decimals)
-            except Exception:
-                return None
-
-        times = [d.strftime("%Y-%m-%d") for d in close.index]
-        payload: dict = {
-            "currency": currency,
-            "decimals": decimals,
-            "times": times,
-            "close": [_round(v) for v in close.values],
-            "ema10": [_round(v) for v in ema10.values],
-        }
-        if sma50 is not None:
-            payload["sma50"] = [_round(v) for v in sma50.values]
-        if sma200 is not None:
-            payload["sma200"] = [_round(v) for v in sma200.values]
-        return payload
+        currency, decimals = _currency_for(ticker)
+        return _series_payload(close, currency, decimals)
     except Exception as exc:
         log.warning("chart_data: build failed for %s: %s", ticker, exc)
+        return None
+
+
+def _currency_for(ticker: str) -> tuple[str, int]:
+    """Market-aware currency symbol + decimals (0 for KRW/JPY, else 2).
+    Same source as the text snapshot's Bollinger / MA formatting."""
+    try:
+        from bot.market import get_market_config as _gcfg
+        _c = _gcfg(ticker)
+        return (
+            _c.get("currency_symbol", "$"),
+            0 if _c.get("currency") in ("KRW", "JPY") else 2,
+        )
+    except Exception:
+        return "$", 2
+
+
+def _series_payload(close, currency: str, decimals: int) -> dict:
+    """Build the parallel-array chart payload (close + 10 EMA / 50 SMA /
+    200 SMA) from a pandas close Series. SMA50/200 omitted when the series
+    is shorter than the window (graceful — short weekly/monthly ranges)."""
+    import math
+
+    ema10 = close.ewm(span=10, adjust=False).mean()
+    sma50 = close.rolling(50).mean() if len(close) >= 50 else None
+    sma200 = close.rolling(200).mean() if len(close) >= 200 else None
+
+    def _round(v) -> float | None:
+        try:
+            f = float(v)
+            if math.isnan(f):
+                return None
+            return round(f, decimals)
+        except Exception:
+            return None
+
+    payload: dict = {
+        "currency": currency,
+        "decimals": decimals,
+        "times": [d.strftime("%Y-%m-%d") for d in close.index],
+        "close": [_round(v) for v in close.values],
+        "ema10": [_round(v) for v in ema10.values],
+    }
+    if sma50 is not None:
+        payload["sma50"] = [_round(v) for v in sma50.values]
+    if sma200 is not None:
+        payload["sma200"] = [_round(v) for v in sma200.values]
+    return payload
+
+
+# On-demand timeframe fetch (dashboard /api/chart endpoint). interval +
+# period are whitelisted; MAs (10/50/200) recompute on the chosen interval
+# (so weekly view = 10wk/50wk/200wk — diverges from the daily text SSoT,
+# which is expected). Returns None on failure (client keeps current view).
+_VALID_INTERVALS = {"1d", "1wk", "1mo"}
+_VALID_PERIODS = {"6mo", "1y", "3y", "5y", "max"}
+
+
+def fetch_chart_payload(
+    ticker: str, interval: str = "1d", period: str = "1y"
+) -> dict | None:
+    if interval not in _VALID_INTERVALS:
+        interval = "1d"
+    if period not in _VALID_PERIODS:
+        period = "1y"
+    try:
+        import yfinance as yf
+
+        hist = yf.Ticker(ticker).history(
+            period=period, interval=interval, auto_adjust=True
+        )
+        if hist is None or len(hist) < 5:
+            return None
+        close = hist["Close"].dropna()
+        if len(close) < 5:
+            return None
+        currency, decimals = _currency_for(ticker)
+        payload = _series_payload(close, currency, decimals)
+        payload["interval"] = interval
+        payload["period"] = period
+        return payload
+    except Exception as exc:
+        log.warning(
+            "chart_data: fetch_chart_payload failed %s %s %s: %s",
+            ticker, interval, period, exc,
+        )
         return None
 
 

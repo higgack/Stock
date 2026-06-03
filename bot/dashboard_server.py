@@ -174,6 +174,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if not self._authorize():
             return
+        # /api/chart?ticker=..&interval=1d|1wk|1mo&range=6mo|1y|3y|5y|max
+        # On-demand timeframe fetch for the detail-page price chart. The
+        # token prefix is already stripped by _authorize() above.
+        if self.path.split("?", 1)[0] == "/api/chart":
+            return self._handle_chart_api()
         return super().do_GET()
 
     def do_HEAD(self):
@@ -395,6 +400,59 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.exception("daily_byte_delete: unexpected failure")
             self._reply_json(500, {"ok": False, "error": str(exc)})
+
+    def _handle_chart_api(self) -> None:
+        """Serve an on-demand chart payload for a ticker / interval / range.
+        Validates inputs, 1h disk-caches per (ticker, interval, range), and
+        fetches via yfinance (free). Read-only GET — gated by _authorize()."""
+        import time
+        import urllib.parse as _uparse
+
+        _VALID_INTERVALS = {"1d", "1wk", "1mo"}
+        _VALID_RANGES = {"6mo", "1y", "3y", "5y", "max"}
+        try:
+            qs = _uparse.urlparse(self.path).query
+            params = _uparse.parse_qs(qs)
+            ticker = (params.get("ticker", [""])[0] or "").strip().upper()
+            interval = (params.get("interval", ["1d"])[0] or "1d").strip()
+            rng = (params.get("range", ["1y"])[0] or "1y").strip()
+            if not _TICKER_RE.match(ticker):
+                self._reply_json(400, {"ok": False, "error": "bad ticker"})
+                return
+            if interval not in _VALID_INTERVALS:
+                interval = "1d"
+            if rng not in _VALID_RANGES:
+                rng = "1y"
+
+            # 1h disk cache. Key is path-safe by construction (ticker passed
+            # _TICKER_RE; interval/range are whitelisted literals).
+            cache_dir = _ARCHIVE_ROOT.parent / "chart_cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            safe = ticker.replace(".", "_").replace("-", "_")
+            cache_f = cache_dir / f"{safe}_{interval}_{rng}.json"
+            if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 3600:
+                try:
+                    self._reply_json(200, json.loads(cache_f.read_text("utf-8")))
+                    return
+                except Exception:
+                    pass  # corrupt cache → refetch
+
+            from bot.chart_data import fetch_chart_payload
+            payload = fetch_chart_payload(ticker, interval=interval, period=rng)
+            if not payload:
+                self._reply_json(404, {"ok": False, "error": "no data"})
+                return
+            body = {"ok": True, "chart": payload}
+            try:
+                cache_f.write_text(
+                    json.dumps(body, ensure_ascii=False), encoding="utf-8"
+                )
+            except Exception:
+                pass
+            self._reply_json(200, body)
+        except Exception as exc:
+            log.warning("chart_api: failed — %s", exc)
+            self._reply_json(500, {"ok": False, "error": "internal"})
 
     def _reply_json(self, status: int, body: dict) -> None:
         encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")

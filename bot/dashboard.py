@@ -1837,6 +1837,16 @@ _DETAIL_CSS = _BASE_CSS + """
 }
 .title-row h1 { margin: 0; font-size: 24px; }
 .meta { color: var(--fg-soft); font-size: 13px; margin-bottom: 24px; }
+.chart-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0 10px; }
+.chart-tf-sep { color: var(--fg-soft); margin: 0 2px; }
+.chart-tf-group { display: inline-flex; gap: 4px; }
+.chart-tf-btn {
+  background: var(--card); color: var(--fg-soft); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer;
+  font-family: inherit; line-height: 1.6;
+}
+.chart-tf-btn:hover { color: var(--fg); border-color: var(--accent); }
+.chart-tf-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
 .price-chart { width: 100%; height: 360px; }
 .chart-legend { color: var(--fg-soft); font-size: 12px; margin-top: 8px; }
 .chart-legend .lg { margin-right: 10px; font-weight: 600; }
@@ -2018,10 +2028,26 @@ def _render_chart_section(rec: dict) -> str:
     # Defuse any stray '</' so the JSON can't terminate the <script> block.
     payload = _json.dumps(pc, ensure_ascii=False, separators=(",", ":"))
     payload = payload.replace("</", "<\\/")
+    tkr = _html.escape(rec.get("ticker", ""))
     return f"""
   <section class="report-section">
-    <h2>📈 가격 차트 (1년)</h2>
-    <div id="price-chart" class="price-chart"></div>
+    <h2>📈 가격 차트</h2>
+    <div class="chart-toolbar">
+      <span class="chart-tf-group">
+        <button class="chart-tf-btn" data-kind="interval" data-val="1d">일봉</button>
+        <button class="chart-tf-btn" data-kind="interval" data-val="1wk">주봉</button>
+        <button class="chart-tf-btn" data-kind="interval" data-val="1mo">월봉</button>
+      </span>
+      <span class="chart-tf-sep">·</span>
+      <span class="chart-tf-group">
+        <button class="chart-tf-btn" data-kind="range" data-val="6mo">6개월</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="1y">1년</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="3y">3년</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="5y">5년</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="max">전체</button>
+      </span>
+    </div>
+    <div id="price-chart" class="price-chart" data-ticker="{tkr}"></div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div class="chart-legend">
       <span class="lg lg-close">종가</span>
@@ -2041,21 +2067,32 @@ def _render_chart_section(rec: dict) -> str:
 
 _CHART_JS = """
 (function(){
-  function init(){
-    var el = document.getElementById('price-chart');
-    var dataEl = document.getElementById('chart-data');
-    if (!el || !dataEl) return;
+  var el = document.getElementById('price-chart');
+  var dataEl = document.getElementById('chart-data');
+  if (!el || !dataEl) return;
+  var initial;
+  try { initial = JSON.parse(dataEl.textContent); } catch (e) { return; }
+  if (!initial || !initial.times || !initial.close) return;
+  var ticker = el.getAttribute('data-ticker') || '';
+  // Trade-plan levels are price lines (valid on any interval) — keep from
+  // the embedded payload and re-apply on every (re)render.
+  var markers = initial.markers || null;
+  var chart = null;
+  var curInterval = '1d', curRange = '1y';
+
+  function isDark(){ return document.documentElement.dataset.theme === 'dark'; }
+  function txtColor(){ return isDark() ? '#cbd5e1' : '#334155'; }
+  function gridColor(){ return isDark() ? 'rgba(148,163,184,0.12)' : 'rgba(100,116,139,0.12)'; }
+
+  function render(d){
     if (typeof LightweightCharts === 'undefined') {
       el.innerHTML = '<div class="chart-fallback">차트 라이브러리를 불러오지 못했습니다 (텍스트 분석은 아래 그대로).</div>';
       return;
     }
-    var d;
-    try { d = JSON.parse(dataEl.textContent); } catch (e) { return; }
     if (!d || !d.times || !d.close) return;
-    function isDark(){ return document.documentElement.dataset.theme === 'dark'; }
-    function txtColor(){ return isDark() ? '#cbd5e1' : '#334155'; }
-    function gridColor(){ return isDark() ? 'rgba(148,163,184,0.12)' : 'rgba(100,116,139,0.12)'; }
-    var chart = LightweightCharts.createChart(el, {
+    if (chart) { try { chart.remove(); } catch(e){} chart = null; }
+    el.innerHTML = '';
+    chart = LightweightCharts.createChart(el, {
       height: 360,
       layout: { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit' },
       grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } },
@@ -2071,35 +2108,67 @@ _CHART_JS = """
     if (d.ema10)  chart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: pf, title: '10 EMA' }).setData(zip(d.ema10));
     if (d.sma50)  chart.addLineSeries({ color: '#3ec46d', lineWidth: 1, priceFormat: pf, title: '50 SMA' }).setData(zip(d.sma50));
     if (d.sma200) chart.addLineSeries({ color: '#e2574c', lineWidth: 1, priceFormat: pf, title: '200 SMA' }).setData(zip(d.sma200));
-    // Trade-plan horizontal lines (dashed). Only the plausibility-filtered
-    // levels arrive in d.markers, so no misleading line is ever drawn.
-    if (d.markers) {
+    if (markers) {
       function priceLine(p, color, title) {
         if (p === null || p === undefined) return;
         closeS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: title });
       }
-      priceLine(d.markers.entry,  '#9b59b6', '진입');
-      priceLine(d.markers.stop,   '#e2574c', '손절');
-      priceLine(d.markers.target, '#3ec46d', '목표');
+      priceLine(markers.entry,  '#9b59b6', '진입');
+      priceLine(markers.stop,   '#e2574c', '손절');
+      priceLine(markers.target, '#3ec46d', '목표');
     }
     chart.timeScale().fitContent();
-    function resize(){ chart.applyOptions({ width: el.clientWidth }); }
-    resize();
-    window.addEventListener('resize', resize);
+    chart.applyOptions({ width: el.clientWidth });
+  }
+
+  function setActive(){
+    var btns = document.querySelectorAll('.chart-tf-btn');
+    for (var i = 0; i < btns.length; i++) {
+      var b = btns[i];
+      var on = (b.getAttribute('data-kind') === 'interval' && b.getAttribute('data-val') === curInterval)
+            || (b.getAttribute('data-kind') === 'range' && b.getAttribute('data-val') === curRange);
+      if (on) b.classList.add('active'); else b.classList.remove('active');
+    }
+  }
+
+  function load(){
+    setActive();
+    // Default view = the embedded payload (instant, offline, SSoT-matching).
+    if (curInterval === '1d' && curRange === '1y') { render(initial); return; }
+    el.style.opacity = '0.5';
+    fetch('../api/chart?ticker=' + encodeURIComponent(ticker) + '&interval=' + curInterval + '&range=' + curRange,
+          { headers: { 'Accept': 'application/json' } })
+      .then(function(r){ return r.json(); })
+      .then(function(j){ el.style.opacity = ''; if (j && j.ok && j.chart) render(j.chart); })
+      .catch(function(){ el.style.opacity = ''; });
+  }
+
+  function onClick(e){
+    var t = e.target;
+    while (t && t !== document && !(t.classList && t.classList.contains('chart-tf-btn'))) t = t.parentNode;
+    if (!t || t === document) return;
+    var kind = t.getAttribute('data-kind'), val = t.getAttribute('data-val');
+    if (kind === 'interval') curInterval = val;
+    else if (kind === 'range') curRange = val;
+    load();
+  }
+
+  function start(){
+    document.addEventListener('click', onClick);
+    render(initial);
+    setActive();
+    window.addEventListener('resize', function(){ if (chart) chart.applyOptions({ width: el.clientWidth }); });
     var last = document.documentElement.dataset.theme;
     setInterval(function(){
-      var t = document.documentElement.dataset.theme;
-      if (t !== last) {
-        last = t;
-        chart.applyOptions({
-          layout: { textColor: txtColor() },
-          grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } }
-        });
+      var th = document.documentElement.dataset.theme;
+      if (th !== last) {
+        last = th;
+        if (chart) chart.applyOptions({ layout: { textColor: txtColor() }, grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } } });
       }
     }, 60000);
   }
-  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', init); }
-  else { init(); }
+  if (document.readyState === 'loading') { document.addEventListener('DOMContentLoaded', start); }
+  else { start(); }
 })();
 """
 

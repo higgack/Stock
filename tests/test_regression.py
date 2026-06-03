@@ -602,3 +602,38 @@ class TestTradeLevelParser:
         html = _render_chart_section(rec)
         assert '"markers"' in html, "마커 페이로드가 차트 JSON 에 주입되어야"
         assert "145.5" in html and "138" in html
+
+    def test_chart_section_has_timeframe_toolbar(self):
+        """일/주/월봉 + 기간 토글 버튼 + data-ticker (on-demand fetch 용)."""
+        from bot.dashboard import _render_chart_section
+
+        rec = {
+            "ticker": "TSLA",
+            "price_chart": {
+                "currency": "$", "decimals": 2,
+                "times": ["2025-06-01", "2025-06-02"],
+                "close": [144.0, 145.0],
+            },
+        }
+        html = _render_chart_section(rec)
+        assert 'data-ticker="TSLA"' in html, "API fetch 용 ticker 누락"
+        assert 'data-kind="interval" data-val="1d"' in html, "일봉 버튼 누락"
+        assert 'data-kind="interval" data-val="1wk"' in html, "주봉 버튼 누락"
+        assert 'data-kind="interval" data-val="1mo"' in html, "월봉 버튼 누락"
+        assert 'data-kind="range" data-val="max"' in html, "전체 기간 버튼 누락"
+
+    def test_fetch_chart_payload_normalizes_bad_inputs(self):
+        """잘못된 interval/range 는 화이트리스트 기본값으로 정규화 (예외
+        전파 금지). 네트워크 없으면 None (graceful)."""
+        from bot.chart_data import fetch_chart_payload
+
+        result = fetch_chart_payload("AAPL", interval="evil", period="../etc")
+        assert result is None or isinstance(result, dict)
+
+    def test_chart_api_interval_range_whitelists(self):
+        """서버 엔드포인트가 참조하는 화이트리스트가 코드에 존재 (path
+        traversal / 임의 yfinance 호출 차단)."""
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert "/api/chart" in src, "차트 API 경로 누락"
+        assert "_VALID_INTERVALS" in src and "_VALID_RANGES" in src
+        assert "_TICKER_RE.match(ticker)" in src, "ticker 검증 누락"

@@ -1004,7 +1004,7 @@ yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 🦉
- • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세=가격차트(1년·10/50/200MA)·💰비용 합산(8 surface)
+ • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세=가격차트(일/주/월봉·기간선택·10/50/200MA)·💰비용 합산
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
  • <b>Daily Byte</b> — 평일19:00·일22:00 KR수급 인포그래픽+본문·검색·🗑️
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
