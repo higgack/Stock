@@ -22,6 +22,7 @@ Run by hand:
     .venv/bin/python -m trade.scripts.fetch_provisional
 """
 
+import argparse
 import logging
 import os
 import sys
@@ -32,6 +33,11 @@ from dotenv import load_dotenv
 from trade import customs, customs_provisional as prov
 
 load_dotenv()
+
+# 5분마다 도는 대시보드 새로고침에서 --if-stale로 호출할 때, 이 시간 안에
+# 이미 수집했고 4종 시계열이 다 차 있으면 API를 안 때리고 건너뛴다(잠정치는
+# 10일 단위라 자주 긁을 필요 없음). env로 조정.
+MAX_AGE_H_DEFAULT = float(os.environ.get("TRADE_PROV_MAX_AGE_H") or "6")
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
@@ -47,11 +53,18 @@ def _window(now: datetime | None = None) -> tuple[str, str]:
     return f"{now.year - 1:04d}01", f"{now.year:04d}12"
 
 
-def run() -> int:
+def run(if_stale: bool = False, max_age_h: float = MAX_AGE_H_DEFAULT) -> int:
     key = os.environ.get("TRADE_DATA_GO_KR_KEY") or ""
     if not key:
         log.info("TRADE_DATA_GO_KR_KEY not set — skipping (silent, no alert)")
         return 0
+
+    # --if-stale: 신선하면 API 0콜로 건너뜀(5분 새로고침에 끼워도 무해).
+    if if_stale:
+        with customs.session() as conn:
+            if not prov.is_stale(conn, max_age_h):
+                log.info("data fresh (≤%.1fh) & complete — skip fetch", max_age_h)
+                return 0
 
     start_yymm, end_yymm = _window()
     log.info("fetching 잠정치 4종, window %s→%s", start_yymm, end_yymm)
@@ -86,7 +99,17 @@ def run() -> int:
 
 
 def main() -> int:
-    return run()
+    ap = argparse.ArgumentParser(
+        description="관세청 10일 단위 잠정치 4종 → 잠정 속보 스냅샷+시계열 (silent).")
+    ap.add_argument(
+        "--if-stale", action="store_true",
+        help=("신선하면(4종 시계열 완비 + 최근 수집 ≤TRADE_PROV_MAX_AGE_H) "
+              "API 0콜로 건너뜀. 5분 대시보드 새로고침에 끼워 self-heal용."))
+    ap.add_argument(
+        "--max-age-h", type=float, default=MAX_AGE_H_DEFAULT, metavar="H",
+        help=f"--if-stale 신선도 기준 시간(기본 {MAX_AGE_H_DEFAULT})")
+    args = ap.parse_args()
+    return run(if_stale=args.if_stale, max_age_h=args.max_age_h)
 
 
 if __name__ == "__main__":

@@ -257,6 +257,40 @@ class StoreTests(unittest.TestCase):
         conn.close()
 
 
+class StaleTests(unittest.TestCase):
+    _ROW = [{"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL", "amt": [1] * 11}]
+
+    def test_empty_is_stale(self):
+        conn = sqlite3.connect(":memory:")
+        self.assertTrue(prov.is_stale(conn))
+        conn.close()
+
+    def test_complete_fresh_not_stale(self):
+        conn = sqlite3.connect(":memory:")
+        for k in prov.ENDPOINTS:
+            prov.store_signal(conn, k, {"ym": "2026-05"}, rows=self._ROW)
+        self.assertFalse(prov.is_stale(conn, max_age_h=6))
+        conn.close()
+
+    def test_incomplete_series_is_stale(self):
+        # 한 종류라도 시계열이 없으면(구버전·미수집) self-heal 대상
+        conn = sqlite3.connect(":memory:")
+        for i, k in enumerate(prov.ENDPOINTS):
+            prov.store_signal(conn, k, {"ym": "x"},
+                              rows=None if i == 0 else self._ROW)
+        self.assertTrue(prov.is_stale(conn))
+        conn.close()
+
+    def test_old_fetch_is_stale(self):
+        conn = sqlite3.connect(":memory:")
+        for k in prov.ENDPOINTS:
+            prov.store_signal(conn, k, {"ym": "2026-05"}, rows=self._ROW)
+        conn.execute("UPDATE customs_provisional SET fetched_at=?",
+                     ("2020-01-01T00:00:00+00:00",))
+        self.assertTrue(prov.is_stale(conn, max_age_h=6))
+        conn.close()
+
+
 class MomentumTests(unittest.TestCase):
     def _rows(self):
         # 두 해 풀월. item1=가속, item2=둔화 → 정렬·모멘텀 검증.

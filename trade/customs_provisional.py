@@ -348,6 +348,36 @@ def load_rows(conn: sqlite3.Connection) -> dict[str, list]:
         return {}
 
 
+def is_stale(conn: sqlite3.Connection, max_age_h: float = 6.0) -> bool:
+    """전체 시계열(series_json)이 비었거나(구버전·미수집) 가장 최근 수집이
+    max_age_h보다 오래됐으면 True → fetch_provisional --if-stale가 한 번만
+    긁어 self-heal. 4종 모두 series_json이 있고 최신 수집이 max_age_h 이내면
+    False(=API 0콜 skip). 어떤 예외든 True(안전하게 갱신 쪽)."""
+    try:
+        ensure_schema(conn)
+        recs = list(conn.execute(
+            "SELECT series_json, fetched_at FROM customs_provisional"))
+    except Exception:
+        return True
+    have = [r for r in recs if r[0]]
+    if len(have) < len(ENDPOINTS):       # 4종 시계열이 다 안 차면 갱신 필요
+        return True
+    newest = None
+    for _series, ts in have:
+        try:
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if newest is None or dt > newest:
+            newest = dt
+    if newest is None:
+        return True
+    age_h = (datetime.now(timezone.utc) - newest).total_seconds() / 3600.0
+    return age_h >= max_age_h
+
+
 # ---------------------------------------------------------------------
 # Render — 가벼운 '잠정 속보' 박스
 # ---------------------------------------------------------------------

@@ -8,15 +8,20 @@ User=higgack
 Group=higgack
 WorkingDirectory=/home/higgack/stock-trade
 EnvironmentFile=-/home/higgack/stock-trade/.env
-# Three passes in one timer tick:
+# Four passes in one timer tick:
 #   1. ingest_inbox — new inbox.jsonl rows → store.db (skips on filter match)
 #   2. purge_ignored — retroactively delete store.db rows that now match the
 #      ignored filter (handles cases where the filter was extended after a
 #      row already landed). Idempotent: 0-match runs are silent no-ops.
-#   3. trade.dashboard — regenerate HTML against the cleaned store.db.
-# All three are idempotent so a missed/duplicated run costs nothing.
+#   3. fetch_provisional --if-stale — 잠정 속보 시계열 self-heal: 4종 시계열이
+#      비었거나(배포 직후·구버전) 마지막 수집이 오래됐을 때만 1회 긁고, 신선하면
+#      API 0콜로 건너뜀(잠정치는 10일 단위라 5분 폴링 불필요). 새 잠정 코드가
+#      배포되면 다음 5분 틱에 모멘텀 패널이 SSH 없이 자동으로 채워진다.
+#   4. trade.dashboard — regenerate HTML against the cleaned store.db.
+# All four are idempotent so a missed/duplicated run costs nothing.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.ingest_inbox
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.purge_ignored
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_provisional --if-stale
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard
 StandardOutput=journal
 StandardError=journal
