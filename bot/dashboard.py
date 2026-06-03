@@ -1849,9 +1849,9 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-tf-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
 .chart-tf-status { color: var(--fg-soft); font-size: 12px; margin-left: 6px; }
 .chart-row { display: flex; gap: 10px; align-items: stretch; }
-.price-chart { flex: 1 1 auto; height: 360px; min-width: 0; }
+.price-chart { flex: 1 1 auto; height: 440px; min-width: 0; }
 .chart-values {
-  flex: 0 0 118px; display: flex; flex-direction: column; gap: 6px;
+  flex: 0 0 110px; display: flex; flex-direction: column; gap: 6px;
   padding-top: 4px; font-size: 12px;
 }
 .cv-item { display: flex; align-items: baseline; gap: 5px; }
@@ -2115,7 +2115,7 @@ _CHART_JS = """
     if (chart) { try { chart.remove(); } catch(e){} chart = null; }
     el.innerHTML = '';
     chart = LightweightCharts.createChart(el, {
-      height: 360,
+      height: 440,
       layout: { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit' },
       grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } },
       rightPriceScale: { borderVisible: false },
@@ -2125,24 +2125,25 @@ _CHART_JS = """
     function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
     var prec = (d.decimals === 0) ? 0 : 2;
     var pf = { precision: prec, minMove: (prec === 0) ? 1 : 0.01 };
-    // 우측 축의 값 태그(lastValueVisible)와 priceLine axisLabel 은 모두 끈다
-    // — 여러 라벨이 겹쳐 가독성을 해쳤음 (2026-06-04). 대신 모든 값을 차트
-    // 바깥 오른쪽 패널(#chart-values)에 깔끔히 나열.
-    var closeS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: false, priceLineVisible: false });
+    // 현재가 + 분석가격(시점가/진입/손절/목표) 은 차트 안 축 라벨로 둔다
+    // (실제 가격 대비 우리가 분석한 가격 위치를 바로 확인 — 사용자 2026-06-04).
+    // 이동평균(10EMA/50SMA/200SMA)만 우측 패널로 빼서 라벨 겹침을 막는다
+    // (겹침의 주범이었음 — 현재가/시점가/10EMA 가 근접).
+    var closeS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
     closeS.setData(zip(d.close));
     if (d.ema10)  chart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.ema10));
     if (d.sma50)  chart.addLineSeries({ color: '#3ec46d', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.sma50));
     if (d.sma200) chart.addLineSeries({ color: '#e2574c', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.sma200));
-    function priceLine(p, color, style) {
+    function priceLine(p, color, title, style) {
       if (p === null || p === undefined) return;
-      closeS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: false });
+      closeS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: true, title: title });
     }
-    // 시점가 = 분석일 종가 (회색 점선) + 트레이드 플랜 라인 (라벨은 패널로).
-    priceLine(asOfClose, '#94a3b8', 3);
+    // 시점가 = 분석일 종가 (회색 점선) + 트레이드 플랜 라인 (축 라벨 표시).
+    priceLine(asOfClose, '#94a3b8', '시점가', 2);
     if (markers) {
-      priceLine(markers.entry,  '#9b59b6');
-      priceLine(markers.stop,   '#e2574c');
-      priceLine(markers.target, '#3ec46d');
+      priceLine(markers.entry,  '#9b59b6', '진입');
+      priceLine(markers.stop,   '#e2574c', '손절');
+      priceLine(markers.target, '#3ec46d', '목표');
     }
     chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });
@@ -2159,17 +2160,11 @@ _CHART_JS = """
     var vEl = document.getElementById('chart-values');
     if (!vEl) return;
     var dec = (d.decimals === 0) ? 0 : 2;
+    // 이동평균만 패널에 (현재가/시점가/진입/손절/목표 는 차트 안 축 라벨).
     var items = [];
-    items.push(['현재가', lastNonNull(d.close), '#4c9aff']);
-    if (asOfClose != null) items.push(['시점가', asOfClose, '#94a3b8']);
     if (d.ema10)  items.push(['10 EMA', lastNonNull(d.ema10), '#f5a623']);
     if (d.sma50)  items.push(['50 SMA', lastNonNull(d.sma50), '#3ec46d']);
     if (d.sma200) items.push(['200 SMA', lastNonNull(d.sma200), '#e2574c']);
-    if (markers) {
-      if (markers.entry  != null) items.push(['진입', markers.entry,  '#9b59b6']);
-      if (markers.stop   != null) items.push(['손절', markers.stop,   '#e2574c']);
-      if (markers.target != null) items.push(['목표', markers.target, '#3ec46d']);
-    }
     var html = '';
     for (var i = 0; i < items.length; i++) {
       html += '<div class="cv-item"><span class="cv-dot" style="background:' + items[i][2] + '"></span>'
