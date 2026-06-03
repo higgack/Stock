@@ -578,6 +578,9 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-prov-flat{color:var(--text-sub);font-size:13px}
 .ind-prov-warn{border-color:var(--tone-import)}
 .ind-prov-cav{margin-top:8px;font-size:11.5px;color:var(--tone-import);line-height:1.4}
+.ind-prov-arch{margin-top:8px;font-size:12.5px}
+.ind-prov-arch a{color:var(--tone-export);text-decoration:none;font-weight:600}
+.ind-prov-arch a:hover{text-decoration:underline}
 .ind-prov-more{margin-top:10px}
 .ind-prov-more>summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--tone-export);list-style:none;padding:6px 0}
 .ind-prov-more>summary::-webkit-details-marker{display:none}
@@ -1661,6 +1664,12 @@ def main() -> int:
             industry_archive.write_export(conn, cards)        # 공유 스냅샷(현재월)
             industry_archive.record_snapshot(conn, cards)     # 아카이브 현재월 = 라이브 추적
             industry_archive.regenerate()                     # 색인 재생성
+    except Exception:
+        pass
+    # 🟢 잠정 타임라인 색인이 404 안 나게 보장(적립은 fetch_provisional이 담당).
+    try:
+        from trade import provisional_archive
+        provisional_archive.ensure_exists()
     except Exception:
         pass
     return 0

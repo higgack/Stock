@@ -180,6 +180,8 @@ class RenderTests(unittest.TestCase):
         self.assertIn("⚡선행", html)               # capex 선행 강조
         self.assertIn("반도체 수출", html)
         self.assertIn("억$", html)                   # 단위 표기
+        self.assertIn("provisional_archive.html", html)  # 🗄 잠정 타임라인 링크
+        self.assertIn("잠정 타임라인", html)
 
     def test_export_cells_warned_with_caveat(self):
         # B안: 수출 절대액 ⚠️ 표식 + 캡션(확정 시 조정 가능).

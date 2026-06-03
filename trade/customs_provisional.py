@@ -542,6 +542,13 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
     from html import escape as _esc
     ym = _esc(ref.get("ym") or "")
     window = _esc(ref.get("window") or "")
+    # 🗄 잠정 타임라인 — 발표 창마다 적립된 과거 잠정 스냅샷(잠정↔확정 대조용).
+    # 서빙 dir(index.html 옆)에 provisional_archive.html이 있으므로 상대 링크.
+    timeline = (
+        "<div class='ind-prov-arch'>"
+        "<a href='provisional_archive.html'>🗄 잠정 타임라인 — 발표 창별 "
+        "과거 잠정 스냅샷 누적(잠정↔확정 대조) →</a></div>"
+    )
     return (
         "<div class='ind-prov'>"
         "<h3>🟢 잠정 속보 <span class='ind-prov-tag'>관세청 10일 단위</span></h3>"
@@ -550,6 +557,7 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
         "<b>(산업 집계와 분리·참고용)</b></div>"
         f"<div class='ind-prov-grid'>{body}</div>"
         f"{caveat}"
+        f"{timeline}"
         f"{momentum_html}"
         "</div>"
     )

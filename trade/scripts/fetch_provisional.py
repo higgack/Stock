@@ -71,6 +71,7 @@ def run(if_stale: bool = False, max_age_h: float = MAX_AGE_H_DEFAULT) -> int:
 
     ok = 0
     failed = 0
+    sigs: dict = {}
     with customs.session() as conn:
         prov.ensure_schema(conn)
         for kind, labels in prov.LABELS.items():
@@ -86,6 +87,7 @@ def run(if_stale: bool = False, max_age_h: float = MAX_AGE_H_DEFAULT) -> int:
                 continue
             # 헤드라인 신호 + 전체 시계열(10일 모멘텀 뷰용) 둘 다 저장.
             prov.store_signal(conn, kind, sig, rows=rows)
+            sigs[kind] = sig
             ok += 1
             log.info(
                 "%s: stored %s %s (전체 %s, YoY %s)",
@@ -93,6 +95,18 @@ def run(if_stale: bool = False, max_age_h: float = MAX_AGE_H_DEFAULT) -> int:
                 customs.fmt_usd(sig.get("total_usd")),
                 customs.fmt_pct(sig.get("total_yoy")),
             )
+
+    # 잠정 타임라인 적립 — 이 시점 헤드라인을 (ym, window) 키로 1건 누적
+    # (같은 창 재기록은 현행화 반영). best-effort.
+    if sigs:
+        from trade import provisional_archive
+        key = provisional_archive.record(sigs)
+        if key:
+            log.info("provisional timeline: recorded %s", key)
+            try:
+                provisional_archive.regenerate()
+            except Exception:
+                pass
 
     log.info("done: kinds_ok=%d failed=%d (silent — no Telegram)", ok, failed)
     return 0
