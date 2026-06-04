@@ -892,6 +892,43 @@ def has_recent_news(ticker: str) -> bool:
                 "news availability (akshare) check failed for %s: %s", ticker, exc,
             )
 
+    # Disclosure fallback (티로보틱스 117730.KS 2026-06-04): 저커버리지
+    # KR/JP/TW/CN 종목은 뉴스 기사 0건이어도 공식 공시(수주/계약/실적)가
+    # primary catalyst — 117730 의 북미 물류·AMR 수주가 '공시로' 나왔는데
+    # 뉴스 0건으로 news/sentiment 가 통째로 skip 됐다. 뉴스 API 가 모두
+    # 비어도 최근 공시가 있으면 skip 하지 않는다(공시 블록은 build_
+    # instrument_context 가 분석가에 이미 주입 → 공시를 material news 로
+    # 활용). 데이터 소스가 시장별(DART/EDINET/MOPS/AKShare)이라 market-gated
+    # — CLAUDE.md 의 documented data-source 예외. best-effort, 실패 시 기존 답.
+    if not has:
+        try:
+            from bot.market import detect_market
+            _m = detect_market(ticker)
+            _code = (ticker or "").upper().split(".")[0]
+            _disc = None
+            if _m == "KR":
+                from bot.dart_client import get_dart
+                _disc = get_dart().get_recent_disclosures(_code, days_back=14, limit=3)
+            elif _m == "JP":
+                from bot.edinet_client import get_edinet
+                _disc = get_edinet().get_recent_disclosures(ticker, days_back=14, limit=3)
+            elif _m == "TW":
+                from bot.mops_client import get_mops
+                _disc = get_mops().get_recent_disclosures(ticker, days_back=14, limit=3)
+            elif _m in ("CN_A", "HK"):
+                from bot.akshare_client import get_akshare
+                _disc = get_akshare().get_recent_disclosures(ticker, days_back=14, limit=3)
+            if _disc:
+                has = True
+                _analyst_log.info(
+                    "news availability: %s 기사 0건이나 최근 공시 %d건 — "
+                    "news/sentiment 를 공시 기반으로 진행", ticker, len(_disc),
+                )
+        except Exception as exc:
+            _analyst_log.warning(
+                "news availability (disclosure) check failed for %s: %s", ticker, exc,
+            )
+
     _NEWS_AVAILABILITY_CACHE[ticker] = has
     return has
 
@@ -5311,6 +5348,21 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         " 메우지 말 것 — 호텔신라 2026-05-17 케이스가"
                         " 그 실수. 위 리스트가 비어있는 경우만"
                         " 한국어 뉴스 부재로 인정."
+                    )
+                else:
+                    # Naver 기사 0건 — 저커버리지 KR 종목은 공시(수주/계약/
+                    # 실적)가 primary catalyst (117730 2026-06-04: 북미 물류·
+                    # AMR 수주가 '공시로' 나왔는데 뉴스 부재로 누락). 위 DART
+                    # 공시 블록을 material news 로 활용하라.
+                    base += (
+                        "\n\n=== KR 뉴스 부재 — 공시 기반 news/sentiment 지시 ===\n"
+                        "Naver 한국어 기사 0건. 그러나 위 'Pre-fetched KR market"
+                        " data (DART)' 블록의 최근 공시(단일판매·공급계약/수주/"
+                        "실적/주요사항 등)가 이 종목의 primary news catalyst 다."
+                        " 그 공시를 material news 로 간주해 news / sentiment"
+                        " 분석을 진행하라 — '관련 뉴스 없음'으로 결론짓지 말 것."
+                        " 단 공시에 없는 내용을 지어내지 말고, 미국·타사 무관"
+                        " 헤드라인으로 메우지도 말 것."
                     )
         except Exception as exc:
             _analyst_log.warning(

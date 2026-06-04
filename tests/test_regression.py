@@ -941,6 +941,61 @@ class TestKRSuffixAndFreezeGate:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 8a5) 마크다운 표 구분선 자동 삽입 + 공시→뉴스 fallback (티로보틱스 117730 2026-06-04)
+#   배경: ① LLM 이 표 헤더 다음 구분선(|---|)을 빼먹어 요약표가 깨져 노출.
+#   ② KOSDAQ 수주가 '공시로'만 존재해 뉴스 0건으로 news/sentiment 통째 skip.
+# ─────────────────────────────────────────────────────────────────────────
+class TestMarkdownTableAndDisclosureNews:
+    """fix: 표 구분선 자동 삽입 + 공시→뉴스 fallback (117730 2026-06-04)."""
+
+    def test_insert_separator_117730_case(self):
+        from bot.md_tables import insert_table_separators
+        raw = ("요약표\n"
+               "| 지표 | 현재 값 | 비고 |\n"
+               "| 평균 | ₩19,556 | ₩11,280 |\n"
+               "| 상단 밴드 | ₩22,495 | 낮음 |")
+        out = insert_table_separators(raw)
+        lines = out.split("\n")
+        assert lines[1].startswith("| 지표"), lines
+        # 헤더 다음 줄 = 구분선 (대시/콜론만), 3컬럼 → 파이프 4개
+        assert set(lines[2].replace("|", "").replace(" ", "")) <= set("-:"), lines[2]
+        assert lines[2].count("|") == 4, lines[2]
+        assert "₩19,556" in out and "상단 밴드" in out  # 데이터 보존
+
+    def test_valid_table_idempotent(self):
+        from bot.md_tables import insert_table_separators
+        valid = "| A | B |\n| --- | --- |\n| 1 | 2 |"
+        assert insert_table_separators(valid) == valid
+        assert insert_table_separators(insert_table_separators(valid)) == valid
+
+    def test_non_table_prose_unchanged(self):
+        from bot.md_tables import insert_table_separators
+        prose = "현재가 X — 하락 추세.\n일반 문장."
+        assert insert_table_separators(prose) == prose
+        assert insert_table_separators("a | b 설명") == "a | b 설명"  # 표 아님
+
+    def test_header_without_data_unchanged(self):
+        from bot.md_tables import insert_table_separators
+        one = "| A | B |\n다음 문장"
+        assert insert_table_separators(one) == one
+
+    def test_disclosure_news_fallback_wired(self):
+        au = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
+                  encoding="utf-8").read()
+        # has_recent_news 공시 fallback (KR DART + JP/TW/CN)
+        assert "get_recent_disclosures(_code, days_back=14" in au, "DART 공시 fallback 누락"
+        assert "from bot.edinet_client import get_edinet" in au, "JP EDINET fallback 누락"
+        assert "from bot.mops_client import get_mops" in au, "TW MOPS fallback 누락"
+        # 뉴스 부재 시 공시-기반 news/sentiment directive
+        assert "공시 기반 news/sentiment 지시" in au, "공시 directive 누락"
+
+    def test_analyzer_wires_table_step_and_skipmsg(self):
+        an = open("bot/analyzer.py", encoding="utf-8").read()
+        assert "insert-table-separators" in an, "표 구분선 스텝 미배선"
+        assert "DART 공시 모두" in an, "skip 메시지 공시 표기 누락"
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger
 # ─────────────────────────────────────────────────────────────────────────
 class TestWatchlist:

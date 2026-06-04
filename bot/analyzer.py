@@ -21,6 +21,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from bot import cache as _cache
 from bot.archive import save_analysis as _archive_save
 from bot.dashboard import regenerate_index as _dashboard_regen
+from bot.md_tables import insert_table_separators as _insert_table_separators
 from bot.usage_tracker import UsageCallback, log_analysis
 
 log = logging.getLogger("stock-bot.analyzer")
@@ -263,19 +264,19 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
                 if _market == "KR":
                     _skip_msg = (
                         f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + Naver(한국어)"
-                        f" 양쪽 모두 최근 28일간 {ticker} 기사 0건"
+                        f" + DART 공시 모두 최근 28일간 {ticker} 0건"
                         " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
                     )
                 elif _market == "JP":
                     _skip_msg = (
                         f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + Kabutan(일본어)"
-                        f" 양쪽 모두 최근 28일간 {ticker} 기사 0건"
+                        f" + EDINET 공시 모두 최근 28일간 {ticker} 0건"
                         " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
                     )
                 elif _market == "TW":
                     _skip_msg = (
                         f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + 鉅亨網(繁體中文)"
-                        f" 양쪽 모두 최근 28일간 {ticker} 기사 0건"
+                        f" + MOPS 공시 모두 최근 28일간 {ticker} 0건"
                         " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
                     )
                 else:
@@ -2206,6 +2207,15 @@ def _polish(body: str, currency_symbol: str = "", canonical: dict | None = None)
         )
         return inline_re.sub(r"\1\n\2", b)
     _step("split-inline-tables", _split_inline_tables)
+    # Markdown table missing its header-separator row entirely. A valid GFM
+    # table REQUIRES a '|---|---|' line right after the header; the LLM
+    # occasionally omits it (티로보틱스 117730.KS 2026-06-04: '요약표\n
+    # | 지표 | 현재 값 | 비고 |\n| 평균 | ... |' — no separator), so the
+    # whole block renders as raw '|...|' text or flattens to bullets in
+    # Telegram. Insert the missing separator so it renders as a table.
+    # Universal — all analyses. (split-inline-tables 다음에 둬서 인라인
+    # 병합 separator 를 먼저 분리한 뒤, separator 자체가 없는 케이스 보강.)
+    _step("insert-table-separators", _insert_table_separators)
     # Comps row emitted as a dash-chain ("9988.HK: Alibaba — 20.1 — 13.2 —
     # 2.39 — 1.94 — 21.8") strips the PER/Fwd PER/PSR/PBR/EV-EBITDA labels,
     # so the reader (and the downstream Trader/PM LLMs that re-cite the

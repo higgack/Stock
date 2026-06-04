@@ -1042,6 +1042,25 @@ review:
   (marketCap divergence 는 valuation 데이터 lag 라 기술지표엔 무관). 140860
   류(현재가 < 52주 최저)는 outside-range 라 HARD 유지. `bot/price_sanity.py`
   순수 함수(단위테스트). Universal.
+- **마크다운 표 구분선 자동 삽입 (`bot/md_tables.insert_table_separators`,
+  2026-06-04)** — analyst LLM 이 GFM 표 헤더 다음 필수 구분선(`|---|---|`)을
+  빼먹으면 표 전체가 raw `|...|` 텍스트로 깨지거나 텔레그램에서 bullet 로
+  flatten 됨. 티로보틱스 117730 2026-06-04 raw 확인: `요약표\n| 지표 | 현재
+  값 | 비고 |\n| 평균 | ... |` (구분선 없음). `analyzer._polish` 파이프라인
+  (split-inline-tables 다음)에 스텝 추가 — 헤더 행 다음이 데이터 행인데
+  구분선이 없으면 헤더 컬럼 수만큼 `|---|...|` 삽입. valid 표는 idempotent
+  (무변경). 경량 모듈로 분리해 단위테스트. Universal — 전 분석 출력.
+- **공시→뉴스 fallback (저커버리지 KR/JP/TW/CN, 2026-06-04)** — 뉴스 기사
+  0건이어도 공식 공시(수주/계약/실적)가 있으면 그게 primary catalyst.
+  티로보틱스 117730 2026-06-04: 북미 물류·AMR 수주가 **'공시로'** 나왔는데
+  yfinance+Naver 기사 0건이라 news/sentiment 가 통째로 skip. fix: `has_recent_
+  news` 가 뉴스 API 모두 비면 시장별 공시 클라이언트(DART/EDINET/MOPS/
+  AKShare)의 최근 14일 공시를 확인 → 있으면 분석 진행(공시 블록은 build_
+  instrument_context 가 분석가에 이미 ungated 주입). KR 뉴스 부재 시 "위 DART
+  공시 블록을 material news 로 활용하라" directive 추가(영문 무관 헤드라인
+  메우기·날조 금지). skip 메시지도 "+ 공시 0건" 으로 정확히 갱신(공시까지
+  확인됐음 표기). 데이터 소스가 시장별이라 market-gated(CLAUDE.md documented
+  data-source 예외) — 원칙(뉴스 부재 시 공식 공시 fallback)은 universal.
 - **SEC XBRL 권위 재무 (US authoritative financials, 2026-06-04)** —
   `bot/edgar_client.py` `get_key_financials(ticker)` 가 data.sec.gov
   `/api/xbrl/companyconcept` 에서 매출/순이익/EPS희석/영업현금흐름/자산/
