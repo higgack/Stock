@@ -710,6 +710,24 @@ class TestPriceChartRender:
                "times": ["2025-06-01"], "close": [1.0]}}
         assert "기간=" in _render_chart_section(rec), "레전드 기간 설명 누락"
 
+    def test_chart_usage_guide_present_and_balanced(self):
+        """접이식 '차트 보는 법' 가이드 (2026-06-04) — 라인/값패널/마커/지표/
+        조작 설명 + <details> 개수 균형(미닫힘 회귀 차단)."""
+        from bot.dashboard import _render_chart_section
+
+        rec = {"ticker": "AAPL", "price_chart": {"currency": "$", "decimals": 2,
+               "times": ["2025-06-01"], "close": [1.0]}}
+        html = _render_chart_section(rec)
+        assert "차트 보는 법" in html, "사용법 가이드 누락"
+        # 지표 의미/마커/조작 핵심 항목이 가이드에 포함
+        for kw in ["RSI", "MACD", "볼린저", "이평선", "과거 추천", "로그",
+                   "분석 후", "기간 N", "hover"]:
+            assert kw in html, "가이드 항목 누락: " + kw
+        # <details> 개수 균형 (회귀 가드 — 열고 안 닫으면 페이지 깨짐)
+        assert html.count("<details") == html.count("</details>"), "<details> 불균형"
+        # v1(차트 없음)이면 가이드도 없음 (빈 섹션)
+        assert _render_chart_section({"ticker": "X"}) == ""
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger

@@ -1938,6 +1938,14 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-legend .lg-stop   { color: #e2574c; }
 .chart-legend .lg-target { color: #3ec46d; }
 .chart-fallback { color: var(--fg-soft); padding: 1em; font-size: 13px; }
+.chart-guide { margin-top: 8px; font-size: 12px; color: var(--fg-soft); }
+.chart-guide > summary { cursor: pointer; color: var(--fg); font-weight: 600; }
+.chart-guide > summary:hover { color: var(--accent); }
+.chart-guide .cg-sec { margin: 8px 0 0; }
+.chart-guide .cg-sec > b { color: var(--fg); }
+.chart-guide ul { margin: 3px 0 6px; padding-left: 18px; }
+.chart-guide li { margin: 1px 0; line-height: 1.55; }
+.chart-guide .k { font-weight: 600; }
 section.report-section { margin-top: 24px; }
 section.report-section > h2 {
   font-size: 16px; margin: 0 0 10px; padding: 6px 0;
@@ -2166,6 +2174,47 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     <div class="chart-legend">
       현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그 on/off (설정 저장됨)
     </div>
+    <details class="chart-guide">
+      <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
+      <div class="cg-sec"><b>가격 라인 / 기준선</b>
+        <ul>
+          <li><span class="k" style="color:#4c9aff">현재가</span> — 장중 라이브(yfinance ~15분 지연, KR은 종가만일 수 있음). 우측 축에 항상 표시.</li>
+          <li><span class="k" style="color:#94a3b8">시점가</span>(회색 점선) — 분석한 날의 종가, 즉 "그때 가격" 기준선.</li>
+          <li><span class="k" style="color:#9b59b6">진입</span> / <span class="k" style="color:#e2574c">손절</span> / <span class="k" style="color:#3ec46d">목표</span>(점선) — 트레이더 플랜의 가격대(본문에서 자동 추출, 비현실 값은 자동 제외).</li>
+        </ul>
+      </div>
+      <div class="cg-sec"><b>우측 값 패널 (지금 값 한눈에)</b>
+        <ul>
+          <li><span class="k">분석 후</span> — 시점가 대비 현재가 변동%. 분석 이후 우리 방향이 맞았는지(초록=올랐다·빨강=내렸다).</li>
+          <li><span class="k">기간 N</span> — 지금 보이는 구간(1개월~전체)의 수익률. 범위를 바꾸면 그 구간 기준으로 갱신.</li>
+          <li>그 아래는 켜둔 지표의 최신값(이평선·볼린저·RSI·MACD·거래량). 가격 항목엔 통화 기호(₩/¥/$ 등) 표시.</li>
+        </ul>
+      </div>
+      <div class="cg-sec"><b>과거 추천 마커 (우리 track record)</b>
+        <ul>
+          <li><span style="color:#26a69a">▲ 매수</span> · <span style="color:#e2574c">▼ 매도</span> · <span style="color:#94a3b8">● 보유</span> — 이 종목을 우리가 분석한 날 + 그날의 판정.</li>
+          <li>마커 옆 <span class="k">+8.3%</span> 같은 수치 = 그 추천의 5거래일 뒤 실제 결과(성과 복기).</li>
+        </ul>
+      </div>
+      <div class="cg-sec"><b>보조지표 버튼</b> — 켜고 끈 상태는 저장되어 다른 종목 페이지에도 유지됩니다.
+        <ul>
+          <li><span class="k">캔들</span> — 라인 ↔ 캔들(시·고·저·종) 전환.</li>
+          <li><span class="k">이평선</span> — <span style="color:#f5a623">10 EMA</span>(단기) · <span style="color:#3ec46d">50 SMA</span>(중기) · <span style="color:#e2574c">200 SMA</span>(장기) 추세선.</li>
+          <li><span class="k" style="color:#7890c8">볼린저</span> — 20일·2σ 밴드. 상단 부근=과열, 하단 부근=과매도, 폭=변동성.</li>
+          <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
+          <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석).</li>
+          <li><span class="k" style="color:#4c9aff">MACD</span> — 하단 별도 패널. 라인이 시그널 위로 교차=상승 모멘텀, 아래로=하락.</li>
+          <li><span class="k">로그</span> — 세로축 로그 스케일. 긴 기간 %변동 비교에 유리.</li>
+        </ul>
+      </div>
+      <div class="cg-sec"><b>기간 · 봉 · 조작</b>
+        <ul>
+          <li><span class="k">일/주/월봉</span> + <span class="k">1개월~전체</span> 범위. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
+          <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
+          <li>지표를 켜고 꺼도 보던 확대 구간은 그대로 유지됩니다.</li>
+        </ul>
+      </div>
+    </details>
   </section>"""
 
 
