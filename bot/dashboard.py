@@ -1817,6 +1817,7 @@ def _render_index(records: list[dict]) -> str:
     # 부동산은 주간(느린) surface 라 nav 제일 뒤 (사용자 정책 2026-05-31)
     if issue_count > 0:
         errors_link = (
+            ' · <a href="portfolio.html">💼 자산</a>'
             f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
             f' · <a href="screener.html">📊 Bottleneck Screener</a>'
             f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
@@ -1826,10 +1827,10 @@ def _render_index(records: list[dict]) -> str:
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + ' · <a href="watchlist.html">🔔 워치리스트</a>'
-            + ' · <a href="portfolio.html">💼 자산</a>'
         )
     else:
         errors_link = (
+            ' · <a href="portfolio.html">💼 자산</a>'
             ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
             ' · <a href="screener.html">📊 Bottleneck Screener</a>'
             ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
@@ -1839,7 +1840,6 @@ def _render_index(records: list[dict]) -> str:
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + ' · <a href="watchlist.html">🔔 워치리스트</a>'
-            + ' · <a href="portfolio.html">💼 자산</a>'
         )
 
     return f"""<!doctype html>
@@ -3053,6 +3053,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="portfolio.html">💼 자산</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
@@ -4443,6 +4444,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="portfolio.html">💼 자산</a>
     · <a href="screener.html">📊 Bottleneck Screener</a>
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
@@ -4655,6 +4657,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="portfolio.html">💼 자산</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
     · <a href="screener.html">📊 Bottleneck Screener</a>
   </div>
@@ -4801,6 +4804,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="portfolio.html">💼 자산</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
     · <a href="realestate.html">🏠 부동산</a>
   </div>
@@ -4954,6 +4958,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="portfolio.html">💼 자산</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
     · <a href="screener.html">📊 Bottleneck Screener</a>
   </div>
@@ -5724,6 +5729,7 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
+    · <a href="portfolio.html">💼 자산</a>
     · <a href="screener.html">📊 Bottleneck Screener</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
   </div>

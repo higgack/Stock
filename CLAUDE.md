@@ -803,14 +803,16 @@ ARCHIVE_ROOT 정적 서빙). 적용:
 DASHBOARD_USER=higgack
 DASHBOARD_PASSWORD=<.env 에만>
 ```
-**Nav 순서 정책 (사용자 2026-05-31):** NOAH archive 헤더 nav 에서 새로
-추가되는 대시보드는 **항상 제일 끝(마지막)에 append**. 현재 순서:
-errors → Bottleneck Screener → 도메인 목록 → 📨 미국 레딧 → Daily Byte
-→ (external: Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약. 앞으로
-만드는 대시보드(예: 신규 surface)는 기본적으로 이 줄 맨 끝에 붙일 것 —
-사용자가 명시 위치를 지정하면 그에 따름(미국 레딧은 사용자 2026-06-03
-요청으로 도메인 목록 다음으로 이동). (`bot/dashboard.py` errors_link 두
-분기 모두 갱신.)
+**Nav 순서 정책 (사용자 2026-05-31, 2026-06-04 갱신):** **💼 자산(portfolio)
+이 nav·help 둘 다 맨 위** (사용자 2026-06-04 — 자산을 메인 허브로). 현재 순서:
+💼 자산 → errors → Bottleneck Screener → 도메인 목록 → 📨 미국 레딧 →
+Daily Byte → (external: Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약
+→ 🔔 워치리스트. NOAH archive 는 index 페이지 자체(h1)이고, 자산이 첫 링크.
+**새로 추가되는 대시보드는 (자산 다음, 끝이 아니라) 사용자 지정 위치** —
+명시 없으면 워치리스트 뒤 append. 갱신 지점 (모두 동시): (a) `bot/
+dashboard.py` errors_link 두 분기(자산 first) + 6개 mini-nav(`← NOAH 종목
+분석` 뒤 자산 링크), (b) `bot/telegram_bot.py` `_HELP_TEXT` §9(자산 first,
+NOAH archive second). help 순서 = nav 순서 일치 의무.
 
 **💰 비용 합산 정책 (사용자 2026-06-02):** 메인 NOAH 대시보드 비용 카드
 (+ `/usage`)는 **nav 에 링크된 비용-발생 surface 전부의 cost 를 합산**해

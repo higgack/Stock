@@ -1073,6 +1073,8 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 🦉 (순서 = 헤더 nav)
+ • <b>💼 자산</b> — 뱅샐 전 계좌 통합(증권사·예적금·부동산·동산·대출·보험)·RAG 채널 업로드
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
  • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세 가격차트(일/주/월봉·지표·과거추천 마커)·💰비용
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
  • <b>Screener</b> — 날짜별 run·Top-3 1/3/6m·검색·🗑️·도메인 /screener_list
@@ -1089,8 +1091,6 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
  • <b>청약 Byte</b> — 평일10·14시 신규 분양+경쟁률 · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/cheongyak.html
- • <b>💼 자산</b> — 뱅샐 전 계좌 통합(증권사·예적금·부동산·동산·대출·보험)·RAG 채널 업로드
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
  • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 스니펫 검색(🟡클릭→분석)
  • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
 
