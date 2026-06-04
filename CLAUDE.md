@@ -400,7 +400,8 @@ pattern to follow:
 - 미국 레딧 게시물 분석 Watcher — t.me/insidertracking 채널의 '미국 레딧
   게시물 분석' 제목 메시지만 자동 forward+archive (사용자 요청 2026-06-03).
   `bot/reddit_insider_watch.py` — Telethon **userbot**(봇은 남의 채널 멤버
-  불가 → 사용자 본인 계정 client) 5분 polling (`reddit-insider-watch.timer`)
+  불가 → 사용자 본인 계정 client) 1분 polling (`reddit-insider-watch.timer`,
+  2026-06-04 5분→1분 단축 — 사용자 요청, ₩0·rate-limit 안전이라 부담 X)
   → 제목 매칭 + seen-set (msg_id) 중복 차단 + 첫 run 기존 메시지 seen 처리
   (폭주 방지, blog_watch mirror) → 우리 NOAH 채널 원본 그대로 forward + 
   `reddit_insider_archive/YYYY-MM-DD/HHMMSS_<msg_id>.json` 저장 →
