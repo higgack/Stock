@@ -1050,17 +1050,23 @@ review:
   (split-inline-tables 다음)에 스텝 추가 — 헤더 행 다음이 데이터 행인데
   구분선이 없으면 헤더 컬럼 수만큼 `|---|...|` 삽입. valid 표는 idempotent
   (무변경). 경량 모듈로 분리해 단위테스트. Universal — 전 분석 출력.
-- **공시→뉴스 fallback (저커버리지 KR/JP/TW/CN, 2026-06-04)** — 뉴스 기사
+- **공시→뉴스 fallback (저커버리지 KR/JP/TW/CN/US, 2026-06-04)** — 뉴스 기사
   0건이어도 공식 공시(수주/계약/실적)가 있으면 그게 primary catalyst.
   티로보틱스 117730 2026-06-04: 북미 물류·AMR 수주가 **'공시로'** 나왔는데
   yfinance+Naver 기사 0건이라 news/sentiment 가 통째로 skip. fix: `has_recent_
-  news` 가 뉴스 API 모두 비면 시장별 공시 클라이언트(DART/EDINET/MOPS/
-  AKShare)의 최근 14일 공시를 확인 → 있으면 분석 진행(공시 블록은 build_
-  instrument_context 가 분석가에 이미 ungated 주입). KR 뉴스 부재 시 "위 DART
-  공시 블록을 material news 로 활용하라" directive 추가(영문 무관 헤드라인
-  메우기·날조 금지). skip 메시지도 "+ 공시 0건" 으로 정확히 갱신(공시까지
-  확인됐음 표기). 데이터 소스가 시장별이라 market-gated(CLAUDE.md documented
-  data-source 예외) — 원칙(뉴스 부재 시 공식 공시 fallback)은 universal.
+  news` 가 뉴스 API 모두 비면 시장별 공시 클라이언트(KR DART / JP EDINET /
+  TW MOPS / CN AKShare / **US EDGAR 8-K**)의 최근 14일 공시를 확인 → 있으면
+  분석 진행(공시 블록은 build_instrument_context 가 분석가에 이미 ungated
+  주입 → gate 만으로도 분석가가 공시를 봄). 뉴스 부재 시 "위 공시 블록을
+  material news 로 활용하라" directive 는 KR/JP/TW/CN/US 5개 시장 전부에 주입
+  (영문 무관 헤드라인 메우기·날조 금지). skip 메시지도 "+ 공시 0건"(KR DART /
+  JP EDINET / TW MOPS / US SEC 8-K) 으로 정확히 갱신(공시까지 확인됐음 표기). 데이터
+  소스가 시장별이라 market-gated(CLAUDE.md documented data-source 예외) —
+  원칙(뉴스 부재 시 공식 공시 fallback)은 universal 5개 시장 전부. ⚠️ 품질
+  차등: KR DART / TW MOPS 重大訊息 / US 8-K = timely material events(강함);
+  JP EDINET = periodic(분기/연차)+大量保有 (timely 적시공시 TDnet 미포함 —
+  Kabutan 이 1차로 timely 커버, EDINET 은 14일 내 실적 filing 보완); CN
+  AKShare = dep 무거움·HK lag.
 - **SEC XBRL 권위 재무 (US authoritative financials, 2026-06-04)** —
   `bot/edgar_client.py` `get_key_financials(ticker)` 가 data.sec.gov
   `/api/xbrl/companyconcept` 에서 매출/순이익/EPS희석/영업현금흐름/자산/

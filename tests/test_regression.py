@@ -986,13 +986,20 @@ class TestMarkdownTableAndDisclosureNews:
         assert "get_recent_disclosures(_code, days_back=14" in au, "DART 공시 fallback 누락"
         assert "from bot.edinet_client import get_edinet" in au, "JP EDINET fallback 누락"
         assert "from bot.mops_client import get_mops" in au, "TW MOPS fallback 누락"
-        # 뉴스 부재 시 공시-기반 news/sentiment directive
+        assert "from bot.edgar_client import get_recent_8k" in au, "US 8-K fallback 누락"
+        # 뉴스 부재 시 공시-기반 news/sentiment directive (KR Naver-empty)
         assert "공시 기반 news/sentiment 지시" in au, "공시 directive 누락"
+        # 5시장 공유 공시 블록 anti-skip ('뉴스 없음' 결론 금지) — KR/JP/TW/CN
+        assert "'관련 뉴스 없음' 결론 금지" in au, "공유 블록 anti-skip directive 누락"
+        # US 8-K 블록도 anti-skip
+        eg = open("bot/edgar_client.py", encoding="utf-8").read()
+        assert "'관련 뉴스 없음' 결론 금지" in eg, "8-K anti-skip directive 누락"
 
     def test_analyzer_wires_table_step_and_skipmsg(self):
         an = open("bot/analyzer.py", encoding="utf-8").read()
         assert "insert-table-separators" in an, "표 구분선 스텝 미배선"
         assert "DART 공시 모두" in an, "skip 메시지 공시 표기 누락"
+        assert "SEC 8-K 공시" in an, "US 8-K skip 메시지 누락"
 
 
 # ─────────────────────────────────────────────────────────────────────────

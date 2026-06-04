@@ -892,8 +892,8 @@ def has_recent_news(ticker: str) -> bool:
                 "news availability (akshare) check failed for %s: %s", ticker, exc,
             )
 
-    # Disclosure fallback (티로보틱스 117730.KS 2026-06-04): 저커버리지
-    # KR/JP/TW/CN 종목은 뉴스 기사 0건이어도 공식 공시(수주/계약/실적)가
+    # Disclosure fallback (티로보틱스 117730.KS 2026-06-04, US 8-K 2026-06-04):
+    # 저커버리지 KR/JP/TW/CN/US 종목은 뉴스 기사 0건이어도 공식 공시(수주/계약/실적)가
     # primary catalyst — 117730 의 북미 물류·AMR 수주가 '공시로' 나왔는데
     # 뉴스 0건으로 news/sentiment 가 통째로 skip 됐다. 뉴스 API 가 모두
     # 비어도 최근 공시가 있으면 skip 하지 않는다(공시 블록은 build_
@@ -918,6 +918,13 @@ def has_recent_news(ticker: str) -> bool:
             elif _m in ("CN_A", "HK"):
                 from bot.akshare_client import get_akshare
                 _disc = get_akshare().get_recent_disclosures(ticker, days_back=14, limit=3)
+            elif _m == "US":
+                # US판 DART = SEC EDGAR 8-K (material events: 수주/M&A/가이던스/
+                # 임원변경 등). 8-K 블록은 build_instrument_context 가 이미 US
+                # 분석가에 주입 — yfinance 뉴스 0건 저커버리지 US 종목도 8-K
+                # 있으면 news/sentiment 진행 (KR DART 와 대칭, 비대칭 갭 해소).
+                from bot.edgar_client import get_recent_8k
+                _disc = get_recent_8k(ticker, days=14, top_n=3)
             if _disc:
                 has = True
                 _analyst_log.info(
@@ -5108,7 +5115,10 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         "\n\n=== Pre-fetched KR market data (DART, verbatim —"
                         " do NOT call any tool for these numbers; use them in"
                         " the news / fundamentals / risk sections as ground"
-                        " truth) ===\n"
+                        " truth. ⚠️ 뉴스 기사가 0건이어도 이 공시(수주/계약/실적"
+                        " 등 material event)를 news/sentiment primary source 로"
+                        " 활용, '관련 뉴스 없음' 결론 금지 — 단 없는 내용 날조·"
+                        "무관 헤드라인 메우기 금지) ===\n"
                         + dart_block
                         + "\n\nRENDERING RULES for the DART block:\n"
                         " • 최근 공시: render as a bullet list, one filing"
@@ -5469,7 +5479,10 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         "\n\n=== Pre-fetched JP market data (EDINET, verbatim —"
                         " do NOT call any tool for these numbers; use them in"
                         " the news / fundamentals / risk sections as ground"
-                        " truth) ===\n"
+                        " truth. ⚠️ 뉴스 기사가 0건이어도 이 공시(수주/계약/실적"
+                        " 등 material event)를 news/sentiment primary source 로"
+                        " 활용, '관련 뉴스 없음' 결론 금지 — 단 없는 내용 날조·"
+                        "무관 헤드라인 메우기 금지) ===\n"
                         + edinet_block
                         + "\n\nRENDERING RULES for the EDINET block:\n"
                         " • 최근 공시: render as a bullet list, one filing"
@@ -5634,7 +5647,10 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         "\n\n=== Pre-fetched TW market data (MOPS, verbatim —"
                         " do NOT call any tool for these numbers; use them in"
                         " the news / fundamentals / risk sections as ground"
-                        " truth) ===\n"
+                        " truth. ⚠️ 뉴스 기사가 0건이어도 이 공시(수주/계약/실적"
+                        " 등 material event)를 news/sentiment primary source 로"
+                        " 활용, '관련 뉴스 없음' 결론 금지 — 단 없는 내용 날조·"
+                        "무관 헤드라인 메우기 금지) ===\n"
                         + mops_block
                         + "\n\nRENDERING RULES for the MOPS block:\n"
                         " • 重大訊息: render as a bullet list, one per line,"
@@ -5868,7 +5884,10 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                         "\n\n=== Pre-fetched CN/HK market data (AKShare, verbatim —"
                         " do NOT call any tool for these numbers; use them in"
                         " the news / fundamentals / risk sections as ground"
-                        " truth) ===\n"
+                        " truth. ⚠️ 뉴스 기사가 0건이어도 이 공시(수주/계약/실적"
+                        " 등 material event)를 news/sentiment primary source 로"
+                        " 활용, '관련 뉴스 없음' 결론 금지 — 단 없는 내용 날조·"
+                        "무관 헤드라인 메우기 금지) ===\n"
                         + cn_block
                         + "\n\nRENDERING RULES for the AKShare CN block:\n"
                         " • 公告: render as a bullet list, one filing per line,"

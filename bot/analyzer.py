@@ -279,6 +279,12 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
                         f" + MOPS 공시 모두 최근 28일간 {ticker} 0건"
                         " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
                     )
+                elif _market == "US":
+                    _skip_msg = (
+                        f"📰 뉴스·💬 감정 분석 자동 생략: yfinance + SEC 8-K 공시"
+                        f" 모두 최근 {ticker} 기사·공시 0건"
+                        " (저커버리지 종목 — 시장·펀더멘털만으로 분석 진행)"
+                    )
                 else:
                     _skip_msg = (
                         f"📰 뉴스·💬 감정 분석 자동 생략: yfinance에 {ticker} 기사 0건"

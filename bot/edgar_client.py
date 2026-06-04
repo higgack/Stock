@@ -395,7 +395,9 @@ def format_edgar_8k_block(filings: list[dict]) -> str:
     lines.append(
         "▶ 8-K 공시는 중요 사건 (Material Event) 필링이다 — 위 항목이 5거래일 가격"
         " 동인이 될 수 있다. §2.02 (Earnings) / §1.01 (계약) / §5.02 (임원 변동)"
-        " 등을 결론에 인용할 것."
+        " 등을 결론에 인용할 것. ⚠️ yfinance 뉴스 기사가 0건이어도 위 8-K 를"
+        " news/sentiment 의 primary source 로 활용 — '관련 뉴스 없음' 결론 금지"
+        " (없는 내용 날조 금지)."
     )
     return "\n".join(lines)
 
