@@ -436,8 +436,11 @@ pattern to follow:
     seen-set·첫 run seen 처리(reddit/blog mirror). 비용 ₩0(LLM 0, pykrx/yfinance만).
     nav 맨끝 '💼 자산', help §1, set_my_commands `/portfolio`(조회 전용).
   • .env: `BANKSALAD_ZIP_PW`(zip 비번) + `TG_RAG_CHANNEL`(@username 또는 -100…ID)
-    + TG_USER_API_ID/HASH(reddit_insider 와 공유). 라이브 가격(추정수량)·NOAH
-    판정/5일성과 오버레이는 증분5 예정. PII(고객정보/가계부)는 파서가 제외, 가계부
+    + TG_USER_API_ID/HASH(reddit_insider 와 공유). **NOAH 판정/5거래일 성과
+    오버레이 = 증분5 완료** (보유종목 ↔ 분석 아카이브 join, 차트 과거-추천 마커
+    헬퍼 `_ticker_analysis_markers` 재사용, read-only·네트워크 0, 보유 테이블에
+    'NOAH 판정·5일' 컬럼). 라이브 가격(추정수량)은 357종목 fetch 비용/rate-limit
+    으로 보류(스냅샷이 이미 최신이라 marginal). PII(고객정보/가계부)는 파서가 제외, 가계부
     (Sheet2)는 후속 phase.
 - Watchlist 조건 알림 — `bot/watchlist.py` (vibe-trade heartbeat/trigger
   패턴 영감, 2026-06-04). `/watch TICKER rsi<30 price>950 >sma50 52whigh

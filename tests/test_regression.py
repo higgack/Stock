@@ -1660,6 +1660,18 @@ class TestPortfolioDashboard:
         m2["prev"] = {"순자산": 1, "주식평가": 1, "_saved_ts": now - 60}
         assert "지난 업데이트" not in _render_portfolio_page(m2), "같은 날짜 증분 스킵 안 됨"
 
+    def test_noah_overlay(self):
+        # 증분5: 보유종목 ↔ NOAH 최근 판정+5거래일 성과 오버레이.
+        from bot.dashboard import _render_portfolio_page
+        m = self._model()  # holdings: 이오테크닉스(KR), 램 리서치(LRCX)
+        noah = {"LRCX": {"rating": "보유", "ret": 12.3, "date": "2026-06-01"}}
+        html = _render_portfolio_page(m, noah)
+        assert "NOAH 판정·5일" in html, "NOAH 컬럼 헤더 누락"
+        assert "보유</a> <span" in html and "+12.3%" in html, "판정·성과 오버레이 누락"
+        assert "NOAH 분석 1" in html, "오버레이 카운트 누락"
+        # noah 미전달도 정상(헤더만, graceful)
+        assert "NOAH 판정·5일" in _render_portfolio_page(m)
+
     def test_nav_and_regen_wired(self):
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'href="portfolio.html">💼 자산' in src, "메인 nav 자산 링크 누락"

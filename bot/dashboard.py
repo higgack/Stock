@@ -5228,9 +5228,12 @@ def _pf_col(v) -> str:
     return "var(--pos)" if (v or 0) >= 0 else "var(--neg)"
 
 
-def _render_portfolio_page(model) -> str:
+def _render_portfolio_page(model, noah=None) -> str:
     """portfolio.json 모델 → portfolio.html. 추천 구성: 순자산 헤더 → 자산배분
-    도넛 → 증권사별 + 수익률 TOP/WORST → 보유 종목 테이블 → 대출/보험."""
+    도넛 → 증권사별 + 수익률 TOP/WORST → 보유 종목 테이블 → 대출/보험.
+
+    noah = {ticker: {rating, ret, date}} (선택) — 있으면 보유 테이블에 NOAH 최근
+    판정 + 5거래일 성과 오버레이(더리치/도미노에 없는 우리만의 강점, 증분5)."""
     import html as _html
     # 풀 nav — 메인(NOAH 아카이브)을 맨 앞, 나머지는 메인 index 와 동일 순서,
     # 자산(현재 페이지)은 굵게(비링크). 사용자 정책 2026-06-04: 자산 대시보드를
@@ -5414,7 +5417,9 @@ def _render_portfolio_page(model) -> str:
                     '<table class="pf-tbl"><tr><th>종목</th><th class="r">수익률</th><th class="r">평가금액</th></tr>'
                     + _mv(model.get("top_gainers", [])) + _mv(model.get("top_losers", [])) + '</table></div>')
 
-    # 보유 종목 전체
+    # 보유 종목 전체 + NOAH 판정/5거래일 성과 오버레이 (증분5).
+    noah = noah or {}
+    noah_n = 0
     hl_rows = ""
     for h in sorted(holdings, key=lambda x: -(x.get("평가금액") or 0)):
         r = h.get("수익률")
@@ -5422,14 +5427,27 @@ def _render_portfolio_page(model) -> str:
         nm = _html.escape(h.get("상품명") or "")
         tkr = h.get("ticker")
         nm_cell = f'<a href="ticker_{_html.escape(str(tkr))}.html">{nm}</a>' if tkr else nm
+        # NOAH 최근 판정 + 5거래일 성과 (분석 기록 있는 종목만)
+        ninfo = noah.get(tkr) if tkr else None
+        if ninfo:
+            noah_n += 1
+            _rr = ninfo.get("ret")
+            _rrt = f' <span style="color:{_pf_col(_rr)}">{_rr:+.1f}%</span>' if _rr is not None else ""
+            noah_cell = (f'<a href="ticker_{_html.escape(str(tkr))}.html" style="color:var(--accent)">'
+                         f'{_html.escape(str(ninfo.get("rating") or ""))}</a>{_rrt}')
+        else:
+            noah_cell = '<span style="color:var(--muted)">—</span>'
         hl_rows += (f'<tr><td>{nm_cell}</td><td>{_html.escape(str(tkr or "—"))}</td>'
                     f'<td>{_html.escape(h.get("금융사") or "")}</td>'
                     f'<td class="r">{_pf_won(h.get("평가금액"))}</td>'
                     f'<td class="r" style="color:{_pf_col(r)}">{rtxt}</td>'
-                    f'<td class="r" style="color:{_pf_col(h.get("평가손익"))}">{_pf_won(h.get("평가손익"))}</td></tr>')
-    holdings_block = ('<div class="pf-card"><div class="pf-h">보유 종목 (' + str(len(holdings)) + ')</div>'
+                    f'<td class="r" style="color:{_pf_col(h.get("평가손익"))}">{_pf_won(h.get("평가손익"))}</td>'
+                    f'<td>{noah_cell}</td></tr>')
+    holdings_block = ('<div class="pf-card"><div class="pf-h">보유 종목 (' + str(len(holdings))
+                      + (f' · NOAH 분석 {noah_n}' if noah_n else '') + ')</div>'
                       '<div class="pf-scroll"><table class="pf-tbl">'
-                      '<tr><th>종목</th><th>티커</th><th>증권사</th><th class="r">평가금액</th><th class="r">수익률</th><th class="r">평가손익</th></tr>'
+                      '<tr><th>종목</th><th>티커</th><th>증권사</th><th class="r">평가금액</th>'
+                      '<th class="r">수익률</th><th class="r">평가손익</th><th>NOAH 판정·5일</th></tr>'
                       + hl_rows + '</table></div></div>')
 
     # 대출 · 보험 — 대출은 한도(원금)+잔액+금리(전부 노출), 보험은 표로
@@ -5485,10 +5503,31 @@ def regenerate_portfolio_index() -> None:
     startup/자정 regen 에서 호출. 오류는 swallow."""
     try:
         from bot.portfolio import load as _pf_load
-        html = _render_portfolio_page(_pf_load())
+        model = _pf_load()
+        # 보유종목 ↔ 분석 아카이브 join — 종목별 최근 판정+5거래일 성과(증분5).
+        # 차트 과거-추천 마커와 동일 헬퍼 재사용(_ticker_analysis_markers 의 마지막
+        # = 최신). read-only (네트워크 0). 실패해도 대시보드는 정상(graceful).
+        noah: dict[str, dict] = {}
+        try:
+            records = _load_all()
+            resolved = _build_resolved_lookup()
+            by_t: dict[str, list[dict]] = {}
+            for r in records:
+                by_t.setdefault(r.get("ticker", ""), []).append(r)
+            for t, recs in by_t.items():
+                if not t:
+                    continue
+                mks = _ticker_analysis_markers(recs, resolved)
+                if mks:
+                    last = mks[-1]
+                    noah[t] = {"rating": last.get("rating"), "ret": last.get("ret"),
+                               "date": last.get("time")}
+        except Exception as exc:
+            log.warning("portfolio NOAH overlay build failed: %s", exc)
+        html = _render_portfolio_page(model, noah)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "portfolio.html").write_text(html, encoding="utf-8")
-        log.info("dashboard: portfolio.html regenerated")
+        log.info("dashboard: portfolio.html regenerated (NOAH overlay %d)", len(noah))
     except Exception as exc:
         log.warning("dashboard: portfolio regen failed: %s", exc)
 
