@@ -75,7 +75,19 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
         tot = sum(it.get("amount") or 0.0 for it in items)
         if tot:
             alloc[cat] = tot
-    rated = [h for h in holdings if h.get("수익률") is not None]
+    # 수익률 TOP/WORST 용 종목명 dedup — 같은 종목을 여러 증권사에 보유하면
+    # export 에 행이 중복되어 상/하위에 같은 종목이 두 번 뜬다(비보심 랩스
+    # 2026-06-04). |수익률| 가장 큰 1개만 남겨('더 두드러지는것') 중복·상하위
+    # 동시노출 방지. (보유 테이블·집계는 원본 전체 유지 — dedup 은 랭킹 표시용만.)
+    _by_name: dict = {}
+    for h in holdings:
+        if h.get("수익률") is None:
+            continue
+        nm = h.get("상품명")
+        cur = _by_name.get(nm)
+        if cur is None or abs(h["수익률"]) > abs(cur["수익률"]):
+            _by_name[nm] = h
+    rated = list(_by_name.values())
     return {
         "as_of": parsed.get("as_of"),
         "net_worth": {

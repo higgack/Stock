@@ -1072,24 +1072,26 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 페르소나 토론 (Buffett/Lynch vs Graham/Marks) · 결정 3노드만 Pro (~₩30 추가로 품질 점프) · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 ground truth 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 (장기 thesis 매도 자제) · 섹터 ETF 알파 · 실패 시 hallucination 대신 명시적 abort
 
 ━━━━━━━━━
-<b>【9. 대시보드】</b> 🦉
- • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세=가격차트(일/주/월봉·기간·지표 토글·과거추천 마커·ℹ️보는법)·💰비용 합산
+<b>【9. 대시보드】</b> 🦉 (순서 = 헤더 nav)
+ • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세 가격차트(일/주/월봉·지표·과거추천 마커)·💰비용
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
- • <b>Daily Byte</b> — 평일19:00·일22:00 KR수급 인포그래픽+본문·검색·🗑️
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
- • <b>청약 Byte</b> — 평일10:00·14:00 신규 분양 모집공고+경쟁률(청약홈) · ticker 무관
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/cheongyak.html
- • <b>부동산 Byte</b> — 금09:00 실거래(MOLIT 매매·전월세·오피스텔·연립)+R-ONE 가격추세+공급(인허가·착공·미분양) · ticker 무관
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
- • <b>Screener</b> — 날짜별 run·Top-3 5/15/30d·스니펫 검색·🗑️. 도메인 /screener_list (분기 GICS 후보는 도메인 목록 페이지 상단에서)
+ • <b>Screener</b> — 날짜별 run·Top-3 1/3/6m·검색·🗑️·도메인 /screener_list
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
- • <b>📨 미국 레딧</b> — t.me/insidertracking '미국 레딧 게시물 분석' 자동포워드(1분·₩0)
+ • <b>📨 미국 레딧</b> — t.me/insidertracking 자동포워드(1분·₩0)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/reddit_insider.html
- • <b>SV</b> — 매크로·산업·Deal·07:30/20:30 매일·평일 08:00/21:00 push·일 22:00 주간
+ • <b>Daily Byte</b> — 평일19:00·일22:00 KR수급 인포그래픽·검색·🗑️
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
+ • <b>SV</b> — 매크로·산업·Deal·매일 07:30/20:30·평일 push
    http://34.50.23.221:8002/dashboard
  • <b>🇰🇷 수출입</b> — 외부 보조(자동 갱신)
    http://34.50.23.221:8765/dashboard/
- • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 본문 스니펫 검색(🟡→클릭시 분석 페이지 이동)
+ • <b>부동산 Byte</b> — 금09:00 실거래+R-ONE 추세+공급 · ticker 무관
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
+ • <b>청약 Byte</b> — 평일10·14시 신규 분양+경쟁률 · ticker 무관
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/cheongyak.html
+ • <b>💼 자산</b> — 뱅샐 전 계좌 통합(증권사·예적금·부동산·동산·대출·보험)·RAG 채널 업로드
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
+ • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 스니펫 검색(🟡클릭→분석)
  • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
 
 ━━━━━━━━━

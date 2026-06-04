@@ -1585,6 +1585,21 @@ class TestPortfolioModel:
         loaded = pf.load()
         assert loaded is not None and loaded["holding_count"] == 2 and "_saved_ts" in loaded
 
+    def test_top_movers_dedup_by_name(self):
+        # 같은 종목 복수 증권사 보유 → 수익률 TOP/WORST 에 한 번만(|수익률| 큰 것).
+        from bot.portfolio import build_model
+        stub = lambda n: {"ticker": None, "market": None, "matched": False, "source": None}
+        parsed = {"holdings": [
+            {"종류": "주식", "금융사": "NH", "상품명": "비보심 랩스", "투자원금": 100, "평가금액": 3, "수익률": -98.3},
+            {"종류": "주식", "금융사": "삼성", "상품명": "비보심 랩스", "투자원금": 100, "평가금액": 4, "수익률": -89.0},
+            {"종류": "주식", "금융사": "NH", "상품명": "램", "투자원금": 10, "평가금액": 50, "수익률": 400.0},
+        ], "finance": {}}
+        m = build_model(parsed, resolve=stub)
+        losers = [h["상품명"] for h in m["top_losers"]]
+        assert losers.count("비보심 랩스") == 1, "중복 종목 제거 실패"
+        bibo = [h for h in m["top_losers"] if h["상품명"] == "비보심 랩스"][0]
+        assert abs(bibo["수익률"] - (-98.3)) < 0.01, "더 두드러지는(|수익률| 큰) 것이 안 남음"
+
 
 class TestPortfolioDashboard:
     """fix: 자산 대시보드 렌더 + 텔레그램 배선 (2026-06-04 자산관리 P1 증분4)."""
@@ -1612,6 +1627,10 @@ class TestPortfolioDashboard:
         assert "동산 (자동차)" in html, "동산(자동차) 라벨 누락"
         assert "주식 국내 / 해외" in html, "국내/해외 비중 누락"
         assert "마지막 업데이트" in html, "업데이트 시각 헤더 누락"
+        # v4(2026-06-04): 풀 nav(메인 NOAH 맨앞) + 자산 self bold
+        assert 'href="index.html">🦉 NOAH 종목분석' in html, "nav 메인 첫 링크 누락"
+        assert "screener.html" in html and "daily_byte.html" in html, "풀 nav 누락"
+        assert "<b>💼 자산</b>" in html, "자산 self(현재페이지) 표시 누락"
         # 빈 상태(업로드 전)
         assert "아직 업로드된 자산이 없습니다" in _render_portfolio_page(None)
 
@@ -1630,6 +1649,8 @@ class TestPortfolioDashboard:
         # 봇 DM 문서 ingest 핸들러는 제거 — 입력은 RAG 채널 watcher (봇 깨끗하게)
         assert "cmd_portfolio_upload" not in src, "DM 업로드 핸들러 잔존(제거돼야)"
         assert "filters.Document" not in src, "DM 문서 핸들러 잔존(제거돼야)"
+        # help §9 대시보드 목록에 자산 추가 (사용자 정책: 대시보드 변경은 help 동기)
+        assert "06beb08f5f4ad5515007e65f8f60b471/portfolio.html" in src, "help 자산 링크 누락"
 
 
 class TestPortfolioWatch:

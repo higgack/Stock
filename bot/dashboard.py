@@ -5229,8 +5229,24 @@ def _render_portfolio_page(model) -> str:
     """portfolio.json 모델 → portfolio.html. 추천 구성: 순자산 헤더 → 자산배분
     도넛 → 증권사별 + 수익률 TOP/WORST → 보유 종목 테이블 → 대출/보험."""
     import html as _html
-    nav = ('<div class="nav"><a href="index.html">← NOAH 종목 분석</a>'
-           ' · <a href="watchlist.html">🔔 워치리스트</a></div>')
+    # 풀 nav — 메인(NOAH 아카이브)을 맨 앞, 나머지는 메인 index 와 동일 순서,
+    # 자산(현재 페이지)은 굵게(비링크). 사용자 정책 2026-06-04: 자산 대시보드를
+    # 허브로 쓰되 기존 메인을 첫 링크로.
+    nav = (
+        '<div class="nav">'
+        '<a href="index.html">🦉 NOAH 종목분석</a>'
+        ' · <a href="errors.html">🚨 오류/미완성</a>'
+        ' · <a href="screener.html">📊 Bottleneck Screener</a>'
+        ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
+        ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
+        ' · <a href="daily_byte.html">📊 Daily Byte</a>'
+        ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
+        f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>'
+        ' · <a href="realestate.html">🏠 부동산</a>'
+        ' · <a href="cheongyak.html">🎟️ 청약</a>'
+        ' · <a href="watchlist.html">🔔 워치리스트</a>'
+        ' · <b>💼 자산</b>'
+        '</div>')
     if not model or not model.get("holdings"):
         return _SCREENER_CSS + _PF_CSS + (
             '<div class="wrap">' + nav + '<h1>💼 자산 관리</h1>'
