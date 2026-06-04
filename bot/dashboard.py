@@ -2164,7 +2164,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     </div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div class="chart-legend">
-      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그 on/off (설정 저장됨)
+      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그 on/off (설정 저장됨)
     </div>
   </section>"""
 
@@ -2462,6 +2462,16 @@ _CHART_JS = """
     // 보이게 (선 색과 매칭). 현재가/시점가/진입/손절/목표.
     items.push(['현재가', (d.last_price != null ? d.last_price : lastNonNull(d.close)), '#4c9aff', dec]);
     if (asOfClose != null) items.push(['시점가', asOfClose, '#94a3b8', dec]);
+    // 분석 후 변동 — 시점가(분석일 종가) 대비 현재가 %. 이 차트의 핵심
+    // 복기 지표 (그때 가격 ↔ 지금 가격). 현재가는 패널 '현재가' 와 동일값.
+    if (asOfClose != null && asOfClose > 0) {
+      var _cur = (d.last_price != null ? d.last_price : lastNonNull(d.close));
+      if (_cur != null) {
+        var _chg = (_cur - asOfClose) / asOfClose * 100;
+        var _col = _chg > 0 ? '#26a69a' : (_chg < 0 ? '#e2574c' : '#94a3b8');
+        items.push(['분석 후', (_chg >= 0 ? '+' : '') + _chg.toFixed(1) + '%', _col, null, 'pct']);
+      }
+    }
     if (markers) {
       if (markers.entry  != null) items.push(['진입', markers.entry,  '#9b59b6', dec]);
       if (markers.stop   != null) items.push(['손절', markers.stop,   '#e2574c', dec]);
@@ -2484,7 +2494,10 @@ _CHART_JS = """
     for (var i = 0; i < items.length; i++) {
       if (items[i] === null) { html += '<div class="cv-sep"></div>'; continue; }
       var it = items[i], kind = it[4];
-      var sval = (kind === 'vol') ? fmtVol(it[1]) : (kind === 'raw' ? fmtNum(it[1], it[3]) : fmtPrice(it[1], it[3]));
+      var sval = (kind === 'pct') ? it[1]
+               : (kind === 'vol') ? fmtVol(it[1])
+               : (kind === 'raw') ? fmtNum(it[1], it[3])
+               : fmtPrice(it[1], it[3]);
       html += '<div class="cv-item"><span class="cv-dot" style="background:' + it[2] + '"></span>'
             + '<span class="cv-name">' + it[0] + '</span>'
             + '<span class="cv-val">' + sval + '</span></div>';

@@ -666,6 +666,31 @@ class TestPriceChartRender:
         assert fmtvol(8_400) == "8.4K"
         assert fmtvol(742) == "742"
 
+    def test_chart_review_delta_row(self):
+        """'분석 후 변동' — 시점가(분석일 종가) 대비 현재가 % 복기 지표
+        (2026-06-04). 차트의 핵심 목적인 '그때↔지금' 복기를 한 줄로 표시.
+        universal (전 시장) · 추가 fetch 0 (두 값 이미 scope)."""
+        from bot.dashboard import _CHART_JS, _render_chart_section
+
+        # 값 패널 '분석 후' 행 + 시점가 대비 현재가 delta 계산식 + pct 포맷 분기
+        assert "'분석 후'" in _CHART_JS, "분석 후 변동 행 누락"
+        assert "(_cur - asOfClose) / asOfClose" in _CHART_JS, "delta 계산식 누락"
+        assert "kind === 'pct'" in _CHART_JS, "pct 포맷(사전 포맷 문자열) 분기 누락"
+        # 현재가는 패널 '현재가' 와 동일 소스(라이브 우선)
+        assert "d.last_price != null ? d.last_price : lastNonNull(d.close)" in _CHART_JS
+        # 레전드에 설명
+        rec = {"ticker": "AAPL", "price_chart": {"currency": "$", "decimals": 2,
+               "times": ["2025-06-01"], "close": [1.0]}}
+        assert "분석 후=" in _render_chart_section(rec), "레전드 설명 누락"
+
+    def test_chart_review_delta_math(self):
+        """분석 후 변동 % 계산 — JS 로직 Python 미러 (부호/0 경계)."""
+        def pct(cur, asof):
+            return (cur - asof) / asof * 100.0
+        assert round(pct(110, 100), 1) == 10.0
+        assert round(pct(90, 100), 1) == -10.0
+        assert round(pct(100, 100), 1) == 0.0
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger
