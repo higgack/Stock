@@ -76,16 +76,19 @@ def _pick_template() -> Path:
     return _TEMPLATE_PATH
 
 
-# 모바일 반응형 교정 (2026-06-04, 사용자 스크린샷): daily_generator 가 섹션
-# 레이아웃을 인라인 style(display:grid;grid-template-columns:1fr 1fr 등)로
-# 짜는데 인라인엔 @media 를 못 넣어 모바일에서 칼럼이 안 접힘(데스크탑 OK,
-# 모바일은 칼럼 으스러짐/빈 우측). base.html 스캐폴드는 VM 전용(repo 미포함)
-# 이라, 생성 시 <head> 에 반응형 <style> 를 주입한다. 데스크탑(>768px)은
-# @media 밖이라 완전 무영향 — 0 리스크.
+# 모바일 반응형 교정 (2026-06-04, 사용자 스크린샷 2차 진단): base.html 스캐폴드
+# (VM 전용·repo 미포함)에 @media(max-width:768px)가 있긴 하나 **일부 그리드만**
+# 커버(.mid-grid/.commentary-grid)하고 콘텐츠+사이드바 그리드(360px 1fr)·산업
+# 4칼럼 그리드 등은 누락 → 모바일에서 2칼럼/4칼럼이 안 접혀 으스러짐/빈 우측.
+# viewport 는 정상(device-width)이라 미디어 자체는 켜짐(=1차 인라인 override 가
+# 헛다리였던 이유). 생성 시 <head>에 반응형 <style>를 주입해 모바일에서 **모든
+# 그리드**를 단일칼럼 강제한다. `*` 는 grid 아닌 요소엔 무해(grid-template-
+# columns 는 grid 컨테이너에만 적용)하고 grid 만 1칼럼화 → 클래스/인라인 불문
+# 전부 접힘. 데스크탑(>768px)은 @media 밖이라 완전 무영향 — 0 리스크.
 _MOBILE_CSS = (
     "@media (max-width:768px){"
     "body{padding:12px !important;}"
-    "[style*=\"grid-template-columns\"]{grid-template-columns:1fr !important;}"
+    "*{grid-template-columns:1fr !important;}"
     "[style*=\"display:flex\"],[style*=\"display: flex\"]{flex-wrap:wrap !important;}"
     "img,table,pre{max-width:100% !important;}"
     "table{display:block;overflow-x:auto;}"
@@ -95,10 +98,12 @@ _MOBILE_CSS = (
 
 def _inject_mobile_responsive(soup) -> None:
     """Inject a mobile @media <style> (+ viewport meta if missing) into
-    <head> so the inline-grid sections collapse to a single column on
-    phones. Inline styles can't carry @media, so this stylesheet rule
-    overrides them with !important inside the breakpoint. No-op when there
-    is no <head>; never raises. Desktop (>768px) untouched."""
+    <head> so EVERY grid container collapses to a single column on phones.
+    base.html's own @media is incomplete (covers only some grids — the
+    content+sidebar and 4-col industry grids are missed), so a universal
+    `*{grid-template-columns:1fr !important}` inside the breakpoint forces
+    them all — class-based or inline. `*` is inert on non-grid elements.
+    No-op when there is no <head>; never raises. Desktop (>768px) untouched."""
     try:
         head = soup.head
         if head is None:
