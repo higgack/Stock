@@ -1524,3 +1524,63 @@ class TestBanksaladParser:
         assert extract_xlsx_from_zip(buf.getvalue(), password=None) == b"PK\x03\x04fake"
         # 실제 뱅샐 zip(ZipCrypto+pwd 5120)은 라이브 검증 완료(2026-06-04);
         # 암호화 zip 픽스처는 PII 우려로 미커밋.
+
+
+class TestPortfolioResolve:
+    """fix: 종목 한글명→티커 resolver (2026-06-04 자산관리 P1 증분2)."""
+
+    def test_overseas_alias(self):
+        from bot.portfolio_resolve import resolve_overseas
+        assert resolve_overseas("램 리서치") == ("LRCX", "US")
+        assert resolve_overseas("어플라이드 머티어리얼즈") == ("AMAT", "US")
+        assert resolve_overseas("ST 마이크로 일렉트로닉스 ADR") == ("STM", "US")
+        assert resolve_overseas("엔비디아") == ("NVDA", "US")
+        # 국내 종목(파마리서치)·미등록은 alias None (pykrx 가 잡음)
+        assert resolve_overseas("파마리서치") is None
+        assert resolve_overseas("없는종목xyz") is None
+
+    def test_resolve_ticker_graceful(self):
+        from bot.portfolio_resolve import resolve_ticker
+        # 해외는 alias 로 즉시 매칭
+        r = resolve_ticker("램 리서치")
+        assert r["matched"] and r["ticker"] == "LRCX" and r["source"] == "alias"
+        # 국내는 pykrx 필요 — 샌드박스 creds 없으면 matched False 지만 crash 없어야
+        r2 = resolve_ticker("이오테크닉스")
+        assert r2["matched"] in (True, False) and r2.get("ticker") in (None, "039030.KS", "039030.KQ")
+
+
+class TestPortfolioModel:
+    """fix: 포트폴리오 집계·요약 모델 (2026-06-04 자산관리 P1 증분3)."""
+
+    def _model(self):
+        from bot.portfolio_parser import parse_banksalad
+        from bot.portfolio import build_model
+        return build_model(parse_banksalad(_BANKSALAD_SYNTH))
+
+    def test_build_model_aggregates(self):
+        m = self._model()
+        assert m["holding_count"] == 2
+        assert m["matched_count"] >= 1  # 램 리서치 alias 매칭(creds 무관)
+        ioteq = [h for h in m["holdings"] if h["상품명"] == "이오테크닉스"][0]
+        assert ioteq["평가손익"] == 5000 - 2298
+        lam = [h for h in m["holdings"] if h["상품명"] == "램 리서치"][0]
+        assert lam["ticker"] == "LRCX" and lam["market"] == "US"
+        assert set(m["by_broker"]) == {"NH투자증권", "삼성증권"}
+        assert m["by_broker"]["NH투자증권"]["종목수"] == 1
+        assert "부동산" in m["asset_allocation"] and "동산" in m["asset_allocation"]
+        assert m["net_worth"]["순자산"] == 930011000
+        assert m["top_gainers"][0]["상품명"] == "램 리서치"  # 948.9 > 117.6
+
+    def test_format_summary_text(self):
+        from bot.portfolio import format_summary_text
+        txt = format_summary_text(self._model())
+        assert "순자산" in txt
+        assert "9.3억" in txt  # 930,011,000 → 9.3억
+        assert "NH투자증권" in txt and "부동산" in txt
+
+    def test_save_load_roundtrip(self, tmp_path, monkeypatch):
+        import bot.portfolio as pf
+        monkeypatch.setattr(pf, "PORTFOLIO_PATH", tmp_path / "portfolio.json")
+        pf.save(self._model())
+        loaded = pf.load()
+        assert loaded is not None and loaded["holding_count"] == 2 and "_saved_ts" in loaded
