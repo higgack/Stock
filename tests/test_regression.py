@@ -534,6 +534,25 @@ class TestPriceChartRender:
         })
         assert _LWC_LIB_NAME not in without, "차트 없는데 라이브러리 script 포함됨"
 
+    def test_chart_past_markers_logscale_tooltip(self):
+        """과거 추천 마커 + 로그 스케일 + 크로스헤어 툴팁 (2026-06-04)."""
+        from bot.dashboard import _CHART_JS, _rating_direction, _render_chart_section
+        # 판정 → 방향
+        assert _rating_direction("Buy") == "up" and _rating_direction("Overweight") == "up"
+        assert _rating_direction("매수") == "up"
+        assert _rating_direction("Sell") == "down" and _rating_direction("Underweight") == "down"
+        assert _rating_direction("Hold") == "hold"
+        # JS 배선
+        assert "analysisMarkers" in _CHART_JS and "setMarkers" in _CHART_JS
+        assert "subscribeCrosshairMove" in _CHART_JS and "chart-tooltip" in _CHART_JS
+        assert "ind.log ? 1 : 0" in _CHART_JS  # 로그 스케일 모드
+        # 마커 payload 주입 + 데이터 범위 밖 필터(JS firstT/lastT)
+        rec = {"ticker": "AAPL", "price_chart": {"currency": "$", "decimals": 2,
+               "times": ["2025-06-01", "2025-06-02"], "close": [1.0, 2.0]}}
+        h = _render_chart_section(rec, [{"time": "2025-06-01", "dir": "up",
+                                         "rating": "Buy", "ret": 8.3}])
+        assert "analysis_markers" in h and "Buy" in h
+
     def test_chart_live_last_price_wiring(self):
         """장중 last_price(~15분 지연) — payload 필드 + 프론트 마지막봉 대체."""
         from bot.dashboard import _CHART_JS

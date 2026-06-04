@@ -1484,6 +1484,47 @@ def _build_resolved_lookup() -> dict[tuple[str, str], dict]:
     return {(e["date"], e["ticker"]): e for e in mem.get("resolved", [])}
 
 
+def _rating_direction(rating: str) -> str:
+    """Classify a verdict string into up / down / hold for chart markers."""
+    r = (rating or "").lower()
+    if any(k in r for k in ("buy", "overweight", "매수")):
+        return "up"
+    if any(k in r for k in ("sell", "underweight", "매도")):
+        return "down"
+    return "hold"
+
+
+def _ticker_analysis_markers(
+    records_for_ticker: list[dict], resolved_lookup: dict
+) -> list[dict]:
+    """Build chart markers for every past analysis of one ticker — the
+    analysis date, its verdict (Buy/Hold/Sell…), and the resolved 5-day
+    return when available. Lets the chart visualize our own track record
+    on the stock (▲매수 +8% etc.). Sorted by date ascending (lightweight-
+    charts requires ascending marker times)."""
+    out: list[dict] = []
+    for r in records_for_ticker:
+        date = r.get("trade_date")
+        ticker = r.get("ticker", "")
+        if not date:
+            continue
+        rating = _extract(_RATING_RE, r.get("summary", "") or "") or ""
+        if not rating:
+            continue
+        res = resolved_lookup.get((date, ticker))
+        ret = None
+        if res:
+            ret = _parse_pct((res.get("raw") or "").strip())
+        out.append({
+            "time": date,
+            "dir": _rating_direction(rating),
+            "rating": rating.strip(),
+            "ret": ret,
+        })
+    out.sort(key=lambda m: m["time"])
+    return out
+
+
 _BENCHMARK_LABEL_CACHE: dict[str, str] = {}
 
 
@@ -1861,7 +1902,14 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-ind-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
 .chart-row { display: flex; gap: 10px; align-items: stretch; }
 .chart-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.price-chart { width: 100%; height: 440px; }
+.price-chart { width: 100%; height: 440px; position: relative; }
+.chart-tooltip {
+  position: absolute; z-index: 5; pointer-events: none;
+  background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 9px; font-size: 11px; line-height: 1.55; white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.25); font-variant-numeric: tabular-nums;
+}
+.chart-tooltip .tt-date { color: var(--fg-soft); margin-bottom: 2px; font-size: 10px; }
 .sub-chart { width: 100%; height: 120px; }
 .sub-chart.hidden { display: none; }
 .chart-values {
@@ -2031,11 +2079,14 @@ def _ensure_chart_lib() -> bool:
         return dest.exists()
 
 
-def _render_chart_section(rec: dict) -> str:
+def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None) -> str:
     """Emit the price-chart <section> when the record carries a price_chart
     payload (schema v2+). The JSON rides in a <script type=application/json>
     block (not an attribute) to avoid escaping bloat; _CHART_JS reads it and
-    renders client-side. Empty string for older v1 entries (graceful)."""
+    renders client-side. Empty string for older v1 entries (graceful).
+
+    `analysis_markers` (optional): past-analysis verdicts for this ticker,
+    rendered as ▲매수/▼매도/●보유 markers on the timeline (track record)."""
     pc = rec.get("price_chart")
     if not isinstance(pc, dict) or not pc.get("times") or not pc.get("close"):
         return ""
@@ -2064,6 +2115,9 @@ def _render_chart_section(rec: dict) -> str:
     _times = pc.get("times") or []
     if _times:
         pc["as_of_date"] = _times[-1]
+    # 과거 추천 마커 (이 종목의 분석 이력 — track record).
+    if analysis_markers:
+        pc["analysis_markers"] = analysis_markers
 
     # Defuse any stray '</' so the JSON can't terminate the <script> block.
     payload = _json.dumps(pc, ensure_ascii=False, separators=(",", ":"))
@@ -2098,6 +2152,7 @@ def _render_chart_section(rec: dict) -> str:
       <button class="chart-ind-btn" data-ind="vol">거래량</button>
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="log">로그</button>
     </div>
     <div class="chart-row">
       <div class="chart-main">
@@ -2109,7 +2164,7 @@ def _render_chart_section(rec: dict) -> str:
     </div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div class="chart-legend">
-      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 진입/손절/목표=트레이드 플랜 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD on/off (설정 저장됨)
+      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그 on/off (설정 저장됨)
     </div>
   </section>"""
 
@@ -2125,13 +2180,14 @@ _CHART_JS = """
   var ticker = el.getAttribute('data-ticker') || '';
   var markers = initial.markers || null;
   var asOfClose = (initial && initial.as_of_close != null) ? initial.as_of_close : null;
+  var analysisMarkers = (initial && initial.analysis_markers) || null;
   var chart = null, rsiChart = null, macdChart = null;
   var curInterval = '1d', curRange = '1y';
   var lastData = null;   // 마지막 렌더 데이터 — 지표 토글 시 refetch 없이 재렌더
 
   // 지표 on/off 상태 (localStorage 영속 — 페이지 넘나들어도 유지).
   var IND_KEY = 'noah_chart_ind_v1';
-  var IND_DEFAULT = { candle:false, ma:true, bb:false, vol:true, rsi:true, macd:false };
+  var IND_DEFAULT = { candle:false, ma:true, bb:false, vol:true, rsi:true, macd:false, log:false };
   function loadInd(){
     var s = {};
     try { s = JSON.parse(localStorage.getItem(IND_KEY) || '{}') || {}; } catch(e){}
@@ -2185,9 +2241,10 @@ _CHART_JS = """
     chart = LightweightCharts.createChart(el, {
       height: 440,
       layout: layout, grid: grid,
-      rightPriceScale: { borderVisible: false, minimumWidth: 72, scaleMargins: { top: 0.06, bottom: 0.26 } },
+      // mode 1 = 로그 스케일 (긴 기간 뷰에서 % 변동 비교 가능). 기본 0=선형.
+      rightPriceScale: { borderVisible: false, minimumWidth: 72, mode: ind.log ? 1 : 0, scaleMargins: { top: 0.06, bottom: 0.26 } },
       timeScale: { borderVisible: false, timeVisible: false },
-      crosshair: { mode: 0 }
+      crosshair: { mode: 1 }
     });
     function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
     var prec = (d.decimals === 0) ? 0 : 2;
@@ -2223,6 +2280,25 @@ _CHART_JS = """
         closeData[closeData.length - 1] = { time: last.time, value: lp };
       }
       mainS.setData(closeData);
+    }
+    // 과거 추천 마커 — 이 종목의 분석 이력(▲매수/▼매도/●보유 + 5거래일 결과).
+    if (analysisMarkers && analysisMarkers.length) {
+      var firstT = d.times[0], lastT = d.times[d.times.length - 1];
+      var mk = [];
+      for (var ai = 0; ai < analysisMarkers.length; ai++) {
+        var a = analysisMarkers[ai];
+        if (!a.time || a.time < firstT || a.time > lastT) continue;
+        var up = a.dir === 'up', dn = a.dir === 'down';
+        var txt = a.rating + (a.ret != null ? ' ' + (a.ret >= 0 ? '+' : '') + a.ret.toFixed(1) + '%' : '');
+        mk.push({
+          time: a.time,
+          position: up ? 'belowBar' : (dn ? 'aboveBar' : 'inBar'),
+          color: up ? '#26a69a' : (dn ? '#e2574c' : '#94a3b8'),
+          shape: up ? 'arrowUp' : (dn ? 'arrowDown' : 'circle'),
+          text: txt
+        });
+      }
+      try { mainS.setMarkers(mk); } catch (e) {}
     }
     if (ind.ma) {
       if (d.ema10)  chart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.ema10));
@@ -2263,6 +2339,40 @@ _CHART_JS = """
     }
     chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });
+
+    // 크로스헤어 hover 툴팁 — 커서 지점의 날짜 + 값(가격/이평선/RSI/거래량).
+    var tip = document.createElement('div');
+    tip.className = 'chart-tooltip';
+    tip.style.display = 'none';
+    el.appendChild(tip);
+    chart.subscribeCrosshairMove(function(param){
+      if (!param || !param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+        tip.style.display = 'none'; return;
+      }
+      var idx = d.times.indexOf(param.time);
+      if (idx < 0) { tip.style.display = 'none'; return; }
+      var rows = ['<div class="tt-date">' + param.time + '</div>'];
+      function trow(name, val, color, dc) {
+        if (val === null || val === undefined) return;
+        rows.push('<div><span style="color:' + color + '">' + name + '</span> ' + fmtNum(val, dc) + '</div>');
+      }
+      trow('종가', d.close[idx], '#4c9aff', prec);
+      if (ind.ma) {
+        trow('10 EMA', d.ema10 && d.ema10[idx], '#f5a623', prec);
+        trow('50 SMA', d.sma50 && d.sma50[idx], '#3ec46d', prec);
+        trow('200 SMA', d.sma200 && d.sma200[idx], '#e2574c', prec);
+      }
+      if (ind.rsi && d.rsi) trow('RSI', d.rsi[idx], '#b07cff', 1);
+      if (ind.vol && d.volume) trow('거래량', d.volume[idx], '#94a3b8', 0);
+      tip.innerHTML = rows.join('');
+      tip.style.display = 'block';
+      var tw = tip.offsetWidth, th = tip.offsetHeight;
+      var x = param.point.x + 14, y = param.point.y + 14;
+      if (x + tw > el.clientWidth) x = param.point.x - tw - 14;
+      if (y + th > 440) y = param.point.y - th - 14;
+      if (x < 0) x = 2; if (y < 0) y = 2;
+      tip.style.left = x + 'px'; tip.style.top = y + 'px';
+    });
 
     var linked = [chart];
 
@@ -2429,7 +2539,7 @@ _CHART_JS = """
 """
 
 
-def _render_detail(rec: dict) -> str:
+def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str:
     ticker = rec.get("ticker", "?")
     date = rec.get("trade_date", "")
     analyzed_at = (rec.get("analyzed_at") or "")[:16].replace("T", " ")
@@ -2458,7 +2568,7 @@ def _render_detail(rec: dict) -> str:
     except Exception:
         resolved_entry = None
     outcome_html = _render_outcome_html(resolved_entry)
-    chart_html = _render_chart_section(rec)
+    chart_html = _render_chart_section(rec, analysis_markers)
     # Only pull in the (vendored) chart library + init JS when this record
     # actually has a chart — older v1 entries skip the script entirely.
     chart_scripts = (
@@ -2532,6 +2642,17 @@ def regenerate_index() -> None:
         (ARCHIVE_ROOT / "errors.html").write_text(
             _render_errors_page(records, hard_failures), encoding="utf-8"
         )
+        # Past-analysis markers per ticker (track record on the chart) —
+        # build once from the already-loaded records + resolved outcomes,
+        # then pass the relevant slice into each detail page (avoids O(n²)).
+        _resolved = _build_resolved_lookup()
+        _by_ticker: dict[str, list[dict]] = {}
+        for r in records:
+            _by_ticker.setdefault(r.get("ticker", ""), []).append(r)
+        _markers_by_ticker = {
+            t: _ticker_analysis_markers(recs, _resolved)
+            for t, recs in _by_ticker.items()
+        }
         for rec in records:
             day = rec.get("trade_date", "")
             ticker = rec.get("ticker", "")
@@ -2540,7 +2661,8 @@ def regenerate_index() -> None:
             day_dir = ARCHIVE_ROOT / day
             day_dir.mkdir(parents=True, exist_ok=True)
             (day_dir / f"{ticker}.html").write_text(
-                _render_detail(rec), encoding="utf-8"
+                _render_detail(rec, _markers_by_ticker.get(ticker)),
+                encoding="utf-8",
             )
         log.info("dashboard: regenerated with %d entries", len(records))
     except Exception as exc:
