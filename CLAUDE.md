@@ -439,9 +439,19 @@ pattern to follow:
     + TG_USER_API_ID/HASH(reddit_insider 와 공유). **NOAH 판정/5거래일 성과
     오버레이 = 증분5 완료** (보유종목 ↔ 분석 아카이브 join, 차트 과거-추천 마커
     헬퍼 `_ticker_analysis_markers` 재사용, read-only·네트워크 0, 보유 테이블에
-    'NOAH 판정·5일' 컬럼). 라이브 가격(추정수량)은 357종목 fetch 비용/rate-limit
-    으로 보류(스냅샷이 이미 최신이라 marginal). PII(고객정보/가계부)는 파서가 제외, 가계부
-    (Sheet2)는 후속 phase.
+    'NOAH 판정' 컬럼=최신 분석 판정+해소 시 5거래일 결과). 보유표 **헤더 클릭
+    정렬 + 증권사/검색/NOAH 필터**(2026-06-04, `_PF_TABLE_JS`, data-* raw 값).
+    종목명·판정은 일반 텍스트색 링크(파란 기본색 제거), 판정은 방향색. 라이브
+    가격(추정수량)은 357종목 fetch 비용/rate-limit 으로 보류(스냅샷 이미 최신).
+  • **가계부 (P2, 2026-06-04 완료)** — 같은 export 의 '2.현금흐름현황' 을
+    `bot/budget.py` `build_budget_model` 로 월별 수입/지출/순저축/저축률 +
+    카테고리 도넛 + 카테고리×월 매트릭스 모델링 → **별도 `budget.html`**
+    (`dashboard._render_budget_page`, nav·help 에서 자산 다음). `portfolio.ingest`
+    가 자산과 함께 `save_budget` + `regenerate_portfolio_index` 가
+    `regenerate_budget_index` 동반 호출(같은 export 산물이라 항상 동기). 수입/지출
+    분류는 카테고리명 키워드 추정(빗나가도 매트릭스는 원본 보존). 뱅샐 총계행이
+    비어(0)면 카테고리 monthly 합이 canonical(finance 섹션과 동일 정책). PII
+    (고객정보)는 파서가 제외.
 - Watchlist 조건 알림 — `bot/watchlist.py` (vibe-trade heartbeat/trigger
   패턴 영감, 2026-06-04). `/watch TICKER rsi<30 price>950 >sma50 52whigh
   earnings foreignbuy …` → `watchlist-check.timer` 30분 간격 `check_all()`
@@ -804,10 +814,12 @@ DASHBOARD_USER=higgack
 DASHBOARD_PASSWORD=<.env 에만>
 ```
 **Nav 순서 정책 (사용자 2026-05-31, 2026-06-04 갱신):** **💼 자산(portfolio)
-이 nav·help 둘 다 맨 위** (사용자 2026-06-04 — 자산을 메인 허브로). 현재 순서:
-💼 자산 → errors → Bottleneck Screener → 도메인 목록 → 📨 미국 레딧 →
-Daily Byte → (external: Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약
-→ 🔔 워치리스트. NOAH archive 는 index 페이지 자체(h1)이고, 자산이 첫 링크.
++ 📒 가계부(budget) 가 nav·help 둘 다 맨 위** (사용자 2026-06-04 — 자산을
+메인 허브로, 가계부는 그 다음). 현재 순서: 💼 자산 → 📒 가계부 → errors →
+Bottleneck Screener → 도메인 목록 → 📨 미국 레딧 → Daily Byte → (external:
+Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약 → 🔔 워치리스트. NOAH
+archive 는 index 페이지 자체(h1)이고, 자산이 첫 링크. 가계부=뱅샐 현금흐름
+별도 대시보드(budget.html), 자산과 같은 export ingest 시 함께 생성·갱신.
 **새로 추가되는 대시보드는 (자산 다음, 끝이 아니라) 사용자 지정 위치** —
 명시 없으면 워치리스트 뒤 append. 갱신 지점 (모두 동시): (a) `bot/
 dashboard.py` errors_link 두 분기(자산 first) + 6개 mini-nav(`← NOAH 종목

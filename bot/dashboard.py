@@ -1818,6 +1818,7 @@ def _render_index(records: list[dict]) -> str:
     if issue_count > 0:
         errors_link = (
             ' · <a href="portfolio.html">💼 자산</a>'
+            ' · <a href="budget.html">📒 가계부</a>'
             f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
             f' · <a href="screener.html">📊 Bottleneck Screener</a>'
             f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
@@ -1831,6 +1832,7 @@ def _render_index(records: list[dict]) -> str:
     else:
         errors_link = (
             ' · <a href="portfolio.html">💼 자산</a>'
+            ' · <a href="budget.html">📒 가계부</a>'
             ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
             ' · <a href="screener.html">📊 Bottleneck Screener</a>'
             ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
@@ -2319,7 +2321,7 @@ _CHART_JS = """
     var lp = (d.last_price != null) ? d.last_price : null;
     if (ind.candle && hasOHLC) {
       // 캔들 — OHLC 가 있을 때만.
-      mainS = chart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#e2574c', borderUpColor:'#26a69a', borderDownColor:'#e2574c', wickUpColor:'#26a69a', wickDownColor:'#e2574c', priceFormat: pf, lastValueVisible: true, priceLineVisible: false });
+      mainS = chart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#e2574c', borderUpColor:'#26a69a', borderDownColor:'#e2574c', wickUpColor:'#26a69a', wickDownColor:'#e2574c', priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
       var cd = [];
       for (var i = 0; i < d.times.length; i++) {
         if (d.open[i]==null||d.high[i]==null||d.low[i]==null||d.close[i]==null) continue;
@@ -3054,6 +3056,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
     · <a href="portfolio.html">💼 자산</a>
+    · <a href="budget.html">📒 가계부</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
@@ -4445,6 +4448,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
     · <a href="portfolio.html">💼 자산</a>
+    · <a href="budget.html">📒 가계부</a>
     · <a href="screener.html">📊 Bottleneck Screener</a>
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
@@ -4658,6 +4662,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
     · <a href="portfolio.html">💼 자산</a>
+    · <a href="budget.html">📒 가계부</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
     · <a href="screener.html">📊 Bottleneck Screener</a>
   </div>
@@ -4805,6 +4810,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
     · <a href="portfolio.html">💼 자산</a>
+    · <a href="budget.html">📒 가계부</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
     · <a href="realestate.html">🏠 부동산</a>
   </div>
@@ -4959,6 +4965,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
     · <a href="portfolio.html">💼 자산</a>
+    · <a href="budget.html">📒 가계부</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
     · <a href="screener.html">📊 Bottleneck Screener</a>
   </div>
@@ -5213,8 +5220,11 @@ _PF_CSS = """<style>
 .pf-ctl label{font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .pf-tbl thead th{position:sticky;top:0;background:var(--card);z-index:1}
 .pf-tbl th[data-k]{cursor:pointer;user-select:none;white-space:nowrap}
+.pf-tbl th[data-k]::after{content:"↕";opacity:.3;font-size:9px;margin-left:3px}
 .pf-tbl th[data-k]:hover{color:var(--text)}
-.pf-ar{opacity:.6;font-size:10px;margin-left:2px}
+.pf-tbl th[data-k]:hover::after{opacity:.65}
+.pf-tbl th.pf-sorted::after{content:""}
+.pf-ar{opacity:.85;font-size:10px;margin-left:2px}
 @media (max-width:760px){.pf-grid>.pf-card{flex:1 1 100% !important;min-width:0 !important}}
 </style>"""
 
@@ -5250,7 +5260,9 @@ function sortBy(k,t){
  }).forEach(function(tr){tb.appendChild(tr);});
  [].forEach.call(tbl.tHead.rows[0].cells,function(th){
   var ar=th.querySelector('.pf-ar'); if(ar)ar.remove();
-  if(th.dataset.k===k){var s=document.createElement('span'); s.className='pf-ar';
+  th.classList.remove('pf-sorted');
+  if(th.dataset.k===k){th.classList.add('pf-sorted');
+   var s=document.createElement('span'); s.className='pf-ar';
    s.textContent=(sortDir>0?' \\u25B2':' \\u25BC'); th.appendChild(s);}
  });
 }
@@ -5321,7 +5333,8 @@ def _render_portfolio_page(model, noah=None) -> str:
     # 허브로 쓰되 기존 메인을 첫 링크로.
     nav = (
         '<div class="nav">'
-        '<a href="index.html">🦉 NOAH 종목분석</a>'
+        '<a href="budget.html">📒 가계부</a>'
+        ' · <a href="index.html">🦉 NOAH 종목분석</a>'
         ' · <a href="errors.html">🚨 오류/미완성</a>'
         ' · <a href="screener.html">📊 Bottleneck Screener</a>'
         ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
@@ -5647,6 +5660,191 @@ def regenerate_portfolio_index() -> None:
         log.info("dashboard: portfolio.html regenerated (NOAH overlay %d)", len(noah))
     except Exception as exc:
         log.warning("dashboard: portfolio regen failed: %s", exc)
+    # 가계부(현금흐름)는 같은 export 산물이라 자산 regen 시 항상 함께 갱신.
+    regenerate_budget_index()
+
+
+# ── 가계부 대시보드 (뱅크샐러드 현금흐름 → budget.html) — 2026-06-04 P2 ──
+# 자산(portfolio)과 별도 surface. 같은 export 의 '2.현금흐름현황' 을 모델링한
+# budget.json 을 월별 수입/지출/순저축/저축률 + 카테고리 breakdown + 매트릭스로
+# 렌더. 사용자 요청 "가계부는 또 다른 별도 대시보드".
+_BUDGET_CSS = """<style>
+.bg-chart{display:flex;gap:7px;align-items:flex-end;overflow-x:auto;padding:10px 2px 2px}
+.bg-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:0 0 auto}
+.bg-bars{display:flex;align-items:flex-end;gap:2px;height:140px}
+.bg-bar{width:12px;border-radius:2px 2px 0 0;min-height:1px}
+.bg-mo{font-size:10px;color:var(--muted);white-space:nowrap}
+.bg-sr{font-size:10px;color:var(--muted)}
+.bg-mtx{overflow:auto;max-height:480px;border:1px solid var(--border);border-radius:8px}
+.bg-mtx td.r,.bg-mtx th.r{text-align:right;font-variant-numeric:tabular-nums}
+</style>"""
+
+_BUDGET_KIND = {"income": "수입", "expense": "지출", "total_income": "수입계",
+                "total_expense": "지출계", "total": "계"}
+
+
+def _budget_nav() -> str:
+    """가계부 페이지 nav — 자산 first, NOAH second, 나머지(가계부 자신은 현재라 생략)."""
+    return (
+        '<div class="nav">'
+        '<a href="portfolio.html">💼 자산</a>'
+        ' · <a href="index.html">🦉 NOAH 종목분석</a>'
+        ' · <a href="errors.html">🚨 오류/미완성</a>'
+        ' · <a href="screener.html">📊 Bottleneck Screener</a>'
+        ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
+        ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
+        ' · <a href="daily_byte.html">📊 Daily Byte</a>'
+        ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
+        f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>'
+        ' · <a href="realestate.html">🏠 부동산</a>'
+        ' · <a href="cheongyak.html">🎟️ 청약</a>'
+        ' · <a href="watchlist.html">🔔 워치리스트</a>'
+        '</div>')
+
+
+def _render_budget_page(budget) -> str:
+    """budget.json 모델 → budget.html. 요약 카드 → 월별 수입/지출 막대 →
+    지출 카테고리 도넛 → 카테고리×월 매트릭스. 분류가 빗나가도 매트릭스는 원본
+    그대로라 데이터 유실 0 (사용자가 보고 수정)."""
+    import html as _html
+    nav = _budget_nav()
+    if not budget or not budget.get("months"):
+        return _SCREENER_CSS + _PF_CSS + _BUDGET_CSS + (
+            '<div class="wrap">' + nav + '<h1>📒 가계부</h1>'
+            '<p class="sub">아직 현금흐름 데이터가 없습니다. 뱅크샐러드 export(zip)를 '
+            'RAG 채널에 올리면 자산과 함께 가계부가 표시됩니다.</p></div>')
+    months = budget["months"]
+    income = budget.get("income", [])
+    expense = budget.get("expense", [])
+    net = budget.get("net", [])
+    srate = budget.get("savings_rate", [])
+    tot = budget.get("totals", {})
+    n = len(months)
+
+    # 업데이트 시각
+    import datetime as _dt
+    _ts = budget.get("_saved_ts")
+    updated = (_dt.datetime.fromtimestamp(_ts, _dt.timezone(_dt.timedelta(hours=9)))
+               .strftime("%Y-%m-%d %H:%M") if _ts else "—")
+
+    def _pct(v):
+        return f"{v:.1f}%" if isinstance(v, (int, float)) else "—"
+
+    # 요약 카드 (기간 월평균 + 저축률)
+    cards = (
+        '<div class="stats">'
+        f'<div class="stat"><div class="stat-num" style="color:var(--pos)">{_pf_won(tot.get("income_avg"))}</div><div class="stat-lbl">월평균 수입</div></div>'
+        f'<div class="stat"><div class="stat-num" style="color:var(--neg)">{_pf_won(tot.get("expense_avg"))}</div><div class="stat-lbl">월평균 지출</div></div>'
+        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(tot.get("net"))}">{_pf_won((tot.get("net") or 0) / n if n else 0)}</div><div class="stat-lbl">월평균 순저축</div></div>'
+        f'<div class="stat"><div class="stat-num">{_pct(tot.get("savings_rate"))}</div><div class="stat-lbl">저축률(기간)</div></div>'
+        '</div>')
+
+    # 월별 수입/지출 막대 (수입 녹 · 지출 빨강), 저축률 라벨
+    H = 140
+    maxv = max([*(income or [0]), *(expense or [0]), 1])
+    cols = ""
+    for i, mo in enumerate(months):
+        iv = income[i] if i < len(income) else 0
+        ev = expense[i] if i < len(expense) else 0
+        nv = net[i] if i < len(net) else 0
+        ih = max(1, int((iv or 0) / maxv * H))
+        eh = max(1, int((ev or 0) / maxv * H))
+        sr = srate[i] if i < len(srate) else None
+        ttl = f"{mo} · 수입 {_pf_won(iv)} · 지출 {_pf_won(ev)} · 순 {_pf_won(nv)} · 저축률 {_pct(sr)}"
+        cols += (f'<div class="bg-col" title="{_html.escape(ttl)}">'
+                 f'<div class="bg-bars"><div class="bg-bar" style="height:{ih}px;background:var(--pos)"></div>'
+                 f'<div class="bg-bar" style="height:{eh}px;background:var(--neg)"></div></div>'
+                 f'<div class="bg-mo">{_html.escape(mo[2:])}</div>'
+                 f'<div class="bg-sr">{_pct(sr)}</div></div>')
+    trend = ('<div class="pf-card"><div class="pf-h">월별 수입·지출 '
+             '<span style="font-weight:400;color:var(--muted);font-size:12px">'
+             '(<span style="color:var(--pos)">■</span> 수입 · '
+             '<span style="color:var(--neg)">■</span> 지출 · 막대 hover로 상세)</span></div>'
+             f'<div class="bg-chart">{cols}</div></div>')
+
+    # 지출 카테고리 도넛 (top 8 + 기타)
+    exp_cats = [c for c in budget.get("expense_cats", []) if (c.get("amount") or 0) > 0]
+    donut = ""
+    if exp_cats:
+        top = exp_cats[:8]
+        rest = sum(c["amount"] for c in exp_cats[8:])
+        if rest > 0:
+            top = top + [{"항목": "기타", "amount": rest}]
+        dtot = sum(c["amount"] for c in top) or 1
+        stops, legend, acc = [], [], 0.0
+        for i, c in enumerate(top):
+            pct = c["amount"] / dtot * 100
+            col = _PF_DONUT_COLORS[i % len(_PF_DONUT_COLORS)]
+            stops.append(f"{col} {acc:.2f}% {acc + pct:.2f}%")
+            legend.append(f'<div class="pf-leg"><span class="pf-dot" style="background:{col}"></span>'
+                          f'{_html.escape(str(c["항목"]))} <b>{_pf_won(c["amount"])}</b> '
+                          f'<span style="color:var(--muted)">({pct:.1f}%)</span></div>')
+            acc += pct
+        # 수입 카테고리 패널 (있으면)
+        inc_cats = [c for c in budget.get("income_cats", []) if (c.get("amount") or 0) > 0]
+        inc_panel = ""
+        if inc_cats:
+            inc_panel = ('<div style="flex:1 1 200px;min-width:190px">'
+                         '<div class="pf-h" style="font-size:13px;color:var(--muted)">💰 수입 구성</div>'
+                         + "".join(f'<div class="pf-leg">{_html.escape(str(c["항목"]))} '
+                                   f'<b>{_pf_won(c["amount"])}</b></div>' for c in inc_cats[:8]) + '</div>')
+        donut = ('<div class="pf-card"><div class="pf-h">지출 카테고리 (기간 합)</div><div class="pf-grid">'
+                 f'<div class="pf-hole"><div class="pf-donut" style="background:conic-gradient({",".join(stops)})"></div></div>'
+                 f'<div style="flex:1 1 240px;min-width:200px">{"".join(legend)}</div>'
+                 + inc_panel + '</div></div>')
+
+    # 카테고리 × 월 매트릭스 (원본 — 분류 빗나가도 데이터 보존). 수입→지출→총계 순.
+    order = {"income": 0, "total_income": 1, "expense": 2, "total_expense": 3, "total": 4}
+    rows = sorted(budget.get("rows", []),
+                  key=lambda r: (order.get(r.get("kind"), 5), -(_safe_num(r.get("총계")) or 0)))
+    mhead = "".join(f'<th class="r">{_html.escape(mo[2:])}</th>' for mo in months)
+    body = ""
+    for r in rows:
+        k = r.get("kind")
+        kcol = "var(--pos)" if k in ("income", "total_income") else (
+            "var(--muted)" if k in ("total", "total_income", "total_expense") else "var(--neg)")
+        mcells = ""
+        mv = r.get("monthly") or []
+        for i in range(n):
+            v = mv[i] if i < len(mv) else None
+            mcells += f'<td class="r">{_pf_won(v) if v is not None else "·"}</td>'
+        body += (f'<tr><td>{_html.escape(str(r.get("항목") or ""))}</td>'
+                 f'<td style="color:{kcol};font-size:11px">{_BUDGET_KIND.get(k, k)}</td>'
+                 f'<td class="r">{_pf_won(r.get("총계"))}</td>'
+                 f'<td class="r">{_pf_won(r.get("월평균"))}</td>{mcells}</tr>')
+    matrix = ('<div class="pf-card"><div class="pf-h">현금흐름 상세 (카테고리 × 월)</div>'
+              '<div class="bg-mtx"><table class="pf-tbl">'
+              '<thead><tr><th>항목</th><th>구분</th><th class="r">총계</th>'
+              f'<th class="r">월평균</th>{mhead}</tr></thead><tbody>{body}</tbody></table></div></div>')
+
+    note = ('<p class="sub" style="margin-top:14px;color:var(--muted);font-size:12px">'
+            '뱅크샐러드 현금흐름 export 기준. 수입/지출 분류는 카테고리명 기반 추정이라 '
+            '일부 빗나갈 수 있으나 아래 매트릭스는 원본 그대로입니다. '
+            f'기간 {_html.escape(str(budget.get("period") or ""))} · 🕒 업데이트 {updated}</p>')
+
+    return (_SCREENER_CSS + _PF_CSS + _BUDGET_CSS + '<div class="wrap">' + nav
+            + '<h1>📒 가계부</h1>'
+            + '<p class="sub">뱅크샐러드 현금흐름 — 월별 수입·지출·저축률 · 자산 대시보드와 별도</p>'
+            + cards + trend + donut + matrix + note + '</div>')
+
+
+def _safe_num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def regenerate_budget_index() -> None:
+    """budget.json → budget.html (ARCHIVE_ROOT). ingest 후 + startup/자정 regen."""
+    try:
+        from bot.budget import load_budget
+        html = _render_budget_page(load_budget())
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "budget.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: budget.html regenerated")
+    except Exception as exc:
+        log.warning("dashboard: budget regen failed: %s", exc)
 
 
 # ── 분기 GICS / 신규 산업 점검 — 후보 트래킹 (2026-06-01) ────────────────
@@ -5730,6 +5928,7 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
   <div class="nav">
     <a href="index.html">← NOAH 종목 분석</a>
     · <a href="portfolio.html">💼 자산</a>
+    · <a href="budget.html">📒 가계부</a>
     · <a href="screener.html">📊 Bottleneck Screener</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
   </div>

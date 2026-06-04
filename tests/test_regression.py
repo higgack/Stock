@@ -1761,3 +1761,57 @@ class TestPortfolioWatch:
         # 고트래픽 RAG 채널 안전: 폴링 사이 새 메시지를 min_id 로 전부 가져옴
         # (최근 N개 윈도가 아니라) — zip 업로드 누락 방지.
         assert "min_id=last_msg_id" in src, "min_id 기반 누락방지 fetch 누락"
+
+
+class TestBudget:
+    """fix: 가계부(현금흐름) 별도 대시보드 (2026-06-04 자산관리 P2)."""
+
+    def _budget(self):
+        from bot.portfolio_parser import parse_banksalad
+        from bot.budget import build_budget_model
+        return build_budget_model(parse_banksalad(_BANKSALAD_SYNTH))
+
+    def test_kind_classification(self):
+        from bot.budget import _kind
+        assert _kind("급여") == "income"
+        assert _kind("식사") == "expense"
+        assert _kind("월지출 총계") == "total_expense"
+        assert _kind("수입 총계") == "total_income"
+        assert _kind("이자수입") == "income"
+
+    def test_model_category_sum_canonical(self):
+        # 뱅샐 총계행이 비어(0) 있으면 카테고리 monthly 합이 canonical
+        # (finance 섹션과 동일 정책) — 식사 [100,200] 가 묻히지 않아야.
+        bm = self._budget()
+        assert bm["expense"] == [100.0, 200.0]
+        assert bm["totals"]["expense"] == 300.0
+        assert bm["expense_cats"][0]["항목"] == "식사"
+        assert bm["expense_cats"][0]["amount"] == 300.0
+        assert bm["months"] == ["2025-06", "2025-07"]
+
+    def test_render_budget_page(self):
+        from bot.dashboard import _render_budget_page
+        html = _render_budget_page(self._budget())
+        assert "<h1>📒 가계부</h1>" in html
+        assert "월별 수입·지출" in html and "현금흐름 상세" in html
+        assert "bg-chart" in html and "식사" in html
+        # nav: 자산 first, NOAH second (가계부 자신은 현재라 생략)
+        assert 'href="portfolio.html">💼 자산' in html
+        assert 'href="index.html">🦉 NOAH' in html
+        assert "아직 현금흐름" in _render_budget_page(None)
+
+    def test_save_load_roundtrip(self, tmp_path, monkeypatch):
+        import bot.budget as bg
+        monkeypatch.setattr(bg, "BUDGET_PATH", tmp_path / "budget.json")
+        bg.save_budget(self._budget())
+        loaded = bg.load_budget()
+        assert loaded and loaded["totals"]["expense"] == 300.0 and "_saved_ts" in loaded
+
+    def test_wiring(self):
+        dsrc = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "def regenerate_budget_index" in dsrc
+        assert "regenerate_budget_index()" in dsrc, "자산 regen 시 가계부 동반 누락"
+        assert 'href="budget.html">📒 가계부' in dsrc, "nav budget 링크 누락"
+        psrc = open("bot/portfolio.py", encoding="utf-8").read()
+        assert "build_budget_model" in psrc and "save_budget" in psrc, "ingest 가계부 배선 누락"
+        assert "budget.html" in open("bot/telegram_bot.py", encoding="utf-8").read()

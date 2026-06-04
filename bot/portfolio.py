@@ -183,6 +183,13 @@ def ingest(data, password=None) -> dict:
     if isinstance(baseline, dict):
         model["prev"] = baseline
     save(model)
+    # 가계부(현금흐름) — 같은 export 에서 별도 모델·대시보드 (P2, 2026-06-04).
+    # 실패해도 자산 ingest 는 그대로 반환(비치명적).
+    try:
+        from bot.budget import build_budget_model, save_budget
+        save_budget(build_budget_model(parsed))
+    except Exception:
+        pass
     return model
 
 

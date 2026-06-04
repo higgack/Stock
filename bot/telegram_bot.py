@@ -1069,13 +1069,15 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【8. 차별화 포인트】</b>
-페르소나 토론 (Buffett/Lynch vs Graham/Marks) · 결정 3노드만 Pro (~₩30 추가로 품질 점프) · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 ground truth 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 (장기 thesis 매도 자제) · 섹터 ETF 알파 · 실패 시 hallucination 대신 명시적 abort
+페르소나 토론 (Buffett/Lynch vs Graham/Marks) · 결정 3노드만 Pro · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 · 섹터 ETF 알파
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 🦉 (순서 = 헤더 nav)
- • <b>💼 자산</b> — 뱅샐 전 계좌 통합(증권사·예적금·부동산·동산·대출·보험)·RAG 채널 업로드
+ • <b>💼 자산</b> — 뱅샐 전 계좌 통합(증권사·예적금·부동산·대출·보험)·RAG 업로드
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
- • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세 가격차트(일/주/월봉·지표·과거추천 마커)·💰비용
+ • <b>📒 가계부</b> — 뱅샐 현금흐름·월별 수입지출·저축률
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/budget.html
+ • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세 가격차트·💰비용
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
  • <b>Screener</b> — 날짜별 run·Top-3 1/3/6m·검색·🗑️·도메인 /screener_list
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
