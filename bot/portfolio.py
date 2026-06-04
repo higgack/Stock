@@ -184,3 +184,54 @@ def ingest(data, password=None) -> dict:
         model["prev"] = baseline
     save(model)
     return model
+
+
+def main(argv=None) -> int:
+    """CLI 검증: ``python -m bot.portfolio <export.zip|.xlsx> [--pw PW] [--no-regen]``.
+
+    RAG 채널 없이 로컬 파일로 즉시 파싱·집계·저장·대시보드 갱신 — 실제 zip
+    테스트용(사용자 요청 2026-06-04). 비번은 ``--pw`` 또는 .env BANKSALAD_ZIP_PW.
+    PII(고객정보/가계부)는 파서가 애초에 제외하므로 저장물엔 들어가지 않는다.
+    ⚠️ ingest 는 ~/.tradingagents/portfolio.json 을 덮어쓴다(실데이터 갱신)."""
+    import argparse
+    import sys
+    p = argparse.ArgumentParser(prog="bot.portfolio",
+                                description="뱅크샐러드 export 로컬 검증·대시보드 갱신")
+    p.add_argument("path", help="뱅크샐러드 export .zip 또는 .xlsx 경로")
+    p.add_argument("--pw", default=None, help="zip 비밀번호(미지정 시 .env BANKSALAD_ZIP_PW)")
+    p.add_argument("--no-regen", action="store_true", help="대시보드 재생성 생략(저장만)")
+    args = p.parse_args(argv)
+    try:
+        from dotenv import load_dotenv
+        env_path = Path(__file__).resolve().parent.parent / ".env"
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+    except ImportError:
+        pass
+    pw = args.pw or os.environ.get("BANKSALAD_ZIP_PW") or None
+    try:
+        data = Path(args.path).read_bytes()
+    except OSError as exc:
+        print(f"파일 읽기 실패: {exc}", file=sys.stderr)
+        return 2
+    try:
+        model = ingest(data, password=pw)
+    except RuntimeError as exc:
+        print(f"🔒 비밀번호 오류 또는 zip 해제 실패: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 — CLI 친절 메시지
+        print(f"파싱 실패: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(format_summary_text(model))
+    if not args.no_regen:
+        try:
+            from bot.dashboard import regenerate_portfolio_index
+            regenerate_portfolio_index()
+            print("\n✅ 대시보드 갱신됨 → portfolio.html")
+        except Exception as exc:  # noqa: BLE001
+            print(f"\n⚠️ 대시보드 재생성 실패(저장은 완료): {exc}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

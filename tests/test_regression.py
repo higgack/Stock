@@ -1585,6 +1585,12 @@ class TestPortfolioModel:
         loaded = pf.load()
         assert loaded is not None and loaded["holding_count"] == 2 and "_saved_ts" in loaded
 
+    def test_cli_badpath_safe(self):
+        # CLI 검증 엔트리(python -m bot.portfolio <zip>) — 없는 경로는 exit 2,
+        # ingest/save 호출 전이라 실제 portfolio.json 을 건드리지 않음(안전).
+        from bot.portfolio import main
+        assert main(["/nonexistent_xyz_portfolio.zip"]) == 2
+
     def test_top_movers_dedup_by_name(self):
         # 같은 종목 복수 증권사 보유 → 수익률 TOP/WORST 에 한 번만(|수익률| 큰 것).
         from bot.portfolio import build_model
