@@ -1863,9 +1863,10 @@ _DETAIL_CSS = _BASE_CSS + """
 .sub-chart { width: 100%; height: 120px; }
 .sub-chart.hidden { display: none; }
 .chart-values {
-  flex: 0 0 110px; display: flex; flex-direction: column; gap: 6px;
+  flex: 0 0 124px; display: flex; flex-direction: column; gap: 5px;
   padding-top: 4px; font-size: 12px;
 }
+.cv-sep { border-top: 1px solid var(--border); margin: 2px 0; }
 .cv-item { display: flex; align-items: baseline; gap: 5px; }
 .cv-dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 2px; align-self: center; }
 .cv-name { color: var(--fg-soft); flex: 1 1 auto; }
@@ -1873,6 +1874,7 @@ _DETAIL_CSS = _BASE_CSS + """
 @media (max-width: 560px) {
   .chart-row { flex-direction: column; }
   .chart-values { flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; gap: 4px 14px; }
+  .cv-sep { display: none; }
 }
 .chart-legend { color: var(--fg-soft); font-size: 12px; margin-top: 8px; }
 .chart-legend .lg { margin-right: 10px; font-weight: 600; }
@@ -2230,7 +2232,9 @@ _CHART_JS = """
     }
     function priceLine(p, color, title, style) {
       if (p === null || p === undefined) return;
-      mainS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: true, title: title });
+      // 축 라벨 OFF — 가까운 가격(진입/손절/시점가)끼리 라벨이 겹쳐 가려지는
+      // 문제 (2026-06-04). 선만 그리고 값은 우측 패널에서 항상 보이게.
+      mainS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: false, title: title });
     }
     priceLine(asOfClose, '#94a3b8', '시점가', 2);
     if (markers) {
@@ -2290,6 +2294,16 @@ _CHART_JS = """
     if (!vEl) return;
     var dec = (d.decimals === 0) ? 0 : 2;
     var items = [];
+    // 분석 가격 — 차트 안에선 가까우면 라벨이 겹쳐 가려지므로 패널에서 항상
+    // 보이게 (선 색과 매칭). 현재가/시점가/진입/손절/목표.
+    items.push(['현재가', lastNonNull(d.close), '#4c9aff', dec]);
+    if (asOfClose != null) items.push(['시점가', asOfClose, '#94a3b8', dec]);
+    if (markers) {
+      if (markers.entry  != null) items.push(['진입', markers.entry,  '#9b59b6', dec]);
+      if (markers.stop   != null) items.push(['손절', markers.stop,   '#e2574c', dec]);
+      if (markers.target != null) items.push(['목표', markers.target, '#3ec46d', dec]);
+    }
+    items.push(null);   // 구분선
     if (ind.ma) {
       if (d.ema10)  items.push(['10 EMA', lastNonNull(d.ema10), '#f5a623', dec]);
       if (d.sma50)  items.push(['50 SMA', lastNonNull(d.sma50), '#3ec46d', dec]);
@@ -2304,6 +2318,7 @@ _CHART_JS = """
     if (ind.vol && d.volume) items.push(['거래량', lastNonNull(d.volume), '#94a3b8', 0]);
     var html = '';
     for (var i = 0; i < items.length; i++) {
+      if (items[i] === null) { html += '<div class="cv-sep"></div>'; continue; }
       html += '<div class="cv-item"><span class="cv-dot" style="background:' + items[i][2] + '"></span>'
             + '<span class="cv-name">' + items[i][0] + '</span>'
             + '<span class="cv-val">' + fmtNum(items[i][1], items[i][3]) + '</span></div>';
