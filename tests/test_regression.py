@@ -1401,3 +1401,126 @@ class TestTradeLevelParser:
         assert "/api/chart" in src, "차트 API 경로 누락"
         assert "_VALID_INTERVALS" in src and "_VALID_RANGES" in src
         assert "_TICKER_RE.match(ticker)" in src, "ticker 검증 누락"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 9) 자산관리 — 뱅크샐러드 export 파서 (2026-06-04 P1 증분1)
+#    뱅샐현황 시트(섹션형) → 투자/재무/부동산/동산/대출/보험/현금흐름 구조화.
+#    1.고객정보(PII)는 파싱 안 함. 총자산/순자산은 export 가 빈 셀이라 항목
+#    합으로 산출. 실파일은 PII 라 미커밋 — 합성 데이터로 검증.
+# ─────────────────────────────────────────────────────────────────────────
+_BANKSALAD_SYNTH = [
+    {"B": "2.현금흐름현황"},
+    {"B": "항목", "C": "총계", "D": "월평균", "E": "2025-06", "F": "2025-07"},
+    {"B": "식사", "C": "0", "D": "0", "E": "100", "F": "200"},
+    {"B": "월지출 총계", "C": "0"},
+    {"B": "3.재무현황"},
+    {"B": "데이터를 내보낸 시점의 자산과 부채 상태"},
+    {"B": "자산", "F": "부채"},
+    {"B": "항목", "C": "상품명", "E": "금액", "F": "항목", "G": "상품명", "I": "금액"},
+    {"B": "자유입출금 자산", "C": "토스뱅크 통장", "E": "1000", "F": "장기대출", "G": "신한 마이너스", "I": "0"},
+    {"C": "우리신세대", "E": "2000"},
+    {"B": "투자성 자산", "C": "이오테크닉스", "E": "5000"},
+    {"C": "한솔케미칼", "E": "3000"},
+    {"B": "부동산", "C": "광교상떼빌", "E": "900000000"},
+    {"B": "동산", "C": "현대 그랜저", "E": "30000000"},
+    {"B": "총자산", "E": "0"},
+    {"B": "순자산"},
+    {"B": "4.보험현황"},
+    {"B": "금융사", "C": "보험명", "E": "계약상태", "F": "총납입금"},
+    {"B": "흥국화재", "C": "가족사랑", "E": "정상", "F": "5000"},
+    {"B": "총계", "C": "보유계약건수"},
+    {"B": "5.투자현황"},
+    {"B": "투자상품종류", "C": "금융사", "D": "상품명", "F": "투자원금", "G": "평가금액", "H": "수익률"},
+    {"B": "주식", "C": "NH투자증권", "D": "이오테크닉스", "F": "2298", "G": "5000", "H": "117.6"},
+    {"B": "주식", "C": "삼성증권", "D": "램 리서치", "F": "476", "G": "5000", "H": "948.9"},
+    {"B": "총계", "D": "보유종목"},
+    {"B": "6.대출현황"},
+    {"B": "대출종류", "C": "금융사", "D": "상품명", "F": "대출원금", "G": "대출잔액", "H": "대출금리"},
+    {"B": "은행 대출", "C": "신한은행", "D": "마이너스", "F": "1000000", "G": "0", "H": "5.54"},
+    {"B": "총계", "D": "보유 대출"},
+]
+
+
+def _mk_min_xlsx():
+    """최소 유효 xlsx(inlineStr) 1시트 — read_xlsx/parse_export 라운드트립용."""
+    import io as _io
+    import zipfile as _zf
+    NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    ct = ('<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/'
+          'package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/>'
+          '</Types>')
+    rels = ('<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/'
+            'package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.'
+            'openxmlformats.org/officeDocument/2006/relationships/officeDocument" '
+            'Target="xl/workbook.xml"/></Relationships>')
+    wb = (f'<?xml version="1.0"?><workbook xmlns="{NS}"><sheets>'
+          '<sheet name="뱅샐현황" sheetId="1"/></sheets></workbook>')
+
+    def s(ref, txt):
+        return f'<c r="{ref}" t="inlineStr"><is><t>{txt}</t></is></c>'
+
+    sheet = (f'<?xml version="1.0"?><worksheet xmlns="{NS}"><sheetData>'
+             f'<row r="1">{s("B1", "5.투자현황")}</row>'
+             f'<row r="2">{s("B2", "투자상품종류")}{s("D2", "상품명")}</row>'
+             f'<row r="3">{s("B3", "주식")}{s("C3", "NH투자증권")}{s("D3", "이오테크닉스")}'
+             f'<c r="G3"><v>5000</v></c></row>'
+             '</sheetData></worksheet>')
+    buf = _io.BytesIO()
+    with _zf.ZipFile(buf, "w") as z:
+        z.writestr("[Content_Types].xml", ct)
+        z.writestr("_rels/.rels", rels)
+        z.writestr("xl/workbook.xml", wb)
+        z.writestr("xl/worksheets/sheet1.xml", sheet)
+    return buf.getvalue()
+
+
+class TestBanksaladParser:
+    """fix: 뱅크샐러드 자산 export 파서 (2026-06-04 자산관리 P1)."""
+
+    def test_parse_sections(self):
+        from bot.portfolio_parser import parse_banksalad
+        p = parse_banksalad(_BANKSALAD_SYNTH)
+        # 투자현황 — 종목/금융사/수익률, '총계' 행 제외
+        assert len(p["holdings"]) == 2
+        h0 = p["holdings"][0]
+        assert h0["상품명"] == "이오테크닉스" and h0["금융사"] == "NH투자증권"
+        assert abs(h0["수익률"] - 117.6) < 0.01 and h0["평가금액"] == 5000
+        # 부동산/동산 캡처 (사용자 요청 핵심)
+        fin = p["finance"]
+        assert fin["assets"]["부동산"][0]["name"] == "광교상떼빌"
+        assert fin["assets"]["동산"][0]["name"] == "현대 그랜저"
+        # 총자산 = 항목 합(export 빈 셀 0 이 아님), 순자산 = 총자산 − 총부채
+        assert fin["총자산"] == 930011000
+        assert fin["총부채"] == 0 and fin["순자산"] == 930011000
+        assert fin["총자산_export"] == 0.0
+        # 대출/보험/현금흐름
+        assert len(p["loans"]) == 1 and p["loans"][0]["대출금리"] == 5.54
+        assert len(p["insurance"]) == 1 and p["insurance"][0]["계약상태"] == "정상"
+        assert p["cashflow"]["months"] == ["2025-06", "2025-07"]
+
+    def test_summarize(self):
+        from bot.portfolio_parser import parse_banksalad, summarize
+        s = summarize(parse_banksalad(_BANKSALAD_SYNTH))
+        assert s["주식_종목수"] == 2
+        assert s["브로커별_종목수"] == {"NH투자증권": 1, "삼성증권": 1}
+        assert s["순자산"] == 930011000 and s["대출_건수"] == 1 and s["보험_건수"] == 1
+
+    def test_read_xlsx_and_parse_export(self):
+        from bot.portfolio_parser import read_xlsx, parse_export
+        data = _mk_min_xlsx()
+        assert "뱅샐현황" in read_xlsx(data), "시트 이름 파싱 실패"
+        # xlsx 바이트를 parse_export 에 주면 zip-추출 실패→xlsx 직접 읽기 폴백
+        p = parse_export(data)
+        assert any(h["상품명"] == "이오테크닉스" for h in p["holdings"])
+
+    def test_extract_from_plain_zip(self):
+        import io as _io
+        import zipfile as _zf
+        from bot.portfolio_parser import extract_xlsx_from_zip
+        buf = _io.BytesIO()
+        with _zf.ZipFile(buf, "w") as z:
+            z.writestr("report.xlsx", b"PK\x03\x04fake")
+        assert extract_xlsx_from_zip(buf.getvalue(), password=None) == b"PK\x03\x04fake"
+        # 실제 뱅샐 zip(ZipCrypto+pwd 5120)은 라이브 검증 완료(2026-06-04);
+        # 암호화 zip 픽스처는 PII 우려로 미커밋.
