@@ -1010,6 +1010,8 @@ class TestMarkdownTableAndDisclosureNews:
         assert "insert-table-separators" in an, "표 구분선 스텝 미배선"
         assert "DART 공시 모두" in an, "skip 메시지 공시 표기 누락"
         assert "SEC 8-K 공시" in an, "US 8-K skip 메시지 누락"
+        # Trader Stop Loss 환각 배너에 권장 Stop 레벨 (MRVL 2026-06-04 ①-lite)
+        assert "권장 Stop ≈" in an, "Stop Loss 환각 배너 권장 stop 누락"
 
 
 # ─────────────────────────────────────────────────────────────────────────

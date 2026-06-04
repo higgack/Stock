@@ -2368,11 +2368,23 @@ def _flag_trader_price_hallucination(
     low = cur * 0.97
     high = cur * 1.03
     suggest = f"{low:,.0f}–{high:,.0f}"
+    # When a Stop Loss specifically was flagged (MRVL 2026-06-04: Trader
+    # anchored on a pre-rally ~$72 stop for a $301 stock = -76%), also
+    # suggest a realistic 5-day stop band — concrete fallback, not just
+    # "something's wrong". Direction-agnostic: long stop below (-5~8%) /
+    # short stop above (+5~8%); reader picks by the Trader's action.
+    # warn-only still (no auto-correct — a real move is theoretically possible).
+    stop_note = ""
+    if any(("Stop" in f) or ("손절" in f) for f in flags):
+        stop_note = (
+            f" 권장 Stop ≈ {cur * 0.92:,.0f}–{cur * 0.95:,.0f}(롱, 현재가 -5~8%)"
+            f" 또는 {cur * 1.05:,.0f}–{cur * 1.08:,.0f}(숏, +5~8%)."
+        )
     note = (
         f"⚠️ <b>가격 환각 의심</b> (학습 cutoff 이후 가격 변동 큰 종목 — Trader"
         f" 가 과거 가격 인용 가능): {' · '.join(flags)}. 현재가 {cur:,.0f}"
-        f" 기준 5거래일 horizon entry 권장 범위 ≈ {suggest}. Trader 출력"
-        f" 그대로 실행 금지, 수동 검증 필요.\n\n"
+        f" 기준 5거래일 horizon entry 권장 범위 ≈ {suggest}.{stop_note} Trader"
+        f" 출력 그대로 실행 금지, 수동 검증 필요.\n\n"
     )
     return note + body
 

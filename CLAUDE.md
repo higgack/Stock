@@ -1073,6 +1073,16 @@ review:
   JP EDINET = periodic(분기/연차)+大量保有 (timely 적시공시 TDnet 미포함 —
   Kabutan 이 1차로 timely 커버, EDINET 은 14일 내 실적 filing 보완); CN
   AKShare = dep 무거움·HK lag.
+- **Trader Stop Loss 환각 배너 권장 stop (`_flag_trader_price_hallucination`,
+  2026-06-04 ①-lite)** — 기존 2층 가드(trader.py 프롬프트 ±15% + Python
+  백스톱)가 Entry/Stop/Target 이 현재가 ±tol 밖이면 ⚠️ 경고 + entry 권장
+  범위를 emit. MRVL 2026-06-04: Trader 가 폭등 전 옛 주가(~$72, 52주 최저
+  $61 부근)에 anchoring 해 $301 종목 Stop Loss $72(-76%) 출력 → 배너는
+  정확히 발화했으나 stop 대안은 없었음. fix: Stop Loss 가 flagged 면 배너에
+  롱(-5~8%)·숏(+5~8%) 권장 stop 밴드도 함께 제시(구체 fallback). warn-only
+  유지(auto-correct 안 함 — 진짜 이동 가능성). 리뷰어의 %/ATR 재설계·요약
+  표 JSON 락은 효용 대비 침습/리스크 과다로 채택 안 함(불릿 요약은 readable,
+  117730 의 깨진 파이프 표와 다른 클래스). Universal — 전 시장.
 - **SEC XBRL 권위 재무 (US authoritative financials, 2026-06-04)** —
   `bot/edgar_client.py` `get_key_financials(ticker)` 가 data.sec.gov
   `/api/xbrl/companyconcept` 에서 매출/순이익/EPS희석/영업현금흐름/자산/
