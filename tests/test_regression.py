@@ -674,6 +674,39 @@ class TestWatchlist:
         from bot.watchlist import evaluate
         assert evaluate("X", ["rsi<30"]) == {}
 
+    def test_flow_conditions_parse_and_eval(self, monkeypatch):
+        from bot.watchlist import parse_conditions
+        v, _ = parse_conditions("foreignbuy foreignsell instbuy instsell")
+        assert set(v) == {"foreignbuy", "foreignsell", "instbuy", "instsell"}
+        # evaluate: monkeypatch chart payload + KR flow
+        import bot.chart_data as cd
+        monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: {
+            "currency": "₩", "decimals": 0, "times": ["a", "b"], "close": [100, 110]})
+        import bot.pykrx_client as pk
+        monkeypatch.setattr(pk, "get_kr_trading_flow",
+                            lambda *a, **k: {"foreign_net": 5e10, "institutional_net": -3e10})
+        from bot.watchlist import evaluate
+        r = evaluate("005930.KS", ["foreignbuy", "instbuy", "instsell"])
+        assert r["foreignbuy"][0] is True    # 외인 +5e10 > 0
+        assert r["instbuy"][0] is False      # 기관 -3e10
+        assert r["instsell"][0] is True
+
+    def test_watchlist_dashboard_renders(self):
+        from bot.dashboard import _render_watchlist_page
+        html = _render_watchlist_page(
+            [{"ticker": "NVDA", "conditions": ["rsi<30", "earnings"],
+              "added": "2026-06-04T10:00", "id": "ab12"}],
+            [{"ts": "2026-06-04T11:00", "ticker": "NVDA", "hits": ["RSI 28 < 30"]}],
+        )
+        assert "워치리스트" in html and "NVDA" in html
+        assert "rsi&lt;30" in html or "rsi<30" in _html_unescape(html)
+        assert "RSI 28" in html
+
+
+def _html_unescape(s):
+    import html as _h
+    return _h.unescape(s)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 9) 트레이드 마커 (entry/stop/target) 파싱 + 비현실값 차단

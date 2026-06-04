@@ -954,7 +954,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /screener [도메인 | 자유어] — Bottleneck (65 도메인 + 미상시 Pro 즉석 생성). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
-/watch TICKER 조건 — 조건 알림(rsi/price/sma/52w/earnings)·/watchlist·/unwatch
+/watch NVDA rsi&lt;30 price&gt;950 — 조건 충족 시 알림 (rsi/price/sma/52w/earnings + KR수급 foreignbuy/instbuy). 목록 /watchlist · 삭제 /unwatch
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
 
 ━━━━━━━━━
@@ -977,7 +977,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 미·한·일·대·중) · ECOS/FRED (KR·JP·TW 금리·CPI) · 섹터 ETF (SPDR/KODEX/NEXT TOPIX-17) · 리스크 6종 · 컨센서스 (yfinance+FnGuide/Kabutan) · 공매도+DTC · 내부자/기관 · 실적 ±10일 · DART/EDINET/MOPS (공시·5%대량보유) · SEC EDGAR (8-K·Form4) · US옵션 IV·P/C비율 · KR개장전 미국선물 · TW鉅亨컨센서스 · KRX (5일 외인·공매도 30일) · KIS 7종 KR수급 · SV 브리프 (08:00 KST)
+yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종(미·한·일·대·중) · ECOS/FRED 금리·CPI · 섹터 ETF · 리스크 6종 · 컨센서스 · 공매도·내부자·기관 · 실적 ±10일 · DART/EDINET/MOPS 공시 · SEC EDGAR 8-K·Form4 · US옵션 IV·P/C · KR개장전 미국선물 · TW컨센서스 · KRX 5일수급 · KIS 7종 · SV 브리프
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -1041,7 +1041,8 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://analytics.blancwm.com/">Analytics Portal</a>
  • <a href="https://reports.blueming.net/dashboard">report summary</a>
  • <a href="https://junresearch.com/jensenHuangKRTracker">젠슨황의 발자취</a>
- • <a href="https://www.ooooo.law/">ooooo.law</a>"""
+ • <a href="https://www.ooooo.law/">ooooo.law</a>
+ • <a href="https://karpathy.ai/jobs/">US Job market</a>"""
 
 
 # Section divider used throughout _HELP_TEXT. Must match the literal
@@ -2003,6 +2004,11 @@ async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if invalid:
         msg += f"\n⚠️ 무시된 조건: <code>{' '.join(invalid)}</code>"
     await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+    try:
+        from bot.dashboard import regenerate_watchlist_index
+        regenerate_watchlist_index()
+    except Exception:
+        pass
 
 
 async def cmd_watchlist(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2038,6 +2044,11 @@ async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     n = remove_watch(update.effective_chat.id, args[0])
     await update.message.reply_text(
         f"🗑️ {n}개 삭제됨" if n else "삭제할 항목 없음 (티커/id 확인)")
+    try:
+        from bot.dashboard import regenerate_watchlist_index
+        regenerate_watchlist_index()
+    except Exception:
+        pass
 
 
 async def _run_screener_and_send(send, *, domain: str | None = None,
@@ -2559,13 +2570,15 @@ async def _periodic_dashboard_refresh() -> None:
                                        regenerate_realestate_index,
                                        regenerate_cheongyak_index,
                                        regenerate_gics_candidates_index,
-                                       regenerate_reddit_insider_index)
+                                       regenerate_reddit_insider_index,
+                                       regenerate_watchlist_index)
             regenerate_index()
             regenerate_daily_byte_index()
             regenerate_realestate_index()
             regenerate_cheongyak_index()
             regenerate_gics_candidates_index()
             regenerate_reddit_insider_index()
+            regenerate_watchlist_index()
             log.info("midnight dashboard regen: ok")
         except Exception:
             log.exception("midnight dashboard regen failed")
@@ -2623,6 +2636,12 @@ async def _on_startup(application) -> None:
         log.info("startup: gics_candidates.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: gics_candidates.html regen failed: %s", exc)
+    try:
+        from bot.dashboard import regenerate_watchlist_index
+        regenerate_watchlist_index()
+        log.info("startup: watchlist.html regenerated with current code")
+    except Exception as exc:
+        log.warning("startup: watchlist.html regen failed: %s", exc)
     try:
         from bot.dashboard import regenerate_reddit_insider_index
         regenerate_reddit_insider_index()

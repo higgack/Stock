@@ -1784,6 +1784,7 @@ def _render_index(records: list[dict]) -> str:
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
+            + ' · <a href="watchlist.html">🔔 워치리스트</a>'
         )
     else:
         errors_link = (
@@ -1795,6 +1796,7 @@ def _render_index(records: list[dict]) -> str:
             + _external_links
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
+            + ' · <a href="watchlist.html">🔔 워치리스트</a>'
         )
 
     return f"""<!doctype html>
@@ -2158,7 +2160,7 @@ _CHART_JS = """
   function subChart(elem){
     return LightweightCharts.createChart(elem, {
       height: 120,
-      layout: { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit' },
+      layout: { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit', attributionLogo: false },
       grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } },
       rightPriceScale: { borderVisible: false, minimumWidth: 72, scaleMargins: { top: 0.12, bottom: 0.12 } },
       timeScale: { borderVisible: false, timeVisible: false, visible: false },
@@ -2178,7 +2180,7 @@ _CHART_JS = """
     if (rsiChart) { try { rsiChart.remove(); } catch(e){} rsiChart = null; }
     if (macdChart) { try { macdChart.remove(); } catch(e){} macdChart = null; }
     el.innerHTML = '';
-    var layout = { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit' };
+    var layout = { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit', attributionLogo: false };
     var grid = { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } };
     chart = LightweightCharts.createChart(el, {
       height: 440,
@@ -4814,6 +4816,91 @@ def regenerate_reddit_insider_index() -> None:
         )
     except Exception as exc:
         log.warning("dashboard: reddit_insider regen failed: %s", exc)
+
+
+# ── Watchlist 조건 알림 대시보드 (2026-06-04) ────────────────────────────
+def _render_watchlist_page(watches: list[dict], alerts: list[dict]) -> str:
+    """watchlist.html — 활성 워치 테이블 + 알림 이력. 읽기 전용
+    (등록/삭제는 텔레그램 /watch · /unwatch). _SCREENER_CSS 재사용."""
+    def esc(s):
+        return _html.escape(str(s))
+
+    watch_rows = ""
+    for w in watches:
+        conds = " ".join(w.get("conditions") or [])
+        added = (w.get("added") or "")[:16].replace("T", " ")
+        watch_rows += (
+            f"<tr><td><b>{esc(w.get('ticker',''))}</b></td>"
+            f"<td><code>{esc(conds)}</code></td>"
+            f"<td class='muted'>{esc(added)}</td>"
+            f"<td class='muted'>{esc(w.get('id',''))}</td></tr>"
+        )
+    if not watch_rows:
+        watch_rows = "<tr><td colspan='4' class='muted'>감시 중인 종목 없음 — 텔레그램에서 <code>/watch TICKER 조건</code></td></tr>"
+
+    alert_rows = ""
+    for a in alerts:
+        ts = (a.get("ts") or "")[:16].replace("T", " ")
+        hits = " · ".join(a.get("hits") or [])
+        alert_rows += (
+            f"<tr><td class='muted'>{esc(ts)}</td>"
+            f"<td><b>{esc(a.get('ticker',''))}</b></td>"
+            f"<td>{esc(hits)}</td></tr>"
+        )
+    if not alert_rows:
+        alert_rows = "<tr><td colspan='3' class='muted'>아직 발생한 알림 없음</td></tr>"
+
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>🔔 워치리스트</title>
+<script>{_THEME_JS}</script>
+<style>{_SCREENER_CSS}
+table {{ width:100%; border-collapse:collapse; margin:10px 0 24px; font-size:14px; }}
+th,td {{ text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top; }}
+th {{ color:var(--fg-soft); font-weight:600; font-size:12px; }}
+td.muted, .muted {{ color:var(--fg-soft); }}
+code {{ font-family:'IBM Plex Mono',monospace; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="./index.html">← 아카이브로 돌아가기</a>
+  <h1>🔔 워치리스트</h1>
+  <p class="sub">조건 충족 시 텔레그램 알림 (30분 간격 체크 · LLM 0 · 비용 ₩0). 등록/삭제는 텔레그램 <code>/watch</code> · <code>/unwatch</code>.</p>
+  <h2>📋 활성 워치 ({len(watches)})</h2>
+  <table>
+    <thead><tr><th>종목</th><th>조건</th><th>등록</th><th>id</th></tr></thead>
+    <tbody>{watch_rows}</tbody>
+  </table>
+  <h2>🔔 알림 이력 ({len(alerts)})</h2>
+  <table>
+    <thead><tr><th>시각</th><th>종목</th><th>충족 조건</th></tr></thead>
+    <tbody>{alert_rows}</tbody>
+  </table>
+  <p class="sub">조건: <code>rsi&lt;30 rsi&gt;70 price&gt;X price&lt;X &gt;sma50 &lt;sma200 52whigh 52wlow earnings foreignbuy foreignsell instbuy instsell</code></p>
+</div>
+</body>
+</html>
+"""
+
+
+def regenerate_watchlist_index() -> None:
+    """Scan watchlist + alerts → write watchlist.html under ARCHIVE_ROOT."""
+    try:
+        from bot.watchlist import all_watches, load_alerts
+        watches = all_watches()
+        alerts = load_alerts(200)
+        html = _render_watchlist_page(watches, alerts)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "watchlist.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: watchlist.html regenerated (%d watches, %d alerts)",
+                 len(watches), len(alerts))
+    except Exception as exc:
+        log.warning("dashboard: watchlist regen failed: %s", exc)
 
 
 # ── 분기 GICS / 신규 산업 점검 — 후보 트래킹 (2026-06-01) ────────────────

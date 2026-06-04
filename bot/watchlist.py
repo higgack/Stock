@@ -33,17 +33,22 @@ log = logging.getLogger(__name__)
 
 _KST = timezone(timedelta(hours=9))
 WATCHLIST_PATH = Path.home() / ".tradingagents" / "watchlist.json"
+ALERTS_PATH = Path.home() / ".tradingagents" / "watchlist_alerts.jsonl"
 
 MAX_WATCHES_PER_CHAT = 50
 MAX_CONDITIONS = 8
 
 # ── condition parsing ────────────────────────────────────────────────────
+# KR 수급 전환 (외인/기관 5일 순매수) — .KS/.KQ 만, edge-trigger 가 곧
+# "전환"(순매도→순매수) 을 잡는다. pykrx (KRX_ID) 필요, 없으면 graceful skip.
+_FLOW_CONDS = {"foreignbuy", "foreignsell", "instbuy", "instsell"}
 _COND_PATTERNS = [
     re.compile(r"^rsi([<>])(\d{1,3}(?:\.\d+)?)$", re.IGNORECASE),
     re.compile(r"^price([<>])(\d+(?:\.\d+)?)$", re.IGNORECASE),
     re.compile(r"^([<>])sma(50|200)$", re.IGNORECASE),
     re.compile(r"^52w(high|low)$", re.IGNORECASE),
     re.compile(r"^earnings$", re.IGNORECASE),
+    re.compile(r"^(foreignbuy|foreignsell|instbuy|instsell)$", re.IGNORECASE),
 ]
 
 
@@ -197,6 +202,22 @@ def evaluate(ticker: str, conditions: list[str]) -> dict:
     hi52, lo52 = max(closes), min(closes)
     cur = payload.get("currency", "$")
 
+    # KR 수급 (외인/기관 5일 순매수) — 해당 조건이 있을 때만 1회 fetch.
+    flow = None
+    if any(c in _FLOW_CONDS for c in conditions):
+        try:
+            from bot.pykrx_client import get_kr_trading_flow
+            flow = get_kr_trading_flow(ticker, days_back=5)
+        except Exception as exc:
+            log.warning("watchlist: flow fetch failed for %s: %s", ticker, exc)
+            flow = None
+
+    def _eok(won):
+        try:
+            return f"{won / 1e8:,.0f}억"
+        except Exception:
+            return str(won)
+
     out: dict = {}
     for cond in conditions:
         met, detail = False, ""
@@ -234,6 +255,19 @@ def evaluate(ticker: str, conditions: list[str]) -> dict:
                 met = 0 <= days <= 5
                 detail = f"다음 실적 D-{days}"
             out[cond] = (met, detail); continue
+        if cond in _FLOW_CONDS:
+            if flow:
+                fn = flow.get("foreign_net", 0)
+                inn = flow.get("institutional_net", 0)
+                if cond == "foreignbuy":
+                    met = fn > 0; detail = f"외인 5일 순매수 {_eok(fn)}"
+                elif cond == "foreignsell":
+                    met = fn < 0; detail = f"외인 5일 순매도 {_eok(fn)}"
+                elif cond == "instbuy":
+                    met = inn > 0; detail = f"기관 5일 순매수 {_eok(inn)}"
+                else:  # instsell
+                    met = inn < 0; detail = f"기관 5일 순매도 {_eok(inn)}"
+            out[cond] = (met, detail); continue
     return out
 
 
@@ -255,6 +289,45 @@ def _push(chat_id, text: str) -> bool:
     except Exception as exc:
         log.warning("watchlist: push failed: %s", exc)
         return False
+
+
+def _log_alert(ticker: str, chat_id, hits: list[str]) -> None:
+    """Append a fired alert to the history log (dashboard 알림 이력)."""
+    try:
+        ALERTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "ts": datetime.now(_KST).isoformat(timespec="seconds"),
+            "ticker": ticker,
+            "chat_id": str(chat_id),
+            "hits": hits,
+        }
+        with ALERTS_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        log.warning("watchlist: alert log failed: %s", exc)
+
+
+def load_alerts(limit: int = 200) -> list[dict]:
+    """Recent fired alerts (newest first) for the dashboard."""
+    try:
+        if not ALERTS_PATH.exists():
+            return []
+        lines = ALERTS_PATH.read_text(encoding="utf-8").splitlines()
+        out = []
+        for ln in lines[-limit:]:
+            try:
+                out.append(json.loads(ln))
+            except Exception:
+                continue
+        out.reverse()
+        return out
+    except Exception:
+        return []
+
+
+def all_watches() -> list[dict]:
+    """Every watch across all chats (for the dashboard)."""
+    return _load()
 
 
 # ── checker (timer entry) ────────────────────────────────────────────────
@@ -296,15 +369,17 @@ def check_all() -> int:
                     del fired[cond]
             if hits:
                 body = "\n".join("• " + h for h in hits)
-                msg = (
-                    f"🔔 <b>{ticker}</b> 조건 충족\n{body}\n\n"
-                    f"분석: /{ticker.replace('.', '').replace('-', '')}"
-                    if ticker.isalnum() else
-                    f"🔔 <b>{ticker}</b> 조건 충족\n{body}\n\n분석: /{ticker}"
-                )
+                msg = (f"🔔 <b>{ticker}</b> 조건 충족\n{body}\n\n분석: /{ticker}")
+                _log_alert(ticker, w.get("chat_id"), hits)
                 if _push(w.get("chat_id"), msg):
                     fired_total += 1
     _save(watches)
+    # 대시보드 갱신 (알림 이력 / fired state 반영) — best-effort.
+    try:
+        from bot.dashboard import regenerate_watchlist_index
+        regenerate_watchlist_index()
+    except Exception as exc:
+        log.warning("watchlist: dashboard regen failed: %s", exc)
     log.info("watchlist: checked %d ticker(s), fired %d alert(s)",
              len(by_ticker), fired_total)
     return fired_total
