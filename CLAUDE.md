@@ -677,6 +677,20 @@ trigger 도 D-N일 임박 catalyst 도 PM rationale 에 없어 Fix F 가 HOLD �
 정확 배너 출력. enum lock(Overweight→BUY 무조건 매핑)은 거부 — discipline
 자체가 현대모비스/호텔신라/코미코 클러스터 방지 정책이므로 우회 불가.
 
+**배너 양 레이어 확장 (삼성전기 009150.KS 2026-06-04 review)** — 위 IBM fix 는
+`override_rating == "Hold"` (analyzer Fix F/G 강제)만 덮었다. 그런데 discipline
+은 **in-graph `_enforce_pm_override_discipline`(portfolio_manager.py)** 에서도
+강제 가능 — 이 경로는 decision 을 이미 Hold 로 다운그레이드 + 센티넬
+`[PM override discipline 자동 보정]` 을 thesis 에 주입한다. 009150 은 PM 1차
+Overweight → in-graph 강제 Hold 였는데, decision rating 이 이미 Hold 라 analyzer
+Fix F 가 `unanimous==final` 로 미발화 → `override_rating=None` → 옛 오해 배너로
+누수(외부 리뷰어가 enum 버그로 오진 → 위험한 enum 하드코딩 제안). fix:
+`analyzer._format_summary` 가 `override_rating=="Hold"` **또는 센티넬 present**
+시 정확 배너로 라우팅 + `_detect_discipline_forced_hold_banner` 가 센티넬 노트의
+'PM 1차 판단 (X)' 를 regex 파싱해 1차 등급 복원(없으면 'Hold override Hold'
+무의미 출력). analyzer Fix F 경로(센티넬 없음)는 `_extract_rating` 로 직접 읽어
+IBM 회귀 유지. enum lock 여전히 거부. Universal.
+
 **기술 지표 SSoT 확장 (IBM 2026-06-02)** — `_compute_technical_snapshot`
 이 RSI/MACD/볼린저만 SSoT 였고 10 EMA/50 SMA/200 SMA 는 별도 경로
 (stockstats/alpha_vantage)라 시점 어긋남 → IBM 10 EMA 266 vs 현재가 325
@@ -1049,6 +1063,21 @@ review:
   (marketCap divergence 는 valuation 데이터 lag 라 기술지표엔 무관). 140860
   류(현재가 < 52주 최저)는 outside-range 라 HARD 유지. `bot/price_sanity.py`
   순수 함수(단위테스트). Universal.
+- **52주 범위 안 MA-대이격 ≠ 글리치 (`price_outlier_vs_refs` 정정, 삼성전기
+  009150.KS 2026-06-04 review)** — 위 '값 블록 차단'·'Comps 마스킹'이 쓰는
+  `price_outlier_vs_refs` 의 MA-이격 분기(50d·200d 둘 다 >±35%)가 **유효 52주
+  범위 안에서도 발화**해, 진짜 포물선 급등/깊은 하락을 '데이터 이상'으로
+  오발하던 것 차단. 009150: 시뮬 환경 실제 ~14배 급등(현재가 ₩1,716,000 ∈
+  52주[₩122,800, ₩2,200,000], PER 162 = 진짜 froth)인데 MA +95%/+317% 이격
+  으로 suspect 발화 → 정확한 데이터를 '신뢰성 낮음' 라벨해 진짜 고평가(froth)
+  신호를 묻음. fix: MA-이격은 **유효 52주 ref(low+high 둘 다) 부재 시에만**
+  발화(docstring 원래 의도 복원). 52주 범위 안이면 큰 MA-이격 = 진짜 강추세지
+  글리치 아님 → '데이터 이상' 마스킹 안 함(분석가가 '과열/평균회귀 리스크'로
+  정확히 서술). 52주 위반(140860 류)·단일봉(`last_close_is_glitch`)·52주 부재
+  MA fallback 은 그대로 글리치 차단. ⚠️ **DATA INTEGRITY ABSOLUTE RULE** 교훈:
+  외부 리뷰가 stale 실세계가(SEMCO ~17만원)로 실 시뮬값(₩1.716M)을 10x 글리치
+  로 오인 → API/시뮬값이 정답, 사전지식이 stale(동국S&C 100130 precedent).
+  magnitude 만으론 진짜 급등과 글리치 구분 불가 → in-range 는 신뢰가 default.
 - **마크다운 표 구분선 자동 삽입 (`bot/md_tables.insert_table_separators`,
   2026-06-04)** — analyst LLM 이 GFM 표 헤더 다음 필수 구분선(`|---|---|`)을
   빼먹으면 표 전체가 raw `|...|` 텍스트로 깨지거나 텔레그램에서 bullet 로
