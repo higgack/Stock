@@ -2184,6 +2184,7 @@ _CHART_JS = """
   var chart = null, rsiChart = null, macdChart = null;
   var curInterval = '1d', curRange = '1y';
   var lastData = null;   // 마지막 렌더 데이터 — 지표 토글 시 refetch 없이 재렌더
+  var curSym = '';       // 현재 시장 통화 기호(₩/¥/€/NT$/HK$/$) — render 시 세팅
 
   // 지표 on/off 상태 (localStorage 영속 — 페이지 넘나들어도 유지).
   var IND_KEY = 'noah_chart_ind_v1';
@@ -2225,13 +2226,17 @@ _CHART_JS = """
   }
   function showSub(id, on){ var e = document.getElementById(id); if (e) { e.className = 'sub-chart' + (on ? '' : ' hidden'); e.innerHTML = ''; } return on ? document.getElementById(id) : null; }
 
-  function render(d){
+  function render(d, preserve){
     if (typeof LightweightCharts === 'undefined') {
       el.innerHTML = '<div class="chart-fallback">차트 라이브러리를 불러오지 못했습니다 (텍스트 분석은 아래 그대로).</div>';
       return;
     }
     if (!d || !d.times || !d.close) return;
     lastData = d;
+    curSym = d.currency || '';
+    // 지표 토글 재렌더(preserve)면 현재 줌/팬을 복원하려고 먼저 캡처.
+    var prevRange = null;
+    if (chart) { try { prevRange = chart.timeScale().getVisibleLogicalRange(); } catch(e){} }
     if (chart) { try { chart.remove(); } catch(e){} chart = null; }
     if (rsiChart) { try { rsiChart.remove(); } catch(e){} rsiChart = null; }
     if (macdChart) { try { macdChart.remove(); } catch(e){} macdChart = null; }
@@ -2337,10 +2342,11 @@ _CHART_JS = """
       priceLine(markers.stop,   '#e2574c', '손절', 2, false);
       priceLine(markers.target, '#3ec46d', '목표', 2, false);
     }
-    chart.timeScale().fitContent();
+    if (!(preserve && prevRange)) chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });
 
-    // 크로스헤어 hover 툴팁 — 커서 지점의 날짜 + 값(가격/이평선/RSI/거래량).
+    // 크로스헤어 hover 툴팁 — 커서 지점의 날짜 + 활성 지표 값(OHLC/종가/이평선/
+    // 볼린저/RSI/MACD/거래량). 가격 행은 통화 기호 prefix(fmtPrice).
     var tip = document.createElement('div');
     tip.className = 'chart-tooltip';
     tip.style.display = 'none';
@@ -2352,9 +2358,15 @@ _CHART_JS = """
       var idx = d.times.indexOf(param.time);
       if (idx < 0) { tip.style.display = 'none'; return; }
       var rows = ['<div class="tt-date">' + param.time + '</div>'];
-      function trow(name, val, color, dc) {
+      function trow(name, val, color, dc, kind) {
         if (val === null || val === undefined) return;
-        rows.push('<div><span style="color:' + color + '">' + name + '</span> ' + fmtNum(val, dc) + '</div>');
+        var s = (kind === 'vol') ? fmtVol(val) : (kind === 'raw' ? fmtNum(val, dc) : fmtPrice(val, dc));
+        rows.push('<div><span style="color:' + color + '">' + name + '</span> ' + s + '</div>');
+      }
+      if (ind.candle && hasOHLC) {
+        trow('시가', d.open && d.open[idx], '#94a3b8', prec);
+        trow('고가', d.high && d.high[idx], '#26a69a', prec);
+        trow('저가', d.low && d.low[idx], '#e2574c', prec);
       }
       trow('종가', d.close[idx], '#4c9aff', prec);
       if (ind.ma) {
@@ -2362,8 +2374,13 @@ _CHART_JS = """
         trow('50 SMA', d.sma50 && d.sma50[idx], '#3ec46d', prec);
         trow('200 SMA', d.sma200 && d.sma200[idx], '#e2574c', prec);
       }
-      if (ind.rsi && d.rsi) trow('RSI', d.rsi[idx], '#b07cff', 1);
-      if (ind.vol && d.volume) trow('거래량', d.volume[idx], '#94a3b8', 0);
+      if (ind.bb && d.bb_u) {
+        trow('볼린저상', d.bb_u && d.bb_u[idx], '#7890c8', prec);
+        trow('볼린저하', d.bb_l && d.bb_l[idx], '#7890c8', prec);
+      }
+      if (ind.rsi && d.rsi) trow('RSI', d.rsi[idx], '#b07cff', 1, 'raw');
+      if (ind.macd && d.macd) trow('MACD', d.macd[idx], '#4c9aff', Math.max(prec, 3), 'raw');
+      if (ind.vol && d.volume) trow('거래량', d.volume[idx], '#94a3b8', 0, 'vol');
       tip.innerHTML = rows.join('');
       tip.style.display = 'block';
       var tw = tip.offsetWidth, th = tip.offsetHeight;
@@ -2409,6 +2426,8 @@ _CHART_JS = """
     }
 
     if (linked.length > 1) linkTimeScales(linked);
+    // 토글 재렌더면 저장한 뷰 복원 — linkTimeScales 가 sub-pane 까지 동기화.
+    if (preserve && prevRange) { try { chart.timeScale().setVisibleLogicalRange(prevRange); } catch(e){} }
     buildValues(d);
   }
 
@@ -2417,6 +2436,22 @@ _CHART_JS = """
     if (v === null || v === undefined) return '–';
     try { return Number(v).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }); }
     catch(e){ return '' + v; }
+  }
+  // 가격 행엔 시장 통화 기호(₩/¥/€/NT$/HK$/$) prefix — payload 가 늘 계산해
+  // 보내던 d.currency 를 실제로 표시 (이전엔 맨숫자라 시장 구분 불가).
+  function fmtPrice(v, decimals){
+    if (v === null || v === undefined) return '–';
+    return curSym + fmtNum(v, decimals);
+  }
+  // 거래량은 K/M/B 약식 (풀정수는 너무 길어 패널/툴팁을 밀어냄).
+  function fmtVol(v){
+    if (v === null || v === undefined) return '–';
+    var n = Number(v); if (isNaN(n)) return '' + v;
+    var a = Math.abs(n);
+    if (a >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (a >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (a >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return fmtNum(n, 0);
   }
   function buildValues(d){
     var vEl = document.getElementById('chart-values');
@@ -2442,15 +2477,17 @@ _CHART_JS = """
       items.push(['볼린저상', lastNonNull(d.bb_u), '#7890c8', dec]);
       items.push(['볼린저하', lastNonNull(d.bb_l), '#7890c8', dec]);
     }
-    if (ind.rsi && d.rsi)   items.push(['RSI', lastNonNull(d.rsi), '#b07cff', 1]);
-    if (ind.macd && d.macd) items.push(['MACD', lastNonNull(d.macd), '#4c9aff', Math.max(dec,3)]);
-    if (ind.vol && d.volume) items.push(['거래량', lastNonNull(d.volume), '#94a3b8', 0]);
+    if (ind.rsi && d.rsi)   items.push(['RSI', lastNonNull(d.rsi), '#b07cff', 1, 'raw']);
+    if (ind.macd && d.macd) items.push(['MACD', lastNonNull(d.macd), '#4c9aff', Math.max(dec,3), 'raw']);
+    if (ind.vol && d.volume) items.push(['거래량', lastNonNull(d.volume), '#94a3b8', 0, 'vol']);
     var html = '';
     for (var i = 0; i < items.length; i++) {
       if (items[i] === null) { html += '<div class="cv-sep"></div>'; continue; }
-      html += '<div class="cv-item"><span class="cv-dot" style="background:' + items[i][2] + '"></span>'
-            + '<span class="cv-name">' + items[i][0] + '</span>'
-            + '<span class="cv-val">' + fmtNum(items[i][1], items[i][3]) + '</span></div>';
+      var it = items[i], kind = it[4];
+      var sval = (kind === 'vol') ? fmtVol(it[1]) : (kind === 'raw' ? fmtNum(it[1], it[3]) : fmtPrice(it[1], it[3]));
+      html += '<div class="cv-item"><span class="cv-dot" style="background:' + it[2] + '"></span>'
+            + '<span class="cv-name">' + it[0] + '</span>'
+            + '<span class="cv-val">' + sval + '</span></div>';
     }
     vEl.innerHTML = html;
   }
@@ -2499,7 +2536,7 @@ _CHART_JS = """
     if (!t || t === document || !t.classList) return;
     if (t.classList.contains('chart-ind-btn')) {
       var k = t.getAttribute('data-ind');
-      if (k in ind) { ind[k] = !ind[k]; saveInd(); setActiveInd(); if (lastData) render(lastData); }
+      if (k in ind) { ind[k] = !ind[k]; saveInd(); setActiveInd(); if (lastData) render(lastData, true); }
       return;
     }
     if (t.classList.contains('chart-tf-btn')) {

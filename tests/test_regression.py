@@ -631,6 +631,41 @@ class TestPriceChartRender:
         result = build_price_chart("NONEXISTENT_TICKER_XYZ_123")
         assert result is None or isinstance(result, dict)
 
+    def test_chart_polish_currency_zoom_tooltip(self):
+        """차트 다듬기 (2026-06-04): ① 통화 기호 표시 ② 지표 토글 시 줌/팬
+        보존 ③ 크로스헤어 툴팁 볼린저/MACD/캔들 OHLC + 거래량 약식.
+        전부 universal (전 시장) · 추가 fetch 0 · payload schema 무변경."""
+        from bot.dashboard import _CHART_JS
+
+        # ① 계산만 되고 미사용이던 d.currency 를 값 패널/툴팁에 통화 prefix.
+        assert "curSym = d.currency" in _CHART_JS, "통화 기호 미세팅"
+        assert "function fmtPrice" in _CHART_JS, "통화 prefix 포맷터 누락"
+        assert "function fmtVol" in _CHART_JS, "거래량 약식 포맷터 누락"
+        # ② 지표 토글 재렌더 시 fitContent 로 튕기지 않고 현재 뷰 복원.
+        assert "getVisibleLogicalRange" in _CHART_JS, "현재 뷰 캡처 누락"
+        assert "render(lastData, true)" in _CHART_JS, "토글 preserve 호출 누락"
+        assert "!(preserve && prevRange)" in _CHART_JS, "fitContent 보존 분기 누락"
+        # ③ 툴팁 — 볼린저/MACD/캔들 OHLC 행 (값 패널 push 가 아닌 trow).
+        assert "trow('볼린저상'" in _CHART_JS, "툴팁 볼린저 누락"
+        assert "trow('MACD'" in _CHART_JS, "툴팁 MACD 누락"
+        assert "trow('시가'" in _CHART_JS, "툴팁 캔들 OHLC 누락"
+
+    def test_chart_fmtvol_abbreviation_logic(self):
+        """fmtVol K/M/B 약식 경계 — JS 로직을 Python 으로 미러 검증."""
+        def fmtvol(n):
+            a = abs(n)
+            if a >= 1e9:
+                return f"{n / 1e9:.2f}B"
+            if a >= 1e6:
+                return f"{n / 1e6:.2f}M"
+            if a >= 1e3:
+                return f"{n / 1e3:.1f}K"
+            return str(int(n))
+        assert fmtvol(2_300_000_000) == "2.30B"
+        assert fmtvol(12_345_678) == "12.35M"
+        assert fmtvol(8_400) == "8.4K"
+        assert fmtvol(742) == "742"
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger
