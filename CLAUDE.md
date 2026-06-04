@@ -1025,6 +1025,12 @@ review:
     (기존 `_52w()` 인라인 ⚠️ 는 LLM 이 조용히 떼버려 무력화됐던 것 보강 —
     이번 케이스가 정확히 그 경로로 누수). 가격 파생 등락·괴리·valuation
     5거래일 dominant 인용 금지 directive.
+  - **Comps 마스킹 (④, 티로보틱스 117730 2026-06-04 review)** — 같은
+    `price_outlier_vs_refs` 로 현재가 suspect 시 MANDATORY COMPS 블록의
+    **subject 행에 ⚠️ 데이터 격리 플래그**(PBR/PSR 등 가격파생 멀티플 신뢰성
+    낮음, 절대값 매출/이익 위주 비교). 분석가가 행을 verbatim 복사하면 플래그
+    도 함께 전파 → Comps 표에서도 일관되게 노출. ①②③ 후 frozen 케이스가
+    드물어 impact 작지만 일관성 보강.
   - **차트(이미 배포 2026-06-04, `bot/chart_data._live_last_price`)** —
     라이브 ~15분 현재가가 시리즈 종가 대비 비현실이면 직전 종가로 폴백.
     셋이 같은 글리치 클래스를 분석·표시 양면에서 차단. ⚠️ no-limit 시장

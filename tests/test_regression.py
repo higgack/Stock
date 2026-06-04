@@ -865,6 +865,16 @@ class TestPriceGlitchGuard:
         assert "_px_repaired" in src, "스냅샷 last-bar 교체 플래그 누락"
         assert "현재가 데이터 이상 (HARD GUARD)" in src, "값 블록 차단 directive 누락"
 
+    def test_comps_masking_wired(self):
+        """④ Comps 마스킹 (117730 2026-06-04): 현재가 suspect 시 subject 행
+        PBR/PSR 에 ⚠️ 데이터 격리 플래그 (price_sanity 재사용)."""
+        au = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
+                  encoding="utf-8").read()
+        assert "_comps_px_suspect" in au, "Comps 마스킹 플래그 누락"
+        assert "데이터 격리(현재가 이상" in au, "Comps 마스킹 directive 누락"
+        # _build_factual_anchor + Comps 두 곳에서 price_outlier_vs_refs 재사용
+        assert au.count("price_outlier_vs_refs") >= 2, "Comps 가 price_sanity 미재사용"
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 8a4) KR .KS↔.KQ suffix 정규화 + freeze 52주 게이트 (티로보틱스 117730 2026-06-04)

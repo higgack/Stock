@@ -3426,8 +3426,28 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 # different wrong names for 2379.TW / 3034.TW / 8299.TWO
                 # because the PEER SET block only injected bare tickers.
                 subject_multiples = _fetch_peer_multiples(ticker)
+                # ④ Comps 마스킹 (티로보틱스 117730 2026-06-04 review): 현재가가
+                # 52주 레인지/MA 와 모순(글리치/transitional)이면 PBR/PSR 등
+                # 가격 파생 멀티플도 신뢰성 낮음 → subject 행에 ⚠️ 데이터 격리
+                # 플래그(분석가가 verbatim 복사 시 플래그도 함께 전파). price_
+                # sanity 재사용, info 정상/부재 시 no-op (never-raise).
+                _comps_px_suspect = False
+                try:
+                    from bot.price_sanity import price_outlier_vs_refs
+                    _comps_px_suspect = price_outlier_vs_refs(
+                        info.get("currentPrice") or info.get("regularMarketPrice"),
+                        info.get("fiftyTwoWeekLow"), info.get("fiftyTwoWeekHigh"),
+                        info.get("fiftyDayAverage"), info.get("twoHundredDayAverage"),
+                    )
+                except Exception:
+                    _comps_px_suspect = False
+                _comps_flag = (
+                    " ⚠️ 데이터 격리(현재가 이상 — PBR/PSR 등 가격파생 멀티플"
+                    " 신뢰성 낮음, 절대값 매출/이익 위주 비교)"
+                ) if _comps_px_suspect else ""
                 if subject_multiples:
-                    peer_lines.append(f"  • {ticker} (subject) — {subject_multiples}")
+                    peer_lines.append(
+                        f"  • {ticker} (subject) — {subject_multiples}{_comps_flag}")
                 else:
                     peer_lines.append(f"  • {ticker} (subject) — (data 미수집)")
                 for t in peers[:6]:
