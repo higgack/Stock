@@ -1015,6 +1015,27 @@ class TestMarkdownTableAndDisclosureNews:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 8a6) SV 대시보드 모바일 반응형 (2026-06-04 사용자 스크린샷) — 인라인 그리드
+#   가 모바일에서 안 접혀 칼럼 으스러짐/빈 우측. daily_generator 가 생성 시
+#   head 에 @media <style> 주입(인라인 그리드를 !important 단일칼럼화).
+# ─────────────────────────────────────────────────────────────────────────
+class TestSVMobileResponsive:
+    """fix: SV 대시보드 모바일 그리드 미접힘 (2026-06-04)."""
+
+    def test_mobile_css_and_injection_wired(self):
+        src = open("standardview/scripts/daily_generator.py",
+                   encoding="utf-8").read()
+        # 반응형 @media (데스크탑 >768px 무영향) + 인라인 그리드 단일칼럼 override
+        assert "@media (max-width:768px){" in src, "모바일 @media 누락"
+        assert "grid-template-columns:1fr !important" in src, "단일칼럼 override 누락"
+        assert "def _inject_mobile_responsive" in src, "주입 함수 누락"
+        assert "noah-mobile" in src, "style id 누락"
+        assert "viewport" in src, "viewport 보강 누락"
+        # 생성 시 호출 (timestamped + latest.html 둘 다 적용되게 str(soup) 전에)
+        assert "_inject_mobile_responsive(soup)" in src, "생성 시 호출 미배선"
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger
 # ─────────────────────────────────────────────────────────────────────────
 class TestWatchlist:

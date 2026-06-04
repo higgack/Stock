@@ -76,6 +76,46 @@ def _pick_template() -> Path:
     return _TEMPLATE_PATH
 
 
+# 모바일 반응형 교정 (2026-06-04, 사용자 스크린샷): daily_generator 가 섹션
+# 레이아웃을 인라인 style(display:grid;grid-template-columns:1fr 1fr 등)로
+# 짜는데 인라인엔 @media 를 못 넣어 모바일에서 칼럼이 안 접힘(데스크탑 OK,
+# 모바일은 칼럼 으스러짐/빈 우측). base.html 스캐폴드는 VM 전용(repo 미포함)
+# 이라, 생성 시 <head> 에 반응형 <style> 를 주입한다. 데스크탑(>768px)은
+# @media 밖이라 완전 무영향 — 0 리스크.
+_MOBILE_CSS = (
+    "@media (max-width:768px){"
+    "body{padding:12px !important;}"
+    "[style*=\"grid-template-columns\"]{grid-template-columns:1fr !important;}"
+    "[style*=\"display:flex\"],[style*=\"display: flex\"]{flex-wrap:wrap !important;}"
+    "img,table,pre{max-width:100% !important;}"
+    "table{display:block;overflow-x:auto;}"
+    "}"
+)
+
+
+def _inject_mobile_responsive(soup) -> None:
+    """Inject a mobile @media <style> (+ viewport meta if missing) into
+    <head> so the inline-grid sections collapse to a single column on
+    phones. Inline styles can't carry @media, so this stylesheet rule
+    overrides them with !important inside the breakpoint. No-op when there
+    is no <head>; never raises. Desktop (>768px) untouched."""
+    try:
+        head = soup.head
+        if head is None:
+            return
+        if not soup.find("meta", attrs={"name": "viewport"}):
+            vp = soup.new_tag("meta")
+            vp["name"] = "viewport"
+            vp["content"] = "width=device-width, initial-scale=1"
+            head.append(vp)
+        if soup.find("style", id="noah-mobile") is None:
+            st = soup.new_tag("style", id="noah-mobile")
+            st.string = _MOBILE_CSS
+            head.append(st)
+    except Exception:
+        pass
+
+
 def _fetch(path: str, method: str = "GET", json_body=None, timeout: int = 180):
     url = f"{BACKEND}{path}"
     log.info("%s %s", method, path)
@@ -1768,6 +1808,7 @@ def _main_impl():
     _HHMM = datetime.now().strftime("%H%M")
     timestamped = REPORTS / f"{TODAY}_{_HHMM}.html"
     _wire_send_to_telegram_button(soup)
+    _inject_mobile_responsive(soup)   # 모바일 그리드 미접힘 교정 (2026-06-04)
     # A-1 unescape entities (2026-05-21)
 
     _html_str = str(soup)
