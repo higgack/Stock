@@ -1034,6 +1034,19 @@ class TestSVMobileResponsive:
         # 생성 시 호출 (timestamped + latest.html 둘 다 적용되게 str(soup) 전에)
         assert "_inject_mobile_responsive(soup)" in src, "생성 시 호출 미배선"
 
+    def test_macro_news_multicolumn_and_readability(self):
+        # 데스크탑+모바일 Macro News 가독성 (2026-06-04 사용자 스크린샷):
+        # 전체폭 카드를 채우는 반응형 다단 그리드 + 헤드라인 줄바꿈/폰트↑,
+        # grid-column:auto 로 산업/Deal 카드도 모바일 풀폭.
+        src = open("standardview/scripts/daily_generator.py",
+                   encoding="utf-8").read()
+        assert "grid-column:auto !important" in src, "스팬 리셋(산업/Deal 풀폭) 누락"
+        assert "news-grid" in src, "Macro News 다단 그리드 래퍼 누락"
+        assert "minmax(520px,1fr)" in src, "반응형 다단 minmax 누락"
+        assert "white-space:normal;font-size:15px" in src, "헤드라인 줄바꿈+폰트 보강 누락"
+        assert ".news-item{flex-direction:column" in src, "모바일 태그-헤드라인 스택 누락"
+        assert ".news-section-header, .news-grid" in src, "strip 2-pass(.news-grid) 누락"
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 8a7) SV 대시보드 '오늘 NOAH 분석' per-ticker 섹션 완전 삭제 (2026-06-04

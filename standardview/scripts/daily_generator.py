@@ -89,8 +89,15 @@ def _pick_template() -> Path:
 _MOBILE_CSS = (
     "@media (max-width:1100px){"
     "body{padding:12px !important;}"
-    "*{grid-template-columns:1fr !important;}"
+    # grid-template-columns:1fr → 부모 그리드 1칼럼. grid-column:auto →
+    # 자식의 인라인 `grid-column:1/3` / `3/4` 스팬(산업 트렌드·Deal
+    # Highlights)을 풀어 나란히 박히지 않고 1개씩 풀폭으로 쌓이게 한다
+    # (인라인 non-!important 라 stylesheet !important 가 이김).
+    "*{grid-template-columns:1fr !important;grid-column:auto !important;}"
     "[style*=\"display:flex\"],[style*=\"display: flex\"]{flex-wrap:wrap !important;}"
+    # Macro News: 모바일에선 태그를 헤드라인 위로 쌓아 헤드라인 풀폭.
+    ".news-item{flex-direction:column !important;align-items:flex-start !important;gap:3px !important;}"
+    ".news-headline{white-space:normal !important;}"
     "img,table,pre{max-width:100% !important;}"
     "table{display:block;overflow-x:auto;}"
     "}"
@@ -923,10 +930,13 @@ def _main_impl():
         if "grid-column" not in existing_style:
             news_card["style"] = (existing_style + ";grid-column:1/-1").lstrip(";")
     if news_card and brief:
-        # Strip existing news items + headers
-        for el in news_card.select(
-            ".news-item, .news-section-header"
-        ):
+        # Strip existing news items + headers + grid wrappers. Two passes:
+        # remove the grid wrapper first (it holds the items), then any bare
+        # .news-item left over from base.html's first-gen template. Stripping
+        # .news-grid prevents empty wrappers accumulating across regenerations.
+        for el in news_card.select(".news-section-header, .news-grid"):
+            el.decompose()
+        for el in news_card.select(".news-item"):
             el.decompose()
 
         def _append_news(parent, articles, header_label):
@@ -935,6 +945,21 @@ def _main_impl():
             )
             hdr.string = header_label
             parent.append(hdr)
+            # B-3.6 (2026-06-04): 항목을 반응형 다단 그리드로 흘려 전체폭
+            # 카드의 가로 공간을 채운다 — 와이드 데스크탑은 2~4단(휑함·작아
+            # 보임 해소), 모바일은 minmax 가 자동 1단(+ _MOBILE_CSS 백업).
+            grid = soup.new_tag(
+                "div",
+                attrs={
+                    "class": "news-grid",
+                    "style": (
+                        "display:grid;"
+                        "grid-template-columns:repeat(auto-fill,minmax(520px,1fr));"
+                        "gap:2px 40px;margin-bottom:8px"
+                    ),
+                },
+            )
+            parent.append(grid)
             for a in articles[:8]:
                 item = soup.new_tag(
                     "div", attrs={"class": "news-item"}
@@ -951,11 +976,14 @@ def _main_impl():
                         "class": "news-headline news-link",
                         "href": a.get("url", "#"),
                         "target": "_blank",
+                        # 줄바꿈 허용(… 잘림 방지) + 폰트 14→15px. 인라인이라
+                        # base.html 의 nowrap/ellipsis 를 덮는다.
+                        "style": "white-space:normal;font-size:15px;line-height:1.45",
                     },
                 )
                 link.string = a.get("title") or ""
                 item.append(link)
-                parent.append(item)
+                grid.append(item)
 
         _append_news(news_card, brief.get("ko_articles") or [], "국내")
         _append_news(news_card, brief.get("en_articles") or [], "글로벌")
