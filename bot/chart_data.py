@@ -236,6 +236,29 @@ def fetch_chart_payload(
         payload = _series_payload(close, currency, decimals, vol, op, hi, lo)
         payload["interval"] = interval
         payload["period"] = period
+        # 장중 last price (yfinance fast_info — ~15분 지연, 무료·무키, ~50ms).
+        # 일봉 series 의 마지막 종가는 D-1 또는 EOD 라, 장중엔 stale. 별도
+        # 필드로 보내 프론트가 '현재가' 라벨/패널에 우선 사용. KR 시장은
+        # 종종 EOD only → 실시간 안 보일 수 있음(해 없음, 그냥 last close).
+        if interval == "1d":
+            try:
+                fi = t.fast_info
+                lp = None
+                for attr in ("last_price", "lastPrice", "regularMarketPrice"):
+                    v = None
+                    try:
+                        v = fi[attr] if hasattr(fi, "__getitem__") else getattr(fi, attr, None)
+                    except Exception:
+                        v = None
+                    if v is not None:
+                        try:
+                            lp = float(v); break
+                        except (TypeError, ValueError):
+                            continue
+                if lp and lp > 0:
+                    payload["last_price"] = round(lp, decimals)
+            except Exception:
+                pass
         return payload
     except Exception as exc:
         log.warning(

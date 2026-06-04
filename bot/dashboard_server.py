@@ -431,9 +431,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             safe = ticker.replace(".", "_").replace("-", "_")
             # Cache version — bump when fetch_chart_payload shape changes so
             # stale caches (e.g. pre-Bollinger/MACD payloads) are ignored.
-            # v2: added bb/macd/ohlc (2026-06-04).
-            cache_f = cache_dir / f"{safe}_{interval}_{rng}_v2.json"
-            if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 3600:
+            # v3: added last_price for ~15min-delayed intraday (2026-06-04).
+            cache_f = cache_dir / f"{safe}_{interval}_{rng}_v3.json"
+            # TTL 5 min — last_price 가 장중 갱신되도록. yfinance 호출은
+            # 종목당 5분당 1회 → 단일 채널 audience 면 무료한도 안전 (~2000/h).
+            if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 300:
                 try:
                     self._reply_json(200, json.loads(cache_f.read_text("utf-8")))
                     return

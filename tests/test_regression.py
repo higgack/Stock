@@ -534,6 +534,20 @@ class TestPriceChartRender:
         })
         assert _LWC_LIB_NAME not in without, "차트 없는데 라이브러리 script 포함됨"
 
+    def test_chart_live_last_price_wiring(self):
+        """장중 last_price(~15분 지연) — payload 필드 + 프론트 마지막봉 대체."""
+        from bot.dashboard import _CHART_JS
+        # 프론트가 last_price 를 series 마지막 봉에 덮어쓰는지 (라인/캔들 양쪽)
+        assert "d.last_price" in _CHART_JS, "last_price 필드 미사용"
+        assert "lb.close = lp" in _CHART_JS, "캔들 마지막봉 close 라이브 대체 누락"
+        assert "value: lp" in _CHART_JS, "라인 마지막점 라이브 대체 누락"
+        # 패널 '현재가' 가 last_price 우선
+        assert "(d.last_price != null ? d.last_price : lastNonNull(d.close))" in _CHART_JS
+        # 서버 캐시 키 버전 (v3) + TTL 단축 (5분)
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert "_v3.json" in srv, "캐시 키 버전 v3 누락"
+        assert "< 300:" in srv, "캐시 TTL 5분 누락"
+
     def test_chart_indicators_volume_rsi_bb_macd_candle(self):
         """보조지표 배선 — 거래량/RSI/볼린저/MACD/캔들 + 토글 (2026-06-04)."""
         from bot.dashboard import _CHART_JS, _render_chart_section

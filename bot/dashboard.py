@@ -2109,7 +2109,7 @@ def _render_chart_section(rec: dict) -> str:
     </div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div class="chart-legend">
-      현재가=최근 거래일 종가 · 시점가=분석일 종가 · 진입/손절/목표=트레이드 플랜 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD on/off (설정 저장됨)
+      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 진입/손절/목표=트레이드 플랜 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD on/off (설정 저장됨)
     </div>
   </section>"""
 
@@ -2194,6 +2194,10 @@ _CHART_JS = """
     var pf = { precision: prec, minMove: (prec === 0) ? 1 : 0.01 };
     var hasOHLC = d.open && d.high && d.low;
     var mainS;
+    // 장중 last_price(~15분 지연) 가 있으면 series 마지막 봉을 라이브 값으로
+    // 대체 → '현재가' 라벨이 D-1 종가 대신 장중 라이브를 가리킨다. MA 는
+    // 별도 사전 계산이라 흔들리지 않음 (시각적 마지막 1점만 갱신).
+    var lp = (d.last_price != null) ? d.last_price : null;
     if (ind.candle && hasOHLC) {
       // 캔들 — OHLC 가 있을 때만.
       mainS = chart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#e2574c', borderUpColor:'#26a69a', borderDownColor:'#e2574c', wickUpColor:'#26a69a', wickDownColor:'#e2574c', priceFormat: pf, lastValueVisible: true, priceLineVisible: false });
@@ -2202,10 +2206,23 @@ _CHART_JS = """
         if (d.open[i]==null||d.high[i]==null||d.low[i]==null||d.close[i]==null) continue;
         cd.push({ time: d.times[i], open: d.open[i], high: d.high[i], low: d.low[i], close: d.close[i] });
       }
+      if (lp != null && cd.length > 0) {
+        var lb = cd[cd.length - 1];
+        // 마지막 봉의 close 만 라이브로 교체 (high/low 는 보존; 라이브가
+        // high·low 를 벗어나면 자동 보정).
+        lb.close = lp;
+        if (lp > lb.high) lb.high = lp;
+        if (lp < lb.low)  lb.low  = lp;
+      }
       mainS.setData(cd);
     } else {
       mainS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
-      mainS.setData(zip(d.close));
+      var closeData = zip(d.close);
+      if (lp != null && closeData.length > 0) {
+        var last = closeData[closeData.length - 1];
+        closeData[closeData.length - 1] = { time: last.time, value: lp };
+      }
+      mainS.setData(closeData);
     }
     if (ind.ma) {
       if (d.ema10)  chart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.ema10));
@@ -2298,7 +2315,7 @@ _CHART_JS = """
     var items = [];
     // 분석 가격 — 차트 안에선 가까우면 라벨이 겹쳐 가려지므로 패널에서 항상
     // 보이게 (선 색과 매칭). 현재가/시점가/진입/손절/목표.
-    items.push(['현재가', lastNonNull(d.close), '#4c9aff', dec]);
+    items.push(['현재가', (d.last_price != null ? d.last_price : lastNonNull(d.close)), '#4c9aff', dec]);
     if (asOfClose != null) items.push(['시점가', asOfClose, '#94a3b8', dec]);
     if (markers) {
       if (markers.entry  != null) items.push(['진입', markers.entry,  '#9b59b6', dec]);
