@@ -160,9 +160,11 @@ fi
 
 # Dashboard server-layer files — restart the dashboard service when these
 # change (must compute BEFORE git reset, since reset makes LOCAL==REMOTE).
+# chart_data 포함 — /api/chart 가 fetch_chart_payload 를 쓰므로 그 로직
+# 변경(예: 볼린저/MACD 추가)도 dashboard 재시작 필요 (2026-06-04).
 DASHBOARD_CHANGED=0
 if echo "$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)" \
-        | grep -qE '^bot/(dashboard_server|dashboard|archive)\.py$'; then
+        | grep -qE '^bot/(dashboard_server|dashboard|archive|chart_data)\.py$'; then
     DASHBOARD_CHANGED=1
 fi
 

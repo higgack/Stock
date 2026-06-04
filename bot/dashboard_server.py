@@ -429,7 +429,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_dir = _ARCHIVE_ROOT.parent / "chart_cache"
             cache_dir.mkdir(parents=True, exist_ok=True)
             safe = ticker.replace(".", "_").replace("-", "_")
-            cache_f = cache_dir / f"{safe}_{interval}_{rng}.json"
+            # Cache version — bump when fetch_chart_payload shape changes so
+            # stale caches (e.g. pre-Bollinger/MACD payloads) are ignored.
+            # v2: added bb/macd/ohlc (2026-06-04).
+            cache_f = cache_dir / f"{safe}_{interval}_{rng}_v2.json"
             if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 3600:
                 try:
                     self._reply_json(200, json.loads(cache_f.read_text("utf-8")))
