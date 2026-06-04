@@ -313,6 +313,34 @@ reasonable prose compression, STOP and REPORT to the user.** Specifically:
   feature, do NOT silently split into multiple messages, do NOT commit
   with a too-long _HELP_TEXT. The default is to stop and ask.
 
+## Dashboard surface registration of changes — mandatory (사용자 정책 2026-06-04)
+
+user-visible 변경은 `_HELP_TEXT` **뿐 아니라 대시보드 표면도 같은
+commit 에서** 갱신 의무. help 만 고치고 대시보드 설명을 방치하면 대시보드가
+낡은/틀린 설명을 노출 → public spec 버그 (help 와 동급 취급). 사용자 강조
+2026-06-04: "변경사항이 있다면 help 외 대시보드에도 업데이트가 필요" — 영구
+규칙으로 박음.
+
+대시보드 표면 = 사용자가 화면에서 읽는 모든 설명/라벨/범례:
+- **차트**: legend (`_render_chart_section` 의 `chart-legend`) + `ℹ️ 차트
+  보는 법` `<details>` 가이드 (`_CHART_JS` 근처) + 값 패널 항목명 + 축/
+  series 라벨.
+- **카드/페이지**: 카드 필드, outcome 컬럼 헤더(예: 1개월/3개월/6개월),
+  페이지 헤더·nav 라벨, 범례.
+
+규칙 (help-text 등록 규칙의 대시보드 확장):
+1. 새 차트 지표/라인/값/토글 추가 → 차트 legend + `ℹ️ 차트 보는 법`
+   가이드 **둘 다** 같은 commit 에서 갱신 (둘 중 하나만 고치면 불일치).
+2. 새 대시보드 surface / 카드 필드 / outcome 컬럼 → 그 페이지의 헤더·
+   설명·범례 동시 갱신.
+3. **동작이 바뀌면 설명도 정확히** — 예: 라이브 현재가가 이상치 시 직전
+   종가로 폴백하도록 바꾸면, 가이드의 '현재가' 설명도 그 폴백을 명시해
+   사용자가 화면만 보고 오해하지 않게 (2026-06-04 라이브 가드 케이스).
+4. commit body 에 "help + dashboard 동시 갱신" (또는 해당 surface 명시).
+
+이 규칙은 차트뿐 아니라 모든 대시보드 표면에 universal 적용. 대시보드는
+help 와 마찬가지로 public-facing spec 이므로 out-of-sync = 버그.
+
 ## Automation-first principle
 
 **Every recurring operation MUST be automated** (cron / systemd timer /

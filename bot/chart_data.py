@@ -200,6 +200,83 @@ _RANGE_DAYS = {
 }
 
 
+# ── Live-price (~15분) sanity 가드 ────────────────────────────────────────
+# yfinance fast_info 시세는 일부 종목(특히 KR/JP/CN)에서 잘못된 분할·조정
+# 기준 / stale / junk 값을 반환한다. 이를 그대로 차트 마지막 봉에 박으면
+# 가짜 절벽이 생기고 현재가/분석후/기간 수치까지 오염된다 (파크시스템스
+# 140860 2026-05-20: 라이브 163,700 vs 실제 종가 ~280,000 = -42%, 10 EMA
+# 278,840 과 모순). 정책(사용자 2026-06-04): 라이브가 조금이라도 의심스러우면
+# **무조건 안정적인 '직전 종가' 로 폴백** — 직전 종가는 auto_adjust 시리즈라
+# 차트 라인·이동평균과 항상 일치하고 절대 오도하지 않는다(최대 ~15분 stale).
+# 임계는 '튜닝 노브' 가 아니라 **물리적 일일 가격제한**(KR ±30% 등)으로만
+# 사용 → 그 이상 벌어진 라이브 값은 단일 세션에 불가능 = 글리치 확정.
+def _live_price_band(market: str) -> tuple[float, float]:
+    """라이브 시세가 직전 종가 대비 들어와야 하는 (low, high) 비율 밴드.
+
+    일일 가격제한 시장(KR ±30% / TW ±10% / CN ±10~20% / JP)은 ±35% 밴드 —
+    실제 한도 이동(≤±30%)은 절대 reject 안 되고(밴드가 한도를 5%p 여유로
+    포함), 그보다 큰 갭은 물리적으로 불가능하니 글리치로 reject. 일일 한도가
+    없는 시장(US/EU/HK)은 느슨한 split-catch 밴드(0.5~2.0x)라 진짜 뉴스 갭은
+    살리고 2x/0.5x 급 분할·junk 글리치만 거른다."""
+    if market in ("KR", "TW", "CN_A", "JP"):
+        return (0.65, 1.35)
+    return (0.5, 2.0)
+
+
+def _validate_live_price(lp, last_close, market: str = "US"):
+    """라이브 시세 lp 가 종가 시리즈의 그럴듯한 연속이면 float 로, 아니면
+    None(→ 호출부가 직전 종가로 폴백) 반환. 순수·total: 절대 raise 안 하고
+    NaN/inf/≤0/형변환 실패/밴드 이탈을 전부 None 처리."""
+    try:
+        lp = float(lp)
+        last_close = float(last_close)
+    except (TypeError, ValueError):
+        return None
+    if not (lp > 0 and last_close > 0):
+        return None
+    if lp != lp or lp in (float("inf"), float("-inf")):   # NaN / inf
+        return None
+    low, high = _live_price_band(market)
+    return lp if low <= lp / last_close <= high else None
+
+
+def _live_last_price(t, payload: dict, decimals: int, ticker: str):
+    """검증된 라이브 현재가(반올림) 또는 None(→ 차트가 직전 종가 사용).
+    어떤 오류든 raise 하지 않고 None 으로 degrade — '오류 나면 안 된다'."""
+    try:
+        closes = [c for c in (payload.get("close") or []) if c is not None]
+        if not closes:
+            return None
+        last_close = closes[-1]
+        fi = t.fast_info
+        raw = None
+        for attr in ("last_price", "lastPrice", "regularMarketPrice"):
+            try:
+                v = fi[attr] if hasattr(fi, "__getitem__") else getattr(fi, attr, None)
+            except Exception:
+                v = None
+            if v is not None:
+                raw = v
+                break
+        try:
+            from bot.market import detect_market
+            market = detect_market(ticker)
+        except Exception:
+            market = "US"
+        valid = _validate_live_price(raw, last_close, market)
+        if valid is None:
+            if raw is not None:
+                log.warning(
+                    "chart_data: live price %r implausible vs last close %r for "
+                    "%s (%s) — falling back to last close", raw, last_close, ticker, market,
+                )
+            return None
+        return round(valid, decimals)
+    except Exception as exc:
+        log.warning("chart_data: live price probe failed for %s: %s", ticker, exc)
+        return None
+
+
 def fetch_chart_payload(
     ticker: str, interval: str = "1d", period: str = "1y"
 ) -> dict | None:
@@ -237,28 +314,15 @@ def fetch_chart_payload(
         payload["interval"] = interval
         payload["period"] = period
         # 장중 last price (yfinance fast_info — ~15분 지연, 무료·무키, ~50ms).
-        # 일봉 series 의 마지막 종가는 D-1 또는 EOD 라, 장중엔 stale. 별도
-        # 필드로 보내 프론트가 '현재가' 라벨/패널에 우선 사용. KR 시장은
-        # 종종 EOD only → 실시간 안 보일 수 있음(해 없음, 그냥 last close).
+        # 일봉 series 의 마지막 종가는 D-1/EOD 라 장중엔 stale → 프론트가
+        # '현재가' 로 우선 사용. 단 fast_info 는 일부 종목(특히 KR/JP/CN)에서
+        # 잘못된 분할·조정 기준/stale/junk 값을 반환해 가짜 절벽을 그릴 수
+        # 있으므로 _live_last_price 가 직전 종가 대비 검증 — 비현실 값이면
+        # None 반환 → 프론트는 안정적인 '직전 종가' 로 폴백(가짜 절벽 차단).
         if interval == "1d":
-            try:
-                fi = t.fast_info
-                lp = None
-                for attr in ("last_price", "lastPrice", "regularMarketPrice"):
-                    v = None
-                    try:
-                        v = fi[attr] if hasattr(fi, "__getitem__") else getattr(fi, attr, None)
-                    except Exception:
-                        v = None
-                    if v is not None:
-                        try:
-                            lp = float(v); break
-                        except (TypeError, ValueError):
-                            continue
-                if lp and lp > 0:
-                    payload["last_price"] = round(lp, decimals)
-            except Exception:
-                pass
+            lp = _live_last_price(t, payload, decimals, ticker)
+            if lp is not None:
+                payload["last_price"] = lp
         return payload
     except Exception as exc:
         log.warning(

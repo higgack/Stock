@@ -432,7 +432,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             # Cache version — bump when fetch_chart_payload shape changes so
             # stale caches (e.g. pre-Bollinger/MACD payloads) are ignored.
             # v3: added last_price for ~15min-delayed intraday (2026-06-04).
-            cache_f = cache_dir / f"{safe}_{interval}_{rng}_v3.json"
+            # v4: last_price now validated vs the close series (bad fast_info
+            #     quote → last-close fallback) — drop v3 caches with the glitch.
+            cache_f = cache_dir / f"{safe}_{interval}_{rng}_v4.json"
             # TTL 5 min — last_price 가 장중 갱신되도록. yfinance 호출은
             # 종목당 5분당 1회 → 단일 채널 audience 면 무료한도 안전 (~2000/h).
             if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 300:

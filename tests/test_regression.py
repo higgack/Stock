@@ -564,7 +564,7 @@ class TestPriceChartRender:
         assert "(d.last_price != null ? d.last_price : lastNonNull(d.close))" in _CHART_JS
         # 서버 캐시 키 버전 (v3) + TTL 단축 (5분)
         srv = open("bot/dashboard_server.py", encoding="utf-8").read()
-        assert "_v3.json" in srv, "캐시 키 버전 v3 누락"
+        assert "_v4.json" in srv, "캐시 키 버전 v4 누락(라이브 가드 후 bump)"
         assert "< 300:" in srv, "캐시 TTL 5분 누락"
 
     def test_chart_indicators_volume_rsi_bb_macd_candle(self):
@@ -727,6 +727,58 @@ class TestPriceChartRender:
         assert html.count("<details") == html.count("</details>"), "<details> 불균형"
         # v1(차트 없음)이면 가이드도 없음 (빈 섹션)
         assert _render_chart_section({"ticker": "X"}) == ""
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 8a2) 라이브 현재가 sanity 가드 (2026-06-04) — fast_info 글리치 → 직전 종가
+#   배경: 파크시스템스 140860.KS 2026-05-20 상세 차트가 라이브 ₩163,700
+#   (실제 ~₩280,000, -42%)을 마지막 봉에 박아 가짜 절벽 + 분석후 -34.1% /
+#   기간 -48.5% 오염. fast_info 의 잘못된 분할·조정/stale/junk 값. 정책:
+#   비현실 라이브는 무조건 직전 종가(auto_adjust, 라인·MA 와 일치)로 폴백.
+# ─────────────────────────────────────────────────────────────────────────
+class TestLivePriceGuard:
+    """fix: 라이브 현재가 글리치 → 직전 종가 폴백 (2026-06-04)."""
+
+    def test_kr_glitch_rejected(self):
+        from bot.chart_data import _validate_live_price
+        # 140860.KS 실제 케이스: 163,700 vs 직전 종가 ~280,000 (-42%) → reject
+        assert _validate_live_price(163700, 280000, "KR") is None
+
+    def test_kr_legit_limit_moves_kept(self):
+        from bot.chart_data import _validate_live_price
+        # KR 일일 한도 ±30% 이내 실제 이동은 절대 reject 안 됨
+        assert _validate_live_price(280000 * 0.996, 280000, "KR") == 280000 * 0.996
+        assert _validate_live_price(280000 * 1.30, 280000, "KR") == 280000 * 1.30  # +30% 한도
+        assert _validate_live_price(280000 * 0.70, 280000, "KR") == 280000 * 0.70  # -30% 한도
+
+    def test_kr_beyond_limit_rejected(self):
+        from bot.chart_data import _validate_live_price
+        # ±35% 밴드 밖(단일 세션 물리적 불가) → 글리치로 reject
+        assert _validate_live_price(280000 * 1.40, 280000, "KR") is None
+        assert _validate_live_price(280000 * 0.50, 280000, "KR") is None
+
+    def test_us_news_gap_kept_but_split_junk_rejected(self):
+        from bot.chart_data import _validate_live_price
+        # 미국은 일일 한도 없음 → 진짜 -42% 뉴스 갭은 살림(글리치와 구분 불가)
+        assert _validate_live_price(58, 100, "US") == 58.0
+        assert _validate_live_price(150, 100, "US") == 150.0
+        # 2x / 0.5x 미만 급 분할·junk 글리치만 거름
+        assert _validate_live_price(40, 100, "US") is None    # 0.4x
+        assert _validate_live_price(250, 100, "US") is None   # 2.5x
+
+    def test_garbage_inputs_reject(self):
+        from bot.chart_data import _validate_live_price
+        for bad in (0, -5, None, "x", float("nan"), float("inf")):
+            assert _validate_live_price(bad, 100, "KR") is None, bad
+        assert _validate_live_price(100, 0, "KR") is None      # 종가 0
+        assert _validate_live_price(100, None, "KR") is None
+
+    def test_band_by_market(self):
+        from bot.chart_data import _live_price_band
+        for m in ("KR", "TW", "CN_A", "JP"):
+            assert _live_price_band(m) == (0.65, 1.35), m
+        for m in ("US", "EU", "HK", "anything"):
+            assert _live_price_band(m) == (0.5, 2.0), m
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -2178,7 +2178,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
       <div class="cg-sec"><b>가격 라인 / 기준선</b>
         <ul>
-          <li><span class="k" style="color:#4c9aff">현재가</span> — 장중 라이브(yfinance ~15분 지연, KR은 종가만일 수 있음). 우측 축에 항상 표시.</li>
+          <li><span class="k" style="color:#4c9aff">현재가</span> — 장중 라이브(yfinance ~15분 지연, KR은 종가만일 수 있음). 우측 축에 항상 표시. 이상 시세(분할·조정 오류 등)는 자동으로 걸러져 직전 종가로 대체.</li>
           <li><span class="k" style="color:#94a3b8">시점가</span>(회색 점선) — 분석한 날의 종가, 즉 "그때 가격" 기준선.</li>
           <li><span class="k" style="color:#9b59b6">진입</span> / <span class="k" style="color:#e2574c">손절</span> / <span class="k" style="color:#3ec46d">목표</span>(점선) — 트레이더 플랜의 가격대(본문에서 자동 추출, 비현실 값은 자동 제외).</li>
         </ul>
