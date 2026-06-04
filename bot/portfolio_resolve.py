@@ -120,7 +120,20 @@ def _load_kr_name_map() -> dict[str, str]:
 
 
 def resolve_kr(name: str) -> tuple[str, str] | None:
-    """국내 종목명 → ('CODE.KS'|'CODE.KQ', 'KR') 또는 None (미상장/pykrx 부재)."""
+    """국내 종목명 → (종목코드, 'KR') 또는 None.
+
+    1순위 **DART corp_code**(이름→6자리 종목번호) — KRX 로그인 불필요, corp_code
+    맵 1회 다운로드 후 30일 디스크 캐시, per-ticker 네트워크 0, **₩0**. 357종목도
+    dict 조회라 즉시·무료. (yfinance suffix probe 는 357회 rate-limit·negative-
+    cache 위험이라 안 씀 — 시장 suffix 는 호출부가 NOAH 매칭 시 .KS/.KQ 둘 다 시도.)
+    2순위 pykrx 역맵(KRX creds 있을 때, 보통 'CODE.KS' 형태) — DART 미스 시만."""
+    try:
+        from bot.dart_client import get_dart
+        hits = get_dart().find_by_name(name)
+        if hits and hits[0].get("stock_code"):
+            return (hits[0]["stock_code"], "KR")
+    except Exception:
+        pass
     m = _load_kr_name_map()
     t = m.get(_normalize(name))
     return (t, "KR") if t else None

@@ -1622,7 +1622,9 @@ class TestPortfolioDashboard:
         assert "conic-gradient(" in html       # 자산배분 도넛
         assert "순자산" in html and "증권사별" in html
         assert "이오테크닉스" in html          # 보유 테이블
-        assert "ticker_LRCX.html" in html      # 해외 매칭 → NOAH 분석 링크
+        assert "LRCX" in html                  # 해외 매칭 티커 표시(티커 컬럼)
+        # 분석 기록 없으면 종목명 링크 안 함(404 방지) — noah 미전달 시 ticker_*.html 없음
+        assert "ticker_LRCX.html" not in html
         assert "부동산" in html                # 자산배분에 부동산
         # 빈 공간 활용(2026-06-04): 도넛 우측 주식 요약 패널
         assert "💹 주식 요약" in html and "승률" in html, "주식 요약 패널 누락"
@@ -1661,16 +1663,17 @@ class TestPortfolioDashboard:
         assert "지난 업데이트" not in _render_portfolio_page(m2), "같은 날짜 증분 스킵 안 됨"
 
     def test_noah_overlay(self):
-        # 증분5: 보유종목 ↔ NOAH 최근 판정+5거래일 성과 오버레이.
+        # 증분5: 보유종목 ↔ NOAH 최근 판정 + (해소되면)5거래일 성과 오버레이.
+        # 컬럼 헤더는 'NOAH 판정' — 성과는 5거래일 해소 시 셀 안에 +x.x% 로 표기.
         from bot.dashboard import _render_portfolio_page
         m = self._model()  # holdings: 이오테크닉스(KR), 램 리서치(LRCX)
         noah = {"LRCX": {"rating": "보유", "ret": 12.3, "date": "2026-06-01"}}
         html = _render_portfolio_page(m, noah)
-        assert "NOAH 판정·5일" in html, "NOAH 컬럼 헤더 누락"
+        assert "NOAH 판정" in html, "NOAH 컬럼 헤더 누락"
         assert "보유</a> <span" in html and "+12.3%" in html, "판정·성과 오버레이 누락"
         assert "NOAH 분석 1" in html, "오버레이 카운트 누락"
         # noah 미전달도 정상(헤더만, graceful)
-        assert "NOAH 판정·5일" in _render_portfolio_page(m)
+        assert "NOAH 판정" in _render_portfolio_page(m)
 
     def test_nav_and_regen_wired(self):
         src = open("bot/dashboard.py", encoding="utf-8").read()

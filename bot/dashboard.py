@@ -5228,6 +5228,18 @@ def _pf_col(v) -> str:
     return "var(--pos)" if (v or 0) >= 0 else "var(--neg)"
 
 
+def _noah_lookup(noah: dict, tkr) -> tuple:
+    """보유 티커 → (NOAH info, 아카이브 full 티커) 또는 (None, None).
+    KR 은 DART 6자리 코드(suffix 없음)라 .KS/.KQ 둘 다 시도해 분석 아카이브
+    ('039030.KS')와 매칭. 해외(LRCX 등)는 그대로 매칭."""
+    if not tkr or not noah:
+        return (None, None)
+    for cand in (str(tkr), f"{tkr}.KS", f"{tkr}.KQ"):
+        if cand in noah:
+            return (noah[cand], cand)
+    return (None, None)
+
+
 def _render_portfolio_page(model, noah=None) -> str:
     """portfolio.json 모델 → portfolio.html. 추천 구성: 순자산 헤더 → 자산배분
     도넛 → 증권사별 + 수익률 TOP/WORST → 보유 종목 테이블 → 대출/보험.
@@ -5426,14 +5438,18 @@ def _render_portfolio_page(model, noah=None) -> str:
         rtxt = f'{r:+.1f}%' if r is not None else "—"
         nm = _html.escape(h.get("상품명") or "")
         tkr = h.get("ticker")
-        nm_cell = f'<a href="ticker_{_html.escape(str(tkr))}.html">{nm}</a>' if tkr else nm
-        # NOAH 최근 판정 + 5거래일 성과 (분석 기록 있는 종목만)
-        ninfo = noah.get(tkr) if tkr else None
+        # NOAH 최근 판정 + 성과 (분석 기록 있는 종목만). KR 6자리 코드는 .KS/.KQ
+        # 둘 다 시도해 아카이브와 매칭. 분석 있을 때만 종목명·판정 링크(404 방지).
+        ninfo, full_tkr = _noah_lookup(noah, tkr)
+        nm_cell = (f'<a href="ticker_{_html.escape(full_tkr)}.html">{nm}</a>'
+                   if full_tkr else nm)
         if ninfo:
             noah_n += 1
             _rr = ninfo.get("ret")
-            _rrt = f' <span style="color:{_pf_col(_rr)}">{_rr:+.1f}%</span>' if _rr is not None else ""
-            noah_cell = (f'<a href="ticker_{_html.escape(str(tkr))}.html" style="color:var(--accent)">'
+            _rrt = (f' <span style="color:{_pf_col(_rr)}">{_rr:+.1f}%</span>'
+                    if _rr is not None else "")
+            noah_cell = (f'<a href="ticker_{_html.escape(full_tkr)}.html" '
+                         f'style="color:var(--accent)">'
                          f'{_html.escape(str(ninfo.get("rating") or ""))}</a>{_rrt}')
         else:
             noah_cell = '<span style="color:var(--muted)">—</span>'
@@ -5447,7 +5463,7 @@ def _render_portfolio_page(model, noah=None) -> str:
                       + (f' · NOAH 분석 {noah_n}' if noah_n else '') + ')</div>'
                       '<div class="pf-scroll"><table class="pf-tbl">'
                       '<tr><th>종목</th><th>티커</th><th>증권사</th><th class="r">평가금액</th>'
-                      '<th class="r">수익률</th><th class="r">평가손익</th><th>NOAH 판정·5일</th></tr>'
+                      '<th class="r">수익률</th><th class="r">평가손익</th><th>NOAH 판정</th></tr>'
                       + hl_rows + '</table></div></div>')
 
     # 대출 · 보험 — 대출은 한도(원금)+잔액+금리(전부 노출), 보험은 표로
