@@ -422,8 +422,14 @@ pattern to follow:
   • `bot/portfolio_resolve.py` — 종목 한글명→티커(국내 pykrx 역맵 graceful /
     해외 한글음역 alias 맵, 미매칭은 '이름만 표시'). `bot/portfolio.py` — 집계
     모델+저장(~/.tradingagents/portfolio.json, atomic)+요약. `dashboard.
-    _render_portfolio_page` → 순자산 헤더·자산배분 도넛·증권사별·💹주식요약·
-    수익률 TOP/WORST·보유 테이블(티커 매칭 시 NOAH 링크)·자산vs부채 바·대출/보험.
+    _render_portfolio_page` → 풀 nav(메인 맨앞·단어 줄바꿈 방지)·순자산 헤더·
+    자산배분 도넛(동산=자동차)·💹주식요약·증권사별 카드(국내/해외 비중·수익률 분포·
+    TOP/WORST 와 등높이)·수익률 TOP/WORST(종목 중복제거)·보유 테이블(매칭 시 NOAH
+    링크)·대출(한도/잔액/금리)·보험 표·🕒마지막 업데이트 시각.
+    **증분 정책 (사용자 2026-06-04): '지난 업데이트 대비 순자산·주식평가 ±%' 는
+    같은 업로드 날짜면 표시 안 함. 같은 날짜 재업로드는 마지막 것이 현재가 되고
+    비교 기준(baseline)은 직전 '다른 날짜' 업로드 그대로 (ingest 가 KST 날짜로
+    baseline 승계 관리).**
   • `bot/portfolio_watch.py` — Telethon **userbot**(reddit_insider 와 세션 공유 →
     추가 로그인 0) `portfolio-watch.timer` 2분 polling → `TG_RAG_CHANNEL`('Noah의
     RAG' 채널)의 .zip/.xlsx 문서 픽업 → ingest → 대시보드 갱신 → NOAH 채널 confirm.

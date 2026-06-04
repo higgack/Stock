@@ -1637,6 +1637,9 @@ class TestPortfolioDashboard:
         assert "screener.html" in html and "daily_byte.html" in html, "풀 nav 누락"
         assert ".nav a,.nav b{white-space:nowrap}" in html, "nav 줄바꿈 방지 CSS 누락"
         assert "<b>💼 자산</b>" not in html, "nav 자기 '자산' 제거 안 됨"
+        # 세로 맞춤(2026-06-04): 손익 분포 + 등높이(증권사별↔TOP/WORST)
+        assert "수익률 분포" in html, "수익률 분포 누락"
+        assert 'pf-grid pf-eqh' in html, "등높이 그리드 클래스 누락"
         # 빈 상태(업로드 전)
         assert "아직 업로드된 자산이 없습니다" in _render_portfolio_page(None)
 
@@ -1649,6 +1652,13 @@ class TestPortfolioDashboard:
         assert "지난 업데이트" in html and "대비" in html, "증분 표시 누락"
         # prev 없으면 증분 미표시 (graceful)
         assert "지난 업데이트" not in _render_portfolio_page(self._model())
+        # 같은 업로드 날짜면 증분 스킵 (사용자 정책 2026-06-04)
+        import time as _t
+        now = _t.time()
+        m2 = self._model()
+        m2["_saved_ts"] = now
+        m2["prev"] = {"순자산": 1, "주식평가": 1, "_saved_ts": now - 60}
+        assert "지난 업데이트" not in _render_portfolio_page(m2), "같은 날짜 증분 스킵 안 됨"
 
     def test_nav_and_regen_wired(self):
         src = open("bot/dashboard.py", encoding="utf-8").read()

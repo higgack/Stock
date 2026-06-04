@@ -5187,6 +5187,8 @@ _PF_DONUT_COLORS = ["#4c9aff", "#3ec46d", "#f5a623", "#e2574c", "#b07cff",
 _PF_CSS = """<style>
 .nav a,.nav b{white-space:nowrap}
 .pf-grid{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;margin:14px 0}
+.pf-grid.pf-eqh{align-items:stretch}
+.pf-grid.pf-eqh>.pf-card{display:flex;flex-direction:column}
 .pf-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin:14px 0}
 .pf-h{margin:0 0 10px;font-size:15px;font-weight:700;color:var(--text)}
 .pf-donut{width:170px;height:170px;border-radius:50%}
@@ -5271,32 +5273,37 @@ def _render_portfolio_page(model) -> str:
     else:
         updated = "—"
     # 지난 업데이트 대비 증분(자산 변화) — 수동 업로드라 추적. ingest 가 박은
-    # model["prev"](직전 스냅샷)와 비교. 첫 업로드면 prev 없음 → 표시 생략.
+    # model["prev"](직전 '다른 날짜' 스냅샷)와 비교. 첫 업로드면 prev 없음.
+    # **같은 날짜 업로드면 증분 생략** (사용자 정책 2026-06-04; 날짜 미상이면 표시).
     prev = model.get("prev")
     delta_html = ""
     if isinstance(prev, dict):
         _pts = prev.get("_saved_ts")
-        if _pts:
-            pdate = _dt.datetime.fromtimestamp(
+        _same_day = bool(
+            _pts and _ts
+            and _dt.datetime.fromtimestamp(_pts, _dt.timezone(_dt.timedelta(hours=9))).date()
+            == _dt.datetime.fromtimestamp(_ts, _dt.timezone(_dt.timedelta(hours=9))).date()
+        )
+        if not _same_day:
+            pdate = (_dt.datetime.fromtimestamp(
                 _pts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d")
-        else:
-            pdate = str(prev.get("as_of") or "이전")
+                if _pts else str(prev.get("as_of") or "이전"))
 
-        def _dlt(cur, was):
-            cur = cur or 0
-            was = was or 0
-            d = cur - was
-            p = (d / was * 100) if was else 0.0
-            sign = "+" if d >= 0 else "−"
-            col = "var(--pos)" if d >= 0 else "var(--neg)"
-            return (f'<span style="color:{col}">{sign}{_pf_won(abs(d))} '
-                    f'({sign}{abs(p):.1f}%)</span>')
-        delta_html = (
-            '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
-            'border-top:1px solid var(--border);padding-top:8px">'
-            f'📈 지난 업데이트({pdate}) 대비 — 순자산 '
-            f'{_dlt(nw.get("순자산"), prev.get("순자산"))} · 주식평가 '
-            f'{_dlt(eval_sum, prev.get("주식평가"))}</div>')
+            def _dlt(cur, was):
+                cur = cur or 0
+                was = was or 0
+                d = cur - was
+                p = (d / was * 100) if was else 0.0
+                sign = "+" if d >= 0 else "−"
+                col = "var(--pos)" if d >= 0 else "var(--neg)"
+                return (f'<span style="color:{col}">{sign}{_pf_won(abs(d))} '
+                        f'({sign}{abs(p):.1f}%)</span>')
+            delta_html = (
+                '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
+                'border-top:1px solid var(--border);padding-top:8px">'
+                f'📈 지난 업데이트({pdate}) 대비 — 순자산 '
+                f'{_dlt(nw.get("순자산"), prev.get("순자산"))} · 주식평가 '
+                f'{_dlt(eval_sum, prev.get("주식평가"))}</div>')
 
     stats = (
         '<div class="stats">'
@@ -5370,9 +5377,29 @@ def _render_portfolio_page(model) -> str:
         f'<span style="color:#4c9aff">●</span> 국내 {_pf_won(domestic)} ({domestic / eq_tot * 100:.0f}%) · '
         f'<span style="color:#f5a623">●</span> 해외 {_pf_won(overseas)} ({overseas / eq_tot * 100:.0f}%)</div>'
         + delta_html + '</div>')
+    # 수익률 분포 — 증권사별 카드를 TOP/WORST 와 높이 맞추는 유용한 채움(겹침 없음,
+    # '다른 괜찮은거'). 종목 수 기준 4구간 stacked bar + 카운트.
+    _rs = [h.get("수익률") for h in holdings if h.get("수익률") is not None]
+    _n = len(_rs) or 1
+    _bw = sum(1 for r in _rs if r >= 100)
+    _w = sum(1 for r in _rs if 0 <= r < 100)
+    _sl = sum(1 for r in _rs if -50 <= r < 0)
+    _bl = sum(1 for r in _rs if r < -50)
+    dist_html = (
+        '<div style="margin-top:12px">'
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:5px">수익률 분포 (종목 수)</div>'
+        '<div style="display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--border)">'
+        f'<div title="+100%↑" style="background:#2ca44b;width:{_bw / _n * 100:.1f}%"></div>'
+        f'<div title="0~+100%" style="background:#7bd389;width:{_w / _n * 100:.1f}%"></div>'
+        f'<div title="-50~0%" style="background:#f0a35e;width:{_sl / _n * 100:.1f}%"></div>'
+        f'<div title="-50%↓" style="background:#e2574c;width:{_bl / _n * 100:.1f}%"></div>'
+        '</div>'
+        '<div style="font-size:11px;color:var(--muted);margin-top:5px">'
+        f'대박(+100%↑) {_bw} · 수익 {_w} · 손실 {_sl} · 큰손실(-50%↓) {_bl}</div>'
+        '</div>')
     bro_block = ('<div class="pf-card" style="flex:1;min-width:300px"><div class="pf-h">증권사별</div>'
                  '<table class="pf-tbl"><tr><th>증권사</th><th class="r">평가금액</th><th class="r">종목</th><th class="r">손익</th></tr>'
-                 + bro_rows + '</table>' + nw_bar + '</div>')
+                 + bro_rows + '</table>' + nw_bar + dist_html + '</div>')
 
     # 수익률 TOP / WORST
     def _mv(items):
@@ -5449,7 +5476,7 @@ def _render_portfolio_page(model) -> str:
                f'🕒 마지막 업데이트 <b style="color:var(--text)">{updated}</b> '
                f'(수동 — 뱅크샐러드 RAG 채널 업로드) · 데이터 기간 {as_of}</p>')
             + stats + donut_block
-            + '<div class="pf-grid">' + bro_block + movers_block + '</div>'
+            + '<div class="pf-grid pf-eqh">' + bro_block + movers_block + '</div>'
             + holdings_block + extra + note + '</div>')
 
 

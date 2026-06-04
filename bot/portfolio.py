@@ -161,12 +161,26 @@ def ingest(data, password=None) -> dict:
     prev = load()  # 직전 저장 모델 (증분 비교용) — 첫 업로드면 None
     parsed = parse_export(data, password=password)
     model = build_model(parsed)
+    baseline = None
     if isinstance(prev, dict) and prev.get("snapshot"):
-        # 직전 업로드의 스냅샷 + 시점 → 다음 렌더에서 '지난 업데이트 대비' 증분 계산.
-        model["prev"] = {
-            **prev["snapshot"],
-            "as_of": prev.get("as_of"),
-            "_saved_ts": prev.get("_saved_ts"),
-        }
+        import datetime as _dt
+
+        def _d(ts):
+            return (_dt.datetime.fromtimestamp(
+                ts, _dt.timezone(_dt.timedelta(hours=9))).date() if ts else None)
+
+        # 같은 날짜 재업로드면 기준(baseline)을 리셋하지 않고 직전 baseline 을
+        # 승계 — '같은 날짜는 마지막 업로드가 현재, 비교는 직전 다른 날짜 기준'
+        # (사용자 정책 2026-06-04). 다른 날짜면 직전 업로드 스냅샷이 새 baseline.
+        if _d(prev.get("_saved_ts")) == _d(time.time()):
+            baseline = prev.get("prev")
+        else:
+            baseline = {
+                **prev["snapshot"],
+                "as_of": prev.get("as_of"),
+                "_saved_ts": prev.get("_saved_ts"),
+            }
+    if isinstance(baseline, dict):
+        model["prev"] = baseline
     save(model)
     return model
