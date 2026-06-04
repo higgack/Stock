@@ -2882,49 +2882,6 @@ async def cmd_portfolio(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
-async def cmd_portfolio_upload(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    """DM 으로 받은 zip/xlsx(뱅크샐러드 export) → 파싱·저장·대시보드 갱신.
-
-    비번은 .env BANKSALAD_ZIP_PW(코드/깃 미기재). ingest 는 파일 I/O + pykrx
-    조회가 있어 to_thread 로 event loop 비차단."""
-    msg = update.message
-    doc = msg.document if msg else None
-    if not doc:
-        return
-    name = (doc.file_name or "").lower()
-    if not (name.endswith(".zip") or name.endswith(".xlsx")):
-        return  # 뱅샐 export 아닌 문서는 조용히 무시
-    if doc.file_size and doc.file_size > 20 * 1024 * 1024:
-        await msg.reply_text("파일이 너무 큽니다(20MB 초과). 뱅크샐러드 export zip 만 보내주세요.")
-        return
-    status = await msg.reply_text("📥 자산 파일 받는 중…")
-    try:
-        f = await doc.get_file()
-        data = bytes(await f.download_as_bytearray())
-    except Exception as exc:
-        await status.edit_text(f"파일 다운로드 실패: {exc}")
-        return
-    pw = os.getenv("BANKSALAD_ZIP_PW")
-    try:
-        from bot.portfolio import ingest, format_summary_text
-        from bot.dashboard import regenerate_portfolio_index
-        model = await asyncio.to_thread(ingest, data, pw)
-    except RuntimeError:
-        await status.edit_text(
-            "🔒 zip 비밀번호 오류. .env 의 BANKSALAD_ZIP_PW 를 확인해주세요 "
-            "(뱅크샐러드 export 비번)."
-        )
-        return
-    except Exception as exc:
-        await status.edit_text(f"자산 파일 파싱 실패: {type(exc).__name__}: {exc}")
-        return
-    try:
-        await asyncio.to_thread(regenerate_portfolio_index)
-    except Exception as exc:
-        log.warning("portfolio dashboard regen failed: %s", exc)
-    await status.edit_text(format_summary_text(model) + f"\n\n📊 대시보드: {_pf_link()}")
-
-
 def main() -> None:
     if not CHANNEL_CHAT_IDS:
         log.warning(
@@ -2956,14 +2913,10 @@ def main() -> None:
     # Catch /compare typed in DM and redirect — actual compare runs only
     # via on_channel_post inside the registered channel.
     app.add_handler(CommandHandler("compare", cmd_compare_hint))
+    # /portfolio = 저장된 자산 요약 조회(읽기 전용). 업로드(ingest)는 봇 DM 이
+    # 아니라 'Noah의 RAG' 채널 watcher(bot.portfolio_watch)가 담당 — 봇 깨끗하게
+    # (사용자 정책 2026-06-04).
     app.add_handler(CommandHandler("portfolio", cmd_portfolio))
-    # 뱅크샐러드 자산 export(zip/xlsx)를 DM 으로 보내면 자동 파싱·저장·대시보드
-    # 갱신 (filters.Document — 명령/텍스트와 disjoint 라 충돌 없음).
-    app.add_handler(
-        MessageHandler(
-            filters.ChatType.PRIVATE & filters.Document.ALL, cmd_portfolio_upload
-        )
-    )
     app.add_handler(CallbackQueryHandler(on_full_report, pattern=r"^full:"))
     app.add_handler(
         MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, on_channel_post)

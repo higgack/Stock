@@ -1617,9 +1617,53 @@ class TestPortfolioDashboard:
     def test_telegram_wiring(self):
         # telegram_bot 은 무거운 의존성 import 라 소스 검증(PM 배너 테스트와 동일 패턴).
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
-        assert "async def cmd_portfolio_upload" in src and "async def cmd_portfolio" in src
-        assert "filters.ChatType.PRIVATE & filters.Document.ALL" in src, "문서 핸들러 미등록"
+        assert "async def cmd_portfolio" in src, "/portfolio 조회 핸들러 누락"
         assert 'CommandHandler("portfolio", cmd_portfolio)' in src
-        assert "BANKSALAD_ZIP_PW" in src, "비번 env 미참조"
-        assert "regenerate_portfolio_index" in src
         assert 'BotCommand("portfolio"' in src, "set_my_commands 미등록"
+        assert "regenerate_portfolio_index" in src  # startup regen
+        # 봇 DM 문서 ingest 핸들러는 제거 — 입력은 RAG 채널 watcher (봇 깨끗하게)
+        assert "cmd_portfolio_upload" not in src, "DM 업로드 핸들러 잔존(제거돼야)"
+        assert "filters.Document" not in src, "DM 문서 핸들러 잔존(제거돼야)"
+
+
+class TestPortfolioWatch:
+    """fix: RAG 채널 자산 watcher (2026-06-04 P1 증분4-b — 봇 DM 대신)."""
+
+    def test_doc_detection(self):
+        import bot.portfolio_watch as pw
+
+        class _F:
+            def __init__(self, name):
+                self.name = name
+                self.ext = ""
+
+        class _M:
+            def __init__(self, name):
+                self.document = object()
+                self.file = _F(name)
+
+        assert pw._is_portfolio_doc(_M("2025-06-05~2026-06-05.zip")) is True
+        assert pw._is_portfolio_doc(_M("report.xlsx")) is True
+        assert pw._is_portfolio_doc(_M("photo.jpg")) is False
+
+        class _N:
+            document = None
+            file = None
+        assert pw._is_portfolio_doc(_N()) is False
+
+    def test_seen_roundtrip(self, tmp_path, monkeypatch):
+        import bot.portfolio_watch as pw
+        monkeypatch.setattr(pw, "_SEEN_PATH", tmp_path / "seen.json")
+        pw._save_seen({"initialized": True, "ids": [1, 2, 3], "last_msg_id": 3})
+        s = pw._load_seen()
+        assert s["initialized"] and s["last_msg_id"] == 3 and 2 in s["ids"]
+
+    def test_watcher_wiring_and_units(self):
+        import os
+        src = open("bot/portfolio_watch.py", encoding="utf-8").read()
+        assert "TG_RAG_CHANNEL" in src and "BANKSALAD_ZIP_PW" in src
+        assert "from bot.portfolio import ingest" in src
+        assert "regenerate_portfolio_index" in src
+        assert os.path.exists("deploy/portfolio-watch.timer")
+        assert os.path.exists("deploy/portfolio-watch.service")
+        assert "portfolio-watch.timer" in open("deploy/install.sh", encoding="utf-8").read()

@@ -1,0 +1,16 @@
+[Unit]
+Description=Trigger 자산 watcher (Noah의 RAG 채널 → 자산 대시보드) every 2 min
+
+[Timer]
+# 2분 간격. 'Noah의 RAG' 채널에 뱅크샐러드 zip 을 올리면 ~2분 내 픽업·파싱·
+# 대시보드 갱신. reddit-insider-watch(1분)와 같은 Telethon 유저 세션을 공유
+# 하므로 간격을 2분으로 둬 동시 실행(세션 sqlite lock) 가능성을 줄임 — 충돌
+# 시에도 graceful 하게 다음 폴링 재시도. 자산 업로드는 드물어 2분이면 충분.
+# Persistent=true 로 부팅 시 즉시 1회 fire.
+OnBootSec=3min
+OnUnitActiveSec=2min
+Unit=portfolio-watch.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

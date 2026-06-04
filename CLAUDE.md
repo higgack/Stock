@@ -412,6 +412,27 @@ pattern to follow:
   (기본 'insidertracking') 추가, 첫 실행 시 본인 전화번호 + 인증코드 1회 입력
   (`~/.tradingagents/reddit_user.session` 저장 후 무인). nav '📨 미국 레딧'
   맨 끝, help §7 알림 + §9 대시보드 동기 추가.
+- 자산관리 대시보드 (뱅크샐러드 export → portfolio.html) — 사용자 정책 2026-06-04.
+  4개 증권사(NH/삼성/유안타/미래에셋 +메리츠)·예적금·부동산·동산·연금·대출·보험을
+  뱅크샐러드 마이데이터 export(비번 zip)로 통합 표시 + 보유주식 NOAH 분석 연결.
+  **봇 DM 안 씀(깨끗하게) — 입력은 'Noah의 RAG' 채널 watcher.** 파이프라인:
+  • `bot/portfolio_parser.py` — 비번 zip(ZipCrypto, stdlib zipfile pwd, AES 아님)
+    → '뱅샐현황' 시트 6섹션 파싱(1.고객정보=PII 의도적 제외). 총자산/순자산은
+    export 가 summary 셀을 비워둬 **항목 합으로 산출**. pandas/openpyxl 불필요.
+  • `bot/portfolio_resolve.py` — 종목 한글명→티커(국내 pykrx 역맵 graceful /
+    해외 한글음역 alias 맵, 미매칭은 '이름만 표시'). `bot/portfolio.py` — 집계
+    모델+저장(~/.tradingagents/portfolio.json, atomic)+요약. `dashboard.
+    _render_portfolio_page` → 순자산 헤더·자산배분 도넛·증권사별·💹주식요약·
+    수익률 TOP/WORST·보유 테이블(티커 매칭 시 NOAH 링크)·자산vs부채 바·대출/보험.
+  • `bot/portfolio_watch.py` — Telethon **userbot**(reddit_insider 와 세션 공유 →
+    추가 로그인 0) `portfolio-watch.timer` 2분 polling → `TG_RAG_CHANNEL`('Noah의
+    RAG' 채널)의 .zip/.xlsx 문서 픽업 → ingest → 대시보드 갱신 → NOAH 채널 confirm.
+    seen-set·첫 run seen 처리(reddit/blog mirror). 비용 ₩0(LLM 0, pykrx/yfinance만).
+    nav 맨끝 '💼 자산', help §1, set_my_commands `/portfolio`(조회 전용).
+  • .env: `BANKSALAD_ZIP_PW`(zip 비번) + `TG_RAG_CHANNEL`(@username 또는 -100…ID)
+    + TG_USER_API_ID/HASH(reddit_insider 와 공유). 라이브 가격(추정수량)·NOAH
+    판정/5일성과 오버레이는 증분5 예정. PII(고객정보/가계부)는 파서가 제외, 가계부
+    (Sheet2)는 후속 phase.
 - Watchlist 조건 알림 — `bot/watchlist.py` (vibe-trade heartbeat/trigger
   패턴 영감, 2026-06-04). `/watch TICKER rsi<30 price>950 >sma50 52whigh
   earnings foreignbuy …` → `watchlist-check.timer` 30분 간격 `check_all()`

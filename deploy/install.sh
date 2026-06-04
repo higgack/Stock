@@ -56,6 +56,7 @@ for unit in \
     realestate-byte-monthly.service realestate-byte-monthly.timer \
     cheongyak-byte.service          cheongyak-byte.timer \
     reddit-insider-watch.service    reddit-insider-watch.timer \
+    portfolio-watch.service         portfolio-watch.timer \
     watchlist-check.service         watchlist-check.timer ;
 do
     if [ -f "$DEPLOY_DIR/$unit" ]; then
@@ -132,6 +133,9 @@ if [ -f "$DEPLOY_DIR/cheongyak-byte.timer" ]; then
 fi
 if [ -f "$DEPLOY_DIR/reddit-insider-watch.timer" ]; then
     systemctl enable --now reddit-insider-watch.timer
+fi
+if [ -f "$DEPLOY_DIR/portfolio-watch.timer" ]; then
+    systemctl enable --now portfolio-watch.timer
 fi
 if [ -f "$DEPLOY_DIR/watchlist-check.timer" ]; then
     systemctl enable --now watchlist-check.timer
