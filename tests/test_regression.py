@@ -1036,6 +1036,36 @@ class TestSVMobileResponsive:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 8a7) SV 대시보드 '오늘 NOAH 분석' per-ticker 섹션 완전 삭제 (2026-06-04
+#   사용자 요청 "이 부분은 아예 삭제"). daily_generator 가 더 이상 latest.html
+#   에 해당 섹션을 주입하면 안 됨. 샌드박스에서 bs4/생성기 실행 불가하므로
+#   주입 코드/헬퍼/로그가 소스에서 사라졌는지 grep 으로 영구 차단.
+# ─────────────────────────────────────────────────────────────────────────
+class TestSVNoahSectionRemoved:
+    """fix: SV 대시보드 '오늘 NOAH 분석' 섹션 완전 삭제 (2026-06-04)."""
+
+    def _src(self):
+        return open("standardview/scripts/daily_generator.py",
+                    encoding="utf-8").read()
+
+    def test_no_noah_section_injection(self):
+        src = self._src()
+        assert "오늘 NOAH" not in src, "NOAH 섹션 헤더 주입 잔존"
+        assert "NOAH analyses section inserted" not in src, "NOAH 섹션 삽입 로그 잔존"
+
+    def test_no_load_noah_today_helper(self):
+        # 유일한 호출처가 사라졌으므로 헬퍼도 제거 (orphan dead-code 차단).
+        src = self._src()
+        assert "_load_noah_today" not in src, "미사용 _load_noah_today 헬퍼 잔존"
+
+    def test_industry_section_preserved(self):
+        # 인접 섹션(산업 트렌드)은 보존 — 삭제가 과하지 않았는지 가드.
+        src = self._src()
+        assert "Industry trends + Deal Highlights" in src, "산업 트렌드 섹션 누락(과삭제)"
+        assert "산업 트렌드 section AFTER takeaway-card." in src, "anchor 단순화 누락"
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger
 # ─────────────────────────────────────────────────────────────────────────
 class TestWatchlist:

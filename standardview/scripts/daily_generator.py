@@ -408,82 +408,6 @@ def _format_brief_for_telegram(text: str) -> str:
     return text.strip()
 
 
-def _load_noah_today() -> list:
-    """B-2.1 (2026-05-20): Read today's NOAH analyses from /api/insights
-    (SQLite persistent store, queryable from Standard View SPA) and map
-    each Insight back to the rendering-record shape the NOAH section
-    expects (ticker / market / verdict / stance_bar / snippet /
-    dashboard_url / ts).
-
-    Falls back to legacy JSONL read when the insights API is unreachable
-    so the daily section still populates during transient outages."""
-    from datetime import date as _d
-    today = _d.today().isoformat()
-    out = []
-
-    # Primary: /api/insights GET, tag=noah, date_from=today
-    try:
-        r = httpx.get(
-            f"{BACKEND}/api/insights",
-            params={"tag": "noah", "date_from": today},
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json() or []
-        # /api/insights returns list of insight dicts
-        if isinstance(data, list):
-            for rec in data:
-                if not isinstance(rec, dict):
-                    continue
-                if rec.get("created_at") != today:
-                    continue
-                # Map Insight schema → rendering shape. verdict is parsed
-                # from source_title ("NOAH analysis: {ticker} → {verdict}")
-                # since insight has no dedicated verdict column.
-                src_title = rec.get("source_title", "") or ""
-                verdict = ""
-                if "→" in src_title:
-                    verdict = src_title.split("→", 1)[1].strip()
-                out.append({
-                    "ticker": rec.get("company_name", "?"),
-                    "market": rec.get("sector", "?"),
-                    "verdict": verdict,
-                    "stance_bar": rec.get("user_insight", ""),
-                    "snippet": rec.get("key_content", ""),
-                    "dashboard_url": rec.get("source_url", ""),
-                    # ts is date-only from insights; rendering does ts[-8:-3]
-                    # which would mangle a YYYY-MM-DD string — leave blank
-                    # so the time chip stays empty rather than showing junk.
-                    "ts": "",
-                })
-            log.info("noah_today via /api/insights: %d entries", len(out))
-            return out
-    except Exception as e:
-        log.warning("/api/insights GET failed, falling back to JSONL: %s", e)
-
-    # Fallback: legacy JSONL read (Phase B-2 path)
-    import json as _json
-    jsonl = Path.home() / "standardview" / "noah_analyses.jsonl"
-    if not jsonl.exists():
-        return out
-    try:
-        with jsonl.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = _json.loads(line)
-                except Exception:
-                    continue
-                if rec.get("date") == today:
-                    out.append(rec)
-        log.info("noah_today via JSONL fallback: %d entries", len(out))
-    except Exception as e:
-        log.warning("noah jsonl read failed: %s", e)
-    return out
-
-
 def _fetch_yf_monthly(ticker: str, months: int = 7) -> list:
     """yfinance monthly close, latest N months. Returns list of floats
     or [] on failure. Used for chart datasets."""
@@ -1486,74 +1410,7 @@ def _main_impl():
             soup = BeautifulSoup(new_html, "html.parser")
             log.info("infData chart updated (%d series)", len(inf_series))
 
-    # ─── 11. NOAH per-ticker analyses (B-2) ──────────────────────
-    # Today's NOAH analyses pushed via /api/noah/analysis. New HTML
-    # section inserted right after takeaway-card.
-    noah_today = _load_noah_today()
-    if noah_today:
-        takeaway = None
-        for s in soup.find_all("section", class_="card"):
-            if "takeaway-card" in (s.get("class") or []):
-                takeaway = s
-                break
-        if takeaway:
-            new_sec = soup.new_tag(
-                "section",
-                attrs={"class": "card", "style": "padding:22px 24px"},
-            )
-            hdr = soup.new_tag("h3", attrs={"class": "panel-title"})
-            hdr.string = f"\U0001F4CA 오늘 NOAH 분석 ({len(noah_today)}건)"
-            new_sec.append(hdr)
-            for rec in noah_today:
-                row = soup.new_tag(
-                    "div",
-                    attrs={"style": "padding:12px 0;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:4px"},
-                )
-                top = soup.new_tag(
-                    "div",
-                    attrs={"style": "display:flex;gap:10px;align-items:center;font-size:14px"},
-                )
-                ticker_el = soup.new_tag(
-                    "span",
-                    attrs={"style": "color:var(--text);font-weight:600;font-family:'IBM Plex Mono',monospace"},
-                )
-                ticker_el.string = f"{rec.get('ticker','?')} [{rec.get('market','?')}]"
-                top.append(ticker_el)
-                verdict_el = soup.new_tag(
-                    "span",
-                    attrs={"style": "color:var(--accent);font-weight:600;background:var(--accent-soft);padding:2px 8px;border-radius:4px;font-size:12px"},
-                )
-                verdict_el.string = rec.get("verdict", "N/A")
-                top.append(verdict_el)
-                ts_el = soup.new_tag(
-                    "span",
-                    attrs={"style": "color:var(--text-muted);font-size:11px;margin-left:auto"},
-                )
-                ts = rec.get("ts", "")
-                ts_el.string = ts[-8:-3] if len(ts) >= 8 else ts
-                top.append(ts_el)
-                row.append(top)
-                if rec.get("stance_bar"):
-                    sb = soup.new_tag("div", attrs={"style": "color:var(--text-muted);font-size:12px"})
-                    sb.string = rec["stance_bar"]
-                    row.append(sb)
-                if rec.get("snippet"):
-                    sn = soup.new_tag("div", attrs={"style": "color:var(--text);font-size:13px;line-height:1.5;margin-top:2px"})
-                    sn.string = rec["snippet"][:300]
-                    row.append(sn)
-                if rec.get("dashboard_url"):
-                    lnk = soup.new_tag(
-                        "a",
-                        attrs={"href": rec["dashboard_url"], "target": "_blank",
-                               "style": "color:var(--cyan);font-size:11px;text-decoration:none;margin-top:2px"},
-                    )
-                    lnk.string = "\U0001F4CB dashboard \u25B8"
-                    row.append(lnk)
-                new_sec.append(row)
-            takeaway.insert_after(new_sec)
-            log.info("NOAH analyses section inserted: %d entries", len(noah_today))
-
-    # ─── 12. Industry trends + Deal Highlights (B-2 enrichment) ──
+    # ─── 11. Industry trends + Deal Highlights (B-2 enrichment) ──
     # Friend Standard View 의 의도 (README "통합 일일 리포트") 달성:
     # macro + industry + deal 3 영역을 daily brief 에 통합.
     # 3 산업 × Gemini 호출 (~₩200-500/day 추가 비용).
@@ -1606,17 +1463,11 @@ def _main_impl():
     log.info("industry fetches: %d/%d", len(industries_data), len(_DEFAULT_INDUSTRIES))
 
     if industries_data:
-        # Insert 산업 트렌드 section AFTER takeaway-card (or after NOAH
-        # section if it exists).
+        # Insert 산업 트렌드 section AFTER takeaway-card.
         anchor = None
         for s in soup.find_all("section", class_="card"):
             if "takeaway-card" in (s.get("class") or []):
                 anchor = s
-        # Move anchor forward past the NOAH section if present
-        if anchor and anchor.find_next_sibling("section"):
-            nxt = anchor.find_next_sibling("section")
-            if nxt and "오늘 NOAH 분석" in (nxt.get_text() or ""):
-                anchor = nxt
 
         if anchor:
             # B-3.5 layout: 8 industries → 2-column inner grid (4×2).
@@ -1743,7 +1594,7 @@ def _main_impl():
                 anchor.insert_after(deal_sec)
                 log.info("Deal Highlights section inserted: %d deals", len(deals_top))
 
-    # ─── 13. sparkData 22 sparklines (A2-5) ──────────────────────
+    # ─── 12. sparkData 22 sparklines (A2-5) ──────────────────────
     # Macro Snapshot card 별 12개월 sparkline 동적화. 14개 (US 금리/
     # CPI/실업률 + USD/KRW + DXY + 4 indices + 4 commodities) 만 fetch,
     # KR 정책금리/국고채/GDP/수출 6개 (ECOS 의존) + dividers 2개는
