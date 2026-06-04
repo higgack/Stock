@@ -520,6 +520,18 @@ class TestPriceChartRender:
         # 페이로드가 비정상(times/close 부재)이어도 빈 문자열
         assert _render_chart_section({"price_chart": {"currency": "$"}}) == ""
 
+    def test_chart_axis_formatter_wired(self):
+        # 차트 축/priceLine 가독성 (2026-06-04 사용자 스크린샷): raw '1716000'
+        # 대신 만/억(KRW)·콤마, 하단 마진 외삽 음수 라벨(-250000) 숨김 +
+        # 우측 마커 여백 + 높이.
+        from bot.dashboard import _CHART_JS
+        assert "function fmtAxis(" in _CHART_JS, "축 포매터 함수 누락"
+        assert "priceFormatter: fmtAxis" in _CHART_JS, "축 포매터 미배선"
+        assert "if (v < 0) return ''" in _CHART_JS, "음수 가격 라벨 숨김 누락"
+        assert "+ '만'" in _CHART_JS and "+ '억'" in _CHART_JS, "KRW 만/억 약식 누락"
+        assert "rightOffset: 4" in _CHART_JS, "마커 잘림 방지 우측 여백 누락"
+        assert "height: 480" in _CHART_JS, "차트 높이 갱신 누락"
+
     def test_chart_json_script_termination_defused(self):
         """JSON 안의 '</' 가 <script> 블록을 조기 종료하지 못하게 defuse."""
         from bot.dashboard import _render_chart_section

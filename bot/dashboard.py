@@ -1902,7 +1902,7 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-ind-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
 .chart-row { display: flex; gap: 10px; align-items: stretch; }
 .chart-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.price-chart { width: 100%; height: 440px; position: relative; }
+.price-chart { width: 100%; height: 480px; position: relative; }
 .chart-tooltip {
   position: absolute; z-index: 5; pointer-events: none;
   background: var(--card); border: 1px solid var(--border); border-radius: 6px;
@@ -2181,6 +2181,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li><span class="k" style="color:#4c9aff">현재가</span> — 장중 라이브(yfinance ~15분 지연, KR은 종가만일 수 있음). 우측 축에 항상 표시. 이상 시세(분할·조정 오류 등)는 자동으로 걸러져 직전 종가로 대체.</li>
           <li><span class="k" style="color:#94a3b8">시점가</span>(회색 점선) — 분석한 날의 종가, 즉 "그때 가격" 기준선.</li>
           <li><span class="k" style="color:#9b59b6">진입</span> / <span class="k" style="color:#e2574c">손절</span> / <span class="k" style="color:#3ec46d">목표</span>(점선) — 트레이더 플랜의 가격대(본문에서 자동 추출, 비현실 값은 자동 제외).</li>
+          <li>세로축(우측 가격) 라벨은 KRW(₩)는 <span class="k">만/억</span> 약식, 그 외 시장은 천단위 콤마로 — 큰 숫자 가독성.</li>
         </ul>
       </div>
       <div class="cg-sec"><b>우측 값 패널 (지금 값 한눈에)</b>
@@ -2293,11 +2294,16 @@ _CHART_JS = """
     var layout = { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit', attributionLogo: false };
     var grid = { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } };
     chart = LightweightCharts.createChart(el, {
-      height: 440,
+      height: 480,
       layout: layout, grid: grid,
+      // 축/priceLine/크로스헤어 라벨 포매터 — raw '1716000' 대신 만/억(KRW)·
+      // 콤마(그 외), 하단 마진 외삽으로 생기는 음수 가격 라벨(-250000) 숨김.
+      localization: { priceFormatter: fmtAxis },
       // mode 1 = 로그 스케일 (긴 기간 뷰에서 % 변동 비교 가능). 기본 0=선형.
-      rightPriceScale: { borderVisible: false, minimumWidth: 72, mode: ind.log ? 1 : 0, scaleMargins: { top: 0.06, bottom: 0.26 } },
-      timeScale: { borderVisible: false, timeVisible: false },
+      // bottom 0.20: 가격 영역을 키워 디테일↑ (거래량 오버레이 top:0.82 와 비중첩).
+      rightPriceScale: { borderVisible: false, minimumWidth: 72, mode: ind.log ? 1 : 0, scaleMargins: { top: 0.06, bottom: 0.20 } },
+      // rightOffset 4: 우측 끝 마커(과거 추천) 텍스트 잘림 방지용 여백.
+      timeScale: { borderVisible: false, timeVisible: false, rightOffset: 4 },
       crosshair: { mode: 1 }
     });
     function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
@@ -2486,6 +2492,22 @@ _CHART_JS = """
     if (v === null || v === undefined) return '–';
     try { return Number(v).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }); }
     catch(e){ return '' + v; }
+  }
+  // 차트 축/priceLine/크로스헤어 가격 라벨 포매터 (메인 차트만; RSI/MACD 는
+  // 자체 format). priceFormat(precision)만으론 raw '1716000' 이라 가독성이
+  // 낮았고, 가격 축이 하단 마진으로 외삽되며 음수 격자에 '-250000' 라벨이
+  // 붙던 버그가 있었음. v<0 은 숨기고, KRW(₩) 큰 값은 만/억 약식, 그 외
+  // 시장은 천단위 콤마(+적정 소수).
+  function fmtAxis(v){
+    if (v === null || v === undefined || isNaN(v)) return '';
+    if (v < 0) return '';
+    if (curSym === '₩' && v >= 10000) {
+      if (v >= 1e8) { var eok = v / 1e8; return (eok >= 100 ? Math.round(eok) : Math.round(eok * 10) / 10) + '억'; }
+      var man = v / 1e4;
+      return (man >= 1000 ? Math.round(man).toLocaleString('en-US') : Math.round(man * 10) / 10) + '만';
+    }
+    var dec = (lastData && lastData.decimals === 0) ? 0 : 2;
+    return fmtNum(v, dec);
   }
   // 가격 행엔 시장 통화 기호(₩/¥/€/NT$/HK$/$) prefix — payload 가 늘 계산해
   // 보내던 d.currency 를 실제로 표시 (이전엔 맨숫자라 시장 구분 불가).
