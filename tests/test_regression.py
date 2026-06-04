@@ -1026,7 +1026,7 @@ class TestSVMobileResponsive:
         src = open("standardview/scripts/daily_generator.py",
                    encoding="utf-8").read()
         # 반응형 @media (데스크탑 >768px 무영향) + 인라인 그리드 단일칼럼 override
-        assert "@media (max-width:768px){" in src, "모바일 @media 누락"
+        assert "@media (max-width:1100px){" in src, "모바일 @media(1100px) 누락"
         assert "*{grid-template-columns:1fr !important" in src, "전 그리드 단일칼럼 override 누락"
         assert "def _inject_mobile_responsive" in src, "주입 함수 누락"
         assert "noah-mobile" in src, "style id 누락"

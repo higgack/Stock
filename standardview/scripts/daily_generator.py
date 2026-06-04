@@ -76,17 +76,18 @@ def _pick_template() -> Path:
     return _TEMPLATE_PATH
 
 
-# 모바일 반응형 교정 (2026-06-04, 사용자 스크린샷 2차 진단): base.html 스캐폴드
-# (VM 전용·repo 미포함)에 @media(max-width:768px)가 있긴 하나 **일부 그리드만**
-# 커버(.mid-grid/.commentary-grid)하고 콘텐츠+사이드바 그리드(360px 1fr)·산업
-# 4칼럼 그리드 등은 누락 → 모바일에서 2칼럼/4칼럼이 안 접혀 으스러짐/빈 우측.
-# viewport 는 정상(device-width)이라 미디어 자체는 켜짐(=1차 인라인 override 가
-# 헛다리였던 이유). 생성 시 <head>에 반응형 <style>를 주입해 모바일에서 **모든
-# 그리드**를 단일칼럼 강제한다. `*` 는 grid 아닌 요소엔 무해(grid-template-
-# columns 는 grid 컨테이너에만 적용)하고 grid 만 1칼럼화 → 클래스/인라인 불문
-# 전부 접힘. 데스크탑(>768px)은 @media 밖이라 완전 무영향 — 0 리스크.
+# 모바일 반응형 교정 (2026-06-04, 사용자 스크린샷 3차): 진짜 Safari 에서도 2칼럼
+# → 폰이 device-width(viewport)인데도 페이지가 데스크탑 폭(~980px)으로 렌더되는
+# 상황(예: Safari '데스크탑용 웹사이트 요청' ON, 또는 텔레그램 등 인앱 웹뷰의
+# wide-render). 그래서 base 의 @media(768px)도, 1·2차 주입(768px)도 발동 안 함
+# (1280px 규칙만 켜져 .mid/.commentary 가 2칼럼 잔존). fix: 주입 미디어 임계를
+# 768→**1100px** 로 넓혀 ~980px 데스크탑-모드 렌더까지 덮는다. 모바일·웹뷰에선
+# 모든 grid 를 단일칼럼 강제(`*{grid-template-columns:1fr}` — grid 아닌 요소엔
+# 무해). 실제 데스크탑(≥1280px)은 1100 임계 밖이라 무영향(1024~1280 좁은 창은
+# 단일칼럼이 되나 가독상 무해). 사용자 측 근본 해결책은 Safari aA→'모바일용
+# 웹사이트 보기'.
 _MOBILE_CSS = (
-    "@media (max-width:768px){"
+    "@media (max-width:1100px){"
     "body{padding:12px !important;}"
     "*{grid-template-columns:1fr !important;}"
     "[style*=\"display:flex\"],[style*=\"display: flex\"]{flex-wrap:wrap !important;}"
@@ -103,7 +104,10 @@ def _inject_mobile_responsive(soup) -> None:
     content+sidebar and 4-col industry grids are missed), so a universal
     `*{grid-template-columns:1fr !important}` inside the breakpoint forces
     them all — class-based or inline. `*` is inert on non-grid elements.
-    No-op when there is no <head>; never raises. Desktop (>768px) untouched."""
+    Breakpoint widened to 1100px (was 768px) because phones often render
+    this page at ~980px desktop width (Safari 'Request Desktop Website' /
+    in-app webview wide-render), where the 768px rules never fire. No-op
+    when there is no <head>; never raises. Real desktop (≥1280px) untouched."""
     try:
         head = soup.head
         if head is None:
