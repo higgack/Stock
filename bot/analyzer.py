@@ -1193,7 +1193,20 @@ def _detect_discipline_forced_hold_banner(state: dict, decision: str) -> str:
     Surfaces the real mechanism: 분석가 합의 방향 + PM 원래 등급 + discipline
     강제 HOLD. Universal — all markets. Empty when the inputs aren't readable.
     """
-    pm_rating = _extract_rating(decision)
+    # Recover the PM's ORIGINAL (pre-discipline) rating. Two force layers:
+    #  - analyzer Fix F/G: the decision text is unmodified, so _extract_rating
+    #    yields the PM's original non-Hold rating directly (IBM 2026-06-02).
+    #  - in-graph _enforce_pm_override_discipline (portfolio_manager.py): the
+    #    decision was ALREADY downgraded to Hold with a sentinel note appended,
+    #    so _extract_rating returns 'Hold' (→ a nonsensical 'Hold override Hold'
+    #    banner). Parse the original from the note's 'PM 1차 판단 (X)' instead.
+    #    삼성전기 009150 2026-06-04 took exactly this in-graph path.
+    pm_rating = None
+    m_orig = re.search(r"PM 1차 판단 \(([^)]+)\)", decision or "")
+    if m_orig:
+        pm_rating = m_orig.group(1).strip()
+    if not pm_rating:
+        pm_rating = _extract_rating(decision)
     pm_dir = _DECISION_DIRECTION.get(pm_rating or "", "")
     unanimous = _get_unanimous_analyst_direction(state)
     if not pm_rating or not pm_dir or not unanimous:
@@ -1308,7 +1321,19 @@ def _format_summary(
     # forced HOLD (분석가 4명 전원 보유 + trigger 없음). Showing '트레이더
     # 매수 → 최종 보유 (PM이 트레이더와 다른 결론)' falsely implies the PM
     # disagreed. Replace with an accurate discipline-forced banner.
-    if override_rating == "Hold":
+    # The discipline can force HOLD at EITHER layer: the analyzer Fix F/G
+    # (override_rating == 'Hold') OR the in-graph _enforce_pm_override_
+    # discipline (portfolio_manager.py), which downgrades the PM verdict and
+    # leaves the sentinel in the decision text. The IBM 2026-06-02 fix only
+    # covered the analyzer layer, so an in-graph-forced HOLD (삼성전기 009150
+    # 2026-06-04: PM 1차 Overweight → 강제 Hold, sentinel present) fell through
+    # to the generic 'PM이 트레이더와 다른 결론' banner — which misled even an
+    # external reviewer into diagnosing a non-existent enum bug. Route BOTH
+    # layers to the accurate discipline banner.
+    discipline_forced = override_rating == "Hold" or (
+        rating == "Hold" and _PM_INGRAPH_SENTINEL in (decision or "")
+    )
+    if discipline_forced:
         trader_divergence = _detect_discipline_forced_hold_banner(state, decision)
     else:
         trader_divergence = _detect_trader_decision_divergence(state, rating)

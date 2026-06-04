@@ -298,13 +298,32 @@ class TestPMOverrideDisciplineBanner:
 
     def test_discipline_banner_function_exists_and_accurate(self):
         src = open("bot/analyzer.py", encoding="utf-8").read()
-        # 배선: override_rating == 'Hold' 일 때 discipline 배너 호출
-        assert 'if override_rating == "Hold":' in src
+        # 배선: analyzer Fix F/G(override_rating) + in-graph 센티넬 양 레이어를
+        # discipline 배너로 라우팅 (009150 2026-06-04 in-graph 강제 케이스 포함).
+        assert 'discipline_forced = override_rating == "Hold"' in src
+        assert '_PM_INGRAPH_SENTINEL in (decision or ""' in src, "in-graph 센티넬 라우팅 누락"
+        assert "if discipline_forced:" in src
         assert (
             "trader_divergence = _detect_discipline_forced_hold_banner"
             in src
         ), "discipline 배너 배선 누락"
         assert "def _detect_discipline_forced_hold_banner" in src
+
+    def test_ingraph_forced_recovers_original_rating(self):
+        """in-graph 강제(009150 2026-06-04): decision rating 이 이미 Hold 라
+        센티넬 노트의 'PM 1차 판단 (X)' 파싱으로 1차 등급을 복원해야 함
+        (없으면 'Hold override Hold' 무의미 배너). 소스에 파싱 배선 확인.
+        bot.analyzer 는 yfinance 의존이라 import 불가 → 소스 검증."""
+        import re
+        src = open("bot/analyzer.py", encoding="utf-8").read()
+        m = re.search(
+            r"def _detect_discipline_forced_hold_banner.*?(?=\n\n\n|\ndef )",
+            src, re.DOTALL,
+        )
+        assert m, "discipline 배너 함수 못 찾음"
+        fn = m.group(0)
+        assert r"PM 1차 판단 \(([^)]+)\)" in fn, "센티넬 1차등급 파싱 누락"
+        assert "_extract_rating(decision)" in fn, "fallback(_extract_rating) 누락"
 
     def test_discipline_banner_no_misleading_phrase(self):
         """discipline 배너는 'PM이 트레이더와 다른 결론' 오해 문구 미사용."""
@@ -853,6 +872,26 @@ class TestPriceGlitchGuard:
         # 52주 없고 50d·200d 둘 다에서 >35% → outlier; 한쪽만 멀면 아님
         assert price_outlier_vs_refs(160000, sma50=270000, sma200=255000) is True
         assert price_outlier_vs_refs(260000, sma50=270000, sma200=255000) is False
+
+    def test_outlier_in_range_parabolic_not_flagged(self):
+        from bot.price_sanity import price_outlier_vs_refs
+        # 삼성전기 009150 2026-06-04: 현재가 1,716,000 ∈ 52주[122,800, 2,200,000],
+        # MA 대비 +95%/+317% 인 진짜 포물선 급등 → suspect 아님 (false '데이터
+        # 이상' 차단, 진짜 froth 신호 보존). 외부 리뷰가 stale 실세계가로 실
+        # 시뮬값을 글리치로 오인한 케이스의 코드측 교정.
+        assert price_outlier_vs_refs(1716000, low52=122800, high52=2200000,
+                                     sma50=880390, sma200=411062) is False
+        # 티로보틱스류 in-range 깊은 하락(-41%)도 데이터 이상 아님
+        assert price_outlier_vs_refs(11280, low52=9820, high52=30900,
+                                     sma50=20000, sma200=22000) is False
+
+    def test_outlier_ma_fallback_only_without_52w(self):
+        from bot.price_sanity import price_outlier_vs_refs
+        # 52주 ref 부재 시엔 MA-이격 fallback 여전히 발화 (글리치 차단 보존)
+        assert price_outlier_vs_refs(1716000, sma50=880390, sma200=411062) is True
+        # 유효 52주 범위 안이면 같은 큰 이격도 미발화 (fallback 은 52주 없을 때만)
+        assert price_outlier_vs_refs(1716000, low52=122800, high52=2200000,
+                                     sma50=880390, sma200=411062) is False
 
     def test_agent_utils_wires_glitch_guard(self):
         """agent_utils 가 실제로 price_sanity 를 호출하는지(스냅샷 교체 +

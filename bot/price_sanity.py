@@ -92,7 +92,18 @@ def price_outlier_vs_refs(px, low52=None, high52=None, sma50=None,
         return True
     if high52 is not None and px > high52 * 1.03:
         return True
-    if (sma50 is not None and sma200 is not None
+    # MA-divergence is a FALLBACK glitch signal — only meaningful when the
+    # reliable 52-week range refs are unavailable. When BOTH 52w refs are valid
+    # and px is within them (the two checks above didn't fire), px is a
+    # plausible price; a large gap from the MAs is then a GENUINE strong trend
+    # (parabolic up / deep drawdown), NOT a data glitch. Flagging it would
+    # false-fire '데이터 이상' on correct data and bury the real froth/over-
+    # extension signal — 삼성전기 009150 2026-06-04: 현재가 ₩1,716,000 ∈
+    # 52주[₩122,800, ₩2,200,000], a genuine ~14x melt-up; 티로보틱스 117730:
+    # in-range -41% real drawdown. So only use the MA fallback when we could
+    # NOT already judge plausibility via a valid 52-week range.
+    have_valid_52w = low52 is not None and high52 is not None
+    if (not have_valid_52w and sma50 is not None and sma200 is not None
             and abs(px / sma50 - 1.0) > gap and abs(px / sma200 - 1.0) > gap):
         return True
     return False
