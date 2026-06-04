@@ -1672,8 +1672,25 @@ class TestPortfolioDashboard:
         assert "NOAH 판정" in html, "NOAH 컬럼 헤더 누락"
         assert "보유</a> <span" in html and "+12.3%" in html, "판정·성과 오버레이 누락"
         assert "NOAH 분석 1" in html, "오버레이 카운트 누락"
+        # 종목명·판정 링크는 파란 기본색 대신 pf-lnk(일반 텍스트색) — 사용자 요청.
+        assert 'class="pf-lnk"' in html, "종목명 일반색 링크 클래스 누락"
+        assert 'style="color:var(--accent)"' not in html, "판정 파란 링크 잔존"
         # noah 미전달도 정상(헤더만, graceful)
         assert "NOAH 판정" in _render_portfolio_page(m)
+
+    def test_sort_filter_controls(self):
+        # 보유 테이블 정렬/필터(2026-06-04): 헤더 클릭 정렬 + 증권사·검색·NOAH 필터.
+        from bot.dashboard import _render_portfolio_page
+        html = _render_portfolio_page(self._model())
+        assert 'id="pf-tbl"' in html, "정렬 테이블 id 누락"
+        assert 'id="pf-broker"' in html and 'id="pf-q"' in html, "증권사/검색 필터 누락"
+        assert 'id="pf-noah"' in html, "NOAH 분석만 필터 누락"
+        assert 'data-k="ret"' in html and 'data-k="eval"' in html, "정렬 헤더 키 누락"
+        # 행에 raw 정렬값 부착(만/억 포맷 비의존)
+        assert "data-eval=" in html and "data-broker=" in html, "행 data-* 정렬값 누락"
+        assert "addEventListener" in html, "정렬/필터 JS 미주입"
+        # 증권사 드롭다운에 실제 증권사(NH투자증권·삼성증권) 옵션
+        assert "NH투자증권" in html and "삼성증권" in html, "증권사 옵션 누락"
 
     def test_nav_and_regen_wired(self):
         src = open("bot/dashboard.py", encoding="utf-8").read()

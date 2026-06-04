@@ -5200,9 +5200,62 @@ _PF_CSS = """<style>
 .pf-tbl th,.pf-tbl td{padding:6px 9px;border-bottom:1px solid var(--border);text-align:left;color:var(--text)}
 .pf-tbl th{color:var(--muted);font-weight:600}
 .pf-tbl td.r,.pf-tbl th.r{text-align:right;font-variant-numeric:tabular-nums}
-.pf-scroll{max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:8px}
+.pf-scroll{max-height:560px;overflow:auto;border:1px solid var(--border);border-radius:8px}
+.pf-lnk{color:inherit;text-decoration:none}
+.pf-lnk:hover{text-decoration:underline}
+.pf-ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}
+.pf-ctl input[type=text],.pf-ctl select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:13px}
+.pf-ctl label{font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+.pf-tbl thead th{position:sticky;top:0;background:var(--card);z-index:1}
+.pf-tbl th[data-k]{cursor:pointer;user-select:none;white-space:nowrap}
+.pf-tbl th[data-k]:hover{color:var(--text)}
+.pf-ar{opacity:.6;font-size:10px;margin-left:2px}
 @media (max-width:760px){.pf-grid>.pf-card{flex:1 1 100% !important;min-width:0 !important}}
 </style>"""
+
+# 보유 테이블 정렬/필터 JS (사용자 요청 2026-06-04). 의존성 0·IIFE 스코프. 데이터는
+# 각 <tr> 의 data-* (raw 숫자/문자) 에 담겨 정렬·검색이 만/억 포맷 텍스트에 흔들리지
+# 않는다. 헤더 클릭=정렬(숫자 desc·문자 asc 시작, 재클릭 토글), 검색·증권사·NOAH 필터.
+_PF_TABLE_JS = """<script>(function(){
+var tbl=document.getElementById('pf-tbl'); if(!tbl||!tbl.tBodies[0]) return;
+var tb=tbl.tBodies[0], rows=[].slice.call(tb.rows);
+var q=document.getElementById('pf-q'), bsel=document.getElementById('pf-broker'),
+    nck=document.getElementById('pf-noah'), cnt=document.getElementById('pf-cnt');
+var sortK=null, sortDir=1;
+function num(v){var n=parseFloat(v); return isNaN(n)?null:n;}
+function apply(){
+ var qv=(q.value||'').trim().toLowerCase(), bv=bsel.value, nv=nck.checked, shown=0;
+ rows.forEach(function(tr){
+  var ok=true;
+  if(qv) ok=((tr.dataset.name||'').indexOf(qv)>=0)||((tr.dataset.tkr||'').indexOf(qv)>=0);
+  if(ok&&bv) ok=(tr.dataset.broker===bv);
+  if(ok&&nv) ok=!!(tr.dataset.noah);
+  tr.style.display=ok?'':'none'; if(ok)shown++;
+ });
+ if(cnt) cnt.textContent=shown+'개 표시';
+}
+function sortBy(k,t){
+ if(sortK===k){sortDir=-sortDir;}else{sortK=k;sortDir=(t==='n'?-1:1);}
+ rows.slice().sort(function(a,b){
+  var av=a.dataset[k], bv=b.dataset[k];
+  if(t==='n'){var an=num(av),bn=num(bv);
+   if(an===null&&bn===null)return 0; if(an===null)return 1; if(bn===null)return -1;
+   return (an-bn)*sortDir;}
+  return String(av).localeCompare(String(bv),'ko')*sortDir;
+ }).forEach(function(tr){tb.appendChild(tr);});
+ [].forEach.call(tbl.tHead.rows[0].cells,function(th){
+  var ar=th.querySelector('.pf-ar'); if(ar)ar.remove();
+  if(th.dataset.k===k){var s=document.createElement('span'); s.className='pf-ar';
+   s.textContent=(sortDir>0?' \\u25B2':' \\u25BC'); th.appendChild(s);}
+ });
+}
+[].forEach.call(tbl.tHead.rows[0].cells,function(th){
+ if(th.dataset.k) th.addEventListener('click',function(){sortBy(th.dataset.k,th.dataset.t);});
+});
+if(q)q.addEventListener('input',apply); if(bsel)bsel.addEventListener('change',apply);
+if(nck)nck.addEventListener('change',apply);
+apply();
+})();</script>"""
 
 
 def _pf_won(v) -> str:
@@ -5226,6 +5279,17 @@ def _pf_won(v) -> str:
 
 def _pf_col(v) -> str:
     return "var(--pos)" if (v or 0) >= 0 else "var(--neg)"
+
+
+def _pf_rating_col(rating) -> str:
+    """NOAH 판정 → 방향 색. 매도/Sell 우선 검사(적극매도 오분류 방지) → 매수 → 그 외 muted.
+    무의미한 파란 링크 대신 판정 방향을 한눈에(사용자 '파란색 말고 똑같이' 후속)."""
+    s = str(rating or "").lower()
+    if any(k in s for k in ("매도", "sell", "underweight")):
+        return "var(--neg)"
+    if any(k in s for k in ("매수", "buy", "overweight")):
+        return "var(--pos)"
+    return "var(--muted)"
 
 
 def _noah_lookup(noah: dict, tkr) -> tuple:
@@ -5429,42 +5493,73 @@ def _render_portfolio_page(model, noah=None) -> str:
                     '<table class="pf-tbl"><tr><th>종목</th><th class="r">수익률</th><th class="r">평가금액</th></tr>'
                     + _mv(model.get("top_gainers", [])) + _mv(model.get("top_losers", [])) + '</table></div>')
 
-    # 보유 종목 전체 + NOAH 판정/5거래일 성과 오버레이 (증분5).
+    # 보유 종목 전체 + NOAH 판정 오버레이(증분5) + 정렬/필터(2026-06-04 사용자 요청).
+    # 각 행에 data-*(raw 숫자/문자) 부착 → JS 정렬·검색이 만/억 포맷에 안 흔들림.
     noah = noah or {}
     noah_n = 0
     hl_rows = ""
-    for h in sorted(holdings, key=lambda x: -(x.get("평가금액") or 0)):
+    _holds_sorted = sorted(holdings, key=lambda x: -(x.get("평가금액") or 0))
+    for h in _holds_sorted:
         r = h.get("수익률")
         rtxt = f'{r:+.1f}%' if r is not None else "—"
         nm = _html.escape(h.get("상품명") or "")
         tkr = h.get("ticker")
-        # NOAH 최근 판정 + 성과 (분석 기록 있는 종목만). KR 6자리 코드는 .KS/.KQ
-        # 둘 다 시도해 아카이브와 매칭. 분석 있을 때만 종목명·판정 링크(404 방지).
+        broker = _html.escape(h.get("금융사") or "")
+        ev, pnl = h.get("평가금액"), h.get("평가손익")
+        # NOAH 최근 판정 (분석 기록 있는 종목만). KR 6자리 코드는 .KS/.KQ 둘 다
+        # 시도해 아카이브와 매칭. 분석 있을 때만 링크(404 방지).
         ninfo, full_tkr = _noah_lookup(noah, tkr)
-        nm_cell = (f'<a href="ticker_{_html.escape(full_tkr)}.html">{nm}</a>'
+        # 종목명: 분석 있으면 링크하되 일반 텍스트색(pf-lnk) — 사용자 '파란색 말고 똑같이'.
+        nm_cell = (f'<a class="pf-lnk" href="ticker_{_html.escape(full_tkr)}.html">{nm}</a>'
                    if full_tkr else nm)
+        noah_rating = ""
         if ninfo:
             noah_n += 1
+            noah_rating = str(ninfo.get("rating") or "")
             _rr = ninfo.get("ret")
             _rrt = (f' <span style="color:{_pf_col(_rr)}">{_rr:+.1f}%</span>'
                     if _rr is not None else "")
-            noah_cell = (f'<a href="ticker_{_html.escape(full_tkr)}.html" '
-                         f'style="color:var(--accent)">'
-                         f'{_html.escape(str(ninfo.get("rating") or ""))}</a>{_rrt}')
+            # 판정 = 방향 색(매수 양/매도 음/보유 muted), 링크는 pf-lnk(밑줄 hover만).
+            noah_cell = (f'<a class="pf-lnk" href="ticker_{_html.escape(full_tkr)}.html" '
+                         f'style="color:{_pf_rating_col(noah_rating)};font-weight:600">'
+                         f'{_html.escape(noah_rating)}</a>{_rrt}')
         else:
             noah_cell = '<span style="color:var(--muted)">—</span>'
-        hl_rows += (f'<tr><td>{nm_cell}</td><td>{_html.escape(str(tkr or "—"))}</td>'
-                    f'<td>{_html.escape(h.get("금융사") or "")}</td>'
-                    f'<td class="r">{_pf_won(h.get("평가금액"))}</td>'
+        _da = (f'data-name="{nm.lower()}" data-tkr="{_html.escape(str(tkr or "")).lower()}" '
+               f'data-broker="{broker}" data-eval="{ev if ev is not None else ""}" '
+               f'data-ret="{r if r is not None else ""}" '
+               f'data-pnl="{pnl if pnl is not None else ""}" '
+               f'data-noah="{_html.escape(noah_rating)}"')
+        hl_rows += (f'<tr {_da}><td>{nm_cell}</td><td>{_html.escape(str(tkr or "—"))}</td>'
+                    f'<td>{broker}</td><td class="r">{_pf_won(ev)}</td>'
                     f'<td class="r" style="color:{_pf_col(r)}">{rtxt}</td>'
-                    f'<td class="r" style="color:{_pf_col(h.get("평가손익"))}">{_pf_won(h.get("평가손익"))}</td>'
+                    f'<td class="r" style="color:{_pf_col(pnl)}">{_pf_won(pnl)}</td>'
                     f'<td>{noah_cell}</td></tr>')
+    # 증권사 드롭다운(평가금액 큰 순 등장 순서)
+    _brokers: list[str] = []
+    for h in _holds_sorted:
+        b = h.get("금융사") or ""
+        if b and b not in _brokers:
+            _brokers.append(b)
+    _opts = '<option value="">전체 증권사</option>' + ''.join(
+        f'<option value="{_html.escape(b)}">{_html.escape(b)}</option>' for b in _brokers)
+    _ctl = ('<div class="pf-ctl"><input type="text" id="pf-q" placeholder="🔎 종목·티커 검색">'
+            f'<select id="pf-broker">{_opts}</select>'
+            '<label><input type="checkbox" id="pf-noah"> NOAH 분석만</label>'
+            '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span></div>'
+            ) if holdings else ''
+    _head = ('<thead><tr><th data-k="name" data-t="s">종목</th>'
+             '<th data-k="tkr" data-t="s">티커</th>'
+             '<th data-k="broker" data-t="s">증권사</th>'
+             '<th class="r" data-k="eval" data-t="n">평가금액</th>'
+             '<th class="r" data-k="ret" data-t="n">수익률</th>'
+             '<th class="r" data-k="pnl" data-t="n">평가손익</th>'
+             '<th data-k="noah" data-t="s">NOAH 판정</th></tr></thead>')
     holdings_block = ('<div class="pf-card"><div class="pf-h">보유 종목 (' + str(len(holdings))
-                      + (f' · NOAH 분석 {noah_n}' if noah_n else '') + ')</div>'
-                      '<div class="pf-scroll"><table class="pf-tbl">'
-                      '<tr><th>종목</th><th>티커</th><th>증권사</th><th class="r">평가금액</th>'
-                      '<th class="r">수익률</th><th class="r">평가손익</th><th>NOAH 판정</th></tr>'
-                      + hl_rows + '</table></div></div>')
+                      + (f' · NOAH 분석 {noah_n}' if noah_n else '') + ')</div>' + _ctl
+                      + '<div class="pf-scroll"><table class="pf-tbl" id="pf-tbl">'
+                      + _head + '<tbody>' + hl_rows + '</tbody></table></div>'
+                      + _PF_TABLE_JS + '</div>')
 
     # 대출 · 보험 — 대출은 한도(원금)+잔액+금리(전부 노출), 보험은 표로
     # (사용자 요청 2026-06-04: 보험도 제대로, 대출 다 반영).
@@ -5500,6 +5595,7 @@ def _render_portfolio_page(model, noah=None) -> str:
 
     note = ('<p class="sub" style="margin-top:14px;color:var(--muted);font-size:12px">'
             '뱅크샐러드 export 스냅샷 기준 — 평가금액·수익률은 export 시점 값. '
+            '표 헤더 클릭 정렬 · 검색/증권사/NOAH 필터 가능. '
             '티커 매칭 종목은 종목명 클릭 시 NOAH 분석으로 연결(분석 기록 있을 때). '
             f'기준 기간: {as_of}</p>')
 
