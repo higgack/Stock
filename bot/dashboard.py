@@ -5267,12 +5267,29 @@ def _render_portfolio_page(model) -> str:
                       f'{_html.escape(cat)} <b>{_pf_won(amt)}</b> '
                       f'<span style="color:var(--muted)">({pct:.1f}%)</span></div>')
         acc += pct
+    # 주식 요약 패널 — 도넛 카드 우측 빈 공간 활용 (배분 도넛과 중복 안 되게
+    # equity sleeve 성과 위주: 평가/원금/손익/비중/승률).
+    win = sum(1 for h in holdings if (h.get("수익률") or 0) > 0)
+    loss = sum(1 for h in holdings if (h.get("수익률") or 0) < 0)
+    rated_n = win + loss
+    winrate = (win / rated_n * 100) if rated_n else 0.0
+    stock_wt = (eval_sum / nw["총자산"] * 100) if nw.get("총자산") else 0.0
+    equity_panel = (
+        '<div style="flex:1 1 200px;min-width:190px">'
+        '<div class="pf-h" style="font-size:13px;color:var(--muted)">💹 주식 요약</div>'
+        f'<div class="pf-leg">평가금액 <b>{_pf_won(eval_sum)}</b></div>'
+        f'<div class="pf-leg">투자원금 <b>{_pf_won(cost_sum)}</b></div>'
+        f'<div class="pf-leg">평가손익 <b style="color:{_pf_col(pnl)}">{_pf_won(pnl)} ({pnl_pct:+.1f}%)</b></div>'
+        f'<div class="pf-leg">총자산 대비 주식 <b>{stock_wt:.1f}%</b></div>'
+        f'<div class="pf-leg">수익 {win} · 손실 {loss} · 승률 <b>{winrate:.0f}%</b></div>'
+        '</div>')
     donut_block = ""
     if stops:
         donut_block = (
             '<div class="pf-card"><div class="pf-h">자산 배분</div><div class="pf-grid">'
             f'<div class="pf-hole"><div class="pf-donut" style="background:conic-gradient({",".join(stops)})"></div></div>'
-            f'<div style="flex:1;min-width:200px">{"".join(legend)}</div></div></div>')
+            f'<div style="flex:1 1 240px;min-width:200px">{"".join(legend)}</div>'
+            + equity_panel + '</div></div>')
 
     # 증권사별
     bro_rows = ""
@@ -5280,9 +5297,22 @@ def _render_portfolio_page(model) -> str:
         bro_rows += (f'<tr><td>{_html.escape(b)}</td><td class="r">{_pf_won(d["평가금액"])}</td>'
                      f'<td class="r">{d["종목수"]}</td>'
                      f'<td class="r" style="color:{_pf_col(d["평가손익"])}">{_pf_won(d["평가손익"])}</td></tr>')
+    # 자산 vs 부채 바 — 증권사별 카드 밑 빈 공간 활용 (순자산 시각화).
+    asset_t = nw.get("총자산") or 0
+    liab_t = nw.get("총부채") or 0
+    denom = (asset_t + liab_t) or 1
+    nw_bar = (
+        '<div style="margin-top:14px">'
+        f'<div style="font-size:12px;color:var(--muted);margin-bottom:5px">순자산 '
+        f'<b style="color:var(--text)">{_pf_won(nw.get("순자산"))}</b> = 자산 '
+        f'{_pf_won(asset_t)} − 부채 {_pf_won(liab_t)}</div>'
+        '<div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--border)">'
+        f'<div title="자산" style="background:var(--pos);width:{asset_t / denom * 100:.1f}%"></div>'
+        f'<div title="부채" style="background:var(--neg);width:{liab_t / denom * 100:.1f}%"></div>'
+        '</div></div>')
     bro_block = ('<div class="pf-card" style="flex:1;min-width:300px"><div class="pf-h">증권사별</div>'
                  '<table class="pf-tbl"><tr><th>증권사</th><th class="r">평가금액</th><th class="r">종목</th><th class="r">손익</th></tr>'
-                 + bro_rows + '</table></div>')
+                 + bro_rows + '</table>' + nw_bar + '</div>')
 
     # 수익률 TOP / WORST
     def _mv(items):
