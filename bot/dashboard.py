@@ -2230,17 +2230,17 @@ _CHART_JS = """
       }
       volS.setData(vd);
     }
-    function priceLine(p, color, title, style) {
+    function priceLine(p, color, title, style, showLabel) {
       if (p === null || p === undefined) return;
-      // 축 라벨 OFF — 가까운 가격(진입/손절/시점가)끼리 라벨이 겹쳐 가려지는
-      // 문제 (2026-06-04). 선만 그리고 값은 우측 패널에서 항상 보이게.
-      mainS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: false, title: title });
+      // 현재가/시점가만 축 라벨 ON (패널과 중복 표시 — 사용자 2026-06-04).
+      // 진입/손절/목표는 서로 가까워 겹치므로 선만, 값은 우측 패널에서.
+      mainS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: !!showLabel, title: title });
     }
-    priceLine(asOfClose, '#94a3b8', '시점가', 2);
+    priceLine(asOfClose, '#94a3b8', '시점가', 2, true);
     if (markers) {
-      priceLine(markers.entry,  '#9b59b6', '진입');
-      priceLine(markers.stop,   '#e2574c', '손절');
-      priceLine(markers.target, '#3ec46d', '목표');
+      priceLine(markers.entry,  '#9b59b6', '진입', 2, false);
+      priceLine(markers.stop,   '#e2574c', '손절', 2, false);
+      priceLine(markers.target, '#3ec46d', '목표', 2, false);
     }
     chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });

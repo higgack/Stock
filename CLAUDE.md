@@ -383,6 +383,18 @@ pattern to follow:
   (기본 'insidertracking') 추가, 첫 실행 시 본인 전화번호 + 인증코드 1회 입력
   (`~/.tradingagents/reddit_user.session` 저장 후 무인). nav '📨 미국 레딧'
   맨 끝, help §7 알림 + §9 대시보드 동기 추가.
+- Watchlist 조건 알림 — `bot/watchlist.py` (vibe-trade heartbeat/trigger
+  패턴 영감, 2026-06-04). `/watch TICKER rsi<30 price>950 >sma50 52whigh
+  earnings …` → `watchlist-check.timer` 30분 간격 `check_all()` 이 종목당
+  yfinance 1회(chart_data.fetch_chart_payload 재사용, **LLM 0·비용 ₩0**)
+  fetch → 조건 평가 → **edge-trigger**(false→true 1회만, 스팸 방지) →
+  등록한 chat_id 로 텔레그램 알림 + `/<TICKER>` 분석 권유. 조건: rsi</>N ·
+  price</>X · </>sma50/200 · 52whigh/low · earnings(D-5, best-effort).
+  저장 `~/.tradingagents/watchlist.json`(atomic). 명령 /watch · /watchlist ·
+  /unwatch(TICKER|id|all), set_my_commands 등록. **실행 아님 — 알림만**(교육
+  스탠스 유지). Fincept(C++/AGPL)·vibe-trade(TS/실거래)는 스코프 불일치라
+  이 트리거 개념만 차용, 나머지(모델 티어링/불변 저널/라이브-데이터-only/
+  페르소나)는 이미 보유 확인.
 - 블로그 Watcher — 네이버 '변화하는 기업을 찾아서'(beatthemkt) 새 글 자동
   포워드+ingest (2026-05-31 사용자 요청). `bot/blog_watch.py` — RSS
   (rss.blog.naver.com/<id>.xml, 브라우저 UA+Referer) 30분 polling

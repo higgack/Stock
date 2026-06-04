@@ -600,6 +600,82 @@ class TestPriceChartRender:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger
+# ─────────────────────────────────────────────────────────────────────────
+class TestWatchlist:
+    """fix: 워치리스트 알림 (2026-06-04, vibe-trade 패턴 영감)."""
+
+    def test_parse_conditions_valid_invalid(self):
+        from bot.watchlist import parse_conditions
+        v, inv = parse_conditions("rsi<30 PRICE>950, >sma50 <sma200 52whigh earnings JUNK")
+        assert "rsi<30" in v and "price>950" in v and ">sma50" in v
+        assert "52whigh" in v and "earnings" in v
+        assert "junk" in inv
+
+    def test_parse_dedup_and_cap(self):
+        from bot.watchlist import parse_conditions, MAX_CONDITIONS
+        v, _ = parse_conditions("rsi<30 rsi<30 price>1 price>2 price>3 price>4 price>5 price>6 price>7 price>8")
+        assert len(v) <= MAX_CONDITIONS
+        assert v.count("rsi<30") == 1
+
+    def test_storage_add_list_remove(self, tmp_path, monkeypatch):
+        import bot.watchlist as wl
+        monkeypatch.setattr(wl, "WATCHLIST_PATH", tmp_path / "watchlist.json")
+        wl.add_watch("NVDA", 111, ["rsi<30", "price>950"])
+        wl.add_watch("AAPL", 111, ["earnings"])
+        wl.add_watch("NVDA", 222, ["rsi>70"])  # 다른 chat
+        assert {w["ticker"] for w in wl.list_watches(111)} == {"NVDA", "AAPL"}
+        assert {w["ticker"] for w in wl.list_watches(222)} == {"NVDA"}
+        # 같은 chat+ticker 재등록 → 조건 머지
+        wl.add_watch("NVDA", 111, ["earnings"])
+        nv = [w for w in wl.list_watches(111) if w["ticker"] == "NVDA"][0]
+        assert set(nv["conditions"]) == {"rsi<30", "price>950", "earnings"}
+        # 삭제
+        assert wl.remove_watch(111, "AAPL") == 1
+        assert {w["ticker"] for w in wl.list_watches(111)} == {"NVDA"}
+        assert wl.remove_watch(111, "all") == 1
+        assert wl.list_watches(111) == []
+        # 다른 chat(222) 은 영향 없음
+        assert len(wl.list_watches(222)) == 1 and wl.list_watches(222)[0]["ticker"] == "NVDA"
+
+    def test_evaluate_conditions(self, monkeypatch):
+        import bot.chart_data as cd
+        # 합성 payload: 현재가 100, rsi 25, sma50 110, sma200 90, 52w hi 200 lo 50
+        fake = {
+            "currency": "$", "decimals": 2,
+            "times": ["2025-06-01", "2025-06-02"],
+            "close": [50.0, 100.0],          # last=100, min=50
+            "rsi": [None, 25.0],
+            "sma50": [None, 110.0],
+            "sma200": [None, 90.0],
+        }
+        # 52w high 를 위해 max 를 키운 close 사용
+        fake["close"] = [50.0, 200.0, 100.0]
+        fake["times"] = ["a", "b", "c"]
+        fake["rsi"] = [None, None, 25.0]
+        fake["sma50"] = [None, None, 110.0]
+        fake["sma200"] = [None, None, 90.0]
+        monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: fake)
+        from bot.watchlist import evaluate
+        r = evaluate("X", ["rsi<30", "rsi>30", "price>90", "price>150",
+                           ">sma200", "<sma50", "52whigh", "52wlow"])
+        assert r["rsi<30"][0] is True
+        assert r["rsi>30"][0] is False
+        assert r["price>90"][0] is True
+        assert r["price>150"][0] is False
+        assert r[">sma200"][0] is True   # 100 > 90
+        assert r["<sma50"][0] is True    # 100 < 110
+        assert r["52whigh"][0] is False  # 100 vs 52주 최고 200 → 아님
+        assert r["52wlow"][0] is False   # 100 vs 52주 최저 50 → 아님
+
+    def test_evaluate_no_data_empty(self, monkeypatch):
+        import bot.chart_data as cd
+        monkeypatch.setattr(cd, "fetch_chart_payload", lambda *a, **k: None)
+        from bot.watchlist import evaluate
+        assert evaluate("X", ["rsi<30"]) == {}
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 9) 트레이드 마커 (entry/stop/target) 파싱 + 비현실값 차단
 #    배경: 2026-06-03 Phase 2 — full_report 의 진입/손절/목표가를 차트에
 #    수평선으로. 핵심 안전장치: 종가 series 대비 비현실적(0.2x~5x 밖)인

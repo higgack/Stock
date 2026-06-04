@@ -954,6 +954,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /screener [도메인 | 자유어] — Bottleneck (65 도메인 + 미상시 Pro 즉석 생성). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
+/watch TICKER 조건 — 조건 알림(rsi/price/sma/52w/earnings)·/watchlist·/unwatch
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
 
 ━━━━━━━━━
@@ -976,7 +977,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 미·한·일·대·중) · ECOS/FRED (KR·JP·TW 금리·CPI) · 섹터 ETF (SPDR/KODEX/NEXT TOPIX-17) · 리스크 6종 · 컨센서스 (yfinance+FnGuide/Kabutan) · 공매도+DTC · 내부자/기관 · 실적 ±10일 · DART/EDINET/MOPS (공시·5%대량보유) · SEC EDGAR (8-K·Form4) · US옵션 IV·P/C비율 · KR개장전 미국선물 · TW鉅亨컨센서스 · KRX (5일 외인·공매도 30일) · KIS 7종 KR수급 · Forward EPS sanity · 컨센서스 staleness · SV 브리프 (08:00 KST)
+yfinance (15년) · Alpha Vantage · 네이버·Kabutan 뉴스 · 분기+연간 재무 · 매크로 9종 (시장별 미·한·일·대·중) · ECOS/FRED (KR·JP·TW 금리·CPI) · 섹터 ETF (SPDR/KODEX/NEXT TOPIX-17) · 리스크 6종 · 컨센서스 (yfinance+FnGuide/Kabutan) · 공매도+DTC · 내부자/기관 · 실적 ±10일 · DART/EDINET/MOPS (공시·5%대량보유) · SEC EDGAR (8-K·Form4) · US옵션 IV·P/C비율 · KR개장전 미국선물 · TW鉅亨컨센서스 · KRX (5일 외인·공매도 30일) · KIS 7종 KR수급 · SV 브리프 (08:00 KST)
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -1964,6 +1965,81 @@ async def cmd_sites(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+_WATCH_HELP = (
+    "사용법: <code>/watch TICKER 조건…</code>\n"
+    "조건: <code>rsi&lt;30 rsi&gt;70 price&gt;950 price&lt;800 &gt;sma50 &lt;sma200 "
+    "52whigh 52wlow earnings</code>\n"
+    "예: <code>/watch NVDA rsi&lt;30 price&gt;950 earnings</code>\n"
+    "조건 충족 시 알림 (LLM 0, 비용 ₩0). 목록 /watchlist · 삭제 /unwatch TICKER"
+)
+
+
+async def cmd_watch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/watch TICKER cond… — register a condition-based alert."""
+    if update.message is None:
+        return
+    args = context.args or []
+    if len(args) < 2:
+        await update.message.reply_text(_WATCH_HELP, parse_mode=ParseMode.HTML)
+        return
+    from bot.watchlist import add_watch, parse_conditions
+    ticker = args[0].strip().upper()
+    if not TICKER_RE.match(ticker):
+        await update.message.reply_text(f"⚠️ 잘못된 티커: {ticker}")
+        return
+    valid, invalid = parse_conditions(" ".join(args[1:]))
+    if not valid:
+        await update.message.reply_text(
+            "⚠️ 유효한 조건이 없습니다.\n\n" + _WATCH_HELP,
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    try:
+        w = add_watch(ticker, update.effective_chat.id, valid)
+    except ValueError as exc:
+        await update.message.reply_text(f"⚠️ {exc}")
+        return
+    msg = f"✅ <b>{ticker}</b> 감시 등록\n조건: <code>{' '.join(w['conditions'])}</code>"
+    if invalid:
+        msg += f"\n⚠️ 무시된 조건: <code>{' '.join(invalid)}</code>"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
+async def cmd_watchlist(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/watchlist — list this chat's active watches."""
+    if update.message is None:
+        return
+    from bot.watchlist import list_watches
+    watches = list_watches(update.effective_chat.id)
+    if not watches:
+        await update.message.reply_text(
+            "감시 중인 종목 없음.\n\n" + _WATCH_HELP, parse_mode=ParseMode.HTML)
+        return
+    lines = ["🔔 <b>워치리스트</b>"]
+    for w in watches:
+        lines.append(
+            f"• <b>{w['ticker']}</b> "
+            f"<code>{' '.join(w.get('conditions') or [])}</code>"
+            f"  (id {w['id']})"
+        )
+    lines.append("\n삭제: /unwatch TICKER (또는 id) · 전체 /unwatch all")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
+async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/unwatch TICKER|id|all — remove watches."""
+    if update.message is None:
+        return
+    args = context.args or []
+    if not args:
+        await update.message.reply_text("사용법: /unwatch TICKER (또는 id, 또는 all)")
+        return
+    from bot.watchlist import remove_watch
+    n = remove_watch(update.effective_chat.id, args[0])
+    await update.message.reply_text(
+        f"🗑️ {n}개 삭제됨" if n else "삭제할 항목 없음 (티커/id 확인)")
+
+
 async def _run_screener_and_send(send, *, domain: str | None = None,
                                   theme: dict | None = None,
                                   cache_key: str | None = None,
@@ -2614,6 +2690,9 @@ async def _on_startup(application) -> None:
             BotCommand("realestate_cost", "부동산 Byte 비용 (실거래 브리프)"),
             BotCommand("screener_list", "Screener 도메인 목록 (전체)"),
             BotCommand("sites", "참고 사이트"),
+            BotCommand("watch", "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
+            BotCommand("watchlist", "감시 목록 보기"),
+            BotCommand("unwatch", "감시 삭제 (TICKER/id/all)"),
             BotCommand("screener", "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
             BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
         ]
@@ -2681,6 +2760,9 @@ def main() -> None:
     app.add_handler(CommandHandler("screener_cost", cmd_screener_cost))
     app.add_handler(CommandHandler("screener_list", cmd_screener_list))
     app.add_handler(CommandHandler("sites", cmd_sites))
+    app.add_handler(CommandHandler("watch", cmd_watch))
+    app.add_handler(CommandHandler("watchlist", cmd_watchlist))
+    app.add_handler(CommandHandler("unwatch", cmd_unwatch))
     app.add_handler(CommandHandler("screener", cmd_screener))
     # Per-domain shortcut commands — `/screener_bottleneck`, `/screener_
     # healthcare` 등. Telegram client 가 자동 hyperlink → 클릭으로 입력
