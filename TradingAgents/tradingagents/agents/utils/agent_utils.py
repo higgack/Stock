@@ -2599,6 +2599,21 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
                     f" 또는 marketCap 한쪽이 stale."
                 )
 
+        # 현재가 글리치 가드 (파크시스템스 140860 2026-05-20): 현재가가 52주
+        # 레인지 또는 50/200일 MA 와 모순이면 블록-레벨 HARD 경고. 기존 _52w()
+        # 인라인 ⚠️ 는 LLM 이 조용히 떼고 raw 값을 써버려(이번 케이스 발생)
+        # 무력화됐으므로, 떼기 어려운 블록 directive 로 보강. 사용자 정책
+        # 2026-06-04: 교체(스냅샷 보정) 우선, 값 블록은 차단·중립 폴백.
+        _px_glitch = False
+        try:
+            from bot.price_sanity import price_outlier_vs_refs
+            _px_glitch = price_outlier_vs_refs(
+                px, wk_low, wk_high,
+                info.get("fiftyDayAverage"), info.get("twoHundredDayAverage"),
+            )
+        except Exception:
+            _px_glitch = False
+
         sep = "━" * 56
         lines = [
             sep,
@@ -2619,6 +2634,15 @@ def _build_factual_anchor(ticker: str, info: dict, _cfg: dict) -> str:
                 " PER / PBR / SMA / 기술지표 cite 시 반드시 '데이터 transitional"
                 " (corp action 의심)' 명시. 5거래일 horizon dominant variable"
                 " 로 valuation/기술지표 사용 금지 — corp action 정정 전 보류."
+            )
+        if _px_glitch:
+            lines.append(sep)
+            lines.append(
+                "⛔ 현재가 데이터 이상 (HARD GUARD): 위 현재가가 52주 레인지 또는"
+                " 50/200일 이동평균과 모순됨 (yfinance 가격 글리치 의심 — 파크시스템스"
+                " 140860 2026-05-20 류). 이 현재가 + 그로부터 파생된 등락률·괴리·"
+                "valuation 을 5거래일 dominant 으로 인용 금지. 아래 'TECHNICAL"
+                " SNAPSHOT' 의 (보정된) 현재가를 사용하고, 가격 방향성 결론은 보류·중립."
             )
         lines.extend([
             sep,
@@ -2652,6 +2676,34 @@ def _compute_technical_snapshot(ticker: str) -> str:
         close = hist["Close"].dropna()
         if len(close) < 20:
             return ""
+
+        # ── Glitched last-bar 가드 (파크시스템스 140860 2026-05-20) ──
+        # yfinance 가 마지막 일봉 종가를 ~40% 낮은 글리치 값으로 반환하면
+        # 현재가·10EMA·볼린저·MACD 전부 phantom 폭락으로 오염된다(현재가
+        # ₩163,700 < 52주 최저 ₩205,000, 10EMA 대비 -43%). 마지막 종가가
+        # 직전 종가 중앙값 대비 시장 일일 한도를 넘어 벌어지면 그 봉을 드롭 →
+        # 이후 모든 지표가 '직전 정상 종가' 기준으로 계산된다 (사용자 정책
+        # 2026-06-04: 교체 우선). KR/JP/CN/TW ±35%, 그 외 ±50%. never-raise.
+        _px_repaired = False
+        try:
+            from bot.price_sanity import (
+                last_close_is_glitch, snapshot_gap_for_market,
+            )
+            from bot.market import detect_market as _dm_snap
+            _snap_gap = snapshot_gap_for_market(_dm_snap(ticker))
+            if last_close_is_glitch([float(v) for v in close.values], _snap_gap):
+                _bad_px = float(close.iloc[-1])
+                close = close.iloc[:-1]
+                if len(close) < 20:
+                    return ""
+                _px_repaired = True
+                _analyst_log.warning(
+                    "technical snapshot: last close %.4g for %s is a glitch"
+                    " outlier — dropped, using prior close %.4g",
+                    _bad_px, ticker, float(close.iloc[-1]),
+                )
+        except Exception:
+            pass
 
         # RSI(14) — Wilder exponential smoothing
         rsi_str = "N/A"
@@ -2734,6 +2786,12 @@ def _compute_technical_snapshot(ticker: str) -> str:
             f"현재가: {_sym_ma}{_fmt_ma.format(_cur_px)} (이 series 종가 — "
             f"아래 MA 와 동일 출처)"
         ]
+        if _px_repaired:
+            ma_lines.append(
+                "⚠️ 마지막 일봉 종가가 이상치(yfinance 글리치)로 감지되어 드롭됨 — "
+                "위 현재가/MA/RSI/MACD/볼린저는 직전 정상 종가 기준. 가격 방향성은 "
+                "신중·중립 해석 (phantom 폭락/급등 아님)."
+            )
         ema10 = close.ewm(span=10, adjust=False).mean()
         _ema10v = float(ema10.iloc[-1])
         _gap10 = (_cur_px - _ema10v) / _ema10v * 100 if _ema10v else 0.0

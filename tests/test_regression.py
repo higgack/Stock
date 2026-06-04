@@ -782,6 +782,91 @@ class TestLivePriceGuard:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 8a3) 분석-시점 가격 글리치 가드 (2026-06-04) — bot/price_sanity.py
+#   배경: 파크시스템스 140860.KS 2026-05-20 분석이 yfinance 글리치 현재가
+#   ₩163,700(실제 ~₩280-300K, 52주 최저 ₩205,000 미만)을 그대로 써서 시장·
+#   펀더멘털·트레이더 전원이 phantom 폭락 위에 Sell/Underweight 결론을 쌓음.
+#   정책(사용자 2026-06-04): 교체(직전 정상 종가) 우선, 안되면 차단/중립.
+#   _compute_technical_snapshot 가 글리치 last-bar 드롭(교체), FACTUAL ANCHOR
+#   값 블록이 outlier 현재가에 HARD 경고(차단)로 보강.
+# ─────────────────────────────────────────────────────────────────────────
+class TestPriceGlitchGuard:
+    """fix: yfinance 가격 글리치 → 교체/차단 (파크시스템스 140860 2026-06-04)."""
+
+    def test_last_close_glitch_kr_case(self):
+        from bot.price_sanity import last_close_is_glitch
+        # 직전 ~300K, 마지막 163,700 (-45%) → KR 한도(0.35) 초과 = glitch
+        vals = [300000, 310000, 295000, 305000, 300000, 308000, 163700]
+        assert last_close_is_glitch(vals, 0.35) is True
+
+    def test_last_close_normal_kept(self):
+        from bot.price_sanity import last_close_is_glitch
+        vals = [300000, 310000, 295000, 305000, 300000, 308000, 303000]
+        assert last_close_is_glitch(vals, 0.35) is False
+
+    def test_last_close_kr_limit_move_kept(self):
+        from bot.price_sanity import last_close_is_glitch
+        # -30% (KR 일일 한도) 는 ±35% 밴드 안 → 실제 한도 이동은 절대 안 드롭
+        assert last_close_is_glitch([300000] * 6 + [210000], 0.35) is False
+
+    def test_last_close_short_series_false(self):
+        from bot.price_sanity import last_close_is_glitch
+        # <7 포인트면 판단 불가 → False (단기/신규 상장 over-fire 방지)
+        assert last_close_is_glitch([300000, 200000, 100000], 0.35) is False
+
+    def test_last_close_nan_or_zero_is_glitch(self):
+        from bot.price_sanity import last_close_is_glitch
+        base = [300000, 310000, 295000, 305000, 300000, 308000]
+        assert last_close_is_glitch(base + [float("nan")], 0.35) is True
+        assert last_close_is_glitch(base + [0], 0.35) is True
+
+    def test_market_gap_and_us_band(self):
+        from bot.price_sanity import last_close_is_glitch, snapshot_gap_for_market
+        assert snapshot_gap_for_market("KR") == 0.35
+        assert snapshot_gap_for_market("US") == 0.50
+        # 미국 +40% 어닝 갭(실제) 보존, 2x junk 드롭
+        assert last_close_is_glitch([100] * 6 + [140], 0.50) is False
+        assert last_close_is_glitch([100] * 6 + [250], 0.50) is True
+
+    def test_outlier_below_52w_low(self):
+        from bot.price_sanity import price_outlier_vs_refs
+        # 140860 실제: 현재가 163,700 < 52주 최저 205,000 → 불가능 = outlier
+        assert price_outlier_vs_refs(163700, low52=205000, high52=350500,
+                                     sma50=269820, sma200=252600) is True
+
+    def test_outlier_in_range_false(self):
+        from bot.price_sanity import price_outlier_vs_refs
+        assert price_outlier_vs_refs(250000, low52=205000, high52=350500,
+                                     sma50=269820, sma200=252600) is False
+
+    def test_outlier_above_52w_high(self):
+        from bot.price_sanity import price_outlier_vs_refs
+        assert price_outlier_vs_refs(400000, low52=205000, high52=350500) is True
+
+    def test_outlier_no_refs_false(self):
+        from bot.price_sanity import price_outlier_vs_refs
+        # 판단할 ref 가 없으면 False (절대 over-fire 안 함)
+        assert price_outlier_vs_refs(163700) is False
+
+    def test_outlier_far_from_both_ma(self):
+        from bot.price_sanity import price_outlier_vs_refs
+        # 52주 없고 50d·200d 둘 다에서 >35% → outlier; 한쪽만 멀면 아님
+        assert price_outlier_vs_refs(160000, sma50=270000, sma200=255000) is True
+        assert price_outlier_vs_refs(260000, sma50=270000, sma200=255000) is False
+
+    def test_agent_utils_wires_glitch_guard(self):
+        """agent_utils 가 실제로 price_sanity 를 호출하는지(스냅샷 교체 +
+        값 블록 차단) 소스에서 확인 — heavy import 없이 배선 회귀 차단."""
+        src = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
+                   encoding="utf-8").read()
+        assert "from bot.price_sanity import" in src, "price_sanity import 누락"
+        assert "last_close_is_glitch" in src, "스냅샷 글리치 검사 미배선"
+        assert "price_outlier_vs_refs" in src, "값 블록 outlier 검사 미배선"
+        assert "_px_repaired" in src, "스냅샷 last-bar 교체 플래그 누락"
+        assert "현재가 데이터 이상 (HARD GUARD)" in src, "값 블록 차단 directive 누락"
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger
 # ─────────────────────────────────────────────────────────────────────────
 class TestWatchlist:

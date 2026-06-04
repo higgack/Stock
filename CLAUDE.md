@@ -1006,6 +1006,31 @@ All structural guards added during KR/JP expansion now also cover US,
 preventing US-side asymmetric weakness. Reflect this in any future
 review:
 
+- **현재가 글리치 가드 (price-glitch HARD GUARD, 2026-06-04)** —
+  `bot/price_sanity.py` (의존성 경량·순수·단위테스트 가능). yfinance 가 한
+  종목의 한 시점 가격을 잘못된 분할/조정 기준·stale·junk 로 반환해 phantom
+  폭락/급등을 만드는 클래스. 파크시스템스 140860.KS 2026-05-20 surfaced:
+  분석·차트 둘 다 현재가 ₩163,700 (실제 ~₩280-300K, **52주 최저 ₩205,000
+  미만 = 물리적 불가능**, 10EMA 대비 -43%) → 시장·펀더멘털·트레이더 전원이
+  phantom 폭락 위에 Sell/Underweight 결론을 쌓음. 사용자 정책 2026-06-04:
+  **교체(직전 정상 종가) 우선, 안 되면 차단·중립**. 적용 (전부 universal):
+  - **분석 SSoT 교체** — `_compute_technical_snapshot` (agent_utils) 가
+    `last_close_is_glitch` 로 마지막 일봉 종가가 직전 종가 중앙값 대비 시장
+    일일 한도(KR/JP/CN/TW ±35%, 그 외 ±50%) 초과면 그 봉을 드롭 → 현재가·
+    10EMA·50/200SMA·RSI·MACD·볼린저 전부 직전 정상 종가 기준 재계산 + 보정
+    배너. 실제 한도 이동(KR ≤±30%)은 절대 안 드롭.
+  - **값 블록 차단** — FACTUAL ANCHOR (`_build_factual_anchor`) 가
+    `price_outlier_vs_refs` (현재가 < 52주 최저 / > 52주 최고, 또는 50d·
+    200d MA 둘 다에서 > ±35%)로 outlier 감지 시 블록-레벨 ⛔ HARD 경고
+    (기존 `_52w()` 인라인 ⚠️ 는 LLM 이 조용히 떼버려 무력화됐던 것 보강 —
+    이번 케이스가 정확히 그 경로로 누수). 가격 파생 등락·괴리·valuation
+    5거래일 dominant 인용 금지 directive.
+  - **차트(이미 배포 2026-06-04, `bot/chart_data._live_last_price`)** —
+    라이브 ~15분 현재가가 시리즈 종가 대비 비현실이면 직전 종가로 폴백.
+    셋이 같은 글리치 클래스를 분석·표시 양면에서 차단. ⚠️ no-limit 시장
+    (US/EU/HK)은 진짜 뉴스 갭 보존을 위해 밴드가 느슨(2x/0.5x) — magnitude
+    만으론 진짜 -40% 뉴스 갭과 글리치 구분 불가하므로, 분석 SSoT 의 series-
+    median 교체 + 52주/MA outlier 검사가 1차 방어선.
 - **SEC XBRL 권위 재무 (US authoritative financials, 2026-06-04)** —
   `bot/edgar_client.py` `get_key_financials(ticker)` 가 data.sec.gov
   `/api/xbrl/companyconcept` 에서 매출/순이익/EPS희석/영업현금흐름/자산/
