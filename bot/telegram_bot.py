@@ -1018,7 +1018,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/start /help /usage /sv_cost /screener_cost /daily_byte_cost /cheongyak_cost /realestate_cost /screener_list /sites — 도움말·비용·목록
+/start /help /usage /sv_cost /screener_cost /daily_byte_cost /cheongyak_cost /realestate_cost /screener_list /sites /portfolio — 도움말·비용·목록·자산(뱅샐 zip)
 /screener [도메인 | 자유어] — Bottleneck (65 도메인 + 미상시 Pro 즉석 생성). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
@@ -2803,6 +2803,7 @@ async def _on_startup(application) -> None:
             BotCommand("unwatch", "감시 삭제 (TICKER/id/all)"),
             BotCommand("screener", "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
             BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
+            BotCommand("portfolio", "💼 자산 (뱅크샐러드 zip 업로드)"),
         ]
         # Per-domain shortcut commands. Description = theme display name
         # (capped at 100 chars to leave headroom under Telegram's 256-char
@@ -2850,6 +2851,80 @@ async def _on_startup(application) -> None:
     _recovery.clear()
 
 
+_PF_DASH_BASE = os.getenv(
+    "NOAH_DASHBOARD_BASE",
+    "http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/",
+)
+
+
+def _pf_link() -> str:
+    return _PF_DASH_BASE.rstrip("/") + "/portfolio.html"
+
+
+async def cmd_portfolio(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/portfolio — 저장된 자산 요약 + 대시보드 링크. 없으면 업로드 안내."""
+    try:
+        from bot.portfolio import load, format_summary_text
+    except Exception as exc:
+        await update.message.reply_text(f"자산 모듈 로드 실패: {exc}")
+        return
+    m = load()
+    if not m or not m.get("holdings"):
+        await update.message.reply_text(
+            "아직 업로드된 자산이 없습니다.\n뱅크샐러드 → 데이터 내보내기 → 메일로 받은 "
+            "<b>zip 파일을 이 대화에 그대로 보내</b>주세요. 자동으로 파싱·정리해 "
+            f"통합 자산 대시보드를 만듭니다.\n📊 {_pf_link()}",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    await update.message.reply_text(
+        format_summary_text(m) + f"\n\n📊 대시보드: {_pf_link()}"
+    )
+
+
+async def cmd_portfolio_upload(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """DM 으로 받은 zip/xlsx(뱅크샐러드 export) → 파싱·저장·대시보드 갱신.
+
+    비번은 .env BANKSALAD_ZIP_PW(코드/깃 미기재). ingest 는 파일 I/O + pykrx
+    조회가 있어 to_thread 로 event loop 비차단."""
+    msg = update.message
+    doc = msg.document if msg else None
+    if not doc:
+        return
+    name = (doc.file_name or "").lower()
+    if not (name.endswith(".zip") or name.endswith(".xlsx")):
+        return  # 뱅샐 export 아닌 문서는 조용히 무시
+    if doc.file_size and doc.file_size > 20 * 1024 * 1024:
+        await msg.reply_text("파일이 너무 큽니다(20MB 초과). 뱅크샐러드 export zip 만 보내주세요.")
+        return
+    status = await msg.reply_text("📥 자산 파일 받는 중…")
+    try:
+        f = await doc.get_file()
+        data = bytes(await f.download_as_bytearray())
+    except Exception as exc:
+        await status.edit_text(f"파일 다운로드 실패: {exc}")
+        return
+    pw = os.getenv("BANKSALAD_ZIP_PW")
+    try:
+        from bot.portfolio import ingest, format_summary_text
+        from bot.dashboard import regenerate_portfolio_index
+        model = await asyncio.to_thread(ingest, data, pw)
+    except RuntimeError:
+        await status.edit_text(
+            "🔒 zip 비밀번호 오류. .env 의 BANKSALAD_ZIP_PW 를 확인해주세요 "
+            "(뱅크샐러드 export 비번)."
+        )
+        return
+    except Exception as exc:
+        await status.edit_text(f"자산 파일 파싱 실패: {type(exc).__name__}: {exc}")
+        return
+    try:
+        await asyncio.to_thread(regenerate_portfolio_index)
+    except Exception as exc:
+        log.warning("portfolio dashboard regen failed: %s", exc)
+    await status.edit_text(format_summary_text(model) + f"\n\n📊 대시보드: {_pf_link()}")
+
+
 def main() -> None:
     if not CHANNEL_CHAT_IDS:
         log.warning(
@@ -2881,6 +2956,14 @@ def main() -> None:
     # Catch /compare typed in DM and redirect — actual compare runs only
     # via on_channel_post inside the registered channel.
     app.add_handler(CommandHandler("compare", cmd_compare_hint))
+    app.add_handler(CommandHandler("portfolio", cmd_portfolio))
+    # 뱅크샐러드 자산 export(zip/xlsx)를 DM 으로 보내면 자동 파싱·저장·대시보드
+    # 갱신 (filters.Document — 명령/텍스트와 disjoint 라 충돌 없음).
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & filters.Document.ALL, cmd_portfolio_upload
+        )
+    )
     app.add_handler(CallbackQueryHandler(on_full_report, pattern=r"^full:"))
     app.add_handler(
         MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, on_channel_post)
@@ -2901,6 +2984,12 @@ def main() -> None:
         _dashboard_regen()
     except Exception as exc:
         log.warning("startup dashboard regen failed: %s", exc)
+    # 자산 대시보드도 startup 에 1회 — 업로드 전이라도 빈 상태 페이지 존재.
+    try:
+        from bot.dashboard import regenerate_portfolio_index
+        regenerate_portfolio_index()
+    except Exception as exc:
+        log.warning("startup portfolio regen failed: %s", exc)
 
     log.info("bot starting — watching channels: %s", CHANNEL_CHAT_IDS or "auto-detect")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

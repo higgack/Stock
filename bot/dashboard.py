@@ -1826,6 +1826,7 @@ def _render_index(records: list[dict]) -> str:
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + ' · <a href="watchlist.html">🔔 워치리스트</a>'
+            + ' · <a href="portfolio.html">💼 자산</a>'
         )
     else:
         errors_link = (
@@ -1838,6 +1839,7 @@ def _render_index(records: list[dict]) -> str:
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + ' · <a href="watchlist.html">🔔 워치리스트</a>'
+            + ' · <a href="portfolio.html">💼 자산</a>'
         )
 
     return f"""<!doctype html>
@@ -5172,6 +5174,189 @@ def regenerate_watchlist_index() -> None:
                  len(watches), len(alerts))
     except Exception as exc:
         log.warning("dashboard: watchlist regen failed: %s", exc)
+
+
+# ── 자산 관리 대시보드 (뱅크샐러드 export → portfolio.html) — 2026-06-04 ──
+# bot/portfolio.py 가 저장한 모델(증권사별·자산배분·순자산·보유종목)을 읽어
+# portfolio.html 렌더. 텔레그램 ZIP 업로드 핸들러가 ingest 후 호출(+startup/
+# 자정 regen). _SCREENER_CSS(테마 vars --text/--muted/--pos/--neg/--border/
+# --card/--bg) 재사용 + 도넛만 _PF_CSS 추가. 닫는 태그는 기존 페이지와 동일
+# (</div> 까지; 브라우저 tolerant).
+_PF_DONUT_COLORS = ["#4c9aff", "#3ec46d", "#f5a623", "#e2574c", "#b07cff",
+                    "#22d3ee", "#f78fb3", "#facc15", "#2dd4bf", "#fb923c", "#a0aec0"]
+_PF_CSS = """<style>
+.pf-grid{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;margin:14px 0}
+.pf-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin:14px 0}
+.pf-h{margin:0 0 10px;font-size:15px;font-weight:700;color:var(--text)}
+.pf-donut{width:170px;height:170px;border-radius:50%}
+.pf-hole{width:170px;height:170px;border-radius:50%;position:relative;flex:0 0 auto}
+.pf-hole::after{content:"";position:absolute;inset:32px;border-radius:50%;background:var(--bg)}
+.pf-leg{font-size:13px;margin:3px 0;color:var(--text)}
+.pf-dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:middle}
+.pf-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.pf-tbl th,.pf-tbl td{padding:6px 9px;border-bottom:1px solid var(--border);text-align:left;color:var(--text)}
+.pf-tbl th{color:var(--muted);font-weight:600}
+.pf-tbl td.r,.pf-tbl th.r{text-align:right;font-variant-numeric:tabular-nums}
+.pf-scroll{max-height:520px;overflow:auto;border:1px solid var(--border);border-radius:8px}
+@media (max-width:760px){.pf-grid>.pf-card{flex:1 1 100% !important;min-width:0 !important}}
+</style>"""
+
+
+def _pf_won(v) -> str:
+    """₩ 금액 → 억/만 약식. None→'-'."""
+    if v is None:
+        return "-"
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    neg = n < 0
+    n = abs(n)
+    if n >= 1e8:
+        s = f"{n / 1e8:.1f}억"
+    elif n >= 1e4:
+        s = f"{n / 1e4:,.0f}만"
+    else:
+        s = f"{n:,.0f}"
+    return ("-" if neg else "") + s + "원"
+
+
+def _pf_col(v) -> str:
+    return "var(--pos)" if (v or 0) >= 0 else "var(--neg)"
+
+
+def _render_portfolio_page(model) -> str:
+    """portfolio.json 모델 → portfolio.html. 추천 구성: 순자산 헤더 → 자산배분
+    도넛 → 증권사별 + 수익률 TOP/WORST → 보유 종목 테이블 → 대출/보험."""
+    import html as _html
+    nav = ('<div class="nav"><a href="index.html">← NOAH 종목 분석</a>'
+           ' · <a href="watchlist.html">🔔 워치리스트</a></div>')
+    if not model or not model.get("holdings"):
+        return _SCREENER_CSS + _PF_CSS + (
+            '<div class="wrap">' + nav + '<h1>💼 자산 관리</h1>'
+            '<p class="sub">아직 업로드된 자산이 없습니다. 텔레그램 봇에 '
+            '<b>뱅크샐러드 자산 export (zip)</b> 를 보내면 자동으로 여기 표시됩니다.</p></div>')
+
+    nw = model.get("net_worth", {})
+    holdings = model.get("holdings", [])
+    eval_sum = sum(h.get("평가금액") or 0 for h in holdings)
+    cost_sum = sum(h.get("투자원금") or 0 for h in holdings)
+    pnl = eval_sum - cost_sum
+    pnl_pct = (pnl / cost_sum * 100) if cost_sum else 0.0
+    as_of = _html.escape(str(model.get("as_of") or ""))
+
+    stats = (
+        '<div class="stats">'
+        f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("순자산"))}</div><div class="stat-lbl">순자산</div></div>'
+        f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("총자산"))}</div><div class="stat-lbl">총자산</div></div>'
+        f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("총부채"))}</div><div class="stat-lbl">총부채</div></div>'
+        f'<div class="stat"><div class="stat-num">{_pf_won(eval_sum)}</div><div class="stat-lbl">주식 평가</div></div>'
+        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(pnl)}">{_pf_won(pnl)} ({pnl_pct:+.1f}%)</div><div class="stat-lbl">주식 평가손익</div></div>'
+        f'<div class="stat"><div class="stat-num">{len(holdings)}</div><div class="stat-lbl">보유 종목</div></div>'
+        '</div>')
+
+    # 자산 배분 도넛
+    alloc_items = sorted(model.get("asset_allocation", {}).items(), key=lambda kv: -kv[1])
+    tot = sum(a for _, a in alloc_items) or 1
+    stops, legend, acc = [], [], 0.0
+    for i, (cat, amt) in enumerate(alloc_items):
+        pct = amt / tot * 100
+        col = _PF_DONUT_COLORS[i % len(_PF_DONUT_COLORS)]
+        stops.append(f"{col} {acc:.2f}% {acc + pct:.2f}%")
+        legend.append(f'<div class="pf-leg"><span class="pf-dot" style="background:{col}"></span>'
+                      f'{_html.escape(cat)} <b>{_pf_won(amt)}</b> '
+                      f'<span style="color:var(--muted)">({pct:.1f}%)</span></div>')
+        acc += pct
+    donut_block = ""
+    if stops:
+        donut_block = (
+            '<div class="pf-card"><div class="pf-h">자산 배분</div><div class="pf-grid">'
+            f'<div class="pf-hole"><div class="pf-donut" style="background:conic-gradient({",".join(stops)})"></div></div>'
+            f'<div style="flex:1;min-width:200px">{"".join(legend)}</div></div></div>')
+
+    # 증권사별
+    bro_rows = ""
+    for b, d in sorted(model.get("by_broker", {}).items(), key=lambda kv: -kv[1]["평가금액"]):
+        bro_rows += (f'<tr><td>{_html.escape(b)}</td><td class="r">{_pf_won(d["평가금액"])}</td>'
+                     f'<td class="r">{d["종목수"]}</td>'
+                     f'<td class="r" style="color:{_pf_col(d["평가손익"])}">{_pf_won(d["평가손익"])}</td></tr>')
+    bro_block = ('<div class="pf-card" style="flex:1;min-width:300px"><div class="pf-h">증권사별</div>'
+                 '<table class="pf-tbl"><tr><th>증권사</th><th class="r">평가금액</th><th class="r">종목</th><th class="r">손익</th></tr>'
+                 + bro_rows + '</table></div>')
+
+    # 수익률 TOP / WORST
+    def _mv(items):
+        out = ""
+        for h in items:
+            r = h.get("수익률")
+            out += (f'<tr><td>{_html.escape(h.get("상품명") or "")}</td>'
+                    f'<td class="r" style="color:{_pf_col(r)}">{r:+.1f}%</td>'
+                    f'<td class="r">{_pf_won(h.get("평가금액"))}</td></tr>')
+        return out
+    movers_block = ('<div class="pf-card" style="flex:1;min-width:300px"><div class="pf-h">수익률 TOP / WORST</div>'
+                    '<table class="pf-tbl"><tr><th>종목</th><th class="r">수익률</th><th class="r">평가금액</th></tr>'
+                    + _mv(model.get("top_gainers", [])) + _mv(model.get("top_losers", [])) + '</table></div>')
+
+    # 보유 종목 전체
+    hl_rows = ""
+    for h in sorted(holdings, key=lambda x: -(x.get("평가금액") or 0)):
+        r = h.get("수익률")
+        rtxt = f'{r:+.1f}%' if r is not None else "—"
+        nm = _html.escape(h.get("상품명") or "")
+        tkr = h.get("ticker")
+        nm_cell = f'<a href="ticker_{_html.escape(str(tkr))}.html">{nm}</a>' if tkr else nm
+        hl_rows += (f'<tr><td>{nm_cell}</td><td>{_html.escape(str(tkr or "—"))}</td>'
+                    f'<td>{_html.escape(h.get("금융사") or "")}</td>'
+                    f'<td class="r">{_pf_won(h.get("평가금액"))}</td>'
+                    f'<td class="r" style="color:{_pf_col(r)}">{rtxt}</td>'
+                    f'<td class="r" style="color:{_pf_col(h.get("평가손익"))}">{_pf_won(h.get("평가손익"))}</td></tr>')
+    holdings_block = ('<div class="pf-card"><div class="pf-h">보유 종목 (' + str(len(holdings)) + ')</div>'
+                      '<div class="pf-scroll"><table class="pf-tbl">'
+                      '<tr><th>종목</th><th>티커</th><th>증권사</th><th class="r">평가금액</th><th class="r">수익률</th><th class="r">평가손익</th></tr>'
+                      + hl_rows + '</table></div></div>')
+
+    # 대출 · 보험
+    loans, ins = model.get("loans", []), model.get("insurance", [])
+    extra = ""
+    if loans or ins:
+        extra = '<div class="pf-card"><div class="pf-h">대출 · 보험</div>'
+        if loans:
+            extra += '<table class="pf-tbl"><tr><th>대출</th><th>금융사</th><th class="r">잔액</th><th class="r">금리</th></tr>'
+            for l in loans:
+                gr = f'{l.get("대출금리")}%' if l.get("대출금리") is not None else "—"
+                extra += (f'<tr><td>{_html.escape(l.get("상품명") or l.get("대출종류") or "")}</td>'
+                          f'<td>{_html.escape(l.get("금융사") or "")}</td>'
+                          f'<td class="r">{_pf_won(l.get("대출잔액"))}</td><td class="r">{gr}</td></tr>')
+            extra += '</table>'
+        if ins:
+            names = ", ".join(_html.escape(i.get("금융사") or "") for i in ins)
+            extra += f'<div style="margin-top:8px;color:var(--muted);font-size:13px">보험 {len(ins)}건: {names}</div>'
+        extra += '</div>'
+
+    note = ('<p class="sub" style="margin-top:14px;color:var(--muted);font-size:12px">'
+            '뱅크샐러드 export 스냅샷 기준 — 평가금액·수익률은 export 시점 값. '
+            '티커 매칭 종목은 종목명 클릭 시 NOAH 분석으로 연결(분석 기록 있을 때). '
+            f'기준 기간: {as_of}</p>')
+
+    return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
+            + '<h1>💼 자산 관리</h1>'
+            + '<p class="sub">뱅크샐러드 전 계좌 통합 — 증권사·예적금·부동산·동산·대출·보험</p>'
+            + stats + donut_block
+            + '<div class="pf-grid">' + bro_block + movers_block + '</div>'
+            + holdings_block + extra + note + '</div>')
+
+
+def regenerate_portfolio_index() -> None:
+    """portfolio.json → portfolio.html (ARCHIVE_ROOT). 텔레그램 ingest 후 +
+    startup/자정 regen 에서 호출. 오류는 swallow."""
+    try:
+        from bot.portfolio import load as _pf_load
+        html = _render_portfolio_page(_pf_load())
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "portfolio.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: portfolio.html regenerated")
+    except Exception as exc:
+        log.warning("dashboard: portfolio regen failed: %s", exc)
 
 
 # ── 분기 GICS / 신규 산업 점검 — 후보 트래킹 (2026-06-01) ────────────────

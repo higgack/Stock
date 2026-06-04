@@ -1584,3 +1584,39 @@ class TestPortfolioModel:
         pf.save(self._model())
         loaded = pf.load()
         assert loaded is not None and loaded["holding_count"] == 2 and "_saved_ts" in loaded
+
+
+class TestPortfolioDashboard:
+    """fix: 자산 대시보드 렌더 + 텔레그램 배선 (2026-06-04 자산관리 P1 증분4)."""
+
+    def _model(self):
+        from bot.portfolio_parser import parse_banksalad
+        from bot.portfolio import build_model
+        return build_model(parse_banksalad(_BANKSALAD_SYNTH))
+
+    def test_render_portfolio_page(self):
+        from bot.dashboard import _render_portfolio_page
+        html = _render_portfolio_page(self._model())
+        assert "<!DOCTYPE html>" in html
+        assert "conic-gradient(" in html       # 자산배분 도넛
+        assert "순자산" in html and "증권사별" in html
+        assert "이오테크닉스" in html          # 보유 테이블
+        assert "ticker_LRCX.html" in html      # 해외 매칭 → NOAH 분석 링크
+        assert "부동산" in html                # 자산배분에 부동산
+        # 빈 상태(업로드 전)
+        assert "아직 업로드된 자산이 없습니다" in _render_portfolio_page(None)
+
+    def test_nav_and_regen_wired(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'href="portfolio.html">💼 자산' in src, "메인 nav 자산 링크 누락"
+        assert "def regenerate_portfolio_index" in src
+
+    def test_telegram_wiring(self):
+        # telegram_bot 은 무거운 의존성 import 라 소스 검증(PM 배너 테스트와 동일 패턴).
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def cmd_portfolio_upload" in src and "async def cmd_portfolio" in src
+        assert "filters.ChatType.PRIVATE & filters.Document.ALL" in src, "문서 핸들러 미등록"
+        assert 'CommandHandler("portfolio", cmd_portfolio)' in src
+        assert "BANKSALAD_ZIP_PW" in src, "비번 env 미참조"
+        assert "regenerate_portfolio_index" in src
+        assert 'BotCommand("portfolio"' in src, "set_my_commands 미등록"
