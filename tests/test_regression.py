@@ -1603,9 +1603,15 @@ class TestPortfolioDashboard:
         assert "이오테크닉스" in html          # 보유 테이블
         assert "ticker_LRCX.html" in html      # 해외 매칭 → NOAH 분석 링크
         assert "부동산" in html                # 자산배분에 부동산
-        # 빈 공간 활용(2026-06-04): 도넛 우측 주식 요약 패널 + 증권사별 밑 순자산 바
+        # 빈 공간 활용(2026-06-04): 도넛 우측 주식 요약 패널 + 증권사별 밑
         assert "💹 주식 요약" in html and "승률" in html, "주식 요약 패널 누락"
-        assert "− 부채" in html, "자산 vs 부채 바 누락"
+        assert "− 부채" in html, "순자산 라인 누락"
+        # v3 피드백(2026-06-04): 보험 표 · 대출 원금 · 동산(자동차) · 국내/해외 · 업데이트 시각
+        assert "보험사" in html and "보험명" in html, "보험 표 누락"
+        assert "한도(원금)" in html, "대출 원금 컬럼 누락"
+        assert "동산 (자동차)" in html, "동산(자동차) 라벨 누락"
+        assert "주식 국내 / 해외" in html, "국내/해외 비중 누락"
+        assert "마지막 업데이트" in html, "업데이트 시각 헤더 누락"
         # 빈 상태(업로드 전)
         assert "아직 업로드된 자산이 없습니다" in _render_portfolio_page(None)
 

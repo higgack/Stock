@@ -5244,6 +5244,16 @@ def _render_portfolio_page(model) -> str:
     pnl = eval_sum - cost_sum
     pnl_pct = (pnl / cost_sum * 100) if cost_sum else 0.0
     as_of = _html.escape(str(model.get("as_of") or ""))
+    # 수동 업로드(뱅크샐러드 RAG 채널)라 '마지막 업데이트' 시각 명시 (사용자
+    # 요청 2026-06-04). ingest 가 save() 에 박은 _saved_ts(epoch) → KST.
+    import datetime as _dt
+    _ts = model.get("_saved_ts")
+    if _ts:
+        updated = _dt.datetime.fromtimestamp(
+            _ts, _dt.timezone(_dt.timedelta(hours=9))
+        ).strftime("%Y-%m-%d %H:%M")
+    else:
+        updated = "—"
 
     stats = (
         '<div class="stats">'
@@ -5263,8 +5273,10 @@ def _render_portfolio_page(model) -> str:
         pct = amt / tot * 100
         col = _PF_DONUT_COLORS[i % len(_PF_DONUT_COLORS)]
         stops.append(f"{col} {acc:.2f}% {acc + pct:.2f}%")
+        # 뱅크샐러드 '동산' 카테고리 = 자동차/이륜차 → 명시 (사용자 요청 2026-06-04)
+        disp = "동산 (자동차)" if cat == "동산" else cat
         legend.append(f'<div class="pf-leg"><span class="pf-dot" style="background:{col}"></span>'
-                      f'{_html.escape(cat)} <b>{_pf_won(amt)}</b> '
+                      f'{_html.escape(disp)} <b>{_pf_won(amt)}</b> '
                       f'<span style="color:var(--muted)">({pct:.1f}%)</span></div>')
         acc += pct
     # 주식 요약 패널 — 도넛 카드 우측 빈 공간 활용 (배분 도넛과 중복 안 되게
@@ -5297,19 +5309,29 @@ def _render_portfolio_page(model) -> str:
         bro_rows += (f'<tr><td>{_html.escape(b)}</td><td class="r">{_pf_won(d["평가금액"])}</td>'
                      f'<td class="r">{d["종목수"]}</td>'
                      f'<td class="r" style="color:{_pf_col(d["평가손익"])}">{_pf_won(d["평가손익"])}</td></tr>')
-    # 자산 vs 부채 바 — 증권사별 카드 밑 빈 공간 활용 (순자산 시각화).
+    # 증권사별 카드 밑 — 순자산 한 줄 + 주식 국내/해외 비중 (자산/부채 바는 부채
+    # 0 이라 단조 → 더 유용한 국내/해외 노출. 사용자 요청 2026-06-04). 국내/해외
+    # 는 resolve 결과 market=='US' 여부로 분류(해외 alias 매칭 → 해외, 나머지
+    # 국내) — pykrx 매칭 없어도 동작.
     asset_t = nw.get("총자산") or 0
     liab_t = nw.get("총부채") or 0
-    denom = (asset_t + liab_t) or 1
+    overseas = sum(h.get("평가금액") or 0 for h in holdings if h.get("market") == "US")
+    domestic = max(eval_sum - overseas, 0)
+    eq_tot = eval_sum or 1
     nw_bar = (
         '<div style="margin-top:14px">'
-        f'<div style="font-size:12px;color:var(--muted);margin-bottom:5px">순자산 '
+        f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">순자산 '
         f'<b style="color:var(--text)">{_pf_won(nw.get("순자산"))}</b> = 자산 '
         f'{_pf_won(asset_t)} − 부채 {_pf_won(liab_t)}</div>'
+        '<div style="font-size:12px;color:var(--muted);margin-bottom:5px">주식 국내 / 해외</div>'
         '<div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--border)">'
-        f'<div title="자산" style="background:var(--pos);width:{asset_t / denom * 100:.1f}%"></div>'
-        f'<div title="부채" style="background:var(--neg);width:{liab_t / denom * 100:.1f}%"></div>'
-        '</div></div>')
+        f'<div title="국내" style="background:#4c9aff;width:{domestic / eq_tot * 100:.1f}%"></div>'
+        f'<div title="해외" style="background:#f5a623;width:{overseas / eq_tot * 100:.1f}%"></div>'
+        '</div>'
+        '<div style="font-size:12px;color:var(--muted);margin-top:5px">'
+        f'<span style="color:#4c9aff">●</span> 국내 {_pf_won(domestic)} ({domestic / eq_tot * 100:.0f}%) · '
+        f'<span style="color:#f5a623">●</span> 해외 {_pf_won(overseas)} ({overseas / eq_tot * 100:.0f}%)</div>'
+        '</div>')
     bro_block = ('<div class="pf-card" style="flex:1;min-width:300px"><div class="pf-h">증권사별</div>'
                  '<table class="pf-tbl"><tr><th>증권사</th><th class="r">평가금액</th><th class="r">종목</th><th class="r">손익</th></tr>'
                  + bro_rows + '</table>' + nw_bar + '</div>')
@@ -5345,22 +5367,36 @@ def _render_portfolio_page(model) -> str:
                       '<tr><th>종목</th><th>티커</th><th>증권사</th><th class="r">평가금액</th><th class="r">수익률</th><th class="r">평가손익</th></tr>'
                       + hl_rows + '</table></div></div>')
 
-    # 대출 · 보험
+    # 대출 · 보험 — 대출은 한도(원금)+잔액+금리(전부 노출), 보험은 표로
+    # (사용자 요청 2026-06-04: 보험도 제대로, 대출 다 반영).
     loans, ins = model.get("loans", []), model.get("insurance", [])
     extra = ""
     if loans or ins:
         extra = '<div class="pf-card"><div class="pf-h">대출 · 보험</div>'
         if loans:
-            extra += '<table class="pf-tbl"><tr><th>대출</th><th>금융사</th><th class="r">잔액</th><th class="r">금리</th></tr>'
+            extra += ('<div style="font-size:13px;color:var(--muted);margin:2px 0 4px">대출 ('
+                      + str(len(loans)) + ')</div>'
+                      '<table class="pf-tbl"><tr><th>대출</th><th>금융사</th>'
+                      '<th class="r">한도(원금)</th><th class="r">잔액</th><th class="r">금리</th></tr>')
             for l in loans:
                 gr = f'{l.get("대출금리")}%' if l.get("대출금리") is not None else "—"
                 extra += (f'<tr><td>{_html.escape(l.get("상품명") or l.get("대출종류") or "")}</td>'
                           f'<td>{_html.escape(l.get("금융사") or "")}</td>'
-                          f'<td class="r">{_pf_won(l.get("대출잔액"))}</td><td class="r">{gr}</td></tr>')
+                          f'<td class="r">{_pf_won(l.get("대출원금"))}</td>'
+                          f'<td class="r">{_pf_won(l.get("대출잔액"))}</td>'
+                          f'<td class="r">{gr}</td></tr>')
             extra += '</table>'
         if ins:
-            names = ", ".join(_html.escape(i.get("금융사") or "") for i in ins)
-            extra += f'<div style="margin-top:8px;color:var(--muted);font-size:13px">보험 {len(ins)}건: {names}</div>'
+            extra += ('<div style="font-size:13px;color:var(--muted);margin:12px 0 4px">보험 ('
+                      + str(len(ins)) + ')</div>'
+                      '<table class="pf-tbl"><tr><th>보험사</th><th>보험명</th>'
+                      '<th>상태</th><th class="r">총납입</th></tr>')
+            for i in ins:
+                extra += (f'<tr><td>{_html.escape(i.get("금융사") or "")}</td>'
+                          f'<td>{_html.escape(i.get("보험명") or "")}</td>'
+                          f'<td>{_html.escape(str(i.get("계약상태") or ""))}</td>'
+                          f'<td class="r">{_pf_won(i.get("총납입금"))}</td></tr>')
+            extra += '</table>'
         extra += '</div>'
 
     note = ('<p class="sub" style="margin-top:14px;color:var(--muted);font-size:12px">'
@@ -5370,7 +5406,10 @@ def _render_portfolio_page(model) -> str:
 
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>💼 자산 관리</h1>'
-            + '<p class="sub">뱅크샐러드 전 계좌 통합 — 증권사·예적금·부동산·동산·대출·보험</p>'
+            + '<p class="sub">뱅크샐러드 전 계좌 통합 — 증권사·예적금·부동산·동산(자동차)·대출·보험</p>'
+            + ('<p class="sub" style="color:var(--muted);font-size:13px;margin-top:2px">'
+               f'🕒 마지막 업데이트 <b style="color:var(--text)">{updated}</b> '
+               f'(수동 — 뱅크샐러드 RAG 채널 업로드) · 데이터 기간 {as_of}</p>')
             + stats + donut_block
             + '<div class="pf-grid">' + bro_block + movers_block + '</div>'
             + holdings_block + extra + note + '</div>')
