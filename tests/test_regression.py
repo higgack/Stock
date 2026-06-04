@@ -691,6 +691,25 @@ class TestPriceChartRender:
         assert round(pct(90, 100), 1) == -10.0
         assert round(pct(100, 100), 1) == 0.0
 
+    def test_chart_period_return_row(self):
+        """'기간 N' — 로드된 범위(1개월~전체) first bar → 현재가 수익률
+        (2026-06-04). 범위/봉 전환 시 그 윈도 기준 갱신. universal · ₩0."""
+        from bot.dashboard import _CHART_JS, _render_chart_section
+
+        # first 추출 헬퍼 + 기간 수익률 계산식 + 행 라벨
+        assert "function firstNonNull" in _CHART_JS, "기간 first 추출 헬퍼 누락"
+        assert "(_curp - _first) / _first" in _CHART_JS, "기간 수익률 계산식 누락"
+        assert "'기간 '" in _CHART_JS, "기간 행 라벨 누락"
+        # 현재 선택 범위(curRange) 기준 — 한국어 라벨 매핑(전 범위)
+        for k, label in [("1mo", "1개월"), ("3mo", "3개월"), ("6mo", "6개월"),
+                         ("1y", "1년"), ("3y", "3년"), ("5y", "5년"),
+                         ("max", "전체")]:
+            assert "'" + k + "':'" + label + "'" in _CHART_JS, "범위 라벨 매핑 누락: " + k
+        # 레전드 설명
+        rec = {"ticker": "AAPL", "price_chart": {"currency": "$", "decimals": 2,
+               "times": ["2025-06-01"], "close": [1.0]}}
+        assert "기간=" in _render_chart_section(rec), "레전드 기간 설명 누락"
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger

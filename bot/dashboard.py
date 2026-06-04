@@ -2164,7 +2164,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     </div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div class="chart-legend">
-      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그 on/off (설정 저장됨)
+      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그 on/off (설정 저장됨)
     </div>
   </section>"""
 
@@ -2432,6 +2432,7 @@ _CHART_JS = """
   }
 
   function lastNonNull(a){ if(!a) return null; for(var i=a.length-1;i>=0;i--){ if(a[i]!==null&&a[i]!==undefined) return a[i]; } return null; }
+  function firstNonNull(a){ if(!a) return null; for(var i=0;i<a.length;i++){ if(a[i]!==null&&a[i]!==undefined) return a[i]; } return null; }
   function fmtNum(v, decimals){
     if (v === null || v === undefined) return '–';
     try { return Number(v).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }); }
@@ -2471,6 +2472,16 @@ _CHART_JS = """
         var _col = _chg > 0 ? '#26a69a' : (_chg < 0 ? '#e2574c' : '#94a3b8');
         items.push(['분석 후', (_chg >= 0 ? '+' : '') + _chg.toFixed(1) + '%', _col, null, 'pct']);
       }
+    }
+    // 기간 수익률 — 로드된 범위(1개월~전체)의 first bar → 현재가 %. 범위/봉
+    // 전환 시 그 윈도 기준으로 갱신 (분석 시점과 무관한 차트 윈도 통계).
+    var _first = firstNonNull(d.close);
+    var _curp = (d.last_price != null ? d.last_price : lastNonNull(d.close));
+    if (_first != null && _first > 0 && _curp != null) {
+      var _pchg = (_curp - _first) / _first * 100;
+      var _pcol = _pchg > 0 ? '#26a69a' : (_pchg < 0 ? '#e2574c' : '#94a3b8');
+      var _rlabel = ({'1mo':'1개월','3mo':'3개월','6mo':'6개월','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[curRange] || curRange;
+      items.push(['기간 ' + _rlabel, (_pchg >= 0 ? '+' : '') + _pchg.toFixed(1) + '%', _pcol, null, 'pct']);
     }
     if (markers) {
       if (markers.entry  != null) items.push(['진입', markers.entry,  '#9b59b6', dec]);
