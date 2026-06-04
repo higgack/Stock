@@ -978,6 +978,21 @@ All structural guards added during KR/JP expansion now also cover US,
 preventing US-side asymmetric weakness. Reflect this in any future
 review:
 
+- **SEC XBRL 권위 재무 (US authoritative financials, 2026-06-04)** —
+  `bot/edgar_client.py` `get_key_financials(ticker)` 가 data.sec.gov
+  `/api/xbrl/companyconcept` 에서 매출/순이익/EPS희석/영업현금흐름/자산/
+  부채/자본/발행주식수 8개를 **실제 10-K/10-Q 원본**(us-gaap/dei)에서
+  fetch (CIK 맵 24h + concept 12h 캐시, 무키, UA 헤더, 404=concept 부재로
+  빈 캐시). metric 당 concept fallback 리스트(Revenue 4종 등 filer 별 태깅
+  차이), 정정 공시는 max filed 선택, annual(FY/10-K) + 최근분기 병기.
+  `format_xbrl_block` → `_prefetch_market_io` US 브랜치 병렬 task
+  `edgar_xbrl` (지연 0, 8 HTTP·12h 캐시) → build_instrument_context 가
+  **펀더멘털 분석가만**(market/social/news 는 `_ANALYST_CONTEXT_EXCLUDE`
+  로 제외, cashflow/balance/ratios 와 동급) 주입. directive: "US 재무는
+  SEC 원본 최우선 인용, yfinance 와 다르면 SEC 정본, 글자단위 사용".
+  **이것이 US 의 DART/EDINET/MOPS 등가물** — KR/JP/TW 는 공식 공시 원본을
+  쓰는데 US 만 yfinance 집계에 의존하던 비대칭 해소. ADR/외국법인(20-F
+  IFRS 택소노미)·yfinance 수치 divergence 자동 플래그는 phase 2.
 - **MANDATORY COMPS PEER SET** — `_US_INDUSTRY_PEERS` (bot/market.py)
   with ~70 yfinance-industry rows covers S&P 500 mega/large + active
   mid-caps. `resolve_peer_set` dispatches by market: KR→`_KR_*`,

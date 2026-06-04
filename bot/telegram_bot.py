@@ -977,7 +977,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종(미·한·일·대·중) · ECOS/FRED 금리·CPI · 섹터 ETF · 리스크 6종 · 컨센서스 · 공매도·내부자·기관 · 실적 ±10일 · DART/EDINET/MOPS 공시 · SEC EDGAR 8-K·Form4 · US옵션 IV·P/C · KR개장전 미국선물 · TW컨센서스 · KRX 5일수급 · KIS 7종 · SV 브리프
+yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종(미·한·일·대·중) · ECOS/FRED 금리·CPI · 섹터 ETF · 리스크 6종 · 컨센서스 · 공매도·내부자·기관 · 실적 ±10일 · DART/EDINET/MOPS 공시 · SEC EDGAR 8-K·Form4·XBRL원본재무 · US옵션 IV·P/C · KR개장전 미국선물 · TW컨센서스 · KRX 5일수급 · KIS 7종 · SV 브리프
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>

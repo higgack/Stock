@@ -1615,7 +1615,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # market-flow data so it stays in the market analyst's set.
     "market": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
-        "edgar_form4",
+        "edgar_form4", "edgar_xbrl",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
@@ -1623,14 +1623,14 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     "social": {
         "krx_flow", "hsgt_flow", "kis_supply",
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
-        "edgar_8k", "edgar_form4",
+        "edgar_8k", "edgar_form4", "edgar_xbrl",
         "options_signals",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
     "news": {"krx_flow", "hsgt_flow", "kis_supply",
-             "options_signals",
+             "options_signals", "edgar_xbrl",
              "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
@@ -1828,6 +1828,11 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             from bot.edgar_client import get_recent_8k, get_recent_form4
             tasks["edgar_8k"] = lambda: get_recent_8k(ticker, days=30)
             tasks["edgar_form4"] = lambda: get_recent_form4(ticker, days=30)
+        except Exception:
+            pass
+        try:
+            from bot.edgar_client import get_key_financials
+            tasks["edgar_xbrl"] = lambda: get_key_financials(ticker)
         except Exception:
             pass
         try:
@@ -4820,6 +4825,20 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
             except Exception as exc:
                 _analyst_log.warning(
                     "edgar form4 injection failed for %s: %s", ticker, exc,
+                )
+            # SEC XBRL authoritative financials (펀더멘털 analyst only — gated
+            # like cashflow/balance/ratios). US 의 DART/EDINET 등가물:
+            # 10-K/10-Q 원본 us-gaap 수치 → yfinance 집계 오류 차단.
+            try:
+                if _section_allowed(analyst_id, "edgar_xbrl"):
+                    from bot.edgar_client import format_xbrl_block
+                    xbrl = prefetched.get("edgar_xbrl")
+                    block_xbrl = format_xbrl_block(xbrl)
+                    if block_xbrl:
+                        base += "\n\n" + block_xbrl
+            except Exception as exc:
+                _analyst_log.warning(
+                    "edgar xbrl injection failed for %s: %s", ticker, exc,
                 )
             try:
                 if _section_allowed(analyst_id, "options_signals"):

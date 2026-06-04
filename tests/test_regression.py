@@ -691,6 +691,46 @@ class TestWatchlist:
         assert r["instbuy"][0] is False      # 기관 -3e10
         assert r["instsell"][0] is True
 
+    def test_xbrl_pick_and_format(self):
+        """SEC XBRL — 정정 공시 최신 filed 선택 + 최근분기 + 렌더 (2026-06-04)."""
+        from bot.edgar_client import _pick_facts, format_xbrl_block, get_key_financials
+        units = {"USD": [
+            {"end": "2024-12-31", "val": 1200, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2025-02-01"},
+            {"end": "2024-12-31", "val": 1180, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2024-11-01"},
+            {"end": "2025-03-31", "val": 350, "fy": 2025, "fp": "Q1", "form": "10-Q", "filed": "2025-04-20"},
+        ]}
+        p = _pick_facts(units, "USD")
+        # 정정 중 최신 filed 선택
+        assert p["annual"]["val"] == 1200 and p["annual"]["filed"] == "2025-02-01"
+        assert p["latest"]["val"] == 350 and p["latest"]["fp"] == "Q1"
+        fin = {"cik": "x", "metrics": {
+            "revenue": {"concept": "Revenues", "annual": units["USD"][0], "latest": units["USD"][2]},
+        }}
+        blk = format_xbrl_block(fin)
+        assert "SEC EDGAR XBRL" in blk and "매출" in blk
+        assert "최근 Q1" in blk  # 분기 병기
+        # graceful: 빈/None
+        assert format_xbrl_block(None) == ""
+        assert format_xbrl_block({"metrics": {}}) == ""
+        # 네트워크 없는 샌드박스 → None (예외 전파 금지)
+        r = get_key_financials("NONEXISTENT_XYZ")
+        assert r is None or isinstance(r, dict)
+
+    def test_xbrl_section_gated_to_fundamentals(self):
+        """edgar_xbrl 은 펀더멘털만 — market/social/news 는 제외."""
+        src = open(
+            "TradingAgents/tradingagents/agents/utils/agent_utils.py",
+            encoding="utf-8",
+        ).read()
+        import re
+        # _ANALYST_CONTEXT_EXCLUDE 의 market/social/news 에 edgar_xbrl 포함
+        for who in ("market", "social", "news"):
+            m = re.search(r'"' + who + r'":\s*\{(.*?)\}', src, re.DOTALL)
+            assert m and "edgar_xbrl" in m.group(1), f"{who} 가 edgar_xbrl 제외 안 함"
+        # 주입 + prefetch 배선 존재
+        assert 'tasks["edgar_xbrl"]' in src
+        assert 'format_xbrl_block' in src
+
     def test_watchlist_dashboard_renders(self):
         from bot.dashboard import _render_watchlist_page
         html = _render_watchlist_page(
