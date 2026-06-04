@@ -1758,3 +1758,6 @@ class TestPortfolioWatch:
         assert os.path.exists("deploy/portfolio-watch.timer")
         assert os.path.exists("deploy/portfolio-watch.service")
         assert "portfolio-watch.timer" in open("deploy/install.sh", encoding="utf-8").read()
+        # 고트래픽 RAG 채널 안전: 폴링 사이 새 메시지를 min_id 로 전부 가져옴
+        # (최근 N개 윈도가 아니라) — zip 업로드 누락 방지.
+        assert "min_id=last_msg_id" in src, "min_id 기반 누락방지 fetch 누락"

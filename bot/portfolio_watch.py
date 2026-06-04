@@ -41,7 +41,8 @@ log = logging.getLogger("bot.portfolio_watch")
 _HOME_DIR = Path.home() / ".tradingagents"
 _SEEN_PATH = _HOME_DIR / "portfolio_watch_seen.json"
 _DEFAULT_SESSION = _HOME_DIR / "reddit_user"  # reddit_insider 와 공유(추가 로그인 0)
-_FETCH_LIMIT = 20
+_FETCH_LIMIT = 20          # 첫 run seed(기존 메시지 seen 처리)용 최근 N개
+_NEW_MSG_CAP = 300         # 이후 폴링: last_msg_id 이후 새 메시지 상한(고트래픽 안전)
 _ZIP_EXTS = (".zip", ".xlsx")
 
 
@@ -160,7 +161,15 @@ async def _run_async() -> int:
     try:
         msgs = []
         try:
-            async for m in client.iter_messages(chan_arg, limit=_FETCH_LIMIT):
+            # 초기화 후엔 last_msg_id 이후 새 메시지를 min_id 로 전부(상한 _NEW_MSG_CAP)
+            # 가져와 고트래픽 RAG 채널('뭐든지 포워드돼 쌓이는')에서도 폴링 사이 업로드를
+            # 놓치지 않음 — 최근 N개 윈도 방식은 2분 내 N개 초과 유입 시 zip 을 흘림.
+            # 첫 run 은 seed 라 최근 _FETCH_LIMIT 개만.
+            if initialized and last_msg_id:
+                it = client.iter_messages(chan_arg, min_id=last_msg_id, limit=_NEW_MSG_CAP)
+            else:
+                it = client.iter_messages(chan_arg, limit=_FETCH_LIMIT)
+            async for m in it:
                 msgs.append(m)
         except FloodWaitError as exc:
             log.warning("FloodWait %ss — 다음 폴링 연기", exc.seconds)
