@@ -5185,6 +5185,7 @@ def regenerate_watchlist_index() -> None:
 _PF_DONUT_COLORS = ["#4c9aff", "#3ec46d", "#f5a623", "#e2574c", "#b07cff",
                     "#22d3ee", "#f78fb3", "#facc15", "#2dd4bf", "#fb923c", "#a0aec0"]
 _PF_CSS = """<style>
+.nav a,.nav b{white-space:nowrap}
 .pf-grid{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;margin:14px 0}
 .pf-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin:14px 0}
 .pf-h{margin:0 0 10px;font-size:15px;font-weight:700;color:var(--text)}
@@ -5245,7 +5246,6 @@ def _render_portfolio_page(model) -> str:
         ' · <a href="realestate.html">🏠 부동산</a>'
         ' · <a href="cheongyak.html">🎟️ 청약</a>'
         ' · <a href="watchlist.html">🔔 워치리스트</a>'
-        ' · <b>💼 자산</b>'
         '</div>')
     if not model or not model.get("holdings"):
         return _SCREENER_CSS + _PF_CSS + (
@@ -5270,6 +5270,33 @@ def _render_portfolio_page(model) -> str:
         ).strftime("%Y-%m-%d %H:%M")
     else:
         updated = "—"
+    # 지난 업데이트 대비 증분(자산 변화) — 수동 업로드라 추적. ingest 가 박은
+    # model["prev"](직전 스냅샷)와 비교. 첫 업로드면 prev 없음 → 표시 생략.
+    prev = model.get("prev")
+    delta_html = ""
+    if isinstance(prev, dict):
+        _pts = prev.get("_saved_ts")
+        if _pts:
+            pdate = _dt.datetime.fromtimestamp(
+                _pts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d")
+        else:
+            pdate = str(prev.get("as_of") or "이전")
+
+        def _dlt(cur, was):
+            cur = cur or 0
+            was = was or 0
+            d = cur - was
+            p = (d / was * 100) if was else 0.0
+            sign = "+" if d >= 0 else "−"
+            col = "var(--pos)" if d >= 0 else "var(--neg)"
+            return (f'<span style="color:{col}">{sign}{_pf_won(abs(d))} '
+                    f'({sign}{abs(p):.1f}%)</span>')
+        delta_html = (
+            '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
+            'border-top:1px solid var(--border);padding-top:8px">'
+            f'📈 지난 업데이트({pdate}) 대비 — 순자산 '
+            f'{_dlt(nw.get("순자산"), prev.get("순자산"))} · 주식평가 '
+            f'{_dlt(eval_sum, prev.get("주식평가"))}</div>')
 
     stats = (
         '<div class="stats">'
@@ -5325,20 +5352,15 @@ def _render_portfolio_page(model) -> str:
         bro_rows += (f'<tr><td>{_html.escape(b)}</td><td class="r">{_pf_won(d["평가금액"])}</td>'
                      f'<td class="r">{d["종목수"]}</td>'
                      f'<td class="r" style="color:{_pf_col(d["평가손익"])}">{_pf_won(d["평가손익"])}</td></tr>')
-    # 증권사별 카드 밑 — 순자산 한 줄 + 주식 국내/해외 비중 (자산/부채 바는 부채
-    # 0 이라 단조 → 더 유용한 국내/해외 노출. 사용자 요청 2026-06-04). 국내/해외
-    # 는 resolve 결과 market=='US' 여부로 분류(해외 alias 매칭 → 해외, 나머지
-    # 국내) — pykrx 매칭 없어도 동작.
-    asset_t = nw.get("총자산") or 0
-    liab_t = nw.get("총부채") or 0
+    # 증권사별 카드 밑 — 주식 국내/해외 비중 + 지난 업데이트 대비 증분.
+    # ('순자산 = 자산 − 부채' 줄은 헤더 stat 과 중복 + 우측 카드와 높이 안 맞아
+    # 제거. 사용자 2026-06-04.) 국내/해외는 resolve market=='US' 여부로 분류
+    # (해외 alias 매칭=해외, 나머지=국내) — pykrx 매칭 없어도 동작.
     overseas = sum(h.get("평가금액") or 0 for h in holdings if h.get("market") == "US")
     domestic = max(eval_sum - overseas, 0)
     eq_tot = eval_sum or 1
     nw_bar = (
         '<div style="margin-top:14px">'
-        f'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">순자산 '
-        f'<b style="color:var(--text)">{_pf_won(nw.get("순자산"))}</b> = 자산 '
-        f'{_pf_won(asset_t)} − 부채 {_pf_won(liab_t)}</div>'
         '<div style="font-size:12px;color:var(--muted);margin-bottom:5px">주식 국내 / 해외</div>'
         '<div style="display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--border)">'
         f'<div title="국내" style="background:#4c9aff;width:{domestic / eq_tot * 100:.1f}%"></div>'
@@ -5347,7 +5369,7 @@ def _render_portfolio_page(model) -> str:
         '<div style="font-size:12px;color:var(--muted);margin-top:5px">'
         f'<span style="color:#4c9aff">●</span> 국내 {_pf_won(domestic)} ({domestic / eq_tot * 100:.0f}%) · '
         f'<span style="color:#f5a623">●</span> 해외 {_pf_won(overseas)} ({overseas / eq_tot * 100:.0f}%)</div>'
-        '</div>')
+        + delta_html + '</div>')
     bro_block = ('<div class="pf-card" style="flex:1;min-width:300px"><div class="pf-h">증권사별</div>'
                  '<table class="pf-tbl"><tr><th>증권사</th><th class="r">평가금액</th><th class="r">종목</th><th class="r">손익</th></tr>'
                  + bro_rows + '</table>' + nw_bar + '</div>')

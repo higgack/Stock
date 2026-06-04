@@ -104,6 +104,14 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
         "top_losers": sorted(rated, key=lambda h: h["수익률"])[:5],
         "holding_count": len(holdings),
         "matched_count": sum(1 for h in holdings if h["matched"]),
+        # 증분(자산 변화) 비교용 압축 스냅샷 — ingest 가 다음 업로드 시 prev 로 사용.
+        "snapshot": {
+            "총자산": fin.get("총자산"), "총부채": fin.get("총부채"),
+            "순자산": fin.get("순자산"),
+            "주식평가": sum(h.get("평가금액") or 0 for h in holdings),
+            "주식원금": sum(h.get("투자원금") or 0 for h in holdings),
+            "종목수": len(holdings),
+        },
     }
 
 
@@ -150,7 +158,15 @@ def ingest(data, password=None) -> dict:
 
     텔레그램 핸들러(증분3 wiring)·CLI 가 호출. password 기본은 호출부가 .env
     BANKSALAD_ZIP_PW 에서 주입(코드/깃에 비번 박지 않음)."""
+    prev = load()  # 직전 저장 모델 (증분 비교용) — 첫 업로드면 None
     parsed = parse_export(data, password=password)
     model = build_model(parsed)
+    if isinstance(prev, dict) and prev.get("snapshot"):
+        # 직전 업로드의 스냅샷 + 시점 → 다음 렌더에서 '지난 업데이트 대비' 증분 계산.
+        model["prev"] = {
+            **prev["snapshot"],
+            "as_of": prev.get("as_of"),
+            "_saved_ts": prev.get("_saved_ts"),
+        }
     save(model)
     return model

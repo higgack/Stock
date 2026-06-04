@@ -1600,6 +1600,12 @@ class TestPortfolioModel:
         bibo = [h for h in m["top_losers"] if h["상품명"] == "비보심 랩스"][0]
         assert abs(bibo["수익률"] - (-98.3)) < 0.01, "더 두드러지는(|수익률| 큰) 것이 안 남음"
 
+    def test_snapshot_for_delta(self):
+        # 증분 비교용 스냅샷이 모델에 포함 (ingest 가 다음 업로드 시 prev 로 사용).
+        m = self._model()
+        assert "snapshot" in m
+        assert m["snapshot"]["순자산"] == 930011000 and m["snapshot"]["종목수"] == 2
+
 
 class TestPortfolioDashboard:
     """fix: 자산 대시보드 렌더 + 텔레그램 배선 (2026-06-04 자산관리 P1 증분4)."""
@@ -1618,21 +1624,31 @@ class TestPortfolioDashboard:
         assert "이오테크닉스" in html          # 보유 테이블
         assert "ticker_LRCX.html" in html      # 해외 매칭 → NOAH 분석 링크
         assert "부동산" in html                # 자산배분에 부동산
-        # 빈 공간 활용(2026-06-04): 도넛 우측 주식 요약 패널 + 증권사별 밑
+        # 빈 공간 활용(2026-06-04): 도넛 우측 주식 요약 패널
         assert "💹 주식 요약" in html and "승률" in html, "주식 요약 패널 누락"
-        assert "− 부채" in html, "순자산 라인 누락"
-        # v3 피드백(2026-06-04): 보험 표 · 대출 원금 · 동산(자동차) · 국내/해외 · 업데이트 시각
+        # v3 피드백: 보험 표 · 대출 원금 · 동산(자동차) · 국내/해외 · 업데이트 시각
         assert "보험사" in html and "보험명" in html, "보험 표 누락"
         assert "한도(원금)" in html, "대출 원금 컬럼 누락"
         assert "동산 (자동차)" in html, "동산(자동차) 라벨 누락"
         assert "주식 국내 / 해외" in html, "국내/해외 비중 누락"
         assert "마지막 업데이트" in html, "업데이트 시각 헤더 누락"
-        # v4(2026-06-04): 풀 nav(메인 NOAH 맨앞) + 자산 self bold
+        # v4·v5: 풀 nav(메인 NOAH 맨앞) · nav 단어 줄바꿈 방지 · 자기 '자산' 제거(제목 중복)
         assert 'href="index.html">🦉 NOAH 종목분석' in html, "nav 메인 첫 링크 누락"
         assert "screener.html" in html and "daily_byte.html" in html, "풀 nav 누락"
-        assert "<b>💼 자산</b>" in html, "자산 self(현재페이지) 표시 누락"
+        assert ".nav a,.nav b{white-space:nowrap}" in html, "nav 줄바꿈 방지 CSS 누락"
+        assert "<b>💼 자산</b>" not in html, "nav 자기 '자산' 제거 안 됨"
         # 빈 상태(업로드 전)
         assert "아직 업로드된 자산이 없습니다" in _render_portfolio_page(None)
+
+    def test_delta_increment(self):
+        # 지난 업데이트 대비 증분(자산 변화) — prev 스냅샷 있을 때만 표시.
+        from bot.dashboard import _render_portfolio_page
+        m = self._model()
+        m["prev"] = {"순자산": 900000000, "주식평가": 8000, "_saved_ts": 1, "as_of": "2025-06-05"}
+        html = _render_portfolio_page(m)
+        assert "지난 업데이트" in html and "대비" in html, "증분 표시 누락"
+        # prev 없으면 증분 미표시 (graceful)
+        assert "지난 업데이트" not in _render_portfolio_page(self._model())
 
     def test_nav_and_regen_wired(self):
         src = open("bot/dashboard.py", encoding="utf-8").read()
