@@ -867,6 +867,80 @@ class TestPriceGlitchGuard:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# 8a4) KR .KS↔.KQ suffix 정규화 + freeze 52주 게이트 (티로보틱스 117730 2026-06-04)
+#   배경: KOSDAQ 종목 117730 을 .KS 로 조회 → yfinance/KIS/뉴스가 엉뚱한
+#   장부 → 데이터 불일치 + 뉴스 0건 + 30% SMA-gap HARD GUARD 오발(실제로는
+#   52주 레인지 안의 진짜 -41% 하락). ① KRX 목록 기반 suffix 자동 교정,
+#   ② 현재가가 52주 안이면(split-staleness 아님) freeze 강등.
+# ─────────────────────────────────────────────────────────────────────────
+class TestKRSuffixAndFreezeGate:
+    """fix: KR suffix 정규화 + freeze 52주 게이트 (117730 2026-06-04)."""
+
+    def test_correct_suffix_kosdaq(self):
+        from bot.market import _correct_kr_suffix
+        # 117730 이 KOSDAQ 목록에 있으면 .KS 입력이라도 .KQ 로 교정
+        assert _correct_kr_suffix("117730", ".KS", set(), {"117730"}) == "117730.KQ"
+
+    def test_correct_suffix_kospi(self):
+        from bot.market import _correct_kr_suffix
+        assert _correct_kr_suffix("005930", ".KQ", {"005930"}, set()) == "005930.KS"
+
+    def test_correct_suffix_ambiguous_keeps_current(self):
+        from bot.market import _correct_kr_suffix
+        # 어디에도 없거나 양쪽 모두면 현재 suffix 유지 (보수적)
+        assert _correct_kr_suffix("117730", ".KS", set(), set()) == "117730.KS"
+        assert _correct_kr_suffix("000660", ".KS", {"000660"}, {"000660"}) == "000660.KS"
+
+    def test_normalize_non_kr_unchanged(self):
+        from bot.market import normalize_kr_ticker_suffix
+        assert normalize_kr_ticker_suffix("AAPL") == "AAPL"
+        assert normalize_kr_ticker_suffix("7203.T") == "7203.T"
+
+    def test_normalize_graceful_and_malformed(self):
+        from bot.market import normalize_kr_ticker_suffix
+        # 샌드박스: pykrx/creds 없음 → 목록 빈 → 원본 그대로(크래시 X)
+        out = normalize_kr_ticker_suffix("117730.KS")
+        assert isinstance(out, str) and out.endswith((".KS", ".KQ"))
+        # malformed (5자리) → 그대로
+        assert normalize_kr_ticker_suffix("12345.KS") == "12345.KS"
+
+    def test_freeze_no_signals_soft(self):
+        from bot.price_sanity import should_hard_freeze_technicals
+        assert should_hard_freeze_technicals(11280, 9820, 30900, []) is False
+
+    def test_freeze_price_axis_always_hard(self):
+        from bot.price_sanity import should_hard_freeze_technicals
+        # split / 거래정지 / 시장경보 = price-axis → in-range 여도 HARD
+        assert should_hard_freeze_technicals(
+            11280, 9820, 30900,
+            ["yfinance .splits ex-date: 2026-05-30 (2:1 forward split)"]) is True
+        assert should_hard_freeze_technicals(
+            11280, 9820, 30900, ["KRX 시장경보 / 거래정지: 거래정지"]) is True
+
+    def test_freeze_in_range_downgrades_to_soft(self):
+        from bot.price_sanity import should_hard_freeze_technicals
+        # 117730: marketCap divergence 만 + 현재가 52주 안 → SOFT(강등)
+        assert should_hard_freeze_technicals(
+            11280, 9820, 30900,
+            ["shares × price vs reported marketCap divergence > 5%"]) is False
+
+    def test_freeze_outside_range_stays_hard(self):
+        from bot.price_sanity import should_hard_freeze_technicals
+        # 140860 류: 현재가가 52주 최저 밖 + 신호 → HARD 유지
+        assert should_hard_freeze_technicals(
+            163700, 205000, 350500,
+            ["shares × price vs reported marketCap divergence > 5%"]) is True
+
+    def test_wiring_suffix_and_freeze_gate(self):
+        au = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
+                  encoding="utf-8").read()
+        assert "should_hard_freeze_technicals" in au, "freeze 게이트 미배선"
+        assert "if _hard:" in au, "HARD 분기 미적용"
+        an = open("bot/analyzer.py", encoding="utf-8").read()
+        assert "normalize_kr_ticker_suffix" in an, "analyze() suffix 정규화 미배선"
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger
 # ─────────────────────────────────────────────────────────────────────────
 class TestWatchlist:

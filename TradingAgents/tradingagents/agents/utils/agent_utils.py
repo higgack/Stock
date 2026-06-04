@@ -4218,7 +4218,22 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
             _wl = sma_gap_info["window_label"]
             _sma = sma_gap_info["sma"]
 
-            if sma_gap_signals:
+            # ② 52주-레인지 게이트 (티로보틱스 117730 2026-06-04): split-
+            # staleness 는 현재가를 52주 레인지 밖으로 밀어내지만(140860 류),
+            # 진짜 하락/급등은 레인지 안이다(117730: ₩11,280 ∈ [9,820,30,900]
+            # 의 실제 -41% drawdown). price-axis 신호(split/거래정지/시장경보)
+            # 없이 in-range 면 기술분석 freeze 를 강등 — marketCap divergence
+            # 같은 비-가격축 신호는 valuation 데이터 lag 라 기술지표엔 무관.
+            try:
+                from bot.price_sanity import should_hard_freeze_technicals
+                _hard = should_hard_freeze_technicals(
+                    px, info.get("fiftyTwoWeekLow"),
+                    info.get("fiftyTwoWeekHigh"), sma_gap_signals,
+                )
+            except Exception:
+                _hard = bool(sma_gap_signals)
+
+            if _hard:
                 # External evidence present → HARD GUARD (existing behavior)
                 base += (
                     f"\n\n=== ⛔ PRICE GAP SANITY (HARD GUARD — Fix J/N 강화) ===\n"
@@ -4250,6 +4265,16 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 # but don't ban technical indicator analysis. 현대모비스
                 # 012330.KS 2026-05-24 surfaced: 28일 사이 +50% 정상 급등
                 # 인데 HARD GUARD 가 발화해 분석가가 분석 포기.
+                if sma_gap_signals:
+                    # ② 강등 (117730 2026-06-04): 신호가 있었으나 현재가가
+                    # 52주 레인지 안이라 split-staleness 가 아닌 실제 이동.
+                    base += (
+                        "\n\n(참고: 아래 신호가 있었으나 현재가가 52주 레인지"
+                        " 안 → split-staleness 가 아닌 실제 추세로 판단해 기술"
+                        " freeze 를 강등함. 신호는 marketCap/valuation 데이터"
+                        " lag 가능성이며 기술지표 해석엔 무관: "
+                        + "; ".join(sma_gap_signals) + ")"
+                    )
                 base += (
                     f"\n\n=== ⚠️ PRICE GAP NOTICE (SOFT — Fix N 신설) ===\n"
                     f"current price {_sym}{_fmt.format(px)} is {_gap_pct:.0f}%"

@@ -1031,6 +1031,17 @@ review:
     (US/EU/HK)은 진짜 뉴스 갭 보존을 위해 밴드가 느슨(2x/0.5x) — magnitude
     만으론 진짜 -40% 뉴스 갭과 글리치 구분 불가하므로, 분석 SSoT 의 series-
     median 교체 + 52주/MA outlier 검사가 1차 방어선.
+- **freeze 가드 52주-레인지 게이트 (`should_hard_freeze_technicals`,
+  2026-06-04)** — 30% SMA-gap HARD GUARD(`agent_utils` ~4150) 의 **오발**
+  보강. split-staleness 는 현재가를 52주 레인지 밖으로 밀어내지만(글리치),
+  진짜 하락/급등은 레인지 안이다. 티로보틱스 117730 2026-06-04 review:
+  현재가 ₩11,280 ∈ 52주[₩9,820~₩30,900] 의 실제 -41% drawdown 인데
+  shares×price↔marketCap divergence(비-가격축, suffix 오조회發 가능) 신호로
+  HARD GUARD 가 발화해 기술분석 전체를 freeze. fix: price-axis 신호(split/
+  거래정지/시장경보)면 항상 HARD, 그 외엔 현재가가 52주 안이면 SOFT 강등
+  (marketCap divergence 는 valuation 데이터 lag 라 기술지표엔 무관). 140860
+  류(현재가 < 52주 최저)는 outside-range 라 HARD 유지. `bot/price_sanity.py`
+  순수 함수(단위테스트). Universal.
 - **SEC XBRL 권위 재무 (US authoritative financials, 2026-06-04)** —
   `bot/edgar_client.py` `get_key_financials(ticker)` 가 data.sec.gov
   `/api/xbrl/companyconcept` 에서 매출/순이익/EPS희석/영업현금흐름/자산/
@@ -1243,10 +1254,18 @@ Metals & Mining) 가 surfaced 한 universal 결함을 prompt + Python 양면
   ticker (또는 `(inferred)` + 단일 회사 OR 'no clean public name').
   '글로벌 파운드리 (TSMC, Tower Semi)' 같은 multi-ticker mixed 라벨
   금지. Commit `7380b05`.
-- **KR suffix normalization** (`_normalize_kr_suffix`) — pykrx KOSPI /
-  KOSDAQ ticker list cache 로 잘못된 .KS↔.KQ suffix 자동 정정. GST
-  083450.KS → .KQ (Hardware review 2026-05-29) surfaced. 다운스트림
-  pykrx flow / KIS 수급 / KRX 시장경보 silent miss 차단. Commit pending.
+- **KR suffix normalization** (`bot/market.normalize_kr_ticker_suffix`,
+  2026-06-04 LIVE) — pykrx KOSPI/KOSDAQ ticker list (7d 디스크 캐시) 로
+  잘못된 .KS↔.KQ suffix 자동 정정. **메인 분석 경로에 wire** — `analyzer.
+  analyze()` 진입 즉시 교정해 모든 다운스트림(build_instrument_context /
+  뉴스 / yfinance / KIS 시장구분 J·Q / 수급)이 올바른 장부 조회. 티로보틱스
+  117730.KS → .KQ (2026-06-04 외부 review surfaced: KOSDAQ 종목을 .KS 로
+  조회 → 시세·시총 불일치 + 뉴스 0건 + freeze 오발) + GST 083450.KS → .KQ
+  (Hardware 2026-05-29). 순수 코어 `_correct_kr_suffix`(코드 집합 기반,
+  단위테스트) + `_kr_market_code_sets`(pykrx + 캐시, creds/pykrx 부재 시
+  빈 집합 → graceful no-op). screener 의 옛 "Commit pending" 의도를 main
+  path 에서 완수. ⚠️ pykrx 가 KRX_ID/KRX_PW 필요 — 부재 시 정규화 skip
+  (원본 유지), 잘못된 suffix 가 들어와도 크래시는 없음.
 - **Local currency symbol** (`_fix_currency_symbols`) — ticker suffix
   → 통화 기호 state machine. TPRO.MI '$34.00' → '€34.00', 3231.TW
   '$161.00' → 'NT$161.00', SUBC.OL '$305.00' → 'kr305.00', MCE.AX

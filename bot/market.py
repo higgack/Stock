@@ -1467,3 +1467,76 @@ _US_INDUSTRY_PEERS = {
 def get_market_config(ticker: str) -> MarketConfig:
     """Convenience wrapper: detect market and return its config dict."""
     return MARKET_CONFIG[detect_market(ticker)]
+
+
+# ── KR .KS↔.KQ suffix 정규화 (티로보틱스 117730 2026-06-04) ──────────────
+# yfinance / KIS(시장구분 J/Q) / 뉴스 쿼리는 .KS(KOSPI)와 .KQ(KOSDAQ)를
+# 구분한다. KOSDAQ 종목을 .KS 로 잘못 조회하면 시세·시총·뉴스가 엉뚱한
+# 장부에서 와 데이터 불일치 + 뉴스 0건 + 기술분석 freeze 오발을 부른다.
+# 권위 있는 KRX 종목 목록(pykrx)으로 6자리 코드의 진짜 시장을 조회해 suffix
+# 를 자동 교정. 목록은 드물게 변하므로 7일 디스크 캐시. pykrx/creds 부재 시
+# graceful (원본 그대로 반환 — 절대 파이프라인 중단 안 함).
+_KR_CODES_CACHE_TTL = 7 * 24 * 3600  # 7d — 상장/폐지는 느리게 변함
+
+
+def _correct_kr_suffix(base6: str, current_suffix: str,
+                       kospi: set, kosdaq: set) -> str:
+    """순수 코어: 6자리 코드 + 현재 suffix + KOSPI/KOSDAQ 코드 집합 →
+    권위 있는 suffix 가 붙은 ticker. 모호/미상이면 현재 suffix 유지."""
+    if base6 in kosdaq and base6 not in kospi:
+        return base6 + ".KQ"
+    if base6 in kospi and base6 not in kosdaq:
+        return base6 + ".KS"
+    return base6 + current_suffix
+
+
+def _kr_market_code_sets():
+    """(kospi_set, kosdaq_set) of 6-digit codes — pykrx + 7d 디스크 캐시.
+    실패(creds/pykrx 부재) 시 (빈, 빈) → 호출부 no-op."""
+    import json
+    import os
+    import time
+
+    cache = os.path.expanduser("~/.tradingagents/kr_market_codes.json")
+    try:
+        if (os.path.exists(cache)
+                and time.time() - os.path.getmtime(cache) < _KR_CODES_CACHE_TTL):
+            d = json.loads(open(cache, encoding="utf-8").read())
+            return set(d.get("KOSPI", [])), set(d.get("KOSDAQ", []))
+    except Exception:
+        pass
+    try:
+        from pykrx import stock as _krx
+        kospi = list(_krx.get_market_ticker_list(market="KOSPI"))
+        kosdaq = list(_krx.get_market_ticker_list(market="KOSDAQ"))
+        if kospi or kosdaq:
+            try:
+                os.makedirs(os.path.dirname(cache), exist_ok=True)
+                with open(cache, "w", encoding="utf-8") as fh:
+                    json.dump({"KOSPI": kospi, "KOSDAQ": kosdaq}, fh)
+            except Exception:
+                pass
+        return set(kospi), set(kosdaq)
+    except Exception:
+        return set(), set()
+
+
+def normalize_kr_ticker_suffix(ticker: str) -> str:
+    """Correct a wrong .KS↔.KQ suffix via the authoritative KRX market
+    lists (e.g. KOSDAQ 117730 mis-typed as 117730.KS → 117730.KQ). Non-KR
+    tickers, malformed codes, or any lookup failure return the input
+    unchanged (graceful — never raises, never blocks the pipeline).
+    Rule applies to all KR analyses going forward."""
+    t = (ticker or "").strip().upper()
+    if not (t.endswith(".KS") or t.endswith(".KQ")):
+        return ticker
+    base, suffix = t[:-3], t[-3:]
+    if not (len(base) == 6 and base.isdigit()):
+        return ticker
+    try:
+        kospi, kosdaq = _kr_market_code_sets()
+        if not kospi and not kosdaq:
+            return ticker  # lists unavailable → keep as-is
+        return _correct_kr_suffix(base, suffix, kospi, kosdaq)
+    except Exception:
+        return ticker

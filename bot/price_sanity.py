@@ -96,3 +96,34 @@ def price_outlier_vs_refs(px, low52=None, high52=None, sma50=None,
             and abs(px / sma50 - 1.0) > gap and abs(px / sma200 - 1.0) > gap):
         return True
     return False
+
+
+def should_hard_freeze_technicals(px, low52, high52, signals) -> bool:
+    """Given a >30% price-vs-SMA gap with external `signals`, decide HARD
+    freeze (ban all technical indicators) vs SOFT (technicals still valid).
+
+    Split-staleness — the case the freeze is meant for — pushes the current
+    price OUTSIDE the 52-week range (the historical series is on a different
+    split basis; 140860 2026-05-20: 현재가 < 52주 최저). A genuine decline /
+    rally keeps the price WITHIN the 52-week range (티로보틱스 117730
+    2026-06-04: 현재가 ₩11,280 ∈ [₩9,820, ₩30,900], a real -41% drawdown).
+
+    So: a price-axis signal (split / 거래정지 / 시장경보) → always HARD. A
+    non-price-axis signal only (e.g. shares×price↔marketCap divergence, which
+    can itself be a suffix/valuation-data artifact) with the price IN-RANGE →
+    SOFT (technicals are on a consistent basis; the divergence is a valuation
+    concern, not a reason to freeze technicals). No signals → SOFT."""
+    if not signals:
+        return False
+    price_axis = any(
+        ("split" in str(s).lower() or "거래정지" in str(s) or "시장경보" in str(s))
+        for s in signals
+    )
+    if price_axis:
+        return True
+    try:
+        lo, hi, p = float(low52), float(high52), float(px)
+        in_52w = lo > 0 and hi > 0 and lo <= p <= hi
+    except (TypeError, ValueError):
+        in_52w = False
+    return not in_52w   # in-range → SOFT (real move); else/unknown → HARD

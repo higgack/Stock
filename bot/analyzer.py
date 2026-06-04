@@ -162,6 +162,19 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     """
     target_date = target_date or _date.today().isoformat()
     ticker = ticker.upper()
+    # KR .KS↔.KQ suffix 자동 교정 (티로보틱스 117730 2026-06-04): KOSDAQ
+    # 종목을 .KS 로 조회하면 yfinance/KIS/뉴스가 엉뚱한 장부에서 데이터를
+    # 받아 불일치·뉴스 0건·기술분석 freeze 오발. 권위 있는 KRX 목록으로
+    # 진입 즉시 교정 → 모든 다운스트림(컨텍스트·뉴스·수급)이 올바른 시장
+    # 조회. pykrx/creds 부재 시 graceful no-op.
+    try:
+        from bot.market import normalize_kr_ticker_suffix
+        _norm = normalize_kr_ticker_suffix(ticker)
+        if _norm != ticker:
+            log.info("KR suffix 정규화: %s → %s", ticker, _norm)
+            ticker = _norm
+    except Exception as _exc:
+        log.warning("KR suffix 정규화 실패 (%s) — 원본 유지", _exc)
     started_at = time.time()
 
     cached = _cache.get(ticker, target_date)
