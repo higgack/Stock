@@ -73,7 +73,10 @@ def build_price_chart(ticker: str, as_of: str | None = None) -> dict | None:
 
         currency, decimals = _currency_for(ticker)
         vol = hist["Volume"].reindex(close.index) if "Volume" in hist else None
-        return _series_payload(close, currency, decimals, vol)
+        op = hist["Open"].reindex(close.index) if "Open" in hist else None
+        hi = hist["High"].reindex(close.index) if "High" in hist else None
+        lo = hist["Low"].reindex(close.index) if "Low" in hist else None
+        return _series_payload(close, currency, decimals, vol, op, hi, lo)
     except Exception as exc:
         log.warning("chart_data: build failed for %s: %s", ticker, exc)
         return None
@@ -93,12 +96,17 @@ def _currency_for(ticker: str) -> tuple[str, int]:
         return "$", 2
 
 
-def _series_payload(close, currency: str, decimals: int, volume=None) -> dict:
-    """Build the parallel-array chart payload (close + 10 EMA / 50 SMA /
-    200 SMA + RSI(14) + volume) from a pandas close Series. SMA50/200 omitted
-    when the series is shorter than the window. RSI/volume are 보조지표
-    (secondary indicators) for the lower panes. Graceful — short weekly/
-    monthly ranges just omit what they can't compute."""
+def _series_payload(
+    close, currency: str, decimals: int,
+    volume=None, opens=None, highs=None, lows=None,
+) -> dict:
+    """Build the parallel-array chart payload from a pandas close Series.
+
+    Includes: close + 10 EMA / 50 SMA / 200 SMA + RSI(14) + volume +
+    Bollinger(20,2σ) + MACD(12,26,9) + OHLC (for candlestick toggle).
+    Bollinger / MACD use the SAME formulas as _compute_technical_snapshot
+    (SSoT) so the chart overlays match the text analysis. Each block is
+    omitted gracefully when the series is too short or inputs are absent."""
     import math
 
     ema10 = close.ewm(span=10, adjust=False).mean()
@@ -126,8 +134,21 @@ def _series_payload(close, currency: str, decimals: int, volume=None) -> dict:
     if sma200 is not None:
         payload["sma200"] = [_round(v) for v in sma200.values]
 
-    # RSI(14) — Wilder exponential smoothing (same as _compute_technical_
-    # snapshot SSoT). Null until enough bars. Lower pane, 0-100 scale.
+    # OHLC (candlestick toggle). open/high/low aligned to close.index.
+    if opens is not None and highs is not None and lows is not None:
+        payload["open"] = [_round(v) for v in opens.values]
+        payload["high"] = [_round(v) for v in highs.values]
+        payload["low"] = [_round(v) for v in lows.values]
+
+    # Bollinger Bands(20, 2σ) — overlay. Same as snapshot SSoT.
+    if len(close) >= 20:
+        bb_mid = close.rolling(20).mean()
+        bb_std = close.rolling(20).std()
+        payload["bb_u"] = [_round(v) for v in (bb_mid + 2 * bb_std).values]
+        payload["bb_m"] = [_round(v) for v in bb_mid.values]
+        payload["bb_l"] = [_round(v) for v in (bb_mid - 2 * bb_std).values]
+
+    # RSI(14) — Wilder exponential smoothing (same as snapshot SSoT).
     if len(close) >= 15:
         delta = close.diff()
         gain = delta.clip(lower=0)
@@ -137,6 +158,19 @@ def _series_payload(close, currency: str, decimals: int, volume=None) -> dict:
         rs = avg_gain / avg_loss
         rsi = 100 - 100 / (1 + rs)
         payload["rsi"] = [_round(v, 1) for v in rsi.values]
+
+    # MACD(12, 26, 9) — lower pane (line + signal + histogram). Same as
+    # snapshot SSoT. Extra decimal precision (3) since values are small.
+    if len(close) >= 27:
+        ema12 = close.ewm(span=12, adjust=False).mean()
+        ema26 = close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        macd_sig = macd_line.ewm(span=9, adjust=False).mean()
+        macd_hist = macd_line - macd_sig
+        md = max(decimals, 3)
+        payload["macd"] = [_round(v, md) for v in macd_line.values]
+        payload["macd_signal"] = [_round(v, md) for v in macd_sig.values]
+        payload["macd_hist"] = [_round(v, md) for v in macd_hist.values]
 
     # Volume — histogram in the price pane bottom. Integer counts.
     if volume is not None:
@@ -196,7 +230,10 @@ def fetch_chart_payload(
             return None
         currency, decimals = _currency_for(ticker)
         vol = hist["Volume"].reindex(close.index) if "Volume" in hist else None
-        payload = _series_payload(close, currency, decimals, vol)
+        op = hist["Open"].reindex(close.index) if "Open" in hist else None
+        hi = hist["High"].reindex(close.index) if "High" in hist else None
+        lo = hist["Low"].reindex(close.index) if "Low" in hist else None
+        payload = _series_payload(close, currency, decimals, vol, op, hi, lo)
         payload["interval"] = interval
         payload["period"] = period
         return payload

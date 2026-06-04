@@ -534,23 +534,36 @@ class TestPriceChartRender:
         })
         assert _LWC_LIB_NAME not in without, "차트 없는데 라이브러리 script 포함됨"
 
-    def test_chart_has_volume_and_rsi_indicators(self):
-        """보조지표 — 거래량 히스토그램 + RSI(14) 하단 pane 배선 (2026-06-04)."""
+    def test_chart_indicators_volume_rsi_bb_macd_candle(self):
+        """보조지표 배선 — 거래량/RSI/볼린저/MACD/캔들 + 토글 (2026-06-04)."""
         from bot.dashboard import _CHART_JS, _render_chart_section
 
-        # JS: 거래량 히스토그램 + RSI 별도 차트 + 시간축 동기화
+        # 거래량 히스토그램 + overlay 스케일
         assert "addHistogramSeries" in _CHART_JS, "거래량 히스토그램 누락"
         assert "priceScaleId: 'vol'" in _CHART_JS, "거래량 overlay 스케일 누락"
-        assert "rsiChart = LightweightCharts.createChart" in _CHART_JS, "RSI pane 누락"
-        assert "syncTime(chart, rsiChart)" in _CHART_JS, "시간축 동기화 누락"
-        assert "price: 70" in _CHART_JS and "price: 30" in _CHART_JS, "RSI 70/30 기준선 누락"
-        # HTML: RSI 컨테이너
+        # RSI pane + 70/30 기준선
+        assert "rsiChart = subChart" in _CHART_JS, "RSI pane 누락"
+        assert "price: 70" in _CHART_JS and "price: 30" in _CHART_JS, "RSI 70/30 누락"
+        # MACD pane
+        assert "macdChart = subChart" in _CHART_JS, "MACD pane 누락"
+        assert "d.macd_hist" in _CHART_JS and "d.macd_signal" in _CHART_JS, "MACD 시리즈 누락"
+        # 볼린저밴드 overlay
+        assert "d.bb_u" in _CHART_JS and "d.bb_l" in _CHART_JS, "볼린저밴드 누락"
+        # 캔들 토글
+        assert "addCandlestickSeries" in _CHART_JS, "캔들 시리즈 누락"
+        # 시간축 동기화 (다중 pane)
+        assert "linkTimeScales" in _CHART_JS, "시간축 동기화 누락"
+        # 지표 토글 상태 영속
+        assert "localStorage" in _CHART_JS and "noah_chart_ind" in _CHART_JS, "토글 영속 누락"
+        # HTML: RSI / MACD 컨테이너 + 토글 버튼
         html = _render_chart_section({
             "ticker": "AAPL",
             "price_chart": {"currency": "$", "decimals": 2,
                             "times": ["2025-06-01"], "close": [1.0]},
         })
-        assert 'id="rsi-chart"' in html, "RSI 차트 컨테이너 누락"
+        assert 'id="rsi-chart"' in html and 'id="macd-chart"' in html, "보조 pane 컨테이너 누락"
+        for k in ["candle", "ma", "bb", "vol", "rsi", "macd"]:
+            assert 'data-ind="' + k + '"' in html, "지표 토글 버튼 누락: " + k
 
     def test_series_payload_rsi_volume_shape(self):
         """_series_payload 가 rsi/volume 키를 추가 (pandas 있을 때만 실행)."""
@@ -560,14 +573,21 @@ class TestPriceChartRender:
             import pytest
             pytest.skip("pandas 미설치 — VM 에서 검증")
         from bot.chart_data import _series_payload
-        idx = pd.date_range("2025-01-01", periods=30, freq="D")
-        close = pd.Series([100 + i for i in range(30)], index=idx)
-        vol = pd.Series([1000 + i for i in range(30)], index=idx, dtype="float64")
-        p = _series_payload(close, "$", 2, vol)
-        assert "rsi" in p and len(p["rsi"]) == 30
+        idx = pd.date_range("2025-01-01", periods=40, freq="D")
+        close = pd.Series([100 + i for i in range(40)], index=idx)
+        vol = pd.Series([1000 + i for i in range(40)], index=idx, dtype="float64")
+        op = pd.Series([99 + i for i in range(40)], index=idx, dtype="float64")
+        hi = pd.Series([101 + i for i in range(40)], index=idx, dtype="float64")
+        lo = pd.Series([98 + i for i in range(40)], index=idx, dtype="float64")
+        p = _series_payload(close, "$", 2, vol, op, hi, lo)
+        assert "rsi" in p and len(p["rsi"]) == 40
         assert "volume" in p and all(isinstance(v, int) for v in p["volume"])
         last_rsi = [x for x in p["rsi"] if x is not None][-1]
         assert 0 <= last_rsi <= 100
+        # Bollinger(20) + MACD(12,26,9) + OHLC 키
+        assert all(k in p for k in ("bb_u", "bb_m", "bb_l")), "볼린저 누락"
+        assert all(k in p for k in ("macd", "macd_signal", "macd_hist")), "MACD 누락"
+        assert all(k in p for k in ("open", "high", "low")), "OHLC 누락"
 
     def test_build_price_chart_graceful_on_failure(self):
         """네트워크/티커 실패 시 None 반환 (예외 전파 금지 — 아카이브
