@@ -464,6 +464,74 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /watch · /watchlist · /unwatch in channel — PTB CommandHandler doesn't
+    # fire on channel_post, so without this branch '/watch' falls through to
+    # ticker analysis and treats 'WATCH' as a symbol (2026-06-04 bug).
+    if first_word in ("watch", "watchlist", "unwatch"):
+        chat_id = post.chat.id
+        rest = body.split()[1:]  # args after the command word
+
+        async def _wsend(t):
+            await ctx.bot.send_message(
+                chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True)
+
+        if first_word == "watch":
+            if len(rest) < 2:
+                await _wsend(_WATCH_HELP)
+                return
+            from bot.watchlist import add_watch, parse_conditions
+            ticker = rest[0].strip().upper()
+            if not TICKER_RE.match(ticker):
+                await _wsend(f"⚠️ 잘못된 티커: {ticker}\n\n{_WATCH_HELP}")
+                return
+            valid, invalid = parse_conditions(" ".join(rest[1:]))
+            if not valid:
+                await _wsend("⚠️ 유효한 조건이 없습니다.\n\n" + _WATCH_HELP)
+                return
+            try:
+                w = add_watch(ticker, chat_id, valid)
+            except ValueError as exc:
+                await _wsend(f"⚠️ {exc}")
+                return
+            msg = f"✅ <b>{ticker}</b> 감시 등록\n조건: <code>{' '.join(w['conditions'])}</code>"
+            if invalid:
+                msg += f"\n⚠️ 무시된 조건: <code>{' '.join(invalid)}</code>"
+            await _wsend(msg)
+            try:
+                from bot.dashboard import regenerate_watchlist_index
+                regenerate_watchlist_index()
+            except Exception:
+                pass
+            return
+        if first_word == "watchlist":
+            from bot.watchlist import list_watches
+            watches = list_watches(chat_id)
+            if not watches:
+                await _wsend("감시 중인 종목 없음.\n\n" + _WATCH_HELP)
+                return
+            lines = ["🔔 <b>워치리스트</b>"]
+            for w in watches:
+                lines.append(
+                    f"• <b>{w['ticker']}</b> <code>{' '.join(w.get('conditions') or [])}</code>"
+                    f"  (id {w['id']})")
+            lines.append("\n삭제: /unwatch TICKER (또는 id) · 전체 /unwatch all")
+            await _wsend("\n".join(lines))
+            return
+        # unwatch
+        if not rest:
+            await _wsend("사용법: /unwatch TICKER (또는 id, 또는 all)")
+            return
+        from bot.watchlist import remove_watch
+        n = remove_watch(chat_id, rest[0])
+        await _wsend(f"🗑️ {n}개 삭제됨" if n else "삭제할 항목 없음 (티커/id 확인)")
+        try:
+            from bot.dashboard import regenerate_watchlist_index
+            regenerate_watchlist_index()
+        except Exception:
+            pass
+        return
+
     # /screener_<slug> shortcut in channel — single-tap per-domain
     # commands (registered dynamically for DM via _register_dynamic_
     # screener_handlers). Same dispatch path so behavior matches.
@@ -1967,11 +2035,32 @@ async def cmd_sites(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 _WATCH_HELP = (
-    "사용법: <code>/watch TICKER 조건…</code>\n"
-    "조건: <code>rsi&lt;30 rsi&gt;70 price&gt;950 price&lt;800 &gt;sma50 &lt;sma200 "
-    "52whigh 52wlow earnings</code>\n"
-    "예: <code>/watch NVDA rsi&lt;30 price&gt;950 earnings</code>\n"
-    "조건 충족 시 알림 (LLM 0, 비용 ₩0). 목록 /watchlist · 삭제 /unwatch TICKER"
+    "🔔 <b>워치리스트 — 조건 충족 시 자동 알림</b> (LLM 0 · 비용 ₩0)\n"
+    "\n"
+    "<b>등록</b>: <code>/watch TICKER 조건1 조건2 …</code>\n"
+    "한 종목에 조건 여러 개(최대 8개) 가능. 같은 종목 다시 /watch 하면 조건 병합.\n"
+    "\n"
+    "<b>📋 조건 종류</b>\n"
+    "• <code>rsi&lt;30</code> / <code>rsi&gt;70</code> — RSI(14)가 값 아래/위로\n"
+    "• <code>price&gt;950</code> / <code>price&lt;800</code> — 현재가가 값 위/아래로\n"
+    "• <code>&gt;sma50</code> / <code>&lt;sma200</code> — 현재가가 이동평균 위/아래로\n"
+    "• <code>52whigh</code> / <code>52wlow</code> — 52주 신고가/신저가 근접\n"
+    "• <code>earnings</code> — 다음 실적 발표 5일 이내(D-5)\n"
+    "• <code>foreignbuy</code> / <code>foreignsell</code> — 외국인 5일 순매수/순매도 전환 (KR .KS/.KQ)\n"
+    "• <code>instbuy</code> / <code>instsell</code> — 기관 5일 순매수/순매도 전환 (KR)\n"
+    "\n"
+    "<b>📝 예시</b>\n"
+    "• <code>/watch NVDA rsi&lt;30 price&gt;950 earnings</code>\n"
+    "• <code>/watch 005930.KS foreignbuy instbuy</code> (외인·기관 순매수 전환 시)\n"
+    "• <code>/watch AAPL &lt;sma200 52wlow</code> (200일선 이탈 + 신저가)\n"
+    "\n"
+    "<b>⚙️ 작동</b>\n"
+    "• 30분마다 yfinance로 자동 체크 (LLM 안 씀)\n"
+    "• 조건이 <b>거짓→참으로 바뀌는 순간 1회만</b> 알림 (계속 참이어도 도배 안 함; 다시 거짓 됐다 참 되면 재알림)\n"
+    "• 충족 시 알림 + <code>/TICKER</code> 정밀 분석 권유\n"
+    "\n"
+    "<b>📌 관리</b>: 목록 <code>/watchlist</code> · 삭제 <code>/unwatch TICKER</code> (또는 id, 또는 <code>all</code>)\n"
+    "대시보드(활성 워치 + 알림 이력): NOAH archive → 🔔 워치리스트"
 )
 
 
