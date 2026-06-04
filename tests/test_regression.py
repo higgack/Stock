@@ -699,12 +699,14 @@ class TestWatchlist:
             {"end": "2024-12-31", "val": 1180, "fy": 2024, "fp": "FY", "form": "10-K", "filed": "2024-11-01"},
             {"end": "2025-03-31", "val": 350, "fy": 2025, "fp": "Q1", "form": "10-Q", "filed": "2025-04-20"},
         ]}
-        p = _pick_facts(units, "USD")
+        p = _pick_facts(units, "money")
         # 정정 중 최신 filed 선택
         assert p["annual"]["val"] == 1200 and p["annual"]["filed"] == "2025-02-01"
         assert p["latest"]["val"] == 350 and p["latest"]["fp"] == "Q1"
+        assert p["unit"] == "USD"
         fin = {"cik": "x", "metrics": {
-            "revenue": {"concept": "Revenues", "annual": units["USD"][0], "latest": units["USD"][2]},
+            "revenue": {"concept": "Revenues", "taxonomy": "us-gaap", "unit": "USD",
+                        "annual": units["USD"][0], "latest": units["USD"][2]},
         }}
         blk = format_xbrl_block(fin)
         assert "SEC EDGAR XBRL" in blk and "매출" in blk
@@ -715,6 +717,32 @@ class TestWatchlist:
         # 네트워크 없는 샌드박스 → None (예외 전파 금지)
         r = get_key_financials("NONEXISTENT_XYZ")
         assert r is None or isinstance(r, dict)
+
+    def test_xbrl_phase2_ifrs_currency_and_divergence(self):
+        """Phase 2 — ADR 20-F IFRS 택소노미 + 외화 단위 + 주식수 divergence."""
+        from bot.edgar_client import _choose_unit, _pick_facts, format_xbrl_block
+        # IFRS filer reporting in EUR, 20-F annual form
+        units_eur = {"EUR": [
+            {"end": "2024-12-31", "val": 5.0e10, "fy": 2024, "fp": "FY",
+             "form": "20-F", "filed": "2025-03-01"},
+        ]}
+        assert _choose_unit(units_eur, "money") == "EUR"
+        p = _pick_facts(units_eur, "money")
+        assert p["unit"] == "EUR" and p["annual"]["val"] == 5.0e10  # 20-F = 연간
+        fin = {"cik": "x", "metrics": {
+            "revenue": {"concept": "Revenue", "taxonomy": "ifrs-full", "unit": "EUR",
+                        "annual": units_eur["EUR"][0], "latest": units_eur["EUR"][0]},
+            "shares": {"concept": "EntityCommonStockSharesOutstanding", "taxonomy": "dei",
+                       "unit": "shares",
+                       "annual": {"val": 1.0e9, "fy": 2024, "fp": "FY", "form": "20-F", "filed": "2025-03-01"},
+                       "latest": {"val": 1.0e9, "fp": "FY"}},
+        }}
+        blk = format_xbrl_block(fin, yf_shares=1.3e9)  # 30% 차이
+        assert "ADR 20-F" in blk and "EUR" in blk
+        assert "발행주식수 불일치" in blk and "30% 차이" in blk
+        # divergence 10% 미만이면 플래그 없음
+        blk2 = format_xbrl_block(fin, yf_shares=1.05e9)
+        assert "발행주식수 불일치" not in blk2
 
     def test_xbrl_section_gated_to_fundamentals(self):
         """edgar_xbrl 은 펀더멘털만 — market/social/news 는 제외."""

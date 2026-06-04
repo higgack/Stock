@@ -4833,7 +4833,12 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 if _section_allowed(analyst_id, "edgar_xbrl"):
                     from bot.edgar_client import format_xbrl_block
                     xbrl = prefetched.get("edgar_xbrl")
-                    block_xbrl = format_xbrl_block(xbrl)
+                    _yf_sh = None
+                    try:
+                        _yf_sh = _instrument_info(ticker).get("sharesOutstanding")
+                    except Exception:
+                        _yf_sh = None
+                    block_xbrl = format_xbrl_block(xbrl, yf_shares=_yf_sh)
                     if block_xbrl:
                         base += "\n\n" + block_xbrl
             except Exception as exc:

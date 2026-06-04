@@ -434,28 +434,47 @@ def format_edgar_form4_block(filings: list[dict]) -> str:
 # filings (us-gaap / dei taxonomy). This brings US fundamentals to the same
 # "official filing" tier as KR(DART) / JP(EDINET) / TW(MOPS) — closing the
 # US-side asymmetry where we otherwise lean on yfinance's aggregation.
-# Each metric maps to an ordered fallback list of XBRL concept names because
-# filers tag the same line item differently (e.g. Revenue).
-# Tuple: (metric_key, taxonomy, [concept fallbacks], expected_unit, label)
+# Each metric maps to an ordered list of (taxonomy, concept) fallbacks —
+# filers tag the same line item differently, AND foreign private issuers
+# (ADRs) file 20-F with the IFRS taxonomy (ifrs-full) instead of us-gaap.
+# unit_kind: "money" | "eps" | "shares" (drives currency-unit selection).
+# Tuple: (metric_key, [(taxonomy, concept), ...], unit_kind, label)
 _XBRL_METRICS = [
-    ("revenue", "us-gaap",
-     ["RevenueFromContractWithCustomerExcludingAssessedTax", "Revenues",
-      "SalesRevenueNet", "RevenueFromContractWithCustomerIncludingAssessedTax"],
-     "USD", "매출"),
-    ("net_income", "us-gaap", ["NetIncomeLoss", "ProfitLoss"], "USD", "순이익"),
-    ("eps_diluted", "us-gaap", ["EarningsPerShareDiluted"], "USD/shares", "EPS(희석)"),
-    ("op_cash_flow", "us-gaap",
-     ["NetCashProvidedByUsedInOperatingActivities",
-      "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
-     "USD", "영업현금흐름"),
-    ("assets", "us-gaap", ["Assets"], "USD", "총자산"),
-    ("liabilities", "us-gaap", ["Liabilities"], "USD", "총부채"),
-    ("equity", "us-gaap",
-     ["StockholdersEquity",
-      "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
-     "USD", "자본총계"),
-    ("shares", "dei", ["EntityCommonStockSharesOutstanding"], "shares", "발행주식수"),
+    ("revenue", [
+        ("us-gaap", "RevenueFromContractWithCustomerExcludingAssessedTax"),
+        ("us-gaap", "Revenues"), ("us-gaap", "SalesRevenueNet"),
+        ("us-gaap", "RevenueFromContractWithCustomerIncludingAssessedTax"),
+        ("ifrs-full", "Revenue"),
+        ("ifrs-full", "RevenueFromContractsWithCustomers"),
+    ], "money", "매출"),
+    ("net_income", [
+        ("us-gaap", "NetIncomeLoss"), ("us-gaap", "ProfitLoss"),
+        ("ifrs-full", "ProfitLoss"),
+        ("ifrs-full", "ProfitLossAttributableToOwnersOfParent"),
+    ], "money", "순이익"),
+    ("eps_diluted", [
+        ("us-gaap", "EarningsPerShareDiluted"),
+        ("ifrs-full", "DilutedEarningsLossPerShare"),
+    ], "eps", "EPS(희석)"),
+    ("op_cash_flow", [
+        ("us-gaap", "NetCashProvidedByUsedInOperatingActivities"),
+        ("us-gaap", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"),
+        ("ifrs-full", "CashFlowsFromUsedInOperatingActivities"),
+    ], "money", "영업현금흐름"),
+    ("assets", [("us-gaap", "Assets"), ("ifrs-full", "Assets")], "money", "총자산"),
+    ("liabilities", [("us-gaap", "Liabilities"), ("ifrs-full", "Liabilities")],
+     "money", "총부채"),
+    ("equity", [
+        ("us-gaap", "StockholdersEquity"),
+        ("us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"),
+        ("ifrs-full", "Equity"),
+        ("ifrs-full", "EquityAttributableToOwnersOfParent"),
+    ], "money", "자본총계"),
+    ("shares", [("dei", "EntityCommonStockSharesOutstanding")], "shares", "발행주식수"),
 ]
+
+# Annual report forms across domestic (10-K) + foreign (20-F / 40-F) filers.
+_ANNUAL_FORMS = ("10-K", "20-F", "40-F")
 
 
 def _fetch_concept(cik: str, taxonomy: str, concept: str) -> Optional[dict]:
@@ -476,30 +495,52 @@ def _fetch_concept(cik: str, taxonomy: str, concept: str) -> Optional[dict]:
         return None
 
 
-def _pick_facts(units: dict, expected_unit: str) -> Optional[dict]:
-    """From a companyconcept `units` dict pick the latest annual (FY / 10-K)
-    and the latest-reported fact. Restatements resolved by max `filed`."""
-    arr = units.get(expected_unit)
-    if not arr:
-        for v in units.values():
-            if v:
-                arr = v
-                break
+def _choose_unit(units: dict, unit_kind: str) -> Optional[str]:
+    """Pick the unit key. money → USD else a 3-letter currency (ADRs may
+    report EUR/JPY/CNY). eps → '<cur>/shares'. shares → 'shares'."""
+    keys = [k for k in units if units.get(k)]
+    if not keys:
+        return None
+    if unit_kind == "money":
+        if "USD" in keys:
+            return "USD"
+        cur = [k for k in keys if len(k) == 3 and k.isalpha() and k.isupper()]
+        if cur:
+            return max(cur, key=lambda k: len(units[k]))
+    elif unit_kind == "eps":
+        if "USD/shares" in keys:
+            return "USD/shares"
+        per = [k for k in keys if k.endswith("/shares")]
+        if per:
+            return max(per, key=lambda k: len(units[k]))
+    else:  # shares
+        if "shares" in keys:
+            return "shares"
+    return keys[0]
+
+
+def _pick_facts(units: dict, unit_kind: str) -> Optional[dict]:
+    """Pick latest annual (FY / 10-K·20-F·40-F) + latest-reported fact +
+    the chosen currency unit. Restatements resolved by max `filed`."""
+    chosen = _choose_unit(units, unit_kind)
+    if not chosen:
+        return None
+    arr = units.get(chosen) or []
     if not arr:
         return None
-    fy = [f for f in arr if f.get("fp") == "FY" and str(f.get("form", "")).startswith("10-K")]
+    fy = [f for f in arr
+          if f.get("fp") == "FY" and str(f.get("form", "")).startswith(_ANNUAL_FORMS)]
     if not fy:
         fy = [f for f in arr if f.get("fp") == "FY"]
     annual = max(fy, key=lambda f: (f.get("end", ""), f.get("filed", ""))) if fy else None
     latest = max(arr, key=lambda f: (f.get("end", ""), f.get("filed", "")))
-    return {"annual": annual, "latest": latest}
+    return {"unit": chosen, "annual": annual, "latest": latest}
 
 
 def get_key_financials(ticker: str) -> Optional[dict]:
-    """Return authoritative key financials for a US ticker from SEC XBRL, or
-    None (no CIK / no data / non-US). Shape:
-        {"cik": "...", "metrics": {metric: {concept, annual, latest}}}
-    annual/latest are XBRL fact dicts {val, end, fy, fp, form, filed, ...}."""
+    """Return authoritative key financials for a US/ADR ticker from SEC XBRL,
+    or None. Shape: {"cik", "metrics": {metric: {concept, taxonomy, unit,
+    annual, latest}}}. annual/latest are XBRL fact dicts."""
     try:
         cik = _ticker_to_cik(ticker)
     except Exception:
@@ -507,43 +548,46 @@ def get_key_financials(ticker: str) -> Optional[dict]:
     if not cik:
         return None
     metrics: dict = {}
-    for metric, tax, concepts, unit, _label in _XBRL_METRICS:
-        for concept in concepts:
+    for metric, pairs, kind, _label in _XBRL_METRICS:
+        for tax, concept in pairs:
             data = _fetch_concept(cik, tax, concept)
             if not data:
                 continue
-            picked = _pick_facts(data.get("units") or {}, unit)
+            picked = _pick_facts(data.get("units") or {}, kind)
             if picked and (picked.get("annual") or picked.get("latest")):
-                metrics[metric] = {"concept": concept, **picked}
+                metrics[metric] = {"concept": concept, "taxonomy": tax, **picked}
                 break
     if not metrics:
         return None
     return {"cik": cik, "metrics": metrics}
 
 
-def _fmt_usd(v) -> str:
+def _fmt_money(v, unit: str = "USD") -> str:
     try:
         v = float(v)
     except (TypeError, ValueError):
         return "N/A"
+    sym = "$" if unit == "USD" else f"{unit} "
     a = abs(v)
     if a >= 1e9:
-        return f"${v / 1e9:,.2f}B"
+        return f"{sym}{v / 1e9:,.2f}B"
     if a >= 1e6:
-        return f"${v / 1e6:,.1f}M"
-    return f"${v:,.0f}"
+        return f"{sym}{v / 1e6:,.1f}M"
+    return f"{sym}{v:,.0f}"
 
 
-def format_xbrl_block(financials: Optional[dict]) -> str:
+def format_xbrl_block(financials: Optional[dict], yf_shares=None) -> str:
     """Render the SEC XBRL key financials as a Korean prompt block. Empty
-    string when unavailable (→ analyst falls back to yfinance gracefully)."""
+    string when unavailable. `yf_shares` (yfinance sharesOutstanding) enables
+    a robust divergence ⚠️ on share count (point-in-time → cleanly comparable;
+    flow-metric TTM-vs-FY comparison is too noisy to auto-flag, deferred)."""
     if not financials or not financials.get("metrics"):
         return ""
     m = financials["metrics"]
-    label = {k: lbl for (k, _t, _c, _u, lbl) in _XBRL_METRICS}
-    lines = [
-        "=== 📄 SEC EDGAR XBRL — US 공식 제출 재무 (10-K / 10-Q 원본) ===",
-    ]
+    label = {k: lbl for (k, _p, _u, lbl) in _XBRL_METRICS}
+    is_ifrs = any(d.get("taxonomy") == "ifrs-full" for d in m.values())
+    src = "us-gaap/dei" if not is_ifrs else "IFRS/dei (ADR 20-F)"
+    lines = [f"=== 📄 SEC EDGAR XBRL — 공식 제출 재무 ({src} 원본) ==="]
     order = ["revenue", "net_income", "eps_diluted", "op_cash_flow",
              "assets", "liabilities", "equity", "shares"]
     for metric in order:
@@ -553,12 +597,14 @@ def format_xbrl_block(financials: Optional[dict]) -> str:
         ann = d.get("annual")
         if not ann:
             continue
+        unit = d.get("unit", "USD")
 
         def _disp(fact):
             v = fact.get("val")
             if metric == "eps_diluted":
+                sym = "$" if unit.startswith("USD") else unit.split("/")[0] + " "
                 try:
-                    return f"${float(v):,.2f}"
+                    return f"{sym}{float(v):,.2f}"
                 except Exception:
                     return str(v)
             if metric == "shares":
@@ -566,20 +612,35 @@ def format_xbrl_block(financials: Optional[dict]) -> str:
                     return f"{float(v) / 1e6:,.0f}M주"
                 except Exception:
                     return str(v)
-            return _fmt_usd(v)
+            return _fmt_money(v, unit)
 
         line = (f"- {label.get(metric, metric)} (FY{ann.get('fy','')}, "
                 f"{ann.get('form','')}, filed {ann.get('filed','')}): {_disp(ann)}")
-        # 최근 분기 — flow 지표(매출/순이익/EPS/현금흐름)는 가장 최근 보고분기도.
         lat = d.get("latest")
         if (metric in ("revenue", "net_income", "eps_diluted", "op_cash_flow")
                 and lat and lat.get("fp") not in (None, "FY")
                 and lat.get("end") != ann.get("end")):
             line += f"  · 최근 {lat.get('fp','Q')}({lat.get('end','')}): {_disp(lat)}"
         lines.append(line)
+
+    # Shares divergence (robust — point-in-time). yfinance staleness / split.
+    sh = m.get("shares")
+    if sh and yf_shares:
+        xb = (sh.get("latest") or sh.get("annual") or {}).get("val")
+        try:
+            xb_f, yf_f = float(xb), float(yf_shares)
+            if xb_f > 0 and abs(xb_f - yf_f) / xb_f > 0.10:
+                lines.append(
+                    f"⚠️ 발행주식수 불일치: yfinance {yf_f/1e6:,.0f}M vs SEC "
+                    f"{xb_f/1e6:,.0f}M ({abs(xb_f-yf_f)/xb_f*100:.0f}% 차이) — "
+                    f"분할/stale 의심. SEC 원본 우선."
+                )
+        except Exception:
+            pass
+
     lines.append(
-        "▶ US 재무 수치는 이 SEC 원본(us-gaap/dei XBRL)을 **최우선 인용**. "
-        "yfinance 와 값이 다르면 SEC 제출본이 정본 — 임의 추정·재계산 금지, "
-        "위 수치를 글자 단위로 사용."
+        "▶ 재무 수치는 이 SEC 원본 XBRL 을 **최우선 인용**. yfinance 와 "
+        "다르면 SEC 제출본이 정본 — 임의 추정·재계산 금지, 위 수치를 글자 "
+        "단위로 사용. (분기 ≠ 연간 비교 시 기간 라벨 명시.)"
     )
     return "\n".join(lines)

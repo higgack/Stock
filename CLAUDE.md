@@ -991,8 +991,14 @@ review:
   로 제외, cashflow/balance/ratios 와 동급) 주입. directive: "US 재무는
   SEC 원본 최우선 인용, yfinance 와 다르면 SEC 정본, 글자단위 사용".
   **이것이 US 의 DART/EDINET/MOPS 등가물** — KR/JP/TW 는 공식 공시 원본을
-  쓰는데 US 만 yfinance 집계에 의존하던 비대칭 해소. ADR/외국법인(20-F
-  IFRS 택소노미)·yfinance 수치 divergence 자동 플래그는 phase 2.
+  쓰는데 US 만 yfinance 집계에 의존하던 비대칭 해소. **Phase 2 완료
+  (2026-06-04)**: (a) **ADR/외국법인 20-F IFRS** — metric 당 us-gaap +
+  ifrs-full concept fallback (Revenue/ProfitLoss/Equity 등), `_choose_unit`
+  이 외화 단위(EUR/JPY/CNY) 자동 선택 + 표시, 연간 form 필터 10-K/20-F/40-F.
+  (b) **yfinance divergence 자동 플래그** — 발행주식수(point-in-time 라
+  깨끗이 비교 가능)만 robust 하게 대조: SEC vs yfinance 10%+ 차이 시 ⚠️
+  "분할/stale 의심, SEC 우선"(injection 이 `_instrument_info.sharesOutstanding`
+  전달). flow 지표(매출/순이익)는 TTM≠FY 노이즈라 자동 대조 미적용(의도).
 - **MANDATORY COMPS PEER SET** — `_US_INDUSTRY_PEERS` (bot/market.py)
   with ~70 yfinance-industry rows covers S&P 500 mega/large + active
   mid-caps. `resolve_peer_set` dispatches by market: KR→`_KR_*`,
