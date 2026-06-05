@@ -1782,10 +1782,16 @@ class TestChartEvents:
         assert classify("전환사채권 발행결정") == "capital"
         assert classify("Entry into a Material Definitive Agreement") == "order"
         assert classify("重大訊息-取得設備訂單") == "order"
-        # 그 외(실적·임원·소송 등)는 'other' → 마커 제외
+        assert classify("소송 등의 제기 신청") == "litigation"
+        assert classify("특허침해 금지 가처분 신청") == "litigation"
+        # US EDGAR 8-K 축약 라벨(버그 fix) — 풀네임 아닌 축약형도 매칭돼야
+        assert classify("§1.01 Material Agreement") == "order"
+        assert classify("§3.02 Unregistered Sales of Equity") == "capital"
+        # 그 외(실적·임원·Reg FD 등)는 'other' → 마커 제외
         assert classify("연결재무제표 기준 영업(잠정)실적") == "other"
         assert classify("분기보고서") == "other"
-        assert classify("매출액또는손익구조30%이상변경") == "other"
+        assert classify("§2.02 Results of Operations (Earnings)") == "other"
+        assert classify("§7.01 Regulation FD Disclosure") == "other"
         assert classify("기타 경영사항") == "other"
 
     def test_norm_shape_dedup_sort(self):
@@ -1803,7 +1809,7 @@ class TestChartEvents:
     def test_whitelist_filter(self):
         # 마커는 화이트리스트 4종만(그 외 제외). 소스에 _SHOW_TYPES 필터 존재.
         from bot.chart_events import _SHOW_TYPES
-        assert set(_SHOW_TYPES) == {"order", "capex", "shareholder", "capital"}
+        assert set(_SHOW_TYPES) == {"order", "litigation", "capex", "shareholder", "capital"}
         src = open("bot/chart_events.py", encoding="utf-8").read()
         assert 'e.get("type") in _SHOW_TYPES' in src, "화이트리스트 필터 누락"
 

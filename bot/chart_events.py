@@ -18,38 +18,47 @@ from __future__ import annotations
 # 자본변동(증자·CB·감자) 4종만 마커로 표시. 그 외(실적·임원·소송 등)는 제외.
 _TYPE_COLOR = {
     "order": "#26a69a",        # 수주·공급계약 (초록)
+    "litigation": "#26a69a",   # 소송 (초록 — 사용자 요청, 수주와 동색)
     "capex": "#4c9aff",        # 신규시설투자·증설 (파랑)
     "shareholder": "#b07cff",  # 주주환원: 배당·자기주식 취득/소각 (보라)
     "capital": "#f5a623",      # 자본변동: 증자·CB·감자·분할 (주황)
     "other": "#94a3b8",        # 그 외 — 마커 미표시(필터 제외)
 }
-_TYPE_LABEL = {"order": "수주·계약", "capex": "시설투자",
+_TYPE_LABEL = {"order": "수주·계약", "litigation": "소송", "capex": "시설투자",
                "shareholder": "주주환원", "capital": "자본변동", "other": "공시"}
 
 # 마커로 표시할 종류(화이트리스트). 'other' 는 제외.
-_SHOW_TYPES = ("order", "capex", "shareholder", "capital")
+_SHOW_TYPES = ("order", "litigation", "capex", "shareholder", "capital")
 
 _SHAREHOLDER_KW = ("자기주식", "자사주", "주식소각", "이익소각", "배당", "주주환원",
                    "treasury", "buyback", "repurchase", "dividend",
                    "自己株式", "自社株", "配当", "回購", "回购", "分紅", "分红", "現金股利")
+_LITIGATION_KW = ("소송", "제소", "피소", "소장", "가처분", "손해배상청구", "특허침해", "특허소송",
+                  "lawsuit", "litigation", "legal proceeding", "complaint filed",
+                  "訴訟", "诉讼", "提訴", "起訴")
 _CAPEX_KW = ("신규시설투자", "시설투자", "설비투자", "신규투자", "유형자산", "증설",
              "공장신설", "생산능력", "공장증설",
              "capital expenditure", "capex", "new facility", "capacity", "plant expansion",
              "設備投資", "增産", "扩产", "扩建", "募投", "投资建设")
+# US EDGAR 8-K 는 축약 라벨('Material Agreement'·'Unregistered Sales of Equity')을 쓰므로
+# 정식 풀네임뿐 아니라 축약형도 키워드에 포함(없으면 US 8-K 가 거의 다 'other' 로 필터됨).
 _ORDER_KW = ("단일판매", "공급계약", "공급ㆍ계약", "공급계약체결", "수주", "계약체결", "수주잔고",
-             "material definitive agreement", "contract", "award", "order backlog",
+             "material agreement", "material definitive agreement", "agreement termination",
+             "supply agreement", "contract", "award", "order backlog",
              "受注", "契約", "訂單", "合約", "合同", "中標", "中标", "签订")
 _CAPITAL_KW = ("유상증자", "무상증자", "전환사채", "신주인수권", "교환사채", "감자",
                "주식분할", "주식병합", "증자", "신주", "액면분할", "액면병합",
+               "unregistered sales of equity", "amendments to articles",
                "offering", "convertible", "warrant", "stock split", "rights issue",
                "増資", "新株", "株式分割", "減資", "增發", "增发", "可轉債", "可转债")
 
 
 def classify(title: str) -> str:
-    """공시 제목 → 종류. 다국어 키워드. 화이트리스트 4종 + 그 외('other').
+    """공시 제목 → 종류. 다국어 키워드. 화이트리스트 + 그 외('other').
 
-    검사 순서(특정 우선): 주주환원(자기주식/배당) → 시설투자 → 수주 → 자본변동.
-    '자기주식취득'이 capex('취득')로 오분류되지 않게 주주환원을 먼저 검사."""
+    검사 순서(특정 우선): 주주환원 → 소송 → 시설투자 → 수주 → 자본변동.
+    '자기주식취득'이 capex('취득')로 오분류되지 않게 주주환원을 먼저 검사.
+    US 8-K 는 축약 라벨이라 _ORDER_KW/_CAPITAL_KW 에 축약형 키워드 포함."""
     t = str(title or "")
     tl = t.lower()
 
@@ -57,6 +66,8 @@ def classify(title: str) -> str:
         return any((k in t) or (k.lower() in tl) for k in kws)
     if _has(_SHAREHOLDER_KW):
         return "shareholder"
+    if _has(_LITIGATION_KW):
+        return "litigation"
     if _has(_CAPEX_KW):
         return "capex"
     if _has(_ORDER_KW):
