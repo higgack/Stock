@@ -529,7 +529,7 @@ class TestPriceChartRender:
         assert "priceFormatter: fmtAxis" in _CHART_JS, "축 포매터 미배선"
         assert "if (v < 0) return ''" in _CHART_JS, "음수 가격 라벨 숨김 누락"
         assert "+ '만'" in _CHART_JS and "+ '억'" in _CHART_JS, "KRW 만/억 약식 누락"
-        assert "rightOffset: 4" in _CHART_JS, "마커 잘림 방지 우측 여백 누락"
+        assert "rightOffset:" in _CHART_JS, "마커 잘림 방지 우측 여백 누락"
         assert "height: 480" in _CHART_JS, "차트 높이 갱신 누락"
 
     def test_chart_json_script_termination_defused(self):

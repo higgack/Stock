@@ -2327,8 +2327,9 @@ _CHART_JS = """
       // mode 1 = 로그 스케일 (긴 기간 뷰에서 % 변동 비교 가능). 기본 0=선형.
       // bottom 0.20: 가격 영역을 키워 디테일↑ (거래량 오버레이 top:0.82 와 비중첩).
       rightPriceScale: { borderVisible: false, minimumWidth: 72, mode: ind.log ? 1 : 0, scaleMargins: { top: 0.06, bottom: 0.20 } },
-      // rightOffset 4: 우측 끝 마커(과거 추천) 텍스트 잘림 방지용 여백.
-      timeScale: { borderVisible: false, timeVisible: false, rightOffset: 4 },
+      // rightOffset 7: 우측 끝에 여백 → 최근 캔들·마커가 가장자리/가격축에 안 붙고
+      // 빈 공간에 놓임(사용자 가독성 2026-06-05).
+      timeScale: { borderVisible: false, timeVisible: false, rightOffset: 7 },
       crosshair: { mode: 1 }
     });
     function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
@@ -2375,7 +2376,9 @@ _CHART_JS = """
         var a = analysisMarkers[ai];
         if (!a.time || a.time < firstT || a.time > lastT) continue;
         var up = a.dir === 'up', dn = a.dir === 'down';
-        var txt = a.rating + (a.ret != null ? ' ' + (a.ret >= 0 ? '+' : '') + a.ret.toFixed(1) + '%' : '');
+        // 마커 텍스트는 결과%만(화살표가 매수/매도/보유 방향 표시 → 긴 'Overweight' 단어
+        // 생략해 캔들 가림 최소화). 미해소(ret 없음)면 화살표만(텍스트 없음).
+        var txt = (a.ret != null ? (a.ret >= 0 ? '+' : '') + a.ret.toFixed(1) + '%' : '');
         mk.push({
           time: a.time,
           position: up ? 'belowBar' : (dn ? 'aboveBar' : 'inBar'),
