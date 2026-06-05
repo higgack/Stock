@@ -1051,7 +1051,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 충족 시 알림 (rsi/price/sma/52w/earnings·KR수급). 목록 /watchlist · 삭제 /unwatch
-/paper buy/sell TICKER N — 모의매매(페이퍼·돈0)·조회 /paper
+/paper — 페이퍼 모의매매(돈0). 전체 /paper help
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
 
 ━━━━━━━━━
@@ -2265,6 +2265,10 @@ async def _handle_paper(args, send, idem=None) -> None:
     `idem` = 텔레그램 message_id 기반 멱등 토큰(재전송 dedup, 별개 주문은 통과)."""
     from bot import paper_trading
     sub = args[0].lower() if args else ""
+
+    if sub in ("help", "도움말", "?"):
+        await send(_PAPER_HELP)
+        return
 
     if sub in ("buy", "sell"):
         # @price = 지정가(limit). 토큰 어디에 와도 파싱(예: /paper buy AAPL 10 @300).
