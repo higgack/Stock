@@ -1147,7 +1147,19 @@ equity()` 가 오늘(KST) 자산 1점을 `equity_history`(365 cap, 일별 dedupe
 호출 → paper.html 에 **인라인 SVG 폴리라인**(외부 라이브러리 0, 2점 이상일
 때, 상승 초록/하락 빨강) + '시작 → 현재' 라인. 커브는 일별로 누적(오늘부터).
 **DM 자동신호는 불요** — DM `/TICKER` 은 hint 만, 분석은 채널 전용(on_channel_
-post)이라 기존 훅이 전 분석 커버. 후속(E1/별도): KIS 모의 어댑터·지정가/PENDING.
+post)이라 기존 훅이 전 분석 커버.
+
+**E0.5e 자동 안전성 + 라벨 명확화 = 완료 (AAPL 2026-06-06 review).** (a)
+**라벨 명확화** — "🧭 투자 계획" → "**🧭 투자 계획 (리서치 매니저)**"(PM 아님!
+외부 리뷰어가 리서치매니저를 PM으로 오독→'합산 파서 고장' 오진). divergence
+배너도 "**PM(최종 결정권자)의 자체 판단 — 리서치 매니저·트레이더와 다른 결론**"
+으로(섹션 regex `🧭\s*투자\s*계획\b` 는 prefix+\b 라 suffix 무해, dashboard dup
+마커는 substring 라 무해). 코드 확인 결과 그 케이스 최종 Hold 는 **PM 의 진짜
+결정**(시스템 강제 아님 — `_check_pm_override_required` None 반환), 배너 정확.
+(b) **자동 컨빅션 게이트** — `paper_signals._is_contested(summary)` 가 요약에
+'방향 상충/시스템 강제/PM OVERRIDE/자동 차단/다른 결론' 마커 있으면 contested
+로 보고 **신규 자동매수 보류**(수동 확인 권장). 청산은 de-risk 라 진행(Risk
+Gate 철학 동일). 후속(별도): 지정가/PENDING·trader pct-only·dynamic comps.
 
 ## 휴장일-인지 거래일 캘린더 (2026-06-05)
 

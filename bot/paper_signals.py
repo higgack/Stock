@@ -23,6 +23,18 @@ AUTO_SIZING_PCT = 0.05     # 매수당 자본 비율 (Risk Gate 캡 안)
 HORIZON_DAYS = 5           # 진입 후 자동 청산까지 거래일 (NOAH 5거래일 윈도)
 _KST = timezone(timedelta(hours=9))
 
+# 컨빅션 게이트(자동매매 안전): 최종 판정이 분석가·트레이더와 갈린(contested)
+# 신호면 신규 매수를 자동 실행하지 않는다. 요약 카드에 아래 배너 마커가 있으면
+# contested 로 본다(방향 상충 / 시스템 강제 / PM OVERRIDE 자동 차단 등). 청산
+# (de-risk)은 contested 여도 진행 — Risk Gate 와 동일 철학(매도 항상 허용).
+_CONTESTED_MARKERS = ("방향 상충", "시스템 강제", "PM OVERRIDE", "자동 차단",
+                      "다른 결론")
+
+
+def _is_contested(summary: str) -> bool:
+    s = summary or ""
+    return any(m in s for m in _CONTESTED_MARKERS)
+
 
 def _direction(rating: str) -> str:
     """판정 문자열 → up(매수) / down(매도) / hold."""
@@ -34,9 +46,12 @@ def _direction(rating: str) -> str:
     return "hold"
 
 
-def on_analysis(ticker: str, rating: str) -> Optional[str]:
+def on_analysis(ticker: str, rating: str, summary: str = "") -> Optional[str]:
     """분석 완료 시 호출 — auto on 이면 판정대로 페이퍼 주문. 알림 텍스트 또는
-    None(무동작/auto off/예외) 반환. 호출부는 반환 텍스트를 채널에 전달."""
+    None(무동작/auto off/예외) 반환. 호출부는 반환 텍스트를 채널에 전달.
+
+    `summary` = 요약 카드 텍스트(컨빅션 게이트용). contested(분석가·트레이더와
+    PM 갈림) 신호면 신규 매수를 자동 실행하지 않음(돈 안전). 청산은 진행."""
     try:
         from bot import paper_trading
         if not paper_trading.auto_enabled():
@@ -46,6 +61,10 @@ def on_analysis(ticker: str, rating: str) -> Optional[str]:
         d = _direction(rating)
 
         if d == "up":
+            # 컨빅션 게이트 — contested 매수 신호는 자동 실행 안 함(수동 확인).
+            if _is_contested(summary):
+                return (f"🤖 자동매수 보류 (판정 {rating}, contested 신호) — "
+                        "분석가/트레이더와 PM 갈림, 수동 확인 권장")
             base = paper_trading.starting_capital_krw()
             if base <= 0:
                 return None

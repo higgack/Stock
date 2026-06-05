@@ -1670,6 +1670,34 @@ class TestPaperAutoSignals:
         monkeypatch.setattr(pt, "auto_enabled", lambda: False)
         assert ps.on_analysis("AAPL", "Buy") is None
 
+    def test_conviction_gate_blocks_contested_buy(self, monkeypatch):
+        # (b) 자동 컨빅션 게이트 — contested(PM이 분석가/트레이더와 갈림) Buy 는
+        # 자동 매수 보류. clean 신호면 정상 매수.
+        import bot.paper_trading as pt, bot.paper_signals as ps
+        monkeypatch.setattr(pt, "auto_enabled", lambda: True)
+        monkeypatch.setattr(pt, "starting_capital_krw", lambda: 1e7)
+        monkeypatch.setattr(pt, "auto_size_pct", lambda: 0.05)
+        called = {"buy": False}
+
+        def fake_buy_value(*a, **k):
+            called["buy"] = True
+            return True, "체결"
+        monkeypatch.setattr(pt, "buy_value", fake_buy_value)
+        # contested 요약(다른 결론 배너) → 보류, 매수 미실행
+        note = ps.on_analysis("AAPL", "Buy",
+                              "⚠️ 트레이더 매수 → 최종 보유 (PM(최종 결정권자)의 자체 판단 — 다른 결론)")
+        assert note and "보류" in note and "contested" in note
+        assert called["buy"] is False, "contested 인데 자동 매수 실행됨"
+        # clean 요약 → 정상 매수
+        note2 = ps.on_analysis("AAPL", "Buy", "📈 시장: 매수 · 💬 감정: 매수")
+        assert called["buy"] is True and "자동매수" in note2
+
+    def test_label_clarifies_research_manager(self):
+        # (a) 라벨 명확화 — 투자계획=리서치 매니저(PM 아님), divergence 배너도 명시.
+        az = open("bot/analyzer.py", encoding="utf-8").read()
+        assert "🧭 투자 계획 (리서치 매니저)" in az, "투자계획 라벨 명확화 누락"
+        assert "PM(최종 결정권자)" in az, "divergence 배너 PM 명확화 누락"
+
     def test_auto_buy_on_buy_verdict(self, monkeypatch):
         import bot.paper_trading as pt, bot.paper_signals as ps
         monkeypatch.setattr(pt, "auto_enabled", lambda: True)

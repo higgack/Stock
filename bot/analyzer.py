@@ -1176,8 +1176,9 @@ def _detect_trader_decision_divergence(state: dict, final_rating: str) -> str:
         return ""
     return (
         f"⚠️ 트레이더 {_DIRECTION_KR.get(trader_dir, trader_dir)} → 최종 "
-        f"{_DIRECTION_KR.get(final_dir, final_dir)} (방향 상충 — PM이 트레이더와"
-        f" 다른 결론. 결정 근거 참고)"
+        f"{_DIRECTION_KR.get(final_dir, final_dir)} (PM(최종 결정권자)의 자체 "
+        f"판단 — 리서치 매니저·트레이더와 다른 결론, PM이 분석가·밸류에이션 "
+        f"종합. 근거 참고)"
     )
 
 
@@ -1390,7 +1391,7 @@ _REPORT_SECTIONS = [
     ("sentiment_report", "💬 감정 분석", "social"),
     ("news_report", "📰 뉴스 분석", "news"),
     ("fundamentals_report", "💰 펀더멘털", "fundamentals"),
-    ("investment_plan", "🧭 투자 계획", None),
+    ("investment_plan", "🧭 투자 계획 (리서치 매니저)", None),
     ("trader_investment_plan", "💼 트레이더 제안", None),
 ]
 
