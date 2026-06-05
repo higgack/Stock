@@ -804,6 +804,18 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard,
         )
+        # E0.5b: NOAH 판정 → 페이퍼 자동 주문(auto on 일 때만). 분석≠실행 분리 —
+        # paper_signals 레이어가 신호를 주문으로 변환. 알림이 있으면 채널에 전송.
+        # graceful: 어떤 실패도 분석 결과 전송엔 영향 없음(이미 위에서 보냄).
+        try:
+            from bot.paper_signals import on_analysis as _paper_on_analysis
+            _r = _SUMMARY_RATING_RE.search(summary or "")
+            _note = _paper_on_analysis(raw, _r.group(1).strip() if _r else "")
+            if _note:
+                await ctx.bot.send_message(chat_id=post.chat.id, text=_note)
+                _regen_paper()
+        except Exception as _pexc:
+            log.debug("paper auto-signal skipped for %s: %s", raw, _pexc)
     finally:
         _recovery.clear()
         await _busy_release()
@@ -2168,6 +2180,7 @@ _PAPER_HELP = (
     "<code>/paper sell TICKER 수량</code> — 모의 매도\n"
     "<code>/paper close TICKER</code> — 전량 매도\n"
     "<code>/paper halt</code> / <code>/paper resume</code> — 거래 중지/재개(kill-switch)\n"
+    "<code>/paper auto on|off</code> — NOAH 판정 자동매매(매수 자본5%·5거래일 청산)\n"
     "<code>/paper reset</code> — 계좌 초기화\n"
     "예: <code>/paper buy AAPL 10</code> · <code>/paper sell 005930.KS 5</code>"
 )
@@ -2226,7 +2239,10 @@ def _paper_summary_text(summ: dict) -> str:
     else:
         lines.append("보유 포지션 없음 — <code>/paper buy TICKER 수량</code>")
     try:
+        from bot import paper_trading
         from bot.risk_gate import status_line
+        lines.append(f"— 🤖 자동매매 {'ON' if paper_trading.auto_enabled() else 'OFF'} "
+                     "(<code>/paper auto on|off</code>)")
         lines.append("— " + status_line())
     except Exception:
         pass
@@ -2286,6 +2302,23 @@ async def _handle_paper(args, send, idem=None) -> None:
         await send("⛔ 거래 중지(kill-switch) — 신규 매수 차단(매도/청산은 허용)"
                    if sub == "halt" else "✅ 거래 재개 — kill-switch 해제")
         _regen_paper()
+        return
+
+    if sub == "auto":
+        if len(args) >= 2 and args[1].lower() in ("on", "off"):
+            paper_trading.set_auto(args[1].lower() == "on")
+            from bot.paper_signals import AUTO_SIZING_PCT, HORIZON_DAYS
+            if args[1].lower() == "on":
+                await send(f"🤖 자동매매 <b>ON</b> — NOAH 분석 판정대로 페이퍼 주문 "
+                           f"(매수=자본 {AUTO_SIZING_PCT:.0%}·{HORIZON_DAYS}거래일 자동청산, "
+                           f"매도=보유 시 청산). Risk Gate 동일 적용.")
+            else:
+                await send("🤖 자동매매 <b>OFF</b> — 수동 명령만.")
+            _regen_paper()
+        else:
+            cur = "ON" if paper_trading.auto_enabled() else "OFF"
+            await send(f"🤖 자동매매 현재 <b>{cur}</b>. 변경: "
+                       "<code>/paper auto on</code> · <code>/paper auto off</code>")
         return
 
     await send(_paper_summary_text(paper_trading.summary()))
@@ -2811,7 +2844,8 @@ async def _periodic_dashboard_refresh() -> None:
                                        regenerate_cheongyak_index,
                                        regenerate_gics_candidates_index,
                                        regenerate_reddit_insider_index,
-                                       regenerate_watchlist_index)
+                                       regenerate_watchlist_index,
+                                       regenerate_paper_index)
             regenerate_index()
             regenerate_daily_byte_index()
             regenerate_realestate_index()
@@ -2819,6 +2853,15 @@ async def _periodic_dashboard_refresh() -> None:
             regenerate_gics_candidates_index()
             regenerate_reddit_insider_index()
             regenerate_watchlist_index()
+            # 페이퍼(E0.5b): 5거래일 horizon 도래 자동 포지션 청산 + 페이지 갱신.
+            try:
+                from bot import paper_trading
+                _closed = paper_trading.close_due_positions()
+                if _closed:
+                    log.info("paper: %d horizon auto-close(s)", len(_closed))
+            except Exception:
+                log.exception("paper horizon close failed")
+            regenerate_paper_index()
             log.info("midnight dashboard regen: ok")
         except Exception:
             log.exception("midnight dashboard regen failed")

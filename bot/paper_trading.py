@@ -23,10 +23,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+_KST = timezone(timedelta(hours=9))
 
 log = logging.getLogger(__name__)
 
@@ -47,9 +51,10 @@ def _new_account() -> dict:
         "starting_capital_krw": float(STARTING_CAPITAL_KRW),
         "cash_krw": float(STARTING_CAPITAL_KRW),
         "realized_pnl_krw": 0.0,
-        "positions": {},        # ticker -> {qty, avg_cost_native, cost_basis_krw, currency, market}
+        "positions": {},        # ticker -> {qty, avg_cost_native, cost_basis_krw, currency, market, auto_close_date?}
         "trades": [],           # 최근 체결(cap)
         "seen_keys": [],        # idempotency
+        "auto_enabled": False,  # NOAH 판정 → 자동 페이퍼 주문 (E0.5b, 기본 OFF)
         "created_ts": time.time(),
     }
 
@@ -287,6 +292,84 @@ def reset():
     return True, f"페이퍼 계좌 초기화 — 시작 자본 ₩{STARTING_CAPITAL_KRW:,}"
 
 
+# ─── E0.5b: NOAH 판정 → 자동 주문 지원 (auto flag · 금액 사이징 · 5거래일 청산) ─
+def auto_enabled() -> bool:
+    return bool(get_account().get("auto_enabled"))
+
+
+def set_auto(on: bool) -> None:
+    acct = get_account()
+    acct["auto_enabled"] = bool(on)
+    _save_account(acct)
+
+
+def starting_capital_krw() -> float:
+    return float(get_account().get("starting_capital_krw") or 0)
+
+
+def buy_value(ticker: str, krw_target: float, idem: Optional[str] = None,
+              horizon_days: Optional[int] = None):
+    """목표 금액(KRW)만큼 시장가 매수 — qty = floor(목표 / (현재가×fx)). 자동
+    신호의 '자본 N% 매수' 사이징용. `horizon_days` 면 진입 후 그 거래일 뒤
+    auto_close_date 를 포지션에 기록(자동 청산 대상). (ok, 메시지)."""
+    ticker = (ticker or "").strip().upper()
+    px, market = live_native_price(ticker)
+    if market not in _E0_MARKETS:
+        return False, f"E0 미지원 시장({market or '?'})"
+    if px is None or px <= 0:
+        return False, f"현재가를 가져올 수 없습니다: {ticker}"
+    _, fx = _market_fx(market)
+    if not fx:
+        return False, f"통화 환산 불가: {market}"
+    qty = math.floor(krw_target / (px * fx))
+    if qty < 1:
+        return False, (f"목표 금액 ₩{krw_target:,.0f} 으로 1주도 매수 불가 "
+                       f"(1주 ≈ ₩{px * fx:,.0f})")
+    ok, msg = _order(ticker, qty, "buy", idem)
+    if ok and horizon_days:
+        _set_horizon(ticker, market, horizon_days)
+    return ok, msg
+
+
+def _set_horizon(ticker: str, market: str, days: int) -> None:
+    """auto 매수 포지션에 자동 청산일(진입+거래일 days) 기록. 휴장일 캘린더
+    부재 시 캘린더-일 근사로 폴백."""
+    try:
+        acct = get_account()
+        pos = acct["positions"].get(ticker)
+        if not pos:
+            return
+        today = datetime.now(_KST).strftime("%Y-%m-%d")
+        close_date = None
+        try:
+            from bot.market_calendar import add_trading_days
+            close_date = add_trading_days(market, today, days)
+        except Exception:
+            close_date = None
+        if close_date is None:   # 폴백: 거래일≈캘린더일×1.5 근사
+            close_date = (datetime.now(_KST)
+                          + timedelta(days=int(days * 1.5) + 1)).strftime("%Y-%m-%d")
+        pos["auto_close_date"] = close_date
+        _save_account(acct)
+    except Exception as exc:
+        log.debug("paper: set_horizon failed for %s: %s", ticker, exc)
+
+
+def close_due_positions():
+    """auto_close_date 가 오늘(KST) 이하인 포지션 전량 청산(5거래일 horizon).
+    periodic 태스크가 호출. 청산 메시지 리스트 반환(없으면 빈 리스트)."""
+    acct = get_account()
+    today = datetime.now(_KST).strftime("%Y-%m-%d")
+    due = [t for t, p in acct.get("positions", {}).items()
+           if p.get("auto_close_date") and p["auto_close_date"] <= today]
+    out = []
+    for t in due:
+        ok, msg = close_position(t, idem=f"horizon:{t}:{today}")
+        if ok:
+            out.append(msg)
+    return out
+
+
 # ─── valuation / summary (price_fn 주입으로 테스트 가능) ──────────────────────
 def positions_with_pnl(price_fn=None) -> list[dict]:
     """각 포지션 + 현재가·평가액(KRW)·미실현 P&L. price_fn(ticker)->(px_native,
@@ -305,6 +388,7 @@ def positions_with_pnl(price_fn=None) -> list[dict]:
             "ticker": tkr, "qty": pos["qty"], "avg_cost_native": pos["avg_cost_native"],
             "currency": pos.get("currency"), "market": pos.get("market"),
             "cost_basis_krw": pos["cost_basis_krw"], "cur_native": px,
+            "auto_close_date": pos.get("auto_close_date"),
         }
         if px is not None and fx:
             row["value_krw"] = pos["qty"] * px * fx

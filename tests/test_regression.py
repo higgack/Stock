@@ -1628,6 +1628,104 @@ class TestRiskGate:
         assert "halt_banner" in ds and "status_line" in ds, "대시보드 게이트 표시 누락"
 
 
+class TestPaperAutoSignals:
+    """E0.5b — NOAH 판정 → 페이퍼 자동 주문 (분석≠실행 분리, auto opt-in,
+    자본 5% 사이징, 5거래일 자동 청산)."""
+
+    def test_direction_mapping(self):
+        import bot.paper_signals as ps
+        assert ps._direction("Buy") == "up" and ps._direction("Overweight") == "up"
+        assert ps._direction("Sell") == "down" and ps._direction("Underweight") == "down"
+        assert ps._direction("Hold") == "hold" and ps._direction("?") == "hold"
+
+    def test_auto_off_noop(self, monkeypatch):
+        import bot.paper_trading as pt, bot.paper_signals as ps
+        monkeypatch.setattr(pt, "auto_enabled", lambda: False)
+        assert ps.on_analysis("AAPL", "Buy") is None
+
+    def test_auto_buy_on_buy_verdict(self, monkeypatch):
+        import bot.paper_trading as pt, bot.paper_signals as ps
+        monkeypatch.setattr(pt, "auto_enabled", lambda: True)
+        monkeypatch.setattr(pt, "starting_capital_krw", lambda: 1e7)
+        cap = {}
+
+        def fake_buy_value(ticker, target, idem=None, horizon_days=None):
+            cap.update(ticker=ticker, target=target, idem=idem, horizon=horizon_days)
+            return True, f"매수 체결: {ticker}"
+        monkeypatch.setattr(pt, "buy_value", fake_buy_value)
+        note = ps.on_analysis("AAPL", "Buy")
+        assert note and "자동매수" in note
+        assert cap["ticker"] == "AAPL" and cap["horizon"] == ps.HORIZON_DAYS
+        assert abs(cap["target"] - 1e7 * ps.AUTO_SIZING_PCT) < 1
+        assert cap["idem"].startswith("auto:AAPL:")
+
+    def test_auto_close_on_sell_when_held(self, monkeypatch):
+        import bot.paper_trading as pt, bot.paper_signals as ps
+        monkeypatch.setattr(pt, "auto_enabled", lambda: True)
+        monkeypatch.setattr(pt, "get_account", lambda: {"positions": {"AAPL": {}}})
+        cap = {}
+        monkeypatch.setattr(pt, "close_position",
+                            lambda t, idem=None: (cap.update(t=t) or (True, f"매도 체결: {t}")))
+        note = ps.on_analysis("AAPL", "Sell")
+        assert note and "자동청산" in note and cap["t"] == "AAPL"
+
+    def test_auto_sell_noop_when_not_held(self, monkeypatch):
+        import bot.paper_trading as pt, bot.paper_signals as ps
+        monkeypatch.setattr(pt, "auto_enabled", lambda: True)
+        monkeypatch.setattr(pt, "get_account", lambda: {"positions": {}})
+        assert ps.on_analysis("AAPL", "Sell") is None
+        monkeypatch.setattr(pt, "auto_enabled", lambda: True)
+        assert ps.on_analysis("AAPL", "Hold") is None     # hold → 무동작
+
+    def test_buy_value_sizing(self, monkeypatch):
+        import bot.paper_trading as pt
+        monkeypatch.setattr(pt, "live_native_price", lambda t: (313.0, "US"))
+        monkeypatch.setattr(pt, "_market_fx", lambda m: ("USD", 1380.0))
+        monkeypatch.setattr(pt, "_set_horizon", lambda *a, **k: None)
+        cap = {}
+        monkeypatch.setattr(pt, "_order",
+                            lambda t, q, s, i: (cap.update(qty=q, side=s) or (True, "ok")))
+        ok, _ = pt.buy_value("AAPL", 500000, horizon_days=5)
+        assert ok and cap["qty"] == 1 and cap["side"] == "buy"   # floor(500000/(313*1380))
+        ok2, msg2 = pt.buy_value("AAPL", 100000)                 # 1주도 못 삼
+        assert not ok2 and "1주도" in msg2
+
+    def test_close_due_positions(self, monkeypatch):
+        import bot.paper_trading as pt
+        from datetime import datetime, timedelta, timezone
+        kst = timezone(timedelta(hours=9))
+        past = (datetime.now(kst) - timedelta(days=1)).strftime("%Y-%m-%d")
+        future = (datetime.now(kst) + timedelta(days=10)).strftime("%Y-%m-%d")
+        monkeypatch.setattr(pt, "get_account", lambda: {"positions": {
+            "DUE": {"auto_close_date": past}, "NOTYET": {"auto_close_date": future},
+            "MANUAL": {}}})
+        closed = []
+        monkeypatch.setattr(pt, "close_position",
+                            lambda t, idem=None: (closed.append(t) or (True, f"c {t}")))
+        out = pt.close_due_positions()
+        assert closed == ["DUE"] and len(out) == 1   # 만기 도래만, 미래/수동 제외
+
+    def test_set_auto_toggle(self, tmp_path, monkeypatch):
+        import bot.paper_trading as pt
+        monkeypatch.setattr(pt, "_ACCOUNT", tmp_path / "a.json")
+        monkeypatch.setattr(pt, "_audit_log", lambda r: None)
+        assert pt.auto_enabled() is False
+        pt.set_auto(True)
+        assert pt.auto_enabled() is True
+        pt.set_auto(False)
+        assert pt.auto_enabled() is False
+
+    def test_wiring(self):
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "from bot.paper_signals import on_analysis" in tb, "분석 완료 훅 누락"
+        assert 'sub == "auto"' in tb and "set_auto" in tb, "/paper auto 명령 누락"
+        assert "close_due_positions" in tb, "periodic 자동청산 훅 누락"
+        pt = open("bot/paper_trading.py", encoding="utf-8").read()
+        assert "def buy_value" in pt and "def close_due_positions" in pt
+        ds = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "자동매매" in ds and "auto_close_date" in ds
+
+
 class TestGicsCandidatesPage:
     """fix(2026-06-05): GICS 후보 대시보드가 서버 파일시스템 경로
     (~/.tradingagents/gics_check_audit.jsonl)를 본문 footer 로 노출하던 것 제거.

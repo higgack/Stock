@@ -1122,6 +1122,18 @@ HALT + **kill-switch**(`~/.tradingagents/TRADING_HALT` 파일, 봇 밖에서도 
 (E2) 전 §5 LIVE 값(2%/10%/5/3%)으로 조이고 LIVE 프로파일 분리. **같은 게이트가
 실거래에도 재사용**.
 
+**E0.5b NOAH 판정 → 자동 신호 = 완료.** `bot/paper_signals.py`(분석≠실행
+분리 — analyzer 가 아니라 이 레이어가 신호를 주문으로 변환). `on_analysis
+(ticker, rating)`: 매수(Buy/Overweight)→자본 5% 사이징 페이퍼 매수+진입 후
+**5거래일 자동 청산**(market_calendar), 매도(Sell/Underweight)→보유 시 청산,
+보유→무시. **기본 OFF**, `/paper auto on|off` 로 opt-in. 멱등 idem=auto:
+{ticker}:{KST date}. Risk Gate 동일 적용. 배선: telegram 단일 분석 완료
+직후(summary 전송 뒤) `on_analysis` 호출→알림 채널 전송(graceful, 분석
+흐름 무영향). `paper_trading.buy_value`(금액 사이징)+`close_due_positions`
+(5거래일 만기 청산, `_periodic_dashboard_refresh` 00:01 KST 에서 호출)+
+`_set_horizon`. /paper 요약·paper.html 에 자동매매 ON/OFF + 포지션 🤖~청산일
+배지. 후속(E0.5c+): horizon 청산 채널 알림·지정가/PENDING·sizing 정책 옵션.
+
 ## 휴장일-인지 거래일 캘린더 (2026-06-05)
 
 `bot/market_calendar.py` — `exchange_calendars`(무료·무키·전 시장

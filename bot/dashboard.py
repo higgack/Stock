@@ -5317,8 +5317,10 @@ def _render_paper_page(summ: dict) -> str:
     gate_line, halt_banner = "", ""
     try:
         from bot.risk_gate import status_line, halt_active
+        from bot import paper_trading as _pt
+        _auto = "ON" if _pt.auto_enabled() else "OFF"
         gate_line = ('<p class="sub" style="color:var(--muted);font-size:12px">🛡️ '
-                     + _html.escape(status_line()) + '</p>')
+                     + _html.escape(status_line()) + f' · 🤖 자동매매 {_auto}</p>')
         if halt_active():
             halt_banner = ('<div class="pf-card" style="border-color:#e2574c">'
                            '<b style="color:#e2574c">⛔ 거래 중지(kill-switch) 활성</b> — '
@@ -5355,8 +5357,11 @@ def _render_paper_page(summ: dict) -> str:
     pos_html = ""
     for r in rows:
         cur = r.get("currency")
+        _hz = r.get("auto_close_date")
+        _hz_badge = (f' <span style="color:#b07cff;font-size:11px">🤖~{_html.escape(str(_hz))}</span>'
+                     if _hz else "")
         pos_html += (
-            f'<tr><td><b>{_html.escape(r["ticker"])}</b></td>'
+            f'<tr><td><b>{_html.escape(r["ticker"])}</b>{_hz_badge}</td>'
             f'<td>{_html.escape(str(r.get("market") or ""))}</td>'
             f'<td class="r">{r["qty"]:g}</td>'
             f'<td class="r">{_native(r.get("avg_cost_native"), cur)}</td>'
