@@ -42,6 +42,24 @@ def _won(v) -> str:
     return ("-" if neg else "") + s + "원"
 
 
+def _distinct_stock_keys(holdings: list[dict]) -> set:
+    """고유 종목 식별 키 집합.
+
+    같은 종목을 여러 증권사에 보유하면 뱅샐 export 가 행을 분리해(중복) 단순
+    포지션 건수는 같은 종목을 두 번 센다(사용자 2026-06-05: "타 증권사에 같은
+    종목 두개는 하나로"). 매칭된 종목은 **ticker** 로 dedup(증권사 간 종목명
+    표기 차이까지 흡수), 미매칭은 **종목명** 으로 dedup. '보유 종목' 카운트가
+    포지션 건수가 아닌 실제 종목 수를 뜻하게 하기 위함. 보유 테이블 자체는
+    원본 행을 유지(증권사 필터 보존) — 카운트만 고유 기준."""
+    keys = set()
+    for h in holdings:
+        if h.get("matched") and h.get("ticker"):
+            keys.add(("t", h["ticker"]))
+        else:
+            keys.add(("n", (h.get("상품명") or "").strip()))
+    return keys
+
+
 def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
     """파서 결과 → 대시보드/요약용 집계 모델.
 
@@ -103,6 +121,9 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
         "top_gainers": sorted(rated, key=lambda h: h["수익률"], reverse=True)[:5],
         "top_losers": sorted(rated, key=lambda h: h["수익률"])[:5],
         "holding_count": len(holdings),
+        # 고유 종목 수(증권사 중복 제외) — '보유 종목' 카운트의 canonical 값.
+        # holding_count(포지션 건수)는 증권사별 합/스냅샷 비교용으로 유지.
+        "distinct_count": len(_distinct_stock_keys(holdings)),
         "matched_count": sum(1 for h in holdings if h["matched"]),
         # 증분(자산 변화) 비교용 압축 스냅샷 — ingest 가 다음 업로드 시 prev 로 사용.
         "snapshot": {
@@ -122,7 +143,8 @@ def format_summary_text(model: dict) -> str:
         "📂 자산 요약 (뱅크샐러드 기준)",
         f"순자산 {_won(nw.get('순자산'))}  "
         f"(자산 {_won(nw.get('총자산'))} − 부채 {_won(nw.get('총부채'))})",
-        f"주식 {model.get('holding_count', 0)}종목 · 티커매칭 {model.get('matched_count', 0)}",
+        f"주식 {model.get('distinct_count', model.get('holding_count', 0))}종목 · "
+        f"티커매칭 {model.get('matched_count', 0)}",
     ]
     if model.get("by_broker"):
         lines.append("— 증권사별 —")

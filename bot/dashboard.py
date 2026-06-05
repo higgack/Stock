@@ -5508,7 +5508,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("총부채"))}</div><div class="stat-lbl">총부채</div></div>'
         f'<div class="stat"><div class="stat-num">{_pf_won(eval_sum)}</div><div class="stat-lbl">주식 평가</div></div>'
         f'<div class="stat"><div class="stat-num" style="color:{_pf_col(pnl)}">{_pf_won(pnl)} ({pnl_pct:+.1f}%)</div><div class="stat-lbl">주식 평가손익</div></div>'
-        f'<div class="stat"><div class="stat-num">{len(holdings)}</div><div class="stat-lbl">보유 종목</div></div>'
+        f'<div class="stat"><div class="stat-num">{model.get("distinct_count", len(holdings))}</div><div class="stat-lbl">보유 종목</div></div>'
         '</div>')
 
     # 자산 배분 도넛
@@ -5671,7 +5671,13 @@ def _render_portfolio_page(model, noah=None) -> str:
              '<th class="r" data-k="ret" data-t="n">수익률</th>'
              '<th class="r" data-k="pnl" data-t="n">평가손익</th>'
              '<th data-k="noah" data-t="s">NOAH 판정</th></tr></thead>')
-    holdings_block = ('<div class="pf-card"><div class="pf-h">보유 종목 (' + str(len(holdings))
+    # 헤더 카운트 = 고유 종목 수(증권사 중복 제외). 행은 증권사별 포지션을
+    # 유지하므로(증권사 필터 보존) 행 수(건)와 다르면 'N종목 · M건' 병기.
+    _distinct = model.get("distinct_count", len(holdings))
+    _positions = len(holdings)
+    _hdr_cnt = (f'{_distinct}종목 · {_positions}건'
+                if _positions != _distinct else f'{_distinct}종목')
+    holdings_block = ('<div class="pf-card"><div class="pf-h">보유 종목 (' + _hdr_cnt
                       + (f' · NOAH 분석 {noah_n}' if noah_n else '') + ')</div>' + _ctl
                       + '<div class="pf-scroll"><table class="pf-tbl" id="pf-tbl">'
                       + _head + '<tbody>' + hl_rows + '</tbody></table></div>'
@@ -5711,6 +5717,9 @@ def _render_portfolio_page(model, noah=None) -> str:
 
     note = ('<p class="sub" style="margin-top:14px;color:var(--muted);font-size:12px">'
             '뱅크샐러드 export 스냅샷 기준 — 평가금액·수익률은 export 시점 값. '
+            "'보유 종목' 수는 증권사 중복 제외 고유 종목 기준"
+            '(같은 종목을 여러 증권사에 보유해도 1종목). 표는 증권사별 포지션을 '
+            '그대로 보여줘 건수(M건)는 종목 수보다 많을 수 있음. '
             '표 헤더 클릭 정렬 · 검색/증권사/NOAH 필터 가능. '
             '티커 매칭 종목은 종목명 클릭 시 NOAH 분석으로 연결(분석 기록 있을 때). '
             f'기준 기간: {as_of}</p>')

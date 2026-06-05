@@ -1618,6 +1618,29 @@ class TestPortfolioModel:
         assert "snapshot" in m
         assert m["snapshot"]["순자산"] == 930011000 and m["snapshot"]["종목수"] == 2
 
+    def test_distinct_count_dedups_across_brokers(self):
+        # '보유 종목' 카운트 = 고유 종목(증권사 중복 제외, 사용자 2026-06-05).
+        # 매칭은 ticker(증권사 간 표기 차이 흡수), 미매칭은 이름으로 dedup.
+        from bot.portfolio import build_model, _distinct_stock_keys
+
+        def resolve(name):
+            if name in ("애플", "Apple"):  # 같은 종목, 다른 표기 → 같은 ticker
+                return {"ticker": "AAPL", "market": "US", "matched": True, "source": "x"}
+            return {"ticker": None, "market": None, "matched": False, "source": None}
+
+        parsed = {"holdings": [
+            {"종류": "주식", "금융사": "NH",   "상품명": "애플",       "투자원금": 100, "평가금액": 120},
+            {"종류": "주식", "금융사": "삼성", "상품명": "Apple",      "투자원금": 100, "평가금액": 120},
+            {"종류": "주식", "금융사": "NH",   "상품명": "비보심 랩스", "투자원금": 100, "평가금액": 3},
+            {"종류": "주식", "금융사": "삼성", "상품명": "비보심 랩스", "투자원금": 100, "평가금액": 4},
+            {"종류": "주식", "금융사": "미래", "상품명": "램",         "투자원금": 10,  "평가금액": 50},
+        ], "finance": {}}
+        m = build_model(parsed, resolve=resolve)
+        assert m["holding_count"] == 5, "포지션 건수는 원본 유지(테이블·증권사 필터용)"
+        assert m["distinct_count"] == 3, "고유 종목 = 애플(AAPL) · 비보심 랩스 · 램"
+        keys = _distinct_stock_keys(m["holdings"])
+        assert keys == {("t", "AAPL"), ("n", "비보심 랩스"), ("n", "램")}
+
 
 class TestPortfolioDashboard:
     """fix: 자산 대시보드 렌더 + 텔레그램 배선 (2026-06-04 자산관리 P1 증분4)."""
@@ -1654,6 +1677,10 @@ class TestPortfolioDashboard:
         # 세로 맞춤(2026-06-04): 손익 분포 + 등높이(증권사별↔TOP/WORST)
         assert "수익률 분포" in html, "수익률 분포 누락"
         assert 'pf-grid pf-eqh' in html, "등높이 그리드 클래스 누락"
+        # 보유 종목 카운트 = 고유 종목('N종목' 단위). 합성데이터 2종목·중복없음.
+        assert "보유 종목 (2종목" in html, "테이블 헤더 '종목' 단위 누락"
+        assert 'model.get("distinct_count"' in open("bot/dashboard.py", encoding="utf-8").read(), \
+            "스탯 카드/헤더가 distinct_count 미사용"
         # 빈 상태(업로드 전)
         assert "아직 업로드된 자산이 없습니다" in _render_portfolio_page(None)
 
