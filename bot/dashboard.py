@@ -5446,6 +5446,16 @@ def _render_portfolio_page(model, noah=None) -> str:
     cost_sum = sum(h.get("투자원금") or 0 for h in holdings)
     pnl = eval_sum - cost_sum
     pnl_pct = (pnl / cost_sum * 100) if cost_sum else 0.0
+    # '보유 종목' 카운트 = 고유 종목(증권사 중복 제외). 저장된 모델(이 기능
+    # 이전 업로드)은 distinct_count 가 없으므로 **렌더 시점에 holdings 로 재계산**
+    # → 재업로드 없이 다음 대시보드 regen 에 즉시 반영. 행 수(포지션 건수)는
+    # _positions 로 별도 유지(증권사별 행·필터 보존).
+    try:
+        from bot.portfolio import _distinct_stock_keys
+        _distinct = len(_distinct_stock_keys(holdings))
+    except Exception:
+        _distinct = model.get("distinct_count", len(holdings))
+    _positions = len(holdings)
     as_of = _html.escape(str(model.get("as_of") or ""))
     # 수동 업로드(뱅크샐러드 RAG 채널)라 '마지막 업데이트' 시각 명시 (사용자
     # 요청 2026-06-04). ingest 가 save() 에 박은 _saved_ts(epoch) → KST.
@@ -5508,7 +5518,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("총부채"))}</div><div class="stat-lbl">총부채</div></div>'
         f'<div class="stat"><div class="stat-num">{_pf_won(eval_sum)}</div><div class="stat-lbl">주식 평가</div></div>'
         f'<div class="stat"><div class="stat-num" style="color:{_pf_col(pnl)}">{_pf_won(pnl)} ({pnl_pct:+.1f}%)</div><div class="stat-lbl">주식 평가손익</div></div>'
-        f'<div class="stat"><div class="stat-num">{model.get("distinct_count", len(holdings))}</div><div class="stat-lbl">보유 종목</div></div>'
+        f'<div class="stat"><div class="stat-num">{_distinct}</div><div class="stat-lbl">보유 종목</div></div>'
         '</div>')
 
     # 자산 배분 도넛
@@ -5671,10 +5681,8 @@ def _render_portfolio_page(model, noah=None) -> str:
              '<th class="r" data-k="ret" data-t="n">수익률</th>'
              '<th class="r" data-k="pnl" data-t="n">평가손익</th>'
              '<th data-k="noah" data-t="s">NOAH 판정</th></tr></thead>')
-    # 헤더 카운트 = 고유 종목 수(증권사 중복 제외). 행은 증권사별 포지션을
-    # 유지하므로(증권사 필터 보존) 행 수(건)와 다르면 'N종목 · M건' 병기.
-    _distinct = model.get("distinct_count", len(holdings))
-    _positions = len(holdings)
+    # 헤더 카운트 = 고유 종목 수(증권사 중복 제외, 위에서 렌더 시점 재계산).
+    # 행은 증권사별 포지션을 유지하므로(증권사 필터 보존) 건수와 다르면 병기.
     _hdr_cnt = (f'{_distinct}종목 · {_positions}건'
                 if _positions != _distinct else f'{_distinct}종목')
     holdings_block = ('<div class="pf-card"><div class="pf-h">보유 종목 (' + _hdr_cnt

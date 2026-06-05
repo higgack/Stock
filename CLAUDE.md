@@ -447,10 +447,12 @@ pattern to follow:
     **'보유 종목' 카운트 = 고유 종목(증권사 중복 제외, 사용자 2026-06-05)** —
     같은 종목을 여러 증권사에 보유하면 export 행이 분리돼 단순 건수가 중복
     카운트. `portfolio._distinct_stock_keys`(매칭=ticker, 미매칭=종목명)로
-    `model['distinct_count']` 산출 → 스탯 카드 '보유 종목' + 텔레그램 요약
-    '주식 N종목' + 테이블 헤더가 사용. 테이블 **행은 원본(증권사별 포지션)
-    유지**(증권사 필터 보존)이라 헤더는 'N종목 · M건' 병기(M=건수≥N). snapshot
-    종목수/holding_count(증분 baseline)는 포지션 건수로 그대로.
+    산출. build_model 이 `model['distinct_count']` 저장(텔레그램 요약 '주식
+    N종목' 용), **대시보드는 렌더 시점에 holdings 로 재계산**(`_render_portfolio_
+    page` 가 `_distinct_stock_keys(holdings)`) → 옛 저장 모델(필드 부재)도
+    재업로드 없이 다음 regen 에 즉시 반영. 테이블 **행은 원본(증권사별 포지션)
+    유지**(증권사 필터 보존)이라 헤더는 'N종목 · M건' 병기(M=건수≥N), note 에
+    의미 명시. snapshot 종목수/holding_count(증분 baseline)는 포지션 건수로 그대로.
   • **가계부 (P2, 2026-06-04 완료)** — 같은 export 의 '2.현금흐름현황' 을
     `bot/budget.py` `build_budget_model` 로 월별 수입/지출/순저축/저축률 +
     카테고리 도넛 + 카테고리×월 매트릭스 모델링 → **별도 `budget.html`**

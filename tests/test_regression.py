@@ -1679,8 +1679,10 @@ class TestPortfolioDashboard:
         assert 'pf-grid pf-eqh' in html, "등높이 그리드 클래스 누락"
         # 보유 종목 카운트 = 고유 종목('N종목' 단위). 합성데이터 2종목·중복없음.
         assert "보유 종목 (2종목" in html, "테이블 헤더 '종목' 단위 누락"
-        assert 'model.get("distinct_count"' in open("bot/dashboard.py", encoding="utf-8").read(), \
-            "스탯 카드/헤더가 distinct_count 미사용"
+        # 저장된 옛 모델(distinct_count 필드 없음)도 재업로드 없이 반영되도록
+        # 렌더 시점에 holdings 로 재계산해야.
+        assert "_distinct_stock_keys(holdings)" in open("bot/dashboard.py", encoding="utf-8").read(), \
+            "보유 종목 카운트 렌더 시점 고유 계산 누락"
         # 빈 상태(업로드 전)
         assert "아직 업로드된 자산이 없습니다" in _render_portfolio_page(None)
 
