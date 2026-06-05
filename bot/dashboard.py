@@ -2624,8 +2624,14 @@ _CHART_JS = """
         items.push(['분석 후', (_chg >= 0 ? '+' : '') + _chg.toFixed(1) + '%', _col, null, 'pct']);
       }
     }
+    if (markers) {
+      if (markers.entry  != null) items.push(['진입', markers.entry,  '#9b59b6', dec]);
+      if (markers.stop   != null) items.push(['손절', markers.stop,   '#e2574c', dec]);
+      if (markers.target != null) items.push(['목표', markers.target, '#3ec46d', dec]);
+    }
     // 기간 수익률 — 로드된 범위(1개월~전체)의 first bar → 현재가 %. 범위/봉
-    // 전환 시 그 윈도 기준으로 갱신 (분석 시점과 무관한 차트 윈도 통계).
+    // 전환 시 그 윈도 기준으로 갱신. 분석 관련 값이 아니라 차트 윈도 통계
+    // 이므로 진입/손절/목표(분석 값) 아래에 배치.
     var _first = firstNonNull(d.close);
     var _curp = (d.last_price != null ? d.last_price : lastNonNull(d.close));
     if (_first != null && _first > 0 && _curp != null) {
@@ -2633,11 +2639,6 @@ _CHART_JS = """
       var _pcol = _pchg > 0 ? '#26a69a' : (_pchg < 0 ? '#e2574c' : '#94a3b8');
       var _rlabel = ({'1mo':'1개월','3mo':'3개월','6mo':'6개월','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[curRange] || curRange;
       items.push(['기간 ' + _rlabel, (_pchg >= 0 ? '+' : '') + _pchg.toFixed(1) + '%', _pcol, null, 'pct']);
-    }
-    if (markers) {
-      if (markers.entry  != null) items.push(['진입', markers.entry,  '#9b59b6', dec]);
-      if (markers.stop   != null) items.push(['손절', markers.stop,   '#e2574c', dec]);
-      if (markers.target != null) items.push(['목표', markers.target, '#3ec46d', dec]);
     }
     // 52주 신고가/신저가 — 항상 표시. 기본 그룹의 맨 밑(진입/손절/목표가 있으면 그 아래).
     if (d.wk52_high != null) items.push(['52주 신고가', d.wk52_high, '#26a69a', dec]);
