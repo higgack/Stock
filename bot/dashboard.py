@@ -5808,25 +5808,44 @@ def _render_budget_page(budget) -> str:
                  f'<div style="flex:1 1 240px;min-width:200px">{"".join(legend)}</div>'
                  + inc_panel + '</div></div>')
 
-    # 카테고리 × 월 매트릭스 (원본 — 분류 빗나가도 데이터 보존). 수입→지출→총계 순.
-    order = {"income": 0, "total_income": 1, "expense": 2, "total_expense": 3, "total": 4}
-    rows = sorted(budget.get("rows", []),
-                  key=lambda r: (order.get(r.get("kind"), 5), -(_safe_num(r.get("총계")) or 0)))
+    # 카테고리 × 월 매트릭스. 뱅샐의 '총계' 행(월수입/월지출 총계 등)은 export 가
+    # 비워둬 0 으로 떠 혼란 → **제외**하고, 끝에 우리가 monthly 로 산출한 수입/지출/
+    # 순저축 합계 행을 굵게 추가(카드·막대와 동일값). 총계/월평균 열도 render 시점에
+    # monthly 로 계산(stored 0 무시 → 재ingest 없이도 즉시 채움). 큰 항목이 위로.
+    def _rtot(r):
+        return sum(x for x in (r.get("monthly") or []) if x is not None)
+
+    def _ravg(r):
+        mv = [x for x in (r.get("monthly") or []) if x is not None]
+        return (sum(mv) / len(mv)) if mv else None
+    cat_rows = [r for r in budget.get("rows", []) if r.get("kind") in ("income", "expense")]
+    cat_rows.sort(key=lambda r: (0 if r["kind"] == "income" else 1, -abs(_rtot(r))))
     mhead = "".join(f'<th class="r">{_html.escape(mo[2:])}</th>' for mo in months)
-    body = ""
-    for r in rows:
-        k = r.get("kind")
-        kcol = "var(--pos)" if k in ("income", "total_income") else (
-            "var(--muted)" if k in ("total", "total_income", "total_expense") else "var(--neg)")
-        mcells = ""
-        mv = r.get("monthly") or []
+
+    def _mcells(arr):
+        out = ""
         for i in range(n):
-            v = mv[i] if i < len(mv) else None
-            mcells += f'<td class="r">{_pf_won(v) if v is not None else "·"}</td>'
+            v = arr[i] if i < len(arr) else None
+            out += f'<td class="r">{_pf_won(v) if v is not None else "·"}</td>'
+        return out
+    body = ""
+    for r in cat_rows:
+        k = r.get("kind")
+        kcol = "var(--pos)" if k == "income" else "var(--neg)"
         body += (f'<tr><td>{_html.escape(str(r.get("항목") or ""))}</td>'
                  f'<td style="color:{kcol};font-size:11px">{_BUDGET_KIND.get(k, k)}</td>'
-                 f'<td class="r">{_pf_won(r.get("총계"))}</td>'
-                 f'<td class="r">{_pf_won(r.get("월평균"))}</td>{mcells}</tr>')
+                 f'<td class="r">{_pf_won(_rtot(r))}</td>'
+                 f'<td class="r">{_pf_won(_ravg(r))}</td>{_mcells(r.get("monthly") or [])}</tr>')
+
+    def _total_row(label, arr, color):
+        tot = sum(a or 0 for a in arr)
+        return (f'<tr style="font-weight:700;border-top:2px solid var(--border)">'
+                f'<td>{label}</td><td style="color:{color};font-size:11px">계</td>'
+                f'<td class="r">{_pf_won(tot)}</td>'
+                f'<td class="r">{_pf_won(tot / n if n else 0)}</td>{_mcells(arr)}</tr>')
+    body += _total_row("수입 합계", income, "var(--pos)")
+    body += _total_row("지출 합계", expense, "var(--neg)")
+    body += _total_row("순저축", net, "var(--muted)")
     matrix = ('<div class="pf-card"><div class="pf-h">현금흐름 상세 (카테고리 × 월)</div>'
               '<div class="bg-mtx"><table class="pf-tbl">'
               '<thead><tr><th>항목</th><th>구분</th><th class="r">총계</th>'
