@@ -1091,11 +1091,51 @@ JP + TW + CN_A + HK consistently.
   registered). Tushare deferred unless AKShare reliability issues
   surface during validation.
 
+## 실거래 실행 — 설계 문서만 (착수 전, 2026-06-05)
+
+`docs/execution_architecture.md` (v0.1 draft) — NOAH 분석 신호를 실제
+주문으로 연결하는 안전 아키텍처·가드레일 설계. **구현 미착수.** 핵심:
+불변 7원칙(fail-closed·paper-first·human-in-loop·하드 캡 코드강제·
+idempotency·kill-switch·분석≠실행 분리), 브로커 **KIS 우선**(모의투자
+도메인으로 돈 없이 실행 코드 100% 검증), 단계 E0(페이퍼)→E1(shadow)→
+E2(live confirm)→E3(bounded). ⚠️ **현행 '알림만(교육)' 스탠스를 뒤집는
+결정**이라 착수 전 이 CLAUDE.md 정책 변경이 선결. §12 사용자 결정(브로커·
+시장·캡 수치·트리거·horizon) 미정. 다음 단계 후보: E0 페이퍼 엔진(토스/
+실거래 무관·리스크 0).
+
+## 휴장일-인지 거래일 캘린더 (2026-06-05)
+
+`bot/market_calendar.py` — `exchange_calendars`(무료·무키·전 시장
+XNYS/XKRX/XTKS/XTAI/XSHG/XHKG)로 `add_trading_days`/`next_trading_day`/
+`is_trading_day`. graceful None(라이브러리/시장 미지원). `auto_resolve`
+의 `_fetch_returns`(5거래일)·`_fetch_returns_calendar`(N캘린더일) readiness
+gate 가 'holding_days+3 캘린더일' 근사 대신 만기 세션 + `_SETTLE_BUFFER_
+DAYS`(1) 로 공휴일까지 반영(윈도에 공휴일 끼면 일찍 발동해 부분 결과를
+최종 기록하던 오발 차단). None 시 기존 휴리스틱 폴백(회귀 0). requirements
+에 `exchange_calendars>=4.5`. 실측 VM 검증(샌드박스 pandas/lib 부재).
+실행 서브시스템도 거래일 만기 계산에 재사용.
+
 ## Universal guard symmetry (US ↔ KR ↔ JP ↔ TW)
 
 All structural guards added during KR/JP expansion now also cover US,
 preventing US-side asymmetric weakness. Reflect this in any future
 review:
+
+- **종목별 실제 상·하한가로 glitch 임계 정밀화 (KR, 2026-06-05)** —
+  price-glitch 가드가 KR 일일 한도를 하드코딩(±35%)하던 것을, KIS
+  `get_current_price` 의 `stck_mxpr`(상한가)·`stck_llam`(하한가)로 정밀화.
+  `price_sanity.exact_session_gap(prev_close, upper, lower)`(pure·0.35 캡
+  밖 오파싱 방어) 가 정확한 일일 max 변동률 산출 → `agent_utils._compute_
+  technical_snapshot` 이 KR 종목에 한해 `snapshot_gap_for_market`(0.35)
+  대신 사용(전일종가=현재가/(1+등락률/100), KIS 실패 시 기본값 폴백).
+  market-gated(소스가 KR/KIS) 이나 원칙(거래소 일일 한도 있으면 정확값)은
+  universal. 실측 VM(KIS 키).
+- **KR 차트 라이브 현재가 = KIS 실시간 우선 (2026-06-05)** —
+  `chart_data._live_last_price` 가 KR 종목이면 `kis_client.get_realtime_
+  price`(2분 캐시, 12h `get_current_price` 와 별개) 를 yfinance fast_info
+  (~15분 지연·KR EOD) 보다 우선. 검증(직전 종가 대비) 통과 시 사용, 실패/
+  비-KR/creds 부재 시 yfinance 폴백. 호출은 차트층 5분 + KIS 2분 캐시로
+  이중 bound. 대시보드 차트 가이드도 동기 갱신. 1분봉 intraday 차트 후속.
 
 - **현재가 글리치 가드 (price-glitch HARD GUARD, 2026-06-04)** —
   `bot/price_sanity.py` (의존성 경량·순수·단위테스트 가능). yfinance 가 한
