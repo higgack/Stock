@@ -1665,6 +1665,33 @@ class TestPaperAutoSignals:
         assert ps._direction("Sell") == "down" and ps._direction("Underweight") == "down"
         assert ps._direction("Hold") == "hold" and ps._direction("?") == "hold"
 
+    def test_decision_chain_audit(self, tmp_path, monkeypatch):
+        # 결정 체인 추적성 — RM/트레이더/PM/분석가 다수/discipline 기록(2026-06-06).
+        import json
+        import bot.paper_signals as ps, bot.paper_trading as pt
+        summary = ("🎯 최종 판정: Hold\n📈 시장: 매수 · 💬 감정: 보유 · 📰 뉴스: 보유 "
+                   "· 💰 펀더멘털: 보유\n⚠️ 트레이더 매수 → 최종 보유 (다른 결론)")
+        full = "## 🧭 투자 계획 (리서치 매니저)\n추천: Overweight\n## 💼 트레이더 제안\n거래 액션: Buy"
+        chain = ps._extract_chain("Hold", summary, full)
+        assert chain["rm"] == "Overweight" and chain["trader"] == "Buy"
+        assert chain["pm"] == "Hold" and chain["majority"] == "hold" and chain["contested"]
+        cs = ps._chain_str(chain)
+        assert "RM Overweight" in cs and "Tr Buy" in cs and "PM Hold" in cs and "다수 보유" in cs
+        # 자동 매수 시 audit.jsonl 에 체인+결과 기록
+        monkeypatch.setattr(ps, "_AUTO_AUDIT", tmp_path / "audit.jsonl")
+        monkeypatch.setattr(pt, "auto_enabled", lambda: True)
+        monkeypatch.setattr(pt, "starting_capital_krw", lambda: 1e7)
+        monkeypatch.setattr(pt, "auto_size_pct", lambda: 0.05)
+        monkeypatch.setattr(pt, "buy_value", lambda *a, **k: (True, "체결"))
+        note = ps.on_analysis("AAPL", "Buy", "📈 시장: 매수 · 💬 감정: 매수",
+                              "## 🧭 투자 계획 (리서치 매니저)\n추천: Buy\n거래 액션: Buy")
+        assert note and "RM Buy" in note and "PM Buy" in note
+        rec = json.loads((tmp_path / "audit.jsonl").read_text(encoding="utf-8").strip())
+        assert rec["ticker"] == "AAPL" and rec["chain"]["pm"] == "Buy"
+        assert "buy_filled" in rec["outcome"]
+        # 대시보드도 결정 체인 이력 표시(추적성 surface)
+        assert "자동매매 결정 이력" in open("bot/dashboard.py", encoding="utf-8").read()
+
     def test_auto_off_noop(self, monkeypatch):
         import bot.paper_trading as pt, bot.paper_signals as ps
         monkeypatch.setattr(pt, "auto_enabled", lambda: False)

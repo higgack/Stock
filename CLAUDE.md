@@ -1161,6 +1161,14 @@ post)이라 기존 훅이 전 분석 커버.
 로 보고 **신규 자동매수 보류**(수동 확인 권장). 청산은 de-risk 라 진행(Risk
 Gate 철학 동일).
 
+**E0.5e+ 결정 체인 audit 로깅 = 완료 (추적성).** 각 자동매매(매수/보류/청산)
+시 `paper_signals._extract_chain` 이 **RM 추천 / 트레이더 액션 / PM 최종 /
+분석가 다수 / discipline 발화 / contested** 를 추출(RM·트레이더는 full report
+섹션, 다수·banner 는 요약 카드 파싱) → `~/.tradingagents/paper/auto_audit.
+jsonl` 에 `{ts,ticker,chain,outcome}` append + 알림 메시지에 compact 체인('RM
+Overweight·Tr Buy·PM Hold·다수 보유') + `paper.html` '🤖 자동매매 결정 이력'
+표(최근 10). 어느 매니저가 뭘 말했고 왜 그 결과가 났는지 영구 추적.
+
 **E0.5f 지정가 주문(limit) = 완료.** `/paper buy TICKER 수량 @지정가` →
 현재가가 조건(매수 ≤·매도 ≥) 미충족이면 `pending` 보관(체결 X), 충족이면
 즉시 체결(지정가보다 유리/동일). `_periodic_paper_pending`(30분)가 fill_

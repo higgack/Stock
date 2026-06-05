@@ -810,8 +810,9 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         try:
             from bot.paper_signals import on_analysis as _paper_on_analysis
             _r = _SUMMARY_RATING_RE.search(summary or "")
-            # summary 전달 → 컨빅션 게이트(contested 신호면 자동 매수 보류).
-            _note = _paper_on_analysis(raw, _r.group(1).strip() if _r else "", summary or "")
+            # summary(컨빅션 게이트) + full(결정 체인 audit: RM/트레이더 추출) 전달.
+            _note = _paper_on_analysis(raw, _r.group(1).strip() if _r else "",
+                                       summary or "", full or "")
             if _note:
                 await ctx.bot.send_message(chat_id=post.chat.id, text=_note)
                 _regen_paper()

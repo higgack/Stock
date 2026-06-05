@@ -13,11 +13,17 @@ graceful — 어떤 예외도 분석 흐름을 깨지 않게 None 으로 degrade
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
+import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
+
+_AUTO_AUDIT = Path.home() / ".tradingagents" / "paper" / "auto_audit.jsonl"
 
 AUTO_SIZING_PCT = 0.05     # 매수당 자본 비율 (Risk Gate 캡 안)
 HORIZON_DAYS = 5           # 진입 후 자동 청산까지 거래일 (NOAH 5거래일 윈도)
@@ -36,6 +42,68 @@ def _is_contested(summary: str) -> bool:
     return any(m in s for m in _CONTESTED_MARKERS)
 
 
+def _majority_from_stance_bar(summary: str) -> Optional[str]:
+    """요약 카드 stance bar(📈 시장: 매수 · 💬 감정: 보유 …)에서 분석가 다수
+    방향 산출 — buy/sell/hold(strict plurality, 동률/분열 시 hold). portfolio_
+    manager._analyst_majority_direction 와 동일 규칙(여기선 카드 텍스트 파싱)."""
+    stances = re.findall(
+        r"(?:시장|감정|뉴스|펀더멘털)\s*[:：]\s*(강?매수|강?매도|보유)", summary or "")
+    if not stances:
+        return None
+    dirs = ["buy" if "매수" in s else ("sell" if "매도" in s else "hold") for s in stances]
+    b, sl, h = dirs.count("buy"), dirs.count("sell"), dirs.count("hold")
+    if b > sl and b > h:
+        return "buy"
+    if sl > b and sl > h:
+        return "sell"
+    return "hold"
+
+
+def _extract_chain(rating: str, summary: str, full: str) -> dict:
+    """자동매매 결정 체인 — RM 추천 / 트레이더 액션 / PM 최종 / 분석가 다수 /
+    discipline 발화. RM·트레이더는 full report 섹션에서, 다수·discipline 은
+    요약 카드에서 파싱. 추적성 audit 용 (어느 매니저가 뭘 말했는지 영구 기록)."""
+    f, s = full or "", summary or ""
+    rm = re.search(r"투자\s*계획.*?추천\s*[:：]\s*([A-Za-z가-힣/]+)", f, re.DOTALL)
+    trader = re.search(r"거래\s*액션\s*[:：]\s*([A-Za-z가-힣/]+)", f)
+    return {
+        "rm": rm.group(1).strip() if rm else None,          # 리서치 매니저 추천
+        "trader": trader.group(1).strip() if trader else None,  # 트레이더 액션
+        "pm": (rating or "").strip(),                        # PM 최종(자동 신호 근거)
+        "majority": _majority_from_stance_bar(s),            # 분석가 다수
+        "discipline_forced": any(m in s for m in ("시스템 강제", "PM OVERRIDE", "자동 차단")),
+        "contested": _is_contested(s),
+    }
+
+
+def _chain_str(c: dict) -> str:
+    """알림용 compact 체인 — 'RM Overweight·Tr Buy·PM Hold·다수 보유'."""
+    parts = []
+    if c.get("rm"):
+        parts.append(f"RM {c['rm']}")
+    if c.get("trader"):
+        parts.append(f"Tr {c['trader']}")
+    parts.append(f"PM {c.get('pm') or '?'}")
+    if c.get("majority"):
+        parts.append(f"다수 {({'buy':'매수','sell':'매도','hold':'보유'}).get(c['majority'], c['majority'])}")
+    if c.get("discipline_forced"):
+        parts.append("⚖️강제보정")
+    return " · ".join(parts)
+
+
+def _log_auto_audit(ticker: str, chain: dict, outcome: str) -> None:
+    """자동매매 결정 체인 + 결과를 audit.jsonl 에 append (추적성). graceful."""
+    try:
+        _AUTO_AUDIT.parent.mkdir(parents=True, exist_ok=True)
+        with open(_AUTO_AUDIT, "a", encoding="utf-8") as fp:
+            fp.write(json.dumps({
+                "ts": time.time(), "ticker": ticker,
+                "chain": chain, "outcome": outcome,
+            }, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
 def _direction(rating: str) -> str:
     """판정 문자열 → up(매수) / down(매도) / hold."""
     r = (rating or "").strip().lower()
@@ -46,12 +114,14 @@ def _direction(rating: str) -> str:
     return "hold"
 
 
-def on_analysis(ticker: str, rating: str, summary: str = "") -> Optional[str]:
+def on_analysis(ticker: str, rating: str, summary: str = "",
+                full: str = "") -> Optional[str]:
     """분석 완료 시 호출 — auto on 이면 판정대로 페이퍼 주문. 알림 텍스트 또는
     None(무동작/auto off/예외) 반환. 호출부는 반환 텍스트를 채널에 전달.
 
-    `summary` = 요약 카드 텍스트(컨빅션 게이트용). contested(분석가·트레이더와
-    PM 갈림) 신호면 신규 매수를 자동 실행하지 않음(돈 안전). 청산은 진행."""
+    `summary`/`full` = 요약 카드/전체 리포트. contested(분석가·트레이더와 PM
+    갈림) 신호면 신규 매수 자동 보류(돈 안전). 매수/청산/보류 시 **결정 체인**
+    (RM/트레이더/PM/분석가 다수/discipline)을 auto_audit.jsonl 에 기록(추적성)."""
     try:
         from bot import paper_trading
         if not paper_trading.auto_enabled():
@@ -59,12 +129,17 @@ def on_analysis(ticker: str, rating: str, summary: str = "") -> Optional[str]:
         tkr = (ticker or "").strip().upper()
         today = datetime.now(_KST).strftime("%Y-%m-%d")
         d = _direction(rating)
+        if d == "hold":
+            return None   # 무동작 — 자동매매 미관여, audit 불요
+
+        chain = _extract_chain(rating, summary, full)
+        cs = _chain_str(chain)
 
         if d == "up":
             # 컨빅션 게이트 — contested 매수 신호는 자동 실행 안 함(수동 확인).
-            if _is_contested(summary):
-                return (f"🤖 자동매수 보류 (판정 {rating}, contested 신호) — "
-                        "분석가/트레이더와 PM 갈림, 수동 확인 권장")
+            if chain["contested"]:
+                _log_auto_audit(tkr, chain, "buy_held(contested)")
+                return f"🤖 자동매수 보류 (contested · {cs}) — 분석가/트레이더와 PM 갈림, 수동 확인"
             base = paper_trading.starting_capital_krw()
             if base <= 0:
                 return None
@@ -72,17 +147,19 @@ def on_analysis(ticker: str, rating: str, summary: str = "") -> Optional[str]:
             ok, msg = paper_trading.buy_value(
                 tkr, base * pct,
                 idem=f"auto:{tkr}:{today}", horizon_days=HORIZON_DAYS)
-            return (f"🤖 자동매수 (판정 {rating}): {msg}" if ok
-                    else f"🤖 자동매수 보류 (판정 {rating}): {msg}")
+            _log_auto_audit(tkr, chain, ("buy_filled" if ok else "buy_blocked") + f": {msg}")
+            return (f"🤖 자동매수 ({cs}): {msg}" if ok
+                    else f"🤖 자동매수 보류 ({cs}): {msg}")
 
         if d == "down":
             held = tkr in paper_trading.get_account().get("positions", {})
             if not held:
                 return None
             ok, msg = paper_trading.close_position(tkr, idem=f"auto:{tkr}:{today}")
-            return f"🤖 자동청산 (판정 {rating}): {msg}" if ok else None
+            _log_auto_audit(tkr, chain, ("close" if ok else "close_blocked") + f": {msg}")
+            return f"🤖 자동청산 ({cs}): {msg}" if ok else None
 
-        return None   # hold → 무동작
+        return None
     except Exception as exc:
         log.debug("paper_signals.on_analysis(%s) failed: %s", ticker, exc)
         return None

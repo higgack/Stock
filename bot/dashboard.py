@@ -5462,11 +5462,50 @@ def _render_paper_page(summ: dict) -> str:
             + '</tbody></table><p class="sub" style="font-size:11px">가격 도달 시 ~30분 내 '
             '자동 체결. 취소: 텔레그램 <code>/paper cancel id</code></p></div>')
 
+    # 자동매매 결정 체인 이력 (추적성, E0.5e) — auto_audit.jsonl 최근 10건.
+    # RM/트레이더/PM/분석가 다수/discipline 을 한눈에(어느 매니저가 뭘 말했나).
+    audit_block = ""
+    try:
+        import datetime as _dt
+        import json as _j
+        _ap = Path.home() / ".tradingagents" / "paper" / "auto_audit.jsonl"
+        if _ap.exists():
+            arows = ""
+            for ln in reversed(_ap.read_text(encoding="utf-8").splitlines()[-10:]):
+                try:
+                    r = _j.loads(ln)
+                except Exception:
+                    continue
+                c = r.get("chain") or {}
+                when = (_dt.datetime.fromtimestamp(r["ts"]).strftime("%m-%d %H:%M")
+                        if r.get("ts") else "")
+                maj = {"buy": "매수", "sell": "매도", "hold": "보유"}.get(
+                    c.get("majority"), c.get("majority") or "")
+                chain_txt = " · ".join(p for p in [
+                    f"RM {c.get('rm')}" if c.get("rm") else "",
+                    f"Tr {c.get('trader')}" if c.get("trader") else "",
+                    f"PM {c.get('pm')}" if c.get("pm") else "",
+                    f"다수 {maj}" if maj else "",
+                    "⚖️강제보정" if c.get("discipline_forced") else "",
+                ] if p)
+                arows += (f'<tr><td class="muted">{_html.escape(when)}</td>'
+                          f'<td><b>{_html.escape(r.get("ticker", ""))}</b></td>'
+                          f'<td>{_html.escape(chain_txt)}</td>'
+                          f'<td class="muted">{_html.escape(str(r.get("outcome", "")))}</td></tr>')
+            if arows:
+                audit_block = (
+                    '<div class="pf-card"><div class="pf-h">🤖 자동매매 결정 이력 (최근)</div>'
+                    '<table class="pf-tbl"><thead><tr><th>시각</th><th>종목</th>'
+                    '<th>결정 체인 (RM·트레이더·PM·분석가 다수)</th><th>결과</th></tr></thead>'
+                    '<tbody>' + arows + '</tbody></table></div>')
+    except Exception:
+        pass
+
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>🧪 페이퍼 트레이딩</h1>'
             '<p class="sub">NOAH 분석 신호/수동 명령의 모의 매매 — 실거래 연결 전 전략 검증(리스크 0)</p>'
             + halt_banner + stats + stats_extra + curve_html + pos_block + pend_block
-            + tr_block + note + gate_line + '</div>')
+            + tr_block + audit_block + note + gate_line + '</div>')
 
 
 def _sym_cur(currency: str) -> str:
