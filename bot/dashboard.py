@@ -5687,6 +5687,10 @@ _BUDGET_CSS = """<style>
 .bg-sr{font-size:10px;color:var(--muted)}
 .bg-mtx{overflow:auto;max-height:480px;border:1px solid var(--border);border-radius:8px}
 .bg-mtx td.r,.bg-mtx th.r{text-align:right;font-variant-numeric:tabular-nums}
+.bg-mtx td,.bg-mtx th{white-space:nowrap}
+.bg-mtx thead th{z-index:2}
+.bg-mtx tbody td:first-child{position:sticky;left:0;background:var(--card);z-index:1}
+.bg-mtx thead th:first-child{position:sticky;left:0;z-index:3}
 </style>"""
 
 _BUDGET_KIND = {"income": "수입", "expense": "지출", "total_income": "수입계",
