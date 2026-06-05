@@ -2250,7 +2250,7 @@ _CHART_JS = """
 
   // 지표 on/off 상태 (localStorage 영속 — 페이지 넘나들어도 유지).
   var IND_KEY = 'noah_chart_ind_v1';
-  var IND_DEFAULT = { candle:false, ma:true, bb:false, vol:true, rsi:true, macd:false, log:false, events:true };
+  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:false, log:false, events:true };
   function loadInd(){
     var s = {};
     try { s = JSON.parse(localStorage.getItem(IND_KEY) || '{}') || {}; } catch(e){}
