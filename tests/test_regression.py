@@ -1373,6 +1373,54 @@ class TestMarketCalendar:
         assert "holding_days + 3" in src and "calendar_days + 3" in src, "휴리스틱 폴백 제거됨"
 
 
+class TestKisRealtimeChartPrice:
+    """fix(2026-06-05): 차트 라이브 현재가가 KR 은 KIS 실시간(2분 캐시)을
+    우선 — yfinance fast_info(~15분 지연·KR EOD) 약점 보완. 실패 시 yfinance 폴백."""
+
+    def test_kis_get_realtime_price(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_ticker_to_code", lambda t: "005930")
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        monkeypatch.setattr(k, "_get",
+                            lambda path, tr_id, params: {"output": {"stck_prpr": "70100"}})
+        assert k.KisClient().get_realtime_price("005930.KS") == 70100
+        # 비-KR(코드 매핑 없음) → None(graceful, yfinance 폴백 신호).
+        monkeypatch.setattr(k, "_ticker_to_code", lambda t: None)
+        assert k.KisClient().get_realtime_price("AAPL") is None
+
+    def test_live_last_price_kr_prefers_kis(self, monkeypatch):
+        import bot.chart_data as cd
+
+        class _Kis:
+            def get_realtime_price(self, ticker):
+                return 103   # 직전 종가 102 근처 → 검증 통과
+        monkeypatch.setattr("bot.kis_client.get_kis", lambda: _Kis())
+        # t 는 KR-valid 경로에서 안 쓰임 → None 전달해도 됨.
+        out = cd._live_last_price(None, {"close": [100, 101, 102]}, 0, "005930.KS")
+        assert out == 103, "KR 라이브 현재가가 KIS 우선이 아님"
+
+    def test_live_last_price_falls_back_to_yfinance(self, monkeypatch):
+        import bot.chart_data as cd
+
+        class _KisNone:
+            def get_realtime_price(self, ticker):
+                return None   # KIS 미가용 → yfinance 폴백
+        monkeypatch.setattr("bot.kis_client.get_kis", lambda: _KisNone())
+
+        class _FI:
+            last_price = 104
+        class _T:
+            fast_info = _FI()
+        out = cd._live_last_price(_T(), {"close": [100, 101, 102]}, 0, "005930.KS")
+        assert out == 104, "KIS None 일 때 yfinance 폴백 실패"
+
+    def test_wiring_present(self):
+        assert "get_realtime_price" in open("bot/kis_client.py", encoding="utf-8").read()
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "get_realtime_price" in cd and 'market == "KR"' in cd, "차트 KR→KIS 배선 누락"
+
+
 class TestExactPriceLimits:
     """fix(2026-06-05): KIS 종목별 실제 상·하한가로 price-glitch 임계 정밀화."""
 

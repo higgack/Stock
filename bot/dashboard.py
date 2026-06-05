@@ -2190,13 +2190,13 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     <script type="application/json" id="chart-data">{payload}</script>
     <div id="chart-disc" class="chart-disc"></div>
     <div class="chart-legend">
-      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (설정 저장됨)
+      현재가=장중 라이브(KR은 KIS 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (설정 저장됨)
     </div>
     <details class="chart-guide">
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
       <div class="cg-sec"><b>가격 라인 / 기준선</b>
         <ul>
-          <li><span class="k" style="color:#4c9aff">현재가</span> — 장중 라이브(yfinance ~15분 지연, KR은 종가만일 수 있음). 우측 축에 항상 표시. 이상 시세(분할·조정 오류 등)는 자동으로 걸러져 직전 종가로 대체.</li>
+          <li><span class="k" style="color:#4c9aff">현재가</span> — 장중 라이브(KR은 KIS 실시간 우선, 그 외 yfinance ~15분 지연). 우측 축에 항상 표시. 이상 시세(분할·조정 오류 등)는 자동으로 걸러져 직전 종가로 대체.</li>
           <li><span class="k" style="color:#94a3b8">시점가</span>(회색 점선) — 분석한 날의 종가, 즉 "그때 가격" 기준선.</li>
           <li><span class="k" style="color:#9b59b6">진입</span> / <span class="k" style="color:#e2574c">손절</span> / <span class="k" style="color:#3ec46d">목표</span>(점선) — 트레이더 플랜의 가격대(본문에서 자동 추출, 비현실 값은 자동 제외).</li>
           <li>세로축(우측 가격) 라벨은 KRW(₩)는 <span class="k">만/억</span> 약식, 그 외 시장은 천단위 콤마로 — 큰 숫자 가독성.</li>

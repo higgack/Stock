@@ -63,13 +63,13 @@ def _mkt_div(ticker: str) -> str:
     return "Q" if ticker.upper().endswith(".KQ") else "J"
 
 
-def _cache_get(key: str) -> Optional[dict]:
+def _cache_get(key: str, ttl_hours: float = _CACHE_TTL_HOURS) -> Optional[dict]:
     f = _CACHE_DIR / key
     if not f.exists():
         return None
     try:
         age_h = (time.time() - f.stat().st_mtime) / 3600
-        if age_h < _CACHE_TTL_HOURS:
+        if age_h < ttl_hours:
             return json.loads(f.read_text())
     except Exception as exc:
         log.debug("kis cache read fail %s: %s", key, exc)
@@ -256,6 +256,32 @@ class KisClient:
         }
         _cache_put(cache_key, result)
         return result
+
+    # 1b. 장중 실시간 현재가 (짧은 캐시 — 차트 라이브 현재가용)
+    def get_realtime_price(self, ticker: str) -> Optional[int]:
+        """장중 현재가(KRW int). 12h get_current_price 와 달리 **2분 캐시**라
+        차트 라이브 현재가에 쓸 만큼 신선하다. yfinance fast_info(~15분 지연·
+        KR 은 종종 EOD)보다 KR 에서 정확. KR 전용 — 비-KR ticker/creds 부재 시
+        None(graceful). 호출 빈도는 차트층 5분 캐시 + 이 2분 캐시로 이중 bound."""
+        code = _ticker_to_code(ticker)
+        if not code:
+            return None
+        cache_key = f"rtprice_{code}.json"
+        cached = _cache_get(cache_key, ttl_hours=2 / 60.0)   # 2분
+        if cached is not None:
+            return cached.get("price")
+        data = _get(
+            "/uapi/domestic-stock/v1/quotations/inquire-price",
+            "FHKST01010100",
+            {"FID_COND_MRKT_DIV_CODE": _mkt_div(ticker), "FID_INPUT_ISCD": code},
+        )
+        if not data:
+            return None
+        price = _int((data.get("output") or {}).get("stck_prpr"))
+        if price is None:
+            return None
+        _cache_put(cache_key, {"price": price})
+        return price
 
     # 2+3. 외인/기관/개인 + 기관 주체별
     def get_investor_flow(self, ticker: str) -> Optional[dict]:

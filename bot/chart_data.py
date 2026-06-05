@@ -292,6 +292,23 @@ def _live_last_price(t, payload: dict, decimals: int, ticker: str):
         if not closes:
             return None
         last_close = closes[-1]
+        try:
+            from bot.market import detect_market
+            market = detect_market(ticker)
+        except Exception:
+            market = "US"
+        # KR: KIS 실시간 현재가(2분 캐시)가 yfinance fast_info(~15분 지연·KR 은
+        # 종종 EOD)보다 정확·신선 → 우선 시도. 검증 통과 시 사용, 실패/비-KR/
+        # creds 부재 시 아래 yfinance 폴백(2026-06-05).
+        if market == "KR":
+            try:
+                from bot.kis_client import get_kis
+                _kp = get_kis().get_realtime_price(ticker)
+                _kv = _validate_live_price(_kp, last_close, market)
+                if _kv is not None:
+                    return round(_kv, decimals)
+            except Exception as exc:
+                log.debug("chart_data: KIS realtime price skipped for %s: %s", ticker, exc)
         fi = t.fast_info
         raw = None
         for attr in ("last_price", "lastPrice", "regularMarketPrice"):
@@ -302,11 +319,6 @@ def _live_last_price(t, payload: dict, decimals: int, ticker: str):
             if v is not None:
                 raw = v
                 break
-        try:
-            from bot.market import detect_market
-            market = detect_market(ticker)
-        except Exception:
-            market = "US"
         valid = _validate_live_price(raw, last_close, market)
         if valid is None:
             if raw is not None:
