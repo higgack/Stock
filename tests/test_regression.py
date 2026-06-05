@@ -1578,6 +1578,56 @@ class TestPaperTrading:
         assert "def regenerate_paper_index" in ds and 'paper.html">🧪 페이퍼' in ds
 
 
+class TestRiskGate:
+    """E0.5 Risk Gate — 하드 캡 + kill-switch (docs/execution_architecture §5,
+    페이퍼 프로파일). 매수만 게이트, 매도/청산은 항상 허용(de-risk)."""
+
+    def test_per_trade_and_sell_passthrough(self):
+        import bot.risk_gate as rg
+        acct = {"starting_capital_krw": 1e7, "positions": {}, "trades": []}
+        assert rg.check_order(acct, "AAPL", "buy", rg.PER_TRADE_PCT * 1e7 - 1)[0]
+        assert not rg.check_order(acct, "AAPL", "buy", rg.PER_TRADE_PCT * 1e7 + 1000)[0]
+        assert rg.check_order(acct, "AAPL", "sell", 0)[0]      # 매도 항상 허용
+
+    def test_max_positions_and_per_position(self):
+        import bot.risk_gate as rg
+        full = {"starting_capital_krw": 1e7,
+                "positions": {f"T{i}": {} for i in range(rg.MAX_POSITIONS)}, "trades": []}
+        assert not rg.check_order(full, "NEW", "buy", 1000)[0]   # 신규 종목 수 한도
+        assert rg.check_order(full, "T0", "buy", 1000)[0]        # 기존 종목은 비중 내 OK
+        pos = {"starting_capital_krw": 1e7,
+               "positions": {"AAPL": {"cost_basis_krw": rg.PER_POSITION_PCT * 1e7}}, "trades": []}
+        assert not rg.check_order(pos, "AAPL", "buy", 1000)[0]   # 종목당 비중 초과
+
+    def test_daily_loss_halts_buys_not_sells(self):
+        import time
+        import bot.risk_gate as rg
+        acct = {"starting_capital_krw": 1e7, "positions": {},
+                "trades": [{"ts": time.time(), "realized_krw": -rg.DAILY_LOSS_PCT * 1e7 - 1}]}
+        assert not rg.check_order(acct, "AAPL", "buy", 1000)[0]
+        assert rg.check_order(acct, "AAPL", "sell", 0)[0]
+
+    def test_killswitch_blocks_buys_allows_sells(self, tmp_path, monkeypatch):
+        import bot.risk_gate as rg
+        monkeypatch.setattr(rg, "_HALT_FILE", tmp_path / "HALT")
+        acct = {"starting_capital_krw": 1e7, "positions": {}, "trades": []}
+        assert not rg.halt_active()
+        rg.set_halt(True)
+        assert rg.halt_active()
+        assert not rg.check_order(acct, "AAPL", "buy", 1000)[0]   # 매수 차단
+        assert rg.check_order(acct, "AAPL", "sell", 0)[0]         # 매도 허용
+        rg.set_halt(False)
+        assert not rg.halt_active() and rg.check_order(acct, "AAPL", "buy", 1000)[0]
+
+    def test_wiring(self):
+        pt = open("bot/paper_trading.py", encoding="utf-8").read()
+        assert "from bot.risk_gate import check_order" in pt and "gate_ok" in pt, "게이트 미배선"
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert '("halt", "resume")' in tb and "set_halt" in tb, "halt/resume 명령 누락"
+        ds = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "halt_banner" in ds and "status_line" in ds, "대시보드 게이트 표시 누락"
+
+
 class TestGicsCandidatesPage:
     """fix(2026-06-05): GICS 후보 대시보드가 서버 파일시스템 경로
     (~/.tradingagents/gics_check_audit.jsonl)를 본문 footer 로 노출하던 것 제거.

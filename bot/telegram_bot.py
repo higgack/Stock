@@ -1113,7 +1113,7 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【10. 진행 중 / 예정】</b>
- • Screener 65도메인+자유어+24h캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기GICS · 실거래 E0페이퍼(모의·돈0) 가동 · 예정: KIS/IBKR 어댑터·L3 sanity
+ • Screener 65도메인+자유어+24h캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기GICS · 실거래 E0페이퍼+RiskGate 가동 · 예정: NOAH자동신호·KIS/IBKR 어댑터
 """
 
 
@@ -2167,6 +2167,7 @@ _PAPER_HELP = (
     "<code>/paper buy TICKER 수량</code> — 모의 매수(시장가)\n"
     "<code>/paper sell TICKER 수량</code> — 모의 매도\n"
     "<code>/paper close TICKER</code> — 전량 매도\n"
+    "<code>/paper halt</code> / <code>/paper resume</code> — 거래 중지/재개(kill-switch)\n"
     "<code>/paper reset</code> — 계좌 초기화\n"
     "예: <code>/paper buy AAPL 10</code> · <code>/paper sell 005930.KS 5</code>"
 )
@@ -2224,6 +2225,11 @@ def _paper_summary_text(summ: dict) -> str:
                 f"→ {cur_px} ({ret})")
     else:
         lines.append("보유 포지션 없음 — <code>/paper buy TICKER 수량</code>")
+    try:
+        from bot.risk_gate import status_line
+        lines.append("— " + status_line())
+    except Exception:
+        pass
     return "\n".join(lines)
 
 
@@ -2272,6 +2278,14 @@ async def _handle_paper(args, send, idem=None) -> None:
         else:
             await send("⚠️ 계좌를 초기화합니다(되돌릴 수 없음). 확인: "
                        "<code>/paper reset yes</code>")
+        return
+
+    if sub in ("halt", "resume"):
+        from bot.risk_gate import set_halt
+        set_halt(sub == "halt")
+        await send("⛔ 거래 중지(kill-switch) — 신규 매수 차단(매도/청산은 허용)"
+                   if sub == "halt" else "✅ 거래 재개 — kill-switch 해제")
+        _regen_paper()
         return
 
     await send(_paper_summary_text(paper_trading.summary()))

@@ -243,6 +243,16 @@ def _order(ticker: str, qty: float, side: str, idem: Optional[str]):
         # idem 으로 넘기면 재전송만 dedup 되고 의도된 별개 주문은 각각 체결된다.
         idem = uuid.uuid4().hex
     acct = get_account()
+    # Risk Gate (E0.5) — 주문 전 하드 한도/kill-switch (fail-closed). 매도는
+    # 항상 통과(de-risk). 같은 게이트가 실거래(E2)에도 재사용된다.
+    try:
+        from bot.risk_gate import check_order
+        _cost_krw = float(qty) * float(px) * float(fx) if side == "buy" else 0.0
+        gate_ok, gate_reason = check_order(acct, ticker, side, _cost_krw)
+        if not gate_ok:
+            return False, gate_reason
+    except Exception as exc:
+        log.debug("paper: risk_gate skipped (%s)", exc)
     fn = _apply_buy if side == "buy" else _apply_sell
     ok, msg = fn(acct, ticker, float(qty), float(px), float(fx), currency, market,
                  time.time(), idem)

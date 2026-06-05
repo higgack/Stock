@@ -1110,7 +1110,17 @@ math(`_apply_buy/_apply_sell`, idempotency key·weighted avg·FX-aware
 realized)는 단위테스트. `/paper [buy|sell|close|reset]` 텔레그램 명령 +
 `paper.html` 대시보드(nav 워치리스트 뒤 🧪) + startup regen. **실주문 없음**
 — 나중에 이 위에 KIS/IBKR 어댑터가 '모의 체결→실주문' 교체로 얹힘. 지정가/
-next-open PENDING·하드 캡 Risk Gate·NOAH 자동신호 = E0.5+ 증분.
+next-open PENDING·NOAH 자동신호 = E0.5b+ 증분.
+
+**E0.5a Risk Gate = 완료.** `bot/risk_gate.py`(순수·broker-무관·단위테스트) —
+주문 전 하드 캡 fail-closed: 거래당/종목당 비중·동시 종목 수·일일 실현손실
+HALT + **kill-switch**(`~/.tradingagents/TRADING_HALT` 파일, 봇 밖에서도 touch
+가능). **매수만 게이트, 매도/청산은 항상 허용(de-risk)**. `paper_trading._order`
+가 매수 전 `check_order` 호출. `/paper halt`·`/paper resume` 로 kill-switch
+토글, `/paper` 요약 + `paper.html` 에 게이트 상태/배너. ⚠️ 캡은 **페이퍼
+프로파일**(거래당 60%/종목당 80%/10종목/일손실 30% — 테스트 안 막힘); 실거래
+(E2) 전 §5 LIVE 값(2%/10%/5/3%)으로 조이고 LIVE 프로파일 분리. **같은 게이트가
+실거래에도 재사용**.
 
 ## 휴장일-인지 거래일 캘린더 (2026-06-05)
 
