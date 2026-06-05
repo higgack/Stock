@@ -5679,8 +5679,8 @@ def regenerate_portfolio_index() -> None:
 # budget.json 을 월별 수입/지출/순저축/저축률 + 카테고리 breakdown + 매트릭스로
 # 렌더. 사용자 요청 "가계부는 또 다른 별도 대시보드".
 _BUDGET_CSS = """<style>
-.bg-chart{display:flex;gap:7px;align-items:flex-end;overflow-x:auto;padding:10px 2px 2px}
-.bg-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:0 0 auto}
+.bg-chart{display:flex;gap:6px;align-items:flex-end;overflow-x:auto;padding:10px 2px 2px}
+.bg-col{display:flex;flex-direction:column;align-items:center;gap:4px;flex:1 1 0;min-width:34px}
 .bg-bars{display:flex;align-items:flex-end;gap:2px;height:140px}
 .bg-bar{width:12px;border-radius:2px 2px 0 0;min-height:1px}
 .bg-mo{font-size:10px;color:var(--muted);white-space:nowrap}
@@ -5760,16 +5760,21 @@ def _render_budget_page(budget) -> str:
         ih = max(1, int((iv or 0) / maxv * H))
         eh = max(1, int((ev or 0) / maxv * H))
         sr = srate[i] if i < len(srate) else None
+        # 저축률 = 순저축/수입. 수입이 매우 작은 달(부분월 등)은 %가 폭주(-3968%)
+        # 하므로 수입>0 & |rate|≤200% 일 때만 라벨 표시, 아니면 '—'(hover엔 실값).
+        sr_disp = (f"{sr:.0f}%" if (sr is not None and (iv or 0) > 0 and -200 <= sr <= 200) else "—")
+        sr_col = _pf_col(sr) if (sr is not None and (iv or 0) > 0) else "var(--muted)"
         ttl = f"{mo} · 수입 {_pf_won(iv)} · 지출 {_pf_won(ev)} · 순 {_pf_won(nv)} · 저축률 {_pct(sr)}"
         cols += (f'<div class="bg-col" title="{_html.escape(ttl)}">'
                  f'<div class="bg-bars"><div class="bg-bar" style="height:{ih}px;background:var(--pos)"></div>'
                  f'<div class="bg-bar" style="height:{eh}px;background:var(--neg)"></div></div>'
                  f'<div class="bg-mo">{_html.escape(mo[2:])}</div>'
-                 f'<div class="bg-sr">{_pct(sr)}</div></div>')
+                 f'<div class="bg-sr" style="color:{sr_col}">{sr_disp}</div></div>')
     trend = ('<div class="pf-card"><div class="pf-h">월별 수입·지출 '
              '<span style="font-weight:400;color:var(--muted);font-size:12px">'
              '(<span style="color:var(--pos)">■</span> 수입 · '
-             '<span style="color:var(--neg)">■</span> 지출 · 막대 hover로 상세)</span></div>'
+             '<span style="color:var(--neg)">■</span> 지출 · 막대 아래 % = <b>저축률</b>(순저축÷수입) · '
+             'hover로 상세)</span></div>'
              f'<div class="bg-chart">{cols}</div></div>')
 
     # 지출 카테고리 도넛 (top 8 + 기타)
@@ -5830,6 +5835,9 @@ def _render_budget_page(budget) -> str:
     note = ('<p class="sub" style="margin-top:14px;color:var(--muted);font-size:12px">'
             '뱅크샐러드 현금흐름 export 기준. 수입/지출 분류는 카테고리명 기반 추정이라 '
             '일부 빗나갈 수 있으나 아래 매트릭스는 원본 그대로입니다. '
+            '총계·월평균은 월별값으로 산출(뱅샐 요약셀이 비어 있어). '
+            '<b>최신 월은 진행 중(부분월)</b>일 수 있어 막대·평균이 작게 보입니다. '
+            '수입이 적은 달은 저축률 %가 비현실적으로 커져 — 로 표시. '
             f'기간 {_html.escape(str(budget.get("period") or ""))} · 🕒 업데이트 {updated}</p>')
 
     return (_SCREENER_CSS + _PF_CSS + _BUDGET_CSS + '<div class="wrap">' + nav

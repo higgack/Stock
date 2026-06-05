@@ -78,6 +78,15 @@ def build_budget_model(parsed: dict) -> dict:
     rows = [{**r, "kind": _kind(r.get("항목"))} for r in raw]
     n = len(months)
 
+    # 매트릭스용 총계/월평균 — 뱅샐이 이 셀들을 비워두는(None) 경우가 많아
+    # monthly 로 직접 산출(표에 '-' 대신 실제 값). 월평균은 데이터 있는 달 기준.
+    for r in rows:
+        mv = [x for x in (r.get("monthly") or []) if x is not None]
+        if r.get("총계") in (None, 0) and mv:
+            r["총계"] = round(sum(mv), 2)
+        if r.get("월평균") in (None, 0) and mv:
+            r["월평균"] = round(sum(mv) / len(mv), 2)
+
     inc_total = next((r for r in rows if r["kind"] == "total_income"), None)
     exp_total = next((r for r in rows if r["kind"] == "total_expense"), None)
 
