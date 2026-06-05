@@ -5777,21 +5777,25 @@ def _render_budget_page(budget) -> str:
              'hover로 상세)</span></div>'
              f'<div class="bg-chart">{cols}</div></div>')
 
-    # 지출 카테고리 도넛 (top 8 + 기타)
+    # 지출 카테고리 도넛 — 금액 큰 상위 8개만 개별, 9위 이하는 '기타N개'로 묶음
+    # (hover 시 묶인 항목명·금액 표시 → '기타가 뭐냐' 즉답, 사용자 2026-06-04).
     exp_cats = [c for c in budget.get("expense_cats", []) if (c.get("amount") or 0) > 0]
     donut = ""
     if exp_cats:
         top = exp_cats[:8]
-        rest = sum(c["amount"] for c in exp_cats[8:])
+        rest_cats = exp_cats[8:]
+        rest = sum(c["amount"] for c in rest_cats)
         if rest > 0:
-            top = top + [{"항목": "기타", "amount": rest}]
+            _detail = " · ".join(f'{c["항목"]} {_pf_won(c["amount"])}' for c in rest_cats[:25])
+            top = top + [{"항목": f"기타 {len(rest_cats)}개", "amount": rest, "_detail": _detail}]
         dtot = sum(c["amount"] for c in top) or 1
         stops, legend, acc = [], [], 0.0
         for i, c in enumerate(top):
             pct = c["amount"] / dtot * 100
             col = _PF_DONUT_COLORS[i % len(_PF_DONUT_COLORS)]
             stops.append(f"{col} {acc:.2f}% {acc + pct:.2f}%")
-            legend.append(f'<div class="pf-leg"><span class="pf-dot" style="background:{col}"></span>'
+            _ttl = f' title="{_html.escape(c["_detail"])}"' if c.get("_detail") else ""
+            legend.append(f'<div class="pf-leg"{_ttl}><span class="pf-dot" style="background:{col}"></span>'
                           f'{_html.escape(str(c["항목"]))} <b>{_pf_won(c["amount"])}</b> '
                           f'<span style="color:var(--muted)">({pct:.1f}%)</span></div>')
             acc += pct
