@@ -1373,6 +1373,47 @@ class TestMarketCalendar:
         assert "holding_days + 3" in src and "calendar_days + 3" in src, "휴리스틱 폴백 제거됨"
 
 
+class TestExactPriceLimits:
+    """fix(2026-06-05): KIS 종목별 실제 상·하한가로 price-glitch 임계 정밀화."""
+
+    def test_exact_session_gap_pure(self):
+        from bot.price_sanity import exact_session_gap
+        # KR ±30% — prev 10000, 상한 13000 / 하한 7000 → gap 0.30.
+        assert abs(exact_session_gap(10000, 13000, 7000) - 0.30) < 1e-9
+        # 비대칭이면 더 큰 쪽(둘 다 캡 안): 상한 +20% / 하한 -30% → 0.30.
+        assert abs(exact_session_gap(10000, 12000, 7000) - 0.30) < 1e-9
+        # 한쪽이 캡(0.35) 초과면 None: 하한 -40% → None.
+        assert exact_session_gap(10000, 12000, 6000) is None
+        # junk/누락 → None(시장 기본값 유지).
+        assert exact_session_gap(None, 1, 1) is None
+        assert exact_session_gap(10000, 0, 7000) is None
+        assert exact_session_gap("x", "y", "z") is None
+        # 비현실 한도(>35%) → None(오파싱 방어).
+        assert exact_session_gap(10000, 99000, 7000) is None
+
+    def test_kis_extracts_price_limits(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_ticker_to_code", lambda t: "005930")
+        monkeypatch.setattr(k, "_cache_get", lambda key: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        fake = {"output": {"stck_prpr": "70000", "prdy_ctrt": "0.0",
+                           "stck_mxpr": "91000", "stck_llam": "49000"}}
+        monkeypatch.setattr(k, "_get", lambda path, tr_id, params: fake)
+        r = k.KisClient().get_current_price("005930.KS")
+        assert r["upper_limit"] == 91000 and r["lower_limit"] == 49000, "상·하한가 추출 누락"
+        from bot.price_sanity import exact_session_gap
+        pc = r["price"] / (1 + (r["change_pct"] or 0) / 100.0)
+        assert abs(exact_session_gap(pc, r["upper_limit"], r["lower_limit"]) - 0.30) < 0.01
+
+    def test_agent_utils_wires_exact_gap(self):
+        src = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
+                   encoding="utf-8").read()
+        assert "exact_session_gap" in src, "agent_utils 가 exact_session_gap 미사용"
+        assert "get_current_price" in src and "upper_limit" in src, "KIS 한도 배선 누락"
+        # 폴백 보존 — KIS 실패 시 snapshot_gap_for_market 기본값 유지(회귀 0).
+        assert "snapshot_gap_for_market" in src, "시장 기본 gap 폴백 제거됨"
+
+
 class TestGicsCandidatesPage:
     """fix(2026-06-05): GICS 후보 대시보드가 서버 파일시스템 경로
     (~/.tradingagents/gics_check_audit.jsonl)를 본문 footer 로 노출하던 것 제거.

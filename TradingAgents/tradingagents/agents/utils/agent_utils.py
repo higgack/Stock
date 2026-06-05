@@ -2731,10 +2731,26 @@ def _compute_technical_snapshot(ticker: str) -> str:
         _px_repaired = False
         try:
             from bot.price_sanity import (
-                last_close_is_glitch, snapshot_gap_for_market,
+                last_close_is_glitch, snapshot_gap_for_market, exact_session_gap,
             )
             from bot.market import detect_market as _dm_snap
-            _snap_gap = snapshot_gap_for_market(_dm_snap(ticker))
+            _mkt_snap = _dm_snap(ticker)
+            _snap_gap = snapshot_gap_for_market(_mkt_snap)
+            # KR: KIS 가 종목별 실제 당일 상·하한가를 주면 시장 하드코딩(0.35)
+            # 대신 그 정확한 일일 한도로 glitch 임계를 정밀화(2026-06-05).
+            # 전일종가 = 현재가 / (1 + 등락률/100). 실패 시 시장 기본값 유지.
+            if _mkt_snap == "KR":
+                try:
+                    from bot.kis_client import get_kis
+                    _kp = get_kis().get_current_price(ticker)
+                    if _kp and _kp.get("price"):
+                        _pc = _kp["price"] / (1 + (_kp.get("change_pct") or 0) / 100.0)
+                        _eg = exact_session_gap(
+                            _pc, _kp.get("upper_limit"), _kp.get("lower_limit"))
+                        if _eg:
+                            _snap_gap = _eg
+                except Exception:
+                    pass
             if last_close_is_glitch([float(v) for v in close.values], _snap_gap):
                 _bad_px = float(close.iloc[-1])
                 close = close.iloc[:-1]

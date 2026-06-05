@@ -249,6 +249,10 @@ class KisClient:
             "bps":        _float(out.get("bps")),
             "market_cap": market_cap_krw,
             "shares":     _int(out.get("lstn_stcn")),
+            # 종목별 당일 상·하한가 (2026-06-05). price_sanity 의 glitch 임계를
+            # 시장 하드코딩(KR ±35%) 대신 실제 일일 한도로 정밀화하는 데 사용.
+            "upper_limit": _int(out.get("stck_mxpr")),
+            "lower_limit": _int(out.get("stck_llam")),
         }
         _cache_put(cache_key, result)
         return result

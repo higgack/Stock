@@ -27,6 +27,32 @@ def snapshot_gap_for_market(market: str) -> float:
     return 0.35 if market in _LIMIT_MARKETS else 0.50
 
 
+def exact_session_gap(prev_close, upper_limit, lower_limit):
+    """Precise max plausible single-session fractional move from a stock's
+    OWN daily price limits (vs the per-market hardcoded `snapshot_gap_for_
+    market`). For KR the exchange publishes per-stock 상한가/하한가 (≈ ±30%
+    of the prior close, but exact); using that as the glitch threshold is
+    tighter and more accurate than the blanket 0.35 — it catches a -32%
+    phantom that 0.35 would wave through, and won't false-fire inside the
+    real limit.
+
+    Returns max(|upper/prev − 1|, |lower/prev − 1|), or None when any input
+    is missing/invalid (caller then keeps the market default). Pure /
+    stdlib-only — unit-testable. Universal helper; the limit *source* is
+    market-specific (KR via KIS today), the principle applies anywhere a
+    venue has daily price limits."""
+    try:
+        pc, u, l = float(prev_close), float(upper_limit), float(lower_limit)
+    except (TypeError, ValueError):
+        return None
+    if not (pc > 0 and u > 0 and l > 0):
+        return None
+    gap = max(abs(u / pc - 1.0), abs(l / pc - 1.0))
+    # Sanity: a sane limit gap is within (0, 0.35]. Outside that the fields
+    # are likely junk/misparsed → fall back to the market default.
+    return gap if 0.0 < gap <= 0.35 else None
+
+
 def recent_median(values, n: int = 5):
     """Median of the up-to-`n` values *preceding* the last element, or None
     when fewer than 3 valid priors exist. Used to judge whether the LAST
