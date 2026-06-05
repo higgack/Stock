@@ -13,6 +13,42 @@ try/except graceful(키 부재·실패 시 빈 리스트). 분류기는 순수 �
 """
 from __future__ import annotations
 
+import re
+
+# US 8-K 항목 라벨(edgar_client 영문, 고정 ~21종) → 한국어. ₩0 완역(MT 불필요).
+_US_8K_KR = {
+    "Material Agreement": "주요계약 체결",
+    "Agreement Termination": "주요계약 해지",
+    "Bankruptcy/Receivership": "파산/법정관리",
+    "Acquisition/Disposition of Assets": "자산 인수/처분",
+    "Results of Operations (Earnings)": "실적 발표",
+    "Material Financial Obligation": "주요 채무 발생",
+    "Triggering Events re Obligations": "채무 트리거 사건",
+    "Cost Associated with Exit": "사업 철수/구조조정 비용",
+    "Asset Impairment": "자산 손상차손",
+    "Exchange Delisting": "상장폐지",
+    "Unregistered Sales of Equity": "비등록 주식 발행",
+    "Change of Auditor": "감사인 변경",
+    "Financial Statement Non-Reliance": "재무제표 신뢰성 부정",
+    "Change in Control": "경영권 변경",
+    "Director/Officer Departure or Appointment": "임원 선임/사임",
+    "Amendments to Articles": "정관 변경",
+    "Submission of Matters to Vote": "주주총회 표결",
+    "Fiscal Year Change": "회계연도 변경",
+    "Regulation FD Disclosure": "Reg FD 공시",
+    "Other Events": "기타 사항",
+    "Financial Statements and Exhibits": "재무제표·첨부",
+}
+
+
+def _us_label_kr(label: str) -> str:
+    """'§1.01 Material Agreement' → '§1.01 주요계약 체결'. 매핑 없으면 원문 유지."""
+    m = re.match(r"(§[\d.]+\s*)(.*)", label or "")
+    if m:
+        return m.group(1) + _US_8K_KR.get(m.group(2).strip(), m.group(2).strip())
+    return label or ""
+
+
 # ── 공시 종류 분류 (다국어 키워드). 색은 사실 기준(호재/악재 판단 아님). ──
 # 사용자 정책 2026-06-05: 수주·계약 / 신규시설투자 / 주주환원(배당·자기주식) /
 # 자본변동(증자·CB·감자) 4종만 마커로 표시. 그 외(실적·임원·소송 등)는 제외.
@@ -184,13 +220,17 @@ def fetch_disclosure_events(ticker: str, limit: int = 250, days: int = 400) -> l
         else:  # US (default)
             from bot.edgar_client import get_recent_8k
             raw = get_recent_8k(ticker, days=kr_us_days, top_n=limit)
-            # EDGAR: items_labels(8-K 항목 설명) 를 제목으로, 없으면 '8-K 공시'.
+            # 분류는 영문 라벨('Material Agreement' 등)로(키워드가 영문). 표시 제목만
+            # 그 뒤 한국어로 번역 — 번역 먼저 하면 분류가 깨짐.
             us = []
             for f in raw or []:
                 labels = f.get("items_labels") or []
                 us.append({"date": f.get("date") or "", "url": f.get("url") or "",
-                           "title": "; ".join(labels) if labels else "8-K 공시"})
+                           "title": " · ".join(labels) if labels else "8-K filing"})
             events = _norm(us, "date", "title", "url")
+            for e in events:  # 표시용 제목 한국어화(분류는 위에서 영문으로 이미 확정)
+                e["title"] = " · ".join(_us_label_kr(p.strip())
+                                        for p in (e.get("title") or "").split(" · "))
     except Exception:
         events = []
     # 화이트리스트(사용자 2026-06-05): 수주·계약 / 시설투자 / 주주환원 / 자본변동만.

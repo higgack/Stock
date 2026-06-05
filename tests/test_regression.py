@@ -1838,6 +1838,16 @@ class TestChartEvents:
         ds = open("bot/dashboard.py", encoding="utf-8").read()
         assert "e.summary ? escTt(e.summary)" in ds, "패널 요약 표시 누락"
 
+    def test_us_label_korean(self):
+        # US 8-K 항목 라벨 한국어 표시(₩0 사전) — 분류는 영문 유지(번역으로 안 깨짐).
+        from bot.chart_events import _us_label_kr, classify
+        assert _us_label_kr("§1.01 Material Agreement") == "§1.01 주요계약 체결"
+        assert _us_label_kr("§3.01 Exchange Delisting") == "§3.01 상장폐지"
+        assert _us_label_kr("§9.99 Unknown Item") == "§9.99 Unknown Item"  # 매핑 없으면 원문
+        # 분류는 영문 라벨로(번역 전): order/risk 정확
+        assert classify("§1.01 Material Agreement") == "order"
+        assert classify("§3.01 Exchange Delisting") == "risk"
+
     def test_whitelist_filter(self):
         # 마커는 화이트리스트 4종만(그 외 제외). 소스에 _SHOW_TYPES 필터 존재.
         from bot.chart_events import _SHOW_TYPES
