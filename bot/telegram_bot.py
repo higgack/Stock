@@ -2184,7 +2184,7 @@ _PAPER_HELP = (
     "<code>/paper pending</code> · <code>/paper cancel id|TICKER|all</code> — 지정가 대기\n"
     "<code>/paper halt</code> / <code>/paper resume</code> — 거래 중지/재개(kill-switch)\n"
     "<code>/paper auto on|off</code> — NOAH 판정 자동매매(매수 자본5%·5거래일 청산)\n"
-    "<code>/paper reset</code> — 계좌 초기화\n"
+    "<code>/paper reset yes</code> — 전체 초기화 · <code>/paper reset TICKER</code> — 개별 종목만\n"
     "예: <code>/paper buy AAPL 10</code> · <code>/paper sell 005930.KS 5</code>"
 )
 
@@ -2332,13 +2332,20 @@ async def _handle_paper(args, send, idem=None) -> None:
         return
 
     if sub == "reset":
-        if len(args) >= 2 and args[1].lower() in ("yes", "확인", "y"):
+        arg = args[1] if len(args) >= 2 else ""
+        if arg.lower() in ("yes", "확인", "y"):
             ok, msg = paper_trading.reset()
             await send("✅ " + msg)
             _regen_paper()
+        elif arg and TICKER_RE.match(arg.upper()):
+            # 개별 종목 리셋(purge) — 전체 reset 보다 약하므로 확인 불요.
+            ok, msg = paper_trading.purge_ticker(arg)
+            await send(("✅ " if ok else "⚠️ ") + msg)
+            if ok:
+                _regen_paper()
         else:
-            await send("⚠️ 계좌를 초기화합니다(되돌릴 수 없음). 확인: "
-                       "<code>/paper reset yes</code>")
+            await send("⚠️ 전체 초기화: <code>/paper reset yes</code> · "
+                       "개별 종목: <code>/paper reset TICKER</code>")
         return
 
     if sub in ("halt", "resume"):

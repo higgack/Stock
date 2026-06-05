@@ -1591,6 +1591,29 @@ class TestPaperTrading:
         assert not (tmp_path / "auto_audit.jsonl").exists(), "결정 이력 미삭제"
         assert len(acct["equity_history"]) == 1, "equity baseline 누락"
 
+    def test_purge_ticker(self, tmp_path, monkeypatch):
+        # 개별 종목 리셋(테스트 정리) — 흔적 삭제·원가 현금 환원(매도 아님).
+        import bot.paper_trading as p
+        monkeypatch.setattr(p, "_ACCOUNT", tmp_path / "a.json")
+        monkeypatch.setattr(p, "_AUDIT", tmp_path / "au.jsonl")
+        monkeypatch.setattr(p, "_HOME", tmp_path)
+        monkeypatch.setattr(p, "live_native_price", lambda t: (313.0, "US"))
+        monkeypatch.setattr(p, "_market_fx", lambda m: ("USD", 1380.0))
+        cash0 = p.get_account()["cash_krw"]
+        p.buy("AAPL", 1)
+        p.buy("NVDA", 1)
+        (tmp_path / "auto_audit.jsonl").write_text(
+            '{"ticker":"AAPL"}\n{"ticker":"NVDA"}\n', encoding="utf-8")
+        ok, _ = p.purge_ticker("AAPL")
+        acct = p.get_account()
+        assert ok and "AAPL" not in acct["positions"] and "NVDA" in acct["positions"]
+        assert abs(acct["cash_krw"] - (cash0 - 313 * 1380)) < 1   # AAPL 원가 환원
+        aud = (tmp_path / "auto_audit.jsonl").read_text(encoding="utf-8")
+        assert "AAPL" not in aud and "NVDA" in aud                # 결정 이력 필터
+        assert p.purge_ticker("TSLA")[0] is False                 # 흔적 없으면 False
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "purge_ticker" in tb and "/paper reset TICKER" in tb
+
     def test_equity_curve_render(self):
         from bot.dashboard import _render_paper_page
         base = dict(cash_krw=1e7, positions_value_krw=0, total_equity_krw=1e7,

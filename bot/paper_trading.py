@@ -382,6 +382,54 @@ def reset():
                   "(포지션·체결·대기·곡선·결정이력 삭제, 자동매매 설정 유지)")
 
 
+def purge_ticker(ticker: str) -> tuple:
+    """개별 종목 리셋 — 그 종목 흔적 전부 삭제(테스트 정리용). 오픈 포지션은
+    **원가를 현금에 환원**(매수 취소처럼, 매도 아님 → 실현손익 안 만듦) + 대기
+    주문·체결 기록·그 종목 실현·결정 이력(auto_audit)에서 제거. `/paper close`
+    (실제 매도, 실현손익 기록)와 다른 '깨끗한 삭제'. (ok, 메시지)."""
+    tkr = (ticker or "").strip().upper()
+    if not tkr:
+        return False, "티커를 입력하세요"
+    acct = get_account()
+    touched = False
+    pos = acct.get("positions", {}).pop(tkr, None)
+    if pos:
+        acct["cash_krw"] += float(pos.get("cost_basis_krw") or 0.0)   # 매수 취소
+        touched = True
+    before = len(acct.get("pending", []))
+    acct["pending"] = [p for p in acct.get("pending", [])
+                       if (p.get("ticker") or "").upper() != tkr]
+    if len(acct["pending"]) < before:
+        touched = True
+    dropped = [t for t in acct.get("trades", [])
+               if (t.get("ticker") or "").upper() == tkr]
+    if dropped:
+        acct["realized_pnl_krw"] -= sum(t.get("realized_krw") or 0 for t in dropped)
+        acct["trades"] = [t for t in acct.get("trades", [])
+                          if (t.get("ticker") or "").upper() != tkr]
+        touched = True
+    if not touched:
+        return False, f"페이퍼에 해당 종목 흔적 없음: {tkr}"
+    _save_account(acct)
+    # 결정 이력(auto_audit.jsonl)에서 그 종목 줄 제거.
+    try:
+        ap = _HOME / "auto_audit.jsonl"
+        if ap.exists():
+            kept = []
+            for ln in ap.read_text(encoding="utf-8").splitlines():
+                try:
+                    if (json.loads(ln).get("ticker") or "").upper() != tkr:
+                        kept.append(ln)
+                except json.JSONDecodeError:
+                    continue
+            ap.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+    except OSError:
+        pass
+    _audit_log({"ts": time.time(), "event": "purge", "ticker": tkr})
+    return True, (f"🧹 {tkr} 페이퍼 리셋 — 포지션·대기·체결·결정이력 삭제 "
+                  "(오픈 포지션 원가는 현금 환원, 매도 아님)")
+
+
 def snapshot_equity(equity_krw: Optional[float] = None) -> None:
     """오늘(KST) 자산 포인트를 equity_history 에 기록(같은 날이면 갱신 = 일별
     1점). `equity_krw` 미지정 시 summary 로 산출. 365점 cap. E0.5d 자산 추이
