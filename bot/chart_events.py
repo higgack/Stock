@@ -29,7 +29,7 @@ _EARN_KW = ("실적", "분기보고서", "반기보고서", "사업보고서", "
             "results of operations", "earnings", "quarterly", "annual report", "financial",
             "決算", "業績", "四半期", "財報", "季報", "年報", "业绩", "季度报告", "年度报告")
 _CAPITAL_KW = ("유상증자", "무상증자", "전환사채", "신주인수권", "감자", "주식분할", "주식병합",
-               "교환사채", "증자", "배정", "자기주식", "offering", "convertible", "dividend",
+               "교환사채", "증자", "배정", "자기주식", "배당", "주주환원", "offering", "convertible", "dividend",
                "stock split", "buyback", "repurchase", "warrant",
                "増資", "新株", "株式分割", "減資", "配当", "自己株式",
                "現金股利", "減資", "增發", "增发", "回購", "回购", "分紅", "分红", "可轉債", "可转债")
@@ -54,8 +54,9 @@ def classify(title: str) -> str:
     return "other"
 
 
-def _norm(items: list[dict], date_key: str, title_key: str) -> list[dict]:
-    """클라이언트별 dict 리스트 → 통일된 [{time:'YYYY-MM-DD', title, type, color}]."""
+def _norm(items: list[dict], date_key: str, title_key: str,
+          url_key: str | None = None) -> list[dict]:
+    """클라이언트별 dict → 통일된 [{time,title,type,color,url}]. url 은 있으면 원문 링크."""
     out: list[dict] = []
     seen: set[tuple] = set()
     for it in items or []:
@@ -73,7 +74,9 @@ def _norm(items: list[dict], date_key: str, title_key: str) -> list[dict]:
             continue
         seen.add(key)
         typ = classify(title)
-        out.append({"time": d, "title": title, "type": typ, "color": _TYPE_COLOR[typ]})
+        url = (str(it.get(url_key) or "").strip() if url_key else "")
+        out.append({"time": d, "title": title, "type": typ,
+                    "color": _TYPE_COLOR[typ], "url": url})
     out.sort(key=lambda e: e["time"])
     return out
 
@@ -94,19 +97,19 @@ def fetch_disclosure_events(ticker: str, limit: int = 60) -> list[dict]:
         if market == "KR":
             from bot.dart_client import get_dart
             raw = get_dart().get_recent_disclosures(code, days_back=400, limit=limit)
-            events = _norm(raw, "date", "title")
+            events = _norm(raw, "date", "title", "url")
         elif market in ("CN_A", "HK"):
             from bot.akshare_client import get_akshare
             raw = get_akshare().get_recent_disclosures(ticker, days_back=120, limit=limit)
-            events = _norm(raw, "date", "subject")
+            events = _norm(raw, "date", "subject", "url")
         elif market == "JP":
             from bot.edinet_client import get_edinet
             raw = get_edinet().get_recent_disclosures(ticker, days_back=120, limit=limit)
-            events = _norm(raw, "date", "description")
+            events = _norm(raw, "date", "description", "url")
         elif market == "TW":
             from bot.mops_client import get_mops
             raw = get_mops().get_recent_disclosures(ticker, days_back=120, limit=limit)
-            events = _norm(raw, "date", "subject")
+            events = _norm(raw, "date", "subject", "url")
         else:  # US (default)
             from bot.edgar_client import get_recent_8k
             raw = get_recent_8k(ticker, days=400, top_n=limit)
@@ -114,9 +117,11 @@ def fetch_disclosure_events(ticker: str, limit: int = 60) -> list[dict]:
             us = []
             for f in raw or []:
                 labels = f.get("items_labels") or []
-                us.append({"date": f.get("date") or "",
+                us.append({"date": f.get("date") or "", "url": f.get("url") or "",
                            "title": "; ".join(labels) if labels else "8-K 공시"})
-            events = _norm(us, "date", "title")
+            events = _norm(us, "date", "title", "url")
     except Exception:
         events = []
+    # 실적(분기·반기·사업보고서·잠정실적) 마커는 제외(사용자 2026-06-05 — 루틴 공시).
+    events = [e for e in events if e.get("type") != "earnings"]
     return events[-limit:] if len(events) > limit else events

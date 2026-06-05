@@ -1914,6 +1914,16 @@ _DETAIL_CSS = _BASE_CSS + """
   box-shadow: 0 2px 10px rgba(0,0,0,0.25); font-variant-numeric: tabular-nums;
 }
 .chart-tooltip .tt-date { color: var(--fg-soft); margin-bottom: 2px; font-size: 10px; }
+.chart-disc {
+  margin: 6px 0 2px; padding: 7px 11px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--card); font-size: 12.5px; line-height: 1.55;
+  color: var(--fg-soft); min-height: 20px;
+}
+.chart-disc b { color: var(--fg); }
+.chart-disc a { color: var(--accent); text-decoration: none; }
+.chart-disc a:hover { text-decoration: underline; }
+.chart-disc .cd-empty { opacity: .7; }
+.chart-disc .cd-desc { opacity: .75; }
 .sub-chart { width: 100%; height: 120px; }
 .sub-chart.hidden { display: none; }
 .chart-values {
@@ -2176,8 +2186,9 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <div id="chart-values" class="chart-values"></div>
     </div>
     <script type="application/json" id="chart-data">{payload}</script>
+    <div id="chart-disc" class="chart-disc"></div>
     <div class="chart-legend">
-      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주 초록·실적 파랑·자본 주황·기타 회색, hover로 제목) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (설정 저장됨)
+      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주 초록·자본 주황·기타 회색 / 실적은 제외, hover 시 차트 아래에 종류·제목·원문 링크) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (설정 저장됨)
     </div>
     <details class="chart-guide">
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
@@ -2204,8 +2215,8 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </div>
       <div class="cg-sec"><b>공시 마커 (날짜별 작은 사각 ■)</b>
         <ul>
-          <li>공식 공시를 날짜에 작게 표시 — <span style="color:#26a69a">수주·계약</span> · <span style="color:#4c9aff">실적</span> · <span style="color:#f5a623">자본변동(유증·CB 등)</span> · <span style="color:#94a3b8">기타</span>. 마우스 hover로 공시 제목 표시.</li>
-          <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). KR·US는 1년, 그 외는 최근 공시 위주. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 직접 읽기. '공시' 버튼으로 on/off.</li>
+          <li>공식 공시를 날짜에 작게 표시 — <span style="color:#26a69a">수주·계약</span> · <span style="color:#f5a623">자본변동(유증·CB 등)</span> · <span style="color:#94a3b8">기타</span>. (실적·정기보고서는 루틴이라 제외.) 마커에 hover하면 <b>차트 아래 패널</b>에 그 날 공시의 종류·전체 제목·간단 설명·<b>원문 보기 링크</b> 표시.</li>
+          <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). KR·US는 1년, 그 외는 최근 공시 위주. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 원문에서 직접 확인. '공시' 버튼으로 on/off(기본 ON).</li>
         </ul>
       </div>
       <div class="cg-sec"><b>보조지표 버튼</b> — 켜고 끈 상태는 저장되어 다른 종목 페이지에도 유지됩니다.
@@ -2423,6 +2434,32 @@ _CHART_JS = """
     if (!(preserve && prevRange)) chart.timeScale().fitContent();
     chart.applyOptions({ width: el.clientWidth });
 
+    // 공시 내용 패널(차트 아래) — 마커 hover 시 종류·전체 제목·설명·원문 링크.
+    // 차트 안 floating 툴팁은 좁아 제목 잘림 → 아래 고정 패널에 표시(사용자 2026-06-05).
+    var discEl = document.getElementById('chart-disc');
+    function escTt(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    var DISC_TYPE = {
+      order:   { l:'수주·계약', c:'#26a69a', d:'제품·서비스 공급/판매 계약 — 매출 가시성' },
+      capital: { l:'자본변동', c:'#f5a623', d:'증자·전환사채 등 — 자금조달/주식수 변동(희석 가능)' },
+      other:   { l:'공시',     c:'#94a3b8', d:'기타 경영·공시 사항' }
+    };
+    var DISC_HINT = '<span class="cd-empty">📋 공시 마커(■)에 마우스를 올리면 그 날 공시의 종류·제목·설명·원문 링크가 여기 표시됩니다.</span>';
+    function showDisc(time){
+      if (!discEl || !(ind.events && d.events && d.events.length)) return;
+      var evs = d.events.filter(function(e){ return e.time === time; });
+      if (!evs.length) return;  // 공시 없는 날 hover는 직전 표시 유지(아래로 읽으러 가도 안 사라짐)
+      var html = '';
+      for (var i = 0; i < evs.length && i < 8; i++){
+        var e = evs[i], t = DISC_TYPE[e.type] || DISC_TYPE.other;
+        var link = e.url ? ' · <a href="' + escTt(e.url) + '" target="_blank" rel="noopener">원문 →</a>' : '';
+        html += '<div><span style="color:' + t.c + '">●</span> <b>' + escTt(e.time) + '</b> [' + t.l + '] ' +
+                escTt(e.title) + '<span class="cd-desc"> — ' + t.d + '</span>' + link + '</div>';
+      }
+      if (evs.length > 8) html += '<div class="cd-empty">+' + (evs.length - 8) + '건 더</div>';
+      discEl.innerHTML = html;
+    }
+    if (discEl && !discEl.innerHTML) discEl.innerHTML = DISC_HINT;
+
     // 크로스헤어 hover 툴팁 — 커서 지점의 날짜 + 활성 지표 값(OHLC/종가/이평선/
     // 볼린저/RSI/MACD/거래량). 가격 행은 통화 기호 prefix(fmtPrice).
     var tip = document.createElement('div');
@@ -2459,18 +2496,8 @@ _CHART_JS = """
       if (ind.rsi && d.rsi) trow('RSI', d.rsi[idx], '#b07cff', 1, 'raw');
       if (ind.macd && d.macd) trow('MACD', d.macd[idx], '#4c9aff', Math.max(prec, 3), 'raw');
       if (ind.vol && d.volume) trow('거래량', d.volume[idx], '#94a3b8', 0, 'vol');
-      // 그 날의 공시 이벤트 제목(있으면) — 마커 hover 대용. HTML escape 필수.
-      if (ind.events && d.events && d.events.length) {
-        function escTt(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-        var evs = d.events.filter(function(e){ return e.time === param.time; });
-        if (evs.length) {
-          rows.push('<div style="border-top:1px solid rgba(148,163,184,0.25);margin-top:3px;padding-top:3px"></div>');
-          for (var vj = 0; vj < evs.length && vj < 6; vj++) {
-            rows.push('<div><span style="color:' + (evs[vj].color || '#94a3b8') + '">📋</span> ' + escTt(evs[vj].title) + '</div>');
-          }
-          if (evs.length > 6) rows.push('<div style="color:var(--fg-soft)">+' + (evs.length - 6) + '건 더</div>');
-        }
-      }
+      // 공시 내용은 floating 툴팁이 아니라 차트 아래 패널(#chart-disc)에 표시.
+      showDisc(param.time);
       tip.innerHTML = rows.join('');
       tip.style.display = 'block';
       var tw = tip.offsetWidth, th = tip.offsetHeight;

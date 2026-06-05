@@ -1785,13 +1785,23 @@ class TestChartEvents:
 
     def test_norm_shape_dedup_sort(self):
         from bot.chart_events import _norm, _TYPE_COLOR
-        out = _norm([{"date": "20260603", "title": "공급계약"},
-                     {"date": "20260603", "title": "공급계약"},          # dup
-                     {"date": "2026-05-30T09:00:00", "title": "분기보고서"}], "date", "title")
+        out = _norm([{"date": "20260603", "title": "공급계약", "u": "http://x"},
+                     {"date": "20260603", "title": "공급계약", "u": "http://x"},   # dup
+                     {"date": "2026-05-30T09:00:00", "title": "전환사채 발행"}],
+                    "date", "title", "u")
         assert len(out) == 2, "dedup 실패"
         assert out[0]["time"] == "2026-05-30" and out[1]["time"] == "2026-06-03", "정렬/날짜정규화 실패"
         assert out[1]["type"] == "order" and out[1]["color"] == _TYPE_COLOR["order"]
-        assert all(set(e) == {"time", "title", "type", "color"} for e in out)
+        assert out[1]["url"] == "http://x", "url 전달 누락"
+        assert all(set(e) == {"time", "title", "type", "color", "url"} for e in out)
+
+    def test_earnings_excluded(self):
+        # 실적(earnings) 마커는 제외(사용자 2026-06-05). 분류기는 earnings 를 알지만
+        # fetch 단계에서 필터 — 소스에 필터 라인 존재 확인.
+        from bot.chart_events import classify
+        assert classify("분기보고서") == "earnings"  # 분류 자체는 유지(색 매핑용)
+        src = open("bot/chart_events.py", encoding="utf-8").read()
+        assert '!= "earnings"' in src, "실적 제외 필터 누락"
 
     def test_chart_wiring(self):
         cd = open("bot/chart_data.py", encoding="utf-8").read()
@@ -1801,6 +1811,9 @@ class TestChartEvents:
         assert 'data-ind="events"' in ds, "공시 토글 버튼 누락"
         assert "ind.events && d.events" in ds, "공시 마커 렌더 게이트 누락"
         assert "events:true" in ds, "공시 토글 기본 ON 누락"
+        # 차트 아래 공시 내용 패널 + hover 갱신
+        assert 'id="chart-disc"' in ds and "function showDisc" in ds, "공시 내용 패널 누락"
+        assert "원문 →" in ds, "원문 링크 누락"
 
 
 class TestBudget:
