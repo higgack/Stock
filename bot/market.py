@@ -791,6 +791,12 @@ def resolve_peer_set(ticker: str, industry: str | None) -> list[str] | None:
     + `_HK_INDUSTRY_PEERS`; dual-listed names appear in both dicts
     under the same industry key (e.g. BYD 002594.SZ in CN_A '자동차',
     1211.HK in HK '자동차')."""
+    subj = (ticker or "").upper()
+    # Mega-cap tech 정밀화 — Mag-7 급은 산업 무관 대형 테크 풀로(체급 매칭).
+    # 좁은 산업 분류(AAPL='Consumer Electronics')가 GoPro/Sonos 같은 미니캡을
+    # peer 로 주는 무의미 Comps 차단 (AAPL 2026-06-06 review).
+    if subj in _US_MEGACAP_TECH:
+        return [t for t in _US_MEGACAP_PEERS if t != subj][:5]
     if not industry:
         return None
     market = detect_market(ticker)
@@ -1371,6 +1377,16 @@ _HK_INDUSTRY_PEERS = {
 # the same yfinance 'industry' string. Subject ticker filtered out by
 # resolve_peer_set. Add a new row when a US subject hits an industry
 # we haven't covered.
+# Mega-cap tech 비교군 (AAPL 2026-06-06 review) — Mag-7 급 종목은 좁은
+# yfinance 산업 분류로 체급이 안 맞는 Comps 가 나온다(AAPL='Consumer
+# Electronics' → GoPro($수억)·Sonos 와 비교 = 무의미). 이 종목들은 산업
+# 무관하게 서로(대형 테크)와 비교하도록 라우팅. 정적 화이트리스트라 소형주
+# (예: GoPro)는 영향 없이 기존 산업 리스트 유지(같은 'Consumer Electronics'
+# 안에 $4.6T 와 $수억이 공존하는 문제를 cap-aware 로 분리).
+_US_MEGACAP_TECH = {"AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA",
+                    "META", "AVGO", "ORCL", "TSLA"}
+_US_MEGACAP_PEERS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META"]
+
 _US_INDUSTRY_PEERS = {
     # ─── Technology
     "Software - Infrastructure": ["MSFT", "ORCL", "IBM", "NOW", "PANW"],

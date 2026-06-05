@@ -1806,6 +1806,22 @@ class TestPaperAutoSignals:
         assert "자동매매" in ds and "auto_close_date" in ds
 
 
+class TestMegacapComps:
+    """fix(2026-06-06 AAPL review): mega-cap tech 는 산업 무관 Mag-7 풀로
+    (좁은 'Consumer Electronics' 분류가 AAPL 을 GoPro/Sonos 와 비교하던 무의미
+    Comps 차단). 소형주는 기존 산업 리스트 유지."""
+
+    def test_megacap_routes_to_mag7(self):
+        from bot.market import resolve_peer_set
+        aapl = resolve_peer_set("AAPL", "Consumer Electronics")
+        assert aapl and "GPRO" not in aapl and "SONO" not in aapl, "AAPL 이 미니캡과 비교됨"
+        assert "MSFT" in aapl and "AAPL" not in aapl, "Mag-7 풀 아님/자기 미제외"
+        assert "MSFT" in (resolve_peer_set("NVDA", "Semiconductors") or [])
+        # 소형주(GoPro)는 영향 없이 산업 리스트 유지(override 화이트리스트에 없음)
+        gpro = resolve_peer_set("GPRO", "Consumer Electronics")
+        assert gpro and "GPRO" not in gpro
+
+
 class TestGicsCandidatesPage:
     """fix(2026-06-05): GICS 후보 대시보드가 서버 파일시스템 경로
     (~/.tradingagents/gics_check_audit.jsonl)를 본문 footer 로 노출하던 것 제거.
