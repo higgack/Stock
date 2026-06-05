@@ -5194,7 +5194,13 @@ def regenerate_reddit_insider_index() -> None:
 # ── Watchlist 조건 알림 대시보드 (2026-06-04) ────────────────────────────
 def _render_watchlist_page(watches: list[dict], alerts: list[dict]) -> str:
     """watchlist.html — 활성 워치 테이블 + 알림 이력. 읽기 전용
-    (등록/삭제는 텔레그램 /watch · /unwatch). _SCREENER_CSS 재사용."""
+    (등록/삭제는 텔레그램 /watch · /unwatch).
+
+    CSS 는 _DETAIL_CSS(순수 CSS 문자열) 를 <style> 안에 사용 — _SCREENER_CSS
+    는 <!DOCTYPE…<style>…</style></head><body> 전체 문서라 <style> 안에 넣으면
+    내부 </style> 가 블록을 조기 종료해 뒤따르는 table CSS 가 텍스트로 누수됨
+    (2026-06-05 버그). _DETAIL_CSS 는 .wrap/.back/.sub/h1/h2/code + --border/
+    --fg-soft 테마 vars 를 모두 제공하므로 table CSS 도 정상 적용."""
     def esc(s):
         return _html.escape(str(s))
 
@@ -5231,7 +5237,7 @@ def _render_watchlist_page(watches: list[dict], alerts: list[dict]) -> str:
 <meta name="color-scheme" content="light dark">
 <title>🔔 워치리스트</title>
 <script>{_THEME_JS}</script>
-<style>{_SCREENER_CSS}
+<style>{_DETAIL_CSS}
 table {{ width:100%; border-collapse:collapse; margin:10px 0 24px; font-size:14px; }}
 th,td {{ text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top; }}
 th {{ color:var(--fg-soft); font-weight:600; font-size:12px; }}

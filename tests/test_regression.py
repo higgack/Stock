@@ -1227,6 +1227,25 @@ class TestWatchlist:
         assert r["instbuy"][0] is False      # 기관 -3e10
         assert r["instsell"][0] is True
 
+    def test_render_no_css_leak(self):
+        # fix(2026-06-05): watchlist.html 이 _SCREENER_CSS(전체 HTML 문서)를
+        # <style> 안에 넣어, 내부 </style> 가 블록을 조기 종료 → 뒤따르는 table
+        # CSS 가 본문 텍스트로 누수됐다. _DETAIL_CSS(순수 CSS)로 교체해 해소.
+        from bot.dashboard import _render_watchlist_page
+        html = _render_watchlist_page(
+            [{"ticker": "AMAT", "conditions": ["52whigh"], "added": "2026-06-04T10:00", "id": "a85c68"}],
+            [{"ts": "2026-06-05T13:05", "ticker": "LRCX", "hits": ["현재가 ≈ 52주 최고"]}])
+        # 단일 문서여야 — 중첩 doctype/style 은 _SCREENER_CSS 누수 시그니처.
+        assert html.lower().count("<!doctype") == 1, "중첩 문서(_SCREENER_CSS 누수)"
+        assert html.count("<style>") == 1 and html.count("</style>") == 1, "style 블록 중복/조기종료"
+        # table CSS 는 </style> 앞(=style 블록 안)에만, 뒤(본문)로 누수 금지.
+        head, _, body = html.partition("</style>")
+        assert "border-collapse:collapse" in head, "table CSS 가 style 블록 안에 없음"
+        assert "border-collapse:collapse" not in body, "table CSS 가 본문으로 누수"
+        # 소스 가드 — _SCREENER_CSS(전체 문서)를 <style> 안에 다시 넣는 회귀 차단.
+        assert "<style>{_SCREENER_CSS}" not in open("bot/dashboard.py", encoding="utf-8").read(), \
+            "_SCREENER_CSS 를 <style> 안에 넣는 회귀"
+
     def test_xbrl_pick_and_format(self):
         """SEC XBRL — 정정 공시 최신 filed 선택 + 최근분기 + 렌더 (2026-06-04)."""
         from bot.edgar_client import _pick_facts, format_xbrl_block, get_key_financials
