@@ -360,11 +360,26 @@ def close_position(ticker: str, idem: Optional[str] = None):
 
 
 def reset():
-    """계좌 초기화(페이퍼). 되돌릴 수 없음 — 호출부가 확인 책임."""
-    _save_account(_new_account())
+    """계좌 초기화(페이퍼). 되돌릴 수 없음 — 호출부가 확인 책임.
+
+    **데이터**(포지션·체결·대기·equity 곡선·idempotency·결정 이력)만 지우고
+    **설정**(자동매매 on/off·사이징)은 보존 — 'reset = 테스트 데이터 삭제,
+    설정 유지'(2026-06-06 사용자 요청). 대시보드 '🤖 자동매매 결정 이력'
+    표(auto_audit.jsonl)도 함께 비워 페이퍼 대시보드 전체가 clean."""
+    prev = get_account()
+    acct = _new_account()
+    acct["auto_enabled"] = bool(prev.get("auto_enabled", False))
+    if prev.get("auto_size_pct"):
+        acct["auto_size_pct"] = prev["auto_size_pct"]
+    _save_account(acct)
     snapshot_equity(float(STARTING_CAPITAL_KRW))   # equity curve baseline
+    try:
+        (_HOME / "auto_audit.jsonl").unlink(missing_ok=True)   # 결정 이력 표 clear
+    except OSError:
+        pass
     _audit_log({"ts": time.time(), "event": "reset"})
-    return True, f"페이퍼 계좌 초기화 — 시작 자본 ₩{STARTING_CAPITAL_KRW:,}"
+    return True, (f"페이퍼 계좌 초기화 — 시작 자본 ₩{STARTING_CAPITAL_KRW:,} "
+                  "(포지션·체결·대기·곡선·결정이력 삭제, 자동매매 설정 유지)")
 
 
 def snapshot_equity(equity_krw: Optional[float] = None) -> None:

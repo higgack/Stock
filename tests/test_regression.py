@@ -1571,6 +1571,26 @@ class TestPaperTrading:
         h2 = pt.get_account()["equity_history"]
         assert len(h2) == 1 and h2[-1]["equity_krw"] == float(pt.STARTING_CAPITAL_KRW)
 
+    def test_reset_preserves_config_clears_data(self, tmp_path, monkeypatch):
+        # reset = 테스트 데이터(포지션·체결·곡선·결정이력) 삭제, 설정(auto·사이징)
+        # 보존 (2026-06-06 사용자 요청).
+        import bot.paper_trading as p
+        monkeypatch.setattr(p, "_ACCOUNT", tmp_path / "a.json")
+        monkeypatch.setattr(p, "_AUDIT", tmp_path / "au.jsonl")
+        monkeypatch.setattr(p, "_HOME", tmp_path)
+        monkeypatch.setattr(p, "live_native_price", lambda t: (313.0, "US"))
+        monkeypatch.setattr(p, "_market_fx", lambda m: ("USD", 1380.0))
+        p.set_auto(True)
+        p.set_auto_size(0.10)
+        p.buy("AAPL", 1)
+        (tmp_path / "auto_audit.jsonl").write_text("{}\n", encoding="utf-8")
+        ok, _ = p.reset()
+        acct = p.get_account()
+        assert ok and not acct["positions"], "포지션 미삭제"
+        assert p.auto_enabled() is True and p.auto_size_pct() == 0.10, "설정 미보존"
+        assert not (tmp_path / "auto_audit.jsonl").exists(), "결정 이력 미삭제"
+        assert len(acct["equity_history"]) == 1, "equity baseline 누락"
+
     def test_equity_curve_render(self):
         from bot.dashboard import _render_paper_page
         base = dict(cash_krw=1e7, positions_value_krw=0, total_equity_krw=1e7,
