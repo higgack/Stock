@@ -58,6 +58,14 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn(".stock-px.up", dashboard._CSS)
         self.assertIn(".stock-px.down", dashboard._CSS)
 
+    def test_company_section_header_shows_eod_price(self):
+        # 회사별 섹션 헤더에 그 회사 EOD 가격(sectionStockPx) — 모달과 둘 다.
+        self.assertIn("function sectionStockPx(", dashboard._JS)
+        self.assertIn(".section-px", dashboard._CSS)
+        # renderSection이 headerExtra 슬롯을 받고, 회사별이 sectionStockPx 전달
+        self.assertIn("(headerExtra||'')", dashboard._JS)
+        self.assertIn("sectionStockPx(name)", dashboard._JS)
+
 
 if __name__ == "__main__":
     unittest.main()

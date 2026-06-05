@@ -786,6 +786,9 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .stock-px{font-weight:600;margin-left:4px}
 .stock-px.up{color:var(--tone-export)}
 .stock-px.down{color:var(--tone-import)}
+.section-px{font-size:14px;font-weight:700;margin-left:8px;vertical-align:middle}
+.section-px.up{color:var(--tone-export)}
+.section-px.down{color:var(--tone-import)}
 .modal-images{display:flex;flex-direction:column;gap:1px;background:var(--bg)}
 .modal-images img{width:100%;display:block;background:var(--img-placeholder)}
 .modal-text{padding:14px 22px;font-size:13px;color:var(--text-sub);white-space:pre-wrap;border-top:1px solid var(--border-soft);background:var(--surface-2)}
@@ -835,6 +838,14 @@ function stockPx(name){
   if(!q)return '';
   var c=Number(q.c)||0, cls=c>=0?'up':'down', sign=c>=0?'+':'';
   return ' <span class="stock-px '+cls+'" title="EOD 종가 '+(Number(q.p)||0).toLocaleString()+'원">'+sign+c.toFixed(1)+'%</span>';
+}
+// 회사별 섹션 헤더용 — 회사명=종목이므로 종가+등락률을 더 크게(EOD).
+function sectionStockPx(name){
+  var q=(typeof STOCK_QUOTES!=='undefined')&&STOCK_QUOTES[name];
+  if(!q)return '';
+  var c=Number(q.c)||0, cls=c>=0?'up':'down', sign=c>=0?'+':'';
+  return ' <span class="section-px '+cls+'" title="EOD 종가(data.go.kr)">'+
+    (Number(q.p)||0).toLocaleString()+'원 '+sign+c.toFixed(1)+'%</span>';
 }
 function whereLabel(a){return [a.region,a.country].filter(Boolean).join(' → ')}
 
@@ -1235,13 +1246,13 @@ function matches(a){
 // just [items-count]. Empty entries are dropped silently. The optional
 // `newBadge` flag puts a small NEW chip next to the title for sections
 // whose item/company first appeared within the last 7 days.
-function renderSection(title, subtitles, miniCardsHtml, newBadge){
+function renderSection(title, subtitles, miniCardsHtml, newBadge, headerExtra){
   const lines=(subtitles||[]).filter(Boolean)
     .map(s=>'<div class="sub-line">'+esc(s)+'</div>').join('');
   const badge=newBadge?' <span class="section-new">NEW</span>':'';
   return '<section class="section">'+
     '<div class="section-header">'+
-      '<h2>'+esc(title)+badge+'</h2>'+
+      '<h2>'+esc(title)+(headerExtra||'')+badge+'</h2>'+
       lines+
     '</div>'+
     '<div class="section-items">'+miniCardsHtml+'</div>'+
@@ -1392,7 +1403,9 @@ function buildCompaniesView(filtered){
       (b.posted_at||'').localeCompare(a.posted_at||'')
     );
     const cards=items.map(renderMiniCard).join('');
-    return renderSection(name, [items.length+'개 품목'], cards, isCompanyNew(name));
+    // 회사명=종목 → 헤더에 그 회사 EOD 가격(있을 때). 모달 칩과 둘 다 유지.
+    return renderSection(name, [items.length+'개 품목'], cards,
+                         isCompanyNew(name), sectionStockPx(name));
   }).join('');
 }
 
