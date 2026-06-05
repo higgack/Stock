@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -235,8 +236,12 @@ def _order(ticker: str, qty: float, side: str, idem: Optional[str]):
     if fx is None:
         return False, f"통화 환산 불가: {market}"
     if idem is None:
-        # 기본 idem: 동일 (ticker,side,qty) 1분 내 중복 탭 방지.
-        idem = f"{ticker}:{side}:{qty:g}:{int(time.time() // 60)}"
+        # 멱등 토큰 미제공(프로그램/테스트 호출) → 매번 고유키 = dedup 안 함.
+        # ⚠️ 과거 '티커:방향:수량:분' 파생키는 서로 다른 주문(sell 5 ↔ close 5)이
+        # 같은 분에 같은 (티커,방향,수량)이면 충돌해 잘못 dedup 했다(2026-06-06).
+        # 진짜 멱등 단위는 '논리적 주문 1건' — 호출부(텔레그램)가 message_id 를
+        # idem 으로 넘기면 재전송만 dedup 되고 의도된 별개 주문은 각각 체결된다.
+        idem = uuid.uuid4().hex
     acct = get_account()
     fn = _apply_buy if side == "buy" else _apply_sell
     ok, msg = fn(acct, ticker, float(qty), float(px), float(fx), currency, market,

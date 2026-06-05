@@ -474,7 +474,8 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             await ctx.bot.send_message(chat_id=_pid, text=t,
                                        parse_mode=ParseMode.HTML,
                                        disable_web_page_preview=True)
-        await _handle_paper(body.split()[1:], _psend)
+        await _handle_paper(body.split()[1:], _psend,
+                            idem=f"tg:{post.message_id}")
         return
 
     # /watch · /watchlist · /unwatch in channel — PTB CommandHandler doesn't
@@ -2194,7 +2195,9 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async def _send(t):
         await update.message.reply_text(t, parse_mode=ParseMode.HTML)
 
-    await _handle_paper(context.args or [], _send)
+    # 멱등 토큰 = 텔레그램 message_id (메시지마다 고유, 재전송만 같음) → 서로
+    # 다른 주문은 각각 체결, 중복 전달만 1회.
+    await _handle_paper(context.args or [], _send, idem=f"tg:{update.message.message_id}")
 
 
 def _paper_summary_text(summ: dict) -> str:
@@ -2224,9 +2227,10 @@ def _paper_summary_text(summ: dict) -> str:
     return "\n".join(lines)
 
 
-async def _handle_paper(args, send) -> None:
+async def _handle_paper(args, send, idem=None) -> None:
     """공유 /paper 핸들러 — DM(cmd_paper) + 채널(on_channel_post) 동일 로직.
-    `args` = 'paper' 뒤 토큰 리스트. `send(text)` = async HTML 전송 콜러블."""
+    `args` = 'paper' 뒤 토큰 리스트. `send(text)` = async HTML 전송 콜러블.
+    `idem` = 텔레그램 message_id 기반 멱등 토큰(재전송 dedup, 별개 주문은 통과)."""
     from bot import paper_trading
     sub = args[0].lower() if args else ""
 
@@ -2244,7 +2248,7 @@ async def _handle_paper(args, send) -> None:
             await send("⚠️ 수량은 숫자여야 합니다 (예: 10)")
             return
         fn = paper_trading.buy if sub == "buy" else paper_trading.sell
-        ok, msg = fn(ticker, qty)
+        ok, msg = fn(ticker, qty, idem=idem)
         await send(("✅ " if ok else "⚠️ ") + msg)
         if ok:
             _regen_paper()
@@ -2254,7 +2258,7 @@ async def _handle_paper(args, send) -> None:
         if len(args) < 2:
             await send("사용법: /paper close TICKER")
             return
-        ok, msg = paper_trading.close_position(args[1].strip().upper())
+        ok, msg = paper_trading.close_position(args[1].strip().upper(), idem=idem)
         await send(("✅ " if ok else "⚠️ ") + msg)
         if ok:
             _regen_paper()

@@ -1512,6 +1512,30 @@ class TestPaperTrading:
         ok, _ = p._apply_sell(acct, "W", 99, 1000.0, 1.0, "KRW", "KR", 1.0, "e")
         assert not ok                                       # 보유 초과
 
+    def test_close_after_partial_sell_distinct_idem(self, monkeypatch):
+        # 버그(2026-06-06): /paper sell AAPL 5 → /paper close AAPL(남은 5)가
+        # 같은 (티커,방향,수량,분) 파생키로 잘못 dedup("중복 무시"). message_id
+        # 기반 멱등이면 다른 주문은 각각 체결, 재전송만 dedup.
+        p, acct = self._fresh(monkeypatch)
+        p._apply_buy(acct, "AAPL", 10, 300.0, 1500.0, "USD", "US", 1.0, "m1")
+        ok, _ = p._apply_sell(acct, "AAPL", 5, 310.0, 1500.0, "USD", "US", 2.0, "m2")
+        assert ok and acct["positions"]["AAPL"]["qty"] == 5
+        # close = 남은 5 매도. 다른 idem(다른 message_id) → 체결돼야(중복 아님).
+        ok, _ = p._apply_sell(acct, "AAPL", 5, 311.0, 1500.0, "USD", "US", 3.0, "m3")
+        assert ok and "AAPL" not in acct["positions"], "close 가 잘못 dedup 됨"
+        # 같은 idem(재전송) → dedup.
+        ok2, msg2 = p._apply_sell(acct, "AAPL", 1, 311.0, 1500.0, "USD", "US", 4.0, "m3")
+        assert ok2 and "중복" in msg2, "재전송 dedup 안 됨"
+
+    def test_idem_default_unique_not_minute_bucket(self):
+        # 기본 멱등키는 분-버킷이 아니라 고유(uuid) — 서로 다른 주문 오인 dedup 방지.
+        pt = open("bot/paper_trading.py", encoding="utf-8").read()
+        assert "uuid.uuid4().hex" in pt, "기본 멱등키 uuid 아님"
+        assert "int(time.time() // 60)" not in pt, "분-버킷 파생키가 남아 있음(버그 회귀)"
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert 'idem=f"tg:{update.message.message_id}"' in tb, "DM message_id 멱등 미전달"
+        assert 'idem=f"tg:{post.message_id}"' in tb, "채널 message_id 멱등 미전달"
+
     def test_summary_offline(self, tmp_path, monkeypatch):
         p, acct = self._fresh(monkeypatch)
         monkeypatch.setattr(p, "_ACCOUNT", tmp_path / "acct.json")
