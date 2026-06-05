@@ -34,6 +34,7 @@ def save_analysis(
     summary: str,
     full_report: str,
     elapsed_sec: float,
+    started_at: float | None = None,
 ) -> None:
     """Persist one analysis to the archive.
 
@@ -41,6 +42,14 @@ def save_analysis(
     previous JSON. Failure is non-fatal — archive errors must never
     break the analysis pipeline, since the analysis result has already
     reached the user via Telegram by the time we get here.
+
+    ``started_at`` (epoch) lets us stamp the per-analysis Gemini cost into
+    the record (``cost_krw``) by summing the usage log over the run window.
+    The sum runs AFTER the price-chart build so this run's chart
+    disclosure-title translation (CN/JP/TW → KR, subsystem='chart_translate')
+    is included in the analysis's cost rather than left as an invisible
+    background charge. Optional / additive — older records simply lack the
+    field and the detail page omits the cost line.
     """
     try:
         day_dir = ARCHIVE_ROOT / trade_date
@@ -58,6 +67,8 @@ def save_analysis(
         # detail-page chart. Non-fatal: a fetch failure just omits the
         # field and the page renders text-only. Computed here (one extra
         # yfinance call) since the graph run's series isn't threaded back.
+        # Also runs the chart's disclosure-title translation, so it must
+        # happen BEFORE the cost stamp below.
         try:
             from bot.chart_data import build_price_chart
             chart = build_price_chart(ticker)
@@ -65,6 +76,16 @@ def save_analysis(
                 record["price_chart"] = chart
         except Exception as exc:
             log.warning("archive: price_chart build skipped for %s: %s", ticker, exc)
+        # Per-analysis cost stamp — summed from the usage log over the run
+        # window so the detail page can show each analysis's spend inline.
+        if started_at:
+            try:
+                from bot.usage_tracker import sum_analysis_cost_krw
+                cost_krw = sum_analysis_cost_krw(started_at)
+                if cost_krw > 0:
+                    record["cost_krw"] = cost_krw
+            except Exception as exc:
+                log.warning("archive: cost stamp skipped for %s: %s", ticker, exc)
         path = day_dir / f"{ticker}.json"
         # Use a tmp+rename so a partial write can't corrupt an existing
         # archive entry (e.g. concurrent reads from the dashboard).

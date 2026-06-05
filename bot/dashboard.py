@@ -2760,6 +2760,14 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
     date = rec.get("trade_date", "")
     analyzed_at = (rec.get("analyzed_at") or "")[:16].replace("T", " ")
     elapsed = float(rec.get("elapsed_sec", 0) or 0)
+    # Per-analysis Gemini cost (incl. this run's chart disclosure-title
+    # translation), stamped by archive.save_analysis. Older records lack the
+    # field → cost line is omitted (only stamped going forward).
+    try:
+        _cost_krw = int(round(float(rec.get("cost_krw", 0) or 0)))
+    except (TypeError, ValueError):
+        _cost_krw = 0
+    cost_part = f" · 비용: ₩{_cost_krw:,}" if _cost_krw > 0 else ""
     rating = _extract(_RATING_RE, rec.get("summary", "")) or "?"
     summary = rec.get("summary", "") or ""
     full = rec.get("full_report", "") or ""
@@ -2811,7 +2819,7 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
   </div>
   <div class="meta">
     분석일: {_html.escape(date)} · 실행 시각: {_html.escape(analyzed_at)} ·
-    소요: {elapsed:.1f}초
+    소요: {elapsed:.1f}초{cost_part}
   </div>
   {outcome_html}
   {chart_html}

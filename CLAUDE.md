@@ -844,6 +844,28 @@ NOAH archive second). help 순서 = nav 순서 일치 의무.
   의 `_sub_keys` + 합산 루프 + `_render_stats_panel` 의 sub_parts 순서,
   (b) `telegram_bot.cmd_usage` 의 합산·분포 라인 두 곳을 동시 갱신.
   breakdown 은 `if m_usd > 0` 으로 이번 달 0 인 surface 는 숨김(compact).
+  • **chart_translate (차트 공시 제목 CN/JP/TW→KR 번역)** 은 subsystem
+    매핑에 없어 default **분석** 버킷으로 폴딩 (`_compute_stats` line
+    ~443). 분석 차트 생성 시점(`save_analysis` 내 `build_price_chart`)에
+    발생, 영구 캐시라 제목당 1회. 의도된 동작 — 차트 번역은 그 분석의
+    부속 비용.
+
+**🧾 개별 분석 비용 stamp (사용자 2026-06-05):** 상세 페이지 메타 라인
+(`_render_detail`, "분석일 · 실행 시각 · 소요 · **비용: ₩X**")에 그 분석
+1건의 Gemini 비용을 표기. `archive.save_analysis(started_at=)` 가
+**build_price_chart(번역 발생) 직후** `usage_tracker.sum_analysis_cost_krw
+(started_at)` 로 run 윈도 `[started_at, now]` 의 usage.jsonl 을 합산해
+record `cost_krw` 로 저장 → 상세 페이지가 렌더. 합산 대상 = 분석 본체
+호출(subsystem 없음) + **chart_translate**(이 분석 차트 번역, 사용자가
+포함 요청). 제외 = screener/daily_byte/realestate/cheongyak/blog(별도 timer
+프로세스에서 동시 실행 가능 → `_ANALYSIS_COST_SUBSYSTEMS` 화이트리스트로
+차단). usage.jsonl **직접 합산**인 이유: 분석 본체는 langchain
+`UsageCallback`, chart_translate 는 `_call_pro` 직접 기록이라 둘이 같은
+파일에만 공통으로 떨어짐 — in-process accumulator 면 번역비를 놓침. busy
+marker 가 /TICKER run 을 직렬화하므로 직전 run 호출(ts < started_at)은
+윈도에 안 겹침. **옛 기록(이 기능 이전)은 cost_krw 부재 → 비용 라인
+생략**(usage.jsonl 30일 회전이라 소급 불가, "앞으로" 만 표기). additive·
+graceful (합산 실패해도 archive write 안 깨짐). universal — 전 시장 동일.
 
 **⛔ 외부 사이트(우리가 운영하지 않는 third-party URL) surface 정책
 (사용자 2026-06-01):** Standard View / 한국 수출입 처럼 우리가 같은 VM

@@ -25,7 +25,13 @@ import time
 from pathlib import Path
 from threading import Lock
 
-from langchain_core.callbacks import BaseCallbackHandler
+try:
+    from langchain_core.callbacks import BaseCallbackHandler
+except ImportError:  # pragma: no cover - langchain absent (lightweight env)
+    # Only UsageCallback needs the real base class; the cost/aggregation
+    # helpers (sum_analysis_cost_krw, load_records, estimate_cost_usd, …) are
+    # pure and must stay importable where langchain isn't installed.
+    BaseCallbackHandler = object  # type: ignore[assignment,misc]
 
 log = logging.getLogger(__name__)
 
@@ -206,6 +212,58 @@ def log_analysis(ticker: str, elapsed_sec: float, cache_hit: bool) -> None:
         "elapsed_sec": round(elapsed_sec, 2),
         "cache_hit": cache_hit,
     })
+
+
+# Subsystems whose cost belongs to a single /TICKER analysis run: the
+# analysis's own Gemini calls land with NO subsystem tag (UsageCallback
+# above omits the field), and chart_translate writes its own llm_call with
+# subsystem='chart_translate' for THIS run's chart disclosure-title
+# translation. Everything else (screener / daily_byte / realestate /
+# cheongyak / blog) is an independent surface that may run concurrently in
+# a separate timer process and must NOT be attributed to the ticker.
+_ANALYSIS_COST_SUBSYSTEMS = (None, "", "chart_translate")
+
+
+def sum_analysis_cost_krw(since_ts: float, until_ts: float | None = None) -> int:
+    """KRW cost of one analysis run, summed from the usage log over
+    ``[since_ts, until_ts]``.
+
+    Reads ``usage.jsonl`` directly (not the in-process UsageCallback)
+    because that file is the single sink BOTH the analysis Gemini calls and
+    chart_translate land in — an in-memory accumulator would miss the
+    translation cost the user wants counted. Restricts to the analysis's own
+    subsystems so a concurrent Daily Byte / screener run can't leak in. The
+    bot serialises /TICKER runs behind the .busy marker, so the previous
+    run's calls (ts < since_ts) never overlap this window. Best-effort —
+    returns 0 on any read error so a cost-stamp failure can't break the
+    archive write."""
+    if until_ts is None:
+        until_ts = time.time()
+    if not USAGE_LOG.exists():
+        return 0
+    total_usd = 0.0
+    try:
+        with open(USAGE_LOG, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") != "llm_call":
+                    continue
+                ts = rec.get("ts", 0)
+                if ts < since_ts or ts > until_ts:
+                    continue
+                if rec.get("subsystem") not in _ANALYSIS_COST_SUBSYSTEMS:
+                    continue
+                total_usd += rec.get("cost_usd", 0) or 0
+    except Exception as exc:
+        log.warning("usage_tracker: sum_analysis_cost_krw failed: %s", exc)
+        return 0
+    return int(round(total_usd * KRW_PER_USD))
 
 
 def log_failure(ticker: str, reason: str) -> None:

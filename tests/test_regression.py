@@ -1894,6 +1894,68 @@ class TestChartEvents:
         assert "원문 →" in ds, "원문 링크 누락"
 
 
+class TestPerAnalysisCost:
+    """fix: 개별 분석 비용을 상세 페이지 메타 라인에 표기 (2026-06-05).
+
+    분석 본체 Gemini 호출(subsystem 없음) + 그 분석 차트의 공시 제목
+    번역(subsystem='chart_translate')만 합산하고, 동시에 별도 timer
+    프로세스로 돌 수 있는 독립 surface(screener/daily_byte 등)는 제외.
+    usage.jsonl 직접 합산이라 in-process accumulator 가 놓치는 번역비까지
+    포함된다."""
+
+    def _write(self, path, rows):
+        import json
+        path.write_text("\n".join(json.dumps(r) for r in rows) + "\n",
+                        encoding="utf-8")
+
+    def test_sum_includes_analysis_and_translate_excludes_others(self, tmp_path, monkeypatch):
+        import bot.usage_tracker as ut
+        log = tmp_path / "usage.jsonl"
+        monkeypatch.setattr(ut, "USAGE_LOG", log)
+        t0 = 1000.0
+        self._write(log, [
+            {"ts": t0 - 5, "type": "llm_call", "cost_usd": 1.0},        # 이전 run(윈도 밖)
+            {"ts": t0 + 1, "type": "llm_call", "cost_usd": 0.01},       # 분석 본체(태그 없음)
+            {"ts": t0 + 2, "type": "llm_call", "cost_usd": 0.005,
+             "subsystem": "chart_translate"},                           # 이 분석 차트 번역 → 포함
+            {"ts": t0 + 3, "type": "llm_call", "cost_usd": 9.0,
+             "subsystem": "screener"},                                  # 동시 screener → 제외
+            {"ts": t0 + 4, "type": "llm_call", "cost_usd": 9.0,
+             "subsystem": "daily_byte"},                                # 동시 Daily Byte → 제외
+            {"ts": t0 + 5, "type": "analysis", "cost_usd": 99.0},       # llm_call 아님 → 제외
+        ])
+        expected = int(round((0.01 + 0.005) * ut.KRW_PER_USD))
+        assert ut.sum_analysis_cost_krw(t0, t0 + 10) == expected
+
+    def test_window_excludes_prior_run(self, tmp_path, monkeypatch):
+        import bot.usage_tracker as ut
+        log = tmp_path / "usage.jsonl"
+        monkeypatch.setattr(ut, "USAGE_LOG", log)
+        self._write(log, [
+            {"ts": 500.0, "type": "llm_call", "cost_usd": 1.0},    # since 이전 → 제외
+            {"ts": 1500.0, "type": "llm_call", "cost_usd": 0.02},  # 윈도 안 → 포함
+        ])
+        assert ut.sum_analysis_cost_krw(1000.0, 2000.0) == int(round(0.02 * ut.KRW_PER_USD))
+
+    def test_missing_file_graceful(self, tmp_path, monkeypatch):
+        import bot.usage_tracker as ut
+        monkeypatch.setattr(ut, "USAGE_LOG", tmp_path / "nope.jsonl")
+        assert ut.sum_analysis_cost_krw(0.0) == 0
+
+    def test_wiring_analyzer_archive_dashboard(self):
+        # analyzer 가 started_at 전달 + archive 가 chart build 뒤 cost stamp.
+        az = open("bot/analyzer.py", encoding="utf-8").read()
+        assert "started_at=started_at" in az, "analyzer 가 started_at 전달 안 함"
+        ar = open("bot/archive.py", encoding="utf-8").read()
+        assert "sum_analysis_cost_krw" in ar and 'record["cost_krw"]' in ar, "archive cost stamp 누락"
+        # cost stamp 는 반드시 build_price_chart(번역 발생) 뒤 — 안 그러면 번역비 누락.
+        assert ar.index("build_price_chart") < ar.index("sum_analysis_cost_krw"), \
+            "cost stamp 가 chart build 보다 앞 — 번역비 누락"
+        ds = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'rec.get("cost_krw"' in ds, "상세 페이지 cost 읽기 누락"
+        assert "비용: ₩" in ds and "{cost_part}" in ds, "메타 라인 비용 표기 누락"
+
+
 class TestBudget:
     """fix: 가계부(현금흐름) 별도 대시보드 (2026-06-04 자산관리 P2)."""
 

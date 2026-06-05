@@ -402,8 +402,10 @@ def analyze(ticker: str, target_date: str | None = None) -> tuple[str, str]:
     elapsed = time.time() - started_at
     log_analysis(ticker, elapsed, cache_hit=False)
     # Persist to the long-term archive. Cache writes expire at midnight;
-    # the archive does not, and is what the dashboard reads from.
-    _archive_save(ticker, target_date, summary, full, elapsed)
+    # the archive does not, and is what the dashboard reads from. Pass
+    # started_at so the archive can stamp this run's Gemini cost (incl. the
+    # chart disclosure-title translation) onto the record for the detail page.
+    _archive_save(ticker, target_date, summary, full, elapsed, started_at=started_at)
     # Refresh the static HTML dashboard. Internally swallows errors, so
     # a dashboard hiccup can't break the analysis path.
     _dashboard_regen()
