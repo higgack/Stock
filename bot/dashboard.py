@@ -2295,7 +2295,7 @@ _CHART_JS = """
       height: 120,
       layout: { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit', attributionLogo: false },
       grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } },
-      rightPriceScale: { borderVisible: false, minimumWidth: 72, scaleMargins: { top: 0.12, bottom: 0.12 } },
+      rightPriceScale: { borderVisible: false, minimumWidth: 130, scaleMargins: { top: 0.12, bottom: 0.12 } },
       // rightOffset 7: 메인 차트와 동일 여백 → RSI/MACD 도 우측 끝이 안 붙고 시간축 정렬 일치.
       timeScale: { borderVisible: false, timeVisible: false, visible: false, rightOffset: 7 },
       crosshair: { mode: 0 }
@@ -2328,7 +2328,9 @@ _CHART_JS = """
       localization: { priceFormatter: fmtAxis },
       // mode 1 = 로그 스케일 (긴 기간 뷰에서 % 변동 비교 가능). 기본 0=선형.
       // bottom 0.20: 가격 영역을 키워 디테일↑ (거래량 오버레이 top:0.82 와 비중첩).
-      rightPriceScale: { borderVisible: false, minimumWidth: 72, mode: ind.log ? 1 : 0, scaleMargins: { top: 0.06, bottom: 0.20 } },
+      // minimumWidth 130: 현재가/시점가 라벨(이름+값)이 가격축 바깥 여백에 들어가
+      // 캔들 위로 안 넘치게(사용자 2026-06-05 — 태그는 차트 밖 오른쪽).
+      rightPriceScale: { borderVisible: false, minimumWidth: 130, mode: ind.log ? 1 : 0, scaleMargins: { top: 0.06, bottom: 0.20 } },
       // rightOffset 7: 우측 끝에 여백 → 최근 캔들·마커가 가장자리/가격축에 안 붙고
       // 빈 공간에 놓임(사용자 가독성 2026-06-05).
       timeScale: { borderVisible: false, timeVisible: false, rightOffset: 7 },
@@ -2345,7 +2347,7 @@ _CHART_JS = """
     var lp = (d.last_price != null) ? d.last_price : null;
     if (ind.candle && hasOHLC) {
       // 캔들 — OHLC 가 있을 때만.
-      mainS = chart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#e2574c', borderUpColor:'#26a69a', borderDownColor:'#e2574c', wickUpColor:'#26a69a', wickDownColor:'#e2574c', priceFormat: pf, lastValueVisible: false, priceLineVisible: false, title: '' });
+      mainS = chart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#e2574c', borderUpColor:'#26a69a', borderDownColor:'#e2574c', wickUpColor:'#26a69a', wickDownColor:'#e2574c', priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
       var cd = [];
       for (var i = 0; i < d.times.length; i++) {
         if (d.open[i]==null||d.high[i]==null||d.low[i]==null||d.close[i]==null) continue;
@@ -2361,7 +2363,7 @@ _CHART_JS = """
       }
       mainS.setData(cd);
     } else {
-      mainS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: false, priceLineVisible: false, title: '' });
+      mainS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
       var closeData = zip(d.close);
       if (lp != null && closeData.length > 0) {
         var last = closeData[closeData.length - 1];
@@ -2433,7 +2435,7 @@ _CHART_JS = """
       // 일 때 박스끼리 겹쳐 최근 캔들을 가리던 문제 해소.
       mainS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: !!showLabel, title: title });
     }
-    priceLine(asOfClose, '#94a3b8', '시점가', 2, false);
+    priceLine(asOfClose, '#94a3b8', '시점가', 2, true);
     if (markers) {
       priceLine(markers.entry,  '#9b59b6', '진입', 2, false);
       priceLine(markers.stop,   '#e2574c', '손절', 2, false);
@@ -2530,7 +2532,7 @@ _CHART_JS = """
     var rsiEl = showSub('rsi-chart', ind.rsi && !!d.rsi);
     if (rsiEl) {
       rsiChart = subChart(rsiEl);
-      var rsiS = rsiChart.addLineSeries({ color: '#b07cff', lineWidth: 1, priceFormat: { precision: 1, minMove: 0.1 }, lastValueVisible: false, priceLineVisible: false, title: '' });
+      var rsiS = rsiChart.addLineSeries({ color: '#b07cff', lineWidth: 1, priceFormat: { precision: 1, minMove: 0.1 }, lastValueVisible: true, priceLineVisible: false, title: 'RSI' });
       rsiS.setData(zip(d.rsi));
       rsiS.createPriceLine({ price: 70, color: 'rgba(229,87,76,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '70' });
       rsiS.createPriceLine({ price: 30, color: 'rgba(76,175,80,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '30' });
@@ -2551,7 +2553,7 @@ _CHART_JS = """
         if (hv !== null && hv !== undefined) hd.push({ time: d.times[i], value: hv, color: hv >= 0 ? 'rgba(38,166,154,0.6)' : 'rgba(229,87,76,0.6)' });
       }
       histS.setData(hd);
-      macdChart.addLineSeries({ color: '#4c9aff', lineWidth: 1, priceFormat: mpf, lastValueVisible: false, priceLineVisible: false, title: '' }).setData(zip(d.macd));
+      macdChart.addLineSeries({ color: '#4c9aff', lineWidth: 1, priceFormat: mpf, lastValueVisible: true, priceLineVisible: false, title: 'MACD' }).setData(zip(d.macd));
       macdChart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: mpf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.macd_signal));
       macdChart.timeScale().fitContent();
       macdChart.applyOptions({ width: macdEl.clientWidth });
