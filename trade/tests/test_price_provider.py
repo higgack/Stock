@@ -84,6 +84,31 @@ class ProviderSelectTests(unittest.TestCase):
             self.assertEqual(pp._provider(), "kis")
             self.assertTrue(pp.provider_active())
 
+    def test_kis_fallback_env_names_noah_style(self):
+        # NOAH 네이밍(KIS_APP_KEY/KIS_APP_SECRET)도 인식 — 한 호스트에서
+        # 같은 KIS 앱을 NOAH와 공유할 때 .env 중복 없게.
+        with mock.patch.dict(os.environ, {
+                "KIS_APP_KEY": "AK", "KIS_APP_SECRET": "AS",
+                "TRADE_PRICE_PROVIDER": "auto"}, clear=True):
+            self.assertEqual(pp._kis_keys(), ("AK", "AS"))
+            self.assertEqual(pp._provider(), "kis")
+
+    def test_trade_prefix_wins_over_noah_fallback(self):
+        # 같이 있으면 TRADE_KIS_* 우선(명시 > 폴백).
+        with mock.patch.dict(os.environ, {
+                "TRADE_KIS_APPKEY": "T", "TRADE_KIS_APPSECRET": "T",
+                "KIS_APP_KEY": "N", "KIS_APP_SECRET": "N",
+                "TRADE_PRICE_PROVIDER": "auto"}, clear=True):
+            self.assertEqual(pp._kis_keys(), ("T", "T"))
+
+    def test_auto_prefers_kis_over_dataportal(self):
+        # 둘 다 있으면 KIS(실시간)가 dataportal(EOD T+1)을 이김.
+        with mock.patch.dict(os.environ, {
+                "KIS_APP_KEY": "AK", "KIS_APP_SECRET": "AS",
+                "TRADE_DATA_GO_KR_KEY": "DK",
+                "TRADE_PRICE_PROVIDER": "auto"}, clear=True):
+            self.assertEqual(pp._provider(), "kis")
+
     def test_explicit_none_forces_off(self):
         with mock.patch.dict(os.environ, {
                 "TRADE_KIS_APPKEY": "AK", "TRADE_KIS_APPSECRET": "AS",

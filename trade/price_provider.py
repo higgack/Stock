@@ -63,6 +63,18 @@ DATAPORTAL_ENDPOINT = (
 Transport = Callable[..., dict]
 
 
+def _kis_keys() -> tuple[str, str]:
+    """(appkey, appsecret) — TRADE_KIS_APPKEY/APPSECRET 우선, 없으면 NOAH
+    네이밍(KIS_APP_KEY/KIS_APP_SECRET)로 폴백. NOAH stock-bot와 같은 호스트
+    에서 한 KIS 앱을 공유하면 .env 중복 없이 한 쌍이면 됨. 둘 중 어느 쪽이든
+    appkey와 secret이 모두 있어야 유효."""
+    ak = (os.environ.get("TRADE_KIS_APPKEY")
+          or os.environ.get("KIS_APP_KEY") or "").strip()
+    sk = (os.environ.get("TRADE_KIS_APPSECRET")
+          or os.environ.get("KIS_APP_SECRET") or "").strip()
+    return ak, sk
+
+
 @dataclass
 class Quote:
     symbol: str
@@ -91,14 +103,17 @@ def _default_transport(method: str, url: str, *, headers: dict,
 
 
 def _provider() -> str:
-    """현재 공급자. auto = data.go.kr 키 있으면 dataportal(EOD·기존 키 재사용),
-    아니면 KIS 키 있으면 kis, 둘 다 없으면 none(외부 호출 0)."""
+    """현재 공급자. auto = KIS 키 있으면 kis(실시간 우선 — data.go.kr EOD는
+    T+1 지연이라 너무 느림), 아니면 data.go.kr 키 있으면 dataportal(EOD),
+    둘 다 없으면 none(외부 호출 0). KIS는 코드 조회만 되지만 이름→코드는
+    data.go.kr durable 캐시로 푸는 하이브리드(resolve_codes)."""
     p = (os.environ.get("TRADE_PRICE_PROVIDER") or "auto").strip().lower()
     if p == "auto":
+        ak, sk = _kis_keys()
+        if ak and sk:
+            return "kis"
         if os.environ.get("TRADE_DATA_GO_KR_KEY"):
             return "dataportal"
-        if os.environ.get("TRADE_KIS_APPKEY") and os.environ.get("TRADE_KIS_APPSECRET"):
-            return "kis"
         return "none"
     return p
 
@@ -135,8 +150,7 @@ def _kis_token(*, transport: Transport = _default_transport) -> Optional[str]:
             return d["access_token"]
     except Exception:
         pass
-    appkey = os.environ.get("TRADE_KIS_APPKEY")
-    appsecret = os.environ.get("TRADE_KIS_APPSECRET")
+    appkey, appsecret = _kis_keys()
     if not appkey or not appsecret:
         return None
     try:
@@ -167,8 +181,7 @@ def _kis_token(*, transport: Transport = _default_transport) -> Optional[str]:
 def _kis_quote_kr(code: str, token: str, *,
                   transport: Transport = _default_transport) -> Optional[Quote]:
     """국내주식 현재가 1종목. 실패/빈 응답 → None."""
-    appkey = os.environ.get("TRADE_KIS_APPKEY") or ""
-    appsecret = os.environ.get("TRADE_KIS_APPSECRET") or ""
+    appkey, appsecret = _kis_keys()
     code = "".join(ch for ch in str(code) if ch.isdigit()).zfill(6)[:6]
     url = (f"{KIS_DOMAIN}/uapi/domestic-stock/v1/quotations/inquire-price"
            f"?fid_cond_mrkt_div_code=J&fid_input_iscd={code}")
