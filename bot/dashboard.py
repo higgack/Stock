@@ -2525,10 +2525,10 @@ _CHART_JS = """
     var rsiEl = showSub('rsi-chart', ind.rsi && !!d.rsi);
     if (rsiEl) {
       rsiChart = subChart(rsiEl);
-      var rsiS = rsiChart.addLineSeries({ color: '#b07cff', lineWidth: 1, priceFormat: { precision: 1, minMove: 0.1 }, lastValueVisible: true, priceLineVisible: false, title: 'RSI' });
+      var rsiS = rsiChart.addLineSeries({ color: '#b07cff', lineWidth: 1, priceFormat: { precision: 1, minMove: 0.1 }, lastValueVisible: false, priceLineVisible: false, title: 'RSI' });
       rsiS.setData(zip(d.rsi));
-      rsiS.createPriceLine({ price: 70, color: 'rgba(229,87,76,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '70' });
-      rsiS.createPriceLine({ price: 30, color: 'rgba(76,175,80,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '30' });
+      rsiS.createPriceLine({ price: 70, color: 'rgba(229,87,76,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '70' });
+      rsiS.createPriceLine({ price: 30, color: 'rgba(76,175,80,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '30' });
       rsiChart.timeScale().fitContent();
       rsiChart.applyOptions({ width: rsiEl.clientWidth });
       linked.push(rsiChart);
@@ -2546,7 +2546,7 @@ _CHART_JS = """
         if (hv !== null && hv !== undefined) hd.push({ time: d.times[i], value: hv, color: hv >= 0 ? 'rgba(38,166,154,0.6)' : 'rgba(229,87,76,0.6)' });
       }
       histS.setData(hd);
-      macdChart.addLineSeries({ color: '#4c9aff', lineWidth: 1, priceFormat: mpf, lastValueVisible: true, priceLineVisible: false, title: 'MACD' }).setData(zip(d.macd));
+      macdChart.addLineSeries({ color: '#4c9aff', lineWidth: 1, priceFormat: mpf, lastValueVisible: false, priceLineVisible: false, title: 'MACD' }).setData(zip(d.macd));
       macdChart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: mpf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.macd_signal));
       macdChart.timeScale().fitContent();
       macdChart.applyOptions({ width: macdEl.clientWidth });
