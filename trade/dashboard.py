@@ -169,17 +169,18 @@ def _stock_quotes_for(payload: list[dict]) -> dict:
         from trade import price_provider
         if not price_provider.provider_active():
             return {}
-        names = set()
+        raw = []
         for a in payload:
-            for s in (a.get("stocks") or []):
-                if s:
-                    names.add(s)
+            raw.extend(a.get("stocks") or [])
+        names = price_provider.split_names(raw)   # 복합 'A / B 등' 분리
         if not names:
             return {}
-        # 장중(평일 09:00–15:30 KST)이면 짧은 TTL(라이브 폴링), 마감 후·주말엔
-        # 긴 TTL(종가 고정 → KIS 재호출 0). 콜 수 자동 절감.
+        # 렌더는 캐시만 읽어 즉시 끝낸다(fetch=False) — 480종목을 동기 API로
+        # 부르면 렌더가 타임아웃돼 일부만 담기던 문제 해결. 실제 시세 호출은
+        # 워머(trade.scripts.fetch_quotes)가 백그라운드에서. 캐시 비면 그 종목은
+        # 가격 생략(다음 워밍 후 채워짐). TTL은 장중/마감 자동.
         ttl = price_provider.recommended_ttl()
-        quotes = price_provider.get_quotes_by_name(sorted(names), ttl_s=ttl)
+        quotes = price_provider.get_quotes_by_name(names, ttl_s=ttl, fetch=False)
         return {nm: {"p": round(q.price), "c": round(q.change_pct, 2)}
                 for nm, q in quotes.items()}
     except Exception:
@@ -833,20 +834,25 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 _JS = r"""
 // --- helpers ---
 function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-// 관련종목 EOD 시세 칩 — STOCK_QUOTES(서버 주입)에 매칭되는 종목만 +등락률.
-// 매칭 없으면 빈 문자열(칩은 이름만). 표시 전용·EOD 종가 기준.
-function stockPx(name){
-  var q=(typeof STOCK_QUOTES!=='undefined')&&STOCK_QUOTES[name];
-  if(!q)return '';
-  var c=Number(q.c)||0, cls=c>=0?'up':'down', sign=c>=0?'+':'';
-  return ' <span class="stock-px '+cls+'" title="EOD 종가 '+(Number(q.p)||0).toLocaleString()+'원">'+sign+c.toFixed(1)+'%</span>';
+// STOCK_QUOTES 조회 — 정확일치 우선, 없으면 복합명('A / B 등')의 첫 종목.
+function pxLookup(name){
+  if(typeof STOCK_QUOTES==='undefined'||!name)return null;
+  if(STOCK_QUOTES[name])return STOCK_QUOTES[name];
+  var first=String(name).split('/')[0].trim();
+  if(first.endsWith(' 등'))first=first.slice(0,-2).trim();
+  return (first&&STOCK_QUOTES[first])||null;
 }
-// 회사별 섹션 헤더용 — 회사명=종목이므로 종가+등락률을 더 크게(EOD).
-function sectionStockPx(name){
-  var q=(typeof STOCK_QUOTES!=='undefined')&&STOCK_QUOTES[name];
-  if(!q)return '';
+// 관련종목 시세 칩 — 매칭되는 종목만 +등락률. 없으면 빈 문자열(이름만).
+function stockPx(name){
+  var q=pxLookup(name); if(!q)return '';
   var c=Number(q.c)||0, cls=c>=0?'up':'down', sign=c>=0?'+':'';
-  return ' <span class="section-px '+cls+'" title="EOD 종가(data.go.kr)">'+
+  return ' <span class="stock-px '+cls+'" title="종가 '+(Number(q.p)||0).toLocaleString()+'원">'+sign+c.toFixed(1)+'%</span>';
+}
+// 회사별 섹션 헤더용 — 회사명=종목이므로 종가+등락률을 더 크게.
+function sectionStockPx(name){
+  var q=pxLookup(name); if(!q)return '';
+  var c=Number(q.c)||0, cls=c>=0?'up':'down', sign=c>=0?'+':'';
+  return ' <span class="section-px '+cls+'" title="종가">'+
     (Number(q.p)||0).toLocaleString()+'원 '+sign+c.toFixed(1)+'%</span>';
 }
 function whereLabel(a){return [a.region,a.country].filter(Boolean).join(' → ')}

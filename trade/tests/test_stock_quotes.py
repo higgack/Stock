@@ -45,6 +45,20 @@ class StockQuotesMapTests(unittest.TestCase):
                                side_effect=RuntimeError("boom")):
             self.assertEqual(dashboard._stock_quotes_for([{"stocks": ["x"]}]), {})
 
+    def test_splits_composites_and_cache_only_fetch_false(self):
+        # 복합명 분리(split_names) + 렌더는 캐시만(fetch=False) — 동기 API 안 함.
+        with mock.patch.object(price_provider, "provider_active", return_value=True), \
+             mock.patch.object(price_provider, "get_quotes_by_name") as gq:
+            gq.return_value = {"삼성전자": _q("005930", "삼성전자", 100, 1.0)}
+            dashboard._stock_quotes_for(
+                [{"stocks": ["GST / 유니셈 등", "삼성전자"]}])
+            args, kwargs = gq.call_args
+            passed = args[0]
+            self.assertIn("GST", passed)
+            self.assertIn("유니셈", passed)
+            self.assertIn("삼성전자", passed)
+            self.assertFalse(kwargs.get("fetch", True))   # 렌더는 fetch=False
+
 
 class FrontendWiringTests(unittest.TestCase):
     def test_js_has_stockpx_helper_and_chip_uses_it(self):
@@ -65,6 +79,13 @@ class FrontendWiringTests(unittest.TestCase):
         # renderSection이 headerExtra 슬롯을 받고, 회사별이 sectionStockPx 전달
         self.assertIn("(headerExtra||'')", dashboard._JS)
         self.assertIn("sectionStockPx(name)", dashboard._JS)
+
+    def test_js_composite_fallback_lookup(self):
+        # 복합명('A / B 등') 칩/헤더는 첫 종목으로 fallback 조회.
+        self.assertIn("function pxLookup(", dashboard._JS)
+        self.assertIn("split('/')[0]", dashboard._JS)
+        # stockPx/sectionStockPx가 pxLookup 사용
+        self.assertIn("var q=pxLookup(name)", dashboard._JS)
 
 
 if __name__ == "__main__":

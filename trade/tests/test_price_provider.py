@@ -440,6 +440,42 @@ class SymbolCapTests(_DPEnv):
             self.assertLessEqual(len(fake.calls), 2)
 
 
+class SplitNamesTests(unittest.TestCase):
+    def test_splits_composites_and_strips_etc(self):
+        self.assertEqual(pp.split_names(["GST / 유니셈 등"]), ["GST", "유니셈"])
+        self.assertEqual(pp.split_names(["HD현대중공업 / HD현대미포조선"]),
+                         ["HD현대중공업", "HD현대미포조선"])
+
+    def test_dedup_and_drop_etc_token(self):
+        self.assertEqual(pp.split_names(["삼성전자", "삼성전자"]), ["삼성전자"])
+        self.assertEqual(pp.split_names(["등"]), [])
+        self.assertEqual(pp.split_names([""]), [])
+
+
+class CacheOnlyTests(_DPEnv):
+    def test_fetch_false_empty_cache_no_api(self):
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.get_quotes_by_name(["삼성전자"], transport=fake, fetch=False)
+        self.assertEqual(out, {})
+        self.assertEqual(len(fake.calls), 0)         # 외부 호출 0(렌더 안전)
+
+    def test_fetch_false_returns_warm_cache(self):
+        fake = FakeDataPortal(_DP_ITEMS)
+        pp.get_quotes_by_name(["삼성전자"], transport=fake, ttl_s=600)   # 워밍
+        n = len(fake.calls)
+        out = pp.get_quotes_by_name(["삼성전자"], transport=fake,
+                                    ttl_s=600, fetch=False)
+        self.assertIn("삼성전자", out)
+        self.assertEqual(len(fake.calls), n)         # 캐시만 — 추가 호출 0
+
+    def test_resolve_codes_fetch_false_cache_only(self):
+        fake = FakeDataPortal(_DP_ITEMS)
+        # 콜드 캐시에서 fetch=False면 빈 결과 + 호출 0
+        self.assertEqual(pp.resolve_codes(["삼성전자"], transport=fake,
+                                          fetch=False), {})
+        self.assertEqual(len(fake.calls), 0)
+
+
 class SafetyTests(_TmpEnv):
     def test_transport_exception_returns_empty(self):
         def boom(*a, **k):

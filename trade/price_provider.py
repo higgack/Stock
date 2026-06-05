@@ -334,12 +334,13 @@ def _dataportal_get_quotes_by_name(names: list[str], *,
 
 
 def resolve_codes(names: Iterable[str], *,
-                  transport: Transport = _default_transport) -> dict[str, str]:
+                  transport: Transport = _default_transport,
+                  fetch: bool = True) -> dict[str, str]:
     """{종목명: 6자리코드} — data.go.kr 종목명→단축코드. KIS처럼 코드 조회만
     되는 공급자가 BeOn 회사명을 쓰게 하는 다리. 코드는 거의 안 변하므로
     durable 캐시(_CODE_CACHE, 기본 7일). 정확일치만(우선주 오매칭 방지),
-    결과는 있는데 일치 없으면 음성 캐시(재조회 절약), 응답 자체가 비면(에러
-    가능) 캐시 안 함(다음에 재시도). DATA_GO_KR_KEY 없으면 {}."""
+    미일치는 음성 캐시(1일). fetch=False면 외부 호출 없이 캐시만 반환(렌더용).
+    DATA_GO_KR_KEY 없으면 {}."""
     uniq = [n.strip() for n in names if n and str(n).strip()]
     if not uniq or not os.environ.get("TRADE_DATA_GO_KR_KEY"):
         return {}
@@ -361,6 +362,8 @@ def resolve_codes(names: Iterable[str], *,
                 if rec.get("code"):
                     out[n] = rec["code"]
                 continue
+        if not fetch:                          # 캐시 전용(렌더): 외부 호출 안 함
+            continue
         q = _dp_pick(_dp_fetch("likeItmsNm", n, transport=transport), exact_name=n)
         if q:
             out[n] = q.symbol
@@ -405,6 +408,24 @@ def _save_cache(cache: dict) -> None:
         pass
 
 
+def split_names(stocks: Iterable[str]) -> list[str]:
+    """BeOn 관련종목 문자열들 → 개별 종목명(중복 제거, 순서 유지).
+    'GST / 유니셈 등' 같은 복합 문자열을 ' / '로 분리하고 후행 '등' 토큰을
+    제거 — 한 칩에 여러 종목이 묶인 경우 각 종목을 따로 시세 조회/워밍."""
+    out, seen = [], set()
+    for s in stocks or []:
+        for part in str(s).split("/"):
+            p = part.strip()
+            if p == "등":
+                continue
+            if p.endswith(" 등"):
+                p = p[:-2].strip()
+            if p and p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out
+
+
 def _norm(symbols: Iterable[str]) -> list[str]:
     seen, out = set(), []
     for s in symbols:
@@ -421,11 +442,11 @@ def _norm(symbols: Iterable[str]) -> list[str]:
 
 def get_quotes(symbols: Iterable[str], *,
                transport: Transport = _default_transport,
-               ttl_s: int = _QUOTE_TTL_S) -> dict[str, Quote]:
+               ttl_s: int = _QUOTE_TTL_S, fetch: bool = True) -> dict[str, Quote]:
     """{6자리코드: Quote}. 공급자 off/키 없음/예외 → {} (호출자는 가격 줄 생략).
 
-    심볼별 TTL 캐시로 5분 렌더가 KIS를 반복 호출하지 않게. 캐시 신선분은
-    재사용, 만료/미수집분만 공급자에서 가져와 캐시 갱신."""
+    심볼별 TTL 캐시. fetch=False면 캐시 신선분만 반환하고 외부 호출 안 함
+    (렌더는 이걸로 즉시 끝내고, 실제 API는 워머 fetch_quotes가 백그라운드에서)."""
     codes = _norm(symbols)[:_MAX_SYMBOLS]
     if not codes:
         return {}
@@ -446,7 +467,7 @@ def get_quotes(symbols: Iterable[str], *,
             except Exception:
                 pass
         stale.append(c)
-    if stale:
+    if stale and fetch:
         try:
             got = provider(stale, transport=transport)
         except Exception:
@@ -470,12 +491,13 @@ def get_quote(symbol: str, *,
 
 def get_quotes_by_name(names: Iterable[str], *,
                        transport: Transport = _default_transport,
-                       ttl_s: int = _QUOTE_TTL_S) -> dict[str, Quote]:
+                       ttl_s: int = _QUOTE_TTL_S,
+                       fetch: bool = True) -> dict[str, Quote]:
     """{종목명: Quote} — BeOn 관련종목(회사명)을 코드 변환 없이 바로 시세에 연결.
 
     이름 정확일치(우선주 오매칭 방지)로만 붙이고, 못 찾으면 그 이름은 생략(틀린
-    종목 안 붙임). dataportal(주식시세정보)만 이름 조회 지원 — 다른 공급자/키
-    없음/예외 → {}. 이름별 TTL 캐시(prefix 'nm:')로 5분 렌더 반복 호출 차단."""
+    종목 안 붙임). fetch=False면 캐시만 읽고 외부 호출 0(렌더는 이걸로 즉시
+    끝냄 — 실제 API는 워머 fetch_quotes가 백그라운드에서 채움)."""
     uniq = []
     seen = set()
     for n in names:
@@ -491,11 +513,11 @@ def get_quotes_by_name(names: Iterable[str], *,
     # KIS 등 코드-기반 공급자: data.go.kr로 이름→코드(durable 캐시) 변환 후
     # 활성 공급자로 시세. 종목명 검색이 없는 KIS가 BeOn 회사명을 쓰는 경로.
     if prov != "dataportal":
-        codes_by_name = resolve_codes(uniq, transport=transport)
+        codes_by_name = resolve_codes(uniq, transport=transport, fetch=fetch)
         if not codes_by_name:
             return {}
         code_q = get_quotes(sorted(set(codes_by_name.values())),
-                            transport=transport, ttl_s=ttl_s)
+                            transport=transport, ttl_s=ttl_s, fetch=fetch)
         return {n: code_q[c] for n, c in codes_by_name.items() if c in code_q}
 
     # dataportal: 이름 질의 한 번에 코드+종가(빠른 경로). 이름별 TTL 캐시.
@@ -513,7 +535,7 @@ def get_quotes_by_name(names: Iterable[str], *,
             except Exception:
                 pass
         stale.append(n)
-    if stale:
+    if stale and fetch:
         try:
             got = _dataportal_get_quotes_by_name(stale, transport=transport)
         except Exception:
