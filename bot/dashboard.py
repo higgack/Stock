@@ -2387,7 +2387,7 @@ _CHART_JS = """
       for (var ei = 0; ei < d.events.length; ei++) {
         var ev = d.events[ei];
         if (!ev.time || ev.time < firstT || ev.time > lastT) continue;
-        mk.push({ time: ev.time, position: 'belowBar', color: ev.color || '#94a3b8', shape: 'square' });
+        mk.push({ time: ev.time, position: 'belowBar', color: ev.color || '#94a3b8', shape: 'square', size: 2 });
       }
     }
     if (mk.length) {
@@ -2421,11 +2421,12 @@ _CHART_JS = """
     }
     function priceLine(p, color, title, style, showLabel) {
       if (p === null || p === undefined) return;
-      // 현재가/시점가만 축 라벨 ON (패널과 중복 표시 — 사용자 2026-06-04).
-      // 진입/손절/목표는 서로 가까워 겹치므로 선만, 값은 우측 패널에서.
+      // 가독성(사용자 2026-06-05): 우측 끝 축 라벨 박스는 '현재가' 하나만(라인
+      // 마지막값). 시점가·진입·손절·목표는 점선만(값은 우측 패널) → 현재가≈시점가
+      // 일 때 박스끼리 겹쳐 최근 캔들을 가리던 문제 해소.
       mainS.createPriceLine({ price: p, color: color, lineWidth: 1, lineStyle: (style===undefined?2:style), axisLabelVisible: !!showLabel, title: title });
     }
-    priceLine(asOfClose, '#94a3b8', '시점가', 2, true);
+    priceLine(asOfClose, '#94a3b8', '시점가', 2, false);
     if (markers) {
       priceLine(markers.entry,  '#9b59b6', '진입', 2, false);
       priceLine(markers.stop,   '#e2574c', '손절', 2, false);
