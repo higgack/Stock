@@ -1558,6 +1558,33 @@ class TestPaperTrading:
         loaded = p.get_account()
         assert loaded["positions"]["AAPL"]["qty"] == 1
 
+    def test_snapshot_equity_dedupes_by_date(self, tmp_path, monkeypatch):
+        # E0.5d: equity curve — 일별 1점(같은 날 갱신), reset 이 baseline 기록.
+        import bot.paper_trading as pt
+        monkeypatch.setattr(pt, "_ACCOUNT", tmp_path / "a.json")
+        monkeypatch.setattr(pt, "_audit_log", lambda r: None)
+        pt.snapshot_equity(1.0e7)
+        pt.snapshot_equity(1.02e7)          # 같은 날 → 1점 갱신
+        hist = pt.get_account()["equity_history"]
+        assert len(hist) == 1 and hist[-1]["equity_krw"] == 1.02e7
+        pt.reset()
+        h2 = pt.get_account()["equity_history"]
+        assert len(h2) == 1 and h2[-1]["equity_krw"] == float(pt.STARTING_CAPITAL_KRW)
+
+    def test_equity_curve_render(self):
+        from bot.dashboard import _render_paper_page
+        base = dict(cash_krw=1e7, positions_value_krw=0, total_equity_krw=1e7,
+                    starting_capital_krw=1e7, realized_pnl_krw=0, unrealized_pnl_krw=0,
+                    total_return_pct=0, n_positions=0, priced_all=True, stats={},
+                    auto_size_pct=0.05, rows=[], trades=[{"ts": 1}])
+        assert "자산 추이" not in _render_paper_page(
+            dict(base, equity_history=[{"date": "2026-06-06", "equity_krw": 1e7}]))
+        h = _render_paper_page(dict(base, equity_history=[
+            {"date": "2026-06-06", "equity_krw": 1e7},
+            {"date": "2026-06-07", "equity_krw": 1.02e7}]))
+        assert "자산 추이 (2일)" in h and "<polyline" in h
+        assert "snapshot_equity" in open("bot/dashboard.py", encoding="utf-8").read()
+
     def test_dashboard_render_and_wiring(self):
         from bot.dashboard import _render_paper_page
         empty = _render_paper_page({"rows": [], "trades": [], "n_positions": 0,

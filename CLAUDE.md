@@ -1139,7 +1139,15 @@ refresh(application)` 가 close_due 청산분을 CHANNEL_CHAT_IDS 로 '🤖 자�
 (`paper_trading.set_auto_size`, 1~50% clamp, 계좌 `auto_size_pct` 저장, paper_
 signals 가 읽음). (3) **성과 통계** — `paper_trading.trade_stats()`(청산 실현
 기반 거래수·승률·평균), `/paper`·paper.html 에 '거래 N회·승률 X%' + 사이징
-표시. 후속(E1/E0.5d): KIS 모의 어댑터·지정가/PENDING·equity 커브.
+표시.
+
+**E0.5d 다듬기 = 완료.** **자산 추이 equity 커브** — `paper_trading.snapshot_
+equity()` 가 오늘(KST) 자산 1점을 `equity_history`(365 cap, 일별 dedupe)에
+기록. `regenerate_paper_index`(매 페이퍼 액션)·reset(baseline)·자정 regen 이
+호출 → paper.html 에 **인라인 SVG 폴리라인**(외부 라이브러리 0, 2점 이상일
+때, 상승 초록/하락 빨강) + '시작 → 현재' 라인. 커브는 일별로 누적(오늘부터).
+**DM 자동신호는 불요** — DM `/TICKER` 은 hint 만, 분석은 채널 전용(on_channel_
+post)이라 기존 훅이 전 분석 커버. 후속(E1/별도): KIS 모의 어댑터·지정가/PENDING.
 
 ## 휴장일-인지 거래일 캘린더 (2026-06-05)
 

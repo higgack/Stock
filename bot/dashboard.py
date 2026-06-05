@@ -5421,10 +5421,32 @@ def _render_paper_page(summ: dict) -> str:
                           f' · 평균 실현 {_pf_won(_st.get("avg_realized_krw"))}'
                           if _wr is not None else '') + '</p>')
 
+    # 자산 추이 커브 (E0.5d) — 일별 equity 포인트를 인라인 SVG 폴리라인으로
+    # (외부 라이브러리 0). 2점 이상일 때만. y축 반전(SVG 좌표) 주의.
+    curve_html = ""
+    _hist = [h for h in (summ.get("equity_history") or [])
+             if isinstance(h.get("equity_krw"), (int, float))]
+    if len(_hist) >= 2:
+        vals = [float(h["equity_krw"]) for h in _hist]
+        mn, mx = min(vals), max(vals)
+        rng = (mx - mn) or 1.0
+        W, H = 600.0, 70.0
+        pts = " ".join(
+            f"{i / (len(vals) - 1) * W:.1f},{H - (v - mn) / rng * H:.1f}"
+            for i, v in enumerate(vals))
+        col = "#26a69a" if vals[-1] >= vals[0] else "#e2574c"
+        curve_html = (
+            '<div class="pf-card"><div class="pf-h">자산 추이 (' + str(len(_hist)) + '일)</div>'
+            f'<svg viewBox="0 0 {W:.0f} {H:.0f}" width="100%" height="{H:.0f}" '
+            'preserveAspectRatio="none" style="display:block">'
+            f'<polyline fill="none" stroke="{col}" stroke-width="2" points="{pts}"/></svg>'
+            f'<p class="sub" style="font-size:11px">{_html.escape(_hist[0]["date"])} '
+            f'{_pf_won(vals[0])} → {_html.escape(_hist[-1]["date"])} {_pf_won(vals[-1])}</p></div>')
+
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>🧪 페이퍼 트레이딩</h1>'
             '<p class="sub">NOAH 분석 신호/수동 명령의 모의 매매 — 실거래 연결 전 전략 검증(리스크 0)</p>'
-            + halt_banner + stats + stats_extra + pos_block + tr_block + note + gate_line + '</div>')
+            + halt_banner + stats + stats_extra + curve_html + pos_block + tr_block + note + gate_line + '</div>')
 
 
 def _sym_cur(currency: str) -> str:
@@ -5436,6 +5458,13 @@ def regenerate_paper_index() -> None:
     try:
         from bot import paper_trading
         summ = paper_trading.summary()
+        # 오늘 자산 포인트 기록(일별 1점, dedupe) → equity 커브가 매 액션마다
+        # 최신. 스냅샷 후 history 를 다시 읽어 이번 렌더에 오늘 점 포함.
+        try:
+            paper_trading.snapshot_equity(summ.get("total_equity_krw"))
+            summ["equity_history"] = paper_trading.get_account().get("equity_history", [])
+        except Exception:
+            pass
         html = _render_paper_page(summ)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "paper.html").write_text(html, encoding="utf-8")

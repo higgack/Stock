@@ -55,6 +55,7 @@ def _new_account() -> dict:
         "trades": [],           # 최근 체결(cap)
         "seen_keys": [],        # idempotency
         "auto_enabled": False,  # NOAH 판정 → 자동 페이퍼 주문 (E0.5b, 기본 OFF)
+        "equity_history": [],   # [{date, equity_krw}] 일별 1점 (E0.5d equity curve)
         "created_ts": time.time(),
     }
 
@@ -288,8 +289,31 @@ def close_position(ticker: str, idem: Optional[str] = None):
 def reset():
     """계좌 초기화(페이퍼). 되돌릴 수 없음 — 호출부가 확인 책임."""
     _save_account(_new_account())
+    snapshot_equity(float(STARTING_CAPITAL_KRW))   # equity curve baseline
     _audit_log({"ts": time.time(), "event": "reset"})
     return True, f"페이퍼 계좌 초기화 — 시작 자본 ₩{STARTING_CAPITAL_KRW:,}"
+
+
+def snapshot_equity(equity_krw: Optional[float] = None) -> None:
+    """오늘(KST) 자산 포인트를 equity_history 에 기록(같은 날이면 갱신 = 일별
+    1점). `equity_krw` 미지정 시 summary 로 산출. 365점 cap. E0.5d 자산 추이
+    커브용 — regenerate_paper_index(매 페이퍼 액션)·reset·자정 regen 이 호출."""
+    try:
+        if equity_krw is None:
+            equity_krw = summary().get("total_equity_krw")
+        if equity_krw is None:
+            return
+        acct = get_account()
+        today = datetime.now(_KST).strftime("%Y-%m-%d")
+        hist = acct.get("equity_history") or []
+        if hist and hist[-1].get("date") == today:
+            hist[-1]["equity_krw"] = float(equity_krw)
+        else:
+            hist.append({"date": today, "equity_krw": float(equity_krw)})
+        acct["equity_history"] = hist[-365:]
+        _save_account(acct)
+    except Exception as exc:
+        log.debug("paper: snapshot_equity failed: %s", exc)
 
 
 # ─── E0.5b: NOAH 판정 → 자동 주문 지원 (auto flag · 금액 사이징 · 5거래일 청산) ─
@@ -460,6 +484,7 @@ def summary(price_fn=None) -> dict:
         "trades": acct.get("trades", []),
         "stats": trade_stats(),
         "auto_size_pct": auto_size_pct(),
+        "equity_history": acct.get("equity_history", []),
         # 가격을 못 가져온 포지션이 있으면 평가/총자산은 부분값(표시 시 주의).
         "priced_all": all(r.get("value_krw") is not None for r in rows),
     }
