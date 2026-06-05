@@ -1934,7 +1934,7 @@ _DETAIL_CSS = _BASE_CSS + """
 .cv-sep { border-top: 1px solid var(--border); margin: 2px 0; }
 .cv-item { display: flex; align-items: baseline; gap: 5px; }
 .cv-dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 2px; align-self: center; }
-.cv-name { color: var(--fg-soft); flex: 1 1 auto; }
+.cv-name { color: var(--fg-soft); flex: 1 1 auto; word-break: keep-all; }
 .cv-val { font-weight: 600; font-variant-numeric: tabular-nums; }
 @media (max-width: 560px) {
   .chart-row { flex-direction: column; }
@@ -2345,7 +2345,7 @@ _CHART_JS = """
     var lp = (d.last_price != null) ? d.last_price : null;
     if (ind.candle && hasOHLC) {
       // 캔들 — OHLC 가 있을 때만.
-      mainS = chart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#e2574c', borderUpColor:'#26a69a', borderDownColor:'#e2574c', wickUpColor:'#26a69a', wickDownColor:'#e2574c', priceFormat: pf, lastValueVisible: false, priceLineVisible: false, title: '현재가' });
+      mainS = chart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#e2574c', borderUpColor:'#26a69a', borderDownColor:'#e2574c', wickUpColor:'#26a69a', wickDownColor:'#e2574c', priceFormat: pf, lastValueVisible: false, priceLineVisible: false, title: '' });
       var cd = [];
       for (var i = 0; i < d.times.length; i++) {
         if (d.open[i]==null||d.high[i]==null||d.low[i]==null||d.close[i]==null) continue;
@@ -2361,7 +2361,7 @@ _CHART_JS = """
       }
       mainS.setData(cd);
     } else {
-      mainS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: false, priceLineVisible: false, title: '현재가' });
+      mainS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: false, priceLineVisible: false, title: '' });
       var closeData = zip(d.close);
       if (lp != null && closeData.length > 0) {
         var last = closeData[closeData.length - 1];
@@ -2386,7 +2386,7 @@ _CHART_JS = """
           position: up ? 'belowBar' : (dn ? 'aboveBar' : 'inBar'),
           color: up ? '#26a69a' : (dn ? '#e2574c' : '#94a3b8'),
           shape: up ? 'arrowUp' : (dn ? 'arrowDown' : 'circle'),
-          text: txt
+          text: txt, size: 2
         });
       }
     }
@@ -2530,7 +2530,7 @@ _CHART_JS = """
     var rsiEl = showSub('rsi-chart', ind.rsi && !!d.rsi);
     if (rsiEl) {
       rsiChart = subChart(rsiEl);
-      var rsiS = rsiChart.addLineSeries({ color: '#b07cff', lineWidth: 1, priceFormat: { precision: 1, minMove: 0.1 }, lastValueVisible: false, priceLineVisible: false, title: 'RSI' });
+      var rsiS = rsiChart.addLineSeries({ color: '#b07cff', lineWidth: 1, priceFormat: { precision: 1, minMove: 0.1 }, lastValueVisible: false, priceLineVisible: false, title: '' });
       rsiS.setData(zip(d.rsi));
       rsiS.createPriceLine({ price: 70, color: 'rgba(229,87,76,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '70' });
       rsiS.createPriceLine({ price: 30, color: 'rgba(76,175,80,0.55)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '30' });
@@ -2551,7 +2551,7 @@ _CHART_JS = """
         if (hv !== null && hv !== undefined) hd.push({ time: d.times[i], value: hv, color: hv >= 0 ? 'rgba(38,166,154,0.6)' : 'rgba(229,87,76,0.6)' });
       }
       histS.setData(hd);
-      macdChart.addLineSeries({ color: '#4c9aff', lineWidth: 1, priceFormat: mpf, lastValueVisible: false, priceLineVisible: false, title: 'MACD' }).setData(zip(d.macd));
+      macdChart.addLineSeries({ color: '#4c9aff', lineWidth: 1, priceFormat: mpf, lastValueVisible: false, priceLineVisible: false, title: '' }).setData(zip(d.macd));
       macdChart.addLineSeries({ color: '#f5a623', lineWidth: 1, priceFormat: mpf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.macd_signal));
       macdChart.timeScale().fitContent();
       macdChart.applyOptions({ width: macdEl.clientWidth });
@@ -2632,14 +2632,14 @@ _CHART_JS = """
       var _rlabel = ({'1mo':'1개월','3mo':'3개월','6mo':'6개월','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[curRange] || curRange;
       items.push(['기간 ' + _rlabel, (_pchg >= 0 ? '+' : '') + _pchg.toFixed(1) + '%', _pcol, null, 'pct']);
     }
-    // 52주 신고가/신저가 — 항상 표시(기간 바로 밑). fast_info 52주값(지표 토글 무관).
-    if (d.wk52_high != null) items.push(['52주 신고가', d.wk52_high, '#26a69a', dec]);
-    if (d.wk52_low  != null) items.push(['52주 신저가', d.wk52_low,  '#e2574c', dec]);
     if (markers) {
       if (markers.entry  != null) items.push(['진입', markers.entry,  '#9b59b6', dec]);
       if (markers.stop   != null) items.push(['손절', markers.stop,   '#e2574c', dec]);
       if (markers.target != null) items.push(['목표', markers.target, '#3ec46d', dec]);
     }
+    // 52주 신고가/신저가 — 항상 표시. 기본 그룹의 맨 밑(진입/손절/목표가 있으면 그 아래).
+    if (d.wk52_high != null) items.push(['52주 신고가', d.wk52_high, '#26a69a', dec]);
+    if (d.wk52_low  != null) items.push(['52주 신저가', d.wk52_low,  '#e2574c', dec]);
     items.push(null);   // 구분선
     if (ind.ma) {
       if (d.ema10)  items.push(['10 EMA', lastNonNull(d.ema10), '#f5a623', dec]);
