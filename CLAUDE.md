@@ -1091,17 +1091,26 @@ JP + TW + CN_A + HK consistently.
   registered). Tushare deferred unless AKShare reliability issues
   surface during validation.
 
-## 실거래 실행 — 설계 문서만 (착수 전, 2026-06-05)
+## 실거래 실행 — 설계 + E0 페이퍼 엔진 (진행 중, 2026-06-05)
 
-`docs/execution_architecture.md` (v0.1 draft) — NOAH 분석 신호를 실제
-주문으로 연결하는 안전 아키텍처·가드레일 설계. **구현 미착수.** 핵심:
-불변 7원칙(fail-closed·paper-first·human-in-loop·하드 캡 코드강제·
-idempotency·kill-switch·분석≠실행 분리), 브로커 **KIS 우선**(모의투자
-도메인으로 돈 없이 실행 코드 100% 검증), 단계 E0(페이퍼)→E1(shadow)→
-E2(live confirm)→E3(bounded). ⚠️ **현행 '알림만(교육)' 스탠스를 뒤집는
-결정**이라 착수 전 이 CLAUDE.md 정책 변경이 선결. §12 사용자 결정(브로커·
-시장·캡 수치·트리거·horizon) 미정. 다음 단계 후보: E0 페이퍼 엔진(토스/
-실거래 무관·리스크 0).
+`docs/execution_architecture.md` (v0.1) — NOAH 분석 신호를 실제 주문으로
+연결하는 안전 아키텍처·가드레일. 불변 7원칙(fail-closed·paper-first·
+human-in-loop·하드 캡 코드강제·idempotency·kill-switch·분석≠실행 분리),
+**멀티 브로커 시장별 라우터**(브로커=pluggable 어댑터, 나머지 계층 broker-
+무관): KR=KIS(모의투자 ✅)·TW/EU=IBKR(유니버설·paper)·US/JP/HK/CN=KIS해외
+또는 IBKR·Toss=오픈 후. ⚠️ 외국인 접근 규제(TW FINI·CN Stock Connect)는
+ADR 우회. 단계 E0(페이퍼)→E1(shadow)→E2(live confirm)→E3(bounded).
+⚠️ **현행 '알림만(교육)' 스탠스를 뒤집는 결정** — E2(실주문) 전 이
+CLAUDE.md 정책 변경 + §12 결정(캡 수치·트리거·horizon)이 선결.
+
+**E0 페이퍼 엔진 = 구현 완료 (리스크 0·돈 0).** `bot/paper_trading.py` —
+모의 계좌(시작 ₩10M)·시장가 즉시 체결(glitch-guarded 현재가, chart_data
+재사용)·KR(₩)+US($ FX환산)·포지션/평단/실현·미실현 P&L. 순수 ledger
+math(`_apply_buy/_apply_sell`, idempotency key·weighted avg·FX-aware
+realized)는 단위테스트. `/paper [buy|sell|close|reset]` 텔레그램 명령 +
+`paper.html` 대시보드(nav 워치리스트 뒤 🧪) + startup regen. **실주문 없음**
+— 나중에 이 위에 KIS/IBKR 어댑터가 '모의 체결→실주문' 교체로 얹힘. 지정가/
+next-open PENDING·하드 캡 Risk Gate·NOAH 자동신호 = E0.5+ 증분.
 
 ## 휴장일-인지 거래일 캘린더 (2026-06-05)
 

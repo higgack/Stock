@@ -1019,10 +1019,11 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
 /start /help /usage /sv_cost /screener_cost /daily_byte_cost /cheongyak_cost /realestate_cost /screener_list /sites /portfolio — 도움말·비용·목록·자산(뱅샐 zip)
-/screener [도메인 | 자유어] — Bottleneck (65 도메인 + 미상시 Pro 즉석 생성). 전체 → /screener_list
+/screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
-/watch NVDA rsi&lt;30 price&gt;950 — 조건 충족 시 알림 (rsi/price/sma/52w/earnings + KR수급 foreignbuy/instbuy). 목록 /watchlist · 삭제 /unwatch
+/watch NVDA rsi&lt;30 price&gt;950 — 조건 충족 시 알림 (rsi/price/sma/52w/earnings·KR수급). 목록 /watchlist · 삭제 /unwatch
+/paper buy/sell TICKER N — 모의매매(페이퍼·돈0)·조회 /paper
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
 
 ━━━━━━━━━
@@ -1098,7 +1099,7 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【10. 진행 중 / 예정】</b>
- • Screener 65 도메인 + 자유어 + 24h 캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기 GICS 3·6·9·12월 5일 · 예정: L3 sanity check
+ • Screener 65도메인+자유어+24h캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기GICS · 실거래 E0페이퍼(모의·돈0) 가동 · 예정: KIS/IBKR 어댑터·L3 sanity
 """
 
 
@@ -2146,6 +2147,108 @@ async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         pass
 
 
+_PAPER_HELP = (
+    "🧪 <b>페이퍼 트레이딩</b> (모의 · 돈 0 · 교육)\n"
+    "<code>/paper</code> — 계좌·포지션·손익\n"
+    "<code>/paper buy TICKER 수량</code> — 모의 매수(시장가)\n"
+    "<code>/paper sell TICKER 수량</code> — 모의 매도\n"
+    "<code>/paper close TICKER</code> — 전량 매도\n"
+    "<code>/paper reset</code> — 계좌 초기화\n"
+    "예: <code>/paper buy AAPL 10</code> · <code>/paper sell 005930.KS 5</code>"
+)
+
+
+def _regen_paper() -> None:
+    try:
+        from bot.dashboard import regenerate_paper_index
+        regenerate_paper_index()
+    except Exception:
+        pass
+
+
+def _won(v) -> str:
+    try:
+        return f"₩{float(v):,.0f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/paper [buy|sell|close|reset] — E0 모의 매매 (실거래 골격, 돈 0)."""
+    if update.message is None:
+        return
+    args = context.args or []
+    sub = args[0].lower() if args else ""
+    from bot import paper_trading
+
+    if sub in ("buy", "sell"):
+        if len(args) < 3:
+            await update.message.reply_text(_PAPER_HELP, parse_mode=ParseMode.HTML)
+            return
+        ticker = args[1].strip().upper()
+        if not TICKER_RE.match(ticker):
+            await update.message.reply_text(f"⚠️ 잘못된 티커: {ticker}")
+            return
+        try:
+            qty = float(args[2])
+        except ValueError:
+            await update.message.reply_text("⚠️ 수량은 숫자여야 합니다 (예: 10)")
+            return
+        fn = paper_trading.buy if sub == "buy" else paper_trading.sell
+        ok, msg = fn(ticker, qty)
+        await update.message.reply_text(("✅ " if ok else "⚠️ ") + msg)
+        if ok:
+            _regen_paper()
+        return
+
+    if sub == "close":
+        if len(args) < 2:
+            await update.message.reply_text("사용법: /paper close TICKER")
+            return
+        ok, msg = paper_trading.close_position(args[1].strip().upper())
+        await update.message.reply_text(("✅ " if ok else "⚠️ ") + msg)
+        if ok:
+            _regen_paper()
+        return
+
+    if sub == "reset":
+        if len(args) >= 2 and args[1].lower() in ("yes", "확인", "y"):
+            ok, msg = paper_trading.reset()
+            await update.message.reply_text("✅ " + msg)
+            _regen_paper()
+        else:
+            await update.message.reply_text(
+                "⚠️ 계좌를 초기화합니다(되돌릴 수 없음). 확인: <code>/paper reset yes</code>",
+                parse_mode=ParseMode.HTML)
+        return
+
+    # default — 계좌 요약
+    summ = paper_trading.summary()
+    part = "" if summ.get("priced_all") else " ⚠️부분"
+    lines = [
+        "🧪 <b>페이퍼 트레이딩</b> (모의)",
+        f"총자산 {_won(summ['total_equity_krw'])}{part} "
+        f"(시작 {_won(summ['starting_capital_krw'])} · {summ['total_return_pct']:+.2f}%)",
+        f"현금 {_won(summ['cash_krw'])} · 포지션 {_won(summ['positions_value_krw'])}",
+        f"실현 {_won(summ['realized_pnl_krw'])} · 미실현 {_won(summ['unrealized_pnl_krw'])}",
+    ]
+    rows = summ.get("rows", [])
+    if rows:
+        lines.append(f"— 포지션 ({summ['n_positions']}) —")
+        for r in rows:
+            cur = r.get("currency")
+            sym = {"KRW": "₩", "USD": "$"}.get(cur, "")
+            dec = 2 if cur == "USD" else 0
+            cur_px = (f"{sym}{r['cur_native']:,.{dec}f}" if r.get("cur_native") is not None else "—")
+            ret = (f"{r['ret_pct']:+.1f}%" if r.get("ret_pct") is not None else "—")
+            lines.append(
+                f"• <b>{r['ticker']}</b> {r['qty']:g}주 @ {sym}{r['avg_cost_native']:,.{dec}f} "
+                f"→ {cur_px} ({ret})")
+    else:
+        lines.append("보유 포지션 없음 — <code>/paper buy TICKER 수량</code>")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+
 async def _run_screener_and_send(send, *, domain: str | None = None,
                                   theme: dict | None = None,
                                   cache_key: str | None = None,
@@ -2807,6 +2910,7 @@ async def _on_startup(application) -> None:
             BotCommand("watch", "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
             BotCommand("watchlist", "감시 목록 보기"),
             BotCommand("unwatch", "감시 삭제 (TICKER/id/all)"),
+            BotCommand("paper", "페이퍼 트레이딩 (모의 매매·돈 0)"),
             BotCommand("screener", "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
             BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
             BotCommand("portfolio", "💼 자산 (뱅크샐러드 zip 업로드)"),
@@ -2909,6 +3013,7 @@ def main() -> None:
     app.add_handler(CommandHandler("watch", cmd_watch))
     app.add_handler(CommandHandler("watchlist", cmd_watchlist))
     app.add_handler(CommandHandler("unwatch", cmd_unwatch))
+    app.add_handler(CommandHandler("paper", cmd_paper))
     app.add_handler(CommandHandler("screener", cmd_screener))
     # Per-domain shortcut commands — `/screener_bottleneck`, `/screener_
     # healthcare` 등. Telegram client 가 자동 hyperlink → 클릭으로 입력
@@ -2949,6 +3054,12 @@ def main() -> None:
         regenerate_portfolio_index()
     except Exception as exc:
         log.warning("startup portfolio regen failed: %s", exc)
+    # 페이퍼 트레이딩 페이지도 startup 에 1회(빈 상태 포함).
+    try:
+        from bot.dashboard import regenerate_paper_index
+        regenerate_paper_index()
+    except Exception as exc:
+        log.warning("startup paper regen failed: %s", exc)
 
     log.info("bot starting — watching channels: %s", CHANNEL_CHAT_IDS or "auto-detect")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

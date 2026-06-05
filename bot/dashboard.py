@@ -1828,6 +1828,7 @@ def _render_index(records: list[dict]) -> str:
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + ' · <a href="watchlist.html">🔔 워치리스트</a>'
+            + ' · <a href="paper.html">🧪 페이퍼</a>'
         )
     else:
         errors_link = (
@@ -1842,6 +1843,7 @@ def _render_index(records: list[dict]) -> str:
             + ' · <a href="realestate.html">🏠 부동산</a>'
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + ' · <a href="watchlist.html">🔔 워치리스트</a>'
+            + ' · <a href="paper.html">🧪 페이퍼</a>'
         )
 
     return f"""<!doctype html>
@@ -5282,6 +5284,137 @@ def regenerate_watchlist_index() -> None:
         log.warning("dashboard: watchlist regen failed: %s", exc)
 
 
+# ── 페이퍼 트레이딩 대시보드 (E0, 2026-06-05) — paper.html ──────────────────
+# bot/paper_trading.py 의 모의 계좌(포지션·P&L)를 읽어 렌더. 명령(/paper*) 시
+# + startup + 자정 regen. 실거래 실행 골격의 read-only surface (docs/execution_
+# architecture.md E0). _SCREENER_CSS 페이지-opener + _PF_CSS 재사용.
+def _paper_nav(active: str = "paper") -> str:
+    def _a(href, label, key):
+        return f"<b>{label}</b>" if key == active else f'<a href="{href}">{label}</a>'
+    return (
+        '<div class="nav">'
+        + _a("portfolio.html", "💼 자산", "portfolio")
+        + ' · ' + _a("budget.html", "📒 가계부", "budget")
+        + ' · <a href="index.html">🦉 NOAH 종목분석</a>'
+        + ' · <a href="watchlist.html">🔔 워치리스트</a>'
+        + ' · ' + _a("paper.html", "🧪 페이퍼", "paper")
+        + '</div>')
+
+
+def _render_paper_page(summ: dict) -> str:
+    import html as _html
+
+    def _native(v, currency):
+        if v is None:
+            return "—"
+        dec = 2 if currency == "USD" else 0
+        return f"{_sym_cur(currency)}{v:,.{dec}f}"
+
+    nav = _paper_nav("paper")
+    rows = summ.get("rows", [])
+    trades = summ.get("trades", [])
+
+    if not rows and not trades:
+        return _SCREENER_CSS + _PF_CSS + (
+            '<div class="wrap">' + nav + '<h1>🧪 페이퍼 트레이딩</h1>'
+            '<p class="sub">아직 모의 거래가 없습니다. 텔레그램에서 '
+            '<b>/paper buy TICKER 수량</b> 으로 시작하세요. (모의·돈 0)</p></div>')
+
+    part = "" if summ.get("priced_all") else (
+        ' <span style="color:var(--muted)">(일부 현재가 미조회 — 평가/총자산 부분값)</span>')
+    stats = (
+        '<div class="stats">'
+        f'<div class="stat"><div class="stat-num">{_pf_won(summ["total_equity_krw"])}</div>'
+        f'<div class="stat-lbl">총자산{part}</div></div>'
+        f'<div class="stat"><div class="stat-num">{_pf_won(summ["cash_krw"])}</div>'
+        '<div class="stat-lbl">현금</div></div>'
+        f'<div class="stat"><div class="stat-num">{_pf_won(summ["positions_value_krw"])}</div>'
+        '<div class="stat-lbl">포지션 평가</div></div>'
+        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(summ["unrealized_pnl_krw"])}">'
+        f'{_pf_won(summ["unrealized_pnl_krw"])}</div><div class="stat-lbl">미실현 손익</div></div>'
+        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(summ["realized_pnl_krw"])}">'
+        f'{_pf_won(summ["realized_pnl_krw"])}</div><div class="stat-lbl">실현 손익</div></div>'
+        f'<div class="stat"><div class="stat-num" style="color:{_pf_col(summ["total_return_pct"])}">'
+        f'{summ["total_return_pct"]:+.2f}%</div><div class="stat-lbl">총 수익률</div></div>'
+        '</div>')
+
+    pos_html = ""
+    for r in rows:
+        cur = r.get("currency")
+        pos_html += (
+            f'<tr><td><b>{_html.escape(r["ticker"])}</b></td>'
+            f'<td>{_html.escape(str(r.get("market") or ""))}</td>'
+            f'<td class="r">{r["qty"]:g}</td>'
+            f'<td class="r">{_native(r.get("avg_cost_native"), cur)}</td>'
+            f'<td class="r">{_native(r.get("cur_native"), cur)}</td>'
+            f'<td class="r">{_pf_won(r.get("value_krw"))}</td>'
+            f'<td class="r" style="color:{_pf_col(r.get("unrealized_krw"))}">{_pf_won(r.get("unrealized_krw"))}</td>'
+            f'<td class="r" style="color:{_pf_col(r.get("ret_pct"))}">'
+            f'{("%+.1f%%" % r["ret_pct"]) if r.get("ret_pct") is not None else "—"}</td></tr>')
+    if not pos_html:
+        pos_html = '<tr><td colspan="8" class="muted">보유 포지션 없음</td></tr>'
+    pos_block = (
+        '<div class="pf-card"><div class="pf-h">보유 포지션 (' + str(summ.get("n_positions", 0)) + ')</div>'
+        '<table class="pf-tbl"><thead><tr><th>종목</th><th>시장</th><th class="r">수량</th>'
+        '<th class="r">평단</th><th class="r">현재가</th><th class="r">평가(₩)</th>'
+        '<th class="r">미실현(₩)</th><th class="r">수익률</th></tr></thead>'
+        '<tbody>' + pos_html + '</tbody></table></div>')
+
+    tr_html = ""
+    import datetime as _dt
+    for t in reversed(trades[-50:]):
+        ts = t.get("ts")
+        when = (_dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else "")
+        side = "매수" if t.get("side") == "buy" else "매도"
+        scol = "#16a34a" if t.get("side") == "buy" else "#dc2626"
+        realized = t.get("realized_krw")
+        tr_html += (
+            f'<tr><td class="muted">{_html.escape(when)}</td>'
+            f'<td><b>{_html.escape(t.get("ticker",""))}</b></td>'
+            f'<td style="color:{scol}">{side}</td>'
+            f'<td class="r">{t.get("qty",0):g}</td>'
+            f'<td class="r">{_native(t.get("fill_native"), t.get("currency"))}</td>'
+            f'<td class="r">{_pf_won(t.get("krw"))}</td>'
+            f'<td class="r" style="color:{_pf_col(realized)}">'
+            f'{_pf_won(realized) if realized is not None else "—"}</td></tr>')
+    if not tr_html:
+        tr_html = '<tr><td colspan="7" class="muted">체결 내역 없음</td></tr>'
+    tr_block = (
+        '<div class="pf-card"><div class="pf-h">체결 내역 (최근 50)</div>'
+        '<table class="pf-tbl"><thead><tr><th>시각</th><th>종목</th><th>구분</th>'
+        '<th class="r">수량</th><th class="r">체결가</th><th class="r">금액(₩)</th>'
+        '<th class="r">실현손익(₩)</th></tr></thead><tbody>' + tr_html + '</tbody></table></div>')
+
+    note = (
+        '<p class="sub" style="margin-top:14px;color:var(--muted);font-size:12px">'
+        f'⚠️ <b>모의(페이퍼) 거래</b> — 실제 주문·실제 돈 아님. 시작 자본 '
+        f'₩{int(summ.get("starting_capital_krw", 0)):,}. 시장가 즉시 체결(글리치-가드 현재가), '
+        'US 는 체결 시점 USD/KRW 환산. 교육 목적 — 투자 권유 아님.</p>')
+
+    return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
+            + '<h1>🧪 페이퍼 트레이딩</h1>'
+            '<p class="sub">NOAH 분석 신호/수동 명령의 모의 매매 — 실거래 연결 전 전략 검증(리스크 0)</p>'
+            + stats + pos_block + tr_block + note + '</div>')
+
+
+def _sym_cur(currency: str) -> str:
+    return {"KRW": "₩", "USD": "$"}.get(currency, "")
+
+
+def regenerate_paper_index() -> None:
+    """페이퍼 계좌 → paper.html. 명령/startup/자정 regen 에서 호출. 에러 무해."""
+    try:
+        from bot import paper_trading
+        summ = paper_trading.summary()
+        html = _render_paper_page(summ)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "paper.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: paper.html regenerated (%d positions)",
+                 summ.get("n_positions", 0))
+    except Exception as exc:
+        log.warning("dashboard: paper regen failed: %s", exc)
+
+
 # ── 자산 관리 대시보드 (뱅크샐러드 export → portfolio.html) — 2026-06-04 ──
 # bot/portfolio.py 가 저장한 모델(증권사별·자산배분·순자산·보유종목)을 읽어
 # portfolio.html 렌더. 텔레그램 ZIP 업로드 핸들러가 ingest 후 호출(+startup/
@@ -5439,6 +5572,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         ' · <a href="realestate.html">🏠 부동산</a>'
         ' · <a href="cheongyak.html">🎟️ 청약</a>'
         ' · <a href="watchlist.html">🔔 워치리스트</a>'
+        ' · <a href="paper.html">🧪 페이퍼</a>'
         '</div>')
     if not model or not model.get("holdings"):
         return _SCREENER_CSS + _PF_CSS + (
@@ -5824,6 +5958,7 @@ def _budget_nav() -> str:
         ' · <a href="realestate.html">🏠 부동산</a>'
         ' · <a href="cheongyak.html">🎟️ 청약</a>'
         ' · <a href="watchlist.html">🔔 워치리스트</a>'
+        ' · <a href="paper.html">🧪 페이퍼</a>'
         '</div>')
 
 

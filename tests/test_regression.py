@@ -1462,6 +1462,95 @@ class TestExactPriceLimits:
         assert "snapshot_gap_for_market" in src, "시장 기본 gap 폴백 제거됨"
 
 
+class TestPaperTrading:
+    """E0 페이퍼 트레이딩 엔진 (2026-06-05, docs/execution_architecture.md E0).
+    실거래 골격에서 '돈만 뺀 것' — 순수 ledger 수학 + idempotency + FX P&L."""
+
+    def _fresh(self, monkeypatch):
+        import bot.paper_trading as p
+        monkeypatch.setattr(p, "_audit_log", lambda rec: None)   # 테스트 디스크 오염 방지
+        return p, p._new_account()
+
+    def test_buy_updates_cash_and_position(self, monkeypatch):
+        p, acct = self._fresh(monkeypatch)
+        ok, _ = p._apply_buy(acct, "AAPL", 10, 100.0, 1380.0, "USD", "US", 1.0, "k1")
+        assert ok
+        assert acct["cash_krw"] == 10_000_000 - 10 * 100 * 1380
+        assert acct["positions"]["AAPL"]["qty"] == 10
+        assert acct["positions"]["AAPL"]["avg_cost_native"] == 100.0
+
+    def test_idempotent_same_key_noop(self, monkeypatch):
+        p, acct = self._fresh(monkeypatch)
+        p._apply_buy(acct, "AAPL", 10, 100.0, 1380.0, "USD", "US", 1.0, "k1")
+        cash = acct["cash_krw"]
+        ok, msg = p._apply_buy(acct, "AAPL", 10, 100.0, 1380.0, "USD", "US", 1.0, "k1")
+        assert ok and "중복" in msg and acct["cash_krw"] == cash    # 재적용 안 됨
+        assert acct["positions"]["AAPL"]["qty"] == 10
+
+    def test_weighted_avg_and_realized_pnl(self, monkeypatch):
+        p, acct = self._fresh(monkeypatch)
+        p._apply_buy(acct, "AAPL", 10, 100.0, 1380.0, "USD", "US", 1.0, "k1")
+        p._apply_buy(acct, "AAPL", 10, 120.0, 1380.0, "USD", "US", 2.0, "k2")
+        assert acct["positions"]["AAPL"]["avg_cost_native"] == 110.0
+        # 5주 @ $130 fx1400 매도 → 실현 = 5*130*1400 - (cost_basis*5/20)
+        ok, _ = p._apply_sell(acct, "AAPL", 5, 130.0, 1400.0, "USD", "US", 3.0, "k3")
+        assert ok
+        cost_basis = (10 * 100 + 10 * 120) * 1380          # 3,036,000
+        expected = 5 * 130 * 1400 - cost_basis * (5 / 20)  # 910,000 - 759,000
+        assert abs(acct["realized_pnl_krw"] - expected) < 1
+        assert acct["positions"]["AAPL"]["qty"] == 15
+
+    def test_rejections(self, monkeypatch):
+        p, acct = self._fresh(monkeypatch)
+        ok, _ = p._apply_buy(acct, "X", 100000, 1000.0, 1.0, "KRW", "KR", 1.0, "a")
+        assert not ok                                       # 현금 부족
+        ok, _ = p._apply_buy(acct, "Y", 0, 1.0, 1.0, "KRW", "KR", 1.0, "b")
+        assert not ok                                       # qty<=0
+        ok, _ = p._apply_sell(acct, "Z", 1, 1.0, 1.0, "KRW", "KR", 1.0, "c")
+        assert not ok                                       # 보유 없음
+        p._apply_buy(acct, "W", 5, 1000.0, 1.0, "KRW", "KR", 1.0, "d")
+        ok, _ = p._apply_sell(acct, "W", 99, 1000.0, 1.0, "KRW", "KR", 1.0, "e")
+        assert not ok                                       # 보유 초과
+
+    def test_summary_offline(self, tmp_path, monkeypatch):
+        p, acct = self._fresh(monkeypatch)
+        monkeypatch.setattr(p, "_ACCOUNT", tmp_path / "acct.json")
+        p._apply_buy(acct, "005930.KS", 10, 70000.0, 1.0, "KRW", "KR", 1.0, "k1")
+        p._save_account(acct)
+        # price_fn 주입(네트워크 X) — 현재가 77000 → +10%
+        summ = p.summary(price_fn=lambda t: (77000.0, "KR"))
+        assert summ["n_positions"] == 1
+        assert abs(summ["rows"][0]["ret_pct"] - 10.0) < 1e-6
+        assert abs(summ["unrealized_pnl_krw"] - 10 * (77000 - 70000)) < 1e-6
+        assert summ["priced_all"] is True
+
+    def test_persistence_roundtrip(self, tmp_path, monkeypatch):
+        import bot.paper_trading as p
+        monkeypatch.setattr(p, "_ACCOUNT", tmp_path / "acct.json")
+        monkeypatch.setattr(p, "_audit_log", lambda rec: None)
+        acct = p._new_account()
+        p._apply_buy(acct, "AAPL", 1, 100.0, 1380.0, "USD", "US", 1.0, "k")
+        p._save_account(acct)
+        loaded = p.get_account()
+        assert loaded["positions"]["AAPL"]["qty"] == 1
+
+    def test_dashboard_render_and_wiring(self):
+        from bot.dashboard import _render_paper_page
+        empty = _render_paper_page({"rows": [], "trades": [], "n_positions": 0,
+            "priced_all": True, "total_equity_krw": 1e7, "cash_krw": 1e7,
+            "positions_value_krw": 0, "unrealized_pnl_krw": 0, "realized_pnl_krw": 0,
+            "total_return_pct": 0, "starting_capital_krw": 1e7})
+        assert "아직 모의 거래가 없습니다" in empty
+        assert empty.lower().count("<!doctype") == 1, "CSS leak/중첩 문서"
+        # 텔레그램·대시보드 배선
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def cmd_paper" in tb and 'CommandHandler("paper", cmd_paper)' in tb
+        assert 'BotCommand("paper"' in tb and "regenerate_paper_index" in tb
+        assert "/paper buy/sell" in tb, "help §1 /paper 누락"
+        ds = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "def regenerate_paper_index" in ds and 'paper.html">🧪 페이퍼' in ds
+
+
 class TestGicsCandidatesPage:
     """fix(2026-06-05): GICS 후보 대시보드가 서버 파일시스템 경로
     (~/.tradingagents/gics_check_audit.jsonl)를 본문 footer 로 노출하던 것 제거.
