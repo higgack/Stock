@@ -1767,6 +1767,42 @@ class TestPortfolioWatch:
         assert "min_id=last_msg_id" in src, "min_id 기반 누락방지 fetch 누락"
 
 
+class TestChartEvents:
+    """fix: 차트 공시 이벤트 마커 (2026-06-05, 전 시장 · 공시만)."""
+
+    def test_classify_multilang(self):
+        from bot.chart_events import classify
+        assert classify("단일판매ㆍ공급계약체결") == "order"
+        assert classify("연결재무제표 기준 영업(잠정)실적") == "earnings"
+        assert classify("분기보고서") == "earnings"
+        assert classify("주요사항보고서(유상증자결정)") == "capital"
+        assert classify("전환사채권 발행결정") == "capital"
+        assert classify("Entry into a Material Definitive Agreement") == "order"
+        assert classify("Results of Operations and Financial Condition") == "earnings"
+        assert classify("自己株式の取得") == "capital"
+        assert classify("重大訊息-取得設備訂單") == "order"
+        assert classify("기타 경영사항") == "other"
+
+    def test_norm_shape_dedup_sort(self):
+        from bot.chart_events import _norm, _TYPE_COLOR
+        out = _norm([{"date": "20260603", "title": "공급계약"},
+                     {"date": "20260603", "title": "공급계약"},          # dup
+                     {"date": "2026-05-30T09:00:00", "title": "분기보고서"}], "date", "title")
+        assert len(out) == 2, "dedup 실패"
+        assert out[0]["time"] == "2026-05-30" and out[1]["time"] == "2026-06-03", "정렬/날짜정규화 실패"
+        assert out[1]["type"] == "order" and out[1]["color"] == _TYPE_COLOR["order"]
+        assert all(set(e) == {"time", "title", "type", "color"} for e in out)
+
+    def test_chart_wiring(self):
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "fetch_disclosure_events" in cd and 'payload["events"]' in cd, "차트 payload events 배선 누락"
+        assert "ticker=ticker" in cd, "_series_payload ticker 전달 누락"
+        ds = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'data-ind="events"' in ds, "공시 토글 버튼 누락"
+        assert "ind.events && d.events" in ds, "공시 마커 렌더 게이트 누락"
+        assert "events:true" in ds, "공시 토글 기본 ON 누락"
+
+
 class TestBudget:
     """fix: 가계부(현금흐름) 별도 대시보드 (2026-06-04 자산관리 P2)."""
 

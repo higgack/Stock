@@ -76,7 +76,7 @@ def build_price_chart(ticker: str, as_of: str | None = None) -> dict | None:
         op = hist["Open"].reindex(close.index) if "Open" in hist else None
         hi = hist["High"].reindex(close.index) if "High" in hist else None
         lo = hist["Low"].reindex(close.index) if "Low" in hist else None
-        return _series_payload(close, currency, decimals, vol, op, hi, lo)
+        return _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker)
     except Exception as exc:
         log.warning("chart_data: build failed for %s: %s", ticker, exc)
         return None
@@ -98,7 +98,7 @@ def _currency_for(ticker: str) -> tuple[str, int]:
 
 def _series_payload(
     close, currency: str, decimals: int,
-    volume=None, opens=None, highs=None, lows=None,
+    volume=None, opens=None, highs=None, lows=None, ticker: str | None = None,
 ) -> dict:
     """Build the parallel-array chart payload from a pandas close Series.
 
@@ -183,6 +183,21 @@ def _series_payload(
             except Exception:
                 return None
         payload["volume"] = [_vol(v) for v in volume.values]
+
+    # 공시 이벤트 마커 (전 시장, ₩0). 보이는 날짜 구간으로 필터 — 차트 first~last
+    # 범위 밖 공시는 제외. 실패/키부재 시 graceful(빈 리스트). 호재/악재 판단 X.
+    if ticker:
+        try:
+            from bot.chart_events import fetch_disclosure_events
+            times = payload.get("times") or []
+            if times:
+                lo_t, hi_t = times[0], times[-1]
+                payload["events"] = [
+                    e for e in fetch_disclosure_events(ticker)
+                    if lo_t <= e["time"] <= hi_t
+                ]
+        except Exception:
+            pass
     return payload
 
 
@@ -310,7 +325,7 @@ def fetch_chart_payload(
         op = hist["Open"].reindex(close.index) if "Open" in hist else None
         hi = hist["High"].reindex(close.index) if "High" in hist else None
         lo = hist["Low"].reindex(close.index) if "Low" in hist else None
-        payload = _series_payload(close, currency, decimals, vol, op, hi, lo)
+        payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker)
         payload["interval"] = interval
         payload["period"] = period
         # 장중 last price (yfinance fast_info — ~15분 지연, 무료·무키, ~50ms).

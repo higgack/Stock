@@ -2165,6 +2165,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <button class="chart-ind-btn" data-ind="rsi">RSI</button>
       <button class="chart-ind-btn" data-ind="macd">MACD</button>
       <button class="chart-ind-btn" data-ind="log">로그</button>
+      <button class="chart-ind-btn" data-ind="events">공시</button>
     </div>
     <div class="chart-row">
       <div class="chart-main">
@@ -2176,7 +2177,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     </div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div class="chart-legend">
-      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그 on/off (설정 저장됨)
+      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주 초록·실적 파랑·자본 주황·기타 회색, hover로 제목) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (설정 저장됨)
     </div>
     <details class="chart-guide">
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
@@ -2201,6 +2202,12 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li>마커 옆 <span class="k">+8.3%</span> 같은 수치 = 그 추천의 5거래일 뒤 실제 결과(성과 복기).</li>
         </ul>
       </div>
+      <div class="cg-sec"><b>공시 마커 (날짜별 작은 사각 ■)</b>
+        <ul>
+          <li>공식 공시를 날짜에 작게 표시 — <span style="color:#26a69a">수주·계약</span> · <span style="color:#4c9aff">실적</span> · <span style="color:#f5a623">자본변동(유증·CB 등)</span> · <span style="color:#94a3b8">기타</span>. 마우스 hover로 공시 제목 표시.</li>
+          <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). KR·US는 1년, 그 외는 최근 공시 위주. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 직접 읽기. '공시' 버튼으로 on/off.</li>
+        </ul>
+      </div>
       <div class="cg-sec"><b>보조지표 버튼</b> — 켜고 끈 상태는 저장되어 다른 종목 페이지에도 유지됩니다.
         <ul>
           <li><span class="k">캔들</span> — 라인 ↔ 캔들(시·고·저·종) 전환.</li>
@@ -2210,6 +2217,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석).</li>
           <li><span class="k" style="color:#4c9aff">MACD</span> — 하단 별도 패널. 라인이 시그널 위로 교차=상승 모멘텀, 아래로=하락.</li>
           <li><span class="k">로그</span> — 세로축 로그 스케일. 긴 기간 %변동 비교에 유리.</li>
+          <li><span class="k">공시</span> — 공시 마커 표시/숨김(위 '공시 마커' 참고).</li>
         </ul>
       </div>
       <div class="cg-sec"><b>기간 · 봉 · 조작</b>
@@ -2242,7 +2250,7 @@ _CHART_JS = """
 
   // 지표 on/off 상태 (localStorage 영속 — 페이지 넘나들어도 유지).
   var IND_KEY = 'noah_chart_ind_v1';
-  var IND_DEFAULT = { candle:false, ma:true, bb:false, vol:true, rsi:true, macd:false, log:false };
+  var IND_DEFAULT = { candle:false, ma:true, bb:false, vol:true, rsi:true, macd:false, log:false, events:true };
   function loadInd(){
     var s = {};
     try { s = JSON.parse(localStorage.getItem(IND_KEY) || '{}') || {}; } catch(e){}
@@ -2345,10 +2353,11 @@ _CHART_JS = """
       }
       mainS.setData(closeData);
     }
-    // 과거 추천 마커 — 이 종목의 분석 이력(▲매수/▼매도/●보유 + 5거래일 결과).
+    // 마커 = 과거 추천(▲매수/▼매도/●보유 + 5거래일 결과) + 공시 이벤트(작은 사각,
+    // 종류별 색, hover로 제목). 둘을 한 배열로 모아 시간순 정렬 후 한 번에 setMarkers.
+    var firstT = d.times[0], lastT = d.times[d.times.length - 1];
+    var mk = [];
     if (analysisMarkers && analysisMarkers.length) {
-      var firstT = d.times[0], lastT = d.times[d.times.length - 1];
-      var mk = [];
       for (var ai = 0; ai < analysisMarkers.length; ai++) {
         var a = analysisMarkers[ai];
         if (!a.time || a.time < firstT || a.time > lastT) continue;
@@ -2362,6 +2371,16 @@ _CHART_JS = """
           text: txt
         });
       }
+    }
+    if (ind.events && d.events && d.events.length) {
+      for (var ei = 0; ei < d.events.length; ei++) {
+        var ev = d.events[ei];
+        if (!ev.time || ev.time < firstT || ev.time > lastT) continue;
+        mk.push({ time: ev.time, position: 'belowBar', color: ev.color || '#94a3b8', shape: 'square' });
+      }
+    }
+    if (mk.length) {
+      mk.sort(function(a, b){ return a.time < b.time ? -1 : (a.time > b.time ? 1 : 0); });
       try { mainS.setMarkers(mk); } catch (e) {}
     }
     if (ind.ma) {
@@ -2440,6 +2459,18 @@ _CHART_JS = """
       if (ind.rsi && d.rsi) trow('RSI', d.rsi[idx], '#b07cff', 1, 'raw');
       if (ind.macd && d.macd) trow('MACD', d.macd[idx], '#4c9aff', Math.max(prec, 3), 'raw');
       if (ind.vol && d.volume) trow('거래량', d.volume[idx], '#94a3b8', 0, 'vol');
+      // 그 날의 공시 이벤트 제목(있으면) — 마커 hover 대용. HTML escape 필수.
+      if (ind.events && d.events && d.events.length) {
+        function escTt(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+        var evs = d.events.filter(function(e){ return e.time === param.time; });
+        if (evs.length) {
+          rows.push('<div style="border-top:1px solid rgba(148,163,184,0.25);margin-top:3px;padding-top:3px"></div>');
+          for (var vj = 0; vj < evs.length && vj < 6; vj++) {
+            rows.push('<div><span style="color:' + (evs[vj].color || '#94a3b8') + '">📋</span> ' + escTt(evs[vj].title) + '</div>');
+          }
+          if (evs.length > 6) rows.push('<div style="color:var(--fg-soft)">+' + (evs.length - 6) + '건 더</div>');
+        }
+      }
       tip.innerHTML = rows.join('');
       tip.style.display = 'block';
       var tw = tip.offsetWidth, th = tip.offsetHeight;
