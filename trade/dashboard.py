@@ -158,6 +158,32 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         return ""
 
 
+def _stock_quotes_for(payload: list[dict]) -> dict:
+    """{종목명: {p: 종가, c: 등락률%}} — BeOn 관련종목(회사명)을 data.go.kr EOD
+    종가에 자동 매칭. 공급자 off(키 없음)/예외/미발견 → 그 종목 생략 또는 {}.
+
+    EOD는 하루 1회만 바뀌므로 TTL을 길게(기본 6h, TRADE_PRICE_EOD_TTL)
+    잡아 5분 렌더가 data.go.kr를 반복 호출 안 하게(일일 트래픽 보호). 어떤
+    실패든 {} → 칩은 가격 없이 그대로 렌더(표시 전용, 절대 안 깨짐)."""
+    try:
+        from trade import price_provider
+        if not price_provider.provider_active():
+            return {}
+        names = set()
+        for a in payload:
+            for s in (a.get("stocks") or []):
+                if s:
+                    names.add(s)
+        if not names:
+            return {}
+        ttl = int(os.environ.get("TRADE_PRICE_EOD_TTL") or "21600")
+        quotes = price_provider.get_quotes_by_name(sorted(names), ttl_s=ttl)
+        return {nm: {"p": round(q.price), "c": round(q.change_pct, 2)}
+                for nm, q in quotes.items()}
+    except Exception:
+        return {}
+
+
 def _load_customs_summary(
     customs_db_path: Path | str | None,
     hs_map_path: Path | str | None,
@@ -364,6 +390,10 @@ def _build_html(
         payload, ensure_ascii=False, separators=(",", ":")
     )
     latest_ids_json = json.dumps(latest_ids, separators=(",", ":"))
+    # 관련종목 EOD 시세 — BeOn stocks(회사명)를 data.go.kr 종가에 자동 매칭.
+    # 공급자 off/키 없음/예외 → {} (칩은 가격 없이 그대로). 표시 전용.
+    stock_quotes_json = json.dumps(_stock_quotes_for(payload),
+                                   ensure_ascii=False, separators=(",", ":"))
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     by_status = s.get("by_status", {})
@@ -461,6 +491,7 @@ def _build_html(
         '<script>'
         f"const ALERTS={payload_json};\n"
         f"const LATEST_IDS=new Set({latest_ids_json});\n"
+        f"const STOCK_QUOTES={stock_quotes_json};\n"
         + _JS
         + '</script></body></html>'
     )
@@ -752,6 +783,9 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .stocks{margin-top:10px;font-size:12px}
 .stocks .label{color:var(--text-sub);margin-right:5px}
 .stock{display:inline-block;padding:3px 8px;margin:2px 3px 0 0;background:var(--chip-bg);color:var(--text);border-radius:4px;font-size:11px}
+.stock-px{font-weight:600;margin-left:4px}
+.stock-px.up{color:var(--tone-export)}
+.stock-px.down{color:var(--tone-import)}
 .modal-images{display:flex;flex-direction:column;gap:1px;background:var(--bg)}
 .modal-images img{width:100%;display:block;background:var(--img-placeholder)}
 .modal-text{padding:14px 22px;font-size:13px;color:var(--text-sub);white-space:pre-wrap;border-top:1px solid var(--border-soft);background:var(--surface-2)}
@@ -794,6 +828,14 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 _JS = r"""
 // --- helpers ---
 function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+// 관련종목 EOD 시세 칩 — STOCK_QUOTES(서버 주입)에 매칭되는 종목만 +등락률.
+// 매칭 없으면 빈 문자열(칩은 이름만). 표시 전용·EOD 종가 기준.
+function stockPx(name){
+  var q=(typeof STOCK_QUOTES!=='undefined')&&STOCK_QUOTES[name];
+  if(!q)return '';
+  var c=Number(q.c)||0, cls=c>=0?'up':'down', sign=c>=0?'+':'';
+  return ' <span class="stock-px '+cls+'" title="EOD 종가 '+(Number(q.p)||0).toLocaleString()+'원">'+sign+c.toFixed(1)+'%</span>';
+}
 function whereLabel(a){return [a.region,a.country].filter(Boolean).join(' → ')}
 
 // Build a one-shot dedup_key → alerts[] index so the modal can find
@@ -1098,7 +1140,7 @@ function renderModalCard(a, primary){
   let stocksHtml='';
   if(primary&&a.stocks&&a.stocks.length){
     stocksHtml='<div class="stocks"><span class="label">관련종목</span>'+
-      a.stocks.map(s=>'<span class="stock">'+esc(s)+'</span>').join('')+
+      a.stocks.map(s=>'<span class="stock">'+esc(s)+stockPx(s)+'</span>').join('')+
       (a.has_etc?'<span class="stock">등</span>':'')+'</div>';
   }
   let imagesHtml='';

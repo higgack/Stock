@@ -153,16 +153,17 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 🟢 수출 · 🟠 수입 · 잠정 · 확정 · 합산
 🟡 확정 D-N (잠정의 예상 확정일 카운트다운)
 🔴 확정 D+N 지연 (예정일 초과)
-🆕 NEW — 카드: 7일내 게시 / 헤더: 7일내 첫 등장 품목·회사
+🆕 NEW — 7일내 게시/첫 등장 품목·회사
 
 <b>7. 부가 기능</b>
 • 검색: 품목/회사/국가 부분일치 (회사명 정확 일치 시 회사 뷰 자동 좁힘)
 • 칩 필터: 수출/수입, 잠정/확정, 🆕 신규(최근 7일 게시 카드만)
-• 📥 CSV — 현재 필터 결과 풀필드 다운로드 (전 메타데이터 + media_urls 절대경로)
-• 모달 — 카드 클릭 시 같은 dedup 키 과거 발표 인라인 비교 (전번 확정 ↔ 이번 잠정 시각 비교)
+• 📥 CSV — 현재 필터 결과 풀필드 (전필드+media_urls 절대경로)
+• 모달 — 카드 클릭 시 같은 dedup 키 과거 발표 인라인 비교 (전번 확정 ↔ 이번 잠정)
   · 🔗 URL 복사 (#a/&lt;id&gt; 딥링크) · 🖼 이미지 저장
   · 합산 ↔ 개별 양방향 링크 (수산화칼륨+탄산칼륨 ↔ 각 개별)
   · 같은 품목 다른 회사 (peer chip — 클릭 시 회사 뷰 자동 필터)
+  · 관련종목 칩 EOD 등락률(시세 키 설정 시·data.go.kr 자동 매칭)
 
 <b>8. 명령어</b> (워치·ignore 명령은 봇과 <b>1:1 채팅(DM)</b>에서만 동작)
 /help · /start — 이 안내 (채널·DM 둘 다)
@@ -191,7 +192,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent) + 미파싱 캡션을 eval_misses.jsonl에 누적 (회귀 fixture용, 키별 1회)
 • trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
 • trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일룩백+200cap, 초과시 ⚠️abort)
-• trade-bot-customs-fetch (1일 4회, 01:30 KST 등) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 발굴 + 🗄아카이브 무제한, 신규진입 DM(첫스캔무음·cap10). 수동핀 수집. 데이터 변동시 ✅갱신 DM. ~15일 6h감지
+• trade-bot-customs-fetch (1일 4회) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 + 🗄아카이브, 신규진입 DM(첫스캔무음·cap10). 수동핀 수집. 변동시 ✅갱신 DM. ~15일 6h감지
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 
@@ -200,7 +201,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-03 — 🟢잠정 🗄타임라인에 🔟모멘텀 동봉, 박스 순서 정리</i>
+<i>최종 갱신: 2026-06-05 — 관련종목 칩에 EOD 등락률(data.go.kr 자동 매칭)</i>
 """
 
 
