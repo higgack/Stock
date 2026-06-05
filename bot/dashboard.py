@@ -5320,7 +5320,8 @@ def _render_paper_page(summ: dict) -> str:
         from bot import paper_trading as _pt
         _auto = "ON" if _pt.auto_enabled() else "OFF"
         gate_line = ('<p class="sub" style="color:var(--muted);font-size:12px">🛡️ '
-                     + _html.escape(status_line()) + f' · 🤖 자동매매 {_auto}</p>')
+                     + _html.escape(status_line())
+                     + f' · 🤖 자동매매 {_auto} (사이징 {_pt.auto_size_pct():.0%})</p>')
         if halt_active():
             halt_banner = ('<div class="pf-card" style="border-color:#e2574c">'
                            '<b style="color:#e2574c">⛔ 거래 중지(kill-switch) 활성</b> — '
@@ -5410,10 +5411,20 @@ def _render_paper_page(summ: dict) -> str:
         f'₩{int(summ.get("starting_capital_krw", 0)):,}. 시장가 즉시 체결(글리치-가드 현재가), '
         'US 는 체결 시점 USD/KRW 환산. 교육 목적 — 투자 권유 아님.</p>')
 
+    _st = summ.get("stats") or {}
+    stats_extra = ""
+    if _st.get("n_closes"):
+        _wr = _st.get("win_rate")
+        stats_extra = ('<p class="sub" style="font-size:12px">📈 거래 '
+                       + str(_st["n_closes"]) + '회'
+                       + (f' · 승률 {_wr:.0f}% (승 {_st.get("wins",0)}/패 {_st.get("losses",0)})'
+                          f' · 평균 실현 {_pf_won(_st.get("avg_realized_krw"))}'
+                          if _wr is not None else '') + '</p>')
+
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>🧪 페이퍼 트레이딩</h1>'
             '<p class="sub">NOAH 분석 신호/수동 명령의 모의 매매 — 실거래 연결 전 전략 검증(리스크 0)</p>'
-            + halt_banner + stats + pos_block + tr_block + note + gate_line + '</div>')
+            + halt_banner + stats + stats_extra + pos_block + tr_block + note + gate_line + '</div>')
 
 
 def _sym_cur(currency: str) -> str:

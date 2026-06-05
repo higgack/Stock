@@ -2238,11 +2238,18 @@ def _paper_summary_text(summ: dict) -> str:
                 f"→ {cur_px} ({ret})")
     else:
         lines.append("보유 포지션 없음 — <code>/paper buy TICKER 수량</code>")
+    st = summ.get("stats") or {}
+    if st.get("n_closes"):
+        wr = st.get("win_rate")
+        avg = st.get("avg_realized_krw")
+        lines.append(f"— 거래 {st['n_closes']}회"
+                     + (f" · 승률 {wr:.0f}% · 평균 {_won(avg)}" if wr is not None else ""))
     try:
         from bot import paper_trading
         from bot.risk_gate import status_line
         lines.append(f"— 🤖 자동매매 {'ON' if paper_trading.auto_enabled() else 'OFF'} "
-                     "(<code>/paper auto on|off</code>)")
+                     f"· 사이징 {paper_trading.auto_size_pct():.0%} "
+                     "(<code>/paper auto on|off|size N</code>)")
         lines.append("— " + status_line())
     except Exception:
         pass
@@ -2305,20 +2312,31 @@ async def _handle_paper(args, send, idem=None) -> None:
         return
 
     if sub == "auto":
+        if len(args) >= 3 and args[1].lower() == "size":
+            try:
+                pct = float(args[2]) / 100.0
+            except ValueError:
+                await send("⚠️ 예: <code>/paper auto size 10</code> (자본의 10%)")
+                return
+            newpct = paper_trading.set_auto_size(pct)
+            await send(f"🤖 자동매수 사이징 = 자본의 <b>{newpct:.0%}</b>")
+            _regen_paper()
+            return
         if len(args) >= 2 and args[1].lower() in ("on", "off"):
             paper_trading.set_auto(args[1].lower() == "on")
-            from bot.paper_signals import AUTO_SIZING_PCT, HORIZON_DAYS
+            from bot.paper_signals import HORIZON_DAYS
             if args[1].lower() == "on":
                 await send(f"🤖 자동매매 <b>ON</b> — NOAH 분석 판정대로 페이퍼 주문 "
-                           f"(매수=자본 {AUTO_SIZING_PCT:.0%}·{HORIZON_DAYS}거래일 자동청산, "
-                           f"매도=보유 시 청산). Risk Gate 동일 적용.")
+                           f"(매수=자본 {paper_trading.auto_size_pct():.0%}·{HORIZON_DAYS}거래일 "
+                           f"자동청산, 매도=보유 시 청산). Risk Gate 동일 적용.")
             else:
                 await send("🤖 자동매매 <b>OFF</b> — 수동 명령만.")
             _regen_paper()
         else:
             cur = "ON" if paper_trading.auto_enabled() else "OFF"
-            await send(f"🤖 자동매매 현재 <b>{cur}</b>. 변경: "
-                       "<code>/paper auto on</code> · <code>/paper auto off</code>")
+            await send(f"🤖 자동매매 현재 <b>{cur}</b> · 사이징 "
+                       f"{paper_trading.auto_size_pct():.0%}. 변경: "
+                       "<code>/paper auto on|off</code> · <code>/paper auto size N</code>")
         return
 
     await send(_paper_summary_text(paper_trading.summary()))
@@ -2817,7 +2835,7 @@ async def _periodic_auto_resolve() -> None:
         await asyncio.sleep(12 * 3600)
 
 
-async def _periodic_dashboard_refresh() -> None:
+async def _periodic_dashboard_refresh(application=None) -> None:
     """Regenerate dashboard index.html ~1 min after each KST midnight.
 
     regenerate_index() otherwise only fires on (a) analysis completion,
@@ -2854,11 +2872,21 @@ async def _periodic_dashboard_refresh() -> None:
             regenerate_reddit_insider_index()
             regenerate_watchlist_index()
             # 페이퍼(E0.5b): 5거래일 horizon 도래 자동 포지션 청산 + 페이지 갱신.
+            # E0.5c: 청산 시 채널 알림(설정된 채널 있을 때) — 조용히 닫히지 않게.
             try:
                 from bot import paper_trading
                 _closed = paper_trading.close_due_positions()
                 if _closed:
                     log.info("paper: %d horizon auto-close(s)", len(_closed))
+                    if application is not None and CHANNEL_CHAT_IDS:
+                        for _m in _closed:
+                            for _cid in CHANNEL_CHAT_IDS:
+                                try:
+                                    await application.bot.send_message(
+                                        chat_id=_cid,
+                                        text="🤖 자동청산(5거래일 만기): " + _m)
+                                except Exception:
+                                    pass
             except Exception:
                 log.exception("paper horizon close failed")
             regenerate_paper_index()
@@ -3020,7 +3048,7 @@ async def _on_startup(application) -> None:
     # the task runs forever, sleeping 12h between cycles. Stored on the
     # application so it stays referenced (otherwise the GC could collect it).
     application._auto_resolve_task = asyncio.create_task(_periodic_auto_resolve())
-    application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh())
+    application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh(application))
 
     orphan = _recovery.read()
     if orphan is None:

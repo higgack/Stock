@@ -307,6 +307,41 @@ def starting_capital_krw() -> float:
     return float(get_account().get("starting_capital_krw") or 0)
 
 
+DEFAULT_AUTO_SIZE_PCT = 0.05   # 자동매수 기본 사이징(자본 비율)
+
+
+def auto_size_pct() -> float:
+    """자동매수 사이징(자본 비율). 미설정 시 기본 5%."""
+    v = get_account().get("auto_size_pct")
+    try:
+        return float(v) if v else DEFAULT_AUTO_SIZE_PCT
+    except (TypeError, ValueError):
+        return DEFAULT_AUTO_SIZE_PCT
+
+
+def set_auto_size(pct: float) -> float:
+    """자동매수 사이징 설정(1~50% clamp). 반영된 비율 반환."""
+    pct = max(0.01, min(0.50, float(pct)))
+    acct = get_account()
+    acct["auto_size_pct"] = pct
+    _save_account(acct)
+    return pct
+
+
+def trade_stats() -> dict:
+    """청산 실현손익 기반 통계 — 거래수·승률·평균손익(페이퍼 성과)."""
+    realized = [t["realized_krw"] for t in get_account().get("trades", [])
+                if t.get("realized_krw") is not None]
+    wins = sum(1 for r in realized if r > 0)
+    losses = sum(1 for r in realized if r < 0)
+    n = wins + losses
+    return {
+        "n_closes": len(realized), "wins": wins, "losses": losses,
+        "win_rate": (wins / n * 100) if n else None,
+        "avg_realized_krw": (sum(realized) / len(realized)) if realized else None,
+    }
+
+
 def buy_value(ticker: str, krw_target: float, idem: Optional[str] = None,
               horizon_days: Optional[int] = None):
     """목표 금액(KRW)만큼 시장가 매수 — qty = floor(목표 / (현재가×fx)). 자동
@@ -423,6 +458,8 @@ def summary(price_fn=None) -> dict:
         "n_positions": len(rows),
         "rows": rows,
         "trades": acct.get("trades", []),
+        "stats": trade_stats(),
+        "auto_size_pct": auto_size_pct(),
         # 가격을 못 가져온 포지션이 있으면 평가/총자산은 부분값(표시 시 주의).
         "priced_all": all(r.get("value_krw") is not None for r in rows),
     }

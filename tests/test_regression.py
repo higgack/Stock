@@ -1647,6 +1647,7 @@ class TestPaperAutoSignals:
         import bot.paper_trading as pt, bot.paper_signals as ps
         monkeypatch.setattr(pt, "auto_enabled", lambda: True)
         monkeypatch.setattr(pt, "starting_capital_krw", lambda: 1e7)
+        monkeypatch.setattr(pt, "auto_size_pct", lambda: 0.05)
         cap = {}
 
         def fake_buy_value(ticker, target, idem=None, horizon_days=None):
@@ -1656,8 +1657,32 @@ class TestPaperAutoSignals:
         note = ps.on_analysis("AAPL", "Buy")
         assert note and "자동매수" in note
         assert cap["ticker"] == "AAPL" and cap["horizon"] == ps.HORIZON_DAYS
-        assert abs(cap["target"] - 1e7 * ps.AUTO_SIZING_PCT) < 1
+        assert abs(cap["target"] - 1e7 * 0.05) < 1            # 사이징 5%
         assert cap["idem"].startswith("auto:AAPL:")
+
+    def test_set_auto_size_clamp_and_stats(self, tmp_path, monkeypatch):
+        import bot.paper_trading as pt
+        monkeypatch.setattr(pt, "_ACCOUNT", tmp_path / "a.json")
+        monkeypatch.setattr(pt, "_audit_log", lambda r: None)
+        assert pt.auto_size_pct() == pt.DEFAULT_AUTO_SIZE_PCT     # 기본 5%
+        assert pt.set_auto_size(0.10) == 0.10 and pt.auto_size_pct() == 0.10
+        assert pt.set_auto_size(5.0) == 0.50                      # 50% clamp
+        assert pt.set_auto_size(0.0) == 0.01                      # 1% clamp
+        # trade_stats — 청산 실현손익 기반 승률
+        acct = pt._new_account()
+        acct["trades"] = [{"realized_krw": 100}, {"realized_krw": -50},
+                          {"realized_krw": 30}, {"realized_krw": None}]
+        monkeypatch.setattr(pt, "get_account", lambda: acct)
+        s = pt.trade_stats()
+        assert s["n_closes"] == 3 and s["wins"] == 2 and s["losses"] == 1
+        assert abs(s["win_rate"] - 200 / 3) < 1e-6
+
+    def test_size_and_stats_wiring(self):
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert 'args[1].lower() == "size"' in tb and "set_auto_size" in tb, "/paper auto size 누락"
+        assert "자동청산(5거래일 만기)" in tb, "horizon 청산 채널 알림 누락"
+        ds = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "승률" in ds and "사이징" in ds, "대시보드 승률/사이징 표시 누락"
 
     def test_auto_close_on_sell_when_held(self, monkeypatch):
         import bot.paper_trading as pt, bot.paper_signals as ps

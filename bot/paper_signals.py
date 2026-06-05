@@ -49,8 +49,9 @@ def on_analysis(ticker: str, rating: str) -> Optional[str]:
             base = paper_trading.starting_capital_krw()
             if base <= 0:
                 return None
+            pct = paper_trading.auto_size_pct()   # 사용자 설정(/paper auto size N), 기본 5%
             ok, msg = paper_trading.buy_value(
-                tkr, base * AUTO_SIZING_PCT,
+                tkr, base * pct,
                 idem=f"auto:{tkr}:{today}", horizon_days=HORIZON_DAYS)
             return (f"🤖 자동매수 (판정 {rating}): {msg}" if ok
                     else f"🤖 자동매수 보류 (판정 {rating}): {msg}")

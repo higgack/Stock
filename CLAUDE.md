@@ -1131,8 +1131,15 @@ HALT + **kill-switch**(`~/.tradingagents/TRADING_HALT` 파일, 봇 밖에서도 
 직후(summary 전송 뒤) `on_analysis` 호출→알림 채널 전송(graceful, 분석
 흐름 무영향). `paper_trading.buy_value`(금액 사이징)+`close_due_positions`
 (5거래일 만기 청산, `_periodic_dashboard_refresh` 00:01 KST 에서 호출)+
-`_set_horizon`. /paper 요약·paper.html 에 자동매매 ON/OFF + 포지션 🤖~청산일
-배지. 후속(E0.5c+): horizon 청산 채널 알림·지정가/PENDING·sizing 정책 옵션.
+`_set_horizon`. /paper 요약·paper.html 에 자동매매 ON/OFF + 포지션 🤖~청산일 배지.
+
+**E0.5c 다듬기 = 완료.** (1) **horizon 청산 채널 알림** — `_periodic_dashboard_
+refresh(application)` 가 close_due 청산분을 CHANNEL_CHAT_IDS 로 '🤖 자동청산
+(5거래일 만기)' 전송(조용히 안 닫힘). (2) **사이징 설정** — `/paper auto size N`
+(`paper_trading.set_auto_size`, 1~50% clamp, 계좌 `auto_size_pct` 저장, paper_
+signals 가 읽음). (3) **성과 통계** — `paper_trading.trade_stats()`(청산 실현
+기반 거래수·승률·평균), `/paper`·paper.html 에 '거래 N회·승률 X%' + 사이징
+표시. 후속(E1/E0.5d): KIS 모의 어댑터·지정가/PENDING·equity 커브.
 
 ## 휴장일-인지 거래일 캘린더 (2026-06-05)
 
