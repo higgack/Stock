@@ -14,43 +14,55 @@ try/except graceful(키 부재·실패 시 빈 리스트). 분류기는 순수 �
 from __future__ import annotations
 
 # ── 공시 종류 분류 (다국어 키워드). 색은 사실 기준(호재/악재 판단 아님). ──
+# 사용자 정책 2026-06-05: 수주·계약 / 신규시설투자 / 주주환원(배당·자기주식) /
+# 자본변동(증자·CB·감자) 4종만 마커로 표시. 그 외(실적·임원·소송 등)는 제외.
 _TYPE_COLOR = {
-    "order": "#26a69a",     # 수주·공급계약 (초록)
-    "earnings": "#4c9aff",  # 실적·정기보고서 (파랑)
-    "capital": "#f5a623",   # 유증·CB·분할 등 자본변동 (주황)
-    "other": "#94a3b8",     # 기타 공시 (회색)
+    "order": "#26a69a",        # 수주·공급계약 (초록)
+    "capex": "#4c9aff",        # 신규시설투자·증설 (파랑)
+    "shareholder": "#b07cff",  # 주주환원: 배당·자기주식 취득/소각 (보라)
+    "capital": "#f5a623",      # 자본변동: 증자·CB·감자·분할 (주황)
+    "other": "#94a3b8",        # 그 외 — 마커 미표시(필터 제외)
 }
-_TYPE_LABEL = {"order": "수주·계약", "earnings": "실적", "capital": "자본변동", "other": "공시"}
+_TYPE_LABEL = {"order": "수주·계약", "capex": "시설투자",
+               "shareholder": "주주환원", "capital": "자본변동", "other": "공시"}
 
-_ORDER_KW = ("수주", "공급계약", "단일판매", "공급ㆍ계약", "공급계약체결", "계약체결", "공급",
-             "material definitive agreement", "contract", "award", "order",
+# 마커로 표시할 종류(화이트리스트). 'other' 는 제외.
+_SHOW_TYPES = ("order", "capex", "shareholder", "capital")
+
+_SHAREHOLDER_KW = ("자기주식", "자사주", "주식소각", "이익소각", "배당", "주주환원",
+                   "treasury", "buyback", "repurchase", "dividend",
+                   "自己株式", "自社株", "配当", "回購", "回购", "分紅", "分红", "現金股利")
+_CAPEX_KW = ("신규시설투자", "시설투자", "설비투자", "신규투자", "유형자산", "증설",
+             "공장신설", "생산능력", "공장증설",
+             "capital expenditure", "capex", "new facility", "capacity", "plant expansion",
+             "設備投資", "增産", "扩产", "扩建", "募投", "投资建设")
+_ORDER_KW = ("단일판매", "공급계약", "공급ㆍ계약", "공급계약체결", "수주", "계약체결", "수주잔고",
+             "material definitive agreement", "contract", "award", "order backlog",
              "受注", "契約", "訂單", "合約", "合同", "中標", "中标", "签订")
-_EARN_KW = ("실적", "분기보고서", "반기보고서", "사업보고서", "잠정실적", "영업(잠정)", "결산",
-            "results of operations", "earnings", "quarterly", "annual report", "financial",
-            "決算", "業績", "四半期", "財報", "季報", "年報", "业绩", "季度报告", "年度报告")
-_CAPITAL_KW = ("유상증자", "무상증자", "전환사채", "신주인수권", "감자", "주식분할", "주식병합",
-               "교환사채", "증자", "배정", "자기주식", "배당", "주주환원", "offering", "convertible", "dividend",
-               "stock split", "buyback", "repurchase", "warrant",
-               "増資", "新株", "株式分割", "減資", "配当", "自己株式",
-               "現金股利", "減資", "增發", "增发", "回購", "回购", "分紅", "分红", "可轉債", "可转债")
+_CAPITAL_KW = ("유상증자", "무상증자", "전환사채", "신주인수권", "교환사채", "감자",
+               "주식분할", "주식병합", "증자", "신주", "액면분할", "액면병합",
+               "offering", "convertible", "warrant", "stock split", "rights issue",
+               "増資", "新株", "株式分割", "減資", "增發", "增发", "可轉債", "可转债")
 
 
 def classify(title: str) -> str:
-    """공시 제목 → 종류('order'|'earnings'|'capital'|'other'). 다국어 키워드.
+    """공시 제목 → 종류. 다국어 키워드. 화이트리스트 4종 + 그 외('other').
 
-    자본변동(증자/CB)을 실적보다 먼저 검사(분기보고서에 '증자' 언급되는 케이스
-    드물지만 자본 이벤트가 더 dominant). 수주 우선."""
+    검사 순서(특정 우선): 주주환원(자기주식/배당) → 시설투자 → 수주 → 자본변동.
+    '자기주식취득'이 capex('취득')로 오분류되지 않게 주주환원을 먼저 검사."""
     t = str(title or "")
     tl = t.lower()
 
     def _has(kws):
         return any((k in t) or (k.lower() in tl) for k in kws)
+    if _has(_SHAREHOLDER_KW):
+        return "shareholder"
+    if _has(_CAPEX_KW):
+        return "capex"
     if _has(_ORDER_KW):
         return "order"
     if _has(_CAPITAL_KW):
         return "capital"
-    if _has(_EARN_KW):
-        return "earnings"
     return "other"
 
 
@@ -130,6 +142,7 @@ def fetch_disclosure_events(ticker: str, limit: int = 250, days: int = 400) -> l
             events = _norm(us, "date", "title", "url")
     except Exception:
         events = []
-    # 실적(분기·반기·사업보고서·잠정실적) 마커는 제외(사용자 2026-06-05 — 루틴 공시).
-    events = [e for e in events if e.get("type") != "earnings"]
+    # 화이트리스트(사용자 2026-06-05): 수주·계약 / 시설투자 / 주주환원 / 자본변동만.
+    # 그 외(실적·임원·소송·매출손익구조변경 등)는 마커 미표시.
+    events = [e for e in events if e.get("type") in _SHOW_TYPES]
     return events[-limit:] if len(events) > limit else events

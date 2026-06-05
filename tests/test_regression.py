@@ -1770,17 +1770,22 @@ class TestPortfolioWatch:
 class TestChartEvents:
     """fix: 차트 공시 이벤트 마커 (2026-06-05, 전 시장 · 공시만)."""
 
-    def test_classify_multilang(self):
+    def test_classify_whitelist(self):
+        # 화이트리스트 4종(사용자 2026-06-05): 수주·계약/시설투자/주주환원/자본변동.
         from bot.chart_events import classify
         assert classify("단일판매ㆍ공급계약체결") == "order"
-        assert classify("연결재무제표 기준 영업(잠정)실적") == "earnings"
-        assert classify("분기보고서") == "earnings"
+        assert classify("신규시설투자등의진행상황보고") == "capex"
+        assert classify("주요사항보고서(자기주식취득결정)") == "shareholder"
+        assert classify("자기주식소각결정") == "shareholder"
+        assert classify("현금ㆍ현물배당결정") == "shareholder"
         assert classify("주요사항보고서(유상증자결정)") == "capital"
         assert classify("전환사채권 발행결정") == "capital"
         assert classify("Entry into a Material Definitive Agreement") == "order"
-        assert classify("Results of Operations and Financial Condition") == "earnings"
-        assert classify("自己株式の取得") == "capital"
         assert classify("重大訊息-取得設備訂單") == "order"
+        # 그 외(실적·임원·소송 등)는 'other' → 마커 제외
+        assert classify("연결재무제표 기준 영업(잠정)실적") == "other"
+        assert classify("분기보고서") == "other"
+        assert classify("매출액또는손익구조30%이상변경") == "other"
         assert classify("기타 경영사항") == "other"
 
     def test_norm_shape_dedup_sort(self):
@@ -1795,13 +1800,12 @@ class TestChartEvents:
         assert out[1]["url"] == "http://x", "url 전달 누락"
         assert all(set(e) == {"time", "title", "type", "color", "url"} for e in out)
 
-    def test_earnings_excluded(self):
-        # 실적(earnings) 마커는 제외(사용자 2026-06-05). 분류기는 earnings 를 알지만
-        # fetch 단계에서 필터 — 소스에 필터 라인 존재 확인.
-        from bot.chart_events import classify
-        assert classify("분기보고서") == "earnings"  # 분류 자체는 유지(색 매핑용)
+    def test_whitelist_filter(self):
+        # 마커는 화이트리스트 4종만(그 외 제외). 소스에 _SHOW_TYPES 필터 존재.
+        from bot.chart_events import _SHOW_TYPES
+        assert set(_SHOW_TYPES) == {"order", "capex", "shareholder", "capital"}
         src = open("bot/chart_events.py", encoding="utf-8").read()
-        assert '!= "earnings"' in src, "실적 제외 필터 누락"
+        assert 'e.get("type") in _SHOW_TYPES' in src, "화이트리스트 필터 누락"
 
     def test_chart_wiring(self):
         cd = open("bot/chart_data.py", encoding="utf-8").read()
