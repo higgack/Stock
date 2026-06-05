@@ -464,6 +464,19 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /paper in channel — E0 페이퍼 트레이딩. PTB CommandHandler 가 channel_post
+    # 에 안 fire 하므로 여기서 라우팅(없으면 'PAPER' 를 티커로 오인). DM cmd_paper
+    # 와 동일 로직(_handle_paper) 공유.
+    if first_word == "paper":
+        _pid = post.chat.id
+
+        async def _psend(t):
+            await ctx.bot.send_message(chat_id=_pid, text=t,
+                                       parse_mode=ParseMode.HTML,
+                                       disable_web_page_preview=True)
+        await _handle_paper(body.split()[1:], _psend)
+        return
+
     # /watch · /watchlist · /unwatch in channel — PTB CommandHandler doesn't
     # fire on channel_post, so without this branch '/watch' falls through to
     # ticker analysis and treats 'WATCH' as a symbol (2026-06-04 bug).
@@ -2174,56 +2187,18 @@ def _won(v) -> str:
 
 
 async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/paper [buy|sell|close|reset] — E0 모의 매매 (실거래 골격, 돈 0)."""
+    """/paper [buy|sell|close|reset] — E0 모의 매매 (DM). 채널은 on_channel_post."""
     if update.message is None:
         return
-    args = context.args or []
-    sub = args[0].lower() if args else ""
-    from bot import paper_trading
 
-    if sub in ("buy", "sell"):
-        if len(args) < 3:
-            await update.message.reply_text(_PAPER_HELP, parse_mode=ParseMode.HTML)
-            return
-        ticker = args[1].strip().upper()
-        if not TICKER_RE.match(ticker):
-            await update.message.reply_text(f"⚠️ 잘못된 티커: {ticker}")
-            return
-        try:
-            qty = float(args[2])
-        except ValueError:
-            await update.message.reply_text("⚠️ 수량은 숫자여야 합니다 (예: 10)")
-            return
-        fn = paper_trading.buy if sub == "buy" else paper_trading.sell
-        ok, msg = fn(ticker, qty)
-        await update.message.reply_text(("✅ " if ok else "⚠️ ") + msg)
-        if ok:
-            _regen_paper()
-        return
+    async def _send(t):
+        await update.message.reply_text(t, parse_mode=ParseMode.HTML)
 
-    if sub == "close":
-        if len(args) < 2:
-            await update.message.reply_text("사용법: /paper close TICKER")
-            return
-        ok, msg = paper_trading.close_position(args[1].strip().upper())
-        await update.message.reply_text(("✅ " if ok else "⚠️ ") + msg)
-        if ok:
-            _regen_paper()
-        return
+    await _handle_paper(context.args or [], _send)
 
-    if sub == "reset":
-        if len(args) >= 2 and args[1].lower() in ("yes", "확인", "y"):
-            ok, msg = paper_trading.reset()
-            await update.message.reply_text("✅ " + msg)
-            _regen_paper()
-        else:
-            await update.message.reply_text(
-                "⚠️ 계좌를 초기화합니다(되돌릴 수 없음). 확인: <code>/paper reset yes</code>",
-                parse_mode=ParseMode.HTML)
-        return
 
-    # default — 계좌 요약
-    summ = paper_trading.summary()
+def _paper_summary_text(summ: dict) -> str:
+    """계좌 요약 → 텔레그램 HTML. DM·채널 공유."""
     part = "" if summ.get("priced_all") else " ⚠️부분"
     lines = [
         "🧪 <b>페이퍼 트레이딩</b> (모의)",
@@ -2246,7 +2221,56 @@ async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"→ {cur_px} ({ret})")
     else:
         lines.append("보유 포지션 없음 — <code>/paper buy TICKER 수량</code>")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    return "\n".join(lines)
+
+
+async def _handle_paper(args, send) -> None:
+    """공유 /paper 핸들러 — DM(cmd_paper) + 채널(on_channel_post) 동일 로직.
+    `args` = 'paper' 뒤 토큰 리스트. `send(text)` = async HTML 전송 콜러블."""
+    from bot import paper_trading
+    sub = args[0].lower() if args else ""
+
+    if sub in ("buy", "sell"):
+        if len(args) < 3:
+            await send(_PAPER_HELP)
+            return
+        ticker = args[1].strip().upper()
+        if not TICKER_RE.match(ticker):
+            await send(f"⚠️ 잘못된 티커: {ticker}")
+            return
+        try:
+            qty = float(args[2])
+        except ValueError:
+            await send("⚠️ 수량은 숫자여야 합니다 (예: 10)")
+            return
+        fn = paper_trading.buy if sub == "buy" else paper_trading.sell
+        ok, msg = fn(ticker, qty)
+        await send(("✅ " if ok else "⚠️ ") + msg)
+        if ok:
+            _regen_paper()
+        return
+
+    if sub == "close":
+        if len(args) < 2:
+            await send("사용법: /paper close TICKER")
+            return
+        ok, msg = paper_trading.close_position(args[1].strip().upper())
+        await send(("✅ " if ok else "⚠️ ") + msg)
+        if ok:
+            _regen_paper()
+        return
+
+    if sub == "reset":
+        if len(args) >= 2 and args[1].lower() in ("yes", "확인", "y"):
+            ok, msg = paper_trading.reset()
+            await send("✅ " + msg)
+            _regen_paper()
+        else:
+            await send("⚠️ 계좌를 초기화합니다(되돌릴 수 없음). 확인: "
+                       "<code>/paper reset yes</code>")
+        return
+
+    await send(_paper_summary_text(paper_trading.summary()))
 
 
 async def _run_screener_and_send(send, *, domain: str | None = None,

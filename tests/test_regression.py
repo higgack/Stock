@@ -1547,6 +1547,9 @@ class TestPaperTrading:
         assert "async def cmd_paper" in tb and 'CommandHandler("paper", cmd_paper)' in tb
         assert 'BotCommand("paper"' in tb and "regenerate_paper_index" in tb
         assert "/paper buy/sell" in tb, "help §1 /paper 누락"
+        # 채널에서도 동작 — on_channel_post 가 'paper' 라우팅 + DM 과 로직 공유.
+        assert 'first_word == "paper"' in tb, "채널 /paper 라우팅 누락"
+        assert "async def _handle_paper" in tb, "DM·채널 공유 핸들러 누락"
         ds = open("bot/dashboard.py", encoding="utf-8").read()
         assert "def regenerate_paper_index" in ds and 'paper.html">🧪 페이퍼' in ds
 
