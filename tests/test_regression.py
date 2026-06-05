@@ -1658,8 +1658,12 @@ class TestPortfolioDashboard:
         m["prev"] = {"순자산": 900000000, "주식평가": 8000, "_saved_ts": 1, "as_of": "2025-06-05"}
         html = _render_portfolio_page(m)
         assert "지난 업데이트" in html and "대비" in html, "증분 표시 누락"
-        # prev 없으면 증분 미표시 (graceful)
-        assert "지난 업데이트" not in _render_portfolio_page(self._model())
+        # 증분은 주식 요약(💹) 패널 밑에 배치 (사용자 2026-06-04) — 같은 카드 안.
+        assert html.index("💹 주식 요약") < html.index("지난 업데이트"), "증분이 주식 요약 밑이 아님"
+        # prev 없으면 증분 수치 미표시 + placeholder 안내(사라진 게 아님)
+        none_html = _render_portfolio_page(self._model())
+        assert "지난 업데이트" not in none_html
+        assert "자산 변화" in none_html, "prev 없을 때 자산 변화 안내 placeholder 누락"
         # 같은 업로드 날짜면 증분 스킵 (사용자 정책 2026-06-04)
         import time as _t
         now = _t.time()

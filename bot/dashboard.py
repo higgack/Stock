@@ -5402,6 +5402,17 @@ def _render_portfolio_page(model, noah=None) -> str:
                 f'{_dlt(nw.get("순자산"), prev.get("순자산"))} · 주식평가 '
                 f'{_dlt(eval_sum, prev.get("주식평가"))}</div>')
 
+    # 증분(자산 변화)을 주식 요약 패널 바로 밑에 배치(사용자 2026-06-04). prev 가
+    # 없으면(첫 업로드·같은 날짜만 업로드) '사라진 게 아니라 비교 대상 대기' 안내.
+    if delta_html:
+        delta_section = delta_html
+    else:
+        delta_section = (
+            '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
+            'border-top:1px solid var(--border);padding-top:8px">'
+            '📈 자산 변화 — 다른 <b>날짜</b>의 export 가 쌓이면 여기에 순자산·주식 '
+            '증분 표시 (같은 날 재업로드는 비교 안 함)</div>')
+
     stats = (
         '<div class="stats">'
         f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("순자산"))}</div><div class="stat-lbl">순자산</div></div>'
@@ -5441,7 +5452,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         f'<div class="pf-leg">평가손익 <b style="color:{_pf_col(pnl)}">{_pf_won(pnl)} ({pnl_pct:+.1f}%)</b></div>'
         f'<div class="pf-leg">총자산 대비 주식 <b>{stock_wt:.1f}%</b></div>'
         f'<div class="pf-leg">수익 {win} · 손실 {loss} · 승률 <b>{winrate:.0f}%</b></div>'
-        '</div>')
+        + delta_section + '</div>')
     donut_block = ""
     if stops:
         donut_block = (
@@ -5456,9 +5467,8 @@ def _render_portfolio_page(model, noah=None) -> str:
         bro_rows += (f'<tr><td>{_html.escape(b)}</td><td class="r">{_pf_won(d["평가금액"])}</td>'
                      f'<td class="r">{d["종목수"]}</td>'
                      f'<td class="r" style="color:{_pf_col(d["평가손익"])}">{_pf_won(d["평가손익"])}</td></tr>')
-    # 증권사별 카드 밑 — 주식 국내/해외 비중 + 지난 업데이트 대비 증분.
-    # ('순자산 = 자산 − 부채' 줄은 헤더 stat 과 중복 + 우측 카드와 높이 안 맞아
-    # 제거. 사용자 2026-06-04.) 국내/해외는 resolve market=='US' 여부로 분류
+    # 증권사별 카드 밑 — 주식 국내/해외 비중. (증분(자산 변화)은 주식 요약 패널
+    # 밑으로 이동 — 사용자 2026-06-04.) 국내/해외는 resolve market=='US' 여부로 분류
     # (해외 alias 매칭=해외, 나머지=국내) — pykrx 매칭 없어도 동작.
     overseas = sum(h.get("평가금액") or 0 for h in holdings if h.get("market") == "US")
     domestic = max(eval_sum - overseas, 0)
@@ -5473,7 +5483,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         '<div style="font-size:12px;color:var(--muted);margin-top:5px">'
         f'<span style="color:#4c9aff">●</span> 국내 {_pf_won(domestic)} ({domestic / eq_tot * 100:.0f}%) · '
         f'<span style="color:#f5a623">●</span> 해외 {_pf_won(overseas)} ({overseas / eq_tot * 100:.0f}%)</div>'
-        + delta_html + '</div>')
+        '</div>')
     # 수익률 분포 — 증권사별 카드를 TOP/WORST 와 높이 맞추는 유용한 채움(겹침 없음,
     # '다른 괜찮은거'). 종목 수 기준 4구간 stacked bar + 카운트.
     _rs = [h.get("수익률") for h in holdings if h.get("수익률") is not None]
