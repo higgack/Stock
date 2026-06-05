@@ -53,10 +53,12 @@ class _TmpEnv(unittest.TestCase):
         ]
         for p in self._p:
             p.start()
+        # clear=True로 격리 — 앰비언트 TRADE_DATA_GO_KR_KEY가 있으면 auto가
+        # dataportal로 가버려 KIS 경로 테스트가 깨지므로(전체 스위트 오염 방지).
         self.env = mock.patch.dict(os.environ, {
             "TRADE_KIS_APPKEY": "AK", "TRADE_KIS_APPSECRET": "AS",
             "TRADE_PRICE_PROVIDER": "auto",
-        }, clear=False)
+        }, clear=True)
         self.env.start()
 
     def tearDown(self):
@@ -174,6 +176,130 @@ class QuoteCacheTests(_TmpEnv):
         pp.get_quotes(["005930"], transport=fake, ttl_s=0)
         price_calls = len([c for c in fake.calls if "inquire-price" in c[1]])
         self.assertEqual(price_calls, 2)
+
+
+class FakeDataPortal:
+    """주식시세정보 transport 스텁 — likeItmsNm/likeSrtnCd 부분일치 필터."""
+    def __init__(self, items, *, wrap=False, single_as_dict=False):
+        self.items = items
+        self.wrap = wrap
+        self.single_as_dict = single_as_dict
+        self.calls = []
+
+    def __call__(self, method, url, *, headers, body=None):
+        from urllib.parse import urlparse, parse_qs
+        self.calls.append((method, url))
+        q = parse_qs(urlparse(url).query)
+        matched = list(self.items)
+        if "likeItmsNm" in q:
+            v = q["likeItmsNm"][0]
+            matched = [i for i in self.items if v in i["itmsNm"]]
+        elif "likeSrtnCd" in q:
+            v = q["likeSrtnCd"][0]
+            matched = [i for i in self.items if v in i["srtnCd"]]
+        if not matched:
+            body = {"items": {}, "totalCount": "0"}
+        else:
+            item = matched[0] if (self.single_as_dict and len(matched) == 1) else matched
+            body = {"items": {"item": item}, "totalCount": str(len(matched))}
+        return {"response": {"body": body}} if self.wrap else {"body": body}
+
+
+_DP_ITEMS = [
+    {"srtnCd": "005930", "itmsNm": "삼성전자", "clpr": "74000", "vs": 2000,
+     "fltRt": 2.78, "basDt": "20260603", "mrktCtg": "KOSPI"},
+    {"srtnCd": "005930", "itmsNm": "삼성전자", "clpr": "72000", "vs": -1000,
+     "fltRt": -1.37, "basDt": "20260602", "mrktCtg": "KOSPI"},   # 전 영업일
+    {"srtnCd": "005935", "itmsNm": "삼성전자우", "clpr": "60000", "vs": -500,
+     "fltRt": -0.83, "basDt": "20260603", "mrktCtg": "KOSPI"},
+    {"srtnCd": "000660", "itmsNm": "SK하이닉스", "clpr": "180000", "vs": 5000,
+     "fltRt": 2.86, "basDt": "20260603", "mrktCtg": "KOSPI"},
+]
+
+
+class _DPEnv(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self._p = [
+            mock.patch.object(pp, "_TOKEN_PATH", d / ".kis_token.json"),
+            mock.patch.object(pp, "_QUOTE_CACHE", d / "kis_quotes.json"),
+            mock.patch.object(pp, "_DATA_DIR", d),
+        ]
+        for p in self._p:
+            p.start()
+        self.env = mock.patch.dict(os.environ, {
+            "TRADE_DATA_GO_KR_KEY": "DK", "TRADE_PRICE_PROVIDER": "auto",
+        }, clear=True)
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        for p in self._p:
+            p.stop()
+        self.tmp.cleanup()
+
+
+class DataPortalTests(_DPEnv):
+    def test_auto_selects_dataportal_when_datagokr_key(self):
+        self.assertEqual(pp._provider(), "dataportal")
+        self.assertTrue(pp.provider_active())
+
+    def test_by_name_exact_match_excludes_preferred_share(self):
+        # "삼성전자"로 검색하면 삼성전자우도 오지만, 정확일치로 005930만.
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.get_quotes_by_name(["삼성전자"], transport=fake)
+        self.assertIn("삼성전자", out)
+        q = out["삼성전자"]
+        self.assertEqual(q.symbol, "005930")        # 우선주(005935) 아님
+        self.assertEqual(q.price, 74000)
+        self.assertEqual(q.change, 2000)
+        self.assertAlmostEqual(q.change_pct, 2.78)
+        self.assertEqual(q.prev_close, 72000)       # 74000 - 2000
+
+    def test_by_name_picks_latest_basdt(self):
+        # 005930이 두 영업일(20260602/20260603) → 최신 20260603(74000).
+        fake = FakeDataPortal(_DP_ITEMS)
+        q = pp.get_quotes_by_name(["삼성전자"], transport=fake)["삼성전자"]
+        self.assertEqual(q.price, 74000)
+
+    def test_by_name_unknown_omitted(self):
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.get_quotes_by_name(["없는회사"], transport=fake)
+        self.assertEqual(out, {})                    # 틀린 종목 안 붙임
+
+    def test_by_code(self):
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.get_quotes(["000660"], transport=fake)
+        self.assertEqual(out["000660"].name, "SK하이닉스")
+
+    def test_handles_single_item_dict_shape(self):
+        # 결과 1건이면 data.go.kr이 item을 list 아닌 dict로 줄 수 있음.
+        fake = FakeDataPortal(_DP_ITEMS, single_as_dict=True)
+        out = pp.get_quotes_by_name(["SK하이닉스"], transport=fake)
+        self.assertEqual(out["SK하이닉스"].symbol, "000660")
+
+    def test_handles_response_wrapper(self):
+        fake = FakeDataPortal(_DP_ITEMS, wrap=True)
+        out = pp.get_quotes_by_name(["SK하이닉스"], transport=fake)
+        self.assertEqual(out["SK하이닉스"].symbol, "000660")
+
+    def test_name_cache_skips_refetch(self):
+        fake = FakeDataPortal(_DP_ITEMS)
+        pp.get_quotes_by_name(["삼성전자"], transport=fake, ttl_s=60)
+        n1 = len(fake.calls)
+        pp.get_quotes_by_name(["삼성전자"], transport=fake, ttl_s=60)
+        self.assertEqual(len(fake.calls), n1)        # 캐시 신선 → 재호출 0
+
+    def test_by_name_empty_when_provider_not_dataportal(self):
+        with mock.patch.dict(os.environ, {"TRADE_PRICE_PROVIDER": "none"}):
+            self.assertEqual(pp.get_quotes_by_name(["삼성전자"],
+                                                   transport=FakeDataPortal(_DP_ITEMS)), {})
+
+    def test_transport_exception_safe(self):
+        def boom(*a, **k):
+            raise RuntimeError("down")
+        self.assertEqual(pp.get_quotes_by_name(["삼성전자"], transport=boom), {})
 
 
 class SafetyTests(_TmpEnv):

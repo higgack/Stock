@@ -33,9 +33,10 @@ from __future__ import annotations
 import json
 import os
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
@@ -47,6 +48,12 @@ _HTTP_TIMEOUT_S = 10
 
 KIS_DOMAIN = (os.environ.get("TRADE_KIS_DOMAIN")
               or "https://openapi.koreainvestment.com:9443")
+
+# 금융위원회_주식시세정보(data.go.kr 15094808) — 종목명/코드로 EOD 종가·등락률.
+# 운영자의 기존 TRADE_DATA_GO_KR_KEY로 호출(잠정치·관세청과 동일 키).
+DATAPORTAL_ENDPOINT = (
+    "https://apis.data.go.kr/1160100/service/"
+    "GetStockSecuritiesInfoService/getStockPriceInfo")
 
 # transport(method, url, *, headers, body) -> dict. 주입식(테스트).
 Transport = Callable[..., dict]
@@ -80,11 +87,15 @@ def _default_transport(method: str, url: str, *, headers: dict,
 
 
 def _provider() -> str:
-    """현재 공급자. auto = KIS 키 있으면 kis, 없으면 none(호출 0)."""
+    """현재 공급자. auto = data.go.kr 키 있으면 dataportal(EOD·기존 키 재사용),
+    아니면 KIS 키 있으면 kis, 둘 다 없으면 none(외부 호출 0)."""
     p = (os.environ.get("TRADE_PRICE_PROVIDER") or "auto").strip().lower()
     if p == "auto":
-        return "kis" if (os.environ.get("TRADE_KIS_APPKEY")
-                         and os.environ.get("TRADE_KIS_APPSECRET")) else "none"
+        if os.environ.get("TRADE_DATA_GO_KR_KEY"):
+            return "dataportal"
+        if os.environ.get("TRADE_KIS_APPKEY") and os.environ.get("TRADE_KIS_APPSECRET"):
+            return "kis"
+        return "none"
     return p
 
 
@@ -184,8 +195,113 @@ def _kis_get_quotes(symbols: list[str], *,
     return out
 
 
+# ---------------------------------------------------------------------
+# data.go.kr provider (금융위 주식시세정보) — EOD, 기존 키 재사용
+# ---------------------------------------------------------------------
+
+def _items_list(resp: dict) -> list[dict]:
+    """data.go.kr body.items.item을 항상 list로. dict(1건)·list(N)·없음 모두."""
+    try:
+        item = ((resp.get("response") or resp).get("body") or {}).get("items")
+    except AttributeError:
+        return []
+    if not item:
+        return []
+    item = item.get("item") if isinstance(item, dict) else item
+    if item is None:
+        return []
+    return item if isinstance(item, list) else [item]
+
+
+def _quote_from_dp_item(it: dict) -> Optional[Quote]:
+    """주식시세정보 item → Quote. clpr(종가)·vs(대비)·fltRt(등락률)·srtnCd."""
+    code = "".join(ch for ch in str(it.get("srtnCd") or "") if ch.isdigit())
+    code = code.zfill(6)[:6] if code else ""
+    price = _fnum(it.get("clpr"))
+    if not code or price <= 0:
+        return None
+    change = _fnum(it.get("vs"))                 # 대비(부호 포함)
+    change_pct = _fnum(it.get("fltRt"))          # 등락률(부호 포함)
+    return Quote(
+        symbol=code,
+        name=(it.get("itmsNm") or code).strip(),
+        price=price, change=change, change_pct=change_pct,
+        prev_close=price - change, currency="KRW",
+        ts=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _dp_fetch(param_key: str, value: str, *,
+              transport: Transport = _default_transport) -> list[dict]:
+    """주식시세정보 1쿼리(최근 ~10영업일 창) → item 리스트. 키 없으면 []."""
+    key = os.environ.get("TRADE_DATA_GO_KR_KEY")
+    if not key:
+        return []
+    begin = (datetime.now(timezone.utc) - timedelta(days=12)).strftime("%Y%m%d")
+    qs = urllib.parse.urlencode({
+        "serviceKey": key, "resultType": "json",
+        "numOfRows": 50, "pageNo": 1,
+        "beginBasDt": begin, param_key: value,
+    })
+    try:
+        resp = transport("GET", f"{DATAPORTAL_ENDPOINT}?{qs}",
+                         headers={"User-Agent": "trade-bot/1.0"}, body=None)
+    except Exception:
+        return []
+    return _items_list(resp)
+
+
+def _dp_pick(items: list[dict], *, exact_name: Optional[str] = None,
+             code: Optional[str] = None) -> Optional[Quote]:
+    """후보 item들에서 1건 선택: 이름 정확일치(우선주 오매칭 방지) 또는 코드,
+    그중 최신 basDt. 정확 매칭 없으면 None(틀린 종목 붙이느니 생략)."""
+    def _norm_nm(s):
+        return (s or "").replace(" ", "")
+    cand = []
+    for it in items:
+        if exact_name is not None and _norm_nm(it.get("itmsNm")) != _norm_nm(exact_name):
+            continue
+        if code is not None:
+            c = "".join(ch for ch in str(it.get("srtnCd") or "") if ch.isdigit()).zfill(6)[:6]
+            if c != code:
+                continue
+        cand.append(it)
+    if not cand:
+        return None
+    cand.sort(key=lambda it: str(it.get("basDt") or ""), reverse=True)  # 최신 영업일
+    return _quote_from_dp_item(cand[0])
+
+
+def _dataportal_get_quotes(symbols: list[str], *,
+                           transport: Transport = _default_transport) -> dict[str, Quote]:
+    """코드(6자리) 기준 조회 — likeSrtnCd로 가져와 코드 정확일치 + 최신일."""
+    out: dict[str, Quote] = {}
+    for code in symbols:
+        q = _dp_pick(_dp_fetch("likeSrtnCd", code, transport=transport), code=code)
+        if q:
+            out[q.symbol] = q
+    return out
+
+
+def _dataportal_get_quotes_by_name(names: list[str], *,
+                                   transport: Transport = _default_transport
+                                   ) -> dict[str, Quote]:
+    """종목명 기준 조회 — likeItmsNm로 가져와 이름 정확일치(우선주 제외) + 최신일.
+    BeOn 관련종목(회사명)을 코드 변환 없이 바로 시세에 연결하는 경로."""
+    out: dict[str, Quote] = {}
+    for nm in names:
+        nm = (nm or "").strip()
+        if not nm:
+            continue
+        q = _dp_pick(_dp_fetch("likeItmsNm", nm, transport=transport), exact_name=nm)
+        if q:
+            out[nm] = q                          # 이름 키(BeOn 매칭용)
+    return out
+
+
 _PROVIDERS: dict[str, Callable[..., dict[str, Quote]]] = {
     "kis": _kis_get_quotes,
+    "dataportal": _dataportal_get_quotes,
     # "toss": _toss_get_quotes,   # 출시 후 동일 시그니처로 추가
 }
 
@@ -271,6 +387,50 @@ def get_quote(symbol: str, *,
     if not codes:
         return None
     return get_quotes(codes, transport=transport).get(codes[0])
+
+
+def get_quotes_by_name(names: Iterable[str], *,
+                       transport: Transport = _default_transport,
+                       ttl_s: int = _QUOTE_TTL_S) -> dict[str, Quote]:
+    """{종목명: Quote} — BeOn 관련종목(회사명)을 코드 변환 없이 바로 시세에 연결.
+
+    이름 정확일치(우선주 오매칭 방지)로만 붙이고, 못 찾으면 그 이름은 생략(틀린
+    종목 안 붙임). dataportal(주식시세정보)만 이름 조회 지원 — 다른 공급자/키
+    없음/예외 → {}. 이름별 TTL 캐시(prefix 'nm:')로 5분 렌더 반복 호출 차단."""
+    uniq = []
+    seen = set()
+    for n in names:
+        n = (n or "").strip()
+        if n and n not in seen:
+            seen.add(n)
+            uniq.append(n)
+    if not uniq or _provider() != "dataportal":
+        return {}
+    now = time.time()
+    cache = _load_cache()
+    fresh: dict[str, Quote] = {}
+    stale: list[str] = []
+    for n in uniq:
+        rec = cache.get("nm:" + n)
+        if rec and (now - rec.get("_cached_at", 0)) < ttl_s:
+            try:
+                d = {k: v for k, v in rec.items() if k != "_cached_at"}
+                fresh[n] = Quote(**d)
+                continue
+            except Exception:
+                pass
+        stale.append(n)
+    if stale:
+        try:
+            got = _dataportal_get_quotes_by_name(stale, transport=transport)
+        except Exception:
+            got = {}
+        for n, q in got.items():
+            fresh[n] = q
+            cache["nm:" + n] = {**q.as_dict(), "_cached_at": now}
+        if got:
+            _save_cache(cache)
+    return fresh
 
 
 def provider_active() -> bool:
