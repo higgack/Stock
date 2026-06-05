@@ -1810,7 +1810,7 @@ class TestChartEvents:
         ds = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'data-ind="events"' in ds, "공시 토글 버튼 누락"
         assert "ind.events && d.events" in ds, "공시 마커 렌더 게이트 누락"
-        assert "events:true" in ds, "공시 토글 기본 ON 누락"
+        assert "events:false" in ds, "공시 토글 기본 OFF 누락(선택해서 보기)"
         # 차트 아래 공시 내용 패널 + hover 갱신
         assert 'id="chart-disc"' in ds and "function showDisc" in ds, "공시 내용 패널 누락"
         assert "원문 →" in ds, "원문 링크 누락"

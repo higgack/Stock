@@ -2216,7 +2216,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <div class="cg-sec"><b>공시 마커 (날짜별 작은 사각 ■)</b>
         <ul>
           <li>공식 공시를 날짜에 작게 표시 — <span style="color:#26a69a">수주·계약</span> · <span style="color:#f5a623">자본변동(유증·CB 등)</span> · <span style="color:#94a3b8">기타</span>. (실적·정기보고서는 루틴이라 제외.) 마커에 hover하면 <b>차트 아래 패널</b>에 그 날 공시의 종류·전체 제목·간단 설명·<b>원문 보기 링크</b> 표시.</li>
-          <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). KR·US는 1년, 그 외는 최근 공시 위주. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 원문에서 직접 확인. '공시' 버튼으로 on/off(기본 ON).</li>
+          <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). KR·US는 1년, 그 외는 최근 공시 위주. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 원문에서 직접 확인. '공시' 버튼으로 on/off(<b>기본 OFF</b> — 선택해서 보기).</li>
         </ul>
       </div>
       <div class="cg-sec"><b>보조지표 버튼</b> — 켜고 끈 상태는 저장되어 다른 종목 페이지에도 유지됩니다.
@@ -2261,7 +2261,7 @@ _CHART_JS = """
 
   // 지표 on/off 상태 (localStorage 영속 — 페이지 넘나들어도 유지).
   var IND_KEY = 'noah_chart_ind_v1';
-  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:false, log:false, events:true };
+  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:false, log:false, events:false };
   function loadInd(){
     var s = {};
     try { s = JSON.parse(localStorage.getItem(IND_KEY) || '{}') || {}; } catch(e){}
