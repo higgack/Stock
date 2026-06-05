@@ -2188,7 +2188,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     <script type="application/json" id="chart-data">{payload}</script>
     <div id="chart-disc" class="chart-disc"></div>
     <div class="chart-legend">
-      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·계약/소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황, hover 시 차트 아래에 종류·제목·원문 링크) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (설정 저장됨)
+      현재가=장중 라이브(yfinance ~15분 지연·KR EOD 가능) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (설정 저장됨)
     </div>
     <details class="chart-guide">
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
@@ -2215,7 +2215,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </div>
       <div class="cg-sec"><b>공시 마커 (날짜별 작은 사각 ■)</b>
         <ul>
-          <li>핵심 공시만 날짜에 작게 표시 — <span style="color:#26a69a">수주·계약</span>(단일판매·공급계약)/<span style="color:#26a69a">소송</span> · <span style="color:#4c9aff">시설투자</span>(신규 시설·증설) · <span style="color:#b07cff">주주환원</span>(배당·자기주식 취득/소각) · <span style="color:#f5a623">자본변동</span>(증자·CB·감자). (실적·임원·Reg FD 등 그 외는 제외.) 마커에 hover하면 <b>차트 아래 패널</b>에 그 날 공시의 종류·전체 제목·간단 설명·<b>원문 보기 링크</b> 표시.</li>
+          <li>핵심 공시만 날짜에 작게 표시 — <span style="color:#26a69a">수주·계약/소송</span> · <span style="color:#4c9aff">시설투자</span> · <span style="color:#b07cff">주주환원</span>(배당·자기주식) · <span style="color:#f5a623">자본변동</span>(증자·CB·감자) · <span style="color:#2dd4bf">M&A·지분</span>(합병·양수도) · <span style="color:#e2574c">리스크</span>(상장폐지·거래정지·횡령) · <span style="color:#f78fb3">최대주주변경</span>. (실적·임원·Reg FD 등 그 외는 제외.) 마커에 hover하면 <b>차트 아래 패널</b>에 그 날 공시의 종류·전체 제목·간단 설명·<b>원문 보기 링크</b> 표시.</li>
           <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). US 8-K 는 항목 종류가 넓어(실적·Reg FD·임원 위주) 매칭되는 마커가 KR DART(세밀한 공시명)보다 적게 표시될 수 있음. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 원문에서 직접 확인. '공시' 버튼으로 on/off(<b>기본 OFF</b> — 선택해서 보기).</li>
         </ul>
       </div>
@@ -2444,6 +2444,9 @@ _CHART_JS = """
       capex:       { l:'시설투자', c:'#4c9aff', d:'신규 시설/설비 투자 — 증설·생산능력 확대' },
       shareholder: { l:'주주환원', c:'#b07cff', d:'배당·자기주식 취득/소각 — 주주환원' },
       capital:     { l:'자본변동', c:'#f5a623', d:'증자·전환사채·감자 등 — 주식수/자본 변동(희석 가능)' },
+      mna:         { l:'M&A·지분', c:'#2dd4bf', d:'합병·영업양수도·타법인주식 취득/처분 — 구조 변경' },
+      risk:        { l:'리스크',   c:'#e2574c', d:'상장폐지·거래정지·감사의견거절·횡령배임 등 — 중대 악재' },
+      control:     { l:'최대주주변경', c:'#f78fb3', d:'최대주주·경영권 변경 — 지배구조 변화' },
       other:       { l:'공시',     c:'#94a3b8', d:'기타 공시' }
     };
     var DISC_HINT = '<span class="cd-empty">📋 공시 마커(■)에 마우스를 올리면 그 날 공시의 종류·제목·설명·원문 링크가 여기 표시됩니다.</span>';

@@ -22,13 +22,18 @@ _TYPE_COLOR = {
     "capex": "#4c9aff",        # 신규시설투자·증설 (파랑)
     "shareholder": "#b07cff",  # 주주환원: 배당·자기주식 취득/소각 (보라)
     "capital": "#f5a623",      # 자본변동: 증자·CB·감자·분할 (주황)
+    "mna": "#2dd4bf",          # M&A·지분: 합병·영업양수도·타법인주식 (청록)
+    "risk": "#e2574c",         # 생존·거래 리스크: 상장폐지·거래정지·횡령 (빨강)
+    "control": "#f78fb3",      # 최대주주·경영권 변경 (분홍)
     "other": "#94a3b8",        # 그 외 — 마커 미표시(필터 제외)
 }
 _TYPE_LABEL = {"order": "수주·계약", "litigation": "소송", "capex": "시설투자",
-               "shareholder": "주주환원", "capital": "자본변동", "other": "공시"}
+               "shareholder": "주주환원", "capital": "자본변동", "mna": "M&A·지분",
+               "risk": "리스크", "control": "최대주주변경", "other": "공시"}
 
 # 마커로 표시할 종류(화이트리스트). 'other' 는 제외.
-_SHOW_TYPES = ("order", "litigation", "capex", "shareholder", "capital")
+_SHOW_TYPES = ("order", "litigation", "capex", "shareholder", "capital",
+               "mna", "risk", "control")
 
 _SHAREHOLDER_KW = ("자기주식", "자사주", "주식소각", "이익소각", "배당", "주주환원",
                    "treasury", "buyback", "repurchase", "dividend",
@@ -36,6 +41,17 @@ _SHAREHOLDER_KW = ("자기주식", "자사주", "주식소각", "이익소각", 
 _LITIGATION_KW = ("소송", "제소", "피소", "소장", "가처분", "손해배상청구", "특허침해", "특허소송",
                   "lawsuit", "litigation", "legal proceeding", "complaint filed",
                   "訴訟", "诉讼", "提訴", "起訴")
+_RISK_KW = ("상장폐지", "관리종목", "거래정지", "매매거래정지", "감사의견거절", "의견거절",
+            "한정의견", "부적정의견", "횡령", "배임", "회생절차", "파산신청", "자본잠식",
+            "영업정지", "불성실공시", "투자주의", "투자경고", "투자위험", "상장적격성",
+            "delisting", "bankruptcy", "receivership", "non-reliance", "going concern",
+            "asset impairment", "上場廃止", "退市", "破産", "破产", "重整", "監理")
+_CONTROL_KW = ("최대주주변경", "최대주주 변경", "최대주주등의주식", "경영권", "지배구조변경",
+               "change in control", "控制权", "控股股东变更", "大株主の異動")
+_MNA_KW = ("합병", "분할합병", "영업양수", "영업양도", "영업양수도", "타법인주식", "타법인출자",
+           "주식교환", "주식이전", "지분인수", "인적분할", "물적분할", "회사분할",
+           "acquisition", "disposition of assets", "merger", "tender offer",
+           "合併", "合并", "M&A", "收購", "收购", "併購", "併购", "事業譲渡")
 _CAPEX_KW = ("신규시설투자", "시설투자", "설비투자", "신규투자", "유형자산", "증설",
              "공장신설", "생산능력", "공장증설",
              "capital expenditure", "capex", "new facility", "capacity", "plant expansion",
@@ -56,9 +72,10 @@ _CAPITAL_KW = ("유상증자", "무상증자", "전환사채", "신주인수권"
 def classify(title: str) -> str:
     """공시 제목 → 종류. 다국어 키워드. 화이트리스트 + 그 외('other').
 
-    검사 순서(특정 우선): 주주환원 → 소송 → 시설투자 → 수주 → 자본변동.
-    '자기주식취득'이 capex('취득')로 오분류되지 않게 주주환원을 먼저 검사.
-    US 8-K 는 축약 라벨이라 _ORDER_KW/_CAPITAL_KW 에 축약형 키워드 포함."""
+    검사 순서(특정 우선): 주주환원 → 소송 → 리스크 → 최대주주 → M&A → 시설투자
+    → 수주 → 자본변동. '자기주식취득'이 capex('취득')·mna 로 오분류되지 않게
+    주주환원을 먼저, mna 는 '타법인주식/합병' 등 특정어만 써 '취득' 오매칭 회피.
+    US 8-K 는 축약 라벨이라 각 KW 에 축약형(Material Agreement·Acquisition 등) 포함."""
     t = str(title or "")
     tl = t.lower()
 
@@ -68,6 +85,12 @@ def classify(title: str) -> str:
         return "shareholder"
     if _has(_LITIGATION_KW):
         return "litigation"
+    if _has(_RISK_KW):
+        return "risk"
+    if _has(_CONTROL_KW):
+        return "control"
+    if _has(_MNA_KW):
+        return "mna"
     if _has(_CAPEX_KW):
         return "capex"
     if _has(_ORDER_KW):
