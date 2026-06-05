@@ -1159,7 +1159,17 @@ post)이라 기존 훅이 전 분석 커버.
 (b) **자동 컨빅션 게이트** — `paper_signals._is_contested(summary)` 가 요약에
 '방향 상충/시스템 강제/PM OVERRIDE/자동 차단/다른 결론' 마커 있으면 contested
 로 보고 **신규 자동매수 보류**(수동 확인 권장). 청산은 de-risk 라 진행(Risk
-Gate 철학 동일). 후속(별도): 지정가/PENDING·trader pct-only·dynamic comps.
+Gate 철학 동일).
+
+**E0.5f 지정가 주문(limit) = 완료.** `/paper buy TICKER 수량 @지정가` →
+현재가가 조건(매수 ≤·매도 ≥) 미충족이면 `pending` 보관(체결 X), 충족이면
+즉시 체결(지정가보다 유리/동일). `_periodic_paper_pending`(30분)가 fill_
+pending() 으로 가격 도달 시 시장가 체결(Risk Gate 포함)+채널 알림+regen.
+`/paper pending`(목록)·`/paper cancel id|TICKER|all`. `paper_trading.
+_marketable`/`fill_pending`/`cancel_pending`/`list_pending`. paper.html 에
+⏳ 지정가 대기 표. 멱등 idem 으로 중복 대기 차단. dynamic comps(mega-cap→
+Mag-7)·라벨 명확화 별도 커밋. trader pct-only 는 기존 가드+auto live-price
+로 안전 처리라 보류(프롬프트 변경 회귀 위험).
 
 ## 휴장일-인지 거래일 캘린더 (2026-06-05)
 

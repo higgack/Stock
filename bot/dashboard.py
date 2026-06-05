@@ -5443,10 +5443,30 @@ def _render_paper_page(summ: dict) -> str:
             f'<p class="sub" style="font-size:11px">{_html.escape(_hist[0]["date"])} '
             f'{_pf_won(vals[0])} → {_html.escape(_hist[-1]["date"])} {_pf_won(vals[-1])}</p></div>')
 
+    # 지정가 대기 주문 (E0.5d limit orders).
+    _pend = summ.get("pending") or []
+    pend_block = ""
+    if _pend:
+        prows = ""
+        for p in _pend:
+            sym = {"KRW": "₩", "USD": "$"}.get(p.get("currency"), "")
+            prows += (f'<tr><td>{"매수" if p.get("side") == "buy" else "매도"}</td>'
+                      f'<td><b>{_html.escape(p.get("ticker", ""))}</b></td>'
+                      f'<td class="r">{p.get("qty", 0):g}</td>'
+                      f'<td class="r">{sym}{p.get("limit", 0):,.2f}</td>'
+                      f'<td class="muted">{_html.escape(p.get("id", ""))}</td></tr>')
+        pend_block = (
+            '<div class="pf-card"><div class="pf-h">⏳ 지정가 대기 (' + str(len(_pend)) + ')</div>'
+            '<table class="pf-tbl"><thead><tr><th>구분</th><th>종목</th><th class="r">수량</th>'
+            '<th class="r">지정가</th><th>id</th></tr></thead><tbody>' + prows
+            + '</tbody></table><p class="sub" style="font-size:11px">가격 도달 시 ~30분 내 '
+            '자동 체결. 취소: 텔레그램 <code>/paper cancel id</code></p></div>')
+
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>🧪 페이퍼 트레이딩</h1>'
             '<p class="sub">NOAH 분석 신호/수동 명령의 모의 매매 — 실거래 연결 전 전략 검증(리스크 0)</p>'
-            + halt_banner + stats + stats_extra + curve_html + pos_block + tr_block + note + gate_line + '</div>')
+            + halt_banner + stats + stats_extra + curve_html + pos_block + pend_block
+            + tr_block + note + gate_line + '</div>')
 
 
 def _sym_cur(currency: str) -> str:

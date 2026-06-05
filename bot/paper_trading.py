@@ -55,6 +55,7 @@ def _new_account() -> dict:
         "trades": [],           # 최근 체결(cap)
         "seen_keys": [],        # idempotency
         "auto_enabled": False,  # NOAH 판정 → 자동 페이퍼 주문 (E0.5b, 기본 OFF)
+        "pending": [],          # 지정가 대기 주문 [{id,ticker,side,qty,limit,…}]
         "equity_history": [],   # [{date, equity_krw}] 일별 1점 (E0.5d equity curve)
         "created_ts": time.time(),
     }
@@ -228,7 +229,8 @@ def _sym(currency: str) -> str:
 
 
 # ─── public order API (I/O wrappers) ─────────────────────────────────────────
-def _order(ticker: str, qty: float, side: str, idem: Optional[str]):
+def _order(ticker: str, qty: float, side: str, idem: Optional[str],
+           limit: Optional[float] = None):
     ticker = (ticker or "").strip().upper()
     if not ticker:
         return False, "티커를 입력하세요"
@@ -248,6 +250,23 @@ def _order(ticker: str, qty: float, side: str, idem: Optional[str]):
         # 진짜 멱등 단위는 '논리적 주문 1건' — 호출부(텔레그램)가 message_id 를
         # idem 으로 넘기면 재전송만 dedup 되고 의도된 별개 주문은 각각 체결된다.
         idem = uuid.uuid4().hex
+    # 지정가(E0.5d limit): 현재가가 limit 조건을 아직 안 채우면 PENDING 보관
+    # (체결 X). 체결은 _periodic_paper_pending 이 fill_pending() 으로 가격 도달
+    # 시 시장가 실행 → Risk Gate 도 그 시점에 적용. marketable 이면 그냥 통과해
+    # 아래에서 현재가 체결(지정가보다 유리/동일).
+    if limit is not None and not _marketable(side, px, float(limit)):
+        acct = get_account()
+        if any(p.get("idem") == idem for p in acct.get("pending", [])):
+            return True, "지정가 주문 이미 대기(중복 무시)"
+        pid = uuid.uuid4().hex[:6]
+        acct.setdefault("pending", []).append({
+            "id": pid, "ticker": ticker, "side": side, "qty": float(qty),
+            "limit": float(limit), "market": market, "currency": currency,
+            "idem": idem, "ts": time.time()})
+        _save_account(acct)
+        return True, (f"⏳ 지정가 {'매수' if side == 'buy' else '매도'} 대기: {ticker} "
+                      f"{qty:g}주 @ {_sym(currency)}{float(limit):,.2f} (현재 "
+                      f"{_sym(currency)}{px:,.2f}, id {pid}) — 가격 도달 시 자동 체결")
     acct = get_account()
     # Risk Gate (E0.5) — 주문 전 하드 한도/kill-switch (fail-closed). 매도는
     # 항상 통과(de-risk). 같은 게이트가 실거래(E2)에도 재사용된다.
@@ -267,14 +286,68 @@ def _order(ticker: str, qty: float, side: str, idem: Optional[str]):
     return ok, msg
 
 
-def buy(ticker: str, qty: float, idem: Optional[str] = None):
-    """시장가 매수 — glitch-guarded 현재가 즉시 체결. (ok, 메시지)."""
-    return _order(ticker, qty, "buy", idem)
+def _marketable(side: str, px: float, limit: float) -> bool:
+    """지정가 체결 가능 여부 — 매수는 현재가 ≤ 지정가, 매도는 현재가 ≥ 지정가."""
+    return (side == "buy" and px <= limit) or (side == "sell" and px >= limit)
 
 
-def sell(ticker: str, qty: float, idem: Optional[str] = None):
-    """시장가 매도. (ok, 메시지)."""
-    return _order(ticker, qty, "sell", idem)
+def buy(ticker: str, qty: float, idem: Optional[str] = None,
+        limit: Optional[float] = None):
+    """매수 — limit 없으면 시장가 즉시, 있으면 도달 시 체결(PENDING). (ok, 메시지)."""
+    return _order(ticker, qty, "buy", idem, limit=limit)
+
+
+def sell(ticker: str, qty: float, idem: Optional[str] = None,
+         limit: Optional[float] = None):
+    """매도 — limit 없으면 시장가, 있으면 도달 시 체결. (ok, 메시지)."""
+    return _order(ticker, qty, "sell", idem, limit=limit)
+
+
+def list_pending() -> list:
+    return get_account().get("pending", [])
+
+
+def cancel_pending(token: str) -> tuple:
+    """지정가 대기 주문 취소 — id 또는 ticker 또는 'all'. (ok, 메시지)."""
+    acct = get_account()
+    pend = acct.get("pending", [])
+    tok = (token or "").strip().upper()
+    if tok == "ALL":
+        n = len(pend)
+        acct["pending"] = []
+    else:
+        acct["pending"] = [p for p in pend
+                           if p.get("id", "").upper() != tok
+                           and p.get("ticker", "").upper() != tok]
+        n = len(pend) - len(acct["pending"])
+    if n:
+        _save_account(acct)
+        return True, f"⏳ 지정가 대기 {n}건 취소"
+    return False, f"취소할 대기 주문 없음: {token}"
+
+
+def fill_pending() -> list:
+    """가격 도달한 지정가 대기 주문을 시장가로 체결. 체결 메시지 리스트 반환.
+    periodic 태스크가 호출. 각 체결은 _order(Risk Gate 포함)를 거친다."""
+    pend = list(get_account().get("pending", []))
+    if not pend:
+        return []
+    filled, keep = [], []
+    for p in pend:
+        try:
+            px, _ = live_native_price(p.get("ticker"))
+            if px is not None and _marketable(p.get("side"), px, p.get("limit")):
+                ok, msg = _order(p["ticker"], p["qty"], p["side"], p.get("idem"))
+                if ok:
+                    filled.append(msg)
+                    continue
+            keep.append(p)
+        except Exception:
+            keep.append(p)
+    acct = get_account()   # _order 가 저장했으므로 재읽기 후 pending 갱신
+    acct["pending"] = keep
+    _save_account(acct)
+    return filled
 
 
 def close_position(ticker: str, idem: Optional[str] = None):
@@ -484,6 +557,7 @@ def summary(price_fn=None) -> dict:
         "trades": acct.get("trades", []),
         "stats": trade_stats(),
         "auto_size_pct": auto_size_pct(),
+        "pending": acct.get("pending", []),
         "equity_history": acct.get("equity_history", []),
         # 가격을 못 가져온 포지션이 있으면 평가/총자산은 부분값(표시 시 주의).
         "priced_all": all(r.get("value_krw") is not None for r in rows),

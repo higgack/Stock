@@ -1806,6 +1806,51 @@ class TestPaperAutoSignals:
         assert "자동매매" in ds and "auto_close_date" in ds
 
 
+class TestPaperLimitOrders:
+    """E0.5d 지정가 주문 — PENDING 보관 + 가격 도달 시 자동 체결 + 취소."""
+
+    def _setup(self, tmp_path, monkeypatch):
+        import bot.paper_trading as p
+        monkeypatch.setattr(p, "_ACCOUNT", tmp_path / "a.json")
+        monkeypatch.setattr(p, "_audit_log", lambda r: None)
+        monkeypatch.setattr(p, "_market_fx", lambda m: ("USD", 1380.0))
+        return p
+
+    def test_limit_buy_pending_then_fill(self, tmp_path, monkeypatch):
+        p = self._setup(tmp_path, monkeypatch)
+        cur = {"px": 313.0}
+        monkeypatch.setattr(p, "live_native_price", lambda t: (cur["px"], "US"))
+        ok, msg = p.buy("AAPL", 1, limit=300.0)         # 313 > 300 → 매수 대기
+        assert ok and "지정가" in msg and len(p.list_pending()) == 1
+        assert p.fill_pending() == [] and len(p.list_pending()) == 1   # 안 떨어짐
+        cur["px"] = 295.0                                # 도달
+        assert p.fill_pending() and not p.list_pending()
+        assert p.get_account()["positions"]["AAPL"]["qty"] == 1
+
+    def test_marketable_limit_fills_immediately(self, tmp_path, monkeypatch):
+        p = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(p, "live_native_price", lambda t: (295.0, "US"))
+        ok, msg = p.buy("AAPL", 1, limit=320.0)         # 295 ≤ 320 → 즉시 체결
+        assert ok and "체결" in msg and not p.list_pending()
+
+    def test_cancel_pending(self, tmp_path, monkeypatch):
+        p = self._setup(tmp_path, monkeypatch)
+        monkeypatch.setattr(p, "live_native_price", lambda t: (313.0, "US"))
+        p.buy("AAPL", 1, limit=250.0)
+        assert len(p.list_pending()) == 1
+        ok, _ = p.cancel_pending("all")
+        assert ok and not p.list_pending()
+
+    def test_wiring(self):
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert 'a.startswith("@")' in tb, "지정가 @ 파싱 누락"
+        assert 'sub == "pending"' in tb and 'sub == "cancel"' in tb, "pending/cancel 명령 누락"
+        assert "_periodic_paper_pending" in tb, "지정가 체결 periodic 누락"
+        pt = open("bot/paper_trading.py", encoding="utf-8").read()
+        assert "def fill_pending" in pt and "def cancel_pending" in pt
+        assert "지정가 대기" in open("bot/dashboard.py", encoding="utf-8").read()
+
+
 class TestMegacapComps:
     """fix(2026-06-06 AAPL review): mega-cap tech 는 산업 무관 Mag-7 풀로
     (좁은 'Consumer Electronics' 분류가 AAPL 을 GoPro/Sonos 와 비교하던 무의미

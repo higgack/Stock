@@ -2177,9 +2177,10 @@ async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 _PAPER_HELP = (
     "🧪 <b>페이퍼 트레이딩</b> (모의 · 돈 0 · 교육)\n"
     "<code>/paper</code> — 계좌·포지션·손익\n"
-    "<code>/paper buy TICKER 수량</code> — 모의 매수(시장가)\n"
-    "<code>/paper sell TICKER 수량</code> — 모의 매도\n"
+    "<code>/paper buy TICKER 수량 [@지정가]</code> — 매수(시장가/지정가)\n"
+    "<code>/paper sell TICKER 수량 [@지정가]</code> — 매도\n"
     "<code>/paper close TICKER</code> — 전량 매도\n"
+    "<code>/paper pending</code> · <code>/paper cancel id|TICKER|all</code> — 지정가 대기\n"
     "<code>/paper halt</code> / <code>/paper resume</code> — 거래 중지/재개(kill-switch)\n"
     "<code>/paper auto on|off</code> — NOAH 판정 자동매매(매수 자본5%·5거래일 청산)\n"
     "<code>/paper reset</code> — 계좌 초기화\n"
@@ -2265,20 +2266,55 @@ async def _handle_paper(args, send, idem=None) -> None:
     sub = args[0].lower() if args else ""
 
     if sub in ("buy", "sell"):
-        if len(args) < 3:
+        # @price = 지정가(limit). 토큰 어디에 와도 파싱(예: /paper buy AAPL 10 @300).
+        limit = None
+        toks = []
+        for a in args[1:]:
+            if a.startswith("@"):
+                try:
+                    limit = float(a[1:])
+                except ValueError:
+                    pass
+            else:
+                toks.append(a)
+        if len(toks) < 2:
             await send(_PAPER_HELP)
             return
-        ticker = args[1].strip().upper()
+        ticker = toks[0].strip().upper()
         if not TICKER_RE.match(ticker):
             await send(f"⚠️ 잘못된 티커: {ticker}")
             return
         try:
-            qty = float(args[2])
+            qty = float(toks[1])
         except ValueError:
             await send("⚠️ 수량은 숫자여야 합니다 (예: 10)")
             return
         fn = paper_trading.buy if sub == "buy" else paper_trading.sell
-        ok, msg = fn(ticker, qty, idem=idem)
+        ok, msg = fn(ticker, qty, idem=idem, limit=limit)
+        await send(("✅ " if ok else "⚠️ ") + msg)
+        if ok:
+            _regen_paper()
+        return
+
+    if sub == "pending":
+        pend = paper_trading.list_pending()
+        if not pend:
+            await send("⏳ 지정가 대기 주문 없음")
+            return
+        lines = ["⏳ <b>지정가 대기</b>"]
+        for p in pend:
+            sym = {"KRW": "₩", "USD": "$"}.get(p.get("currency"), "")
+            lines.append(f"• {'매수' if p['side'] == 'buy' else '매도'} {p['ticker']} "
+                         f"{p['qty']:g}주 @ {sym}{p['limit']:,.2f} (id {p['id']})")
+        lines.append("취소: <code>/paper cancel &lt;id|TICKER|all&gt;</code>")
+        await send("\n".join(lines))
+        return
+
+    if sub == "cancel":
+        if len(args) < 2:
+            await send("사용법: <code>/paper cancel &lt;id|TICKER|all&gt;</code>")
+            return
+        ok, msg = paper_trading.cancel_pending(args[1])
         await send(("✅ " if ok else "⚠️ ") + msg)
         if ok:
             _regen_paper()
@@ -2836,6 +2872,32 @@ async def _periodic_auto_resolve() -> None:
         await asyncio.sleep(12 * 3600)
 
 
+async def _periodic_paper_pending(application=None) -> None:
+    """지정가 대기 주문을 ~30분마다 체결 확인(E0.5d limit orders). 가격 도달 시
+    시장가 체결(Risk Gate 포함) + 채널 알림 + 페이지 갱신. 페이퍼라 비용 0."""
+    while True:
+        await asyncio.sleep(1800)   # 30분
+        try:
+            from bot import paper_trading
+            filled = paper_trading.fill_pending()
+            if filled:
+                try:
+                    from bot.dashboard import regenerate_paper_index
+                    regenerate_paper_index()
+                except Exception:
+                    pass
+                if application is not None and CHANNEL_CHAT_IDS:
+                    for _m in filled:
+                        for _cid in CHANNEL_CHAT_IDS:
+                            try:
+                                await application.bot.send_message(
+                                    chat_id=_cid, text="⏳→✅ 지정가 체결: " + _m)
+                            except Exception:
+                                pass
+        except Exception:
+            log.exception("paper pending fill failed")
+
+
 async def _periodic_dashboard_refresh(application=None) -> None:
     """Regenerate dashboard index.html ~1 min after each KST midnight.
 
@@ -3050,6 +3112,7 @@ async def _on_startup(application) -> None:
     # application so it stays referenced (otherwise the GC could collect it).
     application._auto_resolve_task = asyncio.create_task(_periodic_auto_resolve())
     application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh(application))
+    application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
 
     orphan = _recovery.read()
     if orphan is None:
