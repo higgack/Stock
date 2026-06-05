@@ -2295,7 +2295,8 @@ _CHART_JS = """
       layout: { background: { type: 'solid', color: 'transparent' }, textColor: txtColor(), fontFamily: 'inherit', attributionLogo: false },
       grid: { vertLines: { color: gridColor() }, horzLines: { color: gridColor() } },
       rightPriceScale: { borderVisible: false, minimumWidth: 72, scaleMargins: { top: 0.12, bottom: 0.12 } },
-      timeScale: { borderVisible: false, timeVisible: false, visible: false },
+      // rightOffset 7: 메인 차트와 동일 여백 → RSI/MACD 도 우측 끝이 안 붙고 시간축 정렬 일치.
+      timeScale: { borderVisible: false, timeVisible: false, visible: false, rightOffset: 7 },
       crosshair: { mode: 0 }
     });
   }
