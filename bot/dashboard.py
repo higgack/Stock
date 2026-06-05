@@ -1927,8 +1927,9 @@ _DETAIL_CSS = _BASE_CSS + """
 .sub-chart { width: 100%; height: 120px; }
 .sub-chart.hidden { display: none; }
 .chart-values {
-  flex: 0 0 124px; display: flex; flex-direction: column; gap: 5px;
-  padding-top: 4px; font-size: 12px;
+  flex: 0 0 138px; display: flex; flex-direction: column; gap: 5px;
+  padding: 4px 0 0 14px; margin-left: 6px; font-size: 12px;
+  border-left: 1px solid var(--border);
 }
 .cv-sep { border-top: 1px solid var(--border); margin: 2px 0; }
 .cv-item { display: flex; align-items: baseline; gap: 5px; }
@@ -1937,7 +1938,8 @@ _DETAIL_CSS = _BASE_CSS + """
 .cv-val { font-weight: 600; font-variant-numeric: tabular-nums; }
 @media (max-width: 560px) {
   .chart-row { flex-direction: column; }
-  .chart-values { flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; gap: 4px 14px; }
+  .chart-values { flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; gap: 4px 14px;
+    border-left: none; margin-left: 0; padding-left: 0; }
   .cv-sep { display: none; }
 }
 .chart-legend { color: var(--fg-soft); font-size: 12px; margin-top: 8px; }
@@ -2340,7 +2342,7 @@ _CHART_JS = """
     var lp = (d.last_price != null) ? d.last_price : null;
     if (ind.candle && hasOHLC) {
       // 캔들 — OHLC 가 있을 때만.
-      mainS = chart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#e2574c', borderUpColor:'#26a69a', borderDownColor:'#e2574c', wickUpColor:'#26a69a', wickDownColor:'#e2574c', priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
+      mainS = chart.addCandlestickSeries({ upColor:'#26a69a', downColor:'#e2574c', borderUpColor:'#26a69a', borderDownColor:'#e2574c', wickUpColor:'#26a69a', wickDownColor:'#e2574c', priceFormat: pf, lastValueVisible: false, priceLineVisible: false, title: '현재가' });
       var cd = [];
       for (var i = 0; i < d.times.length; i++) {
         if (d.open[i]==null||d.high[i]==null||d.low[i]==null||d.close[i]==null) continue;
@@ -2356,7 +2358,7 @@ _CHART_JS = """
       }
       mainS.setData(cd);
     } else {
-      mainS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
+      mainS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: false, priceLineVisible: false, title: '현재가' });
       var closeData = zip(d.close);
       if (lp != null && closeData.length > 0) {
         var last = closeData[closeData.length - 1];
