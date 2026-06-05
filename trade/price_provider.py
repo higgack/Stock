@@ -424,40 +424,39 @@ def _save_cache(cache: dict) -> None:
 def split_names(stocks: Iterable[str]) -> list[str]:
     """BeOn 관련종목 문자열들 → 개별 종목명(중복 제거, 순서 유지).
 
-    분리 규칙(보수적 → 적극적 순):
-      · '관련종목 : X' 파서 누수 접두사 제거
-      · '/' '·' ',' 로 분리(보수)
-      · 후행 '등' 토큰/접미사 제거
-      · 한 토큰이 공백 다수면 추가로 공백 분리(예: '삼아알미늄 DI동일 동원시스템즈').
-        영문 약어/마침표 포함(JYP Ent., LS ELECTRIC 등) 토큰은 통째로도 함께
-        남겨 양쪽 다 시도(원본이 우선 매칭되면 안전).
+    BeOn stocks 필드엔 가끔 제품 설명 프로즈가 섞인다(예: '보툴리눔 톡신
+    (강원 횡성_중국) … 90%이상'). 종목명만 추리도록:
+      · '관련종목 :' 접두사 제거
+      · '/' '·' ',' 로 분리
+      · 후행 '등' 제거
+      · 공백 다수 토큰은 모두 종목스러우면(괄호·%·치수 없음) 각각 등록
+        (예: '삼아알미늄 DI동일 동원시스템즈'); 마침표 포함(JYP Ent.)은 통째로
+      · _looks_like_stock 통과한 것만 — 구조적 garbage(괄호·%·+·치수·kVA·
+        3자리+숫자) 제거.
     """
     out, seen = [], set()
 
     def _add(name: str) -> None:
-        if not name or name in seen:
-            return
-        seen.add(name)
-        out.append(name)
+        name = name.strip()
+        if name.endswith(" 등"):
+            name = name[:-2].strip()
+        if name and name not in seen and _looks_like_stock(name):
+            seen.add(name)
+            out.append(name)
 
     for s in stocks or []:
         s = _PARSER_PREFIX_RE.sub("", str(s)).strip()
         for part in _PRIMARY_SPLIT_RE.split(s):
             p = part.strip()
-            if p == "등":
-                continue
             if p.endswith(" 등"):
                 p = p[:-2].strip()
-            if not p:
-                continue
-            _add(p)
             toks = p.split()
-            # 다중 공백 토큰(예: '삼아알미늄 DI동일 동원시스템즈')은 각각도 등록.
-            # 마침표(., Ent.) 포함이면 정식 KRX 명칭일 수 있어 그대로 두는 게
-            # 안전 — 원본만 등록(이미 위에서 _add 됨).
-            if len(toks) >= 2 and not any("." in t for t in toks):
+            if (len(toks) >= 2 and not any("." in t for t in toks)
+                    and all(_looks_like_stock(t) for t in toks)):
                 for t in toks:
-                    _add(t.strip())
+                    _add(t)
+            else:
+                _add(p)
     return out
 
 
@@ -465,6 +464,19 @@ def split_names(stocks: Iterable[str]) -> list[str]:
 _PARSER_PREFIX_RE = re.compile(r"^관련종목\s*:\s*")
 # 1차 분리자: 슬래시·중점(·)·콤마 — 한국 본문에서 종목 나열에 자주 쓰임
 _PRIMARY_SPLIT_RE = re.compile(r"[/·,]")
+# 종목 후보에서 제외할 구조적 마커(제품설명·치수·괄호 등 프로즈 조각).
+_STRUCT_REJECT = re.compile(r'[()%+"」「\[\]]|\d{3,}|kVA')
+
+
+def _looks_like_stock(t: str) -> bool:
+    """프로즈 조각(제품 설명·치수·괄호 등)을 종목 후보에서 제외. 구조적
+    마커(괄호·%·+·따옴표·대괄호·3자리+ 연속숫자·kVA)나 길이 이탈(2~14자 밖)
+    이면 종목명이 아닌 것으로 본다. 통과해도 data.go.kr에서 안 잡히면 어차피
+    음성 캐시 — 여기선 명백한 garbage만 거르는 게 목적."""
+    t = (t or "").strip()
+    if not (2 <= len(t) <= 14):
+        return False
+    return not _STRUCT_REJECT.search(t)
 
 
 # ---------------------------------------------------------------------
@@ -503,11 +515,15 @@ _DIRECT_CODES: dict[str, str] = {
     "현대에너지솔루션": "322000",
     "제이오": "418550",
     "나노신소재": "121600",
+    # alias 질의가 불안정한 종목은 코드 직접(data.go.kr 표기 의존 X)
+    "HD현대미포조선": "010620",   # KRX: HD현대미포
+    "조광ILI": "044060",          # 조광아이엘아이
+    "제이엔케이히터": "126880",   # JNK히터
 }
 
-# 코드 캐시 스키마 버전 — 위 두 매핑/분리 로직이 바뀌면 bump → 기존 캐시
-# (특히 음성 캐시) 자동 무효화 → 새 매핑이 즉시 효과.
-_RESOLVER_VERSION = 2
+# 코드 캐시 스키마 버전 — 매핑/분리 로직이 바뀌면 bump → 기존 캐시(특히 음성
+# 캐시) 자동 무효화 → 새 매핑이 즉시 효과. 운영자가 캐시 파일 삭제 불필요.
+_RESOLVER_VERSION = 3
 
 
 def _norm(symbols: Iterable[str]) -> list[str]:

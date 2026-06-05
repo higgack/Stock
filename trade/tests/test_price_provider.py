@@ -473,20 +473,42 @@ class SplitNamesTests(unittest.TestCase):
         self.assertEqual(pp.split_names(["관련종목 : LG전자"]), ["LG전자"])
         self.assertEqual(pp.split_names(["관련종목: 삼성전자"]), ["삼성전자"])
 
+    def test_prose_garbage_filtered(self):
+        # 제품 설명 프로즈는 종목 후보에서 제거(괄호·%·치수·kVA·따옴표·길이).
+        garbage = [
+            "보툴리눔 톡신 (강원 횡성_중국) 제네톡스 \"보타원\"은 모두 수출용",
+            "000kVA 초과) + 배전반 + 변환기",
+            "90%이상", "1000V", "100kVA에서", '"보타원"은', "(강원", "+",
+            "소형 변압기(100kVA 이하)",
+        ]
+        for g in garbage:
+            self.assertEqual(pp.split_names([g]), [], g)
+
+    def test_looks_like_stock(self):
+        self.assertTrue(pp._looks_like_stock("삼성전자"))
+        self.assertTrue(pp._looks_like_stock("HD현대미포조선"))
+        self.assertTrue(pp._looks_like_stock("S-Oil"))
+        self.assertFalse(pp._looks_like_stock("(강원"))
+        self.assertFalse(pp._looks_like_stock("90%이상"))
+        self.assertFalse(pp._looks_like_stock("000kVA"))
+        self.assertFalse(pp._looks_like_stock("그"))           # 1자
+        self.assertFalse(pp._looks_like_stock("보툴리눔 톡신 강원 횡성중국"))  # 길이
+
 
 class ResolverAliasTests(_DPEnv):
     def test_direct_code_bypasses_datagokr(self):
         # _DIRECT_CODES 항목은 외부 호출 0으로 즉시 코드 반환.
         fake = FakeDataPortal(_DP_ITEMS)
-        out = pp.resolve_codes(["HD현대건설기계"], transport=fake)
+        out = pp.resolve_codes(["HD현대건설기계", "HD현대미포조선"], transport=fake)
         self.assertEqual(out["HD현대건설기계"], "267270")
+        self.assertEqual(out["HD현대미포조선"], "010620")   # alias→direct 전환
         self.assertEqual(len(fake.calls), 0)
 
     def test_name_alias_queries_aliased_name(self):
-        # alias가 적용된 KRX 표기로 likeItmsNm 질의됨.
+        # alias가 적용된 KRX 표기로 likeItmsNm 질의됨(한국타이어→앤테크놀로지).
         seen_query = {}
-        items = [{"srtnCd": "010620", "itmsNm": "HD현대미포",
-                  "clpr": "100000", "vs": 0, "fltRt": 0, "basDt": "20260605",
+        items = [{"srtnCd": "161390", "itmsNm": "한국타이어앤테크놀로지",
+                  "clpr": "50000", "vs": 0, "fltRt": 0, "basDt": "20260605",
                   "mrktCtg": "KOSPI"}]
 
         def fake(method, url, *, headers, body=None):
@@ -495,9 +517,9 @@ class ResolverAliasTests(_DPEnv):
                                                                  [""])[0]
             return {"response": {"body": {"items": {"item": items},
                                           "totalCount": "1"}}}
-        out = pp.resolve_codes(["HD현대미포조선"], transport=fake)
-        self.assertEqual(out["HD현대미포조선"], "010620")
-        self.assertEqual(seen_query["q"], "HD현대미포")        # alias로 질의
+        out = pp.resolve_codes(["한국타이어"], transport=fake)
+        self.assertEqual(out["한국타이어"], "161390")
+        self.assertEqual(seen_query["q"], "한국타이어앤테크놀로지")   # alias로 질의
 
     def test_cache_version_invalidates_old_neg_cache(self):
         # 이전 음성 캐시(_v 없음)는 무시되고, alias 덕에 새로 양성 등록됨.
