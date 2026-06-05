@@ -152,6 +152,22 @@ def fetch_disclosure_events(ticker: str, limit: int = 250, days: int = 400) -> l
             from bot.dart_client import get_dart
             raw = get_dart().get_recent_disclosures(code, days_back=kr_us_days, limit=limit)
             events = _norm(raw, "date", "title", "url")
+            # DART 구조화 요약(₩0): 증자·자기주식·전환사채·합병 금액 + 배당 context.
+            # rcept_no(url 의 rcpNo)로 매칭. 실패 시 graceful(요약 없음).
+            try:
+                import re as _re
+                from bot.dart_detail import get_disclosure_summaries
+                summ = get_disclosure_summaries(code, days_back=kr_us_days)
+                if summ:
+                    for e in events:
+                        m = _re.search(r"rcpNo=(\d+)", e.get("url") or "")
+                        s = summ.get(m.group(1)) if m else None
+                        if not s and "배당" in e.get("title", ""):
+                            s = summ.get("__DIVIDEND__")
+                        if s:
+                            e["summary"] = s
+            except Exception:
+                pass
         elif market in ("CN_A", "HK"):
             from bot.akshare_client import get_akshare
             raw = get_akshare().get_recent_disclosures(ticker, days_back=tw_cn_days, limit=limit)

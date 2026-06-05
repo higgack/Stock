@@ -2458,8 +2458,10 @@ _CHART_JS = """
       for (var i = 0; i < evs.length && i < 8; i++){
         var e = evs[i], t = DISC_TYPE[e.type] || DISC_TYPE.other;
         var link = e.url ? ' · <a href="' + escTt(e.url) + '" target="_blank" rel="noopener">원문 →</a>' : '';
+        // 구조화 요약(DART 숫자)이 있으면 그걸, 없으면 종류 설명을 표시.
+        var desc = e.summary ? escTt(e.summary) : t.d;
         html += '<div><span style="color:' + t.c + '">●</span> <b>' + escTt(e.time) + '</b> [' + t.l + '] ' +
-                escTt(e.title) + '<span class="cd-desc"> — ' + t.d + '</span>' + link + '</div>';
+                escTt(e.title) + '<span class="cd-desc"> — ' + desc + '</span>' + link + '</div>';
       }
       if (evs.length > 8) html += '<div class="cd-empty">+' + (evs.length - 8) + '건 더</div>';
       discEl.innerHTML = html;

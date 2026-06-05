@@ -1819,6 +1819,25 @@ class TestChartEvents:
         assert out[1]["url"] == "http://x", "url 전달 누락"
         assert all(set(e) == {"time", "title", "type", "color", "url"} for e in out)
 
+    def test_dart_detail_summary(self):
+        # DART 구조화 요약(₩0) — 금액 포맷·필드 추출·graceful (2026-06-05).
+        from bot.dart_detail import _won, _summary_for, get_disclosure_summaries
+        assert _won("1500000000") == "15억원" and _won("5000") == "5,000원"
+        assert _won("0") is None and _won("-") is None and _won("x") is None
+        s = _summary_for({"aqpln_prc_ostk": "30000000000", "aqpln_stk_ostk": "1000000"},
+                         "자기주식취득",
+                         [("취득금액", ("aqpln_prc_ostk",), "won"),
+                          ("취득수량", ("aqpln_stk_ostk",), "num")])
+        assert s == "자기주식취득 · 취득금액 300억원 · 취득수량 1,000,000주"
+        assert _summary_for({}, "유상증자", [("x", ("nope",), "won")]) is None
+        # 키 없으면 graceful {} (크래시 X)
+        assert get_disclosure_summaries("005930") == {}
+        # chart_events 가 summary 를 이벤트에 붙이는 배선
+        ce = open("bot/chart_events.py", encoding="utf-8").read()
+        assert "get_disclosure_summaries" in ce and 'e["summary"]' in ce, "요약 배선 누락"
+        ds = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "e.summary ? escTt(e.summary)" in ds, "패널 요약 표시 누락"
+
     def test_whitelist_filter(self):
         # 마커는 화이트리스트 4종만(그 외 제외). 소스에 _SHOW_TYPES 필터 존재.
         from bot.chart_events import _SHOW_TYPES
