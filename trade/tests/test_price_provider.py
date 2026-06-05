@@ -49,6 +49,7 @@ class _TmpEnv(unittest.TestCase):
         self._p = [
             mock.patch.object(pp, "_TOKEN_PATH", d / ".kis_token.json"),
             mock.patch.object(pp, "_QUOTE_CACHE", d / "kis_quotes.json"),
+            mock.patch.object(pp, "_CODE_CACHE", d / "stock_codes.json"),
             mock.patch.object(pp, "_DATA_DIR", d),
         ]
         for p in self._p:
@@ -57,7 +58,7 @@ class _TmpEnv(unittest.TestCase):
         # dataportal로 가버려 KIS 경로 테스트가 깨지므로(전체 스위트 오염 방지).
         self.env = mock.patch.dict(os.environ, {
             "TRADE_KIS_APPKEY": "AK", "TRADE_KIS_APPSECRET": "AS",
-            "TRADE_PRICE_PROVIDER": "auto",
+            "TRADE_PRICE_PROVIDER": "auto", "TRADE_KIS_THROTTLE_MS": "0",
         }, clear=True)
         self.env.start()
 
@@ -224,6 +225,7 @@ class _DPEnv(unittest.TestCase):
         self._p = [
             mock.patch.object(pp, "_TOKEN_PATH", d / ".kis_token.json"),
             mock.patch.object(pp, "_QUOTE_CACHE", d / "kis_quotes.json"),
+            mock.patch.object(pp, "_CODE_CACHE", d / "stock_codes.json"),
             mock.patch.object(pp, "_DATA_DIR", d),
         ]
         for p in self._p:
@@ -300,6 +302,117 @@ class DataPortalTests(_DPEnv):
         def boom(*a, **k):
             raise RuntimeError("down")
         self.assertEqual(pp.get_quotes_by_name(["삼성전자"], transport=boom), {})
+
+
+class FakeHybrid:
+    """data.go.kr(이름→코드) + KIS(코드→시세) 둘 다 응답하는 transport."""
+    def __init__(self, dp_items, kis_prices, *, token="TOK"):
+        self.dp = FakeDataPortal(dp_items)
+        self.kis = FakeKIS(kis_prices, token=token)
+        self.calls = []
+
+    def __call__(self, method, url, *, headers, body=None):
+        self.calls.append(url)
+        if "getStockPriceInfo" in url:
+            return self.dp(method, url, headers=headers, body=body)
+        return self.kis(method, url, headers=headers, body=body)
+
+
+class RecommendedTtlTests(unittest.TestCase):
+    def test_market_hours_short(self):
+        from datetime import datetime
+        with mock.patch.dict(os.environ, {}, clear=True):
+            t = datetime(2026, 6, 5, 11, 0, tzinfo=pp._KST)   # 금 11:00 장중
+            self.assertEqual(pp.recommended_ttl(t), 90)
+
+    def test_after_close_long(self):
+        from datetime import datetime
+        with mock.patch.dict(os.environ, {}, clear=True):
+            t = datetime(2026, 6, 5, 17, 0, tzinfo=pp._KST)   # 금 17:00 마감 후
+            self.assertEqual(pp.recommended_ttl(t), 21600)
+
+    def test_weekend_long(self):
+        from datetime import datetime
+        with mock.patch.dict(os.environ, {}, clear=True):
+            t = datetime(2026, 6, 6, 11, 0, tzinfo=pp._KST)   # 토 11:00
+            self.assertEqual(pp.recommended_ttl(t), 21600)
+
+
+class _KisHybridEnv(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self._p = [
+            mock.patch.object(pp, "_TOKEN_PATH", d / ".kis_token.json"),
+            mock.patch.object(pp, "_QUOTE_CACHE", d / "kis_quotes.json"),
+            mock.patch.object(pp, "_CODE_CACHE", d / "stock_codes.json"),
+            mock.patch.object(pp, "_DATA_DIR", d),
+        ]
+        for p in self._p:
+            p.start()
+        self.env = mock.patch.dict(os.environ, {
+            "TRADE_KIS_APPKEY": "AK", "TRADE_KIS_APPSECRET": "AS",
+            "TRADE_DATA_GO_KR_KEY": "DK", "TRADE_PRICE_PROVIDER": "kis",
+            "TRADE_KIS_THROTTLE_MS": "0",
+        }, clear=True)
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        for p in self._p:
+            p.stop()
+        self.tmp.cleanup()
+
+
+class KisHybridTests(_KisHybridEnv):
+    def test_name_resolves_via_datagokr_price_via_kis(self):
+        # 이름→코드는 data.go.kr, 시세는 KIS 실시간.
+        h = FakeHybrid(_DP_ITEMS, {"005930": (351500, 360500, "삼성전자"),
+                                   "000660": (180000, 175000, "SK하이닉스")})
+        out = pp.get_quotes_by_name(["삼성전자", "SK하이닉스"], transport=h)
+        self.assertEqual(out["삼성전자"].price, 351500)      # KIS 가격
+        self.assertEqual(out["SK하이닉스"].symbol, "000660")
+        # KIS inquire-price가 실제로 호출됨(실시간 경로)
+        self.assertTrue(any("inquire-price" in u for u in h.calls))
+
+    def test_code_cache_durable_skips_resolve(self):
+        h = FakeHybrid(_DP_ITEMS, {"005930": (351500, 360500, "삼성전자")})
+        pp.get_quotes_by_name(["삼성전자"], transport=h, ttl_s=0)
+        dp1 = len([u for u in h.calls if "getStockPriceInfo" in u])
+        pp.get_quotes_by_name(["삼성전자"], transport=h, ttl_s=0)
+        dp2 = len([u for u in h.calls if "getStockPriceInfo" in u])
+        self.assertEqual(dp1, dp2)        # 코드 캐시 → 재-resolve 0 (가격만 재호출)
+
+    def test_unresolved_name_omitted(self):
+        h = FakeHybrid(_DP_ITEMS, {"005930": (1, 1, "삼성전자")})
+        out = pp.get_quotes_by_name(["없는회사"], transport=h)
+        self.assertEqual(out, {})
+
+
+class ResolveCodesTests(_KisHybridEnv):
+    def test_exact_match_and_negative_cache(self):
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.resolve_codes(["삼성전자"], transport=fake)
+        self.assertEqual(out["삼성전자"], "005930")    # 우선주 아님
+        # 미일치(없는회사)는 음성 캐시 → 재호출 안 함
+        pp.resolve_codes(["없는회사"], transport=fake)
+        n1 = len(fake.calls)
+        pp.resolve_codes(["없는회사"], transport=fake)
+        self.assertEqual(len(fake.calls), n1)
+
+    def test_no_key_returns_empty(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(pp.resolve_codes(["삼성전자"],
+                                              transport=FakeDataPortal(_DP_ITEMS)), {})
+
+
+class SymbolCapTests(_DPEnv):
+    def test_caps_symbols(self):
+        with mock.patch.object(pp, "_MAX_SYMBOLS", 2):
+            fake = FakeDataPortal(_DP_ITEMS)
+            pp.get_quotes_by_name(["삼성전자", "SK하이닉스", "삼성전자우"], transport=fake)
+            # 3개 요청했지만 상한 2 → getStockPriceInfo 호출 ≤ 2
+            self.assertLessEqual(len(fake.calls), 2)
 
 
 class SafetyTests(_TmpEnv):

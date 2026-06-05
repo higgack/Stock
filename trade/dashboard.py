@@ -176,7 +176,9 @@ def _stock_quotes_for(payload: list[dict]) -> dict:
                     names.add(s)
         if not names:
             return {}
-        ttl = int(os.environ.get("TRADE_PRICE_EOD_TTL") or "21600")
+        # 장중(평일 09:00–15:30 KST)이면 짧은 TTL(라이브 폴링), 마감 후·주말엔
+        # 긴 TTL(종가 고정 → KIS 재호출 0). 콜 수 자동 절감.
+        ttl = price_provider.recommended_ttl()
         quotes = price_provider.get_quotes_by_name(sorted(names), ttl_s=ttl)
         return {nm: {"p": round(q.price), "c": round(q.change_pct, 2)}
                 for nm, q in quotes.items()}

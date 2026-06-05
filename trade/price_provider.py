@@ -43,8 +43,12 @@ from typing import Callable, Iterable, Optional
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 _TOKEN_PATH = _DATA_DIR / ".kis_token.json"
 _QUOTE_CACHE = _DATA_DIR / "kis_quotes.json"
+_CODE_CACHE = _DATA_DIR / "stock_codes.json"     # 종목명→코드 durable 캐시
 _QUOTE_TTL_S = int(os.environ.get("TRADE_PRICE_CACHE_TTL") or "60")
+_CODE_TTL_S = int(os.environ.get("TRADE_STOCK_CODE_TTL") or str(7 * 86400))  # 7일
+_MAX_SYMBOLS = int(os.environ.get("TRADE_PRICE_MAX_SYMBOLS") or "300")
 _HTTP_TIMEOUT_S = 10
+_KST = timezone(timedelta(hours=9))
 
 KIS_DOMAIN = (os.environ.get("TRADE_KIS_DOMAIN")
               or "https://openapi.koreainvestment.com:9443")
@@ -104,6 +108,19 @@ def _fnum(v) -> float:
         return float(str(v).replace(",", "").strip() or 0)
     except (ValueError, TypeError):
         return 0.0
+
+
+def recommended_ttl(now: Optional[datetime] = None) -> int:
+    """장중(평일 09:00–15:30 KST)이면 짧게(라이브 폴링·기본 90s), 그 외(마감
+    후·주말)엔 길게(종가 고정·기본 6h). KIS 실시간 폴링이 장 마감 후엔
+    재호출 0이 되게 해 콜 수를 자동 절감. dataportal(EOD)에도 무해."""
+    now = now or datetime.now(_KST)
+    live = int(os.environ.get("TRADE_PRICE_LIVE_TTL") or "90")
+    eod = int(os.environ.get("TRADE_PRICE_EOD_TTL") or "21600")
+    if now.weekday() >= 5:                 # 토/일
+        return eod
+    mins = now.hour * 60 + now.minute
+    return live if (9 * 60 <= mins <= 15 * 60 + 30) else eod
 
 
 # ---------------------------------------------------------------------
@@ -187,8 +204,12 @@ def _kis_get_quotes(symbols: list[str], *,
     token = _kis_token(transport=transport)
     if not token:
         return {}
+    # KIS 실전 초당 ~20건 제한 → 호출 간 간격(기본 60ms, <17/s)으로 안전.
+    throttle = _fnum(os.environ.get("TRADE_KIS_THROTTLE_MS") or "60") / 1000.0
     out: dict[str, Quote] = {}
-    for sym in symbols:
+    for i, sym in enumerate(symbols):
+        if i and throttle > 0:
+            time.sleep(throttle)
         q = _kis_quote_kr(sym, token, transport=transport)
         if q:
             out[q.symbol] = q
@@ -299,6 +320,51 @@ def _dataportal_get_quotes_by_name(names: list[str], *,
     return out
 
 
+def resolve_codes(names: Iterable[str], *,
+                  transport: Transport = _default_transport) -> dict[str, str]:
+    """{종목명: 6자리코드} — data.go.kr 종목명→단축코드. KIS처럼 코드 조회만
+    되는 공급자가 BeOn 회사명을 쓰게 하는 다리. 코드는 거의 안 변하므로
+    durable 캐시(_CODE_CACHE, 기본 7일). 정확일치만(우선주 오매칭 방지),
+    결과는 있는데 일치 없으면 음성 캐시(재조회 절약), 응답 자체가 비면(에러
+    가능) 캐시 안 함(다음에 재시도). DATA_GO_KR_KEY 없으면 {}."""
+    uniq = [n.strip() for n in names if n and str(n).strip()]
+    if not uniq or not os.environ.get("TRADE_DATA_GO_KR_KEY"):
+        return {}
+    now = time.time()
+    # 양성(코드 확정)은 7일, 음성(미일치)은 1일 — 비상장/표기불일치 종목의 매
+    # 렌더 재조회를 막되, 일시적 API 오류로 막힌 이름은 하루 안에 self-heal.
+    neg_ttl = int(os.environ.get("TRADE_STOCK_CODE_NEG_TTL") or "86400")
+    try:
+        cache = json.loads(_CODE_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        cache = {}
+    out: dict[str, str] = {}
+    dirty = False
+    for n in uniq:
+        rec = cache.get(n)
+        if rec:
+            ttl = _CODE_TTL_S if rec.get("code") else neg_ttl
+            if (now - rec.get("_cached_at", 0)) < ttl:
+                if rec.get("code"):
+                    out[n] = rec["code"]
+                continue
+        q = _dp_pick(_dp_fetch("likeItmsNm", n, transport=transport), exact_name=n)
+        if q:
+            out[n] = q.symbol
+            cache[n] = {"code": q.symbol, "_cached_at": now}
+        else:
+            cache[n] = {"code": "", "_cached_at": now}      # 음성 캐시(짧은 TTL)
+        dirty = True
+    if dirty:
+        try:
+            _DATA_DIR.mkdir(parents=True, exist_ok=True)
+            _CODE_CACHE.write_text(json.dumps(cache, ensure_ascii=False),
+                                   encoding="utf-8")
+        except OSError:
+            pass
+    return out
+
+
 _PROVIDERS: dict[str, Callable[..., dict[str, Quote]]] = {
     "kis": _kis_get_quotes,
     "dataportal": _dataportal_get_quotes,
@@ -347,7 +413,7 @@ def get_quotes(symbols: Iterable[str], *,
 
     심볼별 TTL 캐시로 5분 렌더가 KIS를 반복 호출하지 않게. 캐시 신선분은
     재사용, 만료/미수집분만 공급자에서 가져와 캐시 갱신."""
-    codes = _norm(symbols)
+    codes = _norm(symbols)[:_MAX_SYMBOLS]
     if not codes:
         return {}
     provider = _PROVIDERS.get(_provider())
@@ -404,8 +470,22 @@ def get_quotes_by_name(names: Iterable[str], *,
         if n and n not in seen:
             seen.add(n)
             uniq.append(n)
-    if not uniq or _provider() != "dataportal":
+    uniq = uniq[:_MAX_SYMBOLS]              # 콜 폭주 방지 상한
+    prov = _provider()
+    if not uniq or prov == "none":
         return {}
+
+    # KIS 등 코드-기반 공급자: data.go.kr로 이름→코드(durable 캐시) 변환 후
+    # 활성 공급자로 시세. 종목명 검색이 없는 KIS가 BeOn 회사명을 쓰는 경로.
+    if prov != "dataportal":
+        codes_by_name = resolve_codes(uniq, transport=transport)
+        if not codes_by_name:
+            return {}
+        code_q = get_quotes(sorted(set(codes_by_name.values())),
+                            transport=transport, ttl_s=ttl_s)
+        return {n: code_q[c] for n, c in codes_by_name.items() if c in code_q}
+
+    # dataportal: 이름 질의 한 번에 코드+종가(빠른 경로). 이름별 TTL 캐시.
     now = time.time()
     cache = _load_cache()
     fresh: dict[str, Quote] = {}
