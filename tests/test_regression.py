@@ -1332,6 +1332,23 @@ def _html_unescape(s):
 
 
 # ─────────────────────────────────────────────────────────────────────────
+class TestGicsCandidatesPage:
+    """fix(2026-06-05): GICS 후보 대시보드가 서버 파일시스템 경로
+    (~/.tradingagents/gics_check_audit.jsonl)를 본문 footer 로 노출하던 것 제거.
+    웹 뷰어에겐 무의미 + 홈 디렉터리·계정명 등 내부 경로 노출."""
+
+    def test_no_server_path_leak(self):
+        from bot.dashboard import _render_gics_candidates_page
+        run = {"ts": "2026-06-05T09:00", "cost_krw": 300, "report": {
+            "window_start": "2026-03", "window_end": "2026-06", "summary": "x",
+            "official_gics_changes": [], "emerging_trends": []}}
+        html = _render_gics_candidates_page([run])
+        assert "gics_check_audit.jsonl" not in html, "감사 로그 파일 경로 노출"
+        assert "raw 응답 audit log" not in html, "감사 로그 footer 노출"
+        assert "/home/" not in html, "서버 파일시스템 경로 노출"
+        assert "분기 GICS" in html, "페이지 자체는 정상 렌더"
+
+
 # 9) 트레이드 마커 (entry/stop/target) 파싱 + 비현실값 차단
 #    배경: 2026-06-03 Phase 2 — full_report 의 진입/손절/목표가를 차트에
 #    수평선으로. 핵심 안전장치: 종가 series 대비 비현실적(0.2x~5x 밖)인

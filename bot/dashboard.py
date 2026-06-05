@@ -6187,9 +6187,6 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
             parts.append('<p class="sub">신규 trend candidate 없음.</p>')
         parts.append('</div></details>')
 
-    parts.append('<p class="sub" style="margin-top:24px">'
-                 'raw 응답 audit log: '
-                 f'<code>{_GICS_AUDIT_LOG}</code></p>')
     parts.append("</div>")
     return "".join(parts)
 
