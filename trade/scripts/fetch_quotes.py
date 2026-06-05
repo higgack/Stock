@@ -24,6 +24,7 @@ import logging
 import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -61,10 +62,13 @@ def run() -> int:
     finally:
         conn.close()
 
-    raw: list[str] = []
+    # 빈도 높은 순으로 워밍 — 자주 등장(섹션으로도 뜨는) 종목을 시간예산 안에
+    # 먼저 채워 화면 체감 커버리지를 극대화(운영자 지적: 중복 많은 것부터).
+    freq: Counter = Counter()
     for a in alerts:
-        raw.extend(a.get("stocks") or [])
-    names = pp.split_names(raw)
+        for n in pp.split_names(a.get("stocks") or []):
+            freq[n] += 1
+    names = [n for n, _ in freq.most_common()]
     if not names:
         log.info("no related stocks in store — nothing to warm")
         return 0
