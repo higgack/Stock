@@ -184,16 +184,22 @@ def _series_payload(
                 return None
         payload["volume"] = [_vol(v) for v in volume.values]
 
-    # 공시 이벤트 마커 (전 시장, ₩0). 보이는 날짜 구간으로 필터 — 차트 first~last
-    # 범위 밖 공시는 제외. 실패/키부재 시 graceful(빈 리스트). 호재/악재 판단 X.
+    # 공시 이벤트 마커 (전 시장, ₩0). 차트가 보여줄 기간(span)을 넘겨 KR/US 는
+    # 풀히스토리, JP/TW/CN 은 시장별 안전 캡으로 fetch. 보이는 날짜 구간으로 필터.
+    # 실패/키부재 시 graceful(빈 리스트). 호재/악재 판단 X.
     if ticker:
         try:
             from bot.chart_events import fetch_disclosure_events
             times = payload.get("times") or []
             if times:
                 lo_t, hi_t = times[0], times[-1]
+                try:
+                    import datetime as _ev_dt
+                    span = (_ev_dt.date.fromisoformat(hi_t) - _ev_dt.date.fromisoformat(lo_t)).days
+                except Exception:
+                    span = 400
                 payload["events"] = [
-                    e for e in fetch_disclosure_events(ticker)
+                    e for e in fetch_disclosure_events(ticker, days=max(span, 30))
                     if lo_t <= e["time"] <= hi_t
                 ]
         except Exception:

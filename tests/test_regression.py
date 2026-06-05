@@ -1807,6 +1807,12 @@ class TestChartEvents:
         cd = open("bot/chart_data.py", encoding="utf-8").read()
         assert "fetch_disclosure_events" in cd and 'payload["events"]' in cd, "차트 payload events 배선 누락"
         assert "ticker=ticker" in cd, "_series_payload ticker 전달 누락"
+        assert "days=max(span" in cd, "차트 기간(span) → 공시 days 전달 누락"
+        # 시장별 안전 캡(전 시장 풀히스토리, JP만 180 캡)
+        ce = open("bot/chart_events.py", encoding="utf-8").read()
+        assert "kr_us_days" in ce and "jp_days" in ce and "tw_cn_days" in ce, "시장별 days 캡 누락"
+        # DART 다년 페이지네이션(100건 초과 시 다음 페이지)
+        assert "total_page" in open("bot/dart_client.py", encoding="utf-8").read(), "DART 페이지네이션 누락"
         ds = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'data-ind="events"' in ds, "공시 토글 버튼 누락"
         assert "ind.events && d.events" in ds, "공시 마커 렌더 게이트 누락"

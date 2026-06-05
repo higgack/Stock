@@ -81,38 +81,46 @@ def _norm(items: list[dict], date_key: str, title_key: str,
     return out
 
 
-def fetch_disclosure_events(ticker: str, limit: int = 60) -> list[dict]:
+def fetch_disclosure_events(ticker: str, limit: int = 250, days: int = 400) -> list[dict]:
     """티커 → 공시 이벤트 마커 리스트. 시장별 무료 클라이언트로 라우팅, 실패 시 [].
 
-    KR DART / US EDGAR 8-K / JP EDINET / TW MOPS / CN·HK AKShare. 각 try/except.
-    호출부(차트 payload)가 보이는 날짜 구간으로 다시 필터한다."""
+    `days` = 차트가 보여줄 기간(일). 시장별 호출 비용·데이터 한계로 캡을 다르게:
+    - KR DART / US EDGAR: 차트 범위 풀히스토리(캡 ~11년). DART 는 페이지네이션,
+      EDGAR 는 submissions 1콜 → 싸고 안전.
+    - JP EDINET: **하루씩 호출하는 구조**라 180일 캡(첫 1회만 호출, 과거일 영구
+      캐시). 1년(365콜)은 첫 로딩 지연·차단 위험이라 회피 — 리스크-프리.
+    - TW MOPS / CN·HK AKShare: 호출 1~2번이라 1년까지 싸게(데이터는 API 가 주는
+      최근 만큼). 각 try/except, 호출부가 보이는 날짜 구간으로 다시 필터."""
     try:
         from bot.market import detect_market
         market = detect_market(ticker)
     except Exception:
         market = "US"
     code = ticker.split(".")[0]
+    kr_us_days = min(max(days + 30, 400), 4000)   # KR/US 풀히스토리(캡 ~11년)
+    jp_days = min(max(days, 120), 180)            # JP 안전 캡(일단위 호출 비용)
+    tw_cn_days = min(max(days, 365), 400)         # TW/CN 1년(호출 1~2회, 싸다)
     events: list[dict] = []
     try:
         if market == "KR":
             from bot.dart_client import get_dart
-            raw = get_dart().get_recent_disclosures(code, days_back=400, limit=limit)
+            raw = get_dart().get_recent_disclosures(code, days_back=kr_us_days, limit=limit)
             events = _norm(raw, "date", "title", "url")
         elif market in ("CN_A", "HK"):
             from bot.akshare_client import get_akshare
-            raw = get_akshare().get_recent_disclosures(ticker, days_back=120, limit=limit)
+            raw = get_akshare().get_recent_disclosures(ticker, days_back=tw_cn_days, limit=limit)
             events = _norm(raw, "date", "subject", "url")
         elif market == "JP":
             from bot.edinet_client import get_edinet
-            raw = get_edinet().get_recent_disclosures(ticker, days_back=120, limit=limit)
+            raw = get_edinet().get_recent_disclosures(ticker, days_back=jp_days, limit=limit)
             events = _norm(raw, "date", "description", "url")
         elif market == "TW":
             from bot.mops_client import get_mops
-            raw = get_mops().get_recent_disclosures(ticker, days_back=120, limit=limit)
+            raw = get_mops().get_recent_disclosures(ticker, days_back=tw_cn_days, limit=limit)
             events = _norm(raw, "date", "subject", "url")
         else:  # US (default)
             from bot.edgar_client import get_recent_8k
-            raw = get_recent_8k(ticker, days=400, top_n=limit)
+            raw = get_recent_8k(ticker, days=kr_us_days, top_n=limit)
             # EDGAR: items_labels(8-K 항목 설명) 를 제목으로, 없으면 '8-K 공시'.
             us = []
             for f in raw or []:

@@ -518,36 +518,46 @@ class DartClient:
 
         end = date.today()
         bgn = end - timedelta(days=days_back)
-        try:
-            resp = requests.get(
-                f"{_DART_BASE}/list.json",
-                params={
-                    "crtfc_key": self.api_key,
-                    "corp_code": corp_code,
-                    "bgn_de": bgn.strftime("%Y%m%d"),
-                    "end_de": end.strftime("%Y%m%d"),
-                    "page_count": min(limit, 100),
-                },
-                timeout=_HTTP_TIMEOUT,
-            )
-            payload = resp.json()
-        except Exception as exc:
-            log.warning("dart: list.json fetch for %s failed: %s", stock_code, exc)
-            return []
-
-        # DART error envelope: status "000" = success, anything else = no data.
-        if payload.get("status") not in ("000",):
-            return []
-        rows = payload.get("list") or []
+        # 페이지네이션 — 한 페이지 100건. limit 이 100 초과면(차트 풀히스토리) 다음
+        # 페이지를 이어 받음. 안전 캡 6페이지(600건). limit≤100 이면 1페이지로 종료
+        # (build_instrument_context 등 기존 호출 동작 불변).
         out: list[dict] = []
-        for r in rows[:limit]:
-            out.append({
-                "date": r.get("rcept_dt") or "",
-                "title": (r.get("report_nm") or "").strip(),
-                "reporter": (r.get("flr_nm") or "").strip(),
-                "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={r.get('rcept_no', '')}",
-            })
-        return out
+        page_no = 1
+        while len(out) < limit and page_no <= 6:
+            try:
+                resp = requests.get(
+                    f"{_DART_BASE}/list.json",
+                    params={
+                        "crtfc_key": self.api_key,
+                        "corp_code": corp_code,
+                        "bgn_de": bgn.strftime("%Y%m%d"),
+                        "end_de": end.strftime("%Y%m%d"),
+                        "page_no": page_no,
+                        "page_count": 100,
+                    },
+                    timeout=_HTTP_TIMEOUT,
+                )
+                payload = resp.json()
+            except Exception as exc:
+                log.warning("dart: list.json fetch for %s failed: %s", stock_code, exc)
+                break
+            # DART error envelope: status "000" = success, anything else = no data.
+            if payload.get("status") not in ("000",):
+                break
+            for r in payload.get("list") or []:
+                out.append({
+                    "date": r.get("rcept_dt") or "",
+                    "title": (r.get("report_nm") or "").strip(),
+                    "reporter": (r.get("flr_nm") or "").strip(),
+                    "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={r.get('rcept_no', '')}",
+                })
+            try:
+                if page_no >= int(payload.get("total_page") or 1):
+                    break
+            except (TypeError, ValueError):
+                break
+            page_no += 1
+        return out[:limit]
 
     # ── /api/elestock.json — insider / major shareholder holdings ──────
     @_disk_cache_daily
