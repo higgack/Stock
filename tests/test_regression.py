@@ -1332,6 +1332,47 @@ def _html_unescape(s):
 
 
 # ─────────────────────────────────────────────────────────────────────────
+class TestMarketCalendar:
+    """fix(2026-06-05): 휴장일-인지 거래일 캘린더 + auto_resolve readiness
+    gate 정밀화. exchange_calendars 부재 시 graceful None → 기존 휴리스틱 폴백."""
+
+    def test_graceful_none_without_lib(self):
+        # 샌드박스엔 exchange_calendars 부재 → 전 함수 graceful None(폴백 신호).
+        from bot.market_calendar import add_trading_days, next_trading_day, is_trading_day
+        assert add_trading_days("KR", "2026-06-01", 5) is None
+        assert next_trading_day("US", "2026-07-04") is None
+        assert is_trading_day("KR", "2026-06-06") is None
+        assert add_trading_days("ZZ", "2026-06-01", 5) is None   # 미지원 시장
+
+    def test_market_to_xcal_covers_all_markets(self):
+        from bot.market_calendar import _MARKET_TO_XCAL
+        # 우리 전 시장이 exchange_calendars 코드에 매핑돼야(universal).
+        for m in ("US", "KR", "JP", "TW", "CN_A", "HK"):
+            assert m in _MARKET_TO_XCAL
+
+    def test_fetch_returns_gate_blocks_on_future_target(self, monkeypatch):
+        # 정밀 gate: add_trading_days 가 미래 만기 반환 → yfinance 호출 전 조기 None.
+        import pytest as _pt
+        _pt.importorskip("yfinance")   # auto_resolve 가 top-level import (VM 검증)
+        import bot.market_calendar as mc, bot.auto_resolve as ar
+        monkeypatch.setattr(mc, "add_trading_days", lambda m, d, n: "2099-01-01")
+        assert ar._fetch_returns("AAPL", "2026-06-01", holding_days=5) == (None, None, None)
+
+    def test_fetch_returns_calendar_gate_blocks_on_future(self, monkeypatch):
+        import pytest as _pt
+        _pt.importorskip("yfinance")
+        import bot.market_calendar as mc, bot.auto_resolve as ar
+        monkeypatch.setattr(mc, "next_trading_day", lambda m, d: "2099-01-01")
+        assert ar._fetch_returns_calendar("AAPL", "2026-06-01", 30) == (None, None, None)
+
+    def test_wiring_present(self):
+        src = open("bot/auto_resolve.py", encoding="utf-8").read()
+        assert "add_trading_days" in src and "next_trading_day" in src, "캘린더 gate 미배선"
+        assert "_SETTLE_BUFFER_DAYS" in src, "settle 버퍼 상수 누락"
+        # 폴백 보존 — 캘린더 None 일 때 기존 +3 휴리스틱이 남아 있어야(회귀 0).
+        assert "holding_days + 3" in src and "calendar_days + 3" in src, "휴리스틱 폴백 제거됨"
+
+
 class TestGicsCandidatesPage:
     """fix(2026-06-05): GICS 후보 대시보드가 서버 파일시스템 경로
     (~/.tradingagents/gics_check_audit.jsonl)를 본문 footer 로 노출하던 것 제거.

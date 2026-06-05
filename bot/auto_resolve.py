@@ -81,6 +81,21 @@ _SCREENER_GATE_CALENDAR_DAYS = {
     180: 183,
 }
 
+# 휴장일-인지 readiness gate (2026-06-05). 거래일/다음-거래일 만기 세션 + 이
+# settle 버퍼(target 세션 close 가 yfinance 에 landing 할 캘린더-일 여유)가
+# 지났을 때만 outcome 을 시도한다. market_calendar 부재 시 아래 함수들이
+# 기존 캘린더-일 휴리스틱으로 폴백한다.
+_SETTLE_BUFFER_DAYS = 1
+
+
+def _detect_market_safe(ticker: str) -> str:
+    """detect_market graceful — 실패 시 US(가장 보수적·기존 동작)."""
+    try:
+        from bot.market import detect_market
+        return detect_market(ticker) or "US"
+    except Exception:
+        return "US"
+
 
 def _fetch_returns_calendar(
     ticker: str, trade_date: str, calendar_days: int,
@@ -96,8 +111,18 @@ def _fetch_returns_calendar(
     구간). None on insufficient data."""
     try:
         start = datetime.strptime(trade_date, "%Y-%m-%d")
-        # +3 calendar-day buffer 로 target+next-bday 가 today 안에 들어왔는지
-        if start + timedelta(days=calendar_days + 3) > datetime.now():
+        # readiness gate — 휴장일-인지(거래일 캘린더) 우선. 만기 = (trade_date
+        # + calendar_days) 이상 첫 거래일. 그 세션 close 가 landing 했을 +1
+        # 캘린더일이 지났을 때만 시도. 캘린더 라이브러리 부재 시 기존 +3
+        # 캘린더-일 휴리스틱으로 폴백(회귀 0).
+        from bot.market_calendar import next_trading_day as _ntd
+        _res_day = _ntd(_detect_market_safe(ticker),
+                        (start + timedelta(days=calendar_days)).strftime("%Y-%m-%d"))
+        if _res_day is not None:
+            if (datetime.strptime(_res_day, "%Y-%m-%d")
+                    + timedelta(days=_SETTLE_BUFFER_DAYS) > datetime.now()):
+                return None, None, None
+        elif start + timedelta(days=calendar_days + 3) > datetime.now():
             return None, None, None
         end = datetime.now() + timedelta(days=1)
         end_str = end.strftime("%Y-%m-%d")
@@ -170,13 +195,19 @@ def _fetch_returns(
         # 5/18 even though all 5 trading days (5/11–5/15) were already
         # in yfinance — because end_calc = 5/9 + 12 = 5/21 > today (5/18)
         # so the function bailed before even attempting the fetch.
-        # The +3 calendar-day buffer is the minimum that absorbs a
-        # weekend transition: a Friday-or-Saturday trade_date plus the
-        # subsequent weekend still has 5 trading days settle within
-        # holding_days + 3 calendar days. Past this gate we attempt the
-        # fetch and rely on the per-fetch readiness check below to
-        # determine whether enough closes actually landed.
-        if start + timedelta(days=holding_days + 3) > datetime.now():
+        # readiness gate — 휴장일-인지(거래일 캘린더) 우선. 만기 = 거래일
+        # holding_days 뒤 세션. 그 세션 close 가 landing 했을 +1 캘린더일이
+        # 지났을 때만 시도. 공휴일이 윈도에 끼면 만기가 자동으로 뒤로 밀려
+        # 부분(4일) 결과를 최종으로 기록하던 휴리스틱 오발을 막는다. 캘린더
+        # 라이브러리 부재 시 기존 +3 캘린더-일 휴리스틱으로 폴백(회귀 0):
+        # 무휴일 주 5거래일 ≈ 7캘린더일 → +8 로 기존 timeliness 와 동일.
+        from bot.market_calendar import add_trading_days as _atd
+        _target = _atd(_detect_market_safe(ticker), trade_date, holding_days)
+        if _target is not None:
+            if (datetime.strptime(_target, "%Y-%m-%d")
+                    + timedelta(days=_SETTLE_BUFFER_DAYS) > datetime.now()):
+                return None, None, None
+        elif start + timedelta(days=holding_days + 3) > datetime.now():
             return None, None, None
         # Fetch end = today + 1 day so we catch closes that just landed.
         # Bigger windows wasted bandwidth without buying anything — the
