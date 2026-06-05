@@ -531,6 +531,12 @@ class TestPriceChartRender:
         assert "+ '만'" in _CHART_JS and "+ '억'" in _CHART_JS, "KRW 만/억 약식 누락"
         assert "rightOffset:" in _CHART_JS, "마커 잘림 방지 우측 여백 누락"
         assert "height: 480" in _CHART_JS, "차트 높이 갱신 누락"
+        # 52주 신고가/신저가 — 우측 패널 기간 밑 항상 표시(지표 토글 무관)
+        assert "'52주 신고가'" in _CHART_JS and "'52주 신저가'" in _CHART_JS, "52주 신고/신저 패널 누락"
+        assert "d.wk52_high" in _CHART_JS and "d.wk52_low" in _CHART_JS, "52주 payload 참조 누락"
+        # chart_data 가 fast_info 로 52주값 주입
+        cdsrc = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "_year_high_low" in cdsrc and 'payload["wk52_high"]' in cdsrc, "52주 payload 배선 누락"
 
     def test_chart_json_script_termination_defused(self):
         """JSON 안의 '</' 가 <script> 블록을 조기 종료하지 못하게 defuse."""

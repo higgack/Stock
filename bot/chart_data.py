@@ -261,6 +261,29 @@ def _validate_live_price(lp, last_close, market: str = "US"):
     return lp if low <= lp / last_close <= high else None
 
 
+def _year_high_low(t, decimals: int):
+    """fast_info 의 52주 신고가/신저가(반올림) → (high, low). 실패 시 (None, None).
+    52주값은 차트 interval/range 와 무관한 fundamental — 패널에 항상 표시용."""
+    try:
+        fi = t.fast_info
+
+        def _g(*names):
+            for n in names:
+                try:
+                    v = fi[n] if hasattr(fi, "__getitem__") else getattr(fi, n, None)
+                except Exception:
+                    v = None
+                if v is not None:
+                    return v
+            return None
+        hi = _g("year_high", "yearHigh", "fifty_two_week_high")
+        lo = _g("year_low", "yearLow", "fifty_two_week_low")
+        return (round(hi, decimals) if isinstance(hi, (int, float)) else None,
+                round(lo, decimals) if isinstance(lo, (int, float)) else None)
+    except Exception:
+        return (None, None)
+
+
 def _live_last_price(t, payload: dict, decimals: int, ticker: str):
     """검증된 라이브 현재가(반올림) 또는 None(→ 차트가 직전 종가 사용).
     어떤 오류든 raise 하지 않고 None 으로 degrade — '오류 나면 안 된다'."""
@@ -344,6 +367,12 @@ def fetch_chart_payload(
             lp = _live_last_price(t, payload, decimals, ticker)
             if lp is not None:
                 payload["last_price"] = lp
+        # 52주 신고가/신저가 — interval 무관(항상 표시). fast_info 캐시라 ₩0.
+        hi52, lo52 = _year_high_low(t, decimals)
+        if hi52 is not None:
+            payload["wk52_high"] = hi52
+        if lo52 is not None:
+            payload["wk52_low"] = lo52
         return payload
     except Exception as exc:
         log.warning(

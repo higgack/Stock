@@ -2206,6 +2206,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
         <ul>
           <li><span class="k">분석 후</span> — 시점가 대비 현재가 변동%. 분석 이후 우리 방향이 맞았는지(초록=올랐다·빨강=내렸다).</li>
           <li><span class="k">기간 N</span> — 지금 보이는 구간(1개월~전체)의 수익률. 범위를 바꾸면 그 구간 기준으로 갱신.</li>
+          <li><span class="k">52주 신고가/신저가</span> — 최근 1년 최고·최저가(항상 표시, 차트 범위·지표 토글 무관).</li>
           <li>그 아래는 켜둔 지표의 최신값(이평선·볼린저·RSI·MACD·거래량). 가격 항목엔 통화 기호(₩/¥/$ 등) 표시.</li>
         </ul>
       </div>
@@ -2631,6 +2632,9 @@ _CHART_JS = """
       var _rlabel = ({'1mo':'1개월','3mo':'3개월','6mo':'6개월','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[curRange] || curRange;
       items.push(['기간 ' + _rlabel, (_pchg >= 0 ? '+' : '') + _pchg.toFixed(1) + '%', _pcol, null, 'pct']);
     }
+    // 52주 신고가/신저가 — 항상 표시(기간 바로 밑). fast_info 52주값(지표 토글 무관).
+    if (d.wk52_high != null) items.push(['52주 신고가', d.wk52_high, '#26a69a', dec]);
+    if (d.wk52_low  != null) items.push(['52주 신저가', d.wk52_low,  '#e2574c', dec]);
     if (markers) {
       if (markers.entry  != null) items.push(['진입', markers.entry,  '#9b59b6', dec]);
       if (markers.stop   != null) items.push(['손절', markers.stop,   '#e2574c', dec]);
