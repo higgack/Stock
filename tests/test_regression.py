@@ -1848,6 +1848,19 @@ class TestChartEvents:
         assert classify("§1.01 Material Agreement") == "order"
         assert classify("§3.01 Exchange Delisting") == "risk"
 
+    def test_title_translate_cache_graceful(self, tmp_path, monkeypatch):
+        # CN/JP/TW 제목 LLM 번역 — 영구 캐시 우선, 키 부재 시 graceful(원문 유지).
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "_CACHE", tmp_path / "c.json")
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        ct._save({"贵州茅台 回购公告": "귀주모태주 자사주 매입 공고"})
+        out = ct.translate_titles_kr(["贵州茅台 回购公告", "未缓存标题"])
+        assert out == {"贵州茅台 回购公告": "귀주모태주 자사주 매입 공고"}  # 캐시만(미캐시는 키없어 생략)
+        assert ct.translate_titles_kr([]) == {}
+        # 배선: chart_events 가 CN/JP/TW 에서 번역 호출(분류는 원문 유지)
+        ce = open("bot/chart_events.py", encoding="utf-8").read()
+        assert "translate_titles_kr" in ce and '("CN_A", "HK", "JP", "TW")' in ce
+
     def test_whitelist_filter(self):
         # 마커는 화이트리스트 4종만(그 외 제외). 소스에 _SHOW_TYPES 필터 존재.
         from bot.chart_events import _SHOW_TYPES

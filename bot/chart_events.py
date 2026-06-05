@@ -236,4 +236,16 @@ def fetch_disclosure_events(ticker: str, limit: int = 250, days: int = 400) -> l
     # 화이트리스트(사용자 2026-06-05): 수주·계약 / 시설투자 / 주주환원 / 자본변동만.
     # 그 외(실적·임원·소송·매출손익구조변경 등)는 마커 미표시.
     events = [e for e in events if e.get("type") in _SHOW_TYPES]
-    return events[-limit:] if len(events) > limit else events
+    events = events[-limit:] if len(events) > limit else events
+    # CN/JP/TW 제목 한국어 번역(Flash, 영구 캐시 → 반복 ₩0). 분류는 위에서 원문으로
+    # 이미 확정 → 표시 제목만 교체. KR=원래 한국어, US=고정 사전(위)이라 제외.
+    if market in ("CN_A", "HK", "JP", "TW") and events:
+        try:
+            from bot.chart_translate import translate_titles_kr
+            kr = translate_titles_kr([e["title"] for e in events])
+            for e in events:
+                if kr.get(e["title"]):
+                    e["title"] = kr[e["title"]]
+        except Exception:
+            pass
+    return events
