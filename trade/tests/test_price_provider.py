@@ -451,6 +451,63 @@ class SplitNamesTests(unittest.TestCase):
         self.assertEqual(pp.split_names(["등"]), [])
         self.assertEqual(pp.split_names([""]), [])
 
+    def test_comma_separator(self):
+        self.assertEqual(pp.split_names(["세아제강, 휴스틸, 넥스틸"]),
+                         ["세아제강", "휴스틸", "넥스틸"])
+        self.assertEqual(pp.split_names(["에코프로비엠, LG화학"]),
+                         ["에코프로비엠", "LG화학"])
+
+    def test_space_separated_multi_tokens(self):
+        # 공백으로 묶인 다중 종목 — 원본도 보존하고 각 토큰도 등록(원본은
+        # 어차피 미해결 → 토큰별 매칭이 작동).
+        out = pp.split_names(["삼아알미늄 DI동일 동원시스템즈 롯데케미칼"])
+        for t in ("삼아알미늄", "DI동일", "동원시스템즈", "롯데케미칼"):
+            self.assertIn(t, out)
+
+    def test_period_tokens_left_intact(self):
+        # JYP Ent. / LS ELECTRIC 같이 마침표/영문 포함은 분리 안 함(KRX 정식
+        # 명칭일 수 있음). 원본 그대로만 등록.
+        self.assertEqual(pp.split_names(["JYP Ent."]), ["JYP Ent."])
+
+    def test_parser_prefix_stripped(self):
+        self.assertEqual(pp.split_names(["관련종목 : LG전자"]), ["LG전자"])
+        self.assertEqual(pp.split_names(["관련종목: 삼성전자"]), ["삼성전자"])
+
+
+class ResolverAliasTests(_DPEnv):
+    def test_direct_code_bypasses_datagokr(self):
+        # _DIRECT_CODES 항목은 외부 호출 0으로 즉시 코드 반환.
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.resolve_codes(["HD현대건설기계"], transport=fake)
+        self.assertEqual(out["HD현대건설기계"], "267270")
+        self.assertEqual(len(fake.calls), 0)
+
+    def test_name_alias_queries_aliased_name(self):
+        # alias가 적용된 KRX 표기로 likeItmsNm 질의됨.
+        seen_query = {}
+        items = [{"srtnCd": "010620", "itmsNm": "HD현대미포",
+                  "clpr": "100000", "vs": 0, "fltRt": 0, "basDt": "20260605",
+                  "mrktCtg": "KOSPI"}]
+
+        def fake(method, url, *, headers, body=None):
+            from urllib.parse import urlparse, parse_qs
+            seen_query["q"] = parse_qs(urlparse(url).query).get("likeItmsNm",
+                                                                 [""])[0]
+            return {"response": {"body": {"items": {"item": items},
+                                          "totalCount": "1"}}}
+        out = pp.resolve_codes(["HD현대미포조선"], transport=fake)
+        self.assertEqual(out["HD현대미포조선"], "010620")
+        self.assertEqual(seen_query["q"], "HD현대미포")        # alias로 질의
+
+    def test_cache_version_invalidates_old_neg_cache(self):
+        # 이전 음성 캐시(_v 없음)는 무시되고, alias 덕에 새로 양성 등록됨.
+        old = {"HD현대건설기계": {"code": "", "_cached_at": time.time()}}
+        pp._CODE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        pp._CODE_CACHE.write_text(__import__("json").dumps(old))
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.resolve_codes(["HD현대건설기계"], transport=fake)
+        self.assertEqual(out["HD현대건설기계"], "267270")    # direct code 적용
+
 
 class CacheOnlyTests(_DPEnv):
     def test_fetch_false_empty_cache_no_api(self):

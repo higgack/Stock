@@ -81,9 +81,11 @@ class FrontendWiringTests(unittest.TestCase):
         self.assertIn("sectionStockPx(name)", dashboard._JS)
 
     def test_js_composite_fallback_lookup(self):
-        # 복합명('A / B 등') 칩/헤더는 첫 종목으로 fallback 조회.
+        # 복합명('A / B 등') 칩/헤더는 첫 종목으로 fallback 조회. 폴백 순서:
+        # 원본 → '관련종목 : ' 제거 → 슬래시/콤마/중점 첫 토큰 → 공백 첫 단어.
         self.assertIn("function pxLookup(", dashboard._JS)
-        self.assertIn("split('/')[0]", dashboard._JS)
+        self.assertIn("관련종목", dashboard._JS)
+        self.assertIn("split(/[\\/·,]/)", dashboard._JS)
         # stockPx/sectionStockPx가 pxLookup 사용
         self.assertIn("var q=pxLookup(name)", dashboard._JS)
 

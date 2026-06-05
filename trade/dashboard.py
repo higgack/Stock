@@ -834,13 +834,23 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 _JS = r"""
 // --- helpers ---
 function esc(s){return s==null?'':String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
-// STOCK_QUOTES 조회 — 정확일치 우선, 없으면 복합명('A / B 등')의 첫 종목.
+// STOCK_QUOTES 조회 — 정확일치 → 파서 누수 접두사 제거 → 1차 토큰(슬래시·
+// 중점·콤마) → 다중 공백 토큰의 첫 단어. 가능한 폴백을 순서대로 시도.
 function pxLookup(name){
   if(typeof STOCK_QUOTES==='undefined'||!name)return null;
-  if(STOCK_QUOTES[name])return STOCK_QUOTES[name];
-  var first=String(name).split('/')[0].trim();
+  var s=String(name);
+  if(STOCK_QUOTES[s])return STOCK_QUOTES[s];
+  s=s.replace(/^관련종목\s*:\s*/,'');
+  if(STOCK_QUOTES[s])return STOCK_QUOTES[s];
+  var first=s.split(/[\/·,]/)[0].trim();
   if(first.endsWith(' 등'))first=first.slice(0,-2).trim();
-  return (first&&STOCK_QUOTES[first])||null;
+  if(first&&STOCK_QUOTES[first])return STOCK_QUOTES[first];
+  // 다중 공백 토큰의 첫 단어(서버 split_names와 동일 규칙)
+  if(first.indexOf(' ')>0){
+    var w=first.split(/\s+/)[0];
+    if(STOCK_QUOTES[w])return STOCK_QUOTES[w];
+  }
+  return null;
 }
 // 관련종목 시세 칩 — 매칭되는 종목만 +등락률. 없으면 빈 문자열(이름만).
 function stockPx(name){

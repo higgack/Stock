@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -352,9 +353,18 @@ def resolve_codes(names: Iterable[str], *,
         cache = json.loads(_CODE_CACHE.read_text(encoding="utf-8"))
     except Exception:
         cache = {}
+    # 리졸버 스키마 버전 불일치(=alias/직접코드 매핑 갱신) → 캐시 무효화.
+    # 옛 음성 캐시가 새 매핑을 가려서 종목이 영원히 안 뜨던 회귀 방지.
+    if cache.get("_v") != _RESOLVER_VERSION:
+        cache = {"_v": _RESOLVER_VERSION}
     out: dict[str, str] = {}
     dirty = False
     for n in uniq:
+        # 1) 직접 코드 매핑 — data.go.kr 미지원 종목 즉시(외부 호출 0).
+        if n in _DIRECT_CODES:
+            out[n] = _DIRECT_CODES[n]
+            continue
+        # 2) 캐시 — 양성/음성 TTL 적용
         rec = cache.get(n)
         if rec:
             ttl = _CODE_TTL_S if rec.get("code") else neg_ttl
@@ -364,7 +374,10 @@ def resolve_codes(names: Iterable[str], *,
                 continue
         if not fetch:                          # 캐시 전용(렌더): 외부 호출 안 함
             continue
-        q = _dp_pick(_dp_fetch("likeItmsNm", n, transport=transport), exact_name=n)
+        # 3) data.go.kr 조회 — alias가 있으면 KRX 표기로 변환해 질의.
+        query = _NAME_ALIASES.get(n, n)
+        q = _dp_pick(_dp_fetch("likeItmsNm", query, transport=transport),
+                     exact_name=query)
         if q:
             out[n] = q.symbol
             cache[n] = {"code": q.symbol, "_cached_at": now}
@@ -410,20 +423,91 @@ def _save_cache(cache: dict) -> None:
 
 def split_names(stocks: Iterable[str]) -> list[str]:
     """BeOn 관련종목 문자열들 → 개별 종목명(중복 제거, 순서 유지).
-    'GST / 유니셈 등' 같은 복합 문자열을 ' / '로 분리하고 후행 '등' 토큰을
-    제거 — 한 칩에 여러 종목이 묶인 경우 각 종목을 따로 시세 조회/워밍."""
+
+    분리 규칙(보수적 → 적극적 순):
+      · '관련종목 : X' 파서 누수 접두사 제거
+      · '/' '·' ',' 로 분리(보수)
+      · 후행 '등' 토큰/접미사 제거
+      · 한 토큰이 공백 다수면 추가로 공백 분리(예: '삼아알미늄 DI동일 동원시스템즈').
+        영문 약어/마침표 포함(JYP Ent., LS ELECTRIC 등) 토큰은 통째로도 함께
+        남겨 양쪽 다 시도(원본이 우선 매칭되면 안전).
+    """
     out, seen = [], set()
+
+    def _add(name: str) -> None:
+        if not name or name in seen:
+            return
+        seen.add(name)
+        out.append(name)
+
     for s in stocks or []:
-        for part in str(s).split("/"):
+        s = _PARSER_PREFIX_RE.sub("", str(s)).strip()
+        for part in _PRIMARY_SPLIT_RE.split(s):
             p = part.strip()
             if p == "등":
                 continue
             if p.endswith(" 등"):
                 p = p[:-2].strip()
-            if p and p not in seen:
-                seen.add(p)
-                out.append(p)
+            if not p:
+                continue
+            _add(p)
+            toks = p.split()
+            # 다중 공백 토큰(예: '삼아알미늄 DI동일 동원시스템즈')은 각각도 등록.
+            # 마침표(., Ent.) 포함이면 정식 KRX 명칭일 수 있어 그대로 두는 게
+            # 안전 — 원본만 등록(이미 위에서 _add 됨).
+            if len(toks) >= 2 and not any("." in t for t in toks):
+                for t in toks:
+                    _add(t.strip())
     return out
+
+
+# 파서 누수 ('관련종목 : LG전자') 접두사
+_PARSER_PREFIX_RE = re.compile(r"^관련종목\s*:\s*")
+# 1차 분리자: 슬래시·중점(·)·콤마 — 한국 본문에서 종목 나열에 자주 쓰임
+_PRIMARY_SPLIT_RE = re.compile(r"[/·,]")
+
+
+# ---------------------------------------------------------------------
+# Resolver — 표기 alias + 직접 코드 매핑
+# ---------------------------------------------------------------------
+
+# data.go.kr의 KRX 정식 표기와 운영자 데이터(BeOn)의 표기 차이 보정.
+# 'BeOn 표기 → KRX 표기'로 적되, data.go.kr 응답을 따른다.
+_NAME_ALIASES: dict[str, str] = {
+    "Sk하이닉스": "SK하이닉스",
+    "HD현대미포조선": "HD현대미포",
+    "한국타이어": "한국타이어앤테크놀로지",
+    "코오롱인더스트리": "코오롱인더",
+    "롯데칠성음료": "롯데칠성",
+    "금호석유": "금호석유화학",
+    "한국수출포장공업": "한국수출포장",
+    "코스맥스NBT": "코스맥스엔비티",
+    "제이엔케이히터": "JNK히터",
+    "조광ILI": "조광아이엘아이",
+}
+
+# KRX엔 상장돼 있지만 data.go.kr likeItmsNm으로 안 잡히는 종목은 코드를
+# 직접 매핑(외부 호출 없이 즉시 KIS로). 이름은 BeOn 표기 기준.
+_DIRECT_CODES: dict[str, str] = {
+    "HD현대건설기계": "267270",
+    "LIG넥스원": "079550",
+    "휴켐스": "069260",
+    "효성첨단소재": "298050",
+    "라온테크": "232680",
+    "와이아이케이": "232140",
+    "네온테크": "306620",
+    "무림제지": "009200",
+    "세하": "027970",
+    "백광산업": "001340",
+    "코오롱플라스틱": "138490",
+    "현대에너지솔루션": "322000",
+    "제이오": "418550",
+    "나노신소재": "121600",
+}
+
+# 코드 캐시 스키마 버전 — 위 두 매핑/분리 로직이 바뀌면 bump → 기존 캐시
+# (특히 음성 캐시) 자동 무효화 → 새 매핑이 즉시 효과.
+_RESOLVER_VERSION = 2
 
 
 def _norm(symbols: Iterable[str]) -> list[str]:
