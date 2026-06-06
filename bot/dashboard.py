@@ -4323,8 +4323,8 @@ def regenerate_screener_index() -> None:
 
 
 # ── Daily Byte archive view ──────────────────────────────────────────────
-# 장 마감 후 KR 수급 브리프 (bot/daily_kr_flow.py). Daily(평일 19:00) +
-# Weekly(일 22:00, SV weekly 와 동일 시각) run 을 한 페이지에 date-그룹
+# 장 마감 후 KR 수급 브리프 (bot/daily_kr_flow.py). Daily(한국거래일 19:00,
+# 주말·공휴일 skip) + Weekly(일 22:00, SV weekly 와 동일 시각) run 을 date-그룹
 # 카드로 렌더. screener.html 의 theme(_SCREENER_CSS)·검색창·🗑️ 휴지통
 # UX 를 그대로 mirror — 차이는 카드가 단일 브리프 본문(섹션 분리 없음)
 # 이라는 점 + Daily/Weekly kind 뱃지.
@@ -4544,7 +4544,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
     · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
   </div>
   <h1>📊 Daily Byte — Archive</h1>
-  <p class="sub">장 마감 후 KR 수급 브리프 · 평일 19:00 Daily + 일 22:00 Weekly (KST) · 수급 데이터 관찰(교육·정보), 투자 권유 아님</p>
+  <p class="sub">장 마감 후 KR 수급 브리프 · 한국거래일 19:00 Daily + 일 22:00 Weekly (KST) · 수급 데이터 관찰(교육·정보), 투자 권유 아님</p>
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 브리프</div></div>
@@ -4566,7 +4566,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
     if not runs:
         parts.append("""
   <div class="empty">
-    아직 Daily Byte 기록이 없습니다. 평일 19:00 KST 자동 생성됩니다.
+    아직 Daily Byte 기록이 없습니다. 한국거래일 19:00 KST 자동 생성됩니다.
   </div>
 </div></body></html>""")
         return "".join(parts)
