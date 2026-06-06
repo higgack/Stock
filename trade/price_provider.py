@@ -91,7 +91,10 @@ class Quote:
     change_pct: float      # %
     prev_close: float
     currency: str
-    ts: str                # UTC ISO
+    ts: str                # UTC ISO (조회 시각)
+    source: str = "kis"    # "kis"(현재가/실시간) | "eod"(data.go.kr 종가)
+    as_of: str = ""        # EOD 기준영업일(YYYYMMDD). KIS(현재가)는 "". 기본값이라
+                           #   source/as_of 없는 구캐시도 Quote(**d)로 그대로 로드됨.
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -297,6 +300,7 @@ def _quote_from_dp_item(it: dict) -> Optional[Quote]:
         price=price, change=change, change_pct=change_pct,
         prev_close=price - change, currency="KRW",
         ts=datetime.now(timezone.utc).isoformat(),
+        source="eod", as_of=str(it.get("basDt") or ""),
     )
 
 
@@ -584,7 +588,8 @@ def get_quotes(symbols: Iterable[str], *,
     codes = _norm(symbols)[:_MAX_SYMBOLS]
     if not codes:
         return {}
-    provider = _PROVIDERS.get(_provider())
+    prov = _provider()
+    provider = _PROVIDERS.get(prov)
     if provider is None:
         return {}
     now = time.time()
@@ -594,12 +599,17 @@ def get_quotes(symbols: Iterable[str], *,
     for c in codes:
         rec = cache.get(c)
         if rec and (now - rec.get("_cached_at", 0)) < ttl_s:
-            try:
-                d = {k: v for k, v in rec.items() if k != "_cached_at"}
-                fresh[c] = Quote(**d)
-                continue
-            except Exception:
-                pass
+            # 소프트 EOD: KIS 공급자로 워밍(fetch=True)할 땐 EOD 소스 캐시를 신선
+            # 취급하지 않고 KIS로 재탈환 시도한다 — 틀린 날 EOD 종가가 6h TTL에
+            # 갇혀 KIS 현재가(금요일 종가)를 막던 포이즈닝 방지. 렌더(fetch=False)
+            # 와 dataportal 공급자에선 그대로 신선 반환(빈칸보단 라벨된 EOD).
+            if not (rec.get("source") == "eod" and fetch and prov == "kis"):
+                try:
+                    d = {k: v for k, v in rec.items() if k != "_cached_at"}
+                    fresh[c] = Quote(**d)
+                    continue
+                except Exception:
+                    pass
         stale.append(c)
     if stale and fetch:
         try:

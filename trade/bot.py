@@ -163,7 +163,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
   · 🔗 URL 복사 (#a/&lt;id&gt; 딥링크) · 🖼 이미지 저장
   · 합산 ↔ 개별 양방향 링크 (수산화칼륨+탄산칼륨 ↔ 각 개별)
   · 같은 품목 다른 회사 (peer chip — 클릭 시 회사 뷰 자동 필터)
-  · 관련종목·회사헤더 시세 등락률(키 설정 시·KIS실시간/data.go.kr EOD)
+  · 관련종목·회사헤더 시세 등락률(KIS 현재가, EOD 종가는 요일 라벨 표시)
 
 <b>8. 명령어</b> (워치·ignore 명령은 봇과 <b>1:1 채팅(DM)</b>에서만 동작)
 /help · /start — 이 안내 (채널·DM 둘 다)
@@ -201,7 +201,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-06 — KIS 시세 장애 시 EOD 자동 폴백·토큰 self-heal</i>
+<i>최종 갱신: 2026-06-06 — EOD 종가 소프트캐시(KIS 우선 탈환)+기준일 요일 라벨</i>
 """
 
 
