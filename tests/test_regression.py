@@ -3074,3 +3074,9 @@ class TestPortfolioSend:
         assert full3 == "317400.KQ"
         assert _noah_lookup(noah, "LRCX") == (None, None)
         assert _noah_lookup({}, "317400") == (None, None)
+
+    def test_noah_portfolio_link_uses_date_path(self):
+        """포트폴리오 NOAH 링크가 {date}/{ticker}.html 경로 (ticker_*.html 아님)."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'ticker_{' not in src or 'ticker_{' not in src.split('_render_portfolio_page')[1].split('\ndef ')[0], \
+            "포트폴리오에 ticker_*.html 링크 잔존"
