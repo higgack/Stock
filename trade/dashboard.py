@@ -158,8 +158,18 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         return ""
 
 
+def _asof_label(basdt: str) -> str:
+    """EOD 기준일(YYYYMMDD) → 한글 요일 1자('목'). 파싱 실패 시 ''. KIS 현재가
+    대비 '며칠 종가'인지 한눈에 — data.go.kr EOD는 보통 T+1 지연이라 토요일엔
+    목/금 종가가 뜬다."""
+    try:
+        return "월화수목금토일"[datetime.strptime(basdt[:8], "%Y%m%d").weekday()]
+    except (ValueError, TypeError, IndexError):
+        return ""
+
+
 def _stock_quotes_for(payload: list[dict]) -> dict:
-    """{종목명: {p: 종가, c: 등락률%}} — BeOn 관련종목(회사명)을 data.go.kr EOD
+    """{종목명: {p: 종가, c: 등락률%, d?: 기준일요일}} — BeOn 관련종목(회사명)을 data.go.kr EOD
     종가에 자동 매칭. 공급자 off(키 없음)/예외/미발견 → 그 종목 생략 또는 {}.
 
     EOD는 하루 1회만 바뀌므로 TTL을 길게(기본 6h, TRADE_PRICE_EOD_TTL)
@@ -181,8 +191,16 @@ def _stock_quotes_for(payload: list[dict]) -> dict:
         # 가격 생략(다음 워밍 후 채워짐). TTL은 장중/마감 자동.
         ttl = price_provider.recommended_ttl()
         quotes = price_provider.get_quotes_by_name(names, ttl_s=ttl, fetch=False)
-        return {nm: {"p": round(q.price), "c": round(q.change_pct, 2)}
-                for nm, q in quotes.items()}
+        out = {}
+        for nm, q in quotes.items():
+            d = {"p": round(q.price), "c": round(q.change_pct, 2)}
+            # EOD(지연 종가)만 기준일 요일 라벨 — KIS 현재가(최신)는 라벨 없음.
+            if getattr(q, "source", "kis") == "eod":
+                lbl = _asof_label(getattr(q, "as_of", ""))
+                if lbl:
+                    d["d"] = lbl
+            out[nm] = d
+        return out
     except Exception:
         return {}
 
@@ -792,6 +810,7 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .section-px{font-size:14px;font-weight:700;margin-left:8px;vertical-align:middle}
 .section-px.up{color:var(--tone-export)}
 .section-px.down{color:var(--tone-import)}
+.px-asof{font-size:.8em;color:#888;font-weight:400;margin-left:2px}
 .modal-images{display:flex;flex-direction:column;gap:1px;background:var(--bg)}
 .modal-images img{width:100%;display:block;background:var(--img-placeholder)}
 .modal-text{padding:14px 22px;font-size:13px;color:var(--text-sub);white-space:pre-wrap;border-top:1px solid var(--border-soft);background:var(--surface-2)}
@@ -856,14 +875,17 @@ function pxLookup(name){
 function stockPx(name){
   var q=pxLookup(name); if(!q)return '';
   var c=Number(q.c)||0, cls=c>=0?'up':'down', sign=c>=0?'+':'';
-  return ' <span class="stock-px '+cls+'" title="종가 '+(Number(q.p)||0).toLocaleString()+'원">'+sign+c.toFixed(1)+'%</span>';
+  var asof=q.d?' <span class="px-asof">('+q.d+')</span>':'';
+  var tt=(q.d?'('+q.d+') 종가 ':'종가 ')+(Number(q.p)||0).toLocaleString()+'원';
+  return ' <span class="stock-px '+cls+'" title="'+tt+'">'+sign+c.toFixed(1)+'%</span>'+asof;
 }
 // 회사별 섹션 헤더용 — 회사명=종목이므로 종가+등락률을 더 크게.
 function sectionStockPx(name){
   var q=pxLookup(name); if(!q)return '';
   var c=Number(q.c)||0, cls=c>=0?'up':'down', sign=c>=0?'+':'';
+  var asof=q.d?' <span class="px-asof">('+q.d+' 종가)</span>':'';
   return ' <span class="section-px '+cls+'" title="종가">'+
-    (Number(q.p)||0).toLocaleString()+'원 '+sign+c.toFixed(1)+'%</span>';
+    (Number(q.p)||0).toLocaleString()+'원 '+sign+c.toFixed(1)+'%</span>'+asof;
 }
 function whereLabel(a){return [a.region,a.country].filter(Boolean).join(' → ')}
 

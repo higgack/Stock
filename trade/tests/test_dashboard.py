@@ -12,7 +12,7 @@ import re
 import unittest
 from pathlib import Path
 
-from trade.dashboard import render_html
+from trade.dashboard import _asof_label, render_html
 from trade.parser import parse_caption
 from trade.store import alert_to_row, open_db, upsert_alert
 
@@ -529,6 +529,17 @@ class TestCustomsPanel(unittest.TestCase):
         # defaults; on a machine with no pins the panel is just hidden).
         html = render_html(self.db_path)
         self.assertIn("<!DOCTYPE html>", html)
+
+
+class AsofLabelTests(unittest.TestCase):
+    def test_weekday_label(self):
+        self.assertEqual(_asof_label("20260604"), "목")   # 2026-06-04 목요일
+        self.assertEqual(_asof_label("20260605"), "금")
+        self.assertEqual(_asof_label("20260606"), "토")
+
+    def test_bad_input_empty(self):
+        for bad in ("", "x", "2026", None):
+            self.assertEqual(_asof_label(bad), "")
 
 
 if __name__ == "__main__":

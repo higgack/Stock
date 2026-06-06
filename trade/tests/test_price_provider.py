@@ -650,6 +650,40 @@ class KisEodFallbackTests(_KisHybridEnv):
         self.assertIn("삼성전자", out)
         self.assertEqual(out["삼성전자"].price, 74000)
 
+    def test_eod_quote_carries_source_and_asof(self):
+        # EOD 폴백분은 source='eod' + 기준영업일(basDt)을 들고 와야(UI 라벨용).
+        h = FakeHybrid(_DP_ITEMS, {})
+        q = pp.get_quotes_by_name(["삼성전자"], transport=h)["삼성전자"]
+        self.assertEqual(q.source, "eod")
+        self.assertEqual(q.as_of, "20260603")          # _DP_ITEMS 최신 basDt
+        # KIS 현재가는 source='kis'·as_of 빈값
+        h2 = FakeHybrid(_DP_ITEMS, {"005930": (351500, 360500, "삼성전자")})
+        q2 = pp.get_quotes_by_name(["삼성전자"], transport=h2, ttl_s=0)["삼성전자"]
+        self.assertEqual(q2.source, "kis")
+        self.assertEqual(q2.as_of, "")
+
+    def test_soft_eod_reclaimed_by_kis_when_recovers(self):
+        # 포이즌 방지의 핵심: KIS 죽어 EOD가 캐시에 박혀도, KIS 회복 시 워밍이
+        # (TTL 신선하더라도) KIS 현재가로 탈환해야 한다 — '틀린 날 6h 갇힘' 차단.
+        h = FakeHybrid(_DP_ITEMS, {})                  # KIS 실패 → EOD 캐시
+        pp.get_quotes_by_name(["삼성전자"], transport=h)
+        rec = json.loads(pp._QUOTE_CACHE.read_text())["005930"]
+        self.assertEqual(rec["source"], "eod")         # 일단 EOD로 박힘
+        h2 = FakeHybrid(_DP_ITEMS, {"005930": (351500, 360500, "삼성전자")})
+        out = pp.get_quotes_by_name(["삼성전자"], transport=h2, ttl_s=21600)  # 6h 신선해도
+        self.assertEqual(out["삼성전자"].price, 351500)  # EOD(74000) 아닌 KIS로 교체
+        self.assertEqual(out["삼성전자"].source, "kis")
+
+    def test_old_cache_without_source_loads_as_kis(self):
+        # source/as_of 없는 구캐시도 Quote(**d) 기본값으로 로드(KIS 취급, 비-soft).
+        old = {"005930": {"symbol": "005930", "name": "삼성전자", "price": 74000,
+               "change": 1000, "change_pct": 1.3, "prev_close": 73000,
+               "currency": "KRW", "ts": "x", "_cached_at": time.time()}}
+        pp._QUOTE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        pp._QUOTE_CACHE.write_text(json.dumps(old))
+        out = pp.get_quotes(["005930"], transport=FakeKIS({}), ttl_s=600)
+        self.assertEqual(out["005930"].source, "kis")  # 기본값 적용, refetch 안 함
+
 
 if __name__ == "__main__":
     unittest.main()
