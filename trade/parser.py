@@ -41,7 +41,7 @@ _FINAL_LINE_RE = re.compile(
 # 안 삼킴. 상한 없음(최소 2자) — 긴 복합사('HD현대일렉트릭 / 효성중공업 / LS ELECTRIC
 # / 일진전기 등' ~39자)도 회사로 잡아야 함. 콜론 앞 괄호 없는 건 회사접두뿐이라 길이
 # 상한이 없어도 item_first 오매칭 위험 없음(20자 상한이 긴 복합사를 놓쳐 회귀했음).
-_COMPANY_TITLE_RE = re.compile(r"^([^():]{2,}?)\s*:\s+(.+)$")
+_COMPANY_TITLE_RE = re.compile(r"^([^():]{2,}?)\s*:\s*(.+)$")
 
 # --- RULE 4 — standard title: '<품목> (<지역>)' ---
 # Right-anchored to (...) so multi-paren items keep their inner parens
@@ -251,6 +251,37 @@ def _parse_stocks(
     return stocks, meta, has_etc, warnings
 
 
+def _is_known_company(name: str) -> bool:
+    """이름이 KRX 상장 마스터(이름→코드)에 있나(공백제거 정확일치). 마스터 없으면 False."""
+    try:
+        from trade import price_provider as pp
+        return (name or "").replace(" ", "") in pp._load_krx_master()
+    except Exception:
+        return False
+
+
+def _company_left_inverted(x: str, y: str, z: str) -> bool:
+    """'X (Y): Z' inline 제목이 회사-우선(거꾸로)인지 판별.
+
+    BeOn은 '품목 (지역): 회사'(RULE 12)도, 반대인 '회사 (별칭/지역/비상장): 품목'도
+    쓴다. 거꾸로로 보는 조건은 **좌변(X 또는 괄호 Y)이 KRX 상장사이거나 Y가 '비상장'
+    마커**이고, 동시에 **우변(Z)이 회사목록이 아닐 때**. 실제 RULE 12는 X=품목(비회사)·
+    Y=지역(비회사·비'비상장')이라 이 조건이 참이 될 수 없어 정상 행은 절대 안 뒤집힘
+    (회귀 0). 마스터 못 읽으면 '비상장' 마커만으로 보수적 판정."""
+    try:
+        from trade import price_provider as pp
+        master = pp._load_krx_master()
+        n = lambda s: (s or "").replace(" ", "")
+        left_is_company = n(x) in master or y == "비상장" or n(y) in master
+        if not left_is_company:
+            return False
+        # 우변이 회사목록이면(=실제 RULE 12) 뒤집지 않음 — 이중 가드.
+        z_companies = [t for t in pp.split_names([z]) if n(t) in master]
+        return not z_companies
+    except Exception:
+        return y == "비상장"
+
+
 def parse_caption(caption: str) -> ParsedAlert | None:
     """Top-level entry point. None if the caption is not a BeOn alert."""
     if not caption:
@@ -335,10 +366,27 @@ def parse_caption(caption: str) -> ParsedAlert | None:
         # items + items), not '품목 (지역): 회사/회사'.
         ism = _INLINE_STOCKS_TITLE_RE.match(title)
         if ism and "/" not in ism.group(1):
-            item_raw = ism.group(1).strip()
-            region_part = ism.group(2).strip()
-            inline_stocks_raw = ism.group(3).strip()
-            title_kind = "item_first"
+            x = ism.group(1).strip()        # 좌변
+            y = ism.group(2).strip()        # 괄호(지역 or 별칭 or '비상장')
+            z = ism.group(3).strip()        # 우변
+            if _company_left_inverted(x, y, z):
+                # 'X (Y): Z'가 거꾸로 — 좌변이 회사, 우변이 품목(회사-우선). 실제
+                # RULE 12(품목 (지역): 회사)는 X=품목이라 여기 안 들어옴(회귀 0).
+                company_from_title = x
+                title_kind = "company_first"
+                rm = _STANDARD_TITLE_RE.match(z)
+                if rm:                       # 우변 품목에 지역 괄호가 붙어있으면 분리
+                    item_raw = rm.group(1).strip()
+                    region_part = rm.group(2).strip()
+                else:                        # 우변에 지역 없으면 Y가 지역(별칭/비상장은 제외)
+                    item_raw = z
+                    region_part = "" if (y == "비상장" or _is_known_company(y)) else y
+                warnings.append("company_first_inverted_inline")
+            else:
+                item_raw = x
+                region_part = y
+                inline_stocks_raw = z
+                title_kind = "item_first"
         else:
             sm = _STANDARD_TITLE_RE.match(title)
             if sm:

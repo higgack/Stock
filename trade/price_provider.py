@@ -373,16 +373,26 @@ def _dataportal_get_quotes_by_name(names: list[str], *,
     return out
 
 
+_krx_master_memo: dict = {"key": None, "data": {}}
+
+
 def _load_krx_master() -> dict[str, str]:
     """{공백제거 정규화 이름: 코드} — 로컬 KRX 상장 마스터(build_krx_codes 생성).
-    없거나 깨졌으면 {} (resolve가 캐시·data.go.kr로 폴백). 매 호출 로드(작은 파일)."""
+    없거나 깨졌으면 {}. (경로, mtime) 기준 메모이즈 — 파서/reparse가 행마다 불러도
+    파일이 바뀔 때만 다시 읽음(테스트가 temp 경로 바꿔도 키에 경로 포함이라 안전)."""
     try:
-        raw = json.loads(_KRX_MASTER.read_text(encoding="utf-8"))
-    except Exception:
+        key = (str(_KRX_MASTER), _KRX_MASTER.stat().st_mtime)
+    except OSError:
         return {}
-    if not isinstance(raw, dict):
-        return {}
-    return {str(k).replace(" ", ""): v for k, v in raw.items() if v}
+    if _krx_master_memo["key"] != key:
+        try:
+            raw = json.loads(_KRX_MASTER.read_text(encoding="utf-8"))
+            data = ({str(k).replace(" ", ""): v for k, v in raw.items() if v}
+                    if isinstance(raw, dict) else {})
+        except Exception:
+            data = {}
+        _krx_master_memo.update(key=key, data=data)
+    return _krx_master_memo["data"]
 
 
 def fetch_krx_master(*, transport: Transport = _default_transport,
