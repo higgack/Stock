@@ -2889,3 +2889,73 @@ class TestPortfolioPnlDelta:
         assert "holdings_pnl" in src
         assert "손익변동" in src
         assert 'data-k="chg"' in src
+
+
+class TestWeekendHolidayGating:
+    """SV 일일 브리프 주말 차단 + Daily Byte 한국 거래일 게이트 회귀 차단.
+    핵심: 일일은 막되 주간브리프(SV·Daily Byte 일요일 22시)는 보존 (사용자
+    정책 2026-06-06 — '주말 일일은 안 오게, 주간브리프는 그대로')."""
+
+    def test_sv_daily_timer_weekday_only(self):
+        """SV 일일 생성 타이머가 평일(Mon-Fri)만 — 주말 미발화."""
+        src = open("standardview/deploy/standardview-daily.timer",
+                   encoding="utf-8").read()
+        assert src.count("Mon..Fri") >= 2  # 07:30 + 20:30 둘 다
+        assert "OnCalendar=*-*-* 07:30" not in src  # every-day 형식 제거
+
+    def test_sv_generator_weekend_guard(self):
+        """daily_generator.main() 에 주말 skip 가드 (weekday>=5) — 타이머가
+        불러도·워치독이 재실행해도 단일 차단점."""
+        src = open("standardview/scripts/daily_generator.py",
+                   encoding="utf-8").read()
+        assert "weekday() >= 5" in src
+        assert "skip daily brief" in src
+
+    def test_sv_watchdog_weekend_skip(self):
+        """sv-watchdog 가 주말(DOW>=6) 재실행 skip — 가드 무력화 방지."""
+        src = open("standardview/deploy/sv-watchdog.sh", encoding="utf-8").read()
+        assert "DOW_KST" in src
+        assert "-ge 6" in src
+
+    def test_daily_byte_trading_day_gate(self):
+        """daily_kr_flow.main() 에 한국 거래일 게이트 (is_trading_day KR).
+        is False 만 skip → None(라이브러리 부재)·True 는 진행(회귀 0)."""
+        src = open("bot/daily_kr_flow.py", encoding="utf-8").read()
+        assert 'is_trading_day("KR"' in src
+        assert "휴장일" in src
+        assert "is False" in src
+
+    def test_weeklies_not_gated(self):
+        """주간브리프(SV·Daily Byte)는 일일 게이트가 없어야 — 일요일(주말)에
+        그대로 발송. 일일 가드가 주간으로 새지 않음을 영구 확인."""
+        sv_weekly = open("standardview/scripts/weekly_pusher.py",
+                         encoding="utf-8").read()
+        db_weekly = open("bot/daily_kr_weekly.py", encoding="utf-8").read()
+        assert "weekday() >= 5" not in sv_weekly
+        assert 'is_trading_day("KR"' not in db_weekly
+
+    def test_weekly_timers_still_sunday(self):
+        """주간브리프 타이머가 여전히 일요일(Sun) 발화 — 보존 확인."""
+        sv = open("standardview/deploy/standardview-weekly.timer",
+                  encoding="utf-8").read()
+        db = open("deploy/daily-byte-weekly.timer", encoding="utf-8").read()
+        assert "Sun" in sv
+        assert "Sun" in db
+
+    def test_gate_decision_logic(self):
+        """게이트 결정 규칙: is_trading_day False→skip, None/True→진행(폴백)."""
+        def should_skip(tday):  # main() 게이트와 동일 규칙 (is False)
+            return tday is False
+        assert should_skip(False) is True    # 휴장 → skip
+        assert should_skip(True) is False    # 거래일 → 진행
+        assert should_skip(None) is False    # 라이브러리 부재 → 진행
+
+    def test_weekend_weekday_logic(self):
+        """주말 판정: 토(5)·일(6) skip, 평일 진행 (daily_generator 가드 규칙)."""
+        from datetime import datetime
+        def is_weekend(d):  # weekday() >= 5
+            return datetime.fromisoformat(d).weekday() >= 5
+        assert is_weekend("2026-06-06") is True   # 토
+        assert is_weekend("2026-06-07") is True   # 일
+        assert is_weekend("2026-06-05") is False  # 금
+        assert is_weekend("2026-06-08") is False  # 월

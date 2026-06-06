@@ -691,6 +691,19 @@ def main() -> int:
         load_dotenv(Path.home() / "stock" / ".env")
     except Exception:
         pass
+    # 한국 거래일에만 — 주말 + 한국 공휴일이면 graceful skip (사용자 정책
+    # 2026-06-06). is_trading_day 가 주말·공휴일 모두 커버. 캘린더 라이브러리
+    # 부재 시 None → 기존 동작 폴백(진행, 회귀 0). 주간브리프(daily_kr_weekly.py,
+    # 일 22시)는 별도 스크립트라 이 게이트가 안 닿아 그대로 발송.
+    try:
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        from bot.market_calendar import is_trading_day
+        _today_kst = _dt.now(_tz(_td(hours=9))).strftime("%Y-%m-%d")
+        if is_trading_day("KR", _today_kst) is False:
+            log.info("daily_byte: KR 휴장일(%s) — skip (주말/공휴일)", _today_kst)
+            return 0
+    except Exception as exc:
+        log.debug("daily_byte: trading-day gate skipped (%s)", exc)
     result = generate()
     if result is None:
         log.error("daily_byte: generation failed / no data — skipping push")

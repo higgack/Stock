@@ -739,6 +739,16 @@ def main():
     sv-update defers redeploy + sv-watchdog defers its re-kick while a
     scheduled / on-demand generation is in flight. Removed in finally so a
     crash can't pin it (sv-watchdog also clears stale >30min markers)."""
+    # 주말(토/일) 일일 브리프 생성 안 함 (사용자 정책 2026-06-06 — 한국장
+    # 휴장 주말엔 SV 일일 브리프 미생성, 대시보드는 금요일 상태 유지). 타이머가
+    # 불러도·워치독이 재실행해도 이 가드가 단일 차단점. 주간브리프(weekly_
+    # pusher.py, 일 22시)는 별도 스크립트라 영향 없음.
+    from datetime import timezone, timedelta
+    _kst_now = datetime.now(timezone(timedelta(hours=9)))
+    if _kst_now.weekday() >= 5:  # 5=토, 6=일
+        log.info("daily_gen: weekend (%s KST) — skip daily brief generation",
+                 _kst_now.strftime("%a"))
+        return
     try:
         _BUSY_MARKER.parent.mkdir(parents=True, exist_ok=True)
         _BUSY_MARKER.touch()
