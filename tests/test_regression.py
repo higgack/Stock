@@ -3045,3 +3045,32 @@ class TestPortfolioSend:
         assert "_PF_SEND_JS" in src
         assert "api/portfolio_send" in src
         assert "pf-snap-date" in src
+
+    def test_budget_kind_param(self):
+        """budget JS 가 kind:'budget' 을 보내고, server 가 budget_ filename 생성."""
+        src_dash = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "kind:'budget'" in src_dash
+        src_srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert '"budget"' in src_srv
+
+    def test_send_caption_param(self):
+        """send() 가 caption 키워드를 받아 텔레그램·이메일 분기."""
+        from bot import portfolio_send as ps
+        import inspect
+        sig = inspect.signature(ps.send)
+        assert "caption" in sig.parameters
+        sig_tg = inspect.signature(ps.send_telegram)
+        assert "caption" in sig_tg.parameters
+
+    def test_noah_lookup_suffix_strip(self):
+        """_noah_lookup 이 기존 .KS suffix 를 strip 후 .KQ 로 재매칭."""
+        from bot.dashboard import _noah_lookup
+        noah = {"317400.KQ": {"rating": "Buy"}}
+        info, full = _noah_lookup(noah, "317400")
+        assert full == "317400.KQ"
+        info2, full2 = _noah_lookup(noah, "317400.KS")
+        assert full2 == "317400.KQ"
+        info3, full3 = _noah_lookup(noah, "317400.KQ")
+        assert full3 == "317400.KQ"
+        assert _noah_lookup(noah, "LRCX") == (None, None)
+        assert _noah_lookup({}, "317400") == (None, None)
