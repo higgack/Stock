@@ -5571,6 +5571,8 @@ _PF_CSS = """<style>
 .pf-ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}
 .pf-ctl input[type=text],.pf-ctl select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:13px}
 .pf-ctl label{font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+.pf-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pf-title-row h1{margin:0}
 .pf-send{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer}
 .pf-send:hover{opacity:.88}
 .pf-send:disabled{opacity:.5;cursor:default}
@@ -6017,11 +6019,13 @@ def _render_portfolio_page(model, noah=None) -> str:
     _ctl = ('<div class="pf-ctl"><input type="text" id="pf-q" placeholder="🔎 종목·티커 검색">'
             f'<select id="pf-broker">{_opts}</select>'
             '<label><input type="checkbox" id="pf-noah"> NOAH 분석만</label>'
-            '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span>'
-            '<button id="pf-send-tg" class="pf-send" type="button">📤 텔레그램 보내기</button>'
-            '<button id="pf-send-em" class="pf-send" type="button">📧 이메일 보내기</button>'
-            f'<span id="pf-snap-date" hidden>{_snap_date}</span></div>'
+            '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span></div>'
             ) if holdings else ''
+    _send_btns = (
+        '<button id="pf-send-tg" class="pf-send" type="button">📤 텔레그램 보내기</button>'
+        '<button id="pf-send-em" class="pf-send" type="button">📧 이메일 보내기</button>'
+        f'<span id="pf-snap-date" hidden>{_snap_date}</span>'
+    ) if holdings else ''
     _chg_th = (
         '<th class="cen" data-k="chg" data-t="n">손익변동'
         f'<br><span style="font-weight:400;font-size:10px;color:var(--muted)">'
@@ -6086,12 +6090,12 @@ def _render_portfolio_page(model, noah=None) -> str:
             '(벌거나 잃은 금액 · 첫 업로드·같은 날 재업로드는 미표시). '
             '표 헤더 클릭 정렬 · 검색/증권사/NOAH 필터 가능. '
             '티커 매칭 종목은 종목명 클릭 시 NOAH 분석으로 연결(분석 기록 있을 때). '
-            '📤 텔레그램·📧 이메일 버튼으로 이 스냅샷(요약+보유종목)을 CSV로 '
-            '본인에게 전송(다운로드 아님·모바일용, 채널엔 안 보냄). '
+            '📤 텔레그램·📧 이메일 버튼으로 이 스냅샷(요약+보유종목)을 CSV로 전송(모바일용). '
             f'기준 기간: {as_of}</p>')
 
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
-            + '<h1>💼 자산 관리</h1>'
+            + '<div class="pf-title-row"><h1>💼 자산 관리</h1>'
+            + _send_btns + '</div>'
             + '<p class="sub">뱅크샐러드 전 계좌 통합 — 증권사·예적금·부동산·동산(자동차)·대출·보험</p>'
             + ('<p class="sub" style="color:var(--muted);font-size:13px;margin-top:2px">'
                f'🕒 마지막 업데이트 <b style="color:var(--text)">{updated}</b> '
