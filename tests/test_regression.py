@@ -2978,14 +2978,14 @@ class TestWeekendHolidayGating:
 
 
 class TestPortfolioSend:
-    """자산 스냅샷 CSV '보내기'(텔레그램 DM + 이메일) 회귀 차단.
-    ⛔ 자산정보는 채널로 절대 안 보냄 — 본인 DM/메일만 (사용자 정책 2026-06-06)."""
+    """자산 스냅샷 CSV '보내기'(텔레그램 채널 + 이메일) 회귀 차단.
+    텔레그램: PORTFOLIO_TG_CHAT_ID 우선 → CHANNEL_CHAT_IDS 폴백 (사용자 정책 2026-06-06)."""
 
     def _clean_env(self, monkeypatch=None):
         import os
         for k in ("TELEGRAM_BOT_TOKEN", "PORTFOLIO_TG_CHAT_ID",
-                  "ALLOWED_USER_IDS", "SMTP_USER", "SMTP_PASS",
-                  "PORTFOLIO_EMAIL_TO"):
+                  "ALLOWED_USER_IDS", "CHANNEL_CHAT_IDS",
+                  "SMTP_USER", "SMTP_PASS", "PORTFOLIO_EMAIL_TO"):
             os.environ.pop(k, None)
 
     def test_telegram_graceful_without_env(self):
@@ -3006,28 +3006,26 @@ class TestPortfolioSend:
         ok, msg = ps.send(b"x", "f.csv", "bogus")
         assert ok is False
 
-    def test_owner_chat_id_priority(self):
-        """PORTFOLIO_TG_CHAT_ID 우선 → 없으면 ALLOWED_USER_IDS 첫 항목.
-        CHANNEL_CHAT_IDS 는 절대 미사용(자산 비공개)."""
+    def test_target_chat_id_priority(self):
+        """PORTFOLIO_TG_CHAT_ID 우선 → 없으면 CHANNEL_CHAT_IDS 첫 채널."""
         import os
         from bot import portfolio_send as ps
         self._clean_env()
-        os.environ["ALLOWED_USER_IDS"] = "435996491,999"
-        assert ps._owner_chat_id() == "435996491"
+        os.environ["CHANNEL_CHAT_IDS"] = "-1001234567890,-100999"
+        assert ps._target_chat_id() == "-1001234567890"
         os.environ["PORTFOLIO_TG_CHAT_ID"] = "123"
-        assert ps._owner_chat_id() == "123"
+        assert ps._target_chat_id() == "123"
         self._clean_env()
-        assert ps._owner_chat_id() == ""
+        assert ps._target_chat_id() == ""
 
-    def test_owner_never_uses_channel(self):
-        """채널 id 만 set 돼도 owner DM 으로 폴백하지 않음(자산 비공개) — 행동
-        검증(주석 문자열 매칭보다 견고)."""
+    def test_channel_fallback(self):
+        """PORTFOLIO_TG_CHAT_ID 없으면 CHANNEL_CHAT_IDS 로 폴백."""
         import os
         from bot import portfolio_send as ps
         self._clean_env()
         os.environ["CHANNEL_CHAT_IDS"] = "-1001234567890"
         try:
-            assert ps._owner_chat_id() == ""  # 채널로 폴백 X
+            assert ps._target_chat_id() == "-1001234567890"
         finally:
             os.environ.pop("CHANNEL_CHAT_IDS", None)
 
