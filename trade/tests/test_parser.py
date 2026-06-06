@@ -441,7 +441,7 @@ class CompanyFirstInvertedTests(unittest.TestCase):
         self._m = mock.patch.object(pp, "_load_krx_master", return_value={
             "HD현대일렉트릭": "267260", "POSCO홀딩스": "005490", "SKC": "011790",
             "빙그레": "005180", "송원산업": "004430", "일진전기": "103590",
-            "두산에너빌리티": "034020", "서흥": "008490",
+            "두산에너빌리티": "034020", "서흥": "008490", "코미코": "183300",
             "삼양식품": "003230", "농심": "004370",   # 실제 RULE 12 우변 회사들
         })
         self._m.start()
@@ -495,6 +495,31 @@ class CompanyFirstInvertedTests(unittest.TestCase):
         self.assertEqual(r.title_kind, "item_first")
         self.assertEqual(r.item, "디램")
         self.assertEqual(r.stocks, ["비상장반도체"])
+
+    # ===== batch 2: 콜론 없는 '회사[(별칭)] (주석) 품목' =====
+    def test_nocolon_company_with_alias_paren(self):
+        r = parse_caption("코미코(미코세라믹스) 세라믹정전척(ESC)" + _STATUS)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["코미코"])
+        self.assertEqual(r.item, "세라믹정전척(ESC)")
+
+    def test_nocolon_subsidiary_marker_even_if_unlisted(self):
+        r = parse_caption("바우와우코리아 (오에스피 자회사) 개사료" + _STATUS)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["바우와우코리아"])
+        self.assertEqual(r.item, "개사료")
+
+    def test_nocolon_plain_item_first_untouched(self):
+        # 정상 '품목 (지역)'은 괄호 뒤 텍스트가 없어 cnc 미발동 → item_first.
+        r = parse_caption("디램 (경기 용인시)" + _STATUS)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.item, "디램")
+
+    def test_nocolon_item_with_inner_paren_untouched(self):
+        # '음극재 (천연흑연)' — 괄호 뒤 없음 → cnc 미발동(품목 괄호 안 삼킴).
+        r = parse_caption("음극재 (천연흑연)" + _STATUS)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.item, "음극재")
 
 
 if __name__ == "__main__":

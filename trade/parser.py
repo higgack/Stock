@@ -282,6 +282,31 @@ def _company_left_inverted(x: str, y: str, z: str) -> bool:
         return y == "비상장"
 
 
+# 콜론 없는 회사-우선: '회사[(별칭)] (주석) 품목'. 첫 괄호 앞=회사, 뒤=품목.
+_COMPANY_NOCOLON_RE = re.compile(r"^([^():]{2,}?)\s*\(([^()]*)\)\s*(.+)$")
+
+
+def _company_nocolon(title: str):
+    """콜론 없는 '회사[(별칭)] (주석) 품목' → (회사, 품목, '') or None.
+
+    좌변(첫 괄호 앞)이 KRX 상장사이거나 괄호에 '비상장'/'자회사' 마커가 있을 때만
+    회사-우선으로 본다(예: '코미코(미코세라믹스) 세라믹정전척(ESC)',
+    '바우와우코리아 (오에스피 자회사) 개사료'). 정상 '품목 (지역)'은 좌변=품목·
+    괄호=지역·뒤(rest) 없음이라 해당 없음(회귀 0). 콜론 있는 형태는 위 규칙들이
+    처리하므로 제외. 지역은 이 형태에선 비정형이라 미분리(품목에 둠)."""
+    if ":" in title:
+        return None
+    m = _COMPANY_NOCOLON_RE.match(title)
+    if not m:
+        return None
+    x, y, rest = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+    if not rest:
+        return None
+    if not (_is_known_company(x) or "비상장" in y or "자회사" in y):
+        return None
+    return x, rest, ""
+
+
 def parse_caption(caption: str) -> ParsedAlert | None:
     """Top-level entry point. None if the caption is not a BeOn alert."""
     if not caption:
@@ -388,8 +413,16 @@ def parse_caption(caption: str) -> ParsedAlert | None:
                 inline_stocks_raw = z
                 title_kind = "item_first"
         else:
-            sm = _STANDARD_TITLE_RE.match(title)
-            if sm:
+            cnc = _company_nocolon(title)
+            sm = None if cnc else _STANDARD_TITLE_RE.match(title)
+            if cnc:
+                # 콜론 없는 '회사[(별칭)] (주석) 품목' — 좌변이 상장사/(비상장·자회사)
+                # 마커일 때만 회사-우선(코미코·바우와우). 정상 '품목 (지역)'은 좌변=
+                # 품목·뒤 텍스트 없음이라 안 걸림(회귀 0).
+                company_from_title, item_raw, region_part = cnc
+                title_kind = "company_first"
+                warnings.append("company_first_nocolon")
+            elif sm:
                 item_raw = sm.group(1).strip()
                 region_part = sm.group(2).strip()
                 title_kind = "item_first"
