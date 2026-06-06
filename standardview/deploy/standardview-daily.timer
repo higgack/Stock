@@ -1,9 +1,12 @@
 [Unit]
-Description=Trigger Standard View daily_generator at 07:30 + 20:30 Asia/Seoul
+Description=Trigger Standard View daily_generator at 07:30 + 20:30 Asia/Seoul (weekdays only)
 
 [Timer]
-OnCalendar=*-*-* 07:30:00 Asia/Seoul
-OnCalendar=*-*-* 20:30:00 Asia/Seoul
+# 평일(Mon-Fri)만 — 주말 일일 브리프 미생성 (사용자 정책 2026-06-06).
+# daily_generator.py 에도 주말 가드가 있어 이중 차단. 주간브리프(standardview-
+# weekly, 일 22시)는 별도 timer 라 그대로 유지.
+OnCalendar=Mon..Fri *-*-* 07:30:00 Asia/Seoul
+OnCalendar=Mon..Fri *-*-* 20:30:00 Asia/Seoul
 Unit=standardview-daily.service
 Persistent=true
 

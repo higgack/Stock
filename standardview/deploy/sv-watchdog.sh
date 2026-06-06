@@ -18,6 +18,16 @@ BUSY_STALE_MIN=30
 
 mkdir -p "$(dirname "$BUSY_MARKER")"
 
+# 주말(토/일)엔 일일 브리프를 생성하지 않으므로(daily_generator 주말 가드)
+# 워치독 재실행도 skip — 안 하면 토/일 stale 감지 → 재실행 → 주말 브리프
+# 재생성으로 가드 무력화 (사용자 정책 2026-06-06). 주간브리프(weekly_pusher,
+# 일 22시)는 별도 unit 이라 영향 없음.
+DOW_KST=$(TZ=Asia/Seoul date +%u)   # 1=Mon … 5=Fri 6=Sat 7=Sun
+if [ "$DOW_KST" -ge 6 ]; then
+    echo "$(date -Is) sv-watchdog: weekend (DOW ${DOW_KST} KST) — skip" >> "$KICK_LOG"
+    exit 0
+fi
+
 # KST hour (operating hours 08:00-22:00 → kick window)
 HOUR_KST=$(TZ=Asia/Seoul date +%H)
 if [ "$HOUR_KST" -lt 8 ] || [ "$HOUR_KST" -ge 22 ]; then
