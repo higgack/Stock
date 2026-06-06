@@ -284,27 +284,31 @@ def _company_left_inverted(x: str, y: str, z: str) -> bool:
 
 # 콜론 없는 회사-우선: '회사[(별칭)] (주석) 품목'. 첫 괄호 앞=회사, 뒤=품목.
 _COMPANY_NOCOLON_RE = re.compile(r"^([^():]{2,}?)\s*\(([^()]*)\)\s*(.+)$")
+# (b) 괄호 없이 '회사 품목...' — 첫 토큰이 회사, 뒤가 '(지역)'으로 시작 안 할 때.
+_COMPANY_LEADING_RE = re.compile(r"^(\S+)\s+([^(\s].*)$")
 
 
 def _company_nocolon(title: str):
-    """콜론 없는 '회사[(별칭)] (주석) 품목' → (회사, 품목, '') or None.
+    """콜론 없는 회사-우선 → (회사, 품목, '') or None. 두 형태:
+    (a) '회사[(별칭)] (주석) 품목' — 첫 괄호 앞이 상장사이거나 괄호에 '비상장'/'자회사'
+        마커(예: '코미코(미코세라믹스) 세라믹정전척(ESC)', '바우와우코리아 (오에스피
+        자회사) 개사료').
+    (b) '회사 품목...' — 첫 토큰이 상장사이고 뒤가 '(지역)'으로 시작 안 할 때(예:
+        '펨트론 3차원 (AOI 및 SPI) 검사장비', '하이텍팜 항생제 (카바페넴계 ...)').
 
-    좌변(첫 괄호 앞)이 KRX 상장사이거나 괄호에 '비상장'/'자회사' 마커가 있을 때만
-    회사-우선으로 본다(예: '코미코(미코세라믹스) 세라믹정전척(ESC)',
-    '바우와우코리아 (오에스피 자회사) 개사료'). 정상 '품목 (지역)'은 좌변=품목·
-    괄호=지역·뒤(rest) 없음이라 해당 없음(회귀 0). 콜론 있는 형태는 위 규칙들이
-    처리하므로 제외. 지역은 이 형태에선 비정형이라 미분리(품목에 둠)."""
+    정상 '품목 (지역)'은 (a)괄호 뒤 없음·(b)첫토큰=품목 또는 뒤가 '('라 둘 다 미발동
+    (회귀 0). 콜론 형태는 위 규칙들이 처리하므로 제외. 지역은 비정형이라 미분리."""
     if ":" in title:
         return None
     m = _COMPANY_NOCOLON_RE.match(title)
-    if not m:
-        return None
-    x, y, rest = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
-    if not rest:
-        return None
-    if not (_is_known_company(x) or "비상장" in y or "자회사" in y):
-        return None
-    return x, rest, ""
+    if m:
+        x, y, rest = m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+        if rest and (_is_known_company(x) or "비상장" in y or "자회사" in y):
+            return x, rest, ""
+    m2 = _COMPANY_LEADING_RE.match(title)
+    if m2 and _is_known_company(m2.group(1)):
+        return m2.group(1).strip(), m2.group(2).strip(), ""
+    return None
 
 
 def parse_caption(caption: str) -> ParsedAlert | None:

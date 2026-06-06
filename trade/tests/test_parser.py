@@ -442,6 +442,7 @@ class CompanyFirstInvertedTests(unittest.TestCase):
             "HD현대일렉트릭": "267260", "POSCO홀딩스": "005490", "SKC": "011790",
             "빙그레": "005180", "송원산업": "004430", "일진전기": "103590",
             "두산에너빌리티": "034020", "서흥": "008490", "코미코": "183300",
+            "펨트론": "368650", "하이텍팜": "106190",
             "삼양식품": "003230", "농심": "004370",   # 실제 RULE 12 우변 회사들
         })
         self._m.start()
@@ -520,6 +521,24 @@ class CompanyFirstInvertedTests(unittest.TestCase):
         r = parse_caption("음극재 (천연흑연)" + _STATUS)
         self.assertEqual(r.title_kind, "item_first")
         self.assertEqual(r.item, "음극재")
+
+    # ===== batch 3: 괄호 없이 '회사 품목...' (첫 토큰이 상장사) =====
+    def test_nocolon_leading_company_no_alias(self):
+        r = parse_caption("펨트론 3차원 (AOI 및 SPI) 검사장비" + _STATUS)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["펨트론"])
+        self.assertEqual(r.item, "3차원 (AOI 및 SPI) 검사장비")
+
+    def test_nocolon_leading_company_nested_paren(self):
+        r = parse_caption("하이텍팜 항생제 (카바페넴계, 이미페넴(IMIPENEM)" + _STATUS)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["하이텍팜"])
+        self.assertTrue(r.item.startswith("항생제"))
+
+    def test_nocolon_leading_noncompany_stays_item_first(self):
+        # 첫 토큰이 회사가 아니면(품목) 미발동 → item_first (회귀 0).
+        r = parse_caption("철강 제품 (전국)" + _STATUS)
+        self.assertEqual(r.title_kind, "item_first")
 
 
 if __name__ == "__main__":
