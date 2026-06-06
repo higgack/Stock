@@ -1,4 +1,4 @@
-"""E0 페이퍼 트레이딩 엔진 — 실거래 실행 골격에서 '돈만 뺀 것' (리스크 0).
+"""E0/E1 페이퍼 트레이딩 엔진 — 실거래 실행 골격에서 '돈만 뺀 것' (리스크 0).
 
 docs/execution_architecture.md 부록 A 의 첫 단계. NOAH 판정/수동 명령을 모의
 주문으로 받아 포지션·평단·실현/미실현 P&L 을 추적한다. 여기서 검증한 Order
@@ -12,7 +12,9 @@ Manager + Ledger 골격 위에 나중에 KIS/IBKR '실주문' 어댑터가 얹�
 - **분석 ≠ 실행 분리**: 이 엔진은 신호를 받기만, 분석을 호출하지 않음.
 
 E0 범위: **시장가 즉시 체결**(glitch-guarded 현재가) · KR(₩)+US($) · 수동 명령.
-지정가/next-open PENDING · 하드 캡 Risk Gate · NOAH 자동신호 = E0.5+ 증분.
+E1 범위: KR 종목을 KIS 모의투자 서버로 라우팅(서버 체결 — 슬리피지·장중 제한·
+부분체결 반영). KIS_PAPER_APP_KEY + KIS_PAPER_APP_SECRET + KIS_PAPER_ACCT_NO
+env 설정 시 자동 활성. US 종목은 E0 유지. KIS 미설정 시 전체 E0 폴백.
 
 통화: 단일 **KRW 계좌**. US 매수는 체결 시점 USD/KRW 로 환산해 원화 차감
 (원화 투자자가 미국주식 사는 모델). 포지션 평단은 native 보관(% 수익률 깔끔),
@@ -43,6 +45,8 @@ _FX_FALLBACK_USDKRW = 1380.0           # USD/KRW fetch 실패 시
 _SEEN_CAP = 500                        # idempotency 키 보관 상한
 _TRADES_CAP = 500                      # 계좌 내 최근 체결 보관(전체는 audit.jsonl)
 _E0_MARKETS = ("KR", "US")             # E0 지원 시장(통화)
+_KIS_FILL_WAIT = 2.0                  # KIS 체결 조회 전 대기 (초)
+_KIS_FILL_RETRIES = 3                 # KIS 체결 조회 재시도
 
 
 # ─── persistence ─────────────────────────────────────────────────────────────
@@ -228,6 +232,94 @@ def _sym(currency: str) -> str:
     return {"KRW": "₩", "USD": "$"}.get(currency, "")
 
 
+# ─── E1: KIS 모의투자 routing ────────────────────────────────────────────────
+def _e1_available() -> bool:
+    """KR 종목에 KIS 모의투자 어댑터 사용 가능 여부."""
+    try:
+        from bot.kis_trading import is_e1_available
+        return is_e1_available()
+    except ImportError:
+        return False
+
+
+def e1_mode() -> Optional[str]:
+    """현재 E1 모드 → "paper" | "live" | None(비활성)."""
+    if not _e1_available():
+        return None
+    return "paper"
+
+
+def _ticker_to_code(ticker: str) -> str:
+    """005930.KS → '005930' (KIS 종목코드 6자리)."""
+    return ticker.split(".")[0].lstrip("0").zfill(6) if "." in ticker else ticker.zfill(6)
+
+
+def _order_e1(acct: dict, ticker: str, qty: float, side: str,
+              px_fallback: float, fx: float, currency: str, market: str,
+              idem: str, limit: Optional[float] = None):
+    """KIS 모의투자 서버로 주문 제출 + 체결 확인 → 레저 반영. (ok, msg).
+    px_fallback = 체결 조회 실패 시 사용할 가격(glitch-guarded 현재가)."""
+    try:
+        from bot.kis_trading import get_adapter
+    except ImportError:
+        return False, "kis_trading 모듈 로드 실패"
+
+    adapter = get_adapter("paper")
+    if adapter is None:
+        return False, "KIS 모의투자 어댑터 초기화 실패(env 확인)"
+
+    code = _ticker_to_code(ticker)
+    ord_type = "limit" if limit is not None else "market"
+    limit_price = int(limit) if limit else 0
+
+    result = adapter.submit_order(code, side, int(qty),
+                                  ord_type=ord_type, limit_price=limit_price)
+    if result is None:
+        return False, f"KIS 주문 제출 실패: {ticker} (서버 거부/네트워크)"
+
+    order_no = result.get("order_no", "")
+    log.info("kis_e1: order submitted %s %s %s qty=%d → order_no=%s",
+             side, ticker, ord_type, int(qty), order_no)
+
+    fill_price = px_fallback
+    if order_no and ord_type == "market":
+        import time as _time
+        for attempt in range(_KIS_FILL_RETRIES):
+            _time.sleep(_KIS_FILL_WAIT)
+            fill = adapter.find_fill(order_no)
+            if fill and fill.get("price"):
+                fill_price = float(fill["price"])
+                log.info("kis_e1: fill confirmed order_no=%s price=%s",
+                         order_no, fill_price)
+                break
+        else:
+            log.info("kis_e1: fill not confirmed, using fallback price %.2f",
+                     px_fallback)
+
+    return _apply_fill_direct(acct, ticker, qty, fill_price, fx, currency,
+                              market, idem, source="kis_e1",
+                              kis_order_no=order_no, side=side)
+
+
+def _apply_fill_direct(acct: dict, ticker: str, qty: float, fill_native: float,
+                       fx: float, currency: str, market: str, idem: str,
+                       source: str = "e0", kis_order_no: str = "",
+                       side: str = "buy"):
+    """체결 확인된 주문을 레저에 직접 반영(재귀 없이). KIS 체결/fill_pending 용."""
+    fn = _apply_buy if side == "buy" else _apply_sell
+    ok, msg = fn(acct, ticker, float(qty), float(fill_native), float(fx),
+                 currency, market, time.time(), idem)
+    if ok:
+        if kis_order_no:
+            pos = acct["positions"].get(ticker)
+            if pos:
+                pos["kis_order_no"] = kis_order_no
+        _save_account(acct)
+        suffix = " [KIS 모의투자]" if source == "kis_e1" else ""
+        msg = msg + suffix
+    return ok, msg
+
+
 # ─── public order API (I/O wrappers) ─────────────────────────────────────────
 def _order(ticker: str, qty: float, side: str, idem: Optional[str],
            limit: Optional[float] = None):
@@ -278,6 +370,10 @@ def _order(ticker: str, qty: float, side: str, idem: Optional[str],
             return False, gate_reason
     except Exception as exc:
         log.debug("paper: risk_gate skipped (%s)", exc)
+    # E1 routing: KR 종목 + KIS 모의투자 키 존재 시 KIS 서버로 주문
+    if market == "KR" and _e1_available():
+        return _order_e1(acct, ticker, float(qty), side, float(px), float(fx),
+                         currency, market, idem, limit=limit)
     fn = _apply_buy if side == "buy" else _apply_sell
     ok, msg = fn(acct, ticker, float(qty), float(px), float(fx), currency, market,
                  time.time(), idem)
@@ -328,7 +424,8 @@ def cancel_pending(token: str) -> tuple:
 
 def fill_pending() -> list:
     """가격 도달한 지정가 대기 주문을 시장가로 체결. 체결 메시지 리스트 반환.
-    periodic 태스크가 호출. 각 체결은 _order(Risk Gate 포함)를 거친다."""
+    periodic 태스크가 호출. 각 체결은 _order(Risk Gate 포함)를 거친다.
+    KR + E1 활성 시 KIS 서버로 지정가 주문 제출(서버가 체결 관리)."""
     pend = list(get_account().get("pending", []))
     if not pend:
         return []
@@ -348,6 +445,18 @@ def fill_pending() -> list:
     acct["pending"] = keep
     _save_account(acct)
     return filled
+
+
+def run_reconcile() -> Optional[dict]:
+    """KIS 잔고 ↔ 우리 ledger 비교(E1 활성 시만). drift 시 dict, 일치 시 None."""
+    if not _e1_available():
+        return None
+    try:
+        from bot.kis_trading import reconcile
+        return reconcile()
+    except Exception as exc:
+        log.warning("paper: reconcile failed: %s", exc)
+        return None
 
 
 def close_position(ticker: str, idem: Optional[str] = None):
@@ -622,6 +731,6 @@ def summary(price_fn=None) -> dict:
         "auto_size_pct": auto_size_pct(),
         "pending": acct.get("pending", []),
         "equity_history": acct.get("equity_history", []),
-        # 가격을 못 가져온 포지션이 있으면 평가/총자산은 부분값(표시 시 주의).
         "priced_all": all(r.get("value_krw") is not None for r in rows),
+        "e1_mode": e1_mode(),
     }

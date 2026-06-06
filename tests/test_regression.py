@@ -2679,3 +2679,123 @@ class TestBudget:
         psrc = open("bot/portfolio.py", encoding="utf-8").read()
         assert "build_budget_model" in psrc and "save_budget" in psrc, "ingest 가계부 배선 누락"
         assert "budget.html" in open("bot/telegram_bot.py", encoding="utf-8").read()
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 15) E1 KIS 모의투자 adapter — 순수 로직 + paper_trading 라우팅 차단
+#     배경: E1 은 KR 종목을 KIS 모의투자 서버로 라우팅해 서버 체결.
+#     핵심: _ticker_to_code 변환, _e1_available gate, _apply_fill_direct
+#     ledger 반영, e1_mode 반환, reconcile stub.
+# ─────────────────────────────────────────────────────────────────────────
+class TestE1KisTradingAdapter:
+    """E1 KIS 모의투자 어댑터 순수 로직 회귀 차단."""
+
+    def test_ticker_to_code(self):
+        from bot.paper_trading import _ticker_to_code
+        assert _ticker_to_code("005930.KS") == "005930"
+        assert _ticker_to_code("039030.KQ") == "039030"
+        assert _ticker_to_code("5930.KS") == "005930"
+        assert _ticker_to_code("AAPL") == "00AAPL"  # US ticker — not used for KIS, but no crash
+
+    def test_e1_available_without_env(self, monkeypatch):
+        monkeypatch.delenv("KIS_PAPER_APP_KEY", raising=False)
+        monkeypatch.delenv("KIS_PAPER_APP_SECRET", raising=False)
+        monkeypatch.delenv("KIS_PAPER_ACCT_NO", raising=False)
+        from bot.paper_trading import _e1_available, e1_mode
+        assert _e1_available() is False
+        assert e1_mode() is None
+
+    def test_e1_available_with_env(self, monkeypatch):
+        monkeypatch.setenv("KIS_PAPER_APP_KEY", "testkey")
+        monkeypatch.setenv("KIS_PAPER_APP_SECRET", "testsecret")
+        monkeypatch.setenv("KIS_PAPER_ACCT_NO", "50191853")
+        from bot.kis_trading import is_e1_available
+        assert is_e1_available() is True
+        from bot.paper_trading import _e1_available, e1_mode
+        assert _e1_available() is True
+        assert e1_mode() == "paper"
+
+    def test_apply_fill_direct_buy(self):
+        from bot.paper_trading import _apply_fill_direct, _new_account
+        acct = _new_account()
+        ok, msg = _apply_fill_direct(acct, "005930.KS", 10, 60000.0,
+                                     1.0, "KRW", "KR", "test-idem",
+                                     source="kis_e1", kis_order_no="ORD001",
+                                     side="buy")
+        assert ok
+        assert "[KIS 모의투자]" in msg
+        assert acct["positions"]["005930.KS"]["qty"] == 10
+        assert acct["positions"]["005930.KS"]["kis_order_no"] == "ORD001"
+        assert acct["cash_krw"] == 10_000_000 - (10 * 60000)
+
+    def test_apply_fill_direct_sell(self):
+        from bot.paper_trading import _apply_fill_direct, _new_account
+        acct = _new_account()
+        # buy first
+        _apply_fill_direct(acct, "005930.KS", 10, 60000.0,
+                           1.0, "KRW", "KR", "buy-idem",
+                           source="kis_e1", side="buy")
+        ok, msg = _apply_fill_direct(acct, "005930.KS", 5, 65000.0,
+                                     1.0, "KRW", "KR", "sell-idem",
+                                     source="kis_e1", side="sell")
+        assert ok
+        assert "매도 체결" in msg
+        assert acct["positions"]["005930.KS"]["qty"] == 5
+
+    def test_summary_includes_e1_mode(self, monkeypatch):
+        monkeypatch.setenv("KIS_PAPER_APP_KEY", "k")
+        monkeypatch.setenv("KIS_PAPER_APP_SECRET", "s")
+        monkeypatch.setenv("KIS_PAPER_ACCT_NO", "12345678")
+        from bot.paper_trading import summary, _new_account
+        def fake_price(_):
+            return 100.0, "KR"
+        s = summary(price_fn=fake_price)
+        assert s["e1_mode"] == "paper"
+
+    def test_reconcile_returns_none_when_e1_unavailable(self, monkeypatch):
+        monkeypatch.delenv("KIS_PAPER_APP_KEY", raising=False)
+        from bot.paper_trading import run_reconcile
+        assert run_reconcile() is None
+
+    def test_kis_adapter_tr_id(self):
+        """KIS 어댑터의 tr_id prefix 분기 — paper=V, live=T."""
+        from bot.kis_trading import KisTradingAdapter
+        import os
+        os.environ.setdefault("KIS_PAPER_APP_KEY", "test")
+        os.environ.setdefault("KIS_PAPER_APP_SECRET", "test")
+        os.environ.setdefault("KIS_PAPER_ACCT_NO", "50191853")
+        paper = KisTradingAdapter("paper")
+        assert paper._tr_id("TTC0802U") == "VTTC0802U"
+        assert paper.base_url.startswith("https://openapivts")
+        live = KisTradingAdapter("live")
+        assert live._tr_id("TTC0802U") == "TTTC0802U"
+        assert live.base_url.startswith("https://openapi.")
+
+    def test_kis_account_parsing(self):
+        """계좌번호 파싱 — 8자리 CANO + 2자리 상품코드."""
+        from bot.kis_trading import KisTradingAdapter
+        import os
+        os.environ["KIS_PAPER_ACCT_NO"] = "50191853-01"
+        a = KisTradingAdapter("paper")
+        assert a.cano == "50191853"
+        assert a.acnt_prdt_cd == "01"
+        os.environ["KIS_PAPER_ACCT_NO"] = "5019185301"
+        b = KisTradingAdapter("paper")
+        assert b.cano == "50191853"
+        assert b.acnt_prdt_cd == "01"
+
+    def test_wiring_e1(self):
+        """E1 배선 확인 — paper_trading 에 E1 라우팅, dashboard 에 E1 배너."""
+        pt_src = open("bot/paper_trading.py", encoding="utf-8").read()
+        assert "_e1_available" in pt_src
+        assert "_order_e1" in pt_src
+        assert "_apply_fill_direct" in pt_src
+        assert "e1_mode" in pt_src
+        assert "run_reconcile" in pt_src
+        ds_src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "e1_banner" in ds_src
+        assert "KIS 모의투자" in ds_src
+        kt_src = open("bot/kis_trading.py", encoding="utf-8").read()
+        assert "submit_order" in kt_src
+        assert "get_balance" in kt_src
+        assert "reconcile" in kt_src

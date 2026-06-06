@@ -2254,6 +2254,9 @@ def _paper_summary_text(summ: dict) -> str:
                      f"· 사이징 {paper_trading.auto_size_pct():.0%} "
                      "(<code>/paper auto on|off|size N</code>)")
         lines.append("— " + status_line())
+        e1 = summ.get("e1_mode")
+        if e1:
+            lines.append("— 🔗 KIS 모의투자 연결 (KR 종목 서버 체결)")
     except Exception:
         pass
     return "\n".join(lines)
@@ -2886,7 +2889,8 @@ async def _periodic_auto_resolve() -> None:
 
 async def _periodic_paper_pending(application=None) -> None:
     """지정가 대기 주문을 ~30분마다 체결 확인(E0.5d limit orders). 가격 도달 시
-    시장가 체결(Risk Gate 포함) + 채널 알림 + 페이지 갱신. 페이퍼라 비용 0."""
+    시장가 체결(Risk Gate 포함) + 채널 알림 + 페이지 갱신. 페이퍼라 비용 0.
+    E1 활성 시 KIS 잔고 reconcile 도 같이 수행(30분마다)."""
     while True:
         await asyncio.sleep(1800)   # 30분
         try:
@@ -2906,6 +2910,23 @@ async def _periodic_paper_pending(application=None) -> None:
                                     chat_id=_cid, text="⏳→✅ 지정가 체결: " + _m)
                             except Exception:
                                 pass
+            # E1 reconcile: KIS 잔고 ↔ ledger 비교 (30분마다, 비용 0)
+            try:
+                drift = paper_trading.run_reconcile()
+                if drift and drift.get("position_drifts") and application and CHANNEL_CHAT_IDS:
+                    drifts = drift["position_drifts"]
+                    lines = ["⚠️ <b>KIS↔ledger 포지션 불일치 감지</b>"]
+                    for d in drifts[:5]:
+                        lines.append(f"• {d['code']}: 우리 {d['ours']}주 / KIS {d['kis']}주")
+                    for _cid in CHANNEL_CHAT_IDS:
+                        try:
+                            await application.bot.send_message(
+                                chat_id=_cid, text="\n".join(lines),
+                                parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+            except Exception:
+                log.debug("paper reconcile skipped")
         except Exception:
             log.exception("paper pending fill failed")
 
