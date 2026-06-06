@@ -630,6 +630,12 @@ _DIRECT_CODES: dict[str, str] = {
     "HD현대미포조선": "010620",   # KRX: HD현대미포
     "조광ILI": "044060",          # 조광아이엘아이
     "제이엔케이히터": "126880",   # JNK히터
+    # 비상장 자회사·표기조각 → 운영자 확인 상장 프록시(모회사/관계사). 동일 회사가
+    # 아니라, 칩엔 BeOn 표기로 뜨고 가격은 이 코드(프록시) 기준. 운영자 도메인 확인분만.
+    "HD현대삼호중공업": "267250",  # → HD현대(지주)
+    "LS전선": "006260",           # → LS(지주)
+    "이녹스리튬": "088390",        # → 이녹스
+    "ELECTRIC": "010120",         # 'LS ELECTRIC' 토큰분리 조각 → LS ELECTRIC
 }
 
 # 코드 캐시 스키마 버전 — 매핑/분리 로직이 바뀌면 bump → 기존 캐시(특히 음성
@@ -659,7 +665,12 @@ def get_quotes(symbols: Iterable[str], *,
 
     심볼별 TTL 캐시. fetch=False면 캐시 신선분만 반환하고 외부 호출 안 함
     (렌더는 이걸로 즉시 끝내고, 실제 API는 워머 fetch_quotes가 백그라운드에서)."""
-    codes = _norm(symbols)[:_MAX_SYMBOLS]
+    # 캡(_MAX_SYMBOLS)은 외부 콜 폭주 방지용 — fetch=False(렌더, 캐시만·콜 0)엔
+    # 적용 안 한다. 안 그러면 관련종목 수가 캡(기본 300)보다 많을 때 렌더가 앞쪽
+    # 코드만 보고 뒤 종목이 캐시에 있어도 잘려 보이던 회귀.
+    codes = _norm(symbols)
+    if fetch:
+        codes = codes[:_MAX_SYMBOLS]
     if not codes:
         return {}
     prov = _provider()
@@ -723,7 +734,8 @@ def get_quotes_by_name(names: Iterable[str], *,
         if n and n not in seen:
             seen.add(n)
             uniq.append(n)
-    uniq = uniq[:_MAX_SYMBOLS]              # 콜 폭주 방지 상한
+    if fetch:                              # 콜 폭주 방지 상한 — 렌더(fetch=False)엔 미적용
+        uniq = uniq[:_MAX_SYMBOLS]         #   (캐시만 읽어 콜 0이므로 자를 이유 없음)
     prov = _provider()
     if not uniq or prov == "none":
         return {}

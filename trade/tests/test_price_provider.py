@@ -758,5 +758,47 @@ class ResolveMasterTests(_DPEnv):
         self.assertEqual(out["삼성전자"], "005930")
 
 
+class RenderCapTests(_DPEnv):
+    def test_get_quotes_by_name_fetch_false_ignores_cap(self):
+        # 렌더(fetch=False)는 _MAX_SYMBOLS 캡을 무시하고 캐시의 전 종목 반환 —
+        # 관련종목이 캡보다 많아도 안 잘림(254→376 회귀의 직접 원인 수정).
+        fake = FakeDataPortal(_DP_ITEMS)
+        names = ["삼성전자", "SK하이닉스"]
+        pp.get_quotes_by_name(names, transport=fake, ttl_s=600)        # 워밍
+        with mock.patch.object(pp, "_MAX_SYMBOLS", 1):                 # 캡 1로 축소
+            got = pp.get_quotes_by_name(names, transport=fake, ttl_s=600, fetch=False)
+        self.assertEqual(set(got), {"삼성전자", "SK하이닉스"})         # 캡 1이어도 2개 다
+
+    def test_get_quotes_fetch_false_ignores_cap(self):
+        fake = FakeDataPortal(_DP_ITEMS)
+        pp.get_quotes(["005930", "000660"], transport=fake, ttl_s=600)  # 워밍
+        with mock.patch.object(pp, "_MAX_SYMBOLS", 1):
+            got = pp.get_quotes(["005930", "000660"], transport=fake, ttl_s=600,
+                                fetch=False)
+        self.assertEqual(set(got), {"005930", "000660"})
+
+    def test_fetch_true_still_capped(self):
+        # 워머/콜 경로(fetch=True)는 캡 유지(콜 폭주 방지) — 회귀 아님 확인.
+        fake = FakeDataPortal(_DP_ITEMS)
+        with mock.patch.object(pp, "_MAX_SYMBOLS", 1):
+            pp.get_quotes_by_name(["삼성전자", "SK하이닉스", "삼성전자우"],
+                                  transport=fake, fetch=True)
+        self.assertLessEqual(len([c for c in fake.calls if "likeItmsNm" in c[1]]), 1)
+
+
+class ProxyDirectCodeTests(_DPEnv):
+    def test_operator_verified_proxies_resolve_offline(self):
+        # 운영자 도메인 확인 프록시(비상장 자회사→상장 모회사/관계사) — 직접코드라
+        # 외부 호출 0으로 해석. 동일 회사 아님(프록시).
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.resolve_codes(
+            ["LS전선", "HD현대삼호중공업", "이녹스리튬", "ELECTRIC"], transport=fake)
+        self.assertEqual(out["LS전선"], "006260")
+        self.assertEqual(out["HD현대삼호중공업"], "267250")
+        self.assertEqual(out["이녹스리튬"], "088390")
+        self.assertEqual(out["ELECTRIC"], "010120")
+        self.assertEqual(len(fake.calls), 0)                          # 직접코드 → API 0
+
+
 if __name__ == "__main__":
     unittest.main()
