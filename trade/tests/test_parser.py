@@ -351,6 +351,42 @@ class TestParserSamples(unittest.TestCase):
         self.assertEqual(len(r.composite_parts), 4)
         self.assertIn("title_no_region", r.parse_warnings)
 
+    def test_company_prefix_no_leading_space_with_region(self):
+        # '휴스틸: 대구경...' (콜론 앞 공백 없음) — 옛 RULE 5가 못 잡아 회사가 품목에
+        # 박히던 케이스. 이제 회사/품목/지역 정확 분리.
+        cap = ("휴스틸: 대구경 철강제 관 (서울 강남구)\n\n"
+               "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다.")
+        r = parse_caption(cap)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["휴스틸"])
+        self.assertEqual(r.item, "대구경 철강제 관")
+        self.assertIsNotNone(r.region)
+
+    def test_company_prefix_no_region(self):
+        cap = ("LG화학: 수산화리튬\n\n"
+               "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다.")
+        r = parse_caption(cap)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["LG화학"])
+        self.assertEqual(r.item, "수산화리튬")
+
+    def test_company_prefix_composite_companies(self):
+        cap = ("넥스틸 / 세아제강: 중소구경 철강제 관\n\n"
+               "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다.")
+        r = parse_caption(cap)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["넥스틸", "세아제강"])
+        self.assertEqual(r.item, "중소구경 철강제 관")
+
+    def test_inline_stocks_not_stolen_by_company_prefix(self):
+        # RULE 12 '품목 (지역): 회사/회사' — 콜론이 ')' 뒤라 회사접두로 안 샘.
+        cap = ("라면 (전국): 삼양식품 / 농심\n\n"
+               "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다.")
+        r = parse_caption(cap)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.item, "라면")
+        self.assertIn("삼양식품", r.stocks)
+
     def test_synthesis_post_is_still_unknown_after_new_rules(self):
         # Inverted shape — guard against RULE 12/13 misclassifying it
         # as inline stocks or trailing text.

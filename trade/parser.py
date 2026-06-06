@@ -32,10 +32,14 @@ _FINAL_LINE_RE = re.compile(
     r"\s*(잠정치|확정치)\s*(수출|수입)\s*데이터"
 )
 
-# --- RULE 5 — company-first title: '<회사> : <품목> (<지역>)' ---
-# Tried before standard. Company name must contain no parens (so the
-# item's own parens, e.g. '음극재 (천연흑연)', don't get swallowed).
-_COMPANY_TITLE_RE = re.compile(r"^([^():]+?)\s+:\s+(.+?)\s*\(([^()]+)\)\s*$")
+# --- RULE 5 (broadened) — company-first prefix: '<회사[/회사…]> : <품목...>' ---
+# 첫 콜론의 왼쪽에 괄호가 없으면 회사 접두로 본다(콜론 앞 공백 유무 무관). 나머지는
+# 아래에서 품목으로 다시 파싱(지역괄호/복합 +). 'BeOn은 휴스틸: 품목'처럼 콜론 앞
+# 공백 없이도 씀 → 옛 '\s+:\s+'가 못 잡아 회사가 품목에 박히던 문제 수정.
+# RULE 12 '품목 (지역): 회사'는 콜론이 ')' 뒤라 왼쪽에 괄호가 있어 매치 안 됨.
+# item_first는 콜론 자체가 없음. 회사명에 '(' 없으니 품목 괄호('음극재 (천연흑연)')는
+# 안 삼킴. 길이 2~20으로 긴 프로즈 오매칭 제한.
+_COMPANY_TITLE_RE = re.compile(r"^([^():]{2,20}?)\s*:\s+(.+)$")
 
 # --- RULE 4 — standard title: '<품목> (<지역>)' ---
 # Right-anchored to (...) so multi-paren items keep their inner parens
@@ -312,9 +316,17 @@ def parse_caption(caption: str) -> ParsedAlert | None:
     cm = _COMPANY_TITLE_RE.match(title)
     if cm:
         company_from_title = cm.group(1).strip()
-        item_raw = cm.group(2).strip()
-        region_part = cm.group(3).strip()
+        rest = cm.group(2).strip()
         title_kind = "company_first"
+        # 나머지를 품목으로: 지역 괄호 있으면 분리, 없으면(복합 '+'/무지역) 통째 품목.
+        rm = _STANDARD_TITLE_RE.match(rest)
+        if rm:
+            item_raw = rm.group(1).strip()
+            region_part = rm.group(2).strip()
+        else:
+            item_raw = rest
+            region_part = ""
+            warnings.append("title_no_region")
     else:
         # RULE 12 — inline stocks. Reject when LEFT side has '/' because
         # that's the synthesis-post inversion (companies / companies (region) :
@@ -389,9 +401,9 @@ def parse_caption(caption: str) -> ParsedAlert | None:
     region, country, regions, countries = _parse_region(region_part)
 
     if title_kind == "company_first":
-        stocks = [company_from_title] if company_from_title else []
-        stocks_meta: dict[str, str] = {}
-        has_etc = False
+        # 회사 접두를 stocks로 — 복합사('넥스틸 / 세아제강')는 _parse_stocks가 분리.
+        stocks, stocks_meta, has_etc, stock_warns = _parse_stocks(company_from_title or "")
+        warnings.extend(stock_warns)
     elif inline_stocks_raw is not None:
         # RULE 12 — stocks list came inline with the title.
         stocks, stocks_meta, has_etc, stock_warns = _parse_stocks(inline_stocks_raw)
