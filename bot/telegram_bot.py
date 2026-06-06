@@ -1098,11 +1098,11 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【8. 차별화 포인트】</b>
-페르소나 토론 (Buffett/Lynch vs Graham/Marks) · 결정 3노드만 Pro · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 · 섹터 ETF 알파
+페르소나 토론 · 결정 3노드만 Pro · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 · 섹터 ETF 알파
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 🦉 (순서 = 헤더 nav)
- • <b>💼 자산</b> — 뱅샐 전 계좌 통합(증권사·예적금·부동산·대출·보험)·RAG 업로드
+ • <b>💼 자산</b> — 뱅샐 전 계좌 통합(증권사·예적금·부동산·대출·보험)·종목별 손익변동·RAG 업로드
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
  • <b>📒 가계부</b> — 뱅샐 현금흐름·월별 수입지출·저축률
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/budget.html
@@ -1127,7 +1127,7 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【10. 진행 중 / 예정】</b>
- • Screener 65도메인+자유어+24h캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기GICS · 실거래 E0페이퍼+RiskGate 가동 · 예정: NOAH자동신호·KIS/IBKR 어댑터
+ • Screener 65도메인+자유어+24h캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기GICS · 실거래 E1 KIS모의투자(KR+US 서버체결)+자동신호+RiskGate 가동 · 예정: IBKR·실전(E2)
 """
 
 
@@ -2177,6 +2177,8 @@ async def cmd_unwatch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 _PAPER_HELP = (
     "🧪 <b>페이퍼 트레이딩</b> (모의 · 돈 0 · 교육)\n"
+    "🔗 KIS 모의투자키 설정 시 <b>KR+US 주문은 KIS 서버 체결</b>"
+    "(슬리피지·장운영시간·부분체결 반영), 미설정 시 내부 즉시체결\n"
     "<code>/paper</code> — 계좌·포지션·손익\n"
     "<code>/paper buy TICKER 수량 [@지정가]</code> — 매수(시장가/지정가)\n"
     "<code>/paper sell TICKER 수량 [@지정가]</code> — 매도\n"
