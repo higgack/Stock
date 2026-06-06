@@ -5739,6 +5739,7 @@ def _render_portfolio_page(model, noah=None) -> str:
     delta_html = ""
     _prev_pnl_map: dict[str, float] = {}
     _show_chg = False
+    _chg_dates = ""  # 손익변동 비교 일자 라벨 (이전 VS 현재)
     if isinstance(prev, dict):
         _pts = prev.get("_saved_ts")
         _same_day = bool(
@@ -5752,6 +5753,11 @@ def _render_portfolio_page(model, noah=None) -> str:
             pdate = (_dt.datetime.fromtimestamp(
                 _pts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d")
                 if _pts else str(prev.get("as_of") or "이전"))
+            # 손익변동 컬럼 헤더에 명시할 비교 일자 (이전 업로드 → 현재 업로드).
+            _cdate = (_dt.datetime.fromtimestamp(
+                _ts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d")
+                if _ts else "현재")
+            _chg_dates = f"{pdate} → {_cdate}"
 
             def _dlt(cur, was):
                 cur = cur or 0
@@ -5961,7 +5967,11 @@ def _render_portfolio_page(model, noah=None) -> str:
             '<label><input type="checkbox" id="pf-noah"> NOAH 분석만</label>'
             '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span></div>'
             ) if holdings else ''
-    _chg_th = '<th class="r" data-k="chg" data-t="n">손익변동</th>' if _show_chg else ''
+    _chg_th = (
+        '<th class="r" data-k="chg" data-t="n">손익변동'
+        f'<br><span style="font-weight:400;font-size:10px;color:var(--muted)">'
+        f'{_html.escape(_chg_dates)}</span></th>'
+    ) if _show_chg else ''
     _head = ('<thead><tr><th data-k="name" data-t="s">종목</th>'
              '<th data-k="tkr" data-t="s">티커</th>'
              '<th data-k="broker" data-t="s">증권사</th>'
