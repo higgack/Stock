@@ -2890,6 +2890,22 @@ class TestPortfolioPnlDelta:
         assert "손익변동" in src
         assert 'data-k="chg"' in src
 
+    def test_chg_column_date_label(self):
+        """손익변동 헤더에 비교 일자 라벨(_chg_dates)이 배선됐는지 —
+        '이전 → 현재' 형식 (사용자 요청 2026-06-06)."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_chg_dates" in src
+        i = src.index("_chg_th =")
+        assert "_chg_dates" in src[i:i + 300]  # 헤더가 일자 라벨 포함
+
+    def test_chg_date_label_format(self):
+        """일자 라벨 포맷: '이전(%m-%d) → 현재(%m-%d)'."""
+        from datetime import datetime, timezone, timedelta
+        kst = timezone(timedelta(hours=9))
+        pdate = datetime(2026, 6, 6, 18, 0, tzinfo=kst).strftime("%m-%d")
+        cdate = datetime(2026, 6, 7, 9, 0, tzinfo=kst).strftime("%m-%d")
+        assert f"{pdate} → {cdate}" == "06-06 → 06-07"
+
 
 class TestWeekendHolidayGating:
     """SV 일일 브리프 주말 차단 + Daily Byte 한국 거래일 게이트 회귀 차단.
