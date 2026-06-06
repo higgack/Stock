@@ -132,6 +132,10 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
             "주식평가": sum(h.get("평가금액") or 0 for h in holdings),
             "주식원금": sum(h.get("투자원금") or 0 for h in holdings),
             "종목수": len(holdings),
+            "holdings_pnl": {
+                f"{h.get('상품명', '')}|{h.get('금융사', '')}": h.get("평가손익") or 0
+                for h in holdings
+            },
         },
     }
 

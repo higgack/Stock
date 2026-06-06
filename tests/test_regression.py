@@ -2834,3 +2834,58 @@ class TestE1KisTradingAdapter:
         assert "get_balance" in kt_src
         assert "get_balance_overseas" in kt_src
         assert "reconcile" in kt_src
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Portfolio 손익변동 컬럼 — holdings_pnl snapshot 생성 + delta 계산
+# ─────────────────────────────────────────────────────────────────────────
+class TestPortfolioPnlDelta:
+    """보유 종목 테이블 손익변동 컬럼 회귀 차단."""
+
+    def test_snapshot_includes_holdings_pnl(self):
+        """build_model 이 snapshot 에 holdings_pnl 맵을 포함하는지."""
+        from bot.portfolio import build_model
+        parsed = {
+            "holdings": [
+                {"상품명": "삼성전자", "금융사": "NH투자증권",
+                 "평가금액": 1000, "투자원금": 800, "수익률": 25.0},
+                {"상품명": "AAPL", "금융사": "메리츠증권",
+                 "평가금액": 500, "투자원금": 600, "수익률": -16.7},
+            ],
+            "finance": {"총자산": 2000, "총부채": 0, "순자산": 2000,
+                        "assets": {}},
+        }
+        model = build_model(parsed, resolve=lambda n: {"ticker": None, "market": None, "matched": False})
+        snap = model["snapshot"]
+        assert "holdings_pnl" in snap
+        assert snap["holdings_pnl"]["삼성전자|NH투자증권"] == 200  # 1000-800
+        assert snap["holdings_pnl"]["AAPL|메리츠증권"] == -100  # 500-600
+
+    def test_pnl_delta_calculation(self):
+        """현재 평가손익 - 이전 평가손익 = 손익변동 정확 계산."""
+        prev_pnl = {"삼성전자|NH투자증권": 150, "현우산업|NH투자증권": -80}
+        cur_holdings = [
+            {"상품명": "삼성전자", "금융사": "NH투자증권", "평가손익": 200},
+            {"상품명": "현우산업", "금융사": "NH투자증권", "평가손익": -120},
+            {"상품명": "신규종목", "금융사": "NH투자증권", "평가손익": 10},
+        ]
+        deltas = {}
+        for h in cur_holdings:
+            key = f"{h['상품명']}|{h['금융사']}"
+            prev = prev_pnl.get(key)
+            if prev is not None:
+                deltas[h["상품명"]] = (h["평가손익"] or 0) - prev
+            else:
+                deltas[h["상품명"]] = "신규"
+        assert deltas["삼성전자"] == 50   # 200 - 150
+        assert deltas["현우산업"] == -40  # -120 - (-80)
+        assert deltas["신규종목"] == "신규"
+
+    def test_dashboard_chg_column_wiring(self):
+        """dashboard.py 가 손익변동 컬럼 코드를 포함하는지."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_prev_pnl_map" in src
+        assert "_show_chg" in src
+        assert "holdings_pnl" in src
+        assert "손익변동" in src
+        assert 'data-k="chg"' in src
