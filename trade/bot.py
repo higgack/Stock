@@ -187,7 +187,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-update (1분) — git pull + 재배포
 • trade-bot-watchdog (1분) — 폴링 hang 감지 + 자동 재시작
 • trade-bot-dashboard — HTTP 서버 (포트 8765, gzip on)
-• trade-bot-dashboard-refresh (5분) — ingest → purge_ignored (filter 회귀 정리) → HTML 재생성
+• trade-bot-dashboard-refresh (5분) — ingest→purge→시세워밍→HTML→미매칭종목 일일 DM점검
 • trade-bot-health (1시간) — BeOn 발표 예정일 (11/21/익월1/익월15) 기준 사이클 누락 감지 → ⚠️ 알림 (이벤트 기반, 침묵 기간엔 silent)
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent) + 미파싱 캡션을 eval_misses.jsonl에 누적 (회귀 fixture용, 키별 1회)
 • trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
@@ -201,7 +201,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-06 — KIS 미동작 시 시세 표시 안 함(오정보 방지·EOD 폴백 제거)</i>
+<i>최종 갱신: 2026-06-06 — 미매칭 신규 관련종목 일일 운영자 DM 점검(resolve-check)</i>
 """
 
 
