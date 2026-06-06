@@ -419,7 +419,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
             f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
             f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
-            "<i>모델: gemini-2.5-pro · 평일 19:00 Daily + 일 22:00 Weekly</i>"
+            "<i>모델: gemini-2.5-pro · 한국거래일 19:00 Daily + 일 22:00 Weekly</i>"
         )
         await ctx.bot.send_message(
             chat_id=post.chat.id, text=text_out, parse_mode=ParseMode.HTML,
@@ -1094,7 +1094,7 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【7. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (평일19:00·일22:00 Weekly) · 🎟️ 청약 (평일10·14시) · 🏠 부동산 (금09:00·1일 Monthly) · 📝 블로그(30분) · 📨 미국 레딧(1분, ₩0)
+🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (한국거래일19:00·일22:00 Weekly) · 🎟️ 청약 (평일10·14시) · 🏠 부동산 (금09:00·1일 Monthly) · 📝 블로그(30분) · 📨 미국 레딧(1분, ₩0)
 
 ━━━━━━━━━
 <b>【8. 차별화 포인트】</b>
@@ -1112,9 +1112,9 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
  • <b>📨 미국 레딧</b> — t.me/insidertracking 자동포워드(1분·₩0)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/reddit_insider.html
- • <b>Daily Byte</b> — 평일19:00·일22:00 KR수급 인포그래픽·검색·🗑️
+ • <b>Daily Byte</b> — 한국거래일19:00·일22:00 KR수급 인포그래픽·검색·🗑️
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/daily_byte.html
- • <b>SV</b> — 매크로·산업·Deal·매일 07:30/20:30·평일 push
+ • <b>SV</b> — 매크로·산업·Deal·평일 07:30/20:30 생성·push
    http://34.50.23.221:8002/dashboard
  • <b>🇰🇷 수출입</b> — 외부 보조(자동 갱신)
    http://34.50.23.221:8765/dashboard/
@@ -1980,7 +1980,7 @@ async def cmd_daily_byte_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> N
         f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
         f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
         f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
-        "<i>모델: gemini-2.5-pro · 평일 19:00 Daily + 일 22:00 Weekly · "
+        "<i>모델: gemini-2.5-pro · 한국거래일 19:00 Daily + 일 22:00 Weekly · "
         "수치는 pykrx 정확값, Pro 는 섹터/로테이션/catalyst narrative</i>"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
