@@ -6174,6 +6174,41 @@ _BUDGET_CSS = """<style>
 _BUDGET_KIND = {"income": "수입", "expense": "지출", "total_income": "수입계",
                 "total_expense": "지출계", "total": "계"}
 
+_BG_SEND_JS = """<script>(function(){
+  function esc(v){v=(v==null?'':String(v));return '"'+v.replace(/"/g,'""')+'"';}
+  function tblRows(id){var t=document.getElementById(id);if(!t)return[];
+    var rs=[];t.querySelectorAll('tr').forEach(function(tr){
+      var a=[];for(var i=0;i<tr.cells.length;i++)a.push(tr.cells[i].textContent.trim());rs.push(a);});return rs;}
+  function buildCsv(){
+    var L=[];function row(a){L.push(a.map(esc).join(','));}
+    var dt=document.getElementById('bg-snap-date');
+    var d=dt?dt.textContent.trim():'budget';
+    row(['NOAH 가계부 스냅샷', d]);row([]);
+    row(['[요약]']);
+    document.querySelectorAll('.stats .stat').forEach(function(s){
+      var l=(s.querySelector('.stat-lbl')||{}).textContent||'';
+      var n=(s.querySelector('.stat-num')||{}).textContent||'';
+      row([l.trim(), n.trim()]);
+    });
+    var mt=tblRows('bg-mtx-tbl');
+    if(mt.length){row([]);row(['[현금흐름 상세]']);mt.forEach(function(r){row(r);});}
+    return L.join('\\r\\n');
+  }
+  function send(to,btn){
+    var t0=btn.textContent;btn.disabled=true;btn.textContent='전송 중…';
+    var dt=document.getElementById('bg-snap-date');
+    var d=dt?dt.textContent.trim():'budget';
+    fetch('api/portfolio_send',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({to:to,csv:buildCsv(),date:'budget_'+d})})
+      .then(function(r){return r.json();})
+      .then(function(j){alert((j&&j.msg)||(j&&j.ok?'전송 완료':'전송 실패'));})
+      .catch(function(){alert('전송 실패 (네트워크)');})
+      .finally(function(){btn.disabled=false;btn.textContent=t0;});
+  }
+  var tg=document.getElementById('bg-send-tg');if(tg)tg.onclick=function(){send('telegram',tg);};
+  var em=document.getElementById('bg-send-em');if(em)em.onclick=function(){send('email',em);};
+})();</script>"""
+
 
 def _budget_nav() -> str:
     """가계부 페이지 nav — 자산 first, NOAH second, 나머지(가계부 자신은 현재라 생략)."""
@@ -6334,7 +6369,7 @@ def _render_budget_page(budget) -> str:
     body += _total_row("지출 합계", expense, "var(--neg)")
     body += _total_row("순저축", net, "var(--muted)")
     matrix = ('<div class="pf-card"><div class="pf-h">현금흐름 상세 (카테고리 × 월)</div>'
-              '<div class="bg-mtx"><table class="pf-tbl">'
+              '<div class="bg-mtx"><table class="pf-tbl" id="bg-mtx-tbl">'
               '<thead><tr><th>항목</th><th>구분</th><th class="r">총계</th>'
               f'<th class="r">월평균</th>{mhead}</tr></thead><tbody>{body}</tbody></table></div></div>')
 
@@ -6346,10 +6381,13 @@ def _render_budget_page(budget) -> str:
             '수입이 적은 달은 저축률 %가 비현실적으로 커져 — 로 표시. '
             f'기간 {_html.escape(str(budget.get("period") or ""))} · 🕒 업데이트 {updated}</p>')
 
+    _bg_btns = ('<button id="bg-send-tg" class="pf-send" type="button">📤 텔레그램 보내기</button>'
+                 '<button id="bg-send-em" class="pf-send" type="button">📧 이메일 보내기</button>'
+                 f'<span id="bg-snap-date" hidden>{_html.escape(str(budget.get("period") or updated))}</span>')
     return (_SCREENER_CSS + _PF_CSS + _BUDGET_CSS + '<div class="wrap">' + nav
-            + '<h1>📒 가계부</h1>'
+            + '<div class="pf-title-row"><h1>📒 가계부</h1>' + _bg_btns + '</div>'
             + '<p class="sub">뱅크샐러드 현금흐름 — 월별 수입·지출·저축률 · 자산 대시보드와 별도</p>'
-            + cards + trend + donut + matrix + note + '</div>')
+            + cards + trend + donut + matrix + _BG_SEND_JS + note + '</div>')
 
 
 def _safe_num(v):
