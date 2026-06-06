@@ -555,6 +555,31 @@ class ResolverAliasTests(_DPEnv):
         self.assertEqual(out["한국타이어"], "161390")
         self.assertEqual(seen_query["q"], "한국타이어앤테크놀로지")   # alias로 질의
 
+    def test_direct_code_spc_group_proxy(self):
+        # SPC그룹(비상장 그룹) → SPC삼립(005610) 프록시, 외부 호출 0(운영자 확인).
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.resolve_codes(["SPC그룹"], transport=fake)
+        self.assertEqual(out["SPC그룹"], "005610")
+        self.assertEqual(len(fake.calls), 0)
+
+    def test_alias_gnbs_queries_eco_name(self):
+        # BeOn '지앤비에스' → KRX '지앤비에스에코' 표기로 likeItmsNm 질의(운영자 확인).
+        seen_query = {}
+        # 코드는 런타임에 data.go.kr가 찾음 — 여기선 alias 질의명/해석 plumbing만 검증
+        # (아래 코드는 테스트 픽스처).
+        items = [{"srtnCd": "439090", "itmsNm": "지앤비에스에코", "clpr": "10000",
+                  "vs": 0, "fltRt": 0, "basDt": "20260605", "mrktCtg": "KOSDAQ"}]
+
+        def fake(method, url, *, headers, body=None):
+            from urllib.parse import urlparse, parse_qs
+            seen_query["q"] = parse_qs(urlparse(url).query).get("likeItmsNm",
+                                                               [""])[0]
+            return {"response": {"body": {"items": {"item": items},
+                                          "totalCount": "1"}}}
+        out = pp.resolve_codes(["지앤비에스"], transport=fake)
+        self.assertEqual(out["지앤비에스"], "439090")
+        self.assertEqual(seen_query["q"], "지앤비에스에코")            # alias로 질의
+
     def test_cache_version_invalidates_old_neg_cache(self):
         # 이전 음성 캐시(_v 없음)는 무시되고, alias 덕에 새로 양성 등록됨.
         old = {"HD현대건설기계": {"code": "", "_cached_at": time.time()}}
