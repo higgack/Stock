@@ -38,8 +38,10 @@ _FINAL_LINE_RE = re.compile(
 # 공백 없이도 씀 → 옛 '\s+:\s+'가 못 잡아 회사가 품목에 박히던 문제 수정.
 # RULE 12 '품목 (지역): 회사'는 콜론이 ')' 뒤라 왼쪽에 괄호가 있어 매치 안 됨.
 # item_first는 콜론 자체가 없음. 회사명에 '(' 없으니 품목 괄호('음극재 (천연흑연)')는
-# 안 삼킴. 길이 2~20으로 긴 프로즈 오매칭 제한.
-_COMPANY_TITLE_RE = re.compile(r"^([^():]{2,20}?)\s*:\s+(.+)$")
+# 안 삼킴. 상한 없음(최소 2자) — 긴 복합사('HD현대일렉트릭 / 효성중공업 / LS ELECTRIC
+# / 일진전기 등' ~39자)도 회사로 잡아야 함. 콜론 앞 괄호 없는 건 회사접두뿐이라 길이
+# 상한이 없어도 item_first 오매칭 위험 없음(20자 상한이 긴 복합사를 놓쳐 회귀했음).
+_COMPANY_TITLE_RE = re.compile(r"^([^():]{2,}?)\s*:\s+(.+)$")
 
 # --- RULE 4 — standard title: '<품목> (<지역>)' ---
 # Right-anchored to (...) so multi-paren items keep their inner parens
