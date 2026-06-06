@@ -175,9 +175,10 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (일회성 공지 등)
 /unignore &lt;msg_id&gt; — ignore 해제
 /ignored — 현재 ignore 목록
-/hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭으로 즉시 핀(✅ 토글), 여러 개 선택 후 맨 아래 <b>완료</b> (예: /hs 반도체, /hs 8542). 직접 등록도 가능: /hs &lt;품목&gt; &lt;HS코드&gt;
+/hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭 즉시 핀(✅ 토글), 맨 아래 <b>완료</b> (예: /hs 반도체). 직접: /hs &lt;품목&gt; &lt;HS코드&gt;
 /unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록 (검색은 ~/.trade/hs_codes.xlsx 필요 — 관세청 15049722 파일 다운로드, 개정 시 덮어쓰기)
-/customs — 관세청 수출입: 📌내 핀 + 📈급등률 TOP(≥$50M) + 💵급증액 TOP + 🗄아카이브. 카드는 기본 접힘(클릭 펼침). 대쉬보드 📦 패널과 동일
+/map &lt;표기&gt; &lt;코드&gt; — 시세 코드 등록(KIS확인) · /map 목록 · /unmap 해제
+/customs — 관세청 수출입: 📌내 핀 + 📈급등률 TOP(≥$50M) + 💵급증액 TOP + 🗄아카이브. 대쉬보드 📦 패널과 동일
 /cost — 비용·자원(외부 API 무료·LLM·디스크·관세청 호출 추정)
 /export — 산업트렌드 공유: 그 시점 월 스냅샷 파일 + 🔗공개 링크(인증 없음). 대쉬보드 🔗 링크(길게 눌러 복사)와 동일
 ※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
@@ -192,7 +193,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent) + 미파싱 캡션을 eval_misses.jsonl에 누적 (회귀 fixture용, 키별 1회)
 • trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
 • trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일룩백+200cap, 초과시 ⚠️abort)
-• trade-bot-customs-fetch (1일 4회) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 + 🗄아카이브, 신규진입 DM(첫스캔무음·cap10). 수동핀 수집. 변동시 ✅갱신 DM. ~15일 6h감지
+• trade-bot-customs-fetch (1일 4회) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 + 🗄아카이브, 신규진입 DM(첫스캔무음·cap10). 변동시 ✅갱신 DM
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 
@@ -201,7 +202,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-06 — 시세 워머 라운드로빈·장중 TTL 30분(꼬리 종목도 표시)</i>
+<i>최종 갱신: 2026-06-06 — /map: 관련종목 시세 코드 텔레그램 즉석 등록(커밋 불필요)</i>
 """
 
 
@@ -967,6 +968,84 @@ async def cmd_hslist(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+_MAP_USAGE = (
+    "사용법: <code>/map &lt;관련종목 표기&gt; &lt;6자리코드&gt;</code>\n"
+    "예: <code>/map 하나코스 226340</code> · 목록 <code>/map</code> · "
+    "해제 <code>/unmap &lt;표기&gt;</code>"
+)
+
+
+async def cmd_map(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """관련종목 시세 코드 즉석 등록 — 대시보드에 안 뜨는 회사를 ssh·커밋 없이
+    텔레그램에서 코드 매핑. KIS로 코드를 확인한 뒤 ~/.trade/stock_overrides.json에
+    저장(resolve_codes가 _DIRECT_CODES보다 먼저 조회) → 다음 워밍부터 표시.
+    인자 없거나 'list'면 현재 등록 목록."""
+    if update.message is None or update.effective_user is None:
+        return
+    operator.remember(update.effective_user.id)
+    from trade import price_provider as pp
+    args = list(ctx.args or [])
+    if not args or args[0].lower() == "list":
+        ov = pp.list_overrides()
+        if not ov:
+            await update.message.reply_text(
+                "등록된 시세 오버라이드 없음.\n" + _MAP_USAGE,
+                parse_mode=ParseMode.HTML)
+            return
+        lines = "\n".join(
+            f"• <code>{_html.escape(k)}</code> → <code>{_html.escape(v)}</code>"
+            for k, v in sorted(ov.items()))
+        await update.message.reply_text(
+            f"📌 <b>시세 코드 오버라이드 {len(ov)}개</b>\n{lines}\n"
+            f"<i>해제: /unmap &lt;표기&gt;</i>", parse_mode=ParseMode.HTML)
+        return
+    if len(args) < 2:
+        await update.message.reply_text(_MAP_USAGE, parse_mode=ParseMode.HTML)
+        return
+    name = " ".join(args[:-1]).strip()
+    code = "".join(ch for ch in args[-1] if ch.isdigit())
+    if len(code) != 6:
+        await update.message.reply_text(
+            f"<code>{_html.escape(args[-1])}</code>는 6자리 종목코드가 아님 "
+            f"(예: <code>226340</code>).", parse_mode=ParseMode.HTML)
+        return
+    # KIS로 실제 시세 확인 — 오등록(틀린 코드) 방지.
+    try:
+        q = pp.get_quote(code)
+    except Exception:
+        q = None
+    if q is None:
+        await update.message.reply_text(
+            f"⚠️ <code>{code}</code> KIS 시세 없음 — 저장 안 함. "
+            f"코드가 맞는지(상장·거래중) 확인해줘.", parse_mode=ParseMode.HTML)
+        return
+    pp.set_override(name, code)
+    nm = q.name if (q.name and q.name != code) else ""
+    suffix = f" {_html.escape(nm)}" if nm else ""
+    await update.message.reply_text(
+        f"✅ 등록: <code>{_html.escape(name)}</code> → <code>{code}</code>"
+        f"{suffix} · {q.price:,.0f}원\n"
+        f"<i>다음 시세 워밍(≤5분)부터 대시보드 표시 · 해제 /unmap "
+        f"{_html.escape(name)}</i>", parse_mode=ParseMode.HTML)
+
+
+async def cmd_unmap(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message is None or update.effective_user is None:
+        return
+    operator.remember(update.effective_user.id)
+    from trade import price_provider as pp
+    args = list(ctx.args or [])
+    if not args:
+        await update.message.reply_text(_MAP_USAGE, parse_mode=ParseMode.HTML)
+        return
+    name = " ".join(args).strip()
+    if pp.remove_override(name):
+        msg = f"🗑 시세 오버라이드 해제: <code>{_html.escape(name)}</code>"
+    else:
+        msg = f"오버라이드에 없음: <code>{_html.escape(name)}</code>"
+    await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+
+
 def _format_customs() -> str:
     """Body for the /customs DM — DM twin of the dashboard 관세청 패널.
     📌 내 핀(수동, 영구) + 📈 급등률 / 💵 급증액 (자동 발굴, 매일 갱신). Reads
@@ -1161,6 +1240,8 @@ def main() -> None:
     app.add_handler(CommandHandler("hs", cmd_hs))
     app.add_handler(CommandHandler("unhs", cmd_unhs))
     app.add_handler(CommandHandler("hslist", cmd_hslist))
+    app.add_handler(CommandHandler("map", cmd_map))
+    app.add_handler(CommandHandler("unmap", cmd_unmap))
     app.add_handler(CommandHandler("customs", cmd_customs))
     app.add_handler(CommandHandler("cost", cmd_cost))
     app.add_handler(CommandHandler("export", cmd_export))

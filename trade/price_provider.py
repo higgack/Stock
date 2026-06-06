@@ -46,6 +46,7 @@ _TOKEN_PATH = _DATA_DIR / ".kis_token.json"
 _QUOTE_CACHE = _DATA_DIR / "kis_quotes.json"
 _CODE_CACHE = _DATA_DIR / "stock_codes.json"     # 종목명→코드 durable 캐시
 _KRX_MASTER = _DATA_DIR / "krx_codes.json"       # KRX 상장 전종목 이름→코드(로컬 마스터)
+_OVERRIDES_PATH = _DATA_DIR / "stock_overrides.json"  # 운영자 /map 즉석 등록(코드보다 우선)
 _CODE_TTL_S = int(os.environ.get("TRADE_STOCK_CODE_TTL") or str(7 * 86400))  # 7일
 _MAX_SYMBOLS = int(os.environ.get("TRADE_PRICE_MAX_SYMBOLS") or "300")
 _HTTP_TIMEOUT_S = 10
@@ -406,6 +407,70 @@ def _load_krx_master() -> dict[str, str]:
     return _krx_master_memo["data"]
 
 
+_overrides_memo: dict = {"key": None, "data": {}}
+
+
+def _load_overrides() -> dict[str, str]:
+    """{BeOn표기(strip): 6자리코드} — 운영자가 /map으로 즉석 등록한 런타임
+    오버라이드. resolve_codes에서 _DIRECT_CODES보다 먼저 조회돼 커밋·배포 없이
+    즉시 효과. (경로·mtime·size) 메모이즈 — 렌더·워머가 매번 불러도 파일이 바뀔
+    때만 다시 읽음."""
+    try:
+        st = _OVERRIDES_PATH.stat()
+        key = (str(_OVERRIDES_PATH), st.st_mtime, st.st_size)
+    except OSError:
+        _overrides_memo.update(key=None, data={})
+        return {}
+    if _overrides_memo["key"] != key:
+        try:
+            raw = json.loads(_OVERRIDES_PATH.read_text(encoding="utf-8"))
+            data = ({str(k).strip(): str(v).strip() for k, v in raw.items()
+                     if str(v).strip()} if isinstance(raw, dict) else {})
+        except Exception:
+            data = {}
+        _overrides_memo.update(key=key, data=data)
+    return _overrides_memo["data"]
+
+
+def list_overrides() -> dict[str, str]:
+    """현재 오버라이드 전체(파일 직접 읽기 — /map 목록용)."""
+    try:
+        d = json.loads(_OVERRIDES_PATH.read_text(encoding="utf-8"))
+        return {str(k): str(v) for k, v in d.items()} if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_overrides(data: dict) -> None:
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = _OVERRIDES_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(_OVERRIDES_PATH)
+
+
+def set_override(name: str, code: str) -> None:
+    """/map — BeOn표기→6자리코드 오버라이드 저장(원자적). name은 strip만(공백
+    포함 표기 허용)."""
+    name = (name or "").strip()
+    code = "".join(ch for ch in str(code) if ch.isdigit())
+    if not name or len(code) != 6:
+        return
+    data = list_overrides()
+    data[name] = code
+    _write_overrides(data)
+
+
+def remove_override(name: str) -> bool:
+    """/unmap — 오버라이드 제거. 있었으면 True."""
+    name = (name or "").strip()
+    data = list_overrides()
+    if name in data:
+        del data[name]
+        _write_overrides(data)
+        return True
+    return False
+
+
 def fetch_krx_master(*, transport: Transport = _default_transport,
                      days: int = 10, num_rows: int = 1000,
                      max_pages: int = 60) -> dict[str, str]:
@@ -460,15 +525,17 @@ def resolve_codes(names: Iterable[str], *,
                   transport: Transport = _default_transport,
                   fetch: bool = True) -> dict[str, str]:
     """{종목명: 6자리코드} — 코드 조회만 되는 공급자(KIS)가 BeOn 회사명을 쓰게 하는
-    다리. 조회 순서: 직접코드 → KRX 로컬 마스터(전 상장종목) → durable 캐시 →
-    data.go.kr 정확일치(미스 폴백). 마스터 덕에 렌더(fetch=False)도 외부 호출 없이
-    대부분 해석 → 커버리지 즉시 상승. 마스터·키 둘 다 없으면 {}."""
+    다리. 조회 순서: 운영자 오버라이드(/map) → 직접코드 → KRX 로컬 마스터(전 상장
+    종목) → durable 캐시 → data.go.kr 정확일치(미스 폴백). 마스터 덕에 렌더
+    (fetch=False)도 외부 호출 없이 대부분 해석 → 커버리지 즉시 상승. 오버라이드·
+    마스터·키 다 없으면 {}."""
     uniq = [n.strip() for n in names if n and str(n).strip()]
     if not uniq:
         return {}
+    overrides = _load_overrides()
     master = _load_krx_master()
     has_key = bool(os.environ.get("TRADE_DATA_GO_KR_KEY"))
-    if not master and not has_key:             # 로컬 마스터도 키도 없으면 해석 불가
+    if not overrides and not master and not has_key:   # 해석 수단 전무 → {}
         return {}
     now = time.time()
     # 양성(코드 확정)은 7일, 음성(미일치)은 1일 — 비상장/표기불일치 종목의 매
@@ -485,6 +552,10 @@ def resolve_codes(names: Iterable[str], *,
     out: dict[str, str] = {}
     dirty = False
     for n in uniq:
+        # 0) 운영자 /map 런타임 오버라이드 — 최우선(커밋·배포 없이 즉시 효과).
+        if n in overrides:
+            out[n] = overrides[n]
+            continue
         # 1) 직접 코드 매핑 — 즉시(외부 호출 0).
         if n in _DIRECT_CODES:
             out[n] = _DIRECT_CODES[n]

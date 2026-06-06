@@ -882,5 +882,56 @@ class ProxyDirectCodeTests(_DPEnv):
         self.assertEqual(len(fake.calls), 0)                          # 직접코드 → API 0
 
 
+class OverrideTests(unittest.TestCase):
+    """운영자 /map 런타임 오버라이드 — _DIRECT_CODES보다 우선, 마스터·키 없어도 동작."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self._p = [
+            mock.patch.object(pp, "_OVERRIDES_PATH", d / "stock_overrides.json"),
+            mock.patch.object(pp, "_CODE_CACHE", d / "stock_codes.json"),
+            mock.patch.object(pp, "_KRX_MASTER", d / "krx_codes.json"),
+            mock.patch.object(pp, "_DATA_DIR", d),
+        ]
+        for p in self._p:
+            p.start()
+        pp._overrides_memo.update(key=None, data={})          # 메모 격리
+        self.env = mock.patch.dict(os.environ, {"TRADE_DATA_GO_KR_KEY": "DK"})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        for p in self._p:
+            p.stop()
+        pp._overrides_memo.update(key=None, data={})
+        self.tmp.cleanup()
+
+    def test_set_list_remove_roundtrip(self):
+        pp.set_override("하나코스", "226340")
+        self.assertEqual(pp.list_overrides().get("하나코스"), "226340")
+        self.assertTrue(pp.remove_override("하나코스"))
+        self.assertNotIn("하나코스", pp.list_overrides())
+        self.assertFalse(pp.remove_override("없는것"))        # 없으면 False
+
+    def test_set_rejects_non_6digit(self):
+        pp.set_override("X", "12345")        # 5자리 → 저장 안 함
+        pp.set_override("Y", "abc")          # 숫자 아님 → 저장 안 함
+        self.assertEqual(pp.list_overrides(), {})
+
+    def test_override_wins_over_direct_code(self):
+        pp.set_override("HD현대건설기계", "999999")           # 직접코드는 267270
+        out = pp.resolve_codes(["HD현대건설기계"], transport=FakeDataPortal(_DP_ITEMS))
+        self.assertEqual(out["HD현대건설기계"], "999999")     # 오버라이드 우선
+
+    def test_override_resolves_without_master_or_key(self):
+        # 마스터·키 다 없어도(early-return 회피) 오버라이드는 해석.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            pp.set_override("새종목", "123456")
+            pp._overrides_memo.update(key=None, data={})      # 파일 변경 강제 재로딩
+            out = pp.resolve_codes(["새종목"])
+            self.assertEqual(out["새종목"], "123456")
+
+
 if __name__ == "__main__":
     unittest.main()
