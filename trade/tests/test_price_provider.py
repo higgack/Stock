@@ -378,7 +378,7 @@ class RecommendedTtlTests(unittest.TestCase):
         from datetime import datetime
         with mock.patch.dict(os.environ, {}, clear=True):
             t = datetime(2026, 6, 5, 11, 0, tzinfo=pp._KST)   # 금 11:00 장중
-            self.assertEqual(pp.recommended_ttl(t), 90)
+            self.assertEqual(pp.recommended_ttl(t), 1800)     # 30분(5분 정적 현실 반영)
 
     def test_after_close_long(self):
         from datetime import datetime

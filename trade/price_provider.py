@@ -136,11 +136,14 @@ def _fnum(v) -> float:
 
 
 def recommended_ttl(now: Optional[datetime] = None) -> int:
-    """장중(평일 09:00–15:30 KST)이면 짧게(라이브 폴링·기본 90s), 그 외(마감
-    후·주말)엔 길게(종가 고정·기본 6h). KIS 실시간 폴링이 장 마감 후엔
-    재호출 0이 되게 해 콜 수를 자동 절감. dataportal(EOD)에도 무해."""
+    """시세 캐시/렌더 표시 기준 TTL. 장중(평일 09:00–15:30 KST) 기본 30분(1800s),
+    그 외(마감 후·주말) 6h. 대시보드 HTML은 5분마다 정적 재생성이라 '초 단위
+    라이브'는 환상 — 짧은 TTL(옛 90s)은 워머가 매 틱 전 종목을 재워밍하게 만들어
+    저빈도 꼬리가 60초 예산에 잘려 영구히 안 뜨던 함정의 원인이었다. 30분이면
+    워머가 라운드로빈으로 한 바퀴 도는 동안 시세가 안 빠져 전 종목이 표시된다
+    (체감 동일: 어차피 5분 정적). TRADE_PRICE_LIVE_TTL로 조정 가능."""
     now = now or datetime.now(_KST)
-    live = int(os.environ.get("TRADE_PRICE_LIVE_TTL") or "90")
+    live = int(os.environ.get("TRADE_PRICE_LIVE_TTL") or "1800")
     eod = int(os.environ.get("TRADE_PRICE_EOD_TTL") or "21600")
     if now.weekday() >= 5:                 # 토/일
         return eod
