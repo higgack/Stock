@@ -2224,7 +2224,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). US 8-K 는 항목 종류가 넓어(실적·Reg FD·임원 위주) 매칭되는 마커가 KR DART(세밀한 공시명)보다 적게 표시될 수 있음. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 원문에서 직접 확인. '공시' 버튼으로 on/off(<b>기본 OFF</b> — 선택해서 보기).</li>
         </ul>
       </div>
-      <div class="cg-sec"><b>보조지표 버튼</b> — 켜고 끈 상태는 저장되어 다른 종목 페이지에도 유지됩니다.
+      <div class="cg-sec"><b>보조지표 버튼</b> — 페이지 안에서 자유롭게 켜고 끌 수 있습니다. 새로고침하면 기본값(캔들·이평선·거래량·RSI)으로 돌아갑니다.
         <ul>
           <li><span class="k">캔들</span> — 라인 ↔ 캔들(시·고·저·종) 전환.</li>
           <li><span class="k">이평선</span> — <span style="color:#f5a623">10 EMA</span>(단기) · <span style="color:#3ec46d">50 SMA</span>(중기) · <span style="color:#e2574c">200 SMA</span>(장기) 추세선.</li>
@@ -2264,17 +2264,17 @@ _CHART_JS = """
   var lastData = null;   // 마지막 렌더 데이터 — 지표 토글 시 refetch 없이 재렌더
   var curSym = '';       // 현재 시장 통화 기호(₩/¥/€/NT$/HK$/$) — render 시 세팅
 
-  // 지표 on/off 상태 (localStorage 영속 — 페이지 넘나들어도 유지).
+  // 지표 on/off 상태 (새로고침 시 항상 기본값으로 회귀 — 사용자 정책 2026-06-06).
+  // 페이지 안에서는 토글 자유(in-memory ind 변경 후 재렌더), 단 localStorage 미저장.
   var IND_KEY = 'noah_chart_ind_v1';
   var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:false, log:false, events:false };
   function loadInd(){
-    var s = {};
-    try { s = JSON.parse(localStorage.getItem(IND_KEY) || '{}') || {}; } catch(e){}
+    try { localStorage.removeItem(IND_KEY); } catch(e){}  // 옛 영속값 정리
     var out = {};
-    for (var k in IND_DEFAULT) out[k] = (s[k] === undefined) ? IND_DEFAULT[k] : !!s[k];
+    for (var k in IND_DEFAULT) out[k] = IND_DEFAULT[k];
     return out;
   }
-  function saveInd(){ try { localStorage.setItem(IND_KEY, JSON.stringify(ind)); } catch(e){} }
+  function saveInd(){ /* no-op: 새로고침 시 기본값 회귀(미영속) */ }
   var ind = loadInd();
 
   function isDark(){ return document.documentElement.dataset.theme === 'dark'; }
