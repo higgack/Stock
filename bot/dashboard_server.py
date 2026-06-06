@@ -201,6 +201,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_simple_delete(
                 "cheongyak_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
                 "regenerate_cheongyak_index")
+        if self.path == "/api/portfolio_send":
+            return self._handle_portfolio_send()
         if self.path != "/api/delete":
             self.send_error(404, "Not Found")
             return
@@ -462,6 +464,38 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("chart_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
+
+    def _handle_portfolio_send(self) -> None:
+        """POST /api/portfolio_send body: {"to":"telegram"|"email",
+        "csv":"<built-by-client>", "date":"YYYY-MM-DD"}.
+
+        클라이언트가 렌더된 자산 표(손익변동·NOAH판정 포함)에서 만든 CSV 를
+        받아 **본인에게만** 전송(텔레그램 DM / 이메일). 서버는 join 로직을
+        재구현하지 않고 relay 만 → 보이는 그대로 전송. Basic-Auth gate 라
+        인증된 소유자만 호출 가능. 5MB cap·대상 화이트리스트."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 5_000_000:
+                raise ValueError("missing or oversized body")
+            payload = json.loads(self.rfile.read(length))
+            to = (payload.get("to") or "").strip()
+            csv_text = payload.get("csv") or ""
+            date = (payload.get("date") or "").strip()
+            if to not in ("telegram", "email"):
+                raise ValueError(f"invalid 'to': {to!r}")
+            if not isinstance(csv_text, str) or not csv_text.strip():
+                raise ValueError("empty csv")
+            if len(csv_text) > 5_000_000:
+                raise ValueError("oversized csv")
+            fname = f"portfolio_{date if _DATE_RE.match(date) else 'snapshot'}.csv"
+            # UTF-8 BOM → Excel 이 한글을 정상 렌더.
+            csv_bytes = ("\ufeff" + csv_text).encode("utf-8")
+            from bot.portfolio_send import send as _pf_send
+            ok, msg = _pf_send(csv_bytes, fname, to)
+            self._reply_json(200 if ok else 502, {"ok": ok, "msg": msg})
+        except Exception as exc:
+            log.warning("portfolio_send: %s", exc)
+            self._reply_json(400, {"ok": False, "msg": "요청 오류"})
 
     def _reply_json(self, status: int, body: dict) -> None:
         encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
