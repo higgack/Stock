@@ -378,6 +378,18 @@ class TestParserSamples(unittest.TestCase):
         self.assertEqual(r.stocks, ["넥스틸", "세아제강"])
         self.assertEqual(r.item, "중소구경 철강제 관")
 
+    def test_company_prefix_long_composite_not_dropped(self):
+        # 회귀 방지: 긴 복합사(>20자)도 회사로 분리 — {2,20} 상한이 못 잡아 회사가
+        # 품목에 박히던(company_first→item_first 거꾸로) 회귀.
+        cap = ("HD현대일렉트릭 / 효성중공업 / LS ELECTRIC / 일진전기 등 : "
+               "초고압 변압기(10,000kVA 초과) (전국)\n\n"
+               "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다.")
+        r = parse_caption(cap)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.item, "초고압 변압기(10,000kVA 초과)")
+        self.assertEqual(r.stocks,
+                         ["HD현대일렉트릭", "효성중공업", "LS ELECTRIC", "일진전기"])
+
     def test_inline_stocks_not_stolen_by_company_prefix(self):
         # RULE 12 '품목 (지역): 회사/회사' — 콜론이 ')' 뒤라 회사접두로 안 샘.
         cap = ("라면 (전국): 삼양식품 / 농심\n\n"
