@@ -5737,6 +5737,8 @@ def _render_portfolio_page(model, noah=None) -> str:
     # **같은 날짜 업로드면 증분 생략** (사용자 정책 2026-06-04; 날짜 미상이면 표시).
     prev = model.get("prev")
     delta_html = ""
+    _prev_pnl_map: dict[str, float] = {}
+    _show_chg = False
     if isinstance(prev, dict):
         _pts = prev.get("_saved_ts")
         _same_day = bool(
@@ -5744,7 +5746,9 @@ def _render_portfolio_page(model, noah=None) -> str:
             and _dt.datetime.fromtimestamp(_pts, _dt.timezone(_dt.timedelta(hours=9))).date()
             == _dt.datetime.fromtimestamp(_ts, _dt.timezone(_dt.timedelta(hours=9))).date()
         )
+        _prev_pnl_map = prev.get("holdings_pnl") or {}
         if not _same_day:
+            _show_chg = bool(_prev_pnl_map)
             pdate = (_dt.datetime.fromtimestamp(
                 _pts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d")
                 if _pts else str(prev.get("as_of") or "이전"))
@@ -5916,15 +5920,33 @@ def _render_portfolio_page(model, noah=None) -> str:
                          f'{_html.escape(noah_rating)}</a>{_rrt}')
         else:
             noah_cell = '<span style="color:var(--muted)">—</span>'
+        # 손익변동 컬럼 — baseline 의 holdings_pnl 대비 현재 평가손익 차이.
+        _chg_val = None
+        _chg_cell = ""
+        if _show_chg:
+            _pkey = f"{h.get('상품명', '')}|{h.get('금융사', '')}"
+            _prev_pnl = _prev_pnl_map.get(_pkey)
+            if _prev_pnl is not None:
+                _chg_val = (pnl or 0) - _prev_pnl
+                if _chg_val == 0:
+                    _chg_cell = '<td class="r" style="color:var(--muted)">—</td>'
+                else:
+                    _csign = "+" if _chg_val > 0 else ""
+                    _chg_cell = (f'<td class="r" style="color:{_pf_col(_chg_val)}">'
+                                 f'{_csign}{_pf_won(_chg_val)}</td>')
+            else:
+                _chg_cell = '<td class="r"><span style="font-size:11px;color:var(--accent)">신규</span></td>'
         _da = (f'data-name="{nm.lower()}" data-tkr="{_html.escape(str(tkr or "")).lower()}" '
                f'data-broker="{broker}" data-eval="{ev if ev is not None else ""}" '
                f'data-ret="{r if r is not None else ""}" '
                f'data-pnl="{pnl if pnl is not None else ""}" '
+               f'data-chg="{_chg_val if _chg_val is not None else ""}" '
                f'data-noah="{_html.escape(noah_rating)}"')
         hl_rows += (f'<tr {_da}><td>{nm_cell}</td><td>{_html.escape(str(tkr or "—"))}</td>'
                     f'<td>{broker}</td><td class="r">{_pf_won(ev)}</td>'
                     f'<td class="r" style="color:{_pf_col(r)}">{rtxt}</td>'
                     f'<td class="r" style="color:{_pf_col(pnl)}">{_pf_won(pnl)}</td>'
+                    + _chg_cell +
                     f'<td>{noah_cell}</td></tr>')
     # 증권사 드롭다운(평가금액 큰 순 등장 순서)
     _brokers: list[str] = []
@@ -5939,12 +5961,14 @@ def _render_portfolio_page(model, noah=None) -> str:
             '<label><input type="checkbox" id="pf-noah"> NOAH 분석만</label>'
             '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span></div>'
             ) if holdings else ''
+    _chg_th = '<th class="r" data-k="chg" data-t="n">손익변동</th>' if _show_chg else ''
     _head = ('<thead><tr><th data-k="name" data-t="s">종목</th>'
              '<th data-k="tkr" data-t="s">티커</th>'
              '<th data-k="broker" data-t="s">증권사</th>'
              '<th class="r" data-k="eval" data-t="n">평가금액</th>'
              '<th class="r" data-k="ret" data-t="n">수익률</th>'
              '<th class="r" data-k="pnl" data-t="n">평가손익</th>'
+             + _chg_th +
              '<th data-k="noah" data-t="s">NOAH 판정</th></tr></thead>')
     # 헤더 카운트 = 고유 종목 수(증권사 중복 제외, 위에서 렌더 시점 재계산).
     # 행은 증권사별 포지션을 유지하므로(증권사 필터 보존) 건수와 다르면 병기.
