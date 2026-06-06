@@ -559,9 +559,11 @@ class ResolverAliasTests(_DPEnv):
     def test_direct_code_bypasses_datagokr(self):
         # _DIRECT_CODES 항목은 외부 호출 0으로 즉시 코드 반환.
         fake = FakeDataPortal(_DP_ITEMS)
-        out = pp.resolve_codes(["HD현대건설기계", "HD현대미포조선"], transport=fake)
+        out = pp.resolve_codes(
+            ["HD현대건설기계", "HD현대미포조선", "코오롱플라스틱"], transport=fake)
         self.assertEqual(out["HD현대건설기계"], "267270")
-        self.assertEqual(out["HD현대미포조선"], "010620")   # alias→direct 전환
+        self.assertEqual(out["HD현대미포조선"], "329180")   # → HD현대중공업 프록시
+        self.assertEqual(out["코오롱플라스틱"], "120110")   # → 코오롱인더스트리 프록시
         self.assertEqual(len(fake.calls), 0)
 
     def test_name_alias_queries_aliased_name(self):
