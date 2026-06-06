@@ -6151,8 +6151,6 @@ def regenerate_portfolio_index() -> None:
                                "date": last.get("time")}
         except Exception as exc:
             log.warning("portfolio NOAH overlay build failed: %s", exc)
-        noah = {t: info for t, info in noah.items()
-                if (ARCHIVE_ROOT / f"ticker_{t}.html").is_file()}
         html = _render_portfolio_page(model, noah)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "portfolio.html").write_text(html, encoding="utf-8")
