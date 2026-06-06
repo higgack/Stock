@@ -6190,6 +6190,11 @@ _BG_SEND_JS = """<script>(function(){
   function tblRows(id){var t=document.getElementById(id);if(!t)return[];
     var rs=[];t.querySelectorAll('tr').forEach(function(tr){
       var a=[];for(var i=0;i<tr.cells.length;i++)a.push(tr.cells[i].textContent.trim());rs.push(a);});return rs;}
+  function legItems(id){var c=document.getElementById(id);if(!c)return[];
+    var rs=[];c.querySelectorAll('.pf-leg').forEach(function(d){
+      var b=d.querySelector('b');var txt=d.textContent.trim();
+      var nm=txt.split(/\\s+/)[0];var amt=b?b.textContent.trim():'';
+      rs.push([nm,amt]);});return rs;}
   function buildCsv(){
     var L=[];function row(a){L.push(a.map(esc).join(','));}
     var dt=document.getElementById('bg-snap-date');
@@ -6201,6 +6206,10 @@ _BG_SEND_JS = """<script>(function(){
       var n=(s.querySelector('.stat-num')||{}).textContent||'';
       row([l.trim(), n.trim()]);
     });
+    var ec=legItems('bg-exp-cats');
+    if(ec.length){row([]);row(['[지출 카테고리]']);row(['항목','금액']);ec.forEach(function(r){row(r);});}
+    var ic=legItems('bg-inc-cats');
+    if(ic.length){row([]);row(['[수입 구성]']);row(['항목','금액']);ic.forEach(function(r){row(r);});}
     var mt=tblRows('bg-mtx-tbl');
     if(mt.length){row([]);row(['[현금흐름 상세]']);mt.forEach(function(r){row(r);});}
     return L.join('\\r\\n');
@@ -6332,13 +6341,13 @@ def _render_budget_page(budget) -> str:
         inc_cats = [c for c in budget.get("income_cats", []) if (c.get("amount") or 0) > 0]
         inc_panel = ""
         if inc_cats:
-            inc_panel = ('<div style="flex:1 1 200px;min-width:190px">'
+            inc_panel = ('<div id="bg-inc-cats" style="flex:1 1 200px;min-width:190px">'
                          '<div class="pf-h" style="font-size:13px;color:var(--muted)">💰 수입 구성</div>'
                          + "".join(f'<div class="pf-leg">{_html.escape(str(c["항목"]))} '
                                    f'<b>{_pf_won(c["amount"])}</b></div>' for c in inc_cats[:8]) + '</div>')
         donut = ('<div class="pf-card"><div class="pf-h">지출 카테고리 (기간 합)</div><div class="pf-grid">'
                  f'<div class="pf-hole"><div class="pf-donut" style="background:conic-gradient({",".join(stops)})"></div></div>'
-                 f'<div style="flex:1 1 240px;min-width:200px">{"".join(legend)}</div>'
+                 f'<div id="bg-exp-cats" style="flex:1 1 240px;min-width:200px">{"".join(legend)}</div>'
                  + inc_panel + '</div></div>')
 
     # 카테고리 × 월 매트릭스. 뱅샐의 '총계' 행(월수입/월지출 총계 등)은 export 가
