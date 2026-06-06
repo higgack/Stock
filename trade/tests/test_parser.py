@@ -9,7 +9,9 @@ Run from the repo root:
 
 import unittest
 from datetime import date
+from unittest import mock
 
+from trade import price_provider as pp
 from trade.parser import parse_caption
 
 
@@ -427,6 +429,72 @@ class TestParserSamples(unittest.TestCase):
         )
         keys = {parse_caption(c).dedup_key() for c in (cap_a, cap_b, cap_c)}
         self.assertEqual(len(keys), 1)
+
+
+_STATUS = "\n\n2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다."
+
+
+class CompanyFirstInvertedTests(unittest.TestCase):
+    """'회사 (별칭/지역/비상장): 품목' (RULE 12 거꾸로) 전환 + 실제 RULE 12 회귀 0."""
+
+    def setUp(self):
+        self._m = mock.patch.object(pp, "_load_krx_master", return_value={
+            "HD현대일렉트릭": "267260", "POSCO홀딩스": "005490", "SKC": "011790",
+            "빙그레": "005180", "송원산업": "004430", "일진전기": "103590",
+            "두산에너빌리티": "034020", "서흥": "008490",
+            "삼양식품": "003230", "농심": "004370",   # 실제 RULE 12 우변 회사들
+        })
+        self._m.start()
+
+    def tearDown(self):
+        self._m.stop()
+
+    def test_inverted_region_in_paren_Y(self):
+        r = parse_caption("HD현대일렉트릭 (경기 성남시) : 초고압 변압기(10,000kVA 초과) + 배전반" + _STATUS)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["HD현대일렉트릭"])
+        self.assertEqual(r.item, "초고압 변압기(10,000kVA 초과) + 배전반")
+        self.assertEqual(r.region, "경기 성남시")
+
+    def test_inverted_alias_region_in_Z(self):
+        r = parse_caption("POSCO홀딩스(포스코필바라리튬솔루션) : 수산화리튬 (전남 광양시)" + _STATUS)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["POSCO홀딩스"])
+        self.assertEqual(r.item, "수산화리튬")
+        self.assertEqual(r.region, "전남 광양시")
+
+    def test_inverted_bisangjang_marker_even_if_unlisted(self):
+        # KP일렉트릭은 마스터에 없지만 '(비상장)' 마커로 회사 판정.
+        r = parse_caption("KP일렉트릭 (비상장) : 소형 변압기(100kVA 이하) (인천 미추홀구_미국)" + _STATUS)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["KP일렉트릭"])
+        self.assertEqual(r.item, "소형 변압기(100kVA 이하)")
+
+    def test_inverted_alias_is_listed_parent(self):
+        # 젤텍은 마스터에 없지만 별칭 '서흥'(상장)으로 좌변=회사 판정.
+        r = parse_caption("젤텍(서흥): 젤라틴 (부산 강서구_글로벌)" + _STATUS)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["젤텍"])
+        self.assertEqual(r.item, "젤라틴")
+
+    def test_colon_no_space_after(self):
+        r = parse_caption("에이치엔에스하이텍 :이방성도전필름 (Anisotropic Conductive Film) (경기 안산시)" + _STATUS)
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["에이치엔에스하이텍"])
+
+    # ===== 회귀 방지: 실제 RULE 12(품목 (지역): 회사)는 절대 안 뒤집힘 =====
+    def test_real_rule12_multi_company_stays_item_first(self):
+        r = parse_caption("라면 (전국): 삼양식품 / 농심" + _STATUS)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.item, "라면")
+        self.assertEqual(set(r.stocks), {"삼양식품", "농심"})
+
+    def test_real_rule12_stays_even_if_stock_unlisted(self):
+        # 우변 회사가 마스터에 없어도, 좌변=품목('디램')이라 item_first 유지(회귀 0의 핵심).
+        r = parse_caption("디램 (경기 용인시): 비상장반도체" + _STATUS)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.item, "디램")
+        self.assertEqual(r.stocks, ["비상장반도체"])
 
 
 if __name__ == "__main__":
