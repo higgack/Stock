@@ -1,18 +1,19 @@
-"""자산 스냅샷 CSV '보내기' — 텔레그램 DM + 이메일 (사용자 요청 2026-06-06).
+"""자산 스냅샷 CSV '보내기' — 텔레그램 채널 + 이메일 (사용자 요청 2026-06-06).
 
 대시보드의 '보내기' 버튼이 렌더된 표(손익변동·NOAH판정 포함)에서 CSV 를
-만들어 `/api/portfolio_send` 로 POST → 이 모듈이 **본인에게만** 전송한다.
+만들어 `/api/portfolio_send` 로 POST → 이 모듈이 NOAH 채널 또는 이메일로
+전송한다.
 
-⛔ 프라이버시: 자산 CSV 는 민감정보 → **공개 채널(CHANNEL_CHAT_IDS)로 절대
-보내지 않는다.** 텔레그램은 본인 DM(PORTFOLIO_TG_CHAT_ID 또는 ALLOWED_USER_IDS
-첫 id), 이메일은 본인 메일(PORTFOLIO_EMAIL_TO 또는 SMTP_USER)로만.
+텔레그램: CHANNEL_CHAT_IDS 첫 번째 채널로 전송 (사용자 정책 2026-06-06
+"텔레그램채널은 현재 우리채널에 보내면돼"). PORTFOLIO_TG_CHAT_ID 가 있으면
+해당 DM 우선.
 
 graceful: 미설정/실패 시 (False, 한국어 사유) 반환 — 대시보드가 그대로 표시.
-순수 헬퍼(_owner_chat_id 등)는 단위테스트.
+순수 헬퍼(_target_chat_id 등)는 단위테스트.
 
 필요 env:
-  텔레그램(즉시): TELEGRAM_BOT_TOKEN(이미 있음) + PORTFOLIO_TG_CHAT_ID(본인
-    텔레그램 user id) 또는 ALLOWED_USER_IDS.
+  텔레그램(즉시): TELEGRAM_BOT_TOKEN(이미 있음) + CHANNEL_CHAT_IDS(채널 id)
+    또는 PORTFOLIO_TG_CHAT_ID(본인 DM 우선).
   이메일(설정 후): SMTP_USER(gmail) + SMTP_PASS(앱비밀번호 — 일반 비번 아님)
     + 선택 SMTP_HOST(기본 smtp.gmail.com)/SMTP_PORT(기본 587)/PORTFOLIO_EMAIL_TO.
 """
@@ -33,13 +34,13 @@ def _env(key: str) -> str:
     return (os.environ.get(key) or "").strip()
 
 
-def _owner_chat_id() -> str:
-    """본인 DM chat id — PORTFOLIO_TG_CHAT_ID 우선, 없으면 ALLOWED_USER_IDS
-    첫 항목. **CHANNEL_CHAT_IDS 는 절대 사용 안 함**(채널=공개, 자산 비공개)."""
+def _target_chat_id() -> str:
+    """전송 대상 chat id — PORTFOLIO_TG_CHAT_ID(DM) 우선, 없으면
+    CHANNEL_CHAT_IDS 첫 채널 (사용자 정책 2026-06-06)."""
     cid = _env("PORTFOLIO_TG_CHAT_ID")
     if cid:
         return cid
-    ids = _env("ALLOWED_USER_IDS")
+    ids = _env("CHANNEL_CHAT_IDS")
     return ids.split(",")[0].strip() if ids else ""
 
 
@@ -48,14 +49,14 @@ def _email_to() -> str:
 
 
 def send_telegram(csv_bytes: bytes, filename: str) -> Tuple[bool, str]:
-    """본인 DM 으로 sendDocument. (ok, 한국어 메시지)."""
+    """NOAH 채널(또는 DM)로 sendDocument. (ok, 한국어 메시지)."""
     token = _env("TELEGRAM_BOT_TOKEN")
-    chat = _owner_chat_id()
+    chat = _target_chat_id()
     if not token:
         return False, "텔레그램 미설정 (TELEGRAM_BOT_TOKEN 없음)"
     if not chat:
-        return False, ("텔레그램 미설정 — 본인 DM id 필요 (.env 에 "
-                       "PORTFOLIO_TG_CHAT_ID 또는 ALLOWED_USER_IDS)")
+        return False, ("텔레그램 미설정 — .env 에 CHANNEL_CHAT_IDS "
+                       "또는 PORTFOLIO_TG_CHAT_ID 필요")
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{token}/sendDocument",
