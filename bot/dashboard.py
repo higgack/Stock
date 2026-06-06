@@ -5573,7 +5573,7 @@ _PF_CSS = """<style>
 .pf-ctl label{font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .pf-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .pf-title-row h1{margin:0}
-.pf-send{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer}
+.pf-send{background:var(--accent);color:#fff;border:0;border-radius:4px;padding:3px 7px;font-size:11px;cursor:pointer}
 .pf-send:hover{opacity:.88}
 .pf-send:disabled{opacity:.5;cursor:default}
 .pf-tbl thead th{position:sticky;top:0;background:var(--card);z-index:1}
@@ -5725,10 +5725,19 @@ def _pf_rating_col(rating) -> str:
 def _noah_lookup(noah: dict, tkr) -> tuple:
     """보유 티커 → (NOAH info, 아카이브 full 티커) 또는 (None, None).
     KR 은 DART 6자리 코드(suffix 없음)라 .KS/.KQ 둘 다 시도해 분석 아카이브
-    ('039030.KS')와 매칭. 해외(LRCX 등)는 그대로 매칭."""
+    ('039030.KS')와 매칭. 이미 suffix 가 붙은 경우(.KS→.KQ 또는 반대)도 처리.
+    해외(LRCX 등)는 그대로 매칭."""
     if not tkr or not noah:
         return (None, None)
-    for cand in (str(tkr), f"{tkr}.KS", f"{tkr}.KQ"):
+    tkr_str = str(tkr)
+    if tkr_str in noah:
+        return (noah[tkr_str], tkr_str)
+    base = tkr_str
+    for sfx in (".KS", ".KQ"):
+        if tkr_str.endswith(sfx):
+            base = tkr_str[:-len(sfx)]
+            break
+    for cand in (f"{base}.KS", f"{base}.KQ"):
         if cand in noah:
             return (noah[cand], cand)
     return (None, None)
@@ -6142,6 +6151,8 @@ def regenerate_portfolio_index() -> None:
                                "date": last.get("time")}
         except Exception as exc:
             log.warning("portfolio NOAH overlay build failed: %s", exc)
+        noah = {t: info for t, info in noah.items()
+                if (ARCHIVE_ROOT / f"ticker_{t}.html").is_file()}
         html = _render_portfolio_page(model, noah)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "portfolio.html").write_text(html, encoding="utf-8")
@@ -6199,7 +6210,7 @@ _BG_SEND_JS = """<script>(function(){
     var dt=document.getElementById('bg-snap-date');
     var d=dt?dt.textContent.trim():'budget';
     fetch('api/portfolio_send',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({to:to,csv:buildCsv(),date:'budget_'+d})})
+      body:JSON.stringify({to:to,csv:buildCsv(),date:d,kind:'budget'})})
       .then(function(r){return r.json();})
       .then(function(j){alert((j&&j.msg)||(j&&j.ok?'전송 완료':'전송 실패'));})
       .catch(function(){alert('전송 실패 (네트워크)');})

@@ -487,11 +487,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 raise ValueError("empty csv")
             if len(csv_text) > 5_000_000:
                 raise ValueError("oversized csv")
-            fname = f"portfolio_{date if _DATE_RE.match(date) else 'snapshot'}.csv"
+            kind = (payload.get("kind") or "").strip()
+            is_budget = kind == "budget"
+            prefix = "budget" if is_budget else "portfolio"
+            fname = f"{prefix}_{date if _DATE_RE.match(date) else 'snapshot'}.csv"
+            caption = "가계부" if is_budget else "자산"
             # UTF-8 BOM → Excel 이 한글을 정상 렌더.
             csv_bytes = ("\ufeff" + csv_text).encode("utf-8")
             from bot.portfolio_send import send as _pf_send
-            ok, msg = _pf_send(csv_bytes, fname, to)
+            ok, msg = _pf_send(csv_bytes, fname, to, caption=caption)
             self._reply_json(200 if ok else 502, {"ok": ok, "msg": msg})
         except Exception as exc:
             log.warning("portfolio_send: %s", exc)

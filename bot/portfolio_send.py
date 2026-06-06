@@ -48,7 +48,7 @@ def _email_to() -> str:
     return _env("PORTFOLIO_EMAIL_TO") or _env("SMTP_USER")
 
 
-def send_telegram(csv_bytes: bytes, filename: str) -> Tuple[bool, str]:
+def send_telegram(csv_bytes: bytes, filename: str, caption: str = "자산") -> Tuple[bool, str]:
     """NOAH 채널(또는 DM)로 sendDocument. (ok, 한국어 메시지)."""
     token = _env("TELEGRAM_BOT_TOKEN")
     chat = _target_chat_id()
@@ -60,7 +60,7 @@ def send_telegram(csv_bytes: bytes, filename: str) -> Tuple[bool, str]:
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{token}/sendDocument",
-            data={"chat_id": chat, "caption": "📊 자산 스냅샷 (대시보드 보내기)"},
+            data={"chat_id": chat, "caption": f"📊 {caption} 스냅샷 (대시보드 보내기)"},
             files={"document": (filename, csv_bytes, "text/csv")},
             timeout=_HTTP_TIMEOUT,
         )
@@ -77,7 +77,7 @@ def send_telegram(csv_bytes: bytes, filename: str) -> Tuple[bool, str]:
         return False, f"텔레그램 전송 실패: {exc}"
 
 
-def send_email(csv_bytes: bytes, filename: str) -> Tuple[bool, str]:
+def send_email(csv_bytes: bytes, filename: str, caption: str = "자산") -> Tuple[bool, str]:
     """SMTP(기본 Gmail)로 본인 메일에 CSV 첨부 전송. (ok, 한국어 메시지)."""
     host = _env("SMTP_HOST") or "smtp.gmail.com"
     try:
@@ -94,10 +94,10 @@ def send_email(csv_bytes: bytes, filename: str) -> Tuple[bool, str]:
         return False, "이메일 미설정 — 수신 주소 없음 (PORTFOLIO_EMAIL_TO/SMTP_USER)"
     try:
         msg = EmailMessage()
-        msg["Subject"] = "NOAH 자산 스냅샷"
+        msg["Subject"] = f"NOAH {caption} 스냅샷"
         msg["From"] = user
         msg["To"] = to
-        msg.set_content("첨부 파일: 자산 관리 대시보드 스냅샷 CSV (Excel 호환).")
+        msg.set_content(f"첨부 파일: {caption} 대시보드 스냅샷 CSV (Excel 호환).")
         msg.add_attachment(csv_bytes, maintype="text", subtype="csv",
                            filename=filename)
         ctx = ssl.create_default_context()
@@ -110,10 +110,10 @@ def send_email(csv_bytes: bytes, filename: str) -> Tuple[bool, str]:
         return False, f"이메일 전송 실패: {exc}"
 
 
-def send(csv_bytes: bytes, filename: str, to: str) -> Tuple[bool, str]:
+def send(csv_bytes: bytes, filename: str, to: str, *, caption: str = "자산") -> Tuple[bool, str]:
     """대상별 디스패치. to ∈ {'telegram','email'}."""
     if to == "telegram":
-        return send_telegram(csv_bytes, filename)
+        return send_telegram(csv_bytes, filename, caption)
     if to == "email":
-        return send_email(csv_bytes, filename)
+        return send_email(csv_bytes, filename, caption)
     return False, f"알 수 없는 전송 대상: {to}"
