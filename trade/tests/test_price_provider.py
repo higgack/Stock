@@ -50,6 +50,7 @@ class _TmpEnv(unittest.TestCase):
             mock.patch.object(pp, "_TOKEN_PATH", d / ".kis_token.json"),
             mock.patch.object(pp, "_QUOTE_CACHE", d / "kis_quotes.json"),
             mock.patch.object(pp, "_CODE_CACHE", d / "stock_codes.json"),
+            mock.patch.object(pp, "_KRX_MASTER", d / "krx_codes.json"),
             mock.patch.object(pp, "_DATA_DIR", d),
         ]
         for p in self._p:
@@ -252,6 +253,7 @@ class _DPEnv(unittest.TestCase):
             mock.patch.object(pp, "_TOKEN_PATH", d / ".kis_token.json"),
             mock.patch.object(pp, "_QUOTE_CACHE", d / "kis_quotes.json"),
             mock.patch.object(pp, "_CODE_CACHE", d / "stock_codes.json"),
+            mock.patch.object(pp, "_KRX_MASTER", d / "krx_codes.json"),
             mock.patch.object(pp, "_DATA_DIR", d),
         ]
         for p in self._p:
@@ -373,6 +375,7 @@ class _KisHybridEnv(unittest.TestCase):
             mock.patch.object(pp, "_TOKEN_PATH", d / ".kis_token.json"),
             mock.patch.object(pp, "_QUOTE_CACHE", d / "kis_quotes.json"),
             mock.patch.object(pp, "_CODE_CACHE", d / "stock_codes.json"),
+            mock.patch.object(pp, "_KRX_MASTER", d / "krx_codes.json"),
             mock.patch.object(pp, "_DATA_DIR", d),
         ]
         for p in self._p:
@@ -683,6 +686,76 @@ class KisEodFallbackTests(_KisHybridEnv):
         pp._QUOTE_CACHE.write_text(json.dumps(old))
         out = pp.get_quotes(["005930"], transport=FakeKIS({}), ttl_s=600)
         self.assertEqual(out["005930"].source, "kis")  # 기본값 적용, refetch 안 함
+
+
+class FakeKrxListing:
+    """getStockPriceInfo 이름필터 없는 전수 페이지네이션 스텁 — page1에 rows,
+    page2부터 빈 응답(빌더가 중단)."""
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    def __call__(self, method, url, *, headers, body=None):
+        from urllib.parse import urlparse, parse_qs
+        self.calls.append(url)
+        page = int(parse_qs(urlparse(url).query).get("pageNo", ["1"])[0])
+        items = self.rows if page == 1 else []
+        return {"response": {"body": {"items": {"item": items},
+                                      "totalCount": str(len(items))}}}
+
+
+class KrxMasterFetchTests(_DPEnv):
+    def test_fetch_builds_name_to_code_dedup(self):
+        rows = [
+            {"srtnCd": "005930", "itmsNm": "삼성전자", "basDt": "20260604"},
+            {"srtnCd": "000660", "itmsNm": "SK하이닉스", "basDt": "20260604"},
+            {"srtnCd": "005930", "itmsNm": "삼성전자", "basDt": "20260603"},  # 구일자 dup
+        ]
+        m = pp.fetch_krx_master(transport=FakeKrxListing(rows))
+        self.assertEqual(m["삼성전자"], "005930")
+        self.assertEqual(m["SK하이닉스"], "000660")
+        self.assertEqual(len(m), 2)                       # 코드 기준 dedup
+
+    def test_fetch_no_key_empty(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(pp.fetch_krx_master(transport=FakeKrxListing([])), {})
+
+
+class ResolveMasterTests(_DPEnv):
+    def _write_master(self, d):
+        pp._KRX_MASTER.parent.mkdir(parents=True, exist_ok=True)
+        pp._KRX_MASTER.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+
+    def test_master_resolves_without_api(self):
+        # 마스터에 있으면 data.go.kr 호출 0으로 즉시 해석(공백 정규화 매칭 포함).
+        self._write_master({"삼성전자": "005930", "SK 하이닉스": "000660"})
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.resolve_codes(["삼성전자", "SK하이닉스"], transport=fake)
+        self.assertEqual(out["삼성전자"], "005930")
+        self.assertEqual(out["SK하이닉스"], "000660")     # 'SK 하이닉스'(공백) 정규화
+        self.assertEqual(len(fake.calls), 0)              # 외부 호출 0
+
+    def test_master_resolves_on_render_fetch_false(self):
+        # 렌더(fetch=False)도 마스터로 즉시 해석 — 커버리지 즉시 상승.
+        self._write_master({"삼성전자": "005930"})
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.resolve_codes(["삼성전자"], transport=fake, fetch=False)
+        self.assertEqual(out["삼성전자"], "005930")
+        self.assertEqual(len(fake.calls), 0)
+
+    def test_fallback_to_datagokr_when_not_in_master(self):
+        self._write_master({"삼성전자": "005930"})         # SK하이닉스는 마스터에 없음
+        fake = FakeDataPortal(_DP_ITEMS)
+        out = pp.resolve_codes(["SK하이닉스"], transport=fake)
+        self.assertEqual(out["SK하이닉스"], "000660")      # data.go.kr 폴백
+        self.assertGreaterEqual(len(fake.calls), 1)
+
+    def test_master_alone_resolves_without_key(self):
+        # 키 없어도 마스터만으로 해석(마스터는 로컬).
+        self._write_master({"삼성전자": "005930"})
+        with mock.patch.dict(os.environ, {}, clear=True):
+            out = pp.resolve_codes(["삼성전자"], transport=FakeDataPortal(_DP_ITEMS))
+        self.assertEqual(out["삼성전자"], "005930")
 
 
 if __name__ == "__main__":
