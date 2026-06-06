@@ -578,15 +578,29 @@ _PRIMARY_SPLIT_RE = re.compile(r"[/·,]")
 # 종목 후보에서 제외할 구조적 마커(제품설명·치수·괄호 등 프로즈 조각).
 _STRUCT_REJECT = re.compile(r'[()%+"」「\[\]]|\d{3,}|kVA')
 
+# 품목·소재·일반명사가 회사명처럼 보여(구조적 마커 없는 짧은 명사) 종목/회사로
+# 새는 것 차단 — 회사별 뷰에 품목 설명이 가짜 회사로 뜨던 문제. 공백제거 정확일치,
+# 운영자 확인 목록(확장 가능). 정확일치라 '한미반도체' 같은 실제 회사는 안 걸림.
+_PRODUCT_BLOCKLIST: frozenset = frozenset({
+    "수산화리튬", "광섬유", "동박", "소주", "젤라틴", "반도체", "웨이퍼",
+    "소자의", "측정", "검사용", "장비", "인터페이스보드", "프로브", "카드",
+    "빙과류", "아이스크림", "변압기", "배전반", "변환기", "자동차단기",
+})
+
 
 def _looks_like_stock(t: str) -> bool:
-    """프로즈 조각(제품 설명·치수·괄호 등)을 종목 후보에서 제외. 구조적
-    마커(괄호·%·+·따옴표·대괄호·3자리+ 연속숫자·kVA)나 길이 이탈(2~14자 밖)
-    이면 종목명이 아닌 것으로 본다. 통과해도 data.go.kr에서 안 잡히면 어차피
-    음성 캐시 — 여기선 명백한 garbage만 거르는 게 목적."""
+    """프로즈 조각(제품 설명·치수·괄호 등)과 제품/일반명사를 종목 후보에서 제외.
+    구조적 마커(괄호·%·+·따옴표·대괄호·3자리+ 연속숫자·kVA)·길이 이탈(2~14자 밖)·
+    제품 블록리스트 정확일치면 종목/회사명이 아닌 것으로 본다. 통과해도 data.go.kr
+    에서 안 잡히면 어차피 음성 캐시 — 여기선 명백한 garbage만 거르는 게 목적."""
     t = (t or "").strip()
     if not (2 <= len(t) <= 14):
         return False
+    if t.replace(" ", "") in _PRODUCT_BLOCKLIST:
+        return False
+    parts = t.split()
+    if len(parts) >= 2 and all(p in _PRODUCT_BLOCKLIST for p in parts):
+        return False                       # 전 토큰이 제품명(예: '반도체 웨이퍼')
     return not _STRUCT_REJECT.search(t)
 
 
@@ -607,6 +621,7 @@ _NAME_ALIASES: dict[str, str] = {
     "코스맥스NBT": "코스맥스엔비티",
     "제이엔케이히터": "JNK히터",
     "조광ILI": "조광아이엘아이",
+    "에스테아이": "에스티아이",      # BeOn 오타(운영자 확인) → KRX 에스티아이
 }
 
 # KRX엔 상장돼 있지만 data.go.kr likeItmsNm으로 안 잡히는 종목은 코드를

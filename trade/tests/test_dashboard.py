@@ -12,7 +12,7 @@ import re
 import unittest
 from pathlib import Path
 
-from trade.dashboard import _asof_label, render_html
+from trade.dashboard import _asof_label, _companies_for, render_html
 from trade.parser import parse_caption
 from trade.store import alert_to_row, open_db, upsert_alert
 
@@ -529,6 +529,23 @@ class TestCustomsPanel(unittest.TestCase):
         # defaults; on a machine with no pins the panel is just hidden).
         html = render_html(self.db_path)
         self.assertIn("<!DOCTYPE html>", html)
+
+
+class CompaniesForTests(unittest.TestCase):
+    def test_filters_products_keeps_companies(self):
+        # 회사별 뷰 그룹핑용 companies — 품목/제품명 제외, 실제 회사·복합명은 유지.
+        out = _companies_for(["삼성전자", "수산화리튬", "동박", "GST / 유니셈 등",
+                              "반도체 웨이퍼", "소자의 측정, 검사용 장비"])
+        self.assertIn("삼성전자", out)
+        self.assertIn("GST", out)
+        self.assertIn("유니셈", out)
+        for prod in ("수산화리튬", "동박", "반도체", "웨이퍼", "반도체 웨이퍼",
+                     "측정", "검사용", "장비"):
+            self.assertNotIn(prod, out)
+
+    def test_empty_safe(self):
+        self.assertEqual(_companies_for([]), [])
+        self.assertEqual(_companies_for(None), [])
 
 
 class AsofLabelTests(unittest.TestCase):

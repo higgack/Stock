@@ -287,6 +287,17 @@ def _load_eval_miss_summary(
     return {"count": count, "oldest_age_days": age_days}
 
 
+def _companies_for(stocks: list) -> list:
+    """회사별 뷰 그룹핑용 회사명 — split_names로 복합명 분리 + 품목/프로즈/제품
+    블록리스트 제외(품목 설명이 가짜 회사로 뜨던 문제). 칩·CSV·검색은 원본 stocks를
+    그대로 쓰고 회사 섹션 그룹핑만 이걸 쓴다. split_names 실패 시 원본 폴백."""
+    try:
+        from trade import price_provider
+        return price_provider.split_names(stocks or [])
+    except Exception:
+        return list(stocks or [])
+
+
 def _alert_to_payload(a: dict, media_prefix: str) -> dict:
     """Strip the alert down to the fields the client view actually uses.
 
@@ -308,6 +319,8 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
         "regions": a.get("regions") or [],
         "countries": a.get("countries") or [],
         "stocks": a.get("stocks") or [],
+        # 회사별 뷰 섹션 그룹핑 전용 — 품목 설명/제품명을 거른 회사명만.
+        "companies": _companies_for(a.get("stocks") or []),
         "stocks_meta": a.get("stocks_meta") or {},
         "is_composite": bool(a.get("is_composite")),
         "composite_parts": a.get("composite_parts") or [],
@@ -1421,7 +1434,9 @@ function countryMix(variants){
 
 function buildCompaniesView(filtered){
   const byCompany={};
-  filtered.forEach(a=>{(a.stocks||[]).forEach(s=>{(byCompany[s]=byCompany[s]||[]).push(a)})});
+  // 회사 섹션은 companies(품목·제품명 거른 회사명)로 그룹핑 — 원본 stocks엔 품목
+  // 설명이 섞여 가짜 회사 섹션이 생기던 문제. companies 없으면 stocks로 폴백.
+  filtered.forEach(a=>{(a.companies||a.stocks||[]).forEach(s=>{(byCompany[s]=byCompany[s]||[]).push(a)})});
   let sorted=Object.entries(byCompany).sort((x,y)=>y[1].length-x[1].length||x[0].localeCompare(y[0]));
   // RULE: in 회사별 view, if the search query matches one or more
   // company names directly, narrow to those sections. Otherwise keep
