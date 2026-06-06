@@ -201,7 +201,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-06 — 종목 시세 백그라운드 워머(복합명 분리·렌더 캐시전용)</i>
+<i>최종 갱신: 2026-06-06 — KIS 시세 장애 시 EOD 자동 폴백·토큰 self-heal</i>
 """
 
 

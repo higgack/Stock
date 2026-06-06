@@ -61,6 +61,7 @@ class _TmpEnv(unittest.TestCase):
             "TRADE_PRICE_PROVIDER": "auto", "TRADE_KIS_THROTTLE_MS": "0",
         }, clear=True)
         self.env.start()
+        pp._KIS_REISSUE_COOLDOWN_UNTIL = 0.0   # self-heal 쿨다운 테스트 격리
 
     def tearDown(self):
         self.env.stop()
@@ -259,6 +260,7 @@ class _DPEnv(unittest.TestCase):
             "TRADE_DATA_GO_KR_KEY": "DK", "TRADE_PRICE_PROVIDER": "auto",
         }, clear=True)
         self.env.start()
+        pp._KIS_REISSUE_COOLDOWN_UNTIL = 0.0   # self-heal 쿨다운 테스트 격리
 
     def tearDown(self):
         self.env.stop()
@@ -381,6 +383,7 @@ class _KisHybridEnv(unittest.TestCase):
             "TRADE_KIS_THROTTLE_MS": "0",
         }, clear=True)
         self.env.start()
+        pp._KIS_REISSUE_COOLDOWN_UNTIL = 0.0   # self-heal 쿨다운 테스트 격리
 
     def tearDown(self):
         self.env.stop()
@@ -566,6 +569,86 @@ class SafetyTests(_TmpEnv):
         for forbidden in ("place_order", "buy", "sell", "submit_order",
                           "cancel_order", "modify_order"):
             self.assertFalse(hasattr(pp, forbidden), forbidden)
+
+
+class FakeKISReauth:
+    """공유앱 토큰 무효화 시뮬 — 서버측 'valid' 토큰과 다른 bearer는 빈손,
+    재발급(tokenP) 후의 토큰으로만 시세를 준다. self-heal 경로 검증용."""
+    def __init__(self, prices: dict, *, reissue_works=True):
+        self.prices = prices
+        self.reissue_works = reissue_works
+        self.valid = None              # 서버측 현재 유효 토큰(처음엔 없음)
+        self.token_calls = 0
+        self.calls = []
+
+    def __call__(self, method, url, *, headers, body=None):
+        self.calls.append(url)
+        if url.endswith("/oauth2/tokenP"):
+            self.token_calls += 1
+            if not self.reissue_works:
+                return {}              # 발급 실패(엔드포인트 장애)
+            self.valid = f"TOK{self.token_calls}"
+            return {"access_token": self.valid, "expires_in": 86400}
+        if "inquire-price" in url:
+            bearer = (headers.get("authorization", "") or "").replace("Bearer ", "")
+            if bearer != self.valid:   # 죽은/무효 토큰 → 빈손(서버 무효화 흉내)
+                return {"output": {}, "rt_cd": "1", "msg_cd": "EGW00123"}
+            code = url.split("fid_input_iscd=")[1][:6]
+            if code not in self.prices:
+                return {"output": {}}
+            prpr, sdpr, name = self.prices[code]
+            return _kis_price_resp(prpr, sdpr, name)
+        return {}
+
+
+class TokenSelfHealTests(_TmpEnv):
+    def _seed_dead_token(self):
+        # 만료는 멀어(평소엔 재사용) 서버에서만 죽은 토큰을 캐시에 심는다.
+        pp._TOKEN_PATH.write_text(json.dumps(
+            {"access_token": "DEAD", "expires_at": time.time() + 86400}))
+
+    def test_dead_cached_token_reissued_and_recovers(self):
+        # 회귀의 핵심: 캐시 토큰이 서버에서 무효화돼 전건 0 → 폐기+재발급 1회로 복구.
+        self._seed_dead_token()
+        fake = FakeKISReauth({"005930": (74000, 72000, "삼성전자")})
+        out = pp.get_quotes(["005930"], transport=fake, ttl_s=0)
+        self.assertIn("005930", out)
+        self.assertEqual(out["005930"].price, 74000)
+        self.assertEqual(fake.token_calls, 1)         # 재발급 정확히 1회로 복구
+
+    def test_cooldown_blocks_repeated_reissue(self):
+        # 데이터 없는 코드(시세 0건)에 self-heal이 매 호출 좋은 토큰을 버리지 않게:
+        # 첫 호출만 초기발급+self-heal재발급=2, 60s 내 두번째는 쿨다운으로 skip.
+        fake = FakeKISReauth({}, reissue_works=True)  # 어떤 코드도 데이터 없음
+        pp.get_quotes(["005930"], transport=fake, ttl_s=0)
+        self.assertEqual(fake.token_calls, 2)
+        pp.get_quotes(["005930"], transport=fake, ttl_s=0)
+        self.assertEqual(fake.token_calls, 2)         # 쿨다운 → 추가 재발급 없음
+
+
+class KisEodFallbackTests(_KisHybridEnv):
+    def test_kis_empty_falls_back_to_dataportal_eod(self):
+        # KIS 시세 0건(토큰사망 등) → resolve된 코드로 data.go.kr EOD 폴백.
+        h = FakeHybrid(_DP_ITEMS, {})                 # KIS prices 비어 전건 실패
+        out = pp.get_quotes_by_name(["삼성전자"], transport=h)
+        self.assertIn("삼성전자", out)
+        self.assertEqual(out["삼성전자"].symbol, "005930")
+        self.assertEqual(out["삼성전자"].price, 74000)   # data.go.kr EOD 종가
+
+    def test_kis_healthy_makes_no_eod_calls(self):
+        # KIS 정상이면 EOD 폴백(likeSrtnCd) 미발동 — 평상시 오버헤드 0.
+        h = FakeHybrid(_DP_ITEMS, {"005930": (351500, 360500, "삼성전자")})
+        out = pp.get_quotes_by_name(["삼성전자"], transport=h, ttl_s=0)
+        self.assertEqual(out["삼성전자"].price, 351500)   # KIS 실시간
+        self.assertFalse(any("likeSrtnCd" in u for u in h.calls))
+
+    def test_eod_fallback_cached_for_render(self):
+        # 워밍 때 EOD 폴백분이 코드캐시에 남아, 렌더(fetch=False)가 즉시 읽음.
+        h = FakeHybrid(_DP_ITEMS, {})                 # KIS 전건 실패 → EOD 폴백
+        pp.get_quotes_by_name(["삼성전자"], transport=h)         # 워밍(fetch=True)
+        out = pp.get_quotes_by_name(["삼성전자"], transport=h, fetch=False)
+        self.assertIn("삼성전자", out)
+        self.assertEqual(out["삼성전자"].price, 74000)
 
 
 if __name__ == "__main__":
