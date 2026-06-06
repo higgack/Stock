@@ -1,7 +1,11 @@
 """KIS 모의투자/실전 주문 어댑터 (E1).
 
 E0 의 자체 체결(live_native_price → 즉시)을 KIS 서버 체결로 교체.
-paper_trading._order 가 KR + E1 키 존재 시 이 어댑터로 자동 라우팅.
+paper_trading._order 가 E1 키 존재 시 이 어댑터로 자동 라우팅.
+
+국내(KR): domestic-stock API — 시장가/지정가
+해외(US): overseas-stock API — 지정가만(미국 시장가=LOO/LOC 미지원,
+    현재가를 지정가로 넣어 사실상 시장가 처리)
 
 모의: https://openapivts.koreainvestment.com:29443 (가짜 돈, 리스크 0)
 실전: https://openapi.koreainvestment.com:9443 (진짜 돈, E2+)
@@ -27,6 +31,14 @@ _BASE_LIVE = "https://openapi.koreainvestment.com:9443"
 _KST = timezone(timedelta(hours=9))
 _HTTP_TIMEOUT = 15
 _TOKEN_MARGIN = 3600  # 만료 1h 전 갱신
+
+# 해외 거래소 코드 (KIS API OVRS_EXCG_CD)
+_US_EXCHANGE_MAP = {
+    "NASDAQ": "NASD", "NYSE": "NYSE", "AMEX": "AMEX",
+    "NMS": "NASD", "NYQ": "NYSE", "ASE": "AMEX",
+    "NGM": "NASD", "NCM": "NASD", "PCX": "NYSE",
+}
+_US_EXCHANGE_DEFAULT = "NASD"
 
 
 def _env(key: str) -> str:
@@ -298,6 +310,122 @@ class KisTradingAdapter:
             "/uapi/domestic-stock/v1/trading/order-rvsecncl",
             self._tr_id("TTC0803U"), body)
         return data is not None
+
+    # ── 해외주식 주문 ────────────────────────────────────────────────────
+    def _us_exchange(self, ticker: str) -> str:
+        """ticker → KIS 해외 거래소 코드 (NASD/NYSE/AMEX)."""
+        try:
+            import yfinance as yf
+            info = yf.Ticker(ticker).fast_info
+            exch = getattr(info, "exchange", None) or ""
+            return _US_EXCHANGE_MAP.get(exch.upper(), _US_EXCHANGE_DEFAULT)
+        except Exception:
+            return _US_EXCHANGE_DEFAULT
+
+    def submit_order_overseas(self, ticker: str, side: str, qty: int,
+                              price: float,
+                              exchange: str = "") -> Optional[dict]:
+        """해외주식 주문 제출 → {order_no, org_no} or None.
+
+        KIS 해외주식은 지정가만 지원. 시장가는 현재가를 지정가로 넣어 처리.
+        ticker: 'AAPL' (suffix 없는 심볼)
+        exchange: 'NASD'|'NYSE'|'AMEX' (미지정 시 자동 감지)
+        """
+        if not exchange:
+            exchange = self._us_exchange(ticker)
+        sym = ticker.split(".")[0].upper()
+
+        if side == "buy":
+            tr_base = "TTT1002U"
+        else:
+            tr_base = "TTT1006U"
+
+        body = {
+            "CANO": self.cano,
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "OVRS_EXCG_CD": exchange,
+            "PDNO": sym,
+            "ORD_DVSN": "00",       # 지정가
+            "ORD_QTY": str(int(qty)),
+            "OVRS_ORD_UNPR": f"{float(price):.2f}",
+            "ORD_SVR_DVSN_CD": "0",
+        }
+        data = self._post("/uapi/overseas-stock/v1/trading/order",
+                          self._tr_id(tr_base), body)
+        if not data:
+            return None
+        out = data.get("output") or {}
+        return {"order_no": out.get("ODNO", ""),
+                "org_no": out.get("KRX_FWDG_ORD_ORGNO", "")}
+
+    def get_executions_overseas(self) -> list[dict]:
+        """해외 당일 체결 → [{order_no, code, side, qty, price, amount, ts}]."""
+        today = datetime.now(_KST).strftime("%Y%m%d")
+        params = {
+            "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "PDNO": "", "ORD_STRT_DT": today, "ORD_END_DT": today,
+            "SLL_BUY_DVSN": "00", "CCLD_NCCS_DVSN": "01",
+            "OVRS_EXCG_CD": "",
+            "CTX_AREA_FK200": "", "CTX_AREA_NK200": "",
+        }
+        data = self._get_api(
+            "/uapi/overseas-stock/v1/trading/inquire-ccld",
+            self._tr_id("TTTS3035R"), params)
+        if not data:
+            return []
+        results = []
+        for row in (data.get("output1") or []):
+            qty = _to_int(row.get("ft_ccld_qty"))
+            if not qty:
+                continue
+            results.append({
+                "order_no": row.get("odno", ""),
+                "code": row.get("pdno", ""),
+                "side": ("sell" if row.get("sll_buy_dvsn_cd") == "01"
+                         else "buy"),
+                "qty": qty,
+                "price": float(row.get("ft_ccld_unpr3", "0") or "0"),
+                "amount": float(row.get("ft_ccld_amt3", "0") or "0"),
+                "ts": row.get("ord_tmd", ""),
+            })
+        return results
+
+    def find_fill_overseas(self, order_no: str) -> Optional[dict]:
+        if not order_no:
+            return None
+        for fill in self.get_executions_overseas():
+            if fill.get("order_no") == order_no:
+                return fill
+        return None
+
+    def get_balance_overseas(self) -> Optional[dict]:
+        """해외 잔고 → {positions: [{code,name,qty,avg_price,...}]}."""
+        params = {
+            "CANO": self.cano, "ACNT_PRDT_CD": self.acnt_prdt_cd,
+            "OVRS_EXCG_CD": "",
+            "TR_CRCY_CD": "USD",
+            "CTX_AREA_FK200": "", "CTX_AREA_NK200": "",
+        }
+        data = self._get_api(
+            "/uapi/overseas-stock/v1/trading/inquire-balance",
+            self._tr_id("TTS3012R"), params)
+        if not data:
+            return None
+        positions = []
+        for row in (data.get("output1") or []):
+            qty = _to_int(row.get("ovrs_cblc_qty"))
+            if not qty:
+                continue
+            positions.append({
+                "code": row.get("ovrs_pdno", ""),
+                "name": row.get("ovrs_item_name", ""),
+                "qty": qty,
+                "avg_price": float(row.get("pchs_avg_pric", "0") or "0"),
+                "current_price": float(row.get("now_pric2", "0") or "0"),
+                "eval_amt": float(row.get("ovrs_stck_evlu_amt", "0") or "0"),
+                "pnl_amt": float(row.get("frcr_evlu_pfls_amt", "0") or "0"),
+            })
+        return {"positions": positions}
 
 
 # ─── singleton ───────────────────────────────────────────────────────────────

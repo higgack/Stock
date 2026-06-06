@@ -2784,11 +2784,44 @@ class TestE1KisTradingAdapter:
         assert b.cano == "50191853"
         assert b.acnt_prdt_cd == "01"
 
+    def test_apply_fill_direct_us(self):
+        """US 종목 KIS E1 체결 → 원화 환산 ledger 정상 반영."""
+        from bot.paper_trading import _apply_fill_direct, _new_account
+        acct = _new_account()
+        ok, msg = _apply_fill_direct(acct, "AAPL", 5, 200.0,
+                                     1380.0, "USD", "US", "us-idem",
+                                     source="kis_e1", kis_order_no="US001",
+                                     side="buy")
+        assert ok
+        assert "[KIS 모의투자]" in msg
+        assert acct["positions"]["AAPL"]["qty"] == 5
+        assert acct["positions"]["AAPL"]["kis_order_no"] == "US001"
+        expected_cost = 5 * 200.0 * 1380.0
+        assert abs(acct["cash_krw"] - (10_000_000 - expected_cost)) < 1
+
+    def test_overseas_tr_id(self):
+        """해외주식 tr_id — paper=V prefix."""
+        from bot.kis_trading import KisTradingAdapter
+        import os
+        os.environ.setdefault("KIS_PAPER_APP_KEY", "test")
+        os.environ.setdefault("KIS_PAPER_APP_SECRET", "test")
+        os.environ.setdefault("KIS_PAPER_ACCT_NO", "50191853")
+        paper = KisTradingAdapter("paper")
+        assert paper._tr_id("TTT1002U") == "VTTT1002U"  # 해외 매수
+        assert paper._tr_id("TTT1006U") == "VTTT1006U"  # 해외 매도
+
+    def test_order_e1_routes_us(self):
+        """_order() 가 US 종목도 E1 라우팅하는지 코드 확인."""
+        src = open("bot/paper_trading.py", encoding="utf-8").read()
+        assert 'market in ("KR", "US") and _e1_available()' in src
+        assert "_order_e1_overseas" in src
+
     def test_wiring_e1(self):
         """E1 배선 확인 — paper_trading 에 E1 라우팅, dashboard 에 E1 배너."""
         pt_src = open("bot/paper_trading.py", encoding="utf-8").read()
         assert "_e1_available" in pt_src
         assert "_order_e1" in pt_src
+        assert "_order_e1_overseas" in pt_src
         assert "_apply_fill_direct" in pt_src
         assert "e1_mode" in pt_src
         assert "run_reconcile" in pt_src
@@ -2797,5 +2830,7 @@ class TestE1KisTradingAdapter:
         assert "KIS 모의투자" in ds_src
         kt_src = open("bot/kis_trading.py", encoding="utf-8").read()
         assert "submit_order" in kt_src
+        assert "submit_order_overseas" in kt_src
         assert "get_balance" in kt_src
+        assert "get_balance_overseas" in kt_src
         assert "reconcile" in kt_src

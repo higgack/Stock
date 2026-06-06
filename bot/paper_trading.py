@@ -258,6 +258,7 @@ def _order_e1(acct: dict, ticker: str, qty: float, side: str,
               px_fallback: float, fx: float, currency: str, market: str,
               idem: str, limit: Optional[float] = None):
     """KIS 모의투자 서버로 주문 제출 + 체결 확인 → 레저 반영. (ok, msg).
+    KR=국내 API(시장가/지정가), US=해외 API(지정가, 현재가를 지정가로).
     px_fallback = 체결 조회 실패 시 사용할 가격(glitch-guarded 현재가)."""
     try:
         from bot.kis_trading import get_adapter
@@ -267,6 +268,11 @@ def _order_e1(acct: dict, ticker: str, qty: float, side: str,
     adapter = get_adapter("paper")
     if adapter is None:
         return False, "KIS 모의투자 어댑터 초기화 실패(env 확인)"
+
+    if market == "US":
+        return _order_e1_overseas(adapter, acct, ticker, qty, side,
+                                 px_fallback, fx, currency, market, idem,
+                                 limit=limit)
 
     code = _ticker_to_code(ticker)
     ord_type = "limit" if limit is not None else "market"
@@ -294,6 +300,41 @@ def _order_e1(acct: dict, ticker: str, qty: float, side: str,
                 break
         else:
             log.info("kis_e1: fill not confirmed, using fallback price %.2f",
+                     px_fallback)
+
+    return _apply_fill_direct(acct, ticker, qty, fill_price, fx, currency,
+                              market, idem, source="kis_e1",
+                              kis_order_no=order_no, side=side)
+
+
+def _order_e1_overseas(adapter, acct: dict, ticker: str, qty: float,
+                       side: str, px_fallback: float, fx: float,
+                       currency: str, market: str, idem: str,
+                       limit: Optional[float] = None):
+    """KIS 해외주식(US) 주문. 지정가만 — limit 미지정 시 현재가를 지정가로."""
+    price = float(limit) if limit is not None else px_fallback
+
+    result = adapter.submit_order_overseas(ticker, side, int(qty), price)
+    if result is None:
+        return False, f"KIS 해외 주문 제출 실패: {ticker} (서버 거부/네트워크)"
+
+    order_no = result.get("order_no", "")
+    log.info("kis_e1_us: order submitted %s %s qty=%d price=%.2f → order_no=%s",
+             side, ticker, int(qty), price, order_no)
+
+    fill_price = px_fallback
+    if order_no:
+        import time as _time
+        for attempt in range(_KIS_FILL_RETRIES):
+            _time.sleep(_KIS_FILL_WAIT)
+            fill = adapter.find_fill_overseas(order_no)
+            if fill and fill.get("price"):
+                fill_price = float(fill["price"])
+                log.info("kis_e1_us: fill confirmed order_no=%s price=%s",
+                         order_no, fill_price)
+                break
+        else:
+            log.info("kis_e1_us: fill not confirmed, using fallback %.2f",
                      px_fallback)
 
     return _apply_fill_direct(acct, ticker, qty, fill_price, fx, currency,
@@ -370,8 +411,8 @@ def _order(ticker: str, qty: float, side: str, idem: Optional[str],
             return False, gate_reason
     except Exception as exc:
         log.debug("paper: risk_gate skipped (%s)", exc)
-    # E1 routing: KR 종목 + KIS 모의투자 키 존재 시 KIS 서버로 주문
-    if market == "KR" and _e1_available():
+    # E1 routing: KIS 모의투자 키 존재 시 KIS 서버로 주문 (KR+US)
+    if market in ("KR", "US") and _e1_available():
         return _order_e1(acct, ticker, float(qty), side, float(px), float(fx),
                          currency, market, idem, limit=limit)
     fn = _apply_buy if side == "buy" else _apply_sell

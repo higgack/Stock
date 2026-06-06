@@ -5333,8 +5333,7 @@ def _render_paper_page(summ: dict) -> str:
         if _e1:
             e1_banner = ('<div class="pf-card" style="border-color:#2563eb">'
                          '<b style="color:#2563eb">🔗 KIS 모의투자 연결</b> — '
-                         'KR 종목은 KIS 서버 체결(슬리피지·장중 제한 반영). '
-                         'US 종목은 E0 자체 체결.</div>')
+                         'KR+US 종목 KIS 서버 체결(슬리피지·장중 제한 반영).</div>')
     except Exception:
         pass
 
