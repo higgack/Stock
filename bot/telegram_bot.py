@@ -2256,7 +2256,7 @@ def _paper_summary_text(summ: dict) -> str:
         lines.append("— " + status_line())
         e1 = summ.get("e1_mode")
         if e1:
-            lines.append("— 🔗 KIS 모의투자 연결 (KR 종목 서버 체결)")
+            lines.append("— 🔗 KIS 모의투자 연결 (KR+US 서버 체결)")
     except Exception:
         pass
     return "\n".join(lines)
