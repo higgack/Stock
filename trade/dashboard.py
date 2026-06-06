@@ -1039,7 +1039,9 @@ const EARLIEST_COMPANY_DATE={};
     if(!EARLIEST_ITEM_DATE[a.item]||pa<EARLIEST_ITEM_DATE[a.item]){
       EARLIEST_ITEM_DATE[a.item]=pa;
     }
-    (a.stocks||[]).forEach(s=>{
+    // 회사 신규 키는 회사별 섹션과 동일하게 companies(품목/제품 거른·복합명 분리)
+    // 기준 — 원본 stocks면 'GST / 유니셈'이 split된 섹션에서 NEW를 놓침.
+    (a.companies||a.stocks||[]).forEach(s=>{
       if(!EARLIEST_COMPANY_DATE[s]||pa<EARLIEST_COMPANY_DATE[s]){
         EARLIEST_COMPANY_DATE[s]=pa;
       }
