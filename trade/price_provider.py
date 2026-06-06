@@ -51,6 +51,12 @@ _MAX_SYMBOLS = int(os.environ.get("TRADE_PRICE_MAX_SYMBOLS") or "300")
 _HTTP_TIMEOUT_S = 10
 _KST = timezone(timedelta(hours=9))
 
+# KIS 토큰 강제 재발급(self-heal) 쿨다운 — 죽은 KIS 토큰 엔드포인트에 매 청크
+# 재발급 POST를 쏘지 않게(KIS 토큰 발급 1/분 제한 미러). 성공한 재발급은 캐시에
+# 새 토큰을 써서 다음 호출이 그걸 읽으므로 자연 종료된다.
+_KIS_REISSUE_COOLDOWN_S = 60.0
+_KIS_REISSUE_COOLDOWN_UNTIL = 0.0
+
 KIS_DOMAIN = (os.environ.get("TRADE_KIS_DOMAIN")
               or "https://openapi.koreainvestment.com:9443")
 
@@ -179,6 +185,16 @@ def _kis_token(*, transport: Transport = _default_transport) -> Optional[str]:
     return tok
 
 
+def _invalidate_token() -> None:
+    """캐시된 KIS 액세스 토큰 폐기. 같은 KIS 앱을 공유하는 다른 봇(NOAH)이
+    토큰을 재발급하면 우리 토큰이 서버에서 무효화되는데, expires_at만 믿고
+    최대 24h 죽은 토큰을 재사용하던 회귀를 끊는다 — 다음 _kis_token()이 새로 발급."""
+    try:
+        _TOKEN_PATH.unlink()
+    except OSError:
+        pass
+
+
 def _kis_quote_kr(code: str, token: str, *,
                   transport: Transport = _default_transport) -> Optional[Quote]:
     """국내주식 현재가 1종목. 실패/빈 응답 → None."""
@@ -213,11 +229,8 @@ def _kis_quote_kr(code: str, token: str, *,
     )
 
 
-def _kis_get_quotes(symbols: list[str], *,
-                    transport: Transport = _default_transport) -> dict[str, Quote]:
-    token = _kis_token(transport=transport)
-    if not token:
-        return {}
+def _kis_quote_batch(symbols: list[str], token: str, *,
+                     transport: Transport = _default_transport) -> dict[str, Quote]:
     # KIS 실전 초당 ~20건 제한 → 호출 간 간격(기본 60ms, <17/s)으로 안전.
     throttle = _fnum(os.environ.get("TRADE_KIS_THROTTLE_MS") or "60") / 1000.0
     out: dict[str, Quote] = {}
@@ -227,6 +240,27 @@ def _kis_get_quotes(symbols: list[str], *,
         q = _kis_quote_kr(sym, token, transport=transport)
         if q:
             out[q.symbol] = q
+    return out
+
+
+def _kis_get_quotes(symbols: list[str], *,
+                    transport: Transport = _default_transport) -> dict[str, Quote]:
+    global _KIS_REISSUE_COOLDOWN_UNTIL
+    token = _kis_token(transport=transport)
+    if not token:
+        return {}
+    out = _kis_quote_batch(symbols, token, transport=transport)
+    # self-heal: 토큰이 (만료 전이라) 캐시에 살아있는데 배치가 전건 0이면 = 서버
+    # 측에서 무효화됐을 강한 신호(공유앱이 새 토큰 발급 등). 캐시 토큰을 폐기하고
+    # 즉시 1회 재발급+재시도 — 죽은 토큰을 expires_at까지 재사용하며 시세가 통째로
+    # 사라지던 회귀를 끊는다. 쿨다운으로 죽은 엔드포인트에 매 청크 thrash 방지.
+    if (not out and symbols
+            and time.time() >= _KIS_REISSUE_COOLDOWN_UNTIL):
+        _KIS_REISSUE_COOLDOWN_UNTIL = time.time() + _KIS_REISSUE_COOLDOWN_S
+        _invalidate_token()
+        token = _kis_token(transport=transport)
+        if token:
+            out = _kis_quote_batch(symbols, token, transport=transport)
     return out
 
 
@@ -616,8 +650,25 @@ def get_quotes_by_name(names: Iterable[str], *,
         codes_by_name = resolve_codes(uniq, transport=transport, fetch=fetch)
         if not codes_by_name:
             return {}
-        code_q = get_quotes(sorted(set(codes_by_name.values())),
-                            transport=transport, ttl_s=ttl_s, fetch=fetch)
+        all_codes = sorted(set(codes_by_name.values()))
+        code_q = get_quotes(all_codes, transport=transport, ttl_s=ttl_s, fetch=fetch)
+        # KIS가 못 채운 코드 → data.go.kr EOD 폴백(기존 키 재사용). KIS 토큰
+        # 사망/장애로 실시간이 통째로 비어도 최소 EOD 종가는 뜨게 해 '전면
+        # 블랙아웃'을 막는다. KIS 정상이면 missing≈0이라 평상시 EOD 콜 0.
+        # fetch=False(렌더)면 외부 호출 0 — 캐시만 읽고 워머가 백그라운드에서 채움.
+        missing = [c for c in all_codes if c not in code_q]
+        if missing and fetch and os.environ.get("TRADE_DATA_GO_KR_KEY"):
+            try:
+                eod = _dataportal_get_quotes(missing, transport=transport)
+            except Exception:
+                eod = {}
+            if eod:
+                now = time.time()
+                cache = _load_cache()
+                for c, q in eod.items():
+                    code_q[c] = q
+                    cache[c] = {**q.as_dict(), "_cached_at": now}
+                _save_cache(cache)
         return {n: code_q[c] for n, c in codes_by_name.items() if c in code_q}
 
     # dataportal: 이름 질의 한 번에 코드+종가(빠른 경로). 이름별 TTL 캐시.

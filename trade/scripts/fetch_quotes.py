@@ -12,8 +12,10 @@ KIS/data.go.kr에 직렬 호출하면 렌더 1회가 100초+ 걸려 systemd 타�
   - 장중/마감 TTL은 recommended_ttl()이 자동 결정(장중 라이브, 마감 freeze).
   - 공급자 off(키 없음)/예외 → 조용히 0종목.
 
-SILENT(Telegram 0). dashboard-refresh.service의 렌더 직전 패스로 돌아,
-다음 렌더가 채워진 캐시를 즉시 읽는다.
+평상시 SILENT. 단, 워밍이 전건 0(KIS·EOD 양쪽 무응답)인 '전면 블랙아웃'으로
+진입/복구하는 전환에만 운영자 DM 1회(5분 스팸 X — 마커 파일로 상태 유지).
+dashboard-refresh.service의 렌더 직전 패스로 돌아, 다음 렌더가 채워진 캐시를
+즉시 읽는다.
 
 Run by hand:
     .venv/bin/python -m trade.scripts.fetch_quotes
@@ -22,6 +24,7 @@ Run by hand:
 
 import logging
 import os
+import subprocess
 import sys
 import time
 from collections import Counter
@@ -45,6 +48,58 @@ _CHUNK = 20
 
 def _store_db() -> Path:
     return Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade") / "store.db"
+
+
+def _marker() -> Path:
+    """블랙아웃 상태 마커 — 존재=블랙아웃 중. 전환에만 알림 보내려고 상태 유지."""
+    return (Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
+            / ".quotes_blackout")
+
+
+def _notify(text: str) -> None:
+    """운영자 DM(관세청 급변 알림과 동일 경로). 토큰/대상 없으면 silent skip —
+    크레드 미설정이 배포·워밍을 깨면 안 되므로(표시 전용 기능)."""
+    token = os.environ.get("TRADE_BOT_TOKEN")
+    try:
+        from trade import operator
+        chat_id = operator.get()
+    except Exception:
+        chat_id = None
+    if not token or not chat_id:
+        return
+    try:
+        subprocess.run(
+            ["curl", "-s", "-m", "10", "-X", "POST",
+             f"https://api.telegram.org/bot{token}/sendMessage",
+             "--data-urlencode", f"chat_id={chat_id}",
+             "--data-urlencode", f"text={text}",
+             "--data-urlencode", "parse_mode=HTML"],
+            timeout=15, check=False, capture_output=True,
+        )
+    except Exception as e:
+        log.warning("notify failed: %s", e)
+
+
+def _update_blackout_state(blackout: bool, *, total: int) -> None:
+    """전면 블랙아웃 진입/복구 전환에만 운영자 DM 1회. 그 외(계속 정상·계속
+    블랙아웃)는 무음 — 5분 워머가 매 틱 스팸하지 않게 마커로 전환만 감지."""
+    m = _marker()
+    was = m.exists()
+    if blackout and not was:
+        _notify(f"⚠️ <b>관련종목 시세 전면 불가</b> — 워머가 {total}종목 전부 0건. "
+                "KIS·data.go.kr 양쪽 무응답(키/쿼터/장애 점검 필요). "
+                "대시보드 시세칩은 빈 채로 유지됩니다.")
+        try:
+            m.parent.mkdir(parents=True, exist_ok=True)
+            m.touch()
+        except OSError:
+            pass
+    elif not blackout and was:
+        _notify("✅ <b>관련종목 시세 복구</b> — 워머가 다시 시세를 채우는 중입니다.")
+        try:
+            m.unlink()
+        except OSError:
+            pass
 
 
 def run() -> int:
@@ -86,10 +141,16 @@ def run() -> int:
         warmed += len(got)
         processed += len(chunk)
 
-    log.info(
+    # warmed==0인데 종목은 있다 = 캐시 신선분도 신규 페치도 0 = 전면 블랙아웃
+    # (공급자 off는 위에서 이미 return). EOD 폴백이 사니 KIS 토큰사망만으론
+    # 여기 안 떨어지고, 양쪽 다 죽었을 때만 0 → 그때만 WARNING + 전환 알림.
+    blackout = warmed == 0 and bool(names)
+    log.log(
+        logging.WARNING if blackout else logging.INFO,
         "warmed %d quotes (%d/%d names processed) in %.1fs (budget %.0fs, ttl %ds)",
         warmed, processed, len(names), time.time() - t0, budget, ttl,
     )
+    _update_blackout_state(blackout, total=len(names))
     return 0
 
 
