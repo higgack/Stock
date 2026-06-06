@@ -444,6 +444,7 @@ class CompanyFirstInvertedTests(unittest.TestCase):
             "두산에너빌리티": "034020", "서흥": "008490", "코미코": "183300",
             "펨트론": "368650", "하이텍팜": "106190",
             "삼양식품": "003230", "농심": "004370",   # 실제 RULE 12 우변 회사들
+            "삼성전자": "005930",                      # OEM 마커 + 우변 회사 회귀 가드
         })
         self._m.start()
 
@@ -483,6 +484,18 @@ class CompanyFirstInvertedTests(unittest.TestCase):
         self.assertEqual(r.title_kind, "company_first")
         self.assertEqual(r.stocks, ["에이치엔에스하이텍"])
 
+    def test_inverted_oem_marker_even_if_unlisted(self):
+        # 하나코스는 마스터에 없지만 괄호 '(본느의 OEM)'의 OEM 마커로 회사 판정.
+        # 우변 품목 끝의 '(강원 횡성군)'은 지역으로 분리, 'OEM' 괄호는 지역 아님.
+        r = parse_caption(
+            "하나코스(본느의 OEM) : 미용이나 메이크업용 제품류와 기초화장용 제품류 "
+            "(의약품은 제외) (강원 횡성군)" + _STATUS
+        )
+        self.assertEqual(r.title_kind, "company_first")
+        self.assertEqual(r.stocks, ["하나코스"])
+        self.assertTrue(r.item.startswith("미용이나 메이크업용"))
+        self.assertEqual(r.region, "강원 횡성군")
+
     # ===== 회귀 방지: 실제 RULE 12(품목 (지역): 회사)는 절대 안 뒤집힘 =====
     def test_real_rule12_multi_company_stays_item_first(self):
         r = parse_caption("라면 (전국): 삼양식품 / 농심" + _STATUS)
@@ -496,6 +509,13 @@ class CompanyFirstInvertedTests(unittest.TestCase):
         self.assertEqual(r.title_kind, "item_first")
         self.assertEqual(r.item, "디램")
         self.assertEqual(r.stocks, ["비상장반도체"])
+
+    def test_oem_marker_but_z_is_company_stays_item_first(self):
+        # 괄호에 'OEM'이 있어도 우변(Z)이 상장사면 실제 RULE 12 — z-가드로 안 뒤집힘.
+        r = parse_caption("전자부품 (OEM): 삼성전자" + _STATUS)
+        self.assertEqual(r.title_kind, "item_first")
+        self.assertEqual(r.item, "전자부품")
+        self.assertEqual(r.stocks, ["삼성전자"])
 
     # ===== batch 2: 콜론 없는 '회사[(별칭)] (주석) 품목' =====
     def test_nocolon_company_with_alias_paren(self):

@@ -260,26 +260,37 @@ def _is_known_company(name: str) -> bool:
         return False
 
 
+# 괄호 안에 들어오면 좌변을 회사로 보는 마커(별칭·지역과 구분). OEM은 'X(브랜드의
+# OEM): 품목' 형태(예: '하나코스(본느의 OEM)')에서 X가 위탁생산 회사임을 뜻함.
+_PAREN_CO_MARKERS = ("비상장", "자회사", "OEM")
+
+
 def _company_left_inverted(x: str, y: str, z: str) -> bool:
     """'X (Y): Z' inline 제목이 회사-우선(거꾸로)인지 판별.
 
-    BeOn은 '품목 (지역): 회사'(RULE 12)도, 반대인 '회사 (별칭/지역/비상장): 품목'도
-    쓴다. 거꾸로로 보는 조건은 **좌변(X 또는 괄호 Y)이 KRX 상장사이거나 Y가 '비상장'
-    마커**이고, 동시에 **우변(Z)이 회사목록이 아닐 때**. 실제 RULE 12는 X=품목(비회사)·
-    Y=지역(비회사·비'비상장')이라 이 조건이 참이 될 수 없어 정상 행은 절대 안 뒤집힘
-    (회귀 0). 마스터 못 읽으면 '비상장' 마커만으로 보수적 판정."""
+    BeOn은 '품목 (지역): 회사'(RULE 12)도, 반대인 '회사 (별칭/지역/비상장/OEM): 품목'도
+    쓴다. 거꾸로로 보는 조건은 **좌변(X 또는 괄호 Y)이 KRX 상장사이거나 Y가
+    _PAREN_CO_MARKERS('비상장'·'자회사'·'OEM') 중 하나를 포함**하고, 동시에 **우변(Z)이
+    회사목록이 아닐 때**. 실제 RULE 12는 X=품목(비회사)·Y=지역(비회사·마커 없음)이라 이
+    조건이 참이 될 수 없어 정상 행은 절대 안 뒤집힘(회귀 0). 우변(Z)이 회사면(예:
+    '전자부품 (OEM): 삼성전자') 마커가 있어도 안 뒤집어 RULE 12를 보존. 마스터 못
+    읽으면 마커만으로 보수적 판정."""
     try:
         from trade import price_provider as pp
         master = pp._load_krx_master()
         n = lambda s: (s or "").replace(" ", "")
-        left_is_company = n(x) in master or y == "비상장" or n(y) in master
+        left_is_company = (
+            n(x) in master
+            or any(m in y for m in _PAREN_CO_MARKERS)
+            or n(y) in master
+        )
         if not left_is_company:
             return False
         # 우변이 회사목록이면(=실제 RULE 12) 뒤집지 않음 — 이중 가드.
         z_companies = [t for t in pp.split_names([z]) if n(t) in master]
         return not z_companies
     except Exception:
-        return y == "비상장"
+        return any(m in y for m in _PAREN_CO_MARKERS)
 
 
 # 콜론 없는 회사-우선: '회사[(별칭)] (주석) 품목'. 첫 괄호 앞=회사, 뒤=품목.
@@ -407,9 +418,12 @@ def parse_caption(caption: str) -> ParsedAlert | None:
                 if rm:                       # 우변 품목에 지역 괄호가 붙어있으면 분리
                     item_raw = rm.group(1).strip()
                     region_part = rm.group(2).strip()
-                else:                        # 우변에 지역 없으면 Y가 지역(별칭/비상장은 제외)
+                else:                        # 우변에 지역 없으면 Y가 지역(별칭/마커는 제외)
                     item_raw = z
-                    region_part = "" if (y == "비상장" or _is_known_company(y)) else y
+                    region_part = "" if (
+                        any(m in y for m in _PAREN_CO_MARKERS)
+                        or _is_known_company(y)
+                    ) else y
                 warnings.append("company_first_inverted_inline")
             else:
                 item_raw = x
