@@ -2975,3 +2975,75 @@ class TestWeekendHolidayGating:
         assert is_weekend("2026-06-07") is True   # 일
         assert is_weekend("2026-06-05") is False  # 금
         assert is_weekend("2026-06-08") is False  # 월
+
+
+class TestPortfolioSend:
+    """자산 스냅샷 CSV '보내기'(텔레그램 DM + 이메일) 회귀 차단.
+    ⛔ 자산정보는 채널로 절대 안 보냄 — 본인 DM/메일만 (사용자 정책 2026-06-06)."""
+
+    def _clean_env(self, monkeypatch=None):
+        import os
+        for k in ("TELEGRAM_BOT_TOKEN", "PORTFOLIO_TG_CHAT_ID",
+                  "ALLOWED_USER_IDS", "SMTP_USER", "SMTP_PASS",
+                  "PORTFOLIO_EMAIL_TO"):
+            os.environ.pop(k, None)
+
+    def test_telegram_graceful_without_env(self):
+        """env 없으면 (False, 한국어 사유) — 크래시 없음."""
+        self._clean_env()
+        from bot import portfolio_send as ps
+        ok, msg = ps.send(b"a,b\n1,2", "portfolio_2026-06-07.csv", "telegram")
+        assert ok is False and "미설정" in msg
+
+    def test_email_graceful_without_env(self):
+        self._clean_env()
+        from bot import portfolio_send as ps
+        ok, msg = ps.send(b"a,b\n1,2", "portfolio_2026-06-07.csv", "email")
+        assert ok is False and "미설정" in msg
+
+    def test_unknown_target(self):
+        from bot import portfolio_send as ps
+        ok, msg = ps.send(b"x", "f.csv", "bogus")
+        assert ok is False
+
+    def test_owner_chat_id_priority(self):
+        """PORTFOLIO_TG_CHAT_ID 우선 → 없으면 ALLOWED_USER_IDS 첫 항목.
+        CHANNEL_CHAT_IDS 는 절대 미사용(자산 비공개)."""
+        import os
+        from bot import portfolio_send as ps
+        self._clean_env()
+        os.environ["ALLOWED_USER_IDS"] = "435996491,999"
+        assert ps._owner_chat_id() == "435996491"
+        os.environ["PORTFOLIO_TG_CHAT_ID"] = "123"
+        assert ps._owner_chat_id() == "123"
+        self._clean_env()
+        assert ps._owner_chat_id() == ""
+
+    def test_owner_never_uses_channel(self):
+        """채널 id 만 set 돼도 owner DM 으로 폴백하지 않음(자산 비공개) — 행동
+        검증(주석 문자열 매칭보다 견고)."""
+        import os
+        from bot import portfolio_send as ps
+        self._clean_env()
+        os.environ["CHANNEL_CHAT_IDS"] = "-1001234567890"
+        try:
+            assert ps._owner_chat_id() == ""  # 채널로 폴백 X
+        finally:
+            os.environ.pop("CHANNEL_CHAT_IDS", None)
+
+    def test_server_endpoint_wiring(self):
+        """dashboard_server 에 /api/portfolio_send 라우트+핸들러+가드."""
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert "/api/portfolio_send" in src
+        assert "_handle_portfolio_send" in src
+        assert "5_000_000" in src          # 5MB cap
+        assert '("telegram", "email")' in src  # 대상 화이트리스트
+        assert "\\ufeff" in src             # Excel BOM
+
+    def test_client_wiring(self):
+        """dashboard.py 에 보내기 버튼 + CSV 빌드 JS + fetch 배선."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "pf-send-tg" in src and "pf-send-em" in src
+        assert "_PF_SEND_JS" in src
+        assert "api/portfolio_send" in src
+        assert "pf-snap-date" in src

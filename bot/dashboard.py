@@ -5571,6 +5571,9 @@ _PF_CSS = """<style>
 .pf-ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}
 .pf-ctl input[type=text],.pf-ctl select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:13px}
 .pf-ctl label{font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+.pf-send{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer}
+.pf-send:hover{opacity:.88}
+.pf-send:disabled{opacity:.5;cursor:default}
 .pf-tbl thead th{position:sticky;top:0;background:var(--card);z-index:1}
 .pf-tbl th[data-k]{cursor:pointer;user-select:none;white-space:nowrap}
 .pf-tbl th[data-k]::after{content:"↕";opacity:.3;font-size:9px;margin-left:3px}
@@ -5625,6 +5628,50 @@ function sortBy(k,t){
 if(q)q.addEventListener('input',apply); if(bsel)bsel.addEventListener('change',apply);
 if(nck)nck.addEventListener('change',apply);
 apply();
+})();</script>"""
+
+
+# 자산 스냅샷 '보내기' — 렌더된 표(요약+보유종목, 손익변동·NOAH판정 포함)에서
+# CSV 를 만들어 api/portfolio_send 로 POST → 서버가 본인 DM(텔레그램)/메일로
+# 전송(사용자 요청 2026-06-06). raw 숫자(data-*) 사용 → Excel 에서 계산 가능.
+_PF_SEND_JS = """<script>(function(){
+  function esc(v){v=(v==null?'':String(v));return '"'+v.replace(/"/g,'""')+'"';}
+  function snapDate(){var e=document.getElementById('pf-snap-date');return e?e.textContent.trim():'snapshot';}
+  function buildCsv(){
+    var L=[];function row(a){L.push(a.map(esc).join(','));}
+    row(['NOAH 자산 스냅샷', snapDate()]);row([]);
+    row(['[요약]']);
+    document.querySelectorAll('.stats .stat').forEach(function(s){
+      var l=(s.querySelector('.stat-lbl')||{}).textContent||'';
+      var n=(s.querySelector('.stat-num')||{}).textContent||'';
+      row([l.trim(), n.trim()]);
+    });
+    row([]);row(['[보유 종목]']);
+    var hasChg=!!document.querySelector('#pf-tbl th[data-k="chg"]');
+    var h=['종목','티커','증권사','평가금액','수익률(%)','평가손익'];
+    if(hasChg)h.push('손익변동');h.push('NOAH판정');row(h);
+    document.querySelectorAll('#pf-tbl tbody tr[data-name]').forEach(function(tr){
+      var c=tr.cells;
+      var a=[c[0].textContent.trim(),c[1].textContent.trim(),c[2].textContent.trim(),
+             tr.getAttribute('data-eval')||'',tr.getAttribute('data-ret')||'',
+             tr.getAttribute('data-pnl')||''];
+      if(hasChg)a.push(tr.getAttribute('data-chg')||'');
+      a.push((tr.getAttribute('data-noah')||'').trim());
+      row(a);
+    });
+    return L.join('\\r\\n');
+  }
+  function send(to,btn){
+    var t0=btn.textContent;btn.disabled=true;btn.textContent='전송 중…';
+    fetch('api/portfolio_send',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({to:to,csv:buildCsv(),date:snapDate()})})
+      .then(function(r){return r.json();})
+      .then(function(j){alert((j&&j.msg)||(j&&j.ok?'전송 완료':'전송 실패'));})
+      .catch(function(){alert('전송 실패 (네트워크)');})
+      .finally(function(){btn.disabled=false;btn.textContent=t0;});
+  }
+  var tg=document.getElementById('pf-send-tg');if(tg)tg.onclick=function(){send('telegram',tg);};
+  var em=document.getElementById('pf-send-em');if(em)em.onclick=function(){send('email',em);};
 })();</script>"""
 
 
@@ -5733,6 +5780,10 @@ def _render_portfolio_page(model, noah=None) -> str:
         ).strftime("%Y-%m-%d %H:%M")
     else:
         updated = "—"
+    # 보내기(CSV) 파일명·헤더용 스냅샷 날짜.
+    _snap_date = (_dt.datetime.fromtimestamp(
+        _ts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d")
+        if _ts else "snapshot")
     # 지난 업데이트 대비 증분(자산 변화) — 수동 업로드라 추적. ingest 가 박은
     # model["prev"](직전 '다른 날짜' 스냅샷)와 비교. 첫 업로드면 prev 없음.
     # **같은 날짜 업로드면 증분 생략** (사용자 정책 2026-06-04; 날짜 미상이면 표시).
@@ -5966,7 +6017,10 @@ def _render_portfolio_page(model, noah=None) -> str:
     _ctl = ('<div class="pf-ctl"><input type="text" id="pf-q" placeholder="🔎 종목·티커 검색">'
             f'<select id="pf-broker">{_opts}</select>'
             '<label><input type="checkbox" id="pf-noah"> NOAH 분석만</label>'
-            '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span></div>'
+            '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span>'
+            '<button id="pf-send-tg" class="pf-send" type="button">📤 텔레그램 보내기</button>'
+            '<button id="pf-send-em" class="pf-send" type="button">📧 이메일 보내기</button>'
+            f'<span id="pf-snap-date" hidden>{_snap_date}</span></div>'
             ) if holdings else ''
     _chg_th = (
         '<th class="cen" data-k="chg" data-t="n">손익변동'
@@ -5989,7 +6043,7 @@ def _render_portfolio_page(model, noah=None) -> str:
                       + (f' · NOAH 분석 {noah_n}' if noah_n else '') + ')</div>' + _ctl
                       + '<div class="pf-scroll"><table class="pf-tbl" id="pf-tbl">'
                       + _head + '<tbody>' + hl_rows + '</tbody></table></div>'
-                      + _PF_TABLE_JS + '</div>')
+                      + _PF_TABLE_JS + _PF_SEND_JS + '</div>')
 
     # 대출 · 보험 — 대출은 한도(원금)+잔액+금리(전부 노출), 보험은 표로
     # (사용자 요청 2026-06-04: 보험도 제대로, 대출 다 반영).
@@ -6032,6 +6086,8 @@ def _render_portfolio_page(model, noah=None) -> str:
             '(벌거나 잃은 금액 · 첫 업로드·같은 날 재업로드는 미표시). '
             '표 헤더 클릭 정렬 · 검색/증권사/NOAH 필터 가능. '
             '티커 매칭 종목은 종목명 클릭 시 NOAH 분석으로 연결(분석 기록 있을 때). '
+            '📤 텔레그램·📧 이메일 버튼으로 이 스냅샷(요약+보유종목)을 CSV로 '
+            '본인에게 전송(다운로드 아님·모바일용, 채널엔 안 보냄). '
             f'기준 기간: {as_of}</p>')
 
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
