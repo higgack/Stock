@@ -205,6 +205,32 @@ class QuoteCacheTests(_TmpEnv):
         price_calls = len([c for c in fake.calls if "inquire-price" in c[1]])
         self.assertEqual(price_calls, 2)
 
+    def test_default_ttl_uses_recommended_not_60s(self):
+        # ttl_s 미지정이면 recommended_ttl() 기본 — 옛 60s 고정 아님(렌더 함정 제거).
+        # 100초 지난 캐시는 옛 기본(60s)이면 만료(재호출)지만, 새 기본이면 신선.
+        fake = FakeKIS({"005930": (74000, 72000, "삼성전자")})
+        pp.get_quotes(["005930"], transport=fake)             # 캐시 적재(기본 ttl)
+        n1 = len([c for c in fake.calls if "inquire-price" in c[1]])
+        cache = pp._load_cache()
+        cache["005930"]["_cached_at"] = time.time() - 100
+        pp._save_cache(cache)
+        with mock.patch.object(pp, "recommended_ttl", return_value=3600):
+            pp.get_quotes(["005930"], transport=fake)         # 기본=recommended=3600
+        n2 = len([c for c in fake.calls if "inquire-price" in c[1]])
+        self.assertEqual(n1, n2)                              # 100s>60s인데도 재호출 0
+
+    def test_default_ttl_honors_cache_ttl_env_override(self):
+        # TRADE_PRICE_CACHE_TTL 명시 설정시 옛 호환 — 그 값이 미지정 기본으로 쓰임.
+        fake = FakeKIS({"005930": (74000, 72000, "삼성전자")})
+        pp.get_quotes(["005930"], transport=fake)
+        cache = pp._load_cache()
+        cache["005930"]["_cached_at"] = time.time() - 100
+        pp._save_cache(cache)
+        with mock.patch.dict(os.environ, {"TRADE_PRICE_CACHE_TTL": "10"}):
+            pp.get_quotes(["005930"], transport=fake)         # 기본=10s → 100s 만료
+        n = len([c for c in fake.calls if "inquire-price" in c[1]])
+        self.assertEqual(n, 2)                                # 재호출됨
+
 
 class FakeDataPortal:
     """주식시세정보 transport 스텁 — likeItmsNm/likeSrtnCd 부분일치 필터."""
