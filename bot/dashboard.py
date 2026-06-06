@@ -5985,8 +5985,12 @@ def _render_portfolio_page(model, noah=None) -> str:
         # 시도해 아카이브와 매칭. 분석 있을 때만 링크(404 방지).
         ninfo, full_tkr = _noah_lookup(noah, tkr)
         # 종목명: 분석 있으면 링크하되 일반 텍스트색(pf-lnk) — 사용자 '파란색 말고 똑같이'.
-        nm_cell = (f'<a class="pf-lnk" href="ticker_{_html.escape(full_tkr)}.html">{nm}</a>'
-                   if full_tkr else nm)
+        # 상세 페이지는 {date}/{ticker}.html 구조 (ticker_*.html 아님).
+        _noah_date = (ninfo or {}).get("date", "")
+        _noah_href = (f'{_html.escape(_noah_date)}/{_html.escape(full_tkr)}.html'
+                      if full_tkr and _noah_date else "")
+        nm_cell = (f'<a class="pf-lnk" href="{_noah_href}">{nm}</a>'
+                   if _noah_href else nm)
         noah_rating = ""
         if ninfo:
             noah_n += 1
@@ -5995,7 +5999,7 @@ def _render_portfolio_page(model, noah=None) -> str:
             _rrt = (f' <span style="color:{_pf_col(_rr)}">{_rr:+.1f}%</span>'
                     if _rr is not None else "")
             # 판정 = 방향 색(매수 양/매도 음/보유 muted), 링크는 pf-lnk(밑줄 hover만).
-            noah_cell = (f'<a class="pf-lnk" href="ticker_{_html.escape(full_tkr)}.html" '
+            noah_cell = (f'<a class="pf-lnk" href="{_noah_href}" '
                          f'style="color:{_pf_rating_col(noah_rating)};font-weight:600">'
                          f'{_html.escape(noah_rating)}</a>{_rrt}')
         else:
