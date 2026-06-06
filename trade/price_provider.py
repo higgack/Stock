@@ -684,11 +684,11 @@ def get_quotes(symbols: Iterable[str], *,
     for c in codes:
         rec = cache.get(c)
         if rec and (now - rec.get("_cached_at", 0)) < ttl_s:
-            # 소프트 EOD: KIS 공급자로 워밍(fetch=True)할 땐 EOD 소스 캐시를 신선
-            # 취급하지 않고 KIS로 재탈환 시도한다 — 틀린 날 EOD 종가가 6h TTL에
-            # 갇혀 KIS 현재가(금요일 종가)를 막던 포이즈닝 방지. 렌더(fetch=False)
-            # 와 dataportal 공급자에선 그대로 신선 반환(빈칸보단 라벨된 EOD).
-            if not (rec.get("source") == "eod" and fetch and prov == "kis"):
+            # prov=kis면 EOD 소스 캐시는 표시하지 않는다 — KIS-or-빈칸(운영자 결정:
+            # EOD는 항상 T+1 지연 '틀린 날'이라 오정보가 빈칸보다 위험). fetch=True면
+            # KIS로 재시도(옛 EOD 잔존분 탈환), fetch=False(렌더)면 생략→빈칸.
+            # dataportal 공급자(KIS 키 없이 EOD 전용 모드)에선 EOD가 정상 경로라 반환.
+            if not (rec.get("source") == "eod" and prov == "kis"):
                 try:
                     d = {k: v for k, v in rec.items() if k != "_cached_at"}
                     fresh[c] = Quote(**d)
@@ -748,23 +748,9 @@ def get_quotes_by_name(names: Iterable[str], *,
             return {}
         all_codes = sorted(set(codes_by_name.values()))
         code_q = get_quotes(all_codes, transport=transport, ttl_s=ttl_s, fetch=fetch)
-        # KIS가 못 채운 코드 → data.go.kr EOD 폴백(기존 키 재사용). KIS 토큰
-        # 사망/장애로 실시간이 통째로 비어도 최소 EOD 종가는 뜨게 해 '전면
-        # 블랙아웃'을 막는다. KIS 정상이면 missing≈0이라 평상시 EOD 콜 0.
-        # fetch=False(렌더)면 외부 호출 0 — 캐시만 읽고 워머가 백그라운드에서 채움.
-        missing = [c for c in all_codes if c not in code_q]
-        if missing and fetch and os.environ.get("TRADE_DATA_GO_KR_KEY"):
-            try:
-                eod = _dataportal_get_quotes(missing, transport=transport)
-            except Exception:
-                eod = {}
-            if eod:
-                now = time.time()
-                cache = _load_cache()
-                for c, q in eod.items():
-                    code_q[c] = q
-                    cache[c] = {**q.as_dict(), "_cached_at": now}
-                _save_cache(cache)
+        # KIS가 못 주면 그 종목은 생략(빈칸) — data.go.kr EOD 폴백은 쓰지 않는다.
+        # 운영자 결정: EOD는 T+1 지연이라 '틀린 날 가격'(오정보)이 빈칸보다 위험.
+        # (EOD 전용 모드는 KIS 키가 아예 없을 때 prov=dataportal 분기에서만)
         return {n: code_q[c] for n, c in codes_by_name.items() if c in code_q}
 
     # dataportal: 이름 질의 한 번에 코드+종가(빠른 경로). 이름별 TTL 캐시.

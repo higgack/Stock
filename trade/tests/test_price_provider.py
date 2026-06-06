@@ -629,53 +629,54 @@ class TokenSelfHealTests(_TmpEnv):
         self.assertEqual(fake.token_calls, 2)         # 쿨다운 → 추가 재발급 없음
 
 
-class KisEodFallbackTests(_KisHybridEnv):
-    def test_kis_empty_falls_back_to_dataportal_eod(self):
-        # KIS 시세 0건(토큰사망 등) → resolve된 코드로 data.go.kr EOD 폴백.
-        h = FakeHybrid(_DP_ITEMS, {})                 # KIS prices 비어 전건 실패
+class KisNoEodFallbackTests(_KisHybridEnv):
+    def _seed_eod(self, code, price, basdt="20260604"):
+        # 캐시에 EOD 소스 잔존분을 직접 심는다(예: 과거 폴백/다운그레이드 잔재).
+        q = pp.Quote(symbol=code, name="x", price=price, change=0, change_pct=0,
+                     prev_close=price, currency="KRW", ts="x",
+                     source="eod", as_of=basdt)
+        pp._QUOTE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        pp._QUOTE_CACHE.write_text(
+            json.dumps({code: {**q.as_dict(), "_cached_at": time.time()}},
+                       ensure_ascii=False), encoding="utf-8")
+
+    def test_kis_empty_returns_blank_no_eod_fallback(self):
+        # KIS가 못 주면 빈칸 — data.go.kr EOD 폴백 안 씀(오정보 방지). likeSrtnCd
+        # (EOD 코드조회)는 호출되지 않아야.
+        h = FakeHybrid(_DP_ITEMS, {})                 # KIS 전건 실패
         out = pp.get_quotes_by_name(["삼성전자"], transport=h)
-        self.assertIn("삼성전자", out)
-        self.assertEqual(out["삼성전자"].symbol, "005930")
-        self.assertEqual(out["삼성전자"].price, 74000)   # data.go.kr EOD 종가
+        self.assertEqual(out, {})                     # 폴백 없음 → 빈칸
+        self.assertFalse(any("likeSrtnCd" in u for u in h.calls))
 
     def test_kis_healthy_makes_no_eod_calls(self):
-        # KIS 정상이면 EOD 폴백(likeSrtnCd) 미발동 — 평상시 오버헤드 0.
         h = FakeHybrid(_DP_ITEMS, {"005930": (351500, 360500, "삼성전자")})
         out = pp.get_quotes_by_name(["삼성전자"], transport=h, ttl_s=0)
         self.assertEqual(out["삼성전자"].price, 351500)   # KIS 실시간
         self.assertFalse(any("likeSrtnCd" in u for u in h.calls))
 
-    def test_eod_fallback_cached_for_render(self):
-        # 워밍 때 EOD 폴백분이 코드캐시에 남아, 렌더(fetch=False)가 즉시 읽음.
-        h = FakeHybrid(_DP_ITEMS, {})                 # KIS 전건 실패 → EOD 폴백
-        pp.get_quotes_by_name(["삼성전자"], transport=h)         # 워밍(fetch=True)
-        out = pp.get_quotes_by_name(["삼성전자"], transport=h, fetch=False)
-        self.assertIn("삼성전자", out)
-        self.assertEqual(out["삼성전자"].price, 74000)
+    def test_eod_entry_hidden_under_kis_on_render(self):
+        # prov=kis면 캐시의 EOD 잔존분은 렌더(fetch=False)에서 표시 안 함 → 빈칸.
+        self._seed_eod("005930", 74000)
+        out = pp.get_quotes(["005930"], transport=FakeHybrid(_DP_ITEMS, {}),
+                            ttl_s=21600, fetch=False)
+        self.assertEqual(out, {})                     # EOD 소스 → kis에서 숨김
 
-    def test_eod_quote_carries_source_and_asof(self):
-        # EOD 폴백분은 source='eod' + 기준영업일(basDt)을 들고 와야(UI 라벨용).
-        h = FakeHybrid(_DP_ITEMS, {})
-        q = pp.get_quotes_by_name(["삼성전자"], transport=h)["삼성전자"]
+    def test_eod_entry_reclaimed_by_kis_on_warm(self):
+        # 워밍(fetch=True)은 EOD 잔존분을 KIS로 탈환(신선해도) → 오래된 EOD 청소.
+        self._seed_eod("005930", 74000)
+        out = pp.get_quotes(
+            ["005930"], transport=FakeHybrid(_DP_ITEMS, {"005930": (351500, 360500, "삼성전자")}),
+            ttl_s=21600, fetch=True)
+        self.assertEqual(out["005930"].price, 351500)  # KIS로 교체
+        self.assertEqual(out["005930"].source, "kis")
+
+    def test_dataportal_item_tagged_eod_with_asof(self):
+        # data.go.kr item → Quote는 source='eod'+기준일(dataportal 전용 모드/라벨용).
+        q = pp._quote_from_dp_item({"srtnCd": "005930", "itmsNm": "삼성전자",
+                                    "clpr": "74000", "vs": 2000, "fltRt": 2.78,
+                                    "basDt": "20260604"})
         self.assertEqual(q.source, "eod")
-        self.assertEqual(q.as_of, "20260603")          # _DP_ITEMS 최신 basDt
-        # KIS 현재가는 source='kis'·as_of 빈값
-        h2 = FakeHybrid(_DP_ITEMS, {"005930": (351500, 360500, "삼성전자")})
-        q2 = pp.get_quotes_by_name(["삼성전자"], transport=h2, ttl_s=0)["삼성전자"]
-        self.assertEqual(q2.source, "kis")
-        self.assertEqual(q2.as_of, "")
-
-    def test_soft_eod_reclaimed_by_kis_when_recovers(self):
-        # 포이즌 방지의 핵심: KIS 죽어 EOD가 캐시에 박혀도, KIS 회복 시 워밍이
-        # (TTL 신선하더라도) KIS 현재가로 탈환해야 한다 — '틀린 날 6h 갇힘' 차단.
-        h = FakeHybrid(_DP_ITEMS, {})                  # KIS 실패 → EOD 캐시
-        pp.get_quotes_by_name(["삼성전자"], transport=h)
-        rec = json.loads(pp._QUOTE_CACHE.read_text())["005930"]
-        self.assertEqual(rec["source"], "eod")         # 일단 EOD로 박힘
-        h2 = FakeHybrid(_DP_ITEMS, {"005930": (351500, 360500, "삼성전자")})
-        out = pp.get_quotes_by_name(["삼성전자"], transport=h2, ttl_s=21600)  # 6h 신선해도
-        self.assertEqual(out["삼성전자"].price, 351500)  # EOD(74000) 아닌 KIS로 교체
-        self.assertEqual(out["삼성전자"].source, "kis")
+        self.assertEqual(q.as_of, "20260604")
 
     def test_old_cache_without_source_loads_as_kis(self):
         # source/as_of 없는 구캐시도 Quote(**d) 기본값으로 로드(KIS 취급, 비-soft).
