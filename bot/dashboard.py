@@ -5313,20 +5313,28 @@ def _render_paper_page(summ: dict) -> str:
     nav = _paper_nav("paper")
     rows = summ.get("rows", [])
     trades = summ.get("trades", [])
-    # Risk Gate 상태 + kill-switch 배너 (E0.5).
-    gate_line, halt_banner = "", ""
+    # Risk Gate 상태 + kill-switch 배너 (E0.5) + E1 모드.
+    gate_line, halt_banner, e1_banner = "", "", ""
     try:
         from bot.risk_gate import status_line, halt_active
         from bot import paper_trading as _pt
         _auto = "ON" if _pt.auto_enabled() else "OFF"
+        _e1 = _pt.e1_mode()
+        e1_tag = " · 🔗 KIS 모의투자" if _e1 else ""
         gate_line = ('<p class="sub" style="color:var(--muted);font-size:12px">🛡️ '
                      + _html.escape(status_line())
-                     + f' · 🤖 자동매매 {_auto} (사이징 {_pt.auto_size_pct():.0%})</p>')
+                     + f' · 🤖 자동매매 {_auto} (사이징 {_pt.auto_size_pct():.0%})'
+                     + e1_tag + '</p>')
         if halt_active():
             halt_banner = ('<div class="pf-card" style="border-color:#e2574c">'
                            '<b style="color:#e2574c">⛔ 거래 중지(kill-switch) 활성</b> — '
                            '신규 매수 차단(매도/청산은 허용). 텔레그램 '
                            '<code>/paper resume</code> 으로 해제.</div>')
+        if _e1:
+            e1_banner = ('<div class="pf-card" style="border-color:#2563eb">'
+                         '<b style="color:#2563eb">🔗 KIS 모의투자 연결</b> — '
+                         'KR 종목은 KIS 서버 체결(슬리피지·장중 제한 반영). '
+                         'US 종목은 E0 자체 체결.</div>')
     except Exception:
         pass
 
@@ -5335,7 +5343,7 @@ def _render_paper_page(summ: dict) -> str:
             '<div class="wrap">' + nav + '<h1>🧪 페이퍼 트레이딩</h1>'
             '<p class="sub">아직 모의 거래가 없습니다. 텔레그램에서 '
             '<b>/paper buy TICKER 수량</b> 으로 시작하세요. (모의·돈 0)</p>'
-            + halt_banner + gate_line + '</div>')
+            + halt_banner + e1_banner + gate_line + '</div>')
 
     part = "" if summ.get("priced_all") else (
         ' <span style="color:var(--muted)">(일부 현재가 미조회 — 평가/총자산 부분값)</span>')
@@ -5504,8 +5512,8 @@ def _render_paper_page(summ: dict) -> str:
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>🧪 페이퍼 트레이딩</h1>'
             '<p class="sub">NOAH 분석 신호/수동 명령의 모의 매매 — 실거래 연결 전 전략 검증(리스크 0)</p>'
-            + halt_banner + stats + stats_extra + curve_html + pos_block + pend_block
-            + tr_block + audit_block + note + gate_line + '</div>')
+            + halt_banner + e1_banner + stats + stats_extra + curve_html + pos_block + pend_block
+            + tr_block + audit_block + note + gate_line + "</div>")
 
 
 def _sym_cur(currency: str) -> str:
