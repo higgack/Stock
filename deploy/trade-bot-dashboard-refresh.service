@@ -8,7 +8,7 @@ User=higgack
 Group=higgack
 WorkingDirectory=/home/higgack/stock-trade
 EnvironmentFile=-/home/higgack/stock-trade/.env
-# Six passes in one timer tick:
+# Seven passes in one timer tick:
 #   1. ingest_inbox — new inbox.jsonl rows → store.db (skips on filter match)
 #   2. purge_ignored — retroactively delete store.db rows that now match the
 #      ignored filter (handles cases where the filter was extended after a
@@ -24,6 +24,9 @@ EnvironmentFile=-/home/higgack/stock-trade/.env
 #      관련종목을 KIS/data.go.kr로 캐시에 채운다. 렌더가 캐시만 읽게(fetch=False)
 #      해 480종목 동기호출로 렌더가 타임아웃되던 문제 해결. 키 없으면 즉시 skip.
 #   6. trade.dashboard — regenerate HTML against the cleaned store.db.
+#   7. resolve_check --if-due — 시세가 안 붙는(이름→코드 미해석) 신규 관련종목을
+#      하루 1회만 점검해 운영자 DM(첫 실행 baseline-silent, 신규만, cap). 매 틱
+#      호출돼도 날짜 마커로 하루 한 번만 실제 수행. 상장사 자동부착의 '나머지' 가시성.
 # All passes are idempotent so a missed/duplicated run costs nothing.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.ingest_inbox
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.purge_ignored
@@ -31,6 +34,7 @@ ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_prov
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.build_krx_codes --if-stale
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_quotes
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.resolve_check --if-due
 # 워머가 시간 예산까지 쓸 수 있게 기본(90s)보다 넉넉히.
 TimeoutStartSec=240
 StandardOutput=journal
