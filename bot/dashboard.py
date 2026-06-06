@@ -5639,6 +5639,9 @@ apply();
 _PF_SEND_JS = """<script>(function(){
   function esc(v){v=(v==null?'':String(v));return '"'+v.replace(/"/g,'""')+'"';}
   function snapDate(){var e=document.getElementById('pf-snap-date');return e?e.textContent.trim():'snapshot';}
+  function tblRows(id){var t=document.getElementById(id);if(!t)return[];
+    var rs=[];t.querySelectorAll('tr').forEach(function(tr){
+      var a=[];for(var i=0;i<tr.cells.length;i++)a.push(tr.cells[i].textContent.trim());rs.push(a);});return rs;}
   function buildCsv(){
     var L=[];function row(a){L.push(a.map(esc).join(','));}
     row(['NOAH 자산 스냅샷', snapDate()]);row([]);
@@ -5648,6 +5651,10 @@ _PF_SEND_JS = """<script>(function(){
       var n=(s.querySelector('.stat-num')||{}).textContent||'';
       row([l.trim(), n.trim()]);
     });
+    var bro=tblRows('pf-bro');
+    if(bro.length){row([]);row(['[증권사별]']);bro.forEach(function(r){row(r);});}
+    var mov=tblRows('pf-movers');
+    if(mov.length){row([]);row(['[수익률 TOP / WORST]']);mov.forEach(function(r){row(r);});}
     row([]);row(['[보유 종목]']);
     var hasChg=!!document.querySelector('#pf-tbl th[data-k="chg"]');
     var h=['종목','티커','증권사','평가금액','수익률(%)','평가손익'];
@@ -5661,6 +5668,10 @@ _PF_SEND_JS = """<script>(function(){
       a.push((tr.getAttribute('data-noah')||'').trim());
       row(a);
     });
+    var lo=tblRows('pf-loans');
+    if(lo.length){row([]);row(['[대출]']);lo.forEach(function(r){row(r);});}
+    var ins=tblRows('pf-ins');
+    if(ins.length){row([]);row(['[보험]']);ins.forEach(function(r){row(r);});}
     return L.join('\\r\\n');
   }
   function send(to,btn){
@@ -5932,7 +5943,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         f'대박(+100%↑) {_bw} · 수익 {_w} · 손실 {_sl} · 큰손실(-50%↓) {_bl}</div>'
         '</div>')
     bro_block = ('<div class="pf-card" style="flex:1;min-width:300px"><div class="pf-h">증권사별</div>'
-                 '<table class="pf-tbl"><tr><th>증권사</th><th class="r">평가금액</th><th class="r">종목</th><th class="r">손익</th></tr>'
+                 '<table class="pf-tbl" id="pf-bro"><tr><th>증권사</th><th class="r">평가금액</th><th class="r">종목</th><th class="r">손익</th></tr>'
                  + bro_rows + '</table>' + nw_bar + dist_html + '</div>')
 
     # 수익률 TOP / WORST
@@ -5945,7 +5956,7 @@ def _render_portfolio_page(model, noah=None) -> str:
                     f'<td class="r">{_pf_won(h.get("평가금액"))}</td></tr>')
         return out
     movers_block = ('<div class="pf-card" style="flex:1;min-width:300px"><div class="pf-h">수익률 TOP / WORST</div>'
-                    '<table class="pf-tbl"><tr><th>종목</th><th class="r">수익률</th><th class="r">평가금액</th></tr>'
+                    '<table class="pf-tbl" id="pf-movers"><tr><th>종목</th><th class="r">수익률</th><th class="r">평가금액</th></tr>'
                     + _mv(model.get("top_gainers", [])) + _mv(model.get("top_losers", [])) + '</table></div>')
 
     # 보유 종목 전체 + NOAH 판정 오버레이(증분5) + 정렬/필터(2026-06-04 사용자 요청).
@@ -6058,7 +6069,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         if loans:
             extra += ('<div style="font-size:13px;color:var(--muted);margin:2px 0 4px">대출 ('
                       + str(len(loans)) + ')</div>'
-                      '<table class="pf-tbl"><tr><th>대출</th><th>금융사</th>'
+                      '<table class="pf-tbl" id="pf-loans"><tr><th>대출</th><th>금융사</th>'
                       '<th class="r">한도(원금)</th><th class="r">잔액</th><th class="r">금리</th></tr>')
             for l in loans:
                 gr = f'{l.get("대출금리")}%' if l.get("대출금리") is not None else "—"
@@ -6071,7 +6082,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         if ins:
             extra += ('<div style="font-size:13px;color:var(--muted);margin:12px 0 4px">보험 ('
                       + str(len(ins)) + ')</div>'
-                      '<table class="pf-tbl"><tr><th>보험사</th><th>보험명</th>'
+                      '<table class="pf-tbl" id="pf-ins"><tr><th>보험사</th><th>보험명</th>'
                       '<th>상태</th><th class="r">총납입</th></tr>')
             for i in ins:
                 extra += (f'<tr><td>{_html.escape(i.get("금융사") or "")}</td>'
