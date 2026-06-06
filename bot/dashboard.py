@@ -5564,6 +5564,7 @@ _PF_CSS = """<style>
 .pf-tbl th,.pf-tbl td{padding:6px 9px;border-bottom:1px solid var(--border);text-align:left;color:var(--text)}
 .pf-tbl th{color:var(--muted);font-weight:600}
 .pf-tbl td.r,.pf-tbl th.r{text-align:right;font-variant-numeric:tabular-nums}
+.pf-tbl td.cen,.pf-tbl th.cen{text-align:center;font-variant-numeric:tabular-nums}
 .pf-scroll{max-height:560px;overflow:auto;border:1px solid var(--border);border-radius:8px}
 .pf-lnk{color:inherit;text-decoration:none}
 .pf-lnk:hover{text-decoration:underline}
@@ -5935,13 +5936,13 @@ def _render_portfolio_page(model, noah=None) -> str:
             if _prev_pnl is not None:
                 _chg_val = (pnl or 0) - _prev_pnl
                 if _chg_val == 0:
-                    _chg_cell = '<td class="r" style="color:var(--muted)">—</td>'
+                    _chg_cell = '<td class="cen" style="color:var(--muted)">—</td>'
                 else:
                     _csign = "+" if _chg_val > 0 else ""
-                    _chg_cell = (f'<td class="r" style="color:{_pf_col(_chg_val)}">'
+                    _chg_cell = (f'<td class="cen" style="color:{_pf_col(_chg_val)}">'
                                  f'{_csign}{_pf_won(_chg_val)}</td>')
             else:
-                _chg_cell = '<td class="r"><span style="font-size:11px;color:var(--accent)">신규</span></td>'
+                _chg_cell = '<td class="cen"><span style="font-size:11px;color:var(--accent)">신규</span></td>'
         _da = (f'data-name="{nm.lower()}" data-tkr="{_html.escape(str(tkr or "")).lower()}" '
                f'data-broker="{broker}" data-eval="{ev if ev is not None else ""}" '
                f'data-ret="{r if r is not None else ""}" '
@@ -5968,7 +5969,7 @@ def _render_portfolio_page(model, noah=None) -> str:
             '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span></div>'
             ) if holdings else ''
     _chg_th = (
-        '<th class="r" data-k="chg" data-t="n">손익변동'
+        '<th class="cen" data-k="chg" data-t="n">손익변동'
         f'<br><span style="font-weight:400;font-size:10px;color:var(--muted)">'
         f'{_html.escape(_chg_dates)}</span></th>'
     ) if _show_chg else ''
