@@ -8,7 +8,9 @@ KIS/data.go.kr에 직렬 호출하면 렌더 1회가 100초+ 걸려 systemd 타�
 동작:
   - store.db 전 alert의 관련종목을 모아 복합명('A / B 등')을 분리.
   - 시간 예산(기본 60s) 안에서 청크로 워밍(get_quotes_by_name fetch=True).
-    durable 코드캐시 + TTL 시세캐시라, 한 번에 다 못 채워도 다음 틱에 누적.
+    **라운드로빈 커서**로 매 틱 멈춘 자리에서 이어 돌아, 한 번에 다 못 채워도
+    저빈도 꼬리까지 몇 틱 안에 전부 커버(옛 '매 틱 위에서부터'는 꼬리 영구 굶음).
+    시세 TTL 30분이라 한 바퀴 도는 동안 표시가 안 빠진다.
   - 장중/마감 TTL은 recommended_ttl()이 자동 결정(장중 라이브, 마감 freeze).
   - 공급자 off(키 없음)/예외 → 조용히 0종목.
 
@@ -54,6 +56,28 @@ def _marker() -> Path:
     """블랙아웃 상태 마커 — 존재=블랙아웃 중. 전환에만 알림 보내려고 상태 유지."""
     return (Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
             / ".quotes_blackout")
+
+
+def _cursor_path() -> Path:
+    """라운드로빈 워밍 커서 — 지난 틱이 멈춘 인덱스를 저장해 다음 틱이 이어감."""
+    return (Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
+            / ".quotes_cursor")
+
+
+def _load_cursor() -> int:
+    try:
+        return max(0, int(_cursor_path().read_text().strip()))
+    except Exception:
+        return 0
+
+
+def _save_cursor(i: int) -> None:
+    try:
+        p = _cursor_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(str(int(i)))
+    except OSError:
+        pass
 
 
 def _notify(text: str) -> None:
@@ -117,29 +141,35 @@ def run() -> int:
     finally:
         conn.close()
 
-    # 빈도 높은 순으로 워밍 — 자주 등장(섹션으로도 뜨는) 종목을 시간예산 안에
-    # 먼저 채워 화면 체감 커버리지를 극대화(운영자 지적: 중복 많은 것부터).
+    # 빈도순으로 안정 정렬한 뒤 **라운드로빈 커서**로 매 틱 멈춘 자리에서 이어 돈다.
+    # 옛 방식(매 틱 위에서부터 + 60s 예산)은 저빈도 꼬리가 매번 잘려 영구히 안
+    # 채워지던 함정 — 커서가 한 바퀴를 보장한다. 시세 TTL은 30분(recommended_ttl)
+    # 이라 한 바퀴(현재 ~2틱) 도는 동안 표시가 안 빠짐 → 전 종목 커버.
     freq: Counter = Counter()
     for a in alerts:
-        for n in pp.split_names(a.get("stocks") or []):
-            freq[n] += 1
-    names = [n for n, _ in freq.most_common()]
-    if not names:
+        for nm in pp.split_names(a.get("stocks") or []):
+            freq[nm] += 1
+    names = [nm for nm, _ in freq.most_common()]
+    n = len(names)
+    if not n:
         log.info("no related stocks in store — nothing to warm")
         return 0
 
     budget = float(os.environ.get("TRADE_QUOTES_BUDGET_S") or "60")
     ttl = pp.recommended_ttl()
+    start = _load_cursor() % n
+    rotated = names[start:] + names[:start]
     t0 = time.time()
     warmed = 0
     processed = 0
-    for i in range(0, len(names), _CHUNK):
-        if time.time() - t0 > budget:
-            break
-        chunk = names[i:i + _CHUNK]
+    for i in range(0, n, _CHUNK):
+        chunk = rotated[i:i + _CHUNK]
         got = pp.get_quotes_by_name(chunk, ttl_s=ttl, fetch=True)
         warmed += len(got)
         processed += len(chunk)
+        if time.time() - t0 > budget:   # 청크 후 검사 — 매 틱 최소 1청크 진행 보장
+            break
+    _save_cursor((start + processed) % n)
 
     # warmed==0인데 종목은 있다 = 캐시 신선분도 신규 페치도 0 = 전면 블랙아웃
     # (공급자 off는 위에서 이미 return). EOD 폴백이 사니 KIS 토큰사망만으론
@@ -147,10 +177,11 @@ def run() -> int:
     blackout = warmed == 0 and bool(names)
     log.log(
         logging.WARNING if blackout else logging.INFO,
-        "warmed %d quotes (%d/%d names processed) in %.1fs (budget %.0fs, ttl %ds)",
-        warmed, processed, len(names), time.time() - t0, budget, ttl,
+        "warmed %d quotes (%d/%d from cursor %d→%d) in %.1fs (budget %.0fs, ttl %ds)",
+        warmed, processed, n, start, (start + processed) % n,
+        time.time() - t0, budget, ttl,
     )
-    _update_blackout_state(blackout, total=len(names))
+    _update_blackout_state(blackout, total=n)
     return 0
 
 

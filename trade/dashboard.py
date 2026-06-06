@@ -465,6 +465,8 @@ def _build_html(
         f'<div class="meta meta-today" id="meta-today"></div>'
         f'<div class="meta meta-backlog">{backlog_inner}</div>'
         f'<div class="meta meta-cost">{_cost_line_html()}</div>'
+        f'<div class="meta meta-quote">💹 관련종목 시세 KIS 기준 · 5분마다 갱신, '
+        f'최대 ~30분 지연 가능(실시간 아님) · KIS 미제공 종목은 공란</div>'
         f"</header>"
     )
 
