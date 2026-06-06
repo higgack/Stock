@@ -8,7 +8,7 @@ User=higgack
 Group=higgack
 WorkingDirectory=/home/higgack/stock-trade
 EnvironmentFile=-/home/higgack/stock-trade/.env
-# Five passes in one timer tick:
+# Six passes in one timer tick:
 #   1. ingest_inbox — new inbox.jsonl rows → store.db (skips on filter match)
 #   2. purge_ignored — retroactively delete store.db rows that now match the
 #      ignored filter (handles cases where the filter was extended after a
@@ -16,14 +16,19 @@ EnvironmentFile=-/home/higgack/stock-trade/.env
 #   3. fetch_provisional --if-stale — 잠정 속보 시계열 self-heal: 4종 시계열이
 #      비었거나(배포 직후·구버전) 마지막 수집이 오래됐을 때만 1회 긁고, 신선하면
 #      API 0콜로 건너뜀(잠정치는 10일 단위라 5분 폴링 불필요).
-#   4. fetch_quotes — 관련종목 시세 캐시 워머(시간 예산 기본 60s). store의 BeOn
+#   4. build_krx_codes --if-stale — KRX 상장 이름→코드 로컬 마스터 빌드. 마스터가
+#      없거나 주(7일)보다 오래됐을 때만 재빌드, 신선하면 즉시 skip. resolve_codes가
+#      이 마스터로 렌더(fetch=False)까지 외부호출 없이 대부분 해석 → 관련종목 시세
+#      커버리지 상승. fetch_quotes보다 먼저 돌아 워머·렌더가 새 마스터를 쓰게 한다.
+#   5. fetch_quotes — 관련종목 시세 캐시 워머(시간 예산 기본 60s). store의 BeOn
 #      관련종목을 KIS/data.go.kr로 캐시에 채운다. 렌더가 캐시만 읽게(fetch=False)
 #      해 480종목 동기호출로 렌더가 타임아웃되던 문제 해결. 키 없으면 즉시 skip.
-#   5. trade.dashboard — regenerate HTML against the cleaned store.db.
+#   6. trade.dashboard — regenerate HTML against the cleaned store.db.
 # All passes are idempotent so a missed/duplicated run costs nothing.
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.ingest_inbox
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.purge_ignored
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_provisional --if-stale
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.build_krx_codes --if-stale
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_quotes
 ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dashboard
 # 워머가 시간 예산까지 쓸 수 있게 기본(90s)보다 넉넉히.

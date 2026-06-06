@@ -45,6 +45,7 @@ _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 _TOKEN_PATH = _DATA_DIR / ".kis_token.json"
 _QUOTE_CACHE = _DATA_DIR / "kis_quotes.json"
 _CODE_CACHE = _DATA_DIR / "stock_codes.json"     # 종목명→코드 durable 캐시
+_KRX_MASTER = _DATA_DIR / "krx_codes.json"       # KRX 상장 전종목 이름→코드(로컬 마스터)
 _QUOTE_TTL_S = int(os.environ.get("TRADE_PRICE_CACHE_TTL") or "60")
 _CODE_TTL_S = int(os.environ.get("TRADE_STOCK_CODE_TTL") or str(7 * 86400))  # 7일
 _MAX_SYMBOLS = int(os.environ.get("TRADE_PRICE_MAX_SYMBOLS") or "300")
@@ -372,16 +373,81 @@ def _dataportal_get_quotes_by_name(names: list[str], *,
     return out
 
 
+def _load_krx_master() -> dict[str, str]:
+    """{공백제거 정규화 이름: 코드} — 로컬 KRX 상장 마스터(build_krx_codes 생성).
+    없거나 깨졌으면 {} (resolve가 캐시·data.go.kr로 폴백). 매 호출 로드(작은 파일)."""
+    try:
+        raw = json.loads(_KRX_MASTER.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k).replace(" ", ""): v for k, v in raw.items() if v}
+
+
+def fetch_krx_master(*, transport: Transport = _default_transport,
+                     days: int = 10, num_rows: int = 1000,
+                     max_pages: int = 60) -> dict[str, str]:
+    """data.go.kr 주식시세정보를 이름필터 없이 전수 페이지네이션 → {종목명: 코드}.
+    최근 days일 창의 전 종목을 코드 기준 dedup(이름은 최신 basDt 우선)해 KRX 상장
+    이름→코드 마스터를 만든다(빌더 build_krx_codes용). 키 없으면 {}.
+
+    data.go.kr의 pageNo-무시 버그 방어: 페이지 시그니처가 직전과 같으면 중단. 새
+    코드가 더 안 늘면 중단. 기존 키(getStockPriceInfo)를 그대로 써 별도 승인 불필요."""
+    key = os.environ.get("TRADE_DATA_GO_KR_KEY")
+    if not key:
+        return {}
+    begin = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y%m%d")
+    best: dict[str, tuple[str, str]] = {}      # code -> (name, basDt)
+    seen_sigs: set = set()
+    for page in range(1, max_pages + 1):
+        qs = urllib.parse.urlencode({
+            "serviceKey": key, "resultType": "json",
+            "numOfRows": num_rows, "pageNo": page, "beginBasDt": begin,
+        })
+        try:
+            resp = transport("GET", f"{DATAPORTAL_ENDPOINT}?{qs}",
+                             headers={"User-Agent": "trade-bot/1.0"}, body=None)
+        except Exception:
+            break
+        items = _items_list(resp)
+        if not items:
+            break
+        sig = tuple(sorted((str(it.get("srtnCd")), str(it.get("basDt"))) for it in items))
+        if sig in seen_sigs:                   # pageNo 무시 → 같은 페이지 반복 → 중단
+            break
+        seen_sigs.add(sig)
+        added = 0
+        for it in items:
+            code = "".join(ch for ch in str(it.get("srtnCd") or "") if ch.isdigit()).zfill(6)[:6]
+            name = (it.get("itmsNm") or "").strip()
+            basdt = str(it.get("basDt") or "")
+            if not code.strip("0") or not name:
+                continue
+            prev = best.get(code)
+            if prev is None:
+                added += 1
+                best[code] = (name, basdt)
+            elif basdt > prev[1]:              # 최신 영업일의 이름 우선
+                best[code] = (name, basdt)
+        if added == 0 and page > 1:            # 새 코드 없음 → 끝까지 봄
+            break
+    return {name: code for code, (name, _b) in best.items()}
+
+
 def resolve_codes(names: Iterable[str], *,
                   transport: Transport = _default_transport,
                   fetch: bool = True) -> dict[str, str]:
-    """{종목명: 6자리코드} — data.go.kr 종목명→단축코드. KIS처럼 코드 조회만
-    되는 공급자가 BeOn 회사명을 쓰게 하는 다리. 코드는 거의 안 변하므로
-    durable 캐시(_CODE_CACHE, 기본 7일). 정확일치만(우선주 오매칭 방지),
-    미일치는 음성 캐시(1일). fetch=False면 외부 호출 없이 캐시만 반환(렌더용).
-    DATA_GO_KR_KEY 없으면 {}."""
+    """{종목명: 6자리코드} — 코드 조회만 되는 공급자(KIS)가 BeOn 회사명을 쓰게 하는
+    다리. 조회 순서: 직접코드 → KRX 로컬 마스터(전 상장종목) → durable 캐시 →
+    data.go.kr 정확일치(미스 폴백). 마스터 덕에 렌더(fetch=False)도 외부 호출 없이
+    대부분 해석 → 커버리지 즉시 상승. 마스터·키 둘 다 없으면 {}."""
     uniq = [n.strip() for n in names if n and str(n).strip()]
-    if not uniq or not os.environ.get("TRADE_DATA_GO_KR_KEY"):
+    if not uniq:
+        return {}
+    master = _load_krx_master()
+    has_key = bool(os.environ.get("TRADE_DATA_GO_KR_KEY"))
+    if not master and not has_key:             # 로컬 마스터도 키도 없으면 해석 불가
         return {}
     now = time.time()
     # 양성(코드 확정)은 7일, 음성(미일치)은 1일 — 비상장/표기불일치 종목의 매
@@ -391,18 +457,25 @@ def resolve_codes(names: Iterable[str], *,
         cache = json.loads(_CODE_CACHE.read_text(encoding="utf-8"))
     except Exception:
         cache = {}
-    # 리졸버 스키마 버전 불일치(=alias/직접코드 매핑 갱신) → 캐시 무효화.
+    # 리졸버 스키마 버전 불일치(=alias/직접코드/마스터 도입) → 캐시 무효화.
     # 옛 음성 캐시가 새 매핑을 가려서 종목이 영원히 안 뜨던 회귀 방지.
     if cache.get("_v") != _RESOLVER_VERSION:
         cache = {"_v": _RESOLVER_VERSION}
     out: dict[str, str] = {}
     dirty = False
     for n in uniq:
-        # 1) 직접 코드 매핑 — data.go.kr 미지원 종목 즉시(외부 호출 0).
+        # 1) 직접 코드 매핑 — 즉시(외부 호출 0).
         if n in _DIRECT_CODES:
             out[n] = _DIRECT_CODES[n]
             continue
-        # 2) 캐시 — 양성/음성 TTL 적용
+        # 2) KRX 로컬 마스터(공백제거 정규화 + alias) — 전 상장종목 로컬 즉시 해석.
+        #    data.go.kr 정확일치 검색의 지연·누락·음성캐시를 우회. 렌더도 여기서 해석.
+        m = (master.get(n.replace(" ", ""))
+             or master.get(_NAME_ALIASES.get(n, n).replace(" ", "")))
+        if m:
+            out[n] = m
+            continue
+        # 3) 캐시 — 양성/음성 TTL 적용
         rec = cache.get(n)
         if rec:
             ttl = _CODE_TTL_S if rec.get("code") else neg_ttl
@@ -410,9 +483,9 @@ def resolve_codes(names: Iterable[str], *,
                 if rec.get("code"):
                     out[n] = rec["code"]
                 continue
-        if not fetch:                          # 캐시 전용(렌더): 외부 호출 안 함
+        if not fetch or not has_key:           # 캐시 전용(렌더)/키 없음: 외부 호출 안 함
             continue
-        # 3) data.go.kr 조회 — alias가 있으면 KRX 표기로 변환해 질의.
+        # 4) data.go.kr 폴백 — 마스터에 없는 표기. alias가 있으면 KRX 표기로 질의.
         query = _NAME_ALIASES.get(n, n)
         q = _dp_pick(_dp_fetch("likeItmsNm", query, transport=transport),
                      exact_name=query)
@@ -561,7 +634,8 @@ _DIRECT_CODES: dict[str, str] = {
 
 # 코드 캐시 스키마 버전 — 매핑/분리 로직이 바뀌면 bump → 기존 캐시(특히 음성
 # 캐시) 자동 무효화 → 새 매핑이 즉시 효과. 운영자가 캐시 파일 삭제 불필요.
-_RESOLVER_VERSION = 3
+# 4: KRX 로컬 마스터 도입 — 옛 음성캐시가 마스터 매칭을 가리지 않게 무효화.
+_RESOLVER_VERSION = 4
 
 
 def _norm(symbols: Iterable[str]) -> list[str]:
