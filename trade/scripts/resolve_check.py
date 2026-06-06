@@ -18,6 +18,7 @@
 Run by hand:
     .venv/bin/python -m trade.scripts.resolve_check            # 강제 수행
     .venv/bin/python -m trade.scripts.resolve_check --if-due   # 오늘 안 했으면만
+    .venv/bin/python -m trade.scripts.resolve_check --audit    # 렌더 기준 빈칸 전수
 """
 
 import json
@@ -159,8 +160,50 @@ def run(if_due: bool = False) -> int:
     return 0
 
 
+def audit() -> int:
+    """운영자 수동 전수 점검 — '대시보드에 시세가 안 붙는 회사'를 분류 출력.
+
+    일일 DM(run)이 이름→코드 해석 실패(①)만 보는 것과 달리, **대시보드 렌더가
+    HTML에 박는 바로 그 함수**(dashboard._stock_quotes_for)를 직접 호출해 실제
+    표시 여부로 판정한다. 손으로 짠 일회성 진단이 ttl/캡 기본값을 잘못 먹여
+    오도하던 문제를 없애려는 것 — 이 명령이 '정답본'이다. 두 부류로 나눔:
+      ■ 코드 자체가 없음 — 비상장·외국·상폐·표기불일치(별칭/프록시 후보 or 무시)
+      ● 코드는 있는데 KIS 시세 없음 — 상폐/미커버/일시(주목 대상)
+    """
+    from trade import dashboard
+    db = _store_db()
+    if not db.exists():
+        log.info("no store.db at %s — skip", db)
+        return 0
+    conn = open_db(db)
+    try:
+        alerts = list_all_alerts(conn)
+    finally:
+        conn.close()
+    freq: Counter = Counter()
+    for a in alerts:
+        for n in pp.split_names(a.get("stocks") or []):
+            freq[n] += 1
+    names = list(freq)
+    qmap = dashboard._stock_quotes_for(alerts)          # 렌더가 박는 {이름: {p,c}}
+    resolved = pp.resolve_codes(names, fetch=False)     # 이름→코드(외부 호출 0)
+    blank = [n for n in names if n not in qmap]
+    no_code = sorted((n for n in blank if n not in resolved), key=lambda n: (-freq[n], n))
+    no_quote = sorted((n for n in blank if n in resolved), key=lambda n: (-freq[n], n))
+    print(f"시세박힘 {len(qmap)} / 전체 {len(names)} / 빈칸 {len(blank)}")
+    print(f"\n■ 코드 없음 ({len(no_code)}) — 비상장·외국·상폐·표기불일치:")
+    for n in no_code:
+        print(f"   {n} ({freq[n]}회)")
+    print(f"\n● 코드는 있는데 KIS 시세 없음 ({len(no_quote)}) — 주목:")
+    for n in no_quote:
+        print(f"   {n} [{resolved[n]}] ({freq[n]}회)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if "--audit" in argv:
+        return audit()
     return run(if_due="--if-due" in argv)
 
 

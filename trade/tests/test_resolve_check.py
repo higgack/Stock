@@ -90,6 +90,24 @@ class ResolveCheckTests(unittest.TestCase):
             self.assertEqual(rc.run(), 0)
         la.assert_not_called()
 
+    def test_audit_classifies_no_code_vs_no_quote(self):
+        # --audit은 렌더 함수(_stock_quotes_for)로 실제 표시여부 판정 후 분류:
+        #   시세 박힌 것=빈칸 아님 / 코드 없음(①) / 코드 있는데 시세 없음(●).
+        alerts = [{"stocks": ["삼성전자", "코드없음회사", "코드있고시세없음"]}]
+        with mock.patch.object(rc, "list_all_alerts", return_value=alerts), \
+             mock.patch.object(pp, "resolve_codes",
+                               return_value={"삼성전자": "005930",
+                                             "코드있고시세없음": "111111"}), \
+             mock.patch("trade.dashboard._stock_quotes_for",
+                        return_value={"삼성전자": {"p": 70000, "c": 1.0}}), \
+             mock.patch("builtins.print") as pr:
+            self.assertEqual(rc.audit(), 0)
+        out = "\n".join(str(c.args[0]) for c in pr.call_args_list if c.args)
+        self.assertIn("코드없음회사", out)          # ■ 코드 없음
+        self.assertIn("코드있고시세없음", out)        # ● 코드 있으나 시세 없음
+        self.assertIn("[111111]", out)               # ● 섹션은 코드 표기
+        self.assertNotIn("삼성전자", out)            # 시세 박힘 → 빈칸 목록에 없음
+
 
 if __name__ == "__main__":
     unittest.main()

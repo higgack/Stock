@@ -20,8 +20,8 @@ READ-ONLY 다리. 주문/매매는 절대 안 함(봇 철학: 표시 전용·bla
     headers: authorization Bearer, appkey, appsecret, tr_id FHKST01010100,
     custtype P. output에서 stck_prpr(현재가)·stck_sdpr(전일종가)·
     hts_kor_isnm(종목명). 등락은 price-prev로 직접 산출(부호필드 의존 X).
-  - 시세 캐시: ~/.trade/kis_quotes.json, 심볼별 TTL(기본 60s)로 5분 렌더가
-    반복 호출 안 하게.
+  - 시세 캐시: ~/.trade/kis_quotes.json, 심볼별 TTL(미지정시 recommended_ttl:
+    장중 90s/마감·주말 6h, 렌더와 동일)로 5분 렌더가 반복 호출 안 하게.
 
 안전:
   - 키 없거나 어떤 예외든 빈 결과({}/None) — 호출자는 그냥 가격 줄을 안 그림.
@@ -46,7 +46,6 @@ _TOKEN_PATH = _DATA_DIR / ".kis_token.json"
 _QUOTE_CACHE = _DATA_DIR / "kis_quotes.json"
 _CODE_CACHE = _DATA_DIR / "stock_codes.json"     # 종목명→코드 durable 캐시
 _KRX_MASTER = _DATA_DIR / "krx_codes.json"       # KRX 상장 전종목 이름→코드(로컬 마스터)
-_QUOTE_TTL_S = int(os.environ.get("TRADE_PRICE_CACHE_TTL") or "60")
 _CODE_TTL_S = int(os.environ.get("TRADE_STOCK_CODE_TTL") or str(7 * 86400))  # 7일
 _MAX_SYMBOLS = int(os.environ.get("TRADE_PRICE_MAX_SYMBOLS") or "300")
 _HTTP_TIMEOUT_S = 10
@@ -147,6 +146,15 @@ def recommended_ttl(now: Optional[datetime] = None) -> int:
         return eod
     mins = now.hour * 60 + now.minute
     return live if (9 * 60 <= mins <= 15 * 60 + 30) else eod
+
+
+def _default_quote_ttl() -> int:
+    """ttl_s 미지정시 쓰는 시세 캐시 기본값. TRADE_PRICE_CACHE_TTL이 명시되면 그
+    값(옛 호환), 아니면 recommended_ttl()(렌더 dashboard와 동일 기준). 옛 60s 고정
+    기본이 렌더(recommended_ttl)와 달라, 순진하게 get_quotes_by_name(fetch=False)을
+    부르면 60초 넘은 캐시를 다 버려 '시세 없음'으로 오도하던 함정을 제거한다."""
+    env = os.environ.get("TRADE_PRICE_CACHE_TTL")
+    return int(env) if env else recommended_ttl()
 
 
 # ---------------------------------------------------------------------
@@ -689,11 +697,16 @@ def _norm(symbols: Iterable[str]) -> list[str]:
 
 def get_quotes(symbols: Iterable[str], *,
                transport: Transport = _default_transport,
-               ttl_s: int = _QUOTE_TTL_S, fetch: bool = True) -> dict[str, Quote]:
+               ttl_s: Optional[int] = None, fetch: bool = True) -> dict[str, Quote]:
     """{6자리코드: Quote}. 공급자 off/키 없음/예외 → {} (호출자는 가격 줄 생략).
 
-    심볼별 TTL 캐시. fetch=False면 캐시 신선분만 반환하고 외부 호출 안 함
-    (렌더는 이걸로 즉시 끝내고, 실제 API는 워머 fetch_quotes가 백그라운드에서)."""
+    심볼별 TTL 캐시. ttl_s 미지정(None)이면 _default_quote_ttl()(=렌더와 동일한
+    recommended_ttl, 장중 90s/마감 6h)을 써, 순진하게 불러도 렌더와 결과가 일치한다
+    (옛 60s 고정 기본이 렌더와 달라 진단을 오도하던 함정 제거). fetch=False면 캐시
+    신선분만 반환하고 외부 호출 안 함(렌더는 이걸로 즉시 끝내고, 실제 API는 워머
+    fetch_quotes가 백그라운드에서)."""
+    if ttl_s is None:
+        ttl_s = _default_quote_ttl()
     # 캡(_MAX_SYMBOLS)은 외부 콜 폭주 방지용 — fetch=False(렌더, 캐시만·콜 0)엔
     # 적용 안 한다. 안 그러면 관련종목 수가 캡(기본 300)보다 많을 때 렌더가 앞쪽
     # 코드만 보고 뒤 종목이 캐시에 있어도 잘려 보이던 회귀.
@@ -749,13 +762,16 @@ def get_quote(symbol: str, *,
 
 def get_quotes_by_name(names: Iterable[str], *,
                        transport: Transport = _default_transport,
-                       ttl_s: int = _QUOTE_TTL_S,
+                       ttl_s: Optional[int] = None,
                        fetch: bool = True) -> dict[str, Quote]:
     """{종목명: Quote} — BeOn 관련종목(회사명)을 코드 변환 없이 바로 시세에 연결.
 
     이름 정확일치(우선주 오매칭 방지)로만 붙이고, 못 찾으면 그 이름은 생략(틀린
-    종목 안 붙임). fetch=False면 캐시만 읽고 외부 호출 0(렌더는 이걸로 즉시
-    끝냄 — 실제 API는 워머 fetch_quotes가 백그라운드에서 채움)."""
+    종목 안 붙임). ttl_s 미지정(None)이면 _default_quote_ttl()(렌더와 동일).
+    fetch=False면 캐시만 읽고 외부 호출 0(렌더는 이걸로 즉시 끝냄 — 실제 API는
+    워머 fetch_quotes가 백그라운드에서 채움)."""
+    if ttl_s is None:
+        ttl_s = _default_quote_ttl()
     uniq = []
     seen = set()
     for n in names:
