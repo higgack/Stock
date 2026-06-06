@@ -500,8 +500,36 @@ class SplitNamesTests(unittest.TestCase):
         self.assertFalse(pp._looks_like_stock("그"))           # 1자
         self.assertFalse(pp._looks_like_stock("보툴리눔 톡신 강원 횡성중국"))  # 길이
 
+    def test_product_blocklist_dropped(self):
+        # 품목·제품명이 회사로 새지 않게(회사별 뷰 가짜 회사 방지).
+        for prod in ("수산화리튬", "동박", "광섬유", "소주", "젤라틴", "반도체", "웨이퍼"):
+            self.assertEqual(pp.split_names([prod]), [], prod)
+        # 전 토큰이 제품명인 2어절도 제외
+        self.assertEqual(pp.split_names(["반도체 웨이퍼"]), [])
+        self.assertEqual(pp.split_names(["검사용 장비"]), [])
+        self.assertEqual(pp.split_names(["소자의 측정, 검사용 장비"]), [])
+        self.assertEqual(pp.split_names(["인터페이스보드 프로브 카드"]), [])  # 길이15
+        # 실제 회사는 정확일치라 안 걸림('한미반도체'≠'반도체')
+        self.assertEqual(pp.split_names(["삼성전자"]), ["삼성전자"])
+        self.assertEqual(pp.split_names(["한미반도체"]), ["한미반도체"])
+        self.assertEqual(pp.split_names(["GST / 유니셈 등"]), ["GST", "유니셈"])
+
 
 class ResolverAliasTests(_DPEnv):
+    def test_typo_alias_esteai_resolves_as_esti(self):
+        # 운영자 확인 오타 에스테아이→에스티아이로 질의(별도 종목으로 안 샘).
+        seen = {}
+        items = [{"srtnCd": "039440", "itmsNm": "에스티아이", "clpr": "20000",
+                  "vs": 0, "fltRt": 0, "basDt": "20260604", "mrktCtg": "KOSDAQ"}]
+
+        def fake(method, url, *, headers, body=None):
+            from urllib.parse import urlparse, parse_qs
+            seen["q"] = parse_qs(urlparse(url).query).get("likeItmsNm", [""])[0]
+            return {"response": {"body": {"items": {"item": items}, "totalCount": "1"}}}
+        out = pp.resolve_codes(["에스테아이"], transport=fake)
+        self.assertEqual(out["에스테아이"], "039440")
+        self.assertEqual(seen["q"], "에스티아이")          # alias로 질의
+
     def test_direct_code_bypasses_datagokr(self):
         # _DIRECT_CODES 항목은 외부 호출 0으로 즉시 코드 반환.
         fake = FakeDataPortal(_DP_ITEMS)
