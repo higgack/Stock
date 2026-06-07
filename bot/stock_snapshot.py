@@ -203,16 +203,28 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
         # strip None values to keep JSON compact
         snap = {k: v for k, v in snap.items() if v is not None}
 
-        # KR enrichment — DART + FSC + KIS + pykrx additive overlay
+        # Market-specific enrichment — additive overlay per market
         if ticker.endswith((".KS", ".KQ")):
             try:
                 _enrich_kr(ticker, snap)
             except Exception as exc:
                 log.warning("stock_snapshot: KR enrich skipped for %s: %s", ticker, exc)
-
-        # US enrichment — SEC EDGAR XBRL financials
-        if not ticker.endswith((".KS", ".KQ", ".T", ".TW", ".SS", ".SZ",
-                                ".HK", ".KS", ".KQ")):
+        elif ticker.endswith(".T"):
+            try:
+                _enrich_jp(ticker, snap)
+            except Exception as exc:
+                log.warning("stock_snapshot: JP enrich skipped for %s: %s", ticker, exc)
+        elif ticker.endswith(".TW"):
+            try:
+                _enrich_tw(ticker, snap)
+            except Exception as exc:
+                log.warning("stock_snapshot: TW enrich skipped for %s: %s", ticker, exc)
+        elif ticker.endswith((".SS", ".SZ", ".BJ", ".HK")):
+            try:
+                _enrich_cn(ticker, snap)
+            except Exception as exc:
+                log.warning("stock_snapshot: CN enrich skipped for %s: %s", ticker, exc)
+        else:
             try:
                 _enrich_us(ticker, snap)
             except Exception as exc:
@@ -420,21 +432,8 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: FSC dilution skipped: %s", exc)
 
-    # ── yfinance dividends (배당 이력, snap 직접 — 전 시장 공통) ──
-    try:
-        import yfinance as yf
-        t = yf.Ticker(ticker)
-        divs = t.dividends
-        if divs is not None and not divs.empty:
-            rows = []
-            for idx, val in divs.tail(12).items():
-                if hasattr(idx, "strftime"):
-                    rows.append({"date": idx.strftime("%Y-%m-%d"),
-                                 "amount": round(float(val), 4)})
-            if rows:
-                snap["dividends"] = rows
-    except Exception as exc:
-        log.debug("stock_snapshot: dividends skipped: %s", exc)
+    # ── yfinance dividends (universal) ────────────────────────────
+    _collect_dividends(ticker, snap)
 
 
 def _enrich_us(ticker: str, snap: dict) -> None:
@@ -478,3 +477,131 @@ def _enrich_us(ticker: str, snap: dict) -> None:
             snap.setdefault("us", {})["insider_trades"] = f4
     except Exception as exc:
         log.debug("stock_snapshot: EDGAR Form 4 skipped: %s", exc)
+
+
+def _enrich_jp(ticker: str, snap: dict) -> None:
+    """Add JP-specific data from EDINET to an existing snapshot dict."""
+    # ── EDINET disclosures (公示) ─────────────────────────────────
+    try:
+        from bot.edinet_client import get_edinet
+        ed = get_edinet()
+        if ed:
+            disclosures = ed.get_recent_disclosures(ticker, days_back=60, limit=20)
+            if disclosures:
+                snap.setdefault("jp", {})["disclosures"] = disclosures
+    except Exception as exc:
+        log.debug("stock_snapshot: EDINET disclosures skipped: %s", exc)
+
+    # ── EDINET 大量保有 (major holders / 5%+ ownership) ───────────
+    try:
+        from bot.edinet_client import get_edinet
+        ed = get_edinet()
+        if ed:
+            holders = ed.get_major_holders(ticker, days_back=180)
+            if holders:
+                snap.setdefault("jp", {})["major_holders"] = holders[:15]
+    except Exception as exc:
+        log.debug("stock_snapshot: EDINET major holders skipped: %s", exc)
+
+    # ── yfinance dividends (universal) ────────────────────────────
+    _collect_dividends(ticker, snap)
+
+
+def _enrich_tw(ticker: str, snap: dict) -> None:
+    """Add TW-specific data from MOPS to an existing snapshot dict."""
+    # ── MOPS 重大訊息 (material disclosures) ──────────────────────
+    try:
+        from bot.mops_client import get_mops
+        mops = get_mops()
+        if mops:
+            disclosures = mops.get_recent_disclosures(ticker, days_back=60, limit=20)
+            if disclosures:
+                snap.setdefault("tw", {})["disclosures"] = disclosures
+    except Exception as exc:
+        log.debug("stock_snapshot: MOPS disclosures skipped: %s", exc)
+
+    # ── MOPS 內部人持股 (insider holdings) ─────────────────────────
+    try:
+        from bot.mops_client import get_mops
+        mops = get_mops()
+        if mops:
+            insiders = mops.get_insider_holdings(ticker)
+            if insiders:
+                snap.setdefault("tw", {})["insider_holdings"] = insiders[:15]
+    except Exception as exc:
+        log.debug("stock_snapshot: MOPS insider holdings skipped: %s", exc)
+
+    # ── yfinance dividends (universal) ────────────────────────────
+    _collect_dividends(ticker, snap)
+
+
+def _enrich_cn(ticker: str, snap: dict) -> None:
+    """Add CN/HK-specific data from AKShare to an existing snapshot dict."""
+    # ── AKShare 公告 (disclosures) ────────────────────────────────
+    try:
+        from bot.akshare_client import get_akshare
+        ak = get_akshare()
+        if ak:
+            disclosures = ak.get_recent_disclosures(ticker, days_back=60, limit=20)
+            if disclosures:
+                snap.setdefault("cn", {})["disclosures"] = disclosures
+    except Exception as exc:
+        log.debug("stock_snapshot: AKShare disclosures skipped: %s", exc)
+
+    # ── AKShare 主要流通股东 (major holders, A-share only) ─────────
+    try:
+        from bot.akshare_client import get_akshare
+        ak = get_akshare()
+        if ak:
+            holders = ak.get_major_holders(ticker)
+            if holders:
+                snap.setdefault("cn", {})["major_holders"] = holders[:15]
+    except Exception as exc:
+        log.debug("stock_snapshot: AKShare major holders skipped: %s", exc)
+
+    # ── AKShare ST/停牌 status ────────────────────────────────────
+    try:
+        from bot.akshare_client import get_akshare
+        ak = get_akshare()
+        if ak:
+            risk: dict = {}
+            if ak.is_st(ticker):
+                risk["is_st"] = True
+            if ak.is_suspended(ticker):
+                risk["is_suspended"] = True
+            if risk:
+                snap.setdefault("cn", {})["risk_status"] = risk
+    except Exception as exc:
+        log.debug("stock_snapshot: AKShare ST/停牌 skipped: %s", exc)
+
+    # ── AKShare 港股通 flow (market-wide) ─────────────────────────
+    try:
+        from bot.akshare_client import get_akshare
+        ak = get_akshare()
+        if ak:
+            flow = ak.get_hsgt_flow_summary(days_back=5)
+            if flow:
+                snap.setdefault("cn", {})["hsgt_flow"] = flow
+    except Exception as exc:
+        log.debug("stock_snapshot: AKShare HSGT flow skipped: %s", exc)
+
+    # ── yfinance dividends (universal) ────────────────────────────
+    _collect_dividends(ticker, snap)
+
+
+def _collect_dividends(ticker: str, snap: dict) -> None:
+    """Collect yfinance dividends — shared helper for all markets."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        divs = t.dividends
+        if divs is not None and not divs.empty:
+            rows = []
+            for idx, val in divs.tail(12).items():
+                if hasattr(idx, "strftime"):
+                    rows.append({"date": idx.strftime("%Y-%m-%d"),
+                                 "amount": round(float(val), 4)})
+            if rows:
+                snap["dividends"] = rows
+    except Exception as exc:
+        log.debug("stock_snapshot: dividends skipped for %s: %s", ticker, exc)

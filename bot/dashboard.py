@@ -3078,13 +3078,31 @@ def _render_stock_info_html(rec: dict) -> str:
     <span class="si-sub">{esc(ne_sub)}</span></div>
 </div>"""
 
-    # ── tab navigation ──────────────────────────────────────────
-    kr = si.get("kr", {})
-    has_disclosures = bool(kr.get("disclosures"))
-    disclosure_tab = '  <button class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
+    # ── market detection — pick the right market-specific sub-dict ──
     is_kr = ticker.endswith((".KS", ".KQ"))
-    flow_tab = '  <button class="si-tab" data-pane="si-flow">수급</button>\n' if is_kr and kr.get("flow") else ""
-    risk_tab = '  <button class="si-tab" data-pane="si-risk">리스크</button>\n' if kr.get("lockup_releases") or kr.get("dilution_events") else ""
+    is_jp = ticker.endswith(".T")
+    is_tw = ticker.endswith(".TW")
+    is_cn = ticker.endswith((".SS", ".SZ", ".BJ", ".HK"))
+    is_us = not (is_kr or is_jp or is_tw or is_cn)
+    if is_kr:
+        mkt = si.get("kr", {})
+    elif is_jp:
+        mkt = si.get("jp", {})
+    elif is_tw:
+        mkt = si.get("tw", {})
+    elif is_cn:
+        mkt = si.get("cn", {})
+    else:
+        mkt = si.get("us", {})
+    kr = si.get("kr", {})
+
+    # ── tab navigation ──────────────────────────────────────────
+    has_disclosures = bool(mkt.get("disclosures"))
+    disclosure_tab = '  <button class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
+    has_flow = bool(is_kr and kr.get("flow")) or bool(is_cn and mkt.get("hsgt_flow"))
+    flow_tab = '  <button class="si-tab" data-pane="si-flow">수급</button>\n' if has_flow else ""
+    has_risk = bool(kr.get("lockup_releases") or kr.get("dilution_events")) or bool(is_cn and mkt.get("risk_status"))
+    risk_tab = '  <button class="si-tab" data-pane="si-risk">리스크</button>\n' if has_risk else ""
     tabs_html = f"""<div class="si-tabs">
   <button class="si-tab active" data-pane="si-overview">종합</button>
   <button class="si-tab" data-pane="si-company">기업</button>
@@ -3597,47 +3615,78 @@ def _render_stock_info_html(rec: dict) -> str:
   {trend_html}
 </div>"""
 
-    # ── 리스크 pane (lockup + dilution) ────────────────────────────
-    risk_pane = ""
+    # CN/HK 港股通 flow
+    if is_cn and not flow_pane:
+        hsgt = mkt.get("hsgt_flow", {})
+        if hsgt:
+            def _cn_flow(v, unit="억"):
+                if v is None:
+                    return '<td class="num">—</td>'
+                color = "#26a69a" if v > 0 else "#e2574c" if v < 0 else ""
+                sign = "+" if v > 0 else ""
+                style = f' style="color:{color}"' if color else ""
+                return f'<td class="num"{style}>{sign}{v:,.1f}{unit}</td>'
+            nb = hsgt.get("northbound_5d")
+            sb = hsgt.get("southbound_5d")
+            nd = hsgt.get("north_direction", "")
+            sd = hsgt.get("south_direction", "")
+            flow_pane = f"""<div class="si-pane" id="si-flow">
+  <div class="si-section">
+    <div class="si-section-title">港股通 자금 흐름 (5일 누적)</div>
+    <table class="si-table"><thead><tr><th>구분</th><th class="num">5일 순매수</th><th>방향</th></tr></thead><tbody>
+      <tr><td>北向 (외국인→A주)</td>{_cn_flow(nb)}<td>{esc(nd)}</td></tr>
+      <tr><td>南向 (본토→HK)</td>{_cn_flow(sb)}<td>{esc(sd)}</td></tr>
+    </tbody></table>
+  </div>
+</div>"""
+
+    # ── 리스크 pane (lockup + dilution + CN ST/停牌) ──────────────
+    risk_parts: list[str] = []
+
+    # KR lockup releases
     lockup = kr.get("lockup_releases", [])
-    dilution = kr.get("dilution_events", [])
-    if lockup or dilution:
-        lockup_html = ""
-        if lockup:
-            lu_rows = ""
-            for lu in lockup:
-                rd = esc(str(lu.get("release_date", "—")))
-                sh = lu.get("shares")
-                sh_str = f"{int(sh):,}" if sh else "—"
-                rem = lu.get("remaining")
-                rem_str = f"{int(rem):,}" if rem else "—"
-                reason = esc(str(lu.get("reason", "—")))
-                lu_rows += f"<tr><td>{rd}</td><td class='num'>{sh_str}</td><td class='num'>{rem_str}</td><td>{reason}</td></tr>\n"
-            lockup_html = f"""<div class="si-section">
+    if lockup:
+        lu_rows = ""
+        for lu in lockup:
+            rd = esc(str(lu.get("release_date", "—")))
+            sh = lu.get("shares")
+            sh_str = f"{int(sh):,}" if sh else "—"
+            rem = lu.get("remaining")
+            rem_str = f"{int(rem):,}" if rem else "—"
+            reason = esc(str(lu.get("reason", "—")))
+            lu_rows += f"<tr><td>{rd}</td><td class='num'>{sh_str}</td><td class='num'>{rem_str}</td><td>{reason}</td></tr>\n"
+        risk_parts.append(f"""<div class="si-section">
       <div class="si-section-title">📌 의무보호예수 해제 예정</div>
       <table class="si-table"><thead><tr><th>해제일</th><th class="num">반환주식</th><th class="num">잔량</th><th>사유</th></tr></thead><tbody>{lu_rows}</tbody></table>
-    </div>"""
+    </div>""")
 
-        dilution_html = ""
-        if dilution:
-            dl_rows = ""
-            for de in dilution:
-                kind = esc(str(de.get("kind", "—")))
-                dd = esc(str(de.get("date", "—")))
-                ns = de.get("new_shares")
-                ns_str = f"{int(ns):,}" if ns else "—"
-                pr = de.get("price")
-                pr_str = f"₩{int(pr):,}" if pr else "—"
-                dl_rows += f"<tr><td>{kind}</td><td>{dd}</td><td class='num'>{ns_str}</td><td class='num'>{pr_str}</td></tr>\n"
-            dilution_html = f"""<div class="si-section">
+    # KR dilution events
+    dilution = kr.get("dilution_events", [])
+    if dilution:
+        dl_rows = ""
+        for de in dilution:
+            kind = esc(str(de.get("kind", "—")))
+            dd = esc(str(de.get("date", "—")))
+            ns = de.get("new_shares")
+            ns_str = f"{int(ns):,}" if ns else "—"
+            pr = de.get("price")
+            pr_str = f"₩{int(pr):,}" if pr else "—"
+            dl_rows += f"<tr><td>{kind}</td><td>{dd}</td><td class='num'>{ns_str}</td><td class='num'>{pr_str}</td></tr>\n"
+        risk_parts.append(f"""<div class="si-section">
       <div class="si-section-title">📉 잠재 희석 이벤트 (CB/BW)</div>
       <table class="si-table"><thead><tr><th>종류</th><th>날짜</th><th class="num">신주수</th><th class="num">행사가</th></tr></thead><tbody>{dl_rows}</tbody></table>
-    </div>"""
+    </div>""")
 
-        risk_pane = f"""<div class="si-pane" id="si-risk">
-  {lockup_html}
-  {dilution_html}
-</div>"""
+    # CN ST/停牌 risk status
+    cn_risk = mkt.get("risk_status", {}) if is_cn else {}
+    if cn_risk.get("is_st"):
+        risk_parts.append('<div style="background:#fff3cd;color:#856404;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">⚠️ ST/＊ST 지정 — 2년+ 연속 적자, 일일 한도 ±5%, 퇴출 위험</div>')
+    if cn_risk.get("is_suspended"):
+        risk_parts.append('<div style="background:#f8d7da;color:#721c24;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">🚫 거래정지 (停牌) — 현재 매매 불가</div>')
+
+    risk_pane = ""
+    if risk_parts:
+        risk_pane = '<div class="si-pane" id="si-risk">\n  ' + "\n  ".join(risk_parts) + "\n</div>"
 
     # ── 배당 이력 (밸류에이션 pane 하단에 추가) ────────────────────
     divs = si.get("dividends", [])
@@ -3718,23 +3767,27 @@ def _render_stock_info_html(rec: dict) -> str:
     <table class="si-table"><thead><tr><th>제출일</th><th>성명</th><th>직위</th><th>거래 내역</th></tr></thead><tbody>{ui_rows}</tbody></table>
   </div>"""
 
-    # ── 공시 pane (KR DART disclosures) ────────────────────────
+    # ── 공시 pane (all markets — DART/EDINET/MOPS/AKShare/EDGAR) ──
     disclosures_pane = ""
-    kr_disclosures = kr.get("disclosures", [])
-    if kr_disclosures:
+    disc_source_map = {"kr": "DART", "jp": "EDINET", "tw": "MOPS",
+                       "cn": "AKShare", "us": "SEC"}
+    disc_source = disc_source_map.get("kr" if is_kr else "jp" if is_jp else
+                                      "tw" if is_tw else "cn" if is_cn else "us", "")
+    all_disclosures = mkt.get("disclosures", [])
+    if all_disclosures:
         d_rows = ""
-        for disc in kr_disclosures:
+        for disc in all_disclosures:
             d_date = esc(str(disc.get("date", "—")))
-            d_title = esc(str(disc.get("title", "—")))
-            d_reporter = esc(str(disc.get("reporter", "")))
+            d_title = esc(str(disc.get("title") or disc.get("subject") or disc.get("description") or "—"))
+            d_reporter = esc(str(disc.get("reporter") or disc.get("filer_name") or disc.get("doc_type_label") or ""))
             d_url = disc.get("url", "")
             title_html = f'<a href="{esc(d_url)}" target="_blank" rel="noopener">{d_title}</a>' if d_url else d_title
             d_rows += f"<tr><td>{d_date}</td><td>{title_html}</td><td>{d_reporter}</td></tr>\n"
         disclosures_pane = f"""<div class="si-pane" id="si-disclosures">
   <div class="si-section">
-    <div class="si-section-title">최근 공시 (DART)</div>
+    <div class="si-section-title">최근 공시 ({esc(disc_source)})</div>
     <table class="si-table">
-      <thead><tr><th>날짜</th><th>제목</th><th>공시자</th></tr></thead>
+      <thead><tr><th>날짜</th><th>제목</th><th>출처</th></tr></thead>
       <tbody>{d_rows}</tbody>
     </table>
   </div>
@@ -3766,14 +3819,20 @@ def _render_stock_info_html(rec: dict) -> str:
         title = f"{firm}: {change}"
         timeline_events.append((d, "리서치", imp, title, action, ""))
 
-    # KR disclosures
-    for disc in kr.get("disclosures", []):
+    # Disclosures (all markets)
+    _high_kw = ("유상증자", "무상증자", "합병", "분할", "감자", "상장폐지", "거래정지",
+                "株式分割", "株式併合", "上場廃止", "增資", "減資", "合併",
+                "ST", "停牌", "delisting", "merger", "acquisition")
+    _med_kw = ("분기보고서", "사업보고서", "반기보고서", "주요사항",
+               "四半期", "有価証券", "決算短信", "重大訊息", "年度報告", "季度報告",
+               "10-K", "10-Q", "8-K", "annual", "quarterly")
+    for disc in mkt.get("disclosures", []):
         d = disc.get("date", "")
-        title = disc.get("title", "")
+        title = disc.get("title") or disc.get("subject") or disc.get("description") or ""
         url = disc.get("url", "")
-        imp = "high" if any(kw in title for kw in ("유상증자", "무상증자", "합병", "분할", "감자", "상장폐지", "거래정지")) else \
-              "medium" if any(kw in title for kw in ("분기보고서", "사업보고서", "반기보고서", "주요사항")) else "low"
-        timeline_events.append((d, "공시", imp, title, disc.get("reporter", ""), url))
+        imp = "high" if any(kw in title for kw in _high_kw) else \
+              "medium" if any(kw in title for kw in _med_kw) else "low"
+        timeline_events.append((d, "공시", imp, title, disc.get("reporter") or disc.get("filer_name") or "", url))
 
     # News
     for n in si.get("news", []):
@@ -3850,6 +3909,66 @@ def _render_stock_info_html(rec: dict) -> str:
   {div_html}
 </div>"""
 
+    # JP EDINET major holders (5%+ 大量保有)
+    jp_holders_html = ""
+    jp_holders = si.get("jp", {}).get("major_holders", []) if is_jp else []
+    if jp_holders:
+        jh_rows = ""
+        for jh in jp_holders:
+            jd = esc(str(jh.get("date", "—")))
+            jfn = esc(str(jh.get("filer_name", "—")))
+            jdesc = esc(str(jh.get("description", "")))
+            jh_rows += f"<tr><td>{jd}</td><td>{jfn}</td><td>{jdesc}</td></tr>\n"
+        jp_holders_html = f"""<div class="si-section">
+    <div class="si-section-title">5%+ 大量保有 (EDINET)</div>
+    <table class="si-table">
+      <thead><tr><th>제출일</th><th>보고자</th><th>내용</th></tr></thead>
+      <tbody>{jh_rows}</tbody>
+    </table>
+  </div>"""
+
+    # TW MOPS insider holdings (內部人持股)
+    tw_insiders_html = ""
+    tw_insiders = si.get("tw", {}).get("insider_holdings", []) if is_tw else []
+    if tw_insiders:
+        ti_rows = ""
+        for ti in tw_insiders:
+            tn = esc(str(ti.get("name", "—")))
+            tr_ = esc(str(ti.get("role", "")))
+            ts = ti.get("shares")
+            ts_str = f"{int(ts):,}" if ts else "—"
+            tp = ti.get("pct")
+            tp_str = f"{tp:.2f}%" if tp else "—"
+            ti_rows += f"<tr><td>{tn}</td><td>{tr_}</td><td class='num'>{ts_str}</td><td class='num'>{tp_str}</td></tr>\n"
+        tw_insiders_html = f"""<div class="si-section">
+    <div class="si-section-title">內部人持股 (MOPS)</div>
+    <table class="si-table">
+      <thead><tr><th>성명</th><th>직위</th><th class="num">보유주식</th><th class="num">지분율</th></tr></thead>
+      <tbody>{ti_rows}</tbody>
+    </table>
+  </div>"""
+
+    # CN AKShare major holders (主要流通股东)
+    cn_holders_html = ""
+    cn_holders = si.get("cn", {}).get("major_holders", []) if is_cn else []
+    if cn_holders:
+        ch_rows = ""
+        for ch in cn_holders:
+            cn_ = esc(str(ch.get("name", "—")))
+            cs = ch.get("shares")
+            cs_str = f"{int(cs):,}" if cs else "—"
+            cp = ch.get("pct")
+            cp_str = f"{cp:.2f}%" if cp else "—"
+            cnat = esc(str(ch.get("nature", "")))
+            ch_rows += f"<tr><td>{cn_}</td><td class='num'>{cs_str}</td><td class='num'>{cp_str}</td><td>{cnat}</td></tr>\n"
+        cn_holders_html = f"""<div class="si-section">
+    <div class="si-section-title">主要流通股东 (AKShare)</div>
+    <table class="si-table">
+      <thead><tr><th>주주명</th><th class="num">보유주식</th><th class="num">지분율</th><th>성격</th></tr></thead>
+      <tbody>{ch_rows}</tbody>
+    </table>
+  </div>"""
+
     holders_pane = f"""<div class="si-pane" id="si-holders">
   <div class="si-section">
     <div class="si-section-title">주요 기관</div>
@@ -3859,6 +3978,9 @@ def _render_stock_info_html(rec: dict) -> str:
   {kr_insider_html}
   {kr_minority_html}
   {us_insider_html}
+  {jp_holders_html}
+  {tw_insiders_html}
+  {cn_holders_html}
 </div>"""
 
     # Return a dict with separate pieces so _render_detail can wrap
