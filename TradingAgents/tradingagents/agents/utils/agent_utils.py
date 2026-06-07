@@ -5377,10 +5377,21 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         # 10 most-recent articles so the news/sentiment analysts
         # have a real KR source to build on.
         try:
-            from bot.market import detect_market
+            from bot.market import detect_market, kr_news_query_name, has_hangul
             if detect_market(ticker) == "KR" and kr_name and _section_allowed(analyst_id, "naver_news"):
                 from bot.naver_news_client import fetch_news, format_news_for_prompt
-                news_items = fetch_news(kr_name, days_back=28, max_items=10)
+                # Korean news search needs the bare Korean brand. kr_name is
+                # sometimes the English DART registration ('NAVER' for
+                # 035420 → 0 hits) — route the query through DART's
+                # Korean-preferring resolver, keep kr_name for display.
+                _news_q = kr_name
+                try:
+                    _ko = get_dart().news_search_name(ticker)
+                    if _ko and has_hangul(_ko):
+                        _news_q = _ko
+                except Exception:
+                    _news_q = kr_news_query_name(kr_name) or kr_name
+                news_items = fetch_news(_news_q, days_back=28, max_items=10)
                 if news_items:
                     base += (
                         "\n\n=== Pre-fetched KR news (Naver 검색, verbatim) ===\n"

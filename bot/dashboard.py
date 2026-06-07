@@ -3152,26 +3152,49 @@ def diagnose_detail_sources(ticker: str) -> dict:
         def _naver():
             from bot.naver_news_client import fetch_news
             from bot.dart_client import get_dart
+            from bot.market import kr_news_query_name
             dart = get_dart()
-            q = (dart.stock_code_to_name(code) if dart else None) or tkr
+            # The actual query the overlay now uses (Korean brand, suffix
+            # stripped). Show the English-registration fallback too so the
+            # NAVER-class bug stays visible if it ever regresses.
+            q = (dart.news_search_name(code) if dart else None) or tkr
+            eng = dart.stock_code_to_name(code) if dart else None
             items = fetch_news(q, days_back=28, max_items=10)
             return {"ok": bool(items), "query": q,
-                    "count": len(items) if items else 0}
+                    "english_registration": eng,
+                    "count": len(items) if items else 0,
+                    "sample": (items[0].get("title") if items else None)}
         _probe("naver_news", _naver)
 
+        # Raw HTTP status of the scrape sources — distinguishes a 403
+        # IP-block (data-source limitation) from a genuinely empty page.
+        def _http_status(url, headers=None):
+            import requests
+            try:
+                r = requests.get(url, headers=headers or {}, timeout=12)
+                return {"status": r.status_code, "bytes": len(r.text)}
+            except Exception as exc:
+                return {"status": None, "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
+
         def _hk():
-            from bot.hk_consensus_client import fetch_consensus
+            from bot.hk_consensus_client import fetch_consensus, _HEADERS, _BASE_URL
+            raw = _http_status(f"{_BASE_URL}?sk={code}&search_type=2", _HEADERS)
             r = fetch_consensus(ticker)
             return {"ok": bool(r and r.get("reports")),
                     "reports": len(r.get("reports", [])) if r else 0,
-                    "target_price": (r or {}).get("target_price")}
+                    "target_price": (r or {}).get("target_price"),
+                    "http": raw}
         _probe("hankyung_research", _hk)
 
         def _fng():
             from bot.fnguide_consensus import fetch_consensus as fg
+            raw = _http_status(
+                f"https://comp.fnguide.com/SVO2/asp/SVD_Consensus.asp?pGB=1&gicode=A{code}&cID=&MenuYn=Y&ReportGB=&NewMenuID=108&stkGb=701",
+                {"User-Agent": "Mozilla/5.0"})
             r = fg(code)
             return {"ok": bool(r and r.get("target_mean")),
-                    "target_mean": (r or {}).get("target_mean")}
+                    "target_mean": (r or {}).get("target_mean"),
+                    "http": raw}
         _probe("fnguide_consensus", _fng)
 
     elif tkr.endswith(".T"):
