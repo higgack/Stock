@@ -492,7 +492,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_dir.mkdir(parents=True, exist_ok=True)
             safe = ticker.replace(".", "_").replace("-", "_")
             kind = "full" if full else "light"
-            cache_f = cache_dir / f"{safe}_{kind}_v2.json"
+            cache_f = cache_dir / f"{safe}_{kind}_v3.json"
             # FULL is slow-moving (filings quarterly / 수급 daily) → 30 min.
             # LIGHT is intraday → 5 min (matches the chart API cadence).
             ttl = 1800 if full else 300

@@ -3338,6 +3338,43 @@ class TestLiveQuoteOverlay:
         src = open("bot/dashboard.py", encoding="utf-8").read()
         i = src.find("def build_live_quote")
         assert i != -1
-        body = src[i:i + 4000]
+        body = src[i:i + 6000]
         assert "set_cache_only(True)" in body, "full-mode cache_only 누락 (₩ 누수)"
         assert "collect_stock_snapshot" in body, "full-mode 재스냅샷 누락"
+
+    def test_full_mode_robust_to_yfinance_failure(self):
+        """full-mode 가 yfinance 실패해도 저장 스냅샷 폴백 + 뉴스/리서치
+        enrichment 로 탭을 채운다 — NAVER 035420 (분석이 뉴스-fallback 코드
+        배포 전 02:56 에 생성돼 저장 스냅샷에 뉴스가 없던) 케이스 회귀 차단."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.find("def build_live_quote")
+        body = src[i:i + 6000]
+        # yfinance 실패 시 저장 스냅샷으로 폴백해야 (None 즉시반환 금지)
+        assert "_load_stored_stock_info(ticker)" in body, "저장 스냅샷 폴백 누락"
+        # 뉴스/리서치 enrichment 를 명시적으로 보장
+        assert "_ensure_detail_enrichment(ticker" in body, "탭 enrichment 보장 누락"
+
+    def test_ensure_enrichment_idempotent_and_graceful(self):
+        """_ensure_detail_enrichment 는 이미 채워진 탭을 재fetch 안 함
+        (idempotent) + 빈/None 입력에 crash 안 함 (graceful)."""
+        import bot.dashboard as d
+        si = {"news": [{"title": "x", "publisher": "p", "link": "", "date": "2026-06-08"}],
+              "kr": {"research_reports": [{"a": 1}]}}
+        before_news = list(si["news"])
+        before_rr = list(si["kr"]["research_reports"])
+        d._ensure_detail_enrichment("035420.KS", si)  # 네트워크 0 (이미 존재)
+        assert si["news"] == before_news, "news 가 이미 있는데 재fetch/변경됨"
+        assert si["kr"]["research_reports"] == before_rr, "research 재fetch/변경됨"
+        # 빈/None 은 graceful
+        d._ensure_detail_enrichment("035420.KS", {})
+        d._ensure_detail_enrichment("035420.KS", None)
+
+    def test_full_panes_include_research_and_news(self):
+        """full-mode whitelist + 렌더러 panes 둘 다 si-research·si-news 포함
+        (NAVER 뉴스 탭 빈칸 회귀 차단)."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.find("def build_live_quote")
+        body = src[i:i + 6000]
+        # full-mode heavy whitelist 에 둘 다 존재
+        assert '"si-research"' in body and '"si-news"' in body, \
+            "full whitelist 에 research/news 누락"
