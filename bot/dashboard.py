@@ -3120,7 +3120,12 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>"""
 
     # ── 기업 정보 pane ──────────────────────────────────────────
+    from bot.translate import (sector_kr, industry_kr, country_kr,
+                               grade_kr, action_kr,
+                               translate_description_kr, translate_news_titles_kr)
     desc = si.get("description", "")
+    if desc:
+        desc = translate_description_kr(desc)
     desc_html = f'<div class="si-desc">{esc(desc[:2000])}</div>' if desc else ""
 
     def grid_row(key, val):
@@ -3208,8 +3213,8 @@ def _render_stock_info_html(rec: dict) -> str:
       <div class="si-grid">
         {grid_row("티커", ticker)}
         {grid_row("거래소", exchange_display)}
-        {grid_row("섹터", si.get("sector", ""))}
-        {grid_row("산업", si.get("industry", ""))}
+        {grid_row("섹터", sector_kr(si.get("sector", "")))}
+        {grid_row("산업", industry_kr(si.get("industry", "")))}
         {kr_basic_rows}{grid_row("회계연도 종료", fy)}
         {grid_row("통화", currency)}
         {grid_row("상장일", ftd)}
@@ -3218,7 +3223,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section">
       <div class="si-section-title">회사 정보</div>
       <div class="si-grid">
-        {grid_row("국가", si.get("country", ""))}
+        {grid_row("국가", country_kr(si.get("country", "")))}
         {grid_row("지역", si.get("city") or si.get("state") or "")}
         {grid_row("임직원", emp_str)}
         {kr_company_rows}<div class="si-row"><div class="si-key">홈페이지</div><div class="si-val">{website_html}</div></div>
@@ -3427,9 +3432,9 @@ def _render_stock_info_html(rec: dict) -> str:
         for u in upgrades:
             d = esc(u.get("date", "—"))
             firm = esc(u.get("Firm", "—"))
-            to_g = esc(u.get("ToGrade", "—"))
-            from_g = esc(u.get("FromGrade", ""))
-            action = esc(u.get("Action", ""))
+            to_g = esc(grade_kr(u.get("ToGrade", "—")))
+            from_g = esc(grade_kr(u.get("FromGrade", "")))
+            action = esc(action_kr(u.get("Action", "")))
             change = f"{from_g} → {to_g}" if from_g else to_g
             r_rows += f"<tr><td>{d}</td><td>{firm}</td><td>{action}</td><td>{change}</td></tr>\n"
         research_table = f"""<table class="si-table">
@@ -3512,9 +3517,12 @@ def _render_stock_info_html(rec: dict) -> str:
     # ── 뉴스 pane ───────────────────────────────────────────────
     news = si.get("news", [])
     if news:
+        raw_titles = [n.get("title", "") for n in news if n.get("title")]
+        title_kr_map = translate_news_titles_kr(raw_titles)
         n_items = ""
         for n in news:
-            title = esc(n.get("title", ""))
+            raw_title = n.get("title", "")
+            title = esc(title_kr_map.get(raw_title, raw_title))
             link = n.get("link", "")
             publisher = esc(n.get("publisher", ""))
             ndate = esc(n.get("date", ""))
