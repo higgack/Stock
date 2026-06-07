@@ -3106,6 +3106,195 @@ _FIN_ITEM_KR: dict[str, str] = {
 }
 
 
+def build_live_quote(ticker: str, full: bool = False) -> dict | None:
+    """Fresh live-quote payload for the detail-page overlay (numbers only).
+
+    LIGHT (full=False): one yfinance ``.info`` call → price-derived
+    multiples + consensus + 52주 + 이평. KR (.KS/.KQ) takes a KIS-first
+    real-time 현재가 / PER / PBR / 시가총액 / 52주 override — KIS is the
+    official KRX feed, fresher and more accurate than yfinance's often
+    EOD-stale KR quotes. ~0.5-1s, intraday-fresh, ₩0.
+
+    FULL (full=True): re-runs ``collect_stock_snapshot`` (every source —
+    재무제표 / 실적 / 주주 / 수급 / 공시) and re-renders the heavy table
+    panes so filing- / daily-cadence data reflects the latest filing.
+    ₩0 (``set_cache_only`` → no Gemini call on the live path). The server
+    caches this longer because the underlying data is slow-moving.
+
+    Numbers only — never triggers Gemini translation. Graceful: returns
+    None on any failure and the caller keeps the stored snapshot, so the
+    page never blanks.
+    """
+    if full:
+        # Re-snapshot from every source, re-render the heavy panes, hand
+        # back ready HTML the client swaps in. set_cache_only keeps it ₩0.
+        try:
+            from bot.translate import set_cache_only
+            set_cache_only(True)
+        except Exception:
+            pass
+        try:
+            from bot.stock_snapshot import collect_stock_snapshot
+            fresh = collect_stock_snapshot(ticker)
+        except Exception as exc:
+            log.warning("build_live_quote: full snapshot failed for %s: %s", ticker, exc)
+            return None
+        if not fresh:
+            return None
+        try:
+            parts = _render_stock_info_html({"ticker": ticker, "stock_info": fresh})
+        except Exception as exc:
+            log.warning("build_live_quote: full render failed for %s: %s", ticker, exc)
+            return None
+        panes = (parts or {}).get("panes", {}) or {}
+        # Only the number/table panes (filing- / daily-cadence). Company /
+        # news / timeline are translation-sensitive and slow-moving, and
+        # valuation / consensus are owned by the LIGHT overlay — exclude
+        # both so we never re-render with stale or untranslated text.
+        heavy = {k: v for k, v in panes.items() if v and k in (
+            "si-financials", "si-earnings", "si-holders", "si-flow",
+            "si-disclosures", "si-risk", "si-peers",
+        )}
+        if not heavy:
+            return None
+        _kst = datetime.timezone(datetime.timedelta(hours=9))
+        return {"mode": "full", "panes": heavy,
+                "meta": {"ts": datetime.datetime.now(_kst).strftime("%H:%M")}}
+
+    # ── LIGHT — price-derived numbers, one .info call (+ KR KIS) ───────
+    try:
+        import yfinance as yf
+    except Exception:
+        return None
+    is_kr = ticker.upper().endswith((".KS", ".KQ"))
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception as exc:
+        log.debug("build_live_quote: yfinance .info failed for %s: %s", ticker, exc)
+        info = {}
+    if not info and not is_kr:
+        return None
+
+    currency = info.get("currency") or ("KRW" if is_kr else "USD")
+    csym = _currency_sym(currency)
+    _0dec = ("KRW", "JPY", "TWD", "HKD")
+    pdec = 0 if currency in _0dec else 2
+
+    price = info.get("currentPrice") or info.get("regularMarketPrice")
+    mcap = info.get("marketCap")
+    vals = {
+        "trailingPE": info.get("trailingPE"),
+        "forwardPE": info.get("forwardPE"),
+        "priceToBook": info.get("priceToBook"),
+        "priceToSalesTrailing12Months": info.get("priceToSalesTrailing12Months"),
+        "enterpriseToEbitda": info.get("enterpriseToEbitda"),
+        "trailingEps": info.get("trailingEps"),
+        "forwardEps": info.get("forwardEps"),
+        "bookValue": info.get("bookValue"),
+        "dividendYield": info.get("dividendYield"),
+        "beta": info.get("beta"),
+        "fiftyTwoWeekHigh": info.get("fiftyTwoWeekHigh"),
+        "fiftyTwoWeekLow": info.get("fiftyTwoWeekLow"),
+        "fiftyDayAverage": info.get("fiftyDayAverage"),
+        "twoHundredDayAverage": info.get("twoHundredDayAverage"),
+    }
+    target_mean = info.get("targetMeanPrice")
+    target_high = info.get("targetHighPrice")
+    target_low = info.get("targetLowPrice")
+    source, delayed = "yfinance", True
+
+    if is_kr:
+        # KIS is the official KRX feed — fresher / more accurate than
+        # yfinance's frequently EOD-stale KR quotes. Realtime (2-min
+        # cache) for 현재가; inquire-price for PER / PBR / EPS / BPS /
+        # 시가총액 / 52주. Any miss falls through to the yfinance values.
+        try:
+            from bot.kis_client import get_kis
+            kc = get_kis()
+            cur = kc.get_current_price(ticker) or {}
+            rt = kc.get_realtime_price(ticker)
+            kis_price = rt or cur.get("price")
+            if kis_price:
+                price = kis_price
+                source, delayed = "KIS 실시간", False
+            for src_k, dst_k in (("per", "trailingPE"), ("pbr", "priceToBook"),
+                                 ("eps", "trailingEps"), ("bps", "bookValue")):
+                v = cur.get(src_k)
+                if v:  # KIS sends 0 for unknown → keep yfinance value
+                    vals[dst_k] = v
+            if cur.get("market_cap"):
+                mcap = cur["market_cap"]
+            if cur.get("high_52w"):
+                vals["fiftyTwoWeekHigh"] = cur["high_52w"]
+            if cur.get("low_52w"):
+                vals["fiftyTwoWeekLow"] = cur["low_52w"]
+        except Exception as exc:
+            log.debug("build_live_quote: KIS override skipped for %s: %s", ticker, exc)
+
+    # Pre-format every field with the SAME helpers the renderer uses so
+    # the client just drops strings into [data-q] cells (no JS-side
+    # formatting drift). Skip None so a live miss never blanks a value
+    # the stored snapshot already had.
+    fmt: dict = {}
+    if price:
+        fmt["price"] = _fmt_num(price, decimals=pdec, prefix=csym)
+    if mcap:
+        fmt["mcap"] = _fmt_mcap(mcap, csym, currency)
+    for k, suf in (("trailingPE", "x"), ("forwardPE", "x"), ("priceToBook", "x"),
+                   ("priceToSalesTrailing12Months", "x"),
+                   ("enterpriseToEbitda", "x"), ("beta", "")):
+        v = vals.get(k)
+        if isinstance(v, (int, float)):
+            fmt[k] = f"{float(v):.2f}{suf}"
+    dy = vals.get("dividendYield")
+    if isinstance(dy, (int, float)):
+        fmt["dividendYield"] = f"{dy * 100:.2f}%"
+    for k in ("trailingEps", "forwardEps", "bookValue",
+              "fiftyDayAverage", "twoHundredDayAverage"):
+        v = vals.get(k)
+        if isinstance(v, (int, float)):
+            fmt[k] = f"{float(v):.2f}"
+
+    pos: dict = {}
+    w52h = vals.get("fiftyTwoWeekHigh")
+    w52l = vals.get("fiftyTwoWeekLow")
+    if price and w52h and w52l and w52h > w52l:
+        wp = max(0.0, min(100.0, (price - w52l) / (w52h - w52l) * 100))
+        pos["w52_pct"] = round(wp, 1)
+        fmt["w52_low"] = f"{csym}{_fmt_num(w52l, decimals=pdec)}"
+        fmt["w52_high"] = f"{csym}{_fmt_num(w52h, decimals=pdec)}"
+        fmt["w52_pos_label"] = f"현재가 ({wp:.0f}%)"
+
+    if target_mean:
+        fmt["target_mean"] = f"{csym}{_fmt_num(target_mean, decimals=pdec)}"
+        if price and price > 0:
+            up = (target_mean - price) / price * 100
+            pos["upside_pos"] = bool(up >= 0)
+            fmt["upside"] = f"{'+' if up >= 0 else ''}{up:.1f}%"
+
+    if target_low and target_high and price and target_high > target_low:
+        rng = target_high - target_low
+        tp = max(0.0, min(100.0, (price - target_low) / rng * 100))
+        mp = max(0.0, min(100.0, ((target_mean or price) - target_low) / rng * 100))
+        pos["tgt_pct"] = round(tp, 1)
+        pos["tgt_mean_pct"] = round(mp, 1)
+        pos["tgt_fill_pos"] = bool(mp > tp)
+        fmt["tgt_low"] = f"{csym}{_fmt_num(target_low, decimals=pdec)}"
+        fmt["tgt_high"] = f"{csym}{_fmt_num(target_high, decimals=pdec)}"
+        fmt["tgt_mean"] = f"목표 {csym}{_fmt_num(target_mean, decimals=pdec)}"
+
+    if not fmt:
+        return None
+    _kst = datetime.timezone(datetime.timedelta(hours=9))
+    return {
+        "mode": "light",
+        "fmt": fmt,
+        "pos": pos,
+        "meta": {"source": source, "delayed": delayed,
+                 "ts": datetime.datetime.now(_kst).strftime("%H:%M")},
+    }
+
+
 def _render_stock_info_html(rec: dict) -> str:
     """Render header cards + tabbed company info sections from stock_info."""
     si = rec.get("stock_info")
@@ -3129,15 +3318,19 @@ def _render_stock_info_html(rec: dict) -> str:
     ne_sub = "(추정)" if ne else ""
 
     header = f"""<div class="si-header">
-  <div class="si-card"><span class="si-label">현재가 (종가)</span>
-    <span class="si-value">{esc(price_str)}</span></div>
+  <div class="si-card"><span class="si-label">현재가</span>
+    <span class="si-value" data-q="price">{esc(price_str)}</span></div>
   <div class="si-card"><span class="si-label">시가총액</span>
-    <span class="si-value">{esc(mcap_str)}</span></div>
+    <span class="si-value" data-q="mcap">{esc(mcap_str)}</span></div>
   <div class="si-card"><span class="si-label">발행주식수</span>
     <span class="si-value">{esc(shares_str)}</span></div>
   <div class="si-card"><span class="si-label">다음 실적</span>
     <span class="si-value">{esc(ne_label)}</span>
     <span class="si-sub">{esc(ne_sub)}</span></div>
+</div>
+<div class="si-quote-status" style="margin:-8px 0 16px;font-size:11px;color:var(--fg-soft)">
+  <span id="q-badge" style="font-weight:600"></span>
+  <span class="si-quote-note">가격연동 지표(현재가·시총·PER·선행PER·PBR·PSR·EV/EBITDA·배당·베타·EPS·BPS·52주·이평·컨센서스)는 라이브 · 재무제표·실적·주주·수급·공시는 최신 공시/일 단위 갱신 · 차트는 분석 시점 저장본</span>
 </div>"""
 
     # ── market detection — pick the right market-specific sub-dict ──
@@ -3190,8 +3383,9 @@ def _render_stock_info_html(rec: dict) -> str:
         desc = translate_description_kr(desc)
     desc_html = f'<div class="si-desc">{esc(desc[:2000])}</div>' if desc else ""
 
-    def grid_row(key, val):
-        return f'<div class="si-row"><div class="si-key">{esc(key)}</div><div class="si-val">{esc(str(val) if val else "—")}</div></div>'
+    def grid_row(key, val, qkey=""):
+        qattr = f' data-q="{qkey}"' if qkey else ""
+        return f'<div class="si-row"><div class="si-key">{esc(key)}</div><div class="si-val"{qattr}>{esc(str(val) if val else "—")}</div></div>'
 
     exchange = si.get("exchange", "")
     # Map exchange codes to readable names
@@ -3295,8 +3489,8 @@ def _render_stock_info_html(rec: dict) -> str:
   <div class="si-section">
     <div class="si-section-title">시장 정보</div>
     <div class="si-grid">
-      {grid_row("시가총액", mcap_str)}
-      {grid_row("현재가 (종가)", price_str)}
+      {grid_row("시가총액", mcap_str, "mcap")}
+      {grid_row("현재가", price_str, "price")}
       {grid_row("발행주식수", shares_str)}
     </div>
   </div>
@@ -3318,11 +3512,11 @@ def _render_stock_info_html(rec: dict) -> str:
     n_analysts = si.get("num_analysts")
     cur_price = si.get("current_price")
 
-    upside_str = ""
+    upside_str = '<span class="pct" data-q="upside"></span>'
     if target_mean and cur_price and cur_price > 0:
         upside = (target_mean - cur_price) / cur_price * 100
         sign = "+" if upside >= 0 else ""
-        upside_str = f'<span class="pct" style="color:{"#26a69a" if upside >= 0 else "#e2574c"}">{sign}{upside:.1f}%</span>'
+        upside_str = f'<span class="pct" data-q="upside" style="color:{"#26a69a" if upside >= 0 else "#e2574c"}">{sign}{upside:.1f}%</span>'
 
     # Range bar
     range_html = ""
@@ -3333,13 +3527,13 @@ def _render_stock_info_html(rec: dict) -> str:
             mean_pct = max(0, min(100, ((target_mean or cur_price) - target_low) / rng * 100))
             range_html = f"""<div class="si-range-bar">
   <div class="si-range-track">
-    <div class="si-range-fill" style="left:0;width:{mean_pct:.1f}%;background:{"#26a69a" if mean_pct > cur_pct else "#e2574c"};opacity:0.3;"></div>
-    <div class="si-range-marker" style="left:{cur_pct:.1f}%" title="현재가"></div>
+    <div class="si-range-fill" data-qfill="tgt" style="left:0;width:{mean_pct:.1f}%;background:{"#26a69a" if mean_pct > cur_pct else "#e2574c"};opacity:0.3;"></div>
+    <div class="si-range-marker" data-qmark="tgt" style="left:{cur_pct:.1f}%" title="현재가"></div>
   </div>
   <div class="si-range-labels">
-    <span>{csym}{_fmt_num(target_low, decimals=2 if currency not in _0dec else 0)}</span>
-    <span>목표 {csym}{_fmt_num(target_mean, decimals=2 if currency not in _0dec else 0)}</span>
-    <span>{csym}{_fmt_num(target_high, decimals=2 if currency not in _0dec else 0)}</span>
+    <span data-q="tgt_low">{csym}{_fmt_num(target_low, decimals=2 if currency not in _0dec else 0)}</span>
+    <span data-q="tgt_mean">목표 {csym}{_fmt_num(target_mean, decimals=2 if currency not in _0dec else 0)}</span>
+    <span data-q="tgt_high">{csym}{_fmt_num(target_high, decimals=2 if currency not in _0dec else 0)}</span>
   </div>
 </div>"""
 
@@ -3377,7 +3571,7 @@ def _render_stock_info_html(rec: dict) -> str:
         <span class="si-con-badge {rec_class}">{esc(rec_label)}</span>
       </div>
       <div class="si-con-target">
-        목표가 {csym}{_fmt_num(target_mean, decimals=2 if currency not in _0dec else 0)} {upside_str}{analysts_str}
+        목표가 <span data-q="target_mean">{csym}{_fmt_num(target_mean, decimals=2 if currency not in _0dec else 0)}</span> {upside_str}{analysts_str}
       </div>
     </div>
     {range_html}
@@ -3386,12 +3580,13 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>"""
 
     # ── 밸류에이션 pane ────────────────────────────────────────
-    def _val_row(label, val, suffix=""):
+    def _val_row(label, val, suffix="", qkey=""):
+        qattr = f' data-q="{qkey}"' if qkey else ""
         if val is None:
-            return f'<tr><td>{esc(label)}</td><td class="num">—</td></tr>\n'
+            return f'<tr><td>{esc(label)}</td><td class="num"{qattr}>—</td></tr>\n'
         if isinstance(val, float):
-            return f'<tr><td>{esc(label)}</td><td class="num">{val:.2f}{suffix}</td></tr>\n'
-        return f'<tr><td>{esc(label)}</td><td class="num">{val}{suffix}</td></tr>\n'
+            return f'<tr><td>{esc(label)}</td><td class="num"{qattr}>{val:.2f}{suffix}</td></tr>\n'
+        return f'<tr><td>{esc(label)}</td><td class="num"{qattr}>{val}{suffix}</td></tr>\n'
 
     # 52-week position bar
     w52_high = si.get("fiftyTwoWeekHigh")
@@ -3404,32 +3599,32 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section-title">52주 레인지 내 위치</div>
     <div class="si-range-bar">
       <div class="si-range-track">
-        <div class="si-range-fill" style="left:0;width:{w52_pct:.1f}%;background:#42a5f5;opacity:0.3;"></div>
-        <div class="si-range-marker" style="left:{w52_pct:.1f}%" title="현재가"></div>
+        <div class="si-range-fill" data-qfill="w52" style="left:0;width:{w52_pct:.1f}%;background:#42a5f5;opacity:0.3;"></div>
+        <div class="si-range-marker" data-qmark="w52" style="left:{w52_pct:.1f}%" title="현재가"></div>
       </div>
       <div class="si-range-labels">
-        <span>{csym}{_fmt_num(w52_low, decimals=2 if currency not in _0dec else 0)}</span>
-        <span>현재가 ({w52_pct:.0f}%)</span>
-        <span>{csym}{_fmt_num(w52_high, decimals=2 if currency not in _0dec else 0)}</span>
+        <span data-q="w52_low">{csym}{_fmt_num(w52_low, decimals=2 if currency not in _0dec else 0)}</span>
+        <span data-q="w52_pos_label">현재가 ({w52_pct:.0f}%)</span>
+        <span data-q="w52_high">{csym}{_fmt_num(w52_high, decimals=2 if currency not in _0dec else 0)}</span>
       </div>
     </div>
   </div>"""
 
     val_multiples = ""
-    val_multiples += _val_row("PER (후행)", si.get("trailingPE"), "x")
-    val_multiples += _val_row("PER (선행)", si.get("forwardPE"), "x")
-    val_multiples += _val_row("PBR (주가순자산)", si.get("priceToBook"), "x")
-    val_multiples += _val_row("PSR (주가매출)", si.get("priceToSalesTrailing12Months"), "x")
-    val_multiples += _val_row("EV/EBITDA", si.get("enterpriseToEbitda"), "x")
-    val_multiples += _val_row("배당수익률", round(si.get("dividendYield", 0) * 100, 2) if si.get("dividendYield") else None, "%")
-    val_multiples += _val_row("베타", si.get("beta"))
+    val_multiples += _val_row("PER (후행)", si.get("trailingPE"), "x", "trailingPE")
+    val_multiples += _val_row("PER (선행)", si.get("forwardPE"), "x", "forwardPE")
+    val_multiples += _val_row("PBR (주가순자산)", si.get("priceToBook"), "x", "priceToBook")
+    val_multiples += _val_row("PSR (주가매출)", si.get("priceToSalesTrailing12Months"), "x", "priceToSalesTrailing12Months")
+    val_multiples += _val_row("EV/EBITDA", si.get("enterpriseToEbitda"), "x", "enterpriseToEbitda")
+    val_multiples += _val_row("배당수익률", round(si.get("dividendYield", 0) * 100, 2) if si.get("dividendYield") else None, "%", "dividendYield")
+    val_multiples += _val_row("베타", si.get("beta"), "", "beta")
 
     val_per_share = ""
-    val_per_share += _val_row("EPS (후행)", si.get("trailingEps"))
-    val_per_share += _val_row("EPS (선행)", si.get("forwardEps"))
-    val_per_share += _val_row("BPS (주당순자산)", si.get("bookValue"))
-    val_per_share += _val_row("50일 이동평균", si.get("fiftyDayAverage"))
-    val_per_share += _val_row("200일 이동평균", si.get("twoHundredDayAverage"))
+    val_per_share += _val_row("EPS (후행)", si.get("trailingEps"), "", "trailingEps")
+    val_per_share += _val_row("EPS (선행)", si.get("forwardEps"), "", "forwardEps")
+    val_per_share += _val_row("BPS (주당순자산)", si.get("bookValue"), "", "bookValue")
+    val_per_share += _val_row("50일 이동평균", si.get("fiftyDayAverage"), "", "fiftyDayAverage")
+    val_per_share += _val_row("200일 이동평균", si.get("twoHundredDayAverage"), "", "twoHundredDayAverage")
 
     # KR financials multi-year (if available)
     kr_fin_ts_html = ""
@@ -3489,7 +3684,12 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>"""
 
     # ── 리서치 pane ─────────────────────────────────────────────
+    # US: yfinance upgrades/downgrades (firm + from→to grade events).
+    # KR: 한경 컨센서스 per-broker reports (발행일/증권사/투자의견/목표가)
+    # — yfinance has no KR upgrade/downgrade feed, so this is the
+    # equivalent surface for Korean equities.
     upgrades = si.get("upgrades_downgrades", [])
+    kr_reports = kr.get("research_reports", [])
     if upgrades:
         r_rows = ""
         for u in upgrades:
@@ -3503,6 +3703,19 @@ def _render_stock_info_html(rec: dict) -> str:
         research_table = f"""<table class="si-table">
   <thead><tr><th>날짜</th><th>리서치펌</th><th>액션</th><th>의견 변화</th></tr></thead>
   <tbody>{r_rows}</tbody></table>"""
+    elif kr_reports:
+        r_rows = ""
+        for rp in kr_reports:
+            d = esc(str(rp.get("date", "—")))
+            broker = esc(str(rp.get("broker", "—")))
+            rating = esc(grade_kr(str(rp.get("rating", "")))) or "—"
+            tgt = rp.get("target")
+            tgt_str = f"₩{int(tgt):,}" if tgt else "—"
+            r_rows += f"<tr><td>{d}</td><td>{broker}</td><td>{rating}</td><td class='num'>{tgt_str}</td></tr>\n"
+        research_table = f"""<table class="si-table">
+  <thead><tr><th>발행일</th><th>증권사</th><th>투자의견</th><th class="num">목표가</th></tr></thead>
+  <tbody>{r_rows}</tbody></table>
+  <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: 한경 컨센서스 · 최근 90일 증권사 리포트</div>"""
     else:
         research_table = '<div class="si-empty">리서치 액션 데이터가 없습니다.</div>'
 
@@ -3580,8 +3793,12 @@ def _render_stock_info_html(rec: dict) -> str:
     # ── 뉴스 pane ───────────────────────────────────────────────
     news = si.get("news", [])
     if news:
-        raw_titles = [n.get("title", "") for n in news if n.get("title")]
-        title_kr_map = translate_news_titles_kr(raw_titles)
+        # KR (Naver) news is already Korean — only send the rest (US
+        # English / JP·TW·CN foreign titles) to the translator. kr_native
+        # items pass through unchanged (₩0, no Gemini call).
+        raw_titles = [n.get("title", "") for n in news
+                      if n.get("title") and not n.get("kr_native")]
+        title_kr_map = translate_news_titles_kr(raw_titles) if raw_titles else {}
         n_items = ""
         for n in news:
             raw_title = n.get("title", "")
@@ -4346,7 +4563,9 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>"""
 
     # Return a dict with separate pieces so _render_detail can wrap
-    # the chart/summary/report inside the overview pane.
+    # the chart/summary/report inside the overview pane. The per-pane
+    # map lets build_live_quote(full=True) hand back just the heavy,
+    # filing-/daily-cadence panes for the client to swap in.
     return {
         "header": header,
         "tabs": tabs_html,
@@ -4357,7 +4576,80 @@ def _render_stock_info_html(rec: dict) -> str:
                        research_pane + "\n" + holders_pane + "\n" +
                        flow_pane + "\n" + disclosures_pane + "\n" +
                        risk_pane + "\n" + news_pane + "\n" + timeline_pane,
+        "panes": {
+            "si-financials": financials_pane,
+            "si-peers": peers_pane,
+            "si-earnings": earnings_pane,
+            "si-holders": holders_pane,
+            "si-flow": flow_pane,
+            "si-disclosures": disclosures_pane,
+            "si-risk": risk_pane,
+        },
     }
+
+
+# Live-quote overlay: on page load, fetch fresh numbers and drop them
+# into the [data-q] cells the renderer tagged. LIGHT (price-derived) is
+# fast; FULL swaps the heavy filing-/daily-cadence panes when ready. Any
+# failure leaves the stored snapshot untouched (graceful — never blanks).
+_QUOTE_JS = r"""
+(function(){
+  if (typeof NOAH_TICKER === 'undefined' || !NOAH_TICKER) return;
+  var base = (typeof NOAH_BASE !== 'undefined') ? NOAH_BASE : '../';
+  var lastFmt = null;
+  function applyFmt(fmt){
+    if (!fmt) return;
+    for (var k in fmt){
+      if (!fmt.hasOwnProperty(k)) continue;
+      var els = document.querySelectorAll('[data-q="' + k + '"]');
+      for (var i = 0; i < els.length; i++) els[i].textContent = fmt[k];
+    }
+  }
+  function applyPos(pos){
+    if (!pos) return;
+    function set(sel, prop, val){ var e = document.querySelector(sel); if (e) e.style[prop] = val; }
+    if (pos.w52_pct != null){ set('[data-qmark="w52"]','left',pos.w52_pct+'%'); set('[data-qfill="w52"]','width',pos.w52_pct+'%'); }
+    if (pos.tgt_pct != null) set('[data-qmark="tgt"]','left',pos.tgt_pct+'%');
+    if (pos.tgt_mean_pct != null){
+      var f = document.querySelector('[data-qfill="tgt"]');
+      if (f){ f.style.width = pos.tgt_mean_pct + '%'; if (pos.tgt_fill_pos != null) f.style.background = pos.tgt_fill_pos ? '#26a69a' : '#e2574c'; }
+    }
+    if (pos.upside_pos != null){ var u = document.querySelector('[data-q="upside"]'); if (u) u.style.color = pos.upside_pos ? '#26a69a' : '#e2574c'; }
+  }
+  function badge(meta, ok){
+    var b = document.getElementById('q-badge'); if (!b) return;
+    if (!ok){ b.textContent = '⏸ 종가 기준'; b.title = '실시간 갱신 일시 불가 — 분석 시점 종가 표시'; return; }
+    var src = (meta && meta.source) || 'yfinance';
+    var dl = (meta && meta.delayed) ? ' · ~15분 지연' : '';
+    var ts = (meta && meta.ts) ? (' · ' + meta.ts + ' KST') : '';
+    b.textContent = '🟢 라이브 · ' + src + dl + ts;
+  }
+  fetch(base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER), {cache:'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (!j || !j.ok || !j.quote){ badge(null, false); return; }
+      lastFmt = j.quote.fmt;
+      applyFmt(j.quote.fmt); applyPos(j.quote.pos); badge(j.quote.meta, true);
+    })
+    .catch(function(){ badge(null, false); });
+  fetch(base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER) + '&full=1', {cache:'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      if (!j || !j.ok || !j.quote || !j.quote.panes) return;
+      var p = j.quote.panes;
+      for (var id in p){
+        if (!p.hasOwnProperty(id) || !p[id]) continue;
+        var el = document.getElementById(id);
+        if (!el) continue;
+        var wasActive = el.classList.contains('active');
+        el.outerHTML = p[id];
+        if (wasActive){ var n = document.getElementById(id); if (n){ n.classList.add('active'); n.style.display = 'block'; } }
+      }
+      if (lastFmt) applyFmt(lastFmt);
+    })
+    .catch(function(){});
+})();
+"""
 
 
 def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str:
@@ -4413,6 +4705,15 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
     si_other = si_parts.get("other_panes", "") if si_parts else ""
     has_tabs = bool(si_parts)
 
+    # Live-quote overlay script — only when there are stock-info tabs to
+    # update. Embeds the ticker as a JSON literal (safe) + the same
+    # relative base the chart API uses.
+    quote_script = (
+        f'<script>var NOAH_TICKER={json.dumps(ticker)};'
+        f'var NOAH_BASE="../";{_QUOTE_JS}</script>'
+        if has_tabs else ""
+    )
+
     # When tabs are present, the chart/summary/report go inside the
     # "종합" pane. Otherwise they render directly (pre-v3 records).
     overview_open = '<div class="si-pane active" id="si-overview">' if has_tabs else ""
@@ -4458,6 +4759,7 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
 <script>{_DETAIL_DEEP_LINK_JS}</script>
 {si_tab_js}
 {chart_scripts}
+{quote_script}
 </body>
 </html>
 """

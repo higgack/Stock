@@ -206,6 +206,11 @@ def fetch_consensus(ticker: str, days_back: int = 90) -> Optional[dict]:
         "analyst_count": distinct_analysts,
         "last_report_date": last_date,
         "report_count": len(rows),
+        # Individual broker reports (newest-first) for the detail-page
+        # 리서치 액션 tab. The aggregate fields above feed the 컨센서스
+        # tab; these per-firm rows are the KR analogue of the yfinance
+        # upgrades/downgrades feed (which has no KR coverage).
+        "reports": sorted(rows, key=lambda r: r["date"], reverse=True)[:15],
     }
 
     try:

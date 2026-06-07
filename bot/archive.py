@@ -236,3 +236,133 @@ def backfill_stock_info(limit: int | None = None) -> int:
             if limit and filled >= limit:
                 return filled
     return filled
+
+
+def backfill_detail_tabs(limit: int | None = None) -> int:
+    """One-time backfill: enrich existing stock_info snapshots with
+    news fallback, KR research reports, and TW/JP consensus that were
+    added after the original snapshot was collected.
+
+    Additive only — never overwrites existing data.  Each record is
+    independently try/excepted.  Rate-limited (1s between records that
+    actually change) to avoid API hammering.
+
+    Free: public scraping only, no LLM.  Triggered once per install
+    via a marker file (see telegram_bot startup).
+    """
+    import time as _time
+
+    filled = 0
+    if not ARCHIVE_ROOT.exists():
+        return 0
+
+    for day_dir in sorted(ARCHIVE_ROOT.iterdir()):
+        if not day_dir.is_dir():
+            continue
+        for jf in sorted(day_dir.glob("*.json")):
+            try:
+                rec = json.loads(jf.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            si = rec.get("stock_info")
+            if not si:
+                continue
+            ticker = rec.get("ticker", "")
+            if not ticker:
+                continue
+
+            changed = False
+
+            # ① News fallback (all markets)
+            if not si.get("news"):
+                try:
+                    from bot.stock_snapshot import _collect_news_fallback
+                    _collect_news_fallback(ticker, si)
+                    if si.get("news"):
+                        changed = True
+                except Exception as exc:
+                    log.debug("backfill_detail_tabs: news %s: %s", ticker, exc)
+
+            # ② KR research reports (한경 컨센서스)
+            if ticker.upper().endswith((".KS", ".KQ")):
+                kr = si.get("kr", {})
+                if not kr.get("research_reports"):
+                    try:
+                        from bot.hk_consensus_client import fetch_consensus as hk_fetch
+                        hk = hk_fetch(ticker)
+                        if hk and hk.get("reports"):
+                            si.setdefault("kr", {})["research_reports"] = hk["reports"]
+                            changed = True
+                            if not si.get("target_mean") and not kr.get("consensus"):
+                                if hk.get("target_price"):
+                                    si.setdefault("kr", {})["consensus"] = {
+                                        "source": "한경 컨센서스",
+                                        "target_mean": hk["target_price"],
+                                        "rating": hk.get("rating"),
+                                        "n_analysts": hk.get("analyst_count"),
+                                        "last_report_date": hk.get("last_report_date"),
+                                    }
+                    except Exception as exc:
+                        log.debug("backfill_detail_tabs: KR research %s: %s", ticker, exc)
+
+            # ③ TW consensus (鉅亨網)
+            if ticker.upper().endswith(".TW"):
+                tw = si.get("tw", {})
+                if not si.get("target_mean") and not tw.get("consensus"):
+                    try:
+                        from bot.cnyes_consensus import fetch_consensus as cnyes_fetch
+                        cn = cnyes_fetch(ticker)
+                        if cn and cn.get("target_mean"):
+                            si.setdefault("tw", {})["consensus"] = {
+                                "source": "鉅亨網",
+                                "target_mean": cn["target_mean"],
+                                "rating": cn.get("rating"),
+                                "n_analysts": cn.get("n_analysts"),
+                                "last_report_date": cn.get("last_report_date"),
+                            }
+                            changed = True
+                    except Exception as exc:
+                        log.debug("backfill_detail_tabs: TW consensus %s: %s", ticker, exc)
+
+            # ④ JP consensus (Kabutan)
+            if ticker.upper().endswith(".T"):
+                jp = si.get("jp", {})
+                if not si.get("target_mean") and not jp.get("consensus"):
+                    try:
+                        from bot.kabutan_consensus import fetch_consensus as kb_fetch
+                        kb = kb_fetch(ticker)
+                        if kb and kb.get("target_mean"):
+                            si.setdefault("jp", {})["consensus"] = {
+                                "source": "Kabutan",
+                                "target_mean": kb["target_mean"],
+                                "rating": kb.get("rating"),
+                                "n_analysts": kb.get("n_analysts"),
+                                "last_report_date": kb.get("last_report_date"),
+                            }
+                            changed = True
+                    except Exception as exc:
+                        log.debug("backfill_detail_tabs: JP consensus %s: %s", ticker, exc)
+
+            if not changed:
+                continue
+
+            try:
+                tmp = jf.with_suffix(".json.tmp")
+                tmp.write_text(
+                    json.dumps(rec, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                tmp.replace(jf)
+                filled += 1
+                log.info("archive: backfilled detail tabs for %s/%s",
+                         rec.get("trade_date", "?"), ticker)
+            except Exception as exc:
+                log.warning("archive: detail tabs write failed for %s: %s",
+                            ticker, exc)
+                continue
+
+            _time.sleep(1)
+
+            if limit and filled >= limit:
+                return filled
+    return filled

@@ -3098,3 +3098,245 @@ class TestPortfolioSend:
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'ticker_{' not in src or 'ticker_{' not in src.split('_render_portfolio_page')[1].split('\ndef ')[0], \
             "포트폴리오에 ticker_*.html 링크 잔존"
+
+
+class TestDetailNewsResearchFallback:
+    """상세 페이지 뉴스·리서치 탭의 KR/JP/TW/CN 데이터 폴백 회귀 차단.
+
+    yfinance .news / .upgrades_downgrades 는 US 만 잘 커버 → 비-US 시장은
+    빈 탭이었다. 우리 자원(Naver/Kabutan/cnyes/AKShare 뉴스 + 한경 리포트)
+    으로 채운다. 영구 가드:
+     • news 폴백 스키마 매핑 (source→publisher) + kr_native 태그
+     • KR(Naver) 뉴스는 이미 한국어 → 렌더 시 Gemini 번역 스킵 (₩0,
+       2026-06-07 startup 크래시-루프 클래스 재발 방지)
+     • 한경 fetch_consensus 가 개별 리포트 rows(reports) 도 반환
+     • KR research_reports 가 리서치 액션 탭에 렌더
+    """
+
+    def _mock_news_clients(self):
+        import sys, types
+        naver = types.ModuleType("bot.naver_news_client")
+        naver.fetch_news = lambda q, days_back=28, max_items=10: [
+            {"date": "2026-06-07", "title": "네이버 2분기 실적 호조",
+             "source": "한경", "link": "http://x", "summary": "s"}]
+        sys.modules["bot.naver_news_client"] = naver
+        kab = types.ModuleType("bot.kabutan_news")
+        kab.fetch_news = lambda c, days_back=28, max_items=10: [
+            {"date": "2026-06-07", "title": "トヨタ決算",
+             "source": "Kabutan", "link": "http://y", "summary": "s"}]
+        sys.modules["bot.kabutan_news"] = kab
+
+    def test_news_fallback_schema_and_kr_native(self):
+        self._mock_news_clients()
+        from bot.stock_snapshot import _collect_news_fallback
+        snap = {"kr": {"corp_name": "네이버"}, "long_name": "NAVER"}
+        _collect_news_fallback("035420.KS", snap)
+        assert snap["news"], "KR 뉴스 폴백 비어있음"
+        n = snap["news"][0]
+        assert n["title"] == "네이버 2분기 실적 호조"
+        assert n["publisher"] == "한경", "source→publisher 매핑 깨짐"
+        assert n.get("kr_native") is True, "KR 은 kr_native 태그 필수"
+
+    def test_news_fallback_jp_not_kr_native(self):
+        self._mock_news_clients()
+        from bot.stock_snapshot import _collect_news_fallback
+        snap = {}
+        _collect_news_fallback("7203.T", snap)
+        assert snap["news"][0]["title"] == "トヨタ決算"
+        assert "kr_native" not in snap["news"][0], "JP 는 번역 대상 (kr_native X)"
+
+    def test_news_fallback_skips_when_yfinance_present(self):
+        from bot.stock_snapshot import _collect_news_fallback
+        snap = {"news": [{"title": "existing"}]}
+        _collect_news_fallback("035420.KS", snap)
+        assert len(snap["news"]) == 1 and snap["news"][0]["title"] == "existing"
+
+    def test_hk_consensus_returns_reports_field(self):
+        """fetch_consensus result 에 reports(개별 증권사 리포트) 필드 존재."""
+        src = open("bot/hk_consensus_client.py", encoding="utf-8").read()
+        assert '"reports":' in src, "한경 result 에 reports 필드 누락"
+        # rows 를 날짜 내림차순 정렬해 reports 로 노출
+        assert "reverse=True" in src
+
+    def test_kr_research_reports_render(self):
+        """KR research_reports 가 리서치 액션 탭에 렌더 + 한글 의견 변환."""
+        from bot.dashboard import _render_stock_info_html
+        rec = {"ticker": "035420.KS", "stock_info": {
+            "long_name": "NAVER", "currency": "KRW", "current_price": 255500,
+            "kr": {"corp_name": "네이버", "research_reports": [
+                {"date": "2026-06-05", "broker": "미래에셋", "target": 320000, "rating": "매수"},
+                {"date": "2026-06-03", "broker": "NH투자", "target": 300000, "rating": "Buy"}]}}}
+        html = "".join(str(v) for v in _render_stock_info_html(rec).values())
+        assert "미래에셋" in html and "NH투자" in html, "증권사명 미렌더"
+        assert "₩320,000" in html, "목표가 ₩+천단위 미렌더"
+        assert "한경 컨센서스" in html, "출처 표기 누락"
+        assert html.count("매수") >= 2, "Buy→매수 + 매수 passthrough 변환 깨짐"
+        assert "리서치 액션 데이터가 없습니다" not in html
+
+    def test_kr_native_news_skips_translation(self):
+        """kr_native 뉴스는 translate_news_titles_kr 에 전달되지 않음
+        (회귀 시 한국어 제목이 Gemini 로 → 비용 + startup 크래시 클래스)."""
+        import bot.dashboard as dash
+        import bot.translate as tr
+        called = {"titles": None}
+        orig = tr.translate_news_titles_kr
+
+        def _spy(titles):
+            called["titles"] = list(titles)
+            return {}
+        # _render_stock_info_html does `from bot.translate import
+        # translate_news_titles_kr` at call time, so patch the source.
+        tr.translate_news_titles_kr = _spy
+        try:
+            # Mixed feed: one kr_native (Naver, already Korean) + one
+            # foreign (US/yfinance English). Only the foreign title may
+            # reach the translator.
+            rec = {"ticker": "035420.KS", "stock_info": {
+                "long_name": "NAVER", "currency": "KRW",
+                "news": [
+                    {"title": "네이버 한국어 제목", "publisher": "한경",
+                     "link": "http://x", "date": "2026-06-07",
+                     "kr_native": True},
+                    {"title": "English foreign headline", "publisher": "Reuters",
+                     "link": "http://y", "date": "2026-06-07"}]}}
+            html = "".join(str(v) for v in dash._render_stock_info_html(rec).values())
+        finally:
+            tr.translate_news_titles_kr = orig
+        passed = called["titles"] or []
+        assert "네이버 한국어 제목" not in passed, "kr_native 뉴스가 번역기에 전달됨 (₩ 누수)"
+        assert "English foreign headline" in passed, "비-KR 뉴스는 번역돼야"
+        assert "네이버 한국어 제목" in html
+
+    def test_tw_consensus_source_code_wired(self):
+        """TW _enrich_tw 에 cnyes_consensus fallback 이 연결돼 있는지 확인."""
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert "cnyes_consensus" in src, "TW cnyes 컨센서스 import 누락"
+        assert "鉅亨網" in src, "TW 컨센서스 source 라벨 누락"
+
+    def test_backfill_detail_tabs_additive_only(self):
+        """backfill_detail_tabs 가 기존 데이터를 덮어쓰지 않는지 확인.
+
+        stock_info.news 가 이미 있는 레코드는 건너뛰어야 함.
+        """
+        import json, tempfile, os
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            day_dir = Path(tmp) / "2026-06-07"
+            day_dir.mkdir()
+            rec = {"ticker": "035420.KS", "trade_date": "2026-06-07",
+                   "stock_info": {"news": [{"title": "existing"}],
+                                  "kr": {"research_reports": [{"broker": "x"}]}}}
+            jf = day_dir / "120000_035420.KS.json"
+            jf.write_text(json.dumps(rec), encoding="utf-8")
+
+            import bot.archive as arch
+            with patch.object(arch, "ARCHIVE_ROOT", Path(tmp)):
+                n = arch.backfill_detail_tabs()
+            assert n == 0, f"이미 데이터 있는 레코드가 변경됨 (filled={n})"
+            after = json.loads(jf.read_text(encoding="utf-8"))
+            assert after["stock_info"]["news"][0]["title"] == "existing"
+            assert after["stock_info"]["kr"]["research_reports"][0]["broker"] == "x"
+
+
+class TestLiveQuoteOverlay:
+    """상세 페이지 라이브 숫자 오버레이 회귀 차단 (2026-06-07).
+
+    상세 페이지 stock_info 숫자(현재가·시총·PER·선행PER·PBR·PSR·
+    EV/EBITDA·배당·베타·EPS·BPS·52주·이평·컨센서스)는 저장된 스냅샷이
+    아니라 페이지 로드 시 /api/quote 로 실시간 갱신. KR 은 KIS 우선.
+    영구 가드:
+     • 렌더러가 [data-q] 후크 + 마커(data-qmark/qfill) + 패널맵(panes)
+       을 emit — JS 오버레이가 붙을 자리
+     • 라이브 fmt 문자열이 렌더러 출력과 글자단위 일치 (시각적 drift 0)
+     • /api/quote 서버 엔드포인트가 do_GET 에 wire
+     • build_live_quote 가 numbers-only (Gemini 호출 0 — full 은
+       set_cache_only)
+    """
+
+    def _si(self):
+        return {
+            "currency": "USD", "current_price": 100.0,
+            "market_cap": 2_500_000_000, "shares_outstanding": 25_000_000,
+            "trailingPE": 30.43, "forwardPE": 25.1, "priceToBook": 5.2,
+            "priceToSalesTrailing12Months": 8.4, "enterpriseToEbitda": 18.9,
+            "dividendYield": 0.0123, "beta": 1.07,
+            "trailingEps": 3.29, "forwardEps": 3.98, "bookValue": 19.2,
+            "fiftyDayAverage": 95.5, "twoHundredDayAverage": 88.1,
+            "fiftyTwoWeekHigh": 120.0, "fiftyTwoWeekLow": 60.0,
+            "target_mean": 130.0, "target_high": 160.0, "target_low": 90.0,
+        }
+
+    def test_renderer_emits_data_q_hooks_and_panes(self):
+        import bot.dashboard as d
+        rec = {"ticker": "TEST", "stock_info": self._si()}
+        parts = d._render_stock_info_html(rec)
+        assert "panes" in parts, "full-mode panes map 누락"
+        for pid in ("si-financials", "si-earnings", "si-holders", "si-flow",
+                    "si-disclosures", "si-risk", "si-peers"):
+            assert pid in parts["panes"], f"heavy pane 누락: {pid}"
+        hdr, other = parts["header"], parts["other_panes"]
+        assert 'data-q="price"' in hdr and 'data-q="mcap"' in hdr
+        assert 'id="q-badge"' in hdr, "라이브 상태 배지 누락"
+        for key in ("trailingPE", "forwardPE", "priceToBook",
+                    "priceToSalesTrailing12Months", "enterpriseToEbitda",
+                    "dividendYield", "beta", "trailingEps", "forwardEps",
+                    "bookValue", "fiftyDayAverage", "twoHundredDayAverage",
+                    "target_mean", "upside", "w52_low", "w52_high",
+                    "w52_pos_label", "tgt_low", "tgt_mean", "tgt_high"):
+            assert f'data-q="{key}"' in other, f"data-q 후크 누락: {key}"
+        for mark in ('data-qmark="w52"', 'data-qfill="w52"',
+                     'data-qmark="tgt"', 'data-qfill="tgt"'):
+            assert mark in other, f"바 마커 누락: {mark}"
+
+    def test_no_formatting_drift(self):
+        """라이브 fmt 가 렌더러 출력과 글자단위 일치 — 같은 값이면 시각
+        변화 0 (drift 시 사용자가 '숫자가 튄다' 인지)."""
+        import bot.dashboard as d
+        rec = {"ticker": "TEST", "stock_info": self._si()}
+        p = d._render_stock_info_html(rec)
+        html = p["header"] + p["other_panes"]
+        csym, pdec = d._currency_sym("USD"), 2
+        exp = {
+            "price": d._fmt_num(100.0, decimals=pdec, prefix=csym),
+            "mcap": d._fmt_mcap(2_500_000_000, csym, "USD"),
+            "trailingPE": "%.2fx" % 30.43, "forwardPE": "%.2fx" % 25.1,
+            "priceToBook": "%.2fx" % 5.2,
+            "priceToSalesTrailing12Months": "%.2fx" % 8.4,
+            "enterpriseToEbitda": "%.2fx" % 18.9, "beta": "%.2f" % 1.07,
+            "dividendYield": "%.2f%%" % (0.0123 * 100),
+            "trailingEps": "%.2f" % 3.29, "forwardEps": "%.2f" % 3.98,
+            "bookValue": "%.2f" % 19.2, "fiftyDayAverage": "%.2f" % 95.5,
+            "twoHundredDayAverage": "%.2f" % 88.1,
+            "target_mean": csym + d._fmt_num(130.0, decimals=pdec),
+            "w52_low": csym + d._fmt_num(60.0, decimals=pdec),
+            "w52_high": csym + d._fmt_num(120.0, decimals=pdec),
+        }
+        miss = [(k, v) for k, v in exp.items() if v not in html]
+        assert not miss, f"포맷 drift: {miss}"
+        assert "+30.0%" in html, "컨센서스 괴리율 drift"
+        assert "현재가 (67%)" in html, "52주 위치 drift"
+
+    def test_detail_injects_quote_script(self):
+        import bot.dashboard as d
+        rec = {"ticker": "TEST", "stock_info": self._si()}
+        html = d._render_detail(rec)
+        assert 'NOAH_TICKER="TEST"' in html, "quote_script ticker 누락"
+        assert "api/quote?ticker=" in html, "라이브 fetch 누락"
+        assert "full=1" in html, "full-mode fetch 누락"
+
+    def test_server_endpoint_wired(self):
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert '"/api/quote"' in src, "/api/quote 라우트 누락"
+        assert "_handle_quote_api" in src, "quote 핸들러 누락"
+        assert "build_live_quote" in src, "build_live_quote 호출 누락"
+
+    def test_full_mode_uses_cache_only(self):
+        """full-mode 가 set_cache_only 로 Gemini 호출 0 (₩0) 보장."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.find("def build_live_quote")
+        assert i != -1
+        body = src[i:i + 4000]
+        assert "set_cache_only(True)" in body, "full-mode cache_only 누락 (₩ 누수)"
+        assert "collect_stock_snapshot" in body, "full-mode 재스냅샷 누락"

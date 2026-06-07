@@ -471,21 +471,32 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         except Exception as exc:
             log.debug("stock_snapshot: FnGuide consensus skipped: %s", exc)
 
-    if not snap.get("target_mean") and not snap.get("kr", {}).get("consensus"):
-        try:
-            from bot.hk_consensus_client import fetch_consensus as hk_fetch
-            hk = hk_fetch(ticker)
-            if hk and hk.get("target_price"):
-                kr = snap.setdefault("kr", {})
-                kr["consensus"] = {
+    # ── 한경 컨센서스 + 리서치 리포트 ─────────────────────────────
+    # Always fetch (4h-cached): the per-broker report rows populate the
+    # 리서치 액션 tab — yfinance has no KR upgrade/downgrade feed, so
+    # this is the KR analogue. The aggregate target only backfills the
+    # 컨센서스 tab when yfinance + FnGuide both came up empty.
+    try:
+        from bot.hk_consensus_client import fetch_consensus as hk_fetch
+        hk = hk_fetch(ticker)
+        if hk:
+            if hk.get("reports"):
+                snap.setdefault("kr", {})["research_reports"] = hk["reports"]
+            if (not snap.get("target_mean")
+                    and not snap.get("kr", {}).get("consensus")
+                    and hk.get("target_price")):
+                snap.setdefault("kr", {})["consensus"] = {
                     "source": "한경",
                     "target_mean": hk["target_price"],
                     "rating": hk.get("rating"),
                     "n_analysts": hk.get("analyst_count"),
                     "last_report_date": hk.get("last_report_date"),
                 }
-        except Exception as exc:
-            log.debug("stock_snapshot: HanKyung consensus skipped: %s", exc)
+    except Exception as exc:
+        log.debug("stock_snapshot: HanKyung consensus skipped: %s", exc)
+
+    # ── Naver 뉴스 폴백 (yfinance KR 뉴스 미커버) ─────────────────
+    _collect_news_fallback(ticker, snap)
 
     # ── yfinance dividends (universal) ────────────────────────────
     _collect_dividends(ticker, snap)
@@ -593,6 +604,9 @@ def _enrich_jp(ticker: str, snap: dict) -> None:
         except Exception as exc:
             log.debug("stock_snapshot: Kabutan consensus skipped: %s", exc)
 
+    # ── Kabutan 뉴스 폴백 (yfinance JP 뉴스 미커버) ───────────────
+    _collect_news_fallback(ticker, snap)
+
     # ── yfinance dividends (universal) ────────────────────────────
     _collect_dividends(ticker, snap)
 
@@ -620,6 +634,25 @@ def _enrich_tw(ticker: str, snap: dict) -> None:
                 snap.setdefault("tw", {})["insider_holdings"] = insiders[:15]
     except Exception as exc:
         log.debug("stock_snapshot: MOPS insider holdings skipped: %s", exc)
+
+    # ── cnyes 컨센서스 (yfinance TW 보완) ────────────────────────
+    if not snap.get("target_mean"):
+        try:
+            from bot.cnyes_consensus import fetch_consensus as cnyes_fetch
+            cn = cnyes_fetch(ticker)
+            if cn and cn.get("target_mean"):
+                snap.setdefault("tw", {})["consensus"] = {
+                    "source": "鉅亨網",
+                    "target_mean": cn["target_mean"],
+                    "rating": cn.get("rating"),
+                    "n_analysts": cn.get("n_analysts"),
+                    "last_report_date": cn.get("last_report_date"),
+                }
+        except Exception as exc:
+            log.debug("stock_snapshot: cnyes consensus skipped: %s", exc)
+
+    # ── 鉅亨網 뉴스 폴백 (yfinance TW 뉴스 미커버) ────────────────
+    _collect_news_fallback(ticker, snap)
 
     # ── yfinance dividends (universal) ────────────────────────────
     _collect_dividends(ticker, snap)
@@ -675,8 +708,69 @@ def _enrich_cn(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: AKShare HSGT flow skipped: %s", exc)
 
+    # ── 东方财富 뉴스 폴백 (yfinance CN/HK 뉴스 미커버) ───────────
+    _collect_news_fallback(ticker, snap)
+
     # ── yfinance dividends (universal) ────────────────────────────
     _collect_dividends(ticker, snap)
+
+
+def _collect_news_fallback(ticker: str, snap: dict) -> None:
+    """When yfinance .news is empty, route to the market's news client.
+
+    yfinance covers US news well but barely touches KR/JP/TW/CN. Each
+    market already has a news client used by the main analysis pipeline
+    (Naver / Kabutan / cnyes / AKShare Eastmoney); all return the same
+    {date, title, source, link, summary} schema. We map it to the
+    snapshot news schema {title, publisher, link, date}. KR (Naver)
+    titles are already Korean — tagged ``kr_native`` so the detail-page
+    render skips the Gemini translation pass. Non-fatal: any failure
+    leaves the (empty) news block untouched.
+    """
+    if snap.get("news"):
+        return  # yfinance already populated it — nothing to backfill
+    items = None
+    kr_native = False
+    try:
+        if ticker.endswith((".KS", ".KQ")):
+            from bot.naver_news_client import fetch_news
+            query = (snap.get("kr", {}).get("corp_name")
+                     or snap.get("long_name") or "").strip()
+            if query:
+                items = fetch_news(query, days_back=28, max_items=10)
+                kr_native = True
+        elif ticker.endswith(".T"):
+            from bot.kabutan_news import fetch_news
+            items = fetch_news(ticker.split(".")[0], days_back=28, max_items=10)
+        elif ticker.endswith(".TW"):
+            from bot.cnyes_client import fetch_news
+            items = fetch_news(ticker.split(".")[0], days_back=28, max_items=10)
+        elif ticker.endswith((".SS", ".SZ", ".BJ", ".HK")):
+            from bot.akshare_client import get_akshare
+            ak = get_akshare()
+            if ak:
+                items = ak.fetch_news(ticker, days_back=28, max_items=10)
+    except Exception as exc:
+        log.debug("stock_snapshot: news fallback skipped for %s: %s", ticker, exc)
+        return
+    if not items:
+        return
+    rows: list[dict] = []
+    for it in items:
+        title = (it.get("title") or "").strip()
+        if not title:
+            continue
+        entry = {
+            "title": title,
+            "publisher": it.get("source", ""),
+            "link": it.get("link", ""),
+            "date": it.get("date", ""),
+        }
+        if kr_native:
+            entry["kr_native"] = True
+        rows.append(entry)
+    if rows:
+        snap["news"] = rows
 
 
 def _collect_dividends(ticker: str, snap: dict) -> None:
