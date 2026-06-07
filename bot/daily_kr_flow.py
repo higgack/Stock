@@ -410,9 +410,13 @@ def _post_process(text: str, date_iso: str) -> str:
     #    헤더 앞 한 줄 띄움 (사용자 2026-05-31). universal: 세 브리프 공통.
     _hdr = "|".join(("📊", "🔥", "🔄", "💰", "📈", "🏆", "⚠️", "🎯",
                      "🏠", "📍", "🏗️", "📐", "🎟️"))
+    # 헤더 줄 leading whitespace 제거
+    text = re.sub(rf"(?m)^[ \t]+(?=(?:{_hdr}))", "", text)
     # 헤더 줄 앞에 빈 줄 삽입 (이미 비어있으면 아래 collapse 가 정리).
     text = re.sub(rf"(?m)^(?=(?:{_hdr}))", "\n", text)
     text = re.sub(rf"(?m)^((?:{_hdr})[^\n]*)$", r"<b>\1</b>", text)
+    # 헤더 다음 빈 줄 제거 → 제목을 본문에 붙임 (다음 줄도 헤더면 보존)
+    text = re.sub(rf"(?m)^(<b>(?:{_hdr})[^\n]*</b>)\n+(?=\S)(?!<b>(?:{_hdr}))", r"\1\n", text)
     # 연속 빈 줄 정리 (--- 제거 + 헤더 빈 줄 삽입으로 생긴 공백 포함)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
