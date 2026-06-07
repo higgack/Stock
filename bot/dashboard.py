@@ -2007,6 +2007,112 @@ mark.snippet-target {
   100% { background: rgba(245, 158, 11, 0.6);
          box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.45); }
 }
+/* ── Stock info header cards ─────────────────────────────── */
+.si-header { display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 18px; }
+.si-card {
+  flex: 1 1 0; min-width: 130px; max-width: 240px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 16px; display: flex; flex-direction: column; gap: 2px;
+}
+.si-card .si-label { font-size: 11px; color: var(--fg-soft); }
+.si-card .si-value { font-size: 18px; font-weight: 700; color: var(--fg);
+  font-variant-numeric: tabular-nums; }
+.si-card .si-sub { font-size: 11px; color: var(--fg-soft); }
+/* ── Tab navigation ──────────────────────────────────────── */
+.si-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin: 0 0 16px; }
+.si-tab {
+  padding: 8px 16px; font-size: 13px; color: var(--fg-soft); cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -2px;
+  font-family: inherit; background: none; border-top: none; border-left: none; border-right: none;
+}
+.si-tab:hover { color: var(--fg); }
+.si-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.si-pane { display: none; }
+.si-pane.active { display: block; }
+/* ── Company info grid ───────────────────────────────────── */
+.si-section { margin: 16px 0; }
+.si-section-title {
+  font-size: 15px; font-weight: 700; color: var(--fg);
+  border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 10px;
+}
+.si-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  background: var(--card);
+}
+.si-row {
+  display: contents;
+}
+.si-key {
+  padding: 8px 14px; font-size: 13px; color: var(--fg-soft);
+  border-bottom: 1px solid var(--border); background: var(--bg);
+}
+.si-val {
+  padding: 8px 14px; font-size: 13px; color: var(--fg); font-weight: 500;
+  border-bottom: 1px solid var(--border);
+}
+.si-grid .si-row:last-child .si-key,
+.si-grid .si-row:last-child .si-val { border-bottom: none; }
+.si-desc {
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 18px; font-size: 13px; line-height: 1.65; color: var(--fg);
+  margin-bottom: 12px;
+}
+/* ── Consensus card ──────────────────────────────────────── */
+.si-consensus { display: flex; flex-wrap: wrap; gap: 14px; margin: 12px 0; }
+.si-con-badge {
+  font-size: 16px; font-weight: 700; padding: 6px 18px;
+  border-radius: 8px; color: #fff;
+}
+.si-con-badge.buy { background: #26a69a; }
+.si-con-badge.hold { background: #f5a623; }
+.si-con-badge.sell { background: #e2574c; }
+.si-con-target { font-size: 14px; color: var(--fg); }
+.si-con-target .pct { font-weight: 600; }
+.si-range-bar { width: 100%; max-width: 380px; margin: 6px 0; }
+.si-range-track {
+  height: 6px; background: var(--border); border-radius: 3px; position: relative;
+}
+.si-range-fill {
+  height: 100%; border-radius: 3px; position: absolute;
+}
+.si-range-marker {
+  position: absolute; top: -4px; width: 3px; height: 14px;
+  background: var(--fg); border-radius: 2px; transform: translateX(-50%);
+}
+.si-range-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--fg-soft); }
+/* ── Earnings / Research / Holders tables ────────────────── */
+.si-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+.si-table thead { background: var(--bg); }
+.si-table th {
+  padding: 8px 12px; text-align: left; font-weight: 600; color: var(--fg-soft);
+  border-bottom: 2px solid var(--border); font-size: 12px;
+}
+.si-table td {
+  padding: 7px 12px; border-bottom: 1px solid var(--border); color: var(--fg);
+}
+.si-table tbody tr:last-child td { border-bottom: none; }
+.si-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.si-table .pos { color: #26a69a; font-weight: 600; }
+.si-table .neg { color: #e2574c; font-weight: 600; }
+/* ── News cards ──────────────────────────────────────────── */
+.si-news-item {
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.si-news-item:last-child { border-bottom: none; }
+.si-news-title { font-size: 13px; font-weight: 600; color: var(--fg); }
+.si-news-title a { color: var(--fg); text-decoration: none; }
+.si-news-title a:hover { color: var(--accent); }
+.si-news-meta { font-size: 11px; color: var(--fg-soft); margin-top: 2px; }
+.si-empty { color: var(--fg-soft); font-size: 13px; padding: 14px 0; }
+@media (max-width: 560px) {
+  .si-card { max-width: none; }
+  .si-grid { grid-template-columns: 1fr; }
+  .si-tab { padding: 6px 10px; font-size: 12px; }
+}
 """
 
 
@@ -2857,6 +2963,388 @@ _CHART_JS = """
 """
 
 
+def _fmt_num(v, decimals=0, prefix="", suffix=""):
+    """Format a number with commas. Return '—' for None/0."""
+    if v is None:
+        return "—"
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if n == 0:
+        return "—"
+    if decimals == 0:
+        return f"{prefix}{int(n):,}{suffix}"
+    return f"{prefix}{n:,.{decimals}f}{suffix}"
+
+
+def _fmt_mcap(v, currency_sym=""):
+    """Format market cap in human-readable units (조/억/B/M/T)."""
+    if v is None:
+        return "—"
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if n <= 0:
+        return "—"
+    if currency_sym in ("₩", "원"):
+        if n >= 1e12:
+            return f"₩{n / 1e12:,.2f}조"
+        if n >= 1e8:
+            return f"₩{n / 1e8:,.0f}억"
+        return f"₩{n:,.0f}"
+    if currency_sym in ("¥",):
+        if n >= 1e12:
+            return f"¥{n / 1e12:,.2f}兆"
+        if n >= 1e8:
+            return f"¥{n / 1e8:,.0f}億"
+        return f"¥{n:,.0f}"
+    # USD / default
+    if n >= 1e12:
+        return f"${n / 1e12:,.2f}T"
+    if n >= 1e9:
+        return f"${n / 1e9:,.2f}B"
+    if n >= 1e6:
+        return f"${n / 1e6:,.1f}M"
+    return f"${n:,.0f}"
+
+
+def _fmt_shares(v):
+    """Format shares outstanding in M/B."""
+    if v is None:
+        return "—"
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if n <= 0:
+        return "—"
+    if n >= 1e9:
+        return f"{n / 1e9:,.3f}B"
+    if n >= 1e6:
+        return f"{n / 1e6:,.1f}M"
+    return f"{n:,.0f}"
+
+
+def _currency_sym(currency: str) -> str:
+    return {"KRW": "₩", "JPY": "¥", "TWD": "NT$", "HKD": "HK$",
+            "CNY": "¥", "EUR": "€", "GBP": "£"}.get(currency or "", "$")
+
+
+def _render_stock_info_html(rec: dict) -> str:
+    """Render header cards + tabbed company info sections from stock_info."""
+    si = rec.get("stock_info")
+    if not si:
+        return ""
+    esc = _html.escape
+
+    ticker = rec.get("ticker", "")
+    currency = si.get("currency", "USD")
+    csym = _currency_sym(currency)
+
+    # ── top header cards ────────────────────────────────────────
+    price = si.get("current_price")
+    price_str = _fmt_num(price, decimals=2 if currency != "KRW" else 0,
+                         prefix=csym)
+    mcap_str = _fmt_mcap(si.get("market_cap"), csym)
+    shares_str = _fmt_shares(si.get("shares_outstanding"))
+    ne = si.get("next_earnings", "")
+    ne_label = ne if ne else "—"
+    ne_sub = "(추정)" if ne else ""
+
+    header = f"""<div class="si-header">
+  <div class="si-card"><span class="si-label">현재가 (종가)</span>
+    <span class="si-value">{esc(price_str)}</span></div>
+  <div class="si-card"><span class="si-label">시가총액</span>
+    <span class="si-value">{esc(mcap_str)}</span></div>
+  <div class="si-card"><span class="si-label">발행주식수</span>
+    <span class="si-value">{esc(shares_str)}</span></div>
+  <div class="si-card"><span class="si-label">다음 실적</span>
+    <span class="si-value">{esc(ne_label)}</span>
+    <span class="si-sub">{esc(ne_sub)}</span></div>
+</div>"""
+
+    # ── tab navigation ──────────────────────────────────────────
+    tabs_html = """<div class="si-tabs">
+  <button class="si-tab active" data-pane="si-overview">종합</button>
+  <button class="si-tab" data-pane="si-company">기업</button>
+  <button class="si-tab" data-pane="si-consensus">컨센서스</button>
+  <button class="si-tab" data-pane="si-earnings">실적</button>
+  <button class="si-tab" data-pane="si-research">리서치</button>
+  <button class="si-tab" data-pane="si-holders">기관</button>
+  <button class="si-tab" data-pane="si-news">뉴스</button>
+</div>"""
+
+    # ── 종합 pane (chart + summary — existing content placeholder) ──
+    overview_pane = '<div class="si-pane active" id="si-overview">'
+    # (chart + summary + report inserted by _render_detail below)
+    overview_pane += '</div>'
+
+    # ── 기업 정보 pane ──────────────────────────────────────────
+    desc = si.get("description", "")
+    desc_html = f'<div class="si-desc">{esc(desc[:2000])}</div>' if desc else ""
+
+    def grid_row(key, val):
+        return f'<div class="si-row"><div class="si-key">{esc(key)}</div><div class="si-val">{esc(str(val) if val else "—")}</div></div>'
+
+    exchange = si.get("exchange", "")
+    # Map exchange codes to readable names
+    ex_map = {"KSE": "KOSPI", "KOE": "KOSPI", "KSQ": "KOSDAQ", "NMS": "NASDAQ",
+              "NYQ": "NYSE", "NGM": "NASDAQ", "JPX": "TSE", "TYO": "TSE",
+              "TWO": "TPEx", "TAI": "TWSE", "HKG": "HKEX", "SHH": "SSE", "SHZ": "SZSE"}
+    exchange_display = ex_map.get(exchange, exchange)
+
+    website = si.get("website", "")
+    website_html = f'<a href="{esc(website)}" target="_blank" rel="noopener">{esc(website)}</a>' if website else "—"
+
+    employees = si.get("employees")
+    emp_str = f"{employees:,}" if employees else "—"
+
+    fy = si.get("fiscal_year_end", "")
+    ftd = si.get("first_trade_date", "")
+
+    company_pane = f"""<div class="si-pane" id="si-company">
+  <div class="si-section">
+    <div class="si-section-title">개요</div>
+    {desc_html}
+  </div>
+  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+    <div class="si-section">
+      <div class="si-section-title">기본 정보</div>
+      <div class="si-grid">
+        {grid_row("티커", ticker)}
+        {grid_row("거래소", exchange_display)}
+        {grid_row("섹터", si.get("sector", ""))}
+        {grid_row("산업", si.get("industry", ""))}
+        {grid_row("회계연도 종료", fy)}
+        {grid_row("통화", currency)}
+        {grid_row("상장일", ftd)}
+      </div>
+    </div>
+    <div class="si-section">
+      <div class="si-section-title">회사 정보</div>
+      <div class="si-grid">
+        {grid_row("국가", si.get("country", ""))}
+        {grid_row("지역", si.get("city") or si.get("state") or "")}
+        {grid_row("임직원", emp_str)}
+        <div class="si-row"><div class="si-key">홈페이지</div><div class="si-val">{website_html}</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="si-section">
+    <div class="si-section-title">시장 정보</div>
+    <div class="si-grid">
+      {grid_row("시가총액", mcap_str)}
+      {grid_row("현재가 (종가)", price_str)}
+      {grid_row("발행주식수", shares_str)}
+    </div>
+  </div>
+</div>"""
+
+    # ── 컨센서스 pane ───────────────────────────────────────────
+    rec_key = (si.get("recommendation_key") or "").lower()
+    rec_map = {"buy": "매수", "strong_buy": "강력 매수", "hold": "보유",
+               "sell": "매도", "strong_sell": "강력 매도", "overweight": "비중확대",
+               "underweight": "비중축소"}
+    rec_label = rec_map.get(rec_key, rec_key or "—")
+    rec_class = "buy" if rec_key in ("buy", "strong_buy", "overweight") else \
+                "sell" if rec_key in ("sell", "strong_sell", "underweight") else "hold"
+
+    target_mean = si.get("target_mean")
+    target_high = si.get("target_high")
+    target_low = si.get("target_low")
+    n_analysts = si.get("num_analysts")
+    cur_price = si.get("current_price")
+
+    upside_str = ""
+    if target_mean and cur_price and cur_price > 0:
+        upside = (target_mean - cur_price) / cur_price * 100
+        sign = "+" if upside >= 0 else ""
+        upside_str = f'<span class="pct" style="color:{"#26a69a" if upside >= 0 else "#e2574c"}">{sign}{upside:.1f}%</span>'
+
+    # Range bar
+    range_html = ""
+    if target_low and target_high and cur_price and target_high > target_low:
+        rng = target_high - target_low
+        if rng > 0:
+            cur_pct = max(0, min(100, (cur_price - target_low) / rng * 100))
+            mean_pct = max(0, min(100, ((target_mean or cur_price) - target_low) / rng * 100))
+            range_html = f"""<div class="si-range-bar">
+  <div class="si-range-track">
+    <div class="si-range-fill" style="left:0;width:{mean_pct:.1f}%;background:{"#26a69a" if mean_pct > cur_pct else "#e2574c"};opacity:0.3;"></div>
+    <div class="si-range-marker" style="left:{cur_pct:.1f}%" title="현재가"></div>
+  </div>
+  <div class="si-range-labels">
+    <span>{csym}{_fmt_num(target_low, decimals=2 if currency != "KRW" else 0)}</span>
+    <span>목표 {csym}{_fmt_num(target_mean, decimals=2 if currency != "KRW" else 0)}</span>
+    <span>{csym}{_fmt_num(target_high, decimals=2 if currency != "KRW" else 0)}</span>
+  </div>
+</div>"""
+
+    analysts_str = f" · {n_analysts}명 애널리스트" if n_analysts else ""
+
+    consensus_pane = f"""<div class="si-pane" id="si-consensus">
+  <div class="si-section">
+    <div class="si-section-title">월가 컨센서스</div>
+    <div class="si-consensus">
+      <div>
+        <span class="si-con-badge {rec_class}">{esc(rec_label)}</span>
+      </div>
+      <div class="si-con-target">
+        목표가 {csym}{_fmt_num(target_mean, decimals=2 if currency != "KRW" else 0)} {upside_str}{analysts_str}
+      </div>
+    </div>
+    {range_html}
+  </div>
+</div>"""
+
+    # ── 실적 pane ───────────────────────────────────────────────
+    earnings = si.get("earnings_history", [])
+    if earnings:
+        e_rows = ""
+        for e in earnings:
+            d = esc(e.get("date", "—"))
+            eps_est = e.get("EPS Estimate")
+            eps_act = e.get("Reported EPS")
+            surprise = e.get("Surprise(%)")
+            eps_est_str = f"{eps_est:.2f}" if eps_est is not None else "—"
+            eps_act_str = f"{eps_act:.2f}" if eps_act is not None else "—"
+            if surprise is not None:
+                s_cls = "pos" if surprise >= 0 else "neg"
+                s_str = f'<span class="{s_cls}">{surprise:+.1f}%</span>'
+            else:
+                s_str = "—"
+            e_rows += f"<tr><td>{d}</td><td class='num'>{eps_est_str}</td><td class='num'>{eps_act_str}</td><td class='num'>{s_str}</td></tr>\n"
+        earnings_table = f"""<table class="si-table">
+  <thead><tr><th>발표일</th><th class="num">EPS 예상</th><th class="num">EPS 실제</th><th class="num">서프라이즈</th></tr></thead>
+  <tbody>{e_rows}</tbody></table>"""
+    else:
+        earnings_table = '<div class="si-empty">실적 데이터가 없습니다.</div>'
+
+    earnings_pane = f"""<div class="si-pane" id="si-earnings">
+  <div class="si-section">
+    <div class="si-section-title">최근 실적</div>
+    {earnings_table}
+  </div>
+</div>"""
+
+    # ── 리서치 pane ─────────────────────────────────────────────
+    upgrades = si.get("upgrades_downgrades", [])
+    if upgrades:
+        r_rows = ""
+        for u in upgrades:
+            d = esc(u.get("date", "—"))
+            firm = esc(u.get("Firm", "—"))
+            to_g = esc(u.get("ToGrade", "—"))
+            from_g = esc(u.get("FromGrade", ""))
+            action = esc(u.get("Action", ""))
+            change = f"{from_g} → {to_g}" if from_g else to_g
+            r_rows += f"<tr><td>{d}</td><td>{firm}</td><td>{action}</td><td>{change}</td></tr>\n"
+        research_table = f"""<table class="si-table">
+  <thead><tr><th>날짜</th><th>리서치펌</th><th>액션</th><th>의견 변화</th></tr></thead>
+  <tbody>{r_rows}</tbody></table>"""
+    else:
+        research_table = '<div class="si-empty">리서치 액션 데이터가 없습니다.</div>'
+
+    research_pane = f"""<div class="si-pane" id="si-research">
+  <div class="si-section">
+    <div class="si-section-title">리서치 액션</div>
+    {research_table}
+  </div>
+</div>"""
+
+    # ── 기관 pane ───────────────────────────────────────────────
+    holders = si.get("institutional_holders", [])
+    ins_pct = si.get("held_pct_insiders")
+    inst_pct = si.get("held_pct_institutions")
+    holder_summary = ""
+    if ins_pct is not None or inst_pct is not None:
+        parts = []
+        if inst_pct is not None:
+            parts.append(f"기관 보유: {inst_pct * 100:.1f}%")
+        if ins_pct is not None:
+            parts.append(f"내부자 보유: {ins_pct * 100:.1f}%")
+        holder_summary = f'<div style="margin-bottom:10px;font-size:13px;color:var(--fg-soft)">{" · ".join(parts)}</div>'
+
+    if holders:
+        h_rows = ""
+        for h in holders:
+            name = esc(str(h.get("Holder", "—")))
+            shares = h.get("Shares")
+            pct = h.get("% Out")
+            val = h.get("Value")
+            shares_str = f"{int(shares):,}" if shares else "—"
+            pct_str = f"{pct * 100:.2f}%" if pct else "—"
+            val_str = f"${val:,.0f}" if val else "—"
+            date_r = esc(str(h.get("Date Reported", "—")))
+            h_rows += f"<tr><td>{name}</td><td class='num'>{shares_str}</td><td class='num'>{pct_str}</td><td class='num'>{val_str}</td><td>{date_r}</td></tr>\n"
+        holders_table = f"""<table class="si-table">
+  <thead><tr><th>기관명</th><th class="num">보유주식</th><th class="num">비중</th><th class="num">평가액</th><th>보고일</th></tr></thead>
+  <tbody>{h_rows}</tbody></table>"""
+    else:
+        holders_table = '<div class="si-empty">기관 보유 데이터가 없습니다.</div>'
+
+    holders_pane = f"""<div class="si-pane" id="si-holders">
+  <div class="si-section">
+    <div class="si-section-title">주요 기관</div>
+    {holder_summary}
+    {holders_table}
+  </div>
+</div>"""
+
+    # ── 뉴스 pane ───────────────────────────────────────────────
+    news = si.get("news", [])
+    if news:
+        n_items = ""
+        for n in news:
+            title = esc(n.get("title", ""))
+            link = n.get("link", "")
+            publisher = esc(n.get("publisher", ""))
+            ndate = esc(n.get("date", ""))
+            link_html = f'<a href="{esc(link)}" target="_blank" rel="noopener">{title}</a>' if link else title
+            n_items += f'<div class="si-news-item"><div class="si-news-title">{link_html}</div><div class="si-news-meta">{publisher} · {ndate}</div></div>\n'
+        news_html = n_items
+    else:
+        news_html = '<div class="si-empty">뉴스 데이터가 없습니다.</div>'
+
+    news_pane = f"""<div class="si-pane" id="si-news">
+  <div class="si-section">
+    <div class="si-section-title">주요 뉴스</div>
+    {news_html}
+  </div>
+</div>"""
+
+    # ── Tab switching JS ────────────────────────────────────────
+    tab_js = """<script>
+(function(){
+  var tabs = document.querySelectorAll('.si-tab');
+  var panes = document.querySelectorAll('.si-pane');
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].addEventListener('click', function(){
+      var target = this.getAttribute('data-pane');
+      for (var j = 0; j < tabs.length; j++) tabs[j].classList.remove('active');
+      for (var j = 0; j < panes.length; j++) panes[j].classList.remove('active');
+      this.classList.add('active');
+      var p = document.getElementById(target);
+      if (p) p.classList.add('active');
+    });
+  });
+})();
+</script>"""
+
+    # Return a dict with separate pieces so _render_detail can wrap
+    # the chart/summary/report inside the overview pane.
+    return {
+        "header": header,
+        "tabs": tabs_html,
+        "tab_js": tab_js,
+        "other_panes": company_pane + "\n" + consensus_pane + "\n" +
+                       earnings_pane + "\n" + research_pane + "\n" +
+                       holders_pane + "\n" + news_pane,
+    }
+
+
 def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str:
     ticker = rec.get("ticker", "?")
     date = rec.get("trade_date", "")
@@ -2895,12 +3383,25 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
         resolved_entry = None
     outcome_html = _render_outcome_html(resolved_entry)
     chart_html = _render_chart_section(rec, analysis_markers)
-    # Only pull in the (vendored) chart library + init JS when this record
-    # actually has a chart — older v1 entries skip the script entirely.
     chart_scripts = (
         f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
         if chart_html else ""
     )
+
+    # Stock info (v3+): header cards, tab navigation, company/consensus/
+    # earnings/research/holders/news panes. Graceful: older records just
+    # skip the whole block.
+    si_parts = _render_stock_info_html(rec)
+    si_header = si_parts.get("header", "") if si_parts else ""
+    si_tabs = si_parts.get("tabs", "") if si_parts else ""
+    si_tab_js = si_parts.get("tab_js", "") if si_parts else ""
+    si_other = si_parts.get("other_panes", "") if si_parts else ""
+    has_tabs = bool(si_parts)
+
+    # When tabs are present, the chart/summary/report go inside the
+    # "종합" pane. Otherwise they render directly (pre-v3 records).
+    overview_open = '<div class="si-pane active" id="si-overview">' if has_tabs else ""
+    overview_close = "</div>" if has_tabs else ""
 
     return f"""<!doctype html>
 <html lang="ko">
@@ -2923,6 +3424,9 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
     분석일: {_html.escape(date)} · 실행 시각: {_html.escape(analyzed_at)} ·
     소요: {elapsed:.1f}초{cost_part}
   </div>
+  {si_header}
+  {si_tabs}
+  {overview_open}
   {outcome_html}
   {chart_html}
   <section class="report-section">
@@ -2933,8 +3437,11 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
     <h2>📋 전체 리포트</h2>
     {_md_to_html(full)}
   </section>
+  {overview_close}
+  {si_other}
 </div>
 <script>{_DETAIL_DEEP_LINK_JS}</script>
+{si_tab_js}
 {chart_scripts}
 </body>
 </html>
