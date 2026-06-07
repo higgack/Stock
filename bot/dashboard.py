@@ -3098,31 +3098,26 @@ def _render_stock_info_html(rec: dict) -> str:
 
     # ── tab navigation ──────────────────────────────────────────
     has_disclosures = bool(mkt.get("disclosures"))
-    disclosure_tab = '  <button class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
+    disclosure_tab = '  <button type="button" class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
     has_flow = bool(is_kr and kr.get("flow")) or bool(is_cn and mkt.get("hsgt_flow"))
-    flow_tab = '  <button class="si-tab" data-pane="si-flow">수급</button>\n' if has_flow else ""
+    flow_tab = '  <button type="button" class="si-tab" data-pane="si-flow">수급</button>\n' if has_flow else ""
     has_risk = bool(kr.get("lockup_releases") or kr.get("dilution_events") or kr.get("market_alert")) or bool(is_cn and mkt.get("risk_status"))
-    risk_tab = '  <button class="si-tab" data-pane="si-risk">리스크</button>\n' if has_risk else ""
+    risk_tab = '  <button type="button" class="si-tab" data-pane="si-risk">리스크</button>\n' if has_risk else ""
     has_financials = bool(si.get("financials"))
-    financials_tab = '  <button class="si-tab" data-pane="si-financials">재무제표</button>\n' if has_financials else ""
+    financials_tab = '  <button type="button" class="si-tab" data-pane="si-financials">재무제표</button>\n' if has_financials else ""
     has_peers = bool(si.get("peer_comps"))
-    peers_tab = '  <button class="si-tab" data-pane="si-peers">동종비교</button>\n' if has_peers else ""
-    tabs_html = f"""<div class="si-tabs">
-  <button class="si-tab active" data-pane="si-overview">종합</button>
-  <button class="si-tab" data-pane="si-company">기업</button>
-  <button class="si-tab" data-pane="si-consensus">컨센서스</button>
-  <button class="si-tab" data-pane="si-valuation">밸류에이션</button>
-{financials_tab}{peers_tab}  <button class="si-tab" data-pane="si-earnings">실적</button>
-  <button class="si-tab" data-pane="si-research">리서치</button>
-  <button class="si-tab" data-pane="si-holders">주주</button>
-{flow_tab}{disclosure_tab}{risk_tab}  <button class="si-tab" data-pane="si-news">뉴스</button>
-  <button class="si-tab" data-pane="si-timeline">타임라인</button>
+    peers_tab = '  <button type="button" class="si-tab" data-pane="si-peers">동종비교</button>\n' if has_peers else ""
+    tabs_html = f"""<div class="si-tabs" id="si-tab-bar">
+  <button type="button" class="si-tab active" data-pane="si-overview">종합</button>
+  <button type="button" class="si-tab" data-pane="si-company">기업</button>
+  <button type="button" class="si-tab" data-pane="si-consensus">컨센서스</button>
+  <button type="button" class="si-tab" data-pane="si-valuation">밸류에이션</button>
+{financials_tab}{peers_tab}  <button type="button" class="si-tab" data-pane="si-earnings">실적</button>
+  <button type="button" class="si-tab" data-pane="si-research">리서치</button>
+  <button type="button" class="si-tab" data-pane="si-holders">주주</button>
+{flow_tab}{disclosure_tab}{risk_tab}  <button type="button" class="si-tab" data-pane="si-news">뉴스</button>
+  <button type="button" class="si-tab" data-pane="si-timeline">타임라인</button>
 </div>"""
-
-    # ── 종합 pane (chart + summary — existing content placeholder) ──
-    overview_pane = '<div class="si-pane active" id="si-overview">'
-    # (chart + summary + report inserted by _render_detail below)
-    overview_pane += '</div>'
 
     # ── 기업 정보 pane ──────────────────────────────────────────
     desc = si.get("description", "")
@@ -3919,17 +3914,23 @@ def _render_stock_info_html(rec: dict) -> str:
     # ── Tab switching JS ────────────────────────────────────────
     tab_js = """<script>
 (function(){
-  var tabs = document.querySelectorAll('.si-tab');
-  var panes = document.querySelectorAll('.si-pane');
-  for (var i = 0; i < tabs.length; i++) {
-    tabs[i].addEventListener('click', function(){
-      var target = this.getAttribute('data-pane');
-      for (var j = 0; j < tabs.length; j++) tabs[j].classList.remove('active');
-      for (var j = 0; j < panes.length; j++) panes[j].classList.remove('active');
-      this.classList.add('active');
-      var p = document.getElementById(target);
-      if (p) p.classList.add('active');
-    });
+  var bar = document.getElementById('si-tab-bar');
+  if (!bar) return;
+  bar.addEventListener('click', function(e){
+    var btn = e.target.closest('.si-tab');
+    if (!btn) return;
+    var target = btn.getAttribute('data-pane');
+    if (!target) return;
+    var tabs = bar.querySelectorAll('.si-tab');
+    var panes = document.querySelectorAll('.si-pane');
+    for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
+    for (var i = 0; i < panes.length; i++) {
+      panes[i].classList.remove('active');
+      panes[i].style.display = 'none';
+    }
+    btn.classList.add('active');
+    var p = document.getElementById(target);
+    if (p) { p.classList.add('active'); p.style.display = 'block'; }
   });
 })();
 </script>"""
