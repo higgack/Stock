@@ -3442,3 +3442,45 @@ class TestKrNewsQuery:
         au_src = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
                       encoding="utf-8").read()
         assert "news_search_name" in au_src, "메인 파이프라인 뉴스 검색어 미수정"
+
+
+class TestGoogleNewsFallback:
+    """키 불필요 Google News RSS 폴백 (Naver API 키 401 auth-fail 2026-06-08).
+
+    Naver 키가 무효(errorCode 024)여도 KR/JP/TW/CN 뉴스가 들어오도록
+    키 없는 Google News RSS 로 폴백."""
+
+    def test_title_publisher_split(self):
+        from bot.google_news_client import _strip_source_suffix
+        t, p = _strip_source_suffix("네이버, 2분기 실적 호조 - 한국경제")
+        assert t == "네이버, 2분기 실적 호조" and p == "한국경제"
+        # 구분자 없으면 publisher 빈값
+        t2, p2 = _strip_source_suffix("제목만 있음")
+        assert t2 == "제목만 있음" and p2 == ""
+        # 긴 tail(40자 초과)은 오분할 방지 — 제목 유지
+        long_tail = "A - " + ("x" * 50)
+        t3, p3 = _strip_source_suffix(long_tail)
+        assert p3 == "", "긴 tail 을 publisher 로 오분할"
+
+    def test_locale_mapping(self):
+        from bot.google_news_client import locale_for_market
+        assert locale_for_market("KR") == ("ko", "KR", "KR:ko")
+        assert locale_for_market("JP") == ("ja", "JP", "JP:ja")
+        assert locale_for_market("TW")[0] == "zh-TW"
+        # 미지 시장 → US 기본
+        assert locale_for_market("ZZ") == ("en-US", "US", "US:en")
+
+    def test_empty_query_returns_none(self):
+        from bot.google_news_client import fetch_news
+        assert fetch_news("") is None
+        assert fetch_news(None) is None
+
+    def test_wired_as_universal_fallback(self):
+        """_collect_news_fallback + agent_utils 둘 다 Naver/scrape 0건 시
+        Google News 폴백을 호출 (키 무효에도 뉴스 복원)."""
+        snap_src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert "google_news_client" in snap_src, "상세 페이지 Google News 폴백 미배선"
+        assert "if not items and g_query" in snap_src, "market source 0건 시 폴백 조건 누락"
+        au_src = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
+                      encoding="utf-8").read()
+        assert "google_news_client" in au_src, "메인 파이프라인 Google News 폴백 미배선"

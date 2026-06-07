@@ -731,6 +731,8 @@ def _collect_news_fallback(ticker: str, snap: dict) -> None:
         return  # yfinance already populated it — nothing to backfill
     items = None
     kr_native = False
+    g_query = ""   # query for the keyless Google News RSS fallback
+    g_market = "US"
     try:
         if ticker.endswith((".KS", ".KQ")):
             from bot.naver_news_client import fetch_news
@@ -751,23 +753,45 @@ def _collect_news_fallback(ticker: str, snap: dict) -> None:
                 except Exception:
                     pass
             query = (cand or kr_news_query_name(snap.get("long_name")) or "").strip()
+            g_query, g_market, kr_native = query, "KR", True
             if query:
                 items = fetch_news(query, days_back=28, max_items=10)
-                kr_native = True
         elif ticker.endswith(".T"):
             from bot.kabutan_news import fetch_news
             items = fetch_news(ticker.split(".")[0], days_back=28, max_items=10)
+            g_query, g_market = (snap.get("long_name") or ticker.split(".")[0]), "JP"
         elif ticker.endswith(".TW"):
             from bot.cnyes_client import fetch_news
             items = fetch_news(ticker.split(".")[0], days_back=28, max_items=10)
+            g_query, g_market = (snap.get("long_name") or ticker.split(".")[0]), "TW"
         elif ticker.endswith((".SS", ".SZ", ".BJ", ".HK")):
             from bot.akshare_client import get_akshare
             ak = get_akshare()
             if ak:
                 items = ak.fetch_news(ticker, days_back=28, max_items=10)
+            g_query = snap.get("long_name") or ""
+            g_market = "HK" if ticker.endswith(".HK") else "CN"
+        else:
+            g_query, g_market = (snap.get("long_name") or ticker), "US"
     except Exception as exc:
         log.debug("stock_snapshot: news fallback skipped for %s: %s", ticker, exc)
-        return
+    # Keyless Google News RSS fallback — fires whenever the market-specific
+    # source returned nothing (invalid Naver key / moved scrape / rate
+    # limit). Surfaced 2026-06-08: NAVER's Naver-API key was auth-failing
+    # (errorCode 024), so KR news was empty everywhere; this restores it
+    # without depending on the broken key. Universal — every market.
+    if not items and g_query:
+        try:
+            from bot.google_news_client import fetch_news as g_fetch, locale_for_market
+            hl, gl, ceid = locale_for_market(g_market)
+            items = g_fetch(g_query, days_back=28, max_items=10,
+                            lang=hl, country=gl, ceid=ceid)
+            # KR/JP/TW/CN Google News titles are in the local language →
+            # tag kr_native only for KR so the renderer skips translation
+            # for already-Korean titles (other markets still translate).
+            kr_native = kr_native and g_market == "KR"
+        except Exception as exc:
+            log.debug("stock_snapshot: google news fallback skipped for %s: %s", ticker, exc)
     if not items:
         return
     rows: list[dict] = []

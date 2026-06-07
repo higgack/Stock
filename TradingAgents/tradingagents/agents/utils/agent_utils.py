@@ -5392,9 +5392,21 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 except Exception:
                     _news_q = kr_news_query_name(kr_name) or kr_name
                 news_items = fetch_news(_news_q, days_back=28, max_items=10)
+                # Keyless Google News RSS fallback — fires when the Naver
+                # API returns nothing (invalid key / quota). Surfaced
+                # 2026-06-08: the Naver key was auth-failing (errorCode
+                # 024) so KR news was empty in every analysis; this
+                # restores it without depending on the broken key.
+                if not news_items and _news_q:
+                    try:
+                        from bot.google_news_client import fetch_news as _g_fetch
+                        news_items = _g_fetch(_news_q, days_back=28, max_items=10,
+                                              lang="ko", country="KR", ceid="KR:ko")
+                    except Exception:
+                        news_items = None
                 if news_items:
                     base += (
-                        "\n\n=== Pre-fetched KR news (Naver 검색, verbatim) ===\n"
+                        "\n\n=== Pre-fetched KR news (Naver/Google 검색, verbatim) ===\n"
                         + format_news_for_prompt(news_items)
                         + "\n\n위 한국어 뉴스가 한국 종목에 대한"
                         " primary news source이다. 영문 뉴스 (Alpha"
