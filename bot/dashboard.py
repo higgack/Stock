@@ -3190,6 +3190,17 @@ def diagnose_detail_sources(ticker: str) -> dict:
                     "raw_api": raw}
         _probe("naver_news", _naver)
 
+        def _gnews():
+            from bot.google_news_client import fetch_news as gf
+            from bot.dart_client import get_dart
+            dart = get_dart()
+            q = (dart.news_search_name(code) if dart else None) or tkr
+            items = gf(q, days_back=28, max_items=10, lang="ko", country="KR", ceid="KR:ko")
+            return {"ok": bool(items), "query": q,
+                    "count": len(items) if items else 0,
+                    "sample": (items[0].get("title") if items else None)}
+        _probe("google_news_fallback", _gnews)
+
         def _hk():
             from bot.hk_consensus_client import fetch_consensus, _HEADERS, _BASE_URL
             # The current scrape URL 404s — probe candidate paths to find the
