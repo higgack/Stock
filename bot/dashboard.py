@@ -3078,19 +3078,41 @@ def _render_stock_info_html(rec: dict) -> str:
     <span class="si-sub">{esc(ne_sub)}</span></div>
 </div>"""
 
-    # ── tab navigation ──────────────────────────────────────────
-    kr = si.get("kr", {})
-    has_disclosures = bool(kr.get("disclosures"))
-    disclosure_tab = '  <button class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
+    # ── market detection — pick the right market-specific sub-dict ──
     is_kr = ticker.endswith((".KS", ".KQ"))
-    flow_tab = '  <button class="si-tab" data-pane="si-flow">수급</button>\n' if is_kr and kr.get("flow") else ""
-    risk_tab = '  <button class="si-tab" data-pane="si-risk">리스크</button>\n' if kr.get("lockup_releases") or kr.get("dilution_events") else ""
+    is_jp = ticker.endswith(".T")
+    is_tw = ticker.endswith(".TW")
+    is_cn = ticker.endswith((".SS", ".SZ", ".BJ", ".HK"))
+    is_us = not (is_kr or is_jp or is_tw or is_cn)
+    if is_kr:
+        mkt = si.get("kr", {})
+    elif is_jp:
+        mkt = si.get("jp", {})
+    elif is_tw:
+        mkt = si.get("tw", {})
+    elif is_cn:
+        mkt = si.get("cn", {})
+    else:
+        mkt = si.get("us", {})
+    kr = si.get("kr", {})
+
+    # ── tab navigation ──────────────────────────────────────────
+    has_disclosures = bool(mkt.get("disclosures"))
+    disclosure_tab = '  <button class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
+    has_flow = bool(is_kr and kr.get("flow")) or bool(is_cn and mkt.get("hsgt_flow"))
+    flow_tab = '  <button class="si-tab" data-pane="si-flow">수급</button>\n' if has_flow else ""
+    has_risk = bool(kr.get("lockup_releases") or kr.get("dilution_events") or kr.get("market_alert")) or bool(is_cn and mkt.get("risk_status"))
+    risk_tab = '  <button class="si-tab" data-pane="si-risk">리스크</button>\n' if has_risk else ""
+    has_financials = bool(si.get("financials"))
+    financials_tab = '  <button class="si-tab" data-pane="si-financials">재무제표</button>\n' if has_financials else ""
+    has_peers = bool(si.get("peer_comps"))
+    peers_tab = '  <button class="si-tab" data-pane="si-peers">동종비교</button>\n' if has_peers else ""
     tabs_html = f"""<div class="si-tabs">
   <button class="si-tab active" data-pane="si-overview">종합</button>
   <button class="si-tab" data-pane="si-company">기업</button>
   <button class="si-tab" data-pane="si-consensus">컨센서스</button>
   <button class="si-tab" data-pane="si-valuation">밸류에이션</button>
-  <button class="si-tab" data-pane="si-earnings">실적</button>
+{financials_tab}{peers_tab}  <button class="si-tab" data-pane="si-earnings">실적</button>
   <button class="si-tab" data-pane="si-research">리서치</button>
   <button class="si-tab" data-pane="si-holders">주주</button>
 {flow_tab}{disclosure_tab}{risk_tab}  <button class="si-tab" data-pane="si-news">뉴스</button>
@@ -3261,9 +3283,33 @@ def _render_stock_info_html(rec: dict) -> str:
 
     analysts_str = f" · {n_analysts}명 애널리스트" if n_analysts else ""
 
+    # Supplementary consensus from market-specific sources (when yfinance empty)
+    supp_consensus_html = ""
+    supp_con = mkt.get("consensus", {})
+    if supp_con and supp_con.get("target_mean"):
+        sc_src = esc(supp_con.get("source", ""))
+        sc_target = supp_con["target_mean"]
+        sc_rating = esc(str(supp_con.get("rating", "—")))
+        sc_n = supp_con.get("n_analysts")
+        sc_n_str = f" · {sc_n}명" if sc_n else ""
+        sc_lrd = supp_con.get("last_report_date")
+        sc_lrd_str = f" · 최신 {esc(sc_lrd)}" if sc_lrd else ""
+        sc_upside = ""
+        if cur_price and cur_price > 0:
+            sc_up = (sc_target - cur_price) / cur_price * 100
+            sc_sign = "+" if sc_up >= 0 else ""
+            sc_color = "#26a69a" if sc_up >= 0 else "#e2574c"
+            sc_upside = f' <span style="color:{sc_color}">{sc_sign}{sc_up:.1f}%</span>'
+        supp_consensus_html = f"""<div class="si-section" style="margin-top:16px">
+    <div class="si-section-title">{sc_src} 컨센서스</div>
+    <div style="font-size:14px">
+      목표가 {csym}{_fmt_num(sc_target, decimals=2 if currency not in ("KRW","JPY") else 0)}{sc_upside} · {sc_rating}{sc_n_str}{sc_lrd_str}
+    </div>
+  </div>"""
+
     consensus_pane = f"""<div class="si-pane" id="si-consensus">
   <div class="si-section">
-    <div class="si-section-title">월가 컨센서스</div>
+    <div class="si-section-title">{"월가" if is_us else ""} 컨센서스</div>
     <div class="si-consensus">
       <div>
         <span class="si-con-badge {rec_class}">{esc(rec_label)}</span>
@@ -3274,6 +3320,7 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
     {range_html}
   </div>
+  {supp_consensus_html}
 </div>"""
 
     # ── 밸류에이션 pane ────────────────────────────────────────
@@ -3597,47 +3644,92 @@ def _render_stock_info_html(rec: dict) -> str:
   {trend_html}
 </div>"""
 
-    # ── 리스크 pane (lockup + dilution) ────────────────────────────
-    risk_pane = ""
+    # CN/HK 港股通 flow
+    if is_cn and not flow_pane:
+        hsgt = mkt.get("hsgt_flow", {})
+        if hsgt:
+            def _cn_flow(v, unit="억"):
+                if v is None:
+                    return '<td class="num">—</td>'
+                color = "#26a69a" if v > 0 else "#e2574c" if v < 0 else ""
+                sign = "+" if v > 0 else ""
+                style = f' style="color:{color}"' if color else ""
+                return f'<td class="num"{style}>{sign}{v:,.1f}{unit}</td>'
+            nb = hsgt.get("northbound_5d")
+            sb = hsgt.get("southbound_5d")
+            nd = hsgt.get("north_direction", "")
+            sd = hsgt.get("south_direction", "")
+            flow_pane = f"""<div class="si-pane" id="si-flow">
+  <div class="si-section">
+    <div class="si-section-title">港股通 자금 흐름 (5일 누적)</div>
+    <table class="si-table"><thead><tr><th>구분</th><th class="num">5일 순매수</th><th>방향</th></tr></thead><tbody>
+      <tr><td>北向 (외국인→A주)</td>{_cn_flow(nb)}<td>{esc(nd)}</td></tr>
+      <tr><td>南向 (본토→HK)</td>{_cn_flow(sb)}<td>{esc(sd)}</td></tr>
+    </tbody></table>
+  </div>
+</div>"""
+
+    # ── 리스크 pane (lockup + dilution + CN ST/停牌) ──────────────
+    risk_parts: list[str] = []
+
+    # KR lockup releases
     lockup = kr.get("lockup_releases", [])
-    dilution = kr.get("dilution_events", [])
-    if lockup or dilution:
-        lockup_html = ""
-        if lockup:
-            lu_rows = ""
-            for lu in lockup:
-                rd = esc(str(lu.get("release_date", "—")))
-                sh = lu.get("shares")
-                sh_str = f"{int(sh):,}" if sh else "—"
-                rem = lu.get("remaining")
-                rem_str = f"{int(rem):,}" if rem else "—"
-                reason = esc(str(lu.get("reason", "—")))
-                lu_rows += f"<tr><td>{rd}</td><td class='num'>{sh_str}</td><td class='num'>{rem_str}</td><td>{reason}</td></tr>\n"
-            lockup_html = f"""<div class="si-section">
+    if lockup:
+        lu_rows = ""
+        for lu in lockup:
+            rd = esc(str(lu.get("release_date", "—")))
+            sh = lu.get("shares")
+            sh_str = f"{int(sh):,}" if sh else "—"
+            rem = lu.get("remaining")
+            rem_str = f"{int(rem):,}" if rem else "—"
+            reason = esc(str(lu.get("reason", "—")))
+            lu_rows += f"<tr><td>{rd}</td><td class='num'>{sh_str}</td><td class='num'>{rem_str}</td><td>{reason}</td></tr>\n"
+        risk_parts.append(f"""<div class="si-section">
       <div class="si-section-title">📌 의무보호예수 해제 예정</div>
       <table class="si-table"><thead><tr><th>해제일</th><th class="num">반환주식</th><th class="num">잔량</th><th>사유</th></tr></thead><tbody>{lu_rows}</tbody></table>
-    </div>"""
+    </div>""")
 
-        dilution_html = ""
-        if dilution:
-            dl_rows = ""
-            for de in dilution:
-                kind = esc(str(de.get("kind", "—")))
-                dd = esc(str(de.get("date", "—")))
-                ns = de.get("new_shares")
-                ns_str = f"{int(ns):,}" if ns else "—"
-                pr = de.get("price")
-                pr_str = f"₩{int(pr):,}" if pr else "—"
-                dl_rows += f"<tr><td>{kind}</td><td>{dd}</td><td class='num'>{ns_str}</td><td class='num'>{pr_str}</td></tr>\n"
-            dilution_html = f"""<div class="si-section">
+    # KR dilution events
+    dilution = kr.get("dilution_events", [])
+    if dilution:
+        dl_rows = ""
+        for de in dilution:
+            kind = esc(str(de.get("kind", "—")))
+            dd = esc(str(de.get("date", "—")))
+            ns = de.get("new_shares")
+            ns_str = f"{int(ns):,}" if ns else "—"
+            pr = de.get("price")
+            pr_str = f"₩{int(pr):,}" if pr else "—"
+            dl_rows += f"<tr><td>{kind}</td><td>{dd}</td><td class='num'>{ns_str}</td><td class='num'>{pr_str}</td></tr>\n"
+        risk_parts.append(f"""<div class="si-section">
       <div class="si-section-title">📉 잠재 희석 이벤트 (CB/BW)</div>
       <table class="si-table"><thead><tr><th>종류</th><th>날짜</th><th class="num">신주수</th><th class="num">행사가</th></tr></thead><tbody>{dl_rows}</tbody></table>
-    </div>"""
+    </div>""")
 
-        risk_pane = f"""<div class="si-pane" id="si-risk">
-  {lockup_html}
-  {dilution_html}
-</div>"""
+    # KR KRX 시장경보 (거래정지/관리종목/투자경고/단기과열)
+    kr_alert = kr.get("market_alert", {})
+    if kr_alert.get("suspended"):
+        risk_parts.append('<div style="background:#f8d7da;color:#721c24;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">🚫 거래정지 — 현재 매매 불가</div>')
+    if kr_alert.get("admin"):
+        risk_parts.append('<div style="background:#f8d7da;color:#721c24;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">⚠️ 관리종목 지정 — 상장폐지 사유 해당, 투자 주의</div>')
+    wl = kr_alert.get("warning_level", "")
+    if wl:
+        wl_colors = {"위험": ("#f8d7da", "#721c24"), "경고": ("#fff3cd", "#856404"), "주의": ("#fff3cd", "#856404")}
+        bg, fg = wl_colors.get(wl, ("#fff3cd", "#856404"))
+        risk_parts.append(f'<div style="background:{bg};color:{fg};padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">⚠️ 투자{wl} — KRX 시장경보 지정</div>')
+    if kr_alert.get("overheating"):
+        risk_parts.append('<div style="background:#fff3cd;color:#856404;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">🔥 단기과열 종목 — 급등/급락 주의</div>')
+
+    # CN ST/停牌 risk status
+    cn_risk = mkt.get("risk_status", {}) if is_cn else {}
+    if cn_risk.get("is_st"):
+        risk_parts.append('<div style="background:#fff3cd;color:#856404;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">⚠️ ST/＊ST 지정 — 2년+ 연속 적자, 일일 한도 ±5%, 퇴출 위험</div>')
+    if cn_risk.get("is_suspended"):
+        risk_parts.append('<div style="background:#f8d7da;color:#721c24;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">🚫 거래정지 (停牌) — 현재 매매 불가</div>')
+
+    risk_pane = ""
+    if risk_parts:
+        risk_pane = '<div class="si-pane" id="si-risk">\n  ' + "\n  ".join(risk_parts) + "\n</div>"
 
     # ── 배당 이력 (밸류에이션 pane 하단에 추가) ────────────────────
     divs = si.get("dividends", [])
@@ -3718,23 +3810,27 @@ def _render_stock_info_html(rec: dict) -> str:
     <table class="si-table"><thead><tr><th>제출일</th><th>성명</th><th>직위</th><th>거래 내역</th></tr></thead><tbody>{ui_rows}</tbody></table>
   </div>"""
 
-    # ── 공시 pane (KR DART disclosures) ────────────────────────
+    # ── 공시 pane (all markets — DART/EDINET/MOPS/AKShare/EDGAR) ──
     disclosures_pane = ""
-    kr_disclosures = kr.get("disclosures", [])
-    if kr_disclosures:
+    disc_source_map = {"kr": "DART", "jp": "EDINET", "tw": "MOPS",
+                       "cn": "AKShare", "us": "SEC"}
+    disc_source = disc_source_map.get("kr" if is_kr else "jp" if is_jp else
+                                      "tw" if is_tw else "cn" if is_cn else "us", "")
+    all_disclosures = mkt.get("disclosures", [])
+    if all_disclosures:
         d_rows = ""
-        for disc in kr_disclosures:
+        for disc in all_disclosures:
             d_date = esc(str(disc.get("date", "—")))
-            d_title = esc(str(disc.get("title", "—")))
-            d_reporter = esc(str(disc.get("reporter", "")))
+            d_title = esc(str(disc.get("title") or disc.get("subject") or disc.get("description") or "—"))
+            d_reporter = esc(str(disc.get("reporter") or disc.get("filer_name") or disc.get("doc_type_label") or ""))
             d_url = disc.get("url", "")
             title_html = f'<a href="{esc(d_url)}" target="_blank" rel="noopener">{d_title}</a>' if d_url else d_title
             d_rows += f"<tr><td>{d_date}</td><td>{title_html}</td><td>{d_reporter}</td></tr>\n"
         disclosures_pane = f"""<div class="si-pane" id="si-disclosures">
   <div class="si-section">
-    <div class="si-section-title">최근 공시 (DART)</div>
+    <div class="si-section-title">최근 공시 ({esc(disc_source)})</div>
     <table class="si-table">
-      <thead><tr><th>날짜</th><th>제목</th><th>공시자</th></tr></thead>
+      <thead><tr><th>날짜</th><th>제목</th><th>출처</th></tr></thead>
       <tbody>{d_rows}</tbody>
     </table>
   </div>
@@ -3766,14 +3862,20 @@ def _render_stock_info_html(rec: dict) -> str:
         title = f"{firm}: {change}"
         timeline_events.append((d, "리서치", imp, title, action, ""))
 
-    # KR disclosures
-    for disc in kr.get("disclosures", []):
+    # Disclosures (all markets)
+    _high_kw = ("유상증자", "무상증자", "합병", "분할", "감자", "상장폐지", "거래정지",
+                "株式分割", "株式併合", "上場廃止", "增資", "減資", "合併",
+                "ST", "停牌", "delisting", "merger", "acquisition")
+    _med_kw = ("분기보고서", "사업보고서", "반기보고서", "주요사항",
+               "四半期", "有価証券", "決算短信", "重大訊息", "年度報告", "季度報告",
+               "10-K", "10-Q", "8-K", "annual", "quarterly")
+    for disc in mkt.get("disclosures", []):
         d = disc.get("date", "")
-        title = disc.get("title", "")
+        title = disc.get("title") or disc.get("subject") or disc.get("description") or ""
         url = disc.get("url", "")
-        imp = "high" if any(kw in title for kw in ("유상증자", "무상증자", "합병", "분할", "감자", "상장폐지", "거래정지")) else \
-              "medium" if any(kw in title for kw in ("분기보고서", "사업보고서", "반기보고서", "주요사항")) else "low"
-        timeline_events.append((d, "공시", imp, title, disc.get("reporter", ""), url))
+        imp = "high" if any(kw in title for kw in _high_kw) else \
+              "medium" if any(kw in title for kw in _med_kw) else "low"
+        timeline_events.append((d, "공시", imp, title, disc.get("reporter") or disc.get("filer_name") or "", url))
 
     # News
     for n in si.get("news", []):
@@ -3850,15 +3952,298 @@ def _render_stock_info_html(rec: dict) -> str:
   {div_html}
 </div>"""
 
+    # ── 재무제표 pane (IS / BS / CF + 수익성 차트) ──────────────────
+    financials_pane = ""
+    fins = si.get("financials", {})
+    if fins:
+        def _fin_table(stmt_data: dict, key_items: list[str], label: str) -> str:
+            """Render one financial statement sub-table."""
+            annual = stmt_data.get("annual", [])
+            quarterly = stmt_data.get("quarterly", [])
+            if not annual and not quarterly:
+                return ""
+            parts: list[str] = []
+            for view_label, rows in (("연간", annual), ("분기", quarterly)):
+                if not rows:
+                    continue
+                periods = [r.get("period", "?")[:7] for r in rows]
+                hdr = "".join(f'<th class="num">{esc(p)}</th>' for p in periods)
+                all_items = set()
+                for r in rows:
+                    all_items.update(k for k in r if k != "period")
+                display_items = [i for i in key_items if i in all_items]
+                extra = sorted(all_items - set(key_items))
+                display_items.extend(extra)
+                tbody = ""
+                for item in display_items:
+                    vals = ""
+                    for r in rows:
+                        v = r.get(item)
+                        if v is not None:
+                            if abs(v) >= 1e9:
+                                vs = f"{v/1e9:.1f}B"
+                            elif abs(v) >= 1e6:
+                                vs = f"{v/1e6:.0f}M"
+                            else:
+                                vs = f"{v:,.0f}"
+                            color = "#e2574c" if v < 0 else ""
+                            style = f' style="color:{color}"' if color else ""
+                            vals += f'<td class="num"{style}>{vs}</td>'
+                        else:
+                            vals += '<td class="num">—</td>'
+                    tbody += f"<tr><td>{esc(item)}</td>{vals}</tr>\n"
+                parts.append(f"""<div class="si-section" style="margin-top:12px">
+        <div class="si-section-title">{label} — {view_label}</div>
+        <div style="overflow-x:auto"><table class="si-table"><thead><tr><th>항목</th>{hdr}</tr></thead><tbody>{tbody}</tbody></table></div>
+      </div>""")
+            return "\n".join(parts)
+
+        is_items = ["Total Revenue", "Operating Revenue", "Cost Of Revenue",
+                     "Gross Profit", "Operating Income", "Operating Expense",
+                     "EBITDA", "EBIT", "Net Income", "Basic EPS", "Diluted EPS",
+                     "Tax Provision", "Interest Expense"]
+        bs_items = ["Total Assets", "Current Assets", "Cash And Cash Equivalents",
+                     "Total Liabilities Net Minority Interest", "Current Liabilities",
+                     "Total Debt", "Stockholders Equity", "Retained Earnings",
+                     "Common Stock Equity", "Working Capital"]
+        cf_items = ["Operating Cash Flow", "Capital Expenditure",
+                     "Free Cash Flow", "Investing Cash Flow",
+                     "Financing Cash Flow", "End Cash Position",
+                     "Repurchase Of Capital Stock", "Cash Dividends Paid"]
+
+        is_html = _fin_table(fins.get("income_statement", {}), is_items, "손익계산서")
+        bs_html = _fin_table(fins.get("balance_sheet", {}), bs_items, "재무상태표")
+        cf_html = _fin_table(fins.get("cash_flow", {}), cf_items, "현금흐름표")
+
+        # Revenue / Operating / Net Income bar chart (inline SVG)
+        chart_svg = ""
+        is_annual = fins.get("income_statement", {}).get("annual", [])
+        if is_annual and len(is_annual) >= 2:
+            chart_items = []
+            for r in reversed(is_annual[:4]):
+                chart_items.append({
+                    "period": r.get("period", "?")[:4],
+                    "revenue": r.get("Total Revenue", 0) or 0,
+                    "op_income": r.get("Operating Income", 0) or 0,
+                    "net_income": r.get("Net Income", 0) or 0,
+                })
+            if any(c["revenue"] for c in chart_items):
+                max_val = max(abs(c["revenue"]) for c in chart_items) or 1
+                bar_w = 180 // len(chart_items)
+                svg_w = bar_w * len(chart_items) * 3 + 120
+                bars = ""
+                labels = ""
+                legend = ('<text x="10" y="14" font-size="11" fill="#999">● <tspan fill="#42a5f5">매출</tspan>'
+                          ' ● <tspan fill="#66bb6a">영업이익</tspan>'
+                          ' ● <tspan fill="#ffa726">순이익</tspan></text>')
+                for i, c in enumerate(chart_items):
+                    x_base = 40 + i * (bar_w * 3 + 16)
+                    for j, (val, color) in enumerate([
+                        (c["revenue"], "#42a5f5"),
+                        (c["op_income"], "#66bb6a"),
+                        (c["net_income"], "#ffa726"),
+                    ]):
+                        h = max(abs(val) / max_val * 120, 2)
+                        y = 150 - h if val >= 0 else 150
+                        bars += f'<rect x="{x_base + j * bar_w}" y="{y}" width="{bar_w - 2}" height="{h}" fill="{color}" rx="2"/>\n'
+                    labels += f'<text x="{x_base + bar_w}" y="170" font-size="11" fill="#999" text-anchor="middle">{c["period"]}</text>\n'
+                chart_svg = f"""<div class="si-section" style="margin-top:12px">
+        <div class="si-section-title">수익성 추이</div>
+        <svg width="{svg_w}" height="185" style="display:block;margin:auto">
+          {legend}
+          <line x1="38" y1="150" x2="{svg_w - 10}" y2="150" stroke="#555" stroke-width="1"/>
+          {bars}
+          {labels}
+        </svg>
+      </div>"""
+
+                # YoY growth rates
+                growth_rows = ""
+                for i in range(1, len(chart_items)):
+                    prev = chart_items[i - 1]
+                    cur = chart_items[i]
+                    period = cur["period"]
+                    cells = ""
+                    for key in ("revenue", "op_income", "net_income"):
+                        p = prev[key]
+                        c = cur[key]
+                        if p and p != 0:
+                            g = (c - p) / abs(p) * 100
+                            color = "#26a69a" if g >= 0 else "#e2574c"
+                            sign = "+" if g >= 0 else ""
+                            cells += f'<td class="num" style="color:{color}">{sign}{g:.1f}%</td>'
+                        else:
+                            cells += '<td class="num">—</td>'
+                    growth_rows += f"<tr><td>{period}</td>{cells}</tr>\n"
+                if growth_rows:
+                    chart_svg += f"""<div class="si-section" style="margin-top:12px">
+        <div class="si-section-title">YoY 성장률</div>
+        <table class="si-table"><thead><tr><th>연도</th><th class="num">매출</th><th class="num">영업이익</th><th class="num">순이익</th></tr></thead><tbody>{growth_rows}</tbody></table>
+      </div>"""
+
+        financials_pane = f"""<div class="si-pane" id="si-financials">
+  {chart_svg}
+  {is_html}
+  {bs_html}
+  {cf_html}
+</div>"""
+
+    # ── 동종비교 (Peer Comps) pane ────────────────────────────────
+    peers_pane = ""
+    peer_comps = si.get("peer_comps", [])
+    if peer_comps:
+        pc_rows = ""
+        for pc in peer_comps:
+            is_subj = pc.get("is_subject")
+            style = ' style="background:rgba(66,165,245,0.12);font-weight:600"' if is_subj else ""
+            name = esc(pc.get("name", "?"))
+            ptk = esc(pc.get("ticker", ""))
+            mc = pc.get("market_cap")
+            mc_str = f"${mc/1e9:.1f}B" if mc and mc >= 1e9 else (f"${mc/1e6:.0f}M" if mc else "—")
+            def _pv(k):
+                v = pc.get(k)
+                return f"{v:.1f}" if v else "—"
+            dy = pc.get("dividendYield")
+            dy_str = f"{dy*100:.1f}%" if dy else "—"
+            pc_rows += f'<tr{style}><td>{name}</td><td>{ptk}</td><td class="num">{mc_str}</td>'
+            pc_rows += f'<td class="num">{_pv("trailingPE")}</td><td class="num">{_pv("forwardPE")}</td>'
+            pc_rows += f'<td class="num">{_pv("priceToBook")}</td><td class="num">{_pv("priceToSalesTrailing12Months")}</td>'
+            pc_rows += f'<td class="num">{_pv("enterpriseToEbitda")}</td><td class="num">{dy_str}</td></tr>\n'
+        peers_pane = f"""<div class="si-pane" id="si-peers">
+  <div class="si-section">
+    <div class="si-section-title">동종업계 밸류에이션 비교</div>
+    <div style="overflow-x:auto">
+    <table class="si-table">
+      <thead><tr><th>회사</th><th>티커</th><th class="num">시총</th><th class="num">PER</th><th class="num">Fwd PER</th><th class="num">PBR</th><th class="num">PSR</th><th class="num">EV/EBITDA</th><th class="num">배당</th></tr></thead>
+      <tbody>{pc_rows}</tbody>
+    </table>
+    </div>
+  </div>
+</div>"""
+
+    # JP EDINET major holders (5%+ 大量保有)
+    jp_holders_html = ""
+    jp_holders = si.get("jp", {}).get("major_holders", []) if is_jp else []
+    if jp_holders:
+        jh_rows = ""
+        for jh in jp_holders:
+            jd = esc(str(jh.get("date", "—")))
+            jfn = esc(str(jh.get("filer_name", "—")))
+            jdesc = esc(str(jh.get("description", "")))
+            jh_rows += f"<tr><td>{jd}</td><td>{jfn}</td><td>{jdesc}</td></tr>\n"
+        jp_holders_html = f"""<div class="si-section">
+    <div class="si-section-title">5%+ 大量保有 (EDINET)</div>
+    <table class="si-table">
+      <thead><tr><th>제출일</th><th>보고자</th><th>내용</th></tr></thead>
+      <tbody>{jh_rows}</tbody>
+    </table>
+  </div>"""
+
+    # TW MOPS insider holdings (內部人持股)
+    tw_insiders_html = ""
+    tw_insiders = si.get("tw", {}).get("insider_holdings", []) if is_tw else []
+    if tw_insiders:
+        ti_rows = ""
+        for ti in tw_insiders:
+            tn = esc(str(ti.get("name", "—")))
+            tr_ = esc(str(ti.get("role", "")))
+            ts = ti.get("shares")
+            ts_str = f"{int(ts):,}" if ts else "—"
+            tp = ti.get("pct")
+            tp_str = f"{tp:.2f}%" if tp else "—"
+            ti_rows += f"<tr><td>{tn}</td><td>{tr_}</td><td class='num'>{ts_str}</td><td class='num'>{tp_str}</td></tr>\n"
+        tw_insiders_html = f"""<div class="si-section">
+    <div class="si-section-title">內部人持股 (MOPS)</div>
+    <table class="si-table">
+      <thead><tr><th>성명</th><th>직위</th><th class="num">보유주식</th><th class="num">지분율</th></tr></thead>
+      <tbody>{ti_rows}</tbody>
+    </table>
+  </div>"""
+
+    # CN AKShare major holders (主要流通股东)
+    cn_holders_html = ""
+    cn_holders = si.get("cn", {}).get("major_holders", []) if is_cn else []
+    if cn_holders:
+        ch_rows = ""
+        for ch in cn_holders:
+            cn_ = esc(str(ch.get("name", "—")))
+            cs = ch.get("shares")
+            cs_str = f"{int(cs):,}" if cs else "—"
+            cp = ch.get("pct")
+            cp_str = f"{cp:.2f}%" if cp else "—"
+            cnat = esc(str(ch.get("nature", "")))
+            ch_rows += f"<tr><td>{cn_}</td><td class='num'>{cs_str}</td><td class='num'>{cp_str}</td><td>{cnat}</td></tr>\n"
+        cn_holders_html = f"""<div class="si-section">
+    <div class="si-section-title">主要流通股东 (AKShare)</div>
+    <table class="si-table">
+      <thead><tr><th>주주명</th><th class="num">보유주식</th><th class="num">지분율</th><th>성격</th></tr></thead>
+      <tbody>{ch_rows}</tbody>
+    </table>
+  </div>"""
+
+    # Short Interest visualization
+    short_html = ""
+    shares_short = si.get("shares_short")
+    short_ratio = si.get("short_ratio")
+    shares_out = si.get("shares_outstanding")
+    if shares_short:
+        si_pct = (shares_short / shares_out * 100) if shares_out and shares_out > 0 else None
+        si_pct_str = f"{si_pct:.2f}%" if si_pct else "—"
+        sr_str = f"{short_ratio:.1f}일" if short_ratio else "—"
+        si_bar = ""
+        if si_pct:
+            bar_w = min(si_pct * 5, 100)
+            bar_color = "#e2574c" if si_pct > 10 else ("#ffa726" if si_pct > 5 else "#66bb6a")
+            si_bar = f'''<div style="margin-top:6px;height:10px;background:#333;border-radius:5px;overflow:hidden;max-width:300px">
+          <div style="height:100%;width:{bar_w:.0f}%;background:{bar_color};border-radius:5px"></div>
+        </div>
+        <div style="font-size:11px;color:#888;margin-top:2px">0% {'━' * 10} 20%+</div>'''
+        short_html = f"""<div class="si-section">
+    <div class="si-section-title">공매도 현황</div>
+    <table class="si-table"><tbody>
+      <tr><td>공매도 주식수</td><td class="num">{int(shares_short):,}</td></tr>
+      <tr><td>공매도 비율</td><td class="num">{si_pct_str}</td></tr>
+      <tr><td>Short Ratio (커버 소요일)</td><td class="num">{sr_str}</td></tr>
+    </tbody></table>
+    {si_bar}
+  </div>"""
+
+    # US insider trades summary (Form 4 buy/sell aggregation)
+    us_insider_summary_html = ""
+    us_ins = si.get("us", {}).get("insider_trades", [])
+    if us_ins:
+        buys = sum(1 for t_ in us_ins if t_.get("transaction_type", "").startswith(("P", "A")))
+        sells = sum(1 for t_ in us_ins if t_.get("transaction_type", "").startswith(("S", "D")))
+        if buys or sells:
+            total = buys + sells
+            buy_pct = buys / total * 100 if total else 0
+            sell_pct = sells / total * 100 if total else 0
+            us_insider_summary_html = f"""<div class="si-section">
+    <div class="si-section-title">내부자 거래 요약 (SEC Form 4)</div>
+    <div style="display:flex;gap:20px;align-items:center;margin:8px 0">
+      <div style="text-align:center"><span style="font-size:24px;font-weight:700;color:#26a69a">{buys}</span><div style="font-size:12px;color:#999">매수</div></div>
+      <div style="flex:1;height:12px;background:#333;border-radius:6px;overflow:hidden;display:flex">
+        <div style="width:{buy_pct:.0f}%;background:#26a69a"></div>
+        <div style="width:{sell_pct:.0f}%;background:#e2574c"></div>
+      </div>
+      <div style="text-align:center"><span style="font-size:24px;font-weight:700;color:#e2574c">{sells}</span><div style="font-size:12px;color:#999">매도</div></div>
+    </div>
+  </div>"""
+
     holders_pane = f"""<div class="si-pane" id="si-holders">
   <div class="si-section">
     <div class="si-section-title">주요 기관</div>
     {holder_summary}
     {holders_table}
   </div>
+  {short_html}
+  {us_insider_summary_html}
   {kr_insider_html}
   {kr_minority_html}
   {us_insider_html}
+  {jp_holders_html}
+  {tw_insiders_html}
+  {cn_holders_html}
 </div>"""
 
     # Return a dict with separate pieces so _render_detail can wrap
@@ -3868,7 +4253,8 @@ def _render_stock_info_html(rec: dict) -> str:
         "tabs": tabs_html,
         "tab_js": tab_js,
         "other_panes": company_pane + "\n" + consensus_pane + "\n" +
-                       valuation_pane + "\n" + earnings_pane + "\n" +
+                       valuation_pane + "\n" + financials_pane + "\n" +
+                       peers_pane + "\n" + earnings_pane + "\n" +
                        research_pane + "\n" + holders_pane + "\n" +
                        flow_pane + "\n" + disclosures_pane + "\n" +
                        risk_pane + "\n" + news_pane + "\n" + timeline_pane,

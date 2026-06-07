@@ -3086,6 +3086,31 @@ async def _on_startup(application) -> None:
             log.info("startup: price-chart backfill thread launched")
     except Exception as exc:
         log.warning("startup: backfill launch failed: %s", exc)
+    # One-time stock_info backfill for pre-v3 archive entries.
+    # Same pattern as chart backfill — marker-gated, background thread, free.
+    try:
+        import threading
+        from pathlib import Path as _Path
+
+        _si_marker = _Path.home() / ".tradingagents" / ".stock_info_backfilled"
+        if not _si_marker.exists():
+            def _run_stock_info_backfill():
+                try:
+                    from bot.archive import backfill_stock_info
+                    from bot.dashboard import regenerate_index
+                    n = backfill_stock_info()
+                    _si_marker.parent.mkdir(parents=True, exist_ok=True)
+                    _si_marker.write_text("done", encoding="utf-8")
+                    if n:
+                        regenerate_index()
+                    log.info("startup: stock_info backfill filled %d entries", n)
+                except Exception as exc:
+                    log.warning("startup: stock_info backfill failed: %s", exc)
+
+            threading.Thread(target=_run_stock_info_backfill, daemon=True).start()
+            log.info("startup: stock_info backfill thread launched")
+    except Exception as exc:
+        log.warning("startup: stock_info backfill launch failed: %s", exc)
     # Populates the 'Menu' button beside the input area + the '/' typing
     # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
     # registered (the universe is too large) — Telegram still recognises
