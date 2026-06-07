@@ -3484,3 +3484,49 @@ class TestGoogleNewsFallback:
         au_src = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
                       encoding="utf-8").read()
         assert "google_news_client" in au_src, "메인 파이프라인 Google News 폴백 미배선"
+
+
+class TestHankyungResearchParser:
+    """한경 컨센서스 리서치 테이블 복원 (사이트 redesign → 구 URL 404,
+    고정 6-td 정규식 깨짐, 2026-06-08 NAVER). 새 URL + 컬럼순서 무관
+    관대한 셀 기반 파서."""
+
+    def test_tolerant_parser_column_order_independent(self):
+        from datetime import date, timedelta
+        import bot.hk_consensus_client as h
+        # 컬럼 순서가 다른 두 행 (제목/증권사/목표가/의견/날짜 위치 상이)
+        html = (
+            "<table><tbody>"
+            "<tr><td><a href=x>네이버 2분기 호실적</a></td><td>미래에셋증권</td>"
+            "<td>김애널</td><td>280,000</td><td>매수</td><td>2026-06-05</td></tr>"
+            "<tr><td>목표가 상향</td><td>2026.06.01</td><td>삼성증권</td>"
+            "<td>320,000</td><td>Buy</td></tr>"
+            "<tr><td>헤더</td><td>증권사</td><td>의견</td></tr>"  # 날짜 없음 → skip
+            "</tbody></table>"
+        )
+        cutoff = date(2026, 6, 7) - timedelta(days=90)
+        rows = h._parse_report_rows(html, cutoff)
+        assert len(rows) == 2, f"expected 2 rows, got {len(rows)}"
+        assert rows[0]["target"] == 280000.0
+        assert rows[0]["broker"] == "미래에셋증권"
+        assert rows[0]["rating"] == "매수"
+        assert rows[0]["date"] == "2026-06-05"
+        # dot-separated date + reordered columns 도 처리
+        assert rows[1]["target"] == 320000.0
+        assert rows[1]["broker"] == "삼성증권"
+        assert rows[1]["date"] == "2026-06-01"
+
+    def test_cutoff_filters_old_rows(self):
+        from datetime import date, timedelta
+        import bot.hk_consensus_client as h
+        html = ("<table><tbody>"
+                "<tr><td>옛 리포트</td><td>키움증권</td><td>100,000</td>"
+                "<td>보유</td><td>2020-01-01</td></tr></tbody></table>")
+        cutoff = date(2026, 6, 7) - timedelta(days=90)
+        assert h._parse_report_rows(html, cutoff) == [], "cutoff 밖 행 미필터"
+
+    def test_new_url_primary_legacy_fallback(self):
+        """신규 /analysis/list URL 우선 + 구 URL 폴백 배선 확인."""
+        src = open("bot/hk_consensus_client.py", encoding="utf-8").read()
+        assert "/analysis/list" in src, "신규 URL 미적용"
+        assert "_fetch_list_html" in src, "멀티-URL fetch 헬퍼 누락"

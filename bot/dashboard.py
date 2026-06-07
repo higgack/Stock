@@ -3202,20 +3202,30 @@ def diagnose_detail_sources(ticker: str) -> dict:
         _probe("google_news_fallback", _gnews)
 
         def _hk():
-            from bot.hk_consensus_client import fetch_consensus, _HEADERS, _BASE_URL
-            # The current scrape URL 404s — probe candidate paths to find the
-            # live one so the scraper can be re-pointed.
-            cands = {
-                "current": f"{_BASE_URL}?sk={code}&search_type=2",
-                "domain_root": "https://consensus.hankyung.com/",
-                "analysis_total": f"https://consensus.hankyung.com/analysis/list?skinType=&sdate=&edate=&now_page=1&search_text={code}",
-                "apps_company": f"https://consensus.hankyung.com/apps.analysis/analysis.company?skinType=business&sk={code}",
-            }
-            probes = {k: _http_status(v, _HEADERS) for k, v in cands.items()}
+            from bot.hk_consensus_client import (
+                fetch_consensus, _fetch_list_html, _cell_texts)
+            import re as _re
             r = fetch_consensus(ticker)
+            # Dump a couple of raw <tr> cell-lists from the live list page so
+            # the tolerant parser can be verified / refined against the real
+            # markup without ssh.
+            sample_rows = []
+            try:
+                html = _fetch_list_html(code) or ""
+                for row_html in _re.findall(r"<tr[^>]*>(.*?)</tr>", html,
+                                            _re.DOTALL | _re.I):
+                    cells = _cell_texts(row_html)
+                    if any(_re.search(r"\d{4}[-./]\d{2}[-./]\d{2}", c) for c in cells):
+                        sample_rows.append(cells)
+                    if len(sample_rows) >= 3:
+                        break
+            except Exception as exc:
+                sample_rows = [f"dump error: {type(exc).__name__}: {str(exc)[:120]}"]
             return {"ok": bool(r and r.get("reports")),
                     "reports": len(r.get("reports", [])) if r else 0,
-                    "url_probes": probes}
+                    "target_price": (r or {}).get("target_price"),
+                    "rating": (r or {}).get("rating"),
+                    "sample_rows": sample_rows}
         _probe("hankyung_research", _hk)
 
         def _fng():
