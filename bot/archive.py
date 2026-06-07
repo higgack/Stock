@@ -24,7 +24,12 @@ ARCHIVE_ROOT = Path.home() / ".tradingagents" / "archive"
 # v2 (2026-06-03): added optional "price_chart" field — compact close +
 # 10 EMA / 50 SMA / 200 SMA series for the detail-page lightweight-charts
 # render. Older v1 entries lack it and render text-only (graceful).
-SCHEMA_VERSION = 2
+# v3 (2026-06-07): added optional "stock_info" field — company snapshot
+# (identity / market data / consensus / earnings / holders / news) from
+# yfinance .info + .earnings_dates + .upgrades_downgrades +
+# .institutional_holders + .news. Powers the detail-page header cards,
+# company info section, consensus card, earnings table, etc.
+SCHEMA_VERSION = 3
 _KST = timezone(timedelta(hours=9))
 
 
@@ -76,6 +81,16 @@ def save_analysis(
                 record["price_chart"] = chart
         except Exception as exc:
             log.warning("archive: price_chart build skipped for %s: %s", ticker, exc)
+        # Company snapshot — identity / market / consensus / earnings /
+        # holders / news from yfinance. Non-fatal: older records or
+        # fetch failures just skip the field (detail page degrades).
+        try:
+            from bot.stock_snapshot import collect_stock_snapshot
+            snap = collect_stock_snapshot(ticker)
+            if snap:
+                record["stock_info"] = snap
+        except Exception as exc:
+            log.warning("archive: stock_snapshot skipped for %s: %s", ticker, exc)
         # Per-analysis cost stamp — summed from the usage log over the run
         # window so the detail page can show each analysis's spend inline.
         if started_at:
