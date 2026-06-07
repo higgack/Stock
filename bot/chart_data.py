@@ -212,7 +212,7 @@ def _series_payload(
 # (so weekly view = 10wk/50wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
 _VALID_INTERVALS = {"1d", "1wk", "1mo"}
-_VALID_PERIODS = {"1mo", "3mo", "6mo", "1y", "3y", "5y", "max"}
+_VALID_PERIODS = {"1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
 # Range → 대략 캘린더 일수. yfinance 의 period 문자열에는 '3y' 가 없어
 # (유효: 1mo/3mo/6mo/1y/2y/5y/10y/max) 전 범위를 start/end 로 통일 fetch
 # → '3y' 정상 동작 + 1개월/3개월 추가가 일관되게 작동.
@@ -348,8 +348,13 @@ def fetch_chart_payload(
         if period == "max":
             hist = t.history(period="max", interval=interval, auto_adjust=True)
         else:
-            end = datetime.now() + timedelta(days=1)
-            start = end - timedelta(days=_RANGE_DAYS.get(period, 366))
+            now = datetime.now()
+            end = now + timedelta(days=1)
+            if period == "ytd":
+                # 연초(1/1) → 오늘. now.year 로 계산해 12/31 자정 edge 안전.
+                start = datetime(now.year, 1, 1)
+            else:
+                start = end - timedelta(days=_RANGE_DAYS.get(period, 366))
             hist = t.history(
                 start=start.strftime("%Y-%m-%d"),
                 end=end.strftime("%Y-%m-%d"),

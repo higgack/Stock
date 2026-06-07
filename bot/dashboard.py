@@ -1908,6 +1908,18 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-ind-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
 .chart-row { display: flex; gap: 10px; align-items: stretch; }
 .chart-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* 상단 헤드라인(현재가 large + 기간 수익률 + 거래량) — 레퍼런스 터미널 패턴. */
+.chart-headline { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  margin: 2px 0; font-variant-numeric: tabular-nums; min-height: 24px; }
+.chart-headline .ch-cur { font-size: 22px; font-weight: 700; color: var(--fg); }
+.chart-headline .ch-chg { font-size: 13px; font-weight: 600; }
+.chart-headline .ch-vol { font-size: 12px; color: var(--fg-soft); }
+/* OHLC 상단바 — 마지막 봉(기본)·hover 봉의 날짜·시고저종·등락·이평선. */
+.chart-ohlc { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  min-height: 16px; font-size: 11.5px; color: var(--fg-soft);
+  font-variant-numeric: tabular-nums; margin-bottom: 2px; }
+.chart-ohlc .co-date { color: var(--fg); font-weight: 600; }
+.chart-ohlc .co-seg { white-space: nowrap; }
 .price-chart { width: 100%; height: 480px; position: relative; }
 .chart-tooltip {
   position: absolute; z-index: 5; pointer-events: none;
@@ -1944,6 +1956,8 @@ _DETAIL_CSS = _BASE_CSS + """
     border-left: none; margin-left: 0; padding-left: 0; }
   .cv-sep { display: none; }
 }
+.chart-caption { color: var(--fg-soft); font-size: 11px; margin: 4px 0 2px;
+  font-variant-numeric: tabular-nums; }
 .chart-legend { color: var(--fg-soft); font-size: 12px; margin-top: 8px; }
 .chart-legend .lg { margin-right: 10px; font-weight: 600; }
 .chart-legend .lg-close { color: #4c9aff; }
@@ -2163,6 +2177,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
         <button class="chart-tf-btn" data-kind="range" data-val="1mo">1개월</button>
         <button class="chart-tf-btn" data-kind="range" data-val="3mo">3개월</button>
         <button class="chart-tf-btn" data-kind="range" data-val="6mo">6개월</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="ytd">YTD</button>
         <button class="chart-tf-btn" data-kind="range" data-val="1y">1년</button>
         <button class="chart-tf-btn" data-kind="range" data-val="3y">3년</button>
         <button class="chart-tf-btn" data-kind="range" data-val="5y">5년</button>
@@ -2183,16 +2198,19 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     </div>
     <div class="chart-row">
       <div class="chart-main">
+        <div id="chart-headline" class="chart-headline"></div>
+        <div id="chart-ohlc" class="chart-ohlc"></div>
         <div id="price-chart" class="price-chart" data-ticker="{tkr}"></div>
         <div id="rsi-chart" class="sub-chart"></div>
         <div id="macd-chart" class="sub-chart"></div>
       </div>
       <div id="chart-values" class="chart-values"></div>
     </div>
+    <div id="chart-caption" class="chart-caption"></div>
     <script type="application/json" id="chart-data">{payload}</script>
     <div id="chart-disc" class="chart-disc"></div>
     <div class="chart-legend">
-      현재가=장중 라이브(KR은 KIS 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률 · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (설정 저장됨)
+      상단 헤드라인=현재가·기간수익률(절대+%)·거래량 · OHLC 바=날짜·시고저종·일간등락(마우스 올리면 그 봉, 떼면 마지막 봉) · 현재가=장중 라이브(KR은 KIS 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률(YTD=연초 이후 포함) · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 차트 아래 캡션=범위·봉 개수·날짜범위·출처 · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (새로고침 시 기본값으로 회귀)
     </div>
     <details class="chart-guide">
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
@@ -2204,10 +2222,16 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li>세로축(우측 가격) 라벨은 KRW(₩)는 <span class="k">만/억</span> 약식, 그 외 시장은 천단위 콤마로 — 큰 숫자 가독성.</li>
         </ul>
       </div>
+      <div class="cg-sec"><b>상단 헤드라인 · OHLC 바</b>
+        <ul>
+          <li>차트 위 <span class="k">현재가</span>(크게) · <span class="k">기간 수익률</span>(표시 구간의 절대 변동 + %) · <span class="k">거래량</span> — 한눈에.</li>
+          <li>그 아래 <span class="k">OHLC 바</span> — 날짜 · 시·고·저·종 · 일간 등락% · (이평선 켜면)10EMA/50SMA/200SMA. 차트에 마우스를 올리면 그 봉 값으로 바뀌고, 떼면 마지막 봉으로 돌아갑니다.</li>
+        </ul>
+      </div>
       <div class="cg-sec"><b>우측 값 패널 (지금 값 한눈에)</b>
         <ul>
           <li><span class="k">분석 후</span> — 시점가 대비 현재가 변동%. 분석 이후 우리 방향이 맞았는지(초록=올랐다·빨강=내렸다).</li>
-          <li><span class="k">기간 N</span> — 지금 보이는 구간(1개월~전체)의 수익률. 범위를 바꾸면 그 구간 기준으로 갱신.</li>
+          <li><span class="k">기간 N</span> — 지금 보이는 구간(1개월·3개월·6개월·YTD·1년·3년·5년·전체)의 수익률. 범위를 바꾸면 그 구간 기준으로 갱신. YTD=연초(1/1) 이후.</li>
           <li><span class="k">52주 신고가/신저가</span> — 최근 1년 최고·최저가(항상 표시, 차트 범위·지표 토글 무관).</li>
           <li>그 아래는 켜둔 지표의 최신값(이평선·볼린저·RSI·MACD·거래량). 가격 항목엔 통화 기호(₩/¥/$ 등) 표시.</li>
         </ul>
@@ -2238,8 +2262,9 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </div>
       <div class="cg-sec"><b>기간 · 봉 · 조작</b>
         <ul>
-          <li><span class="k">일/주/월봉</span> + <span class="k">1개월~전체</span> 범위. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
-          <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
+          <li><span class="k">일/주/월봉</span> + <span class="k">1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
+          <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁 + 상단 OHLC 바 갱신. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
+          <li>차트 아래 <span class="k">캡션</span> — 현재 범위·봉 종류·봉 개수·날짜 범위·데이터 출처.</li>
           <li>지표를 켜고 꺼도 보던 확대 구간은 그대로 유지됩니다.</li>
         </ul>
       </div>
@@ -2488,10 +2513,11 @@ _CHART_JS = """
     el.appendChild(tip);
     chart.subscribeCrosshairMove(function(param){
       if (!param || !param.time || !param.point || param.point.x < 0 || param.point.y < 0) {
-        tip.style.display = 'none'; return;
+        tip.style.display = 'none'; buildOHLC(d, null); return;   // 커서 이탈 → 마지막 봉 복귀
       }
       var idx = d.times.indexOf(param.time);
-      if (idx < 0) { tip.style.display = 'none'; return; }
+      if (idx < 0) { tip.style.display = 'none'; buildOHLC(d, null); return; }
+      buildOHLC(d, idx);   // 상단바를 hover 봉으로 갱신
       var rows = ['<div class="tt-date">' + param.time + '</div>'];
       function trow(name, val, color, dc, kind) {
         if (val === null || val === undefined) return;
@@ -2566,6 +2592,9 @@ _CHART_JS = """
     // 토글 재렌더면 저장한 뷰 복원 — linkTimeScales 가 sub-pane 까지 동기화.
     if (preserve && prevRange) { try { chart.timeScale().setVisibleLogicalRange(prevRange); } catch(e){} }
     buildValues(d);
+    buildHeadline(d);
+    buildOHLC(d, null);   // 기본 = 마지막 봉
+    buildCaption(d);
   }
 
   function lastNonNull(a){ if(!a) return null; for(var i=a.length-1;i>=0;i--){ if(a[i]!==null&&a[i]!==undefined) return a[i]; } return null; }
@@ -2607,6 +2636,9 @@ _CHART_JS = """
     if (a >= 1e3) return (n / 1e3).toFixed(1) + 'K';
     return fmtNum(n, 0);
   }
+  // 범위/봉 한국어 라벨 — 헤드라인·기간수익률·캡션에서 공통 사용.
+  function rangeLabel(r){ r = r || curRange; return ({'1mo':'1개월','3mo':'3개월','6mo':'6개월','ytd':'YTD','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[r] || r; }
+  function intervalLabel(i){ i = i || curInterval; return ({'1d':'일봉','1wk':'주봉','1mo':'월봉'})[i] || i; }
   function buildValues(d){
     var vEl = document.getElementById('chart-values');
     if (!vEl) return;
@@ -2639,8 +2671,7 @@ _CHART_JS = """
     if (_first != null && _first > 0 && _curp != null) {
       var _pchg = (_curp - _first) / _first * 100;
       var _pcol = _pchg > 0 ? '#26a69a' : (_pchg < 0 ? '#e2574c' : '#94a3b8');
-      var _rlabel = ({'1mo':'1개월','3mo':'3개월','6mo':'6개월','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[curRange] || curRange;
-      items.push(['기간 ' + _rlabel, (_pchg >= 0 ? '+' : '') + _pchg.toFixed(1) + '%', _pcol, null, 'pct']);
+      items.push(['기간 ' + rangeLabel(curRange), (_pchg >= 0 ? '+' : '') + _pchg.toFixed(1) + '%', _pcol, null, 'pct']);
     }
     // 52주 신고가/신저가 — 항상 표시. 기본 그룹의 맨 밑(진입/손절/목표가 있으면 그 아래).
     if (d.wk52_high != null) items.push(['52주 신고가', d.wk52_high, '#26a69a', dec]);
@@ -2671,6 +2702,75 @@ _CHART_JS = """
             + '<span class="cv-val">' + sval + '</span></div>';
     }
     vEl.innerHTML = html;
+  }
+
+  // 상단 헤드라인 — 현재가(large) + 기간 수익률(절대+%) + 거래량. 레퍼런스
+  // 터미널 패턴(최근 종가 / 기간 수익률 / 거래량 상단 노출). 현재가는 값패널과
+  // 동일 소스(라이브 우선), 기간 수익률은 표시 구간의 first→현재가.
+  function buildHeadline(d){
+    var hEl = document.getElementById('chart-headline');
+    if (!hEl) return;
+    var dec = (d.decimals === 0) ? 0 : 2;
+    var cur = (d.last_price != null) ? d.last_price : lastNonNull(d.close);
+    var first = firstNonNull(d.close);
+    var html = '<span class="ch-cur">' + fmtPrice(cur, dec) + '</span>';
+    if (first != null && first > 0 && cur != null) {
+      var abs = cur - first, pct = abs / first * 100;
+      var col = abs > 0 ? '#26a69a' : (abs < 0 ? '#e2574c' : '#94a3b8');
+      var sign = abs >= 0 ? '+' : '';
+      html += '<span class="ch-chg" style="color:' + col + '">' + sign + fmtNum(abs, dec)
+            + ' (' + sign + pct.toFixed(2) + '%) · ' + rangeLabel(curRange) + '</span>';
+    }
+    var vol = lastNonNull(d.volume);
+    if (vol != null) html += '<span class="ch-vol">거래량 ' + fmtVol(vol) + '</span>';
+    hEl.innerHTML = html;
+  }
+
+  // OHLC 상단바 — 마지막 봉(기본) 또는 크로스헤어 hover 봉의 날짜·시고저종·
+  // 일간 등락·활성 이평선. 레퍼런스의 '날짜 시 X 고 Y 저 Z 종 W MA..' 라인 미러.
+  function buildOHLC(d, idx){
+    var oEl = document.getElementById('chart-ohlc');
+    if (!oEl || !d.times || !d.times.length) return;
+    if (idx == null || idx < 0 || idx >= d.times.length) idx = d.times.length - 1;
+    var dec = (d.decimals === 0) ? 0 : 2;
+    var hasO = d.open && d.high && d.low;
+    var parts = ['<span class="co-date">' + (d.times[idx] || '') + '</span>'];
+    function seg(name, val, color){
+      if (val === null || val === undefined) return;
+      parts.push('<span class="co-seg"><span style="color:' + color + '">' + name + '</span> '
+               + fmtPrice(val, dec) + '</span>');
+    }
+    if (hasO) {
+      seg('시', d.open[idx], '#94a3b8');
+      seg('고', d.high[idx], '#26a69a');
+      seg('저', d.low[idx], '#e2574c');
+    }
+    // 종가 — 마지막 봉이면 라이브 현재가 반영(차트 렌더와 일치).
+    var cval = d.close[idx];
+    if (idx === d.times.length - 1 && d.last_price != null) cval = d.last_price;
+    seg('종', cval, '#4c9aff');
+    // 일간 등락 — 종가 vs 직전 봉 종가.
+    if (idx > 0 && d.close[idx - 1] != null && cval != null && d.close[idx - 1] > 0) {
+      var ch = (cval - d.close[idx - 1]) / d.close[idx - 1] * 100;
+      var col = ch > 0 ? '#26a69a' : (ch < 0 ? '#e2574c' : '#94a3b8');
+      parts.push('<span class="co-seg" style="color:' + col + '">' + (ch >= 0 ? '+' : '') + ch.toFixed(2) + '%</span>');
+    }
+    if (ind.ma) {
+      if (d.ema10 && d.ema10[idx] != null)  seg('10EMA', d.ema10[idx], '#f5a623');
+      if (d.sma50 && d.sma50[idx] != null)  seg('50SMA', d.sma50[idx], '#3ec46d');
+      if (d.sma200 && d.sma200[idx] != null) seg('200SMA', d.sma200[idx], '#e2574c');
+    }
+    oEl.innerHTML = parts.join('');
+  }
+
+  // 차트 하단 캡션 — 범위·봉종류·봉 개수·날짜범위·출처(레퍼런스 하단 미러).
+  function buildCaption(d){
+    var cEl = document.getElementById('chart-caption');
+    if (!cEl) return;
+    var n = (d.times && d.times.length) ? d.times.length : 0;
+    var first = n ? d.times[0] : '', last = n ? d.times[n - 1] : '';
+    cEl.textContent = rangeLabel(curRange) + ' · ' + intervalLabel(curInterval) + ' · '
+                    + n + '개 봉 · ' + first + ' → ' + last + ' · Yahoo Finance';
   }
 
   function setActive(){
