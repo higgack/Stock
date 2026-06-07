@@ -2050,6 +2050,24 @@ class TestTradeLevelParser:
         assert "_VALID_INTERVALS" in src and "_VALID_RANGES" in src
         assert "_TICKER_RE.match(ticker)" in src, "ticker 검증 누락"
 
+    def test_chart_range_whitelist_sync_ytd(self):
+        """range 화이트리스트가 두 곳(chart_data._VALID_PERIODS + dashboard_
+        server._VALID_RANGES)에 중복 정의 — 한쪽에만 추가하면 그 버튼이 조용히
+        1y 로 폴백하는 드리프트가 생긴다. 둘이 정확히 일치 + 둘 다 'ytd' 포함
+        (YTD 버튼이 실제 동작) 영구 보장 (2026-06-07 Tier 1)."""
+        import re as _re
+        from bot.chart_data import _VALID_PERIODS
+        assert "ytd" in _VALID_PERIODS, "chart_data._VALID_PERIODS 에 ytd 누락"
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        m = _re.search(r"_VALID_RANGES\s*=\s*\{([^}]*)\}", srv)
+        assert m, "_VALID_RANGES 리터럴 누락"
+        server_ranges = set(_re.findall(r'"([a-z0-9]+)"', m.group(1)))
+        assert "ytd" in server_ranges, "서버 _VALID_RANGES 에 ytd 누락"
+        assert server_ranges == set(_VALID_PERIODS), (
+            f"range 화이트리스트 불일치: server={server_ranges} "
+            f"chart_data={set(_VALID_PERIODS)}"
+        )
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 9) 자산관리 — 뱅크샐러드 export 파서 (2026-06-04 P1 증분1)
