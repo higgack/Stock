@@ -1106,7 +1106,7 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
  • <b>📒 가계부</b> — 뱅샐 현금흐름·월별 수입지출·저축률
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/budget.html
- • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세 가격차트·💰비용
+ • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세 가격차트·실시간 지표·💰비용
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
  • <b>Screener</b> — 날짜별 run·Top-3 1/3/6m·검색·🗑️·도메인 /screener_list
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html

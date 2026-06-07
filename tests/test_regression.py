@@ -3238,3 +3238,105 @@ class TestDetailNewsResearchFallback:
             after = json.loads(jf.read_text(encoding="utf-8"))
             assert after["stock_info"]["news"][0]["title"] == "existing"
             assert after["stock_info"]["kr"]["research_reports"][0]["broker"] == "x"
+
+
+class TestLiveQuoteOverlay:
+    """상세 페이지 라이브 숫자 오버레이 회귀 차단 (2026-06-07).
+
+    상세 페이지 stock_info 숫자(현재가·시총·PER·선행PER·PBR·PSR·
+    EV/EBITDA·배당·베타·EPS·BPS·52주·이평·컨센서스)는 저장된 스냅샷이
+    아니라 페이지 로드 시 /api/quote 로 실시간 갱신. KR 은 KIS 우선.
+    영구 가드:
+     • 렌더러가 [data-q] 후크 + 마커(data-qmark/qfill) + 패널맵(panes)
+       을 emit — JS 오버레이가 붙을 자리
+     • 라이브 fmt 문자열이 렌더러 출력과 글자단위 일치 (시각적 drift 0)
+     • /api/quote 서버 엔드포인트가 do_GET 에 wire
+     • build_live_quote 가 numbers-only (Gemini 호출 0 — full 은
+       set_cache_only)
+    """
+
+    def _si(self):
+        return {
+            "currency": "USD", "current_price": 100.0,
+            "market_cap": 2_500_000_000, "shares_outstanding": 25_000_000,
+            "trailingPE": 30.43, "forwardPE": 25.1, "priceToBook": 5.2,
+            "priceToSalesTrailing12Months": 8.4, "enterpriseToEbitda": 18.9,
+            "dividendYield": 0.0123, "beta": 1.07,
+            "trailingEps": 3.29, "forwardEps": 3.98, "bookValue": 19.2,
+            "fiftyDayAverage": 95.5, "twoHundredDayAverage": 88.1,
+            "fiftyTwoWeekHigh": 120.0, "fiftyTwoWeekLow": 60.0,
+            "target_mean": 130.0, "target_high": 160.0, "target_low": 90.0,
+        }
+
+    def test_renderer_emits_data_q_hooks_and_panes(self):
+        import bot.dashboard as d
+        rec = {"ticker": "TEST", "stock_info": self._si()}
+        parts = d._render_stock_info_html(rec)
+        assert "panes" in parts, "full-mode panes map 누락"
+        for pid in ("si-financials", "si-earnings", "si-holders", "si-flow",
+                    "si-disclosures", "si-risk", "si-peers"):
+            assert pid in parts["panes"], f"heavy pane 누락: {pid}"
+        hdr, other = parts["header"], parts["other_panes"]
+        assert 'data-q="price"' in hdr and 'data-q="mcap"' in hdr
+        assert 'id="q-badge"' in hdr, "라이브 상태 배지 누락"
+        for key in ("trailingPE", "forwardPE", "priceToBook",
+                    "priceToSalesTrailing12Months", "enterpriseToEbitda",
+                    "dividendYield", "beta", "trailingEps", "forwardEps",
+                    "bookValue", "fiftyDayAverage", "twoHundredDayAverage",
+                    "target_mean", "upside", "w52_low", "w52_high",
+                    "w52_pos_label", "tgt_low", "tgt_mean", "tgt_high"):
+            assert f'data-q="{key}"' in other, f"data-q 후크 누락: {key}"
+        for mark in ('data-qmark="w52"', 'data-qfill="w52"',
+                     'data-qmark="tgt"', 'data-qfill="tgt"'):
+            assert mark in other, f"바 마커 누락: {mark}"
+
+    def test_no_formatting_drift(self):
+        """라이브 fmt 가 렌더러 출력과 글자단위 일치 — 같은 값이면 시각
+        변화 0 (drift 시 사용자가 '숫자가 튄다' 인지)."""
+        import bot.dashboard as d
+        rec = {"ticker": "TEST", "stock_info": self._si()}
+        p = d._render_stock_info_html(rec)
+        html = p["header"] + p["other_panes"]
+        csym, pdec = d._currency_sym("USD"), 2
+        exp = {
+            "price": d._fmt_num(100.0, decimals=pdec, prefix=csym),
+            "mcap": d._fmt_mcap(2_500_000_000, csym, "USD"),
+            "trailingPE": "%.2fx" % 30.43, "forwardPE": "%.2fx" % 25.1,
+            "priceToBook": "%.2fx" % 5.2,
+            "priceToSalesTrailing12Months": "%.2fx" % 8.4,
+            "enterpriseToEbitda": "%.2fx" % 18.9, "beta": "%.2f" % 1.07,
+            "dividendYield": "%.2f%%" % (0.0123 * 100),
+            "trailingEps": "%.2f" % 3.29, "forwardEps": "%.2f" % 3.98,
+            "bookValue": "%.2f" % 19.2, "fiftyDayAverage": "%.2f" % 95.5,
+            "twoHundredDayAverage": "%.2f" % 88.1,
+            "target_mean": csym + d._fmt_num(130.0, decimals=pdec),
+            "w52_low": csym + d._fmt_num(60.0, decimals=pdec),
+            "w52_high": csym + d._fmt_num(120.0, decimals=pdec),
+        }
+        miss = [(k, v) for k, v in exp.items() if v not in html]
+        assert not miss, f"포맷 drift: {miss}"
+        assert "+30.0%" in html, "컨센서스 괴리율 drift"
+        assert "현재가 (67%)" in html, "52주 위치 drift"
+
+    def test_detail_injects_quote_script(self):
+        import bot.dashboard as d
+        rec = {"ticker": "TEST", "stock_info": self._si()}
+        html = d._render_detail(rec)
+        assert 'NOAH_TICKER="TEST"' in html, "quote_script ticker 누락"
+        assert "api/quote?ticker=" in html, "라이브 fetch 누락"
+        assert "full=1" in html, "full-mode fetch 누락"
+
+    def test_server_endpoint_wired(self):
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert '"/api/quote"' in src, "/api/quote 라우트 누락"
+        assert "_handle_quote_api" in src, "quote 핸들러 누락"
+        assert "build_live_quote" in src, "build_live_quote 호출 누락"
+
+    def test_full_mode_uses_cache_only(self):
+        """full-mode 가 set_cache_only 로 Gemini 호출 0 (₩0) 보장."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.find("def build_live_quote")
+        assert i != -1
+        body = src[i:i + 4000]
+        assert "set_cache_only(True)" in body, "full-mode cache_only 누락 (₩ 누수)"
+        assert "collect_stock_snapshot" in body, "full-mode 재스냅샷 누락"

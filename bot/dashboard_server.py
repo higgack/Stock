@@ -179,6 +179,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # token prefix is already stripped by _authorize() above.
         if self.path.split("?", 1)[0] == "/api/chart":
             return self._handle_chart_api()
+        # /api/quote?ticker=..[&full=1]  — live numbers for the detail page.
+        # LIGHT (default): price-derived multiples + consensus + 52주 + 이평
+        # (yfinance .info, KR KIS-first). FULL: re-snapshot heavy panes.
+        if self.path.split("?", 1)[0] == "/api/quote":
+            return self._handle_quote_api()
         return super().do_GET()
 
     def do_HEAD(self):
@@ -463,6 +468,58 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(200, body)
         except Exception as exc:
             log.warning("chart_api: failed — %s", exc)
+            self._reply_json(500, {"ok": False, "error": "internal"})
+
+    def _handle_quote_api(self) -> None:
+        """Serve a fresh live-quote payload for the detail page. LIGHT
+        (default) returns pre-formatted price-derived numbers (yfinance
+        .info + KR KIS-first), 5-min disk cache. FULL (?full=1) re-renders
+        the heavy filing-/daily-cadence panes via collect_stock_snapshot,
+        30-min cache. Read-only GET, gated by _authorize(). ₩0 — no LLM."""
+        import time
+        import urllib.parse as _uparse
+
+        try:
+            qs = _uparse.urlparse(self.path).query
+            params = _uparse.parse_qs(qs)
+            ticker = (params.get("ticker", [""])[0] or "").strip().upper()
+            full = (params.get("full", ["0"])[0] or "0").strip() == "1"
+            if not _TICKER_RE.match(ticker):
+                self._reply_json(400, {"ok": False, "error": "bad ticker"})
+                return
+
+            cache_dir = _ARCHIVE_ROOT.parent / "quote_cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            safe = ticker.replace(".", "_").replace("-", "_")
+            kind = "full" if full else "light"
+            cache_f = cache_dir / f"{safe}_{kind}_v1.json"
+            # FULL is slow-moving (filings quarterly / 수급 daily) → 30 min.
+            # LIGHT is intraday → 5 min (matches the chart API cadence).
+            ttl = 1800 if full else 300
+            if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < ttl:
+                try:
+                    self._reply_json(200, json.loads(cache_f.read_text("utf-8")))
+                    return
+                except Exception:
+                    pass  # corrupt cache → refetch
+
+            from bot.dashboard import build_live_quote
+            quote = build_live_quote(ticker, full=full)
+            if not quote:
+                # 200 (not 404) so an old server (no endpoint → static 404)
+                # is distinguishable from "endpoint exists, no live data".
+                self._reply_json(200, {"ok": False, "error": "no data"})
+                return
+            body = {"ok": True, "quote": quote}
+            try:
+                cache_f.write_text(
+                    json.dumps(body, ensure_ascii=False), encoding="utf-8"
+                )
+            except Exception:
+                pass
+            self._reply_json(200, body)
+        except Exception as exc:
+            log.warning("quote_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
 
     def _handle_portfolio_send(self) -> None:
