@@ -3101,7 +3101,7 @@ def _render_stock_info_html(rec: dict) -> str:
     disclosure_tab = '  <button class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
     has_flow = bool(is_kr and kr.get("flow")) or bool(is_cn and mkt.get("hsgt_flow"))
     flow_tab = '  <button class="si-tab" data-pane="si-flow">수급</button>\n' if has_flow else ""
-    has_risk = bool(kr.get("lockup_releases") or kr.get("dilution_events")) or bool(is_cn and mkt.get("risk_status"))
+    has_risk = bool(kr.get("lockup_releases") or kr.get("dilution_events") or kr.get("market_alert")) or bool(is_cn and mkt.get("risk_status"))
     risk_tab = '  <button class="si-tab" data-pane="si-risk">리스크</button>\n' if has_risk else ""
     tabs_html = f"""<div class="si-tabs">
   <button class="si-tab active" data-pane="si-overview">종합</button>
@@ -3279,9 +3279,33 @@ def _render_stock_info_html(rec: dict) -> str:
 
     analysts_str = f" · {n_analysts}명 애널리스트" if n_analysts else ""
 
+    # Supplementary consensus from market-specific sources (when yfinance empty)
+    supp_consensus_html = ""
+    supp_con = mkt.get("consensus", {})
+    if supp_con and supp_con.get("target_mean"):
+        sc_src = esc(supp_con.get("source", ""))
+        sc_target = supp_con["target_mean"]
+        sc_rating = esc(str(supp_con.get("rating", "—")))
+        sc_n = supp_con.get("n_analysts")
+        sc_n_str = f" · {sc_n}명" if sc_n else ""
+        sc_lrd = supp_con.get("last_report_date")
+        sc_lrd_str = f" · 최신 {esc(sc_lrd)}" if sc_lrd else ""
+        sc_upside = ""
+        if cur_price and cur_price > 0:
+            sc_up = (sc_target - cur_price) / cur_price * 100
+            sc_sign = "+" if sc_up >= 0 else ""
+            sc_color = "#26a69a" if sc_up >= 0 else "#e2574c"
+            sc_upside = f' <span style="color:{sc_color}">{sc_sign}{sc_up:.1f}%</span>'
+        supp_consensus_html = f"""<div class="si-section" style="margin-top:16px">
+    <div class="si-section-title">{sc_src} 컨센서스</div>
+    <div style="font-size:14px">
+      목표가 {csym}{_fmt_num(sc_target, decimals=2 if currency not in ("KRW","JPY") else 0)}{sc_upside} · {sc_rating}{sc_n_str}{sc_lrd_str}
+    </div>
+  </div>"""
+
     consensus_pane = f"""<div class="si-pane" id="si-consensus">
   <div class="si-section">
-    <div class="si-section-title">월가 컨센서스</div>
+    <div class="si-section-title">{"월가" if is_us else ""} 컨센서스</div>
     <div class="si-consensus">
       <div>
         <span class="si-con-badge {rec_class}">{esc(rec_label)}</span>
@@ -3292,6 +3316,7 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
     {range_html}
   </div>
+  {supp_consensus_html}
 </div>"""
 
     # ── 밸류에이션 pane ────────────────────────────────────────
@@ -3676,6 +3701,20 @@ def _render_stock_info_html(rec: dict) -> str:
       <div class="si-section-title">📉 잠재 희석 이벤트 (CB/BW)</div>
       <table class="si-table"><thead><tr><th>종류</th><th>날짜</th><th class="num">신주수</th><th class="num">행사가</th></tr></thead><tbody>{dl_rows}</tbody></table>
     </div>""")
+
+    # KR KRX 시장경보 (거래정지/관리종목/투자경고/단기과열)
+    kr_alert = kr.get("market_alert", {})
+    if kr_alert.get("suspended"):
+        risk_parts.append('<div style="background:#f8d7da;color:#721c24;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">🚫 거래정지 — 현재 매매 불가</div>')
+    if kr_alert.get("admin"):
+        risk_parts.append('<div style="background:#f8d7da;color:#721c24;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">⚠️ 관리종목 지정 — 상장폐지 사유 해당, 투자 주의</div>')
+    wl = kr_alert.get("warning_level", "")
+    if wl:
+        wl_colors = {"위험": ("#f8d7da", "#721c24"), "경고": ("#fff3cd", "#856404"), "주의": ("#fff3cd", "#856404")}
+        bg, fg = wl_colors.get(wl, ("#fff3cd", "#856404"))
+        risk_parts.append(f'<div style="background:{bg};color:{fg};padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">⚠️ 투자{wl} — KRX 시장경보 지정</div>')
+    if kr_alert.get("overheating"):
+        risk_parts.append('<div style="background:#fff3cd;color:#856404;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">🔥 단기과열 종목 — 급등/급락 주의</div>')
 
     # CN ST/停牌 risk status
     cn_risk = mkt.get("risk_status", {}) if is_cn else {}

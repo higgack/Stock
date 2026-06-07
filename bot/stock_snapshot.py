@@ -432,6 +432,49 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: FSC dilution skipped: %s", exc)
 
+    # ── KRX 시장경보 (거래정지/관리종목/투자경고/단기과열) ─────────
+    try:
+        from bot.krx_alert_client import get_krx_alert
+        alert = get_krx_alert()
+        status = alert.get_status(ticker)
+        if status and (status.get("suspended") or status.get("admin")
+                       or status.get("overheating") or status.get("warning_level")):
+            snap.setdefault("kr", {})["market_alert"] = status
+    except Exception as exc:
+        log.debug("stock_snapshot: KRX alert skipped: %s", exc)
+
+    # ── FnGuide + 한경 컨센서스 (yfinance 보완) ──────────────────
+    if not snap.get("target_mean"):
+        try:
+            from bot.fnguide_consensus import fetch_consensus as fnguide_fetch
+            fg = fnguide_fetch(ticker)
+            if fg and fg.get("target_mean"):
+                kr = snap.setdefault("kr", {})
+                kr["consensus"] = {
+                    "source": "FnGuide",
+                    "target_mean": fg["target_mean"],
+                    "rating": fg.get("rating"),
+                    "n_analysts": fg.get("n_analysts"),
+                }
+        except Exception as exc:
+            log.debug("stock_snapshot: FnGuide consensus skipped: %s", exc)
+
+    if not snap.get("target_mean") and not snap.get("kr", {}).get("consensus"):
+        try:
+            from bot.hk_consensus_client import fetch_consensus as hk_fetch
+            hk = hk_fetch(ticker)
+            if hk and hk.get("target_price"):
+                kr = snap.setdefault("kr", {})
+                kr["consensus"] = {
+                    "source": "한경",
+                    "target_mean": hk["target_price"],
+                    "rating": hk.get("rating"),
+                    "n_analysts": hk.get("analyst_count"),
+                    "last_report_date": hk.get("last_report_date"),
+                }
+        except Exception as exc:
+            log.debug("stock_snapshot: HanKyung consensus skipped: %s", exc)
+
     # ── yfinance dividends (universal) ────────────────────────────
     _collect_dividends(ticker, snap)
 
@@ -469,6 +512,25 @@ def _enrich_us(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: EDGAR financials skipped: %s", exc)
 
+    # ── SEC 8-K disclosures (공시) ───────────────────────────────
+    try:
+        from bot.edgar_client import get_recent_8k
+        filings = get_recent_8k(ticker, days=60, top_n=20)
+        if filings:
+            disc_rows = []
+            for f in filings:
+                labels = f.get("items_labels", [])
+                title = " / ".join(labels) if labels else f.get("items_raw", "8-K")
+                disc_rows.append({
+                    "date": f.get("date", ""),
+                    "title": title,
+                    "url": f.get("url", ""),
+                    "reporter": "SEC 8-K",
+                })
+            snap.setdefault("us", {})["disclosures"] = disc_rows
+    except Exception as exc:
+        log.debug("stock_snapshot: EDGAR 8-K skipped: %s", exc)
+
     # ── SEC Form 4 insider trades ─────────────────────────────────
     try:
         from bot.edgar_client import get_recent_form4
@@ -502,6 +564,22 @@ def _enrich_jp(ticker: str, snap: dict) -> None:
                 snap.setdefault("jp", {})["major_holders"] = holders[:15]
     except Exception as exc:
         log.debug("stock_snapshot: EDINET major holders skipped: %s", exc)
+
+    # ── Kabutan consensus (yfinance 보완) ────────────────────────
+    if not snap.get("target_mean"):
+        try:
+            from bot.kabutan_consensus import fetch_consensus as kabutan_fetch
+            kb = kabutan_fetch(ticker)
+            if kb and kb.get("target_mean"):
+                snap.setdefault("jp", {})["consensus"] = {
+                    "source": "Kabutan",
+                    "target_mean": kb["target_mean"],
+                    "rating": kb.get("rating"),
+                    "n_analysts": kb.get("n_analysts"),
+                    "last_report_date": kb.get("last_report_date"),
+                }
+        except Exception as exc:
+            log.debug("stock_snapshot: Kabutan consensus skipped: %s", exc)
 
     # ── yfinance dividends (universal) ────────────────────────────
     _collect_dividends(ticker, snap)
