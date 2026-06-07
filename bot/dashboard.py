@@ -3103,12 +3103,16 @@ def _render_stock_info_html(rec: dict) -> str:
     flow_tab = '  <button class="si-tab" data-pane="si-flow">수급</button>\n' if has_flow else ""
     has_risk = bool(kr.get("lockup_releases") or kr.get("dilution_events") or kr.get("market_alert")) or bool(is_cn and mkt.get("risk_status"))
     risk_tab = '  <button class="si-tab" data-pane="si-risk">리스크</button>\n' if has_risk else ""
+    has_financials = bool(si.get("financials"))
+    financials_tab = '  <button class="si-tab" data-pane="si-financials">재무제표</button>\n' if has_financials else ""
+    has_peers = bool(si.get("peer_comps"))
+    peers_tab = '  <button class="si-tab" data-pane="si-peers">동종비교</button>\n' if has_peers else ""
     tabs_html = f"""<div class="si-tabs">
   <button class="si-tab active" data-pane="si-overview">종합</button>
   <button class="si-tab" data-pane="si-company">기업</button>
   <button class="si-tab" data-pane="si-consensus">컨센서스</button>
   <button class="si-tab" data-pane="si-valuation">밸류에이션</button>
-  <button class="si-tab" data-pane="si-earnings">실적</button>
+{financials_tab}{peers_tab}  <button class="si-tab" data-pane="si-earnings">실적</button>
   <button class="si-tab" data-pane="si-research">리서치</button>
   <button class="si-tab" data-pane="si-holders">주주</button>
 {flow_tab}{disclosure_tab}{risk_tab}  <button class="si-tab" data-pane="si-news">뉴스</button>
@@ -3948,6 +3952,175 @@ def _render_stock_info_html(rec: dict) -> str:
   {div_html}
 </div>"""
 
+    # ── 재무제표 pane (IS / BS / CF + 수익성 차트) ──────────────────
+    financials_pane = ""
+    fins = si.get("financials", {})
+    if fins:
+        def _fin_table(stmt_data: dict, key_items: list[str], label: str) -> str:
+            """Render one financial statement sub-table."""
+            annual = stmt_data.get("annual", [])
+            quarterly = stmt_data.get("quarterly", [])
+            if not annual and not quarterly:
+                return ""
+            parts: list[str] = []
+            for view_label, rows in (("연간", annual), ("분기", quarterly)):
+                if not rows:
+                    continue
+                periods = [r.get("period", "?")[:7] for r in rows]
+                hdr = "".join(f'<th class="num">{esc(p)}</th>' for p in periods)
+                all_items = set()
+                for r in rows:
+                    all_items.update(k for k in r if k != "period")
+                display_items = [i for i in key_items if i in all_items]
+                extra = sorted(all_items - set(key_items))
+                display_items.extend(extra)
+                tbody = ""
+                for item in display_items:
+                    vals = ""
+                    for r in rows:
+                        v = r.get(item)
+                        if v is not None:
+                            if abs(v) >= 1e9:
+                                vs = f"{v/1e9:.1f}B"
+                            elif abs(v) >= 1e6:
+                                vs = f"{v/1e6:.0f}M"
+                            else:
+                                vs = f"{v:,.0f}"
+                            color = "#e2574c" if v < 0 else ""
+                            style = f' style="color:{color}"' if color else ""
+                            vals += f'<td class="num"{style}>{vs}</td>'
+                        else:
+                            vals += '<td class="num">—</td>'
+                    tbody += f"<tr><td>{esc(item)}</td>{vals}</tr>\n"
+                parts.append(f"""<div class="si-section" style="margin-top:12px">
+        <div class="si-section-title">{label} — {view_label}</div>
+        <div style="overflow-x:auto"><table class="si-table"><thead><tr><th>항목</th>{hdr}</tr></thead><tbody>{tbody}</tbody></table></div>
+      </div>""")
+            return "\n".join(parts)
+
+        is_items = ["Total Revenue", "Operating Revenue", "Cost Of Revenue",
+                     "Gross Profit", "Operating Income", "Operating Expense",
+                     "EBITDA", "EBIT", "Net Income", "Basic EPS", "Diluted EPS",
+                     "Tax Provision", "Interest Expense"]
+        bs_items = ["Total Assets", "Current Assets", "Cash And Cash Equivalents",
+                     "Total Liabilities Net Minority Interest", "Current Liabilities",
+                     "Total Debt", "Stockholders Equity", "Retained Earnings",
+                     "Common Stock Equity", "Working Capital"]
+        cf_items = ["Operating Cash Flow", "Capital Expenditure",
+                     "Free Cash Flow", "Investing Cash Flow",
+                     "Financing Cash Flow", "End Cash Position",
+                     "Repurchase Of Capital Stock", "Cash Dividends Paid"]
+
+        is_html = _fin_table(fins.get("income_statement", {}), is_items, "손익계산서")
+        bs_html = _fin_table(fins.get("balance_sheet", {}), bs_items, "재무상태표")
+        cf_html = _fin_table(fins.get("cash_flow", {}), cf_items, "현금흐름표")
+
+        # Revenue / Operating / Net Income bar chart (inline SVG)
+        chart_svg = ""
+        is_annual = fins.get("income_statement", {}).get("annual", [])
+        if is_annual and len(is_annual) >= 2:
+            chart_items = []
+            for r in reversed(is_annual[:4]):
+                chart_items.append({
+                    "period": r.get("period", "?")[:4],
+                    "revenue": r.get("Total Revenue", 0) or 0,
+                    "op_income": r.get("Operating Income", 0) or 0,
+                    "net_income": r.get("Net Income", 0) or 0,
+                })
+            if any(c["revenue"] for c in chart_items):
+                max_val = max(abs(c["revenue"]) for c in chart_items) or 1
+                bar_w = 180 // len(chart_items)
+                svg_w = bar_w * len(chart_items) * 3 + 120
+                bars = ""
+                labels = ""
+                legend = ('<text x="10" y="14" font-size="11" fill="#999">● <tspan fill="#42a5f5">매출</tspan>'
+                          ' ● <tspan fill="#66bb6a">영업이익</tspan>'
+                          ' ● <tspan fill="#ffa726">순이익</tspan></text>')
+                for i, c in enumerate(chart_items):
+                    x_base = 40 + i * (bar_w * 3 + 16)
+                    for j, (val, color) in enumerate([
+                        (c["revenue"], "#42a5f5"),
+                        (c["op_income"], "#66bb6a"),
+                        (c["net_income"], "#ffa726"),
+                    ]):
+                        h = max(abs(val) / max_val * 120, 2)
+                        y = 150 - h if val >= 0 else 150
+                        bars += f'<rect x="{x_base + j * bar_w}" y="{y}" width="{bar_w - 2}" height="{h}" fill="{color}" rx="2"/>\n'
+                    labels += f'<text x="{x_base + bar_w}" y="170" font-size="11" fill="#999" text-anchor="middle">{c["period"]}</text>\n'
+                chart_svg = f"""<div class="si-section" style="margin-top:12px">
+        <div class="si-section-title">수익성 추이</div>
+        <svg width="{svg_w}" height="185" style="display:block;margin:auto">
+          {legend}
+          <line x1="38" y1="150" x2="{svg_w - 10}" y2="150" stroke="#555" stroke-width="1"/>
+          {bars}
+          {labels}
+        </svg>
+      </div>"""
+
+                # YoY growth rates
+                growth_rows = ""
+                for i in range(1, len(chart_items)):
+                    prev = chart_items[i - 1]
+                    cur = chart_items[i]
+                    period = cur["period"]
+                    cells = ""
+                    for key in ("revenue", "op_income", "net_income"):
+                        p = prev[key]
+                        c = cur[key]
+                        if p and p != 0:
+                            g = (c - p) / abs(p) * 100
+                            color = "#26a69a" if g >= 0 else "#e2574c"
+                            sign = "+" if g >= 0 else ""
+                            cells += f'<td class="num" style="color:{color}">{sign}{g:.1f}%</td>'
+                        else:
+                            cells += '<td class="num">—</td>'
+                    growth_rows += f"<tr><td>{period}</td>{cells}</tr>\n"
+                if growth_rows:
+                    chart_svg += f"""<div class="si-section" style="margin-top:12px">
+        <div class="si-section-title">YoY 성장률</div>
+        <table class="si-table"><thead><tr><th>연도</th><th class="num">매출</th><th class="num">영업이익</th><th class="num">순이익</th></tr></thead><tbody>{growth_rows}</tbody></table>
+      </div>"""
+
+        financials_pane = f"""<div class="si-pane" id="si-financials">
+  {chart_svg}
+  {is_html}
+  {bs_html}
+  {cf_html}
+</div>"""
+
+    # ── 동종비교 (Peer Comps) pane ────────────────────────────────
+    peers_pane = ""
+    peer_comps = si.get("peer_comps", [])
+    if peer_comps:
+        pc_rows = ""
+        for pc in peer_comps:
+            is_subj = pc.get("is_subject")
+            style = ' style="background:rgba(66,165,245,0.12);font-weight:600"' if is_subj else ""
+            name = esc(pc.get("name", "?"))
+            ptk = esc(pc.get("ticker", ""))
+            mc = pc.get("market_cap")
+            mc_str = f"${mc/1e9:.1f}B" if mc and mc >= 1e9 else (f"${mc/1e6:.0f}M" if mc else "—")
+            def _pv(k):
+                v = pc.get(k)
+                return f"{v:.1f}" if v else "—"
+            dy = pc.get("dividendYield")
+            dy_str = f"{dy*100:.1f}%" if dy else "—"
+            pc_rows += f'<tr{style}><td>{name}</td><td>{ptk}</td><td class="num">{mc_str}</td>'
+            pc_rows += f'<td class="num">{_pv("trailingPE")}</td><td class="num">{_pv("forwardPE")}</td>'
+            pc_rows += f'<td class="num">{_pv("priceToBook")}</td><td class="num">{_pv("priceToSalesTrailing12Months")}</td>'
+            pc_rows += f'<td class="num">{_pv("enterpriseToEbitda")}</td><td class="num">{dy_str}</td></tr>\n'
+        peers_pane = f"""<div class="si-pane" id="si-peers">
+  <div class="si-section">
+    <div class="si-section-title">동종업계 밸류에이션 비교</div>
+    <div style="overflow-x:auto">
+    <table class="si-table">
+      <thead><tr><th>회사</th><th>티커</th><th class="num">시총</th><th class="num">PER</th><th class="num">Fwd PER</th><th class="num">PBR</th><th class="num">PSR</th><th class="num">EV/EBITDA</th><th class="num">배당</th></tr></thead>
+      <tbody>{pc_rows}</tbody>
+    </table>
+    </div>
+  </div>
+</div>"""
+
     # JP EDINET major holders (5%+ 大量保有)
     jp_holders_html = ""
     jp_holders = si.get("jp", {}).get("major_holders", []) if is_jp else []
@@ -4008,12 +4181,63 @@ def _render_stock_info_html(rec: dict) -> str:
     </table>
   </div>"""
 
+    # Short Interest visualization
+    short_html = ""
+    shares_short = si.get("shares_short")
+    short_ratio = si.get("short_ratio")
+    shares_out = si.get("shares_outstanding")
+    if shares_short:
+        si_pct = (shares_short / shares_out * 100) if shares_out and shares_out > 0 else None
+        si_pct_str = f"{si_pct:.2f}%" if si_pct else "—"
+        sr_str = f"{short_ratio:.1f}일" if short_ratio else "—"
+        si_bar = ""
+        if si_pct:
+            bar_w = min(si_pct * 5, 100)
+            bar_color = "#e2574c" if si_pct > 10 else ("#ffa726" if si_pct > 5 else "#66bb6a")
+            si_bar = f'''<div style="margin-top:6px;height:10px;background:#333;border-radius:5px;overflow:hidden;max-width:300px">
+          <div style="height:100%;width:{bar_w:.0f}%;background:{bar_color};border-radius:5px"></div>
+        </div>
+        <div style="font-size:11px;color:#888;margin-top:2px">0% {'━' * 10} 20%+</div>'''
+        short_html = f"""<div class="si-section">
+    <div class="si-section-title">공매도 현황</div>
+    <table class="si-table"><tbody>
+      <tr><td>공매도 주식수</td><td class="num">{int(shares_short):,}</td></tr>
+      <tr><td>공매도 비율</td><td class="num">{si_pct_str}</td></tr>
+      <tr><td>Short Ratio (커버 소요일)</td><td class="num">{sr_str}</td></tr>
+    </tbody></table>
+    {si_bar}
+  </div>"""
+
+    # US insider trades summary (Form 4 buy/sell aggregation)
+    us_insider_summary_html = ""
+    us_ins = si.get("us", {}).get("insider_trades", [])
+    if us_ins:
+        buys = sum(1 for t_ in us_ins if t_.get("transaction_type", "").startswith(("P", "A")))
+        sells = sum(1 for t_ in us_ins if t_.get("transaction_type", "").startswith(("S", "D")))
+        if buys or sells:
+            total = buys + sells
+            buy_pct = buys / total * 100 if total else 0
+            sell_pct = sells / total * 100 if total else 0
+            us_insider_summary_html = f"""<div class="si-section">
+    <div class="si-section-title">내부자 거래 요약 (SEC Form 4)</div>
+    <div style="display:flex;gap:20px;align-items:center;margin:8px 0">
+      <div style="text-align:center"><span style="font-size:24px;font-weight:700;color:#26a69a">{buys}</span><div style="font-size:12px;color:#999">매수</div></div>
+      <div style="flex:1;height:12px;background:#333;border-radius:6px;overflow:hidden;display:flex">
+        <div style="width:{buy_pct:.0f}%;background:#26a69a"></div>
+        <div style="width:{sell_pct:.0f}%;background:#e2574c"></div>
+      </div>
+      <div style="text-align:center"><span style="font-size:24px;font-weight:700;color:#e2574c">{sells}</span><div style="font-size:12px;color:#999">매도</div></div>
+    </div>
+  </div>"""
+
     holders_pane = f"""<div class="si-pane" id="si-holders">
   <div class="si-section">
     <div class="si-section-title">주요 기관</div>
     {holder_summary}
     {holders_table}
   </div>
+  {short_html}
+  {us_insider_summary_html}
   {kr_insider_html}
   {kr_minority_html}
   {us_insider_html}
@@ -4029,7 +4253,8 @@ def _render_stock_info_html(rec: dict) -> str:
         "tabs": tabs_html,
         "tab_js": tab_js,
         "other_panes": company_pane + "\n" + consensus_pane + "\n" +
-                       valuation_pane + "\n" + earnings_pane + "\n" +
+                       valuation_pane + "\n" + financials_pane + "\n" +
+                       peers_pane + "\n" + earnings_pane + "\n" +
                        research_pane + "\n" + holders_pane + "\n" +
                        flow_pane + "\n" + disclosures_pane + "\n" +
                        risk_pane + "\n" + news_pane + "\n" + timeline_pane,

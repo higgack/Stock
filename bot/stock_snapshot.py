@@ -200,6 +200,18 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
         except Exception:
             pass
 
+        # ── financial statements (IS / BS / CF — annual + quarterly) ──
+        try:
+            _collect_financials(t, snap)
+        except Exception:
+            pass
+
+        # ── peer multiples (for comps tab) ──────────────────────────
+        try:
+            _collect_peer_multiples(ticker, info, snap)
+        except Exception:
+            pass
+
         # strip None values to keep JSON compact
         snap = {k: v for k, v in snap.items() if v is not None}
 
@@ -683,3 +695,89 @@ def _collect_dividends(ticker: str, snap: dict) -> None:
                 snap["dividends"] = rows
     except Exception as exc:
         log.debug("stock_snapshot: dividends skipped for %s: %s", ticker, exc)
+
+
+def _df_to_rows(df, max_periods: int = 5) -> list[dict]:
+    """Convert a yfinance financial DataFrame to compact row dicts.
+
+    Columns are fiscal period dates, index is line-item names.
+    Returns [{period, item1, item2, ...}, ...] newest-first.
+    """
+    if df is None or df.empty:
+        return []
+    rows: list[dict] = []
+    for col in list(df.columns)[:max_periods]:
+        entry: dict = {}
+        if hasattr(col, "strftime"):
+            entry["period"] = col.strftime("%Y-%m-%d")
+        else:
+            entry["period"] = str(col)[:10]
+        for item in df.index:
+            v = df.at[item, col]
+            if v is not None and str(v) != "nan":
+                entry[item] = round(float(v), 2) if isinstance(v, float) else int(v)
+        rows.append(entry)
+    return rows
+
+
+def _collect_financials(t, snap: dict) -> None:
+    """Collect IS / BS / CF (annual + quarterly) from yfinance Ticker."""
+    fins: dict = {}
+    for label, attr_a, attr_q in (
+        ("income_statement", "financials", "quarterly_financials"),
+        ("balance_sheet", "balance_sheet", "quarterly_balance_sheet"),
+        ("cash_flow", "cashflow", "quarterly_cashflow"),
+    ):
+        annual_df = getattr(t, attr_a, None)
+        quarterly_df = getattr(t, attr_q, None)
+        a_rows = _df_to_rows(annual_df, max_periods=4)
+        q_rows = _df_to_rows(quarterly_df, max_periods=8)
+        if a_rows or q_rows:
+            fins[label] = {}
+            if a_rows:
+                fins[label]["annual"] = a_rows
+            if q_rows:
+                fins[label]["quarterly"] = q_rows
+    if fins:
+        snap["financials"] = fins
+
+
+def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
+    """Collect peer company multiples for the comps tab."""
+    try:
+        from bot.market import resolve_peer_set
+    except ImportError:
+        return
+    industry = info.get("industry", "")
+    if not industry:
+        return
+    peers = resolve_peer_set(ticker, industry)
+    if not peers:
+        return
+    import yfinance as yf
+    comps: list[dict] = []
+    subject_added = False
+    for pt in ([ticker] + peers[:7]):
+        try:
+            pi = yf.Ticker(pt).info or {}
+            name = pi.get("shortName") or pi.get("longName") or pt
+            entry = {
+                "ticker": pt,
+                "name": name[:30],
+                "market_cap": pi.get("marketCap"),
+                "trailingPE": pi.get("trailingPE"),
+                "forwardPE": pi.get("forwardPE"),
+                "priceToBook": pi.get("priceToBook"),
+                "priceToSalesTrailing12Months": pi.get("priceToSalesTrailing12Months"),
+                "enterpriseToEbitda": pi.get("enterpriseToEbitda"),
+                "dividendYield": pi.get("dividendYield"),
+            }
+            entry = {k: v for k, v in entry.items() if v is not None}
+            if pt == ticker:
+                entry["is_subject"] = True
+                subject_added = True
+            comps.append(entry)
+        except Exception:
+            continue
+    if comps and subject_added:
+        snap["peer_comps"] = comps
