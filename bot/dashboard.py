@@ -3149,25 +3149,6 @@ def diagnose_detail_sources(ticker: str) -> dict:
                     "company_info_corp_name": ci.get("corp_name")}
         _probe("dart_name", _dart_name)
 
-        def _naver():
-            from bot.naver_news_client import fetch_news
-            from bot.dart_client import get_dart
-            from bot.market import kr_news_query_name
-            dart = get_dart()
-            # The actual query the overlay now uses (Korean brand, suffix
-            # stripped). Show the English-registration fallback too so the
-            # NAVER-class bug stays visible if it ever regresses.
-            q = (dart.news_search_name(code) if dart else None) or tkr
-            eng = dart.stock_code_to_name(code) if dart else None
-            items = fetch_news(q, days_back=28, max_items=10)
-            return {"ok": bool(items), "query": q,
-                    "english_registration": eng,
-                    "count": len(items) if items else 0,
-                    "sample": (items[0].get("title") if items else None)}
-        _probe("naver_news", _naver)
-
-        # Raw HTTP status of the scrape sources — distinguishes a 403
-        # IP-block (data-source limitation) from a genuinely empty page.
         def _http_status(url, headers=None):
             import requests
             try:
@@ -3176,25 +3157,83 @@ def diagnose_detail_sources(ticker: str) -> dict:
             except Exception as exc:
                 return {"status": None, "error": f"{type(exc).__name__}: {str(exc)[:120]}"}
 
+        def _naver():
+            from bot.naver_news_client import fetch_news, _API_URL
+            from bot.dart_client import get_dart
+            dart = get_dart()
+            q = (dart.news_search_name(code) if dart else None) or tkr
+            eng = dart.stock_code_to_name(code) if dart else None
+            items = fetch_news(q, days_back=28, max_items=10)
+            # 0 items with a valid Korean query + present keys means the API
+            # itself is rejecting us — capture the raw status + Naver's error
+            # body (keys live in headers, never the body, so this is safe).
+            raw = {}
+            if not items:
+                import requests as _rq
+                cid = _os.getenv("NAVER_CLIENT_ID", "").strip()
+                csec = _os.getenv("NAVER_CLIENT_SECRET", "").strip()
+                try:
+                    rr = _rq.get(_API_URL,
+                                 params={"query": q, "display": 5, "sort": "date"},
+                                 headers={"X-Naver-Client-Id": cid,
+                                          "X-Naver-Client-Secret": csec},
+                                 timeout=12)
+                    raw = {"status": rr.status_code,
+                           "total": (rr.json().get("total") if rr.status_code == 200 else None),
+                           "body": rr.text[:300]}
+                except Exception as exc:
+                    raw = {"error": f"{type(exc).__name__}: {str(exc)[:150]}"}
+            return {"ok": bool(items), "query": q,
+                    "english_registration": eng,
+                    "count": len(items) if items else 0,
+                    "sample": (items[0].get("title") if items else None),
+                    "raw_api": raw}
+        _probe("naver_news", _naver)
+
         def _hk():
             from bot.hk_consensus_client import fetch_consensus, _HEADERS, _BASE_URL
-            raw = _http_status(f"{_BASE_URL}?sk={code}&search_type=2", _HEADERS)
+            # The current scrape URL 404s — probe candidate paths to find the
+            # live one so the scraper can be re-pointed.
+            cands = {
+                "current": f"{_BASE_URL}?sk={code}&search_type=2",
+                "domain_root": "https://consensus.hankyung.com/",
+                "analysis_total": f"https://consensus.hankyung.com/analysis/list?skinType=&sdate=&edate=&now_page=1&search_text={code}",
+                "apps_company": f"https://consensus.hankyung.com/apps.analysis/analysis.company?skinType=business&sk={code}",
+            }
+            probes = {k: _http_status(v, _HEADERS) for k, v in cands.items()}
             r = fetch_consensus(ticker)
             return {"ok": bool(r and r.get("reports")),
                     "reports": len(r.get("reports", [])) if r else 0,
-                    "target_price": (r or {}).get("target_price"),
-                    "http": raw}
+                    "url_probes": probes}
         _probe("hankyung_research", _hk)
 
         def _fng():
+            import requests as _rq, re as _re
+            url = (f"https://comp.fnguide.com/SVO2/asp/SVD_Main.asp"
+                   f"?pGB=1&gicode=A{code}&cID=&MenuYn=Y&ReportGB=&NewMenuID=101&stkGb=701")
+            url_cons = (f"https://comp.fnguide.com/SVO2/asp/SVD_Consensus.asp"
+                        f"?pGB=1&gicode=A{code}&cID=&MenuYn=Y&ReportGB=&NewMenuID=108&stkGb=701")
+            snip = {}
+            for label, u in (("consensus", url_cons), ("main", url)):
+                try:
+                    rr = _rq.get(u, headers={"User-Agent": "Mozilla/5.0"}, timeout=12)
+                    html = rr.text
+                    # Snippet around the first 목표주가 label so we can see the
+                    # actual markup the parser must match.
+                    idx = html.find("목표주가")
+                    if idx < 0:
+                        idx = html.find("Consensus")
+                    around = (html[max(0, idx - 40):idx + 220] if idx >= 0 else "")
+                    around = _re.sub(r"\s+", " ", around)
+                    snip[label] = {"status": rr.status_code, "bytes": len(html),
+                                   "label_found": idx >= 0, "around": around[:260]}
+                except Exception as exc:
+                    snip[label] = {"error": f"{type(exc).__name__}: {str(exc)[:120]}"}
             from bot.fnguide_consensus import fetch_consensus as fg
-            raw = _http_status(
-                f"https://comp.fnguide.com/SVO2/asp/SVD_Consensus.asp?pGB=1&gicode=A{code}&cID=&MenuYn=Y&ReportGB=&NewMenuID=108&stkGb=701",
-                {"User-Agent": "Mozilla/5.0"})
             r = fg(code)
             return {"ok": bool(r and r.get("target_mean")),
                     "target_mean": (r or {}).get("target_mean"),
-                    "http": raw}
+                    "snippets": snip}
         _probe("fnguide_consensus", _fng)
 
     elif tkr.endswith(".T"):
