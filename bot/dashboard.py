@@ -2991,8 +2991,8 @@ def _fmt_num(v, decimals=0, prefix="", suffix=""):
     return f"{prefix}{n:,.{decimals}f}{suffix}"
 
 
-def _fmt_mcap(v, currency_sym=""):
-    """Format market cap in human-readable units (조/억/B/M/T)."""
+def _fmt_mcap(v, currency_sym="", currency=""):
+    """Format market cap in human-readable units (조/억/兆/億/B/M/T)."""
     if v is None:
         return "—"
     try:
@@ -3001,26 +3001,34 @@ def _fmt_mcap(v, currency_sym=""):
         return "—"
     if n <= 0:
         return "—"
-    if currency_sym in ("₩", "원"):
+    if currency_sym in ("₩", "원") or currency == "KRW":
         if n >= 1e12:
             return f"₩{n / 1e12:,.2f}조"
         if n >= 1e8:
             return f"₩{n / 1e8:,.0f}억"
         return f"₩{n:,.0f}"
-    if currency_sym in ("¥",):
+    if currency in ("JPY", "TWD", "HKD", "CNY"):
+        sym = {"JPY": "¥", "TWD": "NT$", "HKD": "HK$", "CNY": "¥"}.get(currency, currency_sym or "$")
+        t_label, y_label = ("兆", "億")
+        if n >= 1e12:
+            return f"{sym}{n / 1e12:,.2f}{t_label}"
+        if n >= 1e8:
+            return f"{sym}{n / 1e8:,.0f}{y_label}"
+        return f"{sym}{n:,.0f}"
+    if currency_sym == "¥":
         if n >= 1e12:
             return f"¥{n / 1e12:,.2f}兆"
         if n >= 1e8:
             return f"¥{n / 1e8:,.0f}億"
         return f"¥{n:,.0f}"
-    # USD / default
+    sym = currency_sym or "$"
     if n >= 1e12:
-        return f"${n / 1e12:,.2f}T"
+        return f"{sym}{n / 1e12:,.2f}T"
     if n >= 1e9:
-        return f"${n / 1e9:,.2f}B"
+        return f"{sym}{n / 1e9:,.2f}B"
     if n >= 1e6:
-        return f"${n / 1e6:,.1f}M"
-    return f"${n:,.0f}"
+        return f"{sym}{n / 1e6:,.1f}M"
+    return f"{sym}{n:,.0f}"
 
 
 def _fmt_shares(v):
@@ -3111,9 +3119,10 @@ def _render_stock_info_html(rec: dict) -> str:
 
     # ── top header cards ────────────────────────────────────────
     price = si.get("current_price")
-    price_str = _fmt_num(price, decimals=2 if currency != "KRW" else 0,
+    _0dec = ("KRW", "JPY", "TWD", "HKD")
+    price_str = _fmt_num(price, decimals=2 if currency not in _0dec else 0,
                          prefix=csym)
-    mcap_str = _fmt_mcap(si.get("market_cap"), csym)
+    mcap_str = _fmt_mcap(si.get("market_cap"), csym, currency)
     shares_str = _fmt_shares(si.get("shares_outstanding"))
     ne = si.get("next_earnings", "")
     ne_label = ne if ne else "—"
@@ -3328,9 +3337,9 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-range-marker" style="left:{cur_pct:.1f}%" title="현재가"></div>
   </div>
   <div class="si-range-labels">
-    <span>{csym}{_fmt_num(target_low, decimals=2 if currency != "KRW" else 0)}</span>
-    <span>목표 {csym}{_fmt_num(target_mean, decimals=2 if currency != "KRW" else 0)}</span>
-    <span>{csym}{_fmt_num(target_high, decimals=2 if currency != "KRW" else 0)}</span>
+    <span>{csym}{_fmt_num(target_low, decimals=2 if currency not in _0dec else 0)}</span>
+    <span>목표 {csym}{_fmt_num(target_mean, decimals=2 if currency not in _0dec else 0)}</span>
+    <span>{csym}{_fmt_num(target_high, decimals=2 if currency not in _0dec else 0)}</span>
   </div>
 </div>"""
 
@@ -3356,19 +3365,19 @@ def _render_stock_info_html(rec: dict) -> str:
         supp_consensus_html = f"""<div class="si-section" style="margin-top:16px">
     <div class="si-section-title">{sc_src} 컨센서스</div>
     <div style="font-size:14px">
-      목표가 {csym}{_fmt_num(sc_target, decimals=2 if currency not in ("KRW","JPY") else 0)}{sc_upside} · {sc_rating}{sc_n_str}{sc_lrd_str}
+      목표가 {csym}{_fmt_num(sc_target, decimals=2 if currency not in _0dec else 0)}{sc_upside} · {sc_rating}{sc_n_str}{sc_lrd_str}
     </div>
   </div>"""
 
     consensus_pane = f"""<div class="si-pane" id="si-consensus">
   <div class="si-section">
-    <div class="si-section-title">{"월가" if is_us else ""} 컨센서스</div>
+    <div class="si-section-title">{"월가 컨센서스" if is_us else "애널리스트 컨센서스"}</div>
     <div class="si-consensus">
       <div>
         <span class="si-con-badge {rec_class}">{esc(rec_label)}</span>
       </div>
       <div class="si-con-target">
-        목표가 {csym}{_fmt_num(target_mean, decimals=2 if currency != "KRW" else 0)} {upside_str}{analysts_str}
+        목표가 {csym}{_fmt_num(target_mean, decimals=2 if currency not in _0dec else 0)} {upside_str}{analysts_str}
       </div>
     </div>
     {range_html}
@@ -3399,28 +3408,28 @@ def _render_stock_info_html(rec: dict) -> str:
         <div class="si-range-marker" style="left:{w52_pct:.1f}%" title="현재가"></div>
       </div>
       <div class="si-range-labels">
-        <span>{csym}{_fmt_num(w52_low, decimals=2 if currency != 'KRW' else 0)}</span>
+        <span>{csym}{_fmt_num(w52_low, decimals=2 if currency not in _0dec else 0)}</span>
         <span>현재가 ({w52_pct:.0f}%)</span>
-        <span>{csym}{_fmt_num(w52_high, decimals=2 if currency != 'KRW' else 0)}</span>
+        <span>{csym}{_fmt_num(w52_high, decimals=2 if currency not in _0dec else 0)}</span>
       </div>
     </div>
   </div>"""
 
     val_multiples = ""
-    val_multiples += _val_row("PER (Trailing)", si.get("trailingPE"), "x")
-    val_multiples += _val_row("PER (Forward)", si.get("forwardPE"), "x")
-    val_multiples += _val_row("PBR", si.get("priceToBook"), "x")
-    val_multiples += _val_row("PSR", si.get("priceToSalesTrailing12Months"), "x")
+    val_multiples += _val_row("PER (후행)", si.get("trailingPE"), "x")
+    val_multiples += _val_row("PER (선행)", si.get("forwardPE"), "x")
+    val_multiples += _val_row("PBR (주가순자산)", si.get("priceToBook"), "x")
+    val_multiples += _val_row("PSR (주가매출)", si.get("priceToSalesTrailing12Months"), "x")
     val_multiples += _val_row("EV/EBITDA", si.get("enterpriseToEbitda"), "x")
     val_multiples += _val_row("배당수익률", round(si.get("dividendYield", 0) * 100, 2) if si.get("dividendYield") else None, "%")
     val_multiples += _val_row("베타", si.get("beta"))
 
     val_per_share = ""
-    val_per_share += _val_row("EPS (Trailing)", si.get("trailingEps"))
-    val_per_share += _val_row("EPS (Forward)", si.get("forwardEps"))
-    val_per_share += _val_row("BPS (장부가)", si.get("bookValue"))
-    val_per_share += _val_row("50일 평균", si.get("fiftyDayAverage"))
-    val_per_share += _val_row("200일 평균", si.get("twoHundredDayAverage"))
+    val_per_share += _val_row("EPS (후행)", si.get("trailingEps"))
+    val_per_share += _val_row("EPS (선행)", si.get("forwardEps"))
+    val_per_share += _val_row("BPS (주당순자산)", si.get("bookValue"))
+    val_per_share += _val_row("50일 이동평균", si.get("fiftyDayAverage"))
+    val_per_share += _val_row("200일 이동평균", si.get("twoHundredDayAverage"))
 
     # KR financials multi-year (if available)
     kr_fin_ts_html = ""
@@ -3457,8 +3466,9 @@ def _render_stock_info_html(rec: dict) -> str:
             eps_est = e.get("EPS Estimate")
             eps_act = e.get("Reported EPS")
             surprise = e.get("Surprise(%)")
-            eps_est_str = f"{eps_est:.2f}" if eps_est is not None else "—"
-            eps_act_str = f"{eps_act:.2f}" if eps_act is not None else "—"
+            _ed = 0 if currency in _0dec else 2
+            eps_est_str = f"{eps_est:,.{_ed}f}" if eps_est is not None else "—"
+            eps_act_str = f"{eps_act:,.{_ed}f}" if eps_act is not None else "—"
             if surprise is not None:
                 s_cls = "pos" if surprise >= 0 else "neg"
                 s_str = f'<span class="{s_cls}">{surprise:+.1f}%</span>'
@@ -3796,7 +3806,7 @@ def _render_stock_info_html(rec: dict) -> str:
             d_date = esc(str(dv.get("date", "—")))
             d_amt = dv.get("amount")
             if d_amt is not None:
-                d_fmt = f"{d_amt:,.0f}" if currency in ("KRW", "JPY") else f"{d_amt:,.2f}"
+                d_fmt = f"{d_amt:,.0f}" if currency in _0dec else f"{d_amt:,.2f}"
                 d_str = f"{csym}{d_fmt}"
             else:
                 d_str = "—"
@@ -3852,9 +3862,14 @@ def _render_stock_info_html(rec: dict) -> str:
             name = esc(str(it.get("reporter_name", "—")))
             title = esc(str(it.get("title", "")))
             txns = it.get("transactions", [])
+            _txn_kr = {"Purchase": "매수", "Sale": "매도", "Grant": "부여",
+                       "Exercise": "행사", "Conversion": "전환", "Award": "보상",
+                       "Disposition": "처분", "Acquisition": "취득",
+                       "Gift": "증여", "Tax": "세금 원천징수"}
             txn_strs = []
             for tx in txns[:3]:
-                lbl = tx.get("label", tx.get("code", ""))
+                raw_lbl = tx.get("label", tx.get("code", ""))
+                lbl = _txn_kr.get(raw_lbl, raw_lbl)
                 sh = tx.get("shares")
                 pr = tx.get("price")
                 parts = [lbl]
@@ -4046,13 +4061,22 @@ def _render_stock_info_html(rec: dict) -> str:
                     for r in rows:
                         v = r.get(item)
                         if v is not None:
-                            if currency in ("KRW", "JPY"):
+                            if currency == "KRW":
                                 if abs(v) >= 1e12:
-                                    vs = f"{v/1e12:.1f}조" if currency == "KRW" else f"{v/1e12:.1f}兆"
+                                    vs = f"{v/1e12:.1f}조"
                                 elif abs(v) >= 1e8:
-                                    vs = f"{v/1e8:,.0f}억" if currency == "KRW" else f"{v/1e8:,.0f}億"
+                                    vs = f"{v/1e8:,.0f}억"
                                 elif abs(v) >= 1e4:
-                                    vs = f"{v/1e4:,.0f}만" if currency == "KRW" else f"{v/1e4:,.0f}万"
+                                    vs = f"{v/1e4:,.0f}만"
+                                else:
+                                    vs = f"{v:,.0f}"
+                            elif currency in ("JPY", "TWD", "HKD", "CNY"):
+                                if abs(v) >= 1e12:
+                                    vs = f"{v/1e12:.1f}兆"
+                                elif abs(v) >= 1e8:
+                                    vs = f"{v/1e8:,.0f}億"
+                                elif abs(v) >= 1e4:
+                                    vs = f"{v/1e4:,.0f}万"
                                 else:
                                     vs = f"{v:,.0f}"
                             elif abs(v) >= 1e9:
@@ -4174,7 +4198,7 @@ def _render_stock_info_html(rec: dict) -> str:
             name = esc(pc.get("name", "?"))
             ptk = esc(pc.get("ticker", ""))
             mc = pc.get("market_cap")
-            mc_str = f"${mc/1e9:.1f}B" if mc and mc >= 1e9 else (f"${mc/1e6:.0f}M" if mc else "—")
+            mc_str = _fmt_mcap(mc, csym, currency) if mc else "—"
             def _pv(k):
                 v = pc.get(k)
                 return f"{v:.1f}" if v else "—"
@@ -4189,7 +4213,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section-title">동종업계 밸류에이션 비교</div>
     <div style="overflow-x:auto">
     <table class="si-table">
-      <thead><tr><th>회사</th><th>티커</th><th class="num">시총</th><th class="num">PER</th><th class="num">Fwd PER</th><th class="num">PBR</th><th class="num">PSR</th><th class="num">EV/EBITDA</th><th class="num">배당</th></tr></thead>
+      <thead><tr><th>회사</th><th>티커</th><th class="num">시총</th><th class="num">PER</th><th class="num">선행 PER</th><th class="num">PBR</th><th class="num">PSR</th><th class="num">EV/EBITDA</th><th class="num">배당</th></tr></thead>
       <tbody>{pc_rows}</tbody>
     </table>
     </div>
@@ -4207,7 +4231,7 @@ def _render_stock_info_html(rec: dict) -> str:
             jdesc = esc(str(jh.get("description", "")))
             jh_rows += f"<tr><td>{jd}</td><td>{jfn}</td><td>{jdesc}</td></tr>\n"
         jp_holders_html = f"""<div class="si-section">
-    <div class="si-section-title">5%+ 大量保有 (EDINET)</div>
+    <div class="si-section-title">5%+ 대량보유 (EDINET)</div>
     <table class="si-table">
       <thead><tr><th>제출일</th><th>보고자</th><th>내용</th></tr></thead>
       <tbody>{jh_rows}</tbody>
@@ -4228,7 +4252,7 @@ def _render_stock_info_html(rec: dict) -> str:
             tp_str = f"{tp:.2f}%" if tp else "—"
             ti_rows += f"<tr><td>{tn}</td><td>{tr_}</td><td class='num'>{ts_str}</td><td class='num'>{tp_str}</td></tr>\n"
         tw_insiders_html = f"""<div class="si-section">
-    <div class="si-section-title">內部人持股 (MOPS)</div>
+    <div class="si-section-title">내부자 지분 (MOPS)</div>
     <table class="si-table">
       <thead><tr><th>성명</th><th>직위</th><th class="num">보유주식</th><th class="num">지분율</th></tr></thead>
       <tbody>{ti_rows}</tbody>
@@ -4249,7 +4273,7 @@ def _render_stock_info_html(rec: dict) -> str:
             cnat = esc(str(ch.get("nature", "")))
             ch_rows += f"<tr><td>{cn_}</td><td class='num'>{cs_str}</td><td class='num'>{cp_str}</td><td>{cnat}</td></tr>\n"
         cn_holders_html = f"""<div class="si-section">
-    <div class="si-section-title">主要流通股东 (AKShare)</div>
+    <div class="si-section-title">주요 유통주주 (AKShare)</div>
     <table class="si-table">
       <thead><tr><th>주주명</th><th class="num">보유주식</th><th class="num">지분율</th><th>성격</th></tr></thead>
       <tbody>{ch_rows}</tbody>
@@ -4278,7 +4302,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <table class="si-table"><tbody>
       <tr><td>공매도 주식수</td><td class="num">{int(shares_short):,}</td></tr>
       <tr><td>공매도 비율</td><td class="num">{si_pct_str}</td></tr>
-      <tr><td>Short Ratio (커버 소요일)</td><td class="num">{sr_str}</td></tr>
+      <tr><td>공매도 커버일수</td><td class="num">{sr_str}</td></tr>
     </tbody></table>
     {si_bar}
   </div>"""
