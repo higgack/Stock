@@ -175,3 +175,64 @@ def backfill_price_charts(limit: int | None = None) -> int:
             if limit and filled >= limit:
                 return filled
     return filled
+
+
+def backfill_stock_info(limit: int | None = None) -> int:
+    """One-time backfill: add the ``stock_info`` field to older archive
+    entries that predate the company-snapshot feature. Fetches each
+    ticker's CURRENT snapshot (not as-of — most APIs don't support
+    historical queries). Idempotent: skips entries that already have
+    stock_info. Returns the count filled.
+
+    Triggered once per install via a marker file (see telegram_bot
+    startup). Free — yfinance + public APIs only, no LLM.
+    """
+    filled = 0
+    try:
+        from bot.stock_snapshot import collect_stock_snapshot
+    except Exception as exc:
+        log.warning("archive: stock_info backfill import failed: %s", exc)
+        return 0
+    if not ARCHIVE_ROOT.exists():
+        return 0
+    for day_dir in sorted(ARCHIVE_ROOT.iterdir()):
+        if not day_dir.is_dir():
+            continue
+        for jf in sorted(day_dir.glob("*.json")):
+            try:
+                rec = json.loads(jf.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if rec.get("stock_info"):
+                continue
+            ticker = rec.get("ticker")
+            if not ticker:
+                continue
+            try:
+                snap = collect_stock_snapshot(ticker)
+            except Exception as exc:
+                log.debug("archive: stock_info backfill skipped %s: %s", ticker, exc)
+                continue
+            if not snap:
+                continue
+            rec["stock_info"] = snap
+            rec["schema_version"] = SCHEMA_VERSION
+            try:
+                tmp = jf.with_suffix(".json.tmp")
+                tmp.write_text(
+                    json.dumps(rec, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                tmp.replace(jf)
+                filled += 1
+                log.info("archive: backfilled stock_info for %s/%s",
+                         rec.get("trade_date", "?"), ticker)
+            except Exception as exc:
+                log.warning(
+                    "archive: stock_info backfill write failed for %s: %s",
+                    ticker, exc,
+                )
+                continue
+            if limit and filled >= limit:
+                return filled
+    return filled
