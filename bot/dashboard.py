@@ -3147,13 +3147,9 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
             log.warning("build_live_quote: full render failed for %s: %s", ticker, exc)
             return None
         panes = (parts or {}).get("panes", {}) or {}
-        # Only the number/table panes (filing- / daily-cadence). Company /
-        # news / timeline are translation-sensitive and slow-moving, and
-        # valuation / consensus are owned by the LIGHT overlay — exclude
-        # both so we never re-render with stale or untranslated text.
         heavy = {k: v for k, v in panes.items() if v and k in (
-            "si-financials", "si-earnings", "si-holders", "si-flow",
-            "si-disclosures", "si-risk", "si-peers",
+            "si-financials", "si-earnings", "si-research", "si-holders",
+            "si-flow", "si-disclosures", "si-risk", "si-peers", "si-news",
         )}
         if not heavy:
             return None
@@ -4580,10 +4576,12 @@ def _render_stock_info_html(rec: dict) -> str:
             "si-financials": financials_pane,
             "si-peers": peers_pane,
             "si-earnings": earnings_pane,
+            "si-research": research_pane,
             "si-holders": holders_pane,
             "si-flow": flow_pane,
             "si-disclosures": disclosures_pane,
             "si-risk": risk_pane,
+            "si-news": news_pane,
         },
     }
 

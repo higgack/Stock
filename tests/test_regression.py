@@ -3273,8 +3273,9 @@ class TestLiveQuoteOverlay:
         rec = {"ticker": "TEST", "stock_info": self._si()}
         parts = d._render_stock_info_html(rec)
         assert "panes" in parts, "full-mode panes map 누락"
-        for pid in ("si-financials", "si-earnings", "si-holders", "si-flow",
-                    "si-disclosures", "si-risk", "si-peers"):
+        for pid in ("si-financials", "si-earnings", "si-research",
+                    "si-holders", "si-flow", "si-disclosures", "si-risk",
+                    "si-peers", "si-news"):
             assert pid in parts["panes"], f"heavy pane 누락: {pid}"
         hdr, other = parts["header"], parts["other_panes"]
         assert 'data-q="price"' in hdr and 'data-q="mcap"' in hdr
