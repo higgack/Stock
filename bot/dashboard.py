@@ -3066,14 +3066,17 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>"""
 
     # ── tab navigation ──────────────────────────────────────────
-    tabs_html = """<div class="si-tabs">
+    kr = si.get("kr", {})
+    has_disclosures = bool(kr.get("disclosures"))
+    disclosure_tab = '  <button class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
+    tabs_html = f"""<div class="si-tabs">
   <button class="si-tab active" data-pane="si-overview">종합</button>
   <button class="si-tab" data-pane="si-company">기업</button>
   <button class="si-tab" data-pane="si-consensus">컨센서스</button>
   <button class="si-tab" data-pane="si-earnings">실적</button>
   <button class="si-tab" data-pane="si-research">리서치</button>
-  <button class="si-tab" data-pane="si-holders">기관</button>
-  <button class="si-tab" data-pane="si-news">뉴스</button>
+  <button class="si-tab" data-pane="si-holders">주주</button>
+{disclosure_tab}  <button class="si-tab" data-pane="si-news">뉴스</button>
 </div>"""
 
     # ── 종합 pane (chart + summary — existing content placeholder) ──
@@ -3104,6 +3107,61 @@ def _render_stock_info_html(rec: dict) -> str:
     fy = si.get("fiscal_year_end", "")
     ftd = si.get("first_trade_date", "")
 
+    # KR-specific fields from DART/FSC
+    kr_basic_rows = ""
+    kr_company_rows = ""
+    kr_financial_html = ""
+    if kr:
+        if kr.get("corp_name"):
+            kr_basic_rows += grid_row("법인명", kr["corp_name"])
+        if kr.get("corp_reg_no"):
+            kr_basic_rows += grid_row("법인등록번호", kr["corp_reg_no"])
+        if kr.get("ksic_code"):
+            kr_basic_rows += grid_row("산업분류 (KSIC)", kr["ksic_code"])
+        if kr.get("fiscal_month"):
+            kr_basic_rows += grid_row("결산월", f"{kr['fiscal_month']}월")
+        if kr.get("ceo"):
+            kr_company_rows += grid_row("대표자", kr["ceo"])
+        if kr.get("address"):
+            kr_company_rows += grid_row("주소", kr["address"])
+        if kr.get("established"):
+            est = kr["established"]
+            if len(est) == 8:
+                est = f"{est[:4]}-{est[4:6]}-{est[6:]}"
+            kr_company_rows += grid_row("설립일", est)
+        # minority holders
+        mh = kr.get("minority", {})
+        if mh.get("smam_ratio"):
+            kr_company_rows += grid_row("소액주주 비율", f"{mh['smam_ratio']:.1f}%")
+        # K-IFRS financials summary
+        kf = kr.get("financials", {})
+        if kf:
+            def _krw_eok(v):
+                if v is None:
+                    return "—"
+                return f"{v / 1e8:,.0f}억" if abs(v) >= 1e8 else f"{v:,.0f}"
+            fy_label = f"FY{kf.get('year', '')}" if kf.get("year") else ""
+            fs_label = "(연결)" if kf.get("fs_div") == "CFS" else "(별도)" if kf.get("fs_div") == "OFS" else ""
+            fin_rows = ""
+            for label, key in (("매출", "매출"), ("영업이익", "영업이익"),
+                               ("당기순이익", "당기순이익"), ("자산총계", "자산총계"),
+                               ("부채총계", "부채총계"), ("자본총계", "자본총계")):
+                v = kf.get(key)
+                fin_rows += f'<tr><td>{esc(label)}</td><td class="num">{_krw_eok(v)}</td></tr>\n'
+            ratio_rows = ""
+            for label, key in (("영업이익률", "영업이익률"), ("순이익률", "순이익률"),
+                               ("ROE", "ROE"), ("ROA", "ROA"),
+                               ("부채비율", "부채비율"), ("유동비율", "유동비율")):
+                v = kf.get(key)
+                ratio_rows += f'<tr><td>{esc(label)}</td><td class="num">{f"{v:.1f}%" if v is not None else "—"}</td></tr>\n'
+            kr_financial_html = f"""<div class="si-section">
+    <div class="si-section-title">K-IFRS 재무 요약 {esc(fy_label)} {esc(fs_label)}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+      <table class="si-table"><thead><tr><th>항목</th><th class="num">금액 (₩)</th></tr></thead><tbody>{fin_rows}</tbody></table>
+      <table class="si-table"><thead><tr><th>비율</th><th class="num">값</th></tr></thead><tbody>{ratio_rows}</tbody></table>
+    </div>
+  </div>"""
+
     company_pane = f"""<div class="si-pane" id="si-company">
   <div class="si-section">
     <div class="si-section-title">개요</div>
@@ -3117,7 +3175,7 @@ def _render_stock_info_html(rec: dict) -> str:
         {grid_row("거래소", exchange_display)}
         {grid_row("섹터", si.get("sector", ""))}
         {grid_row("산업", si.get("industry", ""))}
-        {grid_row("회계연도 종료", fy)}
+        {kr_basic_rows}{grid_row("회계연도 종료", fy)}
         {grid_row("통화", currency)}
         {grid_row("상장일", ftd)}
       </div>
@@ -3128,7 +3186,7 @@ def _render_stock_info_html(rec: dict) -> str:
         {grid_row("국가", si.get("country", ""))}
         {grid_row("지역", si.get("city") or si.get("state") or "")}
         {grid_row("임직원", emp_str)}
-        <div class="si-row"><div class="si-key">홈페이지</div><div class="si-val">{website_html}</div></div>
+        {kr_company_rows}<div class="si-row"><div class="si-key">홈페이지</div><div class="si-val">{website_html}</div></div>
       </div>
     </div>
   </div>
@@ -3140,6 +3198,7 @@ def _render_stock_info_html(rec: dict) -> str:
       {grid_row("발행주식수", shares_str)}
     </div>
   </div>
+  {kr_financial_html}
 </div>"""
 
     # ── 컨센서스 pane ───────────────────────────────────────────
@@ -3285,12 +3344,45 @@ def _render_stock_info_html(rec: dict) -> str:
     else:
         holders_table = '<div class="si-empty">기관 보유 데이터가 없습니다.</div>'
 
+    # KR DART insider holdings (임원·주요주주)
+    kr_insider_html = ""
+    kr_insiders = kr.get("insider_holdings", [])
+    if kr_insiders:
+        ki_rows = ""
+        for ih in kr_insiders:
+            nm = esc(str(ih.get("name", "—")))
+            role = esc(str(ih.get("role", "")))
+            shares_i = ih.get("shares")
+            shares_i_str = f"{int(shares_i):,}" if shares_i else "—"
+            pct_i = ih.get("pct")
+            pct_i_str = f"{pct_i:.2f}%" if pct_i is not None else "—"
+            ch_date = esc(str(ih.get("changed_on", "—")))
+            ki_rows += f"<tr><td>{nm}</td><td>{role}</td><td class='num'>{shares_i_str}</td><td class='num'>{pct_i_str}</td><td>{ch_date}</td></tr>\n"
+        kr_insider_html = f"""<div class="si-section">
+    <div class="si-section-title">임원 · 주요주주 지분 (DART)</div>
+    <table class="si-table">
+      <thead><tr><th>성명</th><th>직위</th><th class="num">보유주식</th><th class="num">지분율</th><th>변동일</th></tr></thead>
+      <tbody>{ki_rows}</tbody>
+    </table>
+  </div>"""
+
+    # KR minority holders summary
+    kr_minority_html = ""
+    kr_minority = kr.get("minority", {})
+    if kr_minority.get("smam_ratio") is not None:
+        smam = kr_minority
+        kr_minority_html = f"""<div style="margin:10px 0;font-size:13px;color:var(--fg-soft)">
+  소액주주: {smam.get('smam_cnt', '—'):,}명 / 전체 {smam.get('whole_cnt', '—'):,}명 · 비율 {smam.get('smam_ratio', 0):.1f}% · 기준 {esc(str(smam.get('biz_year', '')))}
+</div>"""
+
     holders_pane = f"""<div class="si-pane" id="si-holders">
   <div class="si-section">
     <div class="si-section-title">주요 기관</div>
     {holder_summary}
     {holders_table}
   </div>
+  {kr_insider_html}
+  {kr_minority_html}
 </div>"""
 
     # ── 뉴스 pane ───────────────────────────────────────────────
@@ -3312,6 +3404,28 @@ def _render_stock_info_html(rec: dict) -> str:
   <div class="si-section">
     <div class="si-section-title">주요 뉴스</div>
     {news_html}
+  </div>
+</div>"""
+
+    # ── 공시 pane (KR DART disclosures) ────────────────────────
+    disclosures_pane = ""
+    kr_disclosures = kr.get("disclosures", [])
+    if kr_disclosures:
+        d_rows = ""
+        for disc in kr_disclosures:
+            d_date = esc(str(disc.get("date", "—")))
+            d_title = esc(str(disc.get("title", "—")))
+            d_reporter = esc(str(disc.get("reporter", "")))
+            d_url = disc.get("url", "")
+            title_html = f'<a href="{esc(d_url)}" target="_blank" rel="noopener">{d_title}</a>' if d_url else d_title
+            d_rows += f"<tr><td>{d_date}</td><td>{title_html}</td><td>{d_reporter}</td></tr>\n"
+        disclosures_pane = f"""<div class="si-pane" id="si-disclosures">
+  <div class="si-section">
+    <div class="si-section-title">최근 공시 (DART)</div>
+    <table class="si-table">
+      <thead><tr><th>날짜</th><th>제목</th><th>공시자</th></tr></thead>
+      <tbody>{d_rows}</tbody>
+    </table>
   </div>
 </div>"""
 
@@ -3341,7 +3455,8 @@ def _render_stock_info_html(rec: dict) -> str:
         "tab_js": tab_js,
         "other_panes": company_pane + "\n" + consensus_pane + "\n" +
                        earnings_pane + "\n" + research_pane + "\n" +
-                       holders_pane + "\n" + news_pane,
+                       holders_pane + "\n" + disclosures_pane + "\n" +
+                       news_pane,
     }
 
 

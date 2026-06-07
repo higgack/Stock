@@ -4,6 +4,9 @@ Called by ``archive.save_analysis`` — one extra yfinance ``.info`` call
 per analysis (~0.5s, non-fatal). The snapshot powers the detail-page
 header cards, company info section, and consensus card. All fields are
 optional — missing data renders gracefully as "—".
+
+KR tickers (.KS/.KQ) get additional data from DART + FSC (법인등록번호,
+DART 대표자, CEO, 결산월, 공시, 임원지분, 소액주주, K-IFRS 재무).
 """
 
 from __future__ import annotations
@@ -198,8 +201,124 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
             pass
 
         # strip None values to keep JSON compact
-        return {k: v for k, v in snap.items() if v is not None}
+        snap = {k: v for k, v in snap.items() if v is not None}
+
+        # KR enrichment — DART + FSC additive overlay
+        if ticker.endswith((".KS", ".KQ")):
+            try:
+                _enrich_kr(ticker, snap)
+            except Exception as exc:
+                log.warning("stock_snapshot: KR enrich skipped for %s: %s", ticker, exc)
+
+        return snap
 
     except Exception as exc:
         log.warning("stock_snapshot: failed for %s: %s", ticker, exc)
         return None
+
+
+def _enrich_kr(ticker: str, snap: dict) -> None:
+    """Add KR-specific data from DART + FSC to an existing snapshot dict.
+
+    Non-fatal: each block is independent try/except. Missing API keys or
+    network errors just skip that block — the detail page degrades.
+    """
+    stock_code = ticker.split(".")[0]
+
+    # ── DART company info (법인등록번호·대표자·결산월·주소·산업분류) ──
+    try:
+        from bot.dart_client import get_dart
+        dart = get_dart()
+        ci = dart.get_company_info(stock_code) if dart else None
+        if ci and ci.get("status") == "000":
+            kr = snap.setdefault("kr", {})
+            for src_key, dst_key in (
+                ("jurir_no", "corp_reg_no"),    # 법인등록번호
+                ("bizr_no", "biz_reg_no"),      # 사업자등록번호
+                ("ceo_nm", "ceo"),              # 대표자
+                ("corp_name", "corp_name"),      # 법인명
+                ("corp_name_eng", "corp_name_eng"),
+                ("induty_code", "ksic_code"),    # 한국표준산업분류
+                ("est_dt", "established"),       # 설립일
+                ("acc_mt", "fiscal_month"),      # 결산월
+                ("adres", "address"),            # 주소
+            ):
+                v = ci.get(src_key)
+                if v and str(v).strip() and str(v).strip() != "":
+                    kr[dst_key] = str(v).strip()
+    except Exception as exc:
+        log.debug("stock_snapshot: DART company info skipped: %s", exc)
+
+    # ── FSC item_info (법인등록번호 fallback · 시장구분) ──────────
+    try:
+        from bot.fsc_client import item_info as fsc_item_info, fsc_key_ready
+        if fsc_key_ready():
+            fi = fsc_item_info(ticker)
+            if fi:
+                kr = snap.setdefault("kr", {})
+                crno = fi.get("crno")
+                if crno and not kr.get("corp_reg_no"):
+                    kr["corp_reg_no"] = crno
+                mrkt = fi.get("mrktCtg")
+                if mrkt:
+                    kr["market_category"] = mrkt
+    except Exception as exc:
+        log.debug("stock_snapshot: FSC item_info skipped: %s", exc)
+
+    # ── DART insider holdings (임원·주요주주 지분) ────────────────
+    try:
+        from bot.dart_client import get_dart
+        dart = get_dart()
+        if dart:
+            holders = dart.get_insider_holdings(stock_code)
+            if holders:
+                snap.setdefault("kr", {})["insider_holdings"] = holders[:15]
+    except Exception as exc:
+        log.debug("stock_snapshot: DART insider holdings skipped: %s", exc)
+
+    # ── DART recent disclosures (최근 공시) ───────────────────────
+    try:
+        from bot.dart_client import get_dart
+        dart = get_dart()
+        if dart:
+            disclosures = dart.get_recent_disclosures(stock_code, days_back=60, limit=30)
+            if disclosures:
+                snap.setdefault("kr", {})["disclosures"] = disclosures
+    except Exception as exc:
+        log.debug("stock_snapshot: DART disclosures skipped: %s", exc)
+
+    # ── DART normalized financials (K-IFRS 재무) ──────────────────
+    try:
+        from bot.dart_client import get_dart
+        dart = get_dart()
+        if dart:
+            fin = dart.get_normalized_financials(ticker)
+            if fin and fin.get("financials"):
+                compact = {
+                    "year": fin.get("year"),
+                    "fs_div": fin.get("fs_div"),
+                }
+                for k in ("매출", "영업이익", "당기순이익", "자산총계",
+                          "부채총계", "자본총계"):
+                    v = fin["financials"].get(k)
+                    if v is not None:
+                        compact[k] = v
+                ratios = fin.get("ratios", {})
+                for k in ("영업이익률", "순이익률", "ROE", "ROA",
+                          "부채비율", "유동비율"):
+                    v = ratios.get(k)
+                    if v is not None:
+                        compact[k] = v
+                snap.setdefault("kr", {})["financials"] = compact
+    except Exception as exc:
+        log.debug("stock_snapshot: DART financials skipped: %s", exc)
+
+    # ── FSC minority holders (소액주주현황) ────────────────────────
+    try:
+        from bot.fsc_client import minority_holders, fsc_key_ready
+        if fsc_key_ready():
+            mh = minority_holders(ticker)
+            if mh:
+                snap.setdefault("kr", {})["minority"] = mh
+    except Exception as exc:
+        log.debug("stock_snapshot: FSC minority holders skipped: %s", exc)
