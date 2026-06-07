@@ -3098,3 +3098,111 @@ class TestPortfolioSend:
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'ticker_{' not in src or 'ticker_{' not in src.split('_render_portfolio_page')[1].split('\ndef ')[0], \
             "포트폴리오에 ticker_*.html 링크 잔존"
+
+
+class TestDetailNewsResearchFallback:
+    """상세 페이지 뉴스·리서치 탭의 KR/JP/TW/CN 데이터 폴백 회귀 차단.
+
+    yfinance .news / .upgrades_downgrades 는 US 만 잘 커버 → 비-US 시장은
+    빈 탭이었다. 우리 자원(Naver/Kabutan/cnyes/AKShare 뉴스 + 한경 리포트)
+    으로 채운다. 영구 가드:
+     • news 폴백 스키마 매핑 (source→publisher) + kr_native 태그
+     • KR(Naver) 뉴스는 이미 한국어 → 렌더 시 Gemini 번역 스킵 (₩0,
+       2026-06-07 startup 크래시-루프 클래스 재발 방지)
+     • 한경 fetch_consensus 가 개별 리포트 rows(reports) 도 반환
+     • KR research_reports 가 리서치 액션 탭에 렌더
+    """
+
+    def _mock_news_clients(self):
+        import sys, types
+        naver = types.ModuleType("bot.naver_news_client")
+        naver.fetch_news = lambda q, days_back=28, max_items=10: [
+            {"date": "2026-06-07", "title": "네이버 2분기 실적 호조",
+             "source": "한경", "link": "http://x", "summary": "s"}]
+        sys.modules["bot.naver_news_client"] = naver
+        kab = types.ModuleType("bot.kabutan_news")
+        kab.fetch_news = lambda c, days_back=28, max_items=10: [
+            {"date": "2026-06-07", "title": "トヨタ決算",
+             "source": "Kabutan", "link": "http://y", "summary": "s"}]
+        sys.modules["bot.kabutan_news"] = kab
+
+    def test_news_fallback_schema_and_kr_native(self):
+        self._mock_news_clients()
+        from bot.stock_snapshot import _collect_news_fallback
+        snap = {"kr": {"corp_name": "네이버"}, "long_name": "NAVER"}
+        _collect_news_fallback("035420.KS", snap)
+        assert snap["news"], "KR 뉴스 폴백 비어있음"
+        n = snap["news"][0]
+        assert n["title"] == "네이버 2분기 실적 호조"
+        assert n["publisher"] == "한경", "source→publisher 매핑 깨짐"
+        assert n.get("kr_native") is True, "KR 은 kr_native 태그 필수"
+
+    def test_news_fallback_jp_not_kr_native(self):
+        self._mock_news_clients()
+        from bot.stock_snapshot import _collect_news_fallback
+        snap = {}
+        _collect_news_fallback("7203.T", snap)
+        assert snap["news"][0]["title"] == "トヨタ決算"
+        assert "kr_native" not in snap["news"][0], "JP 는 번역 대상 (kr_native X)"
+
+    def test_news_fallback_skips_when_yfinance_present(self):
+        from bot.stock_snapshot import _collect_news_fallback
+        snap = {"news": [{"title": "existing"}]}
+        _collect_news_fallback("035420.KS", snap)
+        assert len(snap["news"]) == 1 and snap["news"][0]["title"] == "existing"
+
+    def test_hk_consensus_returns_reports_field(self):
+        """fetch_consensus result 에 reports(개별 증권사 리포트) 필드 존재."""
+        src = open("bot/hk_consensus_client.py", encoding="utf-8").read()
+        assert '"reports":' in src, "한경 result 에 reports 필드 누락"
+        # rows 를 날짜 내림차순 정렬해 reports 로 노출
+        assert "reverse=True" in src
+
+    def test_kr_research_reports_render(self):
+        """KR research_reports 가 리서치 액션 탭에 렌더 + 한글 의견 변환."""
+        from bot.dashboard import _render_stock_info_html
+        rec = {"ticker": "035420.KS", "stock_info": {
+            "long_name": "NAVER", "currency": "KRW", "current_price": 255500,
+            "kr": {"corp_name": "네이버", "research_reports": [
+                {"date": "2026-06-05", "broker": "미래에셋", "target": 320000, "rating": "매수"},
+                {"date": "2026-06-03", "broker": "NH투자", "target": 300000, "rating": "Buy"}]}}}
+        html = "".join(str(v) for v in _render_stock_info_html(rec).values())
+        assert "미래에셋" in html and "NH투자" in html, "증권사명 미렌더"
+        assert "₩320,000" in html, "목표가 ₩+천단위 미렌더"
+        assert "한경 컨센서스" in html, "출처 표기 누락"
+        assert html.count("매수") >= 2, "Buy→매수 + 매수 passthrough 변환 깨짐"
+        assert "리서치 액션 데이터가 없습니다" not in html
+
+    def test_kr_native_news_skips_translation(self):
+        """kr_native 뉴스는 translate_news_titles_kr 에 전달되지 않음
+        (회귀 시 한국어 제목이 Gemini 로 → 비용 + startup 크래시 클래스)."""
+        import bot.dashboard as dash
+        import bot.translate as tr
+        called = {"titles": None}
+        orig = tr.translate_news_titles_kr
+
+        def _spy(titles):
+            called["titles"] = list(titles)
+            return {}
+        # _render_stock_info_html does `from bot.translate import
+        # translate_news_titles_kr` at call time, so patch the source.
+        tr.translate_news_titles_kr = _spy
+        try:
+            # Mixed feed: one kr_native (Naver, already Korean) + one
+            # foreign (US/yfinance English). Only the foreign title may
+            # reach the translator.
+            rec = {"ticker": "035420.KS", "stock_info": {
+                "long_name": "NAVER", "currency": "KRW",
+                "news": [
+                    {"title": "네이버 한국어 제목", "publisher": "한경",
+                     "link": "http://x", "date": "2026-06-07",
+                     "kr_native": True},
+                    {"title": "English foreign headline", "publisher": "Reuters",
+                     "link": "http://y", "date": "2026-06-07"}]}}
+            html = "".join(str(v) for v in dash._render_stock_info_html(rec).values())
+        finally:
+            tr.translate_news_titles_kr = orig
+        passed = called["titles"] or []
+        assert "네이버 한국어 제목" not in passed, "kr_native 뉴스가 번역기에 전달됨 (₩ 누수)"
+        assert "English foreign headline" in passed, "비-KR 뉴스는 번역돼야"
+        assert "네이버 한국어 제목" in html

@@ -3489,7 +3489,12 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>"""
 
     # ── 리서치 pane ─────────────────────────────────────────────
+    # US: yfinance upgrades/downgrades (firm + from→to grade events).
+    # KR: 한경 컨센서스 per-broker reports (발행일/증권사/투자의견/목표가)
+    # — yfinance has no KR upgrade/downgrade feed, so this is the
+    # equivalent surface for Korean equities.
     upgrades = si.get("upgrades_downgrades", [])
+    kr_reports = kr.get("research_reports", [])
     if upgrades:
         r_rows = ""
         for u in upgrades:
@@ -3503,6 +3508,19 @@ def _render_stock_info_html(rec: dict) -> str:
         research_table = f"""<table class="si-table">
   <thead><tr><th>날짜</th><th>리서치펌</th><th>액션</th><th>의견 변화</th></tr></thead>
   <tbody>{r_rows}</tbody></table>"""
+    elif kr_reports:
+        r_rows = ""
+        for rp in kr_reports:
+            d = esc(str(rp.get("date", "—")))
+            broker = esc(str(rp.get("broker", "—")))
+            rating = esc(grade_kr(str(rp.get("rating", "")))) or "—"
+            tgt = rp.get("target")
+            tgt_str = f"₩{int(tgt):,}" if tgt else "—"
+            r_rows += f"<tr><td>{d}</td><td>{broker}</td><td>{rating}</td><td class='num'>{tgt_str}</td></tr>\n"
+        research_table = f"""<table class="si-table">
+  <thead><tr><th>발행일</th><th>증권사</th><th>투자의견</th><th class="num">목표가</th></tr></thead>
+  <tbody>{r_rows}</tbody></table>
+  <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: 한경 컨센서스 · 최근 90일 증권사 리포트</div>"""
     else:
         research_table = '<div class="si-empty">리서치 액션 데이터가 없습니다.</div>'
 
@@ -3580,8 +3598,12 @@ def _render_stock_info_html(rec: dict) -> str:
     # ── 뉴스 pane ───────────────────────────────────────────────
     news = si.get("news", [])
     if news:
-        raw_titles = [n.get("title", "") for n in news if n.get("title")]
-        title_kr_map = translate_news_titles_kr(raw_titles)
+        # KR (Naver) news is already Korean — only send the rest (US
+        # English / JP·TW·CN foreign titles) to the translator. kr_native
+        # items pass through unchanged (₩0, no Gemini call).
+        raw_titles = [n.get("title", "") for n in news
+                      if n.get("title") and not n.get("kr_native")]
+        title_kr_map = translate_news_titles_kr(raw_titles) if raw_titles else {}
         n_items = ""
         for n in news:
             raw_title = n.get("title", "")
