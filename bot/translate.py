@@ -269,6 +269,15 @@ def _cache_key(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+_CACHE_ONLY = False
+
+
+def set_cache_only(val: bool) -> None:
+    """When True, translation functions return cached results only (no API)."""
+    global _CACHE_ONLY
+    _CACHE_ONLY = val
+
+
 def translate_description_kr(desc: str) -> str:
     """Translate a company description to Korean. Permanent cache.
 
@@ -279,6 +288,8 @@ def translate_description_kr(desc: str) -> str:
     cache = _load()
     if key in cache:
         return cache[key]
+    if _CACHE_ONLY:
+        return desc
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         return desc
@@ -320,6 +331,8 @@ def translate_news_titles_kr(titles: list[str]) -> dict[str, str]:
             todo.append(t)
     todo = todo[:_MAX_BATCH]
     if not todo:
+        return out
+    if _CACHE_ONLY:
         return out
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:

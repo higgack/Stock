@@ -4472,6 +4472,8 @@ def regenerate_index() -> None:
     dashboard issues must never break the analysis pipeline.
     """
     try:
+        from bot.translate import set_cache_only
+        set_cache_only(True)
         records = _load_all()
         # Newest-first: dates descending, then analyzed_at descending
         records.sort(
@@ -4515,6 +4517,11 @@ def regenerate_index() -> None:
         log.info("dashboard: regenerated with %d entries", len(records))
     except Exception as exc:
         log.warning("dashboard: regenerate failed: %s", exc)
+    finally:
+        try:
+            set_cache_only(False)
+        except Exception:
+            pass
 
 
 # ── Screener archive view ────────────────────────────────────────────────
