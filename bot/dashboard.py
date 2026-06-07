@@ -3045,6 +3045,59 @@ def _currency_sym(currency: str) -> str:
             "CNY": "¥", "EUR": "€", "GBP": "£"}.get(currency or "", "$")
 
 
+_FIN_ITEM_KR: dict[str, str] = {
+    "Total Revenue": "매출액", "Operating Revenue": "영업수익",
+    "Cost Of Revenue": "매출원가", "Gross Profit": "매출총이익",
+    "Operating Income": "영업이익", "Operating Expense": "영업비용",
+    "EBITDA": "EBITDA", "EBIT": "EBIT",
+    "Net Income": "당기순이익", "Basic EPS": "기본 EPS", "Diluted EPS": "희석 EPS",
+    "Tax Provision": "법인세", "Interest Expense": "이자비용",
+    "Total Assets": "자산총계", "Current Assets": "유동자산",
+    "Cash And Cash Equivalents": "현금 및 현금성자산",
+    "Total Liabilities Net Minority Interest": "부채총계",
+    "Current Liabilities": "유동부채", "Total Debt": "총차입금",
+    "Stockholders Equity": "자본총계", "Retained Earnings": "이익잉여금",
+    "Common Stock Equity": "보통주 자본", "Working Capital": "운전자본",
+    "Operating Cash Flow": "영업활동현금흐름", "Capital Expenditure": "자본적지출",
+    "Free Cash Flow": "잉여현금흐름", "Investing Cash Flow": "투자활동현금흐름",
+    "Financing Cash Flow": "재무활동현금흐름", "End Cash Position": "기말현금",
+    "Repurchase Of Capital Stock": "자사주 매입", "Cash Dividends Paid": "배당금 지급",
+    "Net Income From Continuing Operations": "계속사업이익",
+    "Reconciled Depreciation": "감가상각비", "Total Expenses": "총비용",
+    "Selling General And Administration": "판관비",
+    "Research And Development": "연구개발비",
+    "Total Non Current Assets": "비유동자산",
+    "Total Non Current Liabilities Net Minority Interest": "비유동부채",
+    "Net Tangible Assets": "순유형자산", "Tangible Book Value": "유형자산 장부가",
+    "Invested Capital": "투하자본", "Total Capitalization": "총자본",
+    "Share Issued": "발행주식수", "Ordinary Shares Number": "보통주 수",
+    "Changes In Cash": "현금 변동", "Beginning Cash Position": "기초현금",
+    "Issuance Of Debt": "차입금 조달", "Repayment Of Debt": "차입금 상환",
+    "Issuance Of Capital Stock": "주식 발행",
+    "Depreciation And Amortization": "감가상각비",
+    "Change In Working Capital": "운전자본 변동",
+    "Stock Based Compensation": "주식보상비용",
+    "Deferred Tax": "이연법인세",
+    "Accounts Receivable": "매출채권", "Accounts Payable": "매입채무",
+    "Inventory": "재고자산", "Goodwill": "영업권",
+    "Other Intangible Assets": "기타무형자산",
+    "Long Term Debt": "장기차입금", "Short Long Term Debt": "단기차입금",
+    "Net PPE": "순유형자산(PPE)",
+    "Gross PPE": "유형자산(PPE) 총액",
+    "Land And Improvements": "토지", "Buildings And Improvements": "건물",
+    "Machinery Furniture Equipment": "기계장치",
+    "Accumulated Depreciation": "감가상각누계액",
+    "Other Current Assets": "기타유동자산", "Other Non Current Assets": "기타비유동자산",
+    "Other Current Liabilities": "기타유동부채",
+    "Other Non Current Liabilities": "기타비유동부채",
+    "Minority Interest": "비지배지분",
+    "Interest Income": "이자수익",
+    "Pretax Income": "세전이익", "Tax Effect Of Unusual Items": "특별항목 세효과",
+    "Total Unusual Items": "특별항목 합계",
+    "Total Revenue (KRW)": "매출액 (₩)", "Net Income (KRW)": "당기순이익 (₩)",
+}
+
+
 def _render_stock_info_html(rec: dict) -> str:
     """Render header cards + tabbed company info sections from stock_info."""
     si = rec.get("stock_info")
@@ -3120,7 +3173,12 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>"""
 
     # ── 기업 정보 pane ──────────────────────────────────────────
+    from bot.translate import (sector_kr, industry_kr, country_kr,
+                               grade_kr, action_kr,
+                               translate_description_kr, translate_news_titles_kr)
     desc = si.get("description", "")
+    if desc:
+        desc = translate_description_kr(desc)
     desc_html = f'<div class="si-desc">{esc(desc[:2000])}</div>' if desc else ""
 
     def grid_row(key, val):
@@ -3208,8 +3266,8 @@ def _render_stock_info_html(rec: dict) -> str:
       <div class="si-grid">
         {grid_row("티커", ticker)}
         {grid_row("거래소", exchange_display)}
-        {grid_row("섹터", si.get("sector", ""))}
-        {grid_row("산업", si.get("industry", ""))}
+        {grid_row("섹터", sector_kr(si.get("sector", "")))}
+        {grid_row("산업", industry_kr(si.get("industry", "")))}
         {kr_basic_rows}{grid_row("회계연도 종료", fy)}
         {grid_row("통화", currency)}
         {grid_row("상장일", ftd)}
@@ -3218,7 +3276,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section">
       <div class="si-section-title">회사 정보</div>
       <div class="si-grid">
-        {grid_row("국가", si.get("country", ""))}
+        {grid_row("국가", country_kr(si.get("country", "")))}
         {grid_row("지역", si.get("city") or si.get("state") or "")}
         {grid_row("임직원", emp_str)}
         {kr_company_rows}<div class="si-row"><div class="si-key">홈페이지</div><div class="si-val">{website_html}</div></div>
@@ -3427,9 +3485,9 @@ def _render_stock_info_html(rec: dict) -> str:
         for u in upgrades:
             d = esc(u.get("date", "—"))
             firm = esc(u.get("Firm", "—"))
-            to_g = esc(u.get("ToGrade", "—"))
-            from_g = esc(u.get("FromGrade", ""))
-            action = esc(u.get("Action", ""))
+            to_g = esc(grade_kr(u.get("ToGrade", "—")))
+            from_g = esc(grade_kr(u.get("FromGrade", "")))
+            action = esc(action_kr(u.get("Action", "")))
             change = f"{from_g} → {to_g}" if from_g else to_g
             r_rows += f"<tr><td>{d}</td><td>{firm}</td><td>{action}</td><td>{change}</td></tr>\n"
         research_table = f"""<table class="si-table">
@@ -3512,9 +3570,12 @@ def _render_stock_info_html(rec: dict) -> str:
     # ── 뉴스 pane ───────────────────────────────────────────────
     news = si.get("news", [])
     if news:
+        raw_titles = [n.get("title", "") for n in news if n.get("title")]
+        title_kr_map = translate_news_titles_kr(raw_titles)
         n_items = ""
         for n in news:
-            title = esc(n.get("title", ""))
+            raw_title = n.get("title", "")
+            title = esc(title_kr_map.get(raw_title, raw_title))
             link = n.get("link", "")
             publisher = esc(n.get("publisher", ""))
             ndate = esc(n.get("date", ""))
@@ -3734,7 +3795,11 @@ def _render_stock_info_html(rec: dict) -> str:
         for dv in divs:
             d_date = esc(str(dv.get("date", "—")))
             d_amt = dv.get("amount")
-            d_str = f"{csym}{d_amt:.4f}" if d_amt is not None else "—"
+            if d_amt is not None:
+                d_fmt = f"{d_amt:,.0f}" if currency in ("KRW", "JPY") else f"{d_amt:,.2f}"
+                d_str = f"{csym}{d_fmt}"
+            else:
+                d_str = "—"
             div_rows += f"<tr><td>{d_date}</td><td class='num'>{d_str}</td></tr>\n"
         div_html = f"""<div class="si-section">
     <div class="si-section-title">배당 이력</div>
@@ -3981,7 +4046,16 @@ def _render_stock_info_html(rec: dict) -> str:
                     for r in rows:
                         v = r.get(item)
                         if v is not None:
-                            if abs(v) >= 1e9:
+                            if currency in ("KRW", "JPY"):
+                                if abs(v) >= 1e12:
+                                    vs = f"{v/1e12:.1f}조" if currency == "KRW" else f"{v/1e12:.1f}兆"
+                                elif abs(v) >= 1e8:
+                                    vs = f"{v/1e8:,.0f}억" if currency == "KRW" else f"{v/1e8:,.0f}億"
+                                elif abs(v) >= 1e4:
+                                    vs = f"{v/1e4:,.0f}만" if currency == "KRW" else f"{v/1e4:,.0f}万"
+                                else:
+                                    vs = f"{v:,.0f}"
+                            elif abs(v) >= 1e9:
                                 vs = f"{v/1e9:.1f}B"
                             elif abs(v) >= 1e6:
                                 vs = f"{v/1e6:.0f}M"
@@ -3992,7 +4066,7 @@ def _render_stock_info_html(rec: dict) -> str:
                             vals += f'<td class="num"{style}>{vs}</td>'
                         else:
                             vals += '<td class="num">—</td>'
-                    tbody += f"<tr><td>{esc(item)}</td>{vals}</tr>\n"
+                    tbody += f"<tr><td>{esc(_FIN_ITEM_KR.get(item, item))}</td>{vals}</tr>\n"
                 parts.append(f"""<div class="si-section" style="margin-top:12px">
         <div class="si-section-title">{label} — {view_label}</div>
         <div style="overflow-x:auto"><table class="si-table"><thead><tr><th>항목</th>{hdr}</tr></thead><tbody>{tbody}</tbody></table></div>
