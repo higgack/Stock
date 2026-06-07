@@ -3106,6 +3106,119 @@ _FIN_ITEM_KR: dict[str, str] = {
 }
 
 
+def _load_stored_stock_info(ticker: str) -> dict | None:
+    """Return the ``stock_info`` from the most recent archived analysis of
+    ``ticker``, or None. Used as a fallback for the live FULL overlay when a
+    fresh ``collect_stock_snapshot`` fails (e.g. yfinance .info rate-limit in
+    the long-running dashboard process) — we'd rather render the last good
+    snapshot than blank the heavy tabs."""
+    try:
+        tkr = (ticker or "").upper()
+        best_date = ""
+        best_si = None
+        if not ARCHIVE_ROOT.exists():
+            return None
+        for day_dir in ARCHIVE_ROOT.iterdir():
+            if not day_dir.is_dir() or not _DATE_RE.match(day_dir.name):
+                continue
+            jf = day_dir / f"{tkr}.json"
+            if not jf.exists():
+                continue
+            try:
+                rec = json.loads(jf.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            si = rec.get("stock_info")
+            if si and day_dir.name > best_date:
+                best_date = day_dir.name
+                best_si = si
+        # Return a deep copy so the in-place enrichment below never mutates
+        # the file-backed record the rest of the page renders from.
+        return json.loads(json.dumps(best_si)) if best_si else None
+    except Exception as exc:
+        log.debug("_load_stored_stock_info failed for %s: %s", ticker, exc)
+        return None
+
+
+def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
+    """Fill the news / research / consensus tabs in-place when they're
+    missing from ``si``. These come from our own market clients (Naver /
+    한경 / Kabutan / cnyes / AKShare / EDGAR) — no yfinance, no LLM, ₩0 —
+    so they stay reliable even when yfinance is throttled, and they
+    back-fill analyses created before the enrichment code shipped.
+
+    Mirrors archive.backfill_detail_tabs but operates on a single live
+    snapshot. Each block independently try/excepted — any failure leaves
+    that tab as-is rather than sinking the whole overlay."""
+    if not si:
+        return
+    tkr = (ticker or "").upper()
+
+    # ① News fallback (all markets)
+    if not si.get("news"):
+        try:
+            from bot.stock_snapshot import _collect_news_fallback
+            _collect_news_fallback(ticker, si)
+        except Exception as exc:
+            log.debug("_ensure_detail_enrichment: news %s: %s", ticker, exc)
+
+    # ② KR research reports + consensus (한경 컨센서스)
+    if tkr.endswith((".KS", ".KQ")):
+        kr = si.get("kr", {})
+        if not kr.get("research_reports"):
+            try:
+                from bot.hk_consensus_client import fetch_consensus as hk_fetch
+                hk = hk_fetch(ticker)
+                if hk and hk.get("reports"):
+                    si.setdefault("kr", {})["research_reports"] = hk["reports"]
+                    if not si.get("target_mean") and not kr.get("consensus") and hk.get("target_price"):
+                        si.setdefault("kr", {})["consensus"] = {
+                            "source": "한경 컨센서스",
+                            "target_mean": hk["target_price"],
+                            "rating": hk.get("rating"),
+                            "n_analysts": hk.get("analyst_count"),
+                            "last_report_date": hk.get("last_report_date"),
+                        }
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: KR research %s: %s", ticker, exc)
+
+    # ③ TW consensus (鉅亨網)
+    elif tkr.endswith(".TW"):
+        tw = si.get("tw", {})
+        if not si.get("target_mean") and not tw.get("consensus"):
+            try:
+                from bot.cnyes_consensus import fetch_consensus as cnyes_fetch
+                cn = cnyes_fetch(ticker)
+                if cn and cn.get("target_mean"):
+                    si.setdefault("tw", {})["consensus"] = {
+                        "source": "鉅亨網",
+                        "target_mean": cn["target_mean"],
+                        "rating": cn.get("rating"),
+                        "n_analysts": cn.get("n_analysts"),
+                        "last_report_date": cn.get("last_report_date"),
+                    }
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: TW consensus %s: %s", ticker, exc)
+
+    # ④ JP consensus (Kabutan)
+    elif tkr.endswith(".T"):
+        jp = si.get("jp", {})
+        if not si.get("target_mean") and not jp.get("consensus"):
+            try:
+                from bot.kabutan_consensus import fetch_consensus as kb_fetch
+                kb = kb_fetch(ticker)
+                if kb and kb.get("target_mean"):
+                    si.setdefault("jp", {})["consensus"] = {
+                        "source": "Kabutan",
+                        "target_mean": kb["target_mean"],
+                        "rating": kb.get("rating"),
+                        "n_analysts": kb.get("n_analysts"),
+                        "last_report_date": kb.get("last_report_date"),
+                    }
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: JP consensus %s: %s", ticker, exc)
+
+
 def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     """Fresh live-quote payload for the detail-page overlay (numbers only).
 
@@ -3133,14 +3246,30 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
             set_cache_only(True)
         except Exception:
             pass
+        # 1) Fresh full snapshot. yfinance .info is flaky / rate-limit-prone
+        #    in the long-running dashboard process; a failure there must NOT
+        #    sink the news / research / consensus tabs (those come from
+        #    DART / Naver / 한경 / Kabutan / cnyes — no yfinance dependency).
+        fresh = None
         try:
             from bot.stock_snapshot import collect_stock_snapshot
             fresh = collect_stock_snapshot(ticker)
         except Exception as exc:
             log.warning("build_live_quote: full snapshot failed for %s: %s", ticker, exc)
-            return None
+        # 2) Fall back to the stored snapshot when yfinance bailed, so the
+        #    heavy panes still render real data (financials / holders / etc.).
+        if not fresh:
+            fresh = _load_stored_stock_info(ticker)
         if not fresh:
             return None
+        # 3) Ensure the slow-moving tabs are filled even when the snapshot
+        #    (stored or fresh) predates the news/research enrichment — old
+        #    analyses created before that code shipped have empty tabs that
+        #    only the live overlay can populate. Free (no LLM / no yfinance).
+        try:
+            _ensure_detail_enrichment(ticker, fresh)
+        except Exception as exc:
+            log.debug("build_live_quote: enrichment skipped for %s: %s", ticker, exc)
         try:
             parts = _render_stock_info_html({"ticker": ticker, "stock_info": fresh})
         except Exception as exc:
@@ -3326,7 +3455,7 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>
 <div class="si-quote-status" style="margin:-8px 0 16px;font-size:11px;color:var(--fg-soft)">
   <span id="q-badge" style="font-weight:600"></span>
-  <span class="si-quote-note">가격연동 지표(현재가·시총·PER·선행PER·PBR·PSR·EV/EBITDA·배당·베타·EPS·BPS·52주·이평·컨센서스)는 라이브 · 재무제표·실적·주주·수급·공시는 최신 공시/일 단위 갱신 · 차트는 분석 시점 저장본</span>
+  <span class="si-quote-note">가격연동 지표(현재가·시총·PER·선행PER·PBR·PSR·EV/EBITDA·배당·베타·EPS·BPS·52주·이평·컨센서스)는 라이브 · 재무제표·실적·주주·수급·공시·리서치·뉴스는 최신 공시/일 단위 갱신 · 차트는 분석 시점 저장본</span>
 </div>"""
 
     # ── market detection — pick the right market-specific sub-dict ──
