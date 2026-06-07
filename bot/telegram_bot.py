@@ -3111,6 +3111,32 @@ async def _on_startup(application) -> None:
             log.info("startup: stock_info backfill thread launched")
     except Exception as exc:
         log.warning("startup: stock_info backfill launch failed: %s", exc)
+    # One-time detail-tab backfill: fill empty news/research/consensus tabs
+    # in existing archives using our market-specific data sources (Naver, 한경,
+    # cnyes, Kabutan). Same pattern as chart/stock_info backfill.
+    try:
+        import threading
+        from pathlib import Path as _Path
+
+        _dt_marker = _Path.home() / ".tradingagents" / ".detail_tabs_backfilled"
+        if not _dt_marker.exists():
+            def _run_detail_tabs_backfill():
+                try:
+                    from bot.archive import backfill_detail_tabs
+                    from bot.dashboard import regenerate_index
+                    n = backfill_detail_tabs()
+                    _dt_marker.parent.mkdir(parents=True, exist_ok=True)
+                    _dt_marker.write_text("done", encoding="utf-8")
+                    if n:
+                        regenerate_index()
+                    log.info("startup: detail-tab backfill filled %d entries", n)
+                except Exception as exc:
+                    log.warning("startup: detail-tab backfill failed: %s", exc)
+
+            threading.Thread(target=_run_detail_tabs_backfill, daemon=True).start()
+            log.info("startup: detail-tab backfill thread launched")
+    except Exception as exc:
+        log.warning("startup: detail-tab backfill launch failed: %s", exc)
     # Populates the 'Menu' button beside the input area + the '/' typing
     # autocomplete in DMs. Dynamic per-ticker commands like /NVDA aren't
     # registered (the universe is too large) — Telegram still recognises

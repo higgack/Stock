@@ -635,6 +635,22 @@ def _enrich_tw(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: MOPS insider holdings skipped: %s", exc)
 
+    # ── cnyes 컨센서스 (yfinance TW 보완) ────────────────────────
+    if not snap.get("target_mean"):
+        try:
+            from bot.cnyes_consensus import fetch_consensus as cnyes_fetch
+            cn = cnyes_fetch(ticker)
+            if cn and cn.get("target_mean"):
+                snap.setdefault("tw", {})["consensus"] = {
+                    "source": "鉅亨網",
+                    "target_mean": cn["target_mean"],
+                    "rating": cn.get("rating"),
+                    "n_analysts": cn.get("n_analysts"),
+                    "last_report_date": cn.get("last_report_date"),
+                }
+        except Exception as exc:
+            log.debug("stock_snapshot: cnyes consensus skipped: %s", exc)
+
     # ── 鉅亨網 뉴스 폴백 (yfinance TW 뉴스 미커버) ────────────────
     _collect_news_fallback(ticker, snap)
 

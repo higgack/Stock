@@ -3206,3 +3206,35 @@ class TestDetailNewsResearchFallback:
         assert "네이버 한국어 제목" not in passed, "kr_native 뉴스가 번역기에 전달됨 (₩ 누수)"
         assert "English foreign headline" in passed, "비-KR 뉴스는 번역돼야"
         assert "네이버 한국어 제목" in html
+
+    def test_tw_consensus_source_code_wired(self):
+        """TW _enrich_tw 에 cnyes_consensus fallback 이 연결돼 있는지 확인."""
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert "cnyes_consensus" in src, "TW cnyes 컨센서스 import 누락"
+        assert "鉅亨網" in src, "TW 컨센서스 source 라벨 누락"
+
+    def test_backfill_detail_tabs_additive_only(self):
+        """backfill_detail_tabs 가 기존 데이터를 덮어쓰지 않는지 확인.
+
+        stock_info.news 가 이미 있는 레코드는 건너뛰어야 함.
+        """
+        import json, tempfile, os
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            day_dir = Path(tmp) / "2026-06-07"
+            day_dir.mkdir()
+            rec = {"ticker": "035420.KS", "trade_date": "2026-06-07",
+                   "stock_info": {"news": [{"title": "existing"}],
+                                  "kr": {"research_reports": [{"broker": "x"}]}}}
+            jf = day_dir / "120000_035420.KS.json"
+            jf.write_text(json.dumps(rec), encoding="utf-8")
+
+            import bot.archive as arch
+            with patch.object(arch, "ARCHIVE_ROOT", Path(tmp)):
+                n = arch.backfill_detail_tabs()
+            assert n == 0, f"이미 데이터 있는 레코드가 변경됨 (filled={n})"
+            after = json.loads(jf.read_text(encoding="utf-8"))
+            assert after["stock_info"]["news"][0]["title"] == "existing"
+            assert after["stock_info"]["kr"]["research_reports"][0]["broker"] == "x"
