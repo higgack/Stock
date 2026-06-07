@@ -734,8 +734,23 @@ def _collect_news_fallback(ticker: str, snap: dict) -> None:
     try:
         if ticker.endswith((".KS", ".KQ")):
             from bot.naver_news_client import fetch_news
-            query = (snap.get("kr", {}).get("corp_name")
-                     or snap.get("long_name") or "").strip()
+            from bot.market import kr_news_query_name, has_hangul
+            # Korean news search needs the bare Korean brand ('네이버'),
+            # not the legal suffix ('네이버(주)') or the DART English
+            # registration ('NAVER' → 0 hits). Strip the corporate form;
+            # prefer a Hangul name; ask DART for the Korean corp_name when
+            # the snapshot only has the English one. (NAVER 0-news 2026-06-08)
+            cand = kr_news_query_name(snap.get("kr", {}).get("corp_name"))
+            if not has_hangul(cand):
+                try:
+                    from bot.dart_client import get_dart
+                    dart = get_dart()
+                    ko = dart.news_search_name(ticker) if dart else None
+                    if ko and has_hangul(ko):
+                        cand = ko
+                except Exception:
+                    pass
+            query = (cand or kr_news_query_name(snap.get("long_name")) or "").strip()
             if query:
                 items = fetch_news(query, days_back=28, max_items=10)
                 kr_native = True

@@ -451,6 +451,31 @@ class DartClient:
             }
         return self._stock_to_name.get(code)
 
+    def news_search_name(self, stock_code: str) -> Optional[str]:
+        """Best Korean news-search term for a KR ticker.
+
+        Prefers the Korean corp_name from company.json ('네이버(주)') over
+        the corp_code.xml name, which is sometimes the English DART
+        registration ('NAVER' for 035420) that Korean news search returns
+        0 hits for. Strips the corporate-form suffix so '네이버(주)' →
+        '네이버'. Falls back to the corp_code.xml name when company.json
+        is unavailable. Surfaced 2026-06-08 (NAVER 0-news bug)."""
+        from bot.market import kr_news_query_name, has_hangul
+        code = (stock_code or "").upper().split(".")[0]
+        if not (code.isdigit() and len(code) == 6):
+            return None
+        # company.json corp_name is reliably Korean for almost every filer.
+        try:
+            ci = self.get_company_info(code) or {}
+            korean = kr_news_query_name(ci.get("corp_name"))
+            if korean and has_hangul(korean):
+                return korean
+        except Exception:
+            pass
+        # Fallback: corp_code.xml name (strip suffix; may be English).
+        bare = kr_news_query_name(self.stock_code_to_name(code))
+        return bare or None
+
     # ── /api/company.json — corp info incl. KSIC industry code ─────────
     def get_company_info(self, stock_code: str) -> Optional[dict]:
         """Return DART company info dict for the listed entity. The most

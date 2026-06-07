@@ -220,6 +220,44 @@ def resolve_english_alias(token: str) -> str | None:
     )
 
 
+# Corporate-form tokens that pollute a Naver-news search. Korean news
+# indexes the bare brand ('네이버'), never the legal suffix ('네이버(주)')
+# or the DART English registration ('NAVER'). Strip these (prefix or
+# suffix, fullwidth + the ㈜ glyph included).
+_KR_CORP_FORM_TOKENS = (
+    "㈜", "(주)", "（주）", "(유)", "(재)", "(사)", "(학)", "(의)",
+    "주식회사", "유한회사", "유한책임회사",
+)
+
+
+def kr_news_query_name(name: str | None) -> str:
+    """Best Naver-news search term from a KR corp name.
+
+    Korean news search returns ~0 hits for the DART English registration
+    ('NAVER' for 035420) or the legal-form suffix ('네이버(주)'), so strip
+    the corporate-form tokens and hand back the bare brand ('네이버').
+    Returns the input cleaned of those tokens; '' when nothing is left.
+
+    Surfaced 2026-06-08: the NAVER detail page + the main analysis
+    pipeline both searched 'NAVER' (English) and got 0 Korean articles.
+    Universal — every KR ticker's news query routes through this."""
+    if not name:
+        return ""
+    s = str(name).strip()
+    for tok in _KR_CORP_FORM_TOKENS:
+        s = s.replace(tok, " ")
+    return " ".join(s.split()).strip()
+
+
+def has_hangul(text: str | None) -> bool:
+    """True when ``text`` contains at least one Hangul syllable — used to
+    decide whether a candidate news-search term is actually Korean (the
+    English DART registration like 'NAVER' is not and returns 0 hits)."""
+    if not text:
+        return False
+    return any("가" <= ch <= "힣" for ch in str(text))
+
+
 # Romanized JP company aliases. Same problem as the KR map (NAVER /
 # 035420.KS) — users type TOYOTA expecting the bot to resolve, but
 # yfinance has no such ticker. Most names are unambiguous; the few

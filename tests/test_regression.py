@@ -3400,3 +3400,45 @@ class TestLiveQuoteOverlay:
         src = open("bot/dashboard_server.py", encoding="utf-8").read()
         assert 'params.get("debug"' in src, "debug 파라미터 파싱 누락"
         assert "diagnose_detail_sources" in src, "진단 함수 호출 누락"
+
+
+class TestKrNewsQuery:
+    """KR 뉴스 검색어 = 한글 브랜드 (NAVER 0-news 2026-06-08).
+
+    naver_news 가 영문 DART 등록명('NAVER')으로 검색해 0건 반환하던 버그.
+    한국 뉴스는 '네이버'로 인덱싱 → 법인 접미사 strip + 한글 우선."""
+
+    def test_strip_corporate_form_tokens(self):
+        from bot.market import kr_news_query_name
+        # 법인 접미사/접두사 제거 → bare 브랜드
+        assert kr_news_query_name("네이버(주)") == "네이버"
+        assert kr_news_query_name("(주)카카오") == "카카오"
+        assert kr_news_query_name("㈜한글과컴퓨터") == "한글과컴퓨터"
+        assert kr_news_query_name("현대자동차(주)") == "현대자동차"
+        assert kr_news_query_name("SK하이닉스 주식회사") == "SK하이닉스"
+        # 접미사 없으면 무변경
+        assert kr_news_query_name("삼성전자") == "삼성전자"
+        # None / 빈 입력 graceful
+        assert kr_news_query_name(None) == ""
+        assert kr_news_query_name("") == ""
+
+    def test_has_hangul_distinguishes_english_registration(self):
+        from bot.market import has_hangul
+        # 영문 DART 등록명은 한글 아님 → 한국 뉴스 검색 0건 신호
+        assert has_hangul("NAVER") is False
+        assert has_hangul("네이버") is True
+        assert has_hangul("SK하이닉스") is True
+        assert has_hangul(None) is False
+
+    def test_dart_news_search_name_method_exists(self):
+        """DART client 가 한글 우선 news_search_name 을 제공 (메인+상세
+        뉴스 검색이 영문 등록명으로 0건 나는 회귀 차단)."""
+        from bot.dart_client import DartClient
+        assert hasattr(DartClient, "news_search_name"), "news_search_name 메서드 누락"
+        # stock_snapshot + agent_utils 가 영문 fallback 없이 한글 우선 경로 사용
+        snap_src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert "kr_news_query_name" in snap_src and "has_hangul" in snap_src, \
+            "_collect_news_fallback 가 한글 검색어 정규화 미적용"
+        au_src = open("TradingAgents/tradingagents/agents/utils/agent_utils.py",
+                      encoding="utf-8").read()
+        assert "news_search_name" in au_src, "메인 파이프라인 뉴스 검색어 미수정"
