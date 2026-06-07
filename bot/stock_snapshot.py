@@ -203,12 +203,20 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
         # strip None values to keep JSON compact
         snap = {k: v for k, v in snap.items() if v is not None}
 
-        # KR enrichment — DART + FSC additive overlay
+        # KR enrichment — DART + FSC + KIS + pykrx additive overlay
         if ticker.endswith((".KS", ".KQ")):
             try:
                 _enrich_kr(ticker, snap)
             except Exception as exc:
                 log.warning("stock_snapshot: KR enrich skipped for %s: %s", ticker, exc)
+
+        # US enrichment — SEC EDGAR XBRL financials
+        if not ticker.endswith((".KS", ".KQ", ".T", ".TW", ".SS", ".SZ",
+                                ".HK", ".KS", ".KQ")):
+            try:
+                _enrich_us(ticker, snap)
+            except Exception as exc:
+                log.warning("stock_snapshot: US enrich skipped for %s: %s", ticker, exc)
 
         return snap
 
@@ -322,3 +330,151 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                 snap.setdefault("kr", {})["minority"] = mh
     except Exception as exc:
         log.debug("stock_snapshot: FSC minority holders skipped: %s", exc)
+
+    # ── DART multi-year financials (3-year time series) ───────────
+    try:
+        from bot.dart_client import get_dart
+        from datetime import datetime as _dt
+        dart = get_dart()
+        if dart:
+            current_year = _dt.now().year
+            ts = []
+            for yr in range(current_year - 1, current_year - 4, -1):
+                fin = dart.get_normalized_financials(ticker, year=yr)
+                if fin and fin.get("financials"):
+                    entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
+                    for k in ("매출", "영업이익", "당기순이익", "자산총계",
+                              "부채총계", "자본총계"):
+                        v = fin["financials"].get(k)
+                        if v is not None:
+                            entry[k] = v
+                    ratios = fin.get("ratios", {})
+                    for k in ("영업이익률", "순이익률", "ROE", "ROA",
+                              "부채비율", "유동비율"):
+                        v = ratios.get(k)
+                        if v is not None:
+                            entry[k] = v
+                    ts.append(entry)
+            if ts:
+                snap.setdefault("kr", {})["financials_ts"] = ts
+    except Exception as exc:
+        log.debug("stock_snapshot: DART multi-year financials skipped: %s", exc)
+
+    # ── KIS investor flow (수급) ──────────────────────────────────
+    try:
+        from bot.kis_client import KisClient
+        kis = KisClient()
+        if kis._ready():
+            flow_data: dict = {}
+            inv = kis.get_investor_flow(ticker)
+            if inv:
+                flow_data["investor_flow"] = inv
+            credit = kis.get_credit_short_balance(ticker)
+            if credit:
+                flow_data["credit"] = credit
+            short = kis.get_short_sale(ticker)
+            if short:
+                flow_data["short_sale"] = short
+            program = kis.get_program_trade(ticker)
+            if program:
+                flow_data["program"] = program
+            if flow_data:
+                snap.setdefault("kr", {})["flow"] = flow_data
+    except Exception as exc:
+        log.debug("stock_snapshot: KIS flow skipped: %s", exc)
+
+    # ── pykrx trends (외인·공매도 추이) ──────────────────────────
+    try:
+        from bot.pykrx_client import (
+            get_kr_foreign_ownership_trend,
+            get_kr_short_balance_trend,
+        )
+        trends: dict = {}
+        fo = get_kr_foreign_ownership_trend(ticker, days_back=30)
+        if fo:
+            trends["foreign_ownership"] = fo
+        sb = get_kr_short_balance_trend(ticker, days_back=30)
+        if sb:
+            trends["short_trend"] = sb
+        if trends:
+            snap.setdefault("kr", {}).setdefault("flow", {}).update(trends)
+    except Exception as exc:
+        log.debug("stock_snapshot: pykrx trends skipped: %s", exc)
+
+    # ── FSC lockup releases + dilution events (리스크) ────────────
+    try:
+        from bot.fsc_client import lockup_releases as fsc_lockup, fsc_key_ready
+        if fsc_key_ready():
+            lr = fsc_lockup(ticker, lookback_days=7)
+            if lr:
+                snap.setdefault("kr", {})["lockup_releases"] = lr
+    except Exception as exc:
+        log.debug("stock_snapshot: FSC lockup skipped: %s", exc)
+
+    try:
+        from bot.fsc_client import dilution_events as fsc_dilution, fsc_key_ready
+        if fsc_key_ready():
+            de = fsc_dilution(ticker, lookback_days=10)
+            if de:
+                snap.setdefault("kr", {})["dilution_events"] = de
+    except Exception as exc:
+        log.debug("stock_snapshot: FSC dilution skipped: %s", exc)
+
+    # ── yfinance dividends (배당 이력, snap 직접 — 전 시장 공통) ──
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker)
+        divs = t.dividends
+        if divs is not None and not divs.empty:
+            rows = []
+            for idx, val in divs.tail(12).items():
+                if hasattr(idx, "strftime"):
+                    rows.append({"date": idx.strftime("%Y-%m-%d"),
+                                 "amount": round(float(val), 4)})
+            if rows:
+                snap["dividends"] = rows
+    except Exception as exc:
+        log.debug("stock_snapshot: dividends skipped: %s", exc)
+
+
+def _enrich_us(ticker: str, snap: dict) -> None:
+    """Add US-specific data from SEC EDGAR to an existing snapshot dict."""
+    # ── SEC XBRL multi-year financials ────────────────────────────
+    try:
+        from bot.edgar_client import get_key_financials
+        kf = get_key_financials(ticker)
+        if kf and kf.get("metrics"):
+            metrics = kf["metrics"]
+            us: dict = snap.setdefault("us", {})
+            financials: dict = {}
+            for key, m in metrics.items():
+                entry: dict = {}
+                if m.get("annual"):
+                    entry["annual"] = {
+                        "val": m["annual"].get("val"),
+                        "fy": m["annual"].get("fy"),
+                        "end": m["annual"].get("end"),
+                    }
+                if m.get("latest"):
+                    entry["latest"] = {
+                        "val": m["latest"].get("val"),
+                        "fy": m["latest"].get("fy"),
+                        "end": m["latest"].get("end"),
+                        "form": m["latest"].get("form"),
+                    }
+                entry["unit"] = m.get("unit", "USD")
+                if entry.get("annual") or entry.get("latest"):
+                    financials[key] = entry
+            if financials:
+                us["xbrl"] = financials
+    except Exception as exc:
+        log.debug("stock_snapshot: EDGAR financials skipped: %s", exc)
+
+    # ── SEC Form 4 insider trades ─────────────────────────────────
+    try:
+        from bot.edgar_client import get_recent_form4
+        f4 = get_recent_form4(ticker, days=60, top_n=10)
+        if f4:
+            snap.setdefault("us", {})["insider_trades"] = f4
+    except Exception as exc:
+        log.debug("stock_snapshot: EDGAR Form 4 skipped: %s", exc)
