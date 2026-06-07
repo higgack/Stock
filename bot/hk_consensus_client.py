@@ -42,7 +42,12 @@ import requests
 
 log = logging.getLogger("bot.hk_consensus")
 
-_BASE_URL = "https://consensus.hankyung.com/apps.analysis/analysis.list"
+# 한경 컨센서스는 2026 초 사이트를 개편하며 종목별 리포트 목록을
+# /analysis/list 로 옮겼다 (구 /apps.analysis/analysis.list 는 404).
+# 신규 URL 우선 + 구 URL 폴백 (향후 재변경 대비). 2026-06-08 NAVER
+# 진단에서 신규 URL 200 / 구 URL 404 확인.
+_LIST_URL = "https://consensus.hankyung.com/analysis/list"
+_BASE_URL = "https://consensus.hankyung.com/apps.analysis/analysis.list"  # legacy fallback
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "hk_consensus"
 _CACHE_TTL_HOURS = 12
 _HTTP_TIMEOUT = 15
@@ -77,6 +82,120 @@ def _normalize_code(ticker: str) -> Optional[str]:
     return None
 
 
+def _fetch_list_html(code: str) -> Optional[str]:
+    """Fetch the 종목별 리포트 목록 HTML. Tries the current /analysis/list
+    endpoint first, then the legacy /apps.analysis/analysis.list (404 since
+    the 2026 redesign but kept for resilience). Returns HTML or None."""
+    attempts = (
+        (_LIST_URL, {"skinType": "", "sdate": "", "edate": "",
+                     "now_page": "1", "search_text": code}),
+        (_BASE_URL, {"sk": code, "search_type": "2"}),
+    )
+    for url, params in attempts:
+        try:
+            resp = requests.get(url, params=params, headers=_HEADERS,
+                                timeout=_HTTP_TIMEOUT)
+            resp.encoding = "utf-8"
+            if resp.status_code != 200 or not resp.text:
+                continue
+            # A results page contains at least one dated row; a 404/redirect
+            # stub or an empty-search page won't. Use that as the liveness
+            # check so we fall through to the legacy URL when needed.
+            if re.search(r"\d{4}[-./]\d{2}[-./]\d{2}", resp.text):
+                return resp.text
+        except Exception as exc:
+            log.warning("hk_consensus: fetch failed for %s at %s: %s",
+                        code, url, exc)
+            continue
+    return None
+
+
+_BROKER_RE = re.compile(r"증권|투자|자산운용|Securities|Investment|리서치", re.I)
+_RATING_KEYWORDS = (
+    "강력매수", "비중확대", "비중축소", "매수", "매도", "보유", "중립",
+    "Strong Buy", "Outperform", "Overweight", "Marketperform",
+    "Market Perform", "Underweight", "Buy", "Hold", "Sell", "Neutral",
+)
+
+
+def _cell_texts(row_html: str) -> list[str]:
+    """Strip a <tr> into a list of plain-text <td> cell values."""
+    cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL | re.I)
+    out = []
+    for c in cells:
+        txt = re.sub(r"<[^>]+>", " ", c)
+        txt = txt.replace("&nbsp;", " ").replace("&amp;", "&")
+        out.append(" ".join(txt.split()).strip())
+    return out
+
+
+def _parse_report_rows(html: str, cutoff) -> list[dict]:
+    """Tolerant per-row parser: pull every <tr>, then identify the date /
+    target / rating / broker / title cells by PATTERN rather than fixed
+    column order — robust to the column reshuffles the 한경 redesign
+    introduced. Surfaced 2026-06-08 (NAVER, old fixed-6-td regex broke)."""
+    rows: list[dict] = []
+    for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I):
+        cells = _cell_texts(row_html)
+        if len(cells) < 3:
+            continue
+        # date (accept - . / separators)
+        date_str = None
+        for c in cells:
+            m = re.search(r"(\d{4})[-./](\d{2})[-./](\d{2})", c)
+            if m:
+                date_str = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+                break
+        if not date_str:
+            continue
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d < cutoff:
+            continue
+        # target price — a comma-grouped integer (₩, ≥ 1,000); ignore the
+        # date cell and pure years.
+        target_val = None
+        for c in cells:
+            if date_str.replace("-", "") in c.replace(",", "").replace(".", ""):
+                pass  # don't mine the date cell for a number
+            m = re.search(r"\b([0-9]{1,3}(?:,[0-9]{3})+)\b", c)
+            if m:
+                target_val = float(m.group(1).replace(",", ""))
+                break
+        # rating keyword
+        rating_raw = ""
+        for c in cells:
+            for kw in _RATING_KEYWORDS:
+                if kw.lower() in c.lower():
+                    rating_raw = kw
+                    break
+            if rating_raw:
+                break
+        # broker — a short cell that reads like a 증권사 / 운용사 name
+        broker = ""
+        for c in cells:
+            if c and len(c) <= 22 and _BROKER_RE.search(c):
+                broker = c
+                break
+        # title — the longest non-broker text cell
+        title = ""
+        for c in sorted(cells, key=len, reverse=True):
+            if c and c != broker and not re.fullmatch(r"[\d,.\-/\s]+", c):
+                title = c[:80]
+                break
+        rows.append({
+            "title": title,
+            "broker": broker,
+            "analyst": "",
+            "target": target_val,
+            "rating": rating_raw,
+            "date": date_str,
+        })
+    return rows
+
+
 def fetch_consensus(ticker: str, days_back: int = 90) -> Optional[dict]:
     """Scrape 한경 컨센서스 종목별 페이지.
 
@@ -102,78 +221,13 @@ def fetch_consensus(ticker: str, days_back: int = 90) -> Optional[dict]:
         except Exception as exc:
             log.warning("hk_consensus: cache read failed for %s: %s", code, exc)
 
-    try:
-        resp = requests.get(
-            _BASE_URL,
-            params={"sk": code, "search_type": "2"},
-            headers=_HEADERS,
-            timeout=_HTTP_TIMEOUT,
-        )
-        resp.encoding = "utf-8"
-        resp.raise_for_status()
-        html = resp.text
-    except Exception as exc:
-        log.warning("hk_consensus: fetch failed for %s: %s", code, exc)
+    html = _fetch_list_html(code)
+    if not html:
         return None
-
-    # Parse report rows. 한경 페이지 구조 (변동 빈도 낮음):
-    #   <table class="table_style ...">
-    #     <tbody>
-    #       <tr>
-    #         <td>제목</td>
-    #         <td class="text_l">증권사</td>
-    #         <td>애널리스트</td>
-    #         <td><strong>목표가</strong></td>
-    #         <td>투자의견</td>
-    #         <td>YYYY-MM-DD</td>
-    #       </tr>
-    #     </tbody>
-    #   </table>
-
-    # Defensive parsing — 3 strategy fallback.
-    # Strategy A: tr-row regex matching 6 td cells.
-    row_re = re.compile(
-        r"<tr[^>]*>"
-        r"\s*<td[^>]*>(?:<a[^>]*>)?\s*([^<]+?)\s*(?:</a>)?</td>"  # 1. 제목
-        r"\s*<td[^>]*>\s*([^<]+?)\s*</td>"                          # 2. 증권사
-        r"\s*<td[^>]*>\s*([^<]+?)\s*</td>"                          # 3. 애널리스트
-        r"\s*<td[^>]*>\s*(?:<strong[^>]*>)?\s*([\d,.\s원-]+|[\-]+)\s*(?:</strong>)?</td>"  # 4. 목표가
-        r"\s*<td[^>]*>\s*(?:<strong[^>]*>)?\s*([^<]+?)\s*(?:</strong>)?</td>"  # 5. 투자의견
-        r"\s*<td[^>]*>\s*(\d{4}-\d{2}-\d{2})\s*</td>",              # 6. 발행일
-        re.DOTALL,
-    )
 
     today = date.today()
     cutoff = today - timedelta(days=days_back)
-    rows: list[dict] = []
-    for m in row_re.finditer(html):
-        try:
-            target_raw = m.group(4).strip().replace(",", "").replace("원", "")
-            target_raw = re.sub(r"[^\d.-]", "", target_raw)
-            if not target_raw or target_raw in ("-", ""):
-                target_val = None
-            else:
-                target_val = float(target_raw)
-        except Exception:
-            target_val = None
-
-        rating_raw = m.group(5).strip()
-        date_str = m.group(6).strip()
-        try:
-            d = datetime.strptime(date_str, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        if d < cutoff:
-            continue
-
-        rows.append({
-            "title": m.group(1).strip()[:80],
-            "broker": m.group(2).strip(),
-            "analyst": m.group(3).strip(),
-            "target": target_val,
-            "rating": rating_raw,
-            "date": date_str,
-        })
+    rows = _parse_report_rows(html, cutoff)
 
     if not rows:
         # No coverage found — cache empty result to avoid re-fetch storms
