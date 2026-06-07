@@ -2108,6 +2108,19 @@ mark.snippet-target {
 .si-news-title a:hover { color: var(--accent); }
 .si-news-meta { font-size: 11px; color: var(--fg-soft); margin-top: 2px; }
 .si-empty { color: var(--fg-soft); font-size: 13px; padding: 14px 0; }
+.si-tl-item { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.si-tl-date { min-width: 80px; font-size: 12px; color: var(--fg-soft); flex-shrink: 0; }
+.si-tl-body { flex: 1; }
+.si-tl-title { font-size: 13px; }
+.si-tl-title a { color: var(--fg); text-decoration: none; }
+.si-tl-title a:hover { text-decoration: underline; }
+.si-tl-meta { font-size: 11px; color: var(--fg-soft); margin-top: 2px; }
+.si-tl-badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 600; margin-left: 6px; vertical-align: middle; }
+.si-tl-badge.high { background: #e2574c22; color: #e2574c; }
+.si-tl-badge.medium { background: #ff980022; color: #ff9800; }
+.si-tl-badge.low { background: #26a69a22; color: #26a69a; }
+.si-tl-badge.info { background: #42a5f522; color: #42a5f5; }
+.si-tl-type { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; background: var(--border); margin-right: 6px; }
 @media (max-width: 560px) {
   .si-card { max-width: none; }
   .si-grid { grid-template-columns: 1fr; }
@@ -3077,6 +3090,7 @@ def _render_stock_info_html(rec: dict) -> str:
   <button class="si-tab" data-pane="si-research">리서치</button>
   <button class="si-tab" data-pane="si-holders">주주</button>
 {disclosure_tab}  <button class="si-tab" data-pane="si-news">뉴스</button>
+  <button class="si-tab" data-pane="si-timeline">타임라인</button>
 </div>"""
 
     # ── 종합 pane (chart + summary — existing content placeholder) ──
@@ -3429,6 +3443,80 @@ def _render_stock_info_html(rec: dict) -> str:
   </div>
 </div>"""
 
+    # ── 이벤트 타임라인 pane ────────────────────────────────────
+    timeline_events: list[tuple[str, str, str, str, str, str]] = []
+    # (date, type_label, importance, title, meta, url)
+
+    # Earnings
+    for e in si.get("earnings_history", []):
+        d = e.get("date", "")
+        surprise = e.get("Surprise(%)")
+        eps_act = e.get("Reported EPS")
+        imp = "high" if surprise is not None and abs(surprise) > 5 else "medium"
+        s_str = f" (서프라이즈 {surprise:+.1f}%)" if surprise is not None else ""
+        title = f"EPS {eps_act:.2f}{s_str}" if eps_act is not None else "실적 발표"
+        timeline_events.append((d, "실적", imp, title, "", ""))
+
+    # Research actions
+    for u in si.get("upgrades_downgrades", []):
+        d = u.get("date", "")
+        firm = u.get("Firm", "")
+        action = u.get("Action", "")
+        to_g = u.get("ToGrade", "")
+        from_g = u.get("FromGrade", "")
+        imp = "high" if action in ("upgrade", "downgrade") else "low"
+        change = f"{from_g} → {to_g}" if from_g else to_g
+        title = f"{firm}: {change}"
+        timeline_events.append((d, "리서치", imp, title, action, ""))
+
+    # KR disclosures
+    for disc in kr.get("disclosures", []):
+        d = disc.get("date", "")
+        title = disc.get("title", "")
+        url = disc.get("url", "")
+        imp = "high" if any(kw in title for kw in ("유상증자", "무상증자", "합병", "분할", "감자", "상장폐지", "거래정지")) else \
+              "medium" if any(kw in title for kw in ("분기보고서", "사업보고서", "반기보고서", "주요사항")) else "low"
+        timeline_events.append((d, "공시", imp, title, disc.get("reporter", ""), url))
+
+    # News
+    for n in si.get("news", []):
+        d = n.get("date", "")
+        title = n.get("title", "")
+        url = n.get("link", "")
+        timeline_events.append((d, "뉴스", "info", title, n.get("publisher", ""), url))
+
+    # Sort by date descending
+    timeline_events.sort(key=lambda x: x[0], reverse=True)
+
+    if timeline_events:
+        tl_items = ""
+        for d, type_label, imp, title, meta, url in timeline_events:
+            d_esc = esc(d)
+            title_esc = esc(title)
+            title_html = f'<a href="{esc(url)}" target="_blank" rel="noopener">{title_esc}</a>' if url else title_esc
+            badge_cls = imp
+            badge_map = {"high": "높음", "medium": "보통", "low": "낮음", "info": "참고"}
+            badge_label = badge_map.get(imp, "")
+            meta_esc = esc(meta)
+            meta_html = f' <span class="si-tl-meta">{meta_esc}</span>' if meta else ""
+            tl_items += f"""<div class="si-tl-item">
+  <div class="si-tl-date">{d_esc}</div>
+  <div class="si-tl-body">
+    <div class="si-tl-title"><span class="si-tl-type">{esc(type_label)}</span>{title_html}<span class="si-tl-badge {badge_cls}">{badge_label}</span></div>
+    {meta_html}
+  </div>
+</div>\n"""
+        timeline_pane = f"""<div class="si-pane" id="si-timeline">
+  <div class="si-section">
+    <div class="si-section-title">전체 이벤트 타임라인</div>
+    {tl_items}
+  </div>
+</div>"""
+    else:
+        timeline_pane = """<div class="si-pane" id="si-timeline">
+  <div class="si-empty">이벤트 데이터가 없습니다.</div>
+</div>"""
+
     # ── Tab switching JS ────────────────────────────────────────
     tab_js = """<script>
 (function(){
@@ -3456,7 +3544,7 @@ def _render_stock_info_html(rec: dict) -> str:
         "other_panes": company_pane + "\n" + consensus_pane + "\n" +
                        earnings_pane + "\n" + research_pane + "\n" +
                        holders_pane + "\n" + disclosures_pane + "\n" +
-                       news_pane,
+                       news_pane + "\n" + timeline_pane,
     }
 
 
