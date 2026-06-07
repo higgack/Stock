@@ -3106,6 +3106,122 @@ _FIN_ITEM_KR: dict[str, str] = {
 }
 
 
+def diagnose_detail_sources(ticker: str) -> dict:
+    """Probe every news / research / consensus source for ``ticker`` and
+    report, per source, whether it's reachable and how many rows it
+    returns — so an operator can open
+    ``/api/quote?ticker=X&debug=1`` in the browser (the dashboard is
+    auth-gated) and get a DEFINITIVE answer to "is an empty tab our code,
+    a missing key, or a blocked/unsupported source?" — without ssh.
+
+    Never raises. Reports env-key PRESENCE as booleans only (never the
+    values). ₩0 — same free clients the overlay uses.
+    """
+    import os as _os
+    out: dict = {"ticker": ticker, "market": None, "env": {}, "sources": {}}
+    tkr = (ticker or "").upper()
+
+    def _probe(name: str, fn) -> None:
+        try:
+            res = fn()
+            out["sources"][name] = res
+        except Exception as exc:
+            out["sources"][name] = {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
+    if tkr.endswith((".KS", ".KQ")):
+        out["market"] = "KR"
+        out["env"] = {
+            "NAVER_CLIENT_ID": bool(_os.getenv("NAVER_CLIENT_ID", "").strip()),
+            "NAVER_CLIENT_SECRET": bool(_os.getenv("NAVER_CLIENT_SECRET", "").strip()),
+            "DART_API_KEY": bool(_os.getenv("DART_API_KEY", "").strip()),
+        }
+        code = tkr.split(".")[0]
+
+        def _dart_name():
+            from bot.dart_client import get_dart
+            dart = get_dart()
+            if not dart:
+                return {"ok": False, "error": "DART client unavailable (key missing?)"}
+            nm = dart.stock_code_to_name(code)
+            ci = dart.get_company_info(code) or {}
+            return {"ok": bool(nm or ci.get("corp_name")),
+                    "stock_code_to_name": nm,
+                    "company_info_corp_name": ci.get("corp_name")}
+        _probe("dart_name", _dart_name)
+
+        def _naver():
+            from bot.naver_news_client import fetch_news
+            from bot.dart_client import get_dart
+            dart = get_dart()
+            q = (dart.stock_code_to_name(code) if dart else None) or tkr
+            items = fetch_news(q, days_back=28, max_items=10)
+            return {"ok": bool(items), "query": q,
+                    "count": len(items) if items else 0}
+        _probe("naver_news", _naver)
+
+        def _hk():
+            from bot.hk_consensus_client import fetch_consensus
+            r = fetch_consensus(ticker)
+            return {"ok": bool(r and r.get("reports")),
+                    "reports": len(r.get("reports", [])) if r else 0,
+                    "target_price": (r or {}).get("target_price")}
+        _probe("hankyung_research", _hk)
+
+        def _fng():
+            from bot.fnguide_consensus import fetch_consensus as fg
+            r = fg(code)
+            return {"ok": bool(r and r.get("target_mean")),
+                    "target_mean": (r or {}).get("target_mean")}
+        _probe("fnguide_consensus", _fng)
+
+    elif tkr.endswith(".T"):
+        out["market"] = "JP"
+        def _kb():
+            from bot.kabutan_news import fetch_news
+            items = fetch_news(code := tkr.split(".")[0], days_back=28, max_items=10)
+            return {"ok": bool(items), "count": len(items) if items else 0}
+        _probe("kabutan_news", _kb)
+        def _kbc():
+            from bot.kabutan_consensus import fetch_consensus as kc
+            r = kc(ticker)
+            return {"ok": bool(r and r.get("target_mean")), "target_mean": (r or {}).get("target_mean")}
+        _probe("kabutan_consensus", _kbc)
+
+    elif tkr.endswith(".TW"):
+        out["market"] = "TW"
+        def _cn():
+            from bot.cnyes_client import fetch_news
+            items = fetch_news(tkr.split(".")[0], days_back=28, max_items=10)
+            return {"ok": bool(items), "count": len(items) if items else 0}
+        _probe("cnyes_news", _cn)
+        def _cnc():
+            from bot.cnyes_consensus import fetch_consensus as cc
+            r = cc(ticker)
+            return {"ok": bool(r and r.get("target_mean")), "target_mean": (r or {}).get("target_mean")}
+        _probe("cnyes_consensus", _cnc)
+
+    elif tkr.endswith((".SS", ".SZ", ".BJ", ".HK")):
+        out["market"] = "CN_HK"
+        def _ak():
+            from bot.akshare_client import get_akshare
+            ak = get_akshare()
+            if not ak:
+                return {"ok": False, "error": "AKShare unavailable"}
+            items = ak.fetch_news(ticker, days_back=28, max_items=10)
+            return {"ok": bool(items), "count": len(items) if items else 0}
+        _probe("akshare_news", _ak)
+
+    else:
+        out["market"] = "US"
+        def _yf():
+            import yfinance as yf
+            n = yf.Ticker(ticker).news or []
+            return {"ok": bool(n), "count": len(n)}
+        _probe("yfinance_news", _yf)
+
+    return out
+
+
 def _load_stored_stock_info(ticker: str) -> dict | None:
     """Return the ``stock_info`` from the most recent archived analysis of
     ``ticker``, or None. Used as a fallback for the live FULL overlay when a

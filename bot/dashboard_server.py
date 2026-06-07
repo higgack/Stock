@@ -484,8 +484,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             params = _uparse.parse_qs(qs)
             ticker = (params.get("ticker", [""])[0] or "").strip().upper()
             full = (params.get("full", ["0"])[0] or "0").strip() == "1"
+            debug = (params.get("debug", ["0"])[0] or "0").strip() == "1"
             if not _TICKER_RE.match(ticker):
                 self._reply_json(400, {"ok": False, "error": "bad ticker"})
+                return
+
+            # Diagnostic mode: probe every news/research/consensus source
+            # and report per-source reachability. Auth-gated like the rest
+            # of the dashboard. Gives a definitive "code vs key vs blocked
+            # source" answer from production without ssh. Not cached.
+            if debug:
+                from bot.dashboard import diagnose_detail_sources
+                self._reply_json(200, {"ok": True, "diagnose": diagnose_detail_sources(ticker)})
                 return
 
             cache_dir = _ARCHIVE_ROOT.parent / "quote_cache"

@@ -3378,3 +3378,25 @@ class TestLiveQuoteOverlay:
         # full-mode heavy whitelist 에 둘 다 존재
         assert '"si-research"' in body and '"si-news"' in body, \
             "full whitelist 에 research/news 누락"
+
+    def test_diagnose_sources_shape_and_graceful(self):
+        """diagnose_detail_sources 는 시장별 소스 상태 + env 키 PRESENCE
+        (값 아님) 를 반환하고, 키/네트워크 부재에도 raise 안 함. /api/quote
+        ?debug=1 production 진단의 백본 — '코드 vs 키 vs 차단된 소스' 판별."""
+        import bot.dashboard as d
+        r = d.diagnose_detail_sources("035420.KS")
+        assert r["market"] == "KR"
+        assert set(("NAVER_CLIENT_ID", "DART_API_KEY")).issubset(r["env"].keys())
+        # env 값은 bool (키 문자열 노출 금지)
+        assert all(isinstance(v, bool) for v in r["env"].values()), "env 키 값 노출 위험"
+        assert "naver_news" in r["sources"] and "hankyung_research" in r["sources"]
+        # US / 비-KR 도 graceful
+        ru = d.diagnose_detail_sources("AAPL")
+        assert ru["market"] == "US" and "sources" in ru
+
+    def test_quote_endpoint_has_debug_mode(self):
+        """서버 /api/quote 가 debug=1 진단 분기를 가진다 (ssh 없이 production
+        소스 상태 확인)."""
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert 'params.get("debug"' in src, "debug 파라미터 파싱 누락"
+        assert "diagnose_detail_sources" in src, "진단 함수 호출 누락"
