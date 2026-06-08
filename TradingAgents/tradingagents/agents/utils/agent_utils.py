@@ -1671,7 +1671,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
     # blocks (sentiment fuel) and peer set (Comps consistency).
     "social": {
-        "krx_flow", "hsgt_flow", "kis_supply", "twse_flow",
+        "krx_flow", "hsgt_flow", "kis_supply", "twse_flow", "jpx_weekly_flow",
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
         "edgar_8k", "edgar_form4", "edgar_xbrl",
         "options_signals",
@@ -1682,7 +1682,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
-    "news": {"krx_flow", "hsgt_flow", "kis_supply", "twse_flow",
+    "news": {"krx_flow", "hsgt_flow", "kis_supply", "twse_flow", "jpx_weekly_flow",
              "options_signals", "edgar_xbrl",
              "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
              "finnhub_earnings", "finnhub_rec", "finnhub_insent",
@@ -1693,7 +1693,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # rule1_skeleton is NOT excluded — fundamentals analyst gets the table.
     "fundamentals": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
-        "krx_flow", "hsgt_flow", "kis_supply", "twse_flow",
+        "krx_flow", "hsgt_flow", "kis_supply", "twse_flow", "jpx_weekly_flow",
     },
 }
 
@@ -1841,6 +1841,11 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
         try:
             from bot.fred_client import fetch_macro
             tasks["fred_jp_macro"] = lambda: fetch_macro("JP")
+        except Exception:
+            pass
+        try:
+            from bot.jpx_flow_client import fetch_jpx_weekly_flow as _jpx_flow
+            tasks["jpx_weekly_flow"] = lambda: _jpx_flow()
         except Exception:
             pass
 
@@ -5762,6 +5767,32 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         except Exception as exc:
             _analyst_log.warning(
                 "fred jp macro injection failed for %s: %s", ticker, exc,
+            )
+
+        # JPX weekly investor-type flow (JP market-wide)
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "JP" and _section_allowed(analyst_id, "jpx_weekly_flow"):
+                from bot.jpx_flow_client import format_jpx_flow_block
+                jpx_rows = prefetched.get("jpx_weekly_flow")
+                jpx_block = format_jpx_flow_block(jpx_rows)
+                if jpx_block:
+                    base += (
+                        "\n\n=== JPX 投資部門別 週間売買動向 (市場全体, verbatim) ===\n"
+                        + jpx_block
+                        + "\n\n[JP 수급 해석 가이드]\n"
+                        " • 外国人 = JP 시장 최대 변동 요인 (시장 거래의 ~60-70%)."
+                        " 4주 연속 매수/매도 → 추세 전환 신호.\n"
+                        " • 投資信託 = 국내 투신, 外国人과 반대 방향이면"
+                        " 기관 간 분리 — 방향성 약화.\n"
+                        " • 個人 = 소매 투자자, 逆張り(역행) 성향 강함.\n"
+                        " • 이 데이터는 시장 전체 aggregate 이다 (per-stock 아님)."
+                        " 종목 분석에는 시장 전반 수급 frame 으로만 활용."
+                        " 수치 날조 금지."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "jpx flow injection failed for %s: %s", ticker, exc,
             )
 
         # JP consensus fallback — yfinance 1st, Kabutan 2nd. yfinance
