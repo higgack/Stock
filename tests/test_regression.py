@@ -3863,3 +3863,54 @@ class TestCashInInvest:
             "by_broker": {}, "asset_allocation": {}, "loans": [],
         }
         assert "예수금" not in format_summary_text(m)
+
+
+class TestHkConsensusParser:
+    """한경 컨센서스 parser — plain-integer target + data-attr extraction
+    (2026-06-08).
+
+    한경 2026 redesign 이후 목표가가 콤마 없는 정수로, 투자의견이
+    data-value 속성에 담겨 나오면서 기존 parser 가 둘 다 None/''으로
+    파싱 → 리서치 액션 표 전부 '—' 표시."""
+
+    def test_plain_int_target(self):
+        """콤마 없는 정수 목표가를 파싱."""
+        from bot.hk_consensus_client import _parse_report_rows
+        from datetime import date, timedelta
+        html = '<table><tr><td>2026-06-05</td><td>NH투자증권</td><td>매수</td><td>58000</td></tr></table>'
+        rows = _parse_report_rows(html, date.today() - timedelta(days=30))
+        assert rows and rows[0]["target"] == 58000.0
+
+    def test_comma_target_regression(self):
+        """콤마 있는 정수 목표가 (기존 형식, 회귀 방지)."""
+        from bot.hk_consensus_client import _parse_report_rows
+        from datetime import date, timedelta
+        html = '<table><tr><td>2026-06-05</td><td>삼성증권</td><td>Buy</td><td>450,000</td></tr></table>'
+        rows = _parse_report_rows(html, date.today() - timedelta(days=30))
+        assert rows and rows[0]["target"] == 450000.0
+
+    def test_year_not_matched_as_target(self):
+        """2020-2099 범위 4자리 숫자는 목표가로 매칭 금지."""
+        from bot.hk_consensus_client import _parse_report_rows
+        from datetime import date, timedelta
+        html = '<table><tr><td>2026-06-05</td><td>NH투자증권</td><td>Hold</td><td>2026년 전망</td></tr></table>'
+        rows = _parse_report_rows(html, date.today() - timedelta(days=30))
+        assert rows and rows[0]["target"] is None
+
+    def test_data_value_attr_extraction(self):
+        """data-value 속성에 담긴 투자의견·목표가 추출."""
+        from bot.hk_consensus_client import _parse_report_rows
+        from datetime import date, timedelta
+        html = '<table><tr><td>2026-06-05</td><td>한국투자증권</td><td data-value="Outperform"></td><td data-value="75000"></td></tr></table>'
+        rows = _parse_report_rows(html, date.today() - timedelta(days=30))
+        assert rows and rows[0]["target"] == 75000.0
+        assert rows[0]["rating"] == "Outperform"
+
+    def test_new_rating_keywords(self):
+        """추가된 투자의견 키워드(Trading Buy 등) 인식."""
+        from bot.hk_consensus_client import _parse_report_rows
+        from datetime import date, timedelta
+        for kw in ("Trading Buy", "적극매수", "Accumulate", "Underperform", "Reduce"):
+            html = f'<table><tr><td>2026-06-05</td><td>NH투자증권</td><td>{kw}</td><td>50000</td></tr></table>'
+            rows = _parse_report_rows(html, date.today() - timedelta(days=30))
+            assert rows and rows[0]["rating"] == kw, f"missed keyword: {kw}"

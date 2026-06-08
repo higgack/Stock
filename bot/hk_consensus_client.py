@@ -63,12 +63,18 @@ _HEADERS = {
 
 # Rating → direction mapping (한경 의견 분류는 보통 5단계).
 _RATING_TO_DIRECTION = {
-    "매수": "buy", "Buy": "buy", "BUY": "buy", "강력매수": "buy",
+    "매수": "buy", "Buy": "buy", "BUY": "buy",
+    "강력매수": "buy", "적극매수": "buy",
+    "Strong Buy": "buy", "Trading Buy": "buy",
+    "Outperform": "buy", "Overweight": "buy", "Accumulate": "buy",
+    "비중확대": "buy",
     "보유": "hold", "Hold": "hold", "HOLD": "hold", "중립": "hold",
     "Neutral": "hold", "Marketperform": "hold", "Market Perform": "hold",
+    "Sector Perform": "hold",
+    "Not Rated": "hold", "NR": "hold", "Coverage Initiated": "hold",
     "매도": "sell", "Sell": "sell", "SELL": "sell",
     "비중축소": "sell", "Underweight": "sell",
-    "비중확대": "buy", "Overweight": "buy",
+    "Underperform": "sell", "Reduce": "sell",
 }
 
 
@@ -112,21 +118,41 @@ def _fetch_list_html(code: str) -> Optional[str]:
 
 _BROKER_RE = re.compile(r"증권|투자|자산운용|Securities|Investment|리서치", re.I)
 _RATING_KEYWORDS = (
-    "강력매수", "비중확대", "비중축소", "매수", "매도", "보유", "중립",
-    "Strong Buy", "Outperform", "Overweight", "Marketperform",
-    "Market Perform", "Underweight", "Buy", "Hold", "Sell", "Neutral",
+    "강력매수", "적극매수", "비중확대", "비중축소", "매수", "매도", "보유", "중립",
+    "Strong Buy", "Trading Buy", "Outperform", "Overweight", "Accumulate",
+    "Marketperform", "Market Perform", "Sector Perform",
+    "Underperform", "Underweight", "Reduce",
+    "Not Rated", "NR", "Coverage Initiated",
+    "Buy", "Hold", "Sell", "Neutral",
 )
+_PLAIN_INT_RE = re.compile(r"(?<![0-9])(\d{4,7})(?![0-9./-])")
 
 
 def _cell_texts(row_html: str) -> list[str]:
-    """Strip a <tr> into a list of plain-text <td> cell values."""
-    cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL | re.I)
+    """Strip a <tr> into a list of plain-text <td> cell values.
+
+    Extracts visible text PLUS hidden-but-semantic content: img alt,
+    title attributes on any element, data-value/data-text attrs, and
+    the <td> tag's own title/data-value (한경 2026 redesign).
+    """
+    raw_cells = re.findall(r"(<t[dh][^>]*>)(.*?)</t[dh]>", row_html, re.DOTALL | re.I)
     out = []
-    for c in cells:
-        c = re.sub(r'<img\s[^>]*?\balt=["\']([^"\']*)["\'][^>]*/?>', r' \1 ', c, flags=re.I)
-        txt = re.sub(r"<[^>]+>", " ", c)
+    for tag, inner in raw_cells:
+        parts = []
+        for attr in ("title", "data-value", "data-text"):
+            m = re.search(rf'\b{attr}=["\']([^"\']+)["\']', tag, re.I)
+            if m:
+                parts.append(m.group(1))
+        inner = re.sub(r'<img\s[^>]*?\balt=["\']([^"\']*)["\'][^>]*/?>', r' \1 ', inner, flags=re.I)
+        for attr in ("title", "data-value", "data-text"):
+            inner = re.sub(
+                rf'<[^>]+?\b{attr}=["\']([^"\']*)["\'][^>]*?>',
+                r' \1 ', inner, flags=re.I,
+            )
+        txt = re.sub(r"<[^>]+>", " ", inner)
         txt = txt.replace("&nbsp;", " ").replace("&amp;", "&")
-        out.append(" ".join(txt.split()).strip())
+        combined = " ".join(parts + [txt])
+        out.append(" ".join(combined.split()).strip())
     return out
 
 
@@ -155,16 +181,24 @@ def _parse_report_rows(html: str, cutoff) -> list[dict]:
             continue
         if d < cutoff:
             continue
-        # target price — a comma-grouped integer (₩, ≥ 1,000); ignore the
-        # date cell and pure years.
+        # target price — comma-grouped OR plain integer (₩, ≥ 1,000).
+        # 한경 2026 redesign may omit commas. Skip date cells and
+        # year-like 4-digit numbers (2020-2029).
         target_val = None
+        date_digits = date_str.replace("-", "")
         for c in cells:
-            if date_str.replace("-", "") in c.replace(",", "").replace(".", ""):
+            if date_digits in c.replace(",", "").replace(".", ""):
                 continue
             m = re.search(r"(?<![0-9])([0-9]{1,3}(?:,[0-9]{3})+)(?![0-9])", c)
             if m:
                 target_val = float(m.group(1).replace(",", ""))
                 break
+            m2 = _PLAIN_INT_RE.search(c)
+            if m2:
+                val = int(m2.group(1))
+                if val >= 1000 and not (2000 <= val <= 2099):
+                    target_val = float(val)
+                    break
         # rating keyword
         rating_raw = ""
         for c in cells:
