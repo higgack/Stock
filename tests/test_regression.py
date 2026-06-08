@@ -3693,3 +3693,88 @@ class TestInstitutionalHoldersPctFallback:
         """% Out 누락 시 Shares/shares_outstanding 으로 계산하는 코드 존재."""
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert "shares / shares_out" in src or "shares_out" in src
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 12) 자산 watcher 가 비-뱅샐 .zip/.xlsx 를 자산 업데이트로 오인 차단
+#     배경: 2026-06-08 RAG 채널('무엇이든 포워드')에 올린 비-자산 파일이
+#     확장자만으로 픽업돼 빈 모델(순자산 - · 주식 0종목)이 portfolio.json 을
+#     덮어쓰고 거짓 '✅ 자산 업데이트' 푸시. 섹션 마커 기반 검증 게이트로 차단.
+# ─────────────────────────────────────────────────────────────────────────
+class TestBanksaladExportValidation:
+    """fix commit: 2026-06-08 (RAG 비-자산 파일 오인)."""
+
+    def test_junk_sheet_rejected(self):
+        """섹션 마커 없는 임의 xlsx → is_banksalad_export False."""
+        from bot.portfolio_parser import parse_banksalad, is_banksalad_export
+        rows = [{"B": "Name", "C": "Value"}, {"B": "foo", "C": "1"}]
+        parsed = parse_banksalad(rows)
+        assert parsed["_sections"] == []
+        assert is_banksalad_export(parsed) is False
+
+    def test_real_export_accepted(self):
+        """투자현황(5) 섹션 있는 진짜 export → True."""
+        from bot.portfolio_parser import parse_banksalad, is_banksalad_export
+        rows = [
+            {"B": "5. 투자현황"},
+            {"B": "투자상품종류", "C": "금융사", "D": "상품명",
+             "F": "투자원금", "G": "평가금액", "H": "수익률"},
+            {"B": "국내주식", "C": "NH", "D": "삼성전자",
+             "F": "1000000", "G": "1200000", "H": "20"},
+        ]
+        parsed = parse_banksalad(rows)
+        assert 5 in parsed["_sections"]
+        assert is_banksalad_export(parsed) is True
+
+    def test_finance_only_export_accepted(self):
+        """재무현황(3)만 있어도 진짜 export 로 인정."""
+        from bot.portfolio_parser import parse_banksalad, is_banksalad_export
+        rows = [
+            {"B": "3. 재무현황"},
+            {"B": "항목", "C": "상품", "E": "금액",
+             "F": "항목", "G": "상품", "I": "금액"},
+            {"B": "예적금", "C": "주거래", "E": "5000000"},
+        ]
+        parsed = parse_banksalad(rows)
+        assert is_banksalad_export(parsed) is True
+
+    def test_ingest_raises_on_non_export(self, monkeypatch, tmp_path):
+        """비-뱅샐 파싱 결과면 ingest 가 NotBanksaladExport → save 미도달."""
+        import bot.portfolio as pf
+        # parse_export 가 섹션 없는 결과를 내도록 monkeypatch
+        monkeypatch.setattr(pf, "parse_export",
+                            lambda data, password=None: {"_sections": [],
+                                                         "holdings": [], "finance": {}})
+        # save 가 호출되면 안 됨 — 호출 시 즉시 실패하도록 sentinel
+        called = {"save": False}
+        monkeypatch.setattr(pf, "save", lambda m: called.__setitem__("save", True))
+        with pytest.raises(pf.NotBanksaladExport):
+            pf.ingest(b"junk", password=None)
+        assert called["save"] is False, "비-export 인데 save 가 호출됨(덮어쓰기 위험)"
+
+    def test_not_banksalad_export_is_valueerror(self):
+        """NotBanksaladExport 는 ValueError 하위 — except 호환."""
+        from bot.portfolio import NotBanksaladExport
+        assert issubclass(NotBanksaladExport, ValueError)
+
+    def test_save_writes_bak_backup(self, tmp_path, monkeypatch):
+        """save 가 기존 portfolio.json 을 .bak 으로 백업."""
+        import bot.portfolio as pf
+        path = tmp_path / "portfolio.json"
+        monkeypatch.setattr(pf, "PORTFOLIO_PATH", path)
+        pf.save({"net_worth": {"순자산": 100}})   # 1차 저장(백업 없음)
+        pf.save({"net_worth": {"순자산": 200}})   # 2차 — 직전을 .bak 으로
+        bak = path.with_suffix(".json.bak")
+        assert bak.exists(), ".bak 백업 미생성"
+        import json as _json
+        assert _json.loads(bak.read_text())["net_worth"]["순자산"] == 100
+
+    def test_watcher_skips_non_export_silently(self):
+        """portfolio_watch 가 NotBanksaladExport 를 조용히 skip(푸시 없음)."""
+        src = open("bot/portfolio_watch.py", encoding="utf-8").read()
+        assert "NotBanksaladExport" in src, "watcher 가 비-export 예외 미처리"
+        # NotBanksaladExport 분기에서 _push_confirm 을 호출하지 않아야 함
+        idx = src.find("except NotBanksaladExport")
+        assert idx > 0
+        seg = src[idx:idx + 400]
+        assert "_push_confirm" not in seg, "비-export 인데 confirm 푸시(거짓 알림)"

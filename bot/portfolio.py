@@ -17,10 +17,18 @@ import os
 import time
 from pathlib import Path
 
-from bot.portfolio_parser import parse_export
+from bot.portfolio_parser import parse_export, is_banksalad_export
 from bot.portfolio_resolve import resolve_ticker
 
 PORTFOLIO_PATH = Path.home() / ".tradingagents" / "portfolio.json"
+
+
+class NotBanksaladExport(ValueError):
+    """업로드된 .zip/.xlsx 가 뱅크샐러드 자산 export 가 아님.
+
+    RAG 채널('무엇이든 포워드')의 비-자산 파일이 확장자만으로 자산 업데이트로
+    오인되는 것을 막기 위해 ingest 가 저장 전에 던진다 — watcher 는 조용히
+    skip 해 기존 portfolio.json 을 보존(2026-06-08 사용자 리포트)."""
 
 
 def _won(v) -> str:
@@ -164,8 +172,18 @@ def format_summary_text(model: dict) -> str:
 
 
 def save(model: dict) -> None:
-    """atomic write to portfolio.json."""
+    """atomic write to portfolio.json (+ 직전 1개 .bak 백업).
+
+    덮어쓰기 전 기존 portfolio.json 을 portfolio.json.bak 으로 복사 → 어떤
+    사고(잘못된 ingest 등)로 손상돼도 1회 롤백 가능. 백업 실패는 비치명적
+    (메인 저장은 그대로 진행)."""
     PORTFOLIO_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if PORTFOLIO_PATH.exists():
+        try:
+            bak = PORTFOLIO_PATH.with_suffix(".json.bak")
+            bak.write_text(PORTFOLIO_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        except Exception:
+            pass
     payload = {**model, "_saved_ts": time.time()}
     tmp = PORTFOLIO_PATH.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -186,6 +204,10 @@ def ingest(data, password=None) -> dict:
     BANKSALAD_ZIP_PW 에서 주입(코드/깃에 비번 박지 않음)."""
     prev = load()  # 직전 저장 모델 (증분 비교용) — 첫 업로드면 None
     parsed = parse_export(data, password=password)
+    # 진짜 뱅샐 export 인지 게이트 — 아니면 저장·집계 없이 즉시 중단해 기존
+    # portfolio.json 을 보존(비-자산 RAG 파일이 빈 모델로 덮어쓰는 사고 차단).
+    if not is_banksalad_export(parsed):
+        raise NotBanksaladExport("뱅크샐러드 자산 export 아님 (재무/투자 섹션 미검출)")
     model = build_model(parsed)
     baseline = None
     if isinstance(prev, dict) and prev.get("snapshot"):

@@ -311,7 +311,28 @@ def parse_banksalad(rows: list[dict]) -> dict:
         "insurance": _parse_insurance(rows, sec.get(4)),
         "holdings": _parse_holdings(rows, sec.get(5)),
         "loans": _parse_loans(rows, sec.get(6)),
+        # 검출된 뱅샐 섹션 번호 — 진짜 export 인지 검증용(is_banksalad_export).
+        # RAG 채널엔 비-자산 .zip/.xlsx 도 올라오므로(무엇이든 포워드) 오인 차단.
+        "_sections": sorted(sec.keys()),
     }
+
+
+# 진짜 뱅크샐러드 자산 export 는 '재무현황(3)' / '투자현황(5)' 섹션 마커를
+# 항상 포함한다(보유 0건이어도 헤더는 존재). 비-뱅샐 xlsx 는 이 마커가 없어
+# _sections() 가 비고, parse_banksalad 가 전부 빈/None 모델을 낸다 — 그걸
+# 그대로 저장·알림하면 'RAG 채널에 올린 무관한 파일'이 거짓 자산 업데이트로
+# 둔갑한다(2026-06-08 사용자 리포트). 저장·푸시 전 이 게이트로 차단.
+_BANKSALAD_CORE_SECTIONS = frozenset({3, 5})
+
+
+def is_banksalad_export(parsed: dict) -> bool:
+    """파싱 결과가 실제 뱅크샐러드 자산 export 인지 — 섹션 마커 기반 판정.
+
+    재무현황(3) 또는 투자현황(5) 섹션이 하나라도 검출되면 진짜 export 로 본다.
+    둘 다 없으면 비-자산 파일(RAG 채널의 임의 .zip/.xlsx)로 간주 → 호출부가
+    저장·알림을 건너뛰어 기존 portfolio.json 을 보존."""
+    secs = set(parsed.get("_sections") or [])
+    return bool(secs & _BANKSALAD_CORE_SECTIONS)
 
 
 def _pick_status_sheet(sheets: dict[str, list[dict]]) -> list[dict]:
