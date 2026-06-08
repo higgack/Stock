@@ -574,7 +574,8 @@ def format_list_message() -> str:
 
     lines.append("\n<b>🎯 프리셋:</b>")
     for slug, p in PRESETS.items():
-        lines.append(f"  <code>/screen {slug}</code> — {p['name']}: {p['desc']}")
+        _d = p['desc'].replace("<", "&lt;").replace(">", "&gt;")
+        lines.append(f"  <code>/screen {slug}</code> — {p['name']}: {_d}")
 
     lines.append(
         "\n<b>연산자:</b> <code>&gt; &lt; &gt;= &lt;= =</code>"
