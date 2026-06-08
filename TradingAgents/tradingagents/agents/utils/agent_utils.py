@@ -1664,6 +1664,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     "market": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
         "edgar_form4", "edgar_xbrl",
+        "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
@@ -1673,12 +1674,14 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
         "edgar_8k", "edgar_form4", "edgar_xbrl",
         "options_signals",
+        "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
     "news": {"krx_flow", "hsgt_flow", "kis_supply", "twse_flow",
              "options_signals", "edgar_xbrl",
+             "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
              "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
@@ -1858,6 +1861,17 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
         try:
             from bot.twse_flow_client import fetch_institutional_flow as _twse_flow
             tasks["twse_three_law"] = lambda: _twse_flow(ticker)
+        except Exception:
+            pass
+        try:
+            from bot.finmind_client import (
+                fetch_monthly_revenue as _fm_revenue,
+                fetch_per_pbr as _fm_perpbr,
+                fetch_shareholding as _fm_holding,
+            )
+            tasks["finmind_revenue"] = lambda: _fm_revenue(ticker)
+            tasks["finmind_per_pbr"] = lambda: _fm_perpbr(ticker)
+            tasks["finmind_shareholding"] = lambda: _fm_holding(ticker)
         except Exception:
             pass
 
@@ -5792,6 +5806,51 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         except Exception as exc:
             _analyst_log.warning(
                 "twse_flow injection failed for %s: %s", ticker, exc,
+            )
+
+        # FinMind TW data (fundamentals-only): 월매출 + PER/PBR + TDCC 주주
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "TW":
+                from bot.finmind_client import (
+                    format_monthly_revenue_block,
+                    format_per_pbr_block,
+                    format_shareholding_block,
+                )
+                if _section_allowed(analyst_id, "finmind_revenue"):
+                    rev_rows = prefetched.get("finmind_revenue")
+                    rev_block = format_monthly_revenue_block(rev_rows)
+                    if rev_block:
+                        base += (
+                            "\n\n=== TW 월매출 (FinMind/TWSE 공식, verbatim) ===\n"
+                            + rev_block
+                            + "\n\n위 月營收는 TW 상장사 10일 이내 의무공시."
+                            " YoY 가속/둔화가 5거래일 momentum 핵심."
+                            " 數字는 千元(NT$) 단위. 날조 금지."
+                        )
+                if _section_allowed(analyst_id, "finmind_per_pbr"):
+                    perpbr_rows = prefetched.get("finmind_per_pbr")
+                    perpbr_block = format_per_pbr_block(perpbr_rows)
+                    if perpbr_block:
+                        base += (
+                            "\n\n=== TW 밸류에이션 (FinMind, verbatim) ===\n"
+                            + perpbr_block
+                            + "\n\nyfinance 와 다르면 FinMind(TWSE 원본)"
+                            " 우선. 날조 금지."
+                        )
+                if _section_allowed(analyst_id, "finmind_shareholding"):
+                    hold_rows = prefetched.get("finmind_shareholding")
+                    hold_block = format_shareholding_block(hold_rows)
+                    if hold_block:
+                        base += (
+                            "\n\n=== TDCC 집보戶 주권분산표 (FinMind, verbatim) ===\n"
+                            + hold_block
+                            + "\n\n대주주 집중도 + 개인 분산 구조 파악용."
+                            " 週간 갱신. 수치 날조 금지."
+                        )
+        except Exception as exc:
+            _analyst_log.warning(
+                "finmind injection failed for %s: %s", ticker, exc,
             )
 
         # 鉅亨網 news (TW-only) — yfinance .news covers TW large-caps in
