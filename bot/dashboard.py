@@ -48,6 +48,7 @@ _USAGE_LOG_PATH = Path.home() / ".tradingagents" / "usage.jsonl"
 _MEMORY_LOG_PATH = Path.home() / ".tradingagents" / "memory" / "trading_memory.md"
 _KRW_PER_USD = 1380  # mirrors usage_tracker's constant; keep in sync
 
+_BATCH_REGEN = False  # True during regenerate_index — skip live network fetches
 
 # ─── issue detection ─────────────────────────────────────────────────
 # Patterns that indicate something went wrong inside an otherwise-
@@ -4656,32 +4657,34 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>"""
 
         # Detailed multi-period investor flow (pykrx detail)
+        # Skip live pykrx fetch during batch regen (startup/midnight) to avoid blocking polling
         inv_detail_html = ""
-        try:
-            from bot.pykrx_client import get_kr_investor_detail
-            inv_d = get_kr_investor_detail(ticker)
-            if inv_d and inv_d.get("investors"):
-                invs = inv_d["investors"]
-                unit = inv_d.get("unit", "억원")
-                p_hdrs = "".join(f'<th class="num">{p}</th>' for p in ("1d", "5d", "10d", "20d", "30d", "60d"))
-                d_rows = ""
-                for label, pds in invs.items():
-                    cells = ""
-                    for p in ("1d", "5d", "10d", "20d", "30d", "60d"):
-                        v = pds.get(p)
-                        if v is None or v == 0:
-                            cells += '<td class="num">—</td>'
-                        else:
-                            c = "#26a69a" if v > 0 else "#e2574c"
-                            sign = "+" if v > 0 else ""
-                            cells += f'<td class="num" style="color:{c}">{sign}{v:,.1f}</td>'
-                    d_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
-                inv_detail_html = f"""<div class="si-section">
+        if not _BATCH_REGEN:
+            try:
+                from bot.pykrx_client import get_kr_investor_detail
+                inv_d = get_kr_investor_detail(ticker)
+                if inv_d and inv_d.get("investors"):
+                    invs = inv_d["investors"]
+                    unit = inv_d.get("unit", "억원")
+                    p_hdrs = "".join(f'<th class="num">{p}</th>' for p in ("1d", "5d", "10d", "20d", "30d", "60d"))
+                    d_rows = ""
+                    for label, pds in invs.items():
+                        cells = ""
+                        for p in ("1d", "5d", "10d", "20d", "30d", "60d"):
+                            v = pds.get(p)
+                            if v is None or v == 0:
+                                cells += '<td class="num">—</td>'
+                            else:
+                                c = "#26a69a" if v > 0 else "#e2574c"
+                                sign = "+" if v > 0 else ""
+                                cells += f'<td class="num" style="color:{c}">{sign}{v:,.1f}</td>'
+                        d_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
+                    inv_detail_html = f"""<div class="si-section">
       <div class="si-section-title">투자주체별 순매수 다기간 ({unit})</div>
       <table class="si-table"><thead><tr><th>주체</th>{p_hdrs}</tr></thead><tbody>{d_rows}</tbody></table>
     </div>"""
-        except Exception as exc:
-            log.info("detail: investor detail %s: %s", ticker, exc)
+            except Exception as exc:
+                log.info("detail: investor detail %s: %s", ticker, exc)
 
         # Credit / Short / Program in a grid
         credit = kr_flow.get("credit", {})
@@ -4723,36 +4726,38 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>"""
 
         # Multi-period trends (live fetch from pykrx)
+        # Skip during batch regen to avoid blocking polling
         trend_html = ""
-        try:
-            from bot.pykrx_client import get_kr_multi_period_trends
-            mp = get_kr_multi_period_trends(ticker)
-            if mp:
-                def _pp_cell(v, invert=False):
-                    if v is None:
-                        return '<td class="num">—</td>'
-                    c = "#26a69a" if (v < 0 if invert else v > 0) else "#e2574c" if (v > 0 if invert else v < 0) else ""
-                    s = f' style="color:{c}"' if c else ""
-                    return f'<td class="num"{s}>{v:+.2f}</td>'
-                period_hdrs = "".join(f'<th class="num">{p}일</th>' for p in (5, 10, 20, 30, 60))
-                t_rows = ""
-                fo = mp.get("foreign", {})
-                if fo.get("current_pct") is not None:
-                    pds = fo.get("periods", {})
-                    cells = "".join(_pp_cell(pds.get(p)) for p in (5, 10, 20, 30, 60))
-                    t_rows += f'<tr><td>외국인 보유율</td><td class="num">{fo["current_pct"]:.2f}%</td>{cells}</tr>\n'
-                sh = mp.get("short", {})
-                if sh.get("current_pct") is not None:
-                    pds = sh.get("periods", {})
-                    cells = "".join(_pp_cell(pds.get(p), invert=True) for p in (5, 10, 20, 30, 60))
-                    t_rows += f'<tr><td>공매도 잔고율</td><td class="num">{sh["current_pct"]:.2f}%</td>{cells}</tr>\n'
-                if t_rows:
-                    trend_html = f"""<div class="si-section">
+        if not _BATCH_REGEN:
+            try:
+                from bot.pykrx_client import get_kr_multi_period_trends
+                mp = get_kr_multi_period_trends(ticker)
+                if mp:
+                    def _pp_cell(v, invert=False):
+                        if v is None:
+                            return '<td class="num">—</td>'
+                        c = "#26a69a" if (v < 0 if invert else v > 0) else "#e2574c" if (v > 0 if invert else v < 0) else ""
+                        s = f' style="color:{c}"' if c else ""
+                        return f'<td class="num"{s}>{v:+.2f}</td>'
+                    period_hdrs = "".join(f'<th class="num">{p}일</th>' for p in (5, 10, 20, 30, 60))
+                    t_rows = ""
+                    fo = mp.get("foreign", {})
+                    if fo.get("current_pct") is not None:
+                        pds = fo.get("periods", {})
+                        cells = "".join(_pp_cell(pds.get(p)) for p in (5, 10, 20, 30, 60))
+                        t_rows += f'<tr><td>외국인 보유율</td><td class="num">{fo["current_pct"]:.2f}%</td>{cells}</tr>\n'
+                    sh = mp.get("short", {})
+                    if sh.get("current_pct") is not None:
+                        pds = sh.get("periods", {})
+                        cells = "".join(_pp_cell(pds.get(p), invert=True) for p in (5, 10, 20, 30, 60))
+                        t_rows += f'<tr><td>공매도 잔고율</td><td class="num">{sh["current_pct"]:.2f}%</td>{cells}</tr>\n'
+                    if t_rows:
+                        trend_html = f"""<div class="si-section">
       <div class="si-section-title">다기간 추이 (pp 변화)</div>
       <table class="si-table"><thead><tr><th>항목</th><th class="num">현재</th>{period_hdrs}</tr></thead><tbody>{t_rows}</tbody></table>
     </div>"""
-        except Exception as exc:
-            log.info("detail: multi-period trends %s: %s", ticker, exc)
+            except Exception as exc:
+                log.info("detail: multi-period trends %s: %s", ticker, exc)
 
         flow_pane = f"""<div class="si-pane" id="si-flow">
   {inv_table}
@@ -5799,7 +5804,9 @@ def regenerate_index() -> None:
     Idempotent. Safe to call repeatedly. All errors are swallowed —
     dashboard issues must never break the analysis pipeline.
     """
+    global _BATCH_REGEN
     try:
+        _BATCH_REGEN = True
         from bot.translate import set_cache_only
         set_cache_only(True)
         records = _load_all()
@@ -5846,6 +5853,7 @@ def regenerate_index() -> None:
     except Exception as exc:
         log.warning("dashboard: regenerate failed: %s", exc)
     finally:
+        _BATCH_REGEN = False
         try:
             set_cache_only(False)
         except Exception:
