@@ -658,18 +658,18 @@ class DartClient:
             })
         return out
 
-    # ── 계열회사 현황 (getAffiCpyInfo) ───────────────────────────────
+    # ── 최대주주 현황 (hyslrSttus.json) ──────────────────────────────
 
-    def get_affiliate_companies(self, stock_code: str) -> list[dict]:
-        """DART 계열회사현황 — 종속/관계/계열사 목록.
-        Each row: {name, relation, listed, biz_type}.
+    def get_major_shareholders(self, stock_code: str) -> list[dict]:
+        """DART 최대주주 현황 — major shareholder list from annual report.
+        Each row: {name, relation, shares, pct, note}.
         Empty list on failure."""
         if not self.api_key:
             return []
         corp_code = self.stock_code_to_corp_code(stock_code)
         if not corp_code:
             return []
-        ck = f"affi_{corp_code}"
+        ck = f"majsh_{corp_code}"
         cached = self._disk_get(ck)
         if cached is not None:
             return cached
@@ -688,22 +688,47 @@ class DartClient:
         except Exception as exc:
             log.warning("dart: hyslrSttus for %s failed: %s", stock_code, exc)
             return []
-        if payload.get("status") not in ("000",):
+        status = payload.get("status")
+        if status not in ("000",):
+            log.info("dart: hyslrSttus %s status=%s msg=%s",
+                     stock_code, status, payload.get("message", ""))
             return []
         rows = payload.get("list") or []
+        if rows:
+            sample_keys = list(rows[0].keys())
+            log.info("dart: hyslrSttus %s rows=%d keys=%s",
+                     stock_code, len(rows), sample_keys[:12])
         out: list[dict] = []
         for r in rows:
-            nm = (r.get("inv_prm") or r.get("aflte_nm") or "").strip()
+            nm = (r.get("nm") or r.get("inv_prm") or r.get("aflte_nm")
+                  or r.get("cmpny_nm") or "").strip()
             if not nm:
                 continue
-            rel = (r.get("rel_corp_nm") or r.get("relt") or "").strip()
-            listed = (r.get("lst_at") or "").strip()
-            biz = (r.get("tast_bsns") or r.get("bsn_sumry") or "").strip()
+            rel = (r.get("relate") or r.get("rel_btr_at")
+                   or r.get("relt") or r.get("rel_corp_nm") or "").strip()
+            shares_raw = str(
+                r.get("trmend_posesn_stkqy") or r.get("bsis_posesn_stkqy")
+                or r.get("posesn_stkqy") or "0"
+            ).replace(",", "").strip()
+            try:
+                shares = int(shares_raw) if shares_raw and shares_raw != "-" else 0
+            except ValueError:
+                shares = 0
+            pct_raw = str(
+                r.get("trmend_posesn_stkqy_rate") or r.get("bsis_posesn_stkqy_rate")
+                or r.get("posesn_stkqy_rate") or "0"
+            ).replace(",", "").strip()
+            try:
+                pct = float(pct_raw) if pct_raw and pct_raw != "-" else 0.0
+            except ValueError:
+                pct = 0.0
+            note = (r.get("rm") or r.get("bsn_sumry") or "").strip()
             out.append({
                 "name": nm,
                 "relation": rel,
-                "listed": listed,
-                "biz_type": biz,
+                "shares": shares,
+                "pct": pct,
+                "note": note,
             })
         if out:
             self._disk_set(ck, out)

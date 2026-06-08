@@ -4488,7 +4488,6 @@ def _render_stock_info_html(rec: dict) -> str:
                     fd = esc(str(fh.get("date", "")))
                     le_html = ""
                     if le is not None:
-                        le_cls = "neg" if le >= 95 else ("" if le < 80 else "")
                         le_warn = " ⚠️ ceiling 임박" if le >= 95 else (" ⚠️ 제한 접근" if le >= 80 else "")
                         le_html = f'<tr><td>한도소진율</td><td class="num">{le:.2f}%{le_warn}</td></tr><tr><td>한도주식수</td><td class="num">{lim_s:,}주</td></tr>'
                     kr_foreign_html = f"""<div class="si-section">
@@ -4499,10 +4498,14 @@ def _render_stock_info_html(rec: dict) -> str:
       <tr><td>상장주식수</td><td class="num">{ls:,}주</td></tr>
       {le_html}
     </tbody></table></div>"""
+                else:
+                    log.info("seibro: fetch_foreign_holding(%s) returned None", ticker)
+            else:
+                log.info("seibro: key not ready — DATA_GO_KR_API_KEY not set")
         except Exception as exc:
-            log.debug("_build_detail_tabs: seibro foreign %s: %s", ticker, exc)
+            log.warning("detail: seibro foreign %s: %s", ticker, exc)
 
-    # ── P6 KR: DART 계열회사 현황 (주주탭 하단) ──────────────────
+    # ── P6 KR: DART 최대주주 현황 (주주탭 하단) ──────────────────
     kr_affiliates_html = ""
     if is_kr:
         try:
@@ -4510,21 +4513,28 @@ def _render_stock_info_html(rec: dict) -> str:
             dart = get_dart()
             if dart:
                 stock_code = ticker.split(".")[0]
-                affis = dart.get_affiliate_companies(stock_code)
-                if affis:
-                    af_rows = ""
-                    for af in affis[:30]:
-                        af_nm = esc(af.get("name", ""))
-                        af_rel = esc(af.get("relation", ""))
-                        af_listed = esc(af.get("listed", ""))
-                        af_biz = esc(af.get("biz_type", ""))
-                        af_rows += f"<tr><td>{af_nm}</td><td>{af_rel}</td><td>{af_listed}</td><td>{af_biz}</td></tr>\n"
+                shareholders = dart.get_major_shareholders(stock_code)
+                if shareholders:
+                    sh_rows = ""
+                    for sh in shareholders[:20]:
+                        sh_nm = esc(sh.get("name", ""))
+                        sh_rel = esc(sh.get("relation", ""))
+                        sh_shares = sh.get("shares", 0)
+                        sh_pct = sh.get("pct", 0.0)
+                        sh_shares_str = f"{sh_shares:,}" if sh_shares else "—"
+                        sh_pct_str = f"{sh_pct:.2f}%" if sh_pct else "—"
+                        sh_note = esc(sh.get("note", ""))
+                        sh_rows += f"<tr><td>{sh_nm}</td><td>{sh_rel}</td><td class='num'>{sh_shares_str}</td><td class='num'>{sh_pct_str}</td></tr>\n"
                     kr_affiliates_html = f"""<div class="si-section">
-    <div class="si-section-title">계열회사 현황 (DART · {len(affis)}개사)</div>
-    <table class="si-table"><thead><tr><th>회사명</th><th>관계</th><th>상장여부</th><th>주요 사업</th></tr></thead>
-    <tbody>{af_rows}</tbody></table></div>"""
+    <div class="si-section-title">최대주주 현황 (DART 사업보고서 · {len(shareholders)}명)</div>
+    <table class="si-table"><thead><tr><th>성명(회사명)</th><th>관계</th><th>소유주식수</th><th>지분율</th></tr></thead>
+    <tbody>{sh_rows}</tbody></table></div>"""
+                else:
+                    log.info("dart: get_major_shareholders(%s) returned empty", stock_code)
+            else:
+                log.info("dart: get_dart() returned None — DART_API_KEY not set?")
         except Exception as exc:
-            log.debug("_build_detail_tabs: DART affiliates %s: %s", ticker, exc)
+            log.warning("detail: DART major shareholders %s: %s", ticker, exc)
 
     # holders_pane assembled later (after us_insider_html defined)
 
