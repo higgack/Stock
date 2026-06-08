@@ -1678,7 +1678,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
         "options_signals",
         "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
         "finnhub_earnings", "finnhub_rec", "finnhub_insent",
-        "us_13f_holders",
+        "us_13f_holders", "seibro_foreign",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
@@ -1687,7 +1687,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
              "options_signals", "edgar_xbrl",
              "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
              "finnhub_earnings", "finnhub_rec", "finnhub_insent",
-             "us_13f_holders",
+             "us_13f_holders", "seibro_foreign",
              "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
@@ -1828,6 +1828,12 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["kis_credit_short"]  = lambda: _kis.get_credit_short_balance(ticker)
             tasks["kis_program_trade"] = lambda: _kis.get_program_trade(ticker)
             tasks["kis_short_sale"]    = lambda: _kis.get_short_sale(ticker)
+        except Exception:
+            pass
+        try:
+            from bot.seibro_client import fetch_foreign_holding, fetch_foreign_trend
+            tasks["seibro_foreign"] = lambda: fetch_foreign_holding(ticker)
+            tasks["seibro_foreign_trend"] = lambda: fetch_foreign_trend(ticker, days=30)
         except Exception:
             pass
         # Naver news fetch needs KR corp name (kr_name from DART), which
@@ -5383,12 +5389,15 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 # positioning trajectory (foreigners accumulating
                 # vs distributing, shorts building vs squeezing).
                 foreign_trend = prefetched.get("pykrx_foreign_trend")
+                if foreign_trend is None:
+                    foreign_trend = prefetched.get("seibro_foreign_trend")
                 short_trend = prefetched.get("pykrx_short_trend")
                 trend_block = format_trend_for_prompt(foreign_trend, short_trend)
+                src_label = "KRX" if prefetched.get("pykrx_foreign_trend") else "세이브로/KSD"
                 if trend_block:
                     base += (
-                        "\n\n=== Pre-fetched KR positioning trends"
-                        " (KRX, 30일 추이) ===\n"
+                        f"\n\n=== Pre-fetched KR positioning trends"
+                        f" ({src_label}, 30일 추이) ===\n"
                         + trend_block
                         + "\n\n외국인 지분율 추세 (꾸준한 증가 vs"
                         " 꾸준한 감소)는 5일 flow보다 안정적인"
@@ -5399,6 +5408,24 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         except Exception as exc:
             _analyst_log.warning(
                 "pykrx flow / trend injection failed for %s: %s", ticker, exc,
+            )
+
+        # Seibro/KSD 외국인 보유현황 (data.go.kr, KRX-login-free).
+        # pykrx trend 와 별개로 보유비율 + 한도소진율 상세 제공.
+        try:
+            if _section_allowed(analyst_id, "seibro_foreign"):
+                from bot.seibro_client import format_foreign_holding_block
+                seibro_data = prefetched.get("seibro_foreign")
+                seibro_block = format_foreign_holding_block(seibro_data)
+                if seibro_block:
+                    base += (
+                        "\n\n=== Pre-fetched KR 외국인 보유현황"
+                        " (세이브로/KSD, data.go.kr) ===\n"
+                        + seibro_block
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "seibro foreign injection failed for %s: %s", ticker, exc,
             )
 
         # Step 2B A1: KIS 7종 수급 데이터 inject (시장 분석가 전용).
