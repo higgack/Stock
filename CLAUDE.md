@@ -2331,6 +2331,21 @@ These need new credentials BEFORE work can ship:
   three markets. Resolved; preserved here as a status marker only — no
   further action needed.
 
+- **Finnhub API key — ✅ loaded** (2026-06-08). `FINNHUB_API_KEY` in
+  `.env`. US 전용: earnings surprise + analyst recommendation trends +
+  insider sentiment (MSPR). 무료 60 req/min. `bot/finnhub_client.py`.
+  `finnhub_key_ready()` gate — 키 없으면 graceful skip.
+
+- **Alpha Vantage API key — ✅ loaded** (2026-06-08). `ALPHA_VANTAGE_API_KEY`
+  in `.env`. 전 시장 universal: 뉴스 sentiment score (기사별 bullish/
+  bearish/neutral 정량 점수). 무료 25 req/day + 12h 캐시. `bot/
+  av_sentiment_client.py`. `av_key_ready()` gate.
+
+- **Seibro/KSD 외국인보유 — ✅ activated** (2026-06-08). 기존
+  `DATA_GO_KR_API_KEY` 로 '한국예탁결제원_주식 외국인보유비중' 활용신청
+  완료. KR 외국인 보유비율 + 한도소진율 (pykrx KRX-login-free fallback).
+  `bot/seibro_client.py`. `seibro_key_ready()` gate.
+
 - **Phase 4-CN-D validation cycle — ✅ 완료** (2026-05-21). fix#1~#11 (commits 91427a9~925f926), CN/HK + TW/JP/KR 크로스-마켓 검증 완료.
 - **Phase 4-CN (China + HK expansion) — original deferred design,
   preserved**. User chose 2026-05-18 (Option γ) to ship CN AFTER the
