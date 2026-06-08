@@ -8290,12 +8290,16 @@ def _render_portfolio_page(model, noah=None) -> str:
             return (f'<span style="color:{col}">{sign}{_pf_won(abs(d))} '
                     f'({sign}{abs(p):.1f}%)</span>')
         prev_eval = prev.get("주식평가", prev.get("투자성 자산"))
+        fund_now = model.get("fund_in_pension") or 0
+        fund_was = prev.get("연금펀드") or 0
+        fund_part = (f' · 연금펀드 {_dlt(fund_now, fund_was)}'
+                     if fund_now or fund_was else "")
         delta_html = (
             '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
             'border-top:1px solid var(--border);padding-top:8px">'
             f'📈 지난 업데이트({pdate}) 대비 — 순자산 '
             f'{_dlt(nw.get("순자산"), prev.get("순자산"))} · 주식평가 '
-            f'{_dlt(eval_sum, prev_eval)}</div>')
+            f'{_dlt(eval_sum, prev_eval)}{fund_part}</div>')
 
     # 증분(자산 변화)을 주식 요약 패널 바로 밑에 배치(사용자 2026-06-04). prev 가
     # 없으면(첫 업로드·같은 날짜만 업로드) '사라진 게 아니라 비교 대상 대기' 안내.

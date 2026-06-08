@@ -122,6 +122,18 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
     if cash_in_invest > 0:
         alloc["투자성 자산"] = invest_asset_total - cash_in_invest
         alloc["자유입출금 자산"] = alloc.get("자유입출금 자산", 0) + cash_in_invest
+    # 연금펀드: 연금 자산 중 투자현황(Section 5)에 안 잡히는 펀드 부분.
+    # 연금 계좌 브로커를 자동 식별 — holdings 합이 연금 자산 이하인 브로커.
+    fund_in_pension = 0
+    pension_total = alloc.get("연금 자산", 0)
+    if pension_total > 0 and by_broker:
+        best_broker, best_sum = None, 0
+        for b, d in by_broker.items():
+            bsum = d["평가금액"]
+            if 0 < bsum <= pension_total and bsum > best_sum:
+                best_broker, best_sum = b, bsum
+        if best_broker is not None:
+            fund_in_pension = pension_total - best_sum
     return {
         "as_of": parsed.get("as_of"),
         "net_worth": {
@@ -140,12 +152,14 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
         "distinct_count": len(_distinct_stock_keys(holdings)),
         "matched_count": sum(1 for h in holdings if h["matched"]),
         "cash_in_invest": cash_in_invest,
+        "fund_in_pension": fund_in_pension,
         "snapshot": {
             "총자산": fin.get("총자산"), "총부채": fin.get("총부채"),
             "순자산": fin.get("순자산"),
             "주식평가": eval_sum,
             "주식원금": cost_sum,
             "예수금": cash_in_invest,
+            "연금펀드": fund_in_pension,
             "투자성 자산": invest_asset_total,
             "종목수": len(holdings),
             "holdings_pnl": {
