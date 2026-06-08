@@ -206,6 +206,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_simple_delete(
                 "cheongyak_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
                 "regenerate_cheongyak_index")
+        if self.path == "/api/screen_delete":
+            return self._handle_simple_delete(
+                "screen_archive", r"^\d{6}_[a-f0-9]{1,20}\.json$",
+                "regenerate_screen_index")
         if self.path == "/api/portfolio_send":
             return self._handle_portfolio_send()
         if self.path != "/api/delete":

@@ -7978,21 +7978,30 @@ def _render_screen_page(archives: list[dict]) -> str:
     """screen.html — 조건부 스크리너 결과 이력 + 결과 테이블."""
     cards = ""
     for a in archives[:50]:
-        conds = _html.escape(a.get("conditions_display", a.get("conditions", "")))
+        raw_conds = _html.unescape(a.get("conditions_display", a.get("conditions", "")))
+        conds = _html.escape(raw_conds)
         ts = (a.get("ts") or "")[:16].replace("T", " ")
         hit_count = a.get("hit_count", 0)
         total = a.get("total_universe", 0)
         elapsed = a.get("elapsed_sec", 0)
         cached = " 💾캐시" if a.get("was_cached") else ""
+        date_str = a.get("_date", "")
+        filename = a.get("_file", "")
+        market = a.get("market", "KR")
+        is_us = market == "US"
 
         hits = a.get("hits", [])
         rows = ""
-        for h in hits[:30]:
+        for h in hits:
             name = _html.escape(str(h.get("name", "")))
             ticker = _html.escape(str(h.get("ticker", "")))
             mkt = _html.escape(str(h.get("market", "")))
             mcap = h.get("mcap")
-            mcap_str = f"{mcap:,.0f}" if mcap else "—"
+            if is_us:
+                mcap_str = (f"${mcap/1000:.1f}B" if mcap and mcap >= 1000
+                            else f"${mcap:,.0f}M" if mcap else "—")
+            else:
+                mcap_str = f"{mcap:,.0f}" if mcap else "—"
 
             extra_vals = []
             for k, v in h.items():
@@ -8001,9 +8010,9 @@ def _render_screen_page(archives: list[dict]) -> str:
                 if v is not None:
                     extra_vals.append(f"{k}:{v:g}" if isinstance(v, (int, float)) else f"{k}:{v}")
             extra = _html.escape(" · ".join(extra_vals[:5]))
-            detail_link = f"./{ticker.replace('.', '_')}.html" if ticker else "#"
+            name_cell = f"<b>{name}</b>" if name else f"<b>{ticker}</b>"
             rows += (
-                f"<tr><td><b>{name}</b></td>"
+                f"<tr><td>{name_cell}</td>"
                 f"<td><code>{ticker}</code></td>"
                 f"<td class='muted'>{mkt}</td>"
                 f"<td style='text-align:right'>{mcap_str}</td>"
@@ -8011,18 +8020,19 @@ def _render_screen_page(archives: list[dict]) -> str:
             )
 
         table = ""
+        mcap_hdr = "시총($M)" if is_us else "시총(억)"
         if rows:
             table = (
-                "<table><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
-                "<th>시총(억)</th><th>지표</th></tr></thead>"
+                f"<table><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
+                f"<th>{mcap_hdr}</th><th>지표</th></tr></thead>"
                 f"<tbody>{rows}</tbody></table>"
             )
-            if len(hits) > 30:
-                table += f"<p class='muted'>... 외 {len(hits) - 30}종목</p>"
 
-        cards += f"""<details>
-<summary><b>{conds}</b> — {hit_count}종목/{total:,}종목{cached}
-<span class='muted'>{ts} · {elapsed:.1f}초</span></summary>
+        market_badge = " 🇺🇸" if is_us else ""
+        cards += f"""<details data-date="{_html.escape(date_str)}" data-file="{_html.escape(filename)}">
+<summary><b>{conds}</b>{market_badge} — {hit_count}종목/{total:,}종목{cached}
+<span class='muted'>{ts} · {elapsed:.1f}초</span>
+<button class="del-btn" type="button" title="삭제">🗑️</button></summary>
 {table}
 </details>
 """
@@ -8044,8 +8054,10 @@ th,td {{ text-align:left; padding:6px 8px; border-bottom:1px solid var(--border)
 th {{ color:var(--fg-soft); font-weight:600; font-size:12px; }}
 td.muted, .muted {{ color:var(--fg-soft); font-size:12px; }}
 details {{ margin:12px 0; padding:8px; border:1px solid var(--border); border-radius:6px; }}
-summary {{ cursor:pointer; font-size:14px; }}
+summary {{ cursor:pointer; font-size:14px; position:relative; }}
 summary .muted {{ font-size:12px; margin-left:8px; }}
+.del-btn {{ background:none; border:none; cursor:pointer; font-size:14px; float:right; opacity:0.4; }}
+.del-btn:hover {{ opacity:1; }}
 code {{ font-family:'IBM Plex Mono',monospace; }}
 </style>
 </head>
@@ -8054,13 +8066,34 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
   <a class="back" href="./index.html">← 아카이브로 돌아가기</a>
   · <a href="portfolio.html">💼 자산</a>
   <h1>📊 조건부 스크리너</h1>
-  <p class="sub">정량 조건으로 KR 전 종목 필터 (pykrx+yfinance, ₩0).
-  텔레그램: <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> · <code>/screen valueup</code> (프리셋) · <code>/screen list</code></p>
-  {cards}
+  <p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0).
+  텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> · <code>/screen valueup</code> · <code>/screen list</code></p>
+  {{cards}}
 </div>
+<script>
+document.querySelectorAll('.del-btn').forEach(function(btn) {{
+  btn.addEventListener('click', function(e) {{
+    e.stopPropagation();
+    e.preventDefault();
+    var det = btn.closest('details');
+    if (!det) return;
+    if (!confirm('이 기록을 삭제할까요?')) return;
+    var date = det.dataset.date;
+    var file = det.dataset.file;
+    fetch('api/screen_delete', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{date: date, filename: file}})
+    }}).then(function(r) {{ return r.json(); }}).then(function(d) {{
+      if (d.ok) {{ det.style.opacity = '0.3'; setTimeout(function() {{ det.remove(); }}, 400); }}
+      else {{ alert('삭제 실패: ' + (d.error || '')); }}
+    }}).catch(function(err) {{ alert('삭제 실패: ' + err); }});
+  }});
+}});
+</script>
 </body>
 </html>
-"""
+""".replace("{{cards}}", cards)
 
 
 def regenerate_screen_index() -> None:

@@ -162,6 +162,9 @@ class Condition:
         op = self.operator.replace("<", "&lt;").replace(">", "&gt;")
         return f"{self.metric.name}{op}{self.value:g}{self.metric.unit}"
 
+    def display_raw(self) -> str:
+        return f"{self.metric.name}{self.operator}{self.value:g}{self.metric.unit}"
+
 
 _COND_RE = re.compile(
     r"([가-힣A-Za-z/_]+)\s*(>=|<=|!=|>|<|=)\s*([0-9]+(?:\.[0-9]+)?)"
@@ -424,6 +427,8 @@ def run_screen(conditions: list[Condition],
 
     if market == "KR":
         result = _screen_kr(conditions)
+    elif market == "US":
+        result = _screen_us(conditions)
     else:
         log.warning("stock_screener: market %s not yet supported", market)
         result = ScreenResult(conditions=conditions, hits=[], total_universe=0,
@@ -575,6 +580,116 @@ def _resolve_kr_names(codes: list[str]) -> dict[str, str]:
     return names
 
 
+# ── US market (S&P 500) ───────────────────────────────────────────
+
+_PYKRX_TO_YF_INFO: dict[str, tuple[str, float]] = {
+    "PER": ("trailingPE", 1.0),
+    "PBR": ("priceToBook", 1.0),
+    "EPS": ("trailingEps", 1.0),
+    "BPS": ("bookValue", 1.0),
+    "DIV": ("dividendYield", 100.0),
+    "시가총액": ("marketCap", 1e-6),
+    "거래량": ("volume", 1.0),
+    "종가": ("regularMarketPrice", 1.0),
+}
+
+_US_UNIVERSE_CACHE = _CACHE_DIR / "us_sp500.json"
+
+
+def _get_us_universe() -> list[str]:
+    if _US_UNIVERSE_CACHE.exists():
+        try:
+            data = json.loads(_US_UNIVERSE_CACHE.read_text(encoding="utf-8"))
+            if time.time() - data.get("ts", 0) < 7 * 86400:
+                return data.get("tickers", [])
+        except Exception:
+            pass
+    tickers = _fetch_sp500_tickers()
+    if tickers:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _US_UNIVERSE_CACHE.write_text(
+            json.dumps({"tickers": tickers, "ts": time.time()}),
+            encoding="utf-8")
+    return tickers
+
+
+def _fetch_sp500_tickers() -> list[str]:
+    try:
+        import pandas as pd
+        tables = pd.read_html(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+            attrs={"id": "constituents"})
+        tickers = tables[0]["Symbol"].tolist()
+        return [t.replace(".", "-") for t in tickers if isinstance(t, str)]
+    except Exception as exc:
+        log.warning("stock_screener: S&P 500 list fetch failed: %s", exc)
+        return []
+
+
+def _screen_us(conditions: list[Condition]) -> ScreenResult:
+    """Screen US S&P 500 using yfinance for all metrics."""
+    universe = _get_us_universe()
+    if not universe:
+        return ScreenResult(conditions=conditions, hits=[],
+                            total_universe=0, elapsed_sec=0, market="US")
+    total = len(universe)
+
+    yf_fields: set[str] = set()
+    cond_info: list[tuple[Condition, str, float]] = []
+    for c in conditions:
+        if c.metric.source == "pykrx":
+            mapping = _PYKRX_TO_YF_INFO.get(c.metric.yf_field)
+            if not mapping:
+                continue
+            yf_field, prescale = mapping
+        else:
+            yf_field = c.metric.yf_field
+            prescale = 1.0
+        yf_fields.add(yf_field)
+        cond_info.append((c, yf_field, prescale))
+
+    yf_fields.update(["marketCap", "shortName", "regularMarketPrice"])
+
+    log.info("stock_screener: US — fetching yfinance for %d tickers", total)
+    yf_data = _fetch_yfinance_batch(universe, list(yf_fields), max_workers=20)
+
+    hits = []
+    for ticker, data in yf_data.items():
+        if not data:
+            continue
+        passed = True
+        for c, yf_field, prescale in cond_info:
+            raw = data.get(yf_field)
+            if raw is None:
+                passed = False
+                break
+            test_val = raw * prescale if prescale != 1.0 else raw
+            if not c.test(test_val):
+                passed = False
+                break
+        if passed:
+            mcap_raw = data.get("marketCap")
+            mcap_m = round(mcap_raw / 1e6, 0) if mcap_raw else None
+            hit = {
+                "code": ticker,
+                "ticker": ticker,
+                "name": data.get("shortName", "") or "",
+                "market": "US",
+                "mcap": mcap_m,
+            }
+            for c, yf_field, prescale in cond_info:
+                raw = data.get(yf_field)
+                if raw is not None:
+                    hit[c.metric.key] = round(raw * prescale * c.metric.scale, 2)
+            hit["price"] = data.get("regularMarketPrice")
+            hits.append(hit)
+
+    hits.sort(key=lambda x: x.get("mcap", 0) or 0, reverse=True)
+    log.info("stock_screener: US — %d/%d survive", len(hits), total)
+    return ScreenResult(conditions=conditions, hits=hits,
+                        total_universe=total, elapsed_sec=0, market="US")
+
+
 # ── Telegram formatting ────────────────────────────────────────────
 
 def format_list_message() -> str:
@@ -614,13 +729,16 @@ def format_result_message(result: ScreenResult) -> list[str]:
     """Format screen result for Telegram (chunked for 4096 limit)."""
     cond_str = " · ".join(c.display() for c in result.conditions)
     cache_tag = " 💾캐시" if result.was_cached else ""
+    is_us = result.market == "US"
+    market_tag = " (US S&amp;P 500)" if is_us else " (KR)"
+    sort_note = "시가총액 내림차순 ($M, 대형주 우선)" if is_us else "시가총액 내림차순 (대형주 우선)"
 
     header = (
-        f"📊 <b>조건부 스크리너 결과</b>{cache_tag}\n"
+        f"📊 <b>조건부 스크리너 결과{market_tag}</b>{cache_tag}\n"
         f"조건: <code>{cond_str}</code>\n"
         f"결과: <b>{len(result.hits)}종목</b> / {result.total_universe:,}종목"
         f" · {result.elapsed_sec:.1f}초 · ₩0\n"
-        f"정렬: 시가총액 내림차순 (대형주 우선)\n"
+        f"정렬: {sort_note}\n"
     )
 
     if not result.hits:
@@ -636,7 +754,7 @@ def format_result_message(result: ScreenResult) -> list[str]:
         name = h.get("name", "")
         ticker = h.get("ticker", "")
         mcap = h.get("mcap")
-        mcap_str = _fmt_mcap(mcap) if mcap else ""
+        mcap_str = (_fmt_mcap_us(mcap) if is_us else _fmt_mcap(mcap)) if mcap else ""
 
         vals = []
         for mk in metric_keys:
@@ -662,6 +780,12 @@ def _fmt_mcap(v: float) -> str:
     if v >= 10000:
         return f"[{v/10000:.1f}조]"
     return f"[{v:,.0f}억]"
+
+
+def _fmt_mcap_us(v_millions: float) -> str:
+    if v_millions >= 1000:
+        return f"[${v_millions/1000:.1f}B]"
+    return f"[${v_millions:,.0f}M]"
 
 
 def _chunk_html(text: str, limit: int) -> list[str]:
@@ -692,7 +816,7 @@ def save_screen_archive(result: ScreenResult, conditions_text: str):
 
     data = {
         "conditions": conditions_text,
-        "conditions_display": " · ".join(c.display() for c in result.conditions),
+        "conditions_display": " · ".join(c.display_raw() for c in result.conditions),
         "hit_count": len(result.hits),
         "total_universe": result.total_universe,
         "elapsed_sec": result.elapsed_sec,
