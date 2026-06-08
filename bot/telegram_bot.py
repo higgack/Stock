@@ -2256,9 +2256,10 @@ async def _handle_screen(args: list[str], send) -> None:
     preset = PRESETS.get(raw.lower())
     if preset:
         cond_text = preset["conditions"]
+        _esc = cond_text.replace("<", "&lt;").replace(">", "&gt;")
         await send(
             f"📊 <b>조건부 스크리너</b> — {preset['name']}\n"
-            f"조건: <code>{cond_text}</code>\n⏱ 실행 중..."
+            f"조건: <code>{_esc}</code>\n⏱ 실행 중..."
         )
     else:
         cond_text = raw
