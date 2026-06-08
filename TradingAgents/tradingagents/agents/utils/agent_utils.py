@@ -1665,7 +1665,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
         "edgar_form4", "edgar_xbrl",
         "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
-        "finnhub_earnings", "finnhub_rec",
+        "finnhub_earnings", "finnhub_rec", "us_13f_holders",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
@@ -1677,6 +1677,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
         "options_signals",
         "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
         "finnhub_earnings", "finnhub_rec", "finnhub_insent",
+        "us_13f_holders",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
@@ -1685,6 +1686,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
              "options_signals", "edgar_xbrl",
              "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
              "finnhub_earnings", "finnhub_rec", "finnhub_insent",
+             "us_13f_holders",
              "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
@@ -1921,6 +1923,11 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
                 tasks["finnhub_earnings"] = lambda: _fh_earnings(ticker)
                 tasks["finnhub_rec"] = lambda: _fh_rec(ticker)
                 tasks["finnhub_insent"] = lambda: _fh_insent(ticker)
+        except Exception:
+            pass
+        try:
+            from bot.us_holders_client import fetch_institutional_holders as _us_holders
+            tasks["us_13f_holders"] = lambda: _us_holders(ticker)
         except Exception:
             pass
 
@@ -5124,6 +5131,23 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
             except Exception as exc:
                 _analyst_log.warning(
                     "finnhub insent injection failed for %s: %s", ticker, exc,
+                )
+            # US 13F institutional holders (yfinance, SEC 13F-sourced)
+            try:
+                if _section_allowed(analyst_id, "us_13f_holders"):
+                    from bot.us_holders_client import format_holders_block
+                    holders_data = prefetched.get("us_13f_holders")
+                    holders_block = format_holders_block(holders_data)
+                    if holders_block:
+                        base += (
+                            "\n\n=== US Institutional Holders (SEC 13F, verbatim) ===\n"
+                            + holders_block
+                            + "\n\n13F 분기 공시 기반. 대형 패시브(BlackRock/Vanguard)"
+                            " vs 액티브(Berkshire/ARK) 구분. 수치 날조 금지."
+                        )
+            except Exception as exc:
+                _analyst_log.warning(
+                    "us holders injection failed for %s: %s", ticker, exc,
                 )
 
         # DART (KR-only) — 공시 / 임원지분 / 실적 윈도. yfinance returns
