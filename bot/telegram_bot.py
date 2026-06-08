@@ -1099,10 +1099,10 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 정량 조건으로 KR 전 종목(KOSPI+KOSDAQ) 또는 US S&amp;P 500 필터.
  • <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — KR 자유 조건
  • <code>/screen us PER&lt;15 DIV&gt;2</code> — US S&amp;P 500
+ • <code>/screen 매출QoQ&gt;10 영업이익QoQ&gt;5</code> — QoQ 성장 필터
  • <code>/screen valueup</code> — 프리셋 · <code>/screen list</code>
- • 프리셋: valueup·valueup2·highdiv·value·growth·quality·lowpbr
- • Phase 1 pykrx 벌크(PER/PBR/DIV/시총 즉시) → Phase 2 yfinance(배당성향/ROE 등 생존만)
- • 24h 캐시 · 대시보드 screen.html 이력
+ • Phase 1 pykrx 벌크 → Phase 2 yfinance+QoQ(분기 재무 7종) 생존만
+ • 24h 캐시 · 대시보드 screen.html · /screen list 전체 지표
 
 ━━━━━━━━━
 <b>【7. 캐시 &amp; 비용】</b>
