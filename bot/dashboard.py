@@ -3977,7 +3977,7 @@ def _render_stock_info_html(rec: dict) -> str:
     # ── tab navigation ──────────────────────────────────────────
     has_disclosures = bool(mkt.get("disclosures"))
     disclosure_tab = '  <button type="button" class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
-    has_flow = bool(is_kr and kr.get("flow")) or bool(is_cn and mkt.get("hsgt_flow"))
+    has_flow = bool(is_kr and kr.get("flow")) or bool(is_cn and mkt.get("hsgt_flow")) or is_jp or is_tw or is_us
     flow_tab = '  <button type="button" class="si-tab" data-pane="si-flow">수급</button>\n' if has_flow else ""
     has_risk = bool(kr.get("lockup_releases") or kr.get("dilution_events") or kr.get("market_alert")) or bool(is_cn and mkt.get("risk_status"))
     risk_tab = '  <button type="button" class="si-tab" data-pane="si-risk">리스크</button>\n' if has_risk else ""
@@ -4651,8 +4651,8 @@ def _render_stock_info_html(rec: dict) -> str:
                     v = brk.get(key)
                     brk_rows += f"<tr><td>{esc(label)}</td>{_flow_cell(v)}</tr>\n"
                 inv_table += f"""<div class="si-section">
-      <div class="si-section-title">기관 세부 (당일)</div>
-      <table class="si-table"><thead><tr><th>기관</th><th class="num">순매수</th></tr></thead><tbody>{brk_rows}</tbody></table>
+      <div class="si-section-title">기관 세부 (5일 누적)</div>
+      <table class="si-table"><thead><tr><th>기관</th><th class="num">순매수 (5일)</th></tr></thead><tbody>{brk_rows}</tbody></table>
     </div>"""
 
         # Credit / Short / Program in a grid
@@ -4694,27 +4694,37 @@ def _render_stock_info_html(rec: dict) -> str:
       <table class="si-table"><thead><tr><th>구분</th><th class="num">순매수</th></tr></thead><tbody>{pgm_rows}</tbody></table>
     </div>"""
 
-        # Ownership/Short trends from pykrx
-        fo_trend = kr_flow.get("foreign_ownership", {})
-        short_trend = kr_flow.get("short_trend", {})
+        # Multi-period trends (live fetch from pykrx)
         trend_html = ""
-        if fo_trend or short_trend:
-            t_rows = ""
-            if fo_trend.get("current_pct") is not None:
-                chg = fo_trend.get("change_pp", 0)
-                chg_color = "#26a69a" if chg > 0 else "#e2574c" if chg < 0 else ""
-                chg_style = f' style="color:{chg_color}"' if chg_color else ""
-                t_rows += f'<tr><td>외국인 보유율</td><td class="num">{fo_trend["current_pct"]:.2f}%</td><td class="num"{chg_style}>{chg:+.2f}pp</td></tr>\n'
-            if short_trend.get("current_pct") is not None:
-                chg = short_trend.get("change_pp", 0)
-                chg_color = "#26a69a" if chg < 0 else "#e2574c" if chg > 0 else ""
-                chg_style = f' style="color:{chg_color}"' if chg_color else ""
-                t_rows += f'<tr><td>공매도 잔고율</td><td class="num">{short_trend["current_pct"]:.2f}%</td><td class="num"{chg_style}>{chg:+.2f}pp</td></tr>\n'
-            if t_rows:
-                trend_html = f"""<div class="si-section">
-      <div class="si-section-title">30일 추이</div>
-      <table class="si-table"><thead><tr><th>항목</th><th class="num">현재</th><th class="num">30일 변화</th></tr></thead><tbody>{t_rows}</tbody></table>
+        try:
+            from bot.pykrx_client import get_kr_multi_period_trends
+            mp = get_kr_multi_period_trends(ticker)
+            if mp:
+                def _pp_cell(v, invert=False):
+                    if v is None:
+                        return '<td class="num">—</td>'
+                    c = "#26a69a" if (v < 0 if invert else v > 0) else "#e2574c" if (v > 0 if invert else v < 0) else ""
+                    s = f' style="color:{c}"' if c else ""
+                    return f'<td class="num"{s}>{v:+.2f}</td>'
+                period_hdrs = "".join(f'<th class="num">{p}일</th>' for p in (5, 10, 20, 30, 60))
+                t_rows = ""
+                fo = mp.get("foreign", {})
+                if fo.get("current_pct") is not None:
+                    pds = fo.get("periods", {})
+                    cells = "".join(_pp_cell(pds.get(p)) for p in (5, 10, 20, 30, 60))
+                    t_rows += f'<tr><td>외국인 보유율</td><td class="num">{fo["current_pct"]:.2f}%</td>{cells}</tr>\n'
+                sh = mp.get("short", {})
+                if sh.get("current_pct") is not None:
+                    pds = sh.get("periods", {})
+                    cells = "".join(_pp_cell(pds.get(p), invert=True) for p in (5, 10, 20, 30, 60))
+                    t_rows += f'<tr><td>공매도 잔고율</td><td class="num">{sh["current_pct"]:.2f}%</td>{cells}</tr>\n'
+                if t_rows:
+                    trend_html = f"""<div class="si-section">
+      <div class="si-section-title">다기간 추이 (pp 변화)</div>
+      <table class="si-table"><thead><tr><th>항목</th><th class="num">현재</th>{period_hdrs}</tr></thead><tbody>{t_rows}</tbody></table>
     </div>"""
+        except Exception as exc:
+            log.info("detail: multi-period trends %s: %s", ticker, exc)
 
         flow_pane = f"""<div class="si-pane" id="si-flow">
   {inv_table}
@@ -4748,6 +4758,157 @@ def _render_stock_info_html(rec: dict) -> str:
     </tbody></table>
   </div>
 </div>"""
+
+    # ── JP: JPX 주간 투자주체별 수급 (시장 전체) ────────────────
+    if is_jp and not flow_pane:
+        try:
+            from bot.jpx_flow_client import fetch_jpx_weekly_flow
+            jpx_rows = fetch_jpx_weekly_flow()
+            if jpx_rows and len(jpx_rows) >= 1:
+                inv_labels = [("외국인", "foreigners"), ("투신", "trusts"),
+                              ("개인", "individuals"), ("법인", "corporations"),
+                              ("증권사", "securities")]
+                def _jpx_cell(v):
+                    if v is None or v == 0:
+                        return '<td class="num">—</td>'
+                    c = "#26a69a" if v > 0 else "#e2574c"
+                    sign = "+" if v > 0 else ""
+                    return f'<td class="num" style="color:{c}">{sign}{v:,}</td>'
+                wk_hdrs = ""
+                for i, r in enumerate(jpx_rows[:4]):
+                    d = r.get("date", f"W-{i}")
+                    wk_hdrs += f'<th class="num">{esc(str(d)[:10])}</th>'
+                jpx_body = ""
+                for label, key in inv_labels:
+                    cells = "".join(_jpx_cell(r.get(key)) for r in jpx_rows[:4])
+                    jpx_body += f"<tr><td>{label}</td>{cells}</tr>\n"
+                flow_pane = f"""<div class="si-pane" id="si-flow">
+  <div class="si-section">
+    <div class="si-section-title">JPX 주간 투자주체별 수급 (百万円 · 시장 전체)</div>
+    <table class="si-table"><thead><tr><th>주체</th>{wk_hdrs}</tr></thead><tbody>{jpx_body}</tbody></table>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 시장 전체 집계 (종목별 아님). 출처: JPX 投資部門別 売買状況</div>
+  </div>
+</div>"""
+        except Exception as exc:
+            log.info("detail: jpx flow: %s", exc)
+
+    # ── TW: TWSE/TPEx 三大法人 (종목별 당일+5일) ─────────────────
+    if is_tw and not flow_pane:
+        try:
+            from bot.twse_flow_client import fetch_institutional_flow
+            tw_flow = fetch_institutional_flow(ticker)
+            if tw_flow:
+                tw_today = tw_flow.get("today") or {}
+                tw_5d = tw_flow.get("5d") or {}
+                def _tw_cell(v):
+                    if v is None or v == 0:
+                        return '<td class="num">—</td>'
+                    c = "#26a69a" if v > 0 else "#e2574c"
+                    sign = "+" if v > 0 else ""
+                    return f'<td class="num" style="color:{c}">{sign}{v:,}</td>'
+                tw_labels = [("외자 (外資)", "foreign"), ("투신 (投信)", "trust"),
+                             ("자영상 (自營商)", "dealer"), ("합계", "total")]
+                tw_body = ""
+                for label, key in tw_labels:
+                    tw_body += f"<tr><td>{label}</td>{_tw_cell(tw_today.get(key))}{_tw_cell(tw_5d.get(key))}</tr>\n"
+                flow_pane = f"""<div class="si-pane" id="si-flow">
+  <div class="si-section">
+    <div class="si-section-title">三大法人 매매동향 (주, 종목별)</div>
+    <table class="si-table"><thead><tr><th>주체</th><th class="num">당일</th><th class="num">5일 누적</th></tr></thead><tbody>{tw_body}</tbody></table>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">출처: {'TWSE' if ticker.upper().endswith('.TW') else 'TPEx'} 三大法人買賣超日報</div>
+  </div>
+</div>"""
+        except Exception as exc:
+            log.info("detail: twse flow %s: %s", ticker, exc)
+
+    # ── US: Options IV/PCR + Form 4 Insider + Finnhub Insider Sentiment
+    if is_us and not flow_pane:
+        us_flow_parts: list[str] = []
+        # Options signals
+        try:
+            from bot.options_client import get_options_signals
+            opts = get_options_signals(ticker)
+            if opts:
+                o_rows = ""
+                iv = opts.get("iv_atm")
+                if iv is not None:
+                    dte = opts.get("dte", "?")
+                    o_rows += f'<tr><td>ATM IV (front)</td><td class="num">{iv:.1f}%</td><td>DTE {dte}</td></tr>\n'
+                iv30 = opts.get("iv_atm_30d")
+                if iv30 is not None:
+                    o_rows += f'<tr><td>ATM IV (~30d)</td><td class="num">{iv30:.1f}%</td><td></td></tr>\n'
+                pcr_v = opts.get("pcr_volume")
+                if pcr_v is not None:
+                    pcr_c = "#e2574c" if pcr_v > 1.0 else "#26a69a" if pcr_v < 0.7 else ""
+                    pcr_s = f' style="color:{pcr_c}"' if pcr_c else ""
+                    o_rows += f'<tr><td>P/C Volume Ratio</td><td class="num"{pcr_s}>{pcr_v:.2f}</td><td>{"🐻 bearish" if pcr_v > 1.0 else "🐂 bullish" if pcr_v < 0.7 else ""}</td></tr>\n'
+                pcr_oi = opts.get("pcr_oi")
+                if pcr_oi is not None:
+                    o_rows += f'<tr><td>P/C OI Ratio</td><td class="num">{pcr_oi:.2f}</td><td></td></tr>\n'
+                if o_rows:
+                    us_flow_parts.append(f"""<div class="si-section">
+      <div class="si-section-title">옵션 시장 신호</div>
+      <table class="si-table"><thead><tr><th>지표</th><th class="num">값</th><th>비고</th></tr></thead><tbody>{o_rows}</tbody></table>
+    </div>""")
+        except Exception as exc:
+            log.info("detail: options %s: %s", ticker, exc)
+
+        # Form 4 insider trades
+        try:
+            from bot.edgar_client import get_recent_form4
+            form4 = get_recent_form4(ticker, days=60, top_n=5)
+            if form4:
+                f4_rows = ""
+                for f in form4:
+                    f_name = esc(str(f.get("reporter_name", "—")))
+                    f_title = esc(str(f.get("title", "")))
+                    txns = f.get("transactions", [])
+                    if not txns:
+                        continue
+                    for tx in txns[:2]:
+                        code_t = tx.get("code", "")
+                        label_t = tx.get("label", code_t)
+                        shares_t = tx.get("shares", 0)
+                        price_t = tx.get("price")
+                        dt_t = esc(str(tx.get("date", "")))
+                        tc = "#26a69a" if code_t == "P" else "#e2574c" if code_t == "S" else ""
+                        ts = f' style="color:{tc}"' if tc else ""
+                        sh_str = f"{int(shares_t):,}" if shares_t else "—"
+                        pr_str = f"${price_t:,.2f}" if price_t else "—"
+                        f4_rows += f'<tr><td>{f_name}</td><td>{esc(f_title[:20])}</td><td{ts}>{esc(label_t)}</td><td class="num">{sh_str}</td><td class="num">{pr_str}</td><td>{dt_t}</td></tr>\n'
+                if f4_rows:
+                    us_flow_parts.append(f"""<div class="si-section">
+      <div class="si-section-title">내부자 거래 (SEC Form 4 · 60일)</div>
+      <table class="si-table"><thead><tr><th>이름</th><th>직위</th><th>거래</th><th class="num">주식수</th><th class="num">가격</th><th>날짜</th></tr></thead><tbody>{f4_rows}</tbody></table>
+    </div>""")
+        except Exception as exc:
+            log.info("detail: form4 %s: %s", ticker, exc)
+
+        # Finnhub insider sentiment
+        try:
+            from bot.finnhub_client import fetch_insider_sentiment, finnhub_key_ready
+            if finnhub_key_ready():
+                isent = fetch_insider_sentiment(ticker)
+                if isent and isent.get("data"):
+                    is_rows = ""
+                    for m in isent["data"][:6]:
+                        month = esc(str(m.get("month", "")))
+                        mspr = m.get("mspr", 0)
+                        chg = m.get("change", 0)
+                        mc = "#26a69a" if mspr > 0 else "#e2574c" if mspr < 0 else ""
+                        ms = f' style="color:{mc}"' if mc else ""
+                        is_rows += f'<tr><td>{month}</td><td class="num"{ms}>{mspr:+.2f}</td><td class="num">{chg:+d}</td></tr>\n'
+                    if is_rows:
+                        us_flow_parts.append(f"""<div class="si-section">
+      <div class="si-section-title">내부자 심리 (MSPR · Finnhub)</div>
+      <table class="si-table"><thead><tr><th>월</th><th class="num">MSPR</th><th class="num">건수 변화</th></tr></thead><tbody>{is_rows}</tbody></table>
+      <div style="font-size:11px;color:var(--fg-soft);margin-top:4px">MSPR: Monthly Share Purchase Ratio — 양수=순매수, 음수=순매도</div>
+    </div>""")
+        except Exception as exc:
+            log.info("detail: finnhub insider %s: %s", ticker, exc)
+
+        if us_flow_parts:
+            flow_pane = '<div class="si-pane" id="si-flow">\n  ' + "\n  ".join(us_flow_parts) + "\n</div>"
 
     # ── 리스크 pane (lockup + dilution + CN ST/停牌) ──────────────
     risk_parts: list[str] = []
