@@ -660,44 +660,35 @@ class DartClient:
 
     # ── 최대주주 현황 (hyslrSttus.json) ──────────────────────────────
 
-    def get_major_shareholders(self, stock_code: str) -> list[dict]:
-        """DART 최대주주 현황 — major shareholder list from annual report.
-        Each row: {name, relation, shares, pct, note}.
-        Empty list on failure."""
-        if not self.api_key:
-            return []
-        corp_code = self.stock_code_to_corp_code(stock_code)
-        if not corp_code:
-            return []
-        ck = f"majsh_{corp_code}"
-        cached = self._disk_get(ck)
-        if cached is not None:
-            return cached
+    def _fetch_hyslr(self, corp_code: str, bsns_year: str) -> Optional[list]:
+        """Raw fetch for hyslrSttus. Returns row list or None."""
         try:
             resp = requests.get(
                 f"{_DART_BASE}/hyslrSttus.json",
                 params={
                     "crtfc_key": self.api_key,
                     "corp_code": corp_code,
-                    "bsns_year": str(date.today().year - 1),
+                    "bsns_year": bsns_year,
                     "reprt_code": "11011",
                 },
                 timeout=_HTTP_TIMEOUT,
             )
             payload = resp.json()
         except Exception as exc:
-            log.warning("dart: hyslrSttus for %s failed: %s", stock_code, exc)
-            return []
+            log.warning("dart: hyslrSttus %s/%s failed: %s", corp_code, bsns_year, exc)
+            return None
         status = payload.get("status")
-        if status not in ("000",):
-            log.info("dart: hyslrSttus %s status=%s msg=%s",
-                     stock_code, status, payload.get("message", ""))
-            return []
+        if status != "000":
+            log.info("dart: hyslrSttus %s year=%s status=%s msg=%s",
+                     corp_code, bsns_year, status, payload.get("message", ""))
+            return None
         rows = payload.get("list") or []
         if rows:
-            sample_keys = list(rows[0].keys())
-            log.info("dart: hyslrSttus %s rows=%d keys=%s",
-                     stock_code, len(rows), sample_keys[:12])
+            log.info("dart: hyslrSttus %s year=%s rows=%d keys=%s",
+                     corp_code, bsns_year, len(rows), list(rows[0].keys())[:15])
+        return rows if rows else None
+
+    def _parse_hyslr_rows(self, rows: list) -> list[dict]:
         out: list[dict] = []
         for r in rows:
             nm = (r.get("nm") or r.get("inv_prm") or r.get("aflte_nm")
@@ -730,8 +721,137 @@ class DartClient:
                 "pct": pct,
                 "note": note,
             })
+        return out
+
+    def get_major_shareholders(self, stock_code: str) -> list[dict]:
+        """DART 최대주주 현황 — major shareholder list from annual report.
+        Tries year-1 then year-2 fallback. Each row: {name, relation, shares, pct, note}."""
+        if not self.api_key:
+            return []
+        corp_code = self.stock_code_to_corp_code(stock_code)
+        if not corp_code:
+            return []
+        ck = f"majsh_{corp_code}"
+        cached = self._disk_get(ck)
+        if cached is not None:
+            return cached
+        y = date.today().year
+        rows = self._fetch_hyslr(corp_code, str(y - 1))
+        if not rows:
+            rows = self._fetch_hyslr(corp_code, str(y - 2))
+        if not rows:
+            return []
+        out = self._parse_hyslr_rows(rows)
         if out:
             self._disk_set(ck, out)
+        return out
+
+    # ── 타법인 출자현황 (otrCprInvstmntSttus.json) — 계열회사/자회사 ──
+
+    def get_affiliate_investments(self, stock_code: str) -> list[dict]:
+        """DART 타법인 출자현황 — investment in other corporations (계열회사 proxy).
+        Tries year-1 then year-2 fallback.
+        Each row: {name, purpose, shares, pct, book_value, total_assets, note}."""
+        if not self.api_key:
+            return []
+        corp_code = self.stock_code_to_corp_code(stock_code)
+        if not corp_code:
+            return []
+        ck = f"affinv_{corp_code}"
+        cached = self._disk_get(ck)
+        if cached is not None:
+            return cached
+        y = date.today().year
+        rows = self._fetch_otr_cpr(corp_code, str(y - 1))
+        if not rows:
+            rows = self._fetch_otr_cpr(corp_code, str(y - 2))
+        if not rows:
+            return []
+        out = self._parse_otr_cpr_rows(rows)
+        if out:
+            self._disk_set(ck, out)
+        return out
+
+    def _fetch_otr_cpr(self, corp_code: str, bsns_year: str) -> Optional[list]:
+        """Raw fetch for otrCprInvstmntSttus."""
+        try:
+            resp = requests.get(
+                f"{_DART_BASE}/otrCprInvstmntSttus.json",
+                params={
+                    "crtfc_key": self.api_key,
+                    "corp_code": corp_code,
+                    "bsns_year": bsns_year,
+                    "reprt_code": "11011",
+                },
+                timeout=_HTTP_TIMEOUT,
+            )
+            payload = resp.json()
+        except Exception as exc:
+            log.warning("dart: otrCprInvstmntSttus %s/%s failed: %s",
+                        corp_code, bsns_year, exc)
+            return None
+        status = payload.get("status")
+        if status != "000":
+            log.info("dart: otrCprInvstmntSttus %s year=%s status=%s msg=%s",
+                     corp_code, bsns_year, status, payload.get("message", ""))
+            return None
+        rows = payload.get("list") or []
+        if rows:
+            log.info("dart: otrCprInvstmntSttus %s year=%s rows=%d keys=%s",
+                     corp_code, bsns_year, len(rows), list(rows[0].keys())[:15])
+        return rows if rows else None
+
+    def _parse_otr_cpr_rows(self, rows: list) -> list[dict]:
+        out: list[dict] = []
+        for r in rows:
+            nm = (r.get("inv_prm") or r.get("cmpny_nm") or r.get("nm")
+                  or r.get("aflte_nm") or "").strip()
+            if not nm or nm == "-":
+                continue
+            purpose = (r.get("invstmnt_purps") or r.get("inv_purps")
+                       or r.get("purps") or "").strip()
+            shares_raw = str(
+                r.get("trmend_blce_qy") or r.get("bsis_blce_qy")
+                or r.get("posesn_stkqy") or "0"
+            ).replace(",", "").strip()
+            try:
+                shares = int(shares_raw) if shares_raw and shares_raw != "-" else 0
+            except ValueError:
+                shares = 0
+            pct_raw = str(
+                r.get("trmend_blce_qota_rt") or r.get("bsis_blce_qota_rt")
+                or r.get("qota_rt") or "0"
+            ).replace(",", "").strip()
+            try:
+                pct = float(pct_raw) if pct_raw and pct_raw != "-" else 0.0
+            except ValueError:
+                pct = 0.0
+            bv_raw = str(
+                r.get("trmend_blce_acntbk_amount") or r.get("acntbk_amount")
+                or "0"
+            ).replace(",", "").strip()
+            try:
+                book_value = int(bv_raw) if bv_raw and bv_raw != "-" else 0
+            except ValueError:
+                book_value = 0
+            ta_raw = str(
+                r.get("recent_bsns_year_fnnr_sttus_tot_assets")
+                or r.get("tot_assets") or "0"
+            ).replace(",", "").strip()
+            try:
+                total_assets = int(ta_raw) if ta_raw and ta_raw != "-" else 0
+            except ValueError:
+                total_assets = 0
+            note = (r.get("rm") or "").strip()
+            out.append({
+                "name": nm,
+                "purpose": purpose,
+                "shares": shares,
+                "pct": pct,
+                "book_value": book_value,
+                "total_assets": total_assets,
+                "note": note,
+            })
         return out
 
     def _disk_get(self, key: str):
