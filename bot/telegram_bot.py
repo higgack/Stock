@@ -3305,6 +3305,10 @@ def main() -> None:
         )
     )
 
+    # Emit "bot starting" early so the watchdog sees it during the
+    # potentially long startup regen phase and doesn't false-restart.
+    log.info("bot starting — watching channels: %s", CHANNEL_CHAT_IDS or "auto-detect")
+
     # Refresh the static dashboard once at startup so an auto-update
     # deploy (which restarts the bot) immediately shows any changes
     # to dashboard.py without waiting for the next analysis to fire.
@@ -3325,7 +3329,7 @@ def main() -> None:
     except Exception as exc:
         log.warning("startup paper regen failed: %s", exc)
 
-    log.info("bot starting — watching channels: %s", CHANNEL_CHAT_IDS or "auto-detect")
+    log.info("bot startup regen complete — entering polling loop")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
