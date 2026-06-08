@@ -471,22 +471,22 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         except Exception as exc:
             log.debug("stock_snapshot: FnGuide consensus skipped: %s", exc)
 
-    # ── 리서치 리포트 (한경 → Naver Finance fallback) ──────────────
+    # ── 리서치 리포트 (Naver Finance primary → 한경 fallback) ────────
     # Per-broker report rows populate the 리서치 액션 tab — yfinance has
-    # no KR upgrade/downgrade feed. 한경 is JS-rendered since 2026 redesign
-    # (sample_rows: []) → Naver Finance 종목 리서치 as primary fallback.
+    # no KR upgrade/downgrade feed. Naver Finance 종목 리서치 primary,
+    # 한경 컨센서스 fallback (2026 redesign 이후 JS 렌더링으로 거의 사망).
     _kr_research = None
     try:
-        from bot.hk_consensus_client import fetch_consensus as hk_fetch
-        _kr_research = hk_fetch(ticker)
+        from bot.naver_research_client import fetch_research
+        _kr_research = fetch_research(ticker)
     except Exception as exc:
-        log.debug("stock_snapshot: HanKyung consensus skipped: %s", exc)
+        log.debug("stock_snapshot: Naver research skipped: %s", exc)
     if not (_kr_research and _kr_research.get("reports")):
         try:
-            from bot.naver_research_client import fetch_research
-            _kr_research = fetch_research(ticker)
+            from bot.hk_consensus_client import fetch_consensus as hk_fetch
+            _kr_research = hk_fetch(ticker)
         except Exception as exc:
-            log.debug("stock_snapshot: Naver research skipped: %s", exc)
+            log.debug("stock_snapshot: HanKyung consensus skipped: %s", exc)
     if _kr_research:
         if _kr_research.get("reports"):
             snap.setdefault("kr", {})["research_reports"] = _kr_research["reports"]
@@ -494,7 +494,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                 and not snap.get("kr", {}).get("consensus")
                 and _kr_research.get("target_price")):
             snap.setdefault("kr", {})["consensus"] = {
-                "source": "한경" if _kr_research.get("report_count", 0) > 0 else "Naver Finance",
+                "source": "Naver Finance",
                 "target_mean": _kr_research["target_price"],
                 "rating": _kr_research.get("rating"),
                 "n_analysts": _kr_research.get("analyst_count"),
