@@ -151,3 +151,145 @@ def get_naver_valuation(ticker: str) -> Optional[dict]:
         code, per, eps, pbr, bps, shares,
     )
     return result if result else None
+
+
+def get_naver_foreign_holding(ticker: str) -> Optional[dict]:
+    """Return foreign ownership data from Naver Finance for a KR ticker.
+
+    Returns:
+        {
+            "date": str (today ISO or page date),
+            "foreign_pct": float (외국인보유비율 %),
+            "foreign_shares": int,
+            "listed_shares": int,
+            "limit_exhaustion_pct": float (외국인소진율 %, if available),
+            "source": "naver",
+        }
+        or None on failure.
+    """
+    code = ticker.upper().split(".")[0]
+    if not re.fullmatch(r"\d{6}", code):
+        return None
+
+    today = _date.today().isoformat()
+    ck = f"naver_frgn_{code}_{today}"
+    cached = _load_cached(code, today)
+    if cached is not None and cached.get("_frgn"):
+        return cached.get("_frgn") or None
+
+    try:
+        import requests
+
+        url = f"https://finance.naver.com/item/frgn.naver?code={code}"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+            "Referer": f"https://finance.naver.com/item/main.naver?code={code}",
+        }
+        resp = requests.get(url, headers=headers, timeout=12)
+        if resp.status_code != 200:
+            _log.info("Naver frgn %s → HTTP %d", code, resp.status_code)
+            return None
+        html = resp.text
+        if len(html) < 500:
+            _log.info("Naver frgn %s → page too short (%d)", code, len(html))
+            return None
+    except Exception as exc:
+        _log.warning("Naver frgn fetch failed for %s: %s", code, exc)
+        return None
+
+    foreign_pct = None
+    foreign_shares = None
+    listed_shares = None
+    exhaust_pct = None
+
+    m = re.search(
+        r"보유비율[\s\S]{0,120}?([\d,]+\.?\d*)\s*%",
+        html,
+    )
+    if m:
+        foreign_pct = _parse_float(m.group(1))
+
+    m = re.search(
+        r"소진율[\s\S]{0,120}?([\d,]+\.?\d*)\s*%",
+        html,
+    )
+    if m:
+        exhaust_pct = _parse_float(m.group(1))
+
+    m = re.search(
+        r"보유주식수[\s\S]{0,150}?([\d,]{4,20})",
+        html,
+    )
+    if m:
+        try:
+            foreign_shares = int(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+
+    m = re.search(
+        r"한도주식수[\s\S]{0,150}?([\d,]{4,20})",
+        html,
+    )
+    if m:
+        try:
+            listed_shares = int(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+
+    if foreign_pct is None and foreign_shares is None:
+        url2 = f"https://finance.naver.com/item/main.naver?code={code}"
+        try:
+            resp2 = requests.get(url2, headers=headers, timeout=12)
+            html2 = resp2.text if resp2.status_code == 200 else ""
+        except Exception:
+            html2 = ""
+
+        if html2 and len(html2) > 500:
+            m = re.search(
+                r"외국인소진율[\s\S]{0,120}?([\d,]+\.?\d*)\s*%",
+                html2,
+            )
+            if m:
+                exhaust_pct = _parse_float(m.group(1))
+
+            m = re.search(
+                r"외국인[\s\S]{0,30}?보유[\s\S]{0,30}?비율[\s\S]{0,80}?([\d,]+\.?\d*)\s*%",
+                html2,
+            )
+            if m:
+                foreign_pct = _parse_float(m.group(1))
+
+    if foreign_pct is None and exhaust_pct is None:
+        _log.info("Naver frgn %s → no foreign data found", code)
+        return None
+
+    result: dict = {
+        "date": today,
+        "source": "naver",
+    }
+    if foreign_pct is not None:
+        result["foreign_pct"] = round(foreign_pct, 2)
+    if foreign_shares is not None:
+        result["foreign_shares"] = foreign_shares
+    if listed_shares is not None:
+        result["listed_shares"] = listed_shares
+    if exhaust_pct is not None:
+        result["limit_exhaustion_pct"] = round(exhaust_pct, 2)
+
+    try:
+        cache_data = _load_cached(code, today) or {}
+        cache_data["_frgn"] = result
+        _save_cache(code, today, cache_data)
+    except Exception:
+        pass
+
+    _log.info(
+        "Naver frgn %s → pct=%s exhaust=%s shares=%s",
+        code, foreign_pct, exhaust_pct, foreign_shares,
+    )
+    return result
