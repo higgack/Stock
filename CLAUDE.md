@@ -22,6 +22,32 @@ For **any** request (analysis output, feature idea, bug report, refactor):
    auto-update 가 merge 된 base 브랜치만 감시하므로, merge 하지 않으면
    배포가 안 된다. 사용자에게 "merge 할까요?" 되묻지 말고 바로 실행.
 
+## ⛔ 과거 실수 기록 — 반복 금지 (사용자 정책 2026-06-08)
+
+**모든 세션에서 이 섹션을 먼저 읽고 같은 실수 반복하지 말 것.**
+
+1. **배포 = merge까지 (2026-06-08)**: draft PR 만 열고 멈추면 VM
+   auto-update 가 감지 못함. PR ready → merge → auto-update 1분 내
+   배포. "배포했습니다" 라고 말하기 전에 merge 확인 필수.
+2. **watchdog 연동 확인 (2026-06-08)**: `deploy/watchdog.sh` 가
+   `"bot starting"` 로그를 180초 윈도에서 찾아 startup skip 판단.
+   startup 에 무거운 작업(dashboard regen 3-5분)을 추가하면 이 로그
+   **이전에** 찍혀야 watchdog 이 false-restart 안 함. 봇 startup
+   경로 변경 시 반드시 watchdog 시나리오 검증.
+3. **URL 템플릿 이중 prefix (2026-06-08)**: `_SUBS_URL` 에 이미
+   `CIK{cik}` 가 있는데 호출부에서 `f"CIK{cik}"` 로 또 붙여
+   `CIKCIK...` 404. 템플릿 변수에 prefix 가 있는지 항상 확인.
+4. **auto-update 브랜치 (2026-06-08)**: `auto-update.sh` 가 감시하는
+   브랜치(`claude/stock-trading-automation-xqYf7`)에 merge 해야 배포.
+   다른 브랜치에 push 하고 "배포됐다" 하면 안 됨.
+5. **.env 오타 (2026-06-08)**: 사용자가 준 키를 등록할 때 오타(한글
+   자모 `ㅋ` 혼입) 가능. 등록 후 `grep` 으로 확인 코드 항상 제공.
+6. **봇 restart loop 중 알림 불가 (2026-06-08)**: watchdog 가 봇을
+   반복 재시작하면 auto-update 알림도 안 옴 — 봇이 polling 못 하니까.
+   이 상태에선 사용자에게 VM 수동 restart 안내 필요.
+
+새 실수 발생 시 이 리스트에 날짜 + 한 줄 교훈 추가 의무.
+
 ## ⛔ UNIVERSAL CHANGES ONLY — every change applies to every market
 
 **This is the single most important rule in this file. Read it first.**
