@@ -3169,7 +3169,7 @@ class TestDetailNewsResearchFallback:
         html = "".join(str(v) for v in _render_stock_info_html(rec).values())
         assert "미래에셋" in html and "NH투자" in html, "증권사명 미렌더"
         assert "₩320,000" in html, "목표가 ₩+천단위 미렌더"
-        assert "한경 컨센서스" in html, "출처 표기 누락"
+        assert "Naver Finance" in html, "출처 표기 누락"
         assert html.count("매수") >= 2, "Buy→매수 + 매수 passthrough 변환 깨짐"
         assert "리서치 액션 데이터가 없습니다" not in html
 

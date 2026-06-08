@@ -3383,26 +3383,26 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         except Exception as exc:
             log.debug("_ensure_detail_enrichment: news %s: %s", ticker, exc)
 
-    # ② KR research reports + consensus (한경 → Naver Finance fallback)
+    # ② KR research reports + consensus (Naver Finance primary → 한경 fallback)
     if tkr.endswith((".KS", ".KQ")):
         kr = si.get("kr", {})
         if not kr.get("research_reports"):
             _kr_research = None
             try:
-                from bot.hk_consensus_client import fetch_consensus as hk_fetch
-                _kr_research = hk_fetch(ticker)
+                from bot.naver_research_client import fetch_research
+                _kr_research = fetch_research(ticker)
             except Exception:
                 pass
             if not (_kr_research and _kr_research.get("reports")):
                 try:
-                    from bot.naver_research_client import fetch_research
-                    _kr_research = fetch_research(ticker)
+                    from bot.hk_consensus_client import fetch_consensus as hk_fetch
+                    _kr_research = hk_fetch(ticker)
                 except Exception:
                     pass
             if _kr_research and _kr_research.get("reports"):
                 si.setdefault("kr", {})["research_reports"] = _kr_research["reports"]
                 if not si.get("target_mean") and not kr.get("consensus") and _kr_research.get("target_price"):
-                    src = "Naver Finance" if not _kr_research.get("_source") else _kr_research.get("_source", "한경 컨센서스")
+                    src = "Naver Finance"
                     si.setdefault("kr", {})["consensus"] = {
                         "source": src,
                         "target_mean": _kr_research["target_price"],
@@ -4195,7 +4195,7 @@ def _render_stock_info_html(rec: dict) -> str:
         research_table = f"""<table class="si-table">
   <thead><tr><th>발행일</th><th>증권사</th><th>투자의견</th><th class="num">목표가</th></tr></thead>
   <tbody>{r_rows}</tbody></table>
-  <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: 한경 컨센서스 · 최근 90일 증권사 리포트</div>"""
+  <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: Naver Finance · 최근 90일 증권사 리포트</div>"""
     else:
         research_table = '<div class="si-empty">리서치 액션 데이터가 없습니다.</div>'
 

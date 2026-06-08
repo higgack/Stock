@@ -283,27 +283,34 @@ def backfill_detail_tabs(limit: int | None = None) -> int:
                 except Exception as exc:
                     log.debug("backfill_detail_tabs: news %s: %s", ticker, exc)
 
-            # ② KR research reports (한경 컨센서스)
+            # ② KR research reports (Naver Finance primary → 한경 fallback)
             if ticker.upper().endswith((".KS", ".KQ")):
                 kr = si.get("kr", {})
                 if not kr.get("research_reports"):
+                    _kr_res = None
                     try:
-                        from bot.hk_consensus_client import fetch_consensus as hk_fetch
-                        hk = hk_fetch(ticker)
-                        if hk and hk.get("reports"):
-                            si.setdefault("kr", {})["research_reports"] = hk["reports"]
-                            changed = True
-                            if not si.get("target_mean") and not kr.get("consensus"):
-                                if hk.get("target_price"):
-                                    si.setdefault("kr", {})["consensus"] = {
-                                        "source": "한경 컨센서스",
-                                        "target_mean": hk["target_price"],
-                                        "rating": hk.get("rating"),
-                                        "n_analysts": hk.get("analyst_count"),
-                                        "last_report_date": hk.get("last_report_date"),
-                                    }
-                    except Exception as exc:
-                        log.debug("backfill_detail_tabs: KR research %s: %s", ticker, exc)
+                        from bot.naver_research_client import fetch_research
+                        _kr_res = fetch_research(ticker)
+                    except Exception:
+                        pass
+                    if not (_kr_res and _kr_res.get("reports")):
+                        try:
+                            from bot.hk_consensus_client import fetch_consensus as hk_fetch
+                            _kr_res = hk_fetch(ticker)
+                        except Exception:
+                            pass
+                    if _kr_res and _kr_res.get("reports"):
+                        si.setdefault("kr", {})["research_reports"] = _kr_res["reports"]
+                        changed = True
+                        if not si.get("target_mean") and not kr.get("consensus"):
+                            if _kr_res.get("target_price"):
+                                si.setdefault("kr", {})["consensus"] = {
+                                    "source": "Naver Finance",
+                                    "target_mean": _kr_res["target_price"],
+                                    "rating": _kr_res.get("rating"),
+                                    "n_analysts": _kr_res.get("analyst_count"),
+                                    "last_report_date": _kr_res.get("last_report_date"),
+                                }
 
             # ③ TW consensus (鉅亨網)
             if ticker.upper().endswith(".TW"):
