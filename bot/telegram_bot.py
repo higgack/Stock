@@ -1058,7 +1058,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/start /help /usage /sv_cost /screener_cost /daily_byte_cost /cheongyak_cost /realestate_cost /screener_list /sites /portfolio — 도움말·비용·목록·자산(뱅샐 zip)
+/help /usage /portfolio /screener_list /sites — 비용: /sv·screener·daily_byte·cheongyak·realestate_cost
 /screen [조건 | 프리셋] — 조건부 스크리너 (PER&lt;15 PBR&lt;1 등, ₩0). /screen list
 /screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
@@ -1083,11 +1083,11 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【3. 요약 구성】</b>
-🎯 최종 판정 (Buy/Overweight/Hold/Underweight/Sell) · 📒 지난 추천 결과 (5거래일 후 자동) · ⚠️/📅/📊 실적 ±10일 경고 · 📰 뉴스 스킵 알림 · 4명 stance + ⚠️ stance↔결정 mismatch (불일치 시만) · 각 분석가 한 줄 요지 · [📋 전체 리포트]
+🎯 최종판정(Buy~Sell) · 📒 지난추천 결과(5거래일 자동) · ⚠️ 실적±10일·뉴스스킵 알림 · 4명 stance+mismatch · 한 줄 요지 · [📋 전체 리포트]
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종(미·한·일·대·중) · ECOS/FRED 금리·CPI · 섹터 ETF · 리스크 6종 · 컨센서스 · 공매도·내부자·기관 · 실적 ±10일 · DART/EDINET/MOPS 공시 · SEC EDGAR 8-K·Form4·XBRL원본재무 · US옵션 IV·P/C · KR개장전 미국선물 · TW컨센서스 · KRX 5일수급 · KIS 7종 · SV 브리프
+yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 · ECOS/FRED · 섹터ETF·리스크6종 · 컨센서스·공매도·내부자·기관 · 실적±10일 · DART/EDINET/MOPS/EDGAR공시+XBRL · US옵션·KRX수급·KIS7종 · SV
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -1095,28 +1095,31 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
  • 다음 동일 종목 요약 상단에 자동 표시 · 결정 LLM 과거 실수 반영
 
 ━━━━━━━━━
-<b>【6. 캐시 &amp; 비용】</b>
- • 오늘 같은 종목 재분석 → 디스크 캐시 즉시 반환 (무료)
- • 새 분석 ~₩100~150 / /compare 둘 다 새거 ~₩200~300
- • <b>Gemini context cache</b>: 결정 3노드(Pro) instrument_context 공유 → input ~75%↓
- • 일일 캐시 자정 KST 만료, 15년 가격 데이터는 영구 캐시
- • /usage → 모델별 분포 + 7일 차트
+<b>【6. 조건부 스크리너 /screen】</b> ₩0 · LLM 미사용
+원하는 정량 조건으로 KR 전 종목(KOSPI+KOSDAQ) 즉시 필터.
+ • <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — 자유 조건
+ • <code>/screen valueup</code> — 밸류업 수혜주 (배당성향≥40 부채비율&lt;200)
+ • <code>/screen list</code> — 전체 지표(22개)+프리셋(7종)
+ • 프리셋: valueup·valueup2·highdiv·value·growth·quality·lowpbr
+ • Phase 1 pykrx 벌크(PER/PBR/DIV/시총 즉시) → Phase 2 yfinance(배당성향/ROE 등 생존만)
+ • 24h 캐시 · 대시보드 screen.html 이력
 
 ━━━━━━━━━
-<b>【7. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 분석 실패 · 📊 Daily Byte (한국거래일19:00·일22:00 Weekly) · 🎟️ 청약 (평일10·14시) · 🏠 부동산 (금09:00·1일 Monthly) · 📝 블로그(30분) · 📨 미국 레딧(1분, ₩0)
+<b>【7. 캐시 &amp; 비용】</b>
+ • 같은 종목 재분석 → 캐시 즉시(무료) · 새 분석 ~₩100~150 · /compare ~₩200~300
+ • Gemini cache: 결정 3노드 context 공유 · 자정 만료 · /usage 차트
 
 ━━━━━━━━━
-<b>【8. 차별화 포인트】</b>
-페르소나 토론 · Pro 결정 3노드 · 12h 자기학습 · 결정적 Python fetch · 컨센서스 대조 · mismatch 감지 · 5거래일 horizon · 섹터 ETF α
+<b>【8. 채널 알림】</b>
+🚀✅ 배포 · ⚠️ hang · ❌ 실패 · 📊 Daily Byte(평일19:00·일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 🦉 (순서 = 헤더 nav)
- • <b>💼 자산</b> — 뱅샐 전 계좌 통합(증권사·예적금·부동산·대출·보험)·종목별 손익변동·CSV 보내기·RAG 업로드
+ • <b>💼 자산</b> — 뱅샐 전 계좌 통합(증권사·예적금·부동산·대출·보험)·종목손익·RAG 업로드
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
  • <b>📒 가계부</b> — 뱅샐 현금흐름·월별 수입지출·저축률
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/budget.html
- • <b>NOAH archive</b> (ID/PW) — 헤더 이동·종목 상세 가격차트·실시간 지표·💰비용
+ • <b>NOAH archive</b> (ID/PW) — 종목 상세·가격차트·실시간 지표·💰비용
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
  • <b>Screener</b> — 날짜별 run·Top-3 1/3/6m·검색·🗑️·도메인 /screener_list
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
@@ -1132,13 +1135,14 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
  • <b>청약 Byte</b> — 평일10·14시 신규 분양+경쟁률 · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/cheongyak.html
+ • <b>Screen</b> — 조건부 스크리너 이력·₩0
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screen.html
  • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 스니펫 검색(🟡클릭→분석)
- • 데이터: <code>~/.tradingagents/{archive,screener_archive,usage.jsonl,memory/}</code> · /sites
+ • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
 ━━━━━━━━━
 <b>【10. 진행 중 / 예정】</b>
- • <b>조건부 스크리너</b> /screen (PER·PBR·배당성향·부채비율 등 자유 조건, pykrx+yfinance, ₩0)
- • Screener 65도메인+자유어+24h캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기GICS · 실거래 E1 KIS모의투자(KR+US 서버체결)+자동신호+RiskGate 가동 · 예정: IBKR·실전(E2)
+ • Screener 65도메인+자유어+24h캐시 · 분기GICS · 실거래 E1 KIS모의+자동신호+RiskGate · 예정: IBKR·실전(E2)
 """
 
 
