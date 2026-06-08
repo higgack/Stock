@@ -403,19 +403,20 @@ def run_screen(conditions: list[Condition],
     t0 = time.time()
 
     cond_text = " ".join(c.display() for c in conditions)
-    ck = _cache_key(cond_text)
+    ck = _cache_key(f"{market}:{cond_text}")
 
     if not force_fresh:
         cached = _load_cache(ck)
         if cached:
             hits = cached.get("hits", [])
-            missing = [h["code"] for h in hits
-                       if not h.get("name") and h.get("code")]
-            if missing:
-                name_map = _resolve_kr_names(missing)
-                for h in hits:
-                    if not h.get("name") and h.get("code"):
-                        h["name"] = name_map.get(h["code"], "")
+            if market == "KR":
+                missing = [h["code"] for h in hits
+                           if not h.get("name") and h.get("code")]
+                if missing:
+                    name_map = _resolve_kr_names(missing)
+                    for h in hits:
+                        if not h.get("name") and h.get("code"):
+                            h["name"] = name_map.get(h["code"], "")
             return ScreenResult(
                 conditions=conditions,
                 hits=hits,
