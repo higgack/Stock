@@ -4476,32 +4476,38 @@ def _render_stock_info_html(rec: dict) -> str:
     kr_foreign_html = ""
     if is_kr:
         try:
+            fh = None
             from bot.seibro_client import fetch_foreign_holding, seibro_key_ready
             if seibro_key_ready():
                 fh = fetch_foreign_holding(ticker)
-                if fh:
-                    fp = fh.get("foreign_pct", 0)
-                    fs = fh.get("foreign_shares", 0)
-                    ls = fh.get("listed_shares", 0)
-                    le = fh.get("limit_exhaustion_pct")
-                    lim_s = fh.get("limit_shares", 0)
-                    fd = esc(str(fh.get("date", "")))
-                    le_html = ""
-                    if le is not None:
-                        le_warn = " ⚠️ ceiling 임박" if le >= 95 else (" ⚠️ 제한 접근" if le >= 80 else "")
-                        le_html = f'<tr><td>한도소진율</td><td class="num">{le:.2f}%{le_warn}</td></tr><tr><td>한도주식수</td><td class="num">{lim_s:,}주</td></tr>'
-                    kr_foreign_html = f"""<div class="si-section">
-    <div class="si-section-title">외국인 보유현황 (세이브로/KSD · {fd})</div>
+            if fh is None:
+                try:
+                    from bot.naver_finance_client import get_naver_foreign_holding
+                    fh = get_naver_foreign_holding(ticker)
+                except Exception as nv_exc:
+                    log.info("naver frgn fallback %s: %s", ticker, nv_exc)
+            if fh:
+                fp = fh.get("foreign_pct", 0)
+                fs = fh.get("foreign_shares", 0)
+                ls = fh.get("listed_shares", 0)
+                le = fh.get("limit_exhaustion_pct")
+                lim_s = fh.get("limit_shares", 0)
+                fd = esc(str(fh.get("date", "")))
+                src = "네이버" if fh.get("source") == "naver" else "세이브로/KSD"
+                le_html = ""
+                if le is not None:
+                    le_warn = " ⚠️ ceiling 임박" if le >= 95 else (" ⚠️ 제한 접근" if le >= 80 else "")
+                    le_html = f'<tr><td>한도소진율</td><td class="num">{le:.2f}%{le_warn}</td></tr><tr><td>한도주식수</td><td class="num">{lim_s:,}주</td></tr>'
+                kr_foreign_html = f"""<div class="si-section">
+    <div class="si-section-title">외국인 보유현황 ({src} · {fd})</div>
     <table class="si-table"><tbody>
       <tr><td>보유비율</td><td class="num">{fp:.2f}%</td></tr>
       <tr><td>보유주식수</td><td class="num">{fs:,}주</td></tr>
       <tr><td>상장주식수</td><td class="num">{ls:,}주</td></tr>
       {le_html}
     </tbody></table></div>"""
-                else:
-                    log.info("seibro: fetch_foreign_holding(%s) returned None", ticker)
             else:
-                log.info("seibro: key not ready — DATA_GO_KR_API_KEY not set")
+                log.info("foreign holding: both seibro+naver returned None for %s", ticker)
         except Exception as exc:
             log.warning("detail: seibro foreign %s: %s", ticker, exc)
 

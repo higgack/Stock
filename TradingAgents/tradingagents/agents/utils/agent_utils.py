@@ -5412,15 +5412,23 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
 
         # Seibro/KSD 외국인 보유현황 (data.go.kr, KRX-login-free).
         # pykrx trend 와 별개로 보유비율 + 한도소진율 상세 제공.
+        # Naver Finance fallback when Seibro returns None.
         try:
             if _section_allowed(analyst_id, "seibro_foreign"):
                 from bot.seibro_client import format_foreign_holding_block
                 seibro_data = prefetched.get("seibro_foreign")
+                if seibro_data is None:
+                    try:
+                        from bot.naver_finance_client import get_naver_foreign_holding
+                        seibro_data = get_naver_foreign_holding(ticker)
+                    except Exception:
+                        pass
                 seibro_block = format_foreign_holding_block(seibro_data)
                 if seibro_block:
+                    src = "네이버" if (seibro_data or {}).get("source") == "naver" else "세이브로/KSD"
                     base += (
-                        "\n\n=== Pre-fetched KR 외국인 보유현황"
-                        " (세이브로/KSD, data.go.kr) ===\n"
+                        f"\n\n=== Pre-fetched KR 외국인 보유현황"
+                        f" ({src}) ===\n"
                         + seibro_block
                     )
         except Exception as exc:

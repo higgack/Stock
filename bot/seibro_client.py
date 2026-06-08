@@ -29,7 +29,8 @@ _TIMEOUT = 20
 _KST = timezone(timedelta(hours=9))
 
 _HOST = "https://apis.data.go.kr/1160100"
-_SERVICE = f"{_HOST}/service/GetStocSecuritiesInfoService"
+_SERVICE_NEW = f"{_HOST}/service/GetStockSecuritiesInfoService"
+_SERVICE_OLD = f"{_HOST}/service/GetStocSecuritiesInfoService"
 _OP = "getStockForeignStat"
 
 _HEADERS = {
@@ -91,17 +92,8 @@ def _cache_set(key: str, data):
         pass
 
 
-def _fetch_items(params: dict) -> list[dict]:
-    if not seibro_key_ready():
-        return []
-    key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
-    url = f"{_SERVICE}/{_OP}"
-    q = {
-        "resultType": "json",
-        "numOfRows": params.pop("numOfRows", 100),
-        "pageNo": 1,
-        **params,
-    }
+def _try_fetch(service_url: str, key: str, q: dict) -> Optional[list]:
+    url = f"{service_url}/{_OP}"
     try:
         if "%" in key:
             from urllib.parse import urlencode
@@ -115,16 +107,36 @@ def _fetch_items(params: dict) -> list[dict]:
                 headers=_HEADERS, timeout=_TIMEOUT,
             )
         if resp.status_code != 200:
-            log.warning("seibro: HTTP %d — %s", resp.status_code, resp.text[:160])
-            return []
+            log.info("seibro: %s → HTTP %d", service_url.split("/")[-1], resp.status_code)
+            return None
         body = (resp.json() or {}).get("response", {}).get("body", {}) or {}
         items = (body.get("items") or {}).get("item")
         if items is None:
-            return []
-        return items if isinstance(items, list) else [items]
+            log.info("seibro: %s → no items", service_url.split("/")[-1])
+            return None
+        result = items if isinstance(items, list) else [items]
+        log.info("seibro: %s → %d items", service_url.split("/")[-1], len(result))
+        return result
     except Exception as exc:
-        log.warning("seibro: fetch failed: %s", exc)
+        log.info("seibro: %s → %s", service_url.split("/")[-1], exc)
+        return None
+
+
+def _fetch_items(params: dict) -> list[dict]:
+    if not seibro_key_ready():
         return []
+    key = (os.environ.get("DATA_GO_KR_API_KEY") or "").strip()
+    q = {
+        "resultType": "json",
+        "numOfRows": params.pop("numOfRows", 100),
+        "pageNo": 1,
+        **params,
+    }
+    items = _try_fetch(_SERVICE_NEW, key, dict(q))
+    if items:
+        return items
+    items = _try_fetch(_SERVICE_OLD, key, dict(q))
+    return items or []
 
 
 def _float(v) -> Optional[float]:
@@ -279,7 +291,8 @@ def format_foreign_holding_block(data: Optional[dict]) -> str:
     if pct is None:
         return ""
 
-    lines = [f"• 외국인 보유현황 (세이브로/KSD, {data.get('date', '?')}):"]
+    src = "네이버" if data.get("source") == "naver" else "세이브로/KSD"
+    lines = [f"• 외국인 보유현황 ({src}, {data.get('date', '?')}):"]
     shares = data.get("foreign_shares", 0)
     listed = data.get("listed_shares", 0)
     lines.append(f"  보유비율: {pct:.2f}% ({shares:,}주 / {listed:,}주)")
