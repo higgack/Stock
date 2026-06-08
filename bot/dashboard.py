@@ -8093,7 +8093,7 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {{
 </script>
 </body>
 </html>
-""".replace("{{cards}}", cards)
+""".replace("{cards}", cards)
 
 
 def regenerate_screen_index() -> None:
@@ -8347,17 +8347,6 @@ def _render_portfolio_page(model, noah=None) -> str:
         '<div class="nav">'
         '<a href="budget.html">📒 가계부</a>'
         ' · <a href="index.html">🦉 NOAH 종목분석</a>'
-        ' · <a href="errors.html">🚨 오류/미완성</a>'
-        ' · <a href="screener.html">📊 Bottleneck Screener</a>'
-        ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
-        ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
-        ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-        ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
-        f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>'
-        ' · <a href="realestate.html">🏠 부동산</a>'
-        ' · <a href="cheongyak.html">🎟️ 청약</a>'
-        ' · <a href="watchlist.html">🔔 워치리스트</a>'
-        ' · <a href="paper.html">🧪 페이퍼</a>'
         '</div>')
     if not model or not model.get("holdings"):
         return _SCREENER_CSS + _PF_CSS + (
@@ -8837,22 +8826,11 @@ _BG_SEND_JS = """<script>(function(){
 
 
 def _budget_nav() -> str:
-    """가계부 페이지 nav — 자산 first, NOAH second, 나머지(가계부 자신은 현재라 생략)."""
+    """가계부 페이지 nav — 자산 + NOAH 종목분석만 (나머지는 NOAH 쪽에)."""
     return (
         '<div class="nav">'
         '<a href="portfolio.html">💼 자산</a>'
         ' · <a href="index.html">🦉 NOAH 종목분석</a>'
-        ' · <a href="errors.html">🚨 오류/미완성</a>'
-        ' · <a href="screener.html">📊 Bottleneck Screener</a>'
-        ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
-        ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
-        ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-        ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
-        f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>'
-        ' · <a href="realestate.html">🏠 부동산</a>'
-        ' · <a href="cheongyak.html">🎟️ 청약</a>'
-        ' · <a href="watchlist.html">🔔 워치리스트</a>'
-        ' · <a href="paper.html">🧪 페이퍼</a>'
         '</div>')
 
 

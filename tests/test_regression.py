@@ -2329,9 +2329,9 @@ class TestPortfolioDashboard:
         assert "동산 (자동차)" in html, "동산(자동차) 라벨 누락"
         assert "주식 국내 / 해외" in html, "국내/해외 비중 누락"
         assert "마지막 업데이트" in html, "업데이트 시각 헤더 누락"
-        # v4·v5: 풀 nav(메인 NOAH 맨앞) · nav 단어 줄바꿈 방지 · 자기 '자산' 제거(제목 중복)
-        assert 'href="index.html">🦉 NOAH 종목분석' in html, "nav 메인 첫 링크 누락"
-        assert "screener.html" in html and "daily_byte.html" in html, "풀 nav 누락"
+        # v6: nav 간소화(가계부+NOAH만, 나머지는 NOAH 쪽) · nav 단어 줄바꿈 방지 · 자기 '자산' 제거
+        assert 'href="index.html">🦉 NOAH 종목분석' in html, "nav NOAH 링크 누락"
+        assert 'href="budget.html"' in html, "nav 가계부 링크 누락"
         assert ".nav a,.nav b{white-space:nowrap}" in html, "nav 줄바꿈 방지 CSS 누락"
         assert "<b>💼 자산</b>" not in html, "nav 자기 '자산' 제거 안 됨"
         # 세로 맞춤(2026-06-04): 손익 분포 + 등높이(증권사별↔TOP/WORST)
