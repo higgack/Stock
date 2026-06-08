@@ -16,6 +16,11 @@ For **any** request (analysis output, feature idea, bug report, refactor):
    to commit ("이대로 커밋", "스캐폴드 만들고 커밋해줘", etc.).
 3. **After explicit commit**: stage, commit, and push to the current
    `claude/...` branch. Open / update the draft PR if one doesn't exist.
+4. **"배포/커밋/푸쉬" = 끝까지 완료 (사용자 정책 2026-06-08)**: 사용자가
+   배포·커밋·푸쉬를 지시하면 commit → push → PR ready → **merge 까지
+   전부 완료**하라는 뜻이다. draft PR 만 열어두고 멈추지 말 것. VM
+   auto-update 가 merge 된 base 브랜치만 감시하므로, merge 하지 않으면
+   배포가 안 된다. 사용자에게 "merge 할까요?" 되묻지 말고 바로 실행.
 
 ## ⛔ UNIVERSAL CHANGES ONLY — every change applies to every market
 
