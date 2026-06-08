@@ -3530,3 +3530,40 @@ class TestHankyungResearchParser:
         src = open("bot/hk_consensus_client.py", encoding="utf-8").read()
         assert "/analysis/list" in src, "신규 URL 미적용"
         assert "_fetch_list_html" in src, "멀티-URL fetch 헬퍼 누락"
+
+
+class TestPeerMarketCap:
+    """Peer comps 시총 표시가 peer 자체 통화로 렌더되는지 검증.
+
+    Surfaced 2026-06-08: KR 주식 상세 페이지의 동종비교 탭에서 US
+    peer (LMT/RTX 등) 시총이 ~1000x 작게 표시 — peer 의 USD 시총이
+    subject 의 KRW 로 포맷돼 $120.8B → ₩1,208억 (정답: $120.80B)."""
+
+    def test_peer_currency_stored_in_snapshot(self):
+        """stock_snapshot._collect_peer_multiples 가 peer 통화 저장."""
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert '"currency"' in src or "'currency'" in src, \
+            "peer entry 에 currency 필드 미저장"
+
+    def test_peer_currency_used_in_render(self):
+        """dashboard 가 peer 자체 통화로 시총 포맷."""
+        from bot.dashboard import _fmt_mcap, _currency_sym
+        lmt_mc = 120_800_000_000  # USD
+        assert _fmt_mcap(lmt_mc, _currency_sym("USD"), "USD") == "$120.80B"
+        assert _fmt_mcap(lmt_mc, _currency_sym("KRW"), "KRW") == "₩1,208억"
+
+    def test_ticker_suffix_currency_inference(self):
+        """peer 에 currency 필드 없는 옛 데이터 → ticker suffix 로 추론."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        # peer 렌더 코드에 suffix→currency 매핑 존재 확인
+        assert "peer_cur" in src, "peer currency 추론 로직 누락"
+
+    def test_enrichment_in_render_detail(self):
+        """_render_detail 이 news 부재 시 _ensure_detail_enrichment 호출."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        # _render_detail 안에 enrichment 호출 확인
+        idx_render = src.find("def _render_detail")
+        idx_si_html = src.find("_render_stock_info_html(rec)", idx_render)
+        idx_enrich = src.find("_ensure_detail_enrichment", idx_render)
+        assert idx_render < idx_enrich < idx_si_html, \
+            "_render_detail 에서 _render_stock_info_html 전에 enrichment 호출 필수"

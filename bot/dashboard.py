@@ -3361,25 +3361,33 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         except Exception as exc:
             log.debug("_ensure_detail_enrichment: news %s: %s", ticker, exc)
 
-    # ② KR research reports + consensus (한경 컨센서스)
+    # ② KR research reports + consensus (한경 → Naver Finance fallback)
     if tkr.endswith((".KS", ".KQ")):
         kr = si.get("kr", {})
         if not kr.get("research_reports"):
+            _kr_research = None
             try:
                 from bot.hk_consensus_client import fetch_consensus as hk_fetch
-                hk = hk_fetch(ticker)
-                if hk and hk.get("reports"):
-                    si.setdefault("kr", {})["research_reports"] = hk["reports"]
-                    if not si.get("target_mean") and not kr.get("consensus") and hk.get("target_price"):
-                        si.setdefault("kr", {})["consensus"] = {
-                            "source": "한경 컨센서스",
-                            "target_mean": hk["target_price"],
-                            "rating": hk.get("rating"),
-                            "n_analysts": hk.get("analyst_count"),
-                            "last_report_date": hk.get("last_report_date"),
-                        }
-            except Exception as exc:
-                log.debug("_ensure_detail_enrichment: KR research %s: %s", ticker, exc)
+                _kr_research = hk_fetch(ticker)
+            except Exception:
+                pass
+            if not (_kr_research and _kr_research.get("reports")):
+                try:
+                    from bot.naver_research_client import fetch_research
+                    _kr_research = fetch_research(ticker)
+                except Exception:
+                    pass
+            if _kr_research and _kr_research.get("reports"):
+                si.setdefault("kr", {})["research_reports"] = _kr_research["reports"]
+                if not si.get("target_mean") and not kr.get("consensus") and _kr_research.get("target_price"):
+                    src = "Naver Finance" if not _kr_research.get("_source") else _kr_research.get("_source", "한경 컨센서스")
+                    si.setdefault("kr", {})["consensus"] = {
+                        "source": src,
+                        "target_mean": _kr_research["target_price"],
+                        "rating": _kr_research.get("rating"),
+                        "n_analysts": _kr_research.get("analyst_count"),
+                        "last_report_date": _kr_research.get("last_report_date"),
+                    }
 
     # ③ TW consensus (鉅亨網)
     elif tkr.endswith(".TW"):
@@ -4739,7 +4747,12 @@ def _render_stock_info_html(rec: dict) -> str:
             name = esc(pc.get("name", "?"))
             ptk = esc(pc.get("ticker", ""))
             mc = pc.get("market_cap")
-            mc_str = _fmt_mcap(mc, csym, currency) if mc else "—"
+            peer_cur = pc.get("currency", "")
+            if not peer_cur:
+                _psuf = ptk.rsplit(".", 1)[-1] if "." in ptk else ""
+                peer_cur = {"KS": "KRW", "KQ": "KRW", "T": "JPY", "TW": "TWD",
+                            "HK": "HKD", "SS": "CNY", "SZ": "CNY"}.get(_psuf, "USD")
+            mc_str = _fmt_mcap(mc, _currency_sym(peer_cur), peer_cur) if mc else "—"
             def _pv(k):
                 v = pc.get(k)
                 return f"{v:.1f}" if v else "—"
@@ -5020,6 +5033,16 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
         f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
         if chart_html else ""
     )
+
+    # Enrich the stock_info with news/research if the stored snapshot
+    # predates the enrichment code. In-memory only — never writes back
+    # to the JSON file. ₩0 (Google News RSS + 한경 scrape, no LLM).
+    si = rec.get("stock_info")
+    if si and not si.get("news"):
+        try:
+            _ensure_detail_enrichment(ticker, si)
+        except Exception:
+            pass
 
     # Stock info (v3+): header cards, tab navigation, company/consensus/
     # earnings/research/holders/news panes. Graceful: older records just
