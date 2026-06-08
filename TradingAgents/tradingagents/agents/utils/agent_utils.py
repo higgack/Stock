@@ -1899,6 +1899,11 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["akshare_macro"] = lambda: ak_client.fetch_cn_macro()
         except Exception:
             pass
+        try:
+            from bot.hkex_connect_client import fetch_stock_connect_flow as _hkex_flow
+            tasks["hkex_connect_flow"] = lambda: _hkex_flow()
+        except Exception:
+            pass
 
     elif market == "US":
         try:
@@ -6242,6 +6247,30 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         except Exception as exc:
             _analyst_log.warning(
                 "hsgt flow injection failed for %s: %s", ticker, exc,
+            )
+
+        # HKEX Stock Connect backup (when AKShare HSGT is empty)
+        try:
+            from bot.market import detect_market
+            if (detect_market(ticker) in ("CN_A", "HK")
+                    and _section_allowed(analyst_id, "hsgt_flow")):
+                hsgt_already = prefetched.get("akshare_hsgt_flow")
+                if not hsgt_already:
+                    from bot.hkex_connect_client import format_hkex_flow_block
+                    hkex_flow = prefetched.get("hkex_connect_flow")
+                    hkex_block = format_hkex_flow_block(hkex_flow)
+                    if hkex_block:
+                        base += (
+                            "\n\n=== HKEX Stock Connect Flow (HKEX 공식 백업,"
+                            " verbatim) ===\n"
+                            + hkex_block
+                            + "\n\nAKShare HSGT 미수집 시 HKEX 공식 대체."
+                            " Northbound=본토 매수, Southbound=HK 매수."
+                            " 수치 날조 금지."
+                        )
+        except Exception as exc:
+            _analyst_log.warning(
+                "hkex connect flow injection failed for %s: %s", ticker, exc,
             )
 
         # Eastmoney 中文 news (CN_A + HK) — yfinance / Alpha Vantage
