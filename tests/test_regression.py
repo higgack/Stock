@@ -3796,8 +3796,8 @@ class TestCashInInvest:
                 for i, ev in enumerate(holdings_eval)
             ],
             "finance": {
-                "assets": {"투자성자산": [{"name": f"item{i}", "amount": a}
-                                      for i, a in enumerate(invest_items)]},
+                "assets": {"투자성 자산": [{"name": f"item{i}", "amount": a}
+                                       for i, a in enumerate(invest_items)]},
                 "liabilities": {},
                 "총자산": sum(invest_items), "총부채": 0,
                 "순자산": sum(invest_items),
@@ -3812,7 +3812,7 @@ class TestCashInInvest:
         m = self._build([90_000_000, 10_000_000], [90_000_000])
         assert m["cash_in_invest"] == 10_000_000
         assert m["snapshot"]["예수금"] == 10_000_000
-        assert m["snapshot"]["투자성자산"] == 100_000_000
+        assert m["snapshot"]["투자성 자산"] == 100_000_000
 
     def test_no_cash(self):
         """투자성자산 = 투자현황 → 예수금 0."""
@@ -3839,8 +3839,8 @@ class TestCashInInvest:
         """예수금이 투자성자산에서 빠지고 자유입출금에 합산."""
         m = self._build([90_000_000, 10_000_000], [90_000_000])
         alloc = m["asset_allocation"]
-        assert alloc["투자성자산"] == 90_000_000, "투자성자산에서 예수금 미차감"
-        assert alloc.get("자유입출금", 0) == 10_000_000, "자유입출금에 예수금 미합산"
+        assert alloc["투자성 자산"] == 90_000_000, "투자성 자산에서 예수금 미차감"
+        assert alloc.get("자유입출금 자산", 0) == 10_000_000, "자유입출금 자산에 예수금 미합산"
 
     def test_format_summary_shows_cash(self):
         """예수금 > 0이면 텔레그램 요약에 표시."""

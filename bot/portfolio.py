@@ -116,12 +116,12 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
     rated = list(_by_name.values())
     eval_sum = sum(h.get("평가금액") or 0 for h in holdings)
     cost_sum = sum(h.get("투자원금") or 0 for h in holdings)
-    invest_asset_total = alloc.get("투자성자산", 0)
+    invest_asset_total = alloc.get("투자성 자산", 0)
     cash_in_invest = max(invest_asset_total - eval_sum, 0)
-    # 예수금(CMA/Super365)은 투자성자산이 아니라 자유입출금 — 재분류
+    # 예수금(CMA/Super365)은 투자성 자산이 아니라 자유입출금 자산 — 재분류
     if cash_in_invest > 0:
-        alloc["투자성자산"] = invest_asset_total - cash_in_invest
-        alloc["자유입출금"] = alloc.get("자유입출금", 0) + cash_in_invest
+        alloc["투자성 자산"] = invest_asset_total - cash_in_invest
+        alloc["자유입출금 자산"] = alloc.get("자유입출금 자산", 0) + cash_in_invest
     return {
         "as_of": parsed.get("as_of"),
         "net_worth": {
@@ -146,7 +146,7 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
             "주식평가": eval_sum,
             "주식원금": cost_sum,
             "예수금": cash_in_invest,
-            "투자성자산": invest_asset_total,
+            "투자성 자산": invest_asset_total,
             "종목수": len(holdings),
             "holdings_pnl": {
                 f"{h.get('상품명', '')}|{h.get('금융사', '')}": h.get("평가손익") or 0
@@ -217,7 +217,7 @@ def backfill_cash_in_invest() -> bool:
     alloc = model.get("asset_allocation", {})
     holdings = model.get("holdings", [])
     eval_sum = sum(h.get("평가금액") or 0 for h in holdings)
-    invest_total = alloc.get("투자성자산", 0)
+    invest_total = alloc.get("투자성 자산", 0)
     cash = max(invest_total - eval_sum, 0)
     snap = model.get("snapshot")
     if not isinstance(snap, dict):
@@ -226,12 +226,12 @@ def backfill_cash_in_invest() -> bool:
     if model.get("cash_in_invest") is None:
         model["cash_in_invest"] = cash
         snap["예수금"] = cash
-        snap["투자성자산"] = invest_total
+        snap["투자성 자산"] = invest_total
         changed = True
-    # 예수금→자유입출금 재분류 (asset_allocation 도넛 반영)
-    if cash > 0 and alloc.get("투자성자산", 0) > eval_sum:
-        alloc["투자성자산"] = alloc["투자성자산"] - cash
-        alloc["자유입출금"] = alloc.get("자유입출금", 0) + cash
+    # 예수금→자유입출금 자산 재분류 (asset_allocation 도넛 반영)
+    if cash > 0 and alloc.get("투자성 자산", 0) > eval_sum:
+        alloc["투자성 자산"] = alloc["투자성 자산"] - cash
+        alloc["자유입출금 자산"] = alloc.get("자유입출금 자산", 0) + cash
         changed = True
     if not changed:
         return False
