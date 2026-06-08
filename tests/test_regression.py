@@ -3631,12 +3631,12 @@ class TestDividendYieldSanity:
 class TestCellTextsImgAlt:
     """fix commit: 2026-06-08 (research rating/target 누락)."""
 
-    def test_naver_cell_texts_extracts_img_alt(self):
-        """<img alt="매수"> → cell text 에 '매수' 포함."""
-        from bot.naver_research_client import _cell_texts
-        html = '<td><img alt="매수" src="/img/buy.gif"></td>'
-        cells = _cell_texts(f"<tr>{html}</tr>")
-        assert any("매수" in c for c in cells)
+    def test_naver_detail_regex_extracts_rating(self):
+        """Detail page regex extracts 투자의견 from <em class="coment">."""
+        from bot.naver_research_client import _RATING_DETAIL_RE
+        html = '투자의견 <em class="coment">매수</em>'
+        m = _RATING_DETAIL_RE.search(html)
+        assert m and m.group(1).strip() == "매수"
 
     def test_hk_cell_texts_extracts_img_alt(self):
         """한경 _cell_texts 도 img alt 추출."""
@@ -3645,22 +3645,12 @@ class TestCellTextsImgAlt:
         cells = _cell_texts(f"<tr>{html}</tr>")
         assert any("Buy" in c for c in cells)
 
-    def test_naver_target_regex_after_korean(self):
-        """150,000원 같은 한국어 suffix 뒤에서도 target 추출."""
-        from bot.naver_research_client import _parse_rows
-        html = """<table><tr>
-        <td>삼성전자</td>
-        <td>목표가 분석</td>
-        <td>하나증권</td>
-        <td>26.06.05</td>
-        <td>150,000원</td>
-        <td><img alt="매수" src="/img/buy.gif"></td>
-        </tr></table>"""
-        from datetime import date, timedelta
-        rows = _parse_rows(html, date.today() - timedelta(days=30))
-        assert len(rows) >= 1
-        assert rows[0]["target"] == 150000.0
-        assert rows[0]["rating"] == "매수"
+    def test_naver_detail_regex_extracts_target(self):
+        """Detail page regex extracts 목표가 from <em><strong>."""
+        from bot.naver_research_client import _TARGET_RE
+        html = '목표가 <em class="money"><strong>150,000</strong></em>'
+        m = _TARGET_RE.search(html)
+        assert m and float(m.group(1).replace(",", "")) == 150000.0
 
     def test_hk_pass_to_continue_fix(self):
         """한경 parser 가 date cell 을 target 으로 오파싱하지 않음."""
