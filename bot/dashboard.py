@@ -8232,9 +8232,9 @@ def _render_portfolio_page(model, noah=None) -> str:
     _alloc = model.get("asset_allocation", {})
     cash_in_invest = model.get("cash_in_invest") or 0
     # 옛 모델(재분류 전) 호환: asset_allocation 이 아직 원본이면 렌더 시 재분류
-    if cash_in_invest > 0 and _alloc.get("투자성자산", 0) > eval_sum:
-        _alloc["투자성자산"] = _alloc["투자성자산"] - cash_in_invest
-        _alloc["자유입출금"] = _alloc.get("자유입출금", 0) + cash_in_invest
+    if cash_in_invest > 0 and _alloc.get("투자성 자산", 0) > eval_sum:
+        _alloc["투자성 자산"] = _alloc["투자성 자산"] - cash_in_invest
+        _alloc["자유입출금 자산"] = _alloc.get("자유입출금 자산", 0) + cash_in_invest
     invest_total = eval_sum
     pnl = eval_sum - cost_sum
     pnl_pct = (pnl / cost_sum * 100) if cost_sum else 0.0
@@ -8289,7 +8289,7 @@ def _render_portfolio_page(model, noah=None) -> str:
             col = "var(--pos)" if d >= 0 else "var(--neg)"
             return (f'<span style="color:{col}">{sign}{_pf_won(abs(d))} '
                     f'({sign}{abs(p):.1f}%)</span>')
-        prev_eval = prev.get("주식평가", prev.get("투자성자산"))
+        prev_eval = prev.get("주식평가", prev.get("투자성 자산"))
         delta_html = (
             '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
             'border-top:1px solid var(--border);padding-top:8px">'
