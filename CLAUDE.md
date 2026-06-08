@@ -2379,13 +2379,16 @@ These need new credentials BEFORE work can ship:
   av_sentiment_client.py`. `av_key_ready()` gate.
 
 - **Seibro/KSD 외국인보유 — ⏳ 활용신청 필요** (2026-06-08). 기존
-  `DATA_GO_KR_API_KEY` 공유. **서비스명: '금융위원회_주식분포및사고주권정보'**
-  (data.go.kr publicDataPk=15043364, 조직=금융위원회). ⚠️ '한국예탁결제원'
-  으로 검색하면 안 나옴 — 데이터 제공은 KSD 이지만 data.go.kr 등록은
-  금융위원회 명의. 활용신청: data.go.kr → '금융위원회_주식분포및사고주권정보'
-  검색 → 활용신청(무료, 즉시~2시간 승인). operation `getStockForeignStat`
-  포함. KR 외국인 보유비율 + 한도소진율 (pykrx KRX-login-free fallback).
-  `bot/seibro_client.py`. `seibro_key_ready()` gate.
+  `DATA_GO_KR_API_KEY` 공유. `seibro_client.py` 가 사용하는 서비스 URL 은
+  `https://apis.data.go.kr/1160100/service/GetStocSecuritiesInfoService/
+  getStockForeignStat` 이다. data.go.kr 에서 이 operation 을 포함하는 정확한
+  서비스명이 확인되지 않음 — '금융위원회_주식시세정보' (publicDataPk=15094808,
+  `GetStockSecuritiesInfoService` **'k' 포함**) 의 하위 operation 가능성이
+  있으나 문서상 4개 시세 op 만 기재. 코드의 `GetStoc` (**'k' 미포함**) 는
+  구세대(15043xxx) API 패턴. 사용자가 data.go.kr Swagger UI 에서 '금융위원회_
+  주식시세정보' 의 실제 operation 목록 확인 요망. `seibro_key_ready()` gate.
+  KR 외국인 보유비율 + 한도소진율 (pykrx KRX-login-free fallback).
+  `bot/seibro_client.py`.
 
 - **Phase 4-CN-D validation cycle — ✅ 완료** (2026-05-21). fix#1~#11 (commits 91427a9~925f926), CN/HK + TW/JP/KR 크로스-마켓 검증 완료.
 - **Phase 4-CN (China + HK expansion) — original deferred design,

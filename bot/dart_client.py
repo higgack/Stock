@@ -698,35 +698,70 @@ class DartClient:
         "posesn_stock_qota_rt", "trmend_posesn_stkqy_rate",
         "bsis_posesn_stkqy_rate", "posesn_stkqy_rate", "stock_qota_rt",
     ]
+    _HYSLR_SKIP_KEYS = frozenset({
+        "rcept_no", "corp_cls", "corp_code", "corp_name", "nm",
+        "relate", "rm", "bsns_year", "reprt_code", "stock_knd",
+        "se", "change_on", "change_cause",
+    })
+
+    @staticmethod
+    def _hyslr_extract_int(row: dict, candidates: list) -> int:
+        for key in candidates:
+            v = row.get(key)
+            if v is None:
+                continue
+            vs = str(v).replace(",", "").strip()
+            if not vs or vs == "-":
+                continue
+            try:
+                return int(vs)
+            except ValueError:
+                try:
+                    return int(float(vs))
+                except (ValueError, OverflowError):
+                    continue
+        return 0
+
+    @staticmethod
+    def _hyslr_extract_float(row: dict, candidates: list) -> float:
+        for key in candidates:
+            v = row.get(key)
+            if v is None:
+                continue
+            vs = str(v).replace(",", "").strip()
+            if not vs or vs == "-":
+                continue
+            try:
+                return float(vs)
+            except (ValueError, OverflowError):
+                continue
+        return 0.0
 
     def _parse_hyslr_rows(self, rows: list) -> list[dict]:
         if not rows:
             return []
+        try:
+            log.info("dart: hyslrSttus FULL first row: %s",
+                     json.dumps(rows[0], ensure_ascii=False)[:600])
+        except Exception:
+            pass
+
         first_keys = set(rows[0].keys())
-        shares_key = next((c for c in self._HYSLR_SHARES_CANDIDATES if c in first_keys), None)
-        pct_key = next((c for c in self._HYSLR_PCT_CANDIDATES if c in first_keys), None)
-        if not shares_key or not pct_key:
-            skip = {"rcept_no", "corp_cls", "corp_code", "corp_name", "nm",
-                    "relate", "rm", "bsns_year", "reprt_code", "stock_knd",
-                    "se", "change_on", "change_cause"}
-            for k in first_keys - skip:
-                v = str(rows[0].get(k, "")).replace(",", "").replace("-", "").strip()
-                if not v:
-                    continue
-                if not pct_key and ("rt" in k or "rate" in k):
-                    try:
-                        float(v)
-                        pct_key = k
-                    except ValueError:
-                        pass
-                elif not shares_key and ("co" in k or "qy" in k or "stock" in k):
-                    try:
-                        int(v)
-                        shares_key = k
-                    except ValueError:
-                        pass
-        log.info("dart: hyslrSttus field discovery: shares=%s pct=%s (keys=%s)",
-                 shares_key, pct_key, sorted(first_keys)[:12])
+        extra_shares: list[str] = []
+        extra_pct: list[str] = []
+        for k in sorted(first_keys - self._HYSLR_SKIP_KEYS):
+            if k in self._HYSLR_SHARES_CANDIDATES or k in self._HYSLR_PCT_CANDIDATES:
+                continue
+            kl = k.lower()
+            if any(p in kl for p in ("_rt", "_rate", "qota", "pct")):
+                extra_pct.append(k)
+            elif any(p in kl for p in ("_co", "_qy", "stock", "stkqy", "cnt")):
+                extra_shares.append(k)
+
+        all_shares = list(self._HYSLR_SHARES_CANDIDATES) + extra_shares
+        all_pct = list(self._HYSLR_PCT_CANDIDATES) + extra_pct
+        log.info("dart: hyslrSttus candidates: shares=%s pct=%s",
+                 all_shares[:10], all_pct[:10])
 
         out: list[dict] = []
         for r in rows:
@@ -736,18 +771,8 @@ class DartClient:
                 continue
             rel = (r.get("relate") or r.get("rel_btr_at")
                    or r.get("relt") or r.get("rel_corp_nm") or "").strip()
-            shares_raw = str(r.get(shares_key, "0") if shares_key else "0"
-                             ).replace(",", "").strip()
-            try:
-                shares = int(shares_raw) if shares_raw and shares_raw != "-" else 0
-            except ValueError:
-                shares = 0
-            pct_raw = str(r.get(pct_key, "0") if pct_key else "0"
-                          ).replace(",", "").strip()
-            try:
-                pct = float(pct_raw) if pct_raw and pct_raw != "-" else 0.0
-            except ValueError:
-                pct = 0.0
+            shares = self._hyslr_extract_int(r, all_shares)
+            pct = self._hyslr_extract_float(r, all_pct)
             note = (r.get("rm") or r.get("bsn_sumry") or "").strip()
             out.append({
                 "name": nm,
@@ -766,7 +791,7 @@ class DartClient:
         corp_code = self.stock_code_to_corp_code(stock_code)
         if not corp_code:
             return []
-        ck = f"majsh2_{corp_code}"
+        ck = f"majsh3_{corp_code}"
         cached = self._disk_get(ck)
         if cached is not None:
             return cached
