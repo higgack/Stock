@@ -159,7 +159,8 @@ class Condition:
         return False
 
     def display(self) -> str:
-        return f"{self.metric.name}{self.operator}{self.value:g}{self.metric.unit}"
+        op = self.operator.replace("<", "&lt;").replace(">", "&gt;")
+        return f"{self.metric.name}{op}{self.value:g}{self.metric.unit}"
 
 
 _COND_RE = re.compile(
