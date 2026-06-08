@@ -73,10 +73,20 @@ _BROKER_RE = re.compile(
     r"증권|투자|자산운용|금융투자|리서치|캐피탈|Securities|Investment", re.I)
 
 _NID_RE = re.compile(r'company_read\.naver\?nid=(\d+)')
+# Detail page regex — allow arbitrary HTML tags between label and value
+# (Naver uses <th>목표가</th><td><em>... table structure)
 _TARGET_RE = re.compile(
-    r'목표가\s*<em[^>]*>\s*<strong[^>]*>([\d,]+)</strong>', re.I)
+    r'목표가(?:<[^>]*>|\s)*<em[^>]*>\s*<strong[^>]*>([\d,]+)</strong>', re.I)
 _RATING_DETAIL_RE = re.compile(
-    r'투자의견\s*<em[^>]*>([^<]+)</em>', re.I)
+    r'투자의견(?:<[^>]*>|\s)*<em[^>]*>([^<]+)</em>', re.I)
+# Class-based fallback — match <em class="money"> / <em class="coment">
+# independently (no label prefix required)
+_TARGET_CLASS_RE = re.compile(
+    r'<em[^>]*class=["\'][^"\']*\bmoney\b[^"\']*["\'][^>]*>\s*'
+    r'<strong[^>]*>([\d,]+)</strong>', re.I)
+_RATING_CLASS_RE = re.compile(
+    r'<em[^>]*class=["\'][^"\']*\bcoment\b[^"\']*["\'][^>]*>'
+    r'([^<]+)</em>', re.I)
 
 
 def _normalize_code(ticker: str) -> Optional[str]:
@@ -199,23 +209,29 @@ def _fetch_report_detail(nid: str) -> tuple[Optional[float], str]:
         return None, ""
 
     target: Optional[float] = None
-    m = _TARGET_RE.search(html)
-    if m:
-        try:
-            target = float(m.group(1).replace(",", ""))
-        except ValueError:
-            pass
+    for pat in (_TARGET_RE, _TARGET_CLASS_RE):
+        m = pat.search(html)
+        if m:
+            try:
+                target = float(m.group(1).replace(",", ""))
+            except ValueError:
+                pass
+            if target:
+                break
 
     rating = ""
-    m = _RATING_DETAIL_RE.search(html)
-    if m:
-        raw = m.group(1).strip()
-        for kw in _RATING_KEYWORDS:
-            if kw.lower() == raw.lower():
-                rating = kw
+    for pat in (_RATING_DETAIL_RE, _RATING_CLASS_RE):
+        m = pat.search(html)
+        if m:
+            raw = m.group(1).strip()
+            for kw in _RATING_KEYWORDS:
+                if kw.lower() == raw.lower():
+                    rating = kw
+                    break
+            if not rating:
+                rating = raw
+            if rating:
                 break
-        if not rating:
-            rating = raw
 
     return target, rating
 
@@ -234,7 +250,7 @@ def fetch_research(ticker: str, days_back: int = 90) -> Optional[dict]:
     if not code:
         return None
 
-    cache_key = f"naver_research_{code}_{date.today().isoformat()}.json"
+    cache_key = f"naver_research_v2_{code}_{date.today().isoformat()}.json"
     cache_file = _CACHE_DIR / cache_key
     if cache_file.exists():
         try:
