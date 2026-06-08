@@ -3705,12 +3705,13 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
             fmt[k] = f"{float(v):.2f}{suf}"
     dy = vals.get("dividendYield")
     if isinstance(dy, (int, float)):
-        fmt["dividendYield"] = f"{dy * 100:.2f}%"
+        dy_pct = dy * 100 if dy < 1.0 else dy
+        fmt["dividendYield"] = f"{dy_pct:.2f}%"
     for k in ("trailingEps", "forwardEps", "bookValue",
               "fiftyDayAverage", "twoHundredDayAverage"):
         v = vals.get(k)
         if isinstance(v, (int, float)):
-            fmt[k] = f"{float(v):.2f}"
+            fmt[k] = f"{float(v):,.2f}"
 
     pos: dict = {}
     w52h = vals.get("fiftyTwoWeekHigh")
@@ -4042,7 +4043,7 @@ def _render_stock_info_html(rec: dict) -> str:
         if val is None:
             return f'<tr><td>{esc(label)}</td><td class="num"{qattr}>—</td></tr>\n'
         if isinstance(val, float):
-            return f'<tr><td>{esc(label)}</td><td class="num"{qattr}>{val:.2f}{suffix}</td></tr>\n'
+            return f'<tr><td>{esc(label)}</td><td class="num"{qattr}>{val:,.2f}{suffix}</td></tr>\n'
         return f'<tr><td>{esc(label)}</td><td class="num"{qattr}>{val}{suffix}</td></tr>\n'
 
     # 52-week position bar
@@ -4073,7 +4074,12 @@ def _render_stock_info_html(rec: dict) -> str:
     val_multiples += _val_row("PBR (주가순자산)", si.get("priceToBook"), "x", "priceToBook")
     val_multiples += _val_row("PSR (주가매출)", si.get("priceToSalesTrailing12Months"), "x", "priceToSalesTrailing12Months")
     val_multiples += _val_row("EV/EBITDA", si.get("enterpriseToEbitda"), "x", "enterpriseToEbitda")
-    val_multiples += _val_row("배당수익률", round(si.get("dividendYield", 0) * 100, 2) if si.get("dividendYield") else None, "%", "dividendYield")
+    _dy_raw = si.get("dividendYield")
+    if _dy_raw:
+        _dy_pct = _dy_raw * 100 if _dy_raw < 1.0 else _dy_raw
+        val_multiples += _val_row("배당수익률", round(_dy_pct, 2), "%", "dividendYield")
+    else:
+        val_multiples += _val_row("배당수익률", None, "%", "dividendYield")
     val_multiples += _val_row("베타", si.get("beta"), "", "beta")
 
     val_per_share = ""
@@ -4882,7 +4888,7 @@ def _render_stock_info_html(rec: dict) -> str:
                 v = pc.get(k)
                 return f"{v:.1f}" if v else "—"
             dy = pc.get("dividendYield")
-            dy_str = f"{dy*100:.1f}%" if dy else "—"
+            dy_str = f"{(dy * 100 if dy < 1.0 else dy):.1f}%" if dy else "—"
             pc_rows += f'<tr{style}><td>{name}</td><td>{ptk}</td><td class="num">{mc_str}</td>'
             pc_rows += f'<td class="num">{_pv("trailingPE")}</td><td class="num">{_pv("forwardPE")}</td>'
             pc_rows += f'<td class="num">{_pv("priceToBook")}</td><td class="num">{_pv("priceToSalesTrailing12Months")}</td>'
