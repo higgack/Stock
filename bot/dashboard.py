@@ -4536,6 +4536,42 @@ def _render_stock_info_html(rec: dict) -> str:
         except Exception as exc:
             log.warning("detail: DART major shareholders %s: %s", ticker, exc)
 
+    # ── P6b KR: DART 계열회사(타법인 출자) 현황 (주주탭 하단) ──────
+    kr_affiliates_invest_html = ""
+    if is_kr:
+        try:
+            from bot.dart_client import get_dart
+            dart2 = get_dart()
+            if dart2:
+                stock_code2 = ticker.split(".")[0]
+                investments = dart2.get_affiliate_investments(stock_code2)
+                if investments:
+                    ai_rows = ""
+                    for inv in investments[:30]:
+                        ai_nm = esc(inv.get("name", ""))
+                        ai_purp = esc(inv.get("purpose", ""))
+                        ai_pct = inv.get("pct", 0.0)
+                        ai_bv = inv.get("book_value", 0)
+                        ai_pct_str = f"{ai_pct:.2f}%" if ai_pct else "—"
+                        if ai_bv and ai_bv > 0:
+                            if ai_bv >= 1_0000_0000:
+                                ai_bv_str = f"{ai_bv / 1_0000_0000:,.0f}억"
+                            elif ai_bv >= 1_0000:
+                                ai_bv_str = f"{ai_bv / 1_0000:,.0f}만"
+                            else:
+                                ai_bv_str = f"{ai_bv:,}"
+                        else:
+                            ai_bv_str = "—"
+                        ai_rows += f"<tr><td>{ai_nm}</td><td>{ai_purp}</td><td class='num'>{ai_pct_str}</td><td class='num'>{ai_bv_str}</td></tr>\n"
+                    kr_affiliates_invest_html = f"""<div class="si-section">
+    <div class="si-section-title">계열회사(타법인 출자) 현황 (DART 사업보고서 · {len(investments)}사)</div>
+    <table class="si-table"><thead><tr><th>법인명</th><th>투자목적</th><th>지분율</th><th>장부가액</th></tr></thead>
+    <tbody>{ai_rows}</tbody></table></div>"""
+                else:
+                    log.info("dart: get_affiliate_investments(%s) returned empty", stock_code2)
+        except Exception as exc:
+            log.warning("detail: DART affiliate investments %s: %s", ticker, exc)
+
     # holders_pane assembled later (after us_insider_html defined)
 
     # ── 뉴스 pane ───────────────────────────────────────────────
@@ -5311,6 +5347,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {kr_insider_html}
   {kr_minority_html}
   {kr_affiliates_html}
+  {kr_affiliates_invest_html}
   {us_insider_html}
   {jp_holders_html}
   {tw_insiders_html}
