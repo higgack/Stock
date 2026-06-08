@@ -797,3 +797,99 @@ def format_trend_for_prompt(foreign: Optional[dict], short: Optional[dict]) -> s
             f"- 공매도 잔고 {days}거래일 추이: {cur:.2f}% (시작 {short.get('start_pct', 0):.2f}% → 변동 {chg:+.2f}pp, {magnitude} {direction}){squeeze_note}"
         )
     return "\n".join(lines)
+
+
+def get_kr_multi_period_trends(ticker: str) -> Optional[dict]:
+    """Multi-period foreign ownership + short balance trends.
+
+    Single fetch per series (90 calendar days) → compute changes at
+    5/10/20/30/60 trading-day lookback points.
+
+    Returns:
+        {
+            "foreign": {"current_pct": float, "periods": {5: pp, 10: pp, ...}},
+            "short":   {"current_pct": float, "periods": {5: pp, 10: pp, ...}},
+        }
+        or None on total failure.
+    """
+    code = _normalize_code(ticker)
+    if not code:
+        return None
+    if not krx_login_ready():
+        return None
+
+    today_str = date.today().isoformat()
+    cache_file = _CACHE_DIR / f"multi_trend_{code}_{today_str}.json"
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < _CACHE_TTL_HOURS:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    try:
+        from pykrx import stock
+    except ImportError:
+        return None
+
+    end = date.today()
+    start = end - timedelta(days=90)
+    start_str = start.strftime("%Y%m%d")
+    end_str = end.strftime("%Y%m%d")
+
+    periods = [5, 10, 20, 30, 60]
+    result: dict = {}
+
+    try:
+        df_f = stock.get_exhaustion_rates_of_foreign_investment(start_str, end_str, code)
+        if df_f is not None and not df_f.empty and len(df_f) >= 2:
+            pct_col = None
+            for c in ("지분율", "보유비중", "한도소진률", "한도소진율"):
+                if c in df_f.columns:
+                    pct_col = c
+                    break
+            if pct_col:
+                series = df_f[pct_col].dropna()
+                if len(series) >= 2:
+                    current = float(series.iloc[-1])
+                    pds: dict[int, float] = {}
+                    for p in periods:
+                        idx = max(0, len(series) - 1 - p)
+                        past_val = float(series.iloc[idx])
+                        pds[p] = round(current - past_val, 3)
+                    result["foreign"] = {"current_pct": round(current, 2), "periods": pds}
+    except Exception as exc:
+        log.info("pykrx: multi-period foreign failed for %s: %s", code, exc)
+
+    try:
+        df_s = stock.get_shorting_balance_by_date(start_str, end_str, code)
+        if df_s is not None and not df_s.empty and len(df_s) >= 2:
+            spct_col = None
+            for c in ("비중", "공매도비중", "잔고비중"):
+                if c in df_s.columns:
+                    spct_col = c
+                    break
+            if spct_col:
+                series_s = df_s[spct_col].dropna()
+                if len(series_s) >= 2:
+                    current_s = float(series_s.iloc[-1])
+                    pds_s: dict[int, float] = {}
+                    for p in periods:
+                        idx = max(0, len(series_s) - 1 - p)
+                        past_val = float(series_s.iloc[idx])
+                        pds_s[p] = round(current_s - past_val, 3)
+                    result["short"] = {"current_pct": round(current_s, 2), "periods": pds_s}
+    except Exception as exc:
+        log.info("pykrx: multi-period short failed for %s: %s", code, exc)
+
+    if not result:
+        return None
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(result))
+    except Exception:
+        pass
+
+    return result
