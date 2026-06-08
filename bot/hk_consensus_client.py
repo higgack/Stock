@@ -123,6 +123,7 @@ def _cell_texts(row_html: str) -> list[str]:
     cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL | re.I)
     out = []
     for c in cells:
+        c = re.sub(r'<img\s[^>]*?\balt=["\']([^"\']*)["\'][^>]*/?>', r' \1 ', c, flags=re.I)
         txt = re.sub(r"<[^>]+>", " ", c)
         txt = txt.replace("&nbsp;", " ").replace("&amp;", "&")
         out.append(" ".join(txt.split()).strip())
@@ -159,8 +160,8 @@ def _parse_report_rows(html: str, cutoff) -> list[dict]:
         target_val = None
         for c in cells:
             if date_str.replace("-", "") in c.replace(",", "").replace(".", ""):
-                pass  # don't mine the date cell for a number
-            m = re.search(r"\b([0-9]{1,3}(?:,[0-9]{3})+)\b", c)
+                continue
+            m = re.search(r"(?<![0-9])([0-9]{1,3}(?:,[0-9]{3})+)(?![0-9])", c)
             if m:
                 target_val = float(m.group(1).replace(",", ""))
                 break

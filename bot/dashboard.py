@@ -4219,12 +4219,15 @@ def _render_stock_info_html(rec: dict) -> str:
             parts.append(f"내부자 보유: {ins_pct * 100:.1f}%")
         holder_summary = f'<div style="margin-bottom:10px;font-size:13px;color:var(--fg-soft)">{" · ".join(parts)}</div>'
 
+    shares_out = si.get("shares_outstanding")
     if holders:
         h_rows = ""
         for h in holders:
             name = esc(str(h.get("Holder", "—")))
             shares = h.get("Shares")
             pct = h.get("% Out")
+            if not pct and shares and shares_out and shares_out > 0:
+                pct = shares / shares_out
             val = h.get("Value")
             shares_str = f"{int(shares):,}" if shares else "—"
             pct_str = f"{pct * 100:.2f}%" if pct else "—"
