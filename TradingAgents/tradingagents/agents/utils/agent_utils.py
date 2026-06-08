@@ -1666,6 +1666,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
         "edgar_form4", "edgar_xbrl",
         "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
         "finnhub_earnings", "finnhub_rec", "us_13f_holders",
+        "av_sentiment",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
@@ -1694,6 +1695,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     "fundamentals": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
         "krx_flow", "hsgt_flow", "kis_supply", "twse_flow", "jpx_weekly_flow",
+        "av_sentiment",
     },
 }
 
@@ -1722,6 +1724,14 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     tasks: dict[str, callable] = {}
+
+    # Universal: Alpha Vantage news sentiment (all markets)
+    try:
+        from bot.av_sentiment_client import av_key_ready, fetch_news_sentiment as _av_sent
+        if av_key_ready():
+            tasks["av_sentiment"] = lambda: _av_sent(ticker)
+    except Exception:
+        pass
 
     if market == "KR":
         try:
@@ -6369,6 +6379,25 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 _analyst_log.warning(
                     "%s injection failed for %s: %s", _key, ticker, exc,
                 )
+
+    # Universal: Alpha Vantage news sentiment (all markets)
+    try:
+        if _section_allowed(analyst_id, "av_sentiment"):
+            from bot.av_sentiment_client import format_sentiment_block
+            av_data = prefetched.get("av_sentiment")
+            av_block = format_sentiment_block(av_data)
+            if av_block:
+                base += (
+                    "\n\n=== News Sentiment (Alpha Vantage, verbatim) ===\n"
+                    + av_block
+                    + "\n\n정량 sentiment score 기반. Bullish/Bearish/Neutral"
+                    " 분포 + avg score 로 시장 톤 판단. 제목만 보고 톤을"
+                    " 추론하지 말고 위 수치를 인용. 날조 금지."
+                )
+    except Exception as exc:
+        _analyst_log.warning(
+            "av sentiment injection failed for %s: %s", ticker, exc,
+        )
 
     return base
 
