@@ -1831,6 +1831,11 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
         except Exception:
             pass
         try:
+            from bot.pykrx_client import get_kr_foreign_holding
+            tasks["pykrx_foreign_holding"] = lambda: get_kr_foreign_holding(ticker)
+        except Exception:
+            pass
+        try:
             from bot.seibro_client import fetch_foreign_holding, fetch_foreign_trend
             tasks["seibro_foreign"] = lambda: fetch_foreign_holding(ticker)
             tasks["seibro_foreign_trend"] = lambda: fetch_foreign_trend(ticker, days=30)
@@ -5410,26 +5415,27 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 "pykrx flow / trend injection failed for %s: %s", ticker, exc,
             )
 
-        # Seibro/KSD 외국인 보유현황 (data.go.kr, KRX-login-free).
-        # pykrx trend 와 별개로 보유비율 + 한도소진율 상세 제공.
-        # Naver Finance fallback when Seibro returns None.
+        # KR 외국인 보유현황: pykrx(KRX 공식) → Seibro(data.go.kr) → Naver
         try:
             if _section_allowed(analyst_id, "seibro_foreign"):
                 from bot.seibro_client import format_foreign_holding_block
-                seibro_data = prefetched.get("seibro_foreign")
-                if seibro_data is None:
+                fh_data = prefetched.get("pykrx_foreign_holding")
+                if fh_data is None:
+                    fh_data = prefetched.get("seibro_foreign")
+                if fh_data is None:
                     try:
                         from bot.naver_finance_client import get_naver_foreign_holding
-                        seibro_data = get_naver_foreign_holding(ticker)
+                        fh_data = get_naver_foreign_holding(ticker)
                     except Exception:
                         pass
-                seibro_block = format_foreign_holding_block(seibro_data)
-                if seibro_block:
-                    src = "네이버" if (seibro_data or {}).get("source") == "naver" else "세이브로/KSD"
+                fh_block = format_foreign_holding_block(fh_data)
+                if fh_block:
+                    _src_map = {"krx": "KRX", "naver": "네이버"}
+                    src = _src_map.get((fh_data or {}).get("source", ""), "세이브로/KSD")
                     base += (
                         f"\n\n=== Pre-fetched KR 외국인 보유현황"
                         f" ({src}) ===\n"
-                        + seibro_block
+                        + fh_block
                     )
         except Exception as exc:
             _analyst_log.warning(
