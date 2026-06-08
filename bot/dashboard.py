@@ -3425,6 +3425,131 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
             except Exception as exc:
                 log.debug("_ensure_detail_enrichment: JP consensus %s: %s", ticker, exc)
 
+    # ⑤ Financial statements (재무제표 tab — yfinance)
+    if not si.get("financials"):
+        try:
+            import yfinance as yf
+            from bot.stock_snapshot import _collect_financials
+            _collect_financials(yf.Ticker(ticker), si)
+        except Exception as exc:
+            log.debug("_ensure_detail_enrichment: financials %s: %s", ticker, exc)
+
+    # ⑥ Peer comparables (동종비교 tab — yfinance)
+    if not si.get("peer_comps"):
+        try:
+            import yfinance as yf
+            from bot.stock_snapshot import _collect_peer_multiples
+            t = yf.Ticker(ticker)
+            info = t.info or {}
+            if info.get("industry"):
+                _collect_peer_multiples(ticker, info, si)
+        except Exception as exc:
+            log.debug("_ensure_detail_enrichment: peer_comps %s: %s", ticker, exc)
+
+    # ⑦ KR flow data (수급 tab — KIS + pykrx)
+    if tkr.endswith((".KS", ".KQ")):
+        kr = si.setdefault("kr", {})
+        if not kr.get("flow"):
+            try:
+                from bot.kis_client import KisClient
+                kis = KisClient()
+                if kis._ready():
+                    flow_data: dict = {}
+                    inv = kis.get_investor_flow(ticker)
+                    if inv:
+                        flow_data["investor_flow"] = inv
+                    credit = kis.get_credit_short_balance(ticker)
+                    if credit:
+                        flow_data["credit"] = credit
+                    short = kis.get_short_sale(ticker)
+                    if short:
+                        flow_data["short_sale"] = short
+                    program = kis.get_program_trade(ticker)
+                    if program:
+                        flow_data["program"] = program
+                    if flow_data:
+                        kr["flow"] = flow_data
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: KR flow %s: %s", ticker, exc)
+            try:
+                from bot.pykrx_client import (
+                    get_kr_foreign_ownership_trend,
+                    get_kr_short_balance_trend,
+                )
+                fo = get_kr_foreign_ownership_trend(ticker, days_back=30)
+                if fo:
+                    kr.setdefault("flow", {})["foreign_ownership"] = fo
+                sb = get_kr_short_balance_trend(ticker, days_back=30)
+                if sb:
+                    kr.setdefault("flow", {})["short_trend"] = sb
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: pykrx trends %s: %s", ticker, exc)
+
+    # ⑧ Disclosures (공시 tab — market-specific)
+    if tkr.endswith((".KS", ".KQ")):
+        kr = si.setdefault("kr", {})
+        if not kr.get("disclosures"):
+            try:
+                from bot.dart_client import get_dart
+                dart = get_dart()
+                if dart:
+                    stock_code = ticker.split(".")[0]
+                    disclosures = dart.get_recent_disclosures(stock_code, days_back=60, limit=30)
+                    if disclosures:
+                        kr["disclosures"] = disclosures
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: DART disclosures %s: %s", ticker, exc)
+    elif tkr.endswith(".T"):
+        jp = si.setdefault("jp", {})
+        if not jp.get("disclosures"):
+            try:
+                from bot.edinet_client import get_recent_disclosures as edinet_disc
+                disc = edinet_disc(ticker, days_back=60)
+                if disc:
+                    jp["disclosures"] = disc
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: EDINET disclosures %s: %s", ticker, exc)
+    elif tkr.endswith(".TW"):
+        tw = si.setdefault("tw", {})
+        if not tw.get("disclosures"):
+            try:
+                from bot.mops_client import get_recent_disclosures as mops_disc
+                disc = mops_disc(ticker)
+                if disc:
+                    tw["disclosures"] = disc
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: MOPS disclosures %s: %s", ticker, exc)
+    elif tkr.endswith((".SS", ".SZ", ".BJ", ".HK")):
+        cn = si.setdefault("cn", {})
+        if not cn.get("disclosures"):
+            try:
+                from bot.akshare_client import get_recent_disclosures as ak_disc
+                disc = ak_disc(ticker, days_back=60)
+                if disc:
+                    cn["disclosures"] = disc
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: AKShare disclosures %s: %s", ticker, exc)
+    else:
+        us = si.setdefault("us", {})
+        if not us.get("disclosures"):
+            try:
+                from bot.edgar_client import get_recent_8k
+                filings = get_recent_8k(ticker, days=60, top_n=20)
+                if filings:
+                    disc_rows = []
+                    for f in filings:
+                        labels = f.get("items_labels", [])
+                        title = " / ".join(labels) if labels else f.get("items_raw", "8-K")
+                        disc_rows.append({
+                            "date": f.get("date", ""),
+                            "title": title,
+                            "url": f.get("url", ""),
+                            "reporter": "SEC 8-K",
+                        })
+                    us["disclosures"] = disc_rows
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: EDGAR disclosures %s: %s", ticker, exc)
+
 
 def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     """Fresh live-quote payload for the detail-page overlay (numbers only).
@@ -5034,15 +5159,34 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
         if chart_html else ""
     )
 
-    # Enrich the stock_info with news/research if the stored snapshot
+    # Enrich the stock_info with missing tabs if the stored snapshot
     # predates the enrichment code. In-memory only — never writes back
-    # to the JSON file. ₩0 (Google News RSS + 한경 scrape, no LLM).
+    # to the JSON file.
     si = rec.get("stock_info")
-    if si and not si.get("news"):
-        try:
-            _ensure_detail_enrichment(ticker, si)
-        except Exception:
-            pass
+    if si:
+        _needs = (
+            not si.get("news")
+            or not si.get("financials")
+            or not si.get("peer_comps")
+        )
+        if not _needs:
+            tkr_u = (ticker or "").upper()
+            if tkr_u.endswith((".KS", ".KQ")):
+                _kr = si.get("kr", {})
+                _needs = not _kr.get("flow") or not _kr.get("disclosures")
+            else:
+                _mkt_key = (
+                    "jp" if tkr_u.endswith(".T") else
+                    "tw" if tkr_u.endswith(".TW") else
+                    "cn" if tkr_u.endswith((".SS", ".SZ", ".BJ", ".HK")) else
+                    "us"
+                )
+                _needs = not si.get(_mkt_key, {}).get("disclosures")
+        if _needs:
+            try:
+                _ensure_detail_enrichment(ticker, si)
+            except Exception:
+                pass
 
     # Stock info (v3+): header cards, tab navigation, company/consensus/
     # earnings/research/holders/news panes. Graceful: older records just
