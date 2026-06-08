@@ -114,6 +114,37 @@ _reg("div_yield_yf", "배당수익률(YF)",
      ("배당수익률yf",), "yfinance",
      "dividendYield", "%", 100.0, "yfinance 배당수익률 (pykrx 와 다를 수 있음)")
 
+# QoQ metrics (computed from yfinance quarterly statements)
+_reg("rev_qoq", "매출QoQ", ("매출QoQ", "매출qoq", "revqoq", "revenue_qoq",
+                            "매출전분기"), "qoq",
+     "_qoq_revenue", "%", 1.0, "매출 QoQ 성장률 (전분기 대비)")
+_reg("gp_qoq", "매출총이익QoQ", ("매출총이익QoQ", "매출총이익qoq", "gpqoq",
+                               "grossprofit_qoq"), "qoq",
+     "_qoq_gross_profit", "%", 1.0, "매출총이익 QoQ 성장률")
+_reg("op_qoq", "영업이익QoQ", ("영업이익QoQ", "영업이익qoq", "opqoq",
+                              "opincome_qoq"), "qoq",
+     "_qoq_op_income", "%", 1.0, "영업이익 QoQ 성장률")
+_reg("ebitda_qoq", "EBITDAQoQ", ("EBITDAQoQ", "ebitdaqoq", "ebitda_qoq"),
+     "qoq", "_qoq_ebitda", "%", 1.0, "EBITDA QoQ 성장률")
+_reg("ni_qoq", "순이익QoQ", ("순이익QoQ", "순이익qoq", "niqoq",
+                            "netincome_qoq"), "qoq",
+     "_qoq_net_income", "%", 1.0, "순이익 QoQ 성장률")
+_reg("eps_qoq", "EPSQoQ", ("EPSQoQ", "epsqoq", "eps_qoq"), "qoq",
+     "_qoq_eps", "%", 1.0, "주당순이익 QoQ 성장률 (희석)")
+_reg("ocf_qoq", "영업현금흐름QoQ", ("영업현금흐름QoQ", "영업현금흐름qoq",
+                                  "ocfqoq", "ocf_qoq"), "qoq",
+     "_qoq_ocf", "%", 1.0, "영업현금흐름 QoQ 성장률")
+
+_QOQ_STMT_MAP: dict[str, tuple[str, str]] = {
+    "_qoq_revenue": ("income_stmt", "Total Revenue"),
+    "_qoq_gross_profit": ("income_stmt", "Gross Profit"),
+    "_qoq_op_income": ("income_stmt", "Operating Income"),
+    "_qoq_ebitda": ("income_stmt", "EBITDA"),
+    "_qoq_net_income": ("income_stmt", "Net Income"),
+    "_qoq_eps": ("income_stmt", "Diluted EPS"),
+    "_qoq_ocf": ("cashflow", "Operating Cash Flow"),
+}
+
 # Alias lookup table
 _ALIAS_MAP: dict[str, str] = {}
 for _k, _m in METRICS.items():
@@ -323,16 +354,58 @@ def _safe_float(v) -> Optional[float]:
         return None
 
 
+def _compute_qoq_values(ticker_obj, qoq_map: dict, result: dict):
+    """Compute QoQ growth rates from quarterly statements, store in result."""
+    need_income = any(s == "income_stmt" for s, _ in qoq_map.values())
+    need_cf = any(s == "cashflow" for s, _ in qoq_map.values())
+    stmts: dict = {}
+    try:
+        if need_income:
+            qs = ticker_obj.quarterly_income_stmt
+            if qs is not None and not qs.empty:
+                stmts["income_stmt"] = qs
+        if need_cf:
+            qc = ticker_obj.quarterly_cashflow
+            if qc is not None and not qc.empty:
+                stmts["cashflow"] = qc
+    except Exception:
+        return
+    for key, (stmt_type, row_name) in qoq_map.items():
+        df = stmts.get(stmt_type)
+        if df is None or len(df.columns) < 2:
+            continue
+        if row_name not in df.index:
+            continue
+        try:
+            curr = float(df.loc[row_name].iloc[0])
+            prev = float(df.loc[row_name].iloc[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if math.isnan(curr) or math.isnan(prev) or prev == 0:
+            continue
+        result[key] = round((curr - prev) / abs(prev) * 100, 2)
+
+
 def _fetch_yfinance_batch(tickers: list[str], fields: list[str],
-                          max_workers: int = 8) -> dict[str, dict]:
-    """Fetch yfinance .info for a batch of tickers. Returns {ticker: {field: value}}."""
+                          max_workers: int = 8,
+                          qoq_fields: Optional[dict] = None) -> dict[str, dict]:
+    """Fetch yfinance .info for a batch of tickers. Returns {ticker: {field: value}}.
+
+    If qoq_fields is provided ({computed_key: (stmt_type, row_name)}),
+    also fetch quarterly statements and compute QoQ growth rates.
+    """
     results = {}
+    _qoq = qoq_fields or {}
 
     def _fetch_one(tk: str) -> tuple[str, dict]:
         try:
             import yfinance as yf
-            info = yf.Ticker(tk).info or {}
-            return tk, {f: _safe_float(info.get(f)) for f in fields}
+            t = yf.Ticker(tk)
+            info = t.info or {}
+            data = {f: _safe_float(info.get(f)) for f in fields}
+            if _qoq:
+                _compute_qoq_values(t, _qoq, data)
+            return tk, data
         except Exception as exc:
             log.debug("yfinance fetch %s failed: %s", tk, exc)
             return tk, {}
@@ -460,6 +533,7 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
 
     pykrx_conds = [c for c in conditions if c.metric.source == "pykrx"]
     yf_conds = [c for c in conditions if c.metric.source == "yfinance"]
+    qoq_conds = [c for c in conditions if c.metric.source == "qoq"]
 
     survivors = {}
     for code, data in bulk.items():
@@ -477,8 +551,10 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
     log.info("stock_screener: Phase 1 pykrx bulk — %d/%d survive (%d conditions)",
              len(survivors), total, len(pykrx_conds))
 
-    if yf_conds and survivors:
+    if (yf_conds or qoq_conds) and survivors:
         needed_fields = list({c.metric.yf_field for c in yf_conds})
+        qoq_map = {c.metric.yf_field: _QOQ_STMT_MAP[c.metric.yf_field]
+                    for c in qoq_conds if c.metric.yf_field in _QOQ_STMT_MAP}
         tickers_to_fetch = [f"{code}.KS" for code in survivors]
         kosdaq_codes = _get_kosdaq_codes()
         ticker_map = {}
@@ -490,10 +566,12 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
         batch_size = min(len(ticker_map), 200)
         all_tickers = list(ticker_map.values())[:batch_size]
 
-        log.info("stock_screener: Phase 2 — fetching yfinance for %d tickers (%s)",
-                 len(all_tickers), ", ".join(needed_fields))
+        log.info("stock_screener: Phase 2 — fetching yfinance for %d tickers (%s%s)",
+                 len(all_tickers), ", ".join(needed_fields),
+                 f" + QoQ {len(qoq_map)}" if qoq_map else "")
 
-        yf_data = _fetch_yfinance_batch(all_tickers, needed_fields)
+        yf_data = _fetch_yfinance_batch(all_tickers, needed_fields,
+                                         qoq_fields=qoq_map or None)
 
         reverse_map = {v: k for k, v in ticker_map.items()}
         final = {}
@@ -502,7 +580,7 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
             if not code or code not in survivors:
                 continue
             passed = True
-            for c in yf_conds:
+            for c in yf_conds + qoq_conds:
                 raw = yfd.get(c.metric.yf_field)
                 if not c.test(raw):
                     passed = False
@@ -512,9 +590,9 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
                 final[code] = merged
 
         log.info("stock_screener: Phase 2 yfinance — %d/%d survive (%d conditions)",
-                 len(final), len(survivors), len(yf_conds))
+                 len(final), len(survivors), len(yf_conds) + len(qoq_conds))
         survivors = final
-    elif yf_conds and not survivors:
+    elif (yf_conds or qoq_conds) and not survivors:
         pass
 
     name_map = _resolve_kr_names(list(survivors.keys()))
@@ -636,23 +714,32 @@ def _screen_us(conditions: list[Condition]) -> ScreenResult:
     total = len(universe)
 
     yf_fields: set[str] = set()
+    qoq_map: dict[str, tuple[str, str]] = {}
     cond_info: list[tuple[Condition, str, float]] = []
     for c in conditions:
-        if c.metric.source == "pykrx":
+        if c.metric.source == "qoq":
+            yf_field = c.metric.yf_field
+            prescale = 1.0
+            if yf_field in _QOQ_STMT_MAP:
+                qoq_map[yf_field] = _QOQ_STMT_MAP[yf_field]
+        elif c.metric.source == "pykrx":
             mapping = _PYKRX_TO_YF_INFO.get(c.metric.yf_field)
             if not mapping:
                 continue
             yf_field, prescale = mapping
+            yf_fields.add(yf_field)
         else:
             yf_field = c.metric.yf_field
             prescale = 1.0
-        yf_fields.add(yf_field)
+            yf_fields.add(yf_field)
         cond_info.append((c, yf_field, prescale))
 
     yf_fields.update(["marketCap", "shortName", "regularMarketPrice"])
 
-    log.info("stock_screener: US — fetching yfinance for %d tickers", total)
-    yf_data = _fetch_yfinance_batch(universe, list(yf_fields), max_workers=20)
+    log.info("stock_screener: US — fetching yfinance for %d tickers%s",
+             total, f" (+ QoQ {len(qoq_map)})" if qoq_map else "")
+    yf_data = _fetch_yfinance_batch(universe, list(yf_fields), max_workers=20,
+                                     qoq_fields=qoq_map or None)
 
     hits = []
     for ticker, data in yf_data.items():
@@ -699,6 +786,7 @@ def format_list_message() -> str:
     lines.append("<b>사용법:</b>")
     lines.append("  <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — KR")
     lines.append("  <code>/screen us PER&lt;15 DIV&gt;2</code> — US S&amp;P 500")
+    lines.append("  <code>/screen 매출QoQ&gt;10 영업이익QoQ&gt;5</code> — QoQ 성장")
     lines.append("  <code>/screen valueup</code> (프리셋)")
     lines.append("  <code>/screen list</code> (이 목록)\n")
 
@@ -715,6 +803,12 @@ def format_list_message() -> str:
             aliases = "/".join(m.aliases[:2])
             lines.append(f"  <code>{m.name}</code> ({aliases}) — {m.desc}")
 
+    lines.append("\n<b>QoQ (전분기 대비 성장률, yfinance 분기 재무제표):</b>")
+    for k, m in METRICS.items():
+        if m.source == "qoq":
+            aliases = "/".join(m.aliases[:2])
+            lines.append(f"  <code>{m.name}</code> ({aliases}) — {m.desc}")
+
     lines.append("\n<b>🎯 프리셋:</b>")
     for slug, p in PRESETS.items():
         _d = p['desc'].replace("<", "&lt;").replace(">", "&gt;")
@@ -725,6 +819,7 @@ def format_list_message() -> str:
         "\n<b>시장:</b> KR (KOSPI+KOSDAQ) 기본, <code>us</code> 붙이면 US S&amp;P 500."
         "\n  KR: Phase 1 pykrx 전 종목 → Phase 2 yfinance 생존만"
         "\n  US: yfinance 개별 조회 (~1-2분, Phase 1 지표도 yfinance)"
+        "\n  QoQ: 전분기 대비 성장률 (yfinance 분기 재무제표 기반)"
         "\n비용 ₩0. 24h 캐시."
     )
     return "\n".join(lines)
