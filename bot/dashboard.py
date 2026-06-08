@@ -4655,6 +4655,34 @@ def _render_stock_info_html(rec: dict) -> str:
       <table class="si-table"><thead><tr><th>기관</th><th class="num">순매수 (5일)</th></tr></thead><tbody>{brk_rows}</tbody></table>
     </div>"""
 
+        # Detailed multi-period investor flow (pykrx detail)
+        inv_detail_html = ""
+        try:
+            from bot.pykrx_client import get_kr_investor_detail
+            inv_d = get_kr_investor_detail(ticker)
+            if inv_d and inv_d.get("investors"):
+                invs = inv_d["investors"]
+                unit = inv_d.get("unit", "억원")
+                p_hdrs = "".join(f'<th class="num">{p}</th>' for p in ("1d", "5d", "10d", "20d", "30d", "60d"))
+                d_rows = ""
+                for label, pds in invs.items():
+                    cells = ""
+                    for p in ("1d", "5d", "10d", "20d", "30d", "60d"):
+                        v = pds.get(p)
+                        if v is None or v == 0:
+                            cells += '<td class="num">—</td>'
+                        else:
+                            c = "#26a69a" if v > 0 else "#e2574c"
+                            sign = "+" if v > 0 else ""
+                            cells += f'<td class="num" style="color:{c}">{sign}{v:,.1f}</td>'
+                    d_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
+                inv_detail_html = f"""<div class="si-section">
+      <div class="si-section-title">투자주체별 순매수 다기간 ({unit})</div>
+      <table class="si-table"><thead><tr><th>주체</th>{p_hdrs}</tr></thead><tbody>{d_rows}</tbody></table>
+    </div>"""
+        except Exception as exc:
+            log.info("detail: investor detail %s: %s", ticker, exc)
+
         # Credit / Short / Program in a grid
         credit = kr_flow.get("credit", {})
         short_sale = kr_flow.get("short_sale", {})
@@ -4728,6 +4756,7 @@ def _render_stock_info_html(rec: dict) -> str:
 
         flow_pane = f"""<div class="si-pane" id="si-flow">
   {inv_table}
+  {inv_detail_html}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
     {side_tables}
   </div>
