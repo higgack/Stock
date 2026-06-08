@@ -3651,7 +3651,7 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
             except Exception as exc:
                 log.debug("_ensure_detail_enrichment: pykrx trends %s: %s", ticker, exc)
 
-    # ⑧ Disclosures (공시 tab — market-specific)
+    # ⑧ Disclosures (공시 tab — market-specific, 1년치 무료 API)
     if tkr.endswith((".KS", ".KQ")):
         kr = si.setdefault("kr", {})
         if not kr.get("disclosures"):
@@ -3660,7 +3660,7 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                 dart = get_dart()
                 if dart:
                     stock_code = ticker.split(".")[0]
-                    disclosures = dart.get_recent_disclosures(stock_code, days_back=60, limit=30)
+                    disclosures = dart.get_recent_disclosures(stock_code, days_back=365, limit=50)
                     if disclosures:
                         kr["disclosures"] = disclosures
             except Exception as exc:
@@ -3670,7 +3670,7 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         if not jp.get("disclosures"):
             try:
                 from bot.edinet_client import get_recent_disclosures as edinet_disc
-                disc = edinet_disc(ticker, days_back=60)
+                disc = edinet_disc(ticker, days_back=180, limit=30)
                 if disc:
                     jp["disclosures"] = disc
             except Exception as exc:
@@ -3680,7 +3680,7 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         if not tw.get("disclosures"):
             try:
                 from bot.mops_client import get_recent_disclosures as mops_disc
-                disc = mops_disc(ticker)
+                disc = mops_disc(ticker, days_back=365, limit=50)
                 if disc:
                     tw["disclosures"] = disc
             except Exception as exc:
@@ -3690,7 +3690,7 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         if not cn.get("disclosures"):
             try:
                 from bot.akshare_client import get_recent_disclosures as ak_disc
-                disc = ak_disc(ticker, days_back=60)
+                disc = ak_disc(ticker, days_back=365, limit=50)
                 if disc:
                     cn["disclosures"] = disc
             except Exception as exc:
@@ -3700,7 +3700,7 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
         if not us.get("disclosures"):
             try:
                 from bot.edgar_client import get_recent_8k
-                filings = get_recent_8k(ticker, days=60, top_n=20)
+                filings = get_recent_8k(ticker, days=365, top_n=30)
                 if filings:
                     disc_rows = []
                     for f in filings:
@@ -4804,7 +4804,7 @@ def _render_stock_info_html(rec: dict) -> str:
             d_rows += f"<tr><td>{d_date}</td><td>{title_html}</td><td>{d_reporter}</td></tr>\n"
         disclosures_pane = f"""<div class="si-pane" id="si-disclosures">
   <div class="si-section">
-    <div class="si-section-title">최근 공시 ({esc(disc_source)})</div>
+    <div class="si-section-title">공시 ({esc(disc_source)}{' · JP 6개월' if is_jp else ' · 1년'})</div>
     <table class="si-table">
       <thead><tr><th>날짜</th><th>제목</th><th>출처</th></tr></thead>
       <tbody>{d_rows}</tbody>
