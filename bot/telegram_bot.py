@@ -464,6 +464,18 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /screen in channel — generic conditional screener (비용 ₩0, pykrx bulk).
+    if first_word == "screen":
+        _scid = post.chat.id
+        _scargs = body.split()[1:]
+
+        async def _scsend(t):
+            await ctx.bot.send_message(chat_id=_scid, text=t,
+                                       parse_mode=ParseMode.HTML,
+                                       disable_web_page_preview=True)
+        await _handle_screen(_scargs, _scsend)
+        return
+
     # /paper in channel — E0 페이퍼 트레이딩. PTB CommandHandler 가 channel_post
     # 에 안 fire 하므로 여기서 라우팅(없으면 'PAPER' 를 티커로 오인). DM cmd_paper
     # 와 동일 로직(_handle_paper) 공유.
@@ -1047,6 +1059,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
 /start /help /usage /sv_cost /screener_cost /daily_byte_cost /cheongyak_cost /realestate_cost /screener_list /sites /portfolio — 도움말·비용·목록·자산(뱅샐 zip)
+/screen [조건 | 프리셋] — 조건부 스크리너 (PER&lt;15 PBR&lt;1 등, ₩0). /screen list
 /screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
@@ -1078,11 +1091,8 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
- • 추천은 pending 기록 → <b>12시간마다 백그라운드 자동 해소</b>
- • 5거래일 지난 항목 → raw return + <b>섹터 ETF 알파</b> (SPY 아님; PLUG↔TAN, NVDA↔SOXX 등)
- • 다음 동일 종목 분석 요약 상단에 자동 표시
-   예: 📒 지난 추천 (04-24): 매수 → +5.3% (벤치 +1.2%p)
- • 결정 LLM도 같은 컨텍스트 → 과거 실수 반영
+ • pending → <b>12h 자동 해소</b> → 5거래일 raw return + <b>섹터 ETF α</b>
+ • 다음 동일 종목 요약 상단에 자동 표시 · 결정 LLM 과거 실수 반영
 
 ━━━━━━━━━
 <b>【6. 캐시 &amp; 비용】</b>
@@ -1098,7 +1108,7 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【8. 차별화 포인트】</b>
-페르소나 토론 · 결정 3노드만 Pro · 메모리 피드백 자기학습 (12h 자동) · 결정적 데이터 Python 사전 fetch (LLM 스킵 불가) · Wall Street 컨센서스 대조 · stance↔결정 mismatch 자동 감지 · 5거래일 horizon 명시 · 섹터 ETF 알파
+페르소나 토론 · Pro 결정 3노드 · 12h 자기학습 · 결정적 Python fetch · 컨센서스 대조 · mismatch 감지 · 5거래일 horizon · 섹터 ETF α
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 🦉 (순서 = 헤더 nav)
@@ -1127,6 +1137,7 @@ yfinance · 네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로 9종
 
 ━━━━━━━━━
 <b>【10. 진행 중 / 예정】</b>
+ • <b>조건부 스크리너</b> /screen (PER·PBR·배당성향·부채비율 등 자유 조건, pykrx+yfinance, ₩0)
  • Screener 65도메인+자유어+24h캐시 (재호출 ₩0, <code>fresh</code> 우회) · 분기GICS · 실거래 E1 KIS모의투자(KR+US 서버체결)+자동신호+RiskGate 가동 · 예정: IBKR·실전(E2)
 """
 
@@ -2207,6 +2218,87 @@ def _won(v) -> str:
         return "—"
 
 
+async def cmd_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/screen [조건|프리셋|list] — generic conditional screener (DM)."""
+    if update.message is None:
+        return
+
+    async def _send(t):
+        await update.message.reply_text(t, parse_mode=ParseMode.HTML,
+                                        disable_web_page_preview=True)
+
+    await _handle_screen(context.args or [], _send)
+
+
+async def _handle_screen(args: list[str], send) -> None:
+    """Shared screen handler for DM + channel."""
+    raw = " ".join(args).strip()
+
+    if not raw or raw.lower() == "help":
+        from bot.stock_screener import format_list_message
+        await send(format_list_message())
+        return
+
+    if raw.lower() == "list":
+        from bot.stock_screener import format_list_message
+        await send(format_list_message())
+        return
+
+    from bot.stock_screener import (
+        PRESETS, parse_conditions, run_screen,
+        format_result_message, save_screen_archive,
+    )
+
+    preset = PRESETS.get(raw.lower())
+    if preset:
+        cond_text = preset["conditions"]
+        await send(
+            f"📊 <b>조건부 스크리너</b> — {preset['name']}\n"
+            f"조건: <code>{cond_text}</code>\n⏱ 실행 중..."
+        )
+    else:
+        cond_text = raw
+
+    try:
+        conditions = parse_conditions(cond_text)
+    except ValueError as exc:
+        await send(f"⚠️ {exc}")
+        return
+
+    cond_display = " · ".join(c.display() for c in conditions)
+    if not preset:
+        await send(
+            f"📊 <b>조건부 스크리너</b>\n"
+            f"조건: <code>{cond_display}</code>\n⏱ 실행 중..."
+        )
+
+    import asyncio
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: run_screen(conditions, market="KR")
+        )
+    except Exception as exc:
+        log.warning("screen failed: %s", exc)
+        await send(f"⚠️ 스크리너 실행 실패: {exc}")
+        return
+
+    chunks = format_result_message(result)
+    for chunk in chunks:
+        await send(chunk)
+
+    if not result.was_cached:
+        try:
+            save_screen_archive(result, cond_text)
+        except Exception:
+            pass
+
+    try:
+        from bot.dashboard import regenerate_screen_index
+        regenerate_screen_index()
+    except Exception:
+        pass
+
+
 async def cmd_paper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/paper [buy|sell|close|reset] — E0 모의 매매 (DM). 채널은 on_channel_post."""
     if update.message is None:
@@ -3174,6 +3266,7 @@ async def _on_startup(application) -> None:
             BotCommand("watchlist", "감시 목록 보기"),
             BotCommand("unwatch", "감시 삭제 (TICKER/id/all)"),
             BotCommand("paper", "페이퍼 트레이딩 (모의 매매·돈 0)"),
+            BotCommand("screen", "조건부 스크리너 (PER<15 PBR<1 등 자유 조건)"),
             BotCommand("screener", "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
             BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
             BotCommand("portfolio", "💼 자산 (뱅크샐러드 zip 업로드)"),
@@ -3278,6 +3371,7 @@ def main() -> None:
     app.add_handler(CommandHandler("watchlist", cmd_watchlist))
     app.add_handler(CommandHandler("unwatch", cmd_unwatch))
     app.add_handler(CommandHandler("paper", cmd_paper))
+    app.add_handler(CommandHandler("screen", cmd_screen))
     app.add_handler(CommandHandler("screener", cmd_screener))
     # Per-domain shortcut commands — `/screener_bottleneck`, `/screener_
     # healthcare` 등. Telegram client 가 자동 hyperlink → 클릭으로 입력
@@ -3322,6 +3416,12 @@ def main() -> None:
         regenerate_portfolio_index()
     except Exception as exc:
         log.warning("startup portfolio regen failed: %s", exc)
+    # 조건부 스크리너 페이지도 startup 에 1회.
+    try:
+        from bot.dashboard import regenerate_screen_index
+        regenerate_screen_index()
+    except Exception as exc:
+        log.warning("startup screen regen failed: %s", exc)
     # 페이퍼 트레이딩 페이지도 startup 에 1회(빈 상태 포함).
     try:
         from bot.dashboard import regenerate_paper_index
