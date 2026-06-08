@@ -1664,28 +1664,38 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     "market": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
         "edgar_form4", "edgar_xbrl",
+        "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
+        "finnhub_earnings", "finnhub_rec", "us_13f_holders",
+        "av_sentiment",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
     # blocks (sentiment fuel) and peer set (Comps consistency).
     "social": {
-        "krx_flow", "hsgt_flow", "kis_supply",
+        "krx_flow", "hsgt_flow", "kis_supply", "twse_flow", "jpx_weekly_flow",
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
         "edgar_8k", "edgar_form4", "edgar_xbrl",
         "options_signals",
+        "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
+        "finnhub_earnings", "finnhub_rec", "finnhub_insent",
+        "us_13f_holders", "seibro_foreign",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
-    "news": {"krx_flow", "hsgt_flow", "kis_supply",
+    "news": {"krx_flow", "hsgt_flow", "kis_supply", "twse_flow", "jpx_weekly_flow",
              "options_signals", "edgar_xbrl",
+             "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
+             "finnhub_earnings", "finnhub_rec", "finnhub_insent",
+             "us_13f_holders", "seibro_foreign",
              "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
     # rule1_skeleton is NOT excluded — fundamentals analyst gets the table.
     "fundamentals": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
-        "krx_flow", "hsgt_flow", "kis_supply",
+        "krx_flow", "hsgt_flow", "kis_supply", "twse_flow", "jpx_weekly_flow",
+        "av_sentiment",
     },
 }
 
@@ -1714,6 +1724,14 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     tasks: dict[str, callable] = {}
+
+    # Universal: Alpha Vantage news sentiment (all markets)
+    try:
+        from bot.av_sentiment_client import av_key_ready, fetch_news_sentiment as _av_sent
+        if av_key_ready():
+            tasks["av_sentiment"] = lambda: _av_sent(ticker)
+    except Exception:
+        pass
 
     if market == "KR":
         try:
@@ -1812,6 +1830,12 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["kis_short_sale"]    = lambda: _kis.get_short_sale(ticker)
         except Exception:
             pass
+        try:
+            from bot.seibro_client import fetch_foreign_holding, fetch_foreign_trend
+            tasks["seibro_foreign"] = lambda: fetch_foreign_holding(ticker)
+            tasks["seibro_foreign_trend"] = lambda: fetch_foreign_trend(ticker, days=30)
+        except Exception:
+            pass
         # Naver news fetch needs KR corp name (kr_name from DART), which
         # is resolved inside build_instrument_context AFTER this prefetch.
         # Keep Naver as inline sequential fetch — only ~1s anyway.
@@ -1835,6 +1859,11 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["fred_jp_macro"] = lambda: fetch_macro("JP")
         except Exception:
             pass
+        try:
+            from bot.jpx_flow_client import fetch_jpx_weekly_flow as _jpx_flow
+            tasks["jpx_weekly_flow"] = lambda: _jpx_flow()
+        except Exception:
+            pass
 
     elif market == "TW":
         try:
@@ -1855,6 +1884,22 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["fred_tw_macro"] = lambda: fetch_macro("TW")
         except Exception:
             pass
+        try:
+            from bot.twse_flow_client import fetch_institutional_flow as _twse_flow
+            tasks["twse_three_law"] = lambda: _twse_flow(ticker)
+        except Exception:
+            pass
+        try:
+            from bot.finmind_client import (
+                fetch_monthly_revenue as _fm_revenue,
+                fetch_per_pbr as _fm_perpbr,
+                fetch_shareholding as _fm_holding,
+            )
+            tasks["finmind_revenue"] = lambda: _fm_revenue(ticker)
+            tasks["finmind_per_pbr"] = lambda: _fm_perpbr(ticker)
+            tasks["finmind_shareholding"] = lambda: _fm_holding(ticker)
+        except Exception:
+            pass
 
     elif market in ("CN_A", "HK"):
         try:
@@ -1868,6 +1913,11 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
             tasks["akshare_hsgt_flow"] = lambda: ak_client.get_hsgt_flow_summary(days_back=5)
             tasks["akshare_news"] = lambda: ak_client.fetch_news(ticker, days_back=28, max_items=10)
             tasks["akshare_macro"] = lambda: ak_client.fetch_cn_macro()
+        except Exception:
+            pass
+        try:
+            from bot.hkex_connect_client import fetch_stock_connect_flow as _hkex_flow
+            tasks["hkex_connect_flow"] = lambda: _hkex_flow()
         except Exception:
             pass
 
@@ -1886,6 +1936,24 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
         try:
             from bot.options_client import get_options_signals
             tasks["options_signals"] = lambda: get_options_signals(ticker)
+        except Exception:
+            pass
+        try:
+            from bot.finnhub_client import (
+                finnhub_key_ready,
+                fetch_earnings_surprise as _fh_earnings,
+                fetch_recommendation_trends as _fh_rec,
+                fetch_insider_sentiment as _fh_insent,
+            )
+            if finnhub_key_ready():
+                tasks["finnhub_earnings"] = lambda: _fh_earnings(ticker)
+                tasks["finnhub_rec"] = lambda: _fh_rec(ticker)
+                tasks["finnhub_insent"] = lambda: _fh_insent(ticker)
+        except Exception:
+            pass
+        try:
+            from bot.us_holders_client import fetch_institutional_holders as _us_holders
+            tasks["us_13f_holders"] = lambda: _us_holders(ticker)
         except Exception:
             pass
 
@@ -5040,6 +5108,73 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 _analyst_log.warning(
                     "options injection failed for %s: %s", ticker, exc,
                 )
+            # Finnhub: earnings surprise + recommendation trends + insider MSPR
+            try:
+                if _section_allowed(analyst_id, "finnhub_earnings"):
+                    from bot.finnhub_client import format_earnings_block
+                    fh_earn = prefetched.get("finnhub_earnings")
+                    earn_block = format_earnings_block(fh_earn)
+                    if earn_block:
+                        base += (
+                            "\n\n=== Earnings Surprise (Finnhub, verbatim) ===\n"
+                            + earn_block
+                            + "\n\nBeat/Miss 패턴이 5거래일 momentum 핵심."
+                            " 연속 Beat = 컨센서스 상향 여력, 연속 Miss ="
+                            " downgrade 위험. 수치 날조 금지."
+                        )
+            except Exception as exc:
+                _analyst_log.warning(
+                    "finnhub earnings injection failed for %s: %s", ticker, exc,
+                )
+            try:
+                if _section_allowed(analyst_id, "finnhub_rec"):
+                    from bot.finnhub_client import format_recommendation_block
+                    fh_rec = prefetched.get("finnhub_rec")
+                    rec_block = format_recommendation_block(fh_rec)
+                    if rec_block:
+                        base += (
+                            "\n\n=== Analyst Recommendation Trends (Finnhub, verbatim) ===\n"
+                            + rec_block
+                            + "\n\nyfinance recommendationKey 와 교차검증."
+                            " Buy 비중 변화 방향이 5거래일 catalyst."
+                        )
+            except Exception as exc:
+                _analyst_log.warning(
+                    "finnhub rec injection failed for %s: %s", ticker, exc,
+                )
+            try:
+                if _section_allowed(analyst_id, "finnhub_insent"):
+                    from bot.finnhub_client import format_insider_sentiment_block
+                    fh_insent = prefetched.get("finnhub_insent")
+                    insent_block = format_insider_sentiment_block(fh_insent)
+                    if insent_block:
+                        base += (
+                            "\n\n=== Insider Sentiment MSPR (Finnhub, verbatim) ===\n"
+                            + insent_block
+                            + "\n\nMSPR>0 = Net insider buy, MSPR<0 = Net sell."
+                            " EDGAR Form 4 raw 과 교차검증."
+                        )
+            except Exception as exc:
+                _analyst_log.warning(
+                    "finnhub insent injection failed for %s: %s", ticker, exc,
+                )
+            # US 13F institutional holders (yfinance, SEC 13F-sourced)
+            try:
+                if _section_allowed(analyst_id, "us_13f_holders"):
+                    from bot.us_holders_client import format_holders_block
+                    holders_data = prefetched.get("us_13f_holders")
+                    holders_block = format_holders_block(holders_data)
+                    if holders_block:
+                        base += (
+                            "\n\n=== US Institutional Holders (SEC 13F, verbatim) ===\n"
+                            + holders_block
+                            + "\n\n13F 분기 공시 기반. 대형 패시브(BlackRock/Vanguard)"
+                            " vs 액티브(Berkshire/ARK) 구분. 수치 날조 금지."
+                        )
+            except Exception as exc:
+                _analyst_log.warning(
+                    "us holders injection failed for %s: %s", ticker, exc,
+                )
 
         # DART (KR-only) — 공시 / 임원지분 / 실적 윈도. yfinance returns
         # nothing useful for these on KRX-listed names; DART is the
@@ -5254,12 +5389,15 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 # positioning trajectory (foreigners accumulating
                 # vs distributing, shorts building vs squeezing).
                 foreign_trend = prefetched.get("pykrx_foreign_trend")
+                if foreign_trend is None:
+                    foreign_trend = prefetched.get("seibro_foreign_trend")
                 short_trend = prefetched.get("pykrx_short_trend")
                 trend_block = format_trend_for_prompt(foreign_trend, short_trend)
+                src_label = "KRX" if prefetched.get("pykrx_foreign_trend") else "세이브로/KSD"
                 if trend_block:
                     base += (
-                        "\n\n=== Pre-fetched KR positioning trends"
-                        " (KRX, 30일 추이) ===\n"
+                        f"\n\n=== Pre-fetched KR positioning trends"
+                        f" ({src_label}, 30일 추이) ===\n"
                         + trend_block
                         + "\n\n외국인 지분율 추세 (꾸준한 증가 vs"
                         " 꾸준한 감소)는 5일 flow보다 안정적인"
@@ -5270,6 +5408,24 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         except Exception as exc:
             _analyst_log.warning(
                 "pykrx flow / trend injection failed for %s: %s", ticker, exc,
+            )
+
+        # Seibro/KSD 외국인 보유현황 (data.go.kr, KRX-login-free).
+        # pykrx trend 와 별개로 보유비율 + 한도소진율 상세 제공.
+        try:
+            if _section_allowed(analyst_id, "seibro_foreign"):
+                from bot.seibro_client import format_foreign_holding_block
+                seibro_data = prefetched.get("seibro_foreign")
+                seibro_block = format_foreign_holding_block(seibro_data)
+                if seibro_block:
+                    base += (
+                        "\n\n=== Pre-fetched KR 외국인 보유현황"
+                        " (세이브로/KSD, data.go.kr) ===\n"
+                        + seibro_block
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "seibro foreign injection failed for %s: %s", ticker, exc,
             )
 
         # Step 2B A1: KIS 7종 수급 데이터 inject (시장 분석가 전용).
@@ -5655,6 +5811,32 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 "fred jp macro injection failed for %s: %s", ticker, exc,
             )
 
+        # JPX weekly investor-type flow (JP market-wide)
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "JP" and _section_allowed(analyst_id, "jpx_weekly_flow"):
+                from bot.jpx_flow_client import format_jpx_flow_block
+                jpx_rows = prefetched.get("jpx_weekly_flow")
+                jpx_block = format_jpx_flow_block(jpx_rows)
+                if jpx_block:
+                    base += (
+                        "\n\n=== JPX 投資部門別 週間売買動向 (市場全体, verbatim) ===\n"
+                        + jpx_block
+                        + "\n\n[JP 수급 해석 가이드]\n"
+                        " • 外国人 = JP 시장 최대 변동 요인 (시장 거래의 ~60-70%)."
+                        " 4주 연속 매수/매도 → 추세 전환 신호.\n"
+                        " • 投資信託 = 국내 투신, 外国人과 반대 방향이면"
+                        " 기관 간 분리 — 방향성 약화.\n"
+                        " • 個人 = 소매 투자자, 逆張り(역행) 성향 강함.\n"
+                        " • 이 데이터는 시장 전체 aggregate 이다 (per-stock 아님)."
+                        " 종목 분석에는 시장 전반 수급 frame 으로만 활용."
+                        " 수치 날조 금지."
+                    )
+        except Exception as exc:
+            _analyst_log.warning(
+                "jpx flow injection failed for %s: %s", ticker, exc,
+            )
+
         # JP consensus fallback — yfinance 1st, Kabutan 2nd. yfinance
         # already covers Nikkei 225 / large TOPIX names; the Kabutan
         # path here is invoked from get_market_signals_for() at the
@@ -5752,6 +5934,86 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         except Exception as exc:
             _analyst_log.warning(
                 "mops injection failed for %s: %s", ticker, exc,
+            )
+
+        # TWSE / TPEx 三大法人 institutional flow (TW-only).
+        # Mirrors KR KIS investor_flow block.  No API key.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "TW" and _section_allowed(analyst_id, "twse_flow"):
+                from bot.twse_flow_client import format_twse_flow_block
+                tw_flow = prefetched.get("twse_three_law") or {}
+                if tw_flow:
+                    close_px = None
+                    try:
+                        info = _instrument_info(ticker) or {}
+                        close_px = info.get("previousClose") or info.get("regularMarketPrice")
+                    except Exception:
+                        pass
+                    block = format_twse_flow_block(tw_flow, close_price=close_px)
+                    if block:
+                        base += (
+                            "\n\n=== TWSE 三大法人 日報 (5일 누적, verbatim —"
+                            " 외자/투신/자영상 순매수, 단위 股+추정NT$) ===\n"
+                            + block
+                            + "\n\n[TW 三大法人 해석 가이드]\n"
+                            " • 外資 = 외국인투자자(FINI), TW 시장 최대 영향력."
+                            " 5일 순매수 ±1億NT$ 미만은 noise.\n"
+                            " • 投信 = 국내 투신(뮤추얼펀드), 外資와 반대 방향이면"
+                            " 기관 간 분리 — 5거래일 방향성 약화.\n"
+                            " • 自營商 = 증권사 자체 트레이딩, 단기 hedging 성격"
+                            " 강해 방향성 신호 낮음.\n"
+                            " • 외자+투신 동반 매수 = 가장 강한 기관 합의 신호.\n"
+                            " • 이 데이터는 TWSE/TPEx 공식 통계이다. 날조 금지."
+                        )
+        except Exception as exc:
+            _analyst_log.warning(
+                "twse_flow injection failed for %s: %s", ticker, exc,
+            )
+
+        # FinMind TW data (fundamentals-only): 월매출 + PER/PBR + TDCC 주주
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "TW":
+                from bot.finmind_client import (
+                    format_monthly_revenue_block,
+                    format_per_pbr_block,
+                    format_shareholding_block,
+                )
+                if _section_allowed(analyst_id, "finmind_revenue"):
+                    rev_rows = prefetched.get("finmind_revenue")
+                    rev_block = format_monthly_revenue_block(rev_rows)
+                    if rev_block:
+                        base += (
+                            "\n\n=== TW 월매출 (FinMind/TWSE 공식, verbatim) ===\n"
+                            + rev_block
+                            + "\n\n위 月營收는 TW 상장사 10일 이내 의무공시."
+                            " YoY 가속/둔화가 5거래일 momentum 핵심."
+                            " 數字는 千元(NT$) 단위. 날조 금지."
+                        )
+                if _section_allowed(analyst_id, "finmind_per_pbr"):
+                    perpbr_rows = prefetched.get("finmind_per_pbr")
+                    perpbr_block = format_per_pbr_block(perpbr_rows)
+                    if perpbr_block:
+                        base += (
+                            "\n\n=== TW 밸류에이션 (FinMind, verbatim) ===\n"
+                            + perpbr_block
+                            + "\n\nyfinance 와 다르면 FinMind(TWSE 원본)"
+                            " 우선. 날조 금지."
+                        )
+                if _section_allowed(analyst_id, "finmind_shareholding"):
+                    hold_rows = prefetched.get("finmind_shareholding")
+                    hold_block = format_shareholding_block(hold_rows)
+                    if hold_block:
+                        base += (
+                            "\n\n=== TDCC 집보戶 주권분산표 (FinMind, verbatim) ===\n"
+                            + hold_block
+                            + "\n\n대주주 집중도 + 개인 분산 구조 파악용."
+                            " 週간 갱신. 수치 날조 금지."
+                        )
+        except Exception as exc:
+            _analyst_log.warning(
+                "finmind injection failed for %s: %s", ticker, exc,
             )
 
         # 鉅亨網 news (TW-only) — yfinance .news covers TW large-caps in
@@ -6024,6 +6286,30 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 "hsgt flow injection failed for %s: %s", ticker, exc,
             )
 
+        # HKEX Stock Connect backup (when AKShare HSGT is empty)
+        try:
+            from bot.market import detect_market
+            if (detect_market(ticker) in ("CN_A", "HK")
+                    and _section_allowed(analyst_id, "hsgt_flow")):
+                hsgt_already = prefetched.get("akshare_hsgt_flow")
+                if not hsgt_already:
+                    from bot.hkex_connect_client import format_hkex_flow_block
+                    hkex_flow = prefetched.get("hkex_connect_flow")
+                    hkex_block = format_hkex_flow_block(hkex_flow)
+                    if hkex_block:
+                        base += (
+                            "\n\n=== HKEX Stock Connect Flow (HKEX 공식 백업,"
+                            " verbatim) ===\n"
+                            + hkex_block
+                            + "\n\nAKShare HSGT 미수집 시 HKEX 공식 대체."
+                            " Northbound=본토 매수, Southbound=HK 매수."
+                            " 수치 날조 금지."
+                        )
+        except Exception as exc:
+            _analyst_log.warning(
+                "hkex connect flow injection failed for %s: %s", ticker, exc,
+            )
+
         # Eastmoney 中文 news (CN_A + HK) — yfinance / Alpha Vantage
         # don't index 东方财富 / 财新 reliably; Eastmoney aggregates the
         # 主요 본토 + HK desks under one ticker tag. Mirrors Naver /
@@ -6120,6 +6406,25 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                 _analyst_log.warning(
                     "%s injection failed for %s: %s", _key, ticker, exc,
                 )
+
+    # Universal: Alpha Vantage news sentiment (all markets)
+    try:
+        if _section_allowed(analyst_id, "av_sentiment"):
+            from bot.av_sentiment_client import format_sentiment_block
+            av_data = prefetched.get("av_sentiment")
+            av_block = format_sentiment_block(av_data)
+            if av_block:
+                base += (
+                    "\n\n=== News Sentiment (Alpha Vantage, verbatim) ===\n"
+                    + av_block
+                    + "\n\n정량 sentiment score 기반. Bullish/Bearish/Neutral"
+                    " 분포 + avg score 로 시장 톤 판단. 제목만 보고 톤을"
+                    " 추론하지 말고 위 수치를 인용. 날조 금지."
+                )
+    except Exception as exc:
+        _analyst_log.warning(
+            "av sentiment injection failed for %s: %s", ticker, exc,
+        )
 
     return base
 
