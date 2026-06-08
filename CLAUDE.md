@@ -45,6 +45,10 @@ For **any** request (analysis output, feature idea, bug report, refactor):
 6. **봇 restart loop 중 알림 불가 (2026-06-08)**: watchdog 가 봇을
    반복 재시작하면 auto-update 알림도 안 옴 — 봇이 polling 못 하니까.
    이 상태에선 사용자에게 VM 수동 restart 안내 필요.
+7. **텔레그램 HTML escape 누락 (2026-06-08)**: `부채비율<200` 의
+   `<200` 이 텔레그램 HTML 파서에서 태그로 오인 → BadRequest.
+   `parse_mode=HTML` 로 보내는 텍스트에 사용자 입력/조건식의
+   `<`/`>` 가 포함되면 반드시 `&lt;`/`&gt;` escape 필수.
 
 새 실수 발생 시 이 리스트에 날짜 + 한 줄 교훈 추가 의무.
 
