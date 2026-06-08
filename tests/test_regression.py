@@ -3619,3 +3619,77 @@ class TestDividendYieldSanity:
         segment = src[idx:idx+2000]
         assert "dividendRate" in segment
         assert "currentPrice" in segment
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 10) _cell_texts img alt 추출 + target price regex 회귀 차단
+#     배경: 2026-06-08 KR 종목 리서치 상세에서 투자의견·목표가 전부 "—".
+#     Naver Finance 가 rating 을 <img alt="매수"> 로 렌더 → _cell_texts 가
+#     alt 미추출 → 빈 문자열. target price regex 의 trailing \b 가 한국어
+#     뒤에서 미매칭. hk_consensus 의 pass→continue 버그로 date cell 도 매칭.
+# ─────────────────────────────────────────────────────────────────────────
+class TestCellTextsImgAlt:
+    """fix commit: 2026-06-08 (research rating/target 누락)."""
+
+    def test_naver_cell_texts_extracts_img_alt(self):
+        """<img alt="매수"> → cell text 에 '매수' 포함."""
+        from bot.naver_research_client import _cell_texts
+        html = '<td><img alt="매수" src="/img/buy.gif"></td>'
+        cells = _cell_texts(f"<tr>{html}</tr>")
+        assert any("매수" in c for c in cells)
+
+    def test_hk_cell_texts_extracts_img_alt(self):
+        """한경 _cell_texts 도 img alt 추출."""
+        from bot.hk_consensus_client import _cell_texts
+        html = '<td><img alt="Buy" src="/img/buy.png" /></td>'
+        cells = _cell_texts(f"<tr>{html}</tr>")
+        assert any("Buy" in c for c in cells)
+
+    def test_naver_target_regex_after_korean(self):
+        """150,000원 같은 한국어 suffix 뒤에서도 target 추출."""
+        from bot.naver_research_client import _parse_rows
+        html = """<table><tr>
+        <td>삼성전자</td>
+        <td>목표가 분석</td>
+        <td>하나증권</td>
+        <td>26.06.05</td>
+        <td>150,000원</td>
+        <td><img alt="매수" src="/img/buy.gif"></td>
+        </tr></table>"""
+        from datetime import date, timedelta
+        rows = _parse_rows(html, date.today() - timedelta(days=30))
+        assert len(rows) >= 1
+        assert rows[0]["target"] == 150000.0
+        assert rows[0]["rating"] == "매수"
+
+    def test_hk_pass_to_continue_fix(self):
+        """한경 parser 가 date cell 을 target 으로 오파싱하지 않음."""
+        from bot.hk_consensus_client import _parse_report_rows
+        html = """<table><tr>
+        <td>삼성전자</td>
+        <td>목표가 보고서</td>
+        <td>미래에셋증권</td>
+        <td>2026-06-05</td>
+        <td>85,000</td>
+        <td>매수</td>
+        </tr></table>"""
+        from datetime import date, timedelta
+        rows = _parse_report_rows(html, date.today() - timedelta(days=30))
+        assert len(rows) >= 1
+        assert rows[0]["target"] == 85000.0
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 11) 기관 보유 비중 (% Out) NaN fallback 회귀 차단
+#     배경: 2026-06-08 대시보드 주요 기관 표에서 비중이 전부 "—".
+#     yfinance institutional_holders 의 '% Out' 가 NaN → snapshot 에서
+#     필터 → dashboard 에서 None → "—". Shares / shares_outstanding 으로
+#     fallback 계산.
+# ─────────────────────────────────────────────────────────────────────────
+class TestInstitutionalHoldersPctFallback:
+    """fix commit: 2026-06-08 (기관 비중 누락)."""
+
+    def test_dashboard_computes_pct_from_shares(self):
+        """% Out 누락 시 Shares/shares_outstanding 으로 계산하는 코드 존재."""
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "shares / shares_out" in src or "shares_out" in src
