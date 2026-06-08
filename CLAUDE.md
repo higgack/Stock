@@ -49,6 +49,10 @@ For **any** request (analysis output, feature idea, bug report, refactor):
    `<200` 이 텔레그램 HTML 파서에서 태그로 오인 → BadRequest.
    `parse_mode=HTML` 로 보내는 텍스트에 사용자 입력/조건식의
    `<`/`>` 가 포함되면 반드시 `&lt;`/`&gt;` escape 필수.
+8. **f-string `{{` + `.replace` 불일치 (2026-06-08)**: f-string 안의
+   `{{cards}}` 는 `{cards}` 로 변환됨. `.replace("{{cards}}", val)`
+   은 이중 브레이스를 찾아 매칭 실패 → 리터럴 `{cards}` 노출.
+   `.replace("{cards}", val)` 이어야 함.
 
 새 실수 발생 시 이 리스트에 날짜 + 한 줄 교훈 추가 의무.
 
@@ -859,18 +863,16 @@ ARCHIVE_ROOT 정적 서빙). 적용:
 DASHBOARD_USER=higgack
 DASHBOARD_PASSWORD=<.env 에만>
 ```
-**Nav 순서 정책 (사용자 2026-05-31, 2026-06-04 갱신):** **💼 자산(portfolio)
-+ 📒 가계부(budget) 가 nav·help 둘 다 맨 위** (사용자 2026-06-04 — 자산을
-메인 허브로, 가계부는 그 다음). 현재 순서: 💼 자산 → 📒 가계부 → errors →
-Bottleneck Screener → 도메인 목록 → 📨 미국 레딧 → Daily Byte → (external:
-Standard View · 한국 수출입) → 🏠 부동산 → 🎟️ 청약 → 🔔 워치리스트. NOAH
-archive 는 index 페이지 자체(h1)이고, 자산이 첫 링크. 가계부=뱅샐 현금흐름
-별도 대시보드(budget.html), 자산과 같은 export ingest 시 함께 생성·갱신.
-**새로 추가되는 대시보드는 (자산 다음, 끝이 아니라) 사용자 지정 위치** —
-명시 없으면 워치리스트 뒤 append. 갱신 지점 (모두 동시): (a) `bot/
-dashboard.py` errors_link 두 분기(자산 first) + 6개 mini-nav(`← NOAH 종목
-분석` 뒤 자산 링크), (b) `bot/telegram_bot.py` `_HELP_TEXT` §9(자산 first,
-NOAH archive second). help 순서 = nav 순서 일치 의무.
+**Nav 구조 정책 (사용자 2026-06-08 갱신):** 자산(portfolio)·가계부(budget)
+페이지 nav 에는 **📒 가계부 + 🦉 NOAH 종목분석** 2개만 표시. 나머지 모든
+대시보드(오류/Screener/Daily Byte/부동산/청약/워치리스트/페이퍼/조건부
+스크리너/외부 링크 등)는 **🦉 NOAH 종목분석(index.html) nav에만** 나열.
+NOAH 종목분석이 모든 하위 대시보드의 허브 역할. **새로 추가되는 대시보드도
+NOAH 종목분석 nav(errors_link)에만 추가** — 자산/가계부 nav 수정 불필요.
+갱신 지점: (a) `bot/dashboard.py` errors_link 두 분기(NOAH index.html 풀
+nav) + `_render_portfolio_page` nav(가계부+NOAH만) + `_budget_nav`(자산+
+NOAH만) + 하위 페이지 mini-nav(`← NOAH 종목분석` + 자산 + 가계부),
+(b) `bot/telegram_bot.py` `_HELP_TEXT` §9.
 
 **💰 비용 합산 정책 (사용자 2026-06-02):** 메인 NOAH 대시보드 비용 카드
 (+ `/usage`)는 **nav 에 링크된 비용-발생 surface 전부의 cost 를 합산**해
