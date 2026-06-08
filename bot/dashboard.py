@@ -989,6 +989,17 @@ _INDEX_CSS = _BASE_CSS + """
 .search-bar button:active { transform: scale(0.97); }
 :root[data-theme="dark"] .search-bar button { background: #16a34a; }
 :root[data-theme="dark"] .search-bar button:hover { background: #15803d; }
+.market-filter {
+  display: flex; gap: 6px; flex-wrap: wrap; margin: -12px 4px 12px;
+}
+.mf-btn {
+  background: var(--card); color: var(--fg-soft); border: 1px solid var(--border);
+  border-radius: 16px; padding: 5px 14px; font-size: 13px; cursor: pointer;
+  font-family: inherit; transition: border-color 0.12s, background 0.12s;
+}
+.mf-btn:hover { color: var(--fg); border-color: var(--accent); }
+.mf-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+.mf-count { opacity: 0.7; font-size: 11px; margin-left: 2px; }
 .status-line {
   color: var(--fg-soft); font-size: 13px; margin: 0 4px 16px;
 }
@@ -1142,6 +1153,11 @@ _INDEX_JS = """
   const monthsG = Array.from(document.querySelectorAll('details.month'));
   const total = cards.length;
   const MAX_SNIPPETS = 80;
+  var marketFilter = 'ALL';
+  const mfBtns = Array.from(document.querySelectorAll('.mf-btn'));
+  function matchesMarket(c) {
+    return marketFilter === 'ALL' || c.dataset.market === marketFilter;
+  }
 
   // Parse each card's body line index once. Synthetic 'metadata' line
   // adds the visible card-row text (ticker chip + stance + rating)
@@ -1188,16 +1204,26 @@ _INDEX_JS = """
     snp.style.display = 'none';
     snp.innerHTML = '';
     emptyEl.style.display = 'none';
-    for (const c of cards) c.style.display = '';
-    for (const d of days) {
-      d.style.display = '';
-      // orphan-day (archive 이전 평가 결과) 는 진입 시 접힘 유지 — 사용자
-      // 2026-06-01 "대시보드 진입 시 이 부분도 접혀있게". 일반 day 그룹만
-      // 강제 펼침. 검색 해제 시에도 orphan 의 직전 open 상태(false) 보존.
-      if (!d.classList.contains('orphan-day')) d.open = true;
+    var shown = 0;
+    for (const c of cards) {
+      var vis = matchesMarket(c);
+      c.style.display = vis ? '' : 'none';
+      if (vis) shown++;
     }
-    for (const m of monthsG) m.style.display = '';
-    statusEl.textContent = '총 ' + total + '건의 분석 기록';
+    for (const d of days) {
+      var hasVis = !!d.querySelector('.card:not([style*="display: none"])');
+      d.style.display = hasVis ? '' : 'none';
+      if (hasVis && !d.classList.contains('orphan-day')) d.open = true;
+    }
+    for (const m of monthsG) {
+      var hasDay = !!m.querySelector('details.day:not([style*="display: none"])');
+      m.style.display = hasDay ? '' : 'none';
+    }
+    if (marketFilter === 'ALL') {
+      statusEl.textContent = '총 ' + total + '건의 분석 기록';
+    } else {
+      statusEl.textContent = marketFilter + ' ' + shown + '건 / 총 ' + total + '건';
+    }
   }
 
   function showSnippetsMode(q) {
@@ -1209,6 +1235,7 @@ _INDEX_JS = """
     const ql = q.toLowerCase();
     const hits = [];
     for (const cd of cardData) {
+      if (!matchesMarket(cd.card)) continue;
       for (const ln of cd.lines) {
         if ((ln.txt || '').toLowerCase().indexOf(ql) >= 0) {
           hits.push({card: cd.card, sec: ln.sec, txt: ln.txt});
@@ -1279,6 +1306,14 @@ _INDEX_JS = """
   });
   window.addEventListener('hashchange', syncFromHash);
   syncFromHash();
+
+  mfBtns.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      marketFilter = btn.dataset.mkt;
+      mfBtns.forEach(function(b) { b.classList.toggle('active', b === btn); });
+      applyFilter();
+    });
+  });
 
   // Card deletion: POST /api/delete with {date, ticker}, then remove the
   // card from the DOM on success. We don't location.reload() because
@@ -1668,10 +1703,26 @@ def _render_outcome_html(resolved: dict | None) -> str:
     return "".join(lines)
 
 
+def _ticker_market(ticker: str) -> str:
+    t = (ticker or "").upper()
+    if t.endswith((".KS", ".KQ")): return "KR"
+    if t.endswith(".T"): return "JP"
+    if t.endswith((".TW", ".TWO")): return "TW"
+    if t.endswith((".SS", ".SZ", ".BJ")): return "CN"
+    if t.endswith(".HK"): return "HK"
+    return "US"
+
+
 def _render_index(records: list[dict]) -> str:
     by_date: dict[str, list[dict]] = {}
     for r in records:
         by_date.setdefault(r["trade_date"], []).append(r)
+
+    # Market counts for filter buttons
+    _market_counts: dict[str, int] = {}
+    for _r in records:
+        _mk = _ticker_market(_r.get("ticker", ""))
+        _market_counts[_mk] = _market_counts.get(_mk, 0) + 1
 
     if not records:
         body = '<div class="empty">아직 분석 기록이 없습니다.</div>'
@@ -1755,8 +1806,9 @@ def _render_index(records: list[dict]) -> str:
                 _lines_attr = _html.escape(
                     json.dumps(_idx_lines, ensure_ascii=False)
                 )
+                _card_mkt = _ticker_market(ticker)
                 cards.append(f"""
-                <div class="card" id="card-{_html.escape(date)}-{_html.escape(ticker).replace('.','_')}" data-ticker="{_html.escape(ticker)}"{data_name_attr} data-date="{_html.escape(date)}" data-href="{href}" data-lines="{_lines_attr}">
+                <div class="card" id="card-{_html.escape(date)}-{_html.escape(ticker).replace('.','_')}" data-ticker="{_html.escape(ticker)}"{data_name_attr} data-market="{_card_mkt}" data-date="{_html.escape(date)}" data-href="{href}" data-lines="{_lines_attr}">
                   <div class="card-row">
                     <a class="ticker" href="{href}">📊 {_html.escape(label)}</a>
                     {_badge_html(rating)}
@@ -1872,6 +1924,29 @@ def _render_index(records: list[dict]) -> str:
             + ' · <a href="screen.html">📊 조건부 스크리너</a>'
         )
 
+    # Market filter buttons (show only if >1 market present)
+    _MKT_ORDER = ["US", "KR", "JP", "TW", "CN", "HK"]
+    _mf_btns = [
+        f'<button class="mf-btn active" data-mf="ALL">전체'
+        f' <span class="mf-count">{len(records)}</span></button>'
+    ]
+    for _mk in _MKT_ORDER:
+        if _mk in _market_counts:
+            _mf_btns.append(
+                f'<button class="mf-btn" data-mf="{_mk}">{_mk}'
+                f' <span class="mf-count">{_market_counts[_mk]}</span></button>'
+            )
+    for _mk in sorted(_market_counts):
+        if _mk not in _MKT_ORDER:
+            _mf_btns.append(
+                f'<button class="mf-btn" data-mf="{_mk}">{_mk}'
+                f' <span class="mf-count">{_market_counts[_mk]}</span></button>'
+            )
+    market_filter_html = (
+        f'<div class="market-filter" id="market-filter">{"".join(_mf_btns)}</div>'
+        if len(_market_counts) > 1 else ""
+    )
+
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -1891,6 +1966,7 @@ def _render_index(records: list[dict]) -> str:
     <input id="search" type="text" placeholder="종목 / 본문 검색 (예: NVDA, 삼성전자, 변압기, GLP-1, CHIPS Act)" autocomplete="off" spellcheck="false">
     <button id="clear-btn" type="button" title="검색 초기화">초기화</button>
   </div>
+  {market_filter_html}
   <p id="status" class="status-line">총 {len(records)}건의 분석 기록</p>
   <div id="snippets" class="snippets" style="display:none"></div>
   <div id="empty-search" class="empty-search">검색 결과가 없습니다.</div>
