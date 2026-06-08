@@ -405,6 +405,14 @@ def _post_process(text: str, date_iso: str) -> str:
     # 있는 줄. '---', '***', '___', '--- / ---' 등 LLM 이 내는 모든 separator
     # 변형 차단 (사용자 2026-05-29 '--- 거슬림', 슬래시 혼합형 포함).
     text = re.sub(r"(?m)^[^\w\n]*[-*_]{2,}[^\w\n]*$", "", text)
+    # 2.5) Gemini 제목 줄 (첫 줄, 이모지 없는 "Daily Byte ..." 등) 뒤에
+    #      빈 줄 보장 — 제목과 첫 섹션 헤더가 붙지 않게 (사용자 2026-06-08).
+    lines = text.split("\n")
+    if lines and lines[0].strip() and not any(lines[0].startswith(e) for e in
+            ("📊", "🔥", "🔄", "💰", "📈", "🏆", "⚠️", "🎯", "🏠", "📍", "🏗️", "📐", "🎟️")):
+        first = lines[0]
+        rest = "\n".join(lines[1:]).lstrip("\n")
+        text = f"<b>{first}</b>\n\n{rest}"
     # 3) 이모지 섹션 헤더 줄 → 앞 빈 줄 보장 + 볼드. Daily Byte 8개 +
     #    부동산(🏠📍🏗️📐) + 청약(🎟️) union — 헤더가 본문에 딱 붙지 않게
     #    헤더 앞 한 줄 띄움 (사용자 2026-05-31). universal: 세 브리프 공통.
