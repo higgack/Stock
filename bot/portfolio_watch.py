@@ -207,14 +207,23 @@ async def _run_async() -> int:
             if not data:
                 continue
             try:
-                from bot.portfolio import ingest, format_summary_text
+                from bot.portfolio import ingest, format_summary_text, NotBanksaladExport
                 model = ingest(bytes(data), password=pw)
+            except NotBanksaladExport:
+                # RAG 채널의 비-자산 .zip/.xlsx — 확장자만 같았을 뿐. 조용히
+                # skip(푸시·저장 없음, portfolio.json 보존). seen 처리는 위에서
+                # 이미 됐으므로 재시도 폭주도 없음.
+                log.info("자산 export 아님 — RAG 문서로 무시: %s (msg %d)", fname, mid)
+                continue
             except RuntimeError:
+                # 비밀번호 zip 해제 실패 — 진짜 뱅샐 zip 인데 .env 비번이 stale 한
+                # 실제 설정 신호라 유지(비-뱅샐 password zip 은 드묾).
                 _push_confirm("🔒 자산 zip 비밀번호 오류 — .env BANKSALAD_ZIP_PW 확인 필요")
                 continue
             except Exception as exc:
-                log.error("자산 파싱 실패 (%s): %s", fname, exc)
-                _push_confirm(f"⚠️ 자산 파일 처리 실패: {type(exc).__name__}")
+                # 손상/비-xlsx 등 일반 파싱 실패 — RAG 채널엔 임의 파일이 늘
+                # 올라오므로 매번 '⚠️ 처리 실패' 푸시는 노이즈. 로그만 남기고 skip.
+                log.info("자산 파싱 실패 — 무시 (%s): %s", fname, exc)
                 continue
             try:
                 from bot.dashboard import regenerate_portfolio_index
