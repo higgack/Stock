@@ -2359,13 +2359,13 @@ class TestPortfolioDashboard:
         none_html = _render_portfolio_page(self._model())
         assert "지난 업데이트" not in none_html
         assert "자산 변화" in none_html, "prev 없을 때 자산 변화 안내 placeholder 누락"
-        # 같은 업로드 날짜면 증분 스킵 (사용자 정책 2026-06-04)
+        # 같은 업로드 날짜여도 증분 표시 (사용자 정책 2026-06-08 — 덮어쓰기)
         import time as _t
         now = _t.time()
         m2 = self._model()
         m2["_saved_ts"] = now
         m2["prev"] = {"순자산": 1, "주식평가": 1, "_saved_ts": now - 60}
-        assert "지난 업데이트" not in _render_portfolio_page(m2), "같은 날짜 증분 스킵 안 됨"
+        assert "지난 업데이트" in _render_portfolio_page(m2), "같은 날짜도 증분 표시해야 함"
 
     def test_noah_overlay(self):
         # 증분5: 보유종목 ↔ NOAH 최근 판정 + (해소되면)5거래일 성과 오버레이.

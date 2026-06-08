@@ -244,27 +244,12 @@ def ingest(data, password=None) -> dict:
     if not is_banksalad_export(parsed):
         raise NotBanksaladExport("뱅크샐러드 자산 export 아님 (재무/투자 섹션 미검출)")
     model = build_model(parsed)
-    baseline = None
     if isinstance(prev, dict) and prev.get("snapshot"):
-        import datetime as _dt
-
-        def _d(ts):
-            return (_dt.datetime.fromtimestamp(
-                ts, _dt.timezone(_dt.timedelta(hours=9))).date() if ts else None)
-
-        # 같은 날짜 재업로드면 기준(baseline)을 리셋하지 않고 직전 baseline 을
-        # 승계 — '같은 날짜는 마지막 업로드가 현재, 비교는 직전 다른 날짜 기준'
-        # (사용자 정책 2026-06-04). 다른 날짜면 직전 업로드 스냅샷이 새 baseline.
-        if _d(prev.get("_saved_ts")) == _d(time.time()):
-            baseline = prev.get("prev")
-        else:
-            baseline = {
-                **prev["snapshot"],
-                "as_of": prev.get("as_of"),
-                "_saved_ts": prev.get("_saved_ts"),
-            }
-    if isinstance(baseline, dict):
-        model["prev"] = baseline
+        model["prev"] = {
+            **prev["snapshot"],
+            "as_of": prev.get("as_of"),
+            "_saved_ts": prev.get("_saved_ts"),
+        }
     save(model)
     # 가계부(현금흐름) — 같은 export 에서 별도 모델·대시보드 (P2, 2026-06-04).
     # 실패해도 자산 ingest 는 그대로 반환(비치명적).

@@ -8259,49 +8259,39 @@ def _render_portfolio_page(model, noah=None) -> str:
     _snap_date = (_dt.datetime.fromtimestamp(
         _ts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%Y-%m-%d")
         if _ts else "snapshot")
-    # 지난 업데이트 대비 증분(자산 변화) — 수동 업로드라 추적. ingest 가 박은
-    # model["prev"](직전 '다른 날짜' 스냅샷)와 비교. 첫 업로드면 prev 없음.
-    # **같은 날짜 업로드면 증분 생략** (사용자 정책 2026-06-04; 날짜 미상이면 표시).
     prev = model.get("prev")
     delta_html = ""
     _prev_pnl_map: dict[str, float] = {}
     _show_chg = False
-    _chg_dates = ""  # 손익변동 비교 일자 라벨 (이전 VS 현재)
+    _chg_dates = ""
     if isinstance(prev, dict):
         _pts = prev.get("_saved_ts")
-        _same_day = bool(
-            _pts and _ts
-            and _dt.datetime.fromtimestamp(_pts, _dt.timezone(_dt.timedelta(hours=9))).date()
-            == _dt.datetime.fromtimestamp(_ts, _dt.timezone(_dt.timedelta(hours=9))).date()
-        )
         _prev_pnl_map = prev.get("holdings_pnl") or {}
-        if not _same_day:
-            _show_chg = bool(_prev_pnl_map)
-            pdate = (_dt.datetime.fromtimestamp(
-                _pts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d")
-                if _pts else str(prev.get("as_of") or "이전"))
-            # 손익변동 컬럼 헤더에 명시할 비교 일자 (이전 업로드 → 현재 업로드).
-            _cdate = (_dt.datetime.fromtimestamp(
-                _ts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d")
-                if _ts else "현재")
-            _chg_dates = f"{pdate} → {_cdate}"
+        _show_chg = bool(_prev_pnl_map)
+        pdate = (_dt.datetime.fromtimestamp(
+            _pts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d %H:%M")
+            if _pts else str(prev.get("as_of") or "이전"))
+        _cdate = (_dt.datetime.fromtimestamp(
+            _ts, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d %H:%M")
+            if _ts else "현재")
+        _chg_dates = f"{pdate} → {_cdate}"
 
-            def _dlt(cur, was):
-                cur = cur or 0
-                was = was or 0
-                d = cur - was
-                p = (d / was * 100) if was else 0.0
-                sign = "+" if d >= 0 else "−"
-                col = "var(--pos)" if d >= 0 else "var(--neg)"
-                return (f'<span style="color:{col}">{sign}{_pf_won(abs(d))} '
-                        f'({sign}{abs(p):.1f}%)</span>')
-            prev_invest = prev.get("투자성자산", prev.get("주식평가"))
-            delta_html = (
-                '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
-                'border-top:1px solid var(--border);padding-top:8px">'
-                f'📈 지난 업데이트({pdate}) 대비 — 순자산 '
-                f'{_dlt(nw.get("순자산"), prev.get("순자산"))} · 투자자산 '
-                f'{_dlt(invest_total, prev_invest)}</div>')
+        def _dlt(cur, was):
+            cur = cur or 0
+            was = was or 0
+            d = cur - was
+            p = (d / was * 100) if was else 0.0
+            sign = "+" if d >= 0 else "−"
+            col = "var(--pos)" if d >= 0 else "var(--neg)"
+            return (f'<span style="color:{col}">{sign}{_pf_won(abs(d))} '
+                    f'({sign}{abs(p):.1f}%)</span>')
+        prev_invest = prev.get("투자성자산", prev.get("주식평가"))
+        delta_html = (
+            '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
+            'border-top:1px solid var(--border);padding-top:8px">'
+            f'📈 지난 업데이트({pdate}) 대비 — 순자산 '
+            f'{_dlt(nw.get("순자산"), prev.get("순자산"))} · 투자자산 '
+            f'{_dlt(invest_total, prev_invest)}</div>')
 
     # 증분(자산 변화)을 주식 요약 패널 바로 밑에 배치(사용자 2026-06-04). prev 가
     # 없으면(첫 업로드·같은 날짜만 업로드) '사라진 게 아니라 비교 대상 대기' 안내.
@@ -8311,8 +8301,8 @@ def _render_portfolio_page(model, noah=None) -> str:
         delta_section = (
             '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
             'border-top:1px solid var(--border);padding-top:8px">'
-            '📈 자산 변화 — 다른 <b>날짜</b>의 export 가 쌓이면 여기에 순자산·투자자산 '
-            '증분 표시 (같은 날 재업로드는 비교 안 함)</div>')
+            '📈 자산 변화 — export 가 2회 이상 쌓이면 여기에 순자산·투자자산 '
+            '증분 표시</div>')
 
     cash_stat = (f'<div class="stat"><div class="stat-num">{_pf_won(cash_in_invest)}</div>'
                   '<div class="stat-lbl">예수금</div></div>') if cash_in_invest else ""
