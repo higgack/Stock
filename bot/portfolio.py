@@ -114,6 +114,10 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
         if cur is None or abs(h["수익률"]) > abs(cur["수익률"]):
             _by_name[nm] = h
     rated = list(_by_name.values())
+    eval_sum = sum(h.get("평가금액") or 0 for h in holdings)
+    cost_sum = sum(h.get("투자원금") or 0 for h in holdings)
+    invest_asset_total = alloc.get("투자성자산", 0)
+    cash_in_invest = max(invest_asset_total - eval_sum, 0)
     return {
         "as_of": parsed.get("as_of"),
         "net_worth": {
@@ -129,16 +133,16 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
         "top_gainers": sorted(rated, key=lambda h: h["수익률"], reverse=True)[:5],
         "top_losers": sorted(rated, key=lambda h: h["수익률"])[:5],
         "holding_count": len(holdings),
-        # 고유 종목 수(증권사 중복 제외) — '보유 종목' 카운트의 canonical 값.
-        # holding_count(포지션 건수)는 증권사별 합/스냅샷 비교용으로 유지.
         "distinct_count": len(_distinct_stock_keys(holdings)),
         "matched_count": sum(1 for h in holdings if h["matched"]),
-        # 증분(자산 변화) 비교용 압축 스냅샷 — ingest 가 다음 업로드 시 prev 로 사용.
+        "cash_in_invest": cash_in_invest,
         "snapshot": {
             "총자산": fin.get("총자산"), "총부채": fin.get("총부채"),
             "순자산": fin.get("순자산"),
-            "주식평가": sum(h.get("평가금액") or 0 for h in holdings),
-            "주식원금": sum(h.get("투자원금") or 0 for h in holdings),
+            "주식평가": eval_sum,
+            "주식원금": cost_sum,
+            "예수금": cash_in_invest,
+            "투자성자산": invest_asset_total,
             "종목수": len(holdings),
             "holdings_pnl": {
                 f"{h.get('상품명', '')}|{h.get('금융사', '')}": h.get("평가손익") or 0
@@ -151,12 +155,14 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
 def format_summary_text(model: dict) -> str:
     """텔레그램 회신용 한 화면 요약 (증권사별·자산배분)."""
     nw = model.get("net_worth", {})
+    cash = model.get("cash_in_invest") or 0
+    cash_part = f" · 예수금 {_won(cash)}" if cash else ""
     lines = [
         "📂 자산 요약 (뱅크샐러드 기준)",
         f"순자산 {_won(nw.get('순자산'))}  "
         f"(자산 {_won(nw.get('총자산'))} − 부채 {_won(nw.get('총부채'))})",
         f"주식 {model.get('distinct_count', model.get('holding_count', 0))}종목 · "
-        f"티커매칭 {model.get('matched_count', 0)}",
+        f"티커매칭 {model.get('matched_count', 0)}{cash_part}",
     ]
     if model.get("by_broker"):
         lines.append("— 증권사별 —")
