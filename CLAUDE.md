@@ -2378,9 +2378,13 @@ These need new credentials BEFORE work can ship:
   bearish/neutral 정량 점수). 무료 25 req/day + 12h 캐시. `bot/
   av_sentiment_client.py`. `av_key_ready()` gate.
 
-- **Seibro/KSD 외국인보유 — ✅ activated** (2026-06-08). 기존
-  `DATA_GO_KR_API_KEY` 로 '한국예탁결제원_주식 외국인보유비중' 활용신청
-  완료. KR 외국인 보유비율 + 한도소진율 (pykrx KRX-login-free fallback).
+- **Seibro/KSD 외국인보유 — ⏳ 활용신청 필요** (2026-06-08). 기존
+  `DATA_GO_KR_API_KEY` 공유. **서비스명: '금융위원회_주식분포및사고주권정보'**
+  (data.go.kr publicDataPk=15043364, 조직=금융위원회). ⚠️ '한국예탁결제원'
+  으로 검색하면 안 나옴 — 데이터 제공은 KSD 이지만 data.go.kr 등록은
+  금융위원회 명의. 활용신청: data.go.kr → '금융위원회_주식분포및사고주권정보'
+  검색 → 활용신청(무료, 즉시~2시간 승인). operation `getStockForeignStat`
+  포함. KR 외국인 보유비율 + 한도소진율 (pykrx KRX-login-free fallback).
   `bot/seibro_client.py`. `seibro_key_ready()` gate.
 
 - **Phase 4-CN-D validation cycle — ✅ 완료** (2026-05-21). fix#1~#11 (commits 91427a9~925f926), CN/HK + TW/JP/KR 크로스-마켓 검증 완료.

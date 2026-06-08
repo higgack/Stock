@@ -688,7 +688,46 @@ class DartClient:
                      corp_code, bsns_year, len(rows), list(rows[0].keys())[:15])
         return rows if rows else None
 
+    _HYSLR_SHARES_CANDIDATES = [
+        "trmend_posesn_stock_co", "bsis_posesn_stock_co",
+        "posesn_stock_co", "trmend_posesn_stkqy", "bsis_posesn_stkqy",
+        "posesn_stkqy", "stock_co", "stkqy",
+    ]
+    _HYSLR_PCT_CANDIDATES = [
+        "trmend_posesn_stock_qota_rt", "bsis_posesn_stock_qota_rt",
+        "posesn_stock_qota_rt", "trmend_posesn_stkqy_rate",
+        "bsis_posesn_stkqy_rate", "posesn_stkqy_rate", "stock_qota_rt",
+    ]
+
     def _parse_hyslr_rows(self, rows: list) -> list[dict]:
+        if not rows:
+            return []
+        first_keys = set(rows[0].keys())
+        shares_key = next((c for c in self._HYSLR_SHARES_CANDIDATES if c in first_keys), None)
+        pct_key = next((c for c in self._HYSLR_PCT_CANDIDATES if c in first_keys), None)
+        if not shares_key or not pct_key:
+            skip = {"rcept_no", "corp_cls", "corp_code", "corp_name", "nm",
+                    "relate", "rm", "bsns_year", "reprt_code", "stock_knd",
+                    "se", "change_on", "change_cause"}
+            for k in first_keys - skip:
+                v = str(rows[0].get(k, "")).replace(",", "").replace("-", "").strip()
+                if not v:
+                    continue
+                if not pct_key and ("rt" in k or "rate" in k):
+                    try:
+                        float(v)
+                        pct_key = k
+                    except ValueError:
+                        pass
+                elif not shares_key and ("co" in k or "qy" in k or "stock" in k):
+                    try:
+                        int(v)
+                        shares_key = k
+                    except ValueError:
+                        pass
+        log.info("dart: hyslrSttus field discovery: shares=%s pct=%s (keys=%s)",
+                 shares_key, pct_key, sorted(first_keys)[:12])
+
         out: list[dict] = []
         for r in rows:
             nm = (r.get("nm") or r.get("inv_prm") or r.get("aflte_nm")
@@ -697,18 +736,14 @@ class DartClient:
                 continue
             rel = (r.get("relate") or r.get("rel_btr_at")
                    or r.get("relt") or r.get("rel_corp_nm") or "").strip()
-            shares_raw = str(
-                r.get("trmend_posesn_stkqy") or r.get("bsis_posesn_stkqy")
-                or r.get("posesn_stkqy") or "0"
-            ).replace(",", "").strip()
+            shares_raw = str(r.get(shares_key, "0") if shares_key else "0"
+                             ).replace(",", "").strip()
             try:
                 shares = int(shares_raw) if shares_raw and shares_raw != "-" else 0
             except ValueError:
                 shares = 0
-            pct_raw = str(
-                r.get("trmend_posesn_stkqy_rate") or r.get("bsis_posesn_stkqy_rate")
-                or r.get("posesn_stkqy_rate") or "0"
-            ).replace(",", "").strip()
+            pct_raw = str(r.get(pct_key, "0") if pct_key else "0"
+                          ).replace(",", "").strip()
             try:
                 pct = float(pct_raw) if pct_raw and pct_raw != "-" else 0.0
             except ValueError:
@@ -731,7 +766,7 @@ class DartClient:
         corp_code = self.stock_code_to_corp_code(stock_code)
         if not corp_code:
             return []
-        ck = f"majsh_{corp_code}"
+        ck = f"majsh2_{corp_code}"
         cached = self._disk_get(ck)
         if cached is not None:
             return cached
