@@ -118,6 +118,10 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
     cost_sum = sum(h.get("투자원금") or 0 for h in holdings)
     invest_asset_total = alloc.get("투자성자산", 0)
     cash_in_invest = max(invest_asset_total - eval_sum, 0)
+    # 예수금(CMA/Super365)은 투자성자산이 아니라 자유입출금 — 재분류
+    if cash_in_invest > 0:
+        alloc["투자성자산"] = invest_asset_total - cash_in_invest
+        alloc["자유입출금"] = alloc.get("자유입출금", 0) + cash_in_invest
     return {
         "as_of": parsed.get("as_of"),
         "net_worth": {
@@ -156,7 +160,7 @@ def format_summary_text(model: dict) -> str:
     """텔레그램 회신용 한 화면 요약 (증권사별·자산배분)."""
     nw = model.get("net_worth", {})
     cash = model.get("cash_in_invest") or 0
-    cash_part = f" · 예수금 {_won(cash)}" if cash else ""
+    cash_part = f"\n예수금(자유입출금) {_won(cash)}" if cash else ""
     lines = [
         "📂 자산 요약 (뱅크샐러드 기준)",
         f"순자산 {_won(nw.get('순자산'))}  "
@@ -204,9 +208,9 @@ def load() -> dict | None:
 
 
 def backfill_cash_in_invest() -> bool:
-    """기존 portfolio.json 에 cash_in_invest · snapshot 투자성자산/예수금 백필.
+    """기존 portfolio.json 에 cash_in_invest 백필 + 예수금→자유입출금 재분류.
 
-    재업로드 없이 즉시 반영. 이미 있으면 no-op. 반환: 변경 여부."""
+    재업로드 없이 즉시 반영. 반환: 변경 여부."""
     model = load()
     if not model or not model.get("holdings"):
         return False
@@ -218,16 +222,19 @@ def backfill_cash_in_invest() -> bool:
     snap = model.get("snapshot")
     if not isinstance(snap, dict):
         return False
-    if snap.get("투자성자산") is not None and model.get("cash_in_invest") is not None:
+    changed = False
+    if model.get("cash_in_invest") is None:
+        model["cash_in_invest"] = cash
+        snap["예수금"] = cash
+        snap["투자성자산"] = invest_total
+        changed = True
+    # 예수금→자유입출금 재분류 (asset_allocation 도넛 반영)
+    if cash > 0 and alloc.get("투자성자산", 0) > eval_sum:
+        alloc["투자성자산"] = alloc["투자성자산"] - cash
+        alloc["자유입출금"] = alloc.get("자유입출금", 0) + cash
+        changed = True
+    if not changed:
         return False
-    model["cash_in_invest"] = cash
-    snap["예수금"] = cash
-    snap["투자성자산"] = invest_total
-    prev = model.get("prev")
-    if isinstance(prev, dict) and prev.get("투자성자산") is None:
-        prev_eval = prev.get("주식평가", 0)
-        prev["투자성자산"] = prev_eval
-        prev["예수금"] = 0
     save(model)
     return True
 
