@@ -4521,8 +4521,8 @@ def _render_stock_info_html(rec: dict) -> str:
                         sh_rel = esc(sh.get("relation", ""))
                         sh_shares = sh.get("shares", 0)
                         sh_pct = sh.get("pct", 0.0)
-                        sh_shares_str = f"{sh_shares:,}" if sh_shares else "—"
-                        sh_pct_str = f"{sh_pct:.2f}%" if sh_pct else "—"
+                        sh_shares_str = f"{sh_shares:,}" if sh_shares not in (None, 0) else "—"
+                        sh_pct_str = f"{sh_pct:.2f}%" if sh_pct not in (None, 0, 0.0) else "—"
                         sh_note = esc(sh.get("note", ""))
                         sh_rows += f"<tr><td>{sh_nm}</td><td>{sh_rel}</td><td class='num'>{sh_shares_str}</td><td class='num'>{sh_pct_str}</td></tr>\n"
                     kr_affiliates_html = f"""<div class="si-section">
