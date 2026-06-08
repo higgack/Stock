@@ -893,3 +893,142 @@ def get_kr_multi_period_trends(ticker: str) -> Optional[dict]:
         pass
 
     return result
+
+
+_INVESTOR_COLS_DETAIL = [
+    ("금융투자", ["금융투자", "금융투자업자"]),
+    ("보험", ["보험", "보험회사"]),
+    ("투신", ["투신", "투자신탁", "집합투자"]),
+    ("사모", ["사모", "사모펀드"]),
+    ("은행", ["은행"]),
+    ("기타금융", ["기타금융", "기타금융기관"]),
+    ("연기금", ["연기금", "연기금등"]),
+    ("기타법인", ["기타법인"]),
+    ("개인", ["개인"]),
+    ("외국인", ["외국인합계", "외국인", "외국인투자자"]),
+]
+
+_INVESTOR_COLS_SUMMARY = [
+    ("기관", ["기관합계", "기관", "기관투자자"]),
+    ("기타법인", ["기타법인"]),
+    ("개인", ["개인"]),
+    ("외국인", ["외국인합계", "외국인", "외국인투자자"]),
+]
+
+
+def get_kr_investor_detail(ticker: str) -> Optional[dict]:
+    """Per-ticker multi-period investor flow detail (pykrx).
+
+    Fetches 90 calendar days of daily net purchases by investor type,
+    computes 1d/5d/10d/20d/30d/60d cumulative sums for each.
+
+    Returns:
+        {
+            "investors": {
+                "금융투자": {"1d": int, "5d": int, ..., "60d": int},
+                "보험": {...},
+                ...
+            },
+            "unit": "억원",
+            "trading_days": int,
+        }
+        or None on failure. Values in 억원.
+    """
+    code = _normalize_code(ticker)
+    if not code:
+        return None
+    if not krx_login_ready():
+        return None
+
+    today_str = date.today().isoformat()
+    cache_file = _CACHE_DIR / f"inv_detail_{code}_{today_str}.json"
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < _CACHE_TTL_HOURS:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    try:
+        from pykrx import stock
+    except ImportError:
+        return None
+
+    end = date.today()
+    start = end - timedelta(days=90)
+    start_str = start.strftime("%Y%m%d")
+    end_str = end.strftime("%Y%m%d")
+
+    df = None
+    col_map: list[tuple[str, str]] = []  # (display_label, df_column)
+
+    # Try detail=True first for sub-investor breakdown
+    try:
+        df = stock.get_market_trading_value_by_date(
+            start_str, end_str, code, detail=True,
+        )
+    except (TypeError, Exception):
+        # detail param might not exist in older pykrx
+        try:
+            df = stock.get_market_trading_value_by_date(
+                start_str, end_str, code,
+            )
+        except Exception as exc:
+            log.info("pykrx: investor detail fetch failed for %s: %s", code, exc)
+            return None
+
+    if df is None or df.empty:
+        return None
+
+    # Build column mapping — try detail columns first, fall back to summary
+    cols_available = set(df.columns)
+    for label, candidates in _INVESTOR_COLS_DETAIL:
+        for c in candidates:
+            if c in cols_available:
+                col_map.append((label, c))
+                break
+
+    if len(col_map) < 3:
+        col_map = []
+        for label, candidates in _INVESTOR_COLS_SUMMARY:
+            for c in candidates:
+                if c in cols_available:
+                    col_map.append((label, c))
+                    break
+
+    if not col_map:
+        return None
+
+    eok = 1e8  # 억원
+    periods = [1, 5, 10, 20, 30, 60]
+    investors: dict[str, dict[str, int]] = {}
+    n_rows = len(df)
+
+    for label, col in col_map:
+        try:
+            series = df[col].fillna(0)
+        except Exception:
+            continue
+        pds: dict[str, int] = {}
+        for p in periods:
+            window = series.tail(min(p, n_rows))
+            pds[f"{p}d"] = round(float(window.sum()) / eok, 1)
+        investors[label] = pds
+
+    if not investors:
+        return None
+
+    result = {
+        "investors": investors,
+        "unit": "억원",
+        "trading_days": n_rows,
+    }
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(result))
+    except Exception:
+        pass
+
+    return result
