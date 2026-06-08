@@ -1059,7 +1059,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
 /help /usage /portfolio /screener_list /sites — 비용: /sv·screener·daily_byte·cheongyak·realestate_cost
-/screen [조건 | 프리셋] — 조건부 스크리너 (PER&lt;15 PBR&lt;1 등, ₩0). /screen list
+/screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0). /screen list
 /screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
@@ -1096,10 +1096,10 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 ━━━━━━━━━
 <b>【6. 조건부 스크리너 /screen】</b> ₩0 · LLM 미사용
-원하는 정량 조건으로 KR 전 종목(KOSPI+KOSDAQ) 즉시 필터.
- • <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — 자유 조건
- • <code>/screen valueup</code> — 밸류업 수혜주 (배당성향≥40 부채비율&lt;200)
- • <code>/screen list</code> — 전체 지표(22개)+프리셋(7종)
+정량 조건으로 KR 전 종목(KOSPI+KOSDAQ) 또는 US S&amp;P 500 필터.
+ • <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — KR 자유 조건
+ • <code>/screen us PER&lt;15 DIV&gt;2</code> — US S&amp;P 500
+ • <code>/screen valueup</code> — 프리셋 · <code>/screen list</code>
  • 프리셋: valueup·valueup2·highdiv·value·growth·quality·lowpbr
  • Phase 1 pykrx 벌크(PER/PBR/DIV/시총 즉시) → Phase 2 yfinance(배당성향/ROE 등 생존만)
  • 24h 캐시 · 대시보드 screen.html 이력
@@ -2253,12 +2253,22 @@ async def _handle_screen(args: list[str], send) -> None:
         format_result_message, save_screen_archive,
     )
 
+    market = "KR"
+    tokens = raw.split(None, 1)
+    if tokens and tokens[0].lower() == "us":
+        market = "US"
+        raw = tokens[1] if len(tokens) > 1 else ""
+        if not raw:
+            await send("⚠️ 조건을 입력하세요. 예: <code>/screen us PER&lt;15 DIV&gt;2</code>")
+            return
+
     preset = PRESETS.get(raw.lower())
     if preset:
         cond_text = preset["conditions"]
         _esc = cond_text.replace("<", "&lt;").replace(">", "&gt;")
+        label = "🇺🇸 S&amp;P 500" if market == "US" else "🇰🇷 KR"
         await send(
-            f"📊 <b>조건부 스크리너</b> — {preset['name']}\n"
+            f"📊 <b>조건부 스크리너</b> ({label}) — {preset['name']}\n"
             f"조건: <code>{_esc}</code>\n⏱ 실행 중..."
         )
     else:
@@ -2272,15 +2282,17 @@ async def _handle_screen(args: list[str], send) -> None:
 
     cond_display = " · ".join(c.display() for c in conditions)
     if not preset:
+        label = "🇺🇸 S&amp;P 500" if market == "US" else "🇰🇷 KR"
+        wait_note = " (yfinance 개별 조회, ~1-2분 소요)" if market == "US" else ""
         await send(
-            f"📊 <b>조건부 스크리너</b>\n"
-            f"조건: <code>{cond_display}</code>\n⏱ 실행 중..."
+            f"📊 <b>조건부 스크리너</b> ({label})\n"
+            f"조건: <code>{cond_display}</code>\n⏱ 실행 중...{wait_note}"
         )
 
     import asyncio
     try:
         result = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: run_screen(conditions, market="KR")
+            None, lambda: run_screen(conditions, market=market)
         )
     except Exception as exc:
         log.warning("screen failed: %s", exc)
