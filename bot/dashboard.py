@@ -3339,6 +3339,28 @@ def _load_stored_stock_info(ticker: str) -> dict | None:
         return None
 
 
+def _safe_dy_pct(dy_raw, div_rate=None, price=None):
+    """Return dividend yield as display percentage (0–100), or None.
+
+    yfinance ``dividendYield`` is unreliable: sometimes a decimal ratio
+    (0.0044 = 0.44 %), sometimes already a percentage (1.44 = 1.44 %),
+    sometimes just wrong (0.35 for a stock with real yield 0.44 %).
+    Prefer computing from ``dividendRate / price`` when both exist.
+    Cap at 20 % — no legitimate stock exceeds that.
+    """
+    # Method 1: compute from rate and price (most reliable)
+    if div_rate and price and isinstance(div_rate, (int, float)) and isinstance(price, (int, float)) and price > 0:
+        computed = (div_rate / price) * 100
+        if 0 < computed <= 20:
+            return round(computed, 2)
+    # Method 2: interpret raw dividendYield with heuristic + sanity cap
+    if dy_raw and isinstance(dy_raw, (int, float)) and dy_raw > 0:
+        pct = dy_raw * 100 if dy_raw < 1.0 else dy_raw
+        if 0 < pct <= 20:
+            return round(pct, 2)
+    return None
+
+
 def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
     """Fill the news / research / consensus tabs in-place when they're
     missing from ``si``. These come from our own market clients (Naver /
@@ -3703,10 +3725,9 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
         v = vals.get(k)
         if isinstance(v, (int, float)):
             fmt[k] = f"{float(v):.2f}{suf}"
-    dy = vals.get("dividendYield")
-    if isinstance(dy, (int, float)):
-        dy_pct = dy * 100 if dy < 1.0 else dy
-        fmt["dividendYield"] = f"{dy_pct:.2f}%"
+    _lq_dy = _safe_dy_pct(vals.get("dividendYield"), info.get("dividendRate"), price)
+    if _lq_dy is not None:
+        fmt["dividendYield"] = f"{_lq_dy:.2f}%"
     for k in ("trailingEps", "forwardEps", "bookValue",
               "fiftyDayAverage", "twoHundredDayAverage"):
         v = vals.get(k)
@@ -4074,12 +4095,8 @@ def _render_stock_info_html(rec: dict) -> str:
     val_multiples += _val_row("PBR (주가순자산)", si.get("priceToBook"), "x", "priceToBook")
     val_multiples += _val_row("PSR (주가매출)", si.get("priceToSalesTrailing12Months"), "x", "priceToSalesTrailing12Months")
     val_multiples += _val_row("EV/EBITDA", si.get("enterpriseToEbitda"), "x", "enterpriseToEbitda")
-    _dy_raw = si.get("dividendYield")
-    if _dy_raw:
-        _dy_pct = _dy_raw * 100 if _dy_raw < 1.0 else _dy_raw
-        val_multiples += _val_row("배당수익률", round(_dy_pct, 2), "%", "dividendYield")
-    else:
-        val_multiples += _val_row("배당수익률", None, "%", "dividendYield")
+    _dy_pct = _safe_dy_pct(si.get("dividendYield"), si.get("dividendRate"), si.get("current_price"))
+    val_multiples += _val_row("배당수익률", _dy_pct, "%", "dividendYield")
     val_multiples += _val_row("베타", si.get("beta"), "", "beta")
 
     val_per_share = ""
@@ -4887,8 +4904,8 @@ def _render_stock_info_html(rec: dict) -> str:
             def _pv(k):
                 v = pc.get(k)
                 return f"{v:.1f}" if v else "—"
-            dy = pc.get("dividendYield")
-            dy_str = f"{(dy * 100 if dy < 1.0 else dy):.1f}%" if dy else "—"
+            _pc_dy = _safe_dy_pct(pc.get("dividendYield"), pc.get("dividendRate"), pc.get("currentPrice"))
+            dy_str = f"{_pc_dy:.1f}%" if _pc_dy is not None else "—"
             pc_rows += f'<tr{style}><td>{name}</td><td>{ptk}</td><td class="num">{mc_str}</td>'
             pc_rows += f'<td class="num">{_pv("trailingPE")}</td><td class="num">{_pv("forwardPE")}</td>'
             pc_rows += f'<td class="num">{_pv("priceToBook")}</td><td class="num">{_pv("priceToSalesTrailing12Months")}</td>'

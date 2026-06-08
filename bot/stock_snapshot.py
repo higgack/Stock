@@ -76,7 +76,7 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
         for k in ("trailingPE", "forwardPE", "priceToBook",
                   "priceToSalesTrailing12Months", "enterpriseToEbitda",
                   "trailingEps", "forwardEps", "bookValue",
-                  "dividendYield", "beta",
+                  "dividendYield", "dividendRate", "beta",
                   "fiftyTwoWeekHigh", "fiftyTwoWeekLow",
                   "fiftyDayAverage", "twoHundredDayAverage"):
             v = _g(k)
@@ -911,6 +911,8 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
                 "priceToSalesTrailing12Months": pi.get("priceToSalesTrailing12Months"),
                 "enterpriseToEbitda": pi.get("enterpriseToEbitda"),
                 "dividendYield": pi.get("dividendYield"),
+                "dividendRate": pi.get("dividendRate"),
+                "currentPrice": pi.get("currentPrice") or pi.get("regularMarketPrice"),
             }
             entry = {k: v for k, v in entry.items() if v is not None}
             if pt == ticker:
