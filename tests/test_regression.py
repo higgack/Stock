@@ -2359,13 +2359,13 @@ class TestPortfolioDashboard:
         none_html = _render_portfolio_page(self._model())
         assert "지난 업데이트" not in none_html
         assert "자산 변화" in none_html, "prev 없을 때 자산 변화 안내 placeholder 누락"
-        # 같은 업로드 날짜면 증분 스킵 (사용자 정책 2026-06-04)
+        # 같은 업로드 날짜여도 증분 표시 (사용자 정책 2026-06-08 — 덮어쓰기)
         import time as _t
         now = _t.time()
         m2 = self._model()
         m2["_saved_ts"] = now
         m2["prev"] = {"순자산": 1, "주식평가": 1, "_saved_ts": now - 60}
-        assert "지난 업데이트" not in _render_portfolio_page(m2), "같은 날짜 증분 스킵 안 됨"
+        assert "지난 업데이트" in _render_portfolio_page(m2), "같은 날짜도 증분 표시해야 함"
 
     def test_noah_overlay(self):
         # 증분5: 보유종목 ↔ NOAH 최근 판정 + (해소되면)5거래일 성과 오버레이.
@@ -3778,3 +3778,81 @@ class TestBanksaladExportValidation:
         assert idx > 0
         seg = src[idx:idx + 400]
         assert "_push_confirm" not in seg, "비-export 인데 confirm 푸시(거짓 알림)"
+
+
+class TestCashInInvest:
+    """투자성자산(재무현황) − 투자현황(holdings) = 예수금류 (2026-06-08).
+
+    CMA/Super365 예수금이 섹션 3 투자성자산에는 있지만 섹션 5 투자현황에
+    없어 증분 비교 시 허수 차이가 발생하던 것 차단."""
+
+    def _build(self, invest_items, holdings_eval):
+        from bot.portfolio import build_model
+        parsed = {
+            "as_of": "2026-06-08",
+            "holdings": [
+                {"상품명": f"stock{i}", "금융사": "NH",
+                 "평가금액": ev, "투자원금": ev, "수익률": 0.0}
+                for i, ev in enumerate(holdings_eval)
+            ],
+            "finance": {
+                "assets": {"투자성자산": [{"name": f"item{i}", "amount": a}
+                                      for i, a in enumerate(invest_items)]},
+                "liabilities": {},
+                "총자산": sum(invest_items), "총부채": 0,
+                "순자산": sum(invest_items),
+            },
+            "loans": [], "insurance": [],
+        }
+        noop = lambda name: {"ticker": None, "market": None, "matched": False}
+        return build_model(parsed, resolve=noop)
+
+    def test_cash_computed(self):
+        """투자성자산 1억 중 주식 9천만 → 예수금 1천만."""
+        m = self._build([90_000_000, 10_000_000], [90_000_000])
+        assert m["cash_in_invest"] == 10_000_000
+        assert m["snapshot"]["예수금"] == 10_000_000
+        assert m["snapshot"]["투자성자산"] == 100_000_000
+
+    def test_no_cash(self):
+        """투자성자산 = 투자현황 → 예수금 0."""
+        m = self._build([50_000_000], [50_000_000])
+        assert m["cash_in_invest"] == 0
+        assert m["snapshot"]["예수금"] == 0
+
+    def test_no_invest_category(self):
+        """투자성자산 카테고리 자체가 없으면 예수금 0."""
+        from bot.portfolio import build_model
+        parsed = {
+            "as_of": "2026-06-08",
+            "holdings": [{"상품명": "x", "금융사": "A",
+                          "평가금액": 100, "투자원금": 100, "수익률": 0}],
+            "finance": {"assets": {"예적금": [{"name": "y", "amount": 500}]},
+                        "liabilities": {}, "총자산": 600, "총부채": 0, "순자산": 600},
+            "loans": [], "insurance": [],
+        }
+        noop = lambda name: {"ticker": None, "market": None, "matched": False}
+        m = build_model(parsed, resolve=noop)
+        assert m["cash_in_invest"] == 0
+
+    def test_format_summary_shows_cash(self):
+        """예수금 > 0이면 텔레그램 요약에 표시."""
+        from bot.portfolio import format_summary_text
+        m = {
+            "net_worth": {"순자산": 100, "총자산": 100, "총부채": 0},
+            "distinct_count": 1, "matched_count": 0,
+            "cash_in_invest": 5_000_000,
+            "by_broker": {}, "asset_allocation": {}, "loans": [],
+        }
+        assert "예수금" in format_summary_text(m)
+
+    def test_format_summary_hides_zero_cash(self):
+        """예수금 0이면 텔레그램 요약에 미표시."""
+        from bot.portfolio import format_summary_text
+        m = {
+            "net_worth": {"순자산": 100, "총자산": 100, "총부채": 0},
+            "distinct_count": 1, "matched_count": 0,
+            "cash_in_invest": 0,
+            "by_broker": {}, "asset_allocation": {}, "loans": [],
+        }
+        assert "예수금" not in format_summary_text(m)
