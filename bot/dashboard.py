@@ -4306,11 +4306,36 @@ def _render_stock_info_html(rec: dict) -> str:
     if tw_rev and isinstance(tw_rev, list):
         tw_r_rows = ""
         sorted_rev = sorted(tw_rev, key=lambda r: r.get("date", ""), reverse=True)
+        # build date→revenue map for YoY/MoM fallback computation
+        _rev_map: dict[str, float] = {}
+        for _r in sorted_rev:
+            _d = _r.get("date", "")
+            _rv = _r.get("revenue")
+            if _d and _rv is not None:
+                _rev_map[_d] = float(_rv)
         for r in sorted_rev[:13]:
             d = esc(r.get("date", "—"))
             rev_val = r.get("revenue")
             yoy = r.get("revenue_year_growth_rate")
             mom = r.get("revenue_month_growth_rate")
+            # compute YoY/MoM from raw revenue when API returns null
+            raw_d = r.get("date", "")
+            if rev_val is not None and raw_d and len(raw_d) >= 7:
+                try:
+                    _y, _m = int(raw_d[:4]), int(raw_d[5:7])
+                    if yoy is None:
+                        prev_y_key = f"{_y - 1}-{_m:02d}-01"
+                        prev_y_rev = _rev_map.get(prev_y_key)
+                        if prev_y_rev and prev_y_rev > 0:
+                            yoy = (float(rev_val) / prev_y_rev - 1) * 100
+                    if mom is None:
+                        pm_y, pm_m = (_y, _m - 1) if _m > 1 else (_y - 1, 12)
+                        prev_m_key = f"{pm_y}-{pm_m:02d}-01"
+                        prev_m_rev = _rev_map.get(prev_m_key)
+                        if prev_m_rev and prev_m_rev > 0:
+                            mom = (float(rev_val) / prev_m_rev - 1) * 100
+                except (ValueError, ZeroDivisionError):
+                    pass
             rev_str = f"{rev_val:,.0f}" if rev_val is not None else "—"
             if yoy is not None:
                 y_cls = "pos" if yoy >= 0 else "neg"
@@ -8335,6 +8360,8 @@ _PF_CSS = """<style>
 .pf-ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}
 .pf-ctl input[type=text],.pf-ctl select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 9px;font-size:13px}
 .pf-ctl label{font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+.pf-mkt-filter .mf-btn{background:var(--bg);color:var(--muted);border:1px solid var(--border);border-radius:12px;padding:3px 10px;font-size:12px;cursor:pointer;white-space:nowrap}
+.pf-mkt-filter .mf-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .pf-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .pf-title-row h1{margin:0}
 .pf-send{background:var(--accent);color:#fff;border:0;border-radius:4px;padding:3px 7px;font-size:11px;cursor:pointer}
@@ -8358,13 +8385,22 @@ var tbl=document.getElementById('pf-tbl'); if(!tbl||!tbl.tBodies[0]) return;
 var tb=tbl.tBodies[0], rows=[].slice.call(tb.rows);
 var q=document.getElementById('pf-q'), bsel=document.getElementById('pf-broker'),
     nck=document.getElementById('pf-noah'), cnt=document.getElementById('pf-cnt');
-var sortK=null, sortDir=1;
+var sortK=null, sortDir=1, mktFilter='ALL';
+var mfBtns=[].slice.call(document.querySelectorAll('.pf-mkt-filter .mf-btn'));
+mfBtns.forEach(function(btn){
+  btn.addEventListener('click',function(){
+    mktFilter=btn.dataset.mf;
+    mfBtns.forEach(function(b){b.classList.toggle('active',b===btn);});
+    apply();
+  });
+});
 function num(v){var n=parseFloat(v); return isNaN(n)?null:n;}
 function apply(){
  var qv=(q.value||'').trim().toLowerCase(), bv=bsel.value, nv=nck.checked, shown=0;
  rows.forEach(function(tr){
   var ok=true;
-  if(qv) ok=((tr.dataset.name||'').indexOf(qv)>=0)||((tr.dataset.tkr||'').indexOf(qv)>=0);
+  if(mktFilter!=='ALL') ok=(tr.dataset.market===mktFilter);
+  if(ok&&qv) ok=((tr.dataset.name||'').indexOf(qv)>=0)||((tr.dataset.tkr||'').indexOf(qv)>=0);
   if(ok&&bv) ok=(tr.dataset.broker===bv);
   if(ok&&nv) ok=!!(tr.dataset.noah);
   tr.style.display=ok?'':'none'; if(ok)shown++;
@@ -8783,12 +8819,14 @@ def _render_portfolio_page(model, noah=None) -> str:
                                  f'{_csign}{_pf_won(_chg_val)}</td>')
             else:
                 _chg_cell = '<td class="cen"><span style="font-size:11px;color:var(--accent)">신규</span></td>'
+        _hmkt = _ticker_market(str(tkr or ""))
         _da = (f'data-name="{nm.lower()}" data-tkr="{_html.escape(str(tkr or "")).lower()}" '
                f'data-broker="{broker}" data-eval="{ev if ev is not None else ""}" '
                f'data-ret="{r if r is not None else ""}" '
                f'data-pnl="{pnl if pnl is not None else ""}" '
                f'data-chg="{_chg_val if _chg_val is not None else ""}" '
-               f'data-noah="{_html.escape(noah_rating)}"')
+               f'data-noah="{_html.escape(noah_rating)}" '
+               f'data-market="{_hmkt}"')
         hl_rows += (f'<tr {_da}><td>{nm_cell}</td><td>{_html.escape(str(tkr or "—"))}</td>'
                     f'<td>{broker}</td><td class="r">{_pf_won(ev)}</td>'
                     f'<td class="r" style="color:{_pf_col(r)}">{rtxt}</td>'
@@ -8803,9 +8841,21 @@ def _render_portfolio_page(model, noah=None) -> str:
             _brokers.append(b)
     _opts = '<option value="">전체 증권사</option>' + ''.join(
         f'<option value="{_html.escape(b)}">{_html.escape(b)}</option>' for b in _brokers)
+    # 국가별 필터 버튼
+    _hmkt_counts: dict[str, int] = {}
+    for h in _holds_sorted:
+        _mk = _ticker_market(str(h.get("ticker") or ""))
+        _hmkt_counts[_mk] = _hmkt_counts.get(_mk, 0) + 1
+    _mkt_order = ["KR", "US", "JP", "TW", "CN", "HK"]
+    _mkt_btns = '<button class="mf-btn active" data-mf="ALL">전체</button>'
+    for _mk in _mkt_order:
+        if _mk in _hmkt_counts:
+            _mkt_btns += f'<button class="mf-btn" data-mf="{_mk}">{_mk} {_hmkt_counts[_mk]}</button>'
+    _mkt_filter = f'<div class="pf-mkt-filter" style="display:flex;gap:5px;flex-wrap:wrap">{_mkt_btns}</div>'
     _ctl = ('<div class="pf-ctl"><input type="text" id="pf-q" placeholder="🔎 종목·티커 검색">'
             f'<select id="pf-broker">{_opts}</select>'
             '<label><input type="checkbox" id="pf-noah"> NOAH 분석만</label>'
+            f'{_mkt_filter}'
             '<span id="pf-cnt" style="font-size:12px;color:var(--muted)"></span></div>'
             ) if holdings else ''
     _send_btns = (

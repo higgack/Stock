@@ -201,20 +201,55 @@ def fetch_shareholding(ticker: str) -> Optional[list]:
 # Formatting helpers
 # ------------------------------------------------------------------
 
+def _compute_growth_rates(rows: list) -> dict[str, dict]:
+    """Build date→{yoy, mom} from raw revenue for fallback."""
+    rev_map: dict[str, float] = {}
+    for r in rows:
+        d = r.get("date", "")
+        rv = r.get("revenue")
+        if d and rv is not None:
+            rev_map[d] = float(rv)
+    result: dict[str, dict] = {}
+    for r in rows:
+        d = r.get("date", "")
+        rv = r.get("revenue")
+        if not d or rv is None or len(d) < 7:
+            continue
+        try:
+            y, m = int(d[:4]), int(d[5:7])
+            yoy = r.get("revenue_year_growth_rate")
+            mom = r.get("revenue_month_growth_rate")
+            if yoy is None:
+                prev_y_rev = rev_map.get(f"{y - 1}-{m:02d}-01")
+                if prev_y_rev and prev_y_rev > 0:
+                    yoy = (float(rv) / prev_y_rev - 1) * 100
+            if mom is None:
+                pm_y, pm_m = (y, m - 1) if m > 1 else (y - 1, 12)
+                prev_m_rev = rev_map.get(f"{pm_y}-{pm_m:02d}-01")
+                if prev_m_rev and prev_m_rev > 0:
+                    mom = (float(rv) / prev_m_rev - 1) * 100
+            result[d] = {"yoy": yoy, "mom": mom}
+        except (ValueError, ZeroDivisionError):
+            pass
+    return result
+
+
 def format_monthly_revenue_block(rows: Optional[list]) -> str:
     """Format monthly revenue into a compact text block."""
     if not rows:
         return ""
     lines = ["• TW 월매출 (단위: 千元, FinMind/TWSE 공식):"]
     sorted_rows = sorted(rows, key=lambda r: r.get("date", ""), reverse=True)
+    growth = _compute_growth_rates(sorted_rows)
     for r in sorted_rows[:13]:
         rev = r.get("revenue", 0)
-        yoy = r.get("revenue_year_growth_rate")
-        mom = r.get("revenue_month_growth_rate")
+        d = r.get("date", "?")
+        g = growth.get(d, {})
+        yoy = g.get("yoy")
+        mom = g.get("mom")
         rev_str = f"{rev:,.0f}" if rev else "N/A"
         yoy_str = f"YoY {yoy:+.1f}%" if yoy is not None else ""
         mom_str = f"MoM {mom:+.1f}%" if mom is not None else ""
-        d = r.get("date", "?")
         parts = [rev_str]
         if yoy_str:
             parts.append(yoy_str)
