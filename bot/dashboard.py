@@ -8329,8 +8329,13 @@ def _render_portfolio_page(model, noah=None) -> str:
         pct = amt / tot * 100
         col = _PF_DONUT_COLORS[i % len(_PF_DONUT_COLORS)]
         stops.append(f"{col} {acc:.2f}% {acc + pct:.2f}%")
-        # 뱅크샐러드 '동산' 카테고리 = 자동차/이륜차 → 명시 (사용자 요청 2026-06-04)
-        disp = "동산 (자동차)" if cat == "동산" else cat
+        # 카테고리 표시명 보정
+        if cat == "동산":
+            disp = "동산 (자동차)"
+        elif cat == "자유입출금 자산" and cash_in_invest > 0:
+            disp = "자유입출금 자산 (예수금 포함)"
+        else:
+            disp = cat
         legend.append(f'<div class="pf-leg"><span class="pf-dot" style="background:{col}"></span>'
                       f'{_html.escape(disp)} <b>{_pf_won(amt)}</b> '
                       f'<span style="color:var(--muted)">({pct:.1f}%)</span></div>')
