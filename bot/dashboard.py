@@ -4472,6 +4472,60 @@ def _render_stock_info_html(rec: dict) -> str:
   소액주주: {smam.get('smam_cnt', '—'):,}명 / 전체 {smam.get('whole_cnt', '—'):,}명 · 비율 {smam.get('smam_ratio', 0):.1f}% · 기준 {esc(str(smam.get('biz_year', '')))}
 </div>"""
 
+    # ── P5 KR: Seibro 외국인보유 상세 (주주탭 하단) ──────────────
+    kr_foreign_html = ""
+    if is_kr:
+        try:
+            from bot.seibro_client import fetch_foreign_holding, seibro_key_ready
+            if seibro_key_ready():
+                fh = fetch_foreign_holding(ticker)
+                if fh:
+                    fp = fh.get("foreign_pct", 0)
+                    fs = fh.get("foreign_shares", 0)
+                    ls = fh.get("listed_shares", 0)
+                    le = fh.get("limit_exhaustion_pct")
+                    lim_s = fh.get("limit_shares", 0)
+                    fd = esc(str(fh.get("date", "")))
+                    le_html = ""
+                    if le is not None:
+                        le_cls = "neg" if le >= 95 else ("" if le < 80 else "")
+                        le_warn = " ⚠️ ceiling 임박" if le >= 95 else (" ⚠️ 제한 접근" if le >= 80 else "")
+                        le_html = f'<tr><td>한도소진율</td><td class="num">{le:.2f}%{le_warn}</td></tr><tr><td>한도주식수</td><td class="num">{lim_s:,}주</td></tr>'
+                    kr_foreign_html = f"""<div class="si-section">
+    <div class="si-section-title">외국인 보유현황 (세이브로/KSD · {fd})</div>
+    <table class="si-table"><tbody>
+      <tr><td>보유비율</td><td class="num">{fp:.2f}%</td></tr>
+      <tr><td>보유주식수</td><td class="num">{fs:,}주</td></tr>
+      <tr><td>상장주식수</td><td class="num">{ls:,}주</td></tr>
+      {le_html}
+    </tbody></table></div>"""
+        except Exception as exc:
+            log.debug("_build_detail_tabs: seibro foreign %s: %s", ticker, exc)
+
+    # ── P6 KR: DART 계열회사 현황 (주주탭 하단) ──────────────────
+    kr_affiliates_html = ""
+    if is_kr:
+        try:
+            from bot.dart_client import get_dart
+            dart = get_dart()
+            if dart:
+                stock_code = ticker.split(".")[0]
+                affis = dart.get_affiliate_companies(stock_code)
+                if affis:
+                    af_rows = ""
+                    for af in affis[:30]:
+                        af_nm = esc(af.get("name", ""))
+                        af_rel = esc(af.get("relation", ""))
+                        af_listed = esc(af.get("listed", ""))
+                        af_biz = esc(af.get("biz_type", ""))
+                        af_rows += f"<tr><td>{af_nm}</td><td>{af_rel}</td><td>{af_listed}</td><td>{af_biz}</td></tr>\n"
+                    kr_affiliates_html = f"""<div class="si-section">
+    <div class="si-section-title">계열회사 현황 (DART · {len(affis)}개사)</div>
+    <table class="si-table"><thead><tr><th>회사명</th><th>관계</th><th>상장여부</th><th>주요 사업</th></tr></thead>
+    <tbody>{af_rows}</tbody></table></div>"""
+        except Exception as exc:
+            log.debug("_build_detail_tabs: DART affiliates %s: %s", ticker, exc)
+
     # holders_pane assembled later (after us_insider_html defined)
 
     # ── 뉴스 pane ───────────────────────────────────────────────
@@ -5243,8 +5297,10 @@ def _render_stock_info_html(rec: dict) -> str:
   </div>
   {short_html}
   {us_insider_summary_html}
+  {kr_foreign_html}
   {kr_insider_html}
   {kr_minority_html}
+  {kr_affiliates_html}
   {us_insider_html}
   {jp_holders_html}
   {tw_insiders_html}

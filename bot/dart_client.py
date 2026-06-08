@@ -658,6 +658,77 @@ class DartClient:
             })
         return out
 
+    # ── 계열회사 현황 (getAffiCpyInfo) ───────────────────────────────
+
+    def get_affiliate_companies(self, stock_code: str) -> list[dict]:
+        """DART 계열회사현황 — 종속/관계/계열사 목록.
+        Each row: {name, relation, listed, biz_type}.
+        Empty list on failure."""
+        if not self.api_key:
+            return []
+        corp_code = self.stock_code_to_corp_code(stock_code)
+        if not corp_code:
+            return []
+        ck = f"affi_{corp_code}"
+        cached = self._disk_get(ck)
+        if cached is not None:
+            return cached
+        try:
+            resp = requests.get(
+                f"{_DART_BASE}/hyslrSttus.json",
+                params={
+                    "crtfc_key": self.api_key,
+                    "corp_code": corp_code,
+                    "bsns_year": str(date.today().year - 1),
+                    "reprt_code": "11011",
+                },
+                timeout=_HTTP_TIMEOUT,
+            )
+            payload = resp.json()
+        except Exception as exc:
+            log.warning("dart: hyslrSttus for %s failed: %s", stock_code, exc)
+            return []
+        if payload.get("status") not in ("000",):
+            return []
+        rows = payload.get("list") or []
+        out: list[dict] = []
+        for r in rows:
+            nm = (r.get("inv_prm") or r.get("aflte_nm") or "").strip()
+            if not nm:
+                continue
+            rel = (r.get("rel_corp_nm") or r.get("relt") or "").strip()
+            listed = (r.get("lst_at") or "").strip()
+            biz = (r.get("tast_bsns") or r.get("bsn_sumry") or "").strip()
+            out.append({
+                "name": nm,
+                "relation": rel,
+                "listed": listed,
+                "biz_type": biz,
+            })
+        if out:
+            self._disk_set(ck, out)
+        return out
+
+    def _disk_get(self, key: str):
+        p = Path.home() / ".tradingagents" / "cache" / "dart" / f"{key}.json"
+        if not p.exists():
+            return None
+        try:
+            age_h = (time.time() - p.stat().st_mtime) / 3600
+            if age_h >= 168:  # 7 day cache (yearly report data)
+                return None
+            return json.loads(p.read_text())
+        except Exception:
+            return None
+
+    def _disk_set(self, key: str, data):
+        try:
+            d = Path.home() / ".tradingagents" / "cache" / "dart"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / f"{key}.json").write_text(json.dumps(data, ensure_ascii=False))
+        except Exception:
+            pass
+
     # ── earnings window estimate ────────────────────────────────────────
     # ── D1 Phase 2: 정규화 재무제표 + 비율 ───────────────────────────
 
