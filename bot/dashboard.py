@@ -5252,7 +5252,7 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
 </head>
 <body>
 <div class="wrap">
-  <a class="back" href="../index.html">← 아카이브로 돌아가기</a>
+  <a class="back" href="../index.html" onclick="if(history.length>1){{history.back();return false}}">← 아카이브로 돌아가기</a>
   <div class="title-row">
     <h1>📊 {_html.escape(h1_label)}</h1>
     {_badge_html(rating)}
