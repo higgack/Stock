@@ -697,7 +697,8 @@ def format_list_message() -> str:
     """Format /screen list output."""
     lines = ["📊 <b>조건부 스크리너 (/screen)</b>\n"]
     lines.append("<b>사용법:</b>")
-    lines.append("  <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code>")
+    lines.append("  <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — KR")
+    lines.append("  <code>/screen us PER&lt;15 DIV&gt;2</code> — US S&amp;P 500")
     lines.append("  <code>/screen valueup</code> (프리셋)")
     lines.append("  <code>/screen list</code> (이 목록)\n")
 
@@ -721,7 +722,10 @@ def format_list_message() -> str:
 
     lines.append(
         "\n<b>연산자:</b> <code>&gt; &lt; &gt;= &lt;= =</code>"
-        "\n<b>시장:</b> KR (KOSPI+KOSDAQ). 비용 ₩0. 24h 캐시."
+        "\n<b>시장:</b> KR (KOSPI+KOSDAQ) 기본, <code>us</code> 붙이면 US S&amp;P 500."
+        "\n  KR: Phase 1 pykrx 전 종목 → Phase 2 yfinance 생존만"
+        "\n  US: yfinance 개별 조회 (~1-2분, Phase 1 지표도 yfinance)"
+        "\n비용 ₩0. 24h 캐시."
     )
     return "\n".join(lines)
 
