@@ -152,7 +152,7 @@ def _submissions(cik: str) -> Optional[dict]:
     if payload is not None:
         return payload
     try:
-        url = _SUBS_URL.format(cik=f"CIK{cik}")
+        url = _SUBS_URL.format(cik=cik)
         r = _get(url)
         payload = r.json()
         _save_cache(key, payload)
@@ -487,7 +487,7 @@ def _fetch_concept(cik: str, taxonomy: str, concept: str) -> Optional[dict]:
     if cached is not None:
         return cached or None
     try:
-        url = _CONCEPT_URL.format(cik=f"CIK{cik}", taxonomy=taxonomy, concept=concept)
+        url = _CONCEPT_URL.format(cik=cik, taxonomy=taxonomy, concept=concept)
         r = _get(url)
         payload = r.json()
         _save_cache(key, payload)
