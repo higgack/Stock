@@ -1665,6 +1665,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
         "edgar_form4", "edgar_xbrl",
         "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
+        "finnhub_earnings", "finnhub_rec",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
@@ -1675,6 +1676,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
         "edgar_8k", "edgar_form4", "edgar_xbrl",
         "options_signals",
         "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
+        "finnhub_earnings", "finnhub_rec", "finnhub_insent",
         "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block",
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
@@ -1682,6 +1684,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     "news": {"krx_flow", "hsgt_flow", "kis_supply", "twse_flow",
              "options_signals", "edgar_xbrl",
              "finmind_revenue", "finmind_per_pbr", "finmind_shareholding",
+             "finnhub_earnings", "finnhub_rec", "finnhub_insent",
              "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
     # need short-horizon flow. Keeps macro (rate-sensitive valuation).
@@ -1905,6 +1908,19 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
         try:
             from bot.options_client import get_options_signals
             tasks["options_signals"] = lambda: get_options_signals(ticker)
+        except Exception:
+            pass
+        try:
+            from bot.finnhub_client import (
+                finnhub_key_ready,
+                fetch_earnings_surprise as _fh_earnings,
+                fetch_recommendation_trends as _fh_rec,
+                fetch_insider_sentiment as _fh_insent,
+            )
+            if finnhub_key_ready():
+                tasks["finnhub_earnings"] = lambda: _fh_earnings(ticker)
+                tasks["finnhub_rec"] = lambda: _fh_rec(ticker)
+                tasks["finnhub_insent"] = lambda: _fh_insent(ticker)
         except Exception:
             pass
 
@@ -5058,6 +5074,56 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
             except Exception as exc:
                 _analyst_log.warning(
                     "options injection failed for %s: %s", ticker, exc,
+                )
+            # Finnhub: earnings surprise + recommendation trends + insider MSPR
+            try:
+                if _section_allowed(analyst_id, "finnhub_earnings"):
+                    from bot.finnhub_client import format_earnings_block
+                    fh_earn = prefetched.get("finnhub_earnings")
+                    earn_block = format_earnings_block(fh_earn)
+                    if earn_block:
+                        base += (
+                            "\n\n=== Earnings Surprise (Finnhub, verbatim) ===\n"
+                            + earn_block
+                            + "\n\nBeat/Miss 패턴이 5거래일 momentum 핵심."
+                            " 연속 Beat = 컨센서스 상향 여력, 연속 Miss ="
+                            " downgrade 위험. 수치 날조 금지."
+                        )
+            except Exception as exc:
+                _analyst_log.warning(
+                    "finnhub earnings injection failed for %s: %s", ticker, exc,
+                )
+            try:
+                if _section_allowed(analyst_id, "finnhub_rec"):
+                    from bot.finnhub_client import format_recommendation_block
+                    fh_rec = prefetched.get("finnhub_rec")
+                    rec_block = format_recommendation_block(fh_rec)
+                    if rec_block:
+                        base += (
+                            "\n\n=== Analyst Recommendation Trends (Finnhub, verbatim) ===\n"
+                            + rec_block
+                            + "\n\nyfinance recommendationKey 와 교차검증."
+                            " Buy 비중 변화 방향이 5거래일 catalyst."
+                        )
+            except Exception as exc:
+                _analyst_log.warning(
+                    "finnhub rec injection failed for %s: %s", ticker, exc,
+                )
+            try:
+                if _section_allowed(analyst_id, "finnhub_insent"):
+                    from bot.finnhub_client import format_insider_sentiment_block
+                    fh_insent = prefetched.get("finnhub_insent")
+                    insent_block = format_insider_sentiment_block(fh_insent)
+                    if insent_block:
+                        base += (
+                            "\n\n=== Insider Sentiment MSPR (Finnhub, verbatim) ===\n"
+                            + insent_block
+                            + "\n\nMSPR>0 = Net insider buy, MSPR<0 = Net sell."
+                            " EDGAR Form 4 raw 과 교차검증."
+                        )
+            except Exception as exc:
+                _analyst_log.warning(
+                    "finnhub insent injection failed for %s: %s", ticker, exc,
                 )
 
         # DART (KR-only) — 공시 / 임원지분 / 실적 윈도. yfinance returns
