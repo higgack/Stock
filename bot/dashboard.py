@@ -4472,20 +4472,26 @@ def _render_stock_info_html(rec: dict) -> str:
   소액주주: {smam.get('smam_cnt', '—'):,}명 / 전체 {smam.get('whole_cnt', '—'):,}명 · 비율 {smam.get('smam_ratio', 0):.1f}% · 기준 {esc(str(smam.get('biz_year', '')))}
 </div>"""
 
-    # ── P5 KR: Seibro 외국인보유 상세 (주주탭 하단) ──────────────
+    # ── P5 KR: 외국인보유 상세 (pykrx → Seibro → Naver fallback) ──
     kr_foreign_html = ""
     if is_kr:
         try:
             fh = None
-            from bot.seibro_client import fetch_foreign_holding, seibro_key_ready
-            if seibro_key_ready():
-                fh = fetch_foreign_holding(ticker)
+            try:
+                from bot.pykrx_client import get_kr_foreign_holding
+                fh = get_kr_foreign_holding(ticker)
+            except Exception:
+                pass
+            if fh is None:
+                from bot.seibro_client import fetch_foreign_holding, seibro_key_ready
+                if seibro_key_ready():
+                    fh = fetch_foreign_holding(ticker)
             if fh is None:
                 try:
                     from bot.naver_finance_client import get_naver_foreign_holding
                     fh = get_naver_foreign_holding(ticker)
-                except Exception as nv_exc:
-                    log.info("naver frgn fallback %s: %s", ticker, nv_exc)
+                except Exception:
+                    pass
             if fh:
                 fp = fh.get("foreign_pct", 0)
                 fs = fh.get("foreign_shares", 0)
@@ -4493,7 +4499,8 @@ def _render_stock_info_html(rec: dict) -> str:
                 le = fh.get("limit_exhaustion_pct")
                 lim_s = fh.get("limit_shares", 0)
                 fd = esc(str(fh.get("date", "")))
-                src = "네이버" if fh.get("source") == "naver" else "세이브로/KSD"
+                _src_map = {"krx": "KRX", "naver": "네이버"}
+                src = _src_map.get(fh.get("source", ""), "세이브로/KSD")
                 le_html = ""
                 if le is not None:
                     le_warn = " ⚠️ ceiling 임박" if le >= 95 else (" ⚠️ 제한 접근" if le >= 80 else "")
@@ -4507,7 +4514,7 @@ def _render_stock_info_html(rec: dict) -> str:
       {le_html}
     </tbody></table></div>"""
             else:
-                log.info("foreign holding: both seibro+naver returned None for %s", ticker)
+                log.info("foreign holding: pykrx+seibro+naver all None for %s", ticker)
         except Exception as exc:
             log.warning("detail: seibro foreign %s: %s", ticker, exc)
 

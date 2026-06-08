@@ -291,7 +291,8 @@ def format_foreign_holding_block(data: Optional[dict]) -> str:
     if pct is None:
         return ""
 
-    src = "네이버" if data.get("source") == "naver" else "세이브로/KSD"
+    _src_map = {"krx": "KRX", "naver": "네이버"}
+    src = _src_map.get(data.get("source", ""), "세이브로/KSD")
     lines = [f"• 외국인 보유현황 ({src}, {data.get('date', '?')}):"]
     shares = data.get("foreign_shares", 0)
     listed = data.get("listed_shares", 0)

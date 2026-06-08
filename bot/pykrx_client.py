@@ -585,6 +585,111 @@ def get_kr_foreign_ownership_trend(ticker: str, days_back: int = 30) -> Optional
     return result
 
 
+def get_kr_foreign_holding(ticker: str) -> Optional[dict]:
+    """KRX 공식 외국인 보유현황 스냅샷 (최신 1일).
+
+    pykrx get_exhaustion_rates_of_foreign_investment 로 최근 10일 조회 →
+    마지막 행에서 보유비율/보유주식수/상장주식수/한도소진율 추출.
+
+    Returns Seibro-compatible shape:
+        {
+            "date": str (YYYYMMDD),
+            "foreign_pct": float,
+            "foreign_shares": int,
+            "listed_shares": int,
+            "limit_exhaustion_pct": float (if available),
+            "limit_shares": int (if available),
+            "source": "krx",
+        }
+        or None on failure.
+    """
+    code = _normalize_code(ticker)
+    if not code:
+        return None
+    if not krx_login_ready():
+        return None
+
+    today_str = date.today().isoformat()
+    cache_file = _CACHE_DIR / f"foreign_hold_{code}_{today_str}.json"
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < _CACHE_TTL_HOURS:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    try:
+        from pykrx import stock
+    except ImportError:
+        return None
+
+    end = date.today()
+    start = end - timedelta(days=10)
+    try:
+        df = stock.get_exhaustion_rates_of_foreign_investment(
+            start.strftime("%Y%m%d"),
+            end.strftime("%Y%m%d"),
+            code,
+        )
+    except Exception as exc:
+        log.warning("pykrx: foreign holding fetch failed for %s: %s", code, exc)
+        return None
+
+    if df is None or df.empty:
+        return None
+
+    row = df.iloc[-1]
+    row_date = df.index[-1]
+    if hasattr(row_date, "strftime"):
+        dt_str = row_date.strftime("%Y%m%d")
+    else:
+        dt_str = str(row_date).replace("-", "")[:8]
+
+    def _col(candidates):
+        for c in candidates:
+            if c in df.columns:
+                try:
+                    v = float(row[c])
+                    return v
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    foreign_pct = _col(["지분율", "보유비중"])
+    if foreign_pct is None:
+        return None
+
+    foreign_shares = _col(["보유수량", "보유주식수"])
+    listed_shares = _col(["상장주식수"])
+    exhaust_pct = _col(["한도소진률", "한도소진율"])
+    limit_shares = _col(["한도수량", "한도주식수"])
+
+    result: dict = {
+        "date": dt_str,
+        "foreign_pct": round(foreign_pct, 2),
+        "foreign_shares": int(foreign_shares) if foreign_shares else 0,
+        "listed_shares": int(listed_shares) if listed_shares else 0,
+        "source": "krx",
+    }
+    if exhaust_pct is not None:
+        result["limit_exhaustion_pct"] = round(exhaust_pct, 2)
+    if limit_shares is not None:
+        result["limit_shares"] = int(limit_shares)
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(result))
+    except Exception:
+        pass
+
+    log.info(
+        "pykrx: foreign holding %s → pct=%.2f exhaust=%s date=%s",
+        code, foreign_pct, exhaust_pct, dt_str,
+    )
+    return result
+
+
 def get_kr_short_balance_trend(ticker: str, days_back: int = 30) -> Optional[dict]:
     """30-day short-selling balance trajectory for a KR ticker.
 
