@@ -203,6 +203,35 @@ def load() -> dict | None:
         return None
 
 
+def backfill_cash_in_invest() -> bool:
+    """기존 portfolio.json 에 cash_in_invest · snapshot 투자성자산/예수금 백필.
+
+    재업로드 없이 즉시 반영. 이미 있으면 no-op. 반환: 변경 여부."""
+    model = load()
+    if not model or not model.get("holdings"):
+        return False
+    alloc = model.get("asset_allocation", {})
+    holdings = model.get("holdings", [])
+    eval_sum = sum(h.get("평가금액") or 0 for h in holdings)
+    invest_total = alloc.get("투자성자산", 0)
+    cash = max(invest_total - eval_sum, 0)
+    snap = model.get("snapshot")
+    if not isinstance(snap, dict):
+        return False
+    if snap.get("투자성자산") is not None and model.get("cash_in_invest") is not None:
+        return False
+    model["cash_in_invest"] = cash
+    snap["예수금"] = cash
+    snap["투자성자산"] = invest_total
+    prev = model.get("prev")
+    if isinstance(prev, dict) and prev.get("투자성자산") is None:
+        prev_eval = prev.get("주식평가", 0)
+        prev["투자성자산"] = prev_eval
+        prev["예수금"] = 0
+    save(model)
+    return True
+
+
 def ingest(data, password=None) -> dict:
     """zip/xlsx(바이트 또는 경로) → 파싱·resolve·집계 → 저장. 모델 반환.
 

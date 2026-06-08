@@ -8229,7 +8229,8 @@ def _render_portfolio_page(model, noah=None) -> str:
     holdings = model.get("holdings", [])
     eval_sum = sum(h.get("평가금액") or 0 for h in holdings)
     cost_sum = sum(h.get("투자원금") or 0 for h in holdings)
-    cash_in_invest = model.get("cash_in_invest") or 0
+    _alloc = model.get("asset_allocation", {})
+    cash_in_invest = max(_alloc.get("투자성자산", 0) - eval_sum, 0)
     invest_total = eval_sum + cash_in_invest
     pnl = eval_sum - cost_sum
     pnl_pct = (pnl / cost_sum * 100) if cost_sum else 0.0
@@ -8592,7 +8593,11 @@ def regenerate_portfolio_index() -> None:
     """portfolio.json → portfolio.html (ARCHIVE_ROOT). 텔레그램 ingest 후 +
     startup/자정 regen 에서 호출. 오류는 swallow."""
     try:
-        from bot.portfolio import load as _pf_load
+        from bot.portfolio import load as _pf_load, backfill_cash_in_invest
+        try:
+            backfill_cash_in_invest()
+        except Exception:
+            pass
         model = _pf_load()
         # 보유종목 ↔ 분석 아카이브 join — 종목별 최근 판정+5거래일 성과(증분5).
         # 차트 과거-추천 마커와 동일 헬퍼 재사용(_ticker_analysis_markers 의 마지막
