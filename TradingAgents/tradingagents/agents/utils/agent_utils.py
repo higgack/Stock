@@ -1669,7 +1669,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # 감정 (sentiment): doesn't quantify rates or KRX/HSGT flow. Keeps news
     # blocks (sentiment fuel) and peer set (Comps consistency).
     "social": {
-        "krx_flow", "hsgt_flow", "kis_supply",
+        "krx_flow", "hsgt_flow", "kis_supply", "twse_flow",
         "bok_macro", "fred_jp_macro", "fred_tw_macro", "akshare_macro",
         "edgar_8k", "edgar_form4", "edgar_xbrl",
         "options_signals",
@@ -1677,7 +1677,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     },
     # 뉴스 (news): keeps everything except flow data (numbers without
     # narrative don't add to news synthesis).
-    "news": {"krx_flow", "hsgt_flow", "kis_supply",
+    "news": {"krx_flow", "hsgt_flow", "kis_supply", "twse_flow",
              "options_signals", "edgar_xbrl",
              "rule1_skeleton", "cashflow_block", "balance_block", "ratios_block"},
     # 펀더멘털 (fundamentals): doesn't read native-language news, doesn't
@@ -1685,7 +1685,7 @@ _ANALYST_CONTEXT_EXCLUDE: dict[str, set[str]] = {
     # rule1_skeleton is NOT excluded — fundamentals analyst gets the table.
     "fundamentals": {
         "naver_news", "kabutan_news", "cnyes_news", "eastmoney_news",
-        "krx_flow", "hsgt_flow", "kis_supply",
+        "krx_flow", "hsgt_flow", "kis_supply", "twse_flow",
     },
 }
 
@@ -1853,6 +1853,11 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
         try:
             from bot.fred_client import fetch_macro
             tasks["fred_tw_macro"] = lambda: fetch_macro("TW")
+        except Exception:
+            pass
+        try:
+            from bot.twse_flow_client import fetch_institutional_flow as _twse_flow
+            tasks["twse_three_law"] = lambda: _twse_flow(ticker)
         except Exception:
             pass
 
@@ -5752,6 +5757,41 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
         except Exception as exc:
             _analyst_log.warning(
                 "mops injection failed for %s: %s", ticker, exc,
+            )
+
+        # TWSE / TPEx 三大法人 institutional flow (TW-only).
+        # Mirrors KR KIS investor_flow block.  No API key.
+        try:
+            from bot.market import detect_market
+            if detect_market(ticker) == "TW" and _section_allowed(analyst_id, "twse_flow"):
+                from bot.twse_flow_client import format_twse_flow_block
+                tw_flow = prefetched.get("twse_three_law") or {}
+                if tw_flow:
+                    close_px = None
+                    try:
+                        info = _instrument_info(ticker) or {}
+                        close_px = info.get("previousClose") or info.get("regularMarketPrice")
+                    except Exception:
+                        pass
+                    block = format_twse_flow_block(tw_flow, close_price=close_px)
+                    if block:
+                        base += (
+                            "\n\n=== TWSE 三大法人 日報 (5일 누적, verbatim —"
+                            " 외자/투신/자영상 순매수, 단위 股+추정NT$) ===\n"
+                            + block
+                            + "\n\n[TW 三大法人 해석 가이드]\n"
+                            " • 外資 = 외국인투자자(FINI), TW 시장 최대 영향력."
+                            " 5일 순매수 ±1億NT$ 미만은 noise.\n"
+                            " • 投信 = 국내 투신(뮤추얼펀드), 外資와 반대 방향이면"
+                            " 기관 간 분리 — 5거래일 방향성 약화.\n"
+                            " • 自營商 = 증권사 자체 트레이딩, 단기 hedging 성격"
+                            " 강해 방향성 신호 낮음.\n"
+                            " • 외자+투신 동반 매수 = 가장 강한 기관 합의 신호.\n"
+                            " • 이 데이터는 TWSE/TPEx 공식 통계이다. 날조 금지."
+                        )
+        except Exception as exc:
+            _analyst_log.warning(
+                "twse_flow injection failed for %s: %s", ticker, exc,
             )
 
         # 鉅亨網 news (TW-only) — yfinance .news covers TW large-caps in
