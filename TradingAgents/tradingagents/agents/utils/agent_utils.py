@@ -386,7 +386,11 @@ def get_analyst_directive() -> str:
         " ('상승세' / '하락세' / '급등' / '강세' / '약세' / '+X%' / '-X%')"
         " 절대 금지. ⛔ HARD GUARD 가 발화한 시리즈는 본 분석의 거시 frame"
         " 에서 통째로 omit — 정상 시리즈 (⚠️ 미발화) 만 거시 frame 으로"
-        " 사용. 시장 분석가가 ⛔ 시리즈 한 줄이라도 cite 하면 RULE 위반."
+        " 사용. 시장 분석가가 ⛔ 시리즈 한 줄이라도 cite 하면 RULE 위반.\n"
+        " ⛔ 리포트 본문에 가드 메타-텍스트 노출 절대 금지: '거시 frame 인용"
+        " 보류' / '검증 미완료' / '데이터 이상으로 인용 보류' 같은 시스템 내부"
+        " 가드 텍스트는 리포트에 적지 말 것. 의심 시리즈는 존재 자체를 omit —"
+        " reader 에게 보류 사유를 설명하지 않는다."
     )
 
 
@@ -1540,8 +1544,8 @@ def _format_dart_kr_block(
     # M&A, lawsuits in the last month. Cap at 8 to keep the prompt
     # compact; the LLM only needs the gist, not the full filing list.
     if disclosures:
-        lines.append("- 최근 30일 공시 (상위 {}건):".format(min(len(disclosures), 8)))
-        for d in disclosures[:8]:
+        lines.append("- 최근 1년 공시 (상위 {}건):".format(min(len(disclosures), 20)))
+        for d in disclosures[:20]:
             date_str = d.get("date") or ""
             # DART returns dates as 'YYYYMMDD'; render as 'YYYY-MM-DD'.
             if len(date_str) == 8 and date_str.isdigit():
@@ -1715,7 +1719,7 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
         try:
             from bot.dart_client import get_dart
             dart = get_dart()
-            tasks["dart_disclosures"] = lambda: dart.get_recent_disclosures(ticker, days_back=30, limit=8)
+            tasks["dart_disclosures"] = lambda: dart.get_recent_disclosures(ticker, days_back=365, limit=20)
             tasks["dart_insiders"] = lambda: dart.get_insider_holdings(ticker)
             tasks["dart_window"] = lambda: dart.next_earnings_window(ticker)
         except Exception:
@@ -3578,7 +3582,17 @@ def _build_instrument_context_impl(ticker: str, analyst_id: str | None = None,
                     f" PER 30.43 / PBR 9.86) is also FORBIDDEN — readers"
                     f" cannot tell which value is canonical. The single"
                     f" '(subject)' row above is THE canonical source for"
-                    f" every analyst's Comps table."
+                    f" every analyst's Comps table.\n"
+                    f"\n"
+                    f"SCALE-AWARE COMPS (NAVER 035420.KS 2026-06-08 surfaced"
+                    f" — 시총 ₩16조 vs GOOGL $2T / META $1.6T, 90배+ 체급"
+                    f" 차이에도 절대 PER 비교 후 '저평가' 결론): peer 시총이"
+                    f" subject 시총의 10배 이상이면 해당 peer 행에 '(글로벌"
+                    f" reference — 체급 상이)' 태그를 부착하고, 그 peer 와의"
+                    f" 절대 multiples 비교로 '저평가' / '고평가' 결론을 내리는"
+                    f" 것을 FORBID. 체급 상이 peer 는 산업 방향성 reference"
+                    f" 로만 인용. 동일 체급 peer (시총 10x 이내) 끼리만 상대"
+                    f" valuation 비교 허용."
                 )
         except Exception:
             pass

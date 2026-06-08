@@ -565,7 +565,7 @@ _KR_INDUSTRY_PEERS = {
         "004170.KS", "004990.KS", "069960.KS", "M", "JWN",
     ],
     "Internet Content & Information": [
-        "035420.KS", "035720.KS", "GOOGL", "META", "9988.HK",
+        "035420.KS", "035720.KS", "067160.KQ", "035080.KS", "4689.T",
     ],
     "Auto Manufacturers": [
         "005380.KS", "000270.KS", "TM", "F", "GM",
