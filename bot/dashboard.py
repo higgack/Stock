@@ -1309,7 +1309,7 @@ _INDEX_JS = """
 
   mfBtns.forEach(function(btn) {
     btn.addEventListener('click', function() {
-      marketFilter = btn.dataset.mkt;
+      marketFilter = btn.dataset.mf;
       mfBtns.forEach(function(b) { b.classList.toggle('active', b === btn); });
       applyFilter();
     });
