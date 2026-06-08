@@ -799,11 +799,110 @@ def format_trend_for_prompt(foreign: Optional[dict], short: Optional[dict]) -> s
     return "\n".join(lines)
 
 
+def _pp_from_series(values: list[float], periods: list[int]) -> dict[int, float]:
+    """Compute pp changes at lookback points from a sorted daily pct series."""
+    if len(values) < 2:
+        return {}
+    current = values[-1]
+    pds: dict[int, float] = {}
+    for p in periods:
+        idx = max(0, len(values) - 1 - p)
+        pds[p] = round(current - values[idx], 3)
+    return pds
+
+
+def _pykrx_foreign_trend(code: str, start_str: str, end_str: str,
+                          periods: list[int]) -> Optional[dict]:
+    """Try pykrx for foreign ownership multi-period trend."""
+    try:
+        from pykrx import stock
+    except ImportError:
+        return None
+    try:
+        df = stock.get_exhaustion_rates_of_foreign_investment(
+            start_str, end_str, code,
+        )
+        if df is None or df.empty or len(df) < 2:
+            log.info("pykrx: foreign trend empty for %s (cols=%s, rows=%d)",
+                     code, list(df.columns) if df is not None and hasattr(df, 'columns') else "?",
+                     len(df) if df is not None else 0)
+            return None
+        log.info("pykrx: foreign trend cols for %s: %s, rows=%d",
+                 code, list(df.columns), len(df))
+        for c in ("지분율", "보유비중", "보유비율", "한도소진률", "한도소진율"):
+            if c in df.columns:
+                series = df[c].dropna().tolist()
+                if len(series) >= 2:
+                    pds = _pp_from_series(series, periods)
+                    return {"current_pct": round(series[-1], 2), "periods": pds}
+        for c in df.columns:
+            vals = df[c].dropna()
+            if len(vals) >= 2:
+                sample = float(vals.iloc[-1])
+                if 0 < sample < 100:
+                    series = [float(v) for v in vals]
+                    pds = _pp_from_series(series, periods)
+                    log.info("pykrx: foreign trend using col '%s' for %s", c, code)
+                    return {"current_pct": round(series[-1], 2), "periods": pds}
+    except Exception as exc:
+        log.info("pykrx: foreign trend failed for %s: %s", code, exc)
+    return None
+
+
+def _seibro_foreign_trend(ticker: str, periods: list[int]) -> Optional[dict]:
+    """Fallback: Seibro/KSD daily foreign holding → multi-period pp."""
+    try:
+        from bot.seibro_client import seibro_key_ready, _is_kr_ticker, _kr_code, _fetch_items, _float
+    except ImportError:
+        return None
+    if not seibro_key_ready() or not _is_kr_ticker(ticker):
+        return None
+    code = _kr_code(ticker)
+    if not code:
+        return None
+    try:
+        begin = (date.today() - timedelta(days=100)).strftime("%Y%m%d")
+        items = _fetch_items({"likeSrtnCd": code, "beginBasDt": begin, "numOfRows": 200})
+        rows = []
+        for it in items:
+            if _kr_code(it.get("srtnCd", "")) != code:
+                continue
+            pct = _float(it.get("frnHldnRt"))
+            if pct is None:
+                pct = _float(it.get("frnOwnhRt"))
+            if pct is not None:
+                rows.append((str(it.get("basDt", "")), pct))
+        rows.sort(key=lambda r: r[0])
+        values = [r[1] for r in rows]
+        if len(values) < 2:
+            return None
+        pds = _pp_from_series(values, periods)
+        return {"current_pct": round(values[-1], 2), "periods": pds}
+    except Exception as exc:
+        log.info("seibro: foreign trend fallback failed for %s: %s", ticker, exc)
+        return None
+
+
+def _naver_foreign_trend(ticker: str, periods: list[int]) -> Optional[dict]:
+    """Fallback: Naver Finance foreign holding (current only, no multi-period)."""
+    try:
+        from bot.naver_finance_client import get_naver_foreign_holding
+    except ImportError:
+        return None
+    try:
+        data = get_naver_foreign_holding(ticker)
+        if data and data.get("foreign_pct") is not None:
+            return {"current_pct": round(data["foreign_pct"], 2), "periods": {}}
+    except Exception:
+        pass
+    return None
+
+
 def get_kr_multi_period_trends(ticker: str) -> Optional[dict]:
     """Multi-period foreign ownership + short balance trends.
 
-    Single fetch per series (90 calendar days) → compute changes at
-    5/10/20/30/60 trading-day lookback points.
+    3-tier fallback for foreign: pykrx → Seibro → Naver.
+    Short balance: pykrx only (no free alternative).
 
     Returns:
         {
@@ -815,8 +914,6 @@ def get_kr_multi_period_trends(ticker: str) -> Optional[dict]:
     code = _normalize_code(ticker)
     if not code:
         return None
-    if not krx_login_ready():
-        return None
 
     today_str = date.today().isoformat()
     cache_file = _CACHE_DIR / f"multi_trend_{code}_{today_str}.json"
@@ -824,64 +921,62 @@ def get_kr_multi_period_trends(ticker: str) -> Optional[dict]:
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < _CACHE_TTL_HOURS:
-                return json.loads(cache_file.read_text())
+                cached = json.loads(cache_file.read_text())
+                if cached and cached.get("foreign", {}).get("periods"):
+                    return cached
         except Exception:
             pass
-
-    try:
-        from pykrx import stock
-    except ImportError:
-        return None
 
     end = date.today()
     start = end - timedelta(days=90)
     start_str = start.strftime("%Y%m%d")
     end_str = end.strftime("%Y%m%d")
-
     periods = [5, 10, 20, 30, 60]
     result: dict = {}
 
-    try:
-        df_f = stock.get_exhaustion_rates_of_foreign_investment(start_str, end_str, code)
-        if df_f is not None and not df_f.empty and len(df_f) >= 2:
-            pct_col = None
-            for c in ("지분율", "보유비중", "한도소진률", "한도소진율"):
-                if c in df_f.columns:
-                    pct_col = c
-                    break
-            if pct_col:
-                series = df_f[pct_col].dropna()
-                if len(series) >= 2:
-                    current = float(series.iloc[-1])
-                    pds: dict[int, float] = {}
-                    for p in periods:
-                        idx = max(0, len(series) - 1 - p)
-                        past_val = float(series.iloc[idx])
-                        pds[p] = round(current - past_val, 3)
-                    result["foreign"] = {"current_pct": round(current, 2), "periods": pds}
-    except Exception as exc:
-        log.info("pykrx: multi-period foreign failed for %s: %s", code, exc)
+    # Foreign ownership: 3-tier fallback
+    if krx_login_ready():
+        fo = _pykrx_foreign_trend(code, start_str, end_str, periods)
+        if fo and fo.get("periods"):
+            result["foreign"] = fo
 
-    try:
-        df_s = stock.get_shorting_balance_by_date(start_str, end_str, code)
-        if df_s is not None and not df_s.empty and len(df_s) >= 2:
-            spct_col = None
-            for c in ("비중", "공매도비중", "잔고비중"):
-                if c in df_s.columns:
-                    spct_col = c
-                    break
-            if spct_col:
-                series_s = df_s[spct_col].dropna()
-                if len(series_s) >= 2:
-                    current_s = float(series_s.iloc[-1])
-                    pds_s: dict[int, float] = {}
-                    for p in periods:
-                        idx = max(0, len(series_s) - 1 - p)
-                        past_val = float(series_s.iloc[idx])
-                        pds_s[p] = round(current_s - past_val, 3)
-                    result["short"] = {"current_pct": round(current_s, 2), "periods": pds_s}
-    except Exception as exc:
-        log.info("pykrx: multi-period short failed for %s: %s", code, exc)
+    if not result.get("foreign", {}).get("periods"):
+        fo = _seibro_foreign_trend(ticker, periods)
+        if fo and fo.get("periods"):
+            result["foreign"] = fo
+
+    if "foreign" not in result:
+        fo = _naver_foreign_trend(ticker, periods)
+        if fo:
+            result["foreign"] = fo
+
+    # Short balance: pykrx only
+    if krx_login_ready():
+        try:
+            from pykrx import stock
+            df_s = stock.get_shorting_balance_by_date(start_str, end_str, code)
+            if df_s is not None and not df_s.empty and len(df_s) >= 2:
+                log.info("pykrx: short balance cols for %s: %s", code, list(df_s.columns))
+                for c in ("비중", "공매도비중", "잔고비중", "공매도잔고비중"):
+                    if c in df_s.columns:
+                        vals = df_s[c].dropna().tolist()
+                        if len(vals) >= 2:
+                            pds_s = _pp_from_series(vals, periods)
+                            result["short"] = {"current_pct": round(vals[-1], 2), "periods": pds_s}
+                            break
+                if "short" not in result:
+                    for c in df_s.columns:
+                        vals = df_s[c].dropna()
+                        if len(vals) >= 2:
+                            sample = float(vals.iloc[-1])
+                            if 0 <= sample < 100:
+                                series = [float(v) for v in vals]
+                                pds_s = _pp_from_series(series, periods)
+                                log.info("pykrx: short using col '%s' for %s", c, code)
+                                result["short"] = {"current_pct": round(series[-1], 2), "periods": pds_s}
+                                break
+        except Exception as exc:
+            log.info("pykrx: multi-period short failed for %s: %s", code, exc)
 
     if not result:
         return None
