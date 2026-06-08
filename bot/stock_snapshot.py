@@ -471,29 +471,35 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         except Exception as exc:
             log.debug("stock_snapshot: FnGuide consensus skipped: %s", exc)
 
-    # ── 한경 컨센서스 + 리서치 리포트 ─────────────────────────────
-    # Always fetch (4h-cached): the per-broker report rows populate the
-    # 리서치 액션 tab — yfinance has no KR upgrade/downgrade feed, so
-    # this is the KR analogue. The aggregate target only backfills the
-    # 컨센서스 tab when yfinance + FnGuide both came up empty.
+    # ── 리서치 리포트 (한경 → Naver Finance fallback) ──────────────
+    # Per-broker report rows populate the 리서치 액션 tab — yfinance has
+    # no KR upgrade/downgrade feed. 한경 is JS-rendered since 2026 redesign
+    # (sample_rows: []) → Naver Finance 종목 리서치 as primary fallback.
+    _kr_research = None
     try:
         from bot.hk_consensus_client import fetch_consensus as hk_fetch
-        hk = hk_fetch(ticker)
-        if hk:
-            if hk.get("reports"):
-                snap.setdefault("kr", {})["research_reports"] = hk["reports"]
-            if (not snap.get("target_mean")
-                    and not snap.get("kr", {}).get("consensus")
-                    and hk.get("target_price")):
-                snap.setdefault("kr", {})["consensus"] = {
-                    "source": "한경",
-                    "target_mean": hk["target_price"],
-                    "rating": hk.get("rating"),
-                    "n_analysts": hk.get("analyst_count"),
-                    "last_report_date": hk.get("last_report_date"),
-                }
+        _kr_research = hk_fetch(ticker)
     except Exception as exc:
         log.debug("stock_snapshot: HanKyung consensus skipped: %s", exc)
+    if not (_kr_research and _kr_research.get("reports")):
+        try:
+            from bot.naver_research_client import fetch_research
+            _kr_research = fetch_research(ticker)
+        except Exception as exc:
+            log.debug("stock_snapshot: Naver research skipped: %s", exc)
+    if _kr_research:
+        if _kr_research.get("reports"):
+            snap.setdefault("kr", {})["research_reports"] = _kr_research["reports"]
+        if (not snap.get("target_mean")
+                and not snap.get("kr", {}).get("consensus")
+                and _kr_research.get("target_price")):
+            snap.setdefault("kr", {})["consensus"] = {
+                "source": "한경" if _kr_research.get("report_count", 0) > 0 else "Naver Finance",
+                "target_mean": _kr_research["target_price"],
+                "rating": _kr_research.get("rating"),
+                "n_analysts": _kr_research.get("analyst_count"),
+                "last_report_date": _kr_research.get("last_report_date"),
+            }
 
     # ── Naver 뉴스 폴백 (yfinance KR 뉴스 미커버) ─────────────────
     _collect_news_fallback(ticker, snap)
@@ -897,6 +903,7 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
             entry = {
                 "ticker": pt,
                 "name": name[:30],
+                "currency": pi.get("currency", ""),
                 "market_cap": pi.get("marketCap"),
                 "trailingPE": pi.get("trailingPE"),
                 "forwardPE": pi.get("forwardPE"),
