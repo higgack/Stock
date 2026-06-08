@@ -7,6 +7,14 @@ URL: finance.naver.com/research/company_list.naver?searchType=itemCode&itemCode=
 
 키 불필요 (static HTML). 12h 디스크 캐시. 같은 {date, broker, rating,
 target, title} 스키마를 반환해 한경 → Naver 교체가 dashboard 와 호환.
+
+테이블 구조 (2026-06-08 강화):
+  Naver Finance research list 는 종목명 td 에 rowspan 을 써서 같은
+  종목의 여러 리포트가 한 블록을 이루는 구조. 첫 행은 td 7개 (종목명
+  포함), 이후 행은 td 6개 (종목명 td 가 rowspan 으로 생략). 컬럼
+  순서: [종목명] | 리포트제목 | 증권사 | 날짜(YY.MM.DD) | 목표가 |
+  투자의견 | PDF. 목표가 는 콤마 구분 OR plain integer, 투자의견 은
+  visible text OR <img alt> OR <td title>/<em>/<strong> 내 키워드.
 """
 
 from __future__ import annotations
@@ -15,7 +23,7 @@ import json
 import logging
 import re
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +57,26 @@ _RATING_TO_DIRECTION = {
     "Not Rated": "",
 }
 
+_RATING_KEYWORDS = (
+    "강력매수", "적극매수", "비중확대", "비중축소", "매수", "매도", "보유", "중립",
+    "Strong Buy", "Trading Buy", "Outperform", "Overweight", "Accumulate",
+    "Marketperform", "Market Perform", "Sector Perform",
+    "Underperform", "Underweight", "Reduce",
+    "Not Rated", "NR", "Coverage Initiated",
+    "Buy", "Hold", "Sell", "Neutral",
+)
+
+# Korean broker names almost always END with one of these suffixes
+# (미래에셋증권 / DB금융투자 / 삼성자산운용 / …). Anchoring to the suffix
+# avoids false-matching report TITLES that merely contain 투자/증권
+# mid-string (e.g. a "투자의견 상향" 제목). _BROKER_RE is the loose
+# fallback for non-standard names (foreign brokers, abbreviations).
+_BROKER_SUFFIX_RE = re.compile(
+    r"(증권|투자|자산운용|금융투자|리서치|캐피탈|Securities|Investment)\s*$", re.I)
+_BROKER_RE = re.compile(
+    r"증권|투자|자산운용|금융투자|리서치|캐피탈|Securities|Investment", re.I)
+_PLAIN_INT_RE = re.compile(r"(?<![0-9])(\d{4,7})(?![0-9./-])")
+
 
 def _normalize_code(ticker: str) -> Optional[str]:
     if not ticker:
@@ -77,66 +105,93 @@ def _fetch_html(code: str) -> Optional[str]:
 
 
 def _cell_texts(row_html: str) -> list[str]:
-    """Strip a <tr> into a list of plain-text <td>/<th> cell values."""
-    cells = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL | re.I)
+    """Strip a <tr> into a list of plain-text <td>/<th> cell values.
+
+    Enhanced version (mirroring hk_consensus_client): extracts visible
+    text PLUS hidden-but-semantic content — img alt, title/data-value/
+    data-text attributes on the <td> tag itself and on inner elements.
+    This catches cases where Naver puts the rating in a <td title="매수">
+    or an <img alt="Buy"> rather than as visible text.
+    """
+    raw_cells = re.findall(r"(<t[dh][^>]*>)(.*?)</t[dh]>", row_html, re.DOTALL | re.I)
     out = []
-    for c in cells:
-        c = re.sub(r'<img\s[^>]*?\balt=["\']([^"\']*)["\'][^>]*/?>', r' \1 ', c, flags=re.I)
-        txt = re.sub(r"<[^>]+>", " ", c)
+    for tag, inner in raw_cells:
+        parts = []
+        for attr in ("title", "data-value", "data-text"):
+            m = re.search(rf'\b{attr}=["\']([^"\']+)["\']', tag, re.I)
+            if m:
+                parts.append(m.group(1))
+        inner = re.sub(r'<img\s[^>]*?\balt=["\']([^"\']*)["\'][^>]*/?>', r' \1 ', inner, flags=re.I)
+        for attr in ("title", "data-value", "data-text"):
+            inner = re.sub(
+                rf'<[^>]+?\b{attr}=["\']([^"\']*)["\'][^>]*?>',
+                r' \1 ', inner, flags=re.I,
+            )
+        txt = re.sub(r"<[^>]+>", " ", inner)
         txt = txt.replace("&nbsp;", " ").replace("&amp;", "&")
-        out.append(" ".join(txt.split()).strip())
+        combined = " ".join(parts + [txt])
+        out.append(" ".join(combined.split()).strip())
     return out
 
 
 def _parse_rows(html: str, cutoff) -> list[dict]:
-    """Parse research report rows from the Naver Finance page.
+    """Tolerant per-row parser using pattern matching (not fixed column
+    index) — robust to Naver's rowspan structure where the first column
+    (종목명) spans multiple rows, making cell count 6 or 7.
 
-    Naver Finance research list has columns:
-    종목명 | 리포트 제목 | 증권사 | 날짜(YY.MM.DD) | 목표가 | 투자의견
-
-    Column order can vary, so we use pattern matching (same approach
-    as hk_consensus_client tolerant parser)."""
+    For each <tr> with ≥3 cells, identify date / target / rating /
+    broker / title by pattern. Same approach as hk_consensus_client's
+    tolerant parser, enhanced with plain-integer fallback for target
+    prices and semantic attribute extraction for ratings.
+    """
     rows: list[dict] = []
     for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I):
         cells = _cell_texts(row_html)
         if len(cells) < 3:
             continue
 
+        # date — Naver uses YY.MM.DD; also accept YYYY-MM-DD / YYYY.MM.DD
         date_str = None
         for c in cells:
-            # Naver uses YY.MM.DD format
             m = re.search(r"(\d{2})\.(\d{2})\.(\d{2})", c)
             if m:
                 yy, mm, dd = m.group(1), m.group(2), m.group(3)
                 year = int(yy) + 2000
                 date_str = f"{year}-{mm}-{dd}"
                 break
+            m2 = re.search(r"(\d{4})[-./](\d{2})[-./](\d{2})", c)
+            if m2:
+                date_str = f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
+                break
         if not date_str:
             continue
         try:
-            from datetime import datetime
             d = datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
             continue
         if d < cutoff:
             continue
 
+        # target price — comma-grouped OR plain integer (≥ 1,000).
+        # Skip cells containing the date digits to avoid false matches.
         target_val = None
+        date_digits = date_str.replace("-", "")
         for c in cells:
-            if date_str.replace("-", "") in c.replace(",", "").replace(".", ""):
+            if date_digits in c.replace(",", "").replace(".", ""):
                 continue
             m = re.search(r"(?<![0-9])([0-9]{1,3}(?:,[0-9]{3})+)(?![0-9])", c)
             if m:
                 target_val = float(m.group(1).replace(",", ""))
                 break
+            m2 = _PLAIN_INT_RE.search(c)
+            if m2:
+                val = int(m2.group(1))
+                if val >= 1000 and not (2000 <= val <= 2099):
+                    target_val = float(val)
+                    break
 
+        # rating keyword — search all cells (visible + attribute text)
         rating_raw = ""
-        _RATING_KEYWORDS = (
-            "강력매수", "비중확대", "비중축소", "매수", "매도", "보유", "중립",
-            "Trading Buy", "Outperform", "Overweight", "Marketperform",
-            "Market Perform", "Underweight", "Buy", "Hold", "Sell", "Neutral",
-            "Not Rated",
-        )
         for c in cells:
             for kw in _RATING_KEYWORDS:
                 if kw.lower() in c.lower():
@@ -145,13 +200,22 @@ def _parse_rows(html: str, cutoff) -> list[dict]:
             if rating_raw:
                 break
 
+        # broker — prefer a short cell ENDING with a broker suffix (so a
+        # report title containing 투자/증권 mid-string isn't mistaken for the
+        # broker), then fall back to a loose in-string match for any
+        # non-standard broker name.
         broker = ""
-        _BROKER_RE = re.compile(r"증권|투자|자산운용|Securities|Investment|리서치", re.I)
         for c in cells:
-            if c and len(c) <= 22 and _BROKER_RE.search(c):
+            if c and len(c) <= 22 and _BROKER_SUFFIX_RE.search(c):
                 broker = c
                 break
+        if not broker:
+            for c in cells:
+                if c and len(c) <= 22 and _BROKER_RE.search(c):
+                    broker = c
+                    break
 
+        # title — longest non-broker, non-numeric cell
         title = ""
         for c in sorted(cells, key=len, reverse=True):
             if c and c != broker and not re.fullmatch(r"[\d,.\-/\s]+", c):
