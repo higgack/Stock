@@ -284,7 +284,7 @@ def _parse_form4_xml(cik: str, accession: str, primary_doc: str) -> Optional[dic
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def get_recent_8k(ticker: str, days: int = 30, top_n: int = 8) -> list[dict]:
+def get_recent_8k(ticker: str, days: int = 60, top_n: int = 15) -> list[dict]:
     """Return recent 8-K filings for a US ticker.
 
     Each dict: {date, items_raw, items_labels:[str], accession, url}

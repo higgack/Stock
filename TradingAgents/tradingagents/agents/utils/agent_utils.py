@@ -1924,7 +1924,7 @@ def _prefetch_market_io(ticker: str, market: str) -> dict:
     elif market == "US":
         try:
             from bot.edgar_client import get_recent_8k, get_recent_form4
-            tasks["edgar_8k"] = lambda: get_recent_8k(ticker, days=30)
+            tasks["edgar_8k"] = lambda: get_recent_8k(ticker, days=60, top_n=15)
             tasks["edgar_form4"] = lambda: get_recent_form4(ticker, days=30)
         except Exception:
             pass
