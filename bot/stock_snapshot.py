@@ -313,7 +313,7 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         from bot.dart_client import get_dart
         dart = get_dart()
         if dart:
-            disclosures = dart.get_recent_disclosures(stock_code, days_back=60, limit=30)
+            disclosures = dart.get_recent_disclosures(stock_code, days_back=365, limit=30)
             if disclosures:
                 snap.setdefault("kr", {})["disclosures"] = disclosures
     except Exception as exc:
