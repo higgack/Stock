@@ -226,7 +226,7 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
                 _enrich_jp(ticker, snap)
             except Exception as exc:
                 log.warning("stock_snapshot: JP enrich skipped for %s: %s", ticker, exc)
-        elif ticker.endswith(".TW"):
+        elif ticker.endswith((".TW", ".TWO")):
             try:
                 _enrich_tw(ticker, snap)
             except Exception as exc:
@@ -661,6 +661,24 @@ def _enrich_tw(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: MOPS insider holdings skipped: %s", exc)
 
+    # ── FinMind 월매출 (TW 의무 공시, 千元) ─────────────────────
+    try:
+        from bot.finmind_client import fetch_monthly_revenue
+        rev = fetch_monthly_revenue(ticker)
+        if rev:
+            snap.setdefault("tw", {})["monthly_revenue"] = rev
+    except Exception as exc:
+        log.debug("stock_snapshot: FinMind monthly revenue skipped: %s", exc)
+
+    # ── FinMind PER/PBR (TWSE 원본) ──────────────────────────────
+    try:
+        from bot.finmind_client import fetch_per_pbr
+        ppb = fetch_per_pbr(ticker)
+        if ppb:
+            snap.setdefault("tw", {})["per_pbr"] = ppb
+    except Exception as exc:
+        log.debug("stock_snapshot: FinMind PER/PBR skipped: %s", exc)
+
     # ── cnyes 컨센서스 (yfinance TW 보완) ────────────────────────
     if not snap.get("target_mean"):
         try:
@@ -786,7 +804,7 @@ def _collect_news_fallback(ticker: str, snap: dict) -> None:
             from bot.kabutan_news import fetch_news
             items = fetch_news(ticker.split(".")[0], days_back=28, max_items=10)
             g_query, g_market = (snap.get("long_name") or ticker.split(".")[0]), "JP"
-        elif ticker.endswith(".TW"):
+        elif ticker.endswith((".TW", ".TWO")):
             from bot.cnyes_client import fetch_news
             items = fetch_news(ticker.split(".")[0], days_back=28, max_items=10)
             g_query, g_market = (snap.get("long_name") or ticker.split(".")[0]), "TW"
