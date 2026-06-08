@@ -406,6 +406,13 @@ def run_screen(conditions: list[Condition],
         cached = _load_cache(ck)
         if cached:
             hits = cached.get("hits", [])
+            missing = [h["code"] for h in hits
+                       if not h.get("name") and h.get("code")]
+            if missing:
+                name_map = _resolve_kr_names(missing)
+                for h in hits:
+                    if not h.get("name") and h.get("code"):
+                        h["name"] = name_map.get(h["code"], "")
             return ScreenResult(
                 conditions=conditions,
                 hits=hits,
