@@ -293,12 +293,31 @@ def backfill_detail_tabs(limit: int | None = None) -> int:
                         _kr_res = fetch_research(ticker)
                     except Exception:
                         pass
-                    if not (_kr_res and _kr_res.get("reports")):
+                    _naver_hollow = (_kr_res and _kr_res.get("reports")
+                                     and not any(r.get("target") or r.get("rating")
+                                                 for r in _kr_res["reports"]))
+                    if not (_kr_res and _kr_res.get("reports")) or _naver_hollow:
                         try:
                             from bot.hk_consensus_client import fetch_consensus as hk_fetch
-                            _kr_res = hk_fetch(ticker)
+                            _hk = hk_fetch(ticker)
                         except Exception:
-                            pass
+                            _hk = None
+                        if _hk and _hk.get("reports"):
+                            if _naver_hollow:
+                                _hk_map = {(r.get("date"), r.get("broker")): r
+                                           for r in _hk["reports"]}
+                                for r in _kr_res["reports"]:
+                                    match = _hk_map.get((r.get("date"), r.get("broker")))
+                                    if match:
+                                        if not r.get("target") and match.get("target"):
+                                            r["target"] = match["target"]
+                                        if not r.get("rating") and match.get("rating"):
+                                            r["rating"] = match["rating"]
+                                if not any(r.get("target") or r.get("rating")
+                                           for r in _kr_res["reports"]):
+                                    _kr_res = _hk
+                            else:
+                                _kr_res = _hk
                     if _kr_res and _kr_res.get("reports"):
                         si.setdefault("kr", {})["research_reports"] = _kr_res["reports"]
                         changed = True

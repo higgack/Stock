@@ -481,12 +481,32 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         _kr_research = fetch_research(ticker)
     except Exception as exc:
         log.debug("stock_snapshot: Naver research skipped: %s", exc)
-    if not (_kr_research and _kr_research.get("reports")):
+    _naver_hollow = (_kr_research and _kr_research.get("reports")
+                     and not any(r.get("target") or r.get("rating")
+                                 for r in _kr_research["reports"]))
+    if not (_kr_research and _kr_research.get("reports")) or _naver_hollow:
         try:
             from bot.hk_consensus_client import fetch_consensus as hk_fetch
-            _kr_research = hk_fetch(ticker)
+            _hk = hk_fetch(ticker)
         except Exception as exc:
             log.debug("stock_snapshot: HanKyung consensus skipped: %s", exc)
+            _hk = None
+        if _hk and _hk.get("reports"):
+            if _naver_hollow:
+                _hk_map = {(r.get("date"), r.get("broker")): r
+                           for r in _hk["reports"]}
+                for r in _kr_research["reports"]:
+                    match = _hk_map.get((r.get("date"), r.get("broker")))
+                    if match:
+                        if not r.get("target") and match.get("target"):
+                            r["target"] = match["target"]
+                        if not r.get("rating") and match.get("rating"):
+                            r["rating"] = match["rating"]
+                if not any(r.get("target") or r.get("rating")
+                           for r in _kr_research["reports"]):
+                    _kr_research = _hk
+            else:
+                _kr_research = _hk
     if _kr_research:
         if _kr_research.get("reports"):
             snap.setdefault("kr", {})["research_reports"] = _kr_research["reports"]
