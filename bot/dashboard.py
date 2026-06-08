@@ -1829,6 +1829,7 @@ def _render_index(records: list[dict]) -> str:
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + ' · <a href="watchlist.html">🔔 워치리스트</a>'
             + ' · <a href="paper.html">🧪 페이퍼</a>'
+            + ' · <a href="screen.html">📊 조건부 스크리너</a>'
         )
     else:
         errors_link = (
@@ -1844,6 +1845,7 @@ def _render_index(records: list[dict]) -> str:
             + ' · <a href="cheongyak.html">🎟️ 청약</a>'
             + ' · <a href="watchlist.html">🔔 워치리스트</a>'
             + ' · <a href="paper.html">🧪 페이퍼</a>'
+            + ' · <a href="screen.html">📊 조건부 스크리너</a>'
         )
 
     return f"""<!doctype html>
@@ -7967,6 +7969,111 @@ def _render_paper_page(summ: dict) -> str:
 
 def _sym_cur(currency: str) -> str:
     return {"KRW": "₩", "USD": "$"}.get(currency, "")
+
+
+# ── 조건부 스크리너 대시보드 (screen.html) — 2026-06-08 ────────────────────
+
+
+def _render_screen_page(archives: list[dict]) -> str:
+    """screen.html — 조건부 스크리너 결과 이력 + 결과 테이블."""
+    cards = ""
+    for a in archives[:50]:
+        conds = _html.escape(a.get("conditions_display", a.get("conditions", "")))
+        ts = (a.get("ts") or "")[:16].replace("T", " ")
+        hit_count = a.get("hit_count", 0)
+        total = a.get("total_universe", 0)
+        elapsed = a.get("elapsed_sec", 0)
+        cached = " 💾캐시" if a.get("was_cached") else ""
+
+        hits = a.get("hits", [])
+        rows = ""
+        for h in hits[:30]:
+            name = _html.escape(str(h.get("name", "")))
+            ticker = _html.escape(str(h.get("ticker", "")))
+            mkt = _html.escape(str(h.get("market", "")))
+            mcap = h.get("mcap")
+            mcap_str = f"{mcap:,.0f}" if mcap else "—"
+
+            extra_vals = []
+            for k, v in h.items():
+                if k in ("code", "ticker", "name", "market", "mcap", "price"):
+                    continue
+                if v is not None:
+                    extra_vals.append(f"{k}:{v:g}" if isinstance(v, (int, float)) else f"{k}:{v}")
+            extra = _html.escape(" · ".join(extra_vals[:5]))
+            detail_link = f"./{ticker.replace('.', '_')}.html" if ticker else "#"
+            rows += (
+                f"<tr><td><b>{name}</b></td>"
+                f"<td><code>{ticker}</code></td>"
+                f"<td class='muted'>{mkt}</td>"
+                f"<td style='text-align:right'>{mcap_str}</td>"
+                f"<td class='muted'>{extra}</td></tr>"
+            )
+
+        table = ""
+        if rows:
+            table = (
+                "<table><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
+                "<th>시총(억)</th><th>지표</th></tr></thead>"
+                f"<tbody>{rows}</tbody></table>"
+            )
+            if len(hits) > 30:
+                table += f"<p class='muted'>... 외 {len(hits) - 30}종목</p>"
+
+        cards += f"""<details>
+<summary><b>{conds}</b> — {hit_count}종목/{total:,}종목{cached}
+<span class='muted'>{ts} · {elapsed:.1f}초</span></summary>
+{table}
+</details>
+"""
+
+    if not cards:
+        cards = "<p class='muted'>아직 실행 기록 없음 — 텔레그램에서 <code>/screen PER&lt;15 PBR&lt;1</code></p>"
+
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>📊 조건부 스크리너</title>
+<script>{_THEME_JS}</script>
+<style>{_DETAIL_CSS}
+table {{ width:100%; border-collapse:collapse; margin:10px 0 16px; font-size:13px; }}
+th,td {{ text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); vertical-align:top; }}
+th {{ color:var(--fg-soft); font-weight:600; font-size:12px; }}
+td.muted, .muted {{ color:var(--fg-soft); font-size:12px; }}
+details {{ margin:12px 0; padding:8px; border:1px solid var(--border); border-radius:6px; }}
+summary {{ cursor:pointer; font-size:14px; }}
+summary .muted {{ font-size:12px; margin-left:8px; }}
+code {{ font-family:'IBM Plex Mono',monospace; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="./index.html">← 아카이브로 돌아가기</a>
+  · <a href="portfolio.html">💼 자산</a>
+  <h1>📊 조건부 스크리너</h1>
+  <p class="sub">정량 조건으로 KR 전 종목 필터 (pykrx+yfinance, ₩0).
+  텔레그램: <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> · <code>/screen valueup</code> (프리셋) · <code>/screen list</code></p>
+  {cards}
+</div>
+</body>
+</html>
+"""
+
+
+def regenerate_screen_index() -> None:
+    """조건부 스크리너 아카이브 → screen.html. startup/실행 후 호출."""
+    try:
+        from bot.stock_screener import load_screen_archives
+        archives = load_screen_archives()
+        html_str = _render_screen_page(archives)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "screen.html").write_text(html_str, encoding="utf-8")
+        log.info("dashboard: screen.html regenerated (%d archives)", len(archives))
+    except Exception as exc:
+        log.warning("dashboard: screen regen failed: %s", exc)
 
 
 def regenerate_paper_index() -> None:
