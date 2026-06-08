@@ -331,8 +331,8 @@ def backfill_detail_tabs(limit: int | None = None) -> int:
                                     "last_report_date": _kr_res.get("last_report_date"),
                                 }
 
-            # ③ TW consensus (鉅亨網)
-            if ticker.upper().endswith(".TW"):
+            # ③ TW consensus (鉅亨網) + monthly revenue + PER/PBR
+            if ticker.upper().endswith((".TW", ".TWO")):
                 tw = si.get("tw", {})
                 if not si.get("target_mean") and not tw.get("consensus"):
                     try:
@@ -349,6 +349,26 @@ def backfill_detail_tabs(limit: int | None = None) -> int:
                             changed = True
                     except Exception as exc:
                         log.debug("backfill_detail_tabs: TW consensus %s: %s", ticker, exc)
+                # TW monthly revenue (FinMind/TWSE)
+                if not tw.get("monthly_revenue"):
+                    try:
+                        from bot.finmind_client import fetch_monthly_revenue
+                        rev = fetch_monthly_revenue(ticker)
+                        if rev:
+                            si.setdefault("tw", {})["monthly_revenue"] = rev
+                            changed = True
+                    except Exception as exc:
+                        log.debug("backfill_detail_tabs: TW monthly revenue %s: %s", ticker, exc)
+                # TW PER/PBR (FinMind/TWSE)
+                if not tw.get("per_pbr"):
+                    try:
+                        from bot.finmind_client import fetch_per_pbr
+                        ppb = fetch_per_pbr(ticker)
+                        if ppb:
+                            si.setdefault("tw", {})["per_pbr"] = ppb
+                            changed = True
+                    except Exception as exc:
+                        log.debug("backfill_detail_tabs: TW PER/PBR %s: %s", ticker, exc)
 
             # ④ JP consensus (Kabutan)
             if ticker.upper().endswith(".T"):

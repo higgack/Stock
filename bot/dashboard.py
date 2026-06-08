@@ -1320,6 +1320,30 @@ _INDEX_JS = """
       });
     });
   });
+
+  // ── Scroll position persistence ──────────────────────────────
+  // Save clicked card ID before navigating to detail page.
+  // On return (page reload), find the card, open collapsed parents,
+  // and scroll it into view.
+  document.addEventListener('click', function(ev) {
+    var link = ev.target.closest('a.ticker');
+    if (!link) return;
+    var card = link.closest('.card');
+    if (card && card.id) sessionStorage.setItem('noah_return', card.id);
+  });
+  (function restoreScroll() {
+    var cid = sessionStorage.getItem('noah_return');
+    if (!cid) return;
+    sessionStorage.removeItem('noah_return');
+    var el = document.getElementById(cid);
+    if (!el) return;
+    var p = el.parentElement;
+    while (p) {
+      if (p.tagName === 'DETAILS' && !p.open) p.open = true;
+      p = p.parentElement;
+    }
+    requestAnimationFrame(function() { el.scrollIntoView({block:'center'}); });
+  })();
 })();
 """
 
@@ -3272,7 +3296,7 @@ def diagnose_detail_sources(ticker: str) -> dict:
             return {"ok": bool(r and r.get("target_mean")), "target_mean": (r or {}).get("target_mean")}
         _probe("kabutan_consensus", _kbc)
 
-    elif tkr.endswith(".TW"):
+    elif tkr.endswith((".TW", ".TWO")):
         out["market"] = "TW"
         def _cn():
             from bot.cnyes_client import fetch_news
@@ -3437,8 +3461,8 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                         "last_report_date": _kr_research.get("last_report_date"),
                     }
 
-    # ③ TW consensus (鉅亨網)
-    elif tkr.endswith(".TW"):
+    # ③ TW consensus (鉅亨網) + monthly revenue + PER/PBR
+    elif tkr.endswith((".TW", ".TWO")):
         tw = si.get("tw", {})
         if not si.get("target_mean") and not tw.get("consensus"):
             try:
@@ -3454,6 +3478,24 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                     }
             except Exception as exc:
                 log.debug("_ensure_detail_enrichment: TW consensus %s: %s", ticker, exc)
+        # TW monthly revenue (FinMind/TWSE)
+        if not tw.get("monthly_revenue"):
+            try:
+                from bot.finmind_client import fetch_monthly_revenue
+                rev = fetch_monthly_revenue(ticker)
+                if rev:
+                    si.setdefault("tw", {})["monthly_revenue"] = rev
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: TW monthly revenue %s: %s", ticker, exc)
+        # TW PER/PBR (FinMind/TWSE)
+        if not tw.get("per_pbr"):
+            try:
+                from bot.finmind_client import fetch_per_pbr
+                ppb = fetch_per_pbr(ticker)
+                if ppb:
+                    si.setdefault("tw", {})["per_pbr"] = ppb
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: TW PER/PBR %s: %s", ticker, exc)
 
     # ④ JP consensus (Kabutan)
     elif tkr.endswith(".T"):
@@ -3557,7 +3599,7 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                     jp["disclosures"] = disc
             except Exception as exc:
                 log.debug("_ensure_detail_enrichment: EDINET disclosures %s: %s", ticker, exc)
-    elif tkr.endswith(".TW"):
+    elif tkr.endswith((".TW", ".TWO")):
         tw = si.setdefault("tw", {})
         if not tw.get("disclosures"):
             try:
@@ -3841,7 +3883,7 @@ def _render_stock_info_html(rec: dict) -> str:
     # ── market detection — pick the right market-specific sub-dict ──
     is_kr = ticker.endswith((".KS", ".KQ"))
     is_jp = ticker.endswith(".T")
-    is_tw = ticker.endswith(".TW")
+    is_tw = ticker.endswith((".TW", ".TWO"))
     is_cn = ticker.endswith((".SS", ".SZ", ".BJ", ".HK"))
     is_us = not (is_kr or is_jp or is_tw or is_cn)
     if is_kr:
@@ -4182,11 +4224,43 @@ def _render_stock_info_html(rec: dict) -> str:
     else:
         earnings_table = '<div class="si-empty">실적 데이터가 없습니다.</div>'
 
+    # ── TW 월매출 (營收) ────────────────────────────────────────
+    tw_revenue_html = ""
+    tw_rev = si.get("tw", {}).get("monthly_revenue") if isinstance(si.get("tw"), dict) else None
+    if tw_rev and isinstance(tw_rev, list):
+        tw_r_rows = ""
+        sorted_rev = sorted(tw_rev, key=lambda r: r.get("date", ""), reverse=True)
+        for r in sorted_rev[:13]:
+            d = esc(r.get("date", "—"))
+            rev_val = r.get("revenue")
+            yoy = r.get("revenue_year_growth_rate")
+            mom = r.get("revenue_month_growth_rate")
+            rev_str = f"{rev_val:,.0f}" if rev_val is not None else "—"
+            if yoy is not None:
+                y_cls = "pos" if yoy >= 0 else "neg"
+                yoy_str = f'<span class="{y_cls}">{yoy:+.1f}%</span>'
+            else:
+                yoy_str = "—"
+            if mom is not None:
+                m_cls = "pos" if mom >= 0 else "neg"
+                mom_str = f'<span class="{m_cls}">{mom:+.1f}%</span>'
+            else:
+                mom_str = "—"
+            tw_r_rows += f"<tr><td>{d}</td><td class='num'>{rev_str}</td><td class='num'>{yoy_str}</td><td class='num'>{mom_str}</td></tr>\n"
+        tw_revenue_html = f"""<div class="si-section">
+    <div class="si-section-title">TW 월매출 (營收)</div>
+    <table class="si-table">
+  <thead><tr><th>날짜</th><th class="num">매출(千元)</th><th class="num">YoY</th><th class="num">MoM</th></tr></thead>
+  <tbody>{tw_r_rows}</tbody></table>
+    <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: FinMind/TWSE · 상장사 매월 10일 이내 의무 공시</div>
+  </div>"""
+
     earnings_pane = f"""<div class="si-pane" id="si-earnings">
   <div class="si-section">
     <div class="si-section-title">최근 실적</div>
     {earnings_table}
   </div>
+  {tw_revenue_html}
 </div>"""
 
     # ── 리서치 pane ─────────────────────────────────────────────
@@ -5229,7 +5303,7 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
             else:
                 _mkt_key = (
                     "jp" if tkr_u.endswith(".T") else
-                    "tw" if tkr_u.endswith(".TW") else
+                    "tw" if tkr_u.endswith((".TW", ".TWO")) else
                     "cn" if tkr_u.endswith((".SS", ".SZ", ".BJ", ".HK")) else
                     "us"
                 )
