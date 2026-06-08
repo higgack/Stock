@@ -3567,3 +3567,55 @@ class TestPeerMarketCap:
         idx_enrich = src.find("_ensure_detail_enrichment", idx_render)
         assert idx_render < idx_enrich < idx_si_html, \
             "_render_detail 에서 _render_stock_info_html 전에 enrichment 호출 필수"
+
+
+class TestDividendYieldSanity:
+    """배당수익률 표시가 yfinance 불일치 데이터에서도 합리적인지 검증.
+
+    Surfaced 2026-06-08: AAPL 35.0%, MSFT 87.0%, Shin-Etsu 144.0%,
+    CATL 138.0% — yfinance dividendYield 가 시장별로 ratio/percentage/
+    잘못된 값을 혼용. dividendRate/price 직접 계산 우선 + 20% 캡."""
+
+    def test_safe_dy_pct_exists(self):
+        """dashboard 에 _safe_dy_pct 헬퍼 존재."""
+        from bot.dashboard import _safe_dy_pct
+        assert callable(_safe_dy_pct)
+
+    def test_correct_ratio_passes(self):
+        """정상 ratio (0.0044 = 0.44%) 변환."""
+        from bot.dashboard import _safe_dy_pct
+        assert abs(_safe_dy_pct(0.0044) - 0.44) < 0.01
+
+    def test_bad_ratio_capped(self):
+        """yfinance 가 AAPL 에 0.35 반환 → 35% → 20% 캡 초과 → None."""
+        from bot.dashboard import _safe_dy_pct
+        assert _safe_dy_pct(0.35) is None
+
+    def test_percentage_passthrough(self):
+        """JP/CN 에서 이미 percentage (1.44) → 1.44%."""
+        from bot.dashboard import _safe_dy_pct
+        result = _safe_dy_pct(1.44)
+        assert result is not None
+        assert abs(result - 1.44) < 0.01
+
+    def test_rate_price_preferred(self):
+        """dividendRate/price 계산이 bad raw 보다 우선."""
+        from bot.dashboard import _safe_dy_pct
+        result = _safe_dy_pct(0.35, div_rate=1.00, price=228.0)
+        assert result is not None
+        assert abs(result - 0.44) < 0.1
+
+    def test_snapshot_collects_dividend_rate(self):
+        """stock_snapshot 이 dividendRate 도 수집."""
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert '"dividendRate"' in src or "'dividendRate'" in src
+
+    def test_peer_comps_collects_rate_and_price(self):
+        """peer_comps 수집 시 dividendRate + currentPrice 포함."""
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        # _collect_peer_multiples 함수 정의 내부에 두 필드 존재 확인
+        idx = src.find("def _collect_peer_multiples")
+        assert idx > 0
+        segment = src[idx:idx+2000]
+        assert "dividendRate" in segment
+        assert "currentPrice" in segment
