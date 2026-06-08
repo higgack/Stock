@@ -504,6 +504,8 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
     elif yf_conds and not survivors:
         pass
 
+    name_map = _resolve_kr_names(list(survivors.keys()))
+
     hits = []
     for code, data in survivors.items():
         kosdaq = code in _get_kosdaq_codes()
@@ -511,7 +513,7 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
         hit = {
             "code": code,
             "ticker": f"{code}{suffix}",
-            "name": data.get("종목명", ""),
+            "name": name_map.get(code, data.get("종목명", "")),
             "market": "KOSDAQ" if kosdaq else "KOSPI",
         }
         for c in conditions:
@@ -547,6 +549,23 @@ def _get_kosdaq_codes() -> set:
     except Exception:
         _KOSDAQ_CODES = set()
         return _KOSDAQ_CODES
+
+
+def _resolve_kr_names(codes: list[str]) -> dict[str, str]:
+    """Resolve KR ticker codes to Korean company names via pykrx."""
+    names = {}
+    try:
+        from pykrx import stock
+        for code in codes:
+            try:
+                n = stock.get_market_ticker_name(code)
+                if n:
+                    names[code] = n
+            except Exception:
+                pass
+    except ImportError:
+        pass
+    return names
 
 
 # ── Telegram formatting ────────────────────────────────────────────
@@ -594,6 +613,7 @@ def format_result_message(result: ScreenResult) -> list[str]:
         f"조건: <code>{cond_str}</code>\n"
         f"결과: <b>{len(result.hits)}종목</b> / {result.total_universe:,}종목"
         f" · {result.elapsed_sec:.1f}초 · ₩0\n"
+        f"정렬: 시가총액 내림차순 (대형주 우선)\n"
     )
 
     if not result.hits:
@@ -604,14 +624,10 @@ def format_result_message(result: ScreenResult) -> list[str]:
         if c.metric_key not in metric_keys and c.metric_key not in ("mcap", "price"):
             metric_keys.append(c.metric_key)
 
-    display_limit = 50
-    show_hits = result.hits[:display_limit]
-
     lines = [header, ""]
-    for i, h in enumerate(show_hits, 1):
+    for i, h in enumerate(result.hits, 1):
         name = h.get("name", "")
         ticker = h.get("ticker", "")
-        mkt = h.get("market", "")
         mcap = h.get("mcap")
         mcap_str = _fmt_mcap(mcap) if mcap else ""
 
@@ -625,13 +641,11 @@ def format_result_message(result: ScreenResult) -> list[str]:
                 vals.append(f"{METRICS[mk].name}:N/A")
 
         val_str = " · ".join(vals)
-        line = f"{i}. <b>{name}</b> ({ticker}) {mcap_str}"
+        label = f"<b>{name}</b> ({ticker})" if name else f"<b>{ticker}</b>"
+        line = f"{i}. {label} {mcap_str}"
         if val_str:
             line += f"\n   {val_str}"
         lines.append(line)
-
-    if len(result.hits) > display_limit:
-        lines.append(f"\n... 외 {len(result.hits) - display_limit}종목 (대시보드에서 전체 확인)")
 
     full = "\n".join(lines)
     return _chunk_html(full, 4000)
