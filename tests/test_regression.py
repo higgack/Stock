@@ -3835,6 +3835,13 @@ class TestCashInInvest:
         m = build_model(parsed, resolve=noop)
         assert m["cash_in_invest"] == 0
 
+    def test_cash_reclassified_to_free_cash(self):
+        """예수금이 투자성자산에서 빠지고 자유입출금에 합산."""
+        m = self._build([90_000_000, 10_000_000], [90_000_000])
+        alloc = m["asset_allocation"]
+        assert alloc["투자성자산"] == 90_000_000, "투자성자산에서 예수금 미차감"
+        assert alloc.get("자유입출금", 0) == 10_000_000, "자유입출금에 예수금 미합산"
+
     def test_format_summary_shows_cash(self):
         """예수금 > 0이면 텔레그램 요약에 표시."""
         from bot.portfolio import format_summary_text

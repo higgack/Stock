@@ -8230,8 +8230,12 @@ def _render_portfolio_page(model, noah=None) -> str:
     eval_sum = sum(h.get("평가금액") or 0 for h in holdings)
     cost_sum = sum(h.get("투자원금") or 0 for h in holdings)
     _alloc = model.get("asset_allocation", {})
-    cash_in_invest = max(_alloc.get("투자성자산", 0) - eval_sum, 0)
-    invest_total = eval_sum + cash_in_invest
+    cash_in_invest = model.get("cash_in_invest") or 0
+    # 옛 모델(재분류 전) 호환: asset_allocation 이 아직 원본이면 렌더 시 재분류
+    if cash_in_invest > 0 and _alloc.get("투자성자산", 0) > eval_sum:
+        _alloc["투자성자산"] = _alloc["투자성자산"] - cash_in_invest
+        _alloc["자유입출금"] = _alloc.get("자유입출금", 0) + cash_in_invest
+    invest_total = eval_sum
     pnl = eval_sum - cost_sum
     pnl_pct = (pnl / cost_sum * 100) if cost_sum else 0.0
     # '보유 종목' 카운트 = 고유 종목(증권사 중복 제외). 저장된 모델(이 기능
@@ -8285,13 +8289,13 @@ def _render_portfolio_page(model, noah=None) -> str:
             col = "var(--pos)" if d >= 0 else "var(--neg)"
             return (f'<span style="color:{col}">{sign}{_pf_won(abs(d))} '
                     f'({sign}{abs(p):.1f}%)</span>')
-        prev_invest = prev.get("투자성자산", prev.get("주식평가"))
+        prev_eval = prev.get("주식평가", prev.get("투자성자산"))
         delta_html = (
             '<div style="margin-top:10px;font-size:12px;color:var(--muted);'
             'border-top:1px solid var(--border);padding-top:8px">'
             f'📈 지난 업데이트({pdate}) 대비 — 순자산 '
-            f'{_dlt(nw.get("순자산"), prev.get("순자산"))} · 투자자산 '
-            f'{_dlt(invest_total, prev_invest)}</div>')
+            f'{_dlt(nw.get("순자산"), prev.get("순자산"))} · 주식평가 '
+            f'{_dlt(eval_sum, prev_eval)}</div>')
 
     # 증분(자산 변화)을 주식 요약 패널 바로 밑에 배치(사용자 2026-06-04). prev 가
     # 없으면(첫 업로드·같은 날짜만 업로드) '사라진 게 아니라 비교 대상 대기' 안내.
@@ -8305,7 +8309,7 @@ def _render_portfolio_page(model, noah=None) -> str:
             '증분 표시</div>')
 
     cash_stat = (f'<div class="stat"><div class="stat-num">{_pf_won(cash_in_invest)}</div>'
-                  '<div class="stat-lbl">예수금</div></div>') if cash_in_invest else ""
+                  '<div class="stat-lbl">예수금 (자유입출금)</div></div>') if cash_in_invest else ""
     stats = (
         '<div class="stats">'
         f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("순자산"))}</div><div class="stat-lbl">순자산</div></div>'
@@ -8338,13 +8342,10 @@ def _render_portfolio_page(model, noah=None) -> str:
     rated_n = win + loss
     winrate = (win / rated_n * 100) if rated_n else 0.0
     stock_wt = (eval_sum / nw["총자산"] * 100) if nw.get("총자산") else 0.0
-    cash_leg = (f'<div class="pf-leg">예수금 <b>{_pf_won(cash_in_invest)}</b></div>'
-                 if cash_in_invest else "")
     equity_panel = (
         '<div style="flex:1 1 200px;min-width:190px">'
         '<div class="pf-h" style="font-size:13px;color:var(--muted)">💹 주식 요약</div>'
         f'<div class="pf-leg">평가금액 <b>{_pf_won(eval_sum)}</b></div>'
-        + cash_leg +
         f'<div class="pf-leg">투자원금 <b>{_pf_won(cost_sum)}</b></div>'
         f'<div class="pf-leg">평가손익 <b style="color:{_pf_col(pnl)}">{_pf_won(pnl)} ({pnl_pct:+.1f}%)</b></div>'
         f'<div class="pf-leg">총자산 대비 주식 <b>{stock_wt:.1f}%</b></div>'
