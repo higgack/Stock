@@ -3975,6 +3975,7 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>
 <div class="si-quote-status" style="margin:-8px 0 16px;font-size:11px;color:var(--fg-soft)">
   <span id="q-badge" style="font-weight:600"></span>
+  <button id="q-refresh" style="background:none;border:none;cursor:pointer;font-size:14px;margin-left:8px;padding:2px 4px;vertical-align:middle" title="데이터 새로고침">🔄</button>
   <span class="si-quote-note">가격연동 지표(현재가·시총·PER·선행PER·PBR·PSR·EV/EBITDA·배당·베타·EPS·BPS·52주·이평·컨센서스)는 라이브 · 재무제표·실적·주주·수급·공시·리서치·뉴스는 최신 공시/일 단위 갱신 · 차트는 분석 시점 저장본</span>
 </div>"""
 
@@ -4820,11 +4821,12 @@ def _render_stock_info_html(rec: dict) -> str:
             sd = hsgt.get("south_direction", "")
             flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">港股通 자금 흐름 (5일 누적)</div>
+    <div class="si-section-title">港股通 자금 흐름 (5일 누적 · 시장 전체)</div>
     <table class="si-table"><thead><tr><th>구분</th><th class="num">5일 순매수</th><th>방향</th></tr></thead><tbody>
       <tr><td>北向 (외국인→A주)</td>{_cn_flow(nb)}<td>{esc(nd)}</td></tr>
       <tr><td>南向 (본토→HK)</td>{_cn_flow(sb)}<td>{esc(sd)}</td></tr>
     </tbody></table>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 시장 전체 집계 (종목별 아님). Stock Connect 북향/남향 순매수. 출처: 东方财富</div>
   </div>
 </div>"""
 
@@ -5045,6 +5047,9 @@ def _render_stock_info_html(rec: dict) -> str:
     risk_pane = ""
     if risk_parts:
         risk_pane = '<div class="si-pane" id="si-risk">\n  ' + "\n  ".join(risk_parts) + "\n</div>"
+    # Placeholder so the JS overlay can swap risk content via live quote.
+    if not risk_pane:
+        risk_pane = '<div class="si-pane" id="si-risk"></div>'
 
     # ── 배당 이력 (밸류에이션 pane 하단에 추가) ────────────────────
     divs = si.get("dividends", [])
@@ -5159,6 +5164,11 @@ def _render_stock_info_html(rec: dict) -> str:
     </table>
   </div>
 </div>"""
+
+    # Placeholder so the JS overlay can find the element by ID during
+    # batch regen (when all live-fetch blocks are skipped → disclosures_pane="").
+    if not disclosures_pane:
+        disclosures_pane = '<div class="si-pane" id="si-disclosures"></div>'
 
     # ── 이벤트 타임라인 pane ────────────────────────────────────
     timeline_events: list[tuple[str, str, str, str, str, str]] = []
@@ -5676,6 +5686,20 @@ _QUOTE_JS = r"""
     var ts = (meta && meta.ts) ? (' · ' + meta.ts + ' KST') : '';
     b.textContent = '🟢 라이브 · ' + src + dl + ts;
   }
+  function applyFull(j){
+    if (!j || !j.ok || !j.quote || !j.quote.panes) return;
+    var p = j.quote.panes;
+    for (var id in p){
+      if (!p.hasOwnProperty(id) || !p[id]) continue;
+      var el = document.getElementById(id);
+      if (!el) continue;
+      var wasActive = el.classList.contains('active');
+      el.outerHTML = p[id];
+      if (wasActive){ var n = document.getElementById(id); if (n){ n.classList.add('active'); n.style.display = 'block'; } }
+    }
+    if (lastFmt) applyFmt(lastFmt);
+  }
+  // LIGHT — fast, always fresh
   fetch(base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER), {cache:'no-store'})
     .then(function(r){ return r.json(); })
     .then(function(j){
@@ -5684,22 +5708,38 @@ _QUOTE_JS = r"""
       applyFmt(j.quote.fmt); applyPos(j.quote.pos); badge(j.quote.meta, true);
     })
     .catch(function(){ badge(null, false); });
-  fetch(base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER) + '&full=1', {cache:'no-store'})
+  // FULL — may return stale cache (instant) then background-refresh
+  var fullUrl = base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER) + '&full=1';
+  fetch(fullUrl, {cache:'no-store'})
     .then(function(r){ return r.json(); })
     .then(function(j){
-      if (!j || !j.ok || !j.quote || !j.quote.panes) return;
-      var p = j.quote.panes;
-      for (var id in p){
-        if (!p.hasOwnProperty(id) || !p[id]) continue;
-        var el = document.getElementById(id);
-        if (!el) continue;
-        var wasActive = el.classList.contains('active');
-        el.outerHTML = p[id];
-        if (wasActive){ var n = document.getElementById(id); if (n){ n.classList.add('active'); n.style.display = 'block'; } }
+      applyFull(j);
+      if (j && j.stale){
+        setTimeout(function(){
+          fetch(fullUrl + '&force=1', {cache:'no-store'})
+            .then(function(r){ return r.json(); })
+            .then(function(j2){ applyFull(j2); })
+            .catch(function(){});
+        }, 2000);
       }
-      if (lastFmt) applyFmt(lastFmt);
     })
     .catch(function(){});
+  // Refresh button
+  var rb = document.getElementById('q-refresh');
+  if (rb) rb.addEventListener('click', function(){
+    rb.textContent = '⏳'; rb.disabled = true;
+    fetch(fullUrl + '&force=1', {cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(j){ applyFull(j); rb.textContent = '🔄'; rb.disabled = false; })
+      .catch(function(){ rb.textContent = '🔄'; rb.disabled = false; });
+    fetch(base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER), {cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (!j || !j.ok || !j.quote) return;
+        lastFmt = j.quote.fmt;
+        applyFmt(j.quote.fmt); applyPos(j.quote.pos); badge(j.quote.meta, true);
+      }).catch(function(){});
+  });
 })();
 """
 

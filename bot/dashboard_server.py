@@ -507,15 +507,30 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             safe = ticker.replace(".", "_").replace("-", "_")
             kind = "full" if full else "light"
             cache_f = cache_dir / f"{safe}_{kind}_v5.json"
-            # FULL is slow-moving (filings quarterly / 수급 daily) → 30 min.
+            # FULL is slow-moving (filings quarterly, 수급 daily) → 4 h.
             # LIGHT is intraday → 5 min (matches the chart API cadence).
-            ttl = 1800 if full else 300
+            ttl = 14400 if full else 300  # FULL=4h, LIGHT=5min
             if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < ttl:
                 try:
                     self._reply_json(200, json.loads(cache_f.read_text("utf-8")))
                     return
                 except Exception:
                     pass  # corrupt cache → refetch
+
+            # Stale cache for FULL → serve stale instantly + let client
+            # background-refresh (stale-while-revalidate pattern).  Avoids
+            # the 2-10 s wait on every page load for data that is quarterly.
+            stale_body = None
+            if full and cache_f.exists():
+                try:
+                    stale_body = json.loads(cache_f.read_text("utf-8"))
+                    stale_body["stale"] = True  # signal to client JS
+                except Exception:
+                    pass
+            force = (params.get("force", ["0"])[0] or "0").strip() == "1"
+            if stale_body and not force:
+                self._reply_json(200, stale_body)
+                return
 
             from bot.dashboard import build_live_quote
             quote = build_live_quote(ticker, full=full)
