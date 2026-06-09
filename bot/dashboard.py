@@ -1711,6 +1711,12 @@ def _ticker_market(ticker: str) -> str:
     if t.endswith((".TW", ".TWO")): return "TW"
     if t.endswith((".SS", ".SZ", ".BJ")): return "CN"
     if t.endswith(".HK"): return "HK"
+    # Bare 6-digit numeric (no suffix) = Korean KOSPI/KOSDAQ code
+    # (e.g. '039030' 이오테크닉스, '014680' 한솔케미칼). JP/TW codes are
+    # 4-digit + suffix, CN 6-digit carry .SS/.SZ — so an UNsuffixed 6-digit
+    # is unambiguously KR. Portfolio holdings resolved via DART store the
+    # bare code; without this they fell through to US (이오테크닉스 → US bug).
+    if len(t) == 6 and t.isdigit(): return "KR"
     return "US"
 
 
@@ -4764,6 +4770,7 @@ def _render_stock_info_html(rec: dict) -> str:
                         trend_html = f"""<div class="si-section">
       <div class="si-section-title">다기간 추이 (pp 변화)</div>
       <table class="si-table"><thead><tr><th>항목</th><th class="num">현재</th>{period_hdrs}</tr></thead><tbody>{t_rows}</tbody></table>
+      <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ pp = 퍼센트포인트 = 현재 비율 − N거래일 전 비율(절대 차이). 예: 외국인 39.9%→40.4% = +0.5pp. 데이터가 그 기간만큼 없으면 부정확한 근사 대신 — 표시. 기관·연기금은 일별 보유비율 공시가 없어(외국인 보유율·공매도 잔고율만 일별 비율 존재) 이 표에 못 넣음 — 대신 위 「투자주체별 순매수 다기간」 표에 기관·연기금 순매수가 기간별로 있음.</div>
     </div>"""
             except Exception as exc:
                 log.info("detail: multi-period trends %s: %s", ticker, exc)
