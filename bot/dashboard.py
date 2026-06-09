@@ -6155,6 +6155,7 @@ def _month_kr(ym: str) -> str:
 def _month_transition(
     parts: list[str], prev_month: str | None, date: str,
     this_month: str, month_counts: dict[str, int],
+    force_open: bool = False,
 ) -> str:
     """Emit month-group <details> open/close transitions into `parts` as a
     date loop iterates newest-first. Call once at the top of each iteration
@@ -6172,7 +6173,7 @@ def _month_transition(
     if cur_month != prev_month:
         if prev_month is not None:
             parts.append("</div></details>")  # close previous month
-        m_open = " open" if cur_month == this_month else ""
+        m_open = " open" if (cur_month == this_month or force_open) else ""
         parts.append(
             f'<details class="month"{m_open}>'
             f'<summary class="month-head">'
@@ -8068,10 +8069,14 @@ def _render_realestate_page(runs: list[dict]) -> str:
     for d in by_date:
         _month_counts[(d or "")[:7]] += len(by_date[d])
     _prev_month: str | None = None
+    _first_day = True
+    _first_card = True
     for date in sorted(by_date.keys(), reverse=True):
         _prev_month = _month_transition(
-            parts, _prev_month, date, _this_month, _month_counts)
-        day_open = " open" if date == _today else ""
+            parts, _prev_month, date, _this_month, _month_counts,
+            force_open=_first_day)
+        day_open = " open" if (date == _today or _first_day) else ""
+        _first_day = False
         parts.append(
             f'<details class="day"{day_open}><summary class="day-head">'
             f'<span>📅 {_html.escape(date)}</span>'
@@ -8103,7 +8108,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
                             f'loading="lazy" style="width:100%;max-width:680px;'
                             f'border-radius:10px;margin:8px auto 14px;display:block">')
             parts.append(f"""
-  <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-del-api="{del_api}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
+  <details class="card"{" open" if _first_card else ""} id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-del-api="{del_api}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if _first_card else 'false'}">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
       <span class="domain">{title} ({_html.escape(ts_clock)} · ₩{cost:,.1f})</span>
@@ -8115,6 +8120,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
     </div>
   </details>
 """)
+            _first_card = False
         parts.append('</div></details>')
     _month_close(parts, _prev_month)
     parts.append("</div>")
