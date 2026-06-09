@@ -11084,33 +11084,16 @@ def _render_sector_movers(movers: dict) -> str:
                 f'<table class="sm-tbl">{body}</table></div>')
 
     ts = _html.escape((movers or {}).get("ts", ""))
+    _lnk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     return (
-        '<div class="section-hd"><h2>업종 등락 TOP 10</h2>'
-        f'<span class="ts">{ts} · Naver 업종별 시세</span></div>'
+        '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
+        '<h2>업종 등락 TOP 10</h2>'
+        f'<a href="theme" style="{_lnk}">🎯 테마별 시세</a>'
+        f'<a href="highlow" style="{_lnk}">📈 신고가·신저가</a>'
+        f'<span class="ts" style="margin-left:auto">{ts} · Naver</span></div>'
         '<div class="sm-wrap">'
         + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
         + '</div>'
-    )
-
-
-def _render_night_futures_card(nf: dict | None) -> str:
-    """코스피200 야간선물 카드 (best-effort) — 데이터 없으면 빈 문자열."""
-    if not nf or nf.get("value") is None:
-        return ""
-    val = nf["value"]
-    chg = nf.get("change")
-    pct = nf.get("pct")
-    val_str = f'{val:,.2f}'
-    if chg is not None:
-        cls = "up" if chg > 0 else "dn" if chg < 0 else "neu"
-        arrow = "▲" if chg > 0 else "▼" if chg < 0 else "-"
-        pct_str = f' ({pct:+.2f}%)' if pct is not None else ""
-        chg_cell = f'<td class="{cls}">{arrow}{abs(chg):.2f}{pct_str}</td>'
-    else:
-        chg_cell = '<td class="neu">—</td>'
-    return (
-        '<div class="mcard"><div class="mcard-title">🌙 코스피200 야간선물</div>'
-        f'<table><tr><td>현재가</td><td>{val_str}</td>{chg_cell}</tr></table></div>'
     )
 
 
@@ -11318,7 +11301,6 @@ def _render_market_page(data: dict) -> str:
     research_us = data.get("research_us", [])
     macro = data.get("macro", {})
     sector_movers = data.get("sector_movers", {})
-    night_futures = data.get("night_futures")
 
     parts: list[str] = [_MARKET_CSS]
     parts.append(f"""
@@ -11357,8 +11339,6 @@ def _render_market_page(data: dict) -> str:
   <div class="card-grid">
 """)
 
-    # 코스피200 야간선물 — 가능 시 맨 앞 카드(best-effort, 없으면 미표시)
-    parts.append(_render_night_futures_card(night_futures))
     for title, items in ALL_CARDS:
         if items is None:
             parts.append(_render_fred_card(fred, dollar_idx))

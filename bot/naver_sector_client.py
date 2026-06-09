@@ -1,11 +1,11 @@
-"""Naver 증권 업종별 시세 + 야간선물 스크래퍼.
+"""Naver 증권 시세 스크래퍼 — 업종/테마 등락 + 신고가·신저가.
 
-- fetch_sector_movers(): finance.naver.com/sise/sise_group.naver?type=upjong
-  에서 업종별 등락률 → 상승 TOP / 하락 TOP 위젯용. 매일 갱신(10분 캐시).
-- fetch_night_futures(): 코스피200 야간선물(EUREX/CME 연계) best-effort.
-  ⚠️ Naver 정확한 엔드포인트 실측 검증 필요 — 실패 시 None(카드 미표시).
+- fetch_sector_movers(): sise_group.naver?type=upjong → 업종 상승/하락 TOP.
+- fetch_themes(): sise/theme.naver → 테마별 등락(별도 페이지).
+- fetch_high_low(): 52주 신고가·신저가(별도 페이지, best-effort).
 
-무료·무키. euc-kr 디코딩. graceful — 실패/빈 결과 시 빈값 반환.
+무료·무키. euc-kr 디코딩. graceful — 실패/빈 결과 시 빈값. 사용자 정책
+2026-06-10: 리스크 없는 한 가장 빠르게 → 4분 캐시.
 """
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import json
 import logging
 import re
 import time
-from datetime import date
 from pathlib import Path
 from typing import Optional
 
@@ -21,9 +20,9 @@ import requests
 
 log = logging.getLogger("bot.naver_sector")
 
-_UPJONG_URL = "https://finance.naver.com/sise/sise_group.naver"
+_BASE = "https://finance.naver.com/sise"
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "naver_sector"
-_CACHE_TTL_SEC = 10 * 60  # 업종 등락률은 장중 변동 → 10분
+_CACHE_TTL_SEC = 4 * 60  # 리스크 없이 빠르게(1 HTTP/요청) — 사용자 2026-06-10
 
 _HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -32,9 +31,12 @@ _HEADERS = {
     "Referer": "https://finance.naver.com/sise/",
 }
 
-_DETAIL_RE = re.compile(
-    r'sise_group_detail\.naver\?type=upjong[^"]*?no=\d+"[^>]*>([^<]+)</a>', re.I)
-_PCT_RE = re.compile(r'([+\-]?)(\d{1,2}\.\d{1,2})\s*%')
+# 업종/테마 공통 — sise_group_detail.naver?type=upjong|theme&no=N 링크의 이름
+_GROUP_RE = re.compile(
+    r'sise_group_detail\.naver\?type=(?:upjong|theme)[^"]*?no=\d+"[^>]*>([^<]+)</a>',
+    re.I)
+_PCT_RE = re.compile(r'([+\-]?)(\d{1,3}\.\d{1,2})\s*%')
+_ITEM_RE = re.compile(r'/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>', re.I)
 
 
 def _get(url: str, **kwargs) -> Optional[str]:
@@ -55,30 +57,39 @@ def _clean(s: str) -> str:
     return " ".join(s.split()).strip()
 
 
-def parse_sectors(html: str) -> list[dict]:
-    """업종별 시세 표 → [{name, pct}] (등락률 %). 부호는 텍스트 또는 색 클래스."""
+def _cell_texts(row_html: str) -> list[str]:
+    out = []
+    for inner in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", row_html, re.DOTALL | re.I):
+        out.append(_clean(inner))
+    return out
+
+
+def _pct_from_row(row_html: str) -> Optional[float]:
+    """행의 등락률(%) — 부호 텍스트 우선, 없으면 색 클래스(red/nv)로 추정."""
+    m = _PCT_RE.search(_clean(row_html))
+    if not m:
+        return None
+    num = float(m.group(2))
+    sign = m.group(1)
+    if sign == "-":
+        return -num
+    if sign != "+" and re.search(r"(nv01|nv02|blue|down)", row_html, re.I):
+        return -num
+    return num
+
+
+def parse_groups(html: str) -> list[dict]:
+    """업종/테마 표 → [{name, pct}] (등락률 %)."""
     out: list[dict] = []
     seen: set[str] = set()
     for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I):
-        a = _DETAIL_RE.search(row)
+        a = _GROUP_RE.search(row)
         if not a:
             continue
         name = _clean(a.group(1))
         if not name or name in seen:
             continue
-        # 등락률 셀 — 부호 포함 숫자 우선. 텍스트에 부호 없으면 색 클래스로 추정.
-        pct = None
-        m = _PCT_RE.search(_clean(row))
-        if m:
-            num = float(m.group(2))
-            sign = m.group(1)
-            if sign == "-":
-                num = -num
-            elif sign != "+":
-                # 부호 미표기 → 색 클래스(red=상승, nv/blue=하락)로 추정
-                if re.search(r"(nv01|nv02|blue|down|red04|red05)", row, re.I):
-                    num = -num
-            pct = num
+        pct = _pct_from_row(row)
         if pct is None:
             continue
         seen.add(name)
@@ -86,116 +97,112 @@ def parse_sectors(html: str) -> list[dict]:
     return out
 
 
-def fetch_sector_movers(top_n: int = 10) -> dict:
-    """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}.
-
-    up = 상승 TOP n(등락률 내림차순), down = 하락 TOP n(오름차순). 10분 캐시."""
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = _CACHE_DIR / "upjong.json"
+def _cached(name: str):
+    cache_file = _CACHE_DIR / name
     if cache_file.exists():
         try:
             if time.time() - cache_file.stat().st_mtime < _CACHE_TTL_SEC:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
+    return None
 
-    html = _get(_UPJONG_URL, params={"type": "upjong"})
-    sectors = parse_sectors(html) if html else []
-    if not sectors:
+
+def _cache_write(name: str, obj) -> None:
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        (_CACHE_DIR / name).write_text(json.dumps(obj, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def fetch_sector_movers(top_n: int = 10) -> dict:
+    """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}. 4분 캐시."""
+    c = _cached("upjong.json")
+    if c is not None:
+        return c
+    html = _get(f"{_BASE}/sise_group.naver", params={"type": "upjong"})
+    groups = parse_groups(html) if html else []
+    if not groups:
         return {"up": [], "down": [], "ts": ""}
-
-    ups = sorted([s for s in sectors if s["pct"] > 0],
+    ups = sorted([s for s in groups if s["pct"] > 0],
                  key=lambda x: x["pct"], reverse=True)[:top_n]
-    downs = sorted([s for s in sectors if s["pct"] < 0],
+    downs = sorted([s for s in groups if s["pct"] < 0],
                    key=lambda x: x["pct"])[:top_n]
     out = {"up": ups, "down": downs,
            "ts": time.strftime("%Y-%m-%d %H:%M", time.localtime())}
-    try:
-        cache_file.write_text(json.dumps(out, ensure_ascii=False))
-    except Exception:
-        pass
+    _cache_write("upjong.json", out)
     return out
 
 
-# ──────────────────────────────────────────────────────────────────
-# 코스피200 야간선물 (best-effort) — Naver 실시간 지수 API 후보 다중 시도
-# ⚠️ 실 엔드포인트/코드 VM 검증 필요. 실패 시 None → 카드 미표시(graceful).
-# ──────────────────────────────────────────────────────────────────
-
-# Naver 실시간 폴링 API(도메스틱 인덱스) 후보 — 야간선물 코드 미상이라
-# 여러 후보를 순차 시도. 첫 plausible 값 채택. VM 로그로 어느 것이 맞는지 확인.
-_NF_CANDIDATES = [
-    "https://polling.finance.naver.com/api/realtime/domestic/index/KSF",
-    "https://api.stock.naver.com/index/KSF/basic",
-    "https://api.stock.naver.com/futures/nightFutures/basic",
-]
-_NF_CACHE_TTL = 3 * 60
-
-
-def _plausible_kospi200(v: float) -> bool:
-    # 코스피200 지수/선물 대략 200~2000 범위 sanity (오파싱 방어)
-    return 100.0 <= v <= 5000.0
+def fetch_themes() -> dict:
+    """테마별 시세 → {'themes': [{name, pct}] 등락률 내림차순, 'ts'}. 4분 캐시."""
+    c = _cached("theme.json")
+    if c is not None:
+        return c
+    html = _get(f"{_BASE}/theme.naver")
+    themes = parse_groups(html) if html else []
+    themes.sort(key=lambda x: x["pct"], reverse=True)
+    out = {"themes": themes,
+           "ts": time.strftime("%Y-%m-%d %H:%M", time.localtime()) if themes else ""}
+    _cache_write("theme.json", out)
+    return out
 
 
-def fetch_night_futures() -> Optional[dict]:
-    """코스피200 야간선물 현재가·등락 best-effort. {label, value, change, pct} | None.
-
-    ⚠️ Naver 야간선물 정확 엔드포인트 미검증 — 후보 순차 시도, 실패 시 None."""
-    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = _CACHE_DIR / "night_futures.json"
-    if cache_file.exists():
-        try:
-            if time.time() - cache_file.stat().st_mtime < _NF_CACHE_TTL:
-                return json.loads(cache_file.read_text()) or None
-        except Exception:
-            pass
-
-    for url in _NF_CANDIDATES:
-        try:
-            resp = requests.get(url, headers=_HEADERS, timeout=10)
-            if resp.status_code != 200 or not resp.text:
-                continue
-            data = resp.json()
-        except Exception:
+# ── 52주 신고가·신저가 ───────────────────────────────────────────────
+# Naver: sise_high_low.naver?type=high|low (gubun=signal 52주). best-effort —
+# 페이지 구조/파라미터가 빗나가도 graceful 빈 리스트(호출부가 '데이터 없음').
+def _parse_high_low(html: str) -> list[dict]:
+    """신고가/신저가 종목 표 → [{code, name, price, pct}]."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I):
+        a = _ITEM_RE.search(row)
+        if not a:
             continue
-        node = data[0] if isinstance(data, list) and data else data
-        if not isinstance(node, dict):
+        code, name = a.group(1), _clean(a.group(2))
+        if code in seen:
             continue
-        # Naver 인덱스 JSON 키 후보(closePrice/now/nv) — 다양성 방어 파싱
-        raw_v = (node.get("closePrice") or node.get("now")
-                 or node.get("nv") or node.get("currentPrice"))
-        raw_c = (node.get("compareToPreviousClosePrice")
-                 or node.get("changeValue") or node.get("cv"))
-        try:
-            value = float(str(raw_v).replace(",", "")) if raw_v is not None else None
-        except (TypeError, ValueError):
-            value = None
-        if value is None or not _plausible_kospi200(value):
-            continue
-        try:
-            change = float(str(raw_c).replace(",", "")) if raw_c is not None else None
-        except (TypeError, ValueError):
-            change = None
-        pct = round(change / (value - change) * 100, 2) if (change and value != change) else None
-        out = {"label": "코스피200 야간선물", "value": value,
-               "change": change, "pct": pct, "src": url}
-        try:
-            cache_file.write_text(json.dumps(out, ensure_ascii=False))
-        except Exception:
-            pass
-        log.info("naver_sector: night_futures via %s = %s", url, value)
-        return out
+        cells = _cell_texts(row)
+        price = ""
+        for cterm in cells:
+            if re.fullmatch(r"[\d,]{2,}", cterm):
+                price = cterm
+                break
+        pct = _pct_from_row(row)
+        seen.add(code)
+        out.append({"code": code, "name": name, "price": price,
+                    "pct": round(pct, 2) if pct is not None else None})
+    return out
 
-    log.info("naver_sector: night_futures unavailable (all candidates failed)")
-    return None
+
+def fetch_high_low(limit: int = 40) -> dict:
+    """52주 신고가·신저가 → {'high': [...], 'low': [...], 'ts'}. 4분 캐시.
+
+    ⚠️ Naver 페이지 파라미터 best-effort — 빗나가면 빈 리스트(graceful)."""
+    c = _cached("high_low.json")
+    if c is not None:
+        return c
+    out = {"high": [], "low": [], "ts": ""}
+    # type=up/down 또는 gubun 파라미터 후보 — 첫 plausible 결과 채택
+    for key, params in (("high", {"type": "up", "gubun": "high52"}),
+                        ("low", {"type": "down", "gubun": "low52"})):
+        html = _get(f"{_BASE}/sise_high_low.naver", params=params)
+        rows = _parse_high_low(html)[:limit] if html else []
+        out[key] = rows
+    if out["high"] or out["low"]:
+        out["ts"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+    _cache_write("high_low.json", out)
+    return out
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     mv = fetch_sector_movers()
-    print(f"상승 {len(mv['up'])} / 하락 {len(mv['down'])}")
-    for s in mv["up"][:5]:
-        print("  ▲", s["name"], s["pct"])
-    for s in mv["down"][:5]:
-        print("  ▼", s["name"], s["pct"])
-    print("야간선물:", fetch_night_futures())
+    print(f"업종 상승 {len(mv['up'])} / 하락 {len(mv['down'])}")
+    th = fetch_themes()
+    print(f"테마 {len(th['themes'])}")
+    for t in th["themes"][:5]:
+        print("  ", t["name"], t["pct"])
+    hl = fetch_high_low()
+    print(f"신고가 {len(hl['high'])} / 신저가 {len(hl['low'])}")
