@@ -188,6 +188,8 @@ text-decoration:none;transition:background .15s}
 .kir-title{color:var(--muted);text-decoration:none;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .kir-title:hover{color:var(--accent);text-decoration:underline}
 .cal-entry a{color:inherit;text-decoration:none}
+.cal-entry a.dart-ln{color:var(--muted);font-size:10px}
+.cal-entry a.dart-ln:hover{color:var(--accent);text-decoration:underline}
 .cal-entry a:hover .sym{text-decoration:underline}
 .back-link{display:inline-block;margin-bottom:16px;color:var(--accent);
 text-decoration:none;font-size:13px}
@@ -288,11 +290,14 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
                 label = _html.escape((e.get("name") or sym) if is_kr else sym)
                 mcls = "kr" if is_kr else "us"
                 if is_kr:
-                    # 한국: IR/실적 구분 표기 + 클릭 시 DART 원문
+                    # 한국: 종목명 클릭→분석화면(lookup), 종류 배지 클릭→DART 원문
+                    url = _html.escape(e.get("url", "#"))
                     tag = _html.escape(e.get("ir_type", ""))
-                    hl_span = f' <span class="hour">{tag}</span>' if tag else ""
-                    link = _html.escape(e.get("url", "#"))
-                    ext = ' target="_blank" rel="noopener"'
+                    hl_span = (f' <a class="hour dart-ln" href="{url}" '
+                               f'target="_blank" rel="noopener" title="DART 원문">{tag}↗</a>'
+                               if tag else "")
+                    link = f"lookup/{sym}"
+                    ext = ""
                 else:
                     hl = _hour_label(e["hour"])
                     hl_span = f' <span class="hour">{hl}</span>' if hl else ""
@@ -302,7 +307,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
                           if i >= _MAX_PER_CELL else '')
                 entries += (
                     f'<div class="cal-entry {mcls}{hidden}">'
-                    f'<a href="{link}"{ext}><span class="sym">{label}</span>{hl_span}</a>'
+                    f'<a href="{link}"{ext}><span class="sym">{label}</span></a>{hl_span}'
                     f'</div>\n'
                 )
             overflow = count - _MAX_PER_CELL
