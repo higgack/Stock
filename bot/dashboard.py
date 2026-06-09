@@ -9059,8 +9059,9 @@ def _render_portfolio_page(model, noah=None) -> str:
             '📈 자산 변화 — export 가 2회 이상 쌓이면 여기에 순자산·투자자산 '
             '증분 표시</div>')
 
-    cash_stat = (f'<div class="stat"><div class="stat-num">{_pf_won(cash_in_invest)}</div>'
-                  '<div class="stat-lbl">예수금<br>(자유입출금)</div></div>') if cash_in_invest else ""
+    _free_cash = _alloc.get("자유입출금 자산") or 0
+    cash_stat = (f'<div class="stat"><div class="stat-num">{_pf_won(_free_cash)}</div>'
+                  '<div class="stat-lbl">자유입출금</div></div>') if _free_cash else ""
     stats = (
         '<div class="stats">'
         f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("순자산"))}</div><div class="stat-lbl">순자산</div></div>'
