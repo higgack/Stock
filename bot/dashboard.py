@@ -4156,7 +4156,10 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
   </div>
   {kr_financial_html}
+  <div style="font-size:11px;color:var(--fg-soft);margin-top:8px;text-align:right">출처: yfinance{" · DART · KIS" if is_kr else ""}{" · EDINET" if is_jp else ""}{" · MOPS" if is_tw else ""}{" · AKShare" if is_cn else ""}</div>
 </div>"""
+
+    _src_foot = '<div style="font-size:11px;color:var(--fg-soft);margin-top:8px;text-align:right">'
 
     # ── 컨센서스 pane ───────────────────────────────────────────
     rec_key = (si.get("recommendation_key") or "").lower()
@@ -4238,6 +4241,7 @@ def _render_stock_info_html(rec: dict) -> str:
     {range_html}
   </div>
   {supp_consensus_html}
+  {_src_foot}출처: yfinance{" · FnGuide · 한경" if is_kr else ""}{" · Kabutan" if is_jp else ""}</div>
 </div>"""
 
     # ── 밸류에이션 pane ────────────────────────────────────────
@@ -4402,6 +4406,7 @@ def _render_stock_info_html(rec: dict) -> str:
     {earnings_table}
   </div>
   {tw_revenue_html}
+  {_src_foot}출처: {earn_src}</div>
 </div>"""
 
     # ── 리서치 pane ─────────────────────────────────────────────
@@ -4446,6 +4451,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section-title">리서치 액션</div>
     {research_table}
   </div>
+  {_src_foot}출처: {"Naver Finance" if is_kr else "yfinance"}</div>
 </div>"""
 
     # ── 기관 pane ───────────────────────────────────────────────
@@ -4811,6 +4817,7 @@ def _render_stock_info_html(rec: dict) -> str:
     {side_tables}
   </div>
   {trend_html}
+  {_src_foot}출처: KIS · pykrx</div>
 </div>"""
 
     # CN/HK 港股通 flow
@@ -4988,7 +4995,7 @@ def _render_stock_info_html(rec: dict) -> str:
             log.info("detail: finnhub insider %s: %s", ticker, exc)
 
         if us_flow_parts:
-            flow_pane = '<div class="si-pane" id="si-flow">\n  ' + "\n  ".join(us_flow_parts) + "\n</div>"
+            flow_pane = '<div class="si-pane" id="si-flow">\n  ' + "\n  ".join(us_flow_parts) + f'\n  {_src_foot}출처: yfinance · SEC · Finnhub</div>\n</div>'
 
     # Placeholder so the JS overlay can find the element by ID during
     # batch regen (when all live-fetch blocks are skipped → flow_pane="").
@@ -5299,6 +5306,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {kr_fin_ts_html}
   {us_xbrl_html}
   {div_html}
+  {_src_foot}출처: yfinance{" · DART" if is_kr and kr_fin_ts_html else ""}{" · SEC XBRL" if is_us and us_xbrl_html else ""}</div>
 </div>"""
 
     # ── 재무제표 pane (IS / BS / CF + 수익성 차트) ──────────────────
@@ -5453,6 +5461,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {is_html}
   {bs_html}
   {cf_html}
+  {_src_foot}출처: yfinance</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
@@ -5496,6 +5505,7 @@ def _render_stock_info_html(rec: dict) -> str:
     </table>
     </div>
   </div>
+  {_src_foot}출처: yfinance</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
@@ -5629,6 +5639,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {jp_holders_html}
   {tw_insiders_html}
   {cn_holders_html}
+  {_src_foot}출처: yfinance{" · DART · KRX" if is_kr else ""}{" · SEC" if is_us else ""}{" · EDINET" if is_jp else ""}{" · MOPS" if is_tw else ""}{" · AKShare" if is_cn else ""}</div>
 </div>"""
 
     # Return a dict with separate pieces so _render_detail can wrap
