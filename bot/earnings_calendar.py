@@ -296,14 +296,12 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
                 label = _html.escape((e.get("name") or sym) if is_kr else sym)
                 mcls = "kr" if is_kr else "us"
                 if is_kr:
-                    # 한국: 종목명 클릭→분석화면(lookup), 종류 배지 클릭→DART 원문
-                    url = _html.escape(e.get("url", "#"))
+                    # 한국: 회사 클릭 → DART 공시 원문(사용자 정정 — 분석페이지 아님).
+                    # 종류(실적/IR)는 텍스트 배지로 표기.
                     tag = _html.escape(e.get("ir_type", ""))
-                    hl_span = (f' <a class="hour dart-ln" href="{url}" '
-                               f'target="_blank" rel="noopener" title="DART 원문">{tag}↗</a>'
-                               if tag else "")
-                    link = f"lookup/{sym}"
-                    ext = ""
+                    hl_span = f' <span class="hour">{tag}</span>' if tag else ""
+                    link = _html.escape(e.get("url", "#"))
+                    ext = ' target="_blank" rel="noopener"'
                 else:
                     hl = _hour_label(e["hour"])
                     hl_span = f' <span class="hour">{hl}</span>' if hl else ""
