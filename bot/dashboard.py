@@ -11282,7 +11282,7 @@ def _render_market_page(data: dict) -> str:
     parts.append(f"""
   <div class="section-hd">
     <h2>다가오는 실적</h2>
-    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(+한국 실적·IR)</a>
+    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(미국 실적·한국 IR)</a>
     <span class="ts">한국 yfinance · 미국 Finnhub</span>
   </div>
   <div class="tbl-filter">
