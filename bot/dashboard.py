@@ -2509,7 +2509,7 @@ _CHART_JS = """
   var asOfClose = (initial && initial.as_of_close != null) ? initial.as_of_close : null;
   var analysisMarkers = (initial && initial.analysis_markers) || null;
   var chart = null, rsiChart = null, macdChart = null;
-  var curInterval = '1d', curRange = '3mo';
+  var curInterval = '1d', curRange = '1y';
   var lastData = null;   // 마지막 렌더 데이터 — 지표 토글 시 refetch 없이 재렌더
   var curSym = '';       // 현재 시장 통화 기호(₩/¥/€/NT$/HK$/$) — render 시 세팅
 
