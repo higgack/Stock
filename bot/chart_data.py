@@ -216,7 +216,7 @@ def _series_payload(
 # period are whitelisted; MAs (10/50/200) recompute on the chosen interval
 # (so weekly view = 10wk/50wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
-_VALID_INTERVALS = {"5m", "1d", "1wk", "1mo"}
+_VALID_INTERVALS = {"5m", "15m", "1h", "1d", "1wk", "1mo"}
 _VALID_PERIODS = {"1d", "1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
 # Range → 대략 캘린더 일수. yfinance 의 period 문자열에는 '3y' 가 없어
 # (유효: 1mo/3mo/6mo/1y/2y/5y/10y/max) 전 범위를 start/end 로 통일 fetch
@@ -349,8 +349,11 @@ def fetch_chart_payload(
         period = "1y"
     # '1d'(당일) = intraday 5분봉. yfinance 는 1m/5m 을 start/end 보다 period
     # 문자열로 더 안정적으로 반환 → period='1d' + interval='5m' 직접 fetch.
-    if period == "1d":
-        interval = "5m"
+    _PERIOD_INTERVAL_MAP = {
+        "1d": "5m", "1wk": "15m", "1mo": "1h",
+    }
+    if period in _PERIOD_INTERVAL_MAP:
+        interval = _PERIOD_INTERVAL_MAP[period]
     try:
         import yfinance as yf
         from datetime import datetime, timedelta
