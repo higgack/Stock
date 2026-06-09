@@ -11449,8 +11449,8 @@ def _render_market_page(data: dict) -> str:
     <span class="cnt" id="earn-cnt"></span>
   </div>
   <div class="tabs">
-    <button class="etab-btn active" data-etab="kr">🇰🇷 한국 ({len(_earn_kr)})</button>
-    <button class="etab-btn" data-etab="us">🇺🇸 미국 ({len(_earn_us)})</button>
+    <button class="etab-btn active" data-etab="kr">한국 ({len(_earn_kr)})</button>
+    <button class="etab-btn" data-etab="us">미국 ({len(_earn_us)})</button>
   </div>
   <div id="etab-kr" class="etab-pane active">
     {_render_earnings_table(_earn_kr)}
@@ -11468,9 +11468,9 @@ def _render_market_page(data: dict) -> str:
     <span class="cnt" id="research-cnt"></span>
   </div>
   <div class="tabs">
-    <button class="tab-btn active" data-tab="kr">🇰🇷 한국 기업</button>
-    <button class="tab-btn" data-tab="krind">🇰🇷 한국 산업</button>
-    <button class="tab-btn" data-tab="us">🇺🇸 미국</button>
+    <button class="tab-btn active" data-tab="kr">한국 기업</button>
+    <button class="tab-btn" data-tab="krind">한국 산업</button>
+    <button class="tab-btn" data-tab="us">미국</button>
   </div>
   <div id="tab-kr" class="tab-pane active">
     {_render_research_kr_table(research_kr)}
