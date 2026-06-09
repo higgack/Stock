@@ -198,6 +198,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # /lookup/<TICKER> — lightweight stock overview page (on-demand).
         if raw.startswith("/lookup/"):
             return self._handle_lookup()
+        # /api/lookup_detail — 지연로딩: lookup shell 이 비동기로 받는 무거운 detail
+        if raw == "/api/lookup_detail":
+            return self._handle_lookup_detail()
         if raw.startswith("/api/search"):
             return self._handle_search_api()
         if raw == "/api/favorites":
@@ -768,6 +771,57 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(encoded)
         except Exception as exc:
             log.warning("lookup: failed — %s", exc)
+            self.send_error(500, "internal error")
+
+    def _handle_lookup_detail(self) -> None:
+        """GET /api/lookup_detail?ticker=X — 지연로딩 detail HTML fragment.
+
+        무거운 snapshot+enrichment+차트. 5분 디스크 캐시(lookup shell 과 별도)."""
+        import time
+        import urllib.parse as _ulp
+        try:
+            qs = _ulp.parse_qs(_ulp.urlparse(self.path).query)
+            raw_q = (qs.get("ticker", [""])[0] or "").strip()
+            try:
+                from bot.dashboard import resolve_name_to_ticker
+                resolved = resolve_name_to_ticker(raw_q)
+                ticker = resolved if resolved else raw_q.upper()
+            except Exception:
+                ticker = raw_q.upper()
+            if not ticker or not _TICKER_RE.match(ticker):
+                self.send_error(400, "bad ticker")
+                return
+
+            cache_dir = _ARCHIVE_ROOT.parent / "lookup_cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            safe = ticker.replace(".", "_").replace("-", "_")
+            cache_f = cache_dir / f"detail_{safe}.html"
+            if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 300:
+                try:
+                    encoded = cache_f.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(encoded)))
+                    self.end_headers()
+                    self.wfile.write(encoded)
+                    return
+                except Exception:
+                    pass
+
+            from bot.dashboard import render_lookup_detail
+            html = render_lookup_detail(ticker)
+            encoded = html.encode("utf-8")
+            try:
+                cache_f.write_bytes(encoded)
+            except Exception:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as exc:
+            log.warning("lookup_detail: failed — %s", exc)
             self.send_error(500, "internal error")
 
     def _serve_search_error(self, query: str) -> None:

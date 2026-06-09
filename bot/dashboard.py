@@ -11904,10 +11904,11 @@ def resolve_name_to_ticker(query: str) -> str | None:
     return None
 
 
-def render_lookup_page(ticker: str) -> str:
-    """Render a stock overview page for ANY ticker, matching the NOAH
-    detail page layout (header cards + chart + tabs). Uses
-    collect_stock_snapshot (₩0, no LLM). Returns full HTML string."""
+def render_lookup_detail(ticker: str) -> str:
+    """지연로딩 detail — 무거운 부분(collect_stock_snapshot + enrichment +
+    header/tabs/chart/panes + 스크립트). shell 이 /api/lookup_detail 로 비동기
+    fetch 해 #lk-detail 에 주입 + runScripts 로 스크립트 재실행. HTML
+    fragment 반환(전체 페이지 아님)."""
     # Build stock_info via the same pipeline as NOAH analyses
     si = None
     try:
@@ -11924,10 +11925,6 @@ def render_lookup_page(ticker: str) -> str:
             pass
 
     rec = {"ticker": ticker, "stock_info": si or {}}
-
-    # Display name
-    kr_name = _ticker_display_name(ticker)
-    h1_label = f"{kr_name} / {ticker}" if kr_name else ticker
 
     # Render stock info (header cards + tabs + panes)
     si_parts = _render_stock_info_html(rec)
@@ -12009,7 +12006,39 @@ def render_lookup_page(ticker: str) -> str:
         f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
     )
 
-    search_js = """<script>
+    # ── 지연로딩: detail 은 HTML fragment 로 반환 (shell 이 #lk-detail 주입) ──
+    if not has_tabs:
+        _note = ("" if si else
+                 f'<div class="lk-loading">⚠️ {_tkr_esc} 기본 정보를 불러오지 못했습니다 (차트만 표시).</div>')
+        return f"{_note}{chart_html}\n{chart_scripts}"
+    return (
+        f"{si_header}\n{si_tabs}\n{overview_open}\n{chart_html}\n{overview_close}\n"
+        f"{si_other}\n<script>{_DETAIL_DEEP_LINK_JS}</script>\n{si_tab_js}\n"
+        f"{chart_scripts}\n{quote_script}"
+    )
+
+
+# 지연로딩 shell JS — detail 비동기 fetch → #lk-detail 주입 + 스크립트 순차
+# 재실행(src 는 onload 대기 → LWC 라이브러리 후 _CHART_JS 순서 보존).
+# application/json 데이터 블록(차트 payload)은 실행 건너뛰고 DOM 보존.
+_LOOKUP_LAZY_TMPL = r'''<script>(function(){var T=__TICKER__;
+var box=document.getElementById('lk-detail');if(!box)return;
+function runScripts(c){var ss=[].slice.call(c.querySelectorAll('script'));var i=0;
+function next(){if(i>=ss.length)return;var o=ss[i++];
+var ty=(o.getAttribute('type')||'').toLowerCase();
+if(ty&&ty!=='text/javascript'&&ty!=='application/javascript'){next();return;}
+var s=document.createElement('script');
+for(var k=0;k<o.attributes.length;k++)s.setAttribute(o.attributes[k].name,o.attributes[k].value);
+if(o.src){s.onload=next;s.onerror=next;}else{s.textContent=o.textContent;}
+if(o.parentNode)o.parentNode.replaceChild(s,o);else c.appendChild(s);
+if(!o.src)next();}next();}
+fetch('../api/lookup_detail?ticker='+encodeURIComponent(T))
+.then(function(r){if(!r.ok)throw 0;return r.text();})
+.then(function(h){box.innerHTML=h;runScripts(box);})
+.catch(function(){box.innerHTML='<div class="lk-loading">⚠️ 상세 정보를 불러오지 못했습니다. <a href="" onclick="location.reload();return false">다시 시도</a></div>';});
+})();</script>'''
+
+_LOOKUP_SEARCH_JS = """<script>
 var lkInp=document.getElementById('lk-search');
 var lkBtn=document.getElementById('lk-go');
 function lkGo(){var q=(lkInp.value||'').trim();
@@ -12026,6 +12055,24 @@ lkBtn.addEventListener('click',lkGo);
 lkInp.addEventListener('keydown',function(e){if(e.key==='Enter')lkGo();});
 </script>"""
 
+
+def render_lookup_page(ticker: str) -> str:
+    """지연로딩 shell — 즉시 반환(이름 + 검색 + 스피너). 무거운 detail(스냅샷
+    +enrichment+차트+탭)은 /api/lookup_detail 로 비동기 로드. 첫 바이트까지
+    10~20초 멈춰있던 lookup 을 즉시 인터랙티브하게(사용자 2026-06-10)."""
+    kr_name = _ticker_display_name(ticker)
+    h1_label = f"{kr_name} / {ticker}" if kr_name else ticker
+    lazy_js = _LOOKUP_LAZY_TMPL.replace("__TICKER__", json.dumps(ticker))
+    save_js = (
+        "<script>(function(){var btn=document.getElementById('lk-save');"
+        "if(!btn)return;var ticker=" + json.dumps(ticker) + ";"
+        "btn.addEventListener('click',function(){btn.disabled=true;btn.textContent='…';"
+        "fetch('../api/favorite_add',{method:'POST',headers:{'Content-Type':'application/json'},"
+        "body:JSON.stringify({ticker:ticker})}).then(function(r){return r.json();})"
+        ".then(function(d){if(d.ok){btn.textContent='✅ 저장됨';btn.style.background='var(--accent)';btn.style.color='#fff';}"
+        "else{btn.textContent=(d.error==='duplicate or fetch failed')?'⭐ 이미 저장됨':'⭐ 실패';btn.disabled=false;}})"
+        ".catch(function(){btn.textContent='⭐ 실패';btn.disabled=false;});});})();</script>"
+    )
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -12034,7 +12081,8 @@ lkInp.addEventListener('keydown',function(e){if(e.key==='Enter')lkGo();});
 <meta name="color-scheme" content="light dark">
 <title>📊 {_html.escape(h1_label)} — NOAH Lookup</title>
 <script>{_THEME_JS}</script>
-<style>{_DETAIL_CSS}</style>
+<style>{_DETAIL_CSS}
+.lk-loading{{padding:48px 20px;text-align:center;color:var(--muted);font-size:14px}}</style>
 </head>
 <body>
 <div class="wrap">
@@ -12050,46 +12098,11 @@ lkInp.addEventListener('keydown',function(e){if(e.key==='Enter')lkGo();});
   <div class="title-row">
     <h1>📊 {_html.escape(h1_label)}</h1>
   </div>
-  {si_header}
-  {si_tabs}
-  {overview_open}
-  {chart_html}
-  {overview_close}
-  {si_other}
+  <div id="lk-detail"><div class="lk-loading">📊 종목 상세 정보를 불러오는 중…</div></div>
 </div>
-<script>{_DETAIL_DEEP_LINK_JS}</script>
-{si_tab_js}
-{chart_scripts}
-{quote_script}
-{search_js}
-<script>
-(function() {{
-  var btn = document.getElementById('lk-save');
-  if (!btn) return;
-  var ticker = {json.dumps(ticker)};
-  btn.addEventListener('click', function() {{
-    btn.disabled = true; btn.textContent = '…';
-    fetch('../api/favorite_add', {{
-      method: 'POST', headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{ticker: ticker}})
-    }})
-    .then(function(r) {{ return r.json(); }})
-    .then(function(d) {{
-      if (d.ok) {{
-        btn.textContent = '✅ 저장됨';
-        btn.style.background = 'var(--accent)';
-        btn.style.color = '#fff';
-      }} else {{
-        btn.textContent = d.error === 'duplicate or fetch failed' ? '⭐ 이미 저장됨' : '⭐ 실패';
-        btn.disabled = false;
-      }}
-    }})
-    .catch(function() {{
-      btn.textContent = '⭐ 실패'; btn.disabled = false;
-    }});
-  }});
-}})();
-</script>
+{lazy_js}
+{_LOOKUP_SEARCH_JS}
+{save_js}
 </body>
 </html>
 """
