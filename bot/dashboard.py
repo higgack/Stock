@@ -428,7 +428,7 @@ def _compute_stats(records: list[dict]) -> dict:
     # land in usage.jsonl with subsystem='screener'; SV calls live in
     # ~/standardview/sv_usage.jsonl (separate file, KST-date tagged).
     _sub_keys = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
-                 "Market Daily": 0.0, "부동산": 0.0, "블로그": 0.0,
+                 "부동산": 0.0, "블로그": 0.0,
                  "SV": 0.0, "수출입": 0.0}
     today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     month_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
@@ -442,8 +442,6 @@ def _compute_stats(records: list[dict]) -> dict:
         cost = r.get("cost_usd", 0) or 0
         _subsys = r.get("subsystem")
         sub = ({"screener": "Screener", "daily_byte": "Daily Byte",
-                "market_daily": "Market Daily",
-                "vn_market_daily": "Market Daily",
                 "cheongyak": "부동산", "realestate": "부동산",
                 "blog": "블로그"}.get(_subsys, "분석"))
         if rec_day.startswith(month_prefix):
@@ -7824,7 +7822,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
   </div>
   <h1>📊 Daily Byte — Archive</h1>
-  <p class="sub">장 마감 후 KR 수급 브리프 · 한국거래일 19:00 Daily + 일 22:00 Weekly (KST) · 수급 데이터 관찰(교육·정보), 투자 권유 아님</p>
+  <p class="sub">장 마감 후 시장 브리프 · 🇰🇷 19:00 / 🇺🇸 07:30 / 📅 Weekly 22:00 (KST) · 수급·시황 관찰(교육·정보), 투자 권유 아님</p>
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 브리프</div></div>
@@ -7899,7 +7897,10 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
                 elapsed = r.get("elapsed_sec", 0) or 0
                 kind = r.get("kind", "daily")
                 is_weekly = kind == "weekly"
-                kind_badge = "📅 Weekly" if is_weekly else "📊 Daily"
+                is_us = kind == "us_daily"
+                kind_badge = ("📅 Weekly" if is_weekly
+                              else "🇺🇸 US Daily" if is_us
+                              else "🇰🇷 KR Daily")
                 title = f"{kind_badge} · {_html.escape(date)}"
                 # Body is already Telegram-safe HTML (<b>/<i> only) from
                 # daily_kr_flow._post_process. Strip the leading title line
@@ -10467,7 +10468,7 @@ _MARKET_CSS = (
     ".chart-card svg{display:block;width:100%;height:auto;color:var(--muted)}"
     "@media(max-width:860px){.chart-row{grid-template-columns:1fr}}"
     # ── Market Daily cards ──
-    ".md-row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:28px}"
+    ".md-row{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:28px}"
     "@media(max-width:700px){.md-row{grid-template-columns:1fr}}"
     ".md-card{background:var(--card);border:1px solid var(--border);"
     "border-radius:12px;padding:18px 20px;display:flex;flex-direction:column}"
@@ -11063,10 +11064,9 @@ def _relative_time(ts_str: str) -> str:
 
 
 def _render_market_daily_cards() -> str:
-    """Render the 3-column Market Daily cards (Korea + US + Vietnam)."""
+    """Render the 2-column Market Daily cards (Korea + US → both link to Daily Byte)."""
     kr = _load_latest_market_daily("daily_byte_archive", "daily")
-    us = _load_latest_market_daily("us_market_daily_archive", "daily")
-    vn = _load_latest_market_daily("vn_market_daily_archive", "daily")
+    us = _load_latest_market_daily("daily_byte_archive", "us_daily")
 
     def _card(rec: dict | None, label: str, flag: str, link: str, empty_msg: str) -> str:
         if not rec or not rec.get("body"):
@@ -11091,13 +11091,11 @@ def _render_market_daily_cards() -> str:
             f'</div>'
         )
 
-    kr_card = _card(kr, "한국 마켓 데일리", "🇰🇷", "daily_byte.html",
+    kr_card = _card(kr, "한국 Daily Byte", "🇰🇷", "daily_byte.html",
                      "Daily Byte 아카이브가 아직 없습니다.")
-    us_card = _card(us, "미국 마켓 데일리", "🇺🇸", "daily_byte.html",
-                     "US Market Daily 준비 중입니다.")
-    vn_card = _card(vn, "베트남 마켓 데일리", "🇻🇳", "daily_byte.html",
-                     "VN Market Daily 준비 중입니다.")
-    return f'<div class="md-row">{kr_card}{us_card}{vn_card}</div>'
+    us_card = _card(us, "미국 Daily Byte", "🇺🇸", "daily_byte.html",
+                     "US Daily Byte 준비 중입니다.")
+    return f'<div class="md-row">{kr_card}{us_card}</div>'
 
 
 def _render_market_page(data: dict) -> str:
@@ -11348,6 +11346,13 @@ def _render_market_page(data: dict) -> str:
       return txt;
     }}
 
+    function fmtPER(v, isTrailing) {{
+      if (v == null) return '—';
+      var txt = Number(v).toFixed(1);
+      if (isTrailing) txt += ' <span style="font-size:10px;color:var(--muted)">(후행)</span>';
+      return txt;
+    }}
+
     function renderFavs(list) {{
       favCnt.textContent = list.length ? list.length + '종목' : '';
       if (!list.length) {{
@@ -11355,8 +11360,8 @@ def _render_market_page(data: dict) -> str:
         return;
       }}
       var h = '<table class="dtbl"><thead><tr>'
-        + '<th style="text-align:left">종목</th><th>저장일</th>'
-        + '<th>저장가격</th><th>현재가격</th><th>EPS</th><th>매출</th><th>다음예상 실적일</th><th></th>'
+        + '<th style="text-align:left">종목</th><th>나라</th><th>저장일</th>'
+        + '<th>저장가격</th><th>현재가격</th><th>EPS</th><th>PER</th><th>다음예상 실적일</th><th></th>'
         + '</tr></thead><tbody>';
       list.forEach(function(f) {{
         var flag = FLAG[f.country] || '';
@@ -11373,13 +11378,14 @@ def _render_market_page(data: dict) -> str:
           }}
         }}
         h += '<tr>'
-          + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="font-weight:700;font-size:14px">' + (f.name||f.ticker) + '</a>'
-          + ' <span style="font-size:11px;color:var(--muted)">' + flag + ' ' + f.ticker + '</span></td>'
+          + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="font-weight:700;font-size:14px;color:inherit;text-decoration:none">' + (f.name||f.ticker) + '</a>'
+          + ' <span style="font-size:11px;color:var(--muted)">' + f.ticker + '</span></td>'
+          + '<td>' + flag + '</td>'
           + '<td>' + (f.saved_date||'') + '</td>'
           + '<td>' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
           + '<td>' + curCell + '</td>'
           + '<td>' + fmtEstLabel(f.eps_estimate, f.eps_is_actual) + '</td>'
-          + '<td>' + fmtEstLabel(f.revenue_estimate, f.revenue_is_actual) + '</td>'
+          + '<td>' + fmtPER(f.per, f.per_is_trailing) + '</td>'
           + '<td>' + (f.next_earnings||'—') + '</td>'
           + '<td><button class="fav-del" data-ticker="' + f.ticker + '" title="삭제">✕</button></td>'
           + '</tr>';

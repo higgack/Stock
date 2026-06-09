@@ -1,9 +1,10 @@
-"""US Market Daily — 미국 장 마감 후 시장 브리프 (07:00 KST, 텔레그램 + 대시보드).
+"""US Market Daily — 미국 장 마감 후 시장 브리프 (07:30 KST, 텔레그램 + 대시보드).
 
 yfinance 주요 지수/섹터 데이터 + Gemini Pro (web search grounding) 내러티브.
-Daily Byte KR 과 쌍으로 market.html 우측 카드에 표시.
+KR Daily Byte 와 동일 아카이브(daily_byte_archive)에 저장, daily_byte.html 에
+함께 표시. market.html 에서 Daily Byte 로 연결.
 
-systemd: us-market-daily.timer (07:00 KST Mon-Fri) → us-market-daily.service.
+systemd: us-market-daily.timer (07:30 KST Mon-Fri) → us-market-daily.service.
 수동 실행: cd ~/stock && .venv/bin/python -m bot.us_market_daily
 """
 
@@ -156,30 +157,15 @@ def build_prompt(data: dict) -> str:
 
 # ── 비용 로깅 + 아카이브 ────────────────────────────────────────────────────
 _HOME = os.path.expanduser("~")
-_ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "us_market_daily_archive")
-_USAGE_LOG = os.path.join(_HOME, ".tradingagents", "us_market_daily_usage.jsonl")
+_ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "daily_byte_archive")
 _NOAH_USAGE_LOG = os.path.join(_HOME, ".tradingagents", "usage.jsonl")
 _USD_TO_KRW_FALLBACK = 1330.0
 
 
 def _log_usage(pt: int, ot: int, cost_krw: float) -> None:
-    """Dual-log: us_market_daily_usage.jsonl + usage.jsonl (subsystem='market_daily')."""
+    """Log to usage.jsonl with subsystem='daily_byte' (KR Daily Byte 와 동일 버킷)."""
     import json as _json
     import time as _time
-    try:
-        os.makedirs(os.path.dirname(_USAGE_LOG), exist_ok=True)
-        now = _now_kst()
-        rec = {
-            "ts": now.isoformat(timespec="seconds"),
-            "date": now.date().isoformat(),
-            "month": now.date().isoformat()[:7],
-            "prompt_tok": pt, "output_tok": ot,
-            "cost_krw": round(cost_krw, 4),
-        }
-        with open(_USAGE_LOG, "a", encoding="utf-8") as f:
-            f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
-    except Exception as exc:
-        log.warning("us_market_daily: usage log write failed: %s", exc)
     try:
         os.makedirs(os.path.dirname(_NOAH_USAGE_LOG), exist_ok=True)
         try:
@@ -189,27 +175,27 @@ def _log_usage(pt: int, ot: int, cost_krw: float) -> None:
         rec_noah = {
             "ts": _time.time(), "type": "llm_call", "model": "gemini-2.5-pro",
             "prompt_tokens": pt, "completion_tokens": ot,
-            "cost_usd": round(cost_krw / _fx, 6), "subsystem": "market_daily",
+            "cost_usd": round(cost_krw / _fx, 6), "subsystem": "daily_byte",
         }
         with open(_NOAH_USAGE_LOG, "a", encoding="utf-8") as f:
             f.write(_json.dumps(rec_noah, ensure_ascii=False) + "\n")
     except Exception as exc:
-        log.warning("us_market_daily: NOAH usage log write failed: %s", exc)
+        log.warning("us_market_daily: usage log write failed: %s", exc)
 
 
 def _save_archive(body: str, cost_krw: float, elapsed_sec: float = 0.0) -> str | None:
-    """Write → ~/.tradingagents/us_market_daily_archive/YYYY-MM-DD/HHMMSS_us_market_daily.json"""
+    """Write → ~/.tradingagents/daily_byte_archive/YYYY-MM-DD/HHMMSS_us_daily_byte.json"""
     import json as _json
     try:
         now = _now_kst()
         date_iso = now.date().isoformat()
         day_dir = os.path.join(_ARCHIVE_DIR, date_iso)
         os.makedirs(day_dir, exist_ok=True)
-        path = os.path.join(day_dir, f"{now:%H%M%S}_us_market_daily.json")
+        path = os.path.join(day_dir, f"{now:%H%M%S}_us_daily_byte.json")
         rec = {
             "ts": now.isoformat(timespec="seconds"),
             "date": date_iso,
-            "kind": "daily",
+            "kind": "us_daily",
             "body": body,
             "cost_krw": round(cost_krw, 4),
             "elapsed_sec": round(elapsed_sec, 1),
@@ -283,12 +269,13 @@ def generate() -> tuple[str, float] | None:
     _save_archive(body, cost_krw, elapsed_sec=elapsed)
 
     try:
-        from bot.dashboard import regenerate_market_index
+        from bot.dashboard import regenerate_daily_byte_index, regenerate_market_index
+        regenerate_daily_byte_index()
         regenerate_market_index()
     except Exception as exc:
-        log.warning("us_market_daily: market.html regen failed: %s", exc)
+        log.warning("us_market_daily: dashboard regen failed: %s", exc)
 
-    title = f"🇺🇸 <b>US Market Daily - {_now_kst().strftime('%Y.%m.%d')}</b>"
+    title = f"🇺🇸 <b>US Daily Byte - {_now_kst().strftime('%Y.%m.%d')}</b>"
     full = f"{title}\n<i>미국 장 마감 후 시장 브리프 · 생성 {_now_kst():%H:%M} KST</i>\n\n{body}"
     return full, cost_krw
 

@@ -76,7 +76,12 @@ def add_favorite(ticker: str) -> Optional[dict]:
         return None
 
     eps_est = info.get("forwardEps")
-    rev_est = None
+    per_val = info.get("forwardPE")
+    per_is_trailing = False
+    if per_val is None:
+        per_val = info.get("trailingPE")
+        if per_val is not None:
+            per_is_trailing = True
     next_earn = None
     try:
         cal = tk.calendar
@@ -87,8 +92,6 @@ def add_favorite(ticker: str) -> Optional[dict]:
                 next_earn = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
             if cal.get("Earnings Average") is not None:
                 eps_est = cal["Earnings Average"]
-            if cal.get("Revenue Average") is not None:
-                rev_est = cal["Revenue Average"]
     except Exception:
         pass
 
@@ -106,7 +109,8 @@ def add_favorite(ticker: str) -> Optional[dict]:
         "currency": currency,
         "currency_symbol": _CURRENCY_MAP.get(currency, "$"),
         "eps_estimate": eps_est,
-        "revenue_estimate": rev_est,
+        "per": per_val,
+        "per_is_trailing": per_is_trailing,
         "next_earnings": next_earn,
     }
 
@@ -169,11 +173,14 @@ def get_favorites_with_prices() -> list[dict]:
             f["eps_estimate"] = fwd if fwd is not None else trail
             f["eps_is_actual"] = (fwd is None and trail is not None)
 
-            rev_fwd = None
+            fwd_pe = info.get("forwardPE")
+            trail_pe = info.get("trailingPE")
+            f["per"] = fwd_pe if fwd_pe is not None else trail_pe
+            f["per_is_trailing"] = (fwd_pe is None and trail_pe is not None)
+
             try:
                 cal = tk.calendar
                 if isinstance(cal, dict):
-                    rev_fwd = cal.get("Revenue Average")
                     if cal.get("Earnings Average") is not None and fwd is None:
                         f["eps_estimate"] = cal["Earnings Average"]
                         f["eps_is_actual"] = False
@@ -183,14 +190,6 @@ def get_favorites_with_prices() -> list[dict]:
                         f["next_earnings"] = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
             except Exception:
                 pass
-
-            if rev_fwd is not None:
-                f["revenue_estimate"] = rev_fwd
-                f["revenue_is_actual"] = False
-            else:
-                total = info.get("totalRevenue")
-                f["revenue_estimate"] = total
-                f["revenue_is_actual"] = (total is not None)
         except Exception:
             f["current_price"] = None
 
