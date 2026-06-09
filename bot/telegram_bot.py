@@ -1121,6 +1121,8 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/budget.html
  • <b>NOAH archive</b> (ID/PW) — 종목 상세·가격차트·실시간 지표·💰비용
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
+ • <b>🌍 Market</b> — 글로벌 스냅샷·Macro Snapshot(금리·물가·환율·센티먼트)·실적·리서치·종목검색
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  • <b>📊 Screener</b> — Bottleneck 65도메인+자유어·Top-3 1/3/6m + 조건부(₩0)·검색·🗑️
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
  • <b>🔔 워치리스트</b> — 페이퍼 모의매매(₩0)+워치 조건알림+이력

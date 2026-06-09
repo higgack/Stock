@@ -10205,6 +10205,34 @@ _MARKET_CSS = (
     "border-color:var(--accent)}"
     ".tab-pane{display:none}.tab-pane.active{display:block}"
     ".empty-msg{color:var(--muted);font-size:13px;padding:20px 0}"
+    # ── Macro snapshot ──
+    ".macro-sub{color:var(--muted);font-size:12px;font-weight:600;"
+    "margin:18px 0 10px;text-transform:none}"
+    ".macro-grid{display:grid;"
+    "grid-template-columns:repeat(auto-fill,minmax(190px,1fr));"
+    "gap:12px;margin-bottom:20px}"
+    ".macard{background:var(--card);border:1px solid var(--border);"
+    "border-radius:12px;padding:13px 14px 8px}"
+    ".macard .ml{font-size:12px;color:var(--muted);margin-bottom:6px;"
+    "display:flex;align-items:center;gap:5px}"
+    ".macard .mv{font-size:21px;font-weight:700;letter-spacing:-.5px;"
+    "font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:7px}"
+    ".macard .mc{font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}"
+    ".macard .spark{margin-top:8px;display:block;width:100%;height:34px}"
+    ".macard .ref{font-size:10px;color:var(--muted);font-weight:500;"
+    "border:1px solid var(--border);border-radius:4px;padding:0 4px}"
+    ".chart-row{display:grid;grid-template-columns:1.2fr 1.2fr .8fr;"
+    "gap:14px;margin-bottom:24px}"
+    ".chart-card{background:var(--card);border:1px solid var(--border);"
+    "border-radius:12px;padding:14px 16px}"
+    ".chart-card h3{font-size:14px;margin:0 0 4px}"
+    ".chart-card .leg{font-size:11px;color:var(--muted);margin-bottom:8px;"
+    "display:flex;flex-wrap:wrap;gap:10px}"
+    ".chart-card .leg span{display:inline-flex;align-items:center;gap:4px}"
+    ".chart-card .leg i{width:9px;height:9px;border-radius:2px;display:inline-block}"
+    ".chart-card .foot{font-size:10px;color:var(--muted);margin-top:8px}"
+    ".chart-card svg{display:block;width:100%;height:auto;color:var(--muted)}"
+    "@media(max-width:860px){.chart-row{grid-template-columns:1fr}}"
     "</style></head><body>"
 )
 
@@ -10397,6 +10425,301 @@ def _render_research_us_table(research: list) -> str:
     )
 
 
+# ── Macro Snapshot rendering (SV port — dependency-free inline SVG) ──
+
+def _macro_spark_svg(values: list) -> str:
+    """Inline SVG sparkline. Green if rising, red if falling, gray if flat."""
+    vals = [v for v in (values or []) if v is not None]
+    if len(vals) < 2:
+        return '<div class="spark"></div>'
+    vmin, vmax = min(vals), max(vals)
+    rng = (vmax - vmin) or 1.0
+    n = len(vals)
+    W, H, pad = 120.0, 34.0, 3.0
+    pts = []
+    for i, v in enumerate(vals):
+        x = pad + (i / (n - 1)) * (W - 2 * pad)
+        y = pad + (1 - (v - vmin) / rng) * (H - 2 * pad)
+        pts.append((x, y))
+    delta = vals[-1] - vals[0]
+    color = "#8b95a5" if abs(delta) < rng * 0.02 else ("#26a69a" if delta >= 0 else "#e2574c")
+    poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    area = f"{pad:.1f},{H - pad:.1f} {poly} {W - pad:.1f},{H - pad:.1f}"
+    return (
+        f'<svg class="spark" viewBox="0 0 {W:.0f} {H:.0f}" preserveAspectRatio="none">'
+        f'<polygon points="{area}" fill="{color}" opacity="0.10"/>'
+        f'<polyline points="{poly}" fill="none" stroke="{color}" stroke-width="1.6" '
+        f'stroke-linejoin="round" stroke-linecap="round"/></svg>'
+    )
+
+
+def _macro_fmt_value(v, dec: int, unit: str) -> str:
+    """Format the big card value with currency prefix / % suffix."""
+    if v is None:
+        return "—"
+    num = f"{v:,.0f}" if dec == 0 else f"{v:,.{dec}f}"
+    if unit == "$":
+        return f"${num}"
+    if unit == "%":
+        return f"{num}%"
+    if unit == "억$":
+        return f"{num}<span style='font-size:13px;color:var(--muted);margin-left:2px'>억$</span>"
+    return num
+
+
+def _macro_fmt_change(change, dec: int) -> str:
+    """Render the change chip: ▲/▼ value, '동결' when zero, '—' when absent."""
+    if change is None:
+        return '<span class="mc" style="color:var(--muted)">—</span>'
+    r = round(change, dec if dec > 0 else 2)
+    if r == 0:
+        return '<span class="mc" style="color:var(--muted)">– 동결</span>'
+    up = change > 0
+    color = "var(--pos)" if up else "var(--neg)"
+    arrow = "▲" if up else "▼"
+    val = f"{abs(change):,.0f}" if dec == 0 else f"{abs(change):,.{dec}f}"
+    return f'<span class="mc" style="color:{color}">{arrow} {val}</span>'
+
+
+def _render_macro_card(ind: dict) -> str:
+    label = _html.escape(ind.get("label", ""))
+    val_html = _macro_fmt_value(ind.get("value"), ind.get("decimals", 2), ind.get("unit", ""))
+    chg_html = _macro_fmt_change(ind.get("change"), ind.get("decimals", 2))
+    spark = _macro_spark_svg(ind.get("spark", []))
+    return (
+        f'<div class="macard"><div class="ml">{label}</div>'
+        f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}</div>'
+    )
+
+
+def _ax_fmt(v: float) -> str:
+    av = abs(v)
+    if av >= 1000:
+        return f"{v:,.0f}"
+    if av >= 100:
+        return f"{v:,.0f}"
+    if av >= 10:
+        return f"{v:.1f}"
+    return f"{v:.2f}"
+
+
+def _svg_line_chart(labels: list, series: list) -> str:
+    """Generic multi-series line chart in inline SVG. Theme-aware via
+    currentColor for axes/grid; each series carries its own color.
+
+    series item: {"name", "color", "data": [floats], "axis": "L"|"R"}
+    """
+    if not labels or not series:
+        return ""
+    has_right = any(s.get("axis") == "R" for s in series)
+    W, H = 520.0, 240.0
+    padL, padT, padB = 46.0, 12.0, 28.0
+    padR = 54.0 if has_right else 18.0
+    plotW, plotH = W - padL - padR, H - padT - padB
+
+    def _range(axis: str):
+        pool: list[float] = []
+        for s in series:
+            if s.get("axis", "L") == axis:
+                pool.extend([v for v in s["data"] if v is not None])
+        if not pool:
+            return None
+        lo, hi = min(pool), max(pool)
+        if lo == hi:
+            lo -= 1.0
+            hi += 1.0
+        pad = (hi - lo) * 0.12
+        return lo - pad, hi + pad
+
+    lr = _range("L")
+    rr = _range("R") if has_right else None
+    if lr is None:
+        return ""
+    n = max(len(s["data"]) for s in series)
+
+    def _x(i: int) -> float:
+        return padL + (i / (n - 1)) * plotW if n > 1 else padL + plotW / 2
+
+    def _y(v: float, rng) -> float:
+        lo, hi = rng
+        return padT + (1 - (v - lo) / (hi - lo)) * plotH
+
+    parts: list[str] = [f'<svg viewBox="0 0 {W:.0f} {H:.0f}">']
+
+    # horizontal gridlines + left axis ticks
+    for k in range(5):
+        gy = padT + (k / 4) * plotH
+        parts.append(
+            f'<line x1="{padL:.0f}" y1="{gy:.1f}" x2="{W - padR:.0f}" y2="{gy:.1f}" '
+            f'stroke="currentColor" stroke-width="0.5" opacity="0.18"/>'
+        )
+        lv = lr[1] - (k / 4) * (lr[1] - lr[0])
+        parts.append(
+            f'<text x="{padL - 5:.0f}" y="{gy + 3:.1f}" font-size="9" '
+            f'fill="currentColor" text-anchor="end">{_ax_fmt(lv)}</text>'
+        )
+    # right axis ticks
+    if rr is not None:
+        for k in range(5):
+            gy = padT + (k / 4) * plotH
+            rv = rr[1] - (k / 4) * (rr[1] - rr[0])
+            parts.append(
+                f'<text x="{W - padR + 5:.0f}" y="{gy + 3:.1f}" font-size="9" '
+                f'fill="currentColor" text-anchor="start">{_ax_fmt(rv)}</text>'
+            )
+    # x labels (~6 evenly)
+    step = max(1, (n - 1) // 5) if n > 1 else 1
+    for i in range(0, n, step):
+        lab = _html.escape(str(labels[i])) if i < len(labels) else ""
+        parts.append(
+            f'<text x="{_x(i):.1f}" y="{H - 8:.0f}" font-size="9" '
+            f'fill="currentColor" text-anchor="middle">{lab}</text>'
+        )
+    # series polylines
+    for s in series:
+        rng = rr if s.get("axis") == "R" else lr
+        if rng is None:
+            continue
+        pts = " ".join(
+            f"{_x(i):.1f},{_y(v, rng):.1f}"
+            for i, v in enumerate(s["data"]) if v is not None
+        )
+        parts.append(
+            f'<polyline points="{pts}" fill="none" stroke="{s["color"]}" '
+            f'stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def _chart_card(title: str, legend: list, svg: str, foot: str) -> str:
+    """Wrap an SVG chart with a title, color legend, and source footnote."""
+    if not svg:
+        return ""
+    leg = "".join(
+        f'<span><i style="background:{c}"></i>{_html.escape(nm)}</span>' for nm, c in legend
+    )
+    return (
+        f'<div class="chart-card"><h3>{_html.escape(title)}</h3>'
+        f'<div class="leg">{leg}</div>{svg}'
+        f'<div class="foot">{_html.escape(foot)}</div></div>'
+    )
+
+
+def _render_sentiment_gauge(data: dict) -> str:
+    """Semicircular VIX-derived sentiment gauge (inline SVG)."""
+    import math
+    score = int(data.get("score", 50))
+    vix = data.get("vix")
+    W, H = 240.0, 158.0
+    cx, cy, r = 120.0, 132.0, 96.0
+
+    def _pt(s: float, rad: float):
+        th = math.radians(180 * (1 - s / 100))
+        return cx + rad * math.cos(th), cy - rad * math.sin(th)
+
+    zones = [(0, 25, "#e2574c"), (25, 45, "#f0883e"), (45, 55, "#ffd54f"),
+             (55, 75, "#9ccc65"), (75, 100, "#26a69a")]
+    parts = [f'<svg viewBox="0 0 {W:.0f} {H:.0f}">']
+    for lo, hi, col in zones:
+        seg = []
+        s = lo
+        while s <= hi + 1e-9:
+            x, y = _pt(s, r)
+            seg.append(f"{x:.1f},{y:.1f}")
+            s += 2
+        parts.append(
+            f'<polyline points="{" ".join(seg)}" fill="none" stroke="{col}" '
+            f'stroke-width="15" stroke-linecap="round"/>'
+        )
+    # needle + hub
+    nx, ny = _pt(score, r - 20)
+    parts.append(
+        f'<line x1="{cx:.0f}" y1="{cy:.0f}" x2="{nx:.1f}" y2="{ny:.1f}" '
+        f'stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>'
+    )
+    parts.append(f'<circle cx="{cx:.0f}" cy="{cy:.0f}" r="5" fill="currentColor"/>')
+    # center value + label
+    from bot.macro_snapshot import sentiment_label
+    lbl = sentiment_label(score)
+    parts.append(
+        f'<text x="{cx:.0f}" y="{cy - 24:.0f}" font-size="30" font-weight="700" '
+        f'fill="currentColor" text-anchor="middle">{score}</text>'
+    )
+    parts.append(
+        f'<text x="{cx:.0f}" y="{cy - 6:.0f}" font-size="12" '
+        f'fill="currentColor" text-anchor="middle">{_html.escape(lbl)}</text>'
+    )
+    parts.append('</svg>')
+    svg = "".join(parts)
+    vix_str = f"VIX {vix:.2f} 역산" if isinstance(vix, (int, float)) else "VIX 역산"
+    return (
+        f'<div class="chart-card"><h3>시장 센티먼트</h3>'
+        f'<div class="leg"><span>공포 0 ↔ 100 탐욕</span></div>{svg}'
+        f'<div class="foot">출처: {_html.escape(vix_str)}</div></div>'
+    )
+
+
+def _render_macro_snapshot(macro: dict) -> str:
+    """Full macro snapshot section: cards + 3 charts. Empty string if no data."""
+    if not macro:
+        return ""
+    domestic = macro.get("domestic", [])
+    glob = macro.get("global", [])
+    charts = macro.get("charts", {})
+    if not domestic and not glob:
+        return ""
+
+    out: list[str] = []
+    out.append(f"""
+  <div class="section-hd">
+    <h2>Macro Snapshot</h2>
+    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 최근 변동</span>
+  </div>""")
+
+    if domestic:
+        out.append('<div class="macro-sub">국내 지표</div><div class="macro-grid">')
+        out.extend(_render_macro_card(i) for i in domestic)
+        out.append('</div>')
+    if glob:
+        out.append('<div class="macro-sub">글로벌 지표</div><div class="macro-grid">')
+        out.extend(_render_macro_card(i) for i in glob)
+        out.append('</div>')
+
+    # charts row
+    cards: list[str] = []
+    rf = charts.get("rates_fx")
+    if rf:
+        svg = _svg_line_chart(rf["labels"], [
+            {"name": "미국 10Y", "color": "#42a5f5", "data": rf["us_10y"], "axis": "L"},
+            {"name": "한국 기준금리", "color": "#26c6da", "data": rf["kr_rate"], "axis": "L"},
+            {"name": "원/달러", "color": "#ab47bc", "data": rf["usdkrw"], "axis": "R"},
+        ])
+        cards.append(_chart_card(
+            "금리·환율 추이",
+            [("미국 10Y (좌)", "#42a5f5"), ("한국 기준금리 (좌)", "#26c6da"), ("원/달러 (우)", "#ab47bc")],
+            svg, "출처: FRED · 한국은행 · yfinance",
+        ))
+    inf = charts.get("inflation")
+    if inf:
+        svg = _svg_line_chart(inf["labels"], [
+            {"name": "미국 CPI", "color": "#ffa726", "data": inf["us_cpi"], "axis": "L"},
+            {"name": "한국 CPI", "color": "#26a69a", "data": inf["kr_cpi"], "axis": "R"},
+        ])
+        cards.append(_chart_card(
+            "물가와 경기 모멘텀",
+            [("미국 CPI (좌)", "#ffa726"), ("한국 CPI (우)", "#26a69a")],
+            svg, "출처: FRED · 한국은행",
+        ))
+    sent = charts.get("sentiment")
+    if sent:
+        cards.append(_render_sentiment_gauge(sent))
+    if cards:
+        out.append('<div class="chart-row">' + "".join(cards) + '</div>')
+
+    return "".join(out)
+
+
 def _render_market_page(data: dict) -> str:
     """Render market.html — global market snapshot + earnings + research."""
     from bot.market_overview import ALL_CARDS
@@ -10409,6 +10732,7 @@ def _render_market_page(data: dict) -> str:
     earnings = data.get("earnings", [])
     research_kr = data.get("research_kr", [])
     research_us = data.get("research_us", [])
+    macro = data.get("macro", {})
 
     parts: list[str] = [_MARKET_CSS]
     parts.append(f"""
@@ -10442,6 +10766,8 @@ def _render_market_page(data: dict) -> str:
             parts.append(_render_market_card(title, items, yf))
 
     parts.append('</div>')  # close card-grid
+
+    parts.append(_render_macro_snapshot(macro))
 
     parts.append(f"""
   <div class="section-hd">
