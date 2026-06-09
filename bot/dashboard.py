@@ -4120,6 +4120,8 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
   </div>"""
 
+    _src_foot = '<div style="font-size:11px;color:var(--fg-soft);margin-top:8px;text-align:right">'
+
     company_pane = f"""<div class="si-pane" id="si-company">
   <div class="si-section">
     <div class="si-section-title">개요</div>
@@ -4157,9 +4159,8 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
   </div>
   {kr_financial_html}
+  {_src_foot}출처: yfinance</div>
 </div>"""
-
-    _src_foot = '<div style="font-size:11px;color:var(--fg-soft);margin-top:8px;text-align:right">'
 
     # ── 컨센서스 pane ───────────────────────────────────────────
     rec_key = (si.get("recommendation_key") or "").lower()
@@ -4241,6 +4242,7 @@ def _render_stock_info_html(rec: dict) -> str:
     {range_html}
   </div>
   {supp_consensus_html}
+  {_src_foot}출처: {"yfinance · FnGuide · 한경" if is_kr else "yfinance · Kabutan" if is_jp else "yfinance · AKShare" if is_cn else "yfinance"}</div>
 </div>"""
 
     # ── 밸류에이션 pane ────────────────────────────────────────
@@ -4442,11 +4444,13 @@ def _render_stock_info_html(rec: dict) -> str:
     else:
         research_table = '<div class="si-empty">리서치 액션 데이터가 없습니다.</div>'
 
+    _res_src = "한경 컨센서스" if kr_reports else "yfinance"
     research_pane = f"""<div class="si-pane" id="si-research">
   <div class="si-section">
     <div class="si-section-title">리서치 액션</div>
     {research_table}
   </div>
+  {_src_foot}출처: {_res_src}</div>
 </div>"""
 
     # ── 기관 pane ───────────────────────────────────────────────
@@ -4660,6 +4664,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section-title">주요 뉴스 ({news_src})</div>
     {news_html}
   </div>
+  {_src_foot}출처: {news_src}</div>
 </div>"""
 
     # ── 수급 pane (KR only — KIS + pykrx flow data) ─────────────
@@ -5058,9 +5063,10 @@ def _render_stock_info_html(rec: dict) -> str:
     if cn_risk.get("is_suspended"):
         risk_parts.append('<div style="background:#f8d7da;color:#721c24;padding:12px;border-radius:8px;margin-bottom:10px;font-weight:600">🚫 거래정지 (停牌) — 현재 매매 불가</div>')
 
+    _risk_src = "KRX · FSC" if is_kr else "AKShare" if is_cn else "yfinance"
     risk_pane = ""
     if risk_parts:
-        risk_pane = '<div class="si-pane" id="si-risk">\n  ' + "\n  ".join(risk_parts) + '\n</div>'
+        risk_pane = '<div class="si-pane" id="si-risk">\n  ' + "\n  ".join(risk_parts) + f'\n  {_src_foot}출처: {_risk_src}</div>\n</div>'
     # Placeholder so the JS overlay can swap risk content via live quote.
     if not risk_pane:
         risk_pane = '<div class="si-pane" id="si-risk"></div>'
@@ -5290,6 +5296,7 @@ def _render_stock_info_html(rec: dict) -> str:
 </script>"""
 
     # ── assemble deferred panes (depend on variables defined above) ──
+    _val_src = "yfinance" + (" · SEC XBRL" if is_us else " · DART" if is_kr else "")
     valuation_pane = f"""<div class="si-pane" id="si-valuation">
   {w52_bar_html}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -5305,6 +5312,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {kr_fin_ts_html}
   {us_xbrl_html}
   {div_html}
+  {_src_foot}출처: {_val_src}</div>
 </div>"""
 
     # ── 재무제표 pane (IS / BS / CF + 수익성 차트) ──────────────────
@@ -5618,6 +5626,9 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
   </div>"""
 
+    _hold_src = ("yfinance · DART · pykrx" if is_kr else "yfinance · EDINET" if is_jp
+                 else "yfinance · MOPS" if is_tw else "yfinance · AKShare" if is_cn
+                 else "yfinance · SEC")
     holders_pane = f"""<div class="si-pane" id="si-holders">
   <div class="si-section">
     <div class="si-section-title">주요 기관</div>
@@ -5635,6 +5646,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {jp_holders_html}
   {tw_insiders_html}
   {cn_holders_html}
+  {_src_foot}출처: {_hold_src}</div>
 </div>"""
 
     # Return a dict with separate pieces so _render_detail can wrap
@@ -8227,9 +8239,8 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
     for date in sorted(by_date.keys(), reverse=True):
         _prev_month = _month_transition(
             parts, _prev_month, date, _this_month, _month_counts)
-        day_open = " open" if date == _today else ""
         parts.append(
-            f'<details class="day"{day_open}><summary class="day-head">'
+            f'<details class="day"><summary class="day-head">'
             f'<span>📅 {_html.escape(date)}</span>'
             f'<span class="count">{len(by_date[date])} 건</span></summary>'
             f'<div class="day-body">')

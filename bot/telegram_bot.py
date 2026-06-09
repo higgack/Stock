@@ -3067,7 +3067,8 @@ async def _periodic_dashboard_refresh(application=None) -> None:
                                        regenerate_gics_candidates_index,
                                        regenerate_reddit_insider_index,
                                        regenerate_watchlist_index,
-                                       regenerate_paper_index)
+                                       regenerate_paper_index,
+                                       regenerate_market_index)
             regenerate_index()
             regenerate_daily_byte_index()
             regenerate_realestate_index()
@@ -3075,6 +3076,7 @@ async def _periodic_dashboard_refresh(application=None) -> None:
             regenerate_gics_candidates_index()
             regenerate_reddit_insider_index()
             regenerate_watchlist_index()
+            regenerate_market_index()
             # 페이퍼(E0.5b): 5거래일 horizon 도래 자동 포지션 청산 + 페이지 갱신.
             # E0.5c: 청산 시 채널 알림(설정된 채널 있을 때) — 조용히 닫히지 않게.
             try:
@@ -3163,6 +3165,12 @@ async def _on_startup(application) -> None:
         log.info("startup: reddit_insider.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: reddit_insider.html regen failed: %s", exc)
+    try:
+        from bot.dashboard import regenerate_market_index
+        regenerate_market_index()
+        log.info("startup: market.html regenerated with current code")
+    except Exception as exc:
+        log.warning("startup: market.html regen failed: %s", exc)
     # One-time price-chart backfill for pre-chart (schema v1) archive
     # entries. Marker-gated so it runs once per install, not every restart.
     # Background thread — ~N yfinance fetches shouldn't block startup. Free
