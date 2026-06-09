@@ -133,13 +133,23 @@ def render_highlow_page() -> str:
         data = {"upper": [], "lower": [], "ts": ""}
     ts = _html.escape(data.get("ts", ""))
 
+    def _ticker(code: str) -> str:
+        # 종목분석(lookup) 링크용 — KOSPI .KS / KOSDAQ .KQ 정규화(pykrx 없으면 .KS)
+        if not code:
+            return ""
+        try:
+            from bot.market import normalize_kr_ticker_suffix
+            return normalize_kr_ticker_suffix(f"{code}.KS")
+        except Exception:
+            return f"{code}.KS"
+
     def _panel(title: str, items: list) -> str:
         if not items:
             return (f'<div class="panel"><h2>{title}</h2>'
                     '<div class="empty">해당 종목 없음</div></div>')
         rows = "".join(
             f'<tr><td class="rk">{i}</td>'
-            f'<td class="nm"><a href="lookup/{_html.escape(it.get("code",""))}.KS">'
+            f'<td class="nm"><a href="lookup/{_html.escape(_ticker(it.get("code","")))}">'
             f'{_html.escape(it.get("name",""))}</a></td>'
             f'<td class="num">{_html.escape(str(it.get("price") or "—"))}</td>'
             f'{_pct_cell(it.get("pct"))}</tr>'
