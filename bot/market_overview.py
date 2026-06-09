@@ -71,6 +71,7 @@ CARD_SENTIMENT = [
     ("이더리움", "ETH-USD"),
     ("솔라나", "SOL-USD"),
     ("리플", "XRP-USD"),
+    ("BNB", "BNB-USD"),
     ("도지코인", "DOGE-USD"),
 ]
 
@@ -550,7 +551,7 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < 1:
+            if age_h < (10 / 60):  # 10분 — naver 1h 갱신을 빠르게 반영
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
@@ -581,7 +582,7 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < 1:
+            if age_h < (10 / 60):  # 10분 — naver 1h 갱신을 빠르게 반영
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
@@ -733,7 +734,6 @@ def fetch_all_market_data() -> dict[str, Any]:
         us_fut = pool.submit(fetch_recent_research_us, 40)
         macro_fut = pool.submit(_fetch_macro_safe)
         sector_fut = pool.submit(_fetch_sector_movers_safe)
-        nightf_fut = pool.submit(_fetch_night_futures_safe)
 
         # 실적 병합 — 한국(yfinance) 먼저, 미국(Finnhub) 다음. 각 그룹 날짜순.
         # 사용자 정책: 한국이 되면 한국을 앞으로.
@@ -749,7 +749,6 @@ def fetch_all_market_data() -> dict[str, Any]:
             "research_us": us_fut.result(),
             "macro": macro_fut.result(),
             "sector_movers": sector_fut.result(),
-            "night_futures": nightf_fut.result(),
         }
 
 
@@ -760,12 +759,3 @@ def _fetch_sector_movers_safe() -> dict:
     except Exception as exc:
         log.warning("sector movers fetch error: %s", exc)
         return {"up": [], "down": [], "ts": ""}
-
-
-def _fetch_night_futures_safe():
-    try:
-        from bot.naver_sector_client import fetch_night_futures
-        return fetch_night_futures()
-    except Exception as exc:
-        log.warning("night futures fetch error: %s", exc)
-        return None

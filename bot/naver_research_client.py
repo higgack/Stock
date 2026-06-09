@@ -34,6 +34,10 @@ _BASE_URL = "https://finance.naver.com/research/company_list.naver"
 _DETAIL_URL = "https://finance.naver.com/research/company_read.naver"
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "naver_research"
 _CACHE_TTL_HOURS = 12
+# 전체 시장 종목/산업 리포트는 장중 새 리포트가 자주 올라옴 — 빠른 반영
+# (사용자 2026-06-10 "가장 빠르게"). 리스트 8p + detail ~150 GET/시간이라
+# 1h 가 리스크-freshness 균형. per-ticker fetch_research 는 12h 유지.
+_MARKET_TTL_HOURS = 1
 _HTTP_TIMEOUT = 15
 _DETAIL_WORKERS = 4
 
@@ -330,7 +334,7 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < _CACHE_TTL_HOURS:
+            if age_h < _MARKET_TTL_HOURS:
                 cached = json.loads(cache_file.read_text())
                 return cached or []
         except Exception as exc:
@@ -480,7 +484,7 @@ def fetch_recent_research_industry(limit: int = 80, days_back: int = 7,
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < _CACHE_TTL_HOURS:
+            if age_h < _MARKET_TTL_HOURS:
                 cached = json.loads(cache_file.read_text())
                 return cached or []
         except Exception as exc:

@@ -188,6 +188,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         raw = self.path.split("?", 1)[0]
         if raw == "/earnings":
             return self._handle_earnings()
+        # /theme · /highlow — 테마별 시세 · 신고가/신저가 (Naver, on-demand)
+        if raw in ("/theme", "/highlow"):
+            return self._handle_naver_page(raw)
         # /lookup/<TICKER> — lightweight stock overview page (on-demand).
         if raw.startswith("/lookup/"):
             return self._handle_lookup()
@@ -595,6 +598,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(encoded)
         except Exception as exc:
             log.warning("earnings: failed — %s", exc)
+            self.send_error(500, "internal error")
+
+    def _handle_naver_page(self, raw: str) -> None:
+        """GET /theme | /highlow — 테마별 시세 · 신고가/신저가 페이지."""
+        try:
+            from bot.naver_pages import render_highlow_page, render_theme_page
+            html = render_theme_page() if raw == "/theme" else render_highlow_page()
+            encoded = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as exc:
+            log.warning("naver_page %s: failed — %s", raw, exc)
             self.send_error(500, "internal error")
 
     def _handle_favorites_get(self) -> None:
