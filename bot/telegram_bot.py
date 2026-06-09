@@ -3208,15 +3208,30 @@ async def _on_startup(application) -> None:
         def _ir_month_warm():
             try:
                 from datetime import date as _d
-                from bot.dart_feed import fetch_kr_ir_month
                 t = _d.today()
-                for back in (1, 2):
-                    y, m = t.year, t.month - back
+
+                def _shift(delta):
+                    y, m = t.year, t.month + delta
                     while m < 1:
                         m += 12
                         y -= 1
-                    fetch_kr_ir_month(y, m)
-                log.info("startup: IR-month 캘린더 캐시 워밍 완료(직전 2개월)")
+                    while m > 12:
+                        m -= 12
+                        y += 1
+                    return y, m
+
+                # KIND(실제 IR 개최일) — 이번 달 + 다음 달(미래 일정)
+                try:
+                    from bot.kind_ir_client import fetch_kind_ir_month
+                    for delta in (0, 1):
+                        fetch_kind_ir_month(*_shift(delta))
+                except Exception as exc:
+                    log.warning("startup: KIND warm failed: %s", exc)
+                # DART 폴백 — 직전 2개월(과거 IR)
+                from bot.dart_feed import fetch_kr_ir_month
+                for delta in (-1, -2):
+                    fetch_kr_ir_month(*_shift(delta))
+                log.info("startup: IR 캘린더 캐시 워밍 완료(KIND 0/+1 · DART -1/-2)")
             except Exception as exc:
                 log.warning("startup: IR-month warm failed: %s", exc)
 
