@@ -4844,6 +4844,7 @@ def _render_stock_info_html(rec: dict) -> str:
     </tbody></table>
     <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 이 종목의 개별 수급이 아닌 Stock Connect 시장 전체 집계. 출처: 东方财富 (12시간 캐시)</div>
   </div>
+  {_src_foot}출처: AKShare · 东方财富</div>
 </div>"""
 
     # ── JP: JPX 주간 투자주체별 수급 (시장 전체) ────────────────
@@ -4875,6 +4876,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <table class="si-table"><thead><tr><th>주체</th>{wk_hdrs}</tr></thead><tbody>{jpx_body}</tbody></table>
     <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 이 종목의 개별 수급이 아닌 일본 시장 전체 집계 · 최신 기준: {esc(str(jpx_rows[0].get("date",""))[:10])}. 출처: JPX 投資部門別 売買状況 (주 1회 목/금 발표, 96시간 캐시)</div>
   </div>
+  {_src_foot}출처: JPX</div>
 </div>"""
         except Exception as exc:
             log.info("detail: jpx flow: %s", exc)
@@ -4904,6 +4906,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <table class="si-table"><thead><tr><th>주체</th><th class="num">당일</th><th class="num">5일 누적</th></tr></thead><tbody>{tw_body}</tbody></table>
     <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">출처: {'TWSE' if ticker.upper().endswith('.TW') else 'TPEx'} 三大法人買賣超日報</div>
   </div>
+  {_src_foot}출처: FinMind · {'TWSE' if ticker.upper().endswith('.TW') else 'TPEx'}</div>
 </div>"""
         except Exception as exc:
             log.info("detail: twse flow %s: %s", ticker, exc)
@@ -5062,7 +5065,7 @@ def _render_stock_info_html(rec: dict) -> str:
 
     risk_pane = ""
     if risk_parts:
-        risk_pane = '<div class="si-pane" id="si-risk">\n  ' + "\n  ".join(risk_parts) + "\n</div>"
+        risk_pane = '<div class="si-pane" id="si-risk">\n  ' + "\n  ".join(risk_parts) + f'\n  {_src_foot}출처: {"FSC · DART" if is_kr else "AKShare" if is_cn else "yfinance"}</div>\n</div>'
     # Placeholder so the JS overlay can swap risk content via live quote.
     if not risk_pane:
         risk_pane = '<div class="si-pane" id="si-risk"></div>'
@@ -5179,6 +5182,7 @@ def _render_stock_info_html(rec: dict) -> str:
       <tbody>{d_rows}</tbody>
     </table>
   </div>
+  {_src_foot}출처: {esc(disc_source)}</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID during
