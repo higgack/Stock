@@ -41,8 +41,14 @@ def fetch_month(year: int, month: int) -> list[dict]:
     # 보다 풍부 + 실제 공시 기반. 공시일(rcept_dt)에 배치, 클릭 시 DART 원문.
     try:
         from bot.dart_feed import fetch_kr_earnings_ir
+        # 표시 월이 과거여도 채워지도록 충분히 넓은 아카이브 윈도(오늘~월초+여유).
+        # DART 피드 5분 타이머가 매일 누적 → 시간이 지나며 과거 월도 자동 채움.
+        from datetime import date as _d
+        _today = _d.today()
+        _first = _d(year, month, 1)
+        _back = max(14, (_today - _first).days + 35)
         mprefix = f"{year:04d}-{month:02d}"
-        for it in fetch_kr_earnings_ir():
+        for it in fetch_kr_earnings_ir(days_back=_back):
             d = it.get("date", "")
             if not d.startswith(mprefix):
                 continue
