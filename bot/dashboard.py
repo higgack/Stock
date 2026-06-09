@@ -1772,7 +1772,7 @@ def _render_index(records: list[dict]) -> str:
             <details class="month"{_m_open}>
               <summary class="month-head">
                 <span>📆 {_month_kr(_cur_month_idx)}</span>
-                <span class="count">{_month_counts_idx.get(_cur_month_idx, 0)}건</span>
+                <span class="count">{_month_counts_idx.get(_cur_month_idx, 0)} 건</span>
               </summary>
               <div class="month-body">
             """)
@@ -1846,7 +1846,7 @@ def _render_index(records: list[dict]) -> str:
             <details class="day" open>
               <summary class="day-head">
                 <span>📅 {_format_date_kr(date)}</span>
-                <span class="count">{len(day_records)}건</span>
+                <span class="count">{len(day_records)} 건</span>
               </summary>
               <div class="cards">{"".join(cards)}</div>
             </details>
@@ -1882,7 +1882,7 @@ def _render_index(records: list[dict]) -> str:
             <details class="day orphan-day">
               <summary class="day-head">
                 <span>📒 archive 이전 평가 결과</span>
-                <span class="count">{len(orphans)}건</span>
+                <span class="count">{len(orphans)} 건</span>
               </summary>
               <div class="orphan-list">{"".join(orphan_rows)}</div>
             </details>
@@ -6155,7 +6155,7 @@ def _month_transition(
             f'<details class="month"{m_open}>'
             f'<summary class="month-head">'
             f'<span>📆 {_month_kr(cur_month)}</span>'
-            f'<span class="count">{month_counts.get(cur_month, 0)}건</span>'
+            f'<span class="count">{month_counts.get(cur_month, 0)} 건</span>'
             f'</summary>'
             f'<div class="month-body">'
         )
@@ -6269,7 +6269,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
             f'<details class="day"{day_open}>'
             f'<summary class="day-head">'
             f'<span>📅 {_html.escape(date)}</span>'
-            f'<span class="count">{day_count}건</span>'
+            f'<span class="count">{day_count} 건</span>'
             f'</summary>'
             f'<div class="day-body">'
         )
@@ -6515,7 +6515,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
             p.append(
                 f'<details class="month cs-month"{" open" if is_open else ""}>'
                 f'<summary>📅 {month_str[:4]}년 {int(month_str[5:7])}월'
-                f'<span class="cnt">{count}건</span></summary>'
+                f'<span class="cnt">{count} 건</span></summary>'
             )
         def _cs_month_close(p, prev):
             if prev:
@@ -6533,7 +6533,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
             _cs_day_open = (_cs_d == _today_kst_str)
             parts.append(
                 f'<details class="day cs-day" data-date="{_shtml.escape(_cs_d)}"{" open" if _cs_day_open else ""}>'
-                f'<summary>📅 {_cs_d}<span class="cnt">{len(_cs_day_items)}건</span></summary>'
+                f'<summary>📅 {_cs_d} <span class="cnt">{len(_cs_day_items)} 건</span></summary>'
             )
 
             for _sa in _cs_day_items:
@@ -7858,7 +7858,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
             f'<details class="month"{month_open}>'
             f'<summary class="month-head">'
             f'<span>📆 {_html.escape(_format_month_kr(month))}</span>'
-            f'<span class="count">{month_count}건</span>'
+            f'<span class="count">{month_count} 건</span>'
             f'</summary>'
             f'<div class="month-body">'
         )
@@ -7869,7 +7869,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
                 f'<details class="day"{day_open}>'
                 f'<summary class="day-head">'
                 f'<span>📅 {_html.escape(date)}</span>'
-                f'<span class="count">{day_count}건</span>'
+                f'<span class="count">{day_count} 건</span>'
                 f'</summary>'
                 f'<div class="day-body">'
             )
@@ -8054,7 +8054,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
         parts.append(
             f'<details class="day"{day_open}><summary class="day-head">'
             f'<span>📅 {_html.escape(date)}</span>'
-            f'<span class="count">{len(by_date[date])}건</span></summary>'
+            f'<span class="count">{len(by_date[date])} 건</span></summary>'
             f'<div class="day-body">')
         for r in by_date[date]:
             body = (r.get("body") or "").strip()
@@ -8214,7 +8214,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
         parts.append(
             f'<details class="day"{day_open}><summary class="day-head">'
             f'<span>📅 {_html.escape(date)}</span>'
-            f'<span class="count">{len(by_date[date])}건</span></summary>'
+            f'<span class="count">{len(by_date[date])} 건</span></summary>'
             f'<div class="day-body">')
         for r in by_date[date]:
             body = (r.get("body") or "").strip()
@@ -8377,7 +8377,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
             f'<details class="month"{month_open}>'
             f'<summary class="month-head">'
             f'<span>📆 {_html.escape(_format_month_ri(month))}</span>'
-            f'<span class="count">{month_count}건</span>'
+            f'<span class="count">{month_count} 건</span>'
             f'</summary>'
             f'<div class="month-body">'
         )
@@ -8388,7 +8388,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
                 f'<details class="day"{day_open}>'
                 f'<summary class="day-head">'
                 f'<span>📅 {_html.escape(date)}</span>'
-                f'<span class="count">{day_count}건</span>'
+                f'<span class="count">{day_count} 건</span>'
                 f'</summary>'
                 f'<div class="day-body">'
             )
