@@ -184,8 +184,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # (yfinance .info, KR KIS-first). FULL: re-snapshot heavy panes.
         if self.path.split("?", 1)[0] == "/api/quote":
             return self._handle_quote_api()
-        # /lookup/<TICKER> — lightweight stock overview page (on-demand).
+        # /earnings — monthly earnings calendar page (Finnhub).
         raw = self.path.split("?", 1)[0]
+        if raw == "/earnings":
+            return self._handle_earnings()
+        # /lookup/<TICKER> — lightweight stock overview page (on-demand).
         if raw.startswith("/lookup/"):
             return self._handle_lookup()
         if raw.startswith("/api/search"):
@@ -556,6 +559,32 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("quote_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
+
+    def _handle_earnings(self) -> None:
+        """GET /earnings[?month=YYYY-MM] — monthly earnings calendar page."""
+        import urllib.parse as _ulp
+        from datetime import date as _date
+        try:
+            qs = _ulp.parse_qs(_ulp.urlparse(self.path).query)
+            month_str = (qs.get("month", [""])[0] or "").strip()
+            if month_str and re.match(r"^\d{4}-\d{2}$", month_str):
+                year, month = int(month_str[:4]), int(month_str[5:7])
+                if not (1 <= month <= 12 and 2000 <= year <= 2099):
+                    raise ValueError("invalid month")
+            else:
+                today = _date.today()
+                year, month = today.year, today.month
+            from bot.earnings_calendar import render_page
+            html = render_page(year, month)
+            encoded = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as exc:
+            log.warning("earnings: failed — %s", exc)
+            self.send_error(500, "internal error")
 
     def _handle_search_api(self) -> None:
         """GET /api/search?q=삼성전자 — resolve name → ticker JSON."""

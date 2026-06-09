@@ -10771,7 +10771,7 @@ def _render_market_page(data: dict) -> str:
 
     parts.append(f"""
   <div class="section-hd">
-    <h2>다가오는 실적</h2>
+    <h2><a href="earnings" style="color:inherit;text-decoration:none">다가오는 실적 →</a></h2>
     <span class="ts">Finnhub · 향후 14일</span>
   </div>
   <div class="tbl-filter">
