@@ -78,14 +78,32 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
     - top_gainers/losers: 수익률 정렬 상·하위 5.
     """
     holdings = []
+    unresolved_names: list[str] = []
     for h in parsed.get("holdings", []):
         r = resolve(h.get("상품명") or "")
         ev, cost = h.get("평가금액"), h.get("투자원금")
         pnl = (ev - cost) if (ev is not None and cost is not None) else None
         holdings.append({
             **h, "ticker": r["ticker"], "market": r["market"],
-            "matched": r["matched"], "평가손익": pnl,
+            "matched": r["matched"], "source": r.get("source"),
+            "평가손익": pnl,
         })
+        if not r["matched"] and r.get("source") is None:
+            unresolved_names.append(h.get("상품명") or "")
+    if unresolved_names:
+        try:
+            from bot.portfolio_auto_resolve import batch_resolve
+            from bot.portfolio_resolve import _normalize
+            auto = batch_resolve(unresolved_names)
+            for h in holdings:
+                if h["matched"] or h.get("source"):
+                    continue
+                key = _normalize(h.get("상품명") or "")
+                ar = auto.get(key)
+                if ar:
+                    h["ticker"], h["market"], h["matched"] = ar[0], ar[1], True
+        except Exception:
+            pass
     by_broker: dict[str, dict] = {}
     for h in holdings:
         b = h.get("금융사") or "?"

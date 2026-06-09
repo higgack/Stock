@@ -4857,7 +4857,7 @@ def _render_stock_info_html(rec: dict) -> str:
   <div class="si-section">
     <div class="si-section-title">JPX 주간 투자주체별 수급 (百万円 · 시장 전체)</div>
     <table class="si-table"><thead><tr><th>주체</th>{wk_hdrs}</tr></thead><tbody>{jpx_body}</tbody></table>
-    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 시장 전체 집계 (종목별 아님). 출처: JPX 投資部門別 売買状況</div>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 시장 전체 집계 (종목별 아님) · 최신 기준: {esc(str(jpx_rows[0].get("date",""))[:10])}. 출처: JPX 投資部門別 売買状況 (주 1회 목/금 발표, 96시간 캐시)</div>
   </div>
 </div>"""
         except Exception as exc:
