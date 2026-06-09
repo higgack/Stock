@@ -193,6 +193,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_lookup()
         if raw.startswith("/api/search"):
             return self._handle_search_api()
+        if raw == "/api/favorites":
+            return self._handle_favorites_get()
         return super().do_GET()
 
     def do_HEAD(self):
@@ -203,6 +205,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         if not self._authorize():
             return
+        if self.path == "/api/favorite_add":
+            return self._handle_favorite_add()
+        if self.path == "/api/favorite_remove":
+            return self._handle_favorite_remove()
         if self.path == "/api/screener_delete":
             return self._handle_screener_delete()
         if self.path == "/api/daily_byte_delete":
@@ -585,6 +591,54 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("earnings: failed — %s", exc)
             self.send_error(500, "internal error")
+
+    def _handle_favorites_get(self) -> None:
+        """GET /api/favorites — return saved favorites list."""
+        try:
+            from bot.market_favorites import get_favorites
+            self._json_ok({"ok": True, "favorites": get_favorites()})
+        except Exception as exc:
+            log.warning("favorites_get: %s", exc)
+            self._json_ok({"ok": False, "favorites": []})
+
+    def _handle_favorite_add(self) -> None:
+        """POST /api/favorite_add — save a ticker with current price snapshot."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 1024:
+                raise ValueError("bad body")
+            payload = json.loads(self.rfile.read(length))
+            ticker = (payload.get("ticker") or "").strip()
+            if not ticker or not _TICKER_RE.match(ticker):
+                self._json_ok({"ok": False, "error": "invalid ticker"})
+                return
+            from bot.market_favorites import add_favorite
+            entry = add_favorite(ticker)
+            if entry is None:
+                self._json_ok({"ok": False, "error": "duplicate or fetch failed"})
+                return
+            self._json_ok({"ok": True, "entry": entry})
+        except Exception as exc:
+            log.warning("favorite_add: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc)})
+
+    def _handle_favorite_remove(self) -> None:
+        """POST /api/favorite_remove — remove a ticker from favorites."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 1024:
+                raise ValueError("bad body")
+            payload = json.loads(self.rfile.read(length))
+            ticker = (payload.get("ticker") or "").strip()
+            if not ticker:
+                self._json_ok({"ok": False, "error": "missing ticker"})
+                return
+            from bot.market_favorites import remove_favorite
+            removed = remove_favorite(ticker)
+            self._json_ok({"ok": removed})
+        except Exception as exc:
+            log.warning("favorite_remove: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc)})
 
     def _handle_search_api(self) -> None:
         """GET /api/search?q=삼성전자 — resolve name → ticker JSON."""

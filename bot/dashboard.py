@@ -10223,6 +10223,38 @@ _MARKET_CSS = (
     ".chart-card .foot{font-size:10px;color:var(--muted);margin-top:8px}"
     ".chart-card svg{display:block;width:100%;height:auto;color:var(--muted)}"
     "@media(max-width:860px){.chart-row{grid-template-columns:1fr}}"
+    # ── Market Daily cards ──
+    ".md-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:28px}"
+    "@media(max-width:700px){.md-row{grid-template-columns:1fr}}"
+    ".md-card{background:var(--card);border:1px solid var(--border);"
+    "border-radius:12px;padding:18px 20px;display:flex;flex-direction:column}"
+    ".md-card .md-label{font-size:11px;letter-spacing:1.5px;color:var(--muted);"
+    "font-weight:600;text-transform:uppercase;margin-bottom:4px}"
+    ".md-card .md-time{font-size:11px;color:var(--muted);float:right}"
+    ".md-card h3{font-size:15px;font-weight:700;margin:0 0 10px;line-height:1.4}"
+    ".md-card .md-body{font-size:13px;line-height:1.7;color:var(--text);"
+    "max-height:260px;overflow:hidden;position:relative;flex:1}"
+    ".md-card .md-body.fade::after{content:'';position:absolute;bottom:0;"
+    "left:0;right:0;height:50px;background:linear-gradient(transparent,var(--card))}"
+    ".md-card .md-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}"
+    ".md-tag{font-size:11px;padding:3px 8px;border-radius:4px;"
+    "background:var(--surface-tint);white-space:nowrap}"
+    ".md-tag.pos{background:rgba(5,150,105,.12);color:var(--pos)}"
+    ".md-tag.neg{background:rgba(220,38,38,.12);color:var(--neg)}"
+    ".md-more{display:inline-block;margin-top:10px;font-size:12px;"
+    "color:var(--accent);text-decoration:none}"
+    ".md-more:hover{text-decoration:underline}"
+    ".md-empty{color:var(--muted);font-size:13px;padding:20px 0}"
+    # ── Favorites table ──
+    "#fav-section .fav-hd{display:flex;align-items:baseline;gap:10px;margin:32px 0 14px}"
+    "#fav-section .fav-hd h2{font-size:17px;margin:0}"
+    "#fav-section .fav-hd .cnt{color:var(--muted);font-size:12px}"
+    ".fav-del{background:none;border:none;color:var(--neg);cursor:pointer;"
+    "font-size:14px;padding:2px 6px;border-radius:4px}"
+    ".fav-del:hover{background:rgba(220,38,38,.1)}"
+    "#mkt-save{padding:10px 16px;font-size:14px;font-weight:600;border:none;"
+    "border-radius:8px;background:var(--pos);color:#fff;cursor:pointer}"
+    "#mkt-save:hover{opacity:.9}"
     "</style></head><body>"
 )
 
@@ -10710,6 +10742,119 @@ def _render_macro_snapshot(macro: dict) -> str:
     return "".join(out)
 
 
+def _load_latest_market_daily(archive_name: str, kind_filter: str = "daily") -> dict | None:
+    """Load the most recent archive entry for a market daily surface."""
+    archive_dir = Path.home() / ".tradingagents" / archive_name
+    if not archive_dir.exists():
+        return None
+    for d in sorted(archive_dir.iterdir(), reverse=True)[:7]:
+        if not d.is_dir():
+            continue
+        for f in sorted(d.iterdir(), reverse=True):
+            if not f.name.endswith(".json"):
+                continue
+            try:
+                rec = json.loads(f.read_text("utf-8"))
+                if rec.get("kind", "daily") == kind_filter and rec.get("body"):
+                    return rec
+            except Exception:
+                continue
+    return None
+
+
+def _extract_daily_title(body: str) -> str:
+    """Extract title from Daily Byte body (after 'Daily Byte: YYYYMMDD ')."""
+    first = body.strip().split("\n", 1)[0]
+    import re as _re
+    m = _re.match(r"(?:Daily Byte[:\s]*\d{4}[\.\-]?\d{2}[\.\-]?\d{2}\s*)", first)
+    if m:
+        return first[m.end():].strip() or first
+    if ":" in first and len(first) < 120:
+        return first.split(":", 1)[-1].strip() or first
+    return first[:80]
+
+
+def _extract_daily_summary(body: str, max_chars: int = 600) -> str:
+    """Extract first substantial paragraph(s) from Daily Byte body."""
+    import html as _h
+    lines = body.strip().split("\n")
+    out: list[str] = []
+    total = 0
+    skip_first = True
+    for line in lines:
+        s = line.strip()
+        if not s:
+            continue
+        if skip_first:
+            skip_first = False
+            continue
+        if s.startswith("면책") or s.startswith("📊") or s.startswith("🔥") or s.startswith("🏆"):
+            if total > 100:
+                break
+        out.append(_h.escape(s))
+        total += len(s)
+        if total >= max_chars:
+            break
+    return "<br>".join(out) if out else ""
+
+
+def _relative_time(ts_str: str) -> str:
+    """Convert ISO timestamp to relative time string (e.g., '3시간 전')."""
+    from datetime import datetime as _dt, timezone as _tz
+    try:
+        ts = _dt.fromisoformat(ts_str.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            from zoneinfo import ZoneInfo
+            ts = ts.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+        now = _dt.now(tz=ts.tzinfo)
+        delta = now - ts
+        mins = int(delta.total_seconds() / 60)
+        if mins < 60:
+            return f"{max(mins, 1)}분 전"
+        hours = mins // 60
+        if hours < 24:
+            return f"{hours}시간 전"
+        days = hours // 24
+        return f"{days}일 전"
+    except Exception:
+        return ""
+
+
+def _render_market_daily_cards() -> str:
+    """Render the 2-column Market Daily cards (Korea + US)."""
+    kr = _load_latest_market_daily("daily_byte_archive", "daily")
+    us = _load_latest_market_daily("us_market_daily_archive", "daily")
+
+    def _card(rec: dict | None, label: str, flag: str, link: str, empty_msg: str) -> str:
+        if not rec or not rec.get("body"):
+            return (
+                f'<div class="md-card">'
+                f'<div class="md-label">{flag} {_html.escape(label)}</div>'
+                f'<div class="md-empty">{_html.escape(empty_msg)}</div>'
+                f'</div>'
+            )
+        body = rec["body"]
+        title = _extract_daily_title(body)
+        summary = _extract_daily_summary(body, 500)
+        ts = rec.get("ts", rec.get("date", ""))
+        rel = _relative_time(ts) if ts else ""
+        time_span = f'<span class="md-time">{_html.escape(rel)}</span>' if rel else ""
+        return (
+            f'<div class="md-card">'
+            f'<div class="md-label">{flag} {_html.escape(label)} {time_span}</div>'
+            f'<h3>{_html.escape(title)}</h3>'
+            f'<div class="md-body fade">{summary}</div>'
+            f'<a class="md-more" href="{_html.escape(link)}">전체 보기 →</a>'
+            f'</div>'
+        )
+
+    kr_card = _card(kr, "한국 마켓 데일리", "🇰🇷", "daily_byte.html",
+                     "Daily Byte 아카이브가 아직 없습니다.")
+    us_card = _card(us, "미국 마켓 데일리", "🇺🇸", "daily_byte.html",
+                     "US Market Daily 준비 중입니다.")
+    return f'<div class="md-row">{kr_card}{us_card}</div>'
+
+
 def _render_market_page(data: dict) -> str:
     """Render market.html — global market snapshot + earnings + research."""
     from bot.market_overview import ALL_CARDS
@@ -10750,7 +10895,10 @@ def _render_market_page(data: dict) -> str:
       placeholder="티커 또는 종목명 검색 (예: NVDA, 005930.KS, 7203.T)"
       autocomplete="off" spellcheck="false">
     <button id="mkt-go" type="button">검색</button>
+    <button id="mkt-save" type="button">저장</button>
   </div>
+
+{_render_market_daily_cards()}
 
   <div class="section-hd">
     <h2>글로벌 시장 스냅샷</h2>
@@ -10797,6 +10945,11 @@ def _render_market_page(data: dict) -> str:
   <div id="tab-kr" class="tab-pane">
     {_render_research_kr_table(research_kr)}
   </div>
+</div>
+
+<div id="fav-section">
+  <div class="fav-hd"><h2>⭐ 관심종목</h2><span class="cnt" id="fav-cnt"></span></div>
+  <div id="fav-body"><div class="md-empty">불러오는 중…</div></div>
 </div>
 
 <script>
@@ -10917,6 +11070,113 @@ def _render_market_page(data: dict) -> str:
       }});
       cn.textContent = q ? shown + '/' + total : '';
     }});
+  }})();
+
+  /* ── Favorites CRUD ── */
+  (function() {{
+    var favBody = document.getElementById('fav-body');
+    var favCnt = document.getElementById('fav-cnt');
+    var saveBtn = document.getElementById('mkt-save');
+    var searchInp = document.getElementById('mkt-search');
+
+    var FLAG = {{'US':'🇺🇸','KR':'🇰🇷','JP':'🇯🇵','TW':'🇹🇼','CN':'🇨🇳','HK':'🇭🇰','UK':'🇬🇧','DE':'🇩🇪','FR':'🇫🇷'}};
+
+    function fmtPrice(v, sym) {{
+      if (v == null) return '—';
+      sym = sym || '$';
+      return sym + Number(v).toLocaleString(undefined, {{minimumFractionDigits:0, maximumFractionDigits:2}});
+    }}
+    function fmtEst(v) {{
+      if (v == null) return '—';
+      if (typeof v === 'number') {{
+        if (Math.abs(v) >= 1e9) return (v/1e9).toFixed(1) + 'B';
+        if (Math.abs(v) >= 1e6) return (v/1e6).toFixed(1) + 'M';
+        return v.toFixed(2);
+      }}
+      return String(v);
+    }}
+
+    function renderFavs(list) {{
+      favCnt.textContent = list.length ? list.length + '종목' : '';
+      if (!list.length) {{
+        favBody.innerHTML = '<div class="md-empty">검색창에서 종목을 검색한 뒤 저장 버튼을 눌러주세요.</div>';
+        return;
+      }}
+      var h = '<table class="dtbl"><thead><tr>'
+        + '<th>종목</th><th>나라</th><th>날짜</th><th>시간</th>'
+        + '<th>가격</th><th>EPS 예상</th><th>매출예상</th><th>다음실적일</th><th></th>'
+        + '</tr></thead><tbody>';
+      list.forEach(function(f) {{
+        var flag = FLAG[f.country] || '';
+        h += '<tr>'
+          + '<td><a href="lookup/' + encodeURIComponent(f.ticker) + '">' + (f.name||f.ticker) + '</a></td>'
+          + '<td>' + flag + ' ' + (f.country||'') + '</td>'
+          + '<td>' + (f.saved_date||'') + '</td>'
+          + '<td>' + (f.saved_time||'') + '</td>'
+          + '<td>' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
+          + '<td>' + fmtEst(f.eps_estimate) + '</td>'
+          + '<td>' + fmtEst(f.revenue_estimate) + '</td>'
+          + '<td>' + (f.next_earnings||'—') + '</td>'
+          + '<td><button class="fav-del" data-ticker="' + f.ticker + '" title="삭제">✕</button></td>'
+          + '</tr>';
+      }});
+      h += '</tbody></table>';
+      favBody.innerHTML = h;
+      favBody.querySelectorAll('.fav-del').forEach(function(b) {{
+        b.addEventListener('click', function() {{
+          removeFav(b.dataset.ticker);
+        }});
+      }});
+    }}
+
+    function loadFavs() {{
+      fetch('api/favorites')
+        .then(function(r) {{ return r.json(); }})
+        .then(function(d) {{ renderFavs(d.favorites || []); }})
+        .catch(function() {{ favBody.innerHTML = '<div class="md-empty">관심종목을 불러올 수 없습니다.</div>'; }});
+    }}
+
+    function addFav(ticker) {{
+      saveBtn.disabled = true; saveBtn.textContent = '…';
+      fetch('api/favorite_add', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{ticker: ticker}})
+      }})
+        .then(function(r) {{ return r.json(); }})
+        .then(function(d) {{
+          if (d.error) alert(d.error);
+          loadFavs();
+        }})
+        .catch(function() {{ alert('저장 실패'); }})
+        .finally(function() {{ saveBtn.disabled = false; saveBtn.textContent = '저장'; }});
+    }}
+
+    function removeFav(ticker) {{
+      fetch('api/favorite_remove', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{ticker: ticker}})
+      }})
+        .then(function() {{ loadFavs(); }})
+        .catch(function() {{ alert('삭제 실패'); }});
+    }}
+
+    if (saveBtn) {{
+      saveBtn.addEventListener('click', function() {{
+        var q = (searchInp.value || '').trim();
+        if (!q) {{ alert('검색창에 티커를 입력하세요.'); return; }}
+        fetch('api/search?q=' + encodeURIComponent(q))
+          .then(function(r) {{ return r.json(); }})
+          .then(function(d) {{
+            var ticker = d.ticker || q.toUpperCase();
+            addFav(ticker);
+          }})
+          .catch(function() {{ addFav(q.toUpperCase()); }});
+      }});
+    }}
+
+    loadFavs();
   }})();
 }})();
 </script>

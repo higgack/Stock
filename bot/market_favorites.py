@@ -1,0 +1,131 @@
+"""Market favorites (관심종목) — CRUD for market.html watchlist.
+
+Stores saved tickers with snapshot data (price at save time, estimates)
+in a simple JSON file. No LLM, no recurring cost — yfinance only.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+log = logging.getLogger("bot.market_favorites")
+
+_FAVORITES_FILE = Path.home() / ".tradingagents" / "market_favorites.json"
+
+
+def _load() -> list[dict]:
+    if _FAVORITES_FILE.exists():
+        try:
+            return json.loads(_FAVORITES_FILE.read_text("utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _save(favorites: list[dict]) -> None:
+    _FAVORITES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = _FAVORITES_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(favorites, ensure_ascii=False, indent=2), "utf-8")
+    tmp.replace(_FAVORITES_FILE)
+
+
+def _detect_country(ticker: str) -> str:
+    t = ticker.upper()
+    if t.endswith((".KS", ".KQ")):
+        return "KR"
+    if t.endswith(".T"):
+        return "JP"
+    if t.endswith((".TW", ".TWO")):
+        return "TW"
+    if t.endswith((".SS", ".SZ")):
+        return "CN"
+    if t.endswith(".HK"):
+        return "HK"
+    if t.endswith((".L", ".IL")):
+        return "UK"
+    if t.endswith((".DE", ".F")):
+        return "DE"
+    if t.endswith(".PA"):
+        return "FR"
+    return "US"
+
+
+_CURRENCY_MAP = {
+    "KRW": "₩", "JPY": "¥", "TWD": "NT$", "CNY": "¥",
+    "HKD": "HK$", "GBP": "£", "EUR": "€", "USD": "$",
+}
+
+
+def add_favorite(ticker: str) -> Optional[dict]:
+    """Fetch snapshot from yfinance and append to favorites. None on dupe/error."""
+    import yfinance as yf
+
+    favorites = _load()
+    if any(f["ticker"].upper() == ticker.upper() for f in favorites):
+        return None
+
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.info or {}
+    except Exception as exc:
+        log.warning("favorites: yfinance failed for %s: %s", ticker, exc)
+        return None
+
+    eps_est = info.get("forwardEps")
+    rev_est = None
+    next_earn = None
+    try:
+        cal = tk.calendar
+        if isinstance(cal, dict):
+            earn_dates = cal.get("Earnings Date") or []
+            if earn_dates:
+                d = earn_dates[0]
+                next_earn = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+            if cal.get("Earnings Average") is not None:
+                eps_est = cal["Earnings Average"]
+            if cal.get("Revenue Average") is not None:
+                rev_est = cal["Revenue Average"]
+    except Exception:
+        pass
+
+    price = info.get("regularMarketPrice") or info.get("currentPrice")
+    currency = info.get("currency", "USD")
+    now = datetime.now()
+
+    entry = {
+        "ticker": ticker,
+        "name": info.get("longName") or info.get("shortName") or ticker,
+        "country": _detect_country(ticker),
+        "saved_date": now.strftime("%Y-%m-%d"),
+        "saved_time": now.strftime("%H:%M"),
+        "saved_price": price,
+        "currency": currency,
+        "currency_symbol": _CURRENCY_MAP.get(currency, "$"),
+        "eps_estimate": eps_est,
+        "revenue_estimate": rev_est,
+        "next_earnings": next_earn,
+    }
+
+    favorites.append(entry)
+    _save(favorites)
+    return entry
+
+
+def remove_favorite(ticker: str) -> bool:
+    """Remove ticker from favorites. Returns True if removed."""
+    favorites = _load()
+    before = len(favorites)
+    favorites = [f for f in favorites if f["ticker"].upper() != ticker.upper()]
+    if len(favorites) < before:
+        _save(favorites)
+        return True
+    return False
+
+
+def get_favorites() -> list[dict]:
+    """Return all saved favorites."""
+    return _load()
