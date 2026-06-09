@@ -362,12 +362,10 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
 
     rows = rows[:limit]
     if not rows:
-        try:
-            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            cache_file.write_text("[]")
-        except Exception:
-            pass
-        log.info("naver_research: no recent market reports (%d-day window)",
+        # 빈 결과는 캐시하지 않음(truthy-only) — Naver 일시 차단/실패가 1h 동안
+        # '리서치 없음'으로 박히던 문제(사용자 2026-06-10 '또 갑자기'). 다음
+        # 호출이 재시도.
+        log.info("naver_research: no recent market reports (%d-day window) — 캐시 안 함",
                  days_back)
         return []
 
@@ -515,11 +513,12 @@ def fetch_recent_research_industry(limit: int = 80, days_back: int = 7,
         "link": f"{_INDUSTRY_DETAIL_URL}?nid={r['nid']}",
     } for r in rows]
 
-    try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(out, ensure_ascii=False))
-    except Exception as exc:
-        log.warning("naver_research: industry cache write failed: %s", exc)
+    if out:  # truthy-only — 빈 결과(일시 실패) 캐시 안 함
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(out, ensure_ascii=False))
+        except Exception as exc:
+            log.warning("naver_research: industry cache write failed: %s", exc)
 
     return out
 

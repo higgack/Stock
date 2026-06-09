@@ -11705,7 +11705,7 @@ def _render_market_page(data: dict) -> str:
       countries.forEach(function(c) {{
         copts += '<option value="' + c + '"' + (favState.country === c ? ' selected' : '') + '>' + (FLAG[c] || c) + '</option>';
       }});
-      var ctrl = '<div class="fav-ctrl"><label style="font-size:12px;color:var(--muted)">나라</label>'
+      var ctrl = '<div class="fav-ctrl">'
         + '<select id="fav-country">' + copts + '</select>'
         + '<span style="font-size:11px;color:var(--muted)">↕ 화살표로 순서 변경 · 헤더 클릭 정렬</span></div>';
 
