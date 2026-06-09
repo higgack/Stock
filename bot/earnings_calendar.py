@@ -30,7 +30,25 @@ def _api_key() -> str:
 
 
 def fetch_month(year: int, month: int) -> list[dict]:
-    """Fetch earnings for a full month from Finnhub. 6h cache."""
+    """Fetch earnings for a full month — 미국(Finnhub) + 한국(yfinance .calendar).
+
+    각 이벤트에 market 필드('us'|'kr') 부착해 캘린더가 색/키로 구분. 한국은
+    market_overview.fetch_earnings_calendar_kr(90일·12h캐시) 결과를 해당 월로
+    필터링해 병합(별도 fetch 없음). 한국이 안 되면 미국만 graceful."""
+    events = [dict(e, market="us") for e in _fetch_us_month(year, month)]
+    try:
+        from bot.market_overview import fetch_earnings_calendar_kr
+        mprefix = f"{year:04d}-{month:02d}"
+        for e in fetch_earnings_calendar_kr():
+            if (e.get("date") or "").startswith(mprefix):
+                events.append(dict(e, market="kr"))
+    except Exception as exc:
+        log.warning("earnings_cal: KR merge failed: %s", exc)
+    return events
+
+
+def _fetch_us_month(year: int, month: int) -> list[dict]:
+    """Fetch US earnings for a full month from Finnhub. 6h cache."""
     key = _api_key()
     if not key:
         return []
@@ -130,7 +148,16 @@ min-width:22px;height:22px;border-radius:6px;padding:0 5px}
 text-overflow:ellipsis}
 .cal-entry .sym{font-weight:600}
 .cal-entry .hour{color:var(--muted);margin-left:2px}
-.cal-more{color:var(--muted);font-size:11px;margin-top:2px}
+.cal-more{color:var(--muted);font-size:11px;margin-top:2px;cursor:pointer}
+.cal-more:hover{color:var(--accent);text-decoration:underline}
+.cal-entry.kr .sym{color:#2dd4bf}
+.cal-entry.us .sym{color:#58a6ff}
+.cal-cell.has-extra .cal-day{cursor:pointer}
+.cal-cell.has-extra .cal-day:hover .d{text-decoration:underline}
+.cal-legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--muted);
+margin-bottom:14px;align-items:center}
+.cal-legend .sq{display:inline-block;width:10px;height:10px;border-radius:2px;
+margin-right:5px;vertical-align:middle}
 .cal-entry a{color:inherit;text-decoration:none}
 .cal-entry a:hover .sym{text-decoration:underline}
 .back-link{display:inline-block;margin-bottom:16px;color:var(--accent);
@@ -209,19 +236,27 @@ def render_page(year: int, month: int) -> str:
             day_head = f'<div class="cal-day"><span class="d">{day_num}</span>{badge}</div>'
 
             entries = ""
-            for e in day_events[:_MAX_PER_CELL]:
+            for i, e in enumerate(day_events):
                 sym = e["symbol"]
+                is_kr = e.get("market") == "kr"
+                # 한국=종목명(가독), 미국=티커
+                label = (e.get("name") or sym) if is_kr else sym
+                mcls = "kr" if is_kr else "us"
                 hl = _hour_label(e["hour"])
                 hl_span = f' <span class="hour">{hl}</span>' if hl else ""
+                hidden = (' cal-extra" style="display:none'
+                          if i >= _MAX_PER_CELL else '')
                 entries += (
-                    f'<div class="cal-entry">'
-                    f'<a href="lookup/{sym}"><span class="sym">{sym}</span>{hl_span}</a>'
+                    f'<div class="cal-entry {mcls}{hidden}">'
+                    f'<a href="lookup/{sym}"><span class="sym">{label}</span>{hl_span}</a>'
                     f'</div>\n'
                 )
             overflow = count - _MAX_PER_CELL
-            more = f'<div class="cal-more">+{overflow}</div>' if overflow > 0 else ""
+            cell_cls = "cal-cell has-extra" if overflow > 0 else "cal-cell"
+            more = (f'<div class="cal-more">+{overflow} 더보기</div>'
+                    if overflow > 0 else "")
 
-            grid += f'<div class="cal-cell">{day_head}{entries}{more}</div>\n'
+            grid += f'<div class="{cell_cls}">{day_head}{entries}{more}</div>\n'
 
     month_kr = f"{year}년 {month}월"
 
@@ -234,15 +269,35 @@ def render_page(year: int, month: int) -> str:
 <a class="back-link" href="market.html">← 홈으로</a>
 <div style="font-size:11px;letter-spacing:2px;color:var(--muted);margin-bottom:4px">EARNINGS CALENDAR</div>
 <h1>실적 캘린더</h1>
-<div class="subtitle">한국시간 기준 다가오는 실적 일정입니다. 컨센서스 EPS·매출과 발표 시각(장 시작 전 BMO / 장 마감 후 AMC)을 함께 표시합니다.</div>
+<div class="subtitle">한국시간 기준 다가오는 실적 일정입니다. 발표 시각(장 시작 전 BMO / 장 마감 후 AMC)을 함께 표시합니다. <b>날짜 칸의 +N 더보기(또는 날짜)를 클릭</b>하면 그날 전체 종목이 펼쳐집니다.</div>
+<div class="cal-legend">
+  <span><span class="sq" style="background:#2dd4bf"></span>🇰🇷 한국 (종목명)</span>
+  <span><span class="sq" style="background:#58a6ff"></span>🇺🇸 미국 (티커)</span>
+  <span>출처: 미국 Finnhub · 한국 yfinance(.calendar, ~90일)</span>
+</div>
 <div class="cal-header">
   <h2>{month_kr}</h2>
   <span class="cnt">{total}건</span>
 </div>
 <div class="month-nav">{nav_html}</div>
 <div class="cal-grid">{grid}</div>
-<div style="margin-top:16px;font-size:11px;color:var(--muted)">출처: Finnhub · 장전=BMO(Before Market Open) · 장후=AMC(After Market Close)</div>
+<div style="margin-top:16px;font-size:11px;color:var(--muted)">미국 Finnhub + 한국 yfinance · 장전=BMO(Before Market Open) · 장후=AMC(After Market Close)</div>
 <script>
 (function(){{var h=parseInt(new Intl.DateTimeFormat('en-US',{{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';}})();
+(function(){{
+  document.querySelectorAll('.cal-cell.has-extra').forEach(function(cell){{
+    var more=cell.querySelector('.cal-more');
+    function toggle(){{
+      var ex=cell.querySelectorAll('.cal-extra');
+      if(!ex.length) return;
+      var show=ex[0].style.display==='none';
+      ex.forEach(function(x){{x.style.display=show?'':'none';}});
+      if(more) more.textContent=show?'접기':('+'+ex.length+' 더보기');
+    }}
+    var day=cell.querySelector('.cal-day');
+    if(day) day.addEventListener('click',toggle);
+    if(more) more.addEventListener('click',toggle);
+  }});
+}})();
 </script>
 </body></html>"""
