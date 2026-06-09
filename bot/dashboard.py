@@ -7614,6 +7614,24 @@ def regenerate_screener_index() -> None:
 
 _DAILY_BYTE_JS = """
 <script>
+// 딥링크 — market.html '전체 보기' 가 #card-... 해시로 진입하면 해당 카드의
+// 월/일/카드 details 요소를 모두 펼치고 스크롤(바로 해당 글이 열림). 매칭
+// 카드 없으면 무동작(다른 아카이브 페이지에서도 안전).
+(function() {
+  function openHash() {
+    var id = (location.hash || '').slice(1);
+    if (!id) return;
+    var el = document.getElementById(id);
+    if (!el) return;
+    var p = el;
+    while (p) { if (p.tagName === 'DETAILS') { p.open = true; } p = p.parentElement; }
+    try { el.scrollIntoView({ block: 'start' }); } catch (e) {}
+  }
+  window.addEventListener('hashchange', openHash);
+  if (document.readyState !== 'loading') { openHash(); }
+  else { document.addEventListener('DOMContentLoaded', openHash); }
+  setTimeout(openHash, 60);
+})();
 // Snippet-highlight search + 🗑️ delete (mirrors Bottleneck Screener UX).
 // Reuses scr-* element ids + .card/.day classes from _SCREENER_CSS. Daily
 // Byte cards carry a single 'brief' section, so the search indexes brief
@@ -11079,6 +11097,9 @@ def _load_latest_market_daily(archive_name: str, kind_filter: str = "daily") -> 
             try:
                 rec = json.loads(f.read_text("utf-8"))
                 if rec.get("kind", "daily") == kind_filter and rec.get("body"):
+                    # daily_byte.html 카드 id 매칭용(딥링크) — 같은 규칙으로 생성.
+                    rec["_date"] = d.name
+                    rec["_filename"] = f.name
                     return rec
             except Exception:
                 continue
@@ -11166,13 +11187,21 @@ def _render_market_daily_cards() -> str:
         ts = rec.get("ts", rec.get("date", ""))
         rel = _relative_time(ts) if ts else ""
         rel_span = f' · {_html.escape(rel)}' if rel else ""
+        # 딥링크 — daily_byte.html 의 해당 카드 id 로 바로 펼쳐 열림(전체 글).
+        # card_id 규칙은 _render_daily_byte_page 와 동일해야 함.
+        _d = rec.get("_date", "")
+        _fn = rec.get("_filename", "")
+        deep = link
+        if _d and _fn:
+            _cid = f"card-{_d}-{_fn}".replace(".", "_")
+            deep = f"{link}#{_cid}"
         return (
             f'<div class="md-card">'
             f'<div class="md-label">{flag} {_html.escape(label)} '
             f'<span class="md-time">⏰ 매일 {_html.escape(schedule)} KST{rel_span}</span></div>'
             f'<h3>{_html.escape(title)}</h3>'
             f'<div class="md-body fade">{summary}</div>'
-            f'<a class="md-more" href="{_html.escape(link)}">전체 보기 →</a>'
+            f'<a class="md-more" href="{_html.escape(deep)}">전체 보기 →</a>'
             f'</div>'
         )
 
