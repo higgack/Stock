@@ -184,6 +184,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # (yfinance .info, KR KIS-first). FULL: re-snapshot heavy panes.
         if self.path.split("?", 1)[0] == "/api/quote":
             return self._handle_quote_api()
+        # /lookup/<TICKER> — lightweight stock overview page (on-demand).
+        raw = self.path.split("?", 1)[0]
+        if raw.startswith("/lookup/"):
+            return self._handle_lookup()
         return super().do_GET()
 
     def do_HEAD(self):
@@ -550,6 +554,49 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("quote_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
+
+    def _handle_lookup(self) -> None:
+        """Serve a lightweight stock overview page for any ticker.
+        GET /lookup/<TICKER> — renders on-demand via yfinance, 5min cache."""
+        import time
+        try:
+            raw = self.path.split("?", 1)[0]
+            ticker = raw.split("/lookup/", 1)[-1].strip().upper()
+            if not ticker or not _TICKER_RE.match(ticker):
+                self.send_error(400, "invalid ticker")
+                return
+
+            cache_dir = _ARCHIVE_ROOT.parent / "lookup_cache"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            safe = ticker.replace(".", "_").replace("-", "_")
+            cache_f = cache_dir / f"{safe}.html"
+            if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 300:
+                try:
+                    encoded = cache_f.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(encoded)))
+                    self.end_headers()
+                    self.wfile.write(encoded)
+                    return
+                except Exception:
+                    pass
+
+            from bot.dashboard import render_lookup_page
+            html = render_lookup_page(ticker)
+            encoded = html.encode("utf-8")
+            try:
+                cache_f.write_bytes(encoded)
+            except Exception:
+                pass
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as exc:
+            log.warning("lookup: failed — %s", exc)
+            self.send_error(500, "internal error")
 
     def _handle_portfolio_send(self) -> None:
         """POST /api/portfolio_send body: {"to":"telegram"|"email",

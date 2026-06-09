@@ -1914,6 +1914,7 @@ def _render_index(records: list[dict]) -> str:
     )
     # 부동산은 주간(느린) surface 라 nav 제일 뒤 (사용자 정책 2026-05-31)
     errors_link = (
+        ' · <a href="market.html">🌍 Market</a>'
         ' · <a href="portfolio.html">💼 자산</a>'
         ' · <a href="budget.html">📒 가계부</a>'
         ' · <a href="screener.html">📊 Screener</a>'
@@ -10108,3 +10109,601 @@ def regenerate_gics_candidates_index() -> None:
                  len(runs))
     except Exception as exc:
         log.warning("dashboard: gics_candidates regen failed: %s", exc)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Market Overview landing page (market.html)
+# ═════════════════════════════════════════════════════════════════════
+
+_MARKET_CSS = (
+    "<!doctype html><html lang='ko'><head><meta charset='UTF-8'>"
+    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<meta name='color-scheme' content='light dark'>"
+    "<title>🌍 Market Overview — NOAH</title>"
+    "<script>" + _THEME_JS + "</script>"
+    "<style>"
+    ":root{--bg:#f8fafc;--card:#fff;--border:#e5e7eb;--text:#1f2937;"
+    "--muted:#6b7280;--accent:#0ea5e9;--pos:#059669;--neg:#dc2626;"
+    "--neu:#6b7280;--surface-tint:rgba(0,0,0,.05);"
+    "--accent-soft:rgba(14,165,233,.07)}"
+    ":root[data-theme='dark']{--bg:#0F1219;--card:#1A1F2B;--border:#2A3142;"
+    "--text:#E8ECF4;--muted:#94A3B8;--accent:#3B82F6;--pos:#10B981;"
+    "--neg:#EF4444;--neu:#6B7280;--surface-tint:rgba(255,255,255,.04);"
+    "--accent-soft:rgba(59,130,246,.06)}"
+    "*{box-sizing:border-box}"
+    "body{background:var(--bg);color:var(--text);margin:0;"
+    "font-family:-apple-system,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;"
+    "line-height:1.55;-webkit-font-smoothing:antialiased}"
+    ".wrap{max-width:1100px;margin:0 auto;padding:24px 16px 64px}"
+    ".nav{margin-bottom:12px}"
+    ".nav a{color:var(--accent);text-decoration:none;font-size:13px}"
+    ".nav a:hover{text-decoration:underline}"
+    "h1{font-size:22px;margin:0 0 4px}"
+    ".sub{color:var(--muted);font-size:13px;margin:0 0 24px}"
+    ".search-box{margin:20px 0 28px;display:flex;gap:8px}"
+    ".search-box input{flex:1;padding:10px 14px;font-size:15px;"
+    "border:1px solid var(--border);border-radius:8px;"
+    "background:var(--card);color:var(--text);outline:none}"
+    ".search-box input:focus{border-color:var(--accent);"
+    "box-shadow:0 0 0 3px var(--accent-soft)}"
+    ".search-box button{padding:10px 20px;font-size:14px;font-weight:600;"
+    "border:none;border-radius:8px;background:var(--accent);color:#fff;"
+    "cursor:pointer}"
+    ".search-box button:hover{opacity:.9}"
+    ".section-hd{display:flex;align-items:baseline;gap:10px;"
+    "margin:32px 0 14px}"
+    ".section-hd h2{font-size:17px;margin:0}"
+    ".section-hd .ts{color:var(--muted);font-size:12px}"
+    ".card-grid{display:grid;"
+    "grid-template-columns:repeat(auto-fill,minmax(300px,1fr));"
+    "gap:14px;margin-bottom:28px}"
+    ".mcard{background:var(--card);border:1px solid var(--border);"
+    "border-radius:12px;padding:14px 16px}"
+    ".mcard-title{font-size:13px;font-weight:700;margin-bottom:10px;"
+    "color:var(--text);padding-bottom:6px;border-bottom:1px solid var(--border)}"
+    ".mcard table{width:100%;border-collapse:collapse;font-size:13px}"
+    ".mcard td{padding:3px 0}"
+    ".mcard td:first-child{color:var(--muted)}"
+    ".mcard td:nth-child(2){text-align:right;font-weight:600;"
+    "font-variant-numeric:tabular-nums}"
+    ".mcard td:nth-child(3){text-align:right;width:90px;"
+    "font-variant-numeric:tabular-nums;font-size:12px}"
+    ".up{color:var(--pos)}.dn{color:var(--neg)}"
+    ".tbl-wrap{overflow-x:auto;margin-bottom:28px}"
+    ".dtbl{width:100%;border-collapse:collapse;font-size:13px}"
+    ".dtbl th{text-align:left;padding:8px 10px;font-size:12px;"
+    "color:var(--muted);border-bottom:2px solid var(--border);"
+    "font-weight:600;white-space:nowrap}"
+    ".dtbl td{padding:7px 10px;border-bottom:1px solid var(--surface-tint)}"
+    ".dtbl tr:hover{background:var(--accent-soft)}"
+    ".dtbl .sym{font-weight:600}"
+    ".tabs{display:flex;gap:4px;margin-bottom:14px}"
+    ".tab-btn{padding:6px 16px;font-size:13px;font-weight:600;"
+    "border:1px solid var(--border);border-radius:6px;"
+    "background:var(--card);color:var(--muted);cursor:pointer}"
+    ".tab-btn.active{background:var(--accent);color:#fff;"
+    "border-color:var(--accent)}"
+    ".tab-pane{display:none}.tab-pane.active{display:block}"
+    ".empty-msg{color:var(--muted);font-size:13px;padding:20px 0}"
+    "</style></head><body>"
+)
+
+
+def _fmt_price(v: float, label: str = "") -> str:
+    """Format a price/index value for the market snapshot cards."""
+    if v is None:
+        return "—"
+    lab = label.lower()
+    if "환율" in lab or "/달러" in lab or "/위안" in lab or "/원" in lab or "eurusd" in lab or "gbpusd" in lab:
+        return f"{v:,.2f}"
+    if "금리" in lab or "cpi" in lab or "ppi" in lab or "실업률" in lab or "ffr" in lab:
+        return f"{v:.2f}"
+    if abs(v) >= 100:
+        return f"{v:,.2f}"
+    if abs(v) >= 1:
+        return f"{v:.2f}"
+    return f"{v:.4f}"
+
+
+def _chg_cell(chg: float | None, pct: float | None) -> str:
+    """Render a change cell with ▲/▼ and color."""
+    if chg is None and pct is None:
+        return '<td class="up">—</td>'
+    parts = []
+    if pct is not None:
+        arrow = "▲" if pct >= 0 else "▼"
+        cls = "up" if pct >= 0 else "dn"
+        parts.append(f'{arrow}{abs(pct):.2f}%')
+    elif chg is not None:
+        arrow = "▲" if chg >= 0 else "▼"
+        cls = "up" if chg >= 0 else "dn"
+        parts.append(f'{arrow}{abs(chg):.2f}')
+    else:
+        cls = "neu"
+    return f'<td class="{cls}">{" ".join(parts)}</td>'
+
+
+def _render_market_card(title: str, items: list, yf: dict) -> str:
+    """Render one market snapshot card."""
+    rows: list[str] = []
+    for label, tk in items:
+        d = yf.get(tk)
+        if not d:
+            rows.append(f'<tr><td>{_html.escape(label)}</td>'
+                        f'<td>—</td><td class="neu">—</td></tr>')
+            continue
+        val_str = _fmt_price(d.get("close"), label)
+        rows.append(f'<tr><td>{_html.escape(label)}</td>'
+                    f'<td>{val_str}</td>'
+                    f'{_chg_cell(d.get("change"), d.get("pct"))}</tr>')
+    return (f'<div class="mcard"><div class="mcard-title">'
+            f'{_html.escape(title)}</div><table>{"".join(rows)}</table></div>')
+
+
+def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
+    """Render the FRED indicators card."""
+    rows: list[str] = []
+    if dollar_idx:
+        val_str = f'{dollar_idx["close"]:.2f}'
+        rows.append(f'<tr><td>달러 인덱스</td><td>{val_str}</td>'
+                    f'{_chg_cell(dollar_idx.get("change"), dollar_idx.get("pct"))}</tr>')
+    for item in fred_data:
+        d = item.get("data")
+        label = item.get("label", "")
+        unit = item.get("unit", "")
+        if not d or d.get("value") is None:
+            rows.append(f'<tr><td>{_html.escape(label)}</td>'
+                        f'<td>—</td><td class="neu">—</td></tr>')
+            continue
+        v = d["value"]
+        if unit == "M":
+            val_str = f'{v / 1000:.1f}M'
+        elif unit == "K":
+            val_str = f'{v:,.0f}K'
+        elif unit == "%":
+            val_str = f'{v:.2f}%'
+        else:
+            val_str = f'{v:,.0f}'
+        chg = d.get("change")
+        if chg is not None:
+            arrow = "▲" if chg >= 0 else "▼"
+            cls = "up" if chg >= 0 else "dn"
+            chg_str = f'{arrow}{abs(chg):.2f}'
+            chg_cell = f'<td class="{cls}">{chg_str}</td>'
+        else:
+            chg_cell = '<td class="neu">—</td>'
+        rows.append(f'<tr><td>{_html.escape(label)}</td>'
+                    f'<td>{val_str}</td>{chg_cell}</tr>')
+    return ('<div class="mcard"><div class="mcard-title">'
+            '핵심 지표 (금리/달러)</div><table>'
+            + "".join(rows) + '</table></div>')
+
+
+def _render_earnings_table(earnings: list) -> str:
+    """Render the upcoming earnings calendar table."""
+    if not earnings:
+        return '<div class="empty-msg">실적 발표 일정이 없습니다.</div>'
+    rows: list[str] = []
+    shown = 0
+    for e in earnings:
+        if shown >= 30:
+            break
+        sym = _html.escape(e.get("symbol", ""))
+        dt = _html.escape(e.get("date", ""))
+        hour = e.get("hour", "")
+        hour_label = "장전" if hour == "bmo" else ("장후" if hour == "amc" else "—")
+        eps_est = e.get("eps_estimate")
+        eps_str = f'${eps_est:.2f}' if eps_est is not None else "—"
+        rev_est = e.get("revenue_estimate")
+        if rev_est is not None:
+            if rev_est >= 1e9:
+                rev_str = f'${rev_est / 1e9:.1f}B'
+            elif rev_est >= 1e6:
+                rev_str = f'${rev_est / 1e6:.0f}M'
+            else:
+                rev_str = f'${rev_est:,.0f}'
+        else:
+            rev_str = "—"
+        q = e.get("quarter")
+        y = e.get("year")
+        q_str = f'Q{q} {y}' if q and y else "—"
+        lookup_url = f'lookup/{sym}'
+        rows.append(
+            f'<tr><td class="sym"><a href="{lookup_url}">{sym}</a></td>'
+            f'<td>{dt}</td><td>{hour_label}</td>'
+            f'<td>{q_str}</td><td>{eps_str}</td><td>{rev_str}</td></tr>'
+        )
+        shown += 1
+    return (
+        '<div class="tbl-wrap"><table class="dtbl">'
+        '<thead><tr><th>종목</th><th>날짜</th><th>시간</th>'
+        '<th>분기</th><th>EPS 예상</th><th>매출 예상</th></tr></thead>'
+        '<tbody>' + "".join(rows) + '</tbody></table></div>'
+    )
+
+
+def _render_research_kr_table(research: list) -> str:
+    """Render the KR research actions table."""
+    if not research:
+        return '<div class="empty-msg">최근 리서치 액션이 없습니다.</div>'
+    rows: list[str] = []
+    for r in research[:20]:
+        code = _html.escape(r.get("code", ""))
+        name = _html.escape(r.get("name", ""))
+        broker = _html.escape(r.get("broker", ""))
+        rating = _html.escape(r.get("rating", ""))
+        title = _html.escape(r.get("title", ""))
+        dt = _html.escape(r.get("date", ""))
+        lookup_url = f'lookup/{code}.KS'
+        rows.append(
+            f'<tr><td class="sym"><a href="{lookup_url}">{name or code}</a></td>'
+            f'<td>{broker}</td><td>{rating}</td>'
+            f'<td>{title[:60]}</td><td>{dt}</td></tr>'
+        )
+    return (
+        '<div class="tbl-wrap"><table class="dtbl">'
+        '<thead><tr><th>종목</th><th>증권사</th><th>투자의견</th>'
+        '<th>제목</th><th>날짜</th></tr></thead>'
+        '<tbody>' + "".join(rows) + '</tbody></table></div>'
+    )
+
+
+def _render_research_us_table(research: list) -> str:
+    """Render the US research actions table."""
+    if not research:
+        return '<div class="empty-msg">최근 리서치 액션이 없습니다.</div>'
+    rows: list[str] = []
+    for r in research[:20]:
+        sym = _html.escape(r.get("symbol", ""))
+        firm = _html.escape(r.get("firm", ""))
+        to_g = _html.escape(r.get("to_grade", ""))
+        from_g = _html.escape(r.get("from_grade", ""))
+        action = _html.escape(r.get("action", ""))
+        dt = _html.escape(r.get("date", ""))
+        grade_str = f'{from_g} → {to_g}' if from_g else to_g
+        lookup_url = f'lookup/{sym}'
+        rows.append(
+            f'<tr><td class="sym"><a href="{lookup_url}">{sym}</a></td>'
+            f'<td>{firm}</td><td>{action}</td>'
+            f'<td>{grade_str}</td><td>{dt}</td></tr>'
+        )
+    return (
+        '<div class="tbl-wrap"><table class="dtbl">'
+        '<thead><tr><th>종목</th><th>증권사</th><th>액션</th>'
+        '<th>등급 변경</th><th>날짜</th></tr></thead>'
+        '<tbody>' + "".join(rows) + '</tbody></table></div>'
+    )
+
+
+def _render_market_page(data: dict) -> str:
+    """Render market.html — global market snapshot + earnings + research."""
+    from bot.market_overview import ALL_CARDS
+
+    snap = data.get("snapshot", {})
+    yf = snap.get("yf", {})
+    fred = snap.get("fred", [])
+    dollar_idx = snap.get("dollar_index")
+    ts = snap.get("ts", "")
+    earnings = data.get("earnings", [])
+    research_kr = data.get("research_kr", [])
+    research_us = data.get("research_us", [])
+
+    parts: list[str] = [_MARKET_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="index.html">&larr; NOAH 종목분석</a>
+    &middot; <a href="portfolio.html">💼 자산</a>
+    &middot; <a href="budget.html">📒 가계부</a>
+  </div>
+  <h1>🌍 Market Overview</h1>
+  <p class="sub">글로벌 시장 현황 · 종목 검색 · 실적 일정 · 리서치 액션</p>
+
+  <div class="search-box">
+    <input id="mkt-search" type="text"
+      placeholder="티커 또는 종목명 검색 (예: NVDA, 005930.KS, 7203.T)"
+      autocomplete="off" spellcheck="false">
+    <button id="mkt-go" type="button">검색</button>
+  </div>
+
+  <div class="section-hd">
+    <h2>글로벌 시장 스냅샷</h2>
+    <span class="ts">{_html.escape(ts)} 기준 · 15분 주기 갱신</span>
+  </div>
+  <div class="card-grid">
+""")
+
+    for title, items in ALL_CARDS:
+        if items is None:
+            parts.append(_render_fred_card(fred, dollar_idx))
+        else:
+            parts.append(_render_market_card(title, items, yf))
+
+    parts.append('</div>')  # close card-grid
+
+    parts.append(f"""
+  <div class="section-hd">
+    <h2>다가오는 실적</h2>
+    <span class="ts">Finnhub · 향후 14일</span>
+  </div>
+  {_render_earnings_table(earnings)}
+
+  <div class="section-hd">
+    <h2>최근 리서치 액션</h2>
+  </div>
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="kr">🇰🇷 KR</button>
+    <button class="tab-btn" data-tab="us">🇺🇸 US</button>
+  </div>
+  <div id="tab-kr" class="tab-pane active">
+    {_render_research_kr_table(research_kr)}
+  </div>
+  <div id="tab-us" class="tab-pane">
+    {_render_research_us_table(research_us)}
+  </div>
+</div>
+
+<script>
+(function() {{
+  var inp = document.getElementById('mkt-search');
+  var btn = document.getElementById('mkt-go');
+  function go() {{
+    var q = (inp.value || '').trim().toUpperCase();
+    if (!q) return;
+    window.location.href = 'lookup/' + encodeURIComponent(q);
+  }}
+  btn.addEventListener('click', go);
+  inp.addEventListener('keydown', function(e) {{
+    if (e.key === 'Enter') go();
+  }});
+  inp.focus();
+
+  document.querySelectorAll('.tab-btn').forEach(function(b) {{
+    b.addEventListener('click', function() {{
+      document.querySelectorAll('.tab-btn').forEach(function(x) {{ x.classList.remove('active'); }});
+      document.querySelectorAll('.tab-pane').forEach(function(x) {{ x.classList.remove('active'); }});
+      b.classList.add('active');
+      document.getElementById('tab-' + b.dataset.tab).classList.add('active');
+    }});
+  }});
+}})();
+</script>
+</body></html>
+""")
+    return "".join(parts)
+
+
+def regenerate_market_index() -> None:
+    """Fetch market data and write market.html under ARCHIVE_ROOT."""
+    try:
+        from bot.market_overview import fetch_all_market_data
+        data = fetch_all_market_data()
+        html = _render_market_page(data)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "market.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: market.html regenerated")
+    except Exception as exc:
+        log.warning("dashboard: market.html regen failed: %s", exc)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Lightweight stock lookup page (on-demand, any ticker)
+# ═════════════════════════════════════════════════════════════════════
+
+def render_lookup_page(ticker: str) -> str:
+    """Render a lightweight stock overview page for ANY ticker.
+    Uses yfinance only (₩0, no LLM). Returns full HTML string."""
+    import yfinance as _yf_lookup
+
+    t = _yf_lookup.Ticker(ticker)
+    info = {}
+    try:
+        info = t.info or {}
+    except Exception:
+        pass
+
+    name = info.get("longName") or info.get("shortName") or ticker
+    cur_price = info.get("currentPrice") or info.get("regularMarketPrice")
+    prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
+    currency = info.get("currency", "USD")
+    exchange = info.get("exchange", "")
+    sector = info.get("sector", "")
+    industry = info.get("industry", "")
+    mcap = info.get("marketCap")
+    pe = info.get("trailingPE")
+    fwd_pe = info.get("forwardPE")
+    pb = info.get("priceToBook")
+    ps = info.get("priceToSalesTrailing12Months")
+    div_yield = info.get("dividendYield")
+    beta = info.get("beta")
+    w52_high = info.get("fiftyTwoWeekHigh")
+    w52_low = info.get("fiftyTwoWeekLow")
+    avg_vol = info.get("averageVolume")
+    shares = info.get("sharesOutstanding")
+    eps = info.get("trailingEps")
+    revenue = info.get("totalRevenue")
+    net_income = info.get("netIncomeToCommon")
+    desc = info.get("longBusinessSummary", "")
+
+    if cur_price and prev_close and prev_close != 0:
+        chg = cur_price - prev_close
+        pct = chg / prev_close * 100
+    else:
+        chg, pct = None, None
+
+    def _fv(v, fmt=",.2f", prefix="", suffix=""):
+        if v is None:
+            return "—"
+        return f'{prefix}{v:{fmt}}{suffix}'
+
+    def _fmt_big(v):
+        if v is None:
+            return "—"
+        if abs(v) >= 1e12:
+            return f'{v / 1e12:.2f}T'
+        if abs(v) >= 1e9:
+            return f'{v / 1e9:.2f}B'
+        if abs(v) >= 1e6:
+            return f'{v / 1e6:.1f}M'
+        return f'{v:,.0f}'
+
+    price_cls = "up" if (pct and pct >= 0) else ("dn" if pct else "neu")
+    price_arrow = "▲" if (pct and pct >= 0) else ("▼" if pct else "")
+    price_str = _fv(cur_price, ",.2f")
+    chg_str = f'{price_arrow} {abs(chg):.2f} ({abs(pct):.2f}%)' if chg is not None else "—"
+
+    def _metric_row(label, value):
+        return f'<tr><td>{_html.escape(label)}</td><td>{value}</td></tr>'
+
+    metrics_html = "".join([
+        _metric_row("시가총액", _fmt_big(mcap)),
+        _metric_row("PER (TTM)", _fv(pe, ".2f")),
+        _metric_row("PER (Fwd)", _fv(fwd_pe, ".2f")),
+        _metric_row("PBR", _fv(pb, ".2f")),
+        _metric_row("PSR", _fv(ps, ".2f")),
+        _metric_row("EPS", _fv(eps, ".2f", prefix=currency + " ")),
+        _metric_row("배당수익률", _fv(div_yield * 100 if div_yield else None, ".2f", suffix="%")),
+        _metric_row("베타", _fv(beta, ".2f")),
+        _metric_row("52주 최고", _fv(w52_high, ",.2f")),
+        _metric_row("52주 최저", _fv(w52_low, ",.2f")),
+        _metric_row("평균 거래량", _fmt_big(avg_vol)),
+        _metric_row("발행주식수", _fmt_big(shares)),
+        _metric_row("매출", _fmt_big(revenue)),
+        _metric_row("순이익", _fmt_big(net_income)),
+    ])
+
+    desc_html = ""
+    if desc:
+        desc_short = desc[:500] + ("..." if len(desc) > 500 else "")
+        desc_html = f'<div class="desc"><strong>사업 요약</strong><p>{_html.escape(desc_short)}</p></div>'
+
+    return (
+        "<!doctype html><html lang='ko'><head><meta charset='UTF-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<meta name='color-scheme' content='light dark'>"
+        f"<title>{_html.escape(name)} ({_html.escape(ticker)}) — NOAH Lookup</title>"
+        "<script>" + _THEME_JS + "</script>"
+        "<style>"
+        ":root{--bg:#f8fafc;--card:#fff;--border:#e5e7eb;--text:#1f2937;"
+        "--muted:#6b7280;--accent:#0ea5e9;--pos:#059669;--neg:#dc2626;"
+        "--neu:#6b7280;--accent-soft:rgba(14,165,233,.07)}"
+        ":root[data-theme='dark']{--bg:#0F1219;--card:#1A1F2B;--border:#2A3142;"
+        "--text:#E8ECF4;--muted:#94A3B8;--accent:#3B82F6;--pos:#10B981;"
+        "--neg:#EF4444;--neu:#6B7280;--accent-soft:rgba(59,130,246,.06)}"
+        "*{box-sizing:border-box}"
+        "body{background:var(--bg);color:var(--text);margin:0;"
+        "font-family:-apple-system,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;"
+        "line-height:1.55;-webkit-font-smoothing:antialiased}"
+        ".wrap{max-width:980px;margin:0 auto;padding:24px 16px 64px}"
+        ".nav{margin-bottom:12px}"
+        ".nav a{color:var(--accent);text-decoration:none;font-size:13px}"
+        ".nav a:hover{text-decoration:underline}"
+        ".hd{margin:8px 0 4px}"
+        ".hd h1{font-size:22px;margin:0}"
+        ".hd .sub-info{color:var(--muted);font-size:13px;margin:4px 0 0}"
+        f".price{{font-size:28px;font-weight:700;margin:12px 0 2px}}"
+        f".price-chg{{font-size:15px;margin-bottom:20px}}"
+        ".cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}"
+        "@media(max-width:640px){.cols{grid-template-columns:1fr}}"
+        ".panel{background:var(--card);border:1px solid var(--border);"
+        "border-radius:12px;padding:14px 16px}"
+        ".panel h3{font-size:14px;margin:0 0 10px;color:var(--text)}"
+        ".panel table{width:100%;border-collapse:collapse;font-size:13px}"
+        ".panel td{padding:4px 0}"
+        ".panel td:first-child{color:var(--muted)}"
+        ".panel td:nth-child(2){text-align:right;font-weight:600;"
+        "font-variant-numeric:tabular-nums}"
+        ".up{color:var(--pos)}.dn{color:var(--neg)}.neu{color:var(--neu)}"
+        "#chart-wrap{background:var(--card);border:1px solid var(--border);"
+        "border-radius:12px;padding:10px;margin-bottom:16px;min-height:350px}"
+        ".desc{background:var(--card);border:1px solid var(--border);"
+        "border-radius:12px;padding:14px 16px;margin-bottom:16px;"
+        "font-size:13px;color:var(--muted)}"
+        ".desc strong{color:var(--text);display:block;margin-bottom:6px}"
+        ".desc p{margin:0;line-height:1.6}"
+        ".search-box{margin:14px 0 20px;display:flex;gap:8px}"
+        ".search-box input{flex:1;padding:8px 12px;font-size:14px;"
+        "border:1px solid var(--border);border-radius:8px;"
+        "background:var(--card);color:var(--text);outline:none}"
+        ".search-box input:focus{border-color:var(--accent);"
+        "box-shadow:0 0 0 3px var(--accent-soft)}"
+        ".search-box button{padding:8px 16px;font-size:13px;font-weight:600;"
+        "border:none;border-radius:8px;background:var(--accent);color:#fff;"
+        "cursor:pointer}"
+        "</style>"
+        "</head><body>"
+        "<div class='wrap'>"
+        "<div class='nav'>"
+        "<a href='../market.html'>&larr; Market Overview</a>"
+        " &middot; <a href='../index.html'>NOAH 종목분석</a>"
+        "</div>"
+        "<div class='search-box'>"
+        "<input id='lk-search' type='text' value='" + _html.escape(ticker) + "'"
+        " placeholder='다른 종목 검색' autocomplete='off' spellcheck='false'>"
+        "<button id='lk-go'>검색</button>"
+        "</div>"
+        "<div class='hd'>"
+        f"<h1>{_html.escape(name)}</h1>"
+        f"<div class='sub-info'>{_html.escape(ticker)}"
+        f" · {_html.escape(exchange)}"
+        f" · {_html.escape(sector)}"
+        f"{(' · ' + _html.escape(industry)) if industry else ''}"
+        f" · {_html.escape(currency)}</div>"
+        "</div>"
+        f"<div class='price {price_cls}'>{price_str} {_html.escape(currency)}</div>"
+        f"<div class='price-chg {price_cls}'>{chg_str}</div>"
+        "<div id='chart-wrap'></div>"
+        "<div class='cols'>"
+        "<div class='panel'><h3>핵심 지표</h3>"
+        f"<table>{metrics_html}</table></div>"
+        f"<div class='panel'><h3>기업 정보</h3><table>"
+        f"{_metric_row('섹터', _html.escape(sector) if sector else '—')}"
+        f"{_metric_row('산업', _html.escape(industry) if industry else '—')}"
+        f"{_metric_row('거래소', _html.escape(exchange) if exchange else '—')}"
+        f"{_metric_row('통화', _html.escape(currency))}"
+        "</table></div></div>"
+        f"{desc_html}"
+        "</div>"
+        "<script>"
+        "var lkInp=document.getElementById('lk-search');"
+        "var lkBtn=document.getElementById('lk-go');"
+        "function lkGo(){var q=(lkInp.value||'').trim().toUpperCase();"
+        "if(q)window.location.href=q;}"
+        "lkBtn.addEventListener('click',lkGo);"
+        "lkInp.addEventListener('keydown',function(e){if(e.key==='Enter')lkGo();});"
+        "</script>"
+        "<script>"
+        "(function(){"
+        "var w=document.getElementById('chart-wrap');"
+        "if(!w)return;"
+        "var s=document.createElement('script');"
+        "s.src='../lightweight-charts.standalone.production.js';"
+        "s.onload=function(){"
+        "var chart=LightweightCharts.createChart(w,{"
+        "width:w.clientWidth-20,height:340,"
+        "layout:{background:{type:'solid',color:'transparent'},"
+        "textColor:getComputedStyle(document.documentElement).getPropertyValue('--text').trim()},"
+        "grid:{vertLines:{color:'rgba(128,128,128,0.1)'},horzLines:{color:'rgba(128,128,128,0.1)'}},"
+        "rightPriceScale:{borderColor:'rgba(128,128,128,0.2)'},"
+        "timeScale:{borderColor:'rgba(128,128,128,0.2)',timeVisible:false}"
+        "});"
+        "var ls=chart.addLineSeries({color:'#0ea5e9',lineWidth:2});"
+        "fetch('../api/chart?ticker=" + ticker.replace("'", "") + "&interval=1d&range=1y')"
+        ".then(function(r){return r.json();})"
+        ".then(function(d){"
+        "if(!d.ok||!d.chart)return;"
+        "var c=d.chart;"
+        "var pts=[];"
+        "for(var i=0;i<c.times.length;i++){"
+        "pts.push({time:c.times[i],value:c.close[i]});}"
+        "ls.setData(pts);"
+        "chart.timeScale().fitContent();"
+        "}).catch(function(){});"
+        "new ResizeObserver(function(){chart.applyOptions({width:w.clientWidth-20});}).observe(w);"
+        "};"
+        "s.onerror=function(){w.innerHTML='<div style=\"padding:20px;color:var(--muted)\">차트를 로드할 수 없습니다.</div>'};"
+        "w.appendChild(s);"
+        "})();"
+        "</script>"
+        "</body></html>"
+    )
