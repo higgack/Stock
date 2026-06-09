@@ -381,7 +381,25 @@ def fetch_earnings_calendar(days_ahead: int = 14) -> list[dict]:
             "revenue_estimate": e.get("revenueEstimate"),
             "quarter": e.get("quarter"),
             "year": e.get("year"),
+            "name": "",
         })
+
+    # Batch-resolve company names from yfinance (best-effort)
+    try:
+        import yfinance as yf
+        syms = list({r["symbol"] for r in result})[:30]
+        tickers = yf.Tickers(" ".join(syms))
+        name_map: dict[str, str] = {}
+        for s in syms:
+            try:
+                info = tickers.tickers[s].info or {}
+                name_map[s] = info.get("shortName") or info.get("longName") or ""
+            except Exception:
+                pass
+        for r in result:
+            r["name"] = name_map.get(r["symbol"], "")
+    except Exception:
+        pass
 
     try:
         cache_file.write_text(json.dumps(result, ensure_ascii=False))

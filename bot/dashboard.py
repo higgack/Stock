@@ -10192,6 +10192,9 @@ _MARKET_CSS = (
     ".dtbl td{padding:7px 10px;border-bottom:1px solid var(--surface-tint)}"
     ".dtbl tr:hover{background:var(--accent-soft)}"
     ".dtbl .sym{font-weight:600}"
+    ".dtbl .sym a{color:var(--text);text-decoration:none}"
+    ".dtbl .sym a:hover{color:var(--accent);text-decoration:underline}"
+    ".dtbl .sym .co-name{display:block;font-size:11px;font-weight:400;color:var(--muted);margin-top:1px}"
     ".tabs{display:flex;gap:4px;margin-bottom:14px}"
     ".tab-btn{padding:6px 16px;font-size:13px;font-weight:600;"
     "border:1px solid var(--border);border-radius:6px;"
@@ -10304,6 +10307,7 @@ def _render_earnings_table(earnings: list) -> str:
         if shown >= 30:
             break
         sym = _html.escape(e.get("symbol", ""))
+        co_name = _html.escape(e.get("name", ""))
         dt = _html.escape(e.get("date", ""))
         hour = e.get("hour", "")
         hour_label = "장전" if hour == "bmo" else ("장후" if hour == "amc" else "—")
@@ -10323,8 +10327,9 @@ def _render_earnings_table(earnings: list) -> str:
         y = e.get("year")
         q_str = f'Q{q} {y}' if q and y else "—"
         lookup_url = f'lookup/{sym}'
+        name_span = f'<span class="co-name">{co_name}</span>' if co_name else ""
         rows.append(
-            f'<tr><td class="sym"><a href="{lookup_url}">{sym}</a></td>'
+            f'<tr><td class="sym"><a href="{lookup_url}">{sym}{name_span}</a></td>'
             f'<td>{dt}</td><td>{hour_label}</td>'
             f'<td>{q_str}</td><td>{eps_str}</td><td>{rev_str}</td></tr>'
         )
@@ -10463,7 +10468,7 @@ def _render_market_page(data: dict) -> str:
   var inp = document.getElementById('mkt-search');
   var btn = document.getElementById('mkt-go');
   function go() {{
-    var q = (inp.value || '').trim().toUpperCase();
+    var q = (inp.value || '').trim();
     if (!q) return;
     window.location.href = 'lookup/' + encodeURIComponent(q);
   }}
@@ -10505,220 +10510,162 @@ def regenerate_market_index() -> None:
 # Lightweight stock lookup page (on-demand, any ticker)
 # ═════════════════════════════════════════════════════════════════════
 
-def render_lookup_page(ticker: str) -> str:
-    """Render a lightweight stock overview page for ANY ticker.
-    Uses yfinance only (₩0, no LLM). Returns full HTML string."""
-    import yfinance as _yf_lookup
-
-    t = _yf_lookup.Ticker(ticker)
-    info = {}
+def resolve_name_to_ticker(query: str) -> str | None:
+    """Resolve a Korean/English company name to a ticker symbol.
+    Returns ticker string (e.g. '005930.KS') or None if not resolved."""
+    if not query or not query.strip():
+        return None
+    q = query.strip()
+    # Already looks like a ticker → skip resolution
+    if re.match(r'^[A-Z0-9][A-Z0-9.\-]{0,9}$', q.upper()):
+        return None
+    # KR name → DART corp_code
     try:
-        info = t.info or {}
+        from bot.dart_client import get_dart
+        hits = get_dart().find_by_name(q)
+        if hits and hits[0].get("stock_code"):
+            code = hits[0]["stock_code"]
+            # Determine .KS vs .KQ
+            try:
+                from bot.market import normalize_kr_ticker_suffix
+                resolved = normalize_kr_ticker_suffix(f"{code}.KS")
+                if resolved:
+                    return resolved
+            except Exception:
+                pass
+            return f"{code}.KS"
+    except Exception:
+        pass
+    # English alias (TOYOTA → 7203.T, TSMC → 2330.TW, etc.)
+    try:
+        from bot.market import resolve_english_alias
+        t = resolve_english_alias(q)
+        if t:
+            return t
+    except Exception:
+        pass
+    return None
+
+
+def render_lookup_page(ticker: str) -> str:
+    """Render a stock overview page for ANY ticker, matching the NOAH
+    detail page layout (header cards + chart + tabs). Uses
+    collect_stock_snapshot (₩0, no LLM). Returns full HTML string."""
+    # Build stock_info via the same pipeline as NOAH analyses
+    si = None
+    try:
+        from bot.stock_snapshot import collect_stock_snapshot
+        si = collect_stock_snapshot(ticker)
     except Exception:
         pass
 
-    name = info.get("longName") or info.get("shortName") or ticker
-    cur_price = info.get("currentPrice") or info.get("regularMarketPrice")
-    prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose")
-    currency = info.get("currency", "USD")
-    exchange = info.get("exchange", "")
-    sector = info.get("sector", "")
-    industry = info.get("industry", "")
-    mcap = info.get("marketCap")
-    pe = info.get("trailingPE")
-    fwd_pe = info.get("forwardPE")
-    pb = info.get("priceToBook")
-    ps = info.get("priceToSalesTrailing12Months")
-    div_yield = info.get("dividendYield")
-    beta = info.get("beta")
-    w52_high = info.get("fiftyTwoWeekHigh")
-    w52_low = info.get("fiftyTwoWeekLow")
-    avg_vol = info.get("averageVolume")
-    shares = info.get("sharesOutstanding")
-    eps = info.get("trailingEps")
-    revenue = info.get("totalRevenue")
-    net_income = info.get("netIncomeToCommon")
-    desc = info.get("longBusinessSummary", "")
+    # Enrich missing tabs (news/research/consensus) on-demand
+    if si:
+        try:
+            _ensure_detail_enrichment(ticker, si)
+        except Exception:
+            pass
 
-    if cur_price and prev_close and prev_close != 0:
-        chg = cur_price - prev_close
-        pct = chg / prev_close * 100
-    else:
-        chg, pct = None, None
+    rec = {"ticker": ticker, "stock_info": si or {}}
 
-    def _fv(v, fmt=",.2f", prefix="", suffix=""):
-        if v is None:
-            return "—"
-        return f'{prefix}{v:{fmt}}{suffix}'
+    # Display name
+    kr_name = _ticker_display_name(ticker)
+    h1_label = f"{kr_name} / {ticker}" if kr_name else ticker
 
-    def _fmt_big(v):
-        if v is None:
-            return "—"
-        if abs(v) >= 1e12:
-            return f'{v / 1e12:.2f}T'
-        if abs(v) >= 1e9:
-            return f'{v / 1e9:.2f}B'
-        if abs(v) >= 1e6:
-            return f'{v / 1e6:.1f}M'
-        return f'{v:,.0f}'
+    # Render stock info (header cards + tabs + panes)
+    si_parts = _render_stock_info_html(rec)
+    si_header = si_parts.get("header", "") if si_parts else ""
+    si_tabs = si_parts.get("tabs", "") if si_parts else ""
+    si_tab_js = si_parts.get("tab_js", "") if si_parts else ""
+    si_other = si_parts.get("other_panes", "") if si_parts else ""
+    has_tabs = bool(si_parts)
 
-    price_cls = "up" if (pct and pct >= 0) else ("dn" if pct else "neu")
-    price_arrow = "▲" if (pct and pct >= 0) else ("▼" if pct else "")
-    price_str = _fv(cur_price, ",.2f")
-    chg_str = f'{price_arrow} {abs(chg):.2f} ({abs(pct):.2f}%)' if chg is not None else "—"
-
-    def _metric_row(label, value):
-        return f'<tr><td>{_html.escape(label)}</td><td>{value}</td></tr>'
-
-    metrics_html = "".join([
-        _metric_row("시가총액", _fmt_big(mcap)),
-        _metric_row("PER (TTM)", _fv(pe, ".2f")),
-        _metric_row("PER (Fwd)", _fv(fwd_pe, ".2f")),
-        _metric_row("PBR", _fv(pb, ".2f")),
-        _metric_row("PSR", _fv(ps, ".2f")),
-        _metric_row("EPS", _fv(eps, ".2f", prefix=currency + " ")),
-        _metric_row("배당수익률", _fv(div_yield * 100 if div_yield else None, ".2f", suffix="%")),
-        _metric_row("베타", _fv(beta, ".2f")),
-        _metric_row("52주 최고", _fv(w52_high, ",.2f")),
-        _metric_row("52주 최저", _fv(w52_low, ",.2f")),
-        _metric_row("평균 거래량", _fmt_big(avg_vol)),
-        _metric_row("발행주식수", _fmt_big(shares)),
-        _metric_row("매출", _fmt_big(revenue)),
-        _metric_row("순이익", _fmt_big(net_income)),
-    ])
-
-    desc_html = ""
-    if desc:
-        desc_short = desc[:500] + ("..." if len(desc) > 500 else "")
-        desc_html = f'<div class="desc"><strong>사업 요약</strong><p>{_html.escape(desc_short)}</p></div>'
-
-    return (
-        "<!doctype html><html lang='ko'><head><meta charset='UTF-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<meta name='color-scheme' content='light dark'>"
-        f"<title>{_html.escape(name)} ({_html.escape(ticker)}) — NOAH Lookup</title>"
-        "<script>" + _THEME_JS + "</script>"
-        "<style>"
-        ":root{--bg:#f8fafc;--card:#fff;--border:#e5e7eb;--text:#1f2937;"
-        "--muted:#6b7280;--accent:#0ea5e9;--pos:#059669;--neg:#dc2626;"
-        "--neu:#6b7280;--accent-soft:rgba(14,165,233,.07)}"
-        ":root[data-theme='dark']{--bg:#0F1219;--card:#1A1F2B;--border:#2A3142;"
-        "--text:#E8ECF4;--muted:#94A3B8;--accent:#3B82F6;--pos:#10B981;"
-        "--neg:#EF4444;--neu:#6B7280;--accent-soft:rgba(59,130,246,.06)}"
-        "*{box-sizing:border-box}"
-        "body{background:var(--bg);color:var(--text);margin:0;"
-        "font-family:-apple-system,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;"
-        "line-height:1.55;-webkit-font-smoothing:antialiased}"
-        ".wrap{max-width:980px;margin:0 auto;padding:24px 16px 64px}"
-        ".nav{margin-bottom:12px}"
-        ".nav a{color:var(--accent);text-decoration:none;font-size:13px}"
-        ".nav a:hover{text-decoration:underline}"
-        ".hd{margin:8px 0 4px}"
-        ".hd h1{font-size:22px;margin:0}"
-        ".hd .sub-info{color:var(--muted);font-size:13px;margin:4px 0 0}"
-        f".price{{font-size:28px;font-weight:700;margin:12px 0 2px}}"
-        f".price-chg{{font-size:15px;margin-bottom:20px}}"
-        ".cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}"
-        "@media(max-width:640px){.cols{grid-template-columns:1fr}}"
-        ".panel{background:var(--card);border:1px solid var(--border);"
-        "border-radius:12px;padding:14px 16px}"
-        ".panel h3{font-size:14px;margin:0 0 10px;color:var(--text)}"
-        ".panel table{width:100%;border-collapse:collapse;font-size:13px}"
-        ".panel td{padding:4px 0}"
-        ".panel td:first-child{color:var(--muted)}"
-        ".panel td:nth-child(2){text-align:right;font-weight:600;"
-        "font-variant-numeric:tabular-nums}"
-        ".up{color:var(--pos)}.dn{color:var(--neg)}.neu{color:var(--neu)}"
-        "#chart-wrap{background:var(--card);border:1px solid var(--border);"
-        "border-radius:12px;padding:10px;margin-bottom:16px;min-height:350px}"
-        ".desc{background:var(--card);border:1px solid var(--border);"
-        "border-radius:12px;padding:14px 16px;margin-bottom:16px;"
-        "font-size:13px;color:var(--muted)}"
-        ".desc strong{color:var(--text);display:block;margin-bottom:6px}"
-        ".desc p{margin:0;line-height:1.6}"
-        ".search-box{margin:14px 0 20px;display:flex;gap:8px}"
-        ".search-box input{flex:1;padding:8px 12px;font-size:14px;"
-        "border:1px solid var(--border);border-radius:8px;"
-        "background:var(--card);color:var(--text);outline:none}"
-        ".search-box input:focus{border-color:var(--accent);"
-        "box-shadow:0 0 0 3px var(--accent-soft)}"
-        ".search-box button{padding:8px 16px;font-size:13px;font-weight:600;"
-        "border:none;border-radius:8px;background:var(--accent);color:#fff;"
-        "cursor:pointer}"
-        "</style>"
-        "</head><body>"
-        "<div class='wrap'>"
-        "<div class='nav'>"
-        "<a href='../market.html'>&larr; Market Overview</a>"
-        " &middot; <a href='../index.html'>NOAH 종목분석</a>"
-        "</div>"
-        "<div class='search-box'>"
-        "<input id='lk-search' type='text' value='" + _html.escape(ticker) + "'"
-        " placeholder='다른 종목 검색' autocomplete='off' spellcheck='false'>"
-        "<button id='lk-go'>검색</button>"
-        "</div>"
-        "<div class='hd'>"
-        f"<h1>{_html.escape(name)}</h1>"
-        f"<div class='sub-info'>{_html.escape(ticker)}"
-        f" · {_html.escape(exchange)}"
-        f" · {_html.escape(sector)}"
-        f"{(' · ' + _html.escape(industry)) if industry else ''}"
-        f" · {_html.escape(currency)}</div>"
-        "</div>"
-        f"<div class='price {price_cls}'>{price_str} {_html.escape(currency)}</div>"
-        f"<div class='price-chg {price_cls}'>{chg_str}</div>"
-        "<div id='chart-wrap'></div>"
-        "<div class='cols'>"
-        "<div class='panel'><h3>핵심 지표</h3>"
-        f"<table>{metrics_html}</table></div>"
-        f"<div class='panel'><h3>기업 정보</h3><table>"
-        f"{_metric_row('섹터', _html.escape(sector) if sector else '—')}"
-        f"{_metric_row('산업', _html.escape(industry) if industry else '—')}"
-        f"{_metric_row('거래소', _html.escape(exchange) if exchange else '—')}"
-        f"{_metric_row('통화', _html.escape(currency))}"
-        "</table></div></div>"
-        f"{desc_html}"
-        "</div>"
-        "<script>"
-        "var lkInp=document.getElementById('lk-search');"
-        "var lkBtn=document.getElementById('lk-go');"
-        "function lkGo(){var q=(lkInp.value||'').trim().toUpperCase();"
-        "if(q)window.location.href=q;}"
-        "lkBtn.addEventListener('click',lkGo);"
-        "lkInp.addEventListener('keydown',function(e){if(e.key==='Enter')lkGo();});"
-        "</script>"
-        "<script>"
-        "(function(){"
-        "var w=document.getElementById('chart-wrap');"
-        "if(!w)return;"
-        "var s=document.createElement('script');"
-        "s.src='../lightweight-charts.standalone.production.js';"
-        "s.onload=function(){"
-        "var chart=LightweightCharts.createChart(w,{"
-        "width:w.clientWidth-20,height:340,"
-        "layout:{background:{type:'solid',color:'transparent'},"
-        "textColor:getComputedStyle(document.documentElement).getPropertyValue('--text').trim()},"
-        "grid:{vertLines:{color:'rgba(128,128,128,0.1)'},horzLines:{color:'rgba(128,128,128,0.1)'}},"
-        "rightPriceScale:{borderColor:'rgba(128,128,128,0.2)'},"
-        "timeScale:{borderColor:'rgba(128,128,128,0.2)',timeVisible:false}"
-        "});"
-        "var ls=chart.addLineSeries({color:'#0ea5e9',lineWidth:2});"
-        "fetch('../api/chart?ticker=" + ticker.replace("'", "") + "&interval=1d&range=1y')"
-        ".then(function(r){return r.json();})"
-        ".then(function(d){"
-        "if(!d.ok||!d.chart)return;"
-        "var c=d.chart;"
-        "var pts=[];"
-        "for(var i=0;i<c.times.length;i++){"
-        "pts.push({time:c.times[i],value:c.close[i]});}"
-        "ls.setData(pts);"
-        "chart.timeScale().fitContent();"
-        "}).catch(function(){});"
-        "new ResizeObserver(function(){chart.applyOptions({width:w.clientWidth-20});}).observe(w);"
-        "};"
-        "s.onerror=function(){w.innerHTML='<div style=\"padding:20px;color:var(--muted)\">차트를 로드할 수 없습니다.</div>'};"
-        "w.appendChild(s);"
-        "})();"
-        "</script>"
-        "</body></html>"
+    quote_script = (
+        f'<script>var NOAH_TICKER={json.dumps(ticker)};'
+        f'var NOAH_BASE="../";{_QUOTE_JS}</script>'
+        if has_tabs else ""
     )
+
+    overview_open = '<div class="si-pane active" id="si-overview">' if has_tabs else ""
+    overview_close = "</div>" if has_tabs else ""
+
+    # Build a minimal chart section — no stored price_chart, so the
+    # full _CHART_JS will load from /api/chart on the client side.
+    # We emit the chart container + _CHART_JS with an empty initial
+    # payload so the JS immediately fetches live data.
+    _chart_payload = json.dumps({
+        "times": [], "close": [],
+        "ticker": ticker,
+    })
+    chart_html = f"""<section class="chart-section">
+<h2>📈 가격 차트</h2>
+<div id="chart-toolbar">
+  <div><button class="tb active" data-i="1d">일봉</button><button class="tb" data-i="1wk">주봉</button><button class="tb" data-i="1mo">월봉</button></div>
+  <div><button class="tb" data-r="6mo">6개월</button><button class="tb active" data-r="1y">1년</button><button class="tb" data-r="3y">3년</button><button class="tb" data-r="5y">5년</button><button class="tb" data-r="ytd">YTD</button><button class="tb" data-r="max">전체</button></div>
+</div>
+<div id="chart-ind">
+  지표: <button class="ib active" data-k="candle">캔들</button><button class="ib active" data-k="ma">이평선</button><button class="ib" data-k="bb">볼린저</button><button class="ib active" data-k="vol">거래량</button><button class="ib active" data-k="rsi">RSI</button><button class="ib" data-k="macd">MACD</button><button class="ib" data-k="log">로그</button><button class="ib" data-k="events">공시</button>
+</div>
+<div id="chart-headline"></div>
+<div id="chart-ohlc"></div>
+<div id="chart-container" style="position:relative;min-height:440px"></div>
+<div id="chart-values"></div>
+<div id="rsi-chart"></div>
+<div id="macd-chart"></div>
+<div id="chart-disc"></div>
+<div id="chart-caption"></div>
+<script type="application/json" id="chart-data">{_chart_payload}</script>
+</section>"""
+
+    chart_scripts = (
+        f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
+    )
+
+    # Search box JS — resolves names via server-side redirect
+    search_js = """<script>
+var lkInp=document.getElementById('lk-search');
+var lkBtn=document.getElementById('lk-go');
+function lkGo(){var q=(lkInp.value||'').trim();
+if(q)window.location.href='../lookup/'+encodeURIComponent(q);}
+lkBtn.addEventListener('click',lkGo);
+lkInp.addEventListener('keydown',function(e){if(e.key==='Enter')lkGo();});
+</script>"""
+
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>📊 {_html.escape(h1_label)} — NOAH Lookup</title>
+<script>{_THEME_JS}</script>
+<style>{_DETAIL_CSS}</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back" href="../market.html">← 시장 개요로 돌아가기</a>
+  <div style="margin:10px 0 16px;display:flex;gap:8px">
+    <input id="lk-search" type="text" value="{_html.escape(ticker)}"
+      placeholder="티커 또는 종목명 검색 (예: NVDA, 삼성전자, 7203.T)"
+      autocomplete="off" spellcheck="false"
+      style="flex:1;padding:8px 12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);outline:none">
+    <button id="lk-go" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer">검색</button>
+  </div>
+  <div class="title-row">
+    <h1>📊 {_html.escape(h1_label)}</h1>
+  </div>
+  {si_header}
+  {si_tabs}
+  {overview_open}
+  {chart_html}
+  {overview_close}
+  {si_other}
+</div>
+<script>{_DETAIL_DEEP_LINK_JS}</script>
+{si_tab_js}
+{chart_scripts}
+{quote_script}
+{search_js}
+</body>
+</html>
+"""
