@@ -556,13 +556,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(500, {"ok": False, "error": "internal"})
 
     def _handle_lookup(self) -> None:
-        """Serve a lightweight stock overview page for any ticker.
-        GET /lookup/<TICKER> — renders on-demand via yfinance, 5min cache."""
+        """Serve a stock overview page for any ticker or company name.
+        GET /lookup/<TICKER_OR_NAME> — renders on-demand, 5min cache."""
         import time
+        import urllib.parse as _ulp
         try:
             raw = self.path.split("?", 1)[0]
-            ticker = raw.split("/lookup/", 1)[-1].strip().upper()
+            raw_query = _ulp.unquote(raw.split("/lookup/", 1)[-1]).strip()
+            ticker = raw_query.upper()
             if not ticker or not _TICKER_RE.match(ticker):
+                # Try resolving as company name (Korean/English)
+                try:
+                    from bot.dashboard import resolve_name_to_ticker
+                    resolved = resolve_name_to_ticker(raw_query)
+                    if resolved:
+                        self.send_response(302)
+                        self.send_header("Location", f"/lookup/{_ulp.quote(resolved)}")
+                        self.end_headers()
+                        return
+                except Exception:
+                    pass
                 self.send_error(400, "invalid ticker")
                 return
 
