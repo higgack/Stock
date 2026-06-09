@@ -120,7 +120,8 @@ def fetch_kind_ir_month(year: int, month: int) -> list[dict]:
     (호출부가 DART 폴백). 12h 캐시(월별)."""
     tag = f"{year:04d}-{month:02d}"
     _CACHE.mkdir(parents=True, exist_ok=True)
-    cache_file = _CACHE / f"{tag}.json"
+    # v2 = 실측 형식 파서. 이전(추측) 버전의 빈 [] 캐시를 무효화.
+    cache_file = _CACHE / f"{tag}_v2.json"
     if cache_file.exists():
         try:
             if time.time() - cache_file.stat().st_mtime < _TTL:
