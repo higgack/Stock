@@ -40,6 +40,8 @@ td.rk{color:var(--muted);width:26px}
 td.pct,td.num{text-align:right;white-space:nowrap}
 td.nm a{color:var(--text);text-decoration:none}
 td.nm a:hover{color:var(--accent);text-decoration:underline}
+td.nm a.tnm{text-decoration:underline;text-decoration-color:var(--muted)}
+td.ld{color:var(--muted);font-size:12px}
 .up{color:var(--pos);font-weight:600}.dn{color:var(--neg);font-weight:600}.neu{color:var(--muted)}
 .empty{color:var(--muted);font-size:13px;padding:30px 0;text-align:center}
 .ts{color:var(--muted);font-size:12px;margin-left:8px}
@@ -59,7 +61,7 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
         return f'<a{cls} href="{key}">{label}</a>'
     toggle = ('<div class="toggle">'
               + _t("theme", "🎯 테마별 시세")
-              + _t("highlow", "📈 신고가·신저가")
+              + _t("highlow", "📈 상한가·하한가")
               + '</div>')
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -82,8 +84,12 @@ def _pct_cell(pct) -> str:
     return f'<td class="pct {cls}">{sign}{pct:.2f}%</td>'
 
 
+_THEME_DETAIL = ("https://finance.naver.com/sise/sise_group_detail.naver"
+                 "?type=theme&no=")
+
+
 def render_theme_page() -> str:
-    """테마별 시세 — 전체 테마 등락률 내림차순."""
+    """테마별 시세 — 전체 테마. 테마명=네이버 상세 링크, 최근3일·주도주 포함."""
     try:
         from bot.naver_sector_client import fetch_themes
         data = fetch_themes()
@@ -95,32 +101,42 @@ def render_theme_page() -> str:
     if not themes:
         body = '<div class="empty">테마 시세를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.</div>'
     else:
-        rows = "".join(
-            f'<tr><td class="rk">{i}</td><td class="nm">{_html.escape(t.get("name",""))}</td>'
-            f'{_pct_cell(t.get("pct"))}</tr>'
-            for i, t in enumerate(themes, 1))
+        rows = []
+        for i, t in enumerate(themes, 1):
+            no = _html.escape(str(t.get("no", "")))
+            nm = _html.escape(t.get("name", ""))
+            name_cell = (f'<a href="{_THEME_DETAIL}{no}" target="_blank" '
+                         f'rel="noopener" class="tnm">{nm}</a>' if no else nm)
+            leaders = " · ".join(_html.escape(s) for s in t.get("leaders", []))
+            rows.append(
+                f'<tr><td class="rk">{i}</td><td class="nm">{name_cell}</td>'
+                f'{_pct_cell(t.get("pct"))}{_pct_cell(t.get("pct3"))}'
+                f'<td class="ld">{leaders or "—"}</td></tr>')
         body = (f'<div class="panel"><h2>전체 테마 {len(themes)}개 '
                 f'<span class="ts">{ts} 기준</span></h2>'
-                f'<table><thead><tr><th>#</th><th>테마</th><th style="text-align:right">등락률</th>'
-                f'</tr></thead><tbody>{rows}</tbody></table></div>')
-    return _shell("테마별 시세", "Naver 증권 테마별 등락률 · 상승순. 4분 캐시.",
+                f'<table><thead><tr><th>#</th><th>테마</th>'
+                f'<th style="text-align:right">등락률</th>'
+                f'<th style="text-align:right">최근3일</th><th>주도주</th>'
+                f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+    return _shell("테마별 시세",
+                  "Naver 증권 테마별 등락률 · 상승순. 테마명 클릭 시 네이버 상세. 4분 캐시.",
                   "theme", body)
 
 
 def render_highlow_page() -> str:
-    """52주 신고가·신저가 (best-effort)."""
+    """상한가·하한가 (Naver sise_upper/lower). 신고가 페이지가 불안정해 대체."""
     try:
-        from bot.naver_sector_client import fetch_high_low
-        data = fetch_high_low()
+        from bot.naver_sector_client import fetch_upper_lower
+        data = fetch_upper_lower()
     except Exception as exc:
-        log.warning("highlow page fetch failed: %s", exc)
-        data = {"high": [], "low": [], "ts": ""}
+        log.warning("upper/lower page fetch failed: %s", exc)
+        data = {"upper": [], "lower": [], "ts": ""}
     ts = _html.escape(data.get("ts", ""))
 
     def _panel(title: str, items: list) -> str:
         if not items:
             return (f'<div class="panel"><h2>{title}</h2>'
-                    '<div class="empty">데이터 없음</div></div>')
+                    '<div class="empty">해당 종목 없음</div></div>')
         rows = "".join(
             f'<tr><td class="rk">{i}</td>'
             f'<td class="nm"><a href="lookup/{_html.escape(it.get("code",""))}.KS">'
@@ -134,13 +150,12 @@ def render_highlow_page() -> str:
                 f'<th style="text-align:right">등락률</th></tr></thead>'
                 f'<tbody>{rows}</tbody></table></div>')
 
-    high, low = data.get("high", []), data.get("low", [])
-    if not high and not low:
-        body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
-                '(소스 점검 중 — 잠시 후 다시 시도해 주세요.)</div>')
+    up, low = data.get("upper", []), data.get("lower", [])
+    if not up and not low:
+        body = ('<div class="empty">상한가·하한가 데이터를 불러올 수 없습니다.<br>'
+                '(잠시 후 다시 시도해 주세요.)</div>')
     else:
         body = ('<div class="grid">'
-                + _panel("🔺 52주 신고가", high)
-                + _panel("🔻 52주 신저가", low) + '</div>')
-    sub = f"Naver 증권 52주 신고가·신저가. 4분 캐시. {('· ' + ts + ' 기준') if ts else ''}"
-    return _shell("신고가·신저가", sub, "highlow", body)
+                + _panel("🔺 상한가", up) + _panel("🔻 하한가", low) + '</div>')
+    sub = f"Naver 증권 상한가·하한가. 4분 캐시. {('· ' + ts + ' 기준') if ts else ''}"
+    return _shell("상한가·하한가", sub, "highlow", body)

@@ -97,6 +97,46 @@ def parse_groups(html: str) -> list[dict]:
     return out
 
 
+_THEME_LINK_RE = re.compile(
+    r'sise_group_detail\.naver\?type=theme[^"]*?no=(\d+)"[^>]*>([^<]+)</a>', re.I)
+_SIGNED_PCT_RE = re.compile(r'([+\-]?)(\d{1,3}\.\d{1,2})\s*%')
+
+
+def parse_themes_full(html: str) -> list[dict]:
+    """테마 표 → [{name, no, pct, pct3, leaders}].
+
+    pct=전일대비 등락률, pct3=최근3일 평균 등락률, leaders=주도주(최대 2)."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I):
+        m = _THEME_LINK_RE.search(row)
+        if not m:
+            continue
+        no, name = m.group(1), _clean(m.group(2))
+        if not name or no in seen:
+            continue
+        # % 값들 — 순서대로 전일대비, 최근3일
+        pcts: list[float] = []
+        for pm in _SIGNED_PCT_RE.finditer(_clean(row)):
+            v = float(pm.group(2))
+            if pm.group(1) == "-":
+                v = -v
+            pcts.append(round(v, 2))
+        pct = pcts[0] if pcts else None
+        pct3 = pcts[1] if len(pcts) > 1 else None
+        # 주도주 — /item/main.naver?code= 링크의 종목명(최대 2)
+        leaders = []
+        for lm in re.finditer(
+                r'/item/main\.naver\?code=\d{6}"[^>]*>([^<]+)</a>', row, re.I):
+            nm = _clean(lm.group(1))
+            if nm and nm not in leaders:
+                leaders.append(nm)
+        seen.add(no)
+        out.append({"name": name, "no": no, "pct": pct,
+                    "pct3": pct3, "leaders": leaders[:2]})
+    return out
+
+
 def _cached(name: str):
     cache_file = _CACHE_DIR / name
     if cache_file.exists():
@@ -135,12 +175,28 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
     return out
 
 
+def _first_big(cells: list) -> Optional[float]:
+    """행에서 첫 큰 숫자(5자리+) — 고객예탁금 추정."""
+    for cc in cells[1:]:
+        m = re.search(r"[\d,]{5,}", cc)
+        if m:
+            try:
+                return float(m.group(0).replace(",", ""))
+            except ValueError:
+                return None
+    return None
+
+
+# 신용잔고 현실 범위(억원) — 잘못된 컬럼 매칭 값 차단 가드
+_CRED_MIN, _CRED_MAX = 150000.0, 800000.0
+
+
 def fetch_deposit() -> dict:
     """고객예탁금·신용잔고 (sise_deposit.naver) → {date, deposit, credit,
-    deposit_chg, credit_chg}. 단위 억원(추정). 4분 캐시. best-effort·graceful.
+    deposit_chg, credit_chg, deposit_series, credit_series}. 억원. 4분 캐시.
 
-    ⚠️ Naver 페이지 컬럼 구조 미검증 — 헤더 매칭 + 첫 큰 숫자 폴백. 빗나가면
-    부분/빈값(호출부가 위젯 생략)."""
+    고객예탁금=각 날짜행 첫 큰 숫자(견고). 신용잔고=헤더('신용잔고') 컬럼 +
+    현실범위 가드(빗나가면 생략). 시계열=그래프용(최근~6개월). graceful."""
     c = _cached("deposit.json")
     if c is not None:
         return c
@@ -148,13 +204,11 @@ def fetch_deposit() -> dict:
     html = _get(f"{_BASE}/sise_deposit.naver")
     if html:
         rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I)
-        dep_idx = cred_idx = None
-        for row in rows:                       # 헤더 행에서 컬럼 인덱스 매칭
+        cred_idx = None
+        for row in rows:                       # 헤더에서 신용잔고 컬럼 인덱스
             cells = _cell_texts(row)
             if any("고객예탁금" in cc for cc in cells):
                 for i, cc in enumerate(cells):
-                    if dep_idx is None and "고객예탁금" in cc:
-                        dep_idx = i
                     if cred_idx is None and "신용" in cc:
                         cred_idx = i
                 break
@@ -169,52 +223,70 @@ def fetch_deposit() -> dict:
                         return None
             return None
 
-        data_rows = []
-        for row in rows:                       # 날짜로 시작하는 데이터 행
-            cells = _cell_texts(row)
-            if cells and re.match(r"\d{2,4}[.\-/]\d{1,2}[.\-/]\d{1,2}", cells[0]):
-                data_rows.append(cells)
+        data_rows = [c for row in rows
+                     for c in [_cell_texts(row)]
+                     if c and re.match(r"\d{2,4}[.\-/]\d{1,2}[.\-/]\d{1,2}", c[0])]
         if data_rows:
             cur = data_rows[0]
             prev = data_rows[1] if len(data_rows) > 1 else None
-            dep = _num(cur, dep_idx)
-            if dep is None:                    # 폴백: 첫 큰 숫자 = 고객예탁금
-                for cc in cur[1:]:
-                    m = re.search(r"[\d,]{5,}", cc)
-                    if m:
-                        dep = float(m.group(0).replace(",", ""))
-                        break
+            dep = _first_big(cur)
             cred = _num(cur, cred_idx)
+            if cred is not None and not (_CRED_MIN <= cred <= _CRED_MAX):
+                cred = cred_idx = None          # 비현실 → 잘못된 컬럼, 생략
             out = {"date": cur[0], "deposit": dep, "credit": cred}
             if prev:
-                pd, pc = _num(prev, dep_idx), _num(prev, cred_idx)
+                pd = _first_big(prev)
+                pc = _num(prev, cred_idx)
                 if dep is not None and pd is not None:
                     out["deposit_chg"] = round(dep - pd, 1)
                 if cred is not None and pc is not None:
                     out["credit_chg"] = round(cred - pc, 1)
+            # 시계열(오래된→최신, ~6개월) — 그래프용
+            dser, cser = [], []
+            for cells in reversed(data_rows[:130]):
+                dv = _first_big(cells)
+                if dv is not None:
+                    dser.append({"d": cells[0], "v": dv})
+                cv = _num(cells, cred_idx)
+                if cv is not None and _CRED_MIN <= cv <= _CRED_MAX:
+                    cser.append({"d": cells[0], "v": cv})
+            out["deposit_series"] = dser
+            out["credit_series"] = cser
     _cache_write("deposit.json", out)
     return out
 
 
 def fetch_themes() -> dict:
-    """테마별 시세 → {'themes': [{name, pct}] 등락률 내림차순, 'ts'}. 4분 캐시."""
+    """테마별 시세 → {'themes': [{name, no, pct, pct3, leaders}] 등락률 내림차순,
+    'ts'}. 4분 캐시. 여러 페이지(전 테마) 수집."""
     c = _cached("theme.json")
     if c is not None:
         return c
-    html = _get(f"{_BASE}/theme.naver")
-    themes = parse_groups(html) if html else []
-    themes.sort(key=lambda x: x["pct"], reverse=True)
+    themes: list[dict] = []
+    seen: set[str] = set()
+    for page in range(1, 8):  # 테마 ~200개 → 페이지네이션
+        html = _get(f"{_BASE}/theme.naver", params={"page": page})
+        if not html:
+            break
+        page_rows = parse_themes_full(html)
+        if not page_rows:
+            break
+        for t in page_rows:
+            if t["no"] in seen:
+                continue
+            seen.add(t["no"])
+            themes.append(t)
+    themes.sort(key=lambda x: (x.get("pct") is None, -(x.get("pct") or 0)))
     out = {"themes": themes,
            "ts": time.strftime("%Y-%m-%d %H:%M", time.localtime()) if themes else ""}
     _cache_write("theme.json", out)
     return out
 
 
-# ── 52주 신고가·신저가 ───────────────────────────────────────────────
-# Naver: sise_high_low.naver?type=high|low (gubun=signal 52주). best-effort —
-# 페이지 구조/파라미터가 빗나가도 graceful 빈 리스트(호출부가 '데이터 없음').
-def _parse_high_low(html: str) -> list[dict]:
-    """신고가/신저가 종목 표 → [{code, name, price, pct}]."""
+# ── 상한가·하한가 (신고가/신저가 페이지가 불안정해 대체 — 사용자 2026-06-10) ──
+# Naver: sise_upper.naver(상한가) / sise_lower.naver(하한가) — 표준 시세 페이지.
+def _parse_stock_rows(html: str, limit: int) -> list[dict]:
+    """종목 표(상한/하한/등락 공통) → [{code, name, price, pct}]."""
     out: list[dict] = []
     seen: set[str] = set()
     for row in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I):
@@ -227,33 +299,30 @@ def _parse_high_low(html: str) -> list[dict]:
         cells = _cell_texts(row)
         price = ""
         for cterm in cells:
-            if re.fullmatch(r"[\d,]{2,}", cterm):
+            if re.fullmatch(r"[\d,]{3,}", cterm):
                 price = cterm
                 break
         pct = _pct_from_row(row)
         seen.add(code)
         out.append({"code": code, "name": name, "price": price,
                     "pct": round(pct, 2) if pct is not None else None})
+        if len(out) >= limit:
+            break
     return out
 
 
-def fetch_high_low(limit: int = 40) -> dict:
-    """52주 신고가·신저가 → {'high': [...], 'low': [...], 'ts'}. 4분 캐시.
-
-    ⚠️ Naver 페이지 파라미터 best-effort — 빗나가면 빈 리스트(graceful)."""
-    c = _cached("high_low.json")
+def fetch_upper_lower(limit: int = 50) -> dict:
+    """상한가·하한가 → {'upper': [...], 'lower': [...], 'ts'}. 4분 캐시. graceful."""
+    c = _cached("upper_lower.json")
     if c is not None:
         return c
-    out = {"high": [], "low": [], "ts": ""}
-    # type=up/down 또는 gubun 파라미터 후보 — 첫 plausible 결과 채택
-    for key, params in (("high", {"type": "up", "gubun": "high52"}),
-                        ("low", {"type": "down", "gubun": "low52"})):
-        html = _get(f"{_BASE}/sise_high_low.naver", params=params)
-        rows = _parse_high_low(html)[:limit] if html else []
-        out[key] = rows
-    if out["high"] or out["low"]:
+    out = {"upper": [], "lower": [], "ts": ""}
+    for key, page in (("upper", "sise_upper.naver"), ("lower", "sise_lower.naver")):
+        html = _get(f"{_BASE}/{page}")
+        out[key] = _parse_stock_rows(html, limit) if html else []
+    if out["upper"] or out["lower"]:
         out["ts"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
-    _cache_write("high_low.json", out)
+    _cache_write("upper_lower.json", out)
     return out
 
 
