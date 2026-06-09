@@ -157,29 +157,60 @@ def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
 
 
 def _yf_daily_change(tickers: list[str]) -> dict[str, dict]:
-    """5d daily batch → {ticker: {value, change}} for the latest move."""
+    """{ticker: {value, change}} — '오늘' 값 기준.
+
+    ⚠️ 일봉 iloc[-1]은 확정된 마지막 일봉이라 아시아 지수가 하루 늦게 나옴
+    (Yahoo 일봉 갱신 지연). → fast_info(last_price+previous_close, 견적 기반)
+    를 1차로 써 오늘 값+오늘 등락을 잡고, 실패 종목만 일봉 폴백."""
     out: dict[str, dict] = {}
     if not tickers:
         return out
+    import yfinance as yf
+    from concurrent.futures import ThreadPoolExecutor
+
+    # 1) 일봉 폴백
+    daily: dict[str, dict] = {}
     try:
-        import yfinance as yf
-        df = yf.download(
-            " ".join(tickers), period="5d", progress=False, threads=True, timeout=20
-        )
-        if df is None or df.empty:
-            return out
-        for tk in tickers:
-            try:
-                closes = (df["Close"][tk] if len(tickers) > 1 else df["Close"]).dropna()
-                if len(closes) < 1:
+        df = yf.download(" ".join(tickers), period="5d", progress=False,
+                         threads=True, timeout=20)
+        if df is not None and not df.empty:
+            for tk in tickers:
+                try:
+                    closes = (df["Close"][tk] if len(tickers) > 1
+                              else df["Close"]).dropna()
+                    if len(closes) >= 1:
+                        cur = float(closes.iloc[-1])
+                        prev = float(closes.iloc[-2]) if len(closes) >= 2 else cur
+                        daily[tk] = {"value": cur, "change": cur - prev}
+                except Exception:
                     continue
-                cur = float(closes.iloc[-1])
-                prev = float(closes.iloc[-2]) if len(closes) >= 2 else cur
-                out[tk] = {"value": cur, "change": cur - prev}
-            except Exception:
-                continue
     except Exception as exc:
         log.warning("macro: yf daily batch failed: %s", exc)
+
+    # 2) fast_info live — 오늘 값 + 오늘 등락
+    def _live(tk: str):
+        try:
+            fi = yf.Ticker(tk).fast_info
+            lp = getattr(fi, "last_price", None)
+            pc = getattr(fi, "previous_close", None)
+            if lp is not None and pc is not None:
+                return tk, {"value": float(lp), "change": float(lp) - float(pc)}
+        except Exception:
+            pass
+        return tk, None
+
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for tk, v in pool.map(_live, tickers):
+                if v:
+                    out[tk] = v
+    except Exception as exc:
+        log.warning("macro: fast_info live failed: %s", exc)
+
+    # 3) 폴백 채우기 (fast_info 없는 종목)
+    for tk in tickers:
+        if tk not in out and tk in daily:
+            out[tk] = daily[tk]
     return out
 
 

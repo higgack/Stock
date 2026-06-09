@@ -155,42 +155,68 @@ def _all_yf_tickers() -> list[str]:
 
 
 def _fetch_yf_batch() -> dict[str, dict]:
-    """Batch-fetch last 5 days for all tickers. Returns {ticker: {close, prev_close, change, pct}}."""
+    """{ticker: {close, prev_close, change, pct}} — '오늘' 값 기준.
+
+    ⚠️ 일봉(yf.download period=5d, interval=1d)의 iloc[-1]은 '확정된 마지막
+    일봉'이라, 아시아 지수(코스피/대만/니케이 등)는 Yahoo 일봉 갱신 지연으로
+    하루 늦게(어제 종가) 나오는 버그가 있었다. → fast_info(last_price +
+    previous_close, 견적 기반 near-real-time)를 1차로 써 '오늘 값 + 오늘 등락'
+    을 정확히 잡고, 실패 종목만 일봉으로 폴백(회귀 0)."""
     tickers = _all_yf_tickers()
     result: dict[str, dict] = {}
-    try:
-        df = yf.download(
-            " ".join(tickers),
-            period="5d",
-            progress=False,
-            threads=True,
-            timeout=20,
-        )
-        if df is None or df.empty:
-            return result
 
-        for tk in tickers:
-            try:
-                if len(tickers) > 1:
-                    closes = df["Close"][tk].dropna()
-                else:
-                    closes = df["Close"].dropna()
-                if len(closes) < 1:
+    # 1) 일봉 batch — 폴백용 (fast_info 없는 종목)
+    daily: dict[str, tuple[float, float]] = {}
+    try:
+        df = yf.download(" ".join(tickers), period="5d", progress=False,
+                         threads=True, timeout=20)
+        if df is not None and not df.empty:
+            for tk in tickers:
+                try:
+                    closes = (df["Close"][tk] if len(tickers) > 1
+                              else df["Close"]).dropna()
+                    if len(closes) >= 1:
+                        cur = float(closes.iloc[-1])
+                        prev = float(closes.iloc[-2]) if len(closes) >= 2 else cur
+                        daily[tk] = (cur, prev)
+                except Exception:
                     continue
-                cur = float(closes.iloc[-1])
-                prev = float(closes.iloc[-2]) if len(closes) >= 2 else cur
-                chg = cur - prev
-                pct = (chg / prev * 100) if prev != 0 else 0.0
-                result[tk] = {
-                    "close": cur,
-                    "prev_close": prev,
-                    "change": chg,
-                    "pct": pct,
-                }
-            except Exception:
-                continue
     except Exception as exc:
-        log.warning("market_overview: yfinance batch fetch error: %s", exc)
+        log.warning("market_overview: yf daily batch error: %s", exc)
+
+    # 2) fast_info live — 오늘 값(last_price) + 어제 종가(previous_close)
+    def _live(tk: str):
+        try:
+            fi = yf.Ticker(tk).fast_info
+            lp = getattr(fi, "last_price", None)
+            pc = getattr(fi, "previous_close", None)
+            if lp is not None and pc is not None and float(pc) != 0:
+                return tk, (float(lp), float(pc))
+        except Exception:
+            pass
+        return tk, None
+
+    live: dict[str, tuple[float, float]] = {}
+    try:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for tk, v in pool.map(_live, tickers):
+                if v:
+                    live[tk] = v
+    except Exception as exc:
+        log.warning("market_overview: fast_info live error: %s", exc)
+
+    # 3) merge — live(오늘) 우선, 없으면 daily 폴백
+    for tk in tickers:
+        if tk in live:
+            cur, prev = live[tk]
+        elif tk in daily:
+            cur, prev = daily[tk]
+        else:
+            continue
+        chg = cur - prev
+        pct = (chg / prev * 100) if prev != 0 else 0.0
+        result[tk] = {"close": cur, "prev_close": prev,
+                      "change": chg, "pct": pct}
     return result
 
 
