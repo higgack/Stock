@@ -26,6 +26,10 @@ _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "earnings_cal"
 _CACHE_TTL_SEC = 6 * 3600
 _KIND_IR_URL = ("https://kind.krx.co.kr/corpgeneral/irschedule.do"
                 "?method=searchIRScheduleMain&gubun=iRScheduleCalendar")
+# 회사 클릭 → 그 회사 KIND 정보 팝업(회사개요·IR 등). isuCd=6자리 종목코드.
+# ⚠️ GET param(isuCd) 실측 미검증 — POST-only 면 빈 팝업일 수 있어 VM 확인.
+_KIND_COMPANY_URL = ("https://kind.krx.co.kr/common/companysummary.do"
+                     "?method=searchCompanySummary&isuCd=")
 
 
 def _api_key() -> str:
@@ -52,8 +56,10 @@ def fetch_month(year: int, month: int) -> list[dict]:
             code = it.get("code", "")
             url = it.get("url", "#")
             if url == "#" and src == "kind":
-                url = _KIND_IR_URL  # KIND 항목은 IR일정 페이지로
+                # 회사 클릭 → 그 회사 KIND 정보 팝업(코드 있으면), 없으면 IR일정.
+                url = (_KIND_COMPANY_URL + code) if code else _KIND_IR_URL
             key = (url if url not in ("#", _KIND_IR_URL)
+                   and not url.startswith(_KIND_COMPANY_URL)
                    else f"{code}-{it.get('date')}-{it.get('name')}")
             kr[key] = {
                 "symbol": f"{code}.KS" if code else (it.get("name") or ""),
