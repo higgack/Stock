@@ -6145,10 +6145,11 @@ def _month_close(parts: list[str], prev_month: str | None) -> None:
         parts.append("</div></details>")
 
 
-def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
+def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: list[dict] | None = None) -> str:
     """Render screener.html — date-grouped run cards with Top-3 mini-tables
     showing 5/15/30d outcomes (alpha vs sector ETF). Self-contained HTML
-    with embedded CSS matching NOAH dashboard dark-on-light palette."""
+    with embedded CSS matching NOAH dashboard dark-on-light palette.
+    Optional *screen_archives* embeds conditional screener results at bottom."""
     import html as _html
     from collections import defaultdict
 
@@ -7735,8 +7736,10 @@ def regenerate_daily_byte_index() -> None:
 
 # ── 부동산 Byte archive view ──────────────────────────────────────────────
 _REALESTATE_ARCHIVE_DIR = Path.home() / ".tradingagents" / "realestate_archive"
-_REALESTATE_JS = _DAILY_BYTE_JS.replace("api/daily_byte_delete", "api/realestate_delete").replace(
-    "Daily Byte 브리프", "부동산 Byte").replace("Daily Byte 기록", "부동산 Byte 기록")
+_REALESTATE_JS = (_DAILY_BYTE_JS
+    .replace("Daily Byte 브리프", "부동산/청약")
+    .replace("Daily Byte 기록", "부동산/청약 기록")
+    .replace("fetch('api/daily_byte_delete',", "fetch(card.dataset.delApi || 'api/realestate_delete',"))
 
 
 def _load_realestate_runs() -> list[dict]:
@@ -8346,12 +8349,11 @@ def _paper_nav(active: str = "paper") -> str:
         + _a("portfolio.html", "💼 자산", "portfolio")
         + ' · ' + _a("budget.html", "📒 가계부", "budget")
         + ' · <a href="index.html">🦉 NOAH 종목분석</a>'
-        + ' · <a href="watchlist.html">🔔 워치리스트</a>'
-        + ' · ' + _a("paper.html", "🧪 페이퍼", "paper")
+        + ' · ' + _a("paper.html", "🔔 워치리스트", "paper")
         + '</div>')
 
 
-def _render_paper_page(summ: dict) -> str:
+def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: list[dict] | None = None) -> str:
     import html as _html
 
     def _native(v, currency):
@@ -8558,11 +8560,53 @@ def _render_paper_page(summ: dict) -> str:
     except Exception:
         pass
 
+    # ── Watchlist section (merged into paper page) ─────────────────────
+    wl_section = ""
+    _wl = watches or []
+    _al = alerts or []
+    if _wl or _al:
+        import html as _whtml
+        def _wesc(s):
+            return _whtml.escape(str(s))
+        _wr = ""
+        for w in _wl:
+            _conds = " ".join(w.get("conditions") or [])
+            _added = (w.get("added") or "")[:16].replace("T", " ")
+            _wr += (
+                f"<tr><td><b>{_wesc(w.get('ticker',''))}</b></td>"
+                f"<td><code>{_wesc(_conds)}</code></td>"
+                f"<td class='muted'>{_wesc(_added)}</td>"
+                f"<td class='muted'>{_wesc(w.get('id',''))}</td></tr>"
+            )
+        if not _wr:
+            _wr = "<tr><td colspan='4' class='muted'>감시 중인 종목 없음 — 텔레그램에서 <code>/watch TICKER 조건</code></td></tr>"
+        _ar = ""
+        for a in _al[:200]:
+            _ats = (a.get("ts") or "")[:16].replace("T", " ")
+            _ahits = " · ".join(a.get("hits") or [])
+            _ar += (
+                f"<tr><td class='muted'>{_wesc(_ats)}</td>"
+                f"<td><b>{_wesc(a.get('ticker',''))}</b></td>"
+                f"<td>{_wesc(_ahits)}</td></tr>"
+            )
+        if not _ar:
+            _ar = "<tr><td colspan='3' class='muted'>아직 발생한 알림 없음</td></tr>"
+        wl_section = (
+            '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
+            f'<h2>📋 활성 워치 ({len(_wl)})</h2>'
+            '<table class="pf-tbl"><thead><tr><th>종목</th><th>조건</th><th>등록</th><th>id</th></tr></thead>'
+            f'<tbody>{_wr}</tbody></table>'
+            f'<h2>🔔 알림 이력 ({len(_al)})</h2>'
+            '<table class="pf-tbl"><thead><tr><th>시각</th><th>종목</th><th>충족 조건</th></tr></thead>'
+            f'<tbody>{_ar}</tbody></table>'
+            '<p class="sub">조건: <code>rsi&lt;30 rsi&gt;70 price&gt;X price&lt;X &gt;sma50 &lt;sma200 52whigh 52wlow earnings foreignbuy foreignsell instbuy instsell</code></p>'
+        )
+
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
-            + '<h1>🧪 페이퍼 트레이딩</h1>'
-            '<p class="sub">NOAH 분석 신호/수동 명령의 모의 매매 — 실거래 연결 전 전략 검증(리스크 0)</p>'
+            + '<h1>🔔 워치리스트</h1>'
+            '<p class="sub">조건 알림(30분 체크, ₩0) + 페이퍼 트레이딩(모의 매매, 리스크 0)</p>'
             + halt_banner + e1_banner + stats + stats_extra + curve_html + pos_block + pend_block
-            + tr_block + audit_block + note + gate_line + "</div>")
+            + tr_block + audit_block + note + gate_line + wl_section + "</div>")
 
 
 def _sym_cur(currency: str) -> str:
@@ -8708,7 +8752,7 @@ def regenerate_screen_index() -> None:
 
 
 def regenerate_paper_index() -> None:
-    """페이퍼 계좌 → paper.html. 명령/startup/자정 regen 에서 호출. 에러 무해."""
+    """페이퍼 계좌 + 워치리스트 → paper.html. 명령/startup/자정 regen 에서 호출. 에러 무해."""
     try:
         from bot import paper_trading
         summ = paper_trading.summary()
@@ -8719,11 +8763,20 @@ def regenerate_paper_index() -> None:
             summ["equity_history"] = paper_trading.get_account().get("equity_history", [])
         except Exception:
             pass
-        html = _render_paper_page(summ)
+        # Load watchlist data for merged page
+        watches: list[dict] = []
+        alerts: list[dict] = []
+        try:
+            from bot.watchlist import all_watches, load_alerts
+            watches = all_watches()
+            alerts = load_alerts(200)
+        except Exception:
+            pass
+        html = _render_paper_page(summ, watches=watches, alerts=alerts)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "paper.html").write_text(html, encoding="utf-8")
-        log.info("dashboard: paper.html regenerated (%d positions)",
-                 summ.get("n_positions", 0))
+        log.info("dashboard: paper.html regenerated (%d positions, %d watches)",
+                 summ.get("n_positions", 0), len(watches))
     except Exception as exc:
         log.warning("dashboard: paper regen failed: %s", exc)
 
