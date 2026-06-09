@@ -30,7 +30,9 @@ import requests
 log = logging.getLogger("bot.macro_snapshot")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "macro_snapshot"
-_CACHE_TTL_SEC = 2 * 3600  # 2h
+# 5분 — 글로벌 스냅샷(5분)과 값을 일치시킴(사용자 요청). FRED/ECOS 는 자체
+# 12h 캐시라 재fetch 안 함 → 추가 비용은 fast_info(~26) + yf batch 2회/5분(저위험).
+_CACHE_TTL_SEC = 300  # 5min
 
 # ── Indicator definitions ───────────────────────────────────────────
 # (key, label, unit, source, source_id, decimals)

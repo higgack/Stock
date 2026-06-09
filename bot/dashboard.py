@@ -10531,7 +10531,9 @@ _MARKET_CSS = (
     ".md-more:hover{text-decoration:underline}"
     ".md-empty{color:var(--muted);font-size:13px;padding:20px 0}"
     # ── Favorites table ──
-    "#fav-section .fav-hd{display:flex;align-items:baseline;gap:10px;margin:32px 0 14px}"
+    "#fav-section{margin-top:28px}"
+    "#fav-section .fav-hd{display:flex;align-items:baseline;gap:10px;margin:0 0 14px}"
+    "#fav-body{overflow-x:auto}"
     "#fav-section .fav-hd h2{font-size:17px;margin:0}"
     "#fav-section .fav-hd .cnt{color:var(--muted);font-size:12px}"
     ".fav-del{background:none;border:none;color:var(--neg);cursor:pointer;"
@@ -10768,8 +10770,9 @@ def _render_research_us_table(research: list) -> str:
 
 # ── Macro Snapshot rendering (SV port — dependency-free inline SVG) ──
 
-def _macro_spark_svg(values: list) -> str:
-    """Inline SVG sparkline. Green if rising, red if falling, gray if flat."""
+def _macro_spark_svg(values: list, change=None) -> str:
+    """Inline SVG sparkline. 색 = **최근 1개월 등락**(마지막 월 vs 직전 월) —
+    12개월 전체 추세 아님(사용자 요청). 오르면 초록, 내리면 빨강, 보합 회색."""
     vals = [v for v in (values or []) if v is not None]
     if len(vals) < 2:
         return '<div class="spark"></div>'
@@ -10782,8 +10785,9 @@ def _macro_spark_svg(values: list) -> str:
         x = pad + (i / (n - 1)) * (W - 2 * pad)
         y = pad + (1 - (v - vmin) / rng) * (H - 2 * pad)
         pts.append((x, y))
-    delta = vals[-1] - vals[0]
-    color = "#8b95a5" if abs(delta) < rng * 0.02 else ("#26a69a" if delta >= 0 else "#e2574c")
+    month_delta = vals[-1] - vals[-2]  # 최근 1개월 변화
+    color = ("#8b95a5" if abs(month_delta) < rng * 0.01
+             else "#26a69a" if month_delta > 0 else "#e2574c")
     poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
     area = f"{pad:.1f},{H - pad:.1f} {poly} {W - pad:.1f},{H - pad:.1f}"
     return (
@@ -10826,7 +10830,7 @@ def _render_macro_card(ind: dict) -> str:
     label = _html.escape(ind.get("label", ""))
     val_html = _macro_fmt_value(ind.get("value"), ind.get("decimals", 2), ind.get("unit", ""))
     chg_html = _macro_fmt_change(ind.get("change"), ind.get("decimals", 2))
-    spark = _macro_spark_svg(ind.get("spark", []))
+    spark = _macro_spark_svg(ind.get("spark", []), ind.get("change"))
     return (
         f'<div class="macard"><div class="ml">{label}</div>'
         f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}</div>'
@@ -11285,11 +11289,11 @@ def _render_market_page(data: dict) -> str:
   <div id="tab-us" class="tab-pane">
     {_render_research_us_table(research_us)}
   </div>
-</div>
 
-<div id="fav-section">
-  <div class="fav-hd"><h2>⭐ 관심종목</h2><span class="cnt" id="fav-cnt"></span></div>
-  <div id="fav-body"><div class="md-empty">불러오는 중…</div></div>
+  <div id="fav-section">
+    <div class="fav-hd"><h2>⭐ 관심종목</h2><span class="cnt" id="fav-cnt"></span></div>
+    <div id="fav-body"><div class="md-empty">불러오는 중…</div></div>
+  </div>
 </div>
 
 <script>
