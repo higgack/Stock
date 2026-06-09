@@ -800,11 +800,7 @@ def format_trend_for_prompt(foreign: Optional[dict], short: Optional[dict]) -> s
 
 
 def _pp_from_series(values: list[float], periods: list[int]) -> dict[int, float]:
-    """Compute pp changes at lookback points from a sorted daily pct series.
-
-    Returns None for a period if the series is too short (avoids mislabeling
-    a 45-day change as "60d").  Requires at least p+1 data points for period p.
-    """
+    """Legacy: positional pp changes (no date validation). Use _pp_from_dated_series when dates available."""
     if len(values) < 2:
         return {}
     current = values[-1]
@@ -816,6 +812,64 @@ def _pp_from_series(values: list[float], periods: list[int]) -> dict[int, float]
         else:
             pds[p] = None
     return pds
+
+
+def _pp_from_dated_series(dated: list[tuple[str, float]], periods: list[int]) -> dict[int, float]:
+    """Compute pp changes with date-span validation.
+
+    ``dated`` is a sorted list of (YYYYMMDD_str, pct_value) — one per trading day.
+    For each period *p*, walks back p data points and validates that the
+    actual calendar span is within bounds (≤ p × 2.5 + 7 days).  Long
+    suspensions or data gaps produce None rather than a misleading value.
+    """
+    if len(dated) < 2:
+        return {}
+    cur_date_s, cur_val = dated[-1]
+    pds: dict[int, float] = {}
+    try:
+        cur_d = _parse_date(cur_date_s)
+    except Exception:
+        cur_d = None
+    for p in periods:
+        if len(dated) > p:
+            idx = len(dated) - 1 - p
+            lb_date_s, lb_val = dated[idx]
+            if cur_d is not None:
+                try:
+                    lb_d = _parse_date(lb_date_s)
+                    cal_days = (cur_d - lb_d).days
+                    max_cal = int(p * 2.5) + 7
+                    if cal_days > max_cal or cal_days < 0:
+                        pds[p] = None
+                        continue
+                except Exception:
+                    pass
+            pds[p] = round(cur_val - lb_val, 3)
+        else:
+            pds[p] = None
+    return pds
+
+
+def _parse_date(s: str):
+    """Parse YYYYMMDD or YYYY-MM-DD to date."""
+    from datetime import datetime as _dt
+    s = s.replace("-", "")
+    return _dt.strptime(s[:8], "%Y%m%d").date()
+
+
+def _extract_dated_series(df, col_name: str) -> list[tuple[str, float]]:
+    """Extract (YYYYMMDD, value) pairs from a pykrx DataFrame column, preserving dates."""
+    col = df[col_name].dropna()
+    if len(col) < 2:
+        return []
+    result = []
+    for idx_val, v in col.items():
+        try:
+            d_str = idx_val.strftime("%Y%m%d") if hasattr(idx_val, "strftime") else str(idx_val)[:10].replace("-", "")
+        except Exception:
+            continue
+        result.append((d_str, float(v)))
+    return result
 
 
 def _pykrx_foreign_trend(code: str, start_str: str, end_str: str,
@@ -838,19 +892,20 @@ def _pykrx_foreign_trend(code: str, start_str: str, end_str: str,
                  code, list(df.columns), len(df))
         for c in ("지분율", "보유비중", "보유비율", "한도소진률", "한도소진율"):
             if c in df.columns:
-                series = df[c].dropna().tolist()
-                if len(series) >= 2:
-                    pds = _pp_from_series(series, periods)
-                    return {"current_pct": round(series[-1], 2), "periods": pds}
+                dated = _extract_dated_series(df, c)
+                if len(dated) >= 2:
+                    pds = _pp_from_dated_series(dated, periods)
+                    return {"current_pct": round(dated[-1][1], 2), "periods": pds}
         for c in df.columns:
             vals = df[c].dropna()
             if len(vals) >= 2:
                 sample = float(vals.iloc[-1])
                 if 0 < sample < 100:
-                    series = [float(v) for v in vals]
-                    pds = _pp_from_series(series, periods)
-                    log.info("pykrx: foreign trend using col '%s' for %s", c, code)
-                    return {"current_pct": round(series[-1], 2), "periods": pds}
+                    dated = _extract_dated_series(df, c)
+                    if len(dated) >= 2:
+                        pds = _pp_from_dated_series(dated, periods)
+                        log.info("pykrx: foreign trend using col '%s' for %s", c, code)
+                        return {"current_pct": round(dated[-1][1], 2), "periods": pds}
     except Exception as exc:
         log.info("pykrx: foreign trend failed for %s: %s", code, exc)
     return None
@@ -868,7 +923,7 @@ def _seibro_foreign_trend(ticker: str, periods: list[int]) -> Optional[dict]:
     if not code:
         return None
     try:
-        begin = (date.today() - timedelta(days=120)).strftime("%Y%m%d")
+        begin = (date.today() - timedelta(days=150)).strftime("%Y%m%d")
         items = _fetch_items({"likeSrtnCd": code, "beginBasDt": begin, "numOfRows": 200})
         rows = []
         for it in items:
@@ -880,11 +935,10 @@ def _seibro_foreign_trend(ticker: str, periods: list[int]) -> Optional[dict]:
             if pct is not None:
                 rows.append((str(it.get("basDt", "")), pct))
         rows.sort(key=lambda r: r[0])
-        values = [r[1] for r in rows]
-        if len(values) < 2:
+        if len(rows) < 2:
             return None
-        pds = _pp_from_series(values, periods)
-        return {"current_pct": round(values[-1], 2), "periods": pds}
+        pds = _pp_from_dated_series(rows, periods)
+        return {"current_pct": round(rows[-1][1], 2), "periods": pds}
     except Exception as exc:
         log.info("seibro: foreign trend fallback failed for %s: %s", ticker, exc)
         return None
@@ -934,7 +988,7 @@ def get_kr_multi_period_trends(ticker: str, *, cache_only: bool = False) -> Opti
         return None
 
     end = date.today()
-    start = end - timedelta(days=90)
+    start = end - timedelta(days=150)
     start_str = start.strftime("%Y%m%d")
     end_str = end.strftime("%Y%m%d")
     periods = [5, 10, 20, 30, 60]
@@ -960,10 +1014,10 @@ def get_kr_multi_period_trends(ticker: str, *, cache_only: bool = False) -> Opti
                 log.info("pykrx: short balance cols for %s: %s", code, list(df_s.columns))
                 for c in ("비중", "공매도비중", "잔고비중", "공매도잔고비중"):
                     if c in df_s.columns:
-                        vals = df_s[c].dropna().tolist()
-                        if len(vals) >= 2:
-                            pds_s = _pp_from_series(vals, periods)
-                            result["short"] = {"current_pct": round(vals[-1], 2), "periods": pds_s}
+                        dated = _extract_dated_series(df_s, c)
+                        if len(dated) >= 2:
+                            pds_s = _pp_from_dated_series(dated, periods)
+                            result["short"] = {"current_pct": round(dated[-1][1], 2), "periods": pds_s}
                             break
                 if "short" not in result:
                     for c in df_s.columns:
@@ -971,11 +1025,12 @@ def get_kr_multi_period_trends(ticker: str, *, cache_only: bool = False) -> Opti
                         if len(vals) >= 2:
                             sample = float(vals.iloc[-1])
                             if 0 <= sample < 100:
-                                series = [float(v) for v in vals]
-                                pds_s = _pp_from_series(series, periods)
-                                log.info("pykrx: short using col '%s' for %s", c, code)
-                                result["short"] = {"current_pct": round(series[-1], 2), "periods": pds_s}
-                                break
+                                dated = _extract_dated_series(df_s, c)
+                                if len(dated) >= 2:
+                                    pds_s = _pp_from_dated_series(dated, periods)
+                                    log.info("pykrx: short using col '%s' for %s", c, code)
+                                    result["short"] = {"current_pct": round(dated[-1][1], 2), "periods": pds_s}
+                                    break
         except Exception as exc:
             log.info("pykrx: multi-period short failed for %s: %s", code, exc)
 
