@@ -38,7 +38,7 @@ CARD_ASIA = [
     ("CN CSI 300", "000300.SS"),
     ("CN 상해 종합", "000001.SS"),
     ("HK 홍콩 항셍", "^HSI"),
-    ("HK 항셍테크", "^HSTECH"),
+    ("HK 항셍테크", "3033.HK"),  # ^HSTECH 지수는 yfinance 무데이터 → 추종 ETF(CSOP)로 대체
     ("IN Nifty 50", "^NSEI"),
 ]
 
@@ -105,7 +105,7 @@ CARD_AMERICAS = [
     ("CA 캐나다 TSX", "^GSPTSE"),
     ("BR 브라질 Bovespa", "^BVSP"),
     ("MX 멕시코 IPC", "^MXX"),
-    ("VN 베트남 VN-Index", "^VNINDEX"),
+    ("VN 베트남 (VNM ETF)", "VNM"),  # ^VNINDEX 는 yfinance 무데이터 → VanEck 베트남 ETF 로 대체
     ("ID 인도네시아 JCI", "^JKSE"),
     ("SA 사우디 Tadawul", "^TASI.SR"),
 ]
@@ -452,7 +452,7 @@ def fetch_recent_research_kr(limit: int = 25) -> list[dict]:
     results: list[dict] = []
     try:
         from bot.naver_research_client import fetch_recent_research_market
-        results = fetch_recent_research_market(limit=limit, days_back=14)
+        results = fetch_recent_research_market(limit=limit, days_back=30)
     except Exception as exc:
         log.warning("naver research market fetch error: %s", exc)
 
@@ -491,15 +491,23 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
             ud = t.upgrades_downgrades
             if ud is None or ud.empty:
                 return []
+            # yfinance 등급변경엔 시점별 목표가가 없음 → 현재 컨센서스 평균
+            # 목표가(targetMeanPrice)를 종목 단위로 부착(같은 종목 행은 동일값).
+            tp = None
+            try:
+                inf = t.info or {}
+                tp = inf.get("targetMeanPrice")
+            except Exception:
+                pass
             items = []
-            for idx, row in ud.head(5).iterrows():
+            for idx, row in ud.head(8).iterrows():
                 d = str(idx.date()) if hasattr(idx, "date") else str(idx)[:10]
                 items.append({
                     "symbol": tk,
                     "firm": row.get("Firm", ""),
                     "to_grade": row.get("ToGrade", ""),
                     "from_grade": row.get("FromGrade", ""),
-                    "action": row.get("Action", ""),
+                    "target": tp,
                     "date": d,
                 })
             return items
@@ -581,8 +589,8 @@ def fetch_all_market_data() -> dict[str, Any]:
     with ThreadPoolExecutor(max_workers=5) as pool:
         snap_fut = pool.submit(fetch_market_snapshot)
         earn_fut = pool.submit(fetch_earnings_calendar, 14)
-        kr_fut = pool.submit(fetch_recent_research_kr, 25)
-        us_fut = pool.submit(fetch_recent_research_us, 25)
+        kr_fut = pool.submit(fetch_recent_research_kr, 40)
+        us_fut = pool.submit(fetch_recent_research_us, 40)
         macro_fut = pool.submit(_fetch_macro_safe)
 
         return {

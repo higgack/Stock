@@ -337,7 +337,7 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     cutoff = today - timedelta(days=days_back)
     rows: list[dict] = []
     seen_nid: set[str] = set()
-    for page in (1, 2):
+    for page in (1, 2, 3, 4):
         html = _get(_BASE_URL, params={"page": page})
         if not html:
             break
@@ -372,12 +372,15 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
                 except Exception:
                     detail_map[nid] = (None, "")
         for r in rows:
-            _, rt = detail_map.get(r["nid"], (None, ""))
+            tgt, rt = detail_map.get(r["nid"], (None, ""))
             r["rating"] = rt
+            r["target"] = tgt
 
     out = [{
         "code": r["code"], "name": r["name"], "broker": r["broker"],
-        "rating": r.get("rating", ""), "title": r["title"], "date": r["date"],
+        "rating": r.get("rating", ""), "target": r.get("target"),
+        "title": r["title"], "date": r["date"],
+        "link": f"{_DETAIL_URL}?nid={r['nid']}",
     } for r in rows]
 
     try:
