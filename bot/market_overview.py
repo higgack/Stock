@@ -537,11 +537,12 @@ def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
 # 한경 컨센서스는 2026 초 JS 렌더링 전환으로 정적 scrape 불가 →
 # Naver Finance 전체 시장 리서치 목록(naver_research_client)으로 대체.
 
-def fetch_recent_research_kr(limit: int = 25) -> list[dict]:
-    """Fetch latest KR broker research reports (Naver Finance 리서치 목록).
+def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
+    """Fetch latest KR 종목(기업) 리서치 리포트 — 일주일치(Naver Finance).
 
-    개별 종목 분석이 Naver 리서치를 쓰는 것과 동일 소스 — 전체 시장 최신
-    리포트를 최신순으로. Returns [{code, name, broker, rating, title, date}]."""
+    개별 종목 분석이 Naver 리서치를 쓰는 것과 동일 소스. 사용자 정책
+    2026-06-09: 최근 7일(일주일치) 윈도. Returns
+    [{code, name, broker, rating, target, title, date}]."""
     cache_dir = _CACHE_DIR / "research"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today = date.today()
@@ -557,9 +558,41 @@ def fetch_recent_research_kr(limit: int = 25) -> list[dict]:
     results: list[dict] = []
     try:
         from bot.naver_research_client import fetch_recent_research_market
-        results = fetch_recent_research_market(limit=limit, days_back=30)
+        results = fetch_recent_research_market(limit=limit, days_back=7,
+                                               max_pages=8)
     except Exception as exc:
         log.warning("naver research market fetch error: %s", exc)
+
+    try:
+        cache_file.write_text(json.dumps(results, ensure_ascii=False))
+    except Exception:
+        pass
+    return results[:limit]
+
+
+def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
+    """Fetch latest KR 산업(업종) 리서치 리포트 — 일주일치(Naver Finance).
+
+    종목 리포트와 동일 7일 윈도. Returns [{category, broker, title, date, link}]."""
+    cache_dir = _CACHE_DIR / "research"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    today = date.today()
+    cache_file = cache_dir / f"kr_industry_{today.isoformat()}.json"
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < 1:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    results: list[dict] = []
+    try:
+        from bot.naver_research_client import fetch_recent_research_industry
+        results = fetch_recent_research_industry(limit=limit, days_back=7,
+                                                 max_pages=5)
+    except Exception as exc:
+        log.warning("naver research industry fetch error: %s", exc)
 
     try:
         cache_file.write_text(json.dumps(results, ensure_ascii=False))
@@ -691,13 +724,16 @@ def _fetch_macro_safe() -> dict:
 
 def fetch_all_market_data() -> dict[str, Any]:
     """Fetch everything needed for market.html."""
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         snap_fut = pool.submit(fetch_market_snapshot)
         earn_fut = pool.submit(fetch_earnings_calendar, 14)
         earn_kr_fut = pool.submit(fetch_earnings_calendar_kr, 90)
-        kr_fut = pool.submit(fetch_recent_research_kr, 40)
+        kr_fut = pool.submit(fetch_recent_research_kr, 150)
+        kr_ind_fut = pool.submit(fetch_recent_research_kr_industry, 80)
         us_fut = pool.submit(fetch_recent_research_us, 40)
         macro_fut = pool.submit(_fetch_macro_safe)
+        sector_fut = pool.submit(_fetch_sector_movers_safe)
+        nightf_fut = pool.submit(_fetch_night_futures_safe)
 
         # 실적 병합 — 한국(yfinance) 먼저, 미국(Finnhub) 다음. 각 그룹 날짜순.
         # 사용자 정책: 한국이 되면 한국을 앞으로.
@@ -709,6 +745,27 @@ def fetch_all_market_data() -> dict[str, Any]:
             "snapshot": snap_fut.result(),
             "earnings": earnings,
             "research_kr": kr_fut.result(),
+            "research_kr_industry": kr_ind_fut.result(),
             "research_us": us_fut.result(),
             "macro": macro_fut.result(),
+            "sector_movers": sector_fut.result(),
+            "night_futures": nightf_fut.result(),
         }
+
+
+def _fetch_sector_movers_safe() -> dict:
+    try:
+        from bot.naver_sector_client import fetch_sector_movers
+        return fetch_sector_movers(top_n=10)
+    except Exception as exc:
+        log.warning("sector movers fetch error: %s", exc)
+        return {"up": [], "down": [], "ts": ""}
+
+
+def _fetch_night_futures_safe():
+    try:
+        from bot.naver_sector_client import fetch_night_futures
+        return fetch_night_futures()
+    except Exception as exc:
+        log.warning("night futures fetch error: %s", exc)
+        return None
