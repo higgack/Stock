@@ -58,68 +58,66 @@ _CODE_HREF_RE = re.compile(
 _TITLE_KW = ("투자자", "이해증진", "경영실적", "기업설명", "설명회", "현황", "컨퍼런스")
 
 
-def parse_rows(html: str) -> list[dict]:
-    """IR일정 HTML(테이블/리스트) → [{name, code, date, title, time}]. 휴리스틱."""
+_TD_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.DOTALL | re.I)
+_LI_RE = re.compile(r"<li[^>]*>(.*?)</li>", re.DOTALL | re.I)
+
+
+def parse_calendar(html: str, year: int, month: int) -> list[dict]:
+    """KIND IR 달력 HTML(#calBig 표) → [{name, code, date, title, time}].
+
+    구조(실측 2026-06-10): 각 <td> = 하루(셀 머리에 날짜 숫자) + <ul><li> 이벤트.
+    날짜는 selYear/selMonth + 셀 일(day)로 구성. 빈 셀/빈 li 건너뜀."""
     out: list[dict] = []
-    blocks = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I)
-    if len(blocks) < 2:  # 캘린더 셀(li/div) 구조일 수도
-        blocks = re.findall(r"<li[^>]*>(.*?)</li>", html, re.DOTALL | re.I) or blocks
-    for block in blocks:
-        cells = [_clean(c) for c in
-                 re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", block, re.DOTALL | re.I)]
-        flat = _clean(block)
-        dm = _DATE_RE.search(flat)
+    seen: set = set()
+    for td in _TD_RE.findall(html):
+        head = td.split("<ul", 1)[0]          # <ul> 앞 = 날짜 숫자
+        dm = re.search(r"(\d{1,2})", head)
         if not dm:
+            continue                          # 날짜 없는 빈 셀(달 앞뒤 여백)
+        day = int(dm.group(1))
+        if not (1 <= day <= 31):
             continue
-        d_iso = _iso(*dm.groups())
-
-        # 종목코드: href 의 isurCd 등(태그 제거 전 raw) 우선, 없으면 raw 6자리
-        code = ""
-        cm = _CODE_HREF_RE.search(block)
-        if not cm:
-            cm = _CODE_RE.search(re.sub(r"\d{4}[-./]\d{1,2}[-./]\d{1,2}", " ", block))
-        if cm:
-            code = cm.group(1)
-
-        # 회사명: 첫 anchor 텍스트(회사 링크), 없으면 짧은 비-잡토큰 셀
-        name = ""
-        for a in _ANCHOR_RE.findall(block):
-            t = _clean(a)
-            if (t and len(t) <= 20 and not _DATE_RE.search(t)
-                    and not _TIME_RE.fullmatch(t)
-                    and not any(k in t for k in _NAME_STOP) and not t.isdigit()):
-                name = t
-                break
-        if not name:
-            for t in (cells or re.split(r"\s{2,}|\||·", flat)):
-                t = t.strip()
-                if (t and len(t) <= 20 and not _DATE_RE.search(t)
-                        and not _TIME_RE.fullmatch(t)
-                        and not any(k in t for k in _NAME_STOP)
-                        and not re.fullmatch(r"[\d,.\-:/\s]+", t)):
-                    name = t
-                    break
-
-        # 제목: IR 목적 키워드를 담은 '셀'(전체 행 아님)
-        title = ""
-        for c in cells:
-            if c and c != name and any(k in c for k in _TITLE_KW):
-                title = c[:60]
-                break
-
-        tm = _TIME_RE.search(flat)
-        if not name and not code:
-            continue
-        out.append({"name": name, "code": code, "date": d_iso,
-                    "title": title or "기업설명회(IR)",
-                    "time": tm.group(1) if tm else ""})
+        d_iso = _iso(year, month, day)
+        ul = td[td.find("<ul"):] if "<ul" in td else ""
+        for li in _LI_RE.findall(ul):
+            txt = _clean(li)
+            if not txt:
+                continue                      # 빈 li
+            # 회사명: anchor 텍스트 우선, 없으면 li 평문 첫 토큰
+            name = ""
+            am = _ANCHOR_RE.search(li)
+            if am:
+                name = _clean(am.group(1))
+            if not name or name.isdigit() or _TIME_RE.fullmatch(name):
+                for t in re.split(r"\s{2,}|\||·|,", txt):
+                    t = t.strip()
+                    if (t and len(t) <= 20 and not t.isdigit()
+                            and not _TIME_RE.fullmatch(t)
+                            and not any(k in t for k in _NAME_STOP)):
+                        name = t
+                        break
+            if not name:
+                continue
+            name = name[:30]
+            cm = _CODE_HREF_RE.search(li) or _CODE_RE.search(li)
+            code = cm.group(1) if cm else ""
+            tm = _TIME_RE.search(txt)
+            key = (code, d_iso, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"name": name, "code": code, "date": d_iso,
+                        "title": "기업설명회(IR)",
+                        "time": tm.group(1) if tm else ""})
     return out
 
 
 def fetch_kind_ir_month(year: int, month: int) -> list[dict]:
-    """[year-month] KIND IR일정 → [{name, code, date, title, time}] 날짜순.
+    """[year-month] KIND IR일정(실제 개최일) → [{name, code, date, title, time}].
 
-    실패/빈/포맷 불일치 시 [](호출부가 DART 폴백). 12h 캐시(월별)."""
+    실측 검증(2026-06-10): POST irschedule.do · method=searchIRScheduleCalendar
+    · selYear/selMonth. 세션 쿠키를 위해 메인 페이지 GET 선행. 실패/빈 → []
+    (호출부가 DART 폴백). 12h 캐시(월별)."""
     tag = f"{year:04d}-{month:02d}"
     _CACHE.mkdir(parents=True, exist_ok=True)
     cache_file = _CACHE / f"{tag}.json"
@@ -130,52 +128,36 @@ def fetch_kind_ir_month(year: int, month: int) -> list[dict]:
         except Exception:
             pass
 
-    first = date(year, month, 1)
-    last = (date(year + 1, 1, 1) if month == 12
-            else date(year, month + 1, 1)) - timedelta(days=1)
-    f_iso, l_iso = first.isoformat(), last.isoformat()
-    f_dot, l_dot = f_iso.replace("-", "."), l_iso.replace("-", ".")
-    ym = f"{year:04d}{month:02d}"
-
-    # KIND 캘린더 AJAX param 후보(정확 키 미검증 → 다중 시도)
-    candidates = [
-        {"method": "searchIRScheduleList", "currentPageSize": "100",
-         "pageIndex": "1", "fromDate": f_iso, "toDate": l_iso,
-         "searchCorpName": "", "marketType": "", "repIsuSrtCd": "",
-         "forwardYm": ym, "gubun": "iRScheduleCalendar"},
-        {"method": "searchIRScheduleCalendar", "forwardYm": ym,
-         "searchYm": ym, "fromDate": f_dot, "toDate": l_dot},
-    ]
+    data = {
+        "method": "searchIRScheduleCalendar",
+        "paxreq": "", "outsvcno": "", "forward": "", "gubun": "",
+        "searchFromDate": "", "searchToDate": "",
+        "selYear": str(year), "selMonth": f"{month:02d}",
+    }
     rows: list[dict] = []
-    for data in candidates:
-        try:
-            r = requests.post(_URL, data=data, headers=_HEADERS, timeout=15)
-            if r.status_code == 200 and r.text:
-                rows = parse_rows(r.text)
-                if rows:
-                    break
-        except Exception as exc:
-            log.warning("kind_ir %s: post failed: %s", tag, exc)
-
-    # 월 범위 필터 + dedup
-    seen: set = set()
-    out: list[dict] = []
-    for rrow in rows:
-        d = rrow.get("date", "")
-        if not (f_iso <= d <= l_iso):
-            continue
-        key = (rrow.get("code"), d, rrow.get("name"))
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(rrow)
-    out.sort(key=lambda x: x.get("date", ""))
-    log.info("kind_ir %s → %d IR 일정", tag, len(out))
     try:
-        cache_file.write_text(json.dumps(out, ensure_ascii=False))
+        sess = requests.Session()
+        try:  # 세션 쿠키(JSESSIONID) 확보
+            sess.get(_HEADERS["Referer"], headers=_HEADERS, timeout=15)
+        except Exception:
+            pass
+        r = sess.post(_URL, data=data, headers=_HEADERS, timeout=15)
+        if r.status_code == 200 and r.content:
+            try:                              # 응답 헤더는 ISO-8859-1 오표기
+                text = r.content.decode("utf-8")
+            except UnicodeDecodeError:
+                text = r.content.decode("euc-kr", errors="replace")
+            rows = parse_calendar(text, year, month)
+    except Exception as exc:
+        log.warning("kind_ir %s: post failed: %s", tag, exc)
+
+    rows.sort(key=lambda x: x.get("date", ""))
+    log.info("kind_ir %s → %d IR 일정", tag, len(rows))
+    try:
+        cache_file.write_text(json.dumps(rows, ensure_ascii=False))
     except Exception:
         pass
-    return out
+    return rows
 
 
 if __name__ == "__main__":
