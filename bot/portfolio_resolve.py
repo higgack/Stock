@@ -68,6 +68,13 @@ _OVERSEAS_ALIAS: dict[str, tuple[str, str]] = {
 _DROP_TOKENS = ("adr", "보통주", "우선주", "(주)", "㈜", "inc", "corp", "corporation",
                 "co.,ltd", "co.,ltd.", "ltd", "holding", "holdings", "주식회사")
 
+# KR ETF 브랜드 prefix — 뱅크샐러드 export 의 상품명이 이 중 하나로 시작하면 KR ETF.
+_KR_ETF_BRANDS = (
+    "TIGER", "KODEX", "ARIRANG", "SOL", "TIME", "KBSTAR", "HANARO", "ACE",
+    "KOSEF", "SMART", "BNK", "PLUS", "WOORI", "파워", "마이티",
+    "타이거", "코덱스", "아리랑", "케이비스타", "하나로", "에이스",
+)
+
 
 def _normalize(name: str) -> str:
     """비교용 정규화: 소문자(영문)·공백 제거·부수 토큰 제거.
@@ -81,6 +88,16 @@ def _normalize(name: str) -> str:
     s = re.sub(r"\s+", "", s)            # 모든 공백 제거
     s = re.sub(r"[^0-9a-z가-힣]", "", s)  # 기호 제거
     return s
+
+
+def _is_kr_etf_brand(name: str) -> bool:
+    """상품명이 KR ETF 브랜드 prefix 로 시작하면 True."""
+    upper = (name or "").strip().upper()
+    norm = (name or "").strip()
+    for brand in _KR_ETF_BRANDS:
+        if upper.startswith(brand.upper()) or norm.startswith(brand):
+            return True
+    return False
 
 
 def resolve_overseas(name: str) -> tuple[str, str] | None:
@@ -139,15 +156,85 @@ def resolve_kr(name: str) -> tuple[str, str] | None:
     return (t, "KR") if t else None
 
 
+# ── KR ETF pykrx 역맵 (ETF 종목명 → 'CODE.KS'). ──
+_KR_ETF_MAP: dict[str, str] | None = None
+
+
+def _load_kr_etf_map() -> dict[str, str]:
+    """KRX ETF 상장목록 {정규화 종목명: 'CODE.KS'}. pykrx/creds 부재 시 {}."""
+    global _KR_ETF_MAP
+    if _KR_ETF_MAP is not None:
+        return _KR_ETF_MAP
+    out: dict[str, str] = {}
+    try:
+        from pykrx import stock
+        from datetime import datetime
+        today = datetime.now().strftime("%Y%m%d")
+        for code in stock.get_market_ticker_list(today, market="ETF"):
+            nm = stock.get_market_ticker_name(code)
+            if nm:
+                out.setdefault(_normalize(nm), f"{code}.KS")
+    except Exception:
+        pass
+    _KR_ETF_MAP = out
+    return out
+
+
+def _kr_etf_meta_reverse() -> dict[str, str]:
+    """_KR_ETF_METADATA 의 name_ko → ticker 역맵 (import-time 1회)."""
+    try:
+        from bot.kr_etf_metadata import _KR_ETF_METADATA
+        return {_normalize(v["name_ko"]): k
+                for k, v in _KR_ETF_METADATA.items() if v.get("name_ko")}
+    except Exception:
+        return {}
+
+
+_ETF_META_REV: dict[str, str] | None = None
+
+
+def resolve_kr_etf(name: str) -> tuple[str, str] | None:
+    """KR ETF 상품명 → (ticker, 'KR') 또는 None.
+
+    1순위: kr_etf_metadata 역맵 (name_ko 매칭, 하드코딩 ~50종)
+    2순위: pykrx ETF 전수 역맵 (KRX 상장 ETF 전체, creds 필요)
+    3순위: 브랜드 prefix 매칭 → ticker None 이지만 market='KR' 보장
+    """
+    global _ETF_META_REV
+    if _ETF_META_REV is None:
+        _ETF_META_REV = _kr_etf_meta_reverse()
+
+    key = _normalize(name)
+
+    t = _ETF_META_REV.get(key)
+    if t:
+        return (t, "KR")
+
+    em = _load_kr_etf_map()
+    t2 = em.get(key)
+    if t2:
+        return (t2, "KR")
+
+    if _is_kr_etf_brand(name):
+        return (None, "KR")
+
+    return None
+
+
 def resolve_ticker(name: str) -> dict:
     """상품명 → {ticker, market, matched, source}.
 
-    순서: 해외 alias → 국내 pykrx → 미매칭(None). 미매칭이어도 스냅샷 평가금액은
-    표시되므로 ingest 가 계속 진행한다('이름만 표시')."""
+    순서: 해외 alias → 국내 DART/pykrx → KR ETF → 미매칭(None).
+    미매칭이어도 스냅샷 평가금액은 표시되므로 ingest 가 계속 진행한다('이름만 표시')."""
     ov = resolve_overseas(name)
     if ov:
         return {"ticker": ov[0], "market": ov[1], "matched": True, "source": "alias"}
     kr = resolve_kr(name)
     if kr:
         return {"ticker": kr[0], "market": kr[1], "matched": True, "source": "pykrx"}
+    etf = resolve_kr_etf(name)
+    if etf:
+        src = "etf_meta" if etf[0] else "etf_brand"
+        matched = etf[0] is not None
+        return {"ticker": etf[0], "market": etf[1], "matched": matched, "source": src}
     return {"ticker": None, "market": None, "matched": False, "source": None}

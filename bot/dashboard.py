@@ -4008,14 +4008,18 @@ def _render_stock_info_html(rec: dict) -> str:
     # ── tab navigation ──────────────────────────────────────────
     has_disclosures = bool(mkt.get("disclosures"))
     disclosure_tab = '  <button type="button" class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
-    has_flow = bool(is_kr and kr.get("flow")) or bool(is_cn and mkt.get("hsgt_flow")) or is_jp or is_tw or is_us
+    # Tab buttons for live-fetchable panes are always shown — the JS
+    # overlay (/api/quote?full=1) fills them after page load.  During
+    # batch regen the pane content is empty, but the button + placeholder
+    # div must exist so getElementById() in the overlay JS finds them.
+    has_flow = is_kr or is_cn or is_jp or is_tw or is_us  # any equity market
     flow_tab = '  <button type="button" class="si-tab" data-pane="si-flow">수급</button>\n' if has_flow else ""
     has_risk = bool(kr.get("lockup_releases") or kr.get("dilution_events") or kr.get("market_alert")) or bool(is_cn and mkt.get("risk_status"))
     risk_tab = '  <button type="button" class="si-tab" data-pane="si-risk">리스크</button>\n' if has_risk else ""
-    has_financials = bool(si.get("financials"))
-    financials_tab = '  <button type="button" class="si-tab" data-pane="si-financials">재무제표</button>\n' if has_financials else ""
-    has_peers = bool(si.get("peer_comps"))
-    peers_tab = '  <button type="button" class="si-tab" data-pane="si-peers">동종비교</button>\n' if has_peers else ""
+    has_financials = True  # enrichment overlay always fills this
+    financials_tab = '  <button type="button" class="si-tab" data-pane="si-financials">재무제표</button>\n'
+    has_peers = True  # enrichment overlay always fills this
+    peers_tab = '  <button type="button" class="si-tab" data-pane="si-peers">동종비교</button>\n'
     tabs_html = f"""<div class="si-tabs" id="si-tab-bar">
   <button type="button" class="si-tab active" data-pane="si-overview">종합</button>
   <button type="button" class="si-tab" data-pane="si-company">기업</button>
@@ -4975,6 +4979,11 @@ def _render_stock_info_html(rec: dict) -> str:
         if us_flow_parts:
             flow_pane = '<div class="si-pane" id="si-flow">\n  ' + "\n  ".join(us_flow_parts) + "\n</div>"
 
+    # Placeholder so the JS overlay can find the element by ID during
+    # batch regen (when all live-fetch blocks are skipped → flow_pane="").
+    if not flow_pane:
+        flow_pane = '<div class="si-pane" id="si-flow"></div>'
+
     # ── 리스크 pane (lockup + dilution + CN ST/停牌) ──────────────
     risk_parts: list[str] = []
 
@@ -5427,6 +5436,11 @@ def _render_stock_info_html(rec: dict) -> str:
   {cf_html}
 </div>"""
 
+    # Placeholder so the JS overlay can find the element by ID when
+    # financials data is absent (common during batch regen).
+    if not financials_pane:
+        financials_pane = '<div class="si-pane" id="si-financials"></div>'
+
     # ── 동종비교 (Peer Comps) pane ────────────────────────────────
     peers_pane = ""
     peer_comps = si.get("peer_comps", [])
@@ -5464,6 +5478,11 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
   </div>
 </div>"""
+
+    # Placeholder so the JS overlay can find the element by ID when
+    # peer_comps data is absent (common during batch regen).
+    if not peers_pane:
+        peers_pane = '<div class="si-pane" id="si-peers"></div>'
 
     # JP EDINET major holders (5%+ 大量保有)
     jp_holders_html = ""
