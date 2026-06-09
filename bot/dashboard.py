@@ -1720,6 +1720,21 @@ def _ticker_market(ticker: str) -> str:
     return "US"
 
 
+def _holding_market(h: dict) -> str:
+    """Portfolio holding → market code. Uses resolve_ticker's market field
+    first (covers DART-matched KR items). Falls back to ticker suffix.
+    Unmatched holdings (ticker=None, market=None) default to KR — all data
+    comes from 뱅크샐러드 Korean brokerage exports (ETFs like TIGER/KODEX,
+    unlisted names like 그린광학/SK에코플랜트)."""
+    mkt = h.get("market")
+    if mkt:
+        return mkt
+    tkr = h.get("ticker")
+    if tkr:
+        return _ticker_market(str(tkr))
+    return "KR"
+
+
 def _render_index(records: list[dict]) -> str:
     by_date: dict[str, list[dict]] = {}
     for r in records:
@@ -9047,10 +9062,7 @@ def _render_portfolio_page(model, noah=None) -> str:
         bro_rows += (f'<tr><td>{_html.escape(b)}</td><td class="r">{_pf_won(d["평가금액"])}</td>'
                      f'<td class="r">{d["종목수"]}</td>'
                      f'<td class="r" style="color:{_pf_col(d["평가손익"])}">{_pf_won(d["평가손익"])}</td></tr>')
-    # 증권사별 카드 밑 — 주식 국내/해외 비중. (증분(자산 변화)은 주식 요약 패널
-    # 밑으로 이동 — 사용자 2026-06-04.) 국내/해외는 resolve market=='US' 여부로 분류
-    # (해외 alias 매칭=해외, 나머지=국내) — pykrx 매칭 없어도 동작.
-    overseas = sum(h.get("평가금액") or 0 for h in holdings if h.get("market") == "US")
+    overseas = sum(h.get("평가금액") or 0 for h in holdings if _holding_market(h) != "KR")
     domestic = max(eval_sum - overseas, 0)
     eq_tot = eval_sum or 1
     nw_bar = (
@@ -9153,7 +9165,7 @@ def _render_portfolio_page(model, noah=None) -> str:
                                  f'{_csign}{_pf_won(_chg_val)}</td>')
             else:
                 _chg_cell = '<td class="cen"><span style="font-size:11px;color:var(--accent)">신규</span></td>'
-        _hmkt = _ticker_market(str(tkr or ""))
+        _hmkt = _holding_market(h)
         _da = (f'data-name="{nm.lower()}" data-tkr="{_html.escape(str(tkr or "")).lower()}" '
                f'data-broker="{broker}" data-eval="{ev if ev is not None else ""}" '
                f'data-ret="{r if r is not None else ""}" '
@@ -9178,7 +9190,7 @@ def _render_portfolio_page(model, noah=None) -> str:
     # 국가별 필터 버튼
     _hmkt_counts: dict[str, int] = {}
     for h in _holds_sorted:
-        _mk = _ticker_market(str(h.get("ticker") or ""))
+        _mk = _holding_market(h)
         _hmkt_counts[_mk] = _hmkt_counts.get(_mk, 0) + 1
     _mkt_order = ["KR", "US", "JP", "TW", "CN", "HK"]
     _mkt_btns = '<button class="mf-btn active" data-mf="ALL">전체</button>'
