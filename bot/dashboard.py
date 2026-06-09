@@ -9060,7 +9060,7 @@ def _render_portfolio_page(model, noah=None) -> str:
             '증분 표시</div>')
 
     cash_stat = (f'<div class="stat"><div class="stat-num">{_pf_won(cash_in_invest)}</div>'
-                  '<div class="stat-lbl">예수금 (자유입출금)</div></div>') if cash_in_invest else ""
+                  '<div class="stat-lbl">예수금<br>(자유입출금)</div></div>') if cash_in_invest else ""
     stats = (
         '<div class="stats">'
         f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("순자산"))}</div><div class="stat-lbl">순자산</div></div>'
