@@ -10718,7 +10718,9 @@ def _render_research_kr_table(research: list) -> str:
         except (TypeError, ValueError):
             tp_str = '—'
         lookup_url = f'lookup/{code}.KS'
-        title_cell = (f'<a href="{link}" target="_blank" rel="noopener">{title[:60]}</a>'
+        title_cell = (f'<a href="{link}" target="_blank" rel="noopener" '
+                      f'style="color:var(--text);text-decoration:underline;'
+                      f'text-decoration-color:var(--muted)">{title[:60]}</a>'
                       if link else title[:60])
         rows.append(
             f'<tr><td class="sym"><a href="{lookup_url}">{name or code}</a></td>'
@@ -11502,7 +11504,7 @@ def _render_market_page(data: dict) -> str:
       var countries = [];
       list.forEach(function(f) {{ if (f.country && countries.indexOf(f.country) < 0) countries.push(f.country); }});
       if (favState.country !== 'ALL' && countries.indexOf(favState.country) < 0) favState.country = 'ALL';
-      var copts = '<option value="ALL">전체 나라</option>';
+      var copts = '<option value="ALL">나라</option>';
       countries.forEach(function(c) {{
         copts += '<option value="' + c + '"' + (favState.country === c ? ' selected' : '') + '>' + (FLAG[c] || c) + '</option>';
       }});
