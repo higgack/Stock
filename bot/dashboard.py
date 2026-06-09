@@ -7932,8 +7932,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
       <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
         <summary class="card-h">
           <span class="card-toggle">▸</span>
-          <span class="domain">{title}</span>
-          <span class="meta">⏱ {ts} · ₩{cost:,.1f} · {elapsed:.0f}s</span>
+          <span class="domain">{title} ({ts} · ₩{cost:,.1f} · {elapsed:.0f}s)</span>
           <button class="del-btn" type="button" title="이 Daily Byte 기록 삭제">🗑️</button>
         </summary>
         <div class="card-body">
@@ -8092,8 +8091,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
   <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-del-api="{del_api}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
-      <span class="domain">{title}</span>
-      <span class="meta">⏱ {_html.escape(ts_clock)} · ₩{cost:,.1f}</span>
+      <span class="domain">{title} ({_html.escape(ts_clock)} · ₩{cost:,.1f})</span>
       <button class="del-btn" type="button" title="이 기록 삭제">🗑️</button>
     </summary>
     <div class="card-body">
@@ -8240,8 +8238,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
   <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
-      <span class="domain">{title}</span>
-      <span class="meta">⏱ {_html.escape(ts_clock)} · ₩{cost:,.1f}</span>
+      <span class="domain">{title} ({_html.escape(ts_clock)} · ₩{cost:,.1f})</span>
       <button class="del-btn" type="button" title="이 피드 삭제">🗑️</button>
     </summary>
     <div class="card-body">
