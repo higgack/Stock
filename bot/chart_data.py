@@ -76,7 +76,12 @@ def build_price_chart(ticker: str, as_of: str | None = None) -> dict | None:
         op = hist["Open"].reindex(close.index) if "Open" in hist else None
         hi = hist["High"].reindex(close.index) if "High" in hist else None
         lo = hist["Low"].reindex(close.index) if "Low" in hist else None
-        return _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker)
+        payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker)
+        # 저장 스냅샷은 1년 일봉 윈도 — 값 패널의 '기간 %' 라벨이 정직하게
+        # '1년' 으로 표시되도록 명시(프론트가 d.period 로 라벨 산출).
+        payload["period"] = "1y"
+        payload["interval"] = "1d"
+        return payload
     except Exception as exc:
         log.warning("chart_data: build failed for %s: %s", ticker, exc)
         return None
@@ -211,13 +216,14 @@ def _series_payload(
 # period are whitelisted; MAs (10/50/200) recompute on the chosen interval
 # (so weekly view = 10wk/50wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
-_VALID_INTERVALS = {"1d", "1wk", "1mo"}
-_VALID_PERIODS = {"1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
+_VALID_INTERVALS = {"5m", "1d", "1wk", "1mo"}
+_VALID_PERIODS = {"1d", "1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
 # Range → 대략 캘린더 일수. yfinance 의 period 문자열에는 '3y' 가 없어
 # (유효: 1mo/3mo/6mo/1y/2y/5y/10y/max) 전 범위를 start/end 로 통일 fetch
-# → '3y' 정상 동작 + 1개월/3개월 추가가 일관되게 작동.
+# → '3y' 정상 동작 + 1개월/3개월 추가가 일관되게 작동. '1d'(당일)은 5분봉
+# intraday 라 period='1d' 문자열 직접 fetch (start/end 미사용).
 _RANGE_DAYS = {
-    "1wk": 8, "1mo": 31, "3mo": 93, "6mo": 186, "1y": 366, "3y": 1100,
+    "1d": 1, "1wk": 8, "1mo": 31, "3mo": 93, "6mo": 186, "1y": 366, "3y": 1100,
     "5y": 1830,
 }
 
@@ -341,13 +347,17 @@ def fetch_chart_payload(
         interval = "1d"
     if period not in _VALID_PERIODS:
         period = "1y"
+    # '1d'(당일) = intraday 5분봉. yfinance 는 1m/5m 을 start/end 보다 period
+    # 문자열로 더 안정적으로 반환 → period='1d' + interval='5m' 직접 fetch.
+    if period == "1d":
+        interval = "5m"
     try:
         import yfinance as yf
         from datetime import datetime, timedelta
 
         t = yf.Ticker(ticker)
-        if period == "max":
-            hist = t.history(period="max", interval=interval, auto_adjust=True)
+        if period in ("max", "1d"):
+            hist = t.history(period=period, interval=interval, auto_adjust=True)
         else:
             now = datetime.now()
             end = now + timedelta(days=1)
