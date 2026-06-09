@@ -4407,7 +4407,6 @@ def _render_stock_info_html(rec: dict) -> str:
     {earnings_table}
   </div>
   {tw_revenue_html}
-  {_src_foot}출처: {earn_src}</div>
 </div>"""
 
     # ── 리서치 pane ─────────────────────────────────────────────
@@ -5184,7 +5183,7 @@ def _render_stock_info_html(rec: dict) -> str:
       <tbody>{d_rows}</tbody>
     </table>
   </div>
-  {_src_foot}출처: {esc(disc_source)}</div>
+
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID during
@@ -5468,7 +5467,6 @@ def _render_stock_info_html(rec: dict) -> str:
   {is_html}
   {bs_html}
   {cf_html}
-  {_src_foot}출처: yfinance</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
@@ -5512,7 +5510,6 @@ def _render_stock_info_html(rec: dict) -> str:
     </table>
     </div>
   </div>
-  {_src_foot}출처: yfinance</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
