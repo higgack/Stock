@@ -3030,6 +3030,21 @@ async def _periodic_paper_pending(application=None) -> None:
             log.exception("paper pending fill failed")
 
 
+async def _periodic_market_refresh() -> None:
+    """market.html(글로벌 스냅샷 + 매크로 + 리서치)을 5분마다 재생성 — 페이지의
+    '5분 주기 갱신' 라벨을 실제 충족. 무거운 fetch 는 thread 로 오프로드해 폴링
+    루프 비차단(watchdog getUpdates 영향 0). research/macro/earnings 는 자체
+    캐시(1h+)라 5분마다 실제 재fetch 되는 건 주로 지수/섹터 스냅샷.
+    관심종목은 api/favorites 로 별도 라이브 fetch 라 무관."""
+    while True:
+        await asyncio.sleep(300)   # 5분
+        try:
+            from bot.dashboard import regenerate_market_index
+            await asyncio.to_thread(regenerate_market_index)
+        except Exception:
+            log.exception("periodic market.html refresh failed")
+
+
 async def _periodic_dashboard_refresh(application=None) -> None:
     """Regenerate dashboard index.html ~1 min after each KST midnight.
 
@@ -3313,6 +3328,7 @@ async def _on_startup(application) -> None:
     application._auto_resolve_task = asyncio.create_task(_periodic_auto_resolve())
     application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh(application))
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
+    application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
 
     orphan = _recovery.read()
     if orphan is None:
