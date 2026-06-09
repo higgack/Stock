@@ -492,6 +492,66 @@ class KisClient:
         _cache_put(cache_key, result)
         return result
 
+    # 8. 당일 분봉 차트 (국내주식 당일분봉조회 FHKST03010200)
+    def get_minute_chart(self, ticker: str, interval_min: int = 5) -> Optional[list]:
+        """당일 분봉 OHLCV. interval_min: 1/5/10/15/30/60.
+
+        Returns list of {time: 'HHMMSS', open, high, low, close, volume}
+        sorted ascending (09:00→15:30). 5분 disk cache. KIS creds 부재/
+        비-KR ticker → None (graceful).
+        """
+        code = _ticker_to_code(ticker)
+        if not code:
+            return None
+        iv = str(interval_min)
+        cache_key = f"minchart_{code}_{iv}.json"
+        cached = _cache_get(cache_key, ttl_hours=5 / 60)
+        if cached is not None:
+            return cached
+
+        all_bars: list[dict] = []
+        cursor = "160000"
+        for _ in range(10):
+            data = _get(
+                "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice",
+                "FHKST03010200",
+                {
+                    "FID_COND_MRKT_DIV_CODE": _mkt_div(ticker),
+                    "FID_INPUT_ISCD": code,
+                    "FID_INPUT_HOUR_1": cursor,
+                    "FID_PW_DATA_INQR_DVSN": iv,
+                    "FID_ETC_CLS_CODE": "",
+                },
+            )
+            if not data:
+                break
+            rows = data.get("output2") or []
+            if not rows:
+                break
+            for r in rows:
+                t_str = (r.get("stck_cntg_hour") or "").strip()
+                cl = _int(r.get("stck_prpr"))
+                if not t_str or not cl:
+                    continue
+                all_bars.append({
+                    "time": t_str,
+                    "open": _int(r.get("stck_oprc")) or cl,
+                    "high": _int(r.get("stck_hgpr")) or cl,
+                    "low": _int(r.get("stck_lwpr")) or cl,
+                    "close": cl,
+                    "volume": _int(r.get("cntg_vol")) or 0,
+                })
+            last_t = rows[-1].get("stck_cntg_hour", "")
+            if not last_t or last_t <= "090000" or last_t >= cursor:
+                break
+            cursor = last_t
+
+        if len(all_bars) < 2:
+            return None
+        all_bars.sort(key=lambda x: x["time"])
+        _cache_put(cache_key, all_bars)
+        return all_bars
+
     def get_all(self, ticker: str) -> dict:
         """7종 모든 데이터를 한 dict로. 각 필드가 None이면 해당 endpoint 실패."""
         return {
