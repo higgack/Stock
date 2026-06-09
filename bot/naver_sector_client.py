@@ -191,15 +191,55 @@ def _first_big(cells: list) -> Optional[float]:
 _CRED_MIN, _CRED_MAX = 150000.0, 800000.0
 
 
-def fetch_deposit() -> dict:
-    """고객예탁금·신용잔고 (sise_deposit.naver) → {date, deposit, credit,
-    deposit_chg, credit_chg, deposit_series, credit_series}. 억원. 4분 캐시.
+def _fsc_date(d: str) -> str:
+    return f"{d[:4]}.{d[4:6]}.{d[6:8]}" if d and len(d) >= 8 else (d or "")
 
-    고객예탁금=각 날짜행 첫 큰 숫자(견고). 신용잔고=헤더('신용잔고') 컬럼 +
-    현실범위 가드(빗나가면 생략). 시계열=그래프용(최근~6개월). graceful."""
+
+def _fetch_deposit_fsc() -> dict:
+    """FSC(금융투자협회) 공식 API → 고객예탁금·신용잔고 둘 다 견고하게.
+
+    Naver 탭 구조가 불안정해 신용잔고가 안 나오던 문제 해소(사용자 2026-06-10).
+    값=억원, 일별 시계열 ~6개월. 키(DATA_GO_KR_API_KEY) 부재/실패 시 {}."""
+    try:
+        from bot import fsc_client
+        dser = fsc_client.deposit_series_eok(130)
+        cser = fsc_client.credit_series_eok(130)
+    except Exception as exc:
+        log.warning("deposit FSC failed: %s", exc)
+        return {}
+    out: dict = {}
+    if dser:
+        out["date"] = _fsc_date(dser[-1][0])
+        out["deposit"] = round(dser[-1][1], 1)
+        if len(dser) >= 2:
+            out["deposit_chg"] = round(dser[-1][1] - dser[-2][1], 1)
+        out["deposit_series"] = [{"d": _fsc_date(d), "v": round(v, 1)} for d, v in dser]
+    if cser:
+        out["credit"] = round(cser[-1][1], 1)
+        if len(cser) >= 2:
+            out["credit_chg"] = round(cser[-1][1] - cser[-2][1], 1)
+        out["credit_series"] = [{"d": _fsc_date(d), "v": round(v, 1)} for d, v in cser]
+    return out
+
+
+def fetch_deposit() -> dict:
+    """고객예탁금·신용잔고 → {date, deposit, credit, deposit_chg, credit_chg,
+    deposit_series, credit_series}. 억원. 4분 캐시.
+
+    1차 FSC(금융투자협회 공식 API — 둘 다 견고·일별 시계열), 실패 시 Naver
+    sise_deposit 폴백(고객예탁금만 견고, 신용은 컬럼 가드)."""
     c = _cached("deposit.json")
     if c is not None:
         return c
+    out = _fetch_deposit_fsc()
+    if not out or out.get("deposit") is None:
+        out = _fetch_deposit_naver()
+    _cache_write("deposit.json", out)
+    return out
+
+
+def _fetch_deposit_naver() -> dict:
+    """Naver sise_deposit 폴백 — 고객예탁금 견고(첫 큰 숫자), 신용은 가드."""
     out: dict = {}
     html = _get(f"{_BASE}/sise_deposit.naver")
     if html:
@@ -252,7 +292,6 @@ def fetch_deposit() -> dict:
                     cser.append({"d": cells[0], "v": cv})
             out["deposit_series"] = dser
             out["credit_series"] = cser
-    _cache_write("deposit.json", out)
     return out
 
 

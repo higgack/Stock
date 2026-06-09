@@ -477,6 +477,19 @@ def margin_balance() -> dict | None:
     return _trend(_kofia_series(_OP_CREDIT, "crdTrFingWhl"))
 
 
+def deposit_series_eok(n: int = 130) -> list[tuple[str, float]]:
+    """투자자예탁금 시계열 [(basDt, 억원)] — 대시보드 6개월 그래프용.
+
+    KOFIA 일별 데이터(억원 단위 환산: 원/1e8). 신용잔고와 동일 출처(공식 API)
+    라 Naver 스크래핑보다 견고 — 신용잔고도 깔끔히 나옴."""
+    return [(d, v / 1e8) for d, v in _kofia_series(_OP_DEPOSIT, "invrDpsgAmt", n)]
+
+
+def credit_series_eok(n: int = 130) -> list[tuple[str, float]]:
+    """신용융자잔고 시계열 [(basDt, 억원)] — 대시보드 6개월 그래프용."""
+    return [(d, v / 1e8) for d, v in _kofia_series(_OP_CREDIT, "crdTrFingWhl", n)]
+
+
 def _fmt_jo(won) -> str:
     """원 → 조/억 한국어 단위 (LLM 에 raw 원 미노출, 환각 방지)."""
     if won is None:
