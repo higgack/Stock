@@ -832,6 +832,23 @@ def main() -> int:
     args = parser.parse_args()
 
     log.info("dotenv: %s", _DOTENV_STATUS)
+    # 검색 워밍업 — api/search(종목명→ticker)는 DART corp_code 맵을 처음 1회
+    # 로드할 때 느리다(서버 재시작 직후 첫 검색). 백그라운드로 미리 로드해
+    # 첫 검색 '...' 지연 제거. 실패해도 서버 기동에 무영향.
+    try:
+        import threading as _warm_thr
+
+        def _warm_search():
+            try:
+                from bot.dart_client import get_dart
+                get_dart().find_by_name("삼성전자")  # forces corp_code map load
+                log.info("search warmup: DART corp_code map loaded")
+            except Exception as _wexc:
+                log.debug("search warmup failed: %s", _wexc)
+
+        _warm_thr.Thread(target=_warm_search, daemon=True).start()
+    except Exception:
+        pass
     server = ThreadingHTTPServer((args.bind, args.port), DashboardHandler)
     log.info(
         "serving %s on %s:%d  token=%s  basic_auth=%s",
