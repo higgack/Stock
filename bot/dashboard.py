@@ -11068,11 +11068,13 @@ def _render_market_daily_cards() -> str:
     kr = _load_latest_market_daily("daily_byte_archive", "daily")
     us = _load_latest_market_daily("daily_byte_archive", "us_daily")
 
-    def _card(rec: dict | None, label: str, flag: str, link: str, empty_msg: str) -> str:
+    def _card(rec: dict | None, label: str, flag: str, link: str,
+              empty_msg: str, schedule: str) -> str:
+        sched = (f'<span class="md-time">⏰ 매일 {_html.escape(schedule)} KST</span>')
         if not rec or not rec.get("body"):
             return (
                 f'<div class="md-card">'
-                f'<div class="md-label">{flag} {_html.escape(label)}</div>'
+                f'<div class="md-label">{flag} {_html.escape(label)} {sched}</div>'
                 f'<div class="md-empty">{_html.escape(empty_msg)}</div>'
                 f'</div>'
             )
@@ -11081,10 +11083,11 @@ def _render_market_daily_cards() -> str:
         summary = _extract_daily_summary(body, 400)
         ts = rec.get("ts", rec.get("date", ""))
         rel = _relative_time(ts) if ts else ""
-        time_span = f'<span class="md-time">{_html.escape(rel)}</span>' if rel else ""
+        rel_span = f' · {_html.escape(rel)}' if rel else ""
         return (
             f'<div class="md-card">'
-            f'<div class="md-label">{flag} {_html.escape(label)} {time_span}</div>'
+            f'<div class="md-label">{flag} {_html.escape(label)} '
+            f'<span class="md-time">⏰ 매일 {_html.escape(schedule)} KST{rel_span}</span></div>'
             f'<h3>{_html.escape(title)}</h3>'
             f'<div class="md-body fade">{summary}</div>'
             f'<a class="md-more" href="{_html.escape(link)}">전체 보기 →</a>'
@@ -11092,9 +11095,9 @@ def _render_market_daily_cards() -> str:
         )
 
     kr_card = _card(kr, "한국 Daily Byte", "🇰🇷", "daily_byte.html",
-                     "Daily Byte 아카이브가 아직 없습니다.")
+                     "Daily Byte 아카이브가 아직 없습니다.", "19:00")
     us_card = _card(us, "미국 Daily Byte", "🇺🇸", "daily_byte.html",
-                     "US Daily Byte 준비 중입니다.")
+                     "US Daily Byte 준비 중입니다.", "07:30")
     return f'<div class="md-row">{kr_card}{us_card}</div>'
 
 
@@ -11329,28 +11332,39 @@ def _render_market_page(data: dict) -> str:
       sym = sym || '$';
       return sym + Number(v).toLocaleString(undefined, {{minimumFractionDigits:0, maximumFractionDigits:2}});
     }}
-    function fmtEst(v) {{
-      if (v == null) return '—';
-      if (typeof v === 'number') {{
-        if (Math.abs(v) >= 1e9) return (v/1e9).toFixed(1) + 'B';
-        if (Math.abs(v) >= 1e6) return (v/1e6).toFixed(1) + 'M';
-        return v.toFixed(2);
-      }}
-      return String(v);
+    function tag(isActual) {{
+      /* forward(예상) / trailing(확정) 구분 라벨 — 종목마다 다름 */
+      return isActual
+        ? ' <span style="font-size:10px;color:var(--muted)">(확정)</span>'
+        : ' <span style="font-size:10px;color:var(--muted)">(예상)</span>';
     }}
 
-    function fmtEstLabel(v, isActual) {{
+    function fmtEstLabel(v, isActual, sym) {{
       if (v == null) return '—';
-      var txt = fmtEst(v);
-      if (isActual) txt += ' <span style="font-size:10px;color:var(--muted)">(예상치없음)</span>';
-      return txt;
+      sym = sym || '';
+      var num = (typeof v === 'number')
+        ? Number(v).toLocaleString(undefined, {{maximumFractionDigits:2}})
+        : String(v);
+      return sym + num + tag(isActual);
     }}
 
     function fmtPER(v, isTrailing) {{
       if (v == null) return '—';
-      var txt = Number(v).toFixed(1);
-      if (isTrailing) txt += ' <span style="font-size:10px;color:var(--muted)">(후행)</span>';
-      return txt;
+      return Number(v).toFixed(1) + tag(isTrailing);
+    }}
+
+    function fmtMcap(v, sym) {{
+      if (v == null) return '—';
+      sym = sym || '$';
+      if (sym === '₩' || sym === '¥') {{
+        if (v >= 1e12) return sym + (v/1e12).toFixed(1) + '조';
+        if (v >= 1e8) return sym + Math.round(v/1e8).toLocaleString() + '억';
+        return sym + Number(v).toLocaleString();
+      }}
+      if (v >= 1e12) return sym + (v/1e12).toFixed(2) + 'T';
+      if (v >= 1e9) return sym + (v/1e9).toFixed(1) + 'B';
+      if (v >= 1e6) return sym + (v/1e6).toFixed(0) + 'M';
+      return sym + Number(v).toLocaleString();
     }}
 
     function renderFavs(list) {{
@@ -11360,21 +11374,19 @@ def _render_market_page(data: dict) -> str:
         return;
       }}
       var h = '<table class="dtbl"><thead><tr>'
-        + '<th style="text-align:left">종목</th><th>나라</th><th>저장일</th>'
-        + '<th>저장가격</th><th>현재가격</th><th>EPS</th><th>PER</th><th>다음예상 실적일</th><th></th>'
+        + '<th style="text-align:left">종목</th><th>나라</th><th>저장일</th><th>시총</th>'
+        + '<th>저장가격</th><th>현재가격</th><th>저장대비</th><th>EPS</th><th>PER</th><th>다음예상 실적일</th><th></th>'
         + '</tr></thead><tbody>';
       list.forEach(function(f) {{
         var flag = FLAG[f.country] || '';
-        var curCell = '—';
+        var curCell = '—', pctCell = '—';
         if (f.current_price != null) {{
-          var cp = fmtPrice(f.current_price, f.currency_symbol);
+          curCell = fmtPrice(f.current_price, f.currency_symbol);
           if (f.saved_price != null && f.saved_price > 0) {{
-            var pct = ((f.current_price - f.saved_price) / f.saved_price * 100).toFixed(1);
+            var pct = (f.current_price - f.saved_price) / f.saved_price * 100;
             var clr = pct > 0 ? '#e74c3c' : pct < 0 ? '#3498db' : 'inherit';
             var sign = pct > 0 ? '+' : '';
-            curCell = '<span style="color:' + clr + '">' + cp + ' (' + sign + pct + '%)</span>';
-          }} else {{
-            curCell = cp;
+            pctCell = '<span style="color:' + clr + '">' + sign + pct.toFixed(1) + '%</span>';
           }}
         }}
         h += '<tr>'
@@ -11382,9 +11394,11 @@ def _render_market_page(data: dict) -> str:
           + ' <span style="font-size:11px;color:var(--muted)">' + f.ticker + '</span></td>'
           + '<td>' + flag + '</td>'
           + '<td>' + (f.saved_date||'') + '</td>'
+          + '<td>' + fmtMcap(f.market_cap, f.currency_symbol) + '</td>'
           + '<td>' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
           + '<td>' + curCell + '</td>'
-          + '<td>' + fmtEstLabel(f.eps_estimate, f.eps_is_actual) + '</td>'
+          + '<td>' + pctCell + '</td>'
+          + '<td>' + fmtEstLabel(f.eps_estimate, f.eps_is_actual, f.currency_symbol) + '</td>'
           + '<td>' + fmtPER(f.per, f.per_is_trailing) + '</td>'
           + '<td>' + (f.next_earnings||'—') + '</td>'
           + '<td><button class="fav-del" data-ticker="' + f.ticker + '" title="삭제">✕</button></td>'

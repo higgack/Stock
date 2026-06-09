@@ -108,7 +108,10 @@ def add_favorite(ticker: str) -> Optional[dict]:
         "saved_price": price,
         "currency": currency,
         "currency_symbol": _CURRENCY_MAP.get(currency, "$"),
+        "market_cap": info.get("marketCap"),
         "eps_estimate": eps_est,
+        "eps_is_actual": (info.get("forwardEps") is None
+                          and info.get("trailingEps") is not None),
         "per": per_val,
         "per_is_trailing": per_is_trailing,
         "next_earnings": next_earn,
@@ -167,6 +170,8 @@ def get_favorites_with_prices() -> list[dict]:
                     info = tk.info or {}
                 except Exception:
                     info = {}
+
+            f["market_cap"] = info.get("marketCap")
 
             fwd = info.get("forwardEps")
             trail = info.get("trailingEps")
