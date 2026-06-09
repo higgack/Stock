@@ -2509,7 +2509,7 @@ _CHART_JS = """
   var asOfClose = (initial && initial.as_of_close != null) ? initial.as_of_close : null;
   var analysisMarkers = (initial && initial.analysis_markers) || null;
   var chart = null, rsiChart = null, macdChart = null;
-  var curInterval = '1d', curRange = '3mo';
+  var curInterval = '1d', curRange = '1y';
   var lastData = null;   // 마지막 렌더 데이터 — 지표 토글 시 refetch 없이 재렌더
   var curSym = '';       // 현재 시장 통화 기호(₩/¥/€/NT$/HK$/$) — render 시 세팅
 
@@ -4156,7 +4156,6 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
   </div>
   {kr_financial_html}
-  <div style="font-size:11px;color:var(--fg-soft);margin-top:8px;text-align:right">출처: yfinance{" · DART · KIS" if is_kr else ""}{" · EDINET" if is_jp else ""}{" · MOPS" if is_tw else ""}{" · AKShare" if is_cn else ""}</div>
 </div>"""
 
     _src_foot = '<div style="font-size:11px;color:var(--fg-soft);margin-top:8px;text-align:right">'
@@ -4241,7 +4240,6 @@ def _render_stock_info_html(rec: dict) -> str:
     {range_html}
   </div>
   {supp_consensus_html}
-  {_src_foot}출처: yfinance{" · FnGuide · 한경" if is_kr else ""}{" · Kabutan" if is_jp else ""}</div>
 </div>"""
 
     # ── 밸류에이션 pane ────────────────────────────────────────
@@ -4406,7 +4404,6 @@ def _render_stock_info_html(rec: dict) -> str:
     {earnings_table}
   </div>
   {tw_revenue_html}
-  {_src_foot}출처: {earn_src}</div>
 </div>"""
 
     # ── 리서치 pane ─────────────────────────────────────────────
@@ -4428,8 +4425,7 @@ def _render_stock_info_html(rec: dict) -> str:
             r_rows += f"<tr><td>{d}</td><td>{firm}</td><td>{action}</td><td>{change}</td></tr>\n"
         research_table = f"""<table class="si-table">
   <thead><tr><th>날짜</th><th>리서치펌</th><th>액션</th><th>의견 변화</th></tr></thead>
-  <tbody>{r_rows}</tbody></table>
-  <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: yfinance · 애널리스트 등급 변경(upgrades/downgrades)</div>"""
+  <tbody>{r_rows}</tbody></table>"""
     elif kr_reports:
         r_rows = ""
         for rp in kr_reports:
@@ -4441,8 +4437,7 @@ def _render_stock_info_html(rec: dict) -> str:
             r_rows += f"<tr><td>{d}</td><td>{broker}</td><td>{rating}</td><td class='num'>{tgt_str}</td></tr>\n"
         research_table = f"""<table class="si-table">
   <thead><tr><th>발행일</th><th>증권사</th><th>투자의견</th><th class="num">목표가</th></tr></thead>
-  <tbody>{r_rows}</tbody></table>
-  <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: Naver Finance · 최근 90일 증권사 리포트</div>"""
+  <tbody>{r_rows}</tbody></table>"""
     else:
         research_table = '<div class="si-empty">리서치 액션 데이터가 없습니다.</div>'
 
@@ -4451,7 +4446,6 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section-title">리서치 액션</div>
     {research_table}
   </div>
-  {_src_foot}출처: {"Naver Finance" if is_kr else "yfinance"}</div>
 </div>"""
 
     # ── 기관 pane ───────────────────────────────────────────────
@@ -5065,7 +5059,7 @@ def _render_stock_info_html(rec: dict) -> str:
 
     risk_pane = ""
     if risk_parts:
-        risk_pane = '<div class="si-pane" id="si-risk">\n  ' + "\n  ".join(risk_parts) + f'\n  {_src_foot}출처: {"FSC · DART" if is_kr else "AKShare" if is_cn else "yfinance"}</div>\n</div>'
+        risk_pane = '<div class="si-pane" id="si-risk">\n  ' + "\n  ".join(risk_parts) + '\n</div>'
     # Placeholder so the JS overlay can swap risk content via live quote.
     if not risk_pane:
         risk_pane = '<div class="si-pane" id="si-risk"></div>'
@@ -5182,7 +5176,7 @@ def _render_stock_info_html(rec: dict) -> str:
       <tbody>{d_rows}</tbody>
     </table>
   </div>
-  {_src_foot}출처: {esc(disc_source)}</div>
+
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID during
@@ -5310,7 +5304,6 @@ def _render_stock_info_html(rec: dict) -> str:
   {kr_fin_ts_html}
   {us_xbrl_html}
   {div_html}
-  {_src_foot}출처: yfinance{" · DART" if is_kr and kr_fin_ts_html else ""}{" · SEC XBRL" if is_us and us_xbrl_html else ""}</div>
 </div>"""
 
     # ── 재무제표 pane (IS / BS / CF + 수익성 차트) ──────────────────
@@ -5465,7 +5458,6 @@ def _render_stock_info_html(rec: dict) -> str:
   {is_html}
   {bs_html}
   {cf_html}
-  {_src_foot}출처: yfinance</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
@@ -5509,7 +5501,6 @@ def _render_stock_info_html(rec: dict) -> str:
     </table>
     </div>
   </div>
-  {_src_foot}출처: yfinance</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
@@ -5643,7 +5634,6 @@ def _render_stock_info_html(rec: dict) -> str:
   {jp_holders_html}
   {tw_insiders_html}
   {cn_holders_html}
-  {_src_foot}출처: yfinance{" · DART · KRX" if is_kr else ""}{" · SEC" if is_us else ""}{" · EDINET" if is_jp else ""}{" · MOPS" if is_tw else ""}{" · AKShare" if is_cn else ""}</div>
 </div>"""
 
     # Return a dict with separate pieces so _render_detail can wrap
