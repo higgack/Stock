@@ -10899,7 +10899,9 @@ def _render_macro_card(ind: dict) -> str:
     label = _html.escape(ind.get("label", ""))
     val_html = _macro_fmt_value(ind.get("value"), ind.get("decimals", 2), ind.get("unit", ""))
     chg_html = _macro_fmt_change(ind.get("change"), ind.get("decimals", 2))
-    spark = _macro_spark_svg(ind.get("spark", []), ind.get("spark_dir"))
+    # 색 = 표시되는 라인의 방향(첫→끝): yf 카드는 1개월 일봉이라 1개월,
+    # FRED/ECOS 는 12개월 월간이라 12개월(원래대로 그래프 — 사용자 2026-06-10).
+    spark = _macro_spark_svg(ind.get("spark", []))
     return (
         f'<div class="macard"><div class="ml">{label}</div>'
         f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}</div>'
@@ -11107,6 +11109,33 @@ def _render_deposit_widget(dep: dict) -> str:
     )
 
 
+def _render_deposit_charts(dep: dict) -> str:
+    """고객예탁금·신용잔고 6개월 추이 라인 차트 — 위젯 아래. 데이터 없으면 빈 문자열."""
+    if not dep:
+        return ""
+    cards: list[str] = []
+    dser = dep.get("deposit_series", [])
+    cser = dep.get("credit_series", [])
+    if len(dser) >= 2:
+        svg = _svg_line_chart(
+            [p["d"] for p in dser],
+            [{"name": "고객예탁금", "color": "#ab47bc",
+              "data": [p["v"] for p in dser], "axis": "L"}])
+        cards.append(_chart_card("고객예탁금 추이 (억원)",
+                                 [("고객예탁금", "#ab47bc")], svg, "출처: Naver 증권"))
+    if len(cser) >= 2:
+        svg = _svg_line_chart(
+            [p["d"] for p in cser],
+            [{"name": "신용잔고", "color": "#42a5f5",
+              "data": [p["v"] for p in cser], "axis": "L"}])
+        cards.append(_chart_card("신용잔고 추이 (억원)",
+                                 [("신용잔고", "#42a5f5")], svg, "출처: Naver 증권"))
+    if not cards:
+        return ""
+    return ('<div class="chart-row" style="grid-template-columns:1fr 1fr;'
+            'margin-top:-10px">' + "".join(cards) + '</div>')
+
+
 def _render_sector_movers(movers: dict) -> str:
     """업종 등락 TOP 10 (상승/하락) 위젯 — Naver 업종별 시세. 데이터 없으면 빈 문자열."""
     up = (movers or {}).get("up", [])
@@ -11134,7 +11163,7 @@ def _render_sector_movers(movers: dict) -> str:
         '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
         '<h2>업종 등락 TOP 10</h2>'
         f'<a href="theme" style="{_lnk}">🎯 테마별 시세</a>'
-        f'<a href="highlow" style="{_lnk}">📈 신고가·신저가</a>'
+        f'<a href="highlow" style="{_lnk}">📈 상한가·하한가</a>'
         f'<span class="ts" style="margin-left:auto">{ts} · Naver</span></div>'
         '<div class="sm-wrap">'
         + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
@@ -11395,6 +11424,7 @@ def _render_market_page(data: dict) -> str:
 
     parts.append(_render_macro_snapshot(macro))
     parts.append(_render_deposit_widget(deposit))
+    parts.append(_render_deposit_charts(deposit))
     parts.append(_render_sector_movers(sector_movers))
 
     # 다가오는 실적 — 한국/미국 탭 분리(사용자 정책: 한국 기본·최대한 표시).
