@@ -1455,9 +1455,9 @@ def _build_usage_report() -> str:
     )
     # Market Daily (subsystem='market_daily') break out.
     today_cost_market_daily = sum(
-        r.get("cost_usd", 0) for r in today_calls if r.get("subsystem") == "market_daily")
+        r.get("cost_usd", 0) for r in today_calls if r.get("subsystem") in ("market_daily", "vn_market_daily"))
     month_cost_market_daily = sum(
-        r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "market_daily")
+        r.get("cost_usd", 0) for r in calls if r.get("subsystem") in ("market_daily", "vn_market_daily"))
     # 부동산(청약 포함) + 블로그 (subsystem='cheongyak'/'realestate'/'blog') break out.
     month_cost_realestate = sum(
         r.get("cost_usd", 0) for r in calls if r.get("subsystem") in ("cheongyak", "realestate"))

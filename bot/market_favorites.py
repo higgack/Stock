@@ -132,7 +132,7 @@ def get_favorites() -> list[dict]:
 
 
 def get_favorites_with_prices() -> list[dict]:
-    """Return favorites with current_price added via yfinance fast_info."""
+    """Return favorites with current_price + refreshed estimates via yfinance."""
     import yfinance as yf
     from concurrent.futures import ThreadPoolExecutor
 
@@ -140,15 +140,61 @@ def get_favorites_with_prices() -> list[dict]:
     if not favorites:
         return favorites
 
-    def _fetch_price(f: dict) -> None:
+    def _refresh(f: dict) -> None:
         try:
             tk = yf.Ticker(f["ticker"])
-            fi = tk.fast_info
-            f["current_price"] = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
+            price = None
+            info = None
+            try:
+                fi = tk.fast_info
+                price = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
+            except Exception:
+                pass
+            if price is None:
+                try:
+                    info = tk.info or {}
+                    price = info.get("regularMarketPrice") or info.get("currentPrice")
+                except Exception:
+                    info = {}
+            f["current_price"] = price
+
+            if info is None:
+                try:
+                    info = tk.info or {}
+                except Exception:
+                    info = {}
+
+            fwd = info.get("forwardEps")
+            trail = info.get("trailingEps")
+            f["eps_estimate"] = fwd if fwd is not None else trail
+            f["eps_is_actual"] = (fwd is None and trail is not None)
+
+            rev_fwd = None
+            try:
+                cal = tk.calendar
+                if isinstance(cal, dict):
+                    rev_fwd = cal.get("Revenue Average")
+                    if cal.get("Earnings Average") is not None and fwd is None:
+                        f["eps_estimate"] = cal["Earnings Average"]
+                        f["eps_is_actual"] = False
+                    earn_dates = cal.get("Earnings Date") or []
+                    if earn_dates:
+                        d = earn_dates[0]
+                        f["next_earnings"] = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+            except Exception:
+                pass
+
+            if rev_fwd is not None:
+                f["revenue_estimate"] = rev_fwd
+                f["revenue_is_actual"] = False
+            else:
+                total = info.get("totalRevenue")
+                f["revenue_estimate"] = total
+                f["revenue_is_actual"] = (total is not None)
         except Exception:
             f["current_price"] = None
 
     with ThreadPoolExecutor(max_workers=min(len(favorites), 8)) as pool:
-        pool.map(_fetch_price, favorites)
+        pool.map(_refresh, favorites)
 
     return favorites

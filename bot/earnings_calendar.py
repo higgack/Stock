@@ -95,11 +95,10 @@ def _hour_label(h: str) -> str:
 
 _CSS = """
 <style>
-:root{--bg:#0e1117;--card:#161b22;--border:#30363d;--text:#e6edf3;
+:root,[data-theme="dark"]{--bg:#0e1117;--card:#161b22;--border:#30363d;--text:#e6edf3;
 --muted:#8b949e;--accent:#58a6ff;--badge:#e6edf3;--badge-text:#0e1117}
-@media(prefers-color-scheme:light){
-:root{--bg:#fff;--card:#f6f8fa;--border:#d0d7de;--text:#1f2328;
---muted:#656d76;--accent:#0969da;--badge:#1f2328;--badge-text:#fff}}
+[data-theme="light"]{--bg:#fff;--card:#f6f8fa;--border:#d0d7de;--text:#1f2328;
+--muted:#656d76;--accent:#0969da;--badge:#1f2328;--badge-text:#fff}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
 background:var(--bg);color:var(--text);padding:24px;max-width:1100px;margin:0 auto}
@@ -243,4 +242,7 @@ def render_page(year: int, month: int) -> str:
 <div class="month-nav">{nav_html}</div>
 <div class="cal-grid">{grid}</div>
 <div style="margin-top:16px;font-size:11px;color:var(--muted)">출처: Finnhub · 장전=BMO(Before Market Open) · 장후=AMC(After Market Close)</div>
+<script>
+(function(){{var h=parseInt(new Intl.DateTimeFormat('en-US',{{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';}})();
+</script>
 </body></html>"""
