@@ -212,12 +212,13 @@ def _series_payload(
 # (so weekly view = 10wk/50wk/200wk — diverges from the daily text SSoT,
 # which is expected). Returns None on failure (client keeps current view).
 _VALID_INTERVALS = {"1d", "1wk", "1mo"}
-_VALID_PERIODS = {"1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
+_VALID_PERIODS = {"1wk", "1mo", "3mo", "6mo", "ytd", "1y", "3y", "5y", "max"}
 # Range → 대략 캘린더 일수. yfinance 의 period 문자열에는 '3y' 가 없어
 # (유효: 1mo/3mo/6mo/1y/2y/5y/10y/max) 전 범위를 start/end 로 통일 fetch
 # → '3y' 정상 동작 + 1개월/3개월 추가가 일관되게 작동.
 _RANGE_DAYS = {
-    "1mo": 31, "3mo": 93, "6mo": 186, "1y": 366, "3y": 1100, "5y": 1830,
+    "1wk": 8, "1mo": 31, "3mo": 93, "6mo": 186, "1y": 366, "3y": 1100,
+    "5y": 1830,
 }
 
 
