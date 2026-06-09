@@ -31,34 +31,45 @@ def _api_key() -> str:
 
 
 def fetch_month(year: int, month: int) -> list[dict]:
-    """Fetch earnings for a full month — 미국(Finnhub) + 한국(yfinance .calendar).
+    """Fetch a full month — 미국(Finnhub 실적) + 한국(DART 기업설명회 IR).
 
     각 이벤트에 market 필드('us'|'kr') 부착해 캘린더가 색/키로 구분. 한국은
-    market_overview.fetch_earnings_calendar_kr(90일·12h캐시) 결과를 해당 월로
-    필터링해 병합(별도 fetch 없음). 한국이 안 되면 미국만 graceful."""
+    DART 아카이브(최근 30일·fetch 0) + 과거 월은 DART 직접 월-fetch(12h 캐시)
+    로 IR 공시를 모아 해당 월로 필터·병합. 한국이 안 되면 미국만 graceful."""
     events = [dict(e, market="us") for e in _fetch_us_month(year, month)]
-    # 한국 = DART 영업(잠정)실적 + 기업설명회(IR) (사용자 요청). yfinance .calendar
-    # 보다 풍부 + 실제 공시 기반. 공시일(rcept_dt)에 배치, 클릭 시 DART 원문.
+    # 한국 = DART 기업설명회(IR) 공시만 (사용자 정책 2026-06-09: 캘린더는 IR
+    # 일정만, 실적공시는 DART 피드 페이지가 커버). 공시일(rcept_dt)에 배치,
+    # 클릭 시 DART 원문. 2단 소스:
+    #   (1) 아카이브(최근 30일·5분 타이머 누적·fetch 0) — 현재/근접 월.
+    #   (2) 과거 월로 아카이브가 닿지 않으면 DART 직접 월-fetch(12h 캐시) →
+    #       미국이 5/12 부터 차듯 한국 과거 월도 즉시 채움.
     try:
-        from bot.dart_feed import fetch_kr_earnings_ir
-        # 표시 월이 과거여도 채워지도록 충분히 넓은 아카이브 윈도(오늘~월초+여유).
-        # DART 피드 5분 타이머가 매일 누적 → 시간이 지나며 과거 월도 자동 채움.
+        from bot.dart_feed import fetch_kr_earnings_ir, fetch_kr_ir_month
         from datetime import date as _d
         _today = _d.today()
         _first = _d(year, month, 1)
         _back = max(14, (_today - _first).days + 35)
         mprefix = f"{year:04d}-{month:02d}"
-        for it in fetch_kr_earnings_ir(days_back=_back):
-            d = it.get("date", "")
-            if not d.startswith(mprefix):
-                continue
+        kr: dict[str, dict] = {}  # url 키로 dedup (같은 공시 중복 방지)
+
+        def _add(it):
             code = it.get("code", "")
-            events.append({
+            url = it.get("url", "#")
+            kr[url if url != "#" else f"{code}-{it.get('date')}-{it.get('title')}"] = {
                 "symbol": f"{code}.KS" if code else (it.get("name") or ""),
-                "name": it.get("name", ""), "date": d, "hour": "",
-                "market": "kr", "url": it.get("url", "#"),
-                "ir_type": it.get("type", ""),
-            })
+                "name": it.get("name", ""), "date": it.get("date", ""),
+                "hour": "", "market": "kr", "url": url,
+                "ir_type": it.get("type", "IR"),
+            }
+
+        for it in fetch_kr_earnings_ir(days_back=_back):
+            if it.get("date", "").startswith(mprefix):
+                _add(it)
+        # 아카이브가 이 월을 거의 못 채웠으면(과거 월) DART 직접 월-fetch 보강.
+        if len(kr) < 3:
+            for it in fetch_kr_ir_month(year, month):
+                _add(it)
+        events.extend(kr.values())
     except Exception as exc:
         log.warning("earnings_cal: KR DART merge failed: %s", exc)
     return events
@@ -227,7 +238,7 @@ def _market_toggle(year: int, month: int, market: str) -> str:
 
 
 def render_page(year: int, month: int, market: str = "kr") -> str:
-    """Render the earnings calendar — market='kr'(DART 영업잠정실적+IR) | 'us'(Finnhub)."""
+    """Render the earnings calendar — market='kr'(DART 기업설명회 IR) | 'us'(Finnhub 실적)."""
     market = market if market in ("kr", "us") else "kr"
     events = [e for e in fetch_month(year, month)
               if e.get("market", "us") == market]
@@ -297,7 +308,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
                 mcls = "kr" if is_kr else "us"
                 if is_kr:
                     # 한국: 회사 클릭 → DART 공시 원문(사용자 정정 — 분석페이지 아님).
-                    # 종류(실적/IR)는 텍스트 배지로 표기.
+                    # 종류(IR)는 텍스트 배지로 표기.
                     tag = _html.escape(e.get("ir_type", ""))
                     hl_span = f' <span class="hour">{tag}</span>' if tag else ""
                     link = _html.escape(e.get("url", "#"))
@@ -332,15 +343,15 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
 <a class="back-link" href="market.html">← 홈으로</a>
 <div style="font-size:11px;letter-spacing:2px;color:var(--muted);margin-bottom:4px">EARNINGS CALENDAR</div>
 <h1>실적 캘린더</h1>
-<div class="subtitle">한국시간 기준 실적·IR 일정. <b>한국/미국 버튼</b>으로 달력이 시장별로 전환됩니다. 한국은 DART 의 <b>영업(잠정)실적·기업설명회(IR)</b> 공시(공시일에 배치, <b>클릭 시 DART 원문</b>), 미국은 Finnhub 실적(장전 BMO / 장후 AMC). <b>+N 더보기(또는 날짜) 클릭</b>으로 그날 전체 펼침.</div>
+<div class="subtitle">한국시간 기준 일정. <b>한국/미국 버튼</b>으로 달력이 시장별로 전환됩니다. 한국은 DART 의 <b>기업설명회(IR)</b> 일정(공시일에 배치, <b>클릭 시 DART 원문</b> — 실적공시는 DART 피드 페이지 참조), 미국은 Finnhub 실적(장전 BMO / 장후 AMC). <b>+N 더보기(또는 날짜) 클릭</b>으로 그날 전체 펼침.</div>
 {_market_toggle(year, month, market)}
 <div class="cal-header">
   <h2>{month_kr}</h2>
-  <span class="cnt">{('🇰🇷 한국' if market == 'kr' else '🇺🇸 미국')} {total}건</span>
+  <span class="cnt">{('🇰🇷 한국 IR' if market == 'kr' else '🇺🇸 미국 실적')} {total}건</span>
 </div>
 <div class="month-nav">{nav_html}</div>
 <div class="cal-grid">{grid}</div>
-<div style="margin-top:16px;font-size:11px;color:var(--muted)">한국 DART(영업잠정실적·기업설명회 IR) · 미국 Finnhub · 장전=BMO / 장후=AMC</div>
+<div style="margin-top:16px;font-size:11px;color:var(--muted)">한국 DART 기업설명회(IR) · 미국 Finnhub 실적 · 장전=BMO / 장후=AMC</div>
 <script>
 (function(){{var h=parseInt(new Intl.DateTimeFormat('en-US',{{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';}})();
 (function(){{

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -74,23 +75,20 @@ def _classify_report(report_nm: str) -> str:
 
 
 def fetch_kr_earnings_ir(days_back: int = 10) -> list[dict]:
-    """DART 아카이브에서 한국 실적(영업잠정실적) + IR(기업설명회) 공시 추출.
+    """DART 아카이브에서 한국 IR(기업설명회) 공시만 추출 — 캘린더용.
 
-    이미 5분 타이머가 채운 아카이브를 재활용 → 추가 fetch·비용 0. 반환
-    [{name, code, date, type('실적'|'IR'), title, url}] 날짜 내림차순."""
+    사용자 정책 2026-06-09: 캘린더에는 IR 일정만. 실적공시는 DART 피드
+    페이지가 커버하므로 캘린더에서 제외. 이미 5분 타이머가 채운 아카이브를
+    재활용 → 추가 fetch·비용 0. 반환 [{name, code, date, type='IR', title,
+    url}] 날짜 내림차순."""
     out: list[dict] = []
     by_date = load_all_archives(days_back=days_back)
     for date_str, items in by_date.items():
         for it in items:
             cat = it.get("category")
-            title = it.get("report_nm", "")
-            # 사용자 정책: 기업설명회(IR) + 영업(잠정)실적만. '매출액또는손익구조
-            # 30%이상변경'(한화리츠類)은 제외 — 실적 카테고리지만 IR/잠정실적 아님.
-            is_earn = ("영업(잠정)실적" in title or "잠정실적" in title
-                       or "영업실적" in title)
-            if not (cat == "IR" or is_earn):
+            # IR(기업설명회)만. 실적/매출손익구조 등은 캘린더에서 제외.
+            if cat != "IR":
                 continue
-            cat = "IR" if cat == "IR" else "실적"
             raw = str(it.get("date") or "").strip()
             try:
                 d_iso = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) >= 8 else date_str
@@ -105,6 +103,97 @@ def fetch_kr_earnings_ir(days_back: int = 10) -> list[dict]:
                 "url": it.get("url", "#"),
             })
     out.sort(key=lambda x: x.get("date", ""), reverse=True)
+    return out
+
+
+_IR_MONTH_CACHE = Path.home() / ".tradingagents" / "cache" / "dart_ir_month"
+_IR_MONTH_TTL = 12 * 3600
+
+
+def fetch_kr_ir_month(year: int, month: int, max_pages: int = 40) -> list[dict]:
+    """특정 월의 한국 IR(기업설명회) 공시를 DART 에서 직접 fetch — 캘린더 과거 채움.
+
+    아카이브(최근 30일)가 닿지 않는 과거 월도 즉시 채우기 위한 직접 호출.
+    list.json 을 pblntf_ty='I'(거래소공시)로 좁혀 firehose 를 줄인 뒤 IR
+    키워드만 필터(client-side). 공시 접수일(rcept_dt)에 배치. 12h 디스크
+    캐시(월별). 실패/빈/키부재 → [] (호출부가 다른 소스로 폴백). IR-only.
+
+    ⚠️ pblntf_ty 코드가 빗나가도 graceful [] → 회귀 0. 미래 월은 공시가 아직
+    없으므로 [](today 까지만 fetch)."""
+    api_key = _dart_api_key()
+    if not api_key:
+        return []
+    today = datetime.now(_KST).date()
+    first = date(year, month, 1)
+    if first > today:
+        return []
+    last = (date(year + 1, 1, 1) if month == 12
+            else date(year, month + 1, 1)) - timedelta(days=1)
+    end = min(last, today)
+
+    tag = f"{year:04d}-{month:02d}"
+    _IR_MONTH_CACHE.mkdir(parents=True, exist_ok=True)
+    cache_file = _IR_MONTH_CACHE / f"{tag}.json"
+    if cache_file.exists():
+        try:
+            if time.time() - cache_file.stat().st_mtime < _IR_MONTH_TTL:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    bgn_ds = first.strftime("%Y%m%d")
+    end_ds = end.strftime("%Y%m%d")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for page_no in range(1, max_pages + 1):
+        try:
+            resp = requests.get(
+                f"{_DART_BASE}/list.json",
+                params={
+                    "crtfc_key": api_key,
+                    "bgn_de": bgn_ds,
+                    "end_de": end_ds,
+                    "pblntf_ty": "I",  # 거래소공시 (IR개최안내 포함) — firehose 축소
+                    "page_no": page_no,
+                    "page_count": 100,
+                },
+                timeout=_TIMEOUT,
+            )
+            payload = resp.json()
+        except Exception as exc:
+            log.warning("dart_feed: ir_month %s page %d failed: %s", tag, page_no, exc)
+            break
+        if payload.get("status") not in ("000",):
+            break
+        for r in payload.get("list") or []:
+            rcept_no = r.get("rcept_no", "")
+            if rcept_no in seen:
+                continue
+            seen.add(rcept_no)
+            report_nm = (r.get("report_nm") or "").strip()
+            if _classify_report(report_nm) != "IR":
+                continue
+            raw = str(r.get("rcept_dt") or "").strip()
+            d_iso = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) >= 8 else end_ds
+            out.append({
+                "name": (r.get("corp_name") or "").strip(),
+                "code": (r.get("stock_code") or "").strip(),
+                "date": d_iso,
+                "type": "IR",
+                "title": report_nm,
+                "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}",
+            })
+        try:
+            if page_no >= int(payload.get("total_page") or 1):
+                break
+        except (TypeError, ValueError):
+            break
+
+    out.sort(key=lambda x: x.get("date", ""), reverse=True)
+    try:
+        cache_file.write_text(json.dumps(out, ensure_ascii=False))
+    except Exception:
+        pass
     return out
 
 

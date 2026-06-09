@@ -71,7 +71,6 @@ CARD_SENTIMENT = [
     ("이더리움", "ETH-USD"),
     ("솔라나", "SOL-USD"),
     ("리플", "XRP-USD"),
-    ("BNB", "BNB-USD"),
     ("도지코인", "DOGE-USD"),
 ]
 
