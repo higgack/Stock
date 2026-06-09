@@ -3963,6 +3963,15 @@ def _render_stock_info_html(rec: dict) -> str:
     is_tw = ticker.endswith((".TW", ".TWO"))
     is_cn = ticker.endswith((".SS", ".SZ", ".BJ", ".HK"))
     is_us = not (is_kr or is_jp or is_tw or is_cn)
+    # Live network enrichment (KR 외국인보유·DART, JP JPX, TW 三大法人, US
+    # options/Form4/finnhub) must NEVER run on the bot's event loop during a
+    # batch regen — dozens of cold-cache HTTP calls block Telegram polling
+    # >180s and trip the watchdog (restart → startup regen → cold cache →
+    # hang again, the vicious loop the user kept seeing). The on-demand
+    # /api/quote?full=1 path re-fetches ALL of these live in the dashboard
+    # *server* process and swaps them in, so the static page loses nothing.
+    # Every live-fetch block below is gated on `_live`; keep it that way.
+    _live = not _BATCH_REGEN
     if is_kr:
         mkt = si.get("kr", {})
     elif is_jp:
@@ -4475,7 +4484,7 @@ def _render_stock_info_html(rec: dict) -> str:
 
     # ── P5 KR: 외국인보유 상세 (pykrx → Seibro → Naver fallback) ──
     kr_foreign_html = ""
-    if is_kr:
+    if is_kr and _live:
         try:
             fh = None
             try:
@@ -4521,7 +4530,7 @@ def _render_stock_info_html(rec: dict) -> str:
 
     # ── P6 KR: DART 최대주주 현황 (주주탭 하단) ──────────────────
     kr_affiliates_html = ""
-    if is_kr:
+    if is_kr and _live:
         try:
             from bot.dart_client import get_dart
             dart = get_dart()
@@ -4552,7 +4561,7 @@ def _render_stock_info_html(rec: dict) -> str:
 
     # ── P6b KR: DART 계열회사(타법인 출자) 현황 (주주탭 하단) ──────
     kr_affiliates_invest_html = ""
-    if is_kr:
+    if is_kr and _live:
         try:
             from bot.dart_client import get_dart
             dart2 = get_dart()
@@ -4659,7 +4668,7 @@ def _render_stock_info_html(rec: dict) -> str:
         # Detailed multi-period investor flow (pykrx detail)
         # Skip live pykrx fetch during batch regen (startup/midnight) to avoid blocking polling
         inv_detail_html = ""
-        if not _BATCH_REGEN:
+        if _live:
             try:
                 from bot.pykrx_client import get_kr_investor_detail
                 inv_d = get_kr_investor_detail(ticker)
@@ -4728,7 +4737,7 @@ def _render_stock_info_html(rec: dict) -> str:
         # Multi-period trends (live fetch from pykrx)
         # Skip during batch regen to avoid blocking polling
         trend_html = ""
-        if not _BATCH_REGEN:
+        if _live:
             try:
                 from bot.pykrx_client import get_kr_multi_period_trends
                 mp = get_kr_multi_period_trends(ticker)
@@ -4794,7 +4803,7 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>"""
 
     # ── JP: JPX 주간 투자주체별 수급 (시장 전체) ────────────────
-    if is_jp and not flow_pane:
+    if is_jp and _live and not flow_pane:
         try:
             from bot.jpx_flow_client import fetch_jpx_weekly_flow
             jpx_rows = fetch_jpx_weekly_flow()
@@ -4827,7 +4836,7 @@ def _render_stock_info_html(rec: dict) -> str:
             log.info("detail: jpx flow: %s", exc)
 
     # ── TW: TWSE/TPEx 三大法人 (종목별 당일+5일) ─────────────────
-    if is_tw and not flow_pane:
+    if is_tw and _live and not flow_pane:
         try:
             from bot.twse_flow_client import fetch_institutional_flow
             tw_flow = fetch_institutional_flow(ticker)
@@ -4856,7 +4865,7 @@ def _render_stock_info_html(rec: dict) -> str:
             log.info("detail: twse flow %s: %s", ticker, exc)
 
     # ── US: Options IV/PCR + Form 4 Insider + Finnhub Insider Sentiment
-    if is_us and not flow_pane:
+    if is_us and _live and not flow_pane:
         us_flow_parts: list[str] = []
         # Options signals
         try:
@@ -5720,7 +5729,11 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
                     "us"
                 )
                 _needs = not si.get(_mkt_key, {}).get("disclosures")
-        if _needs:
+        # NEVER run live enrichment (news/research/consensus HTTP per ticker)
+        # during a batch regen — it blocks Telegram polling and trips the
+        # watchdog. The on-demand /api/quote?full=1 path (server process)
+        # calls _ensure_detail_enrichment itself, so the page fills on load.
+        if _needs and not _BATCH_REGEN:
             try:
                 _ensure_detail_enrichment(ticker, si)
             except Exception:

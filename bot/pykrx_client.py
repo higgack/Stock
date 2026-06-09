@@ -800,14 +800,21 @@ def format_trend_for_prompt(foreign: Optional[dict], short: Optional[dict]) -> s
 
 
 def _pp_from_series(values: list[float], periods: list[int]) -> dict[int, float]:
-    """Compute pp changes at lookback points from a sorted daily pct series."""
+    """Compute pp changes at lookback points from a sorted daily pct series.
+
+    Returns None for a period if the series is too short (avoids mislabeling
+    a 45-day change as "60d").  Requires at least p+1 data points for period p.
+    """
     if len(values) < 2:
         return {}
     current = values[-1]
     pds: dict[int, float] = {}
     for p in periods:
-        idx = max(0, len(values) - 1 - p)
-        pds[p] = round(current - values[idx], 3)
+        if len(values) > p:
+            idx = len(values) - 1 - p
+            pds[p] = round(current - values[idx], 3)
+        else:
+            pds[p] = None
     return pds
 
 
@@ -861,7 +868,7 @@ def _seibro_foreign_trend(ticker: str, periods: list[int]) -> Optional[dict]:
     if not code:
         return None
     try:
-        begin = (date.today() - timedelta(days=100)).strftime("%Y%m%d")
+        begin = (date.today() - timedelta(days=120)).strftime("%Y%m%d")
         items = _fetch_items({"likeSrtnCd": code, "beginBasDt": begin, "numOfRows": 200})
         rows = []
         for it in items:
@@ -883,19 +890,11 @@ def _seibro_foreign_trend(ticker: str, periods: list[int]) -> Optional[dict]:
         return None
 
 
-def _naver_foreign_trend(ticker: str, periods: list[int]) -> Optional[dict]:
-    """Fallback: Naver Finance foreign holding (current only, no multi-period)."""
-    try:
-        from bot.naver_finance_client import get_naver_foreign_holding
-    except ImportError:
-        return None
-    try:
-        data = get_naver_foreign_holding(ticker)
-        if data and data.get("foreign_pct") is not None:
-            return {"current_pct": round(data["foreign_pct"], 2), "periods": {}}
-    except Exception:
-        pass
-    return None
+def _has_any_period(pds: Optional[dict]) -> bool:
+    """True if at least one period has a non-None value."""
+    if not pds:
+        return False
+    return any(v is not None for v in pds.values())
 
 
 def get_kr_multi_period_trends(ticker: str) -> Optional[dict]:
@@ -934,20 +933,15 @@ def get_kr_multi_period_trends(ticker: str) -> Optional[dict]:
     periods = [5, 10, 20, 30, 60]
     result: dict = {}
 
-    # Foreign ownership: 3-tier fallback
+    # Foreign ownership: pykrx → Seibro fallback (Naver has no historical series)
     if krx_login_ready():
         fo = _pykrx_foreign_trend(code, start_str, end_str, periods)
-        if fo and fo.get("periods"):
+        if fo and _has_any_period(fo.get("periods")):
             result["foreign"] = fo
 
-    if not result.get("foreign", {}).get("periods"):
+    if not _has_any_period(result.get("foreign", {}).get("periods")):
         fo = _seibro_foreign_trend(ticker, periods)
-        if fo and fo.get("periods"):
-            result["foreign"] = fo
-
-    if "foreign" not in result:
-        fo = _naver_foreign_trend(ticker, periods)
-        if fo:
+        if fo and _has_any_period(fo.get("periods")):
             result["foreign"] = fo
 
     # Short balance: pykrx only
