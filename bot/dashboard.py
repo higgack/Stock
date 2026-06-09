@@ -1767,7 +1767,7 @@ def _render_index(records: list[dict]) -> str:
             if _cur_month_idx != _prev_month_idx:
                 if _prev_month_idx is not None:
                     sections.append("</div></details>")  # close prev month
-                _m_open = " open" if _cur_month_idx == _this_month_idx else ""
+                _m_open = " open"
                 sections.append(f"""
             <details class="month"{_m_open}>
               <summary class="month-head">
@@ -4664,7 +4664,6 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section-title">주요 뉴스 ({news_src})</div>
     {news_html}
   </div>
-  {_src_foot}출처: {news_src}</div>
 </div>"""
 
     # ── 수급 pane (KR only — KIS + pykrx flow data) ─────────────
@@ -7889,7 +7888,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
             f'<div class="month-body">'
         )
         for date in month_dates:
-            day_open = " open" if date == _today_kst else ""
+            day_open = ""
             day_count = len(by_date[date])
             parts.append(
                 f'<details class="day"{day_open}>'
