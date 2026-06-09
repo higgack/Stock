@@ -30,7 +30,7 @@ import requests
 log = logging.getLogger("bot.macro_snapshot")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "macro_snapshot"
-_CACHE_TTL_SEC = 12 * 3600  # 12h
+_CACHE_TTL_SEC = 2 * 3600  # 2h
 
 # ── Indicator definitions ───────────────────────────────────────────
 # (key, label, unit, source, source_id, decimals)
