@@ -1102,7 +1102,7 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
  • <code>/screen 매출QoQ&gt;10 영업이익QoQ&gt;5</code> — QoQ 성장 필터
  • <code>/screen valueup</code> — 프리셋 · <code>/screen list</code>
  • Phase 1 pykrx 벌크 → Phase 2 yfinance+QoQ(분기 재무 7종) 생존만
- • 24h 캐시 · 대시보드 screen.html · /screen list 전체 지표
+ • 24h 캐시 · 대시보드 screener.html 통합 · /screen list 전체 지표
 
 ━━━━━━━━━
 <b>【7. 캐시 &amp; 비용】</b>
@@ -1121,8 +1121,10 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/budget.html
  • <b>NOAH archive</b> (ID/PW) — 종목 상세·가격차트·실시간 지표·💰비용
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
- • <b>Screener</b> — 날짜별 run·Top-3 1/3/6m·검색·🗑️·도메인 /screener_list
+ • <b>📊 Screener</b> — Bottleneck 65도메인+자유어·Top-3 1/3/6m + 조건부(₩0)·검색·🗑️
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screener.html
+ • <b>🔔 워치리스트</b> — 페이퍼 모의매매(₩0)+워치 조건알림+이력
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/paper.html
  • <b>📨 미국 레딧</b> — t.me/insidertracking 자동포워드(1분·₩0)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/reddit_insider.html
  • <b>Daily Byte</b> — 한국거래일19:00·일22:00 KR수급 인포그래픽·검색·🗑️
@@ -1131,12 +1133,8 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
    http://34.50.23.221:8002/dashboard
  • <b>🇰🇷 수출입</b> — 외부 보조(자동 갱신)
    http://34.50.23.221:8765/dashboard/
- • <b>부동산 Byte</b> — 금09:00 실거래+R-ONE 추세+공급 · ticker 무관
+ • <b>🏠 부동산</b> — 실거래+R-ONE+공급(금09:00) · 청약(평일10·14시) · ticker 무관
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
- • <b>청약 Byte</b> — 평일10·14시 신규 분양+경쟁률 · ticker 무관
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/cheongyak.html
- • <b>Screen</b> — 조건부 스크리너 이력·₩0
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/screen.html
  • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 스니펫 검색(🟡클릭→분석)
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
