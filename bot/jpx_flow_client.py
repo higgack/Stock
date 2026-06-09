@@ -32,7 +32,7 @@ import requests
 log = logging.getLogger("bot.jpx_flow")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "jpx_flow"
-_CACHE_TTL_HOURS = 24
+_CACHE_TTL_HOURS = 96  # 4 days — JPX publishes Thu/Fri, ~2 refreshes/week
 _TIMEOUT = 15
 
 _HEADERS = {
