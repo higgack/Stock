@@ -135,6 +135,67 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
     return out
 
 
+def fetch_deposit() -> dict:
+    """고객예탁금·신용잔고 (sise_deposit.naver) → {date, deposit, credit,
+    deposit_chg, credit_chg}. 단위 억원(추정). 4분 캐시. best-effort·graceful.
+
+    ⚠️ Naver 페이지 컬럼 구조 미검증 — 헤더 매칭 + 첫 큰 숫자 폴백. 빗나가면
+    부분/빈값(호출부가 위젯 생략)."""
+    c = _cached("deposit.json")
+    if c is not None:
+        return c
+    out: dict = {}
+    html = _get(f"{_BASE}/sise_deposit.naver")
+    if html:
+        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I)
+        dep_idx = cred_idx = None
+        for row in rows:                       # 헤더 행에서 컬럼 인덱스 매칭
+            cells = _cell_texts(row)
+            if any("고객예탁금" in cc for cc in cells):
+                for i, cc in enumerate(cells):
+                    if dep_idx is None and "고객예탁금" in cc:
+                        dep_idx = i
+                    if cred_idx is None and "신용" in cc:
+                        cred_idx = i
+                break
+
+        def _num(cells: list, idx) -> Optional[float]:
+            if idx is not None and idx < len(cells):
+                m = re.search(r"-?[\d,]{4,}", cells[idx])
+                if m:
+                    try:
+                        return float(m.group(0).replace(",", ""))
+                    except ValueError:
+                        return None
+            return None
+
+        data_rows = []
+        for row in rows:                       # 날짜로 시작하는 데이터 행
+            cells = _cell_texts(row)
+            if cells and re.match(r"\d{2,4}[.\-/]\d{1,2}[.\-/]\d{1,2}", cells[0]):
+                data_rows.append(cells)
+        if data_rows:
+            cur = data_rows[0]
+            prev = data_rows[1] if len(data_rows) > 1 else None
+            dep = _num(cur, dep_idx)
+            if dep is None:                    # 폴백: 첫 큰 숫자 = 고객예탁금
+                for cc in cur[1:]:
+                    m = re.search(r"[\d,]{5,}", cc)
+                    if m:
+                        dep = float(m.group(0).replace(",", ""))
+                        break
+            cred = _num(cur, cred_idx)
+            out = {"date": cur[0], "deposit": dep, "credit": cred}
+            if prev:
+                pd, pc = _num(prev, dep_idx), _num(prev, cred_idx)
+                if dep is not None and pd is not None:
+                    out["deposit_chg"] = round(dep - pd, 1)
+                if cred is not None and pc is not None:
+                    out["credit_chg"] = round(cred - pc, 1)
+    _cache_write("deposit.json", out)
+    return out
+
+
 def fetch_themes() -> dict:
     """테마별 시세 → {'themes': [{name, pct}] 등락률 내림차순, 'ts'}. 4분 캐시."""
     c = _cached("theme.json")

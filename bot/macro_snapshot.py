@@ -81,8 +81,11 @@ GLOBAL = [
 # 위한 버전 해시. 키/심볼 목록이 달라지면 2h TTL 과 무관하게 재빌드 →
 # 새 지표가 stale 캐시에 묻혀 안 보이던 문제 방지.
 import hashlib as _hashlib  # noqa: E402
+# salt 'spark1mo' = 카드 스파크라인을 1개월 일봉 + spark_dir 구조로 변경
+# (2026-06-10). 옛 12개월 spark 캐시를 즉시 무효화.
 _DEFS_VERSION = _hashlib.md5(
-    repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)]).encode()
+    (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
+     + "|spark1mo").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
@@ -158,6 +161,51 @@ def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
     except Exception as exc:
         log.warning("macro: yf monthly batch failed: %s", exc)
     return out
+
+
+def _yf_daily_1mo_batch(tickers: list[str]) -> dict[str, list[float]]:
+    """Batch ~1개월 일봉 종가 → {ticker: [floats]} (카드 스파크라인 라인용).
+
+    사용자 2026-06-10: 카드 미니 차트의 '라인'도 12개월이 아니라 최근 1개월
+    이어야 색(1개월 방향)과 일치. 큰 차트(spark_cache)는 월간 그대로 유지."""
+    out: dict[str, list[float]] = {}
+    if not tickers:
+        return out
+    try:
+        import yfinance as yf
+        df = yf.download(
+            " ".join(tickers), period="1mo", interval="1d",
+            progress=False, threads=True, timeout=20,
+        )
+        if df is None or df.empty:
+            return out
+        for tk in tickers:
+            try:
+                closes = (df["Close"][tk] if len(tickers) > 1
+                          else df["Close"]).dropna()
+                vals = [round(float(c), 4) for c in closes.tolist()]
+                if vals:
+                    out[tk] = vals
+            except Exception:
+                continue
+    except Exception as exc:
+        log.warning("macro: yf daily 1mo batch failed: %s", exc)
+    return out
+
+
+def _spark_dir(series: list, baseline_idx: int) -> int:
+    """1개월 방향 +1/-1/0 — series[-1] vs series[baseline_idx], 1% 데드밴드."""
+    s = [v for v in (series or []) if v is not None]
+    if len(s) < 2:
+        return 0
+    try:
+        delta = s[-1] - s[baseline_idx]
+    except IndexError:
+        return 0
+    rng = (max(s) - min(s)) or 1.0
+    if abs(delta) < rng * 0.01:
+        return 0
+    return 1 if delta > 0 else -1
 
 
 def _yf_daily_change(tickers: list[str]) -> dict[str, dict]:
@@ -266,43 +314,53 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     # Collect yf tickers once.
     yf_tickers = [sid for _, _, _, src, sid, _ in (DOMESTIC + GLOBAL) if src == "yf"]
     yf_monthly = _yf_monthly_batch(yf_tickers)
+    yf_daily_1mo = _yf_daily_1mo_batch(yf_tickers)
     yf_daily = _yf_daily_change(yf_tickers)
 
-    spark_cache: dict[str, list[float]] = {}
+    spark_cache: dict[str, list[float]] = {}  # 큰 차트용(월간 12개월)
 
     def _build(defs: list) -> list[dict]:
         rows: list[dict] = []
         for key, label, unit, src, sid, dec in defs:
             value: Optional[float] = None
             change: Optional[float] = None
-            spark: list[float] = []
+            chart_spark: list[float] = []   # 큰 차트(월간)
+            card_spark: list[float] = []    # 카드 미니(1개월)
+            spark_dir = 0
             if src == "yf":
                 d = yf_daily.get(sid)
                 if d:
                     value, change = d["value"], d["change"]
-                spark = yf_monthly.get(sid, [])
-                if value is None and spark:
-                    value = spark[-1]
+                chart_spark = yf_monthly.get(sid, [])
+                # 카드 라인 = 최근 1개월 일봉(없으면 월간 폴백). 색 = 1개월(첫↔끝).
+                card_spark = yf_daily_1mo.get(sid, []) or chart_spark
+                if value is None and chart_spark:
+                    value = chart_spark[-1]
+                spark_dir = _spark_dir(card_spark, 0)
             elif src == "fred":
-                spark = _fred_monthly(sid)
-                if spark:
-                    value = spark[-1]
-                    if len(spark) >= 2:
-                        change = spark[-1] - spark[-2]
+                chart_spark = _fred_monthly(sid)
+                card_spark = chart_spark      # 월간 시계열(일봉 없음)
+                if chart_spark:
+                    value = chart_spark[-1]
+                    if len(chart_spark) >= 2:
+                        change = chart_spark[-1] - chart_spark[-2]
+                spark_dir = _spark_dir(card_spark, -2)  # 직전 월 대비
             elif src == "ecos":
                 pts = _ecos_series(sid)
                 if pts:
                     value = pts[-1][1]
                     if len(pts) >= 2:
                         change = pts[-1][1] - pts[-2][1]
-                    spark = _downsample_monthly(pts)
+                    chart_spark = _downsample_monthly(pts)
+                    card_spark = chart_spark
+                spark_dir = _spark_dir(card_spark, -2)
             if value is None:
                 continue  # graceful: drop empty cards
-            spark_cache[key] = spark
+            spark_cache[key] = chart_spark   # 큰 차트는 월간 유지
             rows.append({
                 "key": key, "label": label, "unit": unit,
                 "value": value, "change": change, "decimals": dec,
-                "spark": spark,
+                "spark": card_spark, "spark_dir": spark_dir,
             })
         return rows
 
