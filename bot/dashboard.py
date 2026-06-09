@@ -428,7 +428,7 @@ def _compute_stats(records: list[dict]) -> dict:
     # land in usage.jsonl with subsystem='screener'; SV calls live in
     # ~/standardview/sv_usage.jsonl (separate file, KST-date tagged).
     _sub_keys = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
-                 "청약": 0.0, "부동산": 0.0, "블로그": 0.0, "SV": 0.0,
+                 "부동산": 0.0, "블로그": 0.0, "SV": 0.0,
                  "수출입": 0.0}
     today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     month_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
@@ -442,7 +442,7 @@ def _compute_stats(records: list[dict]) -> dict:
         cost = r.get("cost_usd", 0) or 0
         _subsys = r.get("subsystem")
         sub = ({"screener": "Screener", "daily_byte": "Daily Byte",
-                "cheongyak": "청약", "realestate": "부동산",
+                "cheongyak": "부동산", "realestate": "부동산",
                 "blog": "블로그"}.get(_subsys, "분석"))
         if rec_day.startswith(month_prefix):
             month_cost_usd += cost
@@ -681,7 +681,7 @@ def _render_stats_panel(stats: dict) -> str:
     # with non-zero this-month cost — keeps the sub-label compact.
     sub_parts: list[str] = []
     for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
-                       ("청약", "청약"), ("부동산", "부동산"), ("블로그", "블로그"), ("SV", "SV"),
+                       ("부동산", "부동산"), ("블로그", "블로그"), ("SV", "SV"),
                        ("수출입", "수출입")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
         if m_usd > 0:
