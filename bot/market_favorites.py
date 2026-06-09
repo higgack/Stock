@@ -129,3 +129,26 @@ def remove_favorite(ticker: str) -> bool:
 def get_favorites() -> list[dict]:
     """Return all saved favorites."""
     return _load()
+
+
+def get_favorites_with_prices() -> list[dict]:
+    """Return favorites with current_price added via yfinance fast_info."""
+    import yfinance as yf
+    from concurrent.futures import ThreadPoolExecutor
+
+    favorites = _load()
+    if not favorites:
+        return favorites
+
+    def _fetch_price(f: dict) -> None:
+        try:
+            tk = yf.Ticker(f["ticker"])
+            fi = tk.fast_info
+            f["current_price"] = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
+        except Exception:
+            f["current_price"] = None
+
+    with ThreadPoolExecutor(max_workers=min(len(favorites), 8)) as pool:
+        pool.map(_fetch_price, favorites)
+
+    return favorites
