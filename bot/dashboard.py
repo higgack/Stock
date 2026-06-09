@@ -6234,10 +6234,6 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
     · <a href="index.html">🦉 NOAH 종목분석</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
     · <a href="paper.html">🔔 워치리스트</a>
-    · <a href="reddit_insider.html">📨 미국 레딧</a>
-    · <a href="daily_byte.html">📊 Daily Byte</a>
-    · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
-    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
   </div>
   <h1>📊 Screener — Archive</h1>
   <p class="sub">Bottleneck Screener (테마별 6-18M thesis) + 조건부 스크리너 (정량 필터, ₩0) 통합</p>
@@ -10368,7 +10364,7 @@ def _render_research_kr_table(research: list) -> str:
     if not research:
         return '<div class="empty-msg">최근 리서치 액션이 없습니다.</div>'
     rows: list[str] = []
-    for r in research[:20]:
+    for r in research[:25]:
         code = _html.escape(r.get("code", ""))
         name = _html.escape(r.get("name", ""))
         broker = _html.escape(r.get("broker", ""))
@@ -10394,7 +10390,7 @@ def _render_research_us_table(research: list) -> str:
     if not research:
         return '<div class="empty-msg">최근 리서치 액션이 없습니다.</div>'
     rows: list[str] = []
-    for r in research[:20]:
+    for r in research[:25]:
         sym = _html.escape(r.get("symbol", ""))
         firm = _html.escape(r.get("firm", ""))
         to_g = _html.escape(r.get("to_grade", ""))
@@ -10755,7 +10751,7 @@ def _render_market_page(data: dict) -> str:
 
   <div class="section-hd">
     <h2>글로벌 시장 스냅샷</h2>
-    <span class="ts">{_html.escape(ts)} 기준 · 15분 주기 갱신</span>
+    <span class="ts">{_html.escape(ts)} 기준 · 5분 주기 갱신</span>
   </div>
   <div class="card-grid">
 """)

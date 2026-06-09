@@ -26,7 +26,7 @@ import yfinance as yf
 log = logging.getLogger("bot.market_overview")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "market_overview"
-_CACHE_TTL_SEC = 900  # 15 min
+_CACHE_TTL_SEC = 300  # 5 min
 
 # ── Market Snapshot Ticker Groups ────────────────────────────────────
 
@@ -48,6 +48,11 @@ CARD_FX = [
     ("EU 유로/달러", "EURUSD=X"),
     ("GB 파운드/달러", "GBPUSD=X"),
     ("CN 달러/위안", "USDCNY=X"),
+    ("HK 달러/미국달러", "USDHKD=X"),
+    ("TW 대만달러/미국달러", "USDTWD=X"),
+    ("IN 루피/달러", "USDINR=X"),
+    ("AU 호주달러/달러", "AUDUSD=X"),
+    ("CH 스위스프랑/달러", "USDCHF=X"),
 ]
 
 CARD_COMMODITIES = [
@@ -89,6 +94,14 @@ CARD_EU = [
     ("EU 유로 스톡스 50", "^STOXX50E"),
     ("DE 독일 DAX", "^GDAXI"),
     ("GB 영국 FTSE 100", "^FTSE"),
+    ("FR 프랑스 CAC 40", "^FCHI"),
+    ("CH 스위스 SMI", "^SSMI"),
+]
+
+CARD_AMERICAS = [
+    ("CA 캐나다 TSX", "^GSPTSE"),
+    ("BR 브라질 Bovespa", "^BVSP"),
+    ("MX 멕시코 IPC", "^MXX"),
 ]
 
 ALL_CARDS = [
@@ -100,6 +113,7 @@ ALL_CARDS = [
     ("미국 지수", CARD_US),
     ("미국 지수 선물 (Futures)", CARD_FUTURES),
     ("유럽 지수", CARD_EU),
+    ("아메리카 & 이머징", CARD_AMERICAS),
 ]
 
 # ── FRED Economic Indicators ────────────────────────────────────────
@@ -410,7 +424,7 @@ def fetch_earnings_calendar(days_ahead: int = 14) -> list[dict]:
 
 # ── 한경 Recent Research (list page) ────────────────────────────────
 
-def fetch_recent_research_kr(limit: int = 15) -> list[dict]:
+def fetch_recent_research_kr(limit: int = 25) -> list[dict]:
     """Fetch latest KR broker research reports from 한경 컨센서스 list page."""
     cache_dir = _CACHE_DIR / "research"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -497,7 +511,7 @@ def fetch_recent_research_kr(limit: int = 15) -> list[dict]:
 
 # ── US Research (yfinance upgrades aggregated) ──────────────────────
 
-def fetch_recent_research_us(limit: int = 15) -> list[dict]:
+def fetch_recent_research_us(limit: int = 25) -> list[dict]:
     """Fetch recent US upgrades/downgrades from top stocks."""
     cache_dir = _CACHE_DIR / "research"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -506,14 +520,15 @@ def fetch_recent_research_us(limit: int = 15) -> list[dict]:
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < 3:
+            if age_h < 1:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
 
     top_us = ["AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSLA",
               "AVGO", "JPM", "V", "MA", "UNH", "HD", "PG", "JNJ",
-              "NFLX", "CRM", "AMD", "INTC", "BA"]
+              "NFLX", "CRM", "AMD", "INTC", "BA", "LLY", "BRK-B",
+              "WMT", "COST", "ORCL", "ADBE", "MRK", "ABBV", "PEP", "KO"]
     results = []
 
     def _fetch_one(tk):
@@ -523,7 +538,7 @@ def fetch_recent_research_us(limit: int = 15) -> list[dict]:
             if ud is None or ud.empty:
                 return []
             items = []
-            for idx, row in ud.head(3).iterrows():
+            for idx, row in ud.head(5).iterrows():
                 d = str(idx.date()) if hasattr(idx, "date") else str(idx)[:10]
                 items.append({
                     "symbol": tk,
@@ -612,8 +627,8 @@ def fetch_all_market_data() -> dict[str, Any]:
     with ThreadPoolExecutor(max_workers=5) as pool:
         snap_fut = pool.submit(fetch_market_snapshot)
         earn_fut = pool.submit(fetch_earnings_calendar, 14)
-        kr_fut = pool.submit(fetch_recent_research_kr, 15)
-        us_fut = pool.submit(fetch_recent_research_us, 15)
+        kr_fut = pool.submit(fetch_recent_research_kr, 25)
+        us_fut = pool.submit(fetch_recent_research_us, 25)
         macro_fut = pool.submit(_fetch_macro_safe)
 
         return {

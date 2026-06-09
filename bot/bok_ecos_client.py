@@ -93,6 +93,14 @@ _SERIES = {
         "unit": "억$",
         "lookback_days": 400,
     },
+    "export_amt": {
+        "table": "403Y014",   # 통관기준 수출입 — 수출총액
+        "item": "000000",
+        "freq": "M",
+        "label": "한국 수출",
+        "unit": "억$",
+        "lookback_days": 400,
+    },
 }
 
 

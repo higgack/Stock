@@ -42,13 +42,16 @@ DOMESTIC = [
     ("usdkrw", "USD/KRW", "", "yf", "USDKRW=X", 1),
     ("kr_cpi", "한국 CPI", "", "ecos", "cpi_idx", 2),
     ("kr_ca", "경상수지", "억$", "ecos", "current_account", 0),
+    ("kr_export", "한국 수출", "억$", "ecos", "export_amt", 0),
 ]
 
 GLOBAL = [
     ("us_ffr", "미국 FFR", "%", "fred", "FEDFUNDS", 2),
+    ("us_2y", "미국 2Y", "%", "fred", "DGS2", 2),
     ("us_10y", "미국 10Y", "%", "fred", "DGS10", 2),
     ("us_cpi", "미국 CPI", "", "fred", "CPIAUCSL", 2),
     ("us_unemploy", "미국 실업률", "%", "fred", "UNRATE", 1),
+    ("us_ism", "미국 ISM PMI", "", "fred", "NAPM", 1),
     ("us_gdp", "미국 GDP", "%", "fred", "A191RL1Q225SBEA", 1),
     ("dxy", "달러인덱스", "", "yf", "DX-Y.NYB", 2),
     ("sp500", "S&P 500", "", "yf", "^GSPC", 2),
