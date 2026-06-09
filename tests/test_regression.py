@@ -1646,7 +1646,8 @@ class TestPaperTrading:
         assert 'first_word == "paper"' in tb, "채널 /paper 라우팅 누락"
         assert "async def _handle_paper" in tb, "DM·채널 공유 핸들러 누락"
         ds = open("bot/dashboard.py", encoding="utf-8").read()
-        assert "def regenerate_paper_index" in ds and 'paper.html">🧪 페이퍼' in ds
+        # 페이퍼+워치리스트 통합(2026-06-09) 후 nav 라벨이 '🔔 워치리스트'.
+        assert "def regenerate_paper_index" in ds and 'paper.html">🔔 워치리스트' in ds
 
 
 class TestRiskGate:

@@ -2396,6 +2396,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </span>
       <span class="chart-tf-sep">·</span>
       <span class="chart-tf-group">
+        <button class="chart-tf-btn" data-kind="range" data-val="1d">1일</button>
         <button class="chart-tf-btn" data-kind="range" data-val="1wk">1주일</button>
         <button class="chart-tf-btn" data-kind="range" data-val="1mo">1개월</button>
         <button class="chart-tf-btn" data-kind="range" data-val="3mo">3개월</button>
@@ -2454,7 +2455,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <div class="cg-sec"><b>우측 값 패널 (지금 값 한눈에)</b>
         <ul>
           <li><span class="k">분석 후</span> — 시점가 대비 현재가 변동%. 분석 이후 우리 방향이 맞았는지(초록=올랐다·빨강=내렸다).</li>
-          <li><span class="k">기간 N</span> — 지금 보이는 구간(1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체)의 수익률. 범위를 바꾸면 그 구간 기준으로 갱신. YTD=연초(1/1) 이후.</li>
+          <li><span class="k">기간 N</span> — 지금 보이는 구간(1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체)의 수익률. 범위를 바꾸면 그 구간 기준으로 갱신. 1일=장중 5분봉, YTD=연초(1/1) 이후.</li>
           <li><span class="k">52주 신고가/신저가</span> — 최근 1년 최고·최저가(항상 표시, 차트 범위·지표 토글 무관).</li>
           <li>그 아래는 켜둔 지표의 최신값(이평선·볼린저·RSI·MACD·거래량). 가격 항목엔 통화 기호(₩/¥/$ 등) 표시.</li>
         </ul>
@@ -2485,7 +2486,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </div>
       <div class="cg-sec"><b>기간 · 봉 · 조작</b>
         <ul>
-          <li><span class="k">일/주/월봉</span> + <span class="k">1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
+          <li><span class="k">일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 1일 선택 시 장중 5분봉 자동 전환. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
           <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁 + 상단 OHLC 바 갱신. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
           <li>차트 아래 <span class="k">캡션</span> — 현재 범위·봉 종류·봉 개수·날짜 범위·데이터 출처.</li>
           <li>지표를 켜고 꺼도 보던 확대 구간은 그대로 유지됩니다.</li>
@@ -2860,8 +2861,8 @@ _CHART_JS = """
     return fmtNum(n, 0);
   }
   // 범위/봉 한국어 라벨 — 헤드라인·기간수익률·캡션에서 공통 사용.
-  function rangeLabel(r){ r = r || curRange; return ({'1wk':'1주일','1mo':'1개월','3mo':'3개월','6mo':'6개월','ytd':'YTD','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[r] || r; }
-  function intervalLabel(i){ i = i || curInterval; return ({'1d':'일봉','1wk':'주봉','1mo':'월봉'})[i] || i; }
+  function rangeLabel(r){ r = r || curRange; return ({'1d':'1일','1wk':'1주일','1mo':'1개월','3mo':'3개월','6mo':'6개월','ytd':'YTD','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[r] || r; }
+  function intervalLabel(i){ i = i || curInterval; return ({'5m':'5분봉','1d':'일봉','1wk':'주봉','1mo':'월봉'})[i] || i; }
   function buildValues(d){
     var vEl = document.getElementById('chart-values');
     if (!vEl) return;
@@ -3024,7 +3025,16 @@ _CHART_JS = """
       .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function(j){
         el.style.opacity = '';
-        if (j && j.ok && j.chart) { status(''); render(j.chart); }
+        if (j && j.ok && j.chart) {
+          status('');
+          // 서버가 반환한 실제 봉/범위로 동기화 — 서버가 요청 range/interval 을
+          // 화이트리스트 미일치로 보정(예: 미배포 시 1주일→1년)했을 때 값 패널·
+          // 버튼이 '실제 데이터' 를 정직하게 반영하게(기간 % 오라벨 방지).
+          if (j.chart.period) curRange = j.chart.period;
+          if (j.chart.interval) curInterval = j.chart.interval;
+          render(j.chart);
+          setActive();
+        }
         else { status('⚠️ 데이터 없음 (' + ((j && j.error) || 'no data') + ')'); }
       })
       .catch(function(err){
@@ -3046,7 +3056,12 @@ _CHART_JS = """
     if (t.classList.contains('chart-tf-btn')) {
       var kind = t.getAttribute('data-kind'), val = t.getAttribute('data-val');
       if (kind === 'interval') curInterval = val;
-      else if (kind === 'range') curRange = val;
+      else if (kind === 'range') {
+        curRange = val;
+        // 1일(당일)=5분봉 intraday 로 자동 전환, 그 외로 나가면 일봉 복귀.
+        if (val === '1d') curInterval = '5m';
+        else if (curInterval === '5m') curInterval = '1d';
+      }
       load();
     }
   }
@@ -4372,9 +4387,11 @@ def _render_stock_info_html(rec: dict) -> str:
     <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: FinMind/TWSE · 상장사 매월 10일 이내 의무 공시</div>
   </div>"""
 
+    earn_src = ("DART" if is_kr else "MOPS" if is_tw
+                else "AKShare" if is_cn else "yfinance")
     earnings_pane = f"""<div class="si-pane" id="si-earnings">
   <div class="si-section">
-    <div class="si-section-title">최근 실적</div>
+    <div class="si-section-title">최근 실적 ({earn_src})</div>
     {earnings_table}
   </div>
   {tw_revenue_html}
@@ -4399,7 +4416,8 @@ def _render_stock_info_html(rec: dict) -> str:
             r_rows += f"<tr><td>{d}</td><td>{firm}</td><td>{action}</td><td>{change}</td></tr>\n"
         research_table = f"""<table class="si-table">
   <thead><tr><th>날짜</th><th>리서치펌</th><th>액션</th><th>의견 변화</th></tr></thead>
-  <tbody>{r_rows}</tbody></table>"""
+  <tbody>{r_rows}</tbody></table>
+  <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: yfinance · 애널리스트 등급 변경(upgrades/downgrades)</div>"""
     elif kr_reports:
         r_rows = ""
         for rp in kr_reports:
@@ -4625,9 +4643,13 @@ def _render_stock_info_html(rec: dict) -> str:
     else:
         news_html = '<div class="si-empty">뉴스 데이터가 없습니다.</div>'
 
+    # 시장별 1차 뉴스 소스(개별 기사 publisher 는 행마다 별도 표시).
+    news_src = ("Naver Finance" if is_kr else "Kabutan" if is_jp
+                else "鉅亨網(cnyes)" if is_tw else "東方財富(AKShare)" if is_cn
+                else "yfinance")
     news_pane = f"""<div class="si-pane" id="si-news">
   <div class="si-section">
-    <div class="si-section-title">주요 뉴스</div>
+    <div class="si-section-title">주요 뉴스 ({news_src})</div>
     {news_html}
   </div>
 </div>"""
@@ -4667,7 +4689,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     v = brk.get(key)
                     brk_rows += f"<tr><td>{esc(label)}</td>{_flow_cell(v)}</tr>\n"
                 inv_table += f"""<div class="si-section">
-      <div class="si-section-title">기관 세부 (5일 누적)</div>
+      <div class="si-section-title">기관 세부 (KIS · 5일 누적)</div>
       <table class="si-table"><thead><tr><th>기관</th><th class="num">순매수 (5일)</th></tr></thead><tbody>{brk_rows}</tbody></table>
     </div>"""
 
@@ -4695,7 +4717,7 @@ def _render_stock_info_html(rec: dict) -> str:
                                 cells += f'<td class="num" style="color:{c}">{sign}{v:,.1f}</td>'
                         d_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
                     inv_detail_html = f"""<div class="si-section">
-      <div class="si-section-title">투자주체별 순매수 다기간 ({unit})</div>
+      <div class="si-section-title">투자주체별 순매수 다기간 ({unit} · KRX·pykrx 일별 순매수)</div>
       <table class="si-table"><thead><tr><th>주체</th>{p_hdrs}</tr></thead><tbody>{d_rows}</tbody></table>
     </div>"""
             except Exception as exc:
@@ -4720,7 +4742,7 @@ def _render_stock_info_html(rec: dict) -> str:
                 cs_rows += f'<tr><td>공매도 수량</td><td class="num">{int(short_sale["short_qty"]):,}</td></tr>\n'
             if cs_rows:
                 side_tables += f"""<div class="si-section">
-      <div class="si-section-title">신용·공매도</div>
+      <div class="si-section-title">신용·공매도 (KIS)</div>
       <table class="si-table"><thead><tr><th>항목</th><th class="num">값</th></tr></thead><tbody>{cs_rows}</tbody></table>
     </div>"""
 
@@ -4736,7 +4758,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     pgm_rows += f'<tr><td>{esc(label)}</td><td class="num"{style}>{sign}{val:,}만</td></tr>\n'
             if pgm_rows:
                 side_tables += f"""<div class="si-section">
-      <div class="si-section-title">프로그램 매매</div>
+      <div class="si-section-title">프로그램 매매 (KIS)</div>
       <table class="si-table"><thead><tr><th>구분</th><th class="num">순매수</th></tr></thead><tbody>{pgm_rows}</tbody></table>
     </div>"""
 
@@ -4768,7 +4790,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     t_rows += f'<tr><td>공매도 잔고율</td><td class="num">{sh["current_pct"]:.2f}%</td>{cells}</tr>\n'
                 if t_rows:
                     trend_html = f"""<div class="si-section">
-      <div class="si-section-title">다기간 추이 (pp 변화)</div>
+      <div class="si-section-title">다기간 추이 · 외국인보유율·공매도 잔고율 (KRX·pykrx)</div>
       <table class="si-table"><thead><tr><th>항목</th><th class="num">현재</th>{period_hdrs}</tr></thead><tbody>{t_rows}</tbody></table>
       <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ pp = 퍼센트포인트 = 현재 비율 − N거래일 전 비율(절대 차이). 예: 외국인 39.9%→40.4% = +0.5pp. 데이터가 그 기간만큼 없으면 부정확한 근사 대신 — 표시. 기관·연기금은 일별 보유비율 공시가 없어(외국인 보유율·공매도 잔고율만 일별 비율 존재) 이 표에 못 넣음 — 대신 위 「투자주체별 순매수 다기간」 표에 기관·연기금 순매수가 기간별로 있음.</div>
     </div>"""
@@ -4801,7 +4823,7 @@ def _render_stock_info_html(rec: dict) -> str:
             sd = hsgt.get("south_direction", "")
             flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">港股通 시장 전체 자금 흐름 (5일 누적)</div>
+    <div class="si-section-title">港股通 시장 전체 자금 흐름 (AKShare · 5일 누적)</div>
     <table class="si-table"><thead><tr><th>구분</th><th class="num">5일 순매수</th><th>방향</th></tr></thead><tbody>
       <tr><td>北向 (외국인→A주)</td>{_cn_flow(nb)}<td>{esc(nd)}</td></tr>
       <tr><td>南向 (본토→HK)</td>{_cn_flow(sb)}<td>{esc(sd)}</td></tr>
@@ -4864,7 +4886,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     tw_body += f"<tr><td>{label}</td>{_tw_cell(tw_today.get(key))}{_tw_cell(tw_5d.get(key))}</tr>\n"
                 flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">三大法人 매매동향 (주, 종목별)</div>
+    <div class="si-section-title">三大法人 매매동향 (FinMind/TWSE · 종목별)</div>
     <table class="si-table"><thead><tr><th>주체</th><th class="num">당일</th><th class="num">5일 누적</th></tr></thead><tbody>{tw_body}</tbody></table>
     <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">출처: {'TWSE' if ticker.upper().endswith('.TW') else 'TPEx'} 三大法人買賣超日報</div>
   </div>
@@ -5259,7 +5281,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {w52_bar_html}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
     <div class="si-section">
-      <div class="si-section-title">밸류에이션 멀티플</div>
+      <div class="si-section-title">밸류에이션 멀티플 (yfinance)</div>
       <table class="si-table"><thead><tr><th>지표</th><th class="num">값</th></tr></thead><tbody>{val_multiples}</tbody></table>
     </div>
     <div class="si-section">
@@ -5459,7 +5481,7 @@ def _render_stock_info_html(rec: dict) -> str:
             pc_rows += f'<td class="num">{_pv("enterpriseToEbitda")}</td><td class="num">{dy_str}</td></tr>\n'
         peers_pane = f"""<div class="si-pane" id="si-peers">
   <div class="si-section">
-    <div class="si-section-title">동종업계 밸류에이션 비교</div>
+    <div class="si-section-title">동종업계 밸류에이션 비교 (yfinance)</div>
     <div style="overflow-x:auto">
     <table class="si-table">
       <thead><tr><th>회사</th><th>티커</th><th class="num">시총</th><th class="num">PER</th><th class="num">선행 PER</th><th class="num">PBR</th><th class="num">PSR</th><th class="num">EV/EBITDA</th><th class="num">배당</th></tr></thead>
@@ -6212,7 +6234,9 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
   <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
 """)
 
-    if not runs:
+    # Bottleneck run 이 없어도 조건부 스크리너(/screen) 결과가 있으면 그 섹션은
+    # 렌더해야 함 — 둘 다 비었을 때만 빈 메시지 + early return (2026-06-09).
+    if not runs and not (screen_archives or []):
         parts.append("""
   <div class="empty">
     아직 screener 실행 기록이 없습니다. 텔레그램 채널에서
@@ -6528,64 +6552,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
             + _scr_cards
         )
 
-    # ── Conditional screener results (merged from screen.html) ──────
-    _scr_archives = screen_archives or []
-    if _scr_archives:
-        import html as _shtml
-        _sc_cards = ""
-        for a in _scr_archives[:50]:
-            raw_conds = a.get("conditions", "")
-            _sc_conds = _shtml.escape(raw_conds)
-            _sc_ts = (a.get("ts") or "")[:16].replace("T", " ")
-            _sc_hits = a.get("hit_count", 0)
-            _sc_total = a.get("total_universe", 0)
-            _sc_elapsed = a.get("elapsed_sec", 0)
-            _sc_cached = " 💾캐시" if a.get("was_cached") else ""
-            _sc_date = a.get("_date", "")
-            _sc_file = a.get("_file", "")
-            _sc_market = a.get("market", "KR")
-            _sc_is_us = _sc_market == "US"
-            _sc_rows = ""
-            for h in (a.get("hits") or []):
-                _h_name = _shtml.escape(str(h.get("name", "")))
-                _h_ticker = _shtml.escape(str(h.get("ticker", "")))
-                _h_mkt = _shtml.escape(str(h.get("market", "")))
-                _h_mcap = h.get("mcap")
-                if _sc_is_us:
-                    _h_ms = (f"${_h_mcap/1000:.1f}B" if _h_mcap and _h_mcap >= 1000
-                             else f"${_h_mcap:,.0f}M" if _h_mcap else "—")
-                else:
-                    _h_ms = f"{_h_mcap:,.0f}" if _h_mcap else "—"
-                _h_extra = []
-                for k, v in h.items():
-                    if k in ("code", "ticker", "name", "market", "mcap", "price"):
-                        continue
-                    if v is not None:
-                        _h_extra.append(f"{k}:{v:g}" if isinstance(v, (int, float)) else f"{k}:{v}")
-                _h_ex = _shtml.escape(" · ".join(_h_extra[:5]))
-                _h_nc = f"<b>{_h_name}</b>" if _h_name else f"<b>{_h_ticker}</b>"
-                _sc_rows += (f"<tr><td>{_h_nc}</td><td><code>{_h_ticker}</code></td>"
-                             f"<td class='muted'>{_h_mkt}</td><td style='text-align:right'>{_h_ms}</td>"
-                             f"<td class='muted'>{_h_ex}</td></tr>")
-            _sc_tbl = ""
-            if _sc_rows:
-                _mc_hdr = "시총($M)" if _sc_is_us else "시총(억)"
-                _sc_tbl = (f"<table class='scr-tbl'><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
-                           f"<th>{_mc_hdr}</th><th>지표</th></tr></thead><tbody>{_sc_rows}</tbody></table>")
-            _sc_mbadge = " 🇺🇸" if _sc_is_us else ""
-            _sc_cards += (f"<details data-date='{_shtml.escape(_sc_date)}' data-filename='{_shtml.escape(_sc_file)}'>"
-                          f"<summary><b>{_sc_conds}</b>{_sc_mbadge} — {_sc_hits}종목/{_sc_total:,}종목{_sc_cached} "
-                          f"<span class='muted'>{_sc_ts} · {_sc_elapsed:.1f}초</span>"
-                          f"<button class='del-btn' type='button' data-api='api/screen_delete' title='삭제'>🗑️</button></summary>"
-                          f"{_sc_tbl}</details>\n")
-        parts.append(
-            '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
-            '<h2>📊 조건부 스크리너</h2>'
-            '<p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0). '
-            '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code></p>'
-            + _sc_cards
-        )
-
+    # ── Conditional screener results rendered above (single section) ──
     parts.append("</div>")
     # JS — delete button POSTs to /api/screener_delete (mirror of NOAH
     # /api/delete pattern). On success, fade + remove the card. Server
@@ -8536,12 +8503,59 @@ def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: li
     except Exception:
         pass
 
+    # ── Watchlist section (merged into paper page) — 항상 렌더 ──────────────
+    # 페이퍼 계좌가 비어도(거래 0) 워치 목록은 보여야 한다 — 빈-계좌 early
+    # return 경로에도 포함(사용자 2026-06-09: 워치한 종목이 사라져 보임 = 이
+    # early-return 이 워치 섹션을 건너뛴 것이 원인). 워치 0개여도 빈 상태 명시.
+    _wl = watches or []
+    _al = alerts or []
+    import html as _whtml
+
+    def _wesc(s):
+        return _whtml.escape(str(s))
+    _wr = ""
+    for w in _wl:
+        _conds = " ".join(w.get("conditions") or [])
+        _added = (w.get("added") or "")[:16].replace("T", " ")
+        _wr += (
+            f"<tr><td><b>{_wesc(w.get('ticker',''))}</b></td>"
+            f"<td><code>{_wesc(_conds)}</code></td>"
+            f"<td class='muted'>{_wesc(_added)}</td>"
+            f"<td class='muted'>{_wesc(w.get('id',''))}</td></tr>"
+        )
+    if not _wr:
+        _wr = "<tr><td colspan='4' class='muted'>감시 중인 종목 없음 — 텔레그램에서 <code>/watch TICKER 조건</code></td></tr>"
+    _ar = ""
+    for a in _al[:200]:
+        _ats = (a.get("ts") or "")[:16].replace("T", " ")
+        _ahits = " · ".join(a.get("hits") or [])
+        _ar += (
+            f"<tr><td class='muted'>{_wesc(_ats)}</td>"
+            f"<td><b>{_wesc(a.get('ticker',''))}</b></td>"
+            f"<td>{_wesc(_ahits)}</td></tr>"
+        )
+    if not _ar:
+        _ar = "<tr><td colspan='3' class='muted'>아직 발생한 알림 없음</td></tr>"
+    wl_section = (
+        '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
+        f'<h2>📋 활성 워치 ({len(_wl)})</h2>'
+        '<table class="pf-tbl"><thead><tr><th>종목</th><th>조건</th><th>등록</th><th>id</th></tr></thead>'
+        f'<tbody>{_wr}</tbody></table>'
+        f'<h2>🔔 알림 이력 ({len(_al)})</h2>'
+        '<table class="pf-tbl"><thead><tr><th>시각</th><th>종목</th><th>충족 조건</th></tr></thead>'
+        f'<tbody>{_ar}</tbody></table>'
+        '<p class="sub">조건: <code>rsi&lt;30 rsi&gt;70 price&gt;X price&lt;X &gt;sma50 &lt;sma200 52whigh 52wlow earnings foreignbuy foreignsell instbuy instsell</code></p>'
+    )
+
     if not rows and not trades:
+        # 페이퍼 계좌는 비었지만 워치리스트는 항상 표시.
         return _SCREENER_CSS + _PF_CSS + (
-            '<div class="wrap">' + nav + '<h1>🧪 페이퍼 트레이딩</h1>'
-            '<p class="sub">아직 모의 거래가 없습니다. 텔레그램에서 '
+            '<div class="wrap">' + nav + '<h1>🔔 워치리스트</h1>'
+            '<p class="sub">조건 알림(30분 체크, ₩0) + 페이퍼 트레이딩(모의 매매, 리스크 0)</p>'
+            + halt_banner + e1_banner
+            + '<p class="sub">아직 모의 거래가 없습니다. 텔레그램에서 '
             '<b>/paper buy TICKER 수량</b> 으로 시작하세요. (모의·돈 0)</p>'
-            + halt_banner + e1_banner + gate_line + '</div>')
+            + gate_line + wl_section + '</div>')
 
     part = "" if summ.get("priced_all") else (
         ' <span style="color:var(--muted)">(일부 현재가 미조회 — 평가/총자산 부분값)</span>')
@@ -8707,48 +8721,7 @@ def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: li
     except Exception:
         pass
 
-    # ── Watchlist section (merged into paper page) ─────────────────────
-    wl_section = ""
-    _wl = watches or []
-    _al = alerts or []
-    if _wl or _al:
-        import html as _whtml
-        def _wesc(s):
-            return _whtml.escape(str(s))
-        _wr = ""
-        for w in _wl:
-            _conds = " ".join(w.get("conditions") or [])
-            _added = (w.get("added") or "")[:16].replace("T", " ")
-            _wr += (
-                f"<tr><td><b>{_wesc(w.get('ticker',''))}</b></td>"
-                f"<td><code>{_wesc(_conds)}</code></td>"
-                f"<td class='muted'>{_wesc(_added)}</td>"
-                f"<td class='muted'>{_wesc(w.get('id',''))}</td></tr>"
-            )
-        if not _wr:
-            _wr = "<tr><td colspan='4' class='muted'>감시 중인 종목 없음 — 텔레그램에서 <code>/watch TICKER 조건</code></td></tr>"
-        _ar = ""
-        for a in _al[:200]:
-            _ats = (a.get("ts") or "")[:16].replace("T", " ")
-            _ahits = " · ".join(a.get("hits") or [])
-            _ar += (
-                f"<tr><td class='muted'>{_wesc(_ats)}</td>"
-                f"<td><b>{_wesc(a.get('ticker',''))}</b></td>"
-                f"<td>{_wesc(_ahits)}</td></tr>"
-            )
-        if not _ar:
-            _ar = "<tr><td colspan='3' class='muted'>아직 발생한 알림 없음</td></tr>"
-        wl_section = (
-            '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
-            f'<h2>📋 활성 워치 ({len(_wl)})</h2>'
-            '<table class="pf-tbl"><thead><tr><th>종목</th><th>조건</th><th>등록</th><th>id</th></tr></thead>'
-            f'<tbody>{_wr}</tbody></table>'
-            f'<h2>🔔 알림 이력 ({len(_al)})</h2>'
-            '<table class="pf-tbl"><thead><tr><th>시각</th><th>종목</th><th>충족 조건</th></tr></thead>'
-            f'<tbody>{_ar}</tbody></table>'
-            '<p class="sub">조건: <code>rsi&lt;30 rsi&gt;70 price&gt;X price&lt;X &gt;sma50 &lt;sma200 52whigh 52wlow earnings foreignbuy foreignsell instbuy instsell</code></p>'
-        )
-
+    # wl_section 은 위(빈-계좌 early-return 공유)에서 이미 빌드됨.
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
             + '<h1>🔔 워치리스트</h1>'
             '<p class="sub">조건 알림(30분 체크, ₩0) + 페이퍼 트레이딩(모의 매매, 리스크 0)</p>'
