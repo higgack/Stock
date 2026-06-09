@@ -10526,6 +10526,15 @@ _MARKET_CSS = (
     ".chart-card .foot{font-size:10px;color:var(--muted);margin-top:8px}"
     ".chart-card svg{display:block;width:100%;height:auto;color:var(--muted)}"
     "@media(max-width:860px){.chart-row{grid-template-columns:1fr}}"
+    # ── 투자자 예탁금·신용 (deposit) ──
+    ".dp-wrap{display:flex;align-items:center;flex-wrap:wrap;gap:10px 22px;"
+    "background:var(--card);border:1px solid var(--border);border-radius:12px;"
+    "padding:12px 16px;margin-bottom:14px}"
+    ".dp-hd{font-size:13px;font-weight:700}"
+    ".dp-item{display:flex;align-items:baseline;gap:7px}"
+    ".dp-l{font-size:12px;color:var(--muted)}"
+    ".dp-v{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}"
+    ".dp-ts{font-size:11px;color:var(--muted);margin-left:auto}"
     # ── 업종 등락 TOP (sector movers) ──
     ".sm-wrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}"
     "@media(max-width:700px){.sm-wrap{grid-template-columns:1fr}}"
@@ -10827,9 +10836,10 @@ def _render_research_us_table(research: list) -> str:
 
 # ── Macro Snapshot rendering (SV port — dependency-free inline SVG) ──
 
-def _macro_spark_svg(values: list, change=None) -> str:
-    """Inline SVG sparkline. 색 = **최근 1개월 등락**(마지막 월 vs 직전 월) —
-    12개월 전체 추세 아님(사용자 요청). 오르면 초록, 내리면 빨강, 보합 회색."""
+def _macro_spark_svg(values: list, direction=None) -> str:
+    """Inline SVG sparkline. **라인=최근 1개월**(yf 일봉 ~22점; FRED/ECOS 월간).
+    색 = 1개월 방향(direction: +1 상승/-1 하락/0 보합). direction 미지정 시
+    series 첫↔끝(vals[-1]-vals[0])으로 폴백. 오르면 초록·내리면 빨강·보합 회색."""
     vals = [v for v in (values or []) if v is not None]
     if len(vals) < 2:
         return '<div class="spark"></div>'
@@ -10842,9 +10852,11 @@ def _macro_spark_svg(values: list, change=None) -> str:
         x = pad + (i / (n - 1)) * (W - 2 * pad)
         y = pad + (1 - (v - vmin) / rng) * (H - 2 * pad)
         pts.append((x, y))
-    month_delta = vals[-1] - vals[-2]  # 최근 1개월 변화
-    color = ("#8b95a5" if abs(month_delta) < rng * 0.01
-             else "#26a69a" if month_delta > 0 else "#e2574c")
+    if direction is None:
+        delta = vals[-1] - vals[0]  # 표시 구간(1개월) 첫↔끝
+        direction = 0 if abs(delta) < rng * 0.01 else (1 if delta > 0 else -1)
+    color = ("#8b95a5" if direction == 0
+             else "#26a69a" if direction > 0 else "#e2574c")
     poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
     area = f"{pad:.1f},{H - pad:.1f} {poly} {W - pad:.1f},{H - pad:.1f}"
     return (
@@ -10887,7 +10899,7 @@ def _render_macro_card(ind: dict) -> str:
     label = _html.escape(ind.get("label", ""))
     val_html = _macro_fmt_value(ind.get("value"), ind.get("decimals", 2), ind.get("unit", ""))
     chg_html = _macro_fmt_change(ind.get("change"), ind.get("decimals", 2))
-    spark = _macro_spark_svg(ind.get("spark", []), ind.get("change"))
+    spark = _macro_spark_svg(ind.get("spark", []), ind.get("spark_dir"))
     return (
         f'<div class="macard"><div class="ml">{label}</div>'
         f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}</div>'
@@ -11059,6 +11071,39 @@ def _render_sentiment_gauge(data: dict) -> str:
         f'<div class="chart-card"><h3>시장 센티먼트</h3>'
         f'<div class="leg"><span>공포 0 ↔ 100 탐욕</span></div>{svg}'
         f'<div class="foot">출처: {_html.escape(vix_str)}</div></div>'
+    )
+
+
+def _render_deposit_widget(dep: dict) -> str:
+    """고객예탁금·신용잔고 (Naver) — 업종 등락 위. 데이터 없으면 빈 문자열."""
+    if not dep or dep.get("deposit") is None:
+        return ""
+
+    def _won(v) -> str:
+        # 입력 단위 억원 추정 → 조/억 표기
+        if v is None:
+            return "—"
+        if abs(v) >= 10000:
+            return f"{v / 10000:,.1f}조"
+        return f"{v:,.0f}억"
+
+    def _chg(v) -> str:
+        if v is None:
+            return ""
+        cls = "up" if v > 0 else "dn" if v < 0 else "neu"
+        arrow = "▲" if v > 0 else "▼" if v < 0 else "-"
+        return f' <span class="{cls}" style="font-size:12px">{arrow}{_won(abs(v))}</span>'
+
+    date = _html.escape(str(dep.get("date", "")))
+    dv = (f'<div class="dp-item"><span class="dp-l">고객예탁금</span>'
+          f'<span class="dp-v">{_won(dep.get("deposit"))}{_chg(dep.get("deposit_chg"))}</span></div>')
+    cv = ""
+    if dep.get("credit") is not None:
+        cv = (f'<div class="dp-item"><span class="dp-l">신용잔고</span>'
+              f'<span class="dp-v">{_won(dep.get("credit"))}{_chg(dep.get("credit_chg"))}</span></div>')
+    return (
+        '<div class="dp-wrap"><div class="dp-hd">💰 투자자 예탁금·신용</div>'
+        f'{dv}{cv}<span class="dp-ts">{date} · Naver</span></div>'
     )
 
 
@@ -11301,6 +11346,7 @@ def _render_market_page(data: dict) -> str:
     research_us = data.get("research_us", [])
     macro = data.get("macro", {})
     sector_movers = data.get("sector_movers", {})
+    deposit = data.get("deposit", {})
 
     parts: list[str] = [_MARKET_CSS]
     parts.append(f"""
@@ -11348,6 +11394,7 @@ def _render_market_page(data: dict) -> str:
     parts.append('</div>')  # close card-grid
 
     parts.append(_render_macro_snapshot(macro))
+    parts.append(_render_deposit_widget(deposit))
     parts.append(_render_sector_movers(sector_movers))
 
     # 다가오는 실적 — 한국/미국 탭 분리(사용자 정책: 한국 기본·최대한 표시).

@@ -734,6 +734,7 @@ def fetch_all_market_data() -> dict[str, Any]:
         us_fut = pool.submit(fetch_recent_research_us, 40)
         macro_fut = pool.submit(_fetch_macro_safe)
         sector_fut = pool.submit(_fetch_sector_movers_safe)
+        deposit_fut = pool.submit(_fetch_deposit_safe)
 
         # 실적 병합 — 한국(yfinance) 먼저, 미국(Finnhub) 다음. 각 그룹 날짜순.
         # 사용자 정책: 한국이 되면 한국을 앞으로.
@@ -749,6 +750,7 @@ def fetch_all_market_data() -> dict[str, Any]:
             "research_us": us_fut.result(),
             "macro": macro_fut.result(),
             "sector_movers": sector_fut.result(),
+            "deposit": deposit_fut.result(),
         }
 
 
@@ -759,3 +761,12 @@ def _fetch_sector_movers_safe() -> dict:
     except Exception as exc:
         log.warning("sector movers fetch error: %s", exc)
         return {"up": [], "down": [], "ts": ""}
+
+
+def _fetch_deposit_safe() -> dict:
+    try:
+        from bot.naver_sector_client import fetch_deposit
+        return fetch_deposit()
+    except Exception as exc:
+        log.warning("deposit fetch error: %s", exc)
+        return {}
