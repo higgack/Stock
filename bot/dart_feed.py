@@ -205,8 +205,17 @@ def _compute_per(corp_name: str, net_income_str: str) -> str | None:
 # ── 전체 시장 공시 fetch ──
 
 def fetch_market_disclosures(target_date: date | None = None,
-                             max_pages: int = 10) -> list[dict]:
-    """DART list.json 전체 시장 호출 → 분류된 공시 리스트."""
+                             max_pages: int = 20,
+                             days_back: int = 3,
+                             skip_routine: bool = True) -> list[dict]:
+    """DART list.json 전체 시장 호출 → 분류된 공시 리스트.
+
+    days_back: target_date 기준 며칠 전부터 fetch (최근 N+1일 윈도).
+        장 마감 후 공시가 몰리는 KR 특성상 당일만 보면 새벽엔 0건 →
+        최근 3일 윈도로 항상 최근 공시를 보장.
+    skip_routine: '기타'(정정/단순공고 등 catalyst 무관 routine) 제외해
+        실적/계약/주주환원/자금조달/시설투자/지분공시 등 의미있는 공시만.
+    """
     api_key = _dart_api_key()
     if not api_key:
         log.warning("dart_feed: DART_API_KEY not set")
@@ -215,7 +224,8 @@ def fetch_market_disclosures(target_date: date | None = None,
     if target_date is None:
         target_date = datetime.now(_KST).date()
 
-    ds = target_date.strftime("%Y%m%d")
+    end_ds = target_date.strftime("%Y%m%d")
+    bgn_ds = (target_date - timedelta(days=max(0, days_back))).strftime("%Y%m%d")
     out: list[dict] = []
     seen_rcept: set[str] = set()
 
@@ -225,8 +235,8 @@ def fetch_market_disclosures(target_date: date | None = None,
                 f"{_DART_BASE}/list.json",
                 params={
                     "crtfc_key": api_key,
-                    "bgn_de": ds,
-                    "end_de": ds,
+                    "bgn_de": bgn_ds,
+                    "end_de": end_ds,
                     "page_no": page_no,
                     "page_count": 100,
                 },
@@ -250,9 +260,11 @@ def fetch_market_disclosures(target_date: date | None = None,
             corp_name = (r.get("corp_name") or "").strip()
             corp_code = (r.get("corp_code") or "").strip()
             stock_code = (r.get("stock_code") or "").strip()
-            rcept_dt = r.get("rcept_dt") or ds
+            rcept_dt = r.get("rcept_dt") or end_ds
 
             category = _classify_report(report_nm)
+            if skip_routine and category == "기타":
+                continue
 
             item = {
                 "rcept_no": rcept_no,
@@ -351,16 +363,32 @@ def load_all_archives(days_back: int = 30) -> dict[str, list[dict]]:
 
 # ── CLI: python -m bot.dart_feed ──
 
-def run_once(target_date: date | None = None) -> list[dict]:
-    """1회 fetch → enrich → merge → return."""
+def run_once(target_date: date | None = None,
+             days_back: int = 3) -> list[dict]:
+    """1회 fetch(최근 days_back+1일 윈도) → enrich → 공시일별로 분배 merge.
+
+    각 item 을 실제 접수일(rcept_dt)의 아카이브 파일에 저장(dedup)해 대시보드
+    날짜 그룹과 일치. 새벽 당일 0건이어도 직전 거래일 공시가 보여짐."""
     if target_date is None:
         target_date = datetime.now(_KST).date()
-    log.info("dart_feed: fetching %s", target_date)
-    items = fetch_market_disclosures(target_date)
+    log.info("dart_feed: fetching %s (최근 %d일)", target_date, days_back + 1)
+    items = fetch_market_disclosures(target_date, days_back=days_back)
     if items:
         enrich_disclosures(items)
-    all_items = merge_and_save(target_date, items)
-    return all_items
+
+    # 접수일(rcept_dt 'YYYYMMDD')별 그룹핑 → 각 날짜 파일에 merge
+    by_day: dict[date, list[dict]] = {}
+    for it in items:
+        raw = str(it.get("date") or "").strip()
+        try:
+            d = datetime.strptime(raw[:8], "%Y%m%d").date()
+        except (ValueError, TypeError):
+            d = target_date
+        by_day.setdefault(d, []).append(it)
+
+    for d, day_items in by_day.items():
+        merge_and_save(d, day_items)
+    return items
 
 
 if __name__ == "__main__":

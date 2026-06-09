@@ -209,6 +209,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_favorite_add()
         if self.path == "/api/favorite_remove":
             return self._handle_favorite_remove()
+        if self.path == "/api/favorite_reorder":
+            return self._handle_favorite_reorder()
         if self.path == "/api/screener_delete":
             return self._handle_screener_delete()
         if self.path == "/api/daily_byte_delete":
@@ -638,6 +640,28 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._json_ok({"ok": removed})
         except Exception as exc:
             log.warning("favorite_remove: %s", exc)
+            self._json_ok({"ok": False, "error": str(exc)})
+
+    def _handle_favorite_reorder(self) -> None:
+        """POST /api/favorite_reorder — move a ticker up/down in saved order."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 1024:
+                raise ValueError("bad body")
+            payload = json.loads(self.rfile.read(length))
+            ticker = (payload.get("ticker") or "").strip()
+            direction = (payload.get("direction") or "").strip()
+            if not ticker:
+                self._json_ok({"ok": False, "error": "missing ticker"})
+                return
+            if direction not in ("up", "down"):
+                self._json_ok({"ok": False, "error": "invalid direction"})
+                return
+            from bot.market_favorites import reorder_favorite
+            changed = reorder_favorite(ticker, direction)
+            self._json_ok({"ok": changed})
+        except Exception as exc:
+            log.warning("favorite_reorder: %s", exc)
             self._json_ok({"ok": False, "error": str(exc)})
 
     def _handle_search_api(self) -> None:

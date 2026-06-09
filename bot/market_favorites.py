@@ -138,6 +138,25 @@ def get_favorites() -> list[dict]:
     return _load()
 
 
+def reorder_favorite(ticker: str, direction: str) -> bool:
+    """Move a ticker up/down one position in the saved order. Persists.
+
+    direction: 'up' (앞으로) | 'down' (뒤로). Returns True if order changed."""
+    favorites = _load()
+    idx = next((i for i, f in enumerate(favorites)
+                if f.get("ticker", "").upper() == ticker.upper()), None)
+    if idx is None:
+        return False
+    if direction == "up" and idx > 0:
+        favorites[idx - 1], favorites[idx] = favorites[idx], favorites[idx - 1]
+    elif direction == "down" and idx < len(favorites) - 1:
+        favorites[idx + 1], favorites[idx] = favorites[idx], favorites[idx + 1]
+    else:
+        return False
+    _save(favorites)
+    return True
+
+
 def get_favorites_with_prices() -> list[dict]:
     """Return favorites with current_price + refreshed estimates via yfinance."""
     import yfinance as yf

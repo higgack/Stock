@@ -10335,7 +10335,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 """)
 
     parts.append("</div>\n")
-    parts.append(_THEME_JS)
+    parts.append("<script>" + _THEME_JS + "</script>")
     parts.append("</body></html>")
     return "\n".join(parts)
 
@@ -10496,6 +10496,17 @@ _MARKET_CSS = (
     ".fav-del{background:none;border:none;color:var(--neg);cursor:pointer;"
     "font-size:14px;padding:2px 6px;border-radius:4px}"
     ".fav-del:hover{background:rgba(220,38,38,.1)}"
+    "#fav-tbl th.fav-sort{cursor:pointer;user-select:none;white-space:nowrap}"
+    "#fav-tbl th.fav-sort:hover{color:var(--accent,#3b82f6)}"
+    "#fav-tbl .fav-ar{color:var(--accent,#3b82f6);font-size:10px}"
+    ".fav-ctrl{margin-bottom:10px;display:flex;gap:8px;align-items:center}"
+    ".fav-ctrl select{padding:5px 10px;border-radius:6px;background:var(--card);"
+    "color:var(--text);border:1px solid var(--border);font-size:13px}"
+    ".fav-ord{white-space:nowrap}"
+    ".fav-ord button{background:none;border:1px solid var(--border);color:var(--muted);"
+    "cursor:pointer;border-radius:4px;width:22px;height:22px;font-size:10px;line-height:1;"
+    "padding:0;margin:0 1px}"
+    ".fav-ord button:hover{color:var(--accent,#3b82f6);border-color:var(--accent,#3b82f6)}"
     "</style></head><body>"
 )
 
@@ -10937,7 +10948,7 @@ def _render_macro_snapshot(macro: dict) -> str:
     out.append(f"""
   <div class="section-hd">
     <h2>Macro Snapshot</h2>
-    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 최근 변동</span>
+    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 5분 주기 갱신</span>
   </div>""")
 
     if domestic:
@@ -11324,6 +11335,7 @@ def _render_market_page(data: dict) -> str:
   (function() {{
     var favBody = document.getElementById('fav-body');
     var favCnt = document.getElementById('fav-cnt');
+    var favState = {{ sortK: null, sortDir: 1, country: 'ALL' }};
 
     var FLAG = {{'US':'🇺🇸','KR':'🇰🇷','JP':'🇯🇵','TW':'🇹🇼','CN':'🇨🇳','HK':'🇭🇰','UK':'🇬🇧','DE':'🇩🇪','FR':'🇫🇷'}};
 
@@ -11367,29 +11379,61 @@ def _render_market_page(data: dict) -> str:
       return sym + Number(v).toLocaleString();
     }}
 
+    function arrow(k) {{
+      return (favState.sortK === k) ? (favState.sortDir > 0 ? ' ▲' : ' ▼') : '';
+    }}
+
     function renderFavs(list) {{
+      favState.sortK = null;  /* 새 데이터 = 저장 순서로 표시 */
       favCnt.textContent = list.length ? list.length + '종목' : '';
       if (!list.length) {{
         favBody.innerHTML = '<div class="md-empty">종목 검색 후 상세 페이지에서 ⭐ 저장 버튼을 눌러주세요.</div>';
         return;
       }}
-      var h = '<table class="dtbl"><thead><tr>'
-        + '<th style="text-align:left">종목</th><th>나라</th><th>저장일</th><th>시총</th>'
-        + '<th>저장가격</th><th>현재가격</th><th>저장대비</th><th>EPS</th><th>PER</th><th>다음예상 실적일</th><th></th>'
-        + '</tr></thead><tbody>';
-      list.forEach(function(f) {{
+
+      /* 나라 필터 옵션 (존재하는 나라만) */
+      var countries = [];
+      list.forEach(function(f) {{ if (f.country && countries.indexOf(f.country) < 0) countries.push(f.country); }});
+      if (favState.country !== 'ALL' && countries.indexOf(favState.country) < 0) favState.country = 'ALL';
+      var copts = '<option value="ALL">전체 나라</option>';
+      countries.forEach(function(c) {{
+        copts += '<option value="' + c + '"' + (favState.country === c ? ' selected' : '') + '>' + (FLAG[c] || '') + ' ' + c + '</option>';
+      }});
+      var ctrl = '<div class="fav-ctrl"><label style="font-size:12px;color:var(--muted)">나라</label>'
+        + '<select id="fav-country">' + copts + '</select>'
+        + '<span style="font-size:11px;color:var(--muted)">↕ 화살표로 순서 변경 · 헤더 클릭 정렬</span></div>';
+
+      /* 정렬 헤더 (data-k/data-t) */
+      var cols = [['name','s','종목'],['country','s','나라'],['saved','s','저장일'],
+        ['mcap','n','시총'],['sprice','n','저장가격'],['cprice','n','현재가격'],
+        ['pct','n','저장대비'],['eps','n','EPS'],['per','n','PER'],['earn','s','다음예상 실적일']];
+      var thead = '<tr>';
+      cols.forEach(function(c, i) {{
+        var al = (i === 0) ? ' style="text-align:left"' : '';
+        thead += '<th class="fav-sort" data-k="' + c[0] + '" data-t="' + c[1] + '"' + al + '>'
+          + c[2] + '<span class="fav-ar">' + arrow(c[0]) + '</span></th>';
+      }});
+      thead += '<th>순서</th><th></th></tr>';
+
+      var rows = list.map(function(f) {{
         var flag = FLAG[f.country] || '';
-        var curCell = '—', pctCell = '—';
+        var curCell = '—', pctCell = '—', pctVal = '';
         if (f.current_price != null) {{
           curCell = fmtPrice(f.current_price, f.currency_symbol);
           if (f.saved_price != null && f.saved_price > 0) {{
             var pct = (f.current_price - f.saved_price) / f.saved_price * 100;
+            pctVal = pct;
             var clr = pct > 0 ? '#e74c3c' : pct < 0 ? '#3498db' : 'inherit';
             var sign = pct > 0 ? '+' : '';
             pctCell = '<span style="color:' + clr + '">' + sign + pct.toFixed(1) + '%</span>';
           }}
         }}
-        h += '<tr>'
+        var da = 'data-name="' + (f.name || f.ticker).toLowerCase() + '" data-country="' + (f.country || '') + '"'
+          + ' data-saved="' + (f.saved_date || '') + '" data-mcap="' + (f.market_cap != null ? f.market_cap : '') + '"'
+          + ' data-sprice="' + (f.saved_price != null ? f.saved_price : '') + '" data-cprice="' + (f.current_price != null ? f.current_price : '') + '"'
+          + ' data-pct="' + (pctVal !== '' ? pctVal : '') + '" data-eps="' + (f.eps_estimate != null ? f.eps_estimate : '') + '"'
+          + ' data-per="' + (f.per != null ? f.per : '') + '" data-earn="' + (f.next_earnings || '') + '"';
+        return '<tr ' + da + '>'
           + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="font-weight:700;font-size:14px;color:inherit;text-decoration:none">' + (f.name||f.ticker) + '</a>'
           + ' <span style="font-size:11px;color:var(--muted)">' + f.ticker + '</span></td>'
           + '<td>' + flag + '</td>'
@@ -11401,15 +11445,65 @@ def _render_market_page(data: dict) -> str:
           + '<td>' + fmtEstLabel(f.eps_estimate, f.eps_is_actual, f.currency_symbol) + '</td>'
           + '<td>' + fmtPER(f.per, f.per_is_trailing) + '</td>'
           + '<td>' + (f.next_earnings||'—') + '</td>'
+          + '<td class="fav-ord"><button class="fav-up" data-ticker="' + f.ticker + '" title="위로">▲</button>'
+          + '<button class="fav-down" data-ticker="' + f.ticker + '" title="아래로">▼</button></td>'
           + '<td><button class="fav-del" data-ticker="' + f.ticker + '" title="삭제">✕</button></td>'
           + '</tr>';
-      }});
-      h += '</tbody></table>';
-      favBody.innerHTML = h;
+      }}).join('');
+
+      favBody.innerHTML = ctrl + '<table class="dtbl" id="fav-tbl"><thead>' + thead + '</thead><tbody>' + rows + '</tbody></table>';
+
       favBody.querySelectorAll('.fav-del').forEach(function(b) {{
-        b.addEventListener('click', function() {{
-          removeFav(b.dataset.ticker);
-        }});
+        b.addEventListener('click', function() {{ removeFav(b.dataset.ticker); }});
+      }});
+      favBody.querySelectorAll('.fav-up').forEach(function(b) {{
+        b.addEventListener('click', function() {{ reorderFav(b.dataset.ticker, 'up'); }});
+      }});
+      favBody.querySelectorAll('.fav-down').forEach(function(b) {{
+        b.addEventListener('click', function() {{ reorderFav(b.dataset.ticker, 'down'); }});
+      }});
+      var csel = document.getElementById('fav-country');
+      if (csel) csel.addEventListener('change', function() {{ favState.country = csel.value; applyFavFilter(); }});
+      var tbl = document.getElementById('fav-tbl');
+      [].forEach.call(tbl.tHead.rows[0].cells, function(th) {{
+        if (th.dataset.k) th.addEventListener('click', function() {{ sortFav(th.dataset.k, th.dataset.t); }});
+      }});
+      applyFavFilter();
+    }}
+
+    function applyFavFilter() {{
+      var tbl = document.getElementById('fav-tbl');
+      if (!tbl) return;
+      var shown = 0, total = 0;
+      [].forEach.call(tbl.tBodies[0].rows, function(tr) {{
+        total++;
+        var ok = (favState.country === 'ALL') || (tr.dataset.country === favState.country);
+        tr.style.display = ok ? '' : 'none';
+        if (ok) shown++;
+      }});
+      favCnt.textContent = (favState.country === 'ALL') ? (total + '종목') : (shown + '/' + total + '종목');
+    }}
+
+    function sortFav(k, t) {{
+      var tbl = document.getElementById('fav-tbl');
+      if (!tbl) return;
+      if (favState.sortK === k) favState.sortDir = -favState.sortDir;
+      else {{ favState.sortK = k; favState.sortDir = (t === 'n' ? -1 : 1); }}
+      var tb = tbl.tBodies[0];
+      [].slice.call(tb.rows).sort(function(a, b) {{
+        var av = a.dataset[k], bv = b.dataset[k];
+        if (t === 'n') {{
+          var an = parseFloat(av), bn = parseFloat(bv);
+          if (isNaN(an) && isNaN(bn)) return 0;
+          if (isNaN(an)) return 1;
+          if (isNaN(bn)) return -1;
+          return (an - bn) * favState.sortDir;
+        }}
+        return String(av).localeCompare(String(bv), 'ko') * favState.sortDir;
+      }}).forEach(function(tr) {{ tb.appendChild(tr); }});
+      [].forEach.call(tbl.tHead.rows[0].cells, function(th) {{
+        var ar = th.querySelector('.fav-ar');
+        if (ar) ar.textContent = (th.dataset.k === k) ? (favState.sortDir > 0 ? ' ▲' : ' ▼') : '';
       }});
     }}
 
@@ -11428,6 +11522,16 @@ def _render_market_page(data: dict) -> str:
       }})
         .then(function() {{ loadFavs(); }})
         .catch(function() {{ alert('삭제 실패'); }});
+    }}
+
+    function reorderFav(ticker, direction) {{
+      fetch('api/favorite_reorder', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{ticker: ticker, direction: direction}})
+      }})
+        .then(function() {{ loadFavs(); }})
+        .catch(function() {{ alert('순서 변경 실패'); }});
     }}
 
 
