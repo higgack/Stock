@@ -4403,10 +4403,11 @@ def _render_stock_info_html(rec: dict) -> str:
                 else "AKShare" if is_cn else "yfinance")
     earnings_pane = f"""<div class="si-pane" id="si-earnings">
   <div class="si-section">
-    <div class="si-section-title">최근 실적 ({earn_src})</div>
+    <div class="si-section-title">최근 실적</div>
     {earnings_table}
   </div>
   {tw_revenue_html}
+  {_src_foot}출처: {earn_src}</div>
 </div>"""
 
     # ── 리서치 pane ─────────────────────────────────────────────
@@ -4502,7 +4503,7 @@ def _render_stock_info_html(rec: dict) -> str:
             ch_date = esc(str(ih.get("changed_on", "—")))
             ki_rows += f"<tr><td>{nm}</td><td>{role}</td><td class='num'>{shares_i_str}</td><td class='num'>{pct_i_str}</td><td>{ch_date}</td></tr>\n"
         kr_insider_html = f"""<div class="si-section">
-    <div class="si-section-title">임원 · 주요주주 지분 (DART)</div>
+    <div class="si-section-title">임원 · 주요주주 지분</div>
     <table class="si-table">
       <thead><tr><th>성명</th><th>직위</th><th class="num">보유주식</th><th class="num">지분율</th><th>변동일</th></tr></thead>
       <tbody>{ki_rows}</tbody>
@@ -4661,7 +4662,7 @@ def _render_stock_info_html(rec: dict) -> str:
                 else "yfinance")
     news_pane = f"""<div class="si-pane" id="si-news">
   <div class="si-section">
-    <div class="si-section-title">주요 뉴스 ({news_src})</div>
+    <div class="si-section-title">주요 뉴스</div>
     {news_html}
   </div>
   {_src_foot}출처: {news_src}</div>
@@ -5177,13 +5178,13 @@ def _render_stock_info_html(rec: dict) -> str:
             d_rows += f"<tr><td>{d_date}</td><td>{title_html}</td><td>{d_reporter}</td></tr>\n"
         disclosures_pane = f"""<div class="si-pane" id="si-disclosures">
   <div class="si-section">
-    <div class="si-section-title">공시 ({esc(disc_source)}{' · JP 6개월' if is_jp else ' · 1년'})</div>
+    <div class="si-section-title">공시</div>
     <table class="si-table">
       <thead><tr><th>날짜</th><th>제목</th><th>출처</th></tr></thead>
       <tbody>{d_rows}</tbody>
     </table>
   </div>
-
+  {_src_foot}출처: {esc(disc_source)}{' · JP 6개월' if is_jp else ' · 1년'}</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID during
@@ -5506,7 +5507,7 @@ def _render_stock_info_html(rec: dict) -> str:
             pc_rows += f'<td class="num">{_pv("enterpriseToEbitda")}</td><td class="num">{dy_str}</td></tr>\n'
         peers_pane = f"""<div class="si-pane" id="si-peers">
   <div class="si-section">
-    <div class="si-section-title">동종업계 밸류에이션 비교 (yfinance)</div>
+    <div class="si-section-title">동종업계 밸류에이션 비교</div>
     <div style="overflow-x:auto">
     <table class="si-table">
       <thead><tr><th>회사</th><th>티커</th><th class="num">시총</th><th class="num">PER</th><th class="num">선행 PER</th><th class="num">PBR</th><th class="num">PSR</th><th class="num">EV/EBITDA</th><th class="num">배당</th></tr></thead>
@@ -5514,6 +5515,7 @@ def _render_stock_info_html(rec: dict) -> str:
     </table>
     </div>
   </div>
+  {_src_foot}출처: yfinance</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
@@ -10191,8 +10193,8 @@ _MARKET_CSS = (
     "font-weight:600;white-space:nowrap}"
     ".dtbl td{padding:7px 10px;border-bottom:1px solid var(--surface-tint)}"
     ".dtbl tr:hover{background:var(--accent-soft)}"
-    ".dtbl .sym{font-weight:600}"
-    ".dtbl .sym a{color:var(--text);text-decoration:none}"
+    ".dtbl .sym{font-weight:500}"
+    ".dtbl .sym a{color:#b0b8c4;text-decoration:none}"
     ".dtbl .sym a:hover{color:var(--accent);text-decoration:underline}"
     ".dtbl .sym .co-name{display:block;font-size:11px;font-weight:400;color:var(--muted);margin-top:1px}"
     ".tabs{display:flex;gap:4px;margin-bottom:14px}"
