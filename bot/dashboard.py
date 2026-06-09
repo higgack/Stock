@@ -6201,6 +6201,8 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
         1 for r in runs for p in (r.get("top_3_picks") or [])
         if outcomes.get((r.get("_date", ""), (p.get("ticker") or "").upper()), {}).get("raw")
     )
+    _scr_count = len(screen_archives or [])
+    _combined_runs = total_runs + _scr_count
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -6214,36 +6216,39 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
     · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
   </div>
   <h1>📊 Screener — Archive</h1>
-  <p class="sub">테마별 다종목 idea generation · 6-18M thesis (NOAH /ticker 5거래일 평가와 별개 horizon)</p>
+  <p class="sub">Bottleneck Screener (테마별 6-18M thesis) + 조건부 스크리너 (정량 필터, ₩0) 통합</p>
 
   <div class="stats">
-    <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 실행</div></div>
+    <div class="stat"><div class="stat-v">{_combined_runs}</div><div class="stat-l">총 실행 ({total_runs}+{_scr_count})</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost_krw:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{month_cost_krw:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost_krw:,.0f}</div><div class="stat-l">누적 비용</div></div>
     <div class="stat"><div class="stat-v">{total_picks}</div><div class="stat-l">Top-3 picks</div></div>
     <div class="stat"><div class="stat-v">{resolved_count}</div><div class="stat-l">1m resolved</div></div>
   </div>
-
-  <div class="search-bar">
-    <input id="scr-search" type="text" placeholder="ticker / 회사명 / 테마 / 본문 검색 (예: 변압기, 액체냉각, ETN, Eaton)" autocomplete="off" spellcheck="false">
-    <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
-  </div>
-  <p id="scr-status" class="status-line">총 {total_runs}건의 screener 실행</p>
-  <div id="scr-snippets" class="snippets" style="display:none"></div>
-  <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
 """)
 
-    # Bottleneck run 이 없어도 조건부 스크리너(/screen) 결과가 있으면 그 섹션은
-    # 렌더해야 함 — 둘 다 비었을 때만 빈 메시지 + early return (2026-06-09).
     if not runs and not (screen_archives or []):
         parts.append("""
   <div class="empty">
     아직 screener 실행 기록이 없습니다. 텔레그램 채널에서
-    <code>/screener</code> 를 실행하세요.
+    <code>/screener</code> 또는 <code>/screen</code> 을 실행하세요.
   </div>
 </div>""")
         return "".join(parts)
+
+    # ── Bottleneck Screener section header + search ──
+    parts.append(f"""
+  <h2 style="margin:24px 0 8px">🔬 Bottleneck Screener</h2>
+  <p class="sub">테마별 다종목 idea generation · 6-18M thesis</p>
+  <div class="search-bar">
+    <input id="scr-search" type="text" placeholder="ticker / 회사명 / 테마 / 본문 검색 (예: 변압기, 액체냉각, ETN, Eaton)" autocomplete="off" spellcheck="false">
+    <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
+  </div>
+  <p id="scr-status" class="status-line">총 {total_runs}건의 Bottleneck Screener 실행</p>
+  <div id="scr-snippets" class="snippets" style="display:none"></div>
+  <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
+""")
 
     # Sort dates newest-first; expand only today's group by default so the
     # archive stays compact once many days accumulate (NOAH index.html
@@ -6472,76 +6477,24 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
         parts.append('</div></details>')
     _month_close(parts, _prev_month)
 
-    # ── 조건부 스크리너 section (screen archives merged into screener page) ──
+    # ── 조건부 스크리너 section (date-grouped, search, same pattern as Bottleneck) ──
     _scr_list = screen_archives or []
     if _scr_list:
         import html as _shtml
-        _scr_cards = ""
-        for _sa in _scr_list[:50]:
-            _raw_conds = _shtml.unescape(_sa.get("conditions_display", _sa.get("conditions", "")))
-            _scr_conds = _shtml.escape(_raw_conds)
-            _scr_ts = (_sa.get("ts") or "")[:16].replace("T", " ")
-            _scr_hits = _sa.get("hit_count", 0)
-            _scr_total = _sa.get("total_universe", 0)
-            _scr_elapsed = _sa.get("elapsed_sec", 0)
-            _scr_cached = " 💾캐시" if _sa.get("was_cached") else ""
-            _scr_date = _sa.get("_date", "")
-            _scr_file = _sa.get("_file", "")
-            _scr_market = _sa.get("market", "KR")
-            _scr_is_us = _scr_market == "US"
-
-            _scr_rows = ""
-            for _sh in (_sa.get("hits") or []):
-                _sh_name = _shtml.escape(str(_sh.get("name", "")))
-                _sh_ticker = _shtml.escape(str(_sh.get("ticker", "")))
-                _sh_mkt = _shtml.escape(str(_sh.get("market", "")))
-                _sh_mcap = _sh.get("mcap")
-                if _scr_is_us:
-                    _sh_mcap_str = (f"${_sh_mcap/1000:.1f}B" if _sh_mcap and _sh_mcap >= 1000
-                                    else f"${_sh_mcap:,.0f}M" if _sh_mcap else "—")
-                else:
-                    _sh_mcap_str = f"{_sh_mcap:,.0f}" if _sh_mcap else "—"
-                _sh_extras = []
-                for _ek, _ev in _sh.items():
-                    if _ek in ("code", "ticker", "name", "market", "mcap", "price"):
-                        continue
-                    if _ev is not None:
-                        _sh_extras.append(f"{_ek}:{_ev:g}" if isinstance(_ev, (int, float)) else f"{_ek}:{_ev}")
-                _sh_extra = _shtml.escape(" · ".join(_sh_extras[:5]))
-                _sh_name_cell = f"<b>{_sh_name}</b>" if _sh_name else f"<b>{_sh_ticker}</b>"
-                _scr_rows += (
-                    f"<tr><td>{_sh_name_cell}</td>"
-                    f"<td><code>{_sh_ticker}</code></td>"
-                    f"<td class='muted'>{_sh_mkt}</td>"
-                    f"<td style='text-align:right'>{_sh_mcap_str}</td>"
-                    f"<td class='muted'>{_sh_extra}</td></tr>"
-                )
-            _scr_mcap_hdr = "시총($M)" if _scr_is_us else "시총(억)"
-            _scr_table = ""
-            if _scr_rows:
-                _scr_table = (
-                    f"<table class='scr-tbl'><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
-                    f"<th>{_scr_mcap_hdr}</th><th>지표</th></tr></thead>"
-                    f"<tbody>{_scr_rows}</tbody></table>"
-                )
-            _scr_mbadge = " 🇺🇸" if _scr_is_us else ""
-            _scr_cards += (
-                f"<details class='scr-det' data-date=\"{_shtml.escape(_scr_date)}\" data-file=\"{_shtml.escape(_scr_file)}\">"
-                f"<summary><b>{_scr_conds}</b>{_scr_mbadge} — {_scr_hits}종목/{_scr_total:,}종목{_scr_cached} "
-                f"<span class='muted'>{_scr_ts} · {_scr_elapsed:.1f}초</span>"
-                f"<button class='scr-del' type='button' title='삭제'>🗑️</button></summary>"
-                f"{_scr_table}</details>\n"
-            )
-        if not _scr_cards:
-            _scr_cards = "<p class='muted'>아직 실행 기록 없음</p>"
         parts.append(
             '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
-            '<h2>📊 조건부 스크리너</h2>'
+            '<h2 style="margin:0 0 8px">📊 조건부 스크리너</h2>'
             '<p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0). '
             '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> '
             '· <code>/screen valueup</code> · <code>/screen list</code></p>'
+            '<div class="search-bar">'
+            '<input id="cs-search" type="text" placeholder="조건 / 종목명 / 티커 검색 (예: PER, 삼성, AAPL)" autocomplete="off" spellcheck="false">'
+            '<button id="cs-clear" type="button" title="검색 초기화">초기화</button>'
+            '</div>'
+            f'<p id="cs-status" class="status-line">총 {len(_scr_list)}건의 조건부 스크리너 실행</p>'
+            '<div id="cs-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>'
             '<style>'
-            '.scr-det{margin:12px 0;padding:8px;border:1px solid var(--border);border-radius:6px}'
+            '.scr-det{margin:8px 0;padding:8px 12px;border:1px solid var(--border);border-radius:6px}'
             '.scr-det summary{cursor:pointer;font-size:14px;position:relative}'
             '.scr-del{background:none;border:none;cursor:pointer;font-size:14px;float:right;opacity:0.4}'
             '.scr-del:hover{opacity:1}'
@@ -6549,10 +6502,103 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
             '.scr-tbl th,.scr-tbl td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top}'
             '.scr-tbl th{color:var(--fg-soft);font-weight:600;font-size:12px}'
             '</style>'
-            + _scr_cards
         )
 
-    # ── Conditional screener results rendered above (single section) ──
+        # Group by date → month
+        _cs_by_date: dict[str, list] = defaultdict(list)
+        for _sa in _scr_list:
+            _cs_by_date[_sa.get("_date", "")].append(_sa)
+        _cs_dates = sorted(_cs_by_date.keys(), reverse=True)
+
+        _cs_prev_month = ""
+        def _cs_month_open(p, month_str, count, is_open):
+            p.append(
+                f'<details class="month cs-month"{" open" if is_open else ""}>'
+                f'<summary>📅 {month_str[:4]}년 {int(month_str[5:7])}월'
+                f'<span class="cnt">{count}건</span></summary>'
+            )
+        def _cs_month_close(p, prev):
+            if prev:
+                p.append('</details>')
+
+        for _cs_d in _cs_dates:
+            _cs_month = _cs_d[:7]
+            _cs_day_items = _cs_by_date[_cs_d]
+            if _cs_month != _cs_prev_month:
+                _cs_month_close(parts, _cs_prev_month)
+                _cs_month_count = sum(len(_cs_by_date[d]) for d in _cs_dates if d.startswith(_cs_month))
+                _cs_month_open(parts, _cs_month, _cs_month_count, _cs_month == _today_kst_str[:7])
+                _cs_prev_month = _cs_month
+
+            _cs_day_open = (_cs_d == _today_kst_str)
+            parts.append(
+                f'<details class="day cs-day" data-date="{_shtml.escape(_cs_d)}"{" open" if _cs_day_open else ""}>'
+                f'<summary>📅 {_cs_d}<span class="cnt">{len(_cs_day_items)}건</span></summary>'
+            )
+
+            for _sa in _cs_day_items:
+                _raw_conds = _shtml.unescape(_sa.get("conditions_display", _sa.get("conditions", "")))
+                _scr_conds = _shtml.escape(_raw_conds)
+                _scr_ts = (_sa.get("ts") or "")[:16].replace("T", " ")
+                _scr_hits = _sa.get("hit_count", 0)
+                _scr_total = _sa.get("total_universe", 0)
+                _scr_elapsed = _sa.get("elapsed_sec", 0)
+                _scr_cached = " 💾캐시" if _sa.get("was_cached") else ""
+                _scr_date = _sa.get("_date", "")
+                _scr_file = _sa.get("_file", "")
+                _scr_market = _sa.get("market", "KR")
+                _scr_is_us = _scr_market == "US"
+                _search_hay = _raw_conds
+                for _sh in (_sa.get("hits") or []):
+                    _search_hay += " " + str(_sh.get("name", "")) + " " + str(_sh.get("ticker", ""))
+
+                _scr_rows = ""
+                for _sh in (_sa.get("hits") or []):
+                    _sh_name = _shtml.escape(str(_sh.get("name", "")))
+                    _sh_ticker = _shtml.escape(str(_sh.get("ticker", "")))
+                    _sh_mkt = _shtml.escape(str(_sh.get("market", "")))
+                    _sh_mcap = _sh.get("mcap")
+                    if _scr_is_us:
+                        _sh_mcap_str = (f"${_sh_mcap/1000:.1f}B" if _sh_mcap and _sh_mcap >= 1000
+                                        else f"${_sh_mcap:,.0f}M" if _sh_mcap else "—")
+                    else:
+                        _sh_mcap_str = f"{_sh_mcap:,.0f}" if _sh_mcap else "—"
+                    _sh_extras = []
+                    for _ek, _ev in _sh.items():
+                        if _ek in ("code", "ticker", "name", "market", "mcap", "price"):
+                            continue
+                        if _ev is not None:
+                            _sh_extras.append(f"{_ek}:{_ev:g}" if isinstance(_ev, (int, float)) else f"{_ek}:{_ev}")
+                    _sh_extra = _shtml.escape(" · ".join(_sh_extras[:5]))
+                    _sh_name_cell = f"<b>{_sh_name}</b>" if _sh_name else f"<b>{_sh_ticker}</b>"
+                    _scr_rows += (
+                        f"<tr><td>{_sh_name_cell}</td>"
+                        f"<td><code>{_sh_ticker}</code></td>"
+                        f"<td class='muted'>{_sh_mkt}</td>"
+                        f"<td style='text-align:right'>{_sh_mcap_str}</td>"
+                        f"<td class='muted'>{_sh_extra}</td></tr>"
+                    )
+                _scr_mcap_hdr = "시총($M)" if _scr_is_us else "시총(억)"
+                _scr_table = ""
+                if _scr_rows:
+                    _scr_table = (
+                        f"<table class='scr-tbl'><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
+                        f"<th>{_scr_mcap_hdr}</th><th>지표</th></tr></thead>"
+                        f"<tbody>{_scr_rows}</tbody></table>"
+                    )
+                _scr_mbadge = " 🇺🇸" if _scr_is_us else ""
+                parts.append(
+                    f"<details class='scr-det cs-card' data-date=\"{_shtml.escape(_scr_date)}\""
+                    f" data-file=\"{_shtml.escape(_scr_file)}\""
+                    f" data-search=\"{_shtml.escape(_search_hay)}\">"
+                    f"<summary>▸ <b>{_scr_conds}</b>{_scr_mbadge} — {_scr_hits}종목/{_scr_total:,}종목{_scr_cached} "
+                    f"<span class='muted'>{_scr_ts} · {_scr_elapsed:.1f}초</span>"
+                    f"<button class='scr-del' type='button' title='삭제'>🗑️</button></summary>"
+                    f"{_scr_table}</details>\n"
+                )
+            parts.append('</details>')  # close day
+        _cs_month_close(parts, _cs_prev_month)
+
     parts.append("</div>")
     # JS — delete button POSTs to /api/screener_delete (mirror of NOAH
     # /api/delete pattern). On success, fade + remove the card. Server
@@ -6879,6 +6925,52 @@ document.querySelectorAll('.scr-del').forEach(function(btn) {
     }).catch(function(err) { alert('삭제 실패: ' + err); });
   });
 });
+
+// 조건부 스크리너 검색
+(function() {
+  var csInp = document.getElementById('cs-search');
+  var csClr = document.getElementById('cs-clear');
+  var csSts = document.getElementById('cs-status');
+  var csEmp = document.getElementById('cs-empty');
+  if (!csInp) return;
+  var csCards = Array.from(document.querySelectorAll('.cs-card'));
+  var csDays = Array.from(document.querySelectorAll('.cs-day'));
+  var csMonths = Array.from(document.querySelectorAll('.cs-month'));
+  var csTotal = csCards.length;
+
+  function csFilter() {
+    var q = (csInp.value || '').trim().toLowerCase();
+    if (!q) {
+      csCards.forEach(function(c) { c.style.display = ''; });
+      csDays.forEach(function(d) { d.style.display = ''; });
+      csMonths.forEach(function(m) { m.style.display = ''; });
+      csEmp.style.display = 'none';
+      csSts.textContent = '총 ' + csTotal + '건의 조건부 스크리너 실행';
+      return;
+    }
+    var hits = 0;
+    csCards.forEach(function(c) {
+      var hay = (c.dataset.search || '').toLowerCase();
+      var show = hay.indexOf(q) >= 0;
+      c.style.display = show ? '' : 'none';
+      if (show) hits++;
+    });
+    csDays.forEach(function(d) {
+      var any = d.querySelector('.cs-card:not([style*="display: none"])');
+      d.style.display = any ? '' : 'none';
+      if (any) d.open = true;
+    });
+    csMonths.forEach(function(m) {
+      var any = m.querySelector('.cs-day:not([style*="display: none"])');
+      m.style.display = any ? '' : 'none';
+      if (any) m.open = true;
+    });
+    csEmp.style.display = hits === 0 ? 'block' : 'none';
+    csSts.textContent = hits + '건 매칭 (검색: "' + csInp.value.trim() + '")';
+  }
+  csInp.addEventListener('input', csFilter);
+  csClr.addEventListener('click', function() { csInp.value = ''; csFilter(); csInp.focus(); });
+})();
 </script>
 </body></html>
 """)
@@ -6889,7 +6981,7 @@ _SCREENER_CSS = (
     """<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Bottleneck Screener — Archive</title>
+<title>Screener — Archive</title>
 <script>""" + _THEME_JS + """</script>
 <style>
 /* Time-based light/dark theme (Asia/Seoul) — _THEME_JS toggles
