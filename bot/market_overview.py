@@ -564,10 +564,11 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
     except Exception as exc:
         log.warning("naver research market fetch error: %s", exc)
 
-    try:
-        cache_file.write_text(json.dumps(results, ensure_ascii=False))
-    except Exception:
-        pass
+    if results:  # truthy-only — 빈 결과(일시 실패) 캐시 안 함('또 갑자기 없음' 방지)
+        try:
+            cache_file.write_text(json.dumps(results, ensure_ascii=False))
+        except Exception:
+            pass
     return results[:limit]
 
 
@@ -595,10 +596,11 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
     except Exception as exc:
         log.warning("naver research industry fetch error: %s", exc)
 
-    try:
-        cache_file.write_text(json.dumps(results, ensure_ascii=False))
-    except Exception:
-        pass
+    if results:  # truthy-only — 빈 결과 캐시 안 함
+        try:
+            cache_file.write_text(json.dumps(results, ensure_ascii=False))
+        except Exception:
+            pass
     return results[:limit]
 
 
@@ -729,8 +731,8 @@ def fetch_all_market_data() -> dict[str, Any]:
         snap_fut = pool.submit(fetch_market_snapshot)
         earn_fut = pool.submit(fetch_earnings_calendar, 14)
         earn_kr_fut = pool.submit(fetch_earnings_calendar_kr, 90)
-        kr_fut = pool.submit(fetch_recent_research_kr, 150)
-        kr_ind_fut = pool.submit(fetch_recent_research_kr_industry, 80)
+        kr_fut = pool.submit(fetch_recent_research_kr, 80)
+        kr_ind_fut = pool.submit(fetch_recent_research_kr_industry, 60)
         us_fut = pool.submit(fetch_recent_research_us, 40)
         macro_fut = pool.submit(_fetch_macro_safe)
         sector_fut = pool.submit(_fetch_sector_movers_safe)
