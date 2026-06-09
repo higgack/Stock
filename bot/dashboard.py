@@ -7824,13 +7824,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
-    · <a href="screener.html">📊 Screener</a>
-    · <a href="screener_domains.html">🗂️ 도메인 목록</a>
-    · <a href="paper.html">🔔 워치리스트</a>
-    · <a href="reddit_insider.html">📨 미국 레딧</a>
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
-    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
   </div>
   <h1>📊 Daily Byte — Archive</h1>
   <p class="sub">장 마감 후 KR 수급 브리프 · 한국거래일 19:00 Daily + 일 22:00 Weekly (KST) · 수급 데이터 관찰(교육·정보), 투자 권유 아님</p>
@@ -8041,7 +8035,6 @@ def _render_realestate_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="cheongyak.html">🎟️ 청약</a>
   </div>
   <h1>🏠 부동산 — Archive</h1>
   <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 + 청약홈 분양 피드 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
@@ -8349,9 +8342,6 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
     · <a href="screener.html">📊 Screener</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
     · <a href="paper.html">🔔 워치리스트</a>
-    · <a href="daily_byte.html">📊 Daily Byte</a>
-    · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
-    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
   </div>
   <h1>📨 미국 레딧 게시물 분석 — Archive</h1>
   <p class="sub">t.me/insidertracking 자동 포워드 · 제목 '미국 레딧 게시물 분석' 필터 · ₩0 (LLM 없음, 원본 그대로) · 정보 관찰(투자 권유 아님)</p>
@@ -8585,8 +8575,7 @@ def _paper_nav(active: str = "paper") -> str:
         ' · <a href="index.html">🦉 NOAH 종목분석</a>'
         ' · <a href="screener.html">📊 Screener</a>'
         ' · ' + _a("paper.html", "🔔 워치리스트", "paper")
-        + ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-        '</div>')
+        + '</div>')
 
 
 def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: list[dict] | None = None) -> str:
