@@ -428,6 +428,86 @@ def fetch_earnings_calendar(days_ahead: int = 14) -> list[dict]:
     return result
 
 
+# 한국 주요 종목(KOSPI/KOSDAQ 대형주) — yfinance .calendar 로 예정 실적일.
+# Finnhub 무료 티어가 KR 미커버 → 종목별 .calendar(무료)로 직접 산출.
+_KR_EARNINGS_UNIVERSE = [
+    ("005930.KS", "삼성전자"), ("000660.KS", "SK하이닉스"),
+    ("373220.KS", "LG에너지솔루션"), ("207940.KS", "삼성바이오로직스"),
+    ("005380.KS", "현대차"), ("000270.KS", "기아"),
+    ("005490.KS", "POSCO홀딩스"), ("035420.KS", "NAVER"),
+    ("035720.KS", "카카오"), ("051910.KS", "LG화학"),
+    ("006400.KS", "삼성SDI"), ("068270.KS", "셀트리온"),
+    ("105560.KS", "KB금융"), ("055550.KS", "신한지주"),
+    ("012330.KS", "현대모비스"), ("028260.KS", "삼성물산"),
+    ("066570.KS", "LG전자"), ("015760.KS", "한국전력"),
+    ("034730.KS", "SK"), ("096770.KS", "SK이노베이션"),
+    ("017670.KS", "SK텔레콤"), ("030200.KS", "KT"),
+    ("086790.KS", "하나금융지주"), ("010130.KS", "고려아연"),
+    ("009150.KS", "삼성전기"), ("011070.KS", "LG이노텍"),
+    ("003670.KS", "포스코퓨처엠"), ("247540.KQ", "에코프로비엠"),
+    ("086520.KQ", "에코프로"), ("196170.KQ", "알테오젠"),
+    ("058470.KQ", "리노공업"), ("042700.KQ", "한미반도체"),
+    ("091990.KQ", "셀트리온헬스케어"),
+]
+
+
+def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
+    """KR 주요 종목 예정 실적일 (yfinance .calendar, 무료). 12h 캐시.
+
+    KR 실적일은 미국보다 드물게 분포 → 윈도 90일로 넓게. 추정치(EPS/매출)는
+    yfinance 가 KR 에 대해 종종 None → 그대로 '—' 표시(정직)."""
+    cache_dir = _CACHE_DIR / "finnhub"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    today = date.today()
+    cache_file = cache_dir / f"earnings_kr_{today.isoformat()}.json"
+    if cache_file.exists():
+        try:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < 12:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    cutoff = today + timedelta(days=days_ahead)
+
+    def _one(item):
+        tk, name = item
+        try:
+            cal = yf.Ticker(tk).calendar
+            if not isinstance(cal, dict):
+                return None
+            eds = cal.get("Earnings Date") or []
+            if not eds:
+                return None
+            d0 = eds[0]
+            ds = d0.strftime("%Y-%m-%d") if hasattr(d0, "strftime") else str(d0)[:10]
+            try:
+                dd = datetime.strptime(ds, "%Y-%m-%d").date()
+            except ValueError:
+                return None
+            if dd < today or dd > cutoff:
+                return None
+            return {
+                "symbol": tk, "name": name, "date": ds, "hour": "",
+                "eps_estimate": cal.get("Earnings Average"),
+                "revenue_estimate": cal.get("Revenue Average"),
+                "quarter": None, "year": None,
+            }
+        except Exception:
+            return None
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for r in pool.map(_one, _KR_EARNINGS_UNIVERSE):
+            if r:
+                results.append(r)
+    results.sort(key=lambda x: x.get("date", ""))
+    try:
+        cache_file.write_text(json.dumps(results, ensure_ascii=False))
+    except Exception:
+        pass
+    return results
+
+
 # ── Recent KR Research (Naver Finance 리서치 목록) ──────────────────
 # 한경 컨센서스는 2026 초 JS 렌더링 전환으로 정적 scrape 불가 →
 # Naver Finance 전체 시장 리서치 목록(naver_research_client)으로 대체.
@@ -586,16 +666,21 @@ def _fetch_macro_safe() -> dict:
 
 def fetch_all_market_data() -> dict[str, Any]:
     """Fetch everything needed for market.html."""
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         snap_fut = pool.submit(fetch_market_snapshot)
         earn_fut = pool.submit(fetch_earnings_calendar, 14)
+        earn_kr_fut = pool.submit(fetch_earnings_calendar_kr, 90)
         kr_fut = pool.submit(fetch_recent_research_kr, 40)
         us_fut = pool.submit(fetch_recent_research_us, 40)
         macro_fut = pool.submit(_fetch_macro_safe)
 
+        # US(Finnhub, 14일) + KR(yfinance, 90일) 실적 병합 후 날짜순.
+        earnings = (earn_fut.result() or []) + (earn_kr_fut.result() or [])
+        earnings.sort(key=lambda e: e.get("date", ""))
+
         return {
             "snapshot": snap_fut.result(),
-            "earnings": earn_fut.result(),
+            "earnings": earnings,
             "research_kr": kr_fut.result(),
             "research_us": us_fut.result(),
             "macro": macro_fut.result(),

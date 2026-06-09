@@ -10606,25 +10606,37 @@ def _render_earnings_table(earnings: list) -> str:
     rows: list[str] = []
     shown = 0
     for e in earnings:
-        if shown >= 30:
+        if shown >= 40:
             break
         sym = _html.escape(e.get("symbol", ""))
         co_name = _html.escape(e.get("name", ""))
         dt = _html.escape(e.get("date", ""))
+        is_kr = sym.endswith((".KS", ".KQ"))
         hour = e.get("hour", "")
         hour_label = "장전" if hour == "bmo" else ("장후" if hour == "amc" else "—")
         eps_est = e.get("eps_estimate")
-        eps_str = f'${eps_est:.2f}' if eps_est is not None else "—"
-        rev_est = e.get("revenue_estimate")
-        if rev_est is not None:
-            if rev_est >= 1e9:
-                rev_str = f'${rev_est / 1e9:.1f}B'
-            elif rev_est >= 1e6:
-                rev_str = f'${rev_est / 1e6:.0f}M'
-            else:
-                rev_str = f'${rev_est:,.0f}'
+        if eps_est is None:
+            eps_str = "—"
+        elif is_kr:
+            eps_str = f'₩{eps_est:,.0f}'
         else:
+            eps_str = f'${eps_est:.2f}'
+        rev_est = e.get("revenue_estimate")
+        if rev_est is None:
             rev_str = "—"
+        elif is_kr:
+            if rev_est >= 1e12:
+                rev_str = f'₩{rev_est / 1e12:.1f}조'
+            elif rev_est >= 1e8:
+                rev_str = f'₩{rev_est / 1e8:,.0f}억'
+            else:
+                rev_str = f'₩{rev_est:,.0f}'
+        elif rev_est >= 1e9:
+            rev_str = f'${rev_est / 1e9:.1f}B'
+        elif rev_est >= 1e6:
+            rev_str = f'${rev_est / 1e6:.0f}M'
+        else:
+            rev_str = f'${rev_est:,.0f}'
         q = e.get("quarter")
         y = e.get("year")
         q_str = f'Q{q} {y}' if q and y else "—"
@@ -11187,7 +11199,7 @@ def _render_market_page(data: dict) -> str:
   <div class="section-hd">
     <h2>다가오는 실적</h2>
     <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더</a>
-    <span class="ts">Finnhub · 향후 14일</span>
+    <span class="ts">미국 Finnhub(14일) + 한국 yfinance(90일)</span>
   </div>
   <div class="tbl-filter">
     <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
