@@ -275,7 +275,7 @@ def generate() -> tuple[str, float] | None:
     except Exception as exc:
         log.warning("us_market_daily: dashboard regen failed: %s", exc)
 
-    title = f"🇺🇸 <b>US Daily Byte - {_now_kst().strftime('%Y.%m.%d')}</b>"
+    title = f"🇺🇸 <b>미국 Daily Byte - {_now_kst().strftime('%Y.%m.%d')}</b>"
     full = f"{title}\n<i>미국 장 마감 후 시장 브리프 · 생성 {_now_kst():%H:%M} KST</i>\n\n{body}"
     return full, cost_krw
 

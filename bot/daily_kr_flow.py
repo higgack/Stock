@@ -594,7 +594,7 @@ def generate() -> tuple[str, float, str | None] | None:
                              elapsed_sec=_time.monotonic() - _t0,
                              kind="daily", png_rel=png_rel)
 
-    title = f"📊 <b>Daily Byte - {_iso_dot(date)}</b>"
+    title = f"📊 <b>한국 Daily Byte - {_iso_dot(date)}</b>"
     full = f"{title}\n<i>장 마감 후 KR 수급 브리프 · 생성 {_now_kst():%H:%M} KST</i>\n\n{body}"
     return full, cost_krw, png_path
 

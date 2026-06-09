@@ -7898,9 +7898,9 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
                 kind = r.get("kind", "daily")
                 is_weekly = kind == "weekly"
                 is_us = kind == "us_daily"
-                kind_badge = ("📅 Weekly" if is_weekly
-                              else "🇺🇸 US Daily" if is_us
-                              else "🇰🇷 KR Daily")
+                kind_badge = ("📅 한국 Weekly" if is_weekly
+                              else "🇺🇸 미국 Daily" if is_us
+                              else "🇰🇷 한국 Daily")
                 title = f"{kind_badge} · {_html.escape(date)}"
                 # Body is already Telegram-safe HTML (<b>/<i> only) from
                 # daily_kr_flow._post_process. Strip the leading title line
@@ -11120,12 +11120,12 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="budget.html">📒 가계부</a>
     &nbsp;|&nbsp;
     <a href="index.html">🦉 NOAH 종목분석</a>
+    &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="screener.html">📊 Screener</a>
     &middot; <a href="screener_domains.html">🗂️ 도메인 목록</a>
     &middot; <a href="paper.html">🔔 워치리스트</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
-    &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     &middot; <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
     &nbsp;|&nbsp;
@@ -11174,7 +11174,7 @@ def _render_market_page(data: dict) -> str:
 
   <div class="section-hd" style="display:flex;align-items:baseline;gap:12px">
     <h2>최근 리서치 액션</h2>
-    <a href="dart_feed.html" style="font-size:13px;color:var(--accent,#3b82f6);text-decoration:none">📋 DART 공시 →</a>
+    <a href="dart_feed.html" style="font-size:13px;color:var(--accent,#3b82f6);text-decoration:none">📋 DART 공시</a>
   </div>
   <div class="tbl-filter">
     <input id="research-filter" type="text" placeholder="종목 검색 …" autocomplete="off">

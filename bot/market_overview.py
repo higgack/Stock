@@ -428,10 +428,15 @@ def fetch_earnings_calendar(days_ahead: int = 14) -> list[dict]:
     return result
 
 
-# ── 한경 Recent Research (list page) ────────────────────────────────
+# ── Recent KR Research (Naver Finance 리서치 목록) ──────────────────
+# 한경 컨센서스는 2026 초 JS 렌더링 전환으로 정적 scrape 불가 →
+# Naver Finance 전체 시장 리서치 목록(naver_research_client)으로 대체.
 
 def fetch_recent_research_kr(limit: int = 25) -> list[dict]:
-    """Fetch latest KR broker research reports from 한경 컨센서스 list page."""
+    """Fetch latest KR broker research reports (Naver Finance 리서치 목록).
+
+    개별 종목 분석이 Naver 리서치를 쓰는 것과 동일 소스 — 전체 시장 최신
+    리포트를 최신순으로. Returns [{code, name, broker, rating, title, date}]."""
     cache_dir = _CACHE_DIR / "research"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today = date.today()
@@ -444,69 +449,12 @@ def fetch_recent_research_kr(limit: int = 25) -> list[dict]:
         except Exception:
             pass
 
-    url = "https://consensus.hankyung.com/apps.analysis/analysis.list"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://consensus.hankyung.com/",
-    }
+    results: list[dict] = []
     try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        resp.raise_for_status()
-        html = resp.text
+        from bot.naver_research_client import fetch_recent_research_market
+        results = fetch_recent_research_market(limit=limit, days_back=14)
     except Exception as exc:
-        log.warning("hankyung: research list fetch error: %s", exc)
-        return []
-
-    results = []
-    try:
-        row_re = re.compile(
-            r'<tr[^>]*>.*?class="[^"]*code[^"]*"[^>]*>(\d{6})</.*?'
-            r'class="[^"]*name[^"]*"[^>]*>(.*?)</.*?'
-            r'class="[^"]*broker[^"]*"[^>]*>(.*?)</.*?'
-            r'class="[^"]*rating[^"]*"[^>]*>(.*?)</.*?'
-            r'class="[^"]*title[^"]*"[^>]*>(.*?)</.*?'
-            r'class="[^"]*date[^"]*"[^>]*>(.*?)</.*?</tr>',
-            re.DOTALL,
-        )
-        for m in row_re.finditer(html):
-            code, name, broker, rating, title, dt = (
-                m.group(1).strip(),
-                re.sub(r"<[^>]+>", "", m.group(2)).strip(),
-                re.sub(r"<[^>]+>", "", m.group(3)).strip(),
-                re.sub(r"<[^>]+>", "", m.group(4)).strip(),
-                re.sub(r"<[^>]+>", "", m.group(5)).strip(),
-                re.sub(r"<[^>]+>", "", m.group(6)).strip(),
-            )
-            results.append({
-                "code": code,
-                "name": name,
-                "broker": broker,
-                "rating": rating,
-                "title": title,
-                "date": dt,
-            })
-            if len(results) >= limit:
-                break
-    except Exception as exc:
-        log.warning("hankyung: research list parse error: %s", exc)
-
-    if not results:
-        try:
-            from bot.hk_consensus_client import fetch_consensus
-            for tk in ["005930", "000660", "035420", "005380", "035720"]:
-                c = fetch_consensus(tk, days_back=7)
-                if c and c.get("reports"):
-                    for rp in c["reports"][:3]:
-                        results.append({
-                            "code": tk,
-                            "name": "",
-                            "broker": rp.get("broker", ""),
-                            "rating": rp.get("rating", ""),
-                            "title": rp.get("title", ""),
-                            "date": rp.get("date", ""),
-                        })
-        except Exception:
-            pass
+        log.warning("naver research market fetch error: %s", exc)
 
     try:
         cache_file.write_text(json.dumps(results, ensure_ascii=False))
