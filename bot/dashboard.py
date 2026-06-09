@@ -10185,56 +10185,74 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   </div>
 """)
 
+    from collections import OrderedDict as _OD
+    _months: "_OD[str, list]" = _OD()
     for date_str in sorted(by_date.keys(), reverse=True):
-        items = by_date[date_str]
+        _months.setdefault(date_str[:7], []).append(date_str)
+
+    _date_idx = 0  # 전체 날짜 순번 — 최신 1개만 기본 펼침
+    for mi, (ym, dates) in enumerate(_months.items()):
         try:
-            d = _dt.strptime(date_str, "%Y-%m-%d")
-            wd = _WEEKDAY_KR.get(d.weekday(), "")
-            label = f"{d.month}월 {d.day}일 ({wd})"
+            _my, _mm = ym.split("-")
+            month_label = f"{_my}년 {int(_mm)}월"
         except Exception:
-            label = date_str
-
+            month_label = ym
+        month_total = sum(len(by_date[d]) for d in dates)
+        m_cls = "" if mi == 0 else " collapsed"   # 최신 월만 펼침, 과거 월 접힘
         parts.append(f"""
-  <div class="df-date-group" data-date="{date_str}">
-    <div class="df-date-hd">
-      <span>{label}</span>
-      <span class="df-date-meta">
-        이 페이지 <span class="df-date-label">{date_str}</span>
-        <span class="df-date-cnt">{len(items)}</span>
-      </span>
-    </div>
-    <div class="df-grid">
+  <div class="df-month{m_cls}" data-month="{ym}">
+    <div class="df-month-hd"><span class="df-caret">▾</span><span class="df-month-lbl">{month_label}</span><span class="df-month-cnt">{month_total}건</span></div>
+    <div class="df-month-body">
 """)
-        for it in items:
-            cn = _html.escape(it.get("corp_name", ""))
-            rn = _html.escape(it.get("report_nm", ""))
-            cat = it.get("category", "기타")
-            cat_color = _DART_CAT_COLORS.get(cat, "#78909c")
-            url = _html.escape(it.get("url", "#"))
-            dt_short = date_str[5:]  # MM-DD
-            detail_lines = it.get("detail", [])
-            stock_code = it.get("stock_code", "")
-
-            detail_html = ""
-            if detail_lines:
-                for ln in detail_lines:
-                    detail_html += f'<div class="df-detail-ln">= {_html.escape(str(ln))}</div>'
-
-            ticker_link = ""
-            if stock_code and len(stock_code) == 6 and stock_code.isdigit():
-                ticker_link = f' <a href="lookup/{stock_code}.KS" class="df-ticker-link">{stock_code}</a>'
+        for date_str in dates:
+            items = by_date[date_str]
+            try:
+                d = _dt.strptime(date_str, "%Y-%m-%d")
+                wd = _WEEKDAY_KR.get(d.weekday(), "")
+                label = f"{d.year}년 {d.month}월 {d.day}일 ({wd})"
+            except Exception:
+                label = date_str
+            d_cls = "" if _date_idx == 0 else " collapsed"  # 최신 날짜만 펼침
+            _date_idx += 1
 
             parts.append(f"""
-      <div class="df-card" data-cat="{cat}" data-name="{cn}" data-report="{rn}">
-        <div class="df-card-hd">
-          <a href="{url}" target="_blank" rel="noopener" class="df-corp">{cn}</a>{ticker_link}
-          <span class="df-meta"><span class="df-dt">{dt_short}</span> <span class="df-cat" style="background:{cat_color}">{cat}</span></span>
+      <div class="df-date-group{d_cls}" data-date="{date_str}">
+        <div class="df-date-hd">
+          <span class="df-caret">▾</span><span>{label}</span>
+          <span class="df-date-meta"><span class="df-date-cnt">{len(items)}</span></span>
         </div>
-        <div class="df-report">{rn}</div>
-        {detail_html}
-      </div>
+        <div class="df-date-body"><div class="df-grid">
 """)
+            for it in items:
+                cn = _html.escape(it.get("corp_name", ""))
+                rn = _html.escape(it.get("report_nm", ""))
+                cat = it.get("category", "기타")
+                cat_color = _DART_CAT_COLORS.get(cat, "#78909c")
+                url = _html.escape(it.get("url", "#"))
+                dt_short = date_str[5:]  # MM-DD
+                detail_lines = it.get("detail", [])
+                stock_code = it.get("stock_code", "")
 
+                detail_html = ""
+                if detail_lines:
+                    for ln in detail_lines:
+                        detail_html += f'<div class="df-detail-ln">= {_html.escape(str(ln))}</div>'
+
+                ticker_link = ""
+                if stock_code and len(stock_code) == 6 and stock_code.isdigit():
+                    ticker_link = f' <a href="lookup/{stock_code}.KS" class="df-ticker-link">{stock_code}</a>'
+
+                parts.append(f"""
+          <div class="df-card" data-cat="{cat}" data-name="{cn}" data-report="{rn}">
+            <div class="df-card-hd">
+              <a href="{url}" target="_blank" rel="noopener" class="df-corp">{cn}</a>{ticker_link}
+              <span class="df-meta"><span class="df-dt">{dt_short}</span> <span class="df-cat" style="background:{cat_color}">{cat}</span></span>
+            </div>
+            <div class="df-report">{rn}</div>
+            {detail_html}
+          </div>
+""")
+            parts.append("        </div></div>\n      </div>\n")
         parts.append("    </div>\n  </div>\n")
 
     # JS for filtering, search, view toggle
@@ -10248,9 +10266,19 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 .df-view-btns{display:flex;gap:2px;background:var(--card,#1a1f2b);border-radius:6px;padding:2px}
 .df-vbtn{padding:6px 8px;background:transparent;border:none;color:var(--muted,#888);cursor:pointer;border-radius:4px;display:flex;align-items:center}
 .df-vbtn.active{background:var(--accent,#3b82f6);color:#fff}
-.df-date-group{margin-bottom:24px}
-.df-date-hd{display:flex;justify-content:space-between;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--border,#333);margin-bottom:12px;font-weight:600;font-size:15px}
-.df-date-meta{font-size:12px;color:var(--muted,#888);font-weight:400}
+.df-month{margin-bottom:20px}
+.df-month-hd{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none;font-size:18px;font-weight:700;padding:8px 0;border-bottom:2px solid var(--border,#333);margin-bottom:12px}
+.df-month-lbl{flex:0 0 auto}
+.df-month-cnt{margin-left:auto;font-size:12px;font-weight:400;color:var(--muted,#888);background:var(--card,#1a1f2b);padding:2px 10px;border-radius:10px}
+.df-month.collapsed .df-month-body{display:none}
+.df-month-body{padding-left:2px}
+.df-date-group{margin-bottom:18px}
+.df-date-hd{display:flex;gap:8px;align-items:baseline;cursor:pointer;user-select:none;padding:6px 0;border-bottom:1px solid var(--border,#333);margin-bottom:12px;font-weight:600;font-size:15px}
+.df-date-group.collapsed .df-date-body{display:none}
+.df-caret{font-size:11px;color:var(--muted,#888);display:inline-block;transition:transform .15s;flex:0 0 auto}
+.collapsed>.df-month-hd>.df-caret,.collapsed>.df-date-hd>.df-caret{transform:rotate(-90deg)}
+.df-searching .df-month-body,.df-searching .df-date-body{display:block!important}
+.df-date-meta{font-size:12px;color:var(--muted,#888);font-weight:400;margin-left:auto}
 .df-date-label{margin-left:8px}
 .df-date-cnt{margin-left:8px;font-weight:600;color:var(--fg,#ccc)}
 .df-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
@@ -10286,27 +10314,40 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   var viewBtns=document.querySelectorAll('.df-vbtn');
   var grids=document.querySelectorAll('.df-grid');
   var activeCat='전체';
+  var wrap=document.querySelector('.wrap');
 
   function applyFilters(){
     var q=(search?search.value:'').toLowerCase().trim();
-    var vis=0;
+    // 검색/카테고리 필터 중에는 접힌 그룹도 펼쳐 매칭이 보이게.
+    if(wrap)wrap.classList.toggle('df-searching', !!q || activeCat!=='전체');
     cards.forEach(function(c){
       var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
       var textMatch=!q||
         (c.dataset.name||'').toLowerCase().indexOf(q)>=0||
         (c.dataset.report||'').toLowerCase().indexOf(q)>=0||
         c.textContent.toLowerCase().indexOf(q)>=0;
-      if(catMatch&&textMatch){c.classList.remove('hidden');vis++}
+      if(catMatch&&textMatch){c.classList.remove('hidden')}
       else{c.classList.add('hidden')}
     });
-    // update date group counts
     document.querySelectorAll('.df-date-group').forEach(function(g){
       var n=g.querySelectorAll('.df-card:not(.hidden)').length;
       var cnt=g.querySelector('.df-date-cnt');
       if(cnt)cnt.textContent=n;
       g.style.display=n?'':'none';
     });
+    document.querySelectorAll('.df-month').forEach(function(m){
+      var n=m.querySelectorAll('.df-card:not(.hidden)').length;
+      m.style.display=n?'':'none';
+    });
   }
+
+  // 월/날짜 헤더 클릭 → 접기/펼치기
+  document.querySelectorAll('.df-month-hd').forEach(function(h){
+    h.addEventListener('click',function(){h.parentElement.classList.toggle('collapsed');});
+  });
+  document.querySelectorAll('.df-date-hd').forEach(function(h){
+    h.addEventListener('click',function(){h.parentElement.classList.toggle('collapsed');});
+  });
   pills.forEach(function(p){
     p.addEventListener('click',function(){
       pills.forEach(function(x){x.classList.remove('active')});
