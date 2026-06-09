@@ -4821,12 +4821,12 @@ def _render_stock_info_html(rec: dict) -> str:
             sd = hsgt.get("south_direction", "")
             flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">港股通 자금 흐름 (5일 누적 · 시장 전체)</div>
+    <div class="si-section-title">港股通 시장 전체 자금 흐름 (5일 누적)</div>
     <table class="si-table"><thead><tr><th>구분</th><th class="num">5일 순매수</th><th>방향</th></tr></thead><tbody>
       <tr><td>北向 (외국인→A주)</td>{_cn_flow(nb)}<td>{esc(nd)}</td></tr>
       <tr><td>南向 (본토→HK)</td>{_cn_flow(sb)}<td>{esc(sd)}</td></tr>
     </tbody></table>
-    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 시장 전체 집계 (종목별 아님). Stock Connect 북향/남향 순매수. 출처: 东方财富</div>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 이 종목의 개별 수급이 아닌 Stock Connect 시장 전체 집계. 출처: 东方财富 (12시간 캐시)</div>
   </div>
 </div>"""
 
@@ -4855,9 +4855,9 @@ def _render_stock_info_html(rec: dict) -> str:
                     jpx_body += f"<tr><td>{label}</td>{cells}</tr>\n"
                 flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">JPX 주간 투자주체별 수급 (百万円 · 시장 전체)</div>
+    <div class="si-section-title">JPX 시장 전체 주간 투자주체별 수급 (百万円)</div>
     <table class="si-table"><thead><tr><th>주체</th>{wk_hdrs}</tr></thead><tbody>{jpx_body}</tbody></table>
-    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 시장 전체 집계 (종목별 아님) · 최신 기준: {esc(str(jpx_rows[0].get("date",""))[:10])}. 출처: JPX 投資部門別 売買状況 (주 1회 목/금 발표, 96시간 캐시)</div>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 이 종목의 개별 수급이 아닌 일본 시장 전체 집계 · 최신 기준: {esc(str(jpx_rows[0].get("date",""))[:10])}. 출처: JPX 投資部門別 売買状況 (주 1회 목/금 발표, 96시간 캐시)</div>
   </div>
 </div>"""
         except Exception as exc:
