@@ -10526,6 +10526,18 @@ _MARKET_CSS = (
     ".chart-card .foot{font-size:10px;color:var(--muted);margin-top:8px}"
     ".chart-card svg{display:block;width:100%;height:auto;color:var(--muted)}"
     "@media(max-width:860px){.chart-row{grid-template-columns:1fr}}"
+    # ── 업종 등락 TOP (sector movers) ──
+    ".sm-wrap{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}"
+    "@media(max-width:700px){.sm-wrap{grid-template-columns:1fr}}"
+    ".sm-col{background:var(--card);border:1px solid var(--border);"
+    "border-radius:12px;padding:14px 16px}"
+    ".sm-hd{font-size:13px;font-weight:700;margin-bottom:8px;padding-bottom:6px;"
+    "border-bottom:1px solid var(--border)}"
+    ".sm-tbl{width:100%;border-collapse:collapse;font-size:13px}"
+    ".sm-tbl td{padding:5px 0;font-variant-numeric:tabular-nums}"
+    ".sm-tbl td:first-child{color:var(--text)}"
+    ".sm-tbl td:last-child{text-align:right;font-weight:600;width:84px}"
+    ".sm-tbl .rk{color:var(--muted);width:22px;font-size:12px}"
     # ── Market Daily cards ──
     ".md-row{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-bottom:28px}"
     "@media(max-width:700px){.md-row{grid-template-columns:1fr}}"
@@ -10720,11 +10732,11 @@ def _render_earnings_table(earnings: list) -> str:
 
 
 def _render_research_kr_table(research: list) -> str:
-    """Render the KR research actions table."""
+    """Render the KR 기업(종목) research actions table — 일주일치."""
     if not research:
         return '<div class="empty-msg">최근 리서치 액션이 없습니다.</div>'
     rows: list[str] = []
-    for r in research[:40]:
+    for r in research[:200]:
         code = _html.escape(r.get("code", ""))
         name = _html.escape(r.get("name", ""))
         broker = _html.escape(r.get("broker", ""))
@@ -10751,6 +10763,33 @@ def _render_research_kr_table(research: list) -> str:
         '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
         '<thead><tr><th>종목</th><th>증권사</th><th>투자의견</th><th>목표가</th>'
         '<th>제목(클릭→원문)</th><th>날짜</th></tr></thead>'
+        '<tbody>' + "".join(rows) + '</tbody></table></div>'
+    )
+
+
+def _render_research_industry_table(research: list) -> str:
+    """Render the KR 산업(업종) research table — 일주일치. 목표가 없음."""
+    if not research:
+        return '<div class="empty-msg">최근 산업 리포트가 없습니다.</div>'
+    rows: list[str] = []
+    for r in research[:200]:
+        category = _html.escape(r.get("category", "") or "—")
+        broker = _html.escape(r.get("broker", ""))
+        title = _html.escape(r.get("title", ""))
+        dt = _html.escape(r.get("date", ""))
+        link = _html.escape(r.get("link", ""))
+        title_cell = (f'<a href="{link}" target="_blank" rel="noopener" '
+                      f'style="color:var(--text);text-decoration:underline;'
+                      f'text-decoration-color:var(--muted)">{title[:60]}</a>'
+                      if link else title[:60])
+        rows.append(
+            f'<tr><td class="sym">{category}</td>'
+            f'<td>{broker}</td><td>{title_cell}</td><td>{dt}</td></tr>'
+        )
+    return (
+        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
+        '<thead><tr><th>산업</th><th>증권사</th><th>제목(클릭→원문)</th>'
+        '<th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
     )
 
@@ -11023,6 +11062,58 @@ def _render_sentiment_gauge(data: dict) -> str:
     )
 
 
+def _render_sector_movers(movers: dict) -> str:
+    """업종 등락 TOP 10 (상승/하락) 위젯 — Naver 업종별 시세. 데이터 없으면 빈 문자열."""
+    up = (movers or {}).get("up", [])
+    down = (movers or {}).get("down", [])
+    if not up and not down:
+        return ""
+
+    def _col(title: str, items: list) -> str:
+        rows = []
+        for i, s in enumerate(items, 1):
+            pct = s.get("pct", 0) or 0
+            cls = "up" if pct > 0 else "dn" if pct < 0 else "neu"
+            sign = "+" if pct > 0 else ""
+            rows.append(
+                f'<tr><td class="rk">{i}</td>'
+                f'<td>{_html.escape(s.get("name", ""))}</td>'
+                f'<td class="{cls}">{sign}{pct:.2f}%</td></tr>')
+        body = "".join(rows) or '<tr><td colspan="3" style="color:var(--muted)">—</td></tr>'
+        return (f'<div class="sm-col"><div class="sm-hd">{title}</div>'
+                f'<table class="sm-tbl">{body}</table></div>')
+
+    ts = _html.escape((movers or {}).get("ts", ""))
+    return (
+        '<div class="section-hd"><h2>업종 등락 TOP 10</h2>'
+        f'<span class="ts">{ts} · Naver 업종별 시세</span></div>'
+        '<div class="sm-wrap">'
+        + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
+        + '</div>'
+    )
+
+
+def _render_night_futures_card(nf: dict | None) -> str:
+    """코스피200 야간선물 카드 (best-effort) — 데이터 없으면 빈 문자열."""
+    if not nf or nf.get("value") is None:
+        return ""
+    val = nf["value"]
+    chg = nf.get("change")
+    pct = nf.get("pct")
+    val_str = f'{val:,.2f}'
+    if chg is not None:
+        cls = "up" if chg > 0 else "dn" if chg < 0 else "neu"
+        arrow = "▲" if chg > 0 else "▼" if chg < 0 else "-"
+        pct_str = f' ({pct:+.2f}%)' if pct is not None else ""
+        chg_cell = f'<td class="{cls}">{arrow}{abs(chg):.2f}{pct_str}</td>'
+    else:
+        chg_cell = '<td class="neu">—</td>'
+    return (
+        '<div class="mcard"><div class="mcard-title">🌙 코스피200 야간선물</div>'
+        f'<table><tr><td>현재가</td><td>{val_str}</td>{chg_cell}</tr></table></div>'
+    )
+
+
 def _render_macro_snapshot(macro: dict) -> str:
     """Full macro snapshot section: cards + 3 charts. Empty string if no data."""
     if not macro:
@@ -11223,8 +11314,11 @@ def _render_market_page(data: dict) -> str:
     ts = snap.get("ts", "")
     earnings = data.get("earnings", [])
     research_kr = data.get("research_kr", [])
+    research_kr_industry = data.get("research_kr_industry", [])
     research_us = data.get("research_us", [])
     macro = data.get("macro", {})
+    sector_movers = data.get("sector_movers", {})
+    night_futures = data.get("night_futures")
 
     parts: list[str] = [_MARKET_CSS]
     parts.append(f"""
@@ -11245,7 +11339,7 @@ def _render_market_page(data: dict) -> str:
     <a href="realestate.html">🏠 부동산</a>
   </div>
   <h1>🌍 Market Overview</h1>
-  <p class="sub">글로벌 시장 현황 · 종목 검색 · 실적 일정 · 리서치 액션</p>
+  <p class="sub">글로벌 시장 현황 · 종목 검색 · 실적 일정 · 리서치 액션 · 업종 등락</p>
 
   <div class="search-box">
     <input id="mkt-search" type="text"
@@ -11263,6 +11357,8 @@ def _render_market_page(data: dict) -> str:
   <div class="card-grid">
 """)
 
+    # 코스피200 야간선물 — 가능 시 맨 앞 카드(best-effort, 없으면 미표시)
+    parts.append(_render_night_futures_card(night_futures))
     for title, items in ALL_CARDS:
         if items is None:
             parts.append(_render_fred_card(fred, dollar_idx))
@@ -11272,6 +11368,7 @@ def _render_market_page(data: dict) -> str:
     parts.append('</div>')  # close card-grid
 
     parts.append(_render_macro_snapshot(macro))
+    parts.append(_render_sector_movers(sector_movers))
 
     # 다가오는 실적 — 한국/미국 탭 분리(사용자 정책: 한국 기본·최대한 표시).
     _earn_kr = [e for e in earnings
@@ -11309,11 +11406,15 @@ def _render_market_page(data: dict) -> str:
     <span class="cnt" id="research-cnt"></span>
   </div>
   <div class="tabs">
-    <button class="tab-btn active" data-tab="kr">🇰🇷 한국</button>
+    <button class="tab-btn active" data-tab="kr">🇰🇷 한국 기업</button>
+    <button class="tab-btn" data-tab="krind">🇰🇷 한국 산업</button>
     <button class="tab-btn" data-tab="us">🇺🇸 미국</button>
   </div>
   <div id="tab-kr" class="tab-pane active">
     {_render_research_kr_table(research_kr)}
+  </div>
+  <div id="tab-krind" class="tab-pane">
+    {_render_research_industry_table(research_kr_industry)}
   </div>
   <div id="tab-us" class="tab-pane">
     {_render_research_us_table(research_us)}

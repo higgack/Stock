@@ -312,7 +312,8 @@ def _parse_market_list_page(html: str, cutoff) -> list[dict]:
 
 
 def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
-                                 fetch_detail: bool = True) -> list[dict]:
+                                 fetch_detail: bool = True,
+                                 max_pages: int = 4) -> list[dict]:
     """전체 시장 최근 종목 리서치 리포트 (Naver Finance 리서치 목록).
 
     한경 컨센서스가 JS 렌더링으로 정적 scrape 불가 → market.html 의
@@ -320,9 +321,11 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     [{code, name, broker, rating, title, date}] (날짜 내림차순) —
     dashboard 의 research_kr 스키마와 호환. 키 불필요, 12h 디스크 캐시.
 
-    fetch_detail=True 면 각 리포트 상세에서 투자의견(rating)을 best-effort
-    로 채운다 (실패 시 빈 문자열 — 목록은 그대로 표시)."""
-    cache_key = f"naver_market_v1_{date.today().isoformat()}_{limit}.json"
+    days_back 윈도(예: 7=일주일치) 안의 리포트를 max_pages 까지 페이지네이션
+    해 수집. cutoff 보다 오래된 페이지가 나오면 조기 중단. fetch_detail=True
+    면 각 리포트 상세에서 투자의견·목표가를 best-effort 로 채운다."""
+    cache_key = (f"naver_market_v2_{date.today().isoformat()}"
+                 f"_{days_back}_{limit}.json")
     cache_file = _CACHE_DIR / cache_key
     if cache_file.exists():
         try:
@@ -337,16 +340,20 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
     cutoff = today - timedelta(days=days_back)
     rows: list[dict] = []
     seen_nid: set[str] = set()
-    for page in (1, 2, 3, 4):
+    for page in range(1, max_pages + 1):
         html = _get(_BASE_URL, params={"page": page})
         if not html:
             break
-        for r in _parse_market_list_page(html, cutoff):
+        page_rows = _parse_market_list_page(html, cutoff)
+        for r in page_rows:
             if r["nid"] in seen_nid:
                 continue
             seen_nid.add(r["nid"])
             rows.append(r)
         if len(rows) >= limit:
+            break
+        # cutoff 통과 행이 0 인 페이지 = 이미 윈도 밖(오래됨) → 조기 중단
+        if not page_rows and page >= 1:
             break
 
     rows = rows[:limit]
@@ -388,6 +395,127 @@ def fetch_recent_research_market(limit: int = 25, days_back: int = 14,
         cache_file.write_text(json.dumps(out, ensure_ascii=False))
     except Exception as exc:
         log.warning("naver_research: market cache write failed: %s", exc)
+
+    return out
+
+
+# ------------------------------------------------------------------
+# 산업(업종) 리포트 — finance.naver.com/research/industry_list.naver
+# ------------------------------------------------------------------
+
+_INDUSTRY_BASE_URL = "https://finance.naver.com/research/industry_list.naver"
+_INDUSTRY_DETAIL_URL = "https://finance.naver.com/research/industry_read.naver"
+_INDUSTRY_NID_RE = re.compile(r'industry_read\.naver\?nid=(\d+)')
+
+
+def _parse_industry_list_page(html: str, cutoff) -> list[dict]:
+    """산업 리서치 목록 행 파싱.
+
+    컬럼: 분류(업종) | 제목(industry_read nid link) | 증권사 | 첨부 |
+    작성일(YY.MM.DD) | 조회수. 종목코드 없음 — 분류명이 식별자."""
+    rows: list[dict] = []
+    for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I):
+        nid_m = _INDUSTRY_NID_RE.search(row_html)
+        if not nid_m:
+            continue
+        nid = nid_m.group(1)
+        cells = _cell_texts(row_html)
+
+        date_str = None
+        for c in cells:
+            m = re.search(r"(\d{2})\.(\d{2})\.(\d{2})", c)
+            if m:
+                date_str = f"{int(m.group(1)) + 2000}-{m.group(2)}-{m.group(3)}"
+                break
+        if not date_str:
+            continue
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d < cutoff:
+            continue
+
+        title_m = re.search(
+            r'industry_read\.naver\?nid=\d+[^"]*"[^>]*>([^<]+)', row_html, re.I)
+        title = title_m.group(1).strip()[:80] if title_m else ""
+
+        broker = ""
+        for c in cells:
+            if c and len(c) <= 22 and _BROKER_SUFFIX_RE.search(c):
+                broker = c
+                break
+        if not broker:
+            for c in cells:
+                if c and len(c) <= 22 and _BROKER_RE.search(c):
+                    broker = c
+                    break
+
+        # 분류(업종) = 날짜/증권사/제목/숫자 아닌 첫 짧은 셀(보통 cells[0])
+        category = ""
+        for c in cells:
+            if (c and len(c) <= 20 and c != broker and c != title
+                    and not re.search(r"\d{2}\.\d{2}\.\d{2}", c)
+                    and not re.fullmatch(r"[\d,]+", c)):
+                category = c
+                break
+
+        rows.append({
+            "nid": nid, "category": category, "broker": broker,
+            "title": title, "date": date_str,
+        })
+    return rows
+
+
+def fetch_recent_research_industry(limit: int = 80, days_back: int = 7,
+                                   max_pages: int = 5) -> list[dict]:
+    """전체 시장 최근 산업(업종) 리서치 리포트 (Naver industry_list).
+
+    종목 리포트와 동일 윈도(기본 7일=일주일치). 산업 리포트는 단일 목표가가
+    없어 detail fetch 생략(빠름). Returns [{category, broker, title, date,
+    link}] 날짜 내림차순. 키 불필요, 12h 디스크 캐시."""
+    cache_key = (f"naver_industry_v1_{date.today().isoformat()}"
+                 f"_{days_back}_{limit}.json")
+    cache_file = _CACHE_DIR / cache_key
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < _CACHE_TTL_HOURS:
+                cached = json.loads(cache_file.read_text())
+                return cached or []
+        except Exception as exc:
+            log.warning("naver_research: industry cache read failed: %s", exc)
+
+    cutoff = date.today() - timedelta(days=days_back)
+    rows: list[dict] = []
+    seen_nid: set[str] = set()
+    for page in range(1, max_pages + 1):
+        html = _get(_INDUSTRY_BASE_URL, params={"page": page})
+        if not html:
+            break
+        page_rows = _parse_industry_list_page(html, cutoff)
+        for r in page_rows:
+            if r["nid"] in seen_nid:
+                continue
+            seen_nid.add(r["nid"])
+            rows.append(r)
+        if len(rows) >= limit:
+            break
+        if not page_rows and page >= 1:
+            break
+
+    rows = rows[:limit]
+    out = [{
+        "category": r["category"], "broker": r["broker"],
+        "title": r["title"], "date": r["date"],
+        "link": f"{_INDUSTRY_DETAIL_URL}?nid={r['nid']}",
+    } for r in rows]
+
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(out, ensure_ascii=False))
+    except Exception as exc:
+        log.warning("naver_research: industry cache write failed: %s", exc)
 
     return out
 
