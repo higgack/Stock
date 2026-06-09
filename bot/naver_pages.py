@@ -101,26 +101,66 @@ def render_theme_page() -> str:
     if not themes:
         body = '<div class="empty">테마 시세를 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.</div>'
     else:
+        def _ld_link(ld) -> str:
+            # 주도주 종목명 → 우리 종목분석(lookup). 코드 정규화(.KS/.KQ).
+            nm = _html.escape(ld.get("name", "") if isinstance(ld, dict) else str(ld))
+            code = ld.get("code", "") if isinstance(ld, dict) else ""
+            if not code:
+                return nm
+            try:
+                from bot.market import normalize_kr_ticker_suffix
+                tk = normalize_kr_ticker_suffix(f"{code}.KS")
+            except Exception:
+                tk = f"{code}.KS"
+            return f'<a href="lookup/{_html.escape(tk)}" class="tnm">{nm}</a>'
+
         rows = []
         for i, t in enumerate(themes, 1):
             no = _html.escape(str(t.get("no", "")))
             nm = _html.escape(t.get("name", ""))
             name_cell = (f'<a href="{_THEME_DETAIL}{no}" target="_blank" '
                          f'rel="noopener" class="tnm">{nm}</a>' if no else nm)
-            leaders = " · ".join(_html.escape(s) for s in t.get("leaders", []))
+            leaders = " · ".join(_ld_link(s) for s in t.get("leaders", []))
+            pct = t.get("pct")
+            pct3 = t.get("pct3")
+            da = (f'data-name="{nm}" data-pct="{pct if pct is not None else -999}" '
+                  f'data-pct3="{pct3 if pct3 is not None else -999}"')
             rows.append(
-                f'<tr><td class="rk">{i}</td><td class="nm">{name_cell}</td>'
-                f'{_pct_cell(t.get("pct"))}{_pct_cell(t.get("pct3"))}'
+                f'<tr {da}><td class="rk">{i}</td><td class="nm">{name_cell}</td>'
+                f'{_pct_cell(pct)}{_pct_cell(pct3)}'
                 f'<td class="ld">{leaders or "—"}</td></tr>')
         body = (f'<div class="panel"><h2>전체 테마 {len(themes)}개 '
-                f'<span class="ts">{ts} 기준</span></h2>'
-                f'<table><thead><tr><th>#</th><th>테마</th>'
-                f'<th style="text-align:right">등락률</th>'
-                f'<th style="text-align:right">최근3일</th><th>주도주</th>'
-                f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+                f'<span class="ts">{ts} 기준 · 헤더 클릭 정렬</span></h2>'
+                f'<table id="thm-tbl"><thead><tr><th>#</th>'
+                f'<th class="th-sort" data-k="name">테마</th>'
+                f'<th class="th-sort" data-k="pct" style="text-align:right">등락률</th>'
+                f'<th class="th-sort" data-k="pct3" style="text-align:right">최근3일</th>'
+                f'<th>주도주</th></tr></thead>'
+                f'<tbody>{"".join(rows)}</tbody></table></div>{_THEME_SORT_JS}')
     return _shell("테마별 시세",
-                  "Naver 증권 테마별 등락률 · 상승순. 테마명 클릭 시 네이버 상세. 4분 캐시.",
+                  "Naver 증권 테마별 등락률 · 상승순. 테마명·주도주 클릭 시 상세/종목분석. 4분 캐시.",
                   "theme", body)
+
+
+_THEME_SORT_JS = """<script>
+(function(){
+var tbl=document.getElementById('thm-tbl');if(!tbl)return;
+var dir={};
+tbl.querySelectorAll('th.th-sort').forEach(function(th){
+  th.style.cursor='pointer';
+  th.addEventListener('click',function(){
+    var k=th.dataset.k;var d=dir[k]=-(dir[k]||1);
+    var tb=tbl.tBodies[0];var rows=[].slice.call(tb.rows);
+    rows.sort(function(a,b){
+      var av=a.dataset[k],bv=b.dataset[k];
+      if(k==='name')return d*av.localeCompare(bv,'ko');
+      return d*(parseFloat(av)-parseFloat(bv));
+    });
+    rows.forEach(function(r,i){tb.appendChild(r);r.cells[0].textContent=i+1;});
+  });
+});
+})();
+</script>"""
 
 
 def render_highlow_page() -> str:
