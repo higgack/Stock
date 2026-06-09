@@ -85,7 +85,7 @@ import hashlib as _hashlib  # noqa: E402
 # (2026-06-10). 옛 12개월 spark 캐시를 즉시 무효화.
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo").encode()
+     + "|spark1mo_span").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
@@ -327,6 +327,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             chart_spark: list[float] = []   # 큰 차트(월간)
             card_spark: list[float] = []    # 카드 미니(1개월)
             spark_dir = 0
+            spark_span = "12개월"           # 라인 기간 라벨(작게 표기)
             if src == "yf":
                 d = yf_daily.get(sid)
                 if d:
@@ -334,6 +335,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 chart_spark = yf_monthly.get(sid, [])
                 # 카드 라인 = 최근 1개월 일봉(없으면 월간 폴백). 색 = 1개월(첫↔끝).
                 card_spark = yf_daily_1mo.get(sid, []) or chart_spark
+                spark_span = "1개월" if yf_daily_1mo.get(sid) else "12개월"
                 if value is None and chart_spark:
                     value = chart_spark[-1]
                 spark_dir = _spark_dir(card_spark, 0)
@@ -361,6 +363,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 "key": key, "label": label, "unit": unit,
                 "value": value, "change": change, "decimals": dec,
                 "spark": card_spark, "spark_dir": spark_dir,
+                "spark_span": spark_span,
             })
         return rows
 
