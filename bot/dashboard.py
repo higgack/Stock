@@ -10993,24 +10993,55 @@ def render_lookup_page(ticker: str) -> str:
         "times": [], "close": [],
         "ticker": ticker,
     })
-    chart_html = f"""<section class="chart-section">
-<h2>📈 가격 차트</h2>
-<div id="chart-toolbar">
-  <div><button class="tb active" data-i="1d">일봉</button><button class="tb" data-i="1wk">주봉</button><button class="tb" data-i="1mo">월봉</button></div>
-  <div><button class="tb" data-r="6mo">6개월</button><button class="tb active" data-r="1y">1년</button><button class="tb" data-r="3y">3년</button><button class="tb" data-r="5y">5년</button><button class="tb" data-r="ytd">YTD</button><button class="tb" data-r="max">전체</button></div>
-</div>
-<div id="chart-ind">
-  지표: <button class="ib active" data-k="candle">캔들</button><button class="ib active" data-k="ma">이평선</button><button class="ib" data-k="bb">볼린저</button><button class="ib active" data-k="vol">거래량</button><button class="ib active" data-k="rsi">RSI</button><button class="ib" data-k="macd">MACD</button><button class="ib" data-k="log">로그</button><button class="ib" data-k="events">공시</button>
-</div>
-<div id="chart-headline"></div>
-<div id="chart-ohlc"></div>
-<div id="chart-container" style="position:relative;min-height:440px"></div>
-<div id="chart-values"></div>
-<div id="rsi-chart"></div>
-<div id="macd-chart"></div>
-<div id="chart-disc"></div>
-<div id="chart-caption"></div>
-<script type="application/json" id="chart-data">{_chart_payload}</script>
+    _chart_payload = _chart_payload.replace("</", "<\\/")
+    _tkr_esc = _html.escape(ticker)
+    chart_html = f"""<section class="report-section">
+    <h2>📈 가격 차트</h2>
+    <div class="chart-toolbar">
+      <span class="chart-tf-group">
+        <button class="chart-tf-btn" data-kind="interval" data-val="1d">일봉</button>
+        <button class="chart-tf-btn" data-kind="interval" data-val="1wk">주봉</button>
+        <button class="chart-tf-btn" data-kind="interval" data-val="1mo">월봉</button>
+      </span>
+      <span class="chart-tf-sep">·</span>
+      <span class="chart-tf-group">
+        <button class="chart-tf-btn" data-kind="range" data-val="1d">1일</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="1wk">1주일</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="1mo">1개월</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="3mo">3개월</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="6mo">6개월</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="ytd">YTD</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="1y">1년</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="3y">3년</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="5y">5년</button>
+        <button class="chart-tf-btn" data-kind="range" data-val="max">전체</button>
+      </span>
+      <span class="chart-tf-status" id="chart-status"></span>
+    </div>
+    <div class="chart-toolbar chart-ind-toolbar">
+      <span class="chart-ind-label">지표:</span>
+      <button class="chart-ind-btn" data-ind="candle">캔들</button>
+      <button class="chart-ind-btn" data-ind="ma">이평선</button>
+      <button class="chart-ind-btn" data-ind="bb">볼린저</button>
+      <button class="chart-ind-btn" data-ind="vol">거래량</button>
+      <button class="chart-ind-btn" data-ind="rsi">RSI</button>
+      <button class="chart-ind-btn" data-ind="macd">MACD</button>
+      <button class="chart-ind-btn" data-ind="log">로그</button>
+      <button class="chart-ind-btn" data-ind="events">공시</button>
+    </div>
+    <div class="chart-row">
+      <div class="chart-main">
+        <div id="chart-headline" class="chart-headline"></div>
+        <div id="chart-ohlc" class="chart-ohlc"></div>
+        <div id="price-chart" class="price-chart" data-ticker="{_tkr_esc}"></div>
+        <div id="rsi-chart" class="sub-chart"></div>
+        <div id="macd-chart" class="sub-chart"></div>
+      </div>
+      <div id="chart-values" class="chart-values"></div>
+    </div>
+    <div id="chart-caption" class="chart-caption"></div>
+    <script type="application/json" id="chart-data">{_chart_payload}</script>
+    <div id="chart-disc" class="chart-disc"></div>
 </section>"""
 
     chart_scripts = (
