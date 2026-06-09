@@ -195,6 +195,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # /theme · /highlow — 테마별 시세 · 신고가/신저가 (Naver, on-demand)
         if raw in ("/theme", "/highlow"):
             return self._handle_naver_page(raw)
+        # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시
+        if raw == "/trade" or raw.startswith("/trade/"):
+            return self._handle_trade_proxy()
         # /lookup/<TICKER> — lightweight stock overview page (on-demand).
         if raw.startswith("/lookup/"):
             return self._handle_lookup()
@@ -606,6 +609,59 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("earnings: failed — %s", exc)
             self.send_error(500, "internal error")
+
+    def _handle_trade_proxy(self) -> None:
+        """GET /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시.
+
+        같은 VM 의 trade 백엔드(기본 127.0.0.1:8765/dashboard)로 포워드 →
+        우리 도메인·인증 아래 통합(외부 IP:port 노출 제거). 인증은 TRADE_
+        PROXY_AUTH(user:pass) env, 없으면 브라우저가 보낸 Authorization 전달
+        (같은 자격증명 가정). 백엔드 다운 시 502 graceful. 사용자 2026-06-10.
+
+        ⚠️ trade 대시보드 경로/자산/인증 구조 미검증(trade repo 세션 미추가)
+        — 절대경로 /dashboard/ → /trade/ rewrite. 깨지면 TRADE_PROXY_BASE/
+        AUTH env 또는 rewrite 보정 필요(직접 IP 링크는 폴백으로 동작)."""
+        import base64
+        import os
+        import urllib.error as _ue
+        import urllib.request as _ur
+        base = os.environ.get("TRADE_PROXY_BASE",
+                              "http://127.0.0.1:8765/dashboard")
+        sub = self.path[len("/trade"):]
+        if sub == "":
+            sub = "/"
+        if not sub.startswith(("/", "?")):
+            sub = "/" + sub
+        url = base.rstrip("/") + sub
+        headers = {"User-Agent": "NOAH-trade-proxy/1.0",
+                   "Accept": self.headers.get("Accept", "*/*")}
+        ta = os.environ.get("TRADE_PROXY_AUTH")
+        if ta:
+            headers["Authorization"] = "Basic " + base64.b64encode(
+                ta.encode()).decode()
+        elif self.headers.get("Authorization"):
+            headers["Authorization"] = self.headers["Authorization"]
+        try:
+            with _ur.urlopen(_ur.Request(url, headers=headers), timeout=25) as resp:
+                body = resp.read()
+                ctype = resp.headers.get("Content-Type", "text/html; charset=utf-8")
+                status = resp.status
+        except _ue.HTTPError as e:
+            body = e.read() or b""
+            ctype = e.headers.get("Content-Type", "text/html; charset=utf-8")
+            status = e.code
+        except Exception as exc:
+            log.warning("trade proxy %s: %s", url, exc)
+            self.send_error(502, "trade dashboard unavailable")
+            return
+        low = (ctype or "").lower()
+        if any(t in low for t in ("html", "javascript", "css", "json")):
+            body = body.replace(b"/dashboard/", b"/trade/")
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_naver_page(self, raw: str) -> None:
         """GET /theme | /highlow — 테마별 시세 · 신고가/신저가 페이지."""
