@@ -5192,6 +5192,8 @@ def _render_stock_info_html(rec: dict) -> str:
         disclosures_pane = '<div class="si-pane" id="si-disclosures"></div>'
 
     # ── 이벤트 타임라인 pane ────────────────────────────────────
+    _tl_sources = " · ".join(dict.fromkeys(
+        [s for s in ["yfinance", disc_source, news_src] if s]))
     timeline_events: list[tuple[str, str, str, str, str, str]] = []
     # (date, type_label, importance, title, meta, url)
 
@@ -5265,10 +5267,12 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section-title">전체 이벤트 타임라인</div>
     {tl_items}
   </div>
+  {_src_foot}출처: {_tl_sources}</div>
 </div>"""
     else:
-        timeline_pane = """<div class="si-pane" id="si-timeline">
+        timeline_pane = f"""<div class="si-pane" id="si-timeline">
   <div class="si-empty">이벤트 데이터가 없습니다.</div>
+  {_src_foot}출처: {_tl_sources}</div>
 </div>"""
 
     # ── Tab switching JS ────────────────────────────────────────
