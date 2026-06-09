@@ -1462,18 +1462,16 @@ def _build_usage_report() -> str:
     month_cost_daily_byte = sum(
         r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "daily_byte"
     )
-    # 청약 + 부동산 Byte + 블로그 (subsystem='cheongyak'/'realestate'/'blog') break out.
-    month_cost_cheongyak = sum(
-        r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "cheongyak")
+    # 부동산(청약 포함) + 블로그 (subsystem='cheongyak'/'realestate'/'blog') break out.
     month_cost_realestate = sum(
-        r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "realestate")
+        r.get("cost_usd", 0) for r in calls if r.get("subsystem") in ("cheongyak", "realestate"))
     month_cost_blog = sum(
         r.get("cost_usd", 0) for r in calls if r.get("subsystem") == "blog")
     today_cost_analysis = (today_cost - today_cost_screener - today_cost_daily_byte
                            - sum(r.get("cost_usd", 0) for r in today_calls
                                  if r.get("subsystem") in ("cheongyak", "realestate", "blog")))
     month_cost_analysis = (month_cost - month_cost_screener - month_cost_daily_byte
-                           - month_cost_cheongyak - month_cost_realestate - month_cost_blog)
+                           - month_cost_realestate - month_cost_blog)
 
     # Standard View cost — read sv_usage.jsonl directly (KST date tagged).
     sv_today_krw = sv_month_krw = 0.0
@@ -1563,8 +1561,7 @@ def _build_usage_report() -> str:
         f"  • NOAH 분석:        {krw(month_cost_analysis)}",
         f"  • Bottleneck Screener: {krw(month_cost_screener)}  ← /screener_cost",
         f"  • Daily Byte:        {krw(month_cost_daily_byte)}  ← /daily_byte_cost",
-        f"  • 청약 Byte:         {krw(month_cost_cheongyak)}  ← /cheongyak_cost",
-        f"  • 부동산 Byte:       {krw(month_cost_realestate)}  ← /realestate_cost",
+        f"  • 부동산:            {krw(month_cost_realestate)}  ← /realestate_cost",
         f"  • 블로그:            {krw(month_cost_blog)}",
         f"  • Standard View:     {krw(sv_month_usd)}  ← /sv_cost",
         f"  • 한국 수출입:       {krw(tr_month_usd)}",
