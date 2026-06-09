@@ -3420,33 +3420,33 @@ def main() -> None:
     # potentially long startup regen phase and doesn't false-restart.
     log.info("bot starting — watching channels: %s", CHANNEL_CHAT_IDS or "auto-detect")
 
-    # Refresh the static dashboard once at startup so an auto-update
-    # deploy (which restarts the bot) immediately shows any changes
-    # to dashboard.py without waiting for the next analysis to fire.
-    try:
-        _dashboard_regen()
-    except Exception as exc:
-        log.warning("startup dashboard regen failed: %s", exc)
-    # 자산 대시보드도 startup 에 1회 — 업로드 전이라도 빈 상태 페이지 존재.
-    try:
-        from bot.dashboard import regenerate_portfolio_index
-        regenerate_portfolio_index()
-    except Exception as exc:
-        log.warning("startup portfolio regen failed: %s", exc)
-    # 조건부 스크리너 페이지도 startup 에 1회.
-    try:
-        from bot.dashboard import regenerate_screen_index
-        regenerate_screen_index()
-    except Exception as exc:
-        log.warning("startup screen regen failed: %s", exc)
-    # 페이퍼 트레이딩 페이지도 startup 에 1회(빈 상태 포함).
-    try:
-        from bot.dashboard import regenerate_paper_index
-        regenerate_paper_index()
-    except Exception as exc:
-        log.warning("startup paper regen failed: %s", exc)
+    # Refresh the static dashboards once at startup (so an auto-update
+    # deploy — which restarts the bot — immediately reflects dashboard.py
+    # changes). Run it in a DAEMON THREAD, never inline: a synchronous
+    # startup regen that ran long (e.g. cold-cache fetches) used to outlast
+    # the watchdog's 180s "bot starting" grace → false-restart → restart
+    # loop. Backgrounding it lets app.run_polling() (getUpdates) start
+    # immediately, so the watchdog can never trip on startup regen no matter
+    # how long it takes. Each regen already swallows its own errors; at
+    # startup nothing else regenerates concurrently, so this is race-free.
+    def _startup_regen() -> None:
+        from bot.dashboard import (regenerate_index, regenerate_portfolio_index,
+                                   regenerate_screen_index, regenerate_paper_index)
+        for label, fn in (("dashboard", regenerate_index),
+                          ("portfolio", regenerate_portfolio_index),
+                          ("screen", regenerate_screen_index),
+                          ("paper", regenerate_paper_index)):
+            try:
+                fn()
+            except Exception as exc:
+                log.warning("startup %s regen failed: %s", label, exc)
+        log.info("bot startup regen complete (background)")
 
-    log.info("bot startup regen complete — entering polling loop")
+    import threading
+    threading.Thread(target=_startup_regen, name="startup-regen",
+                     daemon=True).start()
+
+    log.info("bot entering polling loop")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
