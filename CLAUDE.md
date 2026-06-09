@@ -863,15 +863,18 @@ ARCHIVE_ROOT 정적 서빙). 적용:
 DASHBOARD_USER=higgack
 DASHBOARD_PASSWORD=<.env 에만>
 ```
-**Nav 구조 정책 (사용자 2026-06-08 갱신):** 자산(portfolio)·가계부(budget)
-페이지 nav 에는 **📒 가계부 + 🦉 NOAH 종목분석** 2개만 표시. 나머지 모든
-대시보드(오류/Screener/Daily Byte/부동산/청약/워치리스트/페이퍼/조건부
-스크리너/외부 링크 등)는 **🦉 NOAH 종목분석(index.html) nav에만** 나열.
-NOAH 종목분석이 모든 하위 대시보드의 허브 역할. **새로 추가되는 대시보드도
-NOAH 종목분석 nav(errors_link)에만 추가** — 자산/가계부 nav 수정 불필요.
-갱신 지점: (a) `bot/dashboard.py` errors_link 두 분기(NOAH index.html 풀
-nav) + `_render_portfolio_page` nav(가계부+NOAH만) + `_budget_nav`(자산+
-NOAH만) + 하위 페이지 mini-nav(`← NOAH 종목분석` + 자산 + 가계부),
+**Nav 구조 정책 (사용자 2026-06-09 갱신):** **market.html 이 전체
+대시보드의 홈(hub)** 역할. 3개 그룹으로 나뉘며, 각 대시보드는 홈 +
+자기 그룹 peers 에만 링크:
+  - **Group 1 (자산)**: 💼 자산, 📒 가계부 — nav: 🌍 홈 + 그룹 peer
+  - **Group 2 (분석)**: 🦉 NOAH 종목분석, 📊 Screener, 🗂️ 도메인 목록,
+    🔔 워치리스트, 📨 미국 레딧, 📊 Daily Byte, 📈 Standard View,
+    🇰🇷 한국 수출입 — nav: 🌍 홈 + 그룹 peers
+  - **Group 3 (부동산)**: 🏠 부동산, 🎟️ 청약 — nav: 🌍 홈 + 그룹 peer
+  - **market.html (홈)**: 전체 대시보드 링크 (그룹별 `|` 구분)
+**새로 추가되는 대시보드는 해당 그룹의 nav 에만 추가** + market.html
+홈 nav 에 추가. 갱신 지점: (a) `bot/dashboard.py` `_render_market_page`
+nav (홈 풀 nav) + 해당 그룹 페이지들의 nav,
 (b) `bot/telegram_bot.py` `_HELP_TEXT` §9.
 
 **💰 비용 합산 정책 (사용자 2026-06-02):** 메인 NOAH 대시보드 비용 카드
