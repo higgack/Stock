@@ -4536,14 +4536,12 @@ def _render_stock_info_html(rec: dict) -> str:
                 le = fh.get("limit_exhaustion_pct")
                 lim_s = fh.get("limit_shares", 0)
                 fd = esc(str(fh.get("date", "")))
-                _src_map = {"krx": "KRX", "naver": "네이버"}
-                src = _src_map.get(fh.get("source", ""), "세이브로/KSD")
                 le_html = ""
                 if le is not None:
                     le_warn = " ⚠️ ceiling 임박" if le >= 95 else (" ⚠️ 제한 접근" if le >= 80 else "")
                     le_html = f'<tr><td>한도소진율</td><td class="num">{le:.2f}%{le_warn}</td></tr><tr><td>한도주식수</td><td class="num">{lim_s:,}주</td></tr>'
                 kr_foreign_html = f"""<div class="si-section">
-    <div class="si-section-title">외국인 보유현황 ({src} · {fd})</div>
+    <div class="si-section-title">외국인 보유현황 ({fd})</div>
     <table class="si-table"><tbody>
       <tr><td>보유비율</td><td class="num">{fp:.2f}%</td></tr>
       <tr><td>보유주식수</td><td class="num">{fs:,}주</td></tr>
@@ -10838,27 +10836,37 @@ def _render_market_page(data: dict) -> str:
     }});
   }});
 
-  /* show-more: hide rows beyond data-limit, add button */
+  /* show-more / 접기 toggle */
   document.querySelectorAll('[data-limit]').forEach(function(wrap) {{
     var limit = parseInt(wrap.dataset.limit);
     var tbl = wrap.querySelector('.dtbl');
     if (!tbl) return;
     var rows = tbl.querySelectorAll('tbody tr');
     if (rows.length <= limit) return;
-    for (var i = limit; i < rows.length; i++) {{
-      rows[i].classList.add('xrow');
-      rows[i].style.display = 'none';
+    var extra = rows.length - limit;
+    function collapse() {{
+      for (var i = limit; i < rows.length; i++) {{
+        rows[i].classList.add('xrow');
+        rows[i].style.display = 'none';
+      }}
     }}
+    collapse();
     var btn = document.createElement('button');
     btn.className = 'show-more-btn';
-    btn.textContent = '더 보기 (' + (rows.length - limit) + '개 더)';
+    var expanded = false;
+    btn.textContent = '더 보기 (' + extra + '개 더)';
     btn.addEventListener('click', function() {{
-      wrap.removeAttribute('data-limit');
-      wrap.querySelectorAll('.xrow').forEach(function(r) {{
-        r.classList.remove('xrow');
-        r.style.display = '';
-      }});
-      btn.style.display = 'none';
+      expanded = !expanded;
+      if (expanded) {{
+        wrap.querySelectorAll('.xrow').forEach(function(r) {{
+          r.classList.remove('xrow');
+          r.style.display = '';
+        }});
+        btn.textContent = '접기';
+      }} else {{
+        collapse();
+        btn.textContent = '더 보기 (' + extra + '개 더)';
+      }}
     }});
     wrap.insertAdjacentElement('afterend', btn);
   }});
