@@ -169,6 +169,8 @@ def build_model(parsed: dict, resolve=resolve_ticker) -> dict:
         "holding_count": len(holdings),
         "distinct_count": len(_distinct_stock_keys(holdings)),
         "matched_count": sum(1 for h in holdings if h["matched"]),
+        "unmatched_names": [h.get("상품명", "") for h in holdings
+                           if not h["matched"] and not h.get("source")],
         "cash_in_invest": cash_in_invest,
         "fund_in_pension": fund_in_pension,
         "snapshot": {
@@ -210,6 +212,12 @@ def format_summary_text(model: dict) -> str:
             lines.append(f"• {cat}: {_won(amt)}")
     if model.get("loans"):
         lines.append(f"— 대출 {len(model['loans'])}건 · 보험 {len(model.get('insurance', []))}건 —")
+    um = model.get("unmatched_names") or []
+    if um:
+        unique = sorted(set(um))
+        lines.append(f"\n⚠️ 미매칭 {len(unique)}종목 (수동 확인 필요)")
+        for n in unique:
+            lines.append(f"  · {n}")
     return "\n".join(lines)
 
 
