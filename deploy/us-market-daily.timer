@@ -1,0 +1,12 @@
+[Unit]
+Description=US Market Daily trigger — 평일 07:00 KST (미국 장 마감 후)
+
+[Timer]
+# 평일(월-금) 07:00 KST. US 장 마감 16:00 ET = 06:00 KST (서머타임),
+# 07:00 KST (윈터타임). 07:00 이면 양쪽 안정적.
+OnCalendar=Mon..Fri *-*-* 07:00:00 Asia/Seoul
+Persistent=true
+Unit=us-market-daily.service
+
+[Install]
+WantedBy=timers.target
