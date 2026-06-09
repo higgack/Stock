@@ -443,6 +443,7 @@ def _compute_stats(records: list[dict]) -> dict:
         _subsys = r.get("subsystem")
         sub = ({"screener": "Screener", "daily_byte": "Daily Byte",
                 "market_daily": "Market Daily",
+                "vn_market_daily": "Market Daily",
                 "cheongyak": "부동산", "realestate": "부동산",
                 "blog": "블로그"}.get(_subsys, "분석"))
         if rec_day.startswith(month_prefix):
@@ -8060,7 +8061,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
         _month_counts[(d or "")[:7]] += len(by_date[d])
     _prev_month: str | None = None
     _first_day = True
-    _first_card = True
+    _first_card = False
     for date in sorted(by_date.keys(), reverse=True):
         _prev_month = _month_transition(
             parts, _prev_month, date, _this_month, _month_counts,
@@ -10225,7 +10226,7 @@ _MARKET_CSS = (
     ".chart-card svg{display:block;width:100%;height:auto;color:var(--muted)}"
     "@media(max-width:860px){.chart-row{grid-template-columns:1fr}}"
     # ── Market Daily cards ──
-    ".md-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:28px}"
+    ".md-row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:28px}"
     "@media(max-width:700px){.md-row{grid-template-columns:1fr}}"
     ".md-card{background:var(--card);border:1px solid var(--border);"
     "border-radius:12px;padding:18px 20px;display:flex;flex-direction:column}"
@@ -10821,9 +10822,10 @@ def _relative_time(ts_str: str) -> str:
 
 
 def _render_market_daily_cards() -> str:
-    """Render the 2-column Market Daily cards (Korea + US)."""
+    """Render the 3-column Market Daily cards (Korea + US + Vietnam)."""
     kr = _load_latest_market_daily("daily_byte_archive", "daily")
     us = _load_latest_market_daily("us_market_daily_archive", "daily")
+    vn = _load_latest_market_daily("vn_market_daily_archive", "daily")
 
     def _card(rec: dict | None, label: str, flag: str, link: str, empty_msg: str) -> str:
         if not rec or not rec.get("body"):
@@ -10835,7 +10837,7 @@ def _render_market_daily_cards() -> str:
             )
         body = rec["body"]
         title = _extract_daily_title(body)
-        summary = _extract_daily_summary(body, 500)
+        summary = _extract_daily_summary(body, 400)
         ts = rec.get("ts", rec.get("date", ""))
         rel = _relative_time(ts) if ts else ""
         time_span = f'<span class="md-time">{_html.escape(rel)}</span>' if rel else ""
@@ -10852,7 +10854,9 @@ def _render_market_daily_cards() -> str:
                      "Daily Byte 아카이브가 아직 없습니다.")
     us_card = _card(us, "미국 마켓 데일리", "🇺🇸", "daily_byte.html",
                      "US Market Daily 준비 중입니다.")
-    return f'<div class="md-row">{kr_card}{us_card}</div>'
+    vn_card = _card(vn, "베트남 마켓 데일리", "🇻🇳", "daily_byte.html",
+                     "VN Market Daily 준비 중입니다.")
+    return f'<div class="md-row">{kr_card}{us_card}{vn_card}</div>'
 
 
 def _render_market_page(data: dict) -> str:
@@ -11094,6 +11098,13 @@ def _render_market_page(data: dict) -> str:
       return String(v);
     }}
 
+    function fmtEstLabel(v, isActual) {{
+      if (v == null) return '—';
+      var txt = fmtEst(v);
+      if (isActual) txt += ' <span style="font-size:10px;color:var(--muted)">(예상치없음)</span>';
+      return txt;
+    }}
+
     function renderFavs(list) {{
       favCnt.textContent = list.length ? list.length + '종목' : '';
       if (!list.length) {{
@@ -11101,8 +11112,8 @@ def _render_market_page(data: dict) -> str:
         return;
       }}
       var h = '<table class="dtbl"><thead><tr>'
-        + '<th>종목</th><th>나라</th><th>저장일</th>'
-        + '<th>저장가격</th><th>현재가격</th><th>EPS 예상</th><th>매출예상</th><th>다음실적일</th><th></th>'
+        + '<th style="text-align:left">종목</th><th>저장일</th>'
+        + '<th>저장가격</th><th>현재가격</th><th>EPS</th><th>매출</th><th>다음예상 실적일</th><th></th>'
         + '</tr></thead><tbody>';
       list.forEach(function(f) {{
         var flag = FLAG[f.country] || '';
@@ -11119,13 +11130,13 @@ def _render_market_page(data: dict) -> str:
           }}
         }}
         h += '<tr>'
-          + '<td><a href="lookup/' + encodeURIComponent(f.ticker) + '">' + (f.name||f.ticker) + '</a></td>'
-          + '<td>' + flag + ' ' + (f.country||'') + '</td>'
+          + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="font-weight:700;font-size:14px">' + (f.name||f.ticker) + '</a>'
+          + ' <span style="font-size:11px;color:var(--muted)">' + flag + ' ' + f.ticker + '</span></td>'
           + '<td>' + (f.saved_date||'') + '</td>'
           + '<td>' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
           + '<td>' + curCell + '</td>'
-          + '<td>' + fmtEst(f.eps_estimate) + '</td>'
-          + '<td>' + fmtEst(f.revenue_estimate) + '</td>'
+          + '<td>' + fmtEstLabel(f.eps_estimate, f.eps_is_actual) + '</td>'
+          + '<td>' + fmtEstLabel(f.revenue_estimate, f.revenue_is_actual) + '</td>'
           + '<td>' + (f.next_earnings||'—') + '</td>'
           + '<td><button class="fav-del" data-ticker="' + f.ticker + '" title="삭제">✕</button></td>'
           + '</tr>';

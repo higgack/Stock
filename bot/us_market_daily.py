@@ -315,39 +315,40 @@ def _chunk(text: str) -> list[str]:
     return out
 
 
-async def push_telegram(application) -> None:
-    """Generate US market daily and push to NOAH channel."""
-    result = generate()
-    if result is None:
-        log.info("us_market_daily: skip (no data or key)")
-        return
-    full, cost_krw = result
-    try:
-        from bot.telegram_bot import CHANNEL_CHAT_IDS
-        chat_ids = CHANNEL_CHAT_IDS
-    except Exception:
-        chat_ids = []
-    if not chat_ids:
-        log.warning("us_market_daily: no channel chat IDs configured")
-        return
-
-    for cid in chat_ids:
-        for chunk in _chunk(full):
+def push_telegram_sync(text: str) -> bool:
+    """Push text to NOAH channel via httpx (sync, standalone service 호환)."""
+    import httpx
+    token = (
+        os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        or os.environ.get("STANDARDVIEW_TELEGRAM_TOKEN", "").strip()
+    )
+    raw_ids = os.environ.get("CHANNEL_CHAT_IDS", "").strip()
+    chat_ids = [c.strip() for c in raw_ids.split(",") if c.strip()]
+    if not token or not chat_ids:
+        log.error("us_market_daily: TELEGRAM_BOT_TOKEN / CHANNEL_CHAT_IDS missing")
+        return False
+    api = f"https://api.telegram.org/bot{token}"
+    chunks = _chunk(text)
+    ok_all = True
+    for chat in chat_ids:
+        for i, msg in enumerate(chunks):
+            params = {"chat_id": chat, "text": msg,
+                      "parse_mode": "HTML", "disable_web_page_preview": True}
             try:
-                await application.bot.send_message(
-                    chat_id=cid, text=chunk, parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
+                r = httpx.post(f"{api}/sendMessage", json=params, timeout=20)
+                if r.status_code != 200:
+                    import re
+                    params.pop("parse_mode", None)
+                    params["text"] = re.sub(r"<[^>]+>", "", msg)
+                    r = httpx.post(f"{api}/sendMessage", json=params, timeout=20)
+                    if r.status_code != 200:
+                        log.warning("us_market_daily: chunk %d → %d %s",
+                                    i + 1, r.status_code, r.text[:160])
+                        ok_all = False
             except Exception as exc:
-                log.warning("us_market_daily: push to %s failed: %s", cid, exc)
-                try:
-                    await application.bot.send_message(
-                        chat_id=cid, text=chunk, disable_web_page_preview=True,
-                    )
-                except Exception:
-                    pass
-
-    log.info("us_market_daily: pushed to %d channels (₩%.1f)", len(chat_ids), cost_krw)
+                log.warning("us_market_daily: push chunk %d failed: %s", i + 1, exc)
+                ok_all = False
+    return ok_all
 
 
 # ── CLI entry point ──────────────────────────────────────────────────────────
@@ -359,6 +360,7 @@ if __name__ == "__main__":
     result = generate()
     if result:
         body, cost = result
+        push_telegram_sync(body)
         print(body[:500])
         print(f"\n--- cost: ₩{cost:.1f}")
     else:

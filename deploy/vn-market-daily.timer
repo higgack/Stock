@@ -1,0 +1,12 @@
+[Unit]
+Description=VN Market Daily trigger — 평일 16:30 KST (베트남 장 마감 후)
+
+[Timer]
+# 평일(월-금) 16:30 KST. VN 장 마감 15:00 ICT = 17:00 KST.
+# 16:30 이면 오후 세션 데이터 대부분 확정.
+OnCalendar=Mon..Fri *-*-* 16:30:00 Asia/Seoul
+Persistent=true
+Unit=vn-market-daily.service
+
+[Install]
+WantedBy=timers.target
