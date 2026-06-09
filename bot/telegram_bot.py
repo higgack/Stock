@@ -1058,7 +1058,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/help /usage /portfolio /screener_list /sites — 비용: /sv·screener·daily_byte·cheongyak·realestate_cost
+/help /usage /portfolio /screener_list /sites — 비용: /screener·daily_byte·cheongyak·realestate_cost
 /screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0). /screen list
 /screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list
 /NVDA /AAPL — 단일 분석 (채널에서)
@@ -1087,7 +1087,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 
 ━━━━━━━━━
 <b>【4. 자동 데이터 소스】</b>
-yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 · ECOS/FRED · 섹터ETF·리스크6종 · 컨센서스·공매도·내부자·기관 · 실적±10일 · DART/EDINET/MOPS/EDGAR공시+XBRL · US옵션·KRX수급·KIS7종 · SV
+yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 · ECOS/FRED · 섹터ETF·리스크6종 · 컨센서스·공매도·내부자·기관 · 실적±10일 · DART/EDINET/MOPS/EDGAR공시+XBRL · US옵션·KRX수급·KIS7종
 
 ━━━━━━━━━
 <b>【5. 메모리 피드백 + 자동 평가】</b>
@@ -1121,8 +1121,8 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/budget.html
  ② 🦉 NOAH(종목상세·차트·💰비용) · 📊 Screener(65+자유어·1/3/6m)
-   · 🔔 워치리스트(페이퍼·조건알림) · 📨 레딧(₩0) · Daily Byte(KR수급19:00)
-   · SV(매크로·산업·Deal) · 🇰🇷 수출입
+   · 🔔 워치리스트(페이퍼·조건알림) · 📨 레딧(₩0) · Daily Byte(한국19:00·미국07:30)
+   · 🇰🇷 수출입
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
  ③ 🏠 부동산(실거래+R-ONE+공급 금09:00) · 🎟️ 청약(평일10·14시)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
@@ -1137,6 +1137,7 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 _SITES_TEXT = """🔗 <b>참고 사이트</b>
 
+ • <a href="http://34.50.23.221:8002/dashboard">Standard View — 매크로·산업·Deal 브리프</a>
  • <a href="https://stockeasy.intellio.kr/">Stockeasy</a>
  • <a href="https://stockhub.kr/">Stockhub</a>
  • <a href="https://jusikbot.com/">Jusikbot — Real-time Stock Dashboard</a>
@@ -1554,7 +1555,6 @@ def _build_usage_report() -> str:
         f"  • Daily Byte:        {krw(month_cost_daily_byte)}  ← /daily_byte_cost",
         f"  • 부동산:            {krw(month_cost_realestate)}  ← /realestate_cost",
         f"  • 블로그:            {krw(month_cost_blog)}",
-        f"  • Standard View:     {krw(sv_month_usd)}  ← /sv_cost",
         f"  • 한국 수출입:       {krw(tr_month_usd)}",
         "",
         f"💰 <b>NOAH 분석 단독 (참고)</b>",

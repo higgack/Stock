@@ -1912,7 +1912,7 @@ def _render_index(records: list[dict]) -> str:
         ' · <a href="paper.html">🔔 워치리스트</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-        ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
+        ''
         f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>'
     )
 
@@ -7819,7 +7819,6 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
   </div>
   <h1>📊 Daily Byte — Archive</h1>
   <p class="sub">장 마감 후 시장 브리프 · 🇰🇷 19:00 / 🇺🇸 07:30 / 📅 Weekly 22:00 (KST) · 수급·시황 관찰(교육·정보), 투자 권유 아님</p>
@@ -11151,7 +11150,6 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="paper.html">🔔 워치리스트</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
-    &middot; <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     &middot; <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
     &nbsp;|&nbsp;
     <a href="realestate.html">🏠 부동산</a>

@@ -168,6 +168,18 @@ if [ -f "$DEPLOY_DIR/trade-bot.service" ]; then
     systemctl enable trade-bot.service
 fi
 
+# ── Standard View 폐기 (사용자 정책 2026-06-09) ──────────────────────
+# SV 는 더 이상 사용하지 않음 — 생성/푸시/업데이트/watchdog/캐시롤오버
+# 전 타이머를 비활성화해 Gemini 비용 0. install.sh 가 root NOPASSWD 로
+# auto-update 에서 실행되므로 SSH 없이 1분 내 자동 중단. standardview/
+# deploy/install.sh 도 enable 안 하도록 무력화됨(재활성 방지).
+echo "→ decommissioning Standard View timers (cost 0)"
+for svunit in standardview-daily.timer standardview-push.timer \
+              standardview-weekly.timer standardview-hourly.timer \
+              sv-update.timer sv-cache-rollover.timer sv-watchdog.timer; do
+    systemctl disable --now "$svunit" 2>/dev/null || true
+done
+
 echo
 echo "→ active stock-bot timers:"
 systemctl list-timers --no-pager --all 2>/dev/null \
