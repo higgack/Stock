@@ -8,6 +8,7 @@ key as finnhub_client.py). 6h disk cache per month.
 from __future__ import annotations
 
 import calendar
+import html as _html
 import json
 import logging
 import os
@@ -158,6 +159,18 @@ text-overflow:ellipsis}
 margin-bottom:14px;align-items:center}
 .cal-legend .sq{display:inline-block;width:10px;height:10px;border-radius:2px;
 margin-right:5px;vertical-align:middle}
+.kir-sec{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:20px}
+.kir-hd{font-size:15px;font-weight:700;margin-bottom:10px}
+.kir-sub{font-size:11px;font-weight:400;color:var(--muted);margin-left:6px}
+.kir-k{color:#fff;font-size:10px;padding:1px 5px;border-radius:4px}
+.kir-list{display:flex;flex-direction:column;gap:5px;max-height:260px;overflow-y:auto}
+.kir-row{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.4}
+.kir-dt{color:var(--muted);flex:0 0 78px;font-variant-numeric:tabular-nums}
+.kir-badge{color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;flex:0 0 auto}
+.kir-nm{font-weight:600;flex:0 0 130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kir-nm a{color:inherit;text-decoration:none}.kir-nm a:hover{text-decoration:underline}
+.kir-title{color:var(--muted);text-decoration:none;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kir-title:hover{color:var(--accent);text-decoration:underline}
 .cal-entry a{color:inherit;text-decoration:none}
 .cal-entry a:hover .sym{text-decoration:underline}
 .back-link{display:inline-block;margin-bottom:16px;color:var(--accent);
@@ -174,6 +187,48 @@ body{padding:12px}
 """
 
 _MAX_PER_CELL = 3
+
+
+def _render_kr_ir_section() -> str:
+    """한국 실적(영업잠정실적) + IR(기업설명회) 공시 — DART 재활용(₩0).
+
+    yfinance .calendar 는 한국 실적일이 희소 → 한국 기업이 공시로 미리
+    발표하는 IR 일정 + 잠정실적을 DART 에서 가져와 보완(사용자 요청)."""
+    try:
+        from bot.dart_feed import fetch_kr_earnings_ir
+        items = fetch_kr_earnings_ir()
+    except Exception as exc:
+        log.warning("earnings_cal: KR IR fetch failed: %s", exc)
+        items = []
+    if not items:
+        return ""
+    rows = ""
+    for e in items[:50]:
+        name = _html.escape(e.get("name", "") or e.get("code", ""))
+        code = e.get("code", "")
+        typ = e.get("type", "")
+        bc = "#42a5f5" if typ == "실적" else "#5c6bc0"
+        title = _html.escape(e.get("title", ""))
+        url = _html.escape(e.get("url", "#"))
+        dt = _html.escape(e.get("date", ""))
+        nm = (f'<a href="lookup/{code}.KS">{name}</a>'
+              if code and len(code) == 6 and code.isdigit() else name)
+        rows += (
+            f'<div class="kir-row" data-type="{typ}">'
+            f'<span class="kir-dt">{dt}</span>'
+            f'<span class="kir-badge" style="background:{bc}">{typ}</span>'
+            f'<span class="kir-nm">{nm}</span>'
+            f'<a class="kir-title" href="{url}" target="_blank" rel="noopener">{title}</a>'
+            f'</div>'
+        )
+    return (
+        '<div class="kir-sec">'
+        '<div class="kir-hd">🇰🇷 한국 실적·IR 공시 '
+        '<span class="kir-sub">DART · 제목 클릭 시 원문 · '
+        '<span class="kir-k" style="background:#42a5f5">실적</span> 잠정실적 / '
+        '<span class="kir-k" style="background:#5c6bc0">IR</span> 기업설명회(일정 미리 공시)</span></div>'
+        f'<div class="kir-list">{rows}</div></div>'
+    )
 
 
 def render_page(year: int, month: int) -> str:
@@ -275,6 +330,7 @@ def render_page(year: int, month: int) -> str:
   <span><span class="sq" style="background:#58a6ff"></span>🇺🇸 미국 (티커)</span>
   <span>출처: 미국 Finnhub · 한국 yfinance(.calendar, ~90일)</span>
 </div>
+{_render_kr_ir_section()}
 <div class="cal-header">
   <h2>{month_kr}</h2>
   <span class="cnt">{total}건</span>

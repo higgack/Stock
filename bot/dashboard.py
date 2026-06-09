@@ -1907,6 +1907,7 @@ def _render_index(records: list[dict]) -> str:
     # Nav group 2 links (NOAH index.html is current page → omit self)
     errors_link = (
         ' · <a href="market.html">🌍 홈</a>'
+        ' · <a href="dart_feed.html">📋 DART 공시</a>'
         ' · <a href="screener.html">📊 Screener</a>'
         ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
@@ -10124,11 +10125,11 @@ def _load_dart_feed_data(days_back: int = 30) -> dict[str, list[dict]]:
         return {}
 
 
-_DART_CATEGORIES = ["전체", "실적", "계약", "주주환원", "자금조달",
+_DART_CATEGORIES = ["전체", "실적", "IR", "계약", "주주환원", "자금조달",
                     "신규시설투자", "자산양수도", "회사구조", "지분공시"]
 
 _DART_CAT_COLORS = {
-    "계약": "#26a69a", "실적": "#42a5f5", "주주환원": "#ab47bc",
+    "계약": "#26a69a", "실적": "#42a5f5", "IR": "#5c6bc0", "주주환원": "#ab47bc",
     "자금조달": "#f5a623", "신규시설투자": "#2196f3", "자산양수도": "#009688",
     "리스크": "#ef5350", "소송": "#26a69a", "회사구조": "#ff7043",
     "지분공시": "#ec407a",

@@ -53,6 +53,8 @@ _CATEGORY_COLORS = {
 
 # DART report_nm 패턴 → 우리 카테고리 (chart_events.classify 보다 세분화)
 _EARNINGS_KW = ("영업(잠정)실적", "매출액또는손익구조", "영업실적", "잠정실적")
+# 기업설명회(IR) — 한국 기업은 IR 일정을 공시로 미리 발표(다가오는 실적/IR 신호)
+_IR_KW = ("기업설명회", "IR개최", "IR 개최", "기업설명회(IR)")
 _EQUITY_KW = ("주식등의대량보유상황보고서", "임원ㆍ주요주주특정증권등소유상황보고서",
               "주요주주특정증권등소유상황보고서", "임원·주요주주특정증권등소유상황보고서")
 
@@ -62,11 +64,42 @@ def _classify_report(report_nm: str) -> str:
     t = report_nm or ""
     if any(k in t for k in _EARNINGS_KW):
         return "실적"
+    if any(k in t for k in _IR_KW):
+        return "IR"
     if any(k in t for k in _EQUITY_KW):
         return "지분공시"
     from bot.chart_events import classify
     eng = classify(t)
     return _CATEGORY_MAP.get(eng, "지분공시" if "보고서" in t else "기타")
+
+
+def fetch_kr_earnings_ir(days_back: int = 10) -> list[dict]:
+    """DART 아카이브에서 한국 실적(영업잠정실적) + IR(기업설명회) 공시 추출.
+
+    이미 5분 타이머가 채운 아카이브를 재활용 → 추가 fetch·비용 0. 반환
+    [{name, code, date, type('실적'|'IR'), title, url}] 날짜 내림차순."""
+    out: list[dict] = []
+    by_date = load_all_archives(days_back=days_back)
+    for date_str, items in by_date.items():
+        for it in items:
+            cat = it.get("category")
+            if cat not in ("실적", "IR"):
+                continue
+            raw = str(it.get("date") or "").strip()
+            try:
+                d_iso = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) >= 8 else date_str
+            except Exception:
+                d_iso = date_str
+            out.append({
+                "name": it.get("corp_name", ""),
+                "code": it.get("stock_code", ""),
+                "date": d_iso,
+                "type": cat,
+                "title": it.get("report_nm", ""),
+                "url": it.get("url", "#"),
+            })
+    out.sort(key=lambda x: x.get("date", ""), reverse=True)
+    return out
 
 
 def _dart_api_key() -> str | None:
