@@ -1,0 +1,14 @@
+[Unit]
+Description=DART Disclosure Feed — 전체 시장 공시 수집 + 대시보드 갱신 (30분 간격)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.dart_feed
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300

@@ -59,7 +59,8 @@ for unit in \
     cheongyak-byte.service          cheongyak-byte.timer \
     reddit-insider-watch.service    reddit-insider-watch.timer \
     portfolio-watch.service         portfolio-watch.timer \
-    watchlist-check.service         watchlist-check.timer ;
+    watchlist-check.service         watchlist-check.timer \
+    dart-feed.service               dart-feed.timer ;
 do
     if [ -f "$DEPLOY_DIR/$unit" ]; then
         install -m 0644 "$DEPLOY_DIR/$unit" /etc/systemd/system/
@@ -147,6 +148,9 @@ if [ -f "$DEPLOY_DIR/portfolio-watch.timer" ]; then
 fi
 if [ -f "$DEPLOY_DIR/watchlist-check.timer" ]; then
     systemctl enable --now watchlist-check.timer
+fi
+if [ -f "$DEPLOY_DIR/dart-feed.timer" ]; then
+    systemctl enable --now dart-feed.timer
 fi
 if [ -f "$DEPLOY_DIR/trade-bot-update.timer" ]; then
     systemctl enable --now trade-bot-update.timer

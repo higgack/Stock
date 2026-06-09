@@ -10112,6 +10112,247 @@ def regenerate_gics_candidates_index() -> None:
 
 
 # ═════════════════════════════════════════════════════════════════════
+# DART 공시 피드 대시보드 (dart_feed.html)
+# ═════════════════════════════════════════════════════════════════════
+
+
+def _load_dart_feed_data(days_back: int = 30) -> dict[str, list[dict]]:
+    try:
+        from bot.dart_feed import load_all_archives
+        return load_all_archives(days_back)
+    except Exception:
+        return {}
+
+
+_DART_CATEGORIES = ["전체", "실적", "계약", "주주환원", "자금조달",
+                    "신규시설투자", "자산양수도", "회사구조", "지분공시"]
+
+_DART_CAT_COLORS = {
+    "계약": "#26a69a", "실적": "#42a5f5", "주주환원": "#ab47bc",
+    "자금조달": "#f5a623", "신규시설투자": "#2196f3", "자산양수도": "#009688",
+    "리스크": "#ef5350", "소송": "#26a69a", "회사구조": "#ff7043",
+    "지분공시": "#ec407a",
+}
+
+_WEEKDAY_KR = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
+
+
+def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
+    import html as _html
+    from datetime import datetime as _dt
+
+    total = sum(len(v) for v in by_date.values())
+
+    cat_counts: dict[str, int] = {}
+    for items in by_date.values():
+        for it in items:
+            c = it.get("category", "기타")
+            cat_counts[c] = cat_counts.get(c, 0) + 1
+
+    pills: list[str] = []
+    pills.append(f'<button class="df-pill active" data-cat="전체">전체 {total}</button>')
+    for cat in _DART_CATEGORIES[1:]:
+        n = cat_counts.get(cat, 0)
+        if n > 0:
+            pills.append(f'<button class="df-pill" data-cat="{cat}">{cat} {n}</button>')
+
+    parts: list[str] = [_SCREENER_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="daily_byte.html">📊 Daily Byte</a>
+  </div>
+  <h1>DART 공시</h1>
+  <p class="sub">최근 주요 공시를 확인하세요.</p>
+
+  <div class="df-controls">
+    <div class="df-pills">{''.join(pills)}</div>
+    <div class="df-right">
+      <div class="search-bar" style="margin:0">
+        <input id="df-search" type="text" placeholder="종목명 · 공시내용 검색" autocomplete="off" spellcheck="false">
+        <button id="df-clear" type="button" title="초기화">초기화</button>
+      </div>
+      <div class="df-view-btns">
+        <button class="df-vbtn active" data-view="grid" title="그리드">
+          <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="5" height="5" rx="1" fill="currentColor"/><rect x="10" y="1" width="5" height="5" rx="1" fill="currentColor"/><rect x="1" y="10" width="5" height="5" rx="1" fill="currentColor"/><rect x="10" y="10" width="5" height="5" rx="1" fill="currentColor"/></svg>
+        </button>
+        <button class="df-vbtn" data-view="list" title="리스트">
+          <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="6.75" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="11.5" width="14" height="2.5" rx="1" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+""")
+
+    for date_str in sorted(by_date.keys(), reverse=True):
+        items = by_date[date_str]
+        try:
+            d = _dt.strptime(date_str, "%Y-%m-%d")
+            wd = _WEEKDAY_KR.get(d.weekday(), "")
+            label = f"{d.month}월 {d.day}일 ({wd})"
+        except Exception:
+            label = date_str
+
+        parts.append(f"""
+  <div class="df-date-group" data-date="{date_str}">
+    <div class="df-date-hd">
+      <span>{label}</span>
+      <span class="df-date-meta">
+        이 페이지 <span class="df-date-label">{date_str}</span>
+        <span class="df-date-cnt">{len(items)}</span>
+      </span>
+    </div>
+    <div class="df-grid">
+""")
+        for it in items:
+            cn = _html.escape(it.get("corp_name", ""))
+            rn = _html.escape(it.get("report_nm", ""))
+            cat = it.get("category", "기타")
+            cat_color = _DART_CAT_COLORS.get(cat, "#78909c")
+            url = _html.escape(it.get("url", "#"))
+            dt_short = date_str[5:]  # MM-DD
+            detail_lines = it.get("detail", [])
+            stock_code = it.get("stock_code", "")
+
+            detail_html = ""
+            if detail_lines:
+                for ln in detail_lines:
+                    detail_html += f'<div class="df-detail-ln">= {_html.escape(str(ln))}</div>'
+
+            ticker_link = ""
+            if stock_code and len(stock_code) == 6 and stock_code.isdigit():
+                ticker_link = f' <a href="lookup/{stock_code}.KS" class="df-ticker-link">{stock_code}</a>'
+
+            parts.append(f"""
+      <div class="df-card" data-cat="{cat}" data-name="{cn}" data-report="{rn}">
+        <div class="df-card-hd">
+          <a href="{url}" target="_blank" rel="noopener" class="df-corp">{cn}</a>{ticker_link}
+          <span class="df-meta"><span class="df-dt">{dt_short}</span> <span class="df-cat" style="background:{cat_color}">{cat}</span></span>
+        </div>
+        <div class="df-report">{rn}</div>
+        {detail_html}
+      </div>
+""")
+
+        parts.append("    </div>\n  </div>\n")
+
+    # JS for filtering, search, view toggle
+    parts.append("""
+<style>
+.df-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:16px}
+.df-pills{display:flex;flex-wrap:wrap;gap:6px}
+.df-pill{padding:4px 12px;border-radius:16px;border:1px solid var(--border,#333);background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:13px;white-space:nowrap}
+.df-pill.active{background:var(--accent,#ef5350);color:#fff;border-color:var(--accent,#ef5350)}
+.df-right{display:flex;gap:8px;align-items:center}
+.df-view-btns{display:flex;gap:2px;background:var(--card,#1a1f2b);border-radius:6px;padding:2px}
+.df-vbtn{padding:6px 8px;background:transparent;border:none;color:var(--muted,#888);cursor:pointer;border-radius:4px;display:flex;align-items:center}
+.df-vbtn.active{background:var(--accent,#3b82f6);color:#fff}
+.df-date-group{margin-bottom:24px}
+.df-date-hd{display:flex;justify-content:space-between;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--border,#333);margin-bottom:12px;font-weight:600;font-size:15px}
+.df-date-meta{font-size:12px;color:var(--muted,#888);font-weight:400}
+.df-date-label{margin-left:8px}
+.df-date-cnt{margin-left:8px;font-weight:600;color:var(--fg,#ccc)}
+.df-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media(max-width:900px){.df-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){.df-grid{grid-template-columns:1fr}}
+.df-card{background:var(--card,#1a1f2b);border:1px solid var(--border,#2a2f3a);border-radius:8px;padding:14px;font-size:13px;display:flex;flex-direction:column;gap:6px}
+.df-card.hidden{display:none}
+.df-card-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.df-corp{font-weight:700;font-size:15px;color:var(--fg,#eee);text-decoration:none}
+.df-corp:hover{text-decoration:underline}
+.df-ticker-link{font-size:11px;color:var(--muted,#888);text-decoration:none}
+.df-ticker-link:hover{color:var(--accent,#3b82f6)}
+.df-meta{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.df-dt{font-size:12px;color:var(--muted,#888)}
+.df-cat{font-size:11px;padding:2px 8px;border-radius:4px;color:#fff;white-space:nowrap}
+.df-report{color:var(--muted,#aaa);font-size:12px;line-height:1.4}
+.df-detail-ln{color:var(--fg,#ccc);font-size:12px;line-height:1.5}
+/* list view */
+.df-grid.list-view{display:flex;flex-direction:column;gap:4px}
+.df-grid.list-view .df-card{flex-direction:row;align-items:center;gap:12px;padding:8px 14px}
+.df-grid.list-view .df-card-hd{flex-direction:row;align-items:center;min-width:160px}
+.df-grid.list-view .df-report{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.df-grid.list-view .df-detail-ln{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted,#888)}
+.df-grid.list-view .df-meta{order:-1;min-width:80px}
+</style>
+
+<script>
+(function(){
+  var pills=document.querySelectorAll('.df-pill');
+  var cards=document.querySelectorAll('.df-card');
+  var search=document.getElementById('df-search');
+  var clearBtn=document.getElementById('df-clear');
+  var viewBtns=document.querySelectorAll('.df-vbtn');
+  var grids=document.querySelectorAll('.df-grid');
+  var activeCat='전체';
+
+  function applyFilters(){
+    var q=(search?search.value:'').toLowerCase().trim();
+    var vis=0;
+    cards.forEach(function(c){
+      var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
+      var textMatch=!q||
+        (c.dataset.name||'').toLowerCase().indexOf(q)>=0||
+        (c.dataset.report||'').toLowerCase().indexOf(q)>=0||
+        c.textContent.toLowerCase().indexOf(q)>=0;
+      if(catMatch&&textMatch){c.classList.remove('hidden');vis++}
+      else{c.classList.add('hidden')}
+    });
+    // update date group counts
+    document.querySelectorAll('.df-date-group').forEach(function(g){
+      var n=g.querySelectorAll('.df-card:not(.hidden)').length;
+      var cnt=g.querySelector('.df-date-cnt');
+      if(cnt)cnt.textContent=n;
+      g.style.display=n?'':'none';
+    });
+  }
+  pills.forEach(function(p){
+    p.addEventListener('click',function(){
+      pills.forEach(function(x){x.classList.remove('active')});
+      p.classList.add('active');
+      activeCat=p.dataset.cat;
+      applyFilters();
+    });
+  });
+  if(search)search.addEventListener('input',applyFilters);
+  if(clearBtn)clearBtn.addEventListener('click',function(){if(search)search.value='';applyFilters()});
+  viewBtns.forEach(function(b){
+    b.addEventListener('click',function(){
+      viewBtns.forEach(function(x){x.classList.remove('active')});
+      b.classList.add('active');
+      var v=b.dataset.view;
+      grids.forEach(function(g){
+        if(v==='list')g.classList.add('list-view');
+        else g.classList.remove('list-view');
+      });
+    });
+  });
+})();
+</script>
+""")
+
+    parts.append("</div>\n")
+    parts.append(_THEME_JS)
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
+def regenerate_dart_feed_index() -> None:
+    """DART feed archive → dart_feed.html."""
+    try:
+        by_date = _load_dart_feed_data(days_back=30)
+        html = _render_dart_feed_page(by_date)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "dart_feed.html").write_text(html, encoding="utf-8")
+        total = sum(len(v) for v in by_date.values())
+        log.info("dashboard: dart_feed.html regenerated (%d disclosures)", total)
+    except Exception as exc:
+        log.warning("dashboard: dart_feed regen failed: %s", exc)
+
+
+# ═════════════════════════════════════════════════════════════════════
 # Market Overview landing page (market.html)
 # ═════════════════════════════════════════════════════════════════════
 
@@ -10886,6 +11127,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="paper.html">🔔 워치리스트</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
+    &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     &middot; <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
     &nbsp;|&nbsp;
@@ -10932,8 +11174,9 @@ def _render_market_page(data: dict) -> str:
   </div>
   {_render_earnings_table(earnings)}
 
-  <div class="section-hd">
+  <div class="section-hd" style="display:flex;align-items:baseline;gap:12px">
     <h2>최근 리서치 액션</h2>
+    <a href="dart_feed.html" style="font-size:13px;color:var(--accent,#3b82f6);text-decoration:none">📋 DART 공시 →</a>
   </div>
   <div class="tbl-filter">
     <input id="research-filter" type="text" placeholder="종목 검색 …" autocomplete="off">
