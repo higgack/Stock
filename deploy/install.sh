@@ -51,6 +51,7 @@ for unit in \
     screener-gics-check.service     screener-gics-check.timer \
     daily-byte.service              daily-byte.timer \
     daily-byte-weekly.service       daily-byte-weekly.timer \
+    us-market-daily.service         us-market-daily.timer \
     blog-watch.service              blog-watch.timer \
     realestate-byte.service         realestate-byte.timer \
     realestate-byte-monthly.service realestate-byte-monthly.timer \
@@ -118,6 +119,9 @@ if [ -f "$DEPLOY_DIR/daily-byte.timer" ]; then
 fi
 if [ -f "$DEPLOY_DIR/daily-byte-weekly.timer" ]; then
     systemctl enable --now daily-byte-weekly.timer
+fi
+if [ -f "$DEPLOY_DIR/us-market-daily.timer" ]; then
+    systemctl enable --now us-market-daily.timer
 fi
 if [ -f "$DEPLOY_DIR/blog-watch.timer" ]; then
     systemctl enable --now blog-watch.timer
