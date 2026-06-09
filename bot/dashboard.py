@@ -10468,12 +10468,13 @@ _MARKET_CSS = (
     ".tbl-filter input:focus{border-color:var(--accent)}"
     ".tbl-filter .cnt{color:var(--muted);font-size:12px}"
     ".tabs{display:flex;gap:4px;margin-bottom:14px}"
-    ".tab-btn{padding:6px 16px;font-size:13px;font-weight:600;"
+    ".tab-btn,.etab-btn{padding:6px 16px;font-size:13px;font-weight:600;"
     "border:1px solid var(--border);border-radius:6px;"
     "background:var(--card);color:var(--muted);cursor:pointer}"
-    ".tab-btn.active{background:var(--accent);color:#fff;"
+    ".tab-btn.active,.etab-btn.active{background:var(--accent);color:#fff;"
     "border-color:var(--accent)}"
     ".tab-pane{display:none}.tab-pane.active{display:block}"
+    ".etab-pane{display:none}.etab-pane.active{display:block}"
     ".empty-msg{color:var(--muted);font-size:13px;padding:20px 0}"
     ".show-more-btn{display:block;margin:8px auto 0;padding:6px 20px;"
     "font-size:13px;color:var(--accent);background:none;"
@@ -10648,7 +10649,7 @@ def _render_earnings_table(earnings: list) -> str:
     rows: list[str] = []
     shown = 0
     for e in earnings:
-        if shown >= 40:
+        if shown >= 100:  # 각자 최대한 — data-limit=10 으로 처음 10개만, 더보기로 전체
             break
         sym = _html.escape(e.get("symbol", ""))
         co_name = _html.escape(e.get("name", ""))
@@ -11237,17 +11238,32 @@ def _render_market_page(data: dict) -> str:
 
     parts.append(_render_macro_snapshot(macro))
 
+    # 다가오는 실적 — 한국/미국 탭 분리(사용자 정책: 한국 기본·최대한 표시).
+    _earn_kr = [e for e in earnings
+                if str(e.get("symbol", "")).endswith((".KS", ".KQ"))]
+    _earn_us = [e for e in earnings
+                if not str(e.get("symbol", "")).endswith((".KS", ".KQ"))]
+
     parts.append(f"""
   <div class="section-hd">
     <h2>다가오는 실적</h2>
-    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더</a>
-    <span class="ts">미국 Finnhub(14일) + 한국 yfinance(90일)</span>
+    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(+한국 실적·IR)</a>
+    <span class="ts">한국 yfinance · 미국 Finnhub</span>
   </div>
   <div class="tbl-filter">
     <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
     <span class="cnt" id="earn-cnt"></span>
   </div>
-  {_render_earnings_table(earnings)}
+  <div class="tabs">
+    <button class="etab-btn active" data-etab="kr">🇰🇷 한국 ({len(_earn_kr)})</button>
+    <button class="etab-btn" data-etab="us">🇺🇸 미국 ({len(_earn_us)})</button>
+  </div>
+  <div id="etab-kr" class="etab-pane active">
+    {_render_earnings_table(_earn_kr)}
+  </div>
+  <div id="etab-us" class="etab-pane">
+    {_render_earnings_table(_earn_us)}
+  </div>
 
   <div class="section-hd" style="display:flex;align-items:baseline;gap:12px">
     <h2>최근 리서치 액션</h2>
@@ -11301,13 +11317,23 @@ def _render_market_page(data: dict) -> str:
   }});
   inp.focus();
 
-  /* tab switching */
+  /* tab switching (리서치 액션) */
   document.querySelectorAll('.tab-btn').forEach(function(b) {{
     b.addEventListener('click', function() {{
       document.querySelectorAll('.tab-btn').forEach(function(x) {{ x.classList.remove('active'); }});
       document.querySelectorAll('.tab-pane').forEach(function(x) {{ x.classList.remove('active'); }});
       b.classList.add('active');
       document.getElementById('tab-' + b.dataset.tab).classList.add('active');
+    }});
+  }});
+
+  /* tab switching (다가오는 실적 한국/미국 — 독립 그룹) */
+  document.querySelectorAll('.etab-btn').forEach(function(b) {{
+    b.addEventListener('click', function() {{
+      document.querySelectorAll('.etab-btn').forEach(function(x) {{ x.classList.remove('active'); }});
+      document.querySelectorAll('.etab-pane').forEach(function(x) {{ x.classList.remove('active'); }});
+      b.classList.add('active');
+      document.getElementById('etab-' + b.dataset.etab).classList.add('active');
     }});
   }});
 
@@ -11373,7 +11399,25 @@ def _render_market_page(data: dict) -> str:
       cn.textContent = q ? shown + '/' + total : '';
     }});
   }}
-  wireFilter('earn-filter', 'earn-cnt');
+  /* earnings filter applies across 한국/미국 etab panes */
+  (function() {{
+    var fi = document.getElementById('earn-filter');
+    var cn = document.getElementById('earn-cnt');
+    if (!fi) return;
+    fi.addEventListener('input', function() {{
+      var q = (fi.value || '').trim().toLowerCase();
+      var total = 0, shown = 0;
+      document.querySelectorAll('.etab-pane .dtbl tbody tr').forEach(function(row) {{
+        total++;
+        var txt = row.textContent.toLowerCase();
+        var vis = !q || txt.indexOf(q) >= 0;
+        if (vis && !q && row.classList.contains('xrow')) vis = false;
+        row.style.display = vis ? '' : 'none';
+        if (vis) shown++;
+      }});
+      cn.textContent = q ? shown + '/' + total : '';
+    }});
+  }})();
   /* research filter applies to both KR and US tabs */
   (function() {{
     var fi = document.getElementById('research-filter');
