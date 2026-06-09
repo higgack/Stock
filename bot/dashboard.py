@@ -10190,10 +10190,15 @@ _MARKET_CSS = (
     "font-weight:600;white-space:nowrap}"
     ".dtbl td{padding:7px 10px;border-bottom:1px solid var(--surface-tint)}"
     ".dtbl tr:hover{background:var(--accent-soft)}"
-    ".dtbl .sym{font-weight:500}"
-    ".dtbl .sym a{color:#b0b8c4;text-decoration:none}"
+    ".dtbl .sym{font-weight:600}"
+    ".dtbl .sym a{color:var(--text);text-decoration:none}"
     ".dtbl .sym a:hover{color:var(--accent);text-decoration:underline}"
     ".dtbl .sym .co-name{display:block;font-size:11px;font-weight:400;color:var(--muted);margin-top:1px}"
+    ".tbl-filter{margin-bottom:10px;display:flex;align-items:center;gap:8px}"
+    ".tbl-filter input{padding:6px 12px;font-size:13px;border:1px solid var(--border);"
+    "border-radius:6px;background:var(--card);color:var(--text);outline:none;width:240px}"
+    ".tbl-filter input:focus{border-color:var(--accent)}"
+    ".tbl-filter .cnt{color:var(--muted);font-size:12px}"
     ".tabs{display:flex;gap:4px;margin-bottom:14px}"
     ".tab-btn{padding:6px 16px;font-size:13px;font-weight:600;"
     "border:1px solid var(--border);border-radius:6px;"
@@ -10781,10 +10786,18 @@ def _render_market_page(data: dict) -> str:
     <h2>다가오는 실적</h2>
     <span class="ts">Finnhub · 향후 14일</span>
   </div>
+  <div class="tbl-filter">
+    <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
+    <span class="cnt" id="earn-cnt"></span>
+  </div>
   {_render_earnings_table(earnings)}
 
   <div class="section-hd">
     <h2>최근 리서치 액션</h2>
+  </div>
+  <div class="tbl-filter">
+    <input id="research-filter" type="text" placeholder="종목 검색 …" autocomplete="off">
+    <span class="cnt" id="research-cnt"></span>
   </div>
   <div class="tabs">
     <button class="tab-btn active" data-tab="kr">🇰🇷 KR</button>
@@ -10805,7 +10818,19 @@ def _render_market_page(data: dict) -> str:
   function go() {{
     var q = (inp.value || '').trim();
     if (!q) return;
-    window.location.href = 'lookup/' + encodeURIComponent(q);
+    btn.disabled = true; btn.textContent = '…';
+    fetch('api/search?q=' + encodeURIComponent(q))
+      .then(function(r){{ return r.json(); }})
+      .then(function(d) {{
+        if (d.ticker) {{
+          window.location.href = 'lookup/' + encodeURIComponent(d.ticker);
+        }} else {{
+          window.location.href = 'lookup/' + encodeURIComponent(q);
+        }}
+      }})
+      .catch(function() {{
+        window.location.href = 'lookup/' + encodeURIComponent(q);
+      }});
   }}
   btn.addEventListener('click', go);
   inp.addEventListener('keydown', function(e) {{
@@ -10813,6 +10838,7 @@ def _render_market_page(data: dict) -> str:
   }});
   inp.focus();
 
+  /* tab switching */
   document.querySelectorAll('.tab-btn').forEach(function(b) {{
     b.addEventListener('click', function() {{
       document.querySelectorAll('.tab-btn').forEach(function(x) {{ x.classList.remove('active'); }});
@@ -10821,6 +10847,52 @@ def _render_market_page(data: dict) -> str:
       document.getElementById('tab-' + b.dataset.tab).classList.add('active');
     }});
   }});
+
+  /* table filter helper */
+  function wireFilter(inputId, cntId, tableParentId) {{
+    var fi = document.getElementById(inputId);
+    var cn = document.getElementById(cntId);
+    if (!fi) return;
+    var parent = tableParentId ? document.getElementById(tableParentId) : fi.parentElement.nextElementSibling;
+    fi.addEventListener('input', function() {{
+      var q = (fi.value || '').trim().toLowerCase();
+      var tables = (parent ? [parent] : []).concat(
+        Array.from(document.querySelectorAll(tableParentId ? '#' + tableParentId + ' .dtbl' : '.dtbl'))
+      );
+      var total = 0, shown = 0;
+      tables.forEach(function(wrap) {{
+        var tbl = wrap.tagName === 'TABLE' ? wrap : wrap.querySelector('.dtbl');
+        if (!tbl) return;
+        tbl.querySelectorAll('tbody tr').forEach(function(row) {{
+          total++;
+          var txt = row.textContent.toLowerCase();
+          var vis = !q || txt.indexOf(q) >= 0;
+          row.style.display = vis ? '' : 'none';
+          if (vis) shown++;
+        }});
+      }});
+      cn.textContent = q ? shown + '/' + total : '';
+    }});
+  }}
+  wireFilter('earn-filter', 'earn-cnt');
+  /* research filter applies to both KR and US tabs */
+  (function() {{
+    var fi = document.getElementById('research-filter');
+    var cn = document.getElementById('research-cnt');
+    if (!fi) return;
+    fi.addEventListener('input', function() {{
+      var q = (fi.value || '').trim().toLowerCase();
+      var total = 0, shown = 0;
+      document.querySelectorAll('.tab-pane .dtbl tbody tr').forEach(function(row) {{
+        total++;
+        var txt = row.textContent.toLowerCase();
+        var vis = !q || txt.indexOf(q) >= 0;
+        row.style.display = vis ? '' : 'none';
+        if (vis) shown++;
+      }});
+      cn.textContent = q ? shown + '/' + total : '';
+    }});
+  }})();
 }})();
 </script>
 </body></html>
@@ -10956,12 +11028,19 @@ def render_lookup_page(ticker: str) -> str:
         f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
     )
 
-    # Search box JS — resolves names via server-side redirect
     search_js = """<script>
 var lkInp=document.getElementById('lk-search');
 var lkBtn=document.getElementById('lk-go');
 function lkGo(){var q=(lkInp.value||'').trim();
-if(q)window.location.href='../lookup/'+encodeURIComponent(q);}
+if(!q)return;
+lkBtn.disabled=true;lkBtn.textContent='…';
+fetch('../api/search?q='+encodeURIComponent(q))
+.then(function(r){return r.json();})
+.then(function(d){
+  window.location.href='../lookup/'+encodeURIComponent(d.ticker||q);
+}).catch(function(){
+  window.location.href='../lookup/'+encodeURIComponent(q);
+});}
 lkBtn.addEventListener('click',lkGo);
 lkInp.addEventListener('keydown',function(e){if(e.key==='Enter')lkGo();});
 </script>"""

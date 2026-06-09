@@ -188,6 +188,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         raw = self.path.split("?", 1)[0]
         if raw.startswith("/lookup/"):
             return self._handle_lookup()
+        if raw.startswith("/api/search"):
+            return self._handle_search_api()
         return super().do_GET()
 
     def do_HEAD(self):
@@ -555,6 +557,37 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             log.warning("quote_api: failed — %s", exc)
             self._reply_json(500, {"ok": False, "error": "internal"})
 
+    def _handle_search_api(self) -> None:
+        """GET /api/search?q=삼성전자 — resolve name → ticker JSON."""
+        import urllib.parse as _ulp
+        try:
+            qs = _ulp.parse_qs(_ulp.urlparse(self.path).query)
+            q = (qs.get("q", [""])[0] or "").strip()
+            if not q:
+                self._json_ok({"ticker": None, "error": "empty query"})
+                return
+            upper = q.upper()
+            if _TICKER_RE.match(upper):
+                self._json_ok({"ticker": upper})
+                return
+            from bot.dashboard import resolve_name_to_ticker
+            resolved = resolve_name_to_ticker(q)
+            if resolved:
+                self._json_ok({"ticker": resolved})
+            else:
+                self._json_ok({"ticker": None, "error": "not found"})
+        except Exception as exc:
+            log.warning("search api: %s", exc)
+            self._json_ok({"ticker": None, "error": str(exc)})
+
+    def _json_ok(self, obj: dict) -> None:
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _handle_lookup(self) -> None:
         """Serve a stock overview page for any ticker or company name.
         GET /lookup/<TICKER_OR_NAME> — renders on-demand, 5min cache."""
@@ -565,19 +598,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             raw_query = _ulp.unquote(raw.split("/lookup/", 1)[-1]).strip()
             ticker = raw_query.upper()
             if not ticker or not _TICKER_RE.match(ticker):
-                # Try resolving as company name (Korean/English)
                 try:
                     from bot.dashboard import resolve_name_to_ticker
                     resolved = resolve_name_to_ticker(raw_query)
                     if resolved:
-                        self.send_response(302)
-                        self.send_header("Location", f"/lookup/{_ulp.quote(resolved)}")
-                        self.end_headers()
+                        ticker = resolved
+                    else:
+                        self._serve_search_error(raw_query)
                         return
                 except Exception:
-                    pass
-                self.send_error(400, "invalid ticker")
-                return
+                    self._serve_search_error(raw_query)
+                    return
 
             cache_dir = _ARCHIVE_ROOT.parent / "lookup_cache"
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -610,6 +641,36 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("lookup: failed — %s", exc)
             self.send_error(500, "internal error")
+
+    def _serve_search_error(self, query: str) -> None:
+        """Render a user-friendly 'not found' page for failed name search."""
+        import html as _h
+        q_esc = _h.escape(query)
+        body = (
+            '<!DOCTYPE html><html><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>검색 결과 없음</title>'
+            '<style>body{font-family:system-ui;background:#0d1117;color:#c9d1d9;'
+            'display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}'
+            '.box{text-align:center;max-width:400px;padding:40px}'
+            'h2{font-size:20px;margin-bottom:12px}'
+            'p{color:#8b949e;font-size:14px;line-height:1.6}'
+            'a{color:#58a6ff;text-decoration:none}'
+            'a:hover{text-decoration:underline}'
+            '.q{color:#f0883e;font-weight:600}'
+            '</style></head><body><div class="box">'
+            f'<h2>검색 결과 없음</h2>'
+            f'<p><span class="q">"{q_esc}"</span>에 해당하는 종목을 찾지 못했습니다.</p>'
+            '<p>티커(NVDA, 005930.KS)를 직접 입력하거나<br>'
+            '한국 종목명(삼성전자, LG에너지솔루션)을 정확히 입력해 주세요.</p>'
+            '<p><a href="market.html">← 홈으로 돌아가기</a></p>'
+            '</div></body></html>'
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_portfolio_send(self) -> None:
         """POST /api/portfolio_send body: {"to":"telegram"|"email",
