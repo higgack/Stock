@@ -4755,40 +4755,40 @@ def _render_stock_info_html(rec: dict) -> str:
       <table class="si-table"><thead><tr><th>구분</th><th class="num">순매수</th></tr></thead><tbody>{pgm_rows}</tbody></table>
     </div>"""
 
-        # Multi-period trends (live fetch from pykrx)
-        # Skip during batch regen to avoid blocking polling
+        # Multi-period trends — batch regen reads cache only (no network),
+        # live render does full fetch. Cached data from last analysis keeps
+        # the table visible even during startup/midnight regen.
         trend_html = ""
-        if _live:
-            try:
-                from bot.pykrx_client import get_kr_multi_period_trends
-                mp = get_kr_multi_period_trends(ticker)
-                if mp:
-                    def _pp_cell(v, invert=False):
-                        if v is None:
-                            return '<td class="num">—</td>'
-                        c = "#26a69a" if (v < 0 if invert else v > 0) else "#e2574c" if (v > 0 if invert else v < 0) else ""
-                        s = f' style="color:{c}"' if c else ""
-                        return f'<td class="num"{s}>{v:+.2f}</td>'
-                    period_hdrs = "".join(f'<th class="num">{p}일</th>' for p in (5, 10, 20, 30, 60))
-                    t_rows = ""
-                    fo = mp.get("foreign", {})
-                    if fo.get("current_pct") is not None:
-                        pds = fo.get("periods", {})
-                        cells = "".join(_pp_cell(pds.get(p)) for p in (5, 10, 20, 30, 60))
-                        t_rows += f'<tr><td>외국인 보유율</td><td class="num">{fo["current_pct"]:.2f}%</td>{cells}</tr>\n'
-                    sh = mp.get("short", {})
-                    if sh.get("current_pct") is not None:
-                        pds = sh.get("periods", {})
-                        cells = "".join(_pp_cell(pds.get(p), invert=True) for p in (5, 10, 20, 30, 60))
-                        t_rows += f'<tr><td>공매도 잔고율</td><td class="num">{sh["current_pct"]:.2f}%</td>{cells}</tr>\n'
-                    if t_rows:
-                        trend_html = f"""<div class="si-section">
+        try:
+            from bot.pykrx_client import get_kr_multi_period_trends
+            mp = get_kr_multi_period_trends(ticker, cache_only=_BATCH_REGEN)
+            if mp:
+                def _pp_cell(v, invert=False):
+                    if v is None:
+                        return '<td class="num">—</td>'
+                    c = "#26a69a" if (v < 0 if invert else v > 0) else "#e2574c" if (v > 0 if invert else v < 0) else ""
+                    s = f' style="color:{c}"' if c else ""
+                    return f'<td class="num"{s}>{v:+.2f}</td>'
+                period_hdrs = "".join(f'<th class="num">{p}일</th>' for p in (5, 10, 20, 30, 60))
+                t_rows = ""
+                fo = mp.get("foreign", {})
+                if fo.get("current_pct") is not None:
+                    pds = fo.get("periods", {})
+                    cells = "".join(_pp_cell(pds.get(p)) for p in (5, 10, 20, 30, 60))
+                    t_rows += f'<tr><td>외국인 보유율</td><td class="num">{fo["current_pct"]:.2f}%</td>{cells}</tr>\n'
+                sh = mp.get("short", {})
+                if sh.get("current_pct") is not None:
+                    pds = sh.get("periods", {})
+                    cells = "".join(_pp_cell(pds.get(p), invert=True) for p in (5, 10, 20, 30, 60))
+                    t_rows += f'<tr><td>공매도 잔고율</td><td class="num">{sh["current_pct"]:.2f}%</td>{cells}</tr>\n'
+                if t_rows:
+                    trend_html = f"""<div class="si-section">
       <div class="si-section-title">다기간 추이 (pp 변화)</div>
       <table class="si-table"><thead><tr><th>항목</th><th class="num">현재</th>{period_hdrs}</tr></thead><tbody>{t_rows}</tbody></table>
       <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ pp = 퍼센트포인트 = 현재 비율 − N거래일 전 비율(절대 차이). 예: 외국인 39.9%→40.4% = +0.5pp. 데이터가 그 기간만큼 없으면 부정확한 근사 대신 — 표시. 기관·연기금은 일별 보유비율 공시가 없어(외국인 보유율·공매도 잔고율만 일별 비율 존재) 이 표에 못 넣음 — 대신 위 「투자주체별 순매수 다기간」 표에 기관·연기금 순매수가 기간별로 있음.</div>
     </div>"""
-            except Exception as exc:
-                log.info("detail: multi-period trends %s: %s", ticker, exc)
+        except Exception as exc:
+            log.info("detail: multi-period trends %s: %s", ticker, exc)
 
         flow_pane = f"""<div class="si-pane" id="si-flow">
   {inv_table}

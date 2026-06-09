@@ -897,11 +897,15 @@ def _has_any_period(pds: Optional[dict]) -> bool:
     return any(v is not None for v in pds.values())
 
 
-def get_kr_multi_period_trends(ticker: str) -> Optional[dict]:
+def get_kr_multi_period_trends(ticker: str, *, cache_only: bool = False) -> Optional[dict]:
     """Multi-period foreign ownership + short balance trends.
 
     3-tier fallback for foreign: pykrx → Seibro → Naver.
     Short balance: pykrx only (no free alternative).
+
+    Args:
+        cache_only: If True, only read from disk cache (no network).
+            Used during batch regen to avoid blocking startup.
 
     Returns:
         {
@@ -925,6 +929,9 @@ def get_kr_multi_period_trends(ticker: str) -> Optional[dict]:
                     return cached
         except Exception:
             pass
+
+    if cache_only:
+        return None
 
     end = date.today()
     start = end - timedelta(days=90)
