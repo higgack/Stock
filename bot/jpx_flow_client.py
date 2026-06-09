@@ -4,24 +4,28 @@ Fetches market-wide weekly net buy/sell by investor type from JPX:
   - 外国人 (Foreigners) — JP market largest driver
   - 投資信託 (Investment Trusts) — domestic mutual funds
   - 個人 (Individuals) — retail
-  - 法人 (Corporations)
-  - 証券会社 (Securities firms, proprietary)
+  - 事業法人 (Corporations)
+  - 自己 (Securities firms, proprietary)
 
-Data is aggregate market-wide (TSE 1部+2部, not per-stock).
+Data is aggregate market-wide (TSE Prime+Standard+Growth, not per-stock).
 Published weekly (Thursday/Friday for prior week).
 
-Source: JPX CSV at https://www.jpx.co.jp/markets/statistics-equities/
-investor-type/nlsgeu000005b1d7-att/stock_val_by_sec_[1|2]s.csv
+JPX changed URL structure (2026-06): fixed aggregated CSV → per-week XLS
+files with dynamic directory hashes. Approach:
+  1. Scrape index page → extract latest stock_val_1_*.xls links
+  2. Download + parse with xlrd (graceful skip if not installed)
+  3. Per-file disk cache (published data is immutable)
+  4. Return [{date, foreigners, trusts, ...}] shape
 
-No API key required. 24h disk cache (weekly data).
+xlrd required: `pip install xlrd`. Missing → graceful None.
+No API key required. 96h aggregate cache (weekly data).
 """
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 import logging
+import re
 import time
 from datetime import date
 from pathlib import Path
@@ -32,7 +36,8 @@ import requests
 log = logging.getLogger("bot.jpx_flow")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "jpx_flow"
-_CACHE_TTL_HOURS = 96  # 4 days — JPX publishes Thu/Fri, ~2 refreshes/week
+_AGG_CACHE_TTL_HOURS = 96       # 4 days — aggregate result
+_FILE_CACHE_TTL_HOURS = 24 * 90  # 90 days — per-week XLS (immutable)
 _TIMEOUT = 15
 
 _HEADERS = {
@@ -42,49 +47,42 @@ _HEADERS = {
     ),
 }
 
-_TSE1_URL = (
-    "https://www.jpx.co.jp/markets/statistics-equities"
-    "/investor-type/nlsgeu000005b1d7-att/stock_val_by_sec_1s.csv"
-)
-_TSE2_URL = (
-    "https://www.jpx.co.jp/markets/statistics-equities"
-    "/investor-type/nlsgeu000005b1d7-att/stock_val_by_sec_2s.csv"
+_BASE_URL = "https://www.jpx.co.jp"
+_INDEX_URL = (
+    _BASE_URL + "/markets/statistics-equities/investor-type/index.html"
 )
 
-_INVESTOR_MAP = {
-    "法人": "corporations",
-    "個人": "individuals",
-    "外国人": "foreigners",
-    "証券会社": "securities",
-    "投資信託": "trusts",
-}
-
-_INVESTOR_MAP_EN = {
-    "Proprietary": "securities",
-    "Brokerage": "brokerage",
-    "Foreigners": "foreigners",
-    "Individuals": "individuals",
-    "Investment Trusts": "trusts",
-    "Corporations": "corporations",
-    "Others": "others",
-    "Securities Cos.": "securities",
-}
+_INVESTOR_KEYWORDS: list[tuple[str, str]] = [
+    ("外国人", "foreigners"),
+    ("外国法人", "foreigners"),
+    ("Foreigners", "foreigners"),
+    ("投資信託", "trusts"),
+    ("Investment Trusts", "trusts"),
+    ("個人", "individuals"),
+    ("Individuals", "individuals"),
+    ("事業法人", "corporations"),
+    ("Corporations", "corporations"),
+    ("自己", "securities"),
+    ("証券会社", "securities"),
+    ("Proprietary", "securities"),
+    ("Securities", "securities"),
+]
 
 
-def _cache_get(key: str) -> Optional[dict]:
+def _cache_get(key: str, ttl_hours: float = _AGG_CACHE_TTL_HOURS) -> Optional[dict | list]:
     f = _CACHE_DIR / key
     if not f.exists():
         return None
     try:
         age_h = (time.time() - f.stat().st_mtime) / 3600
-        if age_h >= _CACHE_TTL_HOURS:
+        if age_h >= ttl_hours:
             return None
         return json.loads(f.read_text())
     except Exception:
         return None
 
 
-def _cache_set(key: str, data):
+def _cache_set(key: str, data) -> None:
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
         (_CACHE_DIR / key).write_text(json.dumps(data, ensure_ascii=False))
@@ -92,105 +90,167 @@ def _cache_set(key: str, data):
         pass
 
 
-def _parse_num(s: str) -> int:
-    """Parse number string, handling commas and negative."""
-    if not s or s.strip() in ("", "-", "N/A"):
-        return 0
-    cleaned = s.replace(",", "").replace(" ", "").strip()
+# ── index page scraper ───────────────────────────────────────────
+
+def _scrape_xls_links() -> list[tuple[str, str]]:
+    """Scrape JPX index page for stock_val_1_*.xls URLs.
+
+    Returns [(full_url, YYMMWW), ...] sorted newest first (deduplicated).
+    YYMMWW: YY=western year last 2 digits, MM=month, WW=week number.
+    """
     try:
-        return int(float(cleaned))
-    except (ValueError, TypeError):
-        return 0
+        resp = requests.get(_INDEX_URL, headers=_HEADERS, timeout=_TIMEOUT)
+        if resp.status_code != 200:
+            log.warning("jpx_flow: index page returned %d", resp.status_code)
+            return []
+        pat = (
+            r'href="(/markets/statistics-equities/investor-type/'
+            r'[^"]+/stock_val_1_(\d{6})\.xls)"'
+        )
+        matches = re.findall(pat, resp.text)
+        matches.sort(key=lambda x: x[1], reverse=True)
+        seen: set[str] = set()
+        unique: list[tuple[str, str]] = []
+        for path, yymw in matches:
+            if yymw not in seen:
+                seen.add(yymw)
+                unique.append((_BASE_URL + path, yymw))
+        return unique
+    except Exception as exc:
+        log.warning("jpx_flow: scrape failed: %s", exc)
+        return []
 
 
-def _fetch_csv(url: str) -> Optional[str]:
+def _yymw_to_label(yymw: str) -> str:
+    """'260504' → '2026/05 W4'."""
+    yy, mm, ww = yymw[:2], yymw[2:4], yymw[4:6]
+    return f"20{yy}/{mm} W{int(ww)}"
+
+
+# ── XLS download + parse ─────────────────────────────────────────
+
+def _download_xls(url: str) -> Optional[bytes]:
     try:
         resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
         if resp.status_code != 200:
             log.warning("jpx_flow: %s returned %d", url, resp.status_code)
             return None
-        for enc in ("shift_jis", "cp932", "utf-8"):
-            try:
-                return resp.content.decode(enc)
-            except (UnicodeDecodeError, LookupError):
-                continue
-        return resp.text
+        return resp.content
     except Exception as exc:
-        log.warning("jpx_flow: fetch failed: %s", exc)
+        log.warning("jpx_flow: download failed: %s", exc)
         return None
 
 
-def _parse_flow_csv(text: str) -> Optional[list[dict]]:
-    """Parse JPX investor-type CSV into weekly flow rows.
-
-    Returns list of dicts sorted by date (newest first):
-        [{"date": "YYYY/MM/DD", "foreigners": net_buy_sell, "trusts": ..., ...}]
-    Values are in 百万円 (millions of yen).
-    """
-    if not text:
+def _parse_num_cell(val) -> Optional[int]:
+    """Parse XLS cell value to int. Handles float, int, str with commas."""
+    if isinstance(val, float):
+        return int(val)
+    if isinstance(val, int):
+        return val
+    s = str(val).replace(",", "").replace(" ", "").strip()
+    if not s or s in ("-", "N/A", ""):
         return None
-
-    lines = text.strip().splitlines()
-    if len(lines) < 3:
-        return None
-
-    header_idx = None
-    for i, line in enumerate(lines):
-        if "売り" in line or "Sell" in line or "期間" in line or "Period" in line:
-            header_idx = i
-            break
-
-    if header_idx is None:
-        for i, line in enumerate(lines):
-            if any(k in line for k in ("外国人", "Foreigners", "個人", "法人")):
-                header_idx = max(0, i - 1)
-                break
-
-    if header_idx is None:
-        return None
-
-    reader = csv.reader(io.StringIO("\n".join(lines[header_idx:])))
-    headers = []
     try:
-        headers = next(reader)
-    except StopIteration:
+        return int(float(s))
+    except (ValueError, TypeError):
         return None
 
-    investor_cols: dict[str, tuple[int, int]] = {}
-    for col_idx, h in enumerate(headers):
-        h_clean = h.strip()
-        for jp_key, en_key in {**_INVESTOR_MAP, **_INVESTOR_MAP_EN}.items():
-            if jp_key in h_clean:
-                if en_key not in investor_cols:
-                    investor_cols[en_key] = (col_idx, -1)
-                else:
-                    prev_buy, _ = investor_cols[en_key]
-                    investor_cols[en_key] = (prev_buy, col_idx)
+
+def _parse_xls_flow(data: bytes, date_label: str) -> Optional[dict]:
+    """Parse a JPX investor-type weekly XLS into flow dict.
+
+    Searches for 売り/買い/差引 columns + investor-type keyword rows,
+    extracts net buy/sell per investor type.
+    Returns {date, foreigners, trusts, individuals, corporations, securities}
+    or None.
+    """
+    try:
+        import xlrd  # noqa: heavy/optional
+    except ImportError:
+        log.warning("jpx_flow: xlrd not installed — pip install xlrd")
+        return None
+
+    try:
+        wb = xlrd.open_workbook(file_contents=data)
+        sheet = wb.sheet_by_index(0)
+
+        # ── find header row with 売り / 買い / 差引 ──
+        sell_col = buy_col = net_col = -1
+        header_row = -1
+
+        for r in range(min(sheet.nrows, 20)):
+            for c in range(min(sheet.ncols, 30)):
+                v = str(sheet.cell_value(r, c)).strip()
+                if "売り" in v or v == "Sell":
+                    sell_col = c
+                    header_row = r
+                elif "買い" in v or v == "Buy":
+                    buy_col = c
+                elif "差引" in v or "差し引" in v or v == "Net":
+                    net_col = c
+
+        if header_row < 0 or (sell_col < 0 and buy_col < 0 and net_col < 0):
+            log.info("jpx_flow: no header row found in XLS")
+            return None
+
+        # ── try to extract actual date from title cells ──
+        actual_date = date_label
+        for r in range(min(header_row, 10)):
+            for c in range(min(sheet.ncols, 10)):
+                v = str(sheet.cell_value(r, c)).strip()
+                m = re.search(r"(\d{4})[/.\-年](\d{1,2})[/.\-月](\d{1,2})", v)
+                if m:
+                    actual_date = (
+                        f"{m.group(1)}/{m.group(2).zfill(2)}"
+                        f"/{m.group(3).zfill(2)}"
+                    )
+                    break
+            if actual_date != date_label:
                 break
 
-    if not investor_cols:
+        # ── extract investor-type net values ──
+        result: dict = {"date": actual_date}
+
+        for r in range(header_row + 1, sheet.nrows):
+            row_text = ""
+            for c in range(min(sheet.ncols, 5)):
+                v = str(sheet.cell_value(r, c)).strip()
+                if v:
+                    row_text += " " + v
+
+            matched_key = None
+            for kw, key in _INVESTOR_KEYWORDS:
+                if kw in row_text and key not in result:
+                    matched_key = key
+                    break
+
+            if not matched_key:
+                continue
+
+            net_val = None
+            if net_col >= 0 and net_col < sheet.ncols:
+                net_val = _parse_num_cell(sheet.cell_value(r, net_col))
+
+            if net_val is None and buy_col >= 0 and sell_col >= 0:
+                buy_v = _parse_num_cell(
+                    sheet.cell_value(r, buy_col) if buy_col < sheet.ncols else None
+                )
+                sell_v = _parse_num_cell(
+                    sheet.cell_value(r, sell_col) if sell_col < sheet.ncols else None
+                )
+                if buy_v is not None and sell_v is not None:
+                    net_val = buy_v - sell_v
+
+            if net_val is not None:
+                result[matched_key] = net_val
+
+        return result if len(result) > 1 else None
+    except Exception as exc:
+        log.warning("jpx_flow: XLS parse error: %s", exc)
         return None
 
-    rows: list[dict] = []
-    for csv_row in reader:
-        if len(csv_row) < 3:
-            continue
-        date_str = csv_row[0].strip()
-        if not date_str or not any(c.isdigit() for c in date_str):
-            continue
 
-        entry: dict = {"date": date_str}
-        for inv_key, (buy_idx, sell_idx) in investor_cols.items():
-            buy_val = _parse_num(csv_row[buy_idx]) if buy_idx >= 0 and buy_idx < len(csv_row) else 0
-            sell_val = _parse_num(csv_row[sell_idx]) if sell_idx >= 0 and sell_idx < len(csv_row) else 0
-            if sell_idx < 0:
-                entry[inv_key] = buy_val
-            else:
-                entry[inv_key] = buy_val - sell_val
-        rows.append(entry)
-
-    return sorted(rows, key=lambda r: r.get("date", ""), reverse=True) if rows else None
-
+# ── public API ───────────────────────────────────────────────────
 
 def fetch_jpx_weekly_flow() -> Optional[list[dict]]:
     """Fetch recent weekly investor-type flow data from JPX.
@@ -202,14 +262,30 @@ def fetch_jpx_weekly_flow() -> Optional[list[dict]]:
     if cached is not None:
         return cached
 
-    text = _fetch_csv(_TSE1_URL)
-    if not text:
-        text = _fetch_csv(_TSE2_URL)
-    if not text:
+    links = _scrape_xls_links()
+    if not links:
         return None
 
-    rows = _parse_flow_csv(text)
+    rows: list[dict] = []
+    for url, yymw in links[:8]:
+        fk = f"jpx_week_{yymw}.json"
+        fc = _cache_get(fk, ttl_hours=_FILE_CACHE_TTL_HOURS)
+        if fc:
+            rows.append(fc)
+            continue
+
+        data = _download_xls(url)
+        if not data:
+            continue
+
+        label = _yymw_to_label(yymw)
+        parsed = _parse_xls_flow(data, label)
+        if parsed:
+            _cache_set(fk, parsed)
+            rows.append(parsed)
+
     if rows:
+        rows.sort(key=lambda r: r.get("date", ""), reverse=True)
         _cache_set(ck, rows[:8])
         return rows[:8]
     return None
