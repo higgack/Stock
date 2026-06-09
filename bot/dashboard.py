@@ -11588,10 +11588,11 @@ def _render_market_page(data: dict) -> str:
       return sym + Number(v).toLocaleString(undefined, {{minimumFractionDigits:0, maximumFractionDigits:2}});
     }}
     function tag(isActual) {{
-      /* forward(예상) / trailing(확정) 구분 라벨 — 종목마다 다름 */
+      /* forward(예상) / trailing(확정) 구분 라벨 — 종목마다 다름. nowrap 으로
+         '(예 상)' 처럼 글자 중간에서 줄바꿈되지 않게. */
       return isActual
-        ? ' <span style="font-size:10px;color:var(--muted)">(확정)</span>'
-        : ' <span style="font-size:10px;color:var(--muted)">(예상)</span>';
+        ? ' <span style="font-size:10px;color:var(--muted);white-space:nowrap">(확정)</span>'
+        : ' <span style="font-size:10px;color:var(--muted);white-space:nowrap">(예상)</span>';
     }}
 
     function fmtEstLabel(v, isActual, sym) {{
@@ -11677,17 +11678,18 @@ def _render_market_page(data: dict) -> str:
           + ' data-pct="' + (pctVal !== '' ? pctVal : '') + '" data-eps="' + (f.eps_estimate != null ? f.eps_estimate : '') + '"'
           + ' data-per="' + (f.per != null ? f.per : '') + '" data-earn="' + (f.next_earnings || '') + '"';
         return '<tr ' + da + '>'
-          + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="font-weight:700;font-size:14px;color:inherit;text-decoration:none">' + (f.name||f.ticker) + '</a>'
-          + ' <span style="font-size:11px;color:var(--muted)">' + f.ticker + '</span></td>'
+          + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="color:inherit;text-decoration:none">'
+          + '<span style="font-weight:600;font-size:13px">' + (f.name||f.ticker) + '</span>'
+          + '<span style="display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:1px">' + f.ticker + '</span></a></td>'
           + '<td>' + flag + '</td>'
-          + '<td>' + (f.saved_date||'') + '</td>'
-          + '<td>' + fmtMcap(f.market_cap, f.currency_symbol) + '</td>'
-          + '<td>' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
-          + '<td>' + curCell + '</td>'
-          + '<td>' + pctCell + '</td>'
-          + '<td>' + fmtEstLabel(f.eps_estimate, f.eps_is_actual, f.currency_symbol) + '</td>'
-          + '<td>' + fmtPER(f.per, f.per_is_trailing) + '</td>'
-          + '<td>' + (f.next_earnings||'—') + '</td>'
+          + '<td style="white-space:nowrap">' + (f.saved_date||'') + '</td>'
+          + '<td style="white-space:nowrap">' + fmtMcap(f.market_cap, f.currency_symbol) + '</td>'
+          + '<td style="white-space:nowrap">' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
+          + '<td style="white-space:nowrap">' + curCell + '</td>'
+          + '<td style="white-space:nowrap">' + pctCell + '</td>'
+          + '<td style="white-space:nowrap">' + fmtEstLabel(f.eps_estimate, f.eps_is_actual, f.currency_symbol) + '</td>'
+          + '<td style="white-space:nowrap">' + fmtPER(f.per, f.per_is_trailing) + '</td>'
+          + '<td style="white-space:nowrap">' + (f.next_earnings||'—') + '</td>'
           + '<td class="fav-ord"><button class="fav-up" data-ticker="' + f.ticker + '" title="위로">▲</button>'
           + '<button class="fav-down" data-ticker="' + f.ticker + '" title="아래로">▼</button></td>'
           + '<td><button class="fav-del" data-ticker="' + f.ticker + '" title="삭제">✕</button></td>'

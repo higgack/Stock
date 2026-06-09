@@ -108,18 +108,23 @@ def fetch_kr_earnings_ir(days_back: int = 10) -> list[dict]:
 
 _IR_MONTH_CACHE = Path.home() / ".tradingagents" / "cache" / "dart_ir_month"
 _IR_MONTH_TTL = 12 * 3600
+_IR_CHUNK_DAYS = 7          # 주 단위 윈도로 쪼개 firehose 깊이를 분산
+_IR_CHUNK_MAX_PAGES = 20    # 청크당 페이지 상한(과거 월 1회 cold load 시간 bound)
 
 
-def fetch_kr_ir_month(year: int, month: int, max_pages: int = 40) -> list[dict]:
-    """특정 월의 한국 IR(기업설명회) 공시를 DART 에서 직접 fetch — 캘린더 과거 채움.
+def fetch_kr_ir_month(year: int, month: int) -> list[dict]:
+    """특정 월의 한국 IR(기업설명회) 공시 — 캘린더 과거 월 채움.
 
-    아카이브(최근 30일)가 닿지 않는 과거 월도 즉시 채우기 위한 직접 호출.
-    list.json 을 pblntf_ty='I'(거래소공시)로 좁혀 firehose 를 줄인 뒤 IR
-    키워드만 필터(client-side). 공시 접수일(rcept_dt)에 배치. 12h 디스크
-    캐시(월별). 실패/빈/키부재 → [] (호출부가 다른 소스로 폴백). IR-only.
+    아카이브(최근 30일)가 닿지 않는 과거 월을 채운다. **June 가 정상 채워지는
+    것과 동일 경로**(fetch_market_disclosures 전체 firehose + _classify_report
+    분류)를 주(7일) 단위로 쪼개 월 전체를 훑어 category=='IR' 만 추린다 —
+    pblntf_ty 필터 미사용(검증된 archive 경로와 동일, 이전 'I' 필터가 IR 을
+    걸러 5월이 비던 문제 해소). 공시 접수일에 배치. 월별 12h 디스크 캐시.
+    실패/키부재 → [] (호출부가 archive 폴백). 미래 월은 [].
 
-    ⚠️ pblntf_ty 코드가 빗나가도 graceful [] → 회귀 0. 미래 월은 공시가 아직
-    없으므로 [](today 까지만 fetch)."""
+    ⚠️ 과거 월 첫 호출은 firehose 페이지네이션으로 느릴 수 있다(이후 캐시).
+    페이지 상한 때문에 매우 바쁜 월의 가장 오래된 날은 일부 누락될 수 있다 —
+    부분이라도 채우는 게 목적(완전 백필은 별도)."""
     api_key = _dart_api_key()
     if not api_key:
         return []
@@ -133,7 +138,8 @@ def fetch_kr_ir_month(year: int, month: int, max_pages: int = 40) -> list[dict]:
 
     tag = f"{year:04d}-{month:02d}"
     _IR_MONTH_CACHE.mkdir(parents=True, exist_ok=True)
-    cache_file = _IR_MONTH_CACHE / f"{tag}.json"
+    # v2 = firehose+classify(no pblntf_ty) 경로. 이전 'I' 필터판 빈 캐시 무효화.
+    cache_file = _IR_MONTH_CACHE / f"{tag}_v2.json"
     if cache_file.exists():
         try:
             if time.time() - cache_file.stat().st_mtime < _IR_MONTH_TTL:
@@ -141,60 +147,47 @@ def fetch_kr_ir_month(year: int, month: int, max_pages: int = 40) -> list[dict]:
         except Exception:
             pass
 
-    bgn_ds = first.strftime("%Y%m%d")
-    end_ds = end.strftime("%Y%m%d")
-    out: list[dict] = []
-    seen: set[str] = set()
-    for page_no in range(1, max_pages + 1):
+    first_iso, end_iso = first.isoformat(), end.isoformat()
+    out: dict[str, dict] = {}  # rcept_no → item (dedup)
+    chunk_end = end
+    while chunk_end >= first:
+        chunk_start = max(first, chunk_end - timedelta(days=_IR_CHUNK_DAYS - 1))
+        span = (chunk_end - chunk_start).days
         try:
-            resp = requests.get(
-                f"{_DART_BASE}/list.json",
-                params={
-                    "crtfc_key": api_key,
-                    "bgn_de": bgn_ds,
-                    "end_de": end_ds,
-                    "pblntf_ty": "I",  # 거래소공시 (IR개최안내 포함) — firehose 축소
-                    "page_no": page_no,
-                    "page_count": 100,
-                },
-                timeout=_TIMEOUT,
-            )
-            payload = resp.json()
+            items = fetch_market_disclosures(
+                target_date=chunk_end, days_back=span,
+                max_pages=_IR_CHUNK_MAX_PAGES, skip_routine=True)
         except Exception as exc:
-            log.warning("dart_feed: ir_month %s page %d failed: %s", tag, page_no, exc)
-            break
-        if payload.get("status") not in ("000",):
-            break
-        for r in payload.get("list") or []:
-            rcept_no = r.get("rcept_no", "")
-            if rcept_no in seen:
+            log.warning("dart_feed: ir_month %s chunk %s failed: %s",
+                        tag, chunk_end, exc)
+            items = []
+        for it in items:
+            if it.get("category") != "IR":
                 continue
-            seen.add(rcept_no)
-            report_nm = (r.get("report_nm") or "").strip()
-            if _classify_report(report_nm) != "IR":
+            raw = str(it.get("date") or "").strip()
+            d_iso = (f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) >= 8
+                     else chunk_end.isoformat())
+            if not (first_iso <= d_iso <= end_iso):
                 continue
-            raw = str(r.get("rcept_dt") or "").strip()
-            d_iso = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) >= 8 else end_ds
-            out.append({
-                "name": (r.get("corp_name") or "").strip(),
-                "code": (r.get("stock_code") or "").strip(),
+            rid = (it.get("rcept_no")
+                   or f"{it.get('stock_code')}-{d_iso}-{it.get('report_nm')}")
+            out[rid] = {
+                "name": it.get("corp_name", ""),
+                "code": it.get("stock_code", ""),
                 "date": d_iso,
                 "type": "IR",
-                "title": report_nm,
-                "url": f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}",
-            })
-        try:
-            if page_no >= int(payload.get("total_page") or 1):
-                break
-        except (TypeError, ValueError):
-            break
+                "title": it.get("report_nm", ""),
+                "url": it.get("url", "#"),
+            }
+        chunk_end = chunk_start - timedelta(days=1)
 
-    out.sort(key=lambda x: x.get("date", ""), reverse=True)
+    result = sorted(out.values(), key=lambda x: x.get("date", ""), reverse=True)
+    log.info("dart_feed: ir_month %s → %d IR 공시", tag, len(result))
     try:
-        cache_file.write_text(json.dumps(out, ensure_ascii=False))
+        cache_file.write_text(json.dumps(result, ensure_ascii=False))
     except Exception:
         pass
-    return out
+    return result
 
 
 def _dart_api_key() -> str | None:
