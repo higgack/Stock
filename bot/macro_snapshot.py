@@ -65,6 +65,14 @@ GLOBAL = [
     ("aluminum", "알루미늄", "$", "yf", "ALI=F", 2),
 ]
 
+# 지표 정의가 바뀌면(예: 은·알루미늄 추가) 디스크 캐시를 즉시 무효화하기
+# 위한 버전 해시. 키/심볼 목록이 달라지면 2h TTL 과 무관하게 재빌드 →
+# 새 지표가 stale 캐시에 묻혀 안 보이던 문제 방지.
+import hashlib as _hashlib  # noqa: E402
+_DEFS_VERSION = _hashlib.md5(
+    repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)]).encode()
+).hexdigest()[:12]
+
 _SPARK_N = 12  # months in sparkline
 
 
@@ -202,7 +210,11 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     if cache_file.exists():
         try:
             if time.time() - cache_file.stat().st_mtime < _CACHE_TTL_SEC:
-                return json.loads(cache_file.read_text())
+                _cached = json.loads(cache_file.read_text())
+                # 지표 정의가 그대로일 때만 캐시 사용 — 은/알루미늄 등 추가 시
+                # 버전 불일치로 즉시 재빌드(stale 캐시에 새 지표 묻힘 방지).
+                if _cached.get("version") == _DEFS_VERSION:
+                    return _cached
         except Exception:
             pass
 
@@ -263,6 +275,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
         "global": glob,
         "charts": charts,
         "ts": kst.strftime("%m.%d. %H:%M KST"),
+        "version": _DEFS_VERSION,
     }
     try:
         cache_file.write_text(json.dumps(result, ensure_ascii=False))
