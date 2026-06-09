@@ -1913,38 +1913,17 @@ def _render_index(records: list[dict]) -> str:
         f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>'
     )
     # 부동산은 주간(느린) surface 라 nav 제일 뒤 (사용자 정책 2026-05-31)
-    if issue_count > 0:
-        errors_link = (
-            ' · <a href="portfolio.html">💼 자산</a>'
-            ' · <a href="budget.html">📒 가계부</a>'
-            f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
-            f' · <a href="screener.html">📊 Bottleneck Screener</a>'
-            f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
-            f' · <a href="reddit_insider.html">📨 미국 레딧</a>'
-            f' · <a href="daily_byte.html">📊 Daily Byte</a>'
-            + _external_links
-            + ' · <a href="realestate.html">🏠 부동산</a>'
-            + ' · <a href="cheongyak.html">🎟️ 청약</a>'
-            + ' · <a href="watchlist.html">🔔 워치리스트</a>'
-            + ' · <a href="paper.html">🧪 페이퍼</a>'
-            + ' · <a href="screen.html">📊 조건부 스크리너</a>'
-        )
-    else:
-        errors_link = (
-            ' · <a href="portfolio.html">💼 자산</a>'
-            ' · <a href="budget.html">📒 가계부</a>'
-            ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
-            ' · <a href="screener.html">📊 Bottleneck Screener</a>'
-            ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
-            ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
-            ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-            + _external_links
-            + ' · <a href="realestate.html">🏠 부동산</a>'
-            + ' · <a href="cheongyak.html">🎟️ 청약</a>'
-            + ' · <a href="watchlist.html">🔔 워치리스트</a>'
-            + ' · <a href="paper.html">🧪 페이퍼</a>'
-            + ' · <a href="screen.html">📊 조건부 스크리너</a>'
-        )
+    errors_link = (
+        ' · <a href="portfolio.html">💼 자산</a>'
+        ' · <a href="budget.html">📒 가계부</a>'
+        ' · <a href="screener.html">📊 Screener</a>'
+        ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
+        ' · <a href="paper.html">🔔 워치리스트</a>'
+        ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
+        ' · <a href="daily_byte.html">📊 Daily Byte</a>'
+        + _external_links
+        + ' · <a href="realestate.html">🏠 부동산</a>'
+    )
 
     # Market filter buttons (show only if >1 market present)
     _MKT_ORDER = ["US", "KR", "JP", "TW", "CN", "HK"]
@@ -6210,7 +6189,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
   </div>
-  <h1>📊 Bottleneck Screener — Archive</h1>
+  <h1>📊 Screener — Archive</h1>
   <p class="sub">테마별 다종목 idea generation · 6-18M thesis (NOAH /ticker 5거래일 평가와 별개 horizon)</p>
 
   <div class="stats">
@@ -7813,21 +7792,21 @@ def _render_realestate_page(runs: list[dict]) -> str:
     · <a href="portfolio.html">💼 자산</a>
     · <a href="budget.html">📒 가계부</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
-    · <a href="screener.html">📊 Bottleneck Screener</a>
+    · <a href="screener.html">📊 Screener</a>
   </div>
-  <h1>🏠 부동산 Byte — Archive</h1>
-  <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
+  <h1>🏠 부동산 — Archive</h1>
+  <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 + 청약홈 분양 피드 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
   <div class="stats">
-    <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 브리프</div></div>
+    <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 기록</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{month_cost:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
   </div>
   <div class="search-bar">
-    <input id="scr-search" type="text" placeholder="지역 / 본문 검색 (예: 강남, 평당, 금리, 전세)" autocomplete="off" spellcheck="false">
+    <input id="scr-search" type="text" placeholder="지역 / 단지명 / 실거래 / 청약 검색 (예: 강남, 평당, 금리, 전세, 동탄)" autocomplete="off" spellcheck="false">
     <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
   </div>
-  <p id="scr-status" class="status-line">총 {total}건의 부동산 브리프</p>
+  <p id="scr-status" class="status-line">총 {total}건의 부동산/청약 기록</p>
   <div id="scr-snippets" class="snippets" style="display:none"></div>
   <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
 """)
@@ -7854,8 +7833,14 @@ def _render_realestate_page(runs: list[dict]) -> str:
         for r in by_date[date]:
             body = (r.get("body") or "").strip()
             body = _re_r.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
-            ymd = r.get("ymd", "")
-            title = f"🏠 {ymd[:4]}.{ymd[4:6]} · {_html.escape(date)}" if ymd else _html.escape(date)
+            kind = r.get("_kind", "realestate")
+            del_api = "api/cheongyak_delete" if kind == "cheongyak" else "api/realestate_delete"
+            if kind == "cheongyak":
+                cnt = r.get("count", 0) or 0
+                title = f"🎟️ 신규 분양 {cnt}건 · {_html.escape(date)}"
+            else:
+                ymd = r.get("ymd", "")
+                title = f"🏠 {ymd[:4]}.{ymd[4:6]} · {_html.escape(date)}" if ymd else _html.escape(date)
             cost = r.get("cost_krw", 0) or 0
             ts_clock = (r.get("ts") or "").split("T", 1)[-1][:5] if "T" in (r.get("ts") or "") else ""
             filename = _html.escape(r.get("_filename", ""))
@@ -7871,12 +7856,12 @@ def _render_realestate_page(runs: list[dict]) -> str:
                             f'loading="lazy" style="width:100%;max-width:680px;'
                             f'border-radius:10px;margin:8px auto 14px;display:block">')
             parts.append(f"""
-  <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
+  <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-del-api="{del_api}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
       <span class="domain">{title}</span>
       <span class="meta">⏱ {_html.escape(ts_clock)} · ₩{cost:,.1f}</span>
-      <button class="del-btn" type="button" title="이 브리프 삭제">🗑️</button>
+      <button class="del-btn" type="button" title="이 기록 삭제">🗑️</button>
     </summary>
     <div class="card-body">
       {img_html}
@@ -7892,9 +7877,15 @@ def _render_realestate_page(runs: list[dict]) -> str:
 
 
 def regenerate_realestate_index() -> None:
-    """Scan realestate archive → write realestate.html under ARCHIVE_ROOT."""
+    """Scan realestate + cheongyak archives → write realestate.html under ARCHIVE_ROOT."""
     try:
-        runs = _load_realestate_runs()
+        re_runs = _load_realestate_runs()
+        ch_runs = _load_cheongyak_runs()
+        for r in re_runs:
+            r.setdefault("_kind", "realestate")
+        for r in ch_runs:
+            r["_kind"] = "cheongyak"
+        runs = re_runs + ch_runs
         html = _render_realestate_page(runs)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "realestate.html").write_text(html, encoding="utf-8")
