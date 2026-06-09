@@ -11216,14 +11216,14 @@ def _render_market_page(data: dict) -> str:
     <span class="cnt" id="research-cnt"></span>
   </div>
   <div class="tabs">
-    <button class="tab-btn active" data-tab="us">🇺🇸 미국</button>
-    <button class="tab-btn" data-tab="kr">🇰🇷 한국</button>
+    <button class="tab-btn active" data-tab="kr">🇰🇷 한국</button>
+    <button class="tab-btn" data-tab="us">🇺🇸 미국</button>
   </div>
-  <div id="tab-us" class="tab-pane active">
-    {_render_research_us_table(research_us)}
-  </div>
-  <div id="tab-kr" class="tab-pane">
+  <div id="tab-kr" class="tab-pane active">
     {_render_research_kr_table(research_kr)}
+  </div>
+  <div id="tab-us" class="tab-pane">
+    {_render_research_us_table(research_us)}
   </div>
 </div>
 

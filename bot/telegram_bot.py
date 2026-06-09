@@ -1111,22 +1111,16 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 실패 · 📊 Daily Byte(평일19:00·일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
+🚀✅ 배포 · ⚠️ hang · ❌ 실패 · 📊 Daily Byte(한국평일19:00·미국07:30·주간일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
 
 ━━━━━━━━━
-<b>【9. 대시보드】</b> 🌍 market.html = 전체 홈(hub)
- <b>🌍 홈</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트)·실적·리서치·종목검색·전체nav
+<b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·워치·레딧·Daily Byte·부동산·청약·수출입)는 🌍Main nav 에서 (바로 가기)
+ 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(한국네이버목표가/원문+미국TP) · 관심종목(시총·PER·등락·정렬/필터/순서) · 📋DART공시 · 종목검색 · 5분 갱신
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
- ① 💼 자산(뱅샐 전계좌·증권사·손익·RAG) · 📒 가계부(현금흐름·저축률)
+ 🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️
+   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/index.html
+ 💼 <b>자산</b> — 뱅샐 전계좌·증권사·손익·NOAH판정 오버레이
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/budget.html
- ② 🦉 NOAH(종목상세·차트·💰비용) · 📊 Screener(65+자유어·1/3/6m)
-   · 🔔 워치리스트(페이퍼·조건알림) · 📨 레딧(₩0) · Daily Byte(한국19:00·미국07:30)
-   · 🇰🇷 수출입
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/
- ③ 🏠 부동산(실거래+R-ONE+공급 금09:00) · 🎟️ 청약(평일10·14시)
-   http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/realestate.html
- • NOAH 카드: 📊·💰·⏱·🎯알파·5/15/30d·🗑️ + 스니펫 검색(🟡클릭→분석)
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
 ━━━━━━━━━
@@ -3185,6 +3179,24 @@ async def _on_startup(application) -> None:
         log.info("startup: dart_feed.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: dart_feed.html regen failed: %s", exc)
+    # DART 공시 즉시 채움 — 타이머(30분)를 기다리지 않고 startup 직후 백그라운드
+    # 1회 fetch → 재배포 시 수 초 내 공시 표시(빈 '전체 0' 방지). 무료·LLM 0.
+    try:
+        import threading as _dt_thr
+
+        def _dart_initial_fetch():
+            try:
+                from bot.dart_feed import run_once
+                items = run_once()
+                from bot.dashboard import regenerate_dart_feed_index as _rg
+                _rg()
+                log.info("startup: DART feed initial fetch %d items", len(items))
+            except Exception as exc:
+                log.warning("startup: DART initial fetch failed: %s", exc)
+
+        _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
+    except Exception as exc:
+        log.warning("startup: DART initial fetch thread failed: %s", exc)
     # One-time price-chart backfill for pre-chart (schema v1) archive
     # entries. Marker-gated so it runs once per install, not every restart.
     # Background thread — ~N yfinance fetches shouldn't block startup. Free
