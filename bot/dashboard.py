@@ -3607,26 +3607,38 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
             except Exception as exc:
                 log.debug("_ensure_detail_enrichment: JP consensus %s: %s", ticker, exc)
 
-    # ⑤ Financial statements (재무제표 tab — yfinance)
-    if not si.get("financials"):
-        try:
-            import yfinance as yf
-            from bot.stock_snapshot import _collect_financials
-            _collect_financials(yf.Ticker(ticker), si)
-        except Exception as exc:
-            log.debug("_ensure_detail_enrichment: financials %s: %s", ticker, exc)
+    # ⑤⑥ 재무제표 + 동종비교 (yfinance, 독립 키 si["financials"]/si["peer_comps"])
+    # — 둘 다 느린 yfinance 호출이라 병렬 실행해 종목분석 지연 단축(사용자
+    # 2026-06-10 '종목지연 다시봐'). 키가 달라 race 없음, 각 try/except 로 격리.
+    def _e_financials():
+        if not si.get("financials"):
+            try:
+                import yfinance as yf
+                from bot.stock_snapshot import _collect_financials
+                _collect_financials(yf.Ticker(ticker), si)
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: financials %s: %s", ticker, exc)
 
-    # ⑥ Peer comparables (동종비교 tab — yfinance)
-    if not si.get("peer_comps"):
-        try:
-            import yfinance as yf
-            from bot.stock_snapshot import _collect_peer_multiples
-            t = yf.Ticker(ticker)
-            info = t.info or {}
-            if info.get("industry"):
-                _collect_peer_multiples(ticker, info, si)
-        except Exception as exc:
-            log.debug("_ensure_detail_enrichment: peer_comps %s: %s", ticker, exc)
+    def _e_peers():
+        if not si.get("peer_comps"):
+            try:
+                import yfinance as yf
+                from bot.stock_snapshot import _collect_peer_multiples
+                t = yf.Ticker(ticker)
+                info = t.info or {}
+                if info.get("industry"):
+                    _collect_peer_multiples(ticker, info, si)
+            except Exception as exc:
+                log.debug("_ensure_detail_enrichment: peer_comps %s: %s", ticker, exc)
+
+    try:
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        with _TPE(max_workers=2) as _pool:
+            for _fut in (_pool.submit(_e_financials), _pool.submit(_e_peers)):
+                _fut.result()
+    except Exception:
+        _e_financials()
+        _e_peers()  # 폴백: 순차
 
     # ⑦ KR flow data (수급 tab — KIS + pykrx)
     if tkr.endswith((".KS", ".KQ")):
