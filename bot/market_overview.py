@@ -597,17 +597,29 @@ def fetch_market_snapshot() -> dict[str, Any]:
     return result
 
 
+def _fetch_macro_safe() -> dict:
+    """Macro snapshot wrapper — never raises (page must render without it)."""
+    try:
+        from bot.macro_snapshot import fetch_macro_snapshot
+        return fetch_macro_snapshot()
+    except Exception as exc:
+        log.warning("market_overview: macro snapshot failed: %s", exc)
+        return {}
+
+
 def fetch_all_market_data() -> dict[str, Any]:
     """Fetch everything needed for market.html."""
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=5) as pool:
         snap_fut = pool.submit(fetch_market_snapshot)
         earn_fut = pool.submit(fetch_earnings_calendar, 14)
         kr_fut = pool.submit(fetch_recent_research_kr, 15)
         us_fut = pool.submit(fetch_recent_research_us, 15)
+        macro_fut = pool.submit(_fetch_macro_safe)
 
         return {
             "snapshot": snap_fut.result(),
             "earnings": earn_fut.result(),
             "research_kr": kr_fut.result(),
             "research_us": us_fut.result(),
+            "macro": macro_fut.result(),
         }

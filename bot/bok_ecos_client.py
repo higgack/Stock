@@ -68,6 +68,31 @@ _SERIES = {
         "unit": "%",
         "lookback_days": 365,
     },
+    # ── Macro-snapshot extras (best-effort; graceful None if code drifts) ──
+    "kr3y": {
+        "table": "817Y002",   # 시장금리 일별
+        "item": "010200000",  # 국고채 3년
+        "freq": "D",
+        "label": "국고채 3년",
+        "unit": "%",
+        "lookback_days": 45,
+    },
+    "cpi_idx": {
+        "table": "901Y009",   # 소비자물가지수 (지수 레벨)
+        "item": "0",
+        "freq": "M",
+        "label": "한국 CPI",
+        "unit": "",
+        "lookback_days": 400,
+    },
+    "current_account": {
+        "table": "301Y017",   # 국제수지 — 경상수지
+        "item": "000000",
+        "freq": "M",
+        "label": "경상수지",
+        "unit": "억$",
+        "lookback_days": 400,
+    },
 }
 
 
@@ -180,6 +205,78 @@ def fetch_kr_macro() -> dict:
         if ind:
             out[key] = ind
     return out
+
+
+def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tuple[str, float]]:
+    """Return sorted [(TIME, value)] points for an ECOS series (sparkline use).
+
+    Returns [] on missing key / API failure / empty rows. Daily series are
+    returned at native daily resolution; the caller downsamples to monthly.
+    Cached per (key, today) for 12h, same as the single-point fetch.
+    """
+    cfg = _SERIES.get(key)
+    if not cfg:
+        return []
+    api_key = os.getenv("BOK_ECOS_API_KEY", "").strip()
+    if not api_key:
+        return []
+
+    lb = lookback_days if lookback_days is not None else max(int(cfg["lookback_days"]), 400)
+    today_str = date.today().isoformat()
+    cache_file = _CACHE_DIR / f"series_{key}_{lb}_{today_str}.json"
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < _CACHE_TTL_HOURS:
+                return [(t, v) for t, v in json.loads(cache_file.read_text())]
+        except Exception:
+            pass
+
+    end = date.today()
+    start = end - timedelta(days=lb)
+    if cfg["freq"] == "D":
+        start_str, end_str = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+    elif cfg["freq"] == "M":
+        start_str, end_str = start.strftime("%Y%m"), end.strftime("%Y%m")
+    elif cfg["freq"] == "Q":
+        start_str = f"{start.year}Q{(start.month - 1) // 3 + 1}"
+        end_str = f"{end.year}Q{(end.month - 1) // 3 + 1}"
+    else:
+        return []
+
+    url = (
+        f"{_BASE_URL}/StatisticSearch/{api_key}/json/kr/1/1000/"
+        f"{cfg['table']}/{cfg['freq']}/{start_str}/{end_str}/{cfg['item']}"
+    )
+    try:
+        resp = requests.get(url, timeout=_TIMEOUT)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:
+        log.warning("ecos: series fetch failed for %s: %s", key, exc)
+        return []
+    if "RESULT" in payload and "StatisticSearch" not in payload:
+        return []
+    rows = payload.get("StatisticSearch", {}).get("row") or []
+    points: list[tuple[str, float]] = []
+    for r in rows:
+        t = r.get("TIME", "")
+        try:
+            v = float(r.get("DATA_VALUE", "") or "nan")
+        except Exception:
+            continue
+        if v != v:  # NaN
+            continue
+        points.append((t, v))
+    points.sort(key=lambda p: p[0])
+
+    if points:
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(points, ensure_ascii=False))
+        except Exception:
+            pass
+    return points
 
 
 def _format_time(time_str: str, freq: str) -> str:
