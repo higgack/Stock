@@ -2455,7 +2455,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <div class="cg-sec"><b>우측 값 패널 (지금 값 한눈에)</b>
         <ul>
           <li><span class="k">분석 후</span> — 시점가 대비 현재가 변동%. 분석 이후 우리 방향이 맞았는지(초록=올랐다·빨강=내렸다).</li>
-          <li><span class="k">기간 N</span> — 지금 보이는 구간(1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체)의 수익률. 범위를 바꾸면 그 구간 기준으로 갱신. 1일=장중 5분봉, YTD=연초(1/1) 이후.</li>
+          <li><span class="k">기간 N</span> — 지금 보이는 구간(1일·1주일·1개월·3개월 등)의 수익률. 범위를 바꾸면 그 구간 기준으로 갱신. 1일=5분봉, 1주일=15분봉, 1개월=1시간봉, YTD=연초(1/1) 이후.</li>
           <li><span class="k">52주 신고가/신저가</span> — 최근 1년 최고·최저가(항상 표시, 차트 범위·지표 토글 무관).</li>
           <li>그 아래는 켜둔 지표의 최신값(이평선·볼린저·RSI·MACD·거래량). 가격 항목엔 통화 기호(₩/¥/$ 등) 표시.</li>
         </ul>
@@ -2486,7 +2486,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </div>
       <div class="cg-sec"><b>기간 · 봉 · 조작</b>
         <ul>
-          <li><span class="k">일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 1일 선택 시 장중 5분봉 자동 전환. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
+          <li><span class="k">일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉, 1주일→15분봉, 1개월→1시간봉, 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
           <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁 + 상단 OHLC 바 갱신. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
           <li>차트 아래 <span class="k">캡션</span> — 현재 범위·봉 종류·봉 개수·날짜 범위·데이터 출처.</li>
           <li>지표를 켜고 꺼도 보던 확대 구간은 그대로 유지됩니다.</li>
@@ -2862,7 +2862,7 @@ _CHART_JS = """
   }
   // 범위/봉 한국어 라벨 — 헤드라인·기간수익률·캡션에서 공통 사용.
   function rangeLabel(r){ r = r || curRange; return ({'1d':'1일','1wk':'1주일','1mo':'1개월','3mo':'3개월','6mo':'6개월','ytd':'YTD','1y':'1년','3y':'3년','5y':'5년','max':'전체'})[r] || r; }
-  function intervalLabel(i){ i = i || curInterval; return ({'5m':'5분봉','1d':'일봉','1wk':'주봉','1mo':'월봉'})[i] || i; }
+  function intervalLabel(i){ i = i || curInterval; return ({'5m':'5분봉','15m':'15분봉','1h':'1시간봉','1d':'일봉','1wk':'주봉','1mo':'월봉'})[i] || i; }
   function buildValues(d){
     var vEl = document.getElementById('chart-values');
     if (!vEl) return;
@@ -3058,9 +3058,9 @@ _CHART_JS = """
       if (kind === 'interval') curInterval = val;
       else if (kind === 'range') {
         curRange = val;
-        // 1일(당일)=5분봉 intraday 로 자동 전환, 그 외로 나가면 일봉 복귀.
-        if (val === '1d') curInterval = '5m';
-        else if (curInterval === '5m') curInterval = '1d';
+        var autoMap = {'1d':'5m','1wk':'15m','1mo':'1h'};
+        if (autoMap[val]) curInterval = autoMap[val];
+        else if (['5m','15m','1h'].indexOf(curInterval) >= 0) curInterval = '1d';
       }
       load();
     }
