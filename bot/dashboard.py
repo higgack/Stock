@@ -4665,6 +4665,7 @@ def _render_stock_info_html(rec: dict) -> str:
     <div class="si-section-title">주요 뉴스</div>
     {news_html}
   </div>
+  {_src_foot}출처: {news_src}</div>
 </div>"""
 
     # ── 수급 pane (KR only — KIS + pykrx flow data) ─────────────
