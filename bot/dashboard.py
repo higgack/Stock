@@ -10514,6 +10514,8 @@ _MARKET_CSS = (
     ".macard .spark{margin-top:8px;display:block;width:100%;height:34px}"
     ".macard .ref{font-size:10px;color:var(--muted);font-weight:500;"
     "border:1px solid var(--border);border-radius:4px;padding:0 4px}"
+    ".macard .msp{margin-left:auto;font-size:9px;color:var(--muted);"
+    "border:1px solid var(--border);border-radius:3px;padding:0 4px;font-weight:500}"
     ".chart-row{display:grid;grid-template-columns:1.2fr 1.2fr .8fr;"
     "gap:14px;margin-bottom:24px}"
     ".chart-card{background:var(--card);border:1px solid var(--border);"
@@ -10897,13 +10899,16 @@ def _macro_fmt_change(change, dec: int) -> str:
 
 def _render_macro_card(ind: dict) -> str:
     label = _html.escape(ind.get("label", ""))
+    span = _html.escape(ind.get("spark_span", ""))
+    span_html = f'<span class="msp">{span}</span>' if span else ""
     val_html = _macro_fmt_value(ind.get("value"), ind.get("decimals", 2), ind.get("unit", ""))
     chg_html = _macro_fmt_change(ind.get("change"), ind.get("decimals", 2))
     # 색 = 표시되는 라인의 방향(첫→끝): yf 카드는 1개월 일봉이라 1개월,
     # FRED/ECOS 는 12개월 월간이라 12개월(원래대로 그래프 — 사용자 2026-06-10).
+    # 라인 기간(1개월/12개월)을 카드에 작게 명시(사용자 2026-06-10).
     spark = _macro_spark_svg(ind.get("spark", []))
     return (
-        f'<div class="macard"><div class="ml">{label}</div>'
+        f'<div class="macard"><div class="ml">{label}{span_html}</div>'
         f'<div class="mv"><span>{val_html}</span>{chg_html}</div>{spark}</div>'
     )
 
