@@ -8434,8 +8434,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
   <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date', ''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
-      <span class="domain">📨 {title}</span>
-      <span class="meta">⏱ {ts_html}</span>
+      <span class="domain">📨 {title} ({ts_html})</span>
     </summary>
     <div class="card-body">
       <div class="analysis-sec"><div class="analysis-b" data-section="brief">{body_html}</div></div>
