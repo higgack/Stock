@@ -10253,9 +10253,6 @@ _MARKET_CSS = (
     ".fav-del{background:none;border:none;color:var(--neg);cursor:pointer;"
     "font-size:14px;padding:2px 6px;border-radius:4px}"
     ".fav-del:hover{background:rgba(220,38,38,.1)}"
-    "#mkt-save{padding:10px 16px;font-size:14px;font-weight:600;border:none;"
-    "border-radius:8px;background:var(--pos);color:#fff;cursor:pointer}"
-    "#mkt-save:hover{opacity:.9}"
     "</style></head><body>"
 )
 
@@ -10765,8 +10762,9 @@ def _load_latest_market_daily(archive_name: str, kind_filter: str = "daily") -> 
 
 def _extract_daily_title(body: str) -> str:
     """Extract title from Daily Byte body (after 'Daily Byte: YYYYMMDD ')."""
-    first = body.strip().split("\n", 1)[0]
     import re as _re
+    first = body.strip().split("\n", 1)[0]
+    first = _re.sub(r"<[^>]+>", "", first)
     m = _re.match(r"(?:Daily Byte[:\s]*\d{4}[\.\-]?\d{2}[\.\-]?\d{2}\s*)", first)
     if m:
         return first[m.end():].strip() or first
@@ -10776,8 +10774,8 @@ def _extract_daily_title(body: str) -> str:
 
 
 def _extract_daily_summary(body: str, max_chars: int = 600) -> str:
-    """Extract first substantial paragraph(s) from Daily Byte body."""
-    import html as _h
+    """Extract first substantial paragraph(s) from Daily Byte body (already HTML)."""
+    import re as _re_s
     lines = body.strip().split("\n")
     out: list[str] = []
     total = 0
@@ -10789,11 +10787,12 @@ def _extract_daily_summary(body: str, max_chars: int = 600) -> str:
         if skip_first:
             skip_first = False
             continue
-        if s.startswith("면책") or s.startswith("📊") or s.startswith("🔥") or s.startswith("🏆"):
+        plain = _re_s.sub(r"<[^>]+>", "", s)
+        if plain.startswith("면책") or plain.startswith("📊") or plain.startswith("🔥") or plain.startswith("🏆"):
             if total > 100:
                 break
-        out.append(_h.escape(s))
-        total += len(s)
+        out.append(s)
+        total += len(plain)
         if total >= max_chars:
             break
     return "<br>".join(out) if out else ""
@@ -10896,7 +10895,6 @@ def _render_market_page(data: dict) -> str:
       placeholder="티커 또는 종목명 검색 (예: NVDA, 005930.KS, 7203.T)"
       autocomplete="off" spellcheck="false">
     <button id="mkt-go" type="button">검색</button>
-    <button id="mkt-save" type="button">저장</button>
   </div>
 
 {_render_market_daily_cards()}
@@ -11078,8 +11076,6 @@ def _render_market_page(data: dict) -> str:
   (function() {{
     var favBody = document.getElementById('fav-body');
     var favCnt = document.getElementById('fav-cnt');
-    var saveBtn = document.getElementById('mkt-save');
-    var searchInp = document.getElementById('mkt-search');
 
     var FLAG = {{'US':'🇺🇸','KR':'🇰🇷','JP':'🇯🇵','TW':'🇹🇼','CN':'🇨🇳','HK':'🇭🇰','UK':'🇬🇧','DE':'🇩🇪','FR':'🇫🇷'}};
 
@@ -11101,7 +11097,7 @@ def _render_market_page(data: dict) -> str:
     function renderFavs(list) {{
       favCnt.textContent = list.length ? list.length + '종목' : '';
       if (!list.length) {{
-        favBody.innerHTML = '<div class="md-empty">검색창에서 종목을 검색한 뒤 저장 버튼을 눌러주세요.</div>';
+        favBody.innerHTML = '<div class="md-empty">종목 검색 후 상세 페이지에서 ⭐ 저장 버튼을 눌러주세요.</div>';
         return;
       }}
       var h = '<table class="dtbl"><thead><tr>'
@@ -11150,22 +11146,6 @@ def _render_market_page(data: dict) -> str:
         .catch(function() {{ favBody.innerHTML = '<div class="md-empty">관심종목을 불러올 수 없습니다.</div>'; }});
     }}
 
-    function addFav(ticker) {{
-      saveBtn.disabled = true; saveBtn.textContent = '…';
-      fetch('api/favorite_add', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{ticker: ticker}})
-      }})
-        .then(function(r) {{ return r.json(); }})
-        .then(function(d) {{
-          if (d.error) alert(d.error);
-          loadFavs();
-        }})
-        .catch(function() {{ alert('저장 실패'); }})
-        .finally(function() {{ saveBtn.disabled = false; saveBtn.textContent = '저장'; }});
-    }}
-
     function removeFav(ticker) {{
       fetch('api/favorite_remove', {{
         method: 'POST',
@@ -11176,19 +11156,6 @@ def _render_market_page(data: dict) -> str:
         .catch(function() {{ alert('삭제 실패'); }});
     }}
 
-    if (saveBtn) {{
-      saveBtn.addEventListener('click', function() {{
-        var q = (searchInp.value || '').trim();
-        if (!q) {{ alert('검색창에 티커를 입력하세요.'); return; }}
-        fetch('api/search?q=' + encodeURIComponent(q))
-          .then(function(r) {{ return r.json(); }})
-          .then(function(d) {{
-            var ticker = d.ticker || q.toUpperCase();
-            addFav(ticker);
-          }})
-          .catch(function() {{ addFav(q.toUpperCase()); }});
-      }});
-    }}
 
     loadFavs();
   }})();
@@ -11393,6 +11360,7 @@ lkInp.addEventListener('keydown',function(e){if(e.key==='Enter')lkGo();});
       autocomplete="off" spellcheck="false"
       style="flex:1;padding:8px 12px;font-size:14px;border:1px solid var(--border);border-radius:8px;background:var(--card);color:var(--text);outline:none">
     <button id="lk-go" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer">검색</button>
+    <button id="lk-save" style="padding:8px 16px;font-size:13px;font-weight:600;border:none;border-radius:8px;background:var(--card);color:var(--accent);border:1px solid var(--accent);cursor:pointer">⭐ 저장</button>
   </div>
   <div class="title-row">
     <h1>📊 {_html.escape(h1_label)}</h1>
@@ -11409,6 +11377,34 @@ lkInp.addEventListener('keydown',function(e){if(e.key==='Enter')lkGo();});
 {chart_scripts}
 {quote_script}
 {search_js}
+<script>
+(function() {{
+  var btn = document.getElementById('lk-save');
+  if (!btn) return;
+  var ticker = {json.dumps(ticker)};
+  btn.addEventListener('click', function() {{
+    btn.disabled = true; btn.textContent = '…';
+    fetch('../api/favorite_add', {{
+      method: 'POST', headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{ticker: ticker}})
+    }})
+    .then(function(r) {{ return r.json(); }})
+    .then(function(d) {{
+      if (d.ok) {{
+        btn.textContent = '✅ 저장됨';
+        btn.style.background = 'var(--accent)';
+        btn.style.color = '#fff';
+      }} else {{
+        btn.textContent = d.error === 'duplicate or fetch failed' ? '⭐ 이미 저장됨' : '⭐ 실패';
+        btn.disabled = false;
+      }}
+    }})
+    .catch(function() {{
+      btn.textContent = '⭐ 실패'; btn.disabled = false;
+    }});
+  }});
+}})();
+</script>
 </body>
 </html>
 """
