@@ -83,8 +83,14 @@ def fetch_kr_earnings_ir(days_back: int = 10) -> list[dict]:
     for date_str, items in by_date.items():
         for it in items:
             cat = it.get("category")
-            if cat not in ("실적", "IR"):
+            title = it.get("report_nm", "")
+            # 사용자 정책: 기업설명회(IR) + 영업(잠정)실적만. '매출액또는손익구조
+            # 30%이상변경'(한화리츠類)은 제외 — 실적 카테고리지만 IR/잠정실적 아님.
+            is_earn = ("영업(잠정)실적" in title or "잠정실적" in title
+                       or "영업실적" in title)
+            if not (cat == "IR" or is_earn):
                 continue
+            cat = "IR" if cat == "IR" else "실적"
             raw = str(it.get("date") or "").strip()
             try:
                 d_iso = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) >= 8 else date_str
