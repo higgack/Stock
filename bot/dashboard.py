@@ -4222,7 +4222,7 @@ def _render_stock_info_html(rec: dict) -> str:
             sc_color = "#26a69a" if sc_up >= 0 else "#e2574c"
             sc_upside = f' <span style="color:{sc_color}">{sc_sign}{sc_up:.1f}%</span>'
         supp_consensus_html = f"""<div class="si-section" style="margin-top:16px">
-    <div class="si-section-title">{sc_src} 컨센서스</div>
+    <div class="si-section-title">보조 컨센서스</div>
     <div style="font-size:14px">
       목표가 {csym}{_fmt_num(sc_target, decimals=2 if currency not in _0dec else 0)}{sc_upside} · {sc_rating}{sc_n_str}{sc_lrd_str}
     </div>
@@ -4687,7 +4687,7 @@ def _render_stock_info_html(rec: dict) -> str:
                 style = f' style="color:{color}"' if color else ""
                 return f'<td class="num"{style}>{sign}{val:,}만</td>'
             inv_table = f"""<div class="si-section">
-      <div class="si-section-title">투자자별 순매수 (KIS)</div>
+      <div class="si-section-title">투자자별 순매수</div>
       <table class="si-table"><thead><tr><th>구분</th><th class="num">당일</th><th class="num">5일 누적</th></tr></thead><tbody>
         <tr><td>외국인</td>{_flow_cell(today.get("foreign"))}{_flow_cell(five_d.get("foreign"))}</tr>
         <tr><td>기관</td>{_flow_cell(today.get("institution"))}{_flow_cell(five_d.get("institution"))}</tr>
@@ -4703,7 +4703,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     v = brk.get(key)
                     brk_rows += f"<tr><td>{esc(label)}</td>{_flow_cell(v)}</tr>\n"
                 inv_table += f"""<div class="si-section">
-      <div class="si-section-title">기관 세부 (KIS · 5일 누적)</div>
+      <div class="si-section-title">기관 세부 (5일 누적)</div>
       <table class="si-table"><thead><tr><th>기관</th><th class="num">순매수 (5일)</th></tr></thead><tbody>{brk_rows}</tbody></table>
     </div>"""
 
@@ -4731,7 +4731,7 @@ def _render_stock_info_html(rec: dict) -> str:
                                 cells += f'<td class="num" style="color:{c}">{sign}{v:,.1f}</td>'
                         d_rows += f"<tr><td>{esc(label)}</td>{cells}</tr>\n"
                     inv_detail_html = f"""<div class="si-section">
-      <div class="si-section-title">투자주체별 순매수 다기간 ({unit} · KRX·pykrx 일별 순매수)</div>
+      <div class="si-section-title">투자주체별 순매수 다기간 ({unit})</div>
       <table class="si-table"><thead><tr><th>주체</th>{p_hdrs}</tr></thead><tbody>{d_rows}</tbody></table>
     </div>"""
             except Exception as exc:
@@ -4756,7 +4756,7 @@ def _render_stock_info_html(rec: dict) -> str:
                 cs_rows += f'<tr><td>공매도 수량</td><td class="num">{int(short_sale["short_qty"]):,}</td></tr>\n'
             if cs_rows:
                 side_tables += f"""<div class="si-section">
-      <div class="si-section-title">신용·공매도 (KIS)</div>
+      <div class="si-section-title">신용·공매도</div>
       <table class="si-table"><thead><tr><th>항목</th><th class="num">값</th></tr></thead><tbody>{cs_rows}</tbody></table>
     </div>"""
 
@@ -4772,7 +4772,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     pgm_rows += f'<tr><td>{esc(label)}</td><td class="num"{style}>{sign}{val:,}만</td></tr>\n'
             if pgm_rows:
                 side_tables += f"""<div class="si-section">
-      <div class="si-section-title">프로그램 매매 (KIS)</div>
+      <div class="si-section-title">프로그램 매매</div>
       <table class="si-table"><thead><tr><th>구분</th><th class="num">순매수</th></tr></thead><tbody>{pgm_rows}</tbody></table>
     </div>"""
 
@@ -4804,7 +4804,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     t_rows += f'<tr><td>공매도 잔고율</td><td class="num">{sh["current_pct"]:.2f}%</td>{cells}</tr>\n'
                 if t_rows:
                     trend_html = f"""<div class="si-section">
-      <div class="si-section-title">다기간 추이 · 외국인보유율·공매도 잔고율 (KRX·pykrx)</div>
+      <div class="si-section-title">다기간 추이 · 외국인보유율·공매도 잔고율</div>
       <table class="si-table"><thead><tr><th>항목</th><th class="num">현재</th>{period_hdrs}</tr></thead><tbody>{t_rows}</tbody></table>
       <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ pp = 퍼센트포인트 = 현재 비율 − N거래일 전 비율(절대 차이). 예: 외국인 39.9%→40.4% = +0.5pp. 데이터가 그 기간만큼 없으면 부정확한 근사 대신 — 표시. 기관·연기금은 일별 보유비율 공시가 없어(외국인 보유율·공매도 잔고율만 일별 비율 존재) 이 표에 못 넣음 — 대신 위 「투자주체별 순매수 다기간」 표에 기관·연기금 순매수가 기간별로 있음.</div>
     </div>"""
@@ -4838,7 +4838,7 @@ def _render_stock_info_html(rec: dict) -> str:
             sd = hsgt.get("south_direction", "")
             flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">港股通 시장 전체 자금 흐름 (AKShare · 5일 누적)</div>
+    <div class="si-section-title">港股通 시장 전체 자금 흐름 (5일 누적)</div>
     <table class="si-table"><thead><tr><th>구분</th><th class="num">5일 순매수</th><th>방향</th></tr></thead><tbody>
       <tr><td>北向 (외국인→A주)</td>{_cn_flow(nb)}<td>{esc(nd)}</td></tr>
       <tr><td>南向 (본토→HK)</td>{_cn_flow(sb)}<td>{esc(sd)}</td></tr>
@@ -4873,7 +4873,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     jpx_body += f"<tr><td>{label}</td>{cells}</tr>\n"
                 flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">JPX 시장 전체 주간 투자주체별 수급 (百万円)</div>
+    <div class="si-section-title">JPX 시장 전체 주간 수급 (百万円)</div>
     <table class="si-table"><thead><tr><th>주체</th>{wk_hdrs}</tr></thead><tbody>{jpx_body}</tbody></table>
     <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 이 종목의 개별 수급이 아닌 일본 시장 전체 집계 · 최신 기준: {esc(str(jpx_rows[0].get("date",""))[:10])}. 출처: JPX 投資部門別 売買状況 (주 1회 목/금 발표, 96시간 캐시)</div>
   </div>
@@ -4903,7 +4903,7 @@ def _render_stock_info_html(rec: dict) -> str:
                     tw_body += f"<tr><td>{label}</td>{_tw_cell(tw_today.get(key))}{_tw_cell(tw_5d.get(key))}</tr>\n"
                 flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">三大法人 매매동향 (FinMind/TWSE · 종목별)</div>
+    <div class="si-section-title">三大法人 매매동향 (종목별)</div>
     <table class="si-table"><thead><tr><th>주체</th><th class="num">당일</th><th class="num">5일 누적</th></tr></thead><tbody>{tw_body}</tbody></table>
     <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">출처: {'TWSE' if ticker.upper().endswith('.TW') else 'TPEx'} 三大法人買賣超日報</div>
   </div>
@@ -4969,7 +4969,7 @@ def _render_stock_info_html(rec: dict) -> str:
                         f4_rows += f'<tr><td>{f_name}</td><td>{esc(f_title[:20])}</td><td{ts}>{esc(label_t)}</td><td class="num">{sh_str}</td><td class="num">{pr_str}</td><td>{dt_t}</td></tr>\n'
                 if f4_rows:
                     us_flow_parts.append(f"""<div class="si-section">
-      <div class="si-section-title">내부자 거래 (SEC Form 4 · 60일)</div>
+      <div class="si-section-title">내부자 거래 (60일)</div>
       <table class="si-table"><thead><tr><th>이름</th><th>직위</th><th>거래</th><th class="num">주식수</th><th class="num">가격</th><th>날짜</th></tr></thead><tbody>{f4_rows}</tbody></table>
     </div>""")
         except Exception as exc:
@@ -4991,7 +4991,7 @@ def _render_stock_info_html(rec: dict) -> str:
                         is_rows += f'<tr><td>{month}</td><td class="num"{ms}>{mspr:+.2f}</td><td class="num">{chg:+d}</td></tr>\n'
                     if is_rows:
                         us_flow_parts.append(f"""<div class="si-section">
-      <div class="si-section-title">내부자 심리 (MSPR · Finnhub)</div>
+      <div class="si-section-title">내부자 심리 (MSPR)</div>
       <table class="si-table"><thead><tr><th>월</th><th class="num">MSPR</th><th class="num">건수 변화</th></tr></thead><tbody>{is_rows}</tbody></table>
       <div style="font-size:11px;color:var(--fg-soft);margin-top:4px">MSPR: Monthly Share Purchase Ratio — 양수=순매수, 음수=순매도</div>
     </div>""")
@@ -5123,7 +5123,7 @@ def _render_stock_info_html(rec: dict) -> str:
             lat_form = lat.get("form", "")
             xb_rows += f"<tr><td>{esc(label)}</td><td class='num'>{ann_str}</td><td>{fy_str}</td><td class='num'>{lat_str}</td><td>{esc(lat_form)}</td></tr>\n"
         us_xbrl_html = f"""<div class="si-section">
-    <div class="si-section-title">SEC XBRL 재무 (EDGAR)</div>
+    <div class="si-section-title">SEC XBRL 재무</div>
     <table class="si-table"><thead><tr><th>항목</th><th class="num">연간</th><th>회계연도</th><th class="num">최근 분기</th><th>Form</th></tr></thead><tbody>{xb_rows}</tbody></table>
   </div>"""
 
@@ -5156,7 +5156,7 @@ def _render_stock_info_html(rec: dict) -> str:
             txn_str = esc("; ".join(txn_strs)) if txn_strs else "—"
             ui_rows += f"<tr><td>{fd}</td><td>{name}</td><td>{title}</td><td>{txn_str}</td></tr>\n"
         us_insider_html = f"""<div class="si-section">
-    <div class="si-section-title">내부자 거래 (SEC Form 4)</div>
+    <div class="si-section-title">내부자 거래</div>
     <table class="si-table"><thead><tr><th>제출일</th><th>성명</th><th>직위</th><th>거래 내역</th></tr></thead><tbody>{ui_rows}</tbody></table>
   </div>"""
 
@@ -5306,7 +5306,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {w52_bar_html}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
     <div class="si-section">
-      <div class="si-section-title">밸류에이션 멀티플 (yfinance)</div>
+      <div class="si-section-title">밸류에이션 멀티플</div>
       <table class="si-table"><thead><tr><th>지표</th><th class="num">값</th></tr></thead><tbody>{val_multiples}</tbody></table>
     </div>
     <div class="si-section">
@@ -5534,7 +5534,7 @@ def _render_stock_info_html(rec: dict) -> str:
             jdesc = esc(str(jh.get("description", "")))
             jh_rows += f"<tr><td>{jd}</td><td>{jfn}</td><td>{jdesc}</td></tr>\n"
         jp_holders_html = f"""<div class="si-section">
-    <div class="si-section-title">5%+ 대량보유 (EDINET)</div>
+    <div class="si-section-title">5%+ 대량보유</div>
     <table class="si-table">
       <thead><tr><th>제출일</th><th>보고자</th><th>내용</th></tr></thead>
       <tbody>{jh_rows}</tbody>
@@ -5555,7 +5555,7 @@ def _render_stock_info_html(rec: dict) -> str:
             tp_str = f"{tp:.2f}%" if tp else "—"
             ti_rows += f"<tr><td>{tn}</td><td>{tr_}</td><td class='num'>{ts_str}</td><td class='num'>{tp_str}</td></tr>\n"
         tw_insiders_html = f"""<div class="si-section">
-    <div class="si-section-title">내부자 지분 (MOPS)</div>
+    <div class="si-section-title">내부자 지분</div>
     <table class="si-table">
       <thead><tr><th>성명</th><th>직위</th><th class="num">보유주식</th><th class="num">지분율</th></tr></thead>
       <tbody>{ti_rows}</tbody>
@@ -5576,7 +5576,7 @@ def _render_stock_info_html(rec: dict) -> str:
             cnat = esc(str(ch.get("nature", "")))
             ch_rows += f"<tr><td>{cn_}</td><td class='num'>{cs_str}</td><td class='num'>{cp_str}</td><td>{cnat}</td></tr>\n"
         cn_holders_html = f"""<div class="si-section">
-    <div class="si-section-title">주요 유통주주 (AKShare)</div>
+    <div class="si-section-title">주요 유통주주</div>
     <table class="si-table">
       <thead><tr><th>주주명</th><th class="num">보유주식</th><th class="num">지분율</th><th>성격</th></tr></thead>
       <tbody>{ch_rows}</tbody>
@@ -5621,7 +5621,7 @@ def _render_stock_info_html(rec: dict) -> str:
             buy_pct = buys / total * 100 if total else 0
             sell_pct = sells / total * 100 if total else 0
             us_insider_summary_html = f"""<div class="si-section">
-    <div class="si-section-title">내부자 거래 요약 (SEC Form 4)</div>
+    <div class="si-section-title">내부자 거래 요약</div>
     <div style="display:flex;gap:20px;align-items:center;margin:8px 0">
       <div style="text-align:center"><span style="font-size:24px;font-weight:700;color:#26a69a">{buys}</span><div style="font-size:12px;color:#999">매수</div></div>
       <div style="flex:1;height:12px;background:#333;border-radius:6px;overflow:hidden;display:flex">
