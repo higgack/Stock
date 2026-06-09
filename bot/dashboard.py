@@ -1912,7 +1912,7 @@ def _render_index(records: list[dict]) -> str:
         ' · <a href="paper.html">🔔 워치리스트</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-        ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
+        ''
         f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>'
     )
 
@@ -7819,7 +7819,6 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
   </div>
   <h1>📊 Daily Byte — Archive</h1>
   <p class="sub">장 마감 후 시장 브리프 · 🇰🇷 19:00 / 🇺🇸 07:30 / 📅 Weekly 22:00 (KST) · 수급·시황 관찰(교육·정보), 투자 권유 아님</p>
@@ -10163,7 +10162,6 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   <div class="nav">
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 NOAH 종목분석</a>
-    · <a href="daily_byte.html">📊 Daily Byte</a>
   </div>
   <h1>DART 공시</h1>
   <p class="sub">최근 주요 공시를 확인하세요.</p>
@@ -10608,25 +10606,37 @@ def _render_earnings_table(earnings: list) -> str:
     rows: list[str] = []
     shown = 0
     for e in earnings:
-        if shown >= 30:
+        if shown >= 40:
             break
         sym = _html.escape(e.get("symbol", ""))
         co_name = _html.escape(e.get("name", ""))
         dt = _html.escape(e.get("date", ""))
+        is_kr = sym.endswith((".KS", ".KQ"))
         hour = e.get("hour", "")
         hour_label = "장전" if hour == "bmo" else ("장후" if hour == "amc" else "—")
         eps_est = e.get("eps_estimate")
-        eps_str = f'${eps_est:.2f}' if eps_est is not None else "—"
-        rev_est = e.get("revenue_estimate")
-        if rev_est is not None:
-            if rev_est >= 1e9:
-                rev_str = f'${rev_est / 1e9:.1f}B'
-            elif rev_est >= 1e6:
-                rev_str = f'${rev_est / 1e6:.0f}M'
-            else:
-                rev_str = f'${rev_est:,.0f}'
+        if eps_est is None:
+            eps_str = "—"
+        elif is_kr:
+            eps_str = f'₩{eps_est:,.0f}'
         else:
+            eps_str = f'${eps_est:.2f}'
+        rev_est = e.get("revenue_estimate")
+        if rev_est is None:
             rev_str = "—"
+        elif is_kr:
+            if rev_est >= 1e12:
+                rev_str = f'₩{rev_est / 1e12:.1f}조'
+            elif rev_est >= 1e8:
+                rev_str = f'₩{rev_est / 1e8:,.0f}억'
+            else:
+                rev_str = f'₩{rev_est:,.0f}'
+        elif rev_est >= 1e9:
+            rev_str = f'${rev_est / 1e9:.1f}B'
+        elif rev_est >= 1e6:
+            rev_str = f'${rev_est / 1e6:.0f}M'
+        else:
+            rev_str = f'${rev_est:,.0f}'
         q = e.get("quarter")
         y = e.get("year")
         q_str = f'Q{q} {y}' if q and y else "—"
@@ -10651,23 +10661,31 @@ def _render_research_kr_table(research: list) -> str:
     if not research:
         return '<div class="empty-msg">최근 리서치 액션이 없습니다.</div>'
     rows: list[str] = []
-    for r in research[:25]:
+    for r in research[:40]:
         code = _html.escape(r.get("code", ""))
         name = _html.escape(r.get("name", ""))
         broker = _html.escape(r.get("broker", ""))
         rating = _html.escape(r.get("rating", ""))
         title = _html.escape(r.get("title", ""))
         dt = _html.escape(r.get("date", ""))
+        link = _html.escape(r.get("link", ""))
+        target = r.get("target")
+        try:
+            tp_str = f'{int(float(target)):,}' if target else '—'
+        except (TypeError, ValueError):
+            tp_str = '—'
         lookup_url = f'lookup/{code}.KS'
+        title_cell = (f'<a href="{link}" target="_blank" rel="noopener">{title[:60]}</a>'
+                      if link else title[:60])
         rows.append(
             f'<tr><td class="sym"><a href="{lookup_url}">{name or code}</a></td>'
-            f'<td>{broker}</td><td>{rating}</td>'
-            f'<td>{title[:60]}</td><td>{dt}</td></tr>'
+            f'<td>{broker}</td><td>{rating}</td><td>{tp_str}</td>'
+            f'<td>{title_cell}</td><td>{dt}</td></tr>'
         )
     return (
         '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
-        '<thead><tr><th>종목</th><th>증권사</th><th>투자의견</th>'
-        '<th>제목</th><th>날짜</th></tr></thead>'
+        '<thead><tr><th>종목</th><th>증권사</th><th>투자의견</th><th>목표가</th>'
+        '<th>제목(클릭→원문)</th><th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
     )
 
@@ -10677,24 +10695,28 @@ def _render_research_us_table(research: list) -> str:
     if not research:
         return '<div class="empty-msg">최근 리서치 액션이 없습니다.</div>'
     rows: list[str] = []
-    for r in research[:25]:
+    for r in research[:40]:
         sym = _html.escape(r.get("symbol", ""))
         firm = _html.escape(r.get("firm", ""))
         to_g = _html.escape(r.get("to_grade", ""))
         from_g = _html.escape(r.get("from_grade", ""))
-        action = _html.escape(r.get("action", ""))
         dt = _html.escape(r.get("date", ""))
         grade_str = f'{from_g} → {to_g}' if from_g else to_g
+        target = r.get("target")
+        try:
+            tp_str = f'${float(target):,.0f}' if target else '—'
+        except (TypeError, ValueError):
+            tp_str = '—'
         lookup_url = f'lookup/{sym}'
         rows.append(
             f'<tr><td class="sym"><a href="{lookup_url}">{sym}</a></td>'
-            f'<td>{firm}</td><td>{action}</td>'
-            f'<td>{grade_str}</td><td>{dt}</td></tr>'
+            f'<td>{firm}</td><td>{grade_str}</td>'
+            f'<td>{tp_str}</td><td>{dt}</td></tr>'
         )
     return (
         '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
-        '<thead><tr><th>종목</th><th>증권사</th><th>액션</th>'
-        '<th>등급 변경</th><th>날짜</th></tr></thead>'
+        '<thead><tr><th>종목</th><th>증권사</th><th>등급 변경</th>'
+        '<th>TP(컨센서스)</th><th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
     )
 
@@ -11140,7 +11162,6 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="paper.html">🔔 워치리스트</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
-    &middot; <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     &middot; <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
     &nbsp;|&nbsp;
     <a href="realestate.html">🏠 부동산</a>
@@ -11178,7 +11199,7 @@ def _render_market_page(data: dict) -> str:
   <div class="section-hd">
     <h2>다가오는 실적</h2>
     <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더</a>
-    <span class="ts">Finnhub · 향후 14일</span>
+    <span class="ts">미국 Finnhub(14일) + 한국 yfinance(90일)</span>
   </div>
   <div class="tbl-filter">
     <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
@@ -11195,8 +11216,8 @@ def _render_market_page(data: dict) -> str:
     <span class="cnt" id="research-cnt"></span>
   </div>
   <div class="tabs">
-    <button class="tab-btn active" data-tab="us">🇺🇸 US</button>
-    <button class="tab-btn" data-tab="kr">🇰🇷 KR</button>
+    <button class="tab-btn active" data-tab="us">🇺🇸 미국</button>
+    <button class="tab-btn" data-tab="kr">🇰🇷 한국</button>
   </div>
   <div id="tab-us" class="tab-pane active">
     {_render_research_us_table(research_us)}
@@ -11397,7 +11418,7 @@ def _render_market_page(data: dict) -> str:
       if (favState.country !== 'ALL' && countries.indexOf(favState.country) < 0) favState.country = 'ALL';
       var copts = '<option value="ALL">전체 나라</option>';
       countries.forEach(function(c) {{
-        copts += '<option value="' + c + '"' + (favState.country === c ? ' selected' : '') + '>' + (FLAG[c] || '') + ' ' + c + '</option>';
+        copts += '<option value="' + c + '"' + (favState.country === c ? ' selected' : '') + '>' + (FLAG[c] || c) + '</option>';
       }});
       var ctrl = '<div class="fav-ctrl"><label style="font-size:12px;color:var(--muted)">나라</label>'
         + '<select id="fav-country">' + copts + '</select>'
@@ -11423,7 +11444,7 @@ def _render_market_page(data: dict) -> str:
           if (f.saved_price != null && f.saved_price > 0) {{
             var pct = (f.current_price - f.saved_price) / f.saved_price * 100;
             pctVal = pct;
-            var clr = pct > 0 ? '#e74c3c' : pct < 0 ? '#3498db' : 'inherit';
+            var clr = pct > 0 ? '#059669' : pct < 0 ? '#dc2626' : 'inherit';
             var sign = pct > 0 ? '+' : '';
             pctCell = '<span style="color:' + clr + '">' + sign + pct.toFixed(1) + '%</span>';
           }}

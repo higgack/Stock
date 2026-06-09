@@ -56,23 +56,16 @@ fi
 
 systemctl daemon-reload
 
-echo "→ enabling timers"
-systemctl enable --now sv-update.timer
-systemctl enable --now sv-cache-rollover.timer
-systemctl enable --now sv-watchdog.timer
-systemctl enable --now standardview-push.timer
-systemctl enable --now standardview-weekly.timer
-systemctl restart standardview-daily.timer  # pick up new 07:30/20:30 schedule
-
-# Disable legacy hourly timer (12/16시 push 제거)
-if systemctl is-enabled standardview-hourly.timer 2>/dev/null | grep -q enabled; then
-    echo "→ disabling legacy standardview-hourly.timer"
-    systemctl disable --now standardview-hourly.timer
-fi
+# ── Standard View 폐기 (사용자 정책 2026-06-09) ──────────────────────
+# SV 는 더 이상 사용하지 않음. enable 대신 모든 타이머를 disable 해
+# Gemini 비용 0. 이 스크립트가 sv-update 로 한 번 더 실행되더라도
+# 재활성화하지 않도록 무력화(메인 deploy/install.sh 도 동일하게 disable).
+echo "→ Standard View decommissioned — disabling all SV timers (cost 0)"
+for svunit in sv-update.timer sv-cache-rollover.timer sv-watchdog.timer \
+              standardview-daily.timer standardview-push.timer \
+              standardview-weekly.timer standardview-hourly.timer; do
+    systemctl disable --now "$svunit" 2>/dev/null || true
+done
 
 echo
-echo "→ active SV timers:"
-systemctl list-timers --no-pager --all 2>/dev/null | grep -E "standardview|sv-" || true
-
-echo
-echo "✓ install complete."
+echo "✓ Standard View timers disabled."

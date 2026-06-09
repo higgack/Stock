@@ -61,6 +61,8 @@ GLOBAL = [
     ("brent", "브렌트유", "$", "yf", "BZ=F", 1),
     ("copper", "구리", "$", "yf", "HG=F", 2),
     ("gold", "금", "$", "yf", "GC=F", 0),
+    ("silver", "은", "$", "yf", "SI=F", 2),
+    ("aluminum", "알루미늄", "$", "yf", "ALI=F", 2),
 ]
 
 _SPARK_N = 12  # months in sparkline
