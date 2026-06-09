@@ -925,7 +925,7 @@ def get_kr_multi_period_trends(ticker: str, *, cache_only: bool = False) -> Opti
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
             if age_h < _CACHE_TTL_HOURS:
                 cached = json.loads(cache_file.read_text())
-                if cached and cached.get("foreign", {}).get("periods"):
+                if cached and _has_any_period(cached.get("foreign", {}).get("periods")):
                     return cached
         except Exception:
             pass
@@ -982,11 +982,16 @@ def get_kr_multi_period_trends(ticker: str, *, cache_only: bool = False) -> Opti
     if not result:
         return None
 
-    try:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps(result))
-    except Exception:
-        pass
+    # Only cache if at least one period has real data (not all-None).
+    # Otherwise a stale all-None cache blocks fresh retries until TTL expires.
+    has_useful = (_has_any_period(result.get("foreign", {}).get("periods"))
+                  or _has_any_period(result.get("short", {}).get("periods")))
+    if has_useful:
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(result))
+        except Exception:
+            pass
 
     return result
 
