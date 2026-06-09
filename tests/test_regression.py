@@ -2697,7 +2697,9 @@ class TestBudget:
         assert 'href="budget.html">📒 가계부' in dsrc, "nav budget 링크 누락"
         psrc = open("bot/portfolio.py", encoding="utf-8").read()
         assert "build_budget_model" in psrc and "save_budget" in psrc, "ingest 가계부 배선 누락"
-        assert "budget.html" in open("bot/telegram_bot.py", encoding="utf-8").read()
+        # help(_HELP_TEXT)은 2026-06-09 사용자 정책으로 3개 entry(Main/NOAH/자산)만
+        # 나열 — 가계부는 자산 페이지 nav 에서 도달(위 dashboard nav 링크로 보장).
+        # 따라서 telegram_bot.py 의 budget.html 직접 언급은 더 이상 요구하지 않음.
 
 
 # ─────────────────────────────────────────────────────────────────────────

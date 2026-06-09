@@ -674,9 +674,11 @@ def fetch_all_market_data() -> dict[str, Any]:
         us_fut = pool.submit(fetch_recent_research_us, 40)
         macro_fut = pool.submit(_fetch_macro_safe)
 
-        # US(Finnhub, 14일) + KR(yfinance, 90일) 실적 병합 후 날짜순.
-        earnings = (earn_fut.result() or []) + (earn_kr_fut.result() or [])
-        earnings.sort(key=lambda e: e.get("date", ""))
+        # 실적 병합 — 한국(yfinance) 먼저, 미국(Finnhub) 다음. 각 그룹 날짜순.
+        # 사용자 정책: 한국이 되면 한국을 앞으로.
+        _kr_e = sorted(earn_kr_fut.result() or [], key=lambda e: e.get("date", ""))
+        _us_e = sorted(earn_fut.result() or [], key=lambda e: e.get("date", ""))
+        earnings = _kr_e + _us_e
 
         return {
             "snapshot": snap_fut.result(),
