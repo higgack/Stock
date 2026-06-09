@@ -566,14 +566,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not q:
                 self._json_ok({"ticker": None, "error": "empty query"})
                 return
-            upper = q.upper()
-            if _TICKER_RE.match(upper):
-                self._json_ok({"ticker": upper})
-                return
             from bot.dashboard import resolve_name_to_ticker
             resolved = resolve_name_to_ticker(q)
             if resolved:
                 self._json_ok({"ticker": resolved})
+                return
+            upper = q.upper()
+            if _TICKER_RE.match(upper):
+                self._json_ok({"ticker": upper})
             else:
                 self._json_ok({"ticker": None, "error": "not found"})
         except Exception as exc:
@@ -596,19 +596,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         try:
             raw = self.path.split("?", 1)[0]
             raw_query = _ulp.unquote(raw.split("/lookup/", 1)[-1]).strip()
-            ticker = raw_query.upper()
+            try:
+                from bot.dashboard import resolve_name_to_ticker
+                resolved = resolve_name_to_ticker(raw_query)
+                ticker = resolved if resolved else raw_query.upper()
+            except Exception:
+                ticker = raw_query.upper()
             if not ticker or not _TICKER_RE.match(ticker):
-                try:
-                    from bot.dashboard import resolve_name_to_ticker
-                    resolved = resolve_name_to_ticker(raw_query)
-                    if resolved:
-                        ticker = resolved
-                    else:
-                        self._serve_search_error(raw_query)
-                        return
-                except Exception:
-                    self._serve_search_error(raw_query)
-                    return
+                self._serve_search_error(raw_query)
+                return
 
             cache_dir = _ARCHIVE_ROOT.parent / "lookup_cache"
             cache_dir.mkdir(parents=True, exist_ok=True)

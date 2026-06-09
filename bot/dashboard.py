@@ -10940,7 +10940,15 @@ def resolve_name_to_ticker(query: str) -> str | None:
     if not query or not query.strip():
         return None
     q = query.strip()
-    # Already looks like a ticker → skip resolution
+    # English alias first (TSMC→2330.TW, TOYOTA→7203.T, etc.)
+    try:
+        from bot.market import resolve_english_alias
+        t = resolve_english_alias(q)
+        if t:
+            return t
+    except Exception:
+        pass
+    # Already looks like a ticker → skip further resolution
     if re.match(r'^[A-Z0-9][A-Z0-9.\-]{0,9}$', q.upper()):
         return None
     # KR name → DART corp_code
@@ -10949,7 +10957,6 @@ def resolve_name_to_ticker(query: str) -> str | None:
         hits = get_dart().find_by_name(q)
         if hits and hits[0].get("stock_code"):
             code = hits[0]["stock_code"]
-            # Determine .KS vs .KQ
             try:
                 from bot.market import normalize_kr_ticker_suffix
                 resolved = normalize_kr_ticker_suffix(f"{code}.KS")
@@ -10958,14 +10965,6 @@ def resolve_name_to_ticker(query: str) -> str | None:
             except Exception:
                 pass
             return f"{code}.KS"
-    except Exception:
-        pass
-    # English alias (TOYOTA → 7203.T, TSMC → 2330.TW, etc.)
-    try:
-        from bot.market import resolve_english_alias
-        t = resolve_english_alias(q)
-        if t:
-            return t
     except Exception:
         pass
     return None

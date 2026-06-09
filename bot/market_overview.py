@@ -81,6 +81,9 @@ CARD_US = [
     ("us 다우 존스", "^DJI"),
     ("us 러셀 2000", "^RUT"),
     ("필라델피아 반도체", "^SOX"),
+    ("다우 운송", "^DJT"),
+    ("KBW 은행", "^BKX"),
+    ("나스닥 바이오", "^NBI"),
 ]
 
 CARD_FUTURES = [
@@ -102,6 +105,9 @@ CARD_AMERICAS = [
     ("CA 캐나다 TSX", "^GSPTSE"),
     ("BR 브라질 Bovespa", "^BVSP"),
     ("MX 멕시코 IPC", "^MXX"),
+    ("VN 베트남 VN-Index", "^VNINDEX"),
+    ("ID 인도네시아 JCI", "^JKSE"),
+    ("SA 사우디 Tadawul", "^TASI.SR"),
 ]
 
 ALL_CARDS = [
