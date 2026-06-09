@@ -9315,8 +9315,8 @@ def _render_portfolio_page(model, noah=None) -> str:
         f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("순자산"))}</div><div class="stat-lbl">순자산</div></div>'
         f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("총자산"))}</div><div class="stat-lbl">총자산</div></div>'
         f'<div class="stat"><div class="stat-num">{_pf_won(nw.get("총부채"))}</div><div class="stat-lbl">총부채</div></div>'
-        f'<div class="stat"><div class="stat-num">{_pf_won(eval_sum)}</div><div class="stat-lbl">주식 평가</div></div>'
         + cash_stat +
+        f'<div class="stat"><div class="stat-num">{_pf_won(eval_sum)}</div><div class="stat-lbl">주식 평가</div></div>'
         f'<div class="stat"><div class="stat-num" style="color:{_pf_col(pnl)}">{_pf_won(pnl)} ({pnl_pct:+.1f}%)</div><div class="stat-lbl">주식 평가손익</div></div>'
         f'<div class="stat"><div class="stat-num">{_distinct}</div><div class="stat-lbl">보유 종목</div></div>'
         '</div>')
