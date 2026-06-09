@@ -1913,38 +1913,17 @@ def _render_index(records: list[dict]) -> str:
         f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>'
     )
     # 부동산은 주간(느린) surface 라 nav 제일 뒤 (사용자 정책 2026-05-31)
-    if issue_count > 0:
-        errors_link = (
-            ' · <a href="portfolio.html">💼 자산</a>'
-            ' · <a href="budget.html">📒 가계부</a>'
-            f' · <a href="errors.html">🚨 오류 / 미완성 {issue_count}건</a>'
-            f' · <a href="screener.html">📊 Bottleneck Screener</a>'
-            f' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
-            f' · <a href="reddit_insider.html">📨 미국 레딧</a>'
-            f' · <a href="daily_byte.html">📊 Daily Byte</a>'
-            + _external_links
-            + ' · <a href="realestate.html">🏠 부동산</a>'
-            + ' · <a href="cheongyak.html">🎟️ 청약</a>'
-            + ' · <a href="watchlist.html">🔔 워치리스트</a>'
-            + ' · <a href="paper.html">🧪 페이퍼</a>'
-            + ' · <a href="screen.html">📊 조건부 스크리너</a>'
-        )
-    else:
-        errors_link = (
-            ' · <a href="portfolio.html">💼 자산</a>'
-            ' · <a href="budget.html">📒 가계부</a>'
-            ' · <a href="errors.html">🚨 오류 기록 (없음)</a>'
-            ' · <a href="screener.html">📊 Bottleneck Screener</a>'
-            ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
-            ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
-            ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-            + _external_links
-            + ' · <a href="realestate.html">🏠 부동산</a>'
-            + ' · <a href="cheongyak.html">🎟️ 청약</a>'
-            + ' · <a href="watchlist.html">🔔 워치리스트</a>'
-            + ' · <a href="paper.html">🧪 페이퍼</a>'
-            + ' · <a href="screen.html">📊 조건부 스크리너</a>'
-        )
+    errors_link = (
+        ' · <a href="portfolio.html">💼 자산</a>'
+        ' · <a href="budget.html">📒 가계부</a>'
+        ' · <a href="screener.html">📊 Screener</a>'
+        ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
+        ' · <a href="paper.html">🔔 워치리스트</a>'
+        ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
+        ' · <a href="daily_byte.html">📊 Daily Byte</a>'
+        + _external_links
+        + ' · <a href="realestate.html">🏠 부동산</a>'
+    )
 
     # Market filter buttons (show only if >1 market present)
     _MKT_ORDER = ["US", "KR", "JP", "TW", "CN", "HK"]
@@ -6166,10 +6145,11 @@ def _month_close(parts: list[str], prev_month: str | None) -> None:
         parts.append("</div></details>")
 
 
-def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
+def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: list[dict] | None = None) -> str:
     """Render screener.html — date-grouped run cards with Top-3 mini-tables
     showing 5/15/30d outcomes (alpha vs sector ETF). Self-contained HTML
-    with embedded CSS matching NOAH dashboard dark-on-light palette."""
+    with embedded CSS matching NOAH dashboard dark-on-light palette.
+    Optional *screen_archives* embeds conditional screener results at bottom."""
     import html as _html
     from collections import defaultdict
 
@@ -6210,7 +6190,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
     · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
   </div>
-  <h1>📊 Bottleneck Screener — Archive</h1>
+  <h1>📊 Screener — Archive</h1>
   <p class="sub">테마별 다종목 idea generation · 6-18M thesis (NOAH /ticker 5거래일 평가와 별개 horizon)</p>
 
   <div class="stats">
@@ -6466,6 +6446,144 @@ def _render_screener_page(runs: list[dict], outcomes: dict) -> str:
         # Close the date's details + body wrapper
         parts.append('</div></details>')
     _month_close(parts, _prev_month)
+
+    # ── 조건부 스크리너 section (screen archives merged into screener page) ──
+    _scr_list = screen_archives or []
+    if _scr_list:
+        import html as _shtml
+        _scr_cards = ""
+        for _sa in _scr_list[:50]:
+            _raw_conds = _shtml.unescape(_sa.get("conditions_display", _sa.get("conditions", "")))
+            _scr_conds = _shtml.escape(_raw_conds)
+            _scr_ts = (_sa.get("ts") or "")[:16].replace("T", " ")
+            _scr_hits = _sa.get("hit_count", 0)
+            _scr_total = _sa.get("total_universe", 0)
+            _scr_elapsed = _sa.get("elapsed_sec", 0)
+            _scr_cached = " 💾캐시" if _sa.get("was_cached") else ""
+            _scr_date = _sa.get("_date", "")
+            _scr_file = _sa.get("_file", "")
+            _scr_market = _sa.get("market", "KR")
+            _scr_is_us = _scr_market == "US"
+
+            _scr_rows = ""
+            for _sh in (_sa.get("hits") or []):
+                _sh_name = _shtml.escape(str(_sh.get("name", "")))
+                _sh_ticker = _shtml.escape(str(_sh.get("ticker", "")))
+                _sh_mkt = _shtml.escape(str(_sh.get("market", "")))
+                _sh_mcap = _sh.get("mcap")
+                if _scr_is_us:
+                    _sh_mcap_str = (f"${_sh_mcap/1000:.1f}B" if _sh_mcap and _sh_mcap >= 1000
+                                    else f"${_sh_mcap:,.0f}M" if _sh_mcap else "—")
+                else:
+                    _sh_mcap_str = f"{_sh_mcap:,.0f}" if _sh_mcap else "—"
+                _sh_extras = []
+                for _ek, _ev in _sh.items():
+                    if _ek in ("code", "ticker", "name", "market", "mcap", "price"):
+                        continue
+                    if _ev is not None:
+                        _sh_extras.append(f"{_ek}:{_ev:g}" if isinstance(_ev, (int, float)) else f"{_ek}:{_ev}")
+                _sh_extra = _shtml.escape(" · ".join(_sh_extras[:5]))
+                _sh_name_cell = f"<b>{_sh_name}</b>" if _sh_name else f"<b>{_sh_ticker}</b>"
+                _scr_rows += (
+                    f"<tr><td>{_sh_name_cell}</td>"
+                    f"<td><code>{_sh_ticker}</code></td>"
+                    f"<td class='muted'>{_sh_mkt}</td>"
+                    f"<td style='text-align:right'>{_sh_mcap_str}</td>"
+                    f"<td class='muted'>{_sh_extra}</td></tr>"
+                )
+            _scr_mcap_hdr = "시총($M)" if _scr_is_us else "시총(억)"
+            _scr_table = ""
+            if _scr_rows:
+                _scr_table = (
+                    f"<table class='scr-tbl'><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
+                    f"<th>{_scr_mcap_hdr}</th><th>지표</th></tr></thead>"
+                    f"<tbody>{_scr_rows}</tbody></table>"
+                )
+            _scr_mbadge = " 🇺🇸" if _scr_is_us else ""
+            _scr_cards += (
+                f"<details class='scr-det' data-date=\"{_shtml.escape(_scr_date)}\" data-file=\"{_shtml.escape(_scr_file)}\">"
+                f"<summary><b>{_scr_conds}</b>{_scr_mbadge} — {_scr_hits}종목/{_scr_total:,}종목{_scr_cached} "
+                f"<span class='muted'>{_scr_ts} · {_scr_elapsed:.1f}초</span>"
+                f"<button class='scr-del' type='button' title='삭제'>🗑️</button></summary>"
+                f"{_scr_table}</details>\n"
+            )
+        if not _scr_cards:
+            _scr_cards = "<p class='muted'>아직 실행 기록 없음</p>"
+        parts.append(
+            '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
+            '<h2>📊 조건부 스크리너</h2>'
+            '<p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0). '
+            '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> '
+            '· <code>/screen valueup</code> · <code>/screen list</code></p>'
+            '<style>'
+            '.scr-det{margin:12px 0;padding:8px;border:1px solid var(--border);border-radius:6px}'
+            '.scr-det summary{cursor:pointer;font-size:14px;position:relative}'
+            '.scr-del{background:none;border:none;cursor:pointer;font-size:14px;float:right;opacity:0.4}'
+            '.scr-del:hover{opacity:1}'
+            '.scr-tbl{width:100%;border-collapse:collapse;margin:10px 0 16px;font-size:13px}'
+            '.scr-tbl th,.scr-tbl td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top}'
+            '.scr-tbl th{color:var(--fg-soft);font-weight:600;font-size:12px}'
+            '</style>'
+            + _scr_cards
+        )
+
+    # ── Conditional screener results (merged from screen.html) ──────
+    _scr_archives = screen_archives or []
+    if _scr_archives:
+        import html as _shtml
+        _sc_cards = ""
+        for a in _scr_archives[:50]:
+            raw_conds = a.get("conditions", "")
+            _sc_conds = _shtml.escape(raw_conds)
+            _sc_ts = (a.get("ts") or "")[:16].replace("T", " ")
+            _sc_hits = a.get("hit_count", 0)
+            _sc_total = a.get("total_universe", 0)
+            _sc_elapsed = a.get("elapsed_sec", 0)
+            _sc_cached = " 💾캐시" if a.get("was_cached") else ""
+            _sc_date = a.get("_date", "")
+            _sc_file = a.get("_file", "")
+            _sc_market = a.get("market", "KR")
+            _sc_is_us = _sc_market == "US"
+            _sc_rows = ""
+            for h in (a.get("hits") or []):
+                _h_name = _shtml.escape(str(h.get("name", "")))
+                _h_ticker = _shtml.escape(str(h.get("ticker", "")))
+                _h_mkt = _shtml.escape(str(h.get("market", "")))
+                _h_mcap = h.get("mcap")
+                if _sc_is_us:
+                    _h_ms = (f"${_h_mcap/1000:.1f}B" if _h_mcap and _h_mcap >= 1000
+                             else f"${_h_mcap:,.0f}M" if _h_mcap else "—")
+                else:
+                    _h_ms = f"{_h_mcap:,.0f}" if _h_mcap else "—"
+                _h_extra = []
+                for k, v in h.items():
+                    if k in ("code", "ticker", "name", "market", "mcap", "price"):
+                        continue
+                    if v is not None:
+                        _h_extra.append(f"{k}:{v:g}" if isinstance(v, (int, float)) else f"{k}:{v}")
+                _h_ex = _shtml.escape(" · ".join(_h_extra[:5]))
+                _h_nc = f"<b>{_h_name}</b>" if _h_name else f"<b>{_h_ticker}</b>"
+                _sc_rows += (f"<tr><td>{_h_nc}</td><td><code>{_h_ticker}</code></td>"
+                             f"<td class='muted'>{_h_mkt}</td><td style='text-align:right'>{_h_ms}</td>"
+                             f"<td class='muted'>{_h_ex}</td></tr>")
+            _sc_tbl = ""
+            if _sc_rows:
+                _mc_hdr = "시총($M)" if _sc_is_us else "시총(억)"
+                _sc_tbl = (f"<table class='scr-tbl'><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
+                           f"<th>{_mc_hdr}</th><th>지표</th></tr></thead><tbody>{_sc_rows}</tbody></table>")
+            _sc_mbadge = " 🇺🇸" if _sc_is_us else ""
+            _sc_cards += (f"<details data-date='{_shtml.escape(_sc_date)}' data-filename='{_shtml.escape(_sc_file)}'>"
+                          f"<summary><b>{_sc_conds}</b>{_sc_mbadge} — {_sc_hits}종목/{_sc_total:,}종목{_sc_cached} "
+                          f"<span class='muted'>{_sc_ts} · {_sc_elapsed:.1f}초</span>"
+                          f"<button class='del-btn' type='button' data-api='api/screen_delete' title='삭제'>🗑️</button></summary>"
+                          f"{_sc_tbl}</details>\n")
+        parts.append(
+            '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
+            '<h2>📊 조건부 스크리너</h2>'
+            '<p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0). '
+            '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code></p>'
+            + _sc_cards
+        )
 
     parts.append("</div>")
     # JS — delete button POSTs to /api/screener_delete (mirror of NOAH
@@ -6752,7 +6870,7 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {
     if (!confirm('📊 ' + date + ' / ' + filename + ' screener 기록을 삭제할까요?')) return;
     btn.disabled = true;
     btn.textContent = '⏳';
-    fetch('api/screener_delete', {
+    fetch(btn.dataset.api || 'api/screener_delete', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({date: date, filename: filename})
@@ -6773,6 +6891,24 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {
       btn.disabled = false;
       btn.textContent = '🗑️';
     });
+  });
+});
+
+document.querySelectorAll('.scr-del').forEach(function(btn) {
+  btn.addEventListener('click', function(e) {
+    e.stopPropagation(); e.preventDefault();
+    var det = btn.closest('.scr-det');
+    if (!det) return;
+    if (!confirm('이 기록을 삭제할까요?')) return;
+    var date = det.dataset.date;
+    var file = det.dataset.file;
+    fetch('api/screen_delete', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({date: date, filename: file})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.ok) { det.style.opacity = '0.3'; setTimeout(function() { det.remove(); }, 400); }
+      else { alert('삭제 실패: ' + (d.error || '')); }
+    }).catch(function(err) { alert('삭제 실패: ' + err); });
   });
 });
 </script>
@@ -7355,11 +7491,18 @@ def regenerate_screener_index() -> None:
     try:
         runs = _load_screener_runs()
         outcomes = _load_screener_outcomes()
-        html = _render_screener_page(runs, outcomes)
+        # Load conditional screener archives for merged section
+        _screen_archives: list[dict] = []
+        try:
+            from bot.stock_screener import load_screen_archives
+            _screen_archives = load_screen_archives()
+        except Exception:
+            pass
+        html = _render_screener_page(runs, outcomes, screen_archives=_screen_archives)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "screener.html").write_text(html, encoding="utf-8")
-        log.info("dashboard: screener.html regenerated (%d runs, %d outcomes)",
-                 len(runs), len(outcomes))
+        log.info("dashboard: screener.html regenerated (%d runs, %d outcomes, %d screen)",
+                 len(runs), len(outcomes), len(_screen_archives))
     except Exception as exc:
         log.warning("dashboard: screener regen failed: %s", exc)
     # Domain registry page — separate try so a render error here doesn't
@@ -7756,8 +7899,10 @@ def regenerate_daily_byte_index() -> None:
 
 # ── 부동산 Byte archive view ──────────────────────────────────────────────
 _REALESTATE_ARCHIVE_DIR = Path.home() / ".tradingagents" / "realestate_archive"
-_REALESTATE_JS = _DAILY_BYTE_JS.replace("api/daily_byte_delete", "api/realestate_delete").replace(
-    "Daily Byte 브리프", "부동산 Byte").replace("Daily Byte 기록", "부동산 Byte 기록")
+_REALESTATE_JS = (_DAILY_BYTE_JS
+    .replace("Daily Byte 브리프", "부동산/청약")
+    .replace("Daily Byte 기록", "부동산/청약 기록")
+    .replace("fetch('api/daily_byte_delete',", "fetch(card.dataset.delApi || 'api/realestate_delete',"))
 
 
 def _load_realestate_runs() -> list[dict]:
@@ -7813,21 +7958,21 @@ def _render_realestate_page(runs: list[dict]) -> str:
     · <a href="portfolio.html">💼 자산</a>
     · <a href="budget.html">📒 가계부</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
-    · <a href="screener.html">📊 Bottleneck Screener</a>
+    · <a href="screener.html">📊 Screener</a>
   </div>
-  <h1>🏠 부동산 Byte — Archive</h1>
-  <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
+  <h1>🏠 부동산 — Archive</h1>
+  <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 + 청약홈 분양 피드 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
   <div class="stats">
-    <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 브리프</div></div>
+    <div class="stat"><div class="stat-v">{total}</div><div class="stat-l">총 기록</div></div>
     <div class="stat"><div class="stat-v">₩{today_cost:,.0f}</div><div class="stat-l">오늘 비용</div></div>
     <div class="stat"><div class="stat-v">₩{month_cost:,.0f}</div><div class="stat-l">이번 달</div></div>
     <div class="stat"><div class="stat-v">₩{total_cost:,.0f}</div><div class="stat-l">누적 비용</div></div>
   </div>
   <div class="search-bar">
-    <input id="scr-search" type="text" placeholder="지역 / 본문 검색 (예: 강남, 평당, 금리, 전세)" autocomplete="off" spellcheck="false">
+    <input id="scr-search" type="text" placeholder="지역 / 단지명 / 실거래 / 청약 검색 (예: 강남, 평당, 금리, 전세, 동탄)" autocomplete="off" spellcheck="false">
     <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
   </div>
-  <p id="scr-status" class="status-line">총 {total}건의 부동산 브리프</p>
+  <p id="scr-status" class="status-line">총 {total}건의 부동산/청약 기록</p>
   <div id="scr-snippets" class="snippets" style="display:none"></div>
   <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
 """)
@@ -7854,8 +7999,14 @@ def _render_realestate_page(runs: list[dict]) -> str:
         for r in by_date[date]:
             body = (r.get("body") or "").strip()
             body = _re_r.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
-            ymd = r.get("ymd", "")
-            title = f"🏠 {ymd[:4]}.{ymd[4:6]} · {_html.escape(date)}" if ymd else _html.escape(date)
+            kind = r.get("_kind", "realestate")
+            del_api = "api/cheongyak_delete" if kind == "cheongyak" else "api/realestate_delete"
+            if kind == "cheongyak":
+                cnt = r.get("count", 0) or 0
+                title = f"🎟️ 신규 분양 {cnt}건 · {_html.escape(date)}"
+            else:
+                ymd = r.get("ymd", "")
+                title = f"🏠 {ymd[:4]}.{ymd[4:6]} · {_html.escape(date)}" if ymd else _html.escape(date)
             cost = r.get("cost_krw", 0) or 0
             ts_clock = (r.get("ts") or "").split("T", 1)[-1][:5] if "T" in (r.get("ts") or "") else ""
             filename = _html.escape(r.get("_filename", ""))
@@ -7871,12 +8022,12 @@ def _render_realestate_page(runs: list[dict]) -> str:
                             f'loading="lazy" style="width:100%;max-width:680px;'
                             f'border-radius:10px;margin:8px auto 14px;display:block">')
             parts.append(f"""
-  <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
+  <details class="card" id="{card_id}" data-date="{_html.escape(r.get('_date',''))}" data-filename="{filename}" data-del-api="{del_api}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="false">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
       <span class="domain">{title}</span>
       <span class="meta">⏱ {_html.escape(ts_clock)} · ₩{cost:,.1f}</span>
-      <button class="del-btn" type="button" title="이 브리프 삭제">🗑️</button>
+      <button class="del-btn" type="button" title="이 기록 삭제">🗑️</button>
     </summary>
     <div class="card-body">
       {img_html}
@@ -7892,9 +8043,15 @@ def _render_realestate_page(runs: list[dict]) -> str:
 
 
 def regenerate_realestate_index() -> None:
-    """Scan realestate archive → write realestate.html under ARCHIVE_ROOT."""
+    """Scan realestate + cheongyak archives → write realestate.html under ARCHIVE_ROOT."""
     try:
-        runs = _load_realestate_runs()
+        re_runs = _load_realestate_runs()
+        ch_runs = _load_cheongyak_runs()
+        for r in re_runs:
+            r.setdefault("_kind", "realestate")
+        for r in ch_runs:
+            r["_kind"] = "cheongyak"
+        runs = re_runs + ch_runs
         html = _render_realestate_page(runs)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "realestate.html").write_text(html, encoding="utf-8")
@@ -8033,15 +8190,8 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
 
 
 def regenerate_cheongyak_index() -> None:
-    """Scan cheongyak archive → write cheongyak.html under ARCHIVE_ROOT."""
-    try:
-        runs = _load_cheongyak_runs()
-        html = _render_cheongyak_page(runs)
-        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
-        (ARCHIVE_ROOT / "cheongyak.html").write_text(html, encoding="utf-8")
-        log.info("dashboard: cheongyak.html regenerated (%d runs)", len(runs))
-    except Exception as exc:
-        log.warning("dashboard: cheongyak regen failed: %s", exc)
+    """Cheongyak merged into realestate page — redirect."""
+    regenerate_realestate_index()
 
 
 # ── 미국 레딧 게시물 분석 — t.me/insidertracking forward archive ─────────
@@ -8329,18 +8479,8 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
 
 
 def regenerate_watchlist_index() -> None:
-    """Scan watchlist + alerts → write watchlist.html under ARCHIVE_ROOT."""
-    try:
-        from bot.watchlist import all_watches, load_alerts
-        watches = all_watches()
-        alerts = load_alerts(200)
-        html = _render_watchlist_page(watches, alerts)
-        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
-        (ARCHIVE_ROOT / "watchlist.html").write_text(html, encoding="utf-8")
-        log.info("dashboard: watchlist.html regenerated (%d watches, %d alerts)",
-                 len(watches), len(alerts))
-    except Exception as exc:
-        log.warning("dashboard: watchlist regen failed: %s", exc)
+    """Watchlist merged into paper page — redirect."""
+    regenerate_paper_index()
 
 
 # ── 페이퍼 트레이딩 대시보드 (E0, 2026-06-05) — paper.html ──────────────────
@@ -8355,12 +8495,11 @@ def _paper_nav(active: str = "paper") -> str:
         + _a("portfolio.html", "💼 자산", "portfolio")
         + ' · ' + _a("budget.html", "📒 가계부", "budget")
         + ' · <a href="index.html">🦉 NOAH 종목분석</a>'
-        + ' · <a href="watchlist.html">🔔 워치리스트</a>'
-        + ' · ' + _a("paper.html", "🧪 페이퍼", "paper")
+        + ' · ' + _a("paper.html", "🔔 워치리스트", "paper")
         + '</div>')
 
 
-def _render_paper_page(summ: dict) -> str:
+def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: list[dict] | None = None) -> str:
     import html as _html
 
     def _native(v, currency):
@@ -8567,11 +8706,53 @@ def _render_paper_page(summ: dict) -> str:
     except Exception:
         pass
 
+    # ── Watchlist section (merged into paper page) ─────────────────────
+    wl_section = ""
+    _wl = watches or []
+    _al = alerts or []
+    if _wl or _al:
+        import html as _whtml
+        def _wesc(s):
+            return _whtml.escape(str(s))
+        _wr = ""
+        for w in _wl:
+            _conds = " ".join(w.get("conditions") or [])
+            _added = (w.get("added") or "")[:16].replace("T", " ")
+            _wr += (
+                f"<tr><td><b>{_wesc(w.get('ticker',''))}</b></td>"
+                f"<td><code>{_wesc(_conds)}</code></td>"
+                f"<td class='muted'>{_wesc(_added)}</td>"
+                f"<td class='muted'>{_wesc(w.get('id',''))}</td></tr>"
+            )
+        if not _wr:
+            _wr = "<tr><td colspan='4' class='muted'>감시 중인 종목 없음 — 텔레그램에서 <code>/watch TICKER 조건</code></td></tr>"
+        _ar = ""
+        for a in _al[:200]:
+            _ats = (a.get("ts") or "")[:16].replace("T", " ")
+            _ahits = " · ".join(a.get("hits") or [])
+            _ar += (
+                f"<tr><td class='muted'>{_wesc(_ats)}</td>"
+                f"<td><b>{_wesc(a.get('ticker',''))}</b></td>"
+                f"<td>{_wesc(_ahits)}</td></tr>"
+            )
+        if not _ar:
+            _ar = "<tr><td colspan='3' class='muted'>아직 발생한 알림 없음</td></tr>"
+        wl_section = (
+            '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
+            f'<h2>📋 활성 워치 ({len(_wl)})</h2>'
+            '<table class="pf-tbl"><thead><tr><th>종목</th><th>조건</th><th>등록</th><th>id</th></tr></thead>'
+            f'<tbody>{_wr}</tbody></table>'
+            f'<h2>🔔 알림 이력 ({len(_al)})</h2>'
+            '<table class="pf-tbl"><thead><tr><th>시각</th><th>종목</th><th>충족 조건</th></tr></thead>'
+            f'<tbody>{_ar}</tbody></table>'
+            '<p class="sub">조건: <code>rsi&lt;30 rsi&gt;70 price&gt;X price&lt;X &gt;sma50 &lt;sma200 52whigh 52wlow earnings foreignbuy foreignsell instbuy instsell</code></p>'
+        )
+
     return (_SCREENER_CSS + _PF_CSS + '<div class="wrap">' + nav
-            + '<h1>🧪 페이퍼 트레이딩</h1>'
-            '<p class="sub">NOAH 분석 신호/수동 명령의 모의 매매 — 실거래 연결 전 전략 검증(리스크 0)</p>'
+            + '<h1>🔔 워치리스트</h1>'
+            '<p class="sub">조건 알림(30분 체크, ₩0) + 페이퍼 트레이딩(모의 매매, 리스크 0)</p>'
             + halt_banner + e1_banner + stats + stats_extra + curve_html + pos_block + pend_block
-            + tr_block + audit_block + note + gate_line + "</div>")
+            + tr_block + audit_block + note + gate_line + wl_section + "</div>")
 
 
 def _sym_cur(currency: str) -> str:
@@ -8704,20 +8885,12 @@ document.querySelectorAll('.del-btn').forEach(function(btn) {{
 
 
 def regenerate_screen_index() -> None:
-    """조건부 스크리너 아카이브 → screen.html. startup/실행 후 호출."""
-    try:
-        from bot.stock_screener import load_screen_archives
-        archives = load_screen_archives()
-        html_str = _render_screen_page(archives)
-        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
-        (ARCHIVE_ROOT / "screen.html").write_text(html_str, encoding="utf-8")
-        log.info("dashboard: screen.html regenerated (%d archives)", len(archives))
-    except Exception as exc:
-        log.warning("dashboard: screen regen failed: %s", exc)
+    """Screen merged into screener page — redirect."""
+    regenerate_screener_index()
 
 
 def regenerate_paper_index() -> None:
-    """페이퍼 계좌 → paper.html. 명령/startup/자정 regen 에서 호출. 에러 무해."""
+    """페이퍼 계좌 + 워치리스트 → paper.html. 명령/startup/자정 regen 에서 호출. 에러 무해."""
     try:
         from bot import paper_trading
         summ = paper_trading.summary()
@@ -8728,11 +8901,20 @@ def regenerate_paper_index() -> None:
             summ["equity_history"] = paper_trading.get_account().get("equity_history", [])
         except Exception:
             pass
-        html = _render_paper_page(summ)
+        # Load watchlist data for merged page
+        watches: list[dict] = []
+        alerts: list[dict] = []
+        try:
+            from bot.watchlist import all_watches, load_alerts
+            watches = all_watches()
+            alerts = load_alerts(200)
+        except Exception:
+            pass
+        html = _render_paper_page(summ, watches=watches, alerts=alerts)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
         (ARCHIVE_ROOT / "paper.html").write_text(html, encoding="utf-8")
-        log.info("dashboard: paper.html regenerated (%d positions)",
-                 summ.get("n_positions", 0))
+        log.info("dashboard: paper.html regenerated (%d positions, %d watches)",
+                 summ.get("n_positions", 0), len(watches))
     except Exception as exc:
         log.warning("dashboard: paper regen failed: %s", exc)
 
