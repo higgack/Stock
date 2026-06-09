@@ -124,13 +124,16 @@ def parse_themes_full(html: str) -> list[dict]:
             pcts.append(round(v, 2))
         pct = pcts[0] if pcts else None
         pct3 = pcts[1] if len(pcts) > 1 else None
-        # 주도주 — /item/main.naver?code= 링크의 종목명(최대 2)
+        # 주도주 — /item/main.naver?code= 의 종목명+코드(최대 2) → 종목분석 링크용
         leaders = []
+        seen_codes: set = set()
         for lm in re.finditer(
-                r'/item/main\.naver\?code=\d{6}"[^>]*>([^<]+)</a>', row, re.I):
-            nm = _clean(lm.group(1))
-            if nm and nm not in leaders:
-                leaders.append(nm)
+                r'/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>', row, re.I):
+            code = lm.group(1)
+            nm = _clean(lm.group(2))
+            if nm and code not in seen_codes:
+                seen_codes.add(code)
+                leaders.append({"name": nm, "code": code})
         seen.add(no)
         out.append({"name": name, "no": no, "pct": pct,
                     "pct3": pct3, "leaders": leaders[:2]})
