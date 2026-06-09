@@ -375,6 +375,23 @@ def fetch_chart_payload(
                 interval=interval,
                 auto_adjust=True,
             )
+        # Intraday fallback: KR/JP/some markets don't have intraday data
+        # via yfinance — returns daily bars even when 5m/15m/1h requested,
+        # producing charts with 1-5 lonely candles. Re-fetch as daily.
+        _MIN_INTRADAY = {"5m": 20, "15m": 10, "1h": 10}
+        if (interval in _MIN_INTRADAY
+                and hist is not None
+                and 0 < len(hist) < _MIN_INTRADAY[interval]):
+            interval = "1d"
+            if period in ("max", "1d"):
+                hist = t.history(period=period, interval="1d", auto_adjust=True)
+            else:
+                hist = t.history(
+                    start=start.strftime("%Y-%m-%d"),
+                    end=end.strftime("%Y-%m-%d"),
+                    interval="1d",
+                    auto_adjust=True,
+                )
         if hist is None or len(hist) < 2:
             return None
         close = hist["Close"].dropna()
