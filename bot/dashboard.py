@@ -2486,7 +2486,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </div>
       <div class="cg-sec"><b>기간 · 봉 · 조작</b>
         <ul>
-          <li><span class="k">일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉, 1주일→15분봉, 1개월→1시간봉, 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
+          <li><span class="k">일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉(KR 종목은 KIS 실시간 분봉), 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
           <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁 + 상단 OHLC 바 갱신. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
           <li>차트 아래 <span class="k">캡션</span> — 현재 범위·봉 종류·봉 개수·날짜 범위·데이터 출처.</li>
           <li>지표를 켜고 꺼도 보던 확대 구간은 그대로 유지됩니다.</li>
@@ -2584,7 +2584,7 @@ _CHART_JS = """
       rightPriceScale: { borderVisible: false, minimumWidth: 130, mode: ind.log ? 1 : 0, scaleMargins: { top: 0.06, bottom: 0.20 } },
       // rightOffset 7: 우측 끝에 여백 → 최근 캔들·마커가 가장자리/가격축에 안 붙고
       // 빈 공간에 놓임(사용자 가독성 2026-06-05).
-      timeScale: { borderVisible: false, timeVisible: false, rightOffset: 7 },
+      timeScale: { borderVisible: false, timeVisible: (curInterval==='5m'||curInterval==='15m'||curInterval==='1h'), rightOffset: 7 },
       crosshair: { mode: 1 }
     });
     function zip(a){ var o=[]; if(!a) return o; for(var i=0;i<d.times.length;i++){ var v=a[i]; if(v===null||v===undefined) continue; o.push({ time: d.times[i], value: v }); } return o; }
@@ -2625,8 +2625,9 @@ _CHART_JS = """
     // 마커 = 과거 추천(▲매수/▼매도/●보유 + 5거래일 결과) + 공시 이벤트(작은 사각,
     // 종류별 색, hover로 제목). 둘을 한 배열로 모아 시간순 정렬 후 한 번에 setMarkers.
     var firstT = d.times[0], lastT = d.times[d.times.length - 1];
+    var isIntraday = (typeof firstT === 'number');
     var mk = [];
-    if (analysisMarkers && analysisMarkers.length) {
+    if (!isIntraday && analysisMarkers && analysisMarkers.length) {
       for (var ai = 0; ai < analysisMarkers.length; ai++) {
         var a = analysisMarkers[ai];
         if (!a.time || a.time < firstT || a.time > lastT) continue;
@@ -2742,7 +2743,8 @@ _CHART_JS = """
       var idx = d.times.indexOf(param.time);
       if (idx < 0) { tip.style.display = 'none'; buildOHLC(d, null); return; }
       buildOHLC(d, idx);   // 상단바를 hover 봉으로 갱신
-      var rows = ['<div class="tt-date">' + param.time + '</div>'];
+      var ttDate = param.time; if (typeof ttDate === 'number') { var _dt = new Date(ttDate * 1000); ttDate = _dt.getUTCFullYear()+'-'+String(_dt.getUTCMonth()+1).padStart(2,'0')+'-'+String(_dt.getUTCDate()).padStart(2,'0')+' '+String(_dt.getUTCHours()).padStart(2,'0')+':'+String(_dt.getUTCMinutes()).padStart(2,'0'); }
+      var rows = ['<div class="tt-date">' + ttDate + '</div>'];
       function trow(name, val, color, dc, kind) {
         if (val === null || val === undefined) return;
         var s = (kind === 'vol') ? fmtVol(val) : (kind === 'raw' ? fmtNum(val, dc) : fmtPrice(val, dc));
@@ -2958,7 +2960,9 @@ _CHART_JS = """
     if (idx == null || idx < 0 || idx >= d.times.length) idx = d.times.length - 1;
     var dec = (d.decimals === 0) ? 0 : 2;
     var hasO = d.open && d.high && d.low;
-    var parts = ['<span class="co-date">' + (d.times[idx] || '') + '</span>'];
+    var tval = d.times[idx] || '';
+    if (typeof tval === 'number') { var dt = new Date(tval * 1000); tval = dt.getUTCFullYear()+'-'+String(dt.getUTCMonth()+1).padStart(2,'0')+'-'+String(dt.getUTCDate()).padStart(2,'0')+' '+String(dt.getUTCHours()).padStart(2,'0')+':'+String(dt.getUTCMinutes()).padStart(2,'0'); }
+    var parts = ['<span class="co-date">' + tval + '</span>'];
     function seg(name, val, color){
       if (val === null || val === undefined) return;
       parts.push('<span class="co-seg"><span style="color:' + color + '">' + name + '</span> '
@@ -2993,8 +2997,11 @@ _CHART_JS = """
     if (!cEl) return;
     var n = (d.times && d.times.length) ? d.times.length : 0;
     var first = n ? d.times[0] : '', last = n ? d.times[n - 1] : '';
+    function fmtT(t){ if(typeof t!=='number') return t; var dt=new Date(t*1000); return dt.getUTCFullYear()+'-'+String(dt.getUTCMonth()+1).padStart(2,'0')+'-'+String(dt.getUTCDate()).padStart(2,'0')+' '+String(dt.getUTCHours()).padStart(2,'0')+':'+String(dt.getUTCMinutes()).padStart(2,'0'); }
+    var isIntrd = (n > 0 && typeof d.times[0] === 'number');
+    var src = isIntrd ? 'KIS · Yahoo Finance' : 'Yahoo Finance';
     cEl.textContent = rangeLabel(curRange) + ' · ' + intervalLabel(curInterval) + ' · '
-                    + n + '개 봉 · ' + first + ' → ' + last + ' · Yahoo Finance';
+                    + n + '개 봉 · ' + fmtT(first) + ' → ' + fmtT(last) + ' · ' + src;
   }
 
   function setActive(){

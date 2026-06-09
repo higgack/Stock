@@ -103,7 +103,8 @@ def _currency_for(ticker: str) -> tuple[str, int]:
 
 def _series_payload(
     close, currency: str, decimals: int,
-    volume=None, opens=None, highs=None, lows=None, ticker: str | None = None,
+    volume=None, opens=None, highs=None, lows=None,
+    ticker: str | None = None, interval: str = "1d",
 ) -> dict:
     """Build the parallel-array chart payload from a pandas close Series.
 
@@ -127,10 +128,17 @@ def _series_payload(
         except Exception:
             return None
 
+    _intraday = interval in ("1m", "5m", "15m", "1h")
+    if _intraday:
+        import calendar as _cal
+        _times = [int(_cal.timegm(d.timetuple())) for d in close.index]
+    else:
+        _times = [d.strftime("%Y-%m-%d") for d in close.index]
+
     payload: dict = {
         "currency": currency,
         "decimals": decimals,
-        "times": [d.strftime("%Y-%m-%d") for d in close.index],
+        "times": _times,
         "close": [_round(v) for v in close.values],
         "ema10": [_round(v) for v in ema10.values],
     }
@@ -192,7 +200,7 @@ def _series_payload(
     # 공시 이벤트 마커 (전 시장, ₩0). 차트가 보여줄 기간(span)을 넘겨 KR/US 는
     # 풀히스토리, JP/TW/CN 은 시장별 안전 캡으로 fetch. 보이는 날짜 구간으로 필터.
     # 실패/키부재 시 graceful(빈 리스트). 호재/악재 판단 X.
-    if ticker:
+    if ticker and not _intraday:
         try:
             from bot.chart_events import fetch_disclosure_events
             times = payload.get("times") or []
@@ -210,6 +218,86 @@ def _series_payload(
         except Exception:
             pass
     return payload
+
+
+# ── KR intraday via KIS API ──────────────────────────────────────────────
+_INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60}
+
+
+def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
+    """KR 종목 당일 분봉을 KIS API 로 fetch → chart payload.
+
+    yfinance 가 KR 분봉을 제공하지 않으므로 KIS 당일분봉조회로 대체.
+    KIS creds 부재 / API 실패 / 장전(데이터 없음) → None(graceful).
+    """
+    iv_min = _INTERVAL_MINUTES.get(interval, 5)
+    try:
+        from bot.kis_client import get_kis
+        bars = get_kis().get_minute_chart(ticker, interval_min=iv_min)
+        if not bars or len(bars) < 2:
+            return None
+
+        import pandas as pd
+        from datetime import datetime, timezone, timedelta
+
+        KST = timezone(timedelta(hours=9))
+        today = datetime.now(KST).date()
+
+        records = []
+        for b in bars:
+            ts = b["time"]
+            h, m, s = int(ts[:2]), int(ts[2:4]), int(ts[4:6])
+            dt = datetime(today.year, today.month, today.day, h, m, s)
+            records.append({
+                "dt": dt,
+                "Close": float(b["close"]),
+                "Open": float(b.get("open") or b["close"]),
+                "High": float(b.get("high") or b["close"]),
+                "Low": float(b.get("low") or b["close"]),
+                "Volume": float(b.get("volume") or 0),
+            })
+
+        df = pd.DataFrame(records).set_index("dt").sort_index()
+        close = df["Close"].dropna()
+        if len(close) < 2:
+            return None
+
+        currency, decimals = _currency_for(ticker)
+        vol = df["Volume"].reindex(close.index)
+        op = df["Open"].reindex(close.index)
+        hi = df["High"].reindex(close.index)
+        lo = df["Low"].reindex(close.index)
+
+        payload = _series_payload(
+            close, currency, decimals, vol, op, hi, lo,
+            ticker=ticker, interval=interval,
+        )
+        payload["interval"] = interval
+        payload["period"] = "1d"
+
+        try:
+            from bot.kis_client import get_kis as _gk2
+            _kp = _gk2().get_realtime_price(ticker)
+            if _kp is not None:
+                payload["last_price"] = round(float(_kp), decimals)
+        except Exception:
+            pass
+
+        try:
+            import yfinance as yf
+            _t = yf.Ticker(ticker)
+            hi52, lo52 = _year_high_low(_t, decimals)
+            if hi52 is not None:
+                payload["wk52_high"] = hi52
+            if lo52 is not None:
+                payload["wk52_low"] = lo52
+        except Exception:
+            pass
+
+        return payload
+    except Exception as exc:
+        log.warning("chart_data: KR intraday failed %s: %s", ticker, exc)
+        return None
 
 
 # On-demand timeframe fetch (dashboard /api/chart endpoint). interval +
@@ -347,13 +435,20 @@ def fetch_chart_payload(
         interval = "1d"
     if period not in _VALID_PERIODS:
         period = "1y"
-    # '1d'(당일) = intraday 5분봉. yfinance 는 1m/5m 을 start/end 보다 period
-    # 문자열로 더 안정적으로 반환 → period='1d' + interval='5m' 직접 fetch.
+    _is_kr = ticker.upper().endswith((".KS", ".KQ"))
+    # 단기 기간 → 최적 봉 자동 매핑.
+    # KR: yfinance 가 분봉을 제공하지 않으므로 '1d'만 KIS API 로 대체하고,
+    # '1wk'/'1mo' 는 일봉으로 유지 (분봉 매핑 skip).
     _PERIOD_INTERVAL_MAP = {
         "1d": "5m", "1wk": "15m", "1mo": "1h",
     }
     if period in _PERIOD_INTERVAL_MAP:
-        interval = _PERIOD_INTERVAL_MAP[period]
+        if _is_kr and period == "1d":
+            kr_payload = _fetch_kr_intraday(ticker, _PERIOD_INTERVAL_MAP[period])
+            if kr_payload:
+                return kr_payload
+        if not _is_kr:
+            interval = _PERIOD_INTERVAL_MAP[period]
     try:
         import yfinance as yf
         from datetime import datetime, timedelta
@@ -365,7 +460,6 @@ def fetch_chart_payload(
             now = datetime.now()
             end = now + timedelta(days=1)
             if period == "ytd":
-                # 연초(1/1) → 오늘. now.year 로 계산해 12/31 자정 edge 안전.
                 start = datetime(now.year, 1, 1)
             else:
                 start = end - timedelta(days=_RANGE_DAYS.get(period, 366))
@@ -375,15 +469,13 @@ def fetch_chart_payload(
                 interval=interval,
                 auto_adjust=True,
             )
-        # Intraday fallback: KR/JP/some markets don't have intraday data
-        # via yfinance — returns daily bars even when 5m/15m/1h requested,
-        # producing charts with 1-5 lonely candles. Re-fetch as daily.
+        # Intraday fallback: some markets don't have intraday via yfinance.
         _MIN_INTRADAY = {"5m": 20, "15m": 10, "1h": 10}
         _got = len(hist) if hist is not None else 0
         if interval in _MIN_INTRADAY and _got < _MIN_INTRADAY[interval]:
             interval = "1d"
             if period in ("max", "1d"):
-                hist = t.history(period=period, interval="1d", auto_adjust=True)
+                hist = t.history(period="5d", interval="1d", auto_adjust=True)
             else:
                 hist = t.history(
                     start=start.strftime("%Y-%m-%d"),
@@ -401,7 +493,7 @@ def fetch_chart_payload(
         op = hist["Open"].reindex(close.index) if "Open" in hist else None
         hi = hist["High"].reindex(close.index) if "High" in hist else None
         lo = hist["Low"].reindex(close.index) if "Low" in hist else None
-        payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker)
+        payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker, interval=interval)
         payload["interval"] = interval
         payload["period"] = period
         # 장중 last price (yfinance fast_info — ~15분 지연, 무료·무키, ~50ms).
