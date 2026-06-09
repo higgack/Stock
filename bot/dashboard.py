@@ -5462,6 +5462,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {is_html}
   {bs_html}
   {cf_html}
+  {_src_foot}출처: yfinance</div>
 </div>"""
 
     # Placeholder so the JS overlay can find the element by ID when
@@ -10192,6 +10193,10 @@ _MARKET_CSS = (
     "border-color:var(--accent)}"
     ".tab-pane{display:none}.tab-pane.active{display:block}"
     ".empty-msg{color:var(--muted);font-size:13px;padding:20px 0}"
+    ".show-more-btn{display:block;margin:8px auto 0;padding:6px 20px;"
+    "font-size:13px;color:var(--accent);background:none;"
+    "border:1px solid var(--border);border-radius:6px;cursor:pointer}"
+    ".show-more-btn:hover{background:var(--accent-soft)}"
     # ── Macro snapshot ──
     ".macro-sub{color:var(--muted);font-size:12px;font-weight:600;"
     "margin:18px 0 10px;text-transform:none}"
@@ -10352,7 +10357,7 @@ def _render_earnings_table(earnings: list) -> str:
         )
         shown += 1
     return (
-        '<div class="tbl-wrap"><table class="dtbl">'
+        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
         '<thead><tr><th>종목</th><th>날짜</th><th>시간</th>'
         '<th>분기</th><th>EPS 예상</th><th>매출 예상</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
@@ -10378,7 +10383,7 @@ def _render_research_kr_table(research: list) -> str:
             f'<td>{title[:60]}</td><td>{dt}</td></tr>'
         )
     return (
-        '<div class="tbl-wrap"><table class="dtbl">'
+        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
         '<thead><tr><th>종목</th><th>증권사</th><th>투자의견</th>'
         '<th>제목</th><th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
@@ -10405,7 +10410,7 @@ def _render_research_us_table(research: list) -> str:
             f'<td>{grade_str}</td><td>{dt}</td></tr>'
         )
     return (
-        '<div class="tbl-wrap"><table class="dtbl">'
+        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
         '<thead><tr><th>종목</th><th>증권사</th><th>액션</th>'
         '<th>등급 변경</th><th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
@@ -10785,14 +10790,14 @@ def _render_market_page(data: dict) -> str:
     <span class="cnt" id="research-cnt"></span>
   </div>
   <div class="tabs">
-    <button class="tab-btn active" data-tab="kr">🇰🇷 KR</button>
-    <button class="tab-btn" data-tab="us">🇺🇸 US</button>
+    <button class="tab-btn active" data-tab="us">🇺🇸 US</button>
+    <button class="tab-btn" data-tab="kr">🇰🇷 KR</button>
   </div>
-  <div id="tab-kr" class="tab-pane active">
-    {_render_research_kr_table(research_kr)}
-  </div>
-  <div id="tab-us" class="tab-pane">
+  <div id="tab-us" class="tab-pane active">
     {_render_research_us_table(research_us)}
+  </div>
+  <div id="tab-kr" class="tab-pane">
+    {_render_research_kr_table(research_kr)}
   </div>
 </div>
 
@@ -10833,6 +10838,31 @@ def _render_market_page(data: dict) -> str:
     }});
   }});
 
+  /* show-more: hide rows beyond data-limit, add button */
+  document.querySelectorAll('[data-limit]').forEach(function(wrap) {{
+    var limit = parseInt(wrap.dataset.limit);
+    var tbl = wrap.querySelector('.dtbl');
+    if (!tbl) return;
+    var rows = tbl.querySelectorAll('tbody tr');
+    if (rows.length <= limit) return;
+    for (var i = limit; i < rows.length; i++) {{
+      rows[i].classList.add('xrow');
+      rows[i].style.display = 'none';
+    }}
+    var btn = document.createElement('button');
+    btn.className = 'show-more-btn';
+    btn.textContent = '더 보기 (' + (rows.length - limit) + '개 더)';
+    btn.addEventListener('click', function() {{
+      wrap.removeAttribute('data-limit');
+      wrap.querySelectorAll('.xrow').forEach(function(r) {{
+        r.classList.remove('xrow');
+        r.style.display = '';
+      }});
+      btn.style.display = 'none';
+    }});
+    wrap.insertAdjacentElement('afterend', btn);
+  }});
+
   /* table filter helper */
   function wireFilter(inputId, cntId, tableParentId) {{
     var fi = document.getElementById(inputId);
@@ -10852,6 +10882,7 @@ def _render_market_page(data: dict) -> str:
           total++;
           var txt = row.textContent.toLowerCase();
           var vis = !q || txt.indexOf(q) >= 0;
+          if (vis && !q && row.classList.contains('xrow')) vis = false;
           row.style.display = vis ? '' : 'none';
           if (vis) shown++;
         }});
@@ -10872,6 +10903,7 @@ def _render_market_page(data: dict) -> str:
         total++;
         var txt = row.textContent.toLowerCase();
         var vis = !q || txt.indexOf(q) >= 0;
+        if (vis && !q && row.classList.contains('xrow')) vis = false;
         row.style.display = vis ? '' : 'none';
         if (vis) shown++;
       }});
