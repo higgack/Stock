@@ -379,9 +379,8 @@ def fetch_chart_payload(
         # via yfinance — returns daily bars even when 5m/15m/1h requested,
         # producing charts with 1-5 lonely candles. Re-fetch as daily.
         _MIN_INTRADAY = {"5m": 20, "15m": 10, "1h": 10}
-        if (interval in _MIN_INTRADAY
-                and hist is not None
-                and 0 < len(hist) < _MIN_INTRADAY[interval]):
+        _got = len(hist) if hist is not None else 0
+        if interval in _MIN_INTRADAY and _got < _MIN_INTRADAY[interval]:
             interval = "1d"
             if period in ("max", "1d"):
                 hist = t.history(period=period, interval="1d", auto_adjust=True)
