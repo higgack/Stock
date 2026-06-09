@@ -10175,7 +10175,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         if n > 0:
             pills.append(f'<button class="df-pill" data-cat="{cat}">{cat} {n}</button>')
 
-    parts: list[str] = [_SCREENER_CSS]
+    # 테마(다크/라이트)를 컨텐츠 전에 설정 → FOUC('처음에 깨졌다 복귀') 방지.
+    parts: list[str] = [_SCREENER_CSS, "<script>" + _THEME_JS + "</script>"]
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
@@ -10193,10 +10194,10 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         <button id="df-clear" type="button" title="초기화">초기화</button>
       </div>
       <div class="df-view-btns">
-        <button class="df-vbtn active" data-view="grid" title="그리드">
+        <button class="df-vbtn" data-view="grid" title="그리드">
           <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="5" height="5" rx="1" fill="currentColor"/><rect x="10" y="1" width="5" height="5" rx="1" fill="currentColor"/><rect x="1" y="10" width="5" height="5" rx="1" fill="currentColor"/><rect x="10" y="10" width="5" height="5" rx="1" fill="currentColor"/></svg>
         </button>
-        <button class="df-vbtn" data-view="list" title="리스트">
+        <button class="df-vbtn active" data-view="list" title="리스트">
           <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="6.75" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="11.5" width="14" height="2.5" rx="1" fill="currentColor"/></svg>
         </button>
       </div>
@@ -10240,7 +10241,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
           <span class="df-caret">▾</span><span>{label}</span>
           <span class="df-date-meta"><span class="df-date-cnt">{len(items)}</span></span>
         </div>
-        <div class="df-date-body"><div class="df-grid">
+        <div class="df-date-body"><div class="df-grid list-view">
 """)
             for it in items:
                 cn = _html.escape(it.get("corp_name", ""))
@@ -10393,7 +10394,6 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 """)
 
     parts.append("</div>\n")
-    parts.append("<script>" + _THEME_JS + "</script>")
     parts.append("</body></html>")
     return "\n".join(parts)
 
