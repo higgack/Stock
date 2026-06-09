@@ -1904,26 +1904,16 @@ def _render_index(records: list[dict]) -> str:
     # Headline link to the errors page; count includes hard failures
     # (usage.jsonl) plus archive entries with placeholder/tool issues.
     issue_count = _count_total_issues(records, _read_hard_failures())
-    # External dashboards live at known LAN addresses; rel=noopener on the
-    # external links prevents window.opener leakage to the third-party tab.
-    # 🇰🇷 regional-indicator pair은 일부 OS (특히 Linux Chromium) 에서 'KR'
-    # 글자로 fallback 렌더되므로 inline SVG 태극기로 대체 — 어디서나 보장.
-    _external_links = (
-        ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
-        f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>'
-    )
-    # 부동산은 주간(느린) surface 라 nav 제일 뒤 (사용자 정책 2026-05-31)
+    # Nav group 2 links (NOAH index.html is current page → omit self)
     errors_link = (
-        ' · <a href="market.html">🌍 Market</a>'
-        ' · <a href="portfolio.html">💼 자산</a>'
-        ' · <a href="budget.html">📒 가계부</a>'
+        ' · <a href="market.html">🌍 홈</a>'
         ' · <a href="screener.html">📊 Screener</a>'
         ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-        + _external_links
-        + ' · <a href="realestate.html">🏠 부동산</a>'
+        ' · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>'
+        f' · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>'
     )
 
     # Market filter buttons (show only if >1 market present)
@@ -6240,12 +6230,14 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
-    <a href="index.html">← NOAH 종목 분석</a>
-    · <a href="portfolio.html">💼 자산</a>
-    · <a href="budget.html">📒 가계부</a>
+    <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
+    · <a href="paper.html">🔔 워치리스트</a>
+    · <a href="reddit_insider.html">📨 미국 레딧</a>
+    · <a href="daily_byte.html">📊 Daily Byte</a>
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
-    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
+    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
   </div>
   <h1>📊 Screener — Archive</h1>
   <p class="sub">Bottleneck Screener (테마별 6-18M thesis) + 조건부 스크리너 (정량 필터, ₩0) 통합</p>
@@ -7510,11 +7502,12 @@ details.layer-details summary {{ position:relative; }}
 </head>
 <body>
 <div class="wrap">
-  <p class="sub">
-    <a href="index.html">← NOAH 종목 분석</a> ·
-    <a href="screener.html">📊 Bottleneck Screener Archive</a> ·
-    <a href="gics_candidates.html">🧬 분기 GICS / 신규 산업 후보</a>
-  </p>
+  <div class="nav">
+    <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="screener.html">📊 Screener</a>
+    · <a href="gics_candidates.html">🧬 GICS 후보</a>
+  </div>
   <h1>📊 Screener 도메인 목록 <span style="color:var(--fg-soft);font-size:16px;font-weight:400">({len(ds)}개 · auto-discovered)</span></h1>
   <p class="sub">텔레그램: <code>/screener_&lt;슬러그&gt;</code> 클릭 한 번으로 즉시 실행 · 별칭은 <code>/screener &lt;별칭&gt;</code> 으로 지원
   · 동일 목록 텔레그램 = <code>/screener_list</code>.</p>
@@ -7830,12 +7823,14 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
-    <a href="index.html">← NOAH 종목 분석</a>
-    · <a href="portfolio.html">💼 자산</a>
-    · <a href="budget.html">📒 가계부</a>
-    · <a href="screener.html">📊 Bottleneck Screener</a>
+    <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="screener.html">📊 Screener</a>
+    · <a href="screener_domains.html">🗂️ 도메인 목록</a>
+    · <a href="paper.html">🔔 워치리스트</a>
+    · <a href="reddit_insider.html">📨 미국 레딧</a>
     · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
-    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입 데이터</a>
+    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
   </div>
   <h1>📊 Daily Byte — Archive</h1>
   <p class="sub">장 마감 후 KR 수급 브리프 · 한국거래일 19:00 Daily + 일 22:00 Weekly (KST) · 수급 데이터 관찰(교육·정보), 투자 권유 아님</p>
@@ -8045,11 +8040,8 @@ def _render_realestate_page(runs: list[dict]) -> str:
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
-    <a href="index.html">← NOAH 종목 분석</a>
-    · <a href="portfolio.html">💼 자산</a>
-    · <a href="budget.html">📒 가계부</a>
-    · <a href="daily_byte.html">📊 Daily Byte</a>
-    · <a href="screener.html">📊 Screener</a>
+    <a href="market.html">🌍 홈</a>
+    · <a href="cheongyak.html">🎟️ 청약</a>
   </div>
   <h1>🏠 부동산 — Archive</h1>
   <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 + 청약홈 분양 피드 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
@@ -8209,10 +8201,7 @@ def _render_cheongyak_page(runs: list[dict]) -> str:
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
-    <a href="index.html">← NOAH 종목 분석</a>
-    · <a href="portfolio.html">💼 자산</a>
-    · <a href="budget.html">📒 가계부</a>
-    · <a href="daily_byte.html">📊 Daily Byte</a>
+    <a href="market.html">🌍 홈</a>
     · <a href="realestate.html">🏠 부동산</a>
   </div>
   <h1>🎟️ 청약 Byte — Archive</h1>
@@ -8355,11 +8344,14 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
-    <a href="index.html">← NOAH 종목 분석</a>
-    · <a href="portfolio.html">💼 자산</a>
-    · <a href="budget.html">📒 가계부</a>
+    <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="screener.html">📊 Screener</a>
+    · <a href="screener_domains.html">🗂️ 도메인 목록</a>
+    · <a href="paper.html">🔔 워치리스트</a>
     · <a href="daily_byte.html">📊 Daily Byte</a>
-    · <a href="screener.html">📊 Bottleneck Screener</a>
+    · <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
+    · <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
   </div>
   <h1>📨 미국 레딧 게시물 분석 — Archive</h1>
   <p class="sub">t.me/insidertracking 자동 포워드 · 제목 '미국 레딧 게시물 분석' 필터 · ₩0 (LLM 없음, 원본 그대로) · 정보 관찰(투자 권유 아님)</p>
@@ -8550,7 +8542,12 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
 </head>
 <body>
 <div class="wrap">
-  <a class="back" href="./index.html">← 아카이브로 돌아가기</a>
+  <div class="nav">
+    <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="screener.html">📊 Screener</a>
+    · <a href="daily_byte.html">📊 Daily Byte</a>
+  </div>
   <h1>🔔 워치리스트</h1>
   <p class="sub">조건 충족 시 텔레그램 알림 (30분 간격 체크 · LLM 0 · 비용 ₩0). 등록/삭제는 텔레그램 <code>/watch</code> · <code>/unwatch</code>.</p>
   <h2>📋 활성 워치 ({len(watches)})</h2>
@@ -8584,11 +8581,12 @@ def _paper_nav(active: str = "paper") -> str:
         return f"<b>{label}</b>" if key == active else f'<a href="{href}">{label}</a>'
     return (
         '<div class="nav">'
-        + _a("portfolio.html", "💼 자산", "portfolio")
-        + ' · ' + _a("budget.html", "📒 가계부", "budget")
-        + ' · <a href="index.html">🦉 NOAH 종목분석</a>'
-        + ' · ' + _a("paper.html", "🔔 워치리스트", "paper")
-        + '</div>')
+        '<a href="market.html">🌍 홈</a>'
+        ' · <a href="index.html">🦉 NOAH 종목분석</a>'
+        ' · <a href="screener.html">📊 Screener</a>'
+        ' · ' + _a("paper.html", "🔔 워치리스트", "paper")
+        + ' · <a href="daily_byte.html">📊 Daily Byte</a>'
+        '</div>')
 
 
 def _render_paper_page(summ: dict, watches: list[dict] | None = None, alerts: list[dict] | None = None) -> str:
@@ -9243,8 +9241,8 @@ def _render_portfolio_page(model, noah=None) -> str:
     # 허브로 쓰되 기존 메인을 첫 링크로.
     nav = (
         '<div class="nav">'
-        '<a href="budget.html">📒 가계부</a>'
-        ' · <a href="index.html">🦉 NOAH 종목분석</a>'
+        '<a href="market.html">🌍 홈</a>'
+        ' · <a href="budget.html">📒 가계부</a>'
         '</div>')
     if not model or not model.get("holdings"):
         return _SCREENER_CSS + _PF_CSS + (
@@ -9736,11 +9734,11 @@ _BG_SEND_JS = """<script>(function(){
 
 
 def _budget_nav() -> str:
-    """가계부 페이지 nav — 자산 + NOAH 종목분석만 (나머지는 NOAH 쪽에)."""
+    """가계부 페이지 nav — 홈 + 자산 (Group 1 peers)."""
     return (
         '<div class="nav">'
-        '<a href="portfolio.html">💼 자산</a>'
-        ' · <a href="index.html">🦉 NOAH 종목분석</a>'
+        '<a href="market.html">🌍 홈</a>'
+        ' · <a href="portfolio.html">💼 자산</a>'
         '</div>')
 
 
@@ -10002,10 +10000,9 @@ def _render_gics_candidates_page(runs: list[dict]) -> str:
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
-    <a href="index.html">← NOAH 종목 분석</a>
-    · <a href="portfolio.html">💼 자산</a>
-    · <a href="budget.html">📒 가계부</a>
-    · <a href="screener.html">📊 Bottleneck Screener</a>
+    <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
+    · <a href="screener.html">📊 Screener</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
   </div>
   <h1>🧬 분기 GICS / 신규 산업 점검</h1>
@@ -10738,9 +10735,19 @@ def _render_market_page(data: dict) -> str:
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
-    <a href="index.html">&larr; NOAH 종목분석</a>
-    &middot; <a href="portfolio.html">💼 자산</a>
+    <a href="portfolio.html">💼 자산</a>
     &middot; <a href="budget.html">📒 가계부</a>
+    &nbsp;|&nbsp;
+    <a href="index.html">🦉 NOAH 종목분석</a>
+    &middot; <a href="screener.html">📊 Screener</a>
+    &middot; <a href="screener_domains.html">🗂️ 도메인 목록</a>
+    &middot; <a href="paper.html">🔔 워치리스트</a>
+    &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
+    &middot; <a href="daily_byte.html">📊 Daily Byte</a>
+    &middot; <a href="http://34.50.23.221:8002/dashboard" target="_blank" rel="noopener">📈 Standard View</a>
+    &middot; <a href="http://34.50.23.221:8765/dashboard/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
+    &nbsp;|&nbsp;
+    <a href="realestate.html">🏠 부동산</a>
   </div>
   <h1>🌍 Market Overview</h1>
   <p class="sub">글로벌 시장 현황 · 종목 검색 · 실적 일정 · 리서치 액션</p>

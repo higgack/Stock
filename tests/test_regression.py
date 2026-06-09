@@ -2330,8 +2330,8 @@ class TestPortfolioDashboard:
         assert "동산 (자동차)" in html, "동산(자동차) 라벨 누락"
         assert "주식 국내 / 해외" in html, "국내/해외 비중 누락"
         assert "마지막 업데이트" in html, "업데이트 시각 헤더 누락"
-        # v6: nav 간소화(가계부+NOAH만, 나머지는 NOAH 쪽) · nav 단어 줄바꿈 방지 · 자기 '자산' 제거
-        assert 'href="index.html">🦉 NOAH 종목분석' in html, "nav NOAH 링크 누락"
+        # v7: market.html 홈 허브 (Group 1 nav = 홈 + 가계부)
+        assert 'href="market.html">🌍 홈' in html, "nav 홈 링크 누락"
         assert 'href="budget.html"' in html, "nav 가계부 링크 누락"
         assert ".nav a,.nav b{white-space:nowrap}" in html, "nav 줄바꿈 방지 CSS 누락"
         assert "<b>💼 자산</b>" not in html, "nav 자기 '자산' 제거 안 됨"
@@ -2678,9 +2678,9 @@ class TestBudget:
         assert "<h1>📒 가계부</h1>" in html
         assert "월별 수입·지출" in html and "현금흐름 상세" in html
         assert "bg-chart" in html and "식사" in html
-        # nav: 자산 first, NOAH second (가계부 자신은 현재라 생략)
+        # nav: 홈 + 자산 (Group 1 peers, 가계부 자신은 현재라 생략)
+        assert 'href="market.html">🌍 홈' in html
         assert 'href="portfolio.html">💼 자산' in html
-        assert 'href="index.html">🦉 NOAH' in html
         assert "아직 현금흐름" in _render_budget_page(None)
 
     def test_save_load_roundtrip(self, tmp_path, monkeypatch):
