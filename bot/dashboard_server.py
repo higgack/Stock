@@ -593,10 +593,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_error(500, "internal error")
 
     def _handle_favorites_get(self) -> None:
-        """GET /api/favorites — return saved favorites list."""
+        """GET /api/favorites — return saved favorites list with current prices."""
         try:
-            from bot.market_favorites import get_favorites
-            self._json_ok({"ok": True, "favorites": get_favorites()})
+            from bot.market_favorites import get_favorites_with_prices
+            self._json_ok({"ok": True, "favorites": get_favorites_with_prices()})
         except Exception as exc:
             log.warning("favorites_get: %s", exc)
             self._json_ok({"ok": False, "favorites": []})

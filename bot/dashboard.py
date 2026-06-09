@@ -10920,7 +10920,8 @@ def _render_market_page(data: dict) -> str:
 
     parts.append(f"""
   <div class="section-hd">
-    <h2><a href="earnings" style="color:inherit;text-decoration:none">다가오는 실적 →</a></h2>
+    <h2>다가오는 실적</h2>
+    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더</a>
     <span class="ts">Finnhub · 향후 14일</span>
   </div>
   <div class="tbl-filter">
@@ -11104,17 +11105,29 @@ def _render_market_page(data: dict) -> str:
         return;
       }}
       var h = '<table class="dtbl"><thead><tr>'
-        + '<th>종목</th><th>나라</th><th>날짜</th><th>시간</th>'
-        + '<th>가격</th><th>EPS 예상</th><th>매출예상</th><th>다음실적일</th><th></th>'
+        + '<th>종목</th><th>나라</th><th>저장일</th>'
+        + '<th>저장가격</th><th>현재가격</th><th>EPS 예상</th><th>매출예상</th><th>다음실적일</th><th></th>'
         + '</tr></thead><tbody>';
       list.forEach(function(f) {{
         var flag = FLAG[f.country] || '';
+        var curCell = '—';
+        if (f.current_price != null) {{
+          var cp = fmtPrice(f.current_price, f.currency_symbol);
+          if (f.saved_price != null && f.saved_price > 0) {{
+            var pct = ((f.current_price - f.saved_price) / f.saved_price * 100).toFixed(1);
+            var clr = pct > 0 ? '#e74c3c' : pct < 0 ? '#3498db' : 'inherit';
+            var sign = pct > 0 ? '+' : '';
+            curCell = '<span style="color:' + clr + '">' + cp + ' (' + sign + pct + '%)</span>';
+          }} else {{
+            curCell = cp;
+          }}
+        }}
         h += '<tr>'
           + '<td><a href="lookup/' + encodeURIComponent(f.ticker) + '">' + (f.name||f.ticker) + '</a></td>'
           + '<td>' + flag + ' ' + (f.country||'') + '</td>'
           + '<td>' + (f.saved_date||'') + '</td>'
-          + '<td>' + (f.saved_time||'') + '</td>'
           + '<td>' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
+          + '<td>' + curCell + '</td>'
           + '<td>' + fmtEst(f.eps_estimate) + '</td>'
           + '<td>' + fmtEst(f.revenue_estimate) + '</td>'
           + '<td>' + (f.next_earnings||'—') + '</td>'
