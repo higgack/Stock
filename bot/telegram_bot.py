@@ -3197,6 +3197,32 @@ async def _on_startup(application) -> None:
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:
         log.warning("startup: DART initial fetch thread failed: %s", exc)
+
+    # 실적 캘린더 과거 월(IR) 캐시 워밍 — 아카이브가 닿지 않는 직전 2개월을
+    # 백그라운드로 미리 fetch·캐시 → 사용자가 과거 월 이동 시 즉시 표시
+    # (firehose 페이지네이션 cold load 25~40초를 시작 시점에 미리 처리).
+    # 12h 캐시라 재시작 내 반복 안 함. 무료·LLM 0·graceful.
+    try:
+        import threading as _ir_thr
+
+        def _ir_month_warm():
+            try:
+                from datetime import date as _d
+                from bot.dart_feed import fetch_kr_ir_month
+                t = _d.today()
+                for back in (1, 2):
+                    y, m = t.year, t.month - back
+                    while m < 1:
+                        m += 12
+                        y -= 1
+                    fetch_kr_ir_month(y, m)
+                log.info("startup: IR-month 캘린더 캐시 워밍 완료(직전 2개월)")
+            except Exception as exc:
+                log.warning("startup: IR-month warm failed: %s", exc)
+
+        _ir_thr.Thread(target=_ir_month_warm, daemon=True).start()
+    except Exception as exc:
+        log.warning("startup: IR-month warm thread failed: %s", exc)
     # One-time price-chart backfill for pre-chart (schema v1) archive
     # entries. Marker-gated so it runs once per install, not every restart.
     # Background thread — ~N yfinance fetches shouldn't block startup. Free

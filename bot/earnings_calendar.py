@@ -232,7 +232,7 @@ def _market_toggle(year: int, month: int, market: str) -> str:
         return (f'<a class="mkt-btn{act}" '
                 f'href="?month={ym}&amp;market={m}">{lbl}</a>')
     return ('<div class="mkt-toggle">'
-            + _b("kr", "🇰🇷 한국 (실적·IR)")
+            + _b("kr", "🇰🇷 한국 (IR)")
             + _b("us", "🇺🇸 미국 (실적)")
             + '</div>')
 
