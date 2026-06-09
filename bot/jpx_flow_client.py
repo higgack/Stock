@@ -53,19 +53,15 @@ _INDEX_URL = (
 )
 
 _INVESTOR_KEYWORDS: list[tuple[str, str]] = [
-    ("外国人", "foreigners"),
-    ("外国法人", "foreigners"),
+    ("海外投資家", "foreigners"),
     ("Foreigners", "foreigners"),
     ("投資信託", "trusts"),
     ("Investment Trusts", "trusts"),
+    ("事業法人", "corporations"),
     ("個人", "individuals"),
     ("Individuals", "individuals"),
-    ("事業法人", "corporations"),
-    ("Corporations", "corporations"),
     ("自己", "securities"),
-    ("証券会社", "securities"),
     ("Proprietary", "securities"),
-    ("Securities", "securities"),
 ]
 
 
@@ -96,7 +92,6 @@ def _scrape_xls_links() -> list[tuple[str, str]]:
     """Scrape JPX index page for stock_val_1_*.xls URLs.
 
     Returns [(full_url, YYMMWW), ...] sorted newest first (deduplicated).
-    YYMMWW: YY=western year last 2 digits, MM=month, WW=week number.
     """
     try:
         resp = requests.get(_INDEX_URL, headers=_HEADERS, timeout=_TIMEOUT)
@@ -121,12 +116,6 @@ def _scrape_xls_links() -> list[tuple[str, str]]:
         return []
 
 
-def _yymw_to_label(yymw: str) -> str:
-    """'260504' → '2026/05 W4'."""
-    yy, mm, ww = yymw[:2], yymw[2:4], yymw[4:6]
-    return f"20{yy}/{mm} W{int(ww)}"
-
-
 # ── XLS download + parse ─────────────────────────────────────────
 
 def _download_xls(url: str) -> Optional[bytes]:
@@ -144,110 +133,121 @@ def _download_xls(url: str) -> Optional[bytes]:
 def _parse_num_cell(val) -> Optional[int]:
     """Parse XLS cell value to int. Handles float, int, str with commas."""
     if isinstance(val, float):
+        if val == 0.0:
+            return None
         return int(val)
     if isinstance(val, int):
-        return val
+        return val if val != 0 else None
     s = str(val).replace(",", "").replace(" ", "").strip()
     if not s or s in ("-", "N/A", ""):
         return None
     try:
-        return int(float(s))
+        v = int(float(s))
+        return v if v != 0 else None
     except (ValueError, TypeError):
         return None
 
 
-def _parse_xls_flow(data: bytes, date_label: str) -> Optional[dict]:
-    """Parse a JPX investor-type weekly XLS into flow dict.
+def _norm_cell(val) -> str:
+    """Normalize cell text: strip + remove full-width spaces."""
+    return str(val).replace("　", "").strip()
 
-    Searches for 売り/買い/差引 columns + investor-type keyword rows,
-    extracts net buy/sell per investor type.
-    Returns {date, foreigners, trusts, individuals, corporations, securities}
-    or None.
+
+def _parse_xls_flow(data: bytes) -> list[dict]:
+    """Parse JPX investor-type weekly XLS into flow dicts.
+
+    Each file contains 2 weeks of data side by side (columns 3-6 = prev
+    week, columns 7-10 = current week). Balance (差引き) is on the 売り
+    row when net-negative, on the 買い row when net-positive.
+
+    Returns list of week dicts (up to 2), values converted to 百万円.
     """
     try:
         import xlrd  # noqa: heavy/optional
     except ImportError:
         log.warning("jpx_flow: xlrd not installed — pip install xlrd")
-        return None
+        return []
 
     try:
         wb = xlrd.open_workbook(file_contents=data)
-        sheet = wb.sheet_by_index(0)
+        sh = wb.sheet_by_index(0)
 
-        # ── find header row with 売り / 買い / 差引 ──
-        sell_col = buy_col = net_col = -1
-        header_row = -1
+        # ── find 差引き columns ──
+        bal_cols: list[int] = []
+        for r in range(min(sh.nrows, 15)):
+            for c in range(sh.ncols):
+                if "差引" in str(sh.cell_value(r, c)):
+                    if c not in bal_cols:
+                        bal_cols.append(c)
+        if not bal_cols:
+            log.info("jpx_flow: no balance columns found")
+            return []
 
-        for r in range(min(sheet.nrows, 20)):
-            for c in range(min(sheet.ncols, 30)):
-                v = str(sheet.cell_value(r, c)).strip()
-                if "売り" in v or v == "Sell":
-                    sell_col = c
-                    header_row = r
-                elif "買い" in v or v == "Buy":
-                    buy_col = c
-                elif "差引" in v or "差し引" in v or v == "Net":
-                    net_col = c
-
-        if header_row < 0 or (sell_col < 0 and buy_col < 0 and net_col < 0):
-            log.info("jpx_flow: no header row found in XLS")
-            return None
-
-        # ── try to extract actual date from title cells ──
-        actual_date = date_label
-        for r in range(min(header_row, 10)):
-            for c in range(min(sheet.ncols, 10)):
-                v = str(sheet.cell_value(r, c)).strip()
-                m = re.search(r"(\d{4})[/.\-年](\d{1,2})[/.\-月](\d{1,2})", v)
-                if m:
-                    actual_date = (
-                        f"{m.group(1)}/{m.group(2).zfill(2)}"
-                        f"/{m.group(3).zfill(2)}"
-                    )
-                    break
-            if actual_date != date_label:
+        # ── extract year from title ──
+        year = ""
+        for r in range(min(sh.nrows, 5)):
+            m = re.search(r"(\d{4})年", str(sh.cell_value(r, 0)))
+            if m:
+                year = m.group(1)
                 break
 
-        # ── extract investor-type net values ──
-        result: dict = {"date": actual_date}
+        # ── extract week date ranges (e.g. "05/25～05/29") ──
+        week_ranges: list[str] = []
+        for r in range(min(sh.nrows, 15)):
+            for c in range(sh.ncols):
+                v = str(sh.cell_value(r, c)).strip()
+                m = re.search(
+                    r"(\d{1,2})/(\d{1,2})[～~\-]\s*(\d{1,2})/(\d{1,2})", v
+                )
+                if m and v not in week_ranges:
+                    week_ranges.append(v)
 
-        for r in range(header_row + 1, sheet.nrows):
-            row_text = ""
-            for c in range(min(sheet.ncols, 5)):
-                v = str(sheet.cell_value(r, c)).strip()
-                if v:
-                    row_text += " " + v
+        # ── build result dicts with date labels ──
+        results: list[dict] = []
+        for i, _bc in enumerate(bal_cols):
+            d: dict = {}
+            if i < len(week_ranges):
+                m = re.search(
+                    r"(\d{1,2})/(\d{1,2})[～~\-]\s*(\d{1,2})/(\d{1,2})",
+                    week_ranges[i],
+                )
+                if m and year:
+                    d["date"] = (
+                        f"{year}/{m.group(3).zfill(2)}/{m.group(4).zfill(2)}"
+                    )
+                else:
+                    d["date"] = week_ranges[i]
+            results.append(d)
+
+        # ── scan all rows for investor-type keywords ──
+        for r in range(sh.nrows):
+            label = _norm_cell(sh.cell_value(r, 0))
+            if not label:
+                continue
 
             matched_key = None
             for kw, key in _INVESTOR_KEYWORDS:
-                if kw in row_text and key not in result:
+                if kw in label:
                     matched_key = key
                     break
-
             if not matched_key:
                 continue
 
-            net_val = None
-            if net_col >= 0 and net_col < sheet.ncols:
-                net_val = _parse_num_cell(sheet.cell_value(r, net_col))
+            for i, bc in enumerate(bal_cols):
+                if i >= len(results):
+                    break
+                if matched_key in results[i]:
+                    continue
+                val = _parse_num_cell(sh.cell_value(r, bc)) if bc < sh.ncols else None
+                if val is None and r + 1 < sh.nrows:
+                    val = _parse_num_cell(sh.cell_value(r + 1, bc)) if bc < sh.ncols else None
+                if val is not None:
+                    results[i][matched_key] = val // 1000  # 千円 → 百万円
 
-            if net_val is None and buy_col >= 0 and sell_col >= 0:
-                buy_v = _parse_num_cell(
-                    sheet.cell_value(r, buy_col) if buy_col < sheet.ncols else None
-                )
-                sell_v = _parse_num_cell(
-                    sheet.cell_value(r, sell_col) if sell_col < sheet.ncols else None
-                )
-                if buy_v is not None and sell_v is not None:
-                    net_val = buy_v - sell_v
-
-            if net_val is not None:
-                result[matched_key] = net_val
-
-        return result if len(result) > 1 else None
+        return [r for r in results if len(r) > 1]
     except Exception as exc:
         log.warning("jpx_flow: XLS parse error: %s", exc)
-        return None
+        return []
 
 
 # ── public API ───────────────────────────────────────────────────
@@ -267,22 +267,32 @@ def fetch_jpx_weekly_flow() -> Optional[list[dict]]:
         return None
 
     rows: list[dict] = []
+    seen_dates: set[str] = set()
+
     for url, yymw in links[:8]:
-        fk = f"jpx_week_{yymw}.json"
+        fk = f"jpx_xls2_{yymw}.json"
         fc = _cache_get(fk, ttl_hours=_FILE_CACHE_TTL_HOURS)
         if fc:
-            rows.append(fc)
+            items = fc if isinstance(fc, list) else [fc]
+            for item in items:
+                d = item.get("date", "")
+                if d and d not in seen_dates:
+                    seen_dates.add(d)
+                    rows.append(item)
             continue
 
         data = _download_xls(url)
         if not data:
             continue
 
-        label = _yymw_to_label(yymw)
-        parsed = _parse_xls_flow(data, label)
+        parsed = _parse_xls_flow(data)
         if parsed:
             _cache_set(fk, parsed)
-            rows.append(parsed)
+            for item in parsed:
+                d = item.get("date", "")
+                if d and d not in seen_dates:
+                    seen_dates.add(d)
+                    rows.append(item)
 
     if rows:
         rows.sort(key=lambda r: r.get("date", ""), reverse=True)
