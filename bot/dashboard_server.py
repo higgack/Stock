@@ -166,7 +166,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
     def end_headers(self):
         path_lower = self.path.lower().split("?")[0]
-        if path_lower.endswith((".html", "/")) or path_lower == "":
+        # on-demand HTML 페이지도 no-cache — 안 하면 옛 페이지가 브라우저에
+        # 캐시돼 stale(예: 신고가→상한가 변경이 안 보이던 문제, 2026-06-10).
+        if (path_lower.endswith((".html", "/")) or path_lower == ""
+                or path_lower in ("/earnings", "/theme", "/highlow")
+                or path_lower.startswith("/lookup/")):
             self.send_header("Cache-Control", "no-cache, must-revalidate")
         super().end_headers()
 
