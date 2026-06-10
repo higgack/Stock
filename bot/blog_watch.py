@@ -102,7 +102,7 @@ def _parse_items(xml: str) -> list[dict]:
         guid = _tag(block, "guid") or link
         pub = _tag(block, "pubDate")
         desc = _html.unescape(re.sub(r"<[^>]+>", " ", _tag(block, "description")))
-        desc = re.sub(r"\s+", " ", desc).strip()[:1800]
+        desc = re.sub(r"\s+", " ", desc).strip()[:4000]
         if title and link:
             out.append({"title": title, "link": link, "guid": guid,
                         "pubDate": pub, "desc": desc})
@@ -132,13 +132,111 @@ def _log_blog_usage(pt: int, ot: int, cost_krw: float) -> None:
             log.warning("blog_watch: usage log failed (%s): %s", path, exc)
 
 
+def _fetch_post_text(link: str) -> str | None:
+    """원문 페이지(m.blog.naver.com)에서 본문 전문 추출 (₩0, 글당 1 fetch).
+
+    RSS description 은 네이버가 자른 발췌(끝 '...')라 글이 중간에 끊김
+    (사용자 2026-06-11). 모바일 페이지의 se-main-container(스마트에디터 ONE,
+    폴백 postViewArea=구에디터)를 div depth 카운터로 정확히 잘라 태그 strip.
+    실패 시 None → RSS 발췌 유지 (graceful)."""
+    try:
+        import httpx
+        m = re.search(r"blog\.naver\.com/([^/?#]+)/(\d+)", link or "")
+        if not m:
+            return None
+        url = f"https://m.blog.naver.com/{m.group(1)}/{m.group(2)}"
+        headers = {
+            "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                           "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"),
+            "Referer": f"https://m.blog.naver.com/{m.group(1)}",
+        }
+        r = httpx.get(url, headers=headers, timeout=20, follow_redirects=True)
+        if r.status_code != 200 or not r.text:
+            return None
+        html = r.text
+        start = None
+        for marker in ('class="se-main-container"', 'id="postViewArea"',
+                       'class="post_ct"'):
+            i = html.find(marker)
+            if i >= 0:
+                start = html.rfind("<div", 0, i)
+                break
+        if start is None or start < 0:
+            return None
+        # div depth 카운터 — 시작 div 의 짝이 닫힐 때까지 (regex 중첩 한계 회피)
+        depth = 0
+        pos = start
+        end = None
+        for tag in re.finditer(r"<div\b|</div>", html[start:start + 400_000]):
+            if tag.group(0) == "<div":
+                depth += 1
+            else:
+                depth -= 1
+                if depth == 0:
+                    end = start + tag.end()
+                    break
+        if end is None:
+            return None
+        body = html[start:end]
+        body = re.sub(r"<(script|style)\b.*?</\1>", " ", body,
+                      flags=re.DOTALL | re.IGNORECASE)
+        text = _html.unescape(re.sub(r"<[^>]+>", " ", body))
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\s*\n\s*", "\n", text).strip()
+        text = re.sub(r" {2,}", " ", text)
+        return text[:15000] if len(text) >= 200 else None
+    except Exception as exc:
+        log.warning("blog_watch: full text fetch failed (%s): %s", link, exc)
+        return None
+
+
+def _backfill_full(max_n: int = 3) -> int:
+    """기존 아카이브의 잘린 발췌(desc<1500자, 전문 미시도)를 원문 전문으로
+    교체 — 사이클(30분)당 max_n 건 점진 백필. 실패 3회 캡."""
+    done = 0
+    try:
+        if not os.path.isdir(_ARCHIVE_DIR):
+            return 0
+        for day in sorted(os.listdir(_ARCHIVE_DIR), reverse=True):
+            day_dir = os.path.join(_ARCHIVE_DIR, day)
+            if not os.path.isdir(day_dir):
+                continue
+            for fn in sorted(os.listdir(day_dir), reverse=True):
+                if done >= max_n:
+                    return done
+                if not fn.endswith(".json"):
+                    continue
+                path = os.path.join(day_dir, fn)
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        rec = json.load(f)
+                    if rec.get("full") or int(rec.get("full_try", 0)) >= 3:
+                        continue
+                    if len(rec.get("desc") or "") >= 1500:
+                        continue
+                    text = _fetch_post_text(rec.get("link") or "")
+                    if text:
+                        rec["desc"] = text
+                        rec["full"] = True
+                    else:
+                        rec["full_try"] = int(rec.get("full_try", 0)) + 1
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(rec, f, ensure_ascii=False)
+                    done += 1
+                except Exception as exc:
+                    log.warning("blog_watch: backfill %s failed: %s", fn, exc)
+    except Exception as exc:
+        log.warning("blog_watch: backfill scan failed: %s", exc)
+    return done
+
+
 def _summarize(item: dict) -> str:
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key or not item.get("desc"):
         return ""
     prompt = (
         "다음은 네이버 블로그 '변화하는 기업을 찾아서'의 새 글이다.\n"
-        f"제목: {item['title']}\n본문 발췌: {item['desc']}\n\n"
+        f"제목: {item['title']}\n본문 발췌: {item['desc'][:2500]}\n\n"
         "이 글의 핵심을 한국어 3줄 이내로 요약하라. 규칙:\n"
         "1. **발췌에 있는 내용만** — 발췌에 없는 수치/사건 창작 절대 금지.\n"
         "2. 종목/기업명이 언급되면 명시.\n"
@@ -173,7 +271,8 @@ def _save_archive(item: dict, summary: str) -> None:
         rec = {"ts": now.isoformat(timespec="seconds"), "date": date_iso,
                "title": item["title"], "link": item["link"],
                "guid": item["guid"], "pubDate": item.get("pubDate", ""),
-               "summary": summary, "desc": item.get("desc", "")[:1200]}
+               "summary": summary, "desc": item.get("desc", "")[:15000],
+               "full": bool(item.get("full"))}
         with open(path, "w", encoding="utf-8") as f:
             json.dump(rec, f, ensure_ascii=False)
     except Exception as exc:
@@ -229,6 +328,12 @@ def run() -> int:
 
     pushed = 0
     for it in new_items:
+        # 원문 전문 fetch — RSS 발췌는 잘려 옴(사용자 2026-06-11). 실패 시
+        # RSS 발췌 유지.
+        full_text = _fetch_post_text(it.get("link") or "")
+        if full_text:
+            it["desc"] = full_text
+            it["full"] = True
         summary = _summarize(it)
         _save_archive(it, summary)
         if _push(it, summary):
@@ -237,6 +342,13 @@ def run() -> int:
         state["seen"].append(it["guid"])
     _save_state(state)
     log.info("blog_watch: 새 글 %d개 처리, %d개 push", len(new_items), pushed)
+    # 기존 잘린 글 점진 백필(전문 교체, 사이클당 3건) — 새 글 없어도 진행.
+    try:
+        bf = _backfill_full(max_n=3)
+        if bf:
+            log.info("blog_watch: 전문 백필 %d건", bf)
+    except Exception as exc:
+        log.warning("blog_watch: backfill failed: %s", exc)
     # 대시보드 갱신 — blog.html (사용자 2026-06-11, 레딧 워처 패턴 mirror)
     try:
         from bot.dashboard import regenerate_blog_index
