@@ -1,11 +1,11 @@
-"""DART 전체 시장 공시 피드 — 30분 간격 수집 + 아카이브 + 대시보드.
+"""DART 전체 시장 공시 피드 — 1분 간격(준실시간) 수집 + 아카이브 + 대시보드.
 
 DART list.json 을 corp_code 없이(전체 시장) 호출해 당일 주요 공시를 수집.
 chart_events.classify 로 카테고리 분류, dart_detail 로 계약/실적/자금조달
 구조화 숫자 추출. 비용 ₩0 (DART API 무료, LLM 0).
 
 아카이브: ~/.tradingagents/dart_feed_archive/YYYY-MM-DD.json
-30분마다 갱신 — 새 공시만 append (rcept_no dedup).
+1분마다 갱신(접수→카드 평균 ~1.5분) — 새 공시만 append (rcept_no dedup).
 """
 from __future__ import annotations
 
@@ -304,9 +304,10 @@ def _budget_add(n: int = 1) -> int:
     except Exception:
         pass
     return total
-# 사이클(5분)당 신규 enrich 시도 상한 — DART 분당 한도 보호. 최신순(피드
-# 순서)으로 소진, 나머지는 다음 사이클이 이어받아 점진 백필.
-_ENRICH_MAX_PER_CYCLE = 40
+# 사이클(1분)당 신규 enrich 시도 상한 — 시간당 480(=8×60) 으로 5분×40
+# 시절과 동일 처리량 유지, DART 분당 한도 보호. 최신순 소진, 나머지는
+# 다음 사이클이 이어받아 점진 백필.
+_ENRICH_MAX_PER_CYCLE = 8
 
 
 def _doc_fail_load() -> dict:
@@ -1064,7 +1065,9 @@ def run_once(target_date: date | None = None,
         except OSError:
             pass
     else:
-        days_back, _max_pages = 0, 12
+        # 증분(매분): 당일 최신 3p(300건) — 시즌 피크 분당 증분(수십 건)
+        # 대비 충분, listing ~4.3천/일.
+        days_back, _max_pages = 0, 3
     log.info("dart_feed: fetching %s (최근 %d일, ≤%dp, 오늘 콜 %d)",
              target_date, days_back + 1, _max_pages, _budget_today())
     items = fetch_market_disclosures(target_date, days_back=days_back,
