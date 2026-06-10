@@ -3,6 +3,21 @@
 Operational rules for working in this repo. Apply to **every subproject** in
 this repo (currently: `bot/` NOAH stock-bot, `trade/` Korea import/export bot).
 
+## ⛔ trade/ (한국 수출입 봇) — 단일 브랜치 통합 (2026-06-11)
+
+`trade/` 풀 코드는 **이 브랜치(메인 deploy, xqYf7)** 에서 관리한다. 옛
+`claude/export-import-dashboard-zQsi2` 브랜치는 은퇴(전환 포인터 커밋만
+남김 — 거기에 새 작업 금지). 운영 구조:
+- VM 은 체크아웃 2개: `~/stock`(NOAH 봇) + `~/stock-trade`(trade 봇,
+  자기 venv) — **둘 다 같은 repo·같은 브랜치(xqYf7)** 를 추적.
+- trade 배포: `~/stock-trade/deploy/trade-auto-update.sh`(1분 폴링)가
+  xqYf7 을 reset --hard 후 `trade/` 변경 시 trade-bot 재시작, trade-bot
+  유닛 변경 시 `install-trade-units.sh` 자동 설치. NOAH 쪽 auto-update
+  와 독립(서로 다른 체크아웃·서비스).
+- trade 작업도 이 세션 플로우 그대로: gifted-bell 에서 수정 → PR →
+  xqYf7 merge → 1분 내 양 봇 각자 배포. trade/ 변경 commit 도 본
+  CLAUDE.md 규칙(검증·커밋 게이트) 동일 적용.
+
 ## Default workflow — review first, commit only on request
 
 For **any** request (analysis output, feature idea, bug report, refactor):

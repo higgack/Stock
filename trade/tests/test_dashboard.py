@@ -1,0 +1,563 @@
+"""Dashboard renderer tests.
+
+We seed an in-memory store with a few representative alerts and inspect
+the rendered HTML for the structural pieces that downstream features
+(filtering, tab switching, image embedding) depend on. We don't try to
+execute the inline JS — that would require a browser — but we verify
+the JSON payload embedded for the JS to consume.
+"""
+
+import json
+import re
+import unittest
+from pathlib import Path
+
+from trade.dashboard import _asof_label, _companies_for, render_html
+from trade.parser import parse_caption
+from trade.store import alert_to_row, open_db, upsert_alert
+
+
+SAMPLES = [
+    # item_first with country
+    (
+        100,
+        "2026-05-11T02:45:00+00:00",
+        "라면 (전국_중국)\n관련종목 : 삼양식품 / 농심\n\n"
+        "2026년 5월 1일 ~ 10일 잠정치 수출데이터 입니다.",
+        ["media/2026-05-11/abc.jpg", "media/2026-05-11/def.jpg"],
+    ),
+    # company_first
+    (
+        101,
+        "2026-05-15T02:45:00+00:00",
+        "SK하이닉스 : 플래시 메모리 (충북 청주시)\n\n"
+        "2026년 4월 확정치 수출데이터 입니다.",
+        ["media/2026-05-15/ghi.jpg"],
+    ),
+    # item-only (placeholder stocks)
+    (
+        102,
+        "2026-05-11T02:45:00+00:00",
+        "2차전지 (전국)\n관련종목: 월별 수출 데이터\n\n"
+        "2026년 4월 1일 ~ 30일 잠정치 수출데이터 입니다.",
+        [],
+    ),
+    # import
+    (
+        103,
+        "2026-05-11T02:45:00+00:00",
+        "염화칼륨 (전국)\n관련종목 : 유니드\n\n"
+        "2026년 5월 1일 ~ 10일 잠정치 수입데이터 입니다.",
+        ["media/2026-05-11/jkl.jpg"],
+    ),
+]
+
+
+def _seed_store(tmp_db_path: Path):
+    conn = open_db(tmp_db_path)
+    for msg_id, posted_at, caption, media in SAMPLES:
+        parsed = parse_caption(caption)
+        row = alert_to_row(
+            parsed,
+            source_chat_id=-1003715527602,
+            source_message_id=msg_id,
+            media_group_id=None,
+            ingested_at=posted_at,
+            posted_at=posted_at,
+            raw_text=caption,
+            media_paths=media,
+        )
+        upsert_alert(conn, row)
+    conn.close()
+
+
+class TestDashboardRenderer(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "store.db"
+        _seed_store(self.db_path)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_renders_full_html_document(self):
+        html = render_html(self.db_path)
+        self.assertTrue(html.startswith("<!DOCTYPE html>"))
+        self.assertIn("<html lang=\"ko\">", html)
+        self.assertIn("</html>", html)
+
+    def test_header_meta_shows_totals(self):
+        html = render_html(self.db_path)
+        # 4 alerts, all distinct dedup_keys → 4 latest
+        self.assertIn("총 4건", html)
+        self.assertIn("(최신 4개)", html)
+
+    def test_tabs_and_views_exist(self):
+        html = render_html(self.db_path)
+        self.assertIn('data-tab="items"', html)
+        self.assertIn('data-tab="companies"', html)
+        self.assertIn('id="items-view"', html)
+        self.assertIn('id="companies-view"', html)
+
+    def test_filter_controls_exist(self):
+        html = render_html(self.db_path)
+        self.assertIn('id="q"', html)
+        self.assertIn('data-val="export"', html)
+        self.assertIn('data-val="import"', html)
+        self.assertIn('data-val="preliminary"', html)
+        self.assertIn('data-val="final"', html)
+        # 🆕 신규 filter — last chip group, gated by isAlertNew in matches()
+        self.assertIn('data-key="onlynew"', html)
+        self.assertIn('data-val="new"', html)
+        self.assertIn("state.onlynew&&!isAlertNew(a)", html)
+        # alert-NEW spans 7 days (was 'today only') so the badge/filter
+        # persist across the ≥10-day 관세청 cycle gap.
+        self.assertIn("function isAlertNew(a){return withinDays(a.posted_at||'',7)}", html)
+
+    def test_embedded_payload_parses_and_carries_all_alerts(self):
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        self.assertIsNotNone(m, "ALERTS payload not found in script")
+        payload = json.loads(m.group(1))
+        self.assertEqual(len(payload), 4)
+
+        items = {p["item"] for p in payload}
+        self.assertIn("라면", items)
+        self.assertIn("플래시 메모리", items)
+        self.assertIn("2차전지", items)
+        self.assertIn("염화칼륨", items)
+
+    def test_media_paths_get_prefix(self):
+        html = render_html(self.db_path, media_url_prefix="/static/")
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        all_media = [p for a in payload for p in a["media"]]
+        self.assertTrue(all_media, "expected at least one media path")
+        for path in all_media:
+            self.assertTrue(
+                path.startswith("/static/"),
+                f"path should start with media prefix, got {path!r}",
+            )
+
+    def test_stocks_visible_in_payload(self):
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        by_item = {p["item"]: p for p in payload}
+        self.assertEqual(by_item["라면"]["stocks"], ["삼양식품", "농심"])
+        self.assertEqual(by_item["플래시 메모리"]["stocks"], ["SK하이닉스"])
+        self.assertEqual(by_item["2차전지"]["stocks"], [])  # placeholder
+        self.assertEqual(by_item["염화칼륨"]["stocks"], ["유니드"])
+
+    def test_payload_carries_direction_and_status(self):
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        by_item = {p["item"]: p for p in payload}
+        self.assertEqual(by_item["라면"]["dir"], "export")
+        self.assertEqual(by_item["라면"]["status"], "preliminary")
+        self.assertEqual(by_item["플래시 메모리"]["status"], "final")
+        self.assertEqual(by_item["염화칼륨"]["dir"], "import")
+
+    def test_modal_container_present(self):
+        html = render_html(self.db_path)
+        self.assertIn('id="modal"', html)
+        self.assertIn('class="modal-backdrop"', html)
+        self.assertIn('class="modal-close"', html)
+        self.assertIn('id="modal-body"', html)
+
+    def test_dark_mode_helper_embedded(self):
+        html = render_html(self.db_path)
+        # applyDarkMode() reads UTC + 9 and toggles body.dark for the
+        # 19:00–07:00 KST window. The script must be embedded for the
+        # transition to fire without page reloads.
+        self.assertIn("applyDarkMode", html)
+        self.assertIn("getUTCHours()+9", html)
+        self.assertIn("setInterval(applyDarkMode", html)
+        # CSS dark-mode variables defined.
+        self.assertIn("body.dark", html)
+
+    def test_mini_card_carries_data_id_for_modal_lookup(self):
+        # Both items view and companies view emit mini-cards with
+        # data-id so the click handler can resolve back to ALERTS[id]
+        # without re-embedding the full alert per card.
+        html = render_html(self.db_path)
+        self.assertIn("renderMiniCard", html)
+        self.assertIn("data-id", html)
+
+    def test_nice_period_label_function_embedded(self):
+        html = render_html(self.db_path)
+        # The modal shows a Korean-language period label rather than
+        # the raw ISO dates. niceLabel() needs to be in the page.
+        self.assertIn("niceLabel", html)
+        self.assertIn("상순", html)
+        self.assertIn("중순까지", html)
+        self.assertIn("확정", html)
+
+    def test_company_view_smart_search_branch_present(self):
+        # When the search query directly matches a company name, the
+        # company view should narrow to only matching sections; check
+        # the branch is emitted.
+        html = render_html(self.db_path)
+        self.assertIn("buildCompaniesView", html)
+        self.assertIn("direct.length", html)
+
+    def test_payload_carries_dedup_key_and_history_alerts(self):
+        # Seed two alerts sharing one dedup_key + one alert with a
+        # different dedup_key → payload should carry all 3 (so the
+        # modal can find siblings), and LATEST_IDS should mark only
+        # the latest one of each dedup_key.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "store.db"
+            conn = open_db(db_path)
+            cap_a = (
+                "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+                "2026년 5월 1일 ~ 10일 잠정치 수출데이터 입니다."
+            )
+            cap_b = (
+                "라면 (전국_중국)\n관련종목 : 삼양식품\n\n"
+                "2026년 4월 확정치 수출데이터 입니다."
+            )
+            cap_c = (
+                "김치 (전국)\n관련종목 : 풀무원\n\n"
+                "2026년 5월 1일 ~ 10일 잠정치 수출데이터 입니다."
+            )
+            for msg_id, posted_at, caption in [
+                (1, "2026-05-11T02:45:00+00:00", cap_a),
+                (2, "2026-05-15T02:45:00+00:00", cap_b),
+                (3, "2026-05-11T02:45:00+00:00", cap_c),
+            ]:
+                parsed = parse_caption(caption)
+                upsert_alert(
+                    conn,
+                    alert_to_row(
+                        parsed,
+                        source_chat_id=-100,
+                        source_message_id=msg_id,
+                        media_group_id=None,
+                        ingested_at=posted_at,
+                        posted_at=posted_at,
+                        raw_text=caption,
+                        media_paths=[],
+                    ),
+                )
+            conn.close()
+
+            html = render_html(db_path)
+            m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+            self.assertIsNotNone(m)
+            payload = json.loads(m.group(1))
+            self.assertEqual(len(payload), 3)
+            # Every alert carries its dedup_key so BY_DEDUP can be
+            # rebuilt client-side.
+            for a in payload:
+                self.assertIn("dedup_key", a)
+
+            # LATEST_IDS contains exactly 2 (one per dedup_key).
+            m2 = re.search(r"const LATEST_IDS=new Set\((\[.*?\])\);", html, re.DOTALL)
+            self.assertIsNotNone(m2)
+            latest_ids = json.loads(m2.group(1))
+            self.assertEqual(len(latest_ids), 2)
+
+    def test_modal_renders_primary_and_secondary_card_helpers(self):
+        html = render_html(self.db_path)
+        # The modal uses a primary + secondary scheme so click-to-swap
+        # works inside the modal. Both class names must be in the
+        # renderModalCard helper.
+        self.assertIn("renderModalCard", html)
+        self.assertIn("modal-card primary", html)
+        self.assertIn("modal-card secondary", html)
+        self.assertIn("BY_DEDUP", html)
+
+    def test_section_subtitle_helper_present(self):
+        html = render_html(self.db_path)
+        # 품목별 view shows a 관련종목 subtitle line built from the
+        # union of variants' stocks; helper must be embedded.
+        self.assertIn("unionStocks", html)
+        self.assertIn("stocksSubtitle", html)
+        self.assertIn("관련종목:", html)
+
+    def test_sla_badge_helpers_present(self):
+        html = render_html(self.db_path)
+        # SLA badge for 잠정 alerts — computes expected 확정 date and
+        # renders D-N / D-DAY / D+N 지연 chip.
+        self.assertIn("expectedFinalKst", html)
+        self.assertIn("slaBadge", html)
+        # 'mini-sla' element class used on mini-cards.
+        self.assertIn("mini-sla", html)
+        # Modal-head SLA chip uses the badge namespace.
+        self.assertIn("sla-pending", html)
+        self.assertIn("sla-late", html)
+
+    def test_csv_button_and_download_function_present(self):
+        html = render_html(self.db_path)
+        self.assertIn('id="csv-btn"', html)
+        self.assertIn("downloadCSV", html)
+        # The CSV exports the currently-filtered result, not all rows.
+        self.assertIn("ALERTS.filter(matches)", html)
+
+    def test_payload_carries_extra_metadata_for_csv(self):
+        # CSV export needs item_raw, regions/countries, stocks_meta,
+        # composite_parts, title_kind, commentary, ingested_at — verify
+        # the payload exposes them.
+        html = render_html(self.db_path)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        payload = json.loads(m.group(1))
+        for a in payload:
+            for k in (
+                "item_raw", "regions", "countries", "stocks_meta",
+                "composite_parts", "title_kind", "commentary", "ingested_at",
+            ):
+                self.assertIn(k, a, f"missing CSV field {k}")
+
+    def test_next_announcement_and_quickstats_present(self):
+        html = render_html(self.db_path)
+        self.assertIn("nextAnnouncement", html)
+        self.assertIn("quickStats", html)
+        # Header has the two empty meta lines that JS populates on render.
+        self.assertIn('id="meta-next"', html)
+        self.assertIn('id="meta-today"', html)
+
+    def test_csv_exports_expanded_columns(self):
+        html = render_html(self.db_path)
+        # Verify the expanded header set is in the embedded downloadCSV.
+        for col in (
+            "title_kind", "item_raw", "composite_parts", "regions",
+            "countries", "stocks_meta", "expected_final_date",
+            "days_to_final", "ingested_at", "commentary",
+            "parse_warnings", "media_urls",
+        ):
+            self.assertIn(col, html, f"CSV column {col} missing")
+        # Absolute URL helper present so Excel hyperlinks resolve.
+        self.assertIn("absUrl", html)
+
+    def test_new_badge_helpers_present(self):
+        html = render_html(self.db_path)
+        # Three NEW chip variants: alert (today), item (debut in 7d),
+        # company (debut in 7d). All driven by EARLIEST_* maps built
+        # once on page load.
+        self.assertIn("isAlertNew", html)
+        self.assertIn("isItemNew", html)
+        self.assertIn("isCompanyNew", html)
+        self.assertIn("EARLIEST_ITEM_DATE", html)
+        self.assertIn("EARLIEST_COMPANY_DATE", html)
+        self.assertIn("mini-new", html)
+        self.assertIn("section-new", html)
+
+    def test_modal_extras_present(self):
+        html = render_html(self.db_path)
+        # Toolbar buttons
+        self.assertIn('data-tool="copy-url"', html)
+        self.assertIn('data-tool="save-image"', html)
+        # Composite ↔ individual link helper
+        self.assertIn("findCompositeLinks", html)
+        # Peer-stock helper
+        self.assertIn("findPeerStocks", html)
+        # Deep-link handler
+        self.assertIn("handleHashDeepLink", html)
+        self.assertIn("alertShareUrl", html)
+        # CSS classes for the new chips
+        self.assertIn("modal-toolbar", html)
+        self.assertIn("link-chip", html)
+        self.assertIn("peer-chip", html)
+
+    def test_matrix_view_helpers_present(self):
+        html = render_html(self.db_path)
+        self.assertIn("buildMatrixView", html)
+        self.assertIn("countryMix", html)
+        # New tab + view container
+        self.assertIn('data-tab="matrix"', html)
+        self.assertIn('id="matrix-view"', html)
+        # CSS for matrix + mix
+        self.assertIn("matrix-table", html)
+        self.assertIn("country-mix", html)
+
+    def test_empty_store_renders_without_crash(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            empty_db = Path(td) / "empty.db"
+            open_db(empty_db).close()
+            html = render_html(empty_db)
+            self.assertIn("<!DOCTYPE html>", html)
+            self.assertIn("총 0건", html)
+
+
+class TestEvalMissBacklogCard(unittest.TestCase):
+    """unstored_check's eval_misses.jsonl backlog must surface in the
+    dashboard header so a growing backlog is visible between the daily
+    ⚠️ alerts (which scroll out of the channel). Empty / missing file
+    must render NO line so the operator's view stays clean after the
+    last RULE was added.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmpdir.name) / "store.db"
+        _seed_store(self.db_path)
+        self.miss_path = Path(self.tmpdir.name) / "eval_misses.jsonl"
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _write_misses(self, recs):
+        with self.miss_path.open("w", encoding="utf-8") as fh:
+            for rec in recs:
+                fh.write(json.dumps(rec) + "\n")
+
+    def test_no_eval_miss_path_renders_no_backlog_line(self):
+        html = render_html(self.db_path)
+        # Empty div is fine (CSS :empty hides it) — but no header text.
+        self.assertNotIn("미파싱 백로그", html)
+
+    def test_missing_eval_miss_file_renders_no_backlog_line(self):
+        html = render_html(
+            self.db_path,
+            eval_miss_path=self.tmpdir.name + "/does_not_exist.jsonl",
+        )
+        self.assertNotIn("미파싱 백로그", html)
+
+    def test_empty_eval_miss_file_renders_no_backlog_line(self):
+        self.miss_path.touch()
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertNotIn("미파싱 백로그", html)
+
+    def test_non_empty_backlog_shows_count_and_oldest_age(self):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        self._write_misses([
+            {"detected_at": old, "chat_id": 1, "message_id": 100,
+             "caption": "a"},
+            {"detected_at": recent, "chat_id": 1, "message_id": 101,
+             "caption": "b"},
+            {"detected_at": recent, "chat_id": 1, "message_id": 102,
+             "caption": "c"},
+        ])
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertIn("미파싱 백로그", html)
+        # The strong tag shows the count …
+        self.assertIn("<strong>3건</strong>", html)
+        # … and the oldest age comes from the 7-day-old row, not the
+        # 1-day-old one.
+        self.assertIn("7일째", html)
+        # The eval_misses.jsonl filename is referenced so operators
+        # know where to look on disk.
+        self.assertIn("eval_misses.jsonl", html)
+
+    def test_malformed_lines_are_skipped_but_valid_rows_count(self):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        self.miss_path.write_text(
+            json.dumps({"detected_at": old, "chat_id": 1,
+                        "message_id": 1, "caption": "x"}) + "\n"
+            + "not-json\n"
+            + json.dumps({"detected_at": old, "chat_id": 1,
+                          "message_id": 2, "caption": "y"}) + "\n",
+            encoding="utf-8",
+        )
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertIn("<strong>2건</strong>", html)
+
+    def test_rows_without_detected_at_still_count_but_no_age(self):
+        # Older eval_misses rows (pre-detected_at era) should still count
+        # toward the backlog total so they don't silently disappear.
+        self._write_misses([
+            {"chat_id": 1, "message_id": 1, "caption": "x"},
+            {"chat_id": 1, "message_id": 2, "caption": "y"},
+        ])
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertIn("<strong>2건</strong>", html)
+        # No age suffix when we couldn't parse any detected_at.
+        self.assertNotIn("일째", html)
+
+
+class TestCustomsPanel(unittest.TestCase):
+    """The 관세청 comparison panel is server-rendered under the header.
+    Hidden entirely when there are no pins; shows '수집 대기' for pins
+    with no cached month yet; shows numbers + 전월비 once data exists.
+    Must never break the main render (additive feature)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp.name) / "store.db"
+        _seed_store(self.db_path)
+        self.customs_db = Path(self.tmp.name) / "customs.db"
+        self.hs_map = Path(self.tmp.name) / "hs_map.tsv"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_no_pins_hides_pin_panel(self):
+        # No pins AND no surge scan data → the whole 관세청 panel is absent.
+        self.hs_map.write_text("", encoding="utf-8")
+        html = render_html(
+            self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
+        )
+        self.assertNotIn("📌 내 핀", html)
+
+    def test_pin_without_data_shows_waiting(self):
+        self.hs_map.write_text("라면\t1902301010\n", encoding="utf-8")
+        # customs_db doesn't exist yet → panel shows but row is 수집 대기
+        html = render_html(
+            self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
+        )
+        self.assertIn("📌 내 핀", html)
+        self.assertIn("수집 대기", html)
+        self.assertIn("1902301010", html)
+
+    def test_pin_with_data_shows_numbers(self):
+        from trade import customs
+        self.hs_map.write_text("라면\t1902301010\n", encoding="utf-8")
+        with customs.session(self.customs_db) as conn:
+            customs.upsert_month(conn, "1902301010", "2026-01", {
+                "exp_dlr": 129673809, "imp_dlr": 1236615,
+                "bal_payments": 128437194, "exp_wgt": 0, "imp_wgt": 0,
+            })
+        html = render_html(
+            self.db_path, customs_db_path=self.customs_db, hs_map_path=self.hs_map
+        )
+        self.assertIn("📌 내 핀", html)
+        self.assertIn("1.3억$", html)        # formatted export (억 달러 통일)
+        self.assertNotIn("수집 대기", html)
+
+    def test_default_paths_no_crash(self):
+        # render_html with no customs args must still work (uses module
+        # defaults; on a machine with no pins the panel is just hidden).
+        html = render_html(self.db_path)
+        self.assertIn("<!DOCTYPE html>", html)
+
+
+class CompaniesForTests(unittest.TestCase):
+    def test_filters_products_keeps_companies(self):
+        # 회사별 뷰 그룹핑용 companies — 품목/제품명 제외, 실제 회사·복합명은 유지.
+        out = _companies_for(["삼성전자", "수산화리튬", "동박", "GST / 유니셈 등",
+                              "반도체 웨이퍼", "소자의 측정, 검사용 장비"])
+        self.assertIn("삼성전자", out)
+        self.assertIn("GST", out)
+        self.assertIn("유니셈", out)
+        for prod in ("수산화리튬", "동박", "반도체", "웨이퍼", "반도체 웨이퍼",
+                     "측정", "검사용", "장비"):
+            self.assertNotIn(prod, out)
+
+    def test_empty_safe(self):
+        self.assertEqual(_companies_for([]), [])
+        self.assertEqual(_companies_for(None), [])
+
+
+class AsofLabelTests(unittest.TestCase):
+    def test_weekday_label(self):
+        self.assertEqual(_asof_label("20260604"), "목")   # 2026-06-04 목요일
+        self.assertEqual(_asof_label("20260605"), "금")
+        self.assertEqual(_asof_label("20260606"), "토")
+
+    def test_bad_input_empty(self):
+        for bad in ("", "x", "2026", None):
+            self.assertEqual(_asof_label(bad), "")
+
+
+if __name__ == "__main__":
+    unittest.main()
