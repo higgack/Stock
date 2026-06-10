@@ -3252,6 +3252,7 @@ async def _periodic_dashboard_refresh(application=None) -> None:
                                        regenerate_cheongyak_index,
                                        regenerate_gics_candidates_index,
                                        regenerate_reddit_insider_index,
+                                       regenerate_blog_index,
                                        regenerate_watchlist_index,
                                        regenerate_paper_index,
                                        regenerate_market_index,
@@ -3262,6 +3263,7 @@ async def _periodic_dashboard_refresh(application=None) -> None:
             regenerate_cheongyak_index()
             regenerate_gics_candidates_index()
             regenerate_reddit_insider_index()
+            regenerate_blog_index()
             regenerate_watchlist_index()
             regenerate_market_index()
             regenerate_dart_feed_index()
@@ -3353,6 +3355,12 @@ async def _on_startup(application) -> None:
         log.info("startup: reddit_insider.html regenerated with current code")
     except Exception as exc:
         log.warning("startup: reddit_insider.html regen failed: %s", exc)
+    try:
+        from bot.dashboard import regenerate_blog_index
+        regenerate_blog_index()
+        log.info("startup: blog.html regenerated with current code")
+    except Exception as exc:
+        log.warning("startup: blog.html regen failed: %s", exc)
     try:
         from bot.dashboard import regenerate_market_index
         regenerate_market_index()

@@ -237,6 +237,12 @@ def run() -> int:
         state["seen"].append(it["guid"])
     _save_state(state)
     log.info("blog_watch: 새 글 %d개 처리, %d개 push", len(new_items), pushed)
+    # 대시보드 갱신 — blog.html (사용자 2026-06-11, 레딧 워처 패턴 mirror)
+    try:
+        from bot.dashboard import regenerate_blog_index
+        regenerate_blog_index()
+    except Exception as exc:
+        log.warning("blog_watch: blog.html regen failed: %s", exc)
     return 0
 
 
