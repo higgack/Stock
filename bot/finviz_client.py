@@ -259,9 +259,60 @@ def _groups_fallback_etf() -> dict:
     return out
 
 
+# ── 11 GICS 섹터 (메인 위젯 '간략' 버전 — 사용자 2026-06-10 '메인은 야후처럼
+# 간략, 세부 페이지는 디테일'). yfinance 섹터 ETF, 무키·견고(스크랩 아님). ──
+_SECTOR_KR = {
+    "Technology": "기술", "Healthcare": "헬스케어", "Financials": "금융",
+    "Consumer Discretionary": "자유소비재", "Consumer Staples": "필수소비재",
+    "Industrials": "산업재", "Energy": "에너지", "Utilities": "유틸리티",
+    "Materials": "소재", "Real Estate": "부동산", "Communication": "커뮤니케이션",
+}
+
+
+def fetch_sectors() -> dict:
+    """미국 11 GICS 섹터 당일 등락 (yfinance 섹터 ETF, 한국어 라벨). 메인
+    대시보드 위젯의 '간략' 버전 — Yahoo 의 섹터 개요처럼 11개만 깔끔히.
+    무키·견고(스크랩 아님). 10분 캐시. (세부 140 업종은 /usindustry 페이지.)"""
+    c = _cached("sectors.json")
+    if c is not None:
+        return c
+    out: dict = {"groups": [], "ts": _now_label(), "source": "yfinance"}
+    try:
+        from bot.us_market_daily import _SECTOR_ETFS
+        import yfinance as yf
+        for name, tk in _SECTOR_ETFS.items():
+            try:
+                fi = yf.Ticker(tk).fast_info
+                last = getattr(fi, "last_price", None)
+                prev = getattr(fi, "previous_close", None)
+                if last and prev and prev > 0:
+                    out["groups"].append({
+                        "name": _SECTOR_KR.get(name, name),
+                        "pct": round((last - prev) / prev * 100, 2)})
+            except Exception:
+                continue
+    except Exception as exc:
+        log.warning("finviz: sectors fetch failed: %s", exc)
+    if out["groups"]:
+        _cache_write("sectors.json", out)
+    return out
+
+
+def top_sector_movers(top_n: int = 10) -> dict:
+    """메인 위젯용 — 11 GICS 섹터 상/하위(부호 분리). top_movers 와 동일
+    shape, 데이터만 섹터(간략). 세부 업종은 /usindustry(top_movers→Finviz)."""
+    data = fetch_sectors()
+    gs = [g for g in data.get("groups", []) if g.get("pct") is not None]
+    ups = [g for g in gs if g["pct"] > 0]
+    downs = [g for g in gs if g["pct"] < 0]
+    return {"up": sorted(ups, key=lambda g: g["pct"], reverse=True)[:top_n],
+            "down": sorted(downs, key=lambda g: g["pct"])[:top_n],
+            "ts": data.get("ts", ""), "source": data.get("source", "")}
+
+
 def top_movers(top_n: int = 10) -> dict:
-    """업종 등락 상/하위 → {'up': [...], 'down': [...], 'ts', 'source'} —
-    KR fetch_sector_movers 와 동일 shape (위젯 렌더 공유 목적).
+    """업종(industry, ~140) 등락 상/하위 → {'up','down','ts','source'} —
+    세부 페이지(/usindustry)용. fetch_groups(Finviz→GICS산출→ETF) 기반.
     fetch_groups 의 정렬에 의존하지 않고 여기서 자체 정렬 (방어적).
 
     부호 필터 (2026-06-10 VM surfaced): 상승 칸은 pct>0, 하락 칸은 pct<0

@@ -768,10 +768,12 @@ def _fetch_sector_movers_safe() -> dict:
 
 
 def _fetch_us_sector_movers_safe() -> dict:
-    """미국 업종 등락 TOP 10 (Finviz, KR 업종 등락 미러 — 사용자 2026-06-10)."""
+    """미국 섹터 등락 — 메인 위젯은 **11 GICS 섹터(간략)**, 세부 140 업종은
+    /usindustry 페이지(top_movers→Finviz). 사용자 2026-06-10 '메인은 야후처럼
+    간략, 세부 페이지는 디테일'."""
     try:
-        from bot.finviz_client import top_movers
-        return top_movers(top_n=10)
+        from bot.finviz_client import top_sector_movers
+        return top_sector_movers(top_n=10)
     except Exception as exc:
         log.warning("us sector movers fetch error: %s", exc)
         return {"up": [], "down": [], "ts": ""}
