@@ -302,6 +302,13 @@ commit-request rule — never do it.
 
 ## Help text registration of changes — mandatory
 
+**⛔ 갱신 타이밍 override (사용자 정책 2026-06-11):** `_HELP_TEXT` 는
+변경마다 같은 commit 에서 갱신하지 말고, **사용자가 "help 갱신해줘" 라고
+요청할 때 한 번에 모아서** 갱신한다 ("help 는 아직도 검증하고 update 할게
+많으니 내가 요청하면 한번해"). 누적 변경분은 commit body 에 기록해 요청
+시 빠짐없이 반영. 아래의 '같은 commit 의무' 문구는 이 정책으로 override
+(4096 cap·압축·도메인 inline 금지 등 나머지 규칙은 유효).
+
 Whenever a change ships that is user-visible (new command, new data
 source, new RULE, new analyst, new dashboard feature, removed
 behavior, etc.), `_HELP_TEXT` MUST be updated in the SAME commit. The

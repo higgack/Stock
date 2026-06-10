@@ -57,7 +57,9 @@ _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "finviz"
 _CACHE_TTL_SEC = 5 * 60         # 5분 — market.html 재생성 주기와 일치(사용자
                                 # 2026-06-10 '10분이 최선인가'). #195 헤더로 통과
                                 # 확인됨 → 5분 스크랩도 단일 채널·캐시로 안전.
-_FALLBACK_TTL_SEC = 6 * 3600    # S&P500 1y 주봉 폴백은 무거워 6h
+# S&P500 1y 주봉 폴백 — 6h 는 장중 stale(20:04 산출이 새벽까지 서빙,
+# 사용자 2026-06-11) → 30분. 배치 다운로드 비용은 30분당 ~1분 수준 허용.
+_FALLBACK_TTL_SEC = 30 * 60
 
 # 위키/스크린너 universe 가 전부 실패할 때의 최후 코어 (~40 대형주) — 신고저
 # 폴백이 빈 화면 안 되게 최소 보장(2026-06-10 VM '데이터 없음' 케이스).
@@ -447,7 +449,7 @@ def top_movers(top_n: int = 10) -> dict:
 # 리디자인에서 span 래핑 가능성 있어 제거 — href 의 t= 만 신뢰, 앵커 내부
 # 텍스트는 [^<]* 로 소비(tail 이 다음 셀부터 시작 = 회사명). .ashx 하위호환.
 _TICKER_CELL_RE = re.compile(
-    r'<a[^>]+href="[^"]*quote(?:\.ashx)?\?t=([A-Z0-9.\-]+)[^"]*"[^>]*>[^<]*</a>(.*?)</tr>',
+    r'<a[^>]+href="[^"]*quote(?:\.ashx)?\?t=([A-Z0-9.\-]+)[^"]*"[^>]*>.*?</a>(.*?)</tr>',
     re.DOTALL)
 _CELL_TXT_RE = re.compile(r'<td[^>]*>(?:<[^>]+>)*([^<]*)')
 

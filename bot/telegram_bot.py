@@ -3103,12 +3103,18 @@ async def _periodic_dashboard_requests(application) -> None:
         for req in reqs:
             kind = req.get("kind")
             query = (req.get("query") or "").strip()
+            req_id = req.get("id", "")
             log.info("dashboard request: kind=%s query=%r", kind, query)
             try:
+                # 완료 시 같은 id 로 result 기록 — 대시보드 실행 버튼이
+                # '작업중(빨강)' → 원복 시점을 알 수 있게 (사용자 2026-06-11).
+                from bot.dashboard_requests import write_result as _wr
                 if kind == "analyze":
                     raw = query.upper()
                     if not TICKER_RE.match(raw):
                         log.warning("dashboard analyze: bad ticker %r", raw)
+                        _wr(req_id, {"ok": False, "done": True,
+                                     "lines": [f"⚠️ 잘못된 티커: {raw}"]})
                         continue
                     await bot.send_message(
                         chat_id=chat_id,
@@ -3116,6 +3122,8 @@ async def _periodic_dashboard_requests(application) -> None:
                         parse_mode=ParseMode.HTML,
                     )
                     await _analyze_ticker_and_post(bot, chat_id, raw)
+                    _wr(req_id, {"ok": True, "done": True, "lines": [
+                        f"✅ {raw} 분석 완료 — 채널 게시 + 아카이브 갱신(새로고침)"]})
                 elif kind == "screener":
                     async def _send(t: str) -> None:
                         await bot.send_message(
@@ -3128,6 +3136,8 @@ async def _periodic_dashboard_requests(application) -> None:
                     )
                     resolved = await _resolve_screener_target(_send, query.lower())
                     if resolved.get("mode") == "error":
+                        _wr(req_id, {"ok": False, "done": True,
+                                     "lines": ["⚠️ 도메인 해석 실패 — 채널 메시지 확인"]})
                         continue
                     await _run_screener_and_send(
                         send=_send,
@@ -3135,6 +3145,8 @@ async def _periodic_dashboard_requests(application) -> None:
                         cache_key=resolved.get("cache_key"),
                         force_fresh=resolved.get("force_fresh", False),
                     )
+                    _wr(req_id, {"ok": True, "done": True, "lines": [
+                        "✅ Screener 완료 — 채널 게시 + 이 페이지 갱신(새로고침)"]})
                 elif kind == "screen":
                     async def _send2(t: str) -> None:
                         await bot.send_message(
@@ -3145,6 +3157,8 @@ async def _periodic_dashboard_requests(application) -> None:
                         f"🌐 대시보드 요청 — 조건부 스크리너 <code>{_html.escape(query)}</code>"
                     )
                     await _handle_screen(query.split(), _send2)
+                    _wr(req_id, {"ok": True, "done": True, "lines": [
+                        "✅ 조건부 스크리너 완료 — 채널 게시 + 이 페이지 갱신(새로고침)"]})
                 elif kind == "command":
                     # 대시보드 명령 콘솔 — '/명령' 실행 후 텍스트 답변을 result
                     # 스풀에 기록(브라우저가 api/command_result 로 폴링).
@@ -3203,10 +3217,10 @@ async def _periodic_dashboard_requests(application) -> None:
             except Exception:
                 log.exception("dashboard request failed: %s", req)
                 try:
-                    if req.get("kind") == "command" and req.get("id"):
+                    if req.get("id"):
                         from bot.dashboard_requests import write_result
                         write_result(req["id"], {"ok": False, "done": True,
-                                                 "lines": ["⚠️ 명령 처리 중 오류가 발생했습니다."]})
+                                                 "lines": ["⚠️ 처리 중 오류 — 텔레그램 채널/로그 확인"]})
                 except Exception:
                     pass
 
