@@ -756,6 +756,12 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
                    "리스크") or "실적" in cat:
             if not corp_code:
                 continue
+            # 지분공시는 '대량보유'(majorstock 구조화 존재)만 시도 — 임원·
+            # 주요주주 소유상황/감사보고서/자산유동화 등은 무료 구조화 소스가
+            # 없어(원문도 라벨 미매칭) 시도 예산만 소모하며 계약·증자 카드를
+            # 굶김(사용자 2026-06-11 '블락?' 진단). 제목만 표시가 정상.
+            if cat == "지분공시" and "대량보유" not in report_nm:
+                continue
             # 사이클당 신규 시도 상한 + 스로틀 — 4일치 일괄 enrich 가
             # DART 분당 한도를 태우고 전부 negative-cache 로 고착되던 것
             # 차단(2026-06-11 surfaced). 나머지는 다음 5분 사이클이 이어감.

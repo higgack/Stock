@@ -265,8 +265,13 @@ def _market_toggle(year: int, month: int, market: str) -> str:
 def render_page(year: int, month: int, market: str = "kr") -> str:
     """Render the earnings calendar — market='kr'(KIND IR일정·DART 폴백) | 'us'(Finnhub 실적)."""
     try:
-        from bot.finviz_client import _sp500_names
-        _us_names = _sp500_names() or {}
+        # 전 미국 상장 디렉토리(NASDAQ Trader, ~8천 종목) 우선 — S&P500
+        # 명단만으론 소형주 이름이 비어 '일부만 이름'(사용자 2026-06-11).
+        from bot.us_symbol_names import us_symbol_names
+        _us_names = us_symbol_names() or {}
+        if not _us_names:
+            from bot.finviz_client import _sp500_names
+            _us_names = _sp500_names() or {}
     except Exception:
         _us_names = {}
     market = market if market in ("kr", "us") else "kr"
