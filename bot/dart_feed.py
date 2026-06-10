@@ -493,10 +493,519 @@ def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
     return {"lines": parts}
 
 
+
+# ── 배치 구현 2026-06-11 (사용자 승인 양식) — 공용 헬퍼 ──────────────────
+
+def _doc_unit_mult(txt: str) -> float:
+    """공시 표 단위 감지: 원=1 / 천원=1e3 / 백만원=1e6 (회사별 혼재 —
+    미감지 시 1,000배 오류 클래스라 필수)."""
+    m = re.search(r"단위\s*[:：]\s*(백만\s*원|천\s*원|원)", txt)
+    if not m:
+        return 1.0
+    u = m.group(1).replace(" ", "")
+    return 1e6 if u == "백만원" else (1e3 if u == "천원" else 1.0)
+
+
+def _amt_won(raw: str, mult: float = 1.0) -> str | None:
+    """'53,206,197' (+단위배수) → '532억원'. 음수 지원."""
+    from bot.dart_detail import _won
+    try:
+        n = float(str(raw).replace(",", "").strip()) * mult
+    except (TypeError, ValueError):
+        return None
+    return _won(str(n))
+
+
+def _pct1(raw: str) -> str | None:
+    try:
+        return f"{float(str(raw).replace(',', '').replace('%', '')):+.1f}%"
+    except (TypeError, ValueError):
+        return None
+
+
+def _correction_header(txt: str) -> str | None:
+    """[기재정정] 공통 — '정정(날짜): 사유' 헤더 라인. 없으면 None."""
+    if "정정신고" not in txt and "정정사유" not in txt:
+        return None
+    d = re.search(r"정정일자\s*(\d{4}-\d{2}-\d{2})", txt)
+    r = re.search(r"정정사유\s*[:：]?\s*([가-힣A-Za-z0-9 ,.()·]{2,40}?)"
+                  r"\s*(?:\d\.|정정사항|정정관련|$)", txt)
+    if not r:
+        return None
+    dd = f"({d.group(1)[2:]})" if d else ""
+    return f"정정{dd}: {r.group(1).strip()}"
+
+
+def _tok_amt(tok, mult):
+    return _amt_won(tok, mult) if tok and tok != "-" else None
+
+
+# ── 실적 — 월별 잠정(Form A) / 연간 30%·15% 변동(Form B) + 정정 ──────────
+
+def _parse_earnings_doc(rcept_no: str, api_key: str, title: str) -> dict | None:
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    mult = _doc_unit_mult(txt)
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    if "당해실적" in txt and "누계실적" in txt:
+        # Form A — 월별 잠정실적. 행 = '라벨 당해실적 (YY.MM) 값들 누계실적
+        # (범위) 값들'. 컬럼 수가 양식마다 달라(흑자전환여부 유무 등) 위치
+        # 고정 대신: 괄호 라벨((26.05)·(%)) 제거 후 금액(콤마/4자리+)과
+        # 비율(소수/3자리-) 분류 — 금액[0]=당월·누계, 비율[0]=전월比,
+        # 비율[-1]=전년比.
+        mlabel = re.search(r"\((\d{2}\.\d{2})\)", txt)
+        parts.insert(len(parts) and 1 or 0,
+                     f"구분: 월별 잠정실적{' (' + mlabel.group(1) + ')' if mlabel else ''}")
+
+        def _amts_pcts(seg: str) -> tuple[list, list]:
+            seg = re.sub(r"\([^)]*\)", " ", seg)
+            amts, pcts = [], []
+            for tok in re.findall(r"[-+]?\d[\d,]*(?:\.\d+)?", seg):
+                if "." in tok:
+                    pcts.append(tok)
+                elif "," in tok or len(tok.lstrip("+-")) > 3:
+                    amts.append(tok)
+                else:
+                    pcts.append(tok)
+            return amts, pcts
+
+        for label in ("매출액", "영업이익", "당기순이익", "총매출액"):
+            pre = r"(?<!총)" if label == "매출액" else ""
+            mm = re.search(pre + rf"{label}\s*(?:\((?:당기|당월)실적\))?\s*당해실적"
+                           rf"\s*(.{{0,160}}?)누계실적\s*(.{{0,160}}?)(?=[가-힣]{{2,}}|$)",
+                           txt, re.DOTALL)
+            if not mm:
+                continue
+            ca, cp = _amts_pcts(mm.group(1))
+            ka, kp = _amts_pcts(mm.group(2))
+            if ca:
+                a = _tok_amt(ca[0], mult)
+                if a:
+                    extras = []
+                    if cp:
+                        extras.append(f"전월 {_pct1(cp[0])}")
+                    if len(cp) > 1:
+                        extras.append(f"전년동월 {_pct1(cp[-1])}")
+                    parts.append(f"{label}(당월): {a}"
+                                 + (f" ({' · '.join(extras)})" if extras else ""))
+            if ka:
+                a = _tok_amt(ka[0], mult)
+                if a:
+                    parts.append(f"{label}(누계): {a}"
+                                 + (f" (전년동기 {_pct1(kp[0])})" if kp else ""))
+        return {"lines": parts} if len(parts) >= 2 else None
+
+    if "직전사업연도" in txt:
+        # Form B — 연간 결산 변동(30%/15%)
+        ftype = re.search(r"재무제표의?\s*종류\s*(개별|연결)", txt)
+        s = re.search(r"시작일\s*(\d{4}-\d{2}-\d{2})", txt)
+        e = re.search(r"종료일\s*(\d{4}-\d{2}-\d{2})", txt)
+        head = "구분: 연간 결산"
+        if corr:
+            head = "구분: [기재정정] 연간 결산"
+        seg = []
+        if ftype:
+            seg.append(ftype.group(1))
+        if s and e:
+            seg.append(f"FY {s.group(1)[2:]}~{e.group(1)[2:]}")
+        if seg:
+            head += " (" + " · ".join(seg) + ")"
+        parts.append(head)
+        for label in ("매출액", "영업이익", "당기순이익"):
+            m = re.search(rf"-?\s*{label}\s*(?:\([^)]{{1,12}}\))?\s+([-\d,]+)\s+([-\d,]+)\s+([-\d,]+)\s+([-\d.,]+)\s*(흑자전환|적자전환|적자지속|-)?",
+                          txt)
+            if not m:
+                continue
+            cur, prev, pct = m.group(1), m.group(2), m.group(4)
+            flag = m.group(5) if m.group(5) and m.group(5) != "-" else None
+            a, b = _amt_won(cur, mult), _amt_won(prev, mult)
+            if not a:
+                continue
+            try:
+                neg = float(cur.replace(",", "")) < 0
+                neg_prev = float(prev.replace(",", "")) < 0
+            except ValueError:
+                neg = neg_prev = False
+            if not flag and neg:
+                flag = "적자지속" if neg_prev else "적자전환"
+            tail = _pct1(pct)
+            extras = [x for x in (f"전기 {b}" if b else None,
+                                  flag or (tail and tail) or None) if x]
+            if not flag and tail:
+                extras = [f"전기 {b}" if b else None, tail]
+                extras = [x for x in extras if x]
+            parts.append(f"{label}: {a}" + (f" ({' · '.join(extras)})" if extras else ""))
+        fin = []
+        for lbl, kr in (("자산총계", "자산"), ("부채총계", "부채"), ("자본총계", "자본")):
+            m = re.search(rf"{lbl}\s+([-\d,]+)", txt)
+            if m:
+                a = _amt_won(m.group(1), mult)
+                if a:
+                    fin.append(f"{kr} {a}")
+        if fin:
+            parts.append("재무현황: " + " · ".join(fin))
+        why = re.search(r"변동\s*주요\s*원인[^가-힣A-Za-z0-9]{0,20}?"
+                        r"([가-힣A-Za-z0-9() ,.·%~\- ]{4,60}?)\s*(?:\d\.|이사회|기타|$)",
+                        txt)
+        if why:
+            parts.append(f"변동 주요원인: {why.group(1).strip()}")
+        return {"lines": parts} if len(parts) >= 2 else None
+    return None
+
+
+# ── 주주환원 — 신탁 체결/해지 · 소각 · 취득결과 · 배당 기준일 ────────────
+
+def _parse_trust(rcept_no: str, api_key: str, cancel: bool) -> dict | None:
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    mult = _doc_unit_mult(txt)
+    g = lambda pat: (lambda m: m.group(1).strip() if m else None)(re.search(pat, txt))
+    parts: list[str] = []
+    org = g(r"(?:계약체결기관|해지기관)\s*([가-힣A-Za-z0-9() .,&]{2,30}?)\s*(?:\(|\d\.|체결|해지|$)")
+    parts.append(f"구분: 자기주식취득 신탁계약 {'해지' if cancel else '체결'}"
+                 + (f" ({org})" if org else ""))
+    if cancel:
+        why = g(r"해지목적\s*([가-힣A-Za-z0-9() ,.·]{2,60}?)\s*(?:\d\.|해지기관|$)")
+        if why:
+            parts.append(f"해지사유: {why}")
+        amt = g(r"해지\s*전\s*([\d,]{6,})") or g(r"계약금액[^0-9]{0,40}([\d,]{6,})")
+        s = g(r"시작일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+        e = g(r"종료일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+        if amt:
+            a = _amt_won(amt, mult)
+            if a:
+                parts.append(f"해지 전 계약: {a}"
+                             + (f" ({_clean_kdate(s)} ~ {_clean_kdate(e)})" if s and e else ""))
+        d = g(r"해지예정일자?\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+        ret = g(r"반환방법\s*([가-힣() 및·,]{2,30})")
+        if d:
+            parts.append(f"해지예정일: {_clean_kdate(d)}"
+                         + (f" · 반환: {ret}" if ret else ""))
+        m = re.search(r"보통주식\s*([\d,]{3,})\s*비율\s*\(%\)\s*([\d.]+)", txt)
+        if m:
+            parts.append(f"보유현황: {int(m.group(1).replace(',', '')):,}주 ({m.group(2)}%)")
+    else:
+        amt = g(r"계약금액[^0-9]{0,40}([\d,]{6,})")
+        s = g(r"시작일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+        e = g(r"종료일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+        if amt:
+            a = _amt_won(amt, mult)
+            if a:
+                line = f"계약금액: {a}"
+                if s and e:
+                    line += f" · 기간 {_fmt_period(_clean_kdate(s) + ' ~ ' + _clean_kdate(e))}"
+                parts.append(line)
+        m = re.search(r"취득예정주식[^0-9]{0,40}([\d,]{2,})", txt)
+        pr = re.search(r"취득하고자\s*하는\s*주식의\s*가격[^0-9]{0,40}([\d,]{2,})", txt)
+        if m:
+            parts.append(f"취득예정: {int(m.group(1).replace(',', '')):,}주"
+                         + (f" (기준가 {int(pr.group(1).replace(',', '')):,}원 — 주가 따라 변동)" if pr else ""))
+        why = g(r"계약목적\s*([가-힣A-Za-z0-9() ,.·]{2,40}?)\s*(?:\d\.|계약체결|$)")
+        if why:
+            parts.append(f"목적: {why}")
+    return {"lines": parts} if len(parts) >= 2 else None
+
+
+def _clean_kdate(s: str | None) -> str:
+    """'2026년 03월 17일' → '2026-03-17'."""
+    if not s:
+        return ""
+    m = re.search(r"(\d{4})[년\s.-]+(\d{1,2})[월\s.-]+(\d{1,2})", s)
+    if not m:
+        return s.strip()
+    return f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+
+
+def _parse_burn(rcept_no: str, api_key: str) -> dict | None:
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    mult = _doc_unit_mult(txt)
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+    profit_burn = ("자본금은 감소하지 않" in txt or "자본금의 감소는 없" in txt
+                   or "343조" in txt)
+    parts.append("구분: 주식 소각"
+                 + (" (이익소각 — 자본금 감소 없음)" if profit_burn else ""))
+    n = re.search(r"소각할\s*주식.{0,30}?보통주식?\s*\(주\)\s*([\d,]{3,})", txt, re.DOTALL)
+    tot = re.search(r"발행주식\s*총수.{0,30}?보통주식?\s*\(주\)\s*([\d,]{4,})", txt, re.DOTALL)
+    amt = re.search(r"소각예정금액[^0-9]{0,30}([\d,]{4,})", txt)
+    if n:
+        nn = int(n.group(1).replace(",", ""))
+        line = f"소각: {nn:,}주"
+        if tot:
+            tt = int(tot.group(1).replace(",", ""))
+            if tt > 0:
+                line += f" = 발행주식의 {nn / tt * 100:.2f}%"
+        if amt:
+            a = _amt_won(amt.group(1), mult)
+            if a:
+                line += f" · {a}"
+        parts.append(line)
+    how = re.search(r"취득방법\s*([가-힣 ]{2,20}?)\s*(?:\d\.|소각|$)", txt)
+    d = re.search(r"소각\s*예정일\s*(\d{4}-\d{2}-\d{2})", txt)
+    seg = []
+    if how:
+        seg.append(f"방법: {how.group(1).strip()}")
+    if d:
+        seg.append(f"소각예정일 {d.group(1)}")
+    if seg:
+        parts.append(" · ".join(seg))
+    return {"lines": parts} if len(parts) >= 2 else None
+
+
+def _parse_buyback_result(rcept_no: str, api_key: str) -> dict | None:
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts: list[str] = ["구분: 자기주식 취득결과"]
+    # 일자별 표의 계(합계) 행 — 컬럼 변형(단가 '-' 등)에 강건하게: 행의
+    # 숫자들 중 최대 = 총액, 첫 비-최대 = 수량, 평균단가 = 총액/수량 산출.
+    seg = re.search(r"(?<![가-힣])(?:합\s*)?계\s*([-\d,.\s]{6,80})", txt)
+    if seg:
+        try:
+            nums = [int(t.replace(",", ""))
+                    for t in re.findall(r"\d[\d,]{2,}", seg.group(1))]
+            if nums:
+                amt = max(nums)
+                qty = next((n for n in nums if n != amt), None)
+                if amt >= 10 ** 6 and qty and 0 < qty < amt:
+                    px = round(amt / qty)
+                    a = _amt_won(str(amt))
+                    line = f"취득: {qty:,}주 @ {px:,}원"
+                    if a:
+                        line += f" = {a}"
+                    parts.append(line)
+        except (TypeError, ValueError, ZeroDivisionError):
+            pass
+    broker = re.search(r"위탁\s*투자\s*중개업자[^가-힣A-Za-z]{0,10}"
+                       r"([가-힣A-Za-z0-9·, ]{2,24})", txt)
+    if broker:
+        nm = re.sub(r"\s*(?:주식회사|㈜)\s*", " ", broker.group(1)).strip()
+        mm = re.match(r".{0,18}?(?:투자증권|금융투자|증권)", nm)
+        if mm:
+            nm = mm.group(0)
+        if len(nm) >= 2:
+            parts.append(f"위탁: {nm}")
+    return {"lines": parts} if len(parts) >= 2 else None
+
+
+def _parse_div_record(rcept_no: str, api_key: str, title: str) -> dict | None:
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    kind = None
+    m = re.search(r"배당구분\s*(분기배당|결산배당|중간배당)", txt)
+    if m:
+        kind = m.group(1)
+    elif "분기" in title or "중간" in title:
+        kind = "분기배당"
+    if not kind and "배당" not in title and "배당" not in txt:
+        return None  # 주총 소집용 기준일 등 — 배당 카드 오라벨 방지
+    parts = [f"구분: {kind or '배당'} 기준일 결정"]
+    d = re.search(r"기준일\s*(\d{4}-\d{2}-\d{2})", txt)
+    if d:
+        line = f"배당기준일: {d.group(1)}"
+        if "폐쇄" in txt and ("없이" in txt or "기준일만" in txt):
+            line += " (권리주주 확정 — 명부폐쇄 없음)"
+        parts.append(line)
+    b = re.search(r"이사회결의일\s*\(?결정일?\)?\s*\(?\s*(\d{4}-\d{2}-\d{2})", txt)
+    if b:
+        parts.append(f"이사회결의: {b.group(1)}")
+    if re.search(r"구체적인\s*사항은\s*추후|추후\s*이사회에서\s*결정", txt):
+        parts.append("※ 배당금액은 추후 이사회 결정")
+    return {"lines": parts} if len(parts) >= 2 else None
+
+
+# ── 자금조달 — 유상/유무상 증자 doc 풀카드 + CB doc 풀카드 ────────────────
+
+def _parse_rights_issue_doc(rcept_no: str, api_key: str, title: str) -> dict | None:
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    mult = _doc_unit_mult(txt)
+    g = lambda pat: (lambda m: m.group(1).strip() if m else None)(re.search(pat, txt))
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+    method = g(r"증자방식\s*([가-힣A-Za-z0-9 ()]{2,30}?)\s*(?:\d|\(주\)|주\)|기타주식|$)")
+    sub = "종속회사" in title
+    sub_nm = g(r"종속회사[명인]?\s*[:：]?\s*\(?주?\)?\s*"
+               r"([가-힣A-Za-z0-9·]{2,16})") if sub else None
+    if "유무상" in title:
+        base = "유무상증자"
+    elif "무상증자" in title:
+        base = "무상증자"
+    else:
+        base = "유상증자"
+    head = ("구분: "
+            + (f"종속회사({sub_nm}) " if sub_nm else ("종속회사 " if sub else ""))
+            + base)
+    if method:
+        head += f" ({method})"
+    parts.append(head)
+    # 신주 종류·수 — 보통주 우선, '-' 면 기타/종류주식(RCPS 등) 변형
+    kind, n_new = "보통주", None
+    m = re.search(r"보통주식?\s*\(주\)\s*([\d,]{1,15})", txt)
+    if m and m.group(1) != "-":
+        n_new = int(m.group(1).replace(",", ""))
+    else:
+        m = re.search(r"(?:종류|기타)주식?\s*\(주\)\s*([\d,]{1,15})", txt)
+        if m:
+            n_new = int(m.group(1).replace(",", ""))
+            kind = "RCPS" if "상환전환우선주" in txt else "종류주식"
+    px = g(r"발행가액?[^0-9]{0,80}?([\d,]{2,})")
+    pre = re.search(r"증자전\s*발행주식\s*총?수.{0,40}?([\d,]{3,})", txt, re.DOTALL)
+    if n_new:
+        line = f"신주: {kind} {n_new:,}주"
+        if pre:
+            base = int(pre.group(1).replace(",", ""))
+            if base > 0:
+                line += f" (+{n_new / base * 100:.1f}%)"
+        if px:
+            pxn = int(px.replace(",", ""))
+            line += f" @ {pxn:,}원"
+            tot = _amt_won(str(n_new * pxn))
+            if tot:
+                line += f" = {tot}"
+        parts.append(line)
+    # 자금 용도
+    uses = []
+    for lbl, kr in (("시설자금", "시설"), ("운영자금", "운영"), ("채무상환자금", "차환"),
+                    (r"타법인\s*증권\s*취득자금", "타법인취득"), ("기타자금", "기타")):
+        m = re.search(rf"{lbl}\s*\(원\)\s*([\d,]{{4,}})", txt)
+        if m:
+            a = _amt_won(m.group(1), mult)
+            if a:
+                uses.append(f"{kr} {a}")
+    if uses:
+        parts.append("용도: " + " · ".join(uses))
+    # 일정 체인
+    sched = []
+    bd = g(r"신주배정기준일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+    if bd:
+        sched.append(f"기준일 {_clean_kdate(bd)[5:]}")
+    cs = re.search(r"구주주\s*시작일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})\s*일?\s*종료일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})", txt)
+    if cs:
+        sched.append(f"구주주청약 {_clean_kdate(cs.group(1))[5:]}~{_clean_kdate(cs.group(2))[5:]}")
+    pay = g(r"납입일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+    if pay:
+        sched.append(f"납입 {_clean_kdate(pay)[5:]}")
+    lst = g(r"상장\s*예정일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+    if lst:
+        sched.append(f"신주상장 {_clean_kdate(lst)[5:]}")
+    if sched:
+        parts.append("일정: " + " → ".join(sched))
+    # 주주배정 비율·주관사 (있을 때만 1줄)
+    ps = g(r"1주당\s*신주배정\s*주식수\s*\(주\)\s*([\d.]{1,8})")
+    lead = g(r"대표주관회사\s*[:：]?\s*([가-힣A-Za-z0-9 ]{2,20}?(?:증권|금융투자))")
+    seg2 = [x for x in (f"1주당 {ps}주" if ps else None,
+                        f"주관 {lead}" if lead else None) if x]
+    if seg2:
+        parts.append("배정: " + " · ".join(seg2))
+    # 제3자배정 대상자 표 — 'NAME [계열회사] ... 배정주식수' best-effort ≤3
+    if method and "제3자" in method:
+        mseg = re.search(r"제3자배정\s*대상자\s*(.{0,400}?)(?=\d{1,2}\.\s|$)",
+                         txt, re.DOTALL)
+        if mseg:
+            alloc = re.findall(
+                r"([가-힣A-Za-z0-9㈜]{2,16}(?:\(주\))?)\s+"
+                r"(?:(계열회사|최대주주|특수관계인)\s+)?"
+                r"[가-힣A-Za-z ,·\-]{0,40}?([\d,]{3,9})\s",
+                mseg.group(1))
+            out = []
+            for nm, rel, cnt in alloc[:3]:
+                if nm in ("해당사항없음", "해당없음"):
+                    continue
+                try:
+                    c = int(cnt.replace(",", ""))
+                except ValueError:
+                    continue
+                out.append(f"{nm}({c:,}주{', ' + rel if rel else ''})")
+            if out:
+                parts.append("배정대상: " + " · ".join(out))
+    return {"lines": parts} if len(parts) >= 3 else None
+
+
+def _parse_cb_doc(rcept_no: str, api_key: str) -> dict | None:
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    g = lambda pat: (lambda m: m.group(1).strip() if m else None)(re.search(pat, txt))
+    parts: list[str] = []
+    rnd = g(r"회\s*차\s*(\d{1,3})")
+    priv = "사모" if "사모" in txt[:3000] else None
+    amt = g(r"전자등록\)?총액\s*\(원\)?\s*([\d,]{6,})") or g(r"권면[^0-9]{0,40}([\d,]{6,})")
+    head = "구분: 전환사채 발행"
+    seg = [x for x in (f"{rnd}회차" if rnd else None, priv) if x]
+    if seg:
+        head += f" ({' · '.join(seg)})"
+    a = _amt_won(amt) if amt else None
+    if a:
+        head += f" — {a}"
+    parts.append(head)
+    cvp = g(r"전환가[액격][^0-9]{0,40}?([\d,]{2,})")
+    cvn = g(r"주식수\s*([\d,]{4,})\s*주식총수\s*대비")
+    dil = g(r"주식총수\s*대비\s*비?율?\s*\(?%?\)?\s*([\d.]{1,6})")
+    if cvp:
+        line = f"전환: 전환가 {int(cvp.replace(',', '')):,}원"
+        if cvn:
+            line += f" → {int(cvn.replace(',', '')):,}주"
+        if dil:
+            line += f" = 주식총수의 {dil}% (잠재 희석)"
+        parts.append(line)
+    r1 = g(r"표면이자율\s*\(%\)\s*([\d.]+)")
+    r2 = g(r"만기이자율\s*\(%\)\s*([\d.]+)")
+    mt = g(r"사채만기일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+    seg = []
+    if r1 or r2:
+        seg.append(f"표면 {r1 or '-'}% / 만기 {r2 or '-'}%")
+    if mt:
+        seg.append(f"만기 {_clean_kdate(mt)}")
+    if seg:
+        parts.append("이자: " + " · ".join(seg))
+    cs = re.search(r"전환청구기간\s*시작일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})\s*일?\s*종료일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})", txt)
+    feat = []
+    if cs:
+        feat.append(f"전환기간 {_clean_kdate(cs.group(1))} ~ {_clean_kdate(cs.group(2))}")
+    if re.search(r"시가\s*하락|최저\s*조정가|리픽", txt):
+        low = g(r"(70|80|85|90)\s*%?\s*(?:미만으로는|이상|에\s*해당)")
+        feat.append("리픽싱 有" + (f"(최저 {low}%)" if low else ""))
+    if "조기상환청구권" in txt or "풋옵션" in txt or "Put Option" in txt:
+        feat.append("풋옵션 有")
+    if feat:
+        parts.append(" · ".join(feat))
+    uses = []
+    for lbl, kr in (("운영자금", "운영"), ("시설자금", "시설"), ("채무상환자금", "차환"),
+                    (r"타법인\s*증권?\s*취득자금", "타법인취득(M&A)")):
+        m = re.search(rf"{lbl}\s*\(원\)\s*([\d,]{{4,}})", txt)
+        if m:
+            aa = _amt_won(m.group(1))
+            if aa:
+                uses.append(f"{kr} {aa}")
+    if uses:
+        parts.append("용도: " + " · ".join(uses))
+    pay = g(r"납입일\s*(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+    if pay:
+        parts.append(f"납입일: {_clean_kdate(pay)}")
+    return {"lines": parts} if len(parts) >= 3 else None
+
+
 def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
     """단일판매·공급계약 — 주요사항보고서 구조화 API 부재(거래소 수시공시)
     → 공시 원문(document.xml zip)의 표준 신고 양식 표에서 핵심 숫자 추출.
-    ₩0·LLM 0·stdlib(zipfile). 필드 부재/형식 변형 graceful(None)."""
+    내용 라벨 3변형(체결계약명/구분+세부내용/계약내용) + 조건부 + 공시유보
+    + 정정 헤더(금액 A→B % 또는 '금액 무변') + 매출액대비·대규모법인 인라인
+    — 사용자 승인 양식 2026-06-11. ₩0·LLM 0·stdlib. graceful(None)."""
     txt = _fetch_doc_text(rcept_no, api_key)
     if not txt:
         return None
@@ -507,28 +1016,87 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
         return m.group(1).strip() if m else None
 
     parts: list[str] = []
-    _END = r"(?:\d\.|계약금액|계약기간|판매|공급|시작일|주요|공시|비고|[A-Za-z0-9]{15,}|$)"
-    body = _grab(r"계약\s*내용[^가-힣A-Za-z0-9]{0,40}?"
-                 r"([가-힣A-Za-z0-9()&.,·\- ]{4,80}?)\s*" + _END)
+    _END = r"(?:\d{1,2}\.\s|계약금액|계약내역|계약기간|공시유보|시작일|비고|[A-Za-z0-9]{15,}|$)"
+    _V = r"([가-힣A-Za-z0-9()\[\]_'‘’\"“”&.,·ㆍ㈜\- ]{2,80}?)"
+
+    # 내용 — 라벨 3변형: 체결계약명(표준 상세형) / 구분+세부내용(자율공시
+    # 간이형) / 판매ㆍ공급계약 내용(구형). 구체 라벨 우선.
+    body = _grab(r"체결계약명[^가-힣A-Za-z0-9]{0,20}?" + _V + r"\s*" + _END)
+    if not body:
+        det = _grab(r"세부내용[^가-힣A-Za-z0-9]{0,20}?" + _V + r"\s*" + _END)
+        if det:
+            gu = _grab(r"계약\s*구분[^가-힣A-Za-z0-9]{0,20}?"
+                       r"([가-힣A-Za-z0-9 ]{2,20}?)[\s\-–—·]*(?:세부|\d{1,2}\.\s|$)")
+            body = f"{gu} — {det}" if gu and gu not in det else det
+    if not body:
+        body = _grab(r"계약\s*내용[^가-힣A-Za-z0-9]{0,40}?" + _V + r"\s*" + _END)
     if body:
-        parts.append(f"계약내용: {body[:60]}")
-    amt = _grab(r"계약금액[^0-9]{0,60}?([\d,]{4,})")
+        parts.append(f"계약: {body[:70]}")
+
+    # 정정사항 표 = 라벨 뒤 (정정전, 정정후) 인접 숫자쌍 — 본문(라벨당 숫자
+    # 1개)과 구분된다. 두번째 숫자가 '6.' 같은 절번호로 오인되지 않게 비율은
+    # 소수형 강제 + 뒤 숫자/점 금지.
+    amt2 = re.search(r"계약금액[^0-9]{0,30}?([\d,]{6,})\s+([\d,]{6,})", txt)
+    rat2 = re.search(r"매출액\s*대비[^0-9]{0,30}?(\d{1,3}(?:\.\d{1,2})?)"
+                     r"\s+(\d{1,3}(?:\.\d{1,2})?)(?![.\d])", txt)
+    if "정정신고" in txt or "정정사유" in txt:
+        segs = []
+        if amt2:
+            try:
+                a = float(amt2.group(1).replace(",", ""))
+                b = float(amt2.group(2).replace(",", ""))
+                wa, wb = _won(amt2.group(1)), _won(amt2.group(2))
+                if wa and wb and a > 0 and a != b:
+                    segs.append(f"계약금액 {wa} → {wb} ({(b - a) / a * 100:+.0f}%)")
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        if rat2 and rat2.group(1) != rat2.group(2):
+            segs.append(f"매출대비 {rat2.group(1)}% → {rat2.group(2)}%")
+        d = re.search(r"정정일자\s*(\d{4}-\d{2}-\d{2})", txt)
+        dd = f"({d.group(1)[2:]})" if d else ""
+        if segs:
+            parts.insert(0, f"정정{dd}: " + " · ".join(segs))
+        else:
+            corr = _correction_header(txt)
+            parts.insert(0, (corr or f"정정{dd}: 기재 정정") + " — 금액 무변")
+
+    # 금액/매출대비 — 정정쌍 있으면 정정후 값이 canonical.
+    amt = amt2.group(2) if amt2 else _grab(r"계약금액[^0-9]{0,60}?([\d,]{4,})")
+    ratio = rat2.group(2) if rat2 else _grab(r"매출액\s*대비[^0-9]{0,60}?([\d.]+)")
+    mcond = re.search(r"조건부\s*계약\s*여부\s*[^가-힣]{0,8}([가-힣]{2,8})", txt)
+    is_cond = bool(mcond and mcond.group(1).startswith("해당")
+                   and "없" not in mcond.group(1))
+    mbig = re.search(r"대규모\s*법인\s*여부\s*[^가-힣]{0,8}([가-힣]{2,8})", txt)
+    is_big = bool(mbig and mbig.group(1).startswith("해당")
+                  and "없" not in mbig.group(1))
     if amt and _won(amt):
-        parts.append(f"계약금액: {_won(amt)}")
-    ratio = _grab(r"매출액\s*대비[^0-9]{0,60}?([\d.]+)")
-    if ratio:
-        parts.append(f"매출액대비: {ratio}%")
+        qual = [x for x in ("조건부" if is_cond else None,
+                            f"매출액대비 {ratio}%" if ratio else None,
+                            "대규모법인" if is_big else None) if x]
+        parts.append(f"계약금액: {_won(amt)}"
+                     + (f" ({' · '.join(qual)})" if qual else ""))
+
     party = _grab(r"계약상대방?[^가-힣A-Za-z0-9(]{0,40}?"
                   r"([가-힣A-Za-z0-9()&.,\- ]{2,40}?)\s*" + _END)
     if party and re.search(r"[가-힣A-Za-z]{2}", party):
         parts.append(f"계약상대: {party[:40]}")
     s = _grab(r"시작일[^0-9]{0,40}?(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})")
     e = _grab(r"종료일[^0-9]{0,40}?(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})")
-    if s and e:
-        parts.append(f"계약기간: {_fmt_period(f'{s} ~ {e}')}")
     cd = _grab(r"계약\s*\(?수주\)?\s*일자?[^0-9]{0,40}?(\d{4}[-./]\d{1,2}[-./]\d{1,2})")
-    if cd:
+    if s and e:
+        parts.append(f"기간: {_fmt_period(f'{s} ~ {e}')}")
+    elif cd:
         parts.append(f"계약일: {cd}")
+
+    # 공시유보 — 상대방 익명("글로벌 우주항공 발사업체")의 맥락 설명.
+    rto = _grab(r"유보\s*기한[^0-9]{0,30}?(\d{4}[년\s.-]+\d{1,2}[월\s.-]+\d{1,2})")
+    rwhy = _grab(r"유보\s*사유[^가-힣A-Za-z0-9]{0,20}?"
+                 r"([가-힣A-Za-z0-9() ,.·]{2,40}?)\s*(?:\d\.|유보|공시|$)")
+    if rto or rwhy:
+        parts.append("공시유보: " + " ".join(x for x in (
+            f"{_clean_kdate(rto)}까지" if rto else None,
+            f"({rwhy})" if rwhy else None) if x))
+
     if len(parts) < 2:
         _doc_fail_mark(rcept_no, hours=12.0)  # 형식 문제 — 곧 안 풀림
         return None
@@ -558,18 +1126,46 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         return _extract_doc_fields(rcept_no, api_key, _SPLIT_MERGE_FIELDS,
                                    min_fields=2)
 
+    # ── 배치 2026-06-11 (사용자 승인 카드 양식) — 원문(document.xml) 1차 파싱.
+    # 실패(None) 시 아래 구조화 API spec 폴백 (graceful).
+    if "영업(잠정)실적" in t or "매출액또는손익구조" in t:
+        doc = _parse_earnings_doc(rcept_no, api_key, t)
+        if doc:
+            return doc
+    elif "공급계약" in t or "단일판매" in t or "단일공급" in t:
+        # 계약은 doc 전용 — 주요사항보고서 구조화 API 부재(거래소 수시공시).
+        return _extract_contract_document(rcept_no, api_key)
+    elif "신탁계약" in t and "해지" in t:
+        doc = _parse_trust(rcept_no, api_key, cancel=True)
+        if doc:
+            return doc
+    elif "신탁계약" in t and ("체결" in t or "연장" in t):
+        doc = _parse_trust(rcept_no, api_key, cancel=False)
+        if doc:
+            return doc
+    elif "소각" in t:
+        doc = _parse_burn(rcept_no, api_key)
+        if doc:
+            return doc
+    elif "취득결과" in t:
+        doc = _parse_buyback_result(rcept_no, api_key)
+        if doc:
+            return doc
+    elif "주주명부폐쇄" in t or ("기준일" in t and "배당" in t):
+        doc = _parse_div_record(rcept_no, api_key, t)
+        if doc:
+            return doc
+    elif "유상증자" in t or "유무상증자" in t:
+        doc = _parse_rights_issue_doc(rcept_no, api_key, t)
+        if doc:
+            return doc
+    elif "전환사채" in t:
+        doc = _parse_cb_doc(rcept_no, api_key)
+        if doc:
+            return doc
+
     specs: list[tuple[str, list]] = []
-    if "공급계약" in t or "단일판매" in t or "단일공급" in t:
-        specs = [("soptTrfCntrDecsn", [
-            ("계약내용", ("ctrt_cn",), "text"),
-            ("계약금액", ("ctrt_amt",), "won"),
-            ("매출액대비", ("sl_cmpnt_rt",), "pct"),
-            ("계약상대", ("cntr_pty",), "text"),
-            ("계약기간", ("cntr_pd",), "period"),
-            ("공급지역", ("dlvy_rgn",), "text"),
-            ("계약일", ("ctrt_de",), "date"),
-        ])]
-    elif "영업(잠정)실적" in t or "매출액또는손익구조" in t:
+    if "영업(잠정)실적" in t or "매출액또는손익구조" in t:
         specs = [("irdsSttus", [
             ("매출액", ("slsAmt", "sls_amt", "thmAmt"), "won"),
             ("영업이익", ("bsopPrfl", "bsop_prfl", "thmBsopPrfl"), "won"),
@@ -704,11 +1300,9 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                     parts.append(f"{lbl}: {str(v)[:50]}")
             if parts:
                 return {"lines": parts}
-    # 구조화 API 가 없거나 빈 응답인 공시 → 원문 zip 파싱 폴백 (₩0·LLM 0).
-    # 공급계약은 전용 파서(서울전자통신 카드 수준), 그 외 전 유형은 generic
-    # 라벨 추출 (사용자 2026-06-11 "공급계약뿐 아니라 다른 종류도 다").
-    if "공급계약" in t or "단일판매" in t or "단일공급" in t:
-        return _extract_contract_document(rcept_no, api_key)
+    # 구조화 API 가 없거나 빈 응답인 공시 → generic 원문 라벨 추출 폴백
+    # (₩0·LLM 0, 사용자 2026-06-11 "공급계약뿐 아니라 다른 종류도 다").
+    # 공급계약은 위 doc-first 분기가 전담.
     return _extract_generic_document(rcept_no, api_key)
 
 
@@ -898,13 +1492,12 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
             try:
                 detail = _extract_detail(report_nm, rcept_no, corp_code, api_key)
                 lines = list(detail.get("lines", [])) if detail else []
-                # 시총·현재가 부착 (다른 봇 수준 — 사용자 2026-06-10). FSC
-                # (무료·12h 캐시·T+1)로 시총·종가. 구조화 detail 있는 카드만.
                 sc = item.get("stock_code", "")
                 if lines and sc and len(sc) == 6 and sc.isdigit():
                     # 주요사업(업종) — DART 업종코드(KSIC) → 한글 (무료·캐시).
+                    # 시총·현재가는 렌더 시점 부착(배치 #11 — 모든 상장사
+                    # 카드, 제목만 카드 + 옛 카드 소급)이라 여기선 안 붙임.
                     lines = _industry_line(sc) + lines
-                    lines += _market_cap_price_lines(sc)
                 if lines:
                     item["detail"] = lines
                     enriched += 1
@@ -970,7 +1563,8 @@ def _industry_line(stock_code: str) -> list[str]:
 
 
 def _market_cap_price_lines(stock_code: str) -> list[str]:
-    """FSC 최신 시세 → ['시가총액: X', '현재가: Y원'] (무료·12h 캐시). 실패 시 []."""
+    """FSC 최신 시세 → ['시가총액: X / 현재가: Y원'] 단일 라인 (승인 양식
+    2026-06-11, 무료·12h 캐시). 실패 시 []."""
     try:
         from bot.fsc_client import latest_price, fsc_key_ready
         from bot.dart_detail import _won as _fw
@@ -979,19 +1573,19 @@ def _market_cap_price_lines(stock_code: str) -> list[str]:
         p = latest_price(f"{stock_code}.KS")  # FSC 는 suffix 무시(6자리 코드)
         if not p:
             return []
-        out: list[str] = []
+        segs: list[str] = []
         mc = p.get("mrktTotAmt")
         cl = p.get("clpr")
         if mc:
             w = _fw(mc)
             if w:
-                out.append(f"시가총액: {w}")
+                segs.append(f"시가총액: {w}")
         if cl:
             try:
-                out.append(f"현재가: {int(float(cl)):,}원")
+                segs.append(f"현재가: {int(float(cl)):,}원")
             except (TypeError, ValueError):
                 pass
-        return out
+        return [" / ".join(segs)] if segs else []
     except Exception:
         return []
 
