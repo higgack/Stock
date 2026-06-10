@@ -11563,8 +11563,6 @@ def _render_market_page(data: dict) -> str:
     <a href="index.html">🦉 NOAH 종목분석</a>
     &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="screener.html">📊 Screener</a>
-    &middot; <a href="screener_domains.html">🗂️ 도메인 목록</a>
-    &middot; <a href="paper.html">🔔 워치리스트</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
     &middot; <a href="trade/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
