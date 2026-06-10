@@ -143,6 +143,33 @@ def _ticker_to_cik(ticker: str) -> Optional[str]:
     return (payload or {}).get(base_ticker)
 
 
+def sec_ticker_names() -> dict:
+    """{TICKER: 회사명(title)} — SEC company_tickers.json (무료·무키, SEC
+    보고 기업 ~1만, ADR/OTC 보고기업 포함). 실적 캘린더 회사명 2차 소스
+    (사용자 2026-06-11 HFUS 류 — NASDAQ Trader 미수록 보완). 7d 캐시.
+
+    ⚠️ _ticker_to_cik 의 'company_tickers' 캐시는 ticker→CIK 만 담아 title
+    이 없으므로 별도 key('company_tickers_names')로 title 맵 캐시."""
+    key = "company_tickers_names"
+    payload: dict | None = _load_cache(key, max_age_h=24 * 7)
+    if payload is not None:
+        return payload
+    try:
+        r = _get(_TICKERS_URL, timeout=20)
+        raw = r.json()
+        names = {
+            v["ticker"].upper(): (v.get("title") or "").strip()
+            for v in raw.values()
+            if isinstance(v, dict) and v.get("ticker") and v.get("title")
+        }
+        if len(names) > 1000:
+            _save_cache(key, names)
+        return names
+    except Exception as exc:
+        _log.warning("edgar: company_tickers names fetch failed: %s", exc)
+        return {}
+
+
 # ── EDGAR submissions ─────────────────────────────────────────────────────────
 
 def _submissions(cik: str) -> Optional[dict]:
