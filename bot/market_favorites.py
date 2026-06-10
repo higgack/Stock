@@ -92,6 +92,10 @@ def add_favorite(ticker: str) -> Optional[dict]:
         per_val = info.get("trailingPE")
         if per_val is not None:
             per_is_trailing = True
+    lfy = info.get("lastFiscalYearEnd")
+    fy_label = None
+    if lfy and isinstance(lfy, (int, float)):
+        fy_label = f"FY{datetime.fromtimestamp(lfy).year % 100:02d}"
     next_earn = None
     try:
         cal = tk.calendar
@@ -122,6 +126,9 @@ def add_favorite(ticker: str) -> Optional[dict]:
         "eps_estimate": eps_est,
         "eps_is_actual": (info.get("forwardEps") is None
                           and info.get("trailingEps") is not None),
+        "eps_fy_label": fy_label if (info.get("forwardEps") is None
+                                     and info.get("trailingEps") is not None) else None,
+        "eps_negative": (eps_est is not None and eps_est < 0),
         "per": per_val,
         "per_is_trailing": per_is_trailing,
         # 과거 날짜(yfinance KR calendar stale)는 빈칸 — 사용자 2026-06-11.
@@ -212,6 +219,14 @@ def get_favorites_with_prices() -> list[dict]:
             trail_pe = info.get("trailingPE")
             f["per"] = fwd_pe if fwd_pe is not None else trail_pe
             f["per_is_trailing"] = (fwd_pe is None and trail_pe is not None)
+
+            lfy = info.get("lastFiscalYearEnd")
+            fy_label = None
+            if lfy and isinstance(lfy, (int, float)):
+                fy_label = f"FY{datetime.fromtimestamp(lfy).year % 100:02d}"
+            f["eps_fy_label"] = fy_label if f.get("eps_is_actual") else None
+            f["eps_negative"] = (f.get("eps_estimate") is not None
+                                 and f["eps_estimate"] < 0)
 
             try:
                 cal = tk.calendar

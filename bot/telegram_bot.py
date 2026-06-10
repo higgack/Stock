@@ -1120,11 +1120,11 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 실패 · 📊 Daily Byte(한국평일19:00·미국07:30·주간일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
+🚀✅ 배포 · ⚠️ hang · ❌ 실패 · ⚖️🚨 소송/리스크 공시 즉시 알림 · 📊 Daily Byte(한국평일19:00·미국07:30·주간일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·레딧·Daily Byte·📝블로그(글 요약+원문 아카이브)·부동산·청약·수출입)는 🌍Main nav, 워치·도메인목록은 Screener nav 에서
- 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(7일치·한국네이버목표가/원문+미국TP 종목당3) · 관심종목(시총·PER·등락·정렬/필터/순서) · 📋DART공시(유형별 구조화 카드) · 업종등락(KR테마·상한가 + 미국TOP10→업종별시세·신고저) · 종목검색(헤더→탭→차트 즉시) · 5분 갱신
+ 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(7일치·한국네이버목표가/원문+미국TP 종목당3) · 관심종목(시총·PER(적자표시)·EPS FY라벨·등락·정렬/필터/순서) · 📋DART공시(18종 구조화 카드·지분공시 대량보유 노이즈컷) · 업종등락(KR테마·상한가 + 미국TOP10→업종별시세·신고저 전량) · 종목검색(헤더→탭→차트 즉시) · 5분 갱신
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️ · <b>분석버튼</b>(종목 분석) · 입력창 <b>'/' 명령</b>(/usage·/portfolio·/watch·/screener 등 텔레그램 명령을 대시보드에서 실행→결과 패널)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/index.html
@@ -3225,6 +3225,34 @@ async def _periodic_dashboard_requests(application) -> None:
                     pass
 
 
+def _send_risk_alerts(alerts: list[dict]) -> None:
+    """#19 소송/리스크 알람 — 큐 소비 → 채널 push (thread-safe, sync HTTP)."""
+    if not alerts or not CHANNEL_CHAT_IDS:
+        return
+    import html as _h
+    import requests as _rq
+    _tk = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not _tk:
+        return
+    for a in alerts:
+        cat_icon = "⚖️" if a.get("category") == "소송" else "🚨"
+        cn = _h.escape(a.get("corp_name", ""))
+        rn = _h.escape(a.get("report_nm", ""))
+        url = a.get("url", "")
+        txt = f'{cat_icon} <b>리스크 공시</b> — {cn}\n{rn}'
+        if url:
+            txt += f'\n<a href="{_h.escape(url)}">원문 보기</a>'
+        for cid in CHANNEL_CHAT_IDS:
+            try:
+                _rq.post(f"https://api.telegram.org/bot{_tk}/sendMessage",
+                         json={"chat_id": cid, "text": txt,
+                               "parse_mode": "HTML",
+                               "disable_web_page_preview": True},
+                         timeout=10)
+            except Exception:
+                pass
+
+
 async def _periodic_dashboard_refresh(application=None) -> None:
     """Regenerate dashboard index.html ~1 min after each KST midnight.
 
@@ -3267,6 +3295,12 @@ async def _periodic_dashboard_refresh(application=None) -> None:
             regenerate_watchlist_index()
             regenerate_market_index()
             regenerate_dart_feed_index()
+            # #19 소송/리스크 알람 소비 (dart-feed timer 가 기록한 큐)
+            try:
+                from bot.dart_feed import consume_risk_alerts
+                _send_risk_alerts(consume_risk_alerts())
+            except Exception:
+                pass
             # 페이퍼(E0.5b): 5거래일 horizon 도래 자동 포지션 청산 + 페이지 갱신.
             # E0.5c: 청산 시 채널 알림(설정된 채널 있을 때) — 조용히 닫히지 않게.
             try:
@@ -3380,11 +3414,12 @@ async def _on_startup(application) -> None:
 
         def _dart_initial_fetch():
             try:
-                from bot.dart_feed import run_once
+                from bot.dart_feed import run_once, consume_risk_alerts
                 items = run_once()
                 from bot.dashboard import regenerate_dart_feed_index as _rg
                 _rg()
                 log.info("startup: DART feed initial fetch %d items", len(items))
+                _send_risk_alerts(consume_risk_alerts())
             except Exception as exc:
                 log.warning("startup: DART initial fetch failed: %s", exc)
 

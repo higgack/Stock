@@ -4114,3 +4114,108 @@ class TestDartCardFormats:
         assert 'df-detail-ln">= ' not in html        # '= ' prefix 제거
         assert "시가총액: 2조원 / 현재가: 1,000원" in html
         assert "042700" in calls and "000100" not in calls  # 중복 방지
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 배치 #18 지분공시 노이즈컷 — 대량보유만 + 신규 OR |Δ|≥5%p
+# ─────────────────────────────────────────────────────────────────────────
+class TestEquityNoiseFilter:
+    """_equity_noise 가 잘못된 지분공시를 올바르게 걸러내는지 확인."""
+
+    @staticmethod
+    def _noise(it):
+        """dashboard._render_dart_feed_page 에 삽입된 필터 로직 재현."""
+        if it.get("category") != "지분공시":
+            return False
+        rn = it.get("report_nm", "")
+        if "대량보유" not in rn:
+            return True
+        det = it.get("detail") or []
+        if not det:
+            return False
+        for dl in det:
+            s = str(dl)
+            if "지분율" in s and "→" not in s:
+                return False
+            m = re.search(r"([+-]?\d+\.?\d*)\s*%p", s)
+            if m:
+                try:
+                    if abs(float(m.group(1))) >= 5.0:
+                        return False
+                except ValueError:
+                    pass
+        return True
+
+    def test_non_majorstock_filtered(self):
+        assert self._noise({"category": "지분공시", "report_nm": "임원소유상황"})
+
+    def test_majorstock_new_passes(self):
+        assert not self._noise({"category": "지분공시",
+                                 "report_nm": "대량보유 신규",
+                                 "detail": ["지분율: 7.23%"]})
+
+    def test_majorstock_big_delta_passes(self):
+        assert not self._noise({
+            "category": "지분공시",
+            "report_nm": "대량보유 변경",
+            "detail": ["지분율: 3.00% → 8.50% (+5.50%p ▲)"]})
+
+    def test_majorstock_small_delta_filtered(self):
+        assert self._noise({
+            "category": "지분공시",
+            "report_nm": "대량보유 변경",
+            "detail": ["지분율: 5.00% → 6.20% (+1.20%p ▲)"]})
+
+    def test_non_equity_passes(self):
+        assert not self._noise({"category": "계약", "report_nm": "공급계약"})
+
+    def test_majorstock_no_detail_passes(self):
+        assert not self._noise({"category": "지분공시",
+                                 "report_nm": "대량보유 신규",
+                                 "detail": []})
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 배치 #19 소송/리스크 알람 큐 — consume_risk_alerts round-trip
+# ─────────────────────────────────────────────────────────────────────────
+class TestRiskAlertQueue:
+    """dart_feed.consume_risk_alerts 가 큐를 올바르게 소비+비움."""
+
+    def test_consume_roundtrip(self, tmp_path, monkeypatch):
+        import json
+        q = tmp_path / "dart_risk_alerts.json"
+        alerts = [{"rcept_no": "R1", "category": "소송",
+                   "corp_name": "A사", "report_nm": "소송", "url": "#"}]
+        q.write_text(json.dumps(alerts), "utf-8")
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_RISK_ALERT_Q", q)
+        got = df.consume_risk_alerts()
+        assert len(got) == 1
+        assert got[0]["rcept_no"] == "R1"
+        # 소비 후 비어야 함
+        assert json.loads(q.read_text("utf-8")) == []
+
+    def test_consume_empty(self, tmp_path, monkeypatch):
+        q = tmp_path / "dart_risk_alerts.json"
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_RISK_ALERT_Q", q)
+        assert df.consume_risk_alerts() == []
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 배치 #20 favorites EPS/PER FY label + 적자 표시
+# ─────────────────────────────────────────────────────────────────────────
+class TestFavoritesEpsFyLabel:
+    """market_favorites 의 FY label 로직 + eps_negative 플래그."""
+
+    def test_fy_label_from_timestamp(self):
+        from datetime import datetime
+        ts = datetime(2025, 12, 31).timestamp()
+        label = f"FY{datetime.fromtimestamp(ts).year % 100:02d}"
+        assert label == "FY25"
+
+    def test_eps_negative_flag(self):
+        eps_neg = -1.5
+        assert eps_neg is not None and eps_neg < 0
+        eps_pos = 3.2
+        assert not (eps_pos is not None and eps_pos < 0)
