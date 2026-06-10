@@ -1069,7 +1069,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 <b>【1. 명령어】</b> (탭 자동입력)
 /help /usage /portfolio /screener_list /sites — 비용: /screener·daily_byte·cheongyak·realestate_cost
 /screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0). /screen list
-/screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list
+/screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list. 분석·스크리너는 대시보드 실행 버튼으로도 가능
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 충족 시 알림 (rsi/price/sma/52w/earnings·KR수급). 목록 /watchlist · 삭제 /unwatch
@@ -1111,7 +1111,7 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
  • <code>/screen 매출QoQ&gt;10 영업이익QoQ&gt;5</code> — QoQ 성장 필터
  • <code>/screen valueup</code> — 프리셋 · <code>/screen list</code>
  • Phase 1 pykrx 벌크 → Phase 2 yfinance+QoQ(분기 재무 7종) 생존만
- • 24h 캐시 · 대시보드 screener.html 통합 · /screen list 전체 지표
+ • 24h 캐시 · 대시보드 통합(실행 버튼 + 📖설명서) · /screen list 전체 지표
 
 ━━━━━━━━━
 <b>【7. 캐시 &amp; 비용】</b>
