@@ -20,7 +20,38 @@ log = logging.getLogger("bot.finviz_client")
 
 _BASE = "https://finviz.com"
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+# 브라우저 수준 헤더 (2026-06-10 — VM 데이터센터 IP 에서 Finviz 1차가
+# 폴백으로 빠지던 건). 얇은 헤더(UA+Accept-Language 만)면 Finviz/앞단
+# 앤티봇이 403/챌린지로 거른다. 실 브라우저 헤더 셋 + sec-ch-ua client
+# hint 로 통과율 ↑. ⚠️ Accept-Encoding 은 **수동 설정 안 함** — httpx 가
+# 설치된 코덱(gzip/deflate)만 자동 광고(브라우저처럼 br 광고했다가 못
+# 풀면 깨짐 — VM 에 brotli 없을 수 있음).
+_HEADERS = {
+    "User-Agent": _UA,
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "image/avif,image/webp,image/apng,*/*;q=0.8"),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://finviz.com/",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
+# 차단/챌린지 페이지 시그니처 (200 인데 데이터 대신 안티봇 페이지인 경우 —
+# 파싱 0행 으로 빠지기 전에 '차단'으로 구분해 진단 로그 + 재시도).
+_BLOCK_MARKERS = ("access denied", "are you a robot", "/cdn-cgi/challenge",
+                  "cf-browser-verification", "captcha", "request blocked",
+                  "unusual traffic")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "finviz"
 _CACHE_TTL_SEC = 10 * 60        # 10분 — Naver(4분)보다 길게 (차단 회피)
@@ -28,16 +59,33 @@ _FALLBACK_TTL_SEC = 6 * 3600    # S&P500 1y 주봉 폴백은 무거워 6h
 
 
 def _get(url: str) -> Optional[str]:
+    """Finviz HTML fetch — 브라우저 헤더 + 최대 2회 시도(백오프). 차단/
+    챌린지 페이지는 None 으로 반환해 폴백이 깨끗이 작동하게 + WARNING 진단.
+    데이터센터 IP 403 vs 마크업변경(_BLOCK_MARKERS 부재 200)을 로그로 구분."""
+    short = url.split("?")[0]
     try:
         import httpx
-        r = httpx.get(url, headers={"User-Agent": _UA,
-                                    "Accept-Language": "en-US,en;q=0.9"},
-                      timeout=12, follow_redirects=True)
-        if r.status_code == 200 and r.text:
-            return r.text
-        log.warning("finviz: %s → HTTP %d", url.split("?")[0], r.status_code)
-    except Exception as exc:
-        log.warning("finviz: fetch failed %s: %s", url.split("?")[0], exc)
+    except Exception:
+        return None
+    for attempt in range(2):
+        try:
+            r = httpx.get(url, headers=_HEADERS, timeout=15,
+                          follow_redirects=True)
+            if r.status_code == 200 and r.text:
+                head = r.text[:800].lower()
+                if any(m in head for m in _BLOCK_MARKERS):
+                    log.warning("finviz: %s → 200 but anti-bot/challenge page "
+                                "(데이터센터 IP 차단 의심) — attempt %d", short, attempt + 1)
+                else:
+                    return r.text
+            else:
+                log.warning("finviz: %s → HTTP %d (attempt %d) — %s",
+                            short, r.status_code, attempt + 1, r.text[:120])
+        except Exception as exc:
+            log.warning("finviz: fetch failed %s (attempt %d): %s",
+                        short, attempt + 1, exc)
+        if attempt == 0:
+            time.sleep(1.2)   # 일시적 차단/혼잡 — 1회 백오프 후 재시도
     return None
 
 
