@@ -3907,3 +3907,80 @@ class TestHkConsensusParser:
             html = f'<table><tr><td>2026-06-05</td><td>NH투자증권</td><td>{kw}</td><td>50000</td></tr></table>'
             rows = _parse_report_rows(html, date.today() - timedelta(days=30))
             assert rows and rows[0]["rating"] == kw, f"missed keyword: {kw}"
+
+
+class TestDartFeedBackfill:
+    """DART 피드 백필 버그 클래스 영구 차단 (2026-06-11 E2E 하네스 surfaced).
+
+    실서피스 5회 연속 '카드 안 채워짐'의 근본 원인 3종 + 하네스가 추가
+    적발한 2종을 stub 만으로(네트워크 0) 고정:
+      1) merge_and_save 가 나중 사이클 enrich 성공분(detail)을 버림
+      2) 증분(당일 0건) 사이클에서 아카이브 pending 백필이 굶음
+      3) 계약 파서 '계약상대' 가 마지막 필드(축약형 공시)일 때 종결
+         lookahead 미매칭 → 카드 사망
+      4) 전환청구권행사가 분류 '기타'로 떨어져 fetch 에서 잘림
+    """
+
+    def _load(self, tmp_path, monkeypatch):
+        import importlib.util
+        import bot.dart_detail  # noqa: F401 — real 패키지 보장(가짜 stub 금지)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        spec = importlib.util.spec_from_file_location(
+            "dart_feed_t", "bot/dart_feed.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        m.time.sleep = lambda s: None
+        return m
+
+    def test_merge_updates_detail_on_existing(self, tmp_path, monkeypatch):
+        m = self._load(tmp_path, monkeypatch)
+        from datetime import date
+        d = date(2026, 6, 10)
+        m.merge_and_save(d, [{"rcept_no": "R1", "report_nm": "x",
+                              "category": "계약"}])
+        m.merge_and_save(d, [{"rcept_no": "R1", "report_nm": "x",
+                              "category": "계약",
+                              "detail": ["계약금액: 50억원"]}])
+        saved = m.load_archive(d)
+        assert saved[0].get("detail") == ["계약금액: 50억원"]
+
+    def test_pending_backfill_on_empty_fetch(self, tmp_path, monkeypatch):
+        m = self._load(tmp_path, monkeypatch)
+        from datetime import date
+        d = date(2026, 6, 10)
+        m.merge_and_save(d, [{"rcept_no": "R2", "report_nm":
+                              "단일판매ㆍ공급계약체결", "category": "계약",
+                              "corp_code": "C", "stock_code": "",
+                              "date": "20260610"}])
+        monkeypatch.setattr(m, "_dart_api_key", lambda: "K")
+        monkeypatch.setattr(m, "fetch_market_disclosures",
+                            lambda *a, **k: [])           # 새벽: 당일 0건
+        monkeypatch.setattr(m, "_extract_detail",
+                            lambda *a: {"lines": ["계약금액: 70억원"]})
+        monkeypatch.setattr(m, "_industry_line", lambda sc: [])
+        monkeypatch.setattr(m, "_market_cap_price_lines", lambda sc: [])
+        m.run_once()
+        saved = m.load_archive(d)
+        assert saved[0].get("detail") == ["계약금액: 70억원"]
+
+    def test_contract_party_as_last_field(self, tmp_path, monkeypatch):
+        m = self._load(tmp_path, monkeypatch)
+        import io, zipfile, types as _t
+        doc = ("<T>계약금액 (원)</T><T>7,000,000,000</T>"
+               "<T>계약상대방</T><T>LG전자(주)</T>"
+               "<PAD>" + "x" * 600 + "</PAD>")
+        buf = io.BytesIO()
+        z = zipfile.ZipFile(buf, "w")
+        z.writestr("x.xml", doc.encode("utf-8"))
+        z.close()
+        resp = _t.SimpleNamespace(content=buf.getvalue(),
+                                  raise_for_status=lambda: None)
+        monkeypatch.setattr(m.requests, "get", lambda *a, **k: resp)
+        r = m._extract_contract_document("RX", "K")
+        assert r and any("70억원" in l for l in r["lines"])
+        assert any("LG전자" in l for l in r["lines"])
+
+    def test_convert_exercise_classified_not_etc(self, tmp_path, monkeypatch):
+        m = self._load(tmp_path, monkeypatch)
+        assert m._classify_report("전환청구권행사(제5회차)") != "기타"
+        assert m._classify_report("주요사항보고서(주식병합결정)") != "기타"
