@@ -736,6 +736,7 @@ def fetch_all_market_data() -> dict[str, Any]:
         us_fut = pool.submit(fetch_recent_research_us, 40)
         macro_fut = pool.submit(_fetch_macro_safe)
         sector_fut = pool.submit(_fetch_sector_movers_safe)
+        us_sector_fut = pool.submit(_fetch_us_sector_movers_safe)
         deposit_fut = pool.submit(_fetch_deposit_safe)
 
         # 실적 병합 — 한국(yfinance) 먼저, 미국(Finnhub) 다음. 각 그룹 날짜순.
@@ -752,6 +753,7 @@ def fetch_all_market_data() -> dict[str, Any]:
             "research_us": us_fut.result(),
             "macro": macro_fut.result(),
             "sector_movers": sector_fut.result(),
+            "us_sector_movers": us_sector_fut.result(),
             "deposit": deposit_fut.result(),
         }
 
@@ -762,6 +764,16 @@ def _fetch_sector_movers_safe() -> dict:
         return fetch_sector_movers(top_n=10)
     except Exception as exc:
         log.warning("sector movers fetch error: %s", exc)
+        return {"up": [], "down": [], "ts": ""}
+
+
+def _fetch_us_sector_movers_safe() -> dict:
+    """미국 업종 등락 TOP 10 (Finviz, KR 업종 등락 미러 — 사용자 2026-06-10)."""
+    try:
+        from bot.finviz_client import top_movers
+        return top_movers(top_n=10)
+    except Exception as exc:
+        log.warning("us sector movers fetch error: %s", exc)
         return {"up": [], "down": [], "ts": ""}
 
 

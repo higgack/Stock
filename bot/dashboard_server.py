@@ -221,7 +221,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # on-demand HTML 페이지도 no-cache — 안 하면 옛 페이지가 브라우저에
         # 캐시돼 stale(예: 신고가→상한가 변경이 안 보이던 문제, 2026-06-10).
         if (path_lower.endswith((".html", "/")) or path_lower == ""
-                or path_lower in ("/earnings", "/theme", "/highlow")
+                or path_lower in ("/earnings", "/theme", "/highlow",
+                                  "/usindustry", "/ushighlow")
                 or path_lower.startswith("/lookup/")):
             self.send_header("Cache-Control", "no-cache, must-revalidate")
         super().end_headers()
@@ -244,9 +245,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         raw = self.path.split("?", 1)[0]
         if raw == "/earnings":
             return self._handle_earnings()
-        # /theme · /highlow — 테마별 시세 · 신고가/신저가 (Naver, on-demand)
+        # /theme · /highlow — 테마별 시세 · 상한가/하한가 (Naver, on-demand)
         if raw in ("/theme", "/highlow"):
             return self._handle_naver_page(raw)
+        # /usindustry · /ushighlow — 미국 업종별 시세 · 52주 신고가/신저가
+        # (Finviz, KR 미러 — 사용자 2026-06-10)
+        if raw in ("/usindustry", "/ushighlow"):
+            return self._handle_us_page(raw)
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시
         if raw == "/trade" or raw.startswith("/trade/"):
             return self._handle_trade_proxy()
@@ -730,6 +735,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(encoded)
         except Exception as exc:
             log.warning("naver_page %s: failed — %s", raw, exc)
+            self.send_error(500, "internal error")
+
+    def _handle_us_page(self, raw: str) -> None:
+        """GET /usindustry | /ushighlow — 미국 업종별 시세 · 52주 신고가/신저가
+        (Finviz, KR /theme·/highlow 미러)."""
+        try:
+            from bot.us_pages import render_us_highlow_page, render_us_industry_page
+            html = (render_us_industry_page() if raw == "/usindustry"
+                    else render_us_highlow_page())
+            encoded = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as exc:
+            log.warning("us_page %s: failed — %s", raw, exc)
             self.send_error(500, "internal error")
 
     def _handle_favorites_get(self) -> None:
