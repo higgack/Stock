@@ -1967,12 +1967,12 @@ def _render_index(records: list[dict]) -> str:
     # Headline link to the errors page; count includes hard failures
     # (usage.jsonl) plus archive entries with placeholder/tool issues.
     issue_count = _count_total_issues(records, _read_hard_failures())
-    # Nav group 2 links (NOAH index.html is current page → omit self)
+    # Nav group 2 links (NOAH index.html is current page → omit self).
+    # 도메인 목록은 제거(사용자 2026-06-10) — Screener 페이지 nav 에서 접근.
     errors_link = (
         ' · <a href="market.html">🌍 홈</a>'
         ' · <a href="dart_feed.html">📋 DART 공시</a>'
         ' · <a href="screener.html">📊 Screener</a>'
-        ' · <a href="screener_domains.html">🗂️ 도메인 목록</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="daily_byte.html">📊 Daily Byte</a>'
