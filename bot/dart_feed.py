@@ -65,6 +65,13 @@ def _classify_report(report_nm: str) -> str:
     t = report_nm or ""
     if any(k in t for k in _EARNINGS_KW):
         return "실적"
+    # 전환청구권/주식분할·병합 — chart_events KW 에 없어 '기타'로 떨어져
+    # fetch(skip_routine)에서 잘리던 것(E2E 하네스 2026-06-11 적발). #237
+    # 파서가 닿도록 명시 분류.
+    if "전환청구권" in t and "행사" in t:
+        return "자금조달"
+    if any(k in t for k in ("주식분할", "주식병합", "액면분할", "액면병합")):
+        return "회사구조"
     if any(k in t for k in _IR_KW):
         return "IR"
     if any(k in t for k in _EQUITY_KW):
@@ -382,7 +389,7 @@ def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
 _GENERIC_DOC_FIELDS = [
     ("투자금액", r"투자금액[^0-9]{0,60}?([\d,]{4,})", "won"),
     ("자기자본대비", r"자기자본\s*대비[^0-9]{0,60}?([\d.]+)", "pct"),
-    ("투자목적", r"투자\s*목적[^가-힣A-Za-z0-9]{0,40}?([가-힣A-Za-z0-9()&.,·\- ]{4,60}?)\s*(?:\d\.|투자기간|4\.)", "text"),
+    ("투자목적", r"투자\s*목적[^가-힣A-Za-z0-9]{0,40}?([가-힣A-Za-z0-9()&.,·\- ]{4,60}?)\s*(?:\d\.|투자기간|자기자본|취득|[A-Za-z0-9]{15,}|$)", "text"),
     ("취득금액", r"취득금액[^0-9]{0,60}?([\d,]{4,})", "won"),
     ("처분금액", r"처분금액[^0-9]{0,60}?([\d,]{4,})", "won"),
     ("청구금액", r"청구금액[^0-9]{0,60}?([\d,]{4,})", "won"),
@@ -500,8 +507,9 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
         return m.group(1).strip() if m else None
 
     parts: list[str] = []
+    _END = r"(?:\d\.|계약금액|계약기간|판매|공급|시작일|주요|공시|비고|[A-Za-z0-9]{15,}|$)"
     body = _grab(r"계약\s*내용[^가-힣A-Za-z0-9]{0,40}?"
-                 r"([가-힣A-Za-z0-9()&.,·\- ]{4,80}?)\s*(?:\d\.|계약금액|3\.)")
+                 r"([가-힣A-Za-z0-9()&.,·\- ]{4,80}?)\s*" + _END)
     if body:
         parts.append(f"계약내용: {body[:60]}")
     amt = _grab(r"계약금액[^0-9]{0,60}?([\d,]{4,})")
@@ -511,7 +519,7 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
     if ratio:
         parts.append(f"매출액대비: {ratio}%")
     party = _grab(r"계약상대방?[^가-힣A-Za-z0-9(]{0,40}?"
-                  r"([가-힣A-Za-z0-9()&.,\- ]{2,40}?)\s*(?:\d\.|계약기간|판매)")
+                  r"([가-힣A-Za-z0-9()&.,\- ]{2,40}?)\s*" + _END)
     if party and re.search(r"[가-힣A-Za-z]{2}", party):
         parts.append(f"계약상대: {party[:40]}")
     s = _grab(r"시작일[^0-9]{0,40}?(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})")
@@ -1124,6 +1132,43 @@ if __name__ == "__main__":
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
                 os.environ.setdefault(k.strip(), v.strip())
+
+    import sys as _sys
+    if "--selftest" in _sys.argv:
+        # VM 1줄 진단(쓰기 없음): 아카이브의 detail 없는 게이트 대상 5건을
+        # 실제 DART 로 추출 시도, 단계별 결과 출력.
+        #   .venv/bin/python -m bot.dart_feed --selftest
+        print(f"[selftest] DART_API_KEY: {'있음' if _dart_api_key() else '❌ 없음'}")
+        print(f"[selftest] 오늘 콜 버짓: {_budget_today()} / {_BUDGET_HARD}")
+        cands = []
+        for _d, _its in load_all_archives(days_back=3).items():
+            for _it in _its:
+                if _it.get("detail") or not _it.get("corp_code"):
+                    continue
+                _t = _it.get("report_nm", "")
+                if any(k in _t for k in ("공급계약", "유상증자", "전환사채",
+                                          "대량보유", "자기주식", "전환청구권")):
+                    cands.append(_it)
+        print(f"[selftest] detail 없는 대상 후보: {len(cands)}건 — 상위 5건 시도")
+        for _it in cands[:5]:
+            _r = _it.get("rcept_no", "")
+            cd = "쿨다운중" if _doc_fail_recent(_r) else "시도가능"
+            res = None
+            if cd == "시도가능":
+                try:
+                    res = _extract_detail(_it.get("report_nm", ""), _r,
+                                          _it.get("corp_code", ""),
+                                          _dart_api_key() or "")
+                except Exception as exc:
+                    res = f"예외: {exc}"
+            nm = _it.get("corp_name", "?")
+            t = _it.get("report_nm", "")[:30]
+            if isinstance(res, dict):
+                print(f"  ✅ {nm} | {t} → {len(res['lines'])}필드: {res['lines'][:2]}")
+            else:
+                print(f"  ❌ {nm} | {t} → {cd if cd != '시도가능' else res or 'None(필드부족/미매칭)'}")
+        print("[selftest] 끝 — ✅ 가 있으면 파이프라인 정상(다음 사이클에 저장됨)")
+        raise SystemExit(0)
 
     items = run_once()
     print(f"dart_feed: {len(items)} disclosures archived")
