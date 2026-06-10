@@ -275,6 +275,35 @@ def _extract_majorstock(rcept_no: str, corp_code: str,
 
 
 _DOC_FAIL = Path.home() / ".tradingagents" / "dart_doc_fail.json"
+# 일일 DART 콜 버짓 백스톱(키당 2만/일 한도 — 사용자 2026-06-11 '블락 전에
+# 미리'): listing 페이지·enrich 시도를 카운트, 초과 시 그날 enrich 중단 +
+# listing 최소화. 차단당하기 전에 우리가 먼저 감속.
+_BUDGET_FILE = Path.home() / ".tradingagents" / "dart_call_budget.json"
+_BUDGET_HARD = 15000   # 한도 20k 대비 25% 안전 마진
+_FULLSCAN_TS = Path.home() / ".tradingagents" / "dart_feed_fullscan.ts"
+
+
+def _budget_today() -> int:
+    try:
+        d = json.loads(_BUDGET_FILE.read_text(encoding="utf-8"))
+        if d.get("date") == datetime.now(_KST).date().isoformat():
+            return int(d.get("n", 0))
+    except Exception:
+        pass
+    return 0
+
+
+def _budget_add(n: int = 1) -> int:
+    """오늘 콜 카운트 += n, 누계 반환. 날짜 바뀌면 리셋."""
+    today = datetime.now(_KST).date().isoformat()
+    total = _budget_today() + n
+    try:
+        _BUDGET_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _BUDGET_FILE.write_text(json.dumps({"date": today, "n": total}),
+                                encoding="utf-8")
+    except Exception:
+        pass
+    return total
 # 사이클(5분)당 신규 enrich 시도 상한 — DART 분당 한도 보호. 최신순(피드
 # 순서)으로 소진, 나머지는 다음 사이클이 이어받아 점진 백필.
 _ENRICH_MAX_PER_CYCLE = 40
@@ -733,6 +762,7 @@ def fetch_market_disclosures(target_date: date | None = None,
     seen_rcept: set[str] = set()
 
     for page_no in range(1, max_pages + 1):
+        _budget_add(1)
         try:
             resp = requests.get(
                 f"{_DART_BASE}/list.json",
@@ -847,7 +877,11 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
             if attempted >= _ENRICH_MAX_PER_CYCLE:
                 skipped += 1
                 continue
+            if _budget_today() >= _BUDGET_HARD:
+                skipped += 1
+                continue
             attempted += 1
+            _budget_add(2)
             time.sleep(0.15)
             try:
                 detail = _extract_detail(report_nm, rcept_no, corp_code, api_key)
@@ -1011,8 +1045,30 @@ def run_once(target_date: date | None = None,
     날짜 그룹과 일치. 새벽 당일 0건이어도 직전 거래일 공시가 보여짐."""
     if target_date is None:
         target_date = datetime.now(_KST).date()
-    log.info("dart_feed: fetching %s (최근 %d일)", target_date, days_back + 1)
-    items = fetch_market_disclosures(target_date, days_back=days_back)
+    # 스캔 모드 — 매 사이클 4일 풀 listing 은 낭비(시즌 헤드룸 잠식).
+    # 시간당 1회만 4일 풀스캔(새벽 보정·정정 회수), 그 외엔 당일만(신규는
+    # 어차피 오늘 접수분). 일일 버짓 초과 시 최소 모드(오늘 3p)로 감속.
+    _now = time.time()
+    try:
+        _last_full = _FULLSCAN_TS.stat().st_mtime
+    except OSError:
+        _last_full = 0.0
+    if _budget_today() >= _BUDGET_HARD:
+        days_back, _max_pages = 0, 3
+        log.warning("dart_feed: 일일 콜 버짓 %d 초과 — 최소 모드", _BUDGET_HARD)
+    elif _now - _last_full >= 3600:
+        _max_pages = 20
+        try:
+            _FULLSCAN_TS.parent.mkdir(parents=True, exist_ok=True)
+            _FULLSCAN_TS.touch()
+        except OSError:
+            pass
+    else:
+        days_back, _max_pages = 0, 12
+    log.info("dart_feed: fetching %s (최근 %d일, ≤%dp, 오늘 콜 %d)",
+             target_date, days_back + 1, _max_pages, _budget_today())
+    items = fetch_market_disclosures(target_date, days_back=days_back,
+                                     max_pages=_max_pages)
     if items:
         enrich_disclosures(items)
 
