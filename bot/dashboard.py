@@ -4068,7 +4068,6 @@ def _render_stock_info_html(rec: dict) -> str:
   <span id="q-badge" style="font-weight:600"></span>
   <span id="q-dot" class="q-dot q-dot-load" title="데이터 로딩 중…"></span>
   <button id="q-refresh" style="background:none;border:none;cursor:pointer;font-size:14px;margin-left:2px;padding:2px 4px;vertical-align:middle" title="데이터 새로고침">🔄</button>
-  <span class="si-quote-note">🔴 로딩 중 / 🟢 전체 로딩 완료 · 가격연동 지표(현재가·시총·PER·선행PER·PBR·PSR·EV/EBITDA·배당·베타·EPS·BPS·52주·이평·컨센서스)는 라이브 · 재무제표·실적·주주·수급·공시·리서치·뉴스는 최신 공시/일 단위 갱신 · 차트는 분석 시점 저장본</span>
 </div>"""
 
     # ── market detection — pick the right market-specific sub-dict ──

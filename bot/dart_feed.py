@@ -304,6 +304,19 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
             ("영업이익", ("bsopPrfl", "bsop_prfl", "thmBsopPrfl"), "won"),
             ("순이익", ("thqrNtinc", "thqr_ntinc", "thmNtinc"), "won"),
         ])]
+    elif "유무상증자" in t:  # 유무상 먼저(무상증자⊂유무상증자 substring 충돌 방지)
+        specs = [("pifricDecsn", [
+            ("방식", ("ic_mthn",), "text"),
+            ("신주수", ("nstk_ostk_cnt",), "num"),
+            ("시설자금", ("fdpp_fclt",), "won"),
+            ("운영자금", ("fdpp_op",), "won"),
+        ])]
+    elif "무상증자" in t:
+        specs = [("fricDecsn", [
+            ("신주(보통)", ("nstk_ostk_cnt",), "num"),
+            ("1주당 배정", ("nstk_ascnt_ps_ostk",), "text"),
+            ("배정기준일", ("nstk_asstd",), "date"),
+        ])]
     elif "유상증자" in t:
         specs = [("piicDecsn", [
             ("방식", ("ic_mthn",), "text"),
@@ -334,6 +347,12 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
             ("만기", ("bd_mtrd",), "date"),
             ("자금용도", ("fdpp_op",), "text"),
         ])]
+    elif "자기주식" in t and "처분" in t:
+        specs = [("tsstkDpDecsn", [
+            ("처분수량(보통)", ("dppln_stk_ostk", "dppln_stk"), "num"),
+            ("처분금액", ("dpstk_prc_ostk", "dppln_prc"), "won"),
+            ("처분목적", ("dp_pp",), "text"),
+        ])]
     elif "자기주식" in t:
         specs = [("tsstkAqDecsn", [
             ("취득예정", ("aqpln_stk_ostk", "aqpln_stk"), "num"),
@@ -344,6 +363,30 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         specs = [("cmpMgDecsn", [
             ("합병비율", ("mg_rt",), "text"),
             ("상대회사", ("mgprt_cmpnm", "cmpcmpnm"), "text"),
+        ])]
+    elif "타법인" in t and "양수" in t:
+        specs = [("otcprStkInvscrInhDecsn", [
+            ("대상회사", ("iscmp_cmpnm", "cmpnm"), "text"),
+            ("양수주식", ("inhstk_cnt", "inh_stk_cnt"), "num"),
+            ("양수금액", ("inh_prc", "trf_prc"), "won"),
+        ])]
+    elif "타법인" in t and "양도" in t:
+        specs = [("otcprStkInvscrTrfDecsn", [
+            ("대상회사", ("iscmp_cmpnm", "cmpnm"), "text"),
+            ("양도주식", ("trfstk_cnt", "trf_stk_cnt"), "num"),
+            ("양도금액", ("trf_prc", "inh_prc"), "won"),
+        ])]
+    elif "영업양수" in t:
+        specs = [("bsnInhDecsn", [
+            ("양수대상", ("inh_sbjc", "trf_sbjc"), "text"),
+            ("양수가액", ("inh_prc", "trf_prc"), "won"),
+            ("목적", ("inh_pp", "trf_pp"), "text"),
+        ])]
+    elif "영업양도" in t:
+        specs = [("bsnTrfDecsn", [
+            ("양도대상", ("trf_sbjc", "inh_sbjc"), "text"),
+            ("양도가액", ("trf_prc", "inh_prc"), "won"),
+            ("목적", ("trf_pp", "inh_pp"), "text"),
         ])]
 
     if not specs:
@@ -544,7 +587,7 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
             continue
 
         if cat in ("계약", "자금조달", "주주환원", "신규시설투자",
-                   "지분공시") or "실적" in cat:
+                   "지분공시", "자산양수도") or "실적" in cat:
             if corp_code:
                 detail = _extract_detail(report_nm, rcept_no, corp_code, api_key)
                 lines = list(detail.get("lines", [])) if detail else []
