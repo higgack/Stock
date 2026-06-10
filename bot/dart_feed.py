@@ -275,6 +275,9 @@ def _extract_majorstock(rcept_no: str, corp_code: str,
 
 
 _DOC_FAIL = Path.home() / ".tradingagents" / "dart_doc_fail.json"
+# 사이클(5분)당 신규 enrich 시도 상한 — DART 분당 한도 보호. 최신순(피드
+# 순서)으로 소진, 나머지는 다음 사이클이 이어받아 점진 백필.
+_ENRICH_MAX_PER_CYCLE = 40
 
 
 def _doc_fail_load() -> dict:
@@ -284,19 +287,25 @@ def _doc_fail_load() -> dict:
         return {}
 
 
-def _doc_fail_recent(rcept_no: str, hours: float = 12.0) -> bool:
-    ts = _doc_fail_load().get(rcept_no)
-    return bool(ts) and (time.time() - float(ts)) < hours * 3600
+def _doc_fail_recent(rcept_no: str) -> bool:
+    """값 = 만료 시각(expiry). 과거 포맷(실패 시각 저장)은 과거값이라 즉시
+    만료로 해석돼 자연 마이그레이션 — 12h 오염 고착도 함께 해소."""
+    exp = _doc_fail_load().get(rcept_no)
+    try:
+        return bool(exp) and time.time() < float(exp)
+    except (TypeError, ValueError):
+        return False
 
 
-def _doc_fail_mark(rcept_no: str) -> None:
-    """원문 파싱 실패 negative-cache — 5분 타이머가 실패 건을 매 사이클
-    재다운로드하지 않게 12h skip. 성공 건은 detail 로 저장돼 재호출 0."""
+def _doc_fail_mark(rcept_no: str, hours: float = 0.5) -> None:
+    """실패 negative-cache — 만료 시각 저장. 기본 30분(다운로드/네트워크/
+    한도 초과 = transient, 빠른 재시도). 파싱 필드 부족 같은 형식 문제는
+    호출부가 12h 로 길게. 성공 건은 detail 저장 → 재호출 0."""
     try:
         d = _doc_fail_load()
-        d[rcept_no] = time.time()
-        if len(d) > 500:
-            d = dict(sorted(d.items(), key=lambda kv: kv[1])[-300:])
+        d[rcept_no] = time.time() + hours * 3600
+        if len(d) > 1500:
+            d = dict(sorted(d.items(), key=lambda kv: kv[1])[-1000:])
         _DOC_FAIL.parent.mkdir(parents=True, exist_ok=True)
         _DOC_FAIL.write_text(json.dumps(d), encoding="utf-8")
     except Exception:
@@ -380,7 +389,7 @@ def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
         if len(parts) >= 6:
             break
     if not parts:
-        _doc_fail_mark(rcept_no)
+        _doc_fail_mark(rcept_no, hours=12.0)  # 형식 문제 — 곧 안 풀림
         return None
     return {"lines": parts}
 
@@ -421,7 +430,7 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
     if cd:
         parts.append(f"계약일: {cd}")
     if len(parts) < 2:
-        _doc_fail_mark(rcept_no)
+        _doc_fail_mark(rcept_no, hours=12.0)  # 형식 문제 — 곧 안 풀림
         return None
     return {"lines": parts}
 
@@ -731,6 +740,7 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
     except Exception:
         known = {}
 
+    attempted = enriched = failed = skipped = 0
     for item in items:
         cat = item.get("category", "")
         report_nm = item.get("report_nm", "")
@@ -744,21 +754,45 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
         if cat in ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
                    "자산양수도", "IR", "회사구조", "소송",
                    "리스크") or "실적" in cat:
-            if corp_code:
+            if not corp_code:
+                continue
+            # 사이클당 신규 시도 상한 + 스로틀 — 4일치 일괄 enrich 가
+            # DART 분당 한도를 태우고 전부 negative-cache 로 고착되던 것
+            # 차단(2026-06-11 surfaced). 나머지는 다음 5분 사이클이 이어감.
+            if rcept_no and _doc_fail_recent(rcept_no):
+                skipped += 1
+                continue
+            if attempted >= _ENRICH_MAX_PER_CYCLE:
+                skipped += 1
+                continue
+            attempted += 1
+            time.sleep(0.15)
+            try:
                 detail = _extract_detail(report_nm, rcept_no, corp_code, api_key)
                 lines = list(detail.get("lines", [])) if detail else []
                 # 시총·현재가 부착 (다른 봇 수준 — 사용자 2026-06-10). FSC
-                # (무료·12h 캐시·T+1)로 시총·종가. 구조화 detail 있는 카드만
-                # (계약/실적/자금조달/주주환원/신규시설투자) → ~소수 카드.
+                # (무료·12h 캐시·T+1)로 시총·종가. 구조화 detail 있는 카드만.
                 sc = item.get("stock_code", "")
                 if lines and sc and len(sc) == 6 and sc.isdigit():
                     # 주요사업(업종) — DART 업종코드(KSIC) → 한글 (무료·캐시).
-                    # 레퍼런스 봇의 '주요사업' 대응(원문 텍스트는 아니지만
-                    # 업종 분류로 사업영역 표시). 맨 앞에.
                     lines = _industry_line(sc) + lines
                     lines += _market_cap_price_lines(sc)
                 if lines:
                     item["detail"] = lines
+                    enriched += 1
+                elif rcept_no:
+                    # 구조화 API 미매칭/원문 필드 부재 — 2h 재시도 억제
+                    # (당일 지연 반영 케이스는 2h 후 자연 재시도).
+                    _doc_fail_mark(rcept_no, hours=2.0)
+                    failed += 1
+            except Exception as exc:
+                failed += 1
+                log.warning("dart_feed enrich %s(%s) 실패: %s",
+                            item.get("corp_name", "?"), rcept_no, exc)
+                if rcept_no:
+                    _doc_fail_mark(rcept_no, hours=1.0)
+    log.info("dart_feed enrich: 성공 %d · 실패 %d · 보류(상한/쿨다운) %d",
+             enriched, failed, skipped)
     return items
 
 

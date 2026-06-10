@@ -532,13 +532,8 @@ def fetch_high_low() -> dict:
     return out
 
 
-def _github_sp500() -> list[str]:
-    """GitHub raw CSV 로 S&P500 티커 (위키 403 우회 — 2026-06-10 VM 확인:
-    Wikipedia 가 데이터센터 IP 403). datasets/s-and-p-500-companies 공개
-    CSV(Symbol 컬럼). 7일 캐시. yfinance 표기로 '.'→'-'(BRK.B→BRK-B)."""
-    c = _cached("sp500_github.json", ttl=7 * 86400)
-    if c:
-        return c
+def _fetch_sp500_csv() -> tuple[list[str], dict]:
+    """GitHub raw CSV → (티커 리스트, {티커: 회사명}). 캐시 없음(호출부가)."""
     try:
         import csv
         import io
@@ -548,19 +543,53 @@ def _github_sp500() -> list[str]:
         r = httpx.get(url, timeout=15, follow_redirects=True)
         if r.status_code == 200 and r.text:
             rows = list(csv.DictReader(io.StringIO(r.text)))
-            tks = []
+            tks: list[str] = []
+            names: dict = {}
             for row in rows:
                 sym = (row.get("Symbol") or row.get("symbol") or "").replace(".", "-").strip()
-                if sym:
-                    tks.append(sym)
+                if not sym:
+                    continue
+                tks.append(sym)
+                nm = (row.get("Security") or row.get("Name")
+                      or row.get("security") or row.get("name") or "").strip()
+                if nm:
+                    names[sym] = nm
             if len(tks) > 100:
-                _cache_write("sp500_github.json", tks)
-                log.info("finviz: GitHub S&P500 universe %d종목 (위키 우회)", len(tks))
-                return tks
+                return tks, names
         log.warning("finviz: GitHub S&P500 CSV → HTTP %d", r.status_code)
     except Exception as exc:
         log.warning("finviz: GitHub S&P500 fetch failed: %s", exc)
-    return []
+    return [], {}
+
+
+def _github_sp500() -> list[str]:
+    """GitHub raw CSV 로 S&P500 티커 (위키 403 우회 — 2026-06-10 VM 확인:
+    Wikipedia 가 데이터센터 IP 403). 7일 캐시. '.'→'-'(BRK.B→BRK-B).
+    회사명 맵(sp500_names.json)도 같은 fetch 에서 캐시."""
+    c = _cached("sp500_github.json", ttl=7 * 86400)
+    if c:
+        return c
+    tks, names = _fetch_sp500_csv()
+    if tks:
+        _cache_write("sp500_github.json", tks)
+        if names:
+            _cache_write("sp500_names.json", names)
+        log.info("finviz: GitHub S&P500 universe %d종목 (위키 우회)", len(tks))
+    return tks
+
+
+def _sp500_names() -> dict:
+    """{티커: 회사명} — 신고가/신저가 폴백 표기용(사용자 2026-06-11
+    'KO(Coca-Cola)'). 캐시 없으면 1회 fetch 해 양쪽 캐시 채움."""
+    c = _cached("sp500_names.json", ttl=7 * 86400)
+    if c:
+        return c
+    tks, names = _fetch_sp500_csv()
+    if tks:
+        _cache_write("sp500_github.json", tks)
+    if names:
+        _cache_write("sp500_names.json", names)
+    return names or {}
 
 
 def _us_universe_robust() -> list[str]:
@@ -634,6 +663,7 @@ def _compute_highlow_sp500() -> dict:
     try:
         import yfinance as yf
         universe = _us_universe_robust()
+        _names = _sp500_names()  # 표기용 회사명(없으면 티커만)
         if not universe:
             log.warning("finviz: S&P500 fallback — universe empty (전 소스 실패)")
             return out
@@ -667,10 +697,12 @@ def _compute_highlow_sp500() -> dict:
                     last = float(closes.iloc[-1])
                     hi, lo = float(highs.max()), float(lows.min())
                     if hi > 0 and last >= hi * 0.99:
-                        out["high"].append({"ticker": tk, "name": tk,
+                        out["high"].append({"ticker": tk,
+                                            "name": _names.get(tk, tk),
                                             "price": round(last, 2), "pct": None})
                     elif lo > 0 and last <= lo * 1.01:
-                        out["low"].append({"ticker": tk, "name": tk,
+                        out["low"].append({"ticker": tk,
+                                           "name": _names.get(tk, tk),
                                            "price": round(last, 2), "pct": None})
                 except Exception:
                     continue

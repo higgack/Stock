@@ -655,8 +655,10 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
                     "target": tp,
                     "date": d,
                 })
-            # 종목당 최대 3건 — AVGO 처럼 한 종목이 테이블을 도배하던 것
-            # (사용자 2026-06-11). 최신순이라 head(15) 중 앞 3건.
+            # 종목당 최대 3건 — 일주일치 전체에서 최신순 3건, 초과분은
+            # 기록하지 않음(사용자 2026-06-11 룰 확정). yfinance 정렬에
+            # 기대지 않고 명시 정렬.
+            items.sort(key=lambda x: x.get("date", ""), reverse=True)
             return items[:3]
         except Exception:
             return []

@@ -97,11 +97,10 @@ def render_us_highlow_page() -> str:
         def _name_cell(it: dict) -> str:
             tk = _html.escape(it.get("ticker", ""))
             nm = _html.escape(it.get("name") or it.get("ticker", ""))
-            # 회사명==티커(폴백 산출)면 한 번만 — 'AIZ AIZ' 중복 제거
-            # (사용자 2026-06-11).
-            suffix = f' <span class="ts">{tk}</span>' if nm != tk else ""
-            return (f'<td class="nm"><a href="lookup/{tk}">{nm}</a>'
-                    f'{suffix}</td>')
+            # 'KO(Coca-Cola)' 형식 — 티커 + (회사명) (사용자 2026-06-11).
+            # 회사명==티커(이름 미확보)면 티커만.
+            label = f'{tk}<span class="ts">({nm})</span>' if nm != tk else tk
+            return f'<td class="nm"><a href="lookup/{tk}">{label}</a></td>'
         rows = "".join(
             f'<tr><td class="rk">{i}</td>'
             f'{_name_cell(it)}'
