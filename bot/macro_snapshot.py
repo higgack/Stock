@@ -291,7 +291,9 @@ def _downsample_monthly(points: list[tuple[str, float]], n: int = _SPARK_N) -> l
 
 # ── Main ────────────────────────────────────────────────────────────
 def fetch_macro_snapshot() -> dict[str, Any]:
-    """Assemble the full macro snapshot. 12h disk cache.
+    """Assemble the full macro snapshot. 5min disk cache (글로벌 스냅샷과
+    동일 주기) — FRED/ECOS 하위 시계열은 각자 12h 캐시(공식 통계라 일·월
+    단위 갱신). _periodic_market_refresh 가 5분마다 market.html 재생성.
 
     Returns {"domestic": [...], "global": [...], "charts": {...}, "ts": str}
     where each indicator is {key,label,unit,value,change,decimals,spark}.
