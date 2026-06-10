@@ -365,6 +365,68 @@ _GENERIC_DOC_FIELDS = [
 ]
 
 
+def _extract_doc_fields(rcept_no: str, api_key: str, fields: list,
+                        min_fields: int = 1) -> dict | None:
+    """원문 zip 에서 지정 라벨 세트만 추출 — 유형 전용 파서 공통 헬퍼
+    (전환청구권·주식분할/병합 — 사용자 2026-06-11 추가, ₩0·LLM 0).
+    미달 시 12h negative-cache(형식 문제는 곧 안 풀림)."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    from bot.dart_detail import _won
+    parts: list[str] = []
+    for lbl, pat, kind in fields:
+        m = re.search(pat, txt)
+        if not m:
+            continue
+        v = m.group(1).strip()
+        if kind == "won":
+            w = _won(v)
+            if w:
+                parts.append(f"{lbl}: {w}")
+        elif kind == "num":
+            try:
+                parts.append(f"{lbl}: {int(v.replace(',', '')):,}주")
+            except (TypeError, ValueError):
+                parts.append(f"{lbl}: {v}")
+        else:
+            parts.append(f"{lbl}: {v[:60]}")
+    if len(parts) < min_fields:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
+
+
+# 전환청구권 행사 — 구조화 API 없음 → 원문 표준 양식 라벨 (해성옵틱스 카드)
+_CONVERT_FIELDS = [
+    ("행사주식수", r"행사주식수[^0-9]{0,80}?([\d,]{2,})", "num"),
+    ("전환가액", r"전환가액[^0-9]{0,80}?([\d,]{2,})", "won"),
+    ("신주 상장예정일",
+     r"상장\s*예정일[^0-9]{0,60}?(\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2})",
+     "text"),
+    ("잔여 권면총액",
+     r"(?:미행사|잔여)[\s\S]{0,40}?권면(?:총액)?[^0-9]{0,60}?([\d,]+)", "won"),
+]
+
+# 주식 분할/병합 — 비율·액면 전후·일정 (체리부로 카드). 합병(cmpMgDecsn)과
+# 별개 유형이라 원문 파싱.
+_SPLIT_MERGE_FIELDS = [
+    ("비율", r"(\d[\d,]*\s*주[를을]?[^0-9\n]{0,14}?\d[\d,]*\s*주로)", "text"),
+    ("1주 금액(전)",
+     r"(?:병합|분할)\s*전[^0-9]{0,40}?1주[^0-9]{0,30}?([\d,]{2,})", "won"),
+    ("1주 금액(후)",
+     r"(?:병합|분할)\s*후[^0-9]{0,40}?1주[^0-9]{0,30}?([\d,]{2,})", "won"),
+    ("주총예정일",
+     r"주주총회[^0-9]{0,50}?(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})", "text"),
+    ("매매거래정지",
+     r"매매\s*거래\s*정지[^0-9]{0,60}?(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2}"
+     r"[^가-힣\n]{0,24}?\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})", "text"),
+    ("신주상장예정일",
+     r"신주[^가-힣\n]{0,8}(?:의\s*)?상장\s*예정일[^0-9]{0,50}?"
+     r"(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})", "text"),
+]
+
+
 def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
     """구조화 API 미커버 공시의 generic 원문 추출 — 라벨 매칭 최대 6줄.
     필드 0개면 negative-cache(12h 재시도 억제)."""
@@ -447,6 +509,16 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
     # 보고사유. (프로텍·하이브 레퍼런스 카드 대응, 무료.)
     if "대량보유" in t:
         return _extract_majorstock(rcept_no, corp_code, api_key)
+
+    # 전환청구권 행사 / 주식 분할·병합 — 구조화 API 미확인 유형 → 검증된
+    # 원문 표준 양식 파싱 (사용자 2026-06-11 추가, ₩0).
+    if "전환청구권" in t and "행사" in t:
+        return _extract_doc_fields(rcept_no, api_key, _CONVERT_FIELDS,
+                                   min_fields=2)
+    if ("주식분할" in t or "주식병합" in t or "액면분할" in t
+            or "액면병합" in t):
+        return _extract_doc_fields(rcept_no, api_key, _SPLIT_MERGE_FIELDS,
+                                   min_fields=2)
 
     specs: list[tuple[str, list]] = []
     if "공급계약" in t or "단일판매" in t or "단일공급" in t:
@@ -751,16 +823,20 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
             item["detail"] = known[rcept_no]
             continue
 
-        if cat in ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
-                   "자산양수도", "IR", "회사구조", "소송",
-                   "리스크") or "실적" in cat:
+        # 전환청구권/주식분할·병합은 카테고리 분류와 무관하게 시도(원문
+        # 파서 보유 — 사용자 2026-06-11 추가).
+        _force = any(k in report_nm for k in
+                     ("전환청구권", "주식분할", "주식병합", "액면분할", "액면병합"))
+        if _force or cat in ("계약", "자금조달", "주주환원", "신규시설투자",
+                             "지분공시", "자산양수도", "IR", "회사구조", "소송",
+                             "리스크") or "실적" in cat:
             if not corp_code:
                 continue
             # 지분공시는 '대량보유'(majorstock 구조화 존재)만 시도 — 임원·
             # 주요주주 소유상황/감사보고서/자산유동화 등은 무료 구조화 소스가
             # 없어(원문도 라벨 미매칭) 시도 예산만 소모하며 계약·증자 카드를
             # 굶김(사용자 2026-06-11 '블락?' 진단). 제목만 표시가 정상.
-            if cat == "지분공시" and "대량보유" not in report_nm:
+            if (not _force) and cat == "지분공시" and "대량보유" not in report_nm:
                 continue
             # 사이클당 신규 시도 상한 + 스로틀 — 4일치 일괄 enrich 가
             # DART 분당 한도를 태우고 전부 negative-cache 로 고착되던 것
