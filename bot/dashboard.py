@@ -990,6 +990,11 @@ _INDEX_CSS = _BASE_CSS + """
 .search-bar button:active { transform: scale(0.97); }
 :root[data-theme="dark"] .search-bar button { background: #16a34a; }
 :root[data-theme="dark"] .search-bar button:hover { background: #15803d; }
+.search-bar button.run-btn { background: #3b82f6; }
+.search-bar button.run-btn:hover { background: #2563eb; }
+:root[data-theme="dark"] .search-bar button.run-btn { background: #2563eb; }
+:root[data-theme="dark"] .search-bar button.run-btn:hover { background: #1d4ed8; }
+.search-bar button:disabled { opacity: 0.55; cursor: wait; }
 .market-filter {
   display: flex; gap: 6px; flex-wrap: wrap; margin: -12px 4px 12px;
 }
@@ -1381,6 +1386,64 @@ _INDEX_JS = """
     requestAnimationFrame(function() { el.scrollIntoView({block:'center'}); });
   })();
 })();
+"""
+
+# ── 대시보드 → 봇 실행 버튼 공통 JS (분석/스크리너) ─────────────────────────
+# POST api/run {kind, q} → dashboard_server 가 스풀 → 봇 폴러가 채널 명령과
+# 동일 경로로 실행. confirm 다이얼로그에 소요시간/비용 명시(오클릭 비용 가드).
+# 상대경로 fetch 라 URL 토큰 prefix 환경에서도 동작 (api/delete 패턴 동일).
+_RUN_REQUEST_JS = r"""
+function noahRunSetup(btnId, inputId, kind, opts) {
+  var btn = document.getElementById(btnId);
+  if (!btn) return;
+  var inp = document.getElementById(inputId);
+  opts = opts || {};
+  btn.addEventListener('click', function() {
+    var q = (inp && inp.value || '').trim();
+    if (!q && opts.requireQuery) {
+      if (inp) inp.focus();
+      alert(opts.emptyMsg || '입력 후 실행하세요.');
+      return;
+    }
+    var label = q || opts.defaultLabel || '';
+    var msg = (label ? "'" + label + "'\n" : '') + (opts.confirmText || '실행할까요?');
+    if (!confirm(msg)) return;
+    var orig = btn.textContent;
+    btn.disabled = true; btn.textContent = '…';
+    fetch('api/run', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({kind: kind, q: q})
+    })
+    .then(function(r) { return r.json().then(function(d) { return {st: r.status, d: d}; }); })
+    .then(function(x) {
+      btn.disabled = false; btn.textContent = orig;
+      if (x.d && x.d.ok) {
+        var note = x.d.dup ? '이미 같은 요청이 대기 중입니다.'
+          : ((x.d.q ? x.d.q + ' — ' : '') + (opts.okMsg || '요청 접수. 결과는 텔레그램 채널에 게시됩니다.'));
+        var s = opts.statusId && document.getElementById(opts.statusId);
+        if (s) { s.textContent = '✅ ' + note; }
+        else { alert('✅ ' + note); }
+      } else {
+        alert('⚠️ ' + ((x.d && x.d.error) || ('요청 실패 (HTTP ' + x.st + ')')));
+      }
+    })
+    .catch(function(e) {
+      btn.disabled = false; btn.textContent = orig;
+      alert('⚠️ 요청 실패: ' + e);
+    });
+  });
+}
+"""
+
+# index.html: 분석 버튼 — 텔레그램 /티커 와 동일한 전체 분석을 대시보드에서.
+_INDEX_RUN_JS = _RUN_REQUEST_JS + r"""
+noahRunSetup('analyze-btn', 'search', 'analyze', {
+  requireQuery: true,
+  emptyMsg: '분석할 종목(티커 또는 종목명)을 검색창에 입력하세요.\n예: NVDA · 삼성전자 · 005930.KS',
+  confirmText: '전체 분석을 시작할까요?\n· 소요 ~3분 · 비용 ~₩100-150 (캐시 시 무료)\n· 결과: 텔레그램 채널 + 이 아카이브(자동 갱신)',
+  okMsg: '분석 요청 접수 — ~3분 후 텔레그램 채널과 이 아카이브에 게시됩니다.',
+  statusId: 'status'
+});
 """
 
 
@@ -1958,6 +2021,7 @@ def _render_index(records: list[dict]) -> str:
   <div class="search-bar">
     <input id="search" type="text" placeholder="종목 / 본문 검색 (예: NVDA, 삼성전자, 변압기, GLP-1, CHIPS Act)" autocomplete="off" spellcheck="false">
     <button id="clear-btn" type="button" title="검색 초기화">초기화</button>
+    <button id="analyze-btn" type="button" class="run-btn" title="입력한 종목 전체 분석 — 텔레그램 /티커 와 동일 (결과: 채널 + 이 아카이브)">분석</button>
   </div>
   {market_filter_html}
   <p id="status" class="status-line">총 {len(records)}건의 분석 기록</p>
@@ -1967,6 +2031,7 @@ def _render_index(records: list[dict]) -> str:
   {footer_html}
 </div>
 <script>{_INDEX_JS}</script>
+<script>{_INDEX_RUN_JS}</script>
 </body>
 </html>
 """

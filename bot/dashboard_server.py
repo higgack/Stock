@@ -294,6 +294,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "regenerate_screen_index")
         if self.path == "/api/portfolio_send":
             return self._handle_portfolio_send()
+        if self.path == "/api/run":
+            return self._handle_run()
         if self.path != "/api/delete":
             self.send_error(404, "Not Found")
             return
@@ -880,6 +882,60 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.warning("lookup: failed — %s", exc)
             self.send_error(500, "internal error")
+
+    def _handle_run(self) -> None:
+        """POST /api/run {kind, q} — 대시보드 '분석/실행' 버튼 → 봇 작업 스풀.
+
+        kinds (bot.dashboard_requests.KINDS):
+          • analyze  — q = 티커/종목명. 여기서 종목명→티커 resolve(api/search 와
+            동일 경로) 후 resolved 티커를 spool. 실패 시 즉시 400(브라우저에
+            바로 표시 — 봇까지 가서 조용히 죽지 않게).
+          • screener — q = Bottleneck 도메인 ('' = 기본 bottleneck).
+          • screen   — q = 조건부 스크리너 조건/프리셋.
+        실행 자체는 텔레그램 봇 프로세스가 폴러로 집어 채널 명령과 동일
+        경로로 수행 — 결과는 채널 + 아카이브에 게시. Basic Auth 뒤라 호출자
+        는 사용자 본인; spool 단 dedupe + 8건 대기 cap 이 폭주 가드."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 1024:
+                raise ValueError("missing or oversized request body")
+            payload = json.loads(self.rfile.read(length))
+            kind = (payload.get("kind") or "").strip().lower()
+            q = " ".join((payload.get("q") or "").split())
+
+            from bot.dashboard_requests import KINDS, submit
+            if kind not in KINDS:
+                raise ValueError(f"invalid kind: {kind!r}")
+
+            if kind == "analyze":
+                if not q:
+                    raise ValueError("티커/종목명을 입력하세요")
+                try:
+                    from bot.dashboard import resolve_name_to_ticker
+                    resolved = resolve_name_to_ticker(q)
+                except Exception:
+                    resolved = None
+                ticker = (resolved or q).upper()
+                if not _TICKER_RE.match(ticker):
+                    raise ValueError(
+                        f"'{q}' 종목을 찾지 못했습니다 — 티커(예: NVDA·005930.KS) "
+                        "또는 정확한 종목명으로 다시 시도"
+                    )
+                q = ticker
+
+            res = submit(kind, q)
+            if not res.get("ok"):
+                raise ValueError(res.get("error") or "요청 실패")
+            log.info("run request spooled: kind=%s q=%r dup=%s",
+                     kind, q, res.get("dup", False))
+            self._reply_json(200, {"ok": True, "q": q,
+                                   "dup": bool(res.get("dup")),
+                                   "note": res.get("note", "")})
+        except ValueError as exc:
+            self._reply_json(400, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            log.exception("run: unexpected failure")
+            self._reply_json(500, {"ok": False, "error": str(exc)})
 
     def _handle_lookup_detail(self) -> None:
         """GET /api/lookup_detail?ticker=X — 지연로딩 detail HTML fragment.
