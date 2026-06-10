@@ -276,16 +276,25 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
 
     Non-fatal: each block is independent try/except. Missing API keys or
     network errors just skip that block — the detail page degrades.
-    """
+
+    병렬화 (2026-06-10 사용자 '여전히 오래걸려' → 커밋 승인): 13개 직렬
+    블록(블록당 0.3~2초, 합산 8~20초 — KR 종목이 특히 느리던 핵심)을
+    ThreadPool 로 동시 실행. #186 과 동일 규율 — 각 task 는 자기 로컬
+    dict 에만 쓰고(공유 가변상태 0) 메인 스레드가 **원래 블록 순서대로
+    setdefault 병합**(DART 우선 corp_reg_no, FnGuide 우선 consensus 등
+    기존 우선순위 보존). 진짜 의존성(Naver→한경 폴백, KIS→pykrx flow,
+    DART 재무 현년+3개년)은 한 task 안에서 순차 유지. DART 동시 호출은
+    엔드포인트가 다르고 12h 디스크 캐시(F3)라 rate-limit 안전. 풀 실패
+    시 직렬 폴백(동작 동일)."""
     stock_code = ticker.split(".")[0]
 
-    # ── DART company info (법인등록번호·대표자·결산월·주소·산업분류) ──
-    try:
+    def _t_dart_company() -> dict:
+        out: dict = {}
         from bot.dart_client import get_dart
         dart = get_dart()
         ci = dart.get_company_info(stock_code) if dart else None
         if ci and ci.get("status") == "000":
-            kr = snap.setdefault("kr", {})
+            kr = out.setdefault("kr", {})
             for src_key, dst_key in (
                 ("jurir_no", "corp_reg_no"),    # 법인등록번호
                 ("bizr_no", "biz_reg_no"),      # 사업자등록번호
@@ -300,254 +309,284 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                 v = ci.get(src_key)
                 if v and str(v).strip() and str(v).strip() != "":
                     kr[dst_key] = str(v).strip()
-    except Exception as exc:
-        log.debug("stock_snapshot: DART company info skipped: %s", exc)
+        return out
 
-    # ── FSC item_info (법인등록번호 fallback · 시장구분) ──────────
-    try:
+    def _t_fsc_item() -> dict:
+        # corp_reg_no 는 DART 가 우선 — 병합이 setdefault 라 DART(앞 순서)
+        # 가 이미 채웠으면 자동으로 안 덮음 (기존 if-missing 의미 보존).
+        out: dict = {}
         from bot.fsc_client import item_info as fsc_item_info, fsc_key_ready
         if fsc_key_ready():
             fi = fsc_item_info(ticker)
             if fi:
-                kr = snap.setdefault("kr", {})
+                kr = out.setdefault("kr", {})
                 crno = fi.get("crno")
-                if crno and not kr.get("corp_reg_no"):
+                if crno:
                     kr["corp_reg_no"] = crno
                 mrkt = fi.get("mrktCtg")
                 if mrkt:
                     kr["market_category"] = mrkt
-    except Exception as exc:
-        log.debug("stock_snapshot: FSC item_info skipped: %s", exc)
+        return out
 
-    # ── DART insider holdings (임원·주요주주 지분) ────────────────
-    try:
+    def _t_dart_insider() -> dict:
+        out: dict = {}
         from bot.dart_client import get_dart
         dart = get_dart()
         if dart:
             holders = dart.get_insider_holdings(stock_code)
             if holders:
-                snap.setdefault("kr", {})["insider_holdings"] = holders[:15]
-    except Exception as exc:
-        log.debug("stock_snapshot: DART insider holdings skipped: %s", exc)
+                out.setdefault("kr", {})["insider_holdings"] = holders[:15]
+        return out
 
-    # ── DART recent disclosures (최근 공시) ───────────────────────
-    try:
+    def _t_dart_disclosures() -> dict:
+        out: dict = {}
         from bot.dart_client import get_dart
         dart = get_dart()
         if dart:
             disclosures = dart.get_recent_disclosures(stock_code, days_back=365, limit=30)
             if disclosures:
-                snap.setdefault("kr", {})["disclosures"] = disclosures
-    except Exception as exc:
-        log.debug("stock_snapshot: DART disclosures skipped: %s", exc)
+                out.setdefault("kr", {})["disclosures"] = disclosures
+        return out
 
-    # ── DART normalized financials (K-IFRS 재무) ──────────────────
-    try:
+    def _t_dart_financials() -> dict:
+        # 현년 + 3개년 시계열 — 같은 DART 재무 API 라 한 task 에서 순차.
+        out: dict = {}
         from bot.dart_client import get_dart
+        from datetime import datetime as _dt
         dart = get_dart()
-        if dart:
-            fin = dart.get_normalized_financials(ticker)
+        if not dart:
+            return out
+        fin = dart.get_normalized_financials(ticker)
+        if fin and fin.get("financials"):
+            compact = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
+            for k in ("매출", "영업이익", "당기순이익", "자산총계",
+                      "부채총계", "자본총계"):
+                v = fin["financials"].get(k)
+                if v is not None:
+                    compact[k] = v
+            ratios = fin.get("ratios", {})
+            for k in ("영업이익률", "순이익률", "ROE", "ROA",
+                      "부채비율", "유동비율"):
+                v = ratios.get(k)
+                if v is not None:
+                    compact[k] = v
+            out.setdefault("kr", {})["financials"] = compact
+        current_year = _dt.now().year
+        ts = []
+        for yr in range(current_year - 1, current_year - 4, -1):
+            fin = dart.get_normalized_financials(ticker, year=yr)
             if fin and fin.get("financials"):
-                compact = {
-                    "year": fin.get("year"),
-                    "fs_div": fin.get("fs_div"),
-                }
+                entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
                 for k in ("매출", "영업이익", "당기순이익", "자산총계",
                           "부채총계", "자본총계"):
                     v = fin["financials"].get(k)
                     if v is not None:
-                        compact[k] = v
+                        entry[k] = v
                 ratios = fin.get("ratios", {})
                 for k in ("영업이익률", "순이익률", "ROE", "ROA",
                           "부채비율", "유동비율"):
                     v = ratios.get(k)
                     if v is not None:
-                        compact[k] = v
-                snap.setdefault("kr", {})["financials"] = compact
-    except Exception as exc:
-        log.debug("stock_snapshot: DART financials skipped: %s", exc)
+                        entry[k] = v
+                ts.append(entry)
+        if ts:
+            out.setdefault("kr", {})["financials_ts"] = ts
+        return out
 
-    # ── FSC minority holders (소액주주현황) ────────────────────────
-    try:
+    def _t_fsc_minority() -> dict:
+        out: dict = {}
         from bot.fsc_client import minority_holders, fsc_key_ready
         if fsc_key_ready():
             mh = minority_holders(ticker)
             if mh:
-                snap.setdefault("kr", {})["minority"] = mh
-    except Exception as exc:
-        log.debug("stock_snapshot: FSC minority holders skipped: %s", exc)
+                out.setdefault("kr", {})["minority"] = mh
+        return out
 
-    # ── DART multi-year financials (3-year time series) ───────────
-    try:
-        from bot.dart_client import get_dart
-        from datetime import datetime as _dt
-        dart = get_dart()
-        if dart:
-            current_year = _dt.now().year
-            ts = []
-            for yr in range(current_year - 1, current_year - 4, -1):
-                fin = dart.get_normalized_financials(ticker, year=yr)
-                if fin and fin.get("financials"):
-                    entry = {"year": fin.get("year"), "fs_div": fin.get("fs_div")}
-                    for k in ("매출", "영업이익", "당기순이익", "자산총계",
-                              "부채총계", "자본총계"):
-                        v = fin["financials"].get(k)
-                        if v is not None:
-                            entry[k] = v
-                    ratios = fin.get("ratios", {})
-                    for k in ("영업이익률", "순이익률", "ROE", "ROA",
-                              "부채비율", "유동비율"):
-                        v = ratios.get(k)
-                        if v is not None:
-                            entry[k] = v
-                    ts.append(entry)
-            if ts:
-                snap.setdefault("kr", {})["financials_ts"] = ts
-    except Exception as exc:
-        log.debug("stock_snapshot: DART multi-year financials skipped: %s", exc)
+    def _t_flow() -> dict:
+        # KIS 4콜 + pykrx 2콜 — 둘 다 kr["flow"] 에 쓰므로 한 task 에서
+        # 순차(KIS 먼저, pykrx 가 trends 를 update — 기존 의미 동일).
+        out: dict = {}
+        flow_data: dict = {}
+        try:
+            from bot.kis_client import KisClient
+            kis = KisClient()
+            if kis._ready():
+                inv = kis.get_investor_flow(ticker)
+                if inv:
+                    flow_data["investor_flow"] = inv
+                credit = kis.get_credit_short_balance(ticker)
+                if credit:
+                    flow_data["credit"] = credit
+                short = kis.get_short_sale(ticker)
+                if short:
+                    flow_data["short_sale"] = short
+                program = kis.get_program_trade(ticker)
+                if program:
+                    flow_data["program"] = program
+        except Exception as exc:
+            log.debug("stock_snapshot: KIS flow skipped: %s", exc)
+        try:
+            from bot.pykrx_client import (
+                get_kr_foreign_ownership_trend,
+                get_kr_short_balance_trend,
+            )
+            fo = get_kr_foreign_ownership_trend(ticker, days_back=30)
+            if fo:
+                flow_data["foreign_ownership"] = fo
+            sb = get_kr_short_balance_trend(ticker, days_back=30)
+            if sb:
+                flow_data["short_trend"] = sb
+        except Exception as exc:
+            log.debug("stock_snapshot: pykrx trends skipped: %s", exc)
+        if flow_data:
+            out.setdefault("kr", {})["flow"] = flow_data
+        return out
 
-    # ── KIS investor flow (수급) ──────────────────────────────────
-    try:
-        from bot.kis_client import KisClient
-        kis = KisClient()
-        if kis._ready():
-            flow_data: dict = {}
-            inv = kis.get_investor_flow(ticker)
-            if inv:
-                flow_data["investor_flow"] = inv
-            credit = kis.get_credit_short_balance(ticker)
-            if credit:
-                flow_data["credit"] = credit
-            short = kis.get_short_sale(ticker)
-            if short:
-                flow_data["short_sale"] = short
-            program = kis.get_program_trade(ticker)
-            if program:
-                flow_data["program"] = program
-            if flow_data:
-                snap.setdefault("kr", {})["flow"] = flow_data
-    except Exception as exc:
-        log.debug("stock_snapshot: KIS flow skipped: %s", exc)
-
-    # ── pykrx trends (외인·공매도 추이) ──────────────────────────
-    try:
-        from bot.pykrx_client import (
-            get_kr_foreign_ownership_trend,
-            get_kr_short_balance_trend,
-        )
-        trends: dict = {}
-        fo = get_kr_foreign_ownership_trend(ticker, days_back=30)
-        if fo:
-            trends["foreign_ownership"] = fo
-        sb = get_kr_short_balance_trend(ticker, days_back=30)
-        if sb:
-            trends["short_trend"] = sb
-        if trends:
-            snap.setdefault("kr", {}).setdefault("flow", {}).update(trends)
-    except Exception as exc:
-        log.debug("stock_snapshot: pykrx trends skipped: %s", exc)
-
-    # ── FSC lockup releases + dilution events (리스크) ────────────
-    try:
-        from bot.fsc_client import lockup_releases as fsc_lockup, fsc_key_ready
-        if fsc_key_ready():
+    def _t_fsc_risk() -> dict:
+        # lockup + dilution — 같은 FSC 키 게이트, 한 task 순차.
+        out: dict = {}
+        from bot.fsc_client import fsc_key_ready
+        if not fsc_key_ready():
+            return out
+        try:
+            from bot.fsc_client import lockup_releases as fsc_lockup
             lr = fsc_lockup(ticker, lookback_days=7)
             if lr:
-                snap.setdefault("kr", {})["lockup_releases"] = lr
-    except Exception as exc:
-        log.debug("stock_snapshot: FSC lockup skipped: %s", exc)
-
-    try:
-        from bot.fsc_client import dilution_events as fsc_dilution, fsc_key_ready
-        if fsc_key_ready():
+                out.setdefault("kr", {})["lockup_releases"] = lr
+        except Exception as exc:
+            log.debug("stock_snapshot: FSC lockup skipped: %s", exc)
+        try:
+            from bot.fsc_client import dilution_events as fsc_dilution
             de = fsc_dilution(ticker, lookback_days=10)
             if de:
-                snap.setdefault("kr", {})["dilution_events"] = de
-    except Exception as exc:
-        log.debug("stock_snapshot: FSC dilution skipped: %s", exc)
+                out.setdefault("kr", {})["dilution_events"] = de
+        except Exception as exc:
+            log.debug("stock_snapshot: FSC dilution skipped: %s", exc)
+        return out
 
-    # ── KRX 시장경보 (거래정지/관리종목/투자경고/단기과열) ─────────
-    try:
+    def _t_krx_alert() -> dict:
+        out: dict = {}
         from bot.krx_alert_client import get_krx_alert
         alert = get_krx_alert()
         status = alert.get_status(ticker)
         if status and (status.get("suspended") or status.get("admin")
                        or status.get("overheating") or status.get("warning_level")):
-            snap.setdefault("kr", {})["market_alert"] = status
-    except Exception as exc:
-        log.debug("stock_snapshot: KRX alert skipped: %s", exc)
+            out.setdefault("kr", {})["market_alert"] = status
+        return out
 
-    # ── FnGuide + 한경 컨센서스 (yfinance 보완) ──────────────────
-    if not snap.get("target_mean"):
-        try:
-            from bot.fnguide_consensus import fetch_consensus as fnguide_fetch
-            fg = fnguide_fetch(ticker)
-            if fg and fg.get("target_mean"):
-                kr = snap.setdefault("kr", {})
-                kr["consensus"] = {
-                    "source": "FnGuide",
-                    "target_mean": fg["target_mean"],
-                    "rating": fg.get("rating"),
-                    "n_analysts": fg.get("n_analysts"),
-                }
-        except Exception as exc:
-            log.debug("stock_snapshot: FnGuide consensus skipped: %s", exc)
-
-    # ── 리서치 리포트 (Naver Finance primary → 한경 fallback) ────────
-    # Per-broker report rows populate the 리서치 액션 tab — yfinance has
-    # no KR upgrade/downgrade feed. Naver Finance 종목 리서치 primary,
-    # 한경 컨센서스 fallback (2026 redesign 이후 JS 렌더링으로 거의 사망).
-    _kr_research = None
-    try:
-        from bot.naver_research_client import fetch_research
-        _kr_research = fetch_research(ticker)
-    except Exception as exc:
-        log.debug("stock_snapshot: Naver research skipped: %s", exc)
-    _naver_hollow = (_kr_research and _kr_research.get("reports")
-                     and not any(r.get("target") or r.get("rating")
-                                 for r in _kr_research["reports"]))
-    if not (_kr_research and _kr_research.get("reports")) or _naver_hollow:
-        try:
-            from bot.hk_consensus_client import fetch_consensus as hk_fetch
-            _hk = hk_fetch(ticker)
-        except Exception as exc:
-            log.debug("stock_snapshot: HanKyung consensus skipped: %s", exc)
-            _hk = None
-        if _hk and _hk.get("reports"):
-            if _naver_hollow:
-                _hk_map = {(r.get("date"), r.get("broker")): r
-                           for r in _hk["reports"]}
-                for r in _kr_research["reports"]:
-                    match = _hk_map.get((r.get("date"), r.get("broker")))
-                    if match:
-                        if not r.get("target") and match.get("target"):
-                            r["target"] = match["target"]
-                        if not r.get("rating") and match.get("rating"):
-                            r["rating"] = match["rating"]
-                if not any(r.get("target") or r.get("rating")
-                           for r in _kr_research["reports"]):
-                    _kr_research = _hk
-            else:
-                _kr_research = _hk
-    if _kr_research:
-        if _kr_research.get("reports"):
-            snap.setdefault("kr", {})["research_reports"] = _kr_research["reports"]
-        if (not snap.get("target_mean")
-                and not snap.get("kr", {}).get("consensus")
-                and _kr_research.get("target_price")):
-            snap.setdefault("kr", {})["consensus"] = {
-                "source": "Naver Finance",
-                "target_mean": _kr_research["target_price"],
-                "rating": _kr_research.get("rating"),
-                "n_analysts": _kr_research.get("analyst_count"),
-                "last_report_date": _kr_research.get("last_report_date"),
+    def _t_fnguide() -> dict:
+        out: dict = {}
+        if snap.get("target_mean"):   # yfinance 컨센서스 있으면 불필요 (기존 gate)
+            return out
+        from bot.fnguide_consensus import fetch_consensus as fnguide_fetch
+        fg = fnguide_fetch(ticker)
+        if fg and fg.get("target_mean"):
+            out.setdefault("kr", {})["consensus"] = {
+                "source": "FnGuide",
+                "target_mean": fg["target_mean"],
+                "rating": fg.get("rating"),
+                "n_analysts": fg.get("n_analysts"),
             }
+        return out
 
-    # ── Naver 뉴스 폴백 (yfinance KR 뉴스 미커버) ─────────────────
+    def _t_research() -> dict:
+        # Naver 1차 → 한경 폴백/머지 — 진짜 의존성이라 task 내부 순차.
+        out: dict = {}
+        _kr_research = None
+        try:
+            from bot.naver_research_client import fetch_research
+            _kr_research = fetch_research(ticker)
+        except Exception as exc:
+            log.debug("stock_snapshot: Naver research skipped: %s", exc)
+        _naver_hollow = (_kr_research and _kr_research.get("reports")
+                         and not any(r.get("target") or r.get("rating")
+                                     for r in _kr_research["reports"]))
+        if not (_kr_research and _kr_research.get("reports")) or _naver_hollow:
+            try:
+                from bot.hk_consensus_client import fetch_consensus as hk_fetch
+                _hk = hk_fetch(ticker)
+            except Exception as exc:
+                log.debug("stock_snapshot: HanKyung consensus skipped: %s", exc)
+                _hk = None
+            if _hk and _hk.get("reports"):
+                if _naver_hollow:
+                    _hk_map = {(r.get("date"), r.get("broker")): r
+                               for r in _hk["reports"]}
+                    for r in _kr_research["reports"]:
+                        match = _hk_map.get((r.get("date"), r.get("broker")))
+                        if match:
+                            if not r.get("target") and match.get("target"):
+                                r["target"] = match["target"]
+                            if not r.get("rating") and match.get("rating"):
+                                r["rating"] = match["rating"]
+                    if not any(r.get("target") or r.get("rating")
+                               for r in _kr_research["reports"]):
+                        _kr_research = _hk
+                else:
+                    _kr_research = _hk
+        if _kr_research:
+            if _kr_research.get("reports"):
+                out.setdefault("kr", {})["research_reports"] = _kr_research["reports"]
+            if (not snap.get("target_mean")
+                    and _kr_research.get("target_price")):
+                # consensus 는 FnGuide 우선 — 병합 순서(setdefault)가 보장.
+                out.setdefault("kr", {})["consensus"] = {
+                    "source": "Naver Finance",
+                    "target_mean": _kr_research["target_price"],
+                    "rating": _kr_research.get("rating"),
+                    "n_analysts": _kr_research.get("analyst_count"),
+                    "last_report_date": _kr_research.get("last_report_date"),
+                }
+        return out
+
+    def _t_dividends() -> dict:
+        out: dict = {}
+        _collect_dividends(ticker, out)
+        return out
+
+    # 병합 순서 = 원래 직렬 블록 순서 (corp_reg_no DART 우선, consensus
+    # FnGuide 우선 등 기존 우선순위가 setdefault 병합으로 그대로 재현).
+    tasks = [_t_dart_company, _t_fsc_item, _t_dart_insider,
+             _t_dart_disclosures, _t_dart_financials, _t_fsc_minority,
+             _t_flow, _t_fsc_risk, _t_krx_alert, _t_fnguide, _t_research,
+             _t_dividends]
+
+    results: list[dict | None] = []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futs = [pool.submit(fn) for fn in tasks]
+            for fut in futs:
+                try:
+                    results.append(fut.result(timeout=60))
+                except Exception as exc:
+                    log.debug("stock_snapshot: KR task skipped: %s", exc)
+                    results.append(None)
+    except Exception:
+        results = []
+        for fn in tasks:   # 풀 실패 — 직렬 폴백 (동작 동일)
+            try:
+                results.append(fn())
+            except Exception as exc:
+                log.debug("stock_snapshot: KR task skipped: %s", exc)
+                results.append(None)
+
+    for out in results:
+        if not out:
+            continue
+        for k, v in out.items():
+            if k == "kr":
+                kr = snap.setdefault("kr", {})
+                for sk, sv in v.items():
+                    kr.setdefault(sk, sv)
+            else:
+                snap.setdefault(k, v)
+
+    # ── Naver 뉴스 폴백 — 풀 **종료 후** 직렬 (의도된 의존성: 한국어
+    # 검색어를 위해 위 _t_dart_company 가 병합해 둔 kr.corp_name 을 읽음.
+    # 풀 안에 넣으면 corp_name 없이 검색해 품질 저하). ~1-2초 추가일 뿐
+    # 전체는 여전히 직렬 8-20초 → 병렬 max+뉴스 ~4-7초.
     _collect_news_fallback(ticker, snap)
-
-    # ── yfinance dividends (universal) ────────────────────────────
-    _collect_dividends(ticker, snap)
 
 
 def _enrich_us(ticker: str, snap: dict) -> None:
