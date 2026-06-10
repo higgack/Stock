@@ -92,7 +92,103 @@ def collect_us_data() -> dict:
     result["mag7"] = _batch_snap(_MAG7)
     result["bonds_fx"] = _batch_snap(_BOND_FX)
 
+    # S&P 500 per-stock 수급 프록시 (KR Daily Byte 미러, 2026-06-10) — 실패해도
+    # 지수/섹터 브리프는 정상 (graceful).
+    try:
+        result["movers"] = collect_sp500_movers()
+    except Exception as exc:
+        log.warning("us_market_daily: movers collection failed: %s", exc)
+        result["movers"] = {}
+
     return result
+
+
+# ── S&P 500 per-stock 수급 프록시 (KR Daily Byte 미러, 2026-06-10) ──────────
+# KR Daily Byte 의 핵심은 pykrx 투자주체별 수급을 Python 이 정확 산출(환각 0)
+# 하고 Pro 는 내러티브만 하는 것. 미국엔 무료 투자주체 데이터가 없으므로
+# 등가물 = breadth(상승종목 비율) + 등락 상하위 + 거래대금 + **거래량 서지**
+# (당일 거래량 / 직전 5일 평균 — 기관성 자금 유입 프록시) + 양→음 전환.
+# S&P 500 유니버스(stock_screener 7d 캐시 재사용)를 yf.download 벌크 1콜로.
+
+_MIN_DOLLAR_VOL_M = 200.0   # $200M 미만 거래대금은 랭킹 제외 (노이즈 컷)
+_SURGE_MIN = 1.8            # 거래량 서지 임계 (당일 / 5일 평균)
+_TOP_N = 12
+
+
+def collect_sp500_movers() -> dict:
+    """S&P 500 전 종목 6일 일봉 벌크 fetch → 당일 등락/거래대금/거래량 서지/
+    양→음 전환/breadth 를 Python 이 정확 산출. 반환 dict 의 수치가 그대로
+    프롬프트에 들어간다 (Pro 재계산 금지 directive)."""
+    import yfinance as yf
+    try:
+        from bot.stock_screener import _get_us_universe
+        universe = _get_us_universe()
+    except Exception as exc:
+        log.warning("us_market_daily: universe fetch failed: %s", exc)
+        return {}
+    if not universe:
+        return {}
+
+    df = yf.download(universe, period="6d", interval="1d",
+                     group_by="ticker", threads=True,
+                     progress=False, auto_adjust=False)
+    if df is None or df.empty:
+        return {}
+
+    rows: list[dict] = []
+    for tk in universe:
+        try:
+            sub = df[tk] if tk in df.columns.get_level_values(0) else None
+            if sub is None:
+                continue
+            closes = sub["Close"].dropna()
+            vols = sub["Volume"].dropna()
+            if len(closes) < 3 or len(vols) < 3:
+                continue
+            c0, c1, c2 = float(closes.iloc[-1]), float(closes.iloc[-2]), float(closes.iloc[-3])
+            if c1 <= 0 or c2 <= 0:
+                continue
+            chg = (c0 - c1) / c1 * 100.0          # 당일 등락 %
+            chg_prev = (c1 - c2) / c2 * 100.0     # 전일 등락 % (양→음 전환 감지)
+            v0 = float(vols.iloc[-1])
+            v_hist = vols.iloc[:-1].tail(5)
+            v_avg = float(v_hist.mean()) if len(v_hist) else 0.0
+            surge = (v0 / v_avg) if v_avg > 0 else None
+            dollar_m = c0 * v0 / 1e6              # 거래대금 $M
+            rows.append({
+                "ticker": tk, "chg": round(chg, 2), "chg_prev": round(chg_prev, 2),
+                "dollar_m": round(dollar_m, 1),
+                "surge": round(surge, 2) if surge else None,
+            })
+        except Exception:
+            continue
+
+    if len(rows) < 50:   # 벌크 응답이 사실상 빈 경우 — 부분 데이터로 오도 방지
+        log.warning("us_market_daily: movers rows too few (%d) — skip", len(rows))
+        return {}
+
+    up = sum(1 for r in rows if r["chg"] > 0)
+    breadth = round(up / len(rows) * 100.0, 1)
+    avg_chg = round(sum(r["chg"] for r in rows) / len(rows), 2)
+
+    liquid = [r for r in rows if r["dollar_m"] >= _MIN_DOLLAR_VOL_M]
+    gainers = sorted(liquid, key=lambda r: r["chg"], reverse=True)[:_TOP_N]
+    losers = sorted(liquid, key=lambda r: r["chg"])[:_TOP_N]
+    by_dollar = sorted(rows, key=lambda r: r["dollar_m"], reverse=True)[:_TOP_N]
+    surges = sorted(
+        (r for r in liquid if r.get("surge") and r["surge"] >= _SURGE_MIN
+         and r["chg"] > 0),
+        key=lambda r: r["surge"], reverse=True)[:_TOP_N]
+    # 양→음 전환: 전일 +2% 이상 → 당일 -1% 이하 (단기 추세 반전 경고)
+    reversals = sorted(
+        (r for r in liquid if r["chg_prev"] >= 2.0 and r["chg"] <= -1.0),
+        key=lambda r: r["chg"])[:8]
+
+    return {
+        "n": len(rows), "breadth_pct": breadth, "avg_chg": avg_chg,
+        "gainers": gainers, "losers": losers, "by_dollar": by_dollar,
+        "surges": surges, "reversals": reversals,
+    }
 
 
 def _format_data_for_prompt(data: dict) -> str:
@@ -122,36 +218,95 @@ def _format_data_for_prompt(data: dict) -> str:
         if s.get("price") is not None:
             parts.append(f"  {name}: {s['price']:,.2f}")
 
+    # ── S&P 500 per-stock 수급 프록시 블록 (없으면 통째 생략 — graceful) ──
+    mv = data.get("movers") or {}
+    if mv.get("n"):
+        def _row(r: dict, with_prev: bool = False) -> str:
+            surge = f" · 거래량 {r['surge']:.1f}x(5일평균 대비)" if r.get("surge") else ""
+            prev = f" · 전일 {r['chg_prev']:+.2f}%" if with_prev else ""
+            return (f"  {r['ticker']}: {r['chg']:+.2f}%{prev}"
+                    f" · 거래대금 ${r['dollar_m']:,.0f}M{surge}")
+
+        parts.append(
+            f"\n=== S&P 500 breadth (전 종목 {mv['n']}개 Python 산출) ===\n"
+            f"  상승종목 비율: {mv['breadth_pct']}% · 평균 등락: {mv['avg_chg']:+.2f}%")
+        if mv.get("gainers"):
+            parts.append("\n=== 당일 상승 상위 (거래대금 $200M+ 필터) ===")
+            parts += [_row(r) for r in mv["gainers"]]
+        if mv.get("losers"):
+            parts.append("\n=== 당일 하락 상위 (거래대금 $200M+ 필터) ===")
+            parts += [_row(r) for r in mv["losers"]]
+        if mv.get("by_dollar"):
+            parts.append("\n=== 거래대금 상위 ===")
+            parts += [_row(r) for r in mv["by_dollar"]]
+        if mv.get("surges"):
+            parts.append(
+                "\n=== 거래량 서지 동반 상승 (당일 거래량 ≥ 직전 5일 평균의 "
+                f"{_SURGE_MIN}x — 기관성 자금 유입 프록시) ===")
+            parts += [_row(r) for r in mv["surges"]]
+        if mv.get("reversals"):
+            parts.append("\n=== 양→음 전환 (전일 +2%↑ → 당일 -1%↓) ===")
+            parts += [_row(r, with_prev=True) for r in mv["reversals"]]
+
     return "\n".join(parts)
 
 
 def build_prompt(data: dict) -> str:
-    """Build the Gemini Pro prompt for US market narrative."""
+    """Gemini Pro 프롬프트 — KR Daily Byte(daily_kr_flow._PROMPT) 8-섹션 구조
+    미러 (사용자 2026-06-10 '한국 Daily Byte 참조해서 미국도 비슷하게').
+    수치는 Python 산출분을 글자 그대로, Pro 는 섹터 그룹핑·로테이션 내러티브
+    ·catalyst(web search)만. 미국엔 KR 투자주체(외인/기관) 데이터가 없으므로
+    수급 프록시 = breadth·거래대금·거래량 서지임을 본문에 정직하게 전제."""
     data_block = _format_data_for_prompt(data)
     today = _now_kst().strftime("%Y-%m-%d")
+    has_movers = bool((data.get("movers") or {}).get("n"))
+    movers_note = "" if has_movers else (
+        "\n(오늘은 S&P 500 per-stock 데이터 수집이 실패해 지수/섹터/Mag-7 "
+        "데이터만 제공됨 — 종목 단위 섹션은 Mag-7 범위로 간략히.)")
 
-    return f"""당신은 미국 주식시장 전문 애널리스트입니다.
-아래 데이터는 오늘({today}) 미국 장 마감 후 yfinance 에서 수집한 정확한 수치입니다.
-이 수치를 **글자 그대로** 인용하고, 절대 반올림하거나 변경하지 마세요.
+    return f"""당신은 미국 주식시장 전문 buy-side 애널리스트입니다. 아래는
+오늘({today}) 미국 장 마감 후 yfinance 에서 직접 산출한 **정확한 수치**입니다.
+이를 바탕으로 'Daily Byte' 미국 일일 브리프를 작성하세요.{movers_note}
 
 {data_block}
 
-위 데이터를 바탕으로 한국어 미국 시장 데일리 브리프를 작성하세요.
+---
 
-[형식 규칙]
-1. 다음 6개 섹션을 이모지 헤더로 구분:
-   📊 시장 총평 (지수 등락 + 한 줄 요약)
-   🔥 섹터 로테이션 (강세/약세 섹터 + 원인)
-   💰 Mag-7 동향 (주요 변동 종목 + catalyst)
-   📈 채권·환율·원자재 (금리/DXY/금/유가 변동 의미)
-   ⚠️ 리스크 & 이벤트 (향후 1주 주요 일정: FOMC/고용/실적 등)
-   🎯 결론 (내일/이번 주 관전 포인트 2-3줄)
-2. 각 섹션은 3-5줄로 간결하게.
-3. 모든 수치는 위 데이터에서 **글자 단위 copy**. 제공되지 않은 수치는 fabrication 금지.
-4. web search 로 오늘의 catalyst / 뉴스 / 일정을 보완하되, 미래 날짜 citation 금지.
-5. 중립적 정보 전달 (매수/매도 권고 금지).
-6. markdown **bold** 는 핵심 수치 · 종목명에만 사용.
-7. 총 분량 1500자 내외.
+작성 규칙:
+1. **수치는 위 데이터를 글자 그대로 인용** — 재계산·반올림·창작 절대 금지.
+   위에 없는 종목/수치를 지어내지 말 것. 등락률·거래대금·서지 배율·breadth
+   도 위 값 그대로 사용.
+2. **수급 프록시 해석**: 미국은 한국 같은 투자주체(외인/기관) 데이터가 없으
+   므로 breadth(상승종목 비율)·거래대금·거래량 서지(5일평균 대비)가 자금
+   흐름의 프록시. 거래량 서지 + 상승 동반 종목은 "기관성 자금 유입 신호"로,
+   지수 상승 + breadth 약세는 "쏠림(narrow rally)"으로 해석해 서술.
+3. **섹터 그룹핑 + 로테이션**: 섹터 ETF 등락 + 위 종목들을 산업/테마로 묶어
+   (AI 반도체/소프트웨어/금융/에너지/헬스케어/소비 등) 유출→유입 방향 명시.
+   종목→섹터 분류는 당신의 지식 + web search 로.
+4. **catalyst 맥락 (web search 활용)**: 상위 종목의 당일 실적/공시/뉴스를
+   web search 로 확인해 "왜 이 자금이 들어왔나" 맥락 + 구체 날짜 제공.
+   **출처 날짜는 반드시 {today} 이하** — 미래 날짜 citation 금지. 확인 안
+   되면 '맥락 미확인' 명시, 추측 catalyst 창작 금지.
+5. **중립 표현**: "주목 종목"은 데이터 관찰일 뿐 BUY/SELL 권고가 아님.
+   '매수 추천'/'목표가' 같은 직접 투자권유 표현 금지.
+6. **구조** (각 섹션 지정 이모지로 시작하는 헤더 한 줄):
+   📊 시장 총평 (지수 + breadth % + VIX·금리 — 자금 흐름 관점 해석)
+   🔥 지금 강한 섹터·종목 (섹터 ETF 상위 + 거래량 서지 동반 상승 종목 우선)
+   🔄 섹터 로테이션 (유출 섹터 → 유입 섹터, ETF 등락 명시)
+   💰 거래대금 상위 동향 (Mag-7 포함 — 등락률 병기, 손바뀜/쏠림 해석)
+   📈 주목할 수급 패턴 (거래량 서지 / 신규 모멘텀 / breadth 다이버전스)
+   🏆 주목 종목 5선 (각 종목: 등락 + 거래대금 + 서지 + catalyst, 중립)
+   ⚠️ 경고 시그널 (양→음 전환 종목 + VIX/금리/달러 리스크 + 향후 1주 일정)
+   🎯 한 줄 결론 (포지셔닝 관점, 중립)
+7. **본문은 일반 텍스트** + 섹션마다 위 지정 이모지로 시작하는 헤더 한 줄.
+   **굵게(`**`)는 섹션 헤더·핵심 수치에만 최소 사용** — catalyst·맥락·설명
+   문장은 일반 텍스트(굵게 금지). `---` 같은 수평선/구분선 절대 쓰지 말 것.
+   HTML 태그·`<br>`·`<ul>` 금지. 각 항목 줄바꿈.
+8. 분량: 한국 Daily Byte 벤치마크 수준의 정보 밀도로 충실하게. 데이터에
+   있는 종목만 다룰 것.
+
+면책: 출력 끝에 "본 브리프는 시장 데이터 관찰 (교육·정보 목적), 투자 권유
+아님" 1줄.
 """
 
 
@@ -226,7 +381,7 @@ def _post_process(text: str) -> str:
     text = re.sub(r"(?m)^\s*[\*\-]\s+", "• ", text)
     text = re.sub(r"(?m)^\s*#{1,6}\s*([^\n]+)$", r"<b>\1</b>", text)
     text = re.sub(r"(?m)^[^\w\n]*[-*_]{2,}[^\w\n]*$", "", text)
-    _hdr = "|".join(("📊", "🔥", "💰", "📈", "⚠️", "🎯"))
+    _hdr = "|".join(("📊", "🔥", "🔄", "💰", "📈", "🏆", "⚠️", "🎯"))
     text = re.sub(rf"(?m)^[ \t]+(?=(?:{_hdr}))", "", text)
     text = re.sub(rf"(?m)^(?=(?:{_hdr}))", "\n", text)
     text = re.sub(rf"(?m)^((?:{_hdr})[^\n]*)$", r"<b>\1</b>", text)
