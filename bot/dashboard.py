@@ -10655,7 +10655,10 @@ _MARKET_CSS = (
     ".dtbl{width:100%;border-collapse:collapse;font-size:13px}"
     ".dtbl th{text-align:left;padding:8px 10px;font-size:12px;"
     "color:var(--muted);border-bottom:2px solid var(--border);"
-    "font-weight:600;white-space:nowrap}"
+    "font-weight:600;white-space:nowrap;cursor:pointer;user-select:none}"
+    ".dtbl th:hover{color:var(--accent)}"
+    ".dtbl th.sort-asc::after{content:' \\25B2';font-size:9px;color:var(--accent)}"
+    ".dtbl th.sort-desc::after{content:' \\25BC';font-size:9px;color:var(--accent)}"
     ".dtbl td{padding:7px 10px;border-bottom:1px solid var(--surface-tint)}"
     ".dtbl tr:hover{background:var(--accent-soft)}"
     ".dtbl .sym{font-weight:600}"
@@ -11758,39 +11761,78 @@ def _render_market_page(data: dict) -> str:
     }});
   }});
 
-  /* show-more / 접기 toggle */
+  /* show-more / 접기 toggle. applyLimit 는 wrap 에 노출 → 정렬 후 재적용. */
   document.querySelectorAll('[data-limit]').forEach(function(wrap) {{
     var limit = parseInt(wrap.dataset.limit);
     var tbl = wrap.querySelector('.dtbl');
     if (!tbl) return;
-    var rows = tbl.querySelectorAll('tbody tr');
-    if (rows.length <= limit) return;
-    var extra = rows.length - limit;
-    function collapse() {{
-      for (var i = limit; i < rows.length; i++) {{
-        rows[i].classList.add('xrow');
-        rows[i].style.display = 'none';
+    wrap._expanded = false;
+    /* 현재 DOM 순서로 limit 재적용(정렬·더보기 공용). 펼친 상태면 전부 표시. */
+    function applyLimit() {{
+      var rs = tbl.querySelectorAll('tbody tr');
+      for (var i = 0; i < rs.length; i++) {{
+        if (wrap._expanded || i < limit) {{
+          rs[i].classList.remove('xrow');
+          rs[i].style.display = '';
+        }} else {{
+          rs[i].classList.add('xrow');
+          rs[i].style.display = 'none';
+        }}
       }}
     }}
-    collapse();
+    wrap._applyLimit = applyLimit;
+    if (tbl.querySelectorAll('tbody tr').length <= limit) return;
+    var extra = tbl.querySelectorAll('tbody tr').length - limit;
+    applyLimit();
     var btn = document.createElement('button');
     btn.className = 'show-more-btn';
-    var expanded = false;
     btn.textContent = '더 보기 (' + extra + '개 더)';
     btn.addEventListener('click', function() {{
-      expanded = !expanded;
-      if (expanded) {{
-        wrap.querySelectorAll('.xrow').forEach(function(r) {{
-          r.classList.remove('xrow');
-          r.style.display = '';
-        }});
-        btn.textContent = '접기';
-      }} else {{
-        collapse();
-        btn.textContent = '더 보기 (' + extra + '개 더)';
-      }}
+      wrap._expanded = !wrap._expanded;
+      applyLimit();
+      btn.textContent = wrap._expanded ? '접기' : ('더 보기 (' + extra + '개 더)');
     }});
     wrap.insertAdjacentElement('afterend', btn);
+  }});
+
+  /* 정렬 — dtbl th 클릭(오름/내림 토글). 숫자(통화/%/조억/B/M)·날짜·문자
+     자동 판별. 정렬 후 wrap._applyLimit 로 더보기 상태 보존. (사용자
+     2026-06-10 리서치·실적 정렬 필터.) */
+  document.querySelectorAll('.dtbl').forEach(function(tbl) {{
+    if (!tbl.tHead || !tbl.tHead.rows.length) return;
+    var ths = tbl.tHead.rows[0].cells;
+    var dir = {{}};
+    function num(s) {{
+      var m = s.replace(/[,%₩$\\s]/g, '').replace(/조/g, 'e12').replace(/억/g, 'e8')
+               .replace(/([0-9.])B$/, '$1e9').replace(/([0-9.])M$/, '$1e6');
+      if (!/^[+-]?\\d*\\.?\\d+(e[+-]?\\d+)?$/.test(m)) return null;
+      return parseFloat(m);
+    }}
+    Array.prototype.forEach.call(ths, function(th, idx) {{
+      th.addEventListener('click', function() {{
+        var tb = tbl.tBodies[0]; if (!tb) return;
+        var d = dir[idx] = -(dir[idx] || 1);
+        var rows = [].slice.call(tb.rows);
+        function cellVal(r) {{ var c = r.cells[idx]; return c ? (c.textContent || '').trim() : ''; }}
+        var allNum = rows.length > 0 && rows.every(function(r) {{
+          var v = cellVal(r); return v === '' || v === '—' || num(v) !== null; }});
+        rows.sort(function(a, b) {{
+          var av = cellVal(a), bv = cellVal(b);
+          if (allNum) {{
+            var an = num(av), bn = num(bv);
+            an = (an === null) ? -Infinity : an;
+            bn = (bn === null) ? -Infinity : bn;
+            return d * (an - bn);
+          }}
+          return d * av.localeCompare(bv, 'ko');
+        }});
+        rows.forEach(function(r) {{ tb.appendChild(r); }});
+        Array.prototype.forEach.call(ths, function(h) {{ h.classList.remove('sort-asc', 'sort-desc'); }});
+        th.classList.add(d > 0 ? 'sort-asc' : 'sort-desc');
+        var wrap = tbl.closest('[data-limit]');
+        if (wrap && wrap._applyLimit) wrap._applyLimit();
+      }});
+    }});
   }});
 
   /* table filter helper */
