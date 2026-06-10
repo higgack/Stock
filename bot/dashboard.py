@@ -2056,6 +2056,7 @@ def _render_index(records: list[dict]) -> str:
         ' · <a href="daily_byte.html">📊 Daily Byte</a>'
         ''
         f' · <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>'
+        ' · <a href="blog.html">📝 블로그</a>'
     )
 
     # Market filter buttons (show only if >1 market present)
@@ -8798,6 +8799,201 @@ def regenerate_reddit_insider_index() -> None:
         log.warning("dashboard: reddit_insider regen failed: %s", exc)
 
 
+# ── 블로그 Watcher 대시보드 (blog.html, 2026-06-11) ─────────────────────
+# bot/blog_watch.py 가 네이버 '변화하는 기업을 찾아서' 새 글을 채널 포워드
+# + ~/.tradingagents/blog_archive/ 에 JSON 적층. 본 페이지는 그 아카이브를
+# 레딧 페이지(reddit_insider.html)와 동일 형식으로 surface (사용자 2026-06-11
+# — 2026-05-31 '대시보드 없음' 정책 변경). nav 노출은 홈 + NOAH 두 곳만.
+_BLOG_ARCHIVE_DIR = Path.home() / ".tradingagents" / "blog_archive"
+
+
+def _load_blog_runs() -> list[dict]:
+    """Scan ~/.tradingagents/blog_archive/YYYY-MM-DD/*.json → newest-first.
+    각 dict: {ts, date, title, link, summary, desc, _date, _filename}."""
+    import json as _json
+    runs: list[dict] = []
+    if not _BLOG_ARCHIVE_DIR.exists():
+        return runs
+    try:
+        for date_dir in sorted(_BLOG_ARCHIVE_DIR.iterdir(), reverse=True):
+            if not date_dir.is_dir():
+                continue
+            for json_file in sorted(date_dir.iterdir(), reverse=True):
+                if not json_file.name.endswith(".json"):
+                    continue
+                try:
+                    with open(json_file, encoding="utf-8") as f:
+                        rec = _json.load(f)
+                    rec["_path"] = str(json_file)
+                    rec["_date"] = rec.get("date") or date_dir.name
+                    rec["_filename"] = json_file.name
+                    runs.append(rec)
+                except Exception as exc:
+                    log.warning("dashboard: blog load %s failed: %s",
+                                json_file, exc)
+    except Exception as exc:
+        log.warning("dashboard: blog scan failed: %s", exc)
+    return runs
+
+
+def _render_blog_page(runs: list[dict]) -> str:
+    """Render blog.html — 레딧 페이지 mirror (월/일 collapse + 검색 + 카드).
+    카드 = 글 제목(원문 링크) + Flash 3줄 요약 + 본문 발췌."""
+    import html as _html
+    import json as _json_bl
+    from collections import defaultdict
+    from datetime import datetime as _dt_bl, timezone as _tz_bl, timedelta as _td_bl
+
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for r in runs:
+        by_date[r.get("_date", "")].append(r)
+
+    total_runs = len(runs)
+    last_ts = ""
+    if runs:
+        last_ts = (runs[0].get("ts") or "")[:16].replace("T", " ")
+
+    parts: list[str] = [_SCREENER_CSS]
+    parts.append(f"""
+<div class="wrap">
+  <div class="nav">
+    <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
+  </div>
+  <h1>📝 블로그 — '변화하는 기업을 찾아서' Archive</h1>
+  <p class="sub">네이버 블로그(beatthemkt) 새 글 자동 수집(30분) · Flash 3줄 요약 + 원문 링크 · 정보 관찰(투자 권유 아님)</p>
+
+  <div class="stats">
+    <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 수집 글</div></div>
+    <div class="stat"><div class="stat-v">{_html.escape(last_ts) if last_ts else '—'}</div><div class="stat-l">마지막 수집 (KST)</div></div>
+  </div>
+
+  <div class="search-bar">
+    <input id="scr-search" type="text" placeholder="제목 / 요약 / 본문 검색 (예: 반도체, 수주, 전환점)" autocomplete="off" spellcheck="false">
+    <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
+  </div>
+  <p id="scr-status" class="status-line">총 {total_runs}건의 글</p>
+  <div id="scr-snippets" class="snippets" style="display:none"></div>
+  <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
+""")
+
+    if not runs:
+        parts.append("""
+  <div class="empty">
+    아직 수집된 글이 없습니다. 블로그에 새 글이 올라오면 30분 내 자동 수집됩니다.
+  </div>
+</div></body></html>""")
+        return "".join(parts)
+
+    _today_kst_bl = _dt_bl.now(_tz_bl(_td_bl(hours=9))).date().isoformat()
+    _this_month_bl = _today_kst_bl[:7]
+
+    months: dict[str, list[str]] = defaultdict(list)
+    for date in sorted(by_date.keys(), reverse=True):
+        months[(date or "")[:7]].append(date)
+
+    def _format_month_bl(ym: str) -> str:
+        try:
+            y, m = ym.split("-")
+            return f"{int(y)}년 {int(m)}월"
+        except Exception:
+            return ym
+
+    for month in sorted(months.keys(), reverse=True):
+        month_dates = months[month]
+        month_open = " open" if month == _this_month_bl else ""
+        month_count = sum(len(by_date[d]) for d in month_dates)
+        parts.append(
+            f'<details class="month"{month_open}>'
+            f'<summary class="month-head">'
+            f'<span>📆 {_html.escape(_format_month_bl(month))}</span>'
+            f'<span class="count">{month_count} 건</span>'
+            f'</summary>'
+            f'<div class="month-body">'
+        )
+        for date in month_dates:
+            day_open = " open" if date == _today_kst_bl else ""
+            day_count = len(by_date[date])
+            parts.append(
+                f'<details class="day"{day_open}>'
+                f'<summary class="day-head">'
+                f'<span>📅 {_html.escape(date)}</span>'
+                f'<span class="count">{day_count} 건</span>'
+                f'</summary>'
+                f'<div class="day-body">'
+            )
+            for r in by_date[date]:
+                raw_ts = r.get("ts") or ""
+                ts_clock = raw_ts.split("T", 1)[1][:5] if "T" in raw_ts else ""
+                ts_html = _html.escape(ts_clock)
+                title = _html.escape(r.get("title") or "블로그 글")
+                link = _html.escape(r.get("link") or "")
+                summary_raw = (r.get("summary") or "").strip()
+                desc_raw = (r.get("desc") or "").strip()
+                summary_html = _html.escape(summary_raw).replace("\n", "<br>")
+                desc_html = _html.escape(desc_raw).replace("\n", "<br>")
+                body_parts = []
+                if summary_html:
+                    body_parts.append(
+                        f'<div class="analysis-b" data-section="summary">{summary_html}</div>')
+                if link:
+                    body_parts.append(
+                        f'<div style="margin:8px 0"><a href="{link}" target="_blank" rel="noopener">🔗 원문 보기</a></div>')
+                if desc_html:
+                    body_parts.append(
+                        f'<div class="analysis-b" data-section="desc" style="color:var(--fg-soft);font-size:13px">{desc_html}</div>')
+                plain = (title + "\n" + summary_raw + "\n" + desc_raw)
+                card_lines: list[dict] = []
+                for ln in plain.splitlines():
+                    s = ln.strip()
+                    if len(s) >= 3:
+                        card_lines.append({"sec": "brief", "txt": s[:300]})
+                if len(card_lines) > 200:
+                    card_lines = card_lines[:200]
+                search_attr = _html.escape(plain.lower()[:6000])
+                lines_attr = _html.escape(
+                    _json_bl.dumps(card_lines, ensure_ascii=False))
+
+                filename = _html.escape(r.get("_filename", ""))
+                card_default_open = (date == _today_kst_bl and day_count == 1)
+                card_open_attr = " open" if card_default_open else ""
+                card_id = (
+                    f"card-{_html.escape(r.get('_date', ''))}-{filename}"
+                    .replace(".", "_")
+                )
+
+                parts.append(f"""
+  <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date', ''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
+    <summary class="card-h">
+      <span class="card-toggle">▸</span>
+      <span class="domain">📝 {title} ({ts_html})</span>
+    </summary>
+    <div class="card-body">
+      <div class="analysis-sec">{''.join(body_parts)}</div>
+    </div>
+  </details>
+""")
+            parts.append('</div></details>')  # close day
+        parts.append('</div></details>')  # close month
+
+    parts.append("</div>")
+    parts.append(_DAILY_BYTE_JS)
+    return "".join(parts)
+
+
+def regenerate_blog_index() -> None:
+    """Scan blog archive → write blog.html under ARCHIVE_ROOT. Called from
+    bot.blog_watch after new posts + periodic refresh + startup."""
+    try:
+        runs = _load_blog_runs()
+        html = _render_blog_page(runs)
+        ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
+        (ARCHIVE_ROOT / "blog.html").write_text(html, encoding="utf-8")
+        log.info("dashboard: blog.html regenerated (%d posts)", len(runs))
+    except Exception as exc:
+        log.warning("dashboard: blog regen failed: %s", exc)
+
+
 # ── Watchlist 조건 알림 대시보드 (2026-06-04) ────────────────────────────
 def _render_watchlist_page(watches: list[dict], alerts: list[dict]) -> str:
     """watchlist.html — 활성 워치 테이블 + 알림 이력. 읽기 전용
@@ -11777,6 +11973,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
     &middot; <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>
+    &middot; <a href="blog.html">📝 블로그</a>
     &nbsp;|&nbsp;
     <a href="realestate.html">🏠 부동산</a>
   </div>

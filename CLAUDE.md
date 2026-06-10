@@ -547,9 +547,12 @@ pattern to follow:
   (`blog-watch.timer`) → 새 GUID 감지 → Gemini Flash 3줄 요약(grounding off,
   발췌 기반 환각 0) → 채널 push + `blog_archive/` JSON 아카이브. state 파일
   (`blog_watch_state.json`) 중복 차단 + 첫 run 은 기존 글 seen 처리만(폭주
-  방지). **대시보드 surface 없음** (사용자 정책 2026-05-31 — "정확히 자동
-  포워드되는 채널처럼 + ingest까지"): 채널 push + `blog_archive/` JSON ingest
-  (봇 참조용 raw 보관)만, blog.html/nav/delete endpoint 미생성. 비용
+  방지). **대시보드 `blog.html` 운영 (사용자 정책 변경 2026-06-11 — 옛
+  2026-05-31 '대시보드 없음' 정책 폐기)**: 레딧 페이지 mirror(월/일 collapse
+  + 검색 + 카드 = 제목·원문링크·Flash 3줄요약·발췌). `regenerate_blog_index`
+  — blog_watch 새 글 후 + startup + 자정 regen. **nav 노출은 두 곳만 고정
+  (사용자 2026-06-11): 홈(market.html) + NOAH 종목분석(index.html), 각각
+  '한국 수출입' 다음.** 다른 그룹 페이지 nav 에 추가 금지. 비용
   subsystem="blog" (글당 ~₩10 Flash). 키 불필요. ⚠️ VM 네이버 접근은 되나
   RSS 403 시 헤더/대체 endpoint 점검 (news client 는 작동 중).
 - 부동산 Byte — 아파트 실거래가 주간 브리프 (2026-05-31 사용자 요청,
