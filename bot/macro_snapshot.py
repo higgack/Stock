@@ -83,9 +83,13 @@ GLOBAL = [
 import hashlib as _hashlib  # noqa: E402
 # salt 'spark1mo' = 카드 스파크라인을 1개월 일봉 + spark_dir 구조로 변경
 # (2026-06-10). 옛 12개월 spark 캐시를 즉시 무효화.
+# 1개월 카드 중 변화를 % 가 아닌 절대값으로 표시할 sid (사용자 2026-06-10):
+# 환율(USD/KRW)·달러인덱스는 절대값이 직관적(₩2.11 / 0.01pt).
+_ABS_CHANGE_SIDS = {"USDKRW=X", "DX-Y.NYB"}
+
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo_span_pct").encode()
+     + "|spark1mo_span_pct_absfx").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
@@ -336,10 +340,12 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 if d:
                     value, change = d["value"], d["change"]
                     # 일일 % 변화 — 한달단위(1개월) 카드는 절대값 대신 %로
-                    # 표시(사용자 2026-06-10). prev = value - change.
-                    _prev = value - change if (value is not None and change is not None) else None
-                    if _prev not in (None, 0):
-                        change_pct = change / _prev * 100
+                    # 표시(사용자 2026-06-10). 단 환율(USD/KRW)·달러인덱스는
+                    # 절대값 원복(사용자 2026-06-10 후속). prev = value - change.
+                    if sid not in _ABS_CHANGE_SIDS:
+                        _prev = value - change if (value is not None and change is not None) else None
+                        if _prev not in (None, 0):
+                            change_pct = change / _prev * 100
                 chart_spark = yf_monthly.get(sid, [])
                 # 카드 라인 = 최근 1개월 일봉(없으면 월간 폴백). 색 = 1개월(첫↔끝).
                 card_spark = yf_daily_1mo.get(sid, []) or chart_spark
