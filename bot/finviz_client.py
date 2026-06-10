@@ -115,8 +115,11 @@ def _now_label() -> str:
 
 # ── 업종(industry) 등락 ────────────────────────────────────────────────────
 
+# href 가 .ashx 폐기 + 클린 URL 로 바뀜 (2026-06-10 VM 로그: screener.ashx
+# →301→screener). screener(.ashx)? + f=ind_ 만으로 매칭(v= 위치/유무 무관),
+# 선행 도메인/경로 허용. 옛 .ashx 형태도 동시 매칭(.ashx)? 라 하위호환.
 _GROUP_ROW_RE = re.compile(
-    r'<a[^>]+href="screener\.ashx\?v=1[^"]*f=ind_[^"]*"[^>]*>([^<]{2,60})</a>(.*?)</tr>',
+    r'<a[^>]+href="[^"]*screener(?:\.ashx)?\?[^"]*f=ind_[^"]*"[^>]*>([^<]{2,60})</a>(.*?)</tr>',
     re.DOTALL | re.IGNORECASE)
 _PCT_RE = re.compile(r'([-+]?\d+\.\d+)%')
 
@@ -129,16 +132,19 @@ def fetch_groups() -> dict:
     if c is not None:
         return c
     out: dict = {"groups": [], "ts": _now_label(), "source": "Finviz"}
-    html = _get(f"{_BASE}/groups.ashx?g=industry&v=110&o=-change")
+    html = _get(f"{_BASE}/groups?g=industry&v=110&o=-change")
     if html:
+        import html as _h
         for name, tail in _GROUP_ROW_RE.findall(html):
             pcts = _PCT_RE.findall(tail)
             if not pcts:
                 continue
             try:
-                # v=110 행의 마지막 % 컬럼 = 당일 Change
+                # v=110 행의 마지막 % 컬럼 = 당일 Change. 이름은 unescape
+                # (Oil &amp; Gas → Oil & Gas) — 렌더가 다시 escape 하므로
+                # 여기서 풀어둬야 이중이스케이프('&amp;amp;') 방지.
                 out["groups"].append(
-                    {"name": name.strip(), "pct": float(pcts[-1])})
+                    {"name": _h.unescape(name.strip()), "pct": float(pcts[-1])})
             except ValueError:
                 continue
         if not out["groups"]:
@@ -195,20 +201,24 @@ def top_movers(top_n: int = 10) -> dict:
 
 # ── 52주 신고가 · 신저가 ──────────────────────────────────────────────────
 
+# quote.ashx?t= → quote?t= (클린 URL). 앵커 텍스트==티커(>\1<) 제약은
+# 리디자인에서 span 래핑 가능성 있어 제거 — href 의 t= 만 신뢰, 앵커 내부
+# 텍스트는 [^<]* 로 소비(tail 이 다음 셀부터 시작 = 회사명). .ashx 하위호환.
 _TICKER_CELL_RE = re.compile(
-    r'<a[^>]+href="quote\.ashx\?t=([A-Z0-9.\-]+)[^"]*"[^>]*>\1</a>(.*?)</tr>',
+    r'<a[^>]+href="[^"]*quote(?:\.ashx)?\?t=([A-Z0-9.\-]+)[^"]*"[^>]*>[^<]*</a>(.*?)</tr>',
     re.DOTALL)
 _CELL_TXT_RE = re.compile(r'<td[^>]*>(?:<[^>]+>)*([^<]*)')
 
 
 def _parse_screener_rows(html: str, limit: int) -> list[dict]:
+    import html as _h
     rows: list[dict] = []
     for tk, tail in _TICKER_CELL_RE.findall(html):
         cells = [c.strip() for c in _CELL_TXT_RE.findall(tail) if c.strip()]
         # v=111 컬럼: Company, Sector, Industry, Country, MktCap, P/E,
         # Price, Change, Volume — 위치 가변 대비 역방향 휴리스틱:
         # 마지막 % = Change, 그 앞 숫자 = Price, 첫 텍스트 = Company.
-        name = cells[0] if cells else tk
+        name = _h.unescape(cells[0]) if cells else tk
         pct = None
         price = None
         joined = " | ".join(cells)
@@ -233,7 +243,7 @@ def _parse_screener_rows(html: str, limit: int) -> list[dict]:
 def _fetch_signal(signal: str, limit: int = 40) -> list[dict]:
     rows: list[dict] = []
     for offset in (1, 21):
-        html = _get(f"{_BASE}/screener.ashx?v=111&s={signal}&o=-change&r={offset}")
+        html = _get(f"{_BASE}/screener?v=111&s={signal}&o=-change&r={offset}")
         if not html:
             break
         page = _parse_screener_rows(html, limit - len(rows))
