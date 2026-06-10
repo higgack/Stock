@@ -54,7 +54,9 @@ _BLOCK_MARKERS = ("access denied", "are you a robot", "/cdn-cgi/challenge",
                   "unusual traffic")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "finviz"
-_CACHE_TTL_SEC = 10 * 60        # 10분 — Naver(4분)보다 길게 (차단 회피)
+_CACHE_TTL_SEC = 5 * 60         # 5분 — market.html 재생성 주기와 일치(사용자
+                                # 2026-06-10 '10분이 최선인가'). #195 헤더로 통과
+                                # 확인됨 → 5분 스크랩도 단일 채널·캐시로 안전.
 _FALLBACK_TTL_SEC = 6 * 3600    # S&P500 1y 주봉 폴백은 무거워 6h
 
 # 위키/스크린너 universe 가 전부 실패할 때의 최후 코어 (~40 대형주) — 신고저
