@@ -1009,18 +1009,26 @@ def save_archive(d: date, items: list[dict]) -> None:
 
 
 def merge_and_save(d: date, new_items: list[dict]) -> list[dict]:
-    """기존 아카이브에 새 공시 merge (rcept_no dedup). 반환: 전체."""
+    """기존 아카이브에 새 공시 merge (rcept_no dedup) + **detail 업데이트
+    반영**. 기존-유지 dedup 이 나중 사이클의 enrich 성공분을 버려 카드가
+    영원히 비던 근본 버그 fix (사용자 2026-06-11 '거의 안 채워짐')."""
     existing = load_archive(d)
-    seen = {it["rcept_no"] for it in existing}
-    added = 0
+    by_id = {it.get("rcept_no"): it for it in existing}
+    added = updated = 0
     for it in new_items:
-        if it["rcept_no"] not in seen:
+        rno = it.get("rcept_no")
+        old = by_id.get(rno)
+        if old is None:
             existing.append(it)
-            seen.add(it["rcept_no"])
+            by_id[rno] = it
             added += 1
-    if added > 0:
+        elif it.get("detail") and not old.get("detail"):
+            old["detail"] = it["detail"]
+            updated += 1
+    if added or updated:
         save_archive(d, existing)
-        log.info("dart_feed: %s — %d new, %d total", d, added, len(existing))
+        log.info("dart_feed: %s — %d new, %d enriched-update, %d total",
+                 d, added, updated, len(existing))
     return existing
 
 
@@ -1072,12 +1080,27 @@ def run_once(target_date: date | None = None,
              target_date, days_back + 1, _max_pages, _budget_today())
     items = fetch_market_disclosures(target_date, days_back=days_back,
                                      max_pages=_max_pages)
-    if items:
-        enrich_disclosures(items)
+    # 백필 대기열 — 최근 3일 아카이브에서 detail 없는 항목을 합쳐 enrich.
+    # 증분(당일) 사이클은 fetch 가 당일분만 담아 새벽/한산 시간대에 백필이
+    # 시간당 풀스캔 8건으로 기어가던 버그 fix (사용자 2026-06-11).
+    fetched_ids = {it.get("rcept_no") for it in items}
+    pending: list[dict] = []
+    try:
+        for day_items in load_all_archives(days_back=3).values():
+            for it in day_items:
+                if it.get("rcept_no") in fetched_ids or it.get("detail"):
+                    continue
+                pending.append(it)
+    except Exception as exc:
+        log.warning("dart_feed: 백필 대기열 로드 실패: %s", exc)
+    work = items + pending
+    if work:
+        enrich_disclosures(work)
 
     # 접수일(rcept_dt 'YYYYMMDD')별 그룹핑 → 각 날짜 파일에 merge
+    # (work 전체 — 아카이브 항목의 enrich 성공분도 detail 업데이트로 반영)
     by_day: dict[date, list[dict]] = {}
-    for it in items:
+    for it in work:
         raw = str(it.get("date") or "").strip()
         try:
             d = datetime.strptime(raw[:8], "%Y%m%d").date()
