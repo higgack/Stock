@@ -1396,53 +1396,6 @@ _INDEX_JS = """
 })();
 """
 
-# ── 대시보드 → 봇 실행 버튼 공통 JS (분석/스크리너) ─────────────────────────
-# POST api/run {kind, q} → dashboard_server 가 스풀 → 봇 폴러가 채널 명령과
-# 동일 경로로 실행. confirm 다이얼로그에 소요시간/비용 명시(오클릭 비용 가드).
-# 상대경로 fetch 라 URL 토큰 prefix 환경에서도 동작 (api/delete 패턴 동일).
-_RUN_REQUEST_JS = r"""
-function noahRunSetup(btnId, inputId, kind, opts) {
-  var btn = document.getElementById(btnId);
-  if (!btn) return;
-  var inp = document.getElementById(inputId);
-  opts = opts || {};
-  btn.addEventListener('click', function() {
-    var q = (inp && inp.value || '').trim();
-    if (!q && opts.requireQuery) {
-      if (inp) inp.focus();
-      alert(opts.emptyMsg || '입력 후 실행하세요.');
-      return;
-    }
-    var label = q || opts.defaultLabel || '';
-    var msg = (label ? "'" + label + "'\n" : '') + (opts.confirmText || '실행할까요?');
-    if (!confirm(msg)) return;
-    var orig = btn.textContent;
-    btn.disabled = true; btn.textContent = '…';
-    fetch('api/run', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({kind: kind, q: q})
-    })
-    .then(function(r) { return r.json().then(function(d) { return {st: r.status, d: d}; }); })
-    .then(function(x) {
-      btn.disabled = false; btn.textContent = orig;
-      if (x.d && x.d.ok) {
-        var note = x.d.dup ? '이미 같은 요청이 대기 중입니다.'
-          : ((x.d.q ? x.d.q + ' — ' : '') + (opts.okMsg || '요청 접수. 결과는 텔레그램 채널에 게시됩니다.'));
-        var s = opts.statusId && document.getElementById(opts.statusId);
-        if (s) { s.textContent = '✅ ' + note; }
-        else { alert('✅ ' + note); }
-      } else {
-        alert('⚠️ ' + ((x.d && x.d.error) || ('요청 실패 (HTTP ' + x.st + ')')));
-      }
-    })
-    .catch(function(e) {
-      btn.disabled = false; btn.textContent = orig;
-      alert('⚠️ 요청 실패: ' + e);
-    });
-  });
-}
-"""
-
 # ── 대시보드 명령 콘솔 JS ─────────────────────────────────────────────────
 # 입력이 '/' 로 시작하면 텔레그램 명령으로 실행(api/run kind=command → 봇이
 # 캡처 shim 으로 핸들러 실행 → api/command_result 폴링), 아니면 기존 주작업
@@ -12486,7 +12439,8 @@ def render_lookup_detail(ticker: str, enrich: bool = True) -> str:
     )
 
 
-# 지연로딩 shell JS — detail 비동기 fetch → #lk-detail 주입 + 스크립트 순차
+# 지연로딩 shell JS — detail fragment(core→full 2단계)를 data-lk 파트별
+# 슬롯(lk-header/tabs/desc/other-slot)에 제자리 주입 + 스크립트 순차
 # 재실행(src 는 onload 대기 → LWC 라이브러리 후 _CHART_JS 순서 보존).
 # application/json 데이터 블록(차트 payload)은 실행 건너뛰고 DOM 보존.
 _LOOKUP_LAZY_TMPL = r'''<script>(function(){var T=__TICKER__;
@@ -12550,7 +12504,7 @@ def render_lookup_page(ticker: str) -> str:
     kr_name = _ticker_display_name(ticker)
     h1_label = f"{kr_name} / {ticker}" if kr_name else ticker
     # 차트는 shell 에서 즉시 렌더(티커만 필요) → 점진 로딩. 무거운 detail
-    # (스냅샷+탭)은 #lk-detail 로 비동기. 사용자 2026-06-10 '차트 먼저'.
+    # (스냅샷+탭)은 슬롯별 비동기(core→full 2단계). 위치는 처음부터 고정.
     chart_section = _lookup_chart_html(ticker)
     chart_scripts = (
         f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
