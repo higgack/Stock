@@ -10719,6 +10719,26 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 
     total = sum(len(v) for v in by_date.values())
 
+    # 시총·현재가 렌더 부착(배치 #11) — FSC 12h 디스크 캐시 + 렌더당 코드
+    # 1회 메모 + cold-fetch 시간예산 45s(30일 윈도 수백 코드 첫 채움이 1분
+    # 사이클을 막지 않게 — 최신 카드부터 채워지고 다음 regen 이 이어감).
+    import time as _time
+    _mc_memo: dict[str, list] = {}
+    _mc_deadline = _time.time() + 45.0
+
+    def _mc_lines(code: str) -> list:
+        if code in _mc_memo:
+            return _mc_memo[code]
+        if _time.time() > _mc_deadline:
+            return []
+        try:
+            from bot.dart_feed import _market_cap_price_lines
+            out = _market_cap_price_lines(code)
+        except Exception:
+            out = []
+        _mc_memo[code] = out
+        return out
+
     cat_counts: dict[str, int] = {}
     for items in by_date.values():
         for it in items:
@@ -10814,9 +10834,15 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                 stock_code = it.get("stock_code", "")
 
                 detail_html = ""
-                if detail_lines:
-                    for ln in detail_lines:
-                        detail_html += f'<div class="df-detail-ln">= {_html.escape(str(ln))}</div>'
+                for ln in detail_lines:
+                    detail_html += f'<div class="df-detail-ln">{_html.escape(str(ln))}</div>'
+                # 시총/현재가 — '모든' 상장사 공시 맨 아래(사용자 2026-06-11).
+                # 렌더 시점 부착: 제목만 카드 + 옛 카드 소급. 옛 enrich 가
+                # 이미 붙인 카드(detail 에 '시가총액' 존재)는 중복 방지.
+                if (stock_code and len(stock_code) == 6 and stock_code.isdigit()
+                        and not any("시가총액" in str(l) for l in detail_lines)):
+                    for ln in _mc_lines(stock_code):
+                        detail_html += f'<div class="df-detail-ln">{_html.escape(str(ln))}</div>'
 
                 ticker_link = ""
                 if stock_code and len(stock_code) == 6 and stock_code.isdigit():

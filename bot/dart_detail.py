@@ -31,9 +31,9 @@ def _won(v) -> str | None:
         return None
     a = abs(n)
     if a >= 1e12:
-        s = f"{n / 1e12:.1f}조"
+        s = f"{n / 1e12:,.1f}".rstrip("0").rstrip(".") + "조"
     elif a >= 1e8:
-        s = f"{n / 1e8:.0f}억"
+        s = f"{n / 1e8:,.1f}".rstrip("0").rstrip(".") + "억"
     elif a >= 1e4:
         s = f"{n / 1e4:,.0f}만"
     else:

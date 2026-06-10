@@ -3984,3 +3984,133 @@ class TestDartFeedBackfill:
         m = self._load(tmp_path, monkeypatch)
         assert m._classify_report("전환청구권행사(제5회차)") != "기타"
         assert m._classify_report("주요사항보고서(주식병합결정)") != "기타"
+
+
+class TestDartCardFormats:
+    """DART 카드 승인 양식(배치 2026-06-11) 영구 회귀 — 검증 중 surfaced
+    버그 클래스 고정:
+      1) _won 콤마/소수 손실 (2007억·6.9억→7억 반올림 손실)
+      2) 계약 _END 가 값 속 '공급/판매'·소수(4.5)를 절단
+      3) 정정 헤더 — 정정전→정정후 (A→B %) / 금액 무변
+      4) 실적 단위(천원/백만원) 감지 + 월 라벨 괄호 토큰 오인
+      5) 시작일~종료일 쌍 regex 가 'N일' 의 trailing 일 미소비
+      6) 대시보드 '= ' prefix 제거 + 시총/현재가 렌더 부착(중복 방지)
+    """
+
+    def _load(self, tmp_path, monkeypatch):
+        import importlib.util
+        import bot.dart_detail  # noqa: F401 — real 패키지 보장
+        monkeypatch.setenv("HOME", str(tmp_path))
+        spec = importlib.util.spec_from_file_location(
+            "dart_feed_t", "bot/dart_feed.py")
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        m.time.sleep = lambda s: None
+        m._doc_fail_recent = lambda rno: False
+        m._doc_fail_mark = lambda rno, hours=0.5: None
+        return m
+
+    def _doc(self, m, monkeypatch, body):
+        import io, types, zipfile
+        buf = io.BytesIO()
+        z = zipfile.ZipFile(buf, "w")
+        z.writestr("doc.xml",
+                   ("<DOC>" + body + "<PAD>" + "x" * 600 + "</PAD></DOC>")
+                   .encode("utf-8"))
+        z.close()
+        resp = types.SimpleNamespace(content=buf.getvalue(), status_code=200)
+        empty = types.SimpleNamespace(
+            content=b"{}", status_code=200,
+            json=lambda: {"status": "013", "list": []})
+        monkeypatch.setattr(
+            m.requests, "get",
+            lambda url, params=None, timeout=None, **k:
+            resp if "document.xml" in url else empty)
+
+    def test_won_comma_and_decimal(self):
+        from bot.dart_detail import _won
+        assert _won("200700000000") == "2,007억원"
+        assert _won("690000000") == "6.9억원"
+        assert _won("3150000000") == "31.5억원"
+        assert _won("-10010000000") == "-100.1억원"
+        assert _won("1500000000") == "15억원"  # 기존 호환
+
+    def test_contract_value_not_truncated_by_keywords(self, tmp_path, monkeypatch):
+        m = self._load(tmp_path, monkeypatch)
+        self._doc(m, monkeypatch,
+                  "1. 판매ㆍ공급계약 내용 특수합금 공급계약 2. 계약내역 "
+                  "조건부 계약여부 해당 확정 계약금액 - 조건부 계약금액 20,200,000,000 "
+                  "매출액 대비(%) 21.1 5. 계약상대방 미국 우주항공 발사업체 "
+                  "7. 공시유보 유보사유 영업기밀 비공개 요청 유보기한 2027-02-15")
+        r = m._extract_detail("단일판매ㆍ공급계약체결", "RX", "C", "K")
+        j = "\n".join(r["lines"])
+        assert "계약: 특수합금 공급계약" in j          # '공급' 절단 금지
+        assert "계약금액: 202억원 (조건부 · 매출액대비 21.1%)" in j
+        assert "공시유보: 2027-02-15까지 (영업기밀 비공개 요청)" in j
+
+    def test_contract_correction_header_a_to_b(self, tmp_path, monkeypatch):
+        m = self._load(tmp_path, monkeypatch)
+        self._doc(m, monkeypatch,
+                  "정정신고 정정일자 2026-06-09 2. 정정사유 계약금액 변경 "
+                  "3. 정정사항 정정전 정정후 계약금액 총액(원) 1,100,000,000 690,000,000 "
+                  "매출액 대비(%) 28.0 17.5 1. 판매ㆍ공급계약 내용 장비 A 공급 "
+                  "5. 계약상대방 ABC Corp")
+        r = m._extract_detail("[기재정정]단일판매ㆍ공급계약체결", "RX", "C", "K")
+        j = "\n".join(r["lines"])
+        assert "정정(26-06-09): 계약금액 11억원 → 6.9억원 (-37%)" in j
+        assert "계약금액: 6.9억원" in j               # 본문 = 정정후
+
+    def test_earnings_unit_and_month_label(self, tmp_path, monkeypatch):
+        m = self._load(tmp_path, monkeypatch)
+        self._doc(m, monkeypatch,
+                  "영업(잠정)실적(공정공시) (단위: 백만원, %) "
+                  "매출액 당해실적 (26.05) 200,700 177,800 12.9 167,250 20.0 "
+                  "누계실적 (26.01~26.05) 935,400 - - 811,300 15.3 "
+                  "2. 정보제공내역 IR")
+        r = m._extract_detail("영업(잠정)실적(공정공시)", "RX", "C", "K")
+        j = "\n".join(r["lines"])
+        assert "구분: 월별 잠정실적 (26.05)" in j
+        assert "매출액(당월): 2,007억원 (전월 +12.9% · 전년동월 +20.0%)" in j
+        assert "매출액(누계): 9,354억원 (전년동기 +15.3%)" in j
+
+    def test_cb_dilution_and_period_pair(self, tmp_path, monkeypatch):
+        m = self._load(tmp_path, monkeypatch)
+        self._doc(m, monkeypatch,
+                  "전환사채권 발행결정 회차 6 사모 전환사채 "
+                  "권면(전자등록)총액(원) 15,000,000,000 "
+                  "표면이자율(%) 1.0 만기이자율(%) 2.0 사채만기일 2029-06-18 "
+                  "전환가액(원/주) 5,788 주식수 2,591,568 주식총수 대비 비율(%) 35.31 "
+                  "전환청구기간 시작일 2027년 06월 18일 종료일 2029년 05월 18일 "
+                  "납입일 2026년 06월 18일")
+        r = m._extract_detail("주요사항보고서(전환사채권발행결정)", "RX", "C", "K")
+        j = "\n".join(r["lines"])
+        assert "구분: 전환사채 발행 (6회차 · 사모) — 150억원" in j
+        assert "주식총수의 35.31% (잠재 희석)" in j
+        assert "전환기간 2027-06-18 ~ 2029-05-18" in j  # 'N일' trailing 소비
+
+    def test_dashboard_no_eq_prefix_and_mcap_attach(self, tmp_path, monkeypatch):
+        m = self._load(tmp_path, monkeypatch)
+        from datetime import date, datetime
+        d = datetime.now(m._KST).date()
+        m.merge_and_save(d, [
+            {"rcept_no": "R1", "corp_name": "A사", "stock_code": "042700",
+             "corp_code": "C", "report_nm": "단일판매ㆍ공급계약체결",
+             "category": "계약", "date": d.strftime("%Y%m%d"), "url": "#",
+             "detail": ["계약: X"]},
+            {"rcept_no": "R2", "corp_name": "B사", "stock_code": "000100",
+             "corp_code": "C", "report_nm": "유상증자결정",
+             "category": "자금조달", "date": d.strftime("%Y%m%d"), "url": "#",
+             "detail": ["신주수: 10주", "시가총액: 1조원"]}])  # 옛 enrich 부착분
+        import bot.dashboard as db
+        import bot.dart_feed as real_df  # 렌더는 real 모듈에서 import
+        calls = []
+        monkeypatch.setattr(
+            real_df, "_market_cap_price_lines",
+            lambda c: (calls.append(c) or ["시가총액: 2조원 / 현재가: 1,000원"]))
+        monkeypatch.setattr(db, "_load_dart_feed_data",
+                            lambda days_back=30: m.load_all_archives(2),
+                            raising=False)
+        html = db._render_dart_feed_page(m.load_all_archives(days_back=2))
+        assert 'df-detail-ln">= ' not in html        # '= ' prefix 제거
+        assert "시가총액: 2조원 / 현재가: 1,000원" in html
+        assert "042700" in calls and "000100" not in calls  # 중복 방지
