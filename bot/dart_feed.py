@@ -196,6 +196,32 @@ def _dart_api_key() -> str | None:
 
 # ── 구조화 상세 추출 ──
 
+_DATE_RE = re.compile(r"(\d{4})[.\-/]?\s?(\d{1,2})[.\-/]?\s?(\d{1,2})")
+
+
+def _fmt_period(s: str) -> str:
+    """'2026-06-08 ~ 2026-12-31' 류 계약기간 → '2026-06-08 ~ 2026-12-31
+    (7개월)'. 두 날짜 파싱해 개월수(round(일수/30.44)) 부기. 실패 시 원문.
+    레퍼런스 봇 '일정 (N개월)' 형식(사용자 2026-06-10)."""
+    if not s:
+        return s
+    found = _DATE_RE.findall(s)
+    if len(found) < 2:
+        return s.strip()
+    try:
+        from datetime import date as _d
+        (y1, m1, d1), (y2, m2, d2) = found[0], found[1]
+        start = _d(int(y1), int(m1), int(d1))
+        end = _d(int(y2), int(m2), int(d2))
+        days = (end - start).days
+        if days <= 0:
+            return s.strip()
+        months = max(1, round(days / 30.44))
+        return f"{start.isoformat()} ~ {end.isoformat()} ({months}개월)"
+    except (ValueError, TypeError):
+        return s.strip()
+
+
 def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                     api_key: str) -> dict | None:
     """주요사항보고서에서 핵심 숫자 추출. None if not applicable."""
@@ -210,7 +236,7 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
             ("계약금액", ("ctrt_amt",), "won"),
             ("매출액대비", ("sl_cmpnt_rt",), "pct"),
             ("계약상대", ("cntr_pty",), "text"),
-            ("계약기간", ("cntr_pd",), "text"),
+            ("계약기간", ("cntr_pd",), "period"),
             ("공급지역", ("dlvy_rgn",), "text"),
             ("계약일", ("ctrt_de",), "date"),
         ])]
@@ -300,6 +326,10 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                     parts.append(f"{lbl}: {v}%")
                 elif kind == "date":
                     parts.append(f"{lbl}: {v}")
+                elif kind == "period":
+                    # 계약기간 텍스트 → 시작/종료일 + 개월수(레퍼런스 봇
+                    # '일정 (N개월)' 형식, 사용자 2026-06-10). 파싱 실패 시 원문.
+                    parts.append(f"{lbl}: {_fmt_period(str(v))}")
                 else:
                     parts.append(f"{lbl}: {str(v)[:50]}")
             if parts:
