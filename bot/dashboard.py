@@ -11116,12 +11116,30 @@ def _macro_fmt_change(change, dec: int) -> str:
     return f'<span class="mc" style="color:{color}">{arrow} {val}</span>'
 
 
+def _macro_fmt_change_pct(pct) -> str:
+    """변화를 % 로 — 한달단위(1개월) 카드용(사용자 2026-06-10 '숫자말고
+    퍼센티지'). 하락 빨강/상승 녹색(절대값 chip 과 동일 부호 규칙)."""
+    if pct is None:
+        return '<span class="mc" style="color:var(--muted)">—</span>'
+    if round(pct, 2) == 0:
+        return '<span class="mc" style="color:var(--muted)">– 보합</span>'
+    up = pct > 0
+    color = "var(--pos)" if up else "var(--neg)"
+    arrow = "▲" if up else "▼"
+    return f'<span class="mc" style="color:{color}">{arrow} {abs(pct):.2f}%</span>'
+
+
 def _render_macro_card(ind: dict) -> str:
     label = _html.escape(ind.get("label", ""))
     span = _html.escape(ind.get("spark_span", ""))
     span_html = f'<span class="msp">{span}</span>' if span else ""
     val_html = _macro_fmt_value(ind.get("value"), ind.get("decimals", 2), ind.get("unit", ""))
-    chg_html = _macro_fmt_change(ind.get("change"), ind.get("decimals", 2))
+    # 한달단위(1개월) yf 카드는 변화를 % 로(change_pct 존재), FRED/ECOS(12개월)
+    # 는 절대값 그대로(사용자 2026-06-10 '한달단위는 숫자말고 퍼센티지').
+    if ind.get("change_pct") is not None:
+        chg_html = _macro_fmt_change_pct(ind.get("change_pct"))
+    else:
+        chg_html = _macro_fmt_change(ind.get("change"), ind.get("decimals", 2))
     # 색 = 표시되는 라인의 방향(첫→끝): yf 카드는 1개월 일봉이라 1개월,
     # FRED/ECOS 는 12개월 월간이라 12개월(원래대로 그래프 — 사용자 2026-06-10).
     # 라인 기간(1개월/12개월)을 카드에 작게 명시(사용자 2026-06-10).

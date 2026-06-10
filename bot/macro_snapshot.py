@@ -85,7 +85,7 @@ import hashlib as _hashlib  # noqa: E402
 # (2026-06-10). 옛 12개월 spark 캐시를 즉시 무효화.
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo_span").encode()
+     + "|spark1mo_span_pct").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
@@ -326,6 +326,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
         for key, label, unit, src, sid, dec in defs:
             value: Optional[float] = None
             change: Optional[float] = None
+            change_pct: Optional[float] = None  # yf(1개월) 카드 — 일일 % 변화
             chart_spark: list[float] = []   # 큰 차트(월간)
             card_spark: list[float] = []    # 카드 미니(1개월)
             spark_dir = 0
@@ -334,6 +335,11 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 d = yf_daily.get(sid)
                 if d:
                     value, change = d["value"], d["change"]
+                    # 일일 % 변화 — 한달단위(1개월) 카드는 절대값 대신 %로
+                    # 표시(사용자 2026-06-10). prev = value - change.
+                    _prev = value - change if (value is not None and change is not None) else None
+                    if _prev not in (None, 0):
+                        change_pct = change / _prev * 100
                 chart_spark = yf_monthly.get(sid, [])
                 # 카드 라인 = 최근 1개월 일봉(없으면 월간 폴백). 색 = 1개월(첫↔끝).
                 card_spark = yf_daily_1mo.get(sid, []) or chart_spark
@@ -363,7 +369,8 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             spark_cache[key] = chart_spark   # 큰 차트는 월간 유지
             rows.append({
                 "key": key, "label": label, "unit": unit,
-                "value": value, "change": change, "decimals": dec,
+                "value": value, "change": change, "change_pct": change_pct,
+                "decimals": dec,
                 "spark": card_spark, "spark_dir": spark_dir,
                 "spark_span": spark_span,
             })
