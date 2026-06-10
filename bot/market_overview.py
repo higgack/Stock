@@ -640,9 +640,13 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
                 tp = inf.get("targetMeanPrice")
             except Exception:
                 pass
+            # KR 탭과 동일 7일 윈도(사용자 2026-06-11) — 과거분 제외.
+            cutoff = (date.today() - timedelta(days=7)).isoformat()
             items = []
-            for idx, row in ud.head(8).iterrows():
+            for idx, row in ud.head(15).iterrows():
                 d = str(idx.date()) if hasattr(idx, "date") else str(idx)[:10]
+                if d < cutoff:
+                    continue
                 items.append({
                     "symbol": tk,
                     "firm": row.get("Firm", ""),
@@ -736,7 +740,7 @@ def fetch_all_market_data() -> dict[str, Any]:
         earn_kr_fut = pool.submit(fetch_earnings_calendar_kr, 90)
         kr_fut = pool.submit(fetch_recent_research_kr, 80)
         kr_ind_fut = pool.submit(fetch_recent_research_kr_industry, 60)
-        us_fut = pool.submit(fetch_recent_research_us, 40)
+        us_fut = pool.submit(fetch_recent_research_us, 80)
         macro_fut = pool.submit(_fetch_macro_safe)
         sector_fut = pool.submit(_fetch_sector_movers_safe)
         us_sector_fut = pool.submit(_fetch_us_sector_movers_safe)
