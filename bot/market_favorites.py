@@ -17,6 +17,16 @@ log = logging.getLogger("bot.market_favorites")
 _FAVORITES_FILE = Path.home() / ".tradingagents" / "market_favorites.json"
 
 
+def _future_or_none(d_str):
+    """다음 실적일이 오늘 이전(stale)이면 None — 빈칸 표시용."""
+    try:
+        if d_str and str(d_str)[:10] >= datetime.now().strftime("%Y-%m-%d"):
+            return str(d_str)[:10]
+    except Exception:
+        pass
+    return None
+
+
 def _load() -> list[dict]:
     if _FAVORITES_FILE.exists():
         try:
@@ -114,7 +124,8 @@ def add_favorite(ticker: str) -> Optional[dict]:
                           and info.get("trailingEps") is not None),
         "per": per_val,
         "per_is_trailing": per_is_trailing,
-        "next_earnings": next_earn,
+        # 과거 날짜(yfinance KR calendar stale)는 빈칸 — 사용자 2026-06-11.
+        "next_earnings": _future_or_none(next_earn),
     }
 
     favorites.append(entry)
@@ -211,9 +222,14 @@ def get_favorites_with_prices() -> list[dict]:
                     earn_dates = cal.get("Earnings Date") or []
                     if earn_dates:
                         d = earn_dates[0]
-                        f["next_earnings"] = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+                        ds = d.strftime("%Y-%m-%d") if hasattr(d, "strftime") else str(d)[:10]
+                        f["next_earnings"] = _future_or_none(ds)
             except Exception:
                 pass
+            # 저장돼 있던 옛 날짜가 이미 과거면 빈칸 (yfinance 가 새 일정을
+            # 안 주는 KR 케이스 — SK hynix 2026-04-22 사용자 2026-06-11).
+            if f.get("next_earnings"):
+                f["next_earnings"] = _future_or_none(f["next_earnings"])
         except Exception:
             f["current_price"] = None
 

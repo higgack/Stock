@@ -303,15 +303,13 @@ def _doc_fail_mark(rcept_no: str) -> None:
         pass
 
 
-def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
-    """단일판매·공급계약 — 주요사항보고서 구조화 API 부재(거래소 수시공시)
-    → 공시 원문(document.xml zip)의 표준 신고 양식 표에서 핵심 숫자 추출.
-    ₩0·LLM 0·stdlib(zipfile). 필드 부재/형식 변형 graceful(None)."""
+def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
+    """공시 원문(document.xml zip) → 태그 제거 평문. 실패 시 None +
+    negative-cache (₩0·LLM 0·stdlib)."""
     if not rcept_no or _doc_fail_recent(rcept_no):
         return None
     import io
     import zipfile
-    from bot.dart_detail import _won
     try:
         r = requests.get(f"{_DART_BASE}/document.xml",
                          params={"crtfc_key": api_key, "rcept_no": rcept_no},
@@ -333,10 +331,68 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
         except UnicodeDecodeError:
             text = raw.decode("cp949", errors="ignore")
         txt = re.sub(r"<[^>]+>", " ", text)
-        txt = re.sub(r"\s+", " ", txt)
+        return re.sub(r"\s+", " ", txt)
     except Exception:
         _doc_fail_mark(rcept_no)
         return None
+
+
+# 전 유형 generic 원문 필드 — (표시라벨, 라벨 regex, kind). 구조화 API 가
+# 없는/빈 공시(IR·시설투자·소송·배당·회사구조 등)의 표준 신고 양식에서 핵심
+# 숫자만. kind: won=원금액 약식 / pct / text / date.
+_GENERIC_DOC_FIELDS = [
+    ("투자금액", r"투자금액[^0-9]{0,60}?([\d,]{4,})", "won"),
+    ("자기자본대비", r"자기자본\s*대비[^0-9]{0,60}?([\d.]+)", "pct"),
+    ("투자목적", r"투자\s*목적[^가-힣A-Za-z0-9]{0,40}?([가-힣A-Za-z0-9()&.,·\- ]{4,60}?)\s*(?:\d\.|투자기간|4\.)", "text"),
+    ("취득금액", r"취득금액[^0-9]{0,60}?([\d,]{4,})", "won"),
+    ("처분금액", r"처분금액[^0-9]{0,60}?([\d,]{4,})", "won"),
+    ("청구금액", r"청구금액[^0-9]{0,60}?([\d,]{4,})", "won"),
+    ("배당금총액", r"배당금\s*총액[^0-9]{0,60}?([\d,]{4,})", "won"),
+    ("1주당 배당금", r"1주당\s*배당금[^0-9]{0,60}?([\d,]{2,})", "won"),
+    ("시가배당률", r"시가\s*배당[률율][^0-9]{0,60}?([\d.]+)", "pct"),
+    ("개최일시", r"개최\s*일시[^0-9]{0,40}?(\d{4}[-./년]\s?\d{1,2}[-./월]\s?\d{1,2}[일]?[^가-힣<]{0,12})", "text"),
+    ("주주총회일", r"주주총회\s*(?:예정)?일[^0-9]{0,40}?(\d{4}[-./]\d{1,2}[-./]\d{1,2})", "date"),
+    ("효력발생일", r"효력\s*발생\s*(?:예정)?일[^0-9]{0,40}?(\d{4}[-./]\d{1,2}[-./]\d{1,2})", "date"),
+]
+
+
+def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
+    """구조화 API 미커버 공시의 generic 원문 추출 — 라벨 매칭 최대 6줄.
+    필드 0개면 negative-cache(12h 재시도 억제)."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    from bot.dart_detail import _won
+    parts: list[str] = []
+    for lbl, pat, kind in _GENERIC_DOC_FIELDS:
+        m = re.search(pat, txt)
+        if not m:
+            continue
+        v = m.group(1).strip()
+        if kind == "won":
+            w = _won(v)
+            if w:
+                parts.append(f"{lbl}: {w}")
+        elif kind == "pct":
+            parts.append(f"{lbl}: {v}%")
+        else:
+            parts.append(f"{lbl}: {v[:50]}")
+        if len(parts) >= 6:
+            break
+    if not parts:
+        _doc_fail_mark(rcept_no)
+        return None
+    return {"lines": parts}
+
+
+def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
+    """단일판매·공급계약 — 주요사항보고서 구조화 API 부재(거래소 수시공시)
+    → 공시 원문(document.xml zip)의 표준 신고 양식 표에서 핵심 숫자 추출.
+    ₩0·LLM 0·stdlib(zipfile). 필드 부재/형식 변형 graceful(None)."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    from bot.dart_detail import _won
 
     def _grab(pat: str) -> str | None:
         m = re.search(pat, txt)
@@ -485,9 +541,7 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
             ("목적", ("trf_pp", "inh_pp"), "text"),
         ])]
 
-    if not specs:
-        return None
-
+    # specs 빈 유형(시설투자·IR·소송 등)도 아래 원문 폴백으로 진행.
     for ep, fields in specs:
         try:
             r = requests.get(
@@ -531,11 +585,12 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                     parts.append(f"{lbl}: {str(v)[:50]}")
             if parts:
                 return {"lines": parts}
-    # 공급계약은 주요사항보고서 구조화 API 가 사실상 빈 응답(거래소 수시공시)
-    # → 원문 zip 파싱 폴백 (서울전자통신 카드 수준 — 사용자 2026-06-11).
+    # 구조화 API 가 없거나 빈 응답인 공시 → 원문 zip 파싱 폴백 (₩0·LLM 0).
+    # 공급계약은 전용 파서(서울전자통신 카드 수준), 그 외 전 유형은 generic
+    # 라벨 추출 (사용자 2026-06-11 "공급계약뿐 아니라 다른 종류도 다").
     if "공급계약" in t or "단일판매" in t or "단일공급" in t:
         return _extract_contract_document(rcept_no, api_key)
-    return None
+    return _extract_generic_document(rcept_no, api_key)
 
 
 # ── PER 산출 (실적 공시용) ──
@@ -686,8 +741,9 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
             item["detail"] = known[rcept_no]
             continue
 
-        if cat in ("계약", "자금조달", "주주환원", "신규시설투자",
-                   "지분공시", "자산양수도") or "실적" in cat:
+        if cat in ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
+                   "자산양수도", "IR", "회사구조", "소송",
+                   "리스크") or "실적" in cat:
             if corp_code:
                 detail = _extract_detail(report_nm, rcept_no, corp_code, api_key)
                 lines = list(detail.get("lines", [])) if detail else []

@@ -2213,7 +2213,7 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 /* 상단 헤드라인(현재가 large + 기간 수익률 + 거래량) — 레퍼런스 터미널 패턴. */
 .chart-head-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-#chart-live-slot { margin-left: auto; display: flex; align-items: center; gap: 6px;
+#chart-live-slot { display: flex; align-items: center; gap: 6px;
   font-size: 11px; color: var(--fg-soft); white-space: nowrap; }
 .chart-headline { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
   margin: 2px 0; font-variant-numeric: tabular-nums; min-height: 24px; }
