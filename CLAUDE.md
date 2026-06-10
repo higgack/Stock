@@ -422,6 +422,16 @@ pattern to follow:
 - Stale process recovery → `stock-bot-watchdog.service` restarts if main loop hangs 12 min. ⚠️ watchdog 는 180초 polling-hang(getUpdates 부재) + `.busy` marker(분석 중이면 12분까지 skip) 두 체크. **무거운 작업(Screener 5-10분, /ticker)은 반드시 `_busy_acquire()`/`_busy_release()` 로 감싸야** watchdog 가 실행 중 재시작해 작업을 살해하지 않음. 2026-06-01 Screener 가 busy marker 미사용으로 Hospitality & Leisure run 이 watchdog 재시작에 살해됨 → `_run_screener_and_send` 에 busy wrap 추가. 새 long-running 핸들러 추가 시 동일 패턴 필수.
 - Memory pending-entry resolution → `_periodic_auto_resolve` asyncio task, 12 h cycle
 - Daily dashboard regen → `_periodic_dashboard_refresh` asyncio task, 00:01 KST
+- DART 공시 피드 → `dart-feed.timer` 1분(준실시간, 접수→카드 ~1.5분).
+  매분 당일 3p 증분 + 시간당 4일 풀스캔 + 일일 콜버짓 15k 자가감속.
+  enrich = 사이클당 8건(시간당 480) 점진 백필, 실패 쿨다운(30m/2h/12h),
+  성공 항목은 INFO 로그에 회사명(접수번호) 병기. VM 1줄 진단:
+  `cd ~/stock && .venv/bin/python -m bot.dart_feed --selftest`.
+  **카테고리 정책 (사용자 2026-06-11, 하나씩 검토 중 — 임의 변경 금지)**:
+  IR 은 enrich 제외(캘린더 전담, 카드는 제목만·수집/캘린더 공급 유지),
+  지분공시는 대량보유만 enrich(임원소유상황/감사보고서 등은 무료 구조화
+  소스 없음 → 제목만이 정상). 나머지 카테고리 정밀화는 사용자가 순차
+  지시할 때만 변경.
 - Journal log size → `SystemMaxUse=500M` in `journald.conf` (auto-trim)
 - Standard View code updates → `sv-update.service` polls git every 1 min, rsyncs `standardview/scripts` + `standardview/backend` into live tree, restarts backend if changed, defers when daily_generator is running. Same pattern as `stock-bot-update`.
 - Standard View cache rollover → `sv-cache-rollover.service` runs 00:05 KST daily, flushes `macro_news_cache` so the first news-brief call of the new date regenerates from scratch (fixes the 2026-05-21 midnight stub-cache bug).

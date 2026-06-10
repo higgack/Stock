@@ -867,8 +867,10 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
         # 파서 보유 — 사용자 2026-06-11 추가).
         _force = any(k in report_nm for k in
                      ("전환청구권", "주식분할", "주식병합", "액면분할", "액면병합"))
+        # IR 은 enrich 제외(사용자 2026-06-11) — IR 일정은 실적 캘린더가
+        # 전담, 피드 카드는 제목만. 수집·아카이브·캘린더 공급은 그대로.
         if _force or cat in ("계약", "자금조달", "주주환원", "신규시설투자",
-                             "지분공시", "자산양수도", "IR", "회사구조", "소송",
+                             "지분공시", "자산양수도", "회사구조", "소송",
                              "리스크") or "실적" in cat:
             if not corp_code:
                 continue
