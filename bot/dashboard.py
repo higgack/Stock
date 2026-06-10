@@ -11361,9 +11361,10 @@ def _render_sector_movers(movers: dict) -> str:
 
 
 def _render_us_sector_movers(movers: dict) -> str:
-    """🇺🇸 미국 업종 등락 TOP 10 — KR 위젯 미러 (Finviz industry, 사용자
-    2026-06-10). 상한가/하한가 대신 52주 신고가·신저가 링크 (가격제한폭
-    없는 시장의 대응 지표). 데이터 없으면 빈 문자열."""
+    """🇺🇸 미국 섹터 등락 — 메인은 **11 GICS 섹터(간략, Yahoo 식)**, 세부
+    140 업종은 '🏭 업종별 시세'(/usindustry). 사용자 2026-06-10 '메인은
+    간략, 세부 들어가면 디테일'. 상한가/하한가 대신 52주 신고가·신저가
+    링크(가격제한폭 없는 시장). 데이터 없으면 빈 문자열."""
     up = (movers or {}).get("up", [])
     down = (movers or {}).get("down", [])
     if not up and not down:
@@ -11384,16 +11385,16 @@ def _render_us_sector_movers(movers: dict) -> str:
                 f'<table class="sm-tbl">{body}</table></div>')
 
     ts = _html.escape((movers or {}).get("ts", ""))
-    src = _html.escape((movers or {}).get("source", "Finviz"))
+    src = _html.escape((movers or {}).get("source", "yfinance"))
     _lnk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     return (
         '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
-        '<h2>🇺🇸 미국 업종 등락 TOP 10</h2>'
-        f'<a href="usindustry" style="{_lnk}">🏭 업종별 시세</a>'
+        '<h2>🇺🇸 미국 섹터 등락</h2>'
+        f'<a href="usindustry" style="{_lnk}">🏭 업종별 시세(세부)</a>'
         f'<a href="ushighlow" style="{_lnk}">📈 신고가·신저가</a>'
         f'<span class="ts" style="margin-left:auto">{ts} · {src}</span></div>'
         '<div class="sm-wrap">'
-        + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
+        + _col("🔺 상승 섹터", up) + _col("🔻 하락 섹터", down)
         + '</div>'
     )
 
