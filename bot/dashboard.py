@@ -1992,7 +1992,7 @@ def _render_index(records: list[dict]) -> str:
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="daily_byte.html">📊 Daily Byte</a>'
         ''
-        f' · <a href="trade/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>'
+        f' · <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>'
     )
 
     # Market filter buttons (show only if >1 market present)
@@ -2053,6 +2053,11 @@ def _render_index(records: list[dict]) -> str:
 
 
 _DETAIL_CSS = _BASE_CSS + """
+.q-dot { display:inline-block; width:9px; height:9px; border-radius:50%;
+  margin-left:8px; vertical-align:middle; }
+.q-dot-load { background:#e2574c; animation:qpulse 1s ease-in-out infinite; }
+.q-dot-done { background:#26a69a; }
+@keyframes qpulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
 .back { color: var(--fg-soft); font-size: 13px; }
 .back:hover { color: var(--accent); }
 .title-row {
@@ -4061,8 +4066,9 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>
 <div class="si-quote-status" style="margin:-8px 0 16px;font-size:11px;color:var(--fg-soft)">
   <span id="q-badge" style="font-weight:600"></span>
-  <button id="q-refresh" style="background:none;border:none;cursor:pointer;font-size:14px;margin-left:8px;padding:2px 4px;vertical-align:middle" title="데이터 새로고침">🔄</button>
-  <span class="si-quote-note">가격연동 지표(현재가·시총·PER·선행PER·PBR·PSR·EV/EBITDA·배당·베타·EPS·BPS·52주·이평·컨센서스)는 라이브 · 재무제표·실적·주주·수급·공시·리서치·뉴스는 최신 공시/일 단위 갱신 · 차트는 분석 시점 저장본</span>
+  <span id="q-dot" class="q-dot q-dot-load" title="데이터 로딩 중…"></span>
+  <button id="q-refresh" style="background:none;border:none;cursor:pointer;font-size:14px;margin-left:2px;padding:2px 4px;vertical-align:middle" title="데이터 새로고침">🔄</button>
+  <span class="si-quote-note">🔴 로딩 중 / 🟢 전체 로딩 완료 · 가격연동 지표(현재가·시총·PER·선행PER·PBR·PSR·EV/EBITDA·배당·베타·EPS·BPS·52주·이평·컨센서스)는 라이브 · 재무제표·실적·주주·수급·공시·리서치·뉴스는 최신 공시/일 단위 갱신 · 차트는 분석 시점 저장본</span>
 </div>"""
 
     # ── market detection — pick the right market-specific sub-dict ──
@@ -5814,15 +5820,25 @@ _QUOTE_JS = r"""
     }
     if (lastFmt) applyFmt(lastFmt);
   }
+  // 로딩 상태등 (사용자 2026-06-10): 빨강=로딩 중, 초록=전체(가격+패널) 신선
+  // 로딩 완료. 가격(LIGHT)과 패널(FULL, stale 면 백그라운드 force 까지) 둘 다
+  // 끝나야 초록 → 사용자가 새로고침 안 눌러도 완료 시점을 안다.
+  var lightDone = false, fullDone = false;
+  function setDot(){
+    var d = document.getElementById('q-dot'); if (!d) return;
+    if (lightDone && fullDone){ d.className = 'q-dot q-dot-done'; d.title = '전체 로딩 완료'; }
+    else { d.className = 'q-dot q-dot-load'; d.title = '데이터 로딩 중…'; }
+  }
   // LIGHT — fast, always fresh
   fetch(base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER), {cache:'no-store'})
     .then(function(r){ return r.json(); })
     .then(function(j){
-      if (!j || !j.ok || !j.quote){ badge(null, false); return; }
+      if (!j || !j.ok || !j.quote){ badge(null, false); lightDone = true; setDot(); return; }
       lastFmt = j.quote.fmt;
       applyFmt(j.quote.fmt); applyPos(j.quote.pos); badge(j.quote.meta, true);
+      lightDone = true; setDot();
     })
-    .catch(function(){ badge(null, false); });
+    .catch(function(){ badge(null, false); lightDone = true; setDot(); });
   // FULL — may return stale cache (instant) then background-refresh
   var fullUrl = base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER) + '&full=1';
   fetch(fullUrl, {cache:'no-store'})
@@ -5830,30 +5846,33 @@ _QUOTE_JS = r"""
     .then(function(j){
       applyFull(j);
       if (j && j.stale){
+        // stale → 백그라운드 force 까지 끝나야 fullDone(초록).
         setTimeout(function(){
           fetch(fullUrl + '&force=1', {cache:'no-store'})
             .then(function(r){ return r.json(); })
-            .then(function(j2){ applyFull(j2); })
-            .catch(function(){});
+            .then(function(j2){ applyFull(j2); fullDone = true; setDot(); })
+            .catch(function(){ fullDone = true; setDot(); });
         }, 2000);
-      }
+      } else { fullDone = true; setDot(); }
     })
-    .catch(function(){});
+    .catch(function(){ fullDone = true; setDot(); });
   // Refresh button
   var rb = document.getElementById('q-refresh');
   if (rb) rb.addEventListener('click', function(){
     rb.textContent = '⏳'; rb.disabled = true;
+    fullDone = false; lightDone = false; setDot();
     fetch(fullUrl + '&force=1', {cache:'no-store'})
       .then(function(r){ return r.json(); })
-      .then(function(j){ applyFull(j); rb.textContent = '🔄'; rb.disabled = false; })
-      .catch(function(){ rb.textContent = '🔄'; rb.disabled = false; });
+      .then(function(j){ applyFull(j); rb.textContent = '🔄'; rb.disabled = false; fullDone = true; setDot(); })
+      .catch(function(){ rb.textContent = '🔄'; rb.disabled = false; fullDone = true; setDot(); });
     fetch(base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER), {cache:'no-store'})
       .then(function(r){ return r.json(); })
       .then(function(j){
-        if (!j || !j.ok || !j.quote) return;
+        if (!j || !j.ok || !j.quote){ lightDone = true; setDot(); return; }
         lastFmt = j.quote.fmt;
         applyFmt(j.quote.fmt); applyPos(j.quote.pos); badge(j.quote.meta, true);
-      }).catch(function(){});
+        lightDone = true; setDot();
+      }).catch(function(){ lightDone = true; setDot(); });
   });
 })();
 """
@@ -6382,7 +6401,6 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 NOAH 종목분석</a>
     · <a href="screener_domains.html">🗂️ 도메인 목록</a>
-    · <a href="paper.html">🔔 워치리스트</a>
   </div>
   <h1>📊 Screener — Archive</h1>
   <p class="sub">Bottleneck Screener (테마별 6-18M thesis) + 조건부 스크리너 (정량 필터, ₩0) 통합</p>
@@ -11637,7 +11655,7 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="screener.html">📊 Screener</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
-    &middot; <a href="trade/" target="_blank" rel="noopener">{_KR_FLAG_SVG} 한국 수출입</a>
+    &middot; <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>
     &nbsp;|&nbsp;
     <a href="realestate.html">🏠 부동산</a>
   </div>
