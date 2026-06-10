@@ -8928,21 +8928,17 @@ def _render_blog_page(runs: list[dict]) -> str:
                 ts_html = _html.escape(ts_clock)
                 title = _html.escape(r.get("title") or "블로그 글")
                 link = _html.escape(r.get("link") or "")
-                summary_raw = (r.get("summary") or "").strip()
                 desc_raw = (r.get("desc") or "").strip()
-                summary_html = _html.escape(summary_raw).replace("\n", "<br>")
                 desc_html = _html.escape(desc_raw).replace("\n", "<br>")
+                # 전문 먼저, 원문 링크는 맨 밑 (요약 미표시 — 사용자 2026-06-11)
                 body_parts = []
-                if summary_html:
-                    body_parts.append(
-                        f'<div class="analysis-b" data-section="summary">{summary_html}</div>')
-                if link:
-                    body_parts.append(
-                        f'<div style="margin:8px 0"><a href="{link}" target="_blank" rel="noopener">🔗 원문 보기</a></div>')
                 if desc_html:
                     body_parts.append(
-                        f'<div class="analysis-b" data-section="desc" style="color:var(--fg-soft);font-size:13px">{desc_html}</div>')
-                plain = (title + "\n" + summary_raw + "\n" + desc_raw)
+                        f'<div class="analysis-b" data-section="desc">{desc_html}</div>')
+                if link:
+                    body_parts.append(
+                        f'<div style="margin:10px 0 2px"><a href="{link}" target="_blank" rel="noopener">🔗 원문 보기</a></div>')
+                plain = (title + "\n" + desc_raw)
                 card_lines: list[dict] = []
                 for ln in plain.splitlines():
                     s = ln.strip()
@@ -8967,6 +8963,7 @@ def _render_blog_page(runs: list[dict]) -> str:
     <summary class="card-h">
       <span class="card-toggle">▸</span>
       <span class="domain">📝 {title} ({ts_html})</span>
+      <button class="del-btn" type="button" title="이 글 삭제">🗑️</button>
     </summary>
     <div class="card-body">
       <div class="analysis-sec">{''.join(body_parts)}</div>
@@ -8977,7 +8974,9 @@ def _render_blog_page(runs: list[dict]) -> str:
         parts.append('</div></details>')  # close month
 
     parts.append("</div>")
-    parts.append(_DAILY_BYTE_JS)
+    parts.append(_DAILY_BYTE_JS
+                 .replace("api/daily_byte_delete", "api/blog_delete")
+                 .replace("Daily Byte 기록을 삭제할까요?", "블로그 글을 삭제할까요?"))
     return "".join(parts)
 
 
