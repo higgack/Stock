@@ -153,10 +153,87 @@ def fetch_groups() -> dict:
             log.warning("finviz: groups HTML fetched but parsed 0 rows "
                         "(markup change?) — head: %r", html[:200])
     if not out["groups"]:
+        # 2차: S&P500 을 GICS 세부업종으로 묶어 자체 산출 (~100 업종).
+        out = _groups_fallback_computed()
+    if not out.get("groups"):
+        # 3차(최후): 11 섹터 ETF.
         out = _groups_fallback_etf()
     if out.get("groups"):
         out["groups"].sort(key=lambda g: g["pct"], reverse=True)
         _cache_write("groups.json", out)
+    return out
+
+
+def _sp500_industry_map() -> dict:
+    """{ticker: GICS Sub-Industry} — 위키피디아 S&P500 표(universe 와 동일
+    출처)에서 업종까지 파싱. 7일 캐시. yfinance .info 호출 0(표 1콜)."""
+    c = _cached("sp500_industry.json", ttl=7 * 86400)
+    if c:
+        return c
+    out: dict = {}
+    try:
+        import pandas as pd
+        tables = pd.read_html(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+            attrs={"id": "constituents"})
+        df = tables[0]
+        for _, row in df.iterrows():
+            sym = str(row.get("Symbol", "")).replace(".", "-").strip()
+            ind = str(row.get("GICS Sub-Industry", "")).strip()
+            if sym and ind and ind.lower() != "nan":
+                out[sym] = ind
+    except Exception as exc:
+        log.warning("finviz: S&P500 industry map fetch failed: %s", exc)
+    if out:
+        _cache_write("sp500_industry.json", out)
+    return out
+
+
+def _groups_fallback_computed() -> dict:
+    """2차 폴백 (사용자 2026-06-10 — Finviz 또 깨져도 11개로 추락 방지) —
+    S&P500 을 GICS Sub-Industry 로 묶어 당일 등락 평균 산출. ~100 업종(11
+    ETF 대비 ~9x granularity), **외부 사이트 의존 0**(위키 표 + yfinance
+    벌크 — 둘 다 이미 쓰는 소스). 30분 캐시(벌크 다운로드 무거워)."""
+    c = _cached("groups_computed.json", ttl=30 * 60)
+    if c is not None:
+        return c
+    out: dict = {"groups": [], "ts": _now_label(),
+                 "source": "S&P500 업종 산출(yfinance)"}
+    imap = _sp500_industry_map()
+    if not imap:
+        return out
+    try:
+        import yfinance as yf
+        from collections import defaultdict
+        tickers = sorted(imap.keys())
+        df = yf.download(tickers, period="2d", interval="1d",
+                         group_by="ticker", threads=True,
+                         progress=False, auto_adjust=False)
+        if df is None or df.empty:
+            return out
+        buckets: dict[str, list] = defaultdict(list)
+        for tk in tickers:
+            try:
+                if tk not in df.columns.get_level_values(0):
+                    continue
+                closes = df[tk]["Close"].dropna()
+                if len(closes) < 2:
+                    continue
+                last, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
+                if prev > 0:
+                    buckets[imap[tk]].append((last - prev) / prev * 100)
+            except Exception:
+                continue
+        for ind, pcts in buckets.items():
+            if len(pcts) >= 3:   # 1-2 종목 업종은 평균이 노이즈 — 제외
+                out["groups"].append(
+                    {"name": ind, "pct": round(sum(pcts) / len(pcts), 2)})
+        log.info("finviz: computed industry fallback — %d industries from %d stocks",
+                 len(out["groups"]), len(tickers))
+        if out["groups"]:
+            _cache_write("groups_computed.json", out)
+    except Exception as exc:
+        log.warning("finviz: computed industry fallback failed: %s", exc)
     return out
 
 
