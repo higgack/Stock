@@ -314,9 +314,107 @@ def fetch_sectors() -> dict:
     return out
 
 
+# ── L3 업종 (메인 위젯 — 사용자 2026-06-10 'L3 48개 버전, Finviz 세부는
+# 개별 페이지'). 우리 스크리너 L3 분류 ~48개를 Finviz 144 업종명 키워드로
+# 묶어 일별 등락 평균. 추가 fetch 0(이미 받은 144 그룹 재사용), 실제 Finviz
+# 데이터 기반. 키워드는 Finviz 업종명(소문자) 부분일치 — 매칭 0이면 그 L3
+# 생략(graceful). 한국어 표시명. ──
+_L3_BUCKETS: list[tuple[str, list[str]]] = [
+    # Industrials
+    ("방산·우주", ["aerospace", "defense"]),
+    ("항공", ["airlines"]),
+    ("건축자재·제품", ["building products", "building materials"]),
+    ("전기장비", ["electrical equipment"]),
+    ("기계", ["machinery", "tools & accessories", "industrial distribution"]),
+    ("운송·물류", ["trucking", "railroad", "integrated freight", "marine shipping"]),
+    ("환경·폐기물", ["waste management", "pollution"]),
+    ("산업서비스", ["specialty business services", "consulting", "staffing",
+                "security & protection", "rental & leasing"]),
+    # Health Care
+    ("제약·바이오", ["drug manufacturers", "biotechnology", "pharmaceutical"]),
+    ("의료기기", ["medical devices", "medical instruments", "diagnostics & research"]),
+    ("의료서비스", ["healthcare plans", "medical care facilities",
+                "health information"]),
+    # Financials
+    ("은행", ["banks"]),
+    ("자본시장·자산운용", ["capital markets", "asset management", "financial data"]),
+    ("소비자금융", ["credit services"]),
+    ("보험", ["insurance"]),
+    # Consumer Discretionary
+    ("자동차", ["auto manufacturers", "auto parts", "recreational vehicles"]),
+    ("의류·럭셔리", ["apparel", "luxury goods", "footwear"]),
+    ("호텔·레저", ["restaurants", "lodging", "resorts & casinos",
+              "travel services", "leisure"]),
+    ("소매·유통", ["retail", "department stores"]),
+    ("주택건설", ["residential construction"]),
+    ("교육", ["education"]),
+    # Consumer Staples
+    ("음료", ["beverages"]),
+    ("식품소매", ["grocery", "food distribution"]),
+    ("식품·농산물", ["packaged foods", "farm products", "confectioner"]),
+    ("생활·개인용품", ["household & personal products"]),
+    ("담배", ["tobacco"]),
+    # Energy
+    ("석유·가스", ["oil & gas e&p", "oil & gas integrated", "oil & gas midstream",
+              "oil & gas refining"]),
+    ("에너지장비·서비스", ["oil & gas equipment", "oil & gas drilling",
+                   "thermal coal", "uranium"]),
+    # Basic Materials
+    ("화학", ["chemicals"]),
+    ("건자재·골재", ["building materials"]),
+    ("포장·용기", ["packaging & containers"]),
+    ("금속·광업", ["steel", "aluminum", "copper", "gold", "silver", "other industrial metals",
+              "other precious metals", "coking coal"]),
+    ("제지·임업", ["lumber", "paper & paper products"]),
+    # Real Estate
+    ("부동산서비스", ["real estate services", "real estate - development",
+                "real estate - diversified"]),
+    ("리츠(REITs)", ["reit"]),
+    # Utilities
+    ("전력유틸리티", ["utilities - regulated electric", "utilities - diversified"]),
+    ("신재생·IPP", ["utilities - renewable", "utilities - independent power"]),
+    ("가스·수도", ["utilities - regulated gas", "utilities - regulated water"]),
+    # Communication Services
+    ("인터랙티브미디어", ["internet content", "electronic gaming"]),
+    ("엔터테인먼트", ["entertainment"]),
+    ("통신서비스", ["telecom services"]),
+    ("광고·출판", ["advertising agencies", "publishing", "broadcasting"]),
+    # Technology
+    ("소프트웨어", ["software"]),
+    ("하드웨어·저장장치", ["computer hardware", "consumer electronics",
+                  "communication equipment", "electronic components"]),
+    ("반도체", ["semiconductor"]),
+    ("IT서비스·핀테크", ["information technology services", "fintech"]),
+]
+
+
+def top_l3_movers(top_n: int = 10) -> dict:
+    """메인 위젯용 — 우리 L3 ~48 업종 상/하위(부호 분리). Finviz 144 업종을
+    _L3_BUCKETS 키워드로 묶어 일별 등락 평균. 세부 144는 /usindustry(top_
+    movers→Finviz). 매칭 0인 L3 는 생략(graceful), 추가 fetch 0."""
+    data = fetch_groups()
+    groups = [g for g in data.get("groups", [])
+              if g.get("pct") is not None and g.get("name")]
+    if not groups:
+        return {"up": [], "down": [], "ts": data.get("ts", ""),
+                "source": data.get("source", "")}
+    buckets: list[dict] = []
+    for disp, kws in _L3_BUCKETS:
+        pcts = [g["pct"] for g in groups
+                if any(kw in g["name"].lower() for kw in kws)]
+        if pcts:
+            buckets.append({"name": disp, "pct": round(sum(pcts) / len(pcts), 2),
+                            "n": len(pcts)})
+    ups = [b for b in buckets if b["pct"] > 0]
+    downs = [b for b in buckets if b["pct"] < 0]
+    return {"up": sorted(ups, key=lambda b: b["pct"], reverse=True)[:top_n],
+            "down": sorted(downs, key=lambda b: b["pct"])[:top_n],
+            "ts": data.get("ts", ""), "source": data.get("source", "")}
+
+
 def top_sector_movers(top_n: int = 10) -> dict:
-    """메인 위젯용 — 11 GICS 섹터 상/하위(부호 분리). top_movers 와 동일
-    shape, 데이터만 섹터(간략). 세부 업종은 /usindustry(top_movers→Finviz)."""
+    """11 GICS 섹터 상/하위(부호 분리). top_movers 와 동일 shape, 데이터만
+    섹터(간략). (미사용 — 메인은 top_l3_movers, 세부는 top_movers.)"""
     data = fetch_sectors()
     gs = [g for g in data.get("groups", []) if g.get("pct") is not None]
     ups = [g for g in gs if g["pct"] > 0]

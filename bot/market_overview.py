@@ -771,13 +771,12 @@ def _fetch_sector_movers_safe() -> dict:
 
 
 def _fetch_us_sector_movers_safe() -> dict:
-    """미국 업종 등락 — 메인 위젯은 **업종(industry) 단위 Top 10 상승/하락**
-    (사용자 2026-06-10 'L3 48개 Top10/Top10 메인에'). Finviz 가 144 업종을
-    주므로 그 중 상·하위 10씩(L3 48 보다 세밀). 세부 전체 144는 /usindustry
-    페이지 그대로(Finviz). top_sector_movers(11 GICS)에서 되돌림."""
+    """미국 업종 등락 — 메인 위젯은 **우리 L3 ~48 업종 단위**(사용자 2026-06-10
+    'L3 버전은 메인, Finviz 세밀 144는 개별 페이지'). Finviz 144 를 L3 버킷
+    으로 묶어 평균. 세부 전체 144는 /usindustry 페이지(top_movers→Finviz)."""
     try:
-        from bot.finviz_client import top_movers
-        return top_movers(top_n=10)
+        from bot.finviz_client import top_l3_movers
+        return top_l3_movers(top_n=10)
     except Exception as exc:
         log.warning("us sector movers fetch error: %s", exc)
         return {"up": [], "down": [], "ts": ""}
