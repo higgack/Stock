@@ -197,10 +197,12 @@ text-overflow:ellipsis}
 .cal-entry .hour{color:var(--muted);margin-left:2px}
 .cal-more{color:var(--muted);font-size:11px;margin-top:2px;cursor:pointer}
 .cal-more:hover{color:var(--accent);text-decoration:underline}
-/* 종목명 = 일반 텍스트색 (가독성 — 사용자 2026-06-10. 옛 teal/blue 는 라이트
-   테마에서 저대비. 시장 구분은 한국/미국 탭이 이미 담당하므로 색 정보 불필요) */
-.cal-entry.kr .sym{color:var(--text)}
-.cal-entry.us .sym{color:var(--text)}
+/* 종목명 색 — 흰색(var(--text))은 가독성 별로(사용자 2026-06-10) → 차분한
+   파랑으로(라이트/다크 모두 대비 확보, 링크임을 시사). 시장 구분은 탭이 담당. */
+.cal-entry.kr .sym{color:#6ea8fe}
+.cal-entry.us .sym{color:#6ea8fe}
+[data-theme="light"] .cal-entry.kr .sym{color:#1d6fe0}
+[data-theme="light"] .cal-entry.us .sym{color:#1d6fe0}
 .cal-entry a:hover .sym{color:var(--accent);text-decoration:underline}
 .cal-cell.has-extra .cal-day{cursor:pointer}
 .cal-cell.has-extra .cal-day:hover .d{text-decoration:underline}
