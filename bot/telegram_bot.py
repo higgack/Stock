@@ -738,6 +738,15 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
 
     # Peek the daily cache so the progress message can be honest about
     # whether the user is going to wait 1-3 minutes or get an instant result.
+    await _analyze_ticker_and_post(ctx.bot, post.chat.id, raw)
+
+
+async def _analyze_ticker_and_post(bot, chat_id: int, raw: str) -> None:
+    """Resolved-ticker 분석 본체 — 진행 메시지 → 분석 subprocess → 요약 edit
+    (+ 📋 전체 리포트 버튼) → 페이퍼 auto-signal. on_channel_post 의 티커
+    분석 블록을 그대로 분리한 것(동작 동일) — 대시보드 '분석' 버튼 폴러
+    (_periodic_dashboard_requests)와 공유하기 위함. ``raw`` 는 TICKER_RE 를
+    통과한 resolved 티커여야 한다."""
     today = _date.today().isoformat()
     is_cached = _cache.get(raw, today) is not None
     if is_cached:
@@ -750,8 +759,8 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     # Immediately post a progress message to the channel
-    progress = await ctx.bot.send_message(
-        chat_id=post.chat.id,
+    progress = await bot.send_message(
+        chat_id=chat_id,
         text=progress_text,
         parse_mode=ParseMode.HTML,
     )
@@ -762,7 +771,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     # there's a race window before the worker thread picks the job up
     # where auto-update / watchdog could see no marker and restart us
     # mid-analysis. Writing it here on the asyncio loop closes that gap.
-    _recovery.write(post.chat.id, progress.message_id, raw)
+    _recovery.write(chat_id, progress.message_id, raw)
     await _busy_acquire()
     try:
         try:
@@ -772,13 +781,13 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             log.warning("analysis timed out for %s after %ss", raw, ANALYSIS_TIMEOUT_SEC)
             usage_tracker.log_failure(raw, "10분 타임아웃")
             try:
-                await ctx.bot.edit_message_text(
+                await bot.edit_message_text(
                     text=(
                         f"❌ <b>{_html.escape(raw)}</b> 분석 실패: 10분 타임아웃\n\n"
                         f"분석이 강제 중단되어 추가 토큰 소비가 멈춥니다. "
                         f"잠시 후 다시 시도하거나 다른 종목으로 시도해주세요."
                     ),
-                    chat_id=post.chat.id,
+                    chat_id=chat_id,
                     message_id=progress.message_id,
                     parse_mode=ParseMode.HTML,
                 )
@@ -791,9 +800,9 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         except Exception as exc:
             log.exception("analysis failed for %s", raw)
             usage_tracker.log_failure(raw, str(exc))
-            await ctx.bot.edit_message_text(
+            await bot.edit_message_text(
                 text=_format_failure(raw, exc),
-                chat_id=post.chat.id,
+                chat_id=chat_id,
                 message_id=progress.message_id,
                 parse_mode=ParseMode.HTML,
             )
@@ -809,9 +818,9 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                 callback_data=f"full:{raw}:{today}",
             )
         ]])
-        await ctx.bot.edit_message_text(
+        await bot.edit_message_text(
             text=_md_to_html(summary),
-            chat_id=post.chat.id,
+            chat_id=chat_id,
             message_id=progress.message_id,
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard,
@@ -826,7 +835,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
             _note = _paper_on_analysis(raw, _r.group(1).strip() if _r else "",
                                        summary or "", full or "")
             if _note:
-                await ctx.bot.send_message(chat_id=post.chat.id, text=_note)
+                await bot.send_message(chat_id=chat_id, text=_note)
                 _regen_paper()
         except Exception as _pexc:
             log.debug("paper auto-signal skipped for %s: %s", raw, _pexc)
@@ -1117,7 +1126,7 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 <b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·워치·레딧·Daily Byte·부동산·청약·수출입)는 🌍Main nav 에서 (바로 가기)
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(한국네이버목표가/원문+미국TP) · 관심종목(시총·PER·등락·정렬/필터/순서) · 📋DART공시 · 종목검색 · 5분 갱신
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
- 🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️
+ 🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️ · <b>분석버튼</b>(대시보드에서 /티커 실행→채널 게시)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/index.html
  💼 <b>자산</b> — 뱅샐 전계좌·증권사·손익·NOAH판정 오버레이
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
@@ -3039,6 +3048,82 @@ async def _periodic_market_refresh() -> None:
             log.exception("periodic market.html refresh failed")
 
 
+async def _periodic_dashboard_requests(application) -> None:
+    """대시보드 '분석/실행' 버튼 요청 스풀 폴러 (5초 간격).
+
+    dashboard_server(별도 프로세스)가 ~/.tradingagents/dashboard_requests/
+    에 떨어뜨린 요청을 집어 **텔레그램 채널 명령과 동일 경로**로 실행 —
+    결과는 채널 + 대시보드 아카이브에 똑같이 게시 (파이프라인 중복 0):
+      • analyze  → _analyze_ticker_and_post (채널 /TICKER 와 동일)
+      • screener → _resolve_screener_target + _run_screener_and_send
+      • screen   → _handle_screen (조건부, ₩0)
+    CHANNEL_CHAT_IDS 미설정이면 결과를 게시할 곳이 없으므로 요청을 소비만
+    하고 버린다(스풀 stale 폐기가 어차피 30분에 정리). 요청별 try/except —
+    한 요청 실패가 폴러를 죽이지 않는다."""
+    from bot.dashboard_requests import take_all
+    while True:
+        await asyncio.sleep(5)
+        try:
+            reqs = await asyncio.to_thread(take_all)
+        except Exception:
+            log.exception("dashboard request poll failed")
+            continue
+        if not reqs:
+            continue
+        if not CHANNEL_CHAT_IDS:
+            log.warning("dashboard requests dropped — CHANNEL_CHAT_IDS unset: %s", reqs)
+            continue
+        chat_id = next(iter(CHANNEL_CHAT_IDS))
+        bot = application.bot
+        for req in reqs:
+            kind = req.get("kind")
+            query = (req.get("query") or "").strip()
+            log.info("dashboard request: kind=%s query=%r", kind, query)
+            try:
+                if kind == "analyze":
+                    raw = query.upper()
+                    if not TICKER_RE.match(raw):
+                        log.warning("dashboard analyze: bad ticker %r", raw)
+                        continue
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🌐 대시보드 요청 — <code>/{_html.escape(raw)}</code> 분석",
+                        parse_mode=ParseMode.HTML,
+                    )
+                    await _analyze_ticker_and_post(bot, chat_id, raw)
+                elif kind == "screener":
+                    async def _send(t: str) -> None:
+                        await bot.send_message(
+                            chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                        )
+                    await _send(
+                        "🌐 대시보드 요청 — Bottleneck Screener"
+                        + (f" <code>{_html.escape(query)}</code>" if query else " (기본)")
+                    )
+                    resolved = await _resolve_screener_target(_send, query.lower())
+                    if resolved.get("mode") == "error":
+                        continue
+                    await _run_screener_and_send(
+                        send=_send,
+                        theme=resolved.get("theme"),
+                        cache_key=resolved.get("cache_key"),
+                        force_fresh=resolved.get("force_fresh", False),
+                    )
+                elif kind == "screen":
+                    async def _send2(t: str) -> None:
+                        await bot.send_message(
+                            chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                        )
+                    await _send2(
+                        f"🌐 대시보드 요청 — 조건부 스크리너 <code>{_html.escape(query)}</code>"
+                    )
+                    await _handle_screen(query.split(), _send2)
+            except Exception:
+                log.exception("dashboard request failed: %s", req)
+
+
 async def _periodic_dashboard_refresh(application=None) -> None:
     """Regenerate dashboard index.html ~1 min after each KST midnight.
 
@@ -3382,6 +3467,10 @@ async def _on_startup(application) -> None:
     application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh(application))
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
     application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
+    # 대시보드 '분석/실행' 버튼 요청 스풀 폴러 (5초) — dashboard_server 가
+    # 떨어뜨린 요청을 채널 명령과 동일 경로로 실행.
+    application._dashboard_requests_task = asyncio.create_task(
+        _periodic_dashboard_requests(application))
 
     orphan = _recovery.read()
     if orphan is None:
