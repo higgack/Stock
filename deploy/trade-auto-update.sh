@@ -10,7 +10,9 @@
 set -euo pipefail
 
 REPO="${TRADE_REPO:-/home/higgack/stock-trade}"
-BRANCH="${TRADE_BRANCH:-claude/export-import-dashboard-zQsi2}"
+# 2026-06-11 통합: trade 코드가 메인 deploy 브랜치(xqYf7)로 합쳐짐 —
+# 이제 두 봇이 같은 브랜치를 추적(한 PR 플로우). 옛 zQsi2 는 은퇴.
+BRANCH="${TRADE_BRANCH:-claude/stock-trading-automation-xqYf7}"
 
 cd "$REPO"
 
@@ -45,49 +47,31 @@ git fetch --quiet origin "$BRANCH"
 LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse "origin/${BRANCH}")
 
-# VM 직접 push edge case (auto-update.sh 와 동일 패턴, 2026-05-21).
-# LOCAL==REMOTE 인데 봇이 commit 보다 먼저 실행됐으면 재시작.
 if [ "$LOCAL" = "$REMOTE" ]; then
-    HEAD_TS=$(git log -1 --format=%ct HEAD 2>/dev/null || echo "")
-    BOT_START_STR=$(systemctl show trade-bot --property=ExecMainStartTimestamp --value 2>/dev/null)
-    BOT_TS=""
-    if [ -n "$BOT_START_STR" ]; then
-        BOT_TS=$(date -d "$BOT_START_STR" +%s 2>/dev/null || echo "")
-    fi
-    if [ -n "$HEAD_TS" ] && [ -n "$BOT_TS" ] && [ "$HEAD_TS" -gt "$BOT_TS" ]; then
-        echo "trade-bot-update: LOCAL==REMOTE but HEAD newer than bot start — restarting"
-        # VM 직접 push 라 pull range (old → new) 가 없으므로 HEAD SHA 단일
-        # 표기. 일반 pull 배포와 동일한 '배포 시작/완료 + 커밋 subject' 형식
-        # (auto-update.sh 와 동일 패턴).
-        HEAD_SHORT="$(git rev-parse --short HEAD)"
-        SUBJECT="$(git log -1 --format='%s' HEAD 2>/dev/null || echo '')"
-        start_msg="🚀 <b>배포 시작</b>: <code>${HEAD_SHORT}</code> (VM 직접 push)"
-        if [ -n "$SUBJECT" ]; then
-            start_msg="${start_msg}"$'\n'"${SUBJECT}"
-        fi
-        notify "$start_msg"
-        if sudo /bin/systemctl restart trade-bot; then
-            sleep 3
-            if systemctl is-active --quiet trade-bot; then
-                done_msg="✅ <b>배포 완료</b>: <code>${HEAD_SHORT}</code> (VM 직접 push)"
-                if [ -n "$SUBJECT" ]; then
-                    done_msg="${done_msg}"$'\n'"${SUBJECT}"
-                fi
-                notify "$done_msg"
-            else
-                notify "❌ <b>배포 실패</b>: 재시작 후 active 아님 (${HEAD_SHORT})"
-            fi
-        else
-            notify "❌ <b>배포 실패</b>: systemctl restart (${HEAD_SHORT})"
-        fi
-        exit 0
-    fi
     exit 0
 fi
 
 LOCAL_SHORT="${LOCAL:0:7}"
 REMOTE_SHORT="${REMOTE:0:7}"
 SUBJECT="$(git log -1 --format='%s' "$REMOTE" 2>/dev/null || echo '')"
+
+# Scope guard — restart trade-bot only when commits actually touch
+# its runtime files. Doc-only / stock-bot / shared-infra updates pull
+# silently but ALWAYS send a 📝 notification to the trade channel so
+# the operator can track every new commit landing on the host.
+CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE")
+TRADE_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^(trade/|deploy/(trade-auto-update\.sh|trade-watchdog\.sh|trade-bot[^/]*\.(service|timer))$)' || true)
+if [ -z "$TRADE_RELEVANT" ]; then
+    echo "trade-bot-update: non-trade-bot changes — pull + 📝 notify (no restart)"
+    git reset --hard "origin/${BRANCH}" --quiet
+    note_msg="📝 <b>운영 업데이트</b>: <code>${LOCAL_SHORT}</code> → <code>${REMOTE_SHORT}</code>"
+    if [ -n "$SUBJECT" ]; then
+        note_msg="${note_msg}"$'\n'"${SUBJECT}"
+    fi
+    note_msg="${note_msg}"$'\n'"<i>재시작 불필요 — doc / 다른 서브프로젝트 변경</i>"
+    notify "$note_msg"
+    exit 0
+fi
 
 echo "trade-bot-update: pulling ${LOCAL_SHORT} → ${REMOTE_SHORT}"
 
@@ -102,9 +86,49 @@ if ! git reset --hard "origin/${BRANCH}" --quiet; then
     exit 1
 fi
 
+# Auto-install any new / changed systemd unit files. install-trade-units.sh
+# is idempotent — copies what differs, daemon-reloads, enables new timers,
+# restarts running services with changed unit files. Requires a sudoers
+# entry (one-time, see trade/README.md); gracefully degrades when missing.
+INSTALL_NOTE=""
+# install-trade-units.sh itself is in the trigger set so that updating
+# the installer (e.g. adding a new sudoers line or auto-enable rule)
+# applies on the next deploy tick without needing to also touch a unit
+# file.
+UNIT_FILES_CHANGED=$(echo "$CHANGED_FILES" | grep -E '^deploy/(trade-bot[^/]*\.(service|timer)|install-trade-units\.sh)$' || true)
+if [ -n "$UNIT_FILES_CHANGED" ]; then
+    if INSTALL_OUTPUT=$(sudo -n "$REPO/deploy/install-trade-units.sh" 2>&1); then
+        echo "$INSTALL_OUTPUT"
+        SUMMARY=$(echo "$INSTALL_OUTPUT" | grep -oE 'SUMMARY .*$' | head -1)
+        if [ -n "$SUMMARY" ]; then
+            INSTALL_NOTE=$'\n'"<i>+ systemd: ${SUMMARY}</i>"
+        else
+            INSTALL_NOTE=$'\n'"<i>+ systemd: 자동 설치 완료</i>"
+        fi
+    else
+        echo "trade-bot-update: install-trade-units.sh failed"
+        INSTALL_NOTE=$'\n'"<i>⚠️ systemd 자동 설치 권한 없음 — sudoers에 install-trade-units.sh 추가</i>"
+    fi
+fi
+
 if ! sudo /bin/systemctl restart trade-bot; then
     notify "❌ <b>배포 실패</b>: systemctl restart (${REMOTE_SHORT})"
     exit 1
+fi
+
+# Best-effort: also restart the dashboard server when the change set
+# touches its code. Requires a sudoers entry; logs and continues if
+# the entry is missing so the main deploy doesn't fail because of it.
+DASHBOARD_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/dashboard(_server)?\.py$|^deploy/trade-bot-dashboard.*\.(service|timer)$' || true)
+DASH_NOTE=""
+if [ -n "$DASHBOARD_RELEVANT" ]; then
+    if sudo -n /bin/systemctl restart trade-bot-dashboard 2>/dev/null; then
+        echo "trade-bot-update: also restarted trade-bot-dashboard"
+        DASH_NOTE=$'\n'"<i>+ trade-bot-dashboard 재시작</i>"
+    else
+        echo "trade-bot-update: trade-bot-dashboard restart skipped (no sudoers entry)"
+        DASH_NOTE=$'\n'"<i>⚠️ dashboard 재시작 권한 없음 — sudoers에 'restart trade-bot-dashboard' 추가 필요</i>"
+    fi
 fi
 
 sleep 3
@@ -113,6 +137,7 @@ if systemctl is-active --quiet trade-bot; then
     if [ -n "$SUBJECT" ]; then
         msg="${msg}"$'\n'"${SUBJECT}"
     fi
+    msg="${msg}${INSTALL_NOTE}${DASH_NOTE}"
     notify "$msg"
     echo "trade-bot-update: restart complete"
 else
