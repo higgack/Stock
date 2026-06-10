@@ -84,12 +84,12 @@ import hashlib as _hashlib  # noqa: E402
 # salt 'spark1mo' = 카드 스파크라인을 1개월 일봉 + spark_dir 구조로 변경
 # (2026-06-10). 옛 12개월 spark 캐시를 즉시 무효화.
 # 1개월 카드 중 변화를 % 가 아닌 절대값으로 표시할 sid (사용자 2026-06-10):
-# 환율(USD/KRW)·달러인덱스는 절대값이 직관적(₩2.11 / 0.01pt).
-_ABS_CHANGE_SIDS = {"USDKRW=X", "DX-Y.NYB"}
+# 환율(USD/KRW)만 절대값이 직관적(₩2.11). 달러인덱스는 % 로 표시(사용자 2026-06-10).
+_ABS_CHANGE_SIDS = {"USDKRW=X"}
 
 _DEFS_VERSION = _hashlib.md5(
     (repr([(k, sid) for k, _, _, _, sid, _ in (DOMESTIC + GLOBAL)])
-     + "|spark1mo_span_pct_absfx").encode()
+     + "|spark1mo_span_pct_absfx_dxypct").encode()
 ).hexdigest()[:12]
 
 _SPARK_N = 12  # months in sparkline
