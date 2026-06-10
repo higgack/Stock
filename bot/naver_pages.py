@@ -42,6 +42,10 @@ td.nm a{color:var(--text);text-decoration:none}
 td.nm a:hover{color:var(--accent);text-decoration:underline}
 td.nm a.tnm{text-decoration:underline;text-decoration-color:var(--muted)}
 td.ld{color:var(--muted);font-size:12px}
+/* 주도주 링크 — 기본 파랑이 저대비(사용자 2026-06-10) → 차분한 파랑 + 약한 밑줄 */
+td.ld a,td.ld a.tnm{color:#6ea8fe;text-decoration:underline;text-decoration-color:var(--muted)}
+[data-theme="light"] td.ld a,[data-theme="light"] td.ld a.tnm{color:#1d6fe0}
+td.ld a:hover{color:var(--accent)}
 .up{color:var(--pos);font-weight:600}.dn{color:var(--neg);font-weight:600}.neu{color:var(--muted)}
 .empty{color:var(--muted);font-size:13px;padding:30px 0;text-align:center}
 .ts{color:var(--muted);font-size:12px;margin-left:8px}

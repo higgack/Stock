@@ -716,6 +716,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         low = (ctype or "").lower()
         if any(t in low for t in ("html", "javascript", "css", "json")):
             body = body.replace(b"/dashboard/", b"/trade/")
+        # HTML 응답에 우리 nav 배너 주입 — 한국수출입 ↔ 홈·NOAH 연결(사용자
+        # 2026-06-10 '메인보드·NOAH 분석대시보드 연결'). 토큰 prefix 포함
+        # 절대경로라 trade 하위경로 무관. body 태그 직후 sticky 배너.
+        if "html" in low:
+            import re as _re
+            _pfx = f"/{_TOKEN}" if _TOKEN else ""
+            _banner = (
+                '<div style="position:sticky;top:0;z-index:2147483647;'
+                'background:#0d1117;color:#c9d1d9;padding:8px 14px;font-size:13px;'
+                'border-bottom:1px solid #30363d;font-family:system-ui,-apple-system,sans-serif">'
+                f'<a href="{_pfx}/market.html" style="color:#58a6ff;text-decoration:none;margin-right:16px">🌍 홈</a>'
+                f'<a href="{_pfx}/index.html" style="color:#58a6ff;text-decoration:none;margin-right:16px">🦉 NOAH 종목분석</a>'
+                '<span style="color:#8b949e">· 🇰🇷 한국 수출입</span></div>'
+            ).encode("utf-8")
+            m = _re.search(rb"<body[^>]*>", body, _re.IGNORECASE)
+            if m:
+                body = body[:m.end()] + _banner + body[m.end():]
+            else:
+                body = _banner + body
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
