@@ -852,6 +852,7 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
         known = {}
 
     attempted = enriched = failed = skipped = 0
+    ok_list: list[str] = []
     for item in items:
         cat = item.get("category", "")
         report_nm = item.get("report_nm", "")
@@ -905,6 +906,7 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
                 if lines:
                     item["detail"] = lines
                     enriched += 1
+                    ok_list.append(f"{item.get('corp_name','?')}({rcept_no})")
                 elif rcept_no:
                     # 구조화 API 미매칭/원문 필드 부재 — 2h 재시도 억제
                     # (당일 지연 반영 케이스는 2h 후 자연 재시도).
@@ -916,8 +918,9 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
                             item.get("corp_name", "?"), rcept_no, exc)
                 if rcept_no:
                     _doc_fail_mark(rcept_no, hours=1.0)
-    log.info("dart_feed enrich: 성공 %d · 실패 %d · 보류(상한/쿨다운) %d",
-             enriched, failed, skipped)
+    log.info("dart_feed enrich: 성공 %d · 실패 %d · 보류(상한/쿨다운) %d%s",
+             enriched, failed, skipped,
+             (" — " + ", ".join(ok_list)) if ok_list else "")
     return items
 
 
@@ -1134,7 +1137,7 @@ if __name__ == "__main__":
                 os.environ.setdefault(k.strip(), v.strip())
 
     import sys as _sys
-    if "--selftest" in _sys.argv:
+    if any("selftest" in a for a in _sys.argv[1:]):
         # VM 1줄 진단(쓰기 없음): 아카이브의 detail 없는 게이트 대상 5건을
         # 실제 DART 로 추출 시도, 단계별 결과 출력.
         #   .venv/bin/python -m bot.dart_feed --selftest
