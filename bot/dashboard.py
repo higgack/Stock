@@ -10739,14 +10739,41 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         _mc_memo[code] = out
         return out
 
+    def _equity_noise(it: dict) -> bool:
+        """#18 지분공시 노이즈컷 — True 이면 숨김."""
+        if it.get("category") != "지분공시":
+            return False
+        rn = it.get("report_nm", "")
+        if "대량보유" not in rn:
+            return True
+        det = it.get("detail") or []
+        if not det:
+            return False
+        for dl in det:
+            s = str(dl)
+            if "지분율" in s and "→" not in s:
+                return False
+            m = re.search(r"([+-]?\d+\.?\d*)\s*%p", s)
+            if m:
+                try:
+                    if abs(float(m.group(1))) >= 5.0:
+                        return False
+                except ValueError:
+                    pass
+        return True
+
     cat_counts: dict[str, int] = {}
+    _filtered_total = 0
     for items in by_date.values():
         for it in items:
+            if _equity_noise(it):
+                continue
+            _filtered_total += 1
             c = it.get("category", "기타")
             cat_counts[c] = cat_counts.get(c, 0) + 1
 
     pills: list[str] = []
-    pills.append(f'<button class="df-pill active" data-cat="전체">전체 {total}</button>')
+    pills.append(f'<button class="df-pill active" data-cat="전체">전체 {_filtered_total}</button>')
     for cat in _DART_CATEGORIES[1:]:
         n = cat_counts.get(cat, 0)
         if n > 0:
@@ -10827,6 +10854,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                 cn = _html.escape(it.get("corp_name", ""))
                 rn = _html.escape(it.get("report_nm", ""))
                 cat = it.get("category", "기타")
+                if _equity_noise(it):
+                    continue
                 cat_color = _DART_CAT_COLORS.get(cat, "#78909c")
                 url = _html.escape(it.get("url", "#"))
                 dt_short = date_str[5:]  # MM-DD
@@ -12302,26 +12331,25 @@ def _render_market_page(data: dict) -> str:
       sym = sym || '$';
       return sym + Number(v).toLocaleString(undefined, {{minimumFractionDigits:0, maximumFractionDigits:2}});
     }}
-    function tag(isActual) {{
-      /* forward(예상) / trailing(확정) 구분 라벨 — 종목마다 다름. nowrap 으로
-         '(예 상)' 처럼 글자 중간에서 줄바꿈되지 않게. */
-      return isActual
-        ? ' <span style="font-size:10px;color:var(--muted);white-space:nowrap">(확정)</span>'
-        : ' <span style="font-size:10px;color:var(--muted);white-space:nowrap">(예상)</span>';
+    function fyTag(label) {{
+      if (!label) return '';
+      return ' <span style="font-size:10px;color:var(--muted);white-space:nowrap">(' + label + ')</span>';
     }}
 
-    function fmtEstLabel(v, isActual, sym) {{
+    function fmtEstLabel(v, isActual, sym, fyLabel) {{
       if (v == null) return '—';
       sym = sym || '';
       var num = (typeof v === 'number')
         ? Number(v).toLocaleString(undefined, {{maximumFractionDigits:2}})
         : String(v);
-      return sym + num + tag(isActual);
+      return sym + num + (isActual ? fyTag(fyLabel) : '');
     }}
 
-    function fmtPER(v, isTrailing) {{
+    function fmtPER(v, isTrailing, fyLabel, epsNeg) {{
+      if (epsNeg) return '<span style="color:var(--muted)">적자</span>';
       if (v == null) return '—';
-      return Number(v).toFixed(1) + tag(isTrailing);
+      if (v < 0) return '<span style="color:var(--muted)">적자</span>';
+      return Number(v).toFixed(1) + (isTrailing ? fyTag(fyLabel) : '');
     }}
 
     function fmtMcap(v, sym) {{
@@ -12402,8 +12430,8 @@ def _render_market_page(data: dict) -> str:
           + '<td style="white-space:nowrap">' + fmtPrice(f.saved_price, f.currency_symbol) + '</td>'
           + '<td style="white-space:nowrap">' + curCell + '</td>'
           + '<td style="white-space:nowrap">' + pctCell + '</td>'
-          + '<td style="white-space:nowrap">' + fmtEstLabel(f.eps_estimate, f.eps_is_actual, f.currency_symbol) + '</td>'
-          + '<td style="white-space:nowrap">' + fmtPER(f.per, f.per_is_trailing) + '</td>'
+          + '<td style="white-space:nowrap">' + fmtEstLabel(f.eps_estimate, f.eps_is_actual, f.currency_symbol, f.eps_fy_label) + '</td>'
+          + '<td style="white-space:nowrap">' + fmtPER(f.per, f.per_is_trailing, f.eps_fy_label, f.eps_negative) + '</td>'
           + '<td style="white-space:nowrap">' + (f.next_earnings||'—') + '</td>'
           + '<td class="fav-ord"><button class="fav-up" data-ticker="' + f.ticker + '" title="위로">▲</button>'
           + '<button class="fav-down" data-ticker="' + f.ticker + '" title="아래로">▼</button></td>'

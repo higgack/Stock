@@ -485,23 +485,25 @@ def _parse_screener_rows(html: str, limit: int) -> list[dict]:
     return rows
 
 
-def _fetch_signal(signal: str, limit: int = 40) -> list[dict]:
+def _fetch_signal(signal: str) -> list[dict]:
+    """Finviz screener signal 전량 fetch — 20행/페이지 자동 페이지네이션."""
     rows: list[dict] = []
-    for offset in (1, 21):
+    offset = 1
+    max_pages = 30  # 안전 상한 (600종목)
+    for _ in range(max_pages):
         html = _get(f"{_BASE}/screener?v=111&s={signal}&o=-change&r={offset}")
         if not html:
             break
-        page = _parse_screener_rows(html, limit - len(rows))
+        page = _parse_screener_rows(html, 9999)
         if not page:
             if offset == 1:
-                # 200 인데 파싱 0행 — 차단이 아니라 마크업 변경 의심 진단.
                 log.warning("finviz: %s HTML fetched but parsed 0 rows "
                             "(markup change?) — head: %r", signal, html[:200])
             break
         rows.extend(page)
-        if len(rows) >= limit or len(page) < 20:
+        if len(page) < 20:
             break
-    # dedupe (페이지 경계 중복 방어)
+        offset += 20
     seen: set[str] = set()
     out = []
     for r in rows:

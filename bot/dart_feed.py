@@ -463,6 +463,97 @@ _SPLIT_MERGE_FIELDS = [
      r"(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})", "text"),
 ]
 
+# ── #13 신규시설투자 — 투자금액·자기자본대비·목적·기간·지역 ──
+_CAPEX_FIELDS = [
+    ("투자금액", r"투자금액[^0-9]{0,60}?([\d,]{4,})", "won"),
+    ("자기자본대비", r"자기자본\s*대비[^0-9]{0,60}?([\d.]+)", "pct"),
+    ("투자목적",
+     r"투자\s*목적[^가-힣A-Za-z0-9]{0,40}?"
+     r"([가-힣A-Za-z0-9()&.,·\- ]{4,60}?)\s*"
+     r"(?:\d\.|투자기간|자기자본|투자지역|[A-Za-z0-9]{15,}|$)", "text"),
+    ("투자기간",
+     r"투자기간[^0-9]{0,40}?"
+     r"(\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2}[^가-힣\n]{0,30}?"
+     r"\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2})", "text"),
+    ("투자지역",
+     r"투자\s*지역[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{2,40}?)\s*"
+     r"(?:\d\.|투자내역|투자금|이사회|$)", "text"),
+]
+
+# ── #14 유형자산 양수/양도/취득/처분 ──
+_TANGIBLE_ASSET_FIELDS = [
+    ("자산명",
+     r"(?:양수|양도|취득|처분)\s*(?:대상|물건|자산)\s*[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{2,50}?)\s*"
+     r"(?:\d\.|취득|처분|양수|양도|자기자본|계약|금액|$)", "text"),
+    ("금액",
+     r"(?:양수|양도|취득|처분)\s*(?:가액|금액|대금)[^0-9]{0,60}?([\d,]{4,})", "won"),
+    ("자기자본대비", r"자기자본\s*대비[^0-9]{0,60}?([\d.]+)", "pct"),
+    ("거래상대",
+     r"(?:양수인|양도인|거래상대방|매수인|매도인)[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{2,30}?)\s*"
+     r"(?:\d\.|관계|금액|$)", "text"),
+    ("예정일",
+     r"(?:양수|양도|취득|처분|계약)\s*(?:예정)?일[^0-9]{0,40}?"
+     r"(\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2})", "text"),
+]
+
+# ── #15 회사분할 ──
+_SPLIT_COMPANY_FIELDS = [
+    ("분할방법",
+     r"분할\s*방법[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{4,60}?)\s*(?:\d\.|분할비율|분할기일|$)", "text"),
+    ("분할비율",
+     r"분할비율[^0-9A-Za-z가-힣]{0,20}?"
+     r"([0-9.:가-힣 ]{2,30}?)\s*(?:\d\.|분할기일|신설|상장|$)", "text"),
+    ("분할기일",
+     r"분할기일[^0-9]{0,40}?"
+     r"(\d{4}\s*[-./년]\s*\d{1,2}\s*[-./월]\s*\d{1,2})", "text"),
+    ("신설회사",
+     r"(?:신설|분할신설)\s*회사[명 ][^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{2,30}?)\s*(?:\d\.|분할|상장|$)", "text"),
+    ("상장예정일",
+     r"(?:신주|재)?\s*상장\s*예정일[^0-9]{0,50}?"
+     r"(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})", "text"),
+]
+
+# ── #16 최대주주 양수도 계약 ──
+_MAJOR_TRANSFER_FIELDS = [
+    ("양수인",
+     r"양수인[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{2,30}?)\s*(?:\d\.|양도인|주식수|$)", "text"),
+    ("양도인",
+     r"양도인[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{2,30}?)\s*(?:\d\.|양수인|주식수|$)", "text"),
+    ("양수도 주식수",
+     r"양수도\s*(?:하는\s*)?주식\s*(?:의?\s*)?수[^0-9]{0,40}?"
+     r"([\d,]{3,})", "num"),
+    ("양수도 대금",
+     r"양수도\s*(?:하는\s*)?주식\s*(?:의?\s*)?(?:가격|대금|금액)"
+     r"[^0-9]{0,40}?([\d,]{4,})", "won"),
+    ("1주당 가격",
+     r"1주당\s*(?:양수도\s*)?(?:가격|가액)[^0-9]{0,40}?([\d,]{3,})", "won"),
+    ("변경예정 최대주주",
+     r"변경\s*(?:예정|후)\s*(?:최대주주|대표[이자])[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{2,20}?)\s*(?:\d\.|$)", "text"),
+]
+
+# ── #17 담보제공 ──
+_COLLATERAL_FIELDS = [
+    ("담보제공 주식수",
+     r"담보(?:로\s*제공|제공)\s*(?:하는\s*)?주식\s*(?:의?\s*)?수[^0-9]{0,40}?"
+     r"([\d,]{3,})", "num"),
+    ("담보금액",
+     r"담보(?:가액|금액|평가액)[^0-9]{0,60}?([\d,]{4,})", "won"),
+    ("담보권자",
+     r"담보(?:권자|설정자|받는\s*자)[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{2,30}?)\s*(?:\d\.|담보|$)", "text"),
+    ("담보사유",
+     r"담보\s*(?:제공\s*)?사유[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()·, ]{2,40}?)\s*(?:\d\.|담보|$)", "text"),
+]
+
 
 def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
     """구조화 API 미커버 공시의 generic 원문 추출 — 라벨 매칭 최대 6줄.
@@ -1163,6 +1254,33 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         doc = _parse_cb_doc(rcept_no, api_key)
         if doc:
             return doc
+    # ── 배치 #13-#17 원문 파서 (2026-06-11) ──
+    elif "신규시설투자" in t or "투자결정" in t:
+        doc = _extract_doc_fields(rcept_no, api_key, _CAPEX_FIELDS,
+                                  min_fields=2)
+        if doc:
+            return doc
+    elif "유형자산" in t and ("양수" in t or "양도" in t
+                             or "취득" in t or "처분" in t):
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _TANGIBLE_ASSET_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "회사분할" in t or "분할합병" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _SPLIT_COMPANY_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "최대주주" in t and ("양수" in t or "양도" in t):
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _MAJOR_TRANSFER_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "담보" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _COLLATERAL_FIELDS, min_fields=2)
+        if doc:
+            return doc
 
     specs: list[tuple[str, list]] = []
     if "영업(잠정)실적" in t or "매출액또는손익구조" in t:
@@ -1457,10 +1575,12 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
             item["detail"] = known[rcept_no]
             continue
 
-        # 전환청구권/주식분할·병합은 카테고리 분류와 무관하게 시도(원문
-        # 파서 보유 — 사용자 2026-06-11 추가).
+        # 원문 파서 보유 유형은 카테고리 분류와 무관하게 시도(배치 #13-#17
+        # 추가 — 담보·최대주주양수도가 '기타'로 분류될 수 있음).
         _force = any(k in report_nm for k in
-                     ("전환청구권", "주식분할", "주식병합", "액면분할", "액면병합"))
+                     ("전환청구권", "주식분할", "주식병합", "액면분할", "액면병합",
+                      "신규시설투자", "투자결정", "유형자산", "회사분할", "분할합병",
+                      "담보"))
         # IR 은 enrich 제외(사용자 2026-06-11) — IR 일정은 실적 캘린더가
         # 전담, 피드 카드는 제목만. 수집·아카이브·캘린더 공급은 그대로.
         if _force or cat in ("계약", "자금조달", "주주환원", "신규시설투자",
@@ -1651,6 +1771,62 @@ def load_all_archives(days_back: int = 30) -> dict[str, list[dict]]:
     return result
 
 
+# ── #19 소송/리스크 알람 큐 ──
+
+_RISK_ALERT_Q = _ARCHIVE_DIR.parent / "dart_risk_alerts.json"
+
+
+def _queue_risk_alerts(items: list[dict], new_ids: set) -> None:
+    """소송/리스크 신규 공시를 큐 파일에 추가 — 텔레그램 봇이 소비."""
+    try:
+        alerts: list[dict] = []
+        try:
+            if _RISK_ALERT_Q.exists():
+                old = json.loads(_RISK_ALERT_Q.read_text("utf-8"))
+                if isinstance(old, list):
+                    alerts = old
+        except Exception:
+            pass
+        existing = {a.get("rcept_no") for a in alerts}
+        added = 0
+        for it in items:
+            cat = it.get("category", "")
+            rno = it.get("rcept_no", "")
+            if cat not in ("소송", "리스크"):
+                continue
+            if not rno or rno in existing or rno not in new_ids:
+                continue
+            alerts.append({
+                "rcept_no": rno,
+                "corp_name": it.get("corp_name", ""),
+                "report_nm": it.get("report_nm", ""),
+                "url": it.get("url", ""),
+                "category": cat,
+            })
+            added += 1
+        if added:
+            _RISK_ALERT_Q.parent.mkdir(parents=True, exist_ok=True)
+            _RISK_ALERT_Q.write_text(
+                json.dumps(alerts, ensure_ascii=False), "utf-8")
+            log.info("dart_feed: %d risk alert(s) queued", added)
+    except Exception as exc:
+        log.warning("dart_feed: risk alert queue failed: %s", exc)
+
+
+def consume_risk_alerts() -> list[dict]:
+    """큐 파일의 알람을 꺼내고 파일을 비운다. 텔레그램 봇 전용."""
+    try:
+        if not _RISK_ALERT_Q.exists():
+            return []
+        alerts = json.loads(_RISK_ALERT_Q.read_text("utf-8"))
+        if not isinstance(alerts, list) or not alerts:
+            return []
+        _RISK_ALERT_Q.write_text("[]", "utf-8")
+        return alerts
+    except Exception:
+        return []
+
+
 # ── CLI: python -m bot.dart_feed ──
 
 def run_once(target_date: date | None = None,
@@ -1717,6 +1893,10 @@ def run_once(target_date: date | None = None,
 
     for d, day_items in by_day.items():
         merge_and_save(d, day_items)
+
+    # #19 소송/리스크 알람 큐 — 새 항목만 기록, 텔레그램 봇이 소비.
+    _queue_risk_alerts(work, fetched_ids)
+
     return items
 
 
