@@ -12463,6 +12463,12 @@ function inject(h){
     dst.innerHTML='';while(src.firstChild)dst.appendChild(src.firstChild);}
   put('header','lk-header-slot');put('tabs','lk-tabs-slot');
   put('desc','lk-desc-slot');put('other','lk-other-slot');
+  /* 라이브 점·🔄 를 주입 즉시 차트 헤드라인 슬롯으로 — _QUOTE_JS(relocate)
+     는 full 단계에만 실려 와 core 동안 탭 위에 떠 보이던 것 차단(사용자
+     2026-06-11). full 재주입 시 슬롯 비우고 새 배지로 교체(중복 방지). */
+  var slot=document.getElementById('chart-live-slot');
+  var stat=document.querySelector('.si-quote-status');
+  if(slot&&stat){slot.innerHTML='';while(stat.firstChild)slot.appendChild(stat.firstChild);stat.style.display='none';}
   document.body.appendChild(sc);runScripts(sc);
 }
 function get(phase){return fetch('../api/lookup_detail?ticker='+encodeURIComponent(T)+'&phase='+phase)
