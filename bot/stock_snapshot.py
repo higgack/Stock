@@ -111,9 +111,18 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
                 except Exception:
                     pass
 
-        # ── earnings history (compact — last 8 quarters) ────────────
-        try:
-            ed = t.earnings_dates
+        # ── 보조 블록 6종 병렬 수집 (2026-06-10 '종목검색 느린거' 사용자
+        # 리스크-승인 수정) — 실적이력/투자의견변경/기관보유/뉴스/재무제표/
+        # 동종비교는 서로 독립인데 직렬이라 합산 ~10-20초가 걸리던 cold-path
+        # 병목. 스레드마다 **자기 전용 yf.Ticker** 를 만들고(생성은 lazy·
+        # HTTP 0 — 공유 세션/인스턴스 없음) 결과를 로컬 dict 로 반환 →
+        # 메인 스레드에서 병합: 스레드 간 공유 가변상태 0. 각 task 60초
+        # bound(직렬일 때도 hang 리스크는 같았고, 이제 한 task 가 전체를
+        # 못 끌고 감). 풀 실패 시 직렬 폴백. market_overview /
+        # market_favorites 의 ThreadPool-8 yfinance 패턴과 동일 클래스.
+        def _aux_earnings() -> dict:
+            out: dict = {}
+            ed = yf.Ticker(ticker).earnings_dates
             if ed is not None and not ed.empty:
                 rows = []
                 for idx, row in ed.head(8).iterrows():
@@ -128,13 +137,12 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
                             entry[col] = round(float(v), 4) if isinstance(v, float) else v
                     rows.append(entry)
                 if rows:
-                    snap["earnings_history"] = rows
-        except Exception:
-            pass
+                    out["earnings_history"] = rows
+            return out
 
-        # ── analyst upgrades/downgrades (last 15) ───────────────────
-        try:
-            ud = t.upgrades_downgrades
+        def _aux_upgrades() -> dict:
+            out: dict = {}
+            ud = yf.Ticker(ticker).upgrades_downgrades
             if ud is not None and not ud.empty:
                 rows = []
                 for idx, row in ud.head(15).iterrows():
@@ -149,13 +157,12 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
                             entry[col] = str(v) if not isinstance(v, (int, float)) else v
                     rows.append(entry)
                 if rows:
-                    snap["upgrades_downgrades"] = rows
-        except Exception:
-            pass
+                    out["upgrades_downgrades"] = rows
+            return out
 
-        # ── institutional holders (top 10) ──────────────────────────
-        try:
-            ih = t.institutional_holders
+        def _aux_holders() -> dict:
+            out: dict = {}
+            ih = yf.Ticker(ticker).institutional_holders
             if ih is not None and not ih.empty:
                 rows = []
                 for _, row in ih.head(10).iterrows():
@@ -172,13 +179,12 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
                             entry[col] = str(v) if not isinstance(v, (int, float)) else v
                     rows.append(entry)
                 if rows:
-                    snap["institutional_holders"] = rows
-        except Exception:
-            pass
+                    out["institutional_holders"] = rows
+            return out
 
-        # ── news (last 10) ──────────────────────────────────────────
-        try:
-            news = t.news
+        def _aux_news() -> dict:
+            out: dict = {}
+            news = yf.Ticker(ticker).news
             if news:
                 rows = []
                 for item in news[:10]:
@@ -196,21 +202,37 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
                     if entry.get("title"):
                         rows.append(entry)
                 if rows:
-                    snap["news"] = rows
-        except Exception:
-            pass
+                    out["news"] = rows
+            return out
 
-        # ── financial statements (IS / BS / CF — annual + quarterly) ──
-        try:
-            _collect_financials(t, snap)
-        except Exception:
-            pass
+        def _aux_financials() -> dict:
+            out: dict = {}
+            _collect_financials(yf.Ticker(ticker), out)
+            return out
 
-        # ── peer multiples (for comps tab) ──────────────────────────
+        def _aux_peers() -> dict:
+            out: dict = {}
+            _collect_peer_multiples(ticker, info, out)
+            return out
+
+        _aux_tasks = (_aux_earnings, _aux_upgrades, _aux_holders,
+                      _aux_news, _aux_financials, _aux_peers)
         try:
-            _collect_peer_multiples(ticker, info, snap)
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futs = [pool.submit(fn) for fn in _aux_tasks]
+                for fut in futs:
+                    try:
+                        snap.update(fut.result(timeout=60) or {})
+                    except Exception:
+                        pass
         except Exception:
-            pass
+            # 풀 생성 실패 등 — 직렬 폴백 (동작 동일, 속도만 원래대로)
+            for fn in _aux_tasks:
+                try:
+                    snap.update(fn() or {})
+                except Exception:
+                    pass
 
         # strip None values to keep JSON compact
         snap = {k: v for k, v in snap.items() if v is not None}
@@ -920,7 +942,12 @@ def _collect_financials(t, snap: dict) -> None:
 
 
 def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
-    """Collect peer company multiples for the comps tab."""
+    """Collect peer company multiples for the comps tab.
+
+    동종 8종 .info 를 병렬 fetch (2026-06-10 사용자 리스크-승인 속도 수정) —
+    직렬 ~8-16초가 cold-path 최대 단일 병목이었음. 스레드마다 자기 전용
+    yf.Ticker(공유 상태 0), 결과는 제출 순서대로 병합해 행 순서 보존
+    (subject 첫 행 유지). 실패 종목은 직렬 때와 동일하게 그냥 빠짐."""
     try:
         from bot.market import resolve_peer_set
     except ImportError:
@@ -932,9 +959,8 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
     if not peers:
         return
     import yfinance as yf
-    comps: list[dict] = []
-    subject_added = False
-    for pt in ([ticker] + peers[:7]):
+
+    def _fetch_one(pt: str) -> dict | None:
         try:
             pi = yf.Ticker(pt).info or {}
             name = pi.get("shortName") or pi.get("longName") or pt
@@ -955,9 +981,26 @@ def _collect_peer_multiples(ticker: str, info: dict, snap: dict) -> None:
             entry = {k: v for k, v in entry.items() if v is not None}
             if pt == ticker:
                 entry["is_subject"] = True
-                subject_added = True
-            comps.append(entry)
+            return entry
         except Exception:
-            continue
+            return None
+
+    targets = [ticker] + peers[:7]
+    results: list[dict | None]
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(len(targets), 8)) as pool:
+            futs = [pool.submit(_fetch_one, pt) for pt in targets]
+            results = []
+            for fut in futs:
+                try:
+                    results.append(fut.result(timeout=30))
+                except Exception:
+                    results.append(None)
+    except Exception:
+        results = [_fetch_one(pt) for pt in targets]  # 직렬 폴백
+
+    comps = [e for e in results if e]
+    subject_added = any(e.get("is_subject") for e in comps)
     if comps and subject_added:
         snap["peer_comps"] = comps
