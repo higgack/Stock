@@ -10,7 +10,9 @@
 set -euo pipefail
 
 REPO="${TRADE_REPO:-/home/higgack/stock-trade}"
-BRANCH="${TRADE_BRANCH:-claude/export-import-dashboard-zQsi2}"
+# 2026-06-11 통합 전환: trade 코드가 메인 deploy 브랜치로 합쳐짐 — 이
+# 커밋이 이 브랜치의 마지막(전환 포인터). 다음 사이클부터 xqYf7 추적.
+BRANCH="${TRADE_BRANCH:-claude/stock-trading-automation-xqYf7}"
 
 cd "$REPO"
 
