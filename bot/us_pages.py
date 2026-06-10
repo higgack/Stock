@@ -51,13 +51,26 @@ def render_us_industry_page() -> str:
         body = ('<div class="empty">업종 데이터를 불러올 수 없습니다.<br>'
                 '(잠시 후 다시 시도해 주세요.)</div>')
     else:
+        def _name_cell(g: dict) -> str:
+            # 업종 클릭 → Finviz 해당 업종 종목 목록(사용자 2026-06-10, KR
+            # 테마→Naver 상세 미러). slug 있는 행(Finviz 출처)만 링크, 폴백
+            # (GICS 산출/ETF)은 슬러그 없어 일반 텍스트.
+            nm = _html.escape(g.get("name", ""))
+            slug = g.get("slug", "")
+            if slug and slug.replace("ind_", "").replace("_", "").isalnum():
+                url = f"https://finviz.com/screener?v=111&f={_html.escape(slug)}&o=-change"
+                return (f'<a href="{url}" target="_blank" rel="noopener">{nm}</a>'
+                        ' <span class="ts">↗</span>')
+            return nm
         rows = "".join(
             f'<tr><td class="rk">{i}</td>'
-            f'<td class="nm">{_html.escape(g.get("name", ""))}</td>'
+            f'<td class="nm">{_name_cell(g)}</td>'
             f'{_pct_cell(g.get("pct"))}</tr>'
             for i, g in enumerate(groups, 1))
+        _clickable = any(g.get("slug") for g in groups)
+        _hint = " · 업종 클릭 → 종목 목록" if _clickable else ""
         body = (f'<div class="panel"><h2>🏭 업종별 등락 '
-                f'<span class="ts">{len(groups)}개 · 등락 내림차순</span></h2>'
+                f'<span class="ts">{len(groups)}개 · 등락 내림차순{_hint}</span></h2>'
                 f'<table><thead><tr><th>#</th><th>업종</th>'
                 f'<th style="text-align:right">등락률</th></tr></thead>'
                 f'<tbody>{rows}</tbody></table></div>')
