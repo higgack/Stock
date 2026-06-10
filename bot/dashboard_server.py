@@ -91,6 +91,58 @@ _AUTH_USER = (os.getenv("DASHBOARD_USER") or "").strip()
 _AUTH_PASSWORD = (os.getenv("DASHBOARD_PASSWORD") or "").strip()
 _AUTH_REALM = "NOAH stock dashboard"
 
+# ── lookup_detail stale-while-revalidate (종목분석 지연로딩 재방문 즉시화) ──
+# 무거운 detail(collect_stock_snapshot 의 yfinance 직렬 호출 + 동종비교 최대
+# 8콜 + 시장 enrichment)은 첫 cold 렌더만 ~10-30초. 그 후엔 디스크 캐시를
+# 즉시 서빙하고, 만료분은 백그라운드 1회 재렌더해 다음 방문을 신선하게 유지
+# (사용자 2026-06-10 '아직도 느린데'). render_lookup_detail 을 그대로 재사용
+# 하므로 새 데이터-경로 코드 0 · stock_snapshot 무수정 · graceful.
+import threading as _threading
+
+_LOOKUP_DETAIL_FRESH_SEC = 1800     # 30분: 그냥 즉시 서빙
+_LOOKUP_DETAIL_STALE_SEC = 86400    # 24h: stale 즉시 서빙 + 백그라운드 갱신
+_LOOKUP_REFRESH_LOCK = _threading.Lock()
+_LOOKUP_REFRESHING: set[str] = set()
+
+
+def _atomic_write_bytes(path, data: bytes) -> None:
+    """temp+os.replace 로 캐시 파일을 원자적으로 기록(반쯤 쓰인 파일 read 방지)."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
+
+
+def _kick_lookup_detail_refresh(ticker: str, cache_f) -> None:
+    """stale 캐시를 백그라운드에서 1회 재렌더(동시 중복 방지). 실패해도 기존
+    stale 캐시는 그대로 → 다음 방문이 다시 시도. 요청 경로를 막지 않음."""
+    with _LOOKUP_REFRESH_LOCK:
+        if ticker in _LOOKUP_REFRESHING:
+            return
+        _LOOKUP_REFRESHING.add(ticker)
+
+    def _work():
+        try:
+            from bot.dashboard import render_lookup_detail
+            html = render_lookup_detail(ticker)
+            if html:
+                _atomic_write_bytes(cache_f, html.encode("utf-8"))
+        except Exception as exc:
+            log.debug("lookup_detail refresh %s: %s", ticker, exc)
+        finally:
+            with _LOOKUP_REFRESH_LOCK:
+                _LOOKUP_REFRESHING.discard(ticker)
+
+    try:
+        _threading.Thread(target=_work, daemon=True).start()
+    except Exception:
+        pass
+
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serves the archive directory; adds POST /api/delete + optional
@@ -832,7 +884,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def _handle_lookup_detail(self) -> None:
         """GET /api/lookup_detail?ticker=X — 지연로딩 detail HTML fragment.
 
-        무거운 snapshot+enrichment+차트. 5분 디스크 캐시(lookup shell 과 별도)."""
+        무거운 snapshot+enrichment+차트. **stale-while-revalidate** 디스크 캐시:
+        - 신선(<30분): 즉시 서빙.
+        - 만료~24h: stale 캐시 즉시 서빙 + 백그라운드 1회 재렌더(다음 방문 신선).
+        - 콜드(캐시 없음): 동기 렌더 후 캐시·서빙(첫 1회만 ~10-30초).
+        재렌더는 같은 render_lookup_detail 라 새 데이터-경로 코드 0. 첫 1회 외엔
+        항상 즉시(사용자 2026-06-10 '아직도 느린데' — 재방문 즉시화). 슬로우-무빙
+        filing/일간 데이터라 30분 신선창은 충분하고, 라이브 현재가/등락은 클라이언트
+        _QUOTE_JS 가 별도 갱신하므로 캐시 신선도와 무관."""
         import time
         import urllib.parse as _ulp
         try:
@@ -852,28 +911,42 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_dir.mkdir(parents=True, exist_ok=True)
             safe = ticker.replace(".", "_").replace("-", "_")
             cache_f = cache_dir / f"detail_{safe}.html"
-            if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 300:
+
+            age = None
+            if cache_f.exists():
+                try:
+                    age = time.time() - cache_f.stat().st_mtime
+                except Exception:
+                    age = None
+
+            # 캐시 hit (신선 or stale-but-usable) → 즉시 서빙.
+            if age is not None and age < _LOOKUP_DETAIL_STALE_SEC:
+                encoded = None
                 try:
                     encoded = cache_f.read_bytes()
+                except Exception:
+                    encoded = None
+                if encoded:
+                    # 만료(>30분)면 백그라운드 1회 재렌더 → 다음 방문은 신선.
+                    if age >= _LOOKUP_DETAIL_FRESH_SEC:
+                        _kick_lookup_detail_refresh(ticker, cache_f)
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(encoded)))
+                    self.send_header("Cache-Control", "no-cache")
                     self.end_headers()
                     self.wfile.write(encoded)
                     return
-                except Exception:
-                    pass
 
+            # 콜드(캐시 없음/너무 오래됨/읽기 실패) → 동기 렌더.
             from bot.dashboard import render_lookup_detail
             html = render_lookup_detail(ticker)
             encoded = html.encode("utf-8")
-            try:
-                cache_f.write_bytes(encoded)
-            except Exception:
-                pass
+            _atomic_write_bytes(cache_f, encoded)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             self.wfile.write(encoded)
         except Exception as exc:
