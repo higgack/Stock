@@ -41,8 +41,8 @@ DOMESTIC = [
     ("kr_rate", "한국 기준금리", "%", "ecos", "base_rate", 2),
     ("kr_3y", "국고채 3년", "%", "ecos", "kr3y", 2),
     ("kr_10y", "국고채 10년", "%", "ecos", "kr10y", 2),
-    ("usdkrw", "USD/KRW", "", "yf", "USDKRW=X", 1),
     ("kr_cpi", "한국 CPI", "", "ecos", "cpi_idx", 2),
+    ("usdkrw", "USD/KRW", "", "yf", "USDKRW=X", 1),
     ("kr_ca", "경상수지", "억$", "ecos", "current_account", 0),
     ("kr_export", "한국 수출", "억$", "ecos", "export_amt", 0),
 ]
