@@ -10327,6 +10327,62 @@ _DART_CAT_COLORS = {
 _WEEKDAY_KR = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
 
 
+# DART 공시 페이지 전용 CSS — 반드시 컨텐츠(카드 ~1000+개) **앞**에 emit.
+# 카드 뒤에 두면 첫 paint 가 무스타일 + 접힘(.collapsed display:none) 미적용
+# 상태로 전체 펼쳐져 보였다가 늦게 도착한 CSS 가 파싱되며 스냅 — '처음에
+# 깨졌다 복귀 아주 잠깐'(사용자 2026-06-10)의 원인. #179 의 _THEME_JS 선행
+# 이동과 같은 클래스 버그(이번엔 CSS).
+_DART_FEED_CSS = """
+<style>
+.df-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:16px}
+.df-pills{display:flex;flex-wrap:wrap;gap:6px}
+.df-pill{padding:4px 12px;border-radius:16px;border:1px solid var(--border,#333);background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:13px;white-space:nowrap}
+.df-pill.active{background:var(--accent,#ef5350);color:#fff;border-color:var(--accent,#ef5350)}
+.df-right{display:flex;gap:8px;align-items:center}
+.df-view-btns{display:flex;gap:2px;background:var(--card,#1a1f2b);border-radius:6px;padding:2px}
+.df-vbtn{padding:6px 8px;background:transparent;border:none;color:var(--muted,#888);cursor:pointer;border-radius:4px;display:flex;align-items:center}
+.df-vbtn.active{background:var(--accent,#3b82f6);color:#fff}
+.df-month{margin-bottom:20px}
+.df-month-hd{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none;font-size:18px;font-weight:700;padding:8px 0;border-bottom:2px solid var(--border,#333);margin-bottom:12px}
+.df-month-lbl{flex:0 0 auto}
+.df-month-cnt{margin-left:auto;font-size:12px;font-weight:400;color:var(--muted,#888);background:var(--card,#1a1f2b);padding:2px 10px;border-radius:10px}
+.df-month.collapsed .df-month-body{display:none}
+.df-month-body{padding-left:2px}
+.df-date-group{margin-bottom:18px}
+.df-date-hd{display:flex;gap:8px;align-items:baseline;cursor:pointer;user-select:none;padding:6px 0;border-bottom:1px solid var(--border,#333);margin-bottom:12px;font-weight:600;font-size:15px}
+.df-date-group.collapsed .df-date-body{display:none}
+.df-caret{font-size:11px;color:var(--muted,#888);display:inline-block;transition:transform .15s;flex:0 0 auto}
+.collapsed>.df-month-hd>.df-caret,.collapsed>.df-date-hd>.df-caret{transform:rotate(-90deg)}
+.df-searching .df-month-body,.df-searching .df-date-body{display:block!important}
+.df-date-meta{font-size:12px;color:var(--muted,#888);font-weight:400;margin-left:auto}
+.df-date-label{margin-left:8px}
+.df-date-cnt{margin-left:8px;font-weight:600;color:var(--fg,#ccc)}
+.df-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media(max-width:900px){.df-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){.df-grid{grid-template-columns:1fr}}
+.df-card{background:var(--card,#1a1f2b);border:1px solid var(--border,#2a2f3a);border-radius:8px;padding:14px;font-size:13px;display:flex;flex-direction:column;gap:6px}
+.df-card.hidden{display:none}
+.df-card-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
+.df-corp{font-weight:700;font-size:15px;color:var(--fg,#eee);text-decoration:none}
+.df-corp:hover{text-decoration:underline}
+.df-ticker-link{font-size:11px;color:var(--muted,#888);text-decoration:none}
+.df-ticker-link:hover{color:var(--accent,#3b82f6)}
+.df-meta{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.df-dt{font-size:12px;color:var(--muted,#888)}
+.df-cat{font-size:11px;padding:2px 8px;border-radius:4px;color:#fff;white-space:nowrap}
+.df-report{color:var(--muted,#aaa);font-size:12px;line-height:1.4}
+.df-detail-ln{color:var(--fg,#ccc);font-size:12px;line-height:1.5}
+/* list view */
+.df-grid.list-view{display:flex;flex-direction:column;gap:4px}
+.df-grid.list-view .df-card{flex-direction:row;align-items:center;gap:12px;padding:8px 14px}
+.df-grid.list-view .df-card-hd{flex-direction:row;align-items:center;min-width:160px}
+.df-grid.list-view .df-report{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.df-grid.list-view .df-detail-ln{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted,#888)}
+.df-grid.list-view .df-meta{order:-1;min-width:80px}
+</style>
+"""
+
+
 def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     import html as _html
     from datetime import datetime as _dt
@@ -10346,8 +10402,11 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         if n > 0:
             pills.append(f'<button class="df-pill" data-cat="{cat}">{cat} {n}</button>')
 
-    # 테마(다크/라이트)를 컨텐츠 전에 설정 → FOUC('처음에 깨졌다 복귀') 방지.
-    parts: list[str] = [_SCREENER_CSS, "<script>" + _THEME_JS + "</script>"]
+    # 테마(다크/라이트) + df-* CSS 를 컨텐츠 전에 emit → FOUC('처음에 깨졌다
+    # 복귀') 방지. CSS 가 카드 1000+개 뒤에 있으면 무스타일·전체펼침 첫
+    # paint 후 스냅(2026-06-10 잔존 건 — _DART_FEED_CSS 주석 참조).
+    parts: list[str] = [_SCREENER_CSS, "<script>" + _THEME_JS + "</script>",
+                        _DART_FEED_CSS]
     parts.append(f"""
 <div class="wrap">
   <div class="nav">
@@ -10446,56 +10505,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
             parts.append("        </div></div>\n      </div>\n")
         parts.append("    </div>\n  </div>\n")
 
-    # JS for filtering, search, view toggle
+    # JS for filtering, search, view toggle — CSS 는 위(컨텐츠 앞) _DART_FEED_CSS.
     parts.append("""
-<style>
-.df-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:16px}
-.df-pills{display:flex;flex-wrap:wrap;gap:6px}
-.df-pill{padding:4px 12px;border-radius:16px;border:1px solid var(--border,#333);background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:13px;white-space:nowrap}
-.df-pill.active{background:var(--accent,#ef5350);color:#fff;border-color:var(--accent,#ef5350)}
-.df-right{display:flex;gap:8px;align-items:center}
-.df-view-btns{display:flex;gap:2px;background:var(--card,#1a1f2b);border-radius:6px;padding:2px}
-.df-vbtn{padding:6px 8px;background:transparent;border:none;color:var(--muted,#888);cursor:pointer;border-radius:4px;display:flex;align-items:center}
-.df-vbtn.active{background:var(--accent,#3b82f6);color:#fff}
-.df-month{margin-bottom:20px}
-.df-month-hd{display:flex;align-items:center;gap:9px;cursor:pointer;user-select:none;font-size:18px;font-weight:700;padding:8px 0;border-bottom:2px solid var(--border,#333);margin-bottom:12px}
-.df-month-lbl{flex:0 0 auto}
-.df-month-cnt{margin-left:auto;font-size:12px;font-weight:400;color:var(--muted,#888);background:var(--card,#1a1f2b);padding:2px 10px;border-radius:10px}
-.df-month.collapsed .df-month-body{display:none}
-.df-month-body{padding-left:2px}
-.df-date-group{margin-bottom:18px}
-.df-date-hd{display:flex;gap:8px;align-items:baseline;cursor:pointer;user-select:none;padding:6px 0;border-bottom:1px solid var(--border,#333);margin-bottom:12px;font-weight:600;font-size:15px}
-.df-date-group.collapsed .df-date-body{display:none}
-.df-caret{font-size:11px;color:var(--muted,#888);display:inline-block;transition:transform .15s;flex:0 0 auto}
-.collapsed>.df-month-hd>.df-caret,.collapsed>.df-date-hd>.df-caret{transform:rotate(-90deg)}
-.df-searching .df-month-body,.df-searching .df-date-body{display:block!important}
-.df-date-meta{font-size:12px;color:var(--muted,#888);font-weight:400;margin-left:auto}
-.df-date-label{margin-left:8px}
-.df-date-cnt{margin-left:8px;font-weight:600;color:var(--fg,#ccc)}
-.df-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-@media(max-width:900px){.df-grid{grid-template-columns:repeat(2,1fr)}}
-@media(max-width:600px){.df-grid{grid-template-columns:1fr}}
-.df-card{background:var(--card,#1a1f2b);border:1px solid var(--border,#2a2f3a);border-radius:8px;padding:14px;font-size:13px;display:flex;flex-direction:column;gap:6px}
-.df-card.hidden{display:none}
-.df-card-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
-.df-corp{font-weight:700;font-size:15px;color:var(--fg,#eee);text-decoration:none}
-.df-corp:hover{text-decoration:underline}
-.df-ticker-link{font-size:11px;color:var(--muted,#888);text-decoration:none}
-.df-ticker-link:hover{color:var(--accent,#3b82f6)}
-.df-meta{display:flex;align-items:center;gap:6px;flex-shrink:0}
-.df-dt{font-size:12px;color:var(--muted,#888)}
-.df-cat{font-size:11px;padding:2px 8px;border-radius:4px;color:#fff;white-space:nowrap}
-.df-report{color:var(--muted,#aaa);font-size:12px;line-height:1.4}
-.df-detail-ln{color:var(--fg,#ccc);font-size:12px;line-height:1.5}
-/* list view */
-.df-grid.list-view{display:flex;flex-direction:column;gap:4px}
-.df-grid.list-view .df-card{flex-direction:row;align-items:center;gap:12px;padding:8px 14px}
-.df-grid.list-view .df-card-hd{flex-direction:row;align-items:center;min-width:160px}
-.df-grid.list-view .df-report{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.df-grid.list-view .df-detail-ln{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted,#888)}
-.df-grid.list-view .df-meta{order:-1;min-width:80px}
-</style>
-
 <script>
 (function(){
   var pills=document.querySelectorAll('.df-pill');
