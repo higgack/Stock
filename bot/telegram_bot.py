@@ -1126,7 +1126,7 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 <b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·레딧·Daily Byte·부동산·청약·수출입)는 🌍Main nav, 워치·도메인목록은 Screener nav 에서
  🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(한국네이버목표가/원문+미국TP) · 관심종목(시총·PER·등락·정렬/필터/순서) · 📋DART공시 · 종목검색 · 5분 갱신
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
- 🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️ · <b>분석버튼</b>(대시보드에서 /티커 실행→채널 게시)
+ 🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️ · <b>분석버튼</b>(종목 분석) · 입력창 <b>'/' 명령</b>(/usage·/portfolio·/watch·/screener 등 텔레그램 명령을 대시보드에서 실행→결과 패널)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/index.html
  💼 <b>자산</b> — 뱅샐 전계좌·증권사·손익·NOAH판정 오버레이
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
@@ -3048,6 +3048,31 @@ async def _periodic_market_refresh() -> None:
             log.exception("periodic market.html refresh failed")
 
 
+# 대시보드 명령 콘솔 — '/명령' → (update, ctx) 핸들러 화이트리스트.
+# 런타임 호출(모든 cmd_* 정의 후)이라 forward-ref 안전. screener/screen 은
+# 별도 채널 경로(아래 poller)라 제외, 티커 분석은 [분석] 버튼 전용이라 제외.
+def _dash_console_commands() -> dict:
+    return {
+        "help": cmd_help, "start": cmd_help,
+        "usage": cmd_usage, "sites": cmd_sites,
+        "screener_list": cmd_screener_list,
+        "watch": cmd_watch, "watchlist": cmd_watchlist, "unwatch": cmd_unwatch,
+        "paper": cmd_paper, "portfolio": cmd_portfolio, "compare": cmd_compare_hint,
+        "sv_cost": cmd_sv_cost, "daily_byte_cost": cmd_daily_byte_cost,
+        "cheongyak_cost": cmd_cheongyak_cost, "realestate_cost": cmd_realestate_cost,
+        "screener_cost": cmd_screener_cost,
+    }
+
+
+# /usage 처럼 패널에 노출할 대표 명령(안내용). screener/screen 포함(별도 경로).
+_DASH_CONSOLE_VISIBLE = (
+    "usage", "help", "sites", "screener_list", "screener", "screen",
+    "portfolio", "watch", "watchlist", "unwatch", "paper", "compare",
+    "screener_cost", "daily_byte_cost", "cheongyak_cost", "realestate_cost",
+    "sv_cost",
+)
+
+
 async def _periodic_dashboard_requests(application) -> None:
     """대시보드 '분석/실행' 버튼 요청 스풀 폴러 (5초 간격).
 
@@ -3120,8 +3145,70 @@ async def _periodic_dashboard_requests(application) -> None:
                         f"🌐 대시보드 요청 — 조건부 스크리너 <code>{_html.escape(query)}</code>"
                     )
                     await _handle_screen(query.split(), _send2)
+                elif kind == "command":
+                    # 대시보드 명령 콘솔 — '/명령' 실행 후 텍스트 답변을 result
+                    # 스풀에 기록(브라우저가 api/command_result 로 폴링).
+                    from bot.dashboard_requests import write_result
+                    req_id = req.get("id", "")
+                    raw = (query or "").strip()
+                    toks = raw.lstrip("/").split()
+                    word = toks[0].lower() if toks else ""
+                    arg = " ".join(toks[1:])
+                    if word == "screener":
+                        # 비싼·비동기 → 기존 채널 경로 재사용 + 패널엔 접수 안내.
+                        async def _scc(t: str) -> None:
+                            await bot.send_message(
+                                chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
+                                disable_web_page_preview=True)
+                        write_result(req_id, {"ok": True, "done": True, "lines": [
+                            "🌐 Bottleneck Screener 실행 시작"
+                            + (f" — {arg}" if arg else " (기본 bottleneck)"),
+                            "결과는 텔레그램 채널 + Screener 대시보드에 게시됩니다(~3-5분).",
+                        ]})
+                        resolved = await _resolve_screener_target(_scc, arg.lower())
+                        if resolved.get("mode") != "error":
+                            await _run_screener_and_send(
+                                send=_scc, theme=resolved.get("theme"),
+                                cache_key=resolved.get("cache_key"),
+                                force_fresh=resolved.get("force_fresh", False))
+                    elif word == "screen":
+                        async def _scc2(t: str) -> None:
+                            await bot.send_message(
+                                chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
+                                disable_web_page_preview=True)
+                        write_result(req_id, {"ok": True, "done": True, "lines": [
+                            f"🌐 조건부 스크리너 실행 — {arg or '(조건 없음)'}",
+                            "결과는 텔레그램 채널에 게시됩니다.",
+                        ]})
+                        await _handle_screen(arg.split(), _scc2)
+                    else:
+                        from bot.dashboard_console import build_capture
+                        handler = _dash_console_commands().get(word)
+                        if handler is None:
+                            write_result(req_id, {"ok": True, "done": True, "lines": [
+                                f"알 수 없는 명령: /{word or '(빈 명령)'}",
+                                "· 티커 분석은 슬래시 없이 종목 입력 후 [분석] 버튼",
+                                "· 사용 가능: "
+                                + " ".join("/" + c for c in _DASH_CONSOLE_VISIBLE),
+                            ]})
+                        else:
+                            upd, ctx2, lines = build_capture(raw)
+                            try:
+                                await handler(upd, ctx2)
+                            except Exception as exc:
+                                log.exception("dashboard command failed: %s", raw)
+                                lines.append(f"⚠️ 명령 실행 오류: {exc}")
+                            write_result(req_id, {"ok": True, "done": True,
+                                                  "lines": lines or ["(출력 없음)"]})
             except Exception:
                 log.exception("dashboard request failed: %s", req)
+                try:
+                    if req.get("kind") == "command" and req.get("id"):
+                        from bot.dashboard_requests import write_result
+                        write_result(req["id"], {"ok": False, "done": True,
+                                                 "lines": ["⚠️ 명령 처리 중 오류가 발생했습니다."]})
+                except Exception:
+                    pass
 
 
 async def _periodic_dashboard_refresh(application=None) -> None:

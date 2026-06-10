@@ -14,6 +14,12 @@ kinds:
   • analyze  — query = 티커 (서버가 종목명→티커 resolve 후 spool)
   • screener — query = Bottleneck 도메인 slug/별칭/자유어 ('' = bottleneck)
   • screen   — query = 조건부 스크리너 조건 ('PER<15 PBR<1' · 'us PER<15' · 'valueup')
+  • command  — query = '/명령어 [인자]' (텔레그램 명령을 대시보드에서 실행).
+    봇이 캡처 shim 으로 핸들러를 돌려 텍스트 답변을 ``write_result`` 로
+    기록 → dashboard_server 의 api/command_result 가 브라우저에 폴링 응답.
+
+결과 스풀(dashboard_results/<id>.json)은 봇(write_result)→서버(read_result)
+역방향 채널. command 요청은 submit 가 돌려준 id 로 결과를 매칭한다.
 """
 
 from __future__ import annotations
@@ -28,11 +34,14 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 SPOOL_DIR = Path.home() / ".tradingagents" / "dashboard_requests"
+RESULTS_DIR = Path.home() / ".tradingagents" / "dashboard_results"
 
-KINDS = ("analyze", "screener", "screen")
+KINDS = ("analyze", "screener", "screen", "command")
 _STALE_SEC = 1800   # 30분 — 봇이 그보다 오래 다운이었다면 폐기 (비용 서프라이즈 방지)
+_RESULT_STALE_SEC = 3600   # 1시간 — 묵은 명령 결과 파일 청소
 _MAX_PENDING = 8    # 폭주 가드 — 대기 초과 시 submit 거부
-_MAX_QUERY_LEN = 120
+_MAX_QUERY_LEN = 200   # command 인자(/watch 다중 조건 등)까지 수용
+_SAFE_ID_RE = __import__("re").compile(r"^[a-f0-9]{8,40}$")
 
 
 def submit(kind: str, query: str) -> dict:
@@ -44,8 +53,10 @@ def submit(kind: str, query: str) -> dict:
     query = " ".join((query or "").split())[:_MAX_QUERY_LEN]
     if kind not in KINDS:
         return {"ok": False, "error": f"unknown kind: {kind}"}
-    if kind in ("analyze", "screen") and not query:
+    if kind in ("analyze", "screen", "command") and not query:
         return {"ok": False, "error": "빈 요청"}
+    if kind == "command" and not query.startswith("/"):
+        return {"ok": False, "error": "명령은 '/' 로 시작해야 합니다"}
     try:
         SPOOL_DIR.mkdir(parents=True, exist_ok=True)
         pending = list_pending()
@@ -54,17 +65,62 @@ def submit(kind: str, query: str) -> dict:
                     "error": "대기 중인 요청이 너무 많습니다 — 잠시 후 다시 시도"}
         for p in pending:
             if p.get("kind") == kind and p.get("query") == query:
-                return {"ok": True, "dup": True,
+                return {"ok": True, "dup": True, "id": p.get("id", ""),
                         "note": "이미 같은 요청이 대기 중입니다"}
-        req = {"kind": kind, "query": query, "ts": time.time()}
+        req_id = uuid.uuid4().hex
+        req = {"kind": kind, "query": query, "ts": time.time(), "id": req_id}
         name = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.json"
         tmp = SPOOL_DIR / (name + ".tmp")
         tmp.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, SPOOL_DIR / name)
-        return {"ok": True}
+        return {"ok": True, "id": req_id}
     except Exception as exc:  # 디스크 오류 등 — 호출자에 깔끔히 보고
         log.warning("dashboard_requests.submit failed: %s", exc)
         return {"ok": False, "error": str(exc)}
+
+
+def write_result(req_id: str, payload: dict) -> None:
+    """봇이 command 실행 결과를 기록 (역방향 채널). dashboard_server 가
+    api/command_result 로 읽어 브라우저에 폴링 응답. 묵은 결과는 청소."""
+    if not (req_id and _SAFE_ID_RE.match(req_id)):
+        return
+    try:
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        _cleanup_results()
+        body = dict(payload or {})
+        body.setdefault("ts", time.time())
+        tmp = RESULTS_DIR / (req_id + ".json.tmp")
+        tmp.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, RESULTS_DIR / (req_id + ".json"))
+    except Exception as exc:
+        log.warning("dashboard_requests.write_result failed: %s", exc)
+
+
+def read_result(req_id: str) -> dict | None:
+    """dashboard_server 가 호출 — 결과 있으면 dict, 아직이면 None. id 검증."""
+    if not (req_id and _SAFE_ID_RE.match(req_id)):
+        return None
+    f = RESULTS_DIR / (req_id + ".json")
+    try:
+        if not f.exists():
+            return None
+        return json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _cleanup_results() -> None:
+    """1시간 지난 결과 파일 삭제 (디스크 누적 방지)."""
+    now = time.time()
+    try:
+        for f in RESULTS_DIR.glob("*.json"):
+            try:
+                if now - f.stat().st_mtime > _RESULT_STALE_SEC:
+                    f.unlink()
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 def list_pending() -> list[dict]:
