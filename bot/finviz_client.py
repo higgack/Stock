@@ -93,6 +93,11 @@ def fetch_groups() -> dict:
                     {"name": name.strip(), "pct": float(pcts[-1])})
             except ValueError:
                 continue
+        if not out["groups"]:
+            # 200 인데 파싱 0행 = 마크업 변경 의심 — 차단(403)과 구분되는
+            # 진단 로그 (VM journal 로 원인 즉시 판별, 2026-06-10).
+            log.warning("finviz: groups HTML fetched but parsed 0 rows "
+                        "(markup change?) — head: %r", html[:200])
     if not out["groups"]:
         out = _groups_fallback_etf()
     if out.get("groups"):
@@ -126,11 +131,17 @@ def _groups_fallback_etf() -> dict:
 def top_movers(top_n: int = 10) -> dict:
     """업종 등락 상/하위 → {'up': [...], 'down': [...], 'ts', 'source'} —
     KR fetch_sector_movers 와 동일 shape (위젯 렌더 공유 목적).
-    fetch_groups 의 정렬에 의존하지 않고 여기서 자체 정렬 (방어적)."""
+    fetch_groups 의 정렬에 의존하지 않고 여기서 자체 정렬 (방어적).
+
+    부호 필터 (2026-06-10 VM surfaced): 상승 칸은 pct>0, 하락 칸은 pct<0
+    만 — 섹터 ETF 폴백(11개)처럼 모수가 top_n×2 보다 작으면 하락 칸이
+    +값으로 채워져 거울처럼 보이던 것 차단. 칸이 10개 미만이어도 정직하게."""
     data = fetch_groups()
     gs = [g for g in data.get("groups", []) if g.get("pct") is not None]
-    return {"up": sorted(gs, key=lambda g: g["pct"], reverse=True)[:top_n],
-            "down": sorted(gs, key=lambda g: g["pct"])[:top_n],
+    ups = [g for g in gs if g["pct"] > 0]
+    downs = [g for g in gs if g["pct"] < 0]
+    return {"up": sorted(ups, key=lambda g: g["pct"], reverse=True)[:top_n],
+            "down": sorted(downs, key=lambda g: g["pct"])[:top_n],
             "ts": data.get("ts", ""), "source": data.get("source", "")}
 
 
@@ -179,6 +190,10 @@ def _fetch_signal(signal: str, limit: int = 40) -> list[dict]:
             break
         page = _parse_screener_rows(html, limit - len(rows))
         if not page:
+            if offset == 1:
+                # 200 인데 파싱 0행 — 차단이 아니라 마크업 변경 의심 진단.
+                log.warning("finviz: %s HTML fetched but parsed 0 rows "
+                            "(markup change?) — head: %r", signal, html[:200])
             break
         rows.extend(page)
         if len(rows) >= limit or len(page) < 20:
@@ -204,7 +219,11 @@ def fetch_high_low() -> dict:
                  "low": _fetch_signal("ta_newlow"),
                  "ts": _now_label(), "source": "Finviz"}
     if not out["high"] and not out["low"]:
+        log.info("finviz: high/low primary empty → S&P500 fallback")
         out = _highlow_fallback_sp500()
+    log.info("finviz: high/low result — high=%d low=%d source=%s",
+             len(out.get("high", [])), len(out.get("low", [])),
+             out.get("source"))
     if out.get("high") or out.get("low"):
         _cache_write("highlow.json", out)
     return out
@@ -212,7 +231,12 @@ def fetch_high_low() -> dict:
 
 def _highlow_fallback_sp500() -> dict:
     """Finviz 차단 시 — S&P 500 1년 주봉 벌크로 52주 고저 1% 근접 산출.
-    무겁기(500종목 1콜 ~20-40초)에 6h 별도 캐시."""
+
+    2026-06-10 VM surfaced('데이터를 불러올 수 없습니다' + source=S&P500
+    산출): 500종목 단일 yf.download 가 통째로 실패하면 빈 결과였음 →
+    **120종목 배치 4-5회**로 분할(배치별 try/except — 일부 실패해도 나머지
+    배치로 표면 유지) + 단계별 진단 로그(universe/배치/산출 수). 무겁기에
+    6h 별도 캐시."""
     c = _cached("highlow_sp500.json", ttl=_FALLBACK_TTL_SEC)
     if c is not None:
         return c
@@ -223,33 +247,50 @@ def _highlow_fallback_sp500() -> dict:
         import yfinance as yf
         universe = _get_us_universe()
         if not universe:
+            log.warning("finviz: S&P500 fallback — universe empty "
+                        "(Wikipedia fetch 실패?)")
             return out
-        df = yf.download(universe, period="1y", interval="1wk",
-                         group_by="ticker", threads=True,
-                         progress=False, auto_adjust=False)
-        if df is None or df.empty:
-            return out
-        for tk in universe:
+        log.info("finviz: S&P500 fallback — universe %d, 배치 다운로드 시작",
+                 len(universe))
+        _CHUNK = 120
+        scanned = 0
+        for ci in range(0, len(universe), _CHUNK):
+            chunk = universe[ci:ci + _CHUNK]
             try:
-                if tk not in df.columns.get_level_values(0):
-                    continue
-                closes = df[tk]["Close"].dropna()
-                highs = df[tk]["High"].dropna()
-                lows = df[tk]["Low"].dropna()
-                if len(closes) < 10:
-                    continue
-                last = float(closes.iloc[-1])
-                hi, lo = float(highs.max()), float(lows.min())
-                if hi > 0 and last >= hi * 0.99:
-                    out["high"].append({"ticker": tk, "name": tk,
-                                        "price": round(last, 2), "pct": None})
-                elif lo > 0 and last <= lo * 1.01:
-                    out["low"].append({"ticker": tk, "name": tk,
-                                       "price": round(last, 2), "pct": None})
-            except Exception:
+                df = yf.download(chunk, period="1y", interval="1wk",
+                                 group_by="ticker", threads=True,
+                                 progress=False, auto_adjust=False)
+            except Exception as exc:
+                log.warning("finviz: S&P500 배치 %d 다운로드 실패: %s",
+                            ci // _CHUNK + 1, exc)
                 continue
+            if df is None or df.empty:
+                log.warning("finviz: S&P500 배치 %d 빈 응답", ci // _CHUNK + 1)
+                continue
+            for tk in chunk:
+                try:
+                    if tk not in df.columns.get_level_values(0):
+                        continue
+                    closes = df[tk]["Close"].dropna()
+                    highs = df[tk]["High"].dropna()
+                    lows = df[tk]["Low"].dropna()
+                    if len(closes) < 10:
+                        continue
+                    scanned += 1
+                    last = float(closes.iloc[-1])
+                    hi, lo = float(highs.max()), float(lows.min())
+                    if hi > 0 and last >= hi * 0.99:
+                        out["high"].append({"ticker": tk, "name": tk,
+                                            "price": round(last, 2), "pct": None})
+                    elif lo > 0 and last <= lo * 1.01:
+                        out["low"].append({"ticker": tk, "name": tk,
+                                           "price": round(last, 2), "pct": None})
+                except Exception:
+                    continue
         out["high"] = out["high"][:40]
         out["low"] = out["low"][:40]
+        log.info("finviz: S&P500 fallback — scanned %d → high %d / low %d",
+                 scanned, len(out["high"]), len(out["low"]))
         if out["high"] or out["low"]:
             _cache_write("highlow_sp500.json", out)
     except Exception as exc:
