@@ -897,6 +897,21 @@ _THEME_JS = """
   }
   apply();
   setInterval(apply, 60000);
+  /* 홈/홈으로 = 뒤로가기 동작 (사용자 2026-06-10) — 개별 대시보드에서 홈을
+     누르면 새로고침 대신 직전 화면으로(스크롤 보존). 직전 페이지가 같은
+     호스트(우리 대시보드)일 때만 history.back(), 아니면 일반 이동(홈 의미
+     보존). document 위임이라 head 에서 등록해도 모든 링크 커버. */
+  document.addEventListener('click', function(e) {
+    var a = e.target.closest ? e.target.closest('a') : null;
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    if (!/(^|\\/)market\\.html(?:[?#]|$)/.test(href)) return;
+    if (history.length > 1 && document.referrer &&
+        document.referrer.indexOf(location.host) > -1) {
+      e.preventDefault();
+      history.back();
+    }
+  });
 })();
 """
 
@@ -8009,6 +8024,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
   </div>
   <h1>📊 Daily Byte — Archive</h1>
   <p class="sub">장 마감 후 시장 브리프 · 🇰🇷 19:00 / 🇺🇸 07:30 / 📅 Weekly 22:00 (KST) · 수급·시황 관찰(교육·정보), 투자 권유 아님</p>
@@ -8222,6 +8238,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
+    · <a href="index.html">🦉 NOAH 종목분석</a>
   </div>
   <h1>🏠 부동산 — Archive</h1>
   <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 + 청약홈 분양 피드 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
@@ -8526,9 +8543,6 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
   <div class="nav">
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 NOAH 종목분석</a>
-    · <a href="screener.html">📊 Screener</a>
-    · <a href="screener_domains.html">🗂️ 도메인 목록</a>
-    · <a href="paper.html">🔔 워치리스트</a>
   </div>
   <h1>📨 미국 레딧 게시물 분석 — Archive</h1>
   <p class="sub">t.me/insidertracking 자동 포워드 · 제목 '미국 레딧 게시물 분석' 필터 · ₩0 (LLM 없음, 원본 그대로) · 정보 관찰(투자 권유 아님)</p>
@@ -10912,9 +10926,11 @@ def _render_earnings_table(earnings: list) -> str:
         y = e.get("year")
         q_str = f'Q{q} {y}' if q and y else "—"
         lookup_url = f'lookup/{sym}'
-        name_span = f'<span class="co-name">{co_name}</span>' if co_name else ""
+        # 회사명만 표시(종목코드 생략) → 컴팩트 (사용자 2026-06-10 '한국
+        # 종목코드 필요없음'). 이름 없으면 티커 폴백. 링크는 티커로.
+        display = co_name if co_name else sym
         rows.append(
-            f'<tr><td class="sym"><a href="{lookup_url}">{sym}{name_span}</a></td>'
+            f'<tr><td class="sym"><a href="{lookup_url}">{display}</a></td>'
             f'<td>{dt}</td><td>{hour_label}</td>'
             f'<td>{q_str}</td><td>{eps_str}</td><td>{rev_str}</td></tr>'
         )

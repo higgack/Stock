@@ -48,9 +48,12 @@ td.ld{color:var(--muted);font-size:12px}
 </style>
 """
 
-_THEME_SCRIPT = """
+_THEME_SCRIPT = r"""
 <script>
 (function(){var h=parseInt(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';})();
+/* 홈으로 = 뒤로가기 (사용자 2026-06-10) — 세부 페이지에서 홈 클릭 시 새로고침
+   대신 직전 화면으로(같은 호스트일 때만). dashboard.py _THEME_JS 와 동일. */
+document.addEventListener('click',function(e){var a=e.target.closest?e.target.closest('a'):null;if(!a)return;var href=a.getAttribute('href')||'';if(!/(^|\/)market\.html(?:[?#]|$)/.test(href))return;if(history.length>1&&document.referrer&&document.referrer.indexOf(location.host)>-1){e.preventDefault();history.back();}});
 </script>
 """
 
