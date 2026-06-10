@@ -61,11 +61,11 @@ def _now() -> datetime:
     return datetime.now(_KST)
 
 
-# ── 디스크 캐시 (truthy-only, 12h) ────────────────────────────────────────
-def _cache_get(key: str):
+# ── 디스크 캐시 (truthy-only, 기본 12h · 호출별 ttl 오버라이드 가능) ──────
+def _cache_get(key: str, ttl: float | None = None):
     try:
         p = os.path.join(_CACHE_DIR, key + ".json")
-        if os.path.exists(p) and (time.time() - os.path.getmtime(p)) < _CACHE_TTL:
+        if os.path.exists(p) and (time.time() - os.path.getmtime(p)) < (ttl or _CACHE_TTL):
             with open(p, encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
@@ -436,9 +436,15 @@ _OP_CREDIT = "getGrantingOfCreditBalanceInfo"         # 신용공여잔고추이
 
 
 def _kofia_series(op: str, field: str, n: int = 30) -> list[tuple[str, float]]:
-    """협회통계 op 의 (basDt, field값) 시계열 (오름차순). 캐시 12h."""
-    ck = f"kofia_{op}_{field}_{_now():%Y%m%d}"
-    c = _cache_get(ck)
+    """협회통계 op 의 (basDt, field값) 시계열 (오름차순).
+
+    캐시 3h (사용자 2026-06-10 — 예탁금 위젯이 Naver 라이브 대비 3일 늦게
+    보인 건. data.go.kr 공표가 당일 갱신되는 경우 12h 캐시가 최대 반나절
+    지연을 더하던 것 단축. 키가 날짜 포함이라 자정 후 첫 호출은 어차피
+    재fetch — TTL 은 당일 내 재확인 주기). 진단 로그로 원천 최신 basDt 를
+    INFO 남김 — VM journal 에서 '원천 자체가 T+N 지연'인지 판별용."""
+    ck = f"kofia_{op}_{field}_{n}_{_now():%Y%m%d}"
+    c = _cache_get(ck, ttl=3 * 3600)
     if c is not None:
         return [tuple(x) for x in c]
     raw = _fetch(_KOFIA_BASE, op, {"numOfRows": n})
@@ -451,6 +457,8 @@ def _kofia_series(op: str, field: str, n: int = 30) -> list[tuple[str, float]]:
     out = sorted(series.items())
     if out:  # truthy-only (transient 빈 응답 미캐시)
         _cache_put(ck, out)
+        log.info("kofia %s.%s: latest basDt=%s (rows=%d) — 원천 공표 지연 진단용",
+                 op, field, out[-1][0], len(out))
     return out
 
 

@@ -11273,6 +11273,7 @@ def _render_deposit_widget(dep: dict) -> str:
         return f' <span class="{cls}" style="font-size:12px">{arrow}{_won(abs(v))}</span>'
 
     date = _html.escape(str(dep.get("date", "")))
+    src = _html.escape(str(dep.get("source") or "금융투자협회"))
     dv = (f'<div class="dp-item"><span class="dp-l">고객예탁금</span>'
           f'<span class="dp-v">{_won(dep.get("deposit"))}{_chg(dep.get("deposit_chg"))}</span></div>')
     cv = ""
@@ -11281,7 +11282,7 @@ def _render_deposit_widget(dep: dict) -> str:
               f'<span class="dp-v">{_won(dep.get("credit"))}{_chg(dep.get("credit_chg"))}</span></div>')
     return (
         '<div class="dp-wrap"><div class="dp-hd">💰 투자자 예탁금·신용</div>'
-        f'{dv}{cv}<span class="dp-ts">{date} · Naver</span></div>'
+        f'{dv}{cv}<span class="dp-ts">기준일 {date} · {src}</span></div>'
     )
 
 
@@ -11290,6 +11291,7 @@ def _render_deposit_charts(dep: dict) -> str:
     if not dep:
         return ""
     cards: list[str] = []
+    src_foot = "출처: " + str(dep.get("source") or "금융투자협회")
     dser = dep.get("deposit_series", [])
     cser = dep.get("credit_series", [])
     if len(dser) >= 2:
@@ -11298,14 +11300,14 @@ def _render_deposit_charts(dep: dict) -> str:
             [{"name": "고객예탁금", "color": "#ab47bc",
               "data": [p["v"] for p in dser], "axis": "L"}])
         cards.append(_chart_card("고객예탁금 추이 (억원)",
-                                 [("고객예탁금", "#ab47bc")], svg, "출처: Naver 증권"))
+                                 [("고객예탁금", "#ab47bc")], svg, src_foot))
     if len(cser) >= 2:
         svg = _svg_line_chart(
             [p["d"] for p in cser],
             [{"name": "신용잔고", "color": "#42a5f5",
               "data": [p["v"] for p in cser], "axis": "L"}])
         cards.append(_chart_card("신용잔고 추이 (억원)",
-                                 [("신용잔고", "#42a5f5")], svg, "출처: Naver 증권"))
+                                 [("신용잔고", "#42a5f5")], svg, src_foot))
     if not cards:
         return ""
     return ('<div class="chart-row" style="grid-template-columns:1fr 1fr;'
