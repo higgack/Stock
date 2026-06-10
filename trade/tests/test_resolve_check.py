@@ -90,6 +90,19 @@ class ResolveCheckTests(unittest.TestCase):
             self.assertEqual(rc.run(), 0)
         la.assert_not_called()
 
+    def test_audit_warns_when_provider_off(self):
+        # 키 미설정이면 전 종목이 빈칸으로 분류돼 오독 — ⚠️ 경고줄 출력.
+        alerts = [{"stocks": ["삼성전자"]}]
+        with mock.patch.object(rc, "list_all_alerts", return_value=alerts), \
+             mock.patch.object(pp, "provider_active", return_value=False), \
+             mock.patch.object(pp, "resolve_codes", return_value={}), \
+             mock.patch("trade.dashboard._stock_quotes_for", return_value={}), \
+             mock.patch("builtins.print") as pr:
+            self.assertEqual(rc.audit(), 0)
+        out = "\n".join(str(c.args[0]) for c in pr.call_args_list if c.args)
+        self.assertIn("⚠️", out)
+        self.assertIn("공급자 OFF", out)
+
     def test_audit_classifies_no_code_vs_no_quote(self):
         # --audit은 렌더 함수(_stock_quotes_for)로 실제 표시여부 판정 후 분류:
         #   시세 박힌 것=빈칸 아님 / 코드 없음(①) / 코드 있는데 시세 없음(●).

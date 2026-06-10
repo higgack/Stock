@@ -113,6 +113,16 @@ def _default_transport(method: str, url: str, *, headers: dict,
         return json.loads(r.read().decode("utf-8"))
 
 
+def _atomic_write_json(path: Path, obj) -> None:
+    """tmp+replace 원자 쓰기 — bot(/map)·워머·렌더가 프로세스를 달리해 같은 JSON을
+    읽고 쓰므로, plain write_text의 부분쓰기(torn read → 파싱실패 → 캐시 전체 무시)
+    노출을 막는다. build_krx_codes의 확립 패턴과 동일."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
 def _provider() -> str:
     """현재 공급자. auto = KIS 키 있으면 kis(실시간 우선 — data.go.kr EOD는
     T+1 지연이라 너무 느림), 아니면 data.go.kr 키 있으면 dataportal(EOD),
@@ -192,10 +202,8 @@ def _kis_token(*, transport: Transport = _default_transport) -> Optional[str]:
     # 취급하면 매 호출 재발급으로 막힘). 괄호로 우선순위 고정.
     expires = time.time() + (_fnum(resp.get("expires_in")) or 86400.0)
     try:
-        _DATA_DIR.mkdir(parents=True, exist_ok=True)
-        _TOKEN_PATH.write_text(
-            json.dumps({"access_token": tok, "expires_at": expires}),
-            encoding="utf-8")
+        _atomic_write_json(_TOKEN_PATH, {"access_token": tok,
+                                         "expires_at": expires})
     except OSError:
         pass
     return tok
@@ -442,10 +450,20 @@ def list_overrides() -> dict[str, str]:
 
 
 def _write_overrides(data: dict) -> None:
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _OVERRIDES_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(_OVERRIDES_PATH)
+    _atomic_write_json(_OVERRIDES_PATH, data)
+
+
+def krx_name_for(code: str) -> str:
+    """6자리 코드 → KRX 종목명(공백제거 표기) 역조회. 로컬 마스터만 사용(외부콜 0).
+    /map의 오등록 검증용 — KIS inquire-price가 종목명(hts_kor_isnm)을 안 주는
+    환경에서 운영자가 '맞는 회사인지' 확인할 수단. 마스터에 없으면 ""."""
+    c = "".join(ch for ch in str(code) if ch.isdigit()).zfill(6)[:6]
+    if not c:
+        return ""
+    for nm, v in _load_krx_master().items():
+        if v == c:
+            return nm
+    return ""
 
 
 def set_override(name: str, code: str) -> None:
@@ -589,9 +607,7 @@ def resolve_codes(names: Iterable[str], *,
         dirty = True
     if dirty:
         try:
-            _DATA_DIR.mkdir(parents=True, exist_ok=True)
-            _CODE_CACHE.write_text(json.dumps(cache, ensure_ascii=False),
-                                   encoding="utf-8")
+            _atomic_write_json(_CODE_CACHE, cache)
         except OSError:
             pass
     return out
@@ -617,9 +633,7 @@ def _load_cache() -> dict:
 
 def _save_cache(cache: dict) -> None:
     try:
-        _DATA_DIR.mkdir(parents=True, exist_ok=True)
-        _QUOTE_CACHE.write_text(json.dumps(cache, ensure_ascii=False),
-                                encoding="utf-8")
+        _atomic_write_json(_QUOTE_CACHE, cache)
     except OSError:
         pass
 

@@ -202,7 +202,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • /api/stats — 카운트 (수출/수입, 잠정/확정 등)
 • /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
 
-<i>최종 갱신: 2026-06-06 — /map: 관련종목 시세 코드 텔레그램 즉석 등록(커밋 불필요)</i>
+<i>최종 갱신: 2026-06-06 — /map 응답에 KRX 종목명 표시 + 시세 캐시 원자쓰기</i>
 """
 
 
@@ -1009,9 +1009,10 @@ async def cmd_map(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"<code>{_html.escape(args[-1])}</code>는 6자리 종목코드가 아님 "
             f"(예: <code>226340</code>).", parse_mode=ParseMode.HTML)
         return
-    # KIS로 실제 시세 확인 — 오등록(틀린 코드) 방지.
+    # KIS로 실제 시세 확인 — 오등록(틀린 코드) 방지. 블로킹 HTTP(urllib)라
+    # to_thread로 — 이벤트루프를 막으면 BeOn 채널 실시간 수신까지 정지함.
     try:
-        q = pp.get_quote(code)
+        q = await asyncio.to_thread(pp.get_quote, code)
     except Exception:
         q = None
     if q is None:
@@ -1020,7 +1021,9 @@ async def cmd_map(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             f"코드가 맞는지(상장·거래중) 확인해줘.", parse_mode=ParseMode.HTML)
         return
     pp.set_override(name, code)
-    nm = q.name if (q.name and q.name != code) else ""
+    # 종목명: KIS가 이름을 안 주면(name==code) KRX 로컬 마스터 역조회 — 운영자가
+    # '맞는 회사인지' 응답에서 바로 확인(오등록 방지의 핵심).
+    nm = q.name if (q.name and q.name != code) else pp.krx_name_for(code)
     suffix = f" {_html.escape(nm)}" if nm else ""
     await update.message.reply_text(
         f"✅ 등록: <code>{_html.escape(name)}</code> → <code>{code}</code>"
