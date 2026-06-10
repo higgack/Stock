@@ -655,7 +655,9 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
                     "target": tp,
                     "date": d,
                 })
-            return items
+            # 종목당 최대 3건 — AVGO 처럼 한 종목이 테이블을 도배하던 것
+            # (사용자 2026-06-11). 최신순이라 head(15) 중 앞 3건.
+            return items[:3]
         except Exception:
             return []
 
