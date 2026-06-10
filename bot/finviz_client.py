@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading as _threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -582,17 +583,52 @@ def _us_universe_robust() -> list[str]:
     return list(_CORE_US)
 
 
-def _highlow_fallback_sp500() -> dict:
-    """Finviz 차단 시 — S&P 500 1년 주봉 벌크로 52주 고저 1% 근접 산출.
+_HL_LOCK = _threading.Lock()
+_HL_REFRESHING = False
 
-    2026-06-10 VM surfaced('데이터를 불러올 수 없습니다' + source=S&P500
-    산출): 500종목 단일 yf.download 가 통째로 실패하면 빈 결과였음 →
-    **120종목 배치 4-5회**로 분할(배치별 try/except — 일부 실패해도 나머지
-    배치로 표면 유지) + 단계별 진단 로그(universe/배치/산출 수). 무겁기에
-    6h 별도 캐시."""
+
+def _kick_highlow_refresh() -> None:
+    """백그라운드 1개만 — stampede 방지."""
+    global _HL_REFRESHING
+    with _HL_LOCK:
+        if _HL_REFRESHING:
+            return
+        _HL_REFRESHING = True
+
+    def _run():
+        global _HL_REFRESHING
+        try:
+            _compute_highlow_sp500()
+        except Exception as exc:
+            log.warning("finviz: highlow 백그라운드 재계산 실패: %s", exc)
+        finally:
+            with _HL_LOCK:
+                _HL_REFRESHING = False
+
+    _threading.Thread(target=_run, daemon=True,
+                      name="highlow-refresh").start()
+
+
+def _highlow_fallback_sp500() -> dict:
+    """Finviz 차단 시 — S&P 500 산출. **stale-while-revalidate**: 30분
+    지난 캐시도 즉시 서빙 + 백그라운드 재계산 (동기 1분+ 배치가 페이지
+    요청을 hang 시키던 것 차단 — 사용자 2026-06-11 '신고가 안 먹어').
+    캐시가 아예 없을 때만 동기 계산(최초 1회)."""
     c = _cached("highlow_sp500.json", ttl=_FALLBACK_TTL_SEC)
     if c is not None:
         return c
+    stale = _cached("highlow_sp500.json", ttl=86400)
+    if stale is not None:
+        _kick_highlow_refresh()
+        return stale
+    return _compute_highlow_sp500()
+
+
+def _compute_highlow_sp500() -> dict:
+    """S&P 500 1년 주봉 벌크로 52주 고저 1% 근접 산출 (무거움 — 배치 4-5회).
+
+    2026-06-10 VM surfaced: 500종목 단일 yf.download 통째 실패 시 빈 결과
+    → 120종목 배치 분할 + 배치별 try/except + 진단 로그."""
     out: dict = {"high": [], "low": [], "ts": _now_label(),
                  "source": "S&P 500 산출(yfinance)"}
     try:

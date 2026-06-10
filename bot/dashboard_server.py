@@ -746,8 +746,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 '<div style="position:sticky;top:0;z-index:2147483647;'
                 'background:#0d1117;color:#c9d1d9;padding:8px 14px;font-size:13px;'
                 'border-bottom:1px solid #30363d;font-family:system-ui,-apple-system,sans-serif">'
-                f'<a href="{_pfx}/market.html" style="color:#58a6ff;text-decoration:none;margin-right:16px">🌍 홈</a>'
-                f'<a href="{_pfx}/index.html" style="color:#58a6ff;text-decoration:none;margin-right:16px">🦉 NOAH 종목분석</a>'
+                # onclick 강제 이동 — trade SPA 라우터가 클릭을 가로채
+                # 자기 화면을 유지하던 것 차단(사용자 2026-06-11 '홈 눌러도
+                # 수출입'). preventDefault 와 무관하게 location 직접 설정.
+                f'<a href="{_pfx}/market.html" onclick="window.location.href=this.href;return false" style="color:#58a6ff;text-decoration:none;margin-right:16px">🌍 홈</a>'
+                f'<a href="{_pfx}/index.html" onclick="window.location.href=this.href;return false" style="color:#58a6ff;text-decoration:none;margin-right:16px">🦉 NOAH 종목분석</a>'
                 '<span style="color:#8b949e">· 🇰🇷 한국 수출입</span></div>'
             ).encode("utf-8")
             m = _re.search(rb"<body[^>]*>", body, _re.IGNORECASE)
