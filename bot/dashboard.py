@@ -10336,7 +10336,7 @@ _DART_FEED_CSS = """
 <style>
 .df-controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:16px}
 .df-pills{display:flex;flex-wrap:wrap;gap:6px}
-.df-pill{padding:4px 12px;border-radius:16px;border:1px solid var(--border,#333);background:transparent;color:var(--fg,#ccc);cursor:pointer;font-size:13px;white-space:nowrap}
+.df-pill{padding:4px 12px;border-radius:16px;border:1px solid var(--border,#333);background:transparent;color:var(--text,#1f2937);cursor:pointer;font-size:13px;white-space:nowrap}
 .df-pill.active{background:var(--accent,#ef5350);color:#fff;border-color:var(--accent,#ef5350)}
 .df-right{display:flex;gap:8px;align-items:center}
 .df-view-btns{display:flex;gap:2px;background:var(--card,#1a1f2b);border-radius:6px;padding:2px}
@@ -10356,22 +10356,22 @@ _DART_FEED_CSS = """
 .df-searching .df-month-body,.df-searching .df-date-body{display:block!important}
 .df-date-meta{font-size:12px;color:var(--muted,#888);font-weight:400;margin-left:auto}
 .df-date-label{margin-left:8px}
-.df-date-cnt{margin-left:8px;font-weight:600;color:var(--fg,#ccc)}
+.df-date-cnt{margin-left:8px;font-weight:600;color:var(--text,#1f2937)}
 .df-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
 @media(max-width:900px){.df-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:600px){.df-grid{grid-template-columns:1fr}}
 .df-card{background:var(--card,#1a1f2b);border:1px solid var(--border,#2a2f3a);border-radius:8px;padding:14px;font-size:13px;display:flex;flex-direction:column;gap:6px}
 .df-card.hidden{display:none}
 .df-card-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
-.df-corp{font-weight:700;font-size:15px;color:var(--fg,#eee);text-decoration:none}
+.df-corp{font-weight:700;font-size:15px;color:var(--text,#1f2937);text-decoration:none}
 .df-corp:hover{text-decoration:underline}
 .df-ticker-link{font-size:11px;color:var(--muted,#888);text-decoration:none}
 .df-ticker-link:hover{color:var(--accent,#3b82f6)}
 .df-meta{display:flex;align-items:center;gap:6px;flex-shrink:0}
 .df-dt{font-size:12px;color:var(--muted,#888)}
 .df-cat{font-size:11px;padding:2px 8px;border-radius:4px;color:#fff;white-space:nowrap}
-.df-report{color:var(--muted,#aaa);font-size:12px;line-height:1.4}
-.df-detail-ln{color:var(--fg,#ccc);font-size:12px;line-height:1.5}
+.df-report{color:var(--muted,#6b7280);font-size:12px;line-height:1.4}
+.df-detail-ln{color:var(--text,#1f2937);font-size:12px;line-height:1.5}
 /* list view */
 .df-grid.list-view{display:flex;flex-direction:column;gap:4px}
 .df-grid.list-view .df-card{flex-direction:row;align-items:center;gap:12px;padding:8px 14px}
@@ -10424,10 +10424,10 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         <button id="df-clear" type="button" title="초기화">초기화</button>
       </div>
       <div class="df-view-btns">
-        <button class="df-vbtn" data-view="grid" title="그리드">
+        <button class="df-vbtn active" data-view="grid" title="그리드">
           <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="5" height="5" rx="1" fill="currentColor"/><rect x="10" y="1" width="5" height="5" rx="1" fill="currentColor"/><rect x="1" y="10" width="5" height="5" rx="1" fill="currentColor"/><rect x="10" y="10" width="5" height="5" rx="1" fill="currentColor"/></svg>
         </button>
-        <button class="df-vbtn active" data-view="list" title="리스트">
+        <button class="df-vbtn" data-view="list" title="리스트">
           <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="6.75" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="11.5" width="14" height="2.5" rx="1" fill="currentColor"/></svg>
         </button>
       </div>
@@ -10471,7 +10471,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
           <span class="df-caret">▾</span><span>{label}</span>
           <span class="df-date-meta"><span class="df-date-cnt">{len(items)}</span></span>
         </div>
-        <div class="df-date-body"><div class="df-grid list-view">
+        <div class="df-date-body"><div class="df-grid">
 """)
             for it in items:
                 cn = _html.escape(it.get("corp_name", ""))
