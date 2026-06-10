@@ -57,6 +57,16 @@ _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "finviz"
 _CACHE_TTL_SEC = 10 * 60        # 10분 — Naver(4분)보다 길게 (차단 회피)
 _FALLBACK_TTL_SEC = 6 * 3600    # S&P500 1y 주봉 폴백은 무거워 6h
 
+# 위키/스크린너 universe 가 전부 실패할 때의 최후 코어 (~40 대형주) — 신고저
+# 폴백이 빈 화면 안 되게 최소 보장(2026-06-10 VM '데이터 없음' 케이스).
+_CORE_US = (
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "BRK-B",
+    "LLY", "JPM", "V", "XOM", "UNH", "MA", "JNJ", "PG", "HD", "COST", "ORCL",
+    "MRK", "ABBV", "CVX", "KO", "PEP", "WMT", "BAC", "CRM", "AMD", "NFLX",
+    "ADBE", "MCD", "WFC", "DIS", "CSCO", "INTC", "QCOM", "TXN", "IBM", "GE",
+    "CAT", "BA", "PFE", "T", "VZ",
+)
+
 
 def _get(url: str) -> Optional[str]:
     """Finviz HTML fetch — 브라우저 헤더 + 최대 2회 시도(백오프). 차단/
@@ -118,8 +128,10 @@ def _now_label() -> str:
 # href 가 .ashx 폐기 + 클린 URL 로 바뀜 (2026-06-10 VM 로그: screener.ashx
 # →301→screener). screener(.ashx)? + f=ind_ 만으로 매칭(v= 위치/유무 무관),
 # 선행 도메인/경로 허용. 옛 .ashx 형태도 동시 매칭(.ashx)? 라 하위호환.
+# 그룹1 = ind_ 슬러그(업종 클릭 → Finviz 해당 업종 종목 링크용, 사용자
+# 2026-06-10 '한국처럼 업종 클릭하면 종목 보기'). 그룹2 = 업종명, 그룹3 = tail.
 _GROUP_ROW_RE = re.compile(
-    r'<a[^>]+href="[^"]*screener(?:\.ashx)?\?[^"]*f=ind_[^"]*"[^>]*>([^<]{2,60})</a>(.*?)</tr>',
+    r'<a[^>]+href="[^"]*screener(?:\.ashx)?\?[^"]*f=(ind_[^"&]*)[^"]*"[^>]*>([^<]{2,60})</a>(.*?)</tr>',
     re.DOTALL | re.IGNORECASE)
 _PCT_RE = re.compile(r'([-+]?\d+\.\d+)%')
 
@@ -135,7 +147,7 @@ def fetch_groups() -> dict:
     html = _get(f"{_BASE}/groups?g=industry&v=110&o=-change")
     if html:
         import html as _h
-        for name, tail in _GROUP_ROW_RE.findall(html):
+        for slug, name, tail in _GROUP_ROW_RE.findall(html):
             pcts = _PCT_RE.findall(tail)
             if not pcts:
                 continue
@@ -143,8 +155,10 @@ def fetch_groups() -> dict:
                 # v=110 행의 마지막 % 컬럼 = 당일 Change. 이름은 unescape
                 # (Oil &amp; Gas → Oil & Gas) — 렌더가 다시 escape 하므로
                 # 여기서 풀어둬야 이중이스케이프('&amp;amp;') 방지.
+                # slug = Finviz f= 필터(업종 클릭 → 해당 업종 종목 링크).
                 out["groups"].append(
-                    {"name": _h.unescape(name.strip()), "pct": float(pcts[-1])})
+                    {"name": _h.unescape(name.strip()), "pct": float(pcts[-1]),
+                     "slug": slug})
             except ValueError:
                 continue
         if not out["groups"]:
@@ -429,12 +443,24 @@ def _highlow_fallback_sp500() -> dict:
     out: dict = {"high": [], "low": [], "ts": _now_label(),
                  "source": "S&P 500 산출(yfinance)"}
     try:
-        from bot.stock_screener import _get_us_universe
         import yfinance as yf
-        universe = _get_us_universe()
+        universe: list[str] = []
+        try:
+            from bot.stock_screener import _get_us_universe
+            universe = _get_us_universe() or []
+        except Exception:
+            universe = []
         if not universe:
-            log.warning("finviz: S&P500 fallback — universe empty "
-                        "(Wikipedia fetch 실패?)")
+            # 위키 universe 실패 시 — GICS 맵 키(같은 표지만 7d 캐시), 그것도
+            # 없으면 하드코딩 코어(2026-06-10 VM '데이터 없음' — Finviz 신고저
+            # 파싱 실패 + universe 부재 이중고. 최소 코어로 빈 화면 방지).
+            universe = list(_sp500_industry_map().keys())
+        if not universe:
+            universe = list(_CORE_US)
+            log.warning("finviz: S&P500 fallback — universe 부재, 코어 %d종목으로",
+                        len(universe))
+        if not universe:
+            log.warning("finviz: S&P500 fallback — universe empty (전 소스 실패)")
             return out
         log.info("finviz: S&P500 fallback — universe %d, 배치 다운로드 시작",
                  len(universe))
