@@ -6574,7 +6574,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
     for date in sorted(by_date.keys(), reverse=True):
         _prev_month = _month_transition(
             parts, _prev_month, date, _this_month, _month_counts)
-        day_open = " open" if date == _today_kst else ""
+        day_open = ""  # 날짜 접힘 기본(사용자 2026-06-11) — 월만 펼침
         day_count = len(by_date[date])
         parts.append(
             f'<details class="day"{day_open}>'
@@ -6846,9 +6846,10 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                 _cs_month_open(parts, _cs_month, _cs_month_count, _cs_month == _today_kst_str[:7])
                 _cs_prev_month = _cs_month
 
-            _cs_day_open = (_cs_d == _today_kst_str)
+            # 첫 진입 시 날짜는 접힌 상태(사용자 2026-06-11) — 월만 펼쳐
+            # 날짜 목록 보이고, 결과는 클릭해서 펼침.
             parts.append(
-                f'<details class="day cs-day" data-date="{_shtml.escape(_cs_d)}"{" open" if _cs_day_open else ""}>'
+                f'<details class="day cs-day" data-date="{_shtml.escape(_cs_d)}">'
                 f'<summary>📅 {_cs_d} <span class="cnt">{len(_cs_day_items)} 건</span></summary>'
             )
 
@@ -8440,7 +8441,7 @@ def _render_realestate_page(runs: list[dict]) -> str:
         _prev_month = _month_transition(
             parts, _prev_month, date, _this_month, _month_counts,
             force_open=_first_day)
-        day_open = " open" if (date == _today or _first_day) else ""
+        day_open = ""  # 부동산 날짜 접힘 기본(사용자 2026-06-11) — 월만 펼침
         _first_day = False
         parts.append(
             f'<details class="day"{day_open}><summary class="day-head">'

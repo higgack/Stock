@@ -230,7 +230,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if (path_lower.endswith((".html", "/")) or path_lower == ""
                 or path_lower in ("/earnings", "/theme", "/highlow",
                                   "/usindustry", "/ushighlow")
-                or path_lower.startswith("/lookup/")):
+                or path_lower.startswith("/lookup/")
+                or path_lower == "/trade" or path_lower.startswith("/trade/")):
+            # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
+            # 0)지만, no-cache 가 없으면 브라우저가 옛 HTML 을 캐시해 갱신이
+            # 안 보임 → 항상 revalidate (사용자 2026-06-11 '업데이트 실시간?').
             self.send_header("Cache-Control", "no-cache, must-revalidate")
         super().end_headers()
 
