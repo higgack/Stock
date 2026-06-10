@@ -85,6 +85,13 @@ except ImportError:
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,9}$")
 _ARCHIVE_ROOT = ARCHIVE_ROOT.resolve()
+# 우리 대시보드 루트 페이지명 — trade 프록시 밑으로 흡수된 상대링크 탈출용.
+_OUR_ROOT_PAGES = frozenset((
+    "market.html", "index.html", "screener.html", "screener_domains.html",
+    "dart_feed.html", "watchlist.html", "daily_byte.html", "portfolio.html",
+    "budget.html", "paper.html", "reddit_insider.html", "realestate.html",
+    "cheongyak.html", "gics_candidates.html", "errors.html",
+))
 
 _TOKEN = (os.getenv("DASHBOARD_TOKEN") or "").strip()
 _AUTH_USER = (os.getenv("DASHBOARD_USER") or "").strip()
@@ -690,6 +697,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         base = os.environ.get("TRADE_PROXY_BASE",
                               "http://127.0.0.1:8765/dashboard")
         sub = self.path[len("/trade"):]
+        # trade 페이지의 상대링크(예: href="market.html")가 /trade/ 밑으로
+        # 흡수되면 trade 백엔드가 자기 인덱스를 돌려줘 '홈 눌렀는데 수출입'
+        # 오작동(사용자 2026-06-11). 우리 루트 페이지명이면 밖으로 redirect.
+        _leaf = sub.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        if _leaf in _OUR_ROOT_PAGES:
+            _pfx = f"/{_TOKEN}" if _TOKEN else ""
+            self.send_response(302)
+            self.send_header("Location", f"{_pfx}/{_leaf}")
+            self.end_headers()
+            return
         if sub == "":
             sub = "/"
         if not sub.startswith(("/", "?")):
@@ -899,7 +916,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_dir.mkdir(parents=True, exist_ok=True)
             safe = ticker.replace(".", "_").replace("-", "_")
             cache_f = cache_dir / f"{safe}.html"
-            if cache_f.exists() and (time.time() - cache_f.stat().st_mtime) < 300:
+            # 코드 배포 시 자동 무효화 — 캐시가 dashboard.py 보다 오래되면
+            # 옛 마크업 서빙 금지(사용자 2026-06-11 stale lookup).
+            try:
+                import bot.dashboard as _dmod
+                _code_mtime = os.path.getmtime(_dmod.__file__)
+            except Exception:
+                _code_mtime = 0.0
+            if (cache_f.exists()
+                    and (time.time() - cache_f.stat().st_mtime) < 300
+                    and cache_f.stat().st_mtime > _code_mtime):
                 try:
                     encoded = cache_f.read_bytes()
                     self.send_response(200)

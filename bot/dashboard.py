@@ -1467,7 +1467,8 @@ _CONSOLE_JS = r"""
     + '.cmd-panel .cmd-hd{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border,#2a2e37);background:var(--bg,#0f1115)}'
     + '.cmd-panel .cmd-title{font-size:13px;font-weight:600;color:var(--accent,#3b82f6);font-family:ui-monospace,Menlo,monospace;word-break:break-all}'
     + '.cmd-panel .cmd-x{background:none;border:none;color:var(--fg-soft,var(--muted,#9aa));cursor:pointer;font-size:14px;padding:2px 6px;flex-shrink:0}'
-    + '.cmd-panel .cmd-body{margin:0;padding:12px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,Menlo,monospace;max-height:60vh;overflow:auto}';
+    + '.cmd-panel .cmd-body{margin:0;padding:12px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,Menlo,monospace;max-height:60vh;overflow:auto}'
+    + '.run-btn.run-busy{background:#e2574c !important;cursor:wait}';
   (document.head||document.documentElement).appendChild(st);
 })();
 function noahEsc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
@@ -1522,12 +1523,37 @@ function noahConsoleSetup(opts){
       body: JSON.stringify({kind: opts.runKind, q: q})})
       .then(function(r){ return r.json().then(function(d){ return {st:r.status, d:d}; }); })
       .then(function(x){
-        if (btn){ btn.disabled=false; btn.textContent=orig; }
         if (x.d && x.d.ok){
           var note = x.d.dup ? '이미 같은 요청이 대기 중입니다.'
             : ((x.d.q ? x.d.q + ' — ' : '') + (opts.okMsg || '요청 접수. 결과는 텔레그램 채널에 게시됩니다.'));
           if (statusEl) statusEl.textContent = '✅ ' + note; else alert('✅ ' + note);
-        } else { alert('⚠️ ' + ((x.d && x.d.error) || ('요청 실패 (HTTP ' + x.st + ')'))); }
+          if (btn && x.d.id){
+            // 작업중 = 빨간 버튼, 완료 시 원복(사용자 2026-06-11). 봇이
+            // 완료 시점에 같은 id 로 result 를 기록 → 5초 폴링.
+            btn.classList.add('run-busy'); btn.textContent = '작업중';
+            (function pollDone(tries){
+              if (tries > 300){
+                btn.classList.remove('run-busy'); btn.disabled=false; btn.textContent=orig;
+                if (statusEl) statusEl.textContent = '⚠️ 완료 확인 시간 초과 — 텔레그램 채널을 확인하세요.';
+                return;
+              }
+              fetch('api/command_result?id=' + encodeURIComponent(x.d.id), {cache:'no-store'})
+                .then(function(r){ return r.json(); })
+                .then(function(d){
+                  if (d && d.done){
+                    btn.classList.remove('run-busy'); btn.disabled=false; btn.textContent=orig;
+                    if (statusEl) statusEl.textContent = (d.lines && d.lines.length ? d.lines[0] : '✅ 완료');
+                    return;
+                  }
+                  setTimeout(function(){ pollDone(tries+1); }, 5000);
+                })
+                .catch(function(){ setTimeout(function(){ pollDone(tries+1); }, 5000); });
+            })(0);
+          } else if (btn){ btn.disabled=false; btn.textContent=orig; }
+        } else {
+          if (btn){ btn.disabled=false; btn.textContent=orig; }
+          alert('⚠️ ' + ((x.d && x.d.error) || ('요청 실패 (HTTP ' + x.st + ')')));
+        }
       })
       .catch(function(e){ if (btn){ btn.disabled=false; btn.textContent=orig; } alert('⚠️ 요청 실패: ' + e); });
   }
@@ -2186,6 +2212,9 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-row { display: flex; gap: 10px; align-items: stretch; }
 .chart-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 /* 상단 헤드라인(현재가 large + 기간 수익률 + 거래량) — 레퍼런스 터미널 패턴. */
+.chart-head-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+#chart-live-slot { margin-left: auto; display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--fg-soft); white-space: nowrap; }
 .chart-headline { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
   margin: 2px 0; font-variant-numeric: tabular-nums; min-height: 24px; }
 .chart-headline .ch-cur { font-size: 22px; font-weight: 700; color: var(--fg); }
@@ -2596,7 +2625,10 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     </div>
     <div class="chart-row">
       <div class="chart-main">
-        <div id="chart-headline" class="chart-headline"></div>
+        <div class="chart-head-row">
+          <div id="chart-headline" class="chart-headline"></div>
+          <span id="chart-live-slot"></span>
+        </div>
         <div id="chart-ohlc" class="chart-ohlc"></div>
         <div id="price-chart" class="price-chart" data-ticker="{tkr}"></div>
         <div id="rsi-chart" class="sub-chart"></div>
@@ -5925,6 +5957,17 @@ _QUOTE_JS = r"""
     if (lightDone && fullDone){ d.className = 'q-dot q-dot-done'; d.title = '전체 로딩 완료'; }
     else { d.className = 'q-dot q-dot-load'; d.title = '데이터 로딩 중…'; }
   }
+  // 라이브 배지를 차트 헤드라인 오른쪽 슬롯으로 이동 — 별도 줄 제거(사용자
+  // 2026-06-11). 차트 없는 페이지는 원래 자리 유지. 슬롯/배지가 늦게 뜨는
+  // lookup 비동기 주입 대비 재시도.
+  (function relocateLive(n){
+    var slot = document.getElementById('chart-live-slot');
+    var stat = document.querySelector('.si-quote-status');
+    if (slot && stat){
+      while (stat.firstChild) slot.appendChild(stat.firstChild);
+      stat.style.display = 'none';
+    } else if (n < 12) setTimeout(function(){ relocateLive(n+1); }, 400);
+  })(0);
   // LIGHT — fast, always fresh
   fetch(base + 'api/quote?ticker=' + encodeURIComponent(NOAH_TICKER), {cache:'no-store'})
     .then(function(r){ return r.json(); })
@@ -6864,12 +6907,19 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                         f"<td class='muted'>{_sh_extra}</td></tr>"
                     )
                 _scr_mcap_hdr = "시총($M)" if _scr_is_us else "시총(억)"
-                _scr_table = ""
                 if _scr_rows:
                     _scr_table = (
                         f"<table class='scr-tbl'><thead><tr><th>종목명</th><th>티커</th><th>시장</th>"
                         f"<th>{_scr_mcap_hdr}</th><th>지표</th></tr></thead>"
                         f"<tbody>{_scr_rows}</tbody></table>"
+                    )
+                else:
+                    # 0종목 — 텔레그램처럼 명시(사용자 2026-06-11: 펼쳤는데
+                    # 빈 카드면 깨진 것처럼 보임).
+                    _scr_table = (
+                        "<p class='muted' style='padding:10px 14px;margin:0'>"
+                        "조건에 맞는 종목이 없습니다 "
+                        f"(0종목 / {_scr_total:,}종목 스캔).</p>"
                     )
                 _scr_mbadge = " 🇺🇸" if _scr_is_us else ""
                 parts.append(
@@ -12375,7 +12425,10 @@ def _lookup_chart_html(ticker: str) -> str:
     </div>
     <div class="chart-row">
       <div class="chart-main">
-        <div id="chart-headline" class="chart-headline"></div>
+        <div class="chart-head-row">
+          <div id="chart-headline" class="chart-headline"></div>
+          <span id="chart-live-slot"></span>
+        </div>
         <div id="chart-ohlc" class="chart-ohlc"></div>
         <div id="price-chart" class="price-chart" data-ticker="{_tkr_esc}"></div>
         <div id="rsi-chart" class="sub-chart"></div>

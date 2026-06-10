@@ -274,6 +274,102 @@ def _extract_majorstock(rcept_no: str, corp_code: str,
     return None
 
 
+_DOC_FAIL = Path.home() / ".tradingagents" / "dart_doc_fail.json"
+
+
+def _doc_fail_load() -> dict:
+    try:
+        return json.loads(_DOC_FAIL.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _doc_fail_recent(rcept_no: str, hours: float = 12.0) -> bool:
+    ts = _doc_fail_load().get(rcept_no)
+    return bool(ts) and (time.time() - float(ts)) < hours * 3600
+
+
+def _doc_fail_mark(rcept_no: str) -> None:
+    """원문 파싱 실패 negative-cache — 5분 타이머가 실패 건을 매 사이클
+    재다운로드하지 않게 12h skip. 성공 건은 detail 로 저장돼 재호출 0."""
+    try:
+        d = _doc_fail_load()
+        d[rcept_no] = time.time()
+        if len(d) > 500:
+            d = dict(sorted(d.items(), key=lambda kv: kv[1])[-300:])
+        _DOC_FAIL.parent.mkdir(parents=True, exist_ok=True)
+        _DOC_FAIL.write_text(json.dumps(d), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
+    """단일판매·공급계약 — 주요사항보고서 구조화 API 부재(거래소 수시공시)
+    → 공시 원문(document.xml zip)의 표준 신고 양식 표에서 핵심 숫자 추출.
+    ₩0·LLM 0·stdlib(zipfile). 필드 부재/형식 변형 graceful(None)."""
+    if not rcept_no or _doc_fail_recent(rcept_no):
+        return None
+    import io
+    import zipfile
+    from bot.dart_detail import _won
+    try:
+        r = requests.get(f"{_DART_BASE}/document.xml",
+                         params={"crtfc_key": api_key, "rcept_no": rcept_no},
+                         timeout=20)
+        blob = r.content or b""
+        if len(blob) < 200 or blob[:1] in (b"{", b"<") and b"status" in blob[:200]:
+            _doc_fail_mark(rcept_no)
+            return None
+        zf = zipfile.ZipFile(io.BytesIO(blob))
+        names = [n for n in zf.namelist() if n.lower().endswith((".xml", ".html"))]
+        if not names:
+            _doc_fail_mark(rcept_no)
+            return None
+        # 본문 = 가장 큰 엔트리 (첨부/표지가 작은 파일로 따로 옴)
+        name = max(names, key=lambda n: zf.getinfo(n).file_size)
+        raw = zf.read(name)[:3_000_000]
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("cp949", errors="ignore")
+        txt = re.sub(r"<[^>]+>", " ", text)
+        txt = re.sub(r"\s+", " ", txt)
+    except Exception:
+        _doc_fail_mark(rcept_no)
+        return None
+
+    def _grab(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    parts: list[str] = []
+    body = _grab(r"계약\s*내용[^가-힣A-Za-z0-9]{0,40}?"
+                 r"([가-힣A-Za-z0-9()&.,·\- ]{4,80}?)\s*(?:\d\.|계약금액|3\.)")
+    if body:
+        parts.append(f"계약내용: {body[:60]}")
+    amt = _grab(r"계약금액[^0-9]{0,60}?([\d,]{4,})")
+    if amt and _won(amt):
+        parts.append(f"계약금액: {_won(amt)}")
+    ratio = _grab(r"매출액\s*대비[^0-9]{0,60}?([\d.]+)")
+    if ratio:
+        parts.append(f"매출액대비: {ratio}%")
+    party = _grab(r"계약상대방?[^가-힣A-Za-z0-9(]{0,40}?"
+                  r"([가-힣A-Za-z0-9()&.,\- ]{2,40}?)\s*(?:\d\.|계약기간|판매)")
+    if party and re.search(r"[가-힣A-Za-z]{2}", party):
+        parts.append(f"계약상대: {party[:40]}")
+    s = _grab(r"시작일[^0-9]{0,40}?(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})")
+    e = _grab(r"종료일[^0-9]{0,40}?(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})")
+    if s and e:
+        parts.append(f"계약기간: {_fmt_period(f'{s} ~ {e}')}")
+    cd = _grab(r"계약\s*\(?수주\)?\s*일자?[^0-9]{0,40}?(\d{4}[-./]\d{1,2}[-./]\d{1,2})")
+    if cd:
+        parts.append(f"계약일: {cd}")
+    if len(parts) < 2:
+        _doc_fail_mark(rcept_no)
+        return None
+    return {"lines": parts}
+
+
 def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                     api_key: str) -> dict | None:
     """주요사항보고서에서 핵심 숫자 추출. None if not applicable."""
@@ -435,6 +531,10 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                     parts.append(f"{lbl}: {str(v)[:50]}")
             if parts:
                 return {"lines": parts}
+    # 공급계약은 주요사항보고서 구조화 API 가 사실상 빈 응답(거래소 수시공시)
+    # → 원문 zip 파싱 폴백 (서울전자통신 카드 수준 — 사용자 2026-06-11).
+    if "공급계약" in t or "단일판매" in t or "단일공급" in t:
+        return _extract_contract_document(rcept_no, api_key)
     return None
 
 
