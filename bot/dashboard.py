@@ -12203,56 +12203,14 @@ def resolve_name_to_ticker(query: str) -> str | None:
     return None
 
 
-def render_lookup_detail(ticker: str) -> str:
-    """지연로딩 detail — 무거운 부분(collect_stock_snapshot + enrichment +
-    header/tabs/chart/panes + 스크립트). shell 이 /api/lookup_detail 로 비동기
-    fetch 해 #lk-detail 에 주입 + runScripts 로 스크립트 재실행. HTML
-    fragment 반환(전체 페이지 아님)."""
-    # Build stock_info via the same pipeline as NOAH analyses
-    si = None
-    try:
-        from bot.stock_snapshot import collect_stock_snapshot
-        si = collect_stock_snapshot(ticker)
-    except Exception:
-        pass
-
-    # Enrich missing tabs (news/research/consensus) on-demand
-    if si:
-        try:
-            _ensure_detail_enrichment(ticker, si)
-        except Exception:
-            pass
-
-    rec = {"ticker": ticker, "stock_info": si or {}}
-
-    # Render stock info (header cards + tabs + panes)
-    si_parts = _render_stock_info_html(rec)
-    si_header = si_parts.get("header", "") if si_parts else ""
-    si_tabs = si_parts.get("tabs", "") if si_parts else ""
-    si_tab_js = si_parts.get("tab_js", "") if si_parts else ""
-    si_other = si_parts.get("other_panes", "") if si_parts else ""
-    has_tabs = bool(si_parts)
-
-    quote_script = (
-        f'<script>var NOAH_TICKER={json.dumps(ticker)};'
-        f'var NOAH_BASE="../";{_QUOTE_JS}</script>'
-        if has_tabs else ""
-    )
-
-    overview_open = '<div class="si-pane active" id="si-overview">' if has_tabs else ""
-    overview_close = "</div>" if has_tabs else ""
-
-    # Build a minimal chart section — no stored price_chart, so the
-    # full _CHART_JS will load from /api/chart on the client side.
-    # We emit the chart container + _CHART_JS with an empty initial
-    # payload so the JS immediately fetches live data.
-    _chart_payload = json.dumps({
-        "times": [], "close": [],
-        "ticker": ticker,
-    })
+def _lookup_chart_html(ticker: str) -> str:
+    """lookup 차트 섹션 HTML — 티커만 있으면 됨(스냅샷 불요). 점진 로딩
+    (사용자 2026-06-10 '차트 먼저')용으로 shell 에서 즉시 렌더. /api/chart
+    가 클라이언트에서 데이터 fetch."""
+    _chart_payload = json.dumps({"times": [], "close": [], "ticker": ticker})
     _chart_payload = _chart_payload.replace("</", "<\\/")
     _tkr_esc = _html.escape(ticker)
-    chart_html = f"""<section class="report-section">
+    return f"""<section class="report-section">
     <h2>📈 가격 차트</h2>
     <div class="chart-toolbar">
       <span class="chart-tf-group">
@@ -12301,19 +12259,64 @@ def render_lookup_detail(ticker: str) -> str:
     <div id="chart-disc" class="chart-disc"></div>
 </section>"""
 
-    chart_scripts = (
-        f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
+
+def render_lookup_detail(ticker: str) -> str:
+    """지연로딩 detail — 무거운 부분(collect_stock_snapshot + enrichment +
+    header/tabs/panes). 차트는 shell 이 **먼저** 렌더하므로 여기선 제외
+    (점진 로딩 — 사용자 2026-06-10 '차트 먼저 보고 나머지 천천히'). shell 이
+    /api/lookup_detail 로 비동기 fetch 해 #lk-detail 에 주입. HTML fragment."""
+    # Build stock_info via the same pipeline as NOAH analyses
+    si = None
+    try:
+        from bot.stock_snapshot import collect_stock_snapshot
+        si = collect_stock_snapshot(ticker)
+    except Exception:
+        pass
+
+    # Enrich missing tabs (news/research/consensus) on-demand
+    if si:
+        try:
+            _ensure_detail_enrichment(ticker, si)
+        except Exception:
+            pass
+
+    rec = {"ticker": ticker, "stock_info": si or {}}
+
+    # Render stock info (header cards + tabs + panes)
+    si_parts = _render_stock_info_html(rec)
+    si_header = si_parts.get("header", "") if si_parts else ""
+    si_tabs = si_parts.get("tabs", "") if si_parts else ""
+    si_tab_js = si_parts.get("tab_js", "") if si_parts else ""
+    si_other = si_parts.get("other_panes", "") if si_parts else ""
+    has_tabs = bool(si_parts)
+
+    quote_script = (
+        f'<script>var NOAH_TICKER={json.dumps(ticker)};'
+        f'var NOAH_BASE="../";{_QUOTE_JS}</script>'
+        if has_tabs else ""
     )
 
-    # ── 지연로딩: detail 은 HTML fragment 로 반환 (shell 이 #lk-detail 주입) ──
+    _tkr_esc = _html.escape(ticker)
+    # 개요 탭 — 차트가 상단으로 이동했으므로 회사 개요(설명) 표시. 없으면 안내.
+    _desc = _html.escape((si or {}).get("description", "") or "")
+    if _desc:
+        overview_inner = (
+            '<div class="si-desc" style="line-height:1.7;color:var(--fg-soft);'
+            'font-size:14px;max-width:880px">' + _desc + '</div>')
+    else:
+        overview_inner = ('<div class="lk-loading">📈 가격 차트는 위에 있습니다. '
+                          '재무·실적·리서치 등은 상단 탭에서 확인하세요.</div>')
+    overview_open = '<div class="si-pane active" id="si-overview">' if has_tabs else ""
+    overview_close = "</div>" if has_tabs else ""
+
+    # ── 지연로딩: detail fragment (차트 제외 — shell 이 먼저 렌더) ──
     if not has_tabs:
-        _note = ("" if si else
-                 f'<div class="lk-loading">⚠️ {_tkr_esc} 기본 정보를 불러오지 못했습니다 (차트만 표시).</div>')
-        return f"{_note}{chart_html}\n{chart_scripts}"
+        return (f'<div class="lk-loading">⚠️ {_tkr_esc} 기본 정보를 불러오지 '
+                '못했습니다 (차트는 위에 표시).</div>')
     return (
-        f"{si_header}\n{si_tabs}\n{overview_open}\n{chart_html}\n{overview_close}\n"
+        f"{si_header}\n{si_tabs}\n{overview_open}\n{overview_inner}\n{overview_close}\n"
         f"{si_other}\n<script>{_DETAIL_DEEP_LINK_JS}</script>\n{si_tab_js}\n"
-        f"{chart_scripts}\n{quote_script}"
+        f"{quote_script}"
     )
 
 
@@ -12361,6 +12364,12 @@ def render_lookup_page(ticker: str) -> str:
     10~20초 멈춰있던 lookup 을 즉시 인터랙티브하게(사용자 2026-06-10)."""
     kr_name = _ticker_display_name(ticker)
     h1_label = f"{kr_name} / {ticker}" if kr_name else ticker
+    # 차트는 shell 에서 즉시 렌더(티커만 필요) → 점진 로딩. 무거운 detail
+    # (스냅샷+탭)은 #lk-detail 로 비동기. 사용자 2026-06-10 '차트 먼저'.
+    chart_section = _lookup_chart_html(ticker)
+    chart_scripts = (
+        f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
+    )
     lazy_js = _LOOKUP_LAZY_TMPL.replace("__TICKER__", json.dumps(ticker))
     save_js = (
         "<script>(function(){var btn=document.getElementById('lk-save');"
@@ -12397,8 +12406,10 @@ def render_lookup_page(ticker: str) -> str:
   <div class="title-row">
     <h1>📊 {_html.escape(h1_label)}</h1>
   </div>
-  <div id="lk-detail"><div class="lk-loading">📊 종목 상세 정보를 불러오는 중…</div></div>
+  {chart_section}
+  <div id="lk-detail"><div class="lk-loading">📊 재무·실적·리서치 등 상세 정보를 불러오는 중… (차트는 위에서 먼저 확인하세요)</div></div>
 </div>
+{chart_scripts}
 {lazy_js}
 {_LOOKUP_SEARCH_JS}
 {save_js}
