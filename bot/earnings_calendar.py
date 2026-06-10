@@ -265,10 +265,17 @@ def _market_toggle(year: int, month: int, market: str) -> str:
 def render_page(year: int, month: int, market: str = "kr") -> str:
     """Render the earnings calendar — market='kr'(KIND IR일정·DART 폴백) | 'us'(Finnhub 실적)."""
     try:
-        # 전 미국 상장 디렉토리(NASDAQ Trader, ~8천 종목) 우선 — S&P500
-        # 명단만으론 소형주 이름이 비어 '일부만 이름'(사용자 2026-06-11).
+        # 1차 NASDAQ Trader(정규 거래소 ~8천, 이름 깔끔) + 2차 SEC company_
+        # tickers(보고기업 ~1만, ADR/OTC 보고기업 포함 — HFUS 류 보완, 사용자
+        # 2026-06-11). NASDAQ Trader 우선, 없는 티커만 SEC title 로 채움.
         from bot.us_symbol_names import us_symbol_names
-        _us_names = us_symbol_names() or {}
+        _us_names = dict(us_symbol_names() or {})
+        try:
+            from bot.edgar_client import sec_ticker_names
+            for _tk, _nm in (sec_ticker_names() or {}).items():
+                _us_names.setdefault(_tk, _nm)
+        except Exception:
+            pass
         if not _us_names:
             from bot.finviz_client import _sp500_names
             _us_names = _sp500_names() or {}
