@@ -676,6 +676,29 @@ def _compute_highlow_sp500() -> dict:
                     continue
         out["high"] = out["high"][:40]
         out["low"] = out["low"][:40]
+        # 등락률 채우기 — 주봉 산출이라 일간 % 부재('—')였던 것(사용자
+        # 2026-06-11). hit 종목(≤80)만 5d 일봉 소량 재다운로드로 당일 % 산출.
+        hits = [r["ticker"] for r in out["high"] + out["low"]]
+        if hits:
+            try:
+                dfd = yf.download(hits, period="5d", interval="1d",
+                                  group_by="ticker", threads=True,
+                                  progress=False, auto_adjust=False)
+                for r in out["high"] + out["low"]:
+                    try:
+                        tk = r["ticker"]
+                        if len(hits) == 1:
+                            closes = dfd["Close"].dropna()
+                        else:
+                            closes = dfd[tk]["Close"].dropna()
+                        if len(closes) >= 2 and float(closes.iloc[-2]):
+                            r["pct"] = round((float(closes.iloc[-1])
+                                              / float(closes.iloc[-2]) - 1) * 100, 2)
+                            r["price"] = round(float(closes.iloc[-1]), 2)
+                    except Exception:
+                        continue
+            except Exception as exc:
+                log.warning("finviz: fallback 등락률 fill 실패: %s", exc)
         log.info("finviz: S&P500 fallback — scanned %d → high %d / low %d",
                  scanned, len(out["high"]), len(out["low"]))
         if out["high"] or out["low"]:

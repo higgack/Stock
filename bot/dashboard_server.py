@@ -1065,7 +1065,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cache_dir = _ARCHIVE_ROOT.parent / "lookup_cache"
             cache_dir.mkdir(parents=True, exist_ok=True)
             safe = ticker.replace(".", "_").replace("-", "_")
-            cache_f = cache_dir / f"detail_{safe}.html"
+            # _v2: data-lk 파트 분할 fragment (구형식 캐시와 격리 — 사용자
+            # 2026-06-11 lookup 레이아웃 재구성).
+            cache_f = cache_dir / f"detail_{safe}_v2.html"
 
             age = None
             if cache_f.exists():

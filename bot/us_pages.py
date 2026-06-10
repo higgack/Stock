@@ -94,11 +94,17 @@ def render_us_highlow_page() -> str:
         if not items:
             return (f'<div class="panel"><h2>{title}</h2>'
                     '<div class="empty">해당 종목 없음</div></div>')
+        def _name_cell(it: dict) -> str:
+            tk = _html.escape(it.get("ticker", ""))
+            nm = _html.escape(it.get("name") or it.get("ticker", ""))
+            # 회사명==티커(폴백 산출)면 한 번만 — 'AIZ AIZ' 중복 제거
+            # (사용자 2026-06-11).
+            suffix = f' <span class="ts">{tk}</span>' if nm != tk else ""
+            return (f'<td class="nm"><a href="lookup/{tk}">{nm}</a>'
+                    f'{suffix}</td>')
         rows = "".join(
             f'<tr><td class="rk">{i}</td>'
-            f'<td class="nm"><a href="lookup/{_html.escape(it.get("ticker", ""))}">'
-            f'{_html.escape(it.get("name") or it.get("ticker", ""))}'
-            f'</a> <span class="ts">{_html.escape(it.get("ticker", ""))}</span></td>'
+            f'{_name_cell(it)}'
             f'<td class="num">{("$" + format(it["price"], ",.2f")) if it.get("price") is not None else "—"}</td>'
             f'{_pct_cell(it.get("pct"))}</tr>'
             for i, it in enumerate(items, 1))
