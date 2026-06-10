@@ -729,7 +729,10 @@ def fetch_all_market_data() -> dict[str, Any]:
     """Fetch everything needed for market.html."""
     with ThreadPoolExecutor(max_workers=8) as pool:
         snap_fut = pool.submit(fetch_market_snapshot)
-        earn_fut = pool.submit(fetch_earnings_calendar, 14)
+        # 다가오는 실적 윈도 최대화 (사용자 2026-06-10 '최대한 가져오기'):
+        # 미국 14→60일(Finnhub 가 확정 발표일 ~4-8주 채움, 표는 100행 cap),
+        # 한국 90일(DART IR + yfinance) 유지.
+        earn_fut = pool.submit(fetch_earnings_calendar, 60)
         earn_kr_fut = pool.submit(fetch_earnings_calendar_kr, 90)
         kr_fut = pool.submit(fetch_recent_research_kr, 80)
         kr_ind_fut = pool.submit(fetch_recent_research_kr_industry, 60)
