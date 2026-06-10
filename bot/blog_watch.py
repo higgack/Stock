@@ -1,13 +1,12 @@
 """블로그 Watcher — 네이버 블로그 '변화하는 기업을 찾아서' (beatthemkt)
 새 글 자동 감지 → NOAH 채널 포워드 + 아카이브(ingest).
 
-흐름: RSS poll (rss.blog.naver.com/<id>.xml, 브라우저 UA+Referer) → 새 GUID
-감지 → Gemini Flash 3줄 요약(저렴, grounding off) → 텔레그램 채널 push +
-JSON 아카이브(대시보드 blog.html 누적·검색·🗑️). state 파일로 중복 차단.
+흐름: RSS poll → 새 GUID 중 카테고리 '관심종목*'/'기업탐방*' 만 → 원문
+전문 fetch(m.blog.naver.com) → 텔레그램 push(제목 한 줄, 링크 임베드) +
+JSON 아카이브(대시보드 blog.html — 전문 + 맨 밑 원문 링크 + 🗑️).
 
-원칙: 발췌(description)에 있는 내용만 요약(환각 0), 투자 권유 표현 금지.
-GOOGLE_API_KEY 없거나 RSS 실패 시 graceful skip. 첫 run 은 폭주 방지 위해
-기존 글을 seen 처리만 하고 push 안 함(initialized 플래그).
+**LLM 0 → 비용 ₩0** (요약 제거, 사용자 2026-06-11). RSS 실패 시 graceful
+skip. 첫 run 은 폭주 방지 위해 기존 글 seen 처리만(initialized 플래그).
 
 systemd: blog-watch.timer (30분) → oneshot.
 수동: cd ~/stock && .venv/bin/python -m bot.blog_watch
@@ -34,11 +33,9 @@ _RSS_URLS = (
 _HOME = os.path.expanduser("~")
 _STATE = os.path.join(_HOME, ".tradingagents", "blog_watch_state.json")
 _ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "blog_archive")
-_USAGE_LOG = os.path.join(_HOME, ".tradingagents", "blog_usage.jsonl")
-_NOAH_USAGE_LOG = os.path.join(_HOME, ".tradingagents", "usage.jsonl")
-_USD_TO_KRW = 1330.0
-_FLASH_IN, _FLASH_OUT = 0.30, 2.50   # gemini-2.5-flash $/M
 _MAX_SEEN = 300
+# 수집 대상 카테고리(prefix 매칭 — 연도 suffix 변경 대응): 사용자 2026-06-11
+_ALLOWED_CATEGORY_PREFIXES = ("관심종목", "기업탐방")
 _MAX_NEW_PER_RUN = 5
 
 
@@ -101,35 +98,13 @@ def _parse_items(xml: str) -> list[dict]:
         link = _tag(block, "link")
         guid = _tag(block, "guid") or link
         pub = _tag(block, "pubDate")
+        category = _html.unescape(_tag(block, "category"))
         desc = _html.unescape(re.sub(r"<[^>]+>", " ", _tag(block, "description")))
         desc = re.sub(r"\s+", " ", desc).strip()[:4000]
         if title and link:
             out.append({"title": title, "link": link, "guid": guid,
-                        "pubDate": pub, "desc": desc})
+                        "pubDate": pub, "desc": desc, "category": category})
     return out
-
-
-# ── Gemini Flash 요약 + 비용 로그 ─────────────────────────────────────────
-def _log_blog_usage(pt: int, ot: int, cost_krw: float) -> None:
-    import time as _time
-    for path, rec in (
-        (_USAGE_LOG, {"ts": _now_kst().isoformat(timespec="seconds"),
-                      "date": _now_kst().date().isoformat(),
-                      "month": _now_kst().date().isoformat()[:7],
-                      "prompt_tok": pt, "output_tok": ot,
-                      "cost_krw": round(cost_krw, 4)}),
-        (_NOAH_USAGE_LOG, {"ts": _time.time(), "type": "llm_call",
-                           "model": "gemini-2.5-flash",
-                           "prompt_tokens": pt, "completion_tokens": ot,
-                           "cost_usd": round(cost_krw / _USD_TO_KRW, 6),
-                           "subsystem": "blog"}),
-    ):
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        except Exception as exc:
-            log.warning("blog_watch: usage log failed (%s): %s", path, exc)
 
 
 def _fetch_post_text(link: str) -> str | None:
@@ -230,33 +205,9 @@ def _backfill_full(max_n: int = 3) -> int:
     return done
 
 
-def _summarize(item: dict) -> str:
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key or not item.get("desc"):
-        return ""
-    prompt = (
-        "다음은 네이버 블로그 '변화하는 기업을 찾아서'의 새 글이다.\n"
-        f"제목: {item['title']}\n본문 발췌: {item['desc'][:2500]}\n\n"
-        "이 글의 핵심을 한국어 3줄 이내로 요약하라. 규칙:\n"
-        "1. **발췌에 있는 내용만** — 발췌에 없는 수치/사건 창작 절대 금지.\n"
-        "2. 종목/기업명이 언급되면 명시.\n"
-        "3. 투자 권유·목표가 표현 금지 (정보 요약만).\n"
-        "4. 발췌가 너무 짧아 요약 불가하면 '본문 확인 권장' 한 줄."
-    )
-    try:
-        from bot.screener import _call_pro
-        text, pt, ot = _call_pro(api_key, prompt, model="gemini-2.5-flash",
-                                 enable_grounding=False)
-        cost_krw = (pt * _FLASH_IN + ot * _FLASH_OUT) / 1e6 * _USD_TO_KRW
-        _log_blog_usage(pt, ot, cost_krw)
-        return (text or "").strip()
-    except Exception as exc:
-        log.warning("blog_watch: summary failed: %s", exc)
-        return ""
-
 
 # ── 아카이브 + 대시보드 ───────────────────────────────────────────────────
-def _save_archive(item: dict, summary: str) -> None:
+def _save_archive(item: dict) -> None:
     """Ingest 저장 — 봇이 나중에 참조 가능하도록 새 글 raw 를 JSON 보관.
     대시보드 surface 는 사용자 정책(2026-05-31)으로 없음 (채널 자동 포워드
     처럼만 다룸). 검색/분석 재료용 적층."""
@@ -271,7 +222,7 @@ def _save_archive(item: dict, summary: str) -> None:
         rec = {"ts": now.isoformat(timespec="seconds"), "date": date_iso,
                "title": item["title"], "link": item["link"],
                "guid": item["guid"], "pubDate": item.get("pubDate", ""),
-               "summary": summary, "desc": item.get("desc", "")[:15000],
+               "desc": item.get("desc", "")[:15000],
                "full": bool(item.get("full"))}
         with open(path, "w", encoding="utf-8") as f:
             json.dump(rec, f, ensure_ascii=False)
@@ -280,16 +231,12 @@ def _save_archive(item: dict, summary: str) -> None:
 
 
 # ── Telegram push ─────────────────────────────────────────────────────────
-def _push(item: dict, summary: str) -> bool:
+def _push(item: dict) -> bool:
+    """텔레그램 = 글 제목 한 줄만(제목에 원문 링크 임베드) — 사용자 2026-06-11.
+    요약 없음 → LLM 0, 비용 ₩0."""
     title = _html.escape(item["title"])
-    link = item["link"]
-    body = (
-        f"📝 <b>변화하는 기업을 찾아서 — 새 글</b>\n"
-        f"<b>{title}</b>\n"
-    )
-    if summary:
-        body += f"\n{_html.escape(summary)}\n"
-    body += f"\n🔗 {link}"
+    link = _html.escape(item["link"])
+    body = f'📝 <a href="{link}">{title}</a>'
     try:
         from bot.daily_kr_flow import push_telegram
         return push_telegram(body)
@@ -321,27 +268,44 @@ def run() -> int:
 
     # 새 글 = seen 에 없는 것. RSS 는 최신순이라 뒤집어 오래된 것부터 push.
     new_items = [it for it in items if it["guid"] not in seen]
-    new_items = list(reversed(new_items))[:_MAX_NEW_PER_RUN]
+    new_items = list(reversed(new_items))
     if not new_items:
         log.info("blog_watch: 새 글 없음")
         return 0
 
-    pushed = 0
+    # 카테고리 필터(사용자 2026-06-11) — '관심종목*'/'기업탐방*' 두 카테고리
+    # 글만 수집. 비대상 새 글도 seen 처리(재검사 방지). 피드에 category 가
+    # 전혀 없으면(형식 변동) 전부 허용 + 경고(놓침 방지).
+    feed_has_cat = any(it.get("category") for it in items)
+    allowed = []
     for it in new_items:
-        # 원문 전문 fetch — RSS 발췌는 잘려 옴(사용자 2026-06-11). 실패 시
-        # RSS 발췌 유지.
+        cat = (it.get("category") or "").strip()
+        ok = (not feed_has_cat) or cat.startswith(_ALLOWED_CATEGORY_PREFIXES)
+        if ok:
+            allowed.append(it)
+        else:
+            seen.add(it["guid"])
+            state["seen"].append(it["guid"])
+    if not feed_has_cat:
+        log.warning("blog_watch: RSS 에 category 없음 — 전체 허용(형식 확인)")
+    skipped_cat = len(new_items) - len(allowed)
+    allowed = allowed[:_MAX_NEW_PER_RUN]
+
+    pushed = 0
+    for it in allowed:
+        # 원문 전문 fetch — RSS 발췌는 잘려 옴. 실패 시 RSS 발췌 유지.
         full_text = _fetch_post_text(it.get("link") or "")
         if full_text:
             it["desc"] = full_text
             it["full"] = True
-        summary = _summarize(it)
-        _save_archive(it, summary)
-        if _push(it, summary):
+        _save_archive(it)
+        if _push(it):
             pushed += 1
         seen.add(it["guid"])
         state["seen"].append(it["guid"])
     _save_state(state)
-    log.info("blog_watch: 새 글 %d개 처리, %d개 push", len(new_items), pushed)
+    log.info("blog_watch: 새 글 %d개 수집, %d push, 카테고리외 %d 제외",
+             len(allowed), pushed, skipped_cat)
     # 기존 잘린 글 점진 백필(전문 교체, 사이클당 3건) — 새 글 없어도 진행.
     try:
         bf = _backfill_full(max_n=3)

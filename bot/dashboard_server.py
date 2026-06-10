@@ -300,6 +300,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return self._handle_screener_delete()
         if self.path == "/api/daily_byte_delete":
             return self._handle_daily_byte_delete()
+        if self.path == "/api/blog_delete":
+            return self._handle_blog_delete()
         if self.path == "/api/realestate_delete":
             return self._handle_simple_delete(
                 "realestate_archive", r"^\d{6}_[a-zA-Z0-9_]{1,40}\.json$",
@@ -458,6 +460,46 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self._reply_json(400, {"ok": False, "error": str(exc)})
         except Exception as exc:
             log.exception("screener_delete: unexpected failure")
+            self._reply_json(500, {"ok": False, "error": str(exc)})
+
+    def _handle_blog_delete(self) -> None:
+        """POST /api/blog_delete {date, filename} — 블로그 아카이브 글 삭제
+        + blog.html 재생성 (daily_byte_delete mirror, 사용자 2026-06-11)."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > 1024:
+                raise ValueError("missing or oversized request body")
+            payload = json.loads(self.rfile.read(length))
+            date = payload.get("date") or ""
+            filename = payload.get("filename") or ""
+            if not _DATE_RE.match(date):
+                raise ValueError(f"invalid date: {date!r}")
+            import re as _re_bl
+            if not _re_bl.match(r"^\d{6}_[0-9a-f]{4,16}\.json$", filename):
+                raise ValueError(f"invalid filename: {filename!r}")
+            from pathlib import Path as _P
+            archive_root = _P.home() / ".tradingagents" / "blog_archive"
+            date_dir = (archive_root / date).resolve()
+            try:
+                date_dir.relative_to(archive_root.resolve())
+            except ValueError:
+                raise ValueError("path escape attempt")
+            target = date_dir / filename
+            if not target.exists() or not target.is_file():
+                raise ValueError(f"no blog entry for {date}/{filename}")
+            target.unlink()
+            try:
+                from bot.dashboard import regenerate_blog_index
+                regenerate_blog_index()
+            except Exception as exc:
+                log.warning("blog_delete: regen failed (file removed): %s", exc)
+            log.info("blog_delete: %s/%s removed", date, filename)
+            self._reply_json(200, {"ok": True, "deleted": [filename]})
+        except ValueError as exc:
+            log.warning("blog_delete: bad request — %s", exc)
+            self._reply_json(400, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            log.exception("blog_delete: unexpected failure")
             self._reply_json(500, {"ok": False, "error": str(exc)})
 
     def _handle_daily_byte_delete(self) -> None:
