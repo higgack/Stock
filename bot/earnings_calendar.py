@@ -191,8 +191,9 @@ vertical-align:top}
 .cal-badge{display:inline-flex;align-items:center;justify-content:center;
 background:var(--badge);color:var(--badge-text);font-size:11px;font-weight:700;
 min-width:22px;height:22px;border-radius:6px;padding:0 5px}
-.cal-entry{color:var(--text);margin-bottom:2px;white-space:nowrap;overflow:hidden;
-text-overflow:ellipsis}
+.cal-entry{color:var(--text);margin-bottom:2px;white-space:normal;
+word-break:break-word;line-height:1.35}
+.cal-entry .nm{color:var(--muted);font-weight:400;font-size:11px}
 .cal-entry .sym{font-weight:600}
 .cal-entry .hour{color:var(--muted);margin-left:2px}
 .cal-more{color:var(--muted);font-size:11px;margin-top:2px;cursor:pointer}
@@ -263,6 +264,11 @@ def _market_toggle(year: int, month: int, market: str) -> str:
 
 def render_page(year: int, month: int, market: str = "kr") -> str:
     """Render the earnings calendar — market='kr'(KIND IR일정·DART 폴백) | 'us'(Finnhub 실적)."""
+    try:
+        from bot.finviz_client import _sp500_names
+        _us_names = _sp500_names() or {}
+    except Exception:
+        _us_names = {}
     market = market if market in ("kr", "us") else "kr"
     events = [e for e in fetch_month(year, month)
               if e.get("market", "us") == market]
@@ -327,8 +333,16 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
             for i, e in enumerate(day_events):
                 sym = _html.escape(str(e.get("symbol", "")))
                 is_kr = e.get("market") == "kr"
-                # 한국=종목명(가독), 미국=티커
-                label = _html.escape((e.get("name") or sym) if is_kr else sym)
+                # 한국=종목명 / 미국=티커(회사명) — 신고가·신저가와 동일 형식
+                # (사용자 2026-06-11). 이름 미확보 시 티커만.
+                if is_kr:
+                    label = _html.escape(e.get("name") or sym)
+                else:
+                    raw_sym = str(e.get("symbol", ""))
+                    nm = (_us_names.get(raw_sym)
+                          or _us_names.get(raw_sym.replace(".", "-")) or "")
+                    label = (f'{sym}<span class="nm">({_html.escape(nm)})</span>'
+                             if nm else sym)
                 mcls = "kr" if is_kr else "us"
                 if is_kr:
                     # 한국: 회사 클릭 → IR 일정 원문(KIND / DART 폴백, 분석페이지 아님).

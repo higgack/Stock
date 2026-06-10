@@ -11897,6 +11897,7 @@ def _relative_time(ts_str: str) -> str:
 
 def _render_market_daily_cards() -> str:
     """Render the 2-column Market Daily cards (Korea + US → both link to Daily Byte)."""
+    import re as _re_md
     kr = _load_latest_market_daily("daily_byte_archive", "daily")
     us = _load_latest_market_daily("daily_byte_archive", "us_daily")
 
@@ -11912,6 +11913,16 @@ def _render_market_daily_cards() -> str:
             )
         body = rec["body"]
         title = _extract_daily_title(body)
+        # KR 카드 제목을 미국 형식으로 통일(사용자 2026-06-11): 본문 첫 줄이
+        # '수급 브리프' 같은 generic 헤더면 'YYYY년 M월 D일 한국 증시 데일리
+        # 브리프' 로 — 렌더 시점 보정이라 옛 기록도 즉시 적용.
+        if label.startswith("한국") and not _re_md.match(r"\d{4}년", title):
+            _d_raw = rec.get("_date") or rec.get("date") or ""
+            try:
+                _y, _m, _dd = _d_raw.split("-")
+                title = f"{int(_y)}년 {int(_m)}월 {int(_dd)}일 한국 증시 데일리 브리프"
+            except Exception:
+                pass
         summary = _extract_daily_summary(body, 400)
         ts = rec.get("ts", rec.get("date", ""))
         rel = _relative_time(ts) if ts else ""
