@@ -222,12 +222,70 @@ def _fmt_period(s: str) -> str:
         return s.strip()
 
 
+def _to_float(v) -> float | None:
+    """콤마/공백 포함 문자열 → float. 실패 시 None."""
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_majorstock(rcept_no: str, corp_code: str,
+                        api_key: str) -> dict | None:
+    """주식등의대량보유상황보고서(5%) → majorstock.json 구조화.
+
+    보고자 / 지분율 변동(직전→현재, %p) / 변동주식 / 보고사유. majorstock 은
+    bgn_de·end_de 없이 corp_code 로 해당 법인의 대량보유 보고 list 를 반환 →
+    rcept_no 로 매칭. graceful None(키·네트워크·필드 부재 무해)."""
+    try:
+        r = requests.get(
+            f"{_DART_BASE}/majorstock.json",
+            params={"crtfc_key": api_key, "corp_code": corp_code},
+            timeout=_TIMEOUT)
+        js = r.json()
+    except Exception:
+        return None
+    if not isinstance(js, dict) or js.get("status") != "000":
+        return None
+    for row in js.get("list") or []:
+        if str(row.get("rcept_no") or "").strip() != str(rcept_no):
+            continue
+        parts: list[str] = []
+        repror = str(row.get("repror") or "").strip()
+        if repror:
+            parts.append(f"보고자: {repror}")
+        stkrt = _to_float(row.get("stkrt"))        # 보유비율(%)
+        d_rt = _to_float(row.get("stkrt_irds"))    # 보유비율 증감(%p)
+        if stkrt is not None and d_rt is not None:
+            before = stkrt - d_rt
+            arrow = "▲" if d_rt > 0 else ("▼" if d_rt < 0 else "–")
+            parts.append(
+                f"지분율: {before:.2f}% → {stkrt:.2f}% ({d_rt:+.2f}%p {arrow})")
+        elif stkrt is not None:
+            parts.append(f"지분율: {stkrt:.2f}%")
+        d_qy = _to_float(row.get("stkqy_irds"))    # 보유주식등의 증감
+        if d_qy:
+            parts.append(f"변동주식: {int(d_qy):+,}주")
+        resn = str(row.get("report_resn") or "").strip()
+        if resn:
+            parts.append(f"보고사유: {resn}")
+        if parts:
+            return {"lines": parts}
+    return None
+
+
 def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                     api_key: str) -> dict | None:
     """주요사항보고서에서 핵심 숫자 추출. None if not applicable."""
     from bot.dart_detail import _won, _pick
 
     t = report_nm or ""
+
+    # 대량보유 5% 보고서 — majorstock.json(지분공시 종합정보). 주요사항보고서와
+    # 응답 구조가 달라 전용 처리: 보고자·지분율 변동(직전→현재, %p)·변동주식·
+    # 보고사유. (프로텍·하이브 레퍼런스 카드 대응, 무료.)
+    if "대량보유" in t:
+        return _extract_majorstock(rcept_no, corp_code, api_key)
 
     specs: list[tuple[str, list]] = []
     if "공급계약" in t or "단일판매" in t or "단일공급" in t:
@@ -460,13 +518,33 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
     if not api_key:
         return items
 
+    # 멱등 가드 — run_once 가 최근 4일 윈도를 5분마다 재fetch·재enrich 하므로,
+    # 아카이브에 이미 detail 이 있으면 DART 재호출 없이 그대로 재사용한다.
+    # (고빈도 카테고리 '지분공시'(대량보유 5%) 추가로 호출량이 폭증하는 것을
+    # 방지 + 기존 카테고리도 동일 이득. 추출 실패=detail 부재분만 재시도.)
+    known: dict[str, list] = {}
+    try:
+        for day_items in load_all_archives(days_back=5).values():
+            for it in day_items:
+                rno = it.get("rcept_no")
+                det = it.get("detail")
+                if rno and det:
+                    known[str(rno)] = det
+    except Exception:
+        known = {}
+
     for item in items:
         cat = item.get("category", "")
         report_nm = item.get("report_nm", "")
-        rcept_no = item.get("rcept_no", "")
+        rcept_no = str(item.get("rcept_no", ""))
         corp_code = item.get("corp_code", "")
 
-        if cat in ("계약", "자금조달", "주주환원", "신규시설투자") or "실적" in cat:
+        if rcept_no and rcept_no in known:
+            item["detail"] = known[rcept_no]
+            continue
+
+        if cat in ("계약", "자금조달", "주주환원", "신규시설투자",
+                   "지분공시") or "실적" in cat:
             if corp_code:
                 detail = _extract_detail(report_nm, rcept_no, corp_code, api_key)
                 lines = list(detail.get("lines", [])) if detail else []
