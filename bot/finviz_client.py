@@ -429,6 +429,57 @@ def fetch_high_low() -> dict:
     return out
 
 
+def _github_sp500() -> list[str]:
+    """GitHub raw CSV 로 S&P500 티커 (위키 403 우회 — 2026-06-10 VM 확인:
+    Wikipedia 가 데이터센터 IP 403). datasets/s-and-p-500-companies 공개
+    CSV(Symbol 컬럼). 7일 캐시. yfinance 표기로 '.'→'-'(BRK.B→BRK-B)."""
+    c = _cached("sp500_github.json", ttl=7 * 86400)
+    if c:
+        return c
+    try:
+        import csv
+        import io
+        import httpx
+        url = ("https://raw.githubusercontent.com/datasets/"
+               "s-and-p-500-companies/main/data/constituents.csv")
+        r = httpx.get(url, timeout=15, follow_redirects=True)
+        if r.status_code == 200 and r.text:
+            rows = list(csv.DictReader(io.StringIO(r.text)))
+            tks = []
+            for row in rows:
+                sym = (row.get("Symbol") or row.get("symbol") or "").replace(".", "-").strip()
+                if sym:
+                    tks.append(sym)
+            if len(tks) > 100:
+                _cache_write("sp500_github.json", tks)
+                log.info("finviz: GitHub S&P500 universe %d종목 (위키 우회)", len(tks))
+                return tks
+        log.warning("finviz: GitHub S&P500 CSV → HTTP %d", r.status_code)
+    except Exception as exc:
+        log.warning("finviz: GitHub S&P500 fetch failed: %s", exc)
+    return []
+
+
+def _us_universe_robust() -> list[str]:
+    """US universe 다단 견고화 (2026-06-10 VM: 위키 403) — 위키(stock_
+    screener) → GitHub CSV → GICS 맵 키 → 하드코딩 코어. 첫 성공값 사용."""
+    try:
+        from bot.stock_screener import _get_us_universe
+        u = _get_us_universe() or []
+        if u:
+            return u
+    except Exception:
+        pass
+    u = _github_sp500()
+    if u:
+        return u
+    u = list(_sp500_industry_map().keys())
+    if u:
+        return u
+    log.warning("finviz: universe 전 소스 실패 → 코어 %d종목", len(_CORE_US))
+    return list(_CORE_US)
+
+
 def _highlow_fallback_sp500() -> dict:
     """Finviz 차단 시 — S&P 500 1년 주봉 벌크로 52주 고저 1% 근접 산출.
 
@@ -444,21 +495,7 @@ def _highlow_fallback_sp500() -> dict:
                  "source": "S&P 500 산출(yfinance)"}
     try:
         import yfinance as yf
-        universe: list[str] = []
-        try:
-            from bot.stock_screener import _get_us_universe
-            universe = _get_us_universe() or []
-        except Exception:
-            universe = []
-        if not universe:
-            # 위키 universe 실패 시 — GICS 맵 키(같은 표지만 7d 캐시), 그것도
-            # 없으면 하드코딩 코어(2026-06-10 VM '데이터 없음' — Finviz 신고저
-            # 파싱 실패 + universe 부재 이중고. 최소 코어로 빈 화면 방지).
-            universe = list(_sp500_industry_map().keys())
-        if not universe:
-            universe = list(_CORE_US)
-            log.warning("finviz: S&P500 fallback — universe 부재, 코어 %d종목으로",
-                        len(universe))
+        universe = _us_universe_robust()
         if not universe:
             log.warning("finviz: S&P500 fallback — universe empty (전 소스 실패)")
             return out
