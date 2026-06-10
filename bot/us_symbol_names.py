@@ -15,7 +15,7 @@ from pathlib import Path
 log = logging.getLogger("bot.us_symbol_names")
 
 _CACHE_FILE = (Path.home() / ".tradingagents" / "cache" / "finviz"
-               / "us_symbol_names.json")
+               / "us_symbol_names_v2.json")  # v2: NYSE suffix·(The) 정리판
 _TTL = 7 * 86400
 
 _URLS = (
@@ -24,18 +24,32 @@ _URLS = (
 )
 
 
+import re as _re
+
+# NYSE(otherlisted) 표기는 대시 없이 ' Common Stock' 등이 붙음 — GBX
+# 'Greenbrier Companies, Inc. (The) Common Stock' 류(사용자 2026-06-11).
+_TAIL_RE = _re.compile(
+    r"\s+(?:Class\s+[A-Z]\s+)?(?:Common Stock|Ordinary Shares?|"
+    r"American Depositary Shares?(?:\s*\(.*\))?|Depositary Shares?.*|"
+    r"Common Shares?|Units?|Warrants?)\s*$", _re.IGNORECASE)
+
+
 def _clean_name(raw: str) -> str:
-    """'Apple Inc. - Common Stock' → 'Apple Inc.' (종류 suffix 제거)."""
+    """'Apple Inc. - Common Stock' / 'Greenbrier Companies, Inc. (The)
+    Common Stock' → 회사명만 (NASDAQ 대시형 + NYSE 무대시형 suffix 제거,
+    '(The)' 정리)."""
     name = (raw or "").strip()
-    for sep in (" - Common Stock", " - Class A", " - Class B", " - Class C",
-                " - Ordinary Shares", " - American Depositary Shares",
-                " - Depositary Shares", " - Units", " - Warrant"):
-        i = name.find(sep)
-        if i > 0:
-            return name[:i].strip()
-    # 일반형: ' - ' 뒤가 증권 종류 설명인 경우가 대부분 — 첫 세그먼트만
+    # 1) NASDAQ 형: ' - ' 뒤 = 증권 종류 설명 → 첫 세그먼트
     if " - " in name:
-        return name.split(" - ", 1)[0].strip()
+        name = name.split(" - ", 1)[0].strip()
+    # 2) NYSE 형: 대시 없는 종류 suffix 제거 (반복 — 'Class A Common Stock')
+    for _ in range(2):
+        new = _TAIL_RE.sub("", name).strip()
+        if new == name:
+            break
+        name = new or name
+    # 3) '(The)' 후치 관사 — 'Greenbrier Companies, Inc. (The)' → 제거
+    name = _re.sub(r"\s*\(The\)\s*", " ", name).strip().rstrip(",")
     return name
 
 
