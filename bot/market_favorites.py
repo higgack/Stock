@@ -230,6 +230,19 @@ def get_favorites_with_prices() -> list[dict]:
             # 안 주는 KR 케이스 — SK hynix 2026-04-22 사용자 2026-06-11).
             if f.get("next_earnings"):
                 f["next_earnings"] = _future_or_none(f["next_earnings"])
+            # calendar 부재/과거 → 실적탭과 동일 소스(earnings_dates, 미래
+            # 추정 포함)로 폴백 — 하이닉스 2026-07-29 케이스(사용자 2026-06-11).
+            if not f.get("next_earnings"):
+                try:
+                    ed = tk.earnings_dates
+                    if ed is not None and len(ed.index):
+                        today_s = datetime.now().strftime("%Y-%m-%d")
+                        fut = sorted(str(ix)[:10] for ix in ed.index
+                                     if str(ix)[:10] >= today_s)
+                        if fut:
+                            f["next_earnings"] = fut[0]
+                except Exception:
+                    pass
         except Exception:
             f["current_price"] = None
 

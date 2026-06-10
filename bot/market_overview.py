@@ -560,7 +560,7 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
     try:
         from bot.naver_research_client import fetch_recent_research_market
         results = fetch_recent_research_market(limit=limit, days_back=7,
-                                               max_pages=8)
+                                               max_pages=20)
     except Exception as exc:
         log.warning("naver research market fetch error: %s", exc)
 
@@ -592,7 +592,7 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
     try:
         from bot.naver_research_client import fetch_recent_research_industry
         results = fetch_recent_research_industry(limit=limit, days_back=7,
-                                                 max_pages=5)
+                                                 max_pages=12)
     except Exception as exc:
         log.warning("naver research industry fetch error: %s", exc)
 
@@ -738,8 +738,10 @@ def fetch_all_market_data() -> dict[str, Any]:
         # 한국 90일(DART IR + yfinance) 유지.
         earn_fut = pool.submit(fetch_earnings_calendar, 60)
         earn_kr_fut = pool.submit(fetch_earnings_calendar_kr, 90)
-        kr_fut = pool.submit(fetch_recent_research_kr, 80)
-        kr_ind_fut = pool.submit(fetch_recent_research_kr_industry, 60)
+        # limit 은 7일치 전부 커버용 상한(사용자 2026-06-11 "limit 80?" —
+        # 한국 종목 리포트는 주당 200+ 가능 → 넉넉히).
+        kr_fut = pool.submit(fetch_recent_research_kr, 300)
+        kr_ind_fut = pool.submit(fetch_recent_research_kr_industry, 150)
         us_fut = pool.submit(fetch_recent_research_us, 80)
         macro_fut = pool.submit(_fetch_macro_safe)
         sector_fut = pool.submit(_fetch_sector_movers_safe)
