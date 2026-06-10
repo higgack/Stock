@@ -15,7 +15,7 @@ from pathlib import Path
 log = logging.getLogger("bot.us_symbol_names")
 
 _CACHE_FILE = (Path.home() / ".tradingagents" / "cache" / "finviz"
-               / "us_symbol_names_v2.json")  # v2: NYSE suffix·(The) 정리판
+               / "us_symbol_names_v3.json")  # v3: Beneficial Interest 추가
 _TTL = 7 * 86400
 
 _URLS = (
@@ -31,7 +31,9 @@ import re as _re
 _TAIL_RE = _re.compile(
     r"\s+(?:Class\s+[A-Z]\s+)?(?:Common Stock|Ordinary Shares?|"
     r"American Depositary Shares?(?:\s*\(.*\))?|Depositary Shares?.*|"
-    r"Common Shares?|Units?|Warrants?)\s*$", _re.IGNORECASE)
+    r"Common Shares?(?:\s+of\s+Beneficial\s+Interest)?|"
+    r"Shares?\s+of\s+Beneficial\s+Interest|Units?|Warrants?)\s*$",
+    _re.IGNORECASE)
 
 
 def _clean_name(raw: str) -> str:
