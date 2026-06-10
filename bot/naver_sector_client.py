@@ -222,6 +222,12 @@ def _fetch_deposit_fsc() -> dict:
         if len(cser) >= 2:
             out["credit_chg"] = round(cser[-1][1] - cser[-2][1], 1)
         out["credit_series"] = [{"d": _fsc_date(d), "v": round(v, 1)} for d, v in cser]
+    if out:
+        # 출처 정직화 (2026-06-10 사용자 review): 데이터는 FSC(금융투자협회
+        # 종합통계)인데 위젯/차트 라벨이 'Naver' 하드코딩 — 06.05(FSC 최신)
+        # vs Naver 페이지 06.08 비교 혼란의 절반이 이 라벨. 렌더가 이 필드로
+        # 실제 출처 + 데이터 일자를 표기.
+        out["source"] = "금융투자협회"
     return out
 
 
@@ -295,6 +301,8 @@ def _fetch_deposit_naver() -> dict:
                     cser.append({"d": cells[0], "v": cv})
             out["deposit_series"] = dser
             out["credit_series"] = cser
+    if out:
+        out["source"] = "Naver"   # 폴백 경로 — 라벨 정직화
     return out
 
 
