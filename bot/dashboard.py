@@ -897,21 +897,9 @@ _THEME_JS = """
   }
   apply();
   setInterval(apply, 60000);
-  /* 홈/홈으로 = 뒤로가기 동작 (사용자 2026-06-10) — 개별 대시보드에서 홈을
-     누르면 새로고침 대신 직전 화면으로(스크롤 보존). 직전 페이지가 같은
-     호스트(우리 대시보드)일 때만 history.back(), 아니면 일반 이동(홈 의미
-     보존). document 위임이라 head 에서 등록해도 모든 링크 커버. */
-  document.addEventListener('click', function(e) {
-    var a = e.target.closest ? e.target.closest('a') : null;
-    if (!a) return;
-    var href = a.getAttribute('href') || '';
-    if (!/(^|\\/)market\\.html(?:[?#]|$)/.test(href)) return;
-    if (history.length > 1 && document.referrer &&
-        document.referrer.indexOf(location.host) > -1) {
-      e.preventDefault();
-      history.back();
-    }
-  });
+  /* '홈 = 뒤로가기' 가로채기는 제거 (사용자 2026-06-11) — 수출입→NOAH→홈
+     클릭이 직전 페이지(수출입)로 돌아가는 등 다단 이동 오작동의 본체.
+     홈 링크는 항상 메인 홈으로 직행. */
 })();
 """
 
@@ -6129,7 +6117,7 @@ def _render_detail(rec: dict, analysis_markers: list[dict] | None = None) -> str
 </head>
 <body>
 <div class="wrap">
-  <a class="back" href="../index.html" onclick="if(history.length>1){{history.back();return false}}">← 아카이브로 돌아가기</a>
+  <a class="back" href="../index.html">← 아카이브로 돌아가기</a>
   <div class="title-row">
     <h1>📊 {_html.escape(h1_label)}</h1>
     {_badge_html(rating)}
@@ -12479,26 +12467,27 @@ def render_lookup_detail(ticker: str) -> str:
     )
 
     _tkr_esc = _html.escape(ticker)
-    # 개요 탭 — 차트가 상단으로 이동했으므로 회사 개요(설명) 표시. 없으면 안내.
+    # 종합 탭 내 설명 — 차트는 shell 이 종합 pane 안에 먼저 렌더(상세 페이지
+    # 와 동일 배치: 헤더 → 탭 → 종합(차트+설명) — 사용자 2026-06-11).
     _desc = _html.escape((si or {}).get("description", "") or "")
     if _desc:
         overview_inner = (
             '<div class="si-desc" style="line-height:1.7;color:var(--fg-soft);'
             'font-size:14px;max-width:880px">' + _desc + '</div>')
     else:
-        overview_inner = ('<div class="lk-loading">📈 가격 차트는 위에 있습니다. '
-                          '재무·실적·리서치 등은 상단 탭에서 확인하세요.</div>')
-    overview_open = '<div class="si-pane active" id="si-overview">' if has_tabs else ""
-    overview_close = "</div>" if has_tabs else ""
+        overview_inner = ""
 
-    # ── 지연로딩: detail fragment (차트 제외 — shell 이 먼저 렌더) ──
+    # ── 지연로딩 fragment: data-lk 파트 분할 — shell JS 가 슬롯에 제자리
+    # 주입(헤더/탭/설명/기타 pane 위치 고정, 차트는 shell 소유라 안 움직임).
     if not has_tabs:
-        return (f'<div class="lk-loading">⚠️ {_tkr_esc} 기본 정보를 불러오지 '
-                '못했습니다 (차트는 위에 표시).</div>')
+        return (f'<div data-lk="desc"><div class="lk-loading">⚠️ {_tkr_esc} '
+                '기본 정보를 불러오지 못했습니다 (차트는 위에 표시).</div></div>')
     return (
-        f"{si_header}\n{si_tabs}\n{overview_open}\n{overview_inner}\n{overview_close}\n"
-        f"{si_other}\n<script>{_DETAIL_DEEP_LINK_JS}</script>\n{si_tab_js}\n"
-        f"{quote_script}"
+        f'<div data-lk="header">{si_header}</div>\n'
+        f'<div data-lk="tabs">{si_tabs}</div>\n'
+        f'<div data-lk="desc">{overview_inner}</div>\n'
+        f'<div data-lk="other">{si_other}</div>\n'
+        f'<script>{_DETAIL_DEEP_LINK_JS}</script>\n{si_tab_js}\n{quote_script}'
     )
 
 
@@ -12506,7 +12495,6 @@ def render_lookup_detail(ticker: str) -> str:
 # 재실행(src 는 onload 대기 → LWC 라이브러리 후 _CHART_JS 순서 보존).
 # application/json 데이터 블록(차트 payload)은 실행 건너뛰고 DOM 보존.
 _LOOKUP_LAZY_TMPL = r'''<script>(function(){var T=__TICKER__;
-var box=document.getElementById('lk-detail');if(!box)return;
 function runScripts(c){var ss=[].slice.call(c.querySelectorAll('script'));var i=0;
 function next(){if(i>=ss.length)return;var o=ss[i++];
 var ty=(o.getAttribute('type')||'').toLowerCase();
@@ -12518,8 +12506,20 @@ if(o.parentNode)o.parentNode.replaceChild(s,o);else c.appendChild(s);
 if(!o.src)next();}next();}
 fetch('../api/lookup_detail?ticker='+encodeURIComponent(T))
 .then(function(r){if(!r.ok)throw 0;return r.text();})
-.then(function(h){box.innerHTML=h;runScripts(box);})
-.catch(function(){box.innerHTML='<div class="lk-loading">⚠️ 상세 정보를 불러오지 못했습니다. <a href="" onclick="location.reload();return false">다시 시도</a></div>';});
+.then(function(h){
+  var tmp=document.createElement('div');tmp.innerHTML=h;
+  /* 스크립트는 먼저 분리(슬롯 이동 시 미실행 방지) → 파트 배치 후 실행 */
+  var sc=document.createElement('div');
+  [].slice.call(tmp.querySelectorAll('script')).forEach(function(s){sc.appendChild(s);});
+  function put(part,slotId){var src=tmp.querySelector('[data-lk="'+part+'"]');
+    var dst=document.getElementById(slotId);if(!src||!dst)return;
+    dst.innerHTML='';while(src.firstChild)dst.appendChild(src.firstChild);}
+  put('header','lk-header-slot');put('tabs','lk-tabs-slot');
+  put('desc','lk-desc-slot');put('other','lk-other-slot');
+  document.body.appendChild(sc);runScripts(sc);
+})
+.catch(function(){var d=document.getElementById('lk-desc-slot');
+  if(d)d.innerHTML='<div class="lk-loading">⚠️ 상세 정보를 불러오지 못했습니다. <a href="" onclick="location.reload();return false">다시 시도</a></div>';});
 })();</script>'''
 
 _LOOKUP_SEARCH_JS = """<script>
@@ -12588,8 +12588,18 @@ def render_lookup_page(ticker: str) -> str:
   <div class="title-row">
     <h1>📊 {_html.escape(h1_label)}</h1>
   </div>
-  {chart_section}
-  <div id="lk-detail"><div class="lk-loading">📊 재무·실적·리서치 등 상세 정보를 불러오는 중… (차트는 위에서 먼저 확인하세요)</div></div>
+  <div id="lk-header-slot"><div class="si-header">
+    <div class="si-card"><span class="si-label">현재가</span><span class="si-value">—</span></div>
+    <div class="si-card"><span class="si-label">시가총액</span><span class="si-value">—</span></div>
+    <div class="si-card"><span class="si-label">발행주식수</span><span class="si-value">—</span></div>
+    <div class="si-card"><span class="si-label">다음 실적</span><span class="si-value">—</span></div>
+  </div></div>
+  <div id="lk-tabs-slot"><div class="si-tabs"><button type="button" class="si-tab active">종합</button><span style="align-self:center;font-size:12px;color:var(--muted);padding:0 10px">재무·실적·리서치 등 로딩 중…</span></div></div>
+  <div class="si-pane active" id="si-overview">
+    {chart_section}
+    <div id="lk-desc-slot"></div>
+  </div>
+  <div id="lk-other-slot"></div>
 </div>
 {chart_scripts}
 {lazy_js}
