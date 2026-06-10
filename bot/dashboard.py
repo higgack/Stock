@@ -12431,11 +12431,14 @@ def _lookup_chart_html(ticker: str) -> str:
 </section>"""
 
 
-def render_lookup_detail(ticker: str) -> str:
-    """지연로딩 detail — 무거운 부분(collect_stock_snapshot + enrichment +
-    header/tabs/panes). 차트는 shell 이 **먼저** 렌더하므로 여기선 제외
-    (점진 로딩 — 사용자 2026-06-10 '차트 먼저 보고 나머지 천천히'). shell 이
-    /api/lookup_detail 로 비동기 fetch 해 #lk-detail 에 주입. HTML fragment."""
+def render_lookup_detail(ticker: str, enrich: bool = True) -> str:
+    """지연로딩 detail fragment (data-lk 파트). 차트는 shell 이 먼저 렌더.
+
+    2단계 로딩(사용자 2026-06-11 '탭 순서대로 채움'): phase=core(enrich=
+    False)는 스냅샷만 — 헤더·탭·기업/컨센서스/밸류/재무 등 앞쪽 탭이 먼저
+    채워짐. phase=full(enrich=True)은 enrichment(뉴스·리서치 — 뒤쪽 탭)까지
+    포함해 교체. 라이브 quote 오버레이 스크립트는 full 에만(스냅샷 이중
+    실행 방지)."""
     # Build stock_info via the same pipeline as NOAH analyses
     si = None
     try:
@@ -12444,8 +12447,8 @@ def render_lookup_detail(ticker: str) -> str:
     except Exception:
         pass
 
-    # Enrich missing tabs (news/research/consensus) on-demand
-    if si:
+    # Enrich missing tabs (news/research/consensus) on-demand — full 만
+    if si and enrich:
         try:
             _ensure_detail_enrichment(ticker, si)
         except Exception:
@@ -12464,29 +12467,20 @@ def render_lookup_detail(ticker: str) -> str:
     quote_script = (
         f'<script>var NOAH_TICKER={json.dumps(ticker)};'
         f'var NOAH_BASE="../";{_QUOTE_JS}</script>'
-        if has_tabs else ""
+        if (has_tabs and enrich) else ""
     )
 
     _tkr_esc = _html.escape(ticker)
-    # 종합 탭 내 설명 — 차트는 shell 이 종합 pane 안에 먼저 렌더(상세 페이지
-    # 와 동일 배치: 헤더 → 탭 → 종합(차트+설명) — 사용자 2026-06-11).
-    _desc = _html.escape((si or {}).get("description", "") or "")
-    if _desc:
-        overview_inner = (
-            '<div class="si-desc" style="line-height:1.7;color:var(--fg-soft);'
-            'font-size:14px;max-width:880px">' + _desc + '</div>')
-    else:
-        overview_inner = ""
+    # 종합 탭 = 차트만 — 회사 설명은 기업 탭과 중복이라 제거(사용자 2026-06-11).
 
     # ── 지연로딩 fragment: data-lk 파트 분할 — shell JS 가 슬롯에 제자리
-    # 주입(헤더/탭/설명/기타 pane 위치 고정, 차트는 shell 소유라 안 움직임).
+    # 주입(헤더/탭/기타 pane 위치 고정, 차트는 shell 소유라 안 움직임).
     if not has_tabs:
         return (f'<div data-lk="desc"><div class="lk-loading">⚠️ {_tkr_esc} '
                 '기본 정보를 불러오지 못했습니다 (차트는 위에 표시).</div></div>')
     return (
         f'<div data-lk="header">{si_header}</div>\n'
         f'<div data-lk="tabs">{si_tabs}</div>\n'
-        f'<div data-lk="desc">{overview_inner}</div>\n'
         f'<div data-lk="other">{si_other}</div>\n'
         f'<script>{_DETAIL_DEEP_LINK_JS}</script>\n{si_tab_js}\n{quote_script}'
     )
@@ -12505,9 +12499,7 @@ for(var k=0;k<o.attributes.length;k++)s.setAttribute(o.attributes[k].name,o.attr
 if(o.src){s.onload=next;s.onerror=next;}else{s.textContent=o.textContent;}
 if(o.parentNode)o.parentNode.replaceChild(s,o);else c.appendChild(s);
 if(!o.src)next();}next();}
-fetch('../api/lookup_detail?ticker='+encodeURIComponent(T))
-.then(function(r){if(!r.ok)throw 0;return r.text();})
-.then(function(h){
+function inject(h){
   var tmp=document.createElement('div');tmp.innerHTML=h;
   /* 스크립트는 먼저 분리(슬롯 이동 시 미실행 방지) → 파트 배치 후 실행 */
   var sc=document.createElement('div');
@@ -12518,9 +12510,19 @@ fetch('../api/lookup_detail?ticker='+encodeURIComponent(T))
   put('header','lk-header-slot');put('tabs','lk-tabs-slot');
   put('desc','lk-desc-slot');put('other','lk-other-slot');
   document.body.appendChild(sc);runScripts(sc);
-})
-.catch(function(){var d=document.getElementById('lk-desc-slot');
-  if(d)d.innerHTML='<div class="lk-loading">⚠️ 상세 정보를 불러오지 못했습니다. <a href="" onclick="location.reload();return false">다시 시도</a></div>';});
+}
+function get(phase){return fetch('../api/lookup_detail?ticker='+encodeURIComponent(T)+'&phase='+phase)
+  .then(function(r){if(!r.ok)throw 0;return r.text();});}
+/* 2단계: core(스냅샷 — 헤더·탭·앞쪽 탭들 먼저) → full(뉴스·리서치 등 뒤쪽
+   탭 enrichment 포함 교체) — 탭 순서대로 채워짐(사용자 2026-06-11). */
+get('core').then(function(h){inject(h);return get('full');})
+.then(function(h){inject(h);})
+.catch(function(){
+  /* core 실패 시 full 단독 재시도 → 그래도 실패면 안내 */
+  get('full').then(function(h){inject(h);}).catch(function(){
+    var d=document.getElementById('lk-desc-slot');
+    if(d)d.innerHTML='<div class="lk-loading">⚠️ 상세 정보를 불러오지 못했습니다. <a href="" onclick="location.reload();return false">다시 시도</a></div>';});
+});
 })();</script>'''
 
 _LOOKUP_SEARCH_JS = """<script>
@@ -12554,6 +12556,19 @@ def render_lookup_page(ticker: str) -> str:
         f'<script src="../{_LWC_LIB_NAME}"></script>\n<script>{_CHART_JS}</script>'
     )
     lazy_js = _LOOKUP_LAZY_TMPL.replace("__TICKER__", json.dumps(ticker))
+    # 현재가·시총 즉시 채움 — LIGHT quote(~0.5-1s, 5분 캐시)로 헤더 스켈레톤
+    # 의 두 카드만 먼저(사용자 2026-06-11 '두번째 캡처 먼저, 차트 다음 바로').
+    # detail(core/full) 도착 시 전체 헤더로 교체되며 applyFmt 가 재적용.
+    qfast_js = (
+        "<script>(function(){fetch('../api/quote?ticker='+encodeURIComponent("
+        + json.dumps(ticker) + "),{cache:'no-store'})"
+        ".then(function(r){return r.json();})"
+        ".then(function(j){if(!j||!j.ok||!j.quote||!j.quote.fmt)return;"
+        "var f=j.quote.fmt;['price','mcap'].forEach(function(k){"
+        "var e=document.querySelector('#lk-header-slot [data-q=\"'+k+'\"]');"
+        "if(e&&f[k])e.textContent=f[k];});})"
+        ".catch(function(){});})();</script>"
+    )
     save_js = (
         "<script>(function(){var btn=document.getElementById('lk-save');"
         "if(!btn)return;var ticker=" + json.dumps(ticker) + ";"
@@ -12590,8 +12605,8 @@ def render_lookup_page(ticker: str) -> str:
     <h1>📊 {_html.escape(h1_label)}</h1>
   </div>
   <div id="lk-header-slot"><div class="si-header">
-    <div class="si-card"><span class="si-label">현재가</span><span class="si-value">—</span></div>
-    <div class="si-card"><span class="si-label">시가총액</span><span class="si-value">—</span></div>
+    <div class="si-card"><span class="si-label">현재가</span><span class="si-value" data-q="price">—</span></div>
+    <div class="si-card"><span class="si-label">시가총액</span><span class="si-value" data-q="mcap">—</span></div>
     <div class="si-card"><span class="si-label">발행주식수</span><span class="si-value">—</span></div>
     <div class="si-card"><span class="si-label">다음 실적</span><span class="si-value">—</span></div>
   </div></div>
@@ -12603,6 +12618,7 @@ def render_lookup_page(ticker: str) -> str:
   <div id="lk-other-slot"></div>
 </div>
 {chart_scripts}
+{qfast_js}
 {lazy_js}
 {_LOOKUP_SEARCH_JS}
 {save_js}
