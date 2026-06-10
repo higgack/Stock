@@ -235,6 +235,21 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
             ("만기", ("bd_mtrd",), "date"),
             ("자금용도", ("fdpp_op",), "text"),
         ])]
+    elif "신주인수권부사채" in t:
+        specs = [("bdwtIsDecsn", [
+            ("권면총액", ("bd_fta", "bd_tota"), "won"),
+            ("행사가격", ("ex_prc", "exrow_prc"), "won"),
+            ("이자율", ("bd_intr_ex",), "text"),
+            ("만기", ("bd_mtrd",), "date"),
+            ("자금용도", ("fdpp_op",), "text"),
+        ])]
+    elif "교환사채" in t:
+        specs = [("exbdIsDecsn", [
+            ("권면총액", ("bd_fta", "bd_tota"), "won"),
+            ("교환가격", ("ex_prc", "exc_prc"), "won"),
+            ("만기", ("bd_mtrd",), "date"),
+            ("자금용도", ("fdpp_op",), "text"),
+        ])]
     elif "자기주식" in t:
         specs = [("tsstkAqDecsn", [
             ("취득예정", ("aqpln_stk_ostk", "aqpln_stk"), "num"),
@@ -421,12 +436,46 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
         rcept_no = item.get("rcept_no", "")
         corp_code = item.get("corp_code", "")
 
-        if cat in ("계약", "자금조달", "주주환원") or "실적" in cat:
+        if cat in ("계약", "자금조달", "주주환원", "신규시설투자") or "실적" in cat:
             if corp_code:
                 detail = _extract_detail(report_nm, rcept_no, corp_code, api_key)
-                if detail:
-                    item["detail"] = detail.get("lines", [])
+                lines = list(detail.get("lines", [])) if detail else []
+                # 시총·현재가 부착 (다른 봇 수준 — 사용자 2026-06-10). FSC
+                # (무료·12h 캐시·T+1)로 시총·종가. 구조화 detail 있는 카드만
+                # (계약/실적/자금조달/주주환원/신규시설투자) → ~소수 카드.
+                sc = item.get("stock_code", "")
+                if lines and sc and len(sc) == 6 and sc.isdigit():
+                    lines += _market_cap_price_lines(sc)
+                if lines:
+                    item["detail"] = lines
     return items
+
+
+def _market_cap_price_lines(stock_code: str) -> list[str]:
+    """FSC 최신 시세 → ['시가총액: X', '현재가: Y원'] (무료·12h 캐시). 실패 시 []."""
+    try:
+        from bot.fsc_client import latest_price, fsc_key_ready
+        from bot.dart_detail import _won as _fw
+        if not fsc_key_ready():
+            return []
+        p = latest_price(f"{stock_code}.KS")  # FSC 는 suffix 무시(6자리 코드)
+        if not p:
+            return []
+        out: list[str] = []
+        mc = p.get("mrktTotAmt")
+        cl = p.get("clpr")
+        if mc:
+            w = _fw(mc)
+            if w:
+                out.append(f"시가총액: {w}")
+        if cl:
+            try:
+                out.append(f"현재가: {int(float(cl)):,}원")
+            except (TypeError, ValueError):
+                pass
+        return out
+    except Exception:
+        return []
 
 
 # ── 아카이브 ──
