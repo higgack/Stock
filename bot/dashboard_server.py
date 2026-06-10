@@ -241,6 +241,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # (yfinance .info, KR KIS-first). FULL: re-snapshot heavy panes.
         if self.path.split("?", 1)[0] == "/api/quote":
             return self._handle_quote_api()
+        # /api/command_result?id=<hex> — 대시보드 명령 콘솔 결과 폴링.
+        if self.path.split("?", 1)[0] == "/api/command_result":
+            return self._handle_command_result()
         # /earnings — monthly earnings calendar page (Finnhub).
         raw = self.path.split("?", 1)[0]
         if raw == "/earnings":
@@ -964,12 +967,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     )
                 q = ticker
 
+            if kind == "command" and not q.startswith("/"):
+                raise ValueError("명령은 '/' 로 시작해야 합니다")
+
             res = submit(kind, q)
             if not res.get("ok"):
                 raise ValueError(res.get("error") or "요청 실패")
             log.info("run request spooled: kind=%s q=%r dup=%s",
                      kind, q, res.get("dup", False))
             self._reply_json(200, {"ok": True, "q": q,
+                                   "id": res.get("id", ""),
                                    "dup": bool(res.get("dup")),
                                    "note": res.get("note", "")})
         except ValueError as exc:
@@ -977,6 +984,28 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.exception("run: unexpected failure")
             self._reply_json(500, {"ok": False, "error": str(exc)})
+
+    def _handle_command_result(self) -> None:
+        """GET /api/command_result?id=<hex> — 봇이 기록한 명령 결과 폴링.
+
+        결과 있으면 {ok, done:true, lines:[...]}, 아직 실행 중이면
+        {ok:true, done:false}. 봇 폴러(5초)+실행 시간만큼 지연될 수 있어
+        브라우저가 주기 폴링한다. id 는 dashboard_requests 가 검증."""
+        import urllib.parse as _uparse
+        try:
+            qs = _uparse.urlparse(self.path).query
+            rid = (_uparse.parse_qs(qs).get("id", [""])[0] or "").strip()
+            from bot.dashboard_requests import read_result
+            res = read_result(rid)
+            if res is None:
+                self._reply_json(200, {"ok": True, "done": False})
+                return
+            self._reply_json(200, {"ok": bool(res.get("ok", True)),
+                                   "done": bool(res.get("done")),
+                                   "lines": res.get("lines", [])})
+        except Exception as exc:
+            self._reply_json(200, {"ok": False, "done": True,
+                                   "error": str(exc)})
 
     def _handle_lookup_detail(self) -> None:
         """GET /api/lookup_detail?ticker=X — 지연로딩 detail HTML fragment.

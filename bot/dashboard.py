@@ -1308,6 +1308,11 @@ _INDEX_JS = """
 
   function applyFilter() {
     const raw = (searchEl.value || '').trim();
+    if (raw.charAt(0) === '/') {  // 명령 모드 — 카드 필터 대신 콘솔 안내
+      showCardsMode();
+      statusEl.textContent = '⌨️ 명령 모드 — Enter 또는 [분석] 으로 실행 (예: /usage · /portfolio · /screener ai · /watchlist)';
+      return;
+    }
     if (!raw) { showCardsMode(); return; }
     showSnippetsMode(raw);
   }
@@ -1450,14 +1455,105 @@ function noahRunSetup(btnId, inputId, kind, opts) {
 }
 """
 
-# index.html: 분석 버튼 — 텔레그램 /티커 와 동일한 전체 분석을 대시보드에서.
-_INDEX_RUN_JS = _RUN_REQUEST_JS + r"""
-noahRunSetup('analyze-btn', 'search', 'analyze', {
-  requireQuery: true,
-  emptyMsg: '분석할 종목(티커 또는 종목명)을 검색창에 입력하세요.\n예: NVDA · 삼성전자 · 005930.KS',
+# ── 대시보드 명령 콘솔 JS ─────────────────────────────────────────────────
+# 입력이 '/' 로 시작하면 텔레그램 명령으로 실행(api/run kind=command → 봇이
+# 캡처 shim 으로 핸들러 실행 → api/command_result 폴링), 아니면 기존 주작업
+# (분석/스크리너). 결과는 입력창 아래 패널(panelId)에 표시. 상대경로 fetch.
+_CONSOLE_JS = r"""
+(function(){
+  if (document.getElementById('noah-cmd-css')) return;
+  var st = document.createElement('style'); st.id = 'noah-cmd-css';
+  st.textContent = '.cmd-panel{background:var(--card,#1a1d24);border:1px solid var(--border,#2a2e37);border-radius:10px;margin:0 0 18px;overflow:hidden}'
+    + '.cmd-panel .cmd-hd{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border,#2a2e37);background:var(--bg,#0f1115)}'
+    + '.cmd-panel .cmd-title{font-size:13px;font-weight:600;color:var(--accent,#3b82f6);font-family:ui-monospace,Menlo,monospace;word-break:break-all}'
+    + '.cmd-panel .cmd-x{background:none;border:none;color:var(--fg-soft,var(--muted,#9aa));cursor:pointer;font-size:14px;padding:2px 6px;flex-shrink:0}'
+    + '.cmd-panel .cmd-body{margin:0;padding:12px 14px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,Menlo,monospace;max-height:60vh;overflow:auto}';
+  (document.head||document.documentElement).appendChild(st);
+})();
+function noahEsc(s){ var d=document.createElement('div'); d.textContent=(s==null?'':String(s)); return d.innerHTML; }
+function noahShowPanel(panel, title, bodyLines){
+  if (!panel) { alert((title?title+'\n\n':'') + (bodyLines||[]).join('\n')); return; }
+  var html = '<div class="cmd-hd"><span class="cmd-title">' + noahEsc(title) + '</span>'
+    + '<button type="button" class="cmd-x" title="닫기">✕</button></div>';
+  if (bodyLines && bodyLines.length){
+    html += '<pre class="cmd-body">' + bodyLines.map(noahEsc).join('\n') + '</pre>';
+  }
+  panel.innerHTML = html; panel.style.display = 'block';
+  var x = panel.querySelector('.cmd-x');
+  if (x) x.addEventListener('click', function(){ panel.style.display='none'; panel.innerHTML=''; });
+}
+function noahPollResult(id, cmd, panel, tries){
+  if (tries > 90){ noahShowPanel(panel, cmd, ['⚠️ 시간 초과 — 텔레그램 채널을 확인하세요.']); return; }
+  fetch('api/command_result?id=' + encodeURIComponent(id), {cache:'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d && d.done){ noahShowPanel(panel, cmd, (d.lines && d.lines.length) ? d.lines : ['(출력 없음)']); return; }
+      setTimeout(function(){ noahPollResult(id, cmd, panel, tries+1); }, 2000);
+    })
+    .catch(function(){ setTimeout(function(){ noahPollResult(id, cmd, panel, tries+1); }, 2000); });
+}
+function noahRunCommand(cmd, panel){
+  var word = cmd.replace(/^\/+/, '').split(/\s+/)[0].toLowerCase();
+  if (word === 'screener'){
+    if (!confirm("'" + cmd + "'\nBottleneck Screener 실행 — ~3-5분 · ~₩330. 계속할까요?")) return;
+  }
+  noahShowPanel(panel, cmd, ['⏳ 실행 중…']);
+  fetch('api/run', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({kind:'command', q: cmd})})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (!d || !d.ok || !d.id){ noahShowPanel(panel, cmd, ['⚠️ ' + ((d&&d.error)||'요청 실패')]); return; }
+      noahPollResult(d.id, cmd, panel, 0);
+    })
+    .catch(function(e){ noahShowPanel(panel, cmd, ['⚠️ 요청 실패: ' + e]); });
+}
+function noahConsoleSetup(opts){
+  var inp = document.getElementById(opts.inputId);
+  var btn = document.getElementById(opts.btnId);
+  var panel = opts.panelId ? document.getElementById(opts.panelId) : null;
+  var statusEl = opts.statusId ? document.getElementById(opts.statusId) : null;
+  function runPrimary(q){
+    if (!q && opts.requireQuery){ if (inp) inp.focus(); alert(opts.emptyMsg || '입력 후 실행하세요.'); return; }
+    var label = q || opts.defaultLabel || '';
+    if (!confirm((label ? "'" + label + "'\n" : '') + (opts.confirmText || '실행할까요?'))) return;
+    var orig = btn ? btn.textContent : '';
+    if (btn){ btn.disabled = true; btn.textContent = '…'; }
+    fetch('api/run', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({kind: opts.runKind, q: q})})
+      .then(function(r){ return r.json().then(function(d){ return {st:r.status, d:d}; }); })
+      .then(function(x){
+        if (btn){ btn.disabled=false; btn.textContent=orig; }
+        if (x.d && x.d.ok){
+          var note = x.d.dup ? '이미 같은 요청이 대기 중입니다.'
+            : ((x.d.q ? x.d.q + ' — ' : '') + (opts.okMsg || '요청 접수. 결과는 텔레그램 채널에 게시됩니다.'));
+          if (statusEl) statusEl.textContent = '✅ ' + note; else alert('✅ ' + note);
+        } else { alert('⚠️ ' + ((x.d && x.d.error) || ('요청 실패 (HTTP ' + x.st + ')'))); }
+      })
+      .catch(function(e){ if (btn){ btn.disabled=false; btn.textContent=orig; } alert('⚠️ 요청 실패: ' + e); });
+  }
+  function go(){
+    var raw = (inp && inp.value || '').trim();
+    if (raw.charAt(0) === '/'){ noahRunCommand(raw, panel); return; }
+    runPrimary(raw);
+  }
+  if (btn) btn.addEventListener('click', go);
+  if (inp) inp.addEventListener('keydown', function(e){
+    if (e.key === 'Enter'){
+      var raw = (inp.value || '').trim();
+      if (raw.charAt(0) === '/'){ e.preventDefault(); noahRunCommand(raw, panel); }
+    }
+  });
+}
+"""
+
+# index.html: 분석 버튼 = 티커 분석(슬래시 없이), '/' 입력 = 텔레그램 명령 콘솔.
+_INDEX_RUN_JS = _CONSOLE_JS + r"""
+noahConsoleSetup({
+  inputId: 'search', btnId: 'analyze-btn', statusId: 'status', panelId: 'cmd-panel',
+  runKind: 'analyze', requireQuery: true,
+  emptyMsg: '분석할 종목(티커 또는 종목명)을 검색창에 입력하세요.\n예: NVDA · 삼성전자 · 005930.KS\n또는 / 명령 (예: /usage · /portfolio · /screener ai)',
   confirmText: '전체 분석을 시작할까요?\n· 소요 ~3분 · 비용 ~₩100-150 (캐시 시 무료)\n· 결과: 텔레그램 채널 + 이 아카이브(자동 갱신)',
-  okMsg: '분석 요청 접수 — ~3분 후 텔레그램 채널과 이 아카이브에 게시됩니다.',
-  statusId: 'status'
+  okMsg: '분석 요청 접수 — ~3분 후 텔레그램 채널과 이 아카이브에 게시됩니다.'
 });
 """
 
@@ -2034,12 +2130,13 @@ def _render_index(records: list[dict]) -> str:
   <p class="sub">카드 클릭 시 전체 리포트{errors_link}</p>
   {stats_panel}
   <div class="search-bar">
-    <input id="search" type="text" placeholder="종목 / 본문 검색 (예: NVDA, 삼성전자, 변압기, GLP-1, CHIPS Act)" autocomplete="off" spellcheck="false">
+    <input id="search" type="text" placeholder="종목·본문 검색 · 분석은 [분석] · '/' 로 명령 (예: /usage · /portfolio · /screener ai)" autocomplete="off" spellcheck="false">
     <button id="clear-btn" type="button" title="검색 초기화">초기화</button>
-    <button id="analyze-btn" type="button" class="run-btn" title="입력한 종목 전체 분석 — 텔레그램 /티커 와 동일 (결과: 채널 + 이 아카이브)">분석</button>
+    <button id="analyze-btn" type="button" class="run-btn" title="슬래시 없이 종목 입력 후 전체 분석(텔레그램 /티커 와 동일). '/' 입력 시엔 그 명령을 실행">분석</button>
   </div>
   {market_filter_html}
   <p id="status" class="status-line">총 {len(records)}건의 분석 기록</p>
+  <div id="cmd-panel" class="cmd-panel" style="display:none"></div>
   <div id="snippets" class="snippets" style="display:none"></div>
   <div id="empty-search" class="empty-search">검색 결과가 없습니다.</div>
   {body}
@@ -6428,6 +6525,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
     <button id="scr-run" type="button" class="run-btn" title="입력 도메인으로 Bottleneck Screener 실행 — 텔레그램 /screener 와 동일 (비우면 기본 bottleneck)">실행</button>
   </div>
   <p id="scr-status" class="status-line">총 {total_runs}건의 Bottleneck Screener 실행</p>
+  <div id="scr-cmd-panel" class="cmd-panel" style="display:none"></div>
   <div id="scr-snippets" class="snippets" style="display:none"></div>
   <div id="scr-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>
 """)
@@ -6933,6 +7031,11 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
 
   function applyFilter() {
     const q = (inp.value || '').trim();
+    if (q.charAt(0) === '/') {  // 명령 모드 — 필터 대신 콘솔 안내
+      showCardsMode();
+      if (sts) sts.textContent = '⌨️ 명령 모드 — Enter 또는 [실행] 으로 실행 (예: /usage · /screener_list · /portfolio)';
+      return;
+    }
     if (!q) { showCardsMode(); return; }
     showSnippetsMode(q);
   }
@@ -7126,7 +7229,16 @@ document.querySelectorAll('.scr-del').forEach(function(btn) {
   var csTotal = csCards.length;
 
   function csFilter() {
-    var q = (csInp.value || '').trim().toLowerCase();
+    var qraw = (csInp.value || '').trim();
+    var q = qraw.toLowerCase();
+    if (qraw.charAt(0) === '/') {  // 명령 모드 — 필터 안 함
+      csCards.forEach(function(c) { c.style.display = ''; });
+      csDays.forEach(function(d) { d.style.display = ''; });
+      csMonths.forEach(function(m) { m.style.display = ''; });
+      csEmp.style.display = 'none';
+      csSts.textContent = '⌨️ 명령 모드 — Enter 또는 [실행] 으로 실행 (예: /usage · /screener_list)';
+      return;
+    }
     if (!q) {
       csCards.forEach(function(c) { c.style.display = ''; });
       csDays.forEach(function(d) { d.style.display = ''; });
@@ -7159,22 +7271,22 @@ document.querySelectorAll('.scr-del').forEach(function(btn) {
   csClr.addEventListener('click', function() { csInp.value = ''; csFilter(); csInp.focus(); });
 })();
 </script>
-<script>""" + _RUN_REQUEST_JS + r"""
-// Bottleneck Screener 실행 — 텔레그램 /screener [도메인|자유어] 와 동일.
-noahRunSetup('scr-run', 'scr-search', 'screener', {
-  requireQuery: false,
+<script>""" + _CONSOLE_JS + r"""
+// Bottleneck Screener 실행(텔레그램 /screener) · '/' 입력 = 명령 콘솔.
+noahConsoleSetup({
+  inputId: 'scr-search', btnId: 'scr-run', statusId: 'scr-status', panelId: 'scr-cmd-panel',
+  runKind: 'screener', requireQuery: false,
   defaultLabel: 'bottleneck (기본)',
   confirmText: 'Bottleneck Screener 를 실행할까요?\n· 소요 5-10분 · 비용 ~₩300-500 (오늘 캐시 시 무료)\n· 결과: 텔레그램 채널 + 이 페이지(자동 갱신)',
-  okMsg: 'Screener 요청 접수 — 5-10분 후 텔레그램 채널과 이 페이지에 게시됩니다.',
-  statusId: 'scr-status'
+  okMsg: 'Screener 요청 접수 — 5-10분 후 텔레그램 채널과 이 페이지에 게시됩니다.'
 });
-// 조건부 스크리너 실행 — 텔레그램 /screen [조건|프리셋] 과 동일 (₩0).
-noahRunSetup('cs-run', 'cs-search', 'screen', {
-  requireQuery: true,
-  emptyMsg: '실행할 조건 또는 프리셋을 입력하세요.\n예: PER<15 PBR<1 · us PER<15 · valueup\n(전체 지표는 제목 옆 📖 설명서)',
+// 조건부 스크리너 실행(텔레그램 /screen, ₩0) · '/' 입력 = 명령 콘솔.
+noahConsoleSetup({
+  inputId: 'cs-search', btnId: 'cs-run', statusId: 'cs-status', panelId: 'scr-cmd-panel',
+  runKind: 'screen', requireQuery: true,
+  emptyMsg: '실행할 조건 또는 프리셋을 입력하세요.\n예: PER<15 PBR<1 · us PER<15 · valueup\n(전체 지표는 제목 옆 📖 설명서)\n또는 / 명령 (예: /usage · /screener_list)',
   confirmText: '조건부 스크리너를 실행할까요?\n· KR 수초~수십초 · us 는 ~1-2분 · 비용 ₩0\n· 결과: 텔레그램 채널 + 이 페이지(자동 갱신)',
-  okMsg: '조건부 스크리너 요청 접수 — 결과는 텔레그램 채널과 이 페이지에 게시됩니다.',
-  statusId: 'cs-status'
+  okMsg: '조건부 스크리너 요청 접수 — 결과는 텔레그램 채널과 이 페이지에 게시됩니다.'
 });
 </script>
 </body></html>
