@@ -6267,6 +6267,63 @@ def _month_close(parts: list[str], prev_month: str | None) -> None:
         parts.append("</div></details>")
 
 
+def _render_screen_manual() -> str:
+    """조건부 스크리너 제목 옆 📖 설명서 (collapsible).
+
+    내용은 stock_screener.METRICS / PRESETS 에서 자동 생성 — /screen list ·
+    _HELP_TEXT §6 과 단일 소스(지표/프리셋 추가 시 하드코딩 목록 없이 자동
+    동기, 사용자 2026-06-10 'help 참조해서 설명서 추가'). import 실패 시
+    빈 문자열(graceful — 페이지는 설명서만 없이 정상)."""
+    try:
+        from bot.stock_screener import METRICS, PRESETS
+    except Exception:
+        return ""
+    try:
+        import html as _h
+
+        def _metric_rows(source: str, n_alias: int) -> str:
+            rows = []
+            for m in METRICS.values():
+                if m.source != source:
+                    continue
+                alias = "/".join(m.aliases[:n_alias])
+                rows.append(
+                    f'<div class="mrow"><b>{_h.escape(m.name)}</b>'
+                    f' ({_h.escape(alias)}) — {_h.escape(m.desc)}</div>'
+                )
+            return "".join(rows)
+
+        preset_rows = "".join(
+            f'<div class="mrow"><code>/screen {_h.escape(slug)}</code>'
+            f' — <b>{_h.escape(p["name"])}</b>: {_h.escape(p["desc"])}</div>'
+            for slug, p in PRESETS.items()
+        )
+        return (
+            '<details class="cs-help"><summary>📖 설명서</summary>'
+            '<div class="cs-help-body">'
+            '<h4>사용법 (텔레그램 /screen = 대시보드 실행 버튼 동일)</h4>'
+            '<div class="mrow"><code>PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — KR (KOSPI+KOSDAQ 전 종목)</div>'
+            '<div class="mrow"><code>us PER&lt;15 DIV&gt;2</code> — 앞에 <code>us</code> = US S&amp;P 500</div>'
+            '<div class="mrow"><code>매출QoQ&gt;10 영업이익QoQ&gt;5</code> — 전분기 대비 성장 필터</div>'
+            '<div class="mrow"><code>valueup</code> — 프리셋 이름만 입력</div>'
+            '<h4>Phase 1 지표 (pykrx 벌크 — KR 전 종목 즉시)</h4>'
+            + _metric_rows("pykrx", 3) +
+            '<h4>Phase 2 지표 (yfinance — Phase 1 생존 종목만)</h4>'
+            + _metric_rows("yfinance", 2) +
+            '<h4>QoQ 지표 (전분기 대비 성장률, yfinance 분기 재무제표)</h4>'
+            + _metric_rows("qoq", 2) +
+            '<h4>프리셋</h4>'
+            + preset_rows +
+            '<h4>연산자 · 시장 · 비용</h4>'
+            '<div class="mrow">연산자: <code>&gt; &lt; &gt;= &lt;= =</code> · '
+            '시장: KR 기본, <code>us</code> 접두 시 US S&amp;P 500 (개별 조회 ~1-2분) · '
+            '비용 ₩0 (LLM 미사용) · 24h 캐시</div>'
+            '</div></details>'
+        )
+    except Exception:
+        return ""
+
+
 def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: list[dict] | None = None) -> str:
     """Render screener.html — date-grouped run cards with Top-3 mini-tables
     showing 5/15/30d outcomes (alpha vs sector ETF). Self-contained HTML
@@ -6325,22 +6382,18 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
   </div>
 """)
 
-    if not runs and not (screen_archives or []):
-        parts.append("""
-  <div class="empty">
-    아직 screener 실행 기록이 없습니다. 텔레그램 채널에서
-    <code>/screener</code> 또는 <code>/screen</code> 을 실행하세요.
-  </div>
-</div>""")
-        return "".join(parts)
+    # 실행 기록이 0건이어도 섹션 헤더 + 실행 버튼은 렌더 — 대시보드에서
+    # 첫 실행을 시작할 수 있어야 하므로 (2026-06-10 실행 버튼 추가와 함께
+    # 옛 early-return 제거). 빈 상태 안내는 각 섹션 status 라인이 담당.
 
-    # ── Bottleneck Screener section header + search ──
+    # ── Bottleneck Screener section header + search + 실행 ──
     parts.append(f"""
   <h2 style="margin:24px 0 8px">🔬 Bottleneck Screener</h2>
   <p class="sub">테마별 다종목 idea generation · 6-18M thesis</p>
   <div class="search-bar">
-    <input id="scr-search" type="text" placeholder="ticker / 회사명 / 테마 / 본문 검색 (예: 변압기, 액체냉각, ETN, Eaton)" autocomplete="off" spellcheck="false">
+    <input id="scr-search" type="text" placeholder="검색 — 또는 실행할 도메인/자유어 입력 (예: bottleneck, 방산, 로봇, 액체냉각) → 실행" autocomplete="off" spellcheck="false">
     <button id="scr-clear" type="button" title="검색 초기화">초기화</button>
+    <button id="scr-run" type="button" class="run-btn" title="입력 도메인으로 Bottleneck Screener 실행 — 텔레그램 /screener 와 동일 (비우면 기본 bottleneck)">실행</button>
   </div>
   <p id="scr-status" class="status-line">총 {total_runs}건의 Bottleneck Screener 실행</p>
   <div id="scr-snippets" class="snippets" style="display:none"></div>
@@ -6575,31 +6628,36 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
     _month_close(parts, _prev_month)
 
     # ── 조건부 스크리너 section (date-grouped, search, same pattern as Bottleneck) ──
+    # 헤더·설명서·검색바·실행 버튼은 기록 0건이어도 항상 렌더 — 첫 실행을
+    # 대시보드에서 시작할 수 있어야 함. 기록 카드만 _scr_list 존재 시.
     _scr_list = screen_archives or []
+    parts.append(
+        '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
+        '<h2 style="margin:0 0 8px">📊 조건부 스크리너'
+        + _render_screen_manual() +
+        '</h2>'
+        '<p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0). '
+        '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> '
+        '· <code>/screen valueup</code> · <code>/screen list</code></p>'
+        '<div class="search-bar">'
+        '<input id="cs-search" type="text" placeholder="검색 — 또는 실행할 조건/프리셋 입력 (예: PER<15 PBR<1, us PER<15, valueup) → 실행" autocomplete="off" spellcheck="false">'
+        '<button id="cs-clear" type="button" title="검색 초기화">초기화</button>'
+        '<button id="cs-run" type="button" class="run-btn" title="입력 조건으로 조건부 스크리너 실행 — 텔레그램 /screen 과 동일 (₩0)">실행</button>'
+        '</div>'
+        f'<p id="cs-status" class="status-line">총 {len(_scr_list)}건의 조건부 스크리너 실행</p>'
+        '<div id="cs-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>'
+        '<style>'
+        '.scr-det{margin:8px 0;padding:8px 12px;border:1px solid var(--border);border-radius:6px}'
+        '.scr-det summary{cursor:pointer;font-size:14px;position:relative}'
+        '.scr-del{background:none;border:none;cursor:pointer;font-size:14px;float:right;opacity:0.4}'
+        '.scr-del:hover{opacity:1}'
+        '.scr-tbl{width:100%;border-collapse:collapse;margin:10px 0 16px;font-size:13px}'
+        '.scr-tbl th,.scr-tbl td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top}'
+        '.scr-tbl th{color:var(--fg-soft);font-weight:600;font-size:12px}'
+        '</style>'
+    )
     if _scr_list:
         import html as _shtml
-        parts.append(
-            '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
-            '<h2 style="margin:0 0 8px">📊 조건부 스크리너</h2>'
-            '<p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0). '
-            '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> '
-            '· <code>/screen valueup</code> · <code>/screen list</code></p>'
-            '<div class="search-bar">'
-            '<input id="cs-search" type="text" placeholder="조건 / 종목명 / 티커 검색 (예: PER, 삼성, AAPL)" autocomplete="off" spellcheck="false">'
-            '<button id="cs-clear" type="button" title="검색 초기화">초기화</button>'
-            '</div>'
-            f'<p id="cs-status" class="status-line">총 {len(_scr_list)}건의 조건부 스크리너 실행</p>'
-            '<div id="cs-empty" class="empty" style="display:none">검색 결과가 없습니다.</div>'
-            '<style>'
-            '.scr-det{margin:8px 0;padding:8px 12px;border:1px solid var(--border);border-radius:6px}'
-            '.scr-det summary{cursor:pointer;font-size:14px;position:relative}'
-            '.scr-del{background:none;border:none;cursor:pointer;font-size:14px;float:right;opacity:0.4}'
-            '.scr-del:hover{opacity:1}'
-            '.scr-tbl{width:100%;border-collapse:collapse;margin:10px 0 16px;font-size:13px}'
-            '.scr-tbl th,.scr-tbl td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top}'
-            '.scr-tbl th{color:var(--fg-soft);font-weight:600;font-size:12px}'
-            '</style>'
-        )
 
         # Group by date → month
         _cs_by_date: dict[str, list] = defaultdict(list)
@@ -7069,6 +7127,24 @@ document.querySelectorAll('.scr-del').forEach(function(btn) {
   csClr.addEventListener('click', function() { csInp.value = ''; csFilter(); csInp.focus(); });
 })();
 </script>
+<script>""" + _RUN_REQUEST_JS + r"""
+// Bottleneck Screener 실행 — 텔레그램 /screener [도메인|자유어] 와 동일.
+noahRunSetup('scr-run', 'scr-search', 'screener', {
+  requireQuery: false,
+  defaultLabel: 'bottleneck (기본)',
+  confirmText: 'Bottleneck Screener 를 실행할까요?\n· 소요 5-10분 · 비용 ~₩300-500 (오늘 캐시 시 무료)\n· 결과: 텔레그램 채널 + 이 페이지(자동 갱신)',
+  okMsg: 'Screener 요청 접수 — 5-10분 후 텔레그램 채널과 이 페이지에 게시됩니다.',
+  statusId: 'scr-status'
+});
+// 조건부 스크리너 실행 — 텔레그램 /screen [조건|프리셋] 과 동일 (₩0).
+noahRunSetup('cs-run', 'cs-search', 'screen', {
+  requireQuery: true,
+  emptyMsg: '실행할 조건 또는 프리셋을 입력하세요.\n예: PER<15 PBR<1 · us PER<15 · valueup\n(전체 지표는 제목 옆 📖 설명서)',
+  confirmText: '조건부 스크리너를 실행할까요?\n· KR 수초~수십초 · us 는 ~1-2분 · 비용 ₩0\n· 결과: 텔레그램 채널 + 이 페이지(자동 갱신)',
+  okMsg: '조건부 스크리너 요청 접수 — 결과는 텔레그램 채널과 이 페이지에 게시됩니다.',
+  statusId: 'cs-status'
+});
+</script>
 </body></html>
 """)
     return "".join(parts)
@@ -7192,6 +7268,24 @@ details.card .card-body { padding:14px 18px 18px; }
   cursor:pointer; transition:transform 0.05s, background 0.1s; }
 .search-bar button:hover { background:var(--search-btn-hover); }
 .search-bar button:active { transform:scale(0.97); }
+.search-bar button.run-btn { background:#3b82f6; }
+.search-bar button.run-btn:hover { background:#2563eb; }
+.search-bar button:disabled { opacity:0.55; cursor:wait; }
+.cs-help { display:inline-block; font-size:13px; font-weight:400; margin-left:10px;
+  vertical-align:middle; position:relative; }
+.cs-help > summary { cursor:pointer; color:var(--accent); list-style:none;
+  user-select:none; }
+.cs-help > summary::-webkit-details-marker { display:none; }
+.cs-help .cs-help-body { position:static; background:var(--card);
+  border:1px solid var(--border); border-radius:10px; padding:14px 16px;
+  margin:10px 0 4px; font-size:13px; line-height:1.7; color:var(--text);
+  max-width:860px; }
+.cs-help .cs-help-body h4 { margin:10px 0 4px; font-size:13px; }
+.cs-help .cs-help-body h4:first-child { margin-top:0; }
+.cs-help .cs-help-body code { background:var(--surface-tint); padding:1px 5px;
+  border-radius:4px; font-family:'IBM Plex Mono',monospace; font-size:12px; }
+.cs-help .cs-help-body .mrow { color:var(--muted); }
+.cs-help .cs-help-body .mrow b { color:var(--text); font-weight:600; }
 .status-line { color:var(--muted); font-size:12px; margin:0 0 12px; }
 table.picks { width:100%; border-collapse:collapse; font-size:15px; }
 table.picks th { text-align:left; color:var(--muted); font-weight:500;
