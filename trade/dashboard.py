@@ -565,7 +565,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Ne
 header{background:var(--surface);padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
 h1{margin:0 0 4px;font-size:18px}
 .meta{font-size:12px;color:var(--text-sub);line-height:1.5}
-.meta-status,.meta-next,.meta-today,.meta-backlog{margin-top:2px}
+.meta-status,.meta-next,.meta-today,.meta-backlog,.meta-quote{margin-top:2px}
 .meta-status:empty,.meta-next:empty,.meta-today:empty,.meta-backlog:empty{display:none}
 .meta-status strong{color:var(--text);font-weight:600}
 .meta-next strong{color:var(--accent);font-weight:600}

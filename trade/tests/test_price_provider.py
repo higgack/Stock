@@ -932,6 +932,14 @@ class OverrideTests(unittest.TestCase):
             out = pp.resolve_codes(["새종목"])
             self.assertEqual(out["새종목"], "123456")
 
+    def test_krx_name_for_reverse_lookup(self):
+        # /map 오등록 검증용 — 코드→KRX명 역조회(로컬 마스터, 외부콜 0).
+        with mock.patch.object(pp, "_load_krx_master",
+                               return_value={"비올": "335890"}):
+            self.assertEqual(pp.krx_name_for("335890"), "비올")
+            self.assertEqual(pp.krx_name_for("000000"), "")    # 마스터에 없음
+            self.assertEqual(pp.krx_name_for(""), "")
+
 
 if __name__ == "__main__":
     unittest.main()

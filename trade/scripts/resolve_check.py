@@ -185,6 +185,10 @@ def audit() -> int:
         for n in pp.split_names(a.get("stocks") or []):
             freq[n] += 1
     names = list(freq)
+    if not pp.provider_active():
+        # 키 미설정이면 qmap이 전부 비어 '전 종목 빈칸'으로 오독됨 — 명시 경고.
+        print("⚠️ 시세 공급자 OFF(키 없음) — 시세박힘이 0으로 나옴. "
+              "● 분류는 무의미, ■(코드 없음)만 참고.")
     qmap = dashboard._stock_quotes_for(alerts)          # 렌더가 박는 {이름: {p,c}}
     resolved = pp.resolve_codes(names, fetch=False)     # 이름→코드(외부 호출 0)
     blank = [n for n in names if n not in qmap]
