@@ -11831,7 +11831,7 @@ def _render_macro_snapshot(macro: dict) -> str:
     out.append(f"""
   <div class="section-hd">
     <h2>Macro Snapshot</h2>
-    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 5분 주기 갱신</span>
+    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 1분 주기 갱신</span>
   </div>""")
 
     if domestic:
@@ -12071,7 +12071,7 @@ def _render_market_page(data: dict) -> str:
 
   <div class="section-hd">
     <h2>글로벌 시장 스냅샷</h2>
-    <span class="ts">{_html.escape(ts)} 기준 · 5분 주기 갱신</span>
+    <span class="ts">{_html.escape(ts)} 기준 · 1분 주기 갱신</span>
   </div>
   <div class="card-grid">
 """)
@@ -12554,7 +12554,12 @@ def regenerate_market_index() -> None:
         data = fetch_all_market_data()
         html = _render_market_page(data)
         ARCHIVE_ROOT.mkdir(parents=True, exist_ok=True)
-        (ARCHIVE_ROOT / "market.html").write_text(html, encoding="utf-8")
+        # 원자 쓰기 — 1분 주기로 빨라지며 half-write 읽힘 창 차단
+        # (SV C-B 클래스, temp + os.replace).
+        target = ARCHIVE_ROOT / "market.html"
+        tmp = target.with_suffix(".html.tmp")
+        tmp.write_text(html, encoding="utf-8")
+        tmp.replace(target)
         log.info("dashboard: market.html regenerated")
     except Exception as exc:
         log.warning("dashboard: market.html regen failed: %s", exc)
