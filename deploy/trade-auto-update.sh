@@ -110,6 +110,22 @@ if ! sudo /bin/systemctl restart trade-bot; then
     exit 1
 fi
 
+# Best-effort: BeOn 리스너 재시작 — listen_beon.py 변경 시 (2026-06-11).
+# 리스너는 별도 상시 서비스라 trade-bot 재시작으로는 새 코드가 로드되지
+# 않음 ('배포 완료 ≠ 프로세스에 로드' 클래스, FloodWait fix 가 안 실리던
+# 케이스). sudoers 항목은 install-trade-units.sh 가 자기확장 설치.
+LISTENER_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/scripts/listen_beon\.py$' || true)
+LISTENER_NOTE=""
+if [ -n "$LISTENER_RELEVANT" ]; then
+    if sudo -n /bin/systemctl restart trade-bot-beon-listener 2>/dev/null; then
+        echo "trade-bot-update: also restarted trade-bot-beon-listener"
+        LISTENER_NOTE=$'\n'"<i>+ BeOn 리스너 재시작</i>"
+    else
+        echo "trade-bot-update: beon-listener restart skipped (no sudoers entry)"
+        LISTENER_NOTE=$'\n'"<i>⚠️ 리스너 재시작 권한 없음 — 다음 배포에서 sudoers 자동 설치 후 재시도</i>"
+    fi
+fi
+
 # Best-effort: also restart the dashboard server when the change set
 # touches its code. Requires a sudoers entry; logs and continues if
 # the entry is missing so the main deploy doesn't fail because of it.
@@ -131,7 +147,7 @@ if systemctl is-active --quiet trade-bot; then
     if [ -n "$SUBJECT" ]; then
         msg="${msg}"$'\n'"${SUBJECT}"
     fi
-    msg="${msg}${INSTALL_NOTE}${DASH_NOTE}"
+    msg="${msg}${INSTALL_NOTE}${DASH_NOTE}${LISTENER_NOTE}"
     notify "$msg"
     echo "trade-bot-update: restart complete"
 else
