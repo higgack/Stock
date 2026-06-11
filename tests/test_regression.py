@@ -4452,3 +4452,33 @@ class TestCommandRegistrySingleSource:
         # /screener_<slug> 가 대시보드 콘솔에서도 screener 경로로 라우팅
         src = self._src()
         assert 'word.startswith("screener_")' in src
+
+
+class TestDartBackfillV3:
+    """v3 당월 정리 백필 — 지난달 삭제 + 당월 재분류 + marker 1회 gate."""
+
+    def test_purge_month_window_and_marker(self, tmp_path, monkeypatch):
+        import json
+        from datetime import datetime, timedelta, timezone
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_ARCHIVE_DIR", tmp_path)
+        monkeypatch.setattr(df, "_BACKFILL_MARKER_V3", tmp_path / ".v3")
+        monkeypatch.setattr(df, "_dart_api_key", lambda: None)  # fetch graceful
+        kst = timezone(timedelta(hours=9))
+        today = datetime.now(kst).date()
+        month_start = today.replace(day=1)
+        prev = month_start - timedelta(days=1)
+        (tmp_path / f"{prev.strftime('%Y-%m-%d')}.json").write_text("[]", "utf-8")
+        cur = tmp_path / f"{month_start.strftime('%Y-%m-%d')}.json"
+        cur.write_text(json.dumps([{
+            "rcept_no": "X1", "report_nm": "공개매수결과보고서",
+            "category": "지분공시", "stock_code": "005930"}],
+            ensure_ascii=False), "utf-8")
+        st = df.backfill_v3_once_if_needed()
+        # 지난달 삭제, 당월 유지 + 재분류(새 룰) 적용
+        assert st["purged"] == 1
+        assert not (tmp_path / f"{prev.strftime('%Y-%m-%d')}.json").exists()
+        saved = json.loads(cur.read_text("utf-8"))
+        assert saved[0]["category"] == "회사구조"
+        # marker — 2회차 no-op (재시작 시 중복 실행 차단)
+        assert df.backfill_v3_once_if_needed() is None
