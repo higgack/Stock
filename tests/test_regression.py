@@ -4482,3 +4482,53 @@ class TestDartBackfillV3:
         assert saved[0]["category"] == "회사구조"
         # marker — 2회차 no-op (재시작 시 중복 실행 차단)
         assert df.backfill_v3_once_if_needed() is None
+
+
+class TestHighlowFullUsAndCapWeight:
+    """신고저 전미국 티어 + L3 시총가중 (사용자 2026-06-11)."""
+
+    def test_symdir_parser(self):
+        from bot.finviz_client import _parse_symdir
+        sample = (
+            "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\n"
+            "AAPL|Apple Inc. - Common Stock|Q|N|N|100|N|N\n"
+            "QQQ|Invesco QQQ Trust|G|N|N|100|Y|N\n"          # ETF 제외
+            "ZTEST|Test Issue Co|Q|Y|N|100|N|N\n"            # Test 제외
+            "BRK.B|Berkshire Hathaway Inc. - Class B Common Stock|Q|N|N|100|N|N\n"
+            "ABCW|ABC Co - Warrant|Q|N|N|100|N|N\n"          # 워런트 제외
+            "File Creation Time: 0611202622:01|||||||")
+        tks, names = _parse_symdir(sample, "Symbol")
+        assert tks == ["AAPL", "BRK-B"]
+        assert names["AAPL"] == "Apple Inc."
+
+    def test_l3_cap_weighted_average(self, monkeypatch):
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "fetch_groups", lambda: {"groups": [
+            {"name": "semiconductors", "pct": -2.0, "mcap_b": 9000.0},
+            {"name": "semiconductor equipment & materials", "pct": -10.0,
+             "mcap_b": 1000.0},
+        ], "ts": "T", "source": "Finviz"})
+        out = fv.top_l3_movers()
+        semi = next(b for b in out["down"] if "반도체" in b["name"])
+        # 시총가중: (−2×9000 + −10×1000)/10000 = −2.8 (단순평균이면 −6.0)
+        assert semi["pct"] == -2.8
+        assert "시총가중" in out["source"]
+
+    def test_l3_simple_average_fallback(self, monkeypatch):
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "fetch_groups", lambda: {"groups": [
+            {"name": "semiconductors", "pct": -2.0},
+            {"name": "semiconductor equipment & materials", "pct": -10.0},
+        ], "ts": "T", "source": "ETF"})
+        out = fv.top_l3_movers()
+        semi = next(b for b in out["down"] if "반도체" in b["name"])
+        assert semi["pct"] == -6.0
+        assert "단순평균" in out["source"]
+
+    def test_full_us_tier_never_sync_computes(self, monkeypatch):
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        kicked = []
+        monkeypatch.setattr(fv, "_kick_full_us_refresh",
+                            lambda: kicked.append(1))
+        assert fv._highlow_full_us() == {} and kicked

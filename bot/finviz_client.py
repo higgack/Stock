@@ -139,6 +139,9 @@ _GROUP_ROW_RE = re.compile(
     r'<a[^>]+href="[^"]*screener(?:\.ashx)?\?[^"]*f=(ind_[^"&]*)[^"]*"[^>]*>([^<]{2,60})</a>(.*?)</tr>',
     re.DOTALL | re.IGNORECASE)
 _PCT_RE = re.compile(r'([-+]?\d+\.\d+)%')
+# 업종 행의 시가총액 셀 — v=110 의 Name 다음 첫 B/M 수치 ("16942.94B").
+# P/E 등 뒤 컬럼엔 B/M suffix 가 없어 첫 매치 = Market Cap (시총가중용).
+_MCAP_CELL_RE = re.compile(r'>\s*([\d,]+\.?\d*)\s*([BM])\s*<')
 
 
 def fetch_groups() -> dict:
@@ -161,9 +164,15 @@ def fetch_groups() -> dict:
                 # (Oil &amp; Gas → Oil & Gas) — 렌더가 다시 escape 하므로
                 # 여기서 풀어둬야 이중이스케이프('&amp;amp;') 방지.
                 # slug = Finviz f= 필터(업종 클릭 → 해당 업종 종목 링크).
-                out["groups"].append(
-                    {"name": _h.unescape(name.strip()), "pct": float(pcts[-1]),
-                     "slug": slug})
+                row = {"name": _h.unescape(name.strip()),
+                       "pct": float(pcts[-1]), "slug": slug}
+                # 업종 시가총액 (십억$ 환산) — L3 시총가중 평균용 (사용자
+                # 2026-06-11). 파싱 실패 시 생략(가중에서 단순평균 폴백).
+                m = _MCAP_CELL_RE.search(tail)
+                if m:
+                    v = float(m.group(1).replace(",", ""))
+                    row["mcap_b"] = v if m.group(2) == "B" else v / 1000.0
+                out["groups"].append(row)
             except ValueError:
                 continue
         if not out["groups"]:
@@ -393,8 +402,9 @@ _L3_BUCKETS: list[tuple[str, list[str]]] = [
 
 def top_l3_movers(top_n: int = 10) -> dict:
     """메인 위젯용 — 우리 L3 ~48 업종 상/하위(부호 분리). Finviz 144 업종을
-    _L3_BUCKETS 키워드로 묶어 일별 등락 평균. 세부 144는 /usindustry(top_
-    movers→Finviz). 매칭 0인 L3 는 생략(graceful), 추가 fetch 0."""
+    _L3_BUCKETS 키워드로 묶어 **업종 시가총액 가중 평균** (사용자 2026-06-11
+    '시총가중방식'). 시총 파싱 안 된 소스(ETF/자체산출 폴백)는 단순평균
+    폴백 + 라벨로 구분. 세부 144는 /usindustry. 매칭 0인 L3 는 생략."""
     data = fetch_groups()
     groups = [g for g in data.get("groups", [])
               if g.get("pct") is not None and g.get("name")]
@@ -402,17 +412,26 @@ def top_l3_movers(top_n: int = 10) -> dict:
         return {"up": [], "down": [], "ts": data.get("ts", ""),
                 "source": data.get("source", "")}
     buckets: list[dict] = []
+    weighted_any = False
     for disp, kws in _L3_BUCKETS:
-        pcts = [g["pct"] for g in groups
+        rows = [g for g in groups
                 if any(kw in g["name"].lower() for kw in kws)]
-        if pcts:
-            buckets.append({"name": disp, "pct": round(sum(pcts) / len(pcts), 2),
-                            "n": len(pcts)})
+        if not rows:
+            continue
+        wsum = sum(g.get("mcap_b") or 0.0 for g in rows)
+        if wsum > 0:
+            pct = sum(g["pct"] * (g.get("mcap_b") or 0.0) for g in rows) / wsum
+            weighted_any = True
+        else:
+            pct = sum(g["pct"] for g in rows) / len(rows)
+        buckets.append({"name": disp, "pct": round(pct, 2), "n": len(rows)})
     ups = [b for b in buckets if b["pct"] > 0]
     downs = [b for b in buckets if b["pct"] < 0]
+    src = data.get("source", "")
+    src += " · L3 시총가중" if weighted_any else " · L3 단순평균"
     return {"up": sorted(ups, key=lambda b: b["pct"], reverse=True)[:top_n],
             "down": sorted(downs, key=lambda b: b["pct"])[:top_n],
-            "ts": data.get("ts", ""), "source": data.get("source", "")}
+            "ts": data.get("ts", ""), "source": src}
 
 
 def top_sector_movers(top_n: int = 10) -> dict:
@@ -530,8 +549,13 @@ def _fetch_signal(signal: str) -> list[dict]:
 
 def fetch_high_low() -> dict:
     """52주 신고가/신저가 → {'high': [...], 'low': [...], 'ts', 'source'}.
-    1차 Finviz(ta_newhigh/ta_newlow — 전 미국 상장), 실패 시 S&P 500 1년
-    주봉 벌크로 고저 1% 근접 종목 산출(yfinance, 6h 캐시). 10분 캐시."""
+
+    3-tier (사용자 2026-06-11 '전체 신고저' — Finviz 의존 제거):
+      1차 Finviz(ta_newhigh/ta_newlow — 당일 신고/신저, 마크업 깨지면 0행)
+      2차 전 미국 상장 산출(nasdaqtrader ~7천 + yfinance — 백그라운드
+          전용, 첫 빌드 전엔 3차로 폴스루)
+      3차 S&P 500 산출(빠른 최후 폴백)
+    5분 캐시."""
     c = _cached("highlow.json")
     if c is not None:
         return c
@@ -539,7 +563,10 @@ def fetch_high_low() -> dict:
                  "low": _fetch_signal("ta_newlow"),
                  "ts": _now_label(), "source": "Finviz(전 미국 상장 · 당일 신고/신저)"}
     if not out["high"] and not out["low"]:
-        log.info("finviz: high/low primary empty → S&P500 fallback")
+        log.info("finviz: high/low primary empty → 전미국 산출 티어")
+        out = _highlow_full_us()
+    if not out.get("high") and not out.get("low"):
+        log.info("finviz: 전미국 캐시 미준비 → S&P500 폴백 (백그라운드 빌드 중)")
         out = _highlow_fallback_sp500()
     log.info("finviz: high/low result — high=%d low=%d source=%s",
              len(out.get("high", [])), len(out.get("low", [])),
@@ -671,21 +698,37 @@ def _highlow_fallback_sp500() -> dict:
 
 
 def _compute_highlow_sp500() -> dict:
-    """S&P 500 1년 주봉 벌크로 52주 고저 1% 근접 산출 (무거움 — 배치 4-5회).
+    """S&P 500 1년 주봉 벌크로 52주 고저 1% 근접 산출 — 빠른 3차 폴백."""
+    return _compute_highlow_from(
+        _us_universe_robust(), _sp500_names(), "highlow_sp500.json",
+        "S&P 500 산출(yfinance · 52주 고저 1% 근접)", "S&P500")
 
-    2026-06-10 VM surfaced: 500종목 단일 yf.download 통째 실패 시 빈 결과
+
+def _compute_highlow_full_us() -> dict:
+    """전 미국 상장(nasdaqtrader 공식 심볼 디렉토리 ~7천) 산출 — Finviz
+    의존 없는 '전량' 2차 (사용자 2026-06-11 '전체 신고저'). 배치 ~60회·
+    수 분 — 백그라운드 전용(_highlow_full_us 가 동기 호출 금지)."""
+    tks, names = _us_full_universe()
+    return _compute_highlow_from(
+        tks, names, "highlow_full_us.json",
+        "전 미국 상장 산출(yfinance · 52주 고저 1% 근접)", "전미국")
+
+
+def _compute_highlow_from(universe: list, names: dict, cache_name: str,
+                          source: str, tag: str) -> dict:
+    """1년 주봉 벌크로 52주 고저 1% 근접 산출 (universe 일반화).
+
+    2026-06-10 VM surfaced: 단일 yf.download 통째 실패 시 빈 결과
     → 120종목 배치 분할 + 배치별 try/except + 진단 로그."""
-    out: dict = {"high": [], "low": [], "ts": _now_label(),
-                 "source": "S&P 500 산출(yfinance · 52주 고저 1% 근접)"}
+    out: dict = {"high": [], "low": [], "ts": _now_label(), "source": source}
     try:
         import yfinance as yf
-        universe = _us_universe_robust()
-        _names = _sp500_names()  # 표기용 회사명(없으면 티커만)
+        _names = names or {}
         if not universe:
-            log.warning("finviz: S&P500 fallback — universe empty (전 소스 실패)")
+            log.warning("finviz: %s highlow — universe empty", tag)
             return out
-        log.info("finviz: S&P500 fallback — universe %d, 배치 다운로드 시작",
-                 len(universe))
+        log.info("finviz: %s highlow — universe %d, 배치 다운로드 시작",
+                 tag, len(universe))
         _CHUNK = 120
         scanned = 0
         for ci in range(0, len(universe), _CHUNK):
@@ -695,12 +738,13 @@ def _compute_highlow_sp500() -> dict:
                                  group_by="ticker", threads=True,
                                  progress=False, auto_adjust=False)
             except Exception as exc:
-                log.warning("finviz: S&P500 배치 %d 다운로드 실패: %s",
-                            ci // _CHUNK + 1, exc)
+                log.warning("finviz: %s 배치 %d 다운로드 실패: %s",
+                            tag, ci // _CHUNK + 1, exc)
                 continue
             if df is None or df.empty:
-                log.warning("finviz: S&P500 배치 %d 빈 응답", ci // _CHUNK + 1)
+                log.warning("finviz: %s 배치 %d 빈 응답", tag, ci // _CHUNK + 1)
                 continue
+            time.sleep(0.2)   # 대형 universe 벌크 사이 호흡 (yfinance 보호)
             for tk in chunk:
                 try:
                     if tk not in df.columns.get_level_values(0):
@@ -755,13 +799,131 @@ def _compute_highlow_sp500() -> dict:
                         r["price"] = round(float(closes.iloc[-1]), 2)
                 except Exception:
                     continue
-        log.info("finviz: S&P500 fallback — scanned %d → high %d / low %d",
-                 scanned, len(out["high"]), len(out["low"]))
+        log.info("finviz: %s highlow — scanned %d → high %d / low %d",
+                 tag, scanned, len(out["high"]), len(out["low"]))
         if out["high"] or out["low"]:
-            _cache_write("highlow_sp500.json", out)
+            _cache_write(cache_name, out)
     except Exception as exc:
-        log.warning("finviz: S&P500 high/low fallback failed: %s", exc)
+        log.warning("finviz: %s highlow 산출 실패: %s", tag, exc)
     return out
+
+
+# ── 전 미국 상장 universe (nasdaqtrader 공식 심볼 디렉토리) ────────────────
+
+def _parse_symdir(text: str, symcol: str) -> tuple[list, dict]:
+    """nasdaqtrader symdir 파이프 구분 텍스트 → (티커 리스트, {티커:회사명}).
+    ETF/Test Issue/워런트·우선주·유닛 류 제외, BRK.B→BRK-B 정규화. 순수
+    함수(단위테스트)."""
+    tks: list = []
+    names: dict = {}
+    lines = text.splitlines()
+    if not lines:
+        return tks, names
+    hdr = lines[0].split("|")
+    idx = {h.strip(): i for i, h in enumerate(hdr)}
+    si = idx.get(symcol, 0)
+    ni = idx.get("Security Name", 1)
+    etf_i = idx.get("ETF")
+    test_i = idx.get("Test Issue")
+    _SKIP_NAME = ("Warrant", "Right", "Preferred", " Unit", "Units",
+                  "Notes", "Debenture")
+    for ln in lines[1:]:
+        if ln.startswith("File Creation Time"):
+            continue
+        cols = ln.split("|")
+        if len(cols) <= max(si, ni):
+            continue
+        sym = cols[si].strip()
+        nm = cols[ni].strip()
+        if not sym or "$" in sym or len(sym) > 6:
+            continue
+        if etf_i is not None and len(cols) > etf_i and cols[etf_i].strip() == "Y":
+            continue
+        if test_i is not None and len(cols) > test_i and cols[test_i].strip() == "Y":
+            continue
+        if any(k in nm for k in _SKIP_NAME):
+            continue
+        sym = sym.replace(".", "-").replace("/", "-")
+        tks.append(sym)
+        # 표기용 — ' - Common Stock' 류 suffix 정리
+        names[sym] = nm.split(" - ")[0].strip() or sym
+    return tks, names
+
+
+def _us_full_universe() -> tuple[list, dict]:
+    """전 미국 상장 보통주 — nasdaqlisted.txt + otherlisted.txt (공식·무키·
+    일 갱신, NYSE/AMEX 포함). 7일 캐시. 실패 시 ([], {})."""
+    c = _cached("us_universe.json", ttl=7 * 86400)
+    cn = _cached("us_universe_names.json", ttl=7 * 86400)
+    if c and cn:
+        return c, cn
+    tks: list = []
+    names: dict = {}
+    try:
+        import httpx
+        for url, symcol in (
+            ("https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt",
+             "Symbol"),
+            ("https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt",
+             "ACT Symbol"),
+        ):
+            r = httpx.get(url, timeout=25, follow_redirects=True)
+            if r.status_code == 200 and r.text:
+                t, n = _parse_symdir(r.text, symcol)
+                tks.extend(t)
+                names.update(n)
+            else:
+                log.warning("finviz: symdir %s → HTTP %d", url, r.status_code)
+    except Exception as exc:
+        log.warning("finviz: 전미국 universe fetch 실패: %s", exc)
+    # dedupe (양쪽 파일 중복 방어)
+    seen: set = set()
+    uniq = [t for t in tks if not (t in seen or seen.add(t))]
+    if len(uniq) > 1000:
+        _cache_write("us_universe.json", uniq)
+        _cache_write("us_universe_names.json", names)
+        log.info("finviz: 전미국 universe %d종목 (nasdaqtrader)", len(uniq))
+        return uniq, names
+    return [], {}
+
+
+_FULL_HL_LOCK = _threading.Lock()
+_FULL_HL_REFRESHING = False
+
+
+def _kick_full_us_refresh() -> None:
+    """전미국 highlow 백그라운드 재계산 — 1개만 (수 분 소요)."""
+    global _FULL_HL_REFRESHING
+    with _FULL_HL_LOCK:
+        if _FULL_HL_REFRESHING:
+            return
+        _FULL_HL_REFRESHING = True
+
+    def _run():
+        global _FULL_HL_REFRESHING
+        try:
+            _compute_highlow_full_us()
+        except Exception as exc:
+            log.warning("finviz: 전미국 highlow 재계산 실패: %s", exc)
+        finally:
+            with _FULL_HL_LOCK:
+                _FULL_HL_REFRESHING = False
+
+    _threading.Thread(target=_run, daemon=True,
+                      name="highlow-full-us").start()
+
+
+def _highlow_full_us() -> dict:
+    """전미국 산출 티어 — **동기 계산 절대 안 함** (~수 분이라 페이지 hang
+    금지). 신선 캐시(30분) 서빙 / stale(≤24h) 서빙+백그라운드 재계산 /
+    캐시 부재 시 백그라운드 kick 후 빈 dict 반환 → 호출부가 S&P500
+    티어로 폴스루 (다음 방문부터 전량 표시)."""
+    c = _cached("highlow_full_us.json", ttl=_FALLBACK_TTL_SEC)
+    if c is not None:
+        return c
+    stale = _cached("highlow_full_us.json", ttl=86400)
+    _kick_full_us_refresh()
+    return stale if stale is not None else {}
 
 
 if __name__ == "__main__":
