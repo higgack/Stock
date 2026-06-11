@@ -10864,6 +10864,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 
                 detail_html = ""
                 for ln in detail_lines:
+                    if str(ln).startswith("주요사업:"):
+                        continue
                     detail_html += f'<div class="df-detail-ln">{_html.escape(str(ln))}</div>'
                 # 시총/현재가 — '모든' 상장사 공시 맨 아래(사용자 2026-06-11).
                 # 렌더 시점 부착: 제목만 카드 + 옛 카드 소급. 옛 enrich 가
