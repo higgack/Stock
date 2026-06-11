@@ -1048,6 +1048,47 @@ def _check_pm_override_required(
 _PM_INGRAPH_SENTINEL = "[PM override discipline 자동 보정]"
 
 
+def _mask_overridden_pm_rating(decision: str) -> str:
+    """강제 HOLD 시 PM 원문에 노출된 비-Hold 등급 표기를 취소선+주석으로
+    마스킹 (082920 2026-06-11 외부 리뷰: '⛔ 자동 차단' 바로 밑에 PM 원문
+    'Overweight' 가 그대로 노출돼 최종 Hold ↔ Overweight 시각 혼선).
+
+    decision 본문의 라인 단위로, 그 줄이 사실상 등급 선언(라인 전체가
+    등급어 1개, 또는 '추천:/판정:/Rating:' 등 접두 + 등급어)일 때만
+    `~~Overweight~~ (시스템 기각 — 최종 HOLD)` 로 치환. 근거 서술 안의
+    'overweight' 단어는 건드리지 않음(과수정 방지)."""
+    _OVR = ("Overweight", "Buy", "Underweight", "Sell")
+    _PREFIX = ("추천", "판정", "등급", "최종", "의견", "rating", "call",
+               "recommendation", "decision")
+    out: list[str] = []
+    for ln in decision.split("\n"):
+        s = ln.strip()
+        if not s:
+            out.append(ln)
+            continue
+        matched = None
+        for w in _OVR:
+            # 케이스1: 줄 전체가 등급어 1개 (앞뒤 기호/공백 허용)
+            if re.fullmatch(rf"[\*\s>·•\-]*{w}[\*\s\.!]*", s, re.IGNORECASE):
+                matched = w
+                break
+            # 케이스2: '추천: Overweight' 류 (접두어 + 등급어로 끝)
+            m = re.match(
+                rf"^(.{{0,18}}?)\b{w}\b[\*\s\.!]*$", s, re.IGNORECASE)
+            if m and any(p in m.group(1).lower() for p in
+                         (p.lower() for p in _PREFIX)):
+                matched = w
+                break
+        if matched:
+            out.append(re.sub(rf"\b{matched}\b",
+                              f"~~{matched}~~ (시스템 기각 — 최종 HOLD)",
+                              ln, count=1, flags=re.IGNORECASE))
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
+
 def _log_pm_override_conflict(
     ticker: str, trade_date: str, state: dict, decision: str, override_note: str
 ) -> None:
@@ -1482,8 +1523,13 @@ def _format_full(
                 _section_cleaned, canonical=_canonical,
             )
         parts.append(f"\n## {label}\n{_section_cleaned}")
+    # 강제 HOLD(override_note 존재 = _check_pm_override_required 가 HOLD
+    # 강제한 경우만 채워짐) 시 PM 원문의 비-Hold 등급 표기를 마스킹 —
+    # 배너는 HOLD 인데 원문 'Overweight' 가 그대로 노출돼 혼선 나던 것
+    # (082920 2026-06-11 외부 review).
     _pm_section = (
-        f"{override_note}\n\n---\n{decision}" if override_note else decision
+        f"{override_note}\n\n---\n{_mask_overridden_pm_rating(decision)}"
+        if override_note else decision
     )
     parts.append(f"\n## ✅ 최종 결정\n{_pm_section}")
     return "\n".join(parts)

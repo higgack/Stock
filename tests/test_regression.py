@@ -4532,3 +4532,50 @@ class TestHighlowFullUsAndCapWeight:
         monkeypatch.setattr(fv, "_kick_full_us_refresh",
                             lambda: kicked.append(1))
         assert fv._highlow_full_us() == {} and kicked
+
+
+class TestPmOverrideRatingMask:
+    """강제 HOLD 시 PM 원문 비-Hold 등급 마스킹 (082920 2026-06-11 review).
+    배너 HOLD ↔ 원문 'Overweight' 시각 혼선 차단 + 산문 등급어 보존."""
+
+    def _mask(self):
+        import ast
+        src = open("bot/analyzer.py", encoding="utf-8").read()
+        for node in ast.parse(src).body:
+            if (isinstance(node, ast.FunctionDef)
+                    and node.name == "_mask_overridden_pm_rating"):
+                ns = {"re": __import__("re")}
+                exec(ast.get_source_segment(src, node), ns)
+                return ns["_mask_overridden_pm_rating"]
+        raise AssertionError("_mask_overridden_pm_rating not found")
+
+    def test_standalone_rating_line_masked(self):
+        m = self._mask()
+        out = m("Overweight\n\n근거: overweight 비중확대를 권고합니다.")
+        assert out.startswith("~~Overweight~~ (시스템 기각 — 최종 HOLD)")
+        # 산문 소문자 overweight 보존 (과수정 금지)
+        assert "overweight 비중확대를 권고" in out
+
+    def test_prefixed_rating_line_masked(self):
+        m = self._mask()
+        out = m("추천: Overweight\n근거: ...")
+        assert "~~Overweight~~ (시스템 기각 — 최종 HOLD)" in out.split("\n")[0]
+
+    def test_bold_rating_line_masked(self):
+        m = self._mask()
+        assert "~~Overweight~~" in m("**Overweight**")
+
+    def test_hold_unchanged(self):
+        m = self._mask()
+        assert m("Hold\n근거: 중립.") == "Hold\n근거: 중립."
+
+    def test_prose_only_rating_preserved(self):
+        m = self._mask()
+        d = "근거: 강세 측은 overweight 를 주장했으나 단기 부담 존재."
+        assert m(d) == d
+
+    def test_wiring_applies_only_with_override_note(self):
+        # _format_full 이 override_note 있을 때만 마스킹 적용
+        src = open("bot/analyzer.py", encoding="utf-8").read()
+        assert "_mask_overridden_pm_rating(decision)" in src
+        assert "if override_note else decision" in src
