@@ -1613,11 +1613,6 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
                 detail = _extract_detail(report_nm, rcept_no, corp_code, api_key)
                 lines = list(detail.get("lines", [])) if detail else []
                 sc = item.get("stock_code", "")
-                if lines and sc and len(sc) == 6 and sc.isdigit():
-                    # 주요사업(업종) — DART 업종코드(KSIC) → 한글 (무료·캐시).
-                    # 시총·현재가는 렌더 시점 부착(배치 #11 — 모든 상장사
-                    # 카드, 제목만 카드 + 옛 카드 소급)이라 여기선 안 붙임.
-                    lines = _industry_line(sc) + lines
                 if lines:
                     item["detail"] = lines
                     enriched += 1
