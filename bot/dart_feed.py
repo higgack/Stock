@@ -1874,60 +1874,9 @@ def load_all_archives(days_back: int = 30) -> dict[str, list[dict]]:
     return result
 
 
-# ── #19 소송/리스크 알람 큐 ──
-
-_RISK_ALERT_Q = _ARCHIVE_DIR.parent / "dart_risk_alerts.json"
-
-
-def _queue_risk_alerts(items: list[dict], new_ids: set) -> None:
-    """소송/리스크 신규 공시를 큐 파일에 추가 — 텔레그램 봇이 소비."""
-    try:
-        alerts: list[dict] = []
-        try:
-            if _RISK_ALERT_Q.exists():
-                old = json.loads(_RISK_ALERT_Q.read_text("utf-8"))
-                if isinstance(old, list):
-                    alerts = old
-        except Exception:
-            pass
-        existing = {a.get("rcept_no") for a in alerts}
-        added = 0
-        for it in items:
-            cat = it.get("category", "")
-            rno = it.get("rcept_no", "")
-            if cat not in ("소송", "리스크"):
-                continue
-            if not rno or rno in existing or rno not in new_ids:
-                continue
-            alerts.append({
-                "rcept_no": rno,
-                "corp_name": it.get("corp_name", ""),
-                "report_nm": it.get("report_nm", ""),
-                "url": it.get("url", ""),
-                "category": cat,
-            })
-            added += 1
-        if added:
-            _RISK_ALERT_Q.parent.mkdir(parents=True, exist_ok=True)
-            _RISK_ALERT_Q.write_text(
-                json.dumps(alerts, ensure_ascii=False), "utf-8")
-            log.info("dart_feed: %d risk alert(s) queued", added)
-    except Exception as exc:
-        log.warning("dart_feed: risk alert queue failed: %s", exc)
-
-
-def consume_risk_alerts() -> list[dict]:
-    """큐 파일의 알람을 꺼내고 파일을 비운다. 텔레그램 봇 전용."""
-    try:
-        if not _RISK_ALERT_Q.exists():
-            return []
-        alerts = json.loads(_RISK_ALERT_Q.read_text("utf-8"))
-        if not isinstance(alerts, list) or not alerts:
-            return []
-        _RISK_ALERT_Q.write_text("[]", "utf-8")
-        return alerts
-    except Exception:
-        return []
+# #19 소송/리스크 전 종목 알람 큐는 제거 (사용자 2026-06-11 — 무차별 스팸
+# + 휘발성 큐 기준 '신규' 판정이 봇 재시작마다 같은 알림을 재발송하는 버그).
+# 교체: bot/dart_fav_alerts.py — 관심종목 한정, 아카이브 스캔 + 영구 seen-set.
 
 
 # ── CLI: python -m bot.dart_feed ──
@@ -1996,9 +1945,6 @@ def run_once(target_date: date | None = None,
 
     for d, day_items in by_day.items():
         merge_and_save(d, day_items)
-
-    # #19 소송/리스크 알람 큐 — 새 항목만 기록, 텔레그램 봇이 소비.
-    _queue_risk_alerts(work, fetched_ids)
 
     return items
 
