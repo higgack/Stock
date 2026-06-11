@@ -4176,30 +4176,72 @@ class TestEquityNoiseFilter:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 배치 #19 소송/리스크 알람 큐 — consume_risk_alerts round-trip
+# 관심종목 DART 공시 알림 (#19 전종목 알람 교체) — /dart_alert
 # ─────────────────────────────────────────────────────────────────────────
-class TestRiskAlertQueue:
-    """dart_feed.consume_risk_alerts 가 큐를 올바르게 소비+비움."""
+class TestDartFavAlerts:
+    """관심종목 DART 공시 알림 (#19 교체, 2026-06-11) — 영구 seen-set 으로
+    재시작 재발송(#19 버그 클래스) 차단 + 신규 관심종목 seed 무발송."""
 
-    def test_consume_roundtrip(self, tmp_path, monkeypatch):
-        import json
-        q = tmp_path / "dart_risk_alerts.json"
-        alerts = [{"rcept_no": "R1", "category": "소송",
-                   "corp_name": "A사", "report_nm": "소송", "url": "#"}]
-        q.write_text(json.dumps(alerts), "utf-8")
+    def _setup(self, tmp_path, monkeypatch, favorites, archives):
+        import bot.dart_fav_alerts as dfa
+        import bot.market_favorites as mf
         import bot.dart_feed as df
-        monkeypatch.setattr(df, "_RISK_ALERT_Q", q)
-        got = df.consume_risk_alerts()
-        assert len(got) == 1
-        assert got[0]["rcept_no"] == "R1"
-        # 소비 후 비어야 함
-        assert json.loads(q.read_text("utf-8")) == []
+        monkeypatch.setattr(dfa, "_STATE_FILE", tmp_path / "state.json")
+        monkeypatch.setattr(mf, "get_favorites", lambda: favorites)
+        monkeypatch.setattr(df, "load_all_archives",
+                            lambda days_back=3: archives)
+        return dfa
 
-    def test_consume_empty(self, tmp_path, monkeypatch):
-        q = tmp_path / "dart_risk_alerts.json"
-        import bot.dart_feed as df
-        monkeypatch.setattr(df, "_RISK_ALERT_Q", q)
-        assert df.consume_risk_alerts() == []
+    def test_kr_code_extraction(self, tmp_path, monkeypatch):
+        dfa = self._setup(tmp_path, monkeypatch,
+                          [{"ticker": "005930.KS"}, {"ticker": "AAPL"},
+                           {"ticker": "035420.kq"}, {"ticker": "247540"}], {})
+        assert dfa.fav_kr_codes() == {"005930", "035420", "247540"}
+
+    def test_enable_seeds_then_only_new_alerts(self, tmp_path, monkeypatch):
+        archives = {"2026-06-11": [
+            {"rcept_no": "R1", "stock_code": "005930", "corp_name": "삼성전자",
+             "report_nm": "기존공시", "category": "계약", "url": "#"},
+        ]}
+        dfa = self._setup(tmp_path, monkeypatch,
+                          [{"ticker": "005930.KS"}], archives)
+        info = dfa.enable(123)
+        assert info["codes"] == 1 and info["seeded"] == 1
+        # 기존 공시는 발송 안 함
+        items, chat = dfa.poll_new()
+        assert items == [] 
+        # 새 공시 도착 → 1회만 발송
+        archives["2026-06-11"].append(
+            {"rcept_no": "R2", "stock_code": "005930", "corp_name": "삼성전자",
+             "report_nm": "신규공시", "category": "실적", "url": "#"})
+        items, chat = dfa.poll_new()
+        assert [i["rcept_no"] for i in items] == ["R2"] and chat == 123
+        # 재폴(=재시작/자정 상당) — 재발송 없음 (영구 seen)
+        items, chat = dfa.poll_new()
+        assert items == []
+
+    def test_new_favorite_seeded_silently(self, tmp_path, monkeypatch):
+        favorites = [{"ticker": "005930.KS"}]
+        archives = {"2026-06-11": [
+            {"rcept_no": "R3", "stock_code": "000660", "corp_name": "SK하이닉스",
+             "report_nm": "기존공시", "category": "계약", "url": "#"},
+        ]}
+        dfa = self._setup(tmp_path, monkeypatch, favorites, archives)
+        dfa.enable(123)
+        # 관심종목에 000660 추가 — 기존 R3 는 seed 만 (무발송)
+        favorites.append({"ticker": "000660.KS"})
+        items, _ = dfa.poll_new()
+        assert items == []
+        # 000660 의 이후 신규 공시는 발송
+        archives["2026-06-11"].append(
+            {"rcept_no": "R4", "stock_code": "000660", "corp_name": "SK하이닉스",
+             "report_nm": "신규공시", "category": "리스크", "url": "#"})
+        items, chat = dfa.poll_new()
+        assert [i["rcept_no"] for i in items] == ["R4"] and chat == 123
+
+    def test_disabled_returns_nothing(self, tmp_path, monkeypatch):
+        dfa = self._setup(tmp_path, monkeypatch, [{"ticker": "005930.KS"}], {})
+        assert dfa.poll_new() == ([], None)
 
 
 # ─────────────────────────────────────────────────────────────────────────

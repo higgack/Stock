@@ -3225,32 +3225,69 @@ async def _periodic_dashboard_requests(application) -> None:
                     pass
 
 
-def _send_risk_alerts(alerts: list[dict]) -> None:
-    """#19 소송/리스크 알람 — 큐 소비 → 채널 push (thread-safe, sync HTTP)."""
-    if not alerts or not CHANNEL_CHAT_IDS:
+# #19 소송/리스크 전 종목 채널 알림은 제거(사용자 2026-06-11 — 무차별 스팸
+# + 휘발성 큐가 봇 재시작마다 같은 알림 재발송). 관심종목 한정 알림으로
+# 교체: bot/dart_fav_alerts.py + /dart_alert + _periodic_dart_fav_alerts.
+
+async def cmd_dart_alert(update, context) -> None:
+    """관심종목 DART 공시 알림 토글 — /dart_alert [on|off] (2026-06-11)."""
+    msg = update.effective_message
+    if msg is None or update.effective_chat is None:
         return
+    from bot import dart_fav_alerts as dfa
+    arg = (context.args[0].lower() if getattr(context, "args", None) else "")
+    if arg in ("on", "켜기", "1"):
+        info = await asyncio.to_thread(dfa.enable, update.effective_chat.id)
+        await msg.reply_text(
+            f"📋 관심종목 공시 알림 ON — KR 관심종목 {info['codes']}개 대상.\n"
+            f"기존 공시 {info['seeded']}건은 기준점 등록(발송 안 함). "
+            f"지금부터 새 공시만 이 채팅으로 알립니다 (수집 후 ~1-2분 내).")
+    elif arg in ("off", "끄기", "0"):
+        await asyncio.to_thread(dfa.disable)
+        await msg.reply_text("📋 관심종목 공시 알림 OFF.")
+    else:
+        s = await asyncio.to_thread(dfa.status)
+        state_txt = "ON ✅" if s["enabled"] else "OFF"
+        await msg.reply_text(
+            f"📋 관심종목 DART 공시 알림: {state_txt}\n"
+            f"대상: KR 관심종목 {s['codes']}개 (US 티커는 DART 미해당)\n"
+            f"피드가 수집하는 전 카테고리(실적·계약·주주환원·자금조달·"
+            f"시설투자·지분·리스크·조회공시 등) 알림.\n"
+            f"사용법: /dart_alert on · /dart_alert off")
+
+
+async def _periodic_dart_fav_alerts(application) -> None:
+    """관심종목 DART 공시 알림 폴러 (75초) — dart_fav_alerts.poll_new 소비.
+
+    dart-feed 타이머(별도 프로세스)가 쓴 아카이브를 스캔하므로 추가 DART
+    호출 0. 영구 seen-set 이라 재시작/자정에 재발송 없음 (#19 버그 클래스
+    구조적 차단)."""
     import html as _h
-    import requests as _rq
-    _tk = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-    if not _tk:
-        return
-    for a in alerts:
-        cat_icon = "⚖️" if a.get("category") == "소송" else "🚨"
-        cn = _h.escape(a.get("corp_name", ""))
-        rn = _h.escape(a.get("report_nm", ""))
-        url = a.get("url", "")
-        txt = f'{cat_icon} <b>리스크 공시</b> — {cn}\n{rn}'
-        if url:
-            txt += f'\n<a href="{_h.escape(url)}">원문 보기</a>'
-        for cid in CHANNEL_CHAT_IDS:
-            try:
-                _rq.post(f"https://api.telegram.org/bot{_tk}/sendMessage",
-                         json={"chat_id": cid, "text": txt,
-                               "parse_mode": "HTML",
-                               "disable_web_page_preview": True},
-                         timeout=10)
-            except Exception:
-                pass
+    while True:
+        await asyncio.sleep(75)
+        try:
+            from bot import dart_fav_alerts as dfa
+            items, chat_id = await asyncio.to_thread(dfa.poll_new)
+            if not items or not chat_id:
+                continue
+            for it in items:
+                cn = _h.escape(it.get("corp_name", ""))
+                rn = _h.escape(it.get("report_nm", ""))
+                cat = _h.escape(it.get("category", ""))
+                txt = f'📋 <b>관심종목 공시</b> — {cn} <i>[{cat}]</i>\n{rn}'
+                url = it.get("url", "")
+                if url:
+                    txt += f'\n<a href="{_h.escape(url)}">원문 보기</a>'
+                try:
+                    await application.bot.send_message(
+                        chat_id=chat_id, text=txt, parse_mode="HTML",
+                        disable_web_page_preview=True)
+                except Exception:
+                    log.warning("dart_fav_alerts: send failed", exc_info=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("dart_fav_alerts poll failed")
 
 
 async def _periodic_dashboard_refresh(application=None) -> None:
@@ -3295,12 +3332,6 @@ async def _periodic_dashboard_refresh(application=None) -> None:
             regenerate_watchlist_index()
             regenerate_market_index()
             regenerate_dart_feed_index()
-            # #19 소송/리스크 알람 소비 (dart-feed timer 가 기록한 큐)
-            try:
-                from bot.dart_feed import consume_risk_alerts
-                _send_risk_alerts(consume_risk_alerts())
-            except Exception:
-                pass
             # 페이퍼(E0.5b): 5거래일 horizon 도래 자동 포지션 청산 + 페이지 갱신.
             # E0.5c: 청산 시 채널 알림(설정된 채널 있을 때) — 조용히 닫히지 않게.
             try:
@@ -3414,12 +3445,11 @@ async def _on_startup(application) -> None:
 
         def _dart_initial_fetch():
             try:
-                from bot.dart_feed import run_once, consume_risk_alerts
+                from bot.dart_feed import run_once
                 items = run_once()
                 from bot.dashboard import regenerate_dart_feed_index as _rg
                 _rg()
                 log.info("startup: DART feed initial fetch %d items", len(items))
-                _send_risk_alerts(consume_risk_alerts())
             except Exception as exc:
                 log.warning("startup: DART initial fetch failed: %s", exc)
 
@@ -3582,6 +3612,7 @@ async def _on_startup(application) -> None:
             BotCommand("watch", "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
             BotCommand("watchlist", "감시 목록 보기"),
             BotCommand("unwatch", "감시 삭제 (TICKER/id/all)"),
+            BotCommand("dart_alert", "관심종목 DART 공시 알림 (on/off)"),
             BotCommand("paper", "페이퍼 트레이딩 (모의 매매·돈 0)"),
             BotCommand("screen", "조건부 스크리너 (PER<15 PBR<1 등 자유 조건)"),
             BotCommand("screener", "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
@@ -3611,6 +3642,9 @@ async def _on_startup(application) -> None:
     application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh(application))
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
     application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
+    # 관심종목 DART 공시 알림 폴러 (75초, /dart_alert on 일 때만 발송)
+    application._dart_fav_alerts_task = asyncio.create_task(
+        _periodic_dart_fav_alerts(application))
     # 대시보드 '분석/실행' 버튼 요청 스풀 폴러 (5초) — dashboard_server 가
     # 떨어뜨린 요청을 채널 명령과 동일 경로로 실행.
     application._dashboard_requests_task = asyncio.create_task(
@@ -3692,6 +3726,7 @@ def main() -> None:
     app.add_handler(CommandHandler("watch", cmd_watch))
     app.add_handler(CommandHandler("watchlist", cmd_watchlist))
     app.add_handler(CommandHandler("unwatch", cmd_unwatch))
+    app.add_handler(CommandHandler("dart_alert", cmd_dart_alert))
     app.add_handler(CommandHandler("paper", cmd_paper))
     app.add_handler(CommandHandler("screen", cmd_screen))
     app.add_handler(CommandHandler("screener", cmd_screener))
