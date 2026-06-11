@@ -737,10 +737,13 @@ def _fetch_macro_safe() -> dict:
 
 
 def _cache_ts(p: Path) -> str:
-    """캐시 파일 mtime → 'YYYY-MM-DD HH:MM' (VM 로컬=KST). 부재 시 ''."""
+    """캐시 파일 mtime → 'YYYY-MM-DD HH:MM' **명시적 KST** (서버 로컬타임
+    의존 제거 — 사용자 정책: 모든 표기 한국시간). 부재 시 ''."""
     try:
         if p.exists():
-            return datetime.fromtimestamp(p.stat().st_mtime).strftime(
+            from datetime import timezone as _tz
+            kst = _tz(timedelta(hours=9))
+            return datetime.fromtimestamp(p.stat().st_mtime, tz=kst).strftime(
                 "%Y-%m-%d %H:%M")
     except Exception:
         pass

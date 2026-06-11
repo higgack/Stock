@@ -486,19 +486,34 @@ def _parse_screener_rows(html: str, limit: int) -> list[dict]:
 
 
 def _fetch_signal(signal: str) -> list[dict]:
-    """Finviz screener signal 전량 fetch — 20행/페이지 자동 페이지네이션."""
+    """Finviz screener signal 전량 fetch — 20행/페이지 자동 페이지네이션.
+
+    URL 변형 폴백 (2026-06-11 진단): 같은 VM 에서 groups(clean URL)는
+    성공하는데 screener 만 0행 — clean `/screener` 가 JS-렌더 신판으로
+    응답할 수 있어, **레거시 `screener.ashx`(서버렌더 표·장기 안정)를
+    1차**로, 실패 시 clean URL 을 2차로 시도. 첫 페이지에서 성공한
+    변형을 나머지 페이지에 재사용."""
     rows: list[dict] = []
     offset = 1
     max_pages = 30  # 안전 상한 (600종목)
+    path = None     # 첫 페이지에서 결정된 변형 ('screener.ashx' | 'screener')
     for _ in range(max_pages):
-        html = _get(f"{_BASE}/screener?v=111&s={signal}&o=-change&r={offset}")
-        if not html:
-            break
-        page = _parse_screener_rows(html, 9999)
-        if not page:
+        page: list[dict] = []
+        variants = (path,) if path else ("screener.ashx", "screener")
+        for var in variants:
+            html = _get(f"{_BASE}/{var}?v=111&s={signal}&o=-change&r={offset}")
+            if not html:
+                continue
+            page = _parse_screener_rows(html, 9999)
+            if page:
+                if path is None:
+                    path = var
+                    log.info("finviz: %s — '%s' 변형으로 파싱 성공", signal, var)
+                break
             if offset == 1:
-                log.warning("finviz: %s HTML fetched but parsed 0 rows "
-                            "(markup change?) — head: %r", signal, html[:200])
+                log.warning("finviz: %s '%s' HTML fetched but parsed 0 rows "
+                            "(markup change?) — head: %r", signal, var, html[:200])
+        if not page:
             break
         rows.extend(page)
         if len(page) < 20:
