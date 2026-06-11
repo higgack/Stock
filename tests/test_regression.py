@@ -4219,3 +4219,42 @@ class TestFavoritesEpsFyLabel:
         assert eps_neg is not None and eps_neg < 0
         eps_pos = 3.2
         assert not (eps_pos is not None and eps_pos < 0)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Daily Byte 면책 미포함 + 제목 통일 (사용자 정책 2026-06-11)
+# ─────────────────────────────────────────────────────────────────────────
+class TestDailyByteDisclaimerStrip:
+    """면책/디스클레이머 줄이 본문에 남지 않게 — 프롬프트 금지 directive 의
+    Python 백스톱 (_post_process). KR(일/주간·부동산·청약 공유) + US 양쪽."""
+
+    def test_kr_post_process_strips_disclaimer(self):
+        from bot.daily_kr_flow import _post_process
+        raw = ("2026년 6월 10일 한국 증시 데일리 브리프\n\n"
+               "면책 조항: 본 브리프는 수급 데이터 관찰 (교육·정보 목적), "
+               "투자 권유 아님.\n\n"
+               "📊 시장 수급 총평\n외국인 -2.6조 순매도. 투자자예탁금 136.4조.\n\n"
+               "본 브리프는 수급 데이터 관찰 (교육·정보 목적), 투자 권유 아님")
+        out = _post_process(raw, "2026-06-10")
+        assert "면책" not in out
+        assert "투자 권유" not in out
+        # 정상 본문 보존 ('투자자예탁금' 은 disclaimer 아님)
+        assert "투자자예탁금 136.4조" in out
+        # 제목 줄 bold 유지
+        assert out.startswith("<b>2026년 6월 10일 한국 증시 데일리 브리프</b>")
+
+    def test_us_post_process_strips_disclaimer(self):
+        from bot.us_market_daily import _post_process
+        raw = ("2026년 6월 11일 미국 증시 데일리 브리프\n\n"
+               "📊 시장 총평\nS&P 500 -1.62% 마감.\n\n"
+               "본 브리프는 시장 데이터 관찰 (교육·정보 목적), 투자 권유 아님")
+        out = _post_process(raw)
+        assert "투자 권유" not in out
+        assert "시장 총평" in out
+
+    def test_kr_prompt_has_title_directive_no_disclaimer_directive(self):
+        from bot.daily_kr_flow import _PROMPT
+        p = _PROMPT.format(date="20260610", date_kr="2026년 6월 10일",
+                           data_summary="DATA")
+        assert "2026년 6월 10일 한국 증시 데일리 브리프" in p
+        assert "면책: 출력 끝에" not in p

@@ -74,7 +74,7 @@ def render_us_industry_page() -> str:
                 f'<table><thead><tr><th>#</th><th>업종</th>'
                 f'<th style="text-align:right">등락률</th></tr></thead>'
                 f'<tbody>{rows}</tbody></table></div>')
-    sub = f"미국 업종(industry) 당일 등락 · 출처 {src} · 10분 캐시" + (f" · {ts} 기준" if ts else "")
+    sub = f"미국 업종(industry) 당일 등락 · 출처 {src} · 5분 캐시" + (f" · {ts} 기준" if ts else "")
     return _shell("미국 업종별 시세", sub, "usindustry", body)
 
 
@@ -121,5 +121,5 @@ def render_us_highlow_page() -> str:
         body = ('<div class="grid">'
                 + _panel("🔺 52주 신고가", hi) + _panel("🔻 52주 신저가", lo) + '</div>')
     sub = (f"미국 52주 신고가·신저가 (가격제한폭이 없는 시장 — 상한가/하한가 대응 지표) · "
-           f"출처 {src} · 10분 캐시" + (f" · {ts} 기준" if ts else ""))
+           f"출처 {src} · 5분 캐시" + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)

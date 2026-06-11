@@ -8238,6 +8238,10 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
                 # 옛 run 의 '---' / '--- / ---' 도 소급 정리). 단어문자 없이 대시류
                 # 2+ 만 있는 줄 + 그로 인한 연속 빈 줄.
                 body = re.sub(r"(?m)^[^\w\n<]*[-*_]{2,}[^\w\n<]*$", "", body)
+                # 면책/디스클레이머 줄 제거 (사용자 정책 2026-06-11 — 옛
+                # 아카이브 기록 소급 정리, _post_process 백스톱과 동일 패턴).
+                body = re.sub(r"(?m)^(?=.*투자\s*권유)(?=.*아(?:님|닙)).*$", "", body)
+                body = re.sub(r"(?m)^\s*(?:<[^>]+>)*\s*면책.*$", "", body)
                 body = re.sub(r"\n{3,}", "\n\n", body).strip()
 
                 # Per-line snippet index for search (sec='brief'). Strip tags
@@ -11920,7 +11924,12 @@ def _extract_daily_summary(body: str, max_chars: int = 600) -> str:
             skip_first = False
             continue
         plain = _re_s.sub(r"<[^>]+>", "", s)
-        if plain.startswith("면책") or plain.startswith("📊") or plain.startswith("🔥") or plain.startswith("🏆"):
+        # 면책/디스클레이머 줄은 요약에서 제외 (사용자 정책 2026-06-11 —
+        # 옛 기록 소급, 새 기록은 _post_process 가 이미 제거).
+        if plain.startswith("면책") or (
+                "투자 권유" in plain and ("아님" in plain or "아닙" in plain)):
+            continue
+        if plain.startswith("📊") or plain.startswith("🔥") or plain.startswith("🏆"):
             if total > 100:
                 break
         out.append(s)
@@ -11954,7 +11963,6 @@ def _relative_time(ts_str: str) -> str:
 
 def _render_market_daily_cards() -> str:
     """Render the 2-column Market Daily cards (Korea + US → both link to Daily Byte)."""
-    import re as _re_md
     kr = _load_latest_market_daily("daily_byte_archive", "daily")
     us = _load_latest_market_daily("daily_byte_archive", "us_daily")
 
@@ -11970,16 +11978,17 @@ def _render_market_daily_cards() -> str:
             )
         body = rec["body"]
         title = _extract_daily_title(body)
-        # KR 카드 제목을 미국 형식으로 통일(사용자 2026-06-11): 본문 첫 줄이
-        # '수급 브리프' 같은 generic 헤더면 'YYYY년 M월 D일 한국 증시 데일리
-        # 브리프' 로 — 렌더 시점 보정이라 옛 기록도 즉시 적용.
-        if label.startswith("한국") and not _re_md.match(r"\d{4}년", title):
-            _d_raw = rec.get("_date") or rec.get("date") or ""
-            try:
-                _y, _m, _dd = _d_raw.split("-")
-                title = f"{int(_y)}년 {int(_m)}월 {int(_dd)}일 한국 증시 데일리 브리프"
-            except Exception:
-                pass
+        # 카드 제목 통일 — 한국 형식 canonical (사용자 2026-06-11): 본문
+        # 첫 줄(LLM 가변 — 'U.S. Market Brief' 류) 대신 KR·US 모두 항상
+        # 'YYYY년 M월 D일 {한국|미국} 증시 데일리 브리프' 강제. 렌더 시점
+        # 보정이라 옛 기록도 즉시 적용. 날짜 파싱 실패 시에만 본문 첫 줄.
+        _country = "한국" if label.startswith("한국") else "미국"
+        _d_raw = rec.get("_date") or rec.get("date") or ""
+        try:
+            _y, _m, _dd = str(_d_raw).split("-")
+            title = f"{int(_y)}년 {int(_m)}월 {int(_dd)}일 {_country} 증시 데일리 브리프"
+        except Exception:
+            pass
         summary = _extract_daily_summary(body, 400)
         ts = rec.get("ts", rec.get("date", ""))
         rel = _relative_time(ts) if ts else ""

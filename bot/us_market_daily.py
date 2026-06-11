@@ -258,7 +258,9 @@ def build_prompt(data: dict) -> str:
     ·catalyst(web search)만. 미국엔 KR 투자주체(외인/기관) 데이터가 없으므로
     수급 프록시 = breadth·거래대금·거래량 서지임을 본문에 정직하게 전제."""
     data_block = _format_data_for_prompt(data)
-    today = _now_kst().strftime("%Y-%m-%d")
+    _now = _now_kst()
+    today = _now.strftime("%Y-%m-%d")
+    date_kr = f"{_now.year}년 {_now.month}월 {_now.day}일"
     has_movers = bool((data.get("movers") or {}).get("n"))
     movers_note = "" if has_movers else (
         "\n(오늘은 S&P 500 per-stock 데이터 수집이 실패해 지수/섹터/Mag-7 "
@@ -305,8 +307,10 @@ def build_prompt(data: dict) -> str:
 8. 분량: 한국 Daily Byte 벤치마크 수준의 정보 밀도로 충실하게. 데이터에
    있는 종목만 다룰 것.
 
-면책: 출력 끝에 "본 브리프는 시장 데이터 관찰 (교육·정보 목적), 투자 권유
-아님" 1줄.
+제목: 첫 줄은 정확히 "{date_kr} 미국 증시 데일리 브리프" 한 줄 (다른 형식
+금지 — 한국 Daily Byte 와 제목 형식 통일, 사용자 정책 2026-06-11). 면책·
+디스클레이머("투자 권유 아님"·"교육·정보 목적" 등) 문구는 본문 어디에도
+포함하지 말 것 — 채널·페이지 차원에서 별도 표기됨.
 """
 
 
@@ -381,6 +385,10 @@ def _post_process(text: str) -> str:
     text = re.sub(r"(?m)^\s*[\*\-]\s+", "• ", text)
     text = re.sub(r"(?m)^\s*#{1,6}\s*([^\n]+)$", r"<b>\1</b>", text)
     text = re.sub(r"(?m)^[^\w\n]*[-*_]{2,}[^\w\n]*$", "", text)
+    # 면책/디스클레이머 줄 제거 — KR _post_process 와 동일 백스톱
+    # (사용자 정책 2026-06-11).
+    text = re.sub(r"(?m)^(?=.*투자\s*권유)(?=.*아(?:님|닙)).*$", "", text)
+    text = re.sub(r"(?m)^\s*면책.*$", "", text)
     _hdr = "|".join(("📊", "🔥", "🔄", "💰", "📈", "🏆", "⚠️", "🎯"))
     text = re.sub(rf"(?m)^[ \t]+(?=(?:{_hdr}))", "", text)
     text = re.sub(rf"(?m)^(?=(?:{_hdr}))", "\n", text)

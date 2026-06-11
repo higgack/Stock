@@ -365,13 +365,19 @@ _PROMPT = """당신은 한국 주식시장 수급 전문 buy-side 애널리스�
    (섹션 이모지 헤더로 구분). HTML 태그·`<br>`·`<ul>` 금지. 각 항목 줄바꿈.
 9. 분량: 벤치마크 수준의 정보 밀도로 충실하게. 데이터에 있는 종목만 다룰 것.
 
-면책: 출력 끝에 "본 브리프는 수급 데이터 관찰 (교육·정보 목적), 투자 권유
-아님" 1줄.
+제목: 첫 줄은 정확히 "{date_kr} 한국 증시 데일리 브리프" 한 줄 (다른 형식
+금지). 면책·디스클레이머("투자 권유 아님"·"교육·정보 목적" 등) 문구는 본문
+어디에도 포함하지 말 것 — 채널·페이지 차원에서 별도 표기됨 (사용자 정책
+2026-06-11).
 """
 
 
 def build_prompt(data: dict) -> str:
-    return _PROMPT.format(date=data["date"], data_summary=build_data_summary(data))
+    d = str(data["date"])
+    date_kr = (f"{int(d[:4])}년 {int(d[4:6])}월 {int(d[6:8])}일"
+               if len(d) == 8 and d.isdigit() else d)
+    return _PROMPT.format(date=data["date"], date_kr=date_kr,
+                          data_summary=build_data_summary(data))
 
 
 def _post_process(text: str, date_iso: str) -> str:
@@ -405,6 +411,11 @@ def _post_process(text: str, date_iso: str) -> str:
     # 있는 줄. '---', '***', '___', '--- / ---' 등 LLM 이 내는 모든 separator
     # 변형 차단 (사용자 2026-05-29 '--- 거슬림', 슬래시 혼합형 포함).
     text = re.sub(r"(?m)^[^\w\n]*[-*_]{2,}[^\w\n]*$", "", text)
+    # 면책/디스클레이머 줄 제거 — 프롬프트 금지 directive 의 Python 백스톱
+    # (사용자 정책 2026-06-11: 시장과 무관한 보일러플레이트 본문 포함 금지).
+    # 공유 호출처(Daily Byte 일/주간 + 부동산 + 청약) 전부 universal 적용.
+    text = re.sub(r"(?m)^(?=.*투자\s*권유)(?=.*아(?:님|닙)).*$", "", text)
+    text = re.sub(r"(?m)^\s*면책.*$", "", text)
     # 2.5) Gemini 제목 줄 (첫 줄, 이모지 없는 "Daily Byte ..." 등) 뒤에
     #      빈 줄 보장 — 제목과 첫 섹션 헤더가 붙지 않게 (사용자 2026-06-08).
     lines = text.split("\n")
