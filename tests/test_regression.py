@@ -4198,10 +4198,16 @@ class TestDartFavAlerts:
                            {"ticker": "035420.kq"}, {"ticker": "247540"}], {})
         assert dfa.fav_kr_codes() == {"005930", "035420", "247540"}
 
+    @staticmethod
+    def _today():
+        from datetime import datetime, timedelta, timezone
+        return datetime.now(timezone(timedelta(hours=9))).strftime("%Y%m%d")
+
     def test_enable_seeds_then_only_new_alerts(self, tmp_path, monkeypatch):
+        td = self._today()
         archives = {"2026-06-11": [
             {"rcept_no": "R1", "stock_code": "005930", "corp_name": "삼성전자",
-             "report_nm": "기존공시", "category": "계약", "url": "#"},
+             "report_nm": "기존공시", "category": "계약", "url": "#", "date": td},
         ]}
         dfa = self._setup(tmp_path, monkeypatch,
                           [{"ticker": "005930.KS"}], archives)
@@ -4209,11 +4215,11 @@ class TestDartFavAlerts:
         assert info["codes"] == 1 and info["seeded"] == 1
         # 기존 공시는 발송 안 함
         items, chat = dfa.poll_new()
-        assert items == [] 
+        assert items == []
         # 새 공시 도착 → 1회만 발송
         archives["2026-06-11"].append(
             {"rcept_no": "R2", "stock_code": "005930", "corp_name": "삼성전자",
-             "report_nm": "신규공시", "category": "실적", "url": "#"})
+             "report_nm": "신규공시", "category": "실적", "url": "#", "date": td})
         items, chat = dfa.poll_new()
         assert [i["rcept_no"] for i in items] == ["R2"] and chat == 123
         # 재폴(=재시작/자정 상당) — 재발송 없음 (영구 seen)
@@ -4221,10 +4227,11 @@ class TestDartFavAlerts:
         assert items == []
 
     def test_new_favorite_seeded_silently(self, tmp_path, monkeypatch):
+        td = self._today()
         favorites = [{"ticker": "005930.KS"}]
         archives = {"2026-06-11": [
             {"rcept_no": "R3", "stock_code": "000660", "corp_name": "SK하이닉스",
-             "report_nm": "기존공시", "category": "계약", "url": "#"},
+             "report_nm": "기존공시", "category": "계약", "url": "#", "date": td},
         ]}
         dfa = self._setup(tmp_path, monkeypatch, favorites, archives)
         dfa.enable(123)
@@ -4235,13 +4242,69 @@ class TestDartFavAlerts:
         # 000660 의 이후 신규 공시는 발송
         archives["2026-06-11"].append(
             {"rcept_no": "R4", "stock_code": "000660", "corp_name": "SK하이닉스",
-             "report_nm": "신규공시", "category": "리스크", "url": "#"})
+             "report_nm": "신규공시", "category": "리스크", "url": "#", "date": td})
         items, chat = dfa.poll_new()
         assert [i["rcept_no"] for i in items] == ["R4"] and chat == 123
+
+    def test_backfilled_old_item_not_alerted(self, tmp_path, monkeypatch):
+        # 백필이 늦게 추가한 과거(그제 이전) 공시는 무발송 seed — 폭주 방지
+        archives = {"2026-06-01": [
+            {"rcept_no": "R5", "stock_code": "005930", "corp_name": "삼성전자",
+             "report_nm": "옛공시", "category": "계약", "url": "#",
+             "date": "20260601"},
+        ]}
+        dfa = self._setup(tmp_path, monkeypatch,
+                          [{"ticker": "005930.KS"}], {})
+        dfa.enable(123)
+        # 활성화 후 백필이 옛 공시를 아카이브에 추가
+        monkeypatch.setattr(__import__("bot.dart_feed", fromlist=["x"]),
+                            "load_all_archives", lambda days_back=3: archives)
+        items, _ = dfa.poll_new()
+        assert items == []
+        # seed 됐으므로 이후에도 재등장 없음
+        items, _ = dfa.poll_new()
+        assert items == []
 
     def test_disabled_returns_nothing(self, tmp_path, monkeypatch):
         dfa = self._setup(tmp_path, monkeypatch, [{"ticker": "005930.KS"}], {})
         assert dfa.poll_new() == ([], None)
+
+
+class TestDartBackfillReclassify:
+    """backfill_with_new_rules (a)패스 — 기존 아카이브 카테고리 소급 재분류."""
+
+    def test_reclassify_existing_archive(self, tmp_path, monkeypatch):
+        import json
+        from datetime import datetime, timedelta, timezone
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_ARCHIVE_DIR", tmp_path)
+        monkeypatch.setattr(df, "_dart_api_key", lambda: None)  # fetch 안 함
+        kst = timezone(timedelta(hours=9))
+        d = datetime.now(kst).date()
+        items = [
+            # 옛 fallback 이 지분공시로 오분류했던 공개매수
+            {"rcept_no": "B1", "report_nm": "공개매수결과보고서",
+             "category": "지분공시", "detail": ["기존 detail 보존"]},
+            # 옛 룰 정상 분류 — 무변경
+            {"rcept_no": "B2", "report_nm": "단일판매ㆍ공급계약체결",
+             "category": "계약"},
+        ]
+        (tmp_path / f"{d.strftime('%Y-%m-%d')}.json").write_text(
+            json.dumps(items, ensure_ascii=False), "utf-8")
+        st = df.backfill_with_new_rules(days_back=0)
+        assert st["reclassified"] == 1
+        saved = json.loads(
+            (tmp_path / f"{d.strftime('%Y-%m-%d')}.json").read_text("utf-8"))
+        by_id = {it["rcept_no"]: it for it in saved}
+        assert by_id["B1"]["category"] == "회사구조"
+        assert by_id["B1"]["detail"] == ["기존 detail 보존"]  # detail 보존
+        assert by_id["B2"]["category"] == "계약"
+
+    def test_fair_disclosure_precedence(self):
+        # 공정공시 wrapper 는 chart 분류 '뒤' — 더 특정한 종류 유지
+        from bot.dart_feed import _classify_report
+        assert _classify_report("단일판매ㆍ공급계약체결(공정공시)") == "계약"
+        assert _classify_report("장래사업ㆍ경영계획(공정공시)") == "실적"
 
 
 # ─────────────────────────────────────────────────────────────────────────

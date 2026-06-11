@@ -1073,6 +1073,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 충족 시 알림 (rsi/price/sma/52w/earnings·KR수급). 목록 /watchlist · 삭제 /unwatch
+/dart_alert on|off — 관심종목(KR) 새 DART 공시 알림 (전 카테고리, 켠 채팅으로)
 /paper — 페이퍼 모의매매(돈0). 전체 /paper help
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
 
@@ -1120,11 +1121,11 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 실패 · ⚖️🚨 소송/리스크 공시 즉시 알림 · 📊 Daily Byte(한국평일19:00·미국07:30·주간일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
+🚀✅ 배포 · ⚠️ hang · ❌ 실패 · 📋 관심종목 DART공시(/dart_alert) · 📊 Daily Byte(한국평일19:00·미국07:30·주간일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·레딧·Daily Byte·📝블로그(글 요약+원문 아카이브)·부동산·청약·수출입)는 🌍Main nav, 워치·도메인목록은 Screener nav 에서
- 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(7일치·한국네이버목표가/원문+미국TP 종목당3) · 관심종목(시총·PER(적자표시)·EPS FY라벨·등락·정렬/필터/순서) · 📋DART공시(18종 구조화 카드·지분공시 대량보유 노이즈컷) · 업종등락(KR테마·상한가 + 미국TOP10→업종별시세·신고저 전량) · 종목검색(헤더→탭→차트 즉시) · 5분 갱신
+ 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(7일치·한국네이버목표가/원문+미국TP 종목당3) · 관심종목(시총·PER(적자표시)·EPS FY라벨·등락·정렬/필터/순서) · 📋DART공시(18종 구조화 카드·조회공시/공개매수/부도·생산중단 등 리스크 수집·지분 노이즈컷) · 업종등락(KR테마·상한가 + 미국TOP10→업종별시세·신고저 전량) · 종목검색(헤더→탭→차트 즉시) · 5분 갱신
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️ · <b>분석버튼</b>(종목 분석) · 입력창 <b>'/' 명령</b>(/usage·/portfolio·/watch·/screener 등 텔레그램 명령을 대시보드에서 실행→결과 패널)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/index.html
@@ -3452,6 +3453,19 @@ async def _on_startup(application) -> None:
                 log.info("startup: DART feed initial fetch %d items", len(items))
             except Exception as exc:
                 log.warning("startup: DART initial fetch failed: %s", exc)
+            # 새 분류 룰 소급 백필 — 최초 1회만 (marker gate, 수 분 소요).
+            # 옛 룰에서 드롭된 과거 공시 추가 + 기존 항목 카테고리 재분류
+            # (사용자 2026-06-11 '일회성 백필'). 차트 .charts_backfilled 패턴.
+            try:
+                from bot.dart_feed import backfill_once_if_needed
+                st = backfill_once_if_needed()
+                if st:
+                    from bot.dashboard import regenerate_dart_feed_index as _rg2
+                    _rg2()
+                    log.info("startup: DART backfill — 재분류 %d · 신규 %d",
+                             st["reclassified"], st["added"])
+            except Exception as exc:
+                log.warning("startup: DART backfill failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:

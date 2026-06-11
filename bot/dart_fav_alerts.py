@@ -146,10 +146,20 @@ def poll_new() -> tuple[list[dict], int | None]:
         st["codes"] = sorted(codes)
         dirty = True
 
+    # 날짜 가드 — 접수일이 그제 이전인 항목은 알림 제외(seed 만). 백필이
+    # 과거 공시를 늦게 추가해도 '신규'로 오인해 폭주하지 않게 (2026-06-11).
+    from datetime import datetime, timedelta, timezone
+    _kst = timezone(timedelta(hours=9))
+    _cutoff = (datetime.now(_kst).date() - timedelta(days=1)).strftime("%Y%m%d")
+
     fresh: list[dict] = []
     for it in _scan_archive_items():
         rno = str(it.get("rcept_no") or "")
         if not rno or it.get("stock_code") not in codes or rno in seen:
+            continue
+        if str(it.get("date") or "")[:8] < _cutoff:
+            seen.add(rno)   # 오래된 늦참(백필) — 무발송 seed
+            dirty = True
             continue
         fresh.append(it)
     # 접수번호 오름차순(시간순) 발송, 상한 초과분은 다음 폴로 이월
