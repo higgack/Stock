@@ -1125,7 +1125,7 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·레딧·Daily Byte·📝블로그(글 요약+원문 아카이브)·부동산·청약·수출입)는 🌍Main nav, 워치·도메인목록은 Screener nav 에서
- 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(7일치·한국네이버목표가/원문+미국TP 종목당3) · 관심종목(시총·PER(적자표시)·EPS FY라벨·등락·정렬/필터/순서) · 📋DART공시(18종 구조화 카드·조회공시/공개매수/부도·생산중단 등 리스크 수집·지분 노이즈컷) · 업종등락(KR테마·상한가 + 미국TOP10→업종별시세·신고저 전량) · 종목검색(헤더→탭→차트 즉시) · 5분 갱신
+ 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(7일치·한국네이버목표가/원문+미국TP 종목당3) · 관심종목(시총·PER(적자표시)·EPS FY라벨·등락·정렬/필터/순서) · 📋DART공시(18종 구조화 카드·조회공시/공개매수/부도·생산중단 등 리스크 수집·지분 노이즈컷) · 업종등락(KR테마·상한가 + 미국TOP10→업종별시세·신고저 전량) · 종목검색(헤더→탭→차트 즉시) · 1분 갱신
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️ · <b>분석버튼</b>(종목 분석) · 입력창 <b>'/' 명령</b>(/usage·/portfolio·/watch·/screener 등 텔레그램 명령을 대시보드에서 실행→결과 패널)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/index.html
@@ -3035,13 +3035,18 @@ async def _periodic_paper_pending(application=None) -> None:
 
 
 async def _periodic_market_refresh() -> None:
-    """market.html(글로벌 스냅샷 + 매크로 + 리서치)을 5분마다 재생성 — 페이지의
-    '5분 주기 갱신' 라벨을 실제 충족. 무거운 fetch 는 thread 로 오프로드해 폴링
-    루프 비차단(watchdog getUpdates 영향 0). research/macro/earnings 는 자체
-    캐시(1h+)라 5분마다 실제 재fetch 되는 건 주로 지수/섹터 스냅샷.
-    관심종목은 api/favorites 로 별도 라이브 fetch 라 무관."""
+    """market.html 1분 주기 재생성 (사용자 2026-06-11 '리스크 없는 선에서
+    가장 빠르게').
+
+    주기 단축이 안전한 이유: 페이지는 각 소스의 **디스크 캐시에서 렌더**
+    하고, 외부 호출 빈도는 소스별 TTL 이 상한 — Finviz 5분(데이터센터 IP
+    안티봇 검증 한계)·Naver 업종 4분·스냅샷 2분·실적/리서치/예탁금 1~12h.
+    루프는 sequential(await)이라 겹침 불가, to_thread 라 폴링 비차단
+    (watchdog 영향 0). 효과: 위젯 최대 지연 = 소스 TTL + 1분 (기존 +5분).
+    ⚠️ Finviz/Naver TTL 을 더 줄이는 건 차단 리스크 — 여기 말고 TTL 이
+    경계다."""
     while True:
-        await asyncio.sleep(300)   # 5분
+        await asyncio.sleep(60)   # 1분
         try:
             from bot.dashboard import regenerate_market_index
             await asyncio.to_thread(regenerate_market_index)
