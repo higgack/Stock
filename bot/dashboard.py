@@ -12567,6 +12567,12 @@ def _render_market_page(data: dict) -> str:
     return "".join(parts)
 
 
+# ⚠️ 배포 주의: dashboard_server 는 on-demand 페이지에서 bot/* 모듈
+# (finviz_client/us_pages/naver_*/earnings_calendar 등)을 import 한다 —
+# auto-update 는 bot/*.py 가 하나라도 바뀌면 대시보드를 재시작한다
+# (2026-06-11 트리거 확장, 실수기록 #11: '배포 완료 ≠ 서버 프로세스에 로드됨').
+
+
 def regenerate_market_index() -> None:
     """Fetch market data and write market.html under ARCHIVE_ROOT."""
     try:
