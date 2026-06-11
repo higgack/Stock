@@ -4258,3 +4258,55 @@ class TestDailyByteDisclaimerStrip:
                            data_summary="DATA")
         assert "2026년 6월 10일 한국 증시 데일리 브리프" in p
         assert "면책: 출력 끝에" not in p
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# DART 커버리지 감사 (사용자 2026-06-11 '놓치는 공시') — 분류 보강
+# ─────────────────────────────────────────────────────────────────────────
+class TestDartClassifyCoverage:
+    """거래소 의무공시인데 키워드 부재로 '기타' 드롭되던 유형들의 분류 보장.
+    '기타' 회귀 시 fetch(skip_routine)가 다시 버리게 되므로 영구 테스트."""
+
+    def _c(self, title):
+        from bot.dart_feed import _classify_report
+        return _classify_report(title)
+
+    def test_risk_events_not_dropped(self):
+        for t in ("부도발생", "해산사유발생", "채권은행등의관리절차개시신청",
+                  "파생상품거래손실발생", "생산중단", "생산재개", "화재발생",
+                  "공정거래위원회의과징금부과"):
+            assert self._c(t) == "리스크", t
+
+    def test_tender_offer_control(self):
+        assert self._c("공개매수신고서") == "회사구조"
+        assert self._c("공개매수결과보고서") == "회사구조"  # 옛 '보고서' fallback 이 지분공시로 오분류하던 것
+
+    def test_inquiry_rumor_category(self):
+        assert self._c("조회공시요구(풍문또는보도)에대한답변(미확정)") == "조회공시"
+        assert self._c("풍문또는보도에대한해명(미확정)") == "조회공시"
+        # 내부 키워드(유상증자) 선점 가드 — 조회공시가 먼저
+        assert self._c("조회공시요구(유상증자설)에대한답변") == "조회공시"
+
+    def test_funding_credit_types(self):
+        for t in ("타인에대한담보제공결정", "타인에대한채무보증결정",
+                  "특수관계인에대한금전대여결정", "단기차입금증가결정",
+                  "전환가액의조정(제5회차)", "교환청구권행사"):
+            assert self._c(t) == "자금조달", t
+        # 담보제공이 '기타' 드롭되면 #248 담보 파서가 dead code 가 됨
+        assert self._c("담보제공결정") != "기타"
+
+    def test_major_holder_collateral_is_control(self):
+        # 최대주주변경 수반 담보계약은 지배구조 사건 — 자금조달 오분류 금지
+        assert self._c("최대주주변경을수반하는주식담보제공계약체결") == "회사구조"
+
+    def test_patent_tech_guidance(self):
+        assert self._c("특허권취득") == "계약"
+        assert self._c("기술이전계약체결") == "계약"
+        assert self._c("장래사업ㆍ경영계획(공정공시)") == "실적"
+
+    def test_existing_behavior_unchanged(self):
+        assert self._c("주식등의대량보유상황보고서") == "지분공시"
+        assert self._c("단일판매ㆍ공급계약체결") == "계약"
+        assert self._c("전환청구권행사") == "자금조달"
+        assert self._c("과징금부과처분취소소송의제기") == "소송"  # 소송 > 리스크 순서
+        assert self._c("주주총회소집공고") == "기타"  # routine 은 여전히 드롭

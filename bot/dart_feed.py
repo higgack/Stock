@@ -50,6 +50,7 @@ _CATEGORY_COLORS = {
     "소송": "#26a69a",
     "회사구조": "#ff7043",
     "지분공시": "#ec407a",
+    "조회공시": "#8d6e63",
 }
 
 # DART report_nm 패턴 → 우리 카테고리 (chart_events.classify 보다 세분화)
@@ -76,6 +77,26 @@ def _classify_report(report_nm: str) -> str:
         return "IR"
     if any(k in t for k in _EQUITY_KW):
         return "지분공시"
+    # ── DART 커버리지 감사 (사용자 2026-06-11 '놓치는 공시') — 거래소
+    # 의무공시인데 키워드 부재로 '기타' 드롭되던 유형 보강. 조회공시를
+    # 가장 먼저 검사 — '조회공시요구(유상증자설)에대한답변' 류가 내부
+    # 키워드(유상증자 등)로 오분류되지 않게.
+    if any(k in t for k in ("조회공시", "풍문", "해명")):
+        return "조회공시"
+    # 담보/보증/대여/차입/리픽싱 — 단 '최대주주변경 수반 주식담보계약' 류는
+    # 지배구조 사건이므로 chart_events fallback(_CONTROL_KW)으로 넘김.
+    if "최대주주" not in t and any(k in t for k in (
+            "담보제공", "채무보증", "금전대여", "단기차입금",
+            "전환가액", "교환청구권")):
+        return "자금조달"
+    if any(k in t for k in ("특허권취득", "기술이전", "기술수출", "기술도입")):
+        return "계약"
+    if "장래사업" in t or "공정공시" in t:
+        # 장래사업ㆍ경영계획/영업전망/수시공시의무관련사항(공정공시) —
+        # 가이던스성 wrapper. 더 특정한 분기(조회공시·계약 등)가 위에서 선점.
+        return "실적"
+    if any(k in t for k in ("생산재개", "화재발생")):  # 생산중단은 chart KW
+        return "리스크"
     from bot.chart_events import classify
     eng = classify(t)
     return _CATEGORY_MAP.get(eng, "지분공시" if "보고서" in t else "기타")
@@ -1457,6 +1478,85 @@ def _compute_per(corp_name: str, net_income_str: str) -> str | None:
 
 # ── 전체 시장 공시 fetch ──
 
+# ── 드롭('기타') 분포 관측 — 커버리지 감사 (사용자 2026-06-11) ──────────────
+# skip_routine 이 버리는 제목을 정규화해 집계, 하루 1회 INFO 로그로 상장사
+# 드롭 top 패턴을 남긴다 → '놓치는 공시' 가 생기면 journald 에서 바로 보임.
+_DROP_TALLY: dict[str, int] = {}
+_DROP_LOG_MARKER = _ARCHIVE_DIR.parent / "dart_feed_droplog_date.txt"
+
+
+def _norm_report_nm(nm: str) -> str:
+    """제목 패턴 정규화 — 차수/정정 prefix 등 변형 제거해 유형별 그룹핑."""
+    s = re.sub(r"\[[^\]]*\]", "", nm or "")          # [기재정정] 등 prefix
+    s = re.sub(r"\(\s*제?\s*\d+\s*[차회]\s*\)", "", s)  # (제5회차)
+    s = re.sub(r"\d+", "", s)                          # 잔여 숫자 변형
+    return s.strip()
+
+
+def _tally_drop(report_nm: str, stock_code: str) -> None:
+    """상장사(6자리 코드) 드롭만 집계 — 비상장/펀드는 노이즈라 제외."""
+    try:
+        if not (stock_code and len(stock_code) == 6 and stock_code.isdigit()):
+            return
+        key = _norm_report_nm(report_nm)
+        if key:
+            _DROP_TALLY[key] = _DROP_TALLY.get(key, 0) + 1
+            _maybe_log_drop_distribution()
+    except Exception:
+        pass
+
+
+_DROP_LOG_DONE = ""   # 프로세스 메모 — marker 파일 반복 read 방지
+
+
+def _maybe_log_drop_distribution() -> None:
+    """하루 1회만 INFO 로 드롭 분포 emit (1분 폴링 스팸 방지, marker 파일 gate)."""
+    global _DROP_LOG_DONE
+    try:
+        today = datetime.now(_KST).strftime("%Y-%m-%d")
+        if _DROP_LOG_DONE == today:
+            return
+        if _DROP_LOG_MARKER.exists() and _DROP_LOG_MARKER.read_text().strip() == today:
+            _DROP_LOG_DONE = today
+            return
+        if sum(_DROP_TALLY.values()) < 20:   # 분포가 어느 정도 모인 뒤에만
+            return
+        top = sorted(_DROP_TALLY.items(), key=lambda kv: -kv[1])[:15]
+        log.info("dart_feed 기타-드롭 분포(상장사, 윈도 내): %s",
+                 " · ".join(f"{k}×{v}" for k, v in top))
+        _DROP_LOG_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _DROP_LOG_MARKER.write_text(today)
+        _DROP_LOG_DONE = today
+    except Exception:
+        pass
+
+
+def coverage_audit(days_back: int = 2, max_pages: int = 80) -> dict:
+    """DART 풀 firehose vs 우리 분류 대조 — '어제·그제 놓친 공시' 진단
+    (사용자 2026-06-11). skip_routine=False 로 전량 fetch 후:
+      • kept: 카테고리별 수집 건수
+      • dropped_listed: '기타' 드롭된 상장사 공시의 정규화 제목 분포
+    VM 에서: .venv/bin/python -m bot.dart_feed --coverage-audit [days]"""
+    items = fetch_market_disclosures(days_back=days_back,
+                                     max_pages=max_pages, skip_routine=False)
+    kept: dict[str, int] = {}
+    dropped_listed: dict[str, int] = {}
+    dropped_other = 0
+    for it in items:
+        cat = it.get("category", "기타")
+        if cat != "기타":
+            kept[cat] = kept.get(cat, 0) + 1
+            continue
+        sc = it.get("stock_code") or ""
+        if len(sc) == 6 and sc.isdigit():
+            key = _norm_report_nm(it.get("report_nm", ""))
+            dropped_listed[key] = dropped_listed.get(key, 0) + 1
+        else:
+            dropped_other += 1
+    return {"total": len(items), "kept": kept,
+            "dropped_listed": dropped_listed, "dropped_other": dropped_other}
+
+
 def fetch_market_disclosures(target_date: date | None = None,
                              max_pages: int = 20,
                              days_back: int = 3,
@@ -1518,6 +1618,7 @@ def fetch_market_disclosures(target_date: date | None = None,
 
             category = _classify_report(report_nm)
             if skip_routine and category == "기타":
+                _tally_drop(report_nm, stock_code)
                 continue
 
             item = {
@@ -1593,6 +1694,13 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
             # 없어(원문도 라벨 미매칭) 시도 예산만 소모하며 계약·증자 카드를
             # 굶김(사용자 2026-06-11 '블락?' 진단). 제목만 표시가 정상.
             if (not _force) and cat == "지분공시" and "대량보유" not in report_nm:
+                continue
+            # 자금조달 신규 유형(커버리지 감사 2026-06-11) 중 구조화 API·원문
+            # 파서가 없는 것(리픽싱/교환청구/차입/대여/보증)은 시도 예산만
+            # 소모 — 제목+시총 카드가 정상. 담보제공은 _force(파서 보유).
+            if (not _force) and cat == "자금조달" and any(
+                    k in report_nm for k in ("전환가액", "교환청구권",
+                                             "단기차입금", "금전대여", "채무보증")):
                 continue
             # 사이클당 신규 시도 상한 + 스로틀 — 4일치 일괄 enrich 가
             # DART 분당 한도를 태우고 전부 negative-cache 로 고착되던 것
@@ -1908,6 +2016,23 @@ if __name__ == "__main__":
                 os.environ.setdefault(k.strip(), v.strip())
 
     import sys as _sys
+    if any("coverage-audit" in a or "coverage_audit" in a for a in _sys.argv[1:]):
+        # DART 풀 firehose vs 우리 분류 대조 (어제·그제 놓친 공시 진단):
+        #   .venv/bin/python -m bot.dart_feed --coverage-audit [days]
+        _days = 2
+        for a in _sys.argv[1:]:
+            if a.isdigit():
+                _days = int(a)
+        rep = coverage_audit(days_back=_days)
+        print(f"[coverage] 윈도 {_days + 1}일 · 총 {rep['total']}건")
+        print("[coverage] 수집(카테고리별):")
+        for k, v in sorted(rep["kept"].items(), key=lambda kv: -kv[1]):
+            print(f"  {k:8s} {v:5d}")
+        print(f"[coverage] 드롭 — 비상장/펀드 {rep['dropped_other']}건 (의도된 제외)")
+        print("[coverage] 드롭 — 상장사 '기타' 제목 분포 (보강 후보):")
+        for k, v in sorted(rep["dropped_listed"].items(), key=lambda kv: -kv[1])[:40]:
+            print(f"  {v:4d} × {k}")
+        raise SystemExit(0)
     if any("selftest" in a for a in _sys.argv[1:]):
         # VM 1줄 진단(쓰기 없음): 아카이브의 detail 없는 게이트 대상 5건을
         # 실제 DART 로 추출 시도, 단계별 결과 출력.
