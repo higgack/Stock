@@ -11768,7 +11768,7 @@ def _render_sector_movers(movers: dict) -> str:
     _lnk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     return (
         '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
-        '<h2>업종 등락 TOP 10</h2>'
+        '<h2>🇰🇷 한국 업종 등락 TOP 10</h2>'
         f'<a href="theme" style="{_lnk}">🎯 테마별 시세</a>'
         f'<a href="highlow" style="{_lnk}">📈 상한가·하한가</a>'
         f'<span class="ts" style="margin-left:auto">{ts} · Naver</span></div>'
