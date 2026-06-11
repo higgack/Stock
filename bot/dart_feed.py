@@ -91,15 +91,18 @@ def _classify_report(report_nm: str) -> str:
         return "자금조달"
     if any(k in t for k in ("특허권취득", "기술이전", "기술수출", "기술도입")):
         return "계약"
-    if "장래사업" in t or "공정공시" in t:
-        # 장래사업ㆍ경영계획/영업전망/수시공시의무관련사항(공정공시) —
-        # 가이던스성 wrapper. 더 특정한 분기(조회공시·계약 등)가 위에서 선점.
-        return "실적"
     if any(k in t for k in ("생산재개", "화재발생")):  # 생산중단은 chart KW
         return "리스크"
     from bot.chart_events import classify
     eng = classify(t)
-    return _CATEGORY_MAP.get(eng, "지분공시" if "보고서" in t else "기타")
+    if eng in _CATEGORY_MAP:
+        return _CATEGORY_MAP[eng]
+    if "장래사업" in t or "공정공시" in t:
+        # 장래사업ㆍ경영계획/수시공시의무관련사항(공정공시) — 가이던스성
+        # wrapper. chart 분류 '뒤'에 두어 '공급계약체결(공정공시)' 류가
+        # 계약 등 더 특정한 종류를 유지하게 (백필 정밀화 2026-06-11).
+        return "실적"
+    return "지분공시" if "보고서" in t else "기타"
 
 
 def fetch_kr_earnings_ir(days_back: int = 10) -> list[dict]:
@@ -1879,6 +1882,85 @@ def load_all_archives(days_back: int = 30) -> dict[str, list[dict]]:
 # 교체: bot/dart_fav_alerts.py — 관심종목 한정, 아카이브 스캔 + 영구 seen-set.
 
 
+# ── 일회성 백필 — 새 분류 룰 소급 (사용자 2026-06-11) ──────────────────────
+# (a) 기존 아카이브 항목 카테고리 로컬 재분류 (DART 호출 0 — merge 가
+#     detail 만 갱신하고 category 는 안 건드리므로 별도 패스 필요)
+# (b) 과거 N일 재fetch — 옛 룰에서 '기타'로 드롭돼 아카이브에 없던 공시
+#     (조회공시/공개매수/담보/부도류) 추가. 일 단위 fetch 로 페이지 bound.
+# 실행: telegram_bot startup 1회(marker gate, 백그라운드 thread) — SSH 0.
+#       수동: .venv/bin/python -m bot.dart_feed --backfill [days]
+
+_BACKFILL_MARKER = _ARCHIVE_DIR.parent / ".dart_feed_backfilled_v2"
+
+
+def backfill_with_new_rules(days_back: int = 14) -> dict:
+    """과거 days_back 일 백필 + 전체 아카이브 재분류. 결과 통계 반환."""
+    stats = {"reclassified": 0, "added": 0, "days": 0, "skipped_budget": 0}
+
+    # (a) 로컬 재분류 — 아카이브 전체 (호출 0, 안전)
+    today = datetime.now(_KST).date()
+    for i in range(60):
+        d = today - timedelta(days=i)
+        items = load_archive(d)
+        if not items:
+            continue
+        changed = False
+        for it in items:
+            new_cat = _classify_report(it.get("report_nm", ""))
+            if new_cat != "기타" and new_cat != it.get("category"):
+                it["category"] = new_cat
+                stats["reclassified"] += 1
+                changed = True
+        if changed:
+            save_archive(d, items)
+
+    # (b) 과거 재fetch — 일 단위 (예산 헤드룸 1,000 콜 보존하며 중단)
+    for i in range(days_back, -1, -1):
+        if _budget_today() >= _BUDGET_HARD - 1000:
+            stats["skipped_budget"] += 1
+            continue
+        d = today - timedelta(days=i)
+        try:
+            fetched = fetch_market_disclosures(target_date=d, days_back=0,
+                                               max_pages=60)
+        except Exception as exc:
+            log.warning("dart_feed backfill: %s fetch 실패: %s", d, exc)
+            continue
+        before = {it.get("rcept_no") for it in load_archive(d)}
+        by_day: dict[date, list[dict]] = {}
+        for it in fetched:
+            raw = str(it.get("date") or "").strip()
+            try:
+                dd = datetime.strptime(raw[:8], "%Y%m%d").date()
+            except (ValueError, TypeError):
+                dd = d
+            by_day.setdefault(dd, []).append(it)
+        for dd, day_items in by_day.items():
+            merge_and_save(dd, day_items)
+        stats["added"] += sum(1 for it in fetched
+                              if it.get("rcept_no") not in before)
+        stats["days"] += 1
+        time.sleep(0.3)   # 페이지 버스트 사이 호흡 (DART 분당 한도 보호)
+
+    log.info("dart_feed backfill: 재분류 %d · 신규 %d (%d일 fetch, 예산스킵 %d)",
+             stats["reclassified"], stats["added"], stats["days"],
+             stats["skipped_budget"])
+    return stats
+
+
+def backfill_once_if_needed(days_back: int = 14) -> dict | None:
+    """marker 파일 gate — 최초 1회만 백필 (charts .charts_backfilled 패턴)."""
+    if _BACKFILL_MARKER.exists():
+        return None
+    stats = backfill_with_new_rules(days_back=days_back)
+    try:
+        _BACKFILL_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _BACKFILL_MARKER.write_text(datetime.now(_KST).isoformat())
+    except OSError:
+        pass
+    return stats
+
+
 # ── CLI: python -m bot.dart_feed ──
 
 def run_once(target_date: date | None = None,
@@ -1962,6 +2044,23 @@ if __name__ == "__main__":
                 os.environ.setdefault(k.strip(), v.strip())
 
     import sys as _sys
+    if any("backfill" in a for a in _sys.argv[1:]):
+        # 새 분류 룰 소급 백필 (재분류 + 과거 N일 재fetch):
+        #   .venv/bin/python -m bot.dart_feed --backfill [days]
+        _days = 14
+        for a in _sys.argv[1:]:
+            if a.isdigit():
+                _days = int(a)
+        st = backfill_with_new_rules(days_back=_days)
+        print(f"[backfill] 재분류 {st['reclassified']}건 · 신규 {st['added']}건 "
+              f"({st['days']}일 fetch · 예산스킵 {st['skipped_budget']})")
+        try:
+            from bot.dashboard import regenerate_dart_feed_index
+            regenerate_dart_feed_index()
+            print("[backfill] dart_feed.html regen 완료")
+        except Exception as exc:
+            print(f"[backfill] regen 실패: {exc}")
+        raise SystemExit(0)
     if any("coverage-audit" in a or "coverage_audit" in a for a in _sys.argv[1:]):
         # DART 풀 firehose vs 우리 분류 대조 (어제·그제 놓친 공시 진단):
         #   .venv/bin/python -m bot.dart_feed --coverage-audit [days]

@@ -68,6 +68,11 @@ For **any** request (analysis output, feature idea, bug report, refactor):
    `{{cards}}` 는 `{cards}` 로 변환됨. `.replace("{{cards}}", val)`
    은 이중 브레이스를 찾아 매칭 실패 → 리터럴 `{cards}` 노출.
    `.replace("{cards}", val)` 이어야 함.
+9. **알림 '신규' 판정은 영구 seen-set 필수 (2026-06-11)**: #19 리스크
+   알림이 휘발성 큐 파일 기준 '신규' 판정 → 봇 재시작(배포·watchdog·
+   자정)마다 같은 알림 통째 재발송. 알림류는 반드시 영구 seen-set +
+   첫 활성화 seed(blog/reddit watcher 패턴) + 날짜 가드. 또한 전 종목
+   무차별 푸시는 스팸 — 알림은 관심종목 등 타겟 한정이 기본.
 
 새 실수 발생 시 이 리스트에 날짜 + 한 줄 교훈 추가 의무.
 
@@ -317,12 +322,13 @@ commit-request rule — never do it.
 
 ## Help text registration of changes — mandatory
 
-**⛔ 갱신 타이밍 override (사용자 정책 2026-06-11):** `_HELP_TEXT` 는
-변경마다 같은 commit 에서 갱신하지 말고, **사용자가 "help 갱신해줘" 라고
-요청할 때 한 번에 모아서** 갱신한다 ("help 는 아직도 검증하고 update 할게
-많으니 내가 요청하면 한번해"). 누적 변경분은 commit body 에 기록해 요청
-시 빠짐없이 반영. 아래의 '같은 commit 의무' 문구는 이 정책으로 override
-(4096 cap·압축·도메인 inline 금지 등 나머지 규칙은 유효).
+**✅ 갱신 타이밍 — 같은 commit 자동 갱신 복원 (사용자 재확인
+2026-06-11 오후):** 한때 '사용자 요청 시 일괄 갱신' override 가 있었으나
+사용자가 같은 날 폐기 ("당연히 help 에도 자동 update 맞지? 내가 안말해도
+하는거야"). 아래 '같은 commit 의무' 원칙이 그대로 유효 — user-visible
+변경은 `_HELP_TEXT` 를 같은 commit 에서 갱신한다. **기능을 제거할 때도
+help 의 해당 줄 제거 의무** (소송/리스크 알림 제거 시 §8 줄 잔존했던 것
+같은 drift 방지). 4096 cap·압축·도메인 inline 금지 등 나머지 규칙 유효.
 
 Whenever a change ships that is user-visible (new command, new data
 source, new RULE, new analyst, new dashboard feature, removed
