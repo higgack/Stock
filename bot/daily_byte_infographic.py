@@ -216,10 +216,8 @@ def render_infographic(data: dict, date_iso: str, out_path: str) -> str | None:
                 size=9.5, color=_MUTED, ha="right")
             ry += 5.2
 
-    # ── 면책 ───────────────────────────────────────────────────────
+    # ── footer (면책 문구 제거 — 사용자 정책 2026-06-11, 출처 표기만) ──
     txt(C1, H - 2.5, "수치: pykrx EOD (KRX 공식) · 환각 0", size=8.5, color=_MUTED)
-    txt(C3 + C3W, H - 2.5, "수급 관찰 (교육·정보), 투자 권유 아님",
-        size=8.5, color=_MUTED, ha="right")
 
     try:
         os.makedirs(os.path.dirname(out_path), exist_ok=True)

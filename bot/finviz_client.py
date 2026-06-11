@@ -522,7 +522,7 @@ def fetch_high_low() -> dict:
         return c
     out: dict = {"high": _fetch_signal("ta_newhigh"),
                  "low": _fetch_signal("ta_newlow"),
-                 "ts": _now_label(), "source": "Finviz"}
+                 "ts": _now_label(), "source": "Finviz(전 미국 상장 · 당일 신고/신저)"}
     if not out["high"] and not out["low"]:
         log.info("finviz: high/low primary empty → S&P500 fallback")
         out = _highlow_fallback_sp500()
@@ -661,7 +661,7 @@ def _compute_highlow_sp500() -> dict:
     2026-06-10 VM surfaced: 500종목 단일 yf.download 통째 실패 시 빈 결과
     → 120종목 배치 분할 + 배치별 try/except + 진단 로그."""
     out: dict = {"high": [], "low": [], "ts": _now_label(),
-                 "source": "S&P 500 산출(yfinance)"}
+                 "source": "S&P 500 산출(yfinance · 52주 고저 1% 근접)"}
     try:
         import yfinance as yf
         universe = _us_universe_robust()
@@ -708,31 +708,38 @@ def _compute_highlow_sp500() -> dict:
                                            "price": round(last, 2), "pct": None})
                 except Exception:
                     continue
-        out["high"] = out["high"][:40]
-        out["low"] = out["low"][:40]
+        # 캡 40/40 제거 (사용자 2026-06-11 '앞으로 채워지겠지') — 폴백도
+        # 자기 universe(S&P 500) 안에서는 전량. 급락장 신저가 100+ 절단 방지.
         # 등락률 채우기 — 주봉 산출이라 일간 % 부재('—')였던 것(사용자
-        # 2026-06-11). hit 종목(≤80)만 5d 일봉 소량 재다운로드로 당일 % 산출.
+        # 2026-06-11). hit 종목만 5d 일봉 재다운로드로 당일 % 산출 — 캡
+        # 해제로 hit 가 커질 수 있어 메인 스캔과 동일하게 배치 분할.
         hits = [r["ticker"] for r in out["high"] + out["low"]]
-        if hits:
+        by_tk = {r["ticker"]: r for r in out["high"] + out["low"]}
+        for ci in range(0, len(hits), _CHUNK):
+            chunk = hits[ci:ci + _CHUNK]
             try:
-                dfd = yf.download(hits, period="5d", interval="1d",
+                dfd = yf.download(chunk, period="5d", interval="1d",
                                   group_by="ticker", threads=True,
                                   progress=False, auto_adjust=False)
-                for r in out["high"] + out["low"]:
-                    try:
-                        tk = r["ticker"]
-                        if len(hits) == 1:
-                            closes = dfd["Close"].dropna()
-                        else:
-                            closes = dfd[tk]["Close"].dropna()
-                        if len(closes) >= 2 and float(closes.iloc[-2]):
-                            r["pct"] = round((float(closes.iloc[-1])
-                                              / float(closes.iloc[-2]) - 1) * 100, 2)
-                            r["price"] = round(float(closes.iloc[-1]), 2)
-                    except Exception:
-                        continue
             except Exception as exc:
-                log.warning("finviz: fallback 등락률 fill 실패: %s", exc)
+                log.warning("finviz: fallback 등락률 배치 %d 실패: %s",
+                            ci // _CHUNK + 1, exc)
+                continue
+            if dfd is None or dfd.empty:
+                continue
+            for tk in chunk:
+                try:
+                    if len(chunk) == 1:
+                        closes = dfd["Close"].dropna()
+                    else:
+                        closes = dfd[tk]["Close"].dropna()
+                    if len(closes) >= 2 and float(closes.iloc[-2]):
+                        r = by_tk[tk]
+                        r["pct"] = round((float(closes.iloc[-1])
+                                          / float(closes.iloc[-2]) - 1) * 100, 2)
+                        r["price"] = round(float(closes.iloc[-1]), 2)
+                except Exception:
+                    continue
         log.info("finviz: S&P500 fallback — scanned %d → high %d / low %d",
                  scanned, len(out["high"]), len(out["low"]))
         if out["high"] or out["low"]:
