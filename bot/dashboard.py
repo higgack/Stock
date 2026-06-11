@@ -10715,7 +10715,8 @@ _DART_FEED_CSS = """
 .df-grid.list-view .df-card{flex-direction:row;align-items:center;gap:12px;padding:8px 14px}
 .df-grid.list-view .df-card-hd{flex-direction:row;align-items:center;min-width:160px}
 .df-grid.list-view .df-report{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.df-grid.list-view .df-detail-ln{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted,#888)}
+.df-grid.list-view .df-detail-ln{display:none}
+.df-grid.list-view .df-detail-ln.df-mcap{display:block;margin-left:auto;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11px;color:var(--muted,#888)}
 .df-grid.list-view .df-meta{order:-1;min-width:80px}
 </style>
 """
@@ -10872,16 +10873,22 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 
                 detail_html = ""
                 for ln in detail_lines:
-                    if str(ln).startswith("주요사업:"):
+                    s = str(ln)
+                    if s.startswith("주요사업:"):
                         continue
-                    detail_html += f'<div class="df-detail-ln">{_html.escape(str(ln))}</div>'
+                    # 시총/현재가 줄은 df-mcap — 리스트 뷰에서 상세는 숨기고
+                    # 이 줄만 유지 (사용자 2026-06-11 '제목+시총/현재가만').
+                    _cls = ("df-detail-ln df-mcap" if "시가총액" in s
+                            else "df-detail-ln")
+                    detail_html += f'<div class="{_cls}">{_html.escape(s)}</div>'
                 # 시총/현재가 — '모든' 상장사 공시 맨 아래(사용자 2026-06-11).
                 # 렌더 시점 부착: 제목만 카드 + 옛 카드 소급. 옛 enrich 가
                 # 이미 붙인 카드(detail 에 '시가총액' 존재)는 중복 방지.
                 if (stock_code and len(stock_code) == 6 and stock_code.isdigit()
                         and not any("시가총액" in str(l) for l in detail_lines)):
                     for ln in _mc_lines(stock_code):
-                        detail_html += f'<div class="df-detail-ln">{_html.escape(str(ln))}</div>'
+                        detail_html += (f'<div class="df-detail-ln df-mcap">'
+                                        f'{_html.escape(str(ln))}</div>')
 
                 ticker_link = ""
                 if stock_code and len(stock_code) == 6 and stock_code.isdigit():
