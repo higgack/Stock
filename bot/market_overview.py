@@ -736,6 +736,31 @@ def _fetch_macro_safe() -> dict:
         return {}
 
 
+def _cache_ts(p: Path) -> str:
+    """캐시 파일 mtime → 'YYYY-MM-DD HH:MM' (VM 로컬=KST). 부재 시 ''."""
+    try:
+        if p.exists():
+            return datetime.fromtimestamp(p.stat().st_mtime).strftime(
+                "%Y-%m-%d %H:%M")
+    except Exception:
+        pass
+    return ""
+
+
+def _widget_data_ts() -> dict:
+    """위젯별 '실제 적용' 데이터 시각 — 각 fetch 의 캐시 파일 mtime
+    (사용자 2026-06-11: 업종등락처럼 'ts · 소스' 를 실적/리서치에도).
+    fetch_all_market_data 의 futures 가 resolve 된 '뒤' 호출 — refetch 가
+    일어났으면 mtime 이 방금 시각으로 갱신돼 있음."""
+    today = date.today().isoformat()
+    return {
+        "earn_us": _cache_ts(_CACHE_DIR / "finnhub" / f"earnings_{today}.json"),
+        "earn_kr": _cache_ts(_CACHE_DIR / "finnhub" / f"earnings_kr_{today}.json"),
+        "res_kr": _cache_ts(_CACHE_DIR / "research" / f"kr_{today}.json"),
+        "res_us": _cache_ts(_CACHE_DIR / "research" / f"us_{today}.json"),
+    }
+
+
 def fetch_all_market_data() -> dict[str, Any]:
     """Fetch everything needed for market.html."""
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -771,6 +796,8 @@ def fetch_all_market_data() -> dict[str, Any]:
             "sector_movers": sector_fut.result(),
             "us_sector_movers": us_sector_fut.result(),
             "deposit": deposit_fut.result(),
+            # futures resolve 후 → refetch 분 mtime 반영된 '실제 적용' 시각
+            "widget_ts": _widget_data_ts(),
         }
 
 

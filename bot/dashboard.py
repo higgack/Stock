@@ -12039,6 +12039,18 @@ def _render_market_page(data: dict) -> str:
     sector_movers = data.get("sector_movers", {})
     us_sector_movers = data.get("us_sector_movers", {})
     deposit = data.get("deposit", {})
+    # 위젯별 '실제 적용' 데이터 시각 — 업종등락의 'ts · 소스' 형식을
+    # 실적/리서치 헤더에도 (사용자 2026-06-11). ts 부재 시 소스명만.
+    _wts = data.get("widget_ts") or {}
+
+    def _src_ts(label: str, ts_key: str, src: str) -> str:
+        t = _wts.get(ts_key) or ""
+        return f"{label} {t} · {src}" if t else f"{label} {src}"
+
+    _earn_ts = (_src_ts("한국", "earn_kr", "yfinance")
+                + " | " + _src_ts("미국", "earn_us", "Finnhub"))
+    _res_ts = (_src_ts("한국", "res_kr", "Naver")
+               + " | " + _src_ts("미국", "res_us", "yfinance"))
 
     parts: list[str] = [_MARKET_CSS]
     parts.append(f"""
@@ -12097,10 +12109,10 @@ def _render_market_page(data: dict) -> str:
                 if not str(e.get("symbol", "")).endswith((".KS", ".KQ"))]
 
     parts.append(f"""
-  <div class="section-hd">
+  <div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
     <h2>다가오는 실적</h2>
     <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(미국 실적·한국 IR)</a>
-    <span class="ts">한국 yfinance · 미국 Finnhub</span>
+    <span class="ts" style="margin-left:auto">{_html.escape(_earn_ts)}</span>
   </div>
   <div class="tbl-filter">
     <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
@@ -12117,9 +12129,10 @@ def _render_market_page(data: dict) -> str:
     {_render_earnings_table(_earn_us)}
   </div>
 
-  <div class="section-hd" style="display:flex;align-items:baseline;gap:12px">
+  <div class="section-hd" style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
     <h2>최근 리서치 액션</h2>
     <a href="dart_feed.html" style="font-size:13px;color:var(--accent,#3b82f6);text-decoration:none">📋 DART 공시</a>
+    <span class="ts" style="margin-left:auto">{_html.escape(_res_ts)}</span>
   </div>
   <div class="tbl-filter">
     <input id="research-filter" type="text" placeholder="종목 검색 …" autocomplete="off">
