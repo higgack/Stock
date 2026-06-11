@@ -1638,8 +1638,8 @@ class TestPaperTrading:
         assert empty.lower().count("<!doctype") == 1, "CSS leak/중첩 문서"
         # 텔레그램·대시보드 배선
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
-        assert "async def cmd_paper" in tb and 'CommandHandler("paper", cmd_paper)' in tb
-        assert 'BotCommand("paper"' in tb and "regenerate_paper_index" in tb
+        assert "async def cmd_paper" in tb and '"paper": (cmd_paper' in tb  # 단일 레지스트리 등록
+        assert '"paper": (cmd_paper, "페이퍼' in tb and "regenerate_paper_index" in tb  # 메뉴=레지스트리 파생
         assert "전체 /paper help" in tb, "help §1 /paper help 포인터 누락"
         assert 'sub in ("help"' in tb, "/paper help 핸들러 누락"
         # 채널에서도 동작 — on_channel_post 가 'paper' 라우팅 + DM 과 로직 공유.
@@ -2407,8 +2407,8 @@ class TestPortfolioDashboard:
         # telegram_bot 은 무거운 의존성 import 라 소스 검증(PM 배너 테스트와 동일 패턴).
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "async def cmd_portfolio" in src, "/portfolio 조회 핸들러 누락"
-        assert 'CommandHandler("portfolio", cmd_portfolio)' in src
-        assert 'BotCommand("portfolio"' in src, "set_my_commands 미등록"
+        assert '"portfolio": (cmd_portfolio' in src  # 단일 레지스트리 등록
+        assert '"portfolio": (cmd_portfolio, "💼' in src, "set_my_commands 미등록(레지스트리)"
         assert "regenerate_portfolio_index" in src  # startup regen
         # 봇 DM 문서 ingest 핸들러는 제거 — 입력은 RAG 채널 watcher (봇 깨끗하게)
         assert "cmd_portfolio_upload" not in src, "DM 업로드 핸들러 잔존(제거돼야)"
@@ -4415,3 +4415,40 @@ class TestDartClassifyCoverage:
         assert self._c("전환청구권행사") == "자금조달"
         assert self._c("과징금부과처분취소소송의제기") == "소송"  # 소송 > 리스크 순서
         assert self._c("주주총회소집공고") == "기타"  # routine 은 여전히 드롭
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 명령 단일 레지스트리 — 텔레그램·대시보드 링크 (사용자 2026-06-11)
+# ─────────────────────────────────────────────────────────────────────────
+class TestCommandRegistrySingleSource:
+    """텔레그램 add_handler / set_my_commands 메뉴 / 대시보드 콘솔이 전부
+    _static_command_registry 한 테이블에서 파생 — 하드코딩 사본이 다시
+    생기면(드리프트 클래스: /dart_alert 콘솔 누락) 실패."""
+
+    def _src(self):
+        return open("bot/telegram_bot.py", encoding="utf-8").read()
+
+    def test_no_hardcoded_botcommand_or_handler_lines(self):
+        src = self._src()
+        # 메뉴/핸들러 하드코딩 잔존 금지 (동적 screener_<slug> 부분 제외)
+        assert 'BotCommand("start"' not in src
+        assert 'app.add_handler(CommandHandler("start"' not in src
+        assert 'app.add_handler(CommandHandler("dart_alert"' not in src
+
+    def test_registry_has_all_commands(self):
+        import re
+        src = self._src()
+        body = re.search(
+            r"def _static_command_registry\(\).*?\n    return \{(.*?)\n    \}",
+            src, re.DOTALL).group(1)
+        for c in ("start", "help", "usage", "sites", "screener_list",
+                  "watch", "watchlist", "unwatch", "dart_alert", "paper",
+                  "screen", "screener", "compare", "portfolio",
+                  "sv_cost", "screener_cost", "daily_byte_cost",
+                  "cheongyak_cost", "realestate_cost"):
+            assert f'"{c}"' in body, f"registry missing /{c}"
+
+    def test_console_routes_dynamic_screener_slugs(self):
+        # /screener_<slug> 가 대시보드 콘솔에서도 screener 경로로 라우팅
+        src = self._src()
+        assert 'word.startswith("screener_")' in src

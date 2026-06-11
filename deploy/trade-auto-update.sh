@@ -57,19 +57,13 @@ SUBJECT="$(git log -1 --format='%s' "$REMOTE" 2>/dev/null || echo '')"
 
 # Scope guard — restart trade-bot only when commits actually touch
 # its runtime files. Doc-only / stock-bot / shared-infra updates pull
-# silently but ALWAYS send a 📝 notification to the trade channel so
-# the operator can track every new commit landing on the host.
+# SILENTLY — 채널 알림 없음 (사용자 2026-06-11: NOAH 쪽 변경이 수출입
+# 채널로 알람 오던 것 차단). 추적은 journald 로그로만.
 CHANGED_FILES=$(git diff --name-only "$LOCAL" "$REMOTE")
 TRADE_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^(trade/|deploy/(trade-auto-update\.sh|trade-watchdog\.sh|trade-bot[^/]*\.(service|timer))$)' || true)
 if [ -z "$TRADE_RELEVANT" ]; then
-    echo "trade-bot-update: non-trade-bot changes — pull + 📝 notify (no restart)"
+    echo "trade-bot-update: non-trade-bot changes (${LOCAL_SHORT} → ${REMOTE_SHORT}: ${SUBJECT}) — silent pull, no restart/notify"
     git reset --hard "origin/${BRANCH}" --quiet
-    note_msg="📝 <b>운영 업데이트</b>: <code>${LOCAL_SHORT}</code> → <code>${REMOTE_SHORT}</code>"
-    if [ -n "$SUBJECT" ]; then
-        note_msg="${note_msg}"$'\n'"${SUBJECT}"
-    fi
-    note_msg="${note_msg}"$'\n'"<i>재시작 불필요 — doc / 다른 서브프로젝트 변경</i>"
-    notify "$note_msg"
     exit 0
 fi
 
