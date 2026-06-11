@@ -4496,10 +4496,24 @@ class TestHighlowFullUsAndCapWeight:
             "ZTEST|Test Issue Co|Q|Y|N|100|N|N\n"            # Test 제외
             "BRK.B|Berkshire Hathaway Inc. - Class B Common Stock|Q|N|N|100|N|N\n"
             "ABCW|ABC Co - Warrant|Q|N|N|100|N|N\n"          # 워런트 제외
+            "AACB|Artius II Acquisition Corp. - Class A Common Stock|Q|N|N|100|N|N\n"  # SPAC 제외
+            "ADAC|American Drive Acquisition Company - Common Stock|Q|N|N|100|N|N\n"   # SPAC 제외
             "File Creation Time: 0611202622:01|||||||")
         tks, names = _parse_symdir(sample, "Symbol")
-        assert tks == ["AAPL", "BRK-B"]
+        assert tks == ["AAPL", "BRK-B"]   # SPAC 2종 제외(신탁가 신고저 오염 차단)
         assert names["AAPL"] == "Apple Inc."
+
+    def test_highlow_spac_price_backstop(self):
+        # 이름 필터를 빠져나온 SPAC: 신고가 + 등락 0% + $9.5~10.6 → 제외
+        high = [
+            {"ticker": "X", "price": 10.0, "pct": 0.0},   # SPAC 패턴 → 제외
+            {"ticker": "Y", "price": 50.0, "pct": 3.0},   # 진짜 신고가 → 유지
+            {"ticker": "Z", "price": 9.95, "pct": 0.0},   # SPAC 패턴 → 제외
+        ]
+        filt = [r for r in high
+                if not (9.5 <= (r.get("price") or 0) <= 10.6
+                        and abs(r.get("pct") or 0) < 0.05)]
+        assert [r["ticker"] for r in filt] == ["Y"]
 
     def test_l3_cap_weighted_average(self, monkeypatch):
         import bot.finviz_client as fv

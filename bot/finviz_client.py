@@ -710,7 +710,7 @@ def _compute_highlow_full_us() -> dict:
     수 분 — 백그라운드 전용(_highlow_full_us 가 동기 호출 금지)."""
     tks, names = _us_full_universe()
     return _compute_highlow_from(
-        tks, names, "highlow_full_us.json",
+        tks, names, "highlow_full_us_v2.json",
         "전 미국 상장 산출(yfinance · 52주 고저 1% 근접)", "전미국")
 
 
@@ -799,12 +799,56 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                         r["price"] = round(float(closes.iloc[-1]), 2)
                 except Exception:
                     continue
-        log.info("finviz: %s highlow — scanned %d → high %d / low %d",
-                 tag, scanned, len(out["high"]), len(out["low"]))
+        # SPAC 백스톱 (이름 필터를 빠져나온 잔여) — 신고가인데 등락 0% +
+        # 가격 $9.5~$10.6(신탁가 밴드)면 SPAC 신탁가 패턴으로 보고 제외.
+        # 신저가는 floor 라 SPAC 거의 없음 → 신고가에만 적용 (2026-06-11).
+        out["high"] = [r for r in out["high"]
+                       if not (9.5 <= (r.get("price") or 0) <= 10.6
+                               and abs(r.get("pct") or 0) < 0.05)]
+        # 시가총액 — hit 종목만 fast_info 병렬 fetch (백그라운드 산출이라
+        # 페이지 hang 0). 종목옆 시총 표시용 (사용자 2026-06-11). 억$ 단위.
+        hits2 = [r["ticker"] for r in out["high"] + out["low"]]
+        mcaps = _fetch_mcaps(hits2)
+        for r in out["high"] + out["low"]:
+            mc = mcaps.get(r["ticker"])
+            r["mcap"] = round(mc / 1e8, 2) if mc else None  # 억$
+        log.info("finviz: %s highlow — scanned %d → high %d / low %d (mcap %d)",
+                 tag, scanned, len(out["high"]), len(out["low"]), len(mcaps))
         if out["high"] or out["low"]:
             _cache_write(cache_name, out)
     except Exception as exc:
         log.warning("finviz: %s highlow 산출 실패: %s", tag, exc)
+    return out
+
+
+def _fetch_mcaps(tickers: list) -> dict:
+    """hit 종목 시가총액(USD) {ticker: mcap}. yfinance fast_info 병렬
+    (백그라운드 전용 — 종목당 1 HTTP). 실패/부재 시 누락(graceful)."""
+    if not tickers:
+        return {}
+    out: dict = {}
+    try:
+        import yfinance as yf
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _one(tk: str):
+            try:
+                fi = yf.Ticker(tk).fast_info
+                mc = None
+                try:
+                    mc = fi.market_cap          # 속성 접근
+                except Exception:
+                    mc = fi.get("market_cap") if hasattr(fi, "get") else None
+                return tk, (float(mc) if mc else None)
+            except Exception:
+                return tk, None
+
+        with ThreadPoolExecutor(max_workers=12) as ex:
+            for tk, mc in ex.map(_one, tickers):
+                if mc:
+                    out[tk] = mc
+    except Exception as exc:
+        log.warning("finviz: 시총 fetch 실패: %s", exc)
     return out
 
 
@@ -826,7 +870,12 @@ def _parse_symdir(text: str, symcol: str) -> tuple[list, dict]:
     etf_i = idx.get("ETF")
     test_i = idx.get("Test Issue")
     _SKIP_NAME = ("Warrant", "Right", "Preferred", " Unit", "Units",
-                  "Notes", "Debenture")
+                  "Notes", "Debenture",
+                  # SPAC 제외 (2026-06-11 검증: 신탁가 $10 고정 → 1년 내내
+                  # 52주 신고가 근처라 신고저 리스트 오염, 등락 0%). 거의
+                  # 전부 'Acquisition Corp/Company' 명칭.
+                  "Acquisition Corp", "Acquisition Company",
+                  "Acquisition Holdings")
     for ln in lines[1:]:
         if ln.startswith("File Creation Time"):
             continue
@@ -853,8 +902,8 @@ def _parse_symdir(text: str, symcol: str) -> tuple[list, dict]:
 def _us_full_universe() -> tuple[list, dict]:
     """전 미국 상장 보통주 — nasdaqlisted.txt + otherlisted.txt (공식·무키·
     일 갱신, NYSE/AMEX 포함). 7일 캐시. 실패 시 ([], {})."""
-    c = _cached("us_universe.json", ttl=7 * 86400)
-    cn = _cached("us_universe_names.json", ttl=7 * 86400)
+    c = _cached("us_universe_v2.json", ttl=7 * 86400)
+    cn = _cached("us_universe_names_v2.json", ttl=7 * 86400)
     if c and cn:
         return c, cn
     tks: list = []
@@ -880,8 +929,8 @@ def _us_full_universe() -> tuple[list, dict]:
     seen: set = set()
     uniq = [t for t in tks if not (t in seen or seen.add(t))]
     if len(uniq) > 1000:
-        _cache_write("us_universe.json", uniq)
-        _cache_write("us_universe_names.json", names)
+        _cache_write("us_universe_v2.json", uniq)
+        _cache_write("us_universe_names_v2.json", names)
         log.info("finviz: 전미국 universe %d종목 (nasdaqtrader)", len(uniq))
         return uniq, names
     return [], {}
@@ -918,10 +967,10 @@ def _highlow_full_us() -> dict:
     금지). 신선 캐시(30분) 서빙 / stale(≤24h) 서빙+백그라운드 재계산 /
     캐시 부재 시 백그라운드 kick 후 빈 dict 반환 → 호출부가 S&P500
     티어로 폴스루 (다음 방문부터 전량 표시)."""
-    c = _cached("highlow_full_us.json", ttl=_FALLBACK_TTL_SEC)
+    c = _cached("highlow_full_us_v2.json", ttl=_FALLBACK_TTL_SEC)
     if c is not None:
         return c
-    stale = _cached("highlow_full_us.json", ttl=86400)
+    stale = _cached("highlow_full_us_v2.json", ttl=86400)
     _kick_full_us_refresh()
     return stale if stale is not None else {}
 
