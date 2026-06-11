@@ -1,5 +1,9 @@
 """Live BeOn_BeClear → trade channel forwarder (Telethon listener).
 
+배포 주의: 이 파일 변경 시 trade-auto-update 가 trade-bot-beon-listener
+서비스를 재시작한다 (sudoers 자기확장, 2026-06-11) — trade-bot 재시작만
+으로는 별도 상시 서비스인 리스너에 새 코드가 로드되지 않음.
+
 Long-running Telethon client that subscribes to NewMessage events on
 the BeOn channel and forwards each new post (or album) to the private
 trade channel within ~1-3 s of publication. The 2-hour timer
