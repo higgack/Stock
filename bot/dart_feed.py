@@ -1961,6 +1961,76 @@ def backfill_once_if_needed(days_back: int = 14) -> dict | None:
     return stats
 
 
+# ── v3 — 당월 정리 백필 (사용자 2026-06-11 '5월치 삭제 + 6월 풀백필') ──────
+
+_BACKFILL_MARKER_V3 = _ARCHIVE_DIR.parent / ".dart_feed_backfilled_v3"
+
+
+def purge_archives_before(cutoff: date) -> int:
+    """cutoff 이전 날짜의 아카이브 파일 삭제. 삭제 수 반환."""
+    removed = 0
+    try:
+        for f in _ARCHIVE_DIR.glob("*.json"):
+            try:
+                d = datetime.strptime(f.stem, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if d < cutoff:
+                f.unlink()
+                removed += 1
+    except Exception as exc:
+        log.warning("dart_feed purge: %s", exc)
+    if removed:
+        log.info("dart_feed purge: %s 이전 아카이브 %d개 삭제", cutoff, removed)
+    return removed
+
+
+def warm_market_caps(days_back: int = 31) -> int:
+    """아카이브 내 상장사 코드 전체의 FSC 시세 캐시 워밍 (12h 캐시 채움).
+
+    렌더의 콜드-페치 45초 예산은 대량 백필 직후 수십 분에 걸쳐 점진
+    워밍됨 — 백필 직후 1회 일괄 워밍으로 모든 카드의 '시가총액/현재가'
+    줄이 다음 regen 부터 즉시 표시되게 (사용자 2026-06-11 '무조건
+    들어가야'). FSC 는 DART 콜 버짓과 무관(별도 API)·무료·12h 캐시."""
+    codes: set[str] = set()
+    for items in load_all_archives(days_back=days_back).values():
+        for it in items:
+            sc = it.get("stock_code") or ""
+            if len(sc) == 6 and sc.isdigit():
+                codes.add(sc)
+    warmed = 0
+    for i, code in enumerate(sorted(codes)):
+        try:
+            if _market_cap_price_lines(code):
+                warmed += 1
+        except Exception:
+            pass
+        time.sleep(0.05)
+        if (i + 1) % 200 == 0:
+            log.info("dart_feed warm: %d/%d 코드", i + 1, len(codes))
+    log.info("dart_feed warm: 시총 캐시 %d/%d 코드 완료", warmed, len(codes))
+    return warmed
+
+
+def backfill_v3_once_if_needed() -> dict | None:
+    """v3 1회 백필: 당월 1일 이전 아카이브 삭제(5월치 제거) → 당월 전체
+    (1일~오늘) 재fetch(새 분류 룰) → FSC 시총 일괄 워밍. marker gate."""
+    if _BACKFILL_MARKER_V3.exists():
+        return None
+    today = datetime.now(_KST).date()
+    month_start = today.replace(day=1)
+    purged = purge_archives_before(month_start)
+    stats = backfill_with_new_rules(days_back=(today - month_start).days)
+    stats["purged"] = purged
+    stats["warmed"] = warm_market_caps()
+    try:
+        _BACKFILL_MARKER_V3.parent.mkdir(parents=True, exist_ok=True)
+        _BACKFILL_MARKER_V3.write_text(datetime.now(_KST).isoformat())
+    except OSError:
+        pass
+    return stats
+
+
 # ── CLI: python -m bot.dart_feed ──
 
 def run_once(target_date: date | None = None,
@@ -2003,7 +2073,10 @@ def run_once(target_date: date | None = None,
     fetched_ids = {it.get("rcept_no") for it in items}
     pending: list[dict] = []
     try:
-        for day_items in load_all_archives(days_back=3).values():
+        # 윈도 3→14일 (2026-06-11): 풀백필이 추가한 당월 초 항목도 파서
+        # 보유 유형이면 enrich 가 자연 드레인 (8건/분 cap 그대로 — 분당
+        # 한도 보호, 백로그는 수 시간에 걸쳐 소진).
+        for day_items in load_all_archives(days_back=14).values():
             for it in day_items:
                 if it.get("rcept_no") in fetched_ids or it.get("detail"):
                     continue

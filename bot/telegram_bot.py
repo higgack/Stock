@@ -3494,19 +3494,22 @@ async def _on_startup(application) -> None:
                 log.info("startup: DART feed initial fetch %d items", len(items))
             except Exception as exc:
                 log.warning("startup: DART initial fetch failed: %s", exc)
-            # 새 분류 룰 소급 백필 — 최초 1회만 (marker gate, 수 분 소요).
-            # 옛 룰에서 드롭된 과거 공시 추가 + 기존 항목 카테고리 재분류
-            # (사용자 2026-06-11 '일회성 백필'). 차트 .charts_backfilled 패턴.
+            # v3 당월 정리 백필 — 최초 1회만 (marker gate, 백그라운드 수십 분).
+            # 당월 1일 이전(5월) 아카이브 삭제 → 당월 전체 재fetch(새 분류
+            # 룰) → FSC 시총 일괄 워밍(모든 카드 '시가총액/현재가' 줄 즉시
+            # 표시) (사용자 2026-06-11). 차트 .charts_backfilled 패턴.
             try:
-                from bot.dart_feed import backfill_once_if_needed
-                st = backfill_once_if_needed()
+                from bot.dart_feed import backfill_v3_once_if_needed
+                st = backfill_v3_once_if_needed()
                 if st:
                     from bot.dashboard import regenerate_dart_feed_index as _rg2
                     _rg2()
-                    log.info("startup: DART backfill — 재분류 %d · 신규 %d",
-                             st["reclassified"], st["added"])
+                    log.info("startup: DART backfill v3 — 삭제 %d개 · 재분류 %d "
+                             "· 신규 %d · 시총워밍 %d코드",
+                             st.get("purged", 0), st["reclassified"],
+                             st["added"], st.get("warmed", 0))
             except Exception as exc:
-                log.warning("startup: DART backfill failed: %s", exc)
+                log.warning("startup: DART backfill v3 failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:
