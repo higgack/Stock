@@ -97,16 +97,19 @@ class _CaptureBot:
         return _noop
 
 
-def build_capture(command_text: str, user_id: int = 0):
+def build_capture(command_text: str, user_id: int = 0, chat_id: int = 0):
     """'/명령 인자' → (fake update, fake context, lines). lines 는 호출 후 채워짐.
 
-    ctx.args 는 텔레그램과 동일하게 '명령 다음 토큰들'."""
+    ctx.args 는 텔레그램과 동일하게 '명령 다음 토큰들'. chat_id 는 호출부가
+    채널 id 를 넘김 — /dart_alert on 처럼 effective_chat.id 를 '알림 받을
+    채팅'으로 저장하는 명령이 무효 chat 0 에 등록되지 않게 (2026-06-11)."""
     lines: list[str] = []
     msg = _CaptureMessage(lines, text=command_text)
+    msg.chat = SimpleNamespace(id=chat_id, type="private")
     update = SimpleNamespace(
         message=msg,
         effective_message=msg,
-        effective_chat=SimpleNamespace(id=0, type="private"),
+        effective_chat=SimpleNamespace(id=chat_id, type="private"),
         effective_user=SimpleNamespace(
             id=user_id, first_name="dashboard", username="dashboard",
             is_bot=False, full_name="dashboard",

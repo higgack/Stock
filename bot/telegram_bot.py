@@ -1069,7 +1069,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 <b>【1. 명령어】</b> (탭 자동입력)
 /help /usage /portfolio /screener_list /sites — 비용: /screener·daily_byte·cheongyak·realestate_cost
 /screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0). /screen list
-/screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list. 분석·스크리너는 대시보드 실행 버튼으로도 가능
+/screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list. 모든 명령은 대시보드 검색창 '/' 명령 모드에서도 동일 실행
 /NVDA /AAPL — 단일 분석 (채널에서)
 /compare NVDA AMD — 두 종목 비교
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 충족 시 알림 (rsi/price/sma/52w/earnings·KR수급). 목록 /watchlist · 삭제 /unwatch
@@ -3052,26 +3052,54 @@ async def _periodic_market_refresh() -> None:
 # 대시보드 명령 콘솔 — '/명령' → (update, ctx) 핸들러 화이트리스트.
 # 런타임 호출(모든 cmd_* 정의 후)이라 forward-ref 안전. screener/screen 은
 # 별도 채널 경로(아래 poller)라 제외, 티커 분석은 [분석] 버튼 전용이라 제외.
-def _dash_console_commands() -> dict:
+def _static_command_registry() -> dict:
+    """정적 명령 단일 레지스트리 — name → (handler, 메뉴 설명).
+
+    텔레그램과 대시보드 명령어를 구조적으로 링크 (사용자 2026-06-11
+    '명령어 자체가 똑같이 링크'). 네 소비처가 전부 이 테이블에서 파생:
+      (a) 텔레그램 add_handler 일괄 등록
+      (b) set_my_commands 메뉴 (mobile autocomplete)
+      (c) 대시보드 명령 콘솔 핸들러 dict
+      (d) 콘솔 '사용 가능' 안내 목록
+    새 명령 추가 = 여기 한 줄 → 네 곳 동시 반영, drift 구조적 차단
+    (/dart_alert 가 콘솔 dict 누락으로 대시보드에서 '알 수 없는 명령'
+    이던 클래스). screener/screen 은 콘솔에서 전용 분기(비싼·비동기
+    채널 경로)가 먼저 잡음. dict 순서 = 텔레그램 메뉴 노출 순서."""
     return {
-        "help": cmd_help, "start": cmd_help,
-        "usage": cmd_usage, "sites": cmd_sites,
-        "screener_list": cmd_screener_list,
-        "watch": cmd_watch, "watchlist": cmd_watchlist, "unwatch": cmd_unwatch,
-        "paper": cmd_paper, "portfolio": cmd_portfolio, "compare": cmd_compare_hint,
-        "sv_cost": cmd_sv_cost, "daily_byte_cost": cmd_daily_byte_cost,
-        "cheongyak_cost": cmd_cheongyak_cost, "realestate_cost": cmd_realestate_cost,
-        "screener_cost": cmd_screener_cost,
+        "start": (cmd_help, "사용법 안내"),
+        "help": (cmd_help, "사용법 안내"),
+        "usage": (cmd_usage, "사용량 / 통합 비용 / 7일 차트"),
+        "sv_cost": (cmd_sv_cost, "Standard View 비용"),
+        "screener_cost": (cmd_screener_cost, "Bottleneck Screener 비용 (Pro)"),
+        "daily_byte_cost": (cmd_daily_byte_cost, "Daily Byte 비용 (KR 수급 브리프)"),
+        "cheongyak_cost": (cmd_cheongyak_cost, "청약 Byte 비용 (신규 분양 피드)"),
+        "realestate_cost": (cmd_realestate_cost, "부동산 Byte 비용 (실거래 브리프)"),
+        "screener_list": (cmd_screener_list, "Screener 도메인 목록 (전체)"),
+        "sites": (cmd_sites, "참고 사이트"),
+        "watch": (cmd_watch, "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
+        "watchlist": (cmd_watchlist, "감시 목록 보기"),
+        "unwatch": (cmd_unwatch, "감시 삭제 (TICKER/id/all)"),
+        "dart_alert": (cmd_dart_alert, "관심종목 DART 공시 알림 (on/off)"),
+        "paper": (cmd_paper, "페이퍼 트레이딩 (모의 매매·돈 0)"),
+        # /screen·/screener — 콘솔은 전용 분기, 텔레그램은 이 핸들러
+        "screen": (cmd_screen, "조건부 스크리너 (PER<15 PBR<1 등 자유 조건)"),
+        "screener": (cmd_screener, "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
+        # /compare 는 DM 힌트 (실제 비교는 채널 on_channel_post)
+        "compare": (cmd_compare_hint, "두 종목 비교 (채널에서 사용)"),
+        # /portfolio 조회 전용 (업로드는 RAG 채널 watcher — 정책 2026-06-04)
+        "portfolio": (cmd_portfolio, "💼 자산 (뱅크샐러드 zip 업로드)"),
     }
 
 
-# /usage 처럼 패널에 노출할 대표 명령(안내용). screener/screen 포함(별도 경로).
-_DASH_CONSOLE_VISIBLE = (
-    "usage", "help", "sites", "screener_list", "screener", "screen",
-    "portfolio", "watch", "watchlist", "unwatch", "paper", "compare",
-    "screener_cost", "daily_byte_cost", "cheongyak_cost", "realestate_cost",
-    "sv_cost",
-)
+def _dash_console_commands() -> dict:
+    """콘솔 핸들러 dict — screener/screen 은 전용 분기(채널 게시 경로)."""
+    return {n: f for n, (f, _d) in _static_command_registry().items()
+            if n not in ("screener", "screen")}
+
+
+def _dash_console_visible() -> tuple:
+    """패널 안내용 명령 목록 — 레지스트리에서 자동 파생 (start 별칭 제외)."""
+    return tuple(k for k in _static_command_registry() if k != "start")
 
 
 async def _periodic_dashboard_requests(application) -> None:
@@ -3169,18 +3197,37 @@ async def _periodic_dashboard_requests(application) -> None:
                     toks = raw.lstrip("/").split()
                     word = toks[0].lower() if toks else ""
                     arg = " ".join(toks[1:])
-                    if word == "screener":
-                        # 비싼·비동기 → 기존 채널 경로 재사용 + 패널엔 접수 안내.
+                    # 단일 레지스트리 exact-match 우선 (screener_list/
+                    # screener_cost 가 아래 screener_* prefix 분기에 먹히지
+                    # 않게) → screener/screener_<slug>/screen 전용 분기 →
+                    # 그 외 안내. 모든 정적 명령 = 대시보드에서도 작동
+                    # (사용자 2026-06-11).
+                    handler = _dash_console_commands().get(word)
+                    if handler is not None:
+                        from bot.dashboard_console import build_capture
+                        upd, ctx2, lines = build_capture(raw, chat_id=chat_id)
+                        try:
+                            await handler(upd, ctx2)
+                        except Exception as exc:
+                            log.exception("dashboard command failed: %s", raw)
+                            lines.append(f"⚠️ 명령 실행 오류: {exc}")
+                        write_result(req_id, {"ok": True, "done": True,
+                                              "lines": lines or ["(출력 없음)"]})
+                    elif word == "screener" or word.startswith("screener_"):
+                        # 비싼·비동기 → 기존 채널 경로 재사용 + 패널엔 접수
+                        # 안내. /screener_<slug> 동적 숏컷도 동일 경로.
+                        q = arg if word == "screener" else (
+                            word[len("screener_"):] + " " + arg).strip()
                         async def _scc(t: str) -> None:
                             await bot.send_message(
                                 chat_id=chat_id, text=t, parse_mode=ParseMode.HTML,
                                 disable_web_page_preview=True)
                         write_result(req_id, {"ok": True, "done": True, "lines": [
                             "🌐 Bottleneck Screener 실행 시작"
-                            + (f" — {arg}" if arg else " (기본 bottleneck)"),
+                            + (f" — {q}" if q else " (기본 bottleneck)"),
                             "결과는 텔레그램 채널 + Screener 대시보드에 게시됩니다(~3-5분).",
                         ]})
-                        resolved = await _resolve_screener_target(_scc, arg.lower())
+                        resolved = await _resolve_screener_target(_scc, q.lower())
                         if resolved.get("mode") != "error":
                             await _run_screener_and_send(
                                 send=_scc, theme=resolved.get("theme"),
@@ -3197,24 +3244,13 @@ async def _periodic_dashboard_requests(application) -> None:
                         ]})
                         await _handle_screen(arg.split(), _scc2)
                     else:
-                        from bot.dashboard_console import build_capture
-                        handler = _dash_console_commands().get(word)
-                        if handler is None:
-                            write_result(req_id, {"ok": True, "done": True, "lines": [
-                                f"알 수 없는 명령: /{word or '(빈 명령)'}",
-                                "· 티커 분석은 슬래시 없이 종목 입력 후 [분석] 버튼",
-                                "· 사용 가능: "
-                                + " ".join("/" + c for c in _DASH_CONSOLE_VISIBLE),
-                            ]})
-                        else:
-                            upd, ctx2, lines = build_capture(raw)
-                            try:
-                                await handler(upd, ctx2)
-                            except Exception as exc:
-                                log.exception("dashboard command failed: %s", raw)
-                                lines.append(f"⚠️ 명령 실행 오류: {exc}")
-                            write_result(req_id, {"ok": True, "done": True,
-                                                  "lines": lines or ["(출력 없음)"]})
+                        write_result(req_id, {"ok": True, "done": True, "lines": [
+                            f"알 수 없는 명령: /{word or '(빈 명령)'}",
+                            "· 티커 분석은 슬래시 없이 종목 입력 후 [분석] 버튼",
+                            "· 사용 가능: "
+                            + " ".join("/" + c for c in _dash_console_visible())
+                            + " · /screener_<도메인>",
+                        ]})
             except Exception:
                 log.exception("dashboard request failed: %s", req)
                 try:
@@ -3612,27 +3648,10 @@ async def _on_startup(application) -> None:
         log.warning("get_me failed (deep-link URLs unavailable): %s", exc)
 
     try:
-        commands = [
-            BotCommand("start", "사용법 안내"),
-            BotCommand("help", "사용법 안내"),
-            BotCommand("usage", "사용량 / 통합 비용 / 7일 차트"),
-            BotCommand("sv_cost", "Standard View 비용"),
-            BotCommand("screener_cost", "Bottleneck Screener 비용 (Pro)"),
-            BotCommand("daily_byte_cost", "Daily Byte 비용 (KR 수급 브리프)"),
-            BotCommand("cheongyak_cost", "청약 Byte 비용 (신규 분양 피드)"),
-            BotCommand("realestate_cost", "부동산 Byte 비용 (실거래 브리프)"),
-            BotCommand("screener_list", "Screener 도메인 목록 (전체)"),
-            BotCommand("sites", "참고 사이트"),
-            BotCommand("watch", "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
-            BotCommand("watchlist", "감시 목록 보기"),
-            BotCommand("unwatch", "감시 삭제 (TICKER/id/all)"),
-            BotCommand("dart_alert", "관심종목 DART 공시 알림 (on/off)"),
-            BotCommand("paper", "페이퍼 트레이딩 (모의 매매·돈 0)"),
-            BotCommand("screen", "조건부 스크리너 (PER<15 PBR<1 등 자유 조건)"),
-            BotCommand("screener", "Bottleneck 종목 발굴 (기본=AI 데이터센터)"),
-            BotCommand("compare", "두 종목 비교 (채널에서 사용)"),
-            BotCommand("portfolio", "💼 자산 (뱅크샐러드 zip 업로드)"),
-        ]
+        # 단일 레지스트리에서 메뉴 파생 — 새 명령이 자동으로 메뉴/autocomplete
+        # 에 노출 (사용자 2026-06-11 '텔레그램·대시보드 명령어 링크').
+        commands = [BotCommand(n, d)
+                    for n, (_f, d) in _static_command_registry().items()]
         # Per-domain shortcut commands. Description = theme display name
         # (capped at 100 chars to leave headroom under Telegram's 256-char
         # description limit). Sorted by slug for stable ordering in the
@@ -3727,36 +3746,17 @@ def main() -> None:
         )
 
     app = Application.builder().token(TOKEN).post_init(_on_startup).build()
-    app.add_handler(CommandHandler("start", cmd_help))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("usage", cmd_usage))
-    app.add_handler(CommandHandler("sv_cost", cmd_sv_cost))
-    app.add_handler(CommandHandler("daily_byte_cost", cmd_daily_byte_cost))
-    app.add_handler(CommandHandler("cheongyak_cost", cmd_cheongyak_cost))
-    app.add_handler(CommandHandler("realestate_cost", cmd_realestate_cost))
-    app.add_handler(CommandHandler("screener_cost", cmd_screener_cost))
-    app.add_handler(CommandHandler("screener_list", cmd_screener_list))
-    app.add_handler(CommandHandler("sites", cmd_sites))
-    app.add_handler(CommandHandler("watch", cmd_watch))
-    app.add_handler(CommandHandler("watchlist", cmd_watchlist))
-    app.add_handler(CommandHandler("unwatch", cmd_unwatch))
-    app.add_handler(CommandHandler("dart_alert", cmd_dart_alert))
-    app.add_handler(CommandHandler("paper", cmd_paper))
-    app.add_handler(CommandHandler("screen", cmd_screen))
-    app.add_handler(CommandHandler("screener", cmd_screener))
+    # 정적 명령 — 단일 레지스트리에서 일괄 등록 (대시보드 명령 콘솔·
+    # 텔레그램 메뉴와 같은 테이블, 사용자 2026-06-11). 개별 명령 주석은
+    # 레지스트리 참조.
+    for _cmd, (_fn, _desc) in _static_command_registry().items():
+        app.add_handler(CommandHandler(_cmd, _fn))
     # Per-domain shortcut commands — `/screener_bottleneck`, `/screener_
     # healthcare` 등. Telegram client 가 자동 hyperlink → 클릭으로 입력
     # prefill, 엔터 1회로 실행. 사용자 ref 예시 (/find_all / /papers_
     # guide 패턴) 와 동일 UX. 등록은 boot 시 1회, 새 도메인 추가 시
     # 봇 재시작 (auto-deploy 1분) 후 자동 노출.
     _register_dynamic_screener_handlers(app)
-    # Catch /compare typed in DM and redirect — actual compare runs only
-    # via on_channel_post inside the registered channel.
-    app.add_handler(CommandHandler("compare", cmd_compare_hint))
-    # /portfolio = 저장된 자산 요약 조회(읽기 전용). 업로드(ingest)는 봇 DM 이
-    # 아니라 'Noah의 RAG' 채널 watcher(bot.portfolio_watch)가 담당 — 봇 깨끗하게
-    # (사용자 정책 2026-06-04).
-    app.add_handler(CommandHandler("portfolio", cmd_portfolio))
     app.add_handler(CallbackQueryHandler(on_full_report, pattern=r"^full:"))
     app.add_handler(
         MessageHandler(filters.ChatType.CHANNEL & filters.TEXT, on_channel_post)
