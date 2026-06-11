@@ -158,13 +158,15 @@ if echo "$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)" \
     DEPLOY_CHANGED=1
 fi
 
-# Dashboard server-layer files — restart the dashboard service when these
-# change (must compute BEFORE git reset, since reset makes LOCAL==REMOTE).
-# chart_data 포함 — /api/chart 가 fetch_chart_payload 를 쓰므로 그 로직
-# 변경(예: 볼린저/MACD 추가)도 dashboard 재시작 필요 (2026-06-04).
+# Dashboard server-layer — restart when ANY bot/*.py changes (2026-06-11).
+# 옛 트리거(4파일 화이트리스트)는 on-demand 페이지가 import 하는 모듈
+# (finviz_client/us_pages/naver_*/earnings_calendar 등) 변경을 놓쳐 새
+# 코드가 서버 프로세스에 로드되지 않는 drift 발생 (#259/#262 신고저
+# fix 가 페이지에 반영 안 되던 실사례 — 실수기록 #11 클래스). 대시보드
+# 재시작은 stateless·수 초라 bot/*.py 전체로 넓혀 클래스 자체 제거.
 DASHBOARD_CHANGED=0
 if echo "$(git diff --name-only "$LOCAL" "$REMOTE" 2>/dev/null)" \
-        | grep -qE '^bot/(dashboard_server|dashboard|archive|chart_data)\.py$'; then
+        | grep -qE '^bot/[^/]+\.py$'; then
     DASHBOARD_CHANGED=1
 fi
 
