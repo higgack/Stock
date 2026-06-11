@@ -10799,7 +10799,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     · <a href="index.html">🦉 NOAH 종목분석</a>
   </div>
   <h1>DART 공시</h1>
-  <p class="sub">최근 주요 공시를 확인하세요.</p>
+  <p class="sub">출처 DART(OpenDART) · 1분 수집 · {datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")} 기준</p>
 
   <div class="df-controls">
     <div class="df-pills">{''.join(pills)}</div>

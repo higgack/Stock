@@ -384,6 +384,22 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
 
     month_kr = f"{year}년 {month}월"
 
+    # '실제 적용' 데이터 시각 — 활성 시장의 월 캐시 mtime (사용자 2026-06-11,
+    # 업종등락·신고저와 동일 'ts 기준' 표기). 캐시 부재 시 생략.
+    _ts = ""
+    try:
+        from datetime import datetime as _dtm
+        if market == "us":
+            _p = _CACHE_DIR / f"{year:04d}-{month:02d}.json"
+        else:
+            from bot.kind_ir_client import _CACHE as _KC
+            _p = _KC / f"{year:04d}-{month:02d}_v2.json"
+        if _p.exists():
+            _ts = _dtm.fromtimestamp(_p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        pass
+    _ts_sfx = f" · {_ts} 기준" if _ts else ""
+
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -401,7 +417,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
 </div>
 <div class="month-nav">{nav_html}</div>
 <div class="cal-grid">{grid}</div>
-<div style="margin-top:16px;font-size:11px;color:var(--muted)">한국 KIND IR일정(DART 폴백) · 미국 Finnhub 실적 · 장전=BMO / 장후=AMC</div>
+<div style="margin-top:16px;font-size:11px;color:var(--muted)">한국 KIND IR일정(DART 폴백) · 미국 Finnhub 실적 · 장전=BMO / 장후=AMC{_ts_sfx}</div>
 <script>
 (function(){{var h=parseInt(new Intl.DateTimeFormat('en-US',{{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';}})();
 (function(){{
