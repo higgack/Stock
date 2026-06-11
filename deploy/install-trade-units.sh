@@ -26,6 +26,7 @@ SUDOERS_DEST="/etc/sudoers.d/higgack-trade-services"
 # needs to run via `sudo -n` from trade-auto-update.sh.
 SUDOERS_LINES=(
     "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-dashboard"
+    "higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-beon-listener"
 )
 
 if [ ! -d "$DEPLOY" ]; then
