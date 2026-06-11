@@ -20,6 +20,13 @@ import requests
 
 log = logging.getLogger("bot.naver_sector")
 
+def _now_kst_label() -> str:
+    """명시적 KST 라벨 — 서버 로컬타임 의존 제거 (사용자 정책: 모든 표기
+    한국시간 기준, 2026-06-11)."""
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
+
+
 _BASE = "https://finance.naver.com/sise"
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "naver_sector"
 _CACHE_TTL_SEC = 4 * 60  # 리스크 없이 빠르게(1 HTTP/요청) — 사용자 2026-06-10
@@ -173,7 +180,7 @@ def fetch_sector_movers(top_n: int = 10) -> dict:
     downs = sorted([s for s in groups if s["pct"] < 0],
                    key=lambda x: x["pct"])[:top_n]
     out = {"up": ups, "down": downs,
-           "ts": time.strftime("%Y-%m-%d %H:%M", time.localtime())}
+           "ts": _now_kst_label()}
     _cache_write("upjong.json", out)
     return out
 
@@ -328,7 +335,7 @@ def fetch_themes() -> dict:
             themes.append(t)
     themes.sort(key=lambda x: (x.get("pct") is None, -(x.get("pct") or 0)))
     out = {"themes": themes,
-           "ts": time.strftime("%Y-%m-%d %H:%M", time.localtime()) if themes else ""}
+           "ts": _now_kst_label() if themes else ""}
     _cache_write("theme.json", out)
     return out
 
@@ -371,7 +378,7 @@ def fetch_upper_lower(limit: int = 50) -> dict:
         html = _get(f"{_BASE}/{page}")
         out[key] = _parse_stock_rows(html, limit) if html else []
     if out["upper"] or out["lower"]:
-        out["ts"] = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+        out["ts"] = _now_kst_label()
     _cache_write("upper_lower.json", out)
     return out
 

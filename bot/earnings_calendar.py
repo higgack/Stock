@@ -388,14 +388,17 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
     # 업종등락·신고저와 동일 'ts 기준' 표기). 캐시 부재 시 생략.
     _ts = ""
     try:
-        from datetime import datetime as _dtm
+        from datetime import datetime as _dtm, timezone as _tzn
         if market == "us":
             _p = _CACHE_DIR / f"{year:04d}-{month:02d}.json"
         else:
             from bot.kind_ir_client import _CACHE as _KC
             _p = _KC / f"{year:04d}-{month:02d}_v2.json"
         if _p.exists():
-            _ts = _dtm.fromtimestamp(_p.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+            # 명시적 KST — 서버 로컬타임 의존 제거 (모든 표기 한국시간)
+            _ts = _dtm.fromtimestamp(
+                _p.stat().st_mtime, tz=_tzn(timedelta(hours=9))
+            ).strftime("%Y-%m-%d %H:%M")
     except Exception:
         pass
     _ts_sfx = f" · {_ts} 기준" if _ts else ""
