@@ -538,9 +538,9 @@ def _ttm_yoy_chart(pts: list[dict]) -> str:
     )
 
 
-def _stat_row(points: list[dict]) -> str:
-    """<dl>: 최신월·수출액·YoY·ΔYoY·3M평균YoY·3M평균ΔYoY·12M MA·MA대비
-    (mirrors the reference card)."""
+def _stat_row(points: list[dict], lab: str = "수출액") -> str:
+    """<dl>: 최신월·수출/수입액·YoY·ΔYoY·3M평균·12M MA·MA대비
+    (mirrors the reference card). lab = 방향 라벨 (수입 카드 2026-06-13)."""
     latest = points[-1]
     exp, ma = latest["exp"], latest.get("ma12")
     ma_rel = ((exp - ma) / ma * 100.0) if ma else None
@@ -555,7 +555,7 @@ def _stat_row(points: list[dict]) -> str:
     return (
         "<dl class='ind-stats'>"
         f"<div><dt>최신월</dt><dd>{_html.escape(_dot_ym(latest['ym']))}{_prov}</dd></div>"
-        f"<div><dt>수출액</dt><dd>{_eokusd(exp)}</dd></div>"
+        f"<div><dt>{lab}</dt><dd>{_eokusd(exp)}</dd></div>"
         f"<div><dt>YoY</dt><dd class='{cls(latest.get('yoy'))}'>{_pct(latest.get('yoy'))}</dd></div>"
         f"<div><dt>ΔYoY</dt><dd class='{cls(latest.get('dyoy'))}'>{_pct(latest.get('dyoy'),'%p')}</dd></div>"
         f"<div><dt>3개월 평균 YoY</dt><dd class='{cls(m['yoy3'])}'>{_pct(m['yoy3'])}</dd></div>"
@@ -615,8 +615,8 @@ def _yoy_bar_svg(pts: list[dict]) -> str:
             f'class="ind-chart">{zero}{axes}{"".join(bars)}</svg>')
 
 
-def _raw_table(pts: list[dict]) -> str:
-    """월별 원자료 table (가로 스크롤): 수출액·YoY·ΔYoY·12M MA·MA대비."""
+def _raw_table(pts: list[dict], lab: str = "수출액") -> str:
+    """월별 원자료 table (가로 스크롤): 수출/수입액·YoY·ΔYoY·12M MA·MA대비."""
     months = [p["ym"] for p in pts]
     def row(label, fn, cls_fn=None):
         cells = []
@@ -630,7 +630,7 @@ def _raw_table(pts: list[dict]) -> str:
     head = "<tr><th>구분</th>" + "".join(
         f"<th>{_html.escape(_dot_ym(m))}</th>" for m in months) + "</tr>"
     body = (
-        row("수출액", lambda p: _eokusd(p["exp"]))
+        row(lab, lambda p: _eokusd(p["exp"]))
         + row("YoY", lambda p: _pct(p.get("yoy")), lambda p: cls(p.get("yoy")))
         + row("ΔYoY", lambda p: _pct(p.get("dyoy"), "%p"), lambda p: cls(p.get("dyoy")))
         + row("12M MA", lambda p: _eokusd(p.get("ma12")))
@@ -646,7 +646,7 @@ def _raw_table(pts: list[dict]) -> str:
             f"<thead>{head}</thead><tbody>{body}</tbody></table></div></div>")
 
 
-def _card_body(pts: list[dict]) -> str:
+def _card_body(pts: list[dict], lab: str = "수출액") -> str:
     """Reference layout — a flat 3-column row: meta | chart-1 | chart-2.
     Each chart cell holds a monthly panel and a ttm panel; the toggle
     swaps which is visible (chart-1: 수출액+MA ↔ TTM 수출액; chart-2:
@@ -665,7 +665,7 @@ def _card_body(pts: list[dict]) -> str:
         "<button type='button' class='ind-tg-btn' data-ind-view='ttm'>12M TTM</button>"
         "</div>"
     )
-    meta = f"<div class='ind-meta'>{toggle}{_stat_row(pts)}{summary}{note}</div>"
+    meta = f"<div class='ind-meta'>{toggle}{_stat_row(pts, lab)}{summary}{note}</div>"
 
     monthly = _monthly_chart(pts)
     bars = _yoy_bar_svg(pts)
@@ -685,14 +685,14 @@ def _card_body(pts: list[dict]) -> str:
                  f"<div class='ind-na'>{na_t}</div></div>")
         return f"<div class='ind-chart-cell'>{m}{t}</div>"
 
-    cell1 = cell("수출액 및 12개월 이동평균", monthly,
-                 "12개월 TTM 수출액", ttm,
+    cell1 = cell(f"{lab} 및 12개월 이동평균", monthly,
+                 f"12개월 TTM {lab}", ttm,
                  "TTM은 24개월 이상 데이터가 필요합니다.")
     cell2 = cell("YoY 성장률", bars,
                  "12개월 TTM YoY 성장률", ttm_yoy,
                  "TTM YoY는 24개월 이상 데이터가 필요합니다.")
     return (f"<div class='ind-row'>{meta}{cell1}{cell2}</div>"
-            f"{_raw_table(pts)}")
+            f"{_raw_table(pts, lab)}")
 
 
 def init_db(conn) -> None:
@@ -986,7 +986,8 @@ _import_mti_name: dict[str, str] = {}
 
 
 def render_subitem_html(by_mti: dict[str, dict],
-                        rate_min_usd: int = 200_000_000) -> str:
+                        rate_min_usd: int = 200_000_000,
+                        amt_th: str = "수출") -> str:
     """하위품목 TOP (MTI6 단위) — one level below industry, ranked by
     MoM(전월대비, 최근 모멘텀) so 기저효과에 휘둘리지 않음:
     📈급등률(MoM% 양수 상위 30, 수출 ≥하한) + 💵급증액(전월대비 Δ$ 상위
@@ -1052,7 +1053,7 @@ def render_subitem_html(by_mti: dict[str, dict],
         th = "전월대비" if metric == "mom" else "증감액"
         return (f"<details class='ind-sub-card' open><summary>{title} ({len(items)})</summary>"
                 f"<div class='ind-raw-scroll'><table class='ind-table'><thead>"
-                f"<tr><th>품목(MTI)</th><th>산업</th><th>수출</th><th>{th}</th></tr></thead>"
+                f"<tr><th>품목(MTI)</th><th>산업</th><th>{amt_th}</th><th>{th}</th></tr></thead>"
                 f"<tbody>{chip_rows(items, metric)}</tbody></table></div></details>")
 
     # TOP 10 풀 카드 (수출액 큰 순) — 산업 카드와 완전히 동일한 형식
@@ -1204,14 +1205,19 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
     series = industry_series(by_industry)
     if not series:
         return ""
-    # bucket industries by classification, each sorted by latest export desc
-    buckets: dict[str, list[tuple[str, list[dict]]]] = {g: [] for g, _ in _GROUPS}
-    for ind, pts in series.items():
-        if not pts:
-            continue
-        buckets.setdefault(classify(pts), []).append((ind, pts))
-    for g in buckets:
-        buckets[g].sort(key=lambda t: t[1][-1]["exp"], reverse=True)
+    imp_series = industry_series(by_import) if by_import else {}
+
+    def _bucketize(ser):
+        b: dict[str, list[tuple[str, list[dict]]]] = {g: [] for g, _ in _GROUPS}
+        for ind, pts in ser.items():
+            if not pts:
+                continue
+            b.setdefault(classify(pts), []).append((ind, pts))
+        for g in b:
+            b[g].sort(key=lambda t: t[1][-1]["exp"], reverse=True)
+        return b
+
+    buckets = _bucketize(series)
 
     out = []
     latest_ym = ""
@@ -1229,13 +1235,22 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
     # /최신월은 15일 후 등장'은 6/12 실관측 — 5월이 6/15 전에 이미 적재 —
     # 으로 정정.) 매일 폴링이 잠정→확정 정제를 자동 반영.
     status = _month_status_label(latest_ym)
+    # 수출/수입 방향 토글 (사용자 2026-06-13 '수입도 똑같이 하위품목까지')
+    dir_toggle = (
+        "<div class='ind-toggle ind-dir-toggle' role='group'>"
+        "<button type='button' class='ind-tg-btn ind-dir-btn is-active' "
+        "data-ind-dir='exp'>수출</button>"
+        "<button type='button' class='ind-tg-btn ind-dir-btn' "
+        "data-ind-dir='imp'>수입</button></div>"
+    ) if imp_series else ""
     out.append(
         "<div class='ind-topbar'>"
-        f"<div class='ind-note'>산업분류별 월 수출액 · YoY/ΔYoY/12M 이동평균 "
+        f"<div class='ind-note'>산업분류별 월 수출·수입액 · YoY/ΔYoY/12M 이동평균 "
         f"(HSK-MTI 연계표 기준) · 최신 <b>{_html.escape(latest_ym)}</b> "
         f"관세청 <b>{status}</b> · 매일 갱신 · "
         f"<b>금액 단위: 억 달러(1억$ = $100M)</b></div>"
-        "<div class='ind-legend'><span><i class='ind-lg-v'></i>수출액</span>"
+        f"{dir_toggle}"
+        "<div class='ind-legend'><span><i class='ind-lg-v'></i>금액</span>"
         "<span><i class='ind-lg-m'></i>12M MA</span></div>"
         "</div>"
     )
@@ -1243,26 +1258,38 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
     # 바로 밑에 별도 삽입(사용자 2026-06-12 순서), 아카이브는 기본 유지.
     if motie:
         out.append(motie_banner())
-    # A: summary board (분류·미분 칩 보드) — mirrors reference header
-    out.append(_summary_board(series))
-    out.append(_intra_views(series, by_mti))
-    for label, cls in _GROUPS:
-        items = buckets.get(label) or []
-        if not items:
-            continue
-        out.append(f"<h2 class='ind-group ind-group-{cls}'>{label} ({len(items)})</h2>")
-        out.append("<div class='ind-cards'>")
-        for ind, pts in items:
-            out.append(
-                "<section class='ind-card'>"
-                f"<div class='ind-head'><h3>{_html.escape(ind)}</h3>"
-                f"<span class='ind-badge ind-badge-{cls}'>{label}</span></div>"
-                + _card_body(pts)
-                + "</section>"
-            )
-        out.append("</div>")
-    # B: 하위품목 TOP (MTI6) — appended below the industry cards
-    if by_mti:
-        out.append(render_subitem_html(by_mti))
+    def _direction_block(ser, bks, mti, lab, amt_th, dir_key, hidden):
+        """한 방향(수출/수입)의 전체 섹션 — 보드·인트라·그룹 카드·하위품목.
+        수입 카드 = 수출과 동일 구조 (사용자 2026-06-13)."""
+        blk = [f"<div class='ind-dirset' data-dir='{dir_key}'"
+               + (" style='display:none'" if hidden else "") + ">"]
+        blk.append(_summary_board(ser))
+        blk.append(_intra_views(ser, mti))
+        for label, cls in _GROUPS:
+            items = bks.get(label) or []
+            if not items:
+                continue
+            blk.append(f"<h2 class='ind-group ind-group-{cls}'>{label} ({len(items)})</h2>")
+            blk.append("<div class='ind-cards'>")
+            for ind, pts in items:
+                blk.append(
+                    "<section class='ind-card'>"
+                    f"<div class='ind-head'><h3>{_html.escape(ind)}</h3>"
+                    f"<span class='ind-badge ind-badge-{cls}'>{label}</span></div>"
+                    + _card_body(pts, lab)
+                    + "</section>"
+                )
+            blk.append("</div>")
+        if mti:
+            blk.append(render_subitem_html(mti, amt_th=amt_th))
+        blk.append("</div>")
+        return "".join(blk)
+
+    out.append(_direction_block(series, buckets, by_mti,
+                                "수출액", "수출", "exp", hidden=False))
+    if imp_series:
+        out.append(_direction_block(imp_series, _bucketize(imp_series),
+                                    by_mti_import, "수입액", "수입",
+                                    "imp", hidden=True))
     return "".join(out)
 

@@ -1623,6 +1623,17 @@ document.addEventListener('click',function(e){
   if(tt)tt.hidden=(view!=='ttm');
 });
 
+// --- 산업트렌드 수출/수입 방향 토글 (2026-06-13 — 수입 카드 전체셋) ---
+document.addEventListener('click',function(e){
+  const b=e.target.closest('.ind-dir-btn');
+  if(!b)return;
+  document.querySelectorAll('.ind-dir-btn').forEach(x=>x.classList.toggle('is-active',x===b));
+  document.querySelectorAll('.ind-dirset').forEach(d=>{
+    d.style.display=(d.dataset.dir===b.dataset.indDir)?'':'none';
+  });
+  filterIndustryCards();   // 검색어 유지 — 새로 보인 방향에도 적용
+});
+
 // --- 잠정 모멘텀 정렬 토글 (절대액/모멘텀/|YoY|) — 4 테이블 동시 재정렬 ---
 document.addEventListener('click',function(e){
   const b=e.target.closest('.ind-prov-sort-btn');

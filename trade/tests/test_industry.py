@@ -437,3 +437,43 @@ class SubitemTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ImportDirectionCardsTests(unittest.TestCase):
+    """수입 카드 전체셋 (사용자 2026-06-13 '수입도 똑같은 식으로 하위품목
+    까지') — [수출|수입] 토글, 수입 블록 = 동일 구조(보드·카드·MTI 하위
+    품목), 기본 숨김, 라벨 수입액/수입."""
+
+    @staticmethod
+    def _data():
+        me = {f"2024-{m:02d}": 1_000_000_000 + m * 10_000_000 for m in range(1, 13)}
+        me.update({f"2025-{m:02d}": 1_200_000_000 + m * 10_000_000 for m in range(1, 13)})
+        mi = {k: int(v * 0.7) for k, v in me.items()}
+        mti_e = {"741000": {"months": dict(me), "industry": "자동차부품", "name": "전장부품"}}
+        mti_i = {"741000": {"months": dict(mi), "industry": "자동차부품", "name": "전장부품"}}
+        return {"자동차부품": me}, {"자동차부품": mi}, mti_e, mti_i
+
+    def test_dual_blocks_and_labels(self):
+        e, i, me, mi = self._data()
+        html = industry.render_industry_html(e, i, me, mi, motie=False)
+        self.assertIn("data-ind-dir='exp'", html)        # 토글
+        self.assertIn("data-ind-dir='imp'", html)
+        imp = html[html.index("data-dir='imp'"):]
+        self.assertIn("display:none", imp[:80])          # 기본 = 수출
+        self.assertIn("수입액", imp)                      # 카드 라벨
+        self.assertIn("<th>수입</th>", imp)               # MTI 하위품목 th
+        exp = html[html.index("data-dir='exp'"):html.index("data-dir='imp'")]
+        self.assertNotIn("수입액", exp)                   # 라벨 오염 0
+
+    def test_no_import_data_no_toggle(self):
+        e, _, me, _ = self._data()
+        html = industry.render_industry_html(e, None, me, None, motie=False)
+        self.assertNotIn("ind-dir-btn", html)            # 수입 없으면 토글 숨김
+        self.assertIn("data-dir='exp'", html)
+
+    def test_js_toggle_wired(self):
+        from pathlib import Path as _P
+        src = (_P(__file__).resolve().parents[2] / "trade" / "dashboard.py"
+               ).read_text(encoding="utf-8")
+        self.assertIn(".ind-dir-btn", src)
+        self.assertIn("dataset.indDir", src)
