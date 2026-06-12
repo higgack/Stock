@@ -1224,6 +1224,25 @@ async def _post_init(app: Application) -> None:
         log.info("bot username cached: @%s", _BOT_USERNAME)
     except Exception as e:
         log.warning("could not fetch bot username at startup: %s", e)
+    # 히트맵 첫 스냅샷 즉시 kick (사용자 2026-06-12 '반영 너무 느려') —
+    # 스냅샷이 비어 있을 때만 전 품목 스캔을 백그라운드 subprocess 로 1회
+    # 실행해, 배포 직후 '다음 타이머(하루 4회, 최대 ~6h)' 대기를 제거.
+    # 스냅샷이 한 번 채워지면 영구 no-op (평소 재시작 영향 0). 스캔은
+    # 자체 분당-호흡/콜버짓 가드 보유 — bot 폴링과 무관한 별도 프로세스.
+    try:
+        from trade import customs, customs_scan
+        with customs.session(customs.DEFAULT_DB) as conn:
+            customs_scan.init_db(conn)
+            empty = not customs_scan.load_heatmap(conn)
+        if empty:
+            import subprocess
+            import sys as _sys
+            subprocess.Popen(
+                [_sys.executable, "-m", "trade.scripts.scan_customs"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            log.info("heatmap snapshot empty — kicked one-off customs scan")
+    except Exception as e:
+        log.warning("heatmap startup kick failed (timer will cover): %s", e)
 
 
 def main() -> None:

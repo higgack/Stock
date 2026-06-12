@@ -710,7 +710,7 @@ def _compute_highlow_full_us() -> dict:
     수 분 — 백그라운드 전용(_highlow_full_us 가 동기 호출 금지)."""
     tks, names = _us_full_universe()
     return _compute_highlow_from(
-        tks, names, "highlow_full_us_v3.json",
+        tks, names, "highlow_full_us_v4.json",
         "전 미국 상장 산출(yfinance · 52주 고저 1% 근접)", "전미국")
 
 
@@ -827,9 +827,11 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         # 페이지 hang 0). 종목옆 시총 표시용 (사용자 2026-06-11). 억$ 단위.
         hits2 = [r["ticker"] for r in out["high"] + out["low"]]
         mcaps = _fetch_mcaps(hits2)
+        inds = _fetch_industries(hits2)   # 업종분류 (영구 캐시, 증분만 fetch)
         for r in out["high"] + out["low"]:
             mc = mcaps.get(r["ticker"])
             r["mcap"] = round(mc / 1e8, 2) if mc else None  # 억$
+            r["ind"] = inds.get(r["ticker"])
         log.info("finviz: %s highlow — scanned %d → high %d / low %d (mcap %d)",
                  tag, scanned, len(out["high"]), len(out["low"]), len(mcaps))
         if out["high"] or out["low"]:
@@ -868,6 +870,37 @@ def _fetch_mcaps(tickers: list) -> dict:
     except Exception as exc:
         log.warning("finviz: 시총 fetch 실패: %s", exc)
     return out
+
+
+def _fetch_industries(tickers: list) -> dict:
+    """hit 종목 업종분류 {ticker: industry} — yfinance .info 원문 그대로
+    (사용자 2026-06-12 '업종분류 추가, yfinance 기준 그대로'). 업종은
+    사실상 불변이라 **영구 디스크 캐시** — 첫 산출만 ~250콜(.info 무거움,
+    백그라운드 전용), 이후 신규 hit 만 증분. 실패 종목은 누락(graceful)."""
+    if not tickers:
+        return {}
+    cache = _cached("us_industry_cache.json", ttl=365 * 86400) or {}
+    missing = [t for t in tickers if t not in cache]
+    if missing:
+        try:
+            import yfinance as yf
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _one(tk: str):
+                try:
+                    info = yf.Ticker(tk).info or {}
+                    return tk, (info.get("industry") or info.get("sector"))
+                except Exception:
+                    return tk, None
+
+            with ThreadPoolExecutor(max_workers=12) as ex:
+                for tk, ind in ex.map(_one, missing):
+                    if ind:
+                        cache[tk] = str(ind)
+            _cache_write("us_industry_cache.json", cache)
+        except Exception as exc:
+            log.warning("finviz: 업종 fetch 실패: %s", exc)
+    return {t: cache[t] for t in tickers if t in cache}
 
 
 # ── 전 미국 상장 universe (nasdaqtrader 공식 심볼 디렉토리) ────────────────
@@ -990,10 +1023,10 @@ def _highlow_full_us() -> dict:
     금지). 신선 캐시(30분) 서빙 / stale(≤24h) 서빙+백그라운드 재계산 /
     캐시 부재 시 백그라운드 kick 후 빈 dict 반환 → 호출부가 S&P500
     티어로 폴스루 (다음 방문부터 전량 표시)."""
-    c = _cached("highlow_full_us_v3.json", ttl=_FALLBACK_TTL_SEC)
+    c = _cached("highlow_full_us_v4.json", ttl=_FALLBACK_TTL_SEC)
     if c is not None:
         return c
-    stale = _cached("highlow_full_us_v3.json", ttl=86400)
+    stale = _cached("highlow_full_us_v4.json", ttl=86400)
     _kick_full_us_refresh()
     return stale if stale is not None else {}
 
