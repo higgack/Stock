@@ -126,6 +126,71 @@ def _send_alert(body: str) -> bool:
     return customs_alert._send(chat, body)
 
 
+# 관세청 데이터 갱신 알림 (사용자 2026-06-13) — 채널 포워드 급증 알림과
+# 구분되는 별도 헤더('✅ 관세청 데이터 갱신'). 4회/일 스캔이지만 지문
+# (확정월+수출입 합+작년동월 합)이 바뀔 때만 발화 → 관세청 실제 갱신
+# (~월 3회: 11·21·월초) + YoY 베이스라인 최초 충전에만 1회, 그 외 무음.
+_NOTIFY_MARKER = Path.home() / ".trade" / ".scan_notified.json"
+
+
+def _scan_fingerprint(hm_rows: list[dict], new_entrants: list) -> dict:
+    """변경 감지 지문 — 순수. 작년동월 합(sey/siy)을 포함해 YoY 색이
+    처음 채워지는 순간도 '갱신'으로 잡는다(사용자가 기다리던 신호)."""
+    ref = max((r.get("ref_ym") or "" for r in hm_rows), default="")
+    return {
+        "ref_ym": ref,
+        "se": sum(int(r.get("exp") or 0) for r in hm_rows),
+        "si": sum(int(r.get("imp") or 0) for r in hm_rows),
+        "sey": sum(int(r.get("exp_py") or 0) for r in hm_rows),
+        "siy": sum(int(r.get("imp_py") or 0) for r in hm_rows),
+        "ne": len(new_entrants),
+    }
+
+
+def _fingerprint_changed(prev: dict, fp: dict) -> bool:
+    """확정월·수출입 합·작년동월 합 중 하나라도 다르면 변경(순수).
+    prev 비어있으면(최초/배포 후) True — 1회 갱신 알림 후 안정."""
+    if not prev:
+        return True
+    return any(prev.get(k) != fp.get(k)
+               for k in ("ref_ym", "se", "si", "sey", "siy"))
+
+
+def _maybe_notify_refresh(hm_rows: list[dict], leaves: dict,
+                          new_entrants: list, *, send=None) -> bool:
+    """변경 시에만 '✅ 관세청 데이터 갱신' 운영자 알림. send 주입(테스트)."""
+    import json as _json
+    send = send or _send_alert
+    fp = _scan_fingerprint(hm_rows, new_entrants)
+    try:
+        prev = _json.loads(_NOTIFY_MARKER.read_text(encoding="utf-8"))
+    except Exception:
+        prev = {}
+    if not _fingerprint_changed(prev, fp):
+        return False   # 무변경 — 4회/일 스캔 무음(스팸 차단)
+    try:
+        from trade.mti_map import industry_of
+        n_ind = len({iv for hs in leaves
+                     if (iv := industry_of(str(hs)))})
+    except Exception:
+        n_ind = 0
+    yoy_ready = fp["sey"] > 0 or fp["siy"] > 0
+    body = (
+        "✅ <b>관세청 데이터 갱신</b>\n"
+        f"최신 확정월 {fp['ref_ym']} · 산업 {n_ind}개\n"
+        "급등률·급증액·산업트렌드·히트맵 갱신"
+        + ("" if yoy_ready else " <i>(YoY 대기)</i>")
+        + f"\n🔍 신규 급증 {len(new_entrants)}건"
+    )
+    ok = send(body)
+    try:
+        _NOTIFY_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _NOTIFY_MARKER.write_text(_json.dumps(fp), encoding="utf-8")
+    except OSError:
+        pass
+    return ok
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
@@ -259,6 +324,12 @@ def main(argv: list[str] | None = None) -> int:
         customs_scan.store_heatmap(conn, hm_rows)
     log.info("stored live; archived=%d new_entrants=%d heatmap=%d",
              archived, len(new_entrants), len(hm_rows))
+
+    # 관세청 데이터 갱신 알림 (변경 감지 시 1회) — 급증 알림과 별도 헤더.
+    try:
+        _maybe_notify_refresh(hm_rows, leaves, new_entrants)
+    except Exception as exc:
+        log.warning("refresh-notify failed (non-fatal): %s", exc)
 
     if new_entrants:
         body = customs_scan.format_alert(new_entrants)
