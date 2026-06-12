@@ -4329,10 +4329,11 @@ class TestDartParseTargetAndSignificance:
         assert is_parse_target({"category": "기타",
                                 "report_nm": "타인에대한담보제공결정",
                                 "corp_code": "x"})
-        # 제목만이 정상 — IR·대량보유 외 지분·구조화 없는 자금조달·corp 부재
-        assert not is_parse_target({"category": "IR",
-                                    "report_nm": "기업설명회(IR)개최",
-                                    "corp_code": "x"})
+        # 제목만이 정상 — 대량보유 외 지분·구조화 없는 자금조달·corp 부재
+        # (IR 은 2026-06-13 부터 파싱 대상 — TestDartIRParsing 참조)
+        assert is_parse_target({"category": "IR",
+                                "report_nm": "기업설명회(IR)개최",
+                                "corp_code": "x"})
         # 임원·주요주주 소유상황 = elestock 구조화 보유 → 파싱 대상
         # (2026-06-12 '지분공시도 다 파싱' — 옛 대량보유-only 정책 폐기)
         assert is_parse_target({"category": "지분공시",
@@ -6132,3 +6133,44 @@ class TestProvZoneDivider:
         assert "10·20일 잠정" in src
         assert "prov_zone_div + prov_html + zone_div" in src   # 순서
         assert ".ind-zone-div.prov span{border-color:#34c759}" in src
+
+
+class TestDartIRParsing:
+    """기업설명회(IR) 상세 파싱 (사용자 2026-06-13 'IR 도 파싱해줘') —
+    옛 '제목만 캘린더 전담'에서 일시·장소·목적·대상·후원 추출. 캘린더
+    공급은 그대로(겸용)."""
+
+    EX = ("기업설명회(IR) 개최 "
+          "1. 일시 행사일 시간(현지시간) 시작일 종료일 시작시간 종료시간 "
+          "2026-06-16 2026-06-16 15:00 18:00 "
+          "2. 장소 서울 그랜드 하얏트 호텔 "
+          "3. 대상자 국내외 기관투자자 "
+          "4. 실시목적 '2026 BofA Korea Conference' 참가 "
+          "5. 실시방법 One-on-One, 소그룹미팅 "
+          "6. 주요내용 2026년 1분기 경영실적, 업황및 Q&A "
+          "7. 후원기관 BofA증권 8. 개최확정일 2026-06-12")
+
+    def test_ir_fields(self):
+        from bot.dart_feed import _ir_lines
+        L = _ir_lines(self.EX)
+        assert any(l.startswith("일시: 2026-06-16") and "15:00~18:00" in l
+                   for l in L), L
+        assert "장소: 서울 그랜드 하얏트 호텔" in L
+        assert any(l.startswith("대상:") and "기관투자자" in l for l in L)
+        assert any(l.startswith("후원:") and "BofA증권" in l for l in L)
+        assert len(L) >= 4
+
+    def test_single_day_no_range(self):
+        from bot.dart_feed import _ir_lines
+        L = _ir_lines("기업설명회(IR) 개최 1. 일시 행사일 시작일 종료일 "
+                      "2026-07-01 2026-07-01 10:00 11:00 2. 장소 여의도")
+        assert any(l == "일시: 2026-07-01 10:00~11:00" for l in L), L  # 같은날=범위X
+
+    def test_ir_is_parse_target_and_routed(self):
+        from bot.dart_feed import is_parse_target
+        assert is_parse_target({"category": "IR",
+                                "report_nm": "기업설명회(IR)개최",
+                                "corp_code": "x"})
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert "_extract_ir" in src and '"기업설명회" in t' in src
+        assert '"IR")' in src  # _PARSE_CATS 포함

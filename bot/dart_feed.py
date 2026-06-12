@@ -1418,6 +1418,66 @@ def _extract_custody(rcept_no: str, api_key: str) -> dict | None:
     return {"lines": parts}
 
 
+def _ir_lines(txt: str) -> list[str]:
+    """기업설명회(IR) 개최 원문 → 카드 lines (순수 — 단위테스트).
+
+    표준 양식(사용자 2026-06-13 '다 비슷할거야', 1예시): 1.일시(행사일
+    시작/종료 + 시간) 2.장소 3.대상자 4.실시목적 5.실시방법 6.주요내용
+    7.후원기관 8.개최확정일. 핵심만 발췌 — 일시(날짜·시간), 장소, 목적,
+    대상, 후원기관. 옛 정책(IR=제목만 캘린더 전담)에서 파싱 추가."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return re.sub(r"\s+", " ", m.group(1)).strip() if m else None
+
+    # 일시 — 시작일(+종료일 다르면 ~종료일) + 시작/종료 시간. 표 구조라
+    # '시작일 종료일 시작시간 종료시간 2026-06-16 2026-06-16 15:00 18:00'.
+    dates = re.findall(r"\d{4}-\d{1,2}-\d{1,2}", txt)
+    times = re.findall(r"\b(\d{1,2}:\d{2})\b", txt)
+    sd = _g(r"행사일[\s\S]{0,40}?(\d{4}-\d{1,2}-\d{1,2})") or (dates[0] if dates else None)
+    if sd:
+        # 종료일 = 시작일 다음 날짜가 다르면 범위
+        ed = None
+        try:
+            after = txt.split(sd, 1)[1]
+            m2 = re.search(r"(\d{4}-\d{1,2}-\d{1,2})", after)
+            if m2 and m2.group(1) != sd:
+                ed = m2.group(1)
+        except Exception:
+            ed = None
+        when = sd + (f"~{ed}" if ed else "")
+        if times:
+            when += f" {times[0]}" + (f"~{times[1]}" if len(times) > 1 else "")
+        parts.append(f"일시: {when}")
+    for lbl, key in (("장소", r"\d\s*\.\s*장\s*소"),
+                     ("대상", r"\d\s*\.\s*대상자?"),
+                     ("목적", r"실시\s*목적"),
+                     ("방법", r"실시\s*방법"),
+                     ("내용", r"주요\s*내용"),
+                     ("후원", r"후원\s*기관")):
+        v = _g(key + r"[^가-힣A-Za-z0-9'\"(]{0,8}?"
+               r"([가-힣A-Za-z0-9'\"()&.,·\-~ ]{2,60}?)\s*(?:\d{1,2}\s*\.|$)")
+        if v and v not in ("-", "해당없음", "해당사항없음"):
+            parts.append(f"{lbl}: {v[:60]}")
+    return parts
+
+
+def _extract_ir(rcept_no: str, api_key: str) -> dict | None:
+    """기업설명회(IR) — 원문 fetch 후 _ir_lines. 2미만 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts = _ir_lines(txt)
+    if len(parts) < 2:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
+
+
 def _inquiry_lines(txt: str) -> list[str]:
     """조회공시/풍문·보도 해명 원문 → 카드 lines (순수 — 단위테스트).
 
@@ -2567,6 +2627,10 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
             return doc
     elif "기타경영사항" in t:
         return _extract_misc_mgmt(rcept_no, api_key)
+    elif "기업설명회" in t or "IR개최" in t or "IR 개최" in t:
+        # IR 파싱 (사용자 2026-06-13) — 옛 '제목만 캘린더 전담' 정책에서
+        # 상세(일시·장소·목적·대상·후원) 추가. 캘린더 공급은 그대로.
+        return _extract_ir(rcept_no, api_key)
     # ── 리스크 9양식 (사용자 2026-06-12 '리스크 완료') ──
     elif "정지해제" in t or ("거래정지" in t and "해제" in t):
         # 주권매매거래정지해제 (미파싱-6) — 매매거래정지보다 먼저 (정지해제가
@@ -3030,7 +3094,8 @@ _PARSE_FORCE_KW = ("전환청구권", "주식분할", "주식병합", "액면분
 _PARSE_CATS = ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
                "자산양수도", "회사구조", "소송", "리스크",
                "조회공시",   # 2026-06-12 '이제 조회공시' — 요구/답변·해명 파싱
-               "배당")       # 2026-06-12 주주환원에서 분리 — 기존 배당 specs 파싱 유지
+               "배당",       # 2026-06-12 주주환원에서 분리 — 기존 배당 specs 파싱 유지
+               "IR")         # 2026-06-13 IR 상세 파싱 (일시·장소·목적·대상·후원)
 # 자금조달 중 무료 구조화 소스·원문 파서가 없는 유형(제목만이 정상).
 _FUNDING_NO_PARSER = ("전환가액", "교환청구권", "단기차입금", "금전대여", "채무보증")
 
