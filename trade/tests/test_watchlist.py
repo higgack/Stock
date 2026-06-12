@@ -33,6 +33,18 @@ class TestWatchlist(unittest.TestCase):
             self.assertTrue(watchlist.remove(conn, 100, "item", "라면"))
             self.assertFalse(watchlist.remove(conn, 100, "item", "라면"))
 
+    def test_remove_all_clears_only_this_user(self):
+        # /unwatch all — 본인 워치 전체 해제, 타인 보존, 멱등 (2026-06-12)
+        with watchlist.session(self.path) as conn:
+            watchlist.add(conn, 100, "item", "라면")
+            watchlist.add(conn, 100, "company", "삼양식품")
+            watchlist.add(conn, 100, "item", "MR-MUF")
+            watchlist.add(conn, 999, "item", "남의것")
+            self.assertEqual(watchlist.remove_all(conn, 100), 3)
+            self.assertEqual(watchlist.list_for(conn, 100), [])
+            self.assertEqual(len(watchlist.list_for(conn, 999)), 1)
+            self.assertEqual(watchlist.remove_all(conn, 100), 0)  # 멱등
+
     def test_list_for_returns_watches_sorted(self):
         with watchlist.session(self.path) as conn:
             watchlist.add(conn, 100, "company", "삼양식품")
