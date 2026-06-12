@@ -178,6 +178,22 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             "<div class='ind-zone-div'><span>📅 여기부터 <b>월간 산업트렌드</b>"
             " — 익월 1일 잠정 적재 → ~15일 확정 정제 · 매일 갱신</span></div>"
         ) if prov_html else ""
+        # 산업트렌드 CSV (사용자 2026-06-13 '매트릭스처럼 CSV') — 카드와
+        # 같은 집계(by_ind/by_imp)를 롱포맷으로 임베드, csv-btn 이 활성
+        # 탭에 따라 소비. (산업, 월, 수출$, 수입$) 전 시계열.
+        import json as _json
+        _months = sorted({m for d in (by_ind, by_imp or {})
+                          for ser in d.values() for m in ser})
+        _ind_rows = []
+        for _name in sorted(set(by_ind) | set(by_imp or {})):
+            _e = by_ind.get(_name, {})
+            _i = (by_imp or {}).get(_name, {})
+            for _m in _months:
+                if _m in _e or _m in _i:
+                    _ind_rows.append([_name, _m, _e.get(_m, 0), _i.get(_m, 0)])
+        ind_csv = ("<script type='application/json' id='ind-csv-data'>"
+                   + _json.dumps(_ind_rows, ensure_ascii=False)
+                   .replace("</", "<\\/") + "</script>")
         # 잠정 속보 존 구분선 (사용자 2026-06-13) — 월간과 동일 pill 형식,
         # 녹색(속보 톤). 위 = 🟢 10·20일 잠정, 아래 = 📅 월간.
         prov_zone_div = (
@@ -187,7 +203,7 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         ) if prov_html else ""
         # 순서 (사용자 2026-06-12): 구분선 → 📋 더 빠른 잠정치(motie) →
         # 🗄 월별 아카이브 → 인사이트 → 산업트렌드 본문(motie 제외).
-        return (prov_zone_div + prov_html + zone_div + industry.motie_banner() + archive_link
+        return (ind_csv + prov_zone_div + prov_html + zone_div + industry.motie_banner() + archive_link
                 + ins_html
                 + industry.render_industry_html(by_ind, by_imp, by_mti,
                                                 by_mti_imp, motie=False))
@@ -1821,7 +1837,30 @@ function downloadCSV(){
   document.body.appendChild(link);link.click();document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
-document.getElementById('csv-btn').addEventListener('click',downloadCSV);
+document.getElementById('csv-btn').addEventListener('click',function(){
+  // 활성 탭별 CSV (사용자 2026-06-13) — 산업트렌드/히트맵도 내보내기
+  const active=document.querySelector('.tab.active');
+  const tab=active?active.dataset.tab:'items';
+  if(tab==='industry'){ downloadIndustryCSV(); return; }
+  if(tab==='heatmap'&&window.hmCSV){ downloadRowsCSV(window.hmCSV(),'heatmap'); return; }
+  downloadCSV();
+});
+function downloadRowsCSV(rows,stem){
+  const csv='\ufeff'+rows.map(r=>r.map(v=>{
+    const s=String(v==null?'':v);
+    return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;
+  }).join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+  a.download=stem+'_'+kstTodayString()+'.csv';
+  document.body.appendChild(a);a.click();a.remove();
+}
+function downloadIndustryCSV(){
+  const el=document.getElementById('ind-csv-data');
+  if(!el){alert('산업 데이터가 아직 없습니다');return;}
+  const rows=[['산업','월','수출$','수입$']].concat(JSON.parse(el.textContent));
+  downloadRowsCSV(rows,'industry');
+}
 
 // --- automatic dark mode 19:00 - 07:00 KST ---
 // Computes KST hour from UTC + 9 so the page works regardless of the

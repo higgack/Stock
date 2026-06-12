@@ -57,3 +57,39 @@ class SearchAndLayoutTests(unittest.TestCase):
         # '}}' 는 정상 JS(객체리터럴+함수 인접 닫힘)에 존재 — 깨진
         # f-string 의 진짜 시그니처는 '{{' 리터럴 잔존.
         self.assertNotIn("{{", js)
+
+
+class HeatmapIndustryGroupAndCSVTests(unittest.TestCase):
+    """히트맵 [HS류|산업] 토글 (사용자 2026-06-13 '전기차는 자동차로' —
+    HS 류는 관세 분류라 산업 관점과 어긋남 → HSK-MTI 연계표 병행 집계)
+    + 산업트렌드·히트맵 CSV 내보내기."""
+
+    _ROWS = [
+        {"hs_code": "8473301000", "name": "디램 모듈", "ref_ym": "2026-05",
+         "exp": 300.0, "exp_pm": 280.0, "exp_py": 200.0,
+         "imp": 30.0, "imp_pm": 28.0, "imp_py": 20.0},
+    ]
+
+    def test_industries_tree_and_toggle(self):
+        from trade import heatmap
+        data = heatmap.build_heatmap_data(self._ROWS)
+        self.assertIn("industries", data)
+        self.assertTrue(data["industries"])         # 미매핑도 '기타(미매핑)' 그룹
+        html = heatmap.render_heatmap_html(self._ROWS)
+        self.assertIn('id="hm-grp"', html)          # [HS류|산업] 토글
+        self.assertIn("window.hmCSV", html)         # CSV 익스포트
+        self.assertNotIn("{{", html.split("<script>")[-1])
+
+    def test_csv_button_tab_dispatch(self):
+        from trade import dashboard as d, heatmap
+        hm = heatmap.render_heatmap_html(self._ROWS)
+        full = d._build_html([], [], {}, "", None, [], "", hm)
+        self.assertIn("downloadIndustryCSV", full)
+        self.assertIn("downloadRowsCSV", full)
+        self.assertIn("tab==='heatmap'&&window.hmCSV", full)
+
+    def test_industry_csv_payload_embedded(self):
+        src = open(__file__.rsplit("/tests/", 1)[0] + "/dashboard.py",
+                   encoding="utf-8").read()
+        self.assertIn("ind-csv-data", src)
+        self.assertIn("ind_csv + prov_zone_div", src)   # 임베드 배선
