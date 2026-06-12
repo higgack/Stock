@@ -635,6 +635,117 @@ _COLLATERAL_FIELDS = [
      r"([가-힣A-Za-z0-9()·, ]{2,40}?)\s*(?:\d\.|담보|$)", "text"),
 ]
 
+# ── 리스크 — 사용자 제공 9양식 기준 (2026-06-12 '리스크 완료').
+# 매매거래정지(중요공시 30분형 + 주권 정지형) / 해산사유 / 불성실공시법인
+# 지정·지정예고 / 기타시장안내(상폐 심의) + 회생절차(전용 파서, 아래).
+
+_SUSPENSION_FIELDS = [
+    # 정지 양식은 '3.정지기간' 압축 표기(점 뒤 공백 없음) — stop 은
+    # `\d{1,2}\s*\.` (공백 불요). 값에 점 없는 charset 이라 날짜 안전.
+    ("사유",
+     r"(?:매매거래)?정지\s*사유[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9()%,·ㆍ ]{2,60}?)\s*(?:\d{1,2}\s*\.|근거|정지기간|$)", "text"),
+    ("정지",
+     r"(?:매매거래정지|가\s*\.?\s*정지)\s*일시[^0-9]{0,20}?"
+     r"(\d{4}-\d{1,2}-\d{1,2}(?:\s*\d{1,2}:\d{2})?)", "text"),
+    # 해제/만료는 날짜('2026-06-12 11:36')뿐 아니라 자유 텍스트('법원의
+    # 결정 확인시까지'·'신주권 변경상장일 전일까지') 수용 (현대사료/DH오토).
+    # 값 charset 에 '.' 없음 → `\d\s*\.` stop 이 날짜를 안 가름.
+    ("해제·만료",
+     r"(?:해제일시|만료일시)[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9 :,()\-]{2,60}?)\s*(?:\d{1,2}\s*\.|근거|$)", "text"),
+    ("비고",
+     r"기타[^가-힣A-Za-z0-9]{0,10}?사유\s*[::]\s*"
+     r"([가-힣A-Za-z0-9 ,()]{2,30})", "text"),
+]
+
+_DISSOLUTION_FIELDS = [
+    # 번호 라벨 필수('1. 해산사유') — 문서 머리 '해산사유 발생' 제목이
+    # '발생'을 값으로 오캡처하는 것 차단
+    ("해산사유",
+     r"\d\s*\.\s*해산사유[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9 ()]{2,40}?)\s*(?:\d{1,2}\.\s|해산내용|$)", "text"),
+    ("내용",
+     r"해산내용[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9 ()]{2,50}?)\s*(?:\d{1,2}\.\s|$)", "text"),
+    ("발생일",
+     r"해산사유\s*발생일[^0-9]{0,20}?"
+     r"(\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}-\d{1,2}-\d{1,2})", "text"),
+]
+
+_UNFAITHFUL_FIELDS = [
+    ("유형",
+     r"불성실공시\s*유형[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9 ]{2,20}?)\s*(?:\d{1,2}\.\s|내\s*용|$)", "text"),
+    ("내용",
+     r"내\s*용[^가-힣A-Za-z0-9]{1,12}?"
+     r"([가-힣A-Za-z0-9()'’‘%.,· \-]{4,80}?)\s*(?:\d{1,2}\.\s|원공시일|지정|$)", "text"),
+    ("벌점", r"부과\s*벌점[^0-9]{0,16}?([\d.]+)", "text"),
+    ("누계벌점", r"누계\s*벌점[^0-9]{0,12}?([\d.]+)", "text"),
+    ("제재금",
+     r"공시위반\s*제재금\s*\(?원?\)?[^0-9]{0,12}?([\d,]{4,})", "won"),
+    ("지정일", r"지정\s*[ㆍ·]?\s*부과일자[^0-9]{0,16}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
+    ("지정예고일", r"지정\s*예고일[^0-9]{0,12}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
+    ("결정시한", r"결정\s*시한[^0-9]{0,12}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
+]
+
+_MARKET_NOTICE_FIELDS = [
+    # 자유 서술 박스 — '제목 :' 행 + 결론 문장(상폐 의결/결정 예정)만 발췌
+    ("제목",
+     r"제\s*목\s*[::]?\s*([가-힣A-Za-z0-9()㈜·ㆍ,.\- ]{6,70}?)\s*"
+     r"(?:['‘’]\s*\d{2}\s*\.|\d{2}\.\d{2}\.\d{2}|$)", "text"),
+    ("결론",
+     r"([가-힣A-Za-z0-9()㈜'‘’.,%· ]{6,80}?"
+     r"(?:상장폐지로\s*의결하였습니다|여부를\s*결정할\s*예정임을\s*알려드립니다"
+     r"|결정할\s*예정입니다))", "text"),
+]
+
+
+def _rehab_lines(txt: str) -> list[str]:
+    """회생절차 개시결정/신청 원문 → 카드 lines (순수 — 단위테스트).
+
+    사건번호·결정일·법원·관리인 + 회생계획안 제출기한. 제출기한은
+    '회생계획안' 앵커 + **마지막 출현** 사용 — 정정공시는 래퍼(정정전
+    stale 값)가 본문보다 앞이라 첫 출현이 옛 값 (수원 2025회합196,
+    2026-06-10 정정 예시)."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+    m = re.search(r"사건\s*번호[^0-9]{0,16}?"
+                  r"(\d{4}\s*[가-힣]{1,4}\s*\d{1,8}(?:\s*회생)?)", txt)
+    if m:
+        parts.append(f"사건번호: {m.group(1).strip()}")
+    m = re.search(r"결정일자[^0-9]{0,12}?(\d{4}-\d{1,2}-\d{1,2})", txt)
+    if m:
+        parts.append(f"결정일: {m.group(1)}")
+    m = re.search(r"관할\s*법원[^가-힣]{0,12}?"
+                  r"([가-힣 ]{2,20}?법원(?:\s*[가-힣]{1,6}지원)?)", txt)
+    if m:
+        parts.append(f"관할법원: {m.group(1).strip()}")
+    m = re.search(r"관리인\s*성명\s*(?:\([^)]{0,20}\))?\s*"
+                  r"([가-힣A-Za-z()· ]{2,30}?)\s*(?:\d{1,2}\.\s|$)", txt)
+    if m:
+        parts.append(f"관리인: {m.group(1).strip()}")
+    ds = re.findall(r"회생계획안의?\s*제출기간[을은]?[^0-9]{0,8}?"
+                    r"(\d{4}\s*[.\-/]\s*\d{1,2}\s*[.\-/]\s*\d{1,2})", txt)
+    if ds:
+        parts.append(f"회생계획안 제출기한: {ds[-1].strip()}")
+    return parts
+
+
+def _parse_rehab(rcept_no: str, api_key: str) -> dict | None:
+    """회생절차 — 원문 fetch 후 _rehab_lines. 필드 2미만이면 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts = _rehab_lines(txt)
+    if len(parts) < 2:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
+
+
 # ── 소송 — 사용자 제공 5양식 기준 (2026-06-12 '소송 5개 우선, 예시로').
 # 표준 양식 2종: 제기·신청(경영권 분쟁 등) / 판결·결정(일정금액 이상의
 # 청구). ㆍ(U+318D)·· 변형 허용. min_fields=2.
@@ -1503,6 +1614,31 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
             return doc
     elif "기타경영사항" in t:
         return _extract_misc_mgmt(rcept_no, api_key)
+    # ── 리스크 9양식 (사용자 2026-06-12 '리스크 완료') ──
+    elif "매매거래정지" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _SUSPENSION_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "해산사유" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _DISSOLUTION_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "불성실공시" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _UNFAITHFUL_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "회생절차" in t:
+        doc = _parse_rehab(rcept_no, api_key)
+        if doc:
+            return doc
+    elif "기타시장안내" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _MARKET_NOTICE_FIELDS, min_fields=1)
+        if doc:
+            return doc
 
     specs: list[tuple[str, list]] = []
     if "영업(잠정)실적" in t or "매출액또는손익구조" in t:
@@ -1937,10 +2073,13 @@ def significance(item: dict, shares_outstanding: float | None = None) -> str | N
     detail = item.get("detail") or []
     correction = "정정" in rn   # [기재정정] 등
 
-    # 7 — 상장폐지 (최우선: 생존 이벤트)
+    # 7 — 상장폐지 (최우선: 생존 이벤트). 발화 라인 화이트리스트 —
+    # 제목/사건(소송·자율공시) + 사유/해제·만료/결론(매매거래정지·
+    # 기타시장안내) — '비고: 상장폐지 아님' 류 자유 서술 오발 차단.
     if "상장폐지" in rn or any(
             "상장폐지" in str(dl) for dl in detail
-            if str(dl).startswith(("제목:", "사건:"))):
+            if str(dl).startswith(("제목:", "사건:", "사유:",
+                                   "해제·만료:", "결론:"))):
         return "상장폐지 관련"
     # 1
     if "매출액또는손익구조" in rn and not correction:

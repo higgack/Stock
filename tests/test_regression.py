@@ -4880,6 +4880,121 @@ class TestDartLawsuitParsing:
         assert '"기타경영사항" in rn' in dsrc
 
 
+class TestDartRiskParsing:
+    """리스크 파싱 (사용자 2026-06-12 '리스크 완료', 9예시) — 매매거래정지
+    2형 / 해산사유 / 불성실공시 지정·예고 / 기타시장안내 / 회생절차."""
+
+    @staticmethod
+    def _run(fields, txt):
+        import re
+        out = {}
+        for lbl, pat, kind in fields:
+            m = re.search(pat, txt)
+            if m:
+                out[lbl] = m.group(1).strip()
+        return out
+
+    def test_suspension_important_disclosure_form(self):
+        # 중요내용공시 30분 정지 (엠앤씨솔루션) — 날짜+시각
+        from bot.dart_feed import _SUSPENSION_FIELDS
+        txt = ("3. 매매거래정지 일시 2026-06-12 11:06 4. 매매거래정지 해제일시 "
+               "2026-06-12 11:36 5. 매매거래정지 사유 무상증자(10%이상) 6. 근거")
+        o = self._run(_SUSPENSION_FIELDS, txt)
+        assert o["정지"] == "2026-06-12 11:06"
+        assert o["해제·만료"] == "2026-06-12 11:36"
+        assert o["사유"] == "무상증자(10%이상)"
+
+    def test_suspension_freetext_expiry_and_compact_numbering(self):
+        # 주권매매거래정지 — '3.정지기간' 압축 표기 + 만료=자유 텍스트
+        from bot.dart_feed import _SUSPENSION_FIELDS, significance
+        txt = ("주권매매거래정지 1.대상종목 현대사료(주) 보통주 2.정지사유 투자자 보호 "
+               "3.정지기간 가.정지일시 2026-06-15 - 나.만료일시 상장폐지결정 등 "
+               "효력정지 가처분신청에 대한 법원의 결정 확인시까지 4.근거규정 코스닥시장업무규정")
+        o = self._run(_SUSPENSION_FIELDS, txt)
+        assert o["사유"] == "투자자 보호"
+        assert o["해제·만료"].endswith("법원의 결정 확인시까지")
+        # 🔥 상장폐지 — 만료 라인으로 발화 (규칙 7 화이트리스트 확장)
+        assert significance({"report_nm": "주권매매거래정지", "category": "리스크",
+                             "detail": [f"사유: {o['사유']}",
+                                        f"해제·만료: {o['해제·만료']}"]}
+                            ) == "상장폐지 관련"
+
+    def test_suspension_merge_variant_with_note(self):
+        from bot.dart_feed import _SUSPENSION_FIELDS
+        txt = ("1.대상종목 (주)디에이치오토웨어 보통주 2.정지사유 주식의 병합, 분할 등 "
+               "전자등록 변경, 말소 3.정지기간 가.정지일시 2026-06-15 - "
+               "나.만료일시 신주권 변경상장일 전일까지 4.근거규정 코스닥 5.기타 사유 : 주식병합")
+        o = self._run(_SUSPENSION_FIELDS, txt)
+        assert o["해제·만료"] == "신주권 변경상장일 전일까지"
+        assert o["비고"] == "주식병합"
+
+    def test_dissolution_form(self):
+        # 해산사유 발생 — 문서 제목 '해산사유 발생'의 '발생' 오캡처 차단 +
+        # 한글 날짜
+        from bot.dart_feed import _DISSOLUTION_FIELDS
+        txt = ("해산사유 발생 1. 해산사유 유동화사채의 상환 완료 2. 해산내용 "
+               "회사의 정관에 의한 해산사유 발생 3. 해산사유발생일(결정일) 2026년 04월 28일")
+        o = self._run(_DISSOLUTION_FIELDS, txt)
+        assert o["해산사유"] == "유동화사채의 상환 완료"
+        assert o["발생일"] == "2026년 04월 28일"
+
+    def test_unfaithful_designation_and_advance_notice(self):
+        from bot.dart_feed import _UNFAITHFUL_FIELDS
+        d = self._run(_UNFAITHFUL_FIELDS, (
+            "2. 불성실공시 유형 공시변경 3. 불성실공시 내용 유상증자결정('26.03.26) "
+            "내용 중 발행주식수 및 발행금액의 20% 이상 변경('26.04.17) "
+            "4. 지정ㆍ부과일자 2026-06-15 5. 부과벌점 현황 부과벌점 0 기 부과벌점 0 "
+            "누계벌점 0 6. 공시위반제재금(원) 8,000,000 7. 공시책임자"))
+        assert d["유형"] == "공시변경" and d["제재금"] == "8,000,000"
+        assert d["벌점"] == "0" and d["지정일"] == "2026-06-15"
+        n = self._run(_UNFAITHFUL_FIELDS, (
+            "불성실공시 유형 공시번복 내용 유상증자결정(제3자배정 ) 철회 원공시일 "
+            "2025-04-15 공시일 2026-05-12 지정예고일 2026-06-11 "
+            "2. 불성실공시법인지정여부 결정시한 2026-07-06 "
+            "3. 최근 1년간 불성실공시법인 부과벌점 5.0"))
+        assert n["유형"] == "공시번복" and n["벌점"] == "5.0"
+        assert n["지정예고일"] == "2026-06-11" and n["결정시한"] == "2026-07-06"
+
+    def test_market_notice_delisting_conclusion(self):
+        from bot.dart_feed import _MARKET_NOTICE_FIELDS, significance
+        txt = ("기타시장안내 제목 :현대사료(주)에 대한 코스닥시장위원회 개최 결과 및 "
+               "상장폐지 결정 안내 '25.08.04 코스닥시장위원회는 상장폐지를 결정한 바 있으며, "
+               "동사 주권에 대해 상장폐지 여부를 심의한 결과, 상장폐지로 의결하였습니다.")
+        o = self._run(_MARKET_NOTICE_FIELDS, txt)
+        assert o["제목"].startswith("현대사료(주)")
+        assert "상장폐지로 의결하였습니다" in o["결론"]
+        assert significance({"report_nm": "기타시장안내", "category": "리스크",
+                             "detail": [f"결론: {o['결론']}"]}) == "상장폐지 관련"
+
+    def test_rehab_lines_last_deadline_wins(self):
+        # 회생절차 — 정정 래퍼(정정전 stale)가 앞이라 제출기한은 마지막 출현
+        # + 목록/신고기간을 제출기한으로 오캡처 안 함(회생계획안 앵커)
+        from bot.dart_feed import _rehab_lines
+        txt = ("정정신고(보고) 정정일자 2026-06-10 3. 정정사유 회생계획안 제출기간 연장 "
+               "[결정문 내용] 6. 회생계획안의 제출기간을 2026. 6. 16.까지로 한다. "
+               "[결정문 내용] 6. 회생계획안의 제출기간을 2026. 7. 14.까지로 한다. "
+               "회생절차 개시결정 1. 사건번호 2025회합196 회생 2. 결정일자 2025-09-30 "
+               "3. 관할법원 수원회생법원 5. 관리인 성명(회사와의 관계 ) 백서현(대표이사) "
+               "6. 확인(결정서접수 )일자 2025-09-30 "
+               "3. 회생채권자, 회생담보권자 및 주주의 목록 제출기간을 2025. 9. 30.부터 "
+               "2025. 11. 11.까지로 한다. 6. 회생계획안의 제출기간을 2026. 7. 14.까지로 한다.")
+        lines = _rehab_lines(txt)
+        assert any(l.startswith("사건번호: 2025회합196") for l in lines)
+        assert "관할법원: 수원회생법원" in lines
+        assert any(l.startswith("관리인: 백서현") for l in lines)
+        fin = next(l for l in lines if l.startswith("회생계획안 제출기한"))
+        assert "7. 14" in fin and "6. 16" not in fin and "9. 30" not in fin
+
+    def test_risk_titles_classified(self):
+        # 9양식 제목 전부 리스크 분류 (드랍 0) — 분류기 회귀 가드
+        from bot.dart_feed import _classify_report
+        for t in ("매매거래정지및정지해제(중요내용공시)", "주권매매거래정지",
+                  "해산사유발생", "불성실공시법인지정", "불성실공시법인지정예고",
+                  "회생절차개시결정", "[기재정정]회생절차개시결정",
+                  "기타시장안내(상장폐지 여부 결정 안내)"):
+            assert _classify_report(t) == "리스크", t
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""
