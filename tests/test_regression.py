@@ -5965,9 +5965,10 @@ class TestDartDividendCategoryAndCapitalRaise:
 
     def test_pill_order_user_spec(self):
         from bot.dashboard import _DART_CATEGORIES
+        # 배당↔지분공시 교환 (사용자 2026-06-12 2차)
         assert _DART_CATEGORIES == [
             "전체", "실적", "계약", "신규시설투자", "주주환원", "자금조달",
-            "배당", "지분공시", "리스크", "소송", "회사구조", "자산양수도",
+            "지분공시", "배당", "리스크", "소송", "회사구조", "자산양수도",
             "조회공시", "IR"]
 
     def test_v5_reclass_wiring_and_parse_cats(self):
