@@ -185,3 +185,87 @@ def companies_for(name: str) -> list[str]:
         if any(k in key for k in kws):
             return list(cos)
     return []
+
+
+# ── 채널 알림(BeOn) 기반 관련기업 — store.db 라이브 조인 (사용자
+# 2026-06-13 '다른 채널 매트릭스 참조'). 채널이 품목→기업을 이미
+# 큐레이션해 두므로(우리 trade-bot 이 수집·파싱하는 alerts 테이블),
+# MTI 품목명이 알림 item 텍스트에 들어가면 그 알림의 종목들을 합집합.
+# 정적 _MAP(대표주 수동)과 별개 라인으로 표기 — 출처 구분. ──────────────
+
+
+def _store_db_path():
+    import os
+    from pathlib import Path
+    return Path(os.environ.get("TRADE_DATA_DIR")
+                or str(Path.home() / ".trade")) / "store.db"
+
+
+def load_channel_pairs(db_path=None) -> list[tuple[str, list[str]]]:
+    """store.db alerts → [(정규화 item 텍스트, 종목 리스트)] 1회 로드.
+    DB 부재/실패 → [] (graceful — 채널 라인만 생략). 비상장 메타 토큰
+    제외 ('파미=비상장' 류 stocks_meta)."""
+    import json as _json
+    import sqlite3
+    from pathlib import Path
+    p = Path(db_path) if db_path else _store_db_path()
+    if not p.exists():
+        return []
+    out: list[tuple[str, list[str]]] = []
+    try:
+        conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        try:
+            cur = conn.execute("SELECT item, stocks, stocks_meta FROM alerts")
+            for item, stocks_j, meta_j in cur.fetchall():
+                if not item:
+                    continue
+                try:
+                    stocks = _json.loads(stocks_j or "[]")
+                    meta = _json.loads(meta_j or "{}")
+                except Exception:
+                    continue
+                toks = [s.strip() for s in stocks if isinstance(s, str)]
+                toks = [s for s in toks
+                        if s and len(s) <= 14
+                        and "비상장" not in str(meta.get(s, ""))]
+                if toks:
+                    out.append((str(item).replace(" ", "").lower(), toks))
+        finally:
+            conn.close()
+    except Exception:
+        return []
+    return out
+
+
+# 2글자 키 화이트리스트 — 짧은 키는 부분일치 함정이 많아(실 CSV 감사
+# 2026-06-13: '대구'(어류)가 지역명에, '장갑'이 장갑차에, '전구'가
+# 전구체에, '진주'가 진주광택안료에 매칭) 검증된 품목명만 허용.
+_CH_SHORT_OK = frozenset({
+    "d램", "경유", "등유", "원유", "중유", "흑연", "벤젠", "황산", "안료",
+    "밸브", "센서", "펄프", "사료", "소주", "맥주", "면류", "커피", "동박",
+    "강관", "형강", "철근", "아연", "비료", "의류", "신발", "담배", "설탕",
+    "참치", "김치", "비누", "치약", "백금", "니켈", "음료",
+})
+
+
+def channel_companies_for(name: str, pairs: list[tuple[str, list[str]]]) -> list[str]:
+    """품목명 ⊂ 알림 item 텍스트 조인 → 종목 합집합 (순서 보존 dedupe,
+    캡 8). 2자 키는 _CH_SHORT_OK 화이트리스트만(짧은 키 부분일치 함정),
+    1자/일반어 제외. 품목명과 같은 토큰 제외 (채널의 item/종목 도치 행
+    방어). 순수 함수 — 단위테스트."""
+    key = (name or "").replace(" ", "").lower()
+    if (not key or len(key) < 2 or key in ("기타", "부품", "모듈")
+            or (len(key) == 2 and key not in _CH_SHORT_OK)
+            or any(d in key for d in _DENY)):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item, stocks in pairs:
+        if key not in item:
+            continue
+        for s in stocks:
+            k = s.replace(" ", "").lower()
+            if k != key and k not in seen:
+                seen.add(k)
+                out.append(s)
+    return out[:8]
