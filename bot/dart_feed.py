@@ -93,6 +93,12 @@ def _classify_report(report_nm: str) -> str:
         return "계약"
     if any(k in t for k in ("생산재개", "화재발생")):  # 생산중단은 chart KW
         return "리스크"
+    # 유형자산 양수/양도/처분/취득(+철회) = 자산양수도 (사용자 2026-06-13
+    # '유형자산처분이 왜 신규시설투자' — chart_events _CAPEX_KW 의
+    # '유형자산'이 capex 로 흘러들던 것 차단). 신규시설투자는 전용
+    # 양식('신규시설투자등')만.
+    if "유형자산" in t and "신규시설투자" not in t:
+        return "자산양수도"
     # 배당 분리 (사용자 2026-06-12 '배당은 주주환원에서 빼서 따로') —
     # chart_events shareholder KW('배당' 포함)보다 먼저. 조회공시('배당설'
     # 답변 류)는 위에서 이미 분기돼 충돌 없음.
@@ -3940,6 +3946,45 @@ def clear_doc_fail_once_v6() -> int | None:
     except OSError:
         pass
     return n
+
+
+_RECLASS_MARKER_V7 = _ARCHIVE_DIR.parent / ".dart_feed_reclassified_v7"
+
+
+def reclassify_v7_once_if_needed() -> dict | None:
+    """유형자산→자산양수도 분류 fix(2026-06-13) 소급 — v5 와 동일 로컬
+    재분류 패스(API 0·수 초), marker 만 분리."""
+    if _RECLASS_MARKER_V7.exists():
+        return None
+    stats = {"reclassified": 0, "upgraded": 0}
+    today = datetime.now(_KST).date()
+    for i in range(60):
+        d = today - timedelta(days=i)
+        items = load_archive(d)
+        if not items:
+            continue
+        changed = False
+        for it in items:
+            new_cat = _classify_report(it.get("report_nm", ""))
+            if new_cat != "기타" and new_cat != it.get("category"):
+                it["category"] = new_cat
+                stats["reclassified"] += 1
+                changed = True
+            before = it.get("category")
+            _upgrade_category(it)
+            if it.get("category") != before:
+                stats["upgraded"] += 1
+                changed = True
+        if changed:
+            save_archive(d, items)
+    try:
+        _RECLASS_MARKER_V7.parent.mkdir(parents=True, exist_ok=True)
+        _RECLASS_MARKER_V7.write_text(datetime.now(_KST).isoformat())
+    except OSError:
+        pass
+    log.info("dart_feed v7 재분류: 제목 %d · 본문승격 %d",
+             stats["reclassified"], stats["upgraded"])
+    return stats
 
 
 def backfill_v4_status() -> str:

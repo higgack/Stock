@@ -3445,6 +3445,17 @@ async def _on_startup(application) -> None:
                              st5.get("reclassified", 0), st5.get("upgraded", 0))
             except Exception as exc:
                 log.warning("startup: DART reclassify v5 failed: %s", exc)
+            # v7 — 유형자산→자산양수도 분류 fix 소급 (API 0·수 초)
+            try:
+                from bot.dart_feed import reclassify_v7_once_if_needed
+                st7 = reclassify_v7_once_if_needed()
+                if st7:
+                    from bot.dashboard import regenerate_dart_feed_index as _rg7
+                    _rg7()
+                    log.info("startup: DART 재분류 v7 — 제목 %d · 본문승격 %d",
+                             st7.get("reclassified", 0), st7.get("upgraded", 0))
+            except Exception as exc:
+                log.warning("startup: DART reclassify v7 failed: %s", exc)
             # v6 — 쿨다운 고착 미파싱 1회 해제 (generic 폴백과 함께 재시도)
             try:
                 from bot.dart_feed import clear_doc_fail_once_v6
