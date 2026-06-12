@@ -37,13 +37,15 @@ class RankingTests(unittest.TestCase):
     def test_rate_is_increases_above_threshold(self):
         # rate_min_usd=0 isolates the pct/threshold logic from the value floor.
         ranked = cs.rank(cs.build_series(self.rows), top_n=30,
-                         pct_threshold=30, rate_min_usd=0)
+                         pct_threshold=30, rate_min_usd=0,
+                         rate_prev_min_usd=0)
         codes = {m["hs_code"] for m in ranked[cs.SECTION_RATE]}
         # +30 and +80 qualify; +5, -50, prev0 do not
         self.assertEqual(codes, {"1111111111", "3333333333"})
 
     def test_rate_sorted_by_pct_desc(self):
-        ranked = cs.rank(cs.build_series(self.rows), rate_min_usd=0)
+        ranked = cs.rank(cs.build_series(self.rows), rate_min_usd=0,
+                         rate_prev_min_usd=0)
         self.assertEqual(ranked[cs.SECTION_RATE][0]["hs_code"], "3333333333")
 
     def test_rate_floor_excludes_small_lines(self):
@@ -378,3 +380,47 @@ class CoverageGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RatePrevFloorTest(unittest.TestCase):
+    """low-base % 폭발 컷 (2026-06-12) — prev 가 사실상 0인 행(나프타
+    $587→$75M, +12,782,507% 실사례)은 급등률에서 제외, 급증액엔 유지."""
+
+    def _rows(self):
+        return [
+            # low-base: prev $500K → curr $75M (% 폭발 케이스)
+            {"hs_code": "2710124000", "stat_kor": "나프타",
+             "year_month": "2026-04", "exp_dlr": 500_000, "imp_dlr": 0},
+            {"hs_code": "2710124000", "stat_kor": "나프타",
+             "year_month": "2026-05", "exp_dlr": 75_000_000, "imp_dlr": 0},
+            # 정상 급등: prev $27M → curr $59M (+118%)
+            {"hs_code": "7207121000", "stat_kor": "슬래브",
+             "year_month": "2026-04", "exp_dlr": 27_000_000, "imp_dlr": 0},
+            {"hs_code": "7207121000", "stat_kor": "슬래브",
+             "year_month": "2026-05", "exp_dlr": 59_000_000, "imp_dlr": 0},
+        ]
+
+    def test_low_base_excluded_from_rate_kept_in_amount(self):
+        ranked = cs.rank(cs.build_series(self._rows()), rate_min_usd=50_000_000)
+        rate_codes = {m["hs_code"] for m in ranked[cs.SECTION_RATE]}
+        amount_codes = {m["hs_code"] for m in ranked[cs.SECTION_AMOUNT]}
+        self.assertNotIn("2710124000", rate_codes)   # % 랭킹에서 제외
+        self.assertIn("7207121000", rate_codes)       # 정상 급등은 유지
+        self.assertIn("2710124000", amount_codes)     # Δ$ 랭킹엔 그대로
+
+    def test_prev_floor_tunable(self):
+        # 플로어 0이면 기존 동작 (low-base 도 % 랭킹 포함)
+        ranked = cs.rank(cs.build_series(self._rows()),
+                         rate_min_usd=50_000_000, rate_prev_min_usd=0)
+        rate_codes = {m["hs_code"] for m in ranked[cs.SECTION_RATE]}
+        self.assertIn("2710124000", rate_codes)
+
+
+class NextAnnouncementScheduleTest(unittest.TestCase):
+    """다음 발표 일정에 '이달 15일 = 전월 전체 확정' 후보 존재 (2026-06-12
+    — 6/12 시점 다음 발표가 6/15 가 아닌 6/21 로 표시되던 버그의 소스 가드)."""
+
+    def test_prev_month_final_candidate_present(self):
+        src = open("trade/dashboard.py", encoding="utf-8").read()
+        self.assertIn("pm+'월 전체 확정'", src)
+        self.assertIn("'-15', kind:pm+", src.replace('"', "'"))
