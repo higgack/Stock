@@ -90,6 +90,13 @@ def remove(conn: sqlite3.Connection, user_id: int, kind: str, pattern: str) -> b
     return cur.rowcount > 0
 
 
+def remove_all(conn: sqlite3.Connection, user_id: int) -> int:
+    """Delete every watch for this user. Returns the number removed
+    (사용자 2026-06-12 '내가 건 알람들 다 지워줘' — /unwatch all 일괄 해제)."""
+    cur = conn.execute("DELETE FROM watches WHERE user_id = ?", (user_id,))
+    return cur.rowcount
+
+
 def list_for(conn: sqlite3.Connection, user_id: int) -> list[dict]:
     return [dict(r) for r in conn.execute(
         "SELECT kind, pattern, added_at FROM watches "

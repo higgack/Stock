@@ -171,7 +171,8 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /watch item &lt;검색어&gt; — 품목만 매칭하고 싶을 때 (예: /watch item 라면)
 /watch company &lt;검색어&gt; — 관련종목만 매칭 (예: /watch company 삼양식품)
 /watch list — 현재 워치 목록
-/unwatch item|company &lt;검색어&gt; — 워치 제거
+/unwatch item|company &lt;검색어&gt; — 워치 1건 제거
+/unwatch all — 내 워치 전체 해제 (알림 끄기)
 /ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (일회성 공지 등)
 /unignore &lt;msg_id&gt; — ignore 해제
 /ignored — 현재 ignore 목록
@@ -450,7 +451,8 @@ _WATCH_USAGE = (
     "/watch item &lt;검색어&gt; — 품목명만\n"
     "/watch company &lt;검색어&gt; — 관련종목만\n"
     "/watch list — 현재 워치 목록\n"
-    "/unwatch item|company &lt;검색어&gt; — 워치 제거\n"
+    "/unwatch item|company &lt;검색어&gt; — 워치 1건 제거\n"
+    "/unwatch all — 내 워치 전체 해제 (알림 끄기)\n"
     "검색은 부분일치 (대소문자 무시). 예: '라면'은 '라면 (전국)'·'라면 + 기타 소스'에 모두 매칭."
 )
 
@@ -528,9 +530,18 @@ async def cmd_unwatch(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     user_id = update.effective_user.id
     args = list(ctx.args or [])
+    # /unwatch all — 내 워치 전체 해제 (사용자 2026-06-12 '다 지워줘').
+    if args and args[0].lower() == "all":
+        with watchlist.session() as conn:
+            n = watchlist.remove_all(conn, user_id)
+        msg = (f"🗑 워치 <b>{n}</b>건 전체 해제 — 이제 알림이 오지 않습니다."
+               if n else "해제할 워치가 없습니다 (이미 0건).")
+        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        return
     if len(args) < 2 or args[0].lower() not in ("item", "company"):
         await update.message.reply_text(
-            "사용법: /unwatch item &lt;검색어&gt; 또는 /unwatch company &lt;검색어&gt;",
+            "사용법: /unwatch item &lt;검색어&gt; · /unwatch company &lt;검색어&gt; · "
+            "/unwatch all (전체 해제)",
             parse_mode=ParseMode.HTML,
         )
         return
