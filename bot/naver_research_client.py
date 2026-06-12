@@ -524,6 +524,118 @@ def fetch_recent_research_industry(limit: int = 80, days_back: int = 7,
 
 
 # ------------------------------------------------------------------
+# 투자전략(투자정보) 리포트 — finance.naver.com/research/invest_list.naver
+# 산업 리포트와 동일 구조이나 분류(category) 컬럼이 없음(전략/자산배분).
+# ------------------------------------------------------------------
+
+_STRATEGY_BASE_URL = "https://finance.naver.com/research/invest_list.naver"
+_STRATEGY_DETAIL_URL = "https://finance.naver.com/research/invest_read.naver"
+_STRATEGY_NID_RE = re.compile(r'invest_read\.naver\?nid=(\d+)')
+
+
+def _parse_strategy_list_page(html: str, cutoff) -> list[dict]:
+    """투자전략(투자정보) 리서치 목록 행 파싱.
+
+    컬럼: 제목(invest_read nid link) | 증권사 | 첨부 | 작성일(YY.MM.DD) |
+    조회수. 종목코드·분류·목표가 없음 — 증권사/제목/날짜만."""
+    rows: list[dict] = []
+    for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.DOTALL | re.I):
+        nid_m = _STRATEGY_NID_RE.search(row_html)
+        if not nid_m:
+            continue
+        nid = nid_m.group(1)
+        cells = _cell_texts(row_html)
+
+        date_str = None
+        for c in cells:
+            m = re.search(r"(\d{2})\.(\d{2})\.(\d{2})", c)
+            if m:
+                date_str = f"{int(m.group(1)) + 2000}-{m.group(2)}-{m.group(3)}"
+                break
+        if not date_str:
+            continue
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d < cutoff:
+            continue
+
+        title_m = re.search(
+            r'invest_read\.naver\?nid=\d+[^"]*"[^>]*>([^<]+)', row_html, re.I)
+        title = title_m.group(1).strip()[:80] if title_m else ""
+
+        broker = ""
+        for c in cells:
+            if c and len(c) <= 22 and _BROKER_SUFFIX_RE.search(c):
+                broker = c
+                break
+        if not broker:
+            for c in cells:
+                if c and len(c) <= 22 and _BROKER_RE.search(c):
+                    broker = c
+                    break
+
+        rows.append({
+            "nid": nid, "broker": broker, "title": title, "date": date_str,
+        })
+    return rows
+
+
+def fetch_recent_research_strategy(limit: int = 80, days_back: int = 7,
+                                   max_pages: int = 5) -> list[dict]:
+    """전체 시장 최근 투자전략(투자정보) 리서치 리포트 (Naver invest_list).
+
+    종목/산업 리포트와 동일 윈도(기본 7일). 단일 목표가가 없어 detail fetch
+    생략(빠름). Returns [{broker, title, date, link}] 날짜 내림차순. 키
+    불필요, 12h 디스크 캐시."""
+    cache_key = (f"naver_strategy_v1_{date.today().isoformat()}"
+                 f"_{days_back}_{limit}.json")
+    cache_file = _CACHE_DIR / cache_key
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < _MARKET_TTL_HOURS:
+                cached = json.loads(cache_file.read_text())
+                return cached or []
+        except Exception as exc:
+            log.warning("naver_research: strategy cache read failed: %s", exc)
+
+    cutoff = date.today() - timedelta(days=days_back)
+    rows: list[dict] = []
+    seen_nid: set[str] = set()
+    for page in range(1, max_pages + 1):
+        html = _get(_STRATEGY_BASE_URL, params={"page": page})
+        if not html:
+            break
+        page_rows = _parse_strategy_list_page(html, cutoff)
+        for r in page_rows:
+            if r["nid"] in seen_nid:
+                continue
+            seen_nid.add(r["nid"])
+            rows.append(r)
+        if len(rows) >= limit:
+            break
+        if not page_rows and page >= 1:
+            break
+
+    rows = rows[:limit]
+    out = [{
+        "broker": r["broker"], "title": r["title"], "date": r["date"],
+        "link": f"{_STRATEGY_DETAIL_URL}?nid={r['nid']}",
+    } for r in rows]
+
+    if out:  # truthy-only — 빈 결과(일시 실패) 캐시 안 함
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(out, ensure_ascii=False))
+        except Exception as exc:
+            log.warning("naver_research: strategy cache write failed: %s", exc)
+
+    return out
+
+
+# ------------------------------------------------------------------
 # Public API
 # ------------------------------------------------------------------
 

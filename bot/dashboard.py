@@ -11498,6 +11498,32 @@ def _render_research_industry_table(research: list) -> str:
     )
 
 
+def _render_research_strategy_table(research: list) -> str:
+    """Render the KR 전략(투자정보) research table — 일주일치. 분류·목표가
+    없음(증권사·제목·날짜만). 사용자 2026-06-12 '네이버 투자전략 → 한국 전략'."""
+    if not research:
+        return '<div class="empty-msg">최근 전략 리포트가 없습니다.</div>'
+    rows: list[str] = []
+    for r in research[:200]:
+        broker = _html.escape(r.get("broker", ""))
+        title = _html.escape(r.get("title", ""))
+        dt = _html.escape(r.get("date", ""))
+        link = _html.escape(r.get("link", ""))
+        title_cell = (f'<a href="{link}" target="_blank" rel="noopener" '
+                      f'style="color:var(--text);text-decoration:underline;'
+                      f'text-decoration-color:var(--muted)">{title[:70]}</a>'
+                      if link else title[:70])
+        rows.append(
+            f'<tr><td>{broker}</td><td>{title_cell}</td><td>{dt}</td></tr>'
+        )
+    return (
+        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
+        '<thead><tr><th>증권사</th><th>제목(클릭→원문)</th>'
+        '<th>날짜</th></tr></thead>'
+        '<tbody>' + "".join(rows) + '</tbody></table></div>'
+    )
+
+
 def _render_research_us_table(research: list) -> str:
     """Render the US research actions table."""
     if not research:
@@ -12145,6 +12171,7 @@ def _render_market_page(data: dict) -> str:
     earnings = data.get("earnings", [])
     research_kr = data.get("research_kr", [])
     research_kr_industry = data.get("research_kr_industry", [])
+    research_kr_strategy = data.get("research_kr_strategy", [])
     research_us = data.get("research_us", [])
     macro = data.get("macro", {})
     sector_movers = data.get("sector_movers", {})
@@ -12252,6 +12279,7 @@ def _render_market_page(data: dict) -> str:
   <div class="tabs">
     <button class="tab-btn active" data-tab="kr">한국 기업</button>
     <button class="tab-btn" data-tab="krind">한국 산업</button>
+    <button class="tab-btn" data-tab="krstrat">한국 전략</button>
     <button class="tab-btn" data-tab="us">미국</button>
   </div>
   <div id="tab-kr" class="tab-pane active">
@@ -12259,6 +12287,9 @@ def _render_market_page(data: dict) -> str:
   </div>
   <div id="tab-krind" class="tab-pane">
     {_render_research_industry_table(research_kr_industry)}
+  </div>
+  <div id="tab-krstrat" class="tab-pane">
+    {_render_research_strategy_table(research_kr_strategy)}
   </div>
   <div id="tab-us" class="tab-pane">
     {_render_research_us_table(research_us)}
