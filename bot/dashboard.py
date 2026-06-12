@@ -10757,11 +10757,17 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         return out
 
     def _equity_noise(it: dict) -> bool:
-        """#18 지분공시 노이즈컷 — True 이면 숨김."""
+        """#18 지분공시 노이즈컷 — True 이면 숨김.
+
+        2026-06-12 '지분공시도 다 파싱': 임원·주요주주 소유상황은 elestock
+        파싱된(detail 보유) 카드만 노출 — 파싱 전/실패는 기존대로 숨겨
+        제목만 카드 홍수 방지. 대량보유는 기존 정책(±5%p 미만 변동 컷)."""
         if it.get("category") != "지분공시":
             return False
         rn = it.get("report_nm", "")
         if "대량보유" not in rn:
+            if "소유상황" in rn:
+                return not (it.get("detail") or [])
             return True
         det = it.get("detail") or []
         if not det:
@@ -10804,7 +10810,9 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         sig = None
         try:
             rn0 = it.get("report_nm", "")
-            if "자기주식" in rn0 and "취득" in rn0 and "결정" in rn0:
+            # 자사주취득·소각 = 발행주식 3% 비율 판정 → shares 필요
+            if (("자기주식" in rn0 and "취득" in rn0 and "결정" in rn0)
+                    or "소각" in rn0):
                 sig = _dart_feed.significance(
                     it, shares_outstanding=_shares_for(it.get("stock_code", "")))
             else:
@@ -10890,7 +10898,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         _lg = []
         if _sig_total:
             _lg.append('<span class="df-badge df-badge-sig">🔥 중요</span> '
-                       '금색 — 손익 30%·계약 매출10%·소각·자사주 3%·시설 자본20%·신규 5% 대량보유')
+                       '금색 — 손익 30%·계약 매출10%·소각/자사주 발행주식3%·시설 자본20%·신규 5% 대량보유')
         if _unp_total:
             _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
                        '주황 점선 — 우리 파서 미적용(제목·원문 공유 시 파서 추가)')
