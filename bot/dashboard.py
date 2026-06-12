@@ -12531,6 +12531,10 @@ def _render_market_page(data: dict) -> str:
     var favState = {{ sortK: null, sortDir: 1, country: 'ALL' }};
 
     var FLAG = {{'US':'🇺🇸','KR':'🇰🇷','JP':'🇯🇵','TW':'🇹🇼','CN':'🇨🇳','HK':'🇭🇰','UK':'🇬🇧','DE':'🇩🇪','FR':'🇫🇷'}};
+    /* 정렬 전용 USD 환산율 (사용자 2026-06-13 '통화기호 달라도 통합
+       시총순') — 표시는 원통화 그대로, data-* 정렬키만 ÷FX. 정적 근사
+       (usage_tracker 1380 기준) — 순서 판정 목적이라 충분. */
+    var FX = {{'KRW':1380,'USD':1,'JPY':155,'TWD':32,'HKD':7.8,'EUR':0.92,'GBP':0.79,'CNY':7.2}};
 
     function fmtPrice(v, sym) {{
       if (v == null) return '—';
@@ -12621,10 +12625,13 @@ def _render_market_page(data: dict) -> str:
             pctCell = '<span style="color:' + clr + '">' + sign + pct.toFixed(1) + '%</span>';
           }}
         }}
+        /* 통화 통합 정렬키 (USD 환산) — ₩1526조 가 $1.13T 위로 가게 */
+        var fx = FX[f.currency] || 1;
+        function usd(v) {{ return v != null ? (v / fx) : ''; }}
         var da = 'data-name="' + (f.name || f.ticker).toLowerCase() + '" data-country="' + (f.country || '') + '"'
-          + ' data-saved="' + (f.saved_date || '') + '" data-mcap="' + (f.market_cap != null ? f.market_cap : '') + '"'
-          + ' data-sprice="' + (f.saved_price != null ? f.saved_price : '') + '" data-cprice="' + (f.current_price != null ? f.current_price : '') + '"'
-          + ' data-pct="' + (pctVal !== '' ? pctVal : '') + '" data-eps="' + (f.eps_estimate != null ? f.eps_estimate : '') + '"'
+          + ' data-saved="' + (f.saved_date || '') + '" data-mcap="' + usd(f.market_cap) + '"'
+          + ' data-sprice="' + usd(f.saved_price) + '" data-cprice="' + usd(f.current_price) + '"'
+          + ' data-pct="' + (pctVal !== '' ? pctVal : '') + '" data-eps="' + usd(f.eps_estimate) + '"'
           + ' data-per="' + (f.per != null ? f.per : '') + '" data-earn="' + (f.next_earnings || '') + '"';
         return '<tr ' + da + '>'
           + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="color:inherit;text-decoration:none">'
