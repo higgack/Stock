@@ -183,13 +183,13 @@ class RenderTests(unittest.TestCase):
         self.assertIn("provisional_archive.html", html)  # 🗄 잠정 타임라인 링크
         self.assertIn("잠정 타임라인", html)
 
-    def test_export_cells_warned_with_caveat(self):
-        # B안: 수출 절대액 ⚠️ 표식 + 캡션(확정 시 조정 가능).
+    def test_export_cells_no_caveat(self):
+        # ⚠️ 상시 캐비엇 제거 (사용자 2026-06-12 '검증 완료, 없애도 됨') —
+        # 잠정의 성질은 '잠정 속보' 라벨 + 잠정 타임라인이 전달.
         html = prov.render_box(self._signals())
-        self.assertIn("⚠️", html)
-        self.assertIn("ind-prov-warn", html)         # 수출 셀 경고 테두리
-        self.assertIn("ind-prov-cav", html)          # 캡션
-        self.assertIn("추세로 참고", html)
+        self.assertNotIn("⚠️", html)
+        self.assertNotIn("ind-prov-warn", html)
+        self.assertNotIn("추세로 참고", html)
 
     def test_no_export_no_caveat(self):
         # 수입만 있으면 수출 ⚠️ 캡션은 안 뜬다.
@@ -345,7 +345,7 @@ class MomentumRenderTests(unittest.TestCase):
         self.assertIn("ind-prov-tbl", html)
         self.assertIn("반도체제조용장비", html)            # 수입 품목 05 라벨
         self.assertIn("⚡", html)                          # capex 강조
-        self.assertIn("⚠️", html)                          # 수출 절대액 경고
+        self.assertNotIn("⚠️", html)   # 수출 경고 제거 (사용자 2026-06-12)
 
     def test_sorted_by_absolute_value_desc(self):
         # 정렬은 최신창 절대액 큰 순. 01=반도체(작게), 02=원유(크게) 설정 →
@@ -421,16 +421,12 @@ class MomentumArchiveHtmlTests(unittest.TestCase):
         self.assertIn("font-weight:600", html)        # 항목명 굵게
         self.assertIn("tabular-nums", html)           # 자릿수 정렬
 
-    def test_archive_html_warn_in_caption_not_per_cell(self):
-        # 핸드오프 ②: ⚠️는 셀마다 반복 안 하고 캡션 배지로 1회만.
-        # 수출 그룹(exp_item)이 있을 때 캡션 배지가 나오고, 셀 ⚠️ 마커는 없음.
-        rows_with_exp = {"exp_item": self._rows()["imp_item"]}  # warn 그룹
+    def test_archive_html_no_warn_anywhere(self):
+        # ⚠️ 캡션 배지 제거 (사용자 2026-06-12) — 캡션·셀 어디에도 없음.
+        rows_with_exp = {"exp_item": self._rows()["imp_item"]}
         html = prov.momentum_archive_html(rows_with_exp)
-        self.assertIn("잠정 — 확정 전 수치", html)    # 캡션 배지
-        # 셀(td) 안에 ⚠️ 반복 없음
-        import re
-        cell_warns = re.findall(r"<td[^>]*>[^<]*⚠️", html)
-        self.assertEqual(cell_warns, [])
+        self.assertNotIn("잠정 — 확정 전 수치", html)
+        self.assertNotIn("⚠️", html)
 
     def test_archive_html_no_warn_when_only_imports(self):
         # 수입 그룹만이면(warn=False) 캡션 배지도 안 뜬다.
@@ -502,3 +498,55 @@ class SortToggleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MomAndStatusLabelTest(unittest.TestCase):
+    """YoY 옆 MoM(전월 동순) + 잠정/확정 동적 라벨 + ⚠️ 캐비엇 제거
+    (사용자 2026-06-12)."""
+
+    def _rows(self):
+        return [
+            {"ym": "2026-06", "priod_dt": "01~10", "decile": "D1",
+             "amt": [28_600_000_000, 11_100_000_000] + [0] * 9},
+            {"ym": "2026-05", "priod_dt": "01~10", "decile": "D1",
+             "amt": [26_000_000_000, 10_000_000_000] + [0] * 9},
+            {"ym": "2025-06", "priod_dt": "01~10", "decile": "D1",
+             "amt": [15_385_000_000, 3_630_000_000] + [0] * 9},
+            # 다른 순(D2) — 동순 매칭 가드
+            {"ym": "2026-05", "priod_dt": "01~20", "decile": "D2",
+             "amt": [60_000_000_000, 0] + [0] * 9},
+        ]
+
+    def test_mom_same_decile_prev_month(self):
+        sig = prov.latest_signal(self._rows(), ("반도체",) + ("x",) * 9)
+        self.assertAlmostEqual(sig["total_yoy"], 85.9, delta=0.1)
+        self.assertAlmostEqual(sig["total_mom"], 10.0, delta=0.1)  # vs 5월 D1
+        self.assertAlmostEqual(sig["items"][0]["mom"], 11.0, delta=0.1)
+
+    def test_mom_january_boundary(self):
+        rows = [
+            {"ym": "2026-01", "priod_dt": "01~10", "decile": "D1",
+             "amt": [110] + [0] * 10},
+            {"ym": "2025-12", "priod_dt": "01~10", "decile": "D1",
+             "amt": [100] + [0] * 10},
+        ]
+        sig = prov.latest_signal(rows, ("x",) * 10)
+        self.assertAlmostEqual(sig["total_mom"], 10.0, delta=0.01)
+
+    def test_render_box_no_caveat_has_mom(self):
+        sig = prov.latest_signal(self._rows(), ("반도체",) + ("x",) * 9)
+        html = prov.render_box({"exp_item": sig, "imp_item": None})
+        self.assertNotIn("이례적으로", html)   # 상시 캐비엇 제거
+        self.assertNotIn("⚠️", html)
+        self.assertIn("MoM", html)
+        self.assertIn("전월 동순", html)
+
+    def test_month_status_label(self):
+        from datetime import date
+        from trade.industry import _month_status_label as lbl
+        self.assertEqual(lbl("2026-05", today=date(2026, 6, 12)),
+                         "잠정(6/15 확정 예정)")
+        self.assertEqual(lbl("2026-05", today=date(2026, 6, 15)),
+                         "확정(익월 ~15일)")
+        self.assertEqual(lbl("2026-12", today=date(2027, 1, 10)),
+                         "잠정(1/15 확정 예정)")

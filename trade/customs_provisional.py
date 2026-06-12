@@ -193,6 +193,14 @@ def latest_signal(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
         (r for r in rows if r["ym"] == py_ym and r["decile"] == cur["decile"]),
         None,
     )
+    # 전월 동순(MoM) — 같은 누적창끼리 전월과 비교 (사용자 2026-06-12
+    # 'YoY 옆에 MoM, 같은 기간 기준'). 예: 6월 1-10 vs 5월 1-10.
+    _y, _m = int(latest_ym[:4]), int(latest_ym[5:7])
+    pm_ym = f"{_y - 1}-12" if _m == 1 else f"{_y}-{_m - 1:02d}"
+    prev_mo = next(
+        (r for r in rows if r["ym"] == pm_ym and r["decile"] == cur["decile"]),
+        None,
+    )
 
     def _yoy(idx: int) -> Optional[float]:
         if prev is None:
@@ -203,8 +211,17 @@ def latest_signal(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
             return None
         return (c - p) / p * 100.0
 
+    def _mom(idx: int) -> Optional[float]:
+        if prev_mo is None:
+            return None
+        p = prev_mo["amt"][idx]
+        c = cur["amt"][idx]
+        if not p:
+            return None
+        return (c - p) / p * 100.0
+
     items = [
-        {"name": name, "usd": cur["amt"][i], "yoy": _yoy(i)}
+        {"name": name, "usd": cur["amt"][i], "yoy": _yoy(i), "mom": _mom(i)}
         for i, name in enumerate(labels, start=1)
     ]
     return {
@@ -214,6 +231,7 @@ def latest_signal(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
         "priod_dt": cur["priod_dt"],
         "total_usd": cur["amt"][0],
         "total_yoy": _yoy(0),
+        "total_mom": _mom(0),
         "items": items,
     }
 
@@ -401,20 +419,29 @@ def _yoy_span(yoy: Optional[float]) -> str:
     return f"<span class='ind-prov-{cls}'>{fmt_pct(yoy)}</span>"
 
 
+def _mom2_span(mom: Optional[float]) -> str:
+    """MoM 보조 표기 (YoY 옆, 전월 동순 대비 — 사용자 2026-06-12)."""
+    from trade.customs import fmt_pct
+    if mom is None:
+        return ""
+    cls = "pos" if mom >= 0 else "neg"
+    return (f" <span class='ind-prov-{cls}' style='font-size:11px;"
+            f"opacity:.85'>MoM {fmt_pct(mom)}</span>")
+
+
 def _metric(label: str, item: Optional[dict], *,
-            lead: bool = False, warn: bool = False) -> str:
+            lead: bool = False) -> str:
+    """헤드라인 셀 — ⚠️ 상시 캐비엇은 제거(사용자 2026-06-12 '검증 완료,
+    없애도 됨'). 값 = 절대액 + YoY(작년 동월·동순) + MoM(전월 동순)."""
     from trade.customs import fmt_usd
     if not item:
         return ""
     tag = " ⚡선행" if lead else ""
-    if warn:
-        tag += " ⚠️"
-    cls = "ind-prov-cell ind-prov-warn" if warn else "ind-prov-cell"
     return (
-        f"<div class='{cls}'>"
+        "<div class='ind-prov-cell'>"
         f"<div class='ind-prov-k'>{label}{tag}</div>"
         f"<div class='ind-prov-v'>{fmt_usd(item.get('usd'))} "
-        f"{_yoy_span(item.get('yoy'))}</div>"
+        f"{_yoy_span(item.get('yoy'))}{_mom2_span(item.get('mom'))}</div>"
         "</div>"
     )
 
@@ -515,14 +542,8 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
                     f"<td class='ind-prov-num'>{_yoy_span(it['yoy'])}</td>"
                     f"<td class='ind-prov-num'>{_mom_span(it['momentum'])}</td></tr>"
                 )
-        # 수출 그룹은 ⚠️ 배지를 캡션에 1회만(셀 반복은 시각 노이즈).
-        if inline:
-            cap_warn = (" <span style='font-size:11px;font-weight:500;"
-                        "color:#ff9500;margin-left:6px'>"
-                        "⚠️ 잠정 — 확정 전 수치</span>") if warn else ""
-        else:
-            cap_warn = (" <span class='ind-prov-cap-warn'>"
-                        "⚠️ 잠정 — 확정 전 수치</span>") if warn else ""
+        # ⚠️ 캡션 제거 (사용자 2026-06-12) — '잠정 속보' 라벨로 충분.
+        cap_warn = ""
         if inline:
             tables.append(
                 "<table style='width:100%;border-collapse:collapse;font-size:12px;"
@@ -556,8 +577,8 @@ def momentum_archive_html(rows_by_kind: dict[str, list]) -> str:
     if not tables:
         return ""
     note = ("<div style='font-size:11.5px;color:#666;line-height:1.4;margin-top:6px'>"
-            "모멘텀 = 최신창 YoY − 직전 풀월 YoY (▲가속/▼둔화) · 절대액 큰 순 · "
-            "수출 절대액 ⚠️ 추세 참고</div>")
+            "모멘텀 = 최신창 YoY − 직전 풀월 YoY (▲가속/▼둔화) · "
+            "절대액 큰 순</div>")
     return f"<div style='margin-top:8px'>{note}{tables}</div>"
 
 
@@ -587,7 +608,7 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
     )
     note = (
         "<div class='ind-prov-mom-note'>모멘텀 = 최신창 YoY − 직전 풀월 YoY "
-        "(▲가속/▼둔화) · 전체 행 고정 · 수출 절대액 ⚠️ 추세 참고</div>"
+        "(▲가속/▼둔화) · 전체 행 고정</div>"
     )
     return (
         "<details class='ind-prov-more'>"
@@ -624,25 +645,22 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
     if exp_item:
         cells.append(_metric(
             "전체 수출",
-            {"usd": exp_item.get("total_usd"), "yoy": exp_item.get("total_yoy")},
-            warn=True))
+            {"usd": exp_item.get("total_usd"), "yoy": exp_item.get("total_yoy"),
+             "mom": exp_item.get("total_mom")}))
     if imp_item:
         cells.append(_metric(
             "전체 수입",
-            {"usd": imp_item.get("total_usd"), "yoy": imp_item.get("total_yoy")}))
+            {"usd": imp_item.get("total_usd"), "yoy": imp_item.get("total_yoy"),
+             "mom": imp_item.get("total_mom")}))
     cells.append(_metric("반도체제조용장비 수입", capex, lead=True))
-    cells.append(_metric("반도체 수출", semi_exp, warn=True))
+    cells.append(_metric("반도체 수출", semi_exp))
     body = "".join(c for c in cells if c)
     if not body:
         return ""
 
-    # 수출 ⚠️ 캡션 — 수출 셀이 실제로 그려질 때만(데이터 있을 때) 노출.
-    has_export = bool(exp_item) or bool(semi_exp)
-    caveat = (
-        "<div class='ind-prov-cav'>⚠️ 수출 잠정 절대액이 과거 대비 이례적으로 "
-        "높게 나옴 — 확정 시 조정 가능, 절대액보다 추세로 참고</div>"
-        if has_export else ""
-    )
+    # ⚠️ 상시 캐비엇 제거 (사용자 2026-06-12) — 데이터 검증 완료, 잠정의
+    # 성질('잠정 속보' 라벨 + 타임라인의 잠정↔확정 대조)로 충분.
+    caveat = ""
 
     from html import escape as _esc
     ym = _esc(ref.get("ym") or "")
@@ -658,7 +676,7 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
         "<div class='ind-prov'>"
         "<h3>🟢 잠정 속보 <span class='ind-prov-tag'>관세청 10일 단위</span></h3>"
         f"<div class='ind-prov-sub'>{ym} · {window} 누적 기준 · 확정치보다 "
-        "최대 ~한 달 선행 · 작년 동월·동순 YoY · 단위 억$ "
+        "최대 ~한 달 선행 · YoY=작년 동월·동순 · MoM=전월 동순 · 단위 억$ "
         "<b>(산업 집계와 분리·참고용)</b></div>"
         f"<div class='ind-prov-grid'>{body}</div>"
         f"{caveat}"
