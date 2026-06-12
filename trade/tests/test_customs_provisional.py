@@ -550,3 +550,22 @@ class MomAndStatusLabelTest(unittest.TestCase):
                          "확정(익월 ~15일)")
         self.assertEqual(lbl("2026-12", today=date(2027, 1, 10)),
                          "잠정(1/15 확정 예정)")
+
+
+class ZoneSeparationTest(unittest.TestCase):
+    """10일 잠정 ↔ 월간 영역 구분 (사용자 2026-06-12 '헷갈려') — 잠정 속보
+    pill 발표일정 + dashboard 조립의 zone 구분선 소스 가드."""
+
+    def test_prov_pill_has_schedule(self):
+        sig = prov.latest_signal([
+            {"ym": "2026-06", "priod_dt": "01~10", "decile": "D1",
+             "amt": [100] + [0] * 10},
+        ], ("x",) * 10)
+        html = prov.render_box({"exp_item": sig})
+        self.assertIn("매월 11·21·익월1일 발표", html)
+
+    def test_dashboard_zone_divider_present(self):
+        src = open("trade/dashboard.py", encoding="utf-8").read()
+        self.assertIn("ind-zone-div", src)
+        self.assertIn("월간 산업트렌드", src)
+        self.assertIn("~15일 확정 정제", src)

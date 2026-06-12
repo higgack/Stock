@@ -152,7 +152,15 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             f'{share_btn}'
             '</div>'
         )
-        return (prov_html + ins_html + archive_link
+        # 데이터 기준 영역 구분선 (사용자 2026-06-12 '10일 잠정 ↔ 월간
+        # 헷갈려'): 위 = 🟢 잠정 속보(10일 단위, 매월 11·21·익월1일 발표),
+        # 아래 = 월간 산업트렌드(익월 1일 잠정 적재 → ~15일 확정 정제).
+        # 은은한 헤어라인 라벨 — 잠정 박스가 있을 때만 (경계가 있을 때만).
+        zone_div = (
+            "<div class='ind-zone-div'><span>여기부터 <b>월간 산업트렌드</b>"
+            " — 익월 1일 잠정 적재 → ~15일 확정 정제 · 매일 갱신</span></div>"
+        ) if prov_html else ""
+        return (prov_html + zone_div + ins_html + archive_link
                 + industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp))
     except Exception:
         return ""
@@ -635,6 +643,9 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-prov{margin:8px 16px 4px;padding:14px 16px;border:1px solid var(--border-soft);border-left:4px solid var(--tone-export);border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}
 .ind-prov>h3{margin:0 0 2px;font-size:16px;color:var(--tone-export)}
 .ind-prov-tag{font-size:11px;font-weight:600;color:var(--text-sub);border:1px solid var(--border-soft);border-radius:999px;padding:1px 8px;margin-left:6px;vertical-align:middle}
+.ind-zone-div{display:flex;align-items:center;gap:10px;margin:18px 0 8px;color:var(--text-sub);font-size:12px}
+.ind-zone-div::before,.ind-zone-div::after{content:'';flex:1;height:1px;background:var(--border-soft)}
+.ind-zone-div b{color:var(--text)}
 .ind-prov-sub{font-size:12px;color:var(--text-sub);margin-bottom:10px}
 .ind-prov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .ind-prov-cell{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
