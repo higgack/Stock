@@ -710,7 +710,7 @@ def _compute_highlow_full_us() -> dict:
     수 분 — 백그라운드 전용(_highlow_full_us 가 동기 호출 금지)."""
     tks, names = _us_full_universe()
     return _compute_highlow_from(
-        tks, names, "highlow_full_us_v2.json",
+        tks, names, "highlow_full_us_v3.json",
         "전 미국 상장 산출(yfinance · 52주 고저 1% 근접)", "전미국")
 
 
@@ -799,12 +799,30 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                         r["price"] = round(float(closes.iloc[-1]), 2)
                 except Exception:
                     continue
-        # SPAC 백스톱 (이름 필터를 빠져나온 잔여) — 신고가인데 등락 0% +
-        # 가격 $9.5~$10.6(신탁가 밴드)면 SPAC 신탁가 패턴으로 보고 제외.
-        # 신저가는 floor 라 SPAC 거의 없음 → 신고가에만 적용 (2026-06-11).
-        out["high"] = [r for r in out["high"]
-                       if not (9.5 <= (r.get("price") or 0) <= 10.6
-                               and abs(r.get("pct") or 0) < 0.05)]
+        # SPAC 신탁가 백스톱 — 2026-06-12 보강: 옛 밴드($9.5~10.6·|pct|
+        # <0.05%)가 신탁 이자 드리프트(+0.1~0.3%)와 $10.68 류를 통과시킴
+        # (ALDF/CEPV/NOEM 실사례). 밴드 $9.4~11.0 + |pct|<1.0% 로 확대,
+        # 신저가에도 적용(평평한 신탁가는 52주 저가 1% 이내이기도 함 —
+        # BDCI/CEPS 실사례). 진짜 소형주가 $10 부근에서 <1% 움직이며
+        # 신고/신저 찍는 희귀 케이스를 잃는 비용 < SPAC 무더기 노이즈.
+        def _spac_band(r: dict) -> bool:
+            return (9.4 <= (r.get("price") or 0) <= 11.0
+                    and abs(r.get("pct") or 0) < 1.0)
+        out["high"] = [r for r in out["high"] if not _spac_band(r)]
+        out["low"] = [r for r in out["low"] if not _spac_band(r)]
+        # 분할 미조정 아티팩트 드랍 — 일봉 리필의 |당일 등락|>75% 는 무제한
+        # 시장이라도 분할/조정 불일치 신호(KLAC +1029% 2026-06-12 실사례,
+        # 전일 $213→당일 $2,411 물리 불가). 가격·시총 신뢰 불가 → 행 제외
+        # (CLAUDE.md price-glitch 가드 클래스).
+        def _split_artifact(r: dict) -> bool:
+            p = r.get("pct")
+            if p is not None and abs(p) > 75.0:
+                log.warning("finviz: %s highlow 분할 아티팩트 의심 드랍 — "
+                            "%s pct=%+.1f%%", tag, r.get("ticker"), p)
+                return True
+            return False
+        out["high"] = [r for r in out["high"] if not _split_artifact(r)]
+        out["low"] = [r for r in out["low"] if not _split_artifact(r)]
         # 시가총액 — hit 종목만 fast_info 병렬 fetch (백그라운드 산출이라
         # 페이지 hang 0). 종목옆 시총 표시용 (사용자 2026-06-11). 억$ 단위.
         hits2 = [r["ticker"] for r in out["high"] + out["low"]]
@@ -869,13 +887,13 @@ def _parse_symdir(text: str, symcol: str) -> tuple[list, dict]:
     ni = idx.get("Security Name", 1)
     etf_i = idx.get("ETF")
     test_i = idx.get("Test Issue")
-    _SKIP_NAME = ("Warrant", "Right", "Preferred", " Unit", "Units",
-                  "Notes", "Debenture",
-                  # SPAC 제외 (2026-06-11 검증: 신탁가 $10 고정 → 1년 내내
-                  # 52주 신고가 근처라 신고저 리스트 오염, 등락 0%). 거의
-                  # 전부 'Acquisition Corp/Company' 명칭.
-                  "Acquisition Corp", "Acquisition Company",
-                  "Acquisition Holdings")
+    # 비-보통주 + SPAC 제외 (2026-06-11 검증 + 06-12 보강: 'Acquisition
+    # II Corp'/'Acquisitions'/'KRAKacquisition'/'SPAC' 변형이 옛 정확일치
+    # 필터를 통과 — 대소문자 무시 substring 으로 확대. 채권형(ZONES/
+    # Repackaged/Bonds) 혼입도 차단).
+    _SKIP_NAME_CI = ("warrant", "right", "preferred", " unit", "units",
+                     "notes", "debenture", "acquisition", "spac",
+                     "merger corp", "bond", "zones", "repackaged")
     for ln in lines[1:]:
         if ln.startswith("File Creation Time"):
             continue
@@ -890,7 +908,12 @@ def _parse_symdir(text: str, symcol: str) -> tuple[list, dict]:
             continue
         if test_i is not None and len(cols) > test_i and cols[test_i].strip() == "Y":
             continue
-        if any(k in nm for k in _SKIP_NAME):
+        nml = nm.lower()
+        if any(k in nml for k in _SKIP_NAME_CI):
+            continue
+        # NASDAQ 5번째 자리 suffix 관행: W=워런트, U=유닛 (이름에 'Warrant'
+        # 가 빠진 행이 실재 — AIMDW/NCPLW 2026-06-12 surfaced).
+        if len(sym) == 5 and sym[-1] in ("W", "U"):
             continue
         sym = sym.replace(".", "-").replace("/", "-")
         tks.append(sym)
@@ -902,8 +925,8 @@ def _parse_symdir(text: str, symcol: str) -> tuple[list, dict]:
 def _us_full_universe() -> tuple[list, dict]:
     """전 미국 상장 보통주 — nasdaqlisted.txt + otherlisted.txt (공식·무키·
     일 갱신, NYSE/AMEX 포함). 7일 캐시. 실패 시 ([], {})."""
-    c = _cached("us_universe_v2.json", ttl=7 * 86400)
-    cn = _cached("us_universe_names_v2.json", ttl=7 * 86400)
+    c = _cached("us_universe_v3.json", ttl=7 * 86400)
+    cn = _cached("us_universe_names_v3.json", ttl=7 * 86400)
     if c and cn:
         return c, cn
     tks: list = []
@@ -929,8 +952,8 @@ def _us_full_universe() -> tuple[list, dict]:
     seen: set = set()
     uniq = [t for t in tks if not (t in seen or seen.add(t))]
     if len(uniq) > 1000:
-        _cache_write("us_universe_v2.json", uniq)
-        _cache_write("us_universe_names_v2.json", names)
+        _cache_write("us_universe_v3.json", uniq)
+        _cache_write("us_universe_names_v3.json", names)
         log.info("finviz: 전미국 universe %d종목 (nasdaqtrader)", len(uniq))
         return uniq, names
     return [], {}
@@ -967,10 +990,10 @@ def _highlow_full_us() -> dict:
     금지). 신선 캐시(30분) 서빙 / stale(≤24h) 서빙+백그라운드 재계산 /
     캐시 부재 시 백그라운드 kick 후 빈 dict 반환 → 호출부가 S&P500
     티어로 폴스루 (다음 방문부터 전량 표시)."""
-    c = _cached("highlow_full_us_v2.json", ttl=_FALLBACK_TTL_SEC)
+    c = _cached("highlow_full_us_v3.json", ttl=_FALLBACK_TTL_SEC)
     if c is not None:
         return c
-    stale = _cached("highlow_full_us_v2.json", ttl=86400)
+    stale = _cached("highlow_full_us_v3.json", ttl=86400)
     _kick_full_us_refresh()
     return stale if stale is not None else {}
 

@@ -4496,24 +4496,44 @@ class TestHighlowFullUsAndCapWeight:
             "ZTEST|Test Issue Co|Q|Y|N|100|N|N\n"            # Test 제외
             "BRK.B|Berkshire Hathaway Inc. - Class B Common Stock|Q|N|N|100|N|N\n"
             "ABCW|ABC Co - Warrant|Q|N|N|100|N|N\n"          # 워런트 제외
-            "AACB|Artius II Acquisition Corp. - Class A Common Stock|Q|N|N|100|N|N\n"  # SPAC 제외
-            "ADAC|American Drive Acquisition Company - Common Stock|Q|N|N|100|N|N\n"   # SPAC 제외
+            "AACB|Artius II Acquisition Corp. - Class A Common Stock|Q|N|N|100|N|N\n"  # SPAC
+            "DMII|Drugs Made In America Acquisition II Corp. - Common Stock|Q|N|N|100|N|N\n"  # 'Acquisition II' 변형
+            "KRAQ|KRAKacquisition Corp - Common Stock|Q|N|N|100|N|N\n"  # 소문자 혼합 변형
+            "XSLL|Xsolla SPAC 1 - Common Stock|Q|N|N|100|N|N\n"         # 'SPAC' 명칭
+            "LEGO|Legato Merger Corp. IV Ordinary Shares|Q|N|N|100|N|N\n"  # Merger Corp
+            "AIMDW|Ainos, Inc. - Class W|Q|N|N|100|N|N\n"    # 5자리 W suffix 워런트
+            "NCPLU|Netcapital Inc. - Class U|Q|N|N|100|N|N\n" # 5자리 U suffix 유닛
+            "ELC|Entergy Louisiana Collateral Trust Mortgage Bonds 4.875%|N|N|N|100|N|N\n"  # 채권형
             "File Creation Time: 0611202622:01|||||||")
         tks, names = _parse_symdir(sample, "Symbol")
-        assert tks == ["AAPL", "BRK-B"]   # SPAC 2종 제외(신탁가 신고저 오염 차단)
+        # SPAC 변형 4종 + W/U suffix + 채권형 전부 제외 (2026-06-12 보강)
+        assert tks == ["AAPL", "BRK-B"], tks
         assert names["AAPL"] == "Apple Inc."
 
     def test_highlow_spac_price_backstop(self):
-        # 이름 필터를 빠져나온 SPAC: 신고가 + 등락 0% + $9.5~10.6 → 제외
-        high = [
-            {"ticker": "X", "price": 10.0, "pct": 0.0},   # SPAC 패턴 → 제외
-            {"ticker": "Y", "price": 50.0, "pct": 3.0},   # 진짜 신고가 → 유지
-            {"ticker": "Z", "price": 9.95, "pct": 0.0},   # SPAC 패턴 → 제외
+        # 확대 밴드 (2026-06-12): $9.4~11.0 + |pct|<1.0% — 신탁 이자
+        # 드리프트(+0.28% ALDF 류)까지 차단, 진짜 급등주는 유지.
+        def band(r):
+            return (9.4 <= (r.get("price") or 0) <= 11.0
+                    and abs(r.get("pct") or 0) < 1.0)
+        rows = [
+            {"ticker": "ALDF", "price": 10.68, "pct": 0.28},  # 드리프트 SPAC → 제외
+            {"ticker": "Y", "price": 50.0, "pct": 3.0},        # 진짜 신고가 → 유지
+            {"ticker": "Q", "price": 10.4, "pct": 5.2},        # $10대 급등 실주 → 유지
+            {"ticker": "BRBI", "price": 11.75, "pct": 0.0},    # 밴드 밖 실기업 → 유지
         ]
-        filt = [r for r in high
-                if not (9.5 <= (r.get("price") or 0) <= 10.6
-                        and abs(r.get("pct") or 0) < 0.05)]
-        assert [r["ticker"] for r in filt] == ["Y"]
+        filt = [r for r in rows if not band(r)]
+        assert [r["ticker"] for r in filt] == ["Y", "Q", "BRBI"]
+
+    def test_highlow_split_artifact_dropped(self):
+        # |당일 등락|>75% = 분할 미조정 아티팩트 (KLAC +1029% 실사례) → 행 제외
+        rows = [
+            {"ticker": "KLAC", "price": 2411.64, "pct": 1029.24},
+            {"ticker": "OK", "price": 91.23, "pct": 6.38},
+        ]
+        filt = [r for r in rows
+                if not (r.get("pct") is not None and abs(r["pct"]) > 75.0)]
+        assert [r["ticker"] for r in filt] == ["OK"]
 
     def test_l3_cap_weighted_average(self, monkeypatch):
         import bot.finviz_client as fv

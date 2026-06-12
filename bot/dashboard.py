@@ -12428,7 +12428,7 @@ def _render_market_page(data: dict) -> str:
       /* 정렬 헤더 (data-k/data-t) */
       var cols = [['name','s','종목'],['country','s','나라'],['saved','s','저장일'],
         ['mcap','n','시총'],['sprice','n','저장가격'],['cprice','n','현재가격'],
-        ['pct','n','저장대비'],['eps','n','EPS'],['per','n','PER'],['earn','s','다음예상 실적일']];
+        ['pct','n','저장대비'],['eps','n','예상 EPS'],['per','n','예상 PER'],['earn','s','다음예상 실적일']];
       var thead = '<tr>';
       cols.forEach(function(c, i) {{
         var al = (i === 0) ? ' style="text-align:left"' : '';
