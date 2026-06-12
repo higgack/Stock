@@ -734,6 +734,150 @@ def _rehab_lines(txt: str) -> list[str]:
     return parts
 
 
+def _volume_lines(txt: str) -> list[str]:
+    """영업(잠정)실적(공정공시) **물량형** — 금액표가 전부 '-' 이고 월간
+    판매물량(천톤·대 등)만 있는 변형 (사용자 2026-06-12 '파싱안된것들':
+    도시가스 천톤 / 완성차 대수). 총계 행 + 누적 행 발췌. 순수."""
+    parts: list[str] = []
+    m = re.search(r"당[월기]\s*실적\s*\(\s*['’]?\s*(\d{2,4})[.년]\s*(\d{1,2})\s*월?\s*\)",
+                  txt)
+    month = f"{m.group(2)}월" if m else "당월"
+    mu = re.search(r"구분[^가-힣A-Za-z0-9]{0,4}?단위\s*[(:]\s*([가-힣A-Za-z]{1,8})",
+                   txt)
+    unit = mu.group(1) if mu else ""
+    mt = re.search(r"(?:총\s*계|(?<![가-힣])계)\s+([\d,]{2,})\s+([\d,]{2,})\s+"
+                   r"(-?[\d.]+)\s+(?:-\s+)?([\d,]{2,})\s+(-?[\d.]+)", txt)
+    if mt:
+        try:
+            parts.append(f"{month} 판매: 총 {mt.group(1)}{unit} "
+                         f"(전월 {float(mt.group(3)):+.1f}% · "
+                         f"전년동월 {float(mt.group(5)):+.1f}%)")
+        except ValueError:
+            pass
+    mc = re.search(r"(?:총\s*계|(?<![가-힣])계)\s+([\d,]{4,})\s+(?:-\s+){1,4}"
+                   r"([\d,]{4,})\s+(-?[\d.]+)", txt)
+    if mc and (not mt or mc.start() != mt.start()):
+        try:
+            parts.append(f"누적: {mc.group(1)}{unit} "
+                         f"(전년동기 {float(mc.group(3)):+.1f}%)")
+        except ValueError:
+            pass
+    return parts
+
+
+def _parse_volume(rcept_no: str, api_key: str) -> dict | None:
+    """물량형 잠정실적 — 원문 fetch 후 _volume_lines. 0건이면 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts = _volume_lines(txt)
+    if not parts:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
+
+
+def _fair_disclosure_lines(txt: str) -> list[str]:
+    """수시공시의무관련사항(공정공시) — 공시제목 + 첫 불릿 항목 ≤3
+    (주주환원정책 발표 예시: 적용기간/목표 환원율/산식). 순수."""
+    parts: list[str] = []
+    m = re.search(r"공시\s*제목[^가-힣A-Za-z0-9]{0,10}?"
+                  r"([\s\S]{4,60}?)\s*(?:□|관련\s*수시공시|$)", txt)
+    if m:
+        parts.append(f"제목: {m.group(1).strip()}")
+    for b in re.findall(r"[-–]\s+([가-힣A-Za-z0-9()%:+÷,.'’ ]{6,70}?)"
+                        r"(?=\s+[-–□]\s|\s*\d\s*\.\s|$)", txt)[:3]:
+        parts.append(b.strip())
+    return parts
+
+
+def _future_plan_lines(txt: str) -> list[str]:
+    """장래사업ㆍ경영계획(공정공시) — 계획 사항/예상투자금액/이사회결의일
+    (네이버-엔비디아 AI 팩토리 예시). 순수."""
+    parts: list[str] = []
+    # 번호 라벨 필수 — 머리말 '※ 동 정보는 장래 계획사항으로서…'의
+    # '으로서…' 오캡처 차단 (해산사유와 동일 클래스)
+    m = re.search(r"\d\s*\.\s*장래\s*계획\s*사항[^가-힣A-Za-z0-9(\[]{0,10}?"
+                  r"([\s\S]{6,80}?)\s*(?:\d\s*\.\s|목\s*적)", txt)
+    if m:
+        parts.append(f"계획: {m.group(1).strip()}")
+    m = re.search(r"예상\s*투자금액[^가-힣A-Za-z0-9]{0,10}?"
+                  r"([\s\S]{2,70}?)\s*(?:기대\s*효과|\d\s*\.\s)", txt)
+    if m:
+        parts.append(f"예상투자금액: {m.group(1).strip()}")
+    m = re.search(r"이사회\s*결의일[^0-9]{0,16}?(\d{4}-\d{1,2}-\d{1,2})", txt)
+    if m:
+        parts.append(f"이사회결의일: {m.group(1)}")
+    return parts
+
+
+def _material_title_category(title_line: str) -> str | None:
+    """투자판단 관련 주요경영사항 제목 → 카테고리 승격 (결정적, 양 경로
+    공유 — fresh-parse + known-reuse)."""
+    t = title_line or ""
+    if any(k in t for k in ("소송", "가처분", "판결")):
+        return "소송"
+    if any(k in t for k in ("기술이전", "라이선스", "공급계약", "계약 체결",
+                            "계약체결", "수주")):
+        return "계약"
+    if any(k in t for k in ("배당", "자사주", "주주환원", "소각")):
+        return "주주환원"
+    if any(k in t for k in ("상장폐지", "거래정지", "회생", "파산")):
+        return "리스크"
+    return None
+
+
+def _material_mgmt_lines(txt: str) -> dict | None:
+    """투자판단 관련 주요경영사항 — 유가증권 catch-all (한미약품 기술이전
+    예시). 제목/계약상대방/계약금액(총+Upfront)/체결일 + 제목 키워드
+    카테고리 승격. 2미만 None. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    title = _g(r"\d\s*\.\s*제\s*목[^가-힣A-Za-z0-9(\[]{0,10}?"
+               r"([\s\S]{4,80}?)\s*\d{1,2}\s*\.\s")
+    if title:
+        parts.append(f"제목: {title}")
+    cp = _g(r"계약\s*상대방?[^A-Za-z가-힣0-9]{0,8}?"
+            r"([A-Za-z가-힣0-9(),.&· ]{2,50}?)\s*(?:\d\s*\)|\d\s*\.\s|$)")
+    if cp:
+        parts.append(f"상대방: {cp}")
+    amt = _g(r"계약금액[^A-Za-z0-9$€¥]{0,8}?"
+             r"(총?\s*US\$[\d,]{4,}(?:\s*\(약[\d조억,.\s]+원\))?"
+             r"|총?\s*[\d,]{4,}\s*원?(?:\s*\(약[\d조억,.\s]+원\))?)")
+    if amt:
+        parts.append(f"계약금액: {amt}")
+    up = _g(r"(?:계약금\s*\(?\s*Upfront\s*\)?|Upfront)[^A-Za-z0-9$]{0,8}?"
+            r"(US\$[\d,]{4,}(?:\s*\(약\s*[\d,]+억원\))?|[\d,]{4,})")
+    if up:
+        parts.append(f"계약금(Upfront): {up}")
+    d = _g(r"계약\s*체결일[^0-9]{0,10}?"
+           r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    if d:
+        parts.append(f"체결일: {d}")
+    if len(parts) < 2:
+        return None
+    out: dict = {"lines": parts}
+    cat = _material_title_category(title or "")
+    if cat:
+        out["category"] = cat
+    return out
+
+
+def _extract_material_mgmt(rcept_no: str, api_key: str) -> dict | None:
+    """투자판단 주요경영사항 — fetch 후 _material_mgmt_lines. 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    out = _material_mgmt_lines(txt)
+    if out is None:
+        _doc_fail_mark(rcept_no, hours=12.0)
+    return out
+
+
 def _inquiry_lines(txt: str) -> list[str]:
     """조회공시/풍문·보도 해명 원문 → 카드 lines (순수 — 단위테스트).
 
@@ -1619,6 +1763,10 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
     # 실패(None) 시 아래 구조화 API spec 폴백 (graceful).
     if "영업(잠정)실적" in t or "매출액또는손익구조" in t:
         doc = _parse_earnings_doc(rcept_no, api_key, t)
+        if not doc and "영업(잠정)실적" in t:
+            # 금액표 전부 '-' 인 월간 판매물량 변형 (도시가스 천톤/완성차
+            # 대수 — 2026-06-12 '파싱안된것들')
+            doc = _parse_volume(rcept_no, api_key)
         if doc:
             return doc
     elif "공급계약" in t or "단일판매" in t or "단일공급" in t:
@@ -1718,6 +1866,25 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
     # ── 조회공시/풍문·보도 해명 (사용자 2026-06-12 '이제 조회공시', 5예시) ──
     elif "조회공시" in t or "풍문" in t or "해명" in t:
         doc = _extract_inquiry(rcept_no, api_key)
+        if doc:
+            return doc
+    # ── 공정공시 변형 + 투자판단 (사용자 2026-06-12 '파싱안된것들') ──
+    elif "수시공시의무관련" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _fair_disclosure_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "장래사업" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _future_plan_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "투자판단" in t or "기술이전" in t:
+        doc = _extract_material_mgmt(rcept_no, api_key)
         if doc:
             return doc
 
@@ -2035,12 +2202,13 @@ def fetch_market_disclosures(target_date: date | None = None,
             rcept_dt = r.get("rcept_dt") or end_ds
 
             category = _classify_report(report_nm)
-            # 기타경영사항(자율공시)은 catch-all 제목이라 '기타'지만 수집 유지
-            # — 본문이 소송성(가처분 등)이면 enrich 가 소송으로 승격
-            # (사용자 2026-06-12 현대사료/세종메디칼 예시). 비소송분은
-            # detail 없음 → 대시보드가 숨김(홍수 방지).
+            # 기타경영사항(자율공시)·투자판단 주요경영사항은 catch-all
+            # 제목이라 '기타'지만 수집 유지 — 본문 파싱으로 소송/계약 등
+            # 승격 (사용자 2026-06-12 현대사료 가처분/한미 기술이전 예시).
+            # 미승격분은 detail 없음 → 대시보드가 숨김(홍수 방지).
             if (skip_routine and category == "기타"
-                    and "기타경영사항" not in report_nm):
+                    and not any(k in report_nm
+                                for k in ("기타경영사항", "투자판단"))):
                 _tally_drop(report_nm, stock_code)
                 continue
 
@@ -2072,7 +2240,7 @@ def fetch_market_disclosures(target_date: date | None = None,
 # 오색칠. 전부 ₩0·순수 판정(렌더타임, 과거 카드 소급).
 _PARSE_FORCE_KW = ("전환청구권", "주식분할", "주식병합", "액면분할", "액면병합",
                    "신규시설투자", "투자결정", "유형자산", "회사분할", "분할합병",
-                   "담보", "기타경영사항")
+                   "담보", "기타경영사항", "투자판단")
 _PARSE_CATS = ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
                "자산양수도", "회사구조", "소송", "리스크",
                "조회공시")   # 2026-06-12 '이제 조회공시' — 요구/답변·해명 파싱
@@ -2104,19 +2272,24 @@ def is_parse_target(item: dict) -> bool:
 
 
 def _upgrade_category(item: dict) -> None:
-    """detail 로부터 결정적 카테고리 승격 — 기타경영사항(자율공시)인데
-    소송성 detail('사건:' 라인 또는 소송성 제목)이 붙은 카드는 '소송'.
+    """detail 로부터 결정적 카테고리 승격 — catch-all 제목(기타경영사항·
+    투자판단 주요경영사항)의 카드를 본문 기반으로 소송/계약 등으로 복원.
     재fetch 사이클이 제목 기준 '기타'로 재분류해도 known-reuse 경로에서
     복원 (멱등·순수)."""
     try:
         rn = item.get("report_nm", "")
-        if "기타경영사항" not in rn or item.get("category") == "소송":
-            return
         det = [str(l) for l in (item.get("detail") or [])]
-        if any(l.startswith("사건:") for l in det) or any(
-                k in l for l in det if l.startswith("제목:")
-                for k in ("소송", "가처분", "판결", "효력정지")):
-            item["category"] = "소송"
+        if "기타경영사항" in rn and item.get("category") != "소송":
+            if any(l.startswith("사건:") for l in det) or any(
+                    k in l for l in det if l.startswith("제목:")
+                    for k in ("소송", "가처분", "판결", "효력정지")):
+                item["category"] = "소송"
+            return
+        if "투자판단" in rn and item.get("category") in ("기타", "", None):
+            tl = next((l for l in det if l.startswith("제목:")), "")
+            cat = _material_title_category(tl)
+            if cat:
+                item["category"] = cat
     except Exception:
         pass
 

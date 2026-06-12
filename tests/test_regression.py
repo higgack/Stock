@@ -4873,7 +4873,8 @@ class TestDartLawsuitParsing:
         # fetch 가 기타경영사항을 routine-drop 에서 제외 + enrich 카테고리 승격
         # + known-reuse 경로 복원 + 대시보드 detail-less 숨김
         src = open("bot/dart_feed.py", encoding="utf-8").read()
-        assert '"기타경영사항" not in report_nm' in src
+        # fetch keep 예외 — 투자판단 추가로 any(...) 형태 (2026-06-12)
+        assert '"기타경영사항", "투자판단"' in src
         assert "_upgrade_category(item)" in src
         assert 'item["category"] = nc' in src
         dsrc = open("bot/dashboard.py", encoding="utf-8").read()
@@ -5064,6 +5065,92 @@ class TestDartInquiryParsing:
         # 라우팅 존재 가드
         src = open("bot/dart_feed.py", encoding="utf-8").read()
         assert "_extract_inquiry" in src and "_inquiry_lines" in src
+
+
+class TestDartFairDisclosureParsing:
+    """공정공시 변형 + 투자판단 파싱 (사용자 2026-06-12 '파싱안된것들',
+    5예시) — 물량형 잠정실적 / 수시공시 / 장래사업 / 투자판단 승격."""
+
+    def test_volume_earnings_gas(self):
+        # 금액표 전부 '-' + 월간 물량(천톤)만 — 총계 행 발췌
+        from bot.dart_feed import _volume_lines
+        L = _volume_lines(
+            "단위 : 백만원, % 매출액 당해실적 - 구분 : 단위(천톤) 당월실적 ('26.5월) "
+            "전월실적 ('26.4월) 전월 대비 증감율 (%) 전년동월 실적 ('25.5월) "
+            "도시가스용 1,177 1,349 -12.8 - 1,130 4.2 - 발전용 1,198 1,321 -9.3 - 1,263 -5.1 - "
+            "기 타 - - - - - - - 총 계 2,375 2,670 -11.0 - 2,393 -0.8 -")
+        assert L[0] == "5월 판매: 총 2,375천톤 (전월 -11.0% · 전년동월 -0.8%)"
+
+    def test_volume_earnings_auto_with_cumulative(self):
+        # 완성차 대수 — 계 행 + 누적 행(전년동기 %) 둘 다
+        from bot.dart_feed import _volume_lines
+        L = _volume_lines(
+            "구분(단위:대,%) 당기실적 (2026년 5월) 전기실적 (2026년 4월) "
+            "국내 45,364 54,051 -16.1 - 58,966 -23.1 - 해외 280,109 271,878 3.0 - 293,654 -4.6 - "
+            "계 325,473 325,929 -0.1 - 352,620 -7.7 - 구분(단위:대,%) 당기누적 (2026년 1~5월) "
+            "국내 258,481 - - - 292,836 -11.7 - 계 1,627,623 - - - 1,707,534 -4.7 -")
+        assert L[0] == "5월 판매: 총 325,473대 (전월 -0.1% · 전년동월 -7.7%)"
+        assert L[1] == "누적: 1,627,623대 (전년동기 -4.7%)"
+
+    def test_fair_disclosure_shareholder_policy(self):
+        from bot.dart_feed import _fair_disclosure_lines
+        L = _fair_disclosure_lines(
+            "1. 정보내용 공시제목 중장기 주주환원정책 발표 관련 수시공시내용 "
+            "□ 주요 내용 - 적용 기간 : 2026년 결산시점 부터 향후 5개년간 "
+            "- 목표 주주환원율 : 연간 별도 기준 조정 당기순이익의 50% "
+            "- 주주환원율 산식 : (총 배당금액 + 자사주 매입액) ÷ 별도기준 조정 당기순이익")
+        assert L[0] == "제목: 중장기 주주환원정책 발표"
+        assert any("향후 5개년간" in l for l in L)
+        assert any("당기순이익의 50%" in l for l in L)
+
+    def test_future_plan_header_not_captured(self):
+        # 머리말 '※ …장래 계획사항으로서…' 오캡처 차단 (번호 라벨 필수)
+        from bot.dart_feed import _future_plan_lines
+        L = _future_plan_lines(
+            "장래사업ㆍ경영 계획(공정공시) ※ 동 정보는 장래 계획사항으로서 향후 변경될 수 있음 "
+            "1. 장래계획 사항 엔비디아와 글로벌 AI 팩토리 공동 구축 사업 추진 "
+            "(신규사업 또는 타법인과의 전략적 제휴) 2. 주요내용 및 추진일정 목적 글로벌 AI "
+            "예상투자금액 세부 계약 조건 협의 중으로 현재 미확정(단계별 계약 확정 시 별도 공시 예정) "
+            "기대효과 - 4. 이사회결의일(결정일) 2026-06-08")
+        assert L[0].startswith("계획: 엔비디아와 글로벌 AI 팩토리")
+        assert "으로서" not in L[0]
+        assert any(l.startswith("예상투자금액:") and "미확정" in l for l in L)
+        assert "이사회결의일: 2026-06-08" in L
+
+    def test_material_mgmt_license_deal_upgrade(self):
+        # 투자판단 주요경영사항(한미 기술이전) — 계약 승격 + 금액 2종
+        from bot.dart_feed import _material_mgmt_lines
+        r = _material_mgmt_lines(
+            "투자판단 관련 주요경영사항 1. 제목 소네페글루타이드 (Sonefpeglutide; "
+            "LAPS GLP2 agonist; HM15912) 기술이전 계약 체결 2. 주요내용 ※ 투자유의사항 "
+            "1) 계약상대방: Eli Lilly and Company (미국) 3) 계약체결일: 2026년 5월 31일 "
+            "6) 계약금액: 총 US$1,260,000,000 (약 1조 8,973억원) "
+            "① 계약금 (Upfront): US$75,000,000 (약 1,129억원) "
+            "3. 이사회결의일(결정일 ) 또는 사실확인일 2026-05-31")
+        assert r["category"] == "계약"
+        assert any(l == "상대방: Eli Lilly and Company (미국)" for l in r["lines"])
+        assert any(l.startswith("계약금액: 총 US$1,260,000,000")
+                   and "1조 8,973억원" in l for l in r["lines"])
+        assert any(l.startswith("계약금(Upfront): US$75,000,000") for l in r["lines"])
+
+    def test_material_mgmt_collected_and_forced(self):
+        # 투자판단: fetch keep 예외 + force 파싱 대상 + 대시보드 숨김 wiring
+        from bot.dart_feed import is_parse_target
+        assert is_parse_target({"category": "기타",
+                                "report_nm": "투자판단관련주요경영사항",
+                                "corp_code": "x"})
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert '"기타경영사항", "투자판단"' in src   # fetch keep 예외
+        dsrc = open("bot/dashboard.py", encoding="utf-8").read()
+        assert '"투자판단" in rn' in dsrc            # detail-less 숨김
+
+    def test_badge_colors_distinct(self):
+        # 🔥 금색 vs ⚠️ 파랑 — 색 분리 (사용자 2026-06-12 '색깔 다르게')
+        dsrc = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "#d4a017" in dsrc            # 🔥 금색 유지
+        assert "#5c9ce6" in dsrc            # ⚠️ 파랑 (옛 주황 #f5a623 카드/배지 제거)
+        assert ".df-badge-unp{background:#5c9ce618" in dsrc
+        assert "파란 점선" in dsrc           # 범례 동기
 
 
 class TestUsDailyMoversEnrichment:

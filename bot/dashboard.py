@@ -10700,14 +10700,16 @@ _DART_FEED_CSS = """
 @media(max-width:600px){.df-grid{grid-template-columns:1fr}}
 .df-card{background:var(--card,#1a1f2b);border:1px solid var(--border,#2a2f3a);border-radius:8px;padding:14px;font-size:13px;display:flex;flex-direction:column;gap:6px}
 .df-card.hidden{display:none}
-/* 중요(🔥)/미파싱(⚠️) 색상 구별 (사용자 2026-06-12) */
+/* 중요(🔥 금색)/미파싱(⚠️ 파랑 점선) 색상 구별 — 두 색 명확 분리
+   (사용자 2026-06-12 '중요랑 미파싱은 색깔을 다르게'; 옛 주황은 금색과
+   혼동) */
 .df-card.df-significant{border-color:#d4a017;box-shadow:0 0 0 1px #d4a01755}
-.df-card.df-unparsed{border-style:dashed;border-color:#f5a623aa}
+.df-card.df-unparsed{border-style:dashed;border-color:#5c9ce6aa}
 .df-badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;align-self:flex-start;line-height:1.5}
 .df-badge-sig{background:#d4a01726;color:#b8860b;border:1px solid #d4a01766}
-.df-badge-unp{background:#f5a62318;color:#c97b14;border:1px solid #f5a62355}
+.df-badge-unp{background:#5c9ce618;color:#3b82c4;border:1px solid #5c9ce655}
 .df-pill-sig.active{background:#d4a017;border-color:#d4a017}
-.df-pill-unp.active{background:#f5a623;border-color:#f5a623}
+.df-pill-unp.active{background:#5c9ce6;border-color:#5c9ce6}
 .df-card-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
 .df-corp{font-weight:700;font-size:15px;color:var(--text,#1f2937);text-decoration:none}
 .df-corp:hover{text-decoration:underline}
@@ -10765,7 +10767,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         기타경영사항(자율공시)도 동일 — 소송성 파싱(detail)된 것만 노출
         (사용자 2026-06-12 소송 5예시, 비소송 자율공시 PR 류 차단)."""
         rn = it.get("report_nm", "")
-        if "기타경영사항" in rn:
+        if "기타경영사항" in rn or "투자판단" in rn:
             return not (it.get("detail") or [])
         if it.get("category") != "지분공시":
             return False
@@ -10905,7 +10907,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                        '금색 — 상장폐지·손익 30%·계약 매출10%·소각/자사주 발행주식3%·시설 자본20%·신규 5% 대량보유')
         if _unp_total:
             _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
-                       '주황 점선 — 우리 파서 미적용(제목·원문 공유 시 파서 추가)')
+                       '파란 점선 — 우리 파서 미적용(제목·원문 공유 시 파서 추가)')
         parts.append('<p class="sub" style="margin:-6px 0 14px">'
                      + ' &nbsp;·&nbsp; '.join(_lg) + '</p>')
 
