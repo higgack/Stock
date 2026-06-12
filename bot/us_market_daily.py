@@ -72,11 +72,19 @@ def collect_us_data() -> dict:
             info = tk.info or {}
             price = info.get("regularMarketPrice") or info.get("currentPrice")
             prev = info.get("regularMarketPreviousClose") or info.get("previousClose")
-            # 글리치 가드 (KLAC 클래스): ±75% 초과 phantom → 직전 종가 교체
+            # 글리치 가드 (KLAC 클래스): ±75% 초과 phantom → 직전 종가 교체.
+            # 2차 — price·prev 둘 다 같은 미조정 기준이면 1차가 장님 →
+            # 조정 일봉 종가와 교차 (일 1회 oneshot 이라 호출 부담 0).
             try:
                 from bot.price_sanity import quote_glitch_gap
                 if quote_glitch_gap(price, prev):
                     price = prev
+                elif price:
+                    hist = tk.history(period="5d")
+                    if hist is not None and len(hist) and "Close" in hist:
+                        hc = float(hist["Close"].dropna().iloc[-1])
+                        if hc > 0 and quote_glitch_gap(price, hc):
+                            price, prev = hc, hc
             except Exception:
                 pass
             chg = None

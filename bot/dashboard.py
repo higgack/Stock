@@ -8700,7 +8700,9 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
             f'<div class="month-body">'
         )
         for date in month_dates:
-            day_open = " open" if date == _today_kst_ri else ""
+            # 날짜 그룹 기본 접힘 (사용자 2026-06-12 '다른 대시보드처럼' —
+            # Daily Byte 전부-접힘 패턴 mirror)
+            day_open = ""
             day_count = len(by_date[date])
             parts.append(
                 f'<details class="day"{day_open}>'
@@ -8732,9 +8734,7 @@ def _render_reddit_insider_page(runs: list[dict]) -> str:
                 )
 
                 filename = _html.escape(r.get("_filename", ""))
-                card_default_open = (
-                    date == _today_kst_ri and day_count == 1
-                )
+                card_default_open = False   # 전부 접힘 (2026-06-12)
                 card_open_attr = " open" if card_default_open else ""
                 card_id = (
                     f"card-{_html.escape(r.get('_date', ''))}-{filename}"

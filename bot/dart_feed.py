@@ -3163,8 +3163,9 @@ def significance(item: dict, shares_outstanding: float | None = None,
     전부 렌더타임 순수 판정(과거 아카이브 카드 소급, 파서 개선 즉시 반영).
     detail 의존 규칙(2·4·5·6·8)은 enrich 후에만 발화 — 미파싱 카드는 ⚠️.
 
-    1. 손익구조 변동 — 매출액 |20%|↑ OR 영업이익 |30%|↑ OR 영업이익
-       흑자전환만 (사용자 2026-06-12 Or 기준·적자전환 제외, 정정 제외, detail 필요)
+    1. 손익구조 변동 — 매출액 +20%↑ OR 영업이익 +30%↑ OR 영업이익
+       흑자전환 (사용자 2026-06-12 — Or 기준·**증가만**·적자전환 제외,
+       정정 제외, detail 필요)
     2. 단일판매·공급계약 매출액대비 10%↑ (기재정정 제외)
     3. 주식소각 발행주식 3%↑ (사용자 2026-06-12 '소각·자사주 3% 이상만' —
        detail 의 '발행주식의 X%' 우선, 없으면 소각주식수÷shares 계산)
@@ -3218,10 +3219,11 @@ def significance(item: dict, shares_outstanding: float | None = None,
             return None
         sp = _line_pct("매출액:")
         op = _line_pct("영업이익:")
-        if sp is not None and abs(sp) >= 20.0:
-            return f"매출액 {sp:+.1f}% 변동"
-        if op is not None and abs(op) >= 30.0:
-            return f"영업이익 {op:+.1f}% 변동"
+        # +(증가)만 발화 (사용자 2026-06-12 3차 — '손익 30%는 + 일때만')
+        if sp is not None and sp >= 20.0:
+            return f"매출액 {sp:+.1f}%"
+        if op is not None and op >= 30.0:
+            return f"영업이익 {op:+.1f}%"
         # 흑자전환만 (사용자 2026-06-12 2차 — 적자전환 제외; 적자전환의
         # 급감은 위 영업이익 |30%| 게이트가 % 있으면 잡음)
         if any(str(dl).startswith("영업이익:") and "흑자전환" in str(dl)
