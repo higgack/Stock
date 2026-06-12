@@ -5564,6 +5564,41 @@ class TestDartUnparsed7:
         assert o["관할법원"] == "수원지방법원 성남지원"
 
 
+class TestLookupPriceGlitchGuard:
+    """종목검색 카드 글리치 가드 (KLAC $2,411/$3.15T 2026-06-12) — yfinance
+    분할 미조정 수신가를 직전 종가로 교체 + 시총 재계산 + 보정 주석."""
+
+    def test_replaces_split_artifact_price(self):
+        from unittest.mock import patch, MagicMock
+        info = {"quoteType": "EQUITY", "currentPrice": 2411.64,
+                "regularMarketPreviousClose": 213.42,
+                "sharesOutstanding": 1.32e8, "marketCap": 3.15e12}
+        mt = MagicMock(); mt.info = info
+        with patch("yfinance.Ticker", return_value=mt):
+            from bot.stock_snapshot import collect_stock_snapshot
+            s = collect_stock_snapshot("KLAC")
+        assert s["current_price"] == 213.42
+        assert abs(s["market_cap"] - 213.42 * 1.32e8) < 1
+        assert "보정" in s["price_glitch_note"]
+
+    def test_normal_price_untouched(self):
+        from unittest.mock import patch, MagicMock
+        info = {"quoteType": "EQUITY", "currentPrice": 215.0,
+                "regularMarketPreviousClose": 213.42,
+                "sharesOutstanding": 1.32e8, "marketCap": 2.84e10}
+        mt = MagicMock(); mt.info = info
+        with patch("yfinance.Ticker", return_value=mt):
+            from bot.stock_snapshot import collect_stock_snapshot
+            s = collect_stock_snapshot("KLAC")
+        assert s["current_price"] == 215.0
+        assert s["market_cap"] == 2.84e10
+        assert "price_glitch_note" not in s
+
+    def test_detail_page_renders_note(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "price_glitch_note" in src
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""

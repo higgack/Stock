@@ -4124,11 +4124,17 @@ def _render_stock_info_html(rec: dict) -> str:
     ne_label = ne if ne else "—"
     ne_sub = "(추정)" if ne else ""
 
+    # 글리치 보정 주석 (KLAC 2026-06-12 — stock_snapshot 가드가 직전 종가로
+    # 교체한 경우 사용자에게 보정 사실 표기)
+    _glitch = si.get("price_glitch_note") or ""
+    _glitch_html = (f'<div style="grid-column:1/-1;font-size:11px;'
+                    f'color:#f5a623">⚠️ {esc(_glitch)}</div>' if _glitch else "")
     header = f"""<div class="si-header">
   <div class="si-card"><span class="si-label">현재가</span>
     <span class="si-value" data-q="price">{esc(price_str)}</span></div>
   <div class="si-card"><span class="si-label">시가총액</span>
     <span class="si-value" data-q="mcap">{esc(mcap_str)}</span></div>
+  {_glitch_html}
   <div class="si-card"><span class="si-label">발행주식수</span>
     <span class="si-value">{esc(shares_str)}</span></div>
   <div class="si-card"><span class="si-label">다음 실적</span>

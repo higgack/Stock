@@ -67,10 +67,29 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
 
         # ── market data ─────────────────────────────────────────────
         price = _g("currentPrice") or _g("regularMarketPrice")
+        # 현재가 글리치 가드 (KLAC $2,411/$3.15T 2026-06-12 — yfinance 분할
+        # 미조정 아티팩트가 검색 카드에 그대로 노출). 신고저 페이지의 75%
+        # 드랍 가드와 동일 클래스 — CLAUDE.md price-glitch 정책: **교체
+        # (직전 종가) 우선**. |1일 변동|>75% 면 직전 종가로 교체 + 시총도
+        # 직전 종가×주식수로 재계산 + 보정 주석 필드.
+        prev = _g("regularMarketPreviousClose") or _g("previousClose")
+        shares = _g("sharesOutstanding")
+        try:
+            if (price and prev and float(prev) > 0
+                    and abs(float(price) / float(prev) - 1) > 0.75):
+                snap["price_glitch_note"] = (
+                    f"소스 이상치 보정 — 수신가 {float(price):,.2f} 가 직전 "
+                    f"종가 대비 ±75% 초과(분할 미조정 의심) → 직전 종가로 표시")
+                price = float(prev)
+                if shares:
+                    snap["market_cap"] = float(prev) * float(shares)
+        except (TypeError, ValueError):
+            pass
         if price:
             snap["current_price"] = price
-        snap["market_cap"] = _g("marketCap")
-        snap["shares_outstanding"] = _g("sharesOutstanding")
+        if "market_cap" not in snap:
+            snap["market_cap"] = _g("marketCap")
+        snap["shares_outstanding"] = shares
 
         # ── valuation multiples ─────────────────────────────────────
         for k in ("trailingPE", "forwardPE", "priceToBook",
