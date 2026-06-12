@@ -4751,6 +4751,25 @@ class TestUsMovers:
         fv.fetch_us_movers()
         assert kicked
 
+    def test_movers_session_aware_freshness(self):
+        # 장-인지 TTL: 장중 30분 / 장 밖은 '마지막 마감 이후 산출본' fresh
+        from datetime import datetime, timezone
+        from bot.finviz_client import _movers_cache_is_fresh
+
+        def ts(*a):
+            return datetime(*a, tzinfo=timezone.utc).timestamp()
+        wed_1500 = ts(2026, 6, 10, 15, 0)          # 수요일 장중
+        assert _movers_cache_is_fresh(wed_1500 - 600, wed_1500)        # 10분
+        assert not _movers_cache_is_fresh(wed_1500 - 1900, wed_1500)   # 31분
+        sat_noon = ts(2026, 6, 13, 12, 0)          # 토요일 (장 밖)
+        fri_2200 = ts(2026, 6, 12, 22, 0)          # 금 마감(21:30) 후 산출
+        fri_2000 = ts(2026, 6, 12, 20, 0)          # 금 장중 산출 (마감 미반영)
+        assert _movers_cache_is_fresh(fri_2200, sat_noon)
+        assert not _movers_cache_is_fresh(fri_2000, sat_noon)
+        mon_1000 = ts(2026, 6, 15, 10, 0)          # 월 프리오픈 (장 밖)
+        sun_0300 = ts(2026, 6, 14, 3, 0)
+        assert _movers_cache_is_fresh(sun_0300, mon_1000)   # 금 마감 후 ✓
+
     def test_movers_total_failure_writes_status(self, monkeypatch):
         # 전 배치 빈 응답 → failed 마커 (영구 building 차단의 핵심)
         import sys
