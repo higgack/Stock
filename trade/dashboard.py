@@ -197,8 +197,8 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         # 잠정 속보 존 구분선 (사용자 2026-06-13) — 월간과 동일 pill 형식,
         # 녹색(속보 톤). 위 = 🟢 10·20일 잠정, 아래 = 📅 월간.
         prov_zone_div = (
-            "<div class='ind-zone-div prov'><span>🟢 여기부터 <b>10·20일 잠정"
-            " 속보</b> — 관세청 10일 단위 · 11일(1~10)·21일(1~20)·"
+            "<div class='ind-zone-div prov'><span>🟢 여기부터 <b>10·20일·"
+            "월초 잠정 속보</b> — 관세청 10일 단위 · 11일(1~10)·21일(1~20)·"
             "월초(전월 풀월) 발표 · 확정 대비 ~한 달 선행</span></div>"
         ) if prov_html else ""
         # 순서 (사용자 2026-06-12): 구분선 → 📋 더 빠른 잠정치(motie) →
