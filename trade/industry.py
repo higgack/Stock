@@ -850,7 +850,21 @@ def load_stored_imports(conn) -> dict[str, dict[str, int]]:
     return out
 
 
-def _summary_board(series: dict[str, list[dict]]) -> str:
+def _base_tag(y) -> str:
+    """전년동월 ~0 기저효과 표지 — |YoY| ≥ 500% 는 수학적으로 맞아도
+    (예: 에틸렌 +110,050% = 전년 ≈0) 추세 신호로 오독 위험 (사용자
+    2026-06-13 '숫자 검증'). 값은 그대로 두고 맥락 배지만 부착."""
+    try:
+        if y is not None and abs(float(y)) >= 500.0:
+            return ("<span class='ind-base-tag' title='전년동월이 ~0에 가까워 "
+                    "비율이 과장됨 (기저효과) — 절대액 컬럼과 함께 볼 것'>기저</span>")
+    except (TypeError, ValueError):
+        pass
+    return ""
+
+
+def _summary_board(series: dict[str, list[dict]],
+                   show_import_momentum: bool = True) -> str:
     """Top-of-tab summary board mirroring the reference header:
       - 4 classification boxes (초고성장/턴어라운드/부진 with %YoY chips,
         + a 분류 기준 explainer)
@@ -933,7 +947,11 @@ def _summary_board(series: dict[str, list[dict]]) -> str:
         # 내림차순. 이미 수출 강한 산업의 수입↑(동행)보다, 수출은 약한데 수입이
         # 먼저 튀는 산업(⚡선행후보)을 위로 올린다.
         cand = []
-        for ind, ipts in _import_series.items():
+        if not show_import_momentum:
+            _import_items = {}
+        else:
+            _import_items = _import_series
+        for ind, ipts in _import_items.items():
             if not ipts:
                 continue
             iy = ipts[-1].get("yoy")
@@ -956,7 +974,7 @@ def _summary_board(series: dict[str, list[dict]]) -> str:
                     cap = ("<span class='ind-imp-cap'>자본재</span>"
                            if _is_capital_good(drv[0]) else "")
                     sub = (f"<span class='ind-imp-drv'>← {_html.escape(drv[0])} "
-                           f"{_pct(drv[1])}{cap}</span>")
+                           f"{_pct(drv[1])}{_base_tag(drv[1])}{cap}</span>")
                 else:
                     sub = ""
                 rows_html.append(
@@ -969,9 +987,11 @@ def _summary_board(series: dict[str, list[dict]]) -> str:
                 "견인(수요견인). <b>자본재</b> 배지=설비·장비 수입(진짜 capex 선행). <b>←</b>는 "
                 "그 산업 수입을 가장 끌어올린 세부품목(MTI).</p>"
                 f"<div class='ind-imp-list'>{''.join(rows_html)}</div></div>")
+    imp_grid = (f"<div class='ind-deriv-grid'>{imp_box}</div>"
+                if imp_box else "")
     return (f"<div class='ind-summary-grid'>{''.join(boxes)}</div>"
             f"<div class='ind-deriv-grid'>{deriv}</div>"
-            f"<div class='ind-deriv-grid'>{imp_box}</div>")
+            f"{imp_grid}")
 
 
 # module-level handoff for the import series (set by render_industry_html
@@ -987,7 +1007,8 @@ _import_mti_name: dict[str, str] = {}
 
 def render_subitem_html(by_mti: dict[str, dict],
                         rate_min_usd: int = 200_000_000,
-                        amt_th: str = "수출") -> str:
+                        amt_th: str = "수출",
+                        lab: str = "수출액") -> str:
     """하위품목 TOP (MTI6 단위) — one level below industry, ranked by
     MoM(전월대비, 최근 모멘텀) so 기저효과에 휘둘리지 않음:
     📈급등률(MoM% 양수 상위 30, 수출 ≥하한) + 💵급증액(전월대비 Δ$ 상위
@@ -1021,16 +1042,23 @@ def render_subitem_html(by_mti: dict[str, dict],
         return ""
 
     def chip_rows(items, metric):
+        # 행 클릭 → 풀 카드 상세 토글 (사용자 2026-06-13 '텔레그램 채널처럼
+        # 품목별 차트+표' — TOP10 풀카드와 동일 _card_body 를 랭킹 전 행에
+        # 확장, 서버 렌더 hidden·표시된 행만이라 비용 bound).
         out = []
         for r in items:
             raw = r["mom"] if metric == "mom" else r["mom_delta"]
             val = _pct(raw) if metric == "mom" else "Δ" + _eokusd(raw)
             cl = "pos" if (raw or 0) > 0 else "neg"
             out.append(
-                f"<tr><td>{_html.escape(r['name'])}</td>"
+                f"<tr class='ind-mti-row' title='클릭 → 차트·월별 상세'>"
+                f"<td>{_html.escape(r['name'])} <span class='ind-mti-more'>▸</span></td>"
                 f"<td class='ind-sub-ind'>{_html.escape(r['industry'])}</td>"
                 f"<td>{_eokusd(r['exp'])}</td>"
-                f"<td class='{cl}'>{val}</td></tr>")
+                f"<td class='{cl}'>{val}</td></tr>"
+                f"<tr class='ind-mti-d' hidden><td colspan='4'>"
+                + _card_body(pts_by_mti[r["mti6"]], lab)
+                + "</td></tr>")
         return "".join(out)
 
     # 급등률: 수출 ≥ 하한 + 전월대비(MoM) 양수 중 MoM% 내림차순 상위 30.
@@ -1071,19 +1099,20 @@ def render_subitem_html(by_mti: dict[str, dict],
             "<section class='ind-card'>"
             f"<div class='ind-head'><h3>{title}</h3>"
             f"<span class='ind-badge ind-badge-{cls}'>{label}</span></div>"
-            + _card_body(pts) + "</section>"
+            + _card_body(pts, lab) + "</section>"
         )
     cards_html = ("<div class='ind-cards'>" + "".join(cards) + "</div>") if cards else ""
 
     return (
         "<h2 class='ind-group ind-group-hot'>하위품목 (MTI 세분)</h2>"
         "<div class='ind-sub-note'>20개 산업 아래 세부 품목(D램·낸드·웨이퍼 등 "
-        "MTI 6자리). 수출액 TOP 10은 풀 카드로, 전체는 급등률·증감액 랭킹표로 — "
-        "산업이 가려버리는 '산업 안의 스타 품목'을 발굴.</div>"
+        f"MTI 6자리). {lab} TOP 10은 풀 카드로, 전체는 급등률·증감액 랭킹표"
+        "(행 클릭 = 차트·월별 상세) — 산업이 가려버리는 '산업 안의 스타 품목'"
+        "을 발굴.</div>"
         + cards_html
         + "<div class='ind-sub-wrap'>"
-        + tbl("📈 급등률 (MoM↑ 상위, 수출 ≥" + _eokusd(rate_min_usd) + ")", rate, "mom")
-        + tbl("💵 급증액 (전월대비, 수출 ≥" + _eokusd(rate_min_usd) + ")", amount, "amount")
+        + tbl("📈 급등률 (MoM↑ 상위, " + amt_th + " ≥" + _eokusd(rate_min_usd) + ")", rate, "mom")
+        + tbl("💵 급증액 (전월대비, " + amt_th + " ≥" + _eokusd(rate_min_usd) + ")", amount, "amount")
         + "</div>"
     )
 
@@ -1144,7 +1173,7 @@ def _intra_views(series: dict[str, list[dict]], by_mti: dict[str, dict] | None) 
     if lead:
         rows = "".join(
             f"<div class='ind-imp-row'><span class='ind-mini-chip'>"
-            f"<b>{_html.escape(nm)}</b> <span class='pos'>{_pct(y)}</span></span>"
+            f"<b>{_html.escape(nm)}</b> <span class='pos'>{_pct(y)}</span>{_base_tag(y)}</span>"
             f"<span class='ind-imp-drv'>{_html.escape(ind)} {_pct(iy)} · Δ{_pct(gap, '%p')}</span>"
             + ("<span class='ind-imp-cap'>반등엔진</span>" if engine else "")
             + "</div>"
@@ -1239,6 +1268,8 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
     dir_toggle = (
         "<div class='ind-toggle ind-dir-toggle' role='group'>"
         "<button type='button' class='ind-tg-btn ind-dir-btn is-active' "
+        "data-ind-dir='all'>전체</button>"
+        "<button type='button' class='ind-tg-btn ind-dir-btn' "
         "data-ind-dir='exp'>수출</button>"
         "<button type='button' class='ind-tg-btn ind-dir-btn' "
         "data-ind-dir='imp'>수입</button></div>"
@@ -1260,10 +1291,12 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
         out.append(motie_banner())
     def _direction_block(ser, bks, mti, lab, amt_th, dir_key, hidden):
         """한 방향(수출/수입)의 전체 섹션 — 보드·인트라·그룹 카드·하위품목.
-        수입 카드 = 수출과 동일 구조 (사용자 2026-06-13)."""
+        수입 카드 = 수출과 동일 구조 (사용자 2026-06-13). 📥 수입 모멘텀
+        박스는 cross-direction 비교(수입YoY−수출YoY)라 수출 뷰 전용 —
+        수입 블록에 두면 자기 자신과 비교돼 무의미 (2026-06-13 버그 fix)."""
         blk = [f"<div class='ind-dirset' data-dir='{dir_key}'"
                + (" style='display:none'" if hidden else "") + ">"]
-        blk.append(_summary_board(ser))
+        blk.append(_summary_board(ser, show_import_momentum=(dir_key == "exp")))
         blk.append(_intra_views(ser, mti))
         for label, cls in _GROUPS:
             items = bks.get(label) or []
@@ -1281,15 +1314,22 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
                 )
             blk.append("</div>")
         if mti:
-            blk.append(render_subitem_html(mti, amt_th=amt_th))
+            blk.append(render_subitem_html(mti, amt_th=amt_th, lab=lab))
         blk.append("</div>")
         return "".join(blk)
 
     out.append(_direction_block(series, buckets, by_mti,
                                 "수출액", "수출", "exp", hidden=False))
     if imp_series:
+        # 전체(기본) 모드: 수출 섹션(하위품목 표까지) 끝 → 구분선 → 수입
+        # 섹션이 이어짐 (사용자 2026-06-13 '캡쳐 다음에 이어지는 걸로').
+        out.append(
+            "<div class='ind-zone-div ind-dir-divider'>"
+            "<span>📥 여기부터 <b>수입</b> — 위 수출과 동일 구조 "
+            "(분류 보드 · 산업 카드 · MTI 하위품목)</span></div>"
+        )
         out.append(_direction_block(imp_series, _bucketize(imp_series),
                                     by_mti_import, "수입액", "수입",
-                                    "imp", hidden=True))
+                                    "imp", hidden=False))
     return "".join(out)
 

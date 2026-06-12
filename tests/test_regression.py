@@ -4650,6 +4650,82 @@ class TestHighlowFullUsAndCapWeight:
         assert "highlow.json" in written
 
 
+class TestUsMovers:
+    """가장 많이 오른/내린 TOP30 (사용자 2026-06-12 '신고가/신저가 옆에').
+    랭킹 순수부 + SWR 비동기 + 페이지 렌더."""
+
+    def test_rank_filters_and_sorts(self):
+        from bot.finviz_client import _rank_us_movers
+        rows = [
+            {"ticker": "A", "price": 5.0, "pct": 40.0, "dollar_m": 2.0},
+            {"ticker": "B", "price": 0.5, "pct": 90.0, "dollar_m": 9.0},   # 페니 컷
+            {"ticker": "C", "price": 10.0, "pct": 25.0, "dollar_m": 0.1},  # 박거래 컷
+            {"ticker": "D", "price": 20.0, "pct": -30.0, "dollar_m": 5.0},
+            {"ticker": "E", "price": 30.0, "pct": 55.0, "dollar_m": 1.0},
+            {"ticker": "F", "price": 30.0, "pct": None, "dollar_m": 1.0},  # 결측 컷
+        ]
+        ups, downs = _rank_us_movers(rows)
+        assert [r["ticker"] for r in ups] == ["E", "A"]
+        assert [r["ticker"] for r in downs] == ["D"]
+
+    def test_rank_top_n_cap(self):
+        from bot.finviz_client import _rank_us_movers
+        rows = [{"ticker": f"T{i}", "price": 10.0, "pct": float(i),
+                 "dollar_m": 5.0} for i in range(1, 41)]
+        ups, downs = _rank_us_movers(rows, top_n=30)
+        assert len(ups) == 30 and ups[0]["pct"] == 40.0 and not downs
+
+    def test_fetch_never_sync_computes(self, monkeypatch):
+        # 신고저 전미국 티어와 동일 — 렌더 경로에서 수 분 배치 동기 계산
+        # 금지 (캐시 부재 시 백그라운드 kick + building 안내)
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        kicked = []
+        monkeypatch.setattr(fv, "_kick_us_movers_refresh",
+                            lambda: kicked.append(1))
+        out = fv.fetch_us_movers()
+        assert out.get("building") and kicked
+
+    def test_movers_page_render(self, monkeypatch):
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "fetch_us_movers", lambda: {
+            "up": [{"ticker": "ATEX", "name": "Anterix", "price": 42.5,
+                    "pct": 47.2, "mcap": 8.5, "ind": "Telecom Services",
+                    "dollar_m": 3.1}],
+            "down": [{"ticker": "XYZ", "name": "Xyz Inc", "price": 12.0,
+                      "pct": -31.0, "mcap": None, "ind": None,
+                      "dollar_m": 1.0}],
+            "ts": "2026-06-12 21:00", "scanned": 6488,
+            "source": "전 미국 상장 산출(yfinance · 당일 등락)"})
+        from bot.us_pages import render_us_movers_page
+        html = render_us_movers_page()
+        assert "가장 많이 오른" in html and "ATEX" in html and "+47.20%" in html
+        assert "가장 많이 내린" in html and "XYZ" in html and "-31.00%" in html
+        assert "업종 분포" in html and "Telecom Services" in html
+        assert 'href="usmovers"' in html      # 토글 탭 (3페이지 공유 shell)
+        assert 'href="lookup/ATEX"' in html   # 종목 → 우리 분석 연결
+
+    def test_movers_page_building_state(self, monkeypatch):
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "fetch_us_movers", lambda: {
+            "up": [], "down": [], "ts": "", "source": "", "building": True})
+        from bot.us_pages import render_us_movers_page
+        html = render_us_movers_page()
+        assert "첫 산출 진행 중" in html
+
+    def test_highlow_page_panels_still_render(self, monkeypatch):
+        # _stock_panel 승격 리팩토링 회귀 가드 — 신고저 페이지 표 동일 유지
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "fetch_high_low", lambda: {
+            "high": [{"ticker": "KO", "name": "Coca-Cola", "price": 71.2,
+                      "pct": 1.1, "mcap": 3000.0, "ind": "Beverages"}],
+            "low": [], "ts": "T", "source": "Finviz"})
+        from bot.us_pages import render_us_highlow_page
+        html = render_us_highlow_page()
+        assert "52주 신고가" in html and "KO" in html and "Beverages" in html
+        assert "hl-table" in html and 'href="lookup/KO"' in html
+
+
 class TestDartLawsuitParsing:
     """소송 파싱 (사용자 2026-06-12, 10예시 제공 — 표준 제기·신청/판결·결정
     + 기타경영사항(자율공시) 소송성 승격) + 🔥 상장폐지 규칙."""
