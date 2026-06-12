@@ -454,15 +454,22 @@ class ImportDirectionCardsTests(unittest.TestCase):
         return {"자동차부품": me}, {"자동차부품": mi}, mti_e, mti_i
 
     def test_dual_blocks_and_labels(self):
+        # 2026-06-13 2차: 기본 = 전체(수출→구분선→수입 모두 표시),
+        # [전체|수출|수입] 3버튼. 수입모멘텀 박스는 수출 블록 전용
+        # (수입 블록 자기비교 버그 fix).
         e, i, me, mi = self._data()
         html = industry.render_industry_html(e, i, me, mi, motie=False)
-        self.assertIn("data-ind-dir='exp'", html)        # 토글
-        self.assertIn("data-ind-dir='imp'", html)
+        for d in ("all", "exp", "imp"):
+            self.assertIn(f"data-ind-dir='{d}'", html)   # 3버튼
+        self.assertIn("ind-dir-divider", html)            # 사이 구분선
         imp = html[html.index("data-dir='imp'"):]
-        self.assertIn("display:none", imp[:80])          # 기본 = 수출
+        self.assertNotIn("display:none", imp[:80])        # 기본 = 전체(표시)
         self.assertIn("수입액", imp)                      # 카드 라벨
         self.assertIn("<th>수입</th>", imp)               # MTI 하위품목 th
-        exp = html[html.index("data-dir='exp'"):html.index("data-dir='imp'")]
+        self.assertIn("수입 ≥", imp)                      # 캡션 방향
+        self.assertNotIn("수입 모멘텀", imp)              # cross-dir 박스 제외
+        self.assertIn("ind-mti-row", imp)                 # 랭킹 행 확장
+        exp = html[html.index("data-dir='exp'"):html.index("ind-dir-divider")]
         self.assertNotIn("수입액", exp)                   # 라벨 오염 0
 
     def test_no_import_data_no_toggle(self):

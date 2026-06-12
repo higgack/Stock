@@ -726,6 +726,11 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-zone-div.prov::before,.ind-zone-div.prov::after{background:#34c759}
 .ind-zone-div.prov span{border-color:#34c759}
 .ind-zone-div.prov b{color:#34c759}
+tr.ind-mti-row{cursor:pointer}
+tr.ind-mti-row:hover td{background:var(--surface-2)}
+.ind-mti-more{color:var(--text-sub);font-size:11px;margin-left:4px}
+tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
+.ind-base-tag{display:inline-block;margin-left:4px;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;background:#ff950022;color:#ff9500;cursor:help}
 .ind-prov-sub{font-size:12px;color:var(--text-sub);margin-bottom:10px}
 .ind-prov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .ind-prov-cell{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
@@ -1627,11 +1632,27 @@ document.addEventListener('click',function(e){
 document.addEventListener('click',function(e){
   const b=e.target.closest('.ind-dir-btn');
   if(!b)return;
+  const mode=b.dataset.indDir;   // all(기본: 수출→구분선→수입) | exp | imp
   document.querySelectorAll('.ind-dir-btn').forEach(x=>x.classList.toggle('is-active',x===b));
   document.querySelectorAll('.ind-dirset').forEach(d=>{
-    d.style.display=(d.dataset.dir===b.dataset.indDir)?'':'none';
+    d.style.display=(mode==='all'||d.dataset.dir===mode)?'':'none';
+  });
+  document.querySelectorAll('.ind-dir-divider').forEach(d=>{
+    d.style.display=(mode==='all')?'':'none';
   });
   filterIndustryCards();   // 검색어 유지 — 새로 보인 방향에도 적용
+});
+
+// --- MTI 랭킹 행 클릭 → 풀 카드 상세 토글 (2026-06-13) ---
+document.addEventListener('click',function(e){
+  const tr=e.target.closest('tr.ind-mti-row');
+  if(!tr)return;
+  const d=tr.nextElementSibling;
+  if(d&&d.classList.contains('ind-mti-d')){
+    d.hidden=!d.hidden;
+    const m=tr.querySelector('.ind-mti-more');
+    if(m)m.textContent=d.hidden?'▸':'▾';
+  }
 });
 
 // --- 잠정 모멘텀 정렬 토글 (절대액/모멘텀/|YoY|) — 4 테이블 동시 재정렬 ---

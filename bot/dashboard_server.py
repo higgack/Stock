@@ -230,7 +230,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 캐시돼 stale(예: 신고가→상한가 변경이 안 보이던 문제, 2026-06-10).
         if (path_lower.endswith((".html", "/")) or path_lower == ""
                 or path_lower in ("/earnings", "/theme", "/highlow",
-                                  "/usindustry", "/ushighlow")
+                                  "/usindustry", "/ushighlow", "/usmovers")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -263,9 +263,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # /theme · /highlow — 테마별 시세 · 상한가/하한가 (Naver, on-demand)
         if raw in ("/theme", "/highlow"):
             return self._handle_naver_page(raw)
-        # /usindustry · /ushighlow — 미국 업종별 시세 · 52주 신고가/신저가
-        # (Finviz, KR 미러 — 사용자 2026-06-10)
-        if raw in ("/usindustry", "/ushighlow"):
+        # /usindustry · /ushighlow · /usmovers — 미국 업종별 시세 · 52주
+        # 신고가/신저가 · 급등급락 TOP30 (KR 미러 — 사용자 2026-06-10/12)
+        if raw in ("/usindustry", "/ushighlow", "/usmovers"):
             return self._handle_us_page(raw)
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시
         if raw == "/trade" or raw.startswith("/trade/"):
@@ -827,11 +827,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_error(500, "internal error")
 
     def _handle_us_page(self, raw: str) -> None:
-        """GET /usindustry | /ushighlow — 미국 업종별 시세 · 52주 신고가/신저가
-        (Finviz, KR /theme·/highlow 미러)."""
+        """GET /usindustry | /ushighlow | /usmovers — 미국 업종별 시세 ·
+        52주 신고가/신저가 · 급등급락 TOP30 (KR /theme·/highlow 미러)."""
         try:
-            from bot.us_pages import render_us_highlow_page, render_us_industry_page
+            from bot.us_pages import (render_us_highlow_page,
+                                      render_us_industry_page,
+                                      render_us_movers_page)
             html = (render_us_industry_page() if raw == "/usindustry"
+                    else render_us_movers_page() if raw == "/usmovers"
                     else render_us_highlow_page())
             encoded = html.encode("utf-8")
             self.send_response(200)

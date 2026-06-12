@@ -64,6 +64,7 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
     toggle = ('<div class="toggle">'
               + _t("usindustry", "🏭 업종별 시세")
               + _t("ushighlow", "📈 신고가·신저가")
+              + _t("usmovers", "🚀 급등·급락 TOP30")
               + '</div>')
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -121,6 +122,65 @@ def render_us_industry_page() -> str:
     return _shell("미국 업종별 시세", sub, "usindustry", body)
 
 
+def _fmt_mcap(m_eok: float | None) -> str:
+    """억$ → 사람이 읽는 시총 ($T/$B/$M). 신고저·급등급락 공용."""
+    if not m_eok:
+        return "—"
+    if m_eok >= 10000:      # ≥ $1T
+        return f"${m_eok / 10000:.2f}T"
+    if m_eok >= 10:         # ≥ $1B
+        return f"${m_eok / 10:.1f}B"
+    return f"${m_eok * 100:.0f}M"
+
+
+def _stock_panel(title: str, items: list, tid: str, extra_head: str = "") -> str:
+    """종목 표 패널 (종목/현재가/등락률/시총/업종, 헤더 정렬) — 신고저·
+    급등급락 공용 (2026-06-12 movers 추가 때 highlow 내부에서 승격)."""
+    if not items:
+        return (f'<div class="panel"><h2>{title}</h2>'
+                '<div class="empty">해당 종목 없음</div></div>')
+
+    def _row(i: int, it: dict) -> str:
+        tk = _html.escape(it.get("ticker", ""))
+        nm = _html.escape(it.get("name") or it.get("ticker", ""))
+        label = f'{tk}<span class="ts">({nm})</span>' if nm != tk else tk
+        price = it.get("price")
+        pct = it.get("pct")
+        mcap = it.get("mcap")
+        # 업종분류 — yfinance industry 원문 그대로 (사용자 2026-06-12)
+        ind = _html.escape(str(it.get("ind") or ""))
+        ind_cell = (f'<td class="ind" title="{ind}">{ind}</td>'
+                    if ind else '<td class="ind">—</td>')
+        # data-* = raw 정렬값 (sym/ind=text, price/pct/mcap=numeric)
+        return (
+            f'<tr data-sym="{tk.lower()}" '
+            f'data-price="{price if price is not None else -1}" '
+            f'data-pct="{pct if pct is not None else -9999}" '
+            f'data-mcap="{mcap if mcap is not None else -1}" '
+            f'data-ind="{ind.lower()}">'
+            f'<td class="rk">{i}</td>'
+            f'<td class="nm"><a href="lookup/{tk}">{label}</a></td>'
+            f'<td class="num">{("$" + format(price, ",.2f")) if price is not None else "—"}</td>'
+            f'{_pct_cell(pct)}'
+            f'<td class="num">{_fmt_mcap(mcap)}</td>'
+            f'{ind_cell}</tr>'
+        )
+    rows = "".join(_row(i, it) for i, it in enumerate(items, 1))
+    # th data-key/data-type → JS 정렬. # 컬럼은 정렬 비활성.
+    return (
+        f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
+        f'{extra_head}'
+        f'<table class="hl-table" id="{tid}"><thead><tr>'
+        f'<th>#</th>'
+        f'<th class="srt" data-key="sym" data-type="text">종목</th>'
+        f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가</th>'
+        f'<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>'
+        f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총</th>'
+        f'<th class="srt" data-key="ind" data-type="text">업종</th>'
+        f'</tr></thead><tbody>{rows}</tbody></table></div>'
+    )
+
+
 def render_us_highlow_page() -> str:
     """미국 52주 신고가·신저가 — Finviz ta_newhigh/ta_newlow (전 미국 상장).
     폴백(S&P 500 산출) 시에도 동일 표. 종목 → 우리 종목분석(lookup)."""
@@ -132,60 +192,7 @@ def render_us_highlow_page() -> str:
         data = {"high": [], "low": [], "ts": "", "source": ""}
     ts = _html.escape(data.get("ts", ""))
     src = _html.escape(data.get("source", "Finviz"))
-
-    def _fmt_mcap(m_eok: float | None) -> str:
-        """억$ → 사람이 읽는 시총 ($T/$B/$M)."""
-        if not m_eok:
-            return "—"
-        if m_eok >= 10000:      # ≥ $1T
-            return f"${m_eok / 10000:.2f}T"
-        if m_eok >= 10:         # ≥ $1B
-            return f"${m_eok / 10:.1f}B"
-        return f"${m_eok * 100:.0f}M"
-
-    def _panel(title: str, items: list, tid: str) -> str:
-        if not items:
-            return (f'<div class="panel"><h2>{title}</h2>'
-                    '<div class="empty">해당 종목 없음</div></div>')
-
-        def _row(i: int, it: dict) -> str:
-            tk = _html.escape(it.get("ticker", ""))
-            nm = _html.escape(it.get("name") or it.get("ticker", ""))
-            label = f'{tk}<span class="ts">({nm})</span>' if nm != tk else tk
-            price = it.get("price")
-            pct = it.get("pct")
-            mcap = it.get("mcap")
-            # 업종분류 — yfinance industry 원문 그대로 (사용자 2026-06-12)
-            ind = _html.escape(str(it.get("ind") or ""))
-            ind_cell = (f'<td class="ind" title="{ind}">{ind}</td>'
-                        if ind else '<td class="ind">—</td>')
-            # data-* = raw 정렬값 (sym/ind=text, price/pct/mcap=numeric)
-            return (
-                f'<tr data-sym="{tk.lower()}" '
-                f'data-price="{price if price is not None else -1}" '
-                f'data-pct="{pct if pct is not None else -9999}" '
-                f'data-mcap="{mcap if mcap is not None else -1}" '
-                f'data-ind="{ind.lower()}">'
-                f'<td class="rk">{i}</td>'
-                f'<td class="nm"><a href="lookup/{tk}">{label}</a></td>'
-                f'<td class="num">{("$" + format(price, ",.2f")) if price is not None else "—"}</td>'
-                f'{_pct_cell(pct)}'
-                f'<td class="num">{_fmt_mcap(mcap)}</td>'
-                f'{ind_cell}</tr>'
-            )
-        rows = "".join(_row(i, it) for i, it in enumerate(items, 1))
-        # th data-key/data-type → JS 정렬. # 컬럼은 정렬 비활성.
-        return (
-            f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
-            f'<table class="hl-table" id="{tid}"><thead><tr>'
-            f'<th>#</th>'
-            f'<th class="srt" data-key="sym" data-type="text">종목</th>'
-            f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가</th>'
-            f'<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>'
-            f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총</th>'
-            f'<th class="srt" data-key="ind" data-type="text">업종</th>'
-            f'</tr></thead><tbody>{rows}</tbody></table></div>'
-        )
+    _panel = _stock_panel
 
     hi, lo = data.get("high", []), data.get("low", [])
     # 기본 정렬 = 시총 내림차순 (사용자 2026-06-12 '처음 화면은 시총순') —
@@ -206,3 +213,55 @@ def render_us_highlow_page() -> str:
            f"업종=GICS·NASDAQ·yfinance 순 매칭 · "
            f"출처 {src} · 5분 캐시" + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
+
+
+def _ind_dist_line(items: list, top_k: int = 5) -> str:
+    """패널 상단 업종 분포 한 줄 — 'Biotechnology 6 · 반도체 4 …' (참고
+    텔레그램 채널의 섹터 카운트 미러, 순수 함수). 업종 없는 행은 제외."""
+    from collections import Counter
+    cnt = Counter(str(it.get("ind")) for it in items if it.get("ind"))
+    if not cnt:
+        return ""
+    parts = " · ".join(f"{_html.escape(ind)} <b>{n}</b>"
+                       for ind, n in cnt.most_common(top_k))
+    return (f'<div class="ts" style="margin:2px 0 8px">업종 분포: {parts}'
+            + (" 외" if len(cnt) > top_k else "") + "</div>")
+
+
+def render_us_movers_page() -> str:
+    """미국 당일 급등·급락 TOP30 — 전 미국 상장 일봉 산출 (신고가/신저가
+    형제 표면, 사용자 2026-06-12). SWR 백그라운드 — 첫 방문이 산출 kick,
+    캐시 전엔 '산출 중' 안내. 종목 → 우리 종목분석(lookup)."""
+    try:
+        from bot.finviz_client import fetch_us_movers
+        data = fetch_us_movers()
+    except Exception as exc:
+        log.warning("us movers page fetch failed: %s", exc)
+        data = {"up": [], "down": [], "ts": "", "source": ""}
+    ts = _html.escape(data.get("ts", ""))
+    src = _html.escape(data.get("source", ""))
+    up, down = data.get("up", []), data.get("down", [])
+
+    if not up and not down:
+        if data.get("building"):
+            body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전 미국 상장 '
+                    '일봉 스캔(수 분 소요). 잠시 후 새로고침해 주세요.</div>')
+        else:
+            body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
+                    '(잠시 후 다시 시도해 주세요.)</div>')
+    else:
+        body = ('<div class="grid">'
+                + _stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up",
+                               _ind_dist_line(up))
+                + _stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down",
+                               _ind_dist_line(down)) + '</div>'
+                + _HL_SORT_JS)
+    scanned = data.get("scanned")
+    sub = (f"미국 당일 등락률 상·하위 30 (전 미국 상장 보통주"
+           + (f" {scanned:,}종목 스캔" if scanned else "")
+           + " · SPAC·워런트·채권형 제외 · $1 미만/거래대금 $0.5M 미만 컷 · "
+             "±75% 초과는 분할/조정 아티팩트 가능성으로 제외) · 분할조정 종가 기준 · "
+             "헤더 클릭 정렬 · 업종=GICS·NASDAQ·yfinance 순 매칭"
+           + (f" · 출처 {src}" if src else "") + " · 30분 캐시"
+           + (f" · {ts} 기준" if ts else ""))
+    return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)

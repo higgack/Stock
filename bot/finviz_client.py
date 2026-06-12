@@ -1194,6 +1194,153 @@ def _highlow_full_us() -> dict:
     return stale if stale is not None else {}
 
 
+# ── 가장 많이 오른/내린 TOP 30 (전 미국 상장 — 사용자 2026-06-12) ─────────
+# 신고가/신저가 형제 표면: 당일 등락률 상·하위 30. 전미국 universe 5d
+# 일봉(분할조정) 벌크 산출 — 신고저 전미국 티어와 동일하게 **백그라운드
+# 전용** SWR (수 분 배치가 페이지 렌더를 hang 못 시키게).
+
+_MOVERS_MIN_PRICE = 1.0     # $1 미만 페니 — 절대가 푼돈에 % 만 큰 노이즈 컷
+_MOVERS_MIN_DOLLAR_M = 0.5  # 당일 거래대금 $0.5M 미만 — 호가 공백 노이즈 컷
+_MOVERS_TOP_N = 30
+_MOVERS_CACHE = "us_movers_v1.json"
+
+
+def _rank_us_movers(rows: list, top_n: int = _MOVERS_TOP_N) -> tuple[list, list]:
+    """순수 랭킹 (단위테스트) — 페니(<$1)·박거래(<$0.5M)·pct 결측 컷 후
+    등락률 상위/하위 각 top_n. 글리치(|pct|>75%)는 스캔 단에서 이미 드랍."""
+    ok = [r for r in rows
+          if r.get("pct") is not None
+          and (r.get("price") or 0) >= _MOVERS_MIN_PRICE
+          and (r.get("dollar_m") or 0) >= _MOVERS_MIN_DOLLAR_M]
+    ups = sorted((r for r in ok if r["pct"] > 0),
+                 key=lambda r: r["pct"], reverse=True)[:top_n]
+    downs = sorted((r for r in ok if r["pct"] < 0),
+                   key=lambda r: r["pct"])[:top_n]
+    return ups, downs
+
+
+def _compute_us_movers() -> dict:
+    """전 미국 상장 5d 일봉 벌크 → 당일 등락 상·하위 TOP30. 백그라운드
+    전용 (배치 ~60회·수 분). universe = nasdaqtrader(_parse_symdir 가
+    SPAC·워런트·채권형 제외), 폴백 S&P500. **auto_adjust=True** — 분할
+    자체를 소스에서 중화(highlow 의 raw 봉과 달리 등락률 비교라 필수),
+    잔존 |pct|>75% 는 글리치 드랍 (KLAC 클래스, CLAUDE.md 가드)."""
+    out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0,
+                 "source": "전 미국 상장 산출(yfinance · 당일 등락)"}
+    tks, names = _us_full_universe()
+    if not tks:
+        tks = _us_universe_robust()
+        names = _sp500_names()
+        out["source"] = "S&P 500 산출(yfinance · 당일 등락)"
+    if not tks:
+        log.warning("finviz: movers — universe empty")
+        return out
+    rows: list[dict] = []
+    try:
+        import yfinance as yf
+        log.info("finviz: movers — universe %d, 배치 다운로드 시작", len(tks))
+        _CHUNK = 120
+        for ci in range(0, len(tks), _CHUNK):
+            chunk = tks[ci:ci + _CHUNK]
+            try:
+                df = yf.download(chunk, period="5d", interval="1d",
+                                 group_by="ticker", threads=True,
+                                 progress=False, auto_adjust=True)
+            except Exception as exc:
+                log.warning("finviz: movers 배치 %d 실패: %s",
+                            ci // _CHUNK + 1, exc)
+                continue
+            if df is None or df.empty:
+                continue
+            last_day = df.index[-1]
+            time.sleep(0.2)   # 벌크 사이 호흡 (highlow 스캔과 동일)
+            for tk in chunk:
+                try:
+                    if tk not in df.columns.get_level_values(0):
+                        continue
+                    sub = df[tk]
+                    closes = sub["Close"].dropna()
+                    # 당일 봉 없는 종목(정지·스테일) — 옛 날짜의 등락이
+                    # phantom 무버로 오르는 것 차단
+                    if len(closes) < 2 or closes.index[-1] != last_day:
+                        continue
+                    c0, c1 = float(closes.iloc[-1]), float(closes.iloc[-2])
+                    if c1 <= 0:
+                        continue
+                    pct = (c0 / c1 - 1.0) * 100.0
+                    if abs(pct) > 75.0:
+                        log.warning("finviz: movers 분할/조정 글리치 의심 드랍 "
+                                    "— %s %+.0f%%", tk, pct)
+                        continue
+                    vols = sub["Volume"].dropna()
+                    v0 = float(vols.iloc[-1]) if len(vols) else 0.0
+                    rows.append({
+                        "ticker": tk, "name": (names or {}).get(tk, tk),
+                        "price": round(c0, 2), "pct": round(pct, 2),
+                        "dollar_m": round(c0 * v0 / 1e6, 2),
+                    })
+                except Exception:
+                    continue
+        out["scanned"] = len(rows)
+        ups, downs = _rank_us_movers(rows)
+        # 시총·업종 부착 — 랭킹에 든 ≤60 종목만 (백그라운드 전용이라 OK)
+        hits = [r["ticker"] for r in ups + downs]
+        mcaps = _fetch_mcaps(hits)
+        inds = _fetch_industries(hits)
+        for r in ups + downs:
+            mc = mcaps.get(r["ticker"])
+            r["mcap"] = round(mc / 1e8, 2) if mc else None   # 억$
+            r["ind"] = inds.get(r["ticker"])
+        out["up"], out["down"] = ups, downs
+        log.info("finviz: movers — scanned %d → up %d / down %d",
+                 len(rows), len(ups), len(downs))
+        if ups or downs:
+            _cache_write(_MOVERS_CACHE, out)
+    except Exception as exc:
+        log.warning("finviz: movers 산출 실패: %s", exc)
+    return out
+
+
+_MOVERS_LOCK = _threading.Lock()
+_MOVERS_REFRESHING = False
+
+
+def _kick_us_movers_refresh() -> None:
+    """movers 백그라운드 재계산 — 1개만 (stampede 방지)."""
+    global _MOVERS_REFRESHING
+    with _MOVERS_LOCK:
+        if _MOVERS_REFRESHING:
+            return
+        _MOVERS_REFRESHING = True
+
+    def _run():
+        global _MOVERS_REFRESHING
+        try:
+            _compute_us_movers()
+        except Exception as exc:
+            log.warning("finviz: movers 백그라운드 재계산 실패: %s", exc)
+        finally:
+            with _MOVERS_LOCK:
+                _MOVERS_REFRESHING = False
+
+    _threading.Thread(target=_run, daemon=True, name="us-movers").start()
+
+
+def fetch_us_movers() -> dict:
+    """가장 많이 오른/내린 TOP30 — **동기 계산 절대 안 함** (전미국 배치
+    수 분 = 페이지 hang 금지, 신고저 전미국 티어와 동일 SWR): 신선(30분)
+    서빙 / stale(≤24h) 서빙 + 백그라운드 재계산 / 캐시 부재 시 백그라운드
+    kick 후 'building' 반환 → 페이지가 '산출 중' 안내."""
+    c = _cached(_MOVERS_CACHE, ttl=_FALLBACK_TTL_SEC)
+    if c is not None:
+        return c
+    stale = _cached(_MOVERS_CACHE, ttl=86400)
+    _kick_us_movers_refresh()
+    if stale is not None:
+        return stale
+    return {"up": [], "down": [], "ts": "", "source": "", "building": True}
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     g = fetch_groups()
@@ -1202,3 +1349,5 @@ if __name__ == "__main__":
         print(" ", row)
     hl = fetch_high_low()
     print(f"high {len(hl.get('high', []))} / low {len(hl.get('low', []))} ({hl.get('source')})")
+    mv = _compute_us_movers()
+    print(f"movers up {len(mv.get('up', []))} / down {len(mv.get('down', []))} ({mv.get('source')})")
