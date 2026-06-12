@@ -93,6 +93,11 @@ def _classify_report(report_nm: str) -> str:
         return "계약"
     if any(k in t for k in ("생산재개", "화재발생")):  # 생산중단은 chart KW
         return "리스크"
+    # 배당 분리 (사용자 2026-06-12 '배당은 주주환원에서 빼서 따로') —
+    # chart_events shareholder KW('배당' 포함)보다 먼저. 조회공시('배당설'
+    # 답변 류)는 위에서 이미 분기돼 충돌 없음.
+    if "배당" in t:
+        return "배당"
     from bot.chart_events import classify
     eng = classify(t)
     if eng in _CATEGORY_MAP:
@@ -2634,7 +2639,15 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         if txt2:
             parts = _fair_disclosure_lines(txt2)
             if len(parts) >= 2:
-                return {"lines": parts}
+                out = {"lines": parts}
+                # 공정공시 wrapper 는 제목 기반으론 '실적'이지만 내용이
+                # 주주환원정책/배당이면 본문 제목으로 승격 (사용자
+                # 2026-06-12 '이건 주주환원 아님? 왜 실적이야' — KG 5사
+                # 중장기 주주환원정책 케이스).
+                nc = _fair_disclosure_category(parts)
+                if nc:
+                    out["category"] = nc
+                return out
             _doc_fail_mark(rcept_no, hours=12.0)
     elif "장래사업" in t:
         txt2 = _fetch_doc_text(rcept_no, api_key)
@@ -3016,7 +3029,8 @@ _PARSE_FORCE_KW = ("전환청구권", "주식분할", "주식병합", "액면분
                    "담보", "기타경영사항", "투자판단")
 _PARSE_CATS = ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
                "자산양수도", "회사구조", "소송", "리스크",
-               "조회공시")   # 2026-06-12 '이제 조회공시' — 요구/답변·해명 파싱
+               "조회공시",   # 2026-06-12 '이제 조회공시' — 요구/답변·해명 파싱
+               "배당")       # 2026-06-12 주주환원에서 분리 — 기존 배당 specs 파싱 유지
 # 자금조달 중 무료 구조화 소스·원문 파서가 없는 유형(제목만이 정상).
 _FUNDING_NO_PARSER = ("전환가액", "교환청구권", "단기차입금", "금전대여", "채무보증")
 
@@ -3044,11 +3058,25 @@ def is_parse_target(item: dict) -> bool:
     return True
 
 
+def _fair_disclosure_category(detail_lines: list) -> str | None:
+    """공정공시 본문 제목 → 의미 카테고리 (배당 > 주주환원, 그 외 None=실적
+    유지). 가이던스/장래계획성은 실적이 맞으므로 명시 마커만 승격."""
+    tl = next((str(l) for l in detail_lines
+               if str(l).startswith("제목:")), "")
+    if not tl:
+        return None
+    if "배당" in tl:
+        return "배당"
+    if "주주환원" in tl or "자기주식" in tl or "자사주" in tl:
+        return "주주환원"
+    return None
+
+
 def _upgrade_category(item: dict) -> None:
     """detail 로부터 결정적 카테고리 승격 — catch-all 제목(기타경영사항·
-    투자판단 주요경영사항)의 카드를 본문 기반으로 소송/계약 등으로 복원.
-    재fetch 사이클이 제목 기준 '기타'로 재분류해도 known-reuse 경로에서
-    복원 (멱등·순수)."""
+    투자판단 주요경영사항·공정공시 wrapper)의 카드를 본문 기반으로 소송/
+    계약/주주환원/배당 등으로 복원. 재fetch 사이클이 제목 기준으로 재분류
+    해도 known-reuse 경로에서 복원 (멱등·순수)."""
     try:
         rn = item.get("report_nm", "")
         det = [str(l) for l in (item.get("detail") or [])]
@@ -3063,8 +3091,56 @@ def _upgrade_category(item: dict) -> None:
             cat = _material_title_category(tl)
             if cat:
                 item["category"] = cat
+            return
+        # 공정공시 wrapper (수시공시의무관련사항 등) — 본문이 주주환원
+        # 정책/배당이면 승격 (사용자 2026-06-12 '왜 실적이야').
+        if "공정공시" in rn or "수시공시" in rn:
+            nc = _fair_disclosure_category(det)
+            if nc and item.get("category") != nc:
+                item["category"] = nc
     except Exception:
         pass
+
+
+def _won_str_to_float(s: str) -> float | None:
+    """'532억원'/'1.2조원'/'8,051억원'/'3,500만원' → 원 단위 float.
+    (_won 약식 표기의 역파서 — 유상증자 시총대비 판정용, 순수)."""
+    m = re.search(r"([\d,]+(?:\.\d+)?)\s*(조|억|만)?\s*원", str(s))
+    if not m:
+        return None
+    try:
+        v = float(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+    return v * {"조": 1e12, "억": 1e8, "만": 1e4}.get(m.group(2), 1.0)
+
+
+def _detail_amount_sum(detail: list, labels: tuple) -> float:
+    """detail 라인 중 'label: X억원' 형태의 금액 합 (원). 라벨 prefix 매칭."""
+    total = 0.0
+    for dl in detail:
+        s = str(dl)
+        if any(s.startswith(lb) for lb in labels):
+            v = _won_str_to_float(s)
+            if v:
+                total += v
+    return total
+
+
+def _market_cap_won(stock_code: str) -> float | None:
+    """FSC 시가총액(원) numeric — 유상증자 시총대비 5% 판정용. 시총 워밍과
+    같은 12h 디스크 캐시 공유(steady-state 추가 네트워크 0). 실패 None."""
+    try:
+        from bot.fsc_client import latest_price, fsc_key_ready
+        if not fsc_key_ready():
+            return None
+        p = latest_price(f"{stock_code}.KS")
+        if not p:
+            return None
+        v = p.get("mrktTotAmt")
+        return float(str(v).replace(",", "")) if v else None
+    except Exception:
+        return None
 
 
 def _sig_pct(detail: list, label_pat: str) -> float | None:
@@ -3081,10 +3157,11 @@ def _sig_pct(detail: list, label_pat: str) -> float | None:
     return None
 
 
-def significance(item: dict, shares_outstanding: float | None = None) -> str | None:
-    """중요 공시 6규칙 판정(사용자 2026-06-12) → 발화 사유 문자열 or None.
+def significance(item: dict, shares_outstanding: float | None = None,
+                 market_cap: float | None = None) -> str | None:
+    """중요 공시 8규칙 판정(사용자 2026-06-12) → 발화 사유 문자열 or None.
     전부 렌더타임 순수 판정(과거 아카이브 카드 소급, 파서 개선 즉시 반영).
-    detail 의존 규칙(2·4·5·6)은 enrich 후에만 발화 — 미파싱 카드는 ⚠️로 표시.
+    detail 의존 규칙(2·4·5·6·8)은 enrich 후에만 발화 — 미파싱 카드는 ⚠️.
 
     1. 매출액또는손익구조 30%↑ 변동 (기재정정 제외) — 제목 자체가 기준
     2. 단일판매·공급계약 매출액대비 10%↑ (기재정정 제외)
@@ -3095,6 +3172,8 @@ def significance(item: dict, shares_outstanding: float | None = None) -> str | N
     6. 지분공시(대량보유) 신규 5%↑ (직전<5%≤현재)
     7. 상장폐지 관련 (사용자 2026-06-12 '중요에 상장폐지도') — 제목 또는
        파싱된 제목/사건 라인에 상장폐지 (효력정지 가처분 포함)
+    8. 유상증자 시총대비 5%↑ (사용자 2026-06-12, 기재정정 제외, market_cap
+       필요 — 증자금액/시설·운영·채무상환·타법인 자금 합 ÷ FSC 시총)
     """
     rn = item.get("report_nm", "")
     cat = item.get("category", "")
@@ -3105,8 +3184,15 @@ def significance(item: dict, shares_outstanding: float | None = None) -> str | N
     # 제목/사건(소송·자율공시) + 사유/해제·만료/결론(매매거래정지·
     # 기타시장안내) — '비고: 상장폐지 아님' 류 자유 서술 오발 차단.
     # '실질심사'(상장적격성 실질심사 대상 = 상폐 전단계)도 포함 (리스크-2).
+    # ⚠️ '상장폐지시까지' 는 기간 boilerplate — 병합/분할 전자등록 변경의
+    # 기계적 거래정지(에코마케팅 230360, 2026-06-12 오발)가 '구주권
+    # 상장폐지시까지 정지' 문구만으로 발화하던 것 차단. 실제 상폐
+    # 신호(상장폐지결정/상장폐지일/상장폐지 우려/사유의 상장폐지)는 유지.
+    def _delist_hit(s: str) -> bool:
+        s = s.replace("상장폐지시까지", "").replace("상장폐지 시까지", "")
+        return "상장폐지" in s or "실질심사" in s
     if ("상장폐지" in rn or "실질심사" in rn or any(
-            ("상장폐지" in s or "실질심사" in s)
+            _delist_hit(s)
             for dl in detail
             if (s := str(dl)).startswith(("제목:", "사건:", "사유:",
                                           "해제·만료:", "결론:")))):
@@ -3161,6 +3247,14 @@ def significance(item: dict, shares_outstanding: float | None = None) -> str | N
         p = _sig_pct(detail, r"자기자본\s*대비")
         if p is not None and p >= 20.0:
             return f"자기자본대비 {p:g}% 투자"
+    # 8 — 유상증자 시총대비 5%↑ (유무상증자 포함, 무상은 자금 0 이라 자연 미발화)
+    if "유상증자" in rn and not correction and market_cap:
+        amt = _detail_amount_sum(
+            detail, ("증자금액", "시설자금", "운영자금", "채무상환", "타법인"))
+        if amt > 0:
+            pct = amt / market_cap * 100
+            if pct >= 5.0:
+                return f"시총대비 {pct:.1f}% 유상증자"
     # 6
     if cat == "지분공시" and "대량보유" in rn:
         new_reason = any("신규" in str(dl) for dl in detail if "보고사유" in str(dl))
@@ -3680,6 +3774,47 @@ def backfill_v4_once_if_needed() -> dict | None:
         }, ensure_ascii=False))
     except OSError:
         pass
+    return stats
+
+
+# ── v5 — 로컬 재분류 (배당 분리·공정공시 승격, 2026-06-12) ─────────────────
+# API 0·순수 로컬: 제목 재분류(_classify_report — 배당 신설) + 본문 승격
+# (_upgrade_category — 공정공시 주주환원/배당). 수 초.
+
+_RECLASS_MARKER_V5 = _ARCHIVE_DIR.parent / ".dart_feed_reclassified_v5"
+
+
+def reclassify_v5_once_if_needed() -> dict | None:
+    if _RECLASS_MARKER_V5.exists():
+        return None
+    stats = {"reclassified": 0, "upgraded": 0}
+    today = datetime.now(_KST).date()
+    for i in range(60):
+        d = today - timedelta(days=i)
+        items = load_archive(d)
+        if not items:
+            continue
+        changed = False
+        for it in items:
+            new_cat = _classify_report(it.get("report_nm", ""))
+            if new_cat != "기타" and new_cat != it.get("category"):
+                it["category"] = new_cat
+                stats["reclassified"] += 1
+                changed = True
+            before = it.get("category")
+            _upgrade_category(it)
+            if it.get("category") != before:
+                stats["upgraded"] += 1
+                changed = True
+        if changed:
+            save_archive(d, items)
+    try:
+        _RECLASS_MARKER_V5.parent.mkdir(parents=True, exist_ok=True)
+        _RECLASS_MARKER_V5.write_text(datetime.now(_KST).isoformat())
+    except OSError:
+        pass
+    log.info("dart_feed v5 재분류: 제목 %d · 본문승격 %d",
+             stats["reclassified"], stats["upgraded"])
     return stats
 
 
