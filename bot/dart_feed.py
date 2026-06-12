@@ -1085,6 +1085,116 @@ def _issue_price_lines(txt: str) -> list[str]:
     return parts
 
 
+def _confirmation_lines(txt: str) -> list[str]:
+    """확인서 (미파싱-5 — 대표이사·신고업무담당이사 기재내용 확인 + 내부
+    회계관리제도). 정형 첨부 문서라 정보 밀도 낮음 — 회사명 + 요지 2줄.
+    순수. ⚠️ 수집 정책 무변경(기타→drop) — 흘러드는 경우만 파싱."""
+    parts: list[str] = []
+    m = re.search(r"((?:주식회사|㈜)\s*[가-힣A-Za-z0-9]{2,20}|"
+                  r"[가-힣A-Za-z0-9]{2,20}\s*(?:주식회사|㈜))\s*대표이사", txt)
+    if m:
+        parts.append(f"회사: {m.group(1).strip()}")
+    if "기재내용" in txt or "기재사항" in txt:
+        seg = "대표이사·신고업무담당이사 기재내용 확인"
+        if "내부회계관리제도" in txt:
+            seg += " · 내부회계관리제도 운영"
+        parts.append(seg)
+    return parts
+
+
+def _asset_complete_lines(txt: str) -> list[str]:
+    """유형자산 양수도 종료보고서 (미파싱-5 — 에어레인→SK에어코어 청주공장).
+    양도인/양수인/양도금액 + 거래 종료(매매대금 정산·소유권이전 완료). 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    # 표 행만 — 본문 prose '당사(양도인)와 …(양수인)' 오캡처 차단(lookbehind)
+    seller = _g(r"(?<![(가-힣])양도인\s+"
+                r"((?:주식회사|㈜)?\s*[가-힣A-Za-z0-9()㈜ ]{2,36}?)\s*양수인")
+    buyer = _g(r"(?<![(가-힣])양수인\s+"
+               r"((?:주식회사|㈜)?\s*[가-힣A-Za-z0-9()㈜ ]{2,36}?)\s*(?:양도\s*금액|\d\s*\.|$)")
+    if seller or buyer:
+        parts.append(" · ".join(x for x in (
+            f"양도인 {seller}" if seller else None,
+            f"양수인 {buyer}" if buyer else None) if x))
+    amt = _g(r"양도\s*금액[^0-9]{0,12}?([\d,]{6,})\s*원")
+    if amt:
+        from bot.dart_detail import _won
+        parts.append(f"양도금액: {_won(amt) or amt + '원'}")
+    if "소유권이전" in txt or "매매대금" in txt or "종료" in txt:
+        parts.append("거래 종료 (매매대금 정산·소유권이전 완료)")
+    return parts
+
+
+def _merger_lines(txt: str) -> list[str]:
+    """회사합병 결정 (미파싱-5 — 네오위즈→뮤즈라이브 100% 자회사 흡수합병).
+    합병방법/비율/상대회사/합병기일·주총·합병등기 예정. 순수."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    cp = _g(r"(?:합병상대회사|소멸회사|존속회사)[\s\S]{0,12}?회사명[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:주요사업|소재지|\d\s*\.|$)")
+    method = "흡수합병" if "흡수합병" in txt else ("분할합병" if "분할합병" in txt else None)
+    seg = "합병방법: " + (method or "합병")
+    if cp:
+        seg += f" (소멸 {cp})"
+    if method:
+        parts.append(seg)
+    rt = _g(r"합병비율[^0-9]{0,12}?(\d[\d,.]*\s*[:：]\s*\d[\d,.]*)")
+    if rt:
+        parts.append(f"합병비율: {rt.replace('：', ':')}")
+    md = _g(r"합병기일[^0-9]{0,12}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    gm = _g(r"주주총회\s*(?:예정일|일자)[^0-9]{0,12}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    rd = _g(r"합병등기\s*예정일[^0-9]{0,12}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    sched = " · ".join(x for x in (
+        f"합병기일 {_clean_kdate(md)}" if md else None,
+        f"주총 {_clean_kdate(gm)}" if gm else None,
+        f"합병등기 {_clean_kdate(rd)}" if rd else None) if x)
+    if sched:
+        parts.append(f"일정: {sched}")
+    return parts
+
+
+def _business_transfer_lines(txt: str) -> list[str]:
+    """영업양도 결정 (공정거래법 — 미파싱-5 SK/엔솔브 PV·ESS 운영사업).
+    양도영업/양도가액/목적/양수법인/재무내용(백만원). 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    biz = _g(r"\d\s*\.\s*양도영업[^가-힣A-Za-z0-9(]{0,8}?"
+             r"([가-힣A-Za-z0-9()· ]{4,50}?)\s*(?:\d\s*\.|양도영업\s*주요|$)")
+    if biz:
+        parts.append(f"양도영업: {biz}")
+    amt = _g(r"양도가액\s*\(?원?\)?[^0-9]{0,12}?([\d,]{6,})")
+    if amt:
+        from bot.dart_detail import _won
+        parts.append(f"양도가액: {_won(amt) or amt + '원'}")
+    buyer = _g(r"양수법인\s*\([^)]{0,20}\)?[^가-힣A-Za-z0-9(]{0,8}?"
+               r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:\(|\d\s*\.|$)")
+    if buyer:
+        parts.append(f"양수법인: {buyer}")
+    why = _g(r"\d\s*\.\s*양도목적[^가-힣A-Za-z0-9]{0,8}?"
+             r"([가-힣A-Za-z0-9 ]{2,40}?)\s*(?:\d\s*\.|양도예정|$)")
+    if why:
+        parts.append(f"목적: {why}")
+    return parts
+
+
 def _custody_lines(txt: str) -> list[str]:
     """부동산투자회사 자산보관 위탁계약 체결 (리츠 — 미파싱-2 예시 2건:
     신영부동산신탁 정정 연장 / 한국토지신탁 오렌지센터). 보관기관·대상
@@ -2105,10 +2215,57 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         if doc:
             return doc
     elif "회사분할" in t or "분할합병" in t:
+        # 분할 철회 정정(미파싱-5) 우선 — 본문에 '철회' 있으면 철회+사유
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2 and "철회" in txt2:
+            parts: list[str] = []
+            corr = _correction_header(txt2)
+            if corr:
+                parts.append(corr)
+            kind = ("물적분할" if "물적분할" in txt2
+                    else ("인적분할" if "인적분할" in txt2 else "회사분할"))
+            parts.append(f"{kind} 철회")
+            mw = re.search(r"철회\s*사유[^가-힣A-Za-z0-9]{0,8}?"
+                           r"([가-힣A-Za-z0-9() .,]{4,80}?)\s*(?:\d\s*\.|향후|$)", txt2)
+            if mw:
+                parts.append(f"사유: {mw.group(1).strip()}")
+            if len(parts) >= 2:
+                return {"lines": parts}
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _SPLIT_COMPANY_FIELDS, min_fields=2)
         if doc:
             return doc
+    elif "종료보고서" in t and ("유형자산" in t or "양수도" in t
+                              or "양도" in t or "양수" in t):
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _asset_complete_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "회사합병" in t or ("합병" in t and "분할" not in t):
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _merger_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+        # 실패 시 아래 specs(cmpMgDecsn) 폴스루 (early return 안 함)
+    elif "영업양도" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _business_transfer_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+        # 실패 시 specs(bsnTrfDecsn) 폴스루
+    elif "확인서" in t:
+        # 정형 첨부(대표이사 확인서) — 수집되면 최소 파싱, 정책상 보통
+        # 기타→drop (흘러드는 경우만)
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _confirmation_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=24.0)
     elif "최대주주" in t and ("양수" in t or "양도" in t):
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _MAJOR_TRANSFER_FIELDS, min_fields=2)

@@ -5380,6 +5380,68 @@ class TestDartUnparsed4:
         assert ip < rights
 
 
+class TestDartUnparsed5:
+    """미파싱-5 (사용자 2026-06-12, 5예시) — 확인서 / 유형자산 양수도
+    종료보고서 / 회사합병 결정 / 영업양도(공정거래법) / 회사분할 철회 정정."""
+
+    def test_confirmation(self):
+        from bot.dart_feed import _confirmation_lines
+        L = _confirmation_lines(
+            "확인서 우리는 당사의 대표이사 및 신고업무담당이사로서 이 공시서류의 "
+            "기재내용에 대해 직접 확인·검토한 결과... 내부회계관리제도를 마련하여 "
+            "운영하고 있음을 확인합니다. 주식회사 피노 대표이사 주송완 (인)")
+        assert any(l == "회사: 주식회사 피노" for l in L)
+        assert any("내부회계관리제도 운영" in l for l in L)
+
+    def test_asset_complete_table_not_prose(self):
+        # 양도인/양수인은 표 행만 — 본문 '(양도인)와 …(양수인)' 오캡처 차단
+        from bot.dart_feed import _asset_complete_lines
+        L = _asset_complete_lines(
+            "본 보고서는 주요사항보고서(유형자산양도결정)에 관한 종료 보고서입니다. "
+            "당사(양도인)와 에스케이에어코어 주식회사(양수인) 간 체결된 토지 및 건물의 "
+            "양수도 계약... 매매대금 정산 및 소유권이전 등기가 완료됨 "
+            "양도인 주식회사 에어레인 양수인 에스케이에어코어 주식회사 "
+            "양도 금액 12,800,000,000원")
+        assert any("양도인 주식회사 에어레인" in l
+                   and "양수인 에스케이에어코어 주식회사" in l for l in L)
+        assert any(l == "양도금액: 128억원" for l in L)
+        assert any("거래 종료" in l for l in L)
+
+    def test_merger(self):
+        from bot.dart_feed import _merger_lines
+        L = _merger_lines(
+            "회사합병 결정 1. 합병방법 흡수합병 - 존속회사 (주)네오위즈 - 소멸회사 뮤즈라이브 "
+            "4. 합병비율 1 : 0.0000000 8. 합병상대회사 회사명 뮤즈라이브 주요사업 게임 "
+            "10. 합병일정 합병기일 2026년 08월 20일 주주총회 예정일 2026년 07월 14일 "
+            "합병등기 예정일 2026년 08월 31일")
+        assert any(l.startswith("합병방법: 흡수합병") for l in L)
+        assert any(l == "합병비율: 1 : 0.0000000" for l in L)
+        assert any("합병기일 2026-08-20" in l and "주총 2026-07-14" in l
+                   and "합병등기 2026-08-31" in l for l in L)
+
+    def test_business_transfer(self):
+        from bot.dart_feed import _business_transfer_lines
+        L = _business_transfer_lines(
+            "영업양도 결정 기업집단명 에스케이 회사명 엔솔브(주) 관련법규 공정거래법 "
+            "1. 양도영업 태양광발전소(PV) 및 에너지저장장치(ESS) 운영 사업 "
+            "2. 양도영업 주요내용 ... 3. 양도가액 (원) 72,626,529,464 "
+            "4. 양도목적 사업구조 개편 5. 양도예정일자 2026년 10월 31일 "
+            "6. 양수법인(회사와의 관계) 이클립스 주식회사(기타)")
+        assert any(l.startswith("양도영업: 태양광발전소(PV)") for l in L)
+        assert any(l.startswith("양도가액:") and "726.3억원" in l for l in L)
+        assert any(l == "양수법인: 이클립스 주식회사" for l in L)
+        assert any(l == "목적: 사업구조 개편" for l in L)
+
+    def test_split_withdrawal_routing(self):
+        # 회사분할 철회 정정 — 라우팅이 _SPLIT_COMPANY_FIELDS 보다 우선
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        block = src[src.index('elif "회사분할" in t or "분할합병" in t:'):]
+        assert '"철회" in txt2' in block[:600]
+        assert '철회' in block[:600] and 'kind' in block[:700]
+        # 물적/인적분할 종류 + 사유 라인
+        assert '"물적분할" if "물적분할" in txt2' in block[:700]
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""
