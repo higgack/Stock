@@ -6214,3 +6214,29 @@ class TestLegendOrderMatchesChips:
                  "유상증자", "대량보유", "배당", "상장폐지"]
         pos = [seg.index(k) for k in order]
         assert pos == sorted(pos), seg
+
+
+class TestTangibleAssetCategory:
+    """유형자산 양수/양도/처분/취득(+철회) = 자산양수도 (사용자 2026-06-13
+    '유형자산처분이 왜 신규시설투자' — chart _CAPEX_KW '유형자산' 누수
+    차단). 신규시설투자는 전용 양식('신규시설투자등')만. 57종 대표 제목
+    전수 점검에서 적발·수정."""
+
+    def test_tangible_asset_routes(self):
+        from bot.dart_feed import _classify_report as C
+        assert C("유형자산처분결정(자율공시)") == "자산양수도"
+        assert C("[기재정정]주요사항보고서(유형자산양수결정)") == "자산양수도"
+        assert C("기타주요경영사항(유형자산 양수결정 철회)") == "자산양수도"
+        assert C("유형자산취득결정") == "자산양수도"
+        # 전용 양식은 유지
+        assert C("신규시설투자등") == "신규시설투자"
+        assert C("신규시설투자등(자회사의 주요경영사항)") == "신규시설투자"
+        # 합병·회사분할 = M&A 버킷(자산양수도) 일관 — 정책 선택 명시
+        assert C("주요사항보고서(회사합병결정)") == "자산양수도"
+        assert C("회사분할결정") == "자산양수도"
+
+    def test_v7_retro_wired(self):
+        from bot.dart_feed import reclassify_v7_once_if_needed
+        assert callable(reclassify_v7_once_if_needed)
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "reclassify_v7_once_if_needed" in src
