@@ -131,7 +131,7 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
     data = build_heatmap_data(rows)
     if not data or not data.get("chapters"):
         return ("<div style='padding:30px;color:var(--text-sub)'>히트맵 데이터가 "
-                "아직 없습니다 — 다음 전 품목 스캔(하루 4회) 후 표시됩니다.</div>")
+                "아직 없습니다 — 다음 스캔(10분 변경감지·일 4회 풀스윕) 후 표시됩니다.</div>")
     from html import escape as _esc
     ref = _esc(data["ref_ym"])
     status = f" · 관세청 <b>{_esc(status_label)}</b>" if status_label else ""
@@ -142,7 +142,7 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
 <style>{_HEATMAP_CSS}</style>
 <div class="hm-wrap">
   <div class="hm-bar">
-    <span>기준 <b>{ref}</b>{status} · 박스=HS4 (크기=금액) · 매일 4회 폴링</span>
+    <span>기준 <b>{ref}</b>{status} · 박스=HS4 (크기=금액) · 10분 변경감지 · 일 4회 풀스윕</span>
     <span class="hm-toggle" id="hm-dir">
       <button class="hm-tbtn is-active" data-v="exp">수출</button>
       <button class="hm-tbtn" data-v="imp">수입</button>
