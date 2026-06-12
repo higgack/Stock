@@ -138,7 +138,12 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
 <script>
 (function(){{
 var DATA=JSON.parse(document.getElementById('hm-data').textContent);
-var dir='exp', mode='yoy';
+var dir='exp', mode='yoy', HMQ='';
+window.hmFilter=function(q){{ HMQ=(q||'').toLowerCase();
+  if(document.getElementById('hm-map').offsetParent!==null) render(); }};
+document.addEventListener('click',function(e){{
+  if(e.target.closest('[data-tab="heatmap"]')) setTimeout(render,0);
+}});
 function pct(cur,base){{ if(!base) return null; return (cur-base)/base*100; }}
 function color(p){{
   if(p===null) return '#5a5f6b';
@@ -221,6 +226,7 @@ function render(){{
         var n=q.it.n;
         var cell=document.createElement('div'); cell.className='hm-cell';
         cell.style.cssText='left:'+q.x+'px;top:'+(q.y+pad)+'px;width:'+q.w+'px;height:'+q.h+'px;background:'+color(n.p);
+        if(HMQ&&(n.h4+' '+n.nm).toLowerCase().indexOf(HMQ)<0){{ cell.style.opacity='.12'; }}
         if(q.w>54&&q.h>26){{
           var s=document.createElement('span');
           s.textContent=n.h4+' '+n.nm+' '+(n.p===null?'신규':(n.p>0?'+':'')+n.p.toFixed(1)+'%');

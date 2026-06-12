@@ -549,7 +549,7 @@ def _build_html(
         + '</nav>'
         '<section class="filters">'
         '<div class="top-row">'
-        '<input type="search" id="q" placeholder="검색: 품목 / 회사 / 국가" autocomplete="off">'
+        '<input type="search" id="q" placeholder="검색: 품목 / 회사 / 국가 / 산업 / HS" autocomplete="off">'
         '<button type="button" id="csv-btn" class="csv-btn" title="현재 필터 결과를 CSV로 내려받기">📥 CSV</button>'
         '</div>'
         '<div class="chips">'
@@ -718,7 +718,9 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-prov-more>summary::-webkit-details-marker{display:none}
 .ind-prov-more>summary::before{content:'▸ ';color:var(--text-sub)}
 .ind-prov-more[open]>summary::before{content:'▾ '}
-.ind-prov-mom{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:6px}
+.ind-prov-mom{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:6px}
+.ind-prov-mom>.ind-prov-sort,.ind-prov-mom>.ind-prov-mom-note{grid-column:1/-1}
+@media(max-width:980px){.ind-prov-mom{grid-template-columns:1fr}}
 .ind-prov-mom-note{grid-column:1/-1;font-size:11.5px;color:var(--text-sub);line-height:1.4}
 .ind-prov-tbl{width:100%;border-collapse:collapse;font-size:12px;background:var(--bg);border:1px solid var(--border-soft);border-radius:8px;overflow:hidden}
 .ind-prov-tbl caption{caption-side:top;text-align:left;font-weight:600;font-size:12.5px;padding:6px 8px;color:var(--text)}
@@ -1570,7 +1572,16 @@ function render(){
   document.getElementById('items-view').innerHTML=buildItemsView(filtered);
   document.getElementById('companies-view').innerHTML=buildCompaniesView(filtered);
   document.getElementById('matrix-view').innerHTML=buildMatrixView(filtered);
+  filterIndustryCards();                              // 산업트렌드 탭도 검색 (2026-06-12)
+  if(window.hmFilter) window.hmFilter(state.q||'');   // 히트맵 탭도 검색
   renderHeaderMeta();
+}
+function filterIndustryCards(){
+  // 산업 카드(.ind-card) 텍스트 매칭 — 속보/신호/배너는 공통 컨텍스트라 유지
+  const q=(state.q||'').toLowerCase();
+  document.querySelectorAll('#industry-view .ind-card').forEach(function(c){
+    c.style.display=(!q||c.textContent.toLowerCase().indexOf(q)>=0)?'':'none';
+  });
 }
 
 // --- 산업트렌드 월별/TTM toggle (delegated; cards are server-rendered) ---
