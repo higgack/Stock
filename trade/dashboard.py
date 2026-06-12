@@ -966,9 +966,13 @@ function nextAnnouncement(){
   const [y,m]=today.split('-').map(Number);
   const ny=m===12?y+1:y;
   const nm=m===12?1:m+1;
+  const pm=m===1?12:m-1;  // 전월 (이달 15일 = 전월 전체 확정)
   const pad=n=>String(n).padStart(2,'0');
+  // 이달 15일 '전월 전체 확정' 후보 누락 fix (사용자 2026-06-12 — 6/12에
+  // 다음 발표가 6/21로 표시되며 6/15 5월 확정을 건너뛰던 버그).
   const cands=[
     {date:y+'-'+pad(m)+'-11', kind:m+'월 1-10일 잠정'},
+    {date:y+'-'+pad(m)+'-15', kind:pm+'월 전체 확정'},
     {date:y+'-'+pad(m)+'-21', kind:m+'월 1-20일 잠정'},
     {date:ny+'-'+pad(nm)+'-01', kind:m+'월 전체 잠정'},
     {date:ny+'-'+pad(nm)+'-15', kind:m+'월 전체 확정'},

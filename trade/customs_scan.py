@@ -56,6 +56,14 @@ PCT_THRESHOLD = float(os.environ.get("TRADE_CUSTOMS_ALERT_PCT") or "30")
 # lines. $50M chosen from the operator's read of that histogram (260 items
 # survive → top-30 are real, stock-relevant movers). Env-tunable.
 RATE_MIN_USD = int(os.environ.get("TRADE_CUSTOMS_RATE_MIN_USD") or "50000000")
+# Prev-month floor for the rate section (2026-06-12, 운영자 승인) — prev 가
+# 사실상 0(수천$~수십만$)인 low-base 행이 +12,782,507% 같은 무의미한 %로
+# 급등률 1~3위를 점거하던 것(나프타 0.00억$→0.75억$ 실사례). prev <
+# $1M(0.01억$)이면 % 랭킹에서 제외 — 진짜 신규/재개 수출은 💵 급증액에
+# Δ$ 로 그대로 랭크되므로 사라지지 않음 (수출($) 컬럼의 '0.00억$→0.75억$'
+# 표기가 신규임을 그대로 전달). Env-tunable.
+RATE_PREV_MIN_USD = int(
+    os.environ.get("TRADE_CUSTOMS_RATE_PREV_MIN_USD") or "1000000")
 # Safety: max pages per chapter so a runaway never hammers the quota.
 MAX_PAGES = int(os.environ.get("TRADE_CUSTOMS_SCAN_MAX_PAGES") or "60")
 # Alert cap (shared shape with customs_alert).
@@ -255,13 +263,17 @@ def rank(
     top_n: int = TOP_N,
     pct_threshold: float = PCT_THRESHOLD,
     rate_min_usd: int = RATE_MIN_USD,
+    rate_prev_min_usd: int = RATE_PREV_MIN_USD,
 ) -> dict[str, list[dict]]:
     """Two ranked lists from the scanned leaves.
 
     rate   — pct >= +pct_threshold (상승만) AND latest export ≥ rate_min_usd
-             (noise floor — small lines double easily), sorted by pct desc.
+             (noise floor — small lines double easily) AND prev ≥
+             rate_prev_min_usd (low-base 컷 — prev 수천$ 행의 +1,000만%
+             류가 % 랭킹 점거 방지, 2026-06-12), sorted by pct desc.
     amount — sorted by export Δ$ desc (가장 많이 늘어난 순), NO floor
-             (Δ$ ranking already buries small lines).
+             (Δ$ ranking already buries small lines — low-base 신규
+             수출도 여기엔 그대로 랭크).
     Each row: hs_code, name, year_month, prev, curr, delta, pct.
 
     All ranked rows share ONE reference month: the latest confirmed month
@@ -293,6 +305,7 @@ def rank(
         if m["pct"] is not None
         and m["pct"] >= pct_threshold
         and (m["curr"] or 0) >= rate_min_usd
+        and (m["prev"] or 0) >= rate_prev_min_usd
     ]
     rate.sort(key=lambda m: m["pct"], reverse=True)
 
