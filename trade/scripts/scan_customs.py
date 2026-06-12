@@ -54,9 +54,13 @@ log = logging.getLogger("scan-customs")
 # month → no comparison → empty ranking (the bug that wiped live on
 # 6/1). 6 months guarantees ≥2 confirmed months year-round with slack.
 # Decoupled from fetch_customs' 12-month history window via its OWN env
-# var. Cost: ~1,200 calls/scan × 4/day ≈ 4,800 « 10,000 free quota.
+# var.
+# 13개월 확장 (2026-06-12, 히트맵 YoY 색용 — 사용자 승인): leaf 별 작년
+# 동월 필요. 비용 실측 기준 — 6개월 윈도 실사용 ~1,512콜/일(대시보드
+# 헤더 실측; 옛 '1,200콜/스캔' 추정은 과대) × ~2.2배 ≈ 3,300콜/일
+# « 10,000 무료 한도. 페이지수는 월수에 비례.
 LOOKBACK_MONTHS_DEFAULT = int(
-    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "6"
+    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "13"
 )
 _MIGRATE_MARKER = Path.home() / ".trade" / ".surge_migrated"
 
@@ -240,7 +244,12 @@ def main(argv: list[str] | None = None) -> int:
         customs_scan.store_live(conn, ranked)
         archived = customs_scan.upsert_archive(conn, ranked)
         new_entrants = customs_scan.eval_new_entrants(conn, ranked)
-    log.info("stored live; archived=%d new_entrants=%d", archived, len(new_entrants))
+        # 히트맵 leaf 스냅샷 (2026-06-12) — 같은 스윕 데이터 재사용(API 0).
+        # ranking 비어있지 않은(=커버리지 양호) 경로에서만 교체 저장.
+        hm_rows = customs_scan.heatmap_rows(leaves)
+        customs_scan.store_heatmap(conn, hm_rows)
+    log.info("stored live; archived=%d new_entrants=%d heatmap=%d",
+             archived, len(new_entrants), len(hm_rows))
 
     if new_entrants:
         body = customs_scan.format_alert(new_entrants)

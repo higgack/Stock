@@ -424,3 +424,48 @@ class NextAnnouncementScheduleTest(unittest.TestCase):
         src = open("trade/dashboard.py", encoding="utf-8").read()
         self.assertIn("pm+'월 전체 확정'", src)
         self.assertIn("'-15', kind:pm+", src.replace('"', "'"))
+
+
+class HeatmapTest(unittest.TestCase):
+    """Finviz식 히트맵 (사용자 2026-06-12) — leaf 스냅샷 산출·저장·집계."""
+
+    def _leaves(self):
+        return {
+            "8542000000": {"name": "메모리 반도체", "months": {
+                "2025-05": {"exp_dlr": 5_000_000_000, "imp_dlr": 100},
+                "2026-04": {"exp_dlr": 9_000_000_000, "imp_dlr": 200},
+                "2026-05": {"exp_dlr": 15_000_000_000, "imp_dlr": 300},
+                "2026-06": {"exp_dlr": 0, "imp_dlr": 0},  # 미발표 트레일링 0
+            }},
+            "0101000000": {"name": "말", "months": {
+                "2026-05": {"exp_dlr": 0, "imp_dlr": 0},   # 양방향 0 → 제외
+            }},
+        }
+
+    def test_heatmap_rows_ref_pm_py(self):
+        rows = cs.heatmap_rows(self._leaves())
+        by = {r["hs_code"]: r for r in rows}
+        r = by["8542000000"]
+        self.assertEqual(r["ref_ym"], "2026-05")        # 트레일링 0 제외
+        self.assertEqual(r["exp"], 15_000_000_000)
+        self.assertEqual(r["exp_pm"], 9_000_000_000)     # 전월
+        self.assertEqual(r["exp_py"], 5_000_000_000)     # 작년동월 (13개월 윈도)
+        self.assertNotIn("0101000000", by)               # 0 leaf 제외
+
+    def test_store_load_roundtrip_and_empty_guard(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        cs.init_db(conn)
+        rows = cs.heatmap_rows(self._leaves())
+        cs.store_heatmap(conn, rows)
+        self.assertEqual(len(cs.load_heatmap(conn)), len(rows))
+        cs.store_heatmap(conn, [])   # 빈 스캔 → 기존 스냅샷 유지
+        self.assertEqual(len(cs.load_heatmap(conn)), len(rows))
+
+    def test_build_heatmap_data_aggregates_h4(self):
+        from trade.heatmap import build_heatmap_data
+        data = build_heatmap_data(cs.heatmap_rows(self._leaves()))
+        ch85 = next(c for c in data["chapters"] if c["c2"] == "85")
+        self.assertEqual(ch85["name"], "전기전자")
+        self.assertEqual(ch85["h4s"][0]["h4"], "8542")
+        self.assertEqual(ch85["h4s"][0]["epy"], 5_000_000_000)

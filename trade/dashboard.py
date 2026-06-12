@@ -84,6 +84,7 @@ def render_html(
     backlog = _load_eval_miss_summary(eval_miss_path)
     customs_rows = _load_customs_summary(customs_db_path, hs_map_path)
     industry_html = _load_industry_html(customs_db_path)
+    heatmap_html = _load_heatmap_html(customs_db_path)
     return _build_html(
         all_alerts, latest_ids, s, media_url_prefix, backlog, customs_rows,
         industry_html,
@@ -162,6 +163,26 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         ) if prov_html else ""
         return (prov_html + zone_div + ins_html + archive_link
                 + industry.render_industry_html(by_ind, by_imp, by_mti, by_mti_imp))
+    except Exception:
+        return ""
+
+
+def _load_heatmap_html(customs_db_path: Path | str | None) -> str:
+    """Finviz식 수출입 히트맵 탭 (사용자 2026-06-12) — customs_scan 의
+    leaf 스냅샷에서 렌더. 데이터/실패 시 '' → 탭 자체가 안 뜸 (additive)."""
+    try:
+        from trade import customs, customs_scan, heatmap, industry
+        db = customs_db_path if customs_db_path is not None else customs.DEFAULT_DB
+        if not Path(db).exists():
+            return ""
+        with customs.session(db) as conn:
+            customs_scan.init_db(conn)
+            rows = customs_scan.load_heatmap(conn)
+        if not rows:
+            return ""
+        ref_ym = max(r.get("ref_ym") or "" for r in rows)
+        status = industry._month_status_label(ref_ym) if ref_ym else ""
+        return heatmap.render_heatmap_html(rows, status_label=status)
     except Exception:
         return ""
 
@@ -496,6 +517,8 @@ def _build_html(
         '<button class="tab" data-tab="matrix">매트릭스</button>'
         + (f'<button class="tab" data-tab="industry">📈 산업트렌드</button>'
            if industry_html else '')
+        + (f'<button class="tab" data-tab="heatmap">🟩 히트맵</button>'
+           if heatmap_html else '')
         + '</nav>'
         '<section class="filters">'
         '<div class="top-row">'
@@ -525,6 +548,8 @@ def _build_html(
         '<main id="matrix-view" class="view"></main>'
         + (f'<main id="industry-view" class="view">{industry_html}</main>'
            if industry_html else '')
+        + (f'<main id="heatmap-view" class="view">{heatmap_html}</main>'
+           if heatmap_html else '')
         + '<div id="modal" class="modal" hidden>'
         '<div class="modal-backdrop"></div>'
         '<div class="modal-content">'

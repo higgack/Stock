@@ -569,3 +569,33 @@ class ZoneSeparationTest(unittest.TestCase):
         self.assertIn("ind-zone-div", src)
         self.assertIn("월간 산업트렌드", src)
         self.assertIn("~15일 확정 정제", src)
+
+
+class MomentumTableMomColumnTest(unittest.TestCase):
+    """모멘텀 표 MoM(전월 동순) 컬럼 (사용자 2026-06-12 '표에도')."""
+
+    def _rows(self):
+        return [
+            {"ym": "2026-06", "priod_dt": "01~10", "decile": "D1",
+             "amt": [110] + [10] * 10},
+            {"ym": "2026-05", "priod_dt": "01~10", "decile": "D1",
+             "amt": [100] + [8] * 10},
+            {"ym": "2026-05", "priod_dt": "01~31", "decile": "FULL",
+             "amt": [300] + [30] * 10},
+            {"ym": "2025-05", "priod_dt": "01~31", "decile": "FULL",
+             "amt": [200] + [20] * 10},
+            {"ym": "2025-06", "priod_dt": "01~10", "decile": "D1",
+             "amt": [55] + [5] * 10},
+        ]
+
+    def test_mom_chg_computed(self):
+        mv = prov.momentum_rows(self._rows(), ("반도체",) + ("x",) * 9)
+        self.assertAlmostEqual(mv["items"][0]["mom_chg"], 10.0, delta=0.01)
+
+    def test_table_has_mom_column(self):
+        _, tables = prov._momentum_tables({"exp_item": self._rows()},
+                                          inline=False)
+        self.assertIn("<th>MoM</th>", tables)
+        self.assertIn("data-momchg", tables)
+        self.assertIn("data-sort='momchg'", prov.render_momentum(
+            {"exp_item": self._rows()}))
