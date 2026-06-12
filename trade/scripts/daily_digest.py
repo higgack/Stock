@@ -34,17 +34,41 @@ _KST = timezone(timedelta(hours=9))
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 
 
-def _forward_count(date_key: str) -> int:
-    """store.db 에서 어제 수집(ingested_at, KST ISO)된 alert 수."""
+_STORE_PATH = _DATA_DIR / "store.db"
+
+
+def _kst_date_of(ts: str) -> str:
+    """ingested_at(UTC isoformat, bot.py 가 기록) → KST 날짜 문자열.
+    오프셋/Z/naive 전부 tolerant — naive 는 UTC 로 간주."""
     try:
-        with open_db() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM alerts WHERE substr(ingested_at,1,10)=?",
-                (date_key,)).fetchone()
-            return int(row[0]) if row else 0
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_KST).date().isoformat()
+    except Exception:
+        return ""
+
+
+def _forward_count(date_key: str) -> int:
+    """store.db 에서 해당 KST 날짜에 수집된 alert 수. ingested_at 은
+    UTC isoformat — KST 하루는 UTC 로 '전일 15:00~당일 15:00' 이라
+    substr 비교 불가(새벽 수집분이 UTC 전일 문자열). UTC 날짜가
+    (전일, 당일) 두 값뿐이므로 그걸로 프리필터 후 행별 KST 정밀 판정."""
+    try:
+        prev_key = (datetime.fromisoformat(date_key).date()
+                    - timedelta(days=1)).isoformat()
+        conn = open_db(_STORE_PATH)
+        try:
+            rows = conn.execute(
+                "SELECT ingested_at FROM alerts "
+                "WHERE substr(ingested_at,1,10) IN (?,?)",
+                (prev_key, date_key)).fetchall()
+        finally:
+            conn.close()
     except Exception as exc:
         log.warning("forward count failed: %s", exc)
         return 0
+    return sum(1 for (ts,) in rows if _kst_date_of(ts) == date_key)
 
 
 def _listener_inactive() -> bool:

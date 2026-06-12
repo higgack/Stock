@@ -58,3 +58,46 @@ class DigestComposeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ForwardCountKstBoundaryTests(unittest.TestCase):
+    """검토에서 잡은 버그 2종 회귀 차단: open_db(path) 필수 + ingested_at
+    UTC → KST 날짜 경계 (새벽 수집분 = UTC 전일 문자열이라 substr 비교
+    불가 — 전일·당일 프리필터 후 행별 KST 정밀 판정)."""
+
+    def test_kst_boundary(self):
+        import itertools
+        import tempfile
+        from trade.store import open_db
+        dg._STORE_PATH = Path(tempfile.mkdtemp()) / "store.db"
+        conn = open_db(dg._STORE_PATH)
+        cols_row = conn.execute("PRAGMA table_info(alerts)").fetchall()
+        seq = itertools.count(1)
+
+        def ins(ts):
+            i = next(seq)
+            vals = {}
+            for (_c, name, ctype, _nn, _d, _pk) in cols_row:
+                if name == "id":
+                    continue
+                if name in ("ingested_at", "posted_at"):
+                    vals[name] = ts
+                elif name == "superseded_by":
+                    vals[name] = None
+                elif name == "source_message_id":
+                    vals[name] = i
+                elif "INT" in str(ctype).upper():
+                    vals[name] = 0
+                else:
+                    vals[name] = f"x{i}" if name == "dedup_key" else ""
+            ph = ",".join(":" + c for c in vals)
+            conn.execute(
+                f"INSERT INTO alerts ({','.join(vals)}) VALUES ({ph})", vals)
+
+        ins("2026-06-09T16:30:00+00:00")   # KST 06/10 01:30 — 포함되어야
+        ins("2026-06-10T05:00:00+00:00")   # KST 06/10 14:00 — 포함
+        ins("2026-06-10T16:00:00+00:00")   # KST 06/11 — 제외
+        ins("2026-06-09T10:00:00+00:00")   # KST 06/09 — 제외
+        conn.commit()
+        conn.close()
+        self.assertEqual(dg._forward_count("2026-06-10"), 2)
