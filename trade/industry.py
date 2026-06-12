@@ -546,9 +546,15 @@ def _stat_row(points: list[dict]) -> str:
     ma_rel = ((exp - ma) / ma * 100.0) if ma else None
     m = momentum(points)
     def cls(v): return "pos" if (v or 0) > 0 else "neg"
+    # 최신월 잠정/확정 — 상세 패널에도 () 표기(사용자 2026-06-12 '5월부분에
+    # () 잠정인지 확정인지'). 짧은 단어만 셀에, 전체 안내는 title 툴팁.
+    _st = _month_status_label(latest["ym"])
+    _st_short = _st.split("(")[0]   # 잠정 / 확정
+    _prov = (f" <span class='ind-mstatus' title='{_html.escape(_st)}'>"
+             f"({_html.escape(_st_short)})</span>")
     return (
         "<dl class='ind-stats'>"
-        f"<div><dt>최신월</dt><dd>{_html.escape(_dot_ym(latest['ym']))}</dd></div>"
+        f"<div><dt>최신월</dt><dd>{_html.escape(_dot_ym(latest['ym']))}{_prov}</dd></div>"
         f"<div><dt>수출액</dt><dd>{_eokusd(exp)}</dd></div>"
         f"<div><dt>YoY</dt><dd class='{cls(latest.get('yoy'))}'>{_pct(latest.get('yoy'))}</dd></div>"
         f"<div><dt>ΔYoY</dt><dd class='{cls(latest.get('dyoy'))}'>{_pct(latest.get('dyoy'),'%p')}</dd></div>"

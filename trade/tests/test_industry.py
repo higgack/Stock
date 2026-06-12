@@ -134,6 +134,22 @@ class StoreRenderTests(unittest.TestCase):
         self.assertIn("분류 기준", html)              # explainer
         self.assertIn("ind-deriv-grid", html)        # 가속/둔화 미분 보드
 
+    def test_stat_row_provisional_label(self):
+        # 상세 패널 최신월 옆 잠정/확정 () 라벨 (사용자 2026-06-12)
+        by = {"반도체": self._series_25mo(11_000_000_000, 31_000_000_000)}
+        html = industry.render_industry_html(by)
+        self.assertIn("ind-mstatus", html)
+        # 날짜 의존(오늘) 없이 둘 중 하나는 반드시 노출
+        self.assertTrue("(잠정)" in html or "(확정)" in html)
+
+    def test_stat_row_provisional_word_matches_status(self):
+        from datetime import date
+        # 2026-05 최신월: 6/15 전이면 잠정, 이후면 확정 (라벨 단어 = 상태)
+        for today, word in ((date(2026, 6, 12), "잠정"),
+                            (date(2026, 6, 20), "확정")):
+            st = industry._month_status_label("2026-05", today=today)
+            self.assertTrue(st.startswith(word), (today, st))
+
     def test_import_signal_box(self):
         # 수입 YoY 급증 → 생산 선행신호 박스
         exp = {"반도체": self._series_25mo(11_000_000_000, 31_000_000_000)}
@@ -249,7 +265,10 @@ class StoreRenderTests(unittest.TestCase):
         self.assertIn("ind-motie", html)
         self.assertIn("motie.go.kr", html)
         self.assertIn("더 빠른 잠정치", html)
-        self.assertIn("관세청 확정", html)   # 우리 트렌드는 확정 기준임을 명시
+        # 토픽바는 관세청 기준 + 동적 잠정/확정 라벨(_month_status_label,
+        # 2026-06-12 두 단계 표기). 날짜 의존 없이 둘 중 하나가 노출.
+        self.assertIn("관세청", html)
+        self.assertTrue("확정(" in html or "잠정(" in html)
 
     def test_render_empty_returns_blank(self):
         self.assertEqual(industry.render_industry_html({}), "")

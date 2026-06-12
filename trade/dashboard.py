@@ -763,6 +763,7 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-stats dd{margin:0;font-size:13px;font-weight:600}
 .ind-stats dd.pos{color:var(--tone-export)}
 .ind-stats dd.neg{color:var(--tone-import)}
+.ind-mstatus{font-size:10px;font-weight:500;color:var(--text-sub);white-space:nowrap}
 .ind-chart{width:100%;height:auto;display:block}
 .ind-grid{stroke:var(--border-soft);stroke-width:1}
 .ind-value-line{fill:none;stroke:var(--accent);stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
