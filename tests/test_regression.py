@@ -4776,6 +4776,110 @@ class TestHighlowFullUsAndCapWeight:
         assert "highlow.json" in written
 
 
+class TestDartLawsuitParsing:
+    """소송 파싱 (사용자 2026-06-12, 10예시 제공 — 표준 제기·신청/판결·결정
+    + 기타경영사항(자율공시) 소송성 승격) + 🔥 상장폐지 규칙."""
+
+    @staticmethod
+    def _run(fields, txt):
+        import re
+        out = {}
+        for lbl, pat, kind in fields:
+            m = re.search(pat, txt)
+            if m:
+                out[lbl] = m.group(1).strip()
+        return out
+
+    def test_ruling_form_wemade(self):
+        # 판결·결정(일정금액): 금액 '-' 시 자기자본/섹션번호 오캡처 금지
+        from bot.dart_feed import _LAWSUIT_RULING_FIELDS
+        txt = ("1. 사건의 명칭 약정금 등 청구의 소 사건번호 2021가합570045 "
+               "2. 원고ㆍ신청인 주위적 원고: (주)전기아이피 피고 : (주)액토즈소프트 "
+               "3. 판결ㆍ결정내용 원고측의 소 취하로 소송 종결 "
+               "4. 판결ㆍ결정금액 판결ㆍ결정금액(원) - 자기자본(원) 151,321,806,607 "
+               "자기자본대비(%) - 대기업여부 해당 5. 판결ㆍ결정사유 원고측의 소 취하 "
+               "6. 관할법원 서울중앙지방법원 8. 판결ㆍ결정일자 2026-06-12")
+        o = self._run(_LAWSUIT_RULING_FIELDS, txt)
+        assert o["사건"] == "약정금 등 청구의 소"
+        assert o["판결"] == "원고측의 소 취하로 소송 종결"
+        assert "판결금액" not in o and "자기자본대비" not in o
+        assert o["관할법원"] == "서울중앙지방법원"
+
+    def test_filed_form_amount_and_branch_court(self):
+        # 제기·신청(일정금액): 취지 라벨 없는 청구내용 + 청구금액 + 지원 법원
+        from bot.dart_feed import _LAWSUIT_FILED_FIELDS
+        txt = ("1. 사건의 명칭 부당이득금 사건번호 2026가합1352 "
+               "2. 원고ㆍ신청인 주식회사 머큐리에프엠 "
+               "3. 청구내용 1. 피고는 원고에게 6,100,000,000원 및 이에 대하여 "
+               "이 사건 소장부본 송달일 다음날부터 다 갚는 날까지는 연 12%의 비율로 계산된 돈을 지급하라. "
+               "2. 소송비용은 피고가 부담한다 "
+               "4. 청구금액 청구금액(원) 6,100,000,000 자기자본(원) 62,375,819,359 "
+               "자기자본대비(%) 9.7 대기업여부 미해당 5. 관할법원 수원지방법원 성남지원 "
+               "7. 제기ㆍ신청일자 2026-05-20")
+        o = self._run(_LAWSUIT_FILED_FIELDS, txt)
+        assert o["사건"] == "부당이득금"
+        assert o["취지"].startswith("피고는 원고에게 6,100,000,000원")
+        assert o["청구금액"] == "6,100,000,000" and o["자기자본대비"] == "9.7"
+        assert o["관할법원"] == "수원지방법원 성남지원"
+        assert "피고" not in o   # 산문 '피고가 부담한다' 조사 오캡처 차단
+
+    def test_filed_form_governance(self):
+        from bot.dart_feed import _LAWSUIT_FILED_FIELDS
+        txt = ("1. 사건의 명칭 주주총회결의취소 청구의 소 사건번호 2026가합1678 "
+               "2. 원고(신청인 ) 1)얼라인파트너스자산운용 주식회사 2)삼성증권 주식회사 "
+               "3. 청구내용 [청구취지] 1. 피고가 별지 목록 기재 주주총회에서 한 별지 목록 기재 "
+               "결의 사항에 대한 결의를 취소한다. 2. 소송비용은 피고가 부담한다. "
+               "4. 관할법원 수원지방법원 6. 제기ㆍ신청일자 2026-05-22")
+        o = self._run(_LAWSUIT_FILED_FIELDS, txt)
+        assert o["원고"].startswith("1)얼라인파트너스자산운용")
+        assert o["취지"].endswith("결의를 취소한다.")
+        assert o["제기일"] == "2026-05-22"
+
+    def test_misc_mgmt_lawsuit_upgrade(self):
+        # 기타경영사항(자율공시) — [사건] 블록(현대사료) / 인라인 법원+사건번호
+        # (캐스텍코리아 상고) → 소송 승격, 비소송 PR 류 → None
+        from bot.dart_feed import _misc_mgmt_lines
+        s4 = ("기타 경영사항(자율공시) 1. 제목 상장폐지결정 효력정지 가처분 신청 "
+              "2. 주요내용 회사는 서울남부지방법원에 가처분 신청을 하였으며, "
+              "[사건] 2026카합1399 상장폐지결정 효력정지 가처분 "
+              "[채권자] 현대사료 주식회사 [채무자] 주식회사 한국거래소 "
+              "3. 결정(확인)일자 2026-06-12")
+        r = _misc_mgmt_lines(s4)
+        assert r["category"] == "소송"
+        assert any("채권자 현대사료 주식회사" in l and "채무자 주식회사 한국거래소" in l
+                   for l in r["lines"])
+        s7 = ("기타 경영사항(자율공시) 1. 제목 주주총회결의무효확인등 소송 판결에 대한 상고제기 "
+              "2. 주요내용 부산고등법원 2025나6026 주주총회결의무효확인등 사건에 관하여 "
+              "상고를 제기한 건입니다. 3. 결정(확인)일자 2026-06-05")
+        r7 = _misc_mgmt_lines(s7)
+        assert r7 and any("부산고등법원 2025나6026" in l for l in r7["lines"])
+        assert _misc_mgmt_lines(
+            "기타 경영사항(자율공시) 1. 제목 신규 브랜드 출시 안내 "
+            "2. 주요내용 당사는 신규 브랜드를 출시합니다. 3. 결정(확인)일자 2026-06-12") is None
+
+    def test_significance_delisting(self):
+        # 🔥 규칙 7 — 상장폐지 (제목 또는 파싱된 제목/사건 라인)
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "상장폐지",
+                             "category": "리스크"}) == "상장폐지 관련"
+        assert significance({"report_nm": "기타경영사항(자율공시)", "category": "소송",
+                             "detail": ["제목: 상장폐지결정 효력정지 가처분 신청"]}
+                            ) == "상장폐지 관련"
+        # 본문 외 라인의 단어만으로는 미발화 (제목:/사건: 라인 한정)
+        assert significance({"report_nm": "기타공시", "category": "기타",
+                             "detail": ["비고: 상장폐지 아님"]}) is None
+
+    def test_wiring_misc_mgmt_collected_and_upgraded(self):
+        # fetch 가 기타경영사항을 routine-drop 에서 제외 + enrich 카테고리 승격
+        # + known-reuse 경로 복원 + 대시보드 detail-less 숨김
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert '"기타경영사항" not in report_nm' in src
+        assert "_upgrade_category(item)" in src
+        assert 'item["category"] = nc' in src
+        dsrc = open("bot/dashboard.py", encoding="utf-8").read()
+        assert '"기타경영사항" in rn' in dsrc
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""

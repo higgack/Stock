@@ -635,6 +635,132 @@ _COLLATERAL_FIELDS = [
      r"([가-힣A-Za-z0-9()·, ]{2,40}?)\s*(?:\d\.|담보|$)", "text"),
 ]
 
+# ── 소송 — 사용자 제공 5양식 기준 (2026-06-12 '소송 5개 우선, 예시로').
+# 표준 양식 2종: 제기·신청(경영권 분쟁 등) / 판결·결정(일정금액 이상의
+# 청구). ㆍ(U+318D)·· 변형 허용. min_fields=2.
+_LAWSUIT_FILED_FIELDS = [
+    ("사건",
+     r"사건의\s*명칭[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()ㆍ·,\- ]{2,60}?)\s*(?:사건\s*번호|\d{1,2}\.\s|$)", "text"),
+    ("사건번호",
+     r"사건\s*번호[^0-9]{0,20}?(\d{4}\s*[가-힣]{1,4}\s*\d{1,8})", "text"),
+    ("원고",
+     r"원고\s*[ㆍ·(]?\s*신청인?\s*\)?[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9()㈜:,·ㆍ\- ]{2,60}?)\s*(?:피고|채무자|\d{1,2}\.\s|\[|$)", "text"),
+    # 구분자 1자 이상 필수 — 산문 '피고가 부담한다' 조사 오캡처 차단
+    # (머큐리에프엠 추가예시 surfaced), 표 셀 '피고 : (주)X' 만 매칭
+    ("피고",
+     r"피고[^가-힣A-Za-z0-9]{1,10}?"
+     r"([가-힣A-Za-z0-9()㈜,·ㆍ\- ]{2,50}?)\s*(?:\d{1,2}\.\s|\[|$)", "text"),
+    # 취지 라벨 변형: [청구취지]/[신청취지] 또는 라벨 없이 '청구내용' 직후
+    # 번호 목록(나비프라/머큐리에프엠 2026-06-12 추가 5예시)
+    ("취지",
+     r"(?:[\[(]?\s*(?:청구|신청)\s*취지\s*[\])]?|청구\s*내용)\s*"
+     r"[^가-힣0-9]{0,8}(?:1\s*[.)]\s*)?"
+     r"([가-힣A-Za-z0-9()ㆍ·,.%'’‘\- ]{8,120}?)"
+     r"(?:\s*(?:\d{1,2}\s*[.)]\s|라는|\[|$))", "text"),
+    # 일정금액 이상 청구 양식의 청구금액/자기자본대비 (제기·신청에도 존재)
+    ("청구금액",
+     r"청구\s*금액\s*\(?원?\)?[^0-9자]{0,16}?([\d,]{4,})", "won"),
+    ("자기자본대비",
+     r"자기자본\s*대비\s*\(?%?\)?[^0-9대]{0,12}?"
+     r"(\d{1,3}(?:\.\d{1,2})?)(?![.)\d])", "pct"),
+    ("관할법원",
+     r"관할\s*법원[^가-힣]{0,12}?"
+     r"([가-힣 ]{2,20}?법원(?:\s*[가-힣]{1,6}지원)?)", "text"),
+    ("제기일",
+     r"제기\s*[ㆍ·]?\s*신청\s*일자[^0-9]{0,20}?"
+     r"(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})", "text"),
+]
+
+_LAWSUIT_RULING_FIELDS = [
+    ("사건",
+     r"사건의\s*명칭[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()ㆍ·,\- ]{2,60}?)\s*(?:사건\s*번호|\d{1,2}\.\s|$)", "text"),
+    ("사건번호",
+     r"사건\s*번호[^0-9]{0,20}?(\d{4}\s*[가-힣]{1,4}\s*\d{1,8})", "text"),
+    # ○(이름 마스킹)·콜론 포함 — 변경등기보류 가처분(디케이엠이) 류
+    # '채권자(신청인) : 최○○ ...' 본문 수용
+    ("판결",
+     r"판결\s*[ㆍ·]?\s*결정\s*내용[^가-힣A-Za-z0-9]{0,16}?"
+     r"([가-힣A-Za-z0-9()ㆍ·○●:,\- ]{2,70}?)\s*(?:\d{1,2}\.\s|\[|판결|$)", "text"),
+    # 금액 '-' 표기 시 인접 '자기자본(원)' 숫자를 오캡처하지 않게 '자' 차단
+    ("판결금액",
+     r"판결\s*[ㆍ·]?\s*결정\s*금액\s*\(?원?\)?[^0-9자]{0,16}?([\d,]{4,})", "won"),
+    # '-' 표기 시 '대기업여부' 를 건너 섹션번호('5.') 오캡처 금지 — '대' 차단
+    # + 값은 온전한 퍼센트 형태만((?![.)\d]) — '5.' 류 절번호 배제)
+    ("자기자본대비",
+     r"자기자본\s*대비\s*\(?%?\)?[^0-9대]{0,12}?"
+     r"(\d{1,3}(?:\.\d{1,2})?)(?![.)\d])", "pct"),
+    ("관할법원",
+     r"관할\s*법원[^가-힣]{0,12}?"
+     r"([가-힣 ]{2,20}?법원(?:\s*[가-힣]{1,6}지원)?)", "text"),
+    ("판결일",
+     r"판결\s*[ㆍ·]?\s*결정\s*일자[^0-9]{0,20}?"
+     r"(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})", "text"),
+]
+
+
+def _misc_mgmt_lines(txt: str) -> dict | None:
+    """기타경영사항(자율공시) 원문 → 소송성 내용이면 {lines, category:'소송'}.
+
+    제목은 catch-all('상장폐지결정 효력정지 가처분 신청' ~ '신규 브랜드
+    출시')이라 본문 파싱으로 판별 (사용자 2026-06-12 — 현대사료/세종메디칼
+    가처분 예시). 소송 마커([사건] 블록 또는 제목의 소송/가처분/판결/
+    효력정지) 없으면 None → 제목만 카드 유지(노이즈 차단). 순수(단위테스트)."""
+    def _grab(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    title = _grab(r"(?:\d{1,2}\s*\.\s*)?제목[^가-힣A-Za-z0-9]{0,12}?"
+                  r"([가-힣A-Za-z0-9()ㆍ·,\- ]{2,60}?)\s*(?:\d{1,2}\.\s|$)")
+    case = _grab(r"\[\s*사건\s*\][^가-힣0-9]{0,8}?"
+                 r"([가-힣A-Za-z0-9 ]{4,60}?)\s*(?:\[|$)")
+    if not case:
+        # [사건] 블록 없는 변형(캐스텍코리아 상고제기) — 본문 인라인
+        # '부산고등법원 2025나6026' 형태에서 법원+사건번호 추출
+        m = re.search(r"([가-힣]{2,8}(?:고등|지방)?법원)\s+"
+                      r"(\d{4}\s*[가-힣]{1,4}\s*\d{1,8})", txt)
+        if m:
+            case = f"{m.group(1)} {m.group(2)}"
+    lawsuit_kw = ("소송", "가처분", "판결", "효력정지", "소제기", "소 제기",
+                  "상고", "항소")
+    if not (case or (title and any(k in title for k in lawsuit_kw))):
+        return None
+    parts: list[str] = []
+    if title:
+        parts.append(f"제목: {title}")
+    if case:
+        parts.append(f"사건: {case}")
+    cred = _grab(r"\[\s*채권자\s*\][^가-힣A-Za-z0-9]{0,8}?"
+                 r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:\[|\d{1,2}\.\s|$)")
+    debt = _grab(r"\[\s*채무자\s*\][^가-힣A-Za-z0-9]{0,8}?"
+                 r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:\[|\d{1,2}\.\s|$)")
+    pd_seg = " · ".join(x for x in (
+        f"채권자 {cred}" if cred else None,
+        f"채무자 {debt}" if debt else None) if x)
+    if pd_seg:
+        parts.append(pd_seg)
+    d = _grab(r"결정\s*\(?확인\)?\s*일자[^0-9]{0,16}?"
+              r"(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})")
+    if d:
+        parts.append(f"접수(확인)일: {d}")
+    if len(parts) < 2:
+        return None
+    return {"lines": parts, "category": "소송"}
+
+
+def _extract_misc_mgmt(rcept_no: str, api_key: str) -> dict | None:
+    """기타경영사항(자율공시) — 원문 fetch 후 _misc_mgmt_lines. 소송성
+    아니면 None(12h 쿨다운으로 재시도 억제 — 내용은 안 바뀜)."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    out = _misc_mgmt_lines(txt)
+    if out is None:
+        _doc_fail_mark(rcept_no, hours=12.0)
+    return out
+
 
 def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
     """구조화 API 미커버 공시의 generic 원문 추출 — 라벨 매칭 최대 6줄.
@@ -1366,6 +1492,17 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                                   _COLLATERAL_FIELDS, min_fields=2)
         if doc:
             return doc
+    # ── 소송 표준 양식 2종 + 기타경영사항 소송성 (사용자 2026-06-12 5예시) ──
+    elif "소송" in t:
+        doc = _extract_doc_fields(
+            rcept_no, api_key,
+            _LAWSUIT_RULING_FIELDS if ("판결" in t or "결정" in t)
+            else _LAWSUIT_FILED_FIELDS,
+            min_fields=2)
+        if doc:
+            return doc
+    elif "기타경영사항" in t:
+        return _extract_misc_mgmt(rcept_no, api_key)
 
     specs: list[tuple[str, list]] = []
     if "영업(잠정)실적" in t or "매출액또는손익구조" in t:
@@ -1681,7 +1818,12 @@ def fetch_market_disclosures(target_date: date | None = None,
             rcept_dt = r.get("rcept_dt") or end_ds
 
             category = _classify_report(report_nm)
-            if skip_routine and category == "기타":
+            # 기타경영사항(자율공시)은 catch-all 제목이라 '기타'지만 수집 유지
+            # — 본문이 소송성(가처분 등)이면 enrich 가 소송으로 승격
+            # (사용자 2026-06-12 현대사료/세종메디칼 예시). 비소송분은
+            # detail 없음 → 대시보드가 숨김(홍수 방지).
+            if (skip_routine and category == "기타"
+                    and "기타경영사항" not in report_nm):
                 _tally_drop(report_nm, stock_code)
                 continue
 
@@ -1713,7 +1855,7 @@ def fetch_market_disclosures(target_date: date | None = None,
 # 오색칠. 전부 ₩0·순수 판정(렌더타임, 과거 카드 소급).
 _PARSE_FORCE_KW = ("전환청구권", "주식분할", "주식병합", "액면분할", "액면병합",
                    "신규시설투자", "투자결정", "유형자산", "회사분할", "분할합병",
-                   "담보")
+                   "담보", "기타경영사항")
 _PARSE_CATS = ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
                "자산양수도", "회사구조", "소송", "리스크")
 # 자금조달 중 무료 구조화 소스·원문 파서가 없는 유형(제목만이 정상).
@@ -1743,6 +1885,24 @@ def is_parse_target(item: dict) -> bool:
     return True
 
 
+def _upgrade_category(item: dict) -> None:
+    """detail 로부터 결정적 카테고리 승격 — 기타경영사항(자율공시)인데
+    소송성 detail('사건:' 라인 또는 소송성 제목)이 붙은 카드는 '소송'.
+    재fetch 사이클이 제목 기준 '기타'로 재분류해도 known-reuse 경로에서
+    복원 (멱등·순수)."""
+    try:
+        rn = item.get("report_nm", "")
+        if "기타경영사항" not in rn or item.get("category") == "소송":
+            return
+        det = [str(l) for l in (item.get("detail") or [])]
+        if any(l.startswith("사건:") for l in det) or any(
+                k in l for l in det if l.startswith("제목:")
+                for k in ("소송", "가처분", "판결", "효력정지")):
+            item["category"] = "소송"
+    except Exception:
+        pass
+
+
 def _sig_pct(detail: list, label_pat: str) -> float | None:
     """detail 라인에서 'label N%' 의 N 추출 (계약 매출액대비·시설 자기자본대비).
     라벨 뒤 구분자는 ':'(spec 'X: 25.3%')·공백(계약 'X 14.2%') 모두 허용,
@@ -1769,12 +1929,19 @@ def significance(item: dict, shares_outstanding: float | None = None) -> str | N
     4. 자기주식취득결정 발행주식 3%↑ (기재정정 제외, shares 필요)
     5. 신규시설투자 자기자본대비 20%↑
     6. 지분공시(대량보유) 신규 5%↑ (직전<5%≤현재)
+    7. 상장폐지 관련 (사용자 2026-06-12 '중요에 상장폐지도') — 제목 또는
+       파싱된 제목/사건 라인에 상장폐지 (효력정지 가처분 포함)
     """
     rn = item.get("report_nm", "")
     cat = item.get("category", "")
     detail = item.get("detail") or []
     correction = "정정" in rn   # [기재정정] 등
 
+    # 7 — 상장폐지 (최우선: 생존 이벤트)
+    if "상장폐지" in rn or any(
+            "상장폐지" in str(dl) for dl in detail
+            if str(dl).startswith(("제목:", "사건:"))):
+        return "상장폐지 관련"
     # 1
     if "매출액또는손익구조" in rn and not correction:
         return "손익구조 30%↑ 변동"
@@ -1896,6 +2063,7 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
 
         if rcept_no and rcept_no in known:
             item["detail"] = known[rcept_no]
+            _upgrade_category(item)   # 재fetch 가 '기타'로 재분류한 소송성 복원
             continue
 
         # 파싱 대상 판정 = is_parse_target (대시보드 미파싱 색칠과 단일 소스,
@@ -1923,6 +2091,9 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
                 sc = item.get("stock_code", "")
                 if lines:
                     item["detail"] = lines
+                    nc = detail.get("category") if isinstance(detail, dict) else None
+                    if nc:
+                        item["category"] = nc   # 기타경영사항 소송성 → 소송 승격
                     enriched += 1
                     ok_list.append(f"{item.get('corp_name','?')}({rcept_no})")
                 elif rcept_no:
