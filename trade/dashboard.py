@@ -85,9 +85,12 @@ def render_html(
     customs_rows = _load_customs_summary(customs_db_path, hs_map_path)
     industry_html = _load_industry_html(customs_db_path)
     heatmap_html = _load_heatmap_html(customs_db_path)
+    # ⚠️ heatmap_html 인자 누락 = 2026-06-12 12:52 이후 5분 refresh 전부
+    # NameError 크래시 → index.html 동결 (순서/잠정/히트맵 전부 미표시의
+    # 최종 진범). _build_html 파라미터 누락 회귀는 render 스모크가 가드.
     return _build_html(
         all_alerts, latest_ids, s, media_url_prefix, backlog, customs_rows,
-        industry_html,
+        industry_html, heatmap_html,
     )
 
 
@@ -470,6 +473,7 @@ def _build_html(
     backlog: dict | None = None,
     customs_rows: list[dict] | None = None,
     industry_html: str = "",
+    heatmap_html: str = "",
 ) -> str:
     payload = [_alert_to_payload(a, media_prefix) for a in alerts]
     payload_json = json.dumps(
