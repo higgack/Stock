@@ -607,6 +607,39 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
     return results[:limit]
 
 
+def fetch_recent_research_kr_strategy(limit: int = 80) -> list[dict]:
+    """Fetch latest KR 투자전략(투자정보) 리서치 리포트 — 일주일치(Naver).
+
+    종목·산업 리포트와 동일 7일 윈도. Returns [{broker, title, date, link}]
+    (분류·목표가 없음). 사용자 2026-06-12 '네이버 투자전략 → 한국 전략 탭'."""
+    cache_dir = _CACHE_DIR / "research"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    today = date.today()
+    cache_file = cache_dir / f"kr_strategy_{today.isoformat()}.json"
+    if cache_file.exists():
+        try:
+            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
+            if age_h < (10 / 60):  # 10분 — naver 1h 갱신을 빠르게 반영
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    results: list[dict] = []
+    try:
+        from bot.naver_research_client import fetch_recent_research_strategy
+        results = fetch_recent_research_strategy(limit=limit, days_back=7,
+                                                 max_pages=12)
+    except Exception as exc:
+        log.warning("naver research strategy fetch error: %s", exc)
+
+    if results:  # truthy-only — 빈 결과 캐시 안 함
+        try:
+            cache_file.write_text(json.dumps(results, ensure_ascii=False))
+        except Exception:
+            pass
+    return results[:limit]
+
+
 # ── US Research (yfinance upgrades aggregated) ──────────────────────
 
 def fetch_recent_research_us(limit: int = 25) -> list[dict]:
@@ -777,6 +810,7 @@ def fetch_all_market_data() -> dict[str, Any]:
         # 한국 종목 리포트는 주당 200+ 가능 → 넉넉히).
         kr_fut = pool.submit(fetch_recent_research_kr, 300)
         kr_ind_fut = pool.submit(fetch_recent_research_kr_industry, 150)
+        kr_strat_fut = pool.submit(fetch_recent_research_kr_strategy, 150)
         us_fut = pool.submit(fetch_recent_research_us, 80)
         macro_fut = pool.submit(_fetch_macro_safe)
         sector_fut = pool.submit(_fetch_sector_movers_safe)
@@ -794,6 +828,7 @@ def fetch_all_market_data() -> dict[str, Any]:
             "earnings": earnings,
             "research_kr": kr_fut.result(),
             "research_kr_industry": kr_ind_fut.result(),
+            "research_kr_strategy": kr_strat_fut.result(),
             "research_us": us_fut.result(),
             "macro": macro_fut.result(),
             "sector_movers": sector_fut.result(),

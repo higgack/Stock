@@ -4727,6 +4727,53 @@ class TestHighlowFullUsAndCapWeight:
         assert "highlow.json" in written
 
 
+class TestResearchStrategyTab:
+    """리서치 액션 '한국 전략' 탭 (사용자 2026-06-12 — 네이버 투자전략).
+    종목/산업 탭과 동일 기준, 투자정보(invest_list) 소스."""
+
+    def test_strategy_list_parser(self):
+        from datetime import date
+        from bot.naver_research_client import _parse_strategy_list_page
+        html = (
+            '<table><tbody>'
+            '<tr><td><a href="invest_read.naver?nid=111&page=1">하반기 전략</a></td>'
+            '<td>미래에셋증권</td><td>PDF</td><td>26.06.12</td><td>1,234</td></tr>'
+            '<tr><td><a href="invest_read.naver?nid=222">자산배분 코멘트</a></td>'
+            '<td>NH투자증권</td><td>PDF</td><td>26.06.11</td><td>9</td></tr>'
+            '<tr><td>광고행(nid없음)</td></tr>'
+            '<tr><td><a href="invest_read.naver?nid=333">오래됨</a></td>'
+            '<td>하나증권</td><td>PDF</td><td>26.05.01</td><td>1</td></tr>'
+            '</tbody></table>')
+        rows = _parse_strategy_list_page(html, date(2026, 6, 10))
+        # nid 없는 행·cutoff 밖(5/1) 제외, 분류·목표가 없음(증권사/제목/날짜)
+        assert [r["nid"] for r in rows] == ["111", "222"]
+        assert rows[0]["broker"] == "미래에셋증권"
+        assert rows[0]["title"].startswith("하반기")
+        assert rows[0]["date"] == "2026-06-12"
+        assert "category" not in rows[0]  # 전략은 분류 컬럼 없음
+
+    def test_strategy_uses_invest_endpoint(self):
+        # 투자정보(invest_list/invest_read) 소스인지 — 종목(company)/산업
+        # (industry) 와 다른 엔드포인트 회귀 가드
+        src = open("bot/naver_research_client.py", encoding="utf-8").read()
+        assert "invest_list.naver" in src and "invest_read.naver" in src
+
+    def test_dashboard_strategy_tab_wired(self):
+        # 탭 버튼·페인·렌더 함수·시그니처가 모두 연결됐는지 (bot.dashboard
+        # import 는 무거워 소스 읽기)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'data-tab="krstrat"' in src
+        assert '한국 전략' in src
+        assert 'id="tab-krstrat"' in src
+        assert "_render_research_strategy_table" in src
+        assert 'research_kr_strategy = data.get("research_kr_strategy"' in src
+
+    def test_market_overview_strategy_wired(self):
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert "fetch_recent_research_kr_strategy" in src
+        assert '"research_kr_strategy": kr_strat_fut.result()' in src
+
+
 class TestPmOverrideRatingMask:
     """강제 HOLD 시 PM 원문 비-Hold 등급 마스킹 (082920 2026-06-11 review).
     배너 HOLD ↔ 원문 'Overweight' 시각 혼선 차단 + 산문 등급어 보존."""
