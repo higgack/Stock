@@ -897,6 +897,82 @@ _BUYBACK_DOC_FIELDS = [
 ]
 
 
+def _disposal_lines(txt: str) -> list[str]:
+    """자기주식 처분 결정 표준 표 (미파싱-3) — 구조화 API(tsstkDpDecsn)가
+    비는 케이스 원문 폴백. 처분예정·가격·금액·기간·목적·상대방. 처분예정
+    기간은 **마지막 출현**(기재정정 래퍼의 '정정전' stale 날짜가 본문보다
+    앞 — 처분금지 가처분 대응 연기 예시 6/17→7/3). 순수."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    from bot.dart_detail import _won
+
+    n = _g(r"처분예정주식\s*\(주\)[^0-9]{0,16}?([\d,]{2,})")
+    if n:
+        parts.append(f"처분예정: {int(n.replace(',', '')):,}주")
+    pr = _g(r"처분\s*대상\s*주식가격\s*\(원\)[^0-9]{0,16}?([\d,]{3,})")
+    amt = _g(r"처분예정금액\s*\(원\)[^0-9]{0,16}?([\d,]{6,})")
+    if amt:
+        seg = f"처분금액: {_won(amt) or amt + '원'}"
+        if pr:
+            seg += f" (주당 {int(pr.replace(',', '')):,}원)"
+        parts.append(seg)
+    ss = re.findall(r"처분예정기간[\s\S]{0,16}?시작일[^0-9]{0,10}?"
+                    r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", txt)
+    es = re.findall(r"처분예정기간[\s\S]{0,60}?종료일[^0-9]{0,10}?"
+                    r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", txt)
+    if ss:
+        s = _clean_kdate(ss[-1])
+        e = _clean_kdate(es[-1]) if es else ""
+        parts.append(f"기간: {s} ~ {e}" if e else f"기간: {s} ~")
+    why = _g(r"처분목적[^가-힣A-Za-z0-9]{0,10}?"
+             r"([가-힣A-Za-z0-9 ]{2,40}?)\s*(?:\d{1,2}\s*\.|처분방법|$)")
+    if why:
+        parts.append(f"목적: {why}")
+    to = _g(r"처분상대방[^가-힣A-Za-z0-9(]{0,10}?"
+            r"([가-힣A-Za-z0-9() ]{2,30}?)\s*(?:\d{1,2}\s*\.|위탁|$)")
+    if to:
+        parts.append(f"상대방: {to}")
+    return parts
+
+
+def _prospectus_corr_lines(txt: str) -> list[str]:
+    """투자설명서 정정신고(보고) — 펀드 정기갱신/운용역 변경 류 (미파싱-3).
+    서류명·최초제출일·사유·위험지표 변경(첫→끝)·운용역 변경. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    doc = _g(r"정정대상\s*공시서류[^가-힣]{0,6}?"
+             r"([가-힣A-Za-z0-9()· ]{2,40}?)\s*(?:\d|2\s*\.|$)")
+    if doc:
+        parts.append(f"서류: {doc}")
+    d0 = _g(r"최초제출일[^0-9]{0,8}?(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    if d0:
+        parts.append(f"최초제출: {_clean_kdate(d0)}")
+    why = _g(r"((?:자본시장과[\s\S]{0,50}?)?정기\s*갱신"
+             r"(?:\s*\([가-힣 ,등]{2,24}\))?|운용역\s*변경)")
+    if why:
+        why = re.sub(r"\s+", " ", why)[:50]
+        parts.append(f"사유: {why}")
+    # 위험지표(표준편차/VaR) 첫→끝 변경 병기
+    vals = re.findall(r"(?:표준편차|VaR)\s*[::]?\s*([\d.]+)\s*%", txt)
+    if len(vals) >= 2 and vals[0] != vals[-1]:
+        parts.append(f"위험지표: {vals[0]}% → {vals[-1]}%")
+    mm = re.search(r"운용역\s*변경\s+([가-힣]{2,5})\s+([가-힣]{2,5})", txt)
+    if mm:
+        parts.append(f"운용역: {mm.group(1)} → {mm.group(2)}")
+    return parts
+
+
 def _custody_lines(txt: str) -> list[str]:
     """부동산투자회사 자산보관 위탁계약 체결 (리츠 — 미파싱-2 예시 2건:
     신영부동산신탁 정정 연장 / 한국토지신탁 오렌지센터). 보관기관·대상
@@ -1220,16 +1296,22 @@ def _pct1(raw: str) -> str | None:
 
 
 def _correction_header(txt: str) -> str | None:
-    """[기재정정] 공통 — '정정(날짜): 사유' 헤더 라인. 없으면 None."""
+    """[기재정정] 공통 — '정정(날짜): 사유' 헤더 라인. 없으면 None.
+
+    표 헤더행('항목 정정사유 정정 전 정정 후') 인접 오캡처 가드 —
+    캡처값이 '정정 전/후'·'항목'·'관련 여부'면 다음 출현으로 skip
+    (미파싱-3 자기주식처분 정정·투자설명서 정정 surfaced)."""
     if "정정신고" not in txt and "정정사유" not in txt:
         return None
     d = re.search(r"정정일자\s*(\d{4}-\d{2}-\d{2})", txt)
-    r = re.search(r"정정사유\s*[:：]?\s*([가-힣A-Za-z0-9 ,.()·]{2,40}?)"
-                  r"\s*(?:\d\.|정정사항|정정관련|$)", txt)
-    if not r:
-        return None
     dd = f"({d.group(1)[2:]})" if d else ""
-    return f"정정{dd}: {r.group(1).strip()}"
+    for m in re.finditer(r"정정사유\s*[:：]?\s*([가-힣A-Za-z0-9 ,.()·]{2,40}?)"
+                         r"\s*(?:\d\.|정정사항|정정관련|$)", txt):
+        val = m.group(1).strip()
+        if re.search(r"정정\s*[전후]|항\s*목|관련\s*여부", val):
+            continue
+        return f"정정{dd}: {val}"
+    return None
 
 
 def _tok_amt(tok, mult):
@@ -1869,6 +1951,14 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                                   _BUYBACK_DOC_FIELDS, min_fields=2)
         if doc:
             return doc
+    elif "자기주식" in t and "처분" in t and "신탁" not in t:
+        # 처분 결정 표준 표 원문 우선 (미파싱-3) — 기재정정 래퍼의 stale
+        # 처분기간은 마지막 출현으로 보정. 실패 시 specs(tsstkDpDecsn) 폴스루.
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _disposal_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
     elif "주주명부폐쇄" in t or ("기준일" in t and "배당" in t):
         doc = _parse_div_record(rcept_no, api_key, t)
         if doc:
@@ -1972,6 +2062,15 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         doc = _extract_custody(rcept_no, api_key)
         if doc:
             return doc
+    elif "투자설명서" in t:
+        # 펀드 정기갱신/운용역 변경 정정 (미파싱-3) — 수집 정책 변경 없음
+        # (피드에 이미 흘러드는 건만 파싱, keep 예외 추가 안 함 — 홍수 방지)
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _prospectus_corr_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
 
     specs: list[tuple[str, list]] = []
     if "영업(잠정)실적" in t or "매출액또는손익구조" in t:

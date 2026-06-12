@@ -5236,6 +5236,76 @@ class TestDartUnparsed2:
                             shares_outstanding=65_787_207) == "발행주식 3.6% 취득"
 
 
+class TestDartUnparsed3:
+    """미파싱-3 (사용자 2026-06-12, 5예시) — 자기주식 처분 doc 폴백(정정
+    stale 기간 보정) / 투자설명서 정정 / 정정 헤더 표-헤더행 오캡처 가드.
+    신탁계약 체결은 기존 _parse_trust 가 처리 확인(코드 무변경)."""
+
+    def test_disposal_correction_uses_post_dates(self):
+        from bot.dart_feed import _disposal_lines
+        L = _disposal_lines(
+            "정정신고(보고) 1. 정정대상 공시서류 : 주요사항보고서(자기주식처분결정) "
+            "3. 정정사항 항 목 정정사유 정정 전 정정 후 4. 처분예정기간 - 시작일, 종료일 "
+            "자기주식 처분금지 가처분 신청 접수에 따른 절차 대응 2026년 6월 17일 2026년 7월 3일 "
+            "자기주식 처분 결정 1. 처분예정주식(주) 보통주 121,951 "
+            "2. 처분 대상 주식가격(원) 보통주 4,100 3. 처분예정금액(원) 보통주 499,999,100 "
+            "4. 처분예정기간 시작일 2026년 07월 03일 종료일 2026년 07월 03일 "
+            "5. 처분목적 신사업 투자재원 조달 7. 처분상대방 주식회사 이룸기술")
+        assert any(l == "처분예정: 121,951주" for l in L)
+        assert any(l == "처분금액: 5억원 (주당 4,100원)" for l in L)
+        # 정정전(6/17) stale 배제 — 마지막 출현(본문 7/3)
+        assert any(l == "기간: 2026-07-03 ~ 2026-07-03" for l in L)
+        assert any(l == "상대방: 주식회사 이룸기술" for l in L)
+        # 표 헤더행 '정정 전 정정 후' 오캡처 없음
+        assert not any("정정 전" in l for l in L)
+
+    def test_prospectus_correction_fund_renewal(self):
+        from bot.dart_feed import _prospectus_corr_lines
+        L = _prospectus_corr_lines(
+            "정 정 신 고 (보고) 1. 정정대상 공시서류 : 투자설명서 "
+            "2. 정정대상 공시서류의 최초제출일 : 2015년 05월 04일 3. 정정사항 "
+            "항 목 정정요구·명령 관련 여부 정정사유 정 정 전 정 정 후 "
+            "아니오 자본시장과 금융투자업에 관한 법률 제123조에 의거한 정기갱신 "
+            "(재무정보 등 자료 업데이트) 실제 연환산 표준편차: 41.28% 실제 연환산 표준편차: 36.79%")
+        assert any(l == "서류: 투자설명서" for l in L)
+        assert any(l.startswith("최초제출: 2015-05-04") for l in L)
+        assert any("정기갱신" in l for l in L)
+        assert any(l == "위험지표: 41.28% → 36.79%" for l in L)
+
+    def test_prospectus_manager_change(self):
+        from bot.dart_feed import _prospectus_corr_lines
+        L = _prospectus_corr_lines(
+            "정 정 신 고 (보고) 1. 정정대상 공시서류 : 투자설명서 "
+            "2. 정정대상 공시서류의 최초제출일 : 2017년 01월 22일 "
+            "항목 정정사유 정정 전 정정 후 <운용전문인력> 아니오 운용역 변경 송진용 신은영 "
+            "97.5% VaR: 27.84% 97.5% VaR: 27.10%")
+        assert any(l == "운용역: 송진용 → 신은영" for l in L)
+        assert any(l == "위험지표: 27.84% → 27.10%" for l in L)
+
+    def test_correction_header_skips_table_header_row(self):
+        # '정정사유' 컬럼 헤더 인접 '정정 전 정정 후' 오캡처 가드 + 정상 회귀
+        from bot.dart_feed import _correction_header
+        assert _correction_header(
+            "정정신고(보고) 항 목 정정사유 정정 전 정정 후 4. 처분예정기간") is None
+        assert _correction_header(
+            "정정신고(보고) 정정일자 2026-06-10 3. 정정사유 회생계획안 제출기간 연장 "
+            "4. 정정사항") == "정정(26-06-10): 회생계획안 제출기간 연장"
+
+    def test_trust_contract_form_still_parses(self, monkeypatch):
+        # 미파싱-3 #1 신탁계약 체결 — 기존 파서가 처리함을 영구 가드
+        import bot.dart_feed as df
+        txt = ("자기주식취득 신탁계약 체결 결정 1. 계약금액(원) 5,000,000,000 "
+               "2. 계약기간 시작일 2026년 06월 15일 종료일 2027년 06월 14일 "
+               "3. 계약목적 주가 안정화를 통한 주주가치 제고 4. 계약체결기관 미래에셋증권 "
+               "9. 취득예정주식(주) 보통주 101,010 10. 취득하고자 하는 주식의 가격(원) 보통주 49,500")
+        monkeypatch.setattr(df, "_fetch_doc_text", lambda r, k: txt)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **kw: None)
+        out = df._parse_trust("X", "K", cancel=False)
+        assert any(l.startswith("계약금액: 50억원") for l in out["lines"])
+        assert any(l.startswith("취득예정: 101,010주") for l in out["lines"])
+        assert any(l == "목적: 주가 안정화를 통한 주주가치 제고" for l in out["lines"])
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""
