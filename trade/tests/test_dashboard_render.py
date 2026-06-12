@@ -93,3 +93,18 @@ class HeatmapIndustryGroupAndCSVTests(unittest.TestCase):
                    encoding="utf-8").read()
         self.assertIn("ind-csv-data", src)
         self.assertIn("ind_csv + prov_zone_div", src)   # 임베드 배선
+
+
+class ProvLabelVocabularyTests(unittest.TestCase):
+    """발표 일정 어휘 분리 (사용자 2026-06-13) — 속보 존은 '월초(전월
+    풀월)', 산업트렌드만 '익월 1일'. 같은 단어 재유입 시 혼동 회귀."""
+
+    def test_prov_zone_no_ikwol(self):
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[2]
+        dash = (root / "trade" / "dashboard.py").read_text(encoding="utf-8")
+        prov = (root / "trade" / "customs_provisional.py").read_text(encoding="utf-8")
+        assert "월초(전월 풀월)" in dash and "월초(전월 풀월)" in prov
+        # 속보 라벨·태그에 '익월1일' 부재 (산업트렌드 divider 의 '익월 1일'
+        # 은 dashboard.py 에 별도 존재 — 공백 있는 형태라 충돌 없음)
+        assert "익월1일" not in dash and "익월1일" not in prov

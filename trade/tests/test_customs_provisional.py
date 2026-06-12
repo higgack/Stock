@@ -592,7 +592,7 @@ class ZoneSeparationTest(unittest.TestCase):
              "amt": [100] + [0] * 10},
         ], ("x",) * 10)
         html = prov.render_box({"exp_item": sig})
-        self.assertIn("매월 11·21·익월1일 발표", html)
+        self.assertIn("11일·21일·월초(전월 풀월) 발표", html)   # 어휘 분리 2026-06-13
 
     def test_dashboard_zone_divider_present(self):
         src = open("trade/dashboard.py", encoding="utf-8").read()
