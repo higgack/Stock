@@ -136,6 +136,36 @@ class SignalTests(unittest.TestCase):
         self.assertIsNone(sig["total_yoy"])
         self.assertIsNone(sig["items"][0]["yoy"])
 
+    def test_mom_matches_same_decile_prior_month(self):
+        # 전월 동순(MoM) — 6월 D1 vs 5월 D1 같은 누적창 (사용자 2026-06-12).
+        rows = [
+            {"ym": "2026-05", "priod_dt": "01~10", "decile": "D1",
+             "amt": [300] + [30] * 10},
+            {"ym": "2026-06", "priod_dt": "01~10", "decile": "D1",
+             "amt": [372] + [37] * 10},
+        ]
+        sig = prov.latest_signal(rows, tuple(f"품목{i}" for i in range(1, 11)))
+        self.assertEqual(sig["ym"], "2026-06")
+        self.assertAlmostEqual(sig["total_mom"], (372 - 300) / 300 * 100)
+        self.assertAlmostEqual(sig["items"][0]["mom"], (37 - 30) / 30 * 100)
+
+    def test_mom_none_when_no_prior_month(self):
+        rows = [{"ym": "2026-06", "priod_dt": "01~10", "decile": "D1",
+                 "amt": [372] + [37] * 10}]
+        sig = prov.latest_signal(rows, tuple(f"품목{i}" for i in range(1, 11)))
+        self.assertIsNone(sig["total_mom"])
+
+    def test_dashboard_recomputes_headline_from_series(self):
+        # 헤드라인 박스 MoM 즉시 반영 — dashboard 가 저장 payload(옛 스키마)
+        # 가 아니라 load_rows(series)에서 latest_signal 재계산하는지 (배포 직후
+        # 표시, fetch 재실행 안 기다림). 소스 읽기(트레이드 dashboard 는 dotenv
+        # 의존이라 import 회피) — 구조 회귀 가드.
+        import os
+        src = open(os.path.join(os.path.dirname(__file__), "..", "dashboard.py"),
+                   encoding="utf-8").read()
+        self.assertIn("customs_provisional.latest_signal(", src)
+        self.assertIn("prov_signals[_kind] = _sig", src)
+
     def test_empty_rows_none(self):
         self.assertIsNone(prov.latest_signal([], ("a",)))
 

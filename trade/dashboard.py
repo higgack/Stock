@@ -123,6 +123,21 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             # 헤드라인 박스(signals) + 🔟 10일 모멘텀 펼치기(전체 시계열 rows).
             prov_signals = customs_provisional.load_signals(conn)
             prov_rows = customs_provisional.load_rows(conn)
+        # 헤드라인 박스 MoM(전월 동순) 즉시 반영 (사용자 2026-06-12 '잠정
+        # mom 아직 안보여'): MoM 은 latest_signal 이 산출하는데, 저장 payload
+        # 가 MoM 도입(2026-06-12) 전 스냅샷이면 비어 보인다 — fetch_provisional
+        # 가 --if-stale(≤6h)로 재fetch 를 미루기 때문(배포 ≠ 화면 반영).
+        # 시계열(series_json)에서 렌더타임 재계산 → 재fetch 안 기다리고 배포
+        # 직후 표시 + 모멘텀 표(render_momentum)와 동일 소스로 일관. 시계열
+        # 없는(구버전) kind 는 저장 payload 유지(폴백).
+        for _kind, _rows in prov_rows.items():
+            try:
+                _sig = customs_provisional.latest_signal(
+                    _rows, customs_provisional.LABELS.get(_kind, ()))
+            except Exception:
+                _sig = None
+            if _sig:
+                prov_signals[_kind] = _sig
         prov_html = customs_provisional.render_box(
             prov_signals,
             momentum_html=customs_provisional.render_momentum(prov_rows))
