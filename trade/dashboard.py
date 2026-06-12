@@ -731,6 +731,8 @@ tr.ind-mti-row:hover td{background:var(--surface-2)}
 .ind-mti-more{color:var(--text-sub);font-size:11px;margin-left:4px}
 tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-base-tag{display:inline-block;margin-left:4px;padding:1px 6px;border-radius:999px;font-size:10px;font-weight:700;background:#ff950022;color:#ff9500;cursor:help}
+.ind-extra{font-size:12px;color:var(--text);margin:6px 0 0;line-height:1.5}
+.ind-extra-sub{color:var(--text-sub);font-size:11px;cursor:help}
 .ind-prov-sub{font-size:12px;color:var(--text-sub);margin-bottom:10px}
 .ind-prov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .ind-prov-cell{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
