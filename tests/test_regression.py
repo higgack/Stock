@@ -6231,9 +6231,14 @@ class TestTangibleAssetCategory:
         # 전용 양식은 유지
         assert C("신규시설투자등") == "신규시설투자"
         assert C("신규시설투자등(자회사의 주요경영사항)") == "신규시설투자"
-        # 합병·회사분할 = M&A 버킷(자산양수도) 일관 — 정책 선택 명시
+        # 합병 = M&A 버킷(자산양수도) · 회사분할(인적/물적) = 회사구조
+        # (사용자 2026-06-13 2차 — '회사구조로 바꿔줘'. 분할합병은 합병
+        # 성격이라 자산양수도 유지)
         assert C("주요사항보고서(회사합병결정)") == "자산양수도"
-        assert C("회사분할결정") == "자산양수도"
+        assert C("회사분할결정") == "회사구조"
+        assert C("인적분할결정") == "회사구조"
+        assert C("물적분할결정") == "회사구조"
+        assert C("회사분할합병결정") == "자산양수도"
 
     def test_v7_retro_wired(self):
         from bot.dart_feed import reclassify_v7_once_if_needed
