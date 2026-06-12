@@ -98,6 +98,36 @@ else
 fi
 rm -f "$SUDOERS_TMP"
 
+# ── trade 체크아웃 sudoers self-heal (2026-06-12) ─────────────────────
+# trade-auto-update.sh(~/stock-trade)의 `sudo -n systemctl restart
+# trade-bot-dashboard` + `sudo -n install-trade-units.sh` 는 sudoers
+# 부트스트랩이 전제인데, 그 항목이 VM 에 설치된 적이 없어 매 배포마다
+# 조용히 skip → 장기실행 trade-bot-dashboard 가 옛 모듈을 영원히 서빙
+# (히트맵 탭/MoM/잠정 라벨/순서가 merge 후에도 안 보이던 근본 원인).
+# 이 install.sh 는 기존 higgack-stock-deploy NOPASSWD 로 root 실행이
+# 보장되므로 여기서 drop-in 을 심으면 trade 쪽 자가관리가 영구 부활.
+SUDOERS_TRADE=/etc/sudoers.d/higgack-trade-services
+SUDOERS_TMP2="$(mktemp)"
+cat > "$SUDOERS_TMP2" <<'SUDOERS'
+higgack ALL=(ALL) NOPASSWD: /home/higgack/stock-trade/deploy/install-trade-units.sh
+higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-dashboard
+higgack ALL=(ALL) NOPASSWD: /bin/systemctl restart trade-bot-beon-listener
+SUDOERS
+if visudo -cf "$SUDOERS_TMP2" >/dev/null 2>&1; then
+    if ! cmp -s "$SUDOERS_TMP2" "$SUDOERS_TRADE" 2>/dev/null; then
+        install -m 0440 -o root -g root "$SUDOERS_TMP2" "$SUDOERS_TRADE"
+        echo "  sudoers drop-in installed: $SUDOERS_TRADE"
+    fi
+else
+    echo "  ⚠️ trade sudoers drop-in failed visudo validation — skipped"
+fi
+rm -f "$SUDOERS_TMP2"
+# 1회 즉시 heal — 그동안 누적된 trade 대시보드 UI 변경을 지금 반영.
+# 유닛 부재(설치 안 된 호스트)면 무해 no-op.
+if systemctl restart trade-bot-dashboard 2>/dev/null; then
+    echo "  trade-bot-dashboard restarted (stale-server heal)"
+fi
+
 # Daily Byte 인포그래픽 한글 렌더용 NanumGothic 폰트 — idempotent.
 # 이미 설치돼 있으면 apt 가 no-op. 실패해도(네트워크/오프라인) install 전체를
 # 막지 않도록 || true. 폰트 부재 시 인포그래픽만 graceful skip(텍스트 정상).

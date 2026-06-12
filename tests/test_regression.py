@@ -5871,3 +5871,18 @@ class TestDeployAwareWidgetCache:
         import re as _re
         m = _re.search(r"earnings_kr_\{today\.isoformat\(\)\}[\s\S]{0,400}?< (\d+)", src)
         assert m and m.group(1) == "6", "KR earnings TTL 6h 아님"
+
+
+class TestTradeDashboardSudoersSelfHeal:
+    """trade-bot-dashboard stale-server 근본 fix (2026-06-12) — sudoers
+    부트스트랩 부재로 재시작이 매 배포 silent-skip 되던 것. NOAH
+    install.sh(root 보장 경로)가 trade drop-in 자가설치 + 1회 즉시 heal."""
+
+    def test_install_sh_heals_trade_sudoers(self):
+        src = open("deploy/install.sh", encoding="utf-8").read()
+        assert "higgack-trade-services" in src
+        assert "install-trade-units.sh" in src      # 부트스트랩 라인
+        assert "restart trade-bot-dashboard" in src
+        assert "visudo -cf" in src                  # 검증 후 설치 (잠금 사고 방지)
+        # 1회 즉시 heal — 누적 UI 변경 반영
+        assert "systemctl restart trade-bot-dashboard 2>/dev/null" in src
