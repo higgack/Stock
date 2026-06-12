@@ -4474,8 +4474,14 @@ class TestDartParseTargetAndSignificance:
         assert not is_parse_target({"category": "IR",
                                     "report_nm": "기업설명회(IR)개최",
                                     "corp_code": "x"})
+        # 임원·주요주주 소유상황 = elestock 구조화 보유 → 파싱 대상
+        # (2026-06-12 '지분공시도 다 파싱' — 옛 대량보유-only 정책 폐기)
+        assert is_parse_target({"category": "지분공시",
+                                "report_nm": "임원ㆍ주요주주특정증권등소유상황보고서",
+                                "corp_code": "x"})
+        # generic '보고서' 분류분(감사보고서 등)은 구조화 소스 없음 → 제외
         assert not is_parse_target({"category": "지분공시",
-                                    "report_nm": "임원ㆍ주요주주특정증권등소유상황보고서",
+                                    "report_nm": "감사보고서제출",
                                     "corp_code": "x"})
         assert not is_parse_target({"category": "자금조달",
                                     "report_nm": "단기차입금증가결정",
@@ -4505,10 +4511,53 @@ class TestDartParseTargetAndSignificance:
         assert significance({"report_nm": "단일판매ㆍ공급계약체결", "category": "계약",
                              "detail": ["계약금액: 50억원 (매출액대비 3.1%)"]}) is None
 
-    def test_significance_rule3_burn(self):
+    def test_significance_rule3_burn_3pct_gate(self):
+        # 소각도 발행주식 3%↑만 (사용자 2026-06-12 — 신도기연 1.21% 미발화)
         from bot.dart_feed import significance
+        small = {"report_nm": "주식소각결정", "category": "주주환원",
+                 "detail": ["구분: 주식 소각 (이익소각 — 자본금 감소 없음)",
+                            "소각: 193,198주 = 발행주식의 1.21% · 29.4억원"]}
+        assert significance(small) is None
+        big = {"report_nm": "주식소각결정", "category": "주주환원",
+               "detail": ["소각: 700,000주 = 발행주식의 3.50% · 120억원"]}
+        assert significance(big) == "발행주식 3.5% 소각"
+        # detail 에 % 없으면 shares 로 계산, shares 없으면 미발화
+        calc = {"report_nm": "주식소각결정", "category": "주주환원",
+                "detail": ["소각: 1,000,000주 · 50억원"]}
+        assert significance(calc, shares_outstanding=20_000_000) == "발행주식 5.0% 소각"
+        assert significance(calc) is None
         assert significance({"report_nm": "주식소각결정",
-                             "category": "주주환원"}) == "주식소각"
+                             "category": "주주환원"}) is None  # detail 부재
+
+    def test_elestock_lines_pure(self):
+        # 임원·주요주주 소유상황 elestock 라인 + 100% 비율 환각 가드
+        from bot.dart_feed import _elestock_lines
+        row = {"repror": "홍길동", "isu_exctv_ofcps": "부사장",
+               "isu_main_shrholdr": "-",
+               "sp_stock_lmp_cnt": "12,345", "sp_stock_lmp_irds_cnt": "-2,000",
+               "sp_stock_lmp_rate": "0.05", "sp_stock_lmp_irds_rate": "-0.01"}
+        lines = _elestock_lines(row)
+        assert lines[0] == "보고자: 홍길동 (부사장)"
+        assert "소유주식: 12,345주 (-2,000주)" in lines
+        assert any(l.startswith("지분율: 0.05%") for l in lines)
+        # sp_stock_lmp_rate ≥50% = 본인분 비율 환각(005930 2026-05-31) → 생략
+        assert not any("지분율" in l
+                       for l in _elestock_lines(dict(row, sp_stock_lmp_rate="100.0")))
+
+    def test_equity_noise_shows_parsed_ownership(self):
+        # 소유상황 카드 = detail 파싱된 것만 노출 (홍수 방지 + '다 파싱' 양립)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert '"소유상황" in rn' in src
+        # dart_feed 라우팅 + 임원 elestock fetcher 존재
+        df_src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert "_extract_elestock" in df_src and "elestock.json" in df_src
+
+    def test_kr_earnings_universe_fallback(self):
+        # pykrx/creds 부재(샌드박스) → 하드코딩 폴백 (빈 universe 금지)
+        from bot.market_overview import _kr_earnings_universe
+        u = _kr_earnings_universe()
+        assert len(u) >= 30
+        assert all(len(t) == 2 for t in u)
 
     def test_significance_rule4_buyback_3pct(self):
         from bot.dart_feed import significance

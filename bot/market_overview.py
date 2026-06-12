@@ -480,10 +480,61 @@ _KR_EARNINGS_UNIVERSE = [
 ]
 
 
-def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
-    """KR 주요 종목 예정 실적일 (yfinance .calendar, 무료). 12h 캐시.
+def _kr_earnings_universe() -> list[tuple[str, str]]:
+    """KR 실적 캘린더 universe — pykrx 시총 상위(KOSPI 300 + KOSDAQ 150)
+    동적 산출, 실패 시 하드코딩 33 폴백 (사용자 2026-06-12 '한국 21개가
+    최선인가' — 옛 고정 33종목이 병목이었음). 7일 디스크 캐시(KRX 4콜).
 
-    KR 실적일은 미국보다 드물게 분포 → 윈도 90일로 넓게. 추정치(EPS/매출)는
+    이름은 get_market_price_change(1콜/시장, 종목명 컬럼 포함) — per-ticker
+    이름 조회 450콜 회피. KRX creds 부재/pykrx 미설치면 graceful 폴백.
+    ⚠️ 커버리지 한계(정직): yfinance .calendar 는 KR 중소형주 대부분 빈값 —
+    universe 를 늘려도 '확정 실적일'이 있는 종목만 표에 추가된다."""
+    cache_file = _CACHE_DIR / "finnhub" / "kr_earnings_universe.json"
+    try:
+        if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 7 * 86400:
+            cached = json.loads(cache_file.read_text())
+            if isinstance(cached, list) and len(cached) > 50:
+                return [tuple(x) for x in cached]
+    except Exception:
+        pass
+    out: list[tuple[str, str]] = []
+    try:
+        from bot.pykrx_client import krx_login_ready, _quiet_pykrx_logging
+        if krx_login_ready():
+            _quiet_pykrx_logging()
+            from pykrx import stock as _pk
+            from datetime import datetime as _dt2, timedelta as _td2
+            d = _dt2.now()
+            ds = d.strftime("%Y%m%d")
+            ds_prev = (d - _td2(days=7)).strftime("%Y%m%d")
+            for mkt, suffix, cap in (("KOSPI", ".KS", 300),
+                                     ("KOSDAQ", ".KQ", 150)):
+                mc = _pk.get_market_cap(ds, market=mkt)
+                names_df = _pk.get_market_price_change(ds_prev, ds, market=mkt)
+                names = (names_df["종목명"].to_dict()
+                         if names_df is not None and "종목명" in names_df else {})
+                top = mc.sort_values("시가총액", ascending=False).head(cap)
+                for code in top.index:
+                    nm = str(names.get(code) or code)
+                    out.append((f"{code}{suffix}", nm))
+    except Exception as exc:
+        log.warning("kr earnings universe via pykrx failed: %s", exc)
+        out = []
+    if len(out) > 50:
+        try:
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
+            cache_file.write_text(json.dumps(out, ensure_ascii=False))
+        except Exception:
+            pass
+        return out
+    return list(_KR_EARNINGS_UNIVERSE)
+
+
+def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
+    """KR 종목 예정 실적일 (yfinance .calendar, 무료). 12h 캐시.
+
+    KR 실적일은 미국보다 드물게 분포 → 윈도 90일로 넓게. universe 는
+    pykrx 시총 상위 450(_kr_earnings_universe, 폴백 33). 추정치(EPS/매출)는
     yfinance 가 KR 에 대해 종종 None → 그대로 '—' 표시(정직)."""
     cache_dir = _CACHE_DIR / "finnhub"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -525,8 +576,9 @@ def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
             return None
 
     results: list[dict] = []
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for r in pool.map(_one, _KR_EARNINGS_UNIVERSE):
+    universe = _kr_earnings_universe()
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        for r in pool.map(_one, universe):
             if r:
                 results.append(r)
     results.sort(key=lambda x: x.get("date", ""))

@@ -305,6 +305,63 @@ def _extract_majorstock(rcept_no: str, corp_code: str,
     return None
 
 
+def _elestock_lines(row: dict) -> list[str]:
+    """elestock(임원ㆍ주요주주 소유상황) row → 카드 lines (순수 — 단위테스트).
+
+    보고자/직위·관계/소유주식+증감/비율+증감. ⚠️ sp_stock_lmp_rate 가
+    가끔 100.0(본인 보유분 비율)으로 와 회사 전체 지분율로 오인되는 환각
+    (삼성 005930 2026-05-31) — ≥50% 는 비율 생략(수량만)."""
+    parts: list[str] = []
+    repror = str(row.get("repror") or "").strip()
+    if repror:
+        seg = f"보고자: {repror}"
+        ofcps = str(row.get("isu_exctv_ofcps") or "").strip()
+        main = str(row.get("isu_main_shrholdr") or "").strip()
+        rel = " · ".join(x for x in (ofcps, main) if x and x != "-")
+        if rel:
+            seg += f" ({rel})"
+        parts.append(seg)
+    cnt = _to_float(row.get("sp_stock_lmp_cnt"))
+    d_cnt = _to_float(row.get("sp_stock_lmp_irds_cnt"))
+    if cnt is not None:
+        seg = f"소유주식: {int(cnt):,}주"
+        if d_cnt:
+            seg += f" ({int(d_cnt):+,}주)"
+        parts.append(seg)
+    rate = _to_float(row.get("sp_stock_lmp_rate"))
+    d_rate = _to_float(row.get("sp_stock_lmp_irds_rate"))
+    if rate is not None and rate < 50.0:   # ≥50% = 본인분 비율 환각 의심
+        seg = f"지분율: {rate:.2f}%"
+        if d_rate:
+            seg += f" ({d_rate:+.2f}%p)"
+        parts.append(seg)
+    return parts
+
+
+def _extract_elestock(rcept_no: str, corp_code: str,
+                      api_key: str) -> dict | None:
+    """임원ㆍ주요주주특정증권등소유상황보고서 → elestock.json 구조화
+    (지분공시 전체 파싱 — 사용자 2026-06-12 '지분공시도 다 파싱, 무료').
+    majorstock 와 동일 패턴: corp_code 로 list → rcept_no 매칭. graceful."""
+    try:
+        r = requests.get(
+            f"{_DART_BASE}/elestock.json",
+            params={"crtfc_key": api_key, "corp_code": corp_code},
+            timeout=_TIMEOUT)
+        js = r.json()
+    except Exception:
+        return None
+    if not isinstance(js, dict) or js.get("status") != "000":
+        return None
+    for row in js.get("list") or []:
+        if str(row.get("rcept_no") or "").strip() != str(rcept_no):
+            continue
+        parts = _elestock_lines(row)
+        if parts:
+            return {"lines": parts}
+    return None
+
+
 _DOC_FAIL = Path.home() / ".tradingagents" / "dart_doc_fail.json"
 # 일일 DART 콜 버짓 백스톱(키당 2만/일 한도 — 사용자 2026-06-11 '블락 전에
 # 미리'): listing 페이지·enrich 시도를 카운트, 초과 시 그날 enrich 중단 +
@@ -1230,6 +1287,10 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
     # 보고사유. (프로텍·하이브 레퍼런스 카드 대응, 무료.)
     if "대량보유" in t:
         return _extract_majorstock(rcept_no, corp_code, api_key)
+    # 임원ㆍ주요주주 소유상황 — elestock 구조화 (지분공시 전체 파싱,
+    # 사용자 2026-06-12). 옛 '대량보유만' 정책 폐기.
+    if "소유상황" in t:
+        return _extract_elestock(rcept_no, corp_code, api_key)
 
     # 전환청구권 행사 / 주식 분할·병합 — 구조화 API 미확인 유형 → 검증된
     # 원문 표준 양식 파싱 (사용자 2026-06-11 추가, ₩0).
@@ -1670,7 +1731,11 @@ def is_parse_target(item: dict) -> bool:
         return False
     if not item.get("corp_code"):
         return False
-    if (not _force) and cat == "지분공시" and "대량보유" not in report_nm:
+    # 지분공시: 대량보유(majorstock) + 임원·주요주주 소유상황(elestock,
+    # 2026-06-12 '지분공시도 다 파싱') — 둘 다 무료 구조화 API 보유.
+    # 그 외('보고서' generic 분류분 — 감사보고서 등)는 구조화 소스 없음.
+    if (not _force) and cat == "지분공시" and not (
+            "대량보유" in report_nm or "소유상황" in report_nm):
         return False
     if (not _force) and cat == "자금조달" and any(
             k in report_nm for k in _FUNDING_NO_PARSER):
@@ -1699,7 +1764,8 @@ def significance(item: dict, shares_outstanding: float | None = None) -> str | N
 
     1. 매출액또는손익구조 30%↑ 변동 (기재정정 제외) — 제목 자체가 기준
     2. 단일판매·공급계약 매출액대비 10%↑ (기재정정 제외)
-    3. 주식소각
+    3. 주식소각 발행주식 3%↑ (사용자 2026-06-12 '소각·자사주 3% 이상만' —
+       detail 의 '발행주식의 X%' 우선, 없으면 소각주식수÷shares 계산)
     4. 자기주식취득결정 발행주식 3%↑ (기재정정 제외, shares 필요)
     5. 신규시설투자 자기자본대비 20%↑
     6. 지분공시(대량보유) 신규 5%↑ (직전<5%≤현재)
@@ -1717,9 +1783,30 @@ def significance(item: dict, shares_outstanding: float | None = None) -> str | N
         p = _sig_pct(detail, r"매출액\s*대비")
         if p is not None and p >= 10.0:
             return f"매출대비 {p:g}% 계약"
-    # 3
+    # 3 — 소각도 발행주식 3%↑만 (신도기연 1.21% 류 미발화, 2026-06-12)
     if "소각" in rn:
-        return "주식소각"
+        for dl in detail:
+            s = str(dl)
+            m = re.search(r"발행주식의\s*([\d.]+)\s*%", s)
+            if m:
+                try:
+                    pct = float(m.group(1))
+                    if pct >= 3.0:
+                        return f"발행주식 {pct:g}% 소각"
+                except ValueError:
+                    pass
+                break  # % 명시 케이스 — 3% 미만이면 미발화 확정
+            m2 = re.search(r"소각[^0-9]*([\d,]+)\s*주", s)
+            if m2 and shares_outstanding:
+                try:
+                    pct = (int(m2.group(1).replace(",", ""))
+                           / shares_outstanding * 100)
+                    if pct >= 3.0:
+                        return f"발행주식 {pct:.1f}% 소각"
+                except (ValueError, ZeroDivisionError):
+                    pass
+                break
+        return None  # detail 부재/미달 — 미발화 (3%↑ 확인된 것만)
     # 4
     if ("자기주식" in rn and "취득" in rn and "결정" in rn
             and "처분" not in rn and not correction and shares_outstanding):

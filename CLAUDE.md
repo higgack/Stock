@@ -451,10 +451,15 @@ pattern to follow:
   성공 항목은 INFO 로그에 회사명(접수번호) 병기. VM 1줄 진단:
   `cd ~/stock && .venv/bin/python -m bot.dart_feed --selftest`.
   **카테고리 정책 (사용자 2026-06-11, 하나씩 검토 중 — 임의 변경 금지)**:
-  IR 은 enrich 제외(캘린더 전담, 카드는 제목만·수집/캘린더 공급 유지),
-  지분공시는 대량보유만 enrich(임원소유상황/감사보고서 등은 무료 구조화
-  소스 없음 → 제목만이 정상). 나머지 카테고리 정밀화는 사용자가 순차
-  지시할 때만 변경.
+  IR 은 enrich 제외(캘린더 전담, 카드는 제목만·수집/캘린더 공급 유지).
+  지분공시는 **대량보유(majorstock) + 임원·주요주주 소유상황(elestock)
+  둘 다 enrich** (사용자 2026-06-12 '지분공시도 다 파싱' — 옛 대량보유-
+  only 폐기. elestock 100% 비율 환각 가드 유지, 소유상황 카드는 detail
+  파싱된 것만 대시보드 노출 — 제목만 홍수 방지). 감사보고서 등 generic
+  '보고서' 분류분은 구조화 소스 없어 제목만이 정상. 나머지 카테고리
+  정밀화는 사용자가 순차 지시할 때만 변경. 🔥 중요 6규칙 중 소각·자사주
+  취득은 **발행주식 3%↑만** 발화(사용자 2026-06-12, 신도기연 1.21% 류
+  미발화).
 - Journal log size → `SystemMaxUse=500M` in `journald.conf` (auto-trim)
 - Standard View code updates → `sv-update.service` polls git every 1 min, rsyncs `standardview/scripts` + `standardview/backend` into live tree, restarts backend if changed, defers when daily_generator is running. Same pattern as `stock-bot-update`.
 - Standard View cache rollover → `sv-cache-rollover.service` runs 00:05 KST daily, flushes `macro_news_cache` so the first news-brief call of the new date regenerates from scratch (fixes the 2026-05-21 midnight stub-cache bug).
