@@ -10716,13 +10716,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 
     total = sum(len(v) for v in by_date.values())
 
-    # 파싱배치 백필 v4 상태 라벨 — marker 파일 기반 (사용자 2026-06-12
-    # '백필 확실히 확인한거지' — SSH/문의 없이 페이지에서 직접 확인).
-    try:
-        from bot.dart_feed import backfill_v4_status
-        _bf4_status = backfill_v4_status()
-    except Exception:
-        _bf4_status = ""
+    # 백필 v4 상태 라벨은 제거 (사용자 2026-06-13 '이제 필요없잖아' —
+    # 일회성 이벤트 완료, backfill_v4_status() 는 CLI 진단용으로 보존).
 
     # 시총·현재가 렌더 부착(배치 #11) — FSC 12h 디스크 캐시 + 렌더당 코드
     # 1회 메모 + cold-fetch 시간예산 45s(30일 윈도 수백 코드 첫 채움이 1분
@@ -10883,7 +10878,6 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   </div>
   <h1>DART 공시</h1>
   <p class="sub">출처 DART(OpenDART) · 1분 수집 · {datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")} 기준</p>
-  <p class="sub" style="margin-top:-8px">{_html.escape(_bf4_status)}</p>
 
   <div class="df-controls">
     <div class="df-pills">{''.join(pills)}</div>
@@ -10938,7 +10932,13 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     <div class="df-month-body">
 """)
         for date_str in dates:
-            items = by_date[date_str]
+            # 접수번호(rcept_no = DART 접수시각 순서 내포) 내림차순 — 카드
+            # 순서 = 실제 공시가 뜬 순서(최신 위). 아카이브 파일 순서는
+            # 백필/재fetch 가 섞을 수 있어 렌더타임 정렬로 고정 (사용자
+            # 2026-06-13 '업데이트 순서가 맞아야', 과거 기록 소급).
+            items = sorted(by_date[date_str],
+                           key=lambda x: str(x.get("rcept_no") or ""),
+                           reverse=True)
             try:
                 d = _dt.strptime(date_str, "%Y-%m-%d")
                 wd = _WEEKDAY_KR.get(d.weekday(), "")

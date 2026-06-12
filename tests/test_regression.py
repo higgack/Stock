@@ -5921,9 +5921,14 @@ class TestBackfillV4StatusLabel:
         src = open("bot/dart_feed.py", encoding="utf-8").read()
         assert "reparse_replaced" in src and "backfill_v4_status" in src
 
-    def test_dashboard_renders_label(self):
+    def test_dashboard_label_removed(self):
+        # 일회성 이벤트 완료 후 라벨 제거 (사용자 2026-06-13) — helper 는
+        # CLI 진단용 보존, 대시보드 렌더에서는 미사용.
         src = open("bot/dashboard.py", encoding="utf-8").read()
-        assert "backfill_v4_status" in src and "_bf4_status" in src
+        assert "_bf4_status" not in src.replace(
+            "백필 v4 상태 라벨은 제거", "")  # 주석 제외 실사용 0
+        from bot.dart_feed import backfill_v4_status
+        assert callable(backfill_v4_status)
 
 
 class TestDartDividendCategoryAndCapitalRaise:
@@ -6174,3 +6179,17 @@ class TestDartIRParsing:
         src = open("bot/dart_feed.py", encoding="utf-8").read()
         assert "_extract_ir" in src and '"기업설명회" in t' in src
         assert '"IR")' in src  # _PARSE_CATS 포함
+
+
+class TestDartCardOrderIsReceiptOrder:
+    """카드 순서 = 접수 순서 (사용자 2026-06-13 '업데이트 순서가 맞아야')
+    — 날짜 그룹 내 rcept_no 내림차순 렌더 정렬. 아카이브 파일 순서는
+    백필/재fetch 가 섞을 수 있어 렌더타임 고정."""
+
+    def test_sorted_by_rcept_no_desc(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'key=lambda x: str(x.get("rcept_no") or "")' in src
+        # 정렬 호출 자체에 reverse=True 인접 확인 (카운트 프리패스의
+        # 'for it in items' 와 혼동 없는 exact 매칭)
+        assert ('key=lambda x: str(x.get("rcept_no") or ""),\n'
+                '                           reverse=True)') in src
