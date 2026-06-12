@@ -85,6 +85,26 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
                     snap["market_cap"] = float(prev) * float(shares)
         except (TypeError, ValueError):
             pass
+        # 2차 가드 (KLAC 잔존 2026-06-12) — info 의 price 와 previousClose
+        # 가 **둘 다 같은 미조정 기준**이면 1차(상대비교)가 장님 (2,411 vs
+        # 직전 2,398 → 통과). 조정 일봉 히스토리(차트와 동일 소스) 마지막
+        # 종가와 교차: ±75% 초과면 조정 종가로 교체 + 시총 재산출. 차트는
+        # $241 인데 헤더만 $2,411 이던 불일치의 근본 차단.
+        try:
+            if price:
+                hist = t.history(period="5d")
+                if hist is not None and len(hist) and "Close" in hist:
+                    hc = float(hist["Close"].dropna().iloc[-1])
+                    if hc > 0 and abs(float(price) / hc - 1) > 0.75:
+                        snap["price_glitch_note"] = (
+                            f"소스 이상치 보정 — 수신가 {float(price):,.2f} 가 "
+                            f"조정 종가 {hc:,.2f} 대비 ±75% 초과(분할 미조정) "
+                            f"→ 조정 종가로 표시")
+                        price = hc
+                        if shares:
+                            snap["market_cap"] = hc * float(shares)
+        except Exception:
+            pass
         if price:
             snap["current_price"] = price
         if "market_cap" not in snap:
