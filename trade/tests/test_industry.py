@@ -591,3 +591,81 @@ class MtiCompaniesTests(unittest.TestCase):
         self.assertIn("심팩", companies_for("페로망간"))
         self.assertEqual(companies_for("정체불명품목"), [])
         self.assertEqual(companies_for(""), [])
+
+
+class MtiCodeAndChannelTests(unittest.TestCase):
+    """이름 옆 MTI 코드 칩 + 구성 HS + 채널 알림 관련기업 조인
+    (사용자 2026-06-13 '이름 옆 코드 · 채널 매트릭스 참조')."""
+
+    def _by(self):
+        from trade import customs_scan
+        rows = []
+        for i in range(25):
+            y, m = 2024 + (i // 12), (i % 12) + 1
+            rows.append({"hs_code": "8542321010", "stat_kor": "디램",
+                         "year_month": f"{y}-{m:02d}",
+                         "exp_dlr": 1_000_000_000, "imp_dlr": 0,
+                         "exp_wgt": 100_000, "imp_wgt": 0})
+        return industry.aggregate_by_mti(customs_scan.build_series(rows))
+
+    def test_code_chip_in_rank_rows_and_cards(self):
+        html = industry.render_subitem_html(self._by())
+        # 랭킹표 행 + TOP10 카드 제목 양쪽에 MTI 코드 칩
+        self.assertGreaterEqual(html.count("ind-code'"), 2)
+        self.assertIn(">831110</span>", html)
+
+    def test_member_hs_line(self):
+        html = industry.render_subitem_html(self._by())
+        self.assertIn("구성 HS", html)
+        self.assertIn("8542321010", html)   # member HS10 노출
+
+    def test_channel_join_pure(self):
+        from trade.mti_companies import channel_companies_for
+        pairs = [
+            ("2차전지원형각형등팩모듈(capassy포함)", ["상신이디피"]),
+            ("(덴티움+오스템임플란트+디오)", ["임플란트"]),   # 도치 행
+            ("임플란트수출", ["덴티움", "디오"]),
+            ("3차원검사장비,모듈", ["인텍플러스", "펨트론", "고영"]),
+        ]
+        # 품목명 ⊂ item, 도치 토큰(자기 이름)은 제외
+        self.assertEqual(channel_companies_for("임플란트", pairs),
+                         ["덴티움", "디오"])
+        self.assertEqual(channel_companies_for("검사장비", pairs),
+                         ["인텍플러스", "펨트론", "고영"])
+        self.assertEqual(channel_companies_for("디램", pairs), [])
+        self.assertEqual(channel_companies_for("램", pairs), [])  # <3자 컷
+
+    def test_channel_pairs_from_sqlite(self):
+        import json
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from trade.mti_companies import channel_companies_for, load_channel_pairs
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "store.db"
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE alerts (item TEXT, stocks TEXT, stocks_meta TEXT)")
+            conn.execute("INSERT INTO alerts VALUES (?,?,?)",
+                         ("3차원 검사장비, 모듈",
+                          json.dumps(["인텍플러스", "펨트론", "파미"]),
+                          json.dumps({"파미": "비상장"})))
+            conn.commit(); conn.close()
+            pairs = load_channel_pairs(db)
+            self.assertEqual(len(pairs), 1)
+            cos = channel_companies_for("검사장비", pairs)
+            self.assertEqual(cos, ["인텍플러스", "펨트론"])   # 비상장 제외
+        # DB 부재 → [] graceful
+        self.assertEqual(load_channel_pairs(Path(td) / "none.db"), [])
+
+    def test_card_channel_line(self):
+        import trade.mti_companies as mc
+        orig = mc.load_channel_pairs
+        mc.load_channel_pairs = lambda db_path=None: [
+            ("d램및낸드모듈수출", ["한미반도체", "테크윙"])]
+        try:
+            html = industry.render_subitem_html(self._by())
+        finally:
+            mc.load_channel_pairs = orig
+        self.assertIn("관련기업(채널 알림)", html)
+        self.assertIn("테크윙", html)
+        self.assertIn("관련기업(큐레이션)", html)   # 두 출처 병기

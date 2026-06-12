@@ -93,6 +93,36 @@ def aggregate_by_mti(
     return out
 
 
+_MTI_HS_CACHE: dict | None = None
+
+
+def _mti_hs_members() -> dict[str, list[str]]:
+    """{mti6: [구성 HS10 코드...]} — HSK-MTI 연계 역맵 (프로세스 1회
+    캐시). MTI 품목은 HS10 leaf 여러 개를 묶은 것이라 자기 HS 코드가
+    없고 '구성 HS' 목록이 정답 (사용자 2026-06-13 'HS Code 가 없나?').
+    연계파일 부재 시 {} (graceful)."""
+    global _MTI_HS_CACHE
+    if _MTI_HS_CACHE is None:
+        try:
+            rev: dict[str, list[str]] = {}
+            for hs, rec in mti_map.load_mti().items():
+                m6 = rec[0]
+                if m6:
+                    rev.setdefault(m6, []).append(hs)
+            _MTI_HS_CACHE = {k: sorted(v) for k, v in rev.items()}
+        except Exception:
+            _MTI_HS_CACHE = {}
+    return _MTI_HS_CACHE
+
+
+def _code_chip(code: str) -> str:
+    """품목명 옆 (MTI 코드) 칩 — 모든 항목 식별자 표기 (사용자 2026-06-13
+    '이름 옆에 코드')."""
+    if not code:
+        return ""
+    return f" <span class='ind-code' title='MTI 코드'>{_html.escape(str(code))}</span>"
+
+
 def _prev_year_month(ym: str) -> str:
     """'2026-04' → '2025-04'. Accepts 'YYYY-MM' or 'YYYYMM'."""
     s = ym.replace("-", "")
@@ -654,10 +684,13 @@ def _unit_str(v) -> str:
     return f"${v:.3f}/kg"
 
 
-def _mti_extras(node: dict, pts: list[dict], amt_th: str) -> str:
-    """품목 카드 meta 하단 부가 2줄 (사용자 2026-06-13 텔레그램 채널
-    미러): 💲 최신월 단가 + 전년동월 대비, 🏢 관련기업 (mti_companies
-    수동 큐레이션). 데이터/매핑 없으면 해당 줄 생략 — 빈 문자열 가능."""
+def _mti_extras(node: dict, pts: list[dict], amt_th: str,
+                mti6: str = "", channel: list[str] | None = None) -> str:
+    """품목 카드 meta 하단 부가줄 (사용자 2026-06-13 텔레그램 채널
+    미러): 💲 최신월 단가 + 전년동월 대비, 🧾 구성 HS 코드(MTI 는 HS10
+    여러 개의 묶음이라 자기 HS 가 없음 — 구성 목록이 답), 🏢 관련기업
+    (큐레이션 + 채널 알림 두 출처 별도 라인). 데이터/매핑 없으면 해당
+    줄 생략 — 빈 문자열 가능."""
     lines = []
     # 단가 — 최신 unit 있는 포인트 + 전년동월 unit 비교
     with_unit = [p for p in pts if p.get("unit")]
@@ -674,7 +707,17 @@ def _mti_extras(node: dict, pts: list[dict], amt_th: str) -> str:
         lines.append(
             f"<p class='ind-extra'>💲 {amt_th} 단가 <b>{_unit_str(latest['unit'])}</b>"
             f"{yoy_html}</p>")
-    # 관련기업 — 품목명 키워드 큐레이션 (자동 추정 아님)
+    # 구성 HS 코드 — 이 MTI 를 구성하는 관세청 HS10 leaf 목록
+    members = _mti_hs_members().get(mti6) or []
+    if members:
+        shown = ", ".join(members[:3])
+        more = f" 외 {len(members) - 3}건" if len(members) > 3 else ""
+        full = ", ".join(members[:30])
+        lines.append(
+            f"<p class='ind-extra'>🧾 구성 HS <span class='ind-extra-sub' "
+            f"title='{_html.escape(full)}'>{_html.escape(shown)}{more}"
+            f" (총 {len(members)}개 HS10)</span></p>")
+    # 관련기업 ① 수동 큐레이션 (대표 상장사)
     try:
         from trade.mti_companies import companies_for
         cos = companies_for(node.get("name") or "")
@@ -683,9 +726,18 @@ def _mti_extras(node: dict, pts: list[dict], amt_th: str) -> str:
     if cos:
         chips = " · ".join(f"<b>{_html.escape(c)}</b>" for c in cos)
         lines.append(
-            "<p class='ind-extra'>🏢 관련기업: " + chips
+            "<p class='ind-extra'>🏢 관련기업(큐레이션): " + chips
             + " <span class='ind-extra-sub' title='품목명 키워드 기반 수동 "
               "큐레이션 — 자동 추정 아님'>ⓘ</span></p>")
+    # 관련기업 ② 채널 알림 조인 (BeOn 수출입 알림이 같은 품목명을 다룬
+    # 기업들 — store.db 라이브, 큐레이션과 출처 구분 표기, 중복 제거)
+    channel = [c for c in (channel or []) if c not in set(cos)]
+    if channel:
+        chips = " · ".join(f"<b>{_html.escape(c)}</b>" for c in channel)
+        lines.append(
+            "<p class='ind-extra'>📨 관련기업(채널 알림): " + chips
+            + " <span class='ind-extra-sub' title='수출입 알림 채널이 이 "
+              "품목명으로 다룬 기업 합집합 — 채널 큐레이션 기반'>ⓘ</span></p>")
     return "".join(lines)
 
 
@@ -1018,7 +1070,7 @@ def _summary_board(series: dict[str, list[dict]],
             if cur < 10_000_000:
                 continue
             if ind not in driver or y > driver[ind][1]:
-                driver[ind] = (nm, y)
+                driver[ind] = (nm, y, mti6)
 
         # 산업별 수출 YoY(괴리·동행/선행후보 판정용)
         exp_yoy = {ind: (pts[-1].get("yoy") if pts else None)
@@ -1053,7 +1105,8 @@ def _summary_board(series: dict[str, list[dict]],
                 if drv:
                     cap = ("<span class='ind-imp-cap'>자본재</span>"
                            if _is_capital_good(drv[0]) else "")
-                    sub = (f"<span class='ind-imp-drv'>← {_html.escape(drv[0])} "
+                    sub = (f"<span class='ind-imp-drv'>← {_html.escape(drv[0])}"
+                           f"{_code_chip(drv[2])} "
                            f"{_pct(drv[1])}{_base_tag(drv[1])}{cap}</span>")
                 else:
                     sub = ""
@@ -1096,6 +1149,13 @@ def render_subitem_html(by_mti: dict[str, dict],
     Each row: 품목명(산업) · 수출 · 전월대비. Returns '' when no data."""
     if not by_mti:
         return ""
+    # 채널 알림 조인 페어 — 렌더당 1회 로드 (store.db 부재 시 [] graceful)
+    try:
+        from trade.mti_companies import channel_companies_for, load_channel_pairs
+        _ch_pairs = load_channel_pairs()
+    except Exception:
+        _ch_pairs = []
+        channel_companies_for = lambda name, pairs: []  # noqa: E731
     rows = []
     pts_by_mti: dict[str, list[dict]] = {}
     extras_by_mti: dict[str, str] = {}
@@ -1104,11 +1164,13 @@ def render_subitem_html(by_mti: dict[str, dict],
         pts = industry_series({mti6: months}).get(mti6) or []
         if not pts:
             continue
-        # 단가($/kg) + 관련기업 — 카드 meta 부가줄. wgts 없는 옛 스냅샷/
-        # 미수록 품목은 빈 문자열 (graceful).
+        # 단가($/kg) + 구성 HS + 관련기업(큐레이션·채널) — 카드 meta
+        # 부가줄. wgts 없는 옛 스냅샷/미수록 품목은 줄 생략 (graceful).
         _attach_units(pts, node.get("wgts"))
         pts_by_mti[mti6] = pts
-        extras_by_mti[mti6] = _mti_extras(node, pts, amt_th)
+        extras_by_mti[mti6] = _mti_extras(
+            node, pts, amt_th, mti6=mti6,
+            channel=channel_companies_for(node.get("name") or "", _ch_pairs))
         latest = pts[-1]
         # MoM = 최신 확정월 vs 달력상 직전월. 직전월 포인트가 없으면(데이터
         # 공백) MoM 미정의 → 두 랭킹표에서 제외. 미래 미발표월은 애초에
@@ -1137,7 +1199,8 @@ def render_subitem_html(by_mti: dict[str, dict],
             cl = "pos" if (raw or 0) > 0 else "neg"
             out.append(
                 f"<tr class='ind-mti-row' title='클릭 → 차트·월별 상세'>"
-                f"<td>{_html.escape(r['name'])} <span class='ind-mti-more'>▸</span></td>"
+                f"<td>{_html.escape(r['name'])}{_code_chip(r['mti6'])}"
+                f" <span class='ind-mti-more'>▸</span></td>"
                 f"<td class='ind-sub-ind'>{_html.escape(r['industry'])}</td>"
                 f"<td>{_eokusd(r['exp'])}</td>"
                 f"<td class='{cl}'>{val}</td></tr>"
@@ -1180,7 +1243,8 @@ def render_subitem_html(by_mti: dict[str, dict],
         cls = {"초고성장/강세": "hot", "턴어라운드 후보": "turn",
                "부진/재하락": "down"}.get(classify(pts), "na")
         label = classify(pts)
-        title = f"{r['name']} <small class='ind-sub-ind'>({r['industry']})</small>"
+        title = (f"{r['name']}{_code_chip(r['mti6'])} "
+                 f"<small class='ind-sub-ind'>({r['industry']})</small>")
         cards.append(
             "<section class='ind-card'>"
             f"<div class='ind-head'><h3>{title}</h3>"
@@ -1193,10 +1257,12 @@ def render_subitem_html(by_mti: dict[str, dict],
     return (
         "<h2 class='ind-group ind-group-hot'>하위품목 (MTI 세분)</h2>"
         "<div class='ind-sub-note'>20개 산업 아래 세부 품목(D램·낸드·웨이퍼 등 "
-        f"MTI 6자리). {lab} TOP 10은 풀 카드로, 전체는 급등률·증감액 랭킹표"
-        "(행 클릭 = 차트·월별 상세) — 산업이 가려버리는 '산업 안의 스타 품목'"
-        "을 발굴. 카드에 단가($/kg, 관세청 중량 기반)·관련기업(수동 큐레이션)"
-        "은 데이터/수록 품목에 한해 표시 — 중량은 다음 정기 스윕부터 적재.</div>"
+        f"MTI 6자리 — 이름 옆 회색 칩이 MTI 코드, 카드 안 '구성 HS'가 이 품목을 "
+        f"이루는 관세청 HS10 코드들). {lab} TOP 10은 풀 카드로, 전체는 급등률·"
+        "증감액 랭킹표(행 클릭 = 차트·월별 상세) — 산업이 가려버리는 '산업 안의 "
+        "스타 품목'을 발굴. 카드에 단가($/kg, 관세청 중량 기반)·관련기업"
+        "(수동 큐레이션 + 수출입 알림 채널 조인 두 출처)은 데이터/수록 품목에 "
+        "한해 표시 — 중량은 다음 정기 스윕부터 적재.</div>"
         + cards_html
         + "<div class='ind-sub-wrap'>"
         + tbl("📈 급등률 (MoM↑ 상위, " + amt_th + " ≥" + _eokusd(rate_min_usd) + ")", rate, "mom")
@@ -1215,8 +1281,8 @@ def _intra_views(series: dict[str, list[dict]], by_mti: dict[str, dict] | None) 
     ind_yoy = {ind: (pts[-1].get("yoy") if pts else None) for ind, pts in series.items()}
     ind_cls = {ind: classify(pts) for ind, pts in series.items() if pts}
 
-    by_ind_subs: dict[str, list[tuple[str, float, float]]] = {}
-    subs: list[tuple[str, str, float, float]] = []
+    by_ind_subs: dict[str, list[tuple[str, float, float, str]]] = {}
+    subs: list[tuple[str, str, float, float, str]] = []
     for mti6, node in by_mti.items():
         pts = industry_series({mti6: node["months"]}).get(mti6) or []
         if not pts:
@@ -1226,20 +1292,20 @@ def _intra_views(series: dict[str, list[dict]], by_mti: dict[str, dict] | None) 
         if y is None or e < _SUB_REL_MIN_USD:
             continue
         ind, nm = node.get("industry", ""), node.get("name", mti6)
-        subs.append((ind, nm, y, e))
-        by_ind_subs.setdefault(ind, []).append((nm, y, e))
+        subs.append((ind, nm, y, e, mti6))
+        by_ind_subs.setdefault(ind, []).append((nm, y, e, mti6))
 
     # A) 견인 품목: 세부 YoY − 산업 YoY ≥ 격차. 산업 부진/턴어라운드인데 세부
     #    초고성장이면 '반등엔진'.
     lead = []
-    for ind, nm, y, _e in subs:
+    for ind, nm, y, _e, m6 in subs:
         iy = ind_yoy.get(ind)
         if iy is None:
             continue
         gap = y - iy
         if gap >= _LEAD_GAP:
             engine = (ind_cls.get(ind) != "초고성장/강세") and (y >= _HIGH_GROWTH_YOY)
-            lead.append((gap, ind, nm, y, iy, engine))
+            lead.append((gap, ind, nm, y, iy, engine, m6))
     lead.sort(reverse=True)
     lead = lead[:10]
 
@@ -1261,11 +1327,11 @@ def _intra_views(series: dict[str, list[dict]], by_mti: dict[str, dict] | None) 
     if lead:
         rows = "".join(
             f"<div class='ind-imp-row'><span class='ind-mini-chip'>"
-            f"<b>{_html.escape(nm)}</b> <span class='pos'>{_pct(y)}</span>{_base_tag(y)}</span>"
+            f"<b>{_html.escape(nm)}</b>{_code_chip(m6)} <span class='pos'>{_pct(y)}</span>{_base_tag(y)}</span>"
             f"<span class='ind-imp-drv'>{_html.escape(ind)} {_pct(iy)} · Δ{_pct(gap, '%p')}</span>"
             + ("<span class='ind-imp-cap'>반등엔진</span>" if engine else "")
             + "</div>"
-            for gap, ind, nm, y, iy, engine in lead)
+            for gap, ind, nm, y, iy, engine, m6 in lead)
         boxes += ("<div class='ind-sbox ind-sbox-accel'><h3>🚀 산업 내 견인 품목</h3>"
                   "<p class='ind-sbox-sub'>세부품목이 소속 산업 평균보다 크게 앞서는 순"
                   "(세부 YoY − 산업 YoY ≥ +30%p). 산업이 부진/턴어라운드인데 세부가 "
@@ -1274,8 +1340,8 @@ def _intra_views(series: dict[str, list[dict]], by_mti: dict[str, dict] | None) 
     if rot:
         rows = "".join(
             f"<div class='ind-imp-row'><span class='ind-mini-chip'><b>{_html.escape(ind)}</b></span>"
-            f"<span class='ind-imp-drv'>{_html.escape(w[0])} <span class='pos'>{_pct(w[1])}</span> ↑ "
-            f"vs {_html.escape(l[0])} <span class='neg'>{_pct(l[1])}</span> ↓</span></div>"
+            f"<span class='ind-imp-drv'>{_html.escape(w[0])}{_code_chip(w[3])} <span class='pos'>{_pct(w[1])}</span> ↑ "
+            f"vs {_html.escape(l[0])}{_code_chip(l[3])} <span class='neg'>{_pct(l[1])}</span> ↓</span></div>"
             for _disp, ind, w, l in rot)
         boxes += ("<div class='ind-sbox ind-sbox-decel'><h3>🔄 산업 내 교체·잠식</h3>"
                   "<p class='ind-sbox-sub'>같은 산업 안에서 한 세부품목은 강세(↑)인데 다른 "
