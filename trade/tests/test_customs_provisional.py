@@ -629,3 +629,43 @@ class MomentumTableMomColumnTest(unittest.TestCase):
         self.assertIn("data-momchg", tables)
         self.assertIn("data-sort='momchg'", prov.render_momentum(
             {"exp_item": self._rows()}))
+
+
+
+class MomChgDeltaTests(unittest.TestCase):
+    """ΔMoM (MoM 모멘텀, 사용자 2026-06-13) — 최신창 MoM − 직전 풀월 MoM.
+    계절효과 미보정 캐비엇 노트 + 6컬럼(YoY·ΔYoY·MoM·ΔMoM) + 정렬키."""
+
+    @staticmethod
+    def _rows():
+        n = len(prov.LABELS["exp_item"]) + 1
+        def amts(total, a):
+            v = [0.0] * n; v[0] = total; v[1] = a; return v
+        out = []
+        for ym, dec, tot, a in (
+            ("2026-06", "D10", 110.0, 60.0), ("2026-05", "D10", 100.0, 50.0),
+            ("2025-06", "D10", 55.0, 30.0), ("2026-05", "FULL", 300.0, 150.0),
+            ("2026-04", "FULL", 250.0, 100.0), ("2025-05", "FULL", 200.0, 100.0),
+        ):
+            out.append({"ym": ym, "decile": dec, "amt": amts(tot, a),
+                        "priod_dt": "x"})
+        return out
+
+    def test_delta_math_and_render(self):
+        mv = prov.momentum_rows(self._rows(), prov.LABELS["exp_item"])
+        tot = mv["items"][0]
+        self.assertAlmostEqual(tot["mom_chg"], 10.0, places=1)
+        self.assertAlmostEqual(tot["momchg_delta"], -10.0, places=1)   # 10−20
+        self.assertAlmostEqual(mv["items"][1]["momchg_delta"], -30.0, places=1)
+        html = prov.render_momentum({"exp_item": self._rows()})
+        self.assertIn("<th>ΔMoM</th>", html)
+        self.assertIn("data-momchgd=", html)
+        self.assertIn("data-sort='momchgd'", html)
+        self.assertIn("계절효과 미보정", html)
+
+    def test_headline_yoy_labeled(self):
+        box = prov.render_box({"exp_item": {
+            "total_usd": 28600000000, "total_yoy": 85.9, "total_mom": 59.1,
+            "ym": "2026-06", "window": "1~10일", "items": []}})
+        self.assertIn("YoY +85.9%", box)
+        self.assertIn("MoM +59.1%", box)
