@@ -10909,7 +10909,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         _lg = []
         if _sig_total:
             _lg.append('<span class="df-badge df-badge-sig">🔥 중요</span> '
-                       '금색 — 상장폐지·손익(매출20%/영업익30%)·계약 매출10%·소각/자사주 발행주식3%·시설 자기자본20%·신규 5% 대량보유·유상증자 시총5%')
+                       '금색 — 상장폐지·손익(매출20%/영업익30%)·계약 매출10%·소각/자사주 발행주식3%·시설 자기자본20%·신규 5% 대량보유·유상증자 시총5%·배당 시가배당률3%')
         if _unp_total:
             _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
                        '파란 점선 — 우리 파서 미적용(제목·원문 공유 시 파서 추가)')

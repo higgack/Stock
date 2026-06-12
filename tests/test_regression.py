@@ -6105,3 +6105,30 @@ class TestDocFailClearV6:
         assert df.clear_doc_fail_once_v6() is None   # marker gate
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "clear_doc_fail_once_v6" in src
+
+
+class TestDividendYieldSignificance:
+    """🔥 규칙 9 — 배당 시가배당률 3%↑ (사용자 2026-06-13)."""
+
+    def test_yield_gate(self):
+        from bot.dart_feed import significance as S
+        hi = {"report_nm": "현금ㆍ현물배당결정", "category": "배당",
+              "detail": ["1주당 배당금: 1,500원", "시가배당률: 3.5%"]}
+        assert S(hi) == "시가배당률 3.5%"
+        assert S({**hi, "detail": ["시가배당률: 0.8%"]}) is None
+        assert S({**hi, "detail": []}) is None        # 미파싱 → ⚠️ 대기
+        assert S({"report_nm": "[기재정정]현금ㆍ현물배당결정",
+                  "category": "배당",
+                  "detail": ["시가배당률: 4.2%"]}) is None   # 정정 제외
+
+
+class TestProvZoneDivider:
+    """잠정 속보 존 구분선 (사용자 2026-06-13 '10·20일 잠정도 위쪽에') —
+    월간 산업트렌드와 동일 pill, 녹색 변형."""
+
+    def test_divider_markup_and_order(self):
+        src = open("trade/dashboard.py", encoding="utf-8").read()
+        assert "ind-zone-div prov" in src
+        assert "10·20일 잠정" in src
+        assert "prov_zone_div + prov_html + zone_div" in src   # 순서
+        assert ".ind-zone-div.prov span{border-color:#34c759}" in src
