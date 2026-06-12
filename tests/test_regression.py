@@ -5970,3 +5970,29 @@ class TestDartDividendCategoryAndCapitalRaise:
         assert "reclassify_v5_once_if_needed" in src
         leg = open("bot/dashboard.py", encoding="utf-8").read()
         assert "유상증자 시총5%" in leg   # 범례 동기
+
+
+class TestDelistBoilerplateNoFire:
+    """🔥 규칙 7 오발 fix (에코마케팅 230360, 2026-06-12) — 병합/분할
+    전자등록 기계적 거래정지의 '해제·만료: 상장폐지시까지' boilerplate 는
+    상폐 신호 아님. 실제 상폐(결정/상장폐지일/우려/사유)는 유지."""
+
+    def test_mechanical_suspension_no_fire(self):
+        from bot.dart_feed import significance
+        eco = {"report_nm": "주권매매거래정지 (주식의 병합, 분할 등 전자등록 변경, 말소)",
+               "category": "리스크",
+               "detail": ["사유: 주식의 병합, 분할 등 전자등록 변경, 말소",
+                          "정지: 2026-06-11", "해제·만료: 상장폐지시까지"]}
+        assert significance(eco) is None
+
+    def test_real_delisting_still_fires(self):
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "주권매매거래정지(상장폐지)",
+                             "category": "리스크",
+                             "detail": ["사유: 상장폐지",
+                                        "상장폐지일: 2026-07-01"]}) == "상장폐지 관련"
+        assert significance({"report_nm": "기타시장안내", "category": "리스크",
+                             "detail": ["제목: 상장폐지 우려 안내"]}) == "상장폐지 관련"
+        assert significance({"report_nm": "주권매매거래정지", "category": "리스크",
+                             "detail": ["사유: 상장폐지 사유 발생",
+                                        "해제·만료: -"]}) == "상장폐지 관련"

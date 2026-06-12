@@ -157,7 +157,14 @@ def main(argv: list[str] | None = None) -> int:
     ok = fail = 0
     for ch in chapters:
         try:
-            all_rows.extend(customs_scan.fetch_chapter(ch, start, end, key=key))
+            # fetch_chapter_range — 13개월 윈도를 ≤12개월로 쪼개 호출.
+            # 관세청이 1년 초과 조회를 resultCode 99 로 전부 거부해
+            # ok=0 fail=97 rows=0 (히트맵 영구 empty) 였던 근본 원인:
+            # splitter(_split_windows)는 구현·테스트돼 있었는데 이
+            # 호출부만 raw fetch_chapter 를 쓰던 배선 누락 (2026-06-12
+            # scan_customs_kick.log 로 적발).
+            all_rows.extend(
+                customs_scan.fetch_chapter_range(ch, start, end, key=key))
             ok += 1
         except Exception as exc:
             fail += 1

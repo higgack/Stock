@@ -469,3 +469,20 @@ class HeatmapTest(unittest.TestCase):
         self.assertEqual(ch85["name"], "전기전자")
         self.assertEqual(ch85["h4s"][0]["h4"], "8542")
         self.assertEqual(ch85["h4s"][0]["epy"], 5_000_000_000)
+
+
+class ScanUsesRangeFetchTests(unittest.TestCase):
+    """scan_customs 가 fetch_chapter_range(≤12개월 분할)를 쓰는지 — 13개월
+    윈도를 raw fetch_chapter 로 보내 관세청이 전부 거부(resultCode 99,
+    ok=0 fail=97 rows=0 → 히트맵 영구 empty)하던 배선 누락 회귀 차단
+    (2026-06-12 scan_customs_kick.log 적발)."""
+
+    def test_scan_script_calls_range_variant(self):
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[1]
+               / "scripts" / "scan_customs.py").read_text(encoding="utf-8")
+        self.assertIn("fetch_chapter_range(", src)
+        # 루프 본문에서 raw fetch_chapter( 직접 호출이 사라졌는지
+        import re
+        calls = re.findall(r"customs_scan\.fetch_chapter\(", src)
+        self.assertEqual(calls, [])

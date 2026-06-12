@@ -3184,8 +3184,15 @@ def significance(item: dict, shares_outstanding: float | None = None,
     # 제목/사건(소송·자율공시) + 사유/해제·만료/결론(매매거래정지·
     # 기타시장안내) — '비고: 상장폐지 아님' 류 자유 서술 오발 차단.
     # '실질심사'(상장적격성 실질심사 대상 = 상폐 전단계)도 포함 (리스크-2).
+    # ⚠️ '상장폐지시까지' 는 기간 boilerplate — 병합/분할 전자등록 변경의
+    # 기계적 거래정지(에코마케팅 230360, 2026-06-12 오발)가 '구주권
+    # 상장폐지시까지 정지' 문구만으로 발화하던 것 차단. 실제 상폐
+    # 신호(상장폐지결정/상장폐지일/상장폐지 우려/사유의 상장폐지)는 유지.
+    def _delist_hit(s: str) -> bool:
+        s = s.replace("상장폐지시까지", "").replace("상장폐지 시까지", "")
+        return "상장폐지" in s or "실질심사" in s
     if ("상장폐지" in rn or "실질심사" in rn or any(
-            ("상장폐지" in s or "실질심사" in s)
+            _delist_hit(s)
             for dl in detail
             if (s := str(dl)).startswith(("제목:", "사건:", "사유:",
                                           "해제·만료:", "결론:")))):
