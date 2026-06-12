@@ -3445,6 +3445,15 @@ async def _on_startup(application) -> None:
                              st5.get("reclassified", 0), st5.get("upgraded", 0))
             except Exception as exc:
                 log.warning("startup: DART reclassify v5 failed: %s", exc)
+            # v6 — 쿨다운 고착 미파싱 1회 해제 (generic 폴백과 함께 재시도)
+            try:
+                from bot.dart_feed import clear_doc_fail_once_v6
+                n6 = clear_doc_fail_once_v6()
+                if n6:
+                    log.info("startup: DART doc_fail v6 — %d건 해제 "
+                             "(미파싱 즉시 재시도)", n6)
+            except Exception as exc:
+                log.warning("startup: DART doc_fail v6 failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:

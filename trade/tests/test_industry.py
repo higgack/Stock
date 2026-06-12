@@ -270,12 +270,15 @@ class StoreRenderTests(unittest.TestCase):
     def test_dashboard_zone_order_and_emphasis(self):
         # 구분선 → motie → 월별 아카이브 순서 + 강조 pill + auto-update
         # 트리거 trade/*.py 확대 (stale dashboard-server 클래스 차단)
-        src = open("trade/dashboard.py", encoding="utf-8").read()
+        # 절대경로 — 타 테스트의 chdir 누수에 면역 (2026-06-12)
+        from pathlib import Path as _P
+        _root = _P(__file__).resolve().parents[2]
+        src = (_root / "trade" / "dashboard.py").read_text(encoding="utf-8")
         i = src.index("zone_div + industry.motie_banner()")
         self.assertIn("archive_link", src[i:i + 120])
         self.assertIn("motie=False", src)
         self.assertIn("1.5px solid var(--accent)", src)
-        sh = open("deploy/trade-auto-update.sh", encoding="utf-8").read()
+        sh = (_root / "deploy" / "trade-auto-update.sh").read_text(encoding="utf-8")
         self.assertIn("^trade/[^/]+\\.py$", sh.replace("\\", "\\"))
         self.assertIn("trade/[^/]+", sh)
 
