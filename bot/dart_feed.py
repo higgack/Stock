@@ -973,6 +973,118 @@ def _prospectus_corr_lines(txt: str) -> list[str]:
     return parts
 
 
+def _related_collateral_lines(txt: str) -> list[str]:
+    """특수관계인에 대한 담보제공 (공정거래법 제26조 — 미파싱-4 2건: 주식
+    담보물(어센틱브랜즈) / 부동산 담보물(엘에스알스코)). 거래상대방·채권자·
+    담보물·기간·한도·금액·조건. 단위 백만원 가능 → mult 적용. 순수."""
+    mult = _doc_unit_mult(txt)
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    cp = _g(r"거래상대방?[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:회사와의|가\s*\.|\d\s*\.|$)")
+    if cp:
+        parts.append(f"거래상대: {cp}")
+    cred = _g(r"채권자[^가-힣A-Za-z0-9(]{0,8}?"
+              r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:다\s*\.|담보물|\d\s*\.|$)")
+    if cred:
+        parts.append(f"채권자: {cred}")
+    # 담보물 값은 면적(60,955.8㎡) 소수점 포함 → stop 은 다음 라벨(담보기간)만
+    obj = _g(r"담보물[^가-힣A-Za-z0-9(]{0,8}?"
+             r"([가-힣A-Za-z0-9()㈜,.㎡\- ]{4,80}?)\s*(?:라\s*\.\s*)?담보기간")
+    if obj:
+        parts.append(f"담보물: {obj}")
+    # 날짜 범위(2026.06.13~2027.06.13) 또는 자유 텍스트(채무전액 상환시 까지)
+    period = _g(r"담보기간[^0-9가-힣]{0,8}?"
+                r"(\d{4}[.\-]\d{1,2}[.\-]\d{1,2}\s*~\s*\d{4}[.\-]\d{1,2}[.\-]\d{1,2}"
+                r"|[가-힣][가-힣 ]{2,28}?(?:까지|상환시\s*까지))")
+    if period:
+        parts.append(f"기간: {period.strip()}")
+    lim = _g(r"담보한도[^0-9]{0,12}?([\d,]{2,})")
+    amt = _g(r"담보금액[^0-9]{0,12}?([\d,]{2,})")
+    seg = []
+    if lim and _amt_won(lim, mult):
+        seg.append(f"한도 {_amt_won(lim, mult)}")
+    if amt and _amt_won(amt, mult):
+        seg.append(f"금액 {_amt_won(amt, mult)}")
+    if seg:
+        parts.append("담보: " + " · ".join(seg))
+    cond = _g(r"거래의?\s*조건[^가-힣A-Za-z0-9]{0,8}?"
+              r"([가-힣A-Za-z0-9()㈜,.% ]{6,80}?)\s*(?:\d\s*\.|이사회|$)")
+    if cond:
+        parts.append(f"조건: {cond}")
+    return parts
+
+
+def _capital_reduction_lines(txt: str) -> list[str]:
+    """감자 결정 (미파싱-4 — 무상감자 결손보전). 감자주식수·비율·자본금
+    전후·방법·사유·기준일·주총. 정정 래퍼면 헤더 + 변경 항목. 순수."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    n = _g(r"감자주식의?\s*종류와?\s*수[\s\S]{0,12}?보통주식?\s*\(주\)[^0-9]{0,10}?"
+           r"([\d,]{4,})")
+    rate = _g(r"감자비율[\s\S]{0,12}?보통주식?\s*\(%\)[^0-9]{0,10}?([\d.]+)")
+    if n:
+        seg = f"감자주식: {int(n.replace(',', '')):,}주"
+        if rate:
+            seg += f" (비율 {rate}%)"
+        parts.append(seg)
+    cb = _g(r"감자전\s*\(원\)[^0-9]{0,10}?([\d,]{6,})")
+    ca = _g(r"감자후\s*\(원\)[^0-9]{0,10}?([\d,]{6,})")
+    if cb and ca:
+        from bot.dart_detail import _won
+        parts.append(f"자본금: {_won(cb)} → {_won(ca)}")
+    why = _g(r"감자사유[^가-힣A-Za-z0-9]{0,10}?"
+             r"([가-힣A-Za-z0-9() ]{2,50}?)\s*(?:\d\s*\.|감자일정|$)")
+    if why:
+        parts.append(f"사유: {why}")
+    base = _g(r"감자기준일[^0-9]{0,10}?"
+              r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    if base:
+        parts.append(f"감자기준일: {_clean_kdate(base)}")
+    gm = _g(r"주주총회\s*예정일[^0-9]{0,10}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    if gm:
+        parts.append(f"주총예정: {_clean_kdate(gm)}")
+    return parts
+
+
+def _issue_price_lines(txt: str) -> list[str]:
+    """[안내] 유상증자 신주 발행가액 (미파싱-4 — 1차 발행가액 27,900원).
+    주당 발행가액 + 확정 공시예정일 (긴 산정방식 narrative 는 생략). 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    kind = _g(r"\d\s*\.\s*구\s*분[^가-힣A-Za-z0-9]{0,8}?"
+              r"([가-힣A-Za-z0-9 ]{4,40}?)\s*(?:\d\s*\.|주당|$)")
+    if kind:
+        parts.append(f"구분: {kind}")
+    pr = _g(r"주당\s*발행가액[\s\S]{0,16}?보통주식?\s*\(원\)[^0-9]{0,10}?([\d,]{3,})")
+    if pr:
+        parts.append(f"주당 발행가액: {int(pr.replace(',', '')):,}원")
+    disc = _g(r"할인율\s*([\d.]+)\s*%")
+    if disc:
+        parts.append(f"할인율: {disc}%")
+    fin = _g(r"확정\s*발행가액[^0-9]{0,40}?"
+             r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})\s*일?\s*에\s*공시")
+    if fin:
+        parts.append(f"확정가액 공시예정: {_clean_kdate(fin)}")
+    return parts
+
+
 def _custody_lines(txt: str) -> list[str]:
     """부동산투자회사 자산보관 위탁계약 체결 (리츠 — 미파싱-2 예시 2건:
     신영부동산신탁 정정 연장 / 한국토지신탁 오렌지센터). 보관기관·대상
@@ -1963,6 +2075,15 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         doc = _parse_div_record(rcept_no, api_key, t)
         if doc:
             return doc
+    elif "발행가액" in t:
+        # 신주 발행가액 안내 (미파싱-4) — 유상증자보다 먼저 (제목에 '유상
+        # 증자' 동반 가능, 발행가액 안내는 별개 양식이라 우선 라우팅).
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _issue_price_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
     elif "유상증자" in t or "유무상증자" in t:
         doc = _parse_rights_issue_doc(rcept_no, api_key, t)
         if doc:
@@ -1993,11 +2114,27 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                                   _MAJOR_TRANSFER_FIELDS, min_fields=2)
         if doc:
             return doc
+    elif "특수관계인" in t and "담보" in t:
+        # 공정거래법 제26조 특수관계인 담보제공 (미파싱-4) — 백만원 단위·
+        # 거래상대방/채권자/담보물 구조가 주요사항보고서 담보와 달라 전용.
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _related_collateral_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
     elif "담보" in t:
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _COLLATERAL_FIELDS, min_fields=2)
         if doc:
             return doc
+    elif "감자" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _capital_reduction_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
     # ── 소송 표준 양식 2종 + 기타경영사항 소송성 (사용자 2026-06-12 5예시) ──
     elif "소송" in t:
         doc = _extract_doc_fields(

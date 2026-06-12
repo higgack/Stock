@@ -5306,6 +5306,80 @@ class TestDartUnparsed3:
         assert any(l == "목적: 주가 안정화를 통한 주주가치 제고" for l in out["lines"])
 
 
+class TestDartUnparsed4:
+    """미파싱-4 (사용자 2026-06-12, 5예시) — 특수관계인 담보제공(주식·부동산,
+    공정거래법 제26조 백만원) / 감자 결정(+정정) / 신주 발행가액 안내."""
+
+    def test_related_collateral_stock(self):
+        from bot.dart_feed import _related_collateral_lines
+        L = _related_collateral_lines(
+            "특수관계인에 대한 담보제공 (단위 : 백만 원) 1. 거래상대방 "
+            "(주)엠티브이반달섬개발피에프브이 회사와의 관계 계열회사 2. 담보제공 내역 "
+            "나. 채권자 반달섬제삼차(주) 다. 담보물 (주)엠티브이반달섬개발피에프브이 "
+            "보통주식 900,000주 라. 담보기간 2026.06.13~2027.06.13 마. 담보한도 31,902 "
+            "바. 담보금액 24,540 아. 거래의 조건 채권최고액을 변경 3. 이사회 의결일 2026.06.12")
+        assert any(l == "거래상대: (주)엠티브이반달섬개발피에프브이" for l in L)
+        assert any(l == "채권자: 반달섬제삼차(주)" for l in L)
+        assert any(l.endswith("보통주식 900,000주") for l in L)
+        assert any(l == "기간: 2026.06.13~2027.06.13" for l in L)
+        # 백만원 단위 → 31,902백만=319억 · 24,540백만=245.4억
+        assert any("319억원" in l and "245.4억원" in l for l in L)
+
+    def test_related_collateral_realestate_area_decimals(self):
+        # 담보물 면적 소수점(㎡)이 '\d.' stop 에 안 잘림 + 자유 텍스트 기간
+        from bot.dart_feed import _related_collateral_lines
+        L = _related_collateral_lines(
+            "특수관계인에 대한 담보제공 (단위 : 백만 원) 1. 거래상대방 하이엠케이(주) "
+            "회사와의 관계 계열회사 2. 담보제공 내역 나. 채권자 한국산업은행 대구지점 "
+            "다. 담보물 경상북도 구미시 진평동 643-2 소재 토지(60,955.8㎡) 및 "
+            "건물(7개동, 27,434.155㎡) 라. 담보기간 채무전액 상환시 까지 "
+            "마. 담보한도 12,000 바. 담보금액 10,000 아. 거래의 조건 근저당권 신규 설정 3. 이사회")
+        assert any("토지(60,955.8㎡)" in l and "건물(7개동, 27,434.155㎡)" in l for l in L)
+        assert any(l == "기간: 채무전액 상환시 까지" for l in L)
+        assert any("120억원" in l and "100억원" in l for l in L)
+
+    def test_capital_reduction(self):
+        from bot.dart_feed import _capital_reduction_lines
+        L = _capital_reduction_lines(
+            "감자 결정 1. 감자주식의 종류와 수 보통주식 (주) 21,000,000 "
+            "3. 감자전후 자본금 감자전 (원) 32,576,019,500 감자후 (원) 22,076,019,500 "
+            "5. 감자비율 보통주식 (%) 32.23 6. 감자기준일 2026년 07월 14일 "
+            "8. 감자사유 결손 보전을 통한 재무구조 개선 9. 감자일정 주주총회 예정일 2026년 06월 26일")
+        assert any(l == "감자주식: 21,000,000주 (비율 32.23%)" for l in L)
+        assert any(l.startswith("자본금:") for l in L)
+        assert any(l == "사유: 결손 보전을 통한 재무구조 개선" for l in L)
+        assert any(l == "감자기준일: 2026-07-14" for l in L)
+        assert any(l == "주총예정: 2026-06-26" for l in L)
+
+    def test_capital_reduction_correction(self):
+        from bot.dart_feed import _capital_reduction_lines
+        L = _capital_reduction_lines(
+            "정정신고(보고) 2026년 06월 10일 1. 정정대상 공시서류 : 감자 결정 "
+            "3. 정정사항 항 목 정정사유 정 정 전 정 정 후 9. 감자일정 주주총회 일정변경 "
+            "- 주주총회 예정일 2026년 06월 30일 - 주주총회 예정일 2026년 06월 26일")
+        assert any(l.startswith("정정") for l in L)        # 정정 헤더
+        assert not any("정정 전" in l for l in L)           # 표 헤더행 오캡처 가드
+
+    def test_issue_price_notice(self):
+        from bot.dart_feed import _issue_price_lines
+        L = _issue_price_lines(
+            "[안내]유상증자 신주 발행가액 1. 구분 신주배정기준일 기준 신주발행가액 "
+            "2. 주당 발행가액 보통주식(원) 27,900 종류주식(원) - "
+            "3. 기타 ※ 확정 발행가액은 2026년 07월 20일에 공시할 예정입니다. 할인율 20%를 적용")
+        assert any(l == "주당 발행가액: 27,900원" for l in L)
+        assert any(l == "확정가액 공시예정: 2026-07-20" for l in L)
+
+    def test_routing_priority(self):
+        # 특수관계인 담보 > 일반 담보 / 발행가액 > 유상증자 (라우팅 순서 가드)
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        rc = src.index('elif "특수관계인" in t and "담보" in t:')
+        gc = src.index('elif "담보" in t:')
+        assert rc < gc
+        ip = src.index('elif "발행가액" in t:')
+        rights = src.index('elif "유상증자" in t or "유무상증자" in t:')
+        assert ip < rights
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""
