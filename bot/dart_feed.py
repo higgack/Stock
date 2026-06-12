@@ -3668,10 +3668,41 @@ def backfill_v4_once_if_needed() -> dict | None:
                   for k in ("reclassified", "added", "days")})
     try:
         _BACKFILL_MARKER_V4.parent.mkdir(parents=True, exist_ok=True)
-        _BACKFILL_MARKER_V4.write_text(datetime.now(_KST).isoformat())
+        # 통계 JSON 으로 저장 — 대시보드가 '백필 v4 완료 …' 라벨로 표시
+        # (사용자 2026-06-12 '확실히 확인한거지' — SSH/문의 없이 화면 확인).
+        rp = stats.get("reparse") or {}
+        _BACKFILL_MARKER_V4.write_text(json.dumps({
+            "ts": datetime.now(_KST).isoformat(timespec="seconds"),
+            "reparse_replaced": rp.get("replaced", 0),
+            "reparse_checked": rp.get("checked", 0),
+            "added": stats.get("added", 0),
+            "reclassified": stats.get("reclassified", 0),
+        }, ensure_ascii=False))
     except OSError:
         pass
     return stats
+
+
+def backfill_v4_status() -> str:
+    """대시보드 표시용 한 줄 — '✅ 완료 ts · …' / '⏳ 대기/실행 중'.
+    옛 plain-isoformat marker 도 tolerant (완료 시각만)."""
+    try:
+        if not _BACKFILL_MARKER_V4.exists():
+            return ("⏳ 파싱배치 백필 v4: 대기/실행 중 (봇 재시작 직후 자동, "
+                    "이후 대기열 분당 8건 드레인)")
+        raw = _BACKFILL_MARKER_V4.read_text(encoding="utf-8").strip()
+        try:
+            d = json.loads(raw)
+            ts = str(d.get("ts", ""))[:16].replace("T", " ")
+            return (f"✅ 파싱배치 백필 v4 완료 {ts} · 재추출 "
+                    f"{d.get('reparse_replaced', 0)}/{d.get('reparse_checked', 0)}건 "
+                    f"교체 · 신규수집 {d.get('added', 0)}건 · 재분류 "
+                    f"{d.get('reclassified', 0)}건 — 미파싱 잔여분은 대기열이 "
+                    f"분당 8건 자동 드레인")
+        except Exception:
+            return f"✅ 파싱배치 백필 v4 완료 {raw[:16].replace('T', ' ')}"
+    except Exception:
+        return ""
 
 
 # ── CLI: python -m bot.dart_feed ──
