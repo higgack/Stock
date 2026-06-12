@@ -56,33 +56,56 @@ def build_heatmap_data(rows: list[dict]) -> dict:
     if not rows:
         return {}
     ref_ym = max(r.get("ref_ym") or "" for r in rows)
-    ch: dict[str, dict] = {}
-    for r in rows:
-        hs = str(r.get("hs_code") or "")
-        if len(hs) < 4:
-            continue
-        c2, h4 = hs[:2], hs[:4]
-        cnode = ch.setdefault(c2, {"name": CHAPTER_KR.get(c2, c2), "h4": {}})
-        node = cnode["h4"].setdefault(h4, {
+    # 산업 그룹 (사용자 2026-06-13 '전기차는 자동차로') — HS 류(2자리)는
+    # 관세 분류라 8507 배터리=85류, 8473 부품=84류가 정상이지만 산업
+    # 관점과 어긋남. 산업트렌드와 동일 HSK-MTI 연계표(industry_of)로
+    # leaf(HS10)→산업을 병행 집계해 [HS류|산업] 토글 제공. 미매핑은
+    # '기타(미매핑)'.
+    try:
+        from trade.mti_map import industry_of as _ind_of
+    except Exception:
+        _ind_of = lambda _h: None
+
+    def _agg(tree: dict, key: str, gname: str, r: dict, h4: str) -> None:
+        gnode = tree.setdefault(key, {"name": gname, "h4": {}})
+        node = gnode["h4"].setdefault(h4, {
             "exp": 0, "exp_pm": 0, "exp_py": 0,
             "imp": 0, "imp_pm": 0, "imp_py": 0,
             "top_name": "", "top_val": -1})
         for k in ("exp", "exp_pm", "exp_py", "imp", "imp_pm", "imp_py"):
             node[k] += int(r.get(k) or 0)
-        # 대표 라벨 = HS4 내 최대 leaf 의 품목명 (수출+수입 합 기준)
         v = int(r.get("exp") or 0) + int(r.get("imp") or 0)
         if v > node["top_val"]:
             node["top_val"] = v
             node["top_name"] = (r.get("name") or h4)[:40]
-    # 직렬화 축약 (전송량) — h4 dict → list
-    out_ch = []
-    for c2, cnode in ch.items():
-        h4s = [{"h4": h4, "nm": n["top_name"],
-                "e": n["exp"], "epm": n["exp_pm"], "epy": n["exp_py"],
-                "i": n["imp"], "ipm": n["imp_pm"], "ipy": n["imp_py"]}
-               for h4, n in cnode["h4"].items()]
-        out_ch.append({"c2": c2, "name": cnode["name"], "h4s": h4s})
-    return {"ref_ym": ref_ym, "chapters": out_ch}
+
+    ch: dict[str, dict] = {}
+    ind: dict[str, dict] = {}
+    for r in rows:
+        hs = str(r.get("hs_code") or "")
+        if len(hs) < 4:
+            continue
+        c2, h4 = hs[:2], hs[:4]
+        _agg(ch, c2, CHAPTER_KR.get(c2, c2), r, h4)
+        try:
+            iname = _ind_of(hs) or "기타(미매핑)"
+        except Exception:
+            iname = "기타(미매핑)"
+        _agg(ind, iname, iname, r, h4)
+
+    def _flat(tree: dict, with_c2: bool) -> list:
+        out = []
+        for key, gnode in tree.items():
+            h4s = [{"h4": h4, "nm": n["top_name"],
+                    "e": n["exp"], "epm": n["exp_pm"], "epy": n["exp_py"],
+                    "i": n["imp"], "ipm": n["imp_pm"], "ipy": n["imp_py"]}
+                   for h4, n in gnode["h4"].items()]
+            out.append({"c2": key if with_c2 else "",
+                        "name": gnode["name"], "h4s": h4s})
+        return out
+
+    return {"ref_ym": ref_ym, "chapters": _flat(ch, True),
+            "industries": _flat(ind, False)}
 
 
 _HEATMAP_CSS = """
@@ -128,6 +151,10 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
       <button class="hm-tbtn is-active" data-v="yoy">YoY</button>
       <button class="hm-tbtn" data-v="mom">MoM</button>
     </span>
+    <span class="hm-toggle" id="hm-grp">
+      <button class="hm-tbtn is-active" data-v="ch">HS류</button>
+      <button class="hm-tbtn" data-v="ind">산업</button>
+    </span>
     <span id="hm-counts"></span>
     <span class="hm-meter" id="hm-meter"></span>
   </div>
@@ -138,7 +165,7 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
 <script>
 (function(){{
 var DATA=JSON.parse(document.getElementById('hm-data').textContent);
-var dir='exp', mode='yoy', HMQ='';
+var dir='exp', mode='yoy', grp='ch', HMQ='';
 window.hmFilter=function(q){{ HMQ=(q||'').toLowerCase();
   if(document.getElementById('hm-map').offsetParent!==null) render(); }};
 document.addEventListener('click',function(e){{
@@ -193,7 +220,8 @@ function render(){{
   var W=map.clientWidth, H=map.clientHeight;
   map.innerHTML='';
   var chs=[], up=0,down=0,flat=0;
-  DATA.chapters.forEach(function(c){{
+  var GROUPS=(grp==='ind'&&DATA.industries)?DATA.industries:DATA.chapters;
+  GROUPS.forEach(function(c){{
     var v=0, cells=[];
     c.h4s.forEach(function(n){{
       var val=dir==='exp'?n.e:n.i;
@@ -218,7 +246,7 @@ function render(){{
     div.className='hm-ch';
     div.style.cssText='left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px';
     var lbl=document.createElement('div'); lbl.className='hm-ch-label';
-    lbl.textContent=c.c2+' '+c.name;
+    lbl.textContent=(c.c2?c.c2+' ':'')+c.name;
     div.appendChild(lbl);
     var pad=13;
     squarify(c.cells.map(function(n){{return {{v:n.v,n:n}}}}),0,0,r.w-2,r.h-pad-2)
@@ -247,12 +275,12 @@ function render(){{
     map.appendChild(div);
   }});
 }}
-['hm-dir','hm-mode'].forEach(function(id){{
+['hm-dir','hm-mode','hm-grp'].forEach(function(id){{
   document.getElementById(id).addEventListener('click',function(e){{
     var b=e.target.closest('.hm-tbtn'); if(!b)return;
     this.querySelectorAll('.hm-tbtn').forEach(function(x){{x.classList.remove('is-active')}});
     b.classList.add('is-active');
-    if(id==='hm-dir')dir=b.dataset.v; else mode=b.dataset.v;
+    if(id==='hm-dir')dir=b.dataset.v; else if(id==='hm-mode')mode=b.dataset.v; else grp=b.dataset.v;
     render();
   }});
 }});
@@ -260,6 +288,19 @@ var hmObs=new IntersectionObserver(function(es){{
   es.forEach(function(en){{ if(en.isIntersecting){{ render(); hmObs.disconnect(); }} }});
 }});
 hmObs.observe(document.getElementById('hm-map'));
+window.hmCSV=function(){{
+  // 활성 그룹 기준 CSV rows — [그룹,HS4,품목,수출$,수출YoY%,수출MoM%,수입$,수입YoY%,수입MoM%]
+  var G=(grp==='ind'&&DATA.industries)?DATA.industries:DATA.chapters;
+  var rows=[['그룹','HS4','품목','수출$','수출YoY%','수출MoM%','수입$','수입YoY%','수입MoM%']];
+  function p(c,b){{ if(!b)return ''; return ((c-b)/b*100).toFixed(1); }}
+  G.forEach(function(c){{
+    c.h4s.forEach(function(n){{
+      rows.push([(c.c2?c.c2+' ':'')+c.name,n.h4,n.nm,
+        n.e,p(n.e,n.epy),p(n.e,n.epm),n.i,p(n.i,n.ipy),p(n.i,n.ipm)]);
+    }});
+  }});
+  return rows;
+}};
 window.addEventListener('resize',function(){{
   if(document.getElementById('hm-map').offsetParent!==null) render();
 }});
