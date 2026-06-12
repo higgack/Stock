@@ -558,6 +558,10 @@ def fetch_high_low() -> dict:
     5분 캐시."""
     c = _cached("highlow.json")
     if c is not None:
+        # 업종 누락 행 치유 (stale 캐시가 ind 필드 도입 전이거나 .info
+        # 실패로 비었던 경우 — 벌크 맵으로 채워지면 캐시도 갱신).
+        if _backfill_industries(c):
+            _cache_write("highlow.json", c)
         return c
     out: dict = {"high": _fetch_signal("ta_newhigh"),
                  "low": _fetch_signal("ta_newlow"),
@@ -568,6 +572,7 @@ def fetch_high_low() -> dict:
     if not out.get("high") and not out.get("low"):
         log.info("finviz: 전미국 캐시 미준비 → S&P500 폴백 (백그라운드 빌드 중)")
         out = _highlow_fallback_sp500()
+    _backfill_industries(out)   # SWR stale 티어 캐시(ind 부재)도 렌더 전 치유
     log.info("finviz: high/low result — high=%d low=%d source=%s",
              len(out.get("high", [])), len(out.get("low", [])),
              out.get("source"))
@@ -576,8 +581,11 @@ def fetch_high_low() -> dict:
     return out
 
 
-def _fetch_sp500_csv() -> tuple[list[str], dict]:
-    """GitHub raw CSV → (티커 리스트, {티커: 회사명}). 캐시 없음(호출부가)."""
+def _fetch_sp500_csv() -> tuple[list[str], dict, dict]:
+    """GitHub raw CSV → (티커 리스트, {티커: 회사명}, {티커: GICS 업종}).
+    캐시 없음(호출부가). 업종은 GICS Sub-Industry 우선(위키 미러 스키마),
+    구 스키마면 Sector 컬럼 폴백 — 신고저 업종 매칭의 1콜 벌크 소스
+    (2026-06-12, yfinance .info 가 VM 에서 비어 '업종 —' 였던 건)."""
     try:
         import csv
         import io
@@ -589,6 +597,7 @@ def _fetch_sp500_csv() -> tuple[list[str], dict]:
             rows = list(csv.DictReader(io.StringIO(r.text)))
             tks: list[str] = []
             names: dict = {}
+            inds: dict = {}
             for row in rows:
                 sym = (row.get("Symbol") or row.get("symbol") or "").replace(".", "-").strip()
                 if not sym:
@@ -598,42 +607,66 @@ def _fetch_sp500_csv() -> tuple[list[str], dict]:
                       or row.get("security") or row.get("name") or "").strip()
                 if nm:
                     names[sym] = nm
+                ind = (row.get("GICS Sub-Industry") or row.get("GICS Sector")
+                       or row.get("Sector") or row.get("sector") or "").strip()
+                if ind and ind.lower() != "nan":
+                    inds[sym] = ind
             if len(tks) > 100:
-                return tks, names
+                return tks, names, inds
         log.warning("finviz: GitHub S&P500 CSV → HTTP %d", r.status_code)
     except Exception as exc:
         log.warning("finviz: GitHub S&P500 fetch failed: %s", exc)
-    return [], {}
+    return [], {}, {}
 
 
 def _github_sp500() -> list[str]:
     """GitHub raw CSV 로 S&P500 티커 (위키 403 우회 — 2026-06-10 VM 확인:
     Wikipedia 가 데이터센터 IP 403). 7일 캐시. '.'→'-'(BRK.B→BRK-B).
-    회사명 맵(sp500_names.json)도 같은 fetch 에서 캐시."""
+    회사명(sp500_names.json)·업종(sp500_inds_github.json) 맵도 같은 fetch."""
     c = _cached("sp500_github.json", ttl=7 * 86400)
     if c:
         return c
-    tks, names = _fetch_sp500_csv()
+    tks, names, inds = _fetch_sp500_csv()
     if tks:
         _cache_write("sp500_github.json", tks)
         if names:
             _cache_write("sp500_names.json", names)
+        if inds:
+            _cache_write("sp500_inds_github.json", inds)
         log.info("finviz: GitHub S&P500 universe %d종목 (위키 우회)", len(tks))
     return tks
 
 
 def _sp500_names() -> dict:
     """{티커: 회사명} — 신고가/신저가 폴백 표기용(사용자 2026-06-11
-    'KO(Coca-Cola)'). 캐시 없으면 1회 fetch 해 양쪽 캐시 채움."""
+    'KO(Coca-Cola)'). 캐시 없으면 1회 fetch 해 캐시들 채움."""
     c = _cached("sp500_names.json", ttl=7 * 86400)
     if c:
         return c
-    tks, names = _fetch_sp500_csv()
+    tks, names, inds = _fetch_sp500_csv()
     if tks:
         _cache_write("sp500_github.json", tks)
     if names:
         _cache_write("sp500_names.json", names)
+    if inds:
+        _cache_write("sp500_inds_github.json", inds)
     return names or {}
+
+
+def _sp500_inds_github() -> dict:
+    """{티커: GICS 업종} — GitHub S&P500 CSV (universe 와 같은 fetch, 1콜).
+    7일 캐시. S&P500 멤버는 폴백 티어 전체를 100% 커버."""
+    c = _cached("sp500_inds_github.json", ttl=7 * 86400)
+    if c:
+        return c
+    tks, names, inds = _fetch_sp500_csv()
+    if tks:
+        _cache_write("sp500_github.json", tks)
+    if names:
+        _cache_write("sp500_names.json", names)
+    if inds:
+        _cache_write("sp500_inds_github.json", inds)
+    return inds or {}
 
 
 def _us_universe_robust() -> list[str]:
@@ -872,16 +905,100 @@ def _fetch_mcaps(tickers: list) -> dict:
     return out
 
 
-def _fetch_industries(tickers: list) -> dict:
-    """hit 종목 업종분류 {ticker: industry} — yfinance .info 원문 그대로
-    (사용자 2026-06-12 '업종분류 추가, yfinance 기준 그대로'). 업종은
-    사실상 불변이라 **영구 디스크 캐시** — 첫 산출만 ~250콜(.info 무거움,
-    백그라운드 전용), 이후 신규 hit 만 증분. 실패 종목은 누락(graceful)."""
+def _parse_nasdaq_screener(payload: dict) -> dict:
+    """api.nasdaq.com screener JSON → {티커: 업종}. download=true 응답의
+    data.rows (구형 data.table.rows 도 수용). industry 우선, 없으면 sector.
+    심볼은 universe 와 동일 정규화('.'/'/'→'-'). 순수 함수(단위테스트)."""
+    out: dict = {}
+    try:
+        data = payload.get("data") or {}
+        rows = data.get("rows") or (data.get("table") or {}).get("rows") or []
+        for row in rows:
+            sym = (row.get("symbol") or "").strip().upper()
+            if not sym or "^" in sym or len(sym) > 6:
+                continue
+            ind = (row.get("industry") or "").strip() or (row.get("sector") or "").strip()
+            if not ind:
+                continue
+            out[sym.replace(".", "-").replace("/", "-")] = ind
+    except Exception:
+        return out
+    return out
+
+
+def _nasdaq_screener_industries() -> dict:
+    """전 미국 상장 {티커: 업종} — NASDAQ 공식 screener API 1콜 (sector+
+    industry 포함, NYSE/AMEX 포함, 무키). 7일 캐시(분류는 사실상 불변).
+    실패 시 {} (graceful)."""
+    c = _cached("nasdaq_industries.json", ttl=7 * 86400)
+    if c:
+        return c
+    try:
+        import httpx
+        r = httpx.get(
+            "https://api.nasdaq.com/api/screener/stocks"
+            "?tableonly=true&limit=25&offset=0&download=true",
+            headers={"User-Agent": _UA,
+                     "Accept": "application/json, text/plain, */*",
+                     "Accept-Language": "en-US,en;q=0.9"},
+            timeout=25, follow_redirects=True)
+        if r.status_code == 200:
+            out = _parse_nasdaq_screener(r.json())
+            if len(out) > 1000:
+                _cache_write("nasdaq_industries.json", out)
+                log.info("finviz: NASDAQ screener 업종맵 %d종목", len(out))
+                return out
+            log.warning("finviz: NASDAQ screener 업종맵 %d행 — 스키마 변경?",
+                        len(out))
+        else:
+            log.warning("finviz: NASDAQ screener → HTTP %d", r.status_code)
+    except Exception as exc:
+        log.warning("finviz: NASDAQ screener fetch 실패: %s", exc)
+    return {}
+
+
+_BULK_IND_FAIL_TS = 0.0   # 벌크 소스 전멸 시 10분 재시도 억제 (렌더 hang 방지)
+
+
+def _bulk_industry_maps() -> dict:
+    """벌크 업종 맵 — per-ticker 호출 0, 1콜짜리 소스 2개 레이어 머지:
+    NASDAQ screener(전 상장, base) ← GitHub S&P500 GICS Sub-Industry(우선,
+    granular). 둘 다 7일 디스크 캐시라 렌더 경로에서도 안전. 전멸 시
+    10분 백오프(요청 경로 반복 타임아웃 방지)."""
+    global _BULK_IND_FAIL_TS
+    if time.time() - _BULK_IND_FAIL_TS < 600:
+        return {}
+    m: dict = {}
+    m.update(_nasdaq_screener_industries())
+    m.update(_sp500_inds_github())
+    if not m:
+        _BULK_IND_FAIL_TS = time.time()
+    return m
+
+
+def _fetch_industries(tickers: list, allow_slow: bool = True) -> dict:
+    """hit 종목 업종분류 {ticker: industry} — 영구 디스크 캐시 + 3-레이어
+    (사용자 2026-06-12 '핀비즈 기준으로 해주던 적절히 매치'):
+      1) 영구 캐시 (us_industry_cache.json, 분류는 사실상 불변)
+      2) 벌크 맵 — GitHub S&P500 GICS + NASDAQ screener (각 1콜·7일 캐시)
+      3) yfinance .info — allow_slow=True(백그라운드 산출)일 때만, 잔여
+         소수만. (.info 가 데이터센터 IP 에서 비어 '업종 —' 전멸이던 건
+         2026-06-12 — 벌크 레이어가 1차가 되어 .info 의존 제거.)
+    실패 종목은 누락(graceful), 해소되면 영구 캐시에 적재."""
     if not tickers:
         return {}
     cache = _cached("us_industry_cache.json", ttl=365 * 86400) or {}
+    changed = False
     missing = [t for t in tickers if t not in cache]
     if missing:
+        bulk = _bulk_industry_maps()
+        for t in missing:
+            ind = bulk.get(t)
+            if ind:
+                cache[t] = str(ind)
+                changed = True
+        missing = [t for t in tickers if t not in cache]
+    if missing and allow_slow:
         try:
             import yfinance as yf
             from concurrent.futures import ThreadPoolExecutor
@@ -894,13 +1011,38 @@ def _fetch_industries(tickers: list) -> dict:
                     return tk, None
 
             with ThreadPoolExecutor(max_workers=12) as ex:
-                for tk, ind in ex.map(_one, missing):
+                for tk, ind in ex.map(_one, missing[:250]):
                     if ind:
                         cache[tk] = str(ind)
-            _cache_write("us_industry_cache.json", cache)
+                        changed = True
         except Exception as exc:
             log.warning("finviz: 업종 fetch 실패: %s", exc)
+    if changed:
+        _cache_write("us_industry_cache.json", cache)
     return {t: cache[t] for t in tickers if t in cache}
+
+
+def _backfill_industries(out: dict) -> bool:
+    """이미 산출/캐시된 신고저 행에 업종 누락분을 채움 (렌더 경로 —
+    yfinance .info 금지, 캐시+벌크만). `ind` 필드 도입 전 stale 캐시
+    (highlow.json / highlow_sp500.json SWR)가 '업종 —' 로 서빙되던 것
+    치유 (2026-06-12). 변경 여부 반환."""
+    try:
+        rows = [r for r in (out.get("high") or []) + (out.get("low") or [])
+                if not r.get("ind")]
+        if not rows:
+            return False
+        inds = _fetch_industries([r["ticker"] for r in rows], allow_slow=False)
+        changed = False
+        for r in rows:
+            ind = inds.get(r.get("ticker"))
+            if ind:
+                r["ind"] = ind
+                changed = True
+        return changed
+    except Exception as exc:
+        log.warning("finviz: 업종 backfill 실패: %s", exc)
+        return False
 
 
 # ── 전 미국 상장 universe (nasdaqtrader 공식 심볼 디렉토리) ────────────────

@@ -203,5 +203,6 @@ def render_us_highlow_page() -> str:
                 + _HL_SORT_JS)
     sub = (f"미국 52주 신고가·신저가 (가격제한폭이 없는 시장 — 상한가/하한가 대응 지표 · "
            f"SPAC·워런트·채권형 제외 · 분할 아티팩트 드랍) · 기본 시총순 · 헤더 클릭 정렬 · "
+           f"업종=GICS·NASDAQ·yfinance 순 매칭 · "
            f"출처 {src} · 5분 캐시" + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
