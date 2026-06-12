@@ -4454,6 +4454,101 @@ class TestCommandRegistrySingleSource:
         assert 'word.startswith("screener_")' in src
 
 
+class TestDartParseTargetAndSignificance:
+    """DART 카드 색상 구분 (사용자 2026-06-12) — is_parse_target(미파싱
+    판정) + significance(중요 6규칙). enrich 와 대시보드 단일 소스."""
+
+    def test_parse_target_registry(self):
+        from bot.dart_feed import is_parse_target
+        # 파싱 대상 — 계약·대량보유·_force(담보)
+        assert is_parse_target({"category": "계약",
+                                "report_nm": "단일판매ㆍ공급계약체결",
+                                "corp_code": "x"})
+        assert is_parse_target({"category": "지분공시",
+                                "report_nm": "주식등의대량보유상황보고서",
+                                "corp_code": "x"})
+        assert is_parse_target({"category": "기타",
+                                "report_nm": "타인에대한담보제공결정",
+                                "corp_code": "x"})
+        # 제목만이 정상 — IR·대량보유 외 지분·구조화 없는 자금조달·corp 부재
+        assert not is_parse_target({"category": "IR",
+                                    "report_nm": "기업설명회(IR)개최",
+                                    "corp_code": "x"})
+        assert not is_parse_target({"category": "지분공시",
+                                    "report_nm": "임원ㆍ주요주주특정증권등소유상황보고서",
+                                    "corp_code": "x"})
+        assert not is_parse_target({"category": "자금조달",
+                                    "report_nm": "단기차입금증가결정",
+                                    "corp_code": "x"})
+        assert not is_parse_target({"category": "계약",
+                                    "report_nm": "공급계약", "corp_code": ""})
+
+    def test_enrich_uses_is_parse_target(self):
+        # enrich 의 시도 조건이 is_parse_target 단일 소스로 통합됐는지
+        # (인라인 _force/지분/자금조달 분기 중복 제거) — 회귀 차단.
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert "if is_parse_target(item):" in src
+
+    def test_significance_rule1_earnings_30pct(self):
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "매출액또는손익구조30%(대규모법인은15%)이상변동",
+                             "category": "실적"}) == "손익구조 30%↑ 변동"
+        # 기재정정 제외
+        assert significance({"report_nm": "[기재정정]매출액또는손익구조30%이상변동",
+                             "category": "실적"}) is None
+
+    def test_significance_rule2_contract_10pct(self):
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "단일판매ㆍ공급계약체결", "category": "계약",
+                             "detail": ["계약금액: 500억원 (매출액대비 14.2% · 조건부)"]}
+                            ) == "매출대비 14.2% 계약"
+        assert significance({"report_nm": "단일판매ㆍ공급계약체결", "category": "계약",
+                             "detail": ["계약금액: 50억원 (매출액대비 3.1%)"]}) is None
+
+    def test_significance_rule3_burn(self):
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "주식소각결정",
+                             "category": "주주환원"}) == "주식소각"
+
+    def test_significance_rule4_buyback_3pct(self):
+        from bot.dart_feed import significance
+        item = {"report_nm": "자기주식취득결정", "category": "주주환원",
+                "detail": ["취득예정: 1,000,000주", "계약금액: 100억원"]}
+        assert significance(item, shares_outstanding=20_000_000) == "발행주식 5.0% 취득"
+        # 3% 미만 / shares 없음 / 정정 → 미발화
+        assert significance(item, shares_outstanding=200_000_000) is None
+        assert significance(item, shares_outstanding=None) is None
+        assert significance({**item, "report_nm": "[기재정정]자기주식취득결정"},
+                            shares_outstanding=20_000_000) is None
+
+    def test_significance_rule5_capex_20pct(self):
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "신규시설투자등", "category": "신규시설투자",
+                             "detail": ["투자금액: 800억원", "자기자본대비: 25.3%"]}
+                            ) == "자기자본대비 25.3% 투자"
+        assert significance({"report_nm": "신규시설투자등", "category": "신규시설투자",
+                             "detail": ["자기자본대비: 12.0%"]}) is None
+
+    def test_significance_rule6_new_5pct_holder(self):
+        from bot.dart_feed import significance
+        # 직전<5%≤현재 = 신규 5% 돌파
+        assert significance({"report_nm": "주식등의대량보유상황보고서", "category": "지분공시",
+                             "detail": ["보고자: 홍길동",
+                                        "지분율: 3.20% → 6.50% (+3.30%p ▲)",
+                                        "보고사유: 신규"]}) == "신규 6.5% 대량보유"
+        # 직전 이미 5%+ → 신규 아님
+        assert significance({"report_nm": "주식등의대량보유상황보고서", "category": "지분공시",
+                             "detail": ["지분율: 6.00% → 7.50% (+1.50%p ▲)"]}) is None
+        # 단일 지분율 + 보고사유 신규
+        assert significance({"report_nm": "주식등의대량보유상황보고서", "category": "지분공시",
+                             "detail": ["지분율: 8.10%", "보고사유: 신규"]}
+                            ) == "신규 8.1% 대량보유"
+
+    def test_significance_none_for_plain(self):
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "기타공시", "category": "기타"}) is None
+
+
 class TestDartBackfillV3:
     """v3 당월 정리 백필 — 지난달 삭제 + 당월 재분류 + marker 1회 gate."""
 
