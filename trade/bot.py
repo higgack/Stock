@@ -1235,12 +1235,34 @@ async def _post_init(app: Application) -> None:
             customs_scan.init_db(conn)
             empty = not customs_scan.load_heatmap(conn)
         if empty:
-            import subprocess
-            import sys as _sys
-            subprocess.Popen(
-                [_sys.executable, "-m", "trade.scripts.scan_customs"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            log.info("heatmap snapshot empty — kicked one-off customs scan")
+            # 중복 킥 가드 (사용자 2026-06-12 '아직 안된듯') — 13개월×97챕터
+            # 자가스로틀 스윕은 수 분~수십 분. auto-update 가 잦으면 스캔이
+            # 끝나기 전 재시작마다 heatmap 이 여전히 empty → 경쟁 스캔이 중복
+            # 기동, API 분당한도/FloodWait 로 둘 다 coverage 미달 → 저장 0 →
+            # heatmap 영원히 empty 로 고착. 마커 30분 가드로 단일 스캔 보장
+            # (정상 완료분보다 길게; 실패 시 30분 후 자연 재시도).
+            import time as _t
+            mk = customs.DEFAULT_DB.parent / ".heatmap_kick.ts"
+            recent = False
+            try:
+                recent = mk.exists() and (_t.time() - mk.stat().st_mtime) < 1800
+            except Exception:
+                recent = False
+            if recent:
+                log.info("heatmap empty but a scan was kicked <30m ago — "
+                         "skip duplicate (in-flight 스윕 보호)")
+            else:
+                import subprocess
+                import sys as _sys
+                try:
+                    mk.parent.mkdir(parents=True, exist_ok=True)
+                    mk.write_text(str(_t.time()), encoding="utf-8")
+                except Exception:
+                    pass
+                subprocess.Popen(
+                    [_sys.executable, "-m", "trade.scripts.scan_customs"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                log.info("heatmap snapshot empty — kicked one-off customs scan")
     except Exception as e:
         log.warning("heatmap startup kick failed (timer will cover): %s", e)
 
