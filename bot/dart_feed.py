@@ -1085,6 +1085,114 @@ def _issue_price_lines(txt: str) -> list[str]:
     return parts
 
 
+def _major_holding_change_lines(txt: str) -> list[str]:
+    """최대주주 등의 주식보유 변동 (공정거래법 — 미파싱-6 에스케이텔레콤씨에스
+    티원). 첫 주주(최대주주) 변동전→변동후 지분율 + 증감. 희석/매집 신호. 순수."""
+    parts: list[str] = []
+    # 주주명 = '계열회사'(관계 열) 직전 단일 토큰(+(주)) — 헤더 prefix 오캡처
+    # 차단 (공백 포함 prefix '동일인 및 …' 배제)
+    mn = re.search(r"([가-힣A-Za-z0-9]{2,20}(?:\([가-힣A-Za-z]{1,4}\))?)"
+                   r"\s*계열회사", txt)
+    # 보통주 행: 변동전수 변동전율 [증감수] 증감율 변동후수 변동후율
+    mr = re.search(r"보통주\s+([\d,]+)\s+([\d.]+)\s+\S+\s+(-?[\d.]+)\s+"
+                   r"([\d,]+)\s+([\d.]+)", txt)
+    if mn and mr:
+        try:
+            before, after = float(mr.group(2)), float(mr.group(5))
+            delta = float(mr.group(3))
+            arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "–")
+            parts.append(f"주주: {mn.group(1).strip()}")
+            parts.append(f"지분율: {before:.2f}% → {after:.2f}% "
+                         f"({delta:+.2f}%p {arrow})")
+        except ValueError:
+            pass
+    return parts
+
+
+def _suspension_release_lines(txt: str) -> list[str]:
+    """주권매매거래정지해제 (미파싱-6 — 글로벌에스엠테크 액면병합 변경상장).
+    대상종목·해제사유·해제일시. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    sym = _g(r"대상종목[^가-힣A-Za-z0-9(]{0,8}?"
+             r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:보통주|\d\s*\.|해제|$)")
+    if sym:
+        parts.append(f"대상: {sym}")
+    why = _g(r"해제사유[^가-힣A-Za-z0-9]{0,8}?"
+             r"([가-힣A-Za-z0-9() ]{2,40}?)\s*(?:\d\s*\.|해제일시|$)")
+    if why:
+        parts.append(f"해제사유: {why}")
+    d = _g(r"해제일시[^0-9]{0,10}?(\d{4}-\d{1,2}-\d{1,2}(?:\s*\d{1,2}:\d{2})?)")
+    if d:
+        parts.append(f"해제일시: {d}")
+    return parts
+
+
+def _tender_result_lines(txt: str) -> list[str]:
+    """공개매수의 결과 (미파싱-6 — 세아홀딩스 자사주 소각용 공개매수). 대상
+    회사·매수가격·예정/응모/매수수량·기간·공개매수 후 보유비율. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    co = _g(r"공개매수\s*대상\s*회사명[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:\d\s*\.|공개매수|$)")
+    if co:
+        parts.append(f"대상: {co}")
+    pr = _g(r"매수가격[^0-9]{0,12}?주당\s*([\d,]{3,})\s*원")
+    if pr:
+        parts.append(f"매수가: 주당 {int(pr.replace(',', '')):,}원")
+    plan = _g(r"매수예정수량[^0-9]{0,12}?(?:최대\s*)?([\d,]{2,})\s*주")
+    sub = _g(r"응모주식\s*수[^0-9]{0,12}?([\d,]{2,})\s*주")
+    bought = _g(r"매수주식\s*수[^0-9]{0,12}?([\d,]{2,})\s*주")
+    seg = []
+    if plan:
+        seg.append(f"예정 {int(plan.replace(',', '')):,}주")
+    if sub:
+        seg.append(f"응모 {int(sub.replace(',', '')):,}주")
+    if bought:
+        seg.append(f"매수 {int(bought.replace(',', '')):,}주")
+    if seg:
+        parts.append("수량: " + " · ".join(seg))
+    rate = _g(r"공개매수\s*후\s*(?:주식등의\s*)?보유비율[^0-9]{0,16}?([\d.]+)")
+    if rate:
+        parts.append(f"공개매수 후 보유: {rate}%")
+    return parts
+
+
+def _major_change_lines(txt: str) -> list[str]:
+    """최대주주 변경 (미파싱-6 — 은홀딩파트너스→임주주 주식매매계약). 변경전→
+    변경후 최대주주(명·비율) + 변경사유. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    # 변경내용 표: 변경전 최대주주명 ... 소유비율(%) X ; 변경후 ... Y
+    bn = _g(r"변경전[\s\S]{0,16}?최대주주명?[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:소유주식|\d\s*\.|변경후|$)")
+    br = _g(r"변경전[\s\S]{0,90}?소유비율\s*\(%\)[^0-9]{0,8}?([\d.]+)")
+    an = _g(r"변경후[\s\S]{0,16}?최대주주명?[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:소유주식|\d\s*\.|$)")
+    ar = _g(r"변경후[\s\S]{0,90}?소유비율\s*\(%\)[^0-9]{0,8}?([\d.]+)")
+    if bn or an:
+        b = f"{bn}({br}%)" if bn and br else (bn or "")
+        a = f"{an}({ar}%)" if an and ar else (an or "")
+        parts.append(f"최대주주: {b} → {a}")
+    why = _g(r"변경사유[^가-힣A-Za-z0-9]{0,8}?"
+             r"([가-힣A-Za-z0-9() ]{4,50}?)\s*(?:\d\s*\.|실권주|지분|$)")
+    if why:
+        parts.append(f"사유: {why}")
+    return parts
+
+
 def _confirmation_lines(txt: str) -> list[str]:
     """확인서 (미파싱-5 — 대표이사·신고업무담당이사 기재내용 확인 + 내부
     회계관리제도). 정형 첨부 문서라 정보 밀도 낮음 — 회사명 + 요지 2줄.
@@ -2304,11 +2412,42 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
     elif "기타경영사항" in t:
         return _extract_misc_mgmt(rcept_no, api_key)
     # ── 리스크 9양식 (사용자 2026-06-12 '리스크 완료') ──
+    elif "정지해제" in t or ("거래정지" in t and "해제" in t):
+        # 주권매매거래정지해제 (미파싱-6) — 매매거래정지보다 먼저 (정지해제가
+        # '매매거래정지' substring 포함). 해제사유·일시.
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _suspension_release_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
     elif "매매거래정지" in t:
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _SUSPENSION_FIELDS, min_fields=2)
         if doc:
             return doc
+    elif "공개매수" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _tender_result_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "최대주주" in t and "변경" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _major_change_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "주식보유" in t and "변동" in t:
+        # 최대주주 등의 주식보유 변동 (공정거래법, 미파싱-6) — 지분율 희석/매집
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _major_holding_change_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
     elif "해산사유" in t:
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _DISSOLUTION_FIELDS, min_fields=2)

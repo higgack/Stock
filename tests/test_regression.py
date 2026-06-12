@@ -5442,6 +5442,66 @@ class TestDartUnparsed5:
         assert '"물적분할" if "물적분할" in txt2' in block[:700]
 
 
+class TestDartUnparsed6:
+    """미파싱-6 (사용자 2026-06-12, 5예시) — 최대주주 등 주식보유 변동 /
+    주권매매거래정지해제 / 공개매수 결과 / 최대주주 변경 + 필터 동시선택."""
+
+    def test_major_holding_change(self):
+        from bot.dart_feed import _major_holding_change_lines
+        L = _major_holding_change_lines(
+            "최대주주 등의 주식보유 변동 ... 변동 후 주식수 지분율 (C) "
+            "동일인 및 동일인 관련자 에스케이스퀘어(주) 계열회사 2026.06.11 "
+            "보통주 56,812 53.13 - -1.06 56,812 52.07 - -")
+        assert any(l == "주주: 에스케이스퀘어(주)" for l in L)
+        assert any(l == "지분율: 53.13% → 52.07% (-1.06%p ▼)" for l in L)
+
+    def test_suspension_release(self):
+        from bot.dart_feed import _suspension_release_lines
+        L = _suspension_release_lines(
+            "주권매매거래정지해제 1.대상종목 글로벌에스엠테크리미티드 보통주 "
+            "2.해제사유 액면병합 주권 변경상장 3.해제일시 2026-06-12 - 4.근거규정 코스닥")
+        assert any(l == "대상: 글로벌에스엠테크리미티드" for l in L)
+        assert any(l == "해제사유: 액면병합 주권 변경상장" for l in L)
+        assert any(l == "해제일시: 2026-06-12" for l in L)
+
+    def test_tender_offer_result(self):
+        from bot.dart_feed import _tender_result_lines
+        L = _tender_result_lines(
+            "1. 공개매수 대상 회사명 주식회사 세아홀딩스 2. 공개매수 주식등의 종류 ... "
+            "3. 공개매수 예정수량 및 가격 매수가격 주당 160,000원 매수예정수량 최대 187,000주 "
+            "결제수단 현금 4. 응모 및 매수현황 예정주식 수 최대 187,000주 응모주식 수 499,122주 "
+            "매수주식 수 187,000주 공개매수 후 주식등의 보유비율 79.52")
+        assert any(l == "대상: 주식회사 세아홀딩스" for l in L)
+        assert any(l == "매수가: 주당 160,000원" for l in L)
+        assert any("응모 499,122주" in l and "매수 187,000주" in l for l in L)
+        assert any(l == "공개매수 후 보유: 79.52%" for l in L)
+
+    def test_major_shareholder_change(self):
+        from bot.dart_feed import _major_change_lines
+        L = _major_change_lines(
+            "최대주주 변경 1. 변경내용 변경전 최대주주명 주식회사 은홀딩파트너스 "
+            "소유주식수(주) 18,521,924 소유비율(%) 53.23 변경후 최대주주명 임주주 "
+            "소유주식수(주) 10,161,661 소유비율(%) 28.63 2. 변경사유 주식매매계약 체결에 "
+            "따른 최대주주변경 3. 지분인수목적 경영참여")
+        assert any(l == "최대주주: 주식회사 은홀딩파트너스(53.23%) → 임주주(28.63%)"
+                   for l in L)
+        assert any(l.startswith("사유: 주식매매계약 체결") for l in L)
+
+    def test_routing_release_before_suspension(self):
+        # 정지해제 라우팅이 매매거래정지보다 먼저 (substring 충돌)
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert src.index('elif "정지해제" in t') < src.index('elif "매매거래정지" in t')
+
+    def test_flag_filters_combine_with_category(self):
+        # 🔥/⚠️ 플래그가 카테고리와 독립 토글·동시선택 (사용자 2026-06-12)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "var activeFlags=[]" in src           # 다중 플래그 배열
+        assert "activeFlags.every(" in src           # 선택 플래그 전부 AND
+        # 플래그 클릭=토글(다른 pill active 유지), 카테고리=카테고리끼리만 배타
+        assert "if(!x.dataset.flag)x.classList.remove('active')" in src
+        assert "함께 선택 가능" in src                # 범례 안내
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""

@@ -10908,6 +10908,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         if _unp_total:
             _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
                        '파란 점선 — 우리 파서 미적용(제목·원문 공유 시 파서 추가)')
+        _lg.append('<span style="color:var(--muted,#888)">🔥·⚠️는 카테고리'
+                   '와 함께 선택 가능 (예: 미파싱+실적)</span>')
         parts.append('<p class="sub" style="margin:-6px 0 14px">'
                      + ' &nbsp;·&nbsp; '.join(_lg) + '</p>')
 
@@ -11031,16 +11033,20 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   var viewBtns=document.querySelectorAll('.df-vbtn');
   var grids=document.querySelectorAll('.df-grid');
   var activeCat='전체';
-  var activeFlag='';   // 🔥 중요(sig) / ⚠️ 미파싱(unparsed) — 카테고리와 별개
+  // 🔥 중요(sig) / ⚠️ 미파싱(unparsed) — 카테고리와 **독립 토글**, 동시
+  // 선택 가능(사용자 2026-06-12 '미파싱+실적, +중요+계약'). 선택된 플래그
+  // 전부 AND (교집합).
+  var activeFlags=[];
   var wrap=document.querySelector('.wrap');
 
   function applyFilters(){
     var q=(search?search.value:'').toLowerCase().trim();
     // 검색/카테고리/플래그 필터 중에는 접힌 그룹도 펼쳐 매칭이 보이게.
-    if(wrap)wrap.classList.toggle('df-searching', !!q || activeCat!=='전체' || !!activeFlag);
+    if(wrap)wrap.classList.toggle('df-searching', !!q || activeCat!=='전체' || activeFlags.length>0);
     cards.forEach(function(c){
       var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
-      var flagMatch=!activeFlag||((c.dataset.flag||'').indexOf(activeFlag)>=0);
+      var cf=(c.dataset.flag||'');
+      var flagMatch=activeFlags.every(function(f){return cf.indexOf(f)>=0;});
       if(!flagMatch){c.classList.add('hidden');return;}
       var textMatch=!q||
         (c.dataset.name||'').toLowerCase().indexOf(q)>=0||
@@ -11070,16 +11076,28 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   });
   pills.forEach(function(p){
     p.addEventListener('click',function(){
-      pills.forEach(function(x){x.classList.remove('active')});
-      p.classList.add('active');
-      // 플래그 pill(🔥/⚠️)은 data-flag, 카테고리 pill 은 data-cat.
-      if(p.dataset.flag){activeFlag=p.dataset.flag;activeCat='전체';}
-      else{activeCat=p.dataset.cat||'전체';activeFlag='';}
+      if(p.dataset.flag){
+        // 플래그 pill(🔥/⚠️) — 독립 토글, 카테고리·다른 플래그와 공존
+        p.classList.toggle('active');
+        var f=p.dataset.flag, i=activeFlags.indexOf(f);
+        if(i>=0)activeFlags.splice(i,1); else activeFlags.push(f);
+      }else{
+        // 카테고리 pill — 카테고리끼리만 상호배타(플래그는 유지)
+        pills.forEach(function(x){if(!x.dataset.flag)x.classList.remove('active')});
+        p.classList.add('active');
+        activeCat=p.dataset.cat||'전체';
+      }
       applyFilters();
     });
   });
   if(search)search.addEventListener('input',applyFilters);
-  if(clearBtn)clearBtn.addEventListener('click',function(){if(search)search.value='';applyFilters()});
+  if(clearBtn)clearBtn.addEventListener('click',function(){
+    if(search)search.value='';
+    activeFlags=[]; activeCat='전체';
+    pills.forEach(function(x){x.classList.remove('active');
+      if(x.dataset.cat==='전체')x.classList.add('active');});
+    applyFilters();
+  });
   viewBtns.forEach(function(b){
     b.addEventListener('click',function(){
       viewBtns.forEach(function(x){x.classList.remove('active')});
