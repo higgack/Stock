@@ -4355,9 +4355,17 @@ class TestDartParseTargetAndSignificance:
         assert "if is_parse_target(item):" in src
 
     def test_significance_rule1_earnings_30pct(self):
+        # 2026-06-12 사용자 게이트 변경: 제목만으로 발화 안 함 — 매출 |20%|↑
+        # OR 영업익 |30%|↑ (상세는 TestEarningsChangeGate). 여기선 미파싱
+        # 미발화 + 게이트 통과 발화 + 기재정정 제외만 가드.
         from bot.dart_feed import significance
         assert significance({"report_nm": "매출액또는손익구조30%(대규모법인은15%)이상변동",
-                             "category": "실적"}) == "손익구조 30%↑ 변동"
+                             "category": "실적"}) is None   # detail 없음 → ⚠️ 대기
+        assert significance(
+            {"report_nm": "매출액또는손익구조30%(대규모법인은15%)이상변동",
+             "category": "실적",
+             "detail": ["매출액: 1,234억원 (전기 987억원 · +25.3%)"]}
+        ) == "매출액 +25.3% 변동"
         # 기재정정 제외
         assert significance({"report_nm": "[기재정정]매출액또는손익구조30%이상변동",
                              "category": "실적"}) is None
@@ -5996,3 +6004,32 @@ class TestDelistBoilerplateNoFire:
         assert significance({"report_nm": "주권매매거래정지", "category": "리스크",
                              "detail": ["사유: 상장폐지 사유 발생",
                                         "해제·만료: -"]}) == "상장폐지 관련"
+
+
+class TestEarningsChangeGate:
+    """🔥 규칙 1 게이트 (사용자 2026-06-12) — 손익구조 공시는 제목만으로
+    발화하지 않고 매출액 |20%|↑ OR 영업이익 |30%|↑ OR 흑자/적자전환."""
+
+    @staticmethod
+    def _mk(det):
+        return {"report_nm": "매출액또는손익구조30%(대규모법인은15%)이상변경",
+                "category": "실적", "detail": det}
+
+    def test_or_gate(self):
+        from bot.dart_feed import significance as S
+        assert S(self._mk(["매출액: 1,234억원 (전기 987억원 · +25.3%)"])
+                 ) == "매출액 +25.3% 변동"
+        assert S(self._mk(["매출액: 800억원 (전기 987억원 · -19.0%)",
+                           "영업이익: 70억원 (전기 98억원 · -29.0%)"])) is None
+        assert S(self._mk(["매출액: 950억원 (전기 987억원 · -3.7%)",
+                           "영업이익: 64억원 (전기 98억원 · -35.0%)"])
+                 ) == "영업이익 -35.0% 변동"
+        assert S(self._mk(["영업이익: -12억원 (전기 98억원 · 적자전환)"])
+                 ) == "영업이익 흑자/적자전환"
+
+    def test_unparsed_and_correction_no_fire(self):
+        from bot.dart_feed import significance as S
+        assert S(self._mk([])) is None          # 미파싱 → ⚠️ 대기
+        assert S({"report_nm": "[기재정정]매출액또는손익구조30%이상변경",
+                  "category": "실적",
+                  "detail": ["매출액: 1,234억원 (전기 987억원 · +25.3%)"]}) is None
