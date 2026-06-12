@@ -5851,3 +5851,38 @@ class TestPmOverrideRatingMask:
         src = open("bot/analyzer.py", encoding="utf-8").read()
         assert "_mask_overridden_pm_rating(decision)" in src
         assert "if override_note else decision" in src
+
+
+class TestDeployAwareWidgetCache:
+    """배포-인지 캐시 솔트 (2026-06-12 '대시보드 반영 너무 느려') — 코드
+    배포(모듈 mtime 변경) 시 day-key 위젯 캐시 즉시 무효화. #281 실적 450
+    확장이 12:01 옛 캐시(12h TTL)에 가려 안 보이던 클래스 영구 차단."""
+
+    def test_salt_defined_and_applied(self):
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert "_CODE_SALT" in src
+        assert 'f"earnings_{today.isoformat()}_{_CODE_SALT}.json"' in src
+        assert 'f"earnings_kr_{today.isoformat()}_{_CODE_SALT}.json"' in src
+        assert "kr_earnings_universe_{_CODE_SALT}.json" in src
+
+    def test_kr_earnings_ttl_6h(self):
+        # KR 실적 TTL 12h→6h (US 와 동일) — 하루 4회 갱신
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        import re as _re
+        m = _re.search(r"earnings_kr_\{today\.isoformat\(\)\}[\s\S]{0,400}?< (\d+)", src)
+        assert m and m.group(1) == "6", "KR earnings TTL 6h 아님"
+
+
+class TestTradeDashboardSudoersSelfHeal:
+    """trade-bot-dashboard stale-server 근본 fix (2026-06-12) — sudoers
+    부트스트랩 부재로 재시작이 매 배포 silent-skip 되던 것. NOAH
+    install.sh(root 보장 경로)가 trade drop-in 자가설치 + 1회 즉시 heal."""
+
+    def test_install_sh_heals_trade_sudoers(self):
+        src = open("deploy/install.sh", encoding="utf-8").read()
+        assert "higgack-trade-services" in src
+        assert "install-trade-units.sh" in src      # 부트스트랩 라인
+        assert "restart trade-bot-dashboard" in src
+        assert "visudo -cf" in src                  # 검증 후 설치 (잠금 사고 방지)
+        # 1회 즉시 heal — 누적 UI 변경 반영
+        assert "systemctl restart trade-bot-dashboard 2>/dev/null" in src

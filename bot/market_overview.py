@@ -31,6 +31,17 @@ _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "market_overview"
 # Naver 업종 TTL 은 각 클라이언트가 별도 보유(안티봇 경계 — 건드리지 말 것).
 _CACHE_TTL_SEC = 120  # 2 min
 
+# 배포-인지 캐시 솔트 (사용자 2026-06-12 '대시보드 반영 너무 느려') —
+# git reset --hard 배포가 이 모듈을 갱신하면 mtime 이 바뀜 → 솔트 포함
+# 캐시 키가 즉시 무효화 → 위젯 로직/universe 변경이 같은 날 day-key
+# 캐시(12h TTL)에 막혀 수 시간 안 보이던 클래스(#281 실적 450 확장이
+# 12:01 옛 캐시에 가려진 케이스) 영구 차단. 코드 무변경 배포면 mtime
+# 그대로 = 캐시 보존(불필요 refetch 0).
+try:
+    _CODE_SALT = str(int(os.path.getmtime(__file__)))[-6:]
+except OSError:
+    _CODE_SALT = "0"
+
 # ── Market Snapshot Ticker Groups ────────────────────────────────────
 
 CARD_ASIA = [
@@ -404,7 +415,7 @@ def fetch_earnings_calendar(days_ahead: int = 14) -> list[dict]:
     cache_dir = _CACHE_DIR / "finnhub"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today = date.today()
-    cache_file = cache_dir / f"earnings_{today.isoformat()}.json"
+    cache_file = cache_dir / f"earnings_{today.isoformat()}_{_CODE_SALT}.json"
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
@@ -497,7 +508,7 @@ def _kr_earnings_universe() -> list[tuple[str, str]]:
     이름 조회 450콜 회피. KRX creds 부재/pykrx 미설치면 graceful 폴백.
     ⚠️ 커버리지 한계(정직): yfinance .calendar 는 KR 중소형주 대부분 빈값 —
     universe 를 늘려도 '확정 실적일'이 있는 종목만 표에 추가된다."""
-    cache_file = _CACHE_DIR / "finnhub" / "kr_earnings_universe.json"
+    cache_file = _CACHE_DIR / "finnhub" / f"kr_earnings_universe_{_CODE_SALT}.json"
     try:
         if cache_file.exists() and (time.time() - cache_file.stat().st_mtime) < 7 * 86400:
             cached = json.loads(cache_file.read_text())
@@ -547,10 +558,12 @@ def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
     cache_dir = _CACHE_DIR / "finnhub"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today = date.today()
-    cache_file = cache_dir / f"earnings_kr_{today.isoformat()}.json"
+    cache_file = cache_dir / f"earnings_kr_{today.isoformat()}_{_CODE_SALT}.json"
     if cache_file.exists():
         try:
-            if (time.time() - cache_file.stat().st_mtime) / 3600 < 12:
+            # 12h→6h (사용자 2026-06-12 '느려') — US 와 동일, 일 4회 갱신.
+            # 450 yf .calendar threadpool ~1분, 무료.
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < 6:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
