@@ -482,7 +482,12 @@ class ScanUsesRangeFetchTests(unittest.TestCase):
         src = (Path(__file__).resolve().parents[1]
                / "scripts" / "scan_customs.py").read_text(encoding="utf-8")
         self.assertIn("fetch_chapter_range(", src)
-        # 루프 본문에서 raw fetch_chapter( 직접 호출이 사라졌는지
+        # raw fetch_chapter( 직접 호출은 probe(1페이지·2개월 — 1년 한도
+        # 내 합법) 단 한 곳만 허용. 스윕 루프 재유입 금지.
         import re
         calls = re.findall(r"customs_scan\.fetch_chapter\(", src)
-        self.assertEqual(calls, [])
+        self.assertEqual(len(calls), 1)
+        probe_body = src[src.index("def _probe_fingerprint"):
+                         src.index("def _probe_says_skip")]
+        self.assertIn("customs_scan.fetch_chapter(", probe_body)
+        self.assertIn("max_pages=1", probe_body)

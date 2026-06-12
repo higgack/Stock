@@ -191,9 +191,94 @@ def _maybe_notify_refresh(hm_rows: list[dict], leaves: dict,
     return ok
 
 
+# 10분 probe 모드 (사용자 2026-06-13 '4회/일보다 빠르게, 리스크 없이') —
+# 풀 스윕(~500콜)을 늘리는 대신 1콜 probe(85류 1페이지·최근 2개월)로
+# '새 데이터 떴나'만 확인, 변경 시에만 풀 스윕+알림 즉시 발동.
+# 비용: probe 144회/일 × 1콜 ≈ 150콜 + 변경 시 스윕(월 ~3회) — 한도 3%.
+# 시간당 풀 스윕(~12,000콜/일 = 한도 초과)의 안전한 대체.
+_PROBE_MARKER = Path.home() / ".trade" / ".scan_probe.json"
+_PROBE_RUN_GUARD = Path.home() / ".trade" / ".scan_probe_run.ts"
+
+
+def _probe_fingerprint(key: str) -> dict | None:
+    """1콜 — 85류(전기전자, 최대 챕터·매월 필수 존재) 최근 2개월 1페이지.
+    지문 = 최신 실월(미래 0행 제외) + 그 월 수출입 합. 관세청이 새 월을
+    싣거나 기존 월을 정정하면 변함. 실패 시 None(보수적 — 스윕 안 함)."""
+    now = datetime.now(timezone.utc)
+    end = now.strftime("%Y%m")
+    y, m = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
+    start = f"{y:04d}{m:02d}"
+    try:
+        rows = customs_scan.fetch_chapter("85", start, end, key=key,
+                                          max_pages=1)
+    except Exception as exc:
+        log.warning("probe fetch failed: %s", exc)
+        return None
+    cur_cal = now.strftime("%Y-%m")
+    best_ym = ""
+    sums: dict[str, list[int]] = {}
+    for r in rows:
+        ym = r.get("year_month") or ""
+        if not ym or ym > cur_cal:      # 미래 월 0-행 (2026-06-01 클래스)
+            continue
+        se_si = sums.setdefault(ym, [0, 0])
+        se_si[0] += int(r.get("exp_dlr") or 0)
+        se_si[1] += int(r.get("imp_dlr") or 0)
+    for ym, (se, si) in sums.items():
+        if (se or si) and ym > best_ym:
+            best_ym = ym
+    if not best_ym:
+        return None
+    return {"ym": best_ym, "se": sums[best_ym][0], "si": sums[best_ym][1]}
+
+
+def _probe_says_skip(key: str) -> bool:
+    """--if-changed 게이트 — True 면 스윕 생략(데이터 무변경/판단불가/
+    스윕 in-flight). 순수 비교 + 30분 run-guard."""
+    import json as _json
+    fp = _probe_fingerprint(key)
+    if fp is None:
+        return True     # probe 실패 — 보수적 skip (정기 4회/일 풀스윕이 안전망)
+    try:
+        prev = _json.loads(_PROBE_MARKER.read_text(encoding="utf-8"))
+    except Exception:
+        prev = {}
+    if prev == fp:
+        log.info("probe: 무변경 (%s) — 스윕 생략", fp["ym"])
+        return True
+    try:
+        if (_PROBE_RUN_GUARD.exists()
+                and time.time() - _PROBE_RUN_GUARD.stat().st_mtime < 1800):
+            log.info("probe: 변경 감지했으나 스윕 in-flight(<30m) — skip")
+            return True
+        _PROBE_RUN_GUARD.parent.mkdir(parents=True, exist_ok=True)
+        _PROBE_RUN_GUARD.write_text(str(time.time()), encoding="utf-8")
+    except Exception:
+        pass
+    log.info("probe: 변경 감지 (%s) — 풀 스윕 발동", fp)
+    return False
+
+
+def _probe_save(key: str) -> None:
+    """스윕 성공 후 probe 지문 저장 — 정기 풀스윕 직후에도 갱신해 다음
+    probe 가 중복 발동하지 않게 (모드 무관 호출)."""
+    import json as _json
+    fp = _probe_fingerprint(key)
+    if fp is None:
+        return
+    try:
+        _PROBE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _PROBE_MARKER.write_text(_json.dumps(fp), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--if-changed", action="store_true",
+                        help="1콜 probe 로 변경 감지 시에만 풀 스윕 "
+                             "(10분 타이머용 — 무변경이면 즉시 종료)")
     parser.add_argument("--keep-pins", action="store_true",
                         help="skip the one-time legacy-pin reset")
     parser.add_argument("--top-n", type=int, default=customs_scan.TOP_N)
@@ -215,6 +300,9 @@ def main(argv: list[str] | None = None) -> int:
     key = os.environ.get("TRADE_DATA_GO_KR_KEY") or ""
     if not key:
         log.warning("TRADE_DATA_GO_KR_KEY not set — skip")
+        return 0
+
+    if args.if_changed and _probe_says_skip(key):
         return 0
 
     start, end = _window(args.lookback_months)
@@ -334,6 +422,11 @@ def main(argv: list[str] | None = None) -> int:
     if new_entrants:
         body = customs_scan.format_alert(new_entrants)
         _send_alert(body)
+    # probe 지문 저장 (1콜) — 정기/probe 모드 모두, 스윕 성공 경로에서만.
+    try:
+        _probe_save(key)
+    except Exception:
+        pass
     return 0
 
 
