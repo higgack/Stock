@@ -213,6 +213,13 @@ def _probe_fingerprint(key: str) -> dict | None:
                                           max_pages=1)
     except Exception as exc:
         log.warning("probe fetch failed: %s", exc)
+        try:
+            from trade import run_ledger
+            if run_ledger.bump("probe_fail") == 1:   # 일 1회 dedup
+                _send_alert(f"❌ <b>관세청 probe 오류</b>\n{type(exc).__name__}"
+                            " — 정기 4회/일 풀스윕이 안전망으로 계속 작동")
+        except Exception:
+            pass
         return None
     cur_cal = now.strftime("%Y-%m")
     best_ym = ""
@@ -325,7 +332,13 @@ def main(argv: list[str] | None = None) -> int:
             fail += 1
             log.warning("chapter %s failed: %s", ch, exc)
     log.info("scan: chapters ok=%d fail=%d rows=%d", ok, fail, len(all_rows))
+    from trade import run_ledger
     if ok == 0:
+        # 오류 알람 (사용자 2026-06-13) — 일 1회 dedup(원장 첫 발생만).
+        if run_ledger.bump("scan_fail") == 1:
+            _send_alert("❌ <b>관세청 스캔 실패</b>\n97챕터 전부 실패 — "
+                        "journal 의 resultMsg 확인 필요 "
+                        "(이전 스냅샷은 유지됨)")
         return 1
     coverage = ok / (ok + fail) if (ok + fail) else 0.0
 
@@ -388,6 +401,10 @@ def main(argv: list[str] | None = None) -> int:
             "partial scan, keeping previous live snapshot (no store/alert)",
             coverage * 100, ok, fail, args.min_coverage * 100,
         )
+        if run_ledger.bump("scan_partial") == 1:
+            _send_alert(f"⚠️ <b>관세청 부분 스캔</b>\n커버리지 "
+                        f"{coverage * 100:.0f}% (ok={ok} fail={fail}) — "
+                        "이전 스냅샷 유지, 다음 스캔 재시도")
         return 0
 
     empty = not (ranked[customs_scan.SECTION_RATE]
@@ -413,9 +430,18 @@ def main(argv: list[str] | None = None) -> int:
     log.info("stored live; archived=%d new_entrants=%d heatmap=%d",
              archived, len(new_entrants), len(hm_rows))
 
+    # 작동 원장 (자정 결산용) — 스윕 1·신규급증 n
+    try:
+        run_ledger.bump("sweeps")
+        if new_entrants:
+            run_ledger.bump("entrants", len(new_entrants))
+    except Exception:
+        pass
+
     # 관세청 데이터 갱신 알림 (변경 감지 시 1회) — 급증 알림과 별도 헤더.
     try:
-        _maybe_notify_refresh(hm_rows, leaves, new_entrants)
+        if _maybe_notify_refresh(hm_rows, leaves, new_entrants):
+            run_ledger.bump("refresh")
     except Exception as exc:
         log.warning("refresh-notify failed (non-fatal): %s", exc)
 
