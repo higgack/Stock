@@ -201,7 +201,12 @@ def _load_heatmap_html(customs_db_path: Path | str | None) -> str:
         ref_ym = max(r.get("ref_ym") or "" for r in rows)
         status = industry._month_status_label(ref_ym) if ref_ym else ""
         return heatmap.render_heatmap_html(rows, status_label=status)
-    except Exception:
+    except Exception as exc:
+        # silent-swallow 금지 (2026-06-12 '히트맵 하루종일 안 나옴' 추적성)
+        # — 데이터는 있는데 렌더 예외로 탭이 사라지는 클래스 가시화.
+        import logging
+        logging.getLogger("trade-dashboard").warning(
+            "heatmap render failed (탭 숨김): %s", exc)
         return ""
 
 
