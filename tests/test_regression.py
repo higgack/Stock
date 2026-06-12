@@ -190,64 +190,6 @@ class TestDashboardDetailsBalance:
 #    longName 과 어긋난 케이스 다수(EXV5 추측 '에너지' → 실제 '자동차').
 #    EU 추가 때 VM 검증으로 잡았음. 향후 추가 시 같은 실수 차단.
 # ─────────────────────────────────────────────────────────────────────────
-class TestSectorETFsIntegrity:
-    """fix commits: 7baef95 / 40d114c (2026-06-01)."""
-
-    def _load_etfs(self):
-        import re
-
-        src = open(
-            "standardview/scripts/weekly_pusher.py", encoding="utf-8"
-        ).read()
-        m = re.search(r"_SECTOR_ETFS:.*?=\s*\[(.*?)\n\]", src, re.DOTALL)
-        assert m, "_SECTOR_ETFS 정의 못 찾음"
-        return re.findall(
-            r'\(\s*"([^"]+)",\s*"([^"]+)",\s*"([^"]+)"\)', m.group(1)
-        )
-
-    def test_no_duplicate_tickers(self):
-        from collections import Counter
-
-        rows = self._load_etfs()
-        cnt = Counter(t for t, _, _ in rows)
-        dups = [t for t, c in cnt.items() if c > 1]
-        assert not dups, f"중복 ticker: {dups}"
-
-    def test_no_hanja_labels(self):
-        import unicodedata
-
-        rows = self._load_etfs()
-        bad = []
-        for t, label, _m in rows:
-            for ch in label:
-                if "CJK UNIFIED" in unicodedata.name(ch, ""):
-                    bad.append((t, label))
-                    break
-        assert not bad, (
-            f"한자 라벨 (전부 한글 정책 위반): {bad[:5]}"
-        )
-
-    def test_all_expected_markets_present(self):
-        """7개 시장 전부 등록 — TW/HK 빠지면 즉시 fail."""
-        from collections import Counter
-
-        rows = self._load_etfs()
-        by_mkt = Counter(m for _, _, m in rows)
-        expected = {"US", "EU", "KR", "JP", "TW", "CN", "HK"}
-        missing = expected - set(by_mkt.keys())
-        assert not missing, f"누락 시장: {missing}"
-        # 최소 보장 — 의도치 않은 대량 삭제 차단
-        assert by_mkt["US"] >= 11, "US SPDR 11섹터 미만"
-        assert by_mkt["KR"] >= 15
-        assert by_mkt["JP"] >= 15, "TOPIX-17 일부 누락 의심"
-        assert by_mkt["EU"] >= 15, "STOXX 600 섹터 일부 누락 의심"
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# 4) Screener post-process idempotency
-#    배경: liquidity warning backend append 가 재실행 시 1번 이상 누적
-#    되면 카드마다 warning 줄 폭증. strip→append 짝이 idempotent 보장.
-# ─────────────────────────────────────────────────────────────────────────
 class TestScreenerPostProcessIdempotent:
     """fix commit: ba6e4bc (2026-06-01)."""
 
@@ -1075,68 +1017,6 @@ class TestMarkdownTableAndDisclosureNews:
 # 8a6) SV 대시보드 모바일 반응형 (2026-06-04 사용자 스크린샷) — 인라인 그리드
 #   가 모바일에서 안 접혀 칼럼 으스러짐/빈 우측. daily_generator 가 생성 시
 #   head 에 @media <style> 주입(인라인 그리드를 !important 단일칼럼화).
-# ─────────────────────────────────────────────────────────────────────────
-class TestSVMobileResponsive:
-    """fix: SV 대시보드 모바일 그리드 미접힘 (2026-06-04)."""
-
-    def test_mobile_css_and_injection_wired(self):
-        src = open("standardview/scripts/daily_generator.py",
-                   encoding="utf-8").read()
-        # 반응형 @media (데스크탑 >768px 무영향) + 인라인 그리드 단일칼럼 override
-        assert "@media (max-width:1100px){" in src, "모바일 @media(1100px) 누락"
-        assert "*{grid-template-columns:1fr !important" in src, "전 그리드 단일칼럼 override 누락"
-        assert "def _inject_mobile_responsive" in src, "주입 함수 누락"
-        assert "noah-mobile" in src, "style id 누락"
-        assert "viewport" in src, "viewport 보강 누락"
-        # 생성 시 호출 (timestamped + latest.html 둘 다 적용되게 str(soup) 전에)
-        assert "_inject_mobile_responsive(soup)" in src, "생성 시 호출 미배선"
-
-    def test_macro_news_multicolumn_and_readability(self):
-        # 데스크탑+모바일 Macro News 가독성 (2026-06-04 사용자 스크린샷):
-        # 전체폭 카드를 채우는 반응형 다단 그리드 + 헤드라인 줄바꿈/폰트↑,
-        # grid-column:auto 로 산업/Deal 카드도 모바일 풀폭.
-        src = open("standardview/scripts/daily_generator.py",
-                   encoding="utf-8").read()
-        assert "grid-column:auto !important" in src, "스팬 리셋(산업/Deal 풀폭) 누락"
-        assert "news-grid" in src, "Macro News 다단 그리드 래퍼 누락"
-        assert "minmax(520px,1fr)" in src, "반응형 다단 minmax 누락"
-        assert "white-space:normal;font-size:15px" in src, "헤드라인 줄바꿈+폰트 보강 누락"
-        assert ".news-item{flex-direction:column" in src, "모바일 태그-헤드라인 스택 누락"
-        assert ".news-section-header, .news-grid" in src, "strip 2-pass(.news-grid) 누락"
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# 8a7) SV 대시보드 '오늘 NOAH 분석' per-ticker 섹션 완전 삭제 (2026-06-04
-#   사용자 요청 "이 부분은 아예 삭제"). daily_generator 가 더 이상 latest.html
-#   에 해당 섹션을 주입하면 안 됨. 샌드박스에서 bs4/생성기 실행 불가하므로
-#   주입 코드/헬퍼/로그가 소스에서 사라졌는지 grep 으로 영구 차단.
-# ─────────────────────────────────────────────────────────────────────────
-class TestSVNoahSectionRemoved:
-    """fix: SV 대시보드 '오늘 NOAH 분석' 섹션 완전 삭제 (2026-06-04)."""
-
-    def _src(self):
-        return open("standardview/scripts/daily_generator.py",
-                    encoding="utf-8").read()
-
-    def test_no_noah_section_injection(self):
-        src = self._src()
-        assert "오늘 NOAH" not in src, "NOAH 섹션 헤더 주입 잔존"
-        assert "NOAH analyses section inserted" not in src, "NOAH 섹션 삽입 로그 잔존"
-
-    def test_no_load_noah_today_helper(self):
-        # 유일한 호출처가 사라졌으므로 헬퍼도 제거 (orphan dead-code 차단).
-        src = self._src()
-        assert "_load_noah_today" not in src, "미사용 _load_noah_today 헬퍼 잔존"
-
-    def test_industry_section_preserved(self):
-        # 인접 섹션(산업 트렌드)은 보존 — 삭제가 과하지 않았는지 가드.
-        src = self._src()
-        assert "Industry trends + Deal Highlights" in src, "산업 트렌드 섹션 누락(과삭제)"
-        assert "산업 트렌드 section AFTER takeaway-card." in src, "anchor 단순화 누락"
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# 8b) 워치리스트 조건 알림 (2026-06-04) — 파서 + 평가 + 저장 + edge-trigger
 # ─────────────────────────────────────────────────────────────────────────
 class TestWatchlist:
     """fix: 워치리스트 알림 (2026-06-04, vibe-trade 패턴 영감)."""
@@ -2929,30 +2809,10 @@ class TestPortfolioPnlDelta:
 
 
 class TestWeekendHolidayGating:
-    """SV 일일 브리프 주말 차단 + Daily Byte 한국 거래일 게이트 회귀 차단.
-    핵심: 일일은 막되 주간브리프(SV·Daily Byte 일요일 22시)는 보존 (사용자
-    정책 2026-06-06 — '주말 일일은 안 오게, 주간브리프는 그대로')."""
-
-    def test_sv_daily_timer_weekday_only(self):
-        """SV 일일 생성 타이머가 평일(Mon-Fri)만 — 주말 미발화."""
-        src = open("standardview/deploy/standardview-daily.timer",
-                   encoding="utf-8").read()
-        assert src.count("Mon..Fri") >= 2  # 07:30 + 20:30 둘 다
-        assert "OnCalendar=*-*-* 07:30" not in src  # every-day 형식 제거
-
-    def test_sv_generator_weekend_guard(self):
-        """daily_generator.main() 에 주말 skip 가드 (weekday>=5) — 타이머가
-        불러도·워치독이 재실행해도 단일 차단점."""
-        src = open("standardview/scripts/daily_generator.py",
-                   encoding="utf-8").read()
-        assert "weekday() >= 5" in src
-        assert "skip daily brief" in src
-
-    def test_sv_watchdog_weekend_skip(self):
-        """sv-watchdog 가 주말(DOW>=6) 재실행 skip — 가드 무력화 방지."""
-        src = open("standardview/deploy/sv-watchdog.sh", encoding="utf-8").read()
-        assert "DOW_KST" in src
-        assert "-ge 6" in src
+    """Daily Byte 한국 거래일 게이트 회귀 차단. 핵심: 일일은 막되 주간
+    브리프(일요일 22시 한·미)는 보존 (사용자 정책 2026-06-06 — '주말
+    일일은 안 오게, 주간브리프는 그대로'). SV 게이트 테스트 3종은 SV
+    폐기(2026-06-12 소스 삭제)와 함께 제거."""
 
     def test_daily_byte_trading_day_gate(self):
         """daily_kr_flow.main() 에 한국 거래일 게이트 (is_trading_day KR).
@@ -2963,21 +2823,19 @@ class TestWeekendHolidayGating:
         assert "is False" in src
 
     def test_weeklies_not_gated(self):
-        """주간브리프(SV·Daily Byte)는 일일 게이트가 없어야 — 일요일(주말)에
-        그대로 발송. 일일 가드가 주간으로 새지 않음을 영구 확인."""
-        sv_weekly = open("standardview/scripts/weekly_pusher.py",
-                         encoding="utf-8").read()
+        """주간브리프(Daily Byte 한·미)는 일일 게이트가 없어야 — 일요일
+        (주말)에 그대로 발송. 일일 가드가 주간으로 새지 않음을 영구 확인."""
         db_weekly = open("bot/daily_kr_weekly.py", encoding="utf-8").read()
-        assert "weekday() >= 5" not in sv_weekly
+        us_weekly = open("bot/us_market_weekly.py", encoding="utf-8").read()
         assert 'is_trading_day("KR"' not in db_weekly
+        assert "weekday() >= 5" not in us_weekly
 
     def test_weekly_timers_still_sunday(self):
-        """주간브리프 타이머가 여전히 일요일(Sun) 발화 — 보존 확인."""
-        sv = open("standardview/deploy/standardview-weekly.timer",
-                  encoding="utf-8").read()
+        """주간브리프 타이머(한·미)가 여전히 일요일(Sun) 발화 — 보존 확인."""
         db = open("deploy/daily-byte-weekly.timer", encoding="utf-8").read()
-        assert "Sun" in sv
+        us = open("deploy/daily-byte-weekly-us.timer", encoding="utf-8").read()
         assert "Sun" in db
+        assert "Sun" in us
 
     def test_gate_decision_logic(self):
         """게이트 결정 규칙: is_trading_day False→skip, None/True→진행(폴백)."""
@@ -4441,10 +4299,11 @@ class TestCommandRegistrySingleSource:
         body = re.search(
             r"def _static_command_registry\(\).*?\n    return \{(.*?)\n    \}",
             src, re.DOTALL).group(1)
+        # sv_cost 제거 (2026-06-12 SV 폐기 최종 정리)
         for c in ("start", "help", "usage", "sites", "screener_list",
                   "watch", "watchlist", "unwatch", "dart_alert", "paper",
                   "screen", "screener", "compare", "portfolio",
-                  "sv_cost", "screener_cost", "daily_byte_cost",
+                  "screener_cost", "daily_byte_cost",
                   "cheongyak_cost", "realestate_cost"):
             assert f'"{c}"' in body, f"registry missing /{c}"
 
@@ -5651,6 +5510,124 @@ class TestLookupPriceGlitchGuard:
     def test_detail_page_renders_note(self):
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert "price_glitch_note" in src
+
+
+class TestQuoteGlitchAllDashboards:
+    """호가 글리치 가드 전 대시보드 일괄 (2026-06-12, 사용자 'KLA 같은
+    사례 안 나오게 모든 대시보드') — 공유 프리미티브 + 5개 적용 지점."""
+
+    def test_quote_glitch_gap_primitive(self):
+        from bot.price_sanity import quote_glitch_gap
+        # KLAC 클래스: 213.42 → 2411.64 (+1030%) = 글리치
+        assert quote_glitch_gap(2411.64, 213.42)
+        assert quote_glitch_gap(50.0, 213.42)        # -77% 도 글리치
+        # 진짜 큰 뉴스 갭(±50% 안쪽)은 보존
+        assert not quote_glitch_gap(310.0, 213.42)   # +45%
+        assert not quote_glitch_gap(110.0, 213.42)   # -48%
+        # 결측/0 → 판정 불가 = False (보수적)
+        assert not quote_glitch_gap(None, 213.42)
+        assert not quote_glitch_gap(100.0, None)
+        assert not quote_glitch_gap(100.0, 0)
+        assert not quote_glitch_gap("x", 100.0)
+
+    def test_wired_into_surfaces(self):
+        # 적용 지점 5곳 배선 가드 — 관심종목 / 홈 live / 미국 Daily(지수+
+        # 무버) / 시총 fetch (검색카드는 TestLookupPriceGlitchGuard 전담)
+        for path in ("bot/market_favorites.py", "bot/market_overview.py",
+                     "bot/us_market_daily.py", "bot/finviz_client.py"):
+            src = open(path, encoding="utf-8").read()
+            assert ("quote_glitch_gap" in src
+                    or "글리치" in src), f"가드 미배선: {path}"
+
+    def test_us_movers_skips_glitch_bar(self):
+        # 무버 경로는 history 마지막 봉 ±75% 초과 종목 제외 로직 존재
+        src = open("bot/us_market_daily.py", encoding="utf-8").read()
+        assert "0.75" in src and "글리치" in src
+
+
+class TestWeeklyByteBothMarkets:
+    """Daily Byte 주간 한·미 (2026-06-12 '주간 한국 미국 다·같은 시간')."""
+
+    def test_kr_weekly_excludes_us_dailies(self):
+        # KR 주간 로더가 us_daily_byte 파일 제외 (#280 동일 디렉토리 공유)
+        src = open("bot/daily_kr_weekly.py", encoding="utf-8").read()
+        assert "us_daily_byte" in src
+
+    def test_us_weekly_module_and_units(self):
+        from bot.us_market_weekly import (_load_week_briefs, generate,
+                                          _save_weekly_archive)
+        assert callable(generate)
+        import os
+        assert os.path.exists("deploy/daily-byte-weekly-us.timer")
+        assert os.path.exists("deploy/daily-byte-weekly-us.service")
+        timer = open("deploy/daily-byte-weekly-us.timer").read()
+        # KR weekly 와 같은 시각 (사용자 '같은 시간')
+        assert "Sun *-*-* 22:00:00 Asia/Seoul" in timer
+        inst = open("deploy/install.sh").read()
+        assert "daily-byte-weekly-us.timer" in inst
+
+    def test_dashboard_badge_us_weekly(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "us_weekly" in src and "미국 Weekly" in src
+
+
+class TestStandardViewRemoved:
+    """Standard View 폐기 최종 정리 (2026-06-12) — 소스 삭제 + 명령/합산
+    reader 제거 + backend disable. 재도입 회귀 차단."""
+
+    def test_source_tree_gone(self):
+        import os
+        assert not os.path.exists("standardview")
+
+    def test_no_active_sv_references(self):
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "cmd_sv_cost" not in tb
+        assert 'first_word == "sv_cost"' not in tb
+        assert "sv-usage/today" not in tb
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "sv_usage.jsonl" not in db
+        an = open("bot/analyzer.py", encoding="utf-8").read()
+        assert "standardview_push" not in an
+
+    def test_backend_disabled_in_install(self):
+        inst = open("deploy/install.sh").read()
+        assert "standardview-backend.service" in inst
+
+
+class TestDartGenericNumberedFallback:
+    """변형/신규 양식 generic 폴백 (2026-06-12 '조금 다른 건 니가 판단해서')
+    — 번호 항목 발췌 + 프로세스 내 원문 캐시."""
+
+    def test_numbered_rows_extraction(self):
+        from bot.dart_feed import _numbered_rows_lines
+        txt = ("타법인 주식 및 출자증권 취득결정 "
+               "1. 발행회사 회사명 (주)테스트홀딩스 2. 취득내역 취득주식수(주) 1,200,000 "
+               "3. 취득금액(원) 15,000,000,000 4. 자기자본대비(%) 8.5 "
+               "5. 취득방법 제3자배정 유상증자 참여 6. 취득목적 신규사업 시너지 확보 "
+               "7. 취득예정일자 2026. 6. 12. 8. 해당없음란 - 9. 이사회결의일 2026-06-11")
+        L = _numbered_rows_lines(txt)
+        # '(원)'/'(%)' 라벨 경계 정확 (값에 다음 항 누수 0)
+        assert any(l == "취득금액(원): 15,000,000,000" for l in L), L
+        assert any(l == "자기자본대비(%): 8.5" for l in L), L
+        assert any("테스트홀딩스" in l for l in L)
+        assert not any("해당없음란" in l for l in L)   # '-' 값 스킵
+        assert len(L) <= 6                              # 캡
+
+    def test_date_inside_value_not_a_stop(self):
+        # 값 속 날짜 '12.' 가 다음 항 stop 으로 오인되지 않음 (라벨형 run 요구)
+        from bot.dart_feed import _numbered_rows_lines
+        L = _numbered_rows_lines(
+            "1. 결정일자 2026. 6. 12. 2. 사유 신규 시설 투자 결정 3. 비고 -")
+        assert any(l.startswith("결정일자: 2026. 6. 12") for l in L), L
+
+    def test_prose_yields_nothing(self):
+        from bot.dart_feed import _numbered_rows_lines
+        assert _numbered_rows_lines("일반 산문 텍스트입니다. 라벨이 없습니다.") == []
+
+    def test_generic_document_hooks_fallback(self):
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert "_numbered_rows_lines" in src
+        assert "_DOC_TEXT_MEM" in src   # fail-mark 후 같은 시도 내 본문 재사용
 
 
 class TestDartRisk2:

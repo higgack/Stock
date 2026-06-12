@@ -1,0 +1,14 @@
+[Unit]
+Description=US Weekly Byte — 주간 미국 시장 종합 텔레그램 푸시 (일 22:00 KST, KR Weekly 동일 시각)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.us_market_weekly
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600

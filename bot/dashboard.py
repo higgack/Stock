@@ -423,13 +423,13 @@ def _compute_stats(records: list[dict]) -> dict:
     today_cost_usd = 0.0
     month_cost_usd = 0.0
     month_cost_by_model: dict[str, float] = {}
-    # Per-subsystem breakdown (분석 / Screener / SV) so the main dashboard
+    # Per-subsystem breakdown (분석 / Screener / …) so the main dashboard
     # surfaces where the total bill is coming from. Screener Pro calls
-    # land in usage.jsonl with subsystem='screener'; SV calls live in
-    # ~/standardview/sv_usage.jsonl (separate file, KST-date tagged).
+    # land in usage.jsonl with subsystem='screener'. (SV 행 제거 2026-06-12
+    # — Standard View 폐기 #148 + 소스 삭제.)
     _sub_keys = {"분석": 0.0, "Screener": 0.0, "Daily Byte": 0.0,
                  "부동산": 0.0, "블로그": 0.0,
-                 "SV": 0.0, "수출입": 0.0}
+                 "수출입": 0.0}
     today_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     month_cost_by_sub_usd: dict[str, float] = dict(_sub_keys)
     for r in usage:
@@ -453,48 +453,17 @@ def _compute_stats(records: list[dict]) -> dict:
                 today_cost_usd += cost
                 today_cost_by_sub_usd[sub] += cost
 
-    # Standard View cost — read ~/standardview/sv_usage.jsonl which stores
-    # cost_krw directly (KST date pre-tagged). Convert KRW → USD via the
-    # same 1330 rate the dashboard uses for KRW display. Failure here is
-    # silent — SV may be running on a separate host without local file.
-    _sv_usage_path = Path.home() / "standardview" / "sv_usage.jsonl"
-    if _sv_usage_path.exists():
-        try:
-            import json as _j
-            with open(_sv_usage_path, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        rec = _j.loads(line)
-                    except Exception:
-                        continue
-                    cost_krw_sv = rec.get("cost_krw", 0) or 0
-                    if cost_krw_sv <= 0:
-                        continue
-                    cost_usd_sv = cost_krw_sv / 1330.0
-                    rec_day_sv = rec.get("date") or ""
-                    if rec_day_sv.startswith(month_prefix):
-                        month_cost_usd += cost_usd_sv
-                        month_cost_by_sub_usd["SV"] += cost_usd_sv
-                        # Roll SV into the gemini-2.5-flash bucket so the
-                        # by-model breakdown stays accurate (SV uses flash).
-                        month_cost_by_model["gemini-2.5-flash"] = (
-                            month_cost_by_model.get("gemini-2.5-flash", 0.0)
-                            + cost_usd_sv
-                        )
-                        if rec_day_sv == today_str:
-                            today_cost_usd += cost_usd_sv
-                            today_cost_by_sub_usd["SV"] += cost_usd_sv
-        except Exception as exc:
-            log.warning("dashboard: SV usage read failed: %s", exc)
+    # Standard View 비용 reader 제거 (2026-06-12) — SV 폐기(#148)로 신규
+    # 비용 0, 소스 트리 삭제와 함께 합산도 정리 (trailing 분 제외).
 
     # 한국 수출입(trade) cost — 별도 repo(stock-trade)가 남기는 usage.jsonl
     # 을 읽어 메인 합산에 포함 (사용자 정책 2026-06-02 — nav 에 링크된 비용
     # -발생 surface 는 메인 대시보드 총합에 합산). 경로: $TRADE_DATA_DIR/
-    # usage.jsonl, 미설정 시 ~/.trade/usage.jsonl. SV 와 달리 그 repo 의
-    # 스키마를 우리가 100% 통제하지 못하므로 방어적으로 cost_usd / cost_krw
-    # 양쪽 + ts(epoch) / date(YYYY-MM-DD str) 양쪽 tolerant. 파일 부재·다른
+    # usage.jsonl, 미설정 시 ~/.trade/usage.jsonl. 그 repo 의 스키마를
+    # 우리가 100% 통제하지 못하므로 방어적으로 cost_usd / cost_krw 양쪽 +
+    # ts(epoch) / date(YYYY-MM-DD str) 양쪽 tolerant. 파일 부재·다른
     # 호스트 시 silent skip. 모델 분포는 미상이라 by_model 에 미합산(총합·
-    # subsystem 분포만 — SV 가 flash 로 roll 하는 것과 달리 trade 모델 불명).
+    # subsystem 분포만).
     _trade_dir = os.environ.get("TRADE_DATA_DIR", "").strip()
     _trade_usage_path = (
         Path(_trade_dir) / "usage.jsonl" if _trade_dir
@@ -677,11 +646,11 @@ def _render_stats_panel(stats: dict) -> str:
     cost_sub_parts = [f"{stats['today_label']} / {stats['month_label']}"]
     if cost_label_parts:
         cost_sub_parts.append(" / ".join(cost_label_parts))
-    # Per-subsystem breakdown (분석 / Screener / SV). Surface only buckets
-    # with non-zero this-month cost — keeps the sub-label compact.
+    # Per-subsystem breakdown. Surface only buckets with non-zero
+    # this-month cost — keeps the sub-label compact. (SV 제거 2026-06-12.)
     sub_parts: list[str] = []
     for key, label in [("분석", "분석"), ("Screener", "screener"), ("Daily Byte", "Daily Byte"),
-                       ("부동산", "부동산"), ("블로그", "블로그"), ("SV", "SV"),
+                       ("부동산", "부동산"), ("블로그", "블로그"),
                        ("수출입", "수출입")]:
         m_usd = stats["month_cost_by_sub_usd"].get(key, 0) or 0
         if m_usd > 0:
@@ -8145,7 +8114,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
         r.get("cost_krw", 0) or 0 for r in runs
         if (r.get("_date") or "").startswith(_month_kst_db)
     )
-    weekly_n = sum(1 for r in runs if r.get("kind") == "weekly")
+    weekly_n = sum(1 for r in runs if r.get("kind") in ("weekly", "us_weekly"))
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -8232,6 +8201,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
                 is_weekly = kind == "weekly"
                 is_us = kind == "us_daily"
                 kind_badge = ("📅 한국 Weekly" if is_weekly
+                              else "📅 미국 Weekly" if kind == "us_weekly"
                               else "🇺🇸 미국 Daily" if is_us
                               else "🇰🇷 한국 Daily")
                 title = f"{kind_badge} · {_html.escape(date)}"

@@ -189,17 +189,30 @@ def get_favorites_with_prices() -> list[dict]:
             tk = yf.Ticker(f["ticker"])
             price = None
             info = None
+            prev_close = None
             try:
                 fi = tk.fast_info
                 price = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
+                prev_close = getattr(fi, "previous_close", None)
             except Exception:
                 pass
             if price is None:
                 try:
                     info = tk.info or {}
                     price = info.get("regularMarketPrice") or info.get("currentPrice")
+                    prev_close = prev_close or info.get("previousClose")
                 except Exception:
                     info = {}
+            # 가격 글리치 가드 (KLAC 클래스 — yfinance 분할 미조정 last_price):
+            # 직전 종가 대비 ±75% 초과면 직전 종가로 교체 (교체 우선 정책).
+            glitched = False
+            try:
+                from bot.price_sanity import quote_glitch_gap
+                if quote_glitch_gap(price, prev_close):
+                    price = prev_close
+                    glitched = True
+            except Exception:
+                pass
             f["current_price"] = price
 
             if info is None:
@@ -208,7 +221,14 @@ def get_favorites_with_prices() -> list[dict]:
                 except Exception:
                     info = {}
 
-            f["market_cap"] = info.get("marketCap")
+            mcap = info.get("marketCap")
+            if glitched and mcap:
+                # 시총도 같은 글리치 가격 기반 — 주식수×직전종가로 재산출,
+                # 주식수 부재 시 표기 생략(None)이 $3.15T 노출보다 낫다.
+                shares = info.get("sharesOutstanding")
+                mcap = (shares * prev_close
+                        if (shares and prev_close) else None)
+            f["market_cap"] = mcap
 
             fwd = info.get("forwardEps")
             trail = info.get("trailingEps")

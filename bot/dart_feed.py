@@ -430,9 +430,17 @@ def _doc_fail_mark(rcept_no: str, hours: float = 0.5) -> None:
         pass
 
 
+# 같은 프로세스 내 원문 평문 재사용 (cap 64) — 전용 파서가 12h fail 마킹
+# 후에도 같은 enrich 시도 안에서 generic 폴백이 재다운로드 0·게이트 무관
+# 으로 본문을 받게 (2026-06-12 '조금 다른 양식은 알아서').
+_DOC_TEXT_MEM: dict[str, str] = {}
+
+
 def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
     """공시 원문(document.xml zip) → 태그 제거 평문. 실패 시 None +
     negative-cache (₩0·LLM 0·stdlib)."""
+    if rcept_no in _DOC_TEXT_MEM:   # fail-mark 게이트보다 먼저 (이미 받음)
+        return _DOC_TEXT_MEM[rcept_no]
     if not rcept_no or _doc_fail_recent(rcept_no):
         return None
     import io
@@ -458,7 +466,11 @@ def _fetch_doc_text(rcept_no: str, api_key: str) -> str | None:
         except UnicodeDecodeError:
             text = raw.decode("cp949", errors="ignore")
         txt = re.sub(r"<[^>]+>", " ", text)
-        return re.sub(r"\s+", " ", txt)
+        out = re.sub(r"\s+", " ", txt)
+        if len(_DOC_TEXT_MEM) >= 64:
+            _DOC_TEXT_MEM.pop(next(iter(_DOC_TEXT_MEM)))
+        _DOC_TEXT_MEM[rcept_no] = out
+        return out
     except Exception:
         _doc_fail_mark(rcept_no)
         return None
@@ -1654,9 +1666,44 @@ def _extract_misc_mgmt(rcept_no: str, api_key: str) -> dict | None:
     return out
 
 
+def _numbered_rows_lines(txt: str, max_lines: int = 6) -> list[str]:
+    """표준 신고 양식 'N. 라벨 값' 행 generic 발췌 — 전용 파서가 없거나
+    변형 양식에 실패했을 때의 최종 폴백 (사용자 2026-06-12 '조금 다른
+    건 니가 판단해서' — 새 예시 없이도 카드에 핵심 줄 표시).
+
+    배치에서 학습한 클래스 재사용 (노이즈 차단):
+    - 번호 라벨 필수(머리말/주석 오캡처 차단) + 라벨 = 한글 시작 2~24자
+    - 다음 항 stop = 번호 + 라벨형 한글 run + 구분자 lookahead — 값 속
+      날짜('2026. 6. 12.')의 'N.' 이 stop 으로 오인되지 않음
+    - 값: '-'/해당없음 류 스킵, 정보성(숫자 포함) 또는 짧은 텍스트만,
+      60자 컷, 최대 6줄. 순수(단위테스트)."""
+    _LBL = r"[가-힣][가-힣A-Za-z()%·ㆍ\s]{1,24}?"   # '(%)'·'(원)' 보조 포함
+    _stop = r"(?=\d{1,2}\s*\.\s*" + _LBL + r"[\s:：]|$)"
+    rows = re.findall(
+        r"\d{1,2}\s*\.\s*(" + _LBL + r")\s*[:：]?\s+"
+        r"([\s\S]{1,120}?)\s*" + _stop, txt)
+    parts: list[str] = []
+    seen: set[str] = set()
+    for lbl, val in rows:
+        lbl = re.sub(r"\s+", " ", lbl).strip()
+        val = re.sub(r"\s+", " ", val).strip(" -–—:·")
+        if not lbl or lbl in seen:
+            continue
+        # 비정보 값 스킵: 빈/해당없음/순수 구분자 + 긴 산문(숫자 없는 40자+)
+        if (not val or val in ("-", "해당없음", "해당사항없음", "없음")
+                or (len(val) > 40 and not re.search(r"\d", val))):
+            continue
+        seen.add(lbl)
+        parts.append(f"{lbl}: {val[:60]}")
+        if len(parts) >= max_lines:
+            break
+    return parts
+
+
 def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
-    """구조화 API 미커버 공시의 generic 원문 추출 — 라벨 매칭 최대 6줄.
-    필드 0개면 negative-cache(12h 재시도 억제)."""
+    """구조화 API 미커버 공시의 generic 원문 추출 — 고정 라벨 매칭 →
+    부족하면 번호 항목 폴백(_numbered_rows_lines). 둘 다 빈손이면
+    negative-cache(12h 재시도 억제)."""
     txt = _fetch_doc_text(rcept_no, api_key)
     if not txt:
         return None
@@ -1677,6 +1724,11 @@ def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
             parts.append(f"{lbl}: {v[:50]}")
         if len(parts) >= 6:
             break
+    if len(parts) < 2:
+        # 번호 항목 generic 폴백 — 변형/신규 양식도 최소 핵심 줄 확보
+        generic = _numbered_rows_lines(txt)
+        if len(generic) > len(parts):
+            parts = generic
     if not parts:
         _doc_fail_mark(rcept_no, hours=12.0)  # 형식 문제 — 곧 안 풀림
         return None

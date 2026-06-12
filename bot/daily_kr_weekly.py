@@ -36,14 +36,17 @@ def _week_dates() -> list[str]:
 
 
 def _load_week_briefs() -> list[dict]:
-    """이번 주 daily(kind!=weekly) 아카이브 본문 로드 (날짜 오름차순)."""
+    """이번 주 KR daily 아카이브 본문 로드 (날짜 오름차순) — weekly 류 +
+    미국 daily(us_daily_byte, #280 부터 같은 디렉토리 공유) 제외. US 는
+    bot/us_market_weekly 가 별도 종합 (사용자 2026-06-12 '주간 한·미 다')."""
     out: list[dict] = []
     for d in _week_dates():
         day_dir = os.path.join(_DAILY_BYTE_ARCHIVE_DIR, d)
         if not os.path.isdir(day_dir):
             continue
         for fn in sorted(os.listdir(day_dir)):
-            if not fn.endswith(".json") or "weekly" in fn:
+            if (not fn.endswith(".json") or "weekly" in fn
+                    or "us_daily_byte" in fn):
                 continue
             try:
                 with open(os.path.join(day_dir, fn), encoding="utf-8") as f:

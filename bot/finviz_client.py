@@ -892,7 +892,20 @@ def _fetch_mcaps(tickers: list) -> dict:
                     mc = fi.market_cap          # 속성 접근
                 except Exception:
                     mc = fi.get("market_cap") if hasattr(fi, "get") else None
-                return tk, (float(mc) if mc else None)
+                if not mc:
+                    return tk, None
+                mc = float(mc)
+                # 글리치 가드 (KLAC $3.15T 클래스): market_cap = 글리치
+                # last_price × 주식수 — 직전 종가 비율로 역보정.
+                try:
+                    from bot.price_sanity import quote_glitch_gap
+                    lp = getattr(fi, "last_price", None)
+                    pc = getattr(fi, "previous_close", None)
+                    if quote_glitch_gap(lp, pc):
+                        mc = mc * float(pc) / float(lp)
+                except Exception:
+                    pass
+                return tk, mc
             except Exception:
                 return tk, None
 
