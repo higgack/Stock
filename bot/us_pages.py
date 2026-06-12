@@ -18,6 +18,7 @@ log = logging.getLogger("bot.us_pages")
 _HL_SORT_JS = """
 <style>
 .hl-table th.srt{cursor:pointer;user-select:none;white-space:nowrap}
+.hl-table td.ind{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted,#888);font-size:12px}
 .hl-table th.srt:hover{color:var(--accent,#3b82f6)}
 .hl-table th.srt .arw{opacity:.45;font-size:10px;margin-left:2px}
 .hl-table th.srt.on .arw{opacity:1}
@@ -154,17 +155,23 @@ def render_us_highlow_page() -> str:
             price = it.get("price")
             pct = it.get("pct")
             mcap = it.get("mcap")
-            # data-* = raw 정렬값 (sym=ticker, price/pct/mcap=numeric)
+            # 업종분류 — yfinance industry 원문 그대로 (사용자 2026-06-12)
+            ind = _html.escape(str(it.get("ind") or ""))
+            ind_cell = (f'<td class="ind" title="{ind}">{ind}</td>'
+                        if ind else '<td class="ind">—</td>')
+            # data-* = raw 정렬값 (sym/ind=text, price/pct/mcap=numeric)
             return (
                 f'<tr data-sym="{tk.lower()}" '
                 f'data-price="{price if price is not None else -1}" '
                 f'data-pct="{pct if pct is not None else -9999}" '
-                f'data-mcap="{mcap if mcap is not None else -1}">'
+                f'data-mcap="{mcap if mcap is not None else -1}" '
+                f'data-ind="{ind.lower()}">'
                 f'<td class="rk">{i}</td>'
                 f'<td class="nm"><a href="lookup/{tk}">{label}</a></td>'
                 f'<td class="num">{("$" + format(price, ",.2f")) if price is not None else "—"}</td>'
                 f'{_pct_cell(pct)}'
-                f'<td class="num">{_fmt_mcap(mcap)}</td></tr>'
+                f'<td class="num">{_fmt_mcap(mcap)}</td>'
+                f'{ind_cell}</tr>'
             )
         rows = "".join(_row(i, it) for i, it in enumerate(items, 1))
         # th data-key/data-type → JS 정렬. # 컬럼은 정렬 비활성.
@@ -176,6 +183,7 @@ def render_us_highlow_page() -> str:
             f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가</th>'
             f'<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>'
             f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총</th>'
+            f'<th class="srt" data-key="ind" data-type="text">업종</th>'
             f'</tr></thead><tbody>{rows}</tbody></table></div>'
         )
 
