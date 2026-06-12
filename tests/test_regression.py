@@ -5502,6 +5502,68 @@ class TestDartUnparsed6:
         assert "함께 선택 가능" in src                # 범례 안내
 
 
+class TestDartUnparsed7:
+    """미파싱-7 (사용자 2026-06-12) — 대량보유 일반서식 doc 폴백 / 판결
+    [주문] / 자율공시 콜론형 / ○마스킹 원고 / 취지 날짜 절단 가드."""
+
+    @staticmethod
+    def _run(fields, txt):
+        import re
+        return {l: m.group(1).strip() for l, p, k in fields
+                if (m := re.search(p, txt))}
+
+    def test_majorstock_doc_fallback(self):
+        # majorstock API 미매칭(웰크론 일반서식) → 요약정보 표 폴백
+        from bot.dart_feed import _majorstock_doc_lines
+        L = _majorstock_doc_lines(
+            "주식등의 대량보유상황보고서 요약정보 발행회사명 (주)웰크론한텍 "
+            "발행회사와의 관계 최대주주 보고구분 변동 보유주식등의 수 및 보유비율 "
+            "직전 보고서 7,855,862 34.75 이번 보고서 7,999,774 35.41 "
+            "보고사유 보고자 및 특별관계자 주식 추가 취득 ※ 보고자 본인은")
+        assert any(l == "발행회사: (주)웰크론한텍 (최대주주)" for l in L)
+        assert any(l == "지분율: 34.75% → 35.41% (+0.66%p ▲)" for l in L)
+        assert any(l.startswith("사유: 보고자 및 특별관계자") for l in L)
+
+    def test_ruling_jumun_block(self):
+        # 판결내용이 [채권자]/[채무자]/[주문] 구조 — 주문 첫 문장 (마침표 포함)
+        from bot.dart_feed import _LAWSUIT_RULING_FIELDS
+        o = self._run(_LAWSUIT_RULING_FIELDS, (
+            "1. 사건의 명칭 회계장부 열람등사 가 처분 사건번호 2026카합516 "
+            "3. 판결ㆍ결정내용 [채권자] 한○○ [채무자] 주식회사 씨씨에스충북방송 "
+            "[주 문] 이 사건의 항고장을 각하한다. 4. 판결ㆍ결정사유 ... "
+            "5. 관할법원 청주지방법원 충주지원 6. 판결ㆍ결정일자 2026-06-09"))
+        assert o["주문"] == "이 사건의 항고장을 각하한다."
+        assert o["관할법원"] == "청주지방법원 충주지원"
+
+    def test_misc_mgmt_colon_form(self):
+        # '사건명:'/'채권자:' 콜론형 (티에스넥스젠 — [사건] 블록 아님)
+        from bot.dart_feed import _misc_mgmt_lines
+        r = _misc_mgmt_lines(
+            "기타 경영사항(자율공시) 1. 제목 상장폐지결정 효력정지 가처분 신청 "
+            "2. 주요내용 회사는 서울남부지방법원에 가처분을 신청하였으며, "
+            "사건명: 서울남부지방법원 2026카합1389 [전자]상장폐지결정 효력정지 가처분 "
+            "채권자: 주식회사 티에스넥스젠 채무자: 주식회사 한국거래소 "
+            "[신청취지] 1. 채권자의 채무자에 대한 ... 3. 결정(확인)일자 2026-06-09")
+        assert r["category"] == "소송"
+        assert any(l.startswith("사건: 서울남부지방법원 2026카합1389") for l in r["lines"])
+        assert any("채권자 주식회사 티에스넥스젠" in l
+                   and "채무자 주식회사 한국거래소" in l for l in r["lines"])
+
+    def test_filed_masked_plaintiff_and_date_in_purport(self):
+        # 원고 '권○○'(마스킹) + 취지 본문 날짜 '2026. 6. 12.' 절단 가드
+        # (항번호 stop 은 다음 문자가 한글/괄호일 때만)
+        from bot.dart_feed import _LAWSUIT_FILED_FIELDS
+        o = self._run(_LAWSUIT_FILED_FIELDS, (
+            "1. 사건의 명칭 의결권행사금지 가처분 신청 사건번호 2026카합50146 "
+            "2. 원고(신청인) 권○○ 3. 청구내용 1.채무자: 신○○, 이○○ "
+            "2.신청취지: (1) 채무자들은 2026. 6. 12. 10:00 경기도 성남시 분당구에서 "
+            "개최되는 주식회사 알로이스의 임시주주총회에서 의결권을 행사하여서는 아니 된다. "
+            "(2) 신청비용은 채무자들이 부담한다. 4. 관할법원 수원지방법원 성남지원"))
+        assert o["원고"] == "권○○"
+        assert "2026. 6. 12" in o["취지"] and "아니 된다" in o["취지"]
+        assert o["관할법원"] == "수원지방법원 성남지원"
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""
