@@ -180,6 +180,11 @@ def render_us_highlow_page() -> str:
         )
 
     hi, lo = data.get("high", []), data.get("low", [])
+    # 기본 정렬 = 시총 내림차순 (사용자 2026-06-12 '처음 화면은 시총순') —
+    # 시총 미확보(—) 행은 뒤로. 헤더 클릭으로 다른 기준 재정렬 가능.
+    _mc_key = lambda it: (it.get("mcap") is None, -(it.get("mcap") or 0))
+    hi = sorted(hi, key=_mc_key)
+    lo = sorted(lo, key=_mc_key)
     if not hi and not lo:
         body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                 '(잠시 후 다시 시도해 주세요.)</div>')
@@ -189,6 +194,6 @@ def render_us_highlow_page() -> str:
                 + _panel("🔻 52주 신저가", lo, "hl-low") + '</div>'
                 + _HL_SORT_JS)
     sub = (f"미국 52주 신고가·신저가 (가격제한폭이 없는 시장 — 상한가/하한가 대응 지표 · "
-           f"SPAC 신탁가 제외) · 헤더 클릭 정렬 · 출처 {src} · 5분 캐시"
-           + (f" · {ts} 기준" if ts else ""))
+           f"SPAC·워런트·채권형 제외 · 분할 아티팩트 드랍) · 기본 시총순 · 헤더 클릭 정렬 · "
+           f"출처 {src} · 5분 캐시" + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
