@@ -102,6 +102,26 @@ def _prev_month(ym: str) -> str:
     return f"{y:04d}-{m:02d}"
 
 
+def _month_status_label(latest_ym: str, today=None) -> str:
+    """최신월의 잠정/확정 라벨 (사용자 2026-06-12 '잠정/확정 구분 명시').
+
+    관세청 월간 통계는 익월 초(전체 잠정) 적재 → 익월 ~15일 확정 정제.
+    오늘이 (최신월+1)월 15일 전이면 '잠정(M/15 확정 예정)', 이후면
+    '확정(익월 ~15일)'. 파싱 실패 시 보수적으로 확정 표기."""
+    from datetime import date, datetime, timedelta, timezone
+    try:
+        s = latest_ym.replace("-", "")
+        y, m = int(s[:4]), int(s[4:6])
+    except (ValueError, IndexError):
+        return "확정(익월 ~15일)"
+    if today is None:
+        today = datetime.now(timezone(timedelta(hours=9))).date()
+    ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+    if today < date(ny, nm, 15):
+        return f"잠정({nm}/15 확정 예정)"
+    return "확정(익월 ~15일)"
+
+
 def _ma(values: list[int], window: int = 12) -> Optional[float]:
     """Moving average of the last `window` values, or None when fewer
     than `window` points exist (so a half-formed MA isn't shown)."""
@@ -1182,30 +1202,32 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
     # 관세청 CONFIRMED-only, published ~the 15th of the following month, so
     # early in any month the freshest confirmed data is the month before
     # last. Daily 4× polling reflects a new confirmed month within hours of
-    # its ~15th publication.
-    # TODO(잠정치): 산업부 수출입동향 보도자료(매월 1일, 전월 잠정치)를 별도
-    # 소스로 붙이면 최신월을 한 달 앞당길 수 있음.
-    # 조사결론(2026-06): data.go.kr엔 접근 가능한 산업분류 잠정 OpenAPI가
-    # 없음 — 확정됨. 202605 조회는 code 00 정상이나 0건, nitemtrade도 0건,
-    # 모든 관세청 OpenAPI가 GW(확정치)뿐. 잠정치는 산업부 보도자료(PDF/HWP)
-    # 비정형 소스에만 존재 → 별도 파서/수집 설계 필요. 보강 마무리 후 작업.
+    # 최신월 잠정/확정 동적 라벨 (사용자 2026-06-12 '잠정/확정 구분 명시
+    # + 두 단계 반영 동의'): 관세청 GW 월간 테이블엔 새 달이 익월 초(전체
+    # 잠정)에 선행 적재되고 ~15일 확정 때 정제된다 — 옛 '확정치' 고정
+    # 라벨은 월 전반(1~14일)에 사실과 어긋났음. (옛 조사주석 'GW엔 확정만
+    # /최신월은 15일 후 등장'은 6/12 실관측 — 5월이 6/15 전에 이미 적재 —
+    # 으로 정정.) 매일 폴링이 잠정→확정 정제를 자동 반영.
+    status = _month_status_label(latest_ym)
     out.append(
         "<div class='ind-topbar'>"
         f"<div class='ind-note'>산업분류별 월 수출액 · YoY/ΔYoY/12M 이동평균 "
         f"(HSK-MTI 연계표 기준) · 최신 <b>{_html.escape(latest_ym)}</b> "
-        f"관세청 확정치(익월 ~15일 발표·매일 갱신) · "
+        f"관세청 <b>{status}</b> · 매일 갱신 · "
         f"<b>금액 단위: 억 달러(1억$ = $100M)</b></div>"
         "<div class='ind-legend'><span><i class='ind-lg-v'></i>수출액</span>"
         "<span><i class='ind-lg-m'></i>12M MA</span></div>"
         "</div>"
     )
-    # 📋 산업부 잠정 원문 링크 배너 — 우리 산업트렌드는 관세청 '확정'(익월 ~15일)
-    # 기준이라, 더 빠른 '잠정'(매월 1일, 산업부 20대 품목)은 공식 원문으로 안내.
-    # 데이터는 안 긁고(파싱 0·깨질 것 0) 링크만 — 산업 집계와 완전 분리.
+    # 📋 산업부 잠정 원문 링크 배너 — 더 빠른 공식 잠정(매월 1일, 산업부
+    # 20대 품목) 안내. 본 산업트렌드는 1일경 잠정 적재 + 15일 확정 정제
+    # 두 단계를 모두 반영 (사용자 2026-06-12 동의 — 옛 '확정 기준' 단정
+    # 문구 정정).
     out.append(
         "<div class='ind-motie'>📋 <b>더 빠른 잠정치</b>(매월 1일·산업부 20대 품목)는 "
         f"<a href='{_MOTIE_URL}' target='_blank' rel='noopener'>산업부 수출입동향 원문 →</a>"
-        "<span class='ind-motie-note'> · 본 산업트렌드는 관세청 확정(익월 ~15일) 기준</span>"
+        "<span class='ind-motie-note'> · 본 산업트렌드는 관세청 월간 통계 기준 — "
+        "익월 초 잠정 적재 → ~15일 확정 정제 자동 반영</span>"
         "</div>"
     )
     # A: summary board (분류·미분 칩 보드) — mirrors reference header
