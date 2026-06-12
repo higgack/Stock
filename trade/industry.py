@@ -60,14 +60,19 @@ def aggregate_by_mti(
     path=mti_map.DEFAULT_PATH,
     field: str = "exp_dlr",
 ) -> dict[str, dict]:
-    """{mti6: {"name","industry","months":{ym:total}}} summing member HS
-    leaves per month. The 하위품목 view ranks these (D램·낸드·웨이퍼 …)
-    one level below industry. Unmapped/'기타' excluded."""
+    """{mti6: {"name","industry","months":{ym:total},"wgts":{ym:kg}}}
+    summing member HS leaves per month. The 하위품목 view ranks these
+    (D램·낸드·웨이퍼 …) one level below industry. Unmapped/'기타' excluded.
+
+    wgts = field 와 짝지어진 중량(kg) 합 (exp_dlr↔exp_wgt, imp_dlr↔
+    imp_wgt) — 단가($/kg) 산출용 (2026-06-13). 옛 leaves(중량 미보존
+    스냅샷)면 빈 dict — 렌더가 graceful 생략."""
     try:
         hsk_map = mti_map.load_mti(path)
         names = mti_map.mti_names(path)
     except mti_map.HskMtiFileMissing:
         return {}
+    wgt_field = {"exp_dlr": "exp_wgt", "imp_dlr": "imp_wgt"}.get(field)
     out: dict[str, dict] = {}
     for hs, node in leaves.items():
         rec = hsk_map.get(hs)
@@ -77,9 +82,14 @@ def aggregate_by_mti(
         if not mti6 or industry == mti_map.CATCH_ALL:
             continue
         nm, ind = names.get(mti6, (mti6, industry))
-        bucket = out.setdefault(mti6, {"name": nm, "industry": ind, "months": {}})
+        bucket = out.setdefault(
+            mti6, {"name": nm, "industry": ind, "months": {}, "wgts": {}})
         for ym, fig in node["months"].items():
             bucket["months"][ym] = bucket["months"].get(ym, 0) + (fig.get(field) or 0)
+            if wgt_field:
+                w = fig.get(wgt_field) or 0
+                if w:
+                    bucket["wgts"][ym] = bucket["wgts"].get(ym, 0) + w
     return out
 
 
@@ -615,8 +625,73 @@ def _yoy_bar_svg(pts: list[dict]) -> str:
             f'class="ind-chart">{zero}{axes}{"".join(bars)}</svg>')
 
 
+def _attach_units(pts: list[dict], wgts: dict | None) -> None:
+    """pts 에 단가 'unit'($/kg) 부착 — wgts {ym: kg} (aggregate_by_mti
+    산출). 키는 'YYYY-MM'/'YYYYMM' 양쪽 수용 (industry_series 가 ym 을
+    정규화하므로). 중량 0/부재 달은 생략 (graceful). in-place, 순수."""
+    if not wgts:
+        return
+    norm = {}
+    for k, v in wgts.items():
+        s = str(k).replace("-", "")
+        if len(s) >= 6 and v:
+            norm[f"{s[:4]}-{s[4:6]}"] = v
+    for p in pts:
+        w = norm.get(p["ym"])
+        if w and p.get("exp"):
+            p["unit"] = p["exp"] / w
+
+
+def _unit_str(v) -> str:
+    """단가 표기 — 품목별 스케일 편차가 커서 (벌크 $0.x ~ 반도체 $수천)
+    크기별 자릿수: ≥$100 정수, ≥$1 소수2, 미만 소수3."""
+    if v is None:
+        return "—"
+    if v >= 100:
+        return f"${v:,.0f}/kg"
+    if v >= 1:
+        return f"${v:,.2f}/kg"
+    return f"${v:.3f}/kg"
+
+
+def _mti_extras(node: dict, pts: list[dict], amt_th: str) -> str:
+    """품목 카드 meta 하단 부가 2줄 (사용자 2026-06-13 텔레그램 채널
+    미러): 💲 최신월 단가 + 전년동월 대비, 🏢 관련기업 (mti_companies
+    수동 큐레이션). 데이터/매핑 없으면 해당 줄 생략 — 빈 문자열 가능."""
+    lines = []
+    # 단가 — 최신 unit 있는 포인트 + 전년동월 unit 비교
+    with_unit = [p for p in pts if p.get("unit")]
+    if with_unit:
+        latest = with_unit[-1]
+        ago_ym = _prev_year_month(latest["ym"])
+        ago = next((p["unit"] for p in with_unit if p["ym"] == ago_ym), None)
+        yoy_html = ""
+        if ago:
+            chg = (latest["unit"] - ago) / ago * 100.0
+            cls = "pos" if chg > 0 else ("neg" if chg < 0 else "")
+            yoy_html = (f" <span class='{cls}'>{_pct(chg)}</span>"
+                        f" <span class='ind-extra-sub'>(전년동월 {_unit_str(ago)})</span>")
+        lines.append(
+            f"<p class='ind-extra'>💲 {amt_th} 단가 <b>{_unit_str(latest['unit'])}</b>"
+            f"{yoy_html}</p>")
+    # 관련기업 — 품목명 키워드 큐레이션 (자동 추정 아님)
+    try:
+        from trade.mti_companies import companies_for
+        cos = companies_for(node.get("name") or "")
+    except Exception:
+        cos = []
+    if cos:
+        chips = " · ".join(f"<b>{_html.escape(c)}</b>" for c in cos)
+        lines.append(
+            "<p class='ind-extra'>🏢 관련기업: " + chips
+            + " <span class='ind-extra-sub' title='품목명 키워드 기반 수동 "
+              "큐레이션 — 자동 추정 아님'>ⓘ</span></p>")
+    return "".join(lines)
+
+
 def _raw_table(pts: list[dict], lab: str = "수출액") -> str:
-    """월별 원자료 table (가로 스크롤): 수출/수입액·YoY·ΔYoY·12M MA·MA대비."""
+    """월별 원자료 table (가로 스크롤): 수출/수입액·YoY·ΔYoY·12M MA·MA대비
+    (+단가 $/kg — unit 부착된 품목 카드만)."""
     months = [p["ym"] for p in pts]
     def row(label, fn, cls_fn=None):
         cells = []
@@ -639,6 +714,8 @@ def _raw_table(pts: list[dict], lab: str = "수출액") -> str:
             lambda p: cls(((p["exp"] - p["ma12"]) / p["ma12"] * 100.0)
                           if p.get("ma12") else None))
     )
+    if any(p.get("unit") for p in pts):
+        body += row("단가($/kg)", lambda p: _unit_str(p.get("unit")))
     # Always-visible (no details) matching the reference. Horizontal scroll
     # for the wide month range, sticky first column.
     return (f"<div class='ind-raw'><div class='ind-raw-title'>월별 원자료</div>"
@@ -646,12 +723,15 @@ def _raw_table(pts: list[dict], lab: str = "수출액") -> str:
             f"<thead>{head}</thead><tbody>{body}</tbody></table></div></div>")
 
 
-def _card_body(pts: list[dict], lab: str = "수출액") -> str:
+def _card_body(pts: list[dict], lab: str = "수출액", extra: str = "") -> str:
     """Reference layout — a flat 3-column row: meta | chart-1 | chart-2.
     Each chart cell holds a monthly panel and a ttm panel; the toggle
     swaps which is visible (chart-1: 수출액+MA ↔ TTM 수출액; chart-2:
     YoY 막대 ↔ TTM YoY). Wide charts, compact meta — matches the original
-    (meta 0.95fr : chart1 1.25fr : chart2 1fr)."""
+    (meta 0.95fr : chart1 1.25fr : chart2 1fr).
+
+    extra = meta 하단 부가 HTML (품목 카드의 단가·관련기업, _mti_extras
+    산출) — 산업 카드는 빈 문자열(무변경)."""
     interp = interpret(pts)
     note = ""
     if interp["signal_label"]:
@@ -665,7 +745,7 @@ def _card_body(pts: list[dict], lab: str = "수출액") -> str:
         "<button type='button' class='ind-tg-btn' data-ind-view='ttm'>12M TTM</button>"
         "</div>"
     )
-    meta = f"<div class='ind-meta'>{toggle}{_stat_row(pts, lab)}{summary}{note}</div>"
+    meta = f"<div class='ind-meta'>{toggle}{_stat_row(pts, lab)}{summary}{note}{extra}</div>"
 
     monthly = _monthly_chart(pts)
     bars = _yoy_bar_svg(pts)
@@ -1018,12 +1098,17 @@ def render_subitem_html(by_mti: dict[str, dict],
         return ""
     rows = []
     pts_by_mti: dict[str, list[dict]] = {}
+    extras_by_mti: dict[str, str] = {}
     for mti6, node in by_mti.items():
         months = node["months"]
         pts = industry_series({mti6: months}).get(mti6) or []
         if not pts:
             continue
+        # 단가($/kg) + 관련기업 — 카드 meta 부가줄. wgts 없는 옛 스냅샷/
+        # 미수록 품목은 빈 문자열 (graceful).
+        _attach_units(pts, node.get("wgts"))
         pts_by_mti[mti6] = pts
+        extras_by_mti[mti6] = _mti_extras(node, pts, amt_th)
         latest = pts[-1]
         # MoM = 최신 확정월 vs 달력상 직전월. 직전월 포인트가 없으면(데이터
         # 공백) MoM 미정의 → 두 랭킹표에서 제외. 미래 미발표월은 애초에
@@ -1057,7 +1142,8 @@ def render_subitem_html(by_mti: dict[str, dict],
                 f"<td>{_eokusd(r['exp'])}</td>"
                 f"<td class='{cl}'>{val}</td></tr>"
                 f"<tr class='ind-mti-d' hidden><td colspan='4'>"
-                + _card_body(pts_by_mti[r["mti6"]], lab)
+                + _card_body(pts_by_mti[r["mti6"]], lab,
+                             extra=extras_by_mti.get(r["mti6"], ""))
                 + "</td></tr>")
         return "".join(out)
 
@@ -1099,7 +1185,8 @@ def render_subitem_html(by_mti: dict[str, dict],
             "<section class='ind-card'>"
             f"<div class='ind-head'><h3>{title}</h3>"
             f"<span class='ind-badge ind-badge-{cls}'>{label}</span></div>"
-            + _card_body(pts, lab) + "</section>"
+            + _card_body(pts, lab, extra=extras_by_mti.get(r["mti6"], ""))
+            + "</section>"
         )
     cards_html = ("<div class='ind-cards'>" + "".join(cards) + "</div>") if cards else ""
 
@@ -1108,7 +1195,8 @@ def render_subitem_html(by_mti: dict[str, dict],
         "<div class='ind-sub-note'>20개 산업 아래 세부 품목(D램·낸드·웨이퍼 등 "
         f"MTI 6자리). {lab} TOP 10은 풀 카드로, 전체는 급등률·증감액 랭킹표"
         "(행 클릭 = 차트·월별 상세) — 산업이 가려버리는 '산업 안의 스타 품목'"
-        "을 발굴.</div>"
+        "을 발굴. 카드에 단가($/kg, 관세청 중량 기반)·관련기업(수동 큐레이션)"
+        "은 데이터/수록 품목에 한해 표시 — 중량은 다음 정기 스윕부터 적재.</div>"
         + cards_html
         + "<div class='ind-sub-wrap'>"
         + tbl("📈 급등률 (MoM↑ 상위, " + amt_th + " ≥" + _eokusd(rate_min_usd) + ")", rate, "mom")

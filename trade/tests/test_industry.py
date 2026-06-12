@@ -484,3 +484,110 @@ class ImportDirectionCardsTests(unittest.TestCase):
                ).read_text(encoding="utf-8")
         self.assertIn(".ind-dir-btn", src)
         self.assertIn("dataset.indDir", src)
+
+
+class MtiUnitPriceCompanyTests(unittest.TestCase):
+    """품목 카드 단가($/kg) + 관련기업 (사용자 2026-06-13 텔레그램 채널
+    미러 2단계). 중량은 이미 fetch 되던 필드 — API 호출 0, additive."""
+
+    def test_build_series_keeps_weights(self):
+        from trade import customs_scan
+        leaves = customs_scan.build_series([
+            {"hs_code": "8542321010", "stat_kor": "디램", "year_month": "2026-04",
+             "exp_dlr": 100, "imp_dlr": 5, "exp_wgt": 20, "imp_wgt": 1}])
+        fig = leaves["8542321010"]["months"]["2026-04"]
+        self.assertEqual(fig["exp_wgt"], 20)
+        self.assertEqual(fig["imp_wgt"], 1)
+
+    def test_aggregate_pairs_weight_field(self):
+        from trade import customs_scan
+        rows = [{"hs_code": "8542321010", "stat_kor": "디램",
+                 "year_month": "2026-04", "exp_dlr": 1000, "imp_dlr": 400,
+                 "exp_wgt": 10, "imp_wgt": 4}]
+        leaves = customs_scan.build_series(rows)
+        exp = industry.aggregate_by_mti(leaves)
+        imp = industry.aggregate_by_mti(leaves, field="imp_dlr")
+        self.assertEqual(exp["831110"]["wgts"]["2026-04"], 10)  # exp↔exp_wgt
+        self.assertEqual(imp["831110"]["wgts"]["2026-04"], 4)   # imp↔imp_wgt
+
+    def test_attach_units_and_format(self):
+        pts = [{"ym": "2025-04", "exp": 380}, {"ym": "2026-04", "exp": 413}]
+        industry._attach_units(
+            pts, {"202504": 100, "2026-04": 100, "2026-05": 0})
+        self.assertAlmostEqual(pts[0]["unit"], 3.8)   # 'YYYYMM' 키 정규화
+        self.assertAlmostEqual(pts[1]["unit"], 4.13)
+        self.assertEqual(industry._unit_str(4.13), "$4.13/kg")
+        self.assertEqual(industry._unit_str(1250.0), "$1,250/kg")
+        self.assertEqual(industry._unit_str(0.4567), "$0.457/kg")
+        # wgts 없음/0 → no-op (옛 스냅샷 graceful)
+        pts2 = [{"ym": "2026-04", "exp": 10}]
+        industry._attach_units(pts2, None)
+        self.assertNotIn("unit", pts2[0])
+
+    def test_mti_extras_unit_yoy_and_companies(self):
+        node = {"name": "디램", "industry": "반도체"}
+        pts = [{"ym": "2025-04", "exp": 380, "unit": 3.8},
+               {"ym": "2026-04", "exp": 413, "unit": 4.13}]
+        html = industry._mti_extras(node, pts, "수출")
+        self.assertIn("수출 단가", html)
+        self.assertIn("$4.13/kg", html)
+        self.assertIn("+8.7%", html)        # (4.13−3.8)/3.8 = +8.7%
+        self.assertIn("전년동월 $3.80/kg", html)
+        self.assertIn("삼성전자", html)
+        self.assertIn("큐레이션", html)     # 수동 큐레이션 표기 의무
+
+    def test_mti_extras_graceful_absent(self):
+        # 미수록 품목 + 중량 없음 → 빈 문자열 (카드 무변화)
+        node = {"name": "정체불명품목xyz", "industry": "기타"}
+        pts = [{"ym": "2026-04", "exp": 1}]
+        self.assertEqual(industry._mti_extras(node, pts, "수출"), "")
+
+    def test_subitem_card_shows_unit_row_and_companies(self):
+        from trade import customs_scan
+        rows = []
+        for i in range(25):
+            y, m = 2024 + (i // 12), (i % 12) + 1
+            rows.append({"hs_code": "8542321010", "stat_kor": "디램",
+                         "year_month": f"{y}-{m:02d}",
+                         "exp_dlr": 1_000_000_000, "imp_dlr": 0,
+                         "exp_wgt": 100_000, "imp_wgt": 0})
+        by = industry.aggregate_by_mti(customs_scan.build_series(rows))
+        html = industry.render_subitem_html(by)
+        self.assertIn("단가($/kg)", html)    # 원자료표 단가 행
+        self.assertIn("수출 단가", html)      # meta 단가 라인
+        self.assertIn("삼성전자", html)       # 관련기업 칩 (D램)
+
+    def test_store_roundtrip_preserves_wgts(self):
+        import sqlite3
+        from trade import customs_scan
+        rows = [{"hs_code": "8542321010", "stat_kor": "디램",
+                 "year_month": "2026-04", "exp_dlr": 100, "imp_dlr": 0,
+                 "exp_wgt": 7, "imp_wgt": 0}]
+        by = industry.aggregate_by_mti(customs_scan.build_series(rows))
+        conn = sqlite3.connect(":memory:")
+        industry.store_mti(conn, by)
+        back = industry.load_mti_stored(conn)
+        self.assertEqual(back["831110"]["wgts"]["2026-04"], 7)
+        conn.close()
+
+
+class MtiCompaniesTests(unittest.TestCase):
+    """관련기업 큐레이션 — 우선순위(구체 키워드 먼저)·비매칭 가드."""
+
+    def test_specific_before_generic(self):
+        from trade.mti_companies import companies_for
+        self.assertIn("한미반도체", companies_for("반도체제조용장비"))  # 장비 ≠ 칩
+        self.assertNotIn("삼성전자", companies_for("반도체제조용장비"))
+        self.assertIn("세방전지", companies_for("납축전지"))            # ≠ 이차전지
+        self.assertIn("POSCO홀딩스", companies_for("아연도강판"))       # 강판 ≠ 아연금속
+        self.assertNotIn("고려아연", companies_for("아연도강판"))
+        self.assertIn("HD현대중공업", companies_for("선박용엔진"))      # 엔진 ≠ 조선3사
+        self.assertNotIn("한화오션", companies_for("선박용엔진"))
+
+    def test_known_and_unknown(self):
+        from trade.mti_companies import companies_for
+        self.assertEqual(companies_for("디램"), ["삼성전자", "SK하이닉스"])
+        self.assertIn("현대제철", companies_for("H형강"))
+        self.assertIn("심팩", companies_for("페로망간"))
+        self.assertEqual(companies_for("정체불명품목"), [])
+        self.assertEqual(companies_for(""), [])

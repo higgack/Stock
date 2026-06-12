@@ -207,9 +207,14 @@ def build_series(rows: list[dict]) -> dict[str, dict]:
         # per month, so the latest row for (leaf, month) wins. (Summing was
         # how duplicate pages inflated figures ~60× before fetch_chapter's
         # dedup; assignment is a second line of defence.)
+        # 중량(kg)도 보존 (2026-06-13 단가 $/kg) — parse_response 가 이미
+        # 주는 필드를 여기서 버리고 있었음. 기존 소비자(rank/heatmap/
+        # aggregate)는 전부 키 접근(.get)이라 additive 무해, API 호출 0.
         node["months"][ym] = {
             "exp_dlr": r.get("exp_dlr") or 0,
             "imp_dlr": r.get("imp_dlr") or 0,
+            "exp_wgt": r.get("exp_wgt") or 0,
+            "imp_wgt": r.get("imp_wgt") or 0,
         }
     return leaves
 
