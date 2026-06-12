@@ -7889,7 +7889,7 @@ def regenerate_screener_index() -> None:
 
 
 # ── Daily Byte archive view ──────────────────────────────────────────────
-# 장 마감 후 KR 수급 브리프 (bot/daily_kr_flow.py). Daily(한국거래일 19:00,
+# 장 마감 후 KR 수급 브리프 (bot/daily_kr_flow.py). Daily(한국거래일 18:00,
 # 주말·공휴일 skip) + Weekly(일 22:00, SV weekly 와 동일 시각) run 을 date-그룹
 # 카드로 렌더. screener.html 의 theme(_SCREENER_CSS)·검색창·🗑️ 휴지통
 # UX 를 그대로 mirror — 차이는 카드가 단일 브리프 본문(섹션 분리 없음)
@@ -8124,7 +8124,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
     · <a href="index.html">🦉 NOAH 종목분석</a>
   </div>
   <h1>📊 Daily Byte — Archive</h1>
-  <p class="sub">장 마감 후 시장 브리프 · 🇰🇷 19:00 / 🇺🇸 07:30 / 📅 Weekly 22:00 (KST) · 수급·시황 관찰(교육·정보), 투자 권유 아님</p>
+  <p class="sub">장 마감 후 시장 브리프 · 🇰🇷 18:00 / 🇺🇸 07:00 / 📅 Weekly 22:00 (KST) · 수급·시황 관찰(교육·정보), 투자 권유 아님</p>
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 브리프</div></div>
@@ -8146,7 +8146,7 @@ def _render_daily_byte_page(runs: list[dict]) -> str:
     if not runs:
         parts.append("""
   <div class="empty">
-    아직 Daily Byte 기록이 없습니다. 한국거래일 19:00 KST 자동 생성됩니다.
+    아직 Daily Byte 기록이 없습니다. 한국거래일 18:00 KST 자동 생성됩니다.
   </div>
 </div></body></html>""")
         return "".join(parts)
@@ -12190,9 +12190,9 @@ def _render_market_daily_cards() -> str:
         )
 
     kr_card = _card(kr, "한국 Daily Byte", "🇰🇷", "daily_byte.html",
-                     "Daily Byte 아카이브가 아직 없습니다.", "19:00")
+                     "Daily Byte 아카이브가 아직 없습니다.", "18:00")
     us_card = _card(us, "미국 Daily Byte", "🇺🇸", "daily_byte.html",
-                     "US Daily Byte 준비 중입니다.", "07:30")
+                     "US Daily Byte 준비 중입니다.", "07:00")
     return f'<div class="md-row">{kr_card}{us_card}</div>'
 
 
