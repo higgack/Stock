@@ -635,6 +635,1024 @@ _COLLATERAL_FIELDS = [
      r"([가-힣A-Za-z0-9()·, ]{2,40}?)\s*(?:\d\.|담보|$)", "text"),
 ]
 
+# ── 리스크 — 사용자 제공 9양식 기준 (2026-06-12 '리스크 완료').
+# 매매거래정지(중요공시 30분형 + 주권 정지형) / 해산사유 / 불성실공시법인
+# 지정·지정예고 / 기타시장안내(상폐 심의) + 회생절차(전용 파서, 아래).
+
+_SUSPENSION_FIELDS = [
+    # 정지 양식은 '3.정지기간' 압축 표기(점 뒤 공백 없음) — stop 은
+    # `\d{1,2}\s*\.` (공백 불요). 값에 점 없는 charset 이라 날짜 안전.
+    ("사유",
+     r"(?:매매거래)?정지\s*사유[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9()%,·ㆍ ]{2,60}?)\s*(?:\d{1,2}\s*\.|근거|정지기간|$)", "text"),
+    ("정지",
+     r"(?:매매거래정지|가\s*\.?\s*정지)\s*일시[^0-9]{0,20}?"
+     r"(\d{4}-\d{1,2}-\d{1,2}(?:\s*\d{1,2}:\d{2})?)", "text"),
+    # 해제/만료는 날짜('2026-06-12 11:36')뿐 아니라 자유 텍스트('법원의
+    # 결정 확인시까지'·'신주권 변경상장일 전일까지') 수용 (현대사료/DH오토).
+    # 값 charset 에 '.' 없음 → `\d\s*\.` stop 이 날짜를 안 가름.
+    ("해제·만료",
+     r"(?:해제일시|만료일시)[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9 :,()\-]{2,60}?)\s*(?:\d{1,2}\s*\.|근거|$)", "text"),
+    ("비고",
+     r"기타[^가-힣A-Za-z0-9]{0,10}?사유\s*[::]\s*"
+     r"([가-힣A-Za-z0-9 ,()]{2,30})", "text"),
+    # 상장폐지 사유발생 정지(SPAC 류, 리스크-2) — 기타란의 정리매매/상폐일
+    ("정리매매",
+     r"정리매매기간[^0-9]{0,8}?(\d{4}[.\-]\s?\d{1,2}[.\-]\s?\d{1,2}\s*~\s*"
+     r"\d{4}[.\-]\s?\d{1,2}[.\-]\s?\d{1,2}(?:\s*\([^)]{1,12}\))?)", "text"),
+    ("상장폐지일",
+     r"상장폐지일[^0-9]{0,8}?(\d{4}[.\-]\s?\d{1,2}[.\-]\s?\d{1,2})", "text"),
+]
+
+_DISSOLUTION_FIELDS = [
+    # 번호 라벨 필수('1. 해산사유') — 문서 머리 '해산사유 발생' 제목이
+    # '발생'을 값으로 오캡처하는 것 차단
+    ("해산사유",
+     r"\d\s*\.\s*해산사유[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9 ()]{2,40}?)\s*(?:\d{1,2}\.\s|해산내용|$)", "text"),
+    ("내용",
+     r"해산내용[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9 ()]{2,50}?)\s*(?:\d{1,2}\.\s|$)", "text"),
+    ("발생일",
+     r"해산사유\s*발생일[^0-9]{0,20}?"
+     r"(\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일|\d{4}-\d{1,2}-\d{1,2})", "text"),
+]
+
+_UNFAITHFUL_FIELDS = [
+    # 다건 유형('공시불이행,공시번복,공시변경' — 리스크-2) 콤마 허용
+    ("유형",
+     r"불성실공시\s*유형[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9,· ]{2,30}?)\s*(?:\d{1,2}\.\s|내\s*용|$)", "text"),
+    ("내용",
+     r"내\s*용[^가-힣A-Za-z0-9]{1,12}?"
+     r"([가-힣A-Za-z0-9()'’‘%.,·ㆍ \-]{4,80}?)\s*(?:\d{1,2}\.\s|원공시일|지정|$)", "text"),
+    ("벌점", r"부과\s*벌점[^0-9]{0,16}?([\d.]+)", "text"),
+    ("누계벌점", r"누계\s*벌점[^0-9]{0,12}?([\d.]+)", "text"),
+    ("제재금",
+     r"공시위반\s*제재금\s*\(?원?\)?[^0-9]{0,12}?([\d,]{4,})", "won"),
+    ("지정일", r"지정\s*[ㆍ·]?\s*부과일자[^0-9]{0,16}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
+    ("지정예고일", r"지정\s*예고일[^0-9]{0,12}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
+    ("결정시한", r"결정\s*시한[^0-9]{0,12}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
+]
+
+_MARKET_NOTICE_FIELDS = [
+    # 자유 서술 박스 — '제목 :' 행 + 결론 문장(상폐 의결/결정 예정)만 발췌.
+    # 제목 stop 에 본문 시작어(거래소는/동사는/당사는) 추가 — 실질심사·
+    # 관리종목우려 류는 '25. 날짜 인용이 없어 제목이 안 잡히던 것 (리스크-2)
+    ("제목",
+     r"제\s*목\s*[::]?\s*([가-힣A-Za-z0-9()㈜·ㆍ,.\- ]{6,70}?)\s*"
+     r"(?:['‘’]\s*\d{2}\s*\.|\d{2}\.\d{2}\.\d{2}|거래소는|동사는|당사는|$)", "text"),
+    # 결론은 주어 앵커(거래소는/동사는/위원회는 …)부터 — 제목 에코·중간
+    # 단어 선두 bleed 차단 (리스크-2). 주어 없으면 결론 생략(제목으로 충분).
+    ("결론",
+     r"((?:거래소는|동사는|당사는|코스닥시장위원회는|기업심사위원회는)"
+     r"[가-힣A-Za-z0-9()㈜'‘’.,%· ]{4,140}?"
+     r"(?:의결하였습니다|알려드립니다|예정입니다|결정하였습니다|우려가\s*있습니다))", "text"),
+    # 관리종목 지정우려 예고(SPAC) — 지정 예정일/제출기한
+    ("지정예정",
+     r"관리종목\s*지정일[^0-9]{0,12}?"
+     r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", "text"),
+    ("제출기한",
+     r"제출기한[^0-9]{0,10}?"
+     r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", "text"),
+]
+
+
+def _rehab_lines(txt: str) -> list[str]:
+    """회생절차 개시결정/신청 원문 → 카드 lines (순수 — 단위테스트).
+
+    사건번호·결정일·법원·관리인 + 회생계획안 제출기한. 제출기한은
+    '회생계획안' 앵커 + **마지막 출현** 사용 — 정정공시는 래퍼(정정전
+    stale 값)가 본문보다 앞이라 첫 출현이 옛 값 (수원 2025회합196,
+    2026-06-10 정정 예시)."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+    m = re.search(r"사건\s*번호[^0-9]{0,16}?"
+                  r"(\d{4}\s*[가-힣]{1,4}\s*\d{1,8}(?:\s*회생)?)", txt)
+    if m:
+        parts.append(f"사건번호: {m.group(1).strip()}")
+    m = re.search(r"결정일자[^0-9]{0,12}?(\d{4}-\d{1,2}-\d{1,2})", txt)
+    if m:
+        parts.append(f"결정일: {m.group(1)}")
+    m = re.search(r"관할\s*법원[^가-힣]{0,12}?"
+                  r"([가-힣 ]{2,20}?법원(?:\s*[가-힣]{1,6}지원)?)", txt)
+    if m:
+        parts.append(f"관할법원: {m.group(1).strip()}")
+    m = re.search(r"관리인\s*성명\s*(?:\([^)]{0,20}\))?\s*"
+                  r"([가-힣A-Za-z()· ]{2,30}?)\s*(?:\d{1,2}\.\s|$)", txt)
+    if m:
+        parts.append(f"관리인: {m.group(1).strip()}")
+    ds = re.findall(r"회생계획안의?\s*제출기간[을은]?[^0-9]{0,8}?"
+                    r"(\d{4}\s*[.\-/]\s*\d{1,2}\s*[.\-/]\s*\d{1,2})", txt)
+    if ds:
+        parts.append(f"회생계획안 제출기한: {ds[-1].strip()}")
+    return parts
+
+
+def _volume_lines(txt: str) -> list[str]:
+    """영업(잠정)실적(공정공시) **물량형** — 금액표가 전부 '-' 이고 월간
+    판매물량(천톤·대 등)만 있는 변형 (사용자 2026-06-12 '파싱안된것들':
+    도시가스 천톤 / 완성차 대수). 총계 행 + 누적 행 발췌. 순수."""
+    parts: list[str] = []
+    m = re.search(r"당[월기]\s*실적\s*\(\s*['’]?\s*(\d{2,4})[.년]\s*(\d{1,2})\s*월?\s*\)",
+                  txt)
+    month = f"{m.group(2)}월" if m else "당월"
+    mu = re.search(r"구분[^가-힣A-Za-z0-9]{0,4}?단위\s*[(:]\s*([가-힣A-Za-z]{1,8})",
+                   txt)
+    unit = mu.group(1) if mu else ""
+    mt = re.search(r"(?:총\s*계|(?<![가-힣])계)\s+([\d,]{2,})\s+([\d,]{2,})\s+"
+                   r"(-?[\d.]+)\s+(?:-\s+)?([\d,]{2,})\s+(-?[\d.]+)", txt)
+    if mt:
+        try:
+            parts.append(f"{month} 판매: 총 {mt.group(1)}{unit} "
+                         f"(전월 {float(mt.group(3)):+.1f}% · "
+                         f"전년동월 {float(mt.group(5)):+.1f}%)")
+        except ValueError:
+            pass
+    mc = re.search(r"(?:총\s*계|(?<![가-힣])계)\s+([\d,]{4,})\s+(?:-\s+){1,4}"
+                   r"([\d,]{4,})\s+(-?[\d.]+)", txt)
+    if mc and (not mt or mc.start() != mt.start()):
+        try:
+            parts.append(f"누적: {mc.group(1)}{unit} "
+                         f"(전년동기 {float(mc.group(3)):+.1f}%)")
+        except ValueError:
+            pass
+    return parts
+
+
+def _parse_volume(rcept_no: str, api_key: str) -> dict | None:
+    """물량형 잠정실적 — 원문 fetch 후 _volume_lines. 0건이면 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts = _volume_lines(txt)
+    if not parts:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
+
+
+def _fair_disclosure_lines(txt: str) -> list[str]:
+    """수시공시의무관련사항(공정공시) — 공시제목 + 첫 불릿 항목 ≤3
+    (주주환원정책 발표 예시: 적용기간/목표 환원율/산식). 순수."""
+    parts: list[str] = []
+    m = re.search(r"공시\s*제목[^가-힣A-Za-z0-9]{0,10}?"
+                  r"([\s\S]{4,60}?)\s*(?:□|관련\s*수시공시|$)", txt)
+    if m:
+        parts.append(f"제목: {m.group(1).strip()}")
+    for b in re.findall(r"[-–]\s+([가-힣A-Za-z0-9()%:+÷,.'’ ]{6,70}?)"
+                        r"(?=\s+[-–□]\s|\s*\d\s*\.\s|$)", txt)[:3]:
+        parts.append(b.strip())
+    return parts
+
+
+def _future_plan_lines(txt: str) -> list[str]:
+    """장래사업ㆍ경영계획(공정공시) — 계획 사항/예상투자금액/이사회결의일
+    (네이버-엔비디아 AI 팩토리 예시). 순수."""
+    parts: list[str] = []
+    # 번호 라벨 필수 — 머리말 '※ 동 정보는 장래 계획사항으로서…'의
+    # '으로서…' 오캡처 차단 (해산사유와 동일 클래스)
+    m = re.search(r"\d\s*\.\s*장래\s*계획\s*사항[^가-힣A-Za-z0-9(\[]{0,10}?"
+                  r"([\s\S]{6,80}?)\s*(?:\d\s*\.\s|목\s*적)", txt)
+    if m:
+        parts.append(f"계획: {m.group(1).strip()}")
+    m = re.search(r"예상\s*투자금액[^가-힣A-Za-z0-9]{0,10}?"
+                  r"([\s\S]{2,70}?)\s*(?:기대\s*효과|\d\s*\.\s)", txt)
+    if m:
+        parts.append(f"예상투자금액: {m.group(1).strip()}")
+    m = re.search(r"이사회\s*결의일[^0-9]{0,16}?(\d{4}-\d{1,2}-\d{1,2})", txt)
+    if m:
+        parts.append(f"이사회결의일: {m.group(1)}")
+    return parts
+
+
+def _material_title_category(title_line: str) -> str | None:
+    """투자판단 관련 주요경영사항 제목 → 카테고리 승격 (결정적, 양 경로
+    공유 — fresh-parse + known-reuse)."""
+    t = title_line or ""
+    if any(k in t for k in ("소송", "가처분", "판결")):
+        return "소송"
+    if any(k in t for k in ("기술이전", "라이선스", "공급계약", "계약 체결",
+                            "계약체결", "수주")):
+        return "계약"
+    if any(k in t for k in ("배당", "자사주", "주주환원", "소각")):
+        return "주주환원"
+    if any(k in t for k in ("상장폐지", "거래정지", "회생", "파산")):
+        return "리스크"
+    return None
+
+
+def _material_mgmt_lines(txt: str) -> dict | None:
+    """투자판단 관련 주요경영사항 — 유가증권 catch-all (한미약품 기술이전
+    예시). 제목/계약상대방/계약금액(총+Upfront)/체결일 + 제목 키워드
+    카테고리 승격. 2미만 None. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    title = _g(r"\d\s*\.\s*제\s*목[^가-힣A-Za-z0-9(\[]{0,10}?"
+               r"([\s\S]{4,80}?)\s*\d{1,2}\s*\.\s")
+    if title:
+        parts.append(f"제목: {title}")
+    cp = _g(r"계약\s*상대방?[^A-Za-z가-힣0-9]{0,8}?"
+            r"([A-Za-z가-힣0-9(][A-Za-z가-힣0-9(),.&·:\- ]{1,59}?)"
+            r"\s*(?:\d\s*\)|\d\s*\.\s|$)")
+    if cp:
+        parts.append(f"상대방: {cp}")
+    # 금액 — US$(한미)·USD(메멘토 코스닥형)·원화 + (약 N억원)/(₩ N) 환산 병기
+    _PAREN = r"(?:\s*\(\s*(?:약|₩)?[\s\d,조억.]*원?\s*\))?"
+    amt = _g(r"(?:계약금액|기술이전\s*금액)[^0-9]{0,12}?[::]?\s*"
+             r"(총?\s*(?:US\$|USD)\s*[\d,]{4,}" + _PAREN +
+             r"|총?\s*[\d,]{4,}\s*원?" + _PAREN + r")")
+    if amt:
+        parts.append(f"계약금액: {amt}")
+    up = _g(r"(?:계약금\s*\(?\s*Upfront\s*\)?|Upfront|선급금)[^0-9]{0,12}?[::]?\s*"
+            r"(총?\s*(?:US\$|USD)\s*[\d,]{4,}" + _PAREN + r"|[\d,]{4,})")
+    if up:
+        parts.append(f"계약금(선급/Upfront): {up}")
+    d = _g(r"계약\s*체결일[^0-9]{0,10}?"
+           r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    if d:
+        parts.append(f"체결일: {d}")
+    if len(parts) < 2:
+        return None
+    out: dict = {"lines": parts}
+    cat = _material_title_category(title or "")
+    if cat:
+        out["category"] = cat
+    return out
+
+
+def _extract_material_mgmt(rcept_no: str, api_key: str) -> dict | None:
+    """투자판단 주요경영사항 — fetch 후 _material_mgmt_lines. 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    out = _material_mgmt_lines(txt)
+    if out is None:
+        _doc_fail_mark(rcept_no, hours=12.0)
+    return out
+
+
+# 자기주식취득결정 원문 폴백 (미파싱-2, 2026-06-12) — 구조화 API
+# (tsstkAqDecsn)가 7일 윈도/필드 변형으로 비는 케이스를 표준 표에서 직접.
+_BUYBACK_DOC_FIELDS = [
+    ("취득예정", r"취득예정주식\s*\(주\)[^0-9]{0,16}?([\d,]{3,})", "num"),
+    ("취득예정금액", r"취득예정금액\s*\(원\)[^0-9]{0,16}?([\d,]{6,})", "won"),
+    ("시작", r"취득예상기간[\s\S]{0,16}?시작일[^0-9]{0,10}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", "text"),
+    ("종료", r"취득예상기간[\s\S]{0,60}?종료일[^0-9]{0,10}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", "text"),
+    ("목적", r"취득목적[^가-힣A-Za-z0-9]{0,10}?"
+            r"([가-힣A-Za-z0-9 ]{2,40}?)\s*(?:\d{1,2}\s*\.|취득방법|$)", "text"),
+    ("방법", r"취득방법[^가-힣A-Za-z0-9]{0,10}?"
+            r"([가-힣A-Za-z0-9() ]{2,40}?)\s*(?:\d{1,2}\s*\.|위탁|$)", "text"),
+]
+
+
+def _disposal_lines(txt: str) -> list[str]:
+    """자기주식 처분 결정 표준 표 (미파싱-3) — 구조화 API(tsstkDpDecsn)가
+    비는 케이스 원문 폴백. 처분예정·가격·금액·기간·목적·상대방. 처분예정
+    기간은 **마지막 출현**(기재정정 래퍼의 '정정전' stale 날짜가 본문보다
+    앞 — 처분금지 가처분 대응 연기 예시 6/17→7/3). 순수."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    from bot.dart_detail import _won
+
+    n = _g(r"처분예정주식\s*\(주\)[^0-9]{0,16}?([\d,]{2,})")
+    if n:
+        parts.append(f"처분예정: {int(n.replace(',', '')):,}주")
+    pr = _g(r"처분\s*대상\s*주식가격\s*\(원\)[^0-9]{0,16}?([\d,]{3,})")
+    amt = _g(r"처분예정금액\s*\(원\)[^0-9]{0,16}?([\d,]{6,})")
+    if amt:
+        seg = f"처분금액: {_won(amt) or amt + '원'}"
+        if pr:
+            seg += f" (주당 {int(pr.replace(',', '')):,}원)"
+        parts.append(seg)
+    ss = re.findall(r"처분예정기간[\s\S]{0,16}?시작일[^0-9]{0,10}?"
+                    r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", txt)
+    es = re.findall(r"처분예정기간[\s\S]{0,60}?종료일[^0-9]{0,10}?"
+                    r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", txt)
+    if ss:
+        s = _clean_kdate(ss[-1])
+        e = _clean_kdate(es[-1]) if es else ""
+        parts.append(f"기간: {s} ~ {e}" if e else f"기간: {s} ~")
+    why = _g(r"처분목적[^가-힣A-Za-z0-9]{0,10}?"
+             r"([가-힣A-Za-z0-9 ]{2,40}?)\s*(?:\d{1,2}\s*\.|처분방법|$)")
+    if why:
+        parts.append(f"목적: {why}")
+    to = _g(r"처분상대방[^가-힣A-Za-z0-9(]{0,10}?"
+            r"([가-힣A-Za-z0-9() ]{2,30}?)\s*(?:\d{1,2}\s*\.|위탁|$)")
+    if to:
+        parts.append(f"상대방: {to}")
+    return parts
+
+
+def _prospectus_corr_lines(txt: str) -> list[str]:
+    """투자설명서 정정신고(보고) — 펀드 정기갱신/운용역 변경 류 (미파싱-3).
+    서류명·최초제출일·사유·위험지표 변경(첫→끝)·운용역 변경. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    doc = _g(r"정정대상\s*공시서류[^가-힣]{0,6}?"
+             r"([가-힣A-Za-z0-9()· ]{2,40}?)\s*(?:\d|2\s*\.|$)")
+    if doc:
+        parts.append(f"서류: {doc}")
+    d0 = _g(r"최초제출일[^0-9]{0,8}?(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    if d0:
+        parts.append(f"최초제출: {_clean_kdate(d0)}")
+    why = _g(r"((?:자본시장과[\s\S]{0,50}?)?정기\s*갱신"
+             r"(?:\s*\([가-힣 ,등]{2,24}\))?|운용역\s*변경)")
+    if why:
+        why = re.sub(r"\s+", " ", why)[:50]
+        parts.append(f"사유: {why}")
+    # 위험지표(표준편차/VaR) 첫→끝 변경 병기
+    vals = re.findall(r"(?:표준편차|VaR)\s*[::]?\s*([\d.]+)\s*%", txt)
+    if len(vals) >= 2 and vals[0] != vals[-1]:
+        parts.append(f"위험지표: {vals[0]}% → {vals[-1]}%")
+    mm = re.search(r"운용역\s*변경\s+([가-힣]{2,5})\s+([가-힣]{2,5})", txt)
+    if mm:
+        parts.append(f"운용역: {mm.group(1)} → {mm.group(2)}")
+    return parts
+
+
+def _related_collateral_lines(txt: str) -> list[str]:
+    """특수관계인에 대한 담보제공 (공정거래법 제26조 — 미파싱-4 2건: 주식
+    담보물(어센틱브랜즈) / 부동산 담보물(엘에스알스코)). 거래상대방·채권자·
+    담보물·기간·한도·금액·조건. 단위 백만원 가능 → mult 적용. 순수."""
+    mult = _doc_unit_mult(txt)
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    cp = _g(r"거래상대방?[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:회사와의|가\s*\.|\d\s*\.|$)")
+    if cp:
+        parts.append(f"거래상대: {cp}")
+    cred = _g(r"채권자[^가-힣A-Za-z0-9(]{0,8}?"
+              r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:다\s*\.|담보물|\d\s*\.|$)")
+    if cred:
+        parts.append(f"채권자: {cred}")
+    # 담보물 값은 면적(60,955.8㎡) 소수점 포함 → stop 은 다음 라벨(담보기간)만
+    obj = _g(r"담보물[^가-힣A-Za-z0-9(]{0,8}?"
+             r"([가-힣A-Za-z0-9()㈜,.㎡\- ]{4,80}?)\s*(?:라\s*\.\s*)?담보기간")
+    if obj:
+        parts.append(f"담보물: {obj}")
+    # 날짜 범위(2026.06.13~2027.06.13) 또는 자유 텍스트(채무전액 상환시 까지)
+    period = _g(r"담보기간[^0-9가-힣]{0,8}?"
+                r"(\d{4}[.\-]\d{1,2}[.\-]\d{1,2}\s*~\s*\d{4}[.\-]\d{1,2}[.\-]\d{1,2}"
+                r"|[가-힣][가-힣 ]{2,28}?(?:까지|상환시\s*까지))")
+    if period:
+        parts.append(f"기간: {period.strip()}")
+    lim = _g(r"담보한도[^0-9]{0,12}?([\d,]{2,})")
+    amt = _g(r"담보금액[^0-9]{0,12}?([\d,]{2,})")
+    seg = []
+    if lim and _amt_won(lim, mult):
+        seg.append(f"한도 {_amt_won(lim, mult)}")
+    if amt and _amt_won(amt, mult):
+        seg.append(f"금액 {_amt_won(amt, mult)}")
+    if seg:
+        parts.append("담보: " + " · ".join(seg))
+    cond = _g(r"거래의?\s*조건[^가-힣A-Za-z0-9]{0,8}?"
+              r"([가-힣A-Za-z0-9()㈜,.% ]{6,80}?)\s*(?:\d\s*\.|이사회|$)")
+    if cond:
+        parts.append(f"조건: {cond}")
+    return parts
+
+
+def _capital_reduction_lines(txt: str) -> list[str]:
+    """감자 결정 (미파싱-4 — 무상감자 결손보전). 감자주식수·비율·자본금
+    전후·방법·사유·기준일·주총. 정정 래퍼면 헤더 + 변경 항목. 순수."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    n = _g(r"감자주식의?\s*종류와?\s*수[\s\S]{0,12}?보통주식?\s*\(주\)[^0-9]{0,10}?"
+           r"([\d,]{4,})")
+    rate = _g(r"감자비율[\s\S]{0,12}?보통주식?\s*\(%\)[^0-9]{0,10}?([\d.]+)")
+    if n:
+        seg = f"감자주식: {int(n.replace(',', '')):,}주"
+        if rate:
+            seg += f" (비율 {rate}%)"
+        parts.append(seg)
+    cb = _g(r"감자전\s*\(원\)[^0-9]{0,10}?([\d,]{6,})")
+    ca = _g(r"감자후\s*\(원\)[^0-9]{0,10}?([\d,]{6,})")
+    if cb and ca:
+        from bot.dart_detail import _won
+        parts.append(f"자본금: {_won(cb)} → {_won(ca)}")
+    why = _g(r"감자사유[^가-힣A-Za-z0-9]{0,10}?"
+             r"([가-힣A-Za-z0-9() ]{2,50}?)\s*(?:\d\s*\.|감자일정|$)")
+    if why:
+        parts.append(f"사유: {why}")
+    base = _g(r"감자기준일[^0-9]{0,10}?"
+              r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    if base:
+        parts.append(f"감자기준일: {_clean_kdate(base)}")
+    gm = _g(r"주주총회\s*예정일[^0-9]{0,10}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    if gm:
+        parts.append(f"주총예정: {_clean_kdate(gm)}")
+    return parts
+
+
+def _issue_price_lines(txt: str) -> list[str]:
+    """[안내] 유상증자 신주 발행가액 (미파싱-4 — 1차 발행가액 27,900원).
+    주당 발행가액 + 확정 공시예정일 (긴 산정방식 narrative 는 생략). 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    kind = _g(r"\d\s*\.\s*구\s*분[^가-힣A-Za-z0-9]{0,8}?"
+              r"([가-힣A-Za-z0-9 ]{4,40}?)\s*(?:\d\s*\.|주당|$)")
+    if kind:
+        parts.append(f"구분: {kind}")
+    pr = _g(r"주당\s*발행가액[\s\S]{0,16}?보통주식?\s*\(원\)[^0-9]{0,10}?([\d,]{3,})")
+    if pr:
+        parts.append(f"주당 발행가액: {int(pr.replace(',', '')):,}원")
+    disc = _g(r"할인율\s*([\d.]+)\s*%")
+    if disc:
+        parts.append(f"할인율: {disc}%")
+    fin = _g(r"확정\s*발행가액[^0-9]{0,40}?"
+             r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})\s*일?\s*에\s*공시")
+    if fin:
+        parts.append(f"확정가액 공시예정: {_clean_kdate(fin)}")
+    return parts
+
+
+def _majorstock_doc_lines(txt: str) -> list[str]:
+    """대량보유상황보고서 원문 요약정보 폴백 (미파싱-7 웰크론 — majorstock
+    구조화 API 미매칭/lag 케이스). 발행회사·관계/직전→이번 보유비율/사유.
+    순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    co = _g(r"발행회사명[^가-힣A-Za-z(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:발행회사와|보고구분|$)")
+    rel = _g(r"발행회사와의\s*관계[^가-힣]{0,8}?([가-힣 ]{2,12}?)\s*(?:보고구분|$)")
+    if co:
+        parts.append(f"발행회사: {co}" + (f" ({rel})" if rel else ""))
+    m = re.search(r"직전\s*보고서[^0-9]{0,12}?([\d,]{4,})\s+([\d.]+)"
+                  r"[\s\S]{0,30}?이번\s*보고서[^0-9]{0,12}?([\d,]{4,})\s+([\d.]+)",
+                  txt)
+    if m:
+        try:
+            b, a = float(m.group(2)), float(m.group(4))
+            arrow = "▲" if a > b else ("▼" if a < b else "–")
+            parts.append(f"지분율: {b:.2f}% → {a:.2f}% ({a - b:+.2f}%p {arrow})")
+            parts.append(f"보유주식: {m.group(1)} → {m.group(3)}주")
+        except ValueError:
+            pass
+    why = _g(r"보고사유[^가-힣]{0,8}?([가-힣A-Za-z0-9 ,·]{4,40}?)\s*(?:※|$)")
+    if why:
+        parts.append(f"사유: {why}")
+    return parts
+
+
+def _major_holding_change_lines(txt: str) -> list[str]:
+    """최대주주 등의 주식보유 변동 (공정거래법 — 미파싱-6 에스케이텔레콤씨에스
+    티원). 첫 주주(최대주주) 변동전→변동후 지분율 + 증감. 희석/매집 신호. 순수."""
+    parts: list[str] = []
+    # 주주명 = '계열회사'(관계 열) 직전 단일 토큰(+(주)) — 헤더 prefix 오캡처
+    # 차단 (공백 포함 prefix '동일인 및 …' 배제)
+    mn = re.search(r"([가-힣A-Za-z0-9]{2,20}(?:\([가-힣A-Za-z]{1,4}\))?)"
+                   r"\s*계열회사", txt)
+    # 보통주 행: 변동전수 변동전율 [증감수] 증감율 변동후수 변동후율
+    mr = re.search(r"보통주\s+([\d,]+)\s+([\d.]+)\s+\S+\s+(-?[\d.]+)\s+"
+                   r"([\d,]+)\s+([\d.]+)", txt)
+    if mn and mr:
+        try:
+            before, after = float(mr.group(2)), float(mr.group(5))
+            delta = float(mr.group(3))
+            arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "–")
+            parts.append(f"주주: {mn.group(1).strip()}")
+            parts.append(f"지분율: {before:.2f}% → {after:.2f}% "
+                         f"({delta:+.2f}%p {arrow})")
+        except ValueError:
+            pass
+    return parts
+
+
+def _suspension_release_lines(txt: str) -> list[str]:
+    """주권매매거래정지해제 (미파싱-6 — 글로벌에스엠테크 액면병합 변경상장).
+    대상종목·해제사유·해제일시. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    sym = _g(r"대상종목[^가-힣A-Za-z0-9(]{0,8}?"
+             r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:보통주|\d\s*\.|해제|$)")
+    if sym:
+        parts.append(f"대상: {sym}")
+    why = _g(r"해제사유[^가-힣A-Za-z0-9]{0,8}?"
+             r"([가-힣A-Za-z0-9() ]{2,40}?)\s*(?:\d\s*\.|해제일시|$)")
+    if why:
+        parts.append(f"해제사유: {why}")
+    d = _g(r"해제일시[^0-9]{0,10}?(\d{4}-\d{1,2}-\d{1,2}(?:\s*\d{1,2}:\d{2})?)")
+    if d:
+        parts.append(f"해제일시: {d}")
+    return parts
+
+
+def _tender_result_lines(txt: str) -> list[str]:
+    """공개매수의 결과 (미파싱-6 — 세아홀딩스 자사주 소각용 공개매수). 대상
+    회사·매수가격·예정/응모/매수수량·기간·공개매수 후 보유비율. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    co = _g(r"공개매수\s*대상\s*회사명[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:\d\s*\.|공개매수|$)")
+    if co:
+        parts.append(f"대상: {co}")
+    pr = _g(r"매수가격[^0-9]{0,12}?주당\s*([\d,]{3,})\s*원")
+    if pr:
+        parts.append(f"매수가: 주당 {int(pr.replace(',', '')):,}원")
+    plan = _g(r"매수예정수량[^0-9]{0,12}?(?:최대\s*)?([\d,]{2,})\s*주")
+    sub = _g(r"응모주식\s*수[^0-9]{0,12}?([\d,]{2,})\s*주")
+    bought = _g(r"매수주식\s*수[^0-9]{0,12}?([\d,]{2,})\s*주")
+    seg = []
+    if plan:
+        seg.append(f"예정 {int(plan.replace(',', '')):,}주")
+    if sub:
+        seg.append(f"응모 {int(sub.replace(',', '')):,}주")
+    if bought:
+        seg.append(f"매수 {int(bought.replace(',', '')):,}주")
+    if seg:
+        parts.append("수량: " + " · ".join(seg))
+    rate = _g(r"공개매수\s*후\s*(?:주식등의\s*)?보유비율[^0-9]{0,16}?([\d.]+)")
+    if rate:
+        parts.append(f"공개매수 후 보유: {rate}%")
+    return parts
+
+
+def _major_change_lines(txt: str) -> list[str]:
+    """최대주주 변경 (미파싱-6 — 은홀딩파트너스→임주주 주식매매계약). 변경전→
+    변경후 최대주주(명·비율) + 변경사유. 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    # 변경내용 표: 변경전 최대주주명 ... 소유비율(%) X ; 변경후 ... Y
+    bn = _g(r"변경전[\s\S]{0,16}?최대주주명?[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:소유주식|\d\s*\.|변경후|$)")
+    br = _g(r"변경전[\s\S]{0,90}?소유비율\s*\(%\)[^0-9]{0,8}?([\d.]+)")
+    an = _g(r"변경후[\s\S]{0,16}?최대주주명?[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:소유주식|\d\s*\.|$)")
+    ar = _g(r"변경후[\s\S]{0,90}?소유비율\s*\(%\)[^0-9]{0,8}?([\d.]+)")
+    if bn or an:
+        b = f"{bn}({br}%)" if bn and br else (bn or "")
+        a = f"{an}({ar}%)" if an and ar else (an or "")
+        parts.append(f"최대주주: {b} → {a}")
+    why = _g(r"변경사유[^가-힣A-Za-z0-9]{0,8}?"
+             r"([가-힣A-Za-z0-9() ]{4,50}?)\s*(?:\d\s*\.|실권주|지분|$)")
+    if why:
+        parts.append(f"사유: {why}")
+    return parts
+
+
+def _confirmation_lines(txt: str) -> list[str]:
+    """확인서 (미파싱-5 — 대표이사·신고업무담당이사 기재내용 확인 + 내부
+    회계관리제도). 정형 첨부 문서라 정보 밀도 낮음 — 회사명 + 요지 2줄.
+    순수. ⚠️ 수집 정책 무변경(기타→drop) — 흘러드는 경우만 파싱."""
+    parts: list[str] = []
+    m = re.search(r"((?:주식회사|㈜)\s*[가-힣A-Za-z0-9]{2,20}|"
+                  r"[가-힣A-Za-z0-9]{2,20}\s*(?:주식회사|㈜))\s*대표이사", txt)
+    if m:
+        parts.append(f"회사: {m.group(1).strip()}")
+    if "기재내용" in txt or "기재사항" in txt:
+        seg = "대표이사·신고업무담당이사 기재내용 확인"
+        if "내부회계관리제도" in txt:
+            seg += " · 내부회계관리제도 운영"
+        parts.append(seg)
+    return parts
+
+
+def _asset_complete_lines(txt: str) -> list[str]:
+    """유형자산 양수도 종료보고서 (미파싱-5 — 에어레인→SK에어코어 청주공장).
+    양도인/양수인/양도금액 + 거래 종료(매매대금 정산·소유권이전 완료). 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    # 표 행만 — 본문 prose '당사(양도인)와 …(양수인)' 오캡처 차단(lookbehind)
+    seller = _g(r"(?<![(가-힣])양도인\s+"
+                r"((?:주식회사|㈜)?\s*[가-힣A-Za-z0-9()㈜ ]{2,36}?)\s*양수인")
+    buyer = _g(r"(?<![(가-힣])양수인\s+"
+               r"((?:주식회사|㈜)?\s*[가-힣A-Za-z0-9()㈜ ]{2,36}?)\s*(?:양도\s*금액|\d\s*\.|$)")
+    if seller or buyer:
+        parts.append(" · ".join(x for x in (
+            f"양도인 {seller}" if seller else None,
+            f"양수인 {buyer}" if buyer else None) if x))
+    amt = _g(r"양도\s*금액[^0-9]{0,12}?([\d,]{6,})\s*원")
+    if amt:
+        from bot.dart_detail import _won
+        parts.append(f"양도금액: {_won(amt) or amt + '원'}")
+    if "소유권이전" in txt or "매매대금" in txt or "종료" in txt:
+        parts.append("거래 종료 (매매대금 정산·소유권이전 완료)")
+    return parts
+
+
+def _merger_lines(txt: str) -> list[str]:
+    """회사합병 결정 (미파싱-5 — 네오위즈→뮤즈라이브 100% 자회사 흡수합병).
+    합병방법/비율/상대회사/합병기일·주총·합병등기 예정. 순수."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    cp = _g(r"(?:합병상대회사|소멸회사|존속회사)[\s\S]{0,12}?회사명[^가-힣A-Za-z0-9(]{0,8}?"
+            r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:주요사업|소재지|\d\s*\.|$)")
+    method = "흡수합병" if "흡수합병" in txt else ("분할합병" if "분할합병" in txt else None)
+    seg = "합병방법: " + (method or "합병")
+    if cp:
+        seg += f" (소멸 {cp})"
+    if method:
+        parts.append(seg)
+    rt = _g(r"합병비율[^0-9]{0,12}?(\d[\d,.]*\s*[:：]\s*\d[\d,.]*)")
+    if rt:
+        parts.append(f"합병비율: {rt.replace('：', ':')}")
+    md = _g(r"합병기일[^0-9]{0,12}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    gm = _g(r"주주총회\s*(?:예정일|일자)[^0-9]{0,12}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    rd = _g(r"합병등기\s*예정일[^0-9]{0,12}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
+    sched = " · ".join(x for x in (
+        f"합병기일 {_clean_kdate(md)}" if md else None,
+        f"주총 {_clean_kdate(gm)}" if gm else None,
+        f"합병등기 {_clean_kdate(rd)}" if rd else None) if x)
+    if sched:
+        parts.append(f"일정: {sched}")
+    return parts
+
+
+def _business_transfer_lines(txt: str) -> list[str]:
+    """영업양도 결정 (공정거래법 — 미파싱-5 SK/엔솔브 PV·ESS 운영사업).
+    양도영업/양도가액/목적/양수법인/재무내용(백만원). 순수."""
+    parts: list[str] = []
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    biz = _g(r"\d\s*\.\s*양도영업[^가-힣A-Za-z0-9(]{0,8}?"
+             r"([가-힣A-Za-z0-9()· ]{4,50}?)\s*(?:\d\s*\.|양도영업\s*주요|$)")
+    if biz:
+        parts.append(f"양도영업: {biz}")
+    amt = _g(r"양도가액\s*\(?원?\)?[^0-9]{0,12}?([\d,]{6,})")
+    if amt:
+        from bot.dart_detail import _won
+        parts.append(f"양도가액: {_won(amt) or amt + '원'}")
+    buyer = _g(r"양수법인\s*\([^)]{0,20}\)?[^가-힣A-Za-z0-9(]{0,8}?"
+               r"([가-힣A-Za-z0-9()㈜ ]{2,30}?)\s*(?:\(|\d\s*\.|$)")
+    if buyer:
+        parts.append(f"양수법인: {buyer}")
+    why = _g(r"\d\s*\.\s*양도목적[^가-힣A-Za-z0-9]{0,8}?"
+             r"([가-힣A-Za-z0-9 ]{2,40}?)\s*(?:\d\s*\.|양도예정|$)")
+    if why:
+        parts.append(f"목적: {why}")
+    return parts
+
+
+def _custody_lines(txt: str) -> list[str]:
+    """부동산투자회사 자산보관 위탁계약 체결 (리츠 — 미파싱-2 예시 2건:
+    신영부동산신탁 정정 연장 / 한국토지신탁 오렌지센터). 보관기관·대상
+    부동산·기간·계약일자. 순수."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    org = _g(r"회사명[^가-힣A-Za-z(]{0,8}?"
+             r"([가-힣A-Za-z(),.· ]{2,50}?)\s*(?:자본금|\d{1,2}\s*\.\s|$)")
+    if org:
+        parts.append(f"보관기관: {org}")
+    prop = _g(r"대상\s*부동산[^가-힣A-Za-z0-9(]{0,8}?(?:은|는|[-–])?\s*"
+              r"([가-힣A-Za-z0-9()\s,.\-]{4,60}?)\s*(?:입니다|\d\s*\.\s|$)")
+    if prop:
+        prop = re.sub(r"^[\s\-–—·]+", "", prop)   # 선두 '- ' strip
+        parts.append(f"대상 부동산: {prop}")
+    # 마지막 출현 = 본문(정정 래퍼의 '정정전' stale 값이 앞에 옴 — 신영
+    # 연장 정정 예시, 회생 제출기한과 동일 클래스)
+    ss = re.findall(r"계약기간[\s\S]{0,12}?시작일[^0-9]{0,8}?"
+                    r"(\d{4}-\d{1,2}-\d{1,2})", txt)
+    es = re.findall(r"계약기간[\s\S]{0,60}?종료일[^0-9]{0,8}?"
+                    r"(\d{4}-\d{1,2}-\d{1,2})", txt)
+    if ss:
+        parts.append(f"기간: {ss[-1]} ~ {es[-1]}" if es else f"기간: {ss[-1]} ~")
+    d = _g(r"계약일자[^0-9]{0,8}?(\d{4}-\d{1,2}-\d{1,2})")
+    if d:
+        parts.append(f"계약일자: {d}")
+    return parts
+
+
+def _extract_custody(rcept_no: str, api_key: str) -> dict | None:
+    """자산보관 위탁계약 — fetch 후 _custody_lines. 2미만 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts = _custody_lines(txt)
+    if len(parts) < 2:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
+
+
+def _inquiry_lines(txt: str) -> list[str]:
+    """조회공시/풍문·보도 해명 원문 → 카드 lines (순수 — 단위테스트).
+
+    사용자 5예시 (2026-06-12 '이제 조회공시'): 요구형(제목·요구일시·답변
+    시한 — 가처분 결정설), 풍문해명형(보도·매체·요지 — STX그린로지스/
+    한화엔진), 시황변동 답변형(제목·요지·재공시 — 대구백화점/핀텔 정정).
+    요지는 결정적 마커 문장 발췌 — 추진(선정/진행중/검토중) + 입장(사실
+    아님/미확정) 분리, LLM 0."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    # 라벨-값 사이 gap 은 greedy — ' : ' 구분자형(KG파이낸셜 최종예시)에서
+    # 캡처가 ': 제목텍스트' 로 시작하는 이중 콜론 차단 (값 문자는 gap
+    # 클래스에서 제외라 과식 불가).
+    title = _g(r"\d\s*\.\s*제\s*목[^가-힣A-Za-z0-9(\[]{0,12}"
+               r"([\s\S]{4,70}?)\s*\d{1,2}\s*\.\s")
+    if title:
+        parts.append(f"제목: {title}")
+    rep = _g(r"보도의\s*내용[^가-힣A-Za-z0-9\[('‘]{0,10}"
+             r"([\s\S]{4,80}?)\s*\d{1,2}\s*\.\s*풍문")
+    media = _g(r"보도의\s*매체[^가-힣A-Za-z0-9]{0,10}?"
+               r"([가-힣A-Za-z0-9,· ]{2,30}?)\s*(?:\d{1,2}\s*\.\s|$)")
+    if rep:
+        parts.append(f"보도: {rep}" + (f" ({media})" if media else ""))
+    # 일시 = 날짜 + 선택적 (오전|오후) + 선택적 HH:MM — 'YYYY-MM-DD 오후
+    # 12:00까지' 변형(KG파이낸셜 2026-06-12 최종예시)까지 한 패턴으로.
+    _DT = (r"(\d{4}-\d{1,2}-\d{1,2}(?:\s*(?:오전|오후))?"
+           r"(?:\s*\d{1,2}:\d{2}(?:\s*까지)?)?)")
+    ask = _g(r"요구일시[^0-9]{0,10}?" + _DT)
+    if ask:
+        parts.append(f"요구일시: {ask}")
+    due = _g(r"답변시한[^0-9]{0,10}?" + _DT)
+    if due:
+        parts.append(f"답변시한: {due}")
+    # 요지 — 추진 상황(무엇을 하고 있나) + 회사 입장(확정/부인) 분리 발췌.
+    # 선두 불릿('- ') strip + lookback 90 (장문 문장 중간 잘림 완화).
+    def _cl(v: str | None) -> str | None:
+        if not v:
+            return None
+        v = re.sub(r"^[\s\-–—·:]+", "", v)
+        # 라벨 인접 캡처('해명내용 - 언론에…') — 선두 16자 내 불릿 경계 컷
+        return re.sub(r"^[^\-–—]{0,16}?[\-–—]\s+", "", v)
+
+    prog = _cl(_g(r"([^.\n]{8,90}(?:선정하였|선정되었|진행\s*중|검토하고\s*있)"
+                  r"[^.\n]{0,60})"))
+    if prog:
+        parts.append(f"추진: {prog}")
+    stance = _cl(_g(r"([^.\n]{0,90}(?:사실이\s*아님|결정된\s*바는?\s*없"
+                    r"|확정된\s*사항은?\s*없|확정되지\s*않았)[^.\n]{0,40})"))
+    if stance:
+        parts.append(f"입장: {stance}")
+    askday = _g(r"조회공시요구일[^0-9]{0,10}?(\d{4}-\d{1,2}-\d{1,2})")
+    ansday = _g(r"조회공시답변일[^0-9]{0,10}?(\d{4}-\d{1,2}-\d{1,2})")
+    if askday or ansday:
+        parts.append(" · ".join(x for x in (
+            f"요구일 {askday}" if askday else None,
+            f"답변일 {ansday}" if ansday else None) if x))
+    redo = _g(r"재공시\s*(?:예정일|기한)[^0-9]{0,16}?(\d{4}-\d{1,2}-\d{1,2})")
+    if redo:
+        parts.append(f"재공시: {redo}")
+    return parts
+
+
+def _extract_inquiry(rcept_no: str, api_key: str) -> dict | None:
+    """조회공시/풍문해명 — 원문 fetch 후 _inquiry_lines. 2미만 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts = _inquiry_lines(txt)
+    if len(parts) < 2:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
+
+
+# 생산재개/중단 (자율공시 — 리스크-2 안국약품 화성공장) — 겸용 필드셋
+_PRODUCTION_FIELDS = [
+    ("내용",
+     r"생산(?:재개|중단)\s*내용[^가-힣A-Za-z0-9(]{0,8}?"
+     r"([가-힣A-Za-z0-9()㈜ ]{2,40}?)\s*(?:\d{1,2}\s*\.|생산)", "text"),
+    ("매출액대비", r"매출액\s*대비\s*\(%\)[^0-9]{0,8}?([\d.]+)", "pct"),
+    ("사업",
+     r"생산(?:재개|중단)\s*사업[^가-힣A-Za-z0-9]{0,8}?"
+     r"([가-힣A-Za-z0-9 ]{2,40}?)\s*(?:\d{1,2}\s*\.|$)", "text"),
+    ("사유",
+     r"생산(?:재개|중단)\s*사유[^가-힣A-Za-z0-9]{0,8}?"
+     r"([가-힣A-Za-z0-9() ]{2,50}?)\s*(?:\d{1,2}\s*\.|생산|$)", "text"),
+    ("일자",
+     r"생산(?:재개|중단)\s*일자[^0-9]{0,8}?(\d{4}-\d{1,2}-\d{1,2})", "text"),
+    ("중단기간",
+     r"생산중단기간[^0-9]{0,6}?(\d{4}[.\-]\s?\d{1,2}[.\-]\s?\d{1,2}\s*~\s*"
+     r"\d{4}[.\-]\s?\d{1,2}[.\-]\s?\d{1,2})", "text"),
+]
+
+
+def _parse_rehab(rcept_no: str, api_key: str) -> dict | None:
+    """회생절차 — 원문 fetch 후 _rehab_lines. 필드 2미만이면 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts = _rehab_lines(txt)
+    if len(parts) < 2:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
+
+
+# ── 소송 — 사용자 제공 5양식 기준 (2026-06-12 '소송 5개 우선, 예시로').
+# 표준 양식 2종: 제기·신청(경영권 분쟁 등) / 판결·결정(일정금액 이상의
+# 청구). ㆍ(U+318D)·· 변형 허용. min_fields=2.
+_LAWSUIT_FILED_FIELDS = [
+    ("사건",
+     r"사건의\s*명칭[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()ㆍ·,\- ]{2,60}?)\s*(?:사건\s*번호|\d{1,2}\.\s|$)", "text"),
+    ("사건번호",
+     r"사건\s*번호[^0-9]{0,20}?(\d{4}\s*[가-힣]{1,4}\s*\d{1,8})", "text"),
+    # ○●(이름 마스킹) 포함 — '권○○' 류 개인 신청인 (미파싱-7 알로이스)
+    ("원고",
+     r"원고\s*[ㆍ·(]?\s*신청인?\s*\)?[^가-힣A-Za-z0-9]{0,12}?"
+     r"([가-힣A-Za-z0-9()㈜○●:,·ㆍ\- ]{2,60}?)\s*(?:피고|채무자|\d{1,2}\.\s|\[|$)", "text"),
+    # 구분자 1자 이상 필수 — 산문 '피고가 부담한다' 조사 오캡처 차단
+    # (머큐리에프엠 추가예시 surfaced), 표 셀 '피고 : (주)X' 만 매칭
+    ("피고",
+     r"피고[^가-힣A-Za-z0-9]{1,10}?"
+     r"([가-힣A-Za-z0-9()㈜○●,·ㆍ\- ]{2,50}?)\s*(?:\d{1,2}\.\s|\[|$)", "text"),
+    # 취지 라벨 변형: [청구취지]/[신청취지] 또는 라벨 없이 '청구내용' 직후
+    # 번호 목록(나비프라/머큐리에프엠 2026-06-12 추가 5예시)
+    # 취지 stop 의 번호목록 감지는 (?<!\d) — 본문 날짜 '2026. 6. 12.' 의
+    # '26. ' 를 항번호로 오인해 절단하던 것 차단 (미파싱-7 알로이스)
+    # 항번호 stop 은 '다음 문자가 한글/괄호'일 때만 — 본문 날짜
+    # '2026. 6. 12.'의 ' 6. '(뒤=숫자)을 항번호로 오인 절단 차단 (미파싱-7)
+    ("취지",
+     r"(?:[\[(]?\s*(?:청구|신청)\s*취지\s*[\])]?[::]?|청구\s*내용)\s*"
+     r"[^가-힣0-9(]{0,8}(?:\(?1\)?\s*[.)]?\s*)?"
+     r"([가-힣A-Za-z0-9()ㆍ·,.%:'’‘\- ]{8,160}?)"
+     r"(?:\s*(?:\d{1,2}\s*[.)]\s*(?=[가-힣(])|라는|\[|$))", "text"),
+    # 일정금액 이상 청구 양식의 청구금액/자기자본대비 (제기·신청에도 존재)
+    ("청구금액",
+     r"청구\s*금액\s*\(?원?\)?[^0-9자]{0,16}?([\d,]{4,})", "won"),
+    ("자기자본대비",
+     r"자기자본\s*대비\s*\(?%?\)?[^0-9대]{0,12}?"
+     r"(\d{1,3}(?:\.\d{1,2})?)(?![.)\d])", "pct"),
+    ("관할법원",
+     r"관할\s*법원[^가-힣]{0,12}?"
+     r"([가-힣 ]{2,20}?법원(?:\s*[가-힣]{1,6}지원)?)", "text"),
+    ("제기일",
+     r"제기\s*[ㆍ·]?\s*신청\s*일자[^0-9]{0,20}?"
+     r"(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})", "text"),
+]
+
+_LAWSUIT_RULING_FIELDS = [
+    ("사건",
+     r"사건의\s*명칭[^가-힣A-Za-z0-9]{0,20}?"
+     r"([가-힣A-Za-z0-9()ㆍ·,\- ]{2,60}?)\s*(?:사건\s*번호|\d{1,2}\.\s|$)", "text"),
+    ("사건번호",
+     r"사건\s*번호[^0-9]{0,20}?(\d{4}\s*[가-힣]{1,4}\s*\d{1,8})", "text"),
+    # ○(이름 마스킹)·콜론 포함 — 변경등기보류 가처분(디케이엠이) 류
+    # '채권자(신청인) : 최○○ ...' 본문 수용
+    ("판결",
+     r"판결\s*[ㆍ·]?\s*결정\s*내용[^가-힣A-Za-z0-9]{0,16}?"
+     r"([가-힣A-Za-z0-9()ㆍ·○●:,\- ]{2,70}?)\s*(?:\d{1,2}\.\s|\[|판결|$)", "text"),
+    # [주 문] 블록 첫 문장 (씨씨에스충북 — 내용 셀이 채권자/채무자/주문
+    # 구조일 때 판결 필드가 '채권자'에서 끊기는 보완, 미파싱-7)
+    ("주문",
+     r"\[\s*주\s*문\s*\][^가-힣]{0,8}?"
+     r"([가-힣A-Za-z0-9 .,·]{4,70}?)(?:\s*(?<![\d.])\d{1,2}\s*[.)]\s|\s*\[|$)", "text"),
+    # 금액 '-' 표기 시 인접 '자기자본(원)' 숫자를 오캡처하지 않게 '자' 차단
+    ("판결금액",
+     r"판결\s*[ㆍ·]?\s*결정\s*금액\s*\(?원?\)?[^0-9자]{0,16}?([\d,]{4,})", "won"),
+    # '-' 표기 시 '대기업여부' 를 건너 섹션번호('5.') 오캡처 금지 — '대' 차단
+    # + 값은 온전한 퍼센트 형태만((?![.)\d]) — '5.' 류 절번호 배제)
+    ("자기자본대비",
+     r"자기자본\s*대비\s*\(?%?\)?[^0-9대]{0,12}?"
+     r"(\d{1,3}(?:\.\d{1,2})?)(?![.)\d])", "pct"),
+    ("관할법원",
+     r"관할\s*법원[^가-힣]{0,12}?"
+     r"([가-힣 ]{2,20}?법원(?:\s*[가-힣]{1,6}지원)?)", "text"),
+    ("판결일",
+     r"판결\s*[ㆍ·]?\s*결정\s*일자[^0-9]{0,20}?"
+     r"(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})", "text"),
+]
+
+
+def _misc_mgmt_lines(txt: str) -> dict | None:
+    """기타경영사항(자율공시) 원문 → 소송성 내용이면 {lines, category:'소송'}.
+
+    제목은 catch-all('상장폐지결정 효력정지 가처분 신청' ~ '신규 브랜드
+    출시')이라 본문 파싱으로 판별 (사용자 2026-06-12 — 현대사료/세종메디칼
+    가처분 예시). 소송 마커([사건] 블록 또는 제목의 소송/가처분/판결/
+    효력정지) 없으면 None → 제목만 카드 유지(노이즈 차단). 순수(단위테스트)."""
+    def _grab(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    title = _grab(r"(?:\d{1,2}\s*\.\s*)?제목[^가-힣A-Za-z0-9]{0,12}?"
+                  r"([가-힣A-Za-z0-9()ㆍ·,\- ]{2,60}?)\s*(?:\d{1,2}\.\s|$)")
+    # [사건] 블록 또는 '사건명:' 콜론형 (미파싱-7 티에스넥스젠) — 값에
+    # [전자] 류 브래킷 허용
+    case = _grab(r"(?:\[\s*사건\s*\]|사건명\s*[::])[^가-힣0-9\[]{0,8}?"
+                 r"([가-힣A-Za-z0-9\[\] ]{4,60}?)\s*(?:채권자|\[채|$)")
+    if not case:
+        # 블록/콜론 없는 변형(캐스텍코리아 상고제기) — 본문 인라인
+        # '부산고등법원 2025나6026' 형태에서 법원+사건번호 추출
+        m = re.search(r"([가-힣]{2,8}(?:고등|지방)?법원)\s+"
+                      r"(\d{4}\s*[가-힣]{1,4}\s*\d{1,8})", txt)
+        if m:
+            case = f"{m.group(1)} {m.group(2)}"
+    lawsuit_kw = ("소송", "가처분", "판결", "효력정지", "소제기", "소 제기",
+                  "상고", "항소")
+    if not (case or (title and any(k in title for k in lawsuit_kw))):
+        return None
+    parts: list[str] = []
+    if title:
+        parts.append(f"제목: {title}")
+    if case:
+        parts.append(f"사건: {case}")
+    # [채권자] 블록형 + '채권자:' 콜론형 둘 다 (미파싱-7 티에스넥스젠)
+    cred = _grab(r"(?:\[\s*채권자\s*\]|채권자\s*[::])[^가-힣A-Za-z0-9]{0,8}?"
+                 r"([가-힣A-Za-z0-9()㈜○● ]{2,40}?)\s*(?:\[|채무자|\d{1,2}\.\s|$)")
+    debt = _grab(r"(?:\[\s*채무자\s*\]|채무자\s*[::])[^가-힣A-Za-z0-9]{0,8}?"
+                 r"([가-힣A-Za-z0-9()㈜○● ]{2,40}?)\s*(?:\[|\d{1,2}\.\s|$)")
+    pd_seg = " · ".join(x for x in (
+        f"채권자 {cred}" if cred else None,
+        f"채무자 {debt}" if debt else None) if x)
+    if pd_seg:
+        parts.append(pd_seg)
+    d = _grab(r"결정\s*\(?확인\)?\s*일자[^0-9]{0,16}?"
+              r"(\d{4}\s*[-./]\s*\d{1,2}\s*[-./]\s*\d{1,2})")
+    if d:
+        parts.append(f"접수(확인)일: {d}")
+    if len(parts) < 2:
+        return None
+    return {"lines": parts, "category": "소송"}
+
+
+def _extract_misc_mgmt(rcept_no: str, api_key: str) -> dict | None:
+    """기타경영사항(자율공시) — 원문 fetch 후 _misc_mgmt_lines. 소송성
+    아니면 None(12h 쿨다운으로 재시도 억제 — 내용은 안 바뀜)."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    out = _misc_mgmt_lines(txt)
+    if out is None:
+        _doc_fail_mark(rcept_no, hours=12.0)
+    return out
+
 
 def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
     """구조화 API 미커버 공시의 generic 원문 추출 — 라벨 매칭 최대 6줄.
@@ -696,16 +1714,22 @@ def _pct1(raw: str) -> str | None:
 
 
 def _correction_header(txt: str) -> str | None:
-    """[기재정정] 공통 — '정정(날짜): 사유' 헤더 라인. 없으면 None."""
+    """[기재정정] 공통 — '정정(날짜): 사유' 헤더 라인. 없으면 None.
+
+    표 헤더행('항목 정정사유 정정 전 정정 후') 인접 오캡처 가드 —
+    캡처값이 '정정 전/후'·'항목'·'관련 여부'면 다음 출현으로 skip
+    (미파싱-3 자기주식처분 정정·투자설명서 정정 surfaced)."""
     if "정정신고" not in txt and "정정사유" not in txt:
         return None
     d = re.search(r"정정일자\s*(\d{4}-\d{2}-\d{2})", txt)
-    r = re.search(r"정정사유\s*[:：]?\s*([가-힣A-Za-z0-9 ,.()·]{2,40}?)"
-                  r"\s*(?:\d\.|정정사항|정정관련|$)", txt)
-    if not r:
-        return None
     dd = f"({d.group(1)[2:]})" if d else ""
-    return f"정정{dd}: {r.group(1).strip()}"
+    for m in re.finditer(r"정정사유\s*[:：]?\s*([가-힣A-Za-z0-9 ,.()·]{2,40}?)"
+                         r"\s*(?:\d\.|정정사항|정정관련|$)", txt):
+        val = m.group(1).strip()
+        if re.search(r"정정\s*[전후]|항\s*목|관련\s*여부", val):
+            continue
+        return f"정정{dd}: {val}"
+    return None
 
 
 def _tok_amt(tok, mult):
@@ -1188,7 +2212,8 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
         return m.group(1).strip() if m else None
 
     parts: list[str] = []
-    _END = r"(?:\d{1,2}\.\s|계약금액|계약내역|계약기간|공시유보|시작일|비고|[A-Za-z0-9]{15,}|$)"
+    _END = (r"(?:\d{1,2}\.\s|계약금액|계약내역|계약기간|공시유보|시작일|비고"
+            r"|[-–]\s*회사와|[A-Za-z0-9]{15,}|$)")   # 유가 표준형 '- 회사와의 관계' 꼬리 컷
     _V = r"([가-힣A-Za-z0-9()\[\]_'‘’\"“”&.,·ㆍ㈜\- ]{2,80}?)"
 
     # 내용 — 라벨 3변형: 체결계약명(표준 상세형) / 구분+세부내용(자율공시
@@ -1203,6 +2228,11 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
     if not body:
         body = _grab(r"계약\s*내용[^가-힣A-Za-z0-9]{0,40}?" + _V + r"\s*" + _END)
     if body:
+        # 유가 표준형 '판매ㆍ공급계약 구분'(공사수주 등) 병기 — VLCC 예시
+        gu2 = _grab(r"공급계약\s*구분[^가-힣A-Za-z0-9]{0,10}?"
+                    r"([가-힣A-Za-z0-9 ]{2,20}?)\s*(?:[-–]|\d{1,2}\s*\.|체결계약명|$)")
+        if gu2 and gu2 not in body:
+            parts.append(f"구분: {gu2}")
         parts.append(f"계약: {body[:70]}")
 
     # 정정사항 표 = 라벨 뒤 (정정전, 정정후) 인접 숫자쌍 — 본문(라벨당 숫자
@@ -1286,7 +2316,18 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
     # 응답 구조가 달라 전용 처리: 보고자·지분율 변동(직전→현재, %p)·변동주식·
     # 보고사유. (프로텍·하이브 레퍼런스 카드 대응, 무료.)
     if "대량보유" in t:
-        return _extract_majorstock(rcept_no, corp_code, api_key)
+        r0 = _extract_majorstock(rcept_no, corp_code, api_key)
+        if r0:
+            return r0
+        # majorstock API 미매칭(일반서식 lag 등, 미파싱-7 웰크론) → 원문
+        # 요약정보 표 폴백 (발행회사/관계/직전→이번 비율/보고사유)
+        txt0 = _fetch_doc_text(rcept_no, api_key)
+        if txt0:
+            parts0 = _majorstock_doc_lines(txt0)
+            if len(parts0) >= 2:
+                return {"lines": parts0}
+            _doc_fail_mark(rcept_no, hours=2.0)
+        return None
     # 임원ㆍ주요주주 소유상황 — elestock 구조화 (지분공시 전체 파싱,
     # 사용자 2026-06-12). 옛 '대량보유만' 정책 폐기.
     if "소유상황" in t:
@@ -1306,6 +2347,10 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
     # 실패(None) 시 아래 구조화 API spec 폴백 (graceful).
     if "영업(잠정)실적" in t or "매출액또는손익구조" in t:
         doc = _parse_earnings_doc(rcept_no, api_key, t)
+        if not doc and "영업(잠정)실적" in t:
+            # 금액표 전부 '-' 인 월간 판매물량 변형 (도시가스 천톤/완성차
+            # 대수 — 2026-06-12 '파싱안된것들')
+            doc = _parse_volume(rcept_no, api_key)
         if doc:
             return doc
     elif "공급계약" in t or "단일판매" in t or "단일공급" in t:
@@ -1327,10 +2372,35 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         doc = _parse_buyback_result(rcept_no, api_key)
         if doc:
             return doc
+    elif ("자기주식" in t and "취득" in t and "신탁" not in t
+            and "처분" not in t):
+        # 표준 표 원문 우선 (미파싱-2 — 구조화 API 7일 윈도 밖이면 비던
+        # 케이스). 실패 시 아래 specs(tsstkAqDecsn) 경로로 폴스루.
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _BUYBACK_DOC_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "자기주식" in t and "처분" in t and "신탁" not in t:
+        # 처분 결정 표준 표 원문 우선 (미파싱-3) — 기재정정 래퍼의 stale
+        # 처분기간은 마지막 출현으로 보정. 실패 시 specs(tsstkDpDecsn) 폴스루.
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _disposal_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
     elif "주주명부폐쇄" in t or ("기준일" in t and "배당" in t):
         doc = _parse_div_record(rcept_no, api_key, t)
         if doc:
             return doc
+    elif "발행가액" in t:
+        # 신주 발행가액 안내 (미파싱-4) — 유상증자보다 먼저 (제목에 '유상
+        # 증자' 동반 가능, 발행가액 안내는 별개 양식이라 우선 라우팅).
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _issue_price_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
     elif "유상증자" in t or "유무상증자" in t:
         doc = _parse_rights_issue_doc(rcept_no, api_key, t)
         if doc:
@@ -1352,20 +2422,192 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         if doc:
             return doc
     elif "회사분할" in t or "분할합병" in t:
+        # 분할 철회 정정(미파싱-5) 우선 — 본문에 '철회' 있으면 철회+사유
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2 and "철회" in txt2:
+            parts: list[str] = []
+            corr = _correction_header(txt2)
+            if corr:
+                parts.append(corr)
+            kind = ("물적분할" if "물적분할" in txt2
+                    else ("인적분할" if "인적분할" in txt2 else "회사분할"))
+            parts.append(f"{kind} 철회")
+            mw = re.search(r"철회\s*사유[^가-힣A-Za-z0-9]{0,8}?"
+                           r"([가-힣A-Za-z0-9() .,]{4,80}?)\s*(?:\d\s*\.|향후|$)", txt2)
+            if mw:
+                parts.append(f"사유: {mw.group(1).strip()}")
+            if len(parts) >= 2:
+                return {"lines": parts}
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _SPLIT_COMPANY_FIELDS, min_fields=2)
         if doc:
             return doc
+    elif "종료보고서" in t and ("유형자산" in t or "양수도" in t
+                              or "양도" in t or "양수" in t):
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _asset_complete_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "회사합병" in t or ("합병" in t and "분할" not in t):
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _merger_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+        # 실패 시 아래 specs(cmpMgDecsn) 폴스루 (early return 안 함)
+    elif "영업양도" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _business_transfer_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+        # 실패 시 specs(bsnTrfDecsn) 폴스루
+    elif "확인서" in t:
+        # 정형 첨부(대표이사 확인서) — 수집되면 최소 파싱, 정책상 보통
+        # 기타→drop (흘러드는 경우만)
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _confirmation_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=24.0)
     elif "최대주주" in t and ("양수" in t or "양도" in t):
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _MAJOR_TRANSFER_FIELDS, min_fields=2)
         if doc:
             return doc
+    elif "특수관계인" in t and "담보" in t:
+        # 공정거래법 제26조 특수관계인 담보제공 (미파싱-4) — 백만원 단위·
+        # 거래상대방/채권자/담보물 구조가 주요사항보고서 담보와 달라 전용.
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _related_collateral_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
     elif "담보" in t:
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _COLLATERAL_FIELDS, min_fields=2)
         if doc:
             return doc
+    elif "감자" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _capital_reduction_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    # ── 소송 표준 양식 2종 + 기타경영사항 소송성 (사용자 2026-06-12 5예시) ──
+    elif "소송" in t:
+        doc = _extract_doc_fields(
+            rcept_no, api_key,
+            _LAWSUIT_RULING_FIELDS if ("판결" in t or "결정" in t)
+            else _LAWSUIT_FILED_FIELDS,
+            min_fields=2)
+        if doc:
+            return doc
+    elif "기타경영사항" in t:
+        return _extract_misc_mgmt(rcept_no, api_key)
+    # ── 리스크 9양식 (사용자 2026-06-12 '리스크 완료') ──
+    elif "정지해제" in t or ("거래정지" in t and "해제" in t):
+        # 주권매매거래정지해제 (미파싱-6) — 매매거래정지보다 먼저 (정지해제가
+        # '매매거래정지' substring 포함). 해제사유·일시.
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _suspension_release_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "매매거래정지" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _SUSPENSION_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "공개매수" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _tender_result_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "최대주주" in t and "변경" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _major_change_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "주식보유" in t and "변동" in t:
+        # 최대주주 등의 주식보유 변동 (공정거래법, 미파싱-6) — 지분율 희석/매집
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _major_holding_change_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "해산사유" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _DISSOLUTION_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "불성실공시" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _UNFAITHFUL_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    elif "회생절차" in t:
+        doc = _parse_rehab(rcept_no, api_key)
+        if doc:
+            return doc
+    elif "기타시장안내" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _MARKET_NOTICE_FIELDS, min_fields=1)
+        if doc:
+            return doc
+    elif "생산재개" in t or "생산중단" in t:
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _PRODUCTION_FIELDS, min_fields=2)
+        if doc:
+            return doc
+    # ── 조회공시/풍문·보도 해명 (사용자 2026-06-12 '이제 조회공시', 5예시) ──
+    elif "조회공시" in t or "풍문" in t or "해명" in t:
+        doc = _extract_inquiry(rcept_no, api_key)
+        if doc:
+            return doc
+    # ── 공정공시 변형 + 투자판단 (사용자 2026-06-12 '파싱안된것들') ──
+    elif "수시공시의무관련" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _fair_disclosure_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "장래사업" in t:
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _future_plan_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
+    elif "투자판단" in t or "기술이전" in t:
+        doc = _extract_material_mgmt(rcept_no, api_key)
+        if doc:
+            return doc
+    elif "자산보관" in t:
+        doc = _extract_custody(rcept_no, api_key)
+        if doc:
+            return doc
+    elif "투자설명서" in t:
+        # 펀드 정기갱신/운용역 변경 정정 (미파싱-3) — 수집 정책 변경 없음
+        # (피드에 이미 흘러드는 건만 파싱, keep 예외 추가 안 함 — 홍수 방지)
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _prospectus_corr_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts}
+            _doc_fail_mark(rcept_no, hours=12.0)
 
     specs: list[tuple[str, list]] = []
     if "영업(잠정)실적" in t or "매출액또는손익구조" in t:
@@ -1681,7 +2923,13 @@ def fetch_market_disclosures(target_date: date | None = None,
             rcept_dt = r.get("rcept_dt") or end_ds
 
             category = _classify_report(report_nm)
-            if skip_routine and category == "기타":
+            # 기타경영사항(자율공시)·투자판단 주요경영사항은 catch-all
+            # 제목이라 '기타'지만 수집 유지 — 본문 파싱으로 소송/계약 등
+            # 승격 (사용자 2026-06-12 현대사료 가처분/한미 기술이전 예시).
+            # 미승격분은 detail 없음 → 대시보드가 숨김(홍수 방지).
+            if (skip_routine and category == "기타"
+                    and not any(k in report_nm
+                                for k in ("기타경영사항", "투자판단"))):
                 _tally_drop(report_nm, stock_code)
                 continue
 
@@ -1713,9 +2961,10 @@ def fetch_market_disclosures(target_date: date | None = None,
 # 오색칠. 전부 ₩0·순수 판정(렌더타임, 과거 카드 소급).
 _PARSE_FORCE_KW = ("전환청구권", "주식분할", "주식병합", "액면분할", "액면병합",
                    "신규시설투자", "투자결정", "유형자산", "회사분할", "분할합병",
-                   "담보")
+                   "담보", "기타경영사항", "투자판단")
 _PARSE_CATS = ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
-               "자산양수도", "회사구조", "소송", "리스크")
+               "자산양수도", "회사구조", "소송", "리스크",
+               "조회공시")   # 2026-06-12 '이제 조회공시' — 요구/답변·해명 파싱
 # 자금조달 중 무료 구조화 소스·원문 파서가 없는 유형(제목만이 정상).
 _FUNDING_NO_PARSER = ("전환가액", "교환청구권", "단기차입금", "금전대여", "채무보증")
 
@@ -1741,6 +2990,29 @@ def is_parse_target(item: dict) -> bool:
             k in report_nm for k in _FUNDING_NO_PARSER):
         return False
     return True
+
+
+def _upgrade_category(item: dict) -> None:
+    """detail 로부터 결정적 카테고리 승격 — catch-all 제목(기타경영사항·
+    투자판단 주요경영사항)의 카드를 본문 기반으로 소송/계약 등으로 복원.
+    재fetch 사이클이 제목 기준 '기타'로 재분류해도 known-reuse 경로에서
+    복원 (멱등·순수)."""
+    try:
+        rn = item.get("report_nm", "")
+        det = [str(l) for l in (item.get("detail") or [])]
+        if "기타경영사항" in rn and item.get("category") != "소송":
+            if any(l.startswith("사건:") for l in det) or any(
+                    k in l for l in det if l.startswith("제목:")
+                    for k in ("소송", "가처분", "판결", "효력정지")):
+                item["category"] = "소송"
+            return
+        if "투자판단" in rn and item.get("category") in ("기타", "", None):
+            tl = next((l for l in det if l.startswith("제목:")), "")
+            cat = _material_title_category(tl)
+            if cat:
+                item["category"] = cat
+    except Exception:
+        pass
 
 
 def _sig_pct(detail: list, label_pat: str) -> float | None:
@@ -1769,12 +3041,24 @@ def significance(item: dict, shares_outstanding: float | None = None) -> str | N
     4. 자기주식취득결정 발행주식 3%↑ (기재정정 제외, shares 필요)
     5. 신규시설투자 자기자본대비 20%↑
     6. 지분공시(대량보유) 신규 5%↑ (직전<5%≤현재)
+    7. 상장폐지 관련 (사용자 2026-06-12 '중요에 상장폐지도') — 제목 또는
+       파싱된 제목/사건 라인에 상장폐지 (효력정지 가처분 포함)
     """
     rn = item.get("report_nm", "")
     cat = item.get("category", "")
     detail = item.get("detail") or []
     correction = "정정" in rn   # [기재정정] 등
 
+    # 7 — 상장폐지 (최우선: 생존 이벤트). 발화 라인 화이트리스트 —
+    # 제목/사건(소송·자율공시) + 사유/해제·만료/결론(매매거래정지·
+    # 기타시장안내) — '비고: 상장폐지 아님' 류 자유 서술 오발 차단.
+    # '실질심사'(상장적격성 실질심사 대상 = 상폐 전단계)도 포함 (리스크-2).
+    if ("상장폐지" in rn or "실질심사" in rn or any(
+            ("상장폐지" in s or "실질심사" in s)
+            for dl in detail
+            if (s := str(dl)).startswith(("제목:", "사건:", "사유:",
+                                          "해제·만료:", "결론:")))):
+        return "상장폐지 관련"
     # 1
     if "매출액또는손익구조" in rn and not correction:
         return "손익구조 30%↑ 변동"
@@ -1896,6 +3180,7 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
 
         if rcept_no and rcept_no in known:
             item["detail"] = known[rcept_no]
+            _upgrade_category(item)   # 재fetch 가 '기타'로 재분류한 소송성 복원
             continue
 
         # 파싱 대상 판정 = is_parse_target (대시보드 미파싱 색칠과 단일 소스,
@@ -1923,6 +3208,9 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
                 sc = item.get("stock_code", "")
                 if lines:
                     item["detail"] = lines
+                    nc = detail.get("category") if isinstance(detail, dict) else None
+                    if nc:
+                        item["category"] = nc   # 기타경영사항 소송성 → 소송 승격
                     enriched += 1
                     ok_list.append(f"{item.get('corp_name','?')}({rcept_no})")
                 elif rcept_no:
@@ -2223,6 +3511,112 @@ def backfill_v3_once_if_needed() -> dict | None:
     try:
         _BACKFILL_MARKER_V3.parent.mkdir(parents=True, exist_ok=True)
         _BACKFILL_MARKER_V3.write_text(datetime.now(_KST).isoformat())
+    except OSError:
+        pass
+    return stats
+
+
+# ── v4 — 파싱 배치(2026-06-12, 37+양식) 소급 적용 백필 ─────────────────────
+# 사용자 '백필 시간이 많이 드니 잘 생각해서' — 3유형을 비용별로 분리:
+#  ① 파서 '변경' 유형(계약 보강·자사주 doc-first): 기존 detail 을 새 파서로
+#     재추출하되 **성공 시에만 교체** (실패=옛 detail 유지 → 데이터 손실 0,
+#     doc_fail 오염 0). 대상 좁음(키워드 4종) → 수 분.
+#  ② 파서 '신설' 유형(소송·리스크·조회공시·공정공시·확인서…): 과거 시도가
+#     doc_fail negative-cache 에 고착 → 캐시 클리어만 하면 run_once 의
+#     14일 대기열(detail 부재분)이 8건/분으로 자연 드레인 (~1-2시간).
+#  ③ '수집 자체가 안 되던' 유형(기타경영사항·투자판단 — keep 예외 신설):
+#     당월 재fetch 로 과거 날짜分 수집(+전체 재분류) → ②의 대기열로 합류.
+# 전부 ₩0 (DART 무료·LLM 0)·일일 콜버짓 가드.
+
+_BACKFILL_MARKER_V4 = _ARCHIVE_DIR.parent / ".dart_feed_backfilled_v4"
+
+# ①의 대상 — 이번 배치에서 출력이 '변경'된 파서의 제목 키워드만 (신설
+# 파서 유형은 detail 부재 → ②가 담당, 여기 나열 금지: 전수 재추출은
+# 콜 낭비 + 시간).
+_V4_REPARSE_KW = ("공급계약", "단일판매",            # 계약 보강(구분 병기·꼬리 컷)
+                  "자기주식취득결정", "자기주식처분결정")  # doc-first 전환(필드 확장)
+
+
+def clear_doc_fail_cache() -> int:
+    """doc_fail negative-cache 전체 클리어 — 신설 파서 유형의 과거 실패분
+    (12~24h 고착)이 즉시 재시도 가능해짐. 클리어 건수 반환."""
+    try:
+        n = len(_doc_fail_load())
+        _DOC_FAIL.unlink(missing_ok=True)
+        if n:
+            log.info("dart_feed v4: doc_fail 캐시 %d건 클리어", n)
+        return n
+    except Exception:
+        return 0
+
+
+def reparse_details(days_back: int = 30,
+                    kw: tuple = _V4_REPARSE_KW) -> dict:
+    """파서가 변경된 유형의 기존 detail 재추출 — enrich 의 known-reuse 가
+    옛 출력으로 고정(idempotent 가드)하는 것을 푸는 1회 경로.
+
+    성공 시에만 교체: 새 파서가 옛 양식 변형에 실패해도 옛 detail 유지
+    (제목만 카드로 퇴행 0), doc_fail 마킹 안 함(다음 정규 사이클 오염 0)."""
+    stats = {"checked": 0, "replaced": 0, "kept": 0}
+    api_key = _dart_api_key()
+    if not api_key:
+        return stats
+    for ds, items in load_all_archives(days_back=days_back).items():
+        changed = False
+        for it in items:
+            rn = it.get("report_nm", "")
+            if not it.get("detail") or not any(k in rn for k in kw):
+                continue
+            if _budget_today() >= _BUDGET_HARD - 500:
+                log.warning("dart_feed v4 reparse: 콜버짓 헤드룸 도달 — 중단"
+                            " (남은 항목은 옛 detail 유지)")
+                break
+            stats["checked"] += 1
+            _budget_add(2)
+            time.sleep(0.15)
+            try:
+                detail = _extract_detail(rn, str(it.get("rcept_no", "")),
+                                         it.get("corp_code", ""), api_key)
+                lines = list(detail.get("lines", [])) if detail else []
+                if lines and lines != it.get("detail"):
+                    it["detail"] = lines
+                    nc = (detail.get("category")
+                          if isinstance(detail, dict) else None)
+                    if nc:
+                        it["category"] = nc
+                    stats["replaced"] += 1
+                    changed = True
+                else:
+                    stats["kept"] += 1
+            except Exception as exc:
+                stats["kept"] += 1
+                log.debug("dart_feed v4 reparse %s 실패(옛 detail 유지): %s",
+                          it.get("rcept_no", "?"), exc)
+        if changed:
+            try:
+                save_archive(datetime.strptime(ds, "%Y-%m-%d").date(), items)
+            except Exception as exc:
+                log.warning("dart_feed v4 reparse save %s: %s", ds, exc)
+    log.info("dart_feed v4 reparse: 검사 %d · 교체 %d · 유지 %d",
+             stats["checked"], stats["replaced"], stats["kept"])
+    return stats
+
+
+def backfill_v4_once_if_needed() -> dict | None:
+    """v4 1회 백필 (marker gate) — 위 ①②③ 순서로 실행, 통계 반환."""
+    if _BACKFILL_MARKER_V4.exists():
+        return None
+    today = datetime.now(_KST).date()
+    month_start = today.replace(day=1)
+    stats: dict = {"doc_fail_cleared": clear_doc_fail_cache()}   # ②
+    stats["reparse"] = reparse_details(days_back=30)             # ①
+    st = backfill_with_new_rules(                                # ③
+        days_back=(today - month_start).days)
+    stats.update({k: st.get(k, 0)
+                  for k in ("reclassified", "added", "days")})
+    try:
+        _BACKFILL_MARKER_V4.parent.mkdir(parents=True, exist_ok=True)
+        _BACKFILL_MARKER_V4.write_text(datetime.now(_KST).isoformat())
     except OSError:
         pass
     return stats

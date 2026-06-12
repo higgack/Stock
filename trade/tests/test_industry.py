@@ -258,6 +258,27 @@ class StoreRenderTests(unittest.TestCase):
         self.assertIn("초고성장", html)               # classified hot (YoY huge)
         self.assertIn("<svg", html)
 
+    def test_motie_banner_factored_and_optional(self):
+        # 대시보드 순서 변경(2026-06-12): motie 배너 분리 — motie=False 면
+        # 본문 제외(대시보드가 구분선 밑에 별도 삽입), 기본 True(아카이브).
+        b = industry.motie_banner()
+        self.assertIn("더 빠른 잠정치", b)
+        by = {"반도체": self._series_25mo(11_000_000_000, 31_000_000_000)}
+        self.assertNotIn("ind-motie", industry.render_industry_html(by, motie=False))
+        self.assertIn("ind-motie", industry.render_industry_html(by))
+
+    def test_dashboard_zone_order_and_emphasis(self):
+        # 구분선 → motie → 월별 아카이브 순서 + 강조 pill + auto-update
+        # 트리거 trade/*.py 확대 (stale dashboard-server 클래스 차단)
+        src = open("trade/dashboard.py", encoding="utf-8").read()
+        i = src.index("zone_div + industry.motie_banner()")
+        self.assertIn("archive_link", src[i:i + 120])
+        self.assertIn("motie=False", src)
+        self.assertIn("1.5px solid var(--accent)", src)
+        sh = open("deploy/trade-auto-update.sh", encoding="utf-8").read()
+        self.assertIn("^trade/[^/]+\\.py$", sh.replace("\\", "\\"))
+        self.assertIn("trade/[^/]+", sh)
+
     def test_motie_provisional_link_banner(self):
         # 산업부 잠정 보도자료 '링크 배너' — 데이터는 안 긁고 원문 링크만, 산업 집계와 분리
         by = {"반도체": self._series_13mo(11_000_000_000, 31_000_000_000)}

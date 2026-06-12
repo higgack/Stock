@@ -457,9 +457,29 @@ pattern to follow:
   only 폐기. elestock 100% 비율 환각 가드 유지, 소유상황 카드는 detail
   파싱된 것만 대시보드 노출 — 제목만 홍수 방지). 감사보고서 등 generic
   '보고서' 분류분은 구조화 소스 없어 제목만이 정상. 나머지 카테고리
-  정밀화는 사용자가 순차 지시할 때만 변경. 🔥 중요 6규칙 중 소각·자사주
+  정밀화는 사용자가 순차 지시할 때만 변경. 🔥 중요 7규칙 중 소각·자사주
   취득은 **발행주식 3%↑만** 발화(사용자 2026-06-12, 신도기연 1.21% 류
-  미발화).
+  미발화), 상장폐지·실질심사는 항상 발화.
+  **파싱 배치 완료 (2026-06-12, 사용자 예시 ~37양식 12묶음 — '이제 파싱
+  예제는 다 끝났어')**: 소송(제기/판결 + 기타경영사항 소송성 승격) ·
+  리스크(거래정지/해제·불성실·실질심사·해산·회생·생산중단/재개·SPAC상폐)
+  · 조회공시(요구/풍문해명/시황답변 — ' : ' 구분자·'오후 12:00까지' 시한
+  변형 포함) · 공정공시(물량형 잠정실적·수시·장래계획) · 투자판단(제목
+  기반 카테고리 승격) · 확인서/종료보고서/자산보관/투자설명서정정/특수
+  관계인담보/감자/발행가액/합병/영업양수도/분할철회/최대주주변경/공개
+  매수결과/대량보유 doc 폴백 등 — 전부 순수 `_*_lines(txt)` + 회귀
+  테스트. **카드 UI**: 🔥 중요(금색)/⚠️ 미파싱(파랑 점선) 색 구분 +
+  카테고리와 **동시선택 필터**(AND 결합). `is_parse_target` = enrich·
+  대시보드 단일 소스. **백필 v4**(`backfill_v4_once_if_needed`, marker
+  `.dart_feed_backfilled_v4`, startup 1회): ①변경 파서(계약·자사주
+  취득/처분)의 기존 detail 재추출 — **성공 시에만 교체**(실패=옛 detail
+  유지·doc_fail 오염 0) ②doc_fail 캐시 클리어(신설 파서의 과거 실패분
+  즉시 재시도 → run_once 14일 대기열이 8건/분 자연 드레인) ③당월
+  재fetch(기타경영사항·투자판단 keep 신설분 소급 수집 + 전체 재분류).
+  파서 작성 시 재사용할 클래스: 정정 래퍼 stale-value 는 findall[-1]
+  (마지막 출현), 라벨-값 gap 은 greedy(이중 콜론 차단), 압축표기 stop
+  은 `\d{1,2}\s*\.`(뒤 공백 불요), 날짜 vs 항번호 구분은 lookahead
+  `(?=[가-힣(])`, 머리말 오캡처는 번호 라벨 필수로 차단.
 - Journal log size → `SystemMaxUse=500M` in `journald.conf` (auto-trim)
 - Standard View code updates → `sv-update.service` polls git every 1 min, rsyncs `standardview/scripts` + `standardview/backend` into live tree, restarts backend if changed, defers when daily_generator is running. Same pattern as `stock-bot-update`.
 - Standard View cache rollover → `sv-cache-rollover.service` runs 00:05 KST daily, flushes `macro_news_cache` so the first news-brief call of the new date regenerates from scratch (fixes the 2026-05-21 midnight stub-cache bug).

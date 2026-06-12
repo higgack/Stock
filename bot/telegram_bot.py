@@ -1125,7 +1125,7 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·레딧·Daily Byte·📝블로그(글 요약+원문 아카이브)·부동산·청약·수출입)는 🌍Main nav, 워치·도메인목록은 Screener nav 에서
- 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(7일치·한국 기업/산업/전략(네이버)+미국TP) · 관심종목(시총·PER(적자표시)·EPS FY라벨·등락·정렬/필터/순서) · 📋DART공시(18종 구조화 카드·🔥중요/⚠️미파싱 색상·조회공시/공개매수/부도·생산중단 등 리스크 수집·지분 노이즈컷) · 업종등락(KR테마·상한가 + 미국TOP10→업종별시세·신고저 전량) · 종목검색(헤더→탭→차트 즉시) · 1분 갱신
+ 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한국yfinance+미국Finnhub) · 리서치액션(7일치·한국 기업/산업/전략(네이버)+미국TP) · 관심종목(시총·PER(적자표시)·EPS FY라벨·등락·정렬/필터/순서) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 동시필터·소송/리스크/조회공시/공정공시/자율공시 파싱·지분 노이즈컷) · 업종등락(KR테마·상한가 + 미국TOP10→업종별시세·신고저 전량) · 종목검색(헤더→탭→차트 즉시) · 1분 갱신
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️ · <b>분석버튼</b>(종목 분석) · 입력창 <b>'/' 명령</b>(/usage·/portfolio·/watch·/screener 등 텔레그램 명령을 대시보드에서 실행→결과 패널)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/index.html
@@ -3510,6 +3510,23 @@ async def _on_startup(application) -> None:
                              st["added"], st.get("warmed", 0))
             except Exception as exc:
                 log.warning("startup: DART backfill v3 failed: %s", exc)
+            # v4 파싱 배치(2026-06-12) 소급 — ①변경 파서 재추출(성공시만
+            # 교체) ②doc_fail 클리어(신설 파서 재시도) ③당월 재fetch
+            # (기타경영사항·투자판단 keep 신설분). marker gate · ₩0.
+            try:
+                from bot.dart_feed import backfill_v4_once_if_needed
+                st4 = backfill_v4_once_if_needed()
+                if st4:
+                    from bot.dashboard import regenerate_dart_feed_index as _rg3
+                    _rg3()
+                    rp = st4.get("reparse", {})
+                    log.info("startup: DART backfill v4 — doc_fail %d 클리어"
+                             " · 재추출 %d/%d 교체 · 재분류 %d · 신규 %d",
+                             st4.get("doc_fail_cleared", 0),
+                             rp.get("replaced", 0), rp.get("checked", 0),
+                             st4.get("reclassified", 0), st4.get("added", 0))
+            except Exception as exc:
+                log.warning("startup: DART backfill v4 failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:

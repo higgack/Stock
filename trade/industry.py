@@ -1168,10 +1168,24 @@ def _intra_views(series: dict[str, list[dict]], by_mti: dict[str, dict] | None) 
             f"<div class='ind-deriv-grid'>{boxes}</div>")
 
 
+def motie_banner() -> str:
+    """📋 산업부 잠정 원문 링크 배너 — 더 빠른 공식 잠정(매월 1일, 산업부
+    20대 품목) 안내. 대시보드는 구분선 바로 밑에 별도 배치(사용자
+    2026-06-12 순서 변경), 아카이브 스냅샷은 본문 내 기본 위치 유지."""
+    return (
+        "<div class='ind-motie'>📋 <b>더 빠른 잠정치</b>(매월 1일·산업부 20대 품목)는 "
+        f"<a href='{_MOTIE_URL}' target='_blank' rel='noopener'>산업부 수출입동향 원문 →</a>"
+        "<span class='ind-motie-note'> · 본 산업트렌드는 관세청 월간 통계 기준 — "
+        "익월 초 잠정 적재 → ~15일 확정 정제 자동 반영</span>"
+        "</div>"
+    )
+
+
 def render_industry_html(by_industry: dict[str, dict[str, int]],
                          by_import: dict[str, dict[str, int]] | None = None,
                          by_mti: dict[str, dict] | None = None,
-                         by_mti_import: dict[str, dict] | None = None) -> str:
+                         by_mti_import: dict[str, dict] | None = None,
+                         motie: bool = True) -> str:
     """Full 산업트렌드 panel: summary board (+ 수입 급증 신호 with per-MTI
     driver) + cards grouped by classification. Returns '' when no data."""
     global _import_series, _import_mti_series, _import_mti_industry, _import_mti_name
@@ -1225,17 +1239,10 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
         "<span><i class='ind-lg-m'></i>12M MA</span></div>"
         "</div>"
     )
-    # 📋 산업부 잠정 원문 링크 배너 — 더 빠른 공식 잠정(매월 1일, 산업부
-    # 20대 품목) 안내. 본 산업트렌드는 1일경 잠정 적재 + 15일 확정 정제
-    # 두 단계를 모두 반영 (사용자 2026-06-12 동의 — 옛 '확정 기준' 단정
-    # 문구 정정).
-    out.append(
-        "<div class='ind-motie'>📋 <b>더 빠른 잠정치</b>(매월 1일·산업부 20대 품목)는 "
-        f"<a href='{_MOTIE_URL}' target='_blank' rel='noopener'>산업부 수출입동향 원문 →</a>"
-        "<span class='ind-motie-note'> · 본 산업트렌드는 관세청 월간 통계 기준 — "
-        "익월 초 잠정 적재 → ~15일 확정 정제 자동 반영</span>"
-        "</div>"
-    )
+    # 📋 산업부 잠정 원문 배너 — 대시보드는 motie=False 로 받고 구분선
+    # 바로 밑에 별도 삽입(사용자 2026-06-12 순서), 아카이브는 기본 유지.
+    if motie:
+        out.append(motie_banner())
     # A: summary board (분류·미분 칩 보드) — mirrors reference header
     out.append(_summary_board(series))
     out.append(_intra_views(series, by_mti))

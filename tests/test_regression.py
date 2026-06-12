@@ -4776,6 +4776,946 @@ class TestHighlowFullUsAndCapWeight:
         assert "highlow.json" in written
 
 
+class TestDartLawsuitParsing:
+    """소송 파싱 (사용자 2026-06-12, 10예시 제공 — 표준 제기·신청/판결·결정
+    + 기타경영사항(자율공시) 소송성 승격) + 🔥 상장폐지 규칙."""
+
+    @staticmethod
+    def _run(fields, txt):
+        import re
+        out = {}
+        for lbl, pat, kind in fields:
+            m = re.search(pat, txt)
+            if m:
+                out[lbl] = m.group(1).strip()
+        return out
+
+    def test_ruling_form_wemade(self):
+        # 판결·결정(일정금액): 금액 '-' 시 자기자본/섹션번호 오캡처 금지
+        from bot.dart_feed import _LAWSUIT_RULING_FIELDS
+        txt = ("1. 사건의 명칭 약정금 등 청구의 소 사건번호 2021가합570045 "
+               "2. 원고ㆍ신청인 주위적 원고: (주)전기아이피 피고 : (주)액토즈소프트 "
+               "3. 판결ㆍ결정내용 원고측의 소 취하로 소송 종결 "
+               "4. 판결ㆍ결정금액 판결ㆍ결정금액(원) - 자기자본(원) 151,321,806,607 "
+               "자기자본대비(%) - 대기업여부 해당 5. 판결ㆍ결정사유 원고측의 소 취하 "
+               "6. 관할법원 서울중앙지방법원 8. 판결ㆍ결정일자 2026-06-12")
+        o = self._run(_LAWSUIT_RULING_FIELDS, txt)
+        assert o["사건"] == "약정금 등 청구의 소"
+        assert o["판결"] == "원고측의 소 취하로 소송 종결"
+        assert "판결금액" not in o and "자기자본대비" not in o
+        assert o["관할법원"] == "서울중앙지방법원"
+
+    def test_filed_form_amount_and_branch_court(self):
+        # 제기·신청(일정금액): 취지 라벨 없는 청구내용 + 청구금액 + 지원 법원
+        from bot.dart_feed import _LAWSUIT_FILED_FIELDS
+        txt = ("1. 사건의 명칭 부당이득금 사건번호 2026가합1352 "
+               "2. 원고ㆍ신청인 주식회사 머큐리에프엠 "
+               "3. 청구내용 1. 피고는 원고에게 6,100,000,000원 및 이에 대하여 "
+               "이 사건 소장부본 송달일 다음날부터 다 갚는 날까지는 연 12%의 비율로 계산된 돈을 지급하라. "
+               "2. 소송비용은 피고가 부담한다 "
+               "4. 청구금액 청구금액(원) 6,100,000,000 자기자본(원) 62,375,819,359 "
+               "자기자본대비(%) 9.7 대기업여부 미해당 5. 관할법원 수원지방법원 성남지원 "
+               "7. 제기ㆍ신청일자 2026-05-20")
+        o = self._run(_LAWSUIT_FILED_FIELDS, txt)
+        assert o["사건"] == "부당이득금"
+        assert o["취지"].startswith("피고는 원고에게 6,100,000,000원")
+        assert o["청구금액"] == "6,100,000,000" and o["자기자본대비"] == "9.7"
+        assert o["관할법원"] == "수원지방법원 성남지원"
+        assert "피고" not in o   # 산문 '피고가 부담한다' 조사 오캡처 차단
+
+    def test_filed_form_governance(self):
+        from bot.dart_feed import _LAWSUIT_FILED_FIELDS
+        txt = ("1. 사건의 명칭 주주총회결의취소 청구의 소 사건번호 2026가합1678 "
+               "2. 원고(신청인 ) 1)얼라인파트너스자산운용 주식회사 2)삼성증권 주식회사 "
+               "3. 청구내용 [청구취지] 1. 피고가 별지 목록 기재 주주총회에서 한 별지 목록 기재 "
+               "결의 사항에 대한 결의를 취소한다. 2. 소송비용은 피고가 부담한다. "
+               "4. 관할법원 수원지방법원 6. 제기ㆍ신청일자 2026-05-22")
+        o = self._run(_LAWSUIT_FILED_FIELDS, txt)
+        assert o["원고"].startswith("1)얼라인파트너스자산운용")
+        assert o["취지"].endswith("결의를 취소한다.")
+        assert o["제기일"] == "2026-05-22"
+
+    def test_misc_mgmt_lawsuit_upgrade(self):
+        # 기타경영사항(자율공시) — [사건] 블록(현대사료) / 인라인 법원+사건번호
+        # (캐스텍코리아 상고) → 소송 승격, 비소송 PR 류 → None
+        from bot.dart_feed import _misc_mgmt_lines
+        s4 = ("기타 경영사항(자율공시) 1. 제목 상장폐지결정 효력정지 가처분 신청 "
+              "2. 주요내용 회사는 서울남부지방법원에 가처분 신청을 하였으며, "
+              "[사건] 2026카합1399 상장폐지결정 효력정지 가처분 "
+              "[채권자] 현대사료 주식회사 [채무자] 주식회사 한국거래소 "
+              "3. 결정(확인)일자 2026-06-12")
+        r = _misc_mgmt_lines(s4)
+        assert r["category"] == "소송"
+        assert any("채권자 현대사료 주식회사" in l and "채무자 주식회사 한국거래소" in l
+                   for l in r["lines"])
+        s7 = ("기타 경영사항(자율공시) 1. 제목 주주총회결의무효확인등 소송 판결에 대한 상고제기 "
+              "2. 주요내용 부산고등법원 2025나6026 주주총회결의무효확인등 사건에 관하여 "
+              "상고를 제기한 건입니다. 3. 결정(확인)일자 2026-06-05")
+        r7 = _misc_mgmt_lines(s7)
+        assert r7 and any("부산고등법원 2025나6026" in l for l in r7["lines"])
+        assert _misc_mgmt_lines(
+            "기타 경영사항(자율공시) 1. 제목 신규 브랜드 출시 안내 "
+            "2. 주요내용 당사는 신규 브랜드를 출시합니다. 3. 결정(확인)일자 2026-06-12") is None
+
+    def test_significance_delisting(self):
+        # 🔥 규칙 7 — 상장폐지 (제목 또는 파싱된 제목/사건 라인)
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "상장폐지",
+                             "category": "리스크"}) == "상장폐지 관련"
+        assert significance({"report_nm": "기타경영사항(자율공시)", "category": "소송",
+                             "detail": ["제목: 상장폐지결정 효력정지 가처분 신청"]}
+                            ) == "상장폐지 관련"
+        # 본문 외 라인의 단어만으로는 미발화 (제목:/사건: 라인 한정)
+        assert significance({"report_nm": "기타공시", "category": "기타",
+                             "detail": ["비고: 상장폐지 아님"]}) is None
+
+    def test_wiring_misc_mgmt_collected_and_upgraded(self):
+        # fetch 가 기타경영사항을 routine-drop 에서 제외 + enrich 카테고리 승격
+        # + known-reuse 경로 복원 + 대시보드 detail-less 숨김
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        # fetch keep 예외 — 투자판단 추가로 any(...) 형태 (2026-06-12)
+        assert '"기타경영사항", "투자판단"' in src
+        assert "_upgrade_category(item)" in src
+        assert 'item["category"] = nc' in src
+        dsrc = open("bot/dashboard.py", encoding="utf-8").read()
+        assert '"기타경영사항" in rn' in dsrc
+
+
+class TestDartRiskParsing:
+    """리스크 파싱 (사용자 2026-06-12 '리스크 완료', 9예시) — 매매거래정지
+    2형 / 해산사유 / 불성실공시 지정·예고 / 기타시장안내 / 회생절차."""
+
+    @staticmethod
+    def _run(fields, txt):
+        import re
+        out = {}
+        for lbl, pat, kind in fields:
+            m = re.search(pat, txt)
+            if m:
+                out[lbl] = m.group(1).strip()
+        return out
+
+    def test_suspension_important_disclosure_form(self):
+        # 중요내용공시 30분 정지 (엠앤씨솔루션) — 날짜+시각
+        from bot.dart_feed import _SUSPENSION_FIELDS
+        txt = ("3. 매매거래정지 일시 2026-06-12 11:06 4. 매매거래정지 해제일시 "
+               "2026-06-12 11:36 5. 매매거래정지 사유 무상증자(10%이상) 6. 근거")
+        o = self._run(_SUSPENSION_FIELDS, txt)
+        assert o["정지"] == "2026-06-12 11:06"
+        assert o["해제·만료"] == "2026-06-12 11:36"
+        assert o["사유"] == "무상증자(10%이상)"
+
+    def test_suspension_freetext_expiry_and_compact_numbering(self):
+        # 주권매매거래정지 — '3.정지기간' 압축 표기 + 만료=자유 텍스트
+        from bot.dart_feed import _SUSPENSION_FIELDS, significance
+        txt = ("주권매매거래정지 1.대상종목 현대사료(주) 보통주 2.정지사유 투자자 보호 "
+               "3.정지기간 가.정지일시 2026-06-15 - 나.만료일시 상장폐지결정 등 "
+               "효력정지 가처분신청에 대한 법원의 결정 확인시까지 4.근거규정 코스닥시장업무규정")
+        o = self._run(_SUSPENSION_FIELDS, txt)
+        assert o["사유"] == "투자자 보호"
+        assert o["해제·만료"].endswith("법원의 결정 확인시까지")
+        # 🔥 상장폐지 — 만료 라인으로 발화 (규칙 7 화이트리스트 확장)
+        assert significance({"report_nm": "주권매매거래정지", "category": "리스크",
+                             "detail": [f"사유: {o['사유']}",
+                                        f"해제·만료: {o['해제·만료']}"]}
+                            ) == "상장폐지 관련"
+
+    def test_suspension_merge_variant_with_note(self):
+        from bot.dart_feed import _SUSPENSION_FIELDS
+        txt = ("1.대상종목 (주)디에이치오토웨어 보통주 2.정지사유 주식의 병합, 분할 등 "
+               "전자등록 변경, 말소 3.정지기간 가.정지일시 2026-06-15 - "
+               "나.만료일시 신주권 변경상장일 전일까지 4.근거규정 코스닥 5.기타 사유 : 주식병합")
+        o = self._run(_SUSPENSION_FIELDS, txt)
+        assert o["해제·만료"] == "신주권 변경상장일 전일까지"
+        assert o["비고"] == "주식병합"
+
+    def test_dissolution_form(self):
+        # 해산사유 발생 — 문서 제목 '해산사유 발생'의 '발생' 오캡처 차단 +
+        # 한글 날짜
+        from bot.dart_feed import _DISSOLUTION_FIELDS
+        txt = ("해산사유 발생 1. 해산사유 유동화사채의 상환 완료 2. 해산내용 "
+               "회사의 정관에 의한 해산사유 발생 3. 해산사유발생일(결정일) 2026년 04월 28일")
+        o = self._run(_DISSOLUTION_FIELDS, txt)
+        assert o["해산사유"] == "유동화사채의 상환 완료"
+        assert o["발생일"] == "2026년 04월 28일"
+
+    def test_unfaithful_designation_and_advance_notice(self):
+        from bot.dart_feed import _UNFAITHFUL_FIELDS
+        d = self._run(_UNFAITHFUL_FIELDS, (
+            "2. 불성실공시 유형 공시변경 3. 불성실공시 내용 유상증자결정('26.03.26) "
+            "내용 중 발행주식수 및 발행금액의 20% 이상 변경('26.04.17) "
+            "4. 지정ㆍ부과일자 2026-06-15 5. 부과벌점 현황 부과벌점 0 기 부과벌점 0 "
+            "누계벌점 0 6. 공시위반제재금(원) 8,000,000 7. 공시책임자"))
+        assert d["유형"] == "공시변경" and d["제재금"] == "8,000,000"
+        assert d["벌점"] == "0" and d["지정일"] == "2026-06-15"
+        n = self._run(_UNFAITHFUL_FIELDS, (
+            "불성실공시 유형 공시번복 내용 유상증자결정(제3자배정 ) 철회 원공시일 "
+            "2025-04-15 공시일 2026-05-12 지정예고일 2026-06-11 "
+            "2. 불성실공시법인지정여부 결정시한 2026-07-06 "
+            "3. 최근 1년간 불성실공시법인 부과벌점 5.0"))
+        assert n["유형"] == "공시번복" and n["벌점"] == "5.0"
+        assert n["지정예고일"] == "2026-06-11" and n["결정시한"] == "2026-07-06"
+
+    def test_market_notice_delisting_conclusion(self):
+        from bot.dart_feed import _MARKET_NOTICE_FIELDS, significance
+        txt = ("기타시장안내 제목 :현대사료(주)에 대한 코스닥시장위원회 개최 결과 및 "
+               "상장폐지 결정 안내 '25.08.04 코스닥시장위원회는 상장폐지를 결정한 바 있으며, "
+               "동사 주권에 대해 상장폐지 여부를 심의한 결과, 상장폐지로 의결하였습니다.")
+        o = self._run(_MARKET_NOTICE_FIELDS, txt)
+        assert o["제목"].startswith("현대사료(주)")
+        assert "상장폐지로 의결하였습니다" in o["결론"]
+        assert significance({"report_nm": "기타시장안내", "category": "리스크",
+                             "detail": [f"결론: {o['결론']}"]}) == "상장폐지 관련"
+
+    def test_rehab_lines_last_deadline_wins(self):
+        # 회생절차 — 정정 래퍼(정정전 stale)가 앞이라 제출기한은 마지막 출현
+        # + 목록/신고기간을 제출기한으로 오캡처 안 함(회생계획안 앵커)
+        from bot.dart_feed import _rehab_lines
+        txt = ("정정신고(보고) 정정일자 2026-06-10 3. 정정사유 회생계획안 제출기간 연장 "
+               "[결정문 내용] 6. 회생계획안의 제출기간을 2026. 6. 16.까지로 한다. "
+               "[결정문 내용] 6. 회생계획안의 제출기간을 2026. 7. 14.까지로 한다. "
+               "회생절차 개시결정 1. 사건번호 2025회합196 회생 2. 결정일자 2025-09-30 "
+               "3. 관할법원 수원회생법원 5. 관리인 성명(회사와의 관계 ) 백서현(대표이사) "
+               "6. 확인(결정서접수 )일자 2025-09-30 "
+               "3. 회생채권자, 회생담보권자 및 주주의 목록 제출기간을 2025. 9. 30.부터 "
+               "2025. 11. 11.까지로 한다. 6. 회생계획안의 제출기간을 2026. 7. 14.까지로 한다.")
+        lines = _rehab_lines(txt)
+        assert any(l.startswith("사건번호: 2025회합196") for l in lines)
+        assert "관할법원: 수원회생법원" in lines
+        assert any(l.startswith("관리인: 백서현") for l in lines)
+        fin = next(l for l in lines if l.startswith("회생계획안 제출기한"))
+        assert "7. 14" in fin and "6. 16" not in fin and "9. 30" not in fin
+
+    def test_risk_titles_classified(self):
+        # 9양식 제목 전부 리스크 분류 (드랍 0) — 분류기 회귀 가드
+        from bot.dart_feed import _classify_report
+        for t in ("매매거래정지및정지해제(중요내용공시)", "주권매매거래정지",
+                  "해산사유발생", "불성실공시법인지정", "불성실공시법인지정예고",
+                  "회생절차개시결정", "[기재정정]회생절차개시결정",
+                  "기타시장안내(상장폐지 여부 결정 안내)"):
+            assert _classify_report(t) == "리스크", t
+
+
+class TestDartInquiryParsing:
+    """조회공시/풍문해명 파싱 (사용자 2026-06-12 '이제 조회공시', 5예시) —
+    요구형 / 풍문해명형(±미확정) / 시황변동 답변형(+정정). 요지는 결정적
+    마커 발췌(추진/입장 분리, LLM 0)."""
+
+    def test_rumor_clarification_with_redisclosure(self):
+        # STX그린로지스 — 보도+매체, 추진(KPMG 선정)·입장(미확정), 재공시
+        from bot.dart_feed import _inquiry_lines
+        txt = ("1. 풍문 또는 보도의 내용 STX그린로지스, 썬에이스 매각 추진보도에 대한 답변 "
+               "2. 풍문 또는 보도의 매체 한국경제 등 3. 풍문 또는 보도의 발생일자 2026-05-15 "
+               "4. 풍문 또는 보도의 내용에 대한 해명내용 - 본 공시는 해명공시(미확정)입니다. "
+               "- 언론에 보도된 내용과 관련하여 당사는 자산 매각주관사로 삼정KPMG를 선정하였습니다. "
+               "매각과 관련한 다양한 전략적 방안을 검토하고 있으며, 현재까지 구체적으로 결정된 바는 없습니다. "
+               "5. 재공시예정일 2026-09-11")
+        L = _inquiry_lines(txt)
+        assert any(l.startswith("보도: STX그린로지스") and "(한국경제 등)" in l for l in L)
+        assert any(l == "추진: 언론에 보도된 내용과 관련하여 당사는 자산 매각주관사로 "
+                        "삼정KPMG를 선정하였습니다" for l in L)   # 선두 '- ' strip
+        assert any(l.startswith("입장:") and "결정된 바는 없습니다" in l for l in L)
+        assert "재공시: 2026-09-11" in L
+
+    def test_inquiry_request_form(self):
+        # 조회공시 요구(풍문) — 제목/요구일시(오전)/답변시한(까지)
+        from bot.dart_feed import _inquiry_lines
+        L = _inquiry_lines(
+            "조회공시 요구(풍문 또는 보도) 1. 제목 주주총회효력정지 가처분 및 "
+            "직무집행정지 가처분 결정설 2. 조회공시요구내용 사실 여부 및 구체적인 내용 "
+            "3. 요구일시 2026-06-12 오전 4. 답변시한 2026-06-12 18:00까지")
+        assert any(l.startswith("제목: 주주총회효력정지 가처분") for l in L)
+        assert "요구일시: 2026-06-12 오전" in L
+        assert "답변시한: 2026-06-12 18:00까지" in L
+
+    def test_denial_clarification(self):
+        # 한화엔진 — 부인형: 입장이 문장 처음부터(중간 잘림 해소)
+        from bot.dart_feed import _inquiry_lines
+        L = _inquiry_lines(
+            "풍문 또는 보도에 대한 해명 1. 풍문 또는 보도의 내용 [단독] 한화엔진, "
+            "AM 떼고 방산 붙인다…그룹 사업 재편 착수 2. 풍문 또는 보도의 매체 이투데이 "
+            "3. 풍문 또는 보도의 발생일자 2026-06-10 4. 풍문 또는 보도의 내용에 대한 해명내용 "
+            "- 본 공시는 해명공시입니다. - 상기 보도의 '방안'과 관련하여 현재 검토된 바 "
+            "없으며, 사실이 아님을 알려드립니다.")
+        assert any(l.startswith("보도: [단독] 한화엔진") for l in L)
+        assert any(l.startswith("입장: 상기 보도의") and "사실이 아님" in l for l in L)
+
+    def test_price_move_answer_with_dates(self):
+        # 핀텔 — 추진(입찰 1순위·금액)/입장(수주 미확정)/요구·답변일/재공시 기한
+        from bot.dart_feed import _inquiry_lines
+        L = _inquiry_lines(
+            "조회공시요구(현저한시황변동)에대한답변(미확정) 1. 제목 조회공시 요구"
+            "(현저한 시황변동)에 대한 답변(조회공시요구일: 2026.06.08) 2. 답변내용 "
+            "[추진중인 사항] - 당사는 최근 공공기관 입찰 2건에서 각각 1순위 대상자로 "
+            "선정되었으며, 계약 예정금액은 각각 약 12억원 및 19억원 규모입니다. "
+            "다만 현재 적격심사가 진행 중으로 현재까지 최종 수주 여부는 확정되지 않았습니다. "
+            "3. 조회공시요구일 2026-06-08 4. 조회공시답변일 2026-06-09 "
+            "5. 재공시 기한 기한 2026-07-09 사유 -")
+        assert any(l.startswith("추진:") and "1순위" in l and "19억원" in l for l in L)
+        assert any(l.startswith("입장:") and "확정되지 않았습니다" in l for l in L)
+        assert any("요구일 2026-06-08 · 답변일 2026-06-09" == l for l in L)
+        assert "재공시: 2026-07-09" in L
+
+    def test_inquiry_category_is_parse_target(self):
+        # 조회공시 카테고리가 enrich 대상에 포함 (옛 _PARSE_CATS 누락 fix)
+        from bot.dart_feed import is_parse_target
+        assert is_parse_target({"category": "조회공시",
+                                "report_nm": "조회공시요구(풍문또는보도)",
+                                "corp_code": "x"})
+        # 라우팅 존재 가드
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert "_extract_inquiry" in src and "_inquiry_lines" in src
+
+    def test_colon_separator_and_pm_deadline(self):
+        # 최종예시 (2026-06-12 '이제 파싱 예제는 다 끝났어') — ' : ' 구분자형
+        # + '오후 12:00까지' 시한. greedy gap 으로 이중 콜론('제목: : X') 차단.
+        from bot.dart_feed import _inquiry_lines
+        L = _inquiry_lines(
+            "조회공시 요구(풍문 또는 보도) 1. 제목 : 최대주주 지분 매각 추진설에 "
+            "대한 조회공시 요구 2. 요구일시 : 2026-06-12 오전 "
+            "3. 답변시한 : 2026-06-13 오후 12:00까지")
+        assert "제목: 최대주주 지분 매각 추진설에 대한 조회공시 요구" in L
+        assert "요구일시: 2026-06-12 오전" in L
+        assert "답변시한: 2026-06-13 오후 12:00까지" in L
+        # 보도형 콜론 구분자 — 캡처 선두 콜론 없음
+        L2 = _inquiry_lines(
+            "풍문 또는 보도에 대한 해명 1. 풍문 또는 보도의 내용 : MBK파트너스의 "
+            "회사 인수 추진 관련 보도 2. 풍문 또는 보도의 매체 : 한국경제 외 "
+            "3. 해명내용 - 위 보도와 관련하여 현재까지 구체적으로 결정된 바 없습니다.")
+        assert any(l.startswith("보도: MBK파트너스") and "(한국경제 외)" in l
+                   for l in L2)
+        assert any(l.startswith("입장:") for l in L2)
+
+
+class TestDartBackfillV4:
+    """파싱 배치 소급 백필 v4 (2026-06-12) — ①변경 파서 재추출(성공시만
+    교체) ②doc_fail 클리어 ③당월 재fetch. 순수 부분만 검증 (네트워크 0)."""
+
+    def test_reparse_kw_scope(self):
+        # ① 대상 = 출력이 '변경'된 파서 유형만 — 신설 파서 유형(소송·리스크·
+        # 조회공시 등)은 detail 부재 → ② 대기열 담당이라 나열 금지 (콜 낭비).
+        from bot.dart_feed import _V4_REPARSE_KW
+        assert set(_V4_REPARSE_KW) == {"공급계약", "단일판매",
+                                       "자기주식취득결정", "자기주식처분결정"}
+        hit = {"report_nm": "단일판매ㆍ공급계약체결", "detail": ["계약: x"]}
+        miss = {"report_nm": "소송등의제기", "detail": ["사건: y"]}
+        assert any(k in hit["report_nm"] for k in _V4_REPARSE_KW)
+        assert not any(k in miss["report_nm"] for k in _V4_REPARSE_KW)
+
+    def test_marker_gate_and_wiring(self):
+        # marker gate 존재 + startup 배선 (v3 패턴 mirror)
+        from bot.dart_feed import (backfill_v4_once_if_needed,
+                                   clear_doc_fail_cache, reparse_details,
+                                   _BACKFILL_MARKER_V4)
+        assert callable(backfill_v4_once_if_needed)
+        assert callable(clear_doc_fail_cache) and callable(reparse_details)
+        assert _BACKFILL_MARKER_V4.name == ".dart_feed_backfilled_v4"
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "backfill_v4_once_if_needed" in src
+
+    def test_reparse_no_key_is_noop(self, monkeypatch):
+        # API 키 부재 → 아카이브 무접촉 graceful no-op
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_dart_api_key", lambda: "")
+        st = df.reparse_details(days_back=1)
+        assert st == {"checked": 0, "replaced": 0, "kept": 0}
+
+
+class TestDartFairDisclosureParsing:
+    """공정공시 변형 + 투자판단 파싱 (사용자 2026-06-12 '파싱안된것들',
+    5예시) — 물량형 잠정실적 / 수시공시 / 장래사업 / 투자판단 승격."""
+
+    def test_volume_earnings_gas(self):
+        # 금액표 전부 '-' + 월간 물량(천톤)만 — 총계 행 발췌
+        from bot.dart_feed import _volume_lines
+        L = _volume_lines(
+            "단위 : 백만원, % 매출액 당해실적 - 구분 : 단위(천톤) 당월실적 ('26.5월) "
+            "전월실적 ('26.4월) 전월 대비 증감율 (%) 전년동월 실적 ('25.5월) "
+            "도시가스용 1,177 1,349 -12.8 - 1,130 4.2 - 발전용 1,198 1,321 -9.3 - 1,263 -5.1 - "
+            "기 타 - - - - - - - 총 계 2,375 2,670 -11.0 - 2,393 -0.8 -")
+        assert L[0] == "5월 판매: 총 2,375천톤 (전월 -11.0% · 전년동월 -0.8%)"
+
+    def test_volume_earnings_auto_with_cumulative(self):
+        # 완성차 대수 — 계 행 + 누적 행(전년동기 %) 둘 다
+        from bot.dart_feed import _volume_lines
+        L = _volume_lines(
+            "구분(단위:대,%) 당기실적 (2026년 5월) 전기실적 (2026년 4월) "
+            "국내 45,364 54,051 -16.1 - 58,966 -23.1 - 해외 280,109 271,878 3.0 - 293,654 -4.6 - "
+            "계 325,473 325,929 -0.1 - 352,620 -7.7 - 구분(단위:대,%) 당기누적 (2026년 1~5월) "
+            "국내 258,481 - - - 292,836 -11.7 - 계 1,627,623 - - - 1,707,534 -4.7 -")
+        assert L[0] == "5월 판매: 총 325,473대 (전월 -0.1% · 전년동월 -7.7%)"
+        assert L[1] == "누적: 1,627,623대 (전년동기 -4.7%)"
+
+    def test_fair_disclosure_shareholder_policy(self):
+        from bot.dart_feed import _fair_disclosure_lines
+        L = _fair_disclosure_lines(
+            "1. 정보내용 공시제목 중장기 주주환원정책 발표 관련 수시공시내용 "
+            "□ 주요 내용 - 적용 기간 : 2026년 결산시점 부터 향후 5개년간 "
+            "- 목표 주주환원율 : 연간 별도 기준 조정 당기순이익의 50% "
+            "- 주주환원율 산식 : (총 배당금액 + 자사주 매입액) ÷ 별도기준 조정 당기순이익")
+        assert L[0] == "제목: 중장기 주주환원정책 발표"
+        assert any("향후 5개년간" in l for l in L)
+        assert any("당기순이익의 50%" in l for l in L)
+
+    def test_future_plan_header_not_captured(self):
+        # 머리말 '※ …장래 계획사항으로서…' 오캡처 차단 (번호 라벨 필수)
+        from bot.dart_feed import _future_plan_lines
+        L = _future_plan_lines(
+            "장래사업ㆍ경영 계획(공정공시) ※ 동 정보는 장래 계획사항으로서 향후 변경될 수 있음 "
+            "1. 장래계획 사항 엔비디아와 글로벌 AI 팩토리 공동 구축 사업 추진 "
+            "(신규사업 또는 타법인과의 전략적 제휴) 2. 주요내용 및 추진일정 목적 글로벌 AI "
+            "예상투자금액 세부 계약 조건 협의 중으로 현재 미확정(단계별 계약 확정 시 별도 공시 예정) "
+            "기대효과 - 4. 이사회결의일(결정일) 2026-06-08")
+        assert L[0].startswith("계획: 엔비디아와 글로벌 AI 팩토리")
+        assert "으로서" not in L[0]
+        assert any(l.startswith("예상투자금액:") and "미확정" in l for l in L)
+        assert "이사회결의일: 2026-06-08" in L
+
+    def test_material_mgmt_license_deal_upgrade(self):
+        # 투자판단 주요경영사항(한미 기술이전) — 계약 승격 + 금액 2종
+        from bot.dart_feed import _material_mgmt_lines
+        r = _material_mgmt_lines(
+            "투자판단 관련 주요경영사항 1. 제목 소네페글루타이드 (Sonefpeglutide; "
+            "LAPS GLP2 agonist; HM15912) 기술이전 계약 체결 2. 주요내용 ※ 투자유의사항 "
+            "1) 계약상대방: Eli Lilly and Company (미국) 3) 계약체결일: 2026년 5월 31일 "
+            "6) 계약금액: 총 US$1,260,000,000 (약 1조 8,973억원) "
+            "① 계약금 (Upfront): US$75,000,000 (약 1,129억원) "
+            "3. 이사회결의일(결정일 ) 또는 사실확인일 2026-05-31")
+        assert r["category"] == "계약"
+        assert any(l == "상대방: Eli Lilly and Company (미국)" for l in r["lines"])
+        assert any(l.startswith("계약금액: 총 US$1,260,000,000")
+                   and "1조 8,973억원" in l for l in r["lines"])
+        # 라벨 '계약금(선급/Upfront)' — 미파싱-2에서 선급금(코스닥형) 통합
+        assert any(l.startswith("계약금(선급/Upfront): US$75,000,000")
+                   for l in r["lines"])
+
+    def test_material_mgmt_collected_and_forced(self):
+        # 투자판단: fetch keep 예외 + force 파싱 대상 + 대시보드 숨김 wiring
+        from bot.dart_feed import is_parse_target
+        assert is_parse_target({"category": "기타",
+                                "report_nm": "투자판단관련주요경영사항",
+                                "corp_code": "x"})
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert '"기타경영사항", "투자판단"' in src   # fetch keep 예외
+        dsrc = open("bot/dashboard.py", encoding="utf-8").read()
+        assert '"투자판단" in rn' in dsrc            # detail-less 숨김
+
+    def test_badge_colors_distinct(self):
+        # 🔥 금색 vs ⚠️ 파랑 — 색 분리 (사용자 2026-06-12 '색깔 다르게')
+        dsrc = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "#d4a017" in dsrc            # 🔥 금색 유지
+        assert "#5c9ce6" in dsrc            # ⚠️ 파랑 (옛 주황 #f5a623 카드/배지 제거)
+        assert ".df-badge-unp{background:#5c9ce618" in dsrc
+        assert "파란 점선" in dsrc           # 범례 동기
+
+
+class TestDartUnparsed2:
+    """미파싱-2 (사용자 2026-06-12, 5예시) — 유가 표준 공급계약 보강 /
+    USD 기술이전 / 자산보관 위탁계약 / 자기주식취득 원문 폴백."""
+
+    def _patch(self, monkeypatch, txt):
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_fetch_doc_text", lambda r, k: txt)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **kw: None)
+        return df
+
+    def test_contract_exchange_standard_vlcc(self, monkeypatch):
+        # 유가 표준형 — 구분(공사수주) 병기 + '- 회사와의 관계' 꼬리 컷
+        txt = ("단일판매ㆍ공급계약 체결 1. 판매ㆍ공급계약 구분 공사수주 - 체결계약명 VLCC 4척 "
+               "2. 계약내역 계약금액(원) 800,100,000,000 최근매출액(원) 12,783,500,000,000 "
+               "매출액대비(%) 6.3 대규모법인여부 해당 3. 계약상대 아시아 지역 선주 - 회사와의 관계 - "
+               "5. 계약기간 시작일 2026-06-12 종료일 2030-02-22 7. 계약(수주)일자 2026-06-12")
+        df = self._patch(monkeypatch, txt)
+        out = df._extract_contract_document("X", "K")
+        assert "구분: 공사수주" in out["lines"]
+        assert any(l == "계약상대: 아시아 지역 선주" for l in out["lines"])
+        assert any("매출액대비 6.3%" in l for l in out["lines"])
+
+    def test_material_mgmt_usd_prepayment(self):
+        # 코스닥 기술이전 — USD 표기 + 선급금 + ₩ 환산 병기
+        from bot.dart_feed import _material_mgmt_lines
+        r = _material_mgmt_lines(
+            "투자판단 관련 주요경영사항 1. 제목 이중항체 MT-103 기술이전 계약 체결 2. 주요내용 "
+            "1) 계약상대방 : Memento Medicines(이하 메멘토) - 국적 : 미국 2) 계약의 내용 "
+            "3) 계약체결일 : 2026년 5월 10일 6) 계약금액 (1) 기술이전 금액 : 총 USD "
+            "538,875,000 (₩ 781,799,850,000) (2) 선급금 : 총 USD 4,000,000 (₩ 5,803,200,000)")
+        assert r["category"] == "계약"
+        assert any(l.startswith("상대방: Memento Medicines") for l in r["lines"])
+        assert any(l.startswith("계약금액: 총 USD 538,875,000")
+                   and "781,799,850,000" in l for l in r["lines"])
+        assert any(l.startswith("계약금(선급/Upfront): 총 USD 4,000,000")
+                   for l in r["lines"])
+
+    def test_custody_correction_uses_post_values(self):
+        # 자산보관 위탁계약 — 정정 래퍼의 '정정전' stale 종료일 대신 본문
+        # (마지막 출현) 사용 + 정정 헤더
+        from bot.dart_feed import _custody_lines
+        L = _custody_lines(
+            "정정신고(보고) 정정일자 2026-06-04 3. 정정사유 차입기간 상환일 연장으로 인한 "
+            "자산보관 위탁계약기간 연장 4. 정정사항 정정항목 정정전 정정후 종료일 2026-06-04 2027-06-04 "
+            "부동산투자회사 자산보관 위탁계약 체결 1. 자산보관기관 회사명 신영부동산신탁"
+            "(SHINYOUNG REAL ESTATE TRUST CO., LTD) 자본금(원) 100,000,000,000 "
+            "2. 계약기간 시작일 2024-06-04 종료일 2027-06-04 3. 계약일자 2024-06-04 "
+            "5. 기타 자산보관계약 대상 부동산은 서울시 영등포구 선유서로 50(문래동6가) "
+            "이편한세상문래 장기일반 민간임대주택 5세대 및 근린생활시설 8호실입니다")
+        assert any(l == "기간: 2024-06-04 ~ 2027-06-04" for l in L)
+        assert any(l.startswith("정정(26-06-04)") for l in L)
+        assert any(l.startswith("보관기관: 신영부동산신탁") for l in L)
+
+    def test_custody_open_ended_and_dash_strip(self):
+        from bot.dart_feed import _custody_lines
+        L = _custody_lines(
+            "부동산투자회사 자산보관 위탁계약 체결 1. 자산보관기관 회사명 (주)한국토지신탁 "
+            "자본금(원) 252,489,230,000 2. 계약기간 시작일 2026-06-01 종료일 - "
+            "3. 계약일자 2026-06-01 5. 기타 1. 자산보관계약 대상 부동산 - "
+            "오렌지센터(서울특별시 세종대로7길 37) 2. 위 자산보관기관의")
+        assert any(l == "기간: 2026-06-01 ~" for l in L)          # 종료일 '-' 개방형
+        assert any(l == "대상 부동산: 오렌지센터(서울특별시 세종대로7길 37)"
+                   for l in L)                                     # 선두 '- ' strip
+
+    def test_buyback_doc_fallback_and_3pct(self, monkeypatch):
+        # 자기주식취득결정 표준 표 원문 폴백 (구조화 API 7일 윈도 밖 케이스)
+        # + 🔥 규칙 4 자동 연동 (2,380,952 / 65,787,207 = 3.6%)
+        txt = ("자기주식 취득 결정 1. 취득예정주식(주) 보통주 2,380,952 기타주식 - "
+               "2. 취득예정금액(원) 보통주 20,000,000,000 기타주식 - "
+               "3. 취득예상기간 시작일 2026년 06월 15일 종료일 2026년 09월 14일 "
+               "5. 취득목적 임직원 보상 재원 마련 6. 취득방법 유가증권 시장을 통한 직접 취득")
+        df = self._patch(monkeypatch, txt)
+        o = df._extract_doc_fields("X", "K", df._BUYBACK_DOC_FIELDS, min_fields=2)
+        assert any(l == "취득예정: 2,380,952주" for l in o["lines"])
+        assert any(l == "목적: 임직원 보상 재원 마련" for l in o["lines"])
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "자기주식취득결정", "category": "주주환원",
+                             "detail": o["lines"]},
+                            shares_outstanding=65_787_207) == "발행주식 3.6% 취득"
+
+
+class TestDartUnparsed3:
+    """미파싱-3 (사용자 2026-06-12, 5예시) — 자기주식 처분 doc 폴백(정정
+    stale 기간 보정) / 투자설명서 정정 / 정정 헤더 표-헤더행 오캡처 가드.
+    신탁계약 체결은 기존 _parse_trust 가 처리 확인(코드 무변경)."""
+
+    def test_disposal_correction_uses_post_dates(self):
+        from bot.dart_feed import _disposal_lines
+        L = _disposal_lines(
+            "정정신고(보고) 1. 정정대상 공시서류 : 주요사항보고서(자기주식처분결정) "
+            "3. 정정사항 항 목 정정사유 정정 전 정정 후 4. 처분예정기간 - 시작일, 종료일 "
+            "자기주식 처분금지 가처분 신청 접수에 따른 절차 대응 2026년 6월 17일 2026년 7월 3일 "
+            "자기주식 처분 결정 1. 처분예정주식(주) 보통주 121,951 "
+            "2. 처분 대상 주식가격(원) 보통주 4,100 3. 처분예정금액(원) 보통주 499,999,100 "
+            "4. 처분예정기간 시작일 2026년 07월 03일 종료일 2026년 07월 03일 "
+            "5. 처분목적 신사업 투자재원 조달 7. 처분상대방 주식회사 이룸기술")
+        assert any(l == "처분예정: 121,951주" for l in L)
+        assert any(l == "처분금액: 5억원 (주당 4,100원)" for l in L)
+        # 정정전(6/17) stale 배제 — 마지막 출현(본문 7/3)
+        assert any(l == "기간: 2026-07-03 ~ 2026-07-03" for l in L)
+        assert any(l == "상대방: 주식회사 이룸기술" for l in L)
+        # 표 헤더행 '정정 전 정정 후' 오캡처 없음
+        assert not any("정정 전" in l for l in L)
+
+    def test_prospectus_correction_fund_renewal(self):
+        from bot.dart_feed import _prospectus_corr_lines
+        L = _prospectus_corr_lines(
+            "정 정 신 고 (보고) 1. 정정대상 공시서류 : 투자설명서 "
+            "2. 정정대상 공시서류의 최초제출일 : 2015년 05월 04일 3. 정정사항 "
+            "항 목 정정요구·명령 관련 여부 정정사유 정 정 전 정 정 후 "
+            "아니오 자본시장과 금융투자업에 관한 법률 제123조에 의거한 정기갱신 "
+            "(재무정보 등 자료 업데이트) 실제 연환산 표준편차: 41.28% 실제 연환산 표준편차: 36.79%")
+        assert any(l == "서류: 투자설명서" for l in L)
+        assert any(l.startswith("최초제출: 2015-05-04") for l in L)
+        assert any("정기갱신" in l for l in L)
+        assert any(l == "위험지표: 41.28% → 36.79%" for l in L)
+
+    def test_prospectus_manager_change(self):
+        from bot.dart_feed import _prospectus_corr_lines
+        L = _prospectus_corr_lines(
+            "정 정 신 고 (보고) 1. 정정대상 공시서류 : 투자설명서 "
+            "2. 정정대상 공시서류의 최초제출일 : 2017년 01월 22일 "
+            "항목 정정사유 정정 전 정정 후 <운용전문인력> 아니오 운용역 변경 송진용 신은영 "
+            "97.5% VaR: 27.84% 97.5% VaR: 27.10%")
+        assert any(l == "운용역: 송진용 → 신은영" for l in L)
+        assert any(l == "위험지표: 27.84% → 27.10%" for l in L)
+
+    def test_correction_header_skips_table_header_row(self):
+        # '정정사유' 컬럼 헤더 인접 '정정 전 정정 후' 오캡처 가드 + 정상 회귀
+        from bot.dart_feed import _correction_header
+        assert _correction_header(
+            "정정신고(보고) 항 목 정정사유 정정 전 정정 후 4. 처분예정기간") is None
+        assert _correction_header(
+            "정정신고(보고) 정정일자 2026-06-10 3. 정정사유 회생계획안 제출기간 연장 "
+            "4. 정정사항") == "정정(26-06-10): 회생계획안 제출기간 연장"
+
+    def test_trust_contract_form_still_parses(self, monkeypatch):
+        # 미파싱-3 #1 신탁계약 체결 — 기존 파서가 처리함을 영구 가드
+        import bot.dart_feed as df
+        txt = ("자기주식취득 신탁계약 체결 결정 1. 계약금액(원) 5,000,000,000 "
+               "2. 계약기간 시작일 2026년 06월 15일 종료일 2027년 06월 14일 "
+               "3. 계약목적 주가 안정화를 통한 주주가치 제고 4. 계약체결기관 미래에셋증권 "
+               "9. 취득예정주식(주) 보통주 101,010 10. 취득하고자 하는 주식의 가격(원) 보통주 49,500")
+        monkeypatch.setattr(df, "_fetch_doc_text", lambda r, k: txt)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **kw: None)
+        out = df._parse_trust("X", "K", cancel=False)
+        assert any(l.startswith("계약금액: 50억원") for l in out["lines"])
+        assert any(l.startswith("취득예정: 101,010주") for l in out["lines"])
+        assert any(l == "목적: 주가 안정화를 통한 주주가치 제고" for l in out["lines"])
+
+
+class TestDartUnparsed4:
+    """미파싱-4 (사용자 2026-06-12, 5예시) — 특수관계인 담보제공(주식·부동산,
+    공정거래법 제26조 백만원) / 감자 결정(+정정) / 신주 발행가액 안내."""
+
+    def test_related_collateral_stock(self):
+        from bot.dart_feed import _related_collateral_lines
+        L = _related_collateral_lines(
+            "특수관계인에 대한 담보제공 (단위 : 백만 원) 1. 거래상대방 "
+            "(주)엠티브이반달섬개발피에프브이 회사와의 관계 계열회사 2. 담보제공 내역 "
+            "나. 채권자 반달섬제삼차(주) 다. 담보물 (주)엠티브이반달섬개발피에프브이 "
+            "보통주식 900,000주 라. 담보기간 2026.06.13~2027.06.13 마. 담보한도 31,902 "
+            "바. 담보금액 24,540 아. 거래의 조건 채권최고액을 변경 3. 이사회 의결일 2026.06.12")
+        assert any(l == "거래상대: (주)엠티브이반달섬개발피에프브이" for l in L)
+        assert any(l == "채권자: 반달섬제삼차(주)" for l in L)
+        assert any(l.endswith("보통주식 900,000주") for l in L)
+        assert any(l == "기간: 2026.06.13~2027.06.13" for l in L)
+        # 백만원 단위 → 31,902백만=319억 · 24,540백만=245.4억
+        assert any("319억원" in l and "245.4억원" in l for l in L)
+
+    def test_related_collateral_realestate_area_decimals(self):
+        # 담보물 면적 소수점(㎡)이 '\d.' stop 에 안 잘림 + 자유 텍스트 기간
+        from bot.dart_feed import _related_collateral_lines
+        L = _related_collateral_lines(
+            "특수관계인에 대한 담보제공 (단위 : 백만 원) 1. 거래상대방 하이엠케이(주) "
+            "회사와의 관계 계열회사 2. 담보제공 내역 나. 채권자 한국산업은행 대구지점 "
+            "다. 담보물 경상북도 구미시 진평동 643-2 소재 토지(60,955.8㎡) 및 "
+            "건물(7개동, 27,434.155㎡) 라. 담보기간 채무전액 상환시 까지 "
+            "마. 담보한도 12,000 바. 담보금액 10,000 아. 거래의 조건 근저당권 신규 설정 3. 이사회")
+        assert any("토지(60,955.8㎡)" in l and "건물(7개동, 27,434.155㎡)" in l for l in L)
+        assert any(l == "기간: 채무전액 상환시 까지" for l in L)
+        assert any("120억원" in l and "100억원" in l for l in L)
+
+    def test_capital_reduction(self):
+        from bot.dart_feed import _capital_reduction_lines
+        L = _capital_reduction_lines(
+            "감자 결정 1. 감자주식의 종류와 수 보통주식 (주) 21,000,000 "
+            "3. 감자전후 자본금 감자전 (원) 32,576,019,500 감자후 (원) 22,076,019,500 "
+            "5. 감자비율 보통주식 (%) 32.23 6. 감자기준일 2026년 07월 14일 "
+            "8. 감자사유 결손 보전을 통한 재무구조 개선 9. 감자일정 주주총회 예정일 2026년 06월 26일")
+        assert any(l == "감자주식: 21,000,000주 (비율 32.23%)" for l in L)
+        assert any(l.startswith("자본금:") for l in L)
+        assert any(l == "사유: 결손 보전을 통한 재무구조 개선" for l in L)
+        assert any(l == "감자기준일: 2026-07-14" for l in L)
+        assert any(l == "주총예정: 2026-06-26" for l in L)
+
+    def test_capital_reduction_correction(self):
+        from bot.dart_feed import _capital_reduction_lines
+        L = _capital_reduction_lines(
+            "정정신고(보고) 2026년 06월 10일 1. 정정대상 공시서류 : 감자 결정 "
+            "3. 정정사항 항 목 정정사유 정 정 전 정 정 후 9. 감자일정 주주총회 일정변경 "
+            "- 주주총회 예정일 2026년 06월 30일 - 주주총회 예정일 2026년 06월 26일")
+        assert any(l.startswith("정정") for l in L)        # 정정 헤더
+        assert not any("정정 전" in l for l in L)           # 표 헤더행 오캡처 가드
+
+    def test_issue_price_notice(self):
+        from bot.dart_feed import _issue_price_lines
+        L = _issue_price_lines(
+            "[안내]유상증자 신주 발행가액 1. 구분 신주배정기준일 기준 신주발행가액 "
+            "2. 주당 발행가액 보통주식(원) 27,900 종류주식(원) - "
+            "3. 기타 ※ 확정 발행가액은 2026년 07월 20일에 공시할 예정입니다. 할인율 20%를 적용")
+        assert any(l == "주당 발행가액: 27,900원" for l in L)
+        assert any(l == "확정가액 공시예정: 2026-07-20" for l in L)
+
+    def test_routing_priority(self):
+        # 특수관계인 담보 > 일반 담보 / 발행가액 > 유상증자 (라우팅 순서 가드)
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        rc = src.index('elif "특수관계인" in t and "담보" in t:')
+        gc = src.index('elif "담보" in t:')
+        assert rc < gc
+        ip = src.index('elif "발행가액" in t:')
+        rights = src.index('elif "유상증자" in t or "유무상증자" in t:')
+        assert ip < rights
+
+
+class TestDartUnparsed5:
+    """미파싱-5 (사용자 2026-06-12, 5예시) — 확인서 / 유형자산 양수도
+    종료보고서 / 회사합병 결정 / 영업양도(공정거래법) / 회사분할 철회 정정."""
+
+    def test_confirmation(self):
+        from bot.dart_feed import _confirmation_lines
+        L = _confirmation_lines(
+            "확인서 우리는 당사의 대표이사 및 신고업무담당이사로서 이 공시서류의 "
+            "기재내용에 대해 직접 확인·검토한 결과... 내부회계관리제도를 마련하여 "
+            "운영하고 있음을 확인합니다. 주식회사 피노 대표이사 주송완 (인)")
+        assert any(l == "회사: 주식회사 피노" for l in L)
+        assert any("내부회계관리제도 운영" in l for l in L)
+
+    def test_asset_complete_table_not_prose(self):
+        # 양도인/양수인은 표 행만 — 본문 '(양도인)와 …(양수인)' 오캡처 차단
+        from bot.dart_feed import _asset_complete_lines
+        L = _asset_complete_lines(
+            "본 보고서는 주요사항보고서(유형자산양도결정)에 관한 종료 보고서입니다. "
+            "당사(양도인)와 에스케이에어코어 주식회사(양수인) 간 체결된 토지 및 건물의 "
+            "양수도 계약... 매매대금 정산 및 소유권이전 등기가 완료됨 "
+            "양도인 주식회사 에어레인 양수인 에스케이에어코어 주식회사 "
+            "양도 금액 12,800,000,000원")
+        assert any("양도인 주식회사 에어레인" in l
+                   and "양수인 에스케이에어코어 주식회사" in l for l in L)
+        assert any(l == "양도금액: 128억원" for l in L)
+        assert any("거래 종료" in l for l in L)
+
+    def test_merger(self):
+        from bot.dart_feed import _merger_lines
+        L = _merger_lines(
+            "회사합병 결정 1. 합병방법 흡수합병 - 존속회사 (주)네오위즈 - 소멸회사 뮤즈라이브 "
+            "4. 합병비율 1 : 0.0000000 8. 합병상대회사 회사명 뮤즈라이브 주요사업 게임 "
+            "10. 합병일정 합병기일 2026년 08월 20일 주주총회 예정일 2026년 07월 14일 "
+            "합병등기 예정일 2026년 08월 31일")
+        assert any(l.startswith("합병방법: 흡수합병") for l in L)
+        assert any(l == "합병비율: 1 : 0.0000000" for l in L)
+        assert any("합병기일 2026-08-20" in l and "주총 2026-07-14" in l
+                   and "합병등기 2026-08-31" in l for l in L)
+
+    def test_business_transfer(self):
+        from bot.dart_feed import _business_transfer_lines
+        L = _business_transfer_lines(
+            "영업양도 결정 기업집단명 에스케이 회사명 엔솔브(주) 관련법규 공정거래법 "
+            "1. 양도영업 태양광발전소(PV) 및 에너지저장장치(ESS) 운영 사업 "
+            "2. 양도영업 주요내용 ... 3. 양도가액 (원) 72,626,529,464 "
+            "4. 양도목적 사업구조 개편 5. 양도예정일자 2026년 10월 31일 "
+            "6. 양수법인(회사와의 관계) 이클립스 주식회사(기타)")
+        assert any(l.startswith("양도영업: 태양광발전소(PV)") for l in L)
+        assert any(l.startswith("양도가액:") and "726.3억원" in l for l in L)
+        assert any(l == "양수법인: 이클립스 주식회사" for l in L)
+        assert any(l == "목적: 사업구조 개편" for l in L)
+
+    def test_split_withdrawal_routing(self):
+        # 회사분할 철회 정정 — 라우팅이 _SPLIT_COMPANY_FIELDS 보다 우선
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        block = src[src.index('elif "회사분할" in t or "분할합병" in t:'):]
+        assert '"철회" in txt2' in block[:600]
+        assert '철회' in block[:600] and 'kind' in block[:700]
+        # 물적/인적분할 종류 + 사유 라인
+        assert '"물적분할" if "물적분할" in txt2' in block[:700]
+
+
+class TestDartUnparsed6:
+    """미파싱-6 (사용자 2026-06-12, 5예시) — 최대주주 등 주식보유 변동 /
+    주권매매거래정지해제 / 공개매수 결과 / 최대주주 변경 + 필터 동시선택."""
+
+    def test_major_holding_change(self):
+        from bot.dart_feed import _major_holding_change_lines
+        L = _major_holding_change_lines(
+            "최대주주 등의 주식보유 변동 ... 변동 후 주식수 지분율 (C) "
+            "동일인 및 동일인 관련자 에스케이스퀘어(주) 계열회사 2026.06.11 "
+            "보통주 56,812 53.13 - -1.06 56,812 52.07 - -")
+        assert any(l == "주주: 에스케이스퀘어(주)" for l in L)
+        assert any(l == "지분율: 53.13% → 52.07% (-1.06%p ▼)" for l in L)
+
+    def test_suspension_release(self):
+        from bot.dart_feed import _suspension_release_lines
+        L = _suspension_release_lines(
+            "주권매매거래정지해제 1.대상종목 글로벌에스엠테크리미티드 보통주 "
+            "2.해제사유 액면병합 주권 변경상장 3.해제일시 2026-06-12 - 4.근거규정 코스닥")
+        assert any(l == "대상: 글로벌에스엠테크리미티드" for l in L)
+        assert any(l == "해제사유: 액면병합 주권 변경상장" for l in L)
+        assert any(l == "해제일시: 2026-06-12" for l in L)
+
+    def test_tender_offer_result(self):
+        from bot.dart_feed import _tender_result_lines
+        L = _tender_result_lines(
+            "1. 공개매수 대상 회사명 주식회사 세아홀딩스 2. 공개매수 주식등의 종류 ... "
+            "3. 공개매수 예정수량 및 가격 매수가격 주당 160,000원 매수예정수량 최대 187,000주 "
+            "결제수단 현금 4. 응모 및 매수현황 예정주식 수 최대 187,000주 응모주식 수 499,122주 "
+            "매수주식 수 187,000주 공개매수 후 주식등의 보유비율 79.52")
+        assert any(l == "대상: 주식회사 세아홀딩스" for l in L)
+        assert any(l == "매수가: 주당 160,000원" for l in L)
+        assert any("응모 499,122주" in l and "매수 187,000주" in l for l in L)
+        assert any(l == "공개매수 후 보유: 79.52%" for l in L)
+
+    def test_major_shareholder_change(self):
+        from bot.dart_feed import _major_change_lines
+        L = _major_change_lines(
+            "최대주주 변경 1. 변경내용 변경전 최대주주명 주식회사 은홀딩파트너스 "
+            "소유주식수(주) 18,521,924 소유비율(%) 53.23 변경후 최대주주명 임주주 "
+            "소유주식수(주) 10,161,661 소유비율(%) 28.63 2. 변경사유 주식매매계약 체결에 "
+            "따른 최대주주변경 3. 지분인수목적 경영참여")
+        assert any(l == "최대주주: 주식회사 은홀딩파트너스(53.23%) → 임주주(28.63%)"
+                   for l in L)
+        assert any(l.startswith("사유: 주식매매계약 체결") for l in L)
+
+    def test_routing_release_before_suspension(self):
+        # 정지해제 라우팅이 매매거래정지보다 먼저 (substring 충돌)
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert src.index('elif "정지해제" in t') < src.index('elif "매매거래정지" in t')
+
+    def test_flag_filters_combine_with_category(self):
+        # 🔥/⚠️ 플래그가 카테고리와 독립 토글·동시선택 (사용자 2026-06-12)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "var activeFlags=[]" in src           # 다중 플래그 배열
+        assert "activeFlags.every(" in src           # 선택 플래그 전부 AND
+        # 플래그 클릭=토글(다른 pill active 유지), 카테고리=카테고리끼리만 배타
+        assert "if(!x.dataset.flag)x.classList.remove('active')" in src
+        assert "함께 선택 가능" in src                # 범례 안내
+
+
+class TestDartUnparsed7:
+    """미파싱-7 (사용자 2026-06-12) — 대량보유 일반서식 doc 폴백 / 판결
+    [주문] / 자율공시 콜론형 / ○마스킹 원고 / 취지 날짜 절단 가드."""
+
+    @staticmethod
+    def _run(fields, txt):
+        import re
+        return {l: m.group(1).strip() for l, p, k in fields
+                if (m := re.search(p, txt))}
+
+    def test_majorstock_doc_fallback(self):
+        # majorstock API 미매칭(웰크론 일반서식) → 요약정보 표 폴백
+        from bot.dart_feed import _majorstock_doc_lines
+        L = _majorstock_doc_lines(
+            "주식등의 대량보유상황보고서 요약정보 발행회사명 (주)웰크론한텍 "
+            "발행회사와의 관계 최대주주 보고구분 변동 보유주식등의 수 및 보유비율 "
+            "직전 보고서 7,855,862 34.75 이번 보고서 7,999,774 35.41 "
+            "보고사유 보고자 및 특별관계자 주식 추가 취득 ※ 보고자 본인은")
+        assert any(l == "발행회사: (주)웰크론한텍 (최대주주)" for l in L)
+        assert any(l == "지분율: 34.75% → 35.41% (+0.66%p ▲)" for l in L)
+        assert any(l.startswith("사유: 보고자 및 특별관계자") for l in L)
+
+    def test_ruling_jumun_block(self):
+        # 판결내용이 [채권자]/[채무자]/[주문] 구조 — 주문 첫 문장 (마침표 포함)
+        from bot.dart_feed import _LAWSUIT_RULING_FIELDS
+        o = self._run(_LAWSUIT_RULING_FIELDS, (
+            "1. 사건의 명칭 회계장부 열람등사 가 처분 사건번호 2026카합516 "
+            "3. 판결ㆍ결정내용 [채권자] 한○○ [채무자] 주식회사 씨씨에스충북방송 "
+            "[주 문] 이 사건의 항고장을 각하한다. 4. 판결ㆍ결정사유 ... "
+            "5. 관할법원 청주지방법원 충주지원 6. 판결ㆍ결정일자 2026-06-09"))
+        assert o["주문"] == "이 사건의 항고장을 각하한다."
+        assert o["관할법원"] == "청주지방법원 충주지원"
+
+    def test_misc_mgmt_colon_form(self):
+        # '사건명:'/'채권자:' 콜론형 (티에스넥스젠 — [사건] 블록 아님)
+        from bot.dart_feed import _misc_mgmt_lines
+        r = _misc_mgmt_lines(
+            "기타 경영사항(자율공시) 1. 제목 상장폐지결정 효력정지 가처분 신청 "
+            "2. 주요내용 회사는 서울남부지방법원에 가처분을 신청하였으며, "
+            "사건명: 서울남부지방법원 2026카합1389 [전자]상장폐지결정 효력정지 가처분 "
+            "채권자: 주식회사 티에스넥스젠 채무자: 주식회사 한국거래소 "
+            "[신청취지] 1. 채권자의 채무자에 대한 ... 3. 결정(확인)일자 2026-06-09")
+        assert r["category"] == "소송"
+        assert any(l.startswith("사건: 서울남부지방법원 2026카합1389") for l in r["lines"])
+        assert any("채권자 주식회사 티에스넥스젠" in l
+                   and "채무자 주식회사 한국거래소" in l for l in r["lines"])
+
+    def test_filed_masked_plaintiff_and_date_in_purport(self):
+        # 원고 '권○○'(마스킹) + 취지 본문 날짜 '2026. 6. 12.' 절단 가드
+        # (항번호 stop 은 다음 문자가 한글/괄호일 때만)
+        from bot.dart_feed import _LAWSUIT_FILED_FIELDS
+        o = self._run(_LAWSUIT_FILED_FIELDS, (
+            "1. 사건의 명칭 의결권행사금지 가처분 신청 사건번호 2026카합50146 "
+            "2. 원고(신청인) 권○○ 3. 청구내용 1.채무자: 신○○, 이○○ "
+            "2.신청취지: (1) 채무자들은 2026. 6. 12. 10:00 경기도 성남시 분당구에서 "
+            "개최되는 주식회사 알로이스의 임시주주총회에서 의결권을 행사하여서는 아니 된다. "
+            "(2) 신청비용은 채무자들이 부담한다. 4. 관할법원 수원지방법원 성남지원"))
+        assert o["원고"] == "권○○"
+        assert "2026. 6. 12" in o["취지"] and "아니 된다" in o["취지"]
+        assert o["관할법원"] == "수원지방법원 성남지원"
+
+
+class TestLookupPriceGlitchGuard:
+    """종목검색 카드 글리치 가드 (KLAC $2,411/$3.15T 2026-06-12) — yfinance
+    분할 미조정 수신가를 직전 종가로 교체 + 시총 재계산 + 보정 주석."""
+
+    def test_replaces_split_artifact_price(self):
+        from unittest.mock import patch, MagicMock
+        info = {"quoteType": "EQUITY", "currentPrice": 2411.64,
+                "regularMarketPreviousClose": 213.42,
+                "sharesOutstanding": 1.32e8, "marketCap": 3.15e12}
+        mt = MagicMock(); mt.info = info
+        with patch("yfinance.Ticker", return_value=mt):
+            from bot.stock_snapshot import collect_stock_snapshot
+            s = collect_stock_snapshot("KLAC")
+        assert s["current_price"] == 213.42
+        assert abs(s["market_cap"] - 213.42 * 1.32e8) < 1
+        assert "보정" in s["price_glitch_note"]
+
+    def test_normal_price_untouched(self):
+        from unittest.mock import patch, MagicMock
+        info = {"quoteType": "EQUITY", "currentPrice": 215.0,
+                "regularMarketPreviousClose": 213.42,
+                "sharesOutstanding": 1.32e8, "marketCap": 2.84e10}
+        mt = MagicMock(); mt.info = info
+        with patch("yfinance.Ticker", return_value=mt):
+            from bot.stock_snapshot import collect_stock_snapshot
+            s = collect_stock_snapshot("KLAC")
+        assert s["current_price"] == 215.0
+        assert s["market_cap"] == 2.84e10
+        assert "price_glitch_note" not in s
+
+    def test_detail_page_renders_note(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "price_glitch_note" in src
+
+
+class TestDartRisk2:
+    """리스크-2 (2026-06-12) — SPAC 상폐정지(정리매매·상폐일) / 불성실
+    다건유형 / 실질심사·관리종목우려(결론 주어앵커) / 생산재개."""
+
+    @staticmethod
+    def _run(fields, txt):
+        import re
+        return {l: m.group(1).strip() for l, p, k in fields
+                if (m := re.search(p, txt))}
+
+    def test_delisting_suspension_with_schedule(self):
+        from bot.dart_feed import _SUSPENSION_FIELDS, significance
+        o = self._run(_SUSPENSION_FIELDS, (
+            "주권매매거래정지 2.정지사유 상장폐지 사유발생 3.정지기간 가.정지일시 "
+            "2026-06-08 - 나.만료일시 2026-06-08 4.근거규정 코스닥 5.기타 * 상장폐지내역 "
+            "- 정리매매기간 : 2026.06.09 ~ 2026.06.17 (7매매일) - 상장폐지일 : 2026.06.18"))
+        assert o["사유"] == "상장폐지 사유발생"
+        assert o["정리매매"].startswith("2026.06.09 ~ 2026.06.17")
+        assert o["상장폐지일"] == "2026.06.18"
+        assert significance({"report_nm": "주권매매거래정지", "category": "리스크",
+                             "detail": [f"사유: {o['사유']}"]}) == "상장폐지 관련"
+
+    def test_unfaithful_multi_type_comma(self):
+        from bot.dart_feed import _UNFAITHFUL_FIELDS
+        o = self._run(_UNFAITHFUL_FIELDS, (
+            "불성실공시 유형 공시불이행,공시번복,공시변경 내용 공시불이행 6건 - "
+            "단일판매ㆍ공급계약해지 원공시일 2026-01-21 지정예고일 2026-06-05 "
+            "2. 불성실공시법인지정여부 결정시한 2026-06-30 3. 최근 1년간 불성실공시법인 부과벌점 23.0"))
+        assert o["유형"] == "공시불이행,공시번복,공시변경"
+        assert "단일판매ㆍ공급계약해지" in o["내용"]
+        assert o["벌점"] == "23.0"
+
+    def test_review_target_and_concern_notice(self):
+        from bot.dart_feed import _MARKET_NOTICE_FIELDS, significance
+        o = self._run(_MARKET_NOTICE_FIELDS, (
+            "기타시장안내 제목 : ㈜다원시스 상장적격성 실질심사 대상 결정 거래소는 "
+            "㈜다원시스에 대하여 상장폐지 가능성 등을 검토한 결과, 동사를 상장적격성 "
+            "실질심사 대상으로 결정하였습니다."))
+        assert o["제목"].endswith("실질심사 대상 결정")
+        assert o["결론"].startswith("거래소는")          # 주어 앵커 (bleed 차단)
+        # 🔥 실질심사 = 상폐 전단계 — 규칙 7 발화
+        assert significance({"report_nm": "기타시장안내", "category": "리스크",
+                             "detail": [f"제목: {o['제목']}"]}) == "상장폐지 관련"
+        o2 = self._run(_MARKET_NOTICE_FIELDS, (
+            "기타시장안내(관리종목지정우려종목) 제목 : 아이비케이에스제23호기업인수목적 "
+            "주식회사 기타시장안내(관리종목 지정우려 예고) 동사는 합병상장예비심사신청서를 "
+            "제출하지 않는 경우 관리종목으로 지정될 우려가 있습니다. "
+            "1. 상장예비심사신청서 제출기한 : 2026년 06월 12일 - 관리종목 지정일(예정) : 2026년 06월 15일"))
+        assert o2["결론"].startswith("동사는")
+        assert o2["지정예정"].startswith("2026년 06월 15")
+
+    def test_production_resume(self):
+        from bot.dart_feed import _PRODUCTION_FIELDS
+        o = self._run(_PRODUCTION_FIELDS, (
+            "생산재개(자율공시) 1. 생산재개내용 안국약품(주) 화성공장 2. 생산재개내역 "
+            "매출액대비(%) 68.15 3. 생산재개사업 정제 제형 제조업무 재개 "
+            "4. 생산재개사유 경인지방식품의약품안정청 행정처분 기간 종료 "
+            "6. 생산재개일자 2026-06-06 8. 기타 생산중단기간:2026.5.22 ~ 2026.6.5"))
+        assert o["내용"] == "안국약품(주) 화성공장"
+        assert o["매출액대비"] == "68.15" and o["일자"] == "2026-06-06"
+        assert o["중단기간"] == "2026.5.22 ~ 2026.6.5"
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""
