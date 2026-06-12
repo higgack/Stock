@@ -760,8 +760,8 @@ pattern to follow:
   부록(미달 우선·경쟁률 내림차순 TOP 8). graceful skip — 경쟁률 미등록/
   비어있어도 신규 공고 push 는 정상.
 - Daily Byte — 장 마감 후 KR 수급 브리프 (2026-05-29 사용자 요청):
-  • `daily-byte.timer` — 평일(Mon-Fri) 19:00 KST oneshot → `bot/daily_
-    kr_flow.py`. pykrx EOD 수급 (~17-18시 갱신) 안정 후 19:00 실행.
+  • `daily-byte.timer` — 평일(Mon-Fri) 18:00 KST(2026-06-13 19→18) oneshot → `bot/daily_
+    kr_flow.py`. pykrx EOD 수급 (~17-18시 갱신) — 18:00 정각 지연일은 walk-back graceful.
   • 설계: A=pykrx 단일(무료) · B=Pro+google_search grounding ON ·
     C=KOSPI+KOSDAQ 전체 net-buy 랭킹 · D=기존 NOAH 채널 push · E=구조화
     long-form · F=수급 중심 "주목 종목" 중립(BUY/SELL 권고 아님).

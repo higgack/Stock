@@ -1,10 +1,11 @@
 [Unit]
-Description=US Market Daily trigger — 평일 07:30 KST (미국 장 마감 후)
+Description=US Market Daily trigger — 평일 07:00 KST (사용자 2026-06-13 07:30→07:00)
 
 [Timer]
-# 평일(월-금) 07:30 KST. US 장 마감 16:00 ET = 06:00 KST (서머타임),
-# 07:00 KST (윈터타임). 07:30 이면 양쪽 안정적 + 데이터 확정.
-OnCalendar=Mon..Fri *-*-* 07:30:00 Asia/Seoul
+# 평일(월-금) 07:00 KST (사용자 2026-06-13). US 장 마감 16:00 ET =
+# 06:00 KST(서머)/07:00 KST(윈터) — 겨울철엔 마감 정각이라 미확정
+# 데이터 위험 소폭 존재(글리치 가드·무버 최소행 가드가 백스톱).
+OnCalendar=Mon..Fri *-*-* 07:00:00 Asia/Seoul
 Persistent=true
 Unit=us-market-daily.service
 
