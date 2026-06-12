@@ -674,7 +674,7 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
     )
     return (
         "<div class='ind-prov'>"
-        "<h3>🟢 잠정 속보 <span class='ind-prov-tag'>관세청 10일 단위</span></h3>"
+        "<h3>🟢 잠정 속보 <span class='ind-prov-tag'>관세청 10일 단위 · 매월 11·21·익월1일 발표</span></h3>"
         f"<div class='ind-prov-sub'>{ym} · {window} 누적 기준 · 확정치보다 "
         "최대 ~한 달 선행 · YoY=작년 동월·동순 · MoM=전월 동순 · 단위 억$ "
         "<b>(산업 집계와 분리·참고용)</b></div>"
