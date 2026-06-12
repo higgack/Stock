@@ -478,13 +478,26 @@ pattern to follow:
   재fetch(기타경영사항·투자판단 keep 신설분 소급 수집 + 전체 재분류).
   파서 작성 시 재사용할 클래스: 정정 래퍼 stale-value 는 findall[-1]
   (마지막 출현), 라벨-값 gap 은 greedy(이중 콜론 차단), 압축표기 stop
-  은 `\d{1,2}\s*\.`(뒤 공백 불요), 날짜 vs 항번호 구분은 lookahead
-  `(?=[가-힣(])`, 머리말 오캡처는 번호 라벨 필수로 차단.
+  은 `\d{1,2}\s*\.`(뒤 공백 불요), 날짜 vs 항번호 구분은 stop 에 라벨형
+  한글 run 요구, 머리말 오캡처는 번호 라벨 필수로 차단.
+  **변형/신규 양식 자율 대응 (사용자 2026-06-12 '조금 다른 건 니가
+  판단해서')**: 예시 수집 단계 종료 — 이후 변형은 ①generic **번호 항목
+  폴백** `_numbered_rows_lines`('N. 라벨 값' 행 발췌, 비정보 값 스킵,
+  6줄 캡, `_extract_generic_document` 가 고정 라벨 부족 시 자동 시도 —
+  전용 파서 실패/부재 유형도 카드에 핵심 줄 표시) + `_DOC_TEXT_MEM`
+  (프로세스 내 원문 캐시 64 — 전용 파서가 fail 마킹해도 같은 시도 안
+  에서 폴백이 본문 재사용) ②Claude 가 위 클래스 가이드로 **사용자 예시
+  없이** 전용 파서를 판단 작성 (드롭 분포 `--coverage-audit` 로 후보
+  탐지). 사용자에게 양식 더 요청하지 말 것.
 - Journal log size → `SystemMaxUse=500M` in `journald.conf` (auto-trim)
-- Standard View code updates → `sv-update.service` polls git every 1 min, rsyncs `standardview/scripts` + `standardview/backend` into live tree, restarts backend if changed, defers when daily_generator is running. Same pattern as `stock-bot-update`.
-- Standard View cache rollover → `sv-cache-rollover.service` runs 00:05 KST daily, flushes `macro_news_cache` so the first news-brief call of the new date regenerates from scratch (fixes the 2026-05-21 midnight stub-cache bug).
-- Standard View watchdog → `sv-watchdog.service` runs every 30 min; if `latest.html` is >90 min stale during 08:00-22:00 KST and the BUSY_MARKER is clear, re-kicks `daily_generator.py` in the background.
-- Standard View systemd units 자동 배포 → `sv-update.sh` 가 `standardview/deploy/*.{service,timer,sh}` 변경 감지 시 `sudo /home/higgack/stock/standardview/deploy/install.sh` 자동 호출 → systemd unit 재설치 + daemon-reload + enable + Telegram 알림. 사용자 1회 setup (NOPASSWD line + 첫 install.sh) 이후 SSH 영원히 미진입 — stock repo push 만으로 timer/service 변경까지 1분 내 자동 적용.
+- ⛔ **Standard View 폐기 완료** — 2026-06-09 #148 (타이머 7종 disable +
+  nav/help 제거) → 2026-06-12 최종 정리: `standardview/` 소스 트리 삭제
+  (git 이력 보존), `standardview-backend.service` disable (install.sh
+  decommission 블록), `/sv_cost` 명령 + `/usage`·대시보드 sv_usage 합산
+  reader + analyzer push hook + `bot/standardview_push.py`/`standardview_
+  bridge.py` 제거, `/sites` 링크 제거. **재도입 금지 — 이 아래 과거 SV
+  스케줄/audit 기록은 역사 보존용.** (dart_client 의 'StanLee5767/
+  standardview 차용' 주석은 코드 출처 표기라 유지.)
 - Stock-bot systemd units 자동 배포 (2026-05-29 신규 — SV 패턴 mirror)
   → `deploy/auto-update.sh` 가 매 1분 git pull 시 `deploy/*.{service,
   timer,sh}` 변경 감지하면 `sudo /home/higgack/stock/deploy/install.sh`
@@ -500,11 +513,7 @@ pattern to follow:
   ```
   이후 새 systemd unit 추가/변경 시도 SSH 진입 없이 push 만으로 1분
   내 적용. NOPASSWD 미설정 시 silent skip (legacy bot 호환).
-- Standard View 스케줄 (2026-05-21):
-  • `standardview-daily.timer` — 07:30 + 20:30 KST 매일, `daily_generator.py` 만 (refresh)
-  • `standardview-push.timer` — 08:00 + 21:00 KST **평일만(Mon-Fri)**, `telegram_pusher.py` 만 (push). 주말 무음(사용자 2026-06-01 "주말에는 빼줘"). daily_generator 는 매일 유지 — HTML 대시보드는 주말에도 신선.
-  • 30분 gap 으로 generator 가 완료된 latest.html 을 pusher 가 사용
-  • legacy `standardview-hourly.timer` (Mon-Fri 12/16시 push) disabled
+- ~~Standard View 스케줄~~ (폐기 — 위 ⛔ 참조)
 - Screener GICS 분기 점검 (2026-05-29 사용자 정책):
   • `screener-gics-check.timer` — 3·6·9·12월 5일 09:00 KST (4x/year, 사용자
     정책 2026-06-01 — 1일→5일 변경 사유: 한국이 미국 대비 시차 앞서므로
@@ -721,10 +730,14 @@ pattern to follow:
     가 run 마다 `~/.tradingagents/daily_byte_archive/YYYY-MM-DD/HHMMSS_
     daily_byte[_weekly].json` 기록 → `regenerate_daily_byte_index()` (startup
     + 자정 periodic + delete 후). dashboard.py `_load/_render_daily_byte_*`.
-  • Weekly 종합 (2026-05-29): `bot/daily_kr_weekly.py` (SV weekly_pusher
-    mirror) — 이번 주 daily 아카이브 본문 모아 Pro 종합 → push + 아카이브
-    (kind="weekly"). `daily-byte-weekly.timer` **일 22:00 KST** (SV
-    standardview-weekly 동일 시각). install.sh 등록.
+  • Weekly 종합 **한·미 양국** (2026-05-29 KR → 2026-06-12 US 추가, 사용자
+    '주간 한국 미국 다·같은 시간'): KR=`bot/daily_kr_weekly.py`(kind=
+    "weekly") + US=`bot/us_market_weekly.py`(kind="us_weekly", 파일명
+    `*_us_daily_byte_weekly.json`) — 각각 이번 주 자기 daily 아카이브만
+    모아 Pro 종합 → push + 아카이브. KR 로더는 `us_daily_byte` 파일 제외
+    (#280 이 같은 디렉토리 공유 — 안 하면 KR 주간에 US 브리프 혼입).
+    타이머 `daily-byte-weekly.timer` + `daily-byte-weekly-us.timer` 둘 다
+    **일 22:00 KST**. install.sh 등록. 대시보드 badge 📅 한국/미국 Weekly.
   • 비용 통합 (2026-05-29): `_log_daily_byte_usage` 가 **subsystem=
     "daily_byte"** 로 usage.jsonl 기록 (screener._log_usage 는 screener
     하드코딩이라 별도) + daily_byte_usage.jsonl. → 메인 대시보드 cost 카드
@@ -963,10 +976,10 @@ nav (홈 풀 nav) + 해당 그룹 페이지들의 nav,
 **💰 비용 합산 정책 (사용자 2026-06-02):** 메인 NOAH 대시보드 비용 카드
 (+ `/usage`)는 **nav 에 링크된 비용-발생 surface 전부의 cost 를 합산**해
 총합을 표시하고, 각 surface 는 개별 비용을 자기 카드 / 전용 명령에서
-표시. 현재 합산 대상 8개 subsystem:
+표시. 현재 합산 대상 7개 subsystem (SV 제거 2026-06-12):
   - usage.jsonl (subsystem 태그): 분석 / Screener / Daily Byte / 청약 /
     부동산 / 블로그 — `_compute_stats` 가 subsystem 매핑으로 분리 합산.
-  - sv_usage.jsonl: Standard View (cost_krw + date 스키마).
+  - ~~sv_usage.jsonl: Standard View~~ (폐기 2026-06-12 — reader 제거).
   - **한국 수출입(trade)**: 별도 repo(stock-trade) 의 usage.jsonl.
     경로 `$TRADE_DATA_DIR/usage.jsonl`, 미설정 시 `~/.trade/usage.jsonl`.
     그 repo 스키마를 우리가 100% 통제 못 하므로 **방어적 reader** —
@@ -1337,6 +1350,17 @@ review:
   비-KR/creds 부재 시 yfinance 폴백. 호출은 차트층 5분 + KIS 2분 캐시로
   이중 bound. 대시보드 차트 가이드도 동기 갱신. 1분봉 intraday 차트 후속.
 
+- **호가 글리치 가드 전 대시보드 일괄 (2026-06-12, KLAC $2,411/$3.15T
+  surfaced — 사용자 'KLA 같은 사례 안 나오게 모든 대시보드')** —
+  `price_sanity.quote_glitch_gap(last, prev, 0.75)` 공유 프리미티브
+  (순수·단위테스트): 직전 종가 대비 ±75% 초과 = yfinance 분할 미조정/
+  stale 글리치 (대형주 일일 ±75% 는 무한도 시장에서도 비현실 → 진짜
+  뉴스 갭 보존). 적용 지점: ①검색카드/상세(`stock_snapshot` — 가격→직전
+  종가 교체 + 시총 재산출 + ⚠️ 표기) ②관심종목(`market_favorites._refresh`
+  — 가격·시총) ③홈 live 등락(`market_overview` — daily 봉 폴백) ④미국
+  Daily Byte(지수 snap 교체 + 무버 글리치 종목 제외) ⑤시총 fetch
+  (`finviz_client._fetch_mcaps` — prev/last 비율 역보정, 신고저·무버
+  카드 공용). 차트/분석 경로는 기존 가드(`last_close_is_glitch` 등) 유지.
 - **현재가 글리치 가드 (price-glitch HARD GUARD, 2026-06-04)** —
   `bot/price_sanity.py` (의존성 경량·순수·단위테스트 가능). yfinance 가 한
   종목의 한 시점 가격을 잘못된 분할/조정 기준·stale·junk 로 반환해 phantom

@@ -164,3 +164,22 @@ def should_hard_freeze_technicals(px, low52, high52, signals) -> bool:
     except (TypeError, ValueError):
         in_52w = False
     return not in_52w   # in-range → SOFT (real move); else/unknown → HARD
+
+
+def quote_glitch_gap(last, prev, max_gap: float = 0.75) -> bool:
+    """단일 호가(현재가 vs 직전 종가) 글리치 판정 — KLAC 2026-06-12 클래스.
+
+    yfinance fast_info/info 가 분할 미조정·stale 값을 last_price 로 반환하면
+    가격·등락·시총(가격×주식수)이 한꺼번에 깨진다 (KLAC $2,411/$3.15T).
+    대형주 일일 ±75% 는 무한도 시장(US)에서도 비현실 — 진짜 뉴스 갭은
+    크게 잡아도 ±50% 안쪽이라 0.75 는 false-fire 없이 글리치만 잡는다.
+    KR/TW/CN/JP 는 일일 한도가 있어 더더욱 안전. 입력 결측/0 은 False
+    (판정 불가 시 손대지 않음 — 보수적). 순수·stdlib (전 대시보드 공유:
+    관심종목·미국 무버·시총 fetch·검색카드)."""
+    try:
+        lp, pc = float(last), float(prev)
+        if lp <= 0 or pc <= 0:
+            return False
+        return abs(lp / pc - 1.0) > max_gap
+    except (TypeError, ValueError):
+        return False

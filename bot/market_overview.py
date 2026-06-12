@@ -208,10 +208,18 @@ def _fetch_yf_batch() -> dict[str, dict]:
     except Exception as exc:
         log.warning("market_overview: fast_info live error: %s", exc)
 
-    # 3) merge — live(오늘) 우선, 없으면 daily 폴백
+    # 3) merge — live(오늘) 우선, 없으면 daily 폴백. live 가 글리치(KLAC
+    # 클래스: fast_info 분할 미조정 → ±75% 초과 phantom 등락)면 daily 봉
+    # 폴백, 그것도 없으면 직전 종가 교체 (교체 우선 정책 2026-06-04).
+    try:
+        from bot.price_sanity import quote_glitch_gap as _qgg
+    except Exception:
+        _qgg = None
     for tk in tickers:
         if tk in live:
             cur, prev = live[tk]
+            if _qgg and _qgg(cur, prev):
+                cur, prev = daily.get(tk, (prev, prev))
         elif tk in daily:
             cur, prev = daily[tk]
         else:

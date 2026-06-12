@@ -51,6 +51,7 @@ for unit in \
     screener-gics-check.service     screener-gics-check.timer \
     daily-byte.service              daily-byte.timer \
     daily-byte-weekly.service       daily-byte-weekly.timer \
+    daily-byte-weekly-us.service    daily-byte-weekly-us.timer \
     us-market-daily.service         us-market-daily.timer \
     blog-watch.service              blog-watch.timer \
     realestate-byte.service         realestate-byte.timer \
@@ -121,6 +122,9 @@ fi
 if [ -f "$DEPLOY_DIR/daily-byte-weekly.timer" ]; then
     systemctl enable --now daily-byte-weekly.timer
 fi
+if [ -f "$DEPLOY_DIR/daily-byte-weekly-us.timer" ]; then
+    systemctl enable --now daily-byte-weekly-us.timer
+fi
 if [ -f "$DEPLOY_DIR/us-market-daily.timer" ]; then
     systemctl enable --now us-market-daily.timer
 fi
@@ -168,15 +172,17 @@ if [ -f "$DEPLOY_DIR/trade-bot.service" ]; then
     systemctl enable trade-bot.service
 fi
 
-# ── Standard View 폐기 (사용자 정책 2026-06-09) ──────────────────────
+# ── Standard View 폐기 (사용자 정책 2026-06-09 → 소스 삭제 2026-06-12) ──
 # SV 는 더 이상 사용하지 않음 — 생성/푸시/업데이트/watchdog/캐시롤오버
-# 전 타이머를 비활성화해 Gemini 비용 0. install.sh 가 root NOPASSWD 로
-# auto-update 에서 실행되므로 SSH 없이 1분 내 자동 중단. standardview/
-# deploy/install.sh 도 enable 안 하도록 무력화됨(재활성 방지).
-echo "→ decommissioning Standard View timers (cost 0)"
+# 전 타이머 + 8002 backend 서비스를 비활성화해 비용·잔존 표면 0.
+# install.sh 가 root NOPASSWD 로 auto-update 에서 실행되므로 SSH 없이
+# 1분 내 자동 중단. standardview/ 소스 트리는 repo 에서 삭제됨
+# (git 이력으로만 보존).
+echo "→ decommissioning Standard View units (cost 0)"
 for svunit in standardview-daily.timer standardview-push.timer \
               standardview-weekly.timer standardview-hourly.timer \
-              sv-update.timer sv-cache-rollover.timer sv-watchdog.timer; do
+              sv-update.timer sv-cache-rollover.timer sv-watchdog.timer \
+              standardview-backend.service; do
     systemctl disable --now "$svunit" 2>/dev/null || true
 done
 

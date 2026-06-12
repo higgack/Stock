@@ -327,42 +327,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # /sv_cost in channel — Standard View Gemini API cost (별도 process).
-    if first_word == "sv_cost":
-        try:
-            import httpx as _httpx
-            r = _httpx.get(
-                "http://127.0.0.1:8002/api/sv-usage/today", timeout=5
-            )
-            data = r.json() if r.status_code == 200 else {}
-        except Exception as exc:
-            await ctx.bot.send_message(
-                chat_id=post.chat.id,
-                text=(
-                    f"SV 비용 조회 실패: {type(exc).__name__}: {exc}\n"
-                    "backend (~/standardview) 8002 가동 중인지 확인."
-                ),
-            )
-            return
-        today_krw = float(data.get("today_krw", 0) or 0)
-        month_krw = float(data.get("month_krw", 0) or 0)
-        today_calls = int(data.get("today_calls", 0) or 0)
-        month_calls = int(data.get("month_calls", 0) or 0)
-        today_pt = int(data.get("today_prompt_tok", 0) or 0)
-        today_ot = int(data.get("today_output_tok", 0) or 0)
-        text_out = (
-            "💰 <b>Standard View 비용</b> (Gemini API, NOAH /usage 와 별개)\n"
-            f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
-            f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
-            f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
-            "<i>모델: gemini-2.5-flash · 매크로/산업/코멘트 호출</i>"
-        )
-        await ctx.bot.send_message(
-            chat_id=post.chat.id,
-            text=text_out,
-            parse_mode=ParseMode.HTML,
-        )
-        return
+    # /sv_cost 채널 분기 제거 (2026-06-12) — SV 폐기(#148) 후 소스 삭제 동반.
 
     # /screener_list in channel — auto-generated registry listing.
     # Single source of truth = bot.screener_themes; _HELP_TEXT only
@@ -380,8 +345,8 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         await _send_screener_domains_list(_send_ch, _screener_list_keyboard())
         return
 
-    # /screener_cost in channel — Bottleneck Screener Pro cost (parallel
-    # to /sv_cost). Reads ~/.tradingagents/screener_usage.jsonl directly.
+    # /screener_cost in channel — Bottleneck Screener Pro cost.
+    # Reads ~/.tradingagents/screener_usage.jsonl directly.
     if first_word == "screener_cost":
         data = _read_screener_cost_today_month()
         today_krw = float(data.get("today_krw", 0) or 0)
@@ -405,7 +370,7 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # /daily_byte_cost in channel — Daily Byte Pro cost (parallel to
-    # /screener_cost · /sv_cost). Reads daily_byte_usage.jsonl directly.
+    # /screener_cost). Reads daily_byte_usage.jsonl directly.
     if first_word == "daily_byte_cost":
         data = _read_daily_byte_cost_today_month()
         today_krw = float(data.get("today_krw", 0) or 0)
@@ -1121,7 +1086,7 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 ━━━━━━━━━
 <b>【8. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 실패 · 📋 관심종목 DART공시(/dart_alert) · 📊 Daily Byte(한국평일19:00·미국07:30·주간일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
+🚀✅ 배포 · ⚠️ hang · ❌ 실패 · 📋 관심종목 DART공시(/dart_alert) · 📊 Daily Byte(한국평일19:00·미국07:30·주간 한·미 일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·레딧·Daily Byte·📝블로그(글 요약+원문 아카이브)·부동산·청약·수출입)는 🌍Main nav, 워치·도메인목록은 Screener nav 에서
@@ -1141,7 +1106,6 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 _SITES_TEXT = """🔗 <b>참고 사이트</b>
 
- • <a href="http://34.50.23.221:8002/dashboard">Standard View — 매크로·산업·Deal 브리프</a>
  • <a href="https://stockeasy.intellio.kr/">Stockeasy</a>
  • <a href="https://stockhub.kr/">Stockhub</a>
  • <a href="https://jusikbot.com/">Jusikbot — Real-time Stock Dashboard</a>
@@ -1469,30 +1433,9 @@ def _build_usage_report() -> str:
     month_cost_analysis = (month_cost - month_cost_screener - month_cost_daily_byte
                            - month_cost_realestate - month_cost_blog)
 
-    # Standard View cost — read sv_usage.jsonl directly (KST date tagged).
-    sv_today_krw = sv_month_krw = 0.0
-    try:
-        import json as _j_sv
-        sv_path = Path.home() / "standardview" / "sv_usage.jsonl"
-        if sv_path.exists():
-            today_str_kst = datetime.now(_KST).date().isoformat()
-            month_str_kst = today_str_kst[:7]
-            with open(sv_path, encoding="utf-8") as _sf:
-                for _line in _sf:
-                    try:
-                        _r = _j_sv.loads(_line)
-                    except Exception:
-                        continue
-                    if _r.get("date") == today_str_kst:
-                        sv_today_krw += _r.get("cost_krw", 0) or 0
-                    if _r.get("month") == month_str_kst:
-                        sv_month_krw += _r.get("cost_krw", 0) or 0
-    except Exception as _exc:
-        log.warning("usage: SV cost read failed: %s", _exc)
-    # Express SV in USD for combined display arithmetic (then back to KRW
-    # via krw() for consistency with other rows).
-    sv_today_usd = sv_today_krw / fx
-    sv_month_usd = sv_month_krw / fx
+    # Standard View 비용 reader 제거 (2026-06-12) — SV 폐기(#148, 타이머
+    # 전부 disable)로 신규 비용 0. 6월 초 trailing 분은 총합에서 제외
+    # (소스 트리 삭제와 함께 reader 도 정리 — 단순성 우선).
 
     # 한국 수출입(trade) cost — 별도 repo usage.jsonl (사용자 정책 2026-06-02).
     # $TRADE_DATA_DIR/usage.jsonl, 미설정 시 ~/.trade/usage.jsonl. cost_usd /
@@ -1538,8 +1481,8 @@ def _build_usage_report() -> str:
     except Exception as _exc:
         log.warning("usage: trade cost read failed: %s", _exc)
 
-    today_total_usd = today_cost + sv_today_usd + tr_today_usd
-    month_total_usd = month_cost + sv_month_usd + tr_month_usd
+    today_total_usd = today_cost + tr_today_usd
+    month_total_usd = month_cost + tr_month_usd
 
     lines = [
         "📊 <b>NOAH 봇 사용 현황</b> (KST)",
@@ -1625,7 +1568,7 @@ def _read_screener_cost_today_month() -> dict:
     """Aggregate Bottleneck Screener cost from ~/.tradingagents/screener_
     usage.jsonl (KST date-tagged). Returns {today_krw, month_krw,
     today_calls, month_calls, today_pt, today_ot}. Empty dict on
-    failure. Mirror of /api/sv-usage/today shape."""
+    failure."""
     from pathlib import Path as _P
     import json as _j
     path = _P.home() / ".tradingagents" / "screener_usage.jsonl"
@@ -1948,7 +1891,7 @@ async def cmd_screener_list(update: Update, _: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def cmd_screener_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """/screener_cost — show Bottleneck Screener Gemini Pro cost (parallel
-    to /sv_cost). Reads ~/.tradingagents/screener_usage.jsonl directly —
+    pattern). Reads ~/.tradingagents/screener_usage.jsonl directly —
     no backend HTTP call needed."""
     if update.message is None:
         return
@@ -1972,7 +1915,7 @@ async def cmd_screener_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def cmd_daily_byte_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
     """/daily_byte_cost — show Daily Byte Gemini Pro cost (parallel to
-    /screener_cost · /sv_cost). Reads ~/.tradingagents/daily_byte_usage.jsonl."""
+    /screener_cost). Reads ~/.tradingagents/daily_byte_usage.jsonl."""
     if update.message is None:
         return
     data = _read_daily_byte_cost_today_month()
@@ -2024,43 +1967,8 @@ async def cmd_cheongyak_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
-async def cmd_sv_cost(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    """/sv_cost — show Standard View Gemini API cost. /usage 는 NOAH 의
-    cost 만 잡으므로 별도. SV backend (~/standardview) 가 같은 host
-    에서 띄워져 있을 때 동작 — 127.0.0.1:8002/api/sv-usage/today 조회."""
-    if update.message is None:
-        return
-    try:
-        import httpx as _httpx
-        r = _httpx.get(
-            "http://127.0.0.1:8002/api/sv-usage/today", timeout=5
-        )
-        if r.status_code != 200:
-            await update.message.reply_text(
-                f"SV 비용 endpoint 응답 {r.status_code} — backend down?"
-            )
-            return
-        data = r.json()
-    except Exception as exc:
-        await update.message.reply_text(
-            f"SV 비용 조회 실패: {type(exc).__name__}: {exc}\n"
-            f"backend (~/standardview) 가 8002 에서 가동 중인지 확인."
-        )
-        return
-    today_krw = float(data.get("today_krw", 0) or 0)
-    month_krw = float(data.get("month_krw", 0) or 0)
-    today_calls = int(data.get("today_calls", 0) or 0)
-    month_calls = int(data.get("month_calls", 0) or 0)
-    today_pt = int(data.get("today_prompt_tok", 0) or 0)
-    today_ot = int(data.get("today_output_tok", 0) or 0)
-    text = (
-        "💰 <b>Standard View 비용</b> (Gemini API, NOAH /usage 와 별개)\n"
-        f"오늘: <b>₩{today_krw:,.1f}</b> · {today_calls}회\n"
-        f"이번 달: <b>₩{month_krw:,.0f}</b> · {month_calls}회\n"
-        f"오늘 tokens: in {today_pt:,} / out {today_ot:,}\n"
-        "<i>모델: gemini-2.5-flash · 매크로 brief + 산업 분석 + 코멘트 카드 호출</i>"
-    )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+# /sv_cost 제거 (2026-06-12) — Standard View 폐기(#148) 후 소스 삭제와
+# 함께 명령도 정리. 생성 타이머가 죽어 '오늘 비용' 이 영구 0 이라 오해만 유발.
 
 
 async def cmd_sites(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3074,7 +2982,6 @@ def _static_command_registry() -> dict:
         "start": (cmd_help, "사용법 안내"),
         "help": (cmd_help, "사용법 안내"),
         "usage": (cmd_usage, "사용량 / 통합 비용 / 7일 차트"),
-        "sv_cost": (cmd_sv_cost, "Standard View 비용"),
         "screener_cost": (cmd_screener_cost, "Bottleneck Screener 비용 (Pro)"),
         "daily_byte_cost": (cmd_daily_byte_cost, "Daily Byte 비용 (KR 수급 브리프)"),
         "cheongyak_cost": (cmd_cheongyak_cost, "청약 Byte 비용 (신규 분양 피드)"),

@@ -72,6 +72,13 @@ def collect_us_data() -> dict:
             info = tk.info or {}
             price = info.get("regularMarketPrice") or info.get("currentPrice")
             prev = info.get("regularMarketPreviousClose") or info.get("previousClose")
+            # 글리치 가드 (KLAC 클래스): ±75% 초과 phantom → 직전 종가 교체
+            try:
+                from bot.price_sanity import quote_glitch_gap
+                if quote_glitch_gap(price, prev):
+                    price = prev
+            except Exception:
+                pass
             chg = None
             if price and prev and prev > 0:
                 chg = round((price - prev) / prev * 100, 2)
@@ -159,6 +166,13 @@ def collect_sp500_movers() -> dict:
                 continue
             c0, c1, c2 = float(closes.iloc[-1]), float(closes.iloc[-2]), float(closes.iloc[-3])
             if c1 <= 0 or c2 <= 0:
+                continue
+            # 마지막 봉 글리치 가드 (KLAC 클래스 — 분할 미조정 봉이 ±75%
+            # phantom 무버로 TOP10 에 오르는 것 차단; S&P500 급 대형주
+            # 일일 ±75% 는 비현실). 해당 종목만 skip (graceful).
+            if abs(c0 / c1 - 1.0) > 0.75:
+                log.info("us_market_daily: %s 가격 글리치 의심(%.0f%%) — 제외",
+                         tk, (c0 / c1 - 1.0) * 100)
                 continue
             chg = (c0 - c1) / c1 * 100.0          # 당일 등락 %
             chg_prev = (c1 - c2) / c2 * 100.0     # 전일 등락 % (양→음 전환 감지)
