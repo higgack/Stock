@@ -842,18 +842,21 @@ def _material_mgmt_lines(txt: str) -> dict | None:
     if title:
         parts.append(f"제목: {title}")
     cp = _g(r"계약\s*상대방?[^A-Za-z가-힣0-9]{0,8}?"
-            r"([A-Za-z가-힣0-9(),.&· ]{2,50}?)\s*(?:\d\s*\)|\d\s*\.\s|$)")
+            r"([A-Za-z가-힣0-9(][A-Za-z가-힣0-9(),.&·:\- ]{1,59}?)"
+            r"\s*(?:\d\s*\)|\d\s*\.\s|$)")
     if cp:
         parts.append(f"상대방: {cp}")
-    amt = _g(r"계약금액[^A-Za-z0-9$€¥]{0,8}?"
-             r"(총?\s*US\$[\d,]{4,}(?:\s*\(약[\d조억,.\s]+원\))?"
-             r"|총?\s*[\d,]{4,}\s*원?(?:\s*\(약[\d조억,.\s]+원\))?)")
+    # 금액 — US$(한미)·USD(메멘토 코스닥형)·원화 + (약 N억원)/(₩ N) 환산 병기
+    _PAREN = r"(?:\s*\(\s*(?:약|₩)?[\s\d,조억.]*원?\s*\))?"
+    amt = _g(r"(?:계약금액|기술이전\s*금액)[^0-9]{0,12}?[::]?\s*"
+             r"(총?\s*(?:US\$|USD)\s*[\d,]{4,}" + _PAREN +
+             r"|총?\s*[\d,]{4,}\s*원?" + _PAREN + r")")
     if amt:
         parts.append(f"계약금액: {amt}")
-    up = _g(r"(?:계약금\s*\(?\s*Upfront\s*\)?|Upfront)[^A-Za-z0-9$]{0,8}?"
-            r"(US\$[\d,]{4,}(?:\s*\(약\s*[\d,]+억원\))?|[\d,]{4,})")
+    up = _g(r"(?:계약금\s*\(?\s*Upfront\s*\)?|Upfront|선급금)[^0-9]{0,12}?[::]?\s*"
+            r"(총?\s*(?:US\$|USD)\s*[\d,]{4,}" + _PAREN + r"|[\d,]{4,})")
     if up:
-        parts.append(f"계약금(Upfront): {up}")
+        parts.append(f"계약금(선급/Upfront): {up}")
     d = _g(r"계약\s*체결일[^0-9]{0,10}?"
            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})")
     if d:
@@ -876,6 +879,70 @@ def _extract_material_mgmt(rcept_no: str, api_key: str) -> dict | None:
     if out is None:
         _doc_fail_mark(rcept_no, hours=12.0)
     return out
+
+
+# 자기주식취득결정 원문 폴백 (미파싱-2, 2026-06-12) — 구조화 API
+# (tsstkAqDecsn)가 7일 윈도/필드 변형으로 비는 케이스를 표준 표에서 직접.
+_BUYBACK_DOC_FIELDS = [
+    ("취득예정", r"취득예정주식\s*\(주\)[^0-9]{0,16}?([\d,]{3,})", "num"),
+    ("취득예정금액", r"취득예정금액\s*\(원\)[^0-9]{0,16}?([\d,]{6,})", "won"),
+    ("시작", r"취득예상기간[\s\S]{0,16}?시작일[^0-9]{0,10}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", "text"),
+    ("종료", r"취득예상기간[\s\S]{0,60}?종료일[^0-9]{0,10}?"
+            r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", "text"),
+    ("목적", r"취득목적[^가-힣A-Za-z0-9]{0,10}?"
+            r"([가-힣A-Za-z0-9 ]{2,40}?)\s*(?:\d{1,2}\s*\.|취득방법|$)", "text"),
+    ("방법", r"취득방법[^가-힣A-Za-z0-9]{0,10}?"
+            r"([가-힣A-Za-z0-9() ]{2,40}?)\s*(?:\d{1,2}\s*\.|위탁|$)", "text"),
+]
+
+
+def _custody_lines(txt: str) -> list[str]:
+    """부동산투자회사 자산보관 위탁계약 체결 (리츠 — 미파싱-2 예시 2건:
+    신영부동산신탁 정정 연장 / 한국토지신탁 오렌지센터). 보관기관·대상
+    부동산·기간·계약일자. 순수."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    org = _g(r"회사명[^가-힣A-Za-z(]{0,8}?"
+             r"([가-힣A-Za-z(),.· ]{2,50}?)\s*(?:자본금|\d{1,2}\s*\.\s|$)")
+    if org:
+        parts.append(f"보관기관: {org}")
+    prop = _g(r"대상\s*부동산[^가-힣A-Za-z0-9(]{0,8}?(?:은|는|[-–])?\s*"
+              r"([가-힣A-Za-z0-9()\s,.\-]{4,60}?)\s*(?:입니다|\d\s*\.\s|$)")
+    if prop:
+        prop = re.sub(r"^[\s\-–—·]+", "", prop)   # 선두 '- ' strip
+        parts.append(f"대상 부동산: {prop}")
+    # 마지막 출현 = 본문(정정 래퍼의 '정정전' stale 값이 앞에 옴 — 신영
+    # 연장 정정 예시, 회생 제출기한과 동일 클래스)
+    ss = re.findall(r"계약기간[\s\S]{0,12}?시작일[^0-9]{0,8}?"
+                    r"(\d{4}-\d{1,2}-\d{1,2})", txt)
+    es = re.findall(r"계약기간[\s\S]{0,60}?종료일[^0-9]{0,8}?"
+                    r"(\d{4}-\d{1,2}-\d{1,2})", txt)
+    if ss:
+        parts.append(f"기간: {ss[-1]} ~ {es[-1]}" if es else f"기간: {ss[-1]} ~")
+    d = _g(r"계약일자[^0-9]{0,8}?(\d{4}-\d{1,2}-\d{1,2})")
+    if d:
+        parts.append(f"계약일자: {d}")
+    return parts
+
+
+def _extract_custody(rcept_no: str, api_key: str) -> dict | None:
+    """자산보관 위탁계약 — fetch 후 _custody_lines. 2미만 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts = _custody_lines(txt)
+    if len(parts) < 2:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
 
 
 def _inquiry_lines(txt: str) -> list[str]:
@@ -1645,7 +1712,8 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
         return m.group(1).strip() if m else None
 
     parts: list[str] = []
-    _END = r"(?:\d{1,2}\.\s|계약금액|계약내역|계약기간|공시유보|시작일|비고|[A-Za-z0-9]{15,}|$)"
+    _END = (r"(?:\d{1,2}\.\s|계약금액|계약내역|계약기간|공시유보|시작일|비고"
+            r"|[-–]\s*회사와|[A-Za-z0-9]{15,}|$)")   # 유가 표준형 '- 회사와의 관계' 꼬리 컷
     _V = r"([가-힣A-Za-z0-9()\[\]_'‘’\"“”&.,·ㆍ㈜\- ]{2,80}?)"
 
     # 내용 — 라벨 3변형: 체결계약명(표준 상세형) / 구분+세부내용(자율공시
@@ -1660,6 +1728,11 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
     if not body:
         body = _grab(r"계약\s*내용[^가-힣A-Za-z0-9]{0,40}?" + _V + r"\s*" + _END)
     if body:
+        # 유가 표준형 '판매ㆍ공급계약 구분'(공사수주 등) 병기 — VLCC 예시
+        gu2 = _grab(r"공급계약\s*구분[^가-힣A-Za-z0-9]{0,10}?"
+                    r"([가-힣A-Za-z0-9 ]{2,20}?)\s*(?:[-–]|\d{1,2}\s*\.|체결계약명|$)")
+        if gu2 and gu2 not in body:
+            parts.append(f"구분: {gu2}")
         parts.append(f"계약: {body[:70]}")
 
     # 정정사항 표 = 라벨 뒤 (정정전, 정정후) 인접 숫자쌍 — 본문(라벨당 숫자
@@ -1788,6 +1861,14 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
         doc = _parse_buyback_result(rcept_no, api_key)
         if doc:
             return doc
+    elif ("자기주식" in t and "취득" in t and "신탁" not in t
+            and "처분" not in t):
+        # 표준 표 원문 우선 (미파싱-2 — 구조화 API 7일 윈도 밖이면 비던
+        # 케이스). 실패 시 아래 specs(tsstkAqDecsn) 경로로 폴스루.
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _BUYBACK_DOC_FIELDS, min_fields=2)
+        if doc:
+            return doc
     elif "주주명부폐쇄" in t or ("기준일" in t and "배당" in t):
         doc = _parse_div_record(rcept_no, api_key, t)
         if doc:
@@ -1885,6 +1966,10 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
             _doc_fail_mark(rcept_no, hours=12.0)
     elif "투자판단" in t or "기술이전" in t:
         doc = _extract_material_mgmt(rcept_no, api_key)
+        if doc:
+            return doc
+    elif "자산보관" in t:
+        doc = _extract_custody(rcept_no, api_key)
         if doc:
             return doc
 

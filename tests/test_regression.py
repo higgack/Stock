@@ -5131,7 +5131,9 @@ class TestDartFairDisclosureParsing:
         assert any(l == "상대방: Eli Lilly and Company (미국)" for l in r["lines"])
         assert any(l.startswith("계약금액: 총 US$1,260,000,000")
                    and "1조 8,973억원" in l for l in r["lines"])
-        assert any(l.startswith("계약금(Upfront): US$75,000,000") for l in r["lines"])
+        # 라벨 '계약금(선급/Upfront)' — 미파싱-2에서 선급금(코스닥형) 통합
+        assert any(l.startswith("계약금(선급/Upfront): US$75,000,000")
+                   for l in r["lines"])
 
     def test_material_mgmt_collected_and_forced(self):
         # 투자판단: fetch keep 예외 + force 파싱 대상 + 대시보드 숨김 wiring
@@ -5151,6 +5153,87 @@ class TestDartFairDisclosureParsing:
         assert "#5c9ce6" in dsrc            # ⚠️ 파랑 (옛 주황 #f5a623 카드/배지 제거)
         assert ".df-badge-unp{background:#5c9ce618" in dsrc
         assert "파란 점선" in dsrc           # 범례 동기
+
+
+class TestDartUnparsed2:
+    """미파싱-2 (사용자 2026-06-12, 5예시) — 유가 표준 공급계약 보강 /
+    USD 기술이전 / 자산보관 위탁계약 / 자기주식취득 원문 폴백."""
+
+    def _patch(self, monkeypatch, txt):
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_fetch_doc_text", lambda r, k: txt)
+        monkeypatch.setattr(df, "_doc_fail_mark", lambda *a, **kw: None)
+        return df
+
+    def test_contract_exchange_standard_vlcc(self, monkeypatch):
+        # 유가 표준형 — 구분(공사수주) 병기 + '- 회사와의 관계' 꼬리 컷
+        txt = ("단일판매ㆍ공급계약 체결 1. 판매ㆍ공급계약 구분 공사수주 - 체결계약명 VLCC 4척 "
+               "2. 계약내역 계약금액(원) 800,100,000,000 최근매출액(원) 12,783,500,000,000 "
+               "매출액대비(%) 6.3 대규모법인여부 해당 3. 계약상대 아시아 지역 선주 - 회사와의 관계 - "
+               "5. 계약기간 시작일 2026-06-12 종료일 2030-02-22 7. 계약(수주)일자 2026-06-12")
+        df = self._patch(monkeypatch, txt)
+        out = df._extract_contract_document("X", "K")
+        assert "구분: 공사수주" in out["lines"]
+        assert any(l == "계약상대: 아시아 지역 선주" for l in out["lines"])
+        assert any("매출액대비 6.3%" in l for l in out["lines"])
+
+    def test_material_mgmt_usd_prepayment(self):
+        # 코스닥 기술이전 — USD 표기 + 선급금 + ₩ 환산 병기
+        from bot.dart_feed import _material_mgmt_lines
+        r = _material_mgmt_lines(
+            "투자판단 관련 주요경영사항 1. 제목 이중항체 MT-103 기술이전 계약 체결 2. 주요내용 "
+            "1) 계약상대방 : Memento Medicines(이하 메멘토) - 국적 : 미국 2) 계약의 내용 "
+            "3) 계약체결일 : 2026년 5월 10일 6) 계약금액 (1) 기술이전 금액 : 총 USD "
+            "538,875,000 (₩ 781,799,850,000) (2) 선급금 : 총 USD 4,000,000 (₩ 5,803,200,000)")
+        assert r["category"] == "계약"
+        assert any(l.startswith("상대방: Memento Medicines") for l in r["lines"])
+        assert any(l.startswith("계약금액: 총 USD 538,875,000")
+                   and "781,799,850,000" in l for l in r["lines"])
+        assert any(l.startswith("계약금(선급/Upfront): 총 USD 4,000,000")
+                   for l in r["lines"])
+
+    def test_custody_correction_uses_post_values(self):
+        # 자산보관 위탁계약 — 정정 래퍼의 '정정전' stale 종료일 대신 본문
+        # (마지막 출현) 사용 + 정정 헤더
+        from bot.dart_feed import _custody_lines
+        L = _custody_lines(
+            "정정신고(보고) 정정일자 2026-06-04 3. 정정사유 차입기간 상환일 연장으로 인한 "
+            "자산보관 위탁계약기간 연장 4. 정정사항 정정항목 정정전 정정후 종료일 2026-06-04 2027-06-04 "
+            "부동산투자회사 자산보관 위탁계약 체결 1. 자산보관기관 회사명 신영부동산신탁"
+            "(SHINYOUNG REAL ESTATE TRUST CO., LTD) 자본금(원) 100,000,000,000 "
+            "2. 계약기간 시작일 2024-06-04 종료일 2027-06-04 3. 계약일자 2024-06-04 "
+            "5. 기타 자산보관계약 대상 부동산은 서울시 영등포구 선유서로 50(문래동6가) "
+            "이편한세상문래 장기일반 민간임대주택 5세대 및 근린생활시설 8호실입니다")
+        assert any(l == "기간: 2024-06-04 ~ 2027-06-04" for l in L)
+        assert any(l.startswith("정정(26-06-04)") for l in L)
+        assert any(l.startswith("보관기관: 신영부동산신탁") for l in L)
+
+    def test_custody_open_ended_and_dash_strip(self):
+        from bot.dart_feed import _custody_lines
+        L = _custody_lines(
+            "부동산투자회사 자산보관 위탁계약 체결 1. 자산보관기관 회사명 (주)한국토지신탁 "
+            "자본금(원) 252,489,230,000 2. 계약기간 시작일 2026-06-01 종료일 - "
+            "3. 계약일자 2026-06-01 5. 기타 1. 자산보관계약 대상 부동산 - "
+            "오렌지센터(서울특별시 세종대로7길 37) 2. 위 자산보관기관의")
+        assert any(l == "기간: 2026-06-01 ~" for l in L)          # 종료일 '-' 개방형
+        assert any(l == "대상 부동산: 오렌지센터(서울특별시 세종대로7길 37)"
+                   for l in L)                                     # 선두 '- ' strip
+
+    def test_buyback_doc_fallback_and_3pct(self, monkeypatch):
+        # 자기주식취득결정 표준 표 원문 폴백 (구조화 API 7일 윈도 밖 케이스)
+        # + 🔥 규칙 4 자동 연동 (2,380,952 / 65,787,207 = 3.6%)
+        txt = ("자기주식 취득 결정 1. 취득예정주식(주) 보통주 2,380,952 기타주식 - "
+               "2. 취득예정금액(원) 보통주 20,000,000,000 기타주식 - "
+               "3. 취득예상기간 시작일 2026년 06월 15일 종료일 2026년 09월 14일 "
+               "5. 취득목적 임직원 보상 재원 마련 6. 취득방법 유가증권 시장을 통한 직접 취득")
+        df = self._patch(monkeypatch, txt)
+        o = df._extract_doc_fields("X", "K", df._BUYBACK_DOC_FIELDS, min_fields=2)
+        assert any(l == "취득예정: 2,380,952주" for l in o["lines"])
+        assert any(l == "목적: 임직원 보상 재원 마련" for l in o["lines"])
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "자기주식취득결정", "category": "주주환원",
+                             "detail": o["lines"]},
+                            shares_outstanding=65_787_207) == "발행주식 3.6% 취득"
 
 
 class TestUsDailyMoversEnrichment:
