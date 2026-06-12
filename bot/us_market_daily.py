@@ -100,6 +100,13 @@ def collect_us_data() -> dict:
         log.warning("us_market_daily: movers collection failed: %s", exc)
         result["movers"] = {}
 
+    # 52주 신고가/신저가 요약 (신고저 캐시 재사용 — KR 신호 미러, 2026-06-12)
+    try:
+        result["highlow"] = _collect_highlow_summary()
+    except Exception as exc:
+        log.warning("us_market_daily: highlow collection failed: %s", exc)
+        result["highlow"] = {}
+
     return result
 
 
@@ -116,20 +123,25 @@ _TOP_N = 12
 
 
 def collect_sp500_movers() -> dict:
-    """S&P 500 전 종목 6일 일봉 벌크 fetch → 당일 등락/거래대금/거래량 서지/
-    양→음 전환/breadth 를 Python 이 정확 산출. 반환 dict 의 수치가 그대로
-    프롬프트에 들어간다 (Pro 재계산 금지 directive)."""
+    """S&P 500 전 종목 1개월 일봉 벌크 fetch → 당일 등락/5일·1개월 누적/
+    거래대금/거래량 서지/양→음 전환/breadth 를 Python 이 정확 산출. 반환
+    dict 의 수치가 그대로 프롬프트에 들어간다 (Pro 재계산 금지 directive).
+
+    universe 는 finviz_client._us_universe_robust (위키→GitHub CSV→GICS→코어)
+    — 옛 stock_screener._get_us_universe 단일 경로는 VM 위키 403 으로 빈
+    universe → movers {} → 'Mag-7 만 분석' 폴백 브리프가 나가던 버그
+    (2026-06-12 사용자 '종목 내용 부족' surfaced)."""
     import yfinance as yf
     try:
-        from bot.stock_screener import _get_us_universe
-        universe = _get_us_universe()
+        from bot.finviz_client import _us_universe_robust
+        universe = _us_universe_robust()
     except Exception as exc:
         log.warning("us_market_daily: universe fetch failed: %s", exc)
         return {}
     if not universe:
         return {}
 
-    df = yf.download(universe, period="6d", interval="1d",
+    df = yf.download(universe, period="1mo", interval="1d",
                      group_by="ticker", threads=True,
                      progress=False, auto_adjust=False)
     if df is None or df.empty:
@@ -150,6 +162,13 @@ def collect_sp500_movers() -> dict:
                 continue
             chg = (c0 - c1) / c1 * 100.0          # 당일 등락 %
             chg_prev = (c1 - c2) / c2 * 100.0     # 전일 등락 % (양→음 전환 감지)
+            # 5일/1개월 누적 (KR 5일·20일 누적 매집 미러 — 추세 지속성 신호)
+            chg_5d = None
+            if len(closes) >= 6 and float(closes.iloc[-6]) > 0:
+                chg_5d = (c0 / float(closes.iloc[-6]) - 1) * 100.0
+            chg_1m = None
+            if len(closes) >= 15 and float(closes.iloc[0]) > 0:
+                chg_1m = (c0 / float(closes.iloc[0]) - 1) * 100.0
             v0 = float(vols.iloc[-1])
             v_hist = vols.iloc[:-1].tail(5)
             v_avg = float(v_hist.mean()) if len(v_hist) else 0.0
@@ -157,6 +176,8 @@ def collect_sp500_movers() -> dict:
             dollar_m = c0 * v0 / 1e6              # 거래대금 $M
             rows.append({
                 "ticker": tk, "chg": round(chg, 2), "chg_prev": round(chg_prev, 2),
+                "chg_5d": round(chg_5d, 2) if chg_5d is not None else None,
+                "chg_1m": round(chg_1m, 2) if chg_1m is not None else None,
                 "dollar_m": round(dollar_m, 1),
                 "surge": round(surge, 2) if surge else None,
             })
@@ -167,6 +188,14 @@ def collect_sp500_movers() -> dict:
         log.warning("us_market_daily: movers rows too few (%d) — skip", len(rows))
         return {}
 
+    out = _rank_movers(rows)
+    _attach_names_mcaps(out)
+    return out
+
+
+def _rank_movers(rows: list[dict]) -> dict:
+    """rows → breadth + 랭킹 5종 (순수 — 단위테스트). 랭킹 리스트의 dict 는
+    rows 와 동일 객체(참조 공유) — 이후 이름/시총 부착이 전 리스트에 반영."""
     up = sum(1 for r in rows if r["chg"] > 0)
     breadth = round(up / len(rows) * 100.0, 1)
     avg_chg = round(sum(r["chg"] for r in rows) / len(rows), 2)
@@ -189,6 +218,58 @@ def collect_sp500_movers() -> dict:
         "gainers": gainers, "losers": losers, "by_dollar": by_dollar,
         "surges": surges, "reversals": reversals,
     }
+
+
+def _attach_names_mcaps(mv: dict) -> None:
+    """랭킹에 든 종목(합집합 ≤~60)에만 회사명 + 시총($B) + 시총 대비
+    거래대금(손바뀜 %) 부착 — KR '시총 대비 강한 매집' 미러. 회사명 =
+    GitHub S&P500 CSV(캐시), 시총 = fast_info 병렬(finviz._fetch_mcaps,
+    07:30 oneshot 타이머라 ~60콜 무해). 실패 시 누락(graceful)."""
+    try:
+        ranked: dict[str, dict] = {}
+        for k in ("gainers", "losers", "by_dollar", "surges", "reversals"):
+            for r in mv.get(k) or []:
+                ranked[r["ticker"]] = r
+        if not ranked:
+            return
+        from bot.finviz_client import _fetch_mcaps, _sp500_names
+        names = _sp500_names()
+        mcaps = _fetch_mcaps(list(ranked.keys()))
+        for tk, r in ranked.items():
+            nm = names.get(tk)
+            if nm:
+                r["name"] = nm
+            mc = mcaps.get(tk)
+            if mc:
+                r["mcap_b"] = round(mc / 1e9, 1)
+                if r.get("dollar_m"):
+                    r["turn_pct"] = round(r["dollar_m"] / (mc / 1e6) * 100.0, 2)
+    except Exception as exc:
+        log.warning("us_market_daily: names/mcap attach failed: %s", exc)
+
+
+def _collect_highlow_summary(top_n: int = 8) -> dict:
+    """52주 신고가/신저가 요약 — finviz_client 신고저 캐시 재사용(추가 산출 0).
+    KR 브리프의 신고가 신호 미러. {count_high, count_low, high:[...], low:[...],
+    source} — 각 항목 {ticker, name, mcap} 시총 내림차순 상위 top_n."""
+    try:
+        from bot.finviz_client import fetch_high_low
+        hl = fetch_high_low()
+        def _top(items: list) -> list:
+            xs = sorted(items or [],
+                        key=lambda it: (it.get("mcap") is None,
+                                        -(it.get("mcap") or 0)))[:top_n]
+            return [{"ticker": it.get("ticker"), "name": it.get("name"),
+                     "mcap": it.get("mcap"), "pct": it.get("pct")} for it in xs]
+        high, low = hl.get("high") or [], hl.get("low") or []
+        if not high and not low:
+            return {}
+        return {"count_high": len(high), "count_low": len(low),
+                "high": _top(high), "low": _top(low),
+                "source": hl.get("source", "")}
+    except Exception as exc:
+        log.warning("us_market_daily: highlow summary failed: %s", exc)
+        return {}
 
 
 def _format_data_for_prompt(data: dict) -> str:
@@ -222,10 +303,19 @@ def _format_data_for_prompt(data: dict) -> str:
     mv = data.get("movers") or {}
     if mv.get("n"):
         def _row(r: dict, with_prev: bool = False) -> str:
+            label = (f"{r['ticker']}({r['name']})" if r.get("name")
+                     else r["ticker"])
+            cum = ""
+            if r.get("chg_5d") is not None:
+                cum += f" · 5일 {r['chg_5d']:+.1f}%"
+            if r.get("chg_1m") is not None:
+                cum += f" · 1개월 {r['chg_1m']:+.1f}%"
+            turn = (f"(시총 ${r['mcap_b']:,.0f}B 대비 {r['turn_pct']:.1f}%)"
+                    if r.get("turn_pct") and r.get("mcap_b") else "")
             surge = f" · 거래량 {r['surge']:.1f}x(5일평균 대비)" if r.get("surge") else ""
             prev = f" · 전일 {r['chg_prev']:+.2f}%" if with_prev else ""
-            return (f"  {r['ticker']}: {r['chg']:+.2f}%{prev}"
-                    f" · 거래대금 ${r['dollar_m']:,.0f}M{surge}")
+            return (f"  {label}: {r['chg']:+.2f}%{prev}{cum}"
+                    f" · 거래대금 ${r['dollar_m']:,.0f}M{turn}{surge}")
 
         parts.append(
             f"\n=== S&P 500 breadth (전 종목 {mv['n']}개 Python 산출) ===\n"
@@ -247,6 +337,20 @@ def _format_data_for_prompt(data: dict) -> str:
         if mv.get("reversals"):
             parts.append("\n=== 양→음 전환 (전일 +2%↑ → 당일 -1%↓) ===")
             parts += [_row(r, with_prev=True) for r in mv["reversals"]]
+
+    # ── 52주 신고가/신저가 (신고저 캐시 재사용 — graceful 생략) ──
+    hl = data.get("highlow") or {}
+    if hl.get("count_high") or hl.get("count_low"):
+        def _hl_row(it: dict) -> str:
+            nm = f"({it['name']})" if it.get("name") else ""
+            mc = (f" 시총 ${it['mcap'] / 10:,.0f}B" if it.get("mcap") else "")
+            return f"{it['ticker']}{nm}{mc}"
+        parts.append(
+            f"\n=== 52주 신고가/신저가 (고저 1% 근접 · {hl.get('source', '')}) ===\n"
+            f"  신고가 {hl.get('count_high', 0)}종목 (시총 상위): "
+            + ", ".join(_hl_row(it) for it in hl.get("high") or []) + "\n"
+            f"  신저가 {hl.get('count_low', 0)}종목 (시총 상위): "
+            + ", ".join(_hl_row(it) for it in hl.get("low") or []))
 
     return "\n".join(parts)
 
@@ -296,9 +400,15 @@ def build_prompt(data: dict) -> str:
    🔥 지금 강한 섹터·종목 (섹터 ETF 상위 + 거래량 서지 동반 상승 종목 우선)
    🔄 섹터 로테이션 (유출 섹터 → 유입 섹터, ETF 등락 명시)
    💰 거래대금 상위 동향 (Mag-7 포함 — 등락률 병기, 손바뀜/쏠림 해석)
-   📈 주목할 수급 패턴 (거래량 서지 / 신규 모멘텀 / breadth 다이버전스)
-   🏆 주목 종목 5선 (각 종목: 등락 + 거래대금 + 서지 + catalyst, 중립)
-   ⚠️ 경고 시그널 (양→음 전환 종목 + VIX/금리/달러 리스크 + 향후 1주 일정)
+   📈 주목할 수급 패턴 (거래량 서지 / 5일·1개월 누적 추세 지속 / 시총 대비
+   높은 손바뀜 / 52주 신고가 신규 진입 / breadth 다이버전스 — KR 브리프의
+   '꾸준한 매집·첫 대량 출현·시총 대비 강한 매집' 패턴 분류를 미러)
+   🏆 주목 종목 5선 — **Mag-7 제외, 위 랭킹·서지·신고가 데이터에서 5종목
+   필수 선정** (movers 데이터가 있으면 'Mag-7 만 분석' 같은 축소 금지).
+   각 종목: 당일 등락 + 5일/1개월 누적 + 거래대금(시총 대비 %) + 거래량
+   서지 + catalyst(web search 로 당일 실적/공시/뉴스 확인, 날짜 명시 —
+   확인 안 되면 '맥락 미확인'). KR 주목 5선과 동일 밀도, 중립.
+   ⚠️ 경고 시그널 (양→음 전환 종목 + 52주 신저가 + VIX/금리/달러 리스크 + 향후 1주 일정)
    🎯 한 줄 결론 (포지셔닝 관점, 중립)
 7. **본문은 일반 텍스트** + 섹션마다 위 지정 이모지로 시작하는 헤더 한 줄.
    **굵게(`**`)는 섹션 헤더·핵심 수치에만 최소 사용** — catalyst·맥락·설명
