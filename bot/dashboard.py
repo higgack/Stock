@@ -10714,6 +10714,14 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 
     total = sum(len(v) for v in by_date.values())
 
+    # 파싱배치 백필 v4 상태 라벨 — marker 파일 기반 (사용자 2026-06-12
+    # '백필 확실히 확인한거지' — SSH/문의 없이 페이지에서 직접 확인).
+    try:
+        from bot.dart_feed import backfill_v4_status
+        _bf4_status = backfill_v4_status()
+    except Exception:
+        _bf4_status = ""
+
     # 시총·현재가 렌더 부착(배치 #11) — FSC 12h 디스크 캐시 + 렌더당 코드
     # 1회 메모 + cold-fetch 시간예산 45s(30일 윈도 수백 코드 첫 채움이 1분
     # 사이클을 막지 않게 — 최신 카드부터 채워지고 다음 regen 이 이어감).
@@ -10855,6 +10863,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   </div>
   <h1>DART 공시</h1>
   <p class="sub">출처 DART(OpenDART) · 1분 수집 · {datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")} 기준</p>
+  <p class="sub" style="margin-top:-8px">{_html.escape(_bf4_status)}</p>
 
   <div class="df-controls">
     <div class="df-pills">{''.join(pills)}</div>

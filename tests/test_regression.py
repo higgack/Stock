@@ -5886,3 +5886,32 @@ class TestTradeDashboardSudoersSelfHeal:
         assert "visudo -cf" in src                  # 검증 후 설치 (잠금 사고 방지)
         # 1회 즉시 heal — 누적 UI 변경 반영
         assert "systemctl restart trade-bot-dashboard 2>/dev/null" in src
+
+
+class TestBackfillV4StatusLabel:
+    """백필 v4 상태 라벨 (2026-06-12 '확실히 확인한거지') — 공시 페이지가
+    marker 파일로 완료/대기를 직접 표시. SSH·문의 없이 화면 확인."""
+
+    def test_status_states(self, tmp_path, monkeypatch):
+        import json as _j
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_BACKFILL_MARKER_V4",
+                            tmp_path / ".dart_feed_backfilled_v4")
+        assert df.backfill_v4_status().startswith("⏳")
+        (tmp_path / ".dart_feed_backfilled_v4").write_text(_j.dumps(
+            {"ts": "2026-06-12T21:40:00", "reparse_replaced": 41,
+             "reparse_checked": 88, "added": 137, "reclassified": 12}))
+        s = df.backfill_v4_status()
+        assert s.startswith("✅") and "41/88" in s and "137" in s
+        # 옛 plain isoformat marker tolerant
+        (tmp_path / ".dart_feed_backfilled_v4").write_text(
+            "2026-06-12T21:30:00+09:00")
+        assert df.backfill_v4_status().startswith("✅")
+
+    def test_marker_written_as_json_stats(self):
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert "reparse_replaced" in src and "backfill_v4_status" in src
+
+    def test_dashboard_renders_label(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "backfill_v4_status" in src and "_bf4_status" in src

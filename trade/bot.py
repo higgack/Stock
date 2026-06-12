@@ -1270,10 +1270,19 @@ async def _post_init(app: Application) -> None:
                     mk.write_text(str(_t.time()), encoding="utf-8")
                 except Exception:
                     pass
+                # 출력을 파일로 — DEVNULL 이면 스캔이 죽어도 흔적 0 이라
+                # 'heatmap 영원히 empty' 원인 추적 불가 (사용자 2026-06-12
+                # '하루종일 안 나옴'). tail ~/.trade/scan_customs_kick.log
+                _klog_path = customs.DEFAULT_DB.parent / "scan_customs_kick.log"
+                try:
+                    _klog = open(_klog_path, "ab")
+                except Exception:
+                    _klog = subprocess.DEVNULL
                 subprocess.Popen(
                     [_sys.executable, "-m", "trade.scripts.scan_customs"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                log.info("heatmap snapshot empty — kicked one-off customs scan")
+                    stdout=_klog, stderr=subprocess.STDOUT)
+                log.info("heatmap snapshot empty — kicked one-off customs "
+                         "scan (log: %s)", _klog_path)
     except Exception as e:
         log.warning("heatmap startup kick failed (timer will cover): %s", e)
 

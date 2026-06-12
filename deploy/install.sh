@@ -123,9 +123,13 @@ else
 fi
 rm -f "$SUDOERS_TMP2"
 # 1회 즉시 heal — 그동안 누적된 trade 대시보드 UI 변경을 지금 반영.
-# 유닛 부재(설치 안 된 호스트)면 무해 no-op.
+# 유닛 부재(설치 안 된 호스트)면 무해 no-op. (re-heal bump 2026-06-12b —
+# 히트맵 탭 미표시 추적: 이 배포에서 install.sh 가 다시 돌며 재시작 1회 더.)
 if systemctl restart trade-bot-dashboard 2>/dev/null; then
     echo "  trade-bot-dashboard restarted (stale-server heal)"
+else
+    echo "  ⚠️ trade-bot-dashboard restart 실패 — 유닛 미설치 의심:"
+    systemctl list-units --all 2>/dev/null | grep -i 'trade' || true
 fi
 
 # Daily Byte 인포그래픽 한글 렌더용 NanumGothic 폰트 — idempotent.
