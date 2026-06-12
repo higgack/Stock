@@ -37,6 +37,8 @@ this repo (currently: `bot/` NOAH stock-bot, `trade/` Korea import/export bot).
    누적'과 동일하고, squash merge 가 어차피 1커밋으로 합친다. draft PR
    은 '[배치 보류]' 제목으로 보관 (auto-update 는 base 만 감시).
 4. **"커밋해/푸시해/배포해" 한마디 = 일괄 flush**: 검증(syntax+회귀)
+   → **배포 전 셀프 리뷰(아래 Pre-commit §7 — diff 재독·시그니처/
+   타임존 가정 검증·배선 E2E·진입점 스모크)**
    → 잔여 작업 커밋 → PR 제목/본문 최종화 + ready → **squash merge
    1회** → 자동배포 → **최종 통합 보고** (변경/적용사항 표 + 사용자가
    화면에서 확인할 체크포인트 + `📦 누적: 0개`). merge 까지가 배포다
@@ -363,6 +365,25 @@ catches a distinct class of bug. Result format:
    번 쓰고 버리지 말 것). 본 슈트가 fail 하면 commit 금지 — 사용자/Claude
    무관. Makefile 도 `make syntax` (4 핵심 파일 ast.parse) / `make
    help-len` (_HELP_TEXT UTF-16 cap 확인) shortcut 제공.
+7. **배포(merge/flush) 전 셀프 리뷰 — 의무 (사용자 2026-06-13 '같은 거
+   두 번 하는 거 정말 힘들어')**: 테스트 green 만으로 merge 금지. flush
+   직전 **base 대비 전체 diff 를 다시 읽고** 아래를 grep 으로 재확인:
+   (a) **기존 함수 호출 가정 검증** — 새 코드가 부르는 기존 함수의 실제
+       시그니처·반환형을 정의부에서 확인 (digest `open_db()` 인자 누락
+       클래스 — 순수 단위테스트는 mock 이라 못 잡음).
+   (b) **데이터 의미 검증** — 타임존(UTC↔KST)·단위(원/천원/백만원·$)·
+       포맷(isoformat/substr)을 쓰는 비교/집계는 **실제 기록 포맷을
+       기록부 코드에서 확인** 후 경계 케이스 테스트 동반 (digest
+       `ingested_at` UTC 를 KST date 로 substr 비교하던 클래스 — KST
+       하루 = UTC 전일 15시~당일 15시).
+   (c) **호출부 배선 E2E** — 헬퍼/파라미터를 추가했으면 모든 호출부가
+       실제로 그걸 타는지 grep (heatmap_html 인자 누락 → 5분 렌더 전부
+       크래시 클래스, 실수 #12c).
+   (d) **진입점 1회 실행** — 순수 함수 테스트와 별개로 실제 진입 경로
+       (render/_build_html·스크립트 main·실 스키마 DB)를 기본값으로 한
+       번 통과시키는 스모크 (NameError/ImportError 류는 이것만이 잡음).
+   2026-06-13 digest 버그 2종(a·b)이 이 리뷰에서 배포 직전 적발된 것이
+   제정 계기 — 리뷰 없이 나갔으면 '결산 0건' 으로 또 하루를 썼다.
 
 Skipping verification is treated the same as skipping the explicit-
 commit-request rule — never do it.
