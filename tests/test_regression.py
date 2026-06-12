@@ -6245,3 +6245,19 @@ class TestTangibleAssetCategory:
         assert callable(reclassify_v7_once_if_needed)
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "reclassify_v7_once_if_needed" in src
+
+
+class TestFavoritesCurrencyUnifiedSort:
+    """관심종목 숫자 컬럼 정렬 = 통화 통합(USD 환산) (사용자 2026-06-13
+    '통화기호 달라도 시총순') — 시총·저장가·현재가·EPS 의 data-* 정렬키만
+    ÷FX, 표시는 원통화 유지. ₩1,526조(≈$1.1T)가 $462B 위로."""
+
+    def test_fx_sort_keys_wired(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "var FX = {{'KRW':1380" in src
+        assert "data-mcap=\"' + usd(f.market_cap)" in src
+        assert "data-sprice=\"' + usd(f.saved_price)" in src
+        assert "data-cprice=\"' + usd(f.current_price)" in src
+        assert "data-eps=\"' + usd(f.eps_estimate)" in src
+        # 표시 셀은 원통화 포맷 유지
+        assert "fmtMcap(f.market_cap, f.currency_symbol)" in src
