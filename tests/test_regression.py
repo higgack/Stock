@@ -4713,6 +4713,62 @@ class TestUsMovers:
         html = render_us_movers_page()
         assert "첫 산출 진행 중" in html
 
+    def test_movers_page_failed_and_progress_states(self, monkeypatch):
+        # 실패가 '산출 중'으로 위장하던 silent-fail 차단 (2026-06-13)
+        import bot.finviz_client as fv
+        from bot.us_pages import render_us_movers_page
+        monkeypatch.setattr(fv, "fetch_us_movers", lambda: {
+            "up": [], "down": [], "ts": "", "source": "", "building": True,
+            "status": {"state": "failed", "ts_label": "2026-06-13 03:40",
+                       "detail": "행 0 (빈 배치 59/59 — yfinance 일시 제한 의심)"}})
+        html = render_us_movers_page()
+        assert "산출 실패" in html and "빈 배치 59/59" in html
+        monkeypatch.setattr(fv, "fetch_us_movers", lambda: {
+            "up": [], "down": [], "ts": "", "source": "", "building": True,
+            "status": {"state": "running", "done": 25, "total": 59,
+                       "ts_label": "2026-06-13 03:41"}})
+        html = render_us_movers_page()
+        assert "배치 25/59" in html
+
+    def test_movers_failed_backoff_no_rekick(self, monkeypatch):
+        # 5분 내 실패 직후엔 매 방문 재스캔 안 함 (429 악순환 차단)
+        import time as _t
+        import bot.finviz_client as fv
+        monkeypatch.setattr(
+            fv, "_cached",
+            lambda name, *a, **k: ({"state": "failed", "ts": _t.time() - 60}
+                                   if name == fv._MOVERS_STATUS else None))
+        kicked = []
+        monkeypatch.setattr(fv, "_kick_us_movers_refresh",
+                            lambda: kicked.append(1))
+        out = fv.fetch_us_movers()
+        assert out.get("building") and not kicked
+        # 실패가 오래됐으면(>5분) 다시 kick
+        monkeypatch.setattr(
+            fv, "_cached",
+            lambda name, *a, **k: ({"state": "failed", "ts": _t.time() - 900}
+                                   if name == fv._MOVERS_STATUS else None))
+        fv.fetch_us_movers()
+        assert kicked
+
+    def test_movers_total_failure_writes_status(self, monkeypatch):
+        # 전 배치 빈 응답 → failed 마커 (영구 building 차단의 핵심)
+        import sys
+        import types
+        import bot.finviz_client as fv
+        written = {}
+        monkeypatch.setattr(fv, "_cache_write",
+                            lambda n, o: written.update({n: o}))
+        monkeypatch.setattr(fv, "_us_full_universe",
+                            lambda: (["AAA", "BBB"], {}))
+        fake_yf = types.ModuleType("yfinance")
+        fake_yf.download = lambda *a, **k: None     # 전 배치 빈 응답
+        monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+        fv._compute_us_movers()
+        st = written.get(fv._MOVERS_STATUS) or {}
+        assert st.get("state") == "failed" and "빈 배치" in st.get("detail", "")
+        assert fv._MOVERS_CACHE not in written      # 빈 결과는 캐시 안 씀
+
     def test_highlow_page_panels_still_render(self, monkeypatch):
         # _stock_panel 승격 리팩토링 회귀 가드 — 신고저 페이지 표 동일 유지
         import bot.finviz_client as fv

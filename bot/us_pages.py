@@ -244,8 +244,27 @@ def render_us_movers_page() -> str:
 
     if not up and not down:
         if data.get("building"):
-            body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전 미국 상장 '
-                    '일봉 스캔(수 분 소요). 잠시 후 새로고침해 주세요.</div>')
+            # 상태 마커로 '산출 중'과 '산출 실패'를 구분 표시 — 실패가
+            # 영구 '산출 중'으로 위장하던 것 차단 (2026-06-13 surfaced)
+            st = data.get("status") or {}
+            ts_lb = _html.escape(str(st.get("ts_label") or ""))
+            if st.get("state") == "failed":
+                detail = _html.escape(str(st.get("detail") or ""))
+                body = (f'<div class="empty">⚠️ 최근 산출 실패'
+                        + (f' ({ts_lb})' if ts_lb else '') + f' — {detail}<br>'
+                        '5분 후 자동 재시도됩니다. 반복되면 yfinance 일시 '
+                        '제한 가능 — 잠시 뒤 다시 확인해 주세요.</div>')
+            elif st.get("state") == "running":
+                done, total = st.get("done"), st.get("total")
+                prog = (f" — 배치 {done}/{total}"
+                        if done is not None and total else "")
+                body = (f'<div class="empty">⏳ 산출 진행 중{prog}'
+                        + (f' (시작 {ts_lb})' if ts_lb else '')
+                        + ' — 전 미국 상장 일봉 스캔(수 분 소요). '
+                          '잠시 후 새로고침해 주세요.</div>')
+            else:
+                body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전 미국 상장 '
+                        '일봉 스캔(수 분 소요). 잠시 후 새로고침해 주세요.</div>')
         else:
             body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')

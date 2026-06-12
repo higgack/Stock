@@ -1203,6 +1203,20 @@ _MOVERS_MIN_PRICE = 1.0     # $1 미만 페니 — 절대가 푼돈에 % 만 큰
 _MOVERS_MIN_DOLLAR_M = 0.5  # 당일 거래대금 $0.5M 미만 — 호가 공백 노이즈 컷
 _MOVERS_TOP_N = 30
 _MOVERS_CACHE = "us_movers_v1.json"
+_MOVERS_STATUS = "us_movers_status.json"   # 산출 상태 마커 (가시성 — 실수 #12d)
+
+
+def _movers_status_write(state: str, **kw) -> None:
+    """산출 상태 기록 — '산출 중' 영구 표시 클래스 차단: 실패도 흔적을
+    남겨 페이지가 진행률/실패 사유를 보여줄 수 있게 (2026-06-13 surfaced
+    — 총실패 시 캐시 미작성 → 영구 building + 매 방문 재발동)."""
+    kw.update({"state": state, "ts": time.time(), "ts_label": _now_label()})
+    _cache_write(_MOVERS_STATUS, kw)
+
+
+def movers_status() -> dict:
+    """현재 산출 상태 {state: running|done|failed, ts, ...} — 부재 시 {}."""
+    return _cached(_MOVERS_STATUS, ttl=86400) or {}
 
 
 def _rank_us_movers(rows: list, top_n: int = _MOVERS_TOP_N) -> tuple[list, list]:
@@ -1234,23 +1248,33 @@ def _compute_us_movers() -> dict:
         out["source"] = "S&P 500 산출(yfinance · 당일 등락)"
     if not tks:
         log.warning("finviz: movers — universe empty")
+        _movers_status_write("failed", detail="universe 전 소스 실패")
         return out
     rows: list[dict] = []
+    _CHUNK = 120
+    n_batches = (len(tks) + _CHUNK - 1) // _CHUNK
+    empty_batches = 0
+    _movers_status_write("running", done=0, total=n_batches,
+                         universe=len(tks))
     try:
         import yfinance as yf
         log.info("finviz: movers — universe %d, 배치 다운로드 시작", len(tks))
-        _CHUNK = 120
         for ci in range(0, len(tks), _CHUNK):
             chunk = tks[ci:ci + _CHUNK]
+            bi = ci // _CHUNK + 1
+            if bi % 5 == 0:   # 진행률 — 페이지가 '배치 N/총' 표시
+                _movers_status_write("running", done=bi, total=n_batches,
+                                     universe=len(tks), rows=len(rows))
             try:
                 df = yf.download(chunk, period="5d", interval="1d",
                                  group_by="ticker", threads=True,
                                  progress=False, auto_adjust=True)
             except Exception as exc:
-                log.warning("finviz: movers 배치 %d 실패: %s",
-                            ci // _CHUNK + 1, exc)
+                log.warning("finviz: movers 배치 %d 실패: %s", bi, exc)
+                empty_batches += 1
                 continue
             if df is None or df.empty:
+                empty_batches += 1
                 continue
             last_day = df.index[-1]
             time.sleep(0.2)   # 벌크 사이 호흡 (highlow 스캔과 동일)
@@ -1292,12 +1316,22 @@ def _compute_us_movers() -> dict:
             r["mcap"] = round(mc / 1e8, 2) if mc else None   # 억$
             r["ind"] = inds.get(r["ticker"])
         out["up"], out["down"] = ups, downs
-        log.info("finviz: movers — scanned %d → up %d / down %d",
-                 len(rows), len(ups), len(downs))
+        log.info("finviz: movers — scanned %d → up %d / down %d (빈 배치 %d/%d)",
+                 len(rows), len(ups), len(downs), empty_batches, n_batches)
         if ups or downs:
             _cache_write(_MOVERS_CACHE, out)
+            _movers_status_write("done", scanned=len(rows),
+                                 up=len(ups), down=len(downs))
+        else:
+            # 전 배치 빈 응답 = yfinance 레이트리밋/차단 의심 — 캐시 미작성
+            # 이더라도 실패 흔적은 남겨 페이지가 사유 표시 + 재발동 백오프
+            _movers_status_write(
+                "failed", scanned=len(rows),
+                detail=f"행 0 (빈 배치 {empty_batches}/{n_batches} — "
+                       "yfinance 일시 제한 의심)")
     except Exception as exc:
         log.warning("finviz: movers 산출 실패: %s", exc)
+        _movers_status_write("failed", detail=f"{type(exc).__name__}: {exc}")
     return out
 
 
@@ -1330,15 +1364,28 @@ def fetch_us_movers() -> dict:
     """가장 많이 오른/내린 TOP30 — **동기 계산 절대 안 함** (전미국 배치
     수 분 = 페이지 hang 금지, 신고저 전미국 티어와 동일 SWR): 신선(30분)
     서빙 / stale(≤24h) 서빙 + 백그라운드 재계산 / 캐시 부재 시 백그라운드
-    kick 후 'building' 반환 → 페이지가 '산출 중' 안내."""
+    kick 후 'building' 반환 → 페이지가 상태(진행률/실패 사유) 안내.
+
+    재발동 백오프 (2026-06-13): 직전 산출이 5분 내 실패였으면 kick 생략 —
+    yfinance 일시 제한 중 매 방문 재스캔이 제한을 연장하는 악순환 차단.
+    진행 중(running 30분 내)에도 중복 kick 생략 (프로세스 재시작으로
+    in-process 플래그가 사라진 경우 대비)."""
     c = _cached(_MOVERS_CACHE, ttl=_FALLBACK_TTL_SEC)
     if c is not None:
         return c
     stale = _cached(_MOVERS_CACHE, ttl=86400)
-    _kick_us_movers_refresh()
+    st = movers_status()
+    age = time.time() - (st.get("ts") or 0)
+    if st.get("state") == "failed" and age < 300:
+        pass        # 백오프 — 5분 내 재시도 안 함 (상태만 표시)
+    elif st.get("state") == "running" and age < 1800:
+        pass        # 이미 산출 중 (다른 워커/재시작 전 프로세스)
+    else:
+        _kick_us_movers_refresh()
     if stale is not None:
         return stale
-    return {"up": [], "down": [], "ts": "", "source": "", "building": True}
+    return {"up": [], "down": [], "ts": "", "source": "",
+            "building": True, "status": st}
 
 
 if __name__ == "__main__":
