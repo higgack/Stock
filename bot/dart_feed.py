@@ -734,6 +734,82 @@ def _rehab_lines(txt: str) -> list[str]:
     return parts
 
 
+def _inquiry_lines(txt: str) -> list[str]:
+    """조회공시/풍문·보도 해명 원문 → 카드 lines (순수 — 단위테스트).
+
+    사용자 5예시 (2026-06-12 '이제 조회공시'): 요구형(제목·요구일시·답변
+    시한 — 가처분 결정설), 풍문해명형(보도·매체·요지 — STX그린로지스/
+    한화엔진), 시황변동 답변형(제목·요지·재공시 — 대구백화점/핀텔 정정).
+    요지는 결정적 마커 문장 발췌 — 추진(선정/진행중/검토중) + 입장(사실
+    아님/미확정) 분리, LLM 0."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    title = _g(r"\d\s*\.\s*제\s*목[^가-힣A-Za-z0-9(\[]{0,12}?"
+               r"([\s\S]{4,70}?)\s*\d{1,2}\s*\.\s")
+    if title:
+        parts.append(f"제목: {title}")
+    rep = _g(r"보도의\s*내용[^가-힣A-Za-z0-9\[('‘]{0,10}?"
+             r"([\s\S]{4,80}?)\s*\d{1,2}\s*\.\s*풍문")
+    media = _g(r"보도의\s*매체[^가-힣A-Za-z0-9]{0,10}?"
+               r"([가-힣A-Za-z0-9,· ]{2,30}?)\s*(?:\d{1,2}\s*\.\s|$)")
+    if rep:
+        parts.append(f"보도: {rep}" + (f" ({media})" if media else ""))
+    ask = _g(r"요구일시[^0-9]{0,10}?"
+             r"(\d{4}-\d{1,2}-\d{1,2}(?:\s*(?:오전|오후))?)")
+    if ask:
+        parts.append(f"요구일시: {ask}")
+    due = _g(r"답변시한[^0-9]{0,10}?"
+             r"(\d{4}-\d{1,2}-\d{1,2}(?:\s*\d{1,2}:\d{2}(?:\s*까지)?)?)")
+    if due:
+        parts.append(f"답변시한: {due}")
+    # 요지 — 추진 상황(무엇을 하고 있나) + 회사 입장(확정/부인) 분리 발췌.
+    # 선두 불릿('- ') strip + lookback 90 (장문 문장 중간 잘림 완화).
+    def _cl(v: str | None) -> str | None:
+        if not v:
+            return None
+        v = re.sub(r"^[\s\-–—·:]+", "", v)
+        # 라벨 인접 캡처('해명내용 - 언론에…') — 선두 16자 내 불릿 경계 컷
+        return re.sub(r"^[^\-–—]{0,16}?[\-–—]\s+", "", v)
+
+    prog = _cl(_g(r"([^.\n]{8,90}(?:선정하였|선정되었|진행\s*중|검토하고\s*있)"
+                  r"[^.\n]{0,60})"))
+    if prog:
+        parts.append(f"추진: {prog}")
+    stance = _cl(_g(r"([^.\n]{0,90}(?:사실이\s*아님|결정된\s*바는?\s*없"
+                    r"|확정된\s*사항은?\s*없|확정되지\s*않았)[^.\n]{0,40})"))
+    if stance:
+        parts.append(f"입장: {stance}")
+    askday = _g(r"조회공시요구일[^0-9]{0,10}?(\d{4}-\d{1,2}-\d{1,2})")
+    ansday = _g(r"조회공시답변일[^0-9]{0,10}?(\d{4}-\d{1,2}-\d{1,2})")
+    if askday or ansday:
+        parts.append(" · ".join(x for x in (
+            f"요구일 {askday}" if askday else None,
+            f"답변일 {ansday}" if ansday else None) if x))
+    redo = _g(r"재공시\s*(?:예정일|기한)[^0-9]{0,16}?(\d{4}-\d{1,2}-\d{1,2})")
+    if redo:
+        parts.append(f"재공시: {redo}")
+    return parts
+
+
+def _extract_inquiry(rcept_no: str, api_key: str) -> dict | None:
+    """조회공시/풍문해명 — 원문 fetch 후 _inquiry_lines. 2미만 12h 쿨다운."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt:
+        return None
+    parts = _inquiry_lines(txt)
+    if len(parts) < 2:
+        _doc_fail_mark(rcept_no, hours=12.0)
+        return None
+    return {"lines": parts}
+
+
 def _parse_rehab(rcept_no: str, api_key: str) -> dict | None:
     """회생절차 — 원문 fetch 후 _rehab_lines. 필드 2미만이면 12h 쿨다운."""
     txt = _fetch_doc_text(rcept_no, api_key)
@@ -1639,6 +1715,11 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                                   _MARKET_NOTICE_FIELDS, min_fields=1)
         if doc:
             return doc
+    # ── 조회공시/풍문·보도 해명 (사용자 2026-06-12 '이제 조회공시', 5예시) ──
+    elif "조회공시" in t or "풍문" in t or "해명" in t:
+        doc = _extract_inquiry(rcept_no, api_key)
+        if doc:
+            return doc
 
     specs: list[tuple[str, list]] = []
     if "영업(잠정)실적" in t or "매출액또는손익구조" in t:
@@ -1993,7 +2074,8 @@ _PARSE_FORCE_KW = ("전환청구권", "주식분할", "주식병합", "액면분
                    "신규시설투자", "투자결정", "유형자산", "회사분할", "분할합병",
                    "담보", "기타경영사항")
 _PARSE_CATS = ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
-               "자산양수도", "회사구조", "소송", "리스크")
+               "자산양수도", "회사구조", "소송", "리스크",
+               "조회공시")   # 2026-06-12 '이제 조회공시' — 요구/답변·해명 파싱
 # 자금조달 중 무료 구조화 소스·원문 파서가 없는 유형(제목만이 정상).
 _FUNDING_NO_PARSER = ("전환가액", "교환청구권", "단기차입금", "금전대여", "채무보증")
 

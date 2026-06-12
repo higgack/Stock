@@ -4995,6 +4995,77 @@ class TestDartRiskParsing:
             assert _classify_report(t) == "리스크", t
 
 
+class TestDartInquiryParsing:
+    """조회공시/풍문해명 파싱 (사용자 2026-06-12 '이제 조회공시', 5예시) —
+    요구형 / 풍문해명형(±미확정) / 시황변동 답변형(+정정). 요지는 결정적
+    마커 발췌(추진/입장 분리, LLM 0)."""
+
+    def test_rumor_clarification_with_redisclosure(self):
+        # STX그린로지스 — 보도+매체, 추진(KPMG 선정)·입장(미확정), 재공시
+        from bot.dart_feed import _inquiry_lines
+        txt = ("1. 풍문 또는 보도의 내용 STX그린로지스, 썬에이스 매각 추진보도에 대한 답변 "
+               "2. 풍문 또는 보도의 매체 한국경제 등 3. 풍문 또는 보도의 발생일자 2026-05-15 "
+               "4. 풍문 또는 보도의 내용에 대한 해명내용 - 본 공시는 해명공시(미확정)입니다. "
+               "- 언론에 보도된 내용과 관련하여 당사는 자산 매각주관사로 삼정KPMG를 선정하였습니다. "
+               "매각과 관련한 다양한 전략적 방안을 검토하고 있으며, 현재까지 구체적으로 결정된 바는 없습니다. "
+               "5. 재공시예정일 2026-09-11")
+        L = _inquiry_lines(txt)
+        assert any(l.startswith("보도: STX그린로지스") and "(한국경제 등)" in l for l in L)
+        assert any(l == "추진: 언론에 보도된 내용과 관련하여 당사는 자산 매각주관사로 "
+                        "삼정KPMG를 선정하였습니다" for l in L)   # 선두 '- ' strip
+        assert any(l.startswith("입장:") and "결정된 바는 없습니다" in l for l in L)
+        assert "재공시: 2026-09-11" in L
+
+    def test_inquiry_request_form(self):
+        # 조회공시 요구(풍문) — 제목/요구일시(오전)/답변시한(까지)
+        from bot.dart_feed import _inquiry_lines
+        L = _inquiry_lines(
+            "조회공시 요구(풍문 또는 보도) 1. 제목 주주총회효력정지 가처분 및 "
+            "직무집행정지 가처분 결정설 2. 조회공시요구내용 사실 여부 및 구체적인 내용 "
+            "3. 요구일시 2026-06-12 오전 4. 답변시한 2026-06-12 18:00까지")
+        assert any(l.startswith("제목: 주주총회효력정지 가처분") for l in L)
+        assert "요구일시: 2026-06-12 오전" in L
+        assert "답변시한: 2026-06-12 18:00까지" in L
+
+    def test_denial_clarification(self):
+        # 한화엔진 — 부인형: 입장이 문장 처음부터(중간 잘림 해소)
+        from bot.dart_feed import _inquiry_lines
+        L = _inquiry_lines(
+            "풍문 또는 보도에 대한 해명 1. 풍문 또는 보도의 내용 [단독] 한화엔진, "
+            "AM 떼고 방산 붙인다…그룹 사업 재편 착수 2. 풍문 또는 보도의 매체 이투데이 "
+            "3. 풍문 또는 보도의 발생일자 2026-06-10 4. 풍문 또는 보도의 내용에 대한 해명내용 "
+            "- 본 공시는 해명공시입니다. - 상기 보도의 '방안'과 관련하여 현재 검토된 바 "
+            "없으며, 사실이 아님을 알려드립니다.")
+        assert any(l.startswith("보도: [단독] 한화엔진") for l in L)
+        assert any(l.startswith("입장: 상기 보도의") and "사실이 아님" in l for l in L)
+
+    def test_price_move_answer_with_dates(self):
+        # 핀텔 — 추진(입찰 1순위·금액)/입장(수주 미확정)/요구·답변일/재공시 기한
+        from bot.dart_feed import _inquiry_lines
+        L = _inquiry_lines(
+            "조회공시요구(현저한시황변동)에대한답변(미확정) 1. 제목 조회공시 요구"
+            "(현저한 시황변동)에 대한 답변(조회공시요구일: 2026.06.08) 2. 답변내용 "
+            "[추진중인 사항] - 당사는 최근 공공기관 입찰 2건에서 각각 1순위 대상자로 "
+            "선정되었으며, 계약 예정금액은 각각 약 12억원 및 19억원 규모입니다. "
+            "다만 현재 적격심사가 진행 중으로 현재까지 최종 수주 여부는 확정되지 않았습니다. "
+            "3. 조회공시요구일 2026-06-08 4. 조회공시답변일 2026-06-09 "
+            "5. 재공시 기한 기한 2026-07-09 사유 -")
+        assert any(l.startswith("추진:") and "1순위" in l and "19억원" in l for l in L)
+        assert any(l.startswith("입장:") and "확정되지 않았습니다" in l for l in L)
+        assert any("요구일 2026-06-08 · 답변일 2026-06-09" == l for l in L)
+        assert "재공시: 2026-07-09" in L
+
+    def test_inquiry_category_is_parse_target(self):
+        # 조회공시 카테고리가 enrich 대상에 포함 (옛 _PARSE_CATS 누락 fix)
+        from bot.dart_feed import is_parse_target
+        assert is_parse_target({"category": "조회공시",
+                                "report_nm": "조회공시요구(풍문또는보도)",
+                                "corp_code": "x"})
+        # 라우팅 존재 가드
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert "_extract_inquiry" in src and "_inquiry_lines" in src
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""
