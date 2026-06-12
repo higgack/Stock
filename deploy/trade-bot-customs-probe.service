@@ -1,0 +1,14 @@
+[Unit]
+Description=관세청 변경 probe — 1콜 감지, 변경 시에만 풀 스윕+갱신 알림
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.scan_customs --if-changed
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=3600

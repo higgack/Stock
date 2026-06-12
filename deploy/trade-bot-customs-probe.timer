@@ -1,0 +1,15 @@
+[Unit]
+Description=관세청 변경 probe 트리거 — 10분 (무변경 시 1콜 후 즉시 종료)
+
+[Timer]
+# 10분마다 1콜 probe (85류 1페이지) — 관세청이 새 통계를 실으면(월 ~3회:
+# 11·21·월초) 풀 스윕 + '✅ 관세청 데이터 갱신' 알림을 ≤10분 내 발동.
+# 비용: probe ~150콜/일 + 변경 시 스윕(~500콜) — 한도 10,000 의 ~3%.
+# 기존 4회/일 정기 풀스윕은 안전망으로 병행 (probe 실패/누락 보정).
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60
+Unit=trade-bot-customs-probe.service
+
+[Install]
+WantedBy=timers.target

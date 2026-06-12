@@ -12306,7 +12306,6 @@ def _render_market_page(data: dict) -> str:
 
   <div class="section-hd" style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
     <h2>최근 리서치 액션</h2>
-    <a href="dart_feed.html" style="font-size:13px;color:var(--accent,#3b82f6);text-decoration:none">📋 DART 공시</a>
     <span class="ts" style="margin-left:auto">{_html.escape(_res_ts)}</span>
   </div>
   <div class="tbl-filter">
