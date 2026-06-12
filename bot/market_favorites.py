@@ -211,6 +211,16 @@ def get_favorites_with_prices() -> list[dict]:
                 if quote_glitch_gap(price, prev_close):
                     price = prev_close
                     glitched = True
+                # 2차 — price·prev 가 둘 다 같은 미조정 기준이면 1차가 장님
+                # (KLAC $2,411 vs $2,398 통과). 조정 일봉 종가와 교차.
+                if not glitched and price:
+                    hist = tk.history(period="5d")
+                    if hist is not None and len(hist) and "Close" in hist:
+                        hc = float(hist["Close"].dropna().iloc[-1])
+                        if hc > 0 and quote_glitch_gap(price, hc):
+                            price = hc
+                            prev_close = hc
+                            glitched = True
             except Exception:
                 pass
             f["current_price"] = price

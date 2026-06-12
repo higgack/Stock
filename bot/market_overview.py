@@ -231,6 +231,11 @@ def _fetch_yf_batch() -> dict[str, dict]:
             cur, prev = live[tk]
             if _qgg and _qgg(cur, prev):
                 cur, prev = daily.get(tk, (prev, prev))
+            elif _qgg and tk in daily and _qgg(cur, daily[tk][0]):
+                # 2차 (KLAC 클래스): live 의 last·prev 가 둘 다 같은 미조정
+                # 기준이면 1차가 장님 — 조정 batch 일봉 종가와 교차해
+                # ±75% 초과면 batch 쌍으로 교체 (추가 호출 0).
+                cur, prev = daily[tk]
         elif tk in daily:
             cur, prev = daily[tk]
         else:

@@ -897,12 +897,20 @@ def _fetch_mcaps(tickers: list) -> dict:
                 mc = float(mc)
                 # 글리치 가드 (KLAC $3.15T 클래스): market_cap = 글리치
                 # last_price × 주식수 — 직전 종가 비율로 역보정.
+                # 2차 — last·prev 둘 다 같은 미조정 기준이면 1차가 장님 →
+                # 조정 일봉 종가와 교차 (백그라운드 전용 경로라 호출 OK).
                 try:
                     from bot.price_sanity import quote_glitch_gap
                     lp = getattr(fi, "last_price", None)
                     pc = getattr(fi, "previous_close", None)
                     if quote_glitch_gap(lp, pc):
                         mc = mc * float(pc) / float(lp)
+                    elif lp:
+                        hist = yf.Ticker(tk).history(period="5d")
+                        if hist is not None and len(hist) and "Close" in hist:
+                            hc = float(hist["Close"].dropna().iloc[-1])
+                            if hc > 0 and quote_glitch_gap(lp, hc):
+                                mc = mc * hc / float(lp)
                 except Exception:
                     pass
                 return tk, mc

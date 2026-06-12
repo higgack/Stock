@@ -4365,7 +4365,7 @@ class TestDartParseTargetAndSignificance:
             {"report_nm": "매출액또는손익구조30%(대규모법인은15%)이상변동",
              "category": "실적",
              "detail": ["매출액: 1,234억원 (전기 987억원 · +25.3%)"]}
-        ) == "매출액 +25.3% 변동"
+        ) == "매출액 +25.3%"
         # 기재정정 제외
         assert significance({"report_nm": "[기재정정]매출액또는손익구조30%이상변동",
                              "category": "실적"}) is None
@@ -6017,14 +6017,16 @@ class TestEarningsChangeGate:
                 "category": "실적", "detail": det}
 
     def test_or_gate(self):
+        # +(증가)만 발화 (2026-06-12 3차) — 감소는 폭과 무관하게 미발화
         from bot.dart_feed import significance as S
         assert S(self._mk(["매출액: 1,234억원 (전기 987억원 · +25.3%)"])
-                 ) == "매출액 +25.3% 변동"
+                 ) == "매출액 +25.3%"
         assert S(self._mk(["매출액: 800억원 (전기 987억원 · -19.0%)",
                            "영업이익: 70억원 (전기 98억원 · -29.0%)"])) is None
         assert S(self._mk(["매출액: 950억원 (전기 987억원 · -3.7%)",
-                           "영업이익: 64억원 (전기 98억원 · -35.0%)"])
-                 ) == "영업이익 -35.0% 변동"
+                           "영업이익: 64억원 (전기 98억원 · -35.0%)"])) is None
+        assert S(self._mk(["영업이익: 130억원 (전기 98억원 · +32.7%)"])
+                 ) == "영업이익 +32.7%"
         # 흑자전환만 발화 (2026-06-12 2차 — 적자전환 제외)
         assert S(self._mk(["영업이익: 12억원 (전기 -98억원 · 흑자전환)"])
                  ) == "영업이익 흑자전환"
@@ -6036,3 +6038,33 @@ class TestEarningsChangeGate:
         assert S({"report_nm": "[기재정정]매출액또는손익구조30%이상변경",
                   "category": "실적",
                   "detail": ["매출액: 1,234억원 (전기 987억원 · +25.3%)"]}) is None
+
+
+class TestSameBasisGlitchSecondGuard:
+    """KLAC 잔존 클래스 (2026-06-12) — price·prev 가 둘 다 같은 미조정
+    기준이면 상대비교 1차 가드가 장님 → 조정 일봉 종가 교차 2차 가드를
+    전 표면(검색카드·관심종목·홈 live·미국 지수·시총 fetch)에 배선."""
+
+    def test_wired_everywhere(self):
+        for path, marker in (
+            ("bot/stock_snapshot.py", "조정 종가"),
+            ("bot/market_favorites.py", 'history(period="5d")'),
+            ("bot/market_overview.py", "daily[tk][0]"),
+            ("bot/us_market_daily.py", 'history(period="5d")'),
+            ("bot/finviz_client.py", 'history(period="5d")'),
+        ):
+            src = open(path, encoding="utf-8").read()
+            assert marker in src, f"2차 가드 미배선: {path}"
+
+
+class TestRedditPageCollapsed:
+    """레딧 페이지 날짜그룹·카드 기본 접힘 (사용자 2026-06-12 '다른
+    대시보드처럼' — Daily Byte 전부-접힘 mirror)."""
+
+    def test_day_and_card_collapsed(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        import re
+        seg = src[src.index("def _render_reddit_insider_page"):]
+        seg = seg[:seg.index("def regenerate_reddit_insider_index")]
+        assert 'day_open = ""' in seg
+        assert "card_default_open = False" in seg
