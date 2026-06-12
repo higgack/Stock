@@ -5599,6 +5599,69 @@ class TestLookupPriceGlitchGuard:
         assert "price_glitch_note" in src
 
 
+class TestDartRisk2:
+    """리스크-2 (2026-06-12) — SPAC 상폐정지(정리매매·상폐일) / 불성실
+    다건유형 / 실질심사·관리종목우려(결론 주어앵커) / 생산재개."""
+
+    @staticmethod
+    def _run(fields, txt):
+        import re
+        return {l: m.group(1).strip() for l, p, k in fields
+                if (m := re.search(p, txt))}
+
+    def test_delisting_suspension_with_schedule(self):
+        from bot.dart_feed import _SUSPENSION_FIELDS, significance
+        o = self._run(_SUSPENSION_FIELDS, (
+            "주권매매거래정지 2.정지사유 상장폐지 사유발생 3.정지기간 가.정지일시 "
+            "2026-06-08 - 나.만료일시 2026-06-08 4.근거규정 코스닥 5.기타 * 상장폐지내역 "
+            "- 정리매매기간 : 2026.06.09 ~ 2026.06.17 (7매매일) - 상장폐지일 : 2026.06.18"))
+        assert o["사유"] == "상장폐지 사유발생"
+        assert o["정리매매"].startswith("2026.06.09 ~ 2026.06.17")
+        assert o["상장폐지일"] == "2026.06.18"
+        assert significance({"report_nm": "주권매매거래정지", "category": "리스크",
+                             "detail": [f"사유: {o['사유']}"]}) == "상장폐지 관련"
+
+    def test_unfaithful_multi_type_comma(self):
+        from bot.dart_feed import _UNFAITHFUL_FIELDS
+        o = self._run(_UNFAITHFUL_FIELDS, (
+            "불성실공시 유형 공시불이행,공시번복,공시변경 내용 공시불이행 6건 - "
+            "단일판매ㆍ공급계약해지 원공시일 2026-01-21 지정예고일 2026-06-05 "
+            "2. 불성실공시법인지정여부 결정시한 2026-06-30 3. 최근 1년간 불성실공시법인 부과벌점 23.0"))
+        assert o["유형"] == "공시불이행,공시번복,공시변경"
+        assert "단일판매ㆍ공급계약해지" in o["내용"]
+        assert o["벌점"] == "23.0"
+
+    def test_review_target_and_concern_notice(self):
+        from bot.dart_feed import _MARKET_NOTICE_FIELDS, significance
+        o = self._run(_MARKET_NOTICE_FIELDS, (
+            "기타시장안내 제목 : ㈜다원시스 상장적격성 실질심사 대상 결정 거래소는 "
+            "㈜다원시스에 대하여 상장폐지 가능성 등을 검토한 결과, 동사를 상장적격성 "
+            "실질심사 대상으로 결정하였습니다."))
+        assert o["제목"].endswith("실질심사 대상 결정")
+        assert o["결론"].startswith("거래소는")          # 주어 앵커 (bleed 차단)
+        # 🔥 실질심사 = 상폐 전단계 — 규칙 7 발화
+        assert significance({"report_nm": "기타시장안내", "category": "리스크",
+                             "detail": [f"제목: {o['제목']}"]}) == "상장폐지 관련"
+        o2 = self._run(_MARKET_NOTICE_FIELDS, (
+            "기타시장안내(관리종목지정우려종목) 제목 : 아이비케이에스제23호기업인수목적 "
+            "주식회사 기타시장안내(관리종목 지정우려 예고) 동사는 합병상장예비심사신청서를 "
+            "제출하지 않는 경우 관리종목으로 지정될 우려가 있습니다. "
+            "1. 상장예비심사신청서 제출기한 : 2026년 06월 12일 - 관리종목 지정일(예정) : 2026년 06월 15일"))
+        assert o2["결론"].startswith("동사는")
+        assert o2["지정예정"].startswith("2026년 06월 15")
+
+    def test_production_resume(self):
+        from bot.dart_feed import _PRODUCTION_FIELDS
+        o = self._run(_PRODUCTION_FIELDS, (
+            "생산재개(자율공시) 1. 생산재개내용 안국약품(주) 화성공장 2. 생산재개내역 "
+            "매출액대비(%) 68.15 3. 생산재개사업 정제 제형 제조업무 재개 "
+            "4. 생산재개사유 경인지방식품의약품안정청 행정처분 기간 종료 "
+            "6. 생산재개일자 2026-06-06 8. 기타 생산중단기간:2026.5.22 ~ 2026.6.5"))
+        assert o["내용"] == "안국약품(주) 화성공장"
+        assert o["매출액대비"] == "68.15" and o["일자"] == "2026-06-06"
+        assert o["중단기간"] == "2026.5.22 ~ 2026.6.5"
+
+
 class TestUsDailyMoversEnrichment:
     """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
     참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""
