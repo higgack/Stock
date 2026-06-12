@@ -18,24 +18,36 @@ this repo (currently: `bot/` NOAH stock-bot, `trade/` Korea import/export bot).
   xqYf7 merge → 1분 내 양 봇 각자 배포. trade/ 변경 commit 도 본
   CLAUDE.md 규칙(검증·커밋 게이트) 동일 적용.
 
-## Default workflow — review first, commit only on request
+## Default workflow — 배치 적재 (사용자 정책 2026-06-12, 옛 review-first 대체)
 
-For **any** request (analysis output, feature idea, bug report, refactor):
+사용자 시간 절약이 목적: "한꺼번에 니가 처리하는동안 내가 다른일하고,
+너 처리하면 최종으로 보고". 요청은 묶어서 처리한다.
 
-1. **Review and propose** — never edit/commit yet. Surface the diagnosis,
-   the proposed change as a **generalized universal rule** (never a
-   ticker-specific or one-off patch), and the trade-offs.
-2. **Wait for explicit "커밋"** from the user before staging anything.
-   Until then, the deliverable is the proposal itself, not committed code.
-   The only exception is when the user opens with an explicit instruction
-   to commit ("이대로 커밋", "스캐폴드 만들고 커밋해줘", etc.).
-3. **After explicit commit**: stage, commit, and push to the current
-   `claude/...` branch. Open / update the draft PR if one doesn't exist.
-4. **"배포/커밋/푸쉬" = 끝까지 완료 (사용자 정책 2026-06-08)**: 사용자가
-   배포·커밋·푸쉬를 지시하면 commit → push → PR ready → **merge 까지
-   전부 완료**하라는 뜻이다. draft PR 만 열어두고 멈추지 말 것. VM
-   auto-update 가 merge 된 base 브랜치만 감시하므로, merge 하지 않으면
-   배포가 안 된다. 사용자에게 "merge 할까요?" 되묻지 말고 바로 실행.
+1. **평소 = 적재 모드**: 사용자가 명시적으로 커밋/배포/푸쉬라고 하지
+   않으면, 요청을 **구현·검증까지 하되 배포(merge)는 안 한다**. 무리가
+   없는 한 계속 쌓는다. **매 답변 끝에 `📦 누적: N개 파일` 표시**
+   (N = base 브랜치 대비 미배포 변경 파일 수, `git diff --name-only
+   origin/<base>` 기준).
+2. **중간 응답 최소화**: 적재 확인 1~2줄 + 📦 카운트만. 요청마다 긴
+   보고 금지 — 사용자를 기다리게 하지 말 것. 질문/리뷰만 있는 요청
+   (코드 변경 없음)은 답변만 하고 적재 카운트 무변동.
+3. **적재 내구성**: 컨테이너가 휘발성이므로 적재분은 dev 브랜치에
+   `[배치 보류 — merge 금지]` prefix 커밋으로 체크포인트 + push 한다.
+   merge 전엔 VM 에 절대 도달하지 않으므로 사용자 관점 '아직 커밋 안 된
+   누적'과 동일하고, squash merge 가 어차피 1커밋으로 합친다. draft PR
+   은 '[배치 보류]' 제목으로 보관 (auto-update 는 base 만 감시).
+4. **"커밋해/푸시해/배포해" 한마디 = 일괄 flush**: 검증(syntax+회귀)
+   → 잔여 작업 커밋 → PR 제목/본문 최종화 + ready → **squash merge
+   1회** → 자동배포 → **최종 통합 보고** (변경/적용사항 표 + 사용자가
+   화면에서 확인할 체크포인트 + `📦 누적: 0개`). merge 까지가 배포다
+   (사용자 정책 2026-06-08) — draft 만 열어두고 멈추지 말고, "merge
+   할까요?" 되묻지 말 것. VM auto-update 는 merge 된 base 브랜치만 감시.
+5. **즉시 배포 예외 (무리가 없는 한의 경계)**: 라이브 장애(봇 다운·
+   watchdog 재시작 루프·대시보드 500 등)는 그 fix 만 최소 분리해 즉시
+   merge 판단 가능. 적재가 너무 커져 충돌·검증 부담이 생기면 중간
+   flush 를 제안.
+6. 변경은 항상 **generalized universal rule** (ticker-specific·one-off
+   패치 금지 — 아래 UNIVERSAL CHANGES ONLY 섹션).
 
 ## ⛔ 과거 실수 기록 — 반복 금지 (사용자 정책 2026-06-08)
 
