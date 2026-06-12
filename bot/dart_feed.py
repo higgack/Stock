@@ -73,6 +73,11 @@ def _classify_report(report_nm: str) -> str:
         return "자금조달"
     if any(k in t for k in ("주식분할", "주식병합", "액면분할", "액면병합")):
         return "회사구조"
+    # 회사분할(인적/물적) = 회사구조 (사용자 2026-06-13 — 옛 M&A 버킷에서
+    # 이동). '분할합병'은 합병 성격이라 자산양수도 유지 (합병 포함 시 제외).
+    if (("회사분할" in t or "인적분할" in t or "물적분할" in t)
+            and "합병" not in t):
+        return "회사구조"
     if any(k in t for k in _IR_KW):
         return "IR"
     if any(k in t for k in _EQUITY_KW):
@@ -3949,13 +3954,19 @@ def clear_doc_fail_once_v6() -> int | None:
 
 
 _RECLASS_MARKER_V7 = _ARCHIVE_DIR.parent / ".dart_feed_reclassified_v7"
+# 분류 정책 버전 — 바뀔 때마다 bump 하면 startup 1회 로컬 재분류가 소급
+# (marker 가 버전 문자열을 저장, 불일치 시 재실행. API 0·수 초).
+_RECLASS_VER = "v8-회사분할-회사구조"
 
 
 def reclassify_v7_once_if_needed() -> dict | None:
-    """유형자산→자산양수도 분류 fix(2026-06-13) 소급 — v5 와 동일 로컬
-    재분류 패스(API 0·수 초), marker 만 분리."""
-    if _RECLASS_MARKER_V7.exists():
-        return None
+    """분류 정책 변경 소급 — 로컬 재분류 패스(API 0·수 초). marker 내용
+    = _RECLASS_VER (버전 bump 만으로 재실행)."""
+    try:
+        if _RECLASS_MARKER_V7.read_text(encoding="utf-8").strip() == _RECLASS_VER:
+            return None
+    except OSError:
+        pass
     stats = {"reclassified": 0, "upgraded": 0}
     today = datetime.now(_KST).date()
     for i in range(60):
@@ -3979,11 +3990,11 @@ def reclassify_v7_once_if_needed() -> dict | None:
             save_archive(d, items)
     try:
         _RECLASS_MARKER_V7.parent.mkdir(parents=True, exist_ok=True)
-        _RECLASS_MARKER_V7.write_text(datetime.now(_KST).isoformat())
+        _RECLASS_MARKER_V7.write_text(_RECLASS_VER, encoding="utf-8")
     except OSError:
         pass
-    log.info("dart_feed v7 재분류: 제목 %d · 본문승격 %d",
-             stats["reclassified"], stats["upgraded"])
+    log.info("dart_feed 재분류(%s): 제목 %d · 본문승격 %d",
+             _RECLASS_VER, stats["reclassified"], stats["upgraded"])
     return stats
 
 
