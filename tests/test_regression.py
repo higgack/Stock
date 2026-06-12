@@ -6025,8 +6025,10 @@ class TestEarningsChangeGate:
         assert S(self._mk(["매출액: 950억원 (전기 987억원 · -3.7%)",
                            "영업이익: 64억원 (전기 98억원 · -35.0%)"])
                  ) == "영업이익 -35.0% 변동"
-        assert S(self._mk(["영업이익: -12억원 (전기 98억원 · 적자전환)"])
-                 ) == "영업이익 흑자/적자전환"
+        # 흑자전환만 발화 (2026-06-12 2차 — 적자전환 제외)
+        assert S(self._mk(["영업이익: 12억원 (전기 -98억원 · 흑자전환)"])
+                 ) == "영업이익 흑자전환"
+        assert S(self._mk(["영업이익: -12억원 (전기 98억원 · 적자전환)"])) is None
 
     def test_unparsed_and_correction_no_fire(self):
         from bot.dart_feed import significance as S

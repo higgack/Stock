@@ -3164,7 +3164,7 @@ def significance(item: dict, shares_outstanding: float | None = None,
     detail 의존 규칙(2·4·5·6·8)은 enrich 후에만 발화 — 미파싱 카드는 ⚠️.
 
     1. 손익구조 변동 — 매출액 |20%|↑ OR 영업이익 |30%|↑ OR 영업이익
-       흑자/적자전환 (사용자 2026-06-12 Or 기준, 기재정정 제외, detail 필요)
+       흑자전환만 (사용자 2026-06-12 Or 기준·적자전환 제외, 정정 제외, detail 필요)
     2. 단일판매·공급계약 매출액대비 10%↑ (기재정정 제외)
     3. 주식소각 발행주식 3%↑ (사용자 2026-06-12 '소각·자사주 3% 이상만' —
        detail 의 '발행주식의 X%' 우선, 없으면 소각주식수÷shares 계산)
@@ -3222,10 +3222,11 @@ def significance(item: dict, shares_outstanding: float | None = None,
             return f"매출액 {sp:+.1f}% 변동"
         if op is not None and abs(op) >= 30.0:
             return f"영업이익 {op:+.1f}% 변동"
-        if any(str(dl).startswith("영업이익:")
-               and ("흑자전환" in str(dl) or "적자전환" in str(dl))
+        # 흑자전환만 (사용자 2026-06-12 2차 — 적자전환 제외; 적자전환의
+        # 급감은 위 영업이익 |30%| 게이트가 % 있으면 잡음)
+        if any(str(dl).startswith("영업이익:") and "흑자전환" in str(dl)
                for dl in detail):
-            return "영업이익 흑자/적자전환"
+            return "영업이익 흑자전환"
     # 2
     if ("공급계약" in rn or "단일판매" in rn) and not correction:
         p = _sig_pct(detail, r"매출액\s*대비")
