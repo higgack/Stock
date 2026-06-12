@@ -3434,6 +3434,17 @@ async def _on_startup(application) -> None:
                              st4.get("reclassified", 0), st4.get("added", 0))
             except Exception as exc:
                 log.warning("startup: DART backfill v4 failed: %s", exc)
+            # v5 로컬 재분류 (배당 분리·공정공시 주주환원 승격) — API 0·수 초.
+            try:
+                from bot.dart_feed import reclassify_v5_once_if_needed
+                st5 = reclassify_v5_once_if_needed()
+                if st5:
+                    from bot.dashboard import regenerate_dart_feed_index as _rg5
+                    _rg5()
+                    log.info("startup: DART 재분류 v5 — 제목 %d · 본문승격 %d",
+                             st5.get("reclassified", 0), st5.get("upgraded", 0))
+            except Exception as exc:
+                log.warning("startup: DART reclassify v5 failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:

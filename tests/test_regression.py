@@ -5915,3 +5915,58 @@ class TestBackfillV4StatusLabel:
     def test_dashboard_renders_label(self):
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert "backfill_v4_status" in src and "_bf4_status" in src
+
+
+class TestDartDividendCategoryAndCapitalRaise:
+    """배당 분리 + 유상증자 시총5% 중요 + 공정공시 승격 + 칩 순서
+    (사용자 2026-06-12)."""
+
+    def test_dividend_split_from_shareholder(self):
+        from bot.dart_feed import _classify_report
+        assert _classify_report("현금ㆍ현물배당결정") == "배당"
+        assert _classify_report("배당기준일안내") == "배당"
+        # 소각·자사주는 주주환원 유지, 조회공시 우선순위 보존
+        assert _classify_report("주식소각결정") == "주주환원"
+        assert _classify_report("조회공시요구(배당설)에대한답변") == "조회공시"
+
+    def test_fair_disclosure_upgrade(self):
+        from bot.dart_feed import _fair_disclosure_category, _upgrade_category
+        assert _fair_disclosure_category(
+            ["제목: 중장기 주주환원정책 발표"]) == "주주환원"
+        assert _fair_disclosure_category(["제목: 2026년 배당정책"]) == "배당"
+        assert _fair_disclosure_category(["제목: 신제품 출시"]) is None
+        it = {"report_nm": "수시공시의무관련사항(공정공시)", "category": "실적",
+              "detail": ["제목: 중장기 주주환원정책 발표"]}
+        _upgrade_category(it)
+        assert it["category"] == "주주환원"   # 'KG 5사 왜 실적이야' fix
+
+    def test_capital_raise_5pct_significance(self):
+        from bot.dart_feed import significance, _won_str_to_float
+        assert _won_str_to_float("8,051억원") == 8051e8
+        assert _won_str_to_float("1.2조원") == 1.2e12
+        item = {"report_nm": "유상증자결정", "category": "자금조달",
+                "detail": ["시설자금: 300억원", "운영자금: 250억원"]}
+        s = significance(item, market_cap=1e12)      # 5.5%
+        assert s and "유상증자" in s
+        assert significance(item, market_cap=2e12) is None   # 2.75%
+        assert significance(item) is None                    # mcap 부재 보수적
+        assert significance({"report_nm": "[기재정정]유상증자결정",
+                             "category": "자금조달",
+                             "detail": ["시설자금: 9,000억원"]},
+                            market_cap=1e12) is None         # 정정 제외
+
+    def test_pill_order_user_spec(self):
+        from bot.dashboard import _DART_CATEGORIES
+        assert _DART_CATEGORIES == [
+            "전체", "실적", "계약", "신규시설투자", "주주환원", "자금조달",
+            "배당", "지분공시", "리스크", "소송", "회사구조", "자산양수도",
+            "조회공시", "IR"]
+
+    def test_v5_reclass_wiring_and_parse_cats(self):
+        from bot.dart_feed import _PARSE_CATS, reclassify_v5_once_if_needed
+        assert "배당" in _PARSE_CATS
+        assert callable(reclassify_v5_once_if_needed)
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "reclassify_v5_once_if_needed" in src
+        leg = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "유상증자 시총5%" in leg   # 범례 동기

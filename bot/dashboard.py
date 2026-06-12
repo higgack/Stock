@@ -10624,11 +10624,12 @@ def _load_dart_feed_data(days_back: int = 30) -> dict[str, list[dict]]:
         return {}
 
 
-_DART_CATEGORIES = ["전체", "실적", "IR", "계약", "주주환원", "자금조달",
-                    "신규시설투자", "자산양수도", "회사구조", "지분공시",
-                    # 커버리지 감사 2026-06-11 — 소송/리스크는 수집은 됐는데
-                    # pill 목록에 빠져 필터 불가했던 것 + 신규 조회공시.
-                    "소송", "리스크", "조회공시"]
+# 칩 순서 = 사용자 지정 고정 (2026-06-12): 전체·중요·미파싱(플래그) 다음
+# 실적 → 계약 → 신규시설투자 → 주주환원 → 자금조달 → 배당(신설 분리) →
+# 지분공시 → 리스크 → 소송 → 회사구조 → 자산양수도 → 조회공시 → IR.
+_DART_CATEGORIES = ["전체", "실적", "계약", "신규시설투자", "주주환원",
+                    "자금조달", "배당", "지분공시", "리스크", "소송",
+                    "회사구조", "자산양수도", "조회공시", "IR"]
 
 _DART_CAT_COLORS = {
     "계약": "#26a69a", "실적": "#42a5f5", "IR": "#5c6bc0", "주주환원": "#ab47bc",
@@ -10779,8 +10780,10 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     # 사전 패스로 item 에 주석(_sig/_unparsed)을 박아 pill 카운트와 카드
     # 렌더가 같은 값을 읽게(이중 계산·불일치 방지, 사용자 2026-06-12).
     # 자기주식 3% 규칙만 발행주식수 필요 → 해당 카드에서만 FSC 조회(메모).
+    # 유상증자 시총 5% 규칙(2026-06-12)은 시총 numeric — 같은 FSC 12h 캐시.
     from bot import dart_feed as _dart_feed
     _sh_memo: dict[str, float | None] = {}
+    _mcw_memo: dict[str, float | None] = {}
 
     def _shares_for(code: str):
         if not (code and len(code) == 6 and code.isdigit()):
@@ -10794,6 +10797,18 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                 _sh_memo[code] = None
         return _sh_memo[code]
 
+    def _mcap_for(code: str):
+        if not (code and len(code) == 6 and code.isdigit()):
+            return None
+        if code not in _mcw_memo:
+            if _time.time() > _mc_deadline:
+                return None
+            try:
+                _mcw_memo[code] = _dart_feed._market_cap_won(code)
+            except Exception:
+                _mcw_memo[code] = None
+        return _mcw_memo[code]
+
     def _annotate(it: dict) -> None:
         if "_sig" in it:
             return
@@ -10805,6 +10820,10 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                     or "소각" in rn0):
                 sig = _dart_feed.significance(
                     it, shares_outstanding=_shares_for(it.get("stock_code", "")))
+            elif "유상증자" in rn0:
+                # 시총대비 5% 판정 → mcap 필요 (FSC 12h 캐시 공유)
+                sig = _dart_feed.significance(
+                    it, market_cap=_mcap_for(it.get("stock_code", "")))
             else:
                 sig = _dart_feed.significance(it)
         except Exception:
@@ -10889,7 +10908,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         _lg = []
         if _sig_total:
             _lg.append('<span class="df-badge df-badge-sig">🔥 중요</span> '
-                       '금색 — 상장폐지·손익 30%·계약 매출10%·소각/자사주 발행주식3%·시설 자본20%·신규 5% 대량보유')
+                       '금색 — 상장폐지·손익 30%·계약 매출10%·소각/자사주 발행주식3%·시설 자본20%·신규 5% 대량보유·유상증자 시총5%')
         if _unp_total:
             _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
                        '파란 점선 — 우리 파서 미적용(제목·원문 공유 시 파서 추가)')
