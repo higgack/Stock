@@ -3176,6 +3176,7 @@ def significance(item: dict, shares_outstanding: float | None = None,
        파싱된 제목/사건 라인에 상장폐지 (효력정지 가처분 포함)
     8. 유상증자 시총대비 5%↑ (사용자 2026-06-12, 기재정정 제외, market_cap
        필요 — 증자금액/시설·운영·채무상환·타법인 자금 합 ÷ FSC 시총)
+    9. 배당 시가배당률 3%↑ (사용자 2026-06-13, detail 의 '시가배당률 N%')
     """
     rn = item.get("report_nm", "")
     cat = item.get("category", "")
@@ -3284,6 +3285,12 @@ def significance(item: dict, shares_outstanding: float | None = None,
             pct = amt / market_cap * 100
             if pct >= 5.0:
                 return f"시총대비 {pct:.1f}% 유상증자"
+    # 9 — 배당 시가배당률 3%↑ (사용자 2026-06-13). 보통주/우선주 복수
+    # 라인 시 첫 매칭(_sig_pct) — 통상 보통주가 먼저.
+    if "배당" in rn and not correction:
+        p = _sig_pct(detail, r"시가\s*배당[률율]")
+        if p is not None and p >= 3.0:
+            return f"시가배당률 {p:g}%"
     # 6
     if cat == "지분공시" and "대량보유" in rn:
         new_reason = any("신규" in str(dl) for dl in detail if "보고사유" in str(dl))

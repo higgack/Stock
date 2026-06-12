@@ -178,9 +178,16 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
             "<div class='ind-zone-div'><span>📅 여기부터 <b>월간 산업트렌드</b>"
             " — 익월 1일 잠정 적재 → ~15일 확정 정제 · 매일 갱신</span></div>"
         ) if prov_html else ""
+        # 잠정 속보 존 구분선 (사용자 2026-06-13) — 월간과 동일 pill 형식,
+        # 녹색(속보 톤). 위 = 🟢 10·20일 잠정, 아래 = 📅 월간.
+        prov_zone_div = (
+            "<div class='ind-zone-div prov'><span>🟢 여기부터 <b>10·20일 잠정"
+            " 속보</b> — 관세청 10일 단위 · 매월 11·21·익월1일 발표 · 확정"
+            " 대비 ~한 달 선행</span></div>"
+        ) if prov_html else ""
         # 순서 (사용자 2026-06-12): 구분선 → 📋 더 빠른 잠정치(motie) →
         # 🗄 월별 아카이브 → 인사이트 → 산업트렌드 본문(motie 제외).
-        return (prov_html + zone_div + industry.motie_banner() + archive_link
+        return (prov_zone_div + prov_html + zone_div + industry.motie_banner() + archive_link
                 + ins_html
                 + industry.render_industry_html(by_ind, by_imp, by_mti,
                                                 by_mti_imp, motie=False))
@@ -700,6 +707,9 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-zone-div::before,.ind-zone-div::after{content:'';flex:1;height:2px;background:var(--accent);opacity:.5;border-radius:2px}
 .ind-zone-div span{background:var(--surface);border:1.5px solid var(--accent);border-radius:999px;padding:7px 16px;white-space:normal}
 .ind-zone-div b{color:var(--accent)}
+.ind-zone-div.prov::before,.ind-zone-div.prov::after{background:#34c759}
+.ind-zone-div.prov span{border-color:#34c759}
+.ind-zone-div.prov b{color:#34c759}
 .ind-prov-sub{font-size:12px;color:var(--text-sub);margin-bottom:10px}
 .ind-prov-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px}
 .ind-prov-cell{background:var(--bg);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px}
