@@ -4727,6 +4727,72 @@ class TestHighlowFullUsAndCapWeight:
         assert "highlow.json" in written
 
 
+class TestUsDailyMoversEnrichment:
+    """미국 Daily Byte 종목 보강 (사용자 2026-06-12 '종목 내용 부족, 한국꺼
+    참조') — universe 다단 폴백 + 누적/시총·이름 부착 + 52주 신고저 블록."""
+
+    def test_universe_uses_robust_fallback(self):
+        # 옛 stock_screener._get_us_universe 단일(위키) 경로가 VM 403 으로
+        # movers {} → 'Mag-7 만 분석' 브리프가 나가던 근본 원인 — robust
+        # 경로(위키→GitHub CSV→GICS→코어) 사용 회귀 가드.
+        src = open("bot/us_market_daily.py", encoding="utf-8").read()
+        assert "_us_universe_robust" in src
+        assert "from bot.stock_screener import _get_us_universe" not in src
+
+    def test_rank_movers_pure(self):
+        from bot.us_market_daily import _rank_movers
+        rows = ([{"ticker": "PLTR", "chg": 8.1, "chg_prev": 1.0, "chg_5d": 14.2,
+                  "chg_1m": 32.0, "dollar_m": 1234.0, "surge": 2.3},
+                 {"ticker": "TINY", "chg": 15.0, "chg_prev": 0.0, "chg_5d": None,
+                  "chg_1m": None, "dollar_m": 50.0, "surge": 5.0},   # 유동성 컷
+                 {"ticker": "REV", "chg": -1.5, "chg_prev": 2.4, "chg_5d": 3.0,
+                  "chg_1m": 9.0, "dollar_m": 400.0, "surge": 0.9}]   # 양→음
+                + [{"ticker": f"F{i}", "chg": 0.1, "chg_prev": 0.0,
+                    "chg_5d": 0.5, "chg_1m": 1.0, "dollar_m": 250.0,
+                    "surge": 1.0} for i in range(60)])
+        mv = _rank_movers(rows)
+        assert mv["gainers"][0]["ticker"] == "PLTR"
+        assert all(r["ticker"] != "TINY" for r in mv["gainers"])  # $200M 컷
+        assert mv["reversals"][0]["ticker"] == "REV"
+        # 랭킹 dict 는 rows 와 참조 공유 — 이름/시총 부착이 전 리스트 반영
+        mv["gainers"][0]["name"] = "Palantir"
+        assert mv["by_dollar"][0].get("name") == "Palantir"
+
+    def test_prompt_row_has_name_cum_turnover(self):
+        from bot.us_market_daily import _format_data_for_prompt
+        mv = {"n": 64, "breadth_pct": 60.0, "avg_chg": 0.5,
+              "gainers": [{"ticker": "PLTR", "name": "Palantir", "chg": 8.12,
+                           "chg_prev": 1.0, "chg_5d": 14.2, "chg_1m": 32.0,
+                           "dollar_m": 1234.0, "surge": 2.3,
+                           "mcap_b": 250.0, "turn_pct": 0.49}],
+              "losers": [], "by_dollar": [], "surges": [], "reversals": []}
+        txt = _format_data_for_prompt(
+            {"indices": {}, "sectors": {}, "mag7": {}, "bonds_fx": {},
+             "movers": mv})
+        # KR 미러 밀도: 회사명 + 5일/1개월 누적 + 시총 대비 손바뀜
+        assert "PLTR(Palantir)" in txt
+        assert "5일 +14.2%" in txt and "1개월 +32.0%" in txt
+        assert "시총 $250B 대비 0.5%" in txt
+
+    def test_prompt_highlow_block(self):
+        from bot.us_market_daily import _format_data_for_prompt
+        txt = _format_data_for_prompt(
+            {"indices": {}, "sectors": {}, "mag7": {}, "bonds_fx": {},
+             "movers": {},
+             "highlow": {"count_high": 24, "count_low": 7, "source": "전미국",
+                         "high": [{"ticker": "MSFT", "name": "Microsoft",
+                                   "mcap": 35000.0, "pct": 1.2}],
+                         "low": []}})
+        assert "52주 신고가/신저가" in txt
+        assert "신고가 24종목" in txt and "신저가 7종목" in txt
+        assert "MSFT(Microsoft) 시총 $3,500B" in txt
+
+    def test_prompt_directive_five_picks_non_mag7(self):
+        # 주목 5선이 'Mag-7 만 분석' 으로 축소되지 않게 하는 directive
+        src = open("bot/us_market_daily.py", encoding="utf-8").read()
+        assert "Mag-7 제외" in src and "축소 금지" in src
+
+
 class TestResearchStrategyTab:
     """리서치 액션 '한국 전략' 탭 (사용자 2026-06-12 — 네이버 투자전략).
     종목/산업 탭과 동일 기준, 투자정보(invest_list) 소스."""
