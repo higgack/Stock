@@ -272,6 +272,11 @@ def momentum_rows(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
     pf_ym = full_months[-1] if full_months else None
     prev_full = _find(pf_ym, "FULL") if pf_ym else None
     prev_full_py = _find(_py(pf_ym), "FULL") if pf_ym else None
+    # ΔMoM 용 — 직전 풀월의 전월 풀월 (예: 5월 FULL 의 MoM 기준 4월 FULL).
+    def _pm(ym: str) -> str:
+        y, m = int(ym[:4]), int(ym[5:7])
+        return f"{y - 1}-12" if m == 1 else f"{y}-{m - 1:02d}"
+    prev_full_pm = _find(_pm(pf_ym), "FULL") if pf_ym else None
 
     def _yoy(base: Optional[dict], prev: Optional[dict], i: int) -> Optional[float]:
         if base is None or prev is None:
@@ -286,9 +291,16 @@ def momentum_rows(rows: list[dict], labels: tuple[str, ...]) -> Optional[dict]:
         cy = _yoy(cur, cur_prev, i)
         pf = _yoy(prev_full, prev_full_py, i)
         mom = (cy - pf) if (cy is not None and pf is not None) else None
+        # ΔMoM (사용자 2026-06-13 'MoM 도 모멘텀') = 최신창 MoM − 직전
+        # 풀월 MoM. ⚠️ MoM 은 계절효과 미보정 — 둘 다 같은 계절 경계를
+        # 건너는 비교라 부분 상쇄되지만, 해석은 ΔYoY(계절 중립)를 우선.
+        mc = _yoy(cur, cur_prev_mo, i)
+        pf_mom = _yoy(prev_full, prev_full_pm, i)
         out.append({"idx": i, "name": name, "usd": cur["amt"][i],
                     "yoy": cy, "momentum": mom,
-                    "mom_chg": _yoy(cur, cur_prev_mo, i)})
+                    "mom_chg": mc,
+                    "momchg_delta": (mc - pf_mom)
+                    if (mc is not None and pf_mom is not None) else None})
     return {
         "ym": latest_ym,
         "decile": cur["decile"],
@@ -434,10 +446,21 @@ def _mom2_span(mom: Optional[float]) -> str:
             f"opacity:.85'>MoM {fmt_pct(mom)}</span>")
 
 
+def _yoy2_span(yoy: Optional[float]) -> str:
+    """헤드라인용 YoY 라벨 명시 표기 (사용자 2026-06-13 'YoY 도 포함') —
+    _mom2_span 과 대칭. 표의 YoY 컬럼은 헤더가 라벨이라 무라벨 유지."""
+    from trade.customs import fmt_pct
+    if yoy is None:
+        return ""
+    cls = "pos" if yoy >= 0 else "neg"
+    return (f"<span class='ind-prov-{cls}' style='font-size:.82em;"
+            f"opacity:.95'>YoY {fmt_pct(yoy)}</span>")
+
+
 def _metric(label: str, item: Optional[dict], *,
             lead: bool = False) -> str:
     """헤드라인 셀 — ⚠️ 상시 캐비엇은 제거(사용자 2026-06-12 '검증 완료,
-    없애도 됨'). 값 = 절대액 + YoY(작년 동월·동순) + MoM(전월 동순)."""
+    없애도 됨'). 값 = 절대액 + YoY(라벨 명시) + MoM(전월 동순)."""
     from trade.customs import fmt_usd
     if not item:
         return ""
@@ -446,7 +469,7 @@ def _metric(label: str, item: Optional[dict], *,
         "<div class='ind-prov-cell'>"
         f"<div class='ind-prov-k'>{label}{tag}</div>"
         f"<div class='ind-prov-v'>{fmt_usd(item.get('usd'))} "
-        f"{_yoy_span(item.get('yoy'))}{_mom2_span(item.get('mom'))}</div>"
+        f"{_yoy2_span(item.get('yoy'))} {_mom2_span(item.get('mom'))}</div>"
         "</div>"
     )
 
@@ -519,9 +542,12 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
             mom_attr = (str(it["momentum"]) if it["momentum"] is not None else "")
             momchg = it.get("mom_chg")   # 옛 스냅샷엔 없음 → None graceful
             momchg_attr = (str(momchg) if momchg is not None else "")
+            momchgd = it.get("momchg_delta")
+            momchgd_attr = (str(momchgd) if momchgd is not None else "")
             pin_attr = ' data-pin="1"' if it["idx"] == 0 else ''
             data_attrs = (f' data-usd="{usd_attr}" data-mom="{mom_attr}" '
-                          f'data-yoy="{yoy_attr}" data-momchg="{momchg_attr}"'
+                          f'data-yoy="{yoy_attr}" data-momchg="{momchg_attr}" '
+                          f'data-momchgd="{momchgd_attr}"'
                           f'{pin_attr}')
             if inline:
                 tot_style = (";font-weight:700;background:#f4f4f4"
@@ -536,13 +562,15 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
                 yoy_html = _yoy_span_inline(it["yoy"])
                 momchg_html = _yoy_span_inline(momchg)
                 mom_html = _mom_span_inline(it["momentum"])
+                momchgd_html = _mom_span_inline(momchgd)
                 body_rows.append(
                     f"<tr style='{tot_style}'{data_attrs}>"
                     f"<td style='{lbl_td}'>{nm}</td>"
                     f"<td style='{num_td}'>{fmt_usd(it['usd'])}</td>"
                     f"<td style='{num_td}'>{yoy_html}</td>"
+                    f"<td style='{num_td}'>{mom_html}</td>"
                     f"<td style='{num_td}'>{momchg_html}</td>"
-                    f"<td style='{num_td}'>{mom_html}</td></tr>"
+                    f"<td style='{num_td}'>{momchgd_html}</td></tr>"
                 )
             else:
                 tr_cls = " class='ind-prov-trtot'" if it["idx"] == 0 else ""
@@ -550,8 +578,9 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
                     f"<tr{tr_cls}{data_attrs}><td>{nm}</td>"
                     f"<td class='ind-prov-num'>{fmt_usd(it['usd'])}</td>"
                     f"<td class='ind-prov-num'>{_yoy_span(it['yoy'])}</td>"
+                    f"<td class='ind-prov-num'>{_mom_span(it['momentum'])}</td>"
                     f"<td class='ind-prov-num'>{_yoy_span(momchg)}</td>"
-                    f"<td class='ind-prov-num'>{_mom_span(it['momentum'])}</td></tr>"
+                    f"<td class='ind-prov-num'>{_mom_span(momchgd)}</td></tr>"
                 )
         # ⚠️ 캡션 제거 (사용자 2026-06-12) — '잠정 속보' 라벨로 충분.
         cap_warn = ""
@@ -566,15 +595,16 @@ def _momentum_tables(rows_by_kind: dict[str, list], *, inline: bool = False
                 "<th style='text-align:left;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>항목</th>"
                 "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>절대액</th>"
                 "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>YoY</th>"
+                "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>ΔYoY</th>"
                 "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>MoM</th>"
-                "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>모멘텀</th>"
+                "<th style='text-align:right;color:#666;padding:4px 8px;border-bottom:1px solid #ddd'>ΔMoM</th>"
                 f"</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
             )
         else:
             tables.append(
                 "<table class='ind-prov-tbl'>"
                 f"<caption>{_esc(title)} · {_esc(win_label)}{cap_warn}</caption>"
-                "<thead><tr><th>항목</th><th>절대액</th><th>YoY</th><th>MoM</th><th>모멘텀</th>"
+                "<thead><tr><th>항목</th><th>절대액</th><th>YoY</th><th>ΔYoY</th><th>MoM</th><th>ΔMoM</th>"
                 f"</tr></thead><tbody>{''.join(body_rows)}</tbody></table>"
             )
     return win_label, "".join(tables)
@@ -589,8 +619,8 @@ def momentum_archive_html(rows_by_kind: dict[str, list]) -> str:
     if not tables:
         return ""
     note = ("<div style='font-size:11.5px;color:#666;line-height:1.4;margin-top:6px'>"
-            "모멘텀 = 최신창 YoY − 직전 풀월 YoY (▲가속/▼둔화) · "
-            "MoM = 전월 동순 · 절대액 큰 순</div>")
+            "ΔYoY = 최신창 YoY − 직전 풀월 YoY · ΔMoM = 최신창 MoM − 직전 풀월 "
+            "MoM (▲가속/▼둔화) · MoM = 전월 동순(계절효과 미보정) · 절대액 큰 순</div>")
     return f"<div style='margin-top:8px'>{note}{tables}</div>"
 
 
@@ -613,16 +643,20 @@ def render_momentum(rows_by_kind: dict[str, list]) -> str:
         "<button type='button' class='ind-prov-sort-btn is-active' "
         "data-sort='usd'>절대액</button>"
         "<button type='button' class='ind-prov-sort-btn' "
-        "data-sort='mom'>모멘텀</button>"
-        "<button type='button' class='ind-prov-sort-btn' "
         "data-sort='yoy'>YoY</button>"
         "<button type='button' class='ind-prov-sort-btn' "
+        "data-sort='mom'>ΔYoY</button>"
+        "<button type='button' class='ind-prov-sort-btn' "
         "data-sort='momchg'>MoM</button>"
+        "<button type='button' class='ind-prov-sort-btn' "
+        "data-sort='momchgd'>ΔMoM</button>"
         "</div>"
     )
     note = (
-        "<div class='ind-prov-mom-note'>모멘텀 = 최신창 YoY − 직전 풀월 YoY "
-        "(▲가속/▼둔화) · MoM = 전월 동순 · 전체 행 고정</div>"
+        "<div class='ind-prov-mom-note'>ΔYoY = 최신창 YoY − 직전 풀월 YoY · "
+        "ΔMoM = 최신창 MoM − 직전 풀월 MoM (▲가속/▼둔화) · MoM = 전월 동순 "
+        "— MoM·ΔMoM 은 계절효과 미보정이라 추세 판단은 ΔYoY 우선 · "
+        "전체 행 고정</div>"
     )
     return (
         "<details class='ind-prov-more'>"
