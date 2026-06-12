@@ -1418,22 +1418,27 @@ def _inquiry_lines(txt: str) -> list[str]:
         m = re.search(pat, txt)
         return m.group(1).strip() if m else None
 
-    title = _g(r"\d\s*\.\s*제\s*목[^가-힣A-Za-z0-9(\[]{0,12}?"
+    # 라벨-값 사이 gap 은 greedy — ' : ' 구분자형(KG파이낸셜 최종예시)에서
+    # 캡처가 ': 제목텍스트' 로 시작하는 이중 콜론 차단 (값 문자는 gap
+    # 클래스에서 제외라 과식 불가).
+    title = _g(r"\d\s*\.\s*제\s*목[^가-힣A-Za-z0-9(\[]{0,12}"
                r"([\s\S]{4,70}?)\s*\d{1,2}\s*\.\s")
     if title:
         parts.append(f"제목: {title}")
-    rep = _g(r"보도의\s*내용[^가-힣A-Za-z0-9\[('‘]{0,10}?"
+    rep = _g(r"보도의\s*내용[^가-힣A-Za-z0-9\[('‘]{0,10}"
              r"([\s\S]{4,80}?)\s*\d{1,2}\s*\.\s*풍문")
     media = _g(r"보도의\s*매체[^가-힣A-Za-z0-9]{0,10}?"
                r"([가-힣A-Za-z0-9,· ]{2,30}?)\s*(?:\d{1,2}\s*\.\s|$)")
     if rep:
         parts.append(f"보도: {rep}" + (f" ({media})" if media else ""))
-    ask = _g(r"요구일시[^0-9]{0,10}?"
-             r"(\d{4}-\d{1,2}-\d{1,2}(?:\s*(?:오전|오후))?)")
+    # 일시 = 날짜 + 선택적 (오전|오후) + 선택적 HH:MM — 'YYYY-MM-DD 오후
+    # 12:00까지' 변형(KG파이낸셜 2026-06-12 최종예시)까지 한 패턴으로.
+    _DT = (r"(\d{4}-\d{1,2}-\d{1,2}(?:\s*(?:오전|오후))?"
+           r"(?:\s*\d{1,2}:\d{2}(?:\s*까지)?)?)")
+    ask = _g(r"요구일시[^0-9]{0,10}?" + _DT)
     if ask:
         parts.append(f"요구일시: {ask}")
-    due = _g(r"답변시한[^0-9]{0,10}?"
-             r"(\d{4}-\d{1,2}-\d{1,2}(?:\s*\d{1,2}:\d{2}(?:\s*까지)?)?)")
+    due = _g(r"답변시한[^0-9]{0,10}?" + _DT)
     if due:
         parts.append(f"답변시한: {due}")
     # 요지 — 추진 상황(무엇을 하고 있나) + 회사 입장(확정/부인) 분리 발췌.
@@ -3506,6 +3511,112 @@ def backfill_v3_once_if_needed() -> dict | None:
     try:
         _BACKFILL_MARKER_V3.parent.mkdir(parents=True, exist_ok=True)
         _BACKFILL_MARKER_V3.write_text(datetime.now(_KST).isoformat())
+    except OSError:
+        pass
+    return stats
+
+
+# ── v4 — 파싱 배치(2026-06-12, 37+양식) 소급 적용 백필 ─────────────────────
+# 사용자 '백필 시간이 많이 드니 잘 생각해서' — 3유형을 비용별로 분리:
+#  ① 파서 '변경' 유형(계약 보강·자사주 doc-first): 기존 detail 을 새 파서로
+#     재추출하되 **성공 시에만 교체** (실패=옛 detail 유지 → 데이터 손실 0,
+#     doc_fail 오염 0). 대상 좁음(키워드 4종) → 수 분.
+#  ② 파서 '신설' 유형(소송·리스크·조회공시·공정공시·확인서…): 과거 시도가
+#     doc_fail negative-cache 에 고착 → 캐시 클리어만 하면 run_once 의
+#     14일 대기열(detail 부재분)이 8건/분으로 자연 드레인 (~1-2시간).
+#  ③ '수집 자체가 안 되던' 유형(기타경영사항·투자판단 — keep 예외 신설):
+#     당월 재fetch 로 과거 날짜分 수집(+전체 재분류) → ②의 대기열로 합류.
+# 전부 ₩0 (DART 무료·LLM 0)·일일 콜버짓 가드.
+
+_BACKFILL_MARKER_V4 = _ARCHIVE_DIR.parent / ".dart_feed_backfilled_v4"
+
+# ①의 대상 — 이번 배치에서 출력이 '변경'된 파서의 제목 키워드만 (신설
+# 파서 유형은 detail 부재 → ②가 담당, 여기 나열 금지: 전수 재추출은
+# 콜 낭비 + 시간).
+_V4_REPARSE_KW = ("공급계약", "단일판매",            # 계약 보강(구분 병기·꼬리 컷)
+                  "자기주식취득결정", "자기주식처분결정")  # doc-first 전환(필드 확장)
+
+
+def clear_doc_fail_cache() -> int:
+    """doc_fail negative-cache 전체 클리어 — 신설 파서 유형의 과거 실패분
+    (12~24h 고착)이 즉시 재시도 가능해짐. 클리어 건수 반환."""
+    try:
+        n = len(_doc_fail_load())
+        _DOC_FAIL.unlink(missing_ok=True)
+        if n:
+            log.info("dart_feed v4: doc_fail 캐시 %d건 클리어", n)
+        return n
+    except Exception:
+        return 0
+
+
+def reparse_details(days_back: int = 30,
+                    kw: tuple = _V4_REPARSE_KW) -> dict:
+    """파서가 변경된 유형의 기존 detail 재추출 — enrich 의 known-reuse 가
+    옛 출력으로 고정(idempotent 가드)하는 것을 푸는 1회 경로.
+
+    성공 시에만 교체: 새 파서가 옛 양식 변형에 실패해도 옛 detail 유지
+    (제목만 카드로 퇴행 0), doc_fail 마킹 안 함(다음 정규 사이클 오염 0)."""
+    stats = {"checked": 0, "replaced": 0, "kept": 0}
+    api_key = _dart_api_key()
+    if not api_key:
+        return stats
+    for ds, items in load_all_archives(days_back=days_back).items():
+        changed = False
+        for it in items:
+            rn = it.get("report_nm", "")
+            if not it.get("detail") or not any(k in rn for k in kw):
+                continue
+            if _budget_today() >= _BUDGET_HARD - 500:
+                log.warning("dart_feed v4 reparse: 콜버짓 헤드룸 도달 — 중단"
+                            " (남은 항목은 옛 detail 유지)")
+                break
+            stats["checked"] += 1
+            _budget_add(2)
+            time.sleep(0.15)
+            try:
+                detail = _extract_detail(rn, str(it.get("rcept_no", "")),
+                                         it.get("corp_code", ""), api_key)
+                lines = list(detail.get("lines", [])) if detail else []
+                if lines and lines != it.get("detail"):
+                    it["detail"] = lines
+                    nc = (detail.get("category")
+                          if isinstance(detail, dict) else None)
+                    if nc:
+                        it["category"] = nc
+                    stats["replaced"] += 1
+                    changed = True
+                else:
+                    stats["kept"] += 1
+            except Exception as exc:
+                stats["kept"] += 1
+                log.debug("dart_feed v4 reparse %s 실패(옛 detail 유지): %s",
+                          it.get("rcept_no", "?"), exc)
+        if changed:
+            try:
+                save_archive(datetime.strptime(ds, "%Y-%m-%d").date(), items)
+            except Exception as exc:
+                log.warning("dart_feed v4 reparse save %s: %s", ds, exc)
+    log.info("dart_feed v4 reparse: 검사 %d · 교체 %d · 유지 %d",
+             stats["checked"], stats["replaced"], stats["kept"])
+    return stats
+
+
+def backfill_v4_once_if_needed() -> dict | None:
+    """v4 1회 백필 (marker gate) — 위 ①②③ 순서로 실행, 통계 반환."""
+    if _BACKFILL_MARKER_V4.exists():
+        return None
+    today = datetime.now(_KST).date()
+    month_start = today.replace(day=1)
+    stats: dict = {"doc_fail_cleared": clear_doc_fail_cache()}   # ②
+    stats["reparse"] = reparse_details(days_back=30)             # ①
+    st = backfill_with_new_rules(                                # ③
+        days_back=(today - month_start).days)
+    stats.update({k: st.get(k, 0)
+                  for k in ("reclassified", "added", "days")})
+    try:
+        _BACKFILL_MARKER_V4.parent.mkdir(parents=True, exist_ok=True)
+        _BACKFILL_MARKER_V4.write_text(datetime.now(_KST).isoformat())
     except OSError:
         pass
     return stats

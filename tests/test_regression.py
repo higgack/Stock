@@ -5066,6 +5066,60 @@ class TestDartInquiryParsing:
         src = open("bot/dart_feed.py", encoding="utf-8").read()
         assert "_extract_inquiry" in src and "_inquiry_lines" in src
 
+    def test_colon_separator_and_pm_deadline(self):
+        # 최종예시 (2026-06-12 '이제 파싱 예제는 다 끝났어') — ' : ' 구분자형
+        # + '오후 12:00까지' 시한. greedy gap 으로 이중 콜론('제목: : X') 차단.
+        from bot.dart_feed import _inquiry_lines
+        L = _inquiry_lines(
+            "조회공시 요구(풍문 또는 보도) 1. 제목 : 최대주주 지분 매각 추진설에 "
+            "대한 조회공시 요구 2. 요구일시 : 2026-06-12 오전 "
+            "3. 답변시한 : 2026-06-13 오후 12:00까지")
+        assert "제목: 최대주주 지분 매각 추진설에 대한 조회공시 요구" in L
+        assert "요구일시: 2026-06-12 오전" in L
+        assert "답변시한: 2026-06-13 오후 12:00까지" in L
+        # 보도형 콜론 구분자 — 캡처 선두 콜론 없음
+        L2 = _inquiry_lines(
+            "풍문 또는 보도에 대한 해명 1. 풍문 또는 보도의 내용 : MBK파트너스의 "
+            "회사 인수 추진 관련 보도 2. 풍문 또는 보도의 매체 : 한국경제 외 "
+            "3. 해명내용 - 위 보도와 관련하여 현재까지 구체적으로 결정된 바 없습니다.")
+        assert any(l.startswith("보도: MBK파트너스") and "(한국경제 외)" in l
+                   for l in L2)
+        assert any(l.startswith("입장:") for l in L2)
+
+
+class TestDartBackfillV4:
+    """파싱 배치 소급 백필 v4 (2026-06-12) — ①변경 파서 재추출(성공시만
+    교체) ②doc_fail 클리어 ③당월 재fetch. 순수 부분만 검증 (네트워크 0)."""
+
+    def test_reparse_kw_scope(self):
+        # ① 대상 = 출력이 '변경'된 파서 유형만 — 신설 파서 유형(소송·리스크·
+        # 조회공시 등)은 detail 부재 → ② 대기열 담당이라 나열 금지 (콜 낭비).
+        from bot.dart_feed import _V4_REPARSE_KW
+        assert set(_V4_REPARSE_KW) == {"공급계약", "단일판매",
+                                       "자기주식취득결정", "자기주식처분결정"}
+        hit = {"report_nm": "단일판매ㆍ공급계약체결", "detail": ["계약: x"]}
+        miss = {"report_nm": "소송등의제기", "detail": ["사건: y"]}
+        assert any(k in hit["report_nm"] for k in _V4_REPARSE_KW)
+        assert not any(k in miss["report_nm"] for k in _V4_REPARSE_KW)
+
+    def test_marker_gate_and_wiring(self):
+        # marker gate 존재 + startup 배선 (v3 패턴 mirror)
+        from bot.dart_feed import (backfill_v4_once_if_needed,
+                                   clear_doc_fail_cache, reparse_details,
+                                   _BACKFILL_MARKER_V4)
+        assert callable(backfill_v4_once_if_needed)
+        assert callable(clear_doc_fail_cache) and callable(reparse_details)
+        assert _BACKFILL_MARKER_V4.name == ".dart_feed_backfilled_v4"
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "backfill_v4_once_if_needed" in src
+
+    def test_reparse_no_key_is_noop(self, monkeypatch):
+        # API 키 부재 → 아카이브 무접촉 graceful no-op
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_dart_api_key", lambda: "")
+        st = df.reparse_details(days_back=1)
+        assert st == {"checked": 0, "replaced": 0, "kept": 0}
+
 
 class TestDartFairDisclosureParsing:
     """공정공시 변형 + 투자판단 파싱 (사용자 2026-06-12 '파싱안된것들',
