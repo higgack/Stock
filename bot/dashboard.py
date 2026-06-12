@@ -10700,6 +10700,14 @@ _DART_FEED_CSS = """
 @media(max-width:600px){.df-grid{grid-template-columns:1fr}}
 .df-card{background:var(--card,#1a1f2b);border:1px solid var(--border,#2a2f3a);border-radius:8px;padding:14px;font-size:13px;display:flex;flex-direction:column;gap:6px}
 .df-card.hidden{display:none}
+/* 중요(🔥)/미파싱(⚠️) 색상 구별 (사용자 2026-06-12) */
+.df-card.df-significant{border-color:#d4a017;box-shadow:0 0 0 1px #d4a01755}
+.df-card.df-unparsed{border-style:dashed;border-color:#f5a623aa}
+.df-badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;align-self:flex-start;line-height:1.5}
+.df-badge-sig{background:#d4a01726;color:#b8860b;border:1px solid #d4a01766}
+.df-badge-unp{background:#f5a62318;color:#c97b14;border:1px solid #f5a62355}
+.df-pill-sig.active{background:#d4a017;border-color:#d4a017}
+.df-pill-unp.active{background:#f5a623;border-color:#f5a623}
 .df-card-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
 .df-corp{font-weight:700;font-size:15px;color:var(--text,#1f2937);text-decoration:none}
 .df-corp:hover{text-decoration:underline}
@@ -10771,8 +10779,59 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                     pass
         return True
 
+    # 미파싱(파싱 대상인데 detail 없음) + 중요 공시 6규칙 판정 — 단일
+    # 사전 패스로 item 에 주석(_sig/_unparsed)을 박아 pill 카운트와 카드
+    # 렌더가 같은 값을 읽게(이중 계산·불일치 방지, 사용자 2026-06-12).
+    # 자기주식 3% 규칙만 발행주식수 필요 → 해당 카드에서만 FSC 조회(메모).
+    from bot import dart_feed as _dart_feed
+    _sh_memo: dict[str, float | None] = {}
+
+    def _shares_for(code: str):
+        if not (code and len(code) == 6 and code.isdigit()):
+            return None
+        if code not in _sh_memo:
+            if _time.time() > _mc_deadline:
+                return None
+            try:
+                _sh_memo[code] = _dart_feed._shares_outstanding(code)
+            except Exception:
+                _sh_memo[code] = None
+        return _sh_memo[code]
+
+    def _annotate(it: dict) -> None:
+        if "_sig" in it:
+            return
+        sig = None
+        try:
+            rn0 = it.get("report_nm", "")
+            if "자기주식" in rn0 and "취득" in rn0 and "결정" in rn0:
+                sig = _dart_feed.significance(
+                    it, shares_outstanding=_shares_for(it.get("stock_code", "")))
+            else:
+                sig = _dart_feed.significance(it)
+        except Exception:
+            sig = None
+        it["_sig"] = sig
+        # 미파싱 = 파싱 대상인데 의미있는 detail 부재(시총/주요사업 줄 제외).
+        try:
+            meaningful = [l for l in (it.get("detail") or [])
+                          if not str(l).startswith("주요사업:")
+                          and "시가총액" not in str(l)]
+            it["_unparsed"] = bool(_dart_feed.is_parse_target(it)) and not meaningful
+        except Exception:
+            it["_unparsed"] = False
+
     cat_counts: dict[str, int] = {}
+    _sig_total = _unp_total = 0
     _filtered_total = 0
+    for items in by_date.values():
+        for it in items:
+            if not _equity_noise(it):
+                _annotate(it)
+                if it.get("_sig"):
+                    _sig_total += 1
+                if it.get("_unparsed"):
+                    _unp_total += 1
     for items in by_date.values():
         for it in items:
             if _equity_noise(it):
@@ -10783,6 +10842,11 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 
     pills: list[str] = []
     pills.append(f'<button class="df-pill active" data-cat="전체">전체 {_filtered_total}</button>')
+    # 특수 플래그 필터(사용자 2026-06-12) — data-flag 기준, 카테고리와 별개.
+    if _sig_total:
+        pills.append(f'<button class="df-pill df-pill-sig" data-flag="sig">🔥 중요 {_sig_total}</button>')
+    if _unp_total:
+        pills.append(f'<button class="df-pill df-pill-unp" data-flag="unparsed">⚠️ 미파싱 {_unp_total}</button>')
     for cat in _DART_CATEGORIES[1:]:
         n = cat_counts.get(cat, 0)
         if n > 0:
@@ -10820,6 +10884,18 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     </div>
   </div>
 """)
+    # 색상 범례 (사용자 2026-06-12) — 🔥 중요/⚠️ 미파싱 의미 안내. 해당
+    # 카드가 하나라도 있을 때만 노출(노이즈 방지).
+    if _sig_total or _unp_total:
+        _lg = []
+        if _sig_total:
+            _lg.append('<span class="df-badge df-badge-sig">🔥 중요</span> '
+                       '금색 — 손익 30%·계약 매출10%·소각·자사주 3%·시설 자본20%·신규 5% 대량보유')
+        if _unp_total:
+            _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
+                       '주황 점선 — 우리 파서 미적용(제목·원문 공유 시 파서 추가)')
+        parts.append('<p class="sub" style="margin:-6px 0 14px">'
+                     + ' &nbsp;·&nbsp; '.join(_lg) + '</p>')
 
     from collections import OrderedDict as _OD
     _months: "_OD[str, list]" = _OD()
@@ -10894,13 +10970,36 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                 if stock_code and len(stock_code) == 6 and stock_code.isdigit():
                     ticker_link = f' <a href="lookup/{stock_code}.KS" class="df-ticker-link">{stock_code}</a>'
 
+                # 중요(🔥)/미파싱(⚠️) 색상 구별 — 사전 패스 주석 사용
+                # (사용자 2026-06-12). 중요는 금색 테두리 + 사유 배지, 미파싱은
+                # 주황 점선 테두리 + 배지. data-flag 로 pill 필터.
+                _annotate(it)
+                _sig = it.get("_sig")
+                _unp = it.get("_unparsed")
+                _card_cls = "df-card"
+                _flags: list[str] = []
+                _badges = ""
+                if _sig:
+                    _card_cls += " df-significant"
+                    _flags.append("sig")
+                    _badges += (f'<span class="df-badge df-badge-sig">🔥 '
+                                f'{_html.escape(str(_sig))}</span>')
+                if _unp:
+                    _card_cls += " df-unparsed"
+                    _flags.append("unparsed")
+                    _badges += ('<span class="df-badge df-badge-unp" '
+                                'title="우리 방식으로 파싱되지 않은 카드 — 제목·원문 '
+                                '링크를 공유하면 파서를 추가합니다">⚠️ 미파싱</span>')
+                _flag_attr = " ".join(_flags)
+
                 parts.append(f"""
-          <div class="df-card" data-cat="{cat}" data-name="{cn}" data-report="{rn}">
+          <div class="{_card_cls}" data-cat="{cat}" data-flag="{_flag_attr}" data-name="{cn}" data-report="{rn}">
             <div class="df-card-hd">
               <a href="{url}" target="_blank" rel="noopener" class="df-corp">{cn}</a>{ticker_link}
               <span class="df-meta"><span class="df-dt">{dt_short}</span> <span class="df-cat" style="background:{cat_color}">{cat}</span></span>
             </div>
             <div class="df-report">{rn}</div>
+            {_badges}
             {detail_html}
           </div>
 """)
@@ -10918,14 +11017,17 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   var viewBtns=document.querySelectorAll('.df-vbtn');
   var grids=document.querySelectorAll('.df-grid');
   var activeCat='전체';
+  var activeFlag='';   // 🔥 중요(sig) / ⚠️ 미파싱(unparsed) — 카테고리와 별개
   var wrap=document.querySelector('.wrap');
 
   function applyFilters(){
     var q=(search?search.value:'').toLowerCase().trim();
-    // 검색/카테고리 필터 중에는 접힌 그룹도 펼쳐 매칭이 보이게.
-    if(wrap)wrap.classList.toggle('df-searching', !!q || activeCat!=='전체');
+    // 검색/카테고리/플래그 필터 중에는 접힌 그룹도 펼쳐 매칭이 보이게.
+    if(wrap)wrap.classList.toggle('df-searching', !!q || activeCat!=='전체' || !!activeFlag);
     cards.forEach(function(c){
       var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
+      var flagMatch=!activeFlag||((c.dataset.flag||'').indexOf(activeFlag)>=0);
+      if(!flagMatch){c.classList.add('hidden');return;}
       var textMatch=!q||
         (c.dataset.name||'').toLowerCase().indexOf(q)>=0||
         (c.dataset.report||'').toLowerCase().indexOf(q)>=0||
@@ -10956,7 +11058,9 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     p.addEventListener('click',function(){
       pills.forEach(function(x){x.classList.remove('active')});
       p.classList.add('active');
-      activeCat=p.dataset.cat;
+      // 플래그 pill(🔥/⚠️)은 data-flag, 카테고리 pill 은 data-cat.
+      if(p.dataset.flag){activeFlag=p.dataset.flag;activeCat='전체';}
+      else{activeCat=p.dataset.cat||'전체';activeFlag='';}
       applyFilters();
     });
   });

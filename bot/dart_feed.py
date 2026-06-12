@@ -1646,6 +1646,138 @@ def fetch_market_disclosures(target_date: date | None = None,
     return out
 
 
+# ── 파싱 대상 판정 + 중요 공시 하이라이트 (사용자 2026-06-12) ──
+# enrich(상세 추출 시도)와 대시보드(미파싱 카드 색상 구별 / 🔥 중요 배지)가
+# **공유하는 단일 레지스트리** — 두 곳이 어긋나면 정상 카드를 미파싱으로
+# 오색칠. 전부 ₩0·순수 판정(렌더타임, 과거 카드 소급).
+_PARSE_FORCE_KW = ("전환청구권", "주식분할", "주식병합", "액면분할", "액면병합",
+                   "신규시설투자", "투자결정", "유형자산", "회사분할", "분할합병",
+                   "담보")
+_PARSE_CATS = ("계약", "자금조달", "주주환원", "신규시설투자", "지분공시",
+               "자산양수도", "회사구조", "소송", "리스크")
+# 자금조달 중 무료 구조화 소스·원문 파서가 없는 유형(제목만이 정상).
+_FUNDING_NO_PARSER = ("전환가액", "교환청구권", "단기차입금", "금전대여", "채무보증")
+
+
+def is_parse_target(item: dict) -> bool:
+    """이 공시가 구조화/원문 파싱 대상인가 — 제목만이 정상인 유형(IR·
+    대량보유 외 지분공시·구조화 없는 자금조달 5종)은 False → 대시보드가
+    미파싱으로 색칠하지 않음. enrich 의 시도 조건과 동일(단일 소스)."""
+    cat = item.get("category", "")
+    report_nm = item.get("report_nm", "")
+    _force = any(k in report_nm for k in _PARSE_FORCE_KW)
+    if not (_force or cat in _PARSE_CATS or "실적" in cat):
+        return False
+    if not item.get("corp_code"):
+        return False
+    if (not _force) and cat == "지분공시" and "대량보유" not in report_nm:
+        return False
+    if (not _force) and cat == "자금조달" and any(
+            k in report_nm for k in _FUNDING_NO_PARSER):
+        return False
+    return True
+
+
+def _sig_pct(detail: list, label_pat: str) -> float | None:
+    """detail 라인에서 'label N%' 의 N 추출 (계약 매출액대비·시설 자기자본대비).
+    라벨 뒤 구분자는 ':'(spec 'X: 25.3%')·공백(계약 'X 14.2%') 모두 허용,
+    '%p'(지분 증감)는 제외."""
+    for dl in detail:
+        m = re.search(label_pat + r"[:\s]*([\d.]+)\s*%(?!p)", str(dl))
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                pass
+    return None
+
+
+def significance(item: dict, shares_outstanding: float | None = None) -> str | None:
+    """중요 공시 6규칙 판정(사용자 2026-06-12) → 발화 사유 문자열 or None.
+    전부 렌더타임 순수 판정(과거 아카이브 카드 소급, 파서 개선 즉시 반영).
+    detail 의존 규칙(2·4·5·6)은 enrich 후에만 발화 — 미파싱 카드는 ⚠️로 표시.
+
+    1. 매출액또는손익구조 30%↑ 변동 (기재정정 제외) — 제목 자체가 기준
+    2. 단일판매·공급계약 매출액대비 10%↑ (기재정정 제외)
+    3. 주식소각
+    4. 자기주식취득결정 발행주식 3%↑ (기재정정 제외, shares 필요)
+    5. 신규시설투자 자기자본대비 20%↑
+    6. 지분공시(대량보유) 신규 5%↑ (직전<5%≤현재)
+    """
+    rn = item.get("report_nm", "")
+    cat = item.get("category", "")
+    detail = item.get("detail") or []
+    correction = "정정" in rn   # [기재정정] 등
+
+    # 1
+    if "매출액또는손익구조" in rn and not correction:
+        return "손익구조 30%↑ 변동"
+    # 2
+    if ("공급계약" in rn or "단일판매" in rn) and not correction:
+        p = _sig_pct(detail, r"매출액\s*대비")
+        if p is not None and p >= 10.0:
+            return f"매출대비 {p:g}% 계약"
+    # 3
+    if "소각" in rn:
+        return "주식소각"
+    # 4
+    if ("자기주식" in rn and "취득" in rn and "결정" in rn
+            and "처분" not in rn and not correction and shares_outstanding):
+        for dl in detail:
+            m = re.search(r"취득예정[^0-9]*([\d,]+)\s*주", str(dl))
+            if m:
+                try:
+                    n = int(m.group(1).replace(",", ""))
+                    pct = n / shares_outstanding * 100
+                    if pct >= 3.0:
+                        return f"발행주식 {pct:.1f}% 취득"
+                except (ValueError, ZeroDivisionError):
+                    pass
+    # 5
+    if "신규시설투자" in rn or "투자결정" in rn:
+        p = _sig_pct(detail, r"자기자본\s*대비")
+        if p is not None and p >= 20.0:
+            return f"자기자본대비 {p:g}% 투자"
+    # 6
+    if cat == "지분공시" and "대량보유" in rn:
+        new_reason = any("신규" in str(dl) for dl in detail if "보고사유" in str(dl))
+        for dl in detail:
+            s = str(dl)
+            if "지분율" not in s:
+                continue
+            nums = re.findall(r"([\d.]+)\s*%(?!p)", s)
+            if "→" in s and len(nums) >= 2:
+                try:
+                    before, after = float(nums[0]), float(nums[1])
+                    if before < 5.0 <= after:
+                        return f"신규 {after:g}% 대량보유"
+                except ValueError:
+                    pass
+            elif nums and new_reason:
+                try:
+                    if float(nums[0]) >= 5.0:
+                        return f"신규 {float(nums[0]):g}% 대량보유"
+                except ValueError:
+                    pass
+    return None
+
+
+def _shares_outstanding(stock_code: str) -> float | None:
+    """FSC 상장주식수(lstgStCnt) — 자기주식 3% 비율 판정용. 시총 워밍과
+    같은 12h 디스크 캐시 공유(steady-state 추가 네트워크 0). 실패 None."""
+    try:
+        from bot.fsc_client import latest_price, fsc_key_ready
+        if not fsc_key_ready():
+            return None
+        p = latest_price(f"{stock_code}.KS")
+        if not p:
+            return None
+        v = p.get("lstgStCnt")
+        return float(str(v).replace(",", "")) if v else None
+    except Exception:
+        return None
+
+
 def enrich_disclosures(items: list[dict]) -> list[dict]:
     """구조화 상세 추출 + PER 계산으로 보강. in-place + return."""
     api_key = _dart_api_key()
@@ -1679,32 +1811,10 @@ def enrich_disclosures(items: list[dict]) -> list[dict]:
             item["detail"] = known[rcept_no]
             continue
 
-        # 원문 파서 보유 유형은 카테고리 분류와 무관하게 시도(배치 #13-#17
-        # 추가 — 담보·최대주주양수도가 '기타'로 분류될 수 있음).
-        _force = any(k in report_nm for k in
-                     ("전환청구권", "주식분할", "주식병합", "액면분할", "액면병합",
-                      "신규시설투자", "투자결정", "유형자산", "회사분할", "분할합병",
-                      "담보"))
-        # IR 은 enrich 제외(사용자 2026-06-11) — IR 일정은 실적 캘린더가
-        # 전담, 피드 카드는 제목만. 수집·아카이브·캘린더 공급은 그대로.
-        if _force or cat in ("계약", "자금조달", "주주환원", "신규시설투자",
-                             "지분공시", "자산양수도", "회사구조", "소송",
-                             "리스크") or "실적" in cat:
-            if not corp_code:
-                continue
-            # 지분공시는 '대량보유'(majorstock 구조화 존재)만 시도 — 임원·
-            # 주요주주 소유상황/감사보고서/자산유동화 등은 무료 구조화 소스가
-            # 없어(원문도 라벨 미매칭) 시도 예산만 소모하며 계약·증자 카드를
-            # 굶김(사용자 2026-06-11 '블락?' 진단). 제목만 표시가 정상.
-            if (not _force) and cat == "지분공시" and "대량보유" not in report_nm:
-                continue
-            # 자금조달 신규 유형(커버리지 감사 2026-06-11) 중 구조화 API·원문
-            # 파서가 없는 것(리픽싱/교환청구/차입/대여/보증)은 시도 예산만
-            # 소모 — 제목+시총 카드가 정상. 담보제공은 _force(파서 보유).
-            if (not _force) and cat == "자금조달" and any(
-                    k in report_nm for k in ("전환가액", "교환청구권",
-                                             "단기차입금", "금전대여", "채무보증")):
-                continue
+        # 파싱 대상 판정 = is_parse_target (대시보드 미파싱 색칠과 단일 소스,
+        # 2026-06-12). IR·대량보유 외 지분공시·구조화 없는 자금조달 5종 제외 +
+        # corp_code 부재 제외 + _force(원문 파서 보유 유형)는 카테고리 무관 시도.
+        if is_parse_target(item):
             # 사이클당 신규 시도 상한 + 스로틀 — 4일치 일괄 enrich 가
             # DART 분당 한도를 태우고 전부 negative-cache 로 고착되던 것
             # 차단(2026-06-11 surfaced). 나머지는 다음 5분 사이클이 이어감.
