@@ -3209,12 +3209,14 @@ def _market_cap_won(stock_code: str) -> float | None:
 
 
 def _sig_pct(detail: list, label_pat: str) -> float | None:
-    """detail 라인에서 'label N%' 의 N 추출 (계약 매출액대비·시설 자기자본대비).
-    라벨 뒤 구분자는 ':'(spec 'X: 25.3%')·공백(계약 'X 14.2%') 모두 허용,
-    '%p'(지분 증감)는 제외."""
+    """detail 라인에서 'label N[%]' 의 N 추출 (계약 매출액대비·시설
+    자기자본대비). 라벨 뒤 구분자 ':'/공백 모두 허용. **% 는 선택** —
+    capex 파서가 '자기자본대비: 39.00' 처럼 % 없이 기록해 규칙 5 가
+    영영 미발화하던 버그 fix (종근당/웨이비스 2026-06-13, 과거 카드
+    소급). '%p'(지분 증감 단위)는 계속 제외."""
     for dl in detail:
-        m = re.search(label_pat + r"[:\s]*([\d.]+)\s*%(?!p)", str(dl))
-        if m:
+        m = re.search(label_pat + r"[:\s]*([\d.]+)\s*(%p|%)?", str(dl))
+        if m and m.group(2) != "%p":
             try:
                 return float(m.group(1))
             except ValueError:
@@ -3235,7 +3237,7 @@ def significance(item: dict, shares_outstanding: float | None = None,
     3. 주식소각 발행주식 3%↑ (사용자 2026-06-12 '소각·자사주 3% 이상만' —
        detail 의 '발행주식의 X%' 우선, 없으면 소각주식수÷shares 계산)
     4. 자기주식취득결정 발행주식 3%↑ (기재정정 제외, shares 필요)
-    5. 신규시설투자 자기자본대비 20%↑
+    5. 신규시설투자 자기자본대비 15%↑ (사용자 2026-06-13 20→15)
     6. 지분공시(대량보유) 신규 5%↑ (직전<5%≤현재)
     7. 상장폐지 관련 (사용자 2026-06-12 '중요에 상장폐지도') — 제목 또는
        파싱된 제목/사건 라인에 상장폐지 (효력정지 가처분 포함)
@@ -3340,7 +3342,7 @@ def significance(item: dict, shares_outstanding: float | None = None,
     # 5
     if "신규시설투자" in rn or "투자결정" in rn:
         p = _sig_pct(detail, r"자기자본\s*대비")
-        if p is not None and p >= 20.0:
+        if p is not None and p >= 15.0:
             return f"자기자본대비 {p:g}% 투자"
     # 8 — 유상증자 시총대비 5%↑ (유무상증자 포함, 무상은 자금 0 이라 자연 미발화)
     if "유상증자" in rn and not correction and market_cap:

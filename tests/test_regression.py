@@ -4438,13 +4438,19 @@ class TestDartParseTargetAndSignificance:
         assert significance({**item, "report_nm": "[기재정정]자기주식취득결정"},
                             shares_outstanding=20_000_000) is None
 
-    def test_significance_rule5_capex_20pct(self):
+    def test_significance_rule5_capex_15pct(self):
+        # 2026-06-13: 임계 20→15 + % 없는 '39.00' 표기(capex 파서 실포맷)
+        # 미발화 버그 fix — 종근당 39.00/웨이비스 50.80 케이스
         from bot.dart_feed import significance
         assert significance({"report_nm": "신규시설투자등", "category": "신규시설투자",
-                             "detail": ["투자금액: 800억원", "자기자본대비: 25.3%"]}
+                             "detail": ["자기자본대비: 39.00"]}
+                            ) == "자기자본대비 39% 투자"
+        assert significance({"report_nm": "신규시설투자등(자회사의 주요경영사항)",
+                             "category": "신규시설투자",
+                             "detail": ["자기자본대비: 25.3%"]}
                             ) == "자기자본대비 25.3% 투자"
         assert significance({"report_nm": "신규시설투자등", "category": "신규시설투자",
-                             "detail": ["자기자본대비: 12.0%"]}) is None
+                             "detail": ["자기자본대비: 14.9"]}) is None
 
     def test_significance_rule6_new_5pct_holder(self):
         from bot.dart_feed import significance
@@ -6193,3 +6199,18 @@ class TestDartCardOrderIsReceiptOrder:
         # 'for it in items' 와 혼동 없는 exact 매칭)
         assert ('key=lambda x: str(x.get("rcept_no") or ""),\n'
                 '                           reverse=True)') in src
+
+
+class TestLegendOrderMatchesChips:
+    """범례 설명 순서 = 칩 순서 (사용자 2026-06-13) — 실적(손익)→계약→
+    신규시설투자→주주환원(소각/자사주)→자금조달(유상증자)→지분공시
+    (신규 대량보유)→배당→리스크(상장폐지)."""
+
+    def test_order_and_threshold(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index("금색 — 손익")
+        seg = src[i:i + 200]
+        order = ["손익", "계약", "시설 자기자본15%", "소각/자사주",
+                 "유상증자", "대량보유", "배당", "상장폐지"]
+        pos = [seg.index(k) for k in order]
+        assert pos == sorted(pos), seg
