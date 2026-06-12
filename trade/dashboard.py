@@ -198,8 +198,8 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         # 녹색(속보 톤). 위 = 🟢 10·20일 잠정, 아래 = 📅 월간.
         prov_zone_div = (
             "<div class='ind-zone-div prov'><span>🟢 여기부터 <b>10·20일 잠정"
-            " 속보</b> — 관세청 10일 단위 · 매월 11·21·익월1일 발표 · 확정"
-            " 대비 ~한 달 선행</span></div>"
+            " 속보</b> — 관세청 10일 단위 · 11일(1~10)·21일(1~20)·"
+            "월초(전월 풀월) 발표 · 확정 대비 ~한 달 선행</span></div>"
         ) if prov_html else ""
         # 순서 (사용자 2026-06-12): 구분선 → 📋 더 빠른 잠정치(motie) →
         # 🗄 월별 아카이브 → 인사이트 → 산업트렌드 본문(motie 제외).
