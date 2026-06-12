@@ -359,7 +359,82 @@ def init_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (hs_code, year_month, section)
         )"""
     )
+    # 히트맵 leaf 스냅샷 (2026-06-12, 사용자 'Finviz식 히트맵') — 스윕이
+    # 메모리에 들고 있던 전 leaf 의 (기준월, 전월, 작년동월) 수출·수입을
+    # 저장 (추가 API 콜 0). 매 스윕 REPLACE (최신 스냅샷만).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS customs_heatmap_leaf (
+            hs_code TEXT PRIMARY KEY, name TEXT, ref_ym TEXT,
+            exp INTEGER, exp_pm INTEGER, exp_py INTEGER,
+            imp INTEGER, imp_pm INTEGER, imp_py INTEGER
+        )"""
+    )
     conn.commit()
+
+
+def heatmap_rows(leaves: dict[str, dict]) -> list[dict]:
+    """스윕 leaves → 히트맵 행 (순수 — 단위테스트).
+
+    기준월 = 전 leaf 공통 최신 실월(트레일링 0 제외, rank 와 동일 원칙).
+    각 leaf: 기준월/전월/작년동월의 수출·수입 USD. 기준월 데이터 없는
+    leaf 는 제외 (간헐 수출 라인 — 트리맵 박스 0 크기 방지)."""
+    moves = []
+    for hs, node in leaves.items():
+        mv = _latest_move(node["months"])
+        if mv is not None:
+            moves.append((hs, mv["year_month"]))
+    if not moves:
+        return []
+    ref_ym = max(ym for _, ym in moves)
+    pm_ym = _yymm_minus(ref_ym.replace("-", ""), 1)
+    py_ym = _yymm_minus(ref_ym.replace("-", ""), 12)
+    pm_key = f"{pm_ym[:4]}-{pm_ym[4:6]}"
+    py_key = f"{py_ym[:4]}-{py_ym[4:6]}"
+    out: list[dict] = []
+    for hs, node in leaves.items():
+        m = node["months"]
+        ref = m.get(ref_ym)
+        if not ref:
+            continue
+        exp = int(ref.get("exp_dlr") or 0)
+        imp = int(ref.get("imp_dlr") or 0)
+        if exp <= 0 and imp <= 0:
+            continue
+        pm = m.get(pm_key) or {}
+        py = m.get(py_key) or {}
+        out.append({
+            "hs_code": hs, "name": node.get("name") or hs, "ref_ym": ref_ym,
+            "exp": exp, "exp_pm": int(pm.get("exp_dlr") or 0),
+            "exp_py": int(py.get("exp_dlr") or 0),
+            "imp": imp, "imp_pm": int(pm.get("imp_dlr") or 0),
+            "imp_py": int(py.get("imp_dlr") or 0),
+        })
+    return out
+
+
+def store_heatmap(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    """히트맵 스냅샷 교체 저장. 빈 rows 면 기존 스냅샷 유지(부분 스캔 보호
+    — coverage guard 와 동일 철학)."""
+    if not rows:
+        return
+    conn.execute("DELETE FROM customs_heatmap_leaf")
+    conn.executemany(
+        "INSERT OR REPLACE INTO customs_heatmap_leaf "
+        "(hs_code, name, ref_ym, exp, exp_pm, exp_py, imp, imp_pm, imp_py) "
+        "VALUES (:hs_code,:name,:ref_ym,:exp,:exp_pm,:exp_py,:imp,:imp_pm,:imp_py)",
+        rows)
+    conn.commit()
+
+
+def load_heatmap(conn: sqlite3.Connection) -> list[dict]:
+    try:
+        cur = conn.execute(
+            "SELECT hs_code, name, ref_ym, exp, exp_pm, exp_py, "
+            "imp, imp_pm, imp_py FROM customs_heatmap_leaf")
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    except sqlite3.OperationalError:
+        return []
 
 
 def store_live(conn: sqlite3.Connection, ranked: dict[str, list[dict]]) -> None:
