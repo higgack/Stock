@@ -4567,6 +4567,70 @@ class TestHighlowFullUsAndCapWeight:
                             lambda: kicked.append(1))
         assert fv._highlow_full_us() == {} and kicked
 
+    # ── 업종 매칭 3-레이어 (2026-06-12 '업종 —' 전멸 fix — yfinance .info
+    # 가 데이터센터 IP 에서 비고, stale 캐시는 ind 필드 도입 전이었음) ──
+
+    def test_nasdaq_screener_parser(self):
+        from bot.finviz_client import _parse_nasdaq_screener
+        payload = {"data": {"rows": [
+            {"symbol": "AAPL", "industry": "Computer Manufacturing",
+             "sector": "Technology"},
+            {"symbol": "BRK/A", "industry": "", "sector": "Finance"},  # → sector 폴백
+            {"symbol": "NOIND", "industry": "", "sector": ""},         # 둘 다 빈 → 누락
+            {"symbol": "TOOLONG7", "industry": "X", "sector": "Y"},    # len>6 제외
+        ]}}
+        m = _parse_nasdaq_screener(payload)
+        assert m["AAPL"] == "Computer Manufacturing"
+        assert m["BRK-A"] == "Finance"          # '/'→'-' 정규화 + sector 폴백
+        assert "NOIND" not in m and "TOOLONG7" not in m
+
+    def test_industry_bulk_layering_gics_wins(self, monkeypatch):
+        import bot.finviz_client as fv
+        monkeypatch.setattr(fv, "_BULK_IND_FAIL_TS", 0.0)
+        monkeypatch.setattr(fv, "_nasdaq_screener_industries",
+                            lambda: {"AAPL": "Computer Manufacturing",
+                                     "TINY": "Misc"})
+        monkeypatch.setattr(fv, "_sp500_inds_github",
+                            lambda: {"AAPL": "Technology Hardware, Storage "
+                                             "& Peripherals"})
+        m = fv._bulk_industry_maps()
+        # S&P500 멤버는 GitHub GICS Sub-Industry 우선, 비멤버는 NASDAQ 커버
+        assert m["AAPL"] == "Technology Hardware, Storage & Peripherals"
+        assert m["TINY"] == "Misc"
+
+    def test_fetch_industries_bulk_without_yfinance(self, monkeypatch):
+        import bot.finviz_client as fv
+        written = {}
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: {})
+        monkeypatch.setattr(fv, "_cache_write",
+                            lambda n, o: written.update({n: o}))
+        monkeypatch.setattr(fv, "_bulk_industry_maps",
+                            lambda: {"AAPL": "Consumer Electronics"})
+        # allow_slow=False(렌더 경로) — 벌크만으로 해소 + 영구 캐시 적재,
+        # 벌크에 없는 종목은 누락(graceful, yfinance 호출 0)
+        out = fv._fetch_industries(["AAPL", "ZZZZ"], allow_slow=False)
+        assert out == {"AAPL": "Consumer Electronics"}
+        assert written["us_industry_cache.json"]["AAPL"] == "Consumer Electronics"
+
+    def test_highlow_cached_rows_backfill_industry(self, monkeypatch):
+        # ind 필드 도입 전 stale highlow.json 캐시 → 렌더 전 치유 + 캐시 갱신
+        import bot.finviz_client as fv
+        cached = {"high": [{"ticker": "AAPL", "price": 200.0, "pct": 1.0,
+                            "mcap": 30000.0}],
+                  "low": [], "ts": "T", "source": "S&P 500 산출"}
+        written = {}
+        monkeypatch.setattr(
+            fv, "_cached",
+            lambda name, *a, **k: cached if name == "highlow.json" else None)
+        monkeypatch.setattr(fv, "_cache_write",
+                            lambda n, o: written.update({n: o}))
+        monkeypatch.setattr(
+            fv, "_fetch_industries",
+            lambda tks, allow_slow=True: {"AAPL": "Consumer Electronics"})
+        out = fv.fetch_high_low()
+        assert out["high"][0]["ind"] == "Consumer Electronics"
+        assert "highlow.json" in written
+
 
 class TestPmOverrideRatingMask:
     """강제 HOLD 시 PM 원문 비-Hold 등급 마스킹 (082920 2026-06-11 review).
