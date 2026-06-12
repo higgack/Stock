@@ -55,12 +55,14 @@ log = logging.getLogger("scan-customs")
 # 6/1). 6 months guarantees ≥2 confirmed months year-round with slack.
 # Decoupled from fetch_customs' 12-month history window via its OWN env
 # var.
-# 13개월 확장 (2026-06-12, 히트맵 YoY 색용 — 사용자 승인): leaf 별 작년
-# 동월 필요. 비용 실측 기준 — 6개월 윈도 실사용 ~1,512콜/일(대시보드
-# 헤더 실측; 옛 '1,200콜/스캔' 추정은 과대) × ~2.2배 ≈ 3,300콜/일
-# « 10,000 무료 한도. 페이지수는 월수에 비례.
+# 14개월 (2026-06-12 밤 13→14 — YoY off-by-one fix): 최신 데이터월은
+# 항상 now 또는 now-1(잠정/확정 지연)이라, now 기준 13개월 윈도(now-12..
+# now)는 최신월의 **전년동월(now-13)을 안 담는다** → 히트맵 YoY 가 전부
+# '신규(전기 0)' (2026-06 실측: ref=2026-05, 필요=2025-05, 윈도 시작=
+# 2025-06). 14개월이면 연중 어느 시점이든 전년동월 포함 + 한 달 슬랙.
+# 비용 +8% 수준 « 10,000 무료 한도. 페이지수는 월수에 비례.
 LOOKBACK_MONTHS_DEFAULT = int(
-    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "13"
+    os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "14"
 )
 _MIGRATE_MARKER = Path.home() / ".trade" / ".surge_migrated"
 

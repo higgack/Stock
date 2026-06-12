@@ -3847,6 +3847,27 @@ def reclassify_v5_once_if_needed() -> dict | None:
     return stats
 
 
+# ── v6 — doc_fail 일회성 해제 (2026-06-12 밤) ─────────────────────────────
+# v4 클리어(20:48)~generic 폴백 배포(#283, 21:23) 사이에 시도돼 12h 쿨다운
+# 에 고착된 미파싱 잔여(~135)가 내일 아침까지 기다리지 않고, generic 번호
+# 항목 폴백 + 이후 배치 파서들과 함께 즉시 재시도되게 1회 해제. 큐는
+# 분당 8건 — ~20분 내 드레인. ₩0.
+
+_DOC_FAIL_CLEAR_MARKER_V6 = _ARCHIVE_DIR.parent / ".dart_doc_fail_cleared_v6"
+
+
+def clear_doc_fail_once_v6() -> int | None:
+    if _DOC_FAIL_CLEAR_MARKER_V6.exists():
+        return None
+    n = clear_doc_fail_cache()
+    try:
+        _DOC_FAIL_CLEAR_MARKER_V6.parent.mkdir(parents=True, exist_ok=True)
+        _DOC_FAIL_CLEAR_MARKER_V6.write_text(datetime.now(_KST).isoformat())
+    except OSError:
+        pass
+    return n
+
+
 def backfill_v4_status() -> str:
     """대시보드 표시용 한 줄 — '✅ 완료 ts · …' / '⏳ 대기/실행 중'.
     옛 plain-isoformat marker 도 tolerant (완료 시각만)."""

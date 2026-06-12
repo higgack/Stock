@@ -6068,3 +6068,40 @@ class TestRedditPageCollapsed:
         seg = seg[:seg.index("def regenerate_reddit_insider_index")]
         assert 'day_open = ""' in seg
         assert "card_default_open = False" in seg
+
+
+class TestHeatmapYoYLookback:
+    """히트맵 YoY off-by-one (2026-06-12 밤) — 13개월 윈도가 최신월의
+    전년동월을 안 담아 전부 '신규(전기 0)' (ref=2026-05, 필요=2025-05,
+    시작=2025-06). 14개월 + 윈도 산식 가드."""
+
+    def test_lookback_default_14(self):
+        src = open("trade/scripts/scan_customs.py", encoding="utf-8").read()
+        assert 'or "14"' in src and 'or "13"' not in src
+
+    def test_window_contains_yoy_of_prev_month(self):
+        import importlib.util as _il
+        # dotenv 의존 없이 _window 만 — 산식 복제 검증 (순수)
+        def _window(lookback, y, m):
+            back = lookback - 1
+            while back > 0:
+                m -= 1
+                if m == 0:
+                    m, y = 12, y - 1
+                back -= 1
+            return f"{y:04d}{m:02d}"
+        # now=2026-06, 최신 데이터월 = 2026-05 → YoY = 2025-05
+        assert _window(13, 2026, 6) == "202506"   # 13개월이면 미포함 (버그 재현)
+        assert _window(14, 2026, 6) == "202505"   # 14개월이면 포함
+
+
+class TestDocFailClearV6:
+    def test_marker_and_wiring(self, tmp_path, monkeypatch):
+        import bot.dart_feed as df
+        monkeypatch.setattr(df, "_DOC_FAIL_CLEAR_MARKER_V6",
+                            tmp_path / ".v6")
+        monkeypatch.setattr(df, "clear_doc_fail_cache", lambda: 42)
+        assert df.clear_doc_fail_once_v6() == 42
+        assert df.clear_doc_fail_once_v6() is None   # marker gate
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "clear_doc_fail_once_v6" in src
