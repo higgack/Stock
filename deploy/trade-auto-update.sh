@@ -129,7 +129,11 @@ fi
 # Best-effort: also restart the dashboard server when the change set
 # touches its code. Requires a sudoers entry; logs and continues if
 # the entry is missing so the main deploy doesn't fail because of it.
-DASHBOARD_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/dashboard(_server)?\.py$|^deploy/trade-bot-dashboard.*\.(service|timer)$' || true)
+# 2026-06-12: trade/*.py 전체로 확대 (NOAH #263 동일 클래스) — dashboard 가
+# industry/customs_provisional/heatmap/customs_scan 등 top-level 모듈을
+# import 하므로 dashboard.py 만 감시하면 그 모듈 변경(MoM 컬럼·(잠정)
+# 라벨·히트맵)이 장기실행 서버에 영원히 미적용되던 것.
+DASHBOARD_RELEVANT=$(echo "$CHANGED_FILES" | grep -E '^trade/[^/]+\.py$|^deploy/trade-bot-dashboard.*\.(service|timer)$' || true)
 DASH_NOTE=""
 if [ -n "$DASHBOARD_RELEVANT" ]; then
     if sudo -n /bin/systemctl restart trade-bot-dashboard 2>/dev/null; then

@@ -84,6 +84,20 @@
   🔥/⚠️ 플래그를 카테고리 탭과 독립 토글·동시선택(activeFlags 배열
   AND, 예 미파싱+실적) + 범례 안내 + 초기화 reset.** 테스트 6종 green,
   회귀 421 passed.
+- ✅ **트레이드 대시보드 피드백 4건 + stale-server 진단 (2026-06-12)**
+  — 🚨 **근본 원인: trade-bot-dashboard(장기실행 서버)가 #272 이후
+  신코드 미적용** (재시작 실패 — sudoers 의심). 증거: 구분선(#270
+  구배포) 보임 vs MoM 컬럼·정렬버튼·히트맵 탭·(잠정) 라벨(#272~277)
+  전부 안 보임 — 코드·테스트는 전부 정상 존재. fix: trade-auto-
+  update DASHBOARD_RELEVANT 를 trade/*.py 전체로 확대(NOAH #263
+  미러) — dashboard 가 import 하는 industry/customs_provisional/
+  heatmap 변경도 재시작. deploy/* 변경이라 merge 시 install-trade-
+  units 재실행 → sudoers 재설치(라인 기존재) → 같은 run 에서
+  dashboard 재시작 성공 예상. + 구분선 강조 pill(accent 테두리·
+  14.5px·📅) + 순서 변경(구분선→📋더 빠른 잠정치→🗄월별 아카이브→
+  본문, industry.motie_banner() 분리·motie=False) + MoM 정렬버튼/
+  컬럼·(잠정)라벨은 기존 코드 확인(추가작업 0). 산업 테스트 39
+  green(신규 2).
 - ⏳ 다음 카테고리 예시 수신 대기 ("아직 안끝남") — 전체 수집 종료
   신호("시작/끝") 오면 최종 점검 + PR ready + squash merge 1회.
 
