@@ -368,9 +368,15 @@ def main(argv: list[str] | None = None) -> int:
 
     leaves = customs_scan.build_series(all_rows)
     ranked = customs_scan.rank(leaves, top_n=args.top_n, pct_threshold=args.pct)
-    log.info("ranked: rate=%d amount=%d (leaves=%d)",
+    # 수입 방향 랭킹 병합 (사용자 2026-06-13) — 같은 leaves(imp_dlr) 재사용,
+    # API 0. store/archive/seen/alert 가 section 단위라 추가만으로 동작.
+    ranked.update(customs_scan.rank(leaves, top_n=args.top_n,
+                                    pct_threshold=args.pct, direction="import"))
+    log.info("ranked: rate=%d amount=%d rate_imp=%d amount_imp=%d (leaves=%d)",
              len(ranked[customs_scan.SECTION_RATE]),
-             len(ranked[customs_scan.SECTION_AMOUNT]), len(leaves))
+             len(ranked[customs_scan.SECTION_AMOUNT]),
+             len(ranked.get(customs_scan.SECTION_RATE_IMP, [])),
+             len(ranked.get(customs_scan.SECTION_AMOUNT_IMP, [])), len(leaves))
 
     if args.dry_run:
         hist = customs_scan.floor_histogram(leaves, pct_threshold=args.pct)
@@ -431,8 +437,9 @@ def main(argv: list[str] | None = None) -> int:
                         "이전 스냅샷 유지, 다음 스캔 재시도")
         return 0
 
-    empty = not (ranked[customs_scan.SECTION_RATE]
-                 or ranked[customs_scan.SECTION_AMOUNT])
+    empty = not any(ranked.get(s) for s in (
+        customs_scan.SECTION_RATE, customs_scan.SECTION_AMOUNT,
+        customs_scan.SECTION_RATE_IMP, customs_scan.SECTION_AMOUNT_IMP))
     with customs.session(db) as conn:
         customs_scan.init_db(conn)
         if empty:

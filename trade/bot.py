@@ -130,7 +130,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 <b>2. 대쉬보드</b>
 <a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
 모바일 OK · 5분마다 자동 갱신 · BasicAuth 보호 · 다크모드 자동 (19~07 KST)
-헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 + 🧪 미파싱 백로그 + 💰 비용·자원 + 📦 관세청 수출입 (📌내 핀 + 📈급등률·💵급증액 TOP30 발굴 + 🗄아카이브 무제한) 자동 표시
+헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 + 🧪 미파싱 백로그 + 💰 비용·자원 + 📦 관세청 수출입 (📌내 핀 + 📈급등률·💵급증액 TOP30 <b>수출·수입 양방향</b> 발굴 + 🗄아카이브 무제한 수출·수입 각각) 자동 표시
 
 <b>3. BeOn 발표 사이클 (KST)</b>
 • 매월 11일경 — 1-10일 잠정
@@ -179,7 +179,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 /hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭 즉시 핀(✅ 토글), 맨 아래 <b>완료</b> (예: /hs 반도체). 직접: /hs &lt;품목&gt; &lt;HS코드&gt;
 /unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록 (검색은 ~/.trade/hs_codes.xlsx 필요 — 관세청 15049722 파일 다운로드, 개정 시 덮어쓰기)
 /map &lt;표기&gt; &lt;코드&gt; — 시세 코드 등록(KIS확인) · /map 목록 · /unmap 해제
-/customs — 관세청 수출입: 📌내 핀 + 📈급등률 TOP(≥$50M) + 💵급증액 TOP + 🗄아카이브. 대쉬보드 📦 패널과 동일
+/customs — 관세청 수출입: 📌내 핀 + 📈급등률 TOP(≥$50M) + 💵급증액 TOP + 🗄아카이브 (수출·수입 양방향). 대쉬보드 📦 패널과 동일
 /cost — 비용·자원(외부 API 무료·LLM·디스크·관세청 호출 추정)
 /export — 산업트렌드 공유: 그 시점 월 스냅샷 파일 + 🔗공개 링크(인증 없음). 대쉬보드 🔗 링크(길게 눌러 복사)와 동일
 ※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
@@ -194,7 +194,7 @@ BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채�
 • trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent) + 미파싱 캡션을 eval_misses.jsonl에 누적 (회귀 fixture용, 키별 1회)
 • trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
 • trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일룩백+200cap, 초과시 ⚠️abort)
-• trade-bot-customs-fetch (1일 4회) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 + 🗄아카이브, 신규진입 DM(첫스캔무음·cap10). 변동시 ✅갱신 DM
+• trade-bot-customs-fetch (1일 4회) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 (수출·수입 양방향) + 🗄아카이브, 신규진입 DM(첫스캔무음·cap10·수입 첫등장도 무음). 변동시 ✅갱신 DM
 • trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
 신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
 

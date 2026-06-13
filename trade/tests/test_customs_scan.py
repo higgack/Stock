@@ -491,3 +491,77 @@ class ScanUsesRangeFetchTests(unittest.TestCase):
                          src.index("def _probe_says_skip")]
         self.assertIn("customs_scan.fetch_chapter(", probe_body)
         self.assertIn("max_pages=1", probe_body)
+
+
+class ImportDirectionTests(unittest.TestCase):
+    """수입 방향 급등률/급증액 TOP + 아카이브 (사용자 2026-06-13 '수입도
+    수출처럼'). 같은 leaves(imp_dlr) 재사용, section 별도(rate_import/
+    amount_import)라 export 무변경. per-section baseline 로 수입 첫 등장 무음."""
+
+    def _leaves(self):
+        # 반도체: 수출 급증, 석유: 수입 급증 — 방향별로 다른 1위
+        rows = [
+            {"hs_code": "8542000000", "name": "반도체", "year_month": "202603",
+             "exp_dlr": 1_000_000_000, "imp_dlr": 200_000_000},
+            {"hs_code": "8542000000", "name": "반도체", "year_month": "202604",
+             "exp_dlr": 3_000_000_000, "imp_dlr": 220_000_000},
+            {"hs_code": "2710000000", "name": "석유", "year_month": "202603",
+             "exp_dlr": 100_000_000, "imp_dlr": 5_000_000_000},
+            {"hs_code": "2710000000", "name": "석유", "year_month": "202604",
+             "exp_dlr": 110_000_000, "imp_dlr": 9_000_000_000},
+        ]
+        return cs.build_series(rows)
+
+    def test_rank_direction_uses_import_field_and_sections(self):
+        leaves = self._leaves()
+        exp = cs.rank(leaves, top_n=10, pct_threshold=20)
+        imp = cs.rank(leaves, top_n=10, pct_threshold=20, direction="import")
+        self.assertEqual(set(exp), {cs.SECTION_RATE, cs.SECTION_AMOUNT})
+        self.assertEqual(set(imp), {cs.SECTION_RATE_IMP, cs.SECTION_AMOUNT_IMP})
+        # 수출 급증액 1위=반도체, 수입 급증액 1위=석유 (방향별 분리)
+        self.assertEqual(exp[cs.SECTION_AMOUNT][0]["name"], "반도체")
+        self.assertEqual(imp[cs.SECTION_AMOUNT_IMP][0]["name"], "석유")
+
+    def test_import_first_appearance_baseline_silent(self):
+        # 기존 export seen 이 있어도 수입 section 첫 등장은 per-section
+        # baseline 으로 무음 (배포 직후 알림 플러드 0)
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        cs.init_db(conn)
+        leaves = self._leaves()
+        rk_exp = cs.rank(leaves, top_n=10, pct_threshold=20)
+        cs.eval_new_entrants(conn, rk_exp)                 # export baseline seed
+        rk = dict(rk_exp)
+        rk.update(cs.rank(leaves, top_n=10, pct_threshold=20, direction="import"))
+        ne = cs.eval_new_entrants(conn, rk)
+        self.assertEqual(ne, [])                            # 수입 첫 등장 무음
+
+    def test_render_emits_import_cards_and_archive(self):
+        import tempfile
+        from pathlib import Path
+        from trade import customs
+        td = tempfile.mkdtemp()
+        db = Path(td) / "store.db"
+        leaves = self._leaves()
+        rk = cs.rank(leaves, top_n=10, pct_threshold=20)
+        rk.update(cs.rank(leaves, top_n=10, pct_threshold=20, direction="import"))
+        with customs.session(db) as conn:
+            cs.init_db(conn)
+            cs.store_live(conn, rk)
+            cs.upsert_archive(conn, rk)
+        html = cs.render_surge_html(str(db))
+        self.assertIn("(수입 ≥", html)                      # 수입 급등률 카드
+        self.assertIn("급증액 TOP <small>(수입)", html)
+        self.assertIn("급변 아카이브 (수입)", html)
+        self.assertIn("급변 아카이브 (수출)", html)
+        self.assertIn("<th>수입($)</th>", html)             # 방향 라벨 헤더
+
+    def test_scan_wires_import_rank(self):
+        from pathlib import Path as _P
+        src = (_P(__file__).resolve().parents[1] / "scripts"
+               / "scan_customs.py").read_text("utf-8")
+        self.assertIn('direction="import"', src)            # 수입 랭킹 병합 배선
+
+
+if __name__ == "__main__":
+    unittest.main()
