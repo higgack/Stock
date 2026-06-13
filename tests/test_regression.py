@@ -3870,13 +3870,16 @@ class TestDartFeedBackfill:
         monkeypatch.setattr(m, "fetch_market_disclosures", lambda *a, **k: items)
         rep = m.coverage_audit(days_back=1)
         assert sum(rep["dropped_noncorp"].values()) == 2     # 투자설명서 + 증권신고서
-        assert sum(rep["dropped_listed"].values()) == 1      # 주총소집공고만 보강후보
+        # 주총소집공고는 A안(2026-06-13)으로 제목완결 거버넌스 → dropped_title
+        assert sum(rep["dropped_listed"].values()) == 0      # 보강후보 0
+        assert sum(rep["dropped_title"].values()) == 1       # 주총소집공고
         assert rep["dropped_other"] == 1                     # 비상장 펀드
         assert rep["kept"].get("계약") == 1
-        # 드롭 모니터링 로그도 비대상 제외 (보강후보만 tally)
+        # 드롭 모니터링 로그: 비대상 + 제목완결 거버넌스 제외, 실제 사건만 tally
         m._DROP_TALLY.clear()
-        m._tally_drop("투자설명서(일괄신고)", "123456")
-        m._tally_drop("주주총회소집공고", "654321")
+        m._tally_drop("투자설명서(일괄신고)", "123456")       # noncorp 제외
+        m._tally_drop("주주총회소집공고", "654321")            # 제목완결 제외 (A안)
+        m._tally_drop("타법인주식및출자증권양수결정", "111111")  # 실제 사건 → tally
         assert sum(m._DROP_TALLY.values()) == 1
 
     def test_backfill_candidates_classified_and_title_only(self, tmp_path, monkeypatch):
@@ -7260,3 +7263,34 @@ class TestDartNoncorpNotMisparsed:
         assert is_parse_target({"category": "계약",
                                 "report_nm": "단일판매ㆍ공급계약체결",
                                 "corp_code": "00123456"})
+
+
+class TestDartTitleCompleteGovernanceA:
+    """주주총회 거버넌스 + 증권발행결과(자율공시) = 제목완결 미파싱/보강후보 제외
+    (사용자 2026-06-13 A안). 기타경영사항(자율공시)는 force-parse(catch-all
+    소송/계약 승격) 유지."""
+
+    def test_shareholder_meeting_not_parse_target(self):
+        from bot.dart_feed import is_parse_target
+        for nm in ("주주총회소집공고", "주주총회소집결의",
+                   "주주명부폐쇄기간또는기준일설정", "의결권대리행사권유참고서류",
+                   "임시주주총회결과", "정기주주총회결과", "증권발행결과(자율공시)"):
+            assert not is_parse_target(
+                {"category": "기타", "report_nm": nm, "corp_code": "00123456"}), nm
+
+    def test_catch_all_and_real_events_preserved(self):
+        from bot.dart_feed import is_parse_target
+        # 바레 기타경영사항(수시 catch-all) — 소송/계약 자동승격 경로 유지
+        assert is_parse_target({"category": "기타", "report_nm": "기타경영사항",
+                                "corp_code": "00123456"})
+        assert is_parse_target({"category": "계약",
+                                "report_nm": "단일판매ㆍ공급계약체결",
+                                "corp_code": "00123456"})
+
+    def test_tally_drop_skips_title_complete(self):
+        from bot import dart_feed as m
+        m._DROP_TALLY.clear()
+        m._tally_drop("주주총회소집공고", "654321")        # 제외
+        m._tally_drop("증권발행결과(자율공시)", "654321")   # 제외
+        m._tally_drop("타법인주식및출자증권양수결정", "111111")  # tally
+        assert sum(m._DROP_TALLY.values()) == 1
