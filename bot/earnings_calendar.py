@@ -378,10 +378,14 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
                 _mkt = e.get("market", "us")
                 is_kr = _mkt == "kr"
                 is_intl = _mkt in _INTL_CAL_MAP   # jp/tw/cn/hk
-                # 한국=종목명 / intl=번역 한글명 / 미국=티커(회사명) — 신고저와 동일
-                # 형식(사용자 2026-06-11/13). 이름 미확보 시 티커만.
-                if is_kr or is_intl:
+                # 한국=종목명 / intl=티커+(한글명) / 미국=티커(회사명) — 사용자
+                # 2026-06-14 'intl 도 티커뒤에 ()'. 이름 미확보 시 티커만.
+                if is_kr:
                     label = _html.escape(e.get("name") or sym)
+                elif is_intl:
+                    _nm = e.get("name") or ""
+                    label = (f'{sym}<span class="nm">({_html.escape(_nm)})</span>'
+                             if _nm and _nm != str(e.get("symbol", "")) else sym)
                 else:
                     raw_sym = str(e.get("symbol", ""))
                     nm = (_us_names.get(raw_sym)

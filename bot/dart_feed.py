@@ -3243,6 +3243,23 @@ def is_parse_target(item: dict) -> bool:
     return True
 
 
+# '의도된 미파싱'(미파싱제외) 키워드 — force-parse(catch-all) 하지만 고정 구조가
+# 없어 detail 빈 게 정상인 유형. 진짜 미파싱(파서 갭)과 분리 (사용자 2026-06-14
+# '의도한 미파싱은 미파싱제외로, 진짜 미파싱과 나눠').
+_INTENDED_FREEFORM_KW = ("기타경영사항", "투자판단", "기타시장안내")
+
+
+def intended_freeform_unparsed(report_nm: str) -> bool:
+    """is_parse_target True + detail 빈 항목 중 '의도된 미파싱'인가 —
+    catch-all freeform(기타경영사항/투자판단/기타시장안내, 고정 구조 없음) 또는
+    [첨부정정](본문 텍스트 없는 첨부만 정정)이면 True. 대시보드가 '미파싱제외'로
+    분리 표시(설계상 정상). 나머지 빈 항목은 '진짜 미파싱'(파서 갭). 순수·테스트."""
+    rn = report_nm or ""
+    if any(k in rn for k in _INTENDED_FREEFORM_KW):
+        return True
+    return rn.startswith("[첨부정정]")
+
+
 def _fair_disclosure_category(detail_lines: list) -> str | None:
     """공정공시 본문 제목 → 의미 카테고리 (배당 > 주주환원, 그 외 None=실적
     유지). 가이던스/장래계획성은 실적이 맞으므로 명시 마커만 승격."""

@@ -241,6 +241,43 @@ def fetch_intl_movers_naver(market: str, top_n: int = 30) -> dict:
             "scanned": len(ups) + len(downs)}
 
 
+def world_name_map(market: str, max_pages: int = 40) -> dict:
+    """{yfinance-접미사 ticker → 한글명} — JP/CN/HK 네이버 worldstock(marketValue
+    정렬 페이지네이션, 사용자 2026-06-14 '네이버에서 한글종목명'). 종목명은
+    안정적이라 7d 디스크 캐시. 실적/캘린더가 티커→한글명 조회에 사용. TW 는
+    네이버 worldstock 미지원 → 빈 dict(호출부가 chart_translate 폴백). graceful·
+    429 면역. 대형주부터(실적 종목은 대부분 상위) 채우므로 max_pages 로 bound."""
+    cfg = _INTL_MOVER_EX.get(market)
+    if not cfg:
+        return {}
+    try:
+        from bot.finviz_client import _CACHE_DIR, _cache_write, _cached  # noqa: F401
+    except Exception:
+        return {}
+    cache = f"naver_world_names_{market}.json"
+    cached = _cached(cache, ttl=7 * 86400)
+    if isinstance(cached, dict) and cached:
+        return cached
+    out: dict = {}
+    for ex, suf in cfg:
+        for page in range(1, max_pages + 1):
+            st = _get_stocks(f"{_BASE}/worldstock/exchange/stock/list"
+                             f"?stockExchangeType={ex}&stockPriceSortType=marketValue"
+                             f"&page={page}&pageSize={_PAGE_SIZE}")
+            if not st:
+                break
+            for s in st:
+                sym = _suffix_ticker(s.get("symbolCode") or s.get("reutersCode"), suf)
+                nm = s.get("name")
+                if sym and nm and nm != sym:
+                    out[sym] = nm
+            if len(st) < _PAGE_SIZE:
+                break
+    if out:
+        _cache_write(cache, out)
+    return out
+
+
 def _is_real_stock(s: dict) -> bool:
     """실종목만 — ETF/ETN/스팩 제외 (사용자 신고저 정책). stockEndType=='stock'
     + 이름에 '스팩' 없음. (52주 최고엔 ETN/레버리지 상품이 섞여 들어옴)."""

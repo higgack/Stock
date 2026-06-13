@@ -10780,11 +10780,15 @@ _DART_FEED_CSS = """
    혼동) */
 .df-card.df-significant{border-color:#d4a017;box-shadow:0 0 0 1px #d4a01755}
 .df-card.df-unparsed{border-style:dashed;border-color:#5c9ce6aa}
+/* 미파싱제외(의도) — 회색 점선, 진짜 미파싱(파랑 점선)과 구별(사용자 2026-06-14) */
+.df-card.df-noparse{border-style:dotted;border-color:#6b727e88}
 .df-badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;align-self:flex-start;line-height:1.5}
 .df-badge-sig{background:#d4a01726;color:#b8860b;border:1px solid #d4a01766}
 .df-badge-unp{background:#5c9ce618;color:#3b82c4;border:1px solid #5c9ce655}
+.df-badge-noparse{background:#6b727e18;color:#8b919b;border:1px solid #6b727e55}
 .df-pill-sig.active{background:#d4a017;border-color:#d4a017}
 .df-pill-unp.active{background:#5c9ce6;border-color:#5c9ce6}
+.df-pill-noparse.active{background:#6b727e;border-color:#6b727e}
 .df-card-hd{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
 .df-corp{font-weight:700;font-size:15px;color:var(--text,#1f2937);text-decoration:none}
 .df-corp:hover{text-decoration:underline}
@@ -10927,16 +10931,23 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
             sig = None
         it["_sig"] = sig
         # 미파싱 = 파싱 대상인데 의미있는 detail 부재(시총/주요사업 줄 제외).
+        # '의도된 미파싱'(미파싱제외 — freeform/첨부정정)과 '진짜 미파싱'(파서 갭)
+        # 분리 (사용자 2026-06-14). 진짜만 _unparsed, 의도는 _noparse.
         try:
             meaningful = [l for l in (it.get("detail") or [])
                           if not str(l).startswith("주요사업:")
                           and "시가총액" not in str(l)]
-            it["_unparsed"] = bool(_dart_feed.is_parse_target(it)) and not meaningful
+            _base_unp = bool(_dart_feed.is_parse_target(it)) and not meaningful
+            if _base_unp and _dart_feed.intended_freeform_unparsed(
+                    it.get("report_nm", "")):
+                it["_unparsed"], it["_noparse"] = False, True
+            else:
+                it["_unparsed"], it["_noparse"] = _base_unp, False
         except Exception:
-            it["_unparsed"] = False
+            it["_unparsed"] = it["_noparse"] = False
 
     cat_counts: dict[str, int] = {}
-    _sig_total = _unp_total = 0
+    _sig_total = _unp_total = _noparse_total = 0
     _filtered_total = 0
     for items in by_date.values():
         for it in items:
@@ -10946,6 +10957,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                     _sig_total += 1
                 if it.get("_unparsed"):
                     _unp_total += 1
+                if it.get("_noparse"):
+                    _noparse_total += 1
     for items in by_date.values():
         for it in items:
             if _equity_noise(it):
@@ -10961,6 +10974,8 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         pills.append(f'<button class="df-pill df-pill-sig" data-flag="sig">🔥 중요 {_sig_total}</button>')
     if _unp_total:
         pills.append(f'<button class="df-pill df-pill-unp" data-flag="unparsed">⚠️ 미파싱 {_unp_total}</button>')
+    if _noparse_total:
+        pills.append(f'<button class="df-pill df-pill-noparse" data-flag="noparse">미파싱제외 {_noparse_total}</button>')
     for cat in _DART_CATEGORIES[1:]:
         n = cat_counts.get(cat, 0)
         if n > 0:
@@ -11001,15 +11016,18 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 """)
     # 색상 범례 (사용자 2026-06-12) — 🔥 중요/⚠️ 미파싱 의미 안내. 해당
     # 카드가 하나라도 있을 때만 노출(노이즈 방지).
-    if _sig_total or _unp_total:
+    if _sig_total or _unp_total or _noparse_total:
         _lg = []
         if _sig_total:
             _lg.append('<span class="df-badge df-badge-sig">🔥 중요</span> '
                        '금색 — 손익(매출+20%/영업익+30%)·계약 매출10%·시설 자기자본15%·소각/자사주 발행주식3%·유상증자 시총5%·신규 5% 대량보유·배당 시가배당률3%·상장폐지')
         if _unp_total:
             _lg.append('<span class="df-badge df-badge-unp">⚠️ 미파싱</span> '
-                       '파란 점선 — 우리 파서 미적용(제목·원문 공유 시 파서 추가)')
-        _lg.append('<span style="color:var(--muted,#888)">🔥·⚠️는 카테고리'
+                       '파란 점선 — 우리 파서 갭(제목·원문 공유 시 파서 추가)')
+        if _noparse_total:
+            _lg.append('<span class="df-badge df-badge-noparse">미파싱제외</span> '
+                       '회색 점선 — 설계상 구조화 대상 아님(자율공시·첨부정정, 제목이 곧 내용)')
+        _lg.append('<span style="color:var(--muted,#888)">🔥·⚠️·미파싱제외는 카테고리'
                    '와 함께 선택 가능 (예: 미파싱+실적)</span>')
         parts.append('<p class="sub" style="margin:-6px 0 14px">'
                      + ' &nbsp;·&nbsp; '.join(_lg) + '</p>')
@@ -11099,6 +11117,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                 _annotate(it)
                 _sig = it.get("_sig")
                 _unp = it.get("_unparsed")
+                _nop = it.get("_noparse")
                 _card_cls = "df-card"
                 _flags: list[str] = []
                 _badges = ""
@@ -11113,6 +11132,12 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
                     _badges += ('<span class="df-badge df-badge-unp" '
                                 'title="우리 방식으로 파싱되지 않은 카드 — 제목·원문 '
                                 '링크를 공유하면 파서를 추가합니다">⚠️ 미파싱</span>')
+                if _nop:
+                    _card_cls += " df-noparse"
+                    _flags.append("noparse")
+                    _badges += ('<span class="df-badge df-badge-noparse" '
+                                'title="설계상 구조화 대상이 아닌 자율공시/첨부정정 — '
+                                '제목이 곧 내용(파서 갭 아님)">미파싱제외</span>')
                 _flag_attr = " ".join(_flags)
 
                 parts.append(f"""
@@ -11234,7 +11259,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
   }
   var csvBtn=document.getElementById('df-csv');
   if(csvBtn)csvBtn.addEventListener('click',function(){
-    var FLAG={sig:'중요',unparsed:'미파싱'};
+    var FLAG={sig:'중요',unparsed:'미파싱',noparse:'미파싱제외'};
     var rows=[];
     cards.forEach(function(c){
       if(c.classList.contains('hidden'))return;          // 필터된 것만
@@ -11599,9 +11624,12 @@ def _render_earnings_table(earnings: list) -> str:
         y = e.get("year")
         q_str = f'Q{q} {y}' if q and y else "—"
         lookup_url = f'lookup/{sym}'
-        # 회사명만 표시(종목코드 생략) → 컴팩트 (사용자 2026-06-10 '한국
-        # 종목코드 필요없음'). 이름 없으면 티커 폴백. 링크는 티커로.
-        display = co_name if co_name else sym
+        # KR/US=회사명(종목코드 생략, 사용자 2026-06-10). intl(JP/CN/HK/TW)=
+        # 티커+(한글명) (사용자 2026-06-14 '티커뒤에 () 로'). 한글명 미확보 시 티커만.
+        if is_intl and co_name and co_name != sym:
+            display = f'{sym} <span class="ts">({co_name})</span>'
+        else:
+            display = co_name if co_name else sym
         rows.append(
             f'<tr><td class="sym"><a href="{lookup_url}">{display}</a></td>'
             f'<td>{dt}</td><td>{hour_label}</td>'
