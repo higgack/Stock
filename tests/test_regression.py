@@ -4759,6 +4759,8 @@ class TestHighlowFullUsAndCapWeight:
             lambda name, *a, **k: cached if name == "highlow.json" else None)
         monkeypatch.setattr(fv, "_cache_write",
                             lambda n, o: written.update({n: o}))
+        # US 52주 장중 1h 시장-인지(2026-06-14) — 캐시 hit 경로 타게 fresh
+        monkeypatch.setattr(fv, "_session_fresh", lambda *a, **k: True)
         monkeypatch.setattr(
             fv, "_fetch_industries",
             lambda tks, allow_slow=True: {"AAPL": "Consumer Electronics"})
@@ -7755,7 +7757,7 @@ class TestCsvExport:
         # 사용자 2026-06-13 'Top-3 말고 전체' → '이런것까지' — Master Table 종목별
         # 상세('[섹션] · Tier · Ticker · (시장) · Company' + 불릿) 구조 파싱.
         assert 'data-section="master_table"' in src and "table.picks" in src   # 파싱 + 폴백
-        assert "📥 전체 CSV" in src
+        assert "📥 CSV" in src    # 사용자 2026-06-14 '전체 CSV → CSV'
         assert "KillTrigger" in src and "TierC(기타)" in src and "가격반영도" in src  # 종목별 컬럼
         assert "Catalyst+시기" in src
 

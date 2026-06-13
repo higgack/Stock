@@ -566,14 +566,20 @@ def fetch_high_low() -> dict:
       2차 전 미국 상장 산출(nasdaqtrader ~7천 + yfinance — 백그라운드
           전용, 첫 빌드 전엔 3차로 폴스루)
       3차 S&P 500 산출(빠른 최후 폴백)
-    5분 캐시."""
-    c = _cached("highlow.json")
-    if c is not None:
-        # 업종 누락 행 치유 (stale 캐시가 ind 필드 도입 전이거나 .info
-        # 실패로 비었던 경우 — 벌크 맵으로 채워지면 캐시도 갱신).
-        if _backfill_industries(c):
-            _cache_write("highlow.json", c)
-        return c
+    신선도 = 시장-인지(_session_fresh US, 장중 1h / 장 밖 마지막 마감 이후 재스캔 0
+    — 사용자 2026-06-14 '미국 신고저도 장중 1h'). 옛 플랫 5분 대체."""
+    stale = _cached("highlow.json", ttl=86400)
+    if stale is not None:
+        try:
+            mt = (_CACHE_DIR / "highlow.json").stat().st_mtime
+        except OSError:
+            mt = 0.0
+        if _session_fresh("US", mt, _HL_INTRA_TTL):
+            # 업종 누락 행 치유 (stale 캐시가 ind 필드 도입 전이거나 .info
+            # 실패로 비었던 경우 — 벌크 맵으로 채워지면 캐시도 갱신).
+            if _backfill_industries(stale):
+                _cache_write("highlow.json", stale)
+            return stale
     out: dict = {"high": _fetch_signal("ta_newhigh"),
                  "low": _fetch_signal("ta_newlow"),
                  "ts": _now_label(), "source": "Finviz(전 미국 상장 · 당일 신고/신저)"}
