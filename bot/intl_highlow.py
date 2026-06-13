@@ -125,10 +125,23 @@ def _kr_full_universe() -> tuple[list[str], dict]:
 
 
 def _compute_kr_full() -> None:
-    """KR 52주 신고저 = pykrx 전종목(KOSPI+KOSDAQ) → yfinance 당일 52주 신고가/
-    신저가 갱신 스캔 (사용자 2026-06-13 — EOD OK·실시간 불요·KRX 소스·진짜 신고가).
-    한글명=pykrx 네이티브(번역 불요). pykrx 부재 → peer-83 yfinance 폴백(회귀 0)."""
-    from bot.finviz_client import _compute_highlow_from
+    """KR 52주 신고저 — **네이버 우선**(전종목·한글명·1콜씩, 사용자 2026-06-13
+    '신고가 신저가는 네이버에 있어'). 네이버 front-api 가 ready 52주 최고/최저를
+    주므로 pykrx+yfinance 전종목 스캔(수 분) 불필요. 네이버 실패 시 pykrx 스캔
+    폴백(회귀 0). 한글명 둘 다 native(번역 불요)."""
+    from bot.finviz_client import _cache_write, _compute_highlow_from
+    # 1) 네이버 — 빠름(1콜씩)·한글명·ETF/ETN/스팩 제외
+    try:
+        from bot.naver_ranking_client import fetch_kr_highlow
+        nv = fetch_kr_highlow()
+        if nv.get("high") or nv.get("low"):
+            _cache_write(_CFG["KR"][1], nv)
+            _status_write("KR", "done", high=len(nv["high"]),
+                          low=len(nv["low"]), src="naver")
+            return
+    except Exception as exc:
+        log.warning("naver KR 52w 실패 → pykrx 폴백: %s", exc)
+    # 2) 폴백: pykrx 전종목 → yfinance 당일 52주 갱신 스캔
     uni, names = _kr_full_universe()
     if not uni:                                   # pykrx 부재 → peer-83 폴백
         uni, names = _universe("KR")

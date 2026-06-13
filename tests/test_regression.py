@@ -7639,6 +7639,54 @@ class TestCsvExport:
         assert 'id="t3-csv"' in h and 'id="cs-csv"' in h and "csv-btn" in h
 
 
+class TestNaverKrRanking:
+    """KR 52주 신고저 = 네이버 front-api 전종목 (사용자 2026-06-13 '신고가 신저가는
+    네이버에 있어'). pykrx+yfinance 스캔 대신 네이버 ready 데이터. VM 실측 필드로
+    파싱 단위검증(샌드박스 네이버 도달 불가). 네이버 실패 시 pykrx 폴백."""
+
+    _SAMPLE = {"itemCode": "240810", "name": "원익IPS", "stockExchangeType": "KOSDAQ",
+               "currentPrice": 183300, "fluctuationsType": "UPPER_LIMIT",
+               "fluctuationsRatio": "30.00", "accumulatedTradingVolume": 4035281,
+               "marketValue": 8997100000000, "stockEndType": "stock"}
+
+    def test_kr_row_schema(self):
+        from bot.naver_ranking_client import _kr_row
+        r = _kr_row(self._SAMPLE)
+        assert r["ticker"] == "240810.KQ"          # KOSDAQ → .KQ
+        assert r["name"] == "원익IPS" and r["price"] == 183300
+        assert r["pct"] == 30.0 and r["vol"] == 4035281
+        assert r["mcap"] == 89971.0                # marketValue/1e8 = 억(원)
+        # KOSPI → .KS
+        assert _kr_row(dict(self._SAMPLE, stockExchangeType="KOSPI"))["ticker"] == "240810.KS"
+
+    def test_signed_pct(self):
+        from bot.naver_ranking_client import _signed_pct
+        assert _signed_pct({"fluctuationsRatio": "1.8", "fluctuationsType": "RISING"}) == 1.8
+        assert _signed_pct({"fluctuationsRatio": "5.2", "fluctuationsType": "FALLING"}) == -5.2
+        assert _signed_pct({"fluctuationsRatio": "30", "fluctuationsType": "UPPER_LIMIT"}) == 30.0
+        assert _signed_pct({"fluctuationsRatio": "30", "fluctuationsType": "LOWER_LIMIT"}) == -30.0
+
+    def test_etf_etn_spac_excluded(self):
+        from bot.naver_ranking_client import _is_real_stock
+        assert _is_real_stock(self._SAMPLE) is True
+        assert _is_real_stock({"stockEndType": "etn", "name": "KB 레버리지 ETN"}) is False
+        assert _is_real_stock({"stockEndType": "etf", "name": "KODEX 200"}) is False
+        assert _is_real_stock({"stockEndType": "stock", "name": "엔에이치스팩28호"}) is False
+
+    def test_fetch_graceful_offline(self):
+        # 샌드박스(네이버 불가) → 빈 결과, 크래시 없음 (스키마 보존)
+        from bot.naver_ranking_client import fetch_kr_highlow
+        d = fetch_kr_highlow()
+        assert set(d) >= {"high", "low", "ts", "source"}
+        assert isinstance(d["high"], list) and isinstance(d["low"], list)
+
+    def test_compute_kr_prefers_naver(self):
+        # _compute_kr_full 이 네이버 우선 + pykrx 폴백 배선 (회귀 0)
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert "from bot.naver_ranking_client import fetch_kr_highlow" in src
+        assert "pykrx 폴백" in src
+
+
 class TestSessionAwarePerMarket:
     """시장-인지 신선도 (_session_fresh) — 사용자 2026-06-13 '장종료후 굳이 안
     돌려도·나라별 시간 체크해 부하없이'. 정규장 중 intra_ttl / 장 밖 마지막 마감
