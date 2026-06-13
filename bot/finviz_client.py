@@ -1667,13 +1667,26 @@ def _backfill_korean_names(rows: list, market: str) -> None:
         return
     if market == "TW":
         # 대만은 () 안을 **영문명**으로 (사용자 2026-06-14 '대만은 한국어 번역
-        # 하지말고 영어로'). yfinance longName 직접 사용, chart_translate 안 함.
+        # 하지말고 영어로'). 1차 yfinance longName, 2차 中文 native 명 → 영문
+        # 번역(translate_names_en) — 급등락(enrich_for_panel)과 동일하게 52주도
+        # 소형주 영문화(사용자 2026-06-14 'TW 52주도 급등락처럼 영문').
         try:
-            en = _fetch_display_names([r["ticker"] for r in rows])
+            tickers = [r["ticker"] for r in rows]
+            en = _fetch_display_names(tickers)
             for r in rows:
                 e = en.get(r["ticker"], "")
                 if e:
                     r["name"] = e
+            # longName 미스 종목 — 中文 native 명(_tw_universe names) 영문 번역
+            miss = [r for r in rows if not en.get(r["ticker"])
+                    and r.get("name") and r["name"] != r["ticker"]]
+            nat = sorted({r["name"] for r in miss})
+            if nat:
+                from bot.chart_translate import translate_names_en
+                tr = translate_names_en(nat)
+                for r in miss:
+                    if tr.get(r["name"]):
+                        r["name"] = tr[r["name"]]
         except Exception as exc:
             log.warning("finviz: TW 영문명 백필 실패: %s", exc)
         return

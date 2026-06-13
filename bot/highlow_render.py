@@ -230,12 +230,28 @@ def enrich_for_panel(items: list, market: str, want_ind: bool = False,
     else:
         meta: dict = {}
         try:
-            from bot.finviz_client import _fetch_mcaps
+            from bot.finviz_client import _cache_write, _cached, _fetch_mcaps
             mcaps = _fetch_mcaps(tickers)
+            # 시총 내구 캐시 (사용자 2026-06-14 'TW 급등락 시총 안 떠 — 52주는
+            # 되는데'): yfinance 가 일시적으로 죽어 _fetch_mcaps 가 None 줘도 직전
+            # 성공값 유지(12h 디스크). 52주는 백그라운드 스캔 결과에 캐시돼 있고
+            # 무버는 렌더-라이브 fetch 라 yfinance 장애에 취약하던 비대칭 해소.
+            pkey = f"enrich_mcap_{market}.json"
+            persist = _cached(pkey, ttl=12 * 3600)
+            persist = dict(persist) if isinstance(persist, dict) else {}
+            changed = False
             for tk in tickers:
                 mc = mcaps.get(tk)
-                meta.setdefault(tk, {})["mcap"] = (round(mc / 1e8, 2)
-                                                   if mc else None)
+                if mc:
+                    eok = round(mc / 1e8, 2)
+                    meta.setdefault(tk, {})["mcap"] = eok
+                    if persist.get(tk) != eok:
+                        persist[tk] = eok
+                        changed = True
+                else:                       # yfinance 미스 → 직전 성공값 폴백
+                    meta.setdefault(tk, {})["mcap"] = persist.get(tk)
+            if changed:
+                _cache_write(pkey, persist)
             if want_ind:
                 from bot.finviz_client import _fetch_industries
                 inds = _fetch_industries(tickers)

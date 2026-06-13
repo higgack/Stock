@@ -7227,6 +7227,40 @@ class TestUpperLowerVolume:
         assert out[0]["name"] == "Translated Co"         # 中文 미스분 영문 번역
         hr._ENRICH_CACHE.clear()
 
+    def test_tw_52w_name_translation(self, monkeypatch):
+        # 사용자 2026-06-14 'TW 신고저도 급등락처럼 영문' — _backfill_korean_names
+        # TW 가 longName 미스분 中文 native 명을 translate_names_en 로 영문화.
+        import bot.chart_translate as ct
+        import bot.finviz_client as fc
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks: {"2330.TW": "TSMC"})   # 2330 만 longName
+        monkeypatch.setattr(ct, "translate_names_en",
+                            lambda names: {n: "Translated Co" for n in names})
+        rows = [{"ticker": "2330.TW", "name": "台積電"},
+                {"ticker": "9999.TW", "name": "中文小型股"}]   # longName 미스
+        fc._backfill_korean_names(rows, "TW")
+        assert rows[0]["name"] == "TSMC"            # yfinance longName 우선
+        assert rows[1]["name"] == "Translated Co"   # 中文 → 영문 번역
+
+    def test_enrich_mcap_persist_fallback(self, monkeypatch):
+        # 사용자 2026-06-14 'TW 급등락 시총 안 떠 (52주는 됨)' — yfinance None 이어도
+        # 직전 성공 시총 디스크 캐시 유지(렌더-라이브 fetch 장애 비대칭 해소).
+        import bot.finviz_client as fc
+        from bot import highlow_render as hr
+        store: dict = {}
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: store.get(name))
+        monkeypatch.setattr(fc, "_cache_write",
+                            lambda name, obj: store.__setitem__(name, obj))
+        monkeypatch.setattr(fc, "_fetch_mcaps", lambda tks: {"2330.TW": 1e13})
+        hr._ENRICH_CACHE.clear()
+        o1 = hr.enrich_for_panel([{"ticker": "2330.TW", "name": "x"}], "TW")
+        assert o1[0]["mcap"] == round(1e13 / 1e8, 2)      # 성공 → persist
+        monkeypatch.setattr(fc, "_fetch_mcaps", lambda tks: {})   # yfinance 죽음
+        hr._ENRICH_CACHE.clear()
+        o2 = hr.enrich_for_panel([{"ticker": "2330.TW", "name": "x"}], "TW")
+        assert o2[0]["mcap"] == round(1e13 / 1e8, 2)      # 직전 성공값 유지
+        hr._ENRICH_CACHE.clear()
+
     def test_tw_stock_day_session_aware(self):
         # 사용자 2026-06-14 '모두 장중 1h' — TW 상한가도 _session_fresh(옛 5분 대체)
         src = open("bot/twse_client.py", encoding="utf-8").read()
