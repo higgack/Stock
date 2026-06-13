@@ -6478,7 +6478,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
     # ── Bottleneck Screener section header + search + 실행 ──
     parts.append(f"""
   <h2 style="margin:24px 0 8px">🔬 Bottleneck Screener
-    <button id="t3-csv" type="button" class="csv-btn" title="모든 실행의 Top-3 종목을 CSV(엑셀)로 — 도메인·날짜·티어·성과 포함">📥 Top-3 CSV</button>
+    <button id="t3-csv" type="button" class="csv-btn" title="모든 실행의 Master Table 전 종목을 CSV(엑셀)로 — 도메인·날짜·테마섹션·전체 후보(Master Table 없으면 Top-3 폴백)">📥 전체 CSV</button>
   </h2>
   <p class="sub">테마별 다종목 idea generation · 6-18M thesis</p>
   <div class="search-bar">
@@ -7278,19 +7278,36 @@ noahConsoleSetup({
     return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate());}
   var t3=document.getElementById('t3-csv');
   if(t3)t3.addEventListener('click',function(){
+    // 전체 = 각 실행의 Master Table(검증된 전 종목) markdown 표 파싱. 테마
+    // 섹션([..]) 추적. Master Table 없는 실행은 그 실행의 Top-3 표로 폴백.
     var rows=[];
-    document.querySelectorAll('table.picks').forEach(function(tb){
-      var card=tb.closest('.card'); if(!card)return;
+    document.querySelectorAll('.card').forEach(function(card){
       var domain=txt(card.querySelector('.domain')), date=card.getAttribute('data-date')||'';
-      tb.querySelectorAll('tbody tr').forEach(function(tr){
-        var c=tr.querySelectorAll('td'); if(c.length<8)return;
-        rows.push([date,domain,txt(c[0]).replace('#',''),txt(c[1]),txt(c[2]),
-                   txt(c[3]),txt(c[4]),txt(c[5]),txt(c[6]),txt(c[7])]);
-      });
+      var before=rows.length;
+      var mt=card.querySelector('.analysis-b[data-section="master_table"]');
+      if(mt){
+        var section='';
+        (mt.textContent||'').split('\n').forEach(function(ln){
+          ln=ln.trim(); if(!ln)return;
+          var sec=ln.match(/^\[(.+)\]$/); if(sec){section=sec[1];return;}
+          if(ln.indexOf('|')<0)return;                 // markdown 표 행만
+          var cells=ln.split('|').map(function(s){return s.trim();}).filter(function(s){return s!=='';});
+          if(!cells.length)return;
+          if(cells.every(function(c){return /^[-:\s]+$/.test(c);}))return;  // |---| 구분선 스킵
+          rows.push([date,domain,section].concat(cells.slice(0,8)));
+        });
+      }
+      if(rows.length===before){                        // Master Table 없음/파싱0 → Top-3 폴백
+        var tb=card.querySelector('table.picks');
+        if(tb)tb.querySelectorAll('tbody tr').forEach(function(tr){
+          rows.push([date,domain,'Top-3'].concat(
+            Array.prototype.map.call(tr.querySelectorAll('td'),txt).slice(0,8)));
+        });
+      }
     });
-    if(!rows.length){alert('내보낼 Top-3 picks 가 없습니다.');return;}
-    noahCsv('screener_top3_'+stamp()+'.csv',
-      ['날짜','도메인','순위','티커','티어','회사','1개월','3개월','6개월','alpha_vs_sector'],rows);
+    if(!rows.length){alert('내보낼 데이터가 없습니다 (Master Table/Top-3 없음).');return;}
+    noahCsv('screener_전체_'+stamp()+'.csv',
+      ['날짜','도메인','테마섹션','열1','열2','열3','열4','열5','열6','열7','열8'],rows);
   });
   var cs=document.getElementById('cs-csv');
   if(cs)cs.addEventListener('click',function(){
