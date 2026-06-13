@@ -82,6 +82,10 @@ def _classify_report(report_nm: str) -> str:
         return "IR"
     if any(k in t for k in _EQUITY_KW):
         return "지분공시"
+    # 최대주주 등 소유주식변동신고서 (공정거래법, 라이브 2026-06-13) — 지분율
+    # 희석/집중/전량처분. report_nm 은 '소유주식변동', doc 표는 '주식보유 변동'.
+    if "소유주식변동" in t or ("주식보유" in t and "변동" in t):
+        return "지분공시"
     # ── DART 커버리지 감사 (사용자 2026-06-11 '놓치는 공시') — 거래소
     # 의무공시인데 키워드 부재로 '기타' 드롭되던 유형 보강. 조회공시를
     # 가장 먼저 검사 — '조회공시요구(유상증자설)에대한답변' 류가 내부
@@ -1203,24 +1207,38 @@ def _majorstock_doc_lines(txt: str) -> list[str]:
 
 
 def _major_holding_change_lines(txt: str) -> list[str]:
-    """최대주주 등의 주식보유 변동 (공정거래법 — 미파싱-6 에스케이텔레콤씨에스
-    티원). 첫 주주(최대주주) 변동전→변동후 지분율 + 증감. 희석/매집 신호. 순수."""
+    """최대주주 등의 주식보유 변동 (공정거래법 — report_nm '최대주주등소유주식
+    변동신고서' / doc 제목 '최대주주 등의 주식보유 변동'). 첫(최대) 주주의 관계·
+    변동전→변동후 지분율 + 증감(희석/집중/전량처분). 순수. 라이브 5예시 2026-
+    06-13: 계열회사 희석(고흥나로)·친족 집중(애나그램)·전량 이전(메이케이/메이
+    엑스지, 변동후 '-'=0). 관계 열을 계열회사 단일→전 관계로 broaden + '-' 처리."""
     parts: list[str] = []
-    # 주주명 = '계열회사'(관계 열) 직전 단일 토큰(+(주)) — 헤더 prefix 오캡처
-    # 차단 (공백 포함 prefix '동일인 및 …' 배제)
-    mn = re.search(r"([가-힣A-Za-z0-9]{2,20}(?:\([가-힣A-Za-z]{1,4}\))?)"
-                   r"\s*계열회사", txt)
-    # 보통주 행: 변동전수 변동전율 [증감수] 증감율 변동후수 변동후율
-    mr = re.search(r"보통주\s+([\d,]+)\s+([\d.]+)\s+\S+\s+(-?[\d.]+)\s+"
-                   r"([\d,]+)\s+([\d.]+)", txt)
+    # 주주명 = 관계 열(계열회사/친족/본인/임원/특수관계인) 직전 단일 토큰
+    # (+(주)/㈜) — 헤더 prefix '동일인 및 …' 오캡처 차단(공백 포함 prefix 배제)
+    mn = re.search(r"([가-힣A-Za-z0-9㈜]{2,20}(?:\([가-힣A-Za-z]{1,4}\))?)"
+                   r"\s*(?:계열회사|친족|본인|임원|특수관계인)", txt)
+    rel = re.search(r"(?:계열회사|친족|본인|임원|특수관계인)", txt)
+    # 보통주 행: 변동전수 변동전율 [증감수] 증감율 변동후수 변동후율 ('-'=0)
+    mr = re.search(r"보통주\s+([\d,]+|-)\s+([\d.]+|-)\s+(\S+)\s+(-?[\d.]+|-)\s+"
+                   r"([\d,]+|-)\s+([\d.]+|-)", txt)
+
+    def _f(s):
+        return 0.0 if s in ("-", "–") else float(s.replace(",", ""))
+
     if mn and mr:
         try:
-            before, after = float(mr.group(2)), float(mr.group(5))
-            delta = float(mr.group(3))
+            before, after = _f(mr.group(2)), _f(mr.group(6))
+            delta = (_f(mr.group(4)) if mr.group(4) not in ("-", "–")
+                     else after - before)
             arrow = "▲" if delta > 0 else ("▼" if delta < 0 else "–")
-            parts.append(f"주주: {mn.group(1).strip()}")
+            who = mn.group(1).strip()
+            if rel:
+                who += f"({rel.group(0)})"
+            parts.append(f"주주: {who}")
+            note = " · 전량 처분" if after == 0 and before > 0 else (
+                   " · 신규" if before == 0 and after > 0 else "")
             parts.append(f"지분율: {before:.2f}% → {after:.2f}% "
-                         f"({delta:+.2f}%p {arrow})")
+                         f"({delta:+.2f}%p {arrow}){note}")
         except ValueError:
             pass
     return parts
@@ -2710,8 +2728,10 @@ def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
             if len(parts) >= 2:
                 return {"lines": parts}
             _doc_fail_mark(rcept_no, hours=12.0)
-    elif "주식보유" in t and "변동" in t:
-        # 최대주주 등의 주식보유 변동 (공정거래법, 미파싱-6) — 지분율 희석/매집
+    elif ("주식보유" in t and "변동" in t) or "소유주식변동" in t:
+        # 최대주주 등의 주식보유 변동 (공정거래법) — report_nm '주식보유변동'
+        # (미파싱-6) + '최대주주등소유주식변동신고서'(소유주식변동, 라이브
+        # 2026-06-13 5예시). 같은 doc 제목·표 구조라 동일 파서 라우팅.
         txt2 = _fetch_doc_text(rcept_no, api_key)
         if txt2:
             parts = _major_holding_change_lines(txt2)
@@ -3190,7 +3210,9 @@ def is_parse_target(item: dict) -> bool:
     # 2026-06-12 '지분공시도 다 파싱') — 둘 다 무료 구조화 API 보유.
     # 그 외('보고서' generic 분류분 — 감사보고서 등)는 구조화 소스 없음.
     if (not _force) and cat == "지분공시" and not (
-            "대량보유" in report_nm or "소유상황" in report_nm):
+            "대량보유" in report_nm or "소유상황" in report_nm
+            or "소유주식변동" in report_nm
+            or ("주식보유" in report_nm and "변동" in report_nm)):
         return False
     if (not _force) and cat == "자금조달" and any(
             k in report_nm for k in _FUNDING_NO_PARSER):

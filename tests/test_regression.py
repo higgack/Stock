@@ -3917,6 +3917,28 @@ class TestDartFeedBackfill:
         assert m.is_parse_target({"category": "계약", "corp_code": "C",
                                   "report_nm": "단일판매ㆍ공급계약체결"}) is True
 
+    def test_owner_share_change_form_classified_and_routed(self, tmp_path, monkeypatch):
+        # 최대주주등소유주식변동신고서(공정거래법, 라이브 2026-06-13 5예시) —
+        # 지분공시 분류 + 파싱대상 + _major_holding_change_lines 라우팅 + 고빈도
+        # 라 _equity_noise detail-required 게이트(미파싱 숨김=홍수 방지)
+        m = self._load(tmp_path, monkeypatch)
+        nm = "최대주주등소유주식변동신고서"
+        assert m._classify_report(nm) == "지분공시"
+        assert m.is_parse_target({"category": "지분공시", "corp_code": "C",
+                                  "report_nm": nm}) is True
+        # dispatch + 게이트 배선(소스 가드)
+        src = (__import__("pathlib").Path(m.__file__).read_text("utf-8"))
+        assert '"소유주식변동" in t' in src                  # _extract_detail 라우팅
+        from pathlib import Path as _P
+        dash = (_P(m.__file__).resolve().parent / "dashboard.py").read_text("utf-8")
+        assert "소유주식변동" in dash                         # _equity_noise 게이트
+        # 회귀: 대량보유/소유상황 여전히 지분공시 파싱대상
+        for r in ("주식등의대량보유상황보고서",
+                  "임원ㆍ주요주주특정증권등소유상황보고서"):
+            assert m._classify_report(r) == "지분공시"
+            assert m.is_parse_target({"category": "지분공시", "corp_code": "C",
+                                      "report_nm": r}) is True
+
 
 class TestDartCardFormats:
     """DART 카드 승인 양식(배치 2026-06-11) 영구 회귀 — 검증 중 surfaced
@@ -5601,12 +5623,26 @@ class TestDartUnparsed6:
 
     def test_major_holding_change(self):
         from bot.dart_feed import _major_holding_change_lines
+        # 관계 열 broaden(2026-06-13): 주주명에 (관계) 병기
         L = _major_holding_change_lines(
             "최대주주 등의 주식보유 변동 ... 변동 후 주식수 지분율 (C) "
             "동일인 및 동일인 관련자 에스케이스퀘어(주) 계열회사 2026.06.11 "
             "보통주 56,812 53.13 - -1.06 56,812 52.07 - -")
-        assert any(l == "주주: 에스케이스퀘어(주)" for l in L)
+        assert any(l == "주주: 에스케이스퀘어(주)(계열회사)" for l in L)
         assert any(l == "지분율: 53.13% → 52.07% (-1.06%p ▼)" for l in L)
+
+    def test_major_holding_change_live_5cases(self):
+        # 라이브 5예시(2026-06-13) — 친족 집중·전량 처분('-'=0) 커버 broaden
+        from bot.dart_feed import _major_holding_change_lines as F
+        # 친족 집중 (애나그램 서진석 50.49→93.92)
+        L = F("동일인 및 동일인 관련자 서진석 친족 2026년 05월 29일 "
+              "보통주 212,050 50.49 3,000,000 43.43 3,212,050 93.92 300,000 0.1")
+        assert any("서진석(친족)" in l for l in L)
+        assert any("50.49% → 93.92% (+43.43%p ▲)" in l for l in L)
+        # 전량 처분 (메이케이 제주항공 100→0, 변동후 '-')
+        L2 = F("동일인 및 동일인 관련자 제주항공 계열회사 2026.06.10 "
+               "보통주 7,800,000 100 -7,800,000 -100 - -")
+        assert any("100.00% → 0.00%" in l and "전량 처분" in l for l in L2)
 
     def test_suspension_release(self):
         from bot.dart_feed import _suspension_release_lines

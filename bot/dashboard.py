@@ -10753,7 +10753,11 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         if it.get("category") != "지분공시":
             return False
         if "대량보유" not in rn:
-            if "소유상황" in rn:
+            # 소유상황(elestock) + 최대주주등소유주식변동신고서(공정거래법,
+            # 라이브 2026-06-13) = 고빈도(36/3일) → detail 파싱된 것만 노출,
+            # 미파싱은 숨겨 제목 홍수 방지 (대량보유와 같은 정책).
+            if ("소유상황" in rn or "소유주식변동" in rn
+                    or ("주식보유" in rn and "변동" in rn)):
                 return not (it.get("detail") or [])
             return True
         det = it.get("detail") or []
