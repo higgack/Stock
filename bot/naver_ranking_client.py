@@ -347,6 +347,71 @@ def world_industry_map(market: str, per_industry: int = 100) -> dict:
     return out
 
 
+def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
+    """{up:[{name,pct}], down:[...], ts, source} — 네이버 업종별 등락(시총가중 평균)
+    Top/Bottom (CN/HK/JP, 사용자 2026-06-14 '업종등락 네이버'). 전 업종 순회·각
+    업종 상위 종목(시총순 20) 시총가중 등락 → 랭킹. ETF 업종 제외. 1h 디스크 캐시
+    (등락 intraday). graceful·429 면역 — 실패 시 빈(호출부 ETF 합성 폴백)."""
+    nat = _UPJONG_NATION.get(market)
+    if not nat:
+        return {"up": [], "down": [], "ts": "", "source": ""}
+    from bot.finviz_client import _cache_write, _cached, _now_label
+    cache = f"naver_sector_movers_{market}.json"
+    c = _cached(cache, ttl=3600)
+    if isinstance(c, dict) and (c.get("up") or c.get("down")):
+        return c
+    import requests
+    try:
+        codes = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12).json()
+    except Exception as exc:
+        log.warning("naver 업종등락 list (%s): %s", market, exc)
+        return {"up": [], "down": [], "ts": "", "source": ""}
+    if not isinstance(codes, list):
+        return {"up": [], "down": [], "ts": "", "source": ""}
+    rows: list = []
+    for ic in codes:
+        if not isinstance(ic, dict):
+            continue
+        code, name = ic.get("code"), ic.get("industryGroupKor")
+        if not code or not name or "ETF" in name:
+            continue
+        try:
+            r = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/{code}/list"
+                             f"?orderType=marketValue&startIdx=0&pageSize=20",
+                             headers=_H, timeout=8)
+            st = r.json() if r.status_code == 200 else None
+        except Exception:
+            st = None
+        if not isinstance(st, list) or not st:
+            continue
+        num = den = 0.0
+        for s in st:
+            if not isinstance(s, dict):
+                continue
+            try:
+                mc = float(s.get("marketValue") or 0)
+                pct = abs(float(s.get("fluctuationsRatio") or 0))
+            except (TypeError, ValueError):
+                continue
+            ft = str(s.get("compareToPreviousPrice") or "")
+            if "FALL" in ft or "LOWER" in ft:
+                pct = -pct
+            if mc > 0:
+                num += mc * pct
+                den += mc
+        if den > 0:
+            rows.append({"name": name, "pct": round(num / den, 2)})
+    if not rows:
+        return {"up": [], "down": [], "ts": "", "source": ""}
+    rows.sort(key=lambda r: r["pct"], reverse=True)
+    up = [r for r in rows if r["pct"] > 0][:top_n]
+    down = sorted([r for r in rows if r["pct"] < 0], key=lambda r: r["pct"])[:top_n]
+    out = {"up": up, "down": down, "ts": _now_label(),
+           "source": "네이버 업종(시총가중 등락)"}
+    _cache_write(cache, out)
+    return out
+
+
 def _is_real_stock(s: dict) -> bool:
     """실종목만 — ETF/ETN/스팩 제외 (사용자 신고저 정책). stockEndType=='stock'
     + 이름에 '스팩' 없음. (52주 최고엔 ETN/레버리지 상품이 섞여 들어옴)."""

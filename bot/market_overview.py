@@ -1169,7 +1169,16 @@ def _fetch_us_sector_movers_safe() -> dict:
 
 
 def _fetch_etf_sector_safe(market: str) -> dict:
-    """JP/TW/CN_A/HK 업종 등락 — 섹터 ETF 합성(yfinance). graceful 빈 dict."""
+    """JP/CN_A/HK 업종 등락 — **네이버 업종 우선**(시총가중 등락, 사용자 2026-06-14
+    '업종등락 네이버'), 빈/실패 시 섹터 ETF 합성(yfinance) 폴백. graceful."""
+    if market in ("JP", "CN_A", "HK"):
+        try:
+            from bot.naver_ranking_client import fetch_intl_sector_movers_naver
+            nv = fetch_intl_sector_movers_naver(market, top_n=10)
+            if nv.get("up") or nv.get("down"):
+                return nv
+        except Exception as exc:
+            log.warning("naver sector movers (%s) → ETF 폴백: %s", market, exc)
     try:
         from bot.etf_sector_client import fetch_sector_movers_etf
         return fetch_sector_movers_etf(market, top_n=10)
