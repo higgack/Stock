@@ -6,7 +6,7 @@
   불안정해 제거(2026-06-10) — KR 신고저는 유니버스 스캔이 후속 과제.
 
 무료·무키. euc-kr 디코딩. graceful — 실패/빈 결과 시 빈값. 사용자 정책
-2026-06-10: 리스크 없는 한 가장 빠르게 → 4분 캐시.
+2026-06-10: 리스크 없는 한 가장 빠르게 → 5분 캐시.
 """
 from __future__ import annotations
 
@@ -267,7 +267,7 @@ def apply_kr_industry(items: list) -> list:
 
 
 def fetch_sector_movers(top_n: int = 10) -> dict:
-    """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}. 4분 캐시."""
+    """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}. 5분 캐시."""
     c = _cached("upjong.json")
     if c is not None:
         return c
@@ -340,7 +340,7 @@ def _fetch_deposit_fsc() -> dict:
 
 def fetch_deposit() -> dict:
     """고객예탁금·신용잔고 → {date, deposit, credit, deposit_chg, credit_chg,
-    deposit_series, credit_series}. 억원. 4분 캐시.
+    deposit_series, credit_series}. 억원. 5분 캐시.
 
     1차 FSC(금융투자협회 공식 API — 둘 다 견고·일별 시계열), 실패 시 Naver
     sise_deposit 폴백(고객예탁금만 견고, 신용은 컬럼 가드)."""
@@ -415,7 +415,7 @@ def _fetch_deposit_naver() -> dict:
 
 def fetch_themes() -> dict:
     """테마별 시세 → {'themes': [{name, no, pct, pct3, leaders}] 등락률 내림차순,
-    'ts'}. 4분 캐시. 여러 페이지(전 테마) 수집."""
+    'ts'}. 5분 캐시. 여러 페이지(전 테마) 수집."""
     c = _cached("theme.json")
     if c is not None:
         return c
@@ -485,7 +485,7 @@ def _parse_stock_rows(html: str, limit: int) -> list[dict]:
 
 
 def fetch_upper_lower(limit: int = 50) -> dict:
-    """상한가·하한가 → {'upper': [...], 'lower': [...], 'ts'}. 4분 캐시. graceful."""
+    """상한가·하한가 → {'upper': [...], 'lower': [...], 'ts'}. 5분 캐시. graceful."""
     c = _cached("upper_lower.json")
     if c is not None:
         return c
