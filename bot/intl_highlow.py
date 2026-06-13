@@ -76,8 +76,67 @@ def intl_highlow_status(market: str) -> dict:
         return {}
 
 
+def _compute_kr_kis() -> None:
+    """KR 52주 신고저 = KIS near-new-highlow(전 시장 스캔·근접 상위) + yfinance
+    mcap/ind 백필 (사용자 2026-06-13 'full-market'). peer-83 대체. 한글명은
+    KIS hts_kor_isnm 네이티브(번역 불요). KIS 실패/creds 부재 → peer 폴백(회귀 0)."""
+    from bot import kis_client
+    from bot.finviz_client import (_cache_write, _compute_highlow_from,
+                                   _fetch_industries, _fetch_mcaps, _now_label)
+    raw = kis_client.fetch_kr_new_highlow()
+    if not raw.get("high") and not raw.get("low"):
+        # KIS 빈 결과(creds 부재 등) → 기존 peer-83 yfinance 스캔 폴백
+        uni, names = _universe("KR")
+        if uni:
+            _status_write("KR", "running", total=len(uni))
+            out = _compute_highlow_from(
+                uni, names, _CFG["KR"][1],
+                "한국 주요종목 산출(yfinance · KIS 폴백)", "KR")
+            _status_write("KR", "done", high=len(out.get("high", [])),
+                          low=len(out.get("low", [])), src="peer")
+        else:
+            _status_write("KR", "failed", detail="KIS empty + peer empty")
+        return
+    try:
+        from bot.market import normalize_kr_ticker_suffix as _norm
+    except Exception:
+        _norm = None
+
+    def _conv(lst):
+        items = []
+        for o in lst:
+            code = str(o.get("code") or "")
+            tk = f"{code}.KS"
+            if _norm:
+                try:
+                    tk = _norm(tk)
+                except Exception:
+                    pass
+            items.append({"ticker": tk, "name": o.get("name") or tk,
+                          "price": o.get("price"), "pct": o.get("pct"),
+                          "vol": o.get("vol")})
+        return items
+    high, low = _conv(raw["high"]), _conv(raw["low"])
+    allt = [it["ticker"] for it in high + low]
+    try:
+        mcaps, inds = _fetch_mcaps(allt), _fetch_industries(allt)
+        for it in high + low:
+            mc = mcaps.get(it["ticker"])
+            it["mcap"] = round(mc / 1e8, 2) if mc else None   # 억원
+            it["ind"] = inds.get(it["ticker"])
+    except Exception as exc:
+        log.warning("intl highlow KR mcap/ind 백필: %s", exc)
+    out = {"high": high, "low": low, "ts": _now_label(),
+           "source": "KIS 신고가/신저가 근접(전 시장 스캔)"}
+    _cache_write(_CFG["KR"][1], out)
+    _status_write("KR", "done", high=len(high), low=len(low), src="kis")
+
+
 def _compute(market: str) -> None:
     try:
+        if market == "KR":
+            _compute_kr_kis()
+            return
         from bot.finviz_client import _compute_highlow_from
         uni, names = _universe(market)
         if not uni:

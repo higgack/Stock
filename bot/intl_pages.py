@@ -47,7 +47,8 @@ def render_intl_highlow52_page(market: str) -> str:
                 + stock_panel("📉 52주 신저가 (1% 근접)", lo, "hl-low",
                               market, ind_dist_line(lo))
                 + '</div>' + HL_SORT_JS)
-    sub = (f"{flag} 주요종목(산업 대표 ~50-100) 1년 주봉 52주 고저 1% 근접 · "
-           f"시총순·헤더 클릭 정렬 · 업종=yfinance · 백그라운드 산출·30분 캐시. "
+    src = _html.escape(data.get("source") or "주요종목(산업 대표 ~50-100) 1년 주봉")
+    sub = (f"{flag} {src} · 52주 고저 근접 · 시총순·헤더 클릭 정렬 · "
+           f"업종=yfinance · 백그라운드 산출·30분 캐시. "
            f"{('· 갱신 ' + ts) if ts else ''}")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body)

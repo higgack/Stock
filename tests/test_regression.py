@@ -7132,3 +7132,45 @@ class TestIntlKoreanNames:
                         "price": 13000, "pct": 1.0, "vol": 100,
                         "mcap": 180000, "ind": "Electronics"}], "t", "JP")
         assert "6758.T" in h and "소니 그룹" in h and "(소니 그룹)" in h
+
+
+class TestKisKrNewHighlow:
+    """KR 52주 신고저 = KIS near-new-highlow 전 시장 (사용자 2026-06-13,
+    PRC=0 신고가·1 신저가 라이브 검증). ETF/채권 필터 + peer 폴백 + 한글명 네이티브."""
+
+    def test_etf_bond_filter(self):
+        from bot.kis_client import _nhl_is_etf_bond
+        assert _nhl_is_etf_bond("Q610056", "메리츠 멕시코 페소화 ETN")
+        assert _nhl_is_etf_bond("152100", "TIGER 미국배당다우존스타겟")
+        assert _nhl_is_etf_bond("000000", "ACE 단기통안채")
+        assert _nhl_is_etf_bond("000000", "메리츠 인버스 3X 국채3년")
+        assert not _nhl_is_etf_bond("000020", "동화약품")
+        assert not _nhl_is_etf_bond("005930", "삼성전자")
+
+    def test_fetch_graceful_without_creds(self):
+        from bot.kis_client import fetch_kr_new_highlow
+        r = fetch_kr_new_highlow()
+        assert set(r) == {"high", "low"}        # creds 부재 시 빈 리스트
+
+    def test_intl_highlow_kr_routes_to_kis(self):
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert 'market == "KR"' in src and "_compute_kr_kis" in src
+        assert "fetch_kr_new_highlow" in src
+        # KIS 빈 결과 → peer 폴백(회귀 0)
+        assert "KIS 폴백" in src or "peer empty" in src
+
+    def test_kr_page_rich_with_kis_source(self):
+        import bot.intl_highlow as ih
+        orig = ih.fetch_intl_highlow
+        ih.fetch_intl_highlow = lambda m: {
+            "high": [{"ticker": "000020.KS", "name": "동화약품", "price": 12000,
+                      "pct": 5.2, "vol": 3000000, "mcap": 3500, "ind": "Drug"}],
+            "low": [], "ts": "x", "building": False,
+            "source": "KIS 신고가/신저가 근접(전 시장 스캔)", "status": {}}
+        try:
+            from bot.intl_pages import render_intl_highlow52_page
+            h = render_intl_highlow52_page("KR")
+        finally:
+            ih.fetch_intl_highlow = orig
+        assert "동화약품" in h and "거래량" in h and "시총" in h
+        assert "KIS 신고가/신저가 근접" in h     # 소스 라벨
