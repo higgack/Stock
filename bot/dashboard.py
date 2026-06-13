@@ -11956,6 +11956,41 @@ def _render_sector_movers(movers: dict) -> str:
     )
 
 
+def _render_etf_sector_movers(movers: dict, heading: str) -> str:
+    """JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(사용자 2026-06-13 Phase 1). KR/US
+    위젯과 동일 구조(상승/하락 업종). 자식 페이지(상한가·신고저 등)는 후속
+    단계라 링크 없음. 데이터 없으면 빈 문자열 → 위젯 자동 생략."""
+    up = (movers or {}).get("up", [])
+    down = (movers or {}).get("down", [])
+    if not up and not down:
+        return ""
+
+    def _col(title: str, items: list) -> str:
+        rows = []
+        for i, s in enumerate(items, 1):
+            pct = s.get("pct", 0) or 0
+            cls = "up" if pct > 0 else "dn" if pct < 0 else "neu"
+            sign = "+" if pct > 0 else ""
+            rows.append(
+                f'<tr><td class="rk">{i}</td>'
+                f'<td>{_html.escape(s.get("name", ""))}</td>'
+                f'<td class="{cls}">{sign}{pct:.2f}%</td></tr>')
+        body = "".join(rows) or '<tr><td colspan="3" style="color:var(--muted)">—</td></tr>'
+        return (f'<div class="sm-col"><div class="sm-hd">{title}</div>'
+                f'<table class="sm-tbl">{body}</table></div>')
+
+    ts = _html.escape((movers or {}).get("ts", ""))
+    src = _html.escape((movers or {}).get("source", "섹터 ETF·yfinance"))
+    return (
+        '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
+        f'<h2>{heading}</h2>'
+        f'<span class="ts" style="margin-left:auto">{ts} · {src}</span></div>'
+        '<div class="sm-wrap">'
+        + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
+        + '</div>'
+    )
+
+
 def _render_us_sector_movers(movers: dict) -> str:
     """🇺🇸 미국 업종 등락 TOP 10 — 메인은 **업종(industry) 단위 상·하위 10**
     (Finviz 144 중, 사용자 2026-06-10 'L3 48개 Top10/Top10 메인'), 세부
@@ -12281,6 +12316,16 @@ def _render_market_page(data: dict) -> str:
     parts.append(_render_deposit_charts(deposit))
     parts.append(_render_sector_movers(sector_movers))
     parts.append(_render_us_sector_movers(us_sector_movers))
+    # JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(Phase 1). TW·HK 는 ETF 희소라
+    # '주요 업종'(TOP 10 아님) 정직 라벨.
+    parts.append(_render_etf_sector_movers(
+        data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10"))
+    parts.append(_render_etf_sector_movers(
+        data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10"))
+    parts.append(_render_etf_sector_movers(
+        data.get("tw_sector_movers", {}), "🇹🇼 대만 주요 업종 등락"))
+    parts.append(_render_etf_sector_movers(
+        data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락"))
 
     # 다가오는 실적 — 한국/미국 탭 분리(사용자 정책: 한국 기본·최대한 표시).
     _earn_kr = [e for e in earnings
