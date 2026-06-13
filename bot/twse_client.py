@@ -23,7 +23,13 @@ import requests
 log = logging.getLogger(__name__)
 
 _URL = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
-_HDRS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.twse.com.tw/"}
+# 상한가/하한가 = OpenAPI STOCK_DAY_ALL (전종목 일일, 평평한 JSON 배열).
+# legacy MI_INDEX type=ALL 은 매일 13:30~13:45(TW) 점검으로 type=ALL 만 중단
+# 되므로(stat 메시지), 점검 무관한 별도 OpenAPI 호스트를 쓴다. 업종(類股)은
+# OpenAPI 동등물이 없어 legacy MI_INDEX 를 best-effort 로 유지(실패 시 ETF 폴백).
+_OPENAPI_STOCK = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+_HDRS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.twse.com.tw/",
+         "Accept": "application/json"}
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "twse"
 _CACHE_TTL_SEC = 5 * 60
 _TW_LIMIT = 9.5      # TW 일일 한도 ±10% → 상한가/하한가권 임계(틱 라운딩 여유)
@@ -182,6 +188,43 @@ def parse_stock_rows(tables: list[dict]) -> list[dict]:
     return []
 
 
+def parse_stock_day_all(rows: list) -> list[dict]:
+    """OpenAPI STOCK_DAY_ALL(평평한 dict 배열) → [{code,name,close,pct}].
+    Change=부호 포함 가격변동. pct = Change/(Close-Change). 필드명 변형 tolerant."""
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        close = _num(r.get("ClosingPrice") or r.get("Close"))
+        chg = _num(r.get("Change"))
+        if close is None or chg is None or close == 0:
+            continue
+        prev = close - chg
+        pct = (chg / prev * 100.0) if prev else 0.0
+        out.append({
+            "code": str(r.get("Code") or r.get("代號") or "").strip(),
+            "name": str(r.get("Name") or r.get("名稱") or "").strip(),
+            "close": close, "pct": round(pct, 2)})
+    return out
+
+
+def fetch_stock_day_all() -> list[dict]:
+    """OpenAPI 전종목 일일 → [{code,name,close,pct}]. 5분 캐시·graceful."""
+    c = _cached("stock_day_all")
+    if c is not None:
+        return c.get("rows", [])
+    try:
+        r = requests.get(_OPENAPI_STOCK, headers=_HDRS, timeout=15)
+        r.raise_for_status()
+        rows = parse_stock_day_all(r.json())
+    except Exception as exc:
+        log.warning("twse STOCK_DAY_ALL fetch error: %s", exc)
+        return []
+    if rows:
+        _cache_write("stock_day_all", {"rows": rows})
+    return rows
+
+
 def fetch_mi_index() -> dict:
     """TWSE MI_INDEX(type=ALL) → {sectors:[...], stocks:[...], ts}. graceful."""
     c = _cached("mi_index")
@@ -221,23 +264,27 @@ def fetch_tw_sector_movers(top_n: int = 10) -> dict:
 
 
 def fetch_tw_upper_lower(limit: int = 80) -> dict:
-    """TW 상한가/하한가권 — 전종목 중 ±9.5%+ (TW 한도 ±10%). {upper,lower,ts}."""
-    mi = fetch_mi_index()
-    stocks = mi.get("stocks") or []
+    """TW 상한가/하한가권 — OpenAPI 전종목 중 ±9.5%+ (TW 한도 ±10%). 점검
+    무관(legacy type=ALL 아님). {upper,lower,ts}."""
+    stocks = fetch_stock_day_all()
     upper = sorted([s for s in stocks if s["pct"] >= _TW_LIMIT],
                    key=lambda s: s["pct"], reverse=True)[:limit]
     lower = sorted([s for s in stocks if s["pct"] <= -_TW_LIMIT],
                    key=lambda s: s["pct"])[:limit]
-    return {"upper": upper, "lower": lower, "ts": mi.get("ts", "")}
+    return {"upper": upper, "lower": lower, "ts": _now_kst_label()}
 
 
 if __name__ == "__main__":   # VM 라이브 구조 검증
     logging.basicConfig(level=logging.INFO)
-    mi = fetch_mi_index()
-    print(f"類股 {len(mi['sectors'])}개 · 전종목 {len(mi['stocks'])}개 · {mi['ts']}")
-    for s in mi["sectors"][:5]:
-        print("  업종", s["name"], s["pct"])
+    # ① 상한가/하한가 — OpenAPI STOCK_DAY_ALL (점검 무관, 언제나)
     ul = fetch_tw_upper_lower()
-    print(f"상한가권 {len(ul['upper'])} / 하한가권 {len(ul['lower'])}")
+    stk = fetch_stock_day_all()
+    print(f"[OpenAPI] 전종목 {len(stk)}개 · 상한가권 {len(ul['upper'])} / "
+          f"하한가권 {len(ul['lower'])}")
     for s in ul["upper"][:5]:
-        print("  ▲", s["code"], s["name"], s["pct"])
+        print("  ▲", s["code"], s["name"], s["pct"], "%")
+    # ② 업종(類股) — legacy MI_INDEX (13:30~13:45 TW 점검 시간 외에 실행)
+    mi = fetch_mi_index()
+    print(f"[legacy 類股] 업종 {len(mi['sectors'])}개 (점검시간이면 0=정상)")
+    for s in mi["sectors"][:5]:
+        print("  업종", s["name"], s["pct"], "%")
