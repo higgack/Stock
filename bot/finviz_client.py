@@ -1392,6 +1392,17 @@ def _compute_us_movers() -> dict:
         from bot.naver_ranking_client import fetch_us_movers as _nv_us_movers
         nv = _nv_us_movers()
         if nv.get("up") or nv.get("down"):
+            # 업종(+업종분포)은 네이버 미제공 → 기존 GICS/NASDAQ/yfinance 업종 로직
+            # 으로 enrich (사용자 2026-06-13 '급등급락에 업종·업종분포 야후로').
+            # 벌크맵(S&P500 GICS·NASDAQ) 우선이라 429 내성, ~60종목만 stragglers .info.
+            try:
+                hits = [r["ticker"] for r in nv["up"] + nv["down"] if r.get("ticker")]
+                inds = _fetch_industries(hits)
+                for r in nv["up"] + nv["down"]:
+                    if not r.get("ind"):
+                        r["ind"] = inds.get(r["ticker"])
+            except Exception as exc:
+                log.warning("US movers 업종 enrich 실패: %s", exc)
             _cache_write(_MOVERS_CACHE, nv)
             _movers_status_write("done", up=len(nv["up"]), down=len(nv["down"]), src="naver")
             return nv
