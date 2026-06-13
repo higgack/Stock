@@ -41,11 +41,17 @@ def render_intl_highlow52_page(market: str) -> str:
         from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                         stock_panel)
         hi, lo = sort_by_mcap(high), sort_by_mcap(low)
+        # KR(KIS): 종목명만·업종 제거·거래량 O(acml_vol). JP/CN/HK(yfinance):
+        # 티커+한글명·업종 O·거래량 X(yfinance vol 미populate, 사용자 2026-06-13).
+        _kr = market == "KR"
+        _opt = dict(name_only=_kr, show_ind=not _kr, show_vol=_kr)
+        _dist = (lambda x: "") if _kr else ind_dist_line   # KR 업종분포도 제거
+        # 신고가 = KIS(KR) 실제 근접순 / yfinance 1% 근접(타시장)
+        _lab1 = "📈 52주 신고가" if _kr else "📈 52주 신고가 (1% 근접)"
+        _lab2 = "📉 52주 신저가" if _kr else "📉 52주 신저가 (1% 근접)"
         body = ('<div class="grid">'
-                + stock_panel("📈 52주 신고가 (1% 근접)", hi, "hl-high",
-                              market, ind_dist_line(hi))
-                + stock_panel("📉 52주 신저가 (1% 근접)", lo, "hl-low",
-                              market, ind_dist_line(lo))
+                + stock_panel(_lab1, hi, "hl-high", market, _dist(hi), **_opt)
+                + stock_panel(_lab2, lo, "hl-low", market, _dist(lo), **_opt)
                 + '</div>' + HL_SORT_JS)
     src = _html.escape(data.get("source") or "주요종목(산업 대표 ~50-100) 1년 주봉")
     sub = (f"{flag} {src} · 52주 고저 근접 · 시총순·헤더 클릭 정렬 · "

@@ -37,36 +37,34 @@ def render_tw_highlow_page() -> str:
         data = {"upper": [], "lower": [], "ts": ""}
     ts = _html.escape(data.get("ts", ""))
 
-    def _panel(title: str, items: list) -> str:
-        if not items:
-            return (f'<div class="panel"><h2>{title}</h2>'
-                    '<div class="empty">해당 종목 없음</div></div>')
-        rows = "".join(
-            f'<tr><td class="rk">{i}</td>'
-            f'<td class="nm"><a href="lookup/{_html.escape(str(it.get("code","")))}.TW">'
-            f'{_html.escape(it.get("name","") or it.get("code",""))}</a></td>'
-            f'<td class="num">{_html.escape(str(it.get("close") or "—"))}</td>'
-            f'{_pct_cell(it.get("pct"))}'
-            f'<td class="num">{_fmt_vol(it.get("vol"))}</td></tr>'
-            for i, it in enumerate(items, 1))
-        return (f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
-                f'<table><thead><tr><th>#</th><th>종목</th>'
-                f'<th style="text-align:right">종가</th>'
-                f'<th style="text-align:right">등락률</th>'
-                f'<th style="text-align:right">거래량</th></tr></thead>'
-                f'<tbody>{rows}</tbody></table></div>')
+    def _prep(lst):
+        # TWSE 항목 → stock_panel 형식. ticker=code.TW, price=close, 거래량 유지.
+        return [{"ticker": f"{it.get('code', '')}.TW",
+                 "name": it.get("name", "") or it.get("code", ""),
+                 "price": it.get("close"), "pct": it.get("pct"),
+                 "vol": it.get("vol")} for it in lst]
 
     dt = _html.escape(data.get("date", ""))
-    up, low = data.get("upper", []), data.get("lower", [])
+    up, low = _prep(data.get("upper", [])), _prep(data.get("lower", []))
     if not up and not low:
         body = ('<div class="empty">상한가·하한가 데이터를 불러올 수 없습니다.<br>'
                 '(장 시간/휴장 또는 TWSE 응답 지연 — 잠시 후 다시 시도.)</div>')
     else:
+        # 미국 포맷 통일(사용자 2026-06-13 req4) — 종목명=티커(한글번역) + 업종 +
+        # 시총 추가 + 거래량(TWSE TradeVolume) 유지 + 통화 헤더. enrich=mcap/업종/한글명.
+        from bot.highlow_render import (HL_SORT_JS, enrich_for_panel,
+                                        sort_by_mcap, stock_panel)
+        up = sort_by_mcap(enrich_for_panel(up, "TW", want_ind=True, want_name=True))
+        low = sort_by_mcap(enrich_for_panel(low, "TW", want_ind=True, want_name=True))
         body = ('<div class="grid">'
-                + _panel("🔺 상한가권 (+9.5%↑)", up)
-                + _panel("🔻 하한가권 (-9.5%↓)", low) + '</div>')
+                + stock_panel("🔺 상한가권 (+9.5%↑)", up, "ul-up", "TW",
+                              show_vol=True, show_ind=True)
+                + stock_panel("🔻 하한가권 (-9.5%↓)", low, "ul-low", "TW",
+                              show_vol=True, show_ind=True)
+                + '</div>' + HL_SORT_JS)
     # 자료 기준일(거래일) 명시 — 주말/장후엔 직전 거래일. 'ts'는 갱신 시각.
-    sub = (f"TWSE 전종목(일반종목) 중 일일 한도 ±10% 근접(±9.5%↑). "
+    sub = (f"TWSE 전종목(일반종목) 중 일일 한도 ±10% 근접(±9.5%↑) · 종목명=티커"
+           f"(한글번역) · 업종·시총=yfinance(10분 캐시) · 시총순·헤더 클릭 정렬. "
            f"{('<b>' + dt + ' 종가 기준</b>') if dt else ''} · 5분 캐시"
            f"{(' · 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 상한가·하한가", sub, body)
@@ -96,15 +94,16 @@ def render_tw_highlow52_page() -> str:
             body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
-        # 미국 포맷 통일(사용자 2026-06-13) — 시총·업종·거래량·정렬·업종분포.
+        # 미국 포맷 통일 — 시총·업종·정렬·업종분포. 거래량은 제거(yfinance vol
+        # 미populate, 사용자 2026-06-13). 종목명=티커(한글명).
         from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                         stock_panel)
         hi, lo = sort_by_mcap(high), sort_by_mcap(low)
         body = ('<div class="grid">'
                 + stock_panel("📈 52주 신고가 (1% 근접)", hi, "hl-high",
-                              "TW", ind_dist_line(hi))
+                              "TW", ind_dist_line(hi), show_vol=False)
                 + stock_panel("📉 52주 신저가 (1% 근접)", lo, "hl-low",
-                              "TW", ind_dist_line(lo))
+                              "TW", ind_dist_line(lo), show_vol=False)
                 + '</div>' + HL_SORT_JS)
     sub = (f"TWSE 전종목(일반종목) 1년 주봉 52주 고저 1% 근접. 백그라운드 산출·"
            f"30분 캐시. {('· 갱신 ' + ts) if ts else ''}")

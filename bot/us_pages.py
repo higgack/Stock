@@ -198,7 +198,12 @@ def render_us_highlow_page() -> str:
         data = {"high": [], "low": [], "ts": "", "source": ""}
     ts = _html.escape(data.get("ts", ""))
     src = _html.escape(data.get("source", "Finviz"))
-    _panel = _stock_panel
+    from bot.highlow_render import stock_panel as _hpanel
+
+    def _panel(title, items, tid, extra=""):
+        # 공용 패널 — 통화기호 헤더화 + 거래량 제거(yfinance/Finviz vol
+        # 미populate, 사용자 2026-06-13). 종목=티커(영문명).
+        return _hpanel(title, items, tid, "US", extra, show_vol=False)
 
     hi, lo = data.get("high", []), data.get("low", [])
     # 기본 정렬 = 시총 내림차순 (사용자 2026-06-12 '처음 화면은 시총순') —
@@ -276,11 +281,12 @@ def render_us_movers_page() -> str:
             body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
+        from bot.highlow_render import stock_panel as _hpanel
         body = ('<div class="grid">'
-                + _stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up",
-                               _ind_dist_line(up))
-                + _stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down",
-                               _ind_dist_line(down)) + '</div>'
+                + _hpanel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "US",
+                          _ind_dist_line(up), show_vol=False)
+                + _hpanel("📉 가장 많이 내린 TOP 30", down, "mv-down", "US",
+                          _ind_dist_line(down), show_vol=False) + '</div>'
                 + _HL_SORT_JS)
     scanned = data.get("scanned")
     sub = (f"미국 당일 등락률 상·하위 30 (전 미국 상장 보통주"

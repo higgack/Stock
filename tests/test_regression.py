@@ -7064,9 +7064,10 @@ class TestUpperLowerVolume:
         assert src.count("거래량") >= 2
 
     def test_kr_naver_highlow_panel_has_volume_col(self):
+        # KR 상한가 = 공용 stock_panel(show_vol=True)로 전환 (사용자 2026-06-13
+        # 시총 추가). 거래량은 stock_panel 이 렌더, 파서는 vol 키 산출.
         src = open("bot/naver_pages.py", encoding="utf-8").read()
-        assert "거래량" in src and '_fmt_vol(it.get("vol"))' in src
-        # 파서가 vol 키 산출
+        assert "stock_panel" in src and "show_vol=True" in src
         psrc = open("bot/naver_sector_client.py", encoding="utf-8").read()
         assert '"vol": vol' in psrc
 
@@ -7090,9 +7091,27 @@ class TestHighlowRenderShared:
         h = stock_panel("📈 신고가", [{"ticker": "2330.TW", "name": "TSMC",
                         "price": 1000.5, "pct": 2.1, "vol": 45000000,
                         "mcap": 250000, "ind": "Semis"}], "t", "TW")
-        for need in ("거래량", "시총", "업종", 'data-key="mcap"',
-                     "NT$1,000.50", "NT$25.0조", "4,500만", "hl-table"):
+        # 통화기호는 헤더에만(사용자 2026-06-13), 셀은 숫자만
+        for need in ("거래량", "업종", 'data-key="mcap"', "hl-table",
+                     "현재가 (NT$)", "시총 (NT$)",   # 헤더 통화기호
+                     "1,000.50", "25.0조", "4,500만"):  # 셀 무기호
             assert need in h, need
+        assert "NT$1,000.50" not in h and "NT$25.0조" not in h  # 셀 무기호 확인
+
+    def test_panel_column_flags(self):
+        from bot.highlow_render import stock_panel
+        # KR: 종목명만·업종X·거래량O
+        kr = stock_panel("x", [{"ticker": "005930.KS", "name": "삼성전자",
+                          "price": 88000, "pct": 1.0, "vol": 1, "mcap": 5260000,
+                          "ind": "Elec"}], "t", "KR", name_only=True,
+                         show_ind=False, show_vol=True)
+        assert "삼성전자" in kr and "업종" not in kr and "거래량" in kr
+        assert '<span class="ts">(' not in kr   # 티커 노출 안 함
+        # US: 거래량X
+        us = stock_panel("x", [{"ticker": "NVDA", "name": "NVDA", "price": 9,
+                          "pct": 1.0, "mcap": 100, "ind": "S"}], "t", "US",
+                         show_vol=False)
+        assert "거래량" not in us
 
     def test_ind_dist_line(self):
         from bot.highlow_render import ind_dist_line
@@ -7294,3 +7313,36 @@ class TestDartTitleCompleteGovernanceA:
         m._tally_drop("증권발행결과(자율공시)", "654321")   # 제외
         m._tally_drop("타법인주식및출자증권양수결정", "111111")  # tally
         assert sum(m._DROP_TALLY.values()) == 1
+
+
+class TestUpperLowerRichEnrich:
+    """상한가/하한가 리치 전환 (사용자 2026-06-13 req2 KR 시총·req4 TW 업종+
+    통화헤더). KR=종목명만·시총·거래량, TW=티커(한글)·업종·시총·거래량. mcap/
+    업종/한글명은 enrich_for_panel(10분 캐시·graceful)."""
+
+    def test_enrich_for_panel_graceful(self):
+        from bot.highlow_render import enrich_for_panel
+        items = [{"ticker": "005930.KS", "name": "삼성전자", "price": 88000,
+                  "pct": 1.0, "vol": 1}]
+        r = enrich_for_panel(items, "KR")          # creds 부재 → mcap None, 원본
+        assert r and r[0]["ticker"] == "005930.KS"
+        assert enrich_for_panel([], "KR") == []
+
+    def test_kr_uppperlower_uses_rich_panel(self):
+        src = open("bot/naver_pages.py", encoding="utf-8").read()
+        assert "enrich_for_panel" in src and "stock_panel" in src
+        assert 'name_only=True' in src and "show_ind=False" in src
+
+    def test_tw_upperlower_uses_rich_panel(self):
+        src = open("bot/tw_pages.py", encoding="utf-8").read()
+        # TW 상한가: 업종+한글명+시총 (enrich want_ind/want_name)
+        assert "enrich_for_panel" in src and "want_ind=True" in src
+        assert "want_name=True" in src and "show_ind=True" in src
+
+    def test_display_names_threadpool_imported(self):
+        # 회귀: _fetch_display_names 가 ThreadPoolExecutor 로컬 import (NameError
+        # 로 한글명 백필 전멸하던 버그 fix, 2026-06-13)
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        dn = src[src.index("def _fetch_display_names"):
+                 src.index("def _backfill_industries")]
+        assert "from concurrent.futures import ThreadPoolExecutor" in dn
