@@ -6477,7 +6477,9 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
 
     # ── Bottleneck Screener section header + search + 실행 ──
     parts.append(f"""
-  <h2 style="margin:24px 0 8px">🔬 Bottleneck Screener</h2>
+  <h2 style="margin:24px 0 8px">🔬 Bottleneck Screener
+    <button id="t3-csv" type="button" class="csv-btn" title="모든 실행의 Top-3 종목을 CSV(엑셀)로 — 도메인·날짜·티어·성과 포함">📥 Top-3 CSV</button>
+  </h2>
   <p class="sub">테마별 다종목 idea generation · 6-18M thesis</p>
   <div class="search-bar">
     <input id="scr-search" type="text" placeholder="검색 — 또는 실행할 도메인/자유어 입력 (예: bottleneck, 방산, 로봇, 액체냉각) → 실행" autocomplete="off" spellcheck="false">
@@ -6725,6 +6727,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
         '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
         '<h2 style="margin:0 0 8px">📊 조건부 스크리너'
         + _render_screen_manual() +
+        '<button id="cs-csv" type="button" class="csv-btn" title="모든 조건부 스크리너 결과를 CSV(엑셀)로 — 조건·날짜·종목·시총·지표 포함">📥 CSV</button>'
         '</h2>'
         '<p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0). '
         '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> '
@@ -7257,6 +7260,56 @@ noahConsoleSetup({
   okMsg: '조건부 스크리너 요청 접수 — 결과는 텔레그램 채널과 이 페이지에 게시됩니다.'
 });
 </script>
+<script>
+/* 📥 CSV 내보내기 (사용자 2026-06-13 '스크리너 두개도 엑셀') — Bottleneck Top-3 +
+   조건부 스크리너 결과를 클라이언트사이드 CSV(엑셀 UTF-8 BOM). 서버 endpoint 불요. */
+(function(){
+  function noahCsv(filename, header, rows){
+    var esc=function(v){return '"'+(v==null?'':(''+v)).replace(/"/g,'""')+'"';};
+    var out=[header.map(esc).join(',')];
+    rows.forEach(function(r){out.push(r.map(esc).join(','));});
+    var blob=new Blob(["﻿"+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+    var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=filename;document.body.appendChild(a);a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},120);
+  }
+  function txt(el){return el?(el.textContent||'').replace(/\s+/g,' ').trim():'';}
+  function stamp(){var d=new Date(),p=function(n){return(''+n).padStart(2,'0');};
+    return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate());}
+  var t3=document.getElementById('t3-csv');
+  if(t3)t3.addEventListener('click',function(){
+    var rows=[];
+    document.querySelectorAll('table.picks').forEach(function(tb){
+      var card=tb.closest('.card'); if(!card)return;
+      var domain=txt(card.querySelector('.domain')), date=card.getAttribute('data-date')||'';
+      tb.querySelectorAll('tbody tr').forEach(function(tr){
+        var c=tr.querySelectorAll('td'); if(c.length<8)return;
+        rows.push([date,domain,txt(c[0]).replace('#',''),txt(c[1]),txt(c[2]),
+                   txt(c[3]),txt(c[4]),txt(c[5]),txt(c[6]),txt(c[7])]);
+      });
+    });
+    if(!rows.length){alert('내보낼 Top-3 picks 가 없습니다.');return;}
+    noahCsv('screener_top3_'+stamp()+'.csv',
+      ['날짜','도메인','순위','티커','티어','회사','1개월','3개월','6개월','alpha_vs_sector'],rows);
+  });
+  var cs=document.getElementById('cs-csv');
+  if(cs)cs.addEventListener('click',function(){
+    var rows=[];
+    document.querySelectorAll('table.scr-tbl').forEach(function(tb){
+      var det=tb.closest('.scr-det');
+      var date=det?(det.getAttribute('data-date')||''):'';
+      var cond=det?txt(det.querySelector('summary')).slice(0,80):'';
+      tb.querySelectorAll('tbody tr').forEach(function(tr){
+        var c=tr.querySelectorAll('td'); if(c.length<5)return;
+        rows.push([date,cond,txt(c[0]),txt(c[1]),txt(c[2]),txt(c[3]),txt(c[4])]);
+      });
+    });
+    if(!rows.length){alert('내보낼 조건부 스크리너 결과가 없습니다.');return;}
+    noahCsv('screener_조건_'+stamp()+'.csv',
+      ['날짜','조건','종목명','티커','시장','시총','지표'],rows);
+  });
+})();
+</script>
 </body></html>
 """)
     return "".join(parts)
@@ -7269,6 +7322,11 @@ _SCREENER_CSS = (
 <title>Screener — Archive</title>
 <script>""" + _THEME_JS + """</script>
 <style>
+/* 📥 CSV 내보내기 버튼 (사용자 2026-06-13) — h2 제목 옆 작은 버튼 */
+.csv-btn{margin-left:10px;padding:4px 10px;font-size:12px;font-weight:600;vertical-align:middle;
+  border:1px solid var(--border,#d0d7de);border-radius:6px;background:var(--card,#f6f8fa);
+  color:var(--text,#1f2328);cursor:pointer}
+.csv-btn:hover{background:#3b82f6;color:#fff;border-color:#3b82f6}
 /* Time-based light/dark theme (Asia/Seoul) — _THEME_JS toggles
    `data-theme="dark"` on the <html> element between 19:00-07:00.
    Mirrors the NOAH index/detail pages. Variables below adapt: light
@@ -10656,6 +10714,8 @@ _DART_FEED_CSS = """
 .df-pill.active{background:var(--accent,#ef5350);color:#fff;border-color:var(--accent,#ef5350)}
 .df-right{display:flex;gap:8px;align-items:center}
 .df-view-btns{display:flex;gap:2px;background:var(--card,#1a1f2b);border-radius:6px;padding:2px}
+.df-csv-btn{padding:6px 12px;border-radius:6px;border:1px solid var(--border,#333);background:var(--card,#1a1f2b);color:var(--text,#1f2937);cursor:pointer;font-size:13px;white-space:nowrap}
+.df-csv-btn:hover{background:var(--accent,#3b82f6);color:#fff;border-color:var(--accent,#3b82f6)}
 .df-vbtn{padding:6px 8px;background:transparent;border:none;color:var(--muted,#888);cursor:pointer;border-radius:4px;display:flex;align-items:center}
 .df-vbtn.active{background:var(--accent,#3b82f6);color:#fff}
 .df-month{margin-bottom:20px}
@@ -10898,6 +10958,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
           <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="6.75" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="11.5" width="14" height="2.5" rx="1" fill="currentColor"/></svg>
         </button>
       </div>
+      <button id="df-csv" type="button" class="df-csv-btn" title="현재 필터된 공시를 CSV(엑셀)로 내려받기 — 한국수출입 대시보드와 동일">📥 CSV</button>
     </div>
   </div>
 """)
@@ -11117,6 +11178,36 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         else g.classList.remove('list-view');
       });
     });
+  });
+  // 📥 CSV 내보내기 (사용자 2026-06-13 '다트는 한국수출입처럼 엑셀로') —
+  // 현재 필터(.hidden 제외)된 공시만, 클라이언트사이드 CSV(엑셀은 UTF-8 BOM
+  // 으로 한글 깨짐 방지). 서버 endpoint 불요. 한국수출입 csv-btn 패턴 미러.
+  function noahCsv(filename, header, rows){
+    var esc=function(v){return '"'+(v==null?'':(''+v)).replace(/"/g,'""')+'"';};
+    var out=[header.map(esc).join(',')];
+    rows.forEach(function(r){out.push(r.map(esc).join(','));});
+    var blob=new Blob(["﻿"+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+    var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=filename;document.body.appendChild(a);a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},120);
+  }
+  var csvBtn=document.getElementById('df-csv');
+  if(csvBtn)csvBtn.addEventListener('click',function(){
+    var FLAG={sig:'중요',unparsed:'미파싱'};
+    var rows=[];
+    cards.forEach(function(c){
+      if(c.classList.contains('hidden'))return;          // 필터된 것만
+      var dt=(c.querySelector('.df-dt')||{}).textContent||'';
+      var flag=(c.dataset.flag||'').split(' ').map(function(f){return FLAG[f]||'';})
+                 .filter(Boolean).join('/');
+      var a=c.querySelector('.df-corp');
+      rows.push([dt.trim(),(c.dataset.name||'').trim(),(c.dataset.cat||'').trim(),
+                 (c.dataset.report||'').trim(),flag,a?a.href:'']);
+    });
+    if(!rows.length){alert('내보낼 공시가 없습니다 (필터 확인).');return;}
+    var d=new Date(),p=function(n){return(''+n).padStart(2,'0');};
+    noahCsv('DART공시_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'.csv',
+            ['날짜','회사','카테고리','제목','플래그','원문URL'],rows);
   });
 })();
 </script>

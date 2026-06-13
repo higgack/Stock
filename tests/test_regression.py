@@ -7607,6 +7607,32 @@ class TestHighlowPrewarm:
         assert t.hour == 7 and t.day == 14
 
 
+class TestCsvExport:
+    """DART + 스크리너(Bottleneck·조건) CSV(엑셀) 내보내기 — 사용자 2026-06-13
+    '다트는 한국수출입처럼 엑셀로' + '스크리너 두개도 엑셀'. 클라이언트사이드
+    (서버 endpoint 불요·UTF-8 BOM 한글). 버튼+수집 JS 배선 확인."""
+
+    def test_dart_csv_button_and_js(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'id="df-csv"' in src                       # 버튼
+        assert "function noahCsv" in src                  # CSV 빌더
+        assert ".df-card" in src and "classList.contains('hidden')" in src  # 필터된 것만
+        assert "DART공시_" in src                          # 파일명
+
+    def test_screener_two_csv_buttons(self):
+        # 사용자 확정: Bottleneck + 조건 스크리너 두 개 모두.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'id="t3-csv"' in src and 'id="cs-csv"' in src
+        assert "table.picks" in src and "table.scr-tbl" in src   # 두 테이블 스크레이프
+        assert "screener_top3_" in src and "screener_조건_" in src
+
+    def test_pages_still_render(self):
+        # 버튼/JS 추가 후에도 페이지 렌더 무결성(NameError/템플릿 깨짐 가드).
+        from bot.dashboard import _render_screener_page
+        h = _render_screener_page([], {}, [])
+        assert 'id="t3-csv"' in h and 'id="cs-csv"' in h and "csv-btn" in h
+
+
 class TestSessionAwarePerMarket:
     """시장-인지 신선도 (_session_fresh) — 사용자 2026-06-13 '장종료후 굳이 안
     돌려도·나라별 시간 체크해 부하없이'. 정규장 중 intra_ttl / 장 밖 마지막 마감
