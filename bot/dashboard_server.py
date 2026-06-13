@@ -231,7 +231,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if (path_lower.endswith((".html", "/")) or path_lower == ""
                 or path_lower in ("/earnings", "/theme", "/highlow",
                                   "/usindustry", "/ushighlow", "/usmovers",
-                                  "/twhighlow")
+                                  "/twhighlow", "/tw52")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -268,8 +268,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 신고가/신저가 · 급등급락 TOP30 (KR 미러 — 사용자 2026-06-10/12)
         if raw in ("/usindustry", "/ushighlow", "/usmovers"):
             return self._handle_us_page(raw)
-        # /twhighlow — 대만 상한가/하한가 (TWSE, 사용자 2026-06-13 Phase 2)
-        if raw == "/twhighlow":
+        # /twhighlow — 대만 상한가/하한가 (TWSE) · /tw52 — 52주 신고가/신저가
+        # (yfinance 유니버스 백그라운드, 사용자 2026-06-13 Phase 2)
+        if raw in ("/twhighlow", "/tw52"):
             return self._handle_tw_page(raw)
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시
         if raw == "/trade" or raw.startswith("/trade/"):
@@ -851,10 +852,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_error(500, "internal error")
 
     def _handle_tw_page(self, raw: str) -> None:
-        """GET /twhighlow — 대만 상한가·하한가 (TWSE, KR /highlow 미러)."""
+        """GET /twhighlow — 상한가·하한가 (TWSE) · /tw52 — 52주 신고가·신저가."""
         try:
-            from bot.tw_pages import render_tw_highlow_page
-            encoded = render_tw_highlow_page().encode("utf-8")
+            from bot.tw_pages import (render_tw_highlow_page,
+                                      render_tw_highlow52_page)
+            html = (render_tw_highlow52_page() if raw == "/tw52"
+                    else render_tw_highlow_page())
+            encoded = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(encoded)))
