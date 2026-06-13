@@ -14,14 +14,20 @@ import time
 
 log = logging.getLogger(__name__)
 
-# market → (peer 맵 속성명, 캐시명, 상태명, 위젯 라벨)
+# market → (peer 맵 속성명, 캐시명, 상태명, 위젯 라벨, native 접미사 필터)
+# 접미사 필터 = peer 맵에 섞인 해외 비교군 제외(KR 반도체에 TSM/NVDA 등).
+# JP/CN/HK 는 맵이 이미 native-only 라 필터가 no-op(검증됨).
 _CFG = {
     "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v1.json",
-           "jp_highlow_status.json", "일본 주요종목"),
+           "jp_highlow_status.json", "일본 주요종목", (".T",)),
     "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v1.json",
-             "cn_highlow_status.json", "중국 A주 주요종목"),
+             "cn_highlow_status.json", "중국 A주 주요종목", (".SS", ".SZ")),
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v1.json",
-           "hk_highlow_status.json", "홍콩 주요종목"),
+           "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
+    # KR — 사용자 2026-06-13 '한국도 신고가신저가'. KIS 신고저 순위 엔드포인트
+    # (1콜·더 쌈)는 VM 검증 대기 → 우선 검증된 yfinance 유니버스 스캔으로.
+    "KR": ("_KR_INDUSTRY_PEERS", "highlow_kr_v1.json",
+           "kr_highlow_status.json", "한국 주요종목", (".KS", ".KQ")),
 }
 _TTL = 30 * 60
 _running: dict[str, bool] = {}
@@ -39,14 +45,18 @@ def _universe(market: str) -> tuple[list[str], dict]:
     except Exception as exc:
         log.warning("intl highlow universe error (%s): %s", market, exc)
         return [], {}
+    suffix = cfg[4] if len(cfg) > 4 else None   # native 시장 접미사(해외 비교군 제외)
     seen, uni, names = set(), [], {}
     for vals in peers.values():
         for x in (vals if isinstance(vals, (list, tuple)) else [vals]):
             t = str(x[0] if isinstance(x, (list, tuple)) else x).strip()
-            if t and t not in seen:
-                seen.add(t)
-                uni.append(t)
-                names[t] = t
+            if not t or t in seen:
+                continue
+            if suffix and not t.endswith(suffix):
+                continue
+            seen.add(t)
+            uni.append(t)
+            names[t] = t
     return uni, names
 
 

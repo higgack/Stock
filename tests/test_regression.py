@@ -4917,16 +4917,27 @@ class TestTwseSectorHighLow:
 
 
 class TestIntlHighLow52:
-    """JP/CN/HK 52주 신고가/신저가 — TW 패턴 일반화(사용자 2026-06-13 '다른
-    나라도 모두'). peer 유니버스 + SWR 동기계산 금지 + 페이지."""
+    """JP/CN/HK/KR 52주 신고가/신저가 — TW 패턴 일반화(사용자 2026-06-13 '다른
+    나라도 모두' + '한국도 신고가신저가'). peer 유니버스 + SWR 동기계산 금지
+    + 페이지. KR 은 peer 맵의 해외 비교군을 native 접미사 필터로 제외."""
 
     def test_universe_from_peer_maps(self):
         import bot.intl_highlow as ih
-        for mk, lo in (("JP", 40), ("CN_A", 30), ("HK", 30)):
+        for mk, lo in (("JP", 40), ("CN_A", 30), ("HK", 30), ("KR", 50)):
             uni, names = ih._universe(mk)
             assert len(uni) >= lo, (mk, len(uni))
             assert len(uni) == len(set(uni))          # dedupe
             assert all(names[t] for t in uni)         # name 기본=ticker
+
+    def test_kr_strips_foreign_comparables(self):
+        # _KR_INDUSTRY_PEERS 는 반도체에 TSM/NVDA 등 해외 비교군 포함 →
+        # .KS/.KQ 만 남겨야(해외 종목이 한국 52주 페이지에 새지 않게).
+        import bot.intl_highlow as ih
+        uni, _ = ih._universe("KR")
+        assert uni and all(t.endswith((".KS", ".KQ")) for t in uni), uni[:5]
+        # JP/CN/HK 는 native-only 맵이라 필터가 no-op(개수 보존)
+        assert len(ih._universe("JP")[0]) == 102
+        assert len(ih._universe("HK")[0]) == 51
 
     def test_fetch_never_sync_computes(self, monkeypatch):
         import bot.intl_highlow as ih
@@ -4958,9 +4969,21 @@ class TestIntlHighLow52:
         root = _P(__file__).resolve().parents[1] / "bot"
         srv = (root / "dashboard_server.py").read_text("utf-8")
         assert "/jp52" in srv and "/cn52" in srv and "/hk52" in srv
-        assert "_handle_intl_page" in srv
+        assert "/kr52" in srv and "_handle_intl_page" in srv
         dash = (root / "dashboard.py").read_text("utf-8")
         assert 'href="jp52"' in dash and 'href="hk52"' in dash
+        assert 'href="kr52"' in dash      # KR 위젯에 52주 신고저 링크
+
+    def test_kr_page_renders(self, monkeypatch):
+        import bot.intl_highlow as ih
+        monkeypatch.setattr(ih, "fetch_intl_highlow", lambda m: {
+            "high": [{"ticker": "005930.KS", "name": "005930.KS",
+                      "price": 88000, "pct": 0.3}],
+            "low": [], "ts": "x", "building": False})
+        from bot.intl_pages import render_intl_highlow52_page, _FLAG
+        assert _FLAG.get("KR") == "🇰🇷 한국"
+        h = render_intl_highlow52_page("KR")
+        assert "005930.KS" in h and "한국" in h and "52주 신고가" in h
 
 
 class TestTwHighLow52:
@@ -6802,3 +6825,107 @@ class TestFavoritesCurrencyUnifiedSort:
         assert "data-eps=\"' + usd(f.eps_estimate)" in src
         # 표시 셀은 원통화 포맷 유지
         assert "fmtMcap(f.market_cap, f.currency_symbol)" in src
+
+
+class TestEarningsCalendarIntl:
+    """다가오는 실적 다국가 — JP/TW/CN/HK (사용자 2026-06-13 '실적빌드').
+    KR 패턴 일반화: 산업 peer 맵 universe + yfinance .calendar 공유 파서.
+    순수 파서 + 유니버스 추출 + 시장별 탭 배선 + 통화 가드."""
+
+    def _cal(self, ds):
+        class _D:
+            def __init__(s, v): s.v = v
+            def strftime(s, fmt): return s.v
+        return {"Earnings Date": [_D(ds)],
+                "Earnings Average": 1.0, "Revenue Average": 2.0e9}
+
+    def test_row_parser_window_and_fields(self):
+        from datetime import date, timedelta
+        from bot.market_overview import _earning_row_from_cal
+        today = date(2026, 6, 13)
+        cutoff = today + timedelta(days=90)
+        r = _earning_row_from_cal(self._cal("2026-07-15"), "7203.T",
+                                  "Toyota", today, cutoff)
+        assert r and r["date"] == "2026-07-15" and r["symbol"] == "7203.T"
+        assert r["name"] == "Toyota"
+        # 과거·미래초과·빈값·None·파싱불가 모두 None
+        assert _earning_row_from_cal(self._cal("2026-01-01"), "X", "X",
+                                     today, cutoff) is None
+        assert _earning_row_from_cal(self._cal("2026-12-01"), "X", "X",
+                                     today, cutoff) is None
+        assert _earning_row_from_cal({}, "X", "X", today, cutoff) is None
+        assert _earning_row_from_cal({"Earnings Date": []}, "X", "X",
+                                     today, cutoff) is None
+        assert _earning_row_from_cal(None, "X", "X", today, cutoff) is None
+        assert _earning_row_from_cal({"Earnings Date": ["not-a-date"]}, "X",
+                                     "X", today, cutoff) is None
+
+    def test_universe_per_market(self):
+        from bot.market_overview import _intl_earnings_universe, _INTL_EARN_PEERS
+        assert set(_INTL_EARN_PEERS) == {"JP", "TW", "CN_A", "HK"}
+        for mk in ("JP", "TW", "CN_A", "HK"):
+            u = _intl_earnings_universe(mk)
+            assert len(u) > 30, (mk, len(u))
+            # (ticker, name) 튜플, 이름=티커 기본, unique
+            assert all(isinstance(t, tuple) and len(t) == 2 and t[0] == t[1]
+                       for t in u)
+            assert len({t[0] for t in u}) == len(u)  # 중복 없음
+        # 미지원 시장 → 빈 리스트 graceful
+        assert _intl_earnings_universe("US") == []
+        assert _intl_earnings_universe("ZZ") == []
+
+    def test_fetch_unsupported_market_empty(self):
+        from bot.market_overview import fetch_earnings_calendar_intl
+        # 미지원 시장은 네트워크 0 으로 즉시 빈 리스트
+        assert fetch_earnings_calendar_intl("US") == []
+        assert fetch_earnings_calendar_intl("ZZ") == []
+
+    def test_market_data_wires_four_markets(self):
+        from pathlib import Path as _P
+        src = (_P(__file__).resolve().parents[1] / "bot"
+               / "market_overview.py").read_text("utf-8")
+        for sym in ('"JP", 90', '"TW", 90', '"CN_A", 90', '"HK", 90'):
+            assert sym in src, sym
+        assert "fetch_earnings_calendar_intl" in src
+        # 병합 라인에 6개 그룹 모두
+        assert "_kr_e + _us_e + _jp_e + _tw_e + _cn_e + _hk_e" in src
+
+    def test_dashboard_tabs_partition(self):
+        # .T(JP)·.TW·.TWO(대만 OTC) 겹치지 않게 분할 — 대시보드 필터 미러
+        def cls(sym):
+            if sym.endswith((".KS", ".KQ")): return "kr"
+            if sym.endswith(".T"): return "jp"
+            if sym.endswith((".TW", ".TWO")): return "tw"
+            if sym.endswith((".SS", ".SZ")): return "cn"
+            if sym.endswith(".HK"): return "hk"
+            return "us"
+        exp = {"005930.KS": "kr", "7203.T": "jp", "2330.TW": "tw",
+               "8299.TWO": "tw",  # 타이베이 OTC = 대만(미국으로 새지 않게)
+               "600519.SS": "cn", "000858.SZ": "cn", "0700.HK": "hk",
+               "AAPL": "us", "T": "us"}
+        for s, e in exp.items():
+            assert cls(s) == e, (s, cls(s))
+
+    def test_dashboard_tabs_and_panes_wired(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        for tab in ("jp", "tw", "cn", "hk"):
+            assert f'data-etab="{tab}"' in src, tab
+            assert f'id="etab-{tab}"' in src, tab
+        # _earn_us 가 모든 해외 접미사 제외(.TWO 타이베이 OTC 포함)
+        assert '(".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".HK")' in src
+        # intl EPS/매출 통화 가드(잘못된 '$' 방지)
+        assert "is_intl = sym.endswith" in src
+        assert "eps_est is None or is_intl" in src
+        assert "rev_est is None or is_intl" in src
+
+    def test_intl_table_render_no_wrong_currency(self):
+        # JP 종목 추정치가 있어도 '$' 가 아닌 '—'(통화 불명확 가드)
+        from bot.dashboard import _render_earnings_table
+        rows = [{"symbol": "7203.T", "name": "Toyota", "date": "2026-07-15",
+                 "hour": "", "eps_estimate": 1.23,
+                 "revenue_estimate": 4.5e9, "quarter": None, "year": None}]
+        html = _render_earnings_table(rows)
+        assert "Toyota" in html and "2026-07-15" in html
+        assert "$1.23" not in html and "$4.5B" not in html
+        # 빈 입력 graceful
+        assert "실적 발표 일정이 없습니다" in _render_earnings_table([])

@@ -232,7 +232,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 or path_lower in ("/earnings", "/theme", "/highlow",
                                   "/usindustry", "/ushighlow", "/usmovers",
                                   "/twhighlow", "/tw52",
-                                  "/jp52", "/cn52", "/hk52")
+                                  "/jp52", "/cn52", "/hk52", "/kr52")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -273,8 +273,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # (yfinance 유니버스 백그라운드, 사용자 2026-06-13 Phase 2)
         if raw in ("/twhighlow", "/tw52"):
             return self._handle_tw_page(raw)
-        # /jp52 /cn52 /hk52 — JP/CN/HK 52주 신고가/신저가 (유니버스 백그라운드)
-        if raw in ("/jp52", "/cn52", "/hk52"):
+        # /jp52 /cn52 /hk52 /kr52 — JP/CN/HK/KR 52주 신고가/신저가 (유니버스 백그라운드)
+        if raw in ("/jp52", "/cn52", "/hk52", "/kr52"):
             return self._handle_intl_page(raw)
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시
         if raw == "/trade" or raw.startswith("/trade/"):
@@ -873,10 +873,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_error(500, "internal error")
 
     def _handle_intl_page(self, raw: str) -> None:
-        """GET /jp52 | /cn52 | /hk52 — JP/CN/HK 52주 신고가·신저가."""
+        """GET /jp52 | /cn52 | /hk52 | /kr52 — JP/CN/HK/KR 52주 신고가·신저가."""
         try:
             from bot.intl_pages import render_intl_highlow52_page
-            market = {"/jp52": "JP", "/cn52": "CN_A", "/hk52": "HK"}[raw]
+            market = {"/jp52": "JP", "/cn52": "CN_A", "/hk52": "HK",
+                      "/kr52": "KR"}[raw]
             encoded = render_intl_highlow52_page(market).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")

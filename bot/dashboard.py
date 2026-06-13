@@ -11430,17 +11430,20 @@ def _render_earnings_table(earnings: list) -> str:
         co_name = _html.escape(e.get("name", ""))
         dt = _html.escape(e.get("date", ""))
         is_kr = sym.endswith((".KS", ".KQ"))
+        # JP/TW/CN/HK — yfinance .calendar 추정치가 통화/단위 불명확(거의
+        # None) → 잘못된 '$' 표기 대신 '—'. 날짜가 핵심 값(사용자 2026-06-13).
+        is_intl = sym.endswith((".T", ".TW", ".TWO", ".SS", ".SZ", ".HK"))
         hour = e.get("hour", "")
         hour_label = "장전" if hour == "bmo" else ("장후" if hour == "amc" else "—")
         eps_est = e.get("eps_estimate")
-        if eps_est is None:
+        if eps_est is None or is_intl:
             eps_str = "—"
         elif is_kr:
             eps_str = f'₩{eps_est:,.0f}'
         else:
             eps_str = f'${eps_est:.2f}'
         rev_est = e.get("revenue_estimate")
-        if rev_est is None:
+        if rev_est is None or is_intl:
             rev_str = "—"
         elif is_kr:
             if rev_est >= 1e12:
@@ -11949,6 +11952,7 @@ def _render_sector_movers(movers: dict) -> str:
         '<h2>🇰🇷 한국 업종 등락 TOP 10</h2>'
         f'<a href="theme" style="{_lnk}">🎯 테마별 시세</a>'
         f'<a href="highlow" style="{_lnk}">📈 상한가·하한가</a>'
+        f'<a href="kr52" style="{_lnk}">🔝 52주 신고저</a>'
         f'<span class="ts" style="margin-left:auto">{ts} · Naver</span></div>'
         '<div class="sm-wrap">'
         + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
@@ -12334,11 +12338,21 @@ def _render_market_page(data: dict) -> str:
         data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락",
         f'<a href="hk52" style="{_lk2}">🔝 52주 신고저</a>'))
 
-    # 다가오는 실적 — 한국/미국 탭 분리(사용자 정책: 한국 기본·최대한 표시).
+    # 다가오는 실적 — 시장별 탭 분리(사용자 정책: 한국 기본·최대한 표시 +
+    # 2026-06-13 '실적빌드 다국가' JP/TW/CN/HK 추가, 접미사 재필터).
     _earn_kr = [e for e in earnings
                 if str(e.get("symbol", "")).endswith((".KS", ".KQ"))]
+    _earn_jp = [e for e in earnings
+                if str(e.get("symbol", "")).endswith(".T")]
+    _earn_tw = [e for e in earnings
+                if str(e.get("symbol", "")).endswith((".TW", ".TWO"))]
+    _earn_cn = [e for e in earnings
+                if str(e.get("symbol", "")).endswith((".SS", ".SZ"))]
+    _earn_hk = [e for e in earnings
+                if str(e.get("symbol", "")).endswith(".HK")]
     _earn_us = [e for e in earnings
-                if not str(e.get("symbol", "")).endswith((".KS", ".KQ"))]
+                if not str(e.get("symbol", "")).endswith(
+                    (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".HK"))]
 
     parts.append(f"""
   <div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
@@ -12353,12 +12367,28 @@ def _render_market_page(data: dict) -> str:
   <div class="tabs">
     <button class="etab-btn active" data-etab="kr">한국 ({len(_earn_kr)})</button>
     <button class="etab-btn" data-etab="us">미국 ({len(_earn_us)})</button>
+    <button class="etab-btn" data-etab="jp">일본 ({len(_earn_jp)})</button>
+    <button class="etab-btn" data-etab="tw">대만 ({len(_earn_tw)})</button>
+    <button class="etab-btn" data-etab="cn">중국 ({len(_earn_cn)})</button>
+    <button class="etab-btn" data-etab="hk">홍콩 ({len(_earn_hk)})</button>
   </div>
   <div id="etab-kr" class="etab-pane active">
     {_render_earnings_table(_earn_kr)}
   </div>
   <div id="etab-us" class="etab-pane">
     {_render_earnings_table(_earn_us)}
+  </div>
+  <div id="etab-jp" class="etab-pane">
+    {_render_earnings_table(_earn_jp)}
+  </div>
+  <div id="etab-tw" class="etab-pane">
+    {_render_earnings_table(_earn_tw)}
+  </div>
+  <div id="etab-cn" class="etab-pane">
+    {_render_earnings_table(_earn_cn)}
+  </div>
+  <div id="etab-hk" class="etab-pane">
+    {_render_earnings_table(_earn_hk)}
   </div>
 
   <div class="section-hd" style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">

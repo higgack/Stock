@@ -11,7 +11,8 @@ from bot.tw_pages import _tw_shell
 
 log = logging.getLogger("bot.intl_pages")
 
-_FLAG = {"JP": "🇯🇵 일본", "CN_A": "🇨🇳 중국 A주", "HK": "🇭🇰 홍콩"}
+_FLAG = {"JP": "🇯🇵 일본", "CN_A": "🇨🇳 중국 A주", "HK": "🇭🇰 홍콩",
+         "KR": "🇰🇷 한국"}
 
 
 def _panel(title: str, items: list) -> str:
