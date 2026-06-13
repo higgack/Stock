@@ -9,7 +9,7 @@ from __future__ import annotations
 import html as _html
 import logging
 
-from bot.naver_pages import _CSS, _THEME_SCRIPT, _pct_cell
+from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
 
 log = logging.getLogger("bot.tw_pages")
 
@@ -46,12 +46,14 @@ def render_tw_highlow_page() -> str:
             f'<td class="nm"><a href="lookup/{_html.escape(str(it.get("code","")))}.TW">'
             f'{_html.escape(it.get("name","") or it.get("code",""))}</a></td>'
             f'<td class="num">{_html.escape(str(it.get("close") or "—"))}</td>'
-            f'{_pct_cell(it.get("pct"))}</tr>'
+            f'{_pct_cell(it.get("pct"))}'
+            f'<td class="num">{_fmt_vol(it.get("vol"))}</td></tr>'
             for i, it in enumerate(items, 1))
         return (f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
                 f'<table><thead><tr><th>#</th><th>종목</th>'
                 f'<th style="text-align:right">종가</th>'
-                f'<th style="text-align:right">등락률</th></tr></thead>'
+                f'<th style="text-align:right">등락률</th>'
+                f'<th style="text-align:right">거래량</th></tr></thead>'
                 f'<tbody>{rows}</tbody></table></div>')
 
     dt = _html.escape(data.get("date", ""))
@@ -82,23 +84,6 @@ def render_tw_highlow52_page() -> str:
     ts = _html.escape(data.get("ts", ""))
     high, low = data.get("high", []), data.get("low", [])
 
-    def _panel(title: str, items: list) -> str:
-        if not items:
-            return (f'<div class="panel"><h2>{title}</h2>'
-                    '<div class="empty">해당 종목 없음</div></div>')
-        rows = "".join(
-            f'<tr><td class="rk">{i}</td>'
-            f'<td class="nm"><a href="lookup/{_html.escape(str(it.get("ticker","")))}">'
-            f'{_html.escape(it.get("name","") or it.get("ticker",""))}</a></td>'
-            f'<td class="num">{_html.escape(str(it.get("price") or "—"))}</td>'
-            f'{_pct_cell(it.get("pct"))}</tr>'
-            for i, it in enumerate(items, 1))
-        return (f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
-                f'<table><thead><tr><th>#</th><th>종목</th>'
-                f'<th style="text-align:right">현재가</th>'
-                f'<th style="text-align:right">등락률</th></tr></thead>'
-                f'<tbody>{rows}</tbody></table></div>')
-
     if not high and not low:
         if data.get("building"):
             st = data.get("status") or {}
@@ -111,9 +96,16 @@ def render_tw_highlow52_page() -> str:
             body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
+        # 미국 포맷 통일(사용자 2026-06-13) — 시총·업종·거래량·정렬·업종분포.
+        from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
+                                        stock_panel)
+        hi, lo = sort_by_mcap(high), sort_by_mcap(low)
         body = ('<div class="grid">'
-                + _panel("📈 52주 신고가 (1% 근접)", high)
-                + _panel("📉 52주 신저가 (1% 근접)", low) + '</div>')
+                + stock_panel("📈 52주 신고가 (1% 근접)", hi, "hl-high",
+                              "TW", ind_dist_line(hi))
+                + stock_panel("📉 52주 신저가 (1% 근접)", lo, "hl-low",
+                              "TW", ind_dist_line(lo))
+                + '</div>' + HL_SORT_JS)
     sub = (f"TWSE 전종목(일반종목) 1년 주봉 52주 고저 1% 근접. 백그라운드 산출·"
            f"30분 캐시. {('· 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body)

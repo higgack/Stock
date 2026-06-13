@@ -9,7 +9,7 @@ from __future__ import annotations
 import html as _html
 import logging
 
-from bot.naver_pages import _CSS, _THEME_SCRIPT, _pct_cell
+from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
 
 log = logging.getLogger("bot.us_pages")
 
@@ -61,10 +61,12 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
     def _t(key: str, label: str) -> str:
         cls = ' class="active"' if key == active else ""
         return f'<a{cls} href="{key}">{label}</a>'
+    # 자식 링크 명칭 통일(사용자 2026-06-13): 업종별 시세(전체) →
+    # 신고가·신저가 → 급등·급락 (가격제한 없는 시장).
     toggle = ('<div class="toggle">'
-              + _t("usindustry", "🏭 업종별 시세")
+              + _t("usindustry", "🏭 업종별 시세(전체)")
               + _t("ushighlow", "📈 신고가·신저가")
-              + _t("usmovers", "🚀 급등·급락 TOP30")
+              + _t("usmovers", "🚀 급등·급락")
               + '</div>')
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -147,21 +149,24 @@ def _stock_panel(title: str, items: list, tid: str, extra_head: str = "") -> str
         price = it.get("price")
         pct = it.get("pct")
         mcap = it.get("mcap")
+        vol = it.get("vol")        # 거래량(사용자 2026-06-13)
         # 업종분류 — yfinance industry 원문 그대로 (사용자 2026-06-12)
         ind = _html.escape(str(it.get("ind") or ""))
         ind_cell = (f'<td class="ind" title="{ind}">{ind}</td>'
                     if ind else '<td class="ind">—</td>')
-        # data-* = raw 정렬값 (sym/ind=text, price/pct/mcap=numeric)
+        # data-* = raw 정렬값 (sym/ind=text, price/pct/mcap/vol=numeric)
         return (
             f'<tr data-sym="{tk.lower()}" '
             f'data-price="{price if price is not None else -1}" '
             f'data-pct="{pct if pct is not None else -9999}" '
+            f'data-vol="{vol if vol is not None else -1}" '
             f'data-mcap="{mcap if mcap is not None else -1}" '
             f'data-ind="{ind.lower()}">'
             f'<td class="rk">{i}</td>'
             f'<td class="nm"><a href="lookup/{tk}">{label}</a></td>'
             f'<td class="num">{("$" + format(price, ",.2f")) if price is not None else "—"}</td>'
             f'{_pct_cell(pct)}'
+            f'<td class="num">{_fmt_vol(vol)}</td>'
             f'<td class="num">{_fmt_mcap(mcap)}</td>'
             f'{ind_cell}</tr>'
         )
@@ -175,6 +180,7 @@ def _stock_panel(title: str, items: list, tid: str, extra_head: str = "") -> str
         f'<th class="srt" data-key="sym" data-type="text">종목</th>'
         f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가</th>'
         f'<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>'
+        f'<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량</th>'
         f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총</th>'
         f'<th class="srt" data-key="ind" data-type="text">업종</th>'
         f'</tr></thead><tbody>{rows}</tbody></table></div>'
@@ -204,10 +210,11 @@ def render_us_highlow_page() -> str:
         body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                 '(잠시 후 다시 시도해 주세요.)</div>')
     else:
+        # 업종 분포 한 줄 추가 (사용자 2026-06-13 '업종분포 다 넣어주는걸로')
         body = ('<div class="grid">'
-                + _panel("🔺 52주 신고가", hi, "hl-high")
-                + _panel("🔻 52주 신저가", lo, "hl-low") + '</div>'
-                + _HL_SORT_JS)
+                + _panel("🔺 52주 신고가", hi, "hl-high", _ind_dist_line(hi))
+                + _panel("🔻 52주 신저가", lo, "hl-low", _ind_dist_line(lo))
+                + '</div>' + _HL_SORT_JS)
     sub = (f"미국 52주 신고가·신저가 (가격제한폭이 없는 시장 — 상한가/하한가 대응 지표 · "
            f"SPAC·워런트·채권형 제외 · 분할 아티팩트 드랍) · 기본 시총순 · 헤더 클릭 정렬 · "
            f"업종=GICS·NASDAQ·yfinance 순 매칭 · "

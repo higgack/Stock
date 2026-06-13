@@ -361,9 +361,25 @@ def _parse_stock_rows(html: str, limit: int) -> list[dict]:
                 price = cterm
                 break
         pct = _pct_from_row(row)
+        # 거래량(사용자 2026-06-13) = 등락률(%) 셀 다음의 콤마 정수 (Naver
+        # sise_upper 컬럼순서: 현재가·전일비·등락률·거래량·시가·고가·저가).
+        # %가 셀 텍스트에 없을 수 있어 graceful None (못 찾으면 '—').
+        vol = None
+        after_pct = False
+        for cterm in cells:
+            if "%" in cterm:
+                after_pct = True
+                continue
+            if after_pct and re.fullmatch(r"[\d,]{4,}", cterm):
+                try:
+                    vol = int(cterm.replace(",", ""))
+                except ValueError:
+                    vol = None
+                break
         seen.add(code)
         out.append({"code": code, "name": name, "price": price,
-                    "pct": round(pct, 2) if pct is not None else None})
+                    "pct": round(pct, 2) if pct is not None else None,
+                    "vol": vol})
         if len(out) >= limit:
             break
     return out

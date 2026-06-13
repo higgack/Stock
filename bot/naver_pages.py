@@ -65,9 +65,13 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
     def _t(key: str, label: str) -> str:
         cls = ' class="active"' if key == active else ""
         return f'<a{cls} href="{key}">{label}</a>'
+    # 자식 링크 순서·명칭 통일(사용자 2026-06-13): 업종별 시세(전체) →
+    # 신고가·신저가(kr52) → 상한가·하한가. kr52 는 intl_pages(_tw_shell)
+    # 렌더라 이 toggle 에선 active 안 됨(일반 링크).
     toggle = ('<div class="toggle">'
-              + _t("theme", "🎯 테마별 시세")
-              + _t("highlow", "📈 상한가·하한가")
+              + _t("theme", "🏭 업종별 시세(전체)")
+              + _t("kr52", "📈 신고가·신저가")
+              + _t("highlow", "🔺 상한가·하한가")
               + '</div>')
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -88,6 +92,22 @@ def _pct_cell(pct) -> str:
     cls = "up" if pct > 0 else "dn" if pct < 0 else "neu"
     sign = "+" if pct > 0 else ""
     return f'<td class="pct {cls}">{sign}{pct:.2f}%</td>'
+
+
+def _fmt_vol(v) -> str:
+    """거래량 표기 — 만/억(사용자 2026-06-13, Naver 급등 표 스타일). 신고저·
+    급등급락 표 공용. 0/None/비수치 → '—'."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if x <= 0:
+        return "—"
+    if x >= 1e8:
+        return f"{x / 1e8:.1f}억"
+    if x >= 1e4:
+        return f"{x / 1e4:,.0f}만"
+    return f"{x:,.0f}"
 
 
 _THEME_DETAIL = ("https://finance.naver.com/sise/sise_group_detail.naver"
@@ -198,12 +218,14 @@ def render_highlow_page() -> str:
             f'<td class="nm"><a href="lookup/{_html.escape(_ticker(it.get("code","")))}">'
             f'{_html.escape(it.get("name",""))}</a></td>'
             f'<td class="num">{_html.escape(str(it.get("price") or "—"))}</td>'
-            f'{_pct_cell(it.get("pct"))}</tr>'
+            f'{_pct_cell(it.get("pct"))}'
+            f'<td class="num">{_fmt_vol(it.get("vol"))}</td></tr>'
             for i, it in enumerate(items, 1))
         return (f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
                 f'<table><thead><tr><th>#</th><th>종목</th>'
                 f'<th style="text-align:right">현재가</th>'
-                f'<th style="text-align:right">등락률</th></tr></thead>'
+                f'<th style="text-align:right">등락률</th>'
+                f'<th style="text-align:right">거래량</th></tr></thead>'
                 f'<tbody>{rows}</tbody></table></div>')
 
     up, low = data.get("upper", []), data.get("lower", [])

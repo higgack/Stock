@@ -2020,6 +2020,68 @@ mismatch no-op 였음), 병렬 prefetch + 디스크 캐시 TTL 일관.
 
 ## TODO
 
+- **리서치 액션 다국가 (JP/TW/CN/HK) — 보류 (사용자 2026-06-13 '리서치는
+  우선 나중에 To do')**. 홈(market.html) '최근 리서치 액션' 은 현재 한국
+  (Naver Finance 기업/산업/전략) + 미국(yfinance upgrades_downgrades)만.
+  일본/대만/중국/홍콩 확장은 보류 — **소스 빈약**이 근본 제약: yfinance
+  international analyst coverage 가 얇고(대형주만 산발적), Naver 같은
+  통합 브로커 리포트 피드의 시장별 등가물이 불명확(JP=みんかぶ/Kabutan
+  레이팅은 종목별·집계 피드 아님, TW=鉅亨網/MoneyDJ, CN=동방재부, HK=
+  AAStocks — 무료·구조화·전시장 목록형 피드 후보를 먼저 검증해야 함).
+  착수 시: 시장별 무료 피드 1개씩 검증(목록형·날짜·브로커·목표가 구조화
+  여부) → 되는 것만 탭 추가(실적빌드처럼 graceful). 실적빌드(#330)와 달리
+  yfinance .calendar 같은 단일 범용 소스가 없어 시장별 클라이언트 필요.
+
+- **한국 52주 신고저 KIS 1콜 경로 — VM 검증 후 소스 교체 (사용자 2026-06-13
+  'KIS 에서 안되는건가')**. 현재 `/kr52` 는 검증된 yfinance 유니버스
+  스캔(83 KR 주요종목, `intl_highlow` KR 분기, #330). KIS Open API 는
+  국내주식 **신고가/신저가 순위** 엔드포인트가 있어(추정 TR_ID
+  `FHPST01890000`, `/uapi/domestic-stock/v1/ranking/new-highlow`) **단일
+  콜**로 전 종목 52주 신고/신저 근접을 받을 수 있음 — 유니버스 스캔보다
+  싸고 넓음(주요종목 83 한정 아님). `kis_client.py` 엔 미구현(현재 종목별
+  시세/수급 TR 만). ⚠️ 샌드박스에서 KIS 도달 불가 → **VM 검증 선결**:
+  정확한 TR_ID·필수 파라미터(시장구분 J/Q·기간·정렬)·응답 필드명 확인.
+  ⚠️ TR_ID `FHPST01890000`·path `new-highlow` 는 **추정**(샌드박스 검증
+  불가) — probe 가 `rt_cd`/`msg1` 로 맞는지 알려줌(`_get` 은 실패 시 None
+  반환+stderr 로그라 raw 응답을 직접 출력해야 진단됨). VM 1블록 probe
+  (creds 로드됨):
+  ⚠️ bare `python -c` 는 `.env` 자동 로드 안 함 → `load_dotenv` 선행 필수
+  (안 하면 token False·status 404·non-JSON 으로 오진, 2026-06-13 1차 probe
+  실패 교훈).
+  ```
+  cd ~/stock && .venv/bin/python -c "
+  from dotenv import load_dotenv; from pathlib import Path
+  load_dotenv(Path.home() / 'stock' / '.env')
+  from bot import kis_client as k
+  import requests, json
+  tok = k._get_token(); print('token:', bool(tok))
+  url = k._BASE_PROD + '/uapi/domestic-stock/v1/ranking/new-highlow'
+  params = {'FID_COND_MRKT_DIV_CODE':'J','FID_COND_SCR_DIV_CODE':'20187',
+    'FID_INPUT_ISCD':'0000','FID_RANK_SORT_CLS_CODE':'0','FID_INPUT_CNT_1':'0',
+    'FID_PRC_CLS_CODE':'0','FID_INPUT_PRICE_1':'','FID_INPUT_PRICE_2':'',
+    'FID_VOL_CNT':'','FID_TRGT_CLS_CODE':'','FID_TRGT_EXLS_CLS_CODE':'',
+    'FID_DIV_CLS_CODE':'0'}
+  h = {'authorization':f'Bearer {tok}','appkey':k._app_key(),
+    'appsecret':k._app_secret(),'tr_id':'FHPST01890000',
+    'Content-Type':'application/json; charset=utf-8'}
+  r = requests.get(url, headers=h, params=params, timeout=10)
+  print('status:', r.status_code)
+  try:
+      d = r.json()
+  except Exception:
+      print('non-JSON body[:300]:', r.text[:300]); raise SystemExit
+  print('rt_cd:', d.get('rt_cd'), '| msg:', d.get('msg1'))
+  out = d.get('output') or d.get('output1') or d.get('output2')
+  print('fields:', list(out[0].keys()) if isinstance(out,list) and out else out)
+  print('sample:', json.dumps(out[:2] if isinstance(out,list) else out, ensure_ascii=False)[:900])"
+  ```
+  rt_cd='0' 이면 path/TR_ID 정답 → fields 로 필드명 확정. rt_cd!='0' 이면
+  msg1 가 사유(유효하지않은 tr_id 등) → KIS 개발자포털 '국내주식순위분석 >
+  신고가/신저가'에서 정확 path/TR_ID 확인 후 재시도. 확정 후 `kis_client.
+  fetch_kr_new_highlow()` 작성 + `/kr52` 데이터 소스만 교체(페이지·라우트·
+  위젯 그대로). 실패 시 yfinance 유지. 추측 보고 금지(실수기록 #12a) —
+  probe 출력 없이 TR_ID 단정하지 말 것.
+
 ## 📋 Standard View open issues (2026-05-21 session pickup)
 
 User 2026-05-21 새벽 1-12시 세션에서 발견 + 진단 + patch + 검증

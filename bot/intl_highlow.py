@@ -14,16 +14,23 @@ import time
 
 log = logging.getLogger(__name__)
 
-# market → (peer 맵 속성명, 캐시명, 상태명, 위젯 라벨)
+# market → (peer 맵 속성명, 캐시명, 상태명, 위젯 라벨, native 접미사 필터)
+# 접미사 필터 = peer 맵에 섞인 해외 비교군 제외(KR 반도체에 TSM/NVDA 등).
+# JP/CN/HK 는 맵이 이미 native-only 라 필터가 no-op(검증됨).
 _CFG = {
     "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v1.json",
-           "jp_highlow_status.json", "일본 주요종목"),
+           "jp_highlow_status.json", "일본 주요종목", (".T",)),
     "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v1.json",
-             "cn_highlow_status.json", "중국 A주 주요종목"),
+             "cn_highlow_status.json", "중국 A주 주요종목", (".SS", ".SZ")),
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v1.json",
-           "hk_highlow_status.json", "홍콩 주요종목"),
+           "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
+    # KR — 사용자 2026-06-13 '한국도 신고가신저가'. KIS 신고저 순위 엔드포인트
+    # (1콜·더 쌈)는 VM 검증 대기 → 우선 검증된 yfinance 유니버스 스캔으로.
+    "KR": ("_KR_INDUSTRY_PEERS", "highlow_kr_v1.json",
+           "kr_highlow_status.json", "한국 주요종목", (".KS", ".KQ")),
 }
 _TTL = 30 * 60
+_TTL_FULL = 6 * 3600   # JP/HK 전종목(~3천) 스캔은 무거워 캐시 길게(재스캔 빈도↓)
 _running: dict[str, bool] = {}
 _lock = threading.Lock()
 
@@ -33,20 +40,34 @@ def _universe(market: str) -> tuple[list[str], dict]:
     cfg = _CFG.get(market)
     if not cfg:
         return [], {}
+    # JP/HK: 공식 상장목록 전종목 우선 (사용자 2026-06-13 full-market), 실패 시
+    # peer 폴백. 이름=ticker(번역 백필이 한글명 채움). CN_A 는 차단으로 peer 만.
+    if market in ("JP", "HK"):
+        try:
+            from bot.intl_universe import full_universe
+            full = full_universe(market)
+            if len(full) > 100:
+                return full, {t: t for t in full}
+        except Exception as exc:
+            log.warning("intl full_universe %s: %s", market, exc)
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
     except Exception as exc:
         log.warning("intl highlow universe error (%s): %s", market, exc)
         return [], {}
+    suffix = cfg[4] if len(cfg) > 4 else None   # native 시장 접미사(해외 비교군 제외)
     seen, uni, names = set(), [], {}
     for vals in peers.values():
         for x in (vals if isinstance(vals, (list, tuple)) else [vals]):
             t = str(x[0] if isinstance(x, (list, tuple)) else x).strip()
-            if t and t not in seen:
-                seen.add(t)
-                uni.append(t)
-                names[t] = t
+            if not t or t in seen:
+                continue
+            if suffix and not t.endswith(suffix):
+                continue
+            seen.add(t)
+            uni.append(t)
+            names[t] = t
     return uni, names
 
 
@@ -66,8 +87,67 @@ def intl_highlow_status(market: str) -> dict:
         return {}
 
 
+def _compute_kr_kis() -> None:
+    """KR 52주 신고저 = KIS near-new-highlow(전 시장 스캔·근접 상위) + yfinance
+    mcap/ind 백필 (사용자 2026-06-13 'full-market'). peer-83 대체. 한글명은
+    KIS hts_kor_isnm 네이티브(번역 불요). KIS 실패/creds 부재 → peer 폴백(회귀 0)."""
+    from bot import kis_client
+    from bot.finviz_client import (_cache_write, _compute_highlow_from,
+                                   _fetch_industries, _fetch_mcaps, _now_label)
+    raw = kis_client.fetch_kr_new_highlow()
+    if not raw.get("high") and not raw.get("low"):
+        # KIS 빈 결과(creds 부재 등) → 기존 peer-83 yfinance 스캔 폴백
+        uni, names = _universe("KR")
+        if uni:
+            _status_write("KR", "running", total=len(uni))
+            out = _compute_highlow_from(
+                uni, names, _CFG["KR"][1],
+                "한국 주요종목 산출(yfinance · KIS 폴백)", "KR")
+            _status_write("KR", "done", high=len(out.get("high", [])),
+                          low=len(out.get("low", [])), src="peer")
+        else:
+            _status_write("KR", "failed", detail="KIS empty + peer empty")
+        return
+    try:
+        from bot.market import normalize_kr_ticker_suffix as _norm
+    except Exception:
+        _norm = None
+
+    def _conv(lst):
+        items = []
+        for o in lst:
+            code = str(o.get("code") or "")
+            tk = f"{code}.KS"
+            if _norm:
+                try:
+                    tk = _norm(tk)
+                except Exception:
+                    pass
+            items.append({"ticker": tk, "name": o.get("name") or tk,
+                          "price": o.get("price"), "pct": o.get("pct"),
+                          "vol": o.get("vol")})
+        return items
+    high, low = _conv(raw["high"]), _conv(raw["low"])
+    allt = [it["ticker"] for it in high + low]
+    try:
+        mcaps, inds = _fetch_mcaps(allt), _fetch_industries(allt)
+        for it in high + low:
+            mc = mcaps.get(it["ticker"])
+            it["mcap"] = round(mc / 1e8, 2) if mc else None   # 억원
+            it["ind"] = inds.get(it["ticker"])
+    except Exception as exc:
+        log.warning("intl highlow KR mcap/ind 백필: %s", exc)
+    out = {"high": high, "low": low, "ts": _now_label(),
+           "source": "KIS 신고가/신저가 근접(전 시장 스캔)"}
+    _cache_write(_CFG["KR"][1], out)
+    _status_write("KR", "done", high=len(high), low=len(low), src="kis")
+
+
 def _compute(market: str) -> None:
     try:
+        if market == "KR":
+            _compute_kr_kis()
+            return
         from bot.finviz_client import _compute_highlow_from
         uni, names = _universe(market)
         if not uni:
@@ -104,7 +184,8 @@ def fetch_intl_highlow(market: str) -> dict:
         return {"high": [], "low": [], "ts": "", "source": "", "building": False}
     from bot.finviz_client import _cached
     cache = _CFG[market][1]
-    fresh = _cached(cache, ttl=_TTL)
+    ttl = _TTL_FULL if market in ("JP", "HK") else _TTL   # 전종목 스캔 캐시 길게
+    fresh = _cached(cache, ttl=ttl)
     if fresh is not None:
         return fresh
     stale = _cached(cache, ttl=86400)

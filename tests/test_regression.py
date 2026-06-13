@@ -4917,16 +4917,27 @@ class TestTwseSectorHighLow:
 
 
 class TestIntlHighLow52:
-    """JP/CN/HK 52주 신고가/신저가 — TW 패턴 일반화(사용자 2026-06-13 '다른
-    나라도 모두'). peer 유니버스 + SWR 동기계산 금지 + 페이지."""
+    """JP/CN/HK/KR 52주 신고가/신저가 — TW 패턴 일반화(사용자 2026-06-13 '다른
+    나라도 모두' + '한국도 신고가신저가'). peer 유니버스 + SWR 동기계산 금지
+    + 페이지. KR 은 peer 맵의 해외 비교군을 native 접미사 필터로 제외."""
 
     def test_universe_from_peer_maps(self):
         import bot.intl_highlow as ih
-        for mk, lo in (("JP", 40), ("CN_A", 30), ("HK", 30)):
+        for mk, lo in (("JP", 40), ("CN_A", 30), ("HK", 30), ("KR", 50)):
             uni, names = ih._universe(mk)
             assert len(uni) >= lo, (mk, len(uni))
             assert len(uni) == len(set(uni))          # dedupe
             assert all(names[t] for t in uni)         # name 기본=ticker
+
+    def test_kr_strips_foreign_comparables(self):
+        # _KR_INDUSTRY_PEERS 는 반도체에 TSM/NVDA 등 해외 비교군 포함 →
+        # .KS/.KQ 만 남겨야(해외 종목이 한국 52주 페이지에 새지 않게).
+        import bot.intl_highlow as ih
+        uni, _ = ih._universe("KR")
+        assert uni and all(t.endswith((".KS", ".KQ")) for t in uni), uni[:5]
+        # JP/CN/HK 는 native-only 맵이라 필터가 no-op(개수 보존)
+        assert len(ih._universe("JP")[0]) == 102
+        assert len(ih._universe("HK")[0]) == 51
 
     def test_fetch_never_sync_computes(self, monkeypatch):
         import bot.intl_highlow as ih
@@ -4958,9 +4969,21 @@ class TestIntlHighLow52:
         root = _P(__file__).resolve().parents[1] / "bot"
         srv = (root / "dashboard_server.py").read_text("utf-8")
         assert "/jp52" in srv and "/cn52" in srv and "/hk52" in srv
-        assert "_handle_intl_page" in srv
+        assert "/kr52" in srv and "_handle_intl_page" in srv
         dash = (root / "dashboard.py").read_text("utf-8")
         assert 'href="jp52"' in dash and 'href="hk52"' in dash
+        assert 'href="kr52"' in dash      # KR 위젯에 52주 신고저 링크
+
+    def test_kr_page_renders(self, monkeypatch):
+        import bot.intl_highlow as ih
+        monkeypatch.setattr(ih, "fetch_intl_highlow", lambda m: {
+            "high": [{"ticker": "005930.KS", "name": "005930.KS",
+                      "price": 88000, "pct": 0.3}],
+            "low": [], "ts": "x", "building": False})
+        from bot.intl_pages import render_intl_highlow52_page, _FLAG
+        assert _FLAG.get("KR") == "🇰🇷 한국"
+        h = render_intl_highlow52_page("KR")
+        assert "005930.KS" in h and "한국" in h and "52주 신고가" in h
 
 
 class TestTwHighLow52:
@@ -6802,3 +6825,438 @@ class TestFavoritesCurrencyUnifiedSort:
         assert "data-eps=\"' + usd(f.eps_estimate)" in src
         # 표시 셀은 원통화 포맷 유지
         assert "fmtMcap(f.market_cap, f.currency_symbol)" in src
+
+
+class TestChildDashboardOrderNaming:
+    """자식 대시보드 링크 순서·명칭 통일(사용자 2026-06-13): 모든 나라
+    ① 업종별 시세(전체) ② 신고가·신저가 ③ 상한가·하한가/급등·급락.
+    홈 위젯 링크 + KR/US 페이지 sibling nav."""
+
+    def _order(self, html, keys):
+        import re
+        pat = "|".join(re.escape(k) for k in keys)
+        return re.findall(rf'href="({pat})"', html)
+
+    def test_kr_home_widget_order_and_names(self):
+        from bot.dashboard import _render_sector_movers
+        h = _render_sector_movers({"up": [{"name": "반도체", "pct": 1.0}],
+                                   "down": [], "ts": "x"})
+        assert self._order(h, ["theme", "kr52", "highlow"]) == \
+            ["theme", "kr52", "highlow"]
+        assert "🏭 업종별 시세(전체)" in h
+        assert "📈 신고가·신저가" in h
+        assert "🔺 상한가·하한가" in h
+        assert "52주 신고저" not in h and "테마별 시세" not in h
+
+    def test_tw_home_widget_highlow_after_52w(self):
+        # TW: 신고가·신저가 → 상한가·하한가 (신고저가 먼저)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i52 = src.find('href="tw52"')
+        ihl = src.find('href="twhighlow"')
+        assert 0 < i52 < ihl, (i52, ihl)
+
+    def test_jp_cn_hk_home_label_unified(self):
+        # JP/CN/HK 홈 링크가 '신고가·신저가'(통일), '52주 신고저' 아님
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        for href in ('jp52', 'cn52', 'hk52'):
+            seg = src[src.find(f'href="{href}"') - 80:
+                      src.find(f'href="{href}"') + 40]
+            assert "신고가·신저가" in seg, href
+        # 옛 라벨 잔존 없음(홈 위젯)
+        assert "🔝 52주 신고저" not in src
+
+    def test_kr_page_nav_includes_kr52_in_order(self):
+        from bot.naver_pages import _shell
+        nav = _shell("t", "s", "theme", "<x>")
+        assert self._order(nav, ["theme", "kr52", "highlow"]) == \
+            ["theme", "kr52", "highlow"]
+        assert "🏭 업종별 시세(전체)" in nav and "📈 신고가·신저가" in nav
+
+    def test_us_page_nav_unified_names(self):
+        from bot.us_pages import _shell
+        nav = _shell("t", "s", "usindustry", "<x>")
+        assert self._order(nav, ["usindustry", "ushighlow", "usmovers"]) == \
+            ["usindustry", "ushighlow", "usmovers"]
+        assert "🏭 업종별 시세(전체)" in nav and "TOP30" not in nav
+
+
+class TestEarningsCalendarIntl:
+    """다가오는 실적 다국가 — JP/TW/CN/HK (사용자 2026-06-13 '실적빌드').
+    KR 패턴 일반화: 산업 peer 맵 universe + yfinance .calendar 공유 파서.
+    순수 파서 + 유니버스 추출 + 시장별 탭 배선 + 통화 가드."""
+
+    def _cal(self, ds):
+        class _D:
+            def __init__(s, v): s.v = v
+            def strftime(s, fmt): return s.v
+        return {"Earnings Date": [_D(ds)],
+                "Earnings Average": 1.0, "Revenue Average": 2.0e9}
+
+    def test_row_parser_window_and_fields(self):
+        from datetime import date, timedelta
+        from bot.market_overview import _earning_row_from_cal
+        today = date(2026, 6, 13)
+        cutoff = today + timedelta(days=90)
+        r = _earning_row_from_cal(self._cal("2026-07-15"), "7203.T",
+                                  "Toyota", today, cutoff)
+        assert r and r["date"] == "2026-07-15" and r["symbol"] == "7203.T"
+        assert r["name"] == "Toyota"
+        # 과거·미래초과·빈값·None·파싱불가 모두 None
+        assert _earning_row_from_cal(self._cal("2026-01-01"), "X", "X",
+                                     today, cutoff) is None
+        assert _earning_row_from_cal(self._cal("2026-12-01"), "X", "X",
+                                     today, cutoff) is None
+        assert _earning_row_from_cal({}, "X", "X", today, cutoff) is None
+        assert _earning_row_from_cal({"Earnings Date": []}, "X", "X",
+                                     today, cutoff) is None
+        assert _earning_row_from_cal(None, "X", "X", today, cutoff) is None
+        assert _earning_row_from_cal({"Earnings Date": ["not-a-date"]}, "X",
+                                     "X", today, cutoff) is None
+
+    def test_universe_per_market(self):
+        from bot.market_overview import _intl_earnings_universe, _INTL_EARN_PEERS
+        assert set(_INTL_EARN_PEERS) == {"JP", "TW", "CN_A", "HK"}
+        for mk in ("JP", "TW", "CN_A", "HK"):
+            u = _intl_earnings_universe(mk)
+            assert len(u) > 30, (mk, len(u))
+            # (ticker, name) 튜플, 이름=티커 기본, unique
+            assert all(isinstance(t, tuple) and len(t) == 2 and t[0] == t[1]
+                       for t in u)
+            assert len({t[0] for t in u}) == len(u)  # 중복 없음
+        # 미지원 시장 → 빈 리스트 graceful
+        assert _intl_earnings_universe("US") == []
+        assert _intl_earnings_universe("ZZ") == []
+
+    def test_fetch_unsupported_market_empty(self):
+        from bot.market_overview import fetch_earnings_calendar_intl
+        # 미지원 시장은 네트워크 0 으로 즉시 빈 리스트
+        assert fetch_earnings_calendar_intl("US") == []
+        assert fetch_earnings_calendar_intl("ZZ") == []
+
+    def test_market_data_wires_four_markets(self):
+        from pathlib import Path as _P
+        src = (_P(__file__).resolve().parents[1] / "bot"
+               / "market_overview.py").read_text("utf-8")
+        for sym in ('"JP", 90', '"TW", 90', '"CN_A", 90', '"HK", 90'):
+            assert sym in src, sym
+        assert "fetch_earnings_calendar_intl" in src
+        # 병합 라인에 6개 그룹 모두
+        assert "_kr_e + _us_e + _jp_e + _tw_e + _cn_e + _hk_e" in src
+
+    def test_dashboard_tabs_partition(self):
+        # .T(JP)·.TW·.TWO(대만 OTC) 겹치지 않게 분할 — 대시보드 필터 미러
+        def cls(sym):
+            if sym.endswith((".KS", ".KQ")): return "kr"
+            if sym.endswith(".T"): return "jp"
+            if sym.endswith((".TW", ".TWO")): return "tw"
+            if sym.endswith((".SS", ".SZ")): return "cn"
+            if sym.endswith(".HK"): return "hk"
+            return "us"
+        exp = {"005930.KS": "kr", "7203.T": "jp", "2330.TW": "tw",
+               "8299.TWO": "tw",  # 타이베이 OTC = 대만(미국으로 새지 않게)
+               "600519.SS": "cn", "000858.SZ": "cn", "0700.HK": "hk",
+               "AAPL": "us", "T": "us"}
+        for s, e in exp.items():
+            assert cls(s) == e, (s, cls(s))
+
+    def test_dashboard_tabs_and_panes_wired(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        for tab in ("jp", "tw", "cn", "hk"):
+            assert f'data-etab="{tab}"' in src, tab
+            assert f'id="etab-{tab}"' in src, tab
+        # _earn_us 가 모든 해외 접미사 제외(.TWO 타이베이 OTC 포함)
+        assert '(".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".HK")' in src
+        # intl EPS/매출 통화 가드(잘못된 '$' 방지)
+        assert "is_intl = sym.endswith" in src
+        assert "eps_est is None or is_intl" in src
+        assert "rev_est is None or is_intl" in src
+
+    def test_intl_table_render_no_wrong_currency(self):
+        # JP 종목 추정치가 있어도 '$' 가 아닌 '—'(통화 불명확 가드)
+        from bot.dashboard import _render_earnings_table
+        rows = [{"symbol": "7203.T", "name": "Toyota", "date": "2026-07-15",
+                 "hour": "", "eps_estimate": 1.23,
+                 "revenue_estimate": 4.5e9, "quarter": None, "year": None}]
+        html = _render_earnings_table(rows)
+        assert "Toyota" in html and "2026-07-15" in html
+        assert "$1.23" not in html and "$4.5B" not in html
+        # 빈 입력 graceful
+        assert "실적 발표 일정이 없습니다" in _render_earnings_table([])
+
+
+class TestVolumeColumn:
+    """거래량 컬럼 — 신고저 + 급등·급락 표 (사용자 2026-06-13 '두번째 캡쳐처럼').
+    intl/tw 신고저(yfinance) + US 신고저·movers(Finviz) 데이터 + 만/억 표기."""
+
+    def test_fmt_vol_units(self):
+        from bot.naver_pages import _fmt_vol
+        assert _fmt_vol(7600000) == "760만"
+        assert _fmt_vol(16850000) == "1,685만"
+        assert _fmt_vol(123456789) == "1.2억"
+        assert _fmt_vol(500) == "500"
+        for bad in (0, None, "x", -5):
+            assert _fmt_vol(bad) == "—", bad
+
+    def test_finviz_parser_extracts_volume(self):
+        import re
+        # _parse_screener_rows 의 vol 추출식 미러 (Finviz v=111 마지막 정수)
+        rgx = r'(?<![\d.])(\d{1,3}(?:,\d{3})+|\d{5,})(?![\d.%])'
+
+        def vol(joined):
+            m = re.findall(rgx, joined)
+            return int(m[-1].replace(",", "")) if m else None
+        assert vol("NV | T | S | USA | 12.3B | 28.5 | 123.45 | +5.20% | 1,234,567") == 1234567
+        assert vol("Big | X | Y | USA | 5.0B | 12 | 200.00 | +3.00% | 950000") == 950000
+        assert vol("NoVol | X | Y | USA | 1.2B | 10 | 5.00 | +1.00%") is None
+        # 실제 파서가 dict 에 vol 키를 담는지(소스 확인)
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert '"vol": vol' in src and 'r["vol"] = int(float(vols' in src
+
+    def test_intl_panel_has_volume_column(self):
+        # 미국 포맷 통일 후 intl 신고저는 highlow_render.stock_panel 사용
+        from bot.highlow_render import stock_panel
+        h = stock_panel("📈 52주 신고가", [{"ticker": "7203.T", "name": "도요타",
+                        "price": 3000, "pct": 0.4, "vol": 16850000,
+                        "mcap": 400000, "ind": "Auto"}], "hl", "JP")
+        assert "거래량" in h and "1,685만" in h and "시총" in h
+        h2 = stock_panel("x", [{"ticker": "A", "name": "A",
+                                "price": 1, "pct": 0.1}], "hl", "JP")
+        assert "거래량" in h2
+
+    def test_tw52_panel_uses_rich_panel(self):
+        # tw52 가 stock_panel(거래량+시총+업종+업종분포) 사용
+        src = open("bot/tw_pages.py", encoding="utf-8").read()
+        assert "stock_panel" in src and "ind_dist_line" in src
+
+    def test_us_stock_panel_volume_sortable(self):
+        from bot.us_pages import _stock_panel
+        h = _stock_panel("🔺 52주 신고가",
+                         [{"ticker": "NVDA", "name": "NVDA", "price": 900.0,
+                           "pct": 2.1, "mcap": 22000, "ind": "Semis",
+                           "vol": 45000000}], "hl-high")
+        assert "거래량" in h
+        assert 'data-vol="45000000"' in h        # 정렬 키
+        assert 'data-key="vol"' in h              # 헤더 정렬 가능
+        assert "4,500만" in h
+
+
+class TestUpperLowerVolume:
+    """상한가/하한가 표 거래량 (사용자 2026-06-13 '상한가/하한가도 거래량').
+    TW=TWSE TradeVolume(clean), KR=Naver 위치 heuristic(graceful)."""
+
+    def test_tw_parse_includes_volume(self):
+        from bot.twse_client import parse_stock_day_all
+        r = parse_stock_day_all([{"Code": "2330", "Name": "TSMC",
+                                  "ClosingPrice": "1000", "Change": "90",
+                                  "TradeVolume": "45000000"}])
+        assert r and r[0]["vol"] == 45000000
+        # TradeVolume 없으면 graceful None
+        r2 = parse_stock_day_all([{"Code": "1", "Name": "x",
+                                   "ClosingPrice": "10", "Change": "1"}])
+        assert r2 and r2[0]["vol"] is None
+
+    def test_tw_upper_panel_has_volume_col(self):
+        src = open("bot/tw_pages.py", encoding="utf-8").read()
+        # 상한가 패널(_panel) + 52w 패널 둘 다 거래량
+        assert src.count("거래량") >= 2
+
+    def test_kr_naver_highlow_panel_has_volume_col(self):
+        src = open("bot/naver_pages.py", encoding="utf-8").read()
+        assert "거래량" in src and '_fmt_vol(it.get("vol"))' in src
+        # 파서가 vol 키 산출
+        psrc = open("bot/naver_sector_client.py", encoding="utf-8").read()
+        assert '"vol": vol' in psrc
+
+
+class TestHighlowRenderShared:
+    """신고저/급등락/상한가 공용 리치 렌더러 (사용자 2026-06-13 '미국 포맷
+    전 나라 통일'). 통화별 가격·시총 + 업종분포 + 시총정렬 + 헤더정렬."""
+
+    def test_fmt_mcap_market_aware(self):
+        from bot.highlow_render import fmt_mcap
+        assert fmt_mcap(4504, "US") == "$450.4B"     # 억$ → $B
+        assert fmt_mcap(25000, "US") == "$2.50T"
+        assert fmt_mcap(30000, "JP") == "¥3.0조"       # 30000억¥ = 3조
+        assert fmt_mcap(500, "JP") == "¥500억"
+        assert fmt_mcap(15260000, "KR") == "₩1526.0조"
+        for bad in (0, None, "x"):
+            assert fmt_mcap(bad, "JP") == "—"
+
+    def test_stock_panel_columns_and_currency(self):
+        from bot.highlow_render import stock_panel
+        h = stock_panel("📈 신고가", [{"ticker": "2330.TW", "name": "TSMC",
+                        "price": 1000.5, "pct": 2.1, "vol": 45000000,
+                        "mcap": 250000, "ind": "Semis"}], "t", "TW")
+        for need in ("거래량", "시총", "업종", 'data-key="mcap"',
+                     "NT$1,000.50", "NT$25.0조", "4,500만", "hl-table"):
+            assert need in h, need
+
+    def test_ind_dist_line(self):
+        from bot.highlow_render import ind_dist_line
+        items = [{"ind": "Semis"}, {"ind": "Semis"}, {"ind": "Banks"},
+                 {"ind": None}]
+        line = ind_dist_line(items)
+        assert "업종 분포" in line and "Semis 2" in line and "Banks 1" in line
+        assert ind_dist_line([]) == ""
+
+    def test_sort_by_mcap_desc_none_last(self):
+        from bot.highlow_render import sort_by_mcap
+        r = sort_by_mcap([{"mcap": 10}, {"mcap": None}, {"mcap": 500}])
+        assert [x.get("mcap") for x in r] == [500, 10, None]
+
+    def test_intl_and_tw_wired_to_shared(self):
+        for mod in ("bot/intl_pages.py", "bot/tw_pages.py"):
+            src = open(mod, encoding="utf-8").read()
+            assert "from bot.highlow_render import" in src and "stock_panel" in src
+
+
+class TestIntlKoreanNames:
+    """intl 신고저 종목명 한글 번역 (사용자 2026-06-13 'TICKER (한글명)').
+    .info longName(VM 정상) → chart_translate Flash·영구캐시. US 제외."""
+
+    def test_fetch_display_names_graceful(self):
+        from bot.finviz_client import _fetch_display_names
+        assert _fetch_display_names([]) == {}
+
+    def test_compute_highlow_translates_non_us(self):
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert "_fetch_display_names(hits2)" in src
+        assert "translate_titles_kr" in src
+        assert 'market and market != "US"' in src
+        # 실패 시 ticker 유지(graceful)
+        assert 'kr_map.get(en) or en' in src
+
+    def test_panel_label_ticker_then_korean(self):
+        from bot.highlow_render import stock_panel
+        h = stock_panel("x", [{"ticker": "6758.T", "name": "소니 그룹",
+                        "price": 13000, "pct": 1.0, "vol": 100,
+                        "mcap": 180000, "ind": "Electronics"}], "t", "JP")
+        assert "6758.T" in h and "소니 그룹" in h and "(소니 그룹)" in h
+
+
+class TestKisKrNewHighlow:
+    """KR 52주 신고저 = KIS near-new-highlow 전 시장 (사용자 2026-06-13,
+    PRC=0 신고가·1 신저가 라이브 검증). ETF/채권 필터 + peer 폴백 + 한글명 네이티브."""
+
+    def test_etf_bond_filter(self):
+        from bot.kis_client import _nhl_is_etf_bond
+        assert _nhl_is_etf_bond("Q610056", "메리츠 멕시코 페소화 ETN")
+        assert _nhl_is_etf_bond("152100", "TIGER 미국배당다우존스타겟")
+        assert _nhl_is_etf_bond("000000", "ACE 단기통안채")
+        assert _nhl_is_etf_bond("000000", "메리츠 인버스 3X 국채3년")
+        assert not _nhl_is_etf_bond("000020", "동화약품")
+        assert not _nhl_is_etf_bond("005930", "삼성전자")
+
+    def test_fetch_graceful_without_creds(self):
+        from bot.kis_client import fetch_kr_new_highlow
+        r = fetch_kr_new_highlow()
+        assert set(r) == {"high", "low"}        # creds 부재 시 빈 리스트
+
+    def test_intl_highlow_kr_routes_to_kis(self):
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert 'market == "KR"' in src and "_compute_kr_kis" in src
+        assert "fetch_kr_new_highlow" in src
+        # KIS 빈 결과 → peer 폴백(회귀 0)
+        assert "KIS 폴백" in src or "peer empty" in src
+
+    def test_kr_page_rich_with_kis_source(self):
+        import bot.intl_highlow as ih
+        orig = ih.fetch_intl_highlow
+        ih.fetch_intl_highlow = lambda m: {
+            "high": [{"ticker": "000020.KS", "name": "동화약품", "price": 12000,
+                      "pct": 5.2, "vol": 3000000, "mcap": 3500, "ind": "Drug"}],
+            "low": [], "ts": "x", "building": False,
+            "source": "KIS 신고가/신저가 근접(전 시장 스캔)", "status": {}}
+        try:
+            from bot.intl_pages import render_intl_highlow52_page
+            h = render_intl_highlow52_page("KR")
+        finally:
+            ih.fetch_intl_highlow = orig
+        assert "동화약품" in h and "거래량" in h and "시총" in h
+        assert "KIS 신고가/신저가 근접" in h     # 소스 라벨
+
+
+class TestIntlFullMarket:
+    """JP/HK 전종목 신고저 (사용자 2026-06-13 'full-market'). JPX/HKEX 공식
+    listing 파서(VM 검증) + peer 폴백 + 긴 캐시. 파서 per-row 순수 테스트."""
+
+    def test_jp_pick(self):
+        from bot.intl_universe import _jp_pick
+        assert _jp_pick("7203", "プライム（内国株式）") == "7203.T"
+        assert _jp_pick("13080", "ETF・ETN") is None
+        assert _jp_pick("2971", "REIT") is None
+        assert _jp_pick("720", "プライム") is None         # 3자리 제외
+
+    def test_hk_pick(self):
+        from bot.intl_universe import _hk_pick
+        assert _hk_pick("00700", "Equity") == "0700.HK"
+        assert _hk_pick("80737", "Equity") == "80737.HK"  # 5자리 유지
+        assert _hk_pick("02800", "ETF") is None
+        assert _hk_pick("700", "Equity") == "0700.HK"     # zero-pad
+
+    def test_full_universe_graceful(self):
+        import bot.intl_universe as iu
+        orig = iu._http_get
+        iu._http_get = lambda u: (_ for _ in ()).throw(RuntimeError("net"))
+        try:
+            assert iu.full_universe("JP") == [] and iu.full_universe("HK") == []
+            assert iu.full_universe("US") == []
+        finally:
+            iu._http_get = orig
+
+    def test_universe_falls_back_to_peer(self):
+        # full_universe 빈 결과(<100) → peer 유니버스 폴백(회귀 0)
+        import bot.intl_highlow as ih, bot.intl_universe as iu
+        orig = iu.full_universe
+        iu.full_universe = lambda m: []
+        try:
+            uni, _ = ih._universe("JP")
+            assert len(uni) > 30 and all(t.endswith(".T") for t in uni)
+        finally:
+            iu.full_universe = orig
+
+    def test_full_market_longer_ttl_wired(self):
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert "_TTL_FULL" in src and 'market in ("JP", "HK")' in src
+        assert "from bot.intl_universe import full_universe" in src
+
+
+class TestUsHighlowIndDist:
+    """US 신고저에도 업종분포 (사용자 2026-06-13 '업종분포 다 넣어주는걸로').
+    기존 US 급등락만 있던 것을 신고저로 확장."""
+
+    def test_us_highlow_has_ind_dist(self):
+        import bot.finviz_client as fc
+        orig = fc.fetch_high_low
+        fc.fetch_high_low = lambda: {
+            "high": [{"ticker": "NVDA", "name": "NVDA", "price": 900,
+                      "pct": 2.1, "mcap": 22000, "ind": "Semis", "vol": 1000},
+                     {"ticker": "AMD", "name": "AMD", "price": 150, "pct": 1.0,
+                      "mcap": 2400, "ind": "Semis", "vol": 500}],
+            "low": [], "ts": "x", "source": "Finviz"}
+        try:
+            from bot.us_pages import render_us_highlow_page
+            h = render_us_highlow_page()
+        finally:
+            fc.fetch_high_low = orig
+        assert "업종 분포" in h and "Semis" in h
+
+
+class TestDartNoncorpNotMisparsed:
+    """펀드 투자설명서/증권신고서 = 미파싱 색칠 제외 (사용자 2026-06-13 '정말
+    미파싱과 구분되게'). is_parse_target 이 _is_noncorp_doc 적용 — coverage-audit
+    '의도된 제외'와 대시보드 badge 일치. 미래에셋 투자설명서(집합투자증권) 케이스."""
+
+    def test_fund_prospectus_not_parse_target(self):
+        from bot.dart_feed import is_parse_target
+        for nm in ("[기재정정]투자설명서(집합투자증권)(미래에셋배당커버드콜)",
+                   "투자설명서(집합투자증권)", "증권신고서(지분증권)",
+                   "일괄신고추가서류"):
+            assert not is_parse_target(
+                {"category": "배당", "report_nm": nm, "corp_code": "00123456"}), nm
+
+    def test_real_event_still_parse_target(self):
+        from bot.dart_feed import is_parse_target
+        assert is_parse_target({"category": "계약",
+                                "report_nm": "단일판매ㆍ공급계약체결",
+                                "corp_code": "00123456"})

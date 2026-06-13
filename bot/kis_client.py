@@ -778,3 +778,77 @@ def _float(v) -> Optional[float]:
         return float(s) if s else None
     except (ValueError, TypeError):
         return None
+
+
+# ─── 국내주식 52주 신고가/신저가 근접 순위 (FHPST01870000) ───────────────────
+# 라이브 검증 2026-06-13: FID_PRC_CLS_CODE 0=신고가 근접·1=신저가 근접.
+# J=KOSPI+KOSDAQ 통합(아이큐어 175250=KOSDAQ 가 J 결과 포함). custtype='P' 필요.
+# 전 시장 스캔 후 근접순 상위 ~30씩(API 캡). ETF/ETN/채권/리츠 제외(실종목만).
+_NHL_PATH = "/uapi/domestic-stock/v1/ranking/near-new-highlow"
+_NHL_TR = "FHPST01870000"
+_NHL_ETF_KW = (
+    "KODEX", "TIGER", "ACE", "SOL", "KBSTAR", "ARIRANG", "HANARO", "KOSEF",
+    "TIMEFOLIO", "RISE", "PLUS", "KIWOOM", "히어로즈", "마이티", "파워",
+    "ETN", "인버스", "레버리지", "선물", "국채", "통안", "회사채", "채권",
+    "리츠", "REIT", "배당다우존스", "S&P", "STOXX", "나스닥", "단기통안채",
+)
+
+
+def _nhl_is_etf_bond(code: str, name: str) -> bool:
+    """ETF/ETN/채권/리츠 판별 — 실종목 신고저만 남김. 영문 prefix 코드(Q…=ETN)
+    + 브랜드/상품 키워드."""
+    if code and not code[:1].isdigit():       # Q610056 류 = ETN/ETF
+        return True
+    nm = name or ""
+    return any(kw in nm for kw in _NHL_ETF_KW)
+
+
+def fetch_kr_new_highlow(period: int = 250, count: int = 60) -> dict:
+    """국내주식 52주 신고가·신저가 근접 (KIS FHPST01870000, PRC 0/1 각 1콜).
+    {high:[...], low:[...]} — 항목 {code, name, price, pct, vol, near_rate}.
+    ETF/ETN/채권 제외. creds 부재/실패 시 빈 리스트(graceful). count=표시 상한."""
+    tok = _get_token()
+    if not tok:
+        return {"high": [], "low": []}
+    out = {"high": [], "low": []}
+    for prc, key, rate_field in (("0", "high", "hprc_near_rate"),
+                                 ("1", "low", "lwpr_near_rate")):
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J", "FID_COND_SCR_DIV_CODE": "20187",
+            "FID_INPUT_ISCD": "0000", "FID_RANK_SORT_CLS_CODE": "0",
+            "FID_INPUT_CNT_1": "1", "FID_INPUT_CNT_2": str(period),
+            "FID_PRC_CLS_CODE": prc, "FID_INPUT_PRICE_1": "",
+            "FID_INPUT_PRICE_2": "", "FID_VOL_CNT": "",
+            "FID_TRGT_CLS_CODE": "0", "FID_TRGT_EXLS_CLS_CODE": "0",
+            "FID_DIV_CLS_CODE": "0", "FID_APLY_RANG_PRC_1": "",
+            "FID_APLY_RANG_PRC_2": "", "FID_APLY_RANG_VOL": "",
+        }
+        headers = {
+            "authorization": f"Bearer {tok}", "appkey": _app_key(),
+            "appsecret": _app_secret(), "tr_id": _NHL_TR, "custtype": "P",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        try:
+            r = requests.get(_BASE_PROD + _NHL_PATH, headers=headers,
+                             params=params, timeout=_HTTP_TIMEOUT)
+            rows = (r.json() or {}).get("output") or []
+        except Exception as exc:
+            log.warning("kis new-highlow %s: %s", key, exc)
+            continue
+        seen: set = set()
+        for o in rows:
+            code = str(o.get("mksc_shrn_iscd") or "").strip()
+            name = str(o.get("hts_kor_isnm") or "").strip()
+            if not code or code in seen or _nhl_is_etf_bond(code, name):
+                continue
+            seen.add(code)
+            out[key].append({
+                "code": code, "name": name,
+                "price": _float(o.get("stck_prpr")),
+                "pct": _float(o.get("prdy_ctrt")),
+                "vol": _int(o.get("acml_vol")),
+                "near_rate": _float(o.get(rate_field)),
+            })
+            if len(out[key]) >= count:
+                break
+    return out

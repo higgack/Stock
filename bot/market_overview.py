@@ -554,6 +554,33 @@ def _kr_earnings_universe() -> list[tuple[str, str]]:
     return list(_KR_EARNINGS_UNIVERSE)
 
 
+def _earning_row_from_cal(cal, tk: str, name: str, today: date,
+                          cutoff: date) -> Optional[dict]:
+    """yfinance .calendar dict → 예정 실적 행 또는 None. 순수(테스트 가능).
+
+    KR + JP/TW/CN/HK 가 공유하는 파싱·윈도 필터. 추정치(EPS/매출)는
+    yfinance 가 비미국 종목에 종종 None → 그대로 둠('—' 표시는 렌더층)."""
+    if not isinstance(cal, dict):
+        return None
+    eds = cal.get("Earnings Date") or []
+    if not eds:
+        return None
+    d0 = eds[0]
+    ds = d0.strftime("%Y-%m-%d") if hasattr(d0, "strftime") else str(d0)[:10]
+    try:
+        dd = datetime.strptime(ds, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    if dd < today or dd > cutoff:
+        return None
+    return {
+        "symbol": tk, "name": name, "date": ds, "hour": "",
+        "eps_estimate": cal.get("Earnings Average"),
+        "revenue_estimate": cal.get("Revenue Average"),
+        "quarter": None, "year": None,
+    }
+
+
 def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
     """KR 종목 예정 실적일 (yfinance .calendar, 무료). 12h 캐시.
 
@@ -578,31 +605,93 @@ def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
     def _one(item):
         tk, name = item
         try:
-            cal = yf.Ticker(tk).calendar
-            if not isinstance(cal, dict):
-                return None
-            eds = cal.get("Earnings Date") or []
-            if not eds:
-                return None
-            d0 = eds[0]
-            ds = d0.strftime("%Y-%m-%d") if hasattr(d0, "strftime") else str(d0)[:10]
-            try:
-                dd = datetime.strptime(ds, "%Y-%m-%d").date()
-            except ValueError:
-                return None
-            if dd < today or dd > cutoff:
-                return None
-            return {
-                "symbol": tk, "name": name, "date": ds, "hour": "",
-                "eps_estimate": cal.get("Earnings Average"),
-                "revenue_estimate": cal.get("Revenue Average"),
-                "quarter": None, "year": None,
-            }
+            return _earning_row_from_cal(yf.Ticker(tk).calendar, tk, name,
+                                         today, cutoff)
         except Exception:
             return None
 
     results: list[dict] = []
     universe = _kr_earnings_universe()
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        for r in pool.map(_one, universe):
+            if r:
+                results.append(r)
+    results.sort(key=lambda x: x.get("date", ""))
+    try:
+        cache_file.write_text(json.dumps(results, ensure_ascii=False))
+    except Exception:
+        pass
+    return results
+
+
+# JP/TW/CN/HK 실적 캘린더 — KR 패턴 일반화 (사용자 2026-06-13 '실적빌드 다국가').
+# 유니버스 = bot.market 의 산업 peer 맵(검증된 주요종목 ~50-100/시장,
+# 신고저 스캔과 동일 소스). yfinance .calendar(무료·무키)로 확정 실적일만.
+_INTL_EARN_PEERS = {
+    "JP": "_JP_INDUSTRY_PEERS",
+    "TW": "_TW_INDUSTRY_PEERS",
+    "CN_A": "_CN_A_INDUSTRY_PEERS",
+    "HK": "_HK_INDUSTRY_PEERS",
+}
+
+
+def _intl_earnings_universe(market: str) -> list[tuple[str, str]]:
+    """peer 맵의 unique 티커(주요종목). 이름은 ticker 기본(맵에 명칭 없음)."""
+    attr = _INTL_EARN_PEERS.get(market)
+    if not attr:
+        return []
+    try:
+        from bot import market as _mkt
+        peers = getattr(_mkt, attr, {}) or {}
+    except Exception as exc:
+        log.warning("intl earnings universe error (%s): %s", market, exc)
+        return []
+    seen: set = set()
+    out: list[tuple[str, str]] = []
+    for vals in peers.values():
+        for x in (vals if isinstance(vals, (list, tuple)) else [vals]):
+            t = str(x[0] if isinstance(x, (list, tuple)) else x).strip()
+            if t and t not in seen:
+                seen.add(t)
+                out.append((t, t))
+    return out
+
+
+def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90) -> list[dict]:
+    """JP/TW/CN/HK 예정 실적일 (yfinance .calendar, 무료·무키). 6h 캐시.
+
+    KR(fetch_earnings_calendar_kr) 패턴 일반화 — 산업 peer 맵 주요종목
+    universe(시장당 ~50-100). 추정치(EPS/매출)는 yfinance 가 비미국에
+    종종 None → '—'(정직). 미지원 시장/유니버스 부재면 빈 리스트.
+    ⚠️ 커버리지 한계: yfinance .calendar 는 비미국 종목 상당수 빈값 —
+    '확정 실적일' 있는 종목만 표에 추가된다(universe 크기와 무관)."""
+    if market not in _INTL_EARN_PEERS:
+        return []
+    universe = _intl_earnings_universe(market)
+    if not universe:
+        return []
+    cache_dir = _CACHE_DIR / "finnhub"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    today = date.today()
+    cache_file = cache_dir / f"earnings_{market}_{today.isoformat()}_{_CODE_SALT}.json"
+    if cache_file.exists():
+        try:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < 6:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+
+    cutoff = today + timedelta(days=days_ahead)
+
+    def _one(item):
+        tk, name = item
+        try:
+            return _earning_row_from_cal(yf.Ticker(tk).calendar, tk, name,
+                                         today, cutoff)
+        except Exception:
+            return None
+
+    results: list[dict] = []
     with ThreadPoolExecutor(max_workers=12) as pool:
         for r in pool.map(_one, universe):
             if r:
@@ -884,6 +973,12 @@ def fetch_all_market_data() -> dict[str, Any]:
         # 한국 90일(DART IR + yfinance) 유지.
         earn_fut = pool.submit(fetch_earnings_calendar, 60)
         earn_kr_fut = pool.submit(fetch_earnings_calendar_kr, 90)
+        # JP/TW/CN/HK 실적 — KR 패턴 일반화(사용자 2026-06-13 '실적빌드 다국가').
+        # 산업 peer 맵 주요종목 universe, yfinance .calendar 6h 캐시(소스 TTL).
+        earn_jp_fut = pool.submit(fetch_earnings_calendar_intl, "JP", 90)
+        earn_tw_fut = pool.submit(fetch_earnings_calendar_intl, "TW", 90)
+        earn_cn_fut = pool.submit(fetch_earnings_calendar_intl, "CN_A", 90)
+        earn_hk_fut = pool.submit(fetch_earnings_calendar_intl, "HK", 90)
         # limit 은 7일치 전부 커버용 상한(사용자 2026-06-11 "limit 80?" —
         # 한국 종목 리포트는 주당 200+ 가능 → 넉넉히).
         kr_fut = pool.submit(fetch_recent_research_kr, 300)
@@ -900,11 +995,17 @@ def fetch_all_market_data() -> dict[str, Any]:
         hk_sector_fut = pool.submit(_fetch_etf_sector_safe, "HK")
         deposit_fut = pool.submit(_fetch_deposit_safe)
 
-        # 실적 병합 — 한국(yfinance) 먼저, 미국(Finnhub) 다음. 각 그룹 날짜순.
-        # 사용자 정책: 한국이 되면 한국을 앞으로.
-        _kr_e = sorted(earn_kr_fut.result() or [], key=lambda e: e.get("date", ""))
-        _us_e = sorted(earn_fut.result() or [], key=lambda e: e.get("date", ""))
-        earnings = _kr_e + _us_e
+        # 실적 병합 — 한국(yfinance) 먼저, 미국(Finnhub) 다음, JP/TW/CN/HK.
+        # 각 그룹 날짜순. 대시보드가 접미사로 재필터해 탭 분리(병합 순서는
+        # cosmetic). 사용자 정책: 한국이 되면 한국을 앞으로.
+        _key = lambda e: e.get("date", "")
+        _kr_e = sorted(earn_kr_fut.result() or [], key=_key)
+        _us_e = sorted(earn_fut.result() or [], key=_key)
+        _jp_e = sorted(earn_jp_fut.result() or [], key=_key)
+        _tw_e = sorted(earn_tw_fut.result() or [], key=_key)
+        _cn_e = sorted(earn_cn_fut.result() or [], key=_key)
+        _hk_e = sorted(earn_hk_fut.result() or [], key=_key)
+        earnings = _kr_e + _us_e + _jp_e + _tw_e + _cn_e + _hk_e
 
         return {
             "snapshot": snap_fut.result(),

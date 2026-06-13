@@ -3199,6 +3199,11 @@ def is_parse_target(item: dict) -> bool:
         return False
     if not item.get("corp_code"):
         return False
+    # 발행·등록 서류(펀드 투자설명서/일괄신고/증권신고서) — 기업 '사건'이 아닌
+    # 발행문서라 미파싱 색칠 제외 (사용자 2026-06-13 '펀드 투자설명서를 정말
+    # 미파싱과 구분되게'). coverage-audit '의도된 제외'와 대시보드 badge 일치.
+    if (not _force) and _is_noncorp_doc(report_nm):
+        return False
     # 제목만으로 완결되는 보강후보 거버넌스/리스크 사건 — 미파싱 색칠 제외
     if (not _force) and any(k in report_nm for k in _TITLE_ONLY_OK_KW):
         return False
