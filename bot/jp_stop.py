@@ -2,7 +2,7 @@
 가격대별 tiered) 도달 종목 (사용자 2026-06-13 'JP 상하한가'). JP 전종목
 (intl_universe.full_universe) → yfinance 일봉 당일 변동 vs 제한폭. 결정적(공개
 표·스크래핑 불요). SWR(시장-인지 신선도 / 스테일+백그라운드 킥 / 캐시부재
-building) — **동기 계산 안 함**. 정규장 2h / 장 마감 후 재스캔 0. graceful.
+building) — **동기 계산 안 함**. 정규장 1h / 장 마감 후 재스캔 0. graceful.
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ log = logging.getLogger("bot.jp_stop")
 
 _CACHE = "jp_stop_v1.json"
 _STATUS = "jp_stop_status.json"
-# 신선도는 시장-인지(finviz_client._session_fresh JP, 장중 2h / 장 밖 마지막 마감
-# 이후 재스캔 0) — 옛 플랫 6h 대체(사용자 2026-06-13 '장종료후 굳이 안 돌려도').
+# 신선도는 시장-인지(finviz_client._session_fresh JP, 장중 1h / 장 밖 마지막 마감
+# 이후 재스캔 0) — 사용자 2026-06-13 '모두 장중에만 1h'.
 _running = {"x": False}
 _lock = threading.Lock()
 

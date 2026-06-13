@@ -5156,15 +5156,16 @@ class TestUsMovers:
         assert kicked
 
     def test_movers_session_aware_freshness(self):
-        # 장-인지 TTL: 장중 30분 / 장 밖은 '마지막 마감 이후 산출본' fresh
+        # 장-인지 TTL: 장중 1h / 장 밖은 '마지막 마감 이후 산출본' fresh
+        # (사용자 2026-06-13 '모두 장중에만 1h' — 옛 30분에서 통일)
         from datetime import datetime, timezone
         from bot.finviz_client import _movers_cache_is_fresh
 
         def ts(*a):
             return datetime(*a, tzinfo=timezone.utc).timestamp()
         wed_1500 = ts(2026, 6, 10, 15, 0)          # 수요일 장중
-        assert _movers_cache_is_fresh(wed_1500 - 600, wed_1500)        # 10분
-        assert not _movers_cache_is_fresh(wed_1500 - 1900, wed_1500)   # 31분
+        assert _movers_cache_is_fresh(wed_1500 - 1800, wed_1500)       # 30분 (1h 내)
+        assert not _movers_cache_is_fresh(wed_1500 - 4000, wed_1500)   # 67분 (1h 초과)
         sat_noon = ts(2026, 6, 13, 12, 0)          # 토요일 (장 밖)
         fri_2200 = ts(2026, 6, 12, 22, 0)          # 금 마감(21:30) 후 산출
         fri_2000 = ts(2026, 6, 12, 20, 0)          # 금 장중 산출 (마감 미반영)
@@ -7299,10 +7300,13 @@ class TestIntlFullMarket:
         finally:
             iu.full_universe = orig
 
-    def test_full_market_longer_ttl_wired(self):
+    def test_full_market_session_aware_wired(self):
+        # 사용자 2026-06-13 '모두 장중에만 1h': JP/HK 전종목(full_universe) 경로 +
+        # 신선도는 시장-인지 _session_fresh(_HL_INTRA_TTL 1h) 통일(옛 플랫 _TTL_FULL 대체).
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
-        assert "_TTL_FULL" in src and 'market in ("JP", "HK")' in src
+        assert 'market in ("JP", "HK")' in src
         assert "from bot.intl_universe import full_universe" in src
+        assert "_session_fresh(market, mt, _HL_INTRA_TTL)" in src   # 장-인지 1h
 
 
 class TestUsHighlowIndDist:
@@ -7752,7 +7756,9 @@ class TestNaverKrRanking:
         assert "당일 52주 신고가/신저가 갱신" not in ip and "직전 종가 고정" not in ip
         assert '_ind_lbl = "" if market == "KR"' in ip   # KR 업종=yfinance 제거
         np = open("bot/naver_pages.py", encoding="utf-8").read()
-        assert "kr_upper_lower_v1.json" in np and "ttl=3600" in np   # 상한가 1h 캐시
+        # 상한가도 시장-인지 1h (사용자 '모두 장중에만 1h') — 옛 플랫 ttl=3600 대체
+        assert "kr_upper_lower_v1.json" in np
+        assert '_session_fresh("KR", _mt, _HL_INTRA_TTL)' in np
         assert "거래대금·시총 native · 시총순" not in np             # 부제 trim
 
     def test_kr_upper_lower_filter_and_wiring(self):

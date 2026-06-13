@@ -2,7 +2,8 @@
 대신 급등/급락(사용자 2026-06-13 '홍콩도 미국처럼'). HKEX 전종목
 (intl_universe.full_universe) → yfinance 일봉 당일 등락률 상·하위 30.
 SWR(시장-인지 신선도 / 스테일+백그라운드 킥 / 캐시부재 building) — **동기 계산
-안 함**. 정규장 30분(무버는 장중 변동 큼) / 장 마감 후 재스캔 0. graceful.
+안 함**. 정규장 1h / 장 마감 후 재스캔 0 (사용자 2026-06-13 '모두 장중에만 1h').
+graceful.
 """
 from __future__ import annotations
 
@@ -14,8 +15,8 @@ log = logging.getLogger("bot.intl_movers")
 
 # market → (캐시명, 상태명, 라벨)
 _CFG = {"HK": ("hk_movers_v1.json", "hk_movers_status.json", "홍콩 전종목")}
-# 신선도는 시장-인지(finviz_client._session_fresh HK, 장중 30분 / 장 밖 마지막 마감
-# 이후 재스캔 0) — US movers 와 동일 정책(무버는 장중 변동 큼, 사용자 2026-06-13).
+# 신선도는 시장-인지(finviz_client._session_fresh HK, 장중 1h / 장 밖 마지막 마감
+# 이후 재스캔 0) — US movers 와 동일 정책(사용자 2026-06-13 '모두 장중에만 1h').
 _running: dict[str, bool] = {}
 _lock = threading.Lock()
 
@@ -68,13 +69,12 @@ def _kick(market: str) -> None:
 
 
 def fetch_intl_movers(market: str) -> dict:
-    """HK 급등/급락 — **동기 계산 안 함**. 시장-인지 신선도(정규장 30분 / 장 밖
+    """HK 급등/급락 — **동기 계산 안 함**. 시장-인지 신선도(정규장 1h / 장 밖
     마지막 마감 이후 재스캔 0) 즉시 / 스테일+백그라운드 킥 / 캐시부재 building.
     실패 5분 백오프·진행중 30분 dedup. {up,down,ts,source,scanned,building,status}."""
     if market not in _CFG:
         return {"up": [], "down": [], "ts": "", "source": "", "building": False}
-    from bot.finviz_client import (_CACHE_DIR, _FALLBACK_TTL_SEC, _cached,
-                                   _session_fresh)
+    from bot.finviz_client import _CACHE_DIR, _HL_INTRA_TTL, _cached, _session_fresh
     cache = _CFG[market][0]
     stale = _cached(cache, ttl=86400)
     if stale is not None:
@@ -82,7 +82,7 @@ def fetch_intl_movers(market: str) -> dict:
             mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh(market, mt, _FALLBACK_TTL_SEC):
+        if _session_fresh(market, mt, _HL_INTRA_TTL):
             return stale
     st = intl_movers_status(market)
     age = time.time() - (st.get("ts") or 0)

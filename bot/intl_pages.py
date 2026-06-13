@@ -53,11 +53,10 @@ def render_intl_highlow52_page(market: str) -> str:
                 + '</div>' + HL_SORT_JS)
     from bot.highlow_render import clean_source as _clean_src
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
-    # KR=네이버(1콜·장중 1h·업종 미표시), JP/CN/HK=yfinance(2h·업종 표시).
-    # 부제 군더더기 제거(사용자 2026-06-13) — 출처·정렬·갱신만.
-    _intra_lbl = "1h" if market == "KR" else "2h"
+    # KR=네이버(1콜·업종 미표시), JP/CN/HK=yfinance(업종 표시) — 신선도는 전 시장
+    # 장중 1h 통일(사용자 2026-06-13 '모두 장중에만 1h'). 부제 군더더기 제거 — 출처·정렬·갱신만.
     _ind_lbl = "" if market == "KR" else "업종=yfinance · "
-    sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}장중 {_intra_lbl} 갱신 "
+    sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}장중 1h 갱신 "
            f"{('· 갱신 ' + ts) if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "CN_A": "cn52", "HK": "hk52"}.get(market, "")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body,
@@ -98,7 +97,7 @@ def render_intl_movers_page(market: str) -> str:
     sc = data.get("scanned")
     sub = (f"{flag} 당일 등락률 상·하위 30 (가격제한 없는 시장 — 급등/급락) · "
            + (f"{sc}종목 스캔 · " if sc else "")
-           + "종목명=티커(한글) · 헤더 클릭 정렬 · 장중 30분 갱신·장 마감 후 고정(재스캔 0). "
+           + "종목명=티커(한글) · 헤더 클릭 정렬 · 장중 1h 갱신·장 마감 후 고정(재스캔 0). "
            + (f"· 갱신 {ts}" if ts else ""))
     return _tw_shell(f"{flag} 급등·급락", sub, body,
                      nav=_market_nav(market, "hkmovers"))
@@ -140,7 +139,7 @@ def render_jp_stop_page() -> str:
     sc = data.get("scanned")
     sub = ("🇯🇵 일본 상한가·하한가(ストップ高/安) — 전일종가별 TSE 制限値幅 도달 · "
            + (f"{sc}종목 스캔 · " if sc else "")
-           + "종목명=티커(한글) · 시총순·헤더 클릭 정렬 · 장중 2h 갱신·장 마감 후 고정(재스캔 0). "
+           + "종목명=티커(한글) · 시총순·헤더 클릭 정렬 · 장중 1h 갱신·장 마감 후 고정(재스캔 0). "
            + (f"· 갱신 {ts}" if ts else ""))
     return _tw_shell("🇯🇵 일본 상한가·하한가", sub, body,
                      nav=_market_nav("JP", "jphighlow"))

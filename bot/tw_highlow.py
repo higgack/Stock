@@ -14,8 +14,8 @@ log = logging.getLogger(__name__)
 
 _CACHE = "highlow_tw_v2.json"
 _STATUS = "tw_highlow_status.json"
-# 신선도는 시장-인지(finviz_client._session_fresh TW, 장중 2h / 장 밖 마지막 마감
-# 이후 재스캔 0) — 옛 플랫 6h 대체(사용자 2026-06-13 '장종료후 굳이 안 돌려도').
+# 신선도는 시장-인지(finviz_client._session_fresh TW, 장중 1h / 장 밖 마지막 마감
+# 이후 재스캔 0) — 사용자 2026-06-13 '모두 장중에만 1h'.
 _running = False
 _lock = threading.Lock()
 
