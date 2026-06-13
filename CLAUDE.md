@@ -2045,8 +2045,13 @@ mismatch no-op 였음), 병렬 prefetch + 디스크 캐시 TTL 일관.
   불가) — probe 가 `rt_cd`/`msg1` 로 맞는지 알려줌(`_get` 은 실패 시 None
   반환+stderr 로그라 raw 응답을 직접 출력해야 진단됨). VM 1블록 probe
   (creds 로드됨):
+  ⚠️ bare `python -c` 는 `.env` 자동 로드 안 함 → `load_dotenv` 선행 필수
+  (안 하면 token False·status 404·non-JSON 으로 오진, 2026-06-13 1차 probe
+  실패 교훈).
   ```
   cd ~/stock && .venv/bin/python -c "
+  from dotenv import load_dotenv; from pathlib import Path
+  load_dotenv(Path.home() / 'stock' / '.env')
   from bot import kis_client as k
   import requests, json
   tok = k._get_token(); print('token:', bool(tok))
@@ -2061,7 +2066,11 @@ mismatch no-op 였음), 병렬 prefetch + 디스크 캐시 TTL 일관.
     'Content-Type':'application/json; charset=utf-8'}
   r = requests.get(url, headers=h, params=params, timeout=10)
   print('status:', r.status_code)
-  d = r.json(); print('rt_cd:', d.get('rt_cd'), '| msg:', d.get('msg1'))
+  try:
+      d = r.json()
+  except Exception:
+      print('non-JSON body[:300]:', r.text[:300]); raise SystemExit
+  print('rt_cd:', d.get('rt_cd'), '| msg:', d.get('msg1'))
   out = d.get('output') or d.get('output1') or d.get('output2')
   print('fields:', list(out[0].keys()) if isinstance(out,list) and out else out)
   print('sample:', json.dumps(out[:2] if isinstance(out,list) else out, ensure_ascii=False)[:900])"
