@@ -304,7 +304,7 @@ def _upjong_ticker(sym: str, market: str) -> str:
     return sym
 
 
-def world_industry_map(market: str, per_industry: int = 100) -> dict:
+def world_industry_map(market: str, per_industry: int = 300) -> dict:   # 300: 소형주 무버
     """{yfinance 티커 → 업종명(한글)} — 네이버 데스크탑 업종 API(CN/HK/JP, 사용자
     2026-06-14). 전 업종(/upjong/list) 순회하며 reutersIndustryName 수집. 업종은
     안정적 → 7d 디스크 캐시. graceful·429 면역. yfinance _fetch_industries 의
@@ -553,6 +553,22 @@ def fetch_kr_highlow(limit: int = 200) -> dict:
         out["high"] = [_kr_row(s) for s in hi if _is_real_stock(s)]
     if lo:
         out["low"] = [_kr_row(s) for s in lo if _is_real_stock(s)]
+    return out
+
+
+def fetch_kr_movers(limit: int = 30) -> dict:
+    """KR 급등/급락 — 네이버 domestic 상승/하락 랭킹 top (상한가 한도 필터 없이,
+    사용자 2026-06-14 'KR 상한가/하한가 → 급등/급락'). JP/CN/HK 무버 형태. 한글명·
+    시총·거래대금 native. ETF/ETN/스팩 제외. {up,down,ts,source}. graceful."""
+    from bot.finviz_client import _now_label
+    out = {"up": [], "down": [], "ts": _now_label(),
+           "source": "네이버 증권 급등/급락(전종목·한글명·시총·거래대금)"}
+    up = _domestic_paged("up", max_items=max(limit, 50))
+    dn = _domestic_paged("down", max_items=max(limit, 50))
+    if up:
+        out["up"] = [_kr_row(s) for s in up if _is_real_stock(s)][:limit]
+    if dn:
+        out["down"] = [_kr_row(s) for s in dn if _is_real_stock(s)][:limit]
     return out
 
 

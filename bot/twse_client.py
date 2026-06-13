@@ -317,6 +317,17 @@ def fetch_tw_upper_lower(limit: int = 80) -> dict:
             "date": data.get("date", "")}
 
 
+def fetch_tw_movers(limit: int = 30) -> dict:
+    """TW 급등/급락 — STOCK_DAY_ALL 전종목(일반종목) 등락 상·하위 (사용자 2026-06-14
+    'TW 상한가/하한가 → 급등/급락', JP/CN/HK 무버 형태). {up,down,ts,date}."""
+    data = fetch_stock_day_all()
+    stocks = [s for s in data.get("rows", []) if _is_common_stock(s.get("code"))]
+    up = sorted(stocks, key=lambda s: s["pct"], reverse=True)[:limit]
+    down = sorted(stocks, key=lambda s: s["pct"])[:limit]
+    return {"up": up, "down": down, "ts": _now_kst_label(),
+            "date": data.get("date", "")}
+
+
 if __name__ == "__main__":   # VM 라이브 구조 검증
     logging.basicConfig(level=logging.INFO)
     # ① 상한가/하한가 — OpenAPI STOCK_DAY_ALL (점검 무관, 언제나)

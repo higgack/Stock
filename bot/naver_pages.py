@@ -71,7 +71,7 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
     toggle = ('<div class="toggle">'
               + _t("theme", "🏭 업종별 시세(전체)")
               + _t("kr52", "📈 신고가·신저가")
-              + _t("highlow", "🔺 상한가·하한가")
+              + _t("highlow", "🚀 급등·급락")
               + '</div>')
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -190,19 +190,16 @@ tbl.querySelectorAll('th.th-sort').forEach(function(th){
 
 
 def render_highlow_page() -> str:
-    """상한가·하한가 — **네이버 front-api 우선**(전종목·한글명·시총·거래대금 native,
-    사용자 2026-06-13 'KR 모두 네이버'). yfinance enrich 제거 → 429 면역. 네이버
-    실패 시 기존 sise_upper/lower + yfinance 시총 폴백(회귀 0)."""
-    from bot.highlow_render import (HL_SORT_JS, sort_by_mcap, stock_panel)
+    """KR 급등·급락 — 네이버 front-api domestic top 상승/하락 (사용자 2026-06-14
+    'KR 상한가/하한가 → 급등/급락', JP/CN/HK 무버 형태). 한글명·시총·거래대금
+    native·429 면역. 장중 30분(무버 신선도)·장 밖 재스캔 0."""
+    from bot.highlow_render import HL_SORT_JS, sort_by_mcap, stock_panel
     data = None
     try:
-        # 시장-인지 신선도 (사용자 2026-06-13 '모두 장중에만 1h'): 정규장 중 1h /
-        # 장 밖 마지막 마감 이후 산출본이면 재스캔 0. 네이버 1콜이라 동기 fetch OK
-        # (yfinance 전종목 스캔과 달리 가벼움). fetch 비거나 실패 시 스테일 서빙.
-        from bot.finviz_client import (_CACHE_DIR, _HL_INTRA_TTL, _cache_write,
+        from bot.finviz_client import (_CACHE_DIR, _MOVERS_INTRA_TTL, _cache_write,
                                        _cached, _session_fresh)
-        from bot.naver_ranking_client import fetch_kr_upper_lower
-        _cf = "kr_upper_lower_v1.json"
+        from bot.naver_ranking_client import fetch_kr_movers
+        _cf = "kr_movers_v1.json"
         stale = _cached(_cf, ttl=86400)
         fresh = False
         if stale is not None:
@@ -210,78 +207,33 @@ def render_highlow_page() -> str:
                 _mt = (_CACHE_DIR / _cf).stat().st_mtime
             except OSError:
                 _mt = 0.0
-            fresh = _session_fresh("KR", _mt, _HL_INTRA_TTL)
+            fresh = _session_fresh("KR", _mt, _MOVERS_INTRA_TTL)
         if stale is not None and fresh:
             nv = stale
         else:
-            nv = fetch_kr_upper_lower()
-            if nv.get("upper") or nv.get("lower"):
+            nv = fetch_kr_movers()
+            if nv.get("up") or nv.get("down"):
                 _cache_write(_cf, nv)
             elif stale is not None:
                 nv = stale       # fetch 빈/실패 → 직전 산출본 유지(블랭크 방지)
-        if nv and (nv.get("upper") or nv.get("lower")):
+        if nv and (nv.get("up") or nv.get("down")):
             data = nv
     except Exception as exc:
-        log.warning("naver KR upper/lower: %s", exc)
+        log.warning("naver KR movers: %s", exc)
 
     if data is not None:
-        # 네이버 front-api — rows 가 이미 ticker·name·price·pct·vol·value·mcap 완비.
-        up = sort_by_mcap(data["upper"])
-        low = sort_by_mcap(data["lower"])
+        up = sort_by_mcap(data["up"])
+        down = sort_by_mcap(data["down"])
         ts = _html.escape(data.get("ts", ""))
         _o = dict(name_only=True, show_ind=False, show_vol=True, show_value=True)
         body = ('<div class="grid">'
-                + stock_panel("🔺 상한가", up, "ul-up", "KR", **_o)
-                + stock_panel("🔻 하한가", low, "ul-low", "KR", **_o)
+                + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "KR", **_o)
+                + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "KR", **_o)
                 + '</div>' + HL_SORT_JS)
-        sub = ("네이버 증권 상한가/하한가(±30%) · 시총순·헤더 클릭 정렬 · "
-               f"장중 1h{(' · ' + ts + ' 기준') if ts else ''}")
-        return _shell("상한가·하한가", sub, "highlow", body)
+        sub = ("네이버 증권 급등/급락 · 시총순·헤더 클릭 정렬 · "
+               f"장중 30분{(' · ' + ts + ' 기준') if ts else ''}")
+        return _shell("급등·급락", sub, "highlow", body)
 
-    # 폴백: 기존 sise_upper/lower(Naver) 목록 + yfinance 시총(429 시 시총 빈)
-    try:
-        from bot.naver_sector_client import fetch_upper_lower
-        data = fetch_upper_lower()
-    except Exception as exc:
-        log.warning("upper/lower page fetch failed: %s", exc)
-        data = {"upper": [], "lower": [], "ts": ""}
-    ts = _html.escape(data.get("ts", ""))
-
-    def _ticker(code: str) -> str:
-        if not code:
-            return ""
-        try:
-            from bot.market import normalize_kr_ticker_suffix
-            return normalize_kr_ticker_suffix(f"{code}.KS")
-        except Exception:
-            return f"{code}.KS"
-
-    def _prep(lst):
-        out = []
-        for it in lst:
-            p = it.get("price")
-            try:
-                pn = float(str(p).replace(",", "")) if p else None
-            except (TypeError, ValueError):
-                pn = None
-            out.append({"ticker": _ticker(it.get("code", "")),
-                        "name": it.get("name", ""), "price": pn,
-                        "pct": it.get("pct"), "vol": it.get("vol")})
-        return out
-
-    up, low = _prep(data.get("upper", [])), _prep(data.get("lower", []))
-    if not up and not low:
-        body = ('<div class="empty">상한가·하한가 데이터를 불러올 수 없습니다.<br>'
-                '(잠시 후 다시 시도해 주세요.)</div>')
-    else:
-        from bot.highlow_render import enrich_for_panel
-        up = sort_by_mcap(enrich_for_panel(up, "KR"))
-        low = sort_by_mcap(enrich_for_panel(low, "KR"))
-        _o = dict(name_only=True, show_ind=False, show_vol=True)
-        body = ('<div class="grid">'
-                + stock_panel("🔺 상한가", up, "ul-up", "KR", **_o)
-                + stock_panel("🔻 하한가", low, "ul-low", "KR", **_o)
-                + '</div>' + HL_SORT_JS)
-    sub = (f"Naver 증권 상한가·하한가 · 시총=yfinance(10분 캐시) · 시총순·헤더 "
-           f"클릭 정렬. 4분 캐시. {('· ' + ts + ' 기준') if ts else ''}")
-    return _shell("상한가·하한가", sub, "highlow", body)
+    body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
+            '(잠시 후 다시 시도해 주세요.)</div>')
+    return _shell("급등·급락", "네이버 증권 급등/급락", "highlow", body)

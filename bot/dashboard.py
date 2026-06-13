@@ -12145,7 +12145,7 @@ def _render_sector_movers(movers: dict) -> str:
         '<h2>🇰🇷 한국 업종 등락 TOP 10</h2>'
         f'<a href="theme" style="{_lnk}">🏭 업종별 시세(전체)</a>'
         f'<a href="kr52" style="{_lnk}">📈 신고가·신저가</a>'
-        f'<a href="highlow" style="{_lnk}">🔺 상한가·하한가</a>'
+        f'<a href="highlow" style="{_lnk}">🚀 급등·급락</a>'
         f'<span class="ts" style="margin-left:auto">{ts} · Naver</span></div>'
         '<div class="sm-wrap">'
         + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
@@ -12548,9 +12548,9 @@ def _render_market_page(data: dict) -> str:
         data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락",
         f'<a href="hk52" style="{_lk2}">📈 신고가·신저가</a>'
         f'<a href="hkmovers" style="{_lk2}">🚀 급등·급락</a>'))
-    # TW: ② 신고가·신저가 → ③ 상한가·하한가 (가격제한 시장)
+    # TW: ② 신고가·신저가 → ③ 급등·급락 (사용자 2026-06-14 상한가→급등락)
     _tw_link = (f'<a href="tw52" style="{_lk}">📈 신고가·신저가</a>'
-                f'<a href="twhighlow" style="{_lk}">🔺 상한가·하한가</a>')
+                f'<a href="twhighlow" style="{_lk}">🚀 급등·급락</a>')
     parts.append(_render_etf_sector_movers(
         data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
 

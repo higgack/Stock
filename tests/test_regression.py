@@ -4926,17 +4926,17 @@ class TestTwseSectorHighLow:
 
     def test_highlow_page_graceful_and_data(self, monkeypatch):
         import bot.twse_client as tw
-        # 데이터 있을 때
-        monkeypatch.setattr(tw, "fetch_tw_upper_lower", lambda limit=80: {
-            "upper": [{"code": "2330", "name": "台積電", "close": 1000, "pct": 10.5}],
-            "lower": [], "ts": "2026-06-13 14:00", "date": "2026-06-12"})
+        # TW 급등/급락 (사용자 2026-06-14 상한가→급등락)
+        monkeypatch.setattr(tw, "fetch_tw_movers", lambda limit=30: {
+            "up": [{"code": "2330", "name": "台積電", "close": 1000, "pct": 10.5}],
+            "down": [], "ts": "2026-06-13 14:00", "date": "2026-06-12"})
         from bot.tw_pages import render_tw_highlow_page
         html = render_tw_highlow_page()
-        assert "台積電" in html and "상한가" in html and "10.50%" in html
+        assert "台積電" in html and "급등" in html and "10.50%" in html
         assert "2026-06-12 종가 기준" in html              # 자료 기준일 표시
         # 빈 데이터 → graceful 안내
-        monkeypatch.setattr(tw, "fetch_tw_upper_lower",
-                            lambda limit=80: {"upper": [], "lower": [], "ts": ""})
+        monkeypatch.setattr(tw, "fetch_tw_movers",
+                            lambda limit=30: {"up": [], "down": [], "ts": ""})
         assert "불러올 수 없습니다" in render_tw_highlow_page()
 
     def test_wired_into_server_and_overview(self):
@@ -6882,7 +6882,7 @@ class TestChildDashboardOrderNaming:
             ["theme", "kr52", "highlow"]
         assert "🏭 업종별 시세(전체)" in h
         assert "📈 신고가·신저가" in h
-        assert "🔺 상한가·하한가" in h
+        assert "🚀 급등·급락" in h   # 사용자 2026-06-14 상한가→급등락
         assert "52주 신고저" not in h and "테마별 시세" not in h
 
     def test_tw_home_widget_highlow_after_52w(self):
@@ -7510,9 +7510,11 @@ class TestUpperLowerRichEnrich:
         assert enrich_for_panel([], "KR") == []
 
     def test_kr_uppperlower_uses_rich_panel(self):
+        # KR 급등락(사용자 2026-06-14) — 네이버 native rows(enrich 불요)·rich panel
         src = open("bot/naver_pages.py", encoding="utf-8").read()
-        assert "enrich_for_panel" in src and "stock_panel" in src
-        assert 'name_only=True' in src and "show_ind=False" in src
+        assert "stock_panel" in src
+        assert ('name_only=True' in src and "show_ind=False" in src
+                and "show_value=True" in src)
 
     def test_tw_upperlower_uses_rich_panel(self):
         src = open("bot/tw_pages.py", encoding="utf-8").read()
@@ -7978,9 +7980,9 @@ class TestNaverKrRanking:
         assert "당일 52주 신고가/신저가 갱신" not in ip and "직전 종가 고정" not in ip
         assert '_ind_lbl = "" if market == "KR"' in ip   # KR 업종=yfinance 제거
         np = open("bot/naver_pages.py", encoding="utf-8").read()
-        # 상한가도 시장-인지 1h (사용자 '모두 장중에만 1h') — 옛 플랫 ttl=3600 대체
-        assert "kr_upper_lower_v1.json" in np
-        assert '_session_fresh("KR", _mt, _HL_INTRA_TTL)' in np
+        # KR 급등락(사용자 2026-06-14) — 무버 신선도 장중 30분(_MOVERS_INTRA_TTL)
+        assert "kr_movers_v1.json" in np
+        assert '_session_fresh("KR", _mt, _MOVERS_INTRA_TTL)' in np
         assert "거래대금·시총 native · 시총순" not in np             # 부제 trim
 
     def test_kr_upper_lower_filter_and_wiring(self):
@@ -7993,12 +7995,14 @@ class TestNaverKrRanking:
         upper = [_kr_row(s) for s in rows if _is_real_stock(s)
                  and "UPPER" in str(s.get("fluctuationsType") or "")]
         assert len(upper) == 1 and upper[0]["pct"] == 30.0      # 상한가만(+5% 제외)
-        from bot.naver_ranking_client import fetch_kr_upper_lower
+        from bot.naver_ranking_client import fetch_kr_movers, fetch_kr_upper_lower
         d = fetch_kr_upper_lower()                              # 오프라인 graceful
         assert set(d) >= {"upper", "lower", "ts", "source"}
-        # 페이지가 네이버 우선 + sise 폴백 배선
+        m = fetch_kr_movers()                                  # 급등락(2026-06-14)
+        assert set(m) >= {"up", "down", "ts", "source"}
+        # KR 페이지가 급등락(fetch_kr_movers) 배선
         src = open("bot/naver_pages.py", encoding="utf-8").read()
-        assert "from bot.naver_ranking_client import fetch_kr_upper_lower" in src
+        assert "from bot.naver_ranking_client import fetch_kr_movers" in src
         assert "show_value=True" in src                        # 거래대금 표시
         assert "429 면역" in src or "native" in src
 
