@@ -232,7 +232,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 or path_lower in ("/earnings", "/theme", "/highlow",
                                   "/usindustry", "/ushighlow", "/usmovers",
                                   "/twhighlow", "/tw52",
-                                  "/jp52", "/cn52", "/hk52", "/kr52",
+                                  "/jp52", "/hk52", "/kr52",
                                   "/hkmovers", "/jpmovers", "/cnmovers",
                                   "/jphighlow")
                 or path_lower.startswith("/lookup/")
@@ -275,8 +275,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # (yfinance 유니버스 백그라운드, 사용자 2026-06-13 Phase 2)
         if raw in ("/twhighlow", "/tw52"):
             return self._handle_tw_page(raw)
-        # /jp52 /cn52 /hk52 /kr52 — JP/CN/HK/KR 52주 신고가/신저가 (유니버스 백그라운드)
-        if raw in ("/jp52", "/cn52", "/hk52", "/kr52"):
+        # /jp52 /hk52 /kr52 — JP/HK/KR 52주 신고가/신저가 (CN 제거 2026-06-14)
+        if raw in ("/jp52", "/hk52", "/kr52"):
             return self._handle_intl_page(raw)
         # /hkmovers /jpmovers /cnmovers — JP/CN/HK 급등·급락 (네이버 worldstock +
         # yfinance 업종, 미국 미러, 사용자 2026-06-13 '중국·홍콩·일본은 미국따라')
@@ -883,11 +883,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_error(500, "internal error")
 
     def _handle_intl_page(self, raw: str) -> None:
-        """GET /jp52 | /cn52 | /hk52 | /kr52 — JP/CN/HK/KR 52주 신고가·신저가."""
+        """GET /jp52 | /hk52 | /kr52 — JP/HK/KR 52주 신고가·신저가 (CN 제거)."""
         try:
             from bot.intl_pages import render_intl_highlow52_page
-            market = {"/jp52": "JP", "/cn52": "CN_A", "/hk52": "HK",
-                      "/kr52": "KR"}[raw]
+            market = {"/jp52": "JP", "/hk52": "HK", "/kr52": "KR"}[raw]
             encoded = render_intl_highlow52_page(market).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")

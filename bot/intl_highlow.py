@@ -20,8 +20,8 @@ log = logging.getLogger(__name__)
 _CFG = {
     "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v3.json",
            "jp_highlow_status.json", "일본 주요종목", (".T",)),
-    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v3.json",
-             "cn_highlow_status.json", "중국 A주 주요종목", (".SS", ".SZ")),
+    # CN_A 52주 제거 (사용자 2026-06-14 '중국 신고저 거의 지원 안 돼 필요없음·자원
+    # 낭비') — yfinance CN A주 1년 history 커버리지 빈약. CN 무버·업종등락(네이버)은 유지.
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v3.json",
            "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
     # KR — 사용자 2026-06-13 '한국도 신고가신저가'. KIS 신고저 순위 엔드포인트
