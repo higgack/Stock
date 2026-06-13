@@ -4916,6 +4916,69 @@ class TestTwseSectorHighLow:
         assert "_fetch_tw_sector_safe" in mo and "twse_client" in mo
 
 
+class TestTwHighLow52:
+    """대만 52주 신고가/신저가 — yfinance 유니버스 백그라운드 SWR (사용자
+    2026-06-13, VM 10/10 검증). 동기계산 금지 + building + 페이지."""
+
+    def test_fetch_never_sync_computes(self, monkeypatch):
+        import bot.tw_highlow as th
+        import bot.finviz_client as fc
+        kicked = {"n": 0}
+        monkeypatch.setattr(th, "_kick_tw_highlow",
+                            lambda: kicked.__setitem__("n", kicked["n"] + 1))
+        # _compute_highlow_from 이 호출되면 즉시 실패(동기계산 금지 가드)
+        monkeypatch.setattr(fc, "_compute_highlow_from",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError("sync compute!")))
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)  # 캐시 부재
+        r = th.fetch_tw_highlow()
+        assert r["building"] is True and r["high"] == [] and r["low"] == []
+        assert kicked["n"] == 1                       # 백그라운드 킥만
+
+    def test_fresh_cache_served(self, monkeypatch):
+        import bot.tw_highlow as th
+        import bot.finviz_client as fc
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: {
+            "high": [{"ticker": "2330.TW", "name": "台積電", "price": 1000, "pct": 1.2}],
+            "low": [], "ts": "x", "source": "TWSE"})
+        r = th.fetch_tw_highlow()
+        assert r["high"][0]["ticker"] == "2330.TW"
+
+    def test_failed_backoff_no_rekick(self, monkeypatch):
+        import bot.tw_highlow as th
+        import bot.finviz_client as fc
+        import time as _t
+        kicked = {"n": 0}
+        monkeypatch.setattr(th, "_kick_tw_highlow",
+                            lambda: kicked.__setitem__("n", kicked["n"] + 1))
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)
+        monkeypatch.setattr(th, "tw_highlow_status",
+                            lambda: {"state": "failed", "ts": _t.time()})
+        th.fetch_tw_highlow()
+        assert kicked["n"] == 0                       # 5분 백오프 — kick 생략
+
+    def test_page_building_and_data(self, monkeypatch):
+        import bot.tw_highlow as th
+        monkeypatch.setattr(th, "fetch_tw_highlow", lambda: {
+            "high": [], "low": [], "ts": "", "building": True,
+            "status": {"total": 1100}})
+        from bot.tw_pages import render_tw_highlow52_page
+        assert "산출 중" in render_tw_highlow52_page() and "1100" in render_tw_highlow52_page()
+        monkeypatch.setattr(th, "fetch_tw_highlow", lambda: {
+            "high": [{"ticker": "2330.TW", "name": "台積電", "price": 1000, "pct": 0.5}],
+            "low": [], "ts": "2026-06-13 14:00", "building": False})
+        h = render_tw_highlow52_page()
+        assert "台積電" in h and "52주 신고가" in h
+
+    def test_wired_into_server_and_widget(self):
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1] / "bot"
+        srv = (root / "dashboard_server.py").read_text("utf-8")
+        assert "/tw52" in srv and "render_tw_highlow52_page" in srv
+        dash = (root / "dashboard.py").read_text("utf-8")
+        assert 'href="tw52"' in dash                  # 위젯 링크
+
+
 class TestUsMovers:
     """가장 많이 오른/내린 TOP30 (사용자 2026-06-12 '신고가/신저가 옆에').
     랭킹 순수부 + SWR 비동기 + 페이지 렌더."""

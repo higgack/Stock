@@ -12322,8 +12322,9 @@ def _render_market_page(data: dict) -> str:
         data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10"))
     parts.append(_render_etf_sector_movers(
         data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10"))
-    _tw_link = ('<a href="twhighlow" style="color:var(--accent);font-size:13px;'
-                'text-decoration:none;margin-left:10px">📈 상한가·하한가</a>')
+    _lk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
+    _tw_link = (f'<a href="twhighlow" style="{_lk}">📈 상한가·하한가</a>'
+                f'<a href="tw52" style="{_lk}">🔝 52주 신고저</a>')
     parts.append(_render_etf_sector_movers(
         data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
     parts.append(_render_etf_sector_movers(

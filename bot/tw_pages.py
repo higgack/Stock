@@ -68,3 +68,52 @@ def render_tw_highlow_page() -> str:
            f"{('<b>' + dt + ' 종가 기준</b>') if dt else ''} · 5분 캐시"
            f"{(' · 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 상한가·하한가", sub, body)
+
+
+def render_tw_highlow52_page() -> str:
+    """대만 52주 신고가·신저가 (yfinance TW 유니버스 백그라운드 스캔). 산출
+    중이면 안내(US 신고저/급등급락 패턴)."""
+    try:
+        from bot.tw_highlow import fetch_tw_highlow
+        data = fetch_tw_highlow()
+    except Exception as exc:
+        log.warning("tw 52w highlow page fetch failed: %s", exc)
+        data = {"high": [], "low": [], "ts": "", "building": False, "status": {}}
+    ts = _html.escape(data.get("ts", ""))
+    high, low = data.get("high", []), data.get("low", [])
+
+    def _panel(title: str, items: list) -> str:
+        if not items:
+            return (f'<div class="panel"><h2>{title}</h2>'
+                    '<div class="empty">해당 종목 없음</div></div>')
+        rows = "".join(
+            f'<tr><td class="rk">{i}</td>'
+            f'<td class="nm"><a href="lookup/{_html.escape(str(it.get("ticker","")))}">'
+            f'{_html.escape(it.get("name","") or it.get("ticker",""))}</a></td>'
+            f'<td class="num">{_html.escape(str(it.get("price") or "—"))}</td>'
+            f'{_pct_cell(it.get("pct"))}</tr>'
+            for i, it in enumerate(items, 1))
+        return (f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
+                f'<table><thead><tr><th>#</th><th>종목</th>'
+                f'<th style="text-align:right">현재가</th>'
+                f'<th style="text-align:right">등락률</th></tr></thead>'
+                f'<tbody>{rows}</tbody></table></div>')
+
+    if not high and not low:
+        if data.get("building"):
+            st = data.get("status") or {}
+            tot = st.get("total")
+            prog = f" (유니버스 {tot}종목)" if tot else ""
+            body = ('<div class="empty">⏳ 52주 신고가·신저가 산출 중'
+                    f'{_html.escape(prog)}…<br>전종목 1년 주봉 스캔(수 분). '
+                    '잠시 후 새로고침해 주세요.</div>')
+        else:
+            body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
+                    '(잠시 후 다시 시도해 주세요.)</div>')
+    else:
+        body = ('<div class="grid">'
+                + _panel("📈 52주 신고가 (1% 근접)", high)
+                + _panel("📉 52주 신저가 (1% 근접)", low) + '</div>')
+    sub = (f"TWSE 전종목(일반종목) 1년 주봉 52주 고저 1% 근접. 백그라운드 산출·"
+           f"30분 캐시. {('· 갱신 ' + ts) if ts else ''}")
+    return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body)
