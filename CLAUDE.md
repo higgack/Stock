@@ -2041,19 +2041,37 @@ mismatch no-op 였음), 병렬 prefetch + 디스크 캐시 TTL 일관.
   싸고 넓음(주요종목 83 한정 아님). `kis_client.py` 엔 미구현(현재 종목별
   시세/수급 TR 만). ⚠️ 샌드박스에서 KIS 도달 불가 → **VM 검증 선결**:
   정확한 TR_ID·필수 파라미터(시장구분 J/Q·기간·정렬)·응답 필드명 확인.
-  VM 1줄 probe(creds 로드됨):
+  ⚠️ TR_ID `FHPST01890000`·path `new-highlow` 는 **추정**(샌드박스 검증
+  불가) — probe 가 `rt_cd`/`msg1` 로 맞는지 알려줌(`_get` 은 실패 시 None
+  반환+stderr 로그라 raw 응답을 직접 출력해야 진단됨). VM 1블록 probe
+  (creds 로드됨):
   ```
-  cd ~/stock && .venv/bin/python -c "from bot import kis_client as k; import json; \
-    print(json.dumps(k._get('/uapi/domestic-stock/v1/ranking/new-highlow','FHPST01890000', \
-    {'FID_COND_MRKT_DIV_CODE':'J','FID_COND_SCR_DIV_CODE':'20187', \
-    'FID_INPUT_ISCD':'0000','FID_RANK_SORT_CLS_CODE':'0','FID_INPUT_CNT_1':'0', \
-    'FID_PRC_CLS_CODE':'0','FID_INPUT_PRICE_1':'','FID_INPUT_PRICE_2':'', \
-    'FID_VOL_CNT':'','FID_TRGT_CLS_CODE':'','FID_TRGT_EXLS_CLS_CODE':'', \
-    'FID_DIV_CLS_CODE':'0'}), ensure_ascii=False)[:1500])"
+  cd ~/stock && .venv/bin/python -c "
+  from bot import kis_client as k
+  import requests, json
+  tok = k._get_token(); print('token:', bool(tok))
+  url = k._BASE_PROD + '/uapi/domestic-stock/v1/ranking/new-highlow'
+  params = {'FID_COND_MRKT_DIV_CODE':'J','FID_COND_SCR_DIV_CODE':'20187',
+    'FID_INPUT_ISCD':'0000','FID_RANK_SORT_CLS_CODE':'0','FID_INPUT_CNT_1':'0',
+    'FID_PRC_CLS_CODE':'0','FID_INPUT_PRICE_1':'','FID_INPUT_PRICE_2':'',
+    'FID_VOL_CNT':'','FID_TRGT_CLS_CODE':'','FID_TRGT_EXLS_CLS_CODE':'',
+    'FID_DIV_CLS_CODE':'0'}
+  h = {'authorization':f'Bearer {tok}','appkey':k._app_key(),
+    'appsecret':k._app_secret(),'tr_id':'FHPST01890000',
+    'Content-Type':'application/json; charset=utf-8'}
+  r = requests.get(url, headers=h, params=params, timeout=10)
+  print('status:', r.status_code)
+  d = r.json(); print('rt_cd:', d.get('rt_cd'), '| msg:', d.get('msg1'))
+  out = d.get('output') or d.get('output1') or d.get('output2')
+  print('fields:', list(out[0].keys()) if isinstance(out,list) and out else out)
+  print('sample:', json.dumps(out[:2] if isinstance(out,list) else out, ensure_ascii=False)[:900])"
   ```
-  출력으로 필드 확정 후 `kis_client.fetch_kr_new_highlow()` 작성 + `/kr52`
-  데이터 소스만 교체(페이지·라우트·위젯 그대로). 실패 시 yfinance 유지.
-  추측 보고 금지(실수기록 #12a) — probe 출력 없이 TR_ID 단정하지 말 것.
+  rt_cd='0' 이면 path/TR_ID 정답 → fields 로 필드명 확정. rt_cd!='0' 이면
+  msg1 가 사유(유효하지않은 tr_id 등) → KIS 개발자포털 '국내주식순위분석 >
+  신고가/신저가'에서 정확 path/TR_ID 확인 후 재시도. 확정 후 `kis_client.
+  fetch_kr_new_highlow()` 작성 + `/kr52` 데이터 소스만 교체(페이지·라우트·
+  위젯 그대로). 실패 시 yfinance 유지. 추측 보고 금지(실수기록 #12a) —
+  probe 출력 없이 TR_ID 단정하지 말 것.
 
 ## 📋 Standard View open issues (2026-05-21 session pickup)
 
