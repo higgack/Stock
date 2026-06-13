@@ -7658,6 +7658,22 @@ class TestHkMovers:
         assert got["7203.T"] == "Auto Manufacturers" and got["9999.T"] == "YF"
         assert fc._industries_for(["AAPL"], "US") == {"AAPL": "YF"}
 
+    def test_industry_english_translation_wired(self, monkeypatch):
+        # 사용자 2026-06-14 '모두 영문' — 네이버 한글 업종명 → 영문(Flash·영구 캐시).
+        import bot.chart_translate as ct
+        # 캐시 히트(키부재여도) → 영문 반환
+        monkeypatch.setattr(ct, "_load_ind",
+                            lambda: {"반도체와반도체장비": "Semiconductors & Equipment"})
+        r = ct.translate_industries_en(["반도체와반도체장비"])
+        assert r["반도체와반도체장비"] == "Semiconductors & Equipment"
+        # graceful: 미캐시+키부재 → 빠짐(원문 유지)
+        monkeypatch.setattr(ct, "_load_ind", lambda: {})
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        assert ct.translate_industries_en(["없는업종"]) == {}
+        # world_industry_map + sector_movers 둘 다 영문화 배선
+        src = open("bot/naver_ranking_client.py", encoding="utf-8").read()
+        assert src.count("translate_industries_en") >= 2
+
     def test_naver_sector_movers_and_wiring(self):
         # 사용자 2026-06-14 '업종등락 네이버'(CN/HK/JP). 시총가중 등락 Top/Bottom.
         from bot.naver_ranking_client import fetch_intl_sector_movers_naver as f
