@@ -17,8 +17,8 @@ log = logging.getLogger("bot.tw_pages")
 # (href, label). KR 은 naver _shell 과 동일 셋(kr52 가 _tw_shell 렌더라 여기 포함).
 _MARKET_NAV = {
     "KR": [("theme", "🏭 업종별 시세(전체)"), ("kr52", "📈 신고가·신저가"),
-           ("highlow", "🔺 상한가·하한가")],
-    "TW": [("tw52", "📈 신고가·신저가"), ("twhighlow", "🔺 상한가·하한가")],
+           ("highlow", "🚀 급등·급락")],
+    "TW": [("tw52", "📈 신고가·신저가"), ("twhighlow", "🚀 급등·급락")],
     "JP": [("jp52", "📈 신고가·신저가"), ("jpmovers", "🚀 급등·급락")],
     "HK": [("hk52", "📈 신고가·신저가"), ("hkmovers", "🚀 급등·급락")],
     "CN_A": [("cnmovers", "🚀 급등·급락")],   # 52주 제거(사용자 2026-06-14)
@@ -52,47 +52,44 @@ def _tw_shell(title: str, sub: str, body: str, nav: str = "") -> str:
 
 
 def render_tw_highlow_page() -> str:
-    """대만 상한가·하한가권 (TWSE 전종목 ±9.5%+). KR highlow 미러."""
+    """대만 급등·급락 (TWSE 전종목 등락 상·하위, 사용자 2026-06-14 'TW 상한가/하한가
+    → 급등/급락', JP/CN/HK 무버 형태)."""
     try:
-        from bot.twse_client import fetch_tw_upper_lower
-        data = fetch_tw_upper_lower()
+        from bot.twse_client import fetch_tw_movers
+        data = fetch_tw_movers()
     except Exception as exc:
-        log.warning("tw upper/lower page fetch failed: %s", exc)
-        data = {"upper": [], "lower": [], "ts": ""}
+        log.warning("tw movers page fetch failed: %s", exc)
+        data = {"up": [], "down": [], "ts": ""}
     ts = _html.escape(data.get("ts", ""))
 
     def _prep(lst):
-        # TWSE 항목 → stock_panel 형식. ticker=code.TW, price=close, 거래량·거래대금
-        # (TWSE TradeVolume/TradeValue) 유지(사용자 2026-06-14 'TW 거래대금').
+        # TWSE 항목 → stock_panel 형식. ticker=code.TW, price=close, 거래량·거래대금.
         return [{"ticker": f"{it.get('code', '')}.TW",
                  "name": it.get("name", "") or it.get("code", ""),
                  "price": it.get("close"), "pct": it.get("pct"),
                  "vol": it.get("vol"), "value": it.get("value")} for it in lst]
 
     dt = _html.escape(data.get("date", ""))
-    up, low = _prep(data.get("upper", [])), _prep(data.get("lower", []))
-    if not up and not low:
-        body = ('<div class="empty">상한가·하한가 데이터를 불러올 수 없습니다.<br>'
+    up, down = _prep(data.get("up", [])), _prep(data.get("down", []))
+    if not up and not down:
+        body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
                 '(장 시간/휴장 또는 TWSE 응답 지연 — 잠시 후 다시 시도.)</div>')
     else:
-        # 미국 포맷 통일(사용자 2026-06-13 req4) — 종목명=티커(한글번역) + 업종 +
-        # 시총 추가 + 거래량(TWSE TradeVolume) 유지 + 통화 헤더. enrich=mcap/업종/한글명.
+        # 종목명=영문 + 업종 + 시총 + 거래량/거래대금(TWSE). enrich=mcap/업종/영문명.
         from bot.highlow_render import (HL_SORT_JS, enrich_for_panel,
                                         sort_by_mcap, stock_panel)
         up = sort_by_mcap(enrich_for_panel(up, "TW", want_ind=True, want_name=True))
-        low = sort_by_mcap(enrich_for_panel(low, "TW", want_ind=True, want_name=True))
+        down = sort_by_mcap(enrich_for_panel(down, "TW", want_ind=True, want_name=True))
         body = ('<div class="grid">'
-                + stock_panel("🔺 상한가 (+10% 한도)", up, "ul-up", "TW",
+                + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "TW",
                               show_vol=True, show_value=True, show_ind=True)
-                + stock_panel("🔻 하한가 (-10% 한도)", low, "ul-low", "TW",
+                + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "TW",
                               show_vol=True, show_value=True, show_ind=True)
                 + '</div>' + HL_SORT_JS)
-    # 자료 기준일(거래일) 명시 — 주말/장후엔 직전 거래일. 'ts'는 갱신 시각.
-    sub = (f"TWSE 전종목 일일 한도 ±10% 도달(상한가/하한가) · 시총순·헤더 클릭 정렬 · "
-           f"종목명=영문 · 업종·시총=yfinance(소형주 시총 일부 미제공) · "
-           f"{(dt + ' 종가 기준 · ') if dt else ''}장중 1h"
+    sub = (f"TWSE 전종목 당일 등락 상·하위 · 시총순·헤더 클릭 정렬 · 종목명=영문 · "
+           f"업종·시총=yfinance · {(dt + ' 종가 기준 · ') if dt else ''}장중 30분"
            f"{(' · ' + ts) if ts else ''}")
-    return _tw_shell("🇹🇼 대만 상한가·하한가", sub, body,
+    return _tw_shell("🇹🇼 대만 급등·급락", sub, body,
                      nav=_market_nav("TW", "twhighlow"))
 
 
