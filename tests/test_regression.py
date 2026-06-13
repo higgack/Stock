@@ -7142,11 +7142,11 @@ class TestIntlKoreanNames:
 
     def test_compute_highlow_translates_non_us(self):
         src = open("bot/finviz_client.py", encoding="utf-8").read()
-        assert "_fetch_display_names(hits2)" in src
-        assert "translate_titles_kr" in src
+        assert "_fetch_display_names(" in src and "translate_titles_kr" in src
         assert 'market and market != "US"' in src
-        # 실패 시 ticker 유지(graceful)
-        assert 'kr_map.get(en) or en' in src
+        assert 'kr_map.get(en) or en' in src          # 실패 시 ticker 유지
+        # 이미 좋은 이름(KR pykrx 한글명 등)은 번역 스킵(덮어쓰기 방지)
+        assert 'r["name"] == r["ticker"]' in src
 
     def test_panel_label_ticker_then_korean(self):
         from bot.highlow_render import stock_panel
@@ -7346,3 +7346,29 @@ class TestUpperLowerRichEnrich:
         dn = src[src.index("def _fetch_display_names"):
                  src.index("def _backfill_industries")]
         assert "from concurrent.futures import ThreadPoolExecutor" in dn
+
+
+class TestKrFullUniverseHighlow:
+    """KR 신고저 = pykrx 전종목 → yfinance 스캔 (사용자 2026-06-13 — KIS 캡 ~30이
+    ETF/SPAC 잠식돼 실종목 1~3개뿐 → KRX 전종목·EOD OK). 한글명 pykrx 네이티브."""
+
+    def test_kr_full_universe_graceful(self):
+        from bot.intl_highlow import _kr_full_universe
+        uni, names = _kr_full_universe()           # creds 부재 → 빈
+        assert isinstance(uni, list) and isinstance(names, dict)
+
+    def test_kr_routes_to_full_scan(self):
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert "_compute_kr_full()" in src          # KR 분기 → 전종목
+        assert 'market in ("JP", "HK", "KR")' in src  # 6h 캐시(무거운 스캔)
+        assert "스팩" in src                         # SPAC 제외
+        # pykrx 부재 → peer 폴백(회귀 0)
+        assert "pykrx 폴백" in src or "peer empty" in src
+
+    def test_provided_names_not_overwritten(self):
+        # KR pykrx 한글명(name != ticker)은 번역 블록의 'need' 에서 제외 →
+        # 보존. JP/HK(name == ticker)만 번역. 로직 미러.
+        items = [{"ticker": "005930.KS", "name": "삼성전자"},
+                 {"ticker": "7203.T", "name": "7203.T"}]
+        need = [r for r in items if not r.get("name") or r["name"] == r["ticker"]]
+        assert [r["ticker"] for r in need] == ["7203.T"]   # 삼성전자 보존
