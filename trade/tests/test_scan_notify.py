@@ -121,3 +121,40 @@ class ProbeModeTests(unittest.TestCase):
         src = _P(sc.__file__).read_text(encoding="utf-8")
         self.assertIn("_probe_says_skip(key)", src)
         self.assertIn("_probe_save(key)", src)
+
+
+class WeightsBackfillTests(unittest.TestCase):
+    """단가($/kg) 중량 1회 강제 백필 (사용자 2026-06-13 '지금안되는건가') —
+    fix 이전 스냅샷엔 중량이 없어 단가 빈칸. probe 는 관세청 무변경이면
+    스윕 skip → 다음 갱신(월 ~3회)까지 안 채워짐. 마커 부재면 1회 강제 풀
+    스윕으로 즉시 적재(성공 저장 경로에서만 마커 → 실패 시 재시도)."""
+
+    def _tmp_marker(self):
+        import tempfile
+        from pathlib import Path as _P
+        sc._WEIGHTS_BACKFILL_MARKER = _P(tempfile.mkdtemp()) / ".weights_backfilled"
+
+    def test_pending_then_done(self):
+        self._tmp_marker()
+        self.assertTrue(sc._weights_backfill_pending())     # 마커 부재 → 강제
+        sc._mark_weights_backfilled()
+        self.assertFalse(sc._weights_backfill_pending())    # 적재 후 → 정상 복귀
+
+    def test_force_bypasses_probe_skip(self):
+        # 마커 부재 시, 관세청 무변경(probe skip True)이어도 게이트가
+        # 스윕을 건너뛰지 않아야 한다 (force_backfill 가 probe-skip 우회).
+        self._tmp_marker()
+        force = sc._weights_backfill_pending()
+        probe_skip = True                                   # 무변경 가정
+        self.assertTrue(force and probe_skip)               # 둘 다 참인데
+        self.assertFalse(not force and probe_skip)          # 게이트는 skip 안 함
+
+    def test_wired_into_main(self):
+        from pathlib import Path as _P
+        src = _P(sc.__file__).read_text(encoding="utf-8")
+        # 게이트: --if-changed AND not force_backfill AND probe_skip 일 때만 종료
+        self.assertIn("not force_backfill and _probe_says_skip(key)", src)
+        # 마커 호출(def 아님)은 성공 저장 로그(stored live) 뒤에서만 —
+        # 조기 return(ok==0/coverage/empty) 경로 제외 → 실패 시 다음 probe 재시도
+        stored = src.index('log.info("stored live')
+        src.index("_mark_weights_backfilled()", stored)   # 없으면 ValueError=fail

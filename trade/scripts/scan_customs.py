@@ -65,6 +65,11 @@ LOOKBACK_MONTHS_DEFAULT = int(
     os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "14"
 )
 _MIGRATE_MARKER = Path.home() / ".trade" / ".surge_migrated"
+# 단가($/kg) 중량 보존 fix(2026-06-13) 이전 적재 스냅샷엔 exp_wgt/imp_wgt 가
+# 없어 단가 행이 빈칸. probe 는 관세청 무변경이면 스윕을 건너뛰어 다음 갱신
+# (월 ~3회)까지 안 채워짐 → 배포 직후 1회 강제 풀 스윕으로 14개월 윈도를
+# 중량 포함 재적재(성공 저장 경로에서만 마커 → 실패 시 다음 probe 재시도).
+_WEIGHTS_BACKFILL_MARKER = Path.home() / ".trade" / ".weights_backfilled"
 
 
 def _window(lookback_months: int, now: datetime | None = None) -> tuple[str, str]:
@@ -107,6 +112,21 @@ def _reset_pins_once() -> str | None:
         return f"기존 핀 {len(entries)}개 백업({bak.name}) 후 초기화"
     _MIGRATE_MARKER.write_text(str(time.time()))
     return None
+
+
+def _weights_backfill_pending() -> bool:
+    """단가 중량 1회 백필이 아직이면 True — 배포 직후 첫 probe 가 관세청
+    무변경이어도 강제 풀 스윕을 한 번 돌려 단가($/kg)를 즉시 채우게 한다.
+    마커는 성공 저장 경로에서만 찍어(graceful) 실패 시 다음 probe 재시도."""
+    return not _WEIGHTS_BACKFILL_MARKER.exists()
+
+
+def _mark_weights_backfilled() -> None:
+    try:
+        _WEIGHTS_BACKFILL_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _WEIGHTS_BACKFILL_MARKER.write_text(str(time.time()))
+    except OSError:
+        pass
 
 
 def _send_alert(body: str) -> bool:
@@ -309,8 +329,12 @@ def main(argv: list[str] | None = None) -> int:
         log.warning("TRADE_DATA_GO_KR_KEY not set — skip")
         return 0
 
-    if args.if_changed and _probe_says_skip(key):
+    # 단가 중량 1회 백필 — 마커 부재면 관세청 무변경이어도 강제 풀 스윕.
+    force_backfill = _weights_backfill_pending()
+    if args.if_changed and not force_backfill and _probe_says_skip(key):
         return 0
+    if force_backfill:
+        log.info("weights backfill pending — 강제 풀 스윕 (단가 중량 1회 적재)")
 
     start, end = _window(args.lookback_months)
     chapters = customs_scan.CHAPTERS[: args.max_chapters]
@@ -429,6 +453,9 @@ def main(argv: list[str] | None = None) -> int:
         customs_scan.store_heatmap(conn, hm_rows)
     log.info("stored live; archived=%d new_entrants=%d heatmap=%d",
              archived, len(new_entrants), len(hm_rows))
+    if force_backfill:
+        _mark_weights_backfilled()      # 성공 저장 후에만 (실패=다음 probe 재시도)
+        log.info("weights backfill 완료 — 단가($/kg) 중량 적재")
 
     # 작동 원장 (자정 결산용) — 스윕 1·신규급증 n
     try:
