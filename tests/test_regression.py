@@ -7408,3 +7408,45 @@ class TestHkMovers:
     def test_compute_movers_from_present(self):
         from bot.finviz_client import _compute_movers_from
         assert callable(_compute_movers_from)
+
+
+class TestJpStop:
+    """일본 상한가/하한가(ストップ高/安) — TSE 制限値幅 도달 종목 (사용자
+    2026-06-13 'JP 상하한가'). 결정적(공개 제한폭 표·스크래핑 불요)."""
+
+    def test_jp_price_limit_table(self):
+        from bot.price_sanity import jp_price_limit
+        assert jp_price_limit(150) == 50        # 100-200 → ±50
+        assert jp_price_limit(3000) == 700      # 3000-5000 → ±700
+        assert jp_price_limit(88000) == 15000   # 70000-100000 → ±15000
+        assert jp_price_limit(99) == 30
+        assert jp_price_limit(0) is None and jp_price_limit("x") is None
+
+    def test_swr_no_sync(self, monkeypatch):
+        import bot.jp_stop as js, bot.finviz_client as fc
+        kicked = {"n": 0}
+        monkeypatch.setattr(js, "_kick", lambda: kicked.__setitem__("n", kicked["n"] + 1))
+        monkeypatch.setattr(fc, "_compute_jp_stop",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("sync!")))
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)
+        r = js.fetch_jp_stop()
+        assert r["building"] is True and kicked["n"] == 1
+
+    def test_page_render_and_wiring(self, monkeypatch):
+        import bot.jp_stop as js
+        monkeypatch.setattr(js, "fetch_jp_stop", lambda: {
+            "upper": [{"ticker": "8316.T", "name": "미쓰이", "price": 3700,
+                       "pct": 23.3, "mcap": 400000, "ind": "Banks"}],
+            "lower": [], "ts": "x", "scanned": 3640, "building": False})
+        from bot.intl_pages import render_jp_stop_page
+        h = render_jp_stop_page()
+        assert "ストップ高" in h and "8316.T" in h and "시총" in h
+        assert "현재가 (¥)" in h
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1] / "bot"
+        assert "/jphighlow" in (root / "dashboard_server.py").read_text("utf-8")
+        assert 'href="jphighlow"' in (root / "dashboard.py").read_text("utf-8")
+
+    def test_compute_jp_stop_present(self):
+        from bot.finviz_client import _compute_jp_stop
+        assert callable(_compute_jp_stop)

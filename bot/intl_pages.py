@@ -97,3 +97,44 @@ def render_intl_movers_page(market: str) -> str:
            + "종목명=티커(한글) · 헤더 클릭 정렬 · 6h 캐시. "
            + (f"· 갱신 {ts}" if ts else ""))
     return _tw_shell(f"{flag} 급등·급락", sub, body)
+
+
+def render_jp_stop_page() -> str:
+    """일본 상한가·하한가(ストップ高/安) — TSE 制限値幅 도달 종목(전종목 스캔).
+    KR/TW 상한가 미러: 티커(한글명)·현재가·등락률·시총·업종(거래량은 yfinance
+    미populate라 생략). 결정적(공개 제한폭 표)."""
+    try:
+        from bot.jp_stop import fetch_jp_stop
+        data = fetch_jp_stop()
+    except Exception as exc:
+        log.warning("jp_stop page: %s", exc)
+        data = {"upper": [], "lower": [], "ts": "", "building": False, "status": {}}
+    ts = _html.escape(data.get("ts", ""))
+    up, low = data.get("upper", []), data.get("lower", [])
+    if not up and not low:
+        if data.get("building"):
+            st = data.get("status") or {}
+            tot = st.get("total")
+            prog = f" (전종목 {tot})" if tot else ""
+            body = ('<div class="empty">⏳ 상한가·하한가 산출 중'
+                    f'{_html.escape(prog)}…<br>전종목 일봉 vs 制限値幅 스캔(수 분). '
+                    '잠시 후 새로고침해 주세요.</div>')
+        else:
+            body = ('<div class="empty">상한가·하한가 데이터를 불러올 수 없습니다.<br>'
+                    '(가격제한 도달 종목이 없거나 잠시 후 재시도.)</div>')
+    else:
+        from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
+                                        stock_panel)
+        up, low = sort_by_mcap(up), sort_by_mcap(low)
+        body = ('<div class="grid">'
+                + stock_panel("🔺 상한가 (ストップ高)", up, "ul-up", "JP",
+                              ind_dist_line(up), show_vol=False)
+                + stock_panel("🔻 하한가 (ストップ安)", low, "ul-low", "JP",
+                              ind_dist_line(low), show_vol=False)
+                + '</div>' + HL_SORT_JS)
+    sc = data.get("scanned")
+    sub = ("🇯🇵 일본 상한가·하한가(ストップ高/安) — 전일종가별 TSE 制限値幅 도달 · "
+           + (f"{sc}종목 스캔 · " if sc else "")
+           + "종목명=티커(한글) · 시총순·헤더 클릭 정렬 · 6h 캐시. "
+           + (f"· 갱신 {ts}" if ts else ""))
+    return _tw_shell("🇯🇵 일본 상한가·하한가", sub, body)

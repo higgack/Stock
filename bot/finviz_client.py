@@ -990,6 +990,83 @@ def _compute_movers_from(universe: list, names: dict, cache_name: str,
     return out
 
 
+def _compute_jp_stop(universe: list, names: dict, cache_name: str,
+                     source: str) -> dict:
+    """일본 ストップ高/安(상한가/하한가) — 유니버스 일봉 당일 변동이 TSE 制限値幅
+    (price_sanity.jp_price_limit, 가격대별 tiered)에 도달한 종목 (사용자 2026-06-13
+    'JP 상하한가'). 결정적(공개 표·스크래핑 불요). {upper, lower, ts, source,
+    scanned}. mcap/업종/한글명 백필(hit 만)."""
+    from bot.price_sanity import jp_price_limit
+    out: dict = {"upper": [], "lower": [], "ts": _now_label(),
+                 "source": source, "scanned": 0}
+    try:
+        _CHUNK = 120
+        scanned = 0
+        for ci in range(0, len(universe), _CHUNK):
+            chunk = universe[ci:ci + _CHUNK]
+            try:
+                dfd = yf.download(chunk, period="5d", interval="1d",
+                                  group_by="ticker", threads=True,
+                                  progress=False, auto_adjust=False)
+            except Exception:
+                continue
+            if dfd is None or dfd.empty:
+                continue
+            time.sleep(0.2)
+            for tk in chunk:
+                try:
+                    sub = dfd if len(chunk) == 1 else dfd[tk]
+                    closes = sub["Close"].dropna()
+                    if len(closes) < 2:
+                        continue
+                    prev, last = float(closes.iloc[-2]), float(closes.iloc[-1])
+                    lim = jp_price_limit(prev)
+                    if not lim or prev <= 0:
+                        continue
+                    scanned += 1
+                    chg = last - prev
+                    if abs(chg) < lim * 0.99:        # 제한폭 미도달 → 통과
+                        continue
+                    pct = round((last / prev - 1) * 100, 2)
+                    vols = sub["Volume"].dropna()
+                    rec = {"ticker": tk, "name": names.get(tk, tk),
+                           "price": round(last, 2), "pct": pct,
+                           "vol": int(float(vols.iloc[-1])) if len(vols) else None}
+                    (out["upper"] if chg > 0 else out["lower"]).append(rec)
+                except Exception:
+                    continue
+        out["scanned"] = scanned
+        hits = [r["ticker"] for r in out["upper"] + out["lower"]]
+        mcaps, inds = _fetch_mcaps(hits), _fetch_industries(hits)
+        for r in out["upper"] + out["lower"]:
+            mc = mcaps.get(r["ticker"])
+            r["mcap"] = round(mc / 1e8, 2) if mc else None
+            r["ind"] = inds.get(r["ticker"])
+        try:                                          # 한글명(name == ticker 만)
+            need = [r for r in out["upper"] + out["lower"]
+                    if not r.get("name") or r["name"] == r["ticker"]]
+            if need:
+                en = _fetch_display_names([r["ticker"] for r in need])
+                uniq = sorted({n for n in en.values() if n})
+                km = {}
+                if uniq:
+                    from bot.chart_translate import translate_titles_kr
+                    km = translate_titles_kr(uniq) or {}
+                for r in need:
+                    e = en.get(r["ticker"], "")
+                    if e:
+                        r["name"] = km.get(e) or e
+        except Exception as exc:
+            log.warning("finviz: %s jp-stop 한글명: %s", source, exc)
+        log.info("finviz: %s jp-stop — scanned %d → 상한 %d / 하한 %d",
+                 source, scanned, len(out["upper"]), len(out["lower"]))
+        if out["upper"] or out["lower"]:
+            _cache_write(cache_name, out)
+    except Exception as exc:
+        log.warning("finviz: %s jp-stop 산출 실패: %s", source, exc)
+    return out
+
+
 def _fetch_mcaps(tickers: list) -> dict:
     """hit 종목 시가총액(USD) {ticker: mcap}. yfinance fast_info 병렬
     (백그라운드 전용 — 종목당 1 HTTP). 실패/부재 시 누락(graceful)."""

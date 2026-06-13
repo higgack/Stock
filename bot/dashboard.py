@@ -12326,9 +12326,11 @@ def _render_market_page(data: dict) -> str:
     # 신고가·신저가 ③ 상한가·하한가/급등·급락. JP/CN/HK 는 업종-전체 페이지
     # 부재(ETF 합성 위젯 자체) + 가격제한 별도 페이지 부재 → ②만.
     _lk2 = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
+    # JP: 신고저 + 상한가·하한가(TSE 制限値幅, 사용자 2026-06-13)
     parts.append(_render_etf_sector_movers(
         data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10",
-        f'<a href="jp52" style="{_lk2}">📈 신고가·신저가</a>'))
+        f'<a href="jp52" style="{_lk2}">📈 신고가·신저가</a>'
+        f'<a href="jphighlow" style="{_lk2}">🔺 상한가·하한가</a>'))
     parts.append(_render_etf_sector_movers(
         data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10",
         f'<a href="cn52" style="{_lk2}">📈 신고가·신저가</a>'))
