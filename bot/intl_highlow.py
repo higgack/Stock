@@ -30,6 +30,7 @@ _CFG = {
            "kr_highlow_status.json", "한국 주요종목", (".KS", ".KQ")),
 }
 _TTL = 30 * 60
+_TTL_FULL = 6 * 3600   # JP/HK 전종목(~3천) 스캔은 무거워 캐시 길게(재스캔 빈도↓)
 _running: dict[str, bool] = {}
 _lock = threading.Lock()
 
@@ -39,6 +40,16 @@ def _universe(market: str) -> tuple[list[str], dict]:
     cfg = _CFG.get(market)
     if not cfg:
         return [], {}
+    # JP/HK: 공식 상장목록 전종목 우선 (사용자 2026-06-13 full-market), 실패 시
+    # peer 폴백. 이름=ticker(번역 백필이 한글명 채움). CN_A 는 차단으로 peer 만.
+    if market in ("JP", "HK"):
+        try:
+            from bot.intl_universe import full_universe
+            full = full_universe(market)
+            if len(full) > 100:
+                return full, {t: t for t in full}
+        except Exception as exc:
+            log.warning("intl full_universe %s: %s", market, exc)
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
@@ -173,7 +184,8 @@ def fetch_intl_highlow(market: str) -> dict:
         return {"high": [], "low": [], "ts": "", "source": "", "building": False}
     from bot.finviz_client import _cached
     cache = _CFG[market][1]
-    fresh = _cached(cache, ttl=_TTL)
+    ttl = _TTL_FULL if market in ("JP", "HK") else _TTL   # 전종목 스캔 캐시 길게
+    fresh = _cached(cache, ttl=ttl)
     if fresh is not None:
         return fresh
     stale = _cached(cache, ttl=86400)

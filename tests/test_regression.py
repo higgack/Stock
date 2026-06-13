@@ -7174,3 +7174,48 @@ class TestKisKrNewHighlow:
             ih.fetch_intl_highlow = orig
         assert "동화약품" in h and "거래량" in h and "시총" in h
         assert "KIS 신고가/신저가 근접" in h     # 소스 라벨
+
+
+class TestIntlFullMarket:
+    """JP/HK 전종목 신고저 (사용자 2026-06-13 'full-market'). JPX/HKEX 공식
+    listing 파서(VM 검증) + peer 폴백 + 긴 캐시. 파서 per-row 순수 테스트."""
+
+    def test_jp_pick(self):
+        from bot.intl_universe import _jp_pick
+        assert _jp_pick("7203", "プライム（内国株式）") == "7203.T"
+        assert _jp_pick("13080", "ETF・ETN") is None
+        assert _jp_pick("2971", "REIT") is None
+        assert _jp_pick("720", "プライム") is None         # 3자리 제외
+
+    def test_hk_pick(self):
+        from bot.intl_universe import _hk_pick
+        assert _hk_pick("00700", "Equity") == "0700.HK"
+        assert _hk_pick("80737", "Equity") == "80737.HK"  # 5자리 유지
+        assert _hk_pick("02800", "ETF") is None
+        assert _hk_pick("700", "Equity") == "0700.HK"     # zero-pad
+
+    def test_full_universe_graceful(self):
+        import bot.intl_universe as iu
+        orig = iu._http_get
+        iu._http_get = lambda u: (_ for _ in ()).throw(RuntimeError("net"))
+        try:
+            assert iu.full_universe("JP") == [] and iu.full_universe("HK") == []
+            assert iu.full_universe("US") == []
+        finally:
+            iu._http_get = orig
+
+    def test_universe_falls_back_to_peer(self):
+        # full_universe 빈 결과(<100) → peer 유니버스 폴백(회귀 0)
+        import bot.intl_highlow as ih, bot.intl_universe as iu
+        orig = iu.full_universe
+        iu.full_universe = lambda m: []
+        try:
+            uni, _ = ih._universe("JP")
+            assert len(uni) > 30 and all(t.endswith(".T") for t in uni)
+        finally:
+            iu.full_universe = orig
+
+    def test_full_market_longer_ttl_wired(self):
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert "_TTL_FULL" in src and 'market in ("JP", "HK")' in src
+        assert "from bot.intl_universe import full_universe" in src
