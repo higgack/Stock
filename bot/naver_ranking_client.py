@@ -30,18 +30,27 @@ _SUFFIX = {"KOSPI": ".KS", "KOSDAQ": ".KQ"}
 
 
 def _get_stocks(url: str) -> list | None:
-    """네이버 front-api GET → result.stocks 리스트. graceful None."""
+    """네이버 front-api GET → result.stocks 리스트. graceful None.
+
+    ⚠️ 봉투가 두 종류 (VM 실측 2026-06-13):
+      worldstock(해외): {isSuccess, detailCode, message, result:{stocks}}
+      domestic(국내):   {result:{stocks}}  ← **isSuccess 없음**
+    그래서 isSuccess 는 **명시적 False 일 때만** 거부(없으면 통과) — 옛 `not
+    isSuccess` 가드는 국내(isSuccess 부재)를 전부 거부해 52주/상한가가 0 이었음."""
     try:
         import requests
         r = requests.get(url, headers=_H, timeout=12)
         if r.status_code != 200:
             return None
         d = r.json()
-        if not isinstance(d, dict) or not d.get("isSuccess"):
+        if not isinstance(d, dict) or d.get("isSuccess") is False:
             return None
-        res = d.get("result") or {}
-        st = res.get("stocks")
-        return st if isinstance(st, list) else None
+        res = d.get("result")
+        if isinstance(res, dict) and isinstance(res.get("stocks"), list):
+            return res["stocks"]
+        if isinstance(d.get("stocks"), list):       # 최상위 stocks 폴백
+            return d["stocks"]
+        return None
     except Exception as exc:
         log.warning("naver_ranking GET 실패: %s", exc)
         return None
