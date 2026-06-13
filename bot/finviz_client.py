@@ -1430,9 +1430,18 @@ def _compute_us_movers() -> dict:
             try:
                 hits = [r["ticker"] for r in nv["up"] + nv["down"] if r.get("ticker")]
                 inds = _fetch_industries(hits)
+                # 야후 벌크(S&P500 GICS·NASDAQ)는 NYSE/AMEX 소형주를 자주 비워
+                # '업종 —' → 네이버 USA 업종맵(전 거래소·4700+)으로 빈 것 보강
+                # (사용자 2026-06-14 'US 급등락 업종 제발'). 야후 우선·네이버 폴백.
+                nv_ind = {}
+                try:
+                    from bot.naver_ranking_client import world_industry_map
+                    nv_ind = world_industry_map("US")
+                except Exception:
+                    pass
                 for r in nv["up"] + nv["down"]:
                     if not r.get("ind"):
-                        r["ind"] = inds.get(r["ticker"])
+                        r["ind"] = inds.get(r["ticker"]) or nv_ind.get(r["ticker"])
             except Exception as exc:
                 log.warning("US movers 업종 enrich 실패: %s", exc)
             _cache_write(_MOVERS_CACHE, nv)
