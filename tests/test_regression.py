@@ -7635,6 +7635,22 @@ class TestHkMovers:
         assert got["7203.T"] == "Auto Manufacturers" and got["9999.T"] == "YF"
         assert fc._industries_for(["AAPL"], "US") == {"AAPL": "YF"}
 
+    def test_naver_sector_movers_and_wiring(self):
+        # 사용자 2026-06-14 '업종등락 네이버'(CN/HK/JP). 시총가중 등락 Top/Bottom.
+        from bot.naver_ranking_client import fetch_intl_sector_movers_naver as f
+        # US/KR/TW 미대상 → 빈(호출부 ETF 폴백)
+        for m in ("US", "KR", "TW"):
+            d = f(m)
+            assert d == {"up": [], "down": [], "ts": "", "source": ""}
+        # JP 오프라인 graceful — 형식 유지
+        d = f("JP")
+        assert isinstance(d, dict) and set(d) >= {"up", "down", "ts", "source"}
+        # market_overview 가 JP/CN/HK 는 네이버 우선 + ETF 폴백
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert "fetch_intl_sector_movers_naver" in src
+        assert 'market in ("JP", "CN_A", "HK")' in src
+        assert "fetch_sector_movers_etf" in src        # 폴백 보존
+
     def test_compute_movers_from_present(self):
         from bot.finviz_client import _compute_movers_from
         assert callable(_compute_movers_from)
