@@ -897,9 +897,20 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                 from bot.naver_ranking_client import world_stock_map
                 wsm = world_stock_map(tag)
                 if wsm:
+                    # 네이버 HK 코드는 5자리 zfill('00700'), yfinance 는 4자리('0700')
+                    # → 선행 0 제거한 정수 코드로 정규화 매칭(VM probe 2026-06-14:
+                    # Tencent 0700.HK 가 None 이던 키 불일치 fix. CNY 8xxxx counter
+                    # 는 별개 int 라 충돌 없음).
+                    norm = {}
+                    for k, v in wsm.items():
+                        c = k.split(".")[0]
+                        if c.isdigit():
+                            norm.setdefault(str(int(c)), v)
                     for r in out["high"] + out["low"]:
                         code = str(r["ticker"]).split(".")[0]
-                        w = wsm.get(r["ticker"]) or wsm.get(code.zfill(4) + ".HK") or {}
+                        w = (wsm.get(r["ticker"])
+                             or (norm.get(str(int(code))) if code.isdigit() else None)
+                             or {})
                         if w.get("vol") is not None:
                             r["vol"] = w["vol"]
                         if w.get("value") is not None:
