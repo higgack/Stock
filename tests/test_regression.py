@@ -7240,6 +7240,20 @@ class TestHighlowRenderShared:
                          show_vol=False)
         assert "거래량" not in us
 
+    def test_us_52w_value_only(self, monkeypatch):
+        # 사용자 2026-06-14 선택: US 52주 영문명 유지 + 거래대금만(거래량 X).
+        # 거래대금=종가×거래량(억$), Finviz Overview Volume 으로 렌더 시점 산출.
+        import bot.finviz_client as fc
+        monkeypatch.setattr(fc, "fetch_high_low", lambda: {
+            "high": [{"ticker": "NVDA", "name": "NVDA", "price": 900.0, "pct": 2.1,
+                      "vol": 50000000, "mcap": 22000, "ind": "Semis"}],
+            "low": [], "ts": "x", "source": "Finviz"})
+        from bot.us_pages import render_us_highlow_page
+        h = render_us_highlow_page()
+        assert "거래대금 ($)" in h          # 거래대금 컬럼 추가
+        assert "거래량" not in h            # 거래량은 추가 안 함(거래대금만)
+        assert "45.0B" in h                 # 900×5e7/1e8=450억$ → $45.0B
+
     def test_ind_dist_line(self):
         from bot.highlow_render import ind_dist_line
         items = [{"ind": "Semis"}, {"ind": "Semis"}, {"ind": "Banks"},

@@ -202,11 +202,19 @@ def render_us_highlow_page() -> str:
     from bot.highlow_render import stock_panel as _hpanel
 
     def _panel(title, items, tid, extra=""):
-        # 공용 패널 — 통화기호 헤더화 + 거래량 제거(yfinance/Finviz vol
-        # 미populate, 사용자 2026-06-13). 종목=티커(영문명).
-        return _hpanel(title, items, tid, "US", extra, show_vol=False)
+        # 종목명=영문 유지(사용자 2026-06-14 선택) + 거래대금만 추가(거래량은 X).
+        return _hpanel(title, items, tid, "US", extra,
+                       show_vol=False, show_value=True)
 
     hi, lo = data.get("high", []), data.get("low", [])
+    # 거래대금(억$) = 종가×거래량 — Finviz Overview Volume 으로 산출(사용자
+    # 2026-06-14 'US 52주 거래대금만 추가'). 렌더 시점 계산이라 캐시 무관.
+    for r in hi + lo:
+        if r.get("value") is None and r.get("price") and r.get("vol"):
+            try:
+                r["value"] = round(float(r["price"]) * float(r["vol"]) / 1e8, 2)
+            except (TypeError, ValueError):
+                pass
     # 기본 정렬 = 시총 내림차순 (사용자 2026-06-12 '처음 화면은 시총순') —
     # 시총 미확보(—) 행은 뒤로. 헤더 클릭으로 다른 기준 재정렬 가능.
     _mc_key = lambda it: (it.get("mcap") is None, -(it.get("mcap") or 0))
