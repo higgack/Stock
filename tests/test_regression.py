@@ -7692,6 +7692,25 @@ class TestNaverKrRanking:
         r = _kr_row(dict(self._SAMPLE, accumulatedTradingValue=690950000000))
         assert r["value"] == 6909.5            # /1e8 억(원)
 
+    def test_kr_upper_lower_filter_and_wiring(self):
+        # 사용자 2026-06-13 'KR 모두 네이버' — 상한가/하한가도 front-api(UPPER/LOWER
+        # _LIMIT 필터), 시총·거래대금 native(yfinance enrich 제거 → 429 면역).
+        from bot.naver_ranking_client import _kr_row, _is_real_stock
+        rows = [dict(self._SAMPLE, fluctuationsType="UPPER_LIMIT"),
+                dict(self._SAMPLE, itemCode="999", name="상승주", fluctuationsType="RISING",
+                     fluctuationsRatio="5.0")]
+        upper = [_kr_row(s) for s in rows if _is_real_stock(s)
+                 and "UPPER" in str(s.get("fluctuationsType") or "")]
+        assert len(upper) == 1 and upper[0]["pct"] == 30.0      # 상한가만(+5% 제외)
+        from bot.naver_ranking_client import fetch_kr_upper_lower
+        d = fetch_kr_upper_lower()                              # 오프라인 graceful
+        assert set(d) >= {"upper", "lower", "ts", "source"}
+        # 페이지가 네이버 우선 + sise 폴백 배선
+        src = open("bot/naver_pages.py", encoding="utf-8").read()
+        assert "from bot.naver_ranking_client import fetch_kr_upper_lower" in src
+        assert "show_value=True" in src                        # 거래대금 표시
+        assert "429 면역" in src or "native" in src
+
 
 class TestNaverWorldRanking:
     """해외(worldstock) 랭킹 — 미국 급등락 네이버(사용자 2026-06-13 '미국등급급락은

@@ -190,7 +190,36 @@ tbl.querySelectorAll('th.th-sort').forEach(function(th){
 
 
 def render_highlow_page() -> str:
-    """상한가·하한가 (Naver sise_upper/lower). 신고가 페이지가 불안정해 대체."""
+    """상한가·하한가 — **네이버 front-api 우선**(전종목·한글명·시총·거래대금 native,
+    사용자 2026-06-13 'KR 모두 네이버'). yfinance enrich 제거 → 429 면역. 네이버
+    실패 시 기존 sise_upper/lower + yfinance 시총 폴백(회귀 0)."""
+    from bot.highlow_render import (HL_SORT_JS, sort_by_mcap, stock_panel)
+    data = None
+    src_label = ""
+    try:
+        from bot.naver_ranking_client import fetch_kr_upper_lower
+        nv = fetch_kr_upper_lower()
+        if nv.get("upper") or nv.get("lower"):
+            data = nv
+            src_label = ("네이버 증권 상한가/하한가(±30% 도달) · 전종목·한글명·"
+                         "거래대금·시총 native · 시총순·헤더 클릭 정렬")
+    except Exception as exc:
+        log.warning("naver KR upper/lower: %s", exc)
+
+    if data is not None:
+        # 네이버 front-api — rows 가 이미 ticker·name·price·pct·vol·value·mcap 완비.
+        up = sort_by_mcap(data["upper"])
+        low = sort_by_mcap(data["lower"])
+        ts = _html.escape(data.get("ts", ""))
+        _o = dict(name_only=True, show_ind=False, show_vol=True, show_value=True)
+        body = ('<div class="grid">'
+                + stock_panel("🔺 상한가", up, "ul-up", "KR", **_o)
+                + stock_panel("🔻 하한가", low, "ul-low", "KR", **_o)
+                + '</div>' + HL_SORT_JS)
+        sub = f"{src_label}. {('· ' + ts + ' 기준') if ts else ''}"
+        return _shell("상한가·하한가", sub, "highlow", body)
+
+    # 폴백: 기존 sise_upper/lower(Naver) 목록 + yfinance 시총(429 시 시총 빈)
     try:
         from bot.naver_sector_client import fetch_upper_lower
         data = fetch_upper_lower()
@@ -200,7 +229,6 @@ def render_highlow_page() -> str:
     ts = _html.escape(data.get("ts", ""))
 
     def _ticker(code: str) -> str:
-        # 종목분석(lookup) 링크용 — KOSPI .KS / KOSDAQ .KQ 정규화(pykrx 없으면 .KS)
         if not code:
             return ""
         try:
@@ -210,7 +238,6 @@ def render_highlow_page() -> str:
             return f"{code}.KS"
 
     def _prep(lst):
-        # Naver 항목 → stock_panel 형식 (ticker·numeric price). 시총은 enrich.
         out = []
         for it in lst:
             p = it.get("price")
@@ -228,10 +255,7 @@ def render_highlow_page() -> str:
         body = ('<div class="empty">상한가·하한가 데이터를 불러올 수 없습니다.<br>'
                 '(잠시 후 다시 시도해 주세요.)</div>')
     else:
-        # 미국 포맷 통일 — 종목명만·거래량·시총(사용자 2026-06-13 시총 추가) +
-        # 통화 헤더. 시총은 enrich_for_panel(yfinance mcap·10분 캐시).
-        from bot.highlow_render import (HL_SORT_JS, enrich_for_panel,
-                                        sort_by_mcap, stock_panel)
+        from bot.highlow_render import enrich_for_panel
         up = sort_by_mcap(enrich_for_panel(up, "KR"))
         low = sort_by_mcap(enrich_for_panel(low, "KR"))
         _o = dict(name_only=True, show_ind=False, show_vol=True)

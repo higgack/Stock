@@ -177,6 +177,27 @@ def fetch_kr_highlow(limit: int = 200) -> dict:
     return out
 
 
+def fetch_kr_upper_lower(limit: int = 200) -> dict:
+    """KR 상한가/하한가 — 네이버 domestic 상승/하락 랭킹에서 fluctuationsType
+    UPPER_LIMIT/LOWER_LIMIT 필터 (사용자 2026-06-13 'KR 모두 네이버'). 시총·거래대금
+    ·한글명 전부 native(yfinance enrich 제거 → 429 면역). ETF/ETN/스팩 제외.
+    {upper, lower, ts, source}. graceful — 실패 시 빈(호출부 폴백)."""
+    from bot.finviz_client import _now_label
+    out = {"upper": [], "lower": [], "ts": _now_label(),
+           "source": "네이버 증권 상한가/하한가(전종목·한글명·시총·거래대금)"}
+    up = _get_stocks(f"{_BASE}/domestic/stock/list?sortType=up"
+                     f"&category=all&page=1&pageSize={limit}")
+    dn = _get_stocks(f"{_BASE}/domestic/stock/list?sortType=down"
+                     f"&category=all&page=1&pageSize={limit}")
+    if up:
+        out["upper"] = [_kr_row(s) for s in up if _is_real_stock(s)
+                        and "UPPER" in str(s.get("fluctuationsType") or "")]
+    if dn:
+        out["lower"] = [_kr_row(s) for s in dn if _is_real_stock(s)
+                        and "LOWER" in str(s.get("fluctuationsType") or "")]
+    return out
+
+
 if __name__ == "__main__":
     import json
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -184,3 +205,5 @@ if __name__ == "__main__":
     print(f"high {len(d['high'])} / low {len(d['low'])} ({d['source']})")
     for r in d["high"][:5]:
         print(" ", json.dumps(r, ensure_ascii=False))
+    u = fetch_kr_upper_lower()
+    print(f"upper {len(u['upper'])} / lower {len(u['lower'])}")
