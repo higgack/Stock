@@ -7000,6 +7000,25 @@ class TestEarningsCalendarIntl:
         # cache_only — 캘린더 on-request 경로 동기 스캔 금지
         assert "cache_only" in src
 
+    def test_intl_research_action_wired(self):
+        # 사용자 2026-06-13 '다른나라들도 리서치액션 보고 판단'. JP/TW/CN/HK
+        # 등급변경(yfinance) fetch + fetch_all_market_data 배선 + 동적 탭.
+        from bot.market_overview import fetch_recent_research_intl
+        assert fetch_recent_research_intl("XX") == []          # 미지원 시장
+        mo = open("bot/market_overview.py", encoding="utf-8").read()
+        for k in ("research_jp", "research_tw", "research_cn", "research_hk"):
+            assert f'"{k}"' in mo, k                            # assembly 키
+        dh = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_render_research_intl_table" in dh
+        assert "_res_intl_btns" in dh and "_res_intl_panes" in dh  # 동적 탭(빈 시장 제거)
+        # 렌더 — 한글명 우선·없으면 빈 안내
+        from bot.dashboard import _render_research_intl_table
+        h = _render_research_intl_table(
+            [{"symbol": "6758.T", "name": "소니", "firm": "X",
+              "to_grade": "Buy", "from_grade": "Hold", "date": "2026-06-12"}])
+        assert "소니" in h and "Hold → Buy" in h
+        assert "커버리지 제한" in _render_research_intl_table([])
+
     def test_intl_table_render_no_wrong_currency(self):
         # JP 종목 추정치가 있어도 '$' 가 아닌 '—'(통화 불명확 가드)
         from bot.dashboard import _render_earnings_table

@@ -11599,6 +11599,34 @@ def _render_research_us_table(research: list) -> str:
     )
 
 
+def _render_research_intl_table(research: list) -> str:
+    """JP/TW/CN/HK 등급변경 — 한글 종목명(번역)·증권사·등급·날짜 (사용자
+    2026-06-13 '보고 판단'). US 표 구조 미러, 종목=한글명(없으면 티커), TP 생략
+    (intl 미수집)."""
+    if not research:
+        return ('<div class="empty-msg">최근 등급 변경이 없습니다. '
+                '(yfinance 해외 애널리스트 커버리지 제한)</div>')
+    rows: list[str] = []
+    for r in research[:40]:
+        sym = _html.escape(r.get("symbol", ""))
+        label = _html.escape(r.get("name") or r.get("symbol", ""))
+        firm = _html.escape(r.get("firm", ""))
+        to_g = _html.escape(r.get("to_grade", ""))
+        from_g = _html.escape(r.get("from_grade", ""))
+        dt = _html.escape(r.get("date", ""))
+        grade_str = f'{from_g} → {to_g}' if from_g else to_g
+        rows.append(
+            f'<tr><td class="sym"><a href="lookup/{sym}">{label}</a></td>'
+            f'<td>{firm}</td><td>{grade_str}</td><td>{dt}</td></tr>'
+        )
+    return (
+        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
+        '<thead><tr><th>종목</th><th>증권사</th><th>등급 변경</th>'
+        '<th>날짜</th></tr></thead>'
+        '<tbody>' + "".join(rows) + '</tbody></table></div>'
+    )
+
+
 # ── Macro Snapshot rendering (SV port — dependency-free inline SVG) ──
 
 def _macro_spark_svg(values: list, direction=None) -> str:
@@ -12254,6 +12282,19 @@ def _render_market_page(data: dict) -> str:
     research_kr_industry = data.get("research_kr_industry", [])
     research_kr_strategy = data.get("research_kr_strategy", [])
     research_us = data.get("research_us", [])
+    # JP/TW/CN/HK 리서치(등급변경) — 데이터 있는 시장만 탭 노출(빈 시장 제거,
+    # 사용자 2026-06-13 '보고 판단'). yfinance 해외 커버리지 얇아 희소 가능.
+    _res_intl_defs = [(k, lbl, rows) for k, lbl, rows in (
+        ("jp", "일본", data.get("research_jp", [])),
+        ("tw", "대만", data.get("research_tw", [])),
+        ("cn", "중국", data.get("research_cn", [])),
+        ("hk", "홍콩", data.get("research_hk", []))) if rows]
+    _res_intl_btns = "".join(
+        f'<button class="tab-btn" data-tab="res{k}">{lbl}</button>'
+        for k, lbl, rows in _res_intl_defs)
+    _res_intl_panes = "".join(
+        f'<div id="tab-res{k}" class="tab-pane">{_render_research_intl_table(rows)}</div>'
+        for k, lbl, rows in _res_intl_defs)
     macro = data.get("macro", {})
     sector_movers = data.get("sector_movers", {})
     us_sector_movers = data.get("us_sector_movers", {})
@@ -12407,6 +12448,7 @@ def _render_market_page(data: dict) -> str:
     <button class="tab-btn" data-tab="krind">한국 산업</button>
     <button class="tab-btn" data-tab="krstrat">한국 전략</button>
     <button class="tab-btn" data-tab="us">미국</button>
+    {_res_intl_btns}
   </div>
   <div id="tab-kr" class="tab-pane active">
     {_render_research_kr_table(research_kr)}
@@ -12420,6 +12462,7 @@ def _render_market_page(data: dict) -> str:
   <div id="tab-us" class="tab-pane">
     {_render_research_us_table(research_us)}
   </div>
+  {_res_intl_panes}
 
   <div id="fav-section">
     <div class="fav-hd"><h2>⭐ 관심종목</h2><span class="cnt" id="fav-cnt"></span></div>
