@@ -2987,6 +2987,13 @@ def _prewarm_highlow() -> None:
         seq.append(("tw_highlow", _tw))
     except Exception:
         pass
+    try:
+        # US 52주 한글명 맵(네이버 업종 koreanCodeName) 선빌드 — 첫 방문자가
+        # 영문→한글 전환 안 보게 (사용자 2026-06-14). 7d 캐시·CN/HK/JP 업종맵 동류.
+        from bot.naver_ranking_client import world_industry_map as _wim
+        seq.append(("us_names", lambda: _wim("US")))
+    except Exception:
+        pass
     for label, fn in seq:
         try:
             fn()
