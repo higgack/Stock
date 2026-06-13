@@ -209,31 +209,36 @@ def render_highlow_page() -> str:
         except Exception:
             return f"{code}.KS"
 
-    def _panel(title: str, items: list) -> str:
-        if not items:
-            return (f'<div class="panel"><h2>{title}</h2>'
-                    '<div class="empty">해당 종목 없음</div></div>')
-        rows = "".join(
-            f'<tr><td class="rk">{i}</td>'
-            f'<td class="nm"><a href="lookup/{_html.escape(_ticker(it.get("code","")))}">'
-            f'{_html.escape(it.get("name",""))}</a></td>'
-            f'<td class="num">{_html.escape(str(it.get("price") or "—"))}</td>'
-            f'{_pct_cell(it.get("pct"))}'
-            f'<td class="num">{_fmt_vol(it.get("vol"))}</td></tr>'
-            for i, it in enumerate(items, 1))
-        return (f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
-                f'<table><thead><tr><th>#</th><th>종목</th>'
-                f'<th style="text-align:right">현재가</th>'
-                f'<th style="text-align:right">등락률</th>'
-                f'<th style="text-align:right">거래량</th></tr></thead>'
-                f'<tbody>{rows}</tbody></table></div>')
+    def _prep(lst):
+        # Naver 항목 → stock_panel 형식 (ticker·numeric price). 시총은 enrich.
+        out = []
+        for it in lst:
+            p = it.get("price")
+            try:
+                pn = float(str(p).replace(",", "")) if p else None
+            except (TypeError, ValueError):
+                pn = None
+            out.append({"ticker": _ticker(it.get("code", "")),
+                        "name": it.get("name", ""), "price": pn,
+                        "pct": it.get("pct"), "vol": it.get("vol")})
+        return out
 
-    up, low = data.get("upper", []), data.get("lower", [])
+    up, low = _prep(data.get("upper", [])), _prep(data.get("lower", []))
     if not up and not low:
         body = ('<div class="empty">상한가·하한가 데이터를 불러올 수 없습니다.<br>'
                 '(잠시 후 다시 시도해 주세요.)</div>')
     else:
+        # 미국 포맷 통일 — 종목명만·거래량·시총(사용자 2026-06-13 시총 추가) +
+        # 통화 헤더. 시총은 enrich_for_panel(yfinance mcap·10분 캐시).
+        from bot.highlow_render import (HL_SORT_JS, enrich_for_panel,
+                                        sort_by_mcap, stock_panel)
+        up = sort_by_mcap(enrich_for_panel(up, "KR"))
+        low = sort_by_mcap(enrich_for_panel(low, "KR"))
+        _o = dict(name_only=True, show_ind=False, show_vol=True)
         body = ('<div class="grid">'
-                + _panel("🔺 상한가", up) + _panel("🔻 하한가", low) + '</div>')
-    sub = f"Naver 증권 상한가·하한가. 4분 캐시. {('· ' + ts + ' 기준') if ts else ''}"
+                + stock_panel("🔺 상한가", up, "ul-up", "KR", **_o)
+                + stock_panel("🔻 하한가", low, "ul-low", "KR", **_o)
+                + '</div>' + HL_SORT_JS)
+    sub = (f"Naver 증권 상한가·하한가 · 시총=yfinance(10분 캐시) · 시총순·헤더 "
+           f"클릭 정렬. 4분 캐시. {('· ' + ts + ' 기준') if ts else ''}")
     return _shell("상한가·하한가", sub, "highlow", body)

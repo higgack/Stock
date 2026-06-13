@@ -1084,6 +1084,8 @@ def _fetch_display_names(tickers: list) -> dict:
     cache = _cached("highlow_names.json", ttl=365 * 86400) or {}
     missing = [t for t in tickers if t not in cache]
     if missing:
+        from concurrent.futures import ThreadPoolExecutor  # _fetch_mcaps 패턴
+
         def _one(tk):
             try:
                 info = yf.Ticker(tk).info

@@ -11,6 +11,10 @@
 from __future__ import annotations
 
 import html as _html
+import logging
+import time as _time
+
+log = logging.getLogger("bot.highlow_render")
 
 from bot.naver_pages import _fmt_vol, _pct_cell
 
@@ -181,3 +185,62 @@ def sort_by_mcap(items: list) -> list:
     """시총 내림차순(없으면 뒤로) — 사용자 '시총순위대로 표시'."""
     return sorted(items, key=lambda it: (it.get("mcap") is None,
                                          -(it.get("mcap") or 0)))
+
+
+_ENRICH_CACHE: dict = {}
+_ENRICH_TTL = 600   # 10분 — render 비용 amortize
+
+
+def enrich_for_panel(items: list, market: str, want_ind: bool = False,
+                     want_name: bool = False) -> list:
+    """상한가/하한가 등 단순 fetch 항목에 mcap(+업종/한글명) 백필 — stock_panel
+    리치 표시용(사용자 2026-06-13 KR 시총·TW 업종). 항목은 'ticker' 보유 가정.
+    10분 모듈 캐시로 render 비용 bound(항목 적음·동일 코드셋 재사용). graceful —
+    실패/creds 부재 시 원본 유지. mcap=억(현지통화) 단위(fmt_mcap 규약)."""
+    tickers = [it.get("ticker") for it in items if it.get("ticker")]
+    if not tickers:
+        return items
+    key = (market, want_ind, want_name, tuple(sorted(set(tickers))))
+    now = _time.time()
+    hit = _ENRICH_CACHE.get(key)
+    if hit and now - hit[0] < _ENRICH_TTL:
+        meta = hit[1]
+    else:
+        meta: dict = {}
+        try:
+            from bot.finviz_client import _fetch_mcaps
+            mcaps = _fetch_mcaps(tickers)
+            for tk in tickers:
+                mc = mcaps.get(tk)
+                meta.setdefault(tk, {})["mcap"] = (round(mc / 1e8, 2)
+                                                   if mc else None)
+            if want_ind:
+                from bot.finviz_client import _fetch_industries
+                inds = _fetch_industries(tickers)
+                for tk in tickers:
+                    meta.setdefault(tk, {})["ind"] = inds.get(tk)
+            if want_name:
+                from bot.finviz_client import _fetch_display_names
+                en = _fetch_display_names(tickers)
+                uniq = sorted({v for v in en.values() if v})
+                kr = {}
+                if uniq:
+                    from bot.chart_translate import translate_titles_kr
+                    kr = translate_titles_kr(uniq) or {}
+                for tk in tickers:
+                    e = en.get(tk, "")
+                    if e:
+                        meta.setdefault(tk, {})["name_kr"] = kr.get(e) or e
+            _ENRICH_CACHE[key] = (now, meta)
+        except Exception as exc:
+            log.warning("enrich_for_panel(%s): %s", market, exc)
+            return items
+    for it in items:
+        m = meta.get(it.get("ticker"), {})
+        if m.get("mcap") is not None:
+            it["mcap"] = m["mcap"]
+        if want_ind and m.get("ind"):
+            it["ind"] = m["ind"]
+        if want_name and m.get("name_kr"):
+            it["name"] = m["name_kr"]
+    return items
