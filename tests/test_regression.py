@@ -3887,8 +3887,10 @@ class TestDartFeedBackfill:
             "벌금등의부과": "리스크",
             "벌금등의부과(자회사의 주요경영사항)": "리스크",
             "중대재해발생": "리스크",
+            "재해발생": "리스크",                        # bare(라이브 2026-06-13)
             "대표이사변경(안내공시)": "회사구조",
             "대표집행임원변경": "회사구조",
+            "대표이사(대표집행임원)변경(안내공시)": "회사구조",  # 괄호 변형(라이브)
             "상호변경안내": "회사구조",
             "본점소재지변경": "회사구조",
             "사외이사의선임ㆍ해임또는중도퇴임에관한신고": "회사구조",
@@ -3897,12 +3899,17 @@ class TestDartFeedBackfill:
         }
         for nm, exp in cat.items():
             assert m._classify_report(nm) == exp, (nm, m._classify_report(nm))
+        # 회귀: 소유상황은 지분공시 파싱대상 — 대표'변경' 분기에 안 걸림
+        assert m._classify_report("임원ㆍ주요주주특정증권등소유상황보고서") == "지분공시"
+        assert m.is_parse_target({"category": "지분공시", "corp_code": "C",
+            "report_nm": "임원ㆍ주요주주특정증권등소유상황보고서"}) is True
         # 기존 분류 회귀 0
         assert m._classify_report("단일판매ㆍ공급계약체결") == "계약"
         assert m._classify_report("현금ㆍ현물배당결정") == "배당"
         # 제목완결 거버넌스/리스크류 = is_parse_target False (미파싱 색칠 제외)
         for nm in ("벌금등의부과", "대표이사변경(안내공시)", "상호변경안내",
-                   "주식매수선택권부여에관한신고", "중대재해발생"):
+                   "주식매수선택권부여에관한신고", "중대재해발생", "재해발생",
+                   "대표이사(대표집행임원)변경(안내공시)"):
             it = {"category": m._classify_report(nm), "report_nm": nm,
                   "corp_code": "C"}
             assert m.is_parse_target(it) is False, nm
