@@ -7737,6 +7737,24 @@ class TestNaverKrRanking:
         r = _kr_row(dict(self._SAMPLE, accumulatedTradingValue=690950000000))
         assert r["value"] == 6909.5            # /1e8 억(원)
 
+    def test_kr_panel_polish(self):
+        # 사용자 2026-06-13: 종목명 nowrap(KR만)·부제 trim(업종=yfinance/당일갱신 제거)
+        # ·상한가 1h 캐시.
+        from bot.highlow_render import HL_SORT_JS, stock_panel
+        kr = stock_panel("x", [{"ticker": "240810.KQ", "name": "원익IPS",
+                                "price": 1, "pct": 1}], "t", "KR", name_only=True)
+        us = stock_panel("x", [{"ticker": "AMAT", "name": "Applied Materials",
+                                "price": 1, "pct": 1}], "t", "US")
+        assert 'class="hl-table nm-nowrap"' in kr      # KR 종목명 줄바꿈 금지
+        assert 'class="hl-table"' in us                # US 영문 긴 이름은 줄바꿈 유지
+        assert ".hl-table.nm-nowrap td.nm" in HL_SORT_JS
+        ip = open("bot/intl_pages.py", encoding="utf-8").read()
+        assert "당일 52주 신고가/신저가 갱신" not in ip and "직전 종가 고정" not in ip
+        assert '_ind_lbl = "" if market == "KR"' in ip   # KR 업종=yfinance 제거
+        np = open("bot/naver_pages.py", encoding="utf-8").read()
+        assert "kr_upper_lower_v1.json" in np and "ttl=3600" in np   # 상한가 1h 캐시
+        assert "거래대금·시총 native · 시총순" not in np             # 부제 trim
+
     def test_kr_upper_lower_filter_and_wiring(self):
         # 사용자 2026-06-13 'KR 모두 네이버' — 상한가/하한가도 front-api(UPPER/LOWER
         # _LIMIT 필터), 시총·거래대금 native(yfinance enrich 제거 → 429 면역).

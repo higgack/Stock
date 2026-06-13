@@ -27,6 +27,9 @@ HL_SORT_JS = """
 <style>
 .hl-table th.srt{cursor:pointer;user-select:none;white-space:nowrap}
 .hl-table td.ind{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted,#888);font-size:12px}
+/* KR(name_only) 종목명은 짧아 줄바꿈 금지 — 상한가(거래대금 컬럼)에서 '원익\nIPS'
+   처럼 깨지던 것 방지. US 영문 긴 이름은 nm-nowrap 미적용이라 줄바꿈 유지. */
+.hl-table.nm-nowrap td.nm{white-space:nowrap}
 .hl-table th.srt:hover{color:var(--accent,#3b82f6)}
 .hl-table th.srt .arw{opacity:.45;font-size:10px;margin-left:2px}
 .hl-table th.srt.on .arw{opacity:1}
@@ -182,7 +185,7 @@ def stock_panel(title: str, items: list, tid: str, market: str,
     return (
         f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
         f'{extra_head}'
-        f'<table class="hl-table" id="{tid}"><thead><tr>'
+        f'<table class="hl-table{" nm-nowrap" if name_only else ""}" id="{tid}"><thead><tr>'
         + "".join(heads)
         + f'</tr></thead><tbody>{rows}</tbody></table></div>'
     )
