@@ -350,6 +350,16 @@ def world_industry_map(market: str, per_industry: int = 300) -> dict:   # 300: �
                 out[tk] = ind
             if tk and nm:
                 names[tk] = nm
+    # 업종명 영문화 (사용자 2026-06-14 '모두 영문') — 한글 업종명 → 영문 번역
+    # (Flash·영구 캐시). 키부재/실패 시 한글 유지(graceful).
+    if out:
+        try:
+            from bot.chart_translate import translate_industries_en
+            en = translate_industries_en(sorted(set(out.values())))
+            if en:
+                out = {tk: en.get(v, v) for tk, v in out.items()}
+        except Exception:
+            pass
     if out:
         _cache_write(cache, out)
     if names:
@@ -522,6 +532,15 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
             rows.append({"name": name, "pct": round(num / den, 2)})
     if not rows:
         return {"up": [], "down": [], "ts": "", "source": ""}
+    # 업종명 영문화 (사용자 2026-06-14 '모두 영문'). graceful.
+    try:
+        from bot.chart_translate import translate_industries_en
+        en = translate_industries_en([r["name"] for r in rows])
+        if en:
+            for r in rows:
+                r["name"] = en.get(r["name"], r["name"])
+    except Exception:
+        pass
     rows.sort(key=lambda r: r["pct"], reverse=True)
     up = [r for r in rows if r["pct"] > 0][:top_n]
     down = sorted([r for r in rows if r["pct"] < 0], key=lambda r: r["pct"])[:top_n]
