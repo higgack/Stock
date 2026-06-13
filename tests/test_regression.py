@@ -4855,11 +4855,20 @@ class TestTwseSectorHighLow:
         assert r["down"][0]["name"] == "금융·보험"
         assert r["source"] == "TWSE 類股"
 
-    def test_upper_lower_filter(self, monkeypatch):
+    def test_openapi_stock_parse_and_filter(self, monkeypatch):
+        # 상한가/하한가 = OpenAPI STOCK_DAY_ALL(평평한 dict 배열, 점검 무관)
         import bot.twse_client as tw
-        monkeypatch.setattr(tw, "fetch_mi_index", lambda: {
-            "sectors": [], "stocks": tw.parse_stock_rows(self._TABLES),
-            "ts": "x"})
+        rows = [
+            {"Code": "2330", "Name": "台積電", "ClosingPrice": "1000", "Change": "95"},   # +10.5%
+            {"Code": "2317", "Name": "鴻海", "ClosingPrice": "99", "Change": "-11"},      # -10%
+            {"Code": "2454", "Name": "聯發科", "ClosingPrice": "805", "Change": "5"},      # +0.6%
+            {"Code": "0050", "Name": "台灣50", "ClosingPrice": "180", "Change": "X"},      # 결측 컷
+        ]
+        parsed = tw.parse_stock_day_all(rows)
+        d = {s["code"]: s for s in parsed}
+        assert d["2330"]["pct"] > 9.5 and d["2317"]["pct"] < -9.5
+        assert "0050" not in d                       # 결측 Change 컷
+        monkeypatch.setattr(tw, "fetch_stock_day_all", lambda: parsed)
         ul = tw.fetch_tw_upper_lower()
         assert any(s["code"] == "2330" for s in ul["upper"])
         assert any(s["code"] == "2317" for s in ul["lower"])
