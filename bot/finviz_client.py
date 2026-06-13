@@ -1600,6 +1600,18 @@ def _backfill_korean_names(rows: list, market: str) -> None:
     한글)·US(영문)는 호출 안 함. in-place·graceful(실패 시 원본 유지)."""
     if not market or market in ("US", "KR"):
         return
+    if market == "TW":
+        # 대만은 () 안을 **영문명**으로 (사용자 2026-06-14 '대만은 한국어 번역
+        # 하지말고 영어로'). yfinance longName 직접 사용, chart_translate 안 함.
+        try:
+            en = _fetch_display_names([r["ticker"] for r in rows])
+            for r in rows:
+                e = en.get(r["ticker"], "")
+                if e:
+                    r["name"] = e
+        except Exception as exc:
+            log.warning("finviz: TW 영문명 백필 실패: %s", exc)
+        return
     try:
         from bot.chart_translate import translate_titles_kr
         # 1) 이미 들어온 네이티브명(CJK/영문) 직접 번역

@@ -205,11 +205,13 @@ def parse_stock_day_all(rows: list) -> list[dict]:
         prev = close - chg
         pct = (chg / prev * 100.0) if prev else 0.0
         vol = _num(r.get("TradeVolume") or r.get("成交股數"))  # 거래량(주식수)
+        val = _num(r.get("TradeValue") or r.get("成交金額"))   # 거래대금(NT$)
         out.append({
             "code": str(r.get("Code") or r.get("代號") or "").strip(),
             "name": str(r.get("Name") or r.get("名稱") or "").strip(),
             "close": close, "pct": round(pct, 2),
-            "vol": int(vol) if vol is not None else None})
+            "vol": int(vol) if vol is not None else None,
+            "value": round(val / 1e8, 2) if val is not None else None})  # 억 NT$
     return out
 
 
@@ -222,11 +224,20 @@ def _roc_to_iso(s) -> str:
 
 
 def fetch_stock_day_all() -> dict:
-    """OpenAPI 전종목 일일 → {rows:[{code,name,close,pct}], date:'YYYY-MM-DD'
-    (자료 기준 거래일)}. 5분 캐시·graceful."""
-    c = _cached("stock_day_all")
-    if c is not None:
-        return c
+    """OpenAPI 전종목 일일 → {rows:[{code,name,close,pct,vol,value}], date}.
+    시장-인지 신선도(_session_fresh TW, 장중 1h / 장 밖 마지막 마감 이후 재산출 0
+    — 사용자 2026-06-14 '모두 장중 1h'). 옛 플랫 5분 대체. graceful."""
+    fp = _CACHE_DIR / "stock_day_all.json"
+    try:
+        if fp.exists():
+            from bot.finviz_client import _HL_INTRA_TTL, _session_fresh
+            if _session_fresh("TW", fp.stat().st_mtime, _HL_INTRA_TTL):
+                return json.loads(fp.read_text(encoding="utf-8"))
+    except Exception:
+        # 신선도 판정 불가(finviz import 실패 등) → 기존 5분 캐시로 폴백
+        c = _cached("stock_day_all")
+        if c is not None:
+            return c
     try:
         r = requests.get(_OPENAPI_STOCK, headers=_HDRS, timeout=15)
         r.raise_for_status()
@@ -235,6 +246,11 @@ def fetch_stock_day_all() -> dict:
         date = _roc_to_iso(raw[0].get("Date")) if isinstance(raw, list) and raw else ""
     except Exception as exc:
         log.warning("twse STOCK_DAY_ALL fetch error: %s", exc)
+        try:                       # fetch 실패 시 스테일 캐시라도(블랭크 방지)
+            if fp.exists():
+                return json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            pass
         return {"rows": [], "date": ""}
     out = {"rows": rows, "date": date}
     if rows:
