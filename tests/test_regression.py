@@ -4880,12 +4880,17 @@ class TestTwseSectorHighLow:
         assert ul["date"] == "2026-06-12"                  # 자료 기준일
         # 순수종목만 — ETF(00910)는 +12.9%여도 제외
         assert not any(s["code"] == "00910" for s in ul["upper"])
-        # ±9.9% — -9.86% 같은 '근접'은 제외(사용자 '하한가랑 거리 먼데')
-        near = tw.parse_stock_day_all(
-            [{"Code": "1234", "Name": "x", "ClosingPrice": "100", "Change": "-9.86"}])
+        # ±9.5%권 — 근접(-9.86%)도 포함(사용자 2026-06-13 '넓게 봐야 파악',
+        # 9.9 로 좁혔다 9.5 환원). -9.0% 는 제외.
+        # Change=가격변동(±%아님): 전일100 → -9.86%(종90.14)·-9.0%(종91)
+        near = tw.parse_stock_day_all([
+            {"Code": "1234", "Name": "x", "ClosingPrice": "90.14", "Change": "-9.86"},
+            {"Code": "5678", "Name": "y", "ClosingPrice": "91", "Change": "-9"}])
         monkeypatch.setattr(tw, "fetch_stock_day_all",
                             lambda: {"rows": near, "date": "x"})
-        assert tw.fetch_tw_upper_lower()["lower"] == []
+        low = tw.fetch_tw_upper_lower()["lower"]
+        assert any(s["code"] == "1234" for s in low)       # -9.86% 포함(±9.5권)
+        assert not any(s["code"] == "5678" for s in low)   # -9.0% 제외
 
     def test_highlow_page_graceful_and_data(self, monkeypatch):
         import bot.twse_client as tw
