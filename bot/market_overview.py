@@ -895,7 +895,7 @@ def fetch_all_market_data() -> dict[str, Any]:
         us_sector_fut = pool.submit(_fetch_us_sector_movers_safe)
         # JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(사용자 2026-06-13 Phase 1)
         jp_sector_fut = pool.submit(_fetch_etf_sector_safe, "JP")
-        tw_sector_fut = pool.submit(_fetch_etf_sector_safe, "TW")
+        tw_sector_fut = pool.submit(_fetch_tw_sector_safe)   # TWSE 類股 우선
         cn_sector_fut = pool.submit(_fetch_etf_sector_safe, "CN_A")
         hk_sector_fut = pool.submit(_fetch_etf_sector_safe, "HK")
         deposit_fut = pool.submit(_fetch_deposit_safe)
@@ -955,6 +955,19 @@ def _fetch_etf_sector_safe(market: str) -> dict:
     except Exception as exc:
         log.warning("etf sector movers fetch error (%s): %s", market, exc)
         return {"up": [], "down": [], "ts": "", "source": ""}
+
+
+def _fetch_tw_sector_safe() -> dict:
+    """TW 업종 등락 — TWSE 類股 지수(~30 업종, 풍부) 우선, 실패 시 ETF 합성
+    폴백(사용자 2026-06-13 Phase 2, TWSE 200 검증)."""
+    try:
+        from bot.twse_client import fetch_tw_sector_movers
+        r = fetch_tw_sector_movers(top_n=10)
+        if r.get("up") or r.get("down"):
+            return r
+    except Exception as exc:
+        log.warning("twse sector fetch error: %s", exc)
+    return _fetch_etf_sector_safe("TW")
 
 
 def _fetch_deposit_safe() -> dict:
