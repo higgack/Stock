@@ -126,13 +126,41 @@ def _world_row(s: dict) -> dict:
     }
 
 
+# ⚠️ 네이버 front-api pageSize 상한 (VM 실측 2026-06-13): pageSize>~50 이면 빈
+# 배열 반환(0). KR 52주/상한가가 pageSize=200 으로 전부 0 이던 진짜 원인. 50 이하
+# + 페이지네이션으로 전종목 수집.
+_PAGE_SIZE = 50
+
+
+def _domestic_paged(sort_type: str, category: str = "all", max_items: int = 200) -> list:
+    """domestic 랭킹 — pageSize 상한(50) 때문에 여러 페이지 합산. graceful []."""
+    out: list = []
+    for page in range(1, max_items // _PAGE_SIZE + 2):
+        st = _get_stocks(f"{_BASE}/domestic/stock/list?sortType={sort_type}"
+                         f"&category={category}&page={page}&pageSize={_PAGE_SIZE}")
+        if not st:
+            break
+        out += st
+        if len(st) < _PAGE_SIZE or len(out) >= max_items:
+            break
+    return out
+
+
 def fetch_world_ranking(exchange: str, sort_type: str, limit: int = 30) -> list:
-    """네이버 worldstock 랭킹 1콜 → rows (한글명·거래대금·시총). sort_type ∈
-    {marketValue|up|down|top|priceTop|dividend}. graceful []."""
-    st = _get_stocks(f"{_BASE}/worldstock/exchange/stock/list"
-                     f"?stockExchangeType={exchange}&stockPriceSortType={sort_type}"
-                     f"&page=1&pageSize={limit}")
-    return [_world_row(s) for s in st] if st else []
+    """네이버 worldstock 랭킹 → rows (한글명·거래대금·시총). sort_type ∈
+    {marketValue|up|down|top|priceTop|dividend}. pageSize 상한(50) 페이지네이션.
+    graceful []."""
+    rows: list = []
+    for page in range(1, limit // _PAGE_SIZE + 2):
+        st = _get_stocks(f"{_BASE}/worldstock/exchange/stock/list"
+                         f"?stockExchangeType={exchange}&stockPriceSortType={sort_type}"
+                         f"&page={page}&pageSize={min(limit, _PAGE_SIZE)}")
+        if not st:
+            break
+        rows += [_world_row(s) for s in st]
+        if len(st) < _PAGE_SIZE or len(rows) >= limit:
+            break
+    return rows[:limit]
 
 
 def fetch_us_movers(top_n: int = 30) -> dict:
@@ -175,10 +203,8 @@ def fetch_kr_highlow(limit: int = 200) -> dict:
     from bot.finviz_client import _now_label
     out = {"high": [], "low": [], "ts": _now_label(),
            "source": "네이버 증권 52주 최고/최저(전종목·한글명)"}
-    hi = _get_stocks(f"{_BASE}/domestic/stock/list?sortType=high52week"
-                     f"&category=all&page=1&pageSize={limit}")
-    lo = _get_stocks(f"{_BASE}/domestic/stock/list?sortType=low52week"
-                     f"&category=all&page=1&pageSize={limit}")
+    hi = _domestic_paged("high52week", max_items=limit)
+    lo = _domestic_paged("low52week", max_items=limit)
     if hi:
         out["high"] = [_kr_row(s) for s in hi if _is_real_stock(s)]
     if lo:
@@ -194,10 +220,8 @@ def fetch_kr_upper_lower(limit: int = 200) -> dict:
     from bot.finviz_client import _now_label
     out = {"upper": [], "lower": [], "ts": _now_label(),
            "source": "네이버 증권 상한가/하한가(전종목·한글명·시총·거래대금)"}
-    up = _get_stocks(f"{_BASE}/domestic/stock/list?sortType=up"
-                     f"&category=all&page=1&pageSize={limit}")
-    dn = _get_stocks(f"{_BASE}/domestic/stock/list?sortType=down"
-                     f"&category=all&page=1&pageSize={limit}")
+    up = _domestic_paged("up", max_items=limit)
+    dn = _domestic_paged("down", max_items=limit)
     if up:
         out["upper"] = [_kr_row(s) for s in up if _is_real_stock(s)
                         and "UPPER" in str(s.get("fluctuationsType") or "")]

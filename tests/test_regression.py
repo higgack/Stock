@@ -7680,6 +7680,24 @@ class TestNaverKrRanking:
         assert set(d) >= {"high", "low", "ts", "source"}
         assert isinstance(d["high"], list) and isinstance(d["low"], list)
 
+    def test_pagesize_cap_pagination(self, monkeypatch):
+        # VM 실측 2026-06-13: 네이버 front-api pageSize>~50 이면 빈 배열 → KR 52주/
+        # 상한가가 pageSize=200 으로 전부 0/0. pageSize=50 + 페이지네이션 회귀 잠금.
+        import re
+        import bot.naver_ranking_client as nr
+
+        def fake(url):
+            assert "pageSize=50" in url, url           # 200 금지
+            p = int(re.search(r"page=(\d+)", url).group(1))
+            return ([{"itemCode": str(i)} for i in range(50)] if p == 1
+                    else [{"itemCode": "x"}] if p == 2 else None)
+        monkeypatch.setattr(nr, "_get_stocks", fake)
+        out = nr._domestic_paged("up", max_items=200)
+        assert len(out) == 51                          # 50(page1) + 1(page2 short→stop)
+        # 소스에 실제 pageSize=200 호출 없음(주석 제외)
+        src = open("bot/naver_ranking_client.py", encoding="utf-8").read()
+        assert "pageSize={limit}" not in src and "_PAGE_SIZE = 50" in src
+
     def test_get_stocks_both_envelopes(self, monkeypatch):
         # VM 2026-06-13: 국내(domestic) 응답엔 isSuccess 가 없어 옛 가드가 전부
         # 거부 → 52주/상한가 0. 가드 완화(isSuccess 명시 False 만 거부) 회귀 잠금.
