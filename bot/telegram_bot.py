@@ -2948,7 +2948,7 @@ async def _periodic_market_refresh() -> None:
 
     주기 단축이 안전한 이유: 페이지는 각 소스의 **디스크 캐시에서 렌더**
     하고, 외부 호출 빈도는 소스별 TTL 이 상한 — Finviz 5분(데이터센터 IP
-    안티봇 검증 한계)·Naver 업종 4분·스냅샷 2분·실적/리서치/예탁금 1~12h.
+    안티봇 검증 한계)·Naver 업종 5분·스냅샷 5분·실적/리서치/예탁금 1~12h.
     루프는 sequential(await)이라 겹침 불가, to_thread 라 폴링 비차단
     (watchdog 영향 0). 효과: 위젯 최대 지연 = 소스 TTL + 1분 (기존 +5분).
     ⚠️ Finviz/Naver TTL 을 더 줄이는 건 차단 리스크 — 여기 말고 TTL 이

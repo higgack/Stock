@@ -164,7 +164,7 @@ def render_theme_page() -> str:
                 f'<th>주도주</th></tr></thead>'
                 f'<tbody>{"".join(rows)}</tbody></table></div>{_THEME_SORT_JS}')
     return _shell("테마별 시세",
-                  "Naver 증권 테마별 등락률 · 상승순. 테마명·주도주 클릭 시 상세/종목분석. 4분 캐시.",
+                  "Naver 증권 테마별 등락률 · 상승순. 테마명·주도주 클릭 시 상세/종목분석. 5분 캐시.",
                   "theme", body)
 
 
