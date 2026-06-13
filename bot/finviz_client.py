@@ -1386,6 +1386,17 @@ def _compute_us_movers() -> dict:
     SPAC·워런트·채권형 제외), 폴백 S&P500. **auto_adjust=True** — 분할
     자체를 소스에서 중화(highlow 의 raw 봉과 달리 등락률 비교라 필수),
     잔존 |pct|>75% 는 글리치 드랍 (KLAC 클래스, CLAUDE.md 가드)."""
+    # 네이버 우선 (NASDAQ+NYSE+AMEX 등락·한글명·거래대금/시총·1콜씩, 사용자
+    # 2026-06-13 '미국등급급락은 네이버'). 성공 시 전미국 yfinance 스캔(수 분) 생략.
+    try:
+        from bot.naver_ranking_client import fetch_us_movers as _nv_us_movers
+        nv = _nv_us_movers()
+        if nv.get("up") or nv.get("down"):
+            _cache_write(_MOVERS_CACHE, nv)
+            _movers_status_write("done", up=len(nv["up"]), down=len(nv["down"]), src="naver")
+            return nv
+    except Exception as exc:
+        log.warning("naver US movers 실패 → yfinance 스캔 폴백: %s", exc)
     out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0,
                  "source": "전 미국 상장 산출(yfinance · 당일 등락)"}
     tks, names = _us_full_universe()

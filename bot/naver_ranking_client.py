@@ -70,15 +70,84 @@ def _kr_row(s: dict) -> dict:
         mcap = round(float(mv) / 1e8, 2) if mv else None
     except (TypeError, ValueError):
         mcap = None
+    tv = s.get("accumulatedTradingValue")
+    try:
+        value = round(float(tv) / 1e8, 2) if tv else None   # 거래대금 억(원)
+    except (TypeError, ValueError):
+        value = None
     return {
         "ticker": f"{code}{suf}" if code else code,
         "name": s.get("name") or code,
         "price": s.get("currentPrice"),
         "pct": _signed_pct(s),
         "vol": s.get("accumulatedTradingVolume"),
+        "value": value,
         "mcap": mcap,
         "ind": None,
     }
+
+
+# 해외(worldstock) stockExchangeType — VM 실측 enum (2026-06-13).
+_WORLD_EXCHANGES = ("NASDAQ", "NYSE", "AMEX", "SHANGHAI", "SHENZHEN",
+                    "HONG_KONG", "TOKYO", "HOCHIMINH", "HANOI")
+# worldstock sortType enum: marketValue|up|down|top|priceTop|dividend (52주 없음).
+
+
+def _world_row(s: dict) -> dict:
+    """네이버 worldstock → highlow_render 스키마. ticker=symbolCode(미국 'AAPL'·
+    중국 '601288'), name=한글 native. mcap/value = 현지통화/1e8 억 (fmt_mcap 규약:
+    US=억$→$T/$B, 그 외=억→억/조). 업종 미제공."""
+    sym = str(s.get("symbolCode") or s.get("reutersCode") or "")
+
+    def _eok(x):
+        try:
+            return round(float(x) / 1e8, 2) if x else None
+        except (TypeError, ValueError):
+            return None
+    return {
+        "ticker": sym,
+        "name": s.get("name") or sym,
+        "price": s.get("currentPrice"),
+        "pct": _signed_pct(s),
+        "vol": s.get("accumulatedTradingVolume"),
+        "value": _eok(s.get("accumulatedTradingValue")),   # 거래대금 억(현지통화)
+        "mcap": _eok(s.get("marketValue")),                # 시총 억(현지통화)
+        "currency": s.get("currencyType"),
+        "ind": None,
+    }
+
+
+def fetch_world_ranking(exchange: str, sort_type: str, limit: int = 30) -> list:
+    """네이버 worldstock 랭킹 1콜 → rows (한글명·거래대금·시총). sort_type ∈
+    {marketValue|up|down|top|priceTop|dividend}. graceful []."""
+    st = _get_stocks(f"{_BASE}/worldstock/exchange/stock/list"
+                     f"?stockExchangeType={exchange}&stockPriceSortType={sort_type}"
+                     f"&page=1&pageSize={limit}")
+    return [_world_row(s) for s in st] if st else []
+
+
+def fetch_us_movers(top_n: int = 30) -> dict:
+    """미국 급등/급락 — 네이버 worldstock NASDAQ+NYSE+AMEX up/down 병합·정렬
+    (사용자 2026-06-13 '미국등급급락은 네이버·한글명'). {up,down,ts,source,scanned}.
+    한글명 native·거래대금/시총 포함. graceful — 전 거래소 실패 시 빈(호출부 폴백)."""
+    from bot.finviz_client import _now_label
+    ups: list = []
+    downs: list = []
+    ok = False
+    for ex in ("NASDAQ", "NYSE", "AMEX"):
+        u = fetch_world_ranking(ex, "up", limit=top_n)
+        d = fetch_world_ranking(ex, "down", limit=top_n)
+        if u or d:
+            ok = True
+        ups += u
+        downs += d
+    if not ok:
+        return {"up": [], "down": [], "ts": _now_label(), "source": "", "scanned": 0}
+    ups.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else -1e9, reverse=True)
+    downs.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else 1e9)
+    return {"up": ups[:top_n], "down": downs[:top_n], "ts": _now_label(),
+            "source": "네이버 증권 미국 등락(NASDAQ+NYSE+AMEX·한글명)",
+            "scanned": len(ups) + len(downs)}
 
 
 def _is_real_stock(s: dict) -> bool:

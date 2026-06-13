@@ -117,10 +117,11 @@ def ind_dist_line(items: list, top_k: int = 5) -> str:
 def stock_panel(title: str, items: list, tid: str, market: str,
                 extra_head: str = "", name_only: bool = False,
                 show_vol: bool = True, show_ind: bool = True,
-                show_mcap: bool = True) -> str:
-    """리치 종목 패널 — 종목·현재가·등락률·(거래량)·(시총)·(업종), 헤더 클릭
-    정렬. **통화기호는 셀이 아닌 현재가/시총 헤더에만**(사용자 2026-06-13).
-    플래그: name_only=종목명만(티커 생략·KR), show_vol/show_ind/show_mcap."""
+                show_mcap: bool = True, show_value: bool = False) -> str:
+    """리치 종목 패널 — 종목·현재가·등락률·(거래량)·(거래대금)·(시총)·(업종),
+    헤더 클릭 정렬. **통화기호는 셀이 아닌 헤더에만**(사용자 2026-06-13).
+    플래그: name_only·show_vol·show_value(거래대금)·show_ind·show_mcap.
+    거래대금/시총 = it['value']/it['mcap'] 억 단위(fmt_mcap 규약)."""
     if not items:
         return (f'<div class="panel"><h2>{title}</h2>'
                 '<div class="empty">해당 종목 없음</div></div>')
@@ -147,8 +148,11 @@ def stock_panel(title: str, items: list, tid: str, market: str,
             f'<td class="num">{_fmt_price(price, market, with_sym=False)}</td>',
             _pct_cell(pct),
         ]
+        value = it.get("value")
         if show_vol:
             cells.append(f'<td class="num">{_fmt_vol(vol)}</td>')
+        if show_value:
+            cells.append(f'<td class="num">{fmt_mcap(value, market, with_sym=False)}</td>')
         if show_mcap:
             cells.append(f'<td class="num">{fmt_mcap(mcap, market, with_sym=False)}</td>')
         if show_ind:
@@ -158,6 +162,7 @@ def stock_panel(title: str, items: list, tid: str, market: str,
                 f'data-price="{pnum if pnum is not None else -1}" '
                 f'data-pct="{pct if pct is not None else -9999}" '
                 f'data-vol="{vol if vol is not None else -1}" '
+                f'data-value="{value if value is not None else -1}" '
                 f'data-mcap="{mcap if mcap is not None else -1}" '
                 f'data-ind="{ind.lower()}"')
         return f'<tr {data}>' + "".join(cells) + '</tr>'
@@ -168,6 +173,8 @@ def stock_panel(title: str, items: list, tid: str, market: str,
              '<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>']
     if show_vol:
         heads.append('<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량</th>')
+    if show_value:
+        heads.append(f'<th class="srt" data-key="value" data-type="num" style="text-align:right">거래대금{cur_h}</th>')
     if show_mcap:
         heads.append(f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총{cur_h}</th>')
     if show_ind:

@@ -7686,6 +7686,53 @@ class TestNaverKrRanking:
         assert "from bot.naver_ranking_client import fetch_kr_highlow" in src
         assert "pykrx 폴백" in src
 
+    def test_kr_row_trading_value(self):
+        # 거래대금(accumulatedTradingValue) 억 단위 (사용자 2026-06-13 '거래대금도')
+        from bot.naver_ranking_client import _kr_row
+        r = _kr_row(dict(self._SAMPLE, accumulatedTradingValue=690950000000))
+        assert r["value"] == 6909.5            # /1e8 억(원)
+
+
+class TestNaverWorldRanking:
+    """해외(worldstock) 랭킹 — 미국 급등락 네이버(사용자 2026-06-13 '미국등급급락은
+    네이버·한글명'). NASDAQ/NYSE/AMEX/SHANGHAI/.../TOKYO + 거래대금·시총. VM 실측
+    필드 파싱 단위검증. 미국 ticker=symbolCode(bare)·한글명."""
+
+    def test_world_row_schema(self):
+        from bot.naver_ranking_client import _world_row
+        s = {"name": "농업은행", "symbolCode": "601288", "currentPrice": 6.8,
+             "currencyType": "CNY", "fluctuationsType": "RISING", "fluctuationsRatio": "1.80",
+             "accumulatedTradingVolume": 460068741, "accumulatedTradingValue": 3086106000,
+             "marketValue": 2170860633284}
+        r = _world_row(s)
+        assert r["ticker"] == "601288" and r["name"] == "농업은행" and r["pct"] == 1.8
+        assert r["value"] == 30.86 and r["mcap"] == 21708.61      # /1e8 억
+        # 미국: symbolCode = bare ticker, 하락 부호
+        us = _world_row({"name": "애플", "symbolCode": "AAPL", "currentPrice": 201.0,
+                         "fluctuationsType": "FALLING", "fluctuationsRatio": "2.1",
+                         "marketValue": 3e12})
+        assert us["ticker"] == "AAPL" and us["pct"] == -2.1 and us["mcap"] == 30000.0
+
+    def test_us_movers_graceful_and_wired(self):
+        from bot.naver_ranking_client import fetch_us_movers
+        m = fetch_us_movers()                  # 샌드박스 네이버 불가 → 빈, 크래시 0
+        assert set(m) >= {"up", "down", "ts", "source", "scanned"}
+        # _compute_us_movers 가 네이버 우선 배선
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert "from bot.naver_ranking_client import fetch_us_movers" in src
+        assert "yfinance 스캔 폴백" in src
+
+    def test_value_column_in_panel(self):
+        # 거래대금 컬럼 (show_value) — 억 단위 fmt_mcap 재사용
+        from bot.highlow_render import stock_panel
+        h = stock_panel("x", [{"ticker": "AAPL", "name": "애플", "price": 201,
+                               "pct": -2.1, "value": 500.0, "mcap": 30000.0}],
+                        "t", "US", show_vol=False, show_value=True)
+        assert "거래대금" in h and 'data-value="500.0"' in h
+        # show_value=False(기본)면 컬럼 없음 (다른 페이지 무영향)
+        h2 = stock_panel("x", [{"ticker": "AAPL", "price": 201, "pct": 1.0}], "t", "US")
+        assert "거래대금" not in h2
+
 
 class TestSessionAwarePerMarket:
     """시장-인지 신선도 (_session_fresh) — 사용자 2026-06-13 '장종료후 굳이 안
