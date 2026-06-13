@@ -4045,6 +4045,35 @@ class TestDartCardFormats:
         assert "주식총수의 35.31% (잠재 희석)" in j
         assert "전환기간 2027-06-18 ~ 2029-05-18" in j  # 'N일' trailing 소비
 
+    def test_extract_detail_generic_fallback_wrapper(self, tmp_path, monkeypatch):
+        # 사용자 2026-06-14 '미파싱 9개' — 전용 분기가 None 이어도 generic 원문
+        # 폴백 보장(옛 early-return 이 generic 건너뛰어 전환청구권/IR/대량보유 등
+        # 미파싱 남던 것 fix). 래퍼가 어느 분기든 None 이면 generic 시도.
+        m = self._load(tmp_path, monkeypatch)
+        monkeypatch.setattr(m, "_extract_detail_specific", lambda *a, **k: None)
+        monkeypatch.setattr(m, "_extract_generic_document",
+                            lambda rno, key: {"lines": ["보고자: 홍길동"]})
+        r = m._extract_detail("아무공시", "RX", "C", "K")
+        assert r and r["lines"] == ["보고자: 홍길동"]   # generic 폴백 발동
+        # category 승격 보존 (전용이 category-only 반환)
+        monkeypatch.setattr(m, "_extract_detail_specific",
+                            lambda *a, **k: {"category": "주주환원"})
+        r2 = m._extract_detail("x", "RX", "C", "K")
+        assert r2["category"] == "주주환원" and r2["lines"] == ["보고자: 홍길동"]
+        # 둘 다 None → None (회귀 0)
+        monkeypatch.setattr(m, "_extract_generic_document", lambda rno, key: None)
+        monkeypatch.setattr(m, "_extract_detail_specific", lambda *a, **k: None)
+        assert m._extract_detail("x", "RX", "C", "K") is None
+
+    def test_numbered_rows_korean_enum(self):
+        # 사용자 2026-06-14 — 가나다 enumeration(변형 양식) generic 발췌.
+        from bot.dart_feed import _numbered_rows_lines
+        r = _numbered_rows_lines("가. 보고자 홍길동 나. 보유비율 5.12% 다. 보고사유 -")
+        assert any("보고자" in x for x in r) and any("보유비율" in x for x in r)
+        assert all("보고사유" not in x for x in r)      # '-' 값 스킵(노이즈)
+        r2 = _numbered_rows_lines("1. 일시 2026-06-16 2. 장소 본사")
+        assert any("일시" in x for x in r2) and any("장소" in x for x in r2)  # 숫자 호환
+
     def test_dashboard_no_eq_prefix_and_mcap_attach(self, tmp_path, monkeypatch):
         m = self._load(tmp_path, monkeypatch)
         from datetime import date, datetime

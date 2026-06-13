@@ -1813,9 +1813,13 @@ def _numbered_rows_lines(txt: str, max_lines: int = 6) -> list[str]:
     - 값: '-'/해당없음 류 스킵, 정보성(숫자 포함) 또는 짧은 텍스트만,
       60자 컷, 최대 6줄. 순수(단위테스트)."""
     _LBL = r"[가-힣][가-힣A-Za-z()%·ㆍ\s]{1,24}?"   # '(%)'·'(원)' 보조 포함
-    _stop = r"(?=\d{1,2}\s*\.\s*" + _LBL + r"[\s:：]|$)"
+    # 항목 머리 = 숫자(1.) 또는 한글 가나다 enumeration(가. 나. — DART 하위항목
+    # 다수가 이 형식, 사용자 2026-06-14 미파싱 변형 대응). 한글은 실제 열거
+    # 문자만(가~하)로 한정해 문장 중간 오캡처 차단.
+    _PFX = r"(?:\d{1,2}|[가나다라마바사아자차카타파하])"
+    _stop = r"(?=" + _PFX + r"\s*\.\s*" + _LBL + r"[\s:：]|$)"
     rows = re.findall(
-        r"\d{1,2}\s*\.\s*(" + _LBL + r")\s*[:：]?\s+"
+        _PFX + r"\s*\.\s*(" + _LBL + r")\s*[:：]?\s+"
         r"([\s\S]{1,120}?)\s*" + _stop, txt)
     parts: list[str] = []
     seen: set[str] = set()
@@ -2494,6 +2498,25 @@ def _extract_contract_document(rcept_no: str, api_key: str) -> dict | None:
 
 def _extract_detail(report_nm: str, rcept_no: str, corp_code: str,
                     api_key: str) -> dict | None:
+    """전용 파서 dispatch + **generic 원문 폴백 일괄 보장** (사용자 2026-06-14
+    '미파싱 9개 끝내'). 옛 구조는 전용 분기 일부가 실패 시 early `return None`
+    으로 generic 폴백(line 끝 _extract_generic_document)을 건너뛰어 미파싱이
+    남았음 — 전환청구권/IR/대량보유/소유상황/분할·병합 등. 래퍼가 어느 분기든
+    None/빈 결과면 generic 원문 폴백을 보장(이미 doc text 는 _DOC_TEXT_MEM
+    재사용 → 추가 fetch 0). 전용 분기의 category 승격은 보존."""
+    r = _extract_detail_specific(report_nm, rcept_no, corp_code, api_key)
+    if r and r.get("lines"):
+        return r
+    g = _extract_generic_document(rcept_no, api_key)
+    if g and g.get("lines"):
+        if r and r.get("category"):
+            g["category"] = r["category"]
+        return g
+    return r
+
+
+def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
+                             api_key: str) -> dict | None:
     """주요사항보고서에서 핵심 숫자 추출. None if not applicable."""
     from bot.dart_detail import _won, _pick
 
