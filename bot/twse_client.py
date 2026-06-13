@@ -32,9 +32,9 @@ _HDRS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.twse.com.tw/",
          "Accept": "application/json"}
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "twse"
 _CACHE_TTL_SEC = 5 * 60
-_TW_LIMIT = 9.9      # TW 일일 한도 ±10% → '진짜 상/하한가'만 (틱 라운딩으로
-                     # -9.99%/-9.97% 등이 한도, -9.8x% 는 '근접'이라 제외 — 사용자
-                     # 2026-06-13 '하한가랑 거리가 먼데')
+_TW_LIMIT = 9.5      # TW 일일 한도 ±10% → 상한가/하한가권(한도+근접). 사용자
+                     # 2026-06-13 '너무 좁히면 파악 어렵잖아' — 9.9 로 좁혔다
+                     # 9.5(원래)로 환원. 넓게 보여 그림 파악이 목적.
 
 # 繁體 類股名 → 한국어 (가독성, 미매핑은 繁體 그대로)
 _SECTOR_KR = {
@@ -286,8 +286,8 @@ def _is_common_stock(code: str) -> bool:
 
 
 def fetch_tw_upper_lower(limit: int = 80) -> dict:
-    """TW 상한가/하한가 — OpenAPI 전종목 중 ±9.9%+ (TW 한도 ±10% 도달분). 순수
-    일반종목만(ETF·워런트 제외). 점검 무관. {upper,lower,ts,date}."""
+    """TW 상한가/하한가권 — OpenAPI 전종목 중 ±9.5%+ (TW 한도 ±10% 도달·근접).
+    순수 일반종목만(ETF·워런트 제외). 점검 무관. {upper,lower,ts,date}."""
     data = fetch_stock_day_all()
     stocks = [s for s in data.get("rows", []) if _is_common_stock(s.get("code"))]
     upper = sorted([s for s in stocks if s["pct"] >= _TW_LIMIT],
