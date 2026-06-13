@@ -7680,6 +7680,33 @@ class TestNaverKrRanking:
         assert set(d) >= {"high", "low", "ts", "source"}
         assert isinstance(d["high"], list) and isinstance(d["low"], list)
 
+    def test_get_stocks_both_envelopes(self, monkeypatch):
+        # VM 2026-06-13: 국내(domestic) 응답엔 isSuccess 가 없어 옛 가드가 전부
+        # 거부 → 52주/상한가 0. 가드 완화(isSuccess 명시 False 만 거부) 회귀 잠금.
+        import requests
+        import bot.naver_ranking_client as nr
+
+        class _Resp:
+            status_code = 200
+
+            def __init__(self, p):
+                self._p = p
+
+            def json(self):
+                return self._p
+        # 국내(isSuccess 부재) — 반드시 통과
+        monkeypatch.setattr(requests, "get",
+                            lambda *a, **k: _Resp({"result": {"stocks": [{"itemCode": "1"}]}}))
+        assert nr._get_stocks("x") == [{"itemCode": "1"}]
+        # 해외(isSuccess true) — 통과
+        monkeypatch.setattr(requests, "get",
+                            lambda *a, **k: _Resp({"isSuccess": True, "result": {"stocks": [{"a": 1}]}}))
+        assert nr._get_stocks("x") == [{"a": 1}]
+        # isSuccess False — 거부
+        monkeypatch.setattr(requests, "get",
+                            lambda *a, **k: _Resp({"isSuccess": False, "result": {"stocks": [{"a": 1}]}}))
+        assert nr._get_stocks("x") is None
+
     def test_compute_kr_prefers_naver(self):
         # _compute_kr_full 이 네이버 우선 + pykrx 폴백 배선 (회귀 0)
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
