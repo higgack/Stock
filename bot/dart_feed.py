@@ -125,10 +125,12 @@ def _classify_report(report_nm: str) -> str:
                    or "제소" in t or "가처분" in t)
     if (not _is_lawsuit
             and any(k in t for k in ("벌금", "과태료", "과징금",
-                                     "중대재해", "산업재해"))):
+                                     "중대재해", "산업재해", "재해발생"))):
         return "리스크"
-    if (any(k in t for k in ("대표이사변경", "대표집행임원변경",
-                             "상호변경", "본점소재지변경"))
+    # 대표이사/대표집행임원 '변경' — '대표이사(대표집행임원)변경' 괄호 변형도
+    # 잡도록 두 토큰 + '변경' 조합 (라이브 2026-06-13: 괄호형 누수 적발).
+    if (("변경" in t and ("대표이사" in t or "대표집행임원" in t))
+            or any(k in t for k in ("상호변경", "본점소재지변경"))
             or ("사외이사" in t and any(k in t for k in ("선임", "해임", "퇴임")))
             or "주식매수선택권" in t):       # 스톡옵션 부여 — 거버넌스 결정
         return "회사구조"
@@ -3159,10 +3161,11 @@ _FUNDING_NO_PARSER = ("전환가액", "교환청구권", "단기차입금", "금
 # 카드로 노출되되 '미파싱' 색칠은 안 한다(제목이 곧 완전한 신호). 벌금액·
 # 스톡옵션 수량 등 구조화 detail 은 라이브 양식 확인 후 후속 — 현 단계는
 # 드롭→가시 카드화가 목표. (홍수 위험 0: 전부 저빈도)
+# (대표이사/대표집행임원 '변경'은 괄호 변형 때문에 아래 is_parse_target 의
+# 전용 분기로 처리 — 단일 키워드로 못 잡음)
 _TITLE_ONLY_OK_KW = ("벌금", "과태료", "과징금", "중대재해", "산업재해",
-                     "대표이사변경", "대표집행임원변경", "상호변경",
-                     "본점소재지변경", "사외이사", "주식매수선택권",
-                     "기업가치제고")
+                     "재해발생", "상호변경", "본점소재지변경", "사외이사",
+                     "주식매수선택권", "기업가치제고")
 
 
 def is_parse_target(item: dict) -> bool:
@@ -3178,6 +3181,10 @@ def is_parse_target(item: dict) -> bool:
         return False
     # 제목만으로 완결되는 보강후보 거버넌스/리스크 사건 — 미파싱 색칠 제외
     if (not _force) and any(k in report_nm for k in _TITLE_ONLY_OK_KW):
+        return False
+    # 대표이사/대표집행임원 '변경'(괄호 변형 포함) — 제목 완결 거버넌스
+    if (not _force) and "변경" in report_nm and (
+            "대표이사" in report_nm or "대표집행임원" in report_nm):
         return False
     # 지분공시: 대량보유(majorstock) + 임원·주요주주 소유상황(elestock,
     # 2026-06-12 '지분공시도 다 파싱') — 둘 다 무료 구조화 API 보유.
