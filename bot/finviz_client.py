@@ -764,6 +764,28 @@ def _compute_highlow_full_us() -> dict:
         "전 미국 상장 산출(yfinance · 당일 52주 고저 갱신)", "전미국")
 
 
+def _industries_for(tickers: list, market: str | None) -> dict:
+    """업종 enrich — CN/HK/JP 는 네이버 업종맵(reutersIndustryName, reliable·
+    yfinance .info 우회, 사용자 2026-06-14 'CN/HK/JP 업종 네이버'), 그 외(US/KR/TW)는
+    _fetch_industries(GICS/yfinance). 네이버 맵 미스·실패 시 yfinance 폴백."""
+    if market in ("CN_A", "HK", "JP"):
+        try:
+            from bot.naver_ranking_client import world_industry_map
+            m = world_industry_map(market)
+            if m:
+                got = {tk: m.get(tk) for tk in tickers}
+                miss = [tk for tk in tickers if not got.get(tk)]
+                if miss:
+                    yf = _fetch_industries(miss)
+                    for tk in miss:
+                        if yf.get(tk):
+                            got[tk] = yf[tk]
+                return got
+        except Exception as exc:
+            log.warning("naver 업종맵 (%s) → yfinance 폴백: %s", market, exc)
+    return _fetch_industries(tickers)
+
+
 def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                           source: str, tag: str) -> dict:
     """1년 일봉 벌크로 **당일 52주 고저 갱신**(진짜 신고가/신저가) 산출 (universe 일반화).
@@ -854,7 +876,7 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         # 페이지 hang 0). 종목옆 시총 표시용 (사용자 2026-06-11). 억$ 단위.
         hits2 = [r["ticker"] for r in out["high"] + out["low"]]
         mcaps = _fetch_mcaps(hits2)
-        inds = _fetch_industries(hits2)   # 업종분류 (영구 캐시, 증분만 fetch)
+        inds = _industries_for(hits2, tag)   # CN/HK/JP=네이버 업종, 그외 GICS/yfinance
         for r in out["high"] + out["low"]:
             mc = mcaps.get(r["ticker"])
             r["mcap"] = round(mc / 1e8, 2) if mc else None  # 억$

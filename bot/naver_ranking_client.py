@@ -278,6 +278,75 @@ def world_name_map(market: str, max_pages: int = 40) -> dict:
     return out
 
 
+# 네이버 데스크탑 업종(industry) API — nationType 별 (사용자 2026-06-14 'CN/HK/JP
+# 업종 네이버'). US/KR=이미 처리, TW=네이버 미지원이라 제외. enum: USA|CHN|HKG|JPN|VNM
+# (VM probe 확인). 종목 객체에 reutersIndustryName(업종 한글)·koreanCodeName 보유.
+_UPJONG_NATION = {"CN_A": "CHN", "HK": "HKG", "JP": "JPN"}
+_UPJONG_BASE = "https://stock.naver.com/api/foreign/market"
+
+
+def _upjong_ticker(sym: str, market: str) -> str:
+    """네이버 업종 symbolCode → yfinance 티커. JP +.T · HK 4자리+.HK · CN 6xx=.SS
+    그외=.SZ(상하이 600/601/603/688 / 선전 000/002/300 코드대역 휴리스틱)."""
+    sym = str(sym or "").strip()
+    if not sym:
+        return ""
+    if market == "JP":
+        return f"{sym}.T"
+    if market == "HK":
+        return f"{sym.zfill(4)}.HK"
+    if market == "CN_A":
+        return f"{sym}.SS" if sym[:1] == "6" else f"{sym}.SZ"
+    return sym
+
+
+def world_industry_map(market: str, per_industry: int = 100) -> dict:
+    """{yfinance 티커 → 업종명(한글)} — 네이버 데스크탑 업종 API(CN/HK/JP, 사용자
+    2026-06-14). 전 업종(/upjong/list) 순회하며 reutersIndustryName 수집. 업종은
+    안정적 → 7d 디스크 캐시. graceful·429 면역. yfinance _fetch_industries 의
+    비-US 대체 — yfinance .info 가 CN A주/소형주 업종을 자주 비워 '업종 —' 이던
+    것 해소. (업종 endpoint 응답은 bare list 라 _get_stocks 안 씀)."""
+    nat = _UPJONG_NATION.get(market)
+    if not nat:
+        return {}
+    from bot.finviz_client import _cache_write, _cached
+    cache = f"naver_industry_{market}.json"
+    cached = _cached(cache, ttl=7 * 86400)
+    if isinstance(cached, dict) and cached:
+        return cached
+    import requests
+    try:
+        cr = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12)
+        codes = cr.json() if cr.status_code == 200 else None
+    except Exception as exc:
+        log.warning("naver 업종 list (%s): %s", market, exc)
+        return {}
+    if not isinstance(codes, list):
+        return {}
+    out: dict = {}
+    for ic in codes:
+        code = (ic or {}).get("code") if isinstance(ic, dict) else None
+        if not code:
+            continue
+        try:
+            r = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/{code}/list"
+                             f"?orderType=marketValue&startIdx=0&pageSize={per_industry}",
+                             headers=_H, timeout=10)
+            st = r.json() if r.status_code == 200 else None
+        except Exception:
+            st = None
+        for s in (st or []):
+            if not isinstance(s, dict):
+                continue
+            tk = _upjong_ticker(s.get("symbolCode") or s.get("reutersCode"), market)
+            ind = s.get("reutersIndustryName")
+            if tk and ind:
+                out[tk] = ind
+    if out:
+        _cache_write(cache, out)
+    return out
+
+
 def _is_real_stock(s: dict) -> bool:
     """실종목만 — ETF/ETN/스팩 제외 (사용자 신고저 정책). stockEndType=='stock'
     + 이름에 '스팩' 없음. (52주 최고엔 ETN/레버리지 상품이 섞여 들어옴)."""
