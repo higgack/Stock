@@ -279,6 +279,42 @@ def world_name_map(market: str, max_pages: int = 40) -> dict:
     return out
 
 
+def world_stock_map(market: str, max_pages: int = 40) -> dict:
+    """{yfinance-접미사 ticker → {name, vol, value(억), mcap(억)}} — 네이버 worldstock
+    (marketValue 정렬 페이지네이션). HK 52주 신고저에 거래량·거래대금·시총·종목명을
+    **네이버 기준**으로 채움(사용자 2026-06-14 'HK 신고저 네이버로'). yfinance HK
+    vol/시총이 자주 비던 것 해소. intraday vol/value → 30분 캐시. 백그라운드 산출
+    경로(_compute_highlow_from)에서 호출이라 동기 빌드(렌더 아님). graceful·429 면역."""
+    cfg = _INTL_MOVER_EX.get(market)
+    if not cfg:
+        return {}
+    from bot.finviz_client import _cache_write, _cached
+    cache = f"naver_world_stock_{market}.json"
+    c = _cached(cache, ttl=1800)
+    if isinstance(c, dict) and c:
+        return c
+    out: dict = {}
+    for ex, suf in cfg:
+        for page in range(1, max_pages + 1):
+            st = _get_stocks(f"{_BASE}/worldstock/exchange/stock/list"
+                             f"?stockExchangeType={ex}&stockPriceSortType=marketValue"
+                             f"&page={page}&pageSize={_PAGE_SIZE}")
+            if not st:
+                break
+            for s in st:
+                tk = _suffix_ticker(s.get("symbolCode") or s.get("reutersCode"), suf)
+                if not tk:
+                    continue
+                row = _world_row(s)
+                out[tk] = {"name": row.get("name"), "vol": row.get("vol"),
+                           "value": row.get("value"), "mcap": row.get("mcap")}
+            if len(st) < _PAGE_SIZE:
+                break
+    if out:
+        _cache_write(cache, out)
+    return out
+
+
 # 네이버 데스크탑 업종(industry) API — nationType 별 (사용자 2026-06-14 'CN/HK/JP
 # 업종 네이버'). US/KR=이미 처리, TW=네이버 미지원이라 제외. enum: USA|CHN|HKG|JPN|VNM
 # (VM probe 확인). 종목 객체에 reutersIndustryName(업종 한글)·koreanCodeName 보유.
