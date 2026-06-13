@@ -54,14 +54,17 @@ def render_tw_highlow_page() -> str:
                 f'<th style="text-align:right">등락률</th></tr></thead>'
                 f'<tbody>{rows}</tbody></table></div>')
 
+    dt = _html.escape(data.get("date", ""))
     up, low = data.get("upper", []), data.get("lower", [])
     if not up and not low:
         body = ('<div class="empty">상한가·하한가 데이터를 불러올 수 없습니다.<br>'
                 '(장 시간/휴장 또는 TWSE 응답 지연 — 잠시 후 다시 시도.)</div>')
     else:
         body = ('<div class="grid">'
-                + _panel("🔺 상한가권 (+9.5%↑)", up)
-                + _panel("🔻 하한가권 (-9.5%↓)", low) + '</div>')
-    sub = (f"TWSE 전종목 중 일일 한도(±10%) 근접 종목. 5분 캐시. "
-           f"{('· ' + ts + ' 기준') if ts else ''}")
+                + _panel("🔺 상한가 (+9.9%↑)", up)
+                + _panel("🔻 하한가 (-9.9%↓)", low) + '</div>')
+    # 자료 기준일(거래일) 명시 — 주말/장후엔 직전 거래일. 'ts'는 갱신 시각.
+    sub = (f"TWSE 전종목(일반종목) 중 일일 한도 ±10% 도달분. "
+           f"{('<b>' + dt + ' 종가 기준</b>') if dt else ''} · 5분 캐시"
+           f"{(' · 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 상한가·하한가", sub, body)

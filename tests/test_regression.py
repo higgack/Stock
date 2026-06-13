@@ -4871,22 +4871,32 @@ class TestTwseSectorHighLow:
         assert "0050" not in d                       # 결측 Change 컷
         assert tw._is_common_stock("2330") and not tw._is_common_stock("00910")
         assert not tw._is_common_stock("0050") and not tw._is_common_stock("2887A")
-        monkeypatch.setattr(tw, "fetch_stock_day_all", lambda: parsed)
+        assert tw._roc_to_iso("1150612") == "2026-06-12"   # ROC→ISO
+        monkeypatch.setattr(tw, "fetch_stock_day_all",
+                            lambda: {"rows": parsed, "date": "2026-06-12"})
         ul = tw.fetch_tw_upper_lower()
         assert any(s["code"] == "2330" for s in ul["upper"])
         assert any(s["code"] == "2317" for s in ul["lower"])
+        assert ul["date"] == "2026-06-12"                  # 자료 기준일
         # 순수종목만 — ETF(00910)는 +12.9%여도 제외
         assert not any(s["code"] == "00910" for s in ul["upper"])
+        # ±9.9% — -9.86% 같은 '근접'은 제외(사용자 '하한가랑 거리 먼데')
+        near = tw.parse_stock_day_all(
+            [{"Code": "1234", "Name": "x", "ClosingPrice": "100", "Change": "-9.86"}])
+        monkeypatch.setattr(tw, "fetch_stock_day_all",
+                            lambda: {"rows": near, "date": "x"})
+        assert tw.fetch_tw_upper_lower()["lower"] == []
 
     def test_highlow_page_graceful_and_data(self, monkeypatch):
         import bot.twse_client as tw
         # 데이터 있을 때
         monkeypatch.setattr(tw, "fetch_tw_upper_lower", lambda limit=80: {
             "upper": [{"code": "2330", "name": "台積電", "close": 1000, "pct": 10.5}],
-            "lower": [], "ts": "2026-06-13 14:00"})
+            "lower": [], "ts": "2026-06-13 14:00", "date": "2026-06-12"})
         from bot.tw_pages import render_tw_highlow_page
         html = render_tw_highlow_page()
-        assert "台積電" in html and "상한가권" in html and "10.50%" in html
+        assert "台積電" in html and "상한가" in html and "10.50%" in html
+        assert "2026-06-12 종가 기준" in html              # 자료 기준일 표시
         # 빈 데이터 → graceful 안내
         monkeypatch.setattr(tw, "fetch_tw_upper_lower",
                             lambda limit=80: {"upper": [], "lower": [], "ts": ""})

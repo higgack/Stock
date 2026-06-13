@@ -32,7 +32,9 @@ _HDRS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.twse.com.tw/",
          "Accept": "application/json"}
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "twse"
 _CACHE_TTL_SEC = 5 * 60
-_TW_LIMIT = 9.5      # TW 일일 한도 ±10% → 상한가/하한가권 임계(틱 라운딩 여유)
+_TW_LIMIT = 9.9      # TW 일일 한도 ±10% → '진짜 상/하한가'만 (틱 라운딩으로
+                     # -9.99%/-9.97% 등이 한도, -9.8x% 는 '근접'이라 제외 — 사용자
+                     # 2026-06-13 '하한가랑 거리가 먼데')
 
 # 繁體 類股名 → 한국어 (가독성, 미매핑은 繁體 그대로)
 _SECTOR_KR = {
@@ -208,21 +210,33 @@ def parse_stock_day_all(rows: list) -> list[dict]:
     return out
 
 
-def fetch_stock_day_all() -> list[dict]:
-    """OpenAPI 전종목 일일 → [{code,name,close,pct}]. 5분 캐시·graceful."""
+def _roc_to_iso(s) -> str:
+    """ROC 날짜 'YYYMMDD'(115=2026) → 'YYYY-MM-DD'. 실패 시 ''."""
+    t = str(s or "").strip()
+    if len(t) == 7 and t.isdigit():
+        return f"{int(t[:3]) + 1911}-{t[3:5]}-{t[5:7]}"
+    return ""
+
+
+def fetch_stock_day_all() -> dict:
+    """OpenAPI 전종목 일일 → {rows:[{code,name,close,pct}], date:'YYYY-MM-DD'
+    (자료 기준 거래일)}. 5분 캐시·graceful."""
     c = _cached("stock_day_all")
     if c is not None:
-        return c.get("rows", [])
+        return c
     try:
         r = requests.get(_OPENAPI_STOCK, headers=_HDRS, timeout=15)
         r.raise_for_status()
-        rows = parse_stock_day_all(r.json())
+        raw = r.json()
+        rows = parse_stock_day_all(raw)
+        date = _roc_to_iso(raw[0].get("Date")) if isinstance(raw, list) and raw else ""
     except Exception as exc:
         log.warning("twse STOCK_DAY_ALL fetch error: %s", exc)
-        return []
+        return {"rows": [], "date": ""}
+    out = {"rows": rows, "date": date}
     if rows:
-        _cache_write("stock_day_all", {"rows": rows})
-    return rows
+        _cache_write("stock_day_all", out)
+    return out
 
 
 def fetch_mi_index() -> dict:
@@ -272,23 +286,25 @@ def _is_common_stock(code: str) -> bool:
 
 
 def fetch_tw_upper_lower(limit: int = 80) -> dict:
-    """TW 상한가/하한가권 — OpenAPI 전종목 중 ±9.5%+ (TW 한도 ±10%). 순수
-    일반종목만(ETF·워런트 제외). 점검 무관. {upper,lower,ts}."""
-    stocks = [s for s in fetch_stock_day_all() if _is_common_stock(s.get("code"))]
+    """TW 상한가/하한가 — OpenAPI 전종목 중 ±9.9%+ (TW 한도 ±10% 도달분). 순수
+    일반종목만(ETF·워런트 제외). 점검 무관. {upper,lower,ts,date}."""
+    data = fetch_stock_day_all()
+    stocks = [s for s in data.get("rows", []) if _is_common_stock(s.get("code"))]
     upper = sorted([s for s in stocks if s["pct"] >= _TW_LIMIT],
                    key=lambda s: s["pct"], reverse=True)[:limit]
     lower = sorted([s for s in stocks if s["pct"] <= -_TW_LIMIT],
                    key=lambda s: s["pct"])[:limit]
-    return {"upper": upper, "lower": lower, "ts": _now_kst_label()}
+    return {"upper": upper, "lower": lower, "ts": _now_kst_label(),
+            "date": data.get("date", "")}
 
 
 if __name__ == "__main__":   # VM 라이브 구조 검증
     logging.basicConfig(level=logging.INFO)
     # ① 상한가/하한가 — OpenAPI STOCK_DAY_ALL (점검 무관, 언제나)
     ul = fetch_tw_upper_lower()
-    stk = fetch_stock_day_all()
-    print(f"[OpenAPI] 전종목 {len(stk)}개 · 상한가권 {len(ul['upper'])} / "
-          f"하한가권 {len(ul['lower'])}")
+    stk = fetch_stock_day_all().get("rows", [])
+    print(f"[OpenAPI {ul.get('date','')}] 전종목 {len(stk)}개 · "
+          f"상한가 {len(ul['upper'])} / 하한가 {len(ul['lower'])}")
     for s in ul["upper"][:5]:
         print("  ▲", s["code"], s["name"], s["pct"], "%")
     # ② 업종(類股) — legacy MI_INDEX (13:30~13:45 TW 점검 시간 외에 실행)
