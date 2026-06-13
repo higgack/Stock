@@ -61,10 +61,12 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
     def _t(key: str, label: str) -> str:
         cls = ' class="active"' if key == active else ""
         return f'<a{cls} href="{key}">{label}</a>'
+    # 자식 링크 명칭 통일(사용자 2026-06-13): 업종별 시세(전체) →
+    # 신고가·신저가 → 급등·급락 (가격제한 없는 시장).
     toggle = ('<div class="toggle">'
-              + _t("usindustry", "🏭 업종별 시세")
+              + _t("usindustry", "🏭 업종별 시세(전체)")
               + _t("ushighlow", "📈 신고가·신저가")
-              + _t("usmovers", "🚀 급등·급락 TOP30")
+              + _t("usmovers", "🚀 급등·급락")
               + '</div>')
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">

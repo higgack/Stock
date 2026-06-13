@@ -6827,6 +6827,59 @@ class TestFavoritesCurrencyUnifiedSort:
         assert "fmtMcap(f.market_cap, f.currency_symbol)" in src
 
 
+class TestChildDashboardOrderNaming:
+    """자식 대시보드 링크 순서·명칭 통일(사용자 2026-06-13): 모든 나라
+    ① 업종별 시세(전체) ② 신고가·신저가 ③ 상한가·하한가/급등·급락.
+    홈 위젯 링크 + KR/US 페이지 sibling nav."""
+
+    def _order(self, html, keys):
+        import re
+        pat = "|".join(re.escape(k) for k in keys)
+        return re.findall(rf'href="({pat})"', html)
+
+    def test_kr_home_widget_order_and_names(self):
+        from bot.dashboard import _render_sector_movers
+        h = _render_sector_movers({"up": [{"name": "반도체", "pct": 1.0}],
+                                   "down": [], "ts": "x"})
+        assert self._order(h, ["theme", "kr52", "highlow"]) == \
+            ["theme", "kr52", "highlow"]
+        assert "🏭 업종별 시세(전체)" in h
+        assert "📈 신고가·신저가" in h
+        assert "🔺 상한가·하한가" in h
+        assert "52주 신고저" not in h and "테마별 시세" not in h
+
+    def test_tw_home_widget_highlow_after_52w(self):
+        # TW: 신고가·신저가 → 상한가·하한가 (신고저가 먼저)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i52 = src.find('href="tw52"')
+        ihl = src.find('href="twhighlow"')
+        assert 0 < i52 < ihl, (i52, ihl)
+
+    def test_jp_cn_hk_home_label_unified(self):
+        # JP/CN/HK 홈 링크가 '신고가·신저가'(통일), '52주 신고저' 아님
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        for href in ('jp52', 'cn52', 'hk52'):
+            seg = src[src.find(f'href="{href}"') - 80:
+                      src.find(f'href="{href}"') + 40]
+            assert "신고가·신저가" in seg, href
+        # 옛 라벨 잔존 없음(홈 위젯)
+        assert "🔝 52주 신고저" not in src
+
+    def test_kr_page_nav_includes_kr52_in_order(self):
+        from bot.naver_pages import _shell
+        nav = _shell("t", "s", "theme", "<x>")
+        assert self._order(nav, ["theme", "kr52", "highlow"]) == \
+            ["theme", "kr52", "highlow"]
+        assert "🏭 업종별 시세(전체)" in nav and "📈 신고가·신저가" in nav
+
+    def test_us_page_nav_unified_names(self):
+        from bot.us_pages import _shell
+        nav = _shell("t", "s", "usindustry", "<x>")
+        assert self._order(nav, ["usindustry", "ushighlow", "usmovers"]) == \
+            ["usindustry", "ushighlow", "usmovers"]
+        assert "🏭 업종별 시세(전체)" in nav and "TOP30" not in nav
+
+
 class TestEarningsCalendarIntl:
     """다가오는 실적 다국가 — JP/TW/CN/HK (사용자 2026-06-13 '실적빌드').
     KR 패턴 일반화: 산업 peer 맵 universe + yfinance .calendar 공유 파서.

@@ -65,9 +65,13 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
     def _t(key: str, label: str) -> str:
         cls = ' class="active"' if key == active else ""
         return f'<a{cls} href="{key}">{label}</a>'
+    # 자식 링크 순서·명칭 통일(사용자 2026-06-13): 업종별 시세(전체) →
+    # 신고가·신저가(kr52) → 상한가·하한가. kr52 는 intl_pages(_tw_shell)
+    # 렌더라 이 toggle 에선 active 안 됨(일반 링크).
     toggle = ('<div class="toggle">'
-              + _t("theme", "🎯 테마별 시세")
-              + _t("highlow", "📈 상한가·하한가")
+              + _t("theme", "🏭 업종별 시세(전체)")
+              + _t("kr52", "📈 신고가·신저가")
+              + _t("highlow", "🔺 상한가·하한가")
               + '</div>')
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">

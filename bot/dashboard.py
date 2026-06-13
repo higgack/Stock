@@ -11950,9 +11950,9 @@ def _render_sector_movers(movers: dict) -> str:
     return (
         '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
         '<h2>🇰🇷 한국 업종 등락 TOP 10</h2>'
-        f'<a href="theme" style="{_lnk}">🎯 테마별 시세</a>'
-        f'<a href="highlow" style="{_lnk}">📈 상한가·하한가</a>'
-        f'<a href="kr52" style="{_lnk}">🔝 52주 신고저</a>'
+        f'<a href="theme" style="{_lnk}">🏭 업종별 시세(전체)</a>'
+        f'<a href="kr52" style="{_lnk}">📈 신고가·신저가</a>'
+        f'<a href="highlow" style="{_lnk}">🔺 상한가·하한가</a>'
         f'<span class="ts" style="margin-left:auto">{ts} · Naver</span></div>'
         '<div class="sm-wrap">'
         + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
@@ -12322,21 +12322,25 @@ def _render_market_page(data: dict) -> str:
     parts.append(_render_us_sector_movers(us_sector_movers))
     # JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(Phase 1). TW·HK 는 ETF 희소라
     # '주요 업종'(TOP 10 아님) 정직 라벨. 신고저 링크(주요종목 유니버스 스캔).
+    # 자식 링크 순서·명칭 통일(사용자 2026-06-13): ① 업종별 시세(전체) ②
+    # 신고가·신저가 ③ 상한가·하한가/급등·급락. JP/CN/HK 는 업종-전체 페이지
+    # 부재(ETF 합성 위젯 자체) + 가격제한 별도 페이지 부재 → ②만.
     _lk2 = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     parts.append(_render_etf_sector_movers(
         data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10",
-        f'<a href="jp52" style="{_lk2}">🔝 52주 신고저</a>'))
+        f'<a href="jp52" style="{_lk2}">📈 신고가·신저가</a>'))
     parts.append(_render_etf_sector_movers(
         data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10",
-        f'<a href="cn52" style="{_lk2}">🔝 52주 신고저</a>'))
+        f'<a href="cn52" style="{_lk2}">📈 신고가·신저가</a>'))
     _lk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
-    _tw_link = (f'<a href="twhighlow" style="{_lk}">📈 상한가·하한가</a>'
-                f'<a href="tw52" style="{_lk}">🔝 52주 신고저</a>')
+    # TW: ② 신고가·신저가 → ③ 상한가·하한가 (가격제한 시장)
+    _tw_link = (f'<a href="tw52" style="{_lk}">📈 신고가·신저가</a>'
+                f'<a href="twhighlow" style="{_lk}">🔺 상한가·하한가</a>')
     parts.append(_render_etf_sector_movers(
         data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
     parts.append(_render_etf_sector_movers(
         data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락",
-        f'<a href="hk52" style="{_lk2}">🔝 52주 신고저</a>'))
+        f'<a href="hk52" style="{_lk2}">📈 신고가·신저가</a>'))
 
     # 다가오는 실적 — 시장별 탭 분리(사용자 정책: 한국 기본·최대한 표시 +
     # 2026-06-13 '실적빌드 다국가' JP/TW/CN/HK 추가, 접미사 재필터).
