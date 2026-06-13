@@ -3554,6 +3554,43 @@ async def _on_startup(application) -> None:
     except Exception as exc:
         log.warning("startup: DART initial fetch thread failed: %s", exc)
 
+    # 52주 캐시 강제 재산출 1회 (사용자 2026-06-14 'HK 산출중/거래량·시총 이상,
+    # TW 영문') — HK 유니버스 캡 + 네이버 overlay + TW 中文→영문 변경이 주말
+    # session-fresh(장 밖 마지막 마감 이후 재스캔 0)에 막혀 다음 장까지 안 보이던
+    # 것을 배포 후 1회 강제 반영(_compute = freshness 우회). marker(버전)로 배포당
+    # 1회만 — 버전 bump 시 재실행. 백그라운드(yfinance 스캔 수 분)·graceful.
+    def _highlow_force_recompute():
+        from bot.finviz_client import _CACHE_DIR
+        marker = _CACHE_DIR / ".highlow_force"
+        ver = "2026-06-14-hk-cap-tw-en"
+        try:
+            if marker.read_text(encoding="utf-8").strip() == ver:
+                return
+        except OSError:
+            pass
+        try:
+            from bot.intl_highlow import _compute as _ihc
+            _ihc("HK")
+        except Exception as exc:
+            log.warning("startup: HK 52주 강제 재산출 실패: %s", exc)
+        try:
+            from bot.tw_highlow import _compute_tw_highlow
+            _compute_tw_highlow()
+        except Exception as exc:
+            log.warning("startup: TW 52주 강제 재산출 실패: %s", exc)
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(ver, encoding="utf-8")
+        except OSError:
+            pass
+        log.info("startup: HK/TW 52주 강제 재산출 완료 (캡·overlay·영문 반영)")
+    try:
+        import threading as _hl_thr
+        _hl_thr.Thread(target=_highlow_force_recompute, daemon=True,
+                       name="highlow-force").start()
+    except Exception as exc:
+        log.warning("startup: 52주 강제 재산출 thread 실패: %s", exc)
+
     # 실적 캘린더 과거 월(IR) 캐시 워밍 — 아카이브가 닿지 않는 직전 2개월을
     # 백그라운드로 미리 fetch·캐시 → 사용자가 과거 월 이동 시 즉시 표시
     # (firehose 페이지네이션 cold load 25~40초를 시작 시점에 미리 처리).
