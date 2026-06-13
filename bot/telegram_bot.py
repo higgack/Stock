@@ -2996,6 +2996,13 @@ def _prewarm_highlow() -> None:
         seq.append(("us_quote", lambda: _bqm("US")))   # US 52주 네이버 거래량/거래대금
     except Exception:
         pass
+    try:
+        # KR 업종 그룹 멤버맵(코드→업종 한글) 선빌드 — KR 신고가·급등락 업종 컬럼
+        # 첫 방문자가 '—' 안 보게 (사용자 2026-06-14). 7d 캐시·네이버 업종 그룹 스캔.
+        from bot.naver_sector_client import _build_kr_industry_map as _bkim
+        seq.append(("kr_industry", _bkim))
+    except Exception:
+        pass
     for label, fn in seq:
         try:
             fn()

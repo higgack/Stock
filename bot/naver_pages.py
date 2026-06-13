@@ -193,7 +193,8 @@ def render_highlow_page() -> str:
     """KR 급등·급락 — 네이버 front-api domestic top 상승/하락 (사용자 2026-06-14
     'KR 상한가/하한가 → 급등/급락', JP/CN/HK 무버 형태). 한글명·시총·거래대금
     native·429 면역. 장중 30분(무버 신선도)·장 밖 재스캔 0."""
-    from bot.highlow_render import HL_SORT_JS, sort_by_mcap, stock_panel
+    from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
+                                    stock_panel)
     data = None
     try:
         from bot.finviz_client import (_CACHE_DIR, _MOVERS_INTRA_TTL, _cache_write,
@@ -224,13 +225,23 @@ def render_highlow_page() -> str:
     if data is not None:
         up = sort_by_mcap(data["up"])
         down = sort_by_mcap(data["down"])
+        # KR 업종(한글) 백필 — 네이버 업종 그룹 멤버맵 (사용자 2026-06-14 'KR
+        # 급등락에 업종 추가, 그냥 한글로'). SWR·graceful(빌드 중이면 —).
+        try:
+            from bot.naver_sector_client import apply_kr_industry
+            apply_kr_industry(up)
+            apply_kr_industry(down)
+        except Exception:
+            pass
         ts = _html.escape(data.get("ts", ""))
-        _o = dict(name_only=True, show_ind=False, show_vol=True, show_value=True)
+        _o = dict(name_only=True, show_ind=True, show_vol=True, show_value=True)
         body = ('<div class="grid">'
-                + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "KR", **_o)
-                + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "KR", **_o)
+                + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "KR",
+                              ind_dist_line(up), **_o)
+                + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "KR",
+                              ind_dist_line(down), **_o)
                 + '</div>' + HL_SORT_JS)
-        sub = ("네이버 증권 급등/급락 · 시총순·헤더 클릭 정렬 · "
+        sub = ("네이버 증권 급등/급락 · 시총순·헤더 클릭 정렬 · 업종=네이버 · "
                f"장중 30분{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("급등·급락", sub, "highlow", body)
 
