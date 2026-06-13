@@ -3007,6 +3007,10 @@ def _tally_drop(report_nm: str, stock_code: str) -> None:
             return
         if _is_noncorp_doc(report_nm):
             return
+        # 제목완결 거버넌스(주주총회/자율공시 결과류 등)는 보강후보 아님 —
+        # 의도된 title-only 처리 (사용자 2026-06-13 A안)
+        if any(k in report_nm for k in _TITLE_ONLY_OK_KW):
+            return
         key = _norm_report_nm(report_nm)
         if key:
             _DROP_TALLY[key] = _DROP_TALLY.get(key, 0) + 1
@@ -3051,6 +3055,7 @@ def coverage_audit(days_back: int = 2, max_pages: int = 80) -> dict:
     kept: dict[str, int] = {}
     dropped_listed: dict[str, int] = {}     # 실제 기업 사건 (보강 후보)
     dropped_noncorp: dict[str, int] = {}    # 발행·등록 서류 (의도된 제외, 펀드 동류)
+    dropped_title: dict[str, int] = {}      # 제목완결 거버넌스 (의도된 제외, A안 2026-06-13)
     dropped_other = 0                       # 비상장/펀드 (의도된 제외)
     for it in items:
         cat = it.get("category", "기타")
@@ -3061,13 +3066,19 @@ def coverage_audit(days_back: int = 2, max_pages: int = 80) -> dict:
         nm = it.get("report_nm", "")
         if len(sc) == 6 and sc.isdigit():
             key = _norm_report_nm(nm)
-            tgt = dropped_noncorp if _is_noncorp_doc(nm) else dropped_listed
+            if _is_noncorp_doc(nm):
+                tgt = dropped_noncorp
+            elif any(k in nm for k in _TITLE_ONLY_OK_KW):
+                tgt = dropped_title             # 주주총회/자율공시 결과류 등 제목완결
+            else:
+                tgt = dropped_listed
             tgt[key] = tgt.get(key, 0) + 1
         else:
             dropped_other += 1
     return {"total": len(items), "kept": kept,
             "dropped_listed": dropped_listed,
             "dropped_noncorp": dropped_noncorp,
+            "dropped_title": dropped_title,
             "dropped_other": dropped_other}
 
 
@@ -3185,7 +3196,14 @@ _FUNDING_NO_PARSER = ("전환가액", "교환청구권", "단기차입금", "금
 # 전용 분기로 처리 — 단일 키워드로 못 잡음)
 _TITLE_ONLY_OK_KW = ("벌금", "과태료", "과징금", "중대재해", "산업재해",
                      "재해발생", "상호변경", "본점소재지변경", "사외이사",
-                     "주식매수선택권", "기업가치제고")
+                     "주식매수선택권", "기업가치제고",
+                     # 주주총회 거버넌스 + 증권발행결과(자율공시) — 제목완결
+                     # (금액/수량 구조화 없음), 미파싱 색칠·보강후보 제외 (사용자
+                     # 2026-06-13 A안). ⚠️ '기타경영사항(자율공시)'는 _PARSE_FORCE_
+                     # KW('기타경영사항')가 force-parse → 여기 넣어도 무효 + 카브
+                     # 아웃 시 소송/계약 자동승격 깨짐 → catch-all 승격 경로 유지.
+                     "주주총회소집", "주주명부폐쇄", "의결권대리행사",
+                     "주주총회결과", "증권발행결과")
 
 
 def is_parse_target(item: dict) -> bool:
@@ -4232,6 +4250,12 @@ if __name__ == "__main__":
             print(f"[coverage] 드롭 — 상장사 발행·등록 서류 {sum(_noncorp.values())}건 "
                   "(투자설명서/일괄신고/증권신고서 — 의도된 제외, 펀드 투자설명서 동류):")
             for k, v in sorted(_noncorp.items(), key=lambda kv: -kv[1])[:20]:
+                print(f"  {v:4d} × {k}")
+        _title = rep.get("dropped_title", {})
+        if _title:
+            print(f"[coverage] 드롭 — 상장사 제목완결 거버넌스 {sum(_title.values())}건 "
+                  "(주주총회/주주명부/의결권/증권발행결과 등 — 의도된 제외, A안):")
+            for k, v in sorted(_title.items(), key=lambda kv: -kv[1])[:20]:
                 print(f"  {v:4d} × {k}")
         print("[coverage] 드롭 — 상장사 '기타' 제목 분포 (보강 후보 — 실제 기업 사건):")
         for k, v in sorted(rep["dropped_listed"].items(), key=lambda kv: -kv[1])[:40]:
