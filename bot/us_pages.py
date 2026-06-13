@@ -221,9 +221,9 @@ def render_us_highlow_page() -> str:
                 + _panel("🔺 52주 신고가", hi, "hl-high", _ind_dist_line(hi))
                 + _panel("🔻 52주 신저가", lo, "hl-low", _ind_dist_line(lo))
                 + '</div>' + _HL_SORT_JS)
-    # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고').
+    # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') + 장중 1h(다른 52주와 통일).
     sub = (f"미국 52주 신고가·신저가 · 시총순·헤더 클릭 정렬 · 업종=GICS·yfinance · "
-           f"출처 {src} · 5분 캐시" + (f" · {ts} 기준" if ts else ""))
+           f"출처 {src} · 장중 1h" + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
 
 

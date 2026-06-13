@@ -6478,7 +6478,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
     # ── Bottleneck Screener section header + search + 실행 ──
     parts.append(f"""
   <h2 style="margin:24px 0 8px">🔬 Bottleneck Screener
-    <button id="t3-csv" type="button" class="csv-btn" title="모든 실행의 Master Table 전 종목을 CSV(엑셀)로 — 도메인·날짜·테마섹션·전체 후보(Master Table 없으면 Top-3 폴백)">📥 전체 CSV</button>
+    <button id="t3-csv" type="button" class="csv-btn" title="모든 실행의 Master Table 전 종목을 CSV(엑셀)로 — 도메인·날짜·테마섹션·전체 후보(Master Table 없으면 Top-3 폴백)">📥 CSV</button>
   </h2>
   <p class="sub">테마별 다종목 idea generation · 6-18M thesis</p>
   <div class="search-bar">
