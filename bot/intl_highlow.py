@@ -18,17 +18,19 @@ log = logging.getLogger(__name__)
 # 접미사 필터 = peer 맵에 섞인 해외 비교군 제외(KR 반도체에 TSM/NVDA 등).
 # JP/CN/HK 는 맵이 이미 native-only 라 필터가 no-op(검증됨).
 _CFG = {
-    "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v2.json",
+    "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v3.json",
            "jp_highlow_status.json", "일본 주요종목", (".T",)),
-    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v2.json",
+    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v3.json",
              "cn_highlow_status.json", "중국 A주 주요종목", (".SS", ".SZ")),
-    "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v2.json",
+    "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v3.json",
            "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
     # KR — 사용자 2026-06-13 '한국도 신고가신저가'. KIS 신고저 순위 엔드포인트
     # (1콜·더 쌈)는 VM 검증 대기 → 우선 검증된 yfinance 유니버스 스캔으로.
     "KR": ("_KR_INDUSTRY_PEERS", "highlow_kr_v2.json",
            "kr_highlow_status.json", "한국 주요종목", (".KS", ".KQ")),
 }
+# v3 (2026-06-14): 네이버 이름맵 + 거래대금(value) 반영 — stale 장-밖 캐시 강제
+# 재스캔(옛 v2 는 이름/거래대금 비어있던 포맷).
 # 신선도는 시장-인지(finviz_client._session_fresh, 장중 1h / 장 밖 마지막 마감
 # 이후 재스캔 0)로 통일 — 사용자 2026-06-13 '모두 장중에만 1h'.
 _running: dict[str, bool] = {}

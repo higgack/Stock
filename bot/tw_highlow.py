@@ -12,7 +12,7 @@ import time
 
 log = logging.getLogger(__name__)
 
-_CACHE = "highlow_tw_v2.json"
+_CACHE = "highlow_tw_v3.json"   # v3 (2026-06-14): 영문명 + 거래대금 강제 재스캔
 _STATUS = "tw_highlow_status.json"
 # 신선도는 시장-인지(finviz_client._session_fresh TW, 장중 1h / 장 밖 마지막 마감
 # 이후 재스캔 0) — 사용자 2026-06-13 '모두 장중에만 1h'.

@@ -1612,18 +1612,35 @@ def _backfill_korean_names(rows: list, market: str) -> None:
         except Exception as exc:
             log.warning("finviz: TW 영문명 백필 실패: %s", exc)
         return
+    # JP/CN/HK: 네이버 worldstock 이름맵 우선 (사용자 2026-06-14 — yfinance .info
+    # 가 자주 막혀 52주 이름이 비던 것 해소, world_name_map 2000개/시장 확인됨).
+    # 7d 캐시라 ₩0. 맵 미스만 chart_translate(네이티브명)+yfinance 폴백.
+    naver_named: set = set()
+    try:
+        from bot.naver_ranking_client import world_name_map
+        nmap = world_name_map(market)
+        for r in rows:
+            nm = nmap.get(r.get("ticker"))
+            if nm:
+                r["name"] = nm
+                naver_named.add(r["ticker"])
+    except Exception as exc:
+        log.warning("finviz: %s 네이버 이름맵 실패: %s", market, exc)
+    rest = [r for r in rows if r.get("ticker") not in naver_named]
+    if not rest:
+        return
     try:
         from bot.chart_translate import translate_titles_kr
-        # 1) 이미 들어온 네이티브명(CJK/영문) 직접 번역
-        native = sorted({r["name"] for r in rows
+        # 1) 네이버 미스 중 네이티브명(CJK) 직접 번역
+        native = sorted({r["name"] for r in rest
                          if r.get("name") and r["name"] != r["ticker"]})
         kr = translate_titles_kr(native) if native else {}
-        for r in rows:
+        for r in rest:
             nm = r.get("name")
             if nm and kr.get(nm):
                 r["name"] = kr[nm]
         # 2) 네이티브명 없던 항목 → yfinance longName 폴백 후 번역
-        need = [r for r in rows if not r.get("name") or r["name"] == r["ticker"]]
+        need = [r for r in rest if not r.get("name") or r["name"] == r["ticker"]]
         if need:
             en = _fetch_display_names([r["ticker"] for r in need])
             ue = sorted({n for n in en.values() if n})
