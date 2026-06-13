@@ -15,6 +15,7 @@ VM 실측으로 엔드포인트·필드·파라미터 전부 확인(2026-06-13, 
 from __future__ import annotations
 
 import logging
+import threading
 
 log = logging.getLogger("bot.naver_ranking")
 
@@ -356,23 +357,37 @@ def world_industry_map(market: str, per_industry: int = 100) -> dict:
     return out
 
 
+_UPJONG_NAME_BUILDING: set = set()
+_UPJONG_NAME_LOCK = threading.Lock()
+
+
 def world_upjong_name(market: str) -> dict:
-    """{yfinance 티커 → koreanCodeName(한글명)} — 업종 endpoint 빌드 시 동반 캐시.
-    US 52주 한글 종목명 등(사용자 2026-06-14 'US 52주 네이버 한글로'). 캐시 없으면
-    world_industry_map 빌드를 1회 트리거(name 캐시도 함께 씀). 7d·graceful."""
+    """{yfinance 티커 → koreanCodeName(한글명)} — 업종 endpoint 빌드 시 동반 캐시(7d).
+    US 52주 한글 종목명 등(사용자 2026-06-14 'US 52주 네이버 한글로'). **렌더 블로킹
+    안 함** — 캐시 없으면 백그라운드 빌드(60 업종 fetch ~12s) 1회 kick 후 이번엔 빈
+    {} 반환(호출부 영문 폴백), 다음 방문부터 한글. graceful·429 면역."""
     if market not in _UPJONG_NATION:
         return {}
     from bot.finviz_client import _cached
-    cache = f"naver_upjong_name_{market}.json"
-    c = _cached(cache, ttl=7 * 86400)
+    c = _cached(f"naver_upjong_name_{market}.json", ttl=7 * 86400)
     if isinstance(c, dict) and c:
         return c
-    try:
-        world_industry_map(market)        # name 캐시도 함께 기록
-    except Exception:
-        return {}
-    c = _cached(cache, ttl=7 * 86400)
-    return c if isinstance(c, dict) else {}
+    with _UPJONG_NAME_LOCK:
+        if market in _UPJONG_NAME_BUILDING:
+            return {}
+        _UPJONG_NAME_BUILDING.add(market)
+
+    def _build() -> None:
+        try:
+            world_industry_map(market)        # name 캐시도 함께 기록
+        except Exception:
+            pass
+        finally:
+            with _UPJONG_NAME_LOCK:
+                _UPJONG_NAME_BUILDING.discard(market)
+    threading.Thread(target=_build, daemon=True,
+                     name=f"upjong-name-{market}").start()
+    return {}
 
 
 def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
