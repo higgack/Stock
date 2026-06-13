@@ -212,14 +212,22 @@ def render_us_highlow_page() -> str:
     # koreanCodeName(7d 캐시). + 거래대금(억$)=종가×거래량(Finviz Volume). 렌더
     # 시점이라 캐시 무관·graceful(네이버 실패 시 영문명 유지).
     try:
-        from bot.naver_ranking_client import world_upjong_name
+        from bot.naver_ranking_client import world_quote_map, world_upjong_name
         _nm = world_upjong_name("US")
+        _q = world_quote_map("US")        # 거래량·거래대금 네이버(사용자 2026-06-14)
     except Exception:
-        _nm = {}
+        _nm, _q = {}, {}
     for r in hi + lo:
         kr = _nm.get(r.get("ticker"))
         if kr:
             r["name"] = kr
+        q = _q.get(r.get("ticker"))       # 네이버 거래량/거래대금 우선
+        if q:
+            if q.get("vol") is not None:
+                r["vol"] = q["vol"]
+            if q.get("value") is not None:
+                r["value"] = q["value"]
+        # 네이버 미스 시 Finviz Volume 으로 거래대금 산출(폴백)
         if r.get("value") is None and r.get("price") and r.get("vol"):
             try:
                 r["value"] = round(float(r["price"]) * float(r["vol"]) / 1e8, 2)
@@ -314,10 +322,10 @@ def render_us_movers_page() -> str:
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') — 무엇·출처(1회)·정렬·신선도.
     if "네이버" in src:
         sub = ("미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · "
-               "시총순·헤더 클릭 정렬 · 장중 1h" + (f" · {ts} 기준" if ts else ""))
+               "시총순·헤더 클릭 정렬 · 장중 30분" + (f" · {ts} 기준" if ts else ""))
     else:
         sub = ("미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · "
                "시총순·헤더 클릭 정렬"
-               + (f" · 출처 {src}" if src else "") + " · 장중 1h"
+               + (f" · 출처 {src}" if src else "") + " · 장중 30분"
                + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)

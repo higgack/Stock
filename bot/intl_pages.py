@@ -105,7 +105,7 @@ def render_intl_movers_page(market: str) -> str:
     src = _html.escape(_clean_src(data.get("source") or f"{flag} 당일 등락"))
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고').
     sub = (f"{flag} 당일 등락 상·하위 30 · {src} · 시총순·헤더 클릭 정렬 · "
-           f"업종=yfinance · 장중 1h" + (f" · {ts} 기준" if ts else ""))
+           f"업종=네이버 · 장중 30분" + (f" · {ts} 기준" if ts else ""))
     _active = {"JP": "jpmovers", "CN_A": "cnmovers", "HK": "hkmovers"}.get(market, "hkmovers")
     return _tw_shell(f"{flag} 급등·급락", sub, body,
                      nav=_market_nav(market, _active))

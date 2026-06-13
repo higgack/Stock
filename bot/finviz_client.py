@@ -1572,8 +1572,9 @@ _SESSIONS_UTC = {
     "CN_A": (1, 30, 7, 0),     # 09:30–15:00 CST(+8)
     "HK":   (1, 30, 8, 0),     # 09:30–16:00 HKT(+8)
 }
-_HL_INTRA_TTL = 1 * 3600       # 장중 랭킹(신고저/상한가/무버) 재산출 간격 — 모든 시장
-#                                통일 (사용자 2026-06-13 '모두 장중에만 1h'). 장 밖 재스캔 0.
+_HL_INTRA_TTL = 1 * 3600       # 장중 52주 신고저 재산출 간격 (사용자 2026-06-13). 장 밖 0.
+_MOVERS_INTRA_TTL = 30 * 60    # 장중 무버(급등락) 재산출 간격 — 30분 (사용자 2026-06-14
+#                                '급등급락은 30분단위로 모두'). 무버는 장중 변동 커 더 자주.
 
 
 def _session_fresh(market: str, cache_ts: float, intra_ttl: float,
@@ -1607,10 +1608,9 @@ def _session_fresh(market: str, cache_ts: float, intra_ttl: float,
 
 
 def _movers_cache_is_fresh(cache_ts: float, now_ts: float | None = None) -> bool:
-    """US 무버 장-인지 신선도 — _session_fresh('US', 1h) 위임(기존 호출부·테스트
-    호환). 장중 1h / 장 밖 마지막 마감 이후 산출본이면 재스캔 0 (사용자 2026-06-13
-    '모두 장중에만 1h' — 옛 30분에서 통일)."""
-    return _session_fresh("US", cache_ts, _HL_INTRA_TTL, now_ts)
+    """US 무버 장-인지 신선도 — 장중 30분 / 장 밖 마지막 마감 이후 재스캔 0
+    (사용자 2026-06-14 '급등급락은 30분단위로 모두' — 52주 1h 와 분리)."""
+    return _session_fresh("US", cache_ts, _MOVERS_INTRA_TTL, now_ts)
 
 
 def _backfill_korean_names(rows: list, market: str) -> None:
