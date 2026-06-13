@@ -263,10 +263,18 @@ def fetch_tw_sector_movers(top_n: int = 10) -> dict:
             "source": "TWSE 類股", "n": len(secs)}
 
 
+def _is_common_stock(code: str) -> bool:
+    """순수 일반종목만 (사용자 2026-06-13 '순수종목만') — TW 일반주는 4자리
+    숫자(1101~9962, 첫자리 1-9). ETF(0050·00910·00400A)·워런트(6자리)·
+    우선주(2887A 등 문자) 제외 → 상한가(±10%) 한도가 적용되는 종목만."""
+    c = str(code or "")
+    return len(c) == 4 and c.isdigit() and c[0] != "0"
+
+
 def fetch_tw_upper_lower(limit: int = 80) -> dict:
-    """TW 상한가/하한가권 — OpenAPI 전종목 중 ±9.5%+ (TW 한도 ±10%). 점검
-    무관(legacy type=ALL 아님). {upper,lower,ts}."""
-    stocks = fetch_stock_day_all()
+    """TW 상한가/하한가권 — OpenAPI 전종목 중 ±9.5%+ (TW 한도 ±10%). 순수
+    일반종목만(ETF·워런트 제외). 점검 무관. {upper,lower,ts}."""
+    stocks = [s for s in fetch_stock_day_all() if _is_common_stock(s.get("code"))]
     upper = sorted([s for s in stocks if s["pct"] >= _TW_LIMIT],
                    key=lambda s: s["pct"], reverse=True)[:limit]
     lower = sorted([s for s in stocks if s["pct"] <= -_TW_LIMIT],
