@@ -6,7 +6,7 @@ from __future__ import annotations
 import html as _html
 import logging
 
-from bot.tw_pages import _tw_shell
+from bot.tw_pages import _market_nav, _tw_shell
 
 log = logging.getLogger("bot.intl_pages")
 
@@ -55,7 +55,9 @@ def render_intl_highlow52_page(market: str) -> str:
     sub = (f"{flag} {src} · **당일 52주 신고가/신저가 갱신** · 시총순·헤더 클릭 "
            f"정렬 · 업종=yfinance · EOD 1일 1회 산출·6h 캐시. "
            f"{('· 갱신 ' + ts) if ts else ''}")
-    return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body)
+    _active = {"KR": "kr52", "JP": "jp52", "CN_A": "cn52", "HK": "hk52"}.get(market, "")
+    return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body,
+                     nav=_market_nav(market, _active))
 
 
 def render_intl_movers_page(market: str) -> str:
@@ -94,7 +96,8 @@ def render_intl_movers_page(market: str) -> str:
            + (f"{sc}종목 스캔 · " if sc else "")
            + "종목명=티커(한글) · 헤더 클릭 정렬 · 6h 캐시. "
            + (f"· 갱신 {ts}" if ts else ""))
-    return _tw_shell(f"{flag} 급등·급락", sub, body)
+    return _tw_shell(f"{flag} 급등·급락", sub, body,
+                     nav=_market_nav(market, "hkmovers"))
 
 
 def render_jp_stop_page() -> str:
@@ -135,4 +138,5 @@ def render_jp_stop_page() -> str:
            + (f"{sc}종목 스캔 · " if sc else "")
            + "종목명=티커(한글) · 시총순·헤더 클릭 정렬 · 6h 캐시. "
            + (f"· 갱신 {ts}" if ts else ""))
-    return _tw_shell("🇯🇵 일본 상한가·하한가", sub, body)
+    return _tw_shell("🇯🇵 일본 상한가·하한가", sub, body,
+                     nav=_market_nav("JP", "jphighlow"))

@@ -13,8 +13,31 @@ from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
 
 log = logging.getLogger("bot.tw_pages")
 
+# 시장별 자식 대시보드 nav — 모두 상호 연결 (사용자 2026-06-13 '캡쳐처럼').
+# (href, label). KR 은 naver _shell 과 동일 셋(kr52 가 _tw_shell 렌더라 여기 포함).
+_MARKET_NAV = {
+    "KR": [("theme", "🏭 업종별 시세(전체)"), ("kr52", "📈 신고가·신저가"),
+           ("highlow", "🔺 상한가·하한가")],
+    "TW": [("tw52", "📈 신고가·신저가"), ("twhighlow", "🔺 상한가·하한가")],
+    "JP": [("jp52", "📈 신고가·신저가"), ("jphighlow", "🔺 상한가·하한가")],
+    "HK": [("hk52", "📈 신고가·신저가"), ("hkmovers", "🚀 급등·급락")],
+    "CN_A": [("cn52", "📈 신고가·신저가")],
+}
 
-def _tw_shell(title: str, sub: str, body: str) -> str:
+
+def _market_nav(market: str, active: str) -> str:
+    """시장 자식 페이지 toggle nav (KR naver 패턴 미러). active 탭 강조."""
+    tabs = _MARKET_NAV.get(market, [])
+    if not tabs:
+        return ""
+    out = []
+    for href, label in tabs:
+        cls = ' class="active"' if href == active else ""
+        out.append(f'<a{cls} href="{href}">{label}</a>')
+    return '<div class="toggle">' + "".join(out) + "</div>"
+
+
+def _tw_shell(title: str, sub: str, body: str, nav: str = "") -> str:
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -22,6 +45,7 @@ def _tw_shell(title: str, sub: str, body: str) -> str:
 <a class="back-link" href="market.html">← 홈으로</a>
 <h1>{_html.escape(title)}</h1>
 <div class="sub">{sub}</div>
+{nav}
 {body}
 {_THEME_SCRIPT}
 </body></html>"""
@@ -67,7 +91,8 @@ def render_tw_highlow_page() -> str:
            f"(한글번역) · 업종·시총=yfinance(10분 캐시) · 시총순·헤더 클릭 정렬. "
            f"{('<b>' + dt + ' 종가 기준</b>') if dt else ''} · 5분 캐시"
            f"{(' · 갱신 ' + ts) if ts else ''}")
-    return _tw_shell("🇹🇼 대만 상한가·하한가", sub, body)
+    return _tw_shell("🇹🇼 대만 상한가·하한가", sub, body,
+                     nav=_market_nav("TW", "twhighlow"))
 
 
 def render_tw_highlow52_page() -> str:
@@ -107,4 +132,5 @@ def render_tw_highlow52_page() -> str:
                 + '</div>' + HL_SORT_JS)
     sub = (f"TWSE 전종목(일반종목) 1년 일봉 · **당일 52주 신고가/신저가 갱신** · "
            f"EOD 1일 1회 산출·6h 캐시. {('· 갱신 ' + ts) if ts else ''}")
-    return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body)
+    return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body,
+                     nav=_market_nav("TW", "tw52"))
