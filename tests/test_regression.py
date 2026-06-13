@@ -4450,15 +4450,24 @@ class TestDartParseTargetAndSignificance:
 
     def test_intended_freeform_split(self):
         # 사용자 2026-06-14 '의도한 미파싱은 미파싱제외로, 진짜 미파싱과 나눠'.
-        from bot.dart_feed import intended_freeform_unparsed as ff
+        from bot.dart_feed import intended_freeform_unparsed as ff, is_parse_target
         assert ff("기타경영사항(자율공시)")                 # catch-all freeform
         assert ff("[기재정정]기타경영사항(자율공시)")
         assert ff("투자판단관련주요경영사항")
         assert ff("기타시장안내")
         assert ff("[첨부정정]주요사항보고서(회사합병결정)")  # 첨부만 정정(본문 없음)
+        # 2026-06-14 미파싱 정리 — 기계적 거래정지해제·LP·IR결과 = 미파싱제외
+        assert ff("주권매매거래정지해제(액면병합 주권 변경상장)")
+        assert ff("유동성공급계약의체결")
+        assert ff("기업설명회(IR)개최결과")
         assert not ff("단일판매ㆍ공급계약체결")             # 진짜 파서 대상
         assert not ff("주요사항보고서(유상증자결정)")
         assert not ff("[기재정정]단일판매ㆍ공급계약체결")   # 본문 정정은 재추출 대상
+        assert not ff("주권매매거래정지(단일판매공급계약)")  # 정지(halt)는 리스크 유지
+        assert not ff("기업설명회(IR)개최(안내공시)")        # 안내공시는 파싱 대상
+        # 펀드 발행실적(집합투자증권) → noncorp → 미파싱 아님(의도된 제외)
+        assert not is_parse_target({"report_nm": "증권발행실적보고서(집합투자증권)(IBK다보스글로벌고배당증권자투자신탁3호[주식])",
+                                    "category": "자금조달", "corp_code": "x"})
         # 대시보드 배선 — 미파싱제외 칩/카드클래스/필터플래그
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert "intended_freeform_unparsed" in src
