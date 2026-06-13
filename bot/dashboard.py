@@ -12317,18 +12317,22 @@ def _render_market_page(data: dict) -> str:
     parts.append(_render_sector_movers(sector_movers))
     parts.append(_render_us_sector_movers(us_sector_movers))
     # JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(Phase 1). TW·HK 는 ETF 희소라
-    # '주요 업종'(TOP 10 아님) 정직 라벨.
+    # '주요 업종'(TOP 10 아님) 정직 라벨. 신고저 링크(주요종목 유니버스 스캔).
+    _lk2 = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     parts.append(_render_etf_sector_movers(
-        data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10"))
+        data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10",
+        f'<a href="jp52" style="{_lk2}">🔝 52주 신고저</a>'))
     parts.append(_render_etf_sector_movers(
-        data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10"))
+        data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10",
+        f'<a href="cn52" style="{_lk2}">🔝 52주 신고저</a>'))
     _lk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     _tw_link = (f'<a href="twhighlow" style="{_lk}">📈 상한가·하한가</a>'
                 f'<a href="tw52" style="{_lk}">🔝 52주 신고저</a>')
     parts.append(_render_etf_sector_movers(
         data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
     parts.append(_render_etf_sector_movers(
-        data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락"))
+        data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락",
+        f'<a href="hk52" style="{_lk2}">🔝 52주 신고저</a>'))
 
     # 다가오는 실적 — 한국/미국 탭 분리(사용자 정책: 한국 기본·최대한 표시).
     _earn_kr = [e for e in earnings

@@ -4916,6 +4916,53 @@ class TestTwseSectorHighLow:
         assert "_fetch_tw_sector_safe" in mo and "twse_client" in mo
 
 
+class TestIntlHighLow52:
+    """JP/CN/HK 52주 신고가/신저가 — TW 패턴 일반화(사용자 2026-06-13 '다른
+    나라도 모두'). peer 유니버스 + SWR 동기계산 금지 + 페이지."""
+
+    def test_universe_from_peer_maps(self):
+        import bot.intl_highlow as ih
+        for mk, lo in (("JP", 40), ("CN_A", 30), ("HK", 30)):
+            uni, names = ih._universe(mk)
+            assert len(uni) >= lo, (mk, len(uni))
+            assert len(uni) == len(set(uni))          # dedupe
+            assert all(names[t] for t in uni)         # name 기본=ticker
+
+    def test_fetch_never_sync_computes(self, monkeypatch):
+        import bot.intl_highlow as ih
+        import bot.finviz_client as fc
+        kicked = {"n": 0}
+        monkeypatch.setattr(ih, "_kick",
+                            lambda m: kicked.__setitem__("n", kicked["n"] + 1))
+        monkeypatch.setattr(fc, "_compute_highlow_from",
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError("sync!")))
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)
+        r = ih.fetch_intl_highlow("JP")
+        assert r["building"] is True and kicked["n"] == 1
+
+    def test_unknown_market_graceful(self):
+        import bot.intl_highlow as ih
+        r = ih.fetch_intl_highlow("XX")
+        assert r["high"] == [] and r["building"] is False
+
+    def test_page_and_wiring(self, monkeypatch):
+        import bot.intl_highlow as ih
+        monkeypatch.setattr(ih, "fetch_intl_highlow", lambda m: {
+            "high": [{"ticker": "7203.T", "name": "7203.T", "price": 3000, "pct": 0.4}],
+            "low": [], "ts": "x", "building": False})
+        from bot.intl_pages import render_intl_highlow52_page
+        h = render_intl_highlow52_page("JP")
+        assert "7203.T" in h and "일본" in h and "52주 신고가" in h
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1] / "bot"
+        srv = (root / "dashboard_server.py").read_text("utf-8")
+        assert "/jp52" in srv and "/cn52" in srv and "/hk52" in srv
+        assert "_handle_intl_page" in srv
+        dash = (root / "dashboard.py").read_text("utf-8")
+        assert 'href="jp52"' in dash and 'href="hk52"' in dash
+
+
 class TestTwHighLow52:
     """대만 52주 신고가/신저가 — yfinance 유니버스 백그라운드 SWR (사용자
     2026-06-13, VM 10/10 검증). 동기계산 금지 + building + 페이지."""
