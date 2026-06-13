@@ -3006,8 +3006,9 @@ def _prewarm_highlow() -> None:
 
 async def _periodic_highlow_prewarm() -> None:
     """매일 07:30·16:30 KST 전종목 신고저/급등락/상한가 캐시 pre-warm — 첫 방문자
-    대기 0(아침 신선). 07:30=US 마감 후+Asia 전일종가, 16:30=Asia 마감 후. 6h
-    캐시라 이 두 시점이 만료 직전을 데움. to_thread(폴링 비차단)·graceful."""
+    대기 0(아침 신선). 07:30=US 마감 후+Asia 전일종가, 16:30=Asia 마감 후. 시장-
+    인지 신선도(정규장 3h·무버 30분 / 장 밖 마지막 마감 이후 재스캔 0)와 함께
+    아침 첫 방문 만료를 미리 데움. to_thread(폴링 비차단)·graceful."""
     kst = timezone(timedelta(hours=9))
     while True:
         now = datetime.now(kst)

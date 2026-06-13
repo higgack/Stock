@@ -742,10 +742,10 @@ def _highlow_fallback_sp500() -> dict:
 
 
 def _compute_highlow_sp500() -> dict:
-    """S&P 500 1년 주봉 벌크로 52주 고저 1% 근접 산출 — 빠른 3차 폴백."""
+    """S&P 500 1년 일봉 벌크로 당일 52주 고저 갱신 산출 — 빠른 3차 폴백."""
     return _compute_highlow_from(
         _us_universe_robust(), _sp500_names(), "highlow_sp500.json",
-        "S&P 500 산출(yfinance · 52주 고저 1% 근접)", "S&P500")
+        "S&P 500 산출(yfinance · 당일 52주 고저 갱신)", "S&P500")
 
 
 def _compute_highlow_full_us() -> dict:
@@ -755,12 +755,12 @@ def _compute_highlow_full_us() -> dict:
     tks, names = _us_full_universe()
     return _compute_highlow_from(
         tks, names, "highlow_full_us_v4.json",
-        "전 미국 상장 산출(yfinance · 52주 고저 1% 근접)", "전미국")
+        "전 미국 상장 산출(yfinance · 당일 52주 고저 갱신)", "전미국")
 
 
 def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                           source: str, tag: str) -> dict:
-    """1년 주봉 벌크로 52주 고저 1% 근접 산출 (universe 일반화).
+    """1년 일봉 벌크로 **당일 52주 고저 갱신**(진짜 신고가/신저가) 산출 (universe 일반화).
 
     2026-06-10 VM surfaced: 단일 yf.download 통째 실패 시 빈 결과
     → 120종목 배치 분할 + 배치별 try/except + 진단 로그."""
@@ -849,28 +849,12 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
             mc = mcaps.get(r["ticker"])
             r["mcap"] = round(mc / 1e8, 2) if mc else None  # 억$
             r["ind"] = inds.get(r["ticker"])
-        # 종목명 한글 (사용자 2026-06-13) — intl(JP/TW/CN/HK) 전용. .info
-        # longName(영문) → chart_translate(Flash·영구캐시). 표시 'TICKER (한글명)'.
-        # ⚠️ 이미 좋은 이름이 들어온 항목(name != ticker, 예: KR pykrx 한글명)은
-        # 번역/덮어쓰기 스킵 — 호출측 제공 이름 보존 + 불필요한 .info/Flash 절약.
-        # US 는 이 경로 미사용(Finviz 영문명). graceful — 실패 시 ticker 유지.
-        if market and market != "US":
-            try:
-                need = [r for r in out["high"] + out["low"]
-                        if not r.get("name") or r["name"] == r["ticker"]]
-                if need:
-                    en_names = _fetch_display_names([r["ticker"] for r in need])
-                    uniq = sorted({n for n in en_names.values() if n})
-                    kr_map = {}
-                    if uniq:
-                        from bot.chart_translate import translate_titles_kr
-                        kr_map = translate_titles_kr(uniq) or {}
-                    for r in need:
-                        en = en_names.get(r["ticker"], "")
-                        if en:
-                            r["name"] = kr_map.get(en) or en
-            except Exception as exc:
-                log.warning("finviz: %s 한글명 백필 실패: %s", tag, exc)
+        # 종목명 한글 (사용자 2026-06-13 '한국·미국 제외 모든 나라 괄호 한국어')
+        # — 공용 헬퍼. 옛 코드는 (1) `market` 미정의(파라미터는 tag) NameError 로
+        # 번역+cache_write 까지 통째로 건너뛰고 (2) name==ticker 일 때만 번역해
+        # JP 銘柄名·TWSE 약칭(南亞科 류)을 스킵했음 — 헬퍼가 둘 다 해소(네이티브명
+        # 직접 번역). US/KR 은 헬퍼가 no-op (영문/pykrx 한글 유지).
+        _backfill_korean_names(out["high"] + out["low"], tag)
         log.info("finviz: %s highlow — scanned %d → high %d / low %d (mcap %d)",
                  tag, scanned, len(out["high"]), len(out["low"]), len(mcaps))
         if out["high"] or out["low"]:
@@ -931,23 +915,7 @@ def _compute_movers_from(universe: list, names: dict, cache_name: str,
             mc = mcaps.get(r["ticker"])
             r["mcap"] = round(mc / 1e8, 2) if mc else None
             r["ind"] = inds.get(r["ticker"])
-        if market and market != "US":      # 한글명 (name == ticker 인 것만)
-            try:
-                need = [r for r in ups + downs
-                        if not r.get("name") or r["name"] == r["ticker"]]
-                if need:
-                    en = _fetch_display_names([r["ticker"] for r in need])
-                    uniq = sorted({n for n in en.values() if n})
-                    km = {}
-                    if uniq:
-                        from bot.chart_translate import translate_titles_kr
-                        km = translate_titles_kr(uniq) or {}
-                    for r in need:
-                        e = en.get(r["ticker"], "")
-                        if e:
-                            r["name"] = km.get(e) or e
-            except Exception as exc:
-                log.warning("finviz: %s movers 한글명: %s", source, exc)
+        _backfill_korean_names(ups + downs, market)   # 네이티브명 → 한글(HK 등)
         out["up"], out["down"] = ups, downs
         log.info("finviz: %s movers — scanned %d → up %d / down %d",
                  source, out["scanned"], len(ups), len(downs))
@@ -1010,22 +978,7 @@ def _compute_jp_stop(universe: list, names: dict, cache_name: str,
             mc = mcaps.get(r["ticker"])
             r["mcap"] = round(mc / 1e8, 2) if mc else None
             r["ind"] = inds.get(r["ticker"])
-        try:                                          # 한글명(name == ticker 만)
-            need = [r for r in out["upper"] + out["lower"]
-                    if not r.get("name") or r["name"] == r["ticker"]]
-            if need:
-                en = _fetch_display_names([r["ticker"] for r in need])
-                uniq = sorted({n for n in en.values() if n})
-                km = {}
-                if uniq:
-                    from bot.chart_translate import translate_titles_kr
-                    km = translate_titles_kr(uniq) or {}
-                for r in need:
-                    e = en.get(r["ticker"], "")
-                    if e:
-                        r["name"] = km.get(e) or e
-        except Exception as exc:
-            log.warning("finviz: %s jp-stop 한글명: %s", source, exc)
+        _backfill_korean_names(out["upper"] + out["lower"], "JP")  # 銘柄名 → 한글
         log.info("finviz: %s jp-stop — scanned %d → 상한 %d / 하한 %d",
                  source, scanned, len(out["upper"]), len(out["lower"]))
         if out["upper"] or out["lower"]:
@@ -1372,13 +1325,18 @@ def _kick_full_us_refresh() -> None:
 
 def _highlow_full_us() -> dict:
     """전미국 산출 티어 — **동기 계산 절대 안 함** (~수 분이라 페이지 hang
-    금지). 신선 캐시(30분) 서빙 / stale(≤24h) 서빙+백그라운드 재계산 /
-    캐시 부재 시 백그라운드 kick 후 빈 dict 반환 → 호출부가 S&P500
-    티어로 폴스루 (다음 방문부터 전량 표시)."""
-    c = _cached("highlow_full_us_v4.json", ttl=_FALLBACK_TTL_SEC)
-    if c is not None:
-        return c
+    금지). 장-인지 신선도(_session_fresh US, 장중 3h / 장 밖 마지막 마감 이후
+    산출본이면 재스캔 0 — 사용자 2026-06-13 '장종료후 굳이 안 돌려도'). stale
+    (≤24h) 서빙+백그라운드 재계산 / 캐시 부재 시 kick 후 빈 dict → 호출부가
+    S&P500 티어로 폴스루 (다음 방문부터 전량 표시)."""
     stale = _cached("highlow_full_us_v4.json", ttl=86400)
+    if stale is not None:
+        try:
+            mt = (_CACHE_DIR / "highlow_full_us_v4.json").stat().st_mtime
+        except OSError:
+            mt = 0.0
+        if _session_fresh("US", mt, _HL_INTRA_TTL):
+            return stale
     _kick_full_us_refresh()
     return stale if stale is not None else {}
 
@@ -1549,30 +1507,87 @@ def _kick_us_movers_refresh() -> None:
     _threading.Thread(target=_run, daemon=True, name="us-movers").start()
 
 
-def _movers_cache_is_fresh(cache_ts: float, now_ts: float | None = None) -> bool:
-    """장-인지 신선도 (사용자 2026-06-13 '30분 갱신이 최선인가') — 순수.
+# 시장별 정규장 창 (UTC) — 장-인지 신선도(_session_fresh). (open_h,open_m,close_h,close_m).
+# KST=UTC+9, JST=UTC+9, TST/CST/HKT=UTC+8, US=ET(EST/EDT 여유 커버). 단일 UTC 일(자정
+# 미교차)이라 (h,m) 튜플 비교로 충분. 점심 휴장은 무시(장중 취급 — 추가 스캔 무해).
+_SESSIONS_UTC = {
+    "US":   (13, 0, 21, 30),   # 09:30–16:00 ET (여유)
+    "KR":   (0, 0, 6, 30),     # 09:00–15:30 KST
+    "JP":   (0, 0, 6, 0),      # 09:00–15:00 JST
+    "TW":   (1, 0, 5, 30),     # 09:00–13:30 TST(+8)
+    "CN_A": (1, 30, 7, 0),     # 09:30–15:00 CST(+8)
+    "HK":   (1, 30, 8, 0),     # 09:30–16:00 HKT(+8)
+}
+_HL_INTRA_TTL = 3 * 3600       # 장중 신고저/상한가 재산출 간격 (사용자 2026-06-13 'EOD·3h')
 
-    - 미국 정규장 가능 창(평일 13:00–21:30 UTC — EST/EDT 양쪽 여유 커버)
-      에는 30분 TTL (장중 등락은 계속 변함).
-    - 장 밖(야간·주말)엔 **마지막 마감 이후 산출본이면 fresh** — 재스캔 0.
-      데이터가 변하지 않는 시간에 33분짜리 전량 스캔을 30분마다 반복하면
-      yfinance IP 부하만 키워 차트/스냅샷 등 다른 surface 의 429 리스크
-      (휴일은 평일 창으로 취급 — 추가 스캔이 무해해 캘린더 의존 안 둠)."""
+
+def _session_fresh(market: str, cache_ts: float, intra_ttl: float,
+                   now_ts: float | None = None) -> bool:
+    """시장-인지 신선도 (사용자 2026-06-13 '장종료후 굳이 안 돌려도·나라별 시간
+    체크해 부하없이') — 순수. 정규장 중엔 intra_ttl TTL(데이터 계속 변함), 장
+    밖(야간·주말)엔 **마지막 마감 이후 산출본이면 fresh → 재스캔 0**.
+
+    플랫 TTL 보다 **부하 낮음**(닫힌 시장 재스캔 제거) + 장중 더 신선 — 3h 가
+    6h 플랫보다 가볍다(장 밖 0회). 시장 미상은 플랫 TTL 폴백. 휴일은 평일 창
+    취급(추가 스캔이 무해해 거래소 캘린더 의존 안 둠)."""
     from datetime import datetime, timedelta, timezone
     now = datetime.fromtimestamp(now_ts or time.time(), tz=timezone.utc)
+    sess = _SESSIONS_UTC.get(market)
+    if sess is None:
+        return (now.timestamp() - cache_ts) < intra_ttl
+    oh, om, ch, cm = sess
     in_session = (now.weekday() < 5
-                  and (13, 0) <= (now.hour, now.minute) < (21, 30))
+                  and (oh, om) <= (now.hour, now.minute) < (ch, cm))
     if in_session:
-        return (now.timestamp() - cache_ts) < _FALLBACK_TTL_SEC
-    # 마지막 마감(가장 최근의 평일 21:30 UTC ≤ now) 이후 산출본이면 fresh
+        return (now.timestamp() - cache_ts) < intra_ttl
+    # 마지막 마감(가장 최근의 평일 close ≤ now) 이후 산출본이면 fresh
     d = now
     for _ in range(8):          # 주말+연휴 스팬 커버 (유한 보장)
         if d.weekday() < 5:
-            cand = d.replace(hour=21, minute=30, second=0, microsecond=0)
+            cand = d.replace(hour=ch, minute=cm, second=0, microsecond=0)
             if cand <= now:
                 return cache_ts >= cand.timestamp()
         d = (d - timedelta(days=1)).replace(hour=23, minute=59)
     return False
+
+
+def _movers_cache_is_fresh(cache_ts: float, now_ts: float | None = None) -> bool:
+    """US 무버 장-인지 신선도 — _session_fresh('US', 30분) 위임(기존 호출부·테스트
+    호환). 장중 30분 / 장 밖 마지막 마감 이후 산출본이면 재스캔 0."""
+    return _session_fresh("US", cache_ts, _FALLBACK_TTL_SEC, now_ts)
+
+
+def _backfill_korean_names(rows: list, market: str) -> None:
+    """JP/TW/CN/HK hit 종목의 표시명을 **한글**로 (사용자 2026-06-13 '한국·미국
+    제외 모든 나라 괄호 안 한국어'). 네이티브명(universe 가 준 CJK/영문)을
+    chart_translate Flash(영구캐시)로 **직접 번역** — 옛 'name==ticker 일 때만'
+    로직은 JP/TW(銘柄名/약칭 보유)를 통째로 건너뛰어 南亞科 류가 그대로 노출됐음.
+    네이티브명 없는 항목(name==ticker)만 yfinance longName 폴백 번역. KR(pykrx
+    한글)·US(영문)는 호출 안 함. in-place·graceful(실패 시 원본 유지)."""
+    if not market or market in ("US", "KR"):
+        return
+    try:
+        from bot.chart_translate import translate_titles_kr
+        # 1) 이미 들어온 네이티브명(CJK/영문) 직접 번역
+        native = sorted({r["name"] for r in rows
+                         if r.get("name") and r["name"] != r["ticker"]})
+        kr = translate_titles_kr(native) if native else {}
+        for r in rows:
+            nm = r.get("name")
+            if nm and kr.get(nm):
+                r["name"] = kr[nm]
+        # 2) 네이티브명 없던 항목 → yfinance longName 폴백 후 번역
+        need = [r for r in rows if not r.get("name") or r["name"] == r["ticker"]]
+        if need:
+            en = _fetch_display_names([r["ticker"] for r in need])
+            ue = sorted({n for n in en.values() if n})
+            ke = translate_titles_kr(ue) if ue else {}
+            for r in need:
+                e = en.get(r["ticker"], "")
+                if e:
+                    r["name"] = ke.get(e) or e
+    except Exception as exc:
+        log.warning("finviz: %s 한글명 백필 실패: %s", market, exc)
 
 
 def fetch_us_movers() -> dict:
