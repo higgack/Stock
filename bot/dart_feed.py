@@ -121,6 +121,22 @@ def _classify_report(report_nm: str) -> str:
     return "지분공시" if "보고서" in t else "기타"
 
 
+# 증권 발행·등록 서류 (투자설명서·일괄신고·증권신고서) — 기업 '사건'이 아니라
+# 발행/등록 문서로, 펀드 투자설명서와 동류다. 상장사 명의여도 카드 대상이
+# 아니므로 coverage 의 '보강 후보(미파싱)'가 아니라 '의도된 제외'로 집계해야
+# 한다 (사용자 2026-06-13 '펀드 투자설명서를 정말 미파싱과 구분되게'). 실제
+# 자금조달 이벤트(유상증자·CB 발행 결정 등)는 별도 결정공시로 이미 분류되므로
+# 이들을 제외해도 신호 손실은 없다 (ELS/DLS 일괄신고 추가서류가 대표적 노이즈).
+_NONCORP_DOC_KW = ("투자설명서", "일괄신고", "증권신고서")
+
+
+def _is_noncorp_doc(report_nm: str) -> bool:
+    """발행·등록 서류(투자설명서/일괄신고/증권신고서 — 펀드 동류 비대상)면
+    True. 순수. coverage 보강후보·드롭모니터링 양쪽에서 제외용."""
+    t = report_nm or ""
+    return any(k in t for k in _NONCORP_DOC_KW)
+
+
 def fetch_kr_earnings_ir(days_back: int = 10) -> list[dict]:
     """DART 아카이브에서 한국 IR(기업설명회) 공시만 추출 — 캘린더용.
 
@@ -2940,9 +2956,13 @@ def _norm_report_nm(nm: str) -> str:
 
 
 def _tally_drop(report_nm: str, stock_code: str) -> None:
-    """상장사(6자리 코드) 드롭만 집계 — 비상장/펀드는 노이즈라 제외."""
+    """상장사(6자리 코드) 드롭만 집계 — 비상장/펀드 + 발행·등록 서류(투자
+    설명서/일괄신고/증권신고서, 펀드 동류 비대상)는 노이즈라 제외, 실제
+    기업 사건 보강후보만 모니터링 (사용자 2026-06-13)."""
     try:
         if not (stock_code and len(stock_code) == 6 and stock_code.isdigit()):
+            return
+        if _is_noncorp_doc(report_nm):
             return
         key = _norm_report_nm(report_nm)
         if key:
@@ -2986,21 +3006,26 @@ def coverage_audit(days_back: int = 2, max_pages: int = 80) -> dict:
     items = fetch_market_disclosures(days_back=days_back,
                                      max_pages=max_pages, skip_routine=False)
     kept: dict[str, int] = {}
-    dropped_listed: dict[str, int] = {}
-    dropped_other = 0
+    dropped_listed: dict[str, int] = {}     # 실제 기업 사건 (보강 후보)
+    dropped_noncorp: dict[str, int] = {}    # 발행·등록 서류 (의도된 제외, 펀드 동류)
+    dropped_other = 0                       # 비상장/펀드 (의도된 제외)
     for it in items:
         cat = it.get("category", "기타")
         if cat != "기타":
             kept[cat] = kept.get(cat, 0) + 1
             continue
         sc = it.get("stock_code") or ""
+        nm = it.get("report_nm", "")
         if len(sc) == 6 and sc.isdigit():
-            key = _norm_report_nm(it.get("report_nm", ""))
-            dropped_listed[key] = dropped_listed.get(key, 0) + 1
+            key = _norm_report_nm(nm)
+            tgt = dropped_noncorp if _is_noncorp_doc(nm) else dropped_listed
+            tgt[key] = tgt.get(key, 0) + 1
         else:
             dropped_other += 1
     return {"total": len(items), "kept": kept,
-            "dropped_listed": dropped_listed, "dropped_other": dropped_other}
+            "dropped_listed": dropped_listed,
+            "dropped_noncorp": dropped_noncorp,
+            "dropped_other": dropped_other}
 
 
 def fetch_market_disclosures(target_date: date | None = None,
@@ -4136,7 +4161,13 @@ if __name__ == "__main__":
         for k, v in sorted(rep["kept"].items(), key=lambda kv: -kv[1]):
             print(f"  {k:8s} {v:5d}")
         print(f"[coverage] 드롭 — 비상장/펀드 {rep['dropped_other']}건 (의도된 제외)")
-        print("[coverage] 드롭 — 상장사 '기타' 제목 분포 (보강 후보):")
+        _noncorp = rep.get("dropped_noncorp", {})
+        if _noncorp:
+            print(f"[coverage] 드롭 — 상장사 발행·등록 서류 {sum(_noncorp.values())}건 "
+                  "(투자설명서/일괄신고/증권신고서 — 의도된 제외, 펀드 투자설명서 동류):")
+            for k, v in sorted(_noncorp.items(), key=lambda kv: -kv[1])[:20]:
+                print(f"  {v:4d} × {k}")
+        print("[coverage] 드롭 — 상장사 '기타' 제목 분포 (보강 후보 — 실제 기업 사건):")
         for k, v in sorted(rep["dropped_listed"].items(), key=lambda kv: -kv[1])[:40]:
             print(f"  {v:4d} × {k}")
         raise SystemExit(0)
