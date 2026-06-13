@@ -183,3 +183,33 @@ def quote_glitch_gap(last, prev, max_gap: float = 0.75) -> bool:
         return abs(lp / pc - 1.0) > max_gap
     except (TypeError, ValueError):
         return False
+
+
+# 일본 TSE 制限値幅(daily price limit) 테이블 — 基準値段(전일종가) → 제한폭(엔).
+# 가격대별 tiered(±% 고정 아님). ストップ高/安(상한가/하한가) 판정용 (사용자
+# 2026-06-13 JP 상하한가). 공개·고정 표라 결정적(스크래핑 불요·테스트 가능).
+_JP_LIMIT_TABLE = (
+    (100, 30), (200, 50), (500, 80), (700, 100), (1000, 150),
+    (1500, 300), (2000, 400), (3000, 500), (5000, 700), (7000, 1000),
+    (10000, 1500), (15000, 3000), (20000, 4000), (30000, 5000),
+    (50000, 7000), (70000, 10000), (100000, 15000), (150000, 30000),
+    (200000, 40000), (300000, 50000), (500000, 70000), (700000, 100000),
+    (1000000, 150000), (1500000, 300000), (2000000, 400000),
+    (3000000, 500000), (5000000, 700000), (7000000, 1000000),
+    (10000000, 1500000),
+)
+
+
+def jp_price_limit(prev_close) -> float | None:
+    """일본 制限値幅(엔) — 전일종가 기준. ストップ高 = prev+limit, ストップ安 =
+    prev-limit. None on bad input. (예: ¥3,000 → ±¥700, ¥150 → ±¥50)."""
+    try:
+        p = float(prev_close)
+    except (TypeError, ValueError):
+        return None
+    if p <= 0:
+        return None
+    for thr, width in _JP_LIMIT_TABLE:
+        if p < thr:
+            return float(width)
+    return float(_JP_LIMIT_TABLE[-1][1])

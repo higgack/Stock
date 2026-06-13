@@ -7372,3 +7372,81 @@ class TestKrFullUniverseHighlow:
                  {"ticker": "7203.T", "name": "7203.T"}]
         need = [r for r in items if not r.get("name") or r["name"] == r["ticker"]]
         assert [r["ticker"] for r in need] == ["7203.T"]   # 삼성전자 보존
+
+
+class TestHkMovers:
+    """홍콩 급등/급락 — 무제한 시장이라 상한가/하한가 대신(사용자 2026-06-13
+    '홍콩도 미국처럼'). HKEX 전종목 yfinance 당일 등락률 상·하위. SWR·6h 캐시."""
+
+    def test_swr_no_sync_compute(self, monkeypatch):
+        import bot.intl_movers as im, bot.finviz_client as fc
+        kicked = {"n": 0}
+        monkeypatch.setattr(im, "_kick",
+                            lambda m: kicked.__setitem__("n", kicked["n"] + 1))
+        monkeypatch.setattr(fc, "_compute_movers_from",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("sync!")))
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)
+        r = im.fetch_intl_movers("HK")
+        assert r["building"] is True and kicked["n"] == 1
+        assert im.fetch_intl_movers("XX")["up"] == []   # 미지원 graceful
+
+    def test_page_render_and_wiring(self, monkeypatch):
+        import bot.intl_movers as im
+        monkeypatch.setattr(im, "fetch_intl_movers", lambda m: {
+            "up": [{"ticker": "9988.HK", "name": "알리바바", "price": 80,
+                    "pct": 9.1, "mcap": 150000, "ind": "Retail"}],
+            "down": [], "ts": "x", "scanned": 2774, "building": False})
+        from bot.intl_pages import render_intl_movers_page
+        h = render_intl_movers_page("HK")
+        assert "급등·급락" in h and "9988.HK" in h and "알리바바" in h
+        assert "거래량" not in h and "현재가 (HK$)" in h
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1] / "bot"
+        assert "/hkmovers" in (root / "dashboard_server.py").read_text("utf-8")
+        assert 'href="hkmovers"' in (root / "dashboard.py").read_text("utf-8")
+
+    def test_compute_movers_from_present(self):
+        from bot.finviz_client import _compute_movers_from
+        assert callable(_compute_movers_from)
+
+
+class TestJpStop:
+    """일본 상한가/하한가(ストップ高/安) — TSE 制限値幅 도달 종목 (사용자
+    2026-06-13 'JP 상하한가'). 결정적(공개 제한폭 표·스크래핑 불요)."""
+
+    def test_jp_price_limit_table(self):
+        from bot.price_sanity import jp_price_limit
+        assert jp_price_limit(150) == 50        # 100-200 → ±50
+        assert jp_price_limit(3000) == 700      # 3000-5000 → ±700
+        assert jp_price_limit(88000) == 15000   # 70000-100000 → ±15000
+        assert jp_price_limit(99) == 30
+        assert jp_price_limit(0) is None and jp_price_limit("x") is None
+
+    def test_swr_no_sync(self, monkeypatch):
+        import bot.jp_stop as js, bot.finviz_client as fc
+        kicked = {"n": 0}
+        monkeypatch.setattr(js, "_kick", lambda: kicked.__setitem__("n", kicked["n"] + 1))
+        monkeypatch.setattr(fc, "_compute_jp_stop",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("sync!")))
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)
+        r = js.fetch_jp_stop()
+        assert r["building"] is True and kicked["n"] == 1
+
+    def test_page_render_and_wiring(self, monkeypatch):
+        import bot.jp_stop as js
+        monkeypatch.setattr(js, "fetch_jp_stop", lambda: {
+            "upper": [{"ticker": "8316.T", "name": "미쓰이", "price": 3700,
+                       "pct": 23.3, "mcap": 400000, "ind": "Banks"}],
+            "lower": [], "ts": "x", "scanned": 3640, "building": False})
+        from bot.intl_pages import render_jp_stop_page
+        h = render_jp_stop_page()
+        assert "ストップ高" in h and "8316.T" in h and "시총" in h
+        assert "현재가 (¥)" in h
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1] / "bot"
+        assert "/jphighlow" in (root / "dashboard_server.py").read_text("utf-8")
+        assert 'href="jphighlow"' in (root / "dashboard.py").read_text("utf-8")
+
+    def test_compute_jp_stop_present(self):
+        from bot.finviz_client import _compute_jp_stop
+        assert callable(_compute_jp_stop)
