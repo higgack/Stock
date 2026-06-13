@@ -709,18 +709,33 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
     # longName → chart_translate(Flash·영구캐시) 번역. 6h 캐시에 이름까지 저장.
     # graceful — 실패 시 ticker 유지(렌더가 '회사명 없으면 티커' 폴백).
     if results:
+        # 한글명: 네이버 worldstock 이름 맵 우선(사용자 2026-06-14 '네이버에서
+        # 한글종목명'). TW(네이버 미지원)·맵 미스만 chart_translate(yfinance
+        # longName→Flash) 폴백. 둘 다 영구/7d 캐시라 ₩~0.
         try:
-            from bot.chart_translate import translate_titles_kr
-            from bot.finviz_client import _fetch_display_names
-            en = _fetch_display_names([r["symbol"] for r in results])
-            uniq = sorted({n for n in en.values() if n})
-            kr = translate_titles_kr(uniq) if uniq else {}
+            from bot.naver_ranking_client import world_name_map
+            nmap = world_name_map(market)
             for r in results:
-                e = en.get(r["symbol"], "")
-                if e:
-                    r["name"] = kr.get(e) or e
+                nm = nmap.get(r["symbol"])
+                if nm:
+                    r["name"] = nm
         except Exception as exc:
-            log.warning("intl earnings 한글명 (%s): %s", market, exc)
+            log.warning("intl earnings 네이버 이름 (%s): %s", market, exc)
+        miss = [r for r in results
+                if not r.get("name") or r["name"] == r["symbol"]]
+        if miss:
+            try:
+                from bot.chart_translate import translate_titles_kr
+                from bot.finviz_client import _fetch_display_names
+                en = _fetch_display_names([r["symbol"] for r in miss])
+                uniq = sorted({n for n in en.values() if n})
+                kr = translate_titles_kr(uniq) if uniq else {}
+                for r in miss:
+                    e = en.get(r["symbol"], "")
+                    if e:
+                        r["name"] = kr.get(e) or e
+            except Exception as exc:
+                log.warning("intl earnings 한글명 폴백 (%s): %s", market, exc)
     try:
         cache_file.write_text(json.dumps(results, ensure_ascii=False))
     except Exception:

@@ -4448,6 +4448,24 @@ class TestDartParseTargetAndSignificance:
         assert not is_parse_target({"category": "계약",
                                     "report_nm": "공급계약", "corp_code": ""})
 
+    def test_intended_freeform_split(self):
+        # 사용자 2026-06-14 '의도한 미파싱은 미파싱제외로, 진짜 미파싱과 나눠'.
+        from bot.dart_feed import intended_freeform_unparsed as ff
+        assert ff("기타경영사항(자율공시)")                 # catch-all freeform
+        assert ff("[기재정정]기타경영사항(자율공시)")
+        assert ff("투자판단관련주요경영사항")
+        assert ff("기타시장안내")
+        assert ff("[첨부정정]주요사항보고서(회사합병결정)")  # 첨부만 정정(본문 없음)
+        assert not ff("단일판매ㆍ공급계약체결")             # 진짜 파서 대상
+        assert not ff("주요사항보고서(유상증자결정)")
+        assert not ff("[기재정정]단일판매ㆍ공급계약체결")   # 본문 정정은 재추출 대상
+        # 대시보드 배선 — 미파싱제외 칩/카드클래스/필터플래그
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "intended_freeform_unparsed" in src
+        assert 'data-flag="noparse"' in src and "df-noparse" in src
+        assert "미파싱제외" in src
+        assert "noparse:'미파싱제외'" in src                 # CSV 라벨
+
     def test_enrich_uses_is_parse_target(self):
         # enrich 의 시도 조건이 is_parse_target 단일 소스로 통합됐는지
         # (인라인 _force/지분/자금조달 분기 중복 제거) — 회귀 차단.
@@ -6938,6 +6956,26 @@ class TestEarningsCalendarIntl:
         # 미지원 시장은 네트워크 0 으로 즉시 빈 리스트
         assert fetch_earnings_calendar_intl("US") == []
         assert fetch_earnings_calendar_intl("ZZ") == []
+
+    def test_intl_korean_name_in_parens(self):
+        # 사용자 2026-06-14 '실적·캘린더 intl 티커뒤에 (한글명)'. 네이버 이름맵 우선.
+        from bot.dashboard import _render_earnings_table
+        h = _render_earnings_table([{"symbol": "8233.T", "name": "다카시마야",
+                                     "date": "2026-06-30"}])
+        assert "8233.T" in h and "(다카시마야)" in h          # 티커 + (한글명)
+        # 한글명 미확보 → 티커만(graceful)
+        assert "(" not in _render_earnings_table(
+            [{"symbol": "8233.T", "name": "", "date": "x"}]).split("8233.T")[1][:3]
+        # 네이버 이름맵 — TW 미지원 빈 dict, 미지원 시장 빈 dict (오프라인 graceful)
+        from bot.naver_ranking_client import world_name_map
+        assert world_name_map("TW") == {} and world_name_map("ZZ") == {}
+        assert isinstance(world_name_map("JP"), dict)
+        # 캘린더도 intl 티커+(한글명) 배선
+        cal = open("bot/earnings_calendar.py", encoding="utf-8").read()
+        assert "elif is_intl:" in cal and 'class="nm">({' in cal
+        # 실적 fetch 가 네이버 이름맵 우선 배선
+        mo = open("bot/market_overview.py", encoding="utf-8").read()
+        assert "from bot.naver_ranking_client import world_name_map" in mo
 
     def test_market_data_wires_four_markets(self):
         from pathlib import Path as _P
