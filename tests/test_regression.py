@@ -7146,6 +7146,36 @@ class TestUpperLowerVolume:
                                    "ClosingPrice": "10", "Change": "1"}])
         assert r2 and r2[0]["vol"] is None
 
+    def test_tw_parse_includes_value(self):
+        # 사용자 2026-06-14 'TW 거래대금' — TWSE TradeValue → 억 NT$.
+        from bot.twse_client import parse_stock_day_all
+        r = parse_stock_day_all([{"Code": "2330", "Name": "TSMC",
+                                  "ClosingPrice": "1000", "Change": "90",
+                                  "TradeVolume": "45000000",
+                                  "TradeValue": "4500000000000"}])
+        assert r and r[0]["value"] == 45000.0          # 4.5e12/1e8
+        r2 = parse_stock_day_all([{"Code": "1", "Name": "x",
+                                   "ClosingPrice": "10", "Change": "1"}])
+        assert r2 and r2[0]["value"] is None           # 없으면 graceful
+
+    def test_tw_names_english_not_korean(self):
+        # 사용자 2026-06-14 '대만은 () 영어로' — chart_translate 안 함, longName 직접.
+        import bot.finviz_client as fc
+        fc._fetch_display_names = lambda tks: {t: "Yageo Corporation" for t in tks}
+        rows = [{"ticker": "2327.TW", "name": "2327.TW"}]
+        fc._backfill_korean_names(rows, "TW")
+        assert rows[0]["name"] == "Yageo Corporation"
+        # enrich_for_panel·_backfill 둘 다 TW 영문 분기
+        hr = open("bot/highlow_render.py", encoding="utf-8").read()
+        assert 'want_name and market == "TW"' in hr
+        fcs = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert 'if market == "TW":' in fcs
+
+    def test_tw_stock_day_session_aware(self):
+        # 사용자 2026-06-14 '모두 장중 1h' — TW 상한가도 _session_fresh(옛 5분 대체)
+        src = open("bot/twse_client.py", encoding="utf-8").read()
+        assert "_session_fresh(\"TW\"" in src and "_HL_INTRA_TTL" in src
+
     def test_tw_upper_panel_has_volume_col(self):
         src = open("bot/tw_pages.py", encoding="utf-8").read()
         # 상한가 패널(_panel) + 52w 패널 둘 다 거래량

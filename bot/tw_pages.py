@@ -62,11 +62,12 @@ def render_tw_highlow_page() -> str:
     ts = _html.escape(data.get("ts", ""))
 
     def _prep(lst):
-        # TWSE 항목 → stock_panel 형식. ticker=code.TW, price=close, 거래량 유지.
+        # TWSE 항목 → stock_panel 형식. ticker=code.TW, price=close, 거래량·거래대금
+        # (TWSE TradeVolume/TradeValue) 유지(사용자 2026-06-14 'TW 거래대금').
         return [{"ticker": f"{it.get('code', '')}.TW",
                  "name": it.get("name", "") or it.get("code", ""),
                  "price": it.get("close"), "pct": it.get("pct"),
-                 "vol": it.get("vol")} for it in lst]
+                 "vol": it.get("vol"), "value": it.get("value")} for it in lst]
 
     dt = _html.escape(data.get("date", ""))
     up, low = _prep(data.get("upper", [])), _prep(data.get("lower", []))
@@ -82,14 +83,14 @@ def render_tw_highlow_page() -> str:
         low = sort_by_mcap(enrich_for_panel(low, "TW", want_ind=True, want_name=True))
         body = ('<div class="grid">'
                 + stock_panel("🔺 상한가 (+10% 한도)", up, "ul-up", "TW",
-                              show_vol=True, show_ind=True)
+                              show_vol=True, show_value=True, show_ind=True)
                 + stock_panel("🔻 하한가 (-10% 한도)", low, "ul-low", "TW",
-                              show_vol=True, show_ind=True)
+                              show_vol=True, show_value=True, show_ind=True)
                 + '</div>' + HL_SORT_JS)
     # 자료 기준일(거래일) 명시 — 주말/장후엔 직전 거래일. 'ts'는 갱신 시각.
     sub = (f"TWSE 전종목 일일 한도 ±10% 도달(상한가/하한가) · 시총순·헤더 클릭 정렬 · "
-           f"업종·시총=yfinance · "
-           f"{(dt + ' 종가 기준 · ') if dt else ''}5분 캐시"
+           f"종목명=영문 · 업종·시총=yfinance(소형주 시총 일부 미제공) · "
+           f"{(dt + ' 종가 기준 · ') if dt else ''}장중 1h"
            f"{(' · ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 상한가·하한가", sub, body,
                      nav=_market_nav("TW", "twhighlow"))
@@ -124,11 +125,14 @@ def render_tw_highlow52_page() -> str:
         from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                         stock_panel)
         hi, lo = sort_by_mcap(high), sort_by_mcap(low)
+        # 거래량/거래대금(=종가×거래량) — yfinance 스캔이 vol 주면 표시(사용자
+        # 2026-06-14). 없으면 숨김(빈 컬럼 방지).
+        _hv = any(r.get("vol") for r in hi + lo)
         body = ('<div class="grid">'
                 + stock_panel("📈 52주 신고가", hi, "hl-high",
-                              "TW", ind_dist_line(hi), show_vol=False)
+                              "TW", ind_dist_line(hi), show_vol=_hv, show_value=_hv)
                 + stock_panel("📉 52주 신저가", lo, "hl-low",
-                              "TW", ind_dist_line(lo), show_vol=False)
+                              "TW", ind_dist_line(lo), show_vol=_hv, show_value=_hv)
                 + '</div>' + HL_SORT_JS)
     sub = (f"TWSE 전종목 1년 일봉 · 당일 52주 신고가/신저가 갱신 · 시총순·헤더 클릭 정렬 · "
            f"장중 1h{(' · ' + ts + ' 기준') if ts else ''}")
