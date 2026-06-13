@@ -194,6 +194,24 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         ind_csv = ("<script type='application/json' id='ind-csv-data'>"
                    + _json.dumps(_ind_rows, ensure_ascii=False)
                    .replace("</", "<\\/") + "</script>")
+        # 품목(MTI) CSV 2종 (사용자 2026-06-13 '이런것들 엑셀로' — 둘 다):
+        # 요약(품목당 1행, 카드 지표) + 월별 원시. csv-btn 이 산업 탭에서 둘
+        # 다 내려받음. 채널 관련기업 조인 페어는 렌더당 1회 로드(graceful).
+        try:
+            from trade.mti_companies import load_channel_pairs
+            _ch_pairs = load_channel_pairs()
+        except Exception:
+            _ch_pairs = []
+        try:
+            _mti_sum, _mti_mon = industry.mti_export_rows(by_mti, by_mti_imp, _ch_pairs)
+        except Exception:
+            _mti_sum, _mti_mon = [], []
+        mti_csv = (
+            "<script type='application/json' id='mti-csv-summary'>"
+            + _json.dumps(_mti_sum, ensure_ascii=False).replace("</", "<\\/")
+            + "</script><script type='application/json' id='mti-csv-monthly'>"
+            + _json.dumps(_mti_mon, ensure_ascii=False).replace("</", "<\\/")
+            + "</script>")
         # 잠정 속보 존 구분선 (사용자 2026-06-13) — 월간과 동일 pill 형식,
         # 녹색(속보 톤). 위 = 🟢 10·20일 잠정, 아래 = 📅 월간.
         prov_zone_div = (
@@ -203,7 +221,7 @@ def _load_industry_html(customs_db_path: Path | str | None) -> str:
         ) if prov_html else ""
         # 순서 (사용자 2026-06-12): 구분선 → 📋 더 빠른 잠정치(motie) →
         # 🗄 월별 아카이브 → 인사이트 → 산업트렌드 본문(motie 제외).
-        return (ind_csv + prov_zone_div + prov_html + zone_div + industry.motie_banner() + archive_link
+        return (ind_csv + mti_csv + prov_zone_div + prov_html + zone_div + industry.motie_banner() + archive_link
                 + ins_html
                 + industry.render_industry_html(by_ind, by_imp, by_mti,
                                                 by_mti_imp, motie=False))
@@ -573,7 +591,7 @@ def _build_html(
         '<section class="filters">'
         '<div class="top-row">'
         '<input type="search" id="q" placeholder="검색: 품목 / 회사 / 국가 / 산업 / HS" autocomplete="off">'
-        '<button type="button" id="csv-btn" class="csv-btn" title="현재 필터 결과를 CSV로 내려받기">📥 CSV</button>'
+        '<button type="button" id="csv-btn" class="csv-btn" title="CSV 내려받기 — 신호알림/히트맵 탭=현재 결과, 산업트렌드 탭=품목 요약+월별 2파일">📥 CSV</button>'
         '</div>'
         '<div class="chips">'
         '<span class="chip-group" data-key="dir">'
@@ -1894,10 +1912,18 @@ function downloadRowsCSV(rows,stem){
   document.body.appendChild(a);a.click();a.remove();
 }
 function downloadIndustryCSV(){
-  const el=document.getElementById('ind-csv-data');
-  if(!el){alert('산업 데이터가 아직 없습니다');return;}
-  const rows=[['산업','월','수출$','수입$']].concat(JSON.parse(el.textContent));
-  downloadRowsCSV(rows,'industry');
+  // 산업 탭 = 품목(MTI) export 2종 (사용자 2026-06-13 '이런것들 엑셀로'):
+  // 요약(품목당 1행, 카드 지표) + 월별 원시. 헤더는 industry.MTI_*_HEADER
+  // 와 동기(테스트가 가드). 산업레벨(ind-csv-data)은 품목 monthly 의 산업
+  // 컬럼으로 피벗 가능해 별도 버튼 불필요.
+  const sEl=document.getElementById('mti-csv-summary');
+  const mEl=document.getElementById('mti-csv-monthly');
+  if(!sEl||!mEl){alert('품목 데이터가 아직 없습니다');return;}
+  const sHead=['품목','MTI','산업','최신월','수출$','수입$','YoY%','ΔYoY%p','3개월평균YoY%','12M MA$','MA대비%','수출단가$/kg','전년동월단가$/kg','구성HS','관련기업(큐레이션)','관련기업(채널)'];
+  const mHead=['품목','MTI','산업','월','수출$','수입$','수출중량kg','수출단가$/kg'];
+  downloadRowsCSV([sHead].concat(JSON.parse(sEl.textContent)),'품목_요약');
+  // 2번째 다운로드는 살짝 지연 — 일부 브라우저가 연속 다운로드를 막음.
+  setTimeout(function(){downloadRowsCSV([mHead].concat(JSON.parse(mEl.textContent)),'품목_월별');},350);
 }
 
 // --- automatic dark mode 19:00 - 07:00 KST ---

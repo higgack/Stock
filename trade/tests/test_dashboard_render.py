@@ -92,7 +92,7 @@ class HeatmapIndustryGroupAndCSVTests(unittest.TestCase):
         src = open(__file__.rsplit("/tests/", 1)[0] + "/dashboard.py",
                    encoding="utf-8").read()
         self.assertIn("ind-csv-data", src)
-        self.assertIn("ind_csv + prov_zone_div", src)   # 임베드 배선
+        self.assertIn("ind_csv + mti_csv + prov_zone_div", src)   # 임베드 배선(품목 CSV 포함)
 
 
 class IndustryTtmToggleScopeTests(unittest.TestCase):
