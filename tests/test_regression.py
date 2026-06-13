@@ -3843,6 +3843,42 @@ class TestDartFeedBackfill:
         assert m._classify_report("전환청구권행사(제5회차)") != "기타"
         assert m._classify_report("주요사항보고서(주식병합결정)") != "기타"
 
+    def test_noncorp_docs_split_from_backfill_candidates(self, tmp_path, monkeypatch):
+        # 발행·등록 서류(투자설명서/일괄신고/증권신고서)는 펀드 동류 비대상 —
+        # coverage 의 '보강 후보'가 아니라 별도 '의도된 제외'로 (사용자 2026-06-13)
+        m = self._load(tmp_path, monkeypatch)
+        for nm in ("투자설명서(일괄신고)", "일괄신고추가서류(파생결합증권-주가연계증권)",
+                   "증권신고서(채무증권)", "[기재정정]투자설명서"):
+            assert m._is_noncorp_doc(nm), nm
+        for nm in ("최대주주등소유주식변동신고서", "주주총회소집공고",
+                   "단일판매ㆍ공급계약체결", "현금ㆍ현물배당결정"):
+            assert not m._is_noncorp_doc(nm), nm
+        # coverage_audit 3분류: 비대상 문서는 dropped_noncorp 로, 실제 사건은
+        # dropped_listed(보강 후보)로 갈림 (제목만 '기타' 드롭되는 상장사 기준)
+        items = [
+            {"category": "기타", "stock_code": "123456",
+             "report_nm": "투자설명서(일괄신고)"},
+            {"category": "기타", "stock_code": "123456",
+             "report_nm": "증권신고서(지분증권)"},
+            {"category": "기타", "stock_code": "654321",
+             "report_nm": "주주총회소집공고"},
+            {"category": "계약", "stock_code": "111111",
+             "report_nm": "단일판매ㆍ공급계약체결"},
+            {"category": "기타", "stock_code": "",        # 비상장/펀드
+             "report_nm": "투자설명서(집합투자증권)"},
+        ]
+        monkeypatch.setattr(m, "fetch_market_disclosures", lambda *a, **k: items)
+        rep = m.coverage_audit(days_back=1)
+        assert sum(rep["dropped_noncorp"].values()) == 2     # 투자설명서 + 증권신고서
+        assert sum(rep["dropped_listed"].values()) == 1      # 주총소집공고만 보강후보
+        assert rep["dropped_other"] == 1                     # 비상장 펀드
+        assert rep["kept"].get("계약") == 1
+        # 드롭 모니터링 로그도 비대상 제외 (보강후보만 tally)
+        m._DROP_TALLY.clear()
+        m._tally_drop("투자설명서(일괄신고)", "123456")
+        m._tally_drop("주주총회소집공고", "654321")
+        assert sum(m._DROP_TALLY.values()) == 1
+
 
 class TestDartCardFormats:
     """DART 카드 승인 양식(배치 2026-06-11) 영구 회귀 — 검증 중 surfaced
