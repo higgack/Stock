@@ -1262,13 +1262,96 @@ def render_subitem_html(by_mti: dict[str, dict],
         "증감액 랭킹표(행 클릭 = 차트·월별 상세) — 산업이 가려버리는 '산업 안의 "
         "스타 품목'을 발굴. 카드에 단가($/kg, 관세청 중량 기반)·관련기업"
         "(수동 큐레이션 + 수출입 알림 채널 조인 두 출처)은 데이터/수록 품목에 "
-        "한해 표시 — 중량은 다음 정기 스윕부터 적재.</div>"
+        "한해 표시 — 중량은 다음 정기 스윕부터 적재. 📥 <b>CSV</b>(상단 버튼, "
+        "산업 탭)는 품목 <b>요약</b>(품목당 1행·카드 지표 전부)+<b>월별 원시</b> "
+        "두 파일로 내려받아 엑셀에서 바로 열림.</div>"
         + cards_html
         + "<div class='ind-sub-wrap'>"
         + tbl("📈 급등률 (MoM↑ 상위, " + amt_th + " ≥" + _eokusd(rate_min_usd) + ")", rate, "mom")
         + tbl("💵 급증액 (전월대비, " + amt_th + " ≥" + _eokusd(rate_min_usd) + ")", amount, "amount")
         + "</div>"
     )
+
+
+# 품목(MTI) 엑셀 export 컬럼 헤더 — JS 가 동일 순서로 prepend (테스트가 동기 가드)
+MTI_SUMMARY_HEADER = [
+    "품목", "MTI", "산업", "최신월", "수출$", "수입$", "YoY%", "ΔYoY%p",
+    "3개월평균YoY%", "12M MA$", "MA대비%", "수출단가$/kg", "전년동월단가$/kg",
+    "구성HS", "관련기업(큐레이션)", "관련기업(채널)",
+]
+MTI_MONTHLY_HEADER = [
+    "품목", "MTI", "산업", "월", "수출$", "수입$", "수출중량kg", "수출단가$/kg",
+]
+
+
+def _xnum(v, nd: int = 1):
+    """export 수치 정리 — None 보존(JS null→공란), 수치는 반올림. 순수."""
+    return round(v, nd) if isinstance(v, (int, float)) else None
+
+
+def mti_export_rows(by_mti: dict, by_mti_imp: dict | None = None,
+                    channel_pairs: list | None = None) -> tuple[list, list]:
+    """품목(MTI) 엑셀 export 2종 (사용자 2026-06-13 '이런것들 엑셀로') —
+    카드에 보이는 데이터를 표로. channel_pairs 주입 시 순수·결정적:
+    - summary (MTI당 1행): 카드 지표 전부 (단가·YoY·구성HS·관련기업 등)
+    - monthly (MTI×월 long): 수출$·수입$·수출중량·수출단가, 직접 피벗용
+    수출액(months) 기준 정렬. 금액은 raw 달러(기존 산업 CSV 와 동일 — 엑셀
+    에서 포맷). Returns (summary_rows, monthly_rows), 헤더 미포함."""
+    from trade.mti_companies import companies_for, channel_companies_for
+    channel_pairs = channel_pairs or []
+    imp = by_mti_imp or {}
+    hs_rev = _mti_hs_members()
+    summary: list[list] = []
+    monthly: list[list] = []
+
+    def _norm_months(d: dict) -> dict:
+        out = {}
+        for k, v in (d or {}).items():
+            s = str(k).replace("-", "")
+            if len(s) >= 6:
+                out[f"{s[:4]}-{s[4:6]}"] = v
+        return out
+
+    # 수출액 큰 순 — 엑셀에서도 의미있는 기본 정렬
+    order = sorted(by_mti, key=lambda k: sum((by_mti[k].get("months") or {}).values()),
+                   reverse=True)
+    for mti6 in order:
+        node = by_mti[mti6]
+        name = node.get("name") or ""
+        ind = node.get("industry") or ""
+        months = node.get("months") or {}
+        wgts = node.get("wgts") or {}
+        imonths = _norm_months((imp.get(mti6) or {}).get("months") or {})
+        wgt_norm = _norm_months(wgts)
+        pts = industry_series({mti6: months}).get(mti6) or []
+        if not pts:
+            continue
+        _attach_units(pts, wgts)                       # pts 에 'unit'(수출$/kg)
+        unit_by_ym = {p["ym"]: p.get("unit") for p in pts}
+        latest = pts[-1]
+        m = momentum(pts)
+        ma = latest.get("ma12")
+        ma_pct = ((latest["exp"] - ma) / ma * 100.0) if ma else None
+        ago_unit = next((p.get("unit") for p in pts
+                         if p["ym"] == _prev_year_month(latest["ym"])), None)
+        summary.append([
+            name, mti6, ind, latest["ym"],
+            latest["exp"], imonths.get(latest["ym"], 0),
+            _xnum(latest.get("yoy")), _xnum(latest.get("dyoy")),
+            _xnum(m.get("yoy3")), _xnum(ma, 0), _xnum(ma_pct),
+            _xnum(latest.get("unit"), 3), _xnum(ago_unit, 3),
+            " ".join(hs_rev.get(mti6, [])),
+            " · ".join(companies_for(name)),
+            " · ".join(channel_companies_for(name, channel_pairs)),
+        ])
+        for ym in sorted({p["ym"] for p in pts} | set(imonths)):
+            monthly.append([
+                name, mti6, ind, ym,
+                next((p["exp"] for p in pts if p["ym"] == ym), 0),
+                imonths.get(ym, 0), wgt_norm.get(ym, 0),
+                _xnum(unit_by_ym.get(ym), 3),
+            ])
+    return summary, monthly
 
 
 def _intra_views(series: dict[str, list[dict]], by_mti: dict[str, dict] | None) -> str:
