@@ -53,8 +53,11 @@ def render_intl_highlow52_page(market: str) -> str:
                 + '</div>' + HL_SORT_JS)
     from bot.highlow_render import clean_source as _clean_src
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
-    sub = (f"{flag} {src} · **당일 52주 신고가/신저가 갱신** · 시총순·헤더 클릭 "
-           f"정렬 · 업종=yfinance · 장중 2h 갱신·장 마감 후 직전 종가 고정(재스캔 0). "
+    # KR=네이버(1콜·장중 1h·업종 미표시), JP/CN/HK=yfinance(2h·업종 표시)
+    _intra_lbl = "1h" if market == "KR" else "2h"
+    _ind_lbl = "" if market == "KR" else "업종=yfinance · "
+    sub = (f"{flag} {src} · **당일 52주 신고가/신저가 갱신** · 시총순·헤더 클릭 정렬 · "
+           f"{_ind_lbl}장중 {_intra_lbl} 갱신·장 마감 후 직전 종가 고정(재스캔 0). "
            f"{('· 갱신 ' + ts) if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "CN_A": "cn52", "HK": "hk52"}.get(market, "")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body,

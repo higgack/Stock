@@ -279,7 +279,10 @@ def fetch_intl_highlow(market: str) -> dict:
             mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh(market, mt, _HL_INTRA_TTL):
+        # KR 은 네이버 1콜(빠름·429 무관)이라 장중 1h 갱신, JP/CN/HK 는 yfinance
+        # 전종목 스캔이라 2h 유지(사용자 2026-06-13 '네이버 장중 1시간').
+        _intra = 3600 if market == "KR" else _HL_INTRA_TTL
+        if _session_fresh(market, mt, _intra):
             return stale
     st = intl_highlow_status(market)
     age = time.time() - (st.get("ts") or 0)
