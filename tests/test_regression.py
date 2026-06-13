@@ -7324,6 +7324,21 @@ class TestUpperLowerVolume:
         ip = open("bot/intl_pages.py", encoding="utf-8").read()
         assert "거래량·거래대금·시총·종목명=네이버" in ip
 
+    def test_hk_universe_liquidity_cap(self, monkeypatch):
+        # 사용자 2026-06-14 'HK 산출중·야후 맛탱이' — 전종목(~2000) yfinance 스캔
+        # 부하를 네이버 시총 상위 N 으로 캡(빠르고 안정). zfill 정수 매칭.
+        import bot.intl_highlow as ih
+        import bot.naver_ranking_client as nv
+        monkeypatch.setattr(nv, "world_stock_map", lambda m: {
+            "00700.HK": {"mcap": 42000.0}, "00005.HK": {"mcap": 24000.0},
+            "00001.HK": {"mcap": 5000.0}, "09999.HK": {"mcap": 100.0}})
+        full = ["9999.HK", "0001.HK", "0700.HK", "0005.HK"]
+        out = ih._cap_by_liquidity_hk(full, 3)
+        assert out[:2] == ["0700.HK", "0005.HK"]   # 시총 상위 우선
+        assert "9999.HK" not in out                 # 소형 탈락
+        monkeypatch.setattr(nv, "world_stock_map", lambda m: {})
+        assert ih._cap_by_liquidity_hk(full, 2) == full[:2]   # 맵 부재 폴백
+
 
 class TestHighlowRenderShared:
     """신고저/급등락/상한가 공용 리치 렌더러 (사용자 2026-06-13 '미국 포맷

@@ -37,6 +37,29 @@ _running: dict[str, bool] = {}
 _lock = threading.Lock()
 
 
+def _cap_by_liquidity_hk(full: list[str], cap: int) -> list[str]:
+    """HK 전종목을 네이버 worldstock 시총 상위 N 으로 캡 — yfinance 1y 스캔 부하↓.
+    네이버 HK 코드(5자리 '00700')↔yfinance(4자리 '0700') 는 선행 0 제거 정수로
+    매칭. world_stock_map 부재 시 원본 앞 N(저번호=대개 메인보드 대형주) 폴백."""
+    try:
+        from bot.naver_ranking_client import world_stock_map
+        wsm = world_stock_map("HK")
+    except Exception:
+        wsm = {}
+    if not wsm:
+        return full[:cap]
+    mc: dict = {}
+    for k, v in wsm.items():
+        c = str(k).split(".")[0]
+        if c.isdigit():
+            mc[str(int(c))] = (v or {}).get("mcap") or 0.0
+
+    def _rank(t: str) -> float:
+        c = str(t).split(".")[0]
+        return -(mc.get(str(int(c)), 0.0) if c.isdigit() else 0.0)
+    return sorted(full, key=_rank)[:cap]
+
+
 def _universe(market: str) -> tuple[list[str], dict]:
     """peer 맵의 unique 티커(주요종목). names 는 ticker 기본(맵에 명칭 없음)."""
     cfg = _CFG.get(market)
@@ -49,6 +72,12 @@ def _universe(market: str) -> tuple[list[str], dict]:
             from bot.intl_universe import full_universe
             full = full_universe(market)
             if len(full) > 100:
+                if market == "HK" and len(full) > 900:
+                    # HK 전종목(~2000) yfinance 1y 스캔이 rate-limit 으로 느림/
+                    # 불안정(사용자 2026-06-14 '산출중·야후 맛탱이'). 네이버 worldstock
+                    # 시총 상위 ~900 으로 캡 — 유동성 큰 종목만(의미있는 52주, 미세
+                    # micro-cap 은 노이즈). 스캔 ~2배 빠름·안정. 키는 zfill 정수 정규화.
+                    full = _cap_by_liquidity_hk(full, 900)
                 return full, {t: t for t in full}
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
