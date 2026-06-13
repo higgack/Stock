@@ -2962,6 +2962,66 @@ async def _periodic_market_refresh() -> None:
             log.exception("periodic market.html refresh failed")
 
 
+def _prewarm_highlow() -> None:
+    """전종목 신고저/급등락/상한가 캐시를 순차 재산출 — 첫 방문자가 수 분 기다리지
+    않게 미리 데워둠(사용자 2026-06-13 '아침엔 항상 신선'). 순차 실행으로 yfinance
+    버스트 회피. 각 시장 graceful(실패해도 다음 진행). 무거운 전종목 스캔이라
+    백그라운드 thread 에서만 호출(_periodic_highlow_prewarm)."""
+    seq = []
+    try:
+        from bot.intl_highlow import _compute as _ih
+        seq += [(f"highlow {m}", (lambda m=m: _ih(m)))
+                for m in ("KR", "JP", "HK", "CN_A")]
+    except Exception:
+        pass
+    try:
+        from bot.intl_movers import _compute as _im
+        seq.append(("movers HK", lambda: _im("HK")))
+    except Exception:
+        pass
+    try:
+        from bot.jp_stop import _compute as _js
+        seq.append(("jp_stop", _js))
+    except Exception:
+        pass
+    try:
+        from bot.tw_highlow import _compute_tw_highlow as _tw
+        seq.append(("tw_highlow", _tw))
+    except Exception:
+        pass
+    for label, fn in seq:
+        try:
+            fn()
+            log.info("highlow prewarm: %s done", label)
+        except Exception as exc:
+            log.warning("highlow prewarm %s: %s", label, exc)
+    # US (Finviz·가벼움) — SWR fetch 로 warm
+    try:
+        from bot.finviz_client import fetch_high_low, fetch_us_movers
+        fetch_high_low()
+        fetch_us_movers()
+    except Exception as exc:
+        log.warning("highlow prewarm US: %s", exc)
+
+
+async def _periodic_highlow_prewarm() -> None:
+    """매일 07:30·16:30 KST 전종목 신고저/급등락/상한가 캐시 pre-warm — 첫 방문자
+    대기 0(아침 신선). 07:30=US 마감 후+Asia 전일종가, 16:30=Asia 마감 후. 6h
+    캐시라 이 두 시점이 만료 직전을 데움. to_thread(폴링 비차단)·graceful."""
+    kst = timezone(timedelta(hours=9))
+    while True:
+        now = datetime.now(kst)
+        cands = [now.replace(hour=h, minute=30, second=0, microsecond=0)
+                 for h in (7, 16)]
+        future = [t for t in cands if t > now]
+        target = min(future) if future else (cands[0] + timedelta(days=1))
+        await asyncio.sleep(max(60.0, (target - now).total_seconds()))
+        try:
+            await asyncio.to_thread(_prewarm_highlow)
+        except Exception:
+            log.exception("highlow prewarm failed")
+
+
 # 대시보드 명령 콘솔 — '/명령' → (update, ctx) 핸들러 화이트리스트.
 # 런타임 호출(모든 cmd_* 정의 후)이라 forward-ref 안전. screener/screen 은
 # 별도 채널 경로(아래 poller)라 제외, 티커 분석은 [분석] 버튼 전용이라 제외.
@@ -3638,6 +3698,7 @@ async def _on_startup(application) -> None:
     application._dashboard_refresh_task = asyncio.create_task(_periodic_dashboard_refresh(application))
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
     application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
+    application._highlow_prewarm_task = asyncio.create_task(_periodic_highlow_prewarm())
     # 관심종목 DART 공시 알림 폴러 (75초, /dart_alert on 일 때만 발송)
     application._dart_fav_alerts_task = asyncio.create_task(
         _periodic_dart_fav_alerts(application))

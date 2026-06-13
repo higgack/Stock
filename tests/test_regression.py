@@ -7515,3 +7515,29 @@ class TestChildDashboardCrossLink:
         from bot.intl_pages import render_intl_highlow52_page, render_jp_stop_page
         assert 'class="toggle"' in render_intl_highlow52_page("JP")
         assert 'href="jp52"' in render_jp_stop_page()
+
+
+class TestHighlowPrewarm:
+    """전종목 신고저/급등락/상한가 아침 pre-warm 타이머 (사용자 2026-06-13
+    '아침엔 항상 신선'). 07:30·16:30 KST 순차 재산출 — 첫 방문자 대기 0."""
+
+    def test_prewarm_registered(self):
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def _periodic_highlow_prewarm" in src
+        assert "def _prewarm_highlow" in src
+        assert "_highlow_prewarm_task = asyncio.create_task" in src
+        assert "for h in (7, 16)" in src        # 07:30 + 16:30 KST
+
+    def test_target_time_logic(self):
+        from datetime import datetime, timezone, timedelta
+        kst = timezone(timedelta(hours=9))
+
+        def nxt(now):
+            cands = [now.replace(hour=h, minute=30, second=0, microsecond=0)
+                     for h in (7, 16)]
+            fut = [t for t in cands if t > now]
+            return min(fut) if fut else (cands[0] + timedelta(days=1))
+        assert nxt(datetime(2026, 6, 13, 6, 0, tzinfo=kst)).hour == 7
+        assert nxt(datetime(2026, 6, 13, 10, 0, tzinfo=kst)).hour == 16
+        t = nxt(datetime(2026, 6, 13, 20, 0, tzinfo=kst))
+        assert t.hour == 7 and t.day == 14
