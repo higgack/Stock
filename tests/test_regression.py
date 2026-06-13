@@ -7090,9 +7090,27 @@ class TestHighlowRenderShared:
         h = stock_panel("📈 신고가", [{"ticker": "2330.TW", "name": "TSMC",
                         "price": 1000.5, "pct": 2.1, "vol": 45000000,
                         "mcap": 250000, "ind": "Semis"}], "t", "TW")
-        for need in ("거래량", "시총", "업종", 'data-key="mcap"',
-                     "NT$1,000.50", "NT$25.0조", "4,500만", "hl-table"):
+        # 통화기호는 헤더에만(사용자 2026-06-13), 셀은 숫자만
+        for need in ("거래량", "업종", 'data-key="mcap"', "hl-table",
+                     "현재가 (NT$)", "시총 (NT$)",   # 헤더 통화기호
+                     "1,000.50", "25.0조", "4,500만"):  # 셀 무기호
             assert need in h, need
+        assert "NT$1,000.50" not in h and "NT$25.0조" not in h  # 셀 무기호 확인
+
+    def test_panel_column_flags(self):
+        from bot.highlow_render import stock_panel
+        # KR: 종목명만·업종X·거래량O
+        kr = stock_panel("x", [{"ticker": "005930.KS", "name": "삼성전자",
+                          "price": 88000, "pct": 1.0, "vol": 1, "mcap": 5260000,
+                          "ind": "Elec"}], "t", "KR", name_only=True,
+                         show_ind=False, show_vol=True)
+        assert "삼성전자" in kr and "업종" not in kr and "거래량" in kr
+        assert '<span class="ts">(' not in kr   # 티커 노출 안 함
+        # US: 거래량X
+        us = stock_panel("x", [{"ticker": "NVDA", "name": "NVDA", "price": 9,
+                          "pct": 1.0, "mcap": 100, "ind": "S"}], "t", "US",
+                         show_vol=False)
+        assert "거래량" not in us
 
     def test_ind_dist_line(self):
         from bot.highlow_render import ind_dist_line

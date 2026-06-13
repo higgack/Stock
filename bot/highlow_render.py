@@ -61,7 +61,7 @@ HL_SORT_JS = """
 """
 
 
-def _fmt_price(price, market: str) -> str:
+def _fmt_price(price, market: str, with_sym: bool = True) -> str:
     if price is None:
         return "—"
     try:
@@ -69,13 +69,14 @@ def _fmt_price(price, market: str) -> str:
     except (TypeError, ValueError):
         return _html.escape(str(price))
     sym, dec = _CUR.get(market, ("", 2))
-    return f"{sym}{p:,.{dec}f}"
+    return f"{sym if with_sym else ''}{p:,.{dec}f}"
 
 
-def fmt_mcap(mcap, market: str) -> str:
+def fmt_mcap(mcap, market: str, with_sym: bool = True) -> str:
     """시총 표기. 입력 mcap = **억 단위**(현지통화 또는 USD) — finviz_client.
     _compute_highlow_from 이 yfinance marketCap / 1e8 로 저장(전 시장 공통 규약).
-    US=억$→$T/$B/$M, 그 외=억(현지)→통화기호+억/조(10000억=1조)."""
+    US=억$→$T/$B/$M, 그 외=억(현지)→통화기호+억/조(10000억=1조).
+    with_sym=False 면 통화기호 생략(헤더에만 표기 — 사용자 2026-06-13)."""
     if not mcap:
         return "—"
     try:
@@ -85,12 +86,13 @@ def fmt_mcap(mcap, market: str) -> str:
     if v <= 0:
         return "—"
     if market == "US":
+        s = "$" if with_sym else ""
         if v >= 10000:             # 10000억$ = $1T
-            return f"${v / 10000:.2f}T"
+            return f"{s}{v / 10000:.2f}T"
         if v >= 10:                # 10억$ = $1B
-            return f"${v / 10:.1f}B"
-        return f"${v * 100:.0f}M"
-    sym = _CUR.get(market, ("", 2))[0]
+            return f"{s}{v / 10:.1f}B"
+        return f"{s}{v * 100:.0f}M"
+    sym = _CUR.get(market, ("", 2))[0] if with_sym else ""
     if v >= 10000:                 # 10000억 = 1조
         return f"{sym}{v / 10000:.1f}조"
     return f"{sym}{v:,.0f}억"
@@ -109,56 +111,69 @@ def ind_dist_line(items: list, top_k: int = 5) -> str:
 
 
 def stock_panel(title: str, items: list, tid: str, market: str,
-                extra_head: str = "") -> str:
-    """리치 종목 패널 — 종목(+이름)·현재가·등락률·거래량·시총·업종, 헤더 클릭
-    정렬. 시총 내림차순으로 들어온 순서 가정(호출측 정렬). 전 시장 공용."""
+                extra_head: str = "", name_only: bool = False,
+                show_vol: bool = True, show_ind: bool = True,
+                show_mcap: bool = True) -> str:
+    """리치 종목 패널 — 종목·현재가·등락률·(거래량)·(시총)·(업종), 헤더 클릭
+    정렬. **통화기호는 셀이 아닌 현재가/시총 헤더에만**(사용자 2026-06-13).
+    플래그: name_only=종목명만(티커 생략·KR), show_vol/show_ind/show_mcap."""
     if not items:
         return (f'<div class="panel"><h2>{title}</h2>'
                 '<div class="empty">해당 종목 없음</div></div>')
+    sym = _CUR.get(market, ("", 2))[0]
+    cur_h = f" ({sym})" if sym else ""
 
     def _row(i: int, it: dict) -> str:
         tk = _html.escape(str(it.get("ticker", "")))
         nm = _html.escape(it.get("name") or it.get("ticker", ""))
-        label = f'{tk}<span class="ts">({nm})</span>' if nm and nm != tk else tk
-        price = it.get("price")
-        pct = it.get("pct")
-        vol = it.get("vol")
-        mcap = it.get("mcap")
+        if name_only:
+            label = nm or tk
+        else:
+            label = f'{tk}<span class="ts">({nm})</span>' if nm and nm != tk else tk
+        price, pct = it.get("price"), it.get("pct")
+        vol, mcap = it.get("vol"), it.get("mcap")
         ind = _html.escape(str(it.get("ind") or ""))
-        ind_cell = (f'<td class="ind" title="{ind}">{ind}</td>'
-                    if ind else '<td class="ind">—</td>')
         try:
             pnum = float(price) if price is not None else None
         except (TypeError, ValueError):
             pnum = None
-        return (
-            f'<tr data-sym="{tk.lower()}" '
-            f'data-price="{pnum if pnum is not None else -1}" '
-            f'data-pct="{pct if pct is not None else -9999}" '
-            f'data-vol="{vol if vol is not None else -1}" '
-            f'data-mcap="{mcap if mcap is not None else -1}" '
-            f'data-ind="{ind.lower()}">'
-            f'<td class="rk">{i}</td>'
-            f'<td class="nm"><a href="lookup/{tk}">{label}</a></td>'
-            f'<td class="num">{_fmt_price(price, market)}</td>'
-            f'{_pct_cell(pct)}'
-            f'<td class="num">{_fmt_vol(vol)}</td>'
-            f'<td class="num">{fmt_mcap(mcap, market)}</td>'
-            f'{ind_cell}</tr>'
-        )
+        cells = [
+            f'<td class="rk">{i}</td>',
+            f'<td class="nm"><a href="lookup/{tk}">{label}</a></td>',
+            f'<td class="num">{_fmt_price(price, market, with_sym=False)}</td>',
+            _pct_cell(pct),
+        ]
+        if show_vol:
+            cells.append(f'<td class="num">{_fmt_vol(vol)}</td>')
+        if show_mcap:
+            cells.append(f'<td class="num">{fmt_mcap(mcap, market, with_sym=False)}</td>')
+        if show_ind:
+            cells.append(f'<td class="ind" title="{ind}">{ind}</td>'
+                         if ind else '<td class="ind">—</td>')
+        data = (f'data-sym="{tk.lower()}" '
+                f'data-price="{pnum if pnum is not None else -1}" '
+                f'data-pct="{pct if pct is not None else -9999}" '
+                f'data-vol="{vol if vol is not None else -1}" '
+                f'data-mcap="{mcap if mcap is not None else -1}" '
+                f'data-ind="{ind.lower()}"')
+        return f'<tr {data}>' + "".join(cells) + '</tr>'
     rows = "".join(_row(i, it) for i, it in enumerate(items, 1))
+    heads = ['<th>#</th>',
+             '<th class="srt" data-key="sym" data-type="text">종목</th>',
+             f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가{cur_h}</th>',
+             '<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>']
+    if show_vol:
+        heads.append('<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량</th>')
+    if show_mcap:
+        heads.append(f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총{cur_h}</th>')
+    if show_ind:
+        heads.append('<th class="srt" data-key="ind" data-type="text">업종</th>')
     return (
         f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
         f'{extra_head}'
         f'<table class="hl-table" id="{tid}"><thead><tr>'
-        f'<th>#</th>'
-        f'<th class="srt" data-key="sym" data-type="text">종목</th>'
-        f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가</th>'
-        f'<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>'
-        f'<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량</th>'
-        f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총</th>'
-        f'<th class="srt" data-key="ind" data-type="text">업종</th>'
-        f'</tr></thead><tbody>{rows}</tbody></table></div>'
+        + "".join(heads)
+        + f'</tr></thead><tbody>{rows}</tbody></table></div>'
     )
 
 

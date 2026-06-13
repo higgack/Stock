@@ -791,12 +791,13 @@ _NHL_ETF_KW = (
     "TIMEFOLIO", "RISE", "PLUS", "KIWOOM", "히어로즈", "마이티", "파워",
     "ETN", "인버스", "레버리지", "선물", "국채", "통안", "회사채", "채권",
     "리츠", "REIT", "배당다우존스", "S&P", "STOXX", "나스닥", "단기통안채",
+    "스팩", "SPAC",   # SPAC 제외 (사용자 2026-06-13 — 신탁가 고정이라 항상 '근접')
 )
 
 
 def _nhl_is_etf_bond(code: str, name: str) -> bool:
-    """ETF/ETN/채권/리츠 판별 — 실종목 신고저만 남김. 영문 prefix 코드(Q…=ETN)
-    + 브랜드/상품 키워드."""
+    """ETF/ETN/채권/리츠/SPAC 판별 — 실종목 신고저만 남김. 영문 prefix 코드
+    (Q…=ETN) + 브랜드/상품/SPAC 키워드."""
     if code and not code[:1].isdigit():       # Q610056 류 = ETN/ETF
         return True
     nm = name or ""

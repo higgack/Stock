@@ -112,6 +112,20 @@ def _compute_kr_kis() -> None:
         from bot.market import normalize_kr_ticker_suffix as _norm
     except Exception:
         _norm = None
+    # ETF/ETN 견고 제외 — pykrx 주식 코드셋(get_market_ticker_list = 주식만,
+    # ETF/ETN 미포함)과 교차. WON/KoAct 등 브랜드 키워드 누락분까지 제거.
+    # SPAC 은 주식이라 셋에 있음 → KIS _nhl_is_etf_bond '스팩' 필터가 별도 제거.
+    # creds/pykrx 부재로 셋이 비면 교차 생략(키워드 필터에 의존, no-op).
+    _codes: set = set()
+    try:
+        from bot.market import _kr_market_code_sets
+        _ks, _kq = _kr_market_code_sets()
+        _codes = _ks | _kq
+    except Exception:
+        _codes = set()
+    if _codes:
+        raw["high"] = [o for o in raw["high"] if str(o.get("code") or "") in _codes]
+        raw["low"] = [o for o in raw["low"] if str(o.get("code") or "") in _codes]
 
     def _conv(lst):
         items = []

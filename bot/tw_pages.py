@@ -96,15 +96,16 @@ def render_tw_highlow52_page() -> str:
             body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
-        # 미국 포맷 통일(사용자 2026-06-13) — 시총·업종·거래량·정렬·업종분포.
+        # 미국 포맷 통일 — 시총·업종·정렬·업종분포. 거래량은 제거(yfinance vol
+        # 미populate, 사용자 2026-06-13). 종목명=티커(한글명).
         from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                         stock_panel)
         hi, lo = sort_by_mcap(high), sort_by_mcap(low)
         body = ('<div class="grid">'
                 + stock_panel("📈 52주 신고가 (1% 근접)", hi, "hl-high",
-                              "TW", ind_dist_line(hi))
+                              "TW", ind_dist_line(hi), show_vol=False)
                 + stock_panel("📉 52주 신저가 (1% 근접)", lo, "hl-low",
-                              "TW", ind_dist_line(lo))
+                              "TW", ind_dist_line(lo), show_vol=False)
                 + '</div>' + HL_SORT_JS)
     sub = (f"TWSE 전종목(일반종목) 1년 주봉 52주 고저 1% 근접. 백그라운드 산출·"
            f"30분 캐시. {('· 갱신 ' + ts) if ts else ''}")
