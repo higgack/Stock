@@ -7170,7 +7170,7 @@ class TestUpperLowerVolume:
         assert r2 and r2[0]["value"] is None           # 없으면 graceful
 
     def test_tw_names_english_not_korean(self):
-        # 사용자 2026-06-14 '대만은 () 영어로' — chart_translate 안 함, longName 직접.
+        # 사용자 2026-06-14 '대만은 () 영어로' — 1차 yfinance longName 직접.
         import bot.finviz_client as fc
         fc._fetch_display_names = lambda tks: {t: "Yageo Corporation" for t in tks}
         rows = [{"ticker": "2327.TW", "name": "2327.TW"}]
@@ -7181,6 +7181,22 @@ class TestUpperLowerVolume:
         assert 'want_name and market == "TW"' in hr
         fcs = open("bot/finviz_client.py", encoding="utf-8").read()
         assert 'if market == "TW":' in fcs
+
+    def test_tw_smallcap_chinese_translated_in_enrich(self, monkeypatch):
+        # 사용자 2026-06-14 'TW 소형주 中文→영문 번역으로 reliable 하게' — enrich_for_panel
+        # TW 가 yfinance longName 미스 시 中文 native 명을 translate_names_en 로 영문화.
+        import bot.chart_translate as ct
+        import bot.finviz_client as fc
+        from bot import highlow_render as hr
+        monkeypatch.setattr(fc, "_fetch_mcaps", lambda tks: {})
+        monkeypatch.setattr(fc, "_fetch_display_names", lambda tks: {})   # yfinance 전무
+        monkeypatch.setattr(ct, "translate_names_en",
+                            lambda names: {n: "Translated Co" for n in names})
+        hr._ENRICH_CACHE.clear()
+        items = [{"ticker": "9999.TW", "name": "中文小型股"}]
+        out = hr.enrich_for_panel(items, "TW", want_name=True)
+        assert out[0]["name"] == "Translated Co"         # 中文 미스분 영문 번역
+        hr._ENRICH_CACHE.clear()
 
     def test_tw_stock_day_session_aware(self):
         # 사용자 2026-06-14 '모두 장중 1h' — TW 상한가도 _session_fresh(옛 5분 대체)
@@ -7199,6 +7215,33 @@ class TestUpperLowerVolume:
         assert "stock_panel" in src and "show_vol=True" in src
         psrc = open("bot/naver_sector_client.py", encoding="utf-8").read()
         assert '"vol": vol' in psrc
+
+    def test_kr_industry_map_apply_graceful(self, monkeypatch):
+        # 사용자 2026-06-14 'KR 신고가·급등락에 업종 한글' — 네이버 업종 그룹 멤버맵.
+        import bot.naver_sector_client as ns
+        from bot.naver_sector_client import apply_kr_industry
+        monkeypatch.setattr(ns, "kr_industry_map",
+                            lambda: {"005930": "반도체와반도체장비"})
+        items = [{"ticker": "005930.KS", "ind": None},
+                 {"ticker": "000660.KS", "ind": "이미있음"}]
+        apply_kr_industry(items)
+        assert items[0]["ind"] == "반도체와반도체장비"     # 코드 백필(접미사 제거)
+        assert items[1]["ind"] == "이미있음"              # 기존값 보존
+        monkeypatch.setattr(ns, "kr_industry_map", lambda: {})
+        r = apply_kr_industry([{"ticker": "005930.KS", "ind": None}])
+        assert r[0]["ind"] is None                        # 빈 맵 graceful
+        assert apply_kr_industry([]) == []
+        # 업종 그룹 링크 정규식 — 번호+이름 캡처 (&amp; 포함 href)
+        m = ns._UPJONG_NO_RE.search(
+            'sise_group_detail.naver?type=upjong&amp;no=278">반도체</a>')
+        assert m and m.group(1) == "278" and "반도체" in m.group(2)
+
+    def test_cache_ttls_unified_5min(self):
+        # 사용자 2026-06-14 '엄마보드 2분·naver_sector 4분 → 모두 5분'.
+        import bot.market_overview as mo
+        import bot.naver_sector_client as ns
+        assert mo._CACHE_TTL_SEC == 300       # 엄마보드(market.html) 스냅샷
+        assert ns._CACHE_TTL_SEC == 300       # 네이버 업종/테마/예탁금
 
 
 class TestHighlowRenderShared:
@@ -7510,11 +7553,12 @@ class TestUpperLowerRichEnrich:
         assert enrich_for_panel([], "KR") == []
 
     def test_kr_uppperlower_uses_rich_panel(self):
-        # KR 급등락(사용자 2026-06-14) — 네이버 native rows(enrich 불요)·rich panel
+        # KR 급등락(사용자 2026-06-14) — 네이버 native rows + 업종(한글) 백필·rich panel
         src = open("bot/naver_pages.py", encoding="utf-8").read()
         assert "stock_panel" in src
-        assert ('name_only=True' in src and "show_ind=False" in src
+        assert ('name_only=True' in src and "show_ind=True" in src
                 and "show_value=True" in src)
+        assert "apply_kr_industry" in src      # KR 업종 백필 배선(사용자 2026-06-14)
 
     def test_tw_upperlower_uses_rich_panel(self):
         src = open("bot/tw_pages.py", encoding="utf-8").read()
@@ -7673,6 +7717,21 @@ class TestHkMovers:
         # world_industry_map + sector_movers 둘 다 영문화 배선
         src = open("bot/naver_ranking_client.py", encoding="utf-8").read()
         assert src.count("translate_industries_en") >= 2
+
+    def test_name_english_translation_wired(self, monkeypatch):
+        # 사용자 2026-06-14 'TW 소형주 中文→영문 번역 인프라 재사용'.
+        import bot.chart_translate as ct
+        # 캐시 히트(키부재여도) → 영문 반환
+        monkeypatch.setattr(ct, "_load_name", lambda: {"台積電": "TSMC"})
+        r = ct.translate_names_en(["台積電"])
+        assert r["台積電"] == "TSMC"
+        # graceful: 미캐시+키부재 → 빠짐(원문 유지)
+        monkeypatch.setattr(ct, "_load_name", lambda: {})
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        assert ct.translate_names_en(["없는회사"]) == {}
+        # enrich_for_panel TW 가 미스분 translate_names_en 배선
+        hr = open("bot/highlow_render.py", encoding="utf-8").read()
+        assert "translate_names_en" in hr
 
     def test_naver_sector_movers_and_wiring(self):
         # 사용자 2026-06-14 '업종등락 네이버'(CN/HK/JP). 시총가중 등락 Top/Bottom.
@@ -7982,8 +8041,8 @@ class TestNaverKrRanking:
         assert r["value"] == 6909.5            # /1e8 억(원)
 
     def test_kr_panel_polish(self):
-        # 사용자 2026-06-13: 종목명 nowrap(KR만)·부제 trim(업종=yfinance/당일갱신 제거)
-        # ·상한가 1h 캐시.
+        # 사용자 2026-06-13: 종목명 nowrap(KR만)·상한가 1h 캐시. 2026-06-14: KR
+        # 52주 업종=네이버(업종 그룹 멤버맵 백필).
         from bot.highlow_render import HL_SORT_JS, stock_panel
         kr = stock_panel("x", [{"ticker": "240810.KQ", "name": "원익IPS",
                                 "price": 1, "pct": 1}], "t", "KR", name_only=True)
@@ -7994,7 +8053,8 @@ class TestNaverKrRanking:
         assert ".hl-table.nm-nowrap td.nm" in HL_SORT_JS
         ip = open("bot/intl_pages.py", encoding="utf-8").read()
         assert "당일 52주 신고가/신저가 갱신" not in ip and "직전 종가 고정" not in ip
-        assert '_ind_lbl = "" if market == "KR"' in ip   # KR 업종=yfinance 제거
+        assert '_ind_lbl = "업종=네이버 · " if market == "KR"' in ip  # KR 업종=네이버
+        assert "apply_kr_industry" in ip               # KR 52주 업종 백필 배선
         np = open("bot/naver_pages.py", encoding="utf-8").read()
         # KR 급등락(사용자 2026-06-14) — 무버 신선도 장중 30분(_MOVERS_INTRA_TTL)
         assert "kr_movers_v1.json" in np

@@ -41,16 +41,26 @@ def render_intl_highlow52_page(market: str) -> str:
         from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                         stock_panel)
         hi, lo = sort_by_mcap(high), sort_by_mcap(low)
-        # KR(KIS): 종목명만·업종 제거·거래량 O(acml_vol). JP/CN/HK(yfinance):
-        # 티커+한글명·업종 O·거래량 X(yfinance vol 미populate, 사용자 2026-06-13).
+        # KR: 종목명만(한글)·거래량 O(네이버). JP/CN/HK(yfinance): 티커+한글명·
+        # 거래량 X(yfinance vol 미populate, 사용자 2026-06-13). 업종은 전 시장 표시.
         _kr = market == "KR"
+        if _kr:
+            # KR 업종(한글) 백필 — 네이버 업종 그룹 멤버맵 (사용자 2026-06-14
+            # 'KR 신고가에 업종 추가, 그냥 한글로'). SWR·graceful(빌드 중이면 —).
+            try:
+                from bot.naver_sector_client import apply_kr_industry
+                apply_kr_industry(hi)
+                apply_kr_industry(lo)
+            except Exception:
+                pass
         # KR(네이버)=거래량+거래대금 항상. JP/CN/HK=yfinance 스캔이 거래량 주면
         # 표시(거래대금≈종가×거래량, 사용자 2026-06-14 '모두 거래량/거래대금').
         # vol 부재 시 숨김(빈 컬럼 방지) — 네이버는 52주 정렬 미지원이라 야후 검출.
         _has_vol = any(r.get("vol") for r in hi + lo)
         _show = _kr or _has_vol
-        _opt = dict(name_only=_kr, show_ind=not _kr, show_vol=_show, show_value=_show)
-        _dist = (lambda x: "") if _kr else ind_dist_line   # KR 업종분포도 제거
+        # 업종은 KR 포함 전 시장 표시(KR=네이버 업종맵, 나머지=yfinance).
+        _opt = dict(name_only=_kr, show_ind=True, show_vol=_show, show_value=_show)
+        _dist = ind_dist_line
         # 당일 52주 고가/저가 '갱신'한 진짜 신고가/신저가 (사용자 2026-06-13).
         body = ('<div class="grid">'
                 + stock_panel("📈 52주 신고가", hi, "hl-high", market, _dist(hi), **_opt)
@@ -58,9 +68,9 @@ def render_intl_highlow52_page(market: str) -> str:
                 + '</div>' + HL_SORT_JS)
     from bot.highlow_render import clean_source as _clean_src
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
-    # KR=네이버(1콜·업종 미표시), JP/CN/HK=yfinance(업종 표시) — 신선도는 전 시장
-    # 장중 1h 통일(사용자 2026-06-13 '모두 장중에만 1h'). 부제 군더더기 제거 — 출처·정렬·갱신만.
-    _ind_lbl = "" if market == "KR" else "업종=yfinance · "
+    # KR=네이버(업종 그룹 멤버맵 백필), JP/CN/HK=yfinance — 신선도는 전 시장 장중
+    # 1h 통일(사용자 2026-06-13 '모두 장중에만 1h'). 부제 군더더기 제거 — 출처·정렬·갱신만.
+    _ind_lbl = "업종=네이버 · " if market == "KR" else "업종=yfinance · "
     sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}장중 1h"
            f"{(' · ' + ts + ' 기준') if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "CN_A": "cn52", "HK": "hk52"}.get(market, "")

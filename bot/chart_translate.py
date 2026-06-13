@@ -117,6 +117,70 @@ def translate_industries_en(names: list[str]) -> dict:
     return out
 
 
+_NAME_CACHE = _HOME / "names_en.json"
+
+
+def _load_name() -> dict:
+    try:
+        return json.loads(_NAME_CACHE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_name(d: dict) -> None:
+    try:
+        _HOME.mkdir(parents=True, exist_ok=True)
+        tmp = _NAME_CACHE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, _NAME_CACHE)
+    except OSError:
+        pass
+
+
+def translate_names_en(names: list[str]) -> dict:
+    """{中文/native 회사명 → 영문} — 대만 소형주 등 yfinance longName 부재 종목을
+    통용 영문 회사명으로(사용자 2026-06-14 '대만 소형주 中文→영문 번역으로 reliable
+    하게'). translate_industries_en 인프라 재사용 패턴. Flash 배치·영구 캐시
+    (names_en.json → 종목당 1회·이후 ₩0). graceful(키부재/실패 시 빠짐 → 호출부
+    원문 유지)."""
+    uniq = [n for n in dict.fromkeys(names) if n and n.strip()]
+    if not uniq:
+        return {}
+    cache = _load_name()
+    out = {n: cache[n] for n in uniq if cache.get(n)}
+    todo = [n for n in uniq if n not in cache][:_MAX_BATCH]
+    if not todo:
+        return out
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        return out
+    lines = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(todo))
+    prompt = (
+        "다음은 대만/중화권 상장사의 中文 회사명입니다. 각 줄을 통용되는 영문 "
+        "회사명으로 번역하세요.\n- 예: 台積電 → TSMC, 鴻海 → Hon Hai (Foxconn), "
+        "聯發科 → MediaTek, 長榮 → Evergreen Marine\n- 공식 영문명이 있으면 그것을, "
+        "없으면 음역. 번역문만, 입력과 동일한 '번호. 번역' 형식, 같은 번호 유지. "
+        "설명 금지.\n\n" + lines)
+    try:
+        from bot.screener import _call_pro
+        text, pt, ot = _call_pro(api_key, prompt, model="gemini-2.5-flash",
+                                 enable_grounding=False)
+        _log_usage(pt, ot)
+        for line in (text or "").splitlines():
+            m = re.match(r"\s*(\d+)[.)]\s*(.+)", line)
+            if not m:
+                continue
+            idx = int(m.group(1)) - 1
+            en = m.group(2).strip()
+            if 0 <= idx < len(todo) and en:
+                out[todo[idx]] = en
+                cache[todo[idx]] = en
+        _save_name(cache)
+    except Exception:
+        pass
+    return out
+
+
 def translate_titles_kr(titles: list[str]) -> dict:
     """[제목…] → {원문제목: 한국어}. 캐시 우선, 미캐시만 Flash 배치 번역. graceful.
 

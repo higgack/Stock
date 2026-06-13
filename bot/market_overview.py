@@ -26,10 +26,10 @@ import yfinance as yf
 log = logging.getLogger("bot.market_overview")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "market_overview"
-# 스냅샷(지수/환율 yfinance 배치 1콜 + FRED 일캐시) — 2분이면 시간당 30콜
-# 수준이라 무위험, 헤드라인 데이터 신선도 ↑ (사용자 2026-06-11). Finviz/
+# 스냅샷(지수/환율 yfinance 배치 1콜 + FRED 일캐시) — 5분 통일(사용자
+# 2026-06-14 '엄마보드 모두 5분'). 시간당 12콜 수준이라 무위험. Finviz/
 # Naver 업종 TTL 은 각 클라이언트가 별도 보유(안티봇 경계 — 건드리지 말 것).
-_CACHE_TTL_SEC = 120  # 2 min
+_CACHE_TTL_SEC = 300  # 5 min
 
 # 배포-인지 캐시 솔트 (사용자 2026-06-12 '대시보드 반영 너무 느려') —
 # git reset --hard 배포가 이 모듈을 갱신하면 mtime 이 바뀜 → 솔트 포함

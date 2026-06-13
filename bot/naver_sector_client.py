@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -30,7 +31,7 @@ def _now_kst_label() -> str:
 
 _BASE = "https://finance.naver.com/sise"
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "naver_sector"
-_CACHE_TTL_SEC = 4 * 60  # 리스크 없이 빠르게(1 HTTP/요청) — 사용자 2026-06-10
+_CACHE_TTL_SEC = 5 * 60  # 5분 통일(사용자 2026-06-14 '모두 5분') — 1 HTTP/요청
 
 _HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -45,6 +46,9 @@ _GROUP_RE = re.compile(
     re.I)
 _PCT_RE = re.compile(r'([+\-]?)(\d{1,3}\.\d{1,2})\s*%')
 _ITEM_RE = re.compile(r'/item/main\.naver\?code=(\d{6})"[^>]*>([^<]+)</a>', re.I)
+# 업종 그룹 링크(번호+이름) — 멤버 스캔용 (parse_groups 의 _GROUP_RE 는 이름만 캡처).
+_UPJONG_NO_RE = re.compile(
+    r'sise_group_detail\.naver\?type=upjong[^"]*?no=(\d+)"[^>]*>([^<]+)</a>', re.I)
 
 
 def _get(url: str, **kwargs) -> Optional[str]:
@@ -165,6 +169,101 @@ def _cache_write(name: str, obj) -> None:
         (_CACHE_DIR / name).write_text(json.dumps(obj, ensure_ascii=False))
     except Exception:
         pass
+
+
+# ── KR 종목코드 → 업종(한글) 맵 (사용자 2026-06-14 'KR 신고가·급등락에 업종 한글') ──
+# 네이버 domestic 시세 객체엔 업종이 없음(_kr_row 'ind 미제공'). 업종 그룹
+# (sise_group upjong) 의 각 그룹 상세 페이지 멤버를 스캔해 코드→업종 맵 구축.
+# 업종 멤버십은 안정적 → 7일 캐시 + SWR 백그라운드(렌더 블로킹 0, world_upjong_name
+# 패턴). 업종명은 네이버 한글 그대로(KR 은 번역 안 함 — 사용자 '그냥 한글로 당연히').
+_KR_IND_CACHE = "kr_industry_map.json"
+_KR_IND_TTL = 7 * 86400
+_kr_ind_building = False
+_kr_ind_lock = threading.Lock()
+
+
+def _build_kr_industry_map() -> None:
+    """네이버 업종 그룹 멤버 스캔 → {6자리코드 → 업종명(한글)}. 백그라운드 1회."""
+    global _kr_ind_building
+    try:
+        html = _get(f"{_BASE}/sise_group.naver", params={"type": "upjong"})
+        groups: list = []
+        seen: set = set()
+        if html:
+            for m in _UPJONG_NO_RE.finditer(html):
+                no, name = m.group(1), _clean(m.group(2))
+                if no not in seen and name:
+                    seen.add(no)
+                    groups.append((no, name))
+        if not groups:
+            return
+
+        def _members(grp):
+            no, name = grp
+            dh = _get(f"{_BASE}/sise_group_detail.naver",
+                      params={"type": "upjong", "no": no})
+            res = []
+            if dh:
+                for im in _ITEM_RE.finditer(dh):
+                    res.append((im.group(1), name))
+            return res
+
+        out: dict = {}
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for members in ex.map(_members, groups):
+                for code, name in members:
+                    out.setdefault(code, name)   # 한 종목 = 첫 업종(소속 1개)
+        if out:
+            _cache_write(_KR_IND_CACHE, out)
+    except Exception as exc:
+        log.warning("kr industry map build: %s", exc)
+    finally:
+        with _kr_ind_lock:
+            _kr_ind_building = False
+
+
+def kr_industry_map() -> dict:
+    """{6자리 종목코드 → 업종명(한글)} — 네이버 업종 그룹 멤버 스캔. 7일 캐시 +
+    SWR 백그라운드(렌더 블로킹 0). 첫 방문 시 빌드 kick 후 빈/스테일 반환, 이후
+    방문부터 채워짐. graceful {}."""
+    fp = _CACHE_DIR / _KR_IND_CACHE
+    raw = None
+    try:
+        if fp.exists():
+            raw = json.loads(fp.read_text())
+            if time.time() - fp.stat().st_mtime < _KR_IND_TTL:
+                return raw
+    except Exception:
+        raw = None
+    global _kr_ind_building
+    with _kr_ind_lock:
+        if not _kr_ind_building:
+            _kr_ind_building = True
+            threading.Thread(target=_build_kr_industry_map, daemon=True,
+                             name="kr-industry-map").start()
+    return raw or {}
+
+
+def apply_kr_industry(items: list) -> list:
+    """KR 항목 리스트에 ind(업종 한글) 백필 — ticker '005930.KS' → 코드 005930 →
+    kr_industry_map. in-place·순수(맵 1회 조회)·graceful. 사용자 2026-06-14."""
+    if not items:
+        return items
+    try:
+        imap = kr_industry_map()
+    except Exception:
+        return items
+    if not imap:
+        return items
+    for it in items:
+        if it.get("ind"):
+            continue
+        code = str(it.get("ticker") or "").split(".")[0]
+        ind = imap.get(code)
+        if ind:
+            it["ind"] = ind
+    return items
 
 
 def fetch_sector_movers(top_n: int = 10) -> dict:
