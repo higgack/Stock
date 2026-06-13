@@ -132,6 +132,6 @@ def render_tw_highlow52_page() -> str:
                               "TW", ind_dist_line(lo), show_vol=False)
                 + '</div>' + HL_SORT_JS)
     sub = (f"TWSE 전종목(일반종목) 1년 일봉 · **당일 52주 신고가/신저가 갱신** · "
-           f"장중 3h 갱신·장 마감 후 직전 종가 고정(재스캔 0). {('· 갱신 ' + ts) if ts else ''}")
+           f"장중 2h 갱신·장 마감 후 직전 종가 고정(재스캔 0). {('· 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body,
                      nav=_market_nav("TW", "tw52"))

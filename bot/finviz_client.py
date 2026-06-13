@@ -1325,7 +1325,7 @@ def _kick_full_us_refresh() -> None:
 
 def _highlow_full_us() -> dict:
     """전미국 산출 티어 — **동기 계산 절대 안 함** (~수 분이라 페이지 hang
-    금지). 장-인지 신선도(_session_fresh US, 장중 3h / 장 밖 마지막 마감 이후
+    금지). 장-인지 신선도(_session_fresh US, 장중 2h / 장 밖 마지막 마감 이후
     산출본이면 재스캔 0 — 사용자 2026-06-13 '장종료후 굳이 안 돌려도'). stale
     (≤24h) 서빙+백그라운드 재계산 / 캐시 부재 시 kick 후 빈 dict → 호출부가
     S&P500 티어로 폴스루 (다음 방문부터 전량 표시)."""
@@ -1518,7 +1518,7 @@ _SESSIONS_UTC = {
     "CN_A": (1, 30, 7, 0),     # 09:30–15:00 CST(+8)
     "HK":   (1, 30, 8, 0),     # 09:30–16:00 HKT(+8)
 }
-_HL_INTRA_TTL = 3 * 3600       # 장중 신고저/상한가 재산출 간격 (사용자 2026-06-13 'EOD·3h')
+_HL_INTRA_TTL = 2 * 3600       # 장중 신고저/상한가 재산출 간격 (사용자 2026-06-13 '2h 로')
 
 
 def _session_fresh(market: str, cache_ts: float, intra_ttl: float,
@@ -1527,7 +1527,7 @@ def _session_fresh(market: str, cache_ts: float, intra_ttl: float,
     체크해 부하없이') — 순수. 정규장 중엔 intra_ttl TTL(데이터 계속 변함), 장
     밖(야간·주말)엔 **마지막 마감 이후 산출본이면 fresh → 재스캔 0**.
 
-    플랫 TTL 보다 **부하 낮음**(닫힌 시장 재스캔 제거) + 장중 더 신선 — 3h 가
+    플랫 TTL 보다 **부하 낮음**(닫힌 시장 재스캔 제거) + 장중 더 신선 — 2h 가
     6h 플랫보다 가볍다(장 밖 0회). 시장 미상은 플랫 TTL 폴백. 휴일은 평일 창
     취급(추가 스캔이 무해해 거래소 캘린더 의존 안 둠)."""
     from datetime import datetime, timedelta, timezone

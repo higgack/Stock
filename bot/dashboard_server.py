@@ -728,7 +728,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 today = _date.today()
                 year, month = today.year, today.month
             market = (qs.get("market", [""])[0] or "kr").strip().lower()
-            if market not in ("kr", "us"):
+            if market not in ("kr", "us", "jp", "tw", "cn", "hk"):  # +intl(2026-06-13)
                 market = "kr"
             from bot.earnings_calendar import render_page
             html = render_page(year, month, market)

@@ -6477,7 +6477,9 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
 
     # ── Bottleneck Screener section header + search + 실행 ──
     parts.append(f"""
-  <h2 style="margin:24px 0 8px">🔬 Bottleneck Screener</h2>
+  <h2 style="margin:24px 0 8px">🔬 Bottleneck Screener
+    <button id="t3-csv" type="button" class="csv-btn" title="모든 실행의 Top-3 종목을 CSV(엑셀)로 — 도메인·날짜·티어·성과 포함">📥 Top-3 CSV</button>
+  </h2>
   <p class="sub">테마별 다종목 idea generation · 6-18M thesis</p>
   <div class="search-bar">
     <input id="scr-search" type="text" placeholder="검색 — 또는 실행할 도메인/자유어 입력 (예: bottleneck, 방산, 로봇, 액체냉각) → 실행" autocomplete="off" spellcheck="false">
@@ -6725,6 +6727,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
         '<hr style="border:none;border-top:1px solid var(--border);margin:32px 0 24px">'
         '<h2 style="margin:0 0 8px">📊 조건부 스크리너'
         + _render_screen_manual() +
+        '<button id="cs-csv" type="button" class="csv-btn" title="모든 조건부 스크리너 결과를 CSV(엑셀)로 — 조건·날짜·종목·시총·지표 포함">📥 CSV</button>'
         '</h2>'
         '<p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0). '
         '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> '
@@ -7257,6 +7260,56 @@ noahConsoleSetup({
   okMsg: '조건부 스크리너 요청 접수 — 결과는 텔레그램 채널과 이 페이지에 게시됩니다.'
 });
 </script>
+<script>
+/* 📥 CSV 내보내기 (사용자 2026-06-13 '스크리너 두개도 엑셀') — Bottleneck Top-3 +
+   조건부 스크리너 결과를 클라이언트사이드 CSV(엑셀 UTF-8 BOM). 서버 endpoint 불요. */
+(function(){
+  function noahCsv(filename, header, rows){
+    var esc=function(v){return '"'+(v==null?'':(''+v)).replace(/"/g,'""')+'"';};
+    var out=[header.map(esc).join(',')];
+    rows.forEach(function(r){out.push(r.map(esc).join(','));});
+    var blob=new Blob(["﻿"+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+    var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=filename;document.body.appendChild(a);a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},120);
+  }
+  function txt(el){return el?(el.textContent||'').replace(/\s+/g,' ').trim():'';}
+  function stamp(){var d=new Date(),p=function(n){return(''+n).padStart(2,'0');};
+    return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate());}
+  var t3=document.getElementById('t3-csv');
+  if(t3)t3.addEventListener('click',function(){
+    var rows=[];
+    document.querySelectorAll('table.picks').forEach(function(tb){
+      var card=tb.closest('.card'); if(!card)return;
+      var domain=txt(card.querySelector('.domain')), date=card.getAttribute('data-date')||'';
+      tb.querySelectorAll('tbody tr').forEach(function(tr){
+        var c=tr.querySelectorAll('td'); if(c.length<8)return;
+        rows.push([date,domain,txt(c[0]).replace('#',''),txt(c[1]),txt(c[2]),
+                   txt(c[3]),txt(c[4]),txt(c[5]),txt(c[6]),txt(c[7])]);
+      });
+    });
+    if(!rows.length){alert('내보낼 Top-3 picks 가 없습니다.');return;}
+    noahCsv('screener_top3_'+stamp()+'.csv',
+      ['날짜','도메인','순위','티커','티어','회사','1개월','3개월','6개월','alpha_vs_sector'],rows);
+  });
+  var cs=document.getElementById('cs-csv');
+  if(cs)cs.addEventListener('click',function(){
+    var rows=[];
+    document.querySelectorAll('table.scr-tbl').forEach(function(tb){
+      var det=tb.closest('.scr-det');
+      var date=det?(det.getAttribute('data-date')||''):'';
+      var cond=det?txt(det.querySelector('summary')).slice(0,80):'';
+      tb.querySelectorAll('tbody tr').forEach(function(tr){
+        var c=tr.querySelectorAll('td'); if(c.length<5)return;
+        rows.push([date,cond,txt(c[0]),txt(c[1]),txt(c[2]),txt(c[3]),txt(c[4])]);
+      });
+    });
+    if(!rows.length){alert('내보낼 조건부 스크리너 결과가 없습니다.');return;}
+    noahCsv('screener_조건_'+stamp()+'.csv',
+      ['날짜','조건','종목명','티커','시장','시총','지표'],rows);
+  });
+})();
+</script>
 </body></html>
 """)
     return "".join(parts)
@@ -7269,6 +7322,11 @@ _SCREENER_CSS = (
 <title>Screener — Archive</title>
 <script>""" + _THEME_JS + """</script>
 <style>
+/* 📥 CSV 내보내기 버튼 (사용자 2026-06-13) — h2 제목 옆 작은 버튼 */
+.csv-btn{margin-left:10px;padding:4px 10px;font-size:12px;font-weight:600;vertical-align:middle;
+  border:1px solid var(--border,#d0d7de);border-radius:6px;background:var(--card,#f6f8fa);
+  color:var(--text,#1f2328);cursor:pointer}
+.csv-btn:hover{background:#3b82f6;color:#fff;border-color:#3b82f6}
 /* Time-based light/dark theme (Asia/Seoul) — _THEME_JS toggles
    `data-theme="dark"` on the <html> element between 19:00-07:00.
    Mirrors the NOAH index/detail pages. Variables below adapt: light
@@ -10656,6 +10714,8 @@ _DART_FEED_CSS = """
 .df-pill.active{background:var(--accent,#ef5350);color:#fff;border-color:var(--accent,#ef5350)}
 .df-right{display:flex;gap:8px;align-items:center}
 .df-view-btns{display:flex;gap:2px;background:var(--card,#1a1f2b);border-radius:6px;padding:2px}
+.df-csv-btn{padding:6px 12px;border-radius:6px;border:1px solid var(--border,#333);background:var(--card,#1a1f2b);color:var(--text,#1f2937);cursor:pointer;font-size:13px;white-space:nowrap}
+.df-csv-btn:hover{background:var(--accent,#3b82f6);color:#fff;border-color:var(--accent,#3b82f6)}
 .df-vbtn{padding:6px 8px;background:transparent;border:none;color:var(--muted,#888);cursor:pointer;border-radius:4px;display:flex;align-items:center}
 .df-vbtn.active{background:var(--accent,#3b82f6);color:#fff}
 .df-month{margin-bottom:20px}
@@ -10898,6 +10958,7 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
           <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="6.75" width="14" height="2.5" rx="1" fill="currentColor"/><rect x="1" y="11.5" width="14" height="2.5" rx="1" fill="currentColor"/></svg>
         </button>
       </div>
+      <button id="df-csv" type="button" class="df-csv-btn" title="현재 필터된 공시를 CSV(엑셀)로 내려받기 — 한국수출입 대시보드와 동일">📥 CSV</button>
     </div>
   </div>
 """)
@@ -11117,6 +11178,36 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         else g.classList.remove('list-view');
       });
     });
+  });
+  // 📥 CSV 내보내기 (사용자 2026-06-13 '다트는 한국수출입처럼 엑셀로') —
+  // 현재 필터(.hidden 제외)된 공시만, 클라이언트사이드 CSV(엑셀은 UTF-8 BOM
+  // 으로 한글 깨짐 방지). 서버 endpoint 불요. 한국수출입 csv-btn 패턴 미러.
+  function noahCsv(filename, header, rows){
+    var esc=function(v){return '"'+(v==null?'':(''+v)).replace(/"/g,'""')+'"';};
+    var out=[header.map(esc).join(',')];
+    rows.forEach(function(r){out.push(r.map(esc).join(','));});
+    var blob=new Blob(["﻿"+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+    var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=filename;document.body.appendChild(a);a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},120);
+  }
+  var csvBtn=document.getElementById('df-csv');
+  if(csvBtn)csvBtn.addEventListener('click',function(){
+    var FLAG={sig:'중요',unparsed:'미파싱'};
+    var rows=[];
+    cards.forEach(function(c){
+      if(c.classList.contains('hidden'))return;          // 필터된 것만
+      var dt=(c.querySelector('.df-dt')||{}).textContent||'';
+      var flag=(c.dataset.flag||'').split(' ').map(function(f){return FLAG[f]||'';})
+                 .filter(Boolean).join('/');
+      var a=c.querySelector('.df-corp');
+      rows.push([dt.trim(),(c.dataset.name||'').trim(),(c.dataset.cat||'').trim(),
+                 (c.dataset.report||'').trim(),flag,a?a.href:'']);
+    });
+    if(!rows.length){alert('내보낼 공시가 없습니다 (필터 확인).');return;}
+    var d=new Date(),p=function(n){return(''+n).padStart(2,'0');};
+    noahCsv('DART공시_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'.csv',
+            ['날짜','회사','카테고리','제목','플래그','원문URL'],rows);
   });
 })();
 </script>
@@ -11595,6 +11686,34 @@ def _render_research_us_table(research: list) -> str:
         '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
         '<thead><tr><th>종목</th><th>증권사</th><th>등급 변경</th>'
         '<th>TP(컨센서스)</th><th>날짜</th></tr></thead>'
+        '<tbody>' + "".join(rows) + '</tbody></table></div>'
+    )
+
+
+def _render_research_intl_table(research: list) -> str:
+    """JP/TW/CN/HK 등급변경 — 한글 종목명(번역)·증권사·등급·날짜 (사용자
+    2026-06-13 '보고 판단'). US 표 구조 미러, 종목=한글명(없으면 티커), TP 생략
+    (intl 미수집)."""
+    if not research:
+        return ('<div class="empty-msg">최근 등급 변경이 없습니다. '
+                '(yfinance 해외 애널리스트 커버리지 제한)</div>')
+    rows: list[str] = []
+    for r in research[:40]:
+        sym = _html.escape(r.get("symbol", ""))
+        label = _html.escape(r.get("name") or r.get("symbol", ""))
+        firm = _html.escape(r.get("firm", ""))
+        to_g = _html.escape(r.get("to_grade", ""))
+        from_g = _html.escape(r.get("from_grade", ""))
+        dt = _html.escape(r.get("date", ""))
+        grade_str = f'{from_g} → {to_g}' if from_g else to_g
+        rows.append(
+            f'<tr><td class="sym"><a href="lookup/{sym}">{label}</a></td>'
+            f'<td>{firm}</td><td>{grade_str}</td><td>{dt}</td></tr>'
+        )
+    return (
+        '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
+        '<thead><tr><th>종목</th><th>증권사</th><th>등급 변경</th>'
+        '<th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
     )
 
@@ -12254,6 +12373,19 @@ def _render_market_page(data: dict) -> str:
     research_kr_industry = data.get("research_kr_industry", [])
     research_kr_strategy = data.get("research_kr_strategy", [])
     research_us = data.get("research_us", [])
+    # JP/TW/CN/HK 리서치(등급변경) — 데이터 있는 시장만 탭 노출(빈 시장 제거,
+    # 사용자 2026-06-13 '보고 판단'). yfinance 해외 커버리지 얇아 희소 가능.
+    _res_intl_defs = [(k, lbl, rows) for k, lbl, rows in (
+        ("jp", "일본", data.get("research_jp", [])),
+        ("tw", "대만", data.get("research_tw", [])),
+        ("cn", "중국", data.get("research_cn", [])),
+        ("hk", "홍콩", data.get("research_hk", []))) if rows]
+    _res_intl_btns = "".join(
+        f'<button class="tab-btn" data-tab="res{k}">{lbl}</button>'
+        for k, lbl, rows in _res_intl_defs)
+    _res_intl_panes = "".join(
+        f'<div id="tab-res{k}" class="tab-pane">{_render_research_intl_table(rows)}</div>'
+        for k, lbl, rows in _res_intl_defs)
     macro = data.get("macro", {})
     sector_movers = data.get("sector_movers", {})
     us_sector_movers = data.get("us_sector_movers", {})
@@ -12361,43 +12493,38 @@ def _render_market_page(data: dict) -> str:
     _earn_us = [e for e in earnings
                 if not str(e.get("symbol", "")).endswith(
                     (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".HK"))]
+    # 빈 시장 탭 제거 (사용자 2026-06-13 '내용없으면 지워' — 중국 0건 등). 한국
+    # 우선 순서 유지, 첫 비어있지 않은 탭이 active. 모두 비면 안내 문구.
+    _etab_defs = [(k, lbl, rows) for k, lbl, rows in (
+        ("kr", "한국", _earn_kr), ("us", "미국", _earn_us),
+        ("jp", "일본", _earn_jp), ("tw", "대만", _earn_tw),
+        ("cn", "중국", _earn_cn), ("hk", "홍콩", _earn_hk)) if rows]
+    if _etab_defs:
+        _etab_btns = "".join(
+            f'<button class="etab-btn{" active" if i == 0 else ""}" '
+            f'data-etab="{k}">{lbl} ({len(rows)})</button>'
+            for i, (k, lbl, rows) in enumerate(_etab_defs))
+        _etab_panes = "".join(
+            f'<div id="etab-{k}" class="etab-pane{" active" if i == 0 else ""}">'
+            f'{_render_earnings_table(rows)}</div>'
+            for i, (k, lbl, rows) in enumerate(_etab_defs))
+    else:
+        _etab_btns = ""
+        _etab_panes = ('<div class="etab-pane active">'
+                       '<div class="empty-msg">실적 발표 일정이 없습니다.</div></div>')
 
     parts.append(f"""
   <div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
     <h2>다가오는 실적</h2>
-    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(미국 실적·한국 IR)</a>
+    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(한국 IR·미국·일·대·홍 실적)</a>
     <span class="ts" style="margin-left:auto">{_html.escape(_earn_ts)}</span>
   </div>
   <div class="tbl-filter">
     <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
     <span class="cnt" id="earn-cnt"></span>
   </div>
-  <div class="tabs">
-    <button class="etab-btn active" data-etab="kr">한국 ({len(_earn_kr)})</button>
-    <button class="etab-btn" data-etab="us">미국 ({len(_earn_us)})</button>
-    <button class="etab-btn" data-etab="jp">일본 ({len(_earn_jp)})</button>
-    <button class="etab-btn" data-etab="tw">대만 ({len(_earn_tw)})</button>
-    <button class="etab-btn" data-etab="cn">중국 ({len(_earn_cn)})</button>
-    <button class="etab-btn" data-etab="hk">홍콩 ({len(_earn_hk)})</button>
-  </div>
-  <div id="etab-kr" class="etab-pane active">
-    {_render_earnings_table(_earn_kr)}
-  </div>
-  <div id="etab-us" class="etab-pane">
-    {_render_earnings_table(_earn_us)}
-  </div>
-  <div id="etab-jp" class="etab-pane">
-    {_render_earnings_table(_earn_jp)}
-  </div>
-  <div id="etab-tw" class="etab-pane">
-    {_render_earnings_table(_earn_tw)}
-  </div>
-  <div id="etab-cn" class="etab-pane">
-    {_render_earnings_table(_earn_cn)}
-  </div>
-  <div id="etab-hk" class="etab-pane">
-    {_render_earnings_table(_earn_hk)}
-  </div>
+  <div class="tabs">{_etab_btns}</div>
+  {_etab_panes}
 
   <div class="section-hd" style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
     <h2>최근 리서치 액션</h2>
@@ -12412,6 +12539,7 @@ def _render_market_page(data: dict) -> str:
     <button class="tab-btn" data-tab="krind">한국 산업</button>
     <button class="tab-btn" data-tab="krstrat">한국 전략</button>
     <button class="tab-btn" data-tab="us">미국</button>
+    {_res_intl_btns}
   </div>
   <div id="tab-kr" class="tab-pane active">
     {_render_research_kr_table(research_kr)}
@@ -12425,6 +12553,7 @@ def _render_market_page(data: dict) -> str:
   <div id="tab-us" class="tab-pane">
     {_render_research_us_table(research_us)}
   </div>
+  {_res_intl_panes}
 
   <div id="fav-section">
     <div class="fav-hd"><h2>⭐ 관심종목</h2><span class="cnt" id="fav-cnt"></span></div>

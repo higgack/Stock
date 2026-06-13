@@ -657,18 +657,20 @@ def _intl_earnings_universe(market: str) -> list[tuple[str, str]]:
     return out
 
 
-def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90) -> list[dict]:
+def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
+                                 cache_only: bool = False) -> list[dict]:
     """JP/TW/CN/HK 예정 실적일 (yfinance .calendar, 무료·무키). 6h 캐시.
 
     KR(fetch_earnings_calendar_kr) 패턴 일반화 — 산업 peer 맵 주요종목
     universe(시장당 ~50-100). 추정치(EPS/매출)는 yfinance 가 비미국에
     종종 None → '—'(정직). 미지원 시장/유니버스 부재면 빈 리스트.
     ⚠️ 커버리지 한계: yfinance .calendar 는 비미국 종목 상당수 빈값 —
-    '확정 실적일' 있는 종목만 표에 추가된다(universe 크기와 무관)."""
+    '확정 실적일' 있는 종목만 표에 추가된다(universe 크기와 무관).
+
+    cache_only=True (실적 캘린더 페이지 on-request 경로) — **동기 스캔 금지**:
+    캐시 있으면(나이 무관) 반환, 없으면 [] (페이지 hang 방지). 캐시는
+    market.html 백그라운드 갱신 + 아침 pre-warm 이 데움."""
     if market not in _INTL_EARN_PEERS:
-        return []
-    universe = _intl_earnings_universe(market)
-    if not universe:
         return []
     cache_dir = _CACHE_DIR / "finnhub"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -676,10 +678,15 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90) -> list[dict
     cache_file = cache_dir / f"earnings_{market}_{today.isoformat()}_{_CODE_SALT}.json"
     if cache_file.exists():
         try:
-            if (time.time() - cache_file.stat().st_mtime) / 3600 < 6:
+            if cache_only or (time.time() - cache_file.stat().st_mtime) / 3600 < 6:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
+    if cache_only:
+        return []                       # on-request 경로 — 스캔 안 함
+    universe = _intl_earnings_universe(market)
+    if not universe:
+        return []
 
     cutoff = today + timedelta(days=days_ahead)
 
@@ -697,6 +704,23 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90) -> list[dict
             if r:
                 results.append(r)
     results.sort(key=lambda x: x.get("date", ""))
+    # 한글 종목명 (사용자 2026-06-13 '일본부터 티커말고 번역 한국종목명') — peer
+    # 맵엔 이름 없어 name==ticker. 확정 실적일 있는 결과(희소)만 yfinance
+    # longName → chart_translate(Flash·영구캐시) 번역. 6h 캐시에 이름까지 저장.
+    # graceful — 실패 시 ticker 유지(렌더가 '회사명 없으면 티커' 폴백).
+    if results:
+        try:
+            from bot.chart_translate import translate_titles_kr
+            from bot.finviz_client import _fetch_display_names
+            en = _fetch_display_names([r["symbol"] for r in results])
+            uniq = sorted({n for n in en.values() if n})
+            kr = translate_titles_kr(uniq) if uniq else {}
+            for r in results:
+                e = en.get(r["symbol"], "")
+                if e:
+                    r["name"] = kr.get(e) or e
+        except Exception as exc:
+            log.warning("intl earnings 한글명 (%s): %s", market, exc)
     try:
         cache_file.write_text(json.dumps(results, ensure_ascii=False))
     except Exception:
@@ -881,6 +905,77 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
     return results
 
 
+def fetch_recent_research_intl(market: str, limit: int = 25) -> list[dict]:
+    """JP/TW/CN/HK 최근 등급변경 — US 패턴(yfinance upgrades_downgrades) 일반화
+    (사용자 2026-06-13 '다른나라들도 같은 조건 리서치액션, 보고 판단'). 산업
+    peer 주요종목 universe(부하 bound 60). 한글명 번역(결과만). 6h 캐시.
+
+    ⚠️ 커버리지 한계: yfinance 해외 애널리스트 등급변경 데이터가 얇아 결과가
+    희소(빈 시장 가능)할 수 있음 — 이 trial 의 '판단' 대상. 그래서 윈도는 US
+    7일 대신 30일로 넓힘. graceful — 실패/없음 시 빈 리스트."""
+    if market not in _INTL_EARN_PEERS:
+        return []
+    cache_dir = _CACHE_DIR / "research"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    today = date.today()
+    cache_file = cache_dir / f"intl_{market}_{today.isoformat()}.json"
+    if cache_file.exists():
+        try:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < 6:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+    universe = _intl_earnings_universe(market)[:60]   # 부하 bound
+    if not universe:
+        return []
+    cutoff = (today - timedelta(days=30)).isoformat()
+
+    def _one(item):
+        tk = item[0]
+        try:
+            ud = yf.Ticker(tk).upgrades_downgrades
+            if ud is None or ud.empty:
+                return []
+            items = []
+            for idx, row in ud.head(10).iterrows():
+                d = str(idx.date()) if hasattr(idx, "date") else str(idx)[:10]
+                if d < cutoff:
+                    continue
+                items.append({"symbol": tk, "firm": row.get("Firm", ""),
+                              "to_grade": row.get("ToGrade", ""),
+                              "from_grade": row.get("FromGrade", ""),
+                              "target": None, "date": d})
+            items.sort(key=lambda x: x["date"], reverse=True)
+            return items[:3]
+        except Exception:
+            return []
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for r in pool.map(_one, universe):
+            results.extend(r)
+    results.sort(key=lambda x: x.get("date", ""), reverse=True)
+    results = results[:limit]
+    # 한글명 — 결과만(희소) yfinance longName → chart_translate(Flash·영구캐시).
+    if results:
+        try:
+            from bot.chart_translate import translate_titles_kr
+            from bot.finviz_client import _fetch_display_names
+            en = _fetch_display_names([r["symbol"] for r in results])
+            uniq = sorted({n for n in en.values() if n})
+            kr = translate_titles_kr(uniq) if uniq else {}
+            for r in results:
+                e = en.get(r["symbol"], "")
+                r["name"] = (kr.get(e) or e) if e else r["symbol"]
+        except Exception as exc:
+            log.warning("intl research 한글명 (%s): %s", market, exc)
+        try:
+            cache_file.write_text(json.dumps(results, ensure_ascii=False))
+        except Exception:
+            pass
+    return results
+
+
 # ── Main assembly ───────────────────────────────────────────────────
 
 def fetch_market_snapshot() -> dict[str, Any]:
@@ -985,6 +1080,12 @@ def fetch_all_market_data() -> dict[str, Any]:
         kr_ind_fut = pool.submit(fetch_recent_research_kr_industry, 150)
         kr_strat_fut = pool.submit(fetch_recent_research_kr_strategy, 150)
         us_fut = pool.submit(fetch_recent_research_us, 80)
+        # JP/TW/CN/HK 리서치 액션 — yfinance 등급변경(사용자 2026-06-13 '보고
+        # 판단'). 6h 캐시·peer 60 bound. 커버리지 얇으면 빈 결과(trial 판단용).
+        res_jp_fut = pool.submit(fetch_recent_research_intl, "JP", 25)
+        res_tw_fut = pool.submit(fetch_recent_research_intl, "TW", 25)
+        res_cn_fut = pool.submit(fetch_recent_research_intl, "CN_A", 25)
+        res_hk_fut = pool.submit(fetch_recent_research_intl, "HK", 25)
         macro_fut = pool.submit(_fetch_macro_safe)
         sector_fut = pool.submit(_fetch_sector_movers_safe)
         us_sector_fut = pool.submit(_fetch_us_sector_movers_safe)
@@ -1014,6 +1115,10 @@ def fetch_all_market_data() -> dict[str, Any]:
             "research_kr_industry": kr_ind_fut.result(),
             "research_kr_strategy": kr_strat_fut.result(),
             "research_us": us_fut.result(),
+            "research_jp": res_jp_fut.result(),
+            "research_tw": res_tw_fut.result(),
+            "research_cn": res_cn_fut.result(),
+            "research_hk": res_hk_fut.result(),
             "macro": macro_fut.result(),
             "sector_movers": sector_fut.result(),
             "us_sector_movers": us_sector_fut.result(),

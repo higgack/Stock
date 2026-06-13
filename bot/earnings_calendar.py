@@ -249,17 +249,27 @@ body{padding:12px}
 _MAX_PER_CELL = 3
 
 
-def _market_toggle(year: int, month: int, market: str) -> str:
-    """한국/미국 전환 버튼 — 달력 자체가 시장별로 바뀜(서버 사이드)."""
+# 캘린더 intl 시장 — 위젯과 동일 소스(market_overview.fetch_earnings_calendar_intl,
+# yfinance .calendar). 사용자 2026-06-13 '캘린더에도 다른나라들'. (cal_key → (mkt, 라벨)).
+_INTL_CAL_MAP = {"jp": ("JP", "🇯🇵 일본"), "tw": ("TW", "🇹🇼 대만"),
+                 "cn": ("CN_A", "🇨🇳 중국"), "hk": ("HK", "🇭🇰 홍콩")}
+
+
+def _market_toggle(year: int, month: int, market: str,
+                   intl_avail: dict | None = None) -> str:
+    """시장 전환 버튼 — 달력이 시장별로 바뀜(서버). 한국/미국 + 데이터 있는
+    intl(JP/TW/HK; CN 은 yfinance 커버리지 0이면 자동 숨김 — 사용자 '내용없으면')."""
     ym = f"{year:04d}-{month:02d}"
+    avail = intl_avail or {}
     def _b(m: str, lbl: str) -> str:
         act = " active" if m == market else ""
         return (f'<a class="mkt-btn{act}" '
                 f'href="?month={ym}&amp;market={m}">{lbl}</a>')
-    return ('<div class="mkt-toggle">'
-            + _b("kr", "🇰🇷 한국 (IR)")
-            + _b("us", "🇺🇸 미국 (실적)")
-            + '</div>')
+    btns = [_b("kr", "🇰🇷 한국 (IR)"), _b("us", "🇺🇸 미국 (실적)")]
+    for m, (_mk, lbl) in _INTL_CAL_MAP.items():
+        if avail.get(m):
+            btns.append(_b(m, lbl))
+    return '<div class="mkt-toggle">' + "".join(btns) + '</div>'
 
 
 def render_page(year: int, month: int, market: str = "kr") -> str:
@@ -281,9 +291,30 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
             _us_names = _sp500_names() or {}
     except Exception:
         _us_names = {}
-    market = market if market in ("kr", "us") else "kr"
-    events = [e for e in fetch_month(year, month)
-              if e.get("market", "us") == market]
+    market = market if market in ("kr", "us", "jp", "tw", "cn", "hk") else "kr"
+    # intl 가용성 — cache_only(동기 스캔 0·페이지 hang 방지). 데이터 있는 시장만
+    # 토글 노출. 캐시는 market.html 백그라운드 갱신 + 아침 pre-warm 이 데움.
+    intl_avail: dict[str, bool] = {}
+    try:
+        from bot.market_overview import fetch_earnings_calendar_intl as _fei
+        for _ck, (_mk, _l) in _INTL_CAL_MAP.items():
+            intl_avail[_ck] = bool(_fei(_mk, cache_only=True))
+    except Exception:
+        pass
+    if market in _INTL_CAL_MAP and not intl_avail.get(market):
+        market = "kr"          # 선택 intl 미가용 → 한국 폴백
+    if market in _INTL_CAL_MAP:
+        _mprefix = f"{year:04d}-{month:02d}"
+        try:
+            from bot.market_overview import fetch_earnings_calendar_intl as _fei
+            events = [dict(e, market=market)
+                      for e in _fei(_INTL_CAL_MAP[market][0], cache_only=True)
+                      if str(e.get("date", "")).startswith(_mprefix)]
+        except Exception:
+            events = []
+    else:
+        events = [e for e in fetch_month(year, month)
+                  if e.get("market", "us") == market]
     by_date: dict[str, list[dict]] = defaultdict(list)
     for e in events:
         by_date[e["date"]].append(e)
@@ -344,10 +375,12 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
             entries = ""
             for i, e in enumerate(day_events):
                 sym = _html.escape(str(e.get("symbol", "")))
-                is_kr = e.get("market") == "kr"
-                # 한국=종목명 / 미국=티커(회사명) — 신고가·신저가와 동일 형식
-                # (사용자 2026-06-11). 이름 미확보 시 티커만.
-                if is_kr:
+                _mkt = e.get("market", "us")
+                is_kr = _mkt == "kr"
+                is_intl = _mkt in _INTL_CAL_MAP   # jp/tw/cn/hk
+                # 한국=종목명 / intl=번역 한글명 / 미국=티커(회사명) — 신고저와 동일
+                # 형식(사용자 2026-06-11/13). 이름 미확보 시 티커만.
+                if is_kr or is_intl:
                     label = _html.escape(e.get("name") or sym)
                 else:
                     raw_sym = str(e.get("symbol", ""))
@@ -355,7 +388,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
                           or _us_names.get(raw_sym.replace(".", "-")) or "")
                     label = (f'{sym}<span class="nm">({_html.escape(nm)})</span>'
                              if nm else sym)
-                mcls = "kr" if is_kr else "us"
+                mcls = "kr" if is_kr else "us"   # intl 은 us 스타일(파랑 sym·lookup 링크)
                 if is_kr:
                     # 한국: 회사 클릭 → IR 일정 원문(KIND / DART 폴백, 분석페이지 아님).
                     # 종류(IR)는 텍스트 배지로 표기.
@@ -412,15 +445,15 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
 <a class="back-link" href="market.html">← 홈으로</a>
 <div style="font-size:11px;letter-spacing:2px;color:var(--muted);margin-bottom:4px">EARNINGS CALENDAR</div>
 <h1>실적 캘린더</h1>
-<div class="subtitle">한국시간 기준 일정. <b>한국/미국 버튼</b>으로 달력이 시장별로 전환됩니다. 한국은 <b>KIND IR일정</b>(실제 개최일·미래 포함, 클릭 시 KIND — DART 는 공시 접수일이라 폴백), 미국은 Finnhub 실적(장전 BMO / 장후 AMC). <b>+N 더보기(또는 날짜) 클릭</b>으로 그날 전체 펼침.</div>
-{_market_toggle(year, month, market)}
+<div class="subtitle">한국시간 기준 일정. <b>시장 버튼</b>으로 달력이 시장별로 전환됩니다. 한국=<b>KIND IR일정</b>(실제 개최일·미래 포함, 클릭 시 KIND — DART 폴백), 미국=Finnhub 실적(장전 BMO / 장후 AMC), 일본·대만·홍콩=yfinance 확정 실적일(주요종목·한글명·향후 90일, 종목 클릭 시 NOAH 분석). <b>+N 더보기(또는 날짜) 클릭</b>으로 그날 전체 펼침.</div>
+{_market_toggle(year, month, market, intl_avail)}
 <div class="cal-header">
   <h2>{month_kr}</h2>
-  <span class="cnt">{('🇰🇷 한국 IR' if market == 'kr' else '🇺🇸 미국 실적')} {total}건</span>
+  <span class="cnt">{({'kr': '🇰🇷 한국 IR', 'us': '🇺🇸 미국 실적'}.get(market) or (_INTL_CAL_MAP.get(market, ('', '🌐'))[1] + ' 실적'))} {total}건</span>
 </div>
 <div class="month-nav">{nav_html}</div>
 <div class="cal-grid">{grid}</div>
-<div style="margin-top:16px;font-size:11px;color:var(--muted)">한국 KIND IR일정(DART 폴백) · 미국 Finnhub 실적 · 장전=BMO / 장후=AMC{_ts_sfx}</div>
+<div style="margin-top:16px;font-size:11px;color:var(--muted)">한국 KIND IR일정(DART 폴백) · 미국 Finnhub 실적 · 일본·대만·홍콩 yfinance 확정 실적일(주요종목) · 장전=BMO / 장후=AMC{_ts_sfx}</div>
 <script>
 (function(){{var h=parseInt(new Intl.DateTimeFormat('en-US',{{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';}})();
 (function(){{
