@@ -46,12 +46,14 @@ def render_tw_highlow_page() -> str:
             f'<td class="nm"><a href="lookup/{_html.escape(str(it.get("code","")))}.TW">'
             f'{_html.escape(it.get("name","") or it.get("code",""))}</a></td>'
             f'<td class="num">{_html.escape(str(it.get("close") or "—"))}</td>'
-            f'{_pct_cell(it.get("pct"))}</tr>'
+            f'{_pct_cell(it.get("pct"))}'
+            f'<td class="num">{_fmt_vol(it.get("vol"))}</td></tr>'
             for i, it in enumerate(items, 1))
         return (f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
                 f'<table><thead><tr><th>#</th><th>종목</th>'
                 f'<th style="text-align:right">종가</th>'
-                f'<th style="text-align:right">등락률</th></tr></thead>'
+                f'<th style="text-align:right">등락률</th>'
+                f'<th style="text-align:right">거래량</th></tr></thead>'
                 f'<tbody>{rows}</tbody></table></div>')
 
     dt = _html.escape(data.get("date", ""))

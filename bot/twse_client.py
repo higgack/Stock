@@ -203,10 +203,12 @@ def parse_stock_day_all(rows: list) -> list[dict]:
             continue
         prev = close - chg
         pct = (chg / prev * 100.0) if prev else 0.0
+        vol = _num(r.get("TradeVolume") or r.get("成交股數"))  # 거래량(주식수)
         out.append({
             "code": str(r.get("Code") or r.get("代號") or "").strip(),
             "name": str(r.get("Name") or r.get("名稱") or "").strip(),
-            "close": close, "pct": round(pct, 2)})
+            "close": close, "pct": round(pct, 2),
+            "vol": int(vol) if vol is not None else None})
     return out
 
 

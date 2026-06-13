@@ -7037,3 +7037,31 @@ class TestVolumeColumn:
         assert 'data-vol="45000000"' in h        # 정렬 키
         assert 'data-key="vol"' in h              # 헤더 정렬 가능
         assert "4,500만" in h
+
+
+class TestUpperLowerVolume:
+    """상한가/하한가 표 거래량 (사용자 2026-06-13 '상한가/하한가도 거래량').
+    TW=TWSE TradeVolume(clean), KR=Naver 위치 heuristic(graceful)."""
+
+    def test_tw_parse_includes_volume(self):
+        from bot.twse_client import parse_stock_day_all
+        r = parse_stock_day_all([{"Code": "2330", "Name": "TSMC",
+                                  "ClosingPrice": "1000", "Change": "90",
+                                  "TradeVolume": "45000000"}])
+        assert r and r[0]["vol"] == 45000000
+        # TradeVolume 없으면 graceful None
+        r2 = parse_stock_day_all([{"Code": "1", "Name": "x",
+                                   "ClosingPrice": "10", "Change": "1"}])
+        assert r2 and r2[0]["vol"] is None
+
+    def test_tw_upper_panel_has_volume_col(self):
+        src = open("bot/tw_pages.py", encoding="utf-8").read()
+        # 상한가 패널(_panel) + 52w 패널 둘 다 거래량
+        assert src.count("거래량") >= 2
+
+    def test_kr_naver_highlow_panel_has_volume_col(self):
+        src = open("bot/naver_pages.py", encoding="utf-8").read()
+        assert "거래량" in src and '_fmt_vol(it.get("vol"))' in src
+        # 파서가 vol 키 산출
+        psrc = open("bot/naver_sector_client.py", encoding="utf-8").read()
+        assert '"vol": vol' in psrc
