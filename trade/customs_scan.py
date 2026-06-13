@@ -70,8 +70,17 @@ MAX_PAGES = int(os.environ.get("TRADE_CUSTOMS_SCAN_MAX_PAGES") or "60")
 ALERT_CAP = int(os.environ.get("TRADE_CUSTOMS_ALERT_CAP") or "10")
 TEASER = 3
 
-SECTION_RATE = "rate"      # 📈 급등률
-SECTION_AMOUNT = "amount"  # 💵 급증액
+SECTION_RATE = "rate"      # 📈 급등률 (수출)
+SECTION_AMOUNT = "amount"  # 💵 급증액 (수출)
+# 수입 방향 (사용자 2026-06-13 '수입도 수출처럼 급등률·급증액 TOP + 아카이브').
+# 같은 section 컬럼의 별도 값 — export 행은 'rate'/'amount' 그대로라 기존 적재·
+# seen 무변경(마이그레이션 0), 수입은 신규 section 으로 추가만 됨.
+SECTION_RATE_IMP = "rate_import"      # 📈 급등률 (수입)
+SECTION_AMOUNT_IMP = "amount_import"  # 💵 급증액 (수입)
+_DIR_SECTIONS = {
+    "export": (SECTION_RATE, SECTION_AMOUNT),
+    "import": (SECTION_RATE_IMP, SECTION_AMOUNT_IMP),
+}
 
 
 # ───────────────────────── I/O: paged chapter fetch ─────────────────────────
@@ -219,8 +228,9 @@ def build_series(rows: list[dict]) -> dict[str, dict]:
     return leaves
 
 
-def _latest_move(months: dict) -> Optional[dict]:
-    """Latest-vs-previous export move, or None when < 2 usable months.
+def _latest_move(months: dict, direction: str = "export") -> Optional[dict]:
+    """Latest-vs-previous move (방향별 — export=exp_dlr / import=imp_dlr),
+    or None when < 2 usable months.
 
     The subtlety (2026-06-01 'live wiped' bug): data.go.kr returns rows
     for FUTURE months (current calendar month and beyond) pre-filled with
@@ -235,6 +245,7 @@ def _latest_move(months: dict) -> Optional[dict]:
     ranks; a not-yet-confirmed future 0 is dropped, so the comparison
     tracks the latest two real months (e.g. 4월 vs 3월 until 5월 confirms).
     delta is always defined; pct is None when prev=0."""
+    fld = "imp_dlr" if direction == "import" else "exp_dlr"
     ordered = sorted(months)
     # Trim the UNCONFIRMED tail: drop trailing zero-export months. 관세청
     # confirms a month ~the 15th of the following month and data.go.kr
@@ -245,13 +256,13 @@ def _latest_move(months: dict) -> Optional[dict]:
     # bigger value follows it) and still ranks, while not-yet-published
     # trailing zeros are removed — fixing the 2026-06-01 'live wiped' bug
     # without dropping real new-export surges.
-    while ordered and (months[ordered[-1]].get("exp_dlr") or 0) == 0:
+    while ordered and (months[ordered[-1]].get(fld) or 0) == 0:
         ordered.pop()
     if len(ordered) < 2:
         return None
     cur_ym, prev_ym = ordered[-1], ordered[-2]
-    curr = months[cur_ym].get("exp_dlr") or 0
-    prev = months[prev_ym].get("exp_dlr") or 0
+    curr = months[cur_ym].get(fld) or 0
+    prev = months[prev_ym].get(fld) or 0
     pct = ((curr - prev) / prev * 100.0) if prev else None
     return {
         "year_month": cur_ym,
@@ -269,6 +280,7 @@ def rank(
     pct_threshold: float = PCT_THRESHOLD,
     rate_min_usd: int = RATE_MIN_USD,
     rate_prev_min_usd: int = RATE_PREV_MIN_USD,
+    direction: str = "export",
 ) -> dict[str, list[dict]]:
     """Two ranked lists from the scanned leaves.
 
@@ -289,9 +301,10 @@ def rank(
     its prior. Operator chose this (uniform reference) over per-item latest;
     the trade-off is that a surge in a lagging-month item won't show until
     that item reports the current month."""
+    rate_sec, amt_sec = _DIR_SECTIONS.get(direction, _DIR_SECTIONS["export"])
     moves = []
     for hs, node in leaves.items():
-        mv = _latest_move(node["months"])
+        mv = _latest_move(node["months"], direction)
         if mv is None:
             continue
         mv = dict(mv)
@@ -317,8 +330,8 @@ def rank(
     amount = sorted(moves, key=lambda m: m["delta"], reverse=True)
 
     return {
-        SECTION_RATE: rate[:top_n],
-        SECTION_AMOUNT: amount[:top_n],
+        rate_sec: rate[:top_n],
+        amt_sec: amount[:top_n],
     }
 
 
@@ -485,13 +498,16 @@ def upsert_archive(conn: sqlite3.Connection, ranked: dict[str, list[dict]],
 def eval_new_entrants(conn: sqlite3.Connection, ranked: dict[str, list[dict]]) -> list[dict]:
     """Return items NEW to the live snapshot since last run (for the DM).
 
-    Baseline-silent: if the seen table is empty (first ever run), mark
-    everything seen and return [] — no alert flood on enable. Dedup key
-    is (hs_code, year_month, section)."""
-    cur = conn.execute("SELECT COUNT(*) FROM customs_surge_seen")
-    is_baseline = (cur.fetchone()[0] == 0)
+    Baseline-silent **per section**: a section with zero seen rows (first
+    ever run, OR a newly-added section like 수입 rate_import/amount_import)
+    seeds silently — no alert flood on enable. Dedup key (hs_code,
+    year_month, section). 수입 추가(2026-06-13) 시 기존 export seen 이 있어도
+    수입 section 은 자기 기준 baseline 이라 첫 등장에 홍수 안 남."""
     new_entrants: list[dict] = []
     for section, rows in ranked.items():
+        sc = conn.execute("SELECT COUNT(*) FROM customs_surge_seen "
+                          "WHERE section=?", (section,)).fetchone()[0]
+        is_baseline = (sc == 0)
         for m in rows:
             seen = conn.execute(
                 "SELECT 1 FROM customs_surge_seen WHERE hs_code=? AND year_month=? AND section=?",
@@ -545,8 +561,6 @@ def format_alert(new_entrants: list[dict]) -> str:
     thr = f"{PCT_THRESHOLD:.0f}"
     head = f"🆕 <b>관세청 급변 신규 진입</b> (TOP{TOP_N} 갱신)"
     lines = [head, ""]
-    rate = [e for e in new_entrants if e["section"] == SECTION_RATE]
-    amount = [e for e in new_entrants if e["section"] == SECTION_AMOUNT]
 
     def _line(e: dict) -> str:
         return (
@@ -555,14 +569,20 @@ def format_alert(new_entrants: list[dict]) -> str:
             f"({customs.fmt_pct(e['pct'])}, Δ{customs.fmt_usd(e['delta'])})"
         )
 
+    # (방향, section, 헤더) 순서 — 수출 먼저, 수입 뒤. 같은 cap 공유.
+    groups = [
+        ("📈 <b>급등률 +%s%% (수출)</b>" % thr, SECTION_RATE),
+        ("💵 <b>급증액 (수출)</b>", SECTION_AMOUNT),
+        ("📈 <b>급등률 +%s%% (수입)</b>" % thr, SECTION_RATE_IMP),
+        ("💵 <b>급증액 (수입)</b>", SECTION_AMOUNT_IMP),
+    ]
     shown = 0
-    if rate:
-        lines.append(f"📈 <b>급등률 +{thr}%</b>")
-        for e in rate[:ALERT_CAP - shown]:
-            lines.append(_line(e)); shown += 1
-    if amount and shown < ALERT_CAP:
-        lines.append("💵 <b>급증액</b>")
-        for e in amount[:ALERT_CAP - shown]:
+    for hdr, sec in groups:
+        bucket = [e for e in new_entrants if e.get("section") == sec]
+        if not bucket or shown >= ALERT_CAP:
+            continue
+        lines.append(hdr)
+        for e in bucket[:ALERT_CAP - shown]:
             lines.append(_line(e)); shown += 1
     overflow = len(new_entrants) - shown
     if overflow > 0:
@@ -589,13 +609,16 @@ def render_surge_html(db_path=None) -> str:
             init_db(conn)
             rate = get_live(conn, SECTION_RATE)
             amount = get_live(conn, SECTION_AMOUNT)
-            archive = get_archive(conn, limit=300)
+            rate_imp = get_live(conn, SECTION_RATE_IMP)
+            amount_imp = get_live(conn, SECTION_AMOUNT_IMP)
+            archive = get_archive(conn, limit=600)   # 수출+수입 합쳐 분리 렌더
     except Exception:
         return ""
-    if not rate and not amount and not archive:
+    if not (rate or amount or rate_imp or amount_imp or archive):
         return ""
 
-    def _live_card(title: str, rows: list[dict], metric: str) -> str:
+    def _live_card(title: str, rows: list[dict], metric: str,
+                   dir_label: str = "수출") -> str:
         if not rows:
             return ""
         body = []
@@ -620,11 +643,13 @@ def render_surge_html(db_path=None) -> str:
             "<details class='customs-panel'>"
             f"<summary>{title} ({len(rows)})</summary>"
             "<table class='customs-table'><thead><tr>"
-            f"<th>품목</th><th>HS</th><th>월</th><th>수출($)</th><th>{metric_th}</th>"
+            f"<th>품목</th><th>HS</th><th>월</th><th>{dir_label}($)</th><th>{metric_th}</th>"
             "</tr></thead><tbody>" + "".join(body) + "</tbody></table></details>"
         )
 
-    def _archive_card(rows: list[dict]) -> str:
+    def _archive_card(rows: list[dict], rate_sec: str, amt_sec: str,
+                      dir_label: str = "수출") -> str:
+        rows = [r for r in rows if r.get("section") in (rate_sec, amt_sec)]
         if not rows:
             return ""
         # Group by month (newest first). Within a month, MERGE the two
@@ -668,9 +693,9 @@ def render_surge_html(db_path=None) -> str:
             lis = []
             for m in items:
                 mk = ""
-                if SECTION_RATE in m["sections"]:
+                if rate_sec in m["sections"]:
                     mk += "📈"
-                if SECTION_AMOUNT in m["sections"]:
+                if amt_sec in m["sections"]:
                     mk += "💵"
                 lis.append(
                     f"<li>{mk} {_esc(m.get('name'))} "
@@ -684,15 +709,22 @@ def render_surge_html(db_path=None) -> str:
             )
         return (
             "<details class='customs-panel'>"
-            f"<summary>🗄 급변 아카이브 ({item_count}건 · 무제한 보관)</summary>"
+            f"<summary>🗄 급변 아카이브 ({dir_label}) "
+            f"({item_count}건 · 무제한 보관)</summary>"
             + "".join(blocks) + "</details>"
         )
 
     floor_lbl = customs.fmt_usd(RATE_MIN_USD)
+    # 사용자 2026-06-13: 수입을 수출 바로 옆/아래로 나란히, 한눈에. 수입 데이터
+    # 없으면(_live_card rows 빈) 자동 생략 — 첫 수입 스캔 전엔 수출만 보임.
     return (
-        _live_card(f"📈 급등률 TOP <small>(수출 ≥{floor_lbl})</small>", rate, "pct")
-        + _live_card("💵 급증액 TOP", amount, "amount")
-        + _archive_card(archive)
+        _live_card(f"📈 급등률 TOP <small>(수출 ≥{floor_lbl})</small>", rate, "pct", "수출")
+        + _live_card(f"📈 급등률 TOP <small>(수입 ≥{floor_lbl})</small>",
+                     rate_imp, "pct", "수입")
+        + _live_card("💵 급증액 TOP <small>(수출)</small>", amount, "amount", "수출")
+        + _live_card("💵 급증액 TOP <small>(수입)</small>", amount_imp, "amount", "수입")
+        + _archive_card(archive, SECTION_RATE, SECTION_AMOUNT, "수출")
+        + _archive_card(archive, SECTION_RATE_IMP, SECTION_AMOUNT_IMP, "수입")
     )
 
 
@@ -707,26 +739,33 @@ def render_surge_text(db_path=None, limit: int = 10) -> str:
             init_db(conn)
             rate = get_live(conn, SECTION_RATE)[:limit]
             amount = get_live(conn, SECTION_AMOUNT)[:limit]
+            rate_imp = get_live(conn, SECTION_RATE_IMP)[:limit]
+            amount_imp = get_live(conn, SECTION_AMOUNT_IMP)[:limit]
     except Exception:
         return ""
-    if not rate and not amount:
+    if not (rate or amount or rate_imp or amount_imp):
         return ""
     out = []
-    if rate:
-        out.append(
-            f"📈 <b>급등률 TOP</b> (전월비 +{PCT_THRESHOLD:.0f}%, "
-            f"수출 ≥{customs.fmt_usd(RATE_MIN_USD)})"
-        )
-        for m in rate:
-            out.append(
-                f"  ▲ {m['name']} ({m['hs_code']}) "
-                f"{customs.fmt_usd(m['curr'])} ({customs.fmt_pct(m['pct'])})"
-            )
-    if amount:
-        out.append("💵 <b>급증액 TOP</b> (증감액)")
-        for m in amount:
-            out.append(
-                f"  Δ{customs.fmt_usd(m['delta'])} {m['name']} ({m['hs_code']}) "
-                f"→ {customs.fmt_usd(m['curr'])}"
-            )
+
+    def _rate_block(rows, dirn):
+        if not rows:
+            return
+        out.append(f"📈 <b>급등률 TOP ({dirn})</b> (전월비 +{PCT_THRESHOLD:.0f}%, "
+                   f"{dirn} ≥{customs.fmt_usd(RATE_MIN_USD)})")
+        for m in rows:
+            out.append(f"  ▲ {m['name']} ({m['hs_code']}) "
+                       f"{customs.fmt_usd(m['curr'])} ({customs.fmt_pct(m['pct'])})")
+
+    def _amt_block(rows, dirn):
+        if not rows:
+            return
+        out.append(f"💵 <b>급증액 TOP ({dirn})</b> (증감액)")
+        for m in rows:
+            out.append(f"  Δ{customs.fmt_usd(m['delta'])} {m['name']} ({m['hs_code']}) "
+                       f"→ {customs.fmt_usd(m['curr'])}")
+
+    _rate_block(rate, "수출")
+    _rate_block(rate_imp, "수입")
+    _amt_block(amount, "수출")
+    _amt_block(amount_imp, "수입")
     return "\n".join(out)
