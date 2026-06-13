@@ -7278,36 +7278,56 @@ noahConsoleSetup({
     return d.getFullYear()+p(d.getMonth()+1)+p(d.getDate());}
   var t3=document.getElementById('t3-csv');
   if(t3)t3.addEventListener('click',function(){
-    // 전체 = 각 실행의 Master Table(검증된 전 종목) markdown 표 파싱. 테마
-    // 섹션([..]) 추적. Master Table 없는 실행은 그 실행의 Top-3 표로 폴백.
+    // 전체 = 각 실행 Master Table 의 **종목별 상세** 파싱 (사용자 2026-06-13 '이런것
+    // 까지 전체 CSV'). 포맷: '[섹션] · Tier · Ticker · (시장) · Company' 헤더 + 그
+    // 아래 '• 필드: 값' 불릿(Tier A/B/C·가격반영도·Catalyst·Kill Trigger). 시장
+    // (시장)에 내부 '·'(뉴욕·미국)가 있어 괄호 인지 정규식 사용. |표/Top-3 폴백.
     var rows=[];
+    var H=['날짜','도메인','테마섹션','티어','티커','시장','회사',
+           'TierA(컨센서스PT)','TierB(실적/펀더)','TierC(기타)','가격반영도','Catalyst+시기','KillTrigger'];
     document.querySelectorAll('.card').forEach(function(card){
       var domain=txt(card.querySelector('.domain')), date=card.getAttribute('data-date')||'';
       var before=rows.length;
       var mt=card.querySelector('.analysis-b[data-section="master_table"]');
       if(mt){
-        var section='';
+        var cur=null;
+        var flush=function(){ if(cur){rows.push([date,domain,cur.sec,cur.tier,cur.tk,cur.mkt,cur.co,
+          cur.tA,cur.tB,cur.tC,cur.price,cur.cat,cur.kill]); cur=null;} };
         (mt.textContent||'').split('\n').forEach(function(ln){
           ln=ln.trim(); if(!ln)return;
-          var sec=ln.match(/^\[(.+)\]$/); if(sec){section=sec[1];return;}
-          if(ln.indexOf('|')<0)return;                 // markdown 표 행만
-          var cells=ln.split('|').map(function(s){return s.trim();}).filter(function(s){return s!=='';});
-          if(!cells.length)return;
-          if(cells.every(function(c){return /^[-:\s]+$/.test(c);}))return;  // |---| 구분선 스킵
-          rows.push([date,domain,section].concat(cells.slice(0,8)));
+          var h=ln.match(/^\[([^\]]+)\]\s*·\s*(.+)$/);            // [섹션] · 나머지
+          if(h){
+            flush();
+            var m=h[2].match(/^(.+?)\s*·\s*(.+?)\s*·\s*\((.+?)\)\s*·\s*(.+)$/);  // Tier·Ticker·(시장)·Company
+            if(m) cur={sec:h[1].trim(),tier:m[1].trim(),tk:m[2].trim(),mkt:m[3].trim(),co:m[4].trim(),
+                       tA:'',tB:'',tC:'',price:'',cat:'',kill:''};
+            else { var p=h[2].split('·').map(function(s){return s.trim();});
+                   cur={sec:h[1].trim(),tier:p[0]||'',tk:p[1]||'',mkt:'',co:p.slice(2).join(' · '),
+                        tA:'',tB:'',tC:'',price:'',cat:'',kill:''}; }
+            return;
+          }
+          if(!cur)return;
+          var kv=ln.replace(/^[•\-]\s*/,'').match(/^(.+?)\s*[:：]\s*(.+)$/); if(!kv)return;
+          var k=kv[1], v=kv[2].trim();
+          if(/Tier\s*A|컨센서스/i.test(k))cur.tA=v; else if(/Tier\s*B|실적|펀더/i.test(k))cur.tB=v;
+          else if(/Tier\s*C|기타/i.test(k))cur.tC=v; else if(/가격|반영/.test(k))cur.price=v;
+          else if(/Catalyst|촉매|시기/i.test(k))cur.cat=v; else if(/Kill|트리거/i.test(k))cur.kill=v;
         });
+        flush();
       }
-      if(rows.length===before){                        // Master Table 없음/파싱0 → Top-3 폴백
-        var tb=card.querySelector('table.picks');
-        if(tb)tb.querySelectorAll('tbody tr').forEach(function(tr){
-          rows.push([date,domain,'Top-3'].concat(
-            Array.prototype.map.call(tr.querySelectorAll('td'),txt).slice(0,8)));
+      if(rows.length===before){                                  // ·/• 없음 → |표 또는 Top-3 폴백
+        var any=false;
+        if(mt)(mt.textContent||'').split('\n').forEach(function(ln){
+          ln=ln.trim(); if(ln.indexOf('|')<0)return;
+          var c=ln.split('|').map(function(s){return s.trim();}).filter(Boolean);
+          if(c.length&&!c.every(function(x){return /^[-:\s]+$/.test(x);})){rows.push([date,domain,'(표)'].concat(c.slice(0,10)));any=true;}
         });
+        if(!any){var tb=card.querySelector('table.picks'); if(tb)tb.querySelectorAll('tbody tr').forEach(function(tr){
+          rows.push([date,domain,'Top-3'].concat(Array.prototype.map.call(tr.querySelectorAll('td'),txt).slice(0,10)));});}
       }
     });
-    if(!rows.length){alert('내보낼 데이터가 없습니다 (Master Table/Top-3 없음).');return;}
-    noahCsv('screener_전체_'+stamp()+'.csv',
-      ['날짜','도메인','테마섹션','열1','열2','열3','열4','열5','열6','열7','열8'],rows);
+    if(!rows.length){alert('내보낼 데이터가 없습니다.');return;}
+    noahCsv('screener_전체_'+stamp()+'.csv',H,rows);
   });
   var cs=document.getElementById('cs-csv');
   if(cs)cs.addEventListener('click',function(){

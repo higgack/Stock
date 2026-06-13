@@ -7625,9 +7625,12 @@ class TestCsvExport:
         assert 'id="t3-csv"' in src and 'id="cs-csv"' in src
         assert "table.scr-tbl" in src                    # 조건 스크리너 표 스크레이프
         assert "screener_전체_" in src and "screener_조건_" in src
-        # 사용자 2026-06-13 'Top-3 말고 전체' — Master Table(전 종목) 파싱 + Top-3 폴백
-        assert 'data-section="master_table"' in src and "table.picks" in src
+        # 사용자 2026-06-13 'Top-3 말고 전체' → '이런것까지' — Master Table 종목별
+        # 상세('[섹션] · Tier · Ticker · (시장) · Company' + 불릿) 구조 파싱.
+        assert 'data-section="master_table"' in src and "table.picks" in src   # 파싱 + 폴백
         assert "📥 전체 CSV" in src
+        assert "KillTrigger" in src and "TierC(기타)" in src and "가격반영도" in src  # 종목별 컬럼
+        assert "Catalyst+시기" in src
 
     def test_pages_still_render(self):
         # 버튼/JS 추가 후에도 페이지 렌더 무결성(NameError/템플릿 깨짐 가드).
