@@ -1619,16 +1619,19 @@ function filterIndustryCards(){
 }
 
 // --- 산업트렌드 월별/TTM toggle (delegated; cards are server-rendered) ---
+// 스코프 = .ind-row (카드 본체 단위). .ind-card 아님 — 품목 랭킹표 행클릭
+// 확장 카드는 <table> 안이라 .ind-card 가 없어 토글이 죽었었음(2026-06-13).
+// 그리고 카드당 패널이 cell1(좌·수출액)+cell2(우·YoY) 2쌍이라 querySelectorAll
+// 로 둘 다 swap — 단수 querySelector 면 우측 차트가 안 바뀌던 버그.
 document.addEventListener('click',function(e){
   const b=e.target.closest('.ind-tg-btn');
-  if(!b)return;
-  const card=b.closest('.ind-card');
-  if(!card)return;
+  if(!b||b.classList.contains('ind-dir-btn'))return;   // 방향 토글은 별도 핸들러
+  const row=b.closest('.ind-row');
+  if(!row)return;
   const view=b.dataset.indView;
-  card.querySelectorAll('.ind-tg-btn').forEach(x=>x.classList.toggle('is-active',x===b));
-  const mo=card.querySelector('.ind-monthly'), tt=card.querySelector('.ind-ttm');
-  if(mo)mo.hidden=(view!=='monthly');
-  if(tt)tt.hidden=(view!=='ttm');
+  row.querySelectorAll('.ind-tg-btn').forEach(x=>x.classList.toggle('is-active',x===b));
+  row.querySelectorAll('.ind-monthly').forEach(mo=>mo.hidden=(view!=='monthly'));
+  row.querySelectorAll('.ind-ttm').forEach(tt=>tt.hidden=(view!=='ttm'));
 });
 
 // --- 산업트렌드 수출/수입 방향 토글 (2026-06-13 — 수입 카드 전체셋) ---
