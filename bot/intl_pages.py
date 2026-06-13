@@ -6,7 +6,7 @@ from __future__ import annotations
 import html as _html
 import logging
 
-from bot.naver_pages import _pct_cell
+from bot.naver_pages import _fmt_vol, _pct_cell
 from bot.tw_pages import _tw_shell
 
 log = logging.getLogger("bot.intl_pages")
@@ -24,12 +24,14 @@ def _panel(title: str, items: list) -> str:
         f'<td class="nm"><a href="lookup/{_html.escape(str(it.get("ticker","")))}">'
         f'{_html.escape(it.get("name","") or it.get("ticker",""))}</a></td>'
         f'<td class="num">{_html.escape(str(it.get("price") or "—"))}</td>'
-        f'{_pct_cell(it.get("pct"))}</tr>'
+        f'{_pct_cell(it.get("pct"))}'
+        f'<td class="num">{_fmt_vol(it.get("vol"))}</td></tr>'
         for i, it in enumerate(items, 1))
     return (f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
             f'<table><thead><tr><th>#</th><th>종목</th>'
             f'<th style="text-align:right">현재가</th>'
-            f'<th style="text-align:right">등락률</th></tr></thead>'
+            f'<th style="text-align:right">등락률</th>'
+            f'<th style="text-align:right">거래량</th></tr></thead>'
             f'<tbody>{rows}</tbody></table></div>')
 
 

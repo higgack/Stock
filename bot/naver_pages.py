@@ -94,6 +94,22 @@ def _pct_cell(pct) -> str:
     return f'<td class="pct {cls}">{sign}{pct:.2f}%</td>'
 
 
+def _fmt_vol(v) -> str:
+    """거래량 표기 — 만/억(사용자 2026-06-13, Naver 급등 표 스타일). 신고저·
+    급등급락 표 공용. 0/None/비수치 → '—'."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if x <= 0:
+        return "—"
+    if x >= 1e8:
+        return f"{x / 1e8:.1f}억"
+    if x >= 1e4:
+        return f"{x / 1e4:,.0f}만"
+    return f"{x:,.0f}"
+
+
 _THEME_DETAIL = ("https://finance.naver.com/sise/sise_group_detail.naver"
                  "?type=theme&no=")
 

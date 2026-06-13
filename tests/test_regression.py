@@ -6982,3 +6982,58 @@ class TestEarningsCalendarIntl:
         assert "$1.23" not in html and "$4.5B" not in html
         # 빈 입력 graceful
         assert "실적 발표 일정이 없습니다" in _render_earnings_table([])
+
+
+class TestVolumeColumn:
+    """거래량 컬럼 — 신고저 + 급등·급락 표 (사용자 2026-06-13 '두번째 캡쳐처럼').
+    intl/tw 신고저(yfinance) + US 신고저·movers(Finviz) 데이터 + 만/억 표기."""
+
+    def test_fmt_vol_units(self):
+        from bot.naver_pages import _fmt_vol
+        assert _fmt_vol(7600000) == "760만"
+        assert _fmt_vol(16850000) == "1,685만"
+        assert _fmt_vol(123456789) == "1.2억"
+        assert _fmt_vol(500) == "500"
+        for bad in (0, None, "x", -5):
+            assert _fmt_vol(bad) == "—", bad
+
+    def test_finviz_parser_extracts_volume(self):
+        import re
+        # _parse_screener_rows 의 vol 추출식 미러 (Finviz v=111 마지막 정수)
+        rgx = r'(?<![\d.])(\d{1,3}(?:,\d{3})+|\d{5,})(?![\d.%])'
+
+        def vol(joined):
+            m = re.findall(rgx, joined)
+            return int(m[-1].replace(",", "")) if m else None
+        assert vol("NV | T | S | USA | 12.3B | 28.5 | 123.45 | +5.20% | 1,234,567") == 1234567
+        assert vol("Big | X | Y | USA | 5.0B | 12 | 200.00 | +3.00% | 950000") == 950000
+        assert vol("NoVol | X | Y | USA | 1.2B | 10 | 5.00 | +1.00%") is None
+        # 실제 파서가 dict 에 vol 키를 담는지(소스 확인)
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert '"vol": vol' in src and 'r["vol"] = int(float(vols' in src
+
+    def test_intl_panel_has_volume_column(self):
+        from bot.intl_pages import _panel
+        h = _panel("📈 52주 신고가", [{"ticker": "7203.T", "name": "Toyota",
+                                       "price": 3000, "pct": 0.4, "vol": 16850000}])
+        assert "거래량" in h and "1,685만" in h
+        # vol 없으면 graceful '—'
+        h2 = _panel("x", [{"ticker": "A", "name": "A", "price": 1, "pct": 0.1}])
+        assert "거래량" in h2
+
+    def test_tw52_panel_has_volume_column(self):
+        from bot.tw_pages import render_tw_highlow52_page
+        src = open("bot/tw_pages.py", encoding="utf-8").read()
+        # 52주 패널에 거래량 헤더 + _fmt_vol 셀
+        assert src.count("거래량") >= 1 and "_fmt_vol(it.get(\"vol\"))" in src
+
+    def test_us_stock_panel_volume_sortable(self):
+        from bot.us_pages import _stock_panel
+        h = _stock_panel("🔺 52주 신고가",
+                         [{"ticker": "NVDA", "name": "NVDA", "price": 900.0,
+                           "pct": 2.1, "mcap": 22000, "ind": "Semis",
+                           "vol": 45000000}], "hl-high")
+        assert "거래량" in h
+        assert 'data-vol="45000000"' in h        # 정렬 키
+        assert 'data-key="vol"' in h              # 헤더 정렬 가능
+        assert "4,500만" in h

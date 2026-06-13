@@ -9,7 +9,7 @@ from __future__ import annotations
 import html as _html
 import logging
 
-from bot.naver_pages import _CSS, _THEME_SCRIPT, _pct_cell
+from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
 
 log = logging.getLogger("bot.us_pages")
 
@@ -149,21 +149,24 @@ def _stock_panel(title: str, items: list, tid: str, extra_head: str = "") -> str
         price = it.get("price")
         pct = it.get("pct")
         mcap = it.get("mcap")
+        vol = it.get("vol")        # 거래량(사용자 2026-06-13)
         # 업종분류 — yfinance industry 원문 그대로 (사용자 2026-06-12)
         ind = _html.escape(str(it.get("ind") or ""))
         ind_cell = (f'<td class="ind" title="{ind}">{ind}</td>'
                     if ind else '<td class="ind">—</td>')
-        # data-* = raw 정렬값 (sym/ind=text, price/pct/mcap=numeric)
+        # data-* = raw 정렬값 (sym/ind=text, price/pct/mcap/vol=numeric)
         return (
             f'<tr data-sym="{tk.lower()}" '
             f'data-price="{price if price is not None else -1}" '
             f'data-pct="{pct if pct is not None else -9999}" '
+            f'data-vol="{vol if vol is not None else -1}" '
             f'data-mcap="{mcap if mcap is not None else -1}" '
             f'data-ind="{ind.lower()}">'
             f'<td class="rk">{i}</td>'
             f'<td class="nm"><a href="lookup/{tk}">{label}</a></td>'
             f'<td class="num">{("$" + format(price, ",.2f")) if price is not None else "—"}</td>'
             f'{_pct_cell(pct)}'
+            f'<td class="num">{_fmt_vol(vol)}</td>'
             f'<td class="num">{_fmt_mcap(mcap)}</td>'
             f'{ind_cell}</tr>'
         )
@@ -177,6 +180,7 @@ def _stock_panel(title: str, items: list, tid: str, extra_head: str = "") -> str
         f'<th class="srt" data-key="sym" data-type="text">종목</th>'
         f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가</th>'
         f'<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>'
+        f'<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량</th>'
         f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총</th>'
         f'<th class="srt" data-key="ind" data-type="text">업종</th>'
         f'</tr></thead><tbody>{rows}</tbody></table></div>'

@@ -498,7 +498,18 @@ def _parse_screener_rows(html: str, limit: int) -> list[dict]:
                 price = float(m_price[-1])
             except ValueError:
                 price = None
-        rows.append({"ticker": tk, "name": name[:40], "price": price, "pct": pct})
+        # Volume(거래량, 사용자 2026-06-13) = 행 마지막 정수(콤마구분) 셀.
+        # Change% 뒤 컬럼이라 rightmost. MktCap 은 'B/M' 접미사·Price 는
+        # 소수라 미충돌. 큰 정수(5+자리)도 허용(콤마 없는 표기 대비).
+        vol = None
+        m_vol = re.findall(r'(?<![\d.])(\d{1,3}(?:,\d{3})+|\d{5,})(?![\d.%])', joined)
+        if m_vol:
+            try:
+                vol = int(m_vol[-1].replace(",", ""))
+            except ValueError:
+                vol = None
+        rows.append({"ticker": tk, "name": name[:40], "price": price,
+                     "pct": pct, "vol": vol})
         if len(rows) >= limit:
             break
     return rows
@@ -821,15 +832,20 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                 continue
             for tk in chunk:
                 try:
-                    if len(chunk) == 1:
-                        closes = dfd["Close"].dropna()
-                    else:
-                        closes = dfd[tk]["Close"].dropna()
+                    sub = dfd if len(chunk) == 1 else dfd[tk]
+                    closes = sub["Close"].dropna()
+                    r = by_tk[tk]
                     if len(closes) >= 2 and float(closes.iloc[-2]):
-                        r = by_tk[tk]
                         r["pct"] = round((float(closes.iloc[-1])
                                           / float(closes.iloc[-2]) - 1) * 100, 2)
                         r["price"] = round(float(closes.iloc[-1]), 2)
+                    # 당일 거래량(사용자 2026-06-13) — 같은 5d 일봉에서 취득.
+                    try:
+                        vols = sub["Volume"].dropna()
+                        if len(vols):
+                            r["vol"] = int(float(vols.iloc[-1]))
+                    except Exception:
+                        pass
                 except Exception:
                     continue
         # SPAC 신탁가 백스톱 — 2026-06-12 보강: 옛 밴드($9.5~10.6·|pct|
