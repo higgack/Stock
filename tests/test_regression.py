@@ -4862,16 +4862,21 @@ class TestTwseSectorHighLow:
             {"Code": "2330", "Name": "台積電", "ClosingPrice": "1000", "Change": "95"},   # +10.5%
             {"Code": "2317", "Name": "鴻海", "ClosingPrice": "99", "Change": "-11"},      # -10%
             {"Code": "2454", "Name": "聯發科", "ClosingPrice": "805", "Change": "5"},      # +0.6%
+            {"Code": "00910", "Name": "ETF", "ClosingPrice": "20", "Change": "2.3"},      # +12.9% ETF
             {"Code": "0050", "Name": "台灣50", "ClosingPrice": "180", "Change": "X"},      # 결측 컷
         ]
         parsed = tw.parse_stock_day_all(rows)
         d = {s["code"]: s for s in parsed}
         assert d["2330"]["pct"] > 9.5 and d["2317"]["pct"] < -9.5
         assert "0050" not in d                       # 결측 Change 컷
+        assert tw._is_common_stock("2330") and not tw._is_common_stock("00910")
+        assert not tw._is_common_stock("0050") and not tw._is_common_stock("2887A")
         monkeypatch.setattr(tw, "fetch_stock_day_all", lambda: parsed)
         ul = tw.fetch_tw_upper_lower()
         assert any(s["code"] == "2330" for s in ul["upper"])
         assert any(s["code"] == "2317" for s in ul["lower"])
+        # 순수종목만 — ETF(00910)는 +12.9%여도 제외
+        assert not any(s["code"] == "00910" for s in ul["upper"])
 
     def test_highlow_page_graceful_and_data(self, monkeypatch):
         import bot.twse_client as tw
