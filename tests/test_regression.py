@@ -3879,6 +3879,37 @@ class TestDartFeedBackfill:
         m._tally_drop("주주총회소집공고", "654321")
         assert sum(m._DROP_TALLY.values()) == 1
 
+    def test_backfill_candidates_classified_and_title_only(self, tmp_path, monkeypatch):
+        # 보강 후보 (사용자 2026-06-13 '파싱 진행') — 기타-드롭되던 실제 사건을
+        # 카테고리화 + 제목완결 거버넌스류는 미파싱 색칠 제외
+        m = self._load(tmp_path, monkeypatch)
+        cat = {
+            "벌금등의부과": "리스크",
+            "벌금등의부과(자회사의 주요경영사항)": "리스크",
+            "중대재해발생": "리스크",
+            "대표이사변경(안내공시)": "회사구조",
+            "대표집행임원변경": "회사구조",
+            "상호변경안내": "회사구조",
+            "본점소재지변경": "회사구조",
+            "사외이사의선임ㆍ해임또는중도퇴임에관한신고": "회사구조",
+            "주식매수선택권부여에관한신고": "회사구조",
+            "기업가치제고계획(자율공시)": "주주환원",
+        }
+        for nm, exp in cat.items():
+            assert m._classify_report(nm) == exp, (nm, m._classify_report(nm))
+        # 기존 분류 회귀 0
+        assert m._classify_report("단일판매ㆍ공급계약체결") == "계약"
+        assert m._classify_report("현금ㆍ현물배당결정") == "배당"
+        # 제목완결 거버넌스/리스크류 = is_parse_target False (미파싱 색칠 제외)
+        for nm in ("벌금등의부과", "대표이사변경(안내공시)", "상호변경안내",
+                   "주식매수선택권부여에관한신고", "중대재해발생"):
+            it = {"category": m._classify_report(nm), "report_nm": nm,
+                  "corp_code": "C"}
+            assert m.is_parse_target(it) is False, nm
+        # 실제 detail 있는 유형은 여전히 파싱 대상(회귀 가드)
+        assert m.is_parse_target({"category": "계약", "corp_code": "C",
+                                  "report_nm": "단일판매ㆍ공급계약체결"}) is True
+
 
 class TestDartCardFormats:
     """DART 카드 승인 양식(배치 2026-06-11) 영구 회귀 — 검증 중 surfaced

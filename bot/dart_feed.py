@@ -113,6 +113,27 @@ def _classify_report(report_nm: str) -> str:
     eng = classify(t)
     if eng in _CATEGORY_MAP:
         return _CATEGORY_MAP[eng]
+    # 보강 후보 (사용자 2026-06-13 '보강 후보 파싱 진행') — 기타-드롭되던 실제
+    # 기업 사건을 카테고리화해 카드로 노출. chart_events.classify **뒤**에 둬
+    # 소송('과징금부과처분취소소송' 등)·기존 특정 분류가 우선(소송>리스크).
+    # 전부 저빈도(3일 1~8건)라 홍수 위험 없음. 제목이 곧 완전한 신호인
+    # 거버넌스/리스크류 — is_parse_target 의 _TITLE_ONLY_OK_KW 로 미파싱 색칠 제외.
+    # 벌금/과징금/과태료 부과 = 리스크. 단 그에 대한 '소송'(과징금부과처분
+    # 취소소송·청구의소 등)은 소송이므로 제외 — chart_events 가 '소송'만 잡고
+    # '…청구의소/…의소'는 못 잡아 누수되던 것 가드.
+    _is_lawsuit = ("소송" in t or "청구의소" in t or t.endswith("의소")
+                   or "제소" in t or "가처분" in t)
+    if (not _is_lawsuit
+            and any(k in t for k in ("벌금", "과태료", "과징금",
+                                     "중대재해", "산업재해"))):
+        return "리스크"
+    if (any(k in t for k in ("대표이사변경", "대표집행임원변경",
+                             "상호변경", "본점소재지변경"))
+            or ("사외이사" in t and any(k in t for k in ("선임", "해임", "퇴임")))
+            or "주식매수선택권" in t):       # 스톡옵션 부여 — 거버넌스 결정
+        return "회사구조"
+    if "기업가치제고" in t:                   # 밸류업 프로그램 — 주주환원 지향
+        return "주주환원"
     if "장래사업" in t or "공정공시" in t:
         # 장래사업ㆍ경영계획/수시공시의무관련사항(공정공시) — 가이던스성
         # wrapper. chart 분류 '뒤'에 두어 '공급계약체결(공정공시)' 류가
@@ -3134,18 +3155,29 @@ _PARSE_CATS = ("계약", "자금조달", "주주환원", "신규시설투자", "
                "IR")         # 2026-06-13 IR 상세 파싱 (일시·장소·목적·대상·후원)
 # 자금조달 중 무료 구조화 소스·원문 파서가 없는 유형(제목만이 정상).
 _FUNDING_NO_PARSER = ("전환가액", "교환청구권", "단기차입금", "금전대여", "채무보증")
+# 보강 후보 중 제목만으로 완결되는 사건 (사용자 2026-06-13) — 카테고리화돼
+# 카드로 노출되되 '미파싱' 색칠은 안 한다(제목이 곧 완전한 신호). 벌금액·
+# 스톡옵션 수량 등 구조화 detail 은 라이브 양식 확인 후 후속 — 현 단계는
+# 드롭→가시 카드화가 목표. (홍수 위험 0: 전부 저빈도)
+_TITLE_ONLY_OK_KW = ("벌금", "과태료", "과징금", "중대재해", "산업재해",
+                     "대표이사변경", "대표집행임원변경", "상호변경",
+                     "본점소재지변경", "사외이사", "주식매수선택권",
+                     "기업가치제고")
 
 
 def is_parse_target(item: dict) -> bool:
     """이 공시가 구조화/원문 파싱 대상인가 — 제목만이 정상인 유형(IR·
-    대량보유 외 지분공시·구조화 없는 자금조달 5종)은 False → 대시보드가
-    미파싱으로 색칠하지 않음. enrich 의 시도 조건과 동일(단일 소스)."""
+    대량보유 외 지분공시·구조화 없는 자금조달 5종·보강후보 거버넌스류)은
+    False → 대시보드가 미파싱으로 색칠하지 않음. enrich 시도 조건과 동일."""
     cat = item.get("category", "")
     report_nm = item.get("report_nm", "")
     _force = any(k in report_nm for k in _PARSE_FORCE_KW)
     if not (_force or cat in _PARSE_CATS or "실적" in cat):
         return False
     if not item.get("corp_code"):
+        return False
+    # 제목만으로 완결되는 보강후보 거버넌스/리스크 사건 — 미파싱 색칠 제외
+    if (not _force) and any(k in report_nm for k in _TITLE_ONLY_OK_KW):
         return False
     # 지분공시: 대량보유(majorstock) + 임원·주요주주 소유상황(elestock,
     # 2026-06-12 '지분공시도 다 파싱') — 둘 다 무료 구조화 API 보유.
