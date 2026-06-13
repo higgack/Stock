@@ -7240,3 +7240,23 @@ class TestUsHighlowIndDist:
         finally:
             fc.fetch_high_low = orig
         assert "업종 분포" in h and "Semis" in h
+
+
+class TestDartNoncorpNotMisparsed:
+    """펀드 투자설명서/증권신고서 = 미파싱 색칠 제외 (사용자 2026-06-13 '정말
+    미파싱과 구분되게'). is_parse_target 이 _is_noncorp_doc 적용 — coverage-audit
+    '의도된 제외'와 대시보드 badge 일치. 미래에셋 투자설명서(집합투자증권) 케이스."""
+
+    def test_fund_prospectus_not_parse_target(self):
+        from bot.dart_feed import is_parse_target
+        for nm in ("[기재정정]투자설명서(집합투자증권)(미래에셋배당커버드콜)",
+                   "투자설명서(집합투자증권)", "증권신고서(지분증권)",
+                   "일괄신고추가서류"):
+            assert not is_parse_target(
+                {"category": "배당", "report_nm": nm, "corp_code": "00123456"}), nm
+
+    def test_real_event_still_parse_target(self):
+        from bot.dart_feed import is_parse_target
+        assert is_parse_target({"category": "계약",
+                                "report_nm": "단일판매ㆍ공급계약체결",
+                                "corp_code": "00123456"})
