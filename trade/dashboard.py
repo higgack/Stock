@@ -1919,8 +1919,13 @@ function downloadIndustryCSV(){
   const sEl=document.getElementById('mti-csv-summary');
   const mEl=document.getElementById('mti-csv-monthly');
   if(!sEl||!mEl){alert('품목 데이터가 아직 없습니다');return;}
-  const sHead=['품목','MTI','산업','최신월','수출$','수입$','YoY%','ΔYoY%p','3개월평균YoY%','12M MA$','MA대비%','수출단가$/kg','전년동월단가$/kg','구성HS','관련기업(큐레이션)','관련기업(채널)'];
-  const mHead=['품목','MTI','산업','월','수출$','수입$','수출중량kg','수출단가$/kg'];
+  // 헤더는 industry.MTI_SUMMARY_HEADER/MTI_MONTHLY_HEADER 와 동기(테스트 가드).
+  // 공통 메타 + 수출 10지표 + 수입 10지표 (급등률=MoM%·급증액=MoMΔ$ 포함).
+  const dirCols=['$','MoM%(급등률)','MoMΔ$(급증액)','YoY%','ΔYoY%p','3개월평균YoY%','12M MA$','MA대비%','단가$/kg','전년동월단가$/kg'];
+  const sHead=['품목','MTI','산업','최신월','구성HS','관련기업(큐레이션)','관련기업(채널)']
+    .concat(dirCols.map(function(c){return '수출'+c;}))
+    .concat(dirCols.map(function(c){return '수입'+c;}));
+  const mHead=['품목','MTI','산업','월','수출$','수입$','수출중량kg','수입중량kg','수출단가$/kg','수입단가$/kg'];
   downloadRowsCSV([sHead].concat(JSON.parse(sEl.textContent)),'품목_요약');
   // 2번째 다운로드는 살짝 지연 — 일부 브라우저가 연속 다운로드를 막음.
   setTimeout(function(){downloadRowsCSV([mHead].concat(JSON.parse(mEl.textContent)),'품목_월별');},350);

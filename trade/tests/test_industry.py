@@ -671,8 +671,12 @@ class MtiCodeAndChannelTests(unittest.TestCase):
 
 
 class MtiExportRowsTests(unittest.TestCase):
-    """품목(MTI) 엑셀 export 2종 (사용자 2026-06-13 '이런것들 엑셀로' — 둘 다):
-    요약 1행/품목(카드 지표) + 월별 원시. csv-btn(산업 탭)이 둘 다 내려받음."""
+    """품목(MTI) 엑셀 export 2종 (사용자 2026-06-13 'CSV 는 대시보드의 모든
+    정보를 · 수입 급등률/급증액 TOP 포함'): 요약 1행(공통 + 수출·수입 양방향
+    10지표) + 월별 원시(양방향 금액·중량·단가). csv-btn(산업 탭)이 둘 다."""
+
+    # 양방향 컬럼 오프셋 (공통 7 + 수출 10 + 수입 10)
+    EX0, IM0 = 7, 17
 
     def _by(self):
         from trade import customs_scan
@@ -685,21 +689,44 @@ class MtiExportRowsTests(unittest.TestCase):
                          "imp_dlr": 0, "exp_wgt": 700_000 + i * 100, "imp_wgt": 0})
         return industry.aggregate_by_mti(customs_scan.build_series(rows))
 
-    def test_summary_and_monthly_shapes(self):
+    def test_summary_both_directions_and_monthly_shapes(self):
         by = self._by()
         mti6 = next(iter(by))
+        # 수입 노드 (양방향 검증) — 금액 + 중량(수입단가용)
         by_imp = {mti6: {"name": by[mti6]["name"], "industry": by[mti6]["industry"],
-                         "months": {k: 200_000_000 for k in by[mti6]["months"]}}}
+                         "months": {k: 200_000_000 for k in by[mti6]["months"]},
+                         "wgts": {k: 20_000 for k in by[mti6]["months"]}}}
         summ, mon = industry.mti_export_rows(by, by_imp, [])
         self.assertTrue(summ and mon)
-        # 컬럼 수 = 헤더 수 (JS prepend 헤더와 정합)
+        # 컬럼 수 = 헤더 수 (27 = 공통7 + 수출10 + 수입10)
         self.assertEqual(len(summ[0]), len(industry.MTI_SUMMARY_HEADER))
+        self.assertEqual(len(industry.MTI_SUMMARY_HEADER), 27)
         self.assertEqual(len(mon[0]), len(industry.MTI_MONTHLY_HEADER))
-        self.assertTrue(summ[0][0])                         # 품목명
-        self.assertEqual(len(str(summ[0][1])), 6)           # MTI6
-        self.assertIsNotNone(summ[0][11])                   # 수출단가($/kg)
-        self.assertEqual(summ[0][5], 200_000_000)           # 최신월 수입$
-        self.assertEqual(len([r for r in mon if r[1] == mti6]), 14)   # 14개월 long
+        r = summ[0]
+        self.assertTrue(r[0])                               # 품목명
+        self.assertEqual(len(str(r[1])), 6)                 # MTI6
+        # 수출 블록: $·MoM%(급등률)·MoMΔ$(급증액)·…·단가
+        self.assertEqual(r[self.EX0], 813_000_000)          # 수출$
+        self.assertIsNotNone(r[self.EX0 + 1])               # 수출 급등률(MoM%)
+        self.assertIsNotNone(r[self.EX0 + 8])               # 수출단가
+        # 수입 블록: 같은 10지표가 채워짐 (사용자 핵심 요청)
+        self.assertEqual(r[self.IM0], 200_000_000)          # 수입$
+        self.assertEqual(r[self.IM0 + 8], 10000.0)          # 수입단가 = 2억/2만kg
+        # 월별 long = 14개월, 수출·수입 금액·중량·단가 모두
+        self.assertEqual(len([x for x in mon if x[1] == mti6]), 14)
+        self.assertEqual(mon[-1][5], 200_000_000)           # 최신월 수입$
+        self.assertEqual(mon[-1][7], 20_000)                # 최신월 수입중량
+
+    def test_import_only_item_included(self):
+        # 수출 by_mti 에 없고 수입에만 있는 품목도 누락 안 됨 (union 순회)
+        by_imp = {"999999": {"name": "수입전용", "industry": "기타",
+                             "months": {"2026-04": 9_000_000, "2026-05": 10_000_000},
+                             "wgts": {"2026-04": 900, "2026-05": 1000}}}
+        summ, _ = industry.mti_export_rows({}, by_imp, [])
+        self.assertTrue(summ)
+        self.assertEqual(summ[0][1], "999999")
+        self.assertIsNone(summ[0][self.EX0])               # 수출 빈칸
+        self.assertEqual(summ[0][self.IM0], 10_000_000)    # 수입$ 채움
 
     def test_sorted_by_export_size(self):
         from trade import customs_scan
@@ -709,15 +736,15 @@ class MtiExportRowsTests(unittest.TestCase):
         by = industry.aggregate_by_mti(customs_scan.build_series(
             r("8542321010", "디램", 900_000_000) + r("2710121000", "휘발유", 50_000_000)))
         summ, _ = industry.mti_export_rows(by, None, [])
-        self.assertGreater(summ[0][4], summ[1][4])          # 큰 수출액 먼저
+        self.assertGreater(summ[0][self.EX0], summ[1][self.EX0])   # 큰 수출액 먼저
 
     def test_channel_company_column(self):
         by = self._by()
         pairs = [("d램및낸드모듈수출", ["한미반도체", "테크윙"])]
         summ, _ = industry.mti_export_rows(by, None, pairs)
-        self.assertIn("테크윙", summ[0][15])                # 채널 조인 컬럼
-        # 페어 없으면 빈칸 (큐레이션과 별개 컬럼)
-        self.assertEqual(industry.mti_export_rows(by, None, [])[0][0][15], "")
+        self.assertIn("테크윙", summ[0][6])                # 관련기업(채널) = idx 6
+        # 페어 없으면 빈칸 (큐레이션 idx 5 와 별개 컬럼)
+        self.assertEqual(industry.mti_export_rows(by, None, [])[0][0][6], "")
 
     def test_embedded_in_dashboard_and_header_synced(self):
         import tempfile
@@ -732,12 +759,18 @@ class MtiExportRowsTests(unittest.TestCase):
         self.assertIn("mti-csv-summary", html)
         self.assertIn("mti-csv-monthly", html)
         self.assertIn('"831110"', html)          # 실제 품목 데이터 적재 확인
-        # JS 헤더 ↔ Python 상수 동기 (cross-file consistency)
+        # JS 헤더 ↔ Python 상수 동기 (cross-file). JS 는 dirCols 를 '수출'/'수입'
+        # 접두로 map 하므로 building block 단위로 가드.
         src = Path(d.__file__).read_text("utf-8")
         self.assertIn("downloadRowsCSV([sHead]", src)
         self.assertIn("mti-csv-summary", src)
         self.assertIn("mti-csv-monthly", src)
-        for h in industry.MTI_SUMMARY_HEADER:
+        for h in ["품목", "MTI", "산업", "최신월", "구성HS",
+                  "관련기업(큐레이션)", "관련기업(채널)"]:
             self.assertIn(h, src)
-        for h in industry.MTI_MONTHLY_HEADER:
+        for c in industry._MTI_DIR_METRIC_COLS:             # dirCols 원소
+            self.assertIn(c, src)
+        self.assertIn("'수출'+c", src)                      # 접두 map 패턴
+        self.assertIn("'수입'+c", src)
+        for h in industry.MTI_MONTHLY_HEADER:               # 월별은 리터럴 array
             self.assertIn(h, src)
