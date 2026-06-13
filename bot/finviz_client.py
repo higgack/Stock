@@ -807,8 +807,12 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                     pct = round((last / prev - 1) * 100, 2) if prev > 0 else None
                     vols = df[tk]["Volume"].dropna()
                     vol = int(float(vols.iloc[-1])) if len(vols) else None
+                    # 거래대금 ≈ 종가×거래량 (억, 현지통화) — 네이버 미제공 52주에
+                    # 거래량/거래대금 표시용(사용자 2026-06-14). yfinance vol 있을 때만.
+                    value = round(last * vol / 1e8, 2) if vol else None
                     rec = {"ticker": tk, "name": _names.get(tk, tk),
-                           "price": round(last, 2), "pct": pct, "vol": vol}
+                           "price": round(last, 2), "pct": pct,
+                           "vol": vol, "value": value}
                     # 진짜 신고가/신저가 = 당일 고가/저가가 직전 극값 갱신(동률 포함)
                     if float(highs.iloc[-1]) >= float(highs.iloc[:-1].max()):
                         out["high"].append(rec)
