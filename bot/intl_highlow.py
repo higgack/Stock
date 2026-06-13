@@ -87,10 +87,69 @@ def intl_highlow_status(market: str) -> dict:
         return {}
 
 
+def _kr_full_universe() -> tuple[list[str], dict]:
+    """KR 전종목(KOSPI+KOSDAQ 주식) 코드+한글명 — pykrx(get_market_price_change
+    가 종목명 컬럼·시장당 1콜). ETF 미포함(주식만), SPAC(스팩) 제외. 7d 디스크
+    캐시. creds/pykrx 부재 시 ([],{}) → 호출부 폴백. (사용자 2026-06-13 — KIS
+    near-highlow 캡 ~30이 ETF/SPAC에 잠식돼 실종목 1~3개뿐 → 전종목 스캔으로)."""
+    from bot.finviz_client import _cached, _cache_write
+    cache_name = "kr_full_universe.json"
+    c = _cached(cache_name, ttl=7 * 86400)
+    if isinstance(c, list) and len(c) > 500:
+        return [x[0] for x in c], {x[0]: x[1] for x in c}
+    try:
+        from bot.pykrx_client import _quiet_pykrx_logging, krx_login_ready
+        if not krx_login_ready():
+            return [], {}
+        _quiet_pykrx_logging()
+        from datetime import datetime, timedelta
+        from pykrx import stock as _pk
+        d = datetime.now()
+        ds, ds_prev = d.strftime("%Y%m%d"), (d - timedelta(days=10)).strftime("%Y%m%d")
+        pairs: list = []
+        for mkt, suf in (("KOSPI", ".KS"), ("KOSDAQ", ".KQ")):
+            df = _pk.get_market_price_change(ds_prev, ds, market=mkt)
+            if df is None or "종목명" not in df:
+                continue
+            for code in df.index:
+                nm = str(df.loc[code, "종목명"]).strip()
+                if not nm or "스팩" in nm:        # SPAC 제외
+                    continue
+                pairs.append([f"{code}{suf}", nm])
+        if len(pairs) > 500:
+            _cache_write(cache_name, pairs)
+            return [p[0] for p in pairs], {p[0]: p[1] for p in pairs}
+    except Exception as exc:
+        log.warning("kr full universe (pykrx): %s", exc)
+    return [], {}
+
+
+def _compute_kr_full() -> None:
+    """KR 52주 신고저 = pykrx 전종목(KOSPI+KOSDAQ) → yfinance 52주 고저 1% 근접
+    스캔 (사용자 2026-06-13 — EOD OK·실시간 불요·KRX 소스). 한글명=pykrx 네이티브
+    (번역 불요). pykrx 부재 → peer-83 yfinance 폴백(회귀 0)."""
+    from bot.finviz_client import _compute_highlow_from
+    uni, names = _kr_full_universe()
+    if not uni:                                   # pykrx 부재 → peer-83 폴백
+        uni, names = _universe("KR")
+        label = "한국 주요종목(yfinance · pykrx 폴백)"
+        src = "peer"
+    else:
+        label = "한국 전종목(pykrx 목록·yfinance 52주 고저 1% 근접)"
+        src = "krx-full"
+    if not uni:
+        _status_write("KR", "failed", detail="pykrx + peer empty")
+        return
+    _status_write("KR", "running", total=len(uni))
+    out = _compute_highlow_from(uni, names, _CFG["KR"][1], label, "KR")
+    _status_write("KR", "done", high=len(out.get("high", [])),
+                  low=len(out.get("low", [])), src=src)
+
+
 def _compute_kr_kis() -> None:
-    """KR 52주 신고저 = KIS near-new-highlow(전 시장 스캔·근접 상위) + yfinance
-    mcap/ind 백필 (사용자 2026-06-13 'full-market'). peer-83 대체. 한글명은
-    KIS hts_kor_isnm 네이티브(번역 불요). KIS 실패/creds 부재 → peer 폴백(회귀 0)."""
+    """(레거시 — _compute_kr_full 로 대체, 2026-06-13) KR 52주 신고저 = KIS
+    near-new-highlow + yfinance mcap/ind 백필. KIS 캡 ~30이 ETF/SPAC에 잠식돼
+    실종목이 1~3개뿐이라 전종목 스캔(_compute_kr_full)으로 교체. 보존(미사용)."""
     from bot import kis_client
     from bot.finviz_client import (_cache_write, _compute_highlow_from,
                                    _fetch_industries, _fetch_mcaps, _now_label)
@@ -160,7 +219,7 @@ def _compute_kr_kis() -> None:
 def _compute(market: str) -> None:
     try:
         if market == "KR":
-            _compute_kr_kis()
+            _compute_kr_full()
             return
         from bot.finviz_client import _compute_highlow_from
         uni, names = _universe(market)
@@ -198,7 +257,7 @@ def fetch_intl_highlow(market: str) -> dict:
         return {"high": [], "low": [], "ts": "", "source": "", "building": False}
     from bot.finviz_client import _cached
     cache = _CFG[market][1]
-    ttl = _TTL_FULL if market in ("JP", "HK") else _TTL   # 전종목 스캔 캐시 길게
+    ttl = _TTL_FULL if market in ("JP", "HK", "KR") else _TTL  # 전종목 스캔 캐시 길게
     fresh = _cached(cache, ttl=ttl)
     if fresh is not None:
         return fresh

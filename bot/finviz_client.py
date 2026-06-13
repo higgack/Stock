@@ -881,17 +881,23 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
             mc = mcaps.get(r["ticker"])
             r["mcap"] = round(mc / 1e8, 2) if mc else None  # 억$
             r["ind"] = inds.get(r["ticker"])
-        # 종목명 한글 (사용자 2026-06-13) — intl(JP/TW/CN/HK/KR) 전용. .info
+        # 종목명 한글 (사용자 2026-06-13) — intl(JP/TW/CN/HK) 전용. .info
         # longName(영문) → chart_translate(Flash·영구캐시). 표시 'TICKER (한글명)'.
+        # ⚠️ 이미 좋은 이름이 들어온 항목(name != ticker, 예: KR pykrx 한글명)은
+        # 번역/덮어쓰기 스킵 — 호출측 제공 이름 보존 + 불필요한 .info/Flash 절약.
         # US 는 이 경로 미사용(Finviz 영문명). graceful — 실패 시 ticker 유지.
         if market and market != "US":
             try:
-                en_names = _fetch_display_names(hits2)
-                uniq = sorted({n for n in en_names.values() if n})
-                if uniq:
-                    from bot.chart_translate import translate_titles_kr
-                    kr_map = translate_titles_kr(uniq) or {}
-                    for r in out["high"] + out["low"]:
+                need = [r for r in out["high"] + out["low"]
+                        if not r.get("name") or r["name"] == r["ticker"]]
+                if need:
+                    en_names = _fetch_display_names([r["ticker"] for r in need])
+                    uniq = sorted({n for n in en_names.values() if n})
+                    kr_map = {}
+                    if uniq:
+                        from bot.chart_translate import translate_titles_kr
+                        kr_map = translate_titles_kr(uniq) or {}
+                    for r in need:
                         en = en_names.get(r["ticker"], "")
                         if en:
                             r["name"] = kr_map.get(en) or en
