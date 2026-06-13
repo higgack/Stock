@@ -7013,19 +7013,20 @@ class TestVolumeColumn:
         assert '"vol": vol' in src and 'r["vol"] = int(float(vols' in src
 
     def test_intl_panel_has_volume_column(self):
-        from bot.intl_pages import _panel
-        h = _panel("📈 52주 신고가", [{"ticker": "7203.T", "name": "Toyota",
-                                       "price": 3000, "pct": 0.4, "vol": 16850000}])
-        assert "거래량" in h and "1,685만" in h
-        # vol 없으면 graceful '—'
-        h2 = _panel("x", [{"ticker": "A", "name": "A", "price": 1, "pct": 0.1}])
+        # 미국 포맷 통일 후 intl 신고저는 highlow_render.stock_panel 사용
+        from bot.highlow_render import stock_panel
+        h = stock_panel("📈 52주 신고가", [{"ticker": "7203.T", "name": "도요타",
+                        "price": 3000, "pct": 0.4, "vol": 16850000,
+                        "mcap": 400000, "ind": "Auto"}], "hl", "JP")
+        assert "거래량" in h and "1,685만" in h and "시총" in h
+        h2 = stock_panel("x", [{"ticker": "A", "name": "A",
+                                "price": 1, "pct": 0.1}], "hl", "JP")
         assert "거래량" in h2
 
-    def test_tw52_panel_has_volume_column(self):
-        from bot.tw_pages import render_tw_highlow52_page
+    def test_tw52_panel_uses_rich_panel(self):
+        # tw52 가 stock_panel(거래량+시총+업종+업종분포) 사용
         src = open("bot/tw_pages.py", encoding="utf-8").read()
-        # 52주 패널에 거래량 헤더 + _fmt_vol 셀
-        assert src.count("거래량") >= 1 and "_fmt_vol(it.get(\"vol\"))" in src
+        assert "stock_panel" in src and "ind_dist_line" in src
 
     def test_us_stock_panel_volume_sortable(self):
         from bot.us_pages import _stock_panel
@@ -7065,3 +7066,45 @@ class TestUpperLowerVolume:
         # 파서가 vol 키 산출
         psrc = open("bot/naver_sector_client.py", encoding="utf-8").read()
         assert '"vol": vol' in psrc
+
+
+class TestHighlowRenderShared:
+    """신고저/급등락/상한가 공용 리치 렌더러 (사용자 2026-06-13 '미국 포맷
+    전 나라 통일'). 통화별 가격·시총 + 업종분포 + 시총정렬 + 헤더정렬."""
+
+    def test_fmt_mcap_market_aware(self):
+        from bot.highlow_render import fmt_mcap
+        assert fmt_mcap(4504, "US") == "$450.4B"     # 억$ → $B
+        assert fmt_mcap(25000, "US") == "$2.50T"
+        assert fmt_mcap(30000, "JP") == "¥3.0조"       # 30000억¥ = 3조
+        assert fmt_mcap(500, "JP") == "¥500억"
+        assert fmt_mcap(15260000, "KR") == "₩1526.0조"
+        for bad in (0, None, "x"):
+            assert fmt_mcap(bad, "JP") == "—"
+
+    def test_stock_panel_columns_and_currency(self):
+        from bot.highlow_render import stock_panel
+        h = stock_panel("📈 신고가", [{"ticker": "2330.TW", "name": "TSMC",
+                        "price": 1000.5, "pct": 2.1, "vol": 45000000,
+                        "mcap": 250000, "ind": "Semis"}], "t", "TW")
+        for need in ("거래량", "시총", "업종", 'data-key="mcap"',
+                     "NT$1,000.50", "NT$25.0조", "4,500만", "hl-table"):
+            assert need in h, need
+
+    def test_ind_dist_line(self):
+        from bot.highlow_render import ind_dist_line
+        items = [{"ind": "Semis"}, {"ind": "Semis"}, {"ind": "Banks"},
+                 {"ind": None}]
+        line = ind_dist_line(items)
+        assert "업종 분포" in line and "Semis 2" in line and "Banks 1" in line
+        assert ind_dist_line([]) == ""
+
+    def test_sort_by_mcap_desc_none_last(self):
+        from bot.highlow_render import sort_by_mcap
+        r = sort_by_mcap([{"mcap": 10}, {"mcap": None}, {"mcap": 500}])
+        assert [x.get("mcap") for x in r] == [500, 10, None]
+
+    def test_intl_and_tw_wired_to_shared(self):
+        for mod in ("bot/intl_pages.py", "bot/tw_pages.py"):
+            src = open(mod, encoding="utf-8").read()
+            assert "from bot.highlow_render import" in src and "stock_panel" in src

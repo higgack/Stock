@@ -6,7 +6,6 @@ from __future__ import annotations
 import html as _html
 import logging
 
-from bot.naver_pages import _fmt_vol, _pct_cell
 from bot.tw_pages import _tw_shell
 
 log = logging.getLogger("bot.intl_pages")
@@ -15,28 +14,9 @@ _FLAG = {"JP": "🇯🇵 일본", "CN_A": "🇨🇳 중국 A주", "HK": "🇭�
          "KR": "🇰🇷 한국"}
 
 
-def _panel(title: str, items: list) -> str:
-    if not items:
-        return (f'<div class="panel"><h2>{title}</h2>'
-                '<div class="empty">해당 종목 없음</div></div>')
-    rows = "".join(
-        f'<tr><td class="rk">{i}</td>'
-        f'<td class="nm"><a href="lookup/{_html.escape(str(it.get("ticker","")))}">'
-        f'{_html.escape(it.get("name","") or it.get("ticker",""))}</a></td>'
-        f'<td class="num">{_html.escape(str(it.get("price") or "—"))}</td>'
-        f'{_pct_cell(it.get("pct"))}'
-        f'<td class="num">{_fmt_vol(it.get("vol"))}</td></tr>'
-        for i, it in enumerate(items, 1))
-    return (f'<div class="panel"><h2>{title} <span class="ts">{len(items)}종목</span></h2>'
-            f'<table><thead><tr><th>#</th><th>종목</th>'
-            f'<th style="text-align:right">현재가</th>'
-            f'<th style="text-align:right">등락률</th>'
-            f'<th style="text-align:right">거래량</th></tr></thead>'
-            f'<tbody>{rows}</tbody></table></div>')
-
-
 def render_intl_highlow52_page(market: str) -> str:
-    """JP/CN_A/HK 52주 신고가·신저가 — 주요종목 유니버스 백그라운드 스캔."""
+    """JP/CN_A/HK/KR 52주 신고가·신저가 — 미국 포맷 통일(사용자 2026-06-13):
+    종목(+이름)·현재가·등락률·거래량·시총·업종 + 시총정렬 + 헤더정렬 + 업종분포."""
     try:
         from bot.intl_highlow import fetch_intl_highlow
         data = fetch_intl_highlow(market)
@@ -58,9 +38,16 @@ def render_intl_highlow52_page(market: str) -> str:
             body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
+        from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
+                                        stock_panel)
+        hi, lo = sort_by_mcap(high), sort_by_mcap(low)
         body = ('<div class="grid">'
-                + _panel("📈 52주 신고가 (1% 근접)", high)
-                + _panel("📉 52주 신저가 (1% 근접)", low) + '</div>')
-    sub = (f"{flag} 주요종목(산업 대표 ~50-100) 1년 주봉 52주 고저 1% 근접. "
-           f"백그라운드 산출·30분 캐시. {('· 갱신 ' + ts) if ts else ''}")
+                + stock_panel("📈 52주 신고가 (1% 근접)", hi, "hl-high",
+                              market, ind_dist_line(hi))
+                + stock_panel("📉 52주 신저가 (1% 근접)", lo, "hl-low",
+                              market, ind_dist_line(lo))
+                + '</div>' + HL_SORT_JS)
+    sub = (f"{flag} 주요종목(산업 대표 ~50-100) 1년 주봉 52주 고저 1% 근접 · "
+           f"시총순·헤더 클릭 정렬 · 업종=yfinance · 백그라운드 산출·30분 캐시. "
+           f"{('· 갱신 ' + ts) if ts else ''}")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body)
