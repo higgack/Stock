@@ -3540,6 +3540,15 @@ async def _on_startup(application) -> None:
                              "(미파싱 즉시 재시도)", n6)
             except Exception as exc:
                 log.warning("startup: DART doc_fail v6 failed: %s", exc)
+            # v7 — generic 폴백 래퍼(2026-06-14) 배포 후 고착 미파싱 재해제
+            try:
+                from bot.dart_feed import clear_doc_fail_once_v7
+                n7 = clear_doc_fail_once_v7()
+                if n7:
+                    log.info("startup: DART doc_fail v7 — %d건 해제 "
+                             "(generic 폴백 래퍼로 재시도)", n7)
+            except Exception as exc:
+                log.warning("startup: DART doc_fail v7 failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:

@@ -4110,6 +4110,25 @@ def clear_doc_fail_once_v6() -> int | None:
     return n
 
 
+_DOC_FAIL_CLEAR_MARKER_V7 = _ARCHIVE_DIR.parent / ".dart_doc_fail_cleared_v7"
+
+
+def clear_doc_fail_once_v7() -> int | None:
+    """generic 폴백 일괄 보장 래퍼 배포(2026-06-14 '미파싱 9개') 후 고착 미파싱
+    1회 재해제 — 전환청구권/IR/대량보유 등 early-return 으로 12h 쿨다운 박힌
+    항목이 새 래퍼(_extract_detail generic 폴백)로 재시도되게. v6 동일 메커니즘,
+    새 마커. run_once 14일 pending 큐가 8건/분으로 자연 재드레인."""
+    if _DOC_FAIL_CLEAR_MARKER_V7.exists():
+        return None
+    n = clear_doc_fail_cache()
+    try:
+        _DOC_FAIL_CLEAR_MARKER_V7.parent.mkdir(parents=True, exist_ok=True)
+        _DOC_FAIL_CLEAR_MARKER_V7.write_text(datetime.now(_KST).isoformat())
+    except OSError:
+        pass
+    return n
+
+
 _RECLASS_MARKER_V7 = _ARCHIVE_DIR.parent / ".dart_feed_reclassified_v7"
 # 분류 정책 버전 — 바뀔 때마다 bump 하면 startup 1회 로컬 재분류가 소급
 # (marker 가 버전 문자열을 저장, 불일치 시 재실행. API 0·수 초).
