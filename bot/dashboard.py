@@ -12495,14 +12495,16 @@ def _render_market_page(data: dict) -> str:
     # 신고가·신저가 ③ 상한가·하한가/급등·급락. JP/CN/HK 는 업종-전체 페이지
     # 부재(ETF 합성 위젯 자체) + 가격제한 별도 페이지 부재 → ②만.
     _lk2 = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
-    # JP: 신고저 + 상한가·하한가(TSE 制限値幅, 사용자 2026-06-13)
+    # JP/CN: 신고저(야후) + 급등·급락(네이버 worldstock·미국 미러, 사용자 2026-06-13
+    # '중국·홍콩·일본은 미국따라' — 상한가/하한가 있는 시장도 상승/하락 TOP 로)
     parts.append(_render_etf_sector_movers(
         data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10",
         f'<a href="jp52" style="{_lk2}">📈 신고가·신저가</a>'
-        f'<a href="jphighlow" style="{_lk2}">🔺 상한가·하한가</a>'))
+        f'<a href="jpmovers" style="{_lk2}">🚀 급등·급락</a>'))
     parts.append(_render_etf_sector_movers(
         data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10",
-        f'<a href="cn52" style="{_lk2}">📈 신고가·신저가</a>'))
+        f'<a href="cn52" style="{_lk2}">📈 신고가·신저가</a>'
+        f'<a href="cnmovers" style="{_lk2}">🚀 급등·급락</a>'))
     _lk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     # TW: ② 신고가·신저가 → ③ 상한가·하한가 (가격제한 시장)
     _tw_link = (f'<a href="tw52" style="{_lk}">📈 신고가·신저가</a>'
