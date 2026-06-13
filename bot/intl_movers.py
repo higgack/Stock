@@ -104,7 +104,8 @@ def fetch_intl_movers(market: str) -> dict:
     실패 5분 백오프·진행중 30분 dedup. {up,down,ts,source,scanned,building,status}."""
     if market not in _CFG:
         return {"up": [], "down": [], "ts": "", "source": "", "building": False}
-    from bot.finviz_client import _CACHE_DIR, _HL_INTRA_TTL, _cached, _session_fresh
+    from bot.finviz_client import (_CACHE_DIR, _MOVERS_INTRA_TTL, _cached,
+                                   _session_fresh)
     cache = _CFG[market][0]
     stale = _cached(cache, ttl=86400)
     if stale is not None:
@@ -112,7 +113,7 @@ def fetch_intl_movers(market: str) -> dict:
             mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh(market, mt, _HL_INTRA_TTL):
+        if _session_fresh(market, mt, _MOVERS_INTRA_TTL):   # 장중 30분(사용자 2026-06-14)
             return stale
     st = intl_movers_status(market)
     age = time.time() - (st.get("ts") or 0)

@@ -390,6 +390,82 @@ def world_upjong_name(market: str) -> dict:
     return {}
 
 
+def _build_quote_map(market: str) -> None:
+    """네이버 업종 endpoint 순회 → {티커→{vol,value}} 거래량·거래대금(억) 캐시."""
+    nat = _UPJONG_NATION.get(market)
+    if not nat:
+        return
+    from bot.finviz_client import _cache_write
+    import requests
+    try:
+        cr = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12)
+        codes = cr.json() if cr.status_code == 200 else None
+    except Exception:
+        return
+    if not isinstance(codes, list):
+        return
+    out: dict = {}
+    for ic in codes:
+        code = (ic or {}).get("code") if isinstance(ic, dict) else None
+        if not code:
+            continue
+        try:
+            r = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/{code}/list"
+                             f"?orderType=marketValue&startIdx=0&pageSize=100",
+                             headers=_H, timeout=10)
+            st = r.json() if r.status_code == 200 else None
+        except Exception:
+            st = None
+        for s in (st or []):
+            if not isinstance(s, dict):
+                continue
+            tk = _upjong_ticker(s.get("symbolCode") or s.get("reutersCode"), market)
+            if not tk:
+                continue
+            try:
+                vol = int(float(s.get("accumulatedTradingVolume") or 0)) or None
+            except (TypeError, ValueError):
+                vol = None
+            try:
+                tv = s.get("accumulatedTradingValue")
+                value = round(float(tv) / 1e8, 2) if tv else None
+            except (TypeError, ValueError):
+                value = None
+            if vol is not None or value is not None:
+                out[tk] = {"vol": vol, "value": value}
+    if out:
+        _cache_write(f"naver_quote_{market}.json", out)
+
+
+def world_quote_map(market: str) -> dict:
+    """{yfinance 티커 → {vol, value(억)}} — 네이버 업종 endpoint 의 거래량·거래대금.
+    US 52주 거래량/거래대금을 네이버로(사용자 2026-06-14 '미국 거래량 다 네이버').
+    intraday → 30분 캐시·SWR(렌더 블로킹 안 함, 캐시 없으면 백그라운드 빌드 후 빈
+    {} → Finviz 폴백, 다음 방문부터 네이버)."""
+    if market not in _UPJONG_NATION:
+        return {}
+    from bot.finviz_client import _cached
+    c = _cached(f"naver_quote_{market}.json", ttl=1800)
+    if isinstance(c, dict) and c:
+        return c
+    key = f"quote:{market}"
+    with _UPJONG_NAME_LOCK:
+        if key in _UPJONG_NAME_BUILDING:
+            return {}
+        _UPJONG_NAME_BUILDING.add(key)
+
+    def _build() -> None:
+        try:
+            _build_quote_map(market)
+        except Exception:
+            pass
+        finally:
+            with _UPJONG_NAME_LOCK:
+                _UPJONG_NAME_BUILDING.discard(key)
+    threading.Thread(target=_build, daemon=True, name=f"upjong-quote-{market}").start()
+    return {}
+
+
 def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
     """{up:[{name,pct}], down:[...], ts, source} — 네이버 업종별 등락(시총가중 평균)
     Top/Bottom (CN/HK/JP, 사용자 2026-06-14 '업종등락 네이버'). 전 업종 순회·각
@@ -400,7 +476,7 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
         return {"up": [], "down": [], "ts": "", "source": ""}
     from bot.finviz_client import _cache_write, _cached, _now_label
     cache = f"naver_sector_movers_{market}.json"
-    c = _cached(cache, ttl=3600)
+    c = _cached(cache, ttl=300)        # 5분 (사용자 2026-06-14 '엄마보드 모든 나라 5분')
     if isinstance(c, dict) and (c.get("up") or c.get("down")):
         return c
     import requests

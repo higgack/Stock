@@ -5187,16 +5187,16 @@ class TestUsMovers:
         assert kicked
 
     def test_movers_session_aware_freshness(self):
-        # 장-인지 TTL: 장중 1h / 장 밖은 '마지막 마감 이후 산출본' fresh
-        # (사용자 2026-06-13 '모두 장중에만 1h' — 옛 30분에서 통일)
+        # 장-인지 TTL: 장중 30분 / 장 밖은 '마지막 마감 이후 산출본' fresh
+        # (사용자 2026-06-14 '급등급락은 30분단위로 모두' — 52주 1h 와 분리)
         from datetime import datetime, timezone
         from bot.finviz_client import _movers_cache_is_fresh
 
         def ts(*a):
             return datetime(*a, tzinfo=timezone.utc).timestamp()
         wed_1500 = ts(2026, 6, 10, 15, 0)          # 수요일 장중
-        assert _movers_cache_is_fresh(wed_1500 - 1800, wed_1500)       # 30분 (1h 내)
-        assert not _movers_cache_is_fresh(wed_1500 - 4000, wed_1500)   # 67분 (1h 초과)
+        assert _movers_cache_is_fresh(wed_1500 - 1200, wed_1500)       # 20분 (30분 내)
+        assert not _movers_cache_is_fresh(wed_1500 - 2400, wed_1500)   # 40분 (30분 초과)
         sat_noon = ts(2026, 6, 13, 12, 0)          # 토요일 (장 밖)
         fri_2200 = ts(2026, 6, 12, 22, 0)          # 금 마감(21:30) 후 산출
         fri_2000 = ts(2026, 6, 12, 20, 0)          # 금 장중 산출 (마감 미반영)
