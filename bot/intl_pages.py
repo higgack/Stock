@@ -44,8 +44,12 @@ def render_intl_highlow52_page(market: str) -> str:
         # KR(KIS): 종목명만·업종 제거·거래량 O(acml_vol). JP/CN/HK(yfinance):
         # 티커+한글명·업종 O·거래량 X(yfinance vol 미populate, 사용자 2026-06-13).
         _kr = market == "KR"
-        # KR(네이버)=거래량+거래대금, JP/CN/HK(yfinance)=값 미populate → 미표시.
-        _opt = dict(name_only=_kr, show_ind=not _kr, show_vol=_kr, show_value=_kr)
+        # KR(네이버)=거래량+거래대금 항상. JP/CN/HK=yfinance 스캔이 거래량 주면
+        # 표시(거래대금≈종가×거래량, 사용자 2026-06-14 '모두 거래량/거래대금').
+        # vol 부재 시 숨김(빈 컬럼 방지) — 네이버는 52주 정렬 미지원이라 야후 검출.
+        _has_vol = any(r.get("vol") for r in hi + lo)
+        _show = _kr or _has_vol
+        _opt = dict(name_only=_kr, show_ind=not _kr, show_vol=_show, show_value=_show)
         _dist = (lambda x: "") if _kr else ind_dist_line   # KR 업종분포도 제거
         # 당일 52주 고가/저가 '갱신'한 진짜 신고가/신저가 (사용자 2026-06-13).
         body = ('<div class="grid">'

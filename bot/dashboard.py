@@ -11242,13 +11242,18 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
       var flag=(c.dataset.flag||'').split(' ').map(function(f){return FLAG[f]||'';})
                  .filter(Boolean).join('/');
       var a=c.querySelector('.df-corp');
+      // 파서 내용(구조화 상세) — 카드의 .df-detail-ln 줄을 ' / '로 합침
+      // (사용자 2026-06-14 '다트 CSV 에 파서내용도'). 미파싱 카드는 빈 칸.
+      var detail=Array.prototype.slice.call(c.querySelectorAll('.df-detail-ln'))
+                   .map(function(e){return (e.textContent||'').trim();})
+                   .filter(Boolean).join(' / ');
       rows.push([dt.trim(),(c.dataset.name||'').trim(),(c.dataset.cat||'').trim(),
-                 (c.dataset.report||'').trim(),flag,a?a.href:'']);
+                 (c.dataset.report||'').trim(),detail,flag,a?a.href:'']);
     });
     if(!rows.length){alert('내보낼 공시가 없습니다 (필터 확인).');return;}
     var d=new Date(),p=function(n){return(''+n).padStart(2,'0');};
     noahCsv('DART공시_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'.csv',
-            ['날짜','회사','카테고리','제목','플래그','원문URL'],rows);
+            ['날짜','회사','카테고리','제목','내용','플래그','원문URL'],rows);
   });
 })();
 </script>

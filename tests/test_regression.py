@@ -7308,6 +7308,24 @@ class TestIntlFullMarket:
         assert "from bot.intl_universe import full_universe" in src
         assert "_session_fresh(market, mt, _HL_INTRA_TTL)" in src   # 장-인지 1h
 
+    def test_intl_52w_volume_value_when_yfinance_populates(self, monkeypatch):
+        # 사용자 2026-06-14 '모두 거래량/거래대금': JP/CN/HK 52주는 네이버에 52주
+        # 정렬이 없어 야후 검출 — 야후 스캔이 거래량 주면 거래량/거래대금(=종가×거래량)
+        # 표시, 없으면 숨김(빈 컬럼 방지).
+        import bot.intl_highlow as ih
+        from bot.intl_pages import render_intl_highlow52_page
+        monkeypatch.setattr(ih, "fetch_intl_highlow", lambda m: {
+            "high": [{"ticker": "7203.T", "name": "도요타", "price": 3000, "pct": 1.2,
+                      "vol": 5000000, "value": 1500.0, "mcap": 400000, "ind": "Auto"}],
+            "low": [], "ts": "x", "source": "s", "building": False, "status": {}})
+        h = render_intl_highlow52_page("JP")
+        assert "거래량" in h and "거래대금" in h
+        monkeypatch.setattr(ih, "fetch_intl_highlow", lambda m: {
+            "high": [{"ticker": "7203.T", "name": "도요타", "price": 3000, "pct": 1.2,
+                      "vol": None, "value": None, "mcap": 400000, "ind": "Auto"}],
+            "low": [], "ts": "x", "source": "s", "building": False, "status": {}})
+        assert "거래량" not in render_intl_highlow52_page("JP")   # vol 부재 → 숨김
+
 
 class TestUsHighlowIndDist:
     """US 신고저에도 업종분포 (사용자 2026-06-13 '업종분포 다 넣어주는걸로').
@@ -7680,6 +7698,15 @@ class TestCsvExport:
         assert "out.join('\\r\\n')" in block       # \r\n literal 보존
         assert "out.join('\r\n')" not in block     # 실제 CR/LF 없음(JS 안 깨짐)
         assert "getElementById('df-csv')" in block and ".df-pill" in block
+
+    def test_dart_csv_includes_parser_detail(self):
+        # 사용자 2026-06-14 '다트 CSV 에 파서내용도' — 카드 .df-detail-ln 줄을
+        # '내용' 컬럼으로 export.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index('parts.append(r"""\n<script>\n(function(){')
+        block = eval(src[src.index('r"""', i):src.index('"""', src.index('r"""', i) + 4) + 3])
+        assert "querySelectorAll('.df-detail-ln')" in block      # 상세 줄 스크레이프
+        assert "'내용','플래그'" in block                        # 헤더에 내용 컬럼
 
     def test_screener_two_csv_buttons(self):
         # 사용자 확정: Bottleneck + 조건 스크리너 두 개 모두.
