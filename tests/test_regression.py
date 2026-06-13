@@ -7623,8 +7623,11 @@ class TestCsvExport:
         # 사용자 확정: Bottleneck + 조건 스크리너 두 개 모두.
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'id="t3-csv"' in src and 'id="cs-csv"' in src
-        assert "table.picks" in src and "table.scr-tbl" in src   # 두 테이블 스크레이프
-        assert "screener_top3_" in src and "screener_조건_" in src
+        assert "table.scr-tbl" in src                    # 조건 스크리너 표 스크레이프
+        assert "screener_전체_" in src and "screener_조건_" in src
+        # 사용자 2026-06-13 'Top-3 말고 전체' — Master Table(전 종목) 파싱 + Top-3 폴백
+        assert 'data-section="master_table"' in src and "table.picks" in src
+        assert "📥 전체 CSV" in src
 
     def test_pages_still_render(self):
         # 버튼/JS 추가 후에도 페이지 렌더 무결성(NameError/템플릿 깨짐 가드).
