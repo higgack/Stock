@@ -65,11 +65,15 @@ LOOKBACK_MONTHS_DEFAULT = int(
     os.environ.get("TRADE_CUSTOMS_SCAN_LOOKBACK_MONTHS") or "14"
 )
 _MIGRATE_MARKER = Path.home() / ".trade" / ".surge_migrated"
-# 단가($/kg) 중량 보존 fix(2026-06-13) 이전 적재 스냅샷엔 exp_wgt/imp_wgt 가
-# 없어 단가 행이 빈칸. probe 는 관세청 무변경이면 스윕을 건너뛰어 다음 갱신
-# (월 ~3회)까지 안 채워짐 → 배포 직후 1회 강제 풀 스윕으로 14개월 윈도를
-# 중량 포함 재적재(성공 저장 경로에서만 마커 → 실패 시 다음 probe 재시도).
-_WEIGHTS_BACKFILL_MARKER = Path.home() / ".trade" / ".weights_backfilled"
+# 배포 직후 1회 강제 풀 스윕 마커 (버전드). probe 는 관세청 무변경이면 스윕을
+# 건너뛰어, 새 스냅샷 필드(단가 중량·수입 랭킹 등)가 다음 관세청 갱신(월 ~3회)
+# 까지 안 채워진다 → 마커 내용이 현재 _SCAN_ROLLOUT_VERSION 과 다르면 무변경
+# 이어도 1회 강제 풀 스윕으로 즉시 재적재(성공 저장 경로에서만 버전 기록 →
+# 실패 시 다음 probe 재시도). **새 populate-필요 기능 배포 시 버전만 bump.**
+# (옛 `.weights_backfilled` 경로 재사용 — 기존 마커는 timestamp 라 버전과
+# 달라 자동으로 1회 강제됨.)
+_ROLLOUT_MARKER = Path.home() / ".trade" / ".weights_backfilled"
+_SCAN_ROLLOUT_VERSION = "2026-06-13-import"   # 수입 급등률/급증액 랭킹 적재
 
 
 def _window(lookback_months: int, now: datetime | None = None) -> tuple[str, str]:
@@ -114,17 +118,21 @@ def _reset_pins_once() -> str | None:
     return None
 
 
-def _weights_backfill_pending() -> bool:
-    """단가 중량 1회 백필이 아직이면 True — 배포 직후 첫 probe 가 관세청
-    무변경이어도 강제 풀 스윕을 한 번 돌려 단가($/kg)를 즉시 채우게 한다.
-    마커는 성공 저장 경로에서만 찍어(graceful) 실패 시 다음 probe 재시도."""
-    return not _WEIGHTS_BACKFILL_MARKER.exists()
-
-
-def _mark_weights_backfilled() -> None:
+def _rollout_scan_pending() -> bool:
+    """현 _SCAN_ROLLOUT_VERSION 의 강제 populate 스윕이 아직이면 True — 배포
+    직후 첫 probe 가 관세청 무변경이어도 1회 강제 풀 스윕으로 새 스냅샷 필드를
+    즉시 채운다. 마커 내용 != 버전이면 pending. 성공 저장 경로에서만 버전
+    기록(graceful) → 실패 시 다음 probe 재시도."""
     try:
-        _WEIGHTS_BACKFILL_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        _WEIGHTS_BACKFILL_MARKER.write_text(str(time.time()))
+        return _ROLLOUT_MARKER.read_text(encoding="utf-8").strip() != _SCAN_ROLLOUT_VERSION
+    except OSError:
+        return True   # 마커 부재 = pending
+
+
+def _mark_rollout_done() -> None:
+    try:
+        _ROLLOUT_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _ROLLOUT_MARKER.write_text(_SCAN_ROLLOUT_VERSION, encoding="utf-8")
     except OSError:
         pass
 
@@ -330,11 +338,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # 단가 중량 1회 백필 — 마커 부재면 관세청 무변경이어도 강제 풀 스윕.
-    force_backfill = _weights_backfill_pending()
-    if args.if_changed and not force_backfill and _probe_says_skip(key):
+    force_rollout = _rollout_scan_pending()
+    if args.if_changed and not force_rollout and _probe_says_skip(key):
         return 0
-    if force_backfill:
-        log.info("weights backfill pending — 강제 풀 스윕 (단가 중량 1회 적재)")
+    if force_rollout:
+        log.info("rollout populate pending (%s) — 강제 풀 스윕 1회",
+                 _SCAN_ROLLOUT_VERSION)
 
     start, end = _window(args.lookback_months)
     chapters = customs_scan.CHAPTERS[: args.max_chapters]
@@ -460,9 +469,9 @@ def main(argv: list[str] | None = None) -> int:
         customs_scan.store_heatmap(conn, hm_rows)
     log.info("stored live; archived=%d new_entrants=%d heatmap=%d",
              archived, len(new_entrants), len(hm_rows))
-    if force_backfill:
-        _mark_weights_backfilled()      # 성공 저장 후에만 (실패=다음 probe 재시도)
-        log.info("weights backfill 완료 — 단가($/kg) 중량 적재")
+    if force_rollout:
+        _mark_rollout_done()            # 성공 저장 후에만 (실패=다음 probe 재시도)
+        log.info("rollout populate 완료 (%s)", _SCAN_ROLLOUT_VERSION)
 
     # 작동 원장 (자정 결산용) — 스윕 1·신규급증 n
     try:
