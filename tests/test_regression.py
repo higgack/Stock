@@ -7763,10 +7763,14 @@ class TestNaverWorldRanking:
         from bot.naver_ranking_client import fetch_us_movers
         m = fetch_us_movers()                  # 샌드박스 네이버 불가 → 빈, 크래시 0
         assert set(m) >= {"up", "down", "ts", "source", "scanned"}
-        # _compute_us_movers 가 네이버 우선 배선
+        # _compute_us_movers 가 네이버 우선 + 업종(야후) enrich 배선
         src = open("bot/finviz_client.py", encoding="utf-8").read()
         assert "from bot.naver_ranking_client import fetch_us_movers" in src
         assert "yfinance 스캔 폴백" in src
+        # 사용자 2026-06-13 '급등급락에 업종·업종분포 야후로' — 네이버 무버에 업종 enrich
+        assert "US movers 업종 enrich" in src
+        ups = open("bot/us_pages.py", encoding="utf-8").read()
+        assert "_ind_dist_line(up)" in ups and "_ind_dist_line(down)" in ups  # 업종분포 줄
 
     def test_value_column_in_panel(self):
         # 거래대금 컬럼 (show_value) — 억 단위 fmt_mcap 재사용
