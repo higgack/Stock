@@ -70,7 +70,12 @@ def render_intl_highlow52_page(market: str) -> str:
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
     # KR=네이버(업종 그룹 멤버맵 백필), JP/CN/HK=yfinance — 신선도는 전 시장 장중
     # 1h 통일(사용자 2026-06-13 '모두 장중에만 1h'). 부제 군더더기 제거 — 출처·정렬·갱신만.
-    _ind_lbl = "업종=네이버 · " if market == "KR" else "업종=yfinance · "
+    if market == "KR":
+        _ind_lbl = "업종=네이버 · "
+    elif market == "HK":   # 사용자 2026-06-14 'HK 거래량·시총 네이버·업종 야후'
+        _ind_lbl = "거래량·거래대금·시총·종목명=네이버 · 업종=yfinance · "
+    else:
+        _ind_lbl = "업종=yfinance · "
     sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}장중 1h"
            f"{(' · ' + ts + ' 기준') if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "CN_A": "cn52", "HK": "hk52"}.get(market, "")

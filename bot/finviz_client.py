@@ -765,10 +765,11 @@ def _compute_highlow_full_us() -> dict:
 
 
 def _industries_for(tickers: list, market: str | None) -> dict:
-    """업종 enrich — CN/HK/JP 는 네이버 업종맵(reutersIndustryName, reliable·
-    yfinance .info 우회, 사용자 2026-06-14 'CN/HK/JP 업종 네이버'), 그 외(US/KR/TW)는
-    _fetch_industries(GICS/yfinance). 네이버 맵 미스·실패 시 yfinance 폴백."""
-    if market in ("CN_A", "HK", "JP"):
+    """업종 enrich — CN/JP 는 네이버 업종맵(reutersIndustryName, reliable·yfinance
+    .info 우회), 그 외(US/KR/TW/HK)는 _fetch_industries(GICS/yfinance). HK 는 네이버
+    업종이 너무 sparse 해 야후로 (사용자 2026-06-14 'HK 급등급락 업종 야후기준').
+    네이버 맵 미스·실패 시 yfinance 폴백."""
+    if market in ("CN_A", "JP"):
         try:
             from bot.naver_ranking_client import world_industry_map
             m = world_industry_map(market)
@@ -887,6 +888,28 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         # JP 銘柄名·TWSE 약칭(南亞科 류)을 스킵했음 — 헬퍼가 둘 다 해소(네이티브명
         # 직접 번역). US/KR 은 헬퍼가 no-op (영문/pykrx 한글 유지).
         _backfill_korean_names(out["high"] + out["low"], tag)
+        # HK — 거래량/거래대금/시총/종목명을 **네이버 worldstock** 으로 채움(사용자
+        # 2026-06-14 'HK 신고저 네이버 기준'). yfinance HK vol/시총이 자주 비어
+        # 컬럼 숨겨지던 것 해소. yfinance 52주 검출은 유지(네이버 52주 sort 부재),
+        # 표시 필드만 네이버 overlay. 키는 zfill(4) 정규화로 매칭.
+        if tag == "HK":
+            try:
+                from bot.naver_ranking_client import world_stock_map
+                wsm = world_stock_map(tag)
+                if wsm:
+                    for r in out["high"] + out["low"]:
+                        code = str(r["ticker"]).split(".")[0]
+                        w = wsm.get(r["ticker"]) or wsm.get(code.zfill(4) + ".HK") or {}
+                        if w.get("vol") is not None:
+                            r["vol"] = w["vol"]
+                        if w.get("value") is not None:
+                            r["value"] = w["value"]
+                        if w.get("mcap") is not None:
+                            r["mcap"] = w["mcap"]
+                        if w.get("name"):
+                            r["name"] = w["name"]
+            except Exception as exc:
+                log.warning("finviz: HK 네이버 worldstock overlay 실패: %s", exc)
         log.info("finviz: %s highlow — scanned %d → high %d / low %d (mcap %d)",
                  tag, scanned, len(out["high"]), len(out["low"]), len(mcaps))
         if out["high"] or out["low"]:

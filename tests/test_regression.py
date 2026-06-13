@@ -7243,6 +7243,24 @@ class TestUpperLowerVolume:
         assert mo._CACHE_TTL_SEC == 300       # 엄마보드(market.html) 스냅샷
         assert ns._CACHE_TTL_SEC == 300       # 네이버 업종/테마/예탁금
 
+    def test_hk_naver_overlay_and_yfinance_industry(self):
+        # 사용자 2026-06-14 'HK 신고저 거래량·거래대금·시총·종목명 네이버, 급등락
+        # 업종 야후'. (1) _industries_for HK → yfinance(네이버 라우팅 제외)
+        import bot.finviz_client as fc
+        fc._fetch_industries = lambda tks, **k: {t: "YF-Ind" for t in tks}
+        got = fc._industries_for(["0700.HK"], "HK")
+        assert got["0700.HK"] == "YF-Ind"      # HK 업종=yfinance
+        # (2) _compute_highlow_from 에 HK worldstock overlay 배선
+        fsrc = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert 'if tag == "HK":' in fsrc and "world_stock_map" in fsrc
+        # (3) world_stock_map graceful(미지원 시장 빈, 오프라인 graceful)
+        from bot.naver_ranking_client import world_stock_map
+        assert world_stock_map("US") == {}      # worldstock 미대상
+        assert isinstance(world_stock_map("HK"), dict)   # 오프라인 graceful
+        # (4) HK 52주 부제 = 네이버 vol/시총·yfinance 업종
+        ip = open("bot/intl_pages.py", encoding="utf-8").read()
+        assert "거래량·거래대금·시총·종목명=네이버" in ip
+
 
 class TestHighlowRenderShared:
     """신고저/급등락/상한가 공용 리치 렌더러 (사용자 2026-06-13 '미국 포맷
@@ -8053,7 +8071,7 @@ class TestNaverKrRanking:
         assert ".hl-table.nm-nowrap td.nm" in HL_SORT_JS
         ip = open("bot/intl_pages.py", encoding="utf-8").read()
         assert "당일 52주 신고가/신저가 갱신" not in ip and "직전 종가 고정" not in ip
-        assert '_ind_lbl = "업종=네이버 · " if market == "KR"' in ip  # KR 업종=네이버
+        assert '_ind_lbl = "업종=네이버 · "' in ip       # KR 업종=네이버
         assert "apply_kr_industry" in ip               # KR 52주 업종 백필 배선
         np = open("bot/naver_pages.py", encoding="utf-8").read()
         # KR 급등락(사용자 2026-06-14) — 무버 신선도 장중 30분(_MOVERS_INTRA_TTL)
