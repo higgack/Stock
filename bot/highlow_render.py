@@ -179,7 +179,7 @@ def stock_panel(title: str, items: list, tid: str, market: str,
              f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가{cur_h}</th>',
              '<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>']
     if show_vol:
-        heads.append('<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량</th>')
+        heads.append('<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량(주)</th>')
     if show_value:
         heads.append(f'<th class="srt" data-key="value" data-type="num" style="text-align:right">거래대금{cur_h}</th>')
     if show_mcap:

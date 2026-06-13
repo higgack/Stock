@@ -180,7 +180,7 @@ def _stock_panel(title: str, items: list, tid: str, extra_head: str = "") -> str
         f'<th class="srt" data-key="sym" data-type="text">종목</th>'
         f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가</th>'
         f'<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>'
-        f'<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량</th>'
+        f'<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량(주)</th>'
         f'<th class="srt" data-key="mcap" data-type="num" style="text-align:right">시총</th>'
         f'<th class="srt" data-key="ind" data-type="text">업종</th>'
         f'</tr></thead><tbody>{rows}</tbody></table></div>'
