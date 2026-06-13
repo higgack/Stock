@@ -4955,7 +4955,8 @@ class TestIntlHighLow52:
 
     def test_universe_from_peer_maps(self):
         import bot.intl_highlow as ih
-        for mk, lo in (("JP", 40), ("CN_A", 30), ("HK", 30), ("KR", 50)):
+        # CN_A 52주 제거(2026-06-14) — JP/HK/KR 만
+        for mk, lo in (("JP", 40), ("HK", 30), ("KR", 50)):
             uni, names = ih._universe(mk)
             assert len(uni) >= lo, (mk, len(uni))
             assert len(uni) == len(set(uni))          # dedupe
@@ -5000,7 +5001,8 @@ class TestIntlHighLow52:
         from pathlib import Path as _P
         root = _P(__file__).resolve().parents[1] / "bot"
         srv = (root / "dashboard_server.py").read_text("utf-8")
-        assert "/jp52" in srv and "/cn52" in srv and "/hk52" in srv
+        assert "/jp52" in srv and "/hk52" in srv   # CN 52주 제거(2026-06-14)
+        assert "/cn52" not in srv
         assert "/kr52" in srv and "_handle_intl_page" in srv
         dash = (root / "dashboard.py").read_text("utf-8")
         assert 'href="jp52"' in dash and 'href="hk52"' in dash
@@ -6893,7 +6895,7 @@ class TestChildDashboardOrderNaming:
     def test_jp_cn_hk_home_label_unified(self):
         # JP/CN/HK 홈 링크가 '신고가·신저가'(통일), '52주 신고저' 아님
         src = open("bot/dashboard.py", encoding="utf-8").read()
-        for href in ('jp52', 'cn52', 'hk52'):
+        for href in ('jp52', 'hk52'):   # CN 52주 제거(2026-06-14)
             seg = src[src.find(f'href="{href}"') - 80:
                       src.find(f'href="{href}"') + 40]
             assert "신고가·신저가" in seg, href
@@ -7240,18 +7242,20 @@ class TestHighlowRenderShared:
                          show_vol=False)
         assert "거래량" not in us
 
-    def test_us_52w_value_only(self, monkeypatch):
-        # 사용자 2026-06-14 선택: US 52주 영문명 유지 + 거래대금만(거래량 X).
-        # 거래대금=종가×거래량(억$), Finviz Overview Volume 으로 렌더 시점 산출.
+    def test_us_52w_naver_name_value(self, monkeypatch):
+        # 사용자 2026-06-14(2차): US 52주 네이버 한글명 + 거래량 + 거래대금.
         import bot.finviz_client as fc
         monkeypatch.setattr(fc, "fetch_high_low", lambda: {
             "high": [{"ticker": "NVDA", "name": "NVDA", "price": 900.0, "pct": 2.1,
                       "vol": 50000000, "mcap": 22000, "ind": "Semis"}],
             "low": [], "ts": "x", "source": "Finviz"})
+        import bot.naver_ranking_client as nv
+        monkeypatch.setattr(nv, "world_upjong_name", lambda m: {"NVDA": "엔비디아"})
         from bot.us_pages import render_us_highlow_page
         h = render_us_highlow_page()
-        assert "거래대금 ($)" in h          # 거래대금 컬럼 추가
-        assert "거래량" not in h            # 거래량은 추가 안 함(거래대금만)
+        assert "엔비디아" in h              # 네이버 한글명 enrich
+        assert "거래대금 ($)" in h          # 거래대금
+        assert "거래량(주)" in h            # 거래량(이제 추가)
         assert "45.0B" in h                 # 900×5e7/1e8=450억$ → $45.0B
 
     def test_ind_dist_line(self):
@@ -7632,15 +7636,18 @@ class TestHkMovers:
         # 사용자 2026-06-14 'CN/HK/JP 업종 네이버'. nationType USA|CHN|HKG|JPN|VNM(probe).
         from bot.naver_ranking_client import (_upjong_ticker, _UPJONG_NATION,
                                               world_industry_map)
-        assert _UPJONG_NATION == {"CN_A": "CHN", "HK": "HKG", "JP": "JPN"}
+        # US 는 한글명(koreanCodeName) 수집용 포함 — 업종 enrich 라우팅은 여전히
+        # CN_A/HK/JP 만(US 업종 yfinance, 사용자 스코프). 2026-06-14.
+        assert _UPJONG_NATION == {"CN_A": "CHN", "HK": "HKG", "JP": "JPN", "US": "USA"}
         # CN 코드대역 휴리스틱: 6xx=상하이(.SS), 0/3xx=선전(.SZ)
         assert _upjong_ticker("600507", "CN_A") == "600507.SS"
         assert _upjong_ticker("000507", "CN_A") == "000507.SZ"
         assert _upjong_ticker("300507", "CN_A") == "300507.SZ"
         assert _upjong_ticker("700", "HK") == "0700.HK"
         assert _upjong_ticker("7203", "JP") == "7203.T"
-        # US/KR/TW 는 네이버 업종 미대상 → {} (graceful)
-        assert world_industry_map("US") == {} and world_industry_map("TW") == {}
+        # KR/TW 는 네이버 업종 미대상 → {} (graceful). US 는 한글명 수집용으로 맵에
+        # 있으나 _industries_for 는 US→yfinance(업종) 유지(아래 확인).
+        assert world_industry_map("KR") == {} and world_industry_map("TW") == {}
         # _industries_for 라우팅: CN/HK/JP→네이버(미스 yfinance 폴백), US→yfinance
         import bot.finviz_client as fc, bot.naver_ranking_client as nv
         nv.world_industry_map = lambda m: {"7203.T": "Auto Manufacturers"}
@@ -7760,8 +7767,8 @@ class TestChildDashboardCrossLink:
         assert 'href="hk52"' in hk and 'href="hkmovers"' in hk
         tw = _market_nav("TW", "tw52")
         assert 'href="tw52"' in tw and 'href="twhighlow"' in tw
-        cn = _market_nav("CN_A", "cnmovers")
-        assert 'href="cn52"' in cn and 'href="cnmovers"' in cn
+        cn = _market_nav("CN_A", "cnmovers")   # CN 52주 제거 — cnmovers 만(2026-06-14)
+        assert 'href="cnmovers"' in cn and 'href="cn52"' not in cn
 
     def test_intl_pages_emit_nav(self, monkeypatch):
         import bot.intl_highlow as ih, bot.jp_stop as js

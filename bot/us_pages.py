@@ -202,14 +202,24 @@ def render_us_highlow_page() -> str:
     from bot.highlow_render import stock_panel as _hpanel
 
     def _panel(title, items, tid, extra=""):
-        # 종목명=영문 유지(사용자 2026-06-14 선택) + 거래대금만 추가(거래량은 X).
+        # 종목명=네이버 한글 + 거래량·거래대금 (사용자 2026-06-14 변경 — '네이버
+        # 한글로, 거래량도 가져와'). 거래량=Finviz Overview Volume.
         return _hpanel(title, items, tid, "US", extra,
-                       show_vol=False, show_value=True)
+                       show_vol=True, show_value=True)
 
     hi, lo = data.get("high", []), data.get("low", [])
-    # 거래대금(억$) = 종가×거래량 — Finviz Overview Volume 으로 산출(사용자
-    # 2026-06-14 'US 52주 거래대금만 추가'). 렌더 시점 계산이라 캐시 무관.
+    # 종목명 네이버 한글 (사용자 2026-06-14 'US 52주 네이버 한글로') — 업종 endpoint
+    # koreanCodeName(7d 캐시). + 거래대금(억$)=종가×거래량(Finviz Volume). 렌더
+    # 시점이라 캐시 무관·graceful(네이버 실패 시 영문명 유지).
+    try:
+        from bot.naver_ranking_client import world_upjong_name
+        _nm = world_upjong_name("US")
+    except Exception:
+        _nm = {}
     for r in hi + lo:
+        kr = _nm.get(r.get("ticker"))
+        if kr:
+            r["name"] = kr
         if r.get("value") is None and r.get("price") and r.get("vol"):
             try:
                 r["value"] = round(float(r["price"]) * float(r["vol"]) / 1e8, 2)
@@ -230,8 +240,9 @@ def render_us_highlow_page() -> str:
                 + _panel("🔻 52주 신저가", lo, "hl-low", _ind_dist_line(lo))
                 + '</div>' + _HL_SORT_JS)
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') + 장중 1h(다른 52주와 통일).
-    sub = (f"미국 52주 신고가·신저가 · 시총순·헤더 클릭 정렬 · 업종=GICS·yfinance · "
-           f"출처 {src} · 장중 1h" + (f" · {ts} 기준" if ts else ""))
+    sub = (f"미국 52주 신고가·신저가 · 종목명=네이버 한글 · 거래량·거래대금 · "
+           f"시총순·헤더 클릭 정렬 · 업종=GICS·yfinance · 출처 {src} · 장중 1h"
+           + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
 
 

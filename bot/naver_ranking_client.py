@@ -281,7 +281,10 @@ def world_name_map(market: str, max_pages: int = 40) -> dict:
 # 네이버 데스크탑 업종(industry) API — nationType 별 (사용자 2026-06-14 'CN/HK/JP
 # 업종 네이버'). US/KR=이미 처리, TW=네이버 미지원이라 제외. enum: USA|CHN|HKG|JPN|VNM
 # (VM probe 확인). 종목 객체에 reutersIndustryName(업종 한글)·koreanCodeName 보유.
-_UPJONG_NATION = {"CN_A": "CHN", "HK": "HKG", "JP": "JPN"}
+# US 도 업종 endpoint 의 koreanCodeName(한글명) 수집용으로 포함 (사용자 2026-06-14
+# 'US 52주 종목명 네이버 한글로'). ⚠️ US 업종 enrich 는 여전히 yfinance(사용자 스코프
+# 'US 업종 아니야') — _industries_for 가 CN_A/HK/JP 만 네이버 라우팅, US 는 NAME 만.
+_UPJONG_NATION = {"CN_A": "CHN", "HK": "HKG", "JP": "JPN", "US": "USA"}
 _UPJONG_BASE = "https://stock.naver.com/api/foreign/market"
 
 
@@ -324,6 +327,7 @@ def world_industry_map(market: str, per_industry: int = 100) -> dict:
     if not isinstance(codes, list):
         return {}
     out: dict = {}
+    names: dict = {}      # {티커→koreanCodeName} 동반 캐시 (US 52주 한글명 등)
     for ic in codes:
         code = (ic or {}).get("code") if isinstance(ic, dict) else None
         if not code:
@@ -340,11 +344,35 @@ def world_industry_map(market: str, per_industry: int = 100) -> dict:
                 continue
             tk = _upjong_ticker(s.get("symbolCode") or s.get("reutersCode"), market)
             ind = s.get("reutersIndustryName")
+            nm = s.get("koreanCodeName")
             if tk and ind:
                 out[tk] = ind
+            if tk and nm:
+                names[tk] = nm
     if out:
         _cache_write(cache, out)
+    if names:
+        _cache_write(f"naver_upjong_name_{market}.json", names)
     return out
+
+
+def world_upjong_name(market: str) -> dict:
+    """{yfinance 티커 → koreanCodeName(한글명)} — 업종 endpoint 빌드 시 동반 캐시.
+    US 52주 한글 종목명 등(사용자 2026-06-14 'US 52주 네이버 한글로'). 캐시 없으면
+    world_industry_map 빌드를 1회 트리거(name 캐시도 함께 씀). 7d·graceful."""
+    if market not in _UPJONG_NATION:
+        return {}
+    from bot.finviz_client import _cached
+    cache = f"naver_upjong_name_{market}.json"
+    c = _cached(cache, ttl=7 * 86400)
+    if isinstance(c, dict) and c:
+        return c
+    try:
+        world_industry_map(market)        # name 캐시도 함께 기록
+    except Exception:
+        return {}
+    c = _cached(cache, ttl=7 * 86400)
+    return c if isinstance(c, dict) else {}
 
 
 def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:

@@ -2971,7 +2971,7 @@ def _prewarm_highlow() -> None:
     try:
         from bot.intl_highlow import _compute as _ih
         seq += [(f"highlow {m}", (lambda m=m: _ih(m)))
-                for m in ("KR", "JP", "HK", "CN_A")]
+                for m in ("KR", "JP", "HK")]   # CN 52주 제거(사용자 2026-06-14)
     except Exception:
         pass
     try:
