@@ -123,38 +123,42 @@ class ProbeModeTests(unittest.TestCase):
         self.assertIn("_probe_save(key)", src)
 
 
-class WeightsBackfillTests(unittest.TestCase):
-    """단가($/kg) 중량 1회 강제 백필 (사용자 2026-06-13 '지금안되는건가') —
-    fix 이전 스냅샷엔 중량이 없어 단가 빈칸. probe 는 관세청 무변경이면
-    스윕 skip → 다음 갱신(월 ~3회)까지 안 채워짐. 마커 부재면 1회 강제 풀
-    스윕으로 즉시 적재(성공 저장 경로에서만 마커 → 실패 시 재시도)."""
+class RolloutScanTests(unittest.TestCase):
+    """배포 직후 1회 강제 populate 스윕 (버전드 마커, 사용자 2026-06-13).
+    probe 는 관세청 무변경이면 스윕 skip → 새 스냅샷 필드(단가 중량·수입
+    랭킹 등)가 다음 갱신(월 ~3회)까지 안 채워짐. 마커 내용 != 현재 버전이면
+    1회 강제 풀 스윕(성공 저장 경로에서만 버전 기록 → 실패 시 재시도).
+    새 populate-필요 기능 = 버전만 bump 하면 자동 1회 강제."""
 
     def _tmp_marker(self):
         import tempfile
         from pathlib import Path as _P
-        sc._WEIGHTS_BACKFILL_MARKER = _P(tempfile.mkdtemp()) / ".weights_backfilled"
+        sc._ROLLOUT_MARKER = _P(tempfile.mkdtemp()) / ".weights_backfilled"
 
-    def test_pending_then_done(self):
+    def test_pending_then_done_versioned(self):
         self._tmp_marker()
-        self.assertTrue(sc._weights_backfill_pending())     # 마커 부재 → 강제
-        sc._mark_weights_backfilled()
-        self.assertFalse(sc._weights_backfill_pending())    # 적재 후 → 정상 복귀
+        self.assertTrue(sc._rollout_scan_pending())          # 마커 부재 → 강제
+        sc._mark_rollout_done()
+        self.assertFalse(sc._rollout_scan_pending())         # 현 버전 기록 → 정상
+        # 옛 마커(다른 내용=구버전/timestamp)는 다시 pending → 자동 1회 강제
+        sc._ROLLOUT_MARKER.write_text("1700000000.0", encoding="utf-8")
+        self.assertTrue(sc._rollout_scan_pending())
 
     def test_force_bypasses_probe_skip(self):
-        # 마커 부재 시, 관세청 무변경(probe skip True)이어도 게이트가
-        # 스윕을 건너뛰지 않아야 한다 (force_backfill 가 probe-skip 우회).
+        # 마커 stale 시, 관세청 무변경(probe skip True)이어도 게이트가
+        # 스윕을 건너뛰지 않아야 한다 (force_rollout 가 probe-skip 우회).
         self._tmp_marker()
-        force = sc._weights_backfill_pending()
-        probe_skip = True                                   # 무변경 가정
-        self.assertTrue(force and probe_skip)               # 둘 다 참인데
-        self.assertFalse(not force and probe_skip)          # 게이트는 skip 안 함
+        force = sc._rollout_scan_pending()
+        probe_skip = True                                    # 무변경 가정
+        self.assertTrue(force and probe_skip)                # 둘 다 참인데
+        self.assertFalse(not force and probe_skip)           # 게이트는 skip 안 함
 
     def test_wired_into_main(self):
         from pathlib import Path as _P
         src = _P(sc.__file__).read_text(encoding="utf-8")
-        # 게이트: --if-changed AND not force_backfill AND probe_skip 일 때만 종료
-        self.assertIn("not force_backfill and _probe_says_skip(key)", src)
+        # 게이트: --if-changed AND not force_rollout AND probe_skip 일 때만 종료
+        self.assertIn("not force_rollout and _probe_says_skip(key)", src)
         # 마커 호출(def 아님)은 성공 저장 로그(stored live) 뒤에서만 —
         # 조기 return(ok==0/coverage/empty) 경로 제외 → 실패 시 다음 probe 재시도
         stored = src.index('log.info("stored live')
-        src.index("_mark_weights_backfilled()", stored)   # 없으면 ValueError=fail
+        src.index("_mark_rollout_done()", stored)            # 없으면 ValueError=fail
