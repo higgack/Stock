@@ -210,10 +210,11 @@ def render_us_highlow_page() -> str:
         body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                 '(잠시 후 다시 시도해 주세요.)</div>')
     else:
+        # 업종 분포 한 줄 추가 (사용자 2026-06-13 '업종분포 다 넣어주는걸로')
         body = ('<div class="grid">'
-                + _panel("🔺 52주 신고가", hi, "hl-high")
-                + _panel("🔻 52주 신저가", lo, "hl-low") + '</div>'
-                + _HL_SORT_JS)
+                + _panel("🔺 52주 신고가", hi, "hl-high", _ind_dist_line(hi))
+                + _panel("🔻 52주 신저가", lo, "hl-low", _ind_dist_line(lo))
+                + '</div>' + _HL_SORT_JS)
     sub = (f"미국 52주 신고가·신저가 (가격제한폭이 없는 시장 — 상한가/하한가 대응 지표 · "
            f"SPAC·워런트·채권형 제외 · 분할 아티팩트 드랍) · 기본 시총순 · 헤더 클릭 정렬 · "
            f"업종=GICS·NASDAQ·yfinance 순 매칭 · "

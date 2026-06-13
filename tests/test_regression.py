@@ -7219,3 +7219,24 @@ class TestIntlFullMarket:
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
         assert "_TTL_FULL" in src and 'market in ("JP", "HK")' in src
         assert "from bot.intl_universe import full_universe" in src
+
+
+class TestUsHighlowIndDist:
+    """US 신고저에도 업종분포 (사용자 2026-06-13 '업종분포 다 넣어주는걸로').
+    기존 US 급등락만 있던 것을 신고저로 확장."""
+
+    def test_us_highlow_has_ind_dist(self):
+        import bot.finviz_client as fc
+        orig = fc.fetch_high_low
+        fc.fetch_high_low = lambda: {
+            "high": [{"ticker": "NVDA", "name": "NVDA", "price": 900,
+                      "pct": 2.1, "mcap": 22000, "ind": "Semis", "vol": 1000},
+                     {"ticker": "AMD", "name": "AMD", "price": 150, "pct": 1.0,
+                      "mcap": 2400, "ind": "Semis", "vol": 500}],
+            "low": [], "ts": "x", "source": "Finviz"}
+        try:
+            from bot.us_pages import render_us_highlow_page
+            h = render_us_highlow_page()
+        finally:
+            fc.fetch_high_low = orig
+        assert "업종 분포" in h and "Semis" in h
