@@ -5156,15 +5156,16 @@ class TestUsMovers:
         assert kicked
 
     def test_movers_session_aware_freshness(self):
-        # 장-인지 TTL: 장중 30분 / 장 밖은 '마지막 마감 이후 산출본' fresh
+        # 장-인지 TTL: 장중 1h / 장 밖은 '마지막 마감 이후 산출본' fresh
+        # (사용자 2026-06-13 '모두 장중에만 1h' — 옛 30분에서 통일)
         from datetime import datetime, timezone
         from bot.finviz_client import _movers_cache_is_fresh
 
         def ts(*a):
             return datetime(*a, tzinfo=timezone.utc).timestamp()
         wed_1500 = ts(2026, 6, 10, 15, 0)          # 수요일 장중
-        assert _movers_cache_is_fresh(wed_1500 - 600, wed_1500)        # 10분
-        assert not _movers_cache_is_fresh(wed_1500 - 1900, wed_1500)   # 31분
+        assert _movers_cache_is_fresh(wed_1500 - 1800, wed_1500)       # 30분 (1h 내)
+        assert not _movers_cache_is_fresh(wed_1500 - 4000, wed_1500)   # 67분 (1h 초과)
         sat_noon = ts(2026, 6, 13, 12, 0)          # 토요일 (장 밖)
         fri_2200 = ts(2026, 6, 12, 22, 0)          # 금 마감(21:30) 후 산출
         fri_2000 = ts(2026, 6, 12, 20, 0)          # 금 장중 산출 (마감 미반영)
@@ -7299,10 +7300,13 @@ class TestIntlFullMarket:
         finally:
             iu.full_universe = orig
 
-    def test_full_market_longer_ttl_wired(self):
+    def test_full_market_session_aware_wired(self):
+        # 사용자 2026-06-13 '모두 장중에만 1h': JP/HK 전종목(full_universe) 경로 +
+        # 신선도는 시장-인지 _session_fresh(_HL_INTRA_TTL 1h) 통일(옛 플랫 _TTL_FULL 대체).
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
-        assert "_TTL_FULL" in src and 'market in ("JP", "HK")' in src
+        assert 'market in ("JP", "HK")' in src
         assert "from bot.intl_universe import full_universe" in src
+        assert "_session_fresh(market, mt, _HL_INTRA_TTL)" in src   # 장-인지 1h
 
 
 class TestUsHighlowIndDist:
@@ -7441,8 +7445,9 @@ class TestKrFullUniverseHighlow:
 
 
 class TestHkMovers:
-    """홍콩 급등/급락 — 무제한 시장이라 상한가/하한가 대신(사용자 2026-06-13
-    '홍콩도 미국처럼'). HKEX 전종목 yfinance 당일 등락률 상·하위. SWR·6h 캐시."""
+    """JP/CN/HK 급등/급락 — 미국처럼 상한가/하한가 대신 상승/하락 TOP(사용자
+    2026-06-13 '중국·홍콩·일본은 미국따라'). 네이버 worldstock(한글명·거래량·
+    거래대금·시총 native) + yfinance 업종(야후방식). SWR·장중 1h 캐시."""
 
     def test_swr_no_sync_compute(self, monkeypatch):
         import bot.intl_movers as im, bot.finviz_client as fc
@@ -7456,20 +7461,61 @@ class TestHkMovers:
         assert r["building"] is True and kicked["n"] == 1
         assert im.fetch_intl_movers("XX")["up"] == []   # 미지원 graceful
 
+    def test_jp_cn_markets_wired(self):
+        # JP/CN_A/HK 셋 다 _CFG 등록 (사용자 '중국·홍콩·일본은 미국따라')
+        import bot.intl_movers as im
+        assert set(im._CFG) == {"HK", "JP", "CN_A"}
+        assert im._CFG["JP"][0] == "jp_movers_v1.json"
+        assert im._CFG["CN_A"][0] == "cn_movers_v1.json"
+
+    def test_naver_first_with_yahoo_industry(self, monkeypatch):
+        # _compute 가 네이버 worldstock 우선 + yfinance 업종 enrich (배선 E2E)
+        import bot.intl_movers as im, bot.naver_ranking_client as nv
+        import bot.finviz_client as fc
+        monkeypatch.setattr(nv, "fetch_intl_movers_naver", lambda m, top_n=30: {
+            "up": [{"ticker": "7203.T", "name": "도요타", "price": 3000,
+                    "pct": 5, "vol": 100, "value": 30, "mcap": 400000, "ind": None}],
+            "down": [], "ts": "x", "source": "네이버", "scanned": 1})
+        monkeypatch.setattr(fc, "_fetch_industries",
+                            lambda hits, **k: {"7203.T": "Auto Manufacturers"})
+        saved = {}
+        monkeypatch.setattr(fc, "_cache_write", lambda n, o: saved.update({n: o}))
+        # full_universe 가 불리면 안 됨(네이버 성공 시 yfinance 스캔 생략)
+        import bot.intl_universe as iu
+        monkeypatch.setattr(iu, "full_universe",
+                            lambda m: (_ for _ in ()).throw(AssertionError("scan!")))
+        im._running["JP"] = True
+        im._compute("JP")
+        assert saved["jp_movers_v1.json"]["up"][0]["ind"] == "Auto Manufacturers"
+
     def test_page_render_and_wiring(self, monkeypatch):
         import bot.intl_movers as im
         monkeypatch.setattr(im, "fetch_intl_movers", lambda m: {
             "up": [{"ticker": "9988.HK", "name": "알리바바", "price": 80,
-                    "pct": 9.1, "mcap": 150000, "ind": "Retail"}],
-            "down": [], "ts": "x", "scanned": 2774, "building": False})
+                    "pct": 9.1, "vol": 1000000, "value": 80.0, "mcap": 150000,
+                    "ind": "Retail"}],
+            "down": [], "ts": "x", "source": "네이버 증권 홍콩(HKEX) 등락",
+            "scanned": 2, "building": False})
         from bot.intl_pages import render_intl_movers_page
         h = render_intl_movers_page("HK")
         assert "급등·급락" in h and "9988.HK" in h and "알리바바" in h
-        assert "거래량" not in h and "현재가 (HK$)" in h
+        # 네이버 native — 거래량·거래대금 표시 (사용자 '거래량도 시총도')
+        assert "거래량" in h and "거래대금 (HK$)" in h and "현재가 (HK$)" in h
         from pathlib import Path as _P
         root = _P(__file__).resolve().parents[1] / "bot"
-        assert "/hkmovers" in (root / "dashboard_server.py").read_text("utf-8")
-        assert 'href="hkmovers"' in (root / "dashboard.py").read_text("utf-8")
+        ds = (root / "dashboard_server.py").read_text("utf-8")
+        assert "/hkmovers" in ds and "/jpmovers" in ds and "/cnmovers" in ds
+        dd = (root / "dashboard.py").read_text("utf-8")
+        assert all(f'href="{m}"' in dd for m in ("hkmovers", "jpmovers", "cnmovers"))
+
+    def test_naver_intl_movers_suffix(self):
+        # 네이버 symbolCode → yfinance 접미사 (HK zero-pad)
+        from bot.naver_ranking_client import _suffix_ticker, _INTL_MOVER_EX
+        assert _suffix_ticker("7203", ".T") == "7203.T"
+        assert _suffix_ticker("700", ".HK") == "0700.HK"
+        assert _suffix_ticker("601288", ".SS") == "601288.SS"
+        assert set(_INTL_MOVER_EX) == {"JP", "HK", "CN_A"}
+        assert _INTL_MOVER_EX["CN_A"] == [("SHANGHAI", ".SS"), ("SHENZHEN", ".SZ")]
 
     def test_compute_movers_from_present(self):
         from bot.finviz_client import _compute_movers_from
@@ -7510,8 +7556,9 @@ class TestJpStop:
         assert "현재가 (¥)" in h
         from pathlib import Path as _P
         root = _P(__file__).resolve().parents[1] / "bot"
+        # /jphighlow 라우트는 구 캐시 링크 호환 유지(JP 위젯은 jpmovers 로 전환)
         assert "/jphighlow" in (root / "dashboard_server.py").read_text("utf-8")
-        assert 'href="jphighlow"' in (root / "dashboard.py").read_text("utf-8")
+        assert 'href="jpmovers"' in (root / "dashboard.py").read_text("utf-8")
 
     def test_compute_jp_stop_present(self):
         from bot.finviz_client import _compute_jp_stop
@@ -7558,13 +7605,15 @@ class TestChildDashboardCrossLink:
         kr = _market_nav("KR", "kr52")
         assert all(f'href="{h}"' in kr for h in ("theme", "kr52", "highlow"))
         assert 'class="active" href="kr52"' in kr
-        jp = _market_nav("JP", "jphighlow")
-        assert 'href="jp52"' in jp and 'href="jphighlow"' in jp
+        # JP/CN_A 도 미국처럼 급등·급락(movers) — 상한가/하한가 대신(사용자 2026-06-13)
+        jp = _market_nav("JP", "jpmovers")
+        assert 'href="jp52"' in jp and 'href="jpmovers"' in jp
         hk = _market_nav("HK", "hkmovers")
         assert 'href="hk52"' in hk and 'href="hkmovers"' in hk
         tw = _market_nav("TW", "tw52")
         assert 'href="tw52"' in tw and 'href="twhighlow"' in tw
-        assert _market_nav("CN_A", "cn52").count('href="cn52"') == 1
+        cn = _market_nav("CN_A", "cnmovers")
+        assert 'href="cn52"' in cn and 'href="cnmovers"' in cn
 
     def test_intl_pages_emit_nav(self, monkeypatch):
         import bot.intl_highlow as ih, bot.jp_stop as js
@@ -7618,6 +7667,19 @@ class TestCsvExport:
         assert "function noahCsv" in src                  # CSV 빌더
         assert ".df-card" in src and "classList.contains('hidden')" in src  # 필터된 것만
         assert "DART공시_" in src                          # 파일명
+
+    def test_dart_filter_js_raw_string(self):
+        # 회귀 차단 (사용자 2026-06-14 '필터 하나도 클릭안되고 CSV 도 안먹어'):
+        # DART 필터/CSV <script> 가 비-raw 면 out.join('\r\n') 의 \r\n 이 실제
+        # 개행으로 변환돼 JS 문자열 리터럴이 깨짐 → IIFE 전체 SyntaxError(필터·CSV
+        # 전부 사망). raw(r-prefix) 필수. (.index 가 raw 아니면 ValueError → 실패)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index('parts.append(r"""\n<script>\n(function(){')   # raw 여야 통과
+        start = src.index('r"""', i)
+        block = eval(src[start:src.index('"""', start + 4) + 3])      # noqa: S307
+        assert "out.join('\\r\\n')" in block       # \r\n literal 보존
+        assert "out.join('\r\n')" not in block     # 실제 CR/LF 없음(JS 안 깨짐)
+        assert "getElementById('df-csv')" in block and ".df-pill" in block
 
     def test_screener_two_csv_buttons(self):
         # 사용자 확정: Bottleneck + 조건 스크리너 두 개 모두.
@@ -7752,7 +7814,9 @@ class TestNaverKrRanking:
         assert "당일 52주 신고가/신저가 갱신" not in ip and "직전 종가 고정" not in ip
         assert '_ind_lbl = "" if market == "KR"' in ip   # KR 업종=yfinance 제거
         np = open("bot/naver_pages.py", encoding="utf-8").read()
-        assert "kr_upper_lower_v1.json" in np and "ttl=3600" in np   # 상한가 1h 캐시
+        # 상한가도 시장-인지 1h (사용자 '모두 장중에만 1h') — 옛 플랫 ttl=3600 대체
+        assert "kr_upper_lower_v1.json" in np
+        assert '_session_fresh("KR", _mt, _HL_INTRA_TTL)' in np
         assert "거래대금·시총 native · 시총순" not in np             # 부제 trim
 
     def test_kr_upper_lower_filter_and_wiring(self):

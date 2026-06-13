@@ -196,15 +196,29 @@ def render_highlow_page() -> str:
     from bot.highlow_render import (HL_SORT_JS, sort_by_mcap, stock_panel)
     data = None
     try:
-        # 1h 캐시 (사용자 2026-06-13 '상한가 하한가도 1시간으로') — 네이버 1콜이라
-        # 가벼움. 캐시 부재 시 1회 fetch + 기록.
-        from bot.finviz_client import _cache_write, _cached
+        # 시장-인지 신선도 (사용자 2026-06-13 '모두 장중에만 1h'): 정규장 중 1h /
+        # 장 밖 마지막 마감 이후 산출본이면 재스캔 0. 네이버 1콜이라 동기 fetch OK
+        # (yfinance 전종목 스캔과 달리 가벼움). fetch 비거나 실패 시 스테일 서빙.
+        from bot.finviz_client import (_CACHE_DIR, _HL_INTRA_TTL, _cache_write,
+                                       _cached, _session_fresh)
         from bot.naver_ranking_client import fetch_kr_upper_lower
-        nv = _cached("kr_upper_lower_v1.json", ttl=3600)
-        if nv is None:
+        _cf = "kr_upper_lower_v1.json"
+        stale = _cached(_cf, ttl=86400)
+        fresh = False
+        if stale is not None:
+            try:
+                _mt = (_CACHE_DIR / _cf).stat().st_mtime
+            except OSError:
+                _mt = 0.0
+            fresh = _session_fresh("KR", _mt, _HL_INTRA_TTL)
+        if stale is not None and fresh:
+            nv = stale
+        else:
             nv = fetch_kr_upper_lower()
             if nv.get("upper") or nv.get("lower"):
-                _cache_write("kr_upper_lower_v1.json", nv)
+                _cache_write(_cf, nv)
+            elif stale is not None:
+                nv = stale       # fetch 빈/실패 → 직전 산출본 유지(블랭크 방지)
         if nv and (nv.get("upper") or nv.get("lower")):
             data = nv
     except Exception as exc:
@@ -220,8 +234,8 @@ def render_highlow_page() -> str:
                 + stock_panel("🔺 상한가", up, "ul-up", "KR", **_o)
                 + stock_panel("🔻 하한가", low, "ul-low", "KR", **_o)
                 + '</div>' + HL_SORT_JS)
-        sub = ("네이버 증권 상한가/하한가(±30% 도달) · 시총순·헤더 클릭 정렬 · "
-               f"장중 1h 갱신{(' · ' + ts + ' 기준') if ts else ''}")
+        sub = ("네이버 증권 상한가/하한가(±30%) · 시총순·헤더 클릭 정렬 · "
+               f"장중 1h{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("상한가·하한가", sub, "highlow", body)
 
     # 폴백: 기존 sise_upper/lower(Naver) 목록 + yfinance 시총(429 시 시총 빈)

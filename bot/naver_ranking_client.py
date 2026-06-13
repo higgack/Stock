@@ -187,6 +187,60 @@ def fetch_us_movers(top_n: int = 30) -> dict:
             "scanned": len(ups) + len(downs)}
 
 
+# 해외 무버 시장 → [(네이버 exchangeType, yfinance 접미사)] (사용자 2026-06-13
+# '중국·홍콩·일본은 미국따라'). 상한가/하한가 있는 시장(JP 制限値幅·CN ±10/20%)도
+# 그냥 상승/하락 TOP 로 표시. CN_A 는 상하이+선전 2거래소 병합.
+_INTL_MOVER_EX = {
+    "JP": [("TOKYO", ".T")],
+    "HK": [("HONG_KONG", ".HK")],
+    "CN_A": [("SHANGHAI", ".SS"), ("SHENZHEN", ".SZ")],
+}
+_INTL_MOVER_LABEL = {"JP": "도쿄(TSE)", "HK": "홍콩(HKEX)", "CN_A": "상하이+선전"}
+
+
+def _suffix_ticker(sym: str, suf: str) -> str:
+    """네이버 worldstock symbolCode → yfinance 접미사 티커. HK 는 4자리 zero-pad
+    (700→0700.HK, yfinance 규약). JP '7203'→7203.T, CN '601288'→601288.SS."""
+    sym = str(sym or "")
+    if not sym:
+        return sym
+    if suf == ".HK":
+        sym = sym.zfill(4)
+    return f"{sym}{suf}"
+
+
+def fetch_intl_movers_naver(market: str, top_n: int = 30) -> dict:
+    """JP/CN/HK 급등·급락 — 네이버 worldstock up/down 병합·정렬 (미국 무버 미러,
+    사용자 2026-06-13). 한글명·거래대금·시총 native. 업종(ind)은 호출부가 yfinance
+    로 enrich. CN_A 는 상하이+선전 병합. graceful — 전 거래소 실패 시 빈(폴백)."""
+    cfg = _INTL_MOVER_EX.get(market)
+    if not cfg:
+        return {"up": [], "down": [], "ts": "", "source": "", "scanned": 0}
+    from bot.finviz_client import _now_label
+    ups: list = []
+    downs: list = []
+    ok = False
+    for ex, suf in cfg:
+        u = fetch_world_ranking(ex, "up", limit=top_n)
+        d = fetch_world_ranking(ex, "down", limit=top_n)
+        if u or d:
+            ok = True
+        for r in u:
+            r["ticker"] = _suffix_ticker(r.get("ticker"), suf)
+        for r in d:
+            r["ticker"] = _suffix_ticker(r.get("ticker"), suf)
+        ups += u
+        downs += d
+    if not ok:
+        return {"up": [], "down": [], "ts": _now_label(), "source": "", "scanned": 0}
+    ups.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else -1e9, reverse=True)
+    downs.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else 1e9)
+    lbl = _INTL_MOVER_LABEL.get(market, market)
+    return {"up": ups[:top_n], "down": downs[:top_n], "ts": _now_label(),
+            "source": f"네이버 증권 {lbl} 등락(한글명·거래대금/시총)",
+            "scanned": len(ups) + len(downs)}
+
+
 def _is_real_stock(s: dict) -> bool:
     """실종목만 — ETF/ETN/스팩 제외 (사용자 신고저 정책). stockEndType=='stock'
     + 이름에 '스팩' 없음. (52주 최고엔 ETN/레버리지 상품이 섞여 들어옴)."""

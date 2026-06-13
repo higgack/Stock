@@ -29,8 +29,8 @@ _CFG = {
     "KR": ("_KR_INDUSTRY_PEERS", "highlow_kr_v2.json",
            "kr_highlow_status.json", "한국 주요종목", (".KS", ".KQ")),
 }
-# 신선도는 시장-인지(finviz_client._session_fresh, 장중 2h / 장 밖 마지막 마감
-# 이후 재스캔 0)로 통일 — 옛 플랫 _TTL/_TTL_FULL 대체(사용자 2026-06-13).
+# 신선도는 시장-인지(finviz_client._session_fresh, 장중 1h / 장 밖 마지막 마감
+# 이후 재스캔 0)로 통일 — 사용자 2026-06-13 '모두 장중에만 1h'.
 _running: dict[str, bool] = {}
 _lock = threading.Lock()
 
@@ -271,18 +271,16 @@ def fetch_intl_highlow(market: str) -> dict:
         return {"high": [], "low": [], "ts": "", "source": "", "building": False}
     from bot.finviz_client import _CACHE_DIR, _HL_INTRA_TTL, _cached, _session_fresh
     cache = _CFG[market][1]
-    # 시장-인지 신선도 (사용자 2026-06-13 '장종료후 굳이 안 돌려도'): 정규장 중
-    # 2h / 장 밖 마지막 마감 이후 산출본이면 재스캔 0. 옛 플랫 6h 대체(부하↓·장중↑).
+    # 시장-인지 신선도 (사용자 2026-06-13 '모두 장중에만 1h'): 정규장 중 1h /
+    # 장 밖 마지막 마감 이후 산출본이면 재스캔 0. 전 시장 통일(KR 네이버·JP/CN/HK
+    # yfinance 모두 장중 1h). 옛 플랫 6h 대체(부하↓·장중↑).
     stale = _cached(cache, ttl=86400)
     if stale is not None:
         try:
             mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             mt = 0.0
-        # KR 은 네이버 1콜(빠름·429 무관)이라 장중 1h 갱신, JP/CN/HK 는 yfinance
-        # 전종목 스캔이라 2h 유지(사용자 2026-06-13 '네이버 장중 1시간').
-        _intra = 3600 if market == "KR" else _HL_INTRA_TTL
-        if _session_fresh(market, mt, _intra):
+        if _session_fresh(market, mt, _HL_INTRA_TTL):
             return stale
     st = intl_highlow_status(market)
     age = time.time() - (st.get("ts") or 0)

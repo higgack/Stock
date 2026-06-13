@@ -233,7 +233,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                   "/usindustry", "/ushighlow", "/usmovers",
                                   "/twhighlow", "/tw52",
                                   "/jp52", "/cn52", "/hk52", "/kr52",
-                                  "/hkmovers", "/jphighlow")
+                                  "/hkmovers", "/jpmovers", "/cnmovers",
+                                  "/jphighlow")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -277,10 +278,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # /jp52 /cn52 /hk52 /kr52 — JP/CN/HK/KR 52주 신고가/신저가 (유니버스 백그라운드)
         if raw in ("/jp52", "/cn52", "/hk52", "/kr52"):
             return self._handle_intl_page(raw)
-        # /hkmovers — 홍콩 급등/급락 (무제한 시장, US 미러, 사용자 2026-06-13)
-        if raw == "/hkmovers":
-            return self._handle_intl_movers("HK")
-        # /jphighlow — 일본 상한가/하한가 (TSE 制限値幅, 사용자 2026-06-13)
+        # /hkmovers /jpmovers /cnmovers — JP/CN/HK 급등·급락 (네이버 worldstock +
+        # yfinance 업종, 미국 미러, 사용자 2026-06-13 '중국·홍콩·일본은 미국따라')
+        if raw in ("/hkmovers", "/jpmovers", "/cnmovers"):
+            return self._handle_intl_movers(
+                {"/hkmovers": "HK", "/jpmovers": "JP", "/cnmovers": "CN_A"}[raw])
+        # /jphighlow — 일본 상한가/하한가 (구 경로, jpmovers 로 대체 — 캐시 링크 호환)
         if raw == "/jphighlow":
             return self._handle_jp_stop()
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시

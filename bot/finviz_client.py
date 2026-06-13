@@ -1325,8 +1325,8 @@ def _kick_full_us_refresh() -> None:
 
 def _highlow_full_us() -> dict:
     """전미국 산출 티어 — **동기 계산 절대 안 함** (~수 분이라 페이지 hang
-    금지). 장-인지 신선도(_session_fresh US, 장중 2h / 장 밖 마지막 마감 이후
-    산출본이면 재스캔 0 — 사용자 2026-06-13 '장종료후 굳이 안 돌려도'). stale
+    금지). 장-인지 신선도(_session_fresh US, 장중 1h / 장 밖 마지막 마감 이후
+    산출본이면 재스캔 0 — 사용자 2026-06-13 '모두 장중에만 1h'). stale
     (≤24h) 서빙+백그라운드 재계산 / 캐시 부재 시 kick 후 빈 dict → 호출부가
     S&P500 티어로 폴스루 (다음 방문부터 전량 표시)."""
     stale = _cached("highlow_full_us_v4.json", ttl=86400)
@@ -1540,7 +1540,8 @@ _SESSIONS_UTC = {
     "CN_A": (1, 30, 7, 0),     # 09:30–15:00 CST(+8)
     "HK":   (1, 30, 8, 0),     # 09:30–16:00 HKT(+8)
 }
-_HL_INTRA_TTL = 2 * 3600       # 장중 신고저/상한가 재산출 간격 (사용자 2026-06-13 '2h 로')
+_HL_INTRA_TTL = 1 * 3600       # 장중 랭킹(신고저/상한가/무버) 재산출 간격 — 모든 시장
+#                                통일 (사용자 2026-06-13 '모두 장중에만 1h'). 장 밖 재스캔 0.
 
 
 def _session_fresh(market: str, cache_ts: float, intra_ttl: float,
@@ -1574,9 +1575,10 @@ def _session_fresh(market: str, cache_ts: float, intra_ttl: float,
 
 
 def _movers_cache_is_fresh(cache_ts: float, now_ts: float | None = None) -> bool:
-    """US 무버 장-인지 신선도 — _session_fresh('US', 30분) 위임(기존 호출부·테스트
-    호환). 장중 30분 / 장 밖 마지막 마감 이후 산출본이면 재스캔 0."""
-    return _session_fresh("US", cache_ts, _FALLBACK_TTL_SEC, now_ts)
+    """US 무버 장-인지 신선도 — _session_fresh('US', 1h) 위임(기존 호출부·테스트
+    호환). 장중 1h / 장 밖 마지막 마감 이후 산출본이면 재스캔 0 (사용자 2026-06-13
+    '모두 장중에만 1h' — 옛 30분에서 통일)."""
+    return _session_fresh("US", cache_ts, _HL_INTRA_TTL, now_ts)
 
 
 def _backfill_korean_names(rows: list, market: str) -> None:
@@ -1623,8 +1625,9 @@ def fetch_us_movers() -> dict:
     진행 중(running 30분 내)에도 중복 kick 생략 (프로세스 재시작으로
     in-process 플래그가 사라진 경우 대비).
 
-    신선도 = 장-인지(_movers_cache_is_fresh): 장중 30분 / 장 밖(야간·
-    주말)은 마지막 마감 이후 산출본이면 재스캔 0."""
+    신선도 = 장-인지(_movers_cache_is_fresh): 장중 1h / 장 밖(야간·
+    주말)은 마지막 마감 이후 산출본이면 재스캔 0 (사용자 2026-06-13
+    '모두 장중에만 1h')."""
     stale = _cached(_MOVERS_CACHE, ttl=86400)
     if stale is not None:
         try:

@@ -2975,13 +2975,11 @@ def _prewarm_highlow() -> None:
     except Exception:
         pass
     try:
+        # JP/CN/HK 무버 — 네이버 worldstock(1콜씩·가벼움, 사용자 2026-06-13
+        # '중국·홍콩·일본은 미국따라'). 옛 jp_stop(yfinance 전종목 스캔)은 jpmovers
+        # 로 대체돼 prewarm 제외(무거운 스캔 절약).
         from bot.intl_movers import _compute as _im
-        seq.append(("movers HK", lambda: _im("HK")))
-    except Exception:
-        pass
-    try:
-        from bot.jp_stop import _compute as _js
-        seq.append(("jp_stop", _js))
+        seq += [(f"movers {m}", (lambda m=m: _im(m))) for m in ("HK", "JP", "CN_A")]
     except Exception:
         pass
     try:

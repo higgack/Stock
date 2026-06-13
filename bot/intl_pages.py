@@ -44,7 +44,8 @@ def render_intl_highlow52_page(market: str) -> str:
         # KR(KIS): 종목명만·업종 제거·거래량 O(acml_vol). JP/CN/HK(yfinance):
         # 티커+한글명·업종 O·거래량 X(yfinance vol 미populate, 사용자 2026-06-13).
         _kr = market == "KR"
-        _opt = dict(name_only=_kr, show_ind=not _kr, show_vol=_kr)
+        # KR(네이버)=거래량+거래대금, JP/CN/HK(yfinance)=값 미populate → 미표시.
+        _opt = dict(name_only=_kr, show_ind=not _kr, show_vol=_kr, show_value=_kr)
         _dist = (lambda x: "") if _kr else ind_dist_line   # KR 업종분포도 제거
         # 당일 52주 고가/저가 '갱신'한 진짜 신고가/신저가 (사용자 2026-06-13).
         body = ('<div class="grid">'
@@ -53,20 +54,20 @@ def render_intl_highlow52_page(market: str) -> str:
                 + '</div>' + HL_SORT_JS)
     from bot.highlow_render import clean_source as _clean_src
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
-    # KR=네이버(1콜·장중 1h·업종 미표시), JP/CN/HK=yfinance(2h·업종 표시).
-    # 부제 군더더기 제거(사용자 2026-06-13) — 출처·정렬·갱신만.
-    _intra_lbl = "1h" if market == "KR" else "2h"
+    # KR=네이버(1콜·업종 미표시), JP/CN/HK=yfinance(업종 표시) — 신선도는 전 시장
+    # 장중 1h 통일(사용자 2026-06-13 '모두 장중에만 1h'). 부제 군더더기 제거 — 출처·정렬·갱신만.
     _ind_lbl = "" if market == "KR" else "업종=yfinance · "
-    sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}장중 {_intra_lbl} 갱신 "
-           f"{('· 갱신 ' + ts) if ts else ''}")
+    sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}장중 1h"
+           f"{(' · ' + ts + ' 기준') if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "CN_A": "cn52", "HK": "hk52"}.get(market, "")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body,
                      nav=_market_nav(market, _active))
 
 
 def render_intl_movers_page(market: str) -> str:
-    """HK 급등·급락 TOP — 미국 급등급락 미러(무제한 시장이라 상한가/하한가 대신).
-    거래량 없음(yfinance vol 미populate), 티커(한글명)·시총·업종 + 업종분포."""
+    """JP/CN/HK 급등·급락 TOP — 미국 급등급락 미러(사용자 2026-06-13 '중국·홍콩·
+    일본은 미국따라'). 네이버 worldstock(한글명·현재가·거래량·거래대금·시총) +
+    yfinance 업종/업종분포(야후방식). 상한가/하한가 있는 시장도 상승/하락 TOP 로."""
     try:
         from bot.intl_movers import fetch_intl_movers
         data = fetch_intl_movers(market)
@@ -78,30 +79,32 @@ def render_intl_movers_page(market: str) -> str:
     up, down = data.get("up", []), data.get("down", [])
     if not up and not down:
         if data.get("building"):
-            st = data.get("status") or {}
-            tot = st.get("total")
-            prog = f" (전종목 {tot})" if tot else ""
-            body = ('<div class="empty">⏳ 급등·급락 산출 중'
-                    f'{_html.escape(prog)}…<br>전종목 일봉 스캔(수 분). '
-                    '잠시 후 새로고침해 주세요.</div>')
+            body = ('<div class="empty">⏳ 급등·급락 산출 중…<br>'
+                    '네이버 등락 랭킹 수집 중. 잠시 후 새로고침해 주세요.</div>')
         else:
             body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
-        from bot.highlow_render import HL_SORT_JS, ind_dist_line, stock_panel
+        from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
+                                        stock_panel)
+        # 네이버 무버: 거래량·거래대금·시총 native + yfinance 업종(야후방식).
+        # 모든 자식 기본 시총순(사용자 2026-06-14, 헤더로 등락률 재정렬).
+        _o = dict(show_vol=True, show_value=True, show_ind=True)
+        up, down = sort_by_mcap(up), sort_by_mcap(down)
         body = ('<div class="grid">'
                 + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", market,
-                              ind_dist_line(up), show_vol=False)
+                              ind_dist_line(up), **_o)
                 + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", market,
-                              ind_dist_line(down), show_vol=False)
+                              ind_dist_line(down), **_o)
                 + '</div>' + HL_SORT_JS)
-    sc = data.get("scanned")
-    sub = (f"{flag} 당일 등락률 상·하위 30 (가격제한 없는 시장 — 급등/급락) · "
-           + (f"{sc}종목 스캔 · " if sc else "")
-           + "종목명=티커(한글) · 헤더 클릭 정렬 · 장중 30분 갱신·장 마감 후 고정(재스캔 0). "
-           + (f"· 갱신 {ts}" if ts else ""))
+    from bot.highlow_render import clean_source as _clean_src
+    src = _html.escape(_clean_src(data.get("source") or f"{flag} 당일 등락"))
+    # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고').
+    sub = (f"{flag} 당일 등락 상·하위 30 · {src} · 시총순·헤더 클릭 정렬 · "
+           f"업종=yfinance · 장중 1h" + (f" · {ts} 기준" if ts else ""))
+    _active = {"JP": "jpmovers", "CN_A": "cnmovers", "HK": "hkmovers"}.get(market, "hkmovers")
     return _tw_shell(f"{flag} 급등·급락", sub, body,
-                     nav=_market_nav(market, "hkmovers"))
+                     nav=_market_nav(market, _active))
 
 
 def render_jp_stop_page() -> str:
@@ -140,7 +143,7 @@ def render_jp_stop_page() -> str:
     sc = data.get("scanned")
     sub = ("🇯🇵 일본 상한가·하한가(ストップ高/安) — 전일종가별 TSE 制限値幅 도달 · "
            + (f"{sc}종목 스캔 · " if sc else "")
-           + "종목명=티커(한글) · 시총순·헤더 클릭 정렬 · 장중 2h 갱신·장 마감 후 고정(재스캔 0). "
+           + "종목명=티커(한글) · 시총순·헤더 클릭 정렬 · 장중 1h 갱신·장 마감 후 고정(재스캔 0). "
            + (f"· 갱신 {ts}" if ts else ""))
     return _tw_shell("🇯🇵 일본 상한가·하한가", sub, body,
                      nav=_market_nav("JP", "jphighlow"))
