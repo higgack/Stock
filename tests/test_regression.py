@@ -4800,6 +4800,93 @@ class TestEtfSectorMovers:
         assert "_fetch_etf_sector_safe" in src
 
 
+class TestTwseSectorHighLow:
+    """TW 업종(類股)+상한가/하한가 — TWSE MI_INDEX (사용자 2026-06-13 Phase 2,
+    VM 200 검증). 방어적 파서(필드 시그니처) + 랭킹 + 페이지 graceful."""
+
+    _TABLES = [
+        {"title": "大盤", "fields": ["項目", "收盤"], "data": [["加權", "18000"]]},
+        {"title": "類股指數",
+         "fields": ["指數", "收盤指數", "漲跌(+/-)", "漲跌點數", "漲跌百分比"],
+         "data": [
+             ["半導體類指數", "450", "<p style=color:red>+</p>", "5", "2.13"],
+             ["金融保險類指數", "1500", "<p style=color:green>-</p>", "3", "-0.62"],
+             ["航運類指數", "200", "<p style=color:red>+</p>", "9", "4.50"],
+             ["食品類指數", "1900", "<p style=color:green>-</p>", "2", "-0.21"],
+             ["鋼鐵類指數", "120", "<p style=color:red>+</p>", "1", "1.05"],
+             ["汽車類指數", "300", "<p style=color:red>+</p>", "2", "0.80"],
+         ]},
+        {"title": "每日收盤行情",
+         "fields": ["證券代號", "證券名稱", "成交股數", "成交筆數", "成交金額",
+                    "開盤價", "最高價", "最低價", "收盤價", "漲跌(+/-)", "漲跌價差",
+                    "最後揭示買價", "最後揭示賣價", "本益比"],
+         "data": [
+             ["2330", "台積電", "1", "1", "1", "995", "1000", "990", "1000",
+              "<p style=color:red>+</p>", "95", "", "", ""],          # +10.5%
+             ["2317", "鴻海", "1", "1", "1", "100", "101", "99", "99",
+              "<p style=color:green>-</p>", "11", "", "", ""],         # -10%
+             ["2454", "聯發科", "1", "1", "1", "800", "810", "799", "805",
+              "<p style=color:red>+</p>", "5", "", "", ""],            # +0.6%
+         ] + [["9" + str(i).zfill(3), "x", "1", "1", "1", "10", "10", "10",
+               "10", "X", "0", "", "", ""] for i in range(60)]},
+    ]
+
+    def test_sector_parse_korean_map(self):
+        from bot.twse_client import parse_sector_rows
+        secs = parse_sector_rows(self._TABLES)
+        d = {s["name"]: s["pct"] for s in secs}
+        assert d.get("반도체") == 2.13 and d.get("해운") == 4.50
+        assert d.get("금융·보험") == -0.62
+
+    def test_stock_parse_pct_and_sign(self):
+        from bot.twse_client import parse_stock_rows
+        stk = {s["code"]: s for s in parse_stock_rows(self._TABLES)}
+        assert stk["2330"]["pct"] > 9.5            # 상한가권
+        assert stk["2317"]["pct"] < -9.5           # 하한가권
+        assert abs(stk["2454"]["pct"]) < 1         # 평범
+
+    def test_sector_movers_rank(self, monkeypatch):
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "fetch_mi_index", lambda: {
+            "sectors": tw.parse_sector_rows(self._TABLES),
+            "stocks": [], "ts": "2026-06-13 14:00"})
+        r = tw.fetch_tw_sector_movers(top_n=10)
+        assert r["up"][0]["name"] == "해운"        # +4.5 최상
+        assert r["down"][0]["name"] == "금융·보험"
+        assert r["source"] == "TWSE 類股"
+
+    def test_upper_lower_filter(self, monkeypatch):
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "fetch_mi_index", lambda: {
+            "sectors": [], "stocks": tw.parse_stock_rows(self._TABLES),
+            "ts": "x"})
+        ul = tw.fetch_tw_upper_lower()
+        assert any(s["code"] == "2330" for s in ul["upper"])
+        assert any(s["code"] == "2317" for s in ul["lower"])
+
+    def test_highlow_page_graceful_and_data(self, monkeypatch):
+        import bot.twse_client as tw
+        # 데이터 있을 때
+        monkeypatch.setattr(tw, "fetch_tw_upper_lower", lambda limit=80: {
+            "upper": [{"code": "2330", "name": "台積電", "close": 1000, "pct": 10.5}],
+            "lower": [], "ts": "2026-06-13 14:00"})
+        from bot.tw_pages import render_tw_highlow_page
+        html = render_tw_highlow_page()
+        assert "台積電" in html and "상한가권" in html and "10.50%" in html
+        # 빈 데이터 → graceful 안내
+        monkeypatch.setattr(tw, "fetch_tw_upper_lower",
+                            lambda limit=80: {"upper": [], "lower": [], "ts": ""})
+        assert "불러올 수 없습니다" in render_tw_highlow_page()
+
+    def test_wired_into_server_and_overview(self):
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1] / "bot"
+        srv = (root / "dashboard_server.py").read_text("utf-8")
+        assert "/twhighlow" in srv and "_handle_tw_page" in srv
+        mo = (root / "market_overview.py").read_text("utf-8")
+        assert "_fetch_tw_sector_safe" in mo and "twse_client" in mo
+
+
 class TestUsMovers:
     """가장 많이 오른/내린 TOP30 (사용자 2026-06-12 '신고가/신저가 옆에').
     랭킹 순수부 + SWR 비동기 + 페이지 렌더."""

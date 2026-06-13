@@ -11956,10 +11956,10 @@ def _render_sector_movers(movers: dict) -> str:
     )
 
 
-def _render_etf_sector_movers(movers: dict, heading: str) -> str:
-    """JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(사용자 2026-06-13 Phase 1). KR/US
-    위젯과 동일 구조(상승/하락 업종). 자식 페이지(상한가·신고저 등)는 후속
-    단계라 링크 없음. 데이터 없으면 빈 문자열 → 위젯 자동 생략."""
+def _render_etf_sector_movers(movers: dict, heading: str, links: str = "") -> str:
+    """JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(Phase 1) 또는 거래소 직접(TWSE,
+    Phase 2). KR/US 위젯과 동일 구조(상승/하락 업종). links = 자식 페이지
+    링크 HTML(있는 시장만). 데이터 없으면 빈 문자열 → 위젯 자동 생략."""
     up = (movers or {}).get("up", [])
     down = (movers or {}).get("down", [])
     if not up and not down:
@@ -11983,7 +11983,7 @@ def _render_etf_sector_movers(movers: dict, heading: str) -> str:
     src = _html.escape((movers or {}).get("source", "섹터 ETF·yfinance"))
     return (
         '<div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">'
-        f'<h2>{heading}</h2>'
+        f'<h2>{heading}</h2>{links}'
         f'<span class="ts" style="margin-left:auto">{ts} · {src}</span></div>'
         '<div class="sm-wrap">'
         + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)
@@ -12322,8 +12322,10 @@ def _render_market_page(data: dict) -> str:
         data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10"))
     parts.append(_render_etf_sector_movers(
         data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10"))
+    _tw_link = ('<a href="twhighlow" style="color:var(--accent);font-size:13px;'
+                'text-decoration:none;margin-left:10px">📈 상한가·하한가</a>')
     parts.append(_render_etf_sector_movers(
-        data.get("tw_sector_movers", {}), "🇹🇼 대만 주요 업종 등락"))
+        data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
     parts.append(_render_etf_sector_movers(
         data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락"))
 

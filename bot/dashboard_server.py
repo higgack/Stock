@@ -230,7 +230,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 캐시돼 stale(예: 신고가→상한가 변경이 안 보이던 문제, 2026-06-10).
         if (path_lower.endswith((".html", "/")) or path_lower == ""
                 or path_lower in ("/earnings", "/theme", "/highlow",
-                                  "/usindustry", "/ushighlow", "/usmovers")
+                                  "/usindustry", "/ushighlow", "/usmovers",
+                                  "/twhighlow")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -267,6 +268,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # 신고가/신저가 · 급등급락 TOP30 (KR 미러 — 사용자 2026-06-10/12)
         if raw in ("/usindustry", "/ushighlow", "/usmovers"):
             return self._handle_us_page(raw)
+        # /twhighlow — 대만 상한가/하한가 (TWSE, 사용자 2026-06-13 Phase 2)
+        if raw == "/twhighlow":
+            return self._handle_tw_page(raw)
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시
         if raw == "/trade" or raw.startswith("/trade/"):
             return self._handle_trade_proxy()
@@ -844,6 +848,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(encoded)
         except Exception as exc:
             log.warning("us_page %s: failed — %s", raw, exc)
+            self.send_error(500, "internal error")
+
+    def _handle_tw_page(self, raw: str) -> None:
+        """GET /twhighlow — 대만 상한가·하한가 (TWSE, KR /highlow 미러)."""
+        try:
+            from bot.tw_pages import render_tw_highlow_page
+            encoded = render_tw_highlow_page().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as exc:
+            log.warning("tw_page %s: failed — %s", raw, exc)
             self.send_error(500, "internal error")
 
     def _handle_favorites_get(self) -> None:
