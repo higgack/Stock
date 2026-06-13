@@ -221,9 +221,8 @@ def render_us_highlow_page() -> str:
                 + _panel("🔺 52주 신고가", hi, "hl-high", _ind_dist_line(hi))
                 + _panel("🔻 52주 신저가", lo, "hl-low", _ind_dist_line(lo))
                 + '</div>' + _HL_SORT_JS)
-    sub = (f"미국 52주 신고가·신저가 (가격제한폭이 없는 시장 — 상한가/하한가 대응 지표 · "
-           f"SPAC·워런트·채권형 제외 · 분할 아티팩트 드랍) · 기본 시총순 · 헤더 클릭 정렬 · "
-           f"업종=GICS·NASDAQ·yfinance 순 매칭 · "
+    # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고').
+    sub = (f"미국 52주 신고가·신저가 · 시총순·헤더 클릭 정렬 · 업종=GICS·yfinance · "
            f"출처 {src} · 5분 캐시" + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
 
@@ -282,27 +281,24 @@ def render_us_movers_page() -> str:
             body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
-        from bot.highlow_render import stock_panel as _hpanel
-        # 네이버 소스면 거래대금 컬럼 표시(Naver 제공) — 사용자 2026-06-13.
+        from bot.highlow_render import sort_by_mcap, stock_panel as _hpanel
+        # 네이버 소스면 거래량·거래대금 표시(Naver 제공) — 사용자 2026-06-14
+        # '거래량과 거래대금 모두'. 모든 자식은 기본 시총순(헤더로 등락률 재정렬).
         _is_nv = "네이버" in src
+        up, down = sort_by_mcap(up), sort_by_mcap(down)
         body = ('<div class="grid">'
                 + _hpanel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "US",
-                          _ind_dist_line(up), show_vol=False, show_value=_is_nv)
+                          _ind_dist_line(up), show_vol=_is_nv, show_value=_is_nv)
                 + _hpanel("📉 가장 많이 내린 TOP 30", down, "mv-down", "US",
-                          _ind_dist_line(down), show_vol=False, show_value=_is_nv) + '</div>'
+                          _ind_dist_line(down), show_vol=_is_nv, show_value=_is_nv) + '</div>'
                 + _HL_SORT_JS)
-    scanned = data.get("scanned")
+    # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') — 무엇·출처(1회)·정렬·신선도.
     if "네이버" in src:
-        sub = ("미국 당일 등락률 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · "
-               "종목명=티커(한글)·거래대금·시총 · 헤더 클릭 정렬"
-               + (f" · 출처 {src}" if src else "")
-               + (f" · {ts} 기준" if ts else ""))
+        sub = ("미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · "
+               "시총순·헤더 클릭 정렬 · 장중 1h" + (f" · {ts} 기준" if ts else ""))
     else:
-        sub = (f"미국 당일 등락률 상·하위 30 (전 미국 상장 보통주"
-               + (f" {scanned:,}종목 스캔" if scanned else "")
-               + " · SPAC·워런트·채권형 제외 · $1 미만/거래대금 $0.5M 미만 컷 · "
-                 "±75% 초과는 분할/조정 아티팩트 가능성으로 제외) · 분할조정 종가 기준 · "
-                 "헤더 클릭 정렬 · 업종=GICS·NASDAQ·yfinance 순 매칭"
-               + (f" · 출처 {src}" if src else "") + " · 30분 캐시"
+        sub = ("미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · "
+               "시총순·헤더 클릭 정렬"
+               + (f" · 출처 {src}" if src else "") + " · 장중 1h"
                + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)

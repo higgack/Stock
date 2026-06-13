@@ -11130,7 +11130,11 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
         parts.append("    </div>\n  </div>\n")
 
     # JS for filtering, search, view toggle — CSS 는 위(컨텐츠 앞) _DART_FEED_CSS.
-    parts.append("""
+    # ⚠️ raw 문자열(r-prefix) 필수 — CSV out.join('\r\n') 의 \r\n 이 비-raw 면 실제
+    # 개행으로 변환돼 JS 문자열 리터럴이 깨짐 → IIFE 전체 SyntaxError(필터·CSV 전부
+    # 사망, 2026-06-14 사용자 '필터 하나도 클릭안되고 CSV 도 안먹어'). 스크리너 CSV
+    # 블록과 동일하게 raw 유지.
+    parts.append(r"""
 <script>
 (function(){
   var pills=document.querySelectorAll('.df-pill');

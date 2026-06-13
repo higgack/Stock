@@ -27,9 +27,13 @@ HL_SORT_JS = """
 <style>
 .hl-table th.srt{cursor:pointer;user-select:none;white-space:nowrap}
 .hl-table td.ind{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted,#888);font-size:12px}
-/* KR(name_only) 종목명은 짧아 줄바꿈 금지 — 상한가(거래대금 컬럼)에서 '원익\nIPS'
-   처럼 깨지던 것 방지. US 영문 긴 이름은 nm-nowrap 미적용이라 줄바꿈 유지. */
-.hl-table.nm-nowrap td.nm{white-space:nowrap}
+/* KR/CJK(name_only) 종목명 줄바꿈 절대 금지 — 상한가 등 다컬럼에서 '원익/IPS'
+   처럼 깨지던 것 방지(사용자 2026-06-14 재요청 — 두 번째). nowrap + keep-all +
+   !important 로 어떤 상위/캐시 규칙도 못 덮게. td 와 내부 a 둘 다 명시. min-width
+   로 좁은 컬럼이 글자를 쥐어짜지 않게. US 영문 긴 이름은 nm-nowrap 미적용. */
+.hl-table.nm-nowrap td.nm,.hl-table.nm-nowrap td.nm a{
+  white-space:nowrap!important;word-break:keep-all;overflow-wrap:normal}
+.hl-table.nm-nowrap td.nm{min-width:84px}
 .hl-table th.srt:hover{color:var(--accent,#3b82f6)}
 .hl-table th.srt .arw{opacity:.45;font-size:10px;margin-left:2px}
 .hl-table th.srt.on .arw{opacity:1}

@@ -7668,6 +7668,19 @@ class TestCsvExport:
         assert ".df-card" in src and "classList.contains('hidden')" in src  # 필터된 것만
         assert "DART공시_" in src                          # 파일명
 
+    def test_dart_filter_js_raw_string(self):
+        # 회귀 차단 (사용자 2026-06-14 '필터 하나도 클릭안되고 CSV 도 안먹어'):
+        # DART 필터/CSV <script> 가 비-raw 면 out.join('\r\n') 의 \r\n 이 실제
+        # 개행으로 변환돼 JS 문자열 리터럴이 깨짐 → IIFE 전체 SyntaxError(필터·CSV
+        # 전부 사망). raw(r-prefix) 필수. (.index 가 raw 아니면 ValueError → 실패)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        i = src.index('parts.append(r"""\n<script>\n(function(){')   # raw 여야 통과
+        start = src.index('r"""', i)
+        block = eval(src[start:src.index('"""', start + 4) + 3])      # noqa: S307
+        assert "out.join('\\r\\n')" in block       # \r\n literal 보존
+        assert "out.join('\r\n')" not in block     # 실제 CR/LF 없음(JS 안 깨짐)
+        assert "getElementById('df-csv')" in block and ".df-pill" in block
+
     def test_screener_two_csv_buttons(self):
         # 사용자 확정: Bottleneck + 조건 스크리너 두 개 모두.
         src = open("bot/dashboard.py", encoding="utf-8").read()

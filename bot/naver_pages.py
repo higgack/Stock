@@ -234,8 +234,8 @@ def render_highlow_page() -> str:
                 + stock_panel("🔺 상한가", up, "ul-up", "KR", **_o)
                 + stock_panel("🔻 하한가", low, "ul-low", "KR", **_o)
                 + '</div>' + HL_SORT_JS)
-        sub = ("네이버 증권 상한가/하한가(±30% 도달) · 시총순·헤더 클릭 정렬 · "
-               f"장중 1h 갱신·장 마감 후 고정(재스캔 0){(' · ' + ts + ' 기준') if ts else ''}")
+        sub = ("네이버 증권 상한가/하한가(±30%) · 시총순·헤더 클릭 정렬 · "
+               f"장중 1h{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("상한가·하한가", sub, "highlow", body)
 
     # 폴백: 기존 sise_upper/lower(Naver) 목록 + yfinance 시총(429 시 시총 빈)
