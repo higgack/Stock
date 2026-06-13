@@ -181,6 +181,14 @@ def stock_panel(title: str, items: list, tid: str, market: str,
     )
 
 
+def clean_source(src: str) -> str:
+    """캐시에 박힌 옛 산출-기준 라벨 정규화 — '52주 고저 1% 근접'(옛)을 현재
+    기준 '당일 52주 고저 갱신'(진짜 신고가/신저가)으로 렌더 시점 치환. stale
+    캐시도 재스캔 대기 없이 즉시 올바른 라벨 표시 (사용자 2026-06-13 '진짜
+    신고가 신저가 아냐' — 기준은 이미 당일 갱신, 라벨만 stale 였음). idempotent."""
+    return (src or "").replace("52주 고저 1% 근접", "당일 52주 고저 갱신")
+
+
 def sort_by_mcap(items: list) -> list:
     """시총 내림차순(없으면 뒤로) — 사용자 '시총순위대로 표시'."""
     return sorted(items, key=lambda it: (it.get("mcap") is None,

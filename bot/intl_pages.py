@@ -51,9 +51,10 @@ def render_intl_highlow52_page(market: str) -> str:
                 + stock_panel("📈 52주 신고가", hi, "hl-high", market, _dist(hi), **_opt)
                 + stock_panel("📉 52주 신저가", lo, "hl-low", market, _dist(lo), **_opt)
                 + '</div>' + HL_SORT_JS)
-    src = _html.escape(data.get("source") or "전종목 1년 일봉")
+    from bot.highlow_render import clean_source as _clean_src
+    src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
     sub = (f"{flag} {src} · **당일 52주 신고가/신저가 갱신** · 시총순·헤더 클릭 "
-           f"정렬 · 업종=yfinance · 장중 3h 갱신·장 마감 후 직전 종가 고정(재스캔 0). "
+           f"정렬 · 업종=yfinance · 장중 2h 갱신·장 마감 후 직전 종가 고정(재스캔 0). "
            f"{('· 갱신 ' + ts) if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "CN_A": "cn52", "HK": "hk52"}.get(market, "")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body,
@@ -136,7 +137,7 @@ def render_jp_stop_page() -> str:
     sc = data.get("scanned")
     sub = ("🇯🇵 일본 상한가·하한가(ストップ高/安) — 전일종가별 TSE 制限値幅 도달 · "
            + (f"{sc}종목 스캔 · " if sc else "")
-           + "종목명=티커(한글) · 시총순·헤더 클릭 정렬 · 장중 3h 갱신·장 마감 후 고정(재스캔 0). "
+           + "종목명=티커(한글) · 시총순·헤더 클릭 정렬 · 장중 2h 갱신·장 마감 후 고정(재스캔 0). "
            + (f"· 갱신 {ts}" if ts else ""))
     return _tw_shell("🇯🇵 일본 상한가·하한가", sub, body,
                      nav=_market_nav("JP", "jphighlow"))

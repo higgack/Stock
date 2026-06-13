@@ -657,18 +657,20 @@ def _intl_earnings_universe(market: str) -> list[tuple[str, str]]:
     return out
 
 
-def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90) -> list[dict]:
+def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
+                                 cache_only: bool = False) -> list[dict]:
     """JP/TW/CN/HK 예정 실적일 (yfinance .calendar, 무료·무키). 6h 캐시.
 
     KR(fetch_earnings_calendar_kr) 패턴 일반화 — 산업 peer 맵 주요종목
     universe(시장당 ~50-100). 추정치(EPS/매출)는 yfinance 가 비미국에
     종종 None → '—'(정직). 미지원 시장/유니버스 부재면 빈 리스트.
     ⚠️ 커버리지 한계: yfinance .calendar 는 비미국 종목 상당수 빈값 —
-    '확정 실적일' 있는 종목만 표에 추가된다(universe 크기와 무관)."""
+    '확정 실적일' 있는 종목만 표에 추가된다(universe 크기와 무관).
+
+    cache_only=True (실적 캘린더 페이지 on-request 경로) — **동기 스캔 금지**:
+    캐시 있으면(나이 무관) 반환, 없으면 [] (페이지 hang 방지). 캐시는
+    market.html 백그라운드 갱신 + 아침 pre-warm 이 데움."""
     if market not in _INTL_EARN_PEERS:
-        return []
-    universe = _intl_earnings_universe(market)
-    if not universe:
         return []
     cache_dir = _CACHE_DIR / "finnhub"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -676,10 +678,15 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90) -> list[dict
     cache_file = cache_dir / f"earnings_{market}_{today.isoformat()}_{_CODE_SALT}.json"
     if cache_file.exists():
         try:
-            if (time.time() - cache_file.stat().st_mtime) / 3600 < 6:
+            if cache_only or (time.time() - cache_file.stat().st_mtime) / 3600 < 6:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
+    if cache_only:
+        return []                       # on-request 경로 — 스캔 안 함
+    universe = _intl_earnings_universe(market)
+    if not universe:
+        return []
 
     cutoff = today + timedelta(days=days_ahead)
 
@@ -697,6 +704,23 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90) -> list[dict
             if r:
                 results.append(r)
     results.sort(key=lambda x: x.get("date", ""))
+    # 한글 종목명 (사용자 2026-06-13 '일본부터 티커말고 번역 한국종목명') — peer
+    # 맵엔 이름 없어 name==ticker. 확정 실적일 있는 결과(희소)만 yfinance
+    # longName → chart_translate(Flash·영구캐시) 번역. 6h 캐시에 이름까지 저장.
+    # graceful — 실패 시 ticker 유지(렌더가 '회사명 없으면 티커' 폴백).
+    if results:
+        try:
+            from bot.chart_translate import translate_titles_kr
+            from bot.finviz_client import _fetch_display_names
+            en = _fetch_display_names([r["symbol"] for r in results])
+            uniq = sorted({n for n in en.values() if n})
+            kr = translate_titles_kr(uniq) if uniq else {}
+            for r in results:
+                e = en.get(r["symbol"], "")
+                if e:
+                    r["name"] = kr.get(e) or e
+        except Exception as exc:
+            log.warning("intl earnings 한글명 (%s): %s", market, exc)
     try:
         cache_file.write_text(json.dumps(results, ensure_ascii=False))
     except Exception:

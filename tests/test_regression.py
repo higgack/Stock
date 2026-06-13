@@ -6965,16 +6965,40 @@ class TestEarningsCalendarIntl:
             assert cls(s) == e, (s, cls(s))
 
     def test_dashboard_tabs_and_panes_wired(self):
+        # 탭/패널은 동적 생성(빈 시장 제거 — 사용자 2026-06-13 '내용없으면 지워').
         src = open("bot/dashboard.py", encoding="utf-8").read()
-        for tab in ("jp", "tw", "cn", "hk"):
-            assert f'data-etab="{tab}"' in src, tab
-            assert f'id="etab-{tab}"' in src, tab
+        assert "_etab_defs = [(k, lbl, rows)" in src     # 동적 탭 정의
+        assert "if rows]" in src                          # 빈 시장 필터
+        assert '<div class="tabs">{_etab_btns}</div>' in src
+        assert "{_etab_panes}" in src
+        # 6시장 모두 후보에 포함(데이터 있을 때만 노출)
+        for lbl in ("한국", "미국", "일본", "대만", "중국", "홍콩"):
+            assert lbl in src, lbl
         # _earn_us 가 모든 해외 접미사 제외(.TWO 타이베이 OTC 포함)
         assert '(".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".HK")' in src
         # intl EPS/매출 통화 가드(잘못된 '$' 방지)
         assert "is_intl = sym.endswith" in src
         assert "eps_est is None or is_intl" in src
         assert "rev_est is None or is_intl" in src
+
+    def test_dashboard_empty_tabs_removed(self):
+        # 빈 시장 탭/패널이 렌더에서 제외되는지 — 동적 생성 로직 단위검증.
+        _earn = {"kr": [{"x": 1}], "us": [], "jp": [{"y": 2}], "tw": [],
+                 "cn": [], "hk": [{"z": 3}]}
+        defs = [(k, lbl, _earn[k]) for k, lbl in (
+            ("kr", "한국"), ("us", "미국"), ("jp", "일본"),
+            ("tw", "대만"), ("cn", "중국"), ("hk", "홍콩")) if _earn[k]]
+        assert [k for k, _l, _r in defs] == ["kr", "jp", "hk"]   # 빈 시장 제거
+        assert defs[0][0] == "kr"                                # 첫 탭=active(한국)
+
+    def test_intl_earnings_korean_name_backfill(self):
+        # 사용자 2026-06-13 '일본부터 티커말고 번역 한국종목명'. intl 결과에
+        # yfinance longName → translate_titles_kr 백필 배선.
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert "translate_titles_kr" in src and "_fetch_display_names" in src
+        assert "intl earnings 한글명" in src
+        # cache_only — 캘린더 on-request 경로 동기 스캔 금지
+        assert "cache_only" in src
 
     def test_intl_table_render_no_wrong_currency(self):
         # JP 종목 추정치가 있어도 '$' 가 아닌 '—'(통화 불명확 가드)

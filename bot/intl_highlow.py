@@ -29,7 +29,7 @@ _CFG = {
     "KR": ("_KR_INDUSTRY_PEERS", "highlow_kr_v2.json",
            "kr_highlow_status.json", "한국 주요종목", (".KS", ".KQ")),
 }
-# 신선도는 시장-인지(finviz_client._session_fresh, 장중 3h / 장 밖 마지막 마감
+# 신선도는 시장-인지(finviz_client._session_fresh, 장중 2h / 장 밖 마지막 마감
 # 이후 재스캔 0)로 통일 — 옛 플랫 _TTL/_TTL_FULL 대체(사용자 2026-06-13).
 _running: dict[str, bool] = {}
 _lock = threading.Lock()
@@ -251,7 +251,7 @@ def _kick(market: str) -> None:
 
 def fetch_intl_highlow(market: str) -> dict:
     """JP/CN_A/HK/KR 52주 신고가/신저가 — **동기 계산 안 함**. 시장-인지 신선도
-    (정규장 3h / 장 밖 마지막 마감 이후 재스캔 0) 즉시 / 스테일+백그라운드 킥 /
+    (정규장 2h / 장 밖 마지막 마감 이후 재스캔 0) 즉시 / 스테일+백그라운드 킥 /
     캐시부재 building. 실패 5분 백오프·진행중 30분 dedup. {high,low,ts,source,
     building,status}."""
     if market not in _CFG:
@@ -259,7 +259,7 @@ def fetch_intl_highlow(market: str) -> dict:
     from bot.finviz_client import _CACHE_DIR, _HL_INTRA_TTL, _cached, _session_fresh
     cache = _CFG[market][1]
     # 시장-인지 신선도 (사용자 2026-06-13 '장종료후 굳이 안 돌려도'): 정규장 중
-    # 3h / 장 밖 마지막 마감 이후 산출본이면 재스캔 0. 옛 플랫 6h 대체(부하↓·장중↑).
+    # 2h / 장 밖 마지막 마감 이후 산출본이면 재스캔 0. 옛 플랫 6h 대체(부하↓·장중↑).
     stale = _cached(cache, ttl=86400)
     if stale is not None:
         try:

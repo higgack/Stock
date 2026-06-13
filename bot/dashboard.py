@@ -12361,43 +12361,38 @@ def _render_market_page(data: dict) -> str:
     _earn_us = [e for e in earnings
                 if not str(e.get("symbol", "")).endswith(
                     (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".HK"))]
+    # 빈 시장 탭 제거 (사용자 2026-06-13 '내용없으면 지워' — 중국 0건 등). 한국
+    # 우선 순서 유지, 첫 비어있지 않은 탭이 active. 모두 비면 안내 문구.
+    _etab_defs = [(k, lbl, rows) for k, lbl, rows in (
+        ("kr", "한국", _earn_kr), ("us", "미국", _earn_us),
+        ("jp", "일본", _earn_jp), ("tw", "대만", _earn_tw),
+        ("cn", "중국", _earn_cn), ("hk", "홍콩", _earn_hk)) if rows]
+    if _etab_defs:
+        _etab_btns = "".join(
+            f'<button class="etab-btn{" active" if i == 0 else ""}" '
+            f'data-etab="{k}">{lbl} ({len(rows)})</button>'
+            for i, (k, lbl, rows) in enumerate(_etab_defs))
+        _etab_panes = "".join(
+            f'<div id="etab-{k}" class="etab-pane{" active" if i == 0 else ""}">'
+            f'{_render_earnings_table(rows)}</div>'
+            for i, (k, lbl, rows) in enumerate(_etab_defs))
+    else:
+        _etab_btns = ""
+        _etab_panes = ('<div class="etab-pane active">'
+                       '<div class="empty-msg">실적 발표 일정이 없습니다.</div></div>')
 
     parts.append(f"""
   <div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
     <h2>다가오는 실적</h2>
-    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(미국 실적·한국 IR)</a>
+    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(한국 IR·미국·일·대·홍 실적)</a>
     <span class="ts" style="margin-left:auto">{_html.escape(_earn_ts)}</span>
   </div>
   <div class="tbl-filter">
     <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
     <span class="cnt" id="earn-cnt"></span>
   </div>
-  <div class="tabs">
-    <button class="etab-btn active" data-etab="kr">한국 ({len(_earn_kr)})</button>
-    <button class="etab-btn" data-etab="us">미국 ({len(_earn_us)})</button>
-    <button class="etab-btn" data-etab="jp">일본 ({len(_earn_jp)})</button>
-    <button class="etab-btn" data-etab="tw">대만 ({len(_earn_tw)})</button>
-    <button class="etab-btn" data-etab="cn">중국 ({len(_earn_cn)})</button>
-    <button class="etab-btn" data-etab="hk">홍콩 ({len(_earn_hk)})</button>
-  </div>
-  <div id="etab-kr" class="etab-pane active">
-    {_render_earnings_table(_earn_kr)}
-  </div>
-  <div id="etab-us" class="etab-pane">
-    {_render_earnings_table(_earn_us)}
-  </div>
-  <div id="etab-jp" class="etab-pane">
-    {_render_earnings_table(_earn_jp)}
-  </div>
-  <div id="etab-tw" class="etab-pane">
-    {_render_earnings_table(_earn_tw)}
-  </div>
-  <div id="etab-cn" class="etab-pane">
-    {_render_earnings_table(_earn_cn)}
-  </div>
-  <div id="etab-hk" class="etab-pane">
-    {_render_earnings_table(_earn_hk)}
-  </div>
+  <div class="tabs">{_etab_btns}</div>
+  {_etab_panes}
 
   <div class="section-hd" style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
     <h2>최근 리서치 액션</h2>

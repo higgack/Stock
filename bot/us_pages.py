@@ -197,7 +197,8 @@ def render_us_highlow_page() -> str:
         log.warning("us high/low page fetch failed: %s", exc)
         data = {"high": [], "low": [], "ts": "", "source": ""}
     ts = _html.escape(data.get("ts", ""))
-    src = _html.escape(data.get("source", "Finviz"))
+    from bot.highlow_render import clean_source as _clean_src
+    src = _html.escape(_clean_src(data.get("source", "Finviz")))  # stale '1% 근접' 정규화
     from bot.highlow_render import stock_panel as _hpanel
 
     def _panel(title, items, tid, extra=""):
