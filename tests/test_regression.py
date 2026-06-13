@@ -4883,17 +4883,17 @@ class TestTwseSectorHighLow:
         assert ul["date"] == "2026-06-12"                  # 자료 기준일
         # 순수종목만 — ETF(00910)는 +12.9%여도 제외
         assert not any(s["code"] == "00910" for s in ul["upper"])
-        # ±9.5%권 — 근접(-9.86%)도 포함(사용자 2026-06-13 '넓게 봐야 파악',
-        # 9.9 로 좁혔다 9.5 환원). -9.0% 는 제외.
-        # Change=가격변동(±%아님): 전일100 → -9.86%(종90.14)·-9.0%(종91)
+        # **진정한 한도 도달**(±10% · 틱 반올림 ≥±9.9%) — 사용자 2026-06-13
+        # 'TW 도 진정한 의미의 상한가/하한가'(JP ストップ高 미러, 옛 9.5 근접권 폐기).
+        # Change=가격변동(±%아님): 전일100 → -9.95%(종90.05)·-9.86%(종90.14)
         near = tw.parse_stock_day_all([
-            {"Code": "1234", "Name": "x", "ClosingPrice": "90.14", "Change": "-9.86"},
-            {"Code": "5678", "Name": "y", "ClosingPrice": "91", "Change": "-9"}])
+            {"Code": "1234", "Name": "x", "ClosingPrice": "90.05", "Change": "-9.95"},
+            {"Code": "5678", "Name": "y", "ClosingPrice": "90.14", "Change": "-9.86"}])
         monkeypatch.setattr(tw, "fetch_stock_day_all",
                             lambda: {"rows": near, "date": "x"})
         low = tw.fetch_tw_upper_lower()["lower"]
-        assert any(s["code"] == "1234" for s in low)       # -9.86% 포함(±9.5권)
-        assert not any(s["code"] == "5678" for s in low)   # -9.0% 제외
+        assert any(s["code"] == "1234" for s in low)       # -9.95% 포함(한도 도달)
+        assert not any(s["code"] == "5678" for s in low)   # -9.86% 제외(근접 ≠ 한도)
 
     def test_highlow_page_graceful_and_data(self, monkeypatch):
         import bot.twse_client as tw
@@ -5014,6 +5014,8 @@ class TestTwHighLow52:
         monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: {
             "high": [{"ticker": "2330.TW", "name": "台積電", "price": 1000, "pct": 1.2}],
             "low": [], "ts": "x", "source": "TWSE"})
+        # 시장-인지 신선도 fresh → 즉시 반환(재스캔 0). 옛 플랫 TTL 대체.
+        monkeypatch.setattr(fc, "_session_fresh", lambda *a, **k: True)
         r = th.fetch_tw_highlow()
         assert r["high"][0]["ticker"] == "2330.TW"
 
@@ -7143,12 +7145,27 @@ class TestIntlKoreanNames:
         assert _fetch_display_names([]) == {}
 
     def test_compute_highlow_translates_non_us(self):
+        # 공용 헬퍼 _backfill_korean_names 가 신고저/무버/JP상한 3경로에서 호출
+        # (옛 `market and market != "US"` NameError + name==ticker 만 번역 버그
+        #  동시 해소 — 사용자 2026-06-13 南亞科 캡쳐). 네이티브명 직접 번역.
         src = open("bot/finviz_client.py", encoding="utf-8").read()
         assert "_fetch_display_names(" in src and "translate_titles_kr" in src
-        assert 'market and market != "US"' in src
-        assert 'kr_map.get(en) or en' in src          # 실패 시 ticker 유지
-        # 이미 좋은 이름(KR pykrx 한글명 등)은 번역 스킵(덮어쓰기 방지)
-        assert 'r["name"] == r["ticker"]' in src
+        assert "def _backfill_korean_names(" in src
+        assert src.count("_backfill_korean_names(") >= 4    # 정의 1 + 호출 3
+        # 네이티브명(name != ticker)도 번역 — 옛 'name==ticker 만' 스킵 제거
+        assert 'r["name"] != r["ticker"]' in src
+        # US/KR 은 no-op (영문/pykrx 한글 유지)
+        assert 'market in ("US", "KR")' in src
+
+    def test_backfill_korean_names_market_gate(self):
+        # US/KR no-op(네트워크 0·이름 보존), graceful (사용자 2026-06-13).
+        from bot.finviz_client import _backfill_korean_names
+        us = [{"ticker": "AAPL", "name": "Apple"}]
+        _backfill_korean_names(us, "US")
+        assert us[0]["name"] == "Apple"
+        kr = [{"ticker": "005930.KS", "name": "삼성전자"}]
+        _backfill_korean_names(kr, "KR")
+        assert kr[0]["name"] == "삼성전자"
 
     def test_panel_label_ticker_then_korean(self):
         from bot.highlow_render import stock_panel
@@ -7362,18 +7379,22 @@ class TestKrFullUniverseHighlow:
     def test_kr_routes_to_full_scan(self):
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
         assert "_compute_kr_full()" in src          # KR 분기 → 전종목
-        assert 'market in ("JP", "HK", "KR")' in src  # 6h 캐시(무거운 스캔)
+        assert "_session_fresh(market" in src       # 시장-인지 신선도(옛 플랫 TTL 대체)
         assert "스팩" in src                         # SPAC 제외
         # pykrx 부재 → peer 폴백(회귀 0)
         assert "pykrx 폴백" in src or "peer empty" in src
 
-    def test_provided_names_not_overwritten(self):
-        # KR pykrx 한글명(name != ticker)은 번역 블록의 'need' 에서 제외 →
-        # 보존. JP/HK(name == ticker)만 번역. 로직 미러.
-        items = [{"ticker": "005930.KS", "name": "삼성전자"},
-                 {"ticker": "7203.T", "name": "7203.T"}]
-        need = [r for r in items if not r.get("name") or r["name"] == r["ticker"]]
-        assert [r["ticker"] for r in need] == ["7203.T"]   # 삼성전자 보존
+    def test_kr_names_preserved_jp_translated(self):
+        # 사용자 2026-06-13: KR(pykrx 한글)은 번역 안 함(보존), JP/TW/CN/HK 는
+        # 네이티브명(銘柄名/약칭)도 번역 시도. _backfill_korean_names 의 시장 게이트.
+        from bot.finviz_client import _backfill_korean_names
+        kr = [{"ticker": "005930.KS", "name": "삼성전자"}]
+        _backfill_korean_names(kr, "KR")          # KR no-op → 보존
+        assert kr[0]["name"] == "삼성전자"
+        # JP 네이티브명(銘柄名)도 'need'(name==ticker)에 안 갇히고 번역 대상 —
+        # 옛 로직은 name!=ticker 면 통째 스킵해 南亞科 류 잔존했음. 헬퍼는 둘 다 처리.
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert 'native = sorted({r["name"]' in src   # 네이티브명 직접 번역
 
 
 class TestHkMovers:
@@ -7515,3 +7536,83 @@ class TestChildDashboardCrossLink:
         from bot.intl_pages import render_intl_highlow52_page, render_jp_stop_page
         assert 'class="toggle"' in render_intl_highlow52_page("JP")
         assert 'href="jp52"' in render_jp_stop_page()
+
+
+class TestHighlowPrewarm:
+    """전종목 신고저/급등락/상한가 아침 pre-warm 타이머 (사용자 2026-06-13
+    '아침엔 항상 신선'). 07:30·16:30 KST 순차 재산출 — 첫 방문자 대기 0."""
+
+    def test_prewarm_registered(self):
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def _periodic_highlow_prewarm" in src
+        assert "def _prewarm_highlow" in src
+        assert "_highlow_prewarm_task = asyncio.create_task" in src
+        assert "for h in (7, 16)" in src        # 07:30 + 16:30 KST
+
+    def test_target_time_logic(self):
+        from datetime import datetime, timezone, timedelta
+        kst = timezone(timedelta(hours=9))
+
+        def nxt(now):
+            cands = [now.replace(hour=h, minute=30, second=0, microsecond=0)
+                     for h in (7, 16)]
+            fut = [t for t in cands if t > now]
+            return min(fut) if fut else (cands[0] + timedelta(days=1))
+        assert nxt(datetime(2026, 6, 13, 6, 0, tzinfo=kst)).hour == 7
+        assert nxt(datetime(2026, 6, 13, 10, 0, tzinfo=kst)).hour == 16
+        t = nxt(datetime(2026, 6, 13, 20, 0, tzinfo=kst))
+        assert t.hour == 7 and t.day == 14
+
+
+class TestSessionAwarePerMarket:
+    """시장-인지 신선도 (_session_fresh) — 사용자 2026-06-13 '장종료후 굳이 안
+    돌려도·나라별 시간 체크해 부하없이'. 정규장 중 intra_ttl / 장 밖 마지막 마감
+    이후 산출본이면 재스캔 0. 신고저/상한가 6h 플랫 캐시를 대체."""
+
+    def _ts(self, y, mo, d, h, mi):
+        import calendar
+        return calendar.timegm((y, mo, d, h, mi, 0, 0, 0, 0))  # UTC epoch
+
+    def test_intra_session_ttl(self):
+        from bot.finviz_client import _session_fresh
+        # 월요일 KR 장중(03:00 UTC = 12:00 KST). intra 3h.
+        now = self._ts(2026, 6, 15, 3, 0)
+        assert _session_fresh("KR", now - 2 * 3600, 3 * 3600, now)      # 2h fresh
+        assert not _session_fresh("KR", now - 4 * 3600, 3 * 3600, now)  # 4h stale
+
+    def test_post_close_hold_no_rescan(self):
+        from bot.finviz_client import _session_fresh
+        # KR 마감 06:30 UTC. 08:00 UTC(장 밖) — 마감 후(07:00) 산출본 fresh,
+        # 마감 전(05:00) 산출본은 stale(최종봉 미반영 → 1회 재스캔).
+        now = self._ts(2026, 6, 15, 8, 0)
+        assert _session_fresh("KR", self._ts(2026, 6, 15, 7, 0), 3 * 3600, now)
+        assert not _session_fresh("KR", self._ts(2026, 6, 15, 5, 0), 3 * 3600, now)
+
+    def test_weekend_holds_friday_close(self):
+        from bot.finviz_client import _session_fresh
+        sat = self._ts(2026, 6, 20, 12, 0)              # 토요일
+        fri_after = self._ts(2026, 6, 19, 7, 0)         # 금 마감(06:30) 후
+        assert _session_fresh("KR", fri_after, 3 * 3600, sat)   # 주말 재스캔 0
+
+    def test_per_market_close_times(self):
+        # 각 시장 마감(UTC) 직후 산출본이 장 밖에서 fresh — 나라별 시간 반영.
+        from bot.finviz_client import _SESSIONS_UTC, _session_fresh
+        for mkt, (_oh, _om, ch, cm) in _SESSIONS_UTC.items():
+            # 마감 30분 후(장 밖) 시점, 마감 직후 산출본 → fresh
+            after = self._ts(2026, 6, 15, ch, cm) + 1800
+            made = self._ts(2026, 6, 15, ch, cm) + 60
+            assert _session_fresh(mkt, made, 3 * 3600, after), mkt
+
+    def test_unknown_market_flat_fallback(self):
+        from bot.finviz_client import _session_fresh
+        now = self._ts(2026, 6, 15, 3, 0)
+        assert _session_fresh("XX", now - 100, 200, now)
+        assert not _session_fresh("XX", now - 300, 200, now)
+
+    def test_wired_into_all_fetch_paths(self):
+        # 신고저/상한가/무버 fetch 가 _session_fresh 를 실제로 탄다(배선 E2E).
+        for path in ("intl_highlow", "tw_highlow", "jp_stop", "intl_movers"):
+            src = open(f"bot/{path}.py", encoding="utf-8").read()
+            assert "_session_fresh(" in src, path
+        fc = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert "_session_fresh(\"US\"" in fc          # US 전종목 티어도 장-인지

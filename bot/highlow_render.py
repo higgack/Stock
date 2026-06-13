@@ -220,17 +220,28 @@ def enrich_for_panel(items: list, market: str, want_ind: bool = False,
                 for tk in tickers:
                     meta.setdefault(tk, {})["ind"] = inds.get(tk)
             if want_name:
-                from bot.finviz_client import _fetch_display_names
-                en = _fetch_display_names(tickers)
-                uniq = sorted({v for v in en.values() if v})
-                kr = {}
-                if uniq:
-                    from bot.chart_translate import translate_titles_kr
-                    kr = translate_titles_kr(uniq) or {}
-                for tk in tickers:
-                    e = en.get(tk, "")
-                    if e:
-                        meta.setdefault(tk, {})["name_kr"] = kr.get(e) or e
+                from bot.chart_translate import translate_titles_kr
+                # 네이티브명(TWSE 약칭·JPX 銘柄名 — items 에 이미 있음) **직접 번역**.
+                # 옛 코드는 yfinance longName 만 번역해 TW longName 비populate 시
+                # 南亞科 류가 그대로 노출됐음(사용자 2026-06-13 캡쳐). 네이티브명
+                # 없는 항목만 longName 폴백.
+                nat = {it.get("ticker"): it.get("name") for it in items
+                       if it.get("name") and it.get("name") != it.get("ticker")}
+                uniq = sorted({v for v in nat.values() if v})
+                kr = translate_titles_kr(uniq) if uniq else {}
+                for tk, nm in nat.items():
+                    if kr.get(nm):
+                        meta.setdefault(tk, {})["name_kr"] = kr[nm]
+                miss = [tk for tk in tickers if tk not in nat]
+                if miss:
+                    from bot.finviz_client import _fetch_display_names
+                    en = _fetch_display_names(miss)
+                    ue = sorted({v for v in en.values() if v})
+                    ke = translate_titles_kr(ue) if ue else {}
+                    for tk in miss:
+                        e = en.get(tk, "")
+                        if e:
+                            meta.setdefault(tk, {})["name_kr"] = ke.get(e) or e
             _ENRICH_CACHE[key] = (now, meta)
         except Exception as exc:
             log.warning("enrich_for_panel(%s): %s", market, exc)

@@ -29,8 +29,8 @@ _CFG = {
     "KR": ("_KR_INDUSTRY_PEERS", "highlow_kr_v2.json",
            "kr_highlow_status.json", "한국 주요종목", (".KS", ".KQ")),
 }
-_TTL = 30 * 60
-_TTL_FULL = 6 * 3600   # JP/HK 전종목(~3천) 스캔은 무거워 캐시 길게(재스캔 빈도↓)
+# 신선도는 시장-인지(finviz_client._session_fresh, 장중 3h / 장 밖 마지막 마감
+# 이후 재스캔 0)로 통일 — 옛 플랫 _TTL/_TTL_FULL 대체(사용자 2026-06-13).
 _running: dict[str, bool] = {}
 _lock = threading.Lock()
 
@@ -229,7 +229,7 @@ def _compute(market: str) -> None:
         _status_write(market, "running", total=len(uni))
         out = _compute_highlow_from(
             uni, names, _CFG[market][1],
-            f"{_CFG[market][3]} 산출(yfinance · 52주 고저 1% 근접)", market)
+            f"{_CFG[market][3]} 산출(yfinance · 당일 52주 고저 갱신)", market)
         _status_write(market, "done", high=len(out.get("high", [])),
                       low=len(out.get("low", [])))
     except Exception as exc:
@@ -250,18 +250,24 @@ def _kick(market: str) -> None:
 
 
 def fetch_intl_highlow(market: str) -> dict:
-    """JP/CN_A/HK 52주 신고가/신저가 — **동기 계산 안 함**. 신선 30분 즉시 /
-    스테일+백그라운드 킥 / 캐시부재 building. 실패 5분 백오프·진행중 30분
-    dedup (TW/US 미러). {high,low,ts,source,building,status}."""
+    """JP/CN_A/HK/KR 52주 신고가/신저가 — **동기 계산 안 함**. 시장-인지 신선도
+    (정규장 3h / 장 밖 마지막 마감 이후 재스캔 0) 즉시 / 스테일+백그라운드 킥 /
+    캐시부재 building. 실패 5분 백오프·진행중 30분 dedup. {high,low,ts,source,
+    building,status}."""
     if market not in _CFG:
         return {"high": [], "low": [], "ts": "", "source": "", "building": False}
-    from bot.finviz_client import _cached
+    from bot.finviz_client import _CACHE_DIR, _HL_INTRA_TTL, _cached, _session_fresh
     cache = _CFG[market][1]
-    ttl = _TTL_FULL if market in ("JP", "HK", "KR") else _TTL  # 전종목 스캔 캐시 길게
-    fresh = _cached(cache, ttl=ttl)
-    if fresh is not None:
-        return fresh
+    # 시장-인지 신선도 (사용자 2026-06-13 '장종료후 굳이 안 돌려도'): 정규장 중
+    # 3h / 장 밖 마지막 마감 이후 산출본이면 재스캔 0. 옛 플랫 6h 대체(부하↓·장중↑).
     stale = _cached(cache, ttl=86400)
+    if stale is not None:
+        try:
+            mt = (_CACHE_DIR / cache).stat().st_mtime
+        except OSError:
+            mt = 0.0
+        if _session_fresh(market, mt, _HL_INTRA_TTL):
+            return stale
     st = intl_highlow_status(market)
     age = time.time() - (st.get("ts") or 0)
     if st.get("state") == "failed" and age < 300:

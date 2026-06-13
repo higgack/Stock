@@ -32,9 +32,10 @@ _HDRS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.twse.com.tw/",
          "Accept": "application/json"}
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "twse"
 _CACHE_TTL_SEC = 5 * 60
-_TW_LIMIT = 9.5      # TW 일일 한도 ±10% → 상한가/하한가권(한도+근접). 사용자
-                     # 2026-06-13 '너무 좁히면 파악 어렵잖아' — 9.9 로 좁혔다
-                     # 9.5(원래)로 환원. 넓게 보여 그림 파악이 목적.
+_TW_LIMIT = 9.9      # TW 일일 한도 = 플랫 ±10%. **진정한 의미의 상한가/하한가**
+                     # = 한도 도달(틱 반올림으로 종가 등락 ≈ ±9.9~10.0%) — 사용자
+                     # 2026-06-13 'TW 도 진정한 의미의 상한가 하한가로'(JP ストップ
+                     # 高/安 미러). 옛 9.5(근접권 넓게)에서 한도-도달로 전환.
 
 # 繁體 類股名 → 한국어 (가독성, 미매핑은 繁體 그대로)
 _SECTOR_KR = {

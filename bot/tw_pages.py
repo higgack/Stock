@@ -81,14 +81,15 @@ def render_tw_highlow_page() -> str:
         up = sort_by_mcap(enrich_for_panel(up, "TW", want_ind=True, want_name=True))
         low = sort_by_mcap(enrich_for_panel(low, "TW", want_ind=True, want_name=True))
         body = ('<div class="grid">'
-                + stock_panel("🔺 상한가권 (+9.5%↑)", up, "ul-up", "TW",
+                + stock_panel("🔺 상한가 (+10% 한도)", up, "ul-up", "TW",
                               show_vol=True, show_ind=True)
-                + stock_panel("🔻 하한가권 (-9.5%↓)", low, "ul-low", "TW",
+                + stock_panel("🔻 하한가 (-10% 한도)", low, "ul-low", "TW",
                               show_vol=True, show_ind=True)
                 + '</div>' + HL_SORT_JS)
     # 자료 기준일(거래일) 명시 — 주말/장후엔 직전 거래일. 'ts'는 갱신 시각.
-    sub = (f"TWSE 전종목(일반종목) 중 일일 한도 ±10% 근접(±9.5%↑) · 종목명=티커"
-           f"(한글번역) · 업종·시총=yfinance(10분 캐시) · 시총순·헤더 클릭 정렬. "
+    sub = (f"TWSE 전종목(일반종목) 중 **일일 한도 ±10% 도달**(진정한 상한가/하한가 · "
+           f"틱 반올림으로 종가 등락 ≥±9.9%) · 종목명=티커(한글번역) · 업종·시총="
+           f"yfinance(10분 캐시) · 시총순·헤더 클릭 정렬. "
            f"{('<b>' + dt + ' 종가 기준</b>') if dt else ''} · 5분 캐시"
            f"{(' · 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 상한가·하한가", sub, body,
@@ -131,6 +132,6 @@ def render_tw_highlow52_page() -> str:
                               "TW", ind_dist_line(lo), show_vol=False)
                 + '</div>' + HL_SORT_JS)
     sub = (f"TWSE 전종목(일반종목) 1년 일봉 · **당일 52주 신고가/신저가 갱신** · "
-           f"EOD 1일 1회 산출·6h 캐시. {('· 갱신 ' + ts) if ts else ''}")
+           f"장중 3h 갱신·장 마감 후 직전 종가 고정(재스캔 0). {('· 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body,
                      nav=_market_nav("TW", "tw52"))
