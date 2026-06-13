@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 _CACHE = "highlow_tw_v2.json"
 _STATUS = "tw_highlow_status.json"
-_TTL = 30 * 60          # 30분 신선 (US movers 동일)
+_TTL = 6 * 3600         # 6h — 전종목 일봉 1년 스캔(EOD 1일 1회면 충분, JP/HK/KR 동일)
 _running = False
 _lock = threading.Lock()
 
