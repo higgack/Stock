@@ -1360,6 +1360,32 @@ def _kick_us_movers_refresh() -> None:
     _threading.Thread(target=_run, daemon=True, name="us-movers").start()
 
 
+def _movers_cache_is_fresh(cache_ts: float, now_ts: float | None = None) -> bool:
+    """장-인지 신선도 (사용자 2026-06-13 '30분 갱신이 최선인가') — 순수.
+
+    - 미국 정규장 가능 창(평일 13:00–21:30 UTC — EST/EDT 양쪽 여유 커버)
+      에는 30분 TTL (장중 등락은 계속 변함).
+    - 장 밖(야간·주말)엔 **마지막 마감 이후 산출본이면 fresh** — 재스캔 0.
+      데이터가 변하지 않는 시간에 33분짜리 전량 스캔을 30분마다 반복하면
+      yfinance IP 부하만 키워 차트/스냅샷 등 다른 surface 의 429 리스크
+      (휴일은 평일 창으로 취급 — 추가 스캔이 무해해 캘린더 의존 안 둠)."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.fromtimestamp(now_ts or time.time(), tz=timezone.utc)
+    in_session = (now.weekday() < 5
+                  and (13, 0) <= (now.hour, now.minute) < (21, 30))
+    if in_session:
+        return (now.timestamp() - cache_ts) < _FALLBACK_TTL_SEC
+    # 마지막 마감(가장 최근의 평일 21:30 UTC ≤ now) 이후 산출본이면 fresh
+    d = now
+    for _ in range(8):          # 주말+연휴 스팬 커버 (유한 보장)
+        if d.weekday() < 5:
+            cand = d.replace(hour=21, minute=30, second=0, microsecond=0)
+            if cand <= now:
+                return cache_ts >= cand.timestamp()
+        d = (d - timedelta(days=1)).replace(hour=23, minute=59)
+    return False
+
+
 def fetch_us_movers() -> dict:
     """가장 많이 오른/내린 TOP30 — **동기 계산 절대 안 함** (전미국 배치
     수 분 = 페이지 hang 금지, 신고저 전미국 티어와 동일 SWR): 신선(30분)
@@ -1369,11 +1395,18 @@ def fetch_us_movers() -> dict:
     재발동 백오프 (2026-06-13): 직전 산출이 5분 내 실패였으면 kick 생략 —
     yfinance 일시 제한 중 매 방문 재스캔이 제한을 연장하는 악순환 차단.
     진행 중(running 30분 내)에도 중복 kick 생략 (프로세스 재시작으로
-    in-process 플래그가 사라진 경우 대비)."""
-    c = _cached(_MOVERS_CACHE, ttl=_FALLBACK_TTL_SEC)
-    if c is not None:
-        return c
+    in-process 플래그가 사라진 경우 대비).
+
+    신선도 = 장-인지(_movers_cache_is_fresh): 장중 30분 / 장 밖(야간·
+    주말)은 마지막 마감 이후 산출본이면 재스캔 0."""
     stale = _cached(_MOVERS_CACHE, ttl=86400)
+    if stale is not None:
+        try:
+            mt = (_CACHE_DIR / _MOVERS_CACHE).stat().st_mtime
+        except OSError:
+            mt = 0.0
+        if _movers_cache_is_fresh(mt):
+            return stale
     st = movers_status()
     age = time.time() - (st.get("ts") or 0)
     if st.get("state") == "failed" and age < 300:
