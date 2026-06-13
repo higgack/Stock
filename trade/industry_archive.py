@@ -82,12 +82,12 @@ _FM = FieldMap(date="_date", ts="ts", body="body", title="title",
 # 동결 페이지는 대시보드 전체 _JS(필터·모달·탭 의존)를 못 쓰므로 이 두 블록만.
 _STANDALONE_JS = """
 document.addEventListener('click',function(e){
-  var b=e.target.closest('.ind-tg-btn'); if(!b)return;
-  var card=b.closest('.ind-card'); if(!card)return;
+  var b=e.target.closest('.ind-tg-btn'); if(!b||b.classList.contains('ind-dir-btn'))return;
+  var row=b.closest('.ind-row'); if(!row)return;   // .ind-card 아님 — 표 안 확장카드도 커버
   var view=b.dataset.indView;
-  card.querySelectorAll('.ind-tg-btn').forEach(function(x){x.classList.toggle('is-active',x===b);});
-  var mo=card.querySelector('.ind-monthly'), tt=card.querySelector('.ind-ttm');
-  if(mo)mo.hidden=(view!=='monthly'); if(tt)tt.hidden=(view!=='ttm');
+  row.querySelectorAll('.ind-tg-btn').forEach(function(x){x.classList.toggle('is-active',x===b);});
+  row.querySelectorAll('.ind-monthly').forEach(function(mo){mo.hidden=(view!=='monthly');});  // cell1+cell2
+  row.querySelectorAll('.ind-ttm').forEach(function(tt){tt.hidden=(view!=='ttm');});
 });
 function applyDarkMode(){var h=(new Date().getUTCHours()+9)%24;document.body.classList.toggle('dark',h>=19||h<7);}
 applyDarkMode(); setInterval(applyDarkMode,60000);

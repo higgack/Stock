@@ -95,6 +95,49 @@ class HeatmapIndustryGroupAndCSVTests(unittest.TestCase):
         self.assertIn("ind_csv + prov_zone_div", src)   # 임베드 배선
 
 
+class IndustryTtmToggleScopeTests(unittest.TestCase):
+    """월별/12M TTM 토글 스코프 (사용자 2026-06-13 '안 눌러지고 디스플레이
+    이상') — 두 버그: (1) JS 가 .ind-card 스코프라 품목 랭킹표 행클릭 확장
+    카드(<table> 안, .ind-card 없음)에서 토글이 죽음, (2) querySelector 단수
+    라 cell1(좌)만 swap·cell2(우 YoY) 안 바뀜. fix = .ind-row 스코프 +
+    querySelectorAll. dashboard.py + industry_archive.py(_STANDALONE_JS) 양쪽."""
+
+    def _card_html(self):
+        from trade import industry
+        months = {}
+        for i in range(26):                       # 26개월 → TTM·TTM YoY 둘 다
+            y, m = 2024 + (3 + i) // 12, (3 + i) % 12 + 1
+            months[f"{y}-{m:02d}"] = 100 + i * 4
+        pts = industry.industry_series({"836110": months})["836110"]
+        return industry._card_body(pts, "수출액", extra="")
+
+    def test_card_body_is_one_ind_row_with_toggle_and_both_panels(self):
+        html = self._card_html()
+        self.assertIn("class='ind-row'", html)
+        self.assertIn("data-ind-view='ttm'", html)           # 토글 버튼
+        self.assertIn("data-ind-view='monthly'", html)
+        # cell1(좌·수출액) + cell2(우·YoY) = 패널 각 2쌍 → querySelectorAll 대상
+        self.assertEqual(html.count("ind-panel ind-monthly"), 2)
+        self.assertEqual(html.count("ind-panel ind-ttm"), 2)
+
+    def test_js_scopes_to_ind_row_not_card_dashboard(self):
+        from pathlib import Path as _P
+        src = (_P(__file__).resolve().parents[1] / "dashboard.py").read_text("utf-8")
+        # 토글 핸들러가 .ind-row 스코프 + querySelectorAll 둘 다 사용
+        self.assertIn("b.closest('.ind-row')", src)
+        self.assertIn("row.querySelectorAll('.ind-monthly')", src)
+        self.assertIn("row.querySelectorAll('.ind-ttm')", src)
+        # 옛 버그 패턴(.ind-card 스코프 + 단수)이 토글 핸들러에 남지 않음
+        self.assertNotIn("card.querySelector('.ind-monthly')", src)
+
+    def test_js_scopes_to_ind_row_archive_standalone(self):
+        from trade import industry_archive as ia
+        js = ia._STANDALONE_JS
+        self.assertIn("b.closest('.ind-row')", js)
+        self.assertIn("row.querySelectorAll('.ind-monthly')", js)
+        self.assertNotIn("card.querySelector('.ind-monthly')", js)
+
+
 class ProvLabelVocabularyTests(unittest.TestCase):
     """발표 일정 어휘 분리 (사용자 2026-06-13) — 속보 존은 '월초(전월
     풀월)', 산업트렌드만 '익월 1일'. 같은 단어 재유입 시 혼동 회귀."""
