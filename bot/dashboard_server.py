@@ -232,7 +232,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 or path_lower in ("/earnings", "/theme", "/highlow",
                                   "/usindustry", "/ushighlow", "/usmovers",
                                   "/twhighlow", "/tw52",
-                                  "/jp52", "/cn52", "/hk52", "/kr52")
+                                  "/jp52", "/cn52", "/hk52", "/kr52", "/hkmovers")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -276,6 +276,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # /jp52 /cn52 /hk52 /kr52 — JP/CN/HK/KR 52주 신고가/신저가 (유니버스 백그라운드)
         if raw in ("/jp52", "/cn52", "/hk52", "/kr52"):
             return self._handle_intl_page(raw)
+        # /hkmovers — 홍콩 급등/급락 (무제한 시장, US 미러, 사용자 2026-06-13)
+        if raw == "/hkmovers":
+            return self._handle_intl_movers("HK")
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시
         if raw == "/trade" or raw.startswith("/trade/"):
             return self._handle_trade_proxy()
@@ -886,6 +889,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(encoded)
         except Exception as exc:
             log.warning("intl_page %s: failed — %s", raw, exc)
+            self.send_error(500, "internal error")
+
+    def _handle_intl_movers(self, market: str) -> None:
+        """GET /hkmovers — 홍콩 급등/급락 (무제한 시장, US 미러)."""
+        try:
+            from bot.intl_pages import render_intl_movers_page
+            encoded = render_intl_movers_page(market).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as exc:
+            log.warning("intl_movers %s: failed — %s", market, exc)
             self.send_error(500, "internal error")
 
     def _handle_favorites_get(self) -> None:

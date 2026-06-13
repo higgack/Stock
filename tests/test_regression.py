@@ -7372,3 +7372,39 @@ class TestKrFullUniverseHighlow:
                  {"ticker": "7203.T", "name": "7203.T"}]
         need = [r for r in items if not r.get("name") or r["name"] == r["ticker"]]
         assert [r["ticker"] for r in need] == ["7203.T"]   # 삼성전자 보존
+
+
+class TestHkMovers:
+    """홍콩 급등/급락 — 무제한 시장이라 상한가/하한가 대신(사용자 2026-06-13
+    '홍콩도 미국처럼'). HKEX 전종목 yfinance 당일 등락률 상·하위. SWR·6h 캐시."""
+
+    def test_swr_no_sync_compute(self, monkeypatch):
+        import bot.intl_movers as im, bot.finviz_client as fc
+        kicked = {"n": 0}
+        monkeypatch.setattr(im, "_kick",
+                            lambda m: kicked.__setitem__("n", kicked["n"] + 1))
+        monkeypatch.setattr(fc, "_compute_movers_from",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("sync!")))
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)
+        r = im.fetch_intl_movers("HK")
+        assert r["building"] is True and kicked["n"] == 1
+        assert im.fetch_intl_movers("XX")["up"] == []   # 미지원 graceful
+
+    def test_page_render_and_wiring(self, monkeypatch):
+        import bot.intl_movers as im
+        monkeypatch.setattr(im, "fetch_intl_movers", lambda m: {
+            "up": [{"ticker": "9988.HK", "name": "알리바바", "price": 80,
+                    "pct": 9.1, "mcap": 150000, "ind": "Retail"}],
+            "down": [], "ts": "x", "scanned": 2774, "building": False})
+        from bot.intl_pages import render_intl_movers_page
+        h = render_intl_movers_page("HK")
+        assert "급등·급락" in h and "9988.HK" in h and "알리바바" in h
+        assert "거래량" not in h and "현재가 (HK$)" in h
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[1] / "bot"
+        assert "/hkmovers" in (root / "dashboard_server.py").read_text("utf-8")
+        assert 'href="hkmovers"' in (root / "dashboard.py").read_text("utf-8")
+
+    def test_compute_movers_from_present(self):
+        from bot.finviz_client import _compute_movers_from
+        assert callable(_compute_movers_from)

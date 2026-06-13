@@ -12338,9 +12338,11 @@ def _render_market_page(data: dict) -> str:
                 f'<a href="twhighlow" style="{_lk}">🔺 상한가·하한가</a>')
     parts.append(_render_etf_sector_movers(
         data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
+    # HK: 무제한 시장 → 미국처럼 신고저 + 급등/급락 (사용자 2026-06-13)
     parts.append(_render_etf_sector_movers(
         data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락",
-        f'<a href="hk52" style="{_lk2}">📈 신고가·신저가</a>'))
+        f'<a href="hk52" style="{_lk2}">📈 신고가·신저가</a>'
+        f'<a href="hkmovers" style="{_lk2}">🚀 급등·급락</a>'))
 
     # 다가오는 실적 — 시장별 탭 분리(사용자 정책: 한국 기본·최대한 표시 +
     # 2026-06-13 '실적빌드 다국가' JP/TW/CN/HK 추가, 접미사 재필터).

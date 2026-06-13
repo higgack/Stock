@@ -58,3 +58,42 @@ def render_intl_highlow52_page(market: str) -> str:
            f"업종=yfinance · 백그라운드 산출·30분 캐시. "
            f"{('· 갱신 ' + ts) if ts else ''}")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body)
+
+
+def render_intl_movers_page(market: str) -> str:
+    """HK 급등·급락 TOP — 미국 급등급락 미러(무제한 시장이라 상한가/하한가 대신).
+    거래량 없음(yfinance vol 미populate), 티커(한글명)·시총·업종 + 업종분포."""
+    try:
+        from bot.intl_movers import fetch_intl_movers
+        data = fetch_intl_movers(market)
+    except Exception as exc:
+        log.warning("intl movers page (%s): %s", market, exc)
+        data = {"up": [], "down": [], "ts": "", "building": False, "status": {}}
+    flag = _FLAG.get(market, market)
+    ts = _html.escape(data.get("ts", ""))
+    up, down = data.get("up", []), data.get("down", [])
+    if not up and not down:
+        if data.get("building"):
+            st = data.get("status") or {}
+            tot = st.get("total")
+            prog = f" (전종목 {tot})" if tot else ""
+            body = ('<div class="empty">⏳ 급등·급락 산출 중'
+                    f'{_html.escape(prog)}…<br>전종목 일봉 스캔(수 분). '
+                    '잠시 후 새로고침해 주세요.</div>')
+        else:
+            body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
+                    '(잠시 후 다시 시도해 주세요.)</div>')
+    else:
+        from bot.highlow_render import HL_SORT_JS, ind_dist_line, stock_panel
+        body = ('<div class="grid">'
+                + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", market,
+                              ind_dist_line(up), show_vol=False)
+                + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", market,
+                              ind_dist_line(down), show_vol=False)
+                + '</div>' + HL_SORT_JS)
+    sc = data.get("scanned")
+    sub = (f"{flag} 당일 등락률 상·하위 30 (가격제한 없는 시장 — 급등/급락) · "
+           + (f"{sc}종목 스캔 · " if sc else "")
+           + "종목명=티커(한글) · 헤더 클릭 정렬 · 6h 캐시. "
+           + (f"· 갱신 {ts}" if ts else ""))
+    return _tw_shell(f"{flag} 급등·급락", sub, body)
