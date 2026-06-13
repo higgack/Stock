@@ -4746,6 +4746,60 @@ class TestHighlowFullUsAndCapWeight:
         assert "highlow.json" in written
 
 
+class TestEtfSectorMovers:
+    """JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(사용자 2026-06-13 Phase 1).
+    랭킹 순수부 + 시장별 ETF 맵 + 홈 위젯 렌더."""
+
+    def test_rank_splits_by_sign_and_sorts(self):
+        from bot.etf_sector_client import _rank_sector_etfs
+        rows = [{"name": "반도체", "pct": 3.2}, {"name": "은행", "pct": -1.1},
+                {"name": "의료", "pct": 0.0}, {"name": "주류", "pct": 1.5},
+                {"name": "부동산", "pct": -2.3}, {"name": "결측", "pct": None}]
+        r = _rank_sector_etfs(rows, top_n=10)
+        assert [x["name"] for x in r["up"]] == ["반도체", "주류"]      # 양수 desc
+        assert [x["name"] for x in r["down"]] == ["부동산", "은행"]    # 음수 asc
+        # 0·None 은 어느 쪽에도 안 들어감
+        names = [x["name"] for x in r["up"] + r["down"]]
+        assert "의료" not in names and "결측" not in names
+
+    def test_topn_cap(self):
+        from bot.etf_sector_client import _rank_sector_etfs
+        rows = [{"name": f"u{i}", "pct": float(i)} for i in range(1, 15)]
+        r = _rank_sector_etfs(rows, top_n=10)
+        assert len(r["up"]) == 10 and r["up"][0]["name"] == "u14"
+
+    def test_market_etf_maps_present(self):
+        from bot.etf_sector_client import _SECTOR_ETFS
+        # JP=TOPIX-17 완전, CN 다수 — 메인 위젯용. TW/HK 는 ETF 희소(정직)
+        assert len(_SECTOR_ETFS["JP"]) == 17
+        assert len(_SECTOR_ETFS["CN_A"]) >= 12
+        assert _SECTOR_ETFS["TW"] and _SECTOR_ETFS["HK"]
+        # 중복 ETF 없음(distinct)
+        for m, etfs in _SECTOR_ETFS.items():
+            codes = [e[0] for e in etfs]
+            assert len(codes) == len(set(codes)), m
+
+    def test_home_widget_render_and_empty(self):
+        from bot.dashboard import _render_etf_sector_movers
+        mv = {"up": [{"name": "반도체", "pct": 3.2}],
+              "down": [{"name": "은행", "pct": -1.1}],
+              "ts": "2026-06-13 14:00", "source": "섹터 ETF·yfinance"}
+        html = _render_etf_sector_movers(mv, "🇯🇵 일본 업종 등락 TOP 10")
+        assert "일본 업종 등락" in html and "반도체" in html
+        assert "섹터 ETF" in html and "+3.20%" in html
+        # 빈 데이터 → 위젯 생략(빈 문자열)
+        assert _render_etf_sector_movers({"up": [], "down": []}, "x") == ""
+
+    def test_wired_into_market_overview(self):
+        from pathlib import Path as _P
+        src = (_P(__file__).resolve().parents[1] / "bot"
+               / "market_overview.py").read_text("utf-8")
+        for k in ("jp_sector_movers", "tw_sector_movers",
+                  "cn_sector_movers", "hk_sector_movers"):
+            assert k in src, k
+        assert "_fetch_etf_sector_safe" in src
+
+
 class TestUsMovers:
     """가장 많이 오른/내린 TOP30 (사용자 2026-06-12 '신고가/신저가 옆에').
     랭킹 순수부 + SWR 비동기 + 페이지 렌더."""

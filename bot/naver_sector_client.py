@@ -1,8 +1,9 @@
-"""Naver 증권 시세 스크래퍼 — 업종/테마 등락 + 신고가·신저가.
+"""Naver 증권 시세 스크래퍼 — 업종/테마 등락 + 상한가·하한가.
 
 - fetch_sector_movers(): sise_group.naver?type=upjong → 업종 상승/하락 TOP.
 - fetch_themes(): sise/theme.naver → 테마별 등락(별도 페이지).
-- fetch_high_low(): 52주 신고가·신저가(별도 페이지, best-effort).
+- fetch_upper_lower(): 상한가·하한가(sise_upper/lower). 52주 신고저 페이지는
+  불안정해 제거(2026-06-10) — KR 신고저는 유니버스 스캔이 후속 과제.
 
 무료·무키. euc-kr 디코딩. graceful — 실패/빈 결과 시 빈값. 사용자 정책
 2026-06-10: 리스크 없는 한 가장 빠르게 → 4분 캐시.
@@ -391,5 +392,5 @@ if __name__ == "__main__":
     print(f"테마 {len(th['themes'])}")
     for t in th["themes"][:5]:
         print("  ", t["name"], t["pct"])
-    hl = fetch_high_low()
-    print(f"신고가 {len(hl['high'])} / 신저가 {len(hl['low'])}")
+    ul = fetch_upper_lower()
+    print(f"상한가 {len(ul['upper'])} / 하한가 {len(ul['lower'])}")

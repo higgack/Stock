@@ -893,6 +893,11 @@ def fetch_all_market_data() -> dict[str, Any]:
         macro_fut = pool.submit(_fetch_macro_safe)
         sector_fut = pool.submit(_fetch_sector_movers_safe)
         us_sector_fut = pool.submit(_fetch_us_sector_movers_safe)
+        # JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(사용자 2026-06-13 Phase 1)
+        jp_sector_fut = pool.submit(_fetch_etf_sector_safe, "JP")
+        tw_sector_fut = pool.submit(_fetch_etf_sector_safe, "TW")
+        cn_sector_fut = pool.submit(_fetch_etf_sector_safe, "CN_A")
+        hk_sector_fut = pool.submit(_fetch_etf_sector_safe, "HK")
         deposit_fut = pool.submit(_fetch_deposit_safe)
 
         # 실적 병합 — 한국(yfinance) 먼저, 미국(Finnhub) 다음. 각 그룹 날짜순.
@@ -911,6 +916,10 @@ def fetch_all_market_data() -> dict[str, Any]:
             "macro": macro_fut.result(),
             "sector_movers": sector_fut.result(),
             "us_sector_movers": us_sector_fut.result(),
+            "jp_sector_movers": jp_sector_fut.result(),
+            "tw_sector_movers": tw_sector_fut.result(),
+            "cn_sector_movers": cn_sector_fut.result(),
+            "hk_sector_movers": hk_sector_fut.result(),
             "deposit": deposit_fut.result(),
             # futures resolve 후 → refetch 분 mtime 반영된 '실제 적용' 시각
             "widget_ts": _widget_data_ts(),
@@ -936,6 +945,16 @@ def _fetch_us_sector_movers_safe() -> dict:
     except Exception as exc:
         log.warning("us sector movers fetch error: %s", exc)
         return {"up": [], "down": [], "ts": ""}
+
+
+def _fetch_etf_sector_safe(market: str) -> dict:
+    """JP/TW/CN_A/HK 업종 등락 — 섹터 ETF 합성(yfinance). graceful 빈 dict."""
+    try:
+        from bot.etf_sector_client import fetch_sector_movers_etf
+        return fetch_sector_movers_etf(market, top_n=10)
+    except Exception as exc:
+        log.warning("etf sector movers fetch error (%s): %s", market, exc)
+        return {"up": [], "down": [], "ts": "", "source": ""}
 
 
 def _fetch_deposit_safe() -> dict:
