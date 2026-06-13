@@ -881,6 +881,22 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
             mc = mcaps.get(r["ticker"])
             r["mcap"] = round(mc / 1e8, 2) if mc else None  # 억$
             r["ind"] = inds.get(r["ticker"])
+        # 종목명 한글 (사용자 2026-06-13) — intl(JP/TW/CN/HK/KR) 전용. .info
+        # longName(영문) → chart_translate(Flash·영구캐시). 표시 'TICKER (한글명)'.
+        # US 는 이 경로 미사용(Finviz 영문명). graceful — 실패 시 ticker 유지.
+        if market and market != "US":
+            try:
+                en_names = _fetch_display_names(hits2)
+                uniq = sorted({n for n in en_names.values() if n})
+                if uniq:
+                    from bot.chart_translate import translate_titles_kr
+                    kr_map = translate_titles_kr(uniq) or {}
+                    for r in out["high"] + out["low"]:
+                        en = en_names.get(r["ticker"], "")
+                        if en:
+                            r["name"] = kr_map.get(en) or en
+            except Exception as exc:
+                log.warning("finviz: %s 한글명 백필 실패: %s", tag, exc)
         log.info("finviz: %s highlow — scanned %d → high %d / low %d (mcap %d)",
                  tag, scanned, len(out["high"]), len(out["low"]), len(mcaps))
         if out["high"] or out["low"]:
@@ -1057,6 +1073,32 @@ def _fetch_industries(tickers: list, allow_slow: bool = True) -> dict:
     if changed:
         _cache_write("us_industry_cache.json", cache)
     return {t: cache[t] for t in tickers if t in cache}
+
+
+def _fetch_display_names(tickers: list) -> dict:
+    """{ticker: longName(영문)} — 영구 캐시(이름 불변) + yfinance .info 병렬.
+    백그라운드 산출 전용(.info 느림 — render 경로 금지). 실패분은 캐시 안 함
+    (다음 스캔 재시도). VM 검증: .info longName 전 시장 정상(2026-06-13)."""
+    if not tickers:
+        return {}
+    cache = _cached("highlow_names.json", ttl=365 * 86400) or {}
+    missing = [t for t in tickers if t not in cache]
+    if missing:
+        def _one(tk):
+            try:
+                info = yf.Ticker(tk).info
+                return tk, str(info.get("longName") or info.get("shortName") or "")
+            except Exception:
+                return tk, ""
+        try:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for tk, nm in pool.map(_one, missing):
+                    if nm:                       # 실패('')는 미캐시 → 재시도
+                        cache[tk] = nm
+            _cache_write("highlow_names.json", cache)
+        except Exception as exc:
+            log.warning("finviz: display name fetch 실패: %s", exc)
+    return {t: cache.get(t, "") for t in tickers}
 
 
 def _backfill_industries(out: dict) -> bool:

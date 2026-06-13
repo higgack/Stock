@@ -7108,3 +7108,27 @@ class TestHighlowRenderShared:
         for mod in ("bot/intl_pages.py", "bot/tw_pages.py"):
             src = open(mod, encoding="utf-8").read()
             assert "from bot.highlow_render import" in src and "stock_panel" in src
+
+
+class TestIntlKoreanNames:
+    """intl 신고저 종목명 한글 번역 (사용자 2026-06-13 'TICKER (한글명)').
+    .info longName(VM 정상) → chart_translate Flash·영구캐시. US 제외."""
+
+    def test_fetch_display_names_graceful(self):
+        from bot.finviz_client import _fetch_display_names
+        assert _fetch_display_names([]) == {}
+
+    def test_compute_highlow_translates_non_us(self):
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert "_fetch_display_names(hits2)" in src
+        assert "translate_titles_kr" in src
+        assert 'market and market != "US"' in src
+        # 실패 시 ticker 유지(graceful)
+        assert 'kr_map.get(en) or en' in src
+
+    def test_panel_label_ticker_then_korean(self):
+        from bot.highlow_render import stock_panel
+        h = stock_panel("x", [{"ticker": "6758.T", "name": "소니 그룹",
+                        "price": 13000, "pct": 1.0, "vol": 100,
+                        "mcap": 180000, "ind": "Electronics"}], "t", "JP")
+        assert "6758.T" in h and "소니 그룹" in h and "(소니 그룹)" in h
