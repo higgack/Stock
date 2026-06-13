@@ -12,7 +12,7 @@ import time
 
 log = logging.getLogger(__name__)
 
-_CACHE = "highlow_tw_v1.json"
+_CACHE = "highlow_tw_v2.json"
 _STATUS = "tw_highlow_status.json"
 _TTL = 30 * 60          # 30분 신선 (US movers 동일)
 _running = False

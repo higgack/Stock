@@ -775,10 +775,13 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                  tag, len(universe))
         _CHUNK = 120
         scanned = 0
+        # 일봉 1년 — **당일 고가/저가가 직전 251일 극값을 갱신**한 종목만(진짜 52주
+        # 신고가/신저가, 사용자 2026-06-13 '1% 근접 말고 진짜'). EOD 1일 1회면 충분.
+        # pct/거래량도 같은 일봉에서 산출(이전의 별도 5d 패스 불요로 제거).
         for ci in range(0, len(universe), _CHUNK):
             chunk = universe[ci:ci + _CHUNK]
             try:
-                df = yf.download(chunk, period="1y", interval="1wk",
+                df = yf.download(chunk, period="1y", interval="1d",
                                  group_by="ticker", threads=True,
                                  progress=False, auto_adjust=False)
             except Exception as exc:
@@ -796,56 +799,21 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                     closes = df[tk]["Close"].dropna()
                     highs = df[tk]["High"].dropna()
                     lows = df[tk]["Low"].dropna()
-                    if len(closes) < 10:
+                    if len(closes) < 20 or len(highs) < 2 or len(lows) < 2:
                         continue
                     scanned += 1
                     last = float(closes.iloc[-1])
-                    hi, lo = float(highs.max()), float(lows.min())
-                    if hi > 0 and last >= hi * 0.99:
-                        out["high"].append({"ticker": tk,
-                                            "name": _names.get(tk, tk),
-                                            "price": round(last, 2), "pct": None})
-                    elif lo > 0 and last <= lo * 1.01:
-                        out["low"].append({"ticker": tk,
-                                           "name": _names.get(tk, tk),
-                                           "price": round(last, 2), "pct": None})
-                except Exception:
-                    continue
-        # 캡 40/40 제거 (사용자 2026-06-11 '앞으로 채워지겠지') — 폴백도
-        # 자기 universe(S&P 500) 안에서는 전량. 급락장 신저가 100+ 절단 방지.
-        # 등락률 채우기 — 주봉 산출이라 일간 % 부재('—')였던 것(사용자
-        # 2026-06-11). hit 종목만 5d 일봉 재다운로드로 당일 % 산출 — 캡
-        # 해제로 hit 가 커질 수 있어 메인 스캔과 동일하게 배치 분할.
-        hits = [r["ticker"] for r in out["high"] + out["low"]]
-        by_tk = {r["ticker"]: r for r in out["high"] + out["low"]}
-        for ci in range(0, len(hits), _CHUNK):
-            chunk = hits[ci:ci + _CHUNK]
-            try:
-                dfd = yf.download(chunk, period="5d", interval="1d",
-                                  group_by="ticker", threads=True,
-                                  progress=False, auto_adjust=False)
-            except Exception as exc:
-                log.warning("finviz: fallback 등락률 배치 %d 실패: %s",
-                            ci // _CHUNK + 1, exc)
-                continue
-            if dfd is None or dfd.empty:
-                continue
-            for tk in chunk:
-                try:
-                    sub = dfd if len(chunk) == 1 else dfd[tk]
-                    closes = sub["Close"].dropna()
-                    r = by_tk[tk]
-                    if len(closes) >= 2 and float(closes.iloc[-2]):
-                        r["pct"] = round((float(closes.iloc[-1])
-                                          / float(closes.iloc[-2]) - 1) * 100, 2)
-                        r["price"] = round(float(closes.iloc[-1]), 2)
-                    # 당일 거래량(사용자 2026-06-13) — 같은 5d 일봉에서 취득.
-                    try:
-                        vols = sub["Volume"].dropna()
-                        if len(vols):
-                            r["vol"] = int(float(vols.iloc[-1]))
-                    except Exception:
-                        pass
+                    prev = float(closes.iloc[-2])
+                    pct = round((last / prev - 1) * 100, 2) if prev > 0 else None
+                    vols = df[tk]["Volume"].dropna()
+                    vol = int(float(vols.iloc[-1])) if len(vols) else None
+                    rec = {"ticker": tk, "name": _names.get(tk, tk),
+                           "price": round(last, 2), "pct": pct, "vol": vol}
+                    # 진짜 신고가/신저가 = 당일 고가/저가가 직전 극값 갱신(동률 포함)
+                    if float(highs.iloc[-1]) >= float(highs.iloc[:-1].max()):
+                        out["high"].append(rec)
+                    elif float(lows.iloc[-1]) <= float(lows.iloc[:-1].min()):
+                        out["low"].append(rec)
                 except Exception:
                     continue
         # SPAC 신탁가 백스톱 — 2026-06-12 보강: 옛 밴드($9.5~10.6·|pct|

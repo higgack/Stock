@@ -46,16 +46,14 @@ def render_intl_highlow52_page(market: str) -> str:
         _kr = market == "KR"
         _opt = dict(name_only=_kr, show_ind=not _kr, show_vol=_kr)
         _dist = (lambda x: "") if _kr else ind_dist_line   # KR 업종분포도 제거
-        # 신고가 = KIS(KR) 실제 근접순 / yfinance 1% 근접(타시장)
-        _lab1 = "📈 52주 신고가" if _kr else "📈 52주 신고가 (1% 근접)"
-        _lab2 = "📉 52주 신저가" if _kr else "📉 52주 신저가 (1% 근접)"
+        # 당일 52주 고가/저가 '갱신'한 진짜 신고가/신저가 (사용자 2026-06-13).
         body = ('<div class="grid">'
-                + stock_panel(_lab1, hi, "hl-high", market, _dist(hi), **_opt)
-                + stock_panel(_lab2, lo, "hl-low", market, _dist(lo), **_opt)
+                + stock_panel("📈 52주 신고가", hi, "hl-high", market, _dist(hi), **_opt)
+                + stock_panel("📉 52주 신저가", lo, "hl-low", market, _dist(lo), **_opt)
                 + '</div>' + HL_SORT_JS)
-    src = _html.escape(data.get("source") or "주요종목(산업 대표 ~50-100) 1년 주봉")
-    sub = (f"{flag} {src} · 52주 고저 근접 · 시총순·헤더 클릭 정렬 · "
-           f"업종=yfinance · 백그라운드 산출·30분 캐시. "
+    src = _html.escape(data.get("source") or "전종목 1년 일봉")
+    sub = (f"{flag} {src} · **당일 52주 신고가/신저가 갱신** · 시총순·헤더 클릭 "
+           f"정렬 · 업종=yfinance · EOD 1일 1회 산출·6h 캐시. "
            f"{('· 갱신 ' + ts) if ts else ''}")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body)
 

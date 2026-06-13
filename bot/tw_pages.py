@@ -100,11 +100,11 @@ def render_tw_highlow52_page() -> str:
                                         stock_panel)
         hi, lo = sort_by_mcap(high), sort_by_mcap(low)
         body = ('<div class="grid">'
-                + stock_panel("📈 52주 신고가 (1% 근접)", hi, "hl-high",
+                + stock_panel("📈 52주 신고가", hi, "hl-high",
                               "TW", ind_dist_line(hi), show_vol=False)
-                + stock_panel("📉 52주 신저가 (1% 근접)", lo, "hl-low",
+                + stock_panel("📉 52주 신저가", lo, "hl-low",
                               "TW", ind_dist_line(lo), show_vol=False)
                 + '</div>' + HL_SORT_JS)
-    sub = (f"TWSE 전종목(일반종목) 1년 주봉 52주 고저 1% 근접. 백그라운드 산출·"
-           f"30분 캐시. {('· 갱신 ' + ts) if ts else ''}")
+    sub = (f"TWSE 전종목(일반종목) 1년 일봉 · **당일 52주 신고가/신저가 갱신** · "
+           f"EOD 1일 1회 산출·6h 캐시. {('· 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body)

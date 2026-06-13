@@ -7011,9 +7011,11 @@ class TestVolumeColumn:
         assert vol("NV | T | S | USA | 12.3B | 28.5 | 123.45 | +5.20% | 1,234,567") == 1234567
         assert vol("Big | X | Y | USA | 5.0B | 12 | 200.00 | +3.00% | 950000") == 950000
         assert vol("NoVol | X | Y | USA | 1.2B | 10 | 5.00 | +1.00%") is None
-        # 실제 파서가 dict 에 vol 키를 담는지(소스 확인)
+        # 실제 파서/스캔이 dict 에 vol 키를 담는지(소스 확인) — _parse_screener_
+        # rows + _compute_highlow_from 일봉 산출(2026-06-13 진짜 신고가 전환 후
+        # vol 을 1차 일봉에서 산출, 별도 5d 패스 제거)
         src = open("bot/finviz_client.py", encoding="utf-8").read()
-        assert '"vol": vol' in src and 'r["vol"] = int(float(vols' in src
+        assert '"vol": vol' in src and 'vol = int(float(vols' in src
 
     def test_intl_panel_has_volume_column(self):
         # 미국 포맷 통일 후 intl 신고저는 highlow_render.stock_panel 사용
@@ -7450,3 +7452,34 @@ class TestJpStop:
     def test_compute_jp_stop_present(self):
         from bot.finviz_client import _compute_jp_stop
         assert callable(_compute_jp_stop)
+
+
+class TestActualNewHighLow:
+    """신고저 = 1% 근접 → **진짜 신고가/신저가**(당일 고가/저가가 직전 극값 갱신)
+    전환 (사용자 2026-06-13 'Yahoo 차트처럼 진짜, EOD 1일 1회'). 일봉 1년 스캔."""
+
+    def test_daily_interval_and_new_high_criterion(self):
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        scan = src[src.index("def _compute_highlow_from"):
+                   src.index("def _compute_movers_from")]
+        assert 'interval="1d"' in scan          # 주봉→일봉
+        assert "highs.iloc[-1]) >= float(highs.iloc[:-1].max())" in scan
+        assert "lows.iloc[-1]) <= float(lows.iloc[:-1].min())" in scan
+        assert "* 0.99" not in scan and "* 1.01" not in scan   # 1% 근접 제거
+
+    def test_new_high_logic(self):
+        # 순수 미러: 당일 고가가 직전 극값 갱신 = 신고가
+        def is_new_high(highs):
+            return highs[-1] >= max(highs[:-1])
+
+        def is_new_low(lows):
+            return lows[-1] <= min(lows[:-1])
+        assert is_new_high([10, 12, 15, 16])        # 16 = 신고가
+        assert not is_new_high([10, 20, 15, 16])    # 16 < 20, 신고가 아님
+        assert is_new_low([10, 8, 9, 7])            # 7 = 신저가
+        assert not is_new_low([5, 8, 9, 7])         # 7 > 5, 신저가 아님
+
+    def test_labels_drop_1pct(self):
+        # '1% 근접' 라벨 제거 (진짜 신고가로 전환)
+        for mod in ("bot/intl_pages.py", "bot/tw_pages.py"):
+            assert "1% 근접" not in open(mod, encoding="utf-8").read(), mod
