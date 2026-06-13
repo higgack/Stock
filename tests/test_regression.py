@@ -7483,3 +7483,35 @@ class TestActualNewHighLow:
         # '1% 근접' 라벨 제거 (진짜 신고가로 전환)
         for mod in ("bot/intl_pages.py", "bot/tw_pages.py"):
             assert "1% 근접" not in open(mod, encoding="utf-8").read(), mod
+
+
+class TestChildDashboardCrossLink:
+    """각 나라 자식 대시보드 상호 연결 nav (사용자 2026-06-13 '캡쳐처럼 모두
+    연결'). KR/US 는 자체 _shell, TW/JP/CN/HK 는 _tw_shell + _market_nav."""
+
+    def test_market_nav_siblings(self):
+        from bot.tw_pages import _market_nav
+        kr = _market_nav("KR", "kr52")
+        assert all(f'href="{h}"' in kr for h in ("theme", "kr52", "highlow"))
+        assert 'class="active" href="kr52"' in kr
+        jp = _market_nav("JP", "jphighlow")
+        assert 'href="jp52"' in jp and 'href="jphighlow"' in jp
+        hk = _market_nav("HK", "hkmovers")
+        assert 'href="hk52"' in hk and 'href="hkmovers"' in hk
+        tw = _market_nav("TW", "tw52")
+        assert 'href="tw52"' in tw and 'href="twhighlow"' in tw
+        assert _market_nav("CN_A", "cn52").count('href="cn52"') == 1
+
+    def test_intl_pages_emit_nav(self, monkeypatch):
+        import bot.intl_highlow as ih, bot.jp_stop as js
+        monkeypatch.setattr(ih, "fetch_intl_highlow", lambda m: {
+            "high": [{"ticker": "7203.T", "name": "도요타", "price": 3000,
+                      "pct": 1, "mcap": 400000, "ind": "A"}],
+            "low": [], "ts": "x", "building": False, "source": "x"})
+        monkeypatch.setattr(js, "fetch_jp_stop", lambda: {
+            "upper": [{"ticker": "8316.T", "name": "미", "price": 3700,
+                       "pct": 23, "mcap": 9, "ind": "B"}],
+            "lower": [], "ts": "x", "scanned": 1, "building": False})
+        from bot.intl_pages import render_intl_highlow52_page, render_jp_stop_page
+        assert 'class="toggle"' in render_intl_highlow52_page("JP")
+        assert 'href="jp52"' in render_jp_stop_page()
