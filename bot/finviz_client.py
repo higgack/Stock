@@ -1990,9 +1990,23 @@ def _backfill_korean_names(rows: list, market: str) -> None:
     rest = [r for r in rows if r.get("ticker") not in naver_named]
     if not rest:
         return
+    # 공식 상장목록 銘柄名/Name 주입 (네이버 worldstock 미커버 소형주가 티커로만
+    # 노출되던 것 해소, 사용자 2026-06-14 (나)). JP/HK 만(JPX/HKEX 파일에 종목명).
+    # name==ticker(네이티브명 부재) 항목에만 채워 아래 Flash 번역이 한글화.
+    if market in ("JP", "HK"):
+        try:
+            from bot.intl_universe import full_universe_names
+            offmap = full_universe_names(market)
+            if offmap:
+                for r in rest:
+                    if ((not r.get("name") or r["name"] == r["ticker"])
+                            and offmap.get(r["ticker"])):
+                        r["name"] = offmap[r["ticker"]]
+        except Exception as exc:
+            log.warning("finviz: %s 공식 종목명 주입 실패: %s", market, exc)
     try:
         from bot.chart_translate import translate_titles_kr
-        # 1) 네이버 미스 중 네이티브명(CJK) 직접 번역
+        # 1) 네이버 미스 중 네이티브명(CJK) 직접 번역 (위 주입으로 소형주도 포함)
         native = sorted({r["name"] for r in rest
                          if r.get("name") and r["name"] != r["ticker"]})
         kr = translate_titles_kr(native) if native else {}

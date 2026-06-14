@@ -93,7 +93,84 @@ def _parse_hk(content: bytes) -> list[str]:
     return out
 
 
+def _parse_jp_names(content: bytes) -> dict:
+    """JPX data_j.xls → {'7203.T': 'トヨタ自動車', …} (보통주, 銘柄名 칼럼)."""
+    import pandas as pd
+    df = pd.read_excel(BytesIO(content))
+    cols = {str(c): c for c in df.columns}
+    code_c = next((cols[c] for c in cols if "コード" in c), None)
+    name_c = next((cols[c] for c in cols if "銘柄名" in c), None)
+    div_c = next((cols[c] for c in cols if "市場" in c or "区分" in c), None)
+    if code_c is None or name_c is None:
+        return {}
+    out: dict = {}
+    for _, row in df.iterrows():
+        tk = _jp_pick(row.get(code_c), row.get(div_c) if div_c is not None else "")
+        nm = str(row.get(name_c) or "").strip()
+        if tk and nm and tk not in out:
+            out[tk] = nm
+    return out
+
+
+def _parse_hk_names(content: bytes) -> dict:
+    """HKEX ListOfSecurities → {'0700.HK': 'TENCENT', …} (Equity, Name 칼럼)."""
+    import pandas as pd
+    raw = pd.read_excel(BytesIO(content), header=None)
+    hdr = None
+    for i in range(min(12, len(raw))):
+        if any("Stock Code" in str(v) for v in raw.iloc[i].tolist()):
+            hdr = i
+            break
+    if hdr is None:
+        return {}
+    df = pd.read_excel(BytesIO(content), header=hdr)
+    cols = {str(c).strip(): c for c in df.columns}
+    code_c = next((cols[c] for c in cols if "Stock Code" in c), None)
+    name_c = next((cols[c] for c in cols if "Name of Securities" in c), None)
+    cat_c = next((cols[c] for c in cols if c == "Category"), None)
+    if code_c is None or name_c is None:
+        return {}
+    out: dict = {}
+    for _, row in df.iterrows():
+        tk = _hk_pick(row.get(code_c), row.get(cat_c) if cat_c is not None else "Equity")
+        nm = str(row.get(name_c) or "").strip()
+        if tk and nm and tk not in out:
+            out[tk] = nm
+    return out
+
+
 _SPEC = {"JP": (_JPX_URL, _parse_jp), "HK": (_HKEX_URL, _parse_hk)}
+_NAME_SPEC = {"JP": (_JPX_URL, _parse_jp_names), "HK": (_HKEX_URL, _parse_hk_names)}
+
+
+def full_universe_names(market: str) -> dict:
+    """{ticker: native 銘柄名/Name} — JP/HK 공식 상장목록 종목명 (사용자 2026-06-14
+    '소형주까지 한글명'). 네이버 worldstock 미커버 소형주의 티커 노출 해소용 —
+    호출부가 Flash 번역. 7일 디스크 캐시. 실패/미지원 → {} (호출부 graceful)."""
+    spec = _NAME_SPEC.get(market)
+    if not spec:
+        return {}
+    try:
+        from bot.finviz_client import _cache_write, _cached
+    except Exception:
+        _cached = _cache_write = None
+    cache_name = f"full_universe_names_{market}.json"
+    if _cached:
+        c = _cached(cache_name, ttl=7 * 86400)
+        if isinstance(c, dict) and len(c) > 100:
+            return c
+    url, parser = spec
+    try:
+        names = parser(_http_get(url))
+    except Exception as exc:
+        log.warning("full_universe_names %s 실패: %s", market, exc)
+        return {}
+    if len(names) > 100 and _cache_write:
+        try:
+            _cache_write(cache_name, names)
+        except Exception:
+            pass
+    return names
 
 
 def full_universe(market: str) -> list[str]:
