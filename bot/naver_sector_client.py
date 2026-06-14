@@ -356,8 +356,54 @@ def fetch_deposit() -> dict:
     out = _fetch_deposit_fsc()
     if not out or out.get("deposit") is None:
         out = _fetch_deposit_naver()
+    # 주식형펀드 — 네이버 trendDeposit/chart 보조(사용자 2026-06-14, 예탁금/신용은
+    # FSC 유지). 신용잔고 옆 3번째 차트(렌더 스캐폴드는 이미 merged).
+    try:
+        ef = _fetch_equity_fund_naver()
+        if ef and isinstance(out, dict):
+            out["equity_fund"] = round(ef[-1][1], 1)
+            if len(ef) >= 2:
+                out["equity_fund_chg"] = round(ef[-1][1] - ef[-2][1], 1)
+            out["equity_fund_series"] = [{"d": _fsc_date(d), "v": round(v, 1)}
+                                         for d, v in ef]
+            out.setdefault("source", "금융투자협회")
+    except Exception as exc:
+        log.warning("equity fund merge failed: %s", exc)
     _cache_write("deposit.json", out)
     return out
+
+
+def _fetch_equity_fund_naver() -> list:
+    """네이버 trendDeposit/chart → 주식형펀드(beneficiaryCertificateStock) 시계열
+    [(bizdate, 억원)] (사용자 2026-06-14, VM probe 구조 확정). 예탁금/신용도 같은
+    응답에 있으나 위젯은 FSC 유지, 주식형펀드만 보조 추가. graceful []."""
+    from bot.finviz_client import naver_paused
+    if naver_paused():
+        return []
+    import requests
+    from datetime import date, timedelta
+    end = date.today()
+    start = end - timedelta(days=220)
+    url = ("https://stock.naver.com/api/domestic/market/trendDeposit/chart"
+           f"?startDate={start:%Y%m%d}&endDate={end:%Y%m%d}")
+    try:
+        r = requests.get(url, timeout=12, headers={
+            "User-Agent": "Mozilla/5.0", "Accept": "application/json",
+            "Referer": "https://stock.naver.com/"})
+        rows = r.json() if r.status_code == 200 else []
+    except Exception as exc:
+        log.warning("naver equity fund fetch failed: %s", exc)
+        return []
+    out = []
+    for it in rows if isinstance(rows, list) else []:
+        d = str(it.get("bizdate") or "")
+        try:
+            v = float(str(it.get("beneficiaryCertificateStock")).replace(",", ""))
+        except Exception:
+            v = None
+        if len(d) == 8 and v is not None:
+            out.append((d, v))    # 억원
+    return sorted(out)
 
 
 def _fetch_deposit_naver() -> dict:
