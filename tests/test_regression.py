@@ -5456,6 +5456,40 @@ class TestAnalysisCsvExport:
 
 
 
+class TestNxtClient:
+    """NXT 외국인·기관 수급 (nxt_client/nxt_pages, 2026-06-14) — 네이버
+    trendForeignOrg 확정 구조 파싱 + 렌더."""
+
+    def test_row_parse(self):
+        import bot.nxt_client as nc
+        r = nc._row({"itemcode": "035420", "itemname": "NAVER",
+                     "accTradeVolume": "439689", "accTradeAmount": "110222496250",
+                     "dailyTradeVolume": "5215884", "nowPrice": "242500",
+                     "prevChangeRate": "8.26"})
+        assert r["code"] == "035420" and r["name"] == "NAVER"
+        assert r["net_amt"] == 1102.2          # 110222496250원 → 억원
+        assert r["net_qty"] == 439689 and r["volume"] == 5215884
+        assert r["price"] == 242500.0 and r["pct"] == 8.26
+        # 매도(음수) 보존
+        s = nc._row({"itemcode": "058470", "itemname": "리노공업",
+                     "accTradeVolume": "-263936", "accTradeAmount": "-26927171050"})
+        assert s["net_amt"] == -269.3 and s["net_qty"] == -263936
+
+    def test_render(self, monkeypatch):
+        import bot.nxt_client as nc
+        from bot.nxt_pages import render_nxt_page
+        monkeypatch.setattr(nc, "fetch_nxt_foreign", lambda **k: {
+            "buy": [nc._row({"itemcode": "035420", "itemname": "NAVER",
+                             "accTradeAmount": "110222496250", "nowPrice": "242500",
+                             "prevChangeRate": "8.26", "dailyTradeVolume": "5215884"})],
+            "sell": [], "date": "20260612"})
+        monkeypatch.setattr(nc, "fetch_nxt_organ", lambda **k: None)
+        html = render_nxt_page()
+        assert "NXT 장전·장후" in html and "NAVER" in html
+        assert "외국인" in html and "기관" in html and "데이터 없음" in html
+        assert 'href="lookup/035420.KS"' in html
+
+
 class TestPruneNonStock:
     """비-주식 가지치기 (finviz_client.prune_non_stock) — CEF 펀드·유령티커·
     이중클래스 dedupe (사용자 2026-06-14 실데이터 회귀)."""
