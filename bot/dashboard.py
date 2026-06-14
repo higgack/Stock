@@ -11937,8 +11937,8 @@ def _macro_fmt_change_pct(pct) -> str:
     퍼센티지'). 하락 빨강/상승 녹색(절대값 chip 과 동일 부호 규칙)."""
     if pct is None:
         return '<span class="mc" style="color:var(--muted)">—</span>'
-    if round(pct, 2) == 0:
-        return '<span class="mc" style="color:var(--muted)">– 보합</span>'
+    if round(pct, 2) == 0:        # 같은 가격이면 '보합' 대신 0.00%(사용자 2026-06-14)
+        return '<span class="mc" style="color:var(--muted)">0.00%</span>'
     up = pct > 0
     color = "var(--pos)" if up else "var(--neg)"
     arrow = "▲" if up else "▼"

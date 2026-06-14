@@ -660,20 +660,23 @@ def fetch_earnings_calendar(days_ahead: int = 14) -> list[dict]:
             "name": "",
         })
 
-    # Batch-resolve company names from yfinance (best-effort)
+    # Batch-resolve company names from yfinance (best-effort). ⛔ 회로차단/정지 중이면
+    # skip — .info(검색과 동일 quote API) 30콜이 야후 차단 가중(사용자 2026-06-14).
     try:
-        import yfinance as yf
-        syms = list({r["symbol"] for r in result})[:30]
-        tickers = yf.Tickers(" ".join(syms))
-        name_map: dict[str, str] = {}
-        for s in syms:
-            try:
-                info = tickers.tickers[s].info or {}
-                name_map[s] = info.get("shortName") or info.get("longName") or ""
-            except Exception:
-                pass
-        for r in result:
-            r["name"] = name_map.get(r["symbol"], "")
+        from bot.finviz_client import fast_info_ok, yf_paused
+        if fast_info_ok() and not yf_paused():
+            import yfinance as yf
+            syms = list({r["symbol"] for r in result})[:30]
+            tickers = yf.Tickers(" ".join(syms))
+            name_map: dict[str, str] = {}
+            for s in syms:
+                try:
+                    info = tickers.tickers[s].info or {}
+                    name_map[s] = info.get("shortName") or info.get("longName") or ""
+                except Exception:
+                    pass
+            for r in result:
+                r["name"] = name_map.get(r["symbol"], "")
     except Exception:
         pass
 
@@ -1171,6 +1174,12 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
     # 6h 내 이미 fetch 했으면 누적 store 그대로(버스트 방지)
     if store and (time.time() - last_fetch) < 6 * 3600:
         return _emit()
+    # ⛔ 야후 quote-API 회로차단/정지 중이면 fetch 안 함(누적 store 유지) — 차단 회복
+    # 보호(사용자 2026-06-14). 차단 중 6h 만료마다 재poke 하던 것 차단.
+    from bot.finviz_client import (fast_info_ok, fast_info_trip,
+                                   is_rate_limit_error, yf_paused)
+    if yf_paused() or not fast_info_ok():
+        return _emit()
 
     # universe = S&P 500 의 **오늘 슬라이스**만 (로테이션 — 전체 커버는 위 7일 누적
     # store 가 유지). CSV 실패 시 메가캡 30 폴백. 회당 ~72종목 → burst 0.
@@ -1193,14 +1202,10 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
             ud = t.upgrades_downgrades
             if ud is None or ud.empty:
                 return []
-            # yfinance 등급변경엔 시점별 목표가가 없음 → 현재 컨센서스 평균
-            # 목표가(targetMeanPrice)를 종목 단위로 부착(같은 종목 행은 동일값).
+            # 목표가(.info targetMeanPrice) 생략 — 검색·상세탭과 **동일 quote API**라
+            # 슬라이스당 72 .info 콜이 야후 차단 가중(사용자 2026-06-14 '계속 블락').
+            # 등급변경(firm/from/to)만 표시. 목표가는 상세 페이지 컨센서스 탭에 있음.
             tp = None
-            try:
-                inf = t.info or {}
-                tp = inf.get("targetMeanPrice")
-            except Exception:
-                pass
             # KR 탭과 동일 7일 윈도(사용자 2026-06-11) — 과거분 제외.
             cutoff = (date.today() - timedelta(days=7)).isoformat()
             items = []
@@ -1221,7 +1226,9 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
             # 기대지 않고 명시 정렬.
             items.sort(key=lambda x: x.get("date", ""), reverse=True)
             return items[:3]
-        except Exception:
+        except Exception as exc:
+            if is_rate_limit_error(exc):       # 차단 감지 → 회로차단 발동(전 소비처 backoff)
+                fast_info_trip("research_us")
             return []
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -1263,6 +1270,17 @@ def fetch_recent_research_intl(market: str, limit: int = 25) -> list[dict]:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
+    # ⛔ 야후 quote-API 회로차단/정지 중이면 fetch 안 함 — **빈 캐시 기록(6h)** 으로
+    # 재시도 폭주 차단(사용자 2026-06-14 '계속 블락' 근본원인: 빈 결과 미캐시 →
+    # 매 regen 5분마다 240콜 재poke → 차단 영구화). 회복 후 다음 사이클에 정상 fetch.
+    from bot.finviz_client import (fast_info_ok, fast_info_trip,
+                                   is_rate_limit_error, yf_paused)
+    if yf_paused() or not fast_info_ok():
+        try:
+            cache_file.write_text(json.dumps([], ensure_ascii=False))
+        except Exception:
+            pass
+        return []
     universe = _intl_earnings_universe(market)[:60]   # 부하 bound
     if not universe:
         return []
@@ -1285,7 +1303,9 @@ def fetch_recent_research_intl(market: str, limit: int = 25) -> list[dict]:
                               "target": None, "date": d})
             items.sort(key=lambda x: x["date"], reverse=True)
             return items[:3]
-        except Exception:
+        except Exception as exc:
+            if is_rate_limit_error(exc):       # 차단 감지 → 회로차단 발동(전 소비처 backoff)
+                fast_info_trip("research_intl")
             return []
 
     results: list[dict] = []
@@ -1307,10 +1327,12 @@ def fetch_recent_research_intl(market: str, limit: int = 25) -> list[dict]:
                 r["name"] = (kr.get(e) or e) if e else r["symbol"]
         except Exception as exc:
             log.warning("intl research 한글명 (%s): %s", market, exc)
-        try:
-            cache_file.write_text(json.dumps(results, ensure_ascii=False))
-        except Exception:
-            pass
+    # ⚠️ **빈 결과도 항상 캐시(6h)** — 미캐시 시 매 regen(5분) 재시도 폭주 = 야후
+    # 차단 지속의 근본원인(사용자 2026-06-14). 결과 유무와 무관하게 기록.
+    try:
+        cache_file.write_text(json.dumps(results, ensure_ascii=False))
+    except Exception:
+        pass
     return results
 
 

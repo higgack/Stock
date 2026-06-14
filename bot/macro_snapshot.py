@@ -69,7 +69,7 @@ GLOBAL = [
     ("silver", "은", "$", "yf", "SI=F", 2),
     ("platinum", "백금", "$", "yf", "PL=F", 0),
     ("copper", "구리", "$", "yf", "HG=F", 2),
-    ("aluminum", "알루미늄", "$", "yf", "ALI=F", 2),
+    ("aluminum", "알루미늄 합금", "$", "yf", "ALI=F", 2),  # 네이버 metals=AA(합금), 사용자 2026-06-14
     ("nickel", "니켈", "$", "yf", "NI=F", 0),  # 사용자 2026-06-14 (네이버 NI, yf 무차트)
     ("corn", "옥수수", "$", "yf", "ZC=F", 0),
     ("soybean", "대두", "$", "yf", "ZS=F", 0),
@@ -407,20 +407,23 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     # idx=securityService/index/{reuters}/price (둘 다 사용자 VM 확인). pageSize=30
     # 페이지네이션. 야후 chart 배치에서 제외 → 야후 부하 경감(코인/fx 만 yf 차트 잔존).
     nv_spark: dict[str, list[float]] = {}
-    _nv_sids = [s for s in all_yf_sids if _kind(s) in ("com", "idx", "coin")]
-    yf_tickers = [s for s in all_yf_sids if _kind(s) not in ("com", "idx", "coin")]
+    _NV_KINDS = ("com", "idx", "coin", "fx")
+    _nv_sids = [s for s in all_yf_sids if _kind(s) in _NV_KINDS]
+    yf_tickers = [s for s in all_yf_sids if _kind(s) not in _NV_KINDS]
     if _nv_sids:
         try:
             from concurrent.futures import ThreadPoolExecutor
             from bot import naver_marketindex as _nmh
 
             def _cs(s):
-                k, code = _MACRO_NAVER[s]    # 카드 1개월=30점(1p). com=marketindex·
-                if k == "com":               # idx=securityService·coin=front-api/crypto.
+                k, code = _MACRO_NAVER[s]    # 카드 1개월=30점(1p). com=marketindex·idx=
+                if k == "com":               # securityService·coin=front-api·fx=exchange.
                     return s, _nmh.fetch_commodity_spark(code, 30)
                 if k == "idx":
                     return s, _nmh.fetch_naver_index_history(code, 30)
-                return s, _nmh.fetch_naver_crypto_history(code, 30)   # coin
+                if k == "coin":
+                    return s, _nmh.fetch_naver_crypto_history(code, 30)
+                return s, _nmh.fetch_naver_fx_history(code, 30)       # fx (USD/KRW)
             with ThreadPoolExecutor(max_workers=8) as _pool:
                 for _s, _ser in _pool.map(_cs, _nv_sids):
                     nv_spark[_s] = _ser
@@ -465,9 +468,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     if _prev not in (None, 0):
                         change_pct = change / _prev * 100
                 if sid in nv_spark:
-                    # 원자재(com)·지수(idx)·코인(coin) — 네이버 history(yfinance 무티커/
-                    # throttle 무관). 카드=최근 1개월(뒤 22점). 값과 같은 네이버 소스라
-                    # 라인 끝이 현재가와 자연 싱크(사용자 2026-06-14 '차트 다 네이버').
+                    # 원자재·지수·코인·환율 — 네이버 history(yfinance 무티커/throttle
+                    # 무관, 매크로 야후 차트 0). 카드=최근 1개월(뒤 22점). 값과 같은
+                    # 네이버 소스라 라인 끝이 현재가와 자연 싱크(사용자 2026-06-14).
                     _ser = nv_spark.get(sid) or []
                     chart_spark = _ser
                     card_spark = _ser[-22:] if len(_ser) >= 22 else _ser

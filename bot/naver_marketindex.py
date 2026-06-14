@@ -239,6 +239,50 @@ def fetch_naver_crypto_history(nf_ticker: str, count: int = 30,
     return s if isinstance(s, list) else []
 
 
+_FXHIST_BASE = "https://api.stock.naver.com/marketindex/exchange"
+
+
+def fetch_naver_fx_history(reuters_code: str, count: int = 30) -> list[float]:
+    """marketindex/exchange/{reutersCode}/prices → 환율 일별 close 시계열(오래된→최신).
+    reutersCode = FX_USDKRW 등 (사용자 VM 확인 2026-06-14). 원자재와 동일 schema
+    (closePrice 콤마문자열·최신순) → _parse_history_closes 재사용·pageSize 30 캡
+    페이지네이션. 응답 bare list/{datas:[]} 수용. 1h 캐시·naver_paused·graceful []."""
+    if not reuters_code:
+        return []
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    ck = f"naver_fxhist_{reuters_code}_{count}.json"
+    c = _cached(ck, ttl=3600)
+    if isinstance(c, list) and c:
+        return c
+    if naver_paused():
+        s = _cached(ck, ttl=86400)
+        return s if isinstance(s, list) else []
+    import requests
+    _PS = 30
+    rows: list = []
+    for _pg in range(1, (count + _PS - 1) // _PS + 1):
+        try:
+            r = requests.get(f"{_FXHIST_BASE}/{reuters_code}/prices",
+                             headers=_HDRS, params={"page": _pg, "pageSize": _PS},
+                             timeout=10)
+            raw = r.json() if r.status_code == 200 else []
+        except Exception as exc:
+            log.warning("naver fxhist %s p%s: %s", reuters_code, _pg, exc)
+            break
+        batch = raw.get("datas") if isinstance(raw, dict) else raw
+        if not (isinstance(batch, list) and batch):
+            break
+        rows.extend(batch)
+        if len(batch) < _PS:
+            break
+    series = _parse_history_closes(rows[:count] if count else rows)
+    if series:
+        _cache_write(ck, series)
+        return series
+    s = _cached(ck, ttl=86400)
+    return s if isinstance(s, list) else []
+
+
 _IDX_CACHE = "naver_worldindex.json"
 
 

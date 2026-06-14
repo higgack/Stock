@@ -8914,9 +8914,22 @@ class TestNaverCommodityCharts:
         assert "fetch_commodity_spark" in src              # 원자재 스파크 네이버
         assert "fetch_naver_index_history" in src          # 지수 스파크 네이버(S&P/나스닥/VIX)
         assert "fetch_naver_crypto_history" in src          # 코인 스파크 네이버(BTC/ETH)
-        assert "if sid in nv_spark:" in src                # 루프 분기(com+idx+coin)
-        assert 'if _kind(s) not in ("com", "idx", "coin")' in src  # 야후 chart 배치서 전부 제외
+        assert "fetch_naver_fx_history" in src              # 환율 스파크 네이버(USD/KRW)
+        assert "if sid in nv_spark:" in src                # 루프 분기(com+idx+coin+fx)
+        assert '_NV_KINDS = ("com", "idx", "coin", "fx")' in src  # 야후 chart 배치서 전부 제외
         assert "_fetch_macro_naver_values(all_yf_sids)" in src   # 값은 전체 네이버
+
+    def test_research_gated_against_yahoo_block(self):
+        # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →
+        # 매 regen(5분) 240콜 재poke. 빈 결과도 캐시 + 회로차단 게이트 + rate-limit trip.
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        # intl: 회로차단 게이트 + 빈 캐시 기록 + trip
+        assert "research_intl" in src                       # rate-limit trip 라벨
+        assert "if yf_paused() or not fast_info_ok():" in src   # 차단 중 fetch skip
+        # US: 게이트 + .info 목표가 생략(quote API 부하 제거)
+        assert "research_us" in src
+        # earnings calendar .info 이름배치도 게이트
+        assert "if fast_info_ok() and not yf_paused():" in src
 
     def test_index_history_graceful_and_endpoint(self):
         # 지수 history (사용자 Network 탭 확인: securityService/index/.INX/price).
@@ -8938,6 +8951,15 @@ class TestNaverCommodityCharts:
         assert "cryptoChartData" in src
         assert 'raw.get("result")' in src                  # {result:[...]} 추출
         assert "series[-count:]" in src                    # 오래된순 → 역순 안 함
+
+    def test_fx_history_graceful_and_endpoint(self):
+        # USD/KRW history (사용자 VM 확인: marketindex/exchange/FX_USDKRW/prices,
+        # 원자재와 동일 closePrice schema). 매크로 마지막 야후 차트 제거.
+        from bot.naver_marketindex import fetch_naver_fx_history
+        assert fetch_naver_fx_history("") == []
+        assert isinstance(fetch_naver_fx_history("FX_USDKRW"), list)
+        src = open("bot/naver_marketindex.py", encoding="utf-8").read()
+        assert "marketindex/exchange" in src and "_FXHIST_BASE" in src
 
     def test_sentiment_gauge_uses_naver_vix(self):
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
