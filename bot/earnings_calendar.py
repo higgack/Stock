@@ -452,7 +452,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
 <a class="back-link" href="market.html">← 홈으로</a>
 <div style="font-size:11px;letter-spacing:2px;color:var(--muted);margin-bottom:4px">EARNINGS CALENDAR</div>
 <h1>실적 캘린더</h1>
-<div class="subtitle">한국시간 기준 일정. <b>시장 버튼</b>으로 달력이 시장별로 전환됩니다. 한국=<b>KIND IR일정</b>(실제 개최일·미래 포함, 클릭 시 KIND — DART 폴백), 미국=Finnhub 실적(장전 BMO / 장후 AMC), 일본·대만·홍콩=yfinance 확정 실적일(주요종목·한글명·향후 90일, 종목 클릭 시 NOAH 분석). <b>+N 더보기(또는 날짜) 클릭</b>으로 그날 전체 펼침.</div>
+<div class="subtitle">한국시간 기준 일정. <b>시장 버튼</b>으로 달력이 시장별로 전환됩니다. 한국=<b>KIND IR일정</b>(실제 개최일·미래 포함, 클릭 시 KIND — DART 폴백), 미국=Finnhub 실적(장전 BMO / 장후 AMC), 일본·홍콩·대만=yfinance 확정 실적일(주요종목·한글명·향후 90일, 종목 클릭 시 NOAH 분석). <b>+N 더보기(또는 날짜) 클릭</b>으로 그날 전체 펼침.</div>
 {_market_toggle(year, month, market, intl_avail)}
 <div class="cal-header">
   <h2>{month_kr}</h2>
@@ -460,7 +460,7 @@ def render_page(year: int, month: int, market: str = "kr") -> str:
 </div>
 <div class="month-nav">{nav_html}</div>
 <div class="cal-grid">{grid}</div>
-<div style="margin-top:16px;font-size:11px;color:var(--muted)">한국 KIND IR일정(DART 폴백) · 미국 Finnhub 실적 · 일본·대만·홍콩 yfinance 확정 실적일(주요종목) · 장전=BMO / 장후=AMC{_ts_sfx}</div>
+<div style="margin-top:16px;font-size:11px;color:var(--muted)">한국 KIND IR일정(DART 폴백) · 미국 Finnhub 실적 · 일본·홍콩·대만 yfinance 확정 실적일(주요종목) · 장전=BMO / 장후=AMC{_ts_sfx}</div>
 <script>
 (function(){{var h=parseInt(new Intl.DateTimeFormat('en-US',{{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';}})();
 (function(){{

@@ -8151,6 +8151,14 @@ class TestHkMovers:
         # US 도 네이버 우선 — AAPL 네이버 업종 직접, 미스(MSFT)는 yfinance 폴백
         usg = fc._industries_for(["AAPL", "MSFT"], "US")
         assert usg["AAPL"] == "Consumer Electronics" and usg["MSFT"] == "YF"
+        # HK 도 Naver-first (2026-06-14 '홍콩도 다른것처럼') — 5자리↔4자리 zfill
+        # 정규화 + 미스 yfinance 폴백
+        nv.world_industry_map = lambda m: {"0700.HK": "Internet",
+                                           "00005.HK": "Banks"}
+        hkg = fc._industries_for(["0700.HK", "0005.HK", "0941.HK"], "HK")
+        assert hkg["0700.HK"] == "Internet"      # 4자리 직접
+        assert hkg["0005.HK"] == "Banks"         # 5자리 키 zfill 정규화
+        assert hkg["0941.HK"] == "YF"            # 미스 → yfinance
 
     def test_industry_english_translation_wired(self, monkeypatch):
         # 사용자 2026-06-14 '모두 영문' — 네이버 한글 업종명 → 영문(Flash·영구 캐시).

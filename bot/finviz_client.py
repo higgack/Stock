@@ -852,20 +852,35 @@ def _compute_highlow_full_us() -> dict:
 
 
 def _industries_for(tickers: list, market: str | None) -> dict:
-    """업종 enrich — CN/JP 는 네이버 업종맵(reutersIndustryName, reliable·yfinance
-    .info 우회), 그 외(US/KR/TW/HK)는 _fetch_industries(GICS/yfinance). HK 는 네이버
-    업종이 너무 sparse 해 야후로 (사용자 2026-06-14 'HK 급등급락 업종 야후기준').
-    HK 는 yfinance 우선이나 야후 정지/실패/sparse 시 **네이버 업종맵으로 메움**
-    (사용자 2026-06-14 '홍콩 급등락 업종 업데이트'). 네이버 맵 미스·실패 시 yfinance 폴백."""
+    """업종 enrich — CN/JP/US/HK 는 네이버 업종맵(reutersIndustryName, reliable·
+    fast_info 우회) 우선, 미스만 yfinance(GICS, breaker-gated 라 쿨다운 중 무호출).
+    KR/TW 는 _fetch_industries. 사용자 2026-06-14 '홍콩도 다른것처럼 네이버+야후'
+    — HK 를 yfinance-first 에서 Naver-first 로 통일(fast_info rate-limit 회피,
+    미스는 yfinance 가 메움). HK 는 5자리↔4자리 zfill 정수 정규화."""
     # CN/JP/US — 네이버 업종맵 우선(reliable·fast_info 우회). US 도 네이버 USA
     # 업종(141개·VM probe 2026-06-14)으로 라우팅 → fast_info rate-limit 시에도
     # 업종 안 빔(미스만 _fetch_industries, breaker-gated 라 쿨다운 중 무호출).
-    if market in ("CN_A", "JP", "US"):
+    if market in ("CN_A", "JP", "US", "HK"):
         try:
             from bot.naver_ranking_client import world_industry_map
             m = world_industry_map(market)
             if m:
-                got = {tk: m.get(tk) for tk in tickers}
+                norm: dict = {}
+                if market == "HK":     # 5자리↔4자리 zfill 정수 정규화
+                    for k, v in m.items():
+                        c = str(k).split(".")[0]
+                        if c.isdigit():
+                            norm.setdefault(str(int(c)), v)
+
+                def _look(tk, _m=m, _norm=norm):
+                    v = _m.get(tk)
+                    if v is None and market == "HK":
+                        c = str(tk).split(".")[0]
+                        if c.isdigit():
+                            v = _norm.get(str(int(c)))
+                    return v
+
+                got = {tk: _look(tk) for tk in tickers}
                 miss = [tk for tk in tickers if not got.get(tk)]
                 if miss:
                     yf = _fetch_industries(miss)
@@ -876,28 +891,6 @@ def _industries_for(tickers: list, market: str | None) -> dict:
         except Exception as exc:
             log.warning("naver 업종맵 (%s) → yfinance 폴백: %s", market, exc)
         return _fetch_industries(tickers)
-    if market == "HK":
-        # yfinance 우선 → 빈/정지 시 네이버 업종맵 폴백 (야후 정지·sparse 메움).
-        got = _fetch_industries(tickers)
-        miss = [tk for tk in tickers if not got.get(tk)]
-        if miss:
-            try:
-                from bot.naver_ranking_client import world_industry_map
-                m = world_industry_map("HK")
-                if m:
-                    norm = {}      # 5자리↔4자리 zfill 정수 정규화
-                    for k, v in m.items():
-                        c = str(k).split(".")[0]
-                        if c.isdigit():
-                            norm.setdefault(str(int(c)), v)
-                    for tk in miss:
-                        c = str(tk).split(".")[0]
-                        v = m.get(tk) or (norm.get(str(int(c))) if c.isdigit() else None)
-                        if v:
-                            got[tk] = v
-            except Exception as exc:
-                log.warning("HK 네이버 업종 폴백 실패: %s", exc)
-        return got
     return _fetch_industries(tickers)
 
 
