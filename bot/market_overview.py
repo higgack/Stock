@@ -64,12 +64,14 @@ CARD_ASIA = [
     ("KR 코스닥", "nvd:KOSDAQ"),
     ("JP 니케이 225", "nvi:.N225"),
     ("TW 대만 가권", "nvi:.TWII"),
-    ("CN CSI 300", "nvi:.CSI300"),   # 네이버 worldstock (VM probe 확정, 사용자 2026-06-14)
     ("CN 상해 종합", "nvi:.SSEC"),
     ("HK 홍콩 항셍", "nvi:.HSI"),
-    ("HK 홍콩H", "nvi:.HSCE"),  # 사용자 2026-06-14 항셍테크 대신 홍콩H(H주지수, 네이버)
     ("VN 베트남 (VN-Index)", "nvi:.VNI"),  # 네이버 worldstock VN지수 (ETF→실지수, 2026-06-14)
     ("IN 인도 Sensex", "nvi:.BSESN"),
+    # 사용자 2026-06-14: CSI300·홍콩H 제거, 인도네시아·말레이시아를 아시아 맨 밑으로
+    # (네이버 worldstock 코드 유지 — 야후 아님).
+    ("ID 인도네시아 JCI", "nvi:.JKSE"),
+    ("MY 말레이시아 KLCI", "nvi:.KLSE"),
 ]
 
 # 사용자 2026-06-14 '다 네이버로' — 세계 cross-rate 는 네이버 exchangeWorld(nvx:).
@@ -148,18 +150,15 @@ CARD_EU = [
     ("GB 영국 FTSE 100", "nvi:.FTSE"),
     ("FR 프랑스 CAC 40", "nvi:.FCHI"),
     ("IT 이탈리아 FTSE MIB", "nvi:.FTMIB"),
-    ("CH 스위스 SMI", "nvi:.SSMI"),
+    ("NL 네덜란드 AEX", "nvi:.AEX"),   # 사용자 2026-06-14 스위스 SMI 대신 네덜란드 AEX
 ]
 
-# 사용자 2026-06-14: 캐나다 다음 호주 ASX 추가, 베트남은 아시아 카드로 이동,
-# 사우디 제거 → 말레이시아 KLCI.
+# 사용자 2026-06-14: 호주 ASX 추가. 인도네시아·말레이시아는 아시아 카드 맨 밑으로 이동.
 CARD_AMERICAS = [
-    ("CA 캐나다 TSX", "nvi:.GSPTSE"),
+    ("AR 아르헨티나 MERVAL", "nvi:.MERV"),   # 사용자 2026-06-14 캐나다 TSX 대신 아르헨티나
     ("AU 호주 ASX 200", "nvi:.AXJO"),
     ("BR 브라질 Bovespa", "nvi:.BVSP"),
     ("MX 멕시코 IPC", "nvi:.MXX"),
-    ("ID 인도네시아 JCI", "nvi:.JKSE"),
-    ("MY 말레이시아 KLCI", "nvi:.KLSE"),
 ]
 
 ALL_CARDS = [

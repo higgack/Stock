@@ -196,28 +196,6 @@ def _yf_daily_1mo_batch(tickers: list[str]) -> dict[str, list[float]]:
                     continue
     except Exception as exc:
         log.warning("macro: yf daily 1mo batch failed: %s", exc)
-    # 벌크 누락분 개별 재시도 (사용자 2026-06-14 '전부 1개월기준' — 부분실패가
-    # 12개월 폴백/혼합 라벨을 만들던 근본원인. history API 라 fast_info 무관).
-    missing = [tk for tk in tickers if tk not in out]
-    if missing:
-        from concurrent.futures import ThreadPoolExecutor
-
-        def _one(tk):
-            try:
-                h = yf.Ticker(tk).history(period="1mo", interval="1d")
-                cl = (h["Close"].dropna() if h is not None and not h.empty
-                      else None)
-                return tk, ([round(float(c), 4) for c in cl.tolist()]
-                            if cl is not None else [])
-            except Exception:
-                return tk, []
-        try:
-            with ThreadPoolExecutor(max_workers=6) as pool:
-                for tk, vals in pool.map(_one, missing):
-                    if vals:
-                        out[tk] = vals
-        except Exception:
-            pass
     return out
 
 

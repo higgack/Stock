@@ -304,24 +304,12 @@ _COIN_URL = "https://stock.naver.com/api/coin/rank/UPBIT"
 _COIN_CACHE = "naver_coins.json"
 
 
-def _coin_symbol(it: dict) -> str:
-    """item → 코인 심볼(BTC/ETH…) 대문자. 다양한 필드/표기(KRW-BTC·BTC-KRW) 수용."""
-    for k in ("symbolCode", "symbol", "code", "reutersCode", "market", "coinCode"):
-        v = it.get(k)
-        if v:
-            s = str(v).upper()
-            for sep in ("KRW-", "-KRW", "UPBIT:", "/KRW"):
-                s = s.replace(sep, "")
-            return s.strip()
-    return ""
-
-
 def fetch_naver_coins() -> dict:
     """{SYMBOL: {close(₩), prev, change, pct}} — coin/rank/UPBIT (업비트 원화시세,
-    사용자 2026-06-14 '코인도 다 줬어'). ⚠️ Upbit=KRW 라 값이 원화. 응답 구조가
-    Naver-convention(closePrice·fluctuationsRatio·compareToPreviousPrice.code) /
-    Upbit-native(trade_price·signed_change_rate·change) 양쪽 모두 방어 파싱. 리스트는
-    재귀 탐색. 1분 캐시·naver_paused·graceful."""
+    사용자 2026-06-14). VM probe 구조 확정(bare list): nfTicker(심볼)·tradePrice(원화
+    숫자)·changeRate(%, 부호포함)·changeValue(원화 변동)·change(RISING/FALLING).
+    ⚠️ Upbit=KRW 라 값이 원화(₩). 응답 bare list / {result|datas|coins:[...]} 수용.
+    BNB 등 업비트 미상장은 자연 누락(graceful). 1분 캐시·naver_paused."""
     from bot.finviz_client import _cache_write, _cached, naver_paused
     c = _cached(_COIN_CACHE, ttl=_TTL)
     if isinstance(c, dict) and c:
@@ -336,52 +324,51 @@ def fetch_naver_coins() -> dict:
     except Exception as exc:
         log.warning("naver coins fetch error: %s", exc)
         return _cached(_COIN_CACHE, ttl=86400) or {}
-
-    def _find_list(o):                          # 가격필드 가진 dict 리스트 재귀 탐색
-        if isinstance(o, list):
-            if o and isinstance(o[0], dict) and any(
-                    k in o[0] for k in ("closePrice", "trade_price", "tradePrice",
-                                        "currentPrice", "price")):
-                return o
-        if isinstance(o, dict):
-            for v in o.values():
-                got = _find_list(v)
-                if got:
-                    return got
-        return None
-
-    rows = _find_list(raw) or []
-    out: dict = {}
-    for it in rows if isinstance(rows, list) else []:
-        if not isinstance(it, dict):
-            continue
-        sym = _coin_symbol(it)
-        close = _num(it.get("closePrice") or it.get("tradePrice")
-                     or it.get("trade_price") or it.get("currentPrice")
-                     or it.get("price"))
-        if not sym or close is None:
-            continue
-        # 등락 — Naver(%, fluctuationsRatio + code 2/5) 또는 Upbit(signed_change_rate ratio)
-        pct = _num(it.get("fluctuationsRatio"))
-        code = ((it.get("compareToPreviousPrice") or it.get("fluctuationsType")
-                 or {}).get("code"))
-        if pct is not None:                     # Naver convention
-            sign = -1.0 if code == "5" else 1.0
-            pct = sign * abs(pct)
-        else:                                   # Upbit native
-            scr = _num(it.get("signed_change_rate") or it.get("signedChangeRate"))
-            chg_t = str(it.get("change") or "").upper()
-            sgn = -1.0 if chg_t == "FALL" else 1.0
-            pct = ((scr * 100.0) if scr is not None and abs(scr) <= 1 else (scr or 0.0))
-            if scr is not None and chg_t in ("RISE", "FALL"):
-                pct = sgn * abs(pct)
-        prev = close / (1 + pct / 100.0) if pct else close
-        out[sym] = {"close": close, "prev": prev,
-                    "change": close - prev, "pct": pct}
+    if isinstance(raw, list):
+        rows = raw
+    elif isinstance(raw, dict):
+        rows = raw.get("result") or raw.get("datas") or raw.get("coins") or []
+    else:
+        rows = []
+    out = _parse_coins(rows)
     if out:
         _cache_write(_COIN_CACHE, out)
     else:
         return _cached(_COIN_CACHE, ttl=86400) or {}
+    return out
+
+
+def _parse_coins(rows) -> dict:
+    """coin/rank item 리스트 → {SYMBOL: {close, prev, change, pct}}. 순수(단위테스트).
+    nfTicker·tradePrice·changeValue·changeRate·change(RISING/FALLING)."""
+    out: dict = {}
+    for it in rows if isinstance(rows, list) else []:
+        if not isinstance(it, dict):
+            continue
+        sym = str(it.get("nfTicker") or it.get("exchangeTicker")
+                  or it.get("symbolCode") or "").upper().strip()
+        close = _num(it.get("tradePrice") or it.get("closePrice")
+                     or it.get("currentPrice"))
+        if not sym or close is None:
+            continue
+        chg = _num(it.get("changeValue"))
+        pct = _num(it.get("changeRate"))
+        ctype = str(it.get("change") or "").upper()
+        if ctype.startswith("FALL"):           # FALLING → 음수
+            chg = -abs(chg) if chg is not None else chg
+            pct = -abs(pct) if pct is not None else pct
+        elif ctype.startswith("RIS"):          # RISING → 양수
+            chg = abs(chg) if chg is not None else chg
+            pct = abs(pct) if pct is not None else pct
+        if chg is not None:
+            prev = close - chg
+        elif pct:
+            prev = close / (1 + pct / 100.0)
+        else:
+            prev = close
+        out[sym] = {"close": close, "prev": prev,
+                    "change": chg if chg is not None else (close - prev),
+                    "pct": pct if pct is not None else 0.0}
     return out
 
 
