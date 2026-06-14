@@ -105,8 +105,9 @@ CARD_SENTIMENT = [
     ("비트코인", "BTC-USD"),
     ("이더리움", "ETH-USD"),
     ("테더", "USDT-USD"),
+    ("USD코인", "USDC-USD"),   # 사용자 2026-06-14 테더 다음
+    ("리플", "XRP-USD"),       # 사용자 2026-06-14 리플↔솔라나 순서 교체
     ("솔라나", "SOL-USD"),
-    ("리플", "XRP-USD"),
     ("BNB", "BNB-USD"),
     ("도지코인", "DOGE-USD"),
 ]
