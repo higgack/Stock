@@ -86,7 +86,7 @@ def render_tw_highlow_page() -> str:
                 + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "TW",
                               show_vol=True, show_value=True, show_ind=True)
                 + '</div>' + HL_SORT_JS)
-    sub = (f"TWSE 전종목 당일 등락 상·하위 · 시총순·헤더 클릭 정렬 · 종목명=영문 · "
+    sub = (f"TWSE 전종목 당일 등락 상·하위 · 시총순·헤더 클릭 정렬 · 종목명=한글 · "
            f"업종·시총=yfinance · {(dt + ' 종가 기준 · ') if dt else ''}장중 30분"
            f"{(' · ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 급등·급락", sub, body,
@@ -117,11 +117,18 @@ def render_tw_highlow52_page() -> str:
             body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
-        # 미국 포맷 통일 — 시총·업종·정렬·업종분포. 거래량은 제거(yfinance vol
-        # 미populate, 사용자 2026-06-13). 종목명=티커(한글명).
-        from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
-                                        stock_panel)
-        hi, lo = sort_by_mcap(high), sort_by_mcap(low)
+        # 미국 포맷 통일 — 시총·업종·정렬·업종분포.
+        from bot.highlow_render import (HL_SORT_JS, enrich_for_panel,
+                                        ind_dist_line, sort_by_mcap, stock_panel)
+        # 종목명 = **렌더 시점** 한국어 해소(사용자 2026-06-14 '이름만 바꾸면
+        # 되지 왜 다시 다 하냐'). 옛 구조는 번역명을 스캔 캐시 rows 에 박아, 이름
+        # 표기를 바꿀 때마다 캐시 버전 bump → 전종목 1년 재스캔이 필요했음.
+        # enrich_for_panel(want_name) 이 렌더 때 TWSE 中文/yfinance longName →
+        # 한국어(translate_titles_kr, 영구캐시)로 덮어쓰므로, 앞으로 TW 이름 정책
+        # 변경 = 이 호출만 수정(재스캔 0). TW 전용 — TW 는 네이버 미지원이라 이름이
+        # 별도 translate 경로(문서화된 data-source 예외). 무버 패널과 동일 패턴.
+        hi = sort_by_mcap(enrich_for_panel(high, "TW", want_name=True))
+        lo = sort_by_mcap(enrich_for_panel(low, "TW", want_name=True))
         # 거래량/거래대금(=종가×거래량) — yfinance 스캔이 vol 주면 표시(사용자
         # 2026-06-14). 없으면 숨김(빈 컬럼 방지).
         _hv = any(r.get("vol") for r in hi + lo)

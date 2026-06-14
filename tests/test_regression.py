@@ -7536,6 +7536,16 @@ class TestVolumeColumn:
         src = open("bot/tw_pages.py", encoding="utf-8").read()
         assert "stock_panel" in src and "ind_dist_line" in src
 
+    def test_tw52_names_resolved_at_render(self):
+        # 종목명 = 렌더 시점 해소(사용자 2026-06-14 '이름만 바꾸면 되지 왜 다시 다
+        # 하냐'). 52주 render 가 enrich_for_panel(want_name=True) 로 이름을 렌더 때
+        # 덮어쓰므로, 이름 정책 변경에 캐시 버전 bump(전종목 재스캔) 불필요.
+        src = open("bot/tw_pages.py", encoding="utf-8").read()
+        assert 'enrich_for_panel(high, "TW", want_name=True)' in src   # 52주 신고가
+        assert 'enrich_for_panel(low, "TW", want_name=True)' in src    # 52주 신저가
+        # 무버 페이지도 동일 패턴(이름 렌더-타임) — 회귀 방지
+        assert 'enrich_for_panel(up, "TW", want_ind=True, want_name=True)' in src
+
     def test_us_stock_panel_volume_sortable(self):
         from bot.us_pages import _stock_panel
         h = _stock_panel("🔺 52주 신고가",
