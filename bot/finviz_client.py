@@ -798,7 +798,8 @@ def _industries_for(tickers: list, market: str | None) -> dict:
     """업종 enrich — CN/JP 는 네이버 업종맵(reutersIndustryName, reliable·yfinance
     .info 우회), 그 외(US/KR/TW/HK)는 _fetch_industries(GICS/yfinance). HK 는 네이버
     업종이 너무 sparse 해 야후로 (사용자 2026-06-14 'HK 급등급락 업종 야후기준').
-    네이버 맵 미스·실패 시 yfinance 폴백."""
+    HK 는 yfinance 우선이나 야후 정지/실패/sparse 시 **네이버 업종맵으로 메움**
+    (사용자 2026-06-14 '홍콩 급등락 업종 업데이트'). 네이버 맵 미스·실패 시 yfinance 폴백."""
     if market in ("CN_A", "JP"):
         try:
             from bot.naver_ranking_client import world_industry_map
@@ -814,6 +815,29 @@ def _industries_for(tickers: list, market: str | None) -> dict:
                 return got
         except Exception as exc:
             log.warning("naver 업종맵 (%s) → yfinance 폴백: %s", market, exc)
+        return _fetch_industries(tickers)
+    if market == "HK":
+        # yfinance 우선 → 빈/정지 시 네이버 업종맵 폴백 (야후 정지·sparse 메움).
+        got = _fetch_industries(tickers)
+        miss = [tk for tk in tickers if not got.get(tk)]
+        if miss:
+            try:
+                from bot.naver_ranking_client import world_industry_map
+                m = world_industry_map("HK")
+                if m:
+                    norm = {}      # 5자리↔4자리 zfill 정수 정규화
+                    for k, v in m.items():
+                        c = str(k).split(".")[0]
+                        if c.isdigit():
+                            norm.setdefault(str(int(c)), v)
+                    for tk in miss:
+                        c = str(tk).split(".")[0]
+                        v = m.get(tk) or (norm.get(str(int(c))) if c.isdigit() else None)
+                        if v:
+                            got[tk] = v
+            except Exception as exc:
+                log.warning("HK 네이버 업종 폴백 실패: %s", exc)
+        return got
     return _fetch_industries(tickers)
 
 
@@ -1305,6 +1329,8 @@ def _fetch_display_names(tickers: list) -> dict:
         return {}
     cache = _cached("highlow_names.json", ttl=365 * 86400) or {}
     missing = [t for t in tickers if t not in cache]
+    if yf_paused():           # YF_PAUSE → .info skip, 영구 캐시만 사용
+        missing = []
     if missing:
         from concurrent.futures import ThreadPoolExecutor  # _fetch_mcaps 패턴
 

@@ -7299,12 +7299,32 @@ class TestUpperLowerVolume:
             'sise_group_detail.naver?type=upjong&amp;no=278">반도체</a>')
         assert m and m.group(1) == "278" and "반도체" in m.group(2)
 
-    def test_cache_ttls_unified_5min(self):
-        # 사용자 2026-06-14 '엄마보드 2분·naver_sector 4분 → 모두 5분'.
+    def test_cache_ttls(self):
+        # 엄마보드 스냅샷 2분→5분(#368)→1분(사용자 2026-06-14 '데이터 주기 1분').
+        # naver_sector 는 5분 유지.
         import bot.market_overview as mo
         import bot.naver_sector_client as ns
-        assert mo._CACHE_TTL_SEC == 300       # 엄마보드(market.html) 스냅샷
-        assert ns._CACHE_TTL_SEC == 300       # 네이버 업종/테마/예탁금
+        assert mo._CACHE_TTL_SEC == 60        # 엄마보드 스냅샷 1분(페이지 재생성과 동기)
+        assert ns._CACHE_TTL_SEC == 300       # 네이버 업종/테마/예탁금 5분
+
+    def test_pause_keeps_naver_hk_industry_earnings(self, monkeypatch):
+        # 사용자 2026-06-14 '정지 중에도 US/HK 업종·TW/HK 실적 한국어'. 정지 게이트가
+        # 네이버 맵 빌드를 막던 버그 + HK 업종 yfinance→naver 폴백 + 스냅샷 게이트.
+        import bot.finviz_client as fc
+        import bot.naver_ranking_client as nv
+        monkeypatch.setattr(fc, "_fetch_industries", lambda tks, **k: {})  # yfinance 빈
+        monkeypatch.setattr(nv, "world_industry_map",
+                            lambda m: {"0700.HK": "Internet", "00005.HK": "Banks"})
+        got = fc._industries_for(["0700.HK", "0005.HK"], "HK")
+        assert got["0700.HK"] == "Internet" and got["0005.HK"] == "Banks"  # naver 폴백
+        # _prewarm_highlow 가 더 이상 정지 시 전체 skip 안 함(네이버 맵 빌드 유지)
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "yfinance 정지(YF_PAUSE) → 전체 skip" not in tb
+        # 스냅샷·_fetch_display_names 게이트 + TW 실적 中文→한글 + 1분
+        fcs = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert ".info skip" in fcs
+        mo = open("bot/market_overview.py", encoding="utf-8").read()
+        assert "yf_batch_snapshot.json" in mo and "TWSE 中文명" in mo
 
     def test_hk_naver_overlay_and_yfinance_industry(self):
         # 사용자 2026-06-14 'HK 신고저 거래량·거래대금·시총·종목명 네이버, 급등락
