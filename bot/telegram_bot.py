@@ -3562,28 +3562,26 @@ async def _on_startup(application) -> None:
     def _highlow_force_recompute():
         from bot.finviz_client import _CACHE_DIR
         marker = _CACHE_DIR / ".highlow_force"
-        ver = "2026-06-14-hk-cap-tw-en"
+        ver = "2026-06-14-batch-jp-overlay-mcap-filter-us-cn-ind"
         try:
             if marker.read_text(encoding="utf-8").strip() == ver:
                 return
         except OSError:
             pass
+        # 전 시장 52주/무버 재산출 + US/CN/HK/JP 업종·시총 네이버 맵 빌드.
+        # _prewarm_highlow 가 freshness 우회 _compute 직접 호출 → JP overlay·시총
+        # 필터·US/CN 업종·TW 영문/시총이 주말 stale 에 막히지 않고 즉시 반영.
         try:
-            from bot.intl_highlow import _compute as _ihc
-            _ihc("HK")
+            _prewarm_highlow()
         except Exception as exc:
-            log.warning("startup: HK 52주 강제 재산출 실패: %s", exc)
-        try:
-            from bot.tw_highlow import _compute_tw_highlow
-            _compute_tw_highlow()
-        except Exception as exc:
-            log.warning("startup: TW 52주 강제 재산출 실패: %s", exc)
+            log.warning("startup: 52주/무버 강제 재산출 실패: %s", exc)
         try:
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text(ver, encoding="utf-8")
         except OSError:
             pass
-        log.info("startup: HK/TW 52주 강제 재산출 완료 (캡·overlay·영문 반영)")
+        log.info("startup: 전 시장 52주/무버 강제 재산출 완료 "
+                 "(JP overlay·시총필터·US/CN 업종·TW 영문)")
     try:
         import threading as _hl_thr
         _hl_thr.Thread(target=_highlow_force_recompute, daemon=True,
