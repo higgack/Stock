@@ -123,8 +123,146 @@ def fetch_world_indices(codes: tuple) -> dict:
     return out
 
 
+_DOM_URL = "https://stock.naver.com/api/polling/domestic/index"
+_DOM_CACHE = "naver_domesticindex.json"
+
+
+def fetch_domestic_indices(codes: tuple) -> dict:
+    """{itemCode: {close, prev, change, pct}} — polling/domestic/index
+    (코스피/코스닥 등 국내지수, 사용자 2026-06-14 '다 네이버로'. VM probe 구조 확정:
+    itemCode·closePriceRaw·compareToPreviousClosePriceRaw·compareToPreviousPrice.code
+    (2상승/5하락)·fluctuationsRatioRaw). *Raw 필드 = 콤마 없는 숫자. 1분 캐시·
+    naver_paused·graceful. 응답이 bare list 또는 {datas:[...]} 양형 모두 수용."""
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    c = _cached(_DOM_CACHE, ttl=_TTL)
+    if isinstance(c, dict) and c:
+        return c
+    if naver_paused():
+        return _cached(_DOM_CACHE, ttl=86400) or {}
+    import requests
+    out: dict = {}
+    try:
+        r = requests.get(_DOM_URL, headers=_HDRS, timeout=12,
+                         params={"itemCodes": ",".join(codes)})
+        raw = r.json() if r.status_code == 200 else []
+    except Exception as exc:
+        log.warning("naver domesticindex fetch error: %s", exc)
+        return _cached(_DOM_CACHE, ttl=86400) or {}
+    rows = raw.get("datas") if isinstance(raw, dict) else raw
+    for it in rows if isinstance(rows, list) else []:
+        ic = str(it.get("itemCode") or "").strip()
+        close = _num(it.get("closePriceRaw") or it.get("closePrice"))
+        if not ic or close is None:
+            continue
+        chg = _num(it.get("compareToPreviousClosePriceRaw")
+                   or it.get("compareToPreviousClosePrice"))
+        code = (it.get("compareToPreviousPrice") or {}).get("code")
+        pctv = _num(it.get("fluctuationsRatioRaw") or it.get("fluctuationsRatio"))
+        sign = -1.0 if code == "5" else 1.0      # 5=하락, 2=상승
+        prev = (close - sign * chg) if chg is not None else close
+        out[ic] = {"close": close, "prev": prev,
+                   "change": (sign * abs(chg)) if chg is not None else 0.0,
+                   "pct": (sign * abs(pctv)) if pctv is not None else 0.0}
+    if out:
+        _cache_write(_DOM_CACHE, out)
+    else:
+        return _cached(_DOM_CACHE, ttl=86400) or {}
+    return out
+
+
+_FX_URL = "https://api.stock.naver.com/marketindex/exchangeWorld"
+_FX_CACHE = "naver_worldfx.json"
+
+
+def fetch_world_fx() -> dict:
+    """{reutersCode: {close, prev, change, pct}} — marketindex/exchangeWorld
+    (세계 환율 cross-rate, 사용자 2026-06-14 '다 네이버로'. VM probe: reutersCode·
+    closePrice·fluctuations·fluctuationsRatio·fluctuationsType.code 2상승/5하락).
+    전체 113쌍 반환(인자 무시) → 호출부가 필요한 코드만 사용(EURUSD/GBPUSD/USDCNY
+    등). ⚠️ 원/달러·엔/원 같은 KRW-base 는 미포함(세계 cross-rate 만, KRW 부재).
+    1분 캐시·naver_paused·graceful. 응답 bare list/{datas:[]} 양형 수용."""
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    c = _cached(_FX_CACHE, ttl=_TTL)
+    if isinstance(c, dict) and c:
+        return c
+    if naver_paused():
+        return _cached(_FX_CACHE, ttl=86400) or {}
+    import requests
+    out: dict = {}
+    try:
+        r = requests.get(_FX_URL, headers=_HDRS, timeout=12)
+        raw = r.json() if r.status_code == 200 else []
+    except Exception as exc:
+        log.warning("naver worldfx fetch error: %s", exc)
+        return _cached(_FX_CACHE, ttl=86400) or {}
+    rows = raw.get("datas") if isinstance(raw, dict) else raw
+    for it in rows if isinstance(rows, list) else []:
+        rc = str(it.get("reutersCode") or "").strip()
+        close = _num(it.get("closePrice"))
+        if not rc or close is None:
+            continue
+        chg = _num(it.get("fluctuations"))
+        pct = _num(it.get("fluctuationsRatio"))
+        code = (it.get("fluctuationsType") or {}).get("code")
+        sign = -1.0 if code == "5" else 1.0      # 5=하락, 2=상승
+        prev = (close - sign * chg) if chg is not None else close
+        out[rc] = {"close": close, "prev": prev,
+                   "change": (sign * abs(chg)) if chg is not None else 0.0,
+                   "pct": (sign * abs(pct)) if pct is not None else 0.0}
+    if out:
+        _cache_write(_FX_CACHE, out)
+    else:
+        return _cached(_FX_CACHE, ttl=86400) or {}
+    return out
+
+
+_KRFX_URL = "https://api.stock.naver.com/marketindex/exchange"
+_KRFX_CACHE = "naver_krfx.json"
+
+
+def fetch_kr_fx() -> dict:
+    """{reutersCode: {name, close, prev, change, pct}} — marketindex/exchange
+    normalList (원/달러·원/엔 등 KRW-base 환율, 사용자 2026-06-14. VM probe: 엔드포인트
+    200, reutersCode=FX_USDKRW 형식). exchangeWorld 와 동일 marketindex 패밀리라
+    item 구조(closePrice·fluctuations·fluctuationsRatio·fluctuationsType.code) 재사용.
+    전체 반환(인자 무시). 1분 캐시·naver_paused·graceful. normalList/datas/bare 수용."""
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    c = _cached(_KRFX_CACHE, ttl=_TTL)
+    if isinstance(c, dict) and c:
+        return c
+    if naver_paused():
+        return _cached(_KRFX_CACHE, ttl=86400) or {}
+    import requests
+    out: dict = {}
+    try:
+        r = requests.get(_KRFX_URL, headers=_HDRS, timeout=12)
+        raw = r.json() if r.status_code == 200 else {}
+    except Exception as exc:
+        log.warning("naver kr fx fetch error: %s", exc)
+        return _cached(_KRFX_CACHE, ttl=86400) or {}
+    if isinstance(raw, dict):
+        rows = raw.get("normalList") or raw.get("datas") or []
+    else:
+        rows = raw
+    for it in rows if isinstance(rows, list) else []:
+        rc = str(it.get("reutersCode") or it.get("symbolCode") or "").strip()
+        rec = _parse_item(it) if rc else None
+        if rc and rec and rec.get("close") is not None:
+            out[rc] = rec
+    if out:
+        _cache_write(_KRFX_CACHE, out)
+    else:
+        return _cached(_KRFX_CACHE, ttl=86400) or {}
+    return out
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    print("국내지수:", fetch_domestic_indices(("KOSPI", "KOSDAQ")))
+    _kf = fetch_kr_fx()
+    print("KR환율:", {k: _kf.get(k) for k in ("FX_USDKRW", "FX_JPYKRW")})
+    _fx = fetch_world_fx()
+    print("세계환율:", {k: _fx.get(k) for k in ("EURUSD", "USDCNY", "USDTWD")})
     d = fetch_commodities()
     print(f"원자재 {len(d)}종")
     for sc in ("CL", "BRN", "DCB", "NG", "GC", "SI", "HG", "AA", "NI",
