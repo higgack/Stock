@@ -1973,6 +1973,10 @@ def _render_index(records: list[dict]) -> str:
                     "5거래일수익률%": _res.get("raw", ""),
                     "알파%p": _res.get("alpha", ""),
                     "비용원": int(round(float(rec.get("cost_krw", 0) or 0))) or "",
+                    # 요약 전문 + 전체 리포트 전문 (사용자 2026-06-14 '요약과 전체
+                    # 리포트까지 모두 포함'). CSV 셀에 멀티라인 — JS esc 가 따옴표 처리.
+                    "요약": summary_text.strip(),
+                    "전체리포트": (rec.get("full_report") or "").strip(),
                 })
                 cards.append(f"""
                 <div class="card" id="card-{_html.escape(date)}-{_html.escape(ticker).replace('.','_')}" data-ticker="{_html.escape(ticker)}"{data_name_attr} data-market="{_card_mkt}" data-date="{_html.escape(date)}" data-href="{href}" data-lines="{_lines_attr}">

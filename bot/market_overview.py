@@ -37,7 +37,9 @@ _CACHE_TTL_SEC = 60  # 1 min
 # ~20 fast_info 병렬 호출하던 게 주범 → 라이브가는 _LIVE_TTL(10분)마다만 갱신,
 # 그 사이엔 download 일봉(1콜) + 직전 라이브 캐시 사용. fast_info 부하 ~10x↓.
 # (download 는 아시아 지수 하루 지연 이슈가 있어 fast_info 를 아예 끄진 않고 throttle.)
-_LIVE_TTL = 600
+_LIVE_TTL = 60      # fast_info 라이브 throttle — 1분 (사용자 2026-06-14
+#                     '전부 1분, fast_info 가 문제 아닌듯'). 회로차단 가드는 유지
+#                     (야후 rate-limit 시에만 skip→daily 폴백, 무해).
 _LAST_LIVE: dict = {}
 _LAST_LIVE_TS = 0.0
 
@@ -163,18 +165,6 @@ FRED_INDICATORS = [
 
 _DOLLAR_INDEX_TICKER = "DX-Y.NYB"
 
-# fast_info 라이브 화이트리스트 (사용자 2026-06-14 '(A) 스냅샷 라이브 축소') —
-# fast_info(quote 엔드포인트, 데이터센터 IP rate-limit 빈발)를 헤드라인 ~15 지수로
-# 제한. Asia 지수는 yfinance 일봉이 하루 지연(문서화 버그)이라 fast_info 필수, US/EU
-# 주요는 장중 intraday. 나머지(롱테일 환율/원자재/코인/이머징/선물)는 daily download
-# 로 충분(24h 시장이거나 종가만 보면 됨) → fast_info 버스트 ~60→~15 로 줄여 rate-
-# limit 재트립 빈도 급감. 화이트리스트 밖은 merge 단계에서 daily 봉으로 폴백.
-_LIVE_WHITELIST = {
-    "^KS11", "^KQ11", "^TWII", "^N225", "000300.SS", "000001.SS",
-    "^HSI", "^NSEI", "3033.HK",                       # Asia 지수 (일봉 지연 → live 필수)
-    "^GSPC", "^IXIC", "^DJI", "^GDAXI", "^FTSE",      # US/EU 주요 지수
-    "USDKRW=X",                                       # 헤드라인 환율
-}
 
 
 # ── yfinance batch fetch ────────────────────────────────────────────
@@ -260,11 +250,10 @@ def _fetch_yf_batch() -> dict[str, dict]:
     # throttle(10분) + 회로차단(쿨다운 중이면 download 만 사용)
     if _fi_ok and time.time() - _LAST_LIVE_TS >= _LIVE_TTL:
         try:
-            # 라이브는 헤드라인 화이트리스트만 (사용자 2026-06-14 '(A) 라이브 축소')
-            # — fast_info 버스트 ~60→~15. 나머지는 아래 merge 가 daily 봉으로 채움.
-            _live_set = [tk for tk in tickers if tk in _LIVE_WHITELIST]
+            # fast_info 라이브 — 전 종목(사용자 2026-06-14 '전부 1분으로'; (A) 축소
+            # 원복). 회로차단(_fi_ok)·throttle(1분)·daily 폴백이 가드.
             with ThreadPoolExecutor(max_workers=8) as pool:
-                for tk, v in pool.map(_live, _live_set):
+                for tk, v in pool.map(_live, tickers):
                     if v:
                         live[tk] = v
             if live:
