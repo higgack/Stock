@@ -65,13 +65,12 @@ CARD_ASIA = [
     ("JP 니케이 225", "nvi:.N225"),
     ("TW 대만 가권", "nvi:.TWII"),
     ("CN 상해 종합", "nvi:.SSEC"),
+    ("CN 심천 종합", "nvi:.SZSC"),  # 사용자 2026-06-14 (VM probe 확정 .SZSC=2,697.17)
     ("HK 홍콩 항셍", "nvi:.HSI"),
     ("VN 베트남 (VN-Index)", "nvi:.VNI"),  # 네이버 worldstock VN지수 (ETF→실지수, 2026-06-14)
+    ("VN 하노이 HNX", "nvi:.HNXI"),  # 사용자 2026-06-14 (VM probe 확정 .HNXI=302.49)
     ("IN 인도 Sensex", "nvi:.BSESN"),
-    # 사용자 2026-06-14: CSI300·홍콩H 제거, 인도네시아·말레이시아를 아시아 맨 밑으로
-    # (네이버 worldstock 코드 유지 — 야후 아님).
-    ("ID 인도네시아 JCI", "nvi:.JKSE"),
-    ("MY 말레이시아 KLCI", "nvi:.KLSE"),
+    # 인도네시아·말레이시아는 아메리카&이머징으로 이동(사용자 2026-06-14 재이동).
 ]
 
 # 사용자 2026-06-14 '다 네이버로' — 세계 cross-rate 는 네이버 exchangeWorld(nvx:).
@@ -126,11 +125,14 @@ CARD_US = [
     ("us S&P 500", "nvi:.INX"),
     ("us 나스닥 종합", "nvi:.IXIC"),
     ("us 다우 존스", "nvi:.DJI"),
-    ("us 러셀 2000", "nvi:.RUT"),
     ("다우 운송", "nvi:.DJT"),
     ("필라델피아 반도체", "nvi:.SOX"),
-    ("나스닥 바이오", "nvi:.NBI"),
-    ("KBW 은행", "nvi:.BKX"),
+    # 사용자 2026-06-14: 러셀·나스닥바이오·KBW 제거, 섹터 ETF 4종 추가(네이버
+    # worldstock/etf, nve:). VM probe 확정 — bare 티커 코드(XLF 53.34 등).
+    ("XLF 금융", "nve:XLF"),
+    ("XLV 헬스케어", "nve:XLV"),
+    ("XLP 필수소비", "nve:XLP"),
+    ("XLE 에너지", "nve:XLE"),
 ]
 
 # 사용자 2026-06-14: 선물에 운송(운임지수) 추가 — 중국컨테이너(CCFI)·BDI 건화물.
@@ -153,12 +155,14 @@ CARD_EU = [
     ("NL 네덜란드 AEX", "nvi:.AEX"),   # 사용자 2026-06-14 스위스 SMI 대신 네덜란드 AEX
 ]
 
-# 사용자 2026-06-14: 호주 ASX 추가. 인도네시아·말레이시아는 아시아 카드 맨 밑으로 이동.
+# 사용자 2026-06-14 순서: 호주·브라질·멕시코·아르헨티나·인도네시아·말레이시아.
 CARD_AMERICAS = [
-    ("AR 아르헨티나 MERVAL", "nvi:.MERV"),   # 사용자 2026-06-14 캐나다 TSX 대신 아르헨티나
     ("AU 호주 ASX 200", "nvi:.AXJO"),
     ("BR 브라질 Bovespa", "nvi:.BVSP"),
     ("MX 멕시코 IPC", "nvi:.MXX"),
+    ("AR 아르헨티나 MERVAL", "nvi:.MERV"),
+    ("ID 인도네시아 JCI", "nvi:.JKSE"),
+    ("MY 말레이시아 KLCI", "nvi:.KLSE"),
 ]
 
 ALL_CARDS = [
@@ -201,8 +205,9 @@ def _all_yf_tickers() -> list[str]:
         if items is None:
             continue
         for _, tk in items:
-            if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:", "nvk:", "nvf:", "nvc:")):
-                continue  # 네이버 (marketindex/worldstock/domestic/exchange/futures/coin)
+            if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:", "nvk:",
+                              "nvf:", "nvc:", "nve:")):
+                continue  # 네이버 (marketindex/worldstock/domestic/exchange/futures/coin/etf)
             tickers.append(tk)
     # 달러인덱스도 네이버(.DXY, marketindex/exchange)로 전환 — yfinance 완전 제거
     # (사용자 2026-06-14 '모두 네이버로'). _fetch_market_snapshot 가 별도 주입.
@@ -326,7 +331,7 @@ def _fetch_yf_batch() -> dict[str, dict]:
     # yfinance 무티커(두바이유/니켈/CCFI/BDI) 포함. 코드별 graceful —
     # 네이버 미반환 코드는 result 미주입(블랭크, 크래시 없음).
     _nv_codes, _nvi_codes, _nvd_codes = [], [], []
-    _nvx_codes, _nvk_codes, _nvf_codes, _nvc_codes = [], [], [], []
+    _nvx_codes, _nvk_codes, _nvf_codes, _nvc_codes, _nve_codes = [], [], [], [], []
     for _grp, _items in ALL_CARDS:
         if not _items:
             continue
@@ -345,6 +350,8 @@ def _fetch_yf_batch() -> dict[str, dict]:
                 _nvf_codes.append(_tk)
             elif _tk.startswith("nvc:"):
                 _nvc_codes.append(_tk)
+            elif _tk.startswith("nve:"):
+                _nve_codes.append(_tk)
     if _nv_codes:
         try:
             from bot.naver_marketindex import fetch_commodities
@@ -422,6 +429,17 @@ def _fetch_yf_batch() -> dict[str, dict]:
                                    "change": _rec["change"], "pct": _rec["pct"]}
         except Exception as exc:
             log.warning("market_overview: naver 코인 병합 실패: %s", exc)
+    if _nve_codes:                             # 미국 섹터 ETF (worldstock/etf)
+        try:
+            from bot.naver_marketindex import fetch_world_etf
+            _nve = fetch_world_etf(tuple(_t[4:] for _t in _nve_codes))
+            for _tk in _nve_codes:
+                _rec = _nve.get(_tk[4:])
+                if _rec and _rec.get("close") is not None:
+                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
+                                   "change": _rec["change"], "pct": _rec["pct"]}
+        except Exception as exc:
+            log.warning("market_overview: naver ETF 병합 실패: %s", exc)
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
