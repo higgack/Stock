@@ -313,6 +313,21 @@ def render_us_movers_page() -> str:
         # '거래량과 거래대금 모두'. 모든 자식은 기본 시총순(헤더로 등락률 재정렬).
         _is_nv = "네이버" in src
         up, down = sort_by_mcap(up), sort_by_mcap(down)
+        # 업종 render-time 백필 (사용자 2026-06-14 'US 급등락 업종 안 나옴') — 무버
+        # 캐시가 네이버 업종맵 생기기 전(stale 02:12)이라 ind=None. GICS/NASDAQ 벌크
+        # (캐시) + 네이버 USA 업종맵(캐시 읽기만)으로 즉시 채움. render-safe(.info 안 함·
+        # 네이버 fetch 안 함). 주말 session-fresh 라 재산출 대기 없이 표시.
+        try:
+            from bot.finviz_client import _cached, _fetch_industries
+            _miss = [r.get("ticker") for r in up + down if not r.get("ind")]
+            if _miss:
+                _bulk = _fetch_industries(_miss, allow_slow=False)   # 벌크 캐시(빠름)
+                _nv = _cached("naver_industry_US.json", ttl=7 * 86400) or {}
+                for r in up + down:
+                    if not r.get("ind"):
+                        r["ind"] = _bulk.get(r.get("ticker")) or _nv.get(r.get("ticker"))
+        except Exception:
+            pass
         body = ('<div class="grid">'
                 + _hpanel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "US",
                           _ind_dist_line(up), show_vol=_is_nv, show_value=_is_nv)
