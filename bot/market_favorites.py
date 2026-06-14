@@ -175,14 +175,33 @@ def reorder_favorite(ticker: str, direction: str) -> bool:
     return True
 
 
+_FAV_CACHE: "list | None" = None
+_FAV_CACHE_TS: float = 0.0
+_FAV_TTL = 180   # 관심종목 가격 캐시 3분 — 위젯 반복 로드(브라우저 /api/favorites)가
+#                  매번 fast_info 를 버스트해 회로차단을 재트립하던 것 차단 (사용자
+#                  2026-06-14 '야후 멈춤 너무 힘들어'). dashboard_server 단일 프로세스 캐시.
+
+
 def get_favorites_with_prices() -> list[dict]:
-    """Return favorites with current_price + refreshed estimates via yfinance."""
+    """Return favorites with current_price + refreshed estimates via yfinance.
+
+    가격 캐시 3분 + fast_info 회로차단 게이트 — 야후 rate-limit 재트립 차단."""
+    global _FAV_CACHE, _FAV_CACHE_TS
+    import time as _time
+    if _FAV_CACHE is not None and (_time.time() - _FAV_CACHE_TS) < _FAV_TTL:
+        return _FAV_CACHE
     import yfinance as yf
     from concurrent.futures import ThreadPoolExecutor
 
     favorites = _load()
     if not favorites:
         return favorites
+    # fast_info 허용? 회로차단 쿨다운/정지 중이면 skip → .info/history 폴백
+    try:
+        from bot.finviz_client import fast_info_ok, yf_paused
+        _fi_allowed = fast_info_ok() and not yf_paused()
+    except Exception:
+        _fi_allowed = True
 
     def _refresh(f: dict) -> None:
         try:
@@ -190,12 +209,19 @@ def get_favorites_with_prices() -> list[dict]:
             price = None
             info = None
             prev_close = None
-            try:
-                fi = tk.fast_info
-                price = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
-                prev_close = getattr(fi, "previous_close", None)
-            except Exception:
-                pass
+            if _fi_allowed:
+                try:
+                    fi = tk.fast_info
+                    price = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
+                    prev_close = getattr(fi, "previous_close", None)
+                except Exception as _exc:
+                    try:    # rate-limit 이면 회로차단 발동(전 소비처 skip·30분 쿨다운)
+                        from bot.finviz_client import (fast_info_trip,
+                                                       is_rate_limit_error)
+                        if is_rate_limit_error(_exc):
+                            fast_info_trip("favorites")
+                    except Exception:
+                        pass
             if price is None:
                 try:
                     info = tk.info or {}
@@ -294,4 +320,6 @@ def get_favorites_with_prices() -> list[dict]:
     with ThreadPoolExecutor(max_workers=min(len(favorites), 8)) as pool:
         pool.map(_refresh, favorites)
 
+    _FAV_CACHE = favorites
+    _FAV_CACHE_TS = _time.time()
     return favorites
