@@ -123,8 +123,56 @@ def fetch_world_indices(codes: tuple) -> dict:
     return out
 
 
+_DOM_URL = "https://stock.naver.com/api/polling/domestic/index"
+_DOM_CACHE = "naver_domesticindex.json"
+
+
+def fetch_domestic_indices(codes: tuple) -> dict:
+    """{itemCode: {close, prev, change, pct}} — polling/domestic/index
+    (코스피/코스닥 등 국내지수, 사용자 2026-06-14 '다 네이버로'. VM probe 구조 확정:
+    itemCode·closePriceRaw·compareToPreviousClosePriceRaw·compareToPreviousPrice.code
+    (2상승/5하락)·fluctuationsRatioRaw). *Raw 필드 = 콤마 없는 숫자. 1분 캐시·
+    naver_paused·graceful. 응답이 bare list 또는 {datas:[...]} 양형 모두 수용."""
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    c = _cached(_DOM_CACHE, ttl=_TTL)
+    if isinstance(c, dict) and c:
+        return c
+    if naver_paused():
+        return _cached(_DOM_CACHE, ttl=86400) or {}
+    import requests
+    out: dict = {}
+    try:
+        r = requests.get(_DOM_URL, headers=_HDRS, timeout=12,
+                         params={"itemCodes": ",".join(codes)})
+        raw = r.json() if r.status_code == 200 else []
+    except Exception as exc:
+        log.warning("naver domesticindex fetch error: %s", exc)
+        return _cached(_DOM_CACHE, ttl=86400) or {}
+    rows = raw.get("datas") if isinstance(raw, dict) else raw
+    for it in rows if isinstance(rows, list) else []:
+        ic = str(it.get("itemCode") or "").strip()
+        close = _num(it.get("closePriceRaw") or it.get("closePrice"))
+        if not ic or close is None:
+            continue
+        chg = _num(it.get("compareToPreviousClosePriceRaw")
+                   or it.get("compareToPreviousClosePrice"))
+        code = (it.get("compareToPreviousPrice") or {}).get("code")
+        pctv = _num(it.get("fluctuationsRatioRaw") or it.get("fluctuationsRatio"))
+        sign = -1.0 if code == "5" else 1.0      # 5=하락, 2=상승
+        prev = (close - sign * chg) if chg is not None else close
+        out[ic] = {"close": close, "prev": prev,
+                   "change": (sign * abs(chg)) if chg is not None else 0.0,
+                   "pct": (sign * abs(pctv)) if pctv is not None else 0.0}
+    if out:
+        _cache_write(_DOM_CACHE, out)
+    else:
+        return _cached(_DOM_CACHE, ttl=86400) or {}
+    return out
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    print("국내지수:", fetch_domestic_indices(("KOSPI", "KOSDAQ")))
     d = fetch_commodities()
     print(f"원자재 {len(d)}종")
     for sc in ("CL", "BRN", "DCB", "NG", "GC", "SI", "HG", "AA", "NI",

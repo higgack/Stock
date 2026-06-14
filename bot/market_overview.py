@@ -60,15 +60,15 @@ except OSError:
 # Code, VM probe 확정). 니케이/대만/상해/항셍/Sensex 네이버. 코스피/코스닥(폴링
 # domestic)·CSI300·항셍테크·Nifty 는 reutersCode 미확정이라 yfinance 유지(후속).
 CARD_ASIA = [
-    ("KR 코스피", "^KS11"),
-    ("KR 코스닥", "^KQ11"),
+    ("KR 코스피", "nvd:KOSPI"),    # 네이버 polling/domestic (사용자 2026-06-14)
+    ("KR 코스닥", "nvd:KOSDAQ"),
     ("JP 니케이 225", "nvi:.N225"),
     ("TW 대만 가권", "nvi:.TWII"),
     ("CN CSI 300", "000300.SS"),
     ("CN 상해 종합", "nvi:.SSEC"),
     ("HK 홍콩 항셍", "nvi:.HSI"),
     ("HK 항셍테크", "3033.HK"),  # ^HSTECH 지수는 yfinance 무데이터 → 추종 ETF(CSOP)로 대체
-    ("IN Nifty 50", "^NSEI"),
+    ("VN 베트남 (VNM ETF)", "VNM"),  # 사용자 2026-06-14 Nifty 50 자리에 베트남
     ("IN 인도 Sensex", "nvi:.BSESN"),
 ]
 
@@ -144,13 +144,15 @@ CARD_EU = [
     ("CH 스위스 SMI", "^SSMI"),
 ]
 
+# 사용자 2026-06-14: 캐나다 다음 호주 ASX 추가, 베트남은 아시아 카드로 이동,
+# 사우디 제거 → 말레이시아 KLCI.
 CARD_AMERICAS = [
     ("CA 캐나다 TSX", "^GSPTSE"),
+    ("AU 호주 ASX 200", "^AXJO"),
     ("BR 브라질 Bovespa", "^BVSP"),
     ("MX 멕시코 IPC", "^MXX"),
-    ("VN 베트남 (VNM ETF)", "VNM"),  # ^VNINDEX 는 yfinance 무데이터 → VanEck 베트남 ETF 로 대체
     ("ID 인도네시아 JCI", "^JKSE"),
-    ("SA 사우디 Tadawul", "^TASI.SR"),
+    ("MY 말레이시아 KLCI", "^KLSE"),
 ]
 
 ALL_CARDS = [
@@ -193,8 +195,8 @@ def _all_yf_tickers() -> list[str]:
         if items is None:
             continue
         for _, tk in items:
-            if tk.startswith("nv:") or tk.startswith("nvi:"):
-                continue  # 네이버 marketindex/worldstock (yfinance 아님 — skip)
+            if tk.startswith(("nv:", "nvi:", "nvd:")):
+                continue  # 네이버 marketindex/worldstock/domestic (yfinance 아님 — skip)
             tickers.append(tk)
     tickers.append(_DOLLAR_INDEX_TICKER)
     return tickers
@@ -311,9 +313,10 @@ def _fetch_yf_batch() -> dict[str, dict]:
     # 네이버 병합 (사용자 2026-06-14 '다 네이버로'). fast_info 무관.
     #   nv:  = marketindex(energy/metals/agri/transport) — 원자재·귀금속·운임지수
     #   nvi: = worldstock/index(reutersCode) — 세계지수(니케이/VIX/필반/이탈리아 등)
+    #   nvd: = polling/domestic/index(itemCode) — 국내지수(코스피/코스닥)
     # yfinance 무티커(두바이유/니켈/CCFI/BDI) 포함. 코드별 graceful —
     # 네이버 미반환 코드는 result 미주입(블랭크, 크래시 없음).
-    _nv_codes, _nvi_codes = [], []
+    _nv_codes, _nvi_codes, _nvd_codes = [], [], []
     for _grp, _items in ALL_CARDS:
         if not _items:
             continue
@@ -322,6 +325,8 @@ def _fetch_yf_batch() -> dict[str, dict]:
                 _nv_codes.append(_tk)
             elif _tk.startswith("nvi:"):
                 _nvi_codes.append(_tk)
+            elif _tk.startswith("nvd:"):
+                _nvd_codes.append(_tk)
     if _nv_codes:
         try:
             from bot.naver_marketindex import fetch_commodities
@@ -344,6 +349,17 @@ def _fetch_yf_batch() -> dict[str, dict]:
                                    "change": _rec["change"], "pct": _rec["pct"]}
         except Exception as exc:
             log.warning("market_overview: naver 세계지수 병합 실패: %s", exc)
+    if _nvd_codes:
+        try:
+            from bot.naver_marketindex import fetch_domestic_indices
+            _nvd = fetch_domestic_indices(tuple(_t[4:] for _t in _nvd_codes))
+            for _tk in _nvd_codes:
+                _rec = _nvd.get(_tk[4:])
+                if _rec and _rec.get("close") is not None:
+                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
+                                   "change": _rec["change"], "pct": _rec["pct"]}
+        except Exception as exc:
+            log.warning("market_overview: naver 국내지수 병합 실패: %s", exc)
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
