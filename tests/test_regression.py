@@ -8913,8 +8913,9 @@ class TestNaverCommodityCharts:
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
         assert "fetch_commodity_spark" in src              # 원자재 스파크 네이버
         assert "fetch_naver_index_history" in src          # 지수 스파크 네이버(S&P/나스닥/VIX)
-        assert "if sid in nv_spark:" in src                # 루프 분기(com+idx)
-        assert 'if _kind(s) not in ("com", "idx")' in src  # 야후 chart 배치서 원자재+지수 제외
+        assert "fetch_naver_crypto_history" in src          # 코인 스파크 네이버(BTC/ETH)
+        assert "if sid in nv_spark:" in src                # 루프 분기(com+idx+coin)
+        assert 'if _kind(s) not in ("com", "idx", "coin")' in src  # 야후 chart 배치서 전부 제외
         assert "_fetch_macro_naver_values(all_yf_sids)" in src   # 값은 전체 네이버
 
     def test_index_history_graceful_and_endpoint(self):
@@ -8926,6 +8927,17 @@ class TestNaverCommodityCharts:
         src = open("bot/naver_marketindex.py", encoding="utf-8").read()
         assert "securityService/index" in src              # 사용자 확인 엔드포인트
         assert "raw.get(\"datas\")" in src                  # bare list/{datas:[]} 양형 수용
+
+    def test_crypto_history_graceful_and_endpoint(self):
+        # 코인 history (사용자 Network 탭 확인: front-api/chart/cryptoChartData,
+        # {result:[{closePrice(숫자),tradeBaseAt}]} 오래된순). VM 확인 BTC=200.
+        from bot.naver_marketindex import fetch_naver_crypto_history
+        assert fetch_naver_crypto_history("") == []        # 코드 없으면 []
+        assert isinstance(fetch_naver_crypto_history("BTC"), list)   # 샌드박스 graceful
+        src = open("bot/naver_marketindex.py", encoding="utf-8").read()
+        assert "cryptoChartData" in src
+        assert 'raw.get("result")' in src                  # {result:[...]} 추출
+        assert "series[-count:]" in src                    # 오래된순 → 역순 안 함
 
     def test_sentiment_gauge_uses_naver_vix(self):
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()

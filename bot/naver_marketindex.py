@@ -190,6 +190,55 @@ def fetch_naver_index_history(reuters_code: str, count: int = 30) -> list[float]
     return s if isinstance(s, list) else []
 
 
+_CRYPTO_HIST_URL = "https://m.stock.naver.com/front-api/chart/cryptoChartData"
+
+
+def fetch_naver_crypto_history(nf_ticker: str, count: int = 30,
+                               market: str = "KRW") -> list[float]:
+    """front-api/chart/cryptoChartData → 코인 일봉 close 시계열(오래된→최신). nfTicker=
+    BTC/ETH/SOL (fetch_naver_coins 동일). UPBIT KRW(카드 값과 통화 일치). 응답
+    {result:[{closePrice(숫자), tradeBaseAt}]} **오래된순**(VM 확인 2026-06-14) →
+    역순 안 함, 최근 count 점. 1h 캐시·naver_paused·graceful []."""
+    if not nf_ticker:
+        return []
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    ck = f"naver_cryptohist_{market}_{nf_ticker}_{count}.json"
+    c = _cached(ck, ttl=3600)
+    if isinstance(c, list) and c:
+        return c
+    if naver_paused():
+        s = _cached(ck, ttl=86400)
+        return s if isinstance(s, list) else []
+    import requests
+    from datetime import datetime, timedelta
+    kst = datetime.utcnow() + timedelta(hours=9)          # KST(UPBIT) 기준
+    frm = kst - timedelta(days=max(count * 2, 45))
+    to = kst + timedelta(days=1)
+    params = {"exchangeType": "UPBIT", "nfTicker": nf_ticker, "marketType": market,
+              "type": "days", "interval": 1,
+              "from": frm.strftime("%Y-%m-%dT00:00:00"),
+              "to": to.strftime("%Y-%m-%dT23:59:59")}
+    try:
+        r = requests.get(_CRYPTO_HIST_URL, headers=_HDRS, params=params, timeout=10)
+        raw = r.json() if r.status_code == 200 else {}
+    except Exception as exc:
+        log.warning("naver cryptohist %s: %s", nf_ticker, exc)
+        s = _cached(ck, ttl=86400)
+        return s if isinstance(s, list) else []
+    rows = raw.get("result") if isinstance(raw, dict) else raw
+    series: list[float] = []
+    for it in rows if isinstance(rows, list) else []:
+        v = _num((it or {}).get("closePrice"))            # 오래된→최신 순 그대로
+        if v is not None:
+            series.append(v)
+    series = series[-count:] if count else series
+    if series:
+        _cache_write(ck, series)
+        return series
+    s = _cached(ck, ttl=86400)
+    return s if isinstance(s, list) else []
+
+
 _IDX_CACHE = "naver_worldindex.json"
 
 

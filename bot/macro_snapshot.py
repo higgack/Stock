@@ -407,17 +407,20 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     # idx=securityService/index/{reuters}/price (둘 다 사용자 VM 확인). pageSize=30
     # 페이지네이션. 야후 chart 배치에서 제외 → 야후 부하 경감(코인/fx 만 yf 차트 잔존).
     nv_spark: dict[str, list[float]] = {}
-    _nv_sids = [s for s in all_yf_sids if _kind(s) in ("com", "idx")]
-    yf_tickers = [s for s in all_yf_sids if _kind(s) not in ("com", "idx")]
+    _nv_sids = [s for s in all_yf_sids if _kind(s) in ("com", "idx", "coin")]
+    yf_tickers = [s for s in all_yf_sids if _kind(s) not in ("com", "idx", "coin")]
     if _nv_sids:
         try:
             from concurrent.futures import ThreadPoolExecutor
             from bot import naver_marketindex as _nmh
 
             def _cs(s):
-                k, code = _MACRO_NAVER[s]    # 카드 1개월=30점(1p). pageSize 캡 회피.
-                return s, (_nmh.fetch_commodity_spark(code, 30) if k == "com"
-                           else _nmh.fetch_naver_index_history(code, 30))
+                k, code = _MACRO_NAVER[s]    # 카드 1개월=30점(1p). com=marketindex·
+                if k == "com":               # idx=securityService·coin=front-api/crypto.
+                    return s, _nmh.fetch_commodity_spark(code, 30)
+                if k == "idx":
+                    return s, _nmh.fetch_naver_index_history(code, 30)
+                return s, _nmh.fetch_naver_crypto_history(code, 30)   # coin
             with ThreadPoolExecutor(max_workers=8) as _pool:
                 for _s, _ser in _pool.map(_cs, _nv_sids):
                     nv_spark[_s] = _ser
@@ -462,8 +465,8 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     if _prev not in (None, 0):
                         change_pct = change / _prev * 100
                 if sid in nv_spark:
-                    # 원자재(com)·지수(idx) — 네이버 history(yfinance 무티커/throttle
-                    # 무관). 카드=최근 1개월(뒤 22 거래일). 값과 같은 네이버 소스라
+                    # 원자재(com)·지수(idx)·코인(coin) — 네이버 history(yfinance 무티커/
+                    # throttle 무관). 카드=최근 1개월(뒤 22점). 값과 같은 네이버 소스라
                     # 라인 끝이 현재가와 자연 싱크(사용자 2026-06-14 '차트 다 네이버').
                     _ser = nv_spark.get(sid) or []
                     chart_spark = _ser
