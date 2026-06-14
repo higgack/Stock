@@ -52,6 +52,7 @@ DOMESTIC = [
 # 비트·이더·솔만(BNB·도지·리플 삭제). 니켈은 yfinance 무티커(네이버 metals 전용)
 # 라 이름 확정 후 추가.
 GLOBAL = [
+    ("us_ffr", "미국 FFR", "%", "fred", "FEDFUNDS", 2),   # 사용자 2026-06-14 맨앞 재추가
     ("us_2y", "미국 2Y", "%", "fred", "DGS2", 2),
     ("us_10y", "미국 10Y", "%", "fred", "DGS10", 2),
     ("us_cpi", "미국 CPI", "", "fred", "CPIAUCSL", 2),
