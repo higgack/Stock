@@ -7396,9 +7396,11 @@ class TestUpperLowerVolume:
         assert fc._compute_highlow_from(["7203.T"], {}, "nx.json", "s", "JP")["high"] == []
         assert fc._compute_movers_from(["7203.T"], {}, "nx.json", "s", "JP")["up"] == []
         assert fc.set_yf_pause(False) is False and fc.yf_paused() is False  # 재개·마커 삭제
-        # 배선: prewarm·kick·earnings·명령·자동정지
+        # 배선: prewarm·kick·earnings·명령·자동정지 + 채널 라우팅(PTB CommandHandler
+        # 는 channel_post 에 안 fire → on_channel_post 분기 필수)
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "cmd_yfpause" in tb and ".yf_autopause_v1" in tb and "yf_paused" in tb
+        assert "_handle_yfpause" in tb and 'first_word == "yfpause"' in tb
         for f in ("bot/intl_highlow.py", "bot/tw_highlow.py"):
             assert "if not yf_paused()" in open(f, encoding="utf-8").read()
         assert "yf_paused" in open("bot/market_overview.py", encoding="utf-8").read()
