@@ -204,7 +204,8 @@ def _all_yf_tickers() -> list[str]:
             if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:", "nvk:", "nvf:", "nvc:")):
                 continue  # 네이버 (marketindex/worldstock/domestic/exchange/futures/coin)
             tickers.append(tk)
-    tickers.append(_DOLLAR_INDEX_TICKER)
+    # 달러인덱스도 네이버(.DXY, marketindex/exchange)로 전환 — yfinance 완전 제거
+    # (사용자 2026-06-14 '모두 네이버로'). _fetch_market_snapshot 가 별도 주입.
     return tickers
 
 
@@ -1275,7 +1276,19 @@ def fetch_market_snapshot() -> dict[str, Any]:
         yf_data = yf_fut.result()
         fred_data = fred_fut.result()
 
-    dollar_idx = yf_data.pop(_DOLLAR_INDEX_TICKER, None)
+    # 달러인덱스 = 네이버 marketindex/exchange '.DXY' (사용자 2026-06-14 '모두 네이버').
+    # fetch_kr_fx 1분 캐시 재사용(원/달러도 같은 엔드포인트). 실패 시 row 생략(graceful).
+    dollar_idx = None
+    try:
+        from bot.naver_marketindex import fetch_kr_fx
+        _dxy = fetch_kr_fx().get(".DXY")
+        if _dxy and _dxy.get("close") is not None:
+            dollar_idx = {"close": _dxy["close"], "change": _dxy["change"],
+                          "pct": _dxy["pct"]}
+    except Exception as exc:
+        log.warning("market_overview: naver 달러인덱스(.DXY) 실패: %s", exc)
+    if dollar_idx is None:                      # 폴백(혹시 .DXY 미반환): 옛 yfinance
+        dollar_idx = yf_data.pop(_DOLLAR_INDEX_TICKER, None)
 
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
