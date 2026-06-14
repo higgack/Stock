@@ -8967,6 +8967,29 @@ class TestNaverCommodityCharts:
         assert "vix_value if isinstance(vix_value" in src   # 네이버 VIX 우선
 
 
+class TestLookupProgressiveTabs:
+    """종목검색 상세 탭 진행 로딩 — '한꺼번에 안 뜨고 먼저 끝나면 그거부터 순서대로'
+    (사용자 2026-06-14). 스냅샷 120s 공유 캐시(core/full/per-pane 1회 계산) +
+    per-pane(뉴스·리서치) 개별 fetch → 끝나는 대로 주입. full 은 최종 권위 렌더."""
+
+    def test_render_pane_graceful(self):
+        from bot.dashboard import render_lookup_detail, _LOOKUP_SI_CACHE
+        assert isinstance(_LOOKUP_SI_CACHE, dict)
+        # 샌드박스 야후 불가 → si None → 빈 문자열(크래시 0)
+        assert render_lookup_detail("AAPL", pane="si-news") == ""
+        assert isinstance(render_lookup_detail("AAPL", enrich=False), str)
+
+    def test_progressive_wiring(self):
+        d = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_LOOKUP_SI_CACHE" in d                       # 스냅샷 공유 캐시
+        assert "function injectPane" in d                    # 단일 탭 주입
+        assert "get('p_news')" in d and "get('p_research')" in d   # per-pane 병렬
+        assert "return get('full')" in d                     # full 최종 렌더(폴백) 유지
+        s = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert '"p_news": "si-news"' in s and '"p_research": "si-research"' in s
+        assert "pane=pane" in s                              # 핸들러→렌더 배선
+
+
 class TestWorldIndicesCodesetCache:
     """worldstock/index 공유 캐시 코드셋 병합 — 부분집합 fetch 가 전체 카드를
     블랭크로 만들던 회귀(2026-06-14: macro_snapshot 이 .INX/.IXIC/.VIX 3종만 써

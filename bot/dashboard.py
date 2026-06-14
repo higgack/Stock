@@ -13267,24 +13267,38 @@ def _lookup_chart_html(ticker: str) -> str:
 </section>"""
 
 
-def render_lookup_detail(ticker: str, enrich: bool = True) -> str:
+_LOOKUP_SI_CACHE: dict = {}   # ticker → (ts, si) : core/full/per-pane 단계 스냅샷 공유
+
+
+def render_lookup_detail(ticker: str, enrich: bool = True, pane=None) -> str:
     """지연로딩 detail fragment (data-lk 파트). 차트는 shell 이 먼저 렌더.
 
-    2단계 로딩(사용자 2026-06-11 '탭 순서대로 채움'): phase=core(enrich=
-    False)는 스냅샷만 — 헤더·탭·기업/컨센서스/밸류/재무 등 앞쪽 탭이 먼저
-    채워짐. phase=full(enrich=True)은 enrichment(뉴스·리서치 — 뒤쪽 탭)까지
-    포함해 교체. 라이브 quote 오버레이 스크립트는 full 에만(스냅샷 이중
-    실행 방지)."""
-    # Build stock_info via the same pipeline as NOAH analyses
-    si = None
-    try:
-        from bot.stock_snapshot import collect_stock_snapshot
-        si = collect_stock_snapshot(ticker)
-    except Exception:
-        pass
+    다단계 로딩: phase=core(enrich=False)는 스냅샷만 — 앞쪽 탭 먼저. phase=full 은
+    enrichment(뉴스·리서치) 포함 교체. **pane=si-news|si-research** 는 그 탭 하나만
+    렌더(enrichment 후) → '나머지 탭'을 끝나는 대로 순서대로 채움(사용자 2026-06-14
+    '한꺼번에 안 뜨고 먼저 끝나면 그거부터'). 라이브 quote 오버레이는 full 에만.
 
-    # Enrich missing tabs (news/research/consensus) on-demand — full 만
-    if si and enrich:
+    ⚡ collect_stock_snapshot 는 120s 공유 캐시(_LOOKUP_SI_CACHE) — core/full/per-pane
+    이 느린 스냅샷(CN AKShare·KR DART 등)을 1회만 계산해 full·탭이 빨리 뜸."""
+    si = None
+    _tk = (ticker or "").upper()
+    _hit = _LOOKUP_SI_CACHE.get(_tk)
+    if _hit and (time.time() - _hit[0]) < 120:
+        si = _hit[1]
+    if si is None:
+        try:
+            from bot.stock_snapshot import collect_stock_snapshot
+            si = collect_stock_snapshot(ticker)
+        except Exception:
+            pass
+        if si:
+            _LOOKUP_SI_CACHE[_tk] = (time.time(), si)
+            if len(_LOOKUP_SI_CACHE) > 48:
+                _LOOKUP_SI_CACHE.pop(next(iter(_LOOKUP_SI_CACHE)))
+
+    # Enrich missing tabs (news/research/consensus) — full·per-pane 만. 멱등
+    # (_ensure_detail_enrichment 내부 if-not 가드)라 병렬 호출에 안전.
+    if si and (enrich or pane):
         try:
             _ensure_detail_enrichment(ticker, si)
         except Exception:
@@ -13294,6 +13308,12 @@ def render_lookup_detail(ticker: str, enrich: bool = True) -> str:
 
     # Render stock info (header cards + tabs + panes)
     si_parts = _render_stock_info_html(rec)
+
+    # 단일 탭만(per-pane 진행 로딩) — 그 pane 만 반환, 프론트가 같은 id 자리에 교체.
+    if pane:
+        _ph = (si_parts.get("panes", {}) if si_parts else {}).get(pane, "")
+        return f'<div data-lk="pane">{_ph}</div>' if _ph else ""
+
     si_header = si_parts.get("header", "") if si_parts else ""
     si_tabs = si_parts.get("tabs", "") if si_parts else ""
     si_tab_js = si_parts.get("tab_js", "") if si_parts else ""
@@ -13356,9 +13376,20 @@ function inject(h){
 }
 function get(phase){return fetch('../api/lookup_detail?ticker='+encodeURIComponent(T)+'&phase='+phase)
   .then(function(r){if(!r.ok)throw 0;return r.text();});}
-/* 2단계: core(스냅샷 — 헤더·탭·앞쪽 탭들 먼저) → full(뉴스·리서치 등 뒤쪽
-   탭 enrichment 포함 교체) — 탭 순서대로 채워짐(사용자 2026-06-11). */
-get('core').then(function(h){inject(h);return get('full');})
+/* 단일 탭(뉴스·리서치)만 끝나는 대로 같은 id 자리에 교체 — '나머지 탭'을 한꺼번에
+   안 기다리고 순서대로 표시(사용자 2026-06-14). full 이 최종 권위 렌더로 덮음. */
+function injectPane(h){if(!h)return;var tmp=document.createElement('div');tmp.innerHTML=h;
+  var src=tmp.querySelector('.si-pane');if(!src)return;
+  var dst=document.getElementById(src.id);
+  if(dst){var act=dst.classList.contains('active');
+    dst.parentNode.replaceChild(src,dst);if(act)src.classList.add('active');}
+  document.body.appendChild(tmp);runScripts(tmp);}
+/* core(스냅샷 앞쪽 탭) → 뉴스·리서치를 병렬로 미리 주입(끝나는 대로) → full
+   (enrichment 전체 + 라이브 quote 오버레이)이 최종 교체. 개별 실패는 무해(full 채움). */
+get('core').then(function(h){inject(h);
+  get('p_news').then(injectPane).catch(function(){});
+  get('p_research').then(injectPane).catch(function(){});
+  return get('full');})
 .then(function(h){inject(h);})
 .catch(function(){
   /* core 실패 시 full 단독 재시도 → 그래도 실패면 안내 */
