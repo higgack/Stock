@@ -26,11 +26,20 @@ import yfinance as yf
 log = logging.getLogger("bot.market_overview")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "market_overview"
-# 스냅샷(지수/환율 yfinance 배치 1콜 + FRED 일캐시) — 1분(사용자 2026-06-14
-# '데이터 주기 1분'). 페이지 재생성(1분)과 동기 → 숫자도 1분마다 갱신. yfinance
-# 1배치/분(~20티커)이라 부하 작음 + YF_PAUSE 시 skip. Finviz/Naver 업종 TTL 은
-# 각 클라이언트가 별도 보유(안티봇 경계 — 건드리지 말 것).
+# 스냅샷 — download 일봉 배치는 1분(사용자 2026-06-14 '데이터 주기 1분', 1콜/분
+# 이라 가벼움), 라이브 fast_info 는 별도 10분 throttle(_LIVE_TTL — rate-limit
+# 회피). YF_PAUSE 시 둘 다 skip. Finviz/Naver 업종 TTL 은 각 클라이언트가 별도
+# 보유(안티봇 경계 — 건드리지 말 것).
 _CACHE_TTL_SEC = 60  # 1 min
+
+# fast_info(라이브 quote API) 호출 throttle — yahoo 가 fast_info 만 쉽게 rate-limit
+# (사용자 2026-06-14 /health: 재개 즉시 재차단, download 는 OK). 홈 스냅샷이 1분마다
+# ~20 fast_info 병렬 호출하던 게 주범 → 라이브가는 _LIVE_TTL(10분)마다만 갱신,
+# 그 사이엔 download 일봉(1콜) + 직전 라이브 캐시 사용. fast_info 부하 ~10x↓.
+# (download 는 아시아 지수 하루 지연 이슈가 있어 fast_info 를 아예 끄진 않고 throttle.)
+_LIVE_TTL = 600
+_LAST_LIVE: dict = {}
+_LAST_LIVE_TS = 0.0
 
 # 배포-인지 캐시 솔트 (사용자 2026-06-12 '대시보드 반영 너무 느려') —
 # git reset --hard 배포가 이 모듈을 갱신하면 mtime 이 바뀜 → 솔트 포함
@@ -224,13 +233,20 @@ def _fetch_yf_batch() -> dict[str, dict]:
         return tk, None
 
     live: dict[str, tuple[float, float]] = {}
-    try:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            for tk, v in pool.map(_live, tickers):
-                if v:
-                    live[tk] = v
-    except Exception as exc:
-        log.warning("market_overview: fast_info live error: %s", exc)
+    global _LAST_LIVE, _LAST_LIVE_TS
+    if time.time() - _LAST_LIVE_TS >= _LIVE_TTL:   # throttle — 10분마다만 fast_info
+        try:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                for tk, v in pool.map(_live, tickers):
+                    if v:
+                        live[tk] = v
+            if live:
+                _LAST_LIVE = dict(live)
+                _LAST_LIVE_TS = time.time()
+        except Exception as exc:
+            log.warning("market_overview: fast_info live error: %s", exc)
+    else:
+        live = dict(_LAST_LIVE)        # throttle 중 — 직전 라이브가 재사용(download 보완)
 
     # 3) merge — live(오늘) 우선, 없으면 daily 폴백. live 가 글리치(KLAC
     # 클래스: fast_info 분할 미조정 → ±75% 초과 phantom 등락)면 daily 봉
