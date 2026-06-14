@@ -5285,8 +5285,9 @@ class TestUsMovers:
         def ts(*a):
             return datetime(*a, tzinfo=timezone.utc).timestamp()
         wed_1500 = ts(2026, 6, 10, 15, 0)          # 수요일 장중
-        assert _movers_cache_is_fresh(wed_1500 - 1200, wed_1500)       # 20분 (30분 내)
-        assert not _movers_cache_is_fresh(wed_1500 - 2400, wed_1500)   # 40분 (30분 초과)
+        # 무버 장중 TTL = 1분 (사용자 2026-06-14 '급등급락 1분, 대만제외')
+        assert _movers_cache_is_fresh(wed_1500 - 30, wed_1500)        # 30초 (1분 내)
+        assert not _movers_cache_is_fresh(wed_1500 - 90, wed_1500)    # 90초 (1분 초과)
         sat_noon = ts(2026, 6, 13, 12, 0)          # 토요일 (장 밖)
         fri_2200 = ts(2026, 6, 12, 22, 0)          # 금 마감(21:30) 후 산출
         fri_2000 = ts(2026, 6, 12, 20, 0)          # 금 장중 산출 (마감 미반영)
