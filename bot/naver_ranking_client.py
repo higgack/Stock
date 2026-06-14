@@ -285,12 +285,14 @@ def world_name_map(market: str, max_pages: int = 40) -> dict:
     return out
 
 
-def world_stock_map(market: str, max_pages: int = 40) -> dict:
+def world_stock_map(market: str, max_pages: int = 60) -> dict:
     """{yfinance-접미사 ticker → {name, vol, value(억), mcap(억)}} — 네이버 worldstock
-    (marketValue 정렬 페이지네이션). HK 52주 신고저에 거래량·거래대금·시총·종목명을
-    **네이버 기준**으로 채움(사용자 2026-06-14 'HK 신고저 네이버로'). yfinance HK
-    vol/시총이 자주 비던 것 해소. intraday vol/value → 30분 캐시. 백그라운드 산출
-    경로(_compute_highlow_from)에서 호출이라 동기 빌드(렌더 아님). graceful·429 면역."""
+    (marketValue 정렬 페이지네이션). JP/HK 52주 신고저에 거래량·거래대금·시총·종목명을
+    **네이버 기준**으로 채움. intraday vol/value → 30분 캐시. 백그라운드 산출 경로
+    (_compute_highlow_from)에서 호출이라 동기 빌드(렌더 아님). graceful·429 면역.
+    ⚠️ 시총 내림차순이라 소형주(신저가에 많음)는 깊은 페이지 — max_pages 40→60(3000
+    종목)으로 커버 확대(사용자 2026-06-14 '일본 신저가 소형주 시총 —'). 그래도 최소형
+    주는 네이버 worldstock 미수록이라 한계."""
     cfg = _INTL_MOVER_EX.get(market)
     if not cfg:
         return {}
