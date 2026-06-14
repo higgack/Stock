@@ -17,7 +17,7 @@ log = logging.getLogger("bot.tw_pages")
 # (href, label). KR 은 naver _shell 과 동일 셋(kr52 가 _tw_shell 렌더라 여기 포함).
 _MARKET_NAV = {
     "KR": [("theme", "🏭 업종별 시세(전체)"), ("kr52", "📈 신고가·신저가"),
-           ("highlow", "🚀 급등·급락")],
+           ("highlow", "🚀 급등·급락"), ("nxt", "🌙 NXT 장전·장후")],
     "TW": [("tw52", "📈 신고가·신저가"), ("twhighlow", "🚀 급등·급락")],
     "JP": [("jp52", "📈 신고가·신저가"), ("jpmovers", "🚀 급등·급락")],
     "HK": [("hk52", "📈 신고가·신저가"), ("hkmovers", "🚀 급등·급락")],

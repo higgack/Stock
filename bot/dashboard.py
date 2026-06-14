@@ -12665,7 +12665,7 @@ def _render_market_page(data: dict) -> str:
     parts.append(f"""
   <div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
     <h2>다가오는 실적</h2>
-    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(한국 IR·미국·일·대·홍 실적)</a>
+    <a href="earnings" style="color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px">📅 실적 캘린더(한국 IR·미국·일·홍·대 실적)</a>
     <span class="ts" style="margin-left:auto">{_html.escape(_earn_ts)}</span>
   </div>
   <div class="tbl-filter">
