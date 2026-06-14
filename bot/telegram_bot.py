@@ -1835,27 +1835,22 @@ def _format_screener_domains_list() -> list[str]:
         cur.append(footer)
         chunks.append("\n".join(cur).rstrip())
 
-    # Chunk(s) N — L4 sub-industry compact (1 line per slug, 2026-06-14).
-    # L4 = L3 아래 세부 sub-industry (예: Semiconductors → Memory/Foundry/...).
-    # 슬러그 직접 또는 L4 전용 별칭으로 접근 (메뉴 autocomplete 제외 — cap 보존).
+    # L4 sub-industry — 요약만 (2026-06-14). L4 는 272+ 라 텔레그램 전수 나열은
+    # 6+ 메시지 스팸 → 카운트 + 접근법만, 전체 목록은 대시보드(🎯 L4 collapsible).
+    # 슬러그 직접(/screener_<L3>_<세부>) 또는 L3 별칭(/screener 반도체→L3) 접근.
     l4_items = by_layer.get("L4_SUBINDUSTRY", [])
     if l4_items:
-        l4_header = (f"━━━ <b>🎯 L4 Sub-industry</b> ({len(l4_items)}개) — "
-                     "각 L3 아래 세부 (슬러그/별칭 타이핑) ━━━")
-        cur = [l4_header, ""]
-        cur_len = _utf16("\n".join(cur))
-        cap = 3800
-        for d in sorted(l4_items, key=lambda x: x["slug"]):
-            slug = d["slug"]
-            line = f"/screener_{slug} — {d['domain']}"
-            add_len = _utf16(line) + 1
-            if cur_len + add_len > cap and len(cur) > 2:
-                chunks.append("\n".join(cur).rstrip())
-                cur = [f"{l4_header} (계속)", ""]
-                cur_len = _utf16("\n".join(cur))
-            cur.append(line)
-            cur_len += add_len
-        chunks.append("\n".join(cur).rstrip())
+        chunks.append(
+            f"━━━ <b>🎯 L4 Sub-industry</b> ({len(l4_items)}개) ━━━\n\n"
+            "각 L3 아래 GICS sub-industry 깊이 (예: Semiconductors → Memory · "
+            "Foundry · Equipment · Logic AI ...).\n\n"
+            "• 전체 목록 + 검색: 대시보드 <code>screener_domains.html</code> 🎯 L4 섹션\n"
+            "• 직접 실행: <code>/screener_&lt;L3슬러그&gt;_&lt;세부&gt;</code> "
+            "(예 <code>/screener_semiconductors_memory</code>)\n"
+            "• 또는 L4 전용 별칭 <code>/screener dram</code> · <code>sic</code> · "
+            "<code>wfe</code> · <code>npu</code> 등\n"
+            "• <code>/screener &lt;L3별칭&gt;</code> (예 반도체)는 L3 전체 유지"
+        )
 
     return chunks
 

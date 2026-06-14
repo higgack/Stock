@@ -2218,21 +2218,26 @@ NOAH /ticker 의 `_fetch_returns` 는 5거래일 그대로 유지 (정책 분리
   compat). `_validate()` 가 layer 값 + binding_layer_taxonomy/regional_
   concentration 최소 2개 (Energy/Real Estate L2 가 공식 L3 2개씩) 체크.
 
-  **L4 Sub-industry themes (2026-06-14 신설 — GICS sub-industry 깊이)**:
-  각 L3 의 binding_layer 를 독립 lens 로 분리. 1차 = Semiconductors L4 8개
-  (`semiconductors_memory`/`_foundry`/`_equipment`/`_logic_ai`/`_logic_
-  mobile`/`_analog`/`_eda`/`_specialty`). slug = `<L3slug>_<세부>` (parent
-  prefix 로 전역 unique). ⛔ **별칭은 부모 L3 와 충돌 금지** — 부모
-  semiconductors 가 이미 `memory`/`foundry`/`eda`/`메모리`/`파운드리` 별칭
-  보유(registry first-wins, `semiconductors` 가 알파벳상 먼저 claim) →
-  L4 는 **전용 별칭만**(`dram`/`wfe`/`sic`/`npu`/`wafer_fab` 등). `/screener
-  <부모별칭>` 은 L3 유지, L4 는 slug 직접·전용 별칭·`/screener_list` 로 접근.
-  ⛔ **L4 는 `set_my_commands` 메뉴 제외** (Telegram 100/scope cap 보존 —
-  full L4 rollout 78+ 모듈 대비). 핸들러(`_register_dynamic_screener_
-  handlers`)는 등록되므로 `/screener_<slug>` 명령은 동작, 메뉴 autocomplete
-  에만 미노출. `/screener_list`(🎯 L4 그룹) + 대시보드 `screener_domains.
-  html`(`.l4` 파랑 섹션) 양쪽 노출. 다른 L3 의 L4 확장도 같은 패턴
-  (전용 별칭 + 메뉴 제외) 으로 모듈 drop.
+  **L4 Sub-industry themes (2026-06-14 — 전 GICS L4 comprehensive, 272개)**:
+  각 L3 의 binding_layer 를 독립 lens 로 분리. **전 48 L3 커버**(사용자
+  '실제 GICS L4 레벨 다 넣어'). 구성: (a) Semiconductors L4 8개 = **수작업
+  고품질**(`semiconductors_memory`/`_foundry`/`_equipment`/`_logic_ai`/`_logic
+  _mobile`/`_analog`/`_eda`/`_specialty`, 전용 별칭 dram/wfe/sic/npu...),
+  (b) 나머지 47 L3 × binding_layer = 264개 = **`scripts/gen_l4_modules.py`
+  자동 생성**(부모 L3 binding_layer_taxonomy + regional_concentration 재구조화,
+  환각 0·실제 종목/카탈리스트 보존, 지역 그룹 split 으로 binding≥2). 새 L3
+  추가/수정 시 `python -m scripts.gen_l4_modules` 재실행(idempotent, 자동생성
+  마커 '자동 생성(부모 L3' 로 식별·교체, 수작업 semis 보존).
+  slug = `<L3slug>_<세부>` (parent prefix 전역 unique). ⛔ **별칭 부모 L3 와
+  충돌 금지** — registry first-wins(`semiconductors` 가 `semiconductors_memory`
+  보다 먼저 claim) → 자동생성은 generic 토큰(big/diversified/group 등) 별칭화
+  제외(junk 방지, 슬러그 직접 접근 기본). `/screener <부모별칭>`(반도체)=L3
+  유지. ⛔ **L4 는 `set_my_commands` 메뉴 제외**(Telegram 100/scope cap —
+  272개라 필수). 핸들러는 등록 → `/screener_<slug>` 명령 동작, 메뉴만 미노출.
+  `/screener_list` 는 **L4 요약만**(272 전수 나열 시 6+ 메시지 스팸 →
+  카운트+접근법), 전체 목록은 대시보드 `screener_domains.html`(🎯 `.l4` 파랑
+  collapsible)이 전수 enumerate. 고가치 L4 는 semis 처럼 수작업 업그레이드
+  가능(자동생성 마커 제거 후 hand-curate → 재생성 시 보존).
 
   **L3 Industry themes (48, 사용자 정식 분류 sub-industry 전체)** —
   Phase B 2026-05-29 ✅ 한 batch 로 전체 ship. 각 L3 모듈 ~100-150 줄,
