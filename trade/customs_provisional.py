@@ -442,8 +442,9 @@ def _mom2_span(mom: Optional[float]) -> str:
     if mom is None:
         return ""
     cls = "pos" if mom >= 0 else "neg"
-    return (f" <span class='ind-prov-{cls}' style='font-size:11px;"
-            f"opacity:.85'>MoM {fmt_pct(mom)}</span>")
+    # MoM 을 YoY 와 동일 크기·불투명도로 (사용자 2026-06-14 'MoM 도 YoY 랑 같은 크기')
+    return (f" <span class='ind-prov-{cls}' style='font-size:.82em;"
+            f"opacity:.95'>MoM {fmt_pct(mom)}</span>")
 
 
 def _yoy2_span(yoy: Optional[float]) -> str:

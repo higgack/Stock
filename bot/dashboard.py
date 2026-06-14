@@ -2022,10 +2022,10 @@ def _render_index(records: list[dict]) -> str:
         ' · <a href="screener.html">📊 Screener</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
+        ' · <a href="blog.html">📝 블로그</a>'
         ' · <a href="daily_byte.html">📊 Daily Byte</a>'
         ''
         f' · <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>'
-        ' · <a href="blog.html">📝 블로그</a>'
     )
 
     # Market filter buttons (show only if >1 market present)
@@ -12514,9 +12514,9 @@ def _render_market_page(data: dict) -> str:
     &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="screener.html">📊 Screener</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
+    &middot; <a href="blog.html">📝 블로그</a>
     &middot; <a href="daily_byte.html">📊 Daily Byte</a>
     &middot; <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>
-    &middot; <a href="blog.html">📝 블로그</a>
     &nbsp;|&nbsp;
     <a href="realestate.html">🏠 부동산</a>
   </div>
