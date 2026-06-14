@@ -64,11 +64,11 @@ CARD_ASIA = [
     ("KR 코스닥", "nvd:KOSDAQ"),
     ("JP 니케이 225", "nvi:.N225"),
     ("TW 대만 가권", "nvi:.TWII"),
-    ("CN CSI 300", "000300.SS"),
+    ("CN CSI 300", "nvi:.CSI300"),   # 네이버 worldstock (VM probe 확정, 사용자 2026-06-14)
     ("CN 상해 종합", "nvi:.SSEC"),
     ("HK 홍콩 항셍", "nvi:.HSI"),
-    ("HK 항셍테크", "3033.HK"),  # ^HSTECH 지수는 yfinance 무데이터 → 추종 ETF(CSOP)로 대체
-    ("VN 베트남 (VNM ETF)", "VNM"),  # 사용자 2026-06-14 Nifty 50 자리에 베트남
+    ("HK 항셍테크", "3033.HK"),  # .HSTECH 네이버 무데이터 → 추종 ETF(CSOP) yfinance 유지
+    ("VN 베트남 (VN-Index)", "nvi:.VNI"),  # 네이버 worldstock VN지수 (ETF→실지수, 2026-06-14)
     ("IN 인도 Sensex", "nvi:.BSESN"),
 ]
 
@@ -136,8 +136,8 @@ CARD_FUTURES = [
     ("us 다우 존스 선물", "YM=F"),
     ("us 나스닥 100 선물", "NQ=F"),
     ("us 러셀 2000 선물", "RTY=F"),
-    ("중국컨테이너 운임 (CCFI)", "nv:CCFI"),
     ("BDI 건화물 운임", "nv:BADI"),
+    ("중국컨테이너 운임 (CCFI)", "nv:CCFI"),
 ]
 
 CARD_EU = [
