@@ -201,6 +201,9 @@ _INTL_MOVER_EX = {
     "JP": [("TOKYO", ".T")],
     "HK": [("HONG_KONG", ".HK")],
     "CN_A": [("SHANGHAI", ".SS"), ("SHENZHEN", ".SZ")],
+    # US — 52주 시총 overlay 용(접미사 없음). VM probe 2026-06-14: NASDAQ/NYSE/
+    # AMEX 전부 marketValue 채워짐 → fast_info 대신 네이버 시총(rate-limit 면역).
+    "US": [("NASDAQ", ""), ("NYSE", ""), ("AMEX", "")],
 }
 _INTL_MOVER_LABEL = {"JP": "도쿄(TSE)", "HK": "홍콩(HKEX)", "CN_A": "상하이+선전"}
 
