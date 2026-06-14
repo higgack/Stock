@@ -289,9 +289,16 @@ def fetch_us_prepost_movers() -> dict:
             mt = 0.0
         if _prepost_fresh(mt):
             return stale
+    # 연장거래 창(미국 장전 4:00–9:30 · 장후 16:00–20:00 ET) 밖이면 스캔 안 함
+    # (사용자 2026-06-14 '계속 새로 시작'). 주말·휴장에 캐시 부재 시 전미국 47배치
+    # 스캔을 매 페이지 접근마다 kick → 무의미(직전 거래일 데이터)·무겁고, 배포
+    # 재시작에 매번 살해돼 영영 미완 → no-cache → 반복. 창 안일 때만 kick.
+    in_win = _in_extended_window(datetime.now(timezone.utc))
     st = prepost_status()
     age = time.time() - (st.get("ts") or 0)
-    if st.get("state") == "failed" and age < 300:
+    if not in_win:
+        pass                                  # 장 마감 — 스캔 안 함(stale 서빙)
+    elif st.get("state") == "failed" and age < 300:
         pass
     elif st.get("state") == "running" and age < 1800:
         pass
@@ -299,8 +306,9 @@ def fetch_us_prepost_movers() -> dict:
         _kick_refresh()
     if stale is not None:
         return stale
+    # 창 밖이면 building=False → 페이지가 '연장거래 시간에 확인' 안내(스캔 표시 X).
     return {"up": [], "down": [], "ts": "", "source": "", "session": "",
-            "building": True, "status": st}
+            "building": in_win, "status": st}
 
 
 if __name__ == "__main__":
