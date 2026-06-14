@@ -13,6 +13,11 @@ from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
 
 log = logging.getLogger("bot.us_pages")
 
+# 연장거래 창 라벨 — ET(미국 거래 기준) + 한국시간 병기 (CLAUDE.md 시간표기 KST 정책).
+# 한국시간은 동부 서머타임(EDT, +13h) 기준; 서머타임 해제(EST) 시 +1h.
+_EXT_WINDOW = ("장전 4:00–9:30 · 장후 16:00–20:00 ET = 한국시간 장전 17:00–22:30 · "
+               "장후 익일 05:00–09:00 (서머타임 기준 · 해제 시 +1h)")
+
 # 신고저 테이블 헤더 클릭 정렬 (사용자 2026-06-11 '종목·현재가·등락률·시총
 # 나래비'). data-* raw 값 기준, 클릭 시 desc→asc 토글 + 화살표. 외부 의존 0.
 _HL_SORT_JS = """
@@ -371,7 +376,7 @@ def render_us_prepost_page() -> str:
                 detail = _html.escape(str(st.get("detail") or ""))
                 body = (f'<div class="empty">⚠️ 최근 산출 실패'
                         + (f' ({ts_lb})' if ts_lb else '') + f' — {detail}<br>'
-                        '연장거래(장전 4:00–9:30 · 장후 16:00–20:00 ET)에만 데이터가 '
+                        f'연장거래({_EXT_WINDOW})에만 데이터가 '
                         '있습니다. 정규장 중·장 완전 종료 시에는 직전 연장 스냅샷을 '
                         '보여줍니다.</div>')
             elif st.get("state") == "running":
@@ -386,8 +391,8 @@ def render_us_prepost_page() -> str:
                 body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전 미국 상장 '
                         '연장거래 스캔(수 분 소요). 잠시 후 새로고침해 주세요.</div>')
         else:
-            body = ('<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
-                    '연장거래(장전 4:00–9:30 · 장후 16:00–20:00 ET) 시간에 '
+            body = (f'<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
+                    f'연장거래({_EXT_WINDOW}) 시간에 '
                     '확인해 주세요.</div>')
     else:
         from bot.highlow_render import sort_by_mcap, stock_panel as _hpanel
