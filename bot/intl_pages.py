@@ -41,11 +41,6 @@ def render_intl_highlow52_page(market: str) -> str:
         from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                         stock_panel)
         hi, lo = sort_by_mcap(high), sort_by_mcap(low)
-        # JP 시총 100억엔↑만 (사용자 2026-06-14 '일본 100억엔 이상'). 네이버 overlay
-        # 가 mcap 채운 뒤 필터.
-        if market == "JP":
-            from bot.highlow_render import filter_min_mcap
-            hi, lo = filter_min_mcap(hi, 100), filter_min_mcap(lo, 100)
         # KR: 종목명만(한글)·거래량 O(네이버). JP/CN/HK(yfinance): 티커+한글명·
         # 거래량 X(yfinance vol 미populate, 사용자 2026-06-13). 업종은 전 시장 표시.
         _kr = market == "KR"
@@ -79,8 +74,8 @@ def render_intl_highlow52_page(market: str) -> str:
         _ind_lbl = "업종=네이버 · "
     elif market == "HK":   # 사용자 2026-06-14 'HK 거래량·시총 네이버·업종 야후'
         _ind_lbl = "거래량·거래대금·시총·종목명=네이버 · 업종=yfinance · "
-    elif market == "JP":   # 사용자 2026-06-14 'JP 시총 네이버·100억엔↑'
-        _ind_lbl = "시총 100억엔↑ · 거래량·거래대금·시총·종목명=네이버 · "
+    elif market == "JP":   # 사용자 2026-06-14 'JP 시총 네이버'
+        _ind_lbl = "거래량·거래대금·시총·종목명=네이버 · "
     else:
         _ind_lbl = "업종=yfinance · "
     sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}장중 1h"
@@ -117,10 +112,6 @@ def render_intl_movers_page(market: str) -> str:
         # 모든 자식 기본 시총순(사용자 2026-06-14, 헤더로 등락률 재정렬).
         _o = dict(show_vol=True, show_value=True, show_ind=True)
         up, down = sort_by_mcap(up), sort_by_mcap(down)
-        # JP 시총 100억엔↑만 (사용자 2026-06-14 '일본 100억엔 이상').
-        if market == "JP":
-            from bot.highlow_render import filter_min_mcap
-            up, down = filter_min_mcap(up, 100), filter_min_mcap(down, 100)
         body = ('<div class="grid">'
                 + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", market,
                               ind_dist_line(up), **_o)
@@ -130,11 +121,10 @@ def render_intl_movers_page(market: str) -> str:
     from bot.highlow_render import clean_source as _clean_src
     src = _html.escape(_clean_src(data.get("source") or f"{flag} 당일 등락"))
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고').
-    _mc_note = "시총 100억엔↑ · " if market == "JP" else ""   # 사용자 2026-06-14
     # 업종 소스 정직 표기 — CN/JP=네이버 우선+야후 폴백, HK=야후 우선+네이버 폴백.
     _ind_src = ("업종=네이버+yfinance" if market in ("CN_A", "JP")
                 else "업종=yfinance+네이버" if market == "HK" else "업종=네이버")
-    sub = (f"{flag} 당일 등락 상·하위 30 · {_mc_note}{src} · 시총순·헤더 클릭 정렬 · "
+    sub = (f"{flag} 당일 등락 상·하위 30 · {src} · 시총순·헤더 클릭 정렬 · "
            f"{_ind_src} · 장중 30분" + (f" · {ts} 기준" if ts else ""))
     _active = {"JP": "jpmovers", "CN_A": "cnmovers", "HK": "hkmovers"}.get(market, "hkmovers")
     return _tw_shell(f"{flag} 급등·급락", sub, body,
