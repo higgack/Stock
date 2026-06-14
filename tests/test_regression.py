@@ -7315,7 +7315,7 @@ class TestUpperLowerVolume:
         assert got["0700.HK"] == "YF-Ind"      # HK 업종=yfinance
         # (2) _compute_highlow_from 에 HK worldstock overlay 배선
         fsrc = open("bot/finviz_client.py", encoding="utf-8").read()
-        assert 'if tag == "HK":' in fsrc and "world_stock_map" in fsrc
+        assert 'if tag in ("HK", "JP"):' in fsrc and "world_stock_map" in fsrc
         # (3) world_stock_map graceful(미지원 시장 빈, 오프라인 graceful)
         from bot.naver_ranking_client import world_stock_map
         assert world_stock_map("US") == {}      # worldstock 미대상
@@ -7338,6 +7338,52 @@ class TestUpperLowerVolume:
         assert "9999.HK" not in out                 # 소형 탈락
         monkeypatch.setattr(nv, "world_stock_map", lambda m: {})
         assert ih._cap_by_liquidity_hk(full, 2) == full[:2]   # 맵 부재 폴백
+
+    def test_min_mcap_filter_and_jp_overlay(self, monkeypatch):
+        # 사용자 2026-06-14 batch — US ≥$1B·JP ≥100억엔 시총 필터 + JP 네이버 overlay.
+        from bot.highlow_render import filter_min_mcap
+        items = [{"mcap": 50}, {"mcap": 5}, {"mcap": None}, {"mcap": 10}]
+        assert [x["mcap"] for x in filter_min_mcap(items, 10)] == [50, 10]  # 5·None 제외
+        # JP overlay (직접 매칭) + HK overlay (zfill 정수 매칭)
+        import bot.finviz_client as fc
+        import bot.naver_ranking_client as nv
+        monkeypatch.setattr(nv, "world_stock_map", lambda m: {
+            "7203.T": {"mcap": 500.0, "name": "도요타"}} if m == "JP"
+            else {"00700.HK": {"mcap": 42000.0, "name": "텐센트"}})
+        jp = [{"ticker": "7203.T", "mcap": None}]
+        fc._naver_worldstock_overlay(jp, "JP")
+        assert jp[0]["mcap"] == 500.0 and jp[0]["name"] == "도요타"
+        hk = [{"ticker": "0700.HK", "mcap": None}]
+        fc._naver_worldstock_overlay(hk, "HK")
+        assert hk[0]["mcap"] == 42000.0          # 0700↔00700 매칭
+        # 배선: _compute_highlow_from 이 HK/JP overlay·TW persist 호출
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert 'if tag in ("HK", "JP"):' in src and "_naver_worldstock_overlay" in src
+        assert 'elif tag == "TW":' in src and "_persist_mcap_overlay" in src
+        # US/JP 시총 필터 배선
+        us = open("bot/us_pages.py", encoding="utf-8").read()
+        assert "filter_min_mcap" in us and "$1B↑" in us
+        ip = open("bot/intl_pages.py", encoding="utf-8").read()
+        assert 'market == "JP"' in ip and "filter_min_mcap" in ip and "100억엔↑" in ip
+
+    def test_tw_persist_mcap_overlay(self, monkeypatch):
+        # 사용자 2026-06-14 'TW 52주 시총 안 떠' — 52주 compute 도 enrich 와 같은
+        # persist 파일 공유(yfinance None 시 직전값).
+        import bot.finviz_client as fc
+        store: dict = {}
+        monkeypatch.setattr(fc, "_cached", lambda n, ttl=0: store.get(n))
+        monkeypatch.setattr(fc, "_cache_write", lambda n, o: store.__setitem__(n, o))
+        fc._persist_mcap_overlay([{"ticker": "2330.TW", "mcap": 1000.0}], "TW")  # seed
+        rows = [{"ticker": "2330.TW", "mcap": None}]
+        fc._persist_mcap_overlay(rows, "TW")
+        assert rows[0]["mcap"] == 1000.0          # 복원
+        assert "enrich_mcap_TW.json" in store     # enrich 와 같은 파일
+
+    def test_intl_earnings_empty_fallback(self):
+        # 사용자 2026-06-14 '다가오는 실적 미국만' — intl 빈 결과 시 최근 비어있지
+        # 않은 캐시 폴백(배포 salt 리셋·yfinance 장애 휘발 방지).
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert "if not results:" in src and "earnings_{market}_*.json" in src
 
 
 class TestHighlowRenderShared:

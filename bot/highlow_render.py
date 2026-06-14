@@ -209,6 +209,12 @@ def sort_by_mcap(items: list) -> list:
                                          -(it.get("mcap") or 0)))
 
 
+def filter_min_mcap(items: list, min_eok: float) -> list:
+    """시총(억, 현지통화/USD) min_eok 이상만 — 소형주 노이즈 제거(사용자 2026-06-14:
+    US ≥$1B=10억$, JP ≥100억엔). mcap None(미확보)은 제외(임계 확인 불가)."""
+    return [it for it in items if (it.get("mcap") or 0) >= min_eok]
+
+
 _ENRICH_CACHE: dict = {}
 _ENRICH_TTL = 600   # 10분 — render 비용 amortize
 

@@ -736,6 +736,21 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
                         r["name"] = kr.get(e) or e
             except Exception as exc:
                 log.warning("intl earnings 한글명 폴백 (%s): %s", market, exc)
+    # 결과 빈 경우(yfinance .calendar 일시 장애·배포 _CODE_SALT 리셋) — 최근
+    # 비어있지 않은 캐시로 폴백(사용자 2026-06-14 '다가오는 실적 미국만 나옴' —
+    # intl 휘발 방지). 빈 결과는 캐시에 안 써 prior 를 가리지 않음.
+    if not results:
+        try:
+            for p in sorted(cache_dir.glob(f"earnings_{market}_*.json"),
+                            key=lambda q: q.stat().st_mtime, reverse=True):
+                if p == cache_file:
+                    continue
+                prior = json.loads(p.read_text())
+                if prior:
+                    return prior
+        except Exception:
+            pass
+        return results
     try:
         cache_file.write_text(json.dumps(results, ensure_ascii=False))
     except Exception:

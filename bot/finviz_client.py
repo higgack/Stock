@@ -888,39 +888,16 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         # JP 銘柄名·TWSE 약칭(南亞科 류)을 스킵했음 — 헬퍼가 둘 다 해소(네이티브명
         # 직접 번역). US/KR 은 헬퍼가 no-op (영문/pykrx 한글 유지).
         _backfill_korean_names(out["high"] + out["low"], tag)
-        # HK — 거래량/거래대금/시총/종목명을 **네이버 worldstock** 으로 채움(사용자
-        # 2026-06-14 'HK 신고저 네이버 기준'). yfinance HK vol/시총이 자주 비어
-        # 컬럼 숨겨지던 것 해소. yfinance 52주 검출은 유지(네이버 52주 sort 부재),
-        # 표시 필드만 네이버 overlay. 키는 zfill(4) 정규화로 매칭.
-        if tag == "HK":
-            try:
-                from bot.naver_ranking_client import world_stock_map
-                wsm = world_stock_map(tag)
-                if wsm:
-                    # 네이버 HK 코드는 5자리 zfill('00700'), yfinance 는 4자리('0700')
-                    # → 선행 0 제거한 정수 코드로 정규화 매칭(VM probe 2026-06-14:
-                    # Tencent 0700.HK 가 None 이던 키 불일치 fix. CNY 8xxxx counter
-                    # 는 별개 int 라 충돌 없음).
-                    norm = {}
-                    for k, v in wsm.items():
-                        c = k.split(".")[0]
-                        if c.isdigit():
-                            norm.setdefault(str(int(c)), v)
-                    for r in out["high"] + out["low"]:
-                        code = str(r["ticker"]).split(".")[0]
-                        w = (wsm.get(r["ticker"])
-                             or (norm.get(str(int(code))) if code.isdigit() else None)
-                             or {})
-                        if w.get("vol") is not None:
-                            r["vol"] = w["vol"]
-                        if w.get("value") is not None:
-                            r["value"] = w["value"]
-                        if w.get("mcap") is not None:
-                            r["mcap"] = w["mcap"]
-                        if w.get("name"):
-                            r["name"] = w["name"]
-            except Exception as exc:
-                log.warning("finviz: HK 네이버 worldstock overlay 실패: %s", exc)
+        # HK/JP — 거래량/거래대금/시총/종목명을 **네이버 worldstock** 으로 채움
+        # (사용자 2026-06-14 'HK·JP 신고저 시총 네이버'). yfinance HK/JP vol/시총이
+        # 자주 비어 컬럼 숨겨지던 것 해소. 52주 검출은 yfinance 유지(네이버 52주
+        # sort 부재), 표시 필드만 네이버 overlay.
+        if tag in ("HK", "JP"):
+            _naver_worldstock_overlay(out["high"] + out["low"], tag)
+        # TW — 네이버 worldstock 미지원 → 시총만 디스크 persist(yfinance 일시
+        # 장애 시 직전 성공값 유지, 사용자 2026-06-14 'TW 52주 시총 안 떠').
+        elif tag == "TW":
+            _persist_mcap_overlay(out["high"] + out["low"], "TW")
         log.info("finviz: %s highlow — scanned %d → high %d / low %d (mcap %d)",
                  tag, scanned, len(out["high"]), len(out["low"]), len(mcaps))
         if out["high"] or out["low"]:
@@ -1052,6 +1029,65 @@ def _compute_jp_stop(universe: list, names: dict, cache_name: str,
     except Exception as exc:
         log.warning("finviz: %s jp-stop 산출 실패: %s", source, exc)
     return out
+
+
+def _naver_worldstock_overlay(rows: list, market: str) -> None:
+    """HK/JP 신고저 행에 네이버 worldstock 거래량·거래대금·시총·종목명 overlay
+    (yfinance 빈약 보완, 사용자 2026-06-14). HK 는 5자리↔4자리 zfill 정수 정규화
+    (Tencent 00700↔0700), JP 는 직접 매칭(7203.T). in-place·graceful."""
+    try:
+        from bot.naver_ranking_client import world_stock_map
+        wsm = world_stock_map(market)
+    except Exception as exc:
+        log.warning("finviz: %s worldstock overlay 실패: %s", market, exc)
+        return
+    if not wsm:
+        return
+    norm: dict = {}
+    if market == "HK":
+        for k, v in wsm.items():
+            c = str(k).split(".")[0]
+            if c.isdigit():
+                norm.setdefault(str(int(c)), v)
+    for r in rows:
+        if market == "HK":
+            code = str(r.get("ticker")).split(".")[0]
+            w = (wsm.get(r.get("ticker"))
+                 or (norm.get(str(int(code))) if code.isdigit() else None) or {})
+        else:
+            w = wsm.get(r.get("ticker")) or {}
+        if w.get("vol") is not None:
+            r["vol"] = w["vol"]
+        if w.get("value") is not None:
+            r["value"] = w["value"]
+        if w.get("mcap") is not None:
+            r["mcap"] = w["mcap"]
+        if w.get("name"):
+            r["name"] = w["name"]
+
+
+def _persist_mcap_overlay(rows: list, market: str) -> None:
+    """시총 디스크 persist — yfinance 가 일시적으로 시총 None 줘도 직전 성공값 유지
+    (사용자 2026-06-14 'TW 시총 안 떠'). enrich_for_panel persist 와 같은 파일
+    (enrich_mcap_<market>.json) 공유 → 52주·무버 시총 일관. in-place·graceful."""
+    try:
+        pkey = f"enrich_mcap_{market}.json"
+        persist = _cached(pkey, ttl=12 * 3600)
+        persist = dict(persist) if isinstance(persist, dict) else {}
+        changed = False
+        for r in rows:
+            tk = r.get("ticker")
+            mc = r.get("mcap")
+            if mc:
+                if persist.get(tk) != mc:
+                    persist[tk] = mc
+                    changed = True
+            elif persist.get(tk) is not None:
+                r["mcap"] = persist[tk]
+        if changed:
+            _cache_write(pkey, persist)
+    except Exception as exc:
+        log.warning("finviz: %s mcap persist 실패: %s", market, exc)
 
 
 def _fetch_mcaps(tickers: list) -> dict:
