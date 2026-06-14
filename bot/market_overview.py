@@ -56,17 +56,20 @@ except OSError:
 
 # ── Market Snapshot Ticker Groups ────────────────────────────────────
 
+# 사용자 2026-06-14 '다 네이버로' — 세계지수는 네이버 worldstock/index(nvi:reuters
+# Code, VM probe 확정). 니케이/대만/상해/항셍/Sensex 네이버. 코스피/코스닥(폴링
+# domestic)·CSI300·항셍테크·Nifty 는 reutersCode 미확정이라 yfinance 유지(후속).
 CARD_ASIA = [
     ("KR 코스피", "^KS11"),
     ("KR 코스닥", "^KQ11"),
-    ("JP 니케이 225", "^N225"),
-    ("TW 대만 가권", "^TWII"),
+    ("JP 니케이 225", "nvi:.N225"),
+    ("TW 대만 가권", "nvi:.TWII"),
     ("CN CSI 300", "000300.SS"),
-    ("CN 상해 종합", "000001.SS"),
-    ("HK 홍콩 항셍", "^HSI"),
+    ("CN 상해 종합", "nvi:.SSEC"),
+    ("HK 홍콩 항셍", "nvi:.HSI"),
     ("HK 항셍테크", "3033.HK"),  # ^HSTECH 지수는 yfinance 무데이터 → 추종 ETF(CSOP)로 대체
     ("IN Nifty 50", "^NSEI"),
-    ("IN 인도 Sensex", "^BSESN"),   # 사용자 2026-06-14
+    ("IN 인도 Sensex", "nvi:.BSESN"),
 ]
 
 CARD_FX = [
@@ -96,9 +99,9 @@ CARD_COMMODITIES = [
     ("니켈", "nv:NI"),               # 사용자 2026-06-14 (네이버 metals)
 ]
 
-# 사용자 2026-06-14: 이더리움 다음 테더 추가.
+# 사용자 2026-06-14: 이더리움 다음 테더 추가. VIX 는 네이버 worldstock(.VIX).
 CARD_SENTIMENT = [
-    ("VIX (공포지수)", "^VIX"),
+    ("VIX (공포지수)", "nvi:.VIX"),
     ("비트코인", "BTC-USD"),
     ("이더리움", "ETH-USD"),
     ("테더", "USDT-USD"),
@@ -115,16 +118,20 @@ CARD_US = [
     ("us 다우 존스", "^DJI"),
     ("us 러셀 2000", "^RUT"),
     ("다우 운송", "^DJT"),
-    ("필라델피아 반도체", "^SOX"),
+    ("필라델피아 반도체", "nvi:.SOX"),   # 네이버 worldstock (사용자 2026-06-14)
     ("나스닥 바이오", "^NBI"),
     ("KBW 은행", "^BKX"),
 ]
 
+# 사용자 2026-06-14: 선물에 운송(운임지수) 추가 — 중국컨테이너(CCFI)·BDI 건화물.
+# 네이버 marketindex/transport(nv:) — energy/metals 와 동일 구조, 주간 갱신.
 CARD_FUTURES = [
     ("us S&P 500 선물", "ES=F"),
     ("us 다우 존스 선물", "YM=F"),
     ("us 나스닥 100 선물", "NQ=F"),
     ("us 러셀 2000 선물", "RTY=F"),
+    ("중국컨테이너 운임 (CCFI)", "nv:CCFI"),
+    ("BDI 건화물 운임", "nv:BADI"),
 ]
 
 CARD_EU = [
@@ -132,7 +139,7 @@ CARD_EU = [
     ("DE 독일 DAX", "^GDAXI"),
     ("GB 영국 FTSE 100", "^FTSE"),
     ("FR 프랑스 CAC 40", "^FCHI"),
-    ("IT 이탈리아 FTSE MIB", "FTSEMIB.MI"),   # 사용자 2026-06-14
+    ("IT 이탈리아 FTSE MIB", "nvi:.FTMIB"),   # 네이버 worldstock (사용자 2026-06-14)
     ("CH 스위스 SMI", "^SSMI"),
 ]
 
@@ -152,7 +159,7 @@ ALL_CARDS = [
     ("원자재 & 귀금속", CARD_COMMODITIES),
     ("시장 심리 & 코인", CARD_SENTIMENT),
     ("미국 지수", CARD_US),
-    ("미국 지수 선물 (Futures)", CARD_FUTURES),
+    ("미국 지수 선물 & 운송 (Futures)", CARD_FUTURES),
     ("유럽 지수", CARD_EU),
     ("아메리카 & 이머징", CARD_AMERICAS),
 ]
@@ -185,8 +192,8 @@ def _all_yf_tickers() -> list[str]:
         if items is None:
             continue
         for _, tk in items:
-            if tk.startswith("nv:"):   # 네이버 marketindex (yfinance 아님 — skip)
-                continue
+            if tk.startswith("nv:") or tk.startswith("nvi:"):
+                continue  # 네이버 marketindex/worldstock (yfinance 아님 — skip)
             tickers.append(tk)
     tickers.append(_DOLLAR_INDEX_TICKER)
     return tickers
@@ -300,20 +307,42 @@ def _fetch_yf_batch() -> dict[str, dict]:
         pct = (chg / prev * 100) if prev != 0 else 0.0
         result[tk] = {"close": cur, "prev_close": prev,
                       "change": chg, "pct": pct}
-    # 원자재 — 네이버 marketindex (사용자 2026-06-14 '다 네이버로'). fast_info 무관,
-    # nv:symbolCode CARD 항목에 네이버 시세 주입(두바이유 등 yfinance 무티커 포함).
-    try:
-        from bot.naver_marketindex import fetch_commodities
-        _nvc = fetch_commodities()
-        for _nm, _tk in CARD_COMMODITIES:
+    # 네이버 병합 (사용자 2026-06-14 '다 네이버로'). fast_info 무관.
+    #   nv:  = marketindex(energy/metals/agri/transport) — 원자재·귀금속·운임지수
+    #   nvi: = worldstock/index(reutersCode) — 세계지수(니케이/VIX/필반/이탈리아 등)
+    # yfinance 무티커(두바이유/니켈/CCFI/BDI) 포함. 코드별 graceful —
+    # 네이버 미반환 코드는 result 미주입(블랭크, 크래시 없음).
+    _nv_codes, _nvi_codes = [], []
+    for _grp, _items in ALL_CARDS:
+        if not _items:
+            continue
+        for _nm, _tk in _items:
             if _tk.startswith("nv:"):
+                _nv_codes.append(_tk)
+            elif _tk.startswith("nvi:"):
+                _nvi_codes.append(_tk)
+    if _nv_codes:
+        try:
+            from bot.naver_marketindex import fetch_commodities
+            _nvc = fetch_commodities()
+            for _tk in _nv_codes:
                 _rec = _nvc.get(_tk[3:])
                 if _rec and _rec.get("close") is not None:
-                    result[_tk] = {"close": _rec["close"],
-                                   "prev_close": _rec["prev"],
+                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
                                    "change": _rec["change"], "pct": _rec["pct"]}
-    except Exception as exc:
-        log.warning("market_overview: naver 원자재 병합 실패: %s", exc)
+        except Exception as exc:
+            log.warning("market_overview: naver 원자재/운임 병합 실패: %s", exc)
+    if _nvi_codes:
+        try:
+            from bot.naver_marketindex import fetch_world_indices
+            _nvi = fetch_world_indices(tuple(_t[4:] for _t in _nvi_codes))
+            for _tk in _nvi_codes:
+                _rec = _nvi.get(_tk[4:])
+                if _rec and _rec.get("close") is not None:
+                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
+                                   "change": _rec["change"], "pct": _rec["pct"]}
+        except Exception as exc:
+            log.warning("market_overview: naver 세계지수 병합 실패: %s", exc)
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)

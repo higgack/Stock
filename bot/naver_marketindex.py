@@ -14,7 +14,10 @@ import logging
 log = logging.getLogger("bot.naver_marketindex")
 
 _BASE = "https://stock.naver.com/api/securityService/marketindex"
-_CATEGORIES = ("energy", "metals", "agricultural")
+_INDEX_URL = "https://stock.naver.com/api/polling/worldstock/index"
+# transport = 운임지수(CCFI/SCFI/BADI 등, 사용자 2026-06-14). energy/metals/agri 와
+# 동일 구조라 fetch_commodities 로 함께 수집(nv:CCFI·nv:BADI 등으로 CARD 참조).
+_CATEGORIES = ("energy", "metals", "agricultural", "transport")
 _CACHE = "naver_marketindex.json"
 _TTL = 60       # 1분 (스냅샷 주기와 일치, 사용자 2026-06-14)
 _HDRS = {
@@ -73,6 +76,50 @@ def fetch_commodities() -> dict:
         _cache_write(_CACHE, out)
     else:                                  # 전 카테고리 실패 → 스테일 캐시
         return _cached(_CACHE, ttl=86400) or {}
+    return out
+
+
+_IDX_CACHE = "naver_worldindex.json"
+
+
+def fetch_world_indices(codes: tuple) -> dict:
+    """{reutersCode: {close, prev, change, pct}} — polling/worldstock/index
+    (사용자 2026-06-14 '다 네이버로', VM probe 구조 확정: datas[].reutersCode·
+    indexName·closePrice·compareToPreviousClosePrice·compareToPreviousPrice.code
+    2상승/5하락). 니케이(.N225)·대만(.TWII)·VIX(.VIX)·필반(.SOX) 등. 1분 캐시·
+    naver_paused·graceful."""
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    c = _cached(_IDX_CACHE, ttl=_TTL)
+    if isinstance(c, dict) and c:
+        return c
+    if naver_paused():
+        return _cached(_IDX_CACHE, ttl=86400) or {}
+    import requests
+    out: dict = {}
+    try:
+        r = requests.get(_INDEX_URL, headers=_HDRS, timeout=12,
+                         params={"reutersCodes": ",".join(codes)})
+        datas = (r.json() or {}).get("datas") or [] if r.status_code == 200 else []
+    except Exception as exc:
+        log.warning("naver worldindex fetch error: %s", exc)
+        return _cached(_IDX_CACHE, ttl=86400) or {}
+    for it in datas if isinstance(datas, list) else []:
+        rc = str(it.get("reutersCode") or "").strip()
+        close = _num(it.get("closePrice"))
+        if not rc or close is None:
+            continue
+        chg = _num(it.get("compareToPreviousClosePrice"))
+        code = (it.get("compareToPreviousPrice") or {}).get("code")
+        sign = -1.0 if code == "5" else 1.0
+        prev = (close - sign * chg) if chg is not None else close
+        pct = (sign * abs(chg) / prev * 100.0) if (chg is not None and prev) else 0.0
+        out[rc] = {"close": close, "prev": prev,
+                   "change": (sign * abs(chg)) if chg is not None else 0.0,
+                   "pct": pct}
+    if out:
+        _cache_write(_IDX_CACHE, out)
+    else:
+        return _cached(_IDX_CACHE, ttl=86400) or {}
     return out
 
 
