@@ -105,14 +105,16 @@ CARD_COMMODITIES = [
 # 사용자 2026-06-14: 이더리움 다음 테더 추가. VIX 는 네이버 worldstock(.VIX).
 CARD_SENTIMENT = [
     ("VIX (공포지수)", "nvi:.VIX"),
-    ("비트코인", "BTC-USD"),
-    ("이더리움", "ETH-USD"),
-    ("테더", "USDT-USD"),
-    ("USD코인", "USDC-USD"),   # 사용자 2026-06-14 테더 다음
-    ("리플", "XRP-USD"),       # 사용자 2026-06-14 리플↔솔라나 순서 교체
-    ("솔라나", "SOL-USD"),
-    ("BNB", "BNB-USD"),
-    ("도지코인", "DOGE-USD"),
+    # 코인 = 네이버 업비트 시세(nvc:, 원화). 사용자 2026-06-14 '코인도 다 네이버'.
+    # ⚠️ 업비트 원화시장이라 값 ₩. 업비트 미상장(BNB 등)은 graceful 블랭크.
+    ("비트코인", "nvc:BTC"),
+    ("이더리움", "nvc:ETH"),
+    ("테더", "nvc:USDT"),
+    ("USD코인", "nvc:USDC"),
+    ("리플", "nvc:XRP"),
+    ("솔라나", "nvc:SOL"),
+    ("BNB", "nvc:BNB"),
+    ("도지코인", "nvc:DOGE"),
 ]
 
 # 사용자 2026-06-14: 러셀 다음 다우운송·필라델피아반도체·나스닥바이오·KBW은행.
@@ -132,10 +134,10 @@ CARD_US = [
 # 사용자 2026-06-14: 선물에 운송(운임지수) 추가 — 중국컨테이너(CCFI)·BDI 건화물.
 # 네이버 marketindex/transport(nv:) — energy/metals 와 동일 구조, 주간 갱신.
 CARD_FUTURES = [
-    ("us S&P 500 선물", "ES=F"),
-    ("us 다우 존스 선물", "YM=F"),
-    ("us 나스닥 100 선물", "NQ=F"),
-    ("us 러셀 2000 선물", "RTY=F"),
+    ("us S&P 500 선물", "nvf:EScv1"),     # 네이버 worldstock/futures (사용자 2026-06-14)
+    ("us 다우 존스 선물", "nvf:YMcv1"),
+    ("us 나스닥 100 선물", "nvf:NQcv1"),
+    ("us 러셀 2000 선물", "nvf:RTYcv1"),
     ("BDI 건화물 운임", "nv:BADI"),
     ("중국컨테이너 운임 (CCFI)", "nv:CCFI"),
 ]
@@ -200,8 +202,8 @@ def _all_yf_tickers() -> list[str]:
         if items is None:
             continue
         for _, tk in items:
-            if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:", "nvk:")):
-                continue  # 네이버 (marketindex/worldstock/domestic/exchangeWorld/exchange)
+            if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:", "nvk:", "nvf:", "nvc:")):
+                continue  # 네이버 (marketindex/worldstock/domestic/exchange/futures/coin)
             tickers.append(tk)
     tickers.append(_DOLLAR_INDEX_TICKER)
     return tickers
@@ -323,7 +325,8 @@ def _fetch_yf_batch() -> dict[str, dict]:
     #   nvk: = marketindex/exchange(reutersCode) — KR-base 환율(원/달러·원/엔)
     # yfinance 무티커(두바이유/니켈/CCFI/BDI) 포함. 코드별 graceful —
     # 네이버 미반환 코드는 result 미주입(블랭크, 크래시 없음).
-    _nv_codes, _nvi_codes, _nvd_codes, _nvx_codes, _nvk_codes = [], [], [], [], []
+    _nv_codes, _nvi_codes, _nvd_codes = [], [], []
+    _nvx_codes, _nvk_codes, _nvf_codes, _nvc_codes = [], [], [], []
     for _grp, _items in ALL_CARDS:
         if not _items:
             continue
@@ -338,6 +341,10 @@ def _fetch_yf_batch() -> dict[str, dict]:
                 _nvx_codes.append(_tk)
             elif _tk.startswith("nvk:"):
                 _nvk_codes.append(_tk)
+            elif _tk.startswith("nvf:"):
+                _nvf_codes.append(_tk)
+            elif _tk.startswith("nvc:"):
+                _nvc_codes.append(_tk)
     if _nv_codes:
         try:
             from bot.naver_marketindex import fetch_commodities
@@ -393,6 +400,28 @@ def _fetch_yf_batch() -> dict[str, dict]:
                                    "change": _rec["change"], "pct": _rec["pct"]}
         except Exception as exc:
             log.warning("market_overview: naver KR환율 병합 실패: %s", exc)
+    if _nvf_codes:                             # 미국 지수선물 (worldstock/futures)
+        try:
+            from bot.naver_marketindex import fetch_world_futures
+            _nvf = fetch_world_futures(tuple(_t[4:] for _t in _nvf_codes))
+            for _tk in _nvf_codes:
+                _rec = _nvf.get(_tk[4:])
+                if _rec and _rec.get("close") is not None:
+                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
+                                   "change": _rec["change"], "pct": _rec["pct"]}
+        except Exception as exc:
+            log.warning("market_overview: naver 선물 병합 실패: %s", exc)
+    if _nvc_codes:                             # 코인 (업비트, fetch_naver_coins 전체 반환)
+        try:
+            from bot.naver_marketindex import fetch_naver_coins
+            _nvc = fetch_naver_coins()
+            for _tk in _nvc_codes:
+                _rec = _nvc.get(_tk[4:])
+                if _rec and _rec.get("close") is not None:
+                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
+                                   "change": _rec["change"], "pct": _rec["pct"]}
+        except Exception as exc:
+            log.warning("market_overview: naver 코인 병합 실패: %s", exc)
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
