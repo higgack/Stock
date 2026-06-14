@@ -262,32 +262,33 @@ def enrich_for_panel(items: list, market: str, want_ind: bool = False,
                 for tk in tickers:
                     meta.setdefault(tk, {})["ind"] = inds.get(tk)
             if want_name and market == "TW":
-                # 대만 영문명 (사용자 2026-06-14 '대만은 영어로'): 1차 yfinance
-                # longName, 2차 中文 종목명 → 영문 번역(translate_names_en, 영구
-                # 캐시) — 소형주 longName 부재분을 reliable 하게 영문화(사용자
-                # 2026-06-14 '中文→영문 번역 인프라 재사용으로 reliable 하게').
+                # 대만 한국어명 (사용자 2026-06-14 '대만도 한글로' — 옛 영문 정책 번복):
+                # 1차 yfinance longName(영문)·2차 中文 종목명 → 한국어 번역
+                # (translate_titles_kr, 영구캐시). JP/HK 와 통일, 소형주까지.
                 from bot.finviz_client import _fetch_display_names
+                from bot.chart_translate import translate_titles_kr
                 en = _fetch_display_names(tickers)
+                ue = sorted({n for n in en.values() if n})
+                ke = translate_titles_kr(ue) if ue else {}
                 for tk in tickers:
                     e = en.get(tk, "")
                     if e:
-                        meta.setdefault(tk, {})["name_kr"] = e
+                        meta.setdefault(tk, {})["name_kr"] = ke.get(e) or e
                 miss = [tk for tk in tickers
                         if not meta.get(tk, {}).get("name_kr")]
                 if miss:
                     miss_set = set(miss)
-                    # 中文 native 명(STOCK_DAY_ALL Name — items 에 이미 있음) 번역.
+                    # 中文 native 명(STOCK_DAY_ALL Name — items 에 이미 있음) 한국어 번역.
                     nat = {it.get("ticker"): it.get("name") for it in items
                            if it.get("ticker") in miss_set and it.get("name")
                            and it.get("name") != it.get("ticker")}
                     uniq = sorted({v for v in nat.values() if v})
                     if uniq:
                         try:
-                            from bot.chart_translate import translate_names_en
-                            tr = translate_names_en(uniq)
+                            kr = translate_titles_kr(uniq)
                             for tk, nm in nat.items():
-                                if tr.get(nm):
-                                    meta.setdefault(tk, {})["name_kr"] = tr[nm]
+                                if kr.get(nm):
+                                    meta.setdefault(tk, {})["name_kr"] = kr[nm]
                         except Exception:
                             pass
             elif want_name:

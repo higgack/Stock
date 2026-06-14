@@ -1137,7 +1137,9 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < 1:
+            # 6h 캐시 (사용자 2026-06-14 — S&P500 확대로 500종목 .upgrades/.info
+            # 호출이 1h burst 면 yahoo 부하↑. 리서치는 준실시간 불요 → 6h 로 완화).
+            if age_h < 6:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass

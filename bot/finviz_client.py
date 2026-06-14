@@ -1949,29 +1949,30 @@ def _backfill_korean_names(rows: list, market: str) -> None:
     if not market or market in ("US", "KR"):
         return
     if market == "TW":
-        # 대만은 () 안을 **영문명**으로 (사용자 2026-06-14 '대만은 한국어 번역
-        # 하지말고 영어로'). 1차 yfinance longName, 2차 中文 native 명 → 영문
-        # 번역(translate_names_en) — 급등락(enrich_for_panel)과 동일하게 52주도
-        # 소형주 영문화(사용자 2026-06-14 'TW 52주도 급등락처럼 영문').
+        # 대만 () 안을 **한국어**로 (사용자 2026-06-14 '대만도 한글로' — 옛 영문 정책
+        # 번복). yfinance longName(영문)·TWSE 中文 native 명 → 한국어 번역
+        # (translate_titles_kr) → '티에스엠씨·미디어텍' 류. JP/HK 와 통일, 소형주까지.
         try:
+            from bot.chart_translate import translate_titles_kr
             tickers = [r["ticker"] for r in rows]
-            en = _fetch_display_names(tickers)
+            en = _fetch_display_names(tickers)            # yfinance longName(영문)
+            ue = sorted({n for n in en.values() if n})
+            ke = translate_titles_kr(ue) if ue else {}
             for r in rows:
                 e = en.get(r["ticker"], "")
                 if e:
-                    r["name"] = e
-            # longName 미스 종목 — 中文 native 명(_tw_universe names) 영문 번역
+                    r["name"] = ke.get(e) or e
+            # longName 미스 종목 — 中文 native 명(_tw_universe names) 한국어 번역
             miss = [r for r in rows if not en.get(r["ticker"])
                     and r.get("name") and r["name"] != r["ticker"]]
             nat = sorted({r["name"] for r in miss})
             if nat:
-                from bot.chart_translate import translate_names_en
-                tr = translate_names_en(nat)
+                kr = translate_titles_kr(nat)
                 for r in miss:
-                    if tr.get(r["name"]):
-                        r["name"] = tr[r["name"]]
+                    if kr.get(r["name"]):
+                        r["name"] = kr[r["name"]]
         except Exception as exc:
-            log.warning("finviz: TW 영문명 백필 실패: %s", exc)
+            log.warning("finviz: TW 한글명 백필 실패: %s", exc)
         return
     # JP/CN/HK: 네이버 worldstock 이름맵 우선 (사용자 2026-06-14 — yfinance .info
     # 가 자주 막혀 52주 이름이 비던 것 해소, world_name_map 2000개/시장 확인됨).

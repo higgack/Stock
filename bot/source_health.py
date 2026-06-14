@@ -192,9 +192,10 @@ def run() -> dict:
         "스냅샷 원자재(marketindex)": _snap_commodity(),
         "스냅샷 코인(coin/rank)": _snap_coin(),
         "스냅샷 환율(exchange)": _snap_fx(),
-        # 기존 경로 (업종 등락·movers·yf 폴백)
-        "yfinance fast_info": _yf_check(),
-        "yfinance batch": _yf_batch_check(),
+        # 기존 경로 (업종 등락·movers·yf 폴백). fast_info 프로브는 제거 — 앱이
+        # fast_info 를 안 쓰는데(전부 네이버·download) 진단 1콜이 오히려 yahoo
+        # rate-limit 압력에 기여 + 항상 ❌ 로 불안 유발(사용자 2026-06-14).
+        "yfinance batch(history)": _yf_batch_check(),
         "Naver 국내(front-api)": _naver_domestic(),
         "Naver 해외(worldstock)": _naver_world(),
         "Naver 업종(desktop API)": _naver_upjong(),

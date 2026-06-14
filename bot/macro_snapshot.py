@@ -139,10 +139,23 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
 
 # ── yfinance monthly batch ──────────────────────────────────────────
 def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
-    """Batch monthly close (13mo) for all tickers → {ticker: [floats]}."""
+    """Batch monthly close (13mo) for all tickers → {ticker: [floats]}.
+
+    ⚠️ 차트 전용 1h 캐시 (사용자 2026-06-14 '매크로 차트 또 날아감'): 값은
+    네이버(1분)인데 차트 download 를 매 1분 snapshot 재생성마다 돌리면 22종목
+    yf.download 가 yahoo IP rate-limit 을 유발 → 차트가 throttle 로 빔. 12개월
+    월간 라인은 1h 묵어도 무해 → download 트래픽 60배↓. 실패 시 스테일 폴백."""
     out: dict[str, list[float]] = {}
     if not tickers:
         return out
+    try:
+        from bot.finviz_client import _cache_write, _cached
+    except Exception:
+        _cache_write = _cached = None
+    if _cached:
+        c = _cached("macro_yf_monthly.json", ttl=3600)
+        if isinstance(c, dict) and c:
+            return c
     try:
         import yfinance as yf
         df = yf.download(
@@ -154,7 +167,7 @@ def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
             timeout=20,
         )
         if df is None or df.empty:
-            return out
+            return _cached("macro_yf_monthly.json", ttl=86400) or out if _cached else out
         for tk in tickers:
             try:
                 if len(tickers) > 1:
@@ -168,6 +181,12 @@ def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
                 continue
     except Exception as exc:
         log.warning("macro: yf monthly batch failed: %s", exc)
+        return _cached("macro_yf_monthly.json", ttl=86400) or out if _cached else out
+    if out and _cache_write:
+        try:
+            _cache_write("macro_yf_monthly.json", out)
+        except Exception:
+            pass
     return out
 
 
@@ -179,6 +198,15 @@ def _yf_daily_1mo_batch(tickers: list[str]) -> dict[str, list[float]]:
     out: dict[str, list[float]] = {}
     if not tickers:
         return out
+    # 차트 전용 1h 캐시 (위 _yf_monthly_batch 와 동일 사유 — 1분 download 폭주 차단).
+    try:
+        from bot.finviz_client import _cache_write, _cached
+    except Exception:
+        _cache_write = _cached = None
+    if _cached:
+        c = _cached("macro_yf_daily1mo.json", ttl=3600)
+        if isinstance(c, dict) and c:
+            return c
     import yfinance as yf
     try:
         df = yf.download(
@@ -197,6 +225,12 @@ def _yf_daily_1mo_batch(tickers: list[str]) -> dict[str, list[float]]:
                     continue
     except Exception as exc:
         log.warning("macro: yf daily 1mo batch failed: %s", exc)
+        return _cached("macro_yf_daily1mo.json", ttl=86400) or out if _cached else out
+    if out and _cache_write:
+        try:
+            _cache_write("macro_yf_daily1mo.json", out)
+        except Exception:
+            pass
     return out
 
 

@@ -7575,49 +7575,54 @@ class TestUpperLowerVolume:
                                    "ClosingPrice": "10", "Change": "1"}])
         assert r2 and r2[0]["value"] is None           # 없으면 graceful
 
-    def test_tw_names_english_not_korean(self):
-        # 사용자 2026-06-14 '대만은 () 영어로' — 1차 yfinance longName 직접.
+    def test_tw_names_korean(self, monkeypatch):
+        # 사용자 2026-06-14 '대만도 한글로' (옛 영문 정책 번복) — yfinance longName(영문)·
+        # 中文 → translate_titles_kr 로 한국어화('티에스엠씨' 류).
+        import bot.chart_translate as ct
         import bot.finviz_client as fc
-        fc._fetch_display_names = lambda tks: {t: "Yageo Corporation" for t in tks}
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks: {t: "Yageo Corporation" for t in tks})
+        monkeypatch.setattr(ct, "translate_titles_kr",
+                            lambda names: {n: "야게오" for n in names})
         rows = [{"ticker": "2327.TW", "name": "2327.TW"}]
         fc._backfill_korean_names(rows, "TW")
-        assert rows[0]["name"] == "Yageo Corporation"
-        # enrich_for_panel·_backfill 둘 다 TW 영문 분기
+        assert rows[0]["name"] == "야게오"          # 영문 longName → 한국어 번역
+        # enrich_for_panel·_backfill 둘 다 TW 한국어 분기(translate_titles_kr)
         hr = open("bot/highlow_render.py", encoding="utf-8").read()
-        assert 'want_name and market == "TW"' in hr
+        assert 'want_name and market == "TW"' in hr and "translate_titles_kr" in hr
         fcs = open("bot/finviz_client.py", encoding="utf-8").read()
         assert 'if market == "TW":' in fcs
 
     def test_tw_smallcap_chinese_translated_in_enrich(self, monkeypatch):
-        # 사용자 2026-06-14 'TW 소형주 中文→영문 번역으로 reliable 하게' — enrich_for_panel
-        # TW 가 yfinance longName 미스 시 中文 native 명을 translate_names_en 로 영문화.
+        # 사용자 2026-06-14 'TW 소형주도 한글로' — enrich_for_panel TW 가 yfinance longName
+        # 미스 시 中文 native 명을 translate_titles_kr 로 한국어화.
         import bot.chart_translate as ct
         import bot.finviz_client as fc
         from bot import highlow_render as hr
         monkeypatch.setattr(fc, "_fetch_mcaps", lambda tks: {})
         monkeypatch.setattr(fc, "_fetch_display_names", lambda tks: {})   # yfinance 전무
-        monkeypatch.setattr(ct, "translate_names_en",
-                            lambda names: {n: "Translated Co" for n in names})
+        monkeypatch.setattr(ct, "translate_titles_kr",
+                            lambda names: {n: "번역된회사" for n in names})
         hr._ENRICH_CACHE.clear()
         items = [{"ticker": "9999.TW", "name": "中文小型股"}]
         out = hr.enrich_for_panel(items, "TW", want_name=True)
-        assert out[0]["name"] == "Translated Co"         # 中文 미스분 영문 번역
+        assert out[0]["name"] == "번역된회사"         # 中文 미스분 한국어 번역
         hr._ENRICH_CACHE.clear()
 
     def test_tw_52w_name_translation(self, monkeypatch):
-        # 사용자 2026-06-14 'TW 신고저도 급등락처럼 영문' — _backfill_korean_names
-        # TW 가 longName 미스분 中文 native 명을 translate_names_en 로 영문화.
+        # 사용자 2026-06-14 'TW 신고저도 한글' — _backfill_korean_names TW 가 longName(영문)·
+        # 中文 native 명을 translate_titles_kr 로 한국어화.
         import bot.chart_translate as ct
         import bot.finviz_client as fc
         monkeypatch.setattr(fc, "_fetch_display_names",
                             lambda tks: {"2330.TW": "TSMC"})   # 2330 만 longName
-        monkeypatch.setattr(ct, "translate_names_en",
-                            lambda names: {n: "Translated Co" for n in names})
+        monkeypatch.setattr(ct, "translate_titles_kr",
+                            lambda names: {n: "번역" + str(n)[:2] for n in names})
         rows = [{"ticker": "2330.TW", "name": "台積電"},
                 {"ticker": "9999.TW", "name": "中文小型股"}]   # longName 미스
         fc._backfill_korean_names(rows, "TW")
-        assert rows[0]["name"] == "TSMC"            # yfinance longName 우선
-        assert rows[1]["name"] == "Translated Co"   # 中文 → 영문 번역
+        assert rows[0]["name"] == "번역TS"          # 영문 longName "TSMC" → 한국어 번역
+        assert rows[1]["name"] == "번역中文"        # 中文 → 한국어 번역
 
     def test_enrich_mcap_persist_fallback(self, monkeypatch):
         # 사용자 2026-06-14 'TW 급등락 시총 안 떠 (52주는 됨)' — yfinance None 이어도
@@ -8338,9 +8343,10 @@ class TestHkMovers:
         monkeypatch.setattr(ct, "_load_name", lambda: {})
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         assert ct.translate_names_en(["없는회사"]) == {}
-        # enrich_for_panel TW 가 미스분 translate_names_en 배선
+        # enrich_for_panel TW 는 2026-06-14 한글 전환 → translate_titles_kr 배선
+        # (translate_names_en 함수는 인프라로 보존, 위 1-2 가 동작 검증).
         hr = open("bot/highlow_render.py", encoding="utf-8").read()
-        assert "translate_names_en" in hr
+        assert "translate_titles_kr" in hr
 
     def test_naver_sector_movers_and_wiring(self):
         # 사용자 2026-06-14 '업종등락 네이버'(CN/HK/JP). 시총가중 등락 Top/Bottom.
