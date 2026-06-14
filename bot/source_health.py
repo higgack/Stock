@@ -152,6 +152,24 @@ def format_report(res: dict) -> str:
     ]
     for name, (ok, detail) in res["checks"].items():
         lines.append(f"  {'✅' if ok else '❌'} {name} — {detail}")
+    # fast_info ❌ 인데 download+Naver 정상이면 = 구조적·무해 (사용자 2026-06-14
+    # '왜 계속 이런거지?'). Yahoo 가 데이터센터 IP 의 시세(quote) 엔드포인트만
+    # 제한 — 우리는 download(history)+Naver 로 우회하므로 앱 영향 0. /health 의
+    # fast_info 점검은 진단용 '직접' 호출이라 제한 시 항상 ❌ (앱 traffic 아님).
+    ck = res.get("checks", {})
+    fi_ok = ck.get("yfinance fast_info", (True,))[0]
+    batch_ok = ck.get("yfinance batch", (False,))[0]
+    naver_ok = any(v[0] for k, v in ck.items() if k.startswith("Naver"))
+    if (not fi_ok) and batch_ok and naver_ok:
+        lines.append("")
+        lines.append(
+            "ℹ️ fast_info ❌ 는 정상입니다 — Yahoo 가 데이터센터 IP 의 시세"
+            "(quote·fast_info) 엔드포인트를 구조적으로 제한. 우리 앱은 "
+            "download(history)+네이버로 우회(회로차단 자동)하며 시총·업종·52주·"
+            "차트·장전장후 전부 그 경로라 영향 0. 미국 장전장후(prepost)도 "
+            "history API 라 무관. 이 fast_info 점검은 진단용 직접 1콜이라 "
+            "Yahoo 제한 중엔 항상 ❌ 로 뜸(앱 트래픽 아님)."
+        )
     return "\n".join(lines)
 
 
