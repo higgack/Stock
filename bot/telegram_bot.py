@@ -1760,6 +1760,7 @@ def _format_screener_domains_list() -> list[str]:
     n_l1 = len(by_layer.get("L1_TREND", []))
     n_l2 = len(by_layer.get("L2_SECTOR", []))
     n_l3 = len(by_layer.get("L3_INDUSTRY", []))
+    n_l4 = len(by_layer.get("L4_SUBINDUSTRY", []))
     n_adhoc = len(by_layer.get("AD_HOC", []))
 
     def _utf16(s: str) -> int:
@@ -1775,6 +1776,7 @@ def _format_screener_domains_list() -> list[str]:
         f"📊 <b>Bottleneck Screener — 도메인 목록</b> ({len(ds)}개)",
         "",
         f"L1 trend {n_l1} + L2 sector {n_l2} + L3 industry {n_l3}"
+        + (f" + L4 sub {n_l4}" if n_l4 else "")
         + (f" + 🆕 AD_HOC {n_adhoc}" if n_adhoc else ""),
         ".",
         "하단 버튼: L1+L2+AD_HOC 즉시 클릭. L3 는 <code>/screener_&lt;슬러그&gt;</code>"
@@ -1831,6 +1833,28 @@ def _format_screener_domains_list() -> list[str]:
             cur_len += add_len
         # Attach footer only to the final L3 chunk.
         cur.append(footer)
+        chunks.append("\n".join(cur).rstrip())
+
+    # Chunk(s) N — L4 sub-industry compact (1 line per slug, 2026-06-14).
+    # L4 = L3 아래 세부 sub-industry (예: Semiconductors → Memory/Foundry/...).
+    # 슬러그 직접 또는 L4 전용 별칭으로 접근 (메뉴 autocomplete 제외 — cap 보존).
+    l4_items = by_layer.get("L4_SUBINDUSTRY", [])
+    if l4_items:
+        l4_header = (f"━━━ <b>🎯 L4 Sub-industry</b> ({len(l4_items)}개) — "
+                     "각 L3 아래 세부 (슬러그/별칭 타이핑) ━━━")
+        cur = [l4_header, ""]
+        cur_len = _utf16("\n".join(cur))
+        cap = 3800
+        for d in sorted(l4_items, key=lambda x: x["slug"]):
+            slug = d["slug"]
+            line = f"/screener_{slug} — {d['domain']}"
+            add_len = _utf16(line) + 1
+            if cur_len + add_len > cap and len(cur) > 2:
+                chunks.append("\n".join(cur).rstrip())
+                cur = [f"{l4_header} (계속)", ""]
+                cur_len = _utf16("\n".join(cur))
+            cur.append(line)
+            cur_len += add_len
         chunks.append("\n".join(cur).rstrip())
 
     return chunks
@@ -3885,7 +3909,13 @@ async def _on_startup(application) -> None:
         # client autocomplete menu.
         try:
             from bot.screener_themes import list_domains
+            # L4 sub-industry 는 메뉴(autocomplete)에서 제외 — Telegram 100/scope
+            # cap 보존(L4 full rollout 78+ 모듈 대비, 2026-06-14). L4 는 핸들러
+            # (_register_dynamic_screener_handlers)·/screener 별칭·/screener_list
+            # 로 접근 가능, 메뉴에만 미노출.
             for d in sorted(list_domains(), key=lambda x: x["slug"]):
+                if d.get("layer") == "L4_SUBINDUSTRY":
+                    continue
                 desc = (d.get("domain") or d["slug"])[:100]
                 commands.append(BotCommand(f"screener_{d['slug']}", desc))
         except Exception as exc:

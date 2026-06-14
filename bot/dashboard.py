@@ -7618,6 +7618,9 @@ def _render_screener_domains_page() -> str:
         ("L1_TREND",    "📈 L1 Trend",   "Cross-cutting cycle 베팅 — 공식 sector 분류 외"),
         ("L2_SECTOR",   "🏢 L2 Sector",  "11 공식 sector (미국 GICS-like)"),
         ("L3_INDUSTRY", "🔬 L3 Industry","각 L2 아래 sub-industry"),
+        # L4 = 각 L3 아래 세부 sub-industry (2026-06-14, GICS sub-industry 깊이).
+        # 예: Semiconductors → Memory/Foundry/Equipment/Logic AI ...
+        ("L4_SUBINDUSTRY", "🎯 L4 Sub-industry", "각 L3 아래 세부 sub-industry (slug/별칭 접근)"),
         # AD_HOC = `/screener <자유어>` 5회+ 사용 후 자동 promoted 정식 모듈
         # (bot/screener_freetext.promote_to_module). 사용자 수동 reclassify
         # 전까지 별도 layer 로 노출.
@@ -7654,6 +7657,7 @@ def _render_screener_domains_page() -> str:
         "L1_TREND": "l1",
         "L2_SECTOR": "l2",
         "L3_INDUSTRY": "l3",
+        "L4_SUBINDUSTRY": "l4",
         "AD_HOC": "ad_hoc",
     }
     # Per-layer collapsible — 전부 default 접힘 (사용자 정책 2026-06-01
@@ -7664,6 +7668,7 @@ def _render_screener_domains_page() -> str:
         "L1_TREND": False,
         "L2_SECTOR": False,
         "L3_INDUSTRY": False,
+        "L4_SUBINDUSTRY": False,
         "AD_HOC": False,
     }
     for layer_key, layer_label, layer_desc in _LAYER_META:
@@ -7816,6 +7821,9 @@ def _render_screener_domains_page() -> str:
 .layer-section.l3 {{ border-left-color:#8b5cf6; }}
 .layer-section.l3 {{ background:linear-gradient(90deg,
   rgba(139,92,246,0.07) 0%, transparent 280px); }}
+.layer-section.l4 {{ border-left-color:#3b82f6; }}
+.layer-section.l4 {{ background:linear-gradient(90deg,
+  rgba(59,130,246,0.07) 0%, transparent 280px); }}
 .layer-section.ad_hoc {{ border-left-color:#f59e0b; }}
 .layer-section.ad_hoc {{ background:linear-gradient(90deg,
   rgba(245,158,11,0.08) 0%, transparent 280px); }}
@@ -7825,6 +7833,8 @@ def _render_screener_domains_page() -> str:
   background:linear-gradient(90deg, rgba(16,185,129,0.10) 0%, transparent 280px); }}
 :root[data-theme="dark"] .layer-section.l3 {{
   background:linear-gradient(90deg, rgba(167,139,250,0.10) 0%, transparent 280px); }}
+:root[data-theme="dark"] .layer-section.l4 {{
+  background:linear-gradient(90deg, rgba(96,165,250,0.10) 0%, transparent 280px); }}
 :root[data-theme="dark"] .layer-section.ad_hoc {{
   background:linear-gradient(90deg, rgba(251,191,36,0.12) 0%, transparent 280px); }}
 .layer-h {{ font-size:20px; margin:0 0 4px;
