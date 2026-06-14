@@ -170,9 +170,57 @@ def fetch_domestic_indices(codes: tuple) -> dict:
     return out
 
 
+_FX_URL = "https://api.stock.naver.com/marketindex/exchangeWorld"
+_FX_CACHE = "naver_worldfx.json"
+
+
+def fetch_world_fx() -> dict:
+    """{reutersCode: {close, prev, change, pct}} — marketindex/exchangeWorld
+    (세계 환율 cross-rate, 사용자 2026-06-14 '다 네이버로'. VM probe: reutersCode·
+    closePrice·fluctuations·fluctuationsRatio·fluctuationsType.code 2상승/5하락).
+    전체 113쌍 반환(인자 무시) → 호출부가 필요한 코드만 사용(EURUSD/GBPUSD/USDCNY
+    등). ⚠️ 원/달러·엔/원 같은 KRW-base 는 미포함(세계 cross-rate 만, KRW 부재).
+    1분 캐시·naver_paused·graceful. 응답 bare list/{datas:[]} 양형 수용."""
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    c = _cached(_FX_CACHE, ttl=_TTL)
+    if isinstance(c, dict) and c:
+        return c
+    if naver_paused():
+        return _cached(_FX_CACHE, ttl=86400) or {}
+    import requests
+    out: dict = {}
+    try:
+        r = requests.get(_FX_URL, headers=_HDRS, timeout=12)
+        raw = r.json() if r.status_code == 200 else []
+    except Exception as exc:
+        log.warning("naver worldfx fetch error: %s", exc)
+        return _cached(_FX_CACHE, ttl=86400) or {}
+    rows = raw.get("datas") if isinstance(raw, dict) else raw
+    for it in rows if isinstance(rows, list) else []:
+        rc = str(it.get("reutersCode") or "").strip()
+        close = _num(it.get("closePrice"))
+        if not rc or close is None:
+            continue
+        chg = _num(it.get("fluctuations"))
+        pct = _num(it.get("fluctuationsRatio"))
+        code = (it.get("fluctuationsType") or {}).get("code")
+        sign = -1.0 if code == "5" else 1.0      # 5=하락, 2=상승
+        prev = (close - sign * chg) if chg is not None else close
+        out[rc] = {"close": close, "prev": prev,
+                   "change": (sign * abs(chg)) if chg is not None else 0.0,
+                   "pct": (sign * abs(pct)) if pct is not None else 0.0}
+    if out:
+        _cache_write(_FX_CACHE, out)
+    else:
+        return _cached(_FX_CACHE, ttl=86400) or {}
+    return out
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     print("국내지수:", fetch_domestic_indices(("KOSPI", "KOSDAQ")))
+    _fx = fetch_world_fx()
+    print("세계환율:", {k: _fx.get(k) for k in ("EURUSD", "USDCNY", "USDTWD")})
     d = fetch_commodities()
     print(f"원자재 {len(d)}종")
     for sc in ("CL", "BRN", "DCB", "NG", "GC", "SI", "HG", "AA", "NI",

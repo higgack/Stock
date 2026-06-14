@@ -72,17 +72,20 @@ CARD_ASIA = [
     ("IN 인도 Sensex", "nvi:.BSESN"),
 ]
 
+# 사용자 2026-06-14 '다 네이버로' — 세계 cross-rate 는 네이버 exchangeWorld(nvx:).
+# ⚠️ 원/달러·엔/원은 KRW-base 라 exchangeWorld 미포함(KRW 부재) → yfinance 유지
+# (daily download 경로라 fast_info 무관, 후속에 KR 환율 엔드포인트 확인 시 이전).
 CARD_FX = [
     ("KR 원/달러", "USDKRW=X"),
     ("JP 엔/원 (100엔)", "JPYKRW=X"),
-    ("EU 유로/달러", "EURUSD=X"),
-    ("GB 파운드/달러", "GBPUSD=X"),
-    ("CN 달러/위안", "USDCNY=X"),
-    ("HK 달러/미국달러", "USDHKD=X"),
-    ("TW 대만달러/미국달러", "USDTWD=X"),
-    ("IN 루피/달러", "USDINR=X"),
-    ("AU 호주달러/달러", "AUDUSD=X"),
-    ("CH 스위스프랑/달러", "USDCHF=X"),
+    ("EU 유로/달러", "nvx:EURUSD"),
+    ("GB 파운드/달러", "nvx:GBPUSD"),
+    ("CN 달러/위안", "nvx:USDCNY"),
+    ("HK 달러/미국달러", "nvx:USDHKD"),
+    ("TW 대만달러/미국달러", "nvx:USDTWD"),
+    ("IN 루피/달러", "nvx:USDINR"),
+    ("AU 호주달러/달러", "nvx:AUDUSD"),
+    ("CH 스위스프랑/달러", "nvx:USDCHF"),
 ]
 
 # 사용자 2026-06-14 '다 네이버로' — 원자재를 네이버 marketindex(nv:symbolCode)로
@@ -195,8 +198,8 @@ def _all_yf_tickers() -> list[str]:
         if items is None:
             continue
         for _, tk in items:
-            if tk.startswith(("nv:", "nvi:", "nvd:")):
-                continue  # 네이버 marketindex/worldstock/domestic (yfinance 아님 — skip)
+            if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:")):
+                continue  # 네이버 marketindex/worldstock/domestic/exchangeWorld (skip)
             tickers.append(tk)
     tickers.append(_DOLLAR_INDEX_TICKER)
     return tickers
@@ -314,9 +317,10 @@ def _fetch_yf_batch() -> dict[str, dict]:
     #   nv:  = marketindex(energy/metals/agri/transport) — 원자재·귀금속·운임지수
     #   nvi: = worldstock/index(reutersCode) — 세계지수(니케이/VIX/필반/이탈리아 등)
     #   nvd: = polling/domestic/index(itemCode) — 국내지수(코스피/코스닥)
+    #   nvx: = marketindex/exchangeWorld(reutersCode) — 세계 환율 cross-rate
     # yfinance 무티커(두바이유/니켈/CCFI/BDI) 포함. 코드별 graceful —
     # 네이버 미반환 코드는 result 미주입(블랭크, 크래시 없음).
-    _nv_codes, _nvi_codes, _nvd_codes = [], [], []
+    _nv_codes, _nvi_codes, _nvd_codes, _nvx_codes = [], [], [], []
     for _grp, _items in ALL_CARDS:
         if not _items:
             continue
@@ -327,6 +331,8 @@ def _fetch_yf_batch() -> dict[str, dict]:
                 _nvi_codes.append(_tk)
             elif _tk.startswith("nvd:"):
                 _nvd_codes.append(_tk)
+            elif _tk.startswith("nvx:"):
+                _nvx_codes.append(_tk)
     if _nv_codes:
         try:
             from bot.naver_marketindex import fetch_commodities
@@ -360,6 +366,17 @@ def _fetch_yf_batch() -> dict[str, dict]:
                                    "change": _rec["change"], "pct": _rec["pct"]}
         except Exception as exc:
             log.warning("market_overview: naver 국내지수 병합 실패: %s", exc)
+    if _nvx_codes:                             # fetch_world_fx 는 전체 반환(인자 무시)
+        try:
+            from bot.naver_marketindex import fetch_world_fx
+            _nvx = fetch_world_fx()
+            for _tk in _nvx_codes:
+                _rec = _nvx.get(_tk[4:])
+                if _rec and _rec.get("close") is not None:
+                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
+                                   "change": _rec["change"], "pct": _rec["pct"]}
+        except Exception as exc:
+            log.warning("market_overview: naver 세계환율 병합 실패: %s", exc)
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
