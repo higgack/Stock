@@ -67,7 +67,7 @@ CARD_ASIA = [
     ("CN CSI 300", "nvi:.CSI300"),   # 네이버 worldstock (VM probe 확정, 사용자 2026-06-14)
     ("CN 상해 종합", "nvi:.SSEC"),
     ("HK 홍콩 항셍", "nvi:.HSI"),
-    ("HK 항셍테크", "3033.HK"),  # .HSTECH 네이버 무데이터 → 추종 ETF(CSOP) yfinance 유지
+    ("HK 홍콩H", "nvi:.HSCE"),  # 사용자 2026-06-14 항셍테크 대신 홍콩H(H주지수, 네이버)
     ("VN 베트남 (VN-Index)", "nvi:.VNI"),  # 네이버 worldstock VN지수 (ETF→실지수, 2026-06-14)
     ("IN 인도 Sensex", "nvi:.BSESN"),
 ]
