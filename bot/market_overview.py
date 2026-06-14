@@ -26,10 +26,11 @@ import yfinance as yf
 log = logging.getLogger("bot.market_overview")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "market_overview"
-# 스냅샷(지수/환율 yfinance 배치 1콜 + FRED 일캐시) — 5분 통일(사용자
-# 2026-06-14 '엄마보드 모두 5분'). 시간당 12콜 수준이라 무위험. Finviz/
-# Naver 업종 TTL 은 각 클라이언트가 별도 보유(안티봇 경계 — 건드리지 말 것).
-_CACHE_TTL_SEC = 300  # 5 min
+# 스냅샷(지수/환율 yfinance 배치 1콜 + FRED 일캐시) — 1분(사용자 2026-06-14
+# '데이터 주기 1분'). 페이지 재생성(1분)과 동기 → 숫자도 1분마다 갱신. yfinance
+# 1배치/분(~20티커)이라 부하 작음 + YF_PAUSE 시 skip. Finviz/Naver 업종 TTL 은
+# 각 클라이언트가 별도 보유(안티봇 경계 — 건드리지 말 것).
+_CACHE_TTL_SEC = 60  # 1 min
 
 # 배포-인지 캐시 솔트 (사용자 2026-06-12 '대시보드 반영 너무 느려') —
 # git reset --hard 배포가 이 모듈을 갱신하면 mtime 이 바뀜 → 솔트 포함
@@ -178,6 +179,18 @@ def _fetch_yf_batch() -> dict[str, dict]:
     을 정확히 잡고, 실패 종목만 일봉으로 폴백(회귀 0)."""
     tickers = _all_yf_tickers()
     result: dict[str, dict] = {}
+    # YF_PAUSE(사용자 2026-06-14 '정지게이트 모두 추가') → yfinance skip, 직전 성공
+    # 배치를 디스크에서 반환(홈 지수 stale 유지·블랭크 방지). 네이버·FRED 는 무관.
+    _bc = _CACHE_DIR / "yf_batch_snapshot.json"
+    try:
+        from bot.finviz_client import yf_paused
+        if yf_paused():
+            try:
+                return json.loads(_bc.read_text())
+            except Exception:
+                return {}
+    except Exception:
+        pass
 
     # 1) 일봉 batch — 폴백용 (fast_info 없는 종목)
     daily: dict[str, tuple[float, float]] = {}
@@ -244,6 +257,12 @@ def _fetch_yf_batch() -> dict[str, dict]:
         pct = (chg / prev * 100) if prev != 0 else 0.0
         result[tk] = {"close": cur, "prev_close": prev,
                       "change": chg, "pct": pct}
+    if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
+        try:
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            _bc.write_text(json.dumps(result, ensure_ascii=False))
+        except Exception:
+            pass
     return result
 
 
@@ -740,18 +759,49 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
     # longName → chart_translate(Flash·영구캐시) 번역. 6h 캐시에 이름까지 저장.
     # graceful — 실패 시 ticker 유지(렌더가 '회사명 없으면 티커' 폴백).
     if results:
-        # 한글명: 네이버 worldstock 이름 맵 우선(사용자 2026-06-14 '네이버에서
-        # 한글종목명'). TW(네이버 미지원)·맵 미스만 chart_translate(yfinance
-        # longName→Flash) 폴백. 둘 다 영구/7d 캐시라 ₩~0.
+        # 한글명 3-레이어 (사용자 2026-06-14 'TW·HK 실적도 한국어'):
+        # (1) 네이버 worldstock 이름맵(JP/CN/HK — HK 는 5↔4자리 zfill 정규화)
+        # (2) TW = TWSE 中文명 → 한국어 번역(네이버 worldstock 미지원)
+        # (3) 잔여 미스 = yfinance longName → 번역. 전부 영구/7d 캐시라 ₩~0.
         try:
             from bot.naver_ranking_client import world_name_map
             nmap = world_name_map(market)
-            for r in results:
-                nm = nmap.get(r["symbol"])
-                if nm:
-                    r["name"] = nm
+            if nmap:
+                norm = {}
+                if market == "HK":     # 5자리↔4자리 zfill 정수 정규화
+                    for k, v in nmap.items():
+                        c = str(k).split(".")[0]
+                        if c.isdigit():
+                            norm.setdefault(str(int(c)), v)
+                for r in results:
+                    sym = r["symbol"]
+                    nm = nmap.get(sym)
+                    if not nm and market == "HK":
+                        c = str(sym).split(".")[0]
+                        if c.isdigit():
+                            nm = norm.get(str(int(c)))
+                    if nm:
+                        r["name"] = nm
         except Exception as exc:
             log.warning("intl earnings 네이버 이름 (%s): %s", market, exc)
+        if market == "TW":             # TWSE 中文명 → 한국어 번역(네이버 미지원)
+            try:
+                from bot.chart_translate import translate_titles_kr
+                from bot.twse_client import fetch_stock_day_all
+                tw_names = {f"{s.get('code')}.TW": s.get("name")
+                            for s in fetch_stock_day_all().get("rows", [])
+                            if s.get("code") and s.get("name")}
+                nat = {r["symbol"]: tw_names[r["symbol"]] for r in results
+                       if tw_names.get(r["symbol"])
+                       and (not r.get("name") or r["name"] == r["symbol"])}
+                uniq = sorted({v for v in nat.values() if v})
+                kr = translate_titles_kr(uniq) if uniq else {}
+                for r in results:
+                    nm = nat.get(r["symbol"])
+                    if nm and kr.get(nm):
+                        r["name"] = kr[nm]
+            except Exception as exc:
+                log.warning("TW earnings 中文→한글: %s", exc)
         miss = [r for r in results
                 if not r.get("name") or r["name"] == r["symbol"]]
         if miss:

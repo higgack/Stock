@@ -2977,14 +2977,13 @@ def _prewarm_highlow() -> None:
     """전종목 신고저/급등락/상한가 캐시를 순차 재산출 — 첫 방문자가 수 분 기다리지
     않게 미리 데워둠(사용자 2026-06-13 '아침엔 항상 신선'). 순차 실행으로 yfinance
     버스트 회피. 각 시장 graceful(실패해도 다음 진행). 무거운 전종목 스캔이라
-    백그라운드 thread 에서만 호출(_periodic_highlow_prewarm)."""
-    try:
-        from bot.finviz_client import yf_paused
-        if yf_paused():
-            log.info("highlow prewarm — yfinance 정지(YF_PAUSE) → 전체 skip")
-            return
-    except Exception:
-        pass
+    백그라운드 thread 에서만 호출(_periodic_highlow_prewarm).
+
+    ⚠️ yfinance 정지(YF_PAUSE) 중에도 **호출은 유지** — 내부 yfinance 컴퓨트
+    (_compute_highlow_from 등)는 각자 정지 게이트로 캐시 반환·스캔 skip 하지만,
+    네이버 맵 빌드(world_industry_map US·world_quote_map·world_stock_map)·Finviz
+    US 52주·네이버 무버는 yfinance 무관이라 계속 데워야 업종/시총이 안 빈다(사용자
+    2026-06-14 'US/HK 업종 안 나옴' — 옛 전체 skip 이 네이버 맵까지 막던 버그)."""
     seq = []
     try:
         from bot.intl_highlow import _compute as _ih
