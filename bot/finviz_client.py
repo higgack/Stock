@@ -847,7 +847,7 @@ def _compute_highlow_full_us() -> dict:
     수 분 — 백그라운드 전용(_highlow_full_us 가 동기 호출 금지)."""
     tks, names = _us_full_universe()
     return _compute_highlow_from(
-        tks, names, "highlow_full_us_v4.json",
+        tks, names, "highlow_full_us_v5.json",
         "전 미국 상장 산출(yfinance · 당일 52주 고저 갱신)", "전미국")
 
 
@@ -1671,14 +1671,14 @@ def _highlow_full_us() -> dict:
     산출본이면 재스캔 0 — 사용자 2026-06-13 '모두 장중에만 1h'). stale
     (≤24h) 서빙+백그라운드 재계산 / 캐시 부재 시 kick 후 빈 dict → 호출부가
     S&P500 티어로 폴스루 (다음 방문부터 전량 표시)."""
-    stale = _cached("highlow_full_us_v4.json", ttl=86400)
+    stale = _cached("highlow_full_us_v5.json", ttl=86400)
     if stale is not None:
         try:
-            mt = (_CACHE_DIR / "highlow_full_us_v4.json").stat().st_mtime
+            mt = (_CACHE_DIR / "highlow_full_us_v5.json").stat().st_mtime
         except OSError:
             mt = 0.0
         if _session_fresh("US", mt, _HL_INTRA_TTL):
-            return _prune_cached(stale, ("high", "low"), "highlow_full_us_v4.json")
+            return _prune_cached(stale, ("high", "low"), "highlow_full_us_v5.json")
     _kick_full_us_refresh()
     return stale if stale is not None else {}
 

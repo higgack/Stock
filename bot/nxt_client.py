@@ -21,9 +21,27 @@ _HDRS = {
                   "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Accept": "application/json", "Referer": "https://stock.naver.com/",
 }
-# 외국인=FOREIGNER(probe 확정). 기관은 후보 다중 시도(투자자 코드 미확정 —
-# 첫 성공 응답 사용, 전부 실패 시 빈 섹션 '데이터 없음' 정직 표기).
-_ORGAN_CANDIDATES = ("ORGAN", "ORGANIZATION", "INSTITUTION", "ORGN")
+# 외국인=FOREIGNER · 기관=ORGANIZATION (둘 다 VM probe 2026-06-14 확정 200).
+# ORGANIZATION 우선(나머지 후보는 400 — 폴백 보존만). 첫 성공 응답 사용.
+_ORGAN_CANDIDATES = ("ORGANIZATION", "ORGAN", "INSTITUTION", "ORGN")
+_FCACHE = "nxt_foreign.json"
+_OCACHE = "nxt_organ.json"
+_TTL = 120   # 2분 (연장거래 준실시간) — SWR: 매 방문 라이브 호출 방지(개선점 B)
+
+
+def _cached_fetch(cache_name: str, fn) -> dict | None:
+    """2분 디스크 캐시 + 실패 시 스테일(24h) 폴백 — 매 방문 네이버 직접 호출 차단
+    (사용자 2026-06-14 개선점 B). 신선 캐시 즉시 / 미스 시 fetch+저장 / 실패 시 스테일."""
+    from bot.finviz_client import _cache_write, _cached
+    c = _cached(cache_name, ttl=_TTL)
+    if isinstance(c, dict) and (c.get("buy") or c.get("sell")):
+        return c
+    out = fn()
+    if out and (out.get("buy") or out.get("sell")):
+        _cache_write(cache_name, out)
+        return out
+    stale = _cached(cache_name, ttl=86400)       # 빈 화면 방지(연장 시간 외 등)
+    return stale if isinstance(stale, dict) else out
 
 
 def _num(x):
@@ -76,18 +94,20 @@ def _fetch(investor: str, trade_type: str = "NXT",
 
 
 def fetch_nxt_foreign(trade_type: str = "NXT") -> dict | None:
-    """NXT 외국인 순매수/순매도 상위. graceful None."""
-    return _fetch("FOREIGNER", trade_type)
+    """NXT 외국인 순매수/순매도 상위. 2분 SWR 캐시. graceful None."""
+    return _cached_fetch(_FCACHE, lambda: _fetch("FOREIGNER", trade_type))
 
 
 def fetch_nxt_organ(trade_type: str = "NXT") -> dict | None:
-    """NXT 기관 순매수/순매도 상위 — investor 코드 후보 다중 시도. graceful None."""
-    for inv in _ORGAN_CANDIDATES:
-        out = _fetch(inv, trade_type)
-        if out:
-            out["investor_code"] = inv
-            return out
-    return None
+    """NXT 기관(ORGANIZATION) 순매수/순매도 상위. 2분 SWR 캐시. graceful None."""
+    def _go():
+        for inv in _ORGAN_CANDIDATES:
+            out = _fetch(inv, trade_type)
+            if out:
+                out["investor_code"] = inv
+                return out
+        return None
+    return _cached_fetch(_OCACHE, _go)
 
 
 if __name__ == "__main__":

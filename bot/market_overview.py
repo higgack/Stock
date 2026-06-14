@@ -185,9 +185,7 @@ FRED_INDICATORS = [
     ("US 미국채 10년 (금리)", "DGS10", "%", 90),
     ("US 미국채 30년 (금리)", "DGS30", "%", 90),
     ("JOLTS (비농업 구인)", "JTSJOL", "M", 365),
-    ("비농업 고용 (월간)", "PAYEMS", "K", 365),
     ("실업수당 청구 (신규)", "ICSA", "", 90),
-    ("실업률", "UNRATE", "%", 365),
     ("GDP 성장률 (QoQ)", "A191RL1Q225SBEA", "%", 400),
     ("근원 PCE 물가 (YoY)", "PCEPILFE", "%", 730),  # 사용자 2026-06-14 GDP 다음
     ("소매판매 (YoY)", "RSAFS", "%", 400),
@@ -1144,10 +1142,18 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
         except Exception:
             pass
 
-    top_us = ["AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSLA",
-              "AVGO", "JPM", "V", "MA", "UNH", "HD", "PG", "JNJ",
-              "NFLX", "CRM", "AMD", "INTC", "BA", "LLY", "BRK-B",
-              "WMT", "COST", "ORCL", "ADBE", "MRK", "ABBV", "PEP", "KO"]
+    # 시장 전체급 universe — S&P 500 (사용자 2026-06-14 '고정 30 말고 최대한').
+    # 8-worker 스레드 + 1h 캐시로 부하 bound. CSV 실패 시 메가캡 30 폴백.
+    _FALLBACK_30 = ["AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSLA",
+                    "AVGO", "JPM", "V", "MA", "UNH", "HD", "PG", "JNJ",
+                    "NFLX", "CRM", "AMD", "INTC", "BA", "LLY", "BRK-B",
+                    "WMT", "COST", "ORCL", "ADBE", "MRK", "ABBV", "PEP", "KO"]
+    try:
+        from bot.finviz_client import _fetch_sp500_csv
+        _sp_tks, _sp_names, _sp_inds = _fetch_sp500_csv()
+        top_us = _sp_tks if (_sp_tks and len(_sp_tks) > 100) else _FALLBACK_30
+    except Exception:
+        top_us = _FALLBACK_30
     results = []
 
     def _fetch_one(tk):
@@ -1440,9 +1446,17 @@ def _fetch_sector_movers_safe() -> dict:
 
 
 def _fetch_us_sector_movers_safe() -> dict:
-    """미국 업종 등락 — 메인 위젯은 **우리 L3 ~48 업종 단위**(사용자 2026-06-10
-    'L3 버전은 메인, Finviz 세밀 144는 개별 페이지'). Finviz 144 를 L3 버킷
-    으로 묶어 평균. 세부 전체 144는 /usindustry 페이지(top_movers→Finviz)."""
+    """미국 업종 등락 TOP 10 — **네이버 업종(USA) 우선**(사용자 2026-06-14 개선점 A:
+    데이터센터 IP Finviz 403 잦음 + 섹터ETF 폴백이 fast_info 트리거 → 네이버로).
+    네이버 USA 업종맵(시총가중 등락, JP/CN/HK 와 동일 경로). 빈/실패 시 Finviz L3
+    폴백(top_l3_movers). 둘 다 {up:[{name,pct}],down} 동형이라 렌더 동일."""
+    try:
+        from bot.naver_ranking_client import fetch_intl_sector_movers_naver
+        nv = fetch_intl_sector_movers_naver("US", top_n=10)
+        if nv.get("up") or nv.get("down"):
+            return nv
+    except Exception as exc:
+        log.warning("naver US 업종등락 → Finviz 폴백: %s", exc)
     try:
         from bot.finviz_client import top_l3_movers
         return top_l3_movers(top_n=10)

@@ -536,11 +536,19 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
     nat = _UPJONG_NATION.get(market)
     if not nat:
         return {"up": [], "down": [], "ts": "", "source": ""}
-    from bot.finviz_client import _cache_write, _cached, _now_label
+    from bot.finviz_client import (_CACHE_DIR, _cache_write, _cached,
+                                   _now_label, _session_fresh)
     cache = f"naver_sector_movers_{market}.json"
-    c = _cached(cache, ttl=300)        # 5분 (사용자 2026-06-14 '엄마보드 모든 나라 5분')
-    if isinstance(c, dict) and (c.get("up") or c.get("down")):
-        return c
+    # 세션-인지(개선점 C, 사용자 2026-06-14): 장중 5분 / 장 밖엔 마지막 산출본이면
+    # 재fetch 0(평면 5분이 장 밖·주말에도 재fetch 하던 낭비 제거). 무버·신고저와 통일.
+    stale = _cached(cache, ttl=86400)
+    if isinstance(stale, dict) and (stale.get("up") or stale.get("down")):
+        try:
+            _mt = (_CACHE_DIR / cache).stat().st_mtime
+        except OSError:
+            _mt = 0.0
+        if _session_fresh(market, _mt, 300):
+            return stale
     import requests
     try:
         codes = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12).json()

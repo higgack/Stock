@@ -62,10 +62,10 @@ def _panel(title: str, rows: list, side: str) -> str:
             f'<td class="q">{_fmt_qty(r.get("volume"))}</td></tr>')
     body = "".join(trs) or '<tr><td colspan="7" class="empty">—</td></tr>'
     return (f'<div class="nxt-panel"><div class="nxt-hd {side}">{title}</div>'
-            f'<table class="nxt-tbl"><thead><tr><th>#</th><th>종목</th>'
+            f'<div class="nxt-tw"><table class="nxt-tbl"><thead><tr><th>#</th><th>종목</th>'
             f'<th>순매{"수" if side == "buy" else "도"}금액</th><th>순매{"수" if side == "buy" else "도"}량</th>'
             f'<th>현재가</th><th>등락</th><th>총거래량</th></tr></thead>'
-            f'<tbody>{body}</tbody></table></div>')
+            f'<tbody>{body}</tbody></table></div></div>')
 
 
 def _investor_block(label: str, data: dict | None) -> str:
@@ -85,13 +85,14 @@ _NXT_CSS = """
 .nxt-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media(max-width:860px){.nxt-grid{grid-template-columns:1fr}}
 .nxt-panel{background:var(--card,#1c1f26);border:1px solid var(--border,#2a2e37);border-radius:10px;overflow:hidden}
+.nxt-tw{overflow-x:auto}
 .nxt-hd{padding:9px 12px;font-weight:700;font-size:14px}
 .nxt-hd.buy{color:#ef5350}.nxt-hd.sell{color:#42a5f5}
-.nxt-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
-.nxt-tbl th{padding:5px 8px;text-align:right;color:var(--muted,#9aa0aa);font-weight:500;border-bottom:1px solid var(--border,#2a2e37);white-space:nowrap}
+.nxt-tbl{width:100%;border-collapse:collapse;font-size:11.5px}
+.nxt-tbl th{padding:4px 6px;text-align:right;color:var(--muted,#9aa0aa);font-weight:500;border-bottom:1px solid var(--border,#2a2e37);white-space:nowrap}
 .nxt-tbl th:nth-child(2){text-align:left}
-.nxt-tbl td{padding:5px 8px;text-align:right;border-bottom:1px solid var(--border,#23262e);white-space:nowrap}
-.nxt-tbl td:nth-child(2){text-align:left;max-width:130px;overflow:hidden;text-overflow:ellipsis}
+.nxt-tbl td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--border,#23262e);white-space:nowrap}
+.nxt-tbl td:nth-child(2){text-align:left;max-width:100px;overflow:hidden;text-overflow:ellipsis}
 .nxt-tbl td a{color:var(--fg,#e8eaed);text-decoration:none}
 .nxt-tbl td a:hover{color:var(--accent,#3b82f6);text-decoration:underline}
 .nxt-tbl .rk{color:var(--muted,#9aa0aa)}

@@ -162,7 +162,15 @@ def _cached(name: str):
     cache_file = _CACHE_DIR / name
     if cache_file.exists():
         try:
-            if time.time() - cache_file.stat().st_mtime < _CACHE_TTL_SEC:
+            mt = cache_file.stat().st_mtime
+            # 세션-인지(개선점 C, 사용자 2026-06-14): KR 장중 5분 / 장 밖엔 마지막
+            # 산출본 fresh(재fetch 0). _session_fresh 부재 시 평면 5분 폴백.
+            try:
+                from bot.finviz_client import _session_fresh
+                fresh = _session_fresh("KR", mt, _CACHE_TTL_SEC)
+            except Exception:
+                fresh = (time.time() - mt < _CACHE_TTL_SEC)
+            if fresh:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
