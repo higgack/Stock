@@ -5154,10 +5154,10 @@ class TestUsMovers:
         import bot.finviz_client as fv
         monkeypatch.setattr(fv, "fetch_us_movers", lambda: {
             "up": [{"ticker": "ATEX", "name": "Anterix", "price": 42.5,
-                    "pct": 47.2, "mcap": 85, "ind": "Telecom Services",  # ≥$1B(필터 통과)
+                    "pct": 47.2, "mcap": 8.5, "ind": "Telecom Services",
                     "dollar_m": 3.1}],
             "down": [{"ticker": "XYZ", "name": "Xyz Inc", "price": 12.0,
-                      "pct": -31.0, "mcap": None, "ind": None,  # 시총 부재 → 필터 보류 유지
+                      "pct": -31.0, "mcap": None, "ind": None,
                       "dollar_m": 1.0}],
             "ts": "2026-06-12 21:00", "scanned": 6488,
             "source": "전 미국 상장 산출(yfinance · 당일 등락)"})
@@ -7359,12 +7359,9 @@ class TestUpperLowerVolume:
         monkeypatch.setattr(nv, "world_stock_map", lambda m: {})
         assert ih._cap_by_liquidity_hk(full, 2) == full[:2]   # 맵 부재 폴백
 
-    def test_min_mcap_filter_and_jp_overlay(self, monkeypatch):
-        # 사용자 2026-06-14 batch — US ≥$1B·JP ≥100억엔 시총 필터 + JP 네이버 overlay.
-        from bot.highlow_render import filter_min_mcap
-        items = [{"mcap": 50}, {"mcap": 5}, {"mcap": None}, {"mcap": 10}]
-        assert [x["mcap"] for x in filter_min_mcap(items, 10)] == [50, 10]  # 5·None 제외
-        # JP overlay (직접 매칭) + HK overlay (zfill 정수 매칭)
+    def test_jp_hk_naver_overlay(self, monkeypatch):
+        # JP 네이버 worldstock overlay(직접 매칭) + HK overlay(zfill 정수 매칭).
+        # (시총 필터는 사용자 2026-06-14 '다시 생각' 으로 제거 — 시총 표시는 유지.)
         import bot.finviz_client as fc
         import bot.naver_ranking_client as nv
         monkeypatch.setattr(nv, "world_stock_map", lambda m: {
@@ -7380,11 +7377,9 @@ class TestUpperLowerVolume:
         src = open("bot/finviz_client.py", encoding="utf-8").read()
         assert 'if tag in ("HK", "JP"):' in src and "_naver_worldstock_overlay" in src
         assert 'elif tag == "TW":' in src and "_persist_mcap_overlay" in src
-        # US/JP 시총 필터 배선
-        us = open("bot/us_pages.py", encoding="utf-8").read()
-        assert "filter_min_mcap" in us and "$1B↑" in us
-        ip = open("bot/intl_pages.py", encoding="utf-8").read()
-        assert 'market == "JP"' in ip and "filter_min_mcap" in ip and "100억엔↑" in ip
+        # 시총 필터 제거 확인 (사용자 '다시 생각')
+        assert "filter_min_mcap" not in open("bot/us_pages.py", encoding="utf-8").read()
+        assert "filter_min_mcap" not in open("bot/intl_pages.py", encoding="utf-8").read()
 
     def test_tw_persist_mcap_overlay(self, monkeypatch):
         # 사용자 2026-06-14 'TW 52주 시총 안 떠' — 52주 compute 도 enrich 와 같은

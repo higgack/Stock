@@ -209,17 +209,8 @@ def sort_by_mcap(items: list) -> list:
                                          -(it.get("mcap") or 0)))
 
 
-def filter_min_mcap(items: list, min_eok: float) -> list:
-    """시총(억, 현지통화/USD) min_eok 이상만 — 소형주 노이즈 제거(사용자 2026-06-14:
-    US ≥$1B=10억$, JP ≥100억엔). ⚠️ mcap 데이터가 절반 이상 비면(overlay 실패·yf
-    정지 등) 필터를 적용 안 하고 원본 반환 — 시총 부재로 페이지가 통째 비는 것 방지.
-    시총 충분 시에만 엄격 적용(None·<임계 제외)."""
-    if not items:
-        return items
-    with_mc = [it for it in items if it.get("mcap") is not None]
-    if len(with_mc) < len(items) * 0.5:    # 시총 절반 이상 부재 → 필터 신뢰 불가
-        return items
-    return [it for it in with_mc if (it.get("mcap") or 0) >= min_eok]
+# (filter_min_mcap 시총 필터는 사용자 2026-06-14 '다시 생각' 으로 제거 — 시총
+#  컬럼 표시·정렬은 유지. 향후 재도입 시 데이터-인지 버전을 git 이력에서 복원.)
 
 
 _ENRICH_CACHE: dict = {}

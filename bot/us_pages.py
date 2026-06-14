@@ -235,11 +235,9 @@ def render_us_highlow_page() -> str:
                 pass
     # 기본 정렬 = 시총 내림차순 (사용자 2026-06-12 '처음 화면은 시총순') —
     # 시총 미확보(—) 행은 뒤로. 헤더 클릭으로 다른 기준 재정렬 가능.
-    # 시총 $1B↑만 (사용자 2026-06-14 '시총 1B 이상만') — 10억$.
-    from bot.highlow_render import filter_min_mcap
     _mc_key = lambda it: (it.get("mcap") is None, -(it.get("mcap") or 0))
-    hi = filter_min_mcap(sorted(hi, key=_mc_key), 10)
-    lo = filter_min_mcap(sorted(lo, key=_mc_key), 10)
+    hi = sorted(hi, key=_mc_key)
+    lo = sorted(lo, key=_mc_key)
     if not hi and not lo:
         body = ('<div class="empty">신고가·신저가 데이터를 불러올 수 없습니다.<br>'
                 '(잠시 후 다시 시도해 주세요.)</div>')
@@ -250,7 +248,7 @@ def render_us_highlow_page() -> str:
                 + _panel("🔻 52주 신저가", lo, "hl-low", _ind_dist_line(lo))
                 + '</div>' + _HL_SORT_JS)
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') + 장중 1h(다른 52주와 통일).
-    sub = (f"미국 52주 신고가·신저가 · 시총 $1B↑ · 종목명=네이버 한글 · 거래량·거래대금 · "
+    sub = (f"미국 52주 신고가·신저가 · 종목명=네이버 한글 · 거래량·거래대금 · "
            f"시총순·헤더 클릭 정렬 · 업종=GICS·yfinance · 출처 {src} · 장중 1h"
            + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
@@ -310,14 +308,11 @@ def render_us_movers_page() -> str:
             body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
-        from bot.highlow_render import (filter_min_mcap, sort_by_mcap,
-                                        stock_panel as _hpanel)
+        from bot.highlow_render import sort_by_mcap, stock_panel as _hpanel
         # 네이버 소스면 거래량·거래대금 표시(Naver 제공) — 사용자 2026-06-14
         # '거래량과 거래대금 모두'. 모든 자식은 기본 시총순(헤더로 등락률 재정렬).
-        # 시총 $1B↑만 (사용자 2026-06-14 '시총 1B 이상만') — 10억$.
         _is_nv = "네이버" in src
-        up = filter_min_mcap(sort_by_mcap(up), 10)
-        down = filter_min_mcap(sort_by_mcap(down), 10)
+        up, down = sort_by_mcap(up), sort_by_mcap(down)
         body = ('<div class="grid">'
                 + _hpanel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "US",
                           _ind_dist_line(up), show_vol=_is_nv, show_value=_is_nv)
@@ -326,10 +321,10 @@ def render_us_movers_page() -> str:
                 + _HL_SORT_JS)
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') — 무엇·출처(1회)·정렬·신선도.
     if "네이버" in src:
-        sub = ("미국 당일 등락 상·하위 30 · 시총 $1B↑ · 네이버 증권(NASDAQ+NYSE+AMEX) · "
+        sub = ("미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · "
                "시총순·헤더 클릭 정렬 · 장중 30분" + (f" · {ts} 기준" if ts else ""))
     else:
-        sub = ("미국 당일 등락 상·하위 30 · 시총 $1B↑ · 전 미국 보통주(SPAC·워런트 제외) · "
+        sub = ("미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · "
                "시총순·헤더 클릭 정렬"
                + (f" · 출처 {src}" if src else "") + " · 장중 30분"
                + (f" · {ts} 기준" if ts else ""))
