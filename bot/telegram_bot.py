@@ -3625,7 +3625,7 @@ async def _on_startup(application) -> None:
     def _highlow_force_recompute():
         from bot.finviz_client import _CACHE_DIR
         marker = _CACHE_DIR / ".highlow_force"
-        ver = "2026-06-14-batch-jp-overlay-mcap-filter-us-cn-ind"
+        ver = "2026-06-14-audit-naver-maps-rebuild"
         try:
             if marker.read_text(encoding="utf-8").strip() == ver:
                 return
