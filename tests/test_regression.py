@@ -5345,6 +5345,80 @@ class TestUsPrepost:
         assert "장후" in html and "NVDA" in html and 'href="lookup/NVDA"' in html
 
 
+class TestPruneNonStock:
+    """비-주식 가지치기 (finviz_client.prune_non_stock) — CEF 펀드·유령티커·
+    이중클래스 dedupe (사용자 2026-06-14 실데이터 회귀)."""
+
+    def test_cef_detection(self):
+        from bot.finviz_client import _is_fund_vehicle
+        cef = [
+            ("Cohen & Steers Infrastructure Fund Inc", "Finance Companies"),
+            ("BlackRock Capital Allocation Term Closed End Fund", "Finance/Investors Services"),
+            ("Virtus Dividend Interest & Prem Str Fd", "Finance: Consumer Services"),
+            ("Gabelli Utility Trust (The) Common Stock", "Trusts Except Educational Religious and Charitable"),
+            ("RiverNorth Flexible Municipal Income Fund II, Inc.", "Trusts Except Educational Religious and Charitable"),
+            ("Putnam Premier Income Trust", "Finance Companies"),
+            ("MFS Government Markets Income Trust Common Stock", "Trusts Except Educational Religious and Charitable"),
+            ("PCM Fund, Inc. Common Stock", "Trusts Except Educational Religious and Charitable"),
+            ("Nuveen Real Estate Income Fund", "Finance/Investors Services"),
+        ]
+        for nm, ind in cef:
+            assert _is_fund_vehicle(nm, ind), f"CEF 미검출: {nm}"
+
+    def test_legit_trust_names_preserved(self):
+        # 은행·REIT·운용 '회사'는 'Trust' 들어가도 보존 (Fund/Fd/Closed-End·CEF
+        # 업종코드 아님). OPI(Office Properties Income Trust)는 REIT → Income Trust
+        # 패턴이라도 비-부동산 가드로 보존.
+        from bot.finviz_client import _is_fund_vehicle
+        legit = [
+            ("Northern Trust", "Asset Management & Custody Banks"),
+            ("TrustCo Bank Corp NY", "Major Banks"),
+            ("W.p. Carey", "Real Estate Investment Trusts"),
+            ("Office Properties Income Trust", "Real Estate Investment Trusts"),
+            ("Affiliated Managers Group", "Investment Managers"),
+            ("Amkor Technology", "Semiconductors"),
+        ]
+        for nm, ind in legit:
+            assert not _is_fund_vehicle(nm, ind), f"합법 오드롭: {nm}"
+
+    def test_frozen_ticker(self):
+        from bot.finviz_client import _is_frozen_row
+        assert _is_frozen_row({"name": "Sinovac Biotech, Ltd.",
+                               "mcap": None, "ind": None, "vol": None})
+        assert not _is_frozen_row({"mcap": 3500.0, "ind": None, "vol": None})
+        assert not _is_frozen_row({"mcap": None, "ind": "Banks", "vol": None})
+
+    def test_dedupe_dual_class(self):
+        from bot.finviz_client import prune_non_stock
+        rows = [
+            {"ticker": "CENT", "name": "Central Garden & Pet",
+             "vol": 70000, "mcap": 2700, "ind": "Consumer Specialties"},
+            {"ticker": "CENTA", "name": "Central Garden & Pet Class A",
+             "vol": 320000, "mcap": 2400, "ind": "Consumer Specialties"},
+            {"ticker": "SENEA", "name": "Seneca Foods Class A",
+             "vol": 540000, "mcap": 1200, "ind": "Packaged Foods"},
+            {"ticker": "SENEB", "name": "Seneca Foods Class B",
+             "vol": 589, "mcap": 1100, "ind": "Packaged Foods"},
+            {"ticker": "AMKR", "name": "Amkor Technology",
+             "vol": 7550000, "mcap": 20500, "ind": "Semiconductors"},
+        ]
+        out = [r["ticker"] for r in prune_non_stock(rows)]
+        assert out == ["CENTA", "SENEA", "AMKR"], out   # 유동성 큰 클래스 1개 + 순서
+
+    def test_prune_integration(self):
+        from bot.finviz_client import prune_non_stock
+        rows = [
+            {"ticker": "AMKR", "name": "Amkor Technology",
+             "ind": "Semiconductors", "vol": 7000000, "mcap": 20500},
+            {"ticker": "PDI", "name": "PIMCO Dynamic Income Fund",
+             "ind": "Trusts Except Educational Religious and Charitable",
+             "vol": 100, "mcap": 500},
+            {"ticker": "SVA", "name": "Sinovac Biotech, Ltd.",
+             "mcap": None, "ind": None, "vol": None},
+        ]
+        assert [r["ticker"] for r in prune_non_stock(rows)] == ["AMKR"]
+
+
 class TestDartLawsuitParsing:
     """소송 파싱 (사용자 2026-06-12, 10예시 제공 — 표준 제기·신청/판결·결정
     + 기타경영사항(자율공시) 소송성 승격) + 🔥 상장폐지 규칙."""
