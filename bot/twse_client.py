@@ -206,6 +206,11 @@ def parse_stock_day_all(rows: list) -> list[dict]:
         pct = (chg / prev * 100.0) if prev else 0.0
         vol = _num(r.get("TradeVolume") or r.get("成交股數"))  # 거래량(주식수)
         val = _num(r.get("TradeValue") or r.get("成交金額"))   # 거래대금(NT$)
+        # TradeValue 미제공(OpenAPI STOCK_DAY_ALL 가 거래대금 필드 없음, 사용자
+        # 2026-06-14 'TW 거래대금 왜 안 채워져')이면 종가×거래량으로 산출 —
+        # 52주/무버 위젯과 동일식(value = last*vol). 있으면 원값 우선.
+        if val is None and vol is not None and close:
+            val = close * vol
         out.append({
             "code": str(r.get("Code") or r.get("代號") or "").strip(),
             "name": str(r.get("Name") or r.get("名稱") or "").strip(),
