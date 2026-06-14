@@ -1120,7 +1120,7 @@ yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 ·
 
 ━━━━━━━━━
 <b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·레딧·Daily Byte·📝블로그(글 요약+원문 아카이브)·부동산·청약·수출입)는 🌍Main nav, 워치·도메인목록은 Screener nav 에서
- 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한·미·일·대·중·홍 6시장 탭) · 리서치액션(7일치·한국 기업/산업/전략(네이버)+미국TP) · 관심종목(시총·PER(적자표시)·EPS FY라벨·등락·정렬/필터/순서) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱/미파싱제외 색상+카테고리 동시필터·소송/리스크/조회공시/공정공시/자율공시 파싱·지분 노이즈컷·CSV) · 업종등락(한·미·일·대·중·홍 — 업종별시세·신고가신저가·급등급락) · 종목검색(헤더→탭→차트 즉시) · 1분 갱신
+ 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한·미·일·대·중·홍 6시장 탭) · 리서치액션(7일치·한국 기업/산업/전략(네이버)+미국TP) · 관심종목(시총·PER(적자표시)·EPS FY라벨·등락·정렬/필터/순서) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱/미파싱제외 색상+카테고리 동시필터·소송/리스크/조회공시/공정공시/자율공시 파싱·지분 노이즈컷·CSV) · 업종등락(한·미·일·대·중·홍 — 업종별시세·신고가신저가·급등급락·미국 장전/장후) · 종목검색(헤더→탭→차트 즉시) · 1분 갱신
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
  🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️ · <b>분석버튼</b>(종목 분석) · 입력창 <b>'/' 명령</b>(/usage·/portfolio·/watch·/screener 등 텔레그램 명령을 대시보드에서 실행→결과 패널)
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/index.html
@@ -3052,6 +3052,16 @@ def _prewarm_highlow() -> None:
         fetch_us_movers()
     except Exception as exc:
         log.warning("highlow prewarm US: %s", exc)
+    # 장전/장후 급등락 — 연장거래 창(미국 장전·장후)일 때만 warm (장 밖 무의미한
+    # 전미국 스캔 회피). 07:30 KST=US 장후, 정규장 중 prewarm 은 직전 스냅샷 유지.
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        from bot.prepost_client import (_in_extended_window,
+                                        fetch_us_prepost_movers)
+        if _in_extended_window(_dt.now(_tz.utc)):
+            fetch_us_prepost_movers()
+    except Exception as exc:
+        log.warning("prepost prewarm US: %s", exc)
 
 
 async def _periodic_highlow_prewarm() -> None:

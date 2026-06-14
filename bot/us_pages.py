@@ -67,6 +67,7 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
               + _t("usindustry", "🏭 업종별 시세(전체)")
               + _t("ushighlow", "📈 신고가·신저가")
               + _t("usmovers", "🚀 급등·급락")
+              + _t("usprepost", "🌙 장전·장후")
               + '</div>')
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
@@ -344,3 +345,60 @@ def render_us_movers_page() -> str:
                + (f" · 출처 {src}" if src else "") + " · 장중 30분"
                + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)
+
+
+def render_us_prepost_page() -> str:
+    """미국 장전(pre-market)·장후(after-hours) 급등·급락 TOP30 — 정규장 종가
+    대비 연장거래 등락(yfinance prepost 30분봉, 사용자 2026-06-14 '장전/장후도
+    별도 자식'). 급등락(정규장)의 형제 표면. SWR 백그라운드 — 첫 방문 kick.
+    연장거래는 유동성 얇아 뉴스 종목 위주(정상). 종목 → 우리 종목분석(lookup)."""
+    try:
+        from bot.prepost_client import fetch_us_prepost_movers
+        data = fetch_us_prepost_movers()
+    except Exception as exc:
+        log.warning("us prepost page fetch failed: %s", exc)
+        data = {"up": [], "down": [], "ts": "", "source": "", "session": ""}
+    ts = _html.escape(data.get("ts", ""))
+    up, down = data.get("up", []), data.get("down", [])
+    sess = data.get("session") or ""
+    sess_kr = "장전" if sess == "pre" else "장후" if sess == "post" else "장전·장후"
+
+    if not up and not down:
+        if data.get("building"):
+            st = data.get("status") or {}
+            ts_lb = _html.escape(str(st.get("ts_label") or ""))
+            if st.get("state") == "failed":
+                detail = _html.escape(str(st.get("detail") or ""))
+                body = (f'<div class="empty">⚠️ 최근 산출 실패'
+                        + (f' ({ts_lb})' if ts_lb else '') + f' — {detail}<br>'
+                        '연장거래(장전 4:00–9:30 · 장후 16:00–20:00 ET)에만 데이터가 '
+                        '있습니다. 정규장 중·장 완전 종료 시에는 직전 연장 스냅샷을 '
+                        '보여줍니다.</div>')
+            elif st.get("state") == "running":
+                done, total = st.get("done"), st.get("total")
+                prog = (f" — 배치 {done}/{total}"
+                        if done is not None and total else "")
+                body = (f'<div class="empty">⏳ 산출 진행 중{prog}'
+                        + (f' (시작 {ts_lb})' if ts_lb else '')
+                        + ' — 전 미국 상장 연장거래 스캔(수 분 소요). '
+                          '잠시 후 새로고침해 주세요.</div>')
+            else:
+                body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전 미국 상장 '
+                        '연장거래 스캔(수 분 소요). 잠시 후 새로고침해 주세요.</div>')
+        else:
+            body = ('<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
+                    '연장거래(장전 4:00–9:30 · 장후 16:00–20:00 ET) 시간에 '
+                    '확인해 주세요.</div>')
+    else:
+        from bot.highlow_render import sort_by_mcap, stock_panel as _hpanel
+        up, down = sort_by_mcap(up), sort_by_mcap(down)
+        body = ('<div class="grid">'
+                + _hpanel(f"🚀 {sess_kr} 가장 많이 오른 TOP 30", up, "pp-up", "US",
+                          _ind_dist_line(up), show_vol=True)
+                + _hpanel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down, "pp-down", "US",
+                          _ind_dist_line(down), show_vol=True) + '</div>'
+                + _HL_SORT_JS)
+    sub = (f"미국 {sess_kr} 연장거래 등락 상·하위 30 · 정규장 종가 대비 · "
+           "yfinance 30분봉 · 시총순·헤더 클릭 정렬 · 연장거래 창에서 30분"
+           + (f" · {ts} 기준" if ts else ""))
+    return _shell("미국 장전·장후 급등·급락", sub, "usprepost", body)
