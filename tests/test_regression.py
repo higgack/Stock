@@ -5154,10 +5154,10 @@ class TestUsMovers:
         import bot.finviz_client as fv
         monkeypatch.setattr(fv, "fetch_us_movers", lambda: {
             "up": [{"ticker": "ATEX", "name": "Anterix", "price": 42.5,
-                    "pct": 47.2, "mcap": 8.5, "ind": "Telecom Services",
+                    "pct": 47.2, "mcap": 85, "ind": "Telecom Services",  # ≥$1B(필터 통과)
                     "dollar_m": 3.1}],
             "down": [{"ticker": "XYZ", "name": "Xyz Inc", "price": 12.0,
-                      "pct": -31.0, "mcap": None, "ind": None,
+                      "pct": -31.0, "mcap": None, "ind": None,  # 시총 부재 → 필터 보류 유지
                       "dollar_m": 1.0}],
             "ts": "2026-06-12 21:00", "scanned": 6488,
             "source": "전 미국 상장 산출(yfinance · 당일 등락)"})
@@ -7641,12 +7641,13 @@ class TestIntlFullMarket:
                       "vol": 5000000, "value": 1500.0, "mcap": 400000, "ind": "Auto"}],
             "low": [], "ts": "x", "source": "s", "building": False, "status": {}})
         h = render_intl_highlow52_page("JP")
-        assert "거래량" in h and "거래대금" in h
+        # 컬럼 헤더로 검사(부제에 '거래량·거래대금' 라벨이 생겨 bare 문자열은 부정확).
+        assert "거래량(주)" in h
         monkeypatch.setattr(ih, "fetch_intl_highlow", lambda m: {
             "high": [{"ticker": "7203.T", "name": "도요타", "price": 3000, "pct": 1.2,
                       "vol": None, "value": None, "mcap": 400000, "ind": "Auto"}],
             "low": [], "ts": "x", "source": "s", "building": False, "status": {}})
-        assert "거래량" not in render_intl_highlow52_page("JP")   # vol 부재 → 숨김
+        assert "거래량(주)" not in render_intl_highlow52_page("JP")   # vol 부재 → 컬럼 숨김
 
 
 class TestUsHighlowIndDist:

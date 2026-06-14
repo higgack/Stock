@@ -131,7 +131,9 @@ def render_intl_movers_page(market: str) -> str:
     src = _html.escape(_clean_src(data.get("source") or f"{flag} 당일 등락"))
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고').
     _mc_note = "시총 100억엔↑ · " if market == "JP" else ""   # 사용자 2026-06-14
-    _ind_src = "업종=네이버+yfinance" if market == "CN_A" else "업종=네이버"  # CN 이중
+    # 업종 소스 정직 표기 — CN/JP=네이버 우선+야후 폴백, HK=야후 우선+네이버 폴백.
+    _ind_src = ("업종=네이버+yfinance" if market in ("CN_A", "JP")
+                else "업종=yfinance+네이버" if market == "HK" else "업종=네이버")
     sub = (f"{flag} 당일 등락 상·하위 30 · {_mc_note}{src} · 시총순·헤더 클릭 정렬 · "
            f"{_ind_src} · 장중 30분" + (f" · {ts} 기준" if ts else ""))
     _active = {"JP": "jpmovers", "CN_A": "cnmovers", "HK": "hkmovers"}.get(market, "hkmovers")
