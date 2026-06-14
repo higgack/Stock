@@ -4489,6 +4489,13 @@ class TestDartParseTargetAndSignificance:
         assert ff("주권매매거래정지해제(액면병합 주권 변경상장)")
         assert ff("유동성공급계약의체결")
         assert ff("기업설명회(IR)개최결과")
+        # 2026-06-14 title-only — 원문 미제공·구조화 API 부재(합병/분할 종료보고서·
+        # 대량보유 약식). detail 빈 게 정상 → 미파싱제외(사용자 '그냥 타이틀 온리').
+        assert ff("합병등종료보고서(합병)")
+        assert ff("회사분할종료보고서")
+        assert ff("주식등의대량보유상황보고서(약식)")
+        assert not ff("주식등의대량보유상황보고서(일반)")    # 일반=majorstock API
+        assert not ff("유형자산양수도종료보고서")            # _asset_complete_lines 파싱
         assert not ff("단일판매ㆍ공급계약체결")             # 진짜 파서 대상
         assert not ff("주요사항보고서(유상증자결정)")
         assert not ff("[기재정정]단일판매ㆍ공급계약체결")   # 본문 정정은 재추출 대상
