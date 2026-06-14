@@ -12093,9 +12093,13 @@ def _render_deposit_widget(dep: dict) -> str:
     if dep.get("credit") is not None:
         cv = (f'<div class="dp-item"><span class="dp-l">신용잔고</span>'
               f'<span class="dp-v">{_won(dep.get("credit"))}{_chg(dep.get("credit_chg"))}</span></div>')
+    ev = ""        # 주식형펀드 (있을 때만 — graceful, 사용자 2026-06-14)
+    if dep.get("equity_fund") is not None:
+        ev = (f'<div class="dp-item"><span class="dp-l">주식형펀드</span>'
+              f'<span class="dp-v">{_won(dep.get("equity_fund"))}{_chg(dep.get("equity_fund_chg"))}</span></div>')
     return (
         '<div class="dp-wrap"><div class="dp-hd">💰 투자자 예탁금·신용</div>'
-        f'{dv}{cv}<span class="dp-ts">기준일 {date} · {src}</span></div>'
+        f'{dv}{cv}{ev}<span class="dp-ts">기준일 {date} · {src}</span></div>'
     )
 
 
@@ -12121,10 +12125,21 @@ def _render_deposit_charts(dep: dict) -> str:
               "data": [p["v"] for p in cser], "axis": "L"}])
         cards.append(_chart_card("신용잔고 추이 (억원)",
                                  [("신용잔고", "#42a5f5")], svg, src_foot))
+    # 주식형펀드 자금동향 — 신용잔고 옆 3번째 차트 (사용자 2026-06-14). 데이터
+    # (equity_fund_series) 있을 때만 → graceful 2-col 회귀. 출처는 같은 KOFIA.
+    eser = dep.get("equity_fund_series", [])
+    if len(eser) >= 2:
+        svg = _svg_line_chart(
+            [p["d"] for p in eser],
+            [{"name": "주식형펀드", "color": "#26a69a",
+              "data": [p["v"] for p in eser], "axis": "L"}])
+        cards.append(_chart_card("주식형펀드 추이 (억원)",
+                                 [("주식형펀드", "#26a69a")], svg, src_foot))
     if not cards:
         return ""
-    return ('<div class="chart-row" style="grid-template-columns:1fr 1fr;'
-            'margin-top:-10px">' + "".join(cards) + '</div>')
+    return (f'<div class="chart-row" style="grid-template-columns:'
+            f'repeat({len(cards)},1fr);margin-top:-10px">'
+            + "".join(cards) + '</div>')
 
 
 def _render_sector_movers(movers: dict) -> str:
