@@ -3283,13 +3283,25 @@ _INTENDED_FREEFORM_KW = ("기타경영사항", "투자판단", "기타시장안�
 def intended_freeform_unparsed(report_nm: str) -> bool:
     """is_parse_target True + detail 빈 항목 중 '의도된 미파싱'인가 —
     catch-all freeform(기타경영사항/투자판단/기타시장안내) · 기계적 거래정지해제 ·
-    LP 유동성공급계약 · IR 개최결과 · [첨부정정](본문 없는 첨부 정정)이면 True.
-    대시보드가 '미파싱제외'(회색·설계상 정상)로 분리. 나머지 빈 항목은 '진짜
+    LP 유동성공급계약 · IR 개최결과 · [첨부정정](본문 없는 첨부 정정) ·
+    합병/분할 종료보고서 · 대량보유 약식(원문·전용 API 부재, 제목이 곧 내용)이면
+    True. 대시보드가 '미파싱제외'(회색·설계상 정상)로 분리. 나머지 빈 항목은 '진짜
     미파싱'(파서 갭). 순수·테스트."""
     rn = report_nm or ""
     if any(k in rn for k in _INTENDED_FREEFORM_KW):
         return True
-    return rn.startswith("[첨부정정]")
+    if rn.startswith("[첨부정정]"):
+        return True
+    # 원문(document.xml) 미제공·구조화 API 부재 유형 — 제목이 곧 내용(사용자
+    # 2026-06-14 '그냥 타이틀 온리처리'). 합병/분할 등 종료보고서(합병·분할 완료
+    # 사실 보고, _fetch_doc_text=없음·전용 API 없음) + 대량보유 약식(간이 5% 보고,
+    # 원문 미제공). detail 빈 게 정상 → 진짜 미파싱 아닌 미파싱제외. 유형자산
+    # 양수도 종료(_asset_complete_lines 파싱)·대량보유 일반(majorstock API)은 미해당.
+    if "종료보고서" in rn and ("합병" in rn or "분할" in rn):
+        return True
+    if "대량보유" in rn and "약식" in rn:
+        return True
+    return False
 
 
 def _fair_disclosure_category(detail_lines: list) -> str | None:
