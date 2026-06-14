@@ -366,10 +366,15 @@ def fetch_macro_snapshot() -> dict[str, Any]:
 
     # Collect yf tickers once.
     yf_tickers = [sid for _, _, _, src, sid, _ in (DOMESTIC + GLOBAL) if src == "yf"]
+    # 차트(스파크라인)는 yf history(download) — fast_info 아님, rate-limit 무관.
     yf_monthly = _yf_monthly_batch(yf_tickers)
     yf_daily_1mo = _yf_daily_1mo_batch(yf_tickers)
-    yf_daily = _yf_daily_change(yf_tickers)
-    # 현재값은 네이버 우선(값만; 차트는 yf). 사용자 2026-06-14 '값 네이버+차트 유지'.
+    # ⛔ _yf_daily_change(fast_info ~24콜/갱신) 제거 (사용자 2026-06-14 '매크로카드
+    # 맨날 없어져·뭐가 fast_info 트리거하냐'). 이게 1분마다 야후 quote 를 24회 때려
+    # YFRateLimitError 유발 → 회로차단 → Macro value None → 카드 소실의 주범이었음.
+    # 모든 yf 가격 sid 가 _MACRO_NAVER 에 매핑돼 값은 네이버로 충분, 네이버 결측 시
+    # chart_spark[-1](yf_monthly=download/history) 폴백. fast_info 호출 0.
+    yf_daily: dict[str, dict] = {}
     macro_nv = _fetch_macro_naver_values(yf_tickers)
 
     spark_cache: dict[str, list[float]] = {}  # 큰 차트용(월간 12개월)

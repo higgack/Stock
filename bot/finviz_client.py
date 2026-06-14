@@ -1042,9 +1042,15 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                     pct = round((last / prev - 1) * 100, 2) if prev > 0 else None
                     vols = df[tk]["Volume"].dropna()
                     vol = int(float(vols.iloc[-1])) if len(vols) else None
+                    # 비거래(거래량 0/None) 제외 — HK ADR/HDR(마이크로소프트·인텔 등
+                    # 미국주식 예탁증서)·휴면 종목이 평평한 가격으로 거짓 52주 고저에
+                    # 잡히는 것 차단(사용자 2026-06-14 '홍콩 미국주식 ADR 다 제거').
+                    # 진짜 신고저는 당일 거래가 있어야 성립 — universal(전 시장 무의미).
+                    if not vol:
+                        continue
                     # 거래대금 ≈ 종가×거래량 (억, 현지통화) — 네이버 미제공 52주에
-                    # 거래량/거래대금 표시용(사용자 2026-06-14). yfinance vol 있을 때만.
-                    value = round(last * vol / 1e8, 2) if vol else None
+                    # 거래량/거래대금 표시용(사용자 2026-06-14).
+                    value = round(last * vol / 1e8, 2)
                     rec = {"ticker": tk, "name": _names.get(tk, tk),
                            "price": round(last, 2), "pct": pct,
                            "vol": vol, "value": value}
@@ -1165,9 +1171,11 @@ def _compute_movers_from(universe: list, names: dict, cache_name: str,
                     if abs(pct) > 75.0:        # 분할/조정 아티팩트 드롭
                         continue
                     vols = sub["Volume"].dropna()
+                    vol = int(float(vols.iloc[-1])) if len(vols) else None
+                    if not vol:                # 비거래(ADR/HDR·휴면) 제외 (사용자
+                        continue               # 2026-06-14 '홍콩 미국주식 ADR 제거')
                     rows.append({"ticker": tk, "name": names.get(tk, tk),
-                                 "price": round(last, 2), "pct": pct,
-                                 "vol": int(float(vols.iloc[-1])) if len(vols) else None})
+                                 "price": round(last, 2), "pct": pct, "vol": vol})
                 except Exception:
                     continue
         out["scanned"] = len(rows)
