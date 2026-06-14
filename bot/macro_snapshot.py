@@ -469,14 +469,18 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                         change_pct = change / _prev * 100
                 if sid in nv_spark:
                     # 원자재·지수·코인·환율 — 네이버 history(yfinance 무티커/throttle
-                    # 무관, 매크로 야후 차트 0). 카드=최근 1개월(뒤 22점). 값과 같은
-                    # 네이버 소스라 라인 끝이 현재가와 자연 싱크(사용자 2026-06-14).
-                    _ser = nv_spark.get(sid) or []
+                    # 무관, 매크로 야후 차트 0). 카드=최근 1개월(뒤 22점). **라인 끝점을
+                    # 1분 현재값(macro_nv)으로 교체** → 값과 차트가 1분 싱크(사용자
+                    # 2026-06-14 '차트까지 1분으로 다 싱크'). 일봉 history 는 1h 캐시
+                    # (일 1회 갱신이라 충분), 끝점만 매 1분 regen 시 현재값 반영.
+                    _ser = list(nv_spark.get(sid) or [])
+                    if value is None and _ser:
+                        value = _ser[-1]
+                    if value is not None and _ser:
+                        _ser[-1] = value
                     chart_spark = _ser
                     card_spark = _ser[-22:] if len(_ser) >= 22 else _ser
                     spark_span = "1개월"
-                    if value is None and _ser:
-                        value = _ser[-1]
                     spark_dir = _spark_dir(card_spark, 0)
                 else:
                     chart_spark = yf_monthly.get(sid, [])
