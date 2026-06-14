@@ -11923,8 +11923,8 @@ def _macro_fmt_change(change, dec: int) -> str:
     if change is None:
         return '<span class="mc" style="color:var(--muted)">—</span>'
     r = round(change, dec if dec > 0 else 2)
-    if r == 0:
-        return '<span class="mc" style="color:var(--muted)">– 동결</span>'
+    if r == 0:        # 전월(직전 데이터점) 대비 변화 0 — '12개월 전과 같다' 오해 방지
+        return '<span class="mc" style="color:var(--muted)">전월 동일</span>'
     up = change > 0
     color = "var(--pos)" if up else "var(--neg)"
     arrow = "▲" if up else "▼"
