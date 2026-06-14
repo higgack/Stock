@@ -320,7 +320,9 @@ def fetch_intl_highlow(market: str) -> dict:
     elif st.get("state") == "running" and age < 1800:
         pass
     else:
-        _kick(market)
+        from bot.finviz_client import yf_paused
+        if not yf_paused():        # YF_PAUSE → 재산출 kick 안 함(스테일 유지)
+            _kick(market)
     if stale is not None:
         return {**stale, "building": st.get("state") == "running"}
     return {"high": [], "low": [], "ts": "", "source": "",
