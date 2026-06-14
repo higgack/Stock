@@ -197,13 +197,27 @@ class TestScreenerL4Subindustry:
     def test_l4_valid_layer_and_modules(self):
         from bot.screener_themes import _VALID_LAYERS, list_domains
         assert "L4_SUBINDUSTRY" in _VALID_LAYERS
-        l4 = [d for d in list_domains() if d.get("layer") == "L4_SUBINDUSTRY"]
+        ds = list_domains()
+        l4 = [d for d in ds if d.get("layer") == "L4_SUBINDUSTRY"]
         slugs = {d["slug"] for d in l4}
-        # 반도체 L4 8 모듈 전부 등록 (모듈 import-time _validate 통과 = 등록됨)
+        # 반도체 L4 8 수작업 모듈 (모듈 import-time _validate 통과 = 등록됨)
         expect = {f"semiconductors_{s}" for s in
                   ("memory", "foundry", "equipment", "logic_ai",
                    "logic_mobile", "analog", "eda", "specialty")}
         assert expect <= slugs, expect - slugs
+        # 전 GICS L4 comprehensive (2026-06-14) — 전 L3 파생, ≥200개
+        assert len(l4) >= 200, f"L4 {len(l4)} < 200 (comprehensive coverage)"
+        # 비-반도체 L3 도 L4 자식 보유 (generator 전 L3 커버)
+        l3_slugs = {d["slug"] for d in ds if d.get("layer") == "L3_INDUSTRY"}
+        for parent in ("banks", "software", "oil_gas", "pharma_biotech",
+                       "machinery", "reits"):
+            assert parent in l3_slugs
+            kids = [s for s in slugs if s.startswith(parent + "_")]
+            assert kids, f"L3 {parent} 에 L4 자식 없음"
+        # 모든 L4 는 부모 L3 prefix 보유 (전역 unique slug)
+        orphan = [s for s in slugs
+                  if not any(s.startswith(p + "_") for p in l3_slugs)]
+        assert not orphan, f"부모 L3 prefix 없는 L4: {orphan[:5]}"
 
     def test_l4_no_alias_collision_with_parent(self):
         # 부모 L3 공유 별칭(memory/foundry/eda/메모리/파운드리)은 L3 유지,
