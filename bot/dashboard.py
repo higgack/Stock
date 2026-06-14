@@ -12215,6 +12215,7 @@ def _render_sector_movers(movers: dict) -> str:
         f'<a href="theme" style="{_lnk}">🏭 업종별 시세(전체)</a>'
         f'<a href="kr52" style="{_lnk}">📈 신고가·신저가</a>'
         f'<a href="highlow" style="{_lnk}">🚀 급등·급락</a>'
+        f'<a href="nxt" style="{_lnk}">🌙 NXT 장전·장후</a>'
         f'<span class="ts" style="margin-left:auto">{ts} · Naver</span></div>'
         '<div class="sm-wrap">'
         + _col("🔺 상승 업종", up) + _col("🔻 하락 업종", down)

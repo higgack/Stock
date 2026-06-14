@@ -235,7 +235,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                   "/twhighlow", "/tw52",
                                   "/jp52", "/hk52", "/kr52",
                                   "/hkmovers", "/jpmovers", "/cnmovers",
-                                  "/jphighlow")
+                                  "/jphighlow", "/nxt")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -284,9 +284,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if raw in ("/hkmovers", "/jpmovers", "/cnmovers"):
             return self._handle_intl_movers(
                 {"/hkmovers": "HK", "/jpmovers": "JP", "/cnmovers": "CN_A"}[raw])
+        # /nxt — KR NXT 장전·장후 외국인·기관 수급 (네이버 trendForeignOrg, 2026-06-14)
+        if raw == "/nxt":
+            return self._handle_simple_page(
+                "bot.nxt_pages", "render_nxt_page")
         # /jphighlow — 일본 상한가/하한가 (구 경로, jpmovers 로 대체 — 캐시 링크 호환)
-        if raw == "/jphighlow":
-            return self._handle_jp_stop()
+        if raw == "/jphighlow":            return self._handle_jp_stop()
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시
         if raw == "/trade" or raw.startswith("/trade/"):
             return self._handle_trade_proxy()
@@ -844,6 +847,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.wfile.write(encoded)
         except Exception as exc:
             log.warning("naver_page %s: failed — %s", raw, exc)
+            self.send_error(500, "internal error")
+
+    def _handle_simple_page(self, module: str, func: str) -> None:
+        """GET → module.func() (인자 없는 렌더) → HTML. /nxt 등 단순 페이지 공용."""
+        try:
+            import importlib
+            html = getattr(importlib.import_module(module), func)()
+            encoded = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+        except Exception as exc:
+            log.warning("simple_page %s.%s: failed — %s", module, func, exc)
             self.send_error(500, "internal error")
 
     def _handle_us_page(self, raw: str) -> None:
