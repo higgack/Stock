@@ -66,6 +66,7 @@ CARD_ASIA = [
     ("HK 홍콩 항셍", "^HSI"),
     ("HK 항셍테크", "3033.HK"),  # ^HSTECH 지수는 yfinance 무데이터 → 추종 ETF(CSOP)로 대체
     ("IN Nifty 50", "^NSEI"),
+    ("IN 인도 Sensex", "^BSESN"),   # 사용자 2026-06-14
 ]
 
 CARD_FX = [
@@ -92,6 +93,7 @@ CARD_COMMODITIES = [
     ("국제 은", "nv:SI"),
     ("구리", "nv:HG"),
     ("알루미늄", "nv:AA"),
+    ("니켈", "nv:NI"),               # 사용자 2026-06-14 (네이버 metals)
 ]
 
 # 사용자 2026-06-14: 이더리움 다음 테더 추가.
@@ -130,6 +132,7 @@ CARD_EU = [
     ("DE 독일 DAX", "^GDAXI"),
     ("GB 영국 FTSE 100", "^FTSE"),
     ("FR 프랑스 CAC 40", "^FCHI"),
+    ("IT 이탈리아 FTSE MIB", "FTSEMIB.MI"),   # 사용자 2026-06-14
     ("CH 스위스 SMI", "^SSMI"),
 ]
 
