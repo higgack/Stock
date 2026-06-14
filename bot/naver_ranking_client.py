@@ -39,6 +39,12 @@ def _get_stocks(url: str) -> list | None:
     그래서 isSuccess 는 **명시적 False 일 때만** 거부(없으면 통과) — 옛 `not
     isSuccess` 가드는 국내(isSuccess 부재)를 전부 거부해 52주/상한가가 0 이었음."""
     try:
+        from bot.finviz_client import naver_paused
+        if naver_paused():       # NAVER_PAUSE → fetch skip(호출부 캐시·빈값 폴백)
+            return None
+    except Exception:
+        pass
+    try:
         import requests
         r = requests.get(url, headers=_H, timeout=12)
         if r.status_code != 200:
@@ -349,11 +355,13 @@ def world_industry_map(market: str, per_industry: int = 300) -> dict:   # 300: �
     nat = _UPJONG_NATION.get(market)
     if not nat:
         return {}
-    from bot.finviz_client import _cache_write, _cached
+    from bot.finviz_client import _cache_write, _cached, naver_paused
     cache = f"naver_industry_{market}.json"
     cached = _cached(cache, ttl=7 * 86400)
     if isinstance(cached, dict) and cached:
         return cached
+    if naver_paused():           # NAVER_PAUSE → 캐시만(fetch skip)
+        return cached if isinstance(cached, dict) else {}
     import requests
     try:
         cr = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12)
@@ -441,7 +449,9 @@ def _build_quote_map(market: str) -> None:
     nat = _UPJONG_NATION.get(market)
     if not nat:
         return
-    from bot.finviz_client import _cache_write
+    from bot.finviz_client import _cache_write, naver_paused
+    if naver_paused():           # NAVER_PAUSE → fetch skip(기존 캐시 유지)
+        return
     import requests
     try:
         cr = requests.get(f"{_UPJONG_BASE}/{nat}/upjong/list", headers=_H, timeout=12)
