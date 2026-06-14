@@ -5418,6 +5418,25 @@ class TestPruneNonStock:
         ]
         assert [r["ticker"] for r in prune_non_stock(rows)] == ["AMKR"]
 
+    def test_prune_cached_serve_time_idempotent(self, monkeypatch):
+        # 옛 캐시(가지치기 도입 전) serve-time 정리 + 멱등(재캐시 1회만)
+        import bot.finviz_client as fv
+        writes = []
+        monkeypatch.setattr(fv, "_cache_write", lambda n, o: writes.append(n))
+        stale = {"high": [
+            {"ticker": "AMKR", "name": "Amkor Technology",
+             "ind": "Semiconductors", "vol": 7000000, "mcap": 20500},
+            {"ticker": "PDI", "name": "PIMCO Dynamic Income Fund",
+             "ind": "Trusts Except Educational Religious and Charitable",
+             "vol": 100, "mcap": 500},
+        ], "low": [], "ts": "T", "source": "X"}
+        out = fv._prune_cached(stale, ("high", "low"), "highlow.json")
+        assert [r["ticker"] for r in out["high"]] == ["AMKR"]
+        assert writes == ["highlow.json"]      # 변경 → 재캐시 1회
+        writes.clear()
+        fv._prune_cached(out, ("high", "low"), "highlow.json")
+        assert writes == []                     # 멱등 — 재캐시 없음
+
 
 class TestDartLawsuitParsing:
     """소송 파싱 (사용자 2026-06-12, 10예시 제공 — 표준 제기·신청/판결·결정

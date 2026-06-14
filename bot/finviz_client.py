@@ -664,7 +664,7 @@ def fetch_high_low() -> dict:
             # 실패로 비었던 경우 — 벌크 맵으로 채워지면 캐시도 갱신).
             if _backfill_industries(stale):
                 _cache_write("highlow.json", stale)
-            return stale
+            return _prune_cached(stale, ("high", "low"), "highlow.json")
     out: dict = {"high": _fetch_signal("ta_newhigh"),
                  "low": _fetch_signal("ta_newlow"),
                  "ts": _now_label(), "source": "Finviz(전 미국 상장 · 당일 신고/신저)"}
@@ -675,6 +675,8 @@ def fetch_high_low() -> dict:
         log.info("finviz: 전미국 캐시 미준비 → S&P500 폴백 (백그라운드 빌드 중)")
         out = _highlow_fallback_sp500()
     _backfill_industries(out)   # SWR stale 티어 캐시(ind 부재)도 렌더 전 치유
+    out["high"] = prune_non_stock(out.get("high", []))   # CEF·유령·이중클래스
+    out["low"] = prune_non_stock(out.get("low", []))     # (Finviz 1차 티어 포함)
     log.info("finviz: high/low result — high=%d low=%d source=%s",
              len(out.get("high", [])), len(out.get("low", [])),
              out.get("source"))
@@ -968,6 +970,28 @@ def prune_non_stock(rows: list) -> list:
             if not _is_fund_vehicle(r.get("name"), r.get("ind"))
             and not _is_frozen_row(r)]
     return _dedupe_dual_class(kept)
+
+
+def _prune_cached(data, keys, cache_name):
+    """stale 캐시 serve-time 가지치기(멱등) — 가지치기 도입 전 옛 캐시도 렌더 전
+    즉시 정리(주말 stale 에도 적용, 사용자 2026-06-14 '바로 보이게'). 변하면
+    재캐시. keys=('high','low')|('up','down'). _backfill_industries 동류 패턴."""
+    if not isinstance(data, dict):
+        return data
+    changed = False
+    for k in keys:
+        rows = data.get(k)
+        if isinstance(rows, list) and rows:
+            pruned = prune_non_stock(rows)
+            if len(pruned) != len(rows):
+                data[k] = pruned
+                changed = True
+    if changed:
+        try:
+            _cache_write(cache_name, data)
+        except Exception:
+            pass
+    return data
 
 
 def _compute_highlow_from(universe: list, names: dict, cache_name: str,
@@ -1641,7 +1665,7 @@ def _highlow_full_us() -> dict:
         except OSError:
             mt = 0.0
         if _session_fresh("US", mt, _HL_INTRA_TTL):
-            return stale
+            return _prune_cached(stale, ("high", "low"), "highlow_full_us_v4.json")
     _kick_full_us_refresh()
     return stale if stale is not None else {}
 
@@ -1995,7 +2019,7 @@ def fetch_us_movers() -> dict:
         except OSError:
             mt = 0.0
         if _movers_cache_is_fresh(mt):
-            return stale
+            return _prune_cached(stale, ("up", "down"), _MOVERS_CACHE)
     st = movers_status()
     age = time.time() - (st.get("ts") or 0)
     if st.get("state") == "failed" and age < 300:
