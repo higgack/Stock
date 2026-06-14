@@ -5427,6 +5427,30 @@ class TestFavoritesFastInfoGuard:
         assert "_FAV_TTL = 180" in src
 
 
+class TestSnapshotLiveWhitelist:
+    """글로벌 스냅샷 fast_info 라이브 축소 (2026-06-14) — 헤드라인 ~15 지수만
+    fast_info, 롱테일은 daily download → rate-limit 재트립 빈도 급감."""
+
+    def test_live_whitelist_membership(self):
+        import bot.market_overview as mo
+        wl = mo._LIVE_WHITELIST
+        allt = mo._all_yf_tickers()
+        # 버스트 대폭 축소 (전체의 절반 미만)
+        assert len(wl) < len(allt) / 2
+        assert len([t for t in allt if t in wl]) <= 20
+        # Asia 지수(yfinance 일봉 하루 지연 → fast_info 필수) 포함
+        for t in ("^KS11", "^KQ11", "^N225", "^HSI", "000300.SS"):
+            assert t in wl
+        # 롱테일(24h 시장·종가만 → daily 로 충분) 제외
+        for t in ("DOGE-USD", "RTY=F", "^NBI", "^TASI.SR"):
+            assert t not in wl
+
+    def test_live_loop_filtered_in_source(self):
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert "_live_set = [tk for tk in tickers if tk in _LIVE_WHITELIST]" in src
+        assert "pool.map(_live, _live_set)" in src
+
+
 class TestPruneNonStock:
     """비-주식 가지치기 (finviz_client.prune_non_stock) — CEF 펀드·유령티커·
     이중클래스 dedupe (사용자 2026-06-14 실데이터 회귀)."""
