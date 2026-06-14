@@ -5399,6 +5399,34 @@ class TestUsPrepost:
         assert "장후" in html and "NVDA" in html and 'href="lookup/NVDA"' in html
 
 
+class TestFavoritesFastInfoGuard:
+    """관심종목 fast_info 재트립 차단 (2026-06-14) — 3분 캐시 + 회로차단 게이트.
+    위젯 반복 로드가 fast_info 를 버스트해 야후 rate-limit 재트립하던 것 차단."""
+
+    def test_favorites_price_cache_short_circuit(self):
+        import time
+        import bot.market_favorites as mf
+        sentinel = [{"ticker": "X", "current_price": 1}]
+        mf._FAV_CACHE = sentinel
+        mf._FAV_CACHE_TS = time.time()
+        # TTL(3분) 내면 yfinance 안 타고 캐시 그대로 반환
+        assert mf.get_favorites_with_prices() is sentinel
+        # TTL 만료 + 빈 관심종목 → 재진입(네트워크 0)
+        mf._FAV_CACHE_TS = time.time() - 9999
+        mf._FAV_CACHE = None
+        mf._load = lambda: []
+        assert mf.get_favorites_with_prices() == []
+
+    def test_favorites_fast_info_gated_in_source(self):
+        # fast_info 직접 호출이 _fi_allowed(=fast_info_ok and not yf_paused)
+        # 게이트 뒤 + rate-limit 시 fast_info_trip — 소스 검증(yfinance import 무거움)
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        assert "_fi_allowed = fast_info_ok() and not yf_paused()" in src
+        assert "if _fi_allowed:" in src
+        assert "fast_info_trip(\"favorites\")" in src
+        assert "_FAV_TTL = 180" in src
+
+
 class TestPruneNonStock:
     """비-주식 가지치기 (finviz_client.prune_non_stock) — CEF 펀드·유령티커·
     이중클래스 dedupe (사용자 2026-06-14 실데이터 회귀)."""
