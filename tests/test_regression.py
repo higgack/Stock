@@ -5273,6 +5273,78 @@ class TestUsMovers:
         assert "hl-table" in html and 'href="lookup/KO"' in html
 
 
+class TestUsPrepost:
+    """미국 장전/장후 급등락 (prepost_client) — 순수 함수 + 페이지 렌더 가드."""
+
+    def test_in_extended_window(self):
+        from datetime import datetime, timezone
+        from bot.prepost_client import _in_extended_window
+
+        def W(*a):
+            return _in_extended_window(datetime(*a, tzinfo=timezone.utc))
+        # 수 2026-06-10: 09:00 UTC=05:00 ET 장전 / 17:00 UTC 정규장 / 22:00 UTC 장후
+        assert W(2026, 6, 10, 9, 0) is True       # 장전
+        assert W(2026, 6, 10, 17, 0) is False     # 정규장
+        assert W(2026, 6, 10, 22, 0) is True      # 장후
+        assert W(2026, 6, 13, 12, 0) is False     # 토 정오 (휴장)
+        assert W(2026, 6, 13, 0, 30) is True      # 토 새벽 = 금 장후 tail
+        assert W(2026, 6, 14, 22, 0) is False     # 일 (휴장)
+
+    def test_prepost_fresh(self):
+        from datetime import datetime, timezone
+        from bot.prepost_client import _prepost_fresh
+        now = datetime(2026, 6, 10, 22, 0, tzinfo=timezone.utc).timestamp()  # 장후 창
+        assert _prepost_fresh(now - 10 * 60, now)         # 10분 = fresh(<30m)
+        assert not _prepost_fresh(now - 40 * 60, now)     # 40분 = stale
+        closed = datetime(2026, 6, 10, 17, 0, tzinfo=timezone.utc).timestamp()  # 정규장
+        assert _prepost_fresh(closed - 10 * 3600, closed)  # 장 밖 = 항상 fresh(재스캔0)
+
+    def test_rank_prepost(self):
+        from bot.prepost_client import _rank_prepost
+        rows = [{"ticker": "A", "pct": 12.0, "price": 50, "vol": 5000},
+                {"ticker": "B", "pct": -8.0, "price": 20, "vol": 9000},
+                {"ticker": "C", "pct": 99.0, "price": 5, "vol": 9000},   # 글리치 컷
+                {"ticker": "D", "pct": 3.0, "price": 0.5, "vol": 9000},  # 페니 컷
+                {"ticker": "E", "pct": 4.0, "price": 30, "vol": 100}]     # 박거래 컷
+        ups, downs = _rank_prepost(rows)
+        assert [r["ticker"] for r in ups] == ["A"]
+        assert [r["ticker"] for r in downs] == ["B"]
+
+    def test_classify_index_and_ticker_prepost(self):
+        import pandas as pd
+        from bot.prepost_client import _classify_index, _ticker_prepost
+        idx = pd.DatetimeIndex(pd.to_datetime(
+            ["2026-06-09 15:30:00", "2026-06-10 17:00:00", "2026-06-10 18:00:00"]
+        )).tz_localize("America/New_York")
+        kinds, dates = _classify_index(idx)
+        assert kinds == ["reg", "post", "post"]
+        closes = pd.Series([100.0, 110.0, 115.0])   # 전일 종가 100 → 장후 115 = +15%
+        vols = pd.Series([0, 2000, 3000])
+        rec = _ticker_prepost(closes, vols, kinds, dates)
+        assert rec and rec["session"] == "post"
+        assert rec["pct"] == 15.0 and rec["vol"] == 5000
+
+    def test_prepost_page_building_state(self, monkeypatch):
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "fetch_us_prepost_movers", lambda: {
+            "up": [], "down": [], "ts": "", "source": "", "session": "",
+            "building": True, "status": {"state": "running", "done": 3, "total": 50}})
+        from bot.us_pages import render_us_prepost_page
+        html = render_us_prepost_page()
+        assert "산출 진행 중" in html and "장전·장후" in html
+
+    def test_prepost_page_render(self, monkeypatch):
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "fetch_us_prepost_movers", lambda: {
+            "up": [{"ticker": "NVDA", "name": "NVIDIA", "price": 900.0,
+                    "pct": 5.5, "vol": 120000, "mcap": 22000.0, "ind": "Semis",
+                    "session": "post"}],
+            "down": [], "ts": "T", "source": "yf", "session": "post"})
+        from bot.us_pages import render_us_prepost_page
+        html = render_us_prepost_page()
+        assert "장후" in html and "NVDA" in html and 'href="lookup/NVDA"' in html
+
+
 class TestDartLawsuitParsing:
     """소송 파싱 (사용자 2026-06-12, 10예시 제공 — 표준 제기·신청/판결·결정
     + 기타경영사항(자율공시) 소송성 승격) + 🔥 상장폐지 규칙."""

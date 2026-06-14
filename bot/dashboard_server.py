@@ -231,6 +231,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if (path_lower.endswith((".html", "/")) or path_lower == ""
                 or path_lower in ("/earnings", "/theme", "/highlow",
                                   "/usindustry", "/ushighlow", "/usmovers",
+                                  "/usprepost",
                                   "/twhighlow", "/tw52",
                                   "/jp52", "/hk52", "/kr52",
                                   "/hkmovers", "/jpmovers", "/cnmovers",
@@ -267,9 +268,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # /theme · /highlow — 테마별 시세 · 상한가/하한가 (Naver, on-demand)
         if raw in ("/theme", "/highlow"):
             return self._handle_naver_page(raw)
-        # /usindustry · /ushighlow · /usmovers — 미국 업종별 시세 · 52주
+        # /usindustry · /ushighlow · /usmovers · /usprepost — 미국 업종별 시세 · 52주
         # 신고가/신저가 · 급등급락 TOP30 (KR 미러 — 사용자 2026-06-10/12)
-        if raw in ("/usindustry", "/ushighlow", "/usmovers"):
+        if raw in ("/usindustry", "/ushighlow", "/usmovers", "/usprepost"):
             return self._handle_us_page(raw)
         # /twhighlow — 대만 상한가/하한가 (TWSE) · /tw52 — 52주 신고가/신저가
         # (yfinance 유니버스 백그라운드, 사용자 2026-06-13 Phase 2)
@@ -846,14 +847,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_error(500, "internal error")
 
     def _handle_us_page(self, raw: str) -> None:
-        """GET /usindustry | /ushighlow | /usmovers — 미국 업종별 시세 ·
-        52주 신고가/신저가 · 급등급락 TOP30 (KR /theme·/highlow 미러)."""
+        """GET /usindustry | /ushighlow | /usmovers | /usprepost — 미국 업종별
+        시세 · 52주 신고가/신저가 · 급등급락 TOP30 · 장전/장후 (KR 미러)."""
         try:
             from bot.us_pages import (render_us_highlow_page,
                                       render_us_industry_page,
-                                      render_us_movers_page)
+                                      render_us_movers_page,
+                                      render_us_prepost_page)
             html = (render_us_industry_page() if raw == "/usindustry"
                     else render_us_movers_page() if raw == "/usmovers"
+                    else render_us_prepost_page() if raw == "/usprepost"
                     else render_us_highlow_page())
             encoded = html.encode("utf-8")
             self.send_response(200)
