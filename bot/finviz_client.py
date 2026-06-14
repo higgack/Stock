@@ -857,7 +857,10 @@ def _industries_for(tickers: list, market: str | None) -> dict:
     업종이 너무 sparse 해 야후로 (사용자 2026-06-14 'HK 급등급락 업종 야후기준').
     HK 는 yfinance 우선이나 야후 정지/실패/sparse 시 **네이버 업종맵으로 메움**
     (사용자 2026-06-14 '홍콩 급등락 업종 업데이트'). 네이버 맵 미스·실패 시 yfinance 폴백."""
-    if market in ("CN_A", "JP"):
+    # CN/JP/US — 네이버 업종맵 우선(reliable·fast_info 우회). US 도 네이버 USA
+    # 업종(141개·VM probe 2026-06-14)으로 라우팅 → fast_info rate-limit 시에도
+    # 업종 안 빔(미스만 _fetch_industries, breaker-gated 라 쿨다운 중 무호출).
+    if market in ("CN_A", "JP", "US"):
         try:
             from bot.naver_ranking_client import world_industry_map
             m = world_industry_map(market)
@@ -1085,12 +1088,14 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         out["low"] = [r for r in out["low"] if not _split_artifact(r)]
         # 시가총액 — hit 종목만 fast_info 병렬 fetch (백그라운드 산출이라
         # 페이지 hang 0). 종목옆 시총 표시용 (사용자 2026-06-11). 억$ 단위.
-        # ⚠️ JP/HK 는 아래 _naver_worldstock_overlay 가 시총을 네이버로 덮어쓰므로
-        # fast_info 호출이 **낭비** — 게다가 fast_info(quote API)는 yahoo 가
-        # 자주 rate-limit(2026-06-14 /health 진단: download 는 OK, fast_info 만
-        # Too Many Requests). JP/HK 는 fast_info 생략해 레이트리밋 트리거 감소.
+        # ⚠️ HK/JP/US/CN 은 아래 _naver_worldstock_overlay 가 시총을 네이버로
+        # 채우므로 fast_info 호출이 **낭비** — 게다가 fast_info(quote API)는 yahoo
+        # 가 자주 rate-limit(2026-06-14 /health: download OK, fast_info 만 Too Many
+        # Requests). US/CN 도 worldstock 시총 확인(VM probe 2026-06-14: NASDAQ
+        # 엔비디아·NYSE TSMC·상하이·선전 marketValue ✓) → fast_info 생략(레이트리밋
+        # 트리거 0). TW 만 worldstock 미지원이라 _fetch_mcaps 유지(디스크 persist 폴백).
         hits2 = [r["ticker"] for r in out["high"] + out["low"]]
-        mcaps = {} if tag in ("HK", "JP") else _fetch_mcaps(hits2)
+        mcaps = {} if tag in ("HK", "JP", "US", "CN_A") else _fetch_mcaps(hits2)
         inds = _industries_for(hits2, tag)   # CN/HK/JP=네이버 업종, 그외 GICS/yfinance
         for r in out["high"] + out["low"]:
             mc = mcaps.get(r["ticker"])
@@ -1102,12 +1107,16 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         # JP 銘柄名·TWSE 약칭(南亞科 류)을 스킵했음 — 헬퍼가 둘 다 해소(네이티브명
         # 직접 번역). US/KR 은 헬퍼가 no-op (영문/pykrx 한글 유지).
         _backfill_korean_names(out["high"] + out["low"], tag)
-        # HK/JP — 거래량/거래대금/시총/종목명을 **네이버 worldstock** 으로 채움
-        # (사용자 2026-06-14 'HK·JP 신고저 시총 네이버'). yfinance HK/JP vol/시총이
-        # 자주 비어 컬럼 숨겨지던 것 해소. 52주 검출은 yfinance 유지(네이버 52주
-        # sort 부재), 표시 필드만 네이버 overlay.
+        # HK/JP/US/CN — 거래량/거래대금/시총을 **네이버 worldstock** 으로 채움
+        # (사용자 2026-06-14). yfinance vol/시총 빈약·fast_info rate-limit 보완.
+        # 52주 검출은 yfinance download 유지(네이버 52주 sort 부재), 표시 필드만
+        # 네이버 overlay. US/CN 은 종목명을 기존 파이프라인(한글 quote_map·번역)
+        # 보존(overlay_name=False) — HK/JP 는 worldstock 명 유지.
         if tag in ("HK", "JP"):
             _naver_worldstock_overlay(out["high"] + out["low"], tag)
+        elif tag in ("US", "CN_A"):
+            _naver_worldstock_overlay(out["high"] + out["low"], tag,
+                                      overlay_name=False)
         # TW — 네이버 worldstock 미지원 → 시총만 디스크 persist(yfinance 일시
         # 장애 시 직전 성공값 유지, 사용자 2026-06-14 'TW 52주 시총 안 떠').
         elif tag == "TW":
@@ -1252,10 +1261,13 @@ def _compute_jp_stop(universe: list, names: dict, cache_name: str,
     return out
 
 
-def _naver_worldstock_overlay(rows: list, market: str) -> None:
-    """HK/JP 신고저 행에 네이버 worldstock 거래량·거래대금·시총·종목명 overlay
-    (yfinance 빈약 보완, 사용자 2026-06-14). HK 는 5자리↔4자리 zfill 정수 정규화
-    (Tencent 00700↔0700), JP 는 직접 매칭(7203.T). in-place·graceful."""
+def _naver_worldstock_overlay(rows: list, market: str,
+                              overlay_name: bool = True) -> None:
+    """HK/JP/US/CN 신고저 행에 네이버 worldstock 거래량·거래대금·시총·(종목명)
+    overlay (yfinance 빈약·fast_info rate-limit 보완, 사용자 2026-06-14). HK 는
+    5자리↔4자리 zfill 정수 정규화(Tencent 00700↔0700), JP/US/CN 은 직접 매칭
+    (7203.T·NVDA·600519.SS). overlay_name=False(US/CN)면 기존 종목명 파이프라인
+    (한글명 quote_map·번역) 보존하고 시총·거래량만 채움. in-place·graceful."""
     try:
         from bot.naver_ranking_client import world_stock_map
         wsm = world_stock_map(market)
@@ -1283,7 +1295,7 @@ def _naver_worldstock_overlay(rows: list, market: str) -> None:
             r["value"] = w["value"]
         if w.get("mcap") is not None:
             r["mcap"] = w["mcap"]
-        if w.get("name"):
+        if overlay_name and w.get("name"):
             r["name"] = w["name"]
 
 

@@ -8066,15 +8066,18 @@ class TestHkMovers:
         assert _suffix_ticker("7203", ".T") == "7203.T"
         assert _suffix_ticker("700", ".HK") == "0700.HK"
         assert _suffix_ticker("601288", ".SS") == "601288.SS"
-        assert set(_INTL_MOVER_EX) == {"JP", "HK", "CN_A"}
+        # US 추가(2026-06-14) — 52주 시총 worldstock overlay 용(접미사 없음)
+        assert set(_INTL_MOVER_EX) == {"JP", "HK", "CN_A", "US"}
         assert _INTL_MOVER_EX["CN_A"] == [("SHANGHAI", ".SS"), ("SHENZHEN", ".SZ")]
+        assert _INTL_MOVER_EX["US"] == [("NASDAQ", ""), ("NYSE", ""), ("AMEX", "")]
+        assert _suffix_ticker("NVDA", "") == "NVDA"   # US 접미사 없음 직접
 
     def test_naver_industry_map_and_routing(self):
         # 사용자 2026-06-14 'CN/HK/JP 업종 네이버'. nationType USA|CHN|HKG|JPN|VNM(probe).
         from bot.naver_ranking_client import (_upjong_ticker, _UPJONG_NATION,
                                               world_industry_map)
-        # US 는 한글명(koreanCodeName) 수집용 포함 — 업종 enrich 라우팅은 여전히
-        # CN_A/HK/JP 만(US 업종 yfinance, 사용자 스코프). 2026-06-14.
+        # US 도 네이버 업종 라우팅(2026-06-14 — fast_info rate-limit 회피, 미스만
+        # yfinance breaker-gated). nationType USA. CN_A/HK/JP/US 네이버 우선.
         assert _UPJONG_NATION == {"CN_A": "CHN", "HK": "HKG", "JP": "JPN", "US": "USA"}
         # CN 코드대역 휴리스틱: 6xx=상하이(.SS), 0/3xx=선전(.SZ)
         assert _upjong_ticker("600507", "CN_A") == "600507.SS"
@@ -8082,16 +8085,18 @@ class TestHkMovers:
         assert _upjong_ticker("300507", "CN_A") == "300507.SZ"
         assert _upjong_ticker("700", "HK") == "0700.HK"
         assert _upjong_ticker("7203", "JP") == "7203.T"
-        # KR/TW 는 네이버 업종 미대상 → {} (graceful). US 는 한글명 수집용으로 맵에
-        # 있으나 _industries_for 는 US→yfinance(업종) 유지(아래 확인).
+        # KR/TW 는 네이버 업종 미대상 → {} (graceful).
         assert world_industry_map("KR") == {} and world_industry_map("TW") == {}
-        # _industries_for 라우팅: CN/HK/JP→네이버(미스 yfinance 폴백), US→yfinance
+        # _industries_for 라우팅: CN/HK/JP/US→네이버(미스만 yfinance 폴백)
         import bot.finviz_client as fc, bot.naver_ranking_client as nv
-        nv.world_industry_map = lambda m: {"7203.T": "Auto Manufacturers"}
+        nv.world_industry_map = lambda m: {"7203.T": "Auto Manufacturers",
+                                           "AAPL": "Consumer Electronics"}
         fc._fetch_industries = lambda tks, **k: {t: "YF" for t in tks}
         got = fc._industries_for(["7203.T", "9999.T"], "JP")
         assert got["7203.T"] == "Auto Manufacturers" and got["9999.T"] == "YF"
-        assert fc._industries_for(["AAPL"], "US") == {"AAPL": "YF"}
+        # US 도 네이버 우선 — AAPL 네이버 업종 직접, 미스(MSFT)는 yfinance 폴백
+        usg = fc._industries_for(["AAPL", "MSFT"], "US")
+        assert usg["AAPL"] == "Consumer Electronics" and usg["MSFT"] == "YF"
 
     def test_industry_english_translation_wired(self, monkeypatch):
         # 사용자 2026-06-14 '모두 영문' — 네이버 한글 업종명 → 영문(Flash·영구 캐시).
