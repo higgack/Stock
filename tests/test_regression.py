@@ -7385,6 +7385,24 @@ class TestUpperLowerVolume:
         src = open("bot/market_overview.py", encoding="utf-8").read()
         assert "if not results:" in src and "earnings_{market}_*.json" in src
 
+    def test_yf_pause_gates(self, monkeypatch, tmp_path):
+        # 사용자 2026-06-14 '야후 콜 멈춰봐 — 안 돌아와' — yfinance 부하 작업 일괄 skip.
+        import bot.finviz_client as fc
+        monkeypatch.setattr(fc, "_YF_PAUSE_MARKER", tmp_path / "YF_PAUSE")
+        assert fc.yf_paused() is False
+        assert fc.set_yf_pause(True) is True and fc.yf_paused() is True
+        # 정지 시 yfinance 부하 작업 skip (네트워크 0)
+        assert fc._fetch_mcaps(["AAPL"]) == {}
+        assert fc._compute_highlow_from(["7203.T"], {}, "nx.json", "s", "JP")["high"] == []
+        assert fc._compute_movers_from(["7203.T"], {}, "nx.json", "s", "JP")["up"] == []
+        assert fc.set_yf_pause(False) is False and fc.yf_paused() is False  # 재개·마커 삭제
+        # 배선: prewarm·kick·earnings·명령·자동정지
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "cmd_yfpause" in tb and ".yf_autopause_v1" in tb and "yf_paused" in tb
+        for f in ("bot/intl_highlow.py", "bot/tw_highlow.py"):
+            assert "if not yf_paused()" in open(f, encoding="utf-8").read()
+        assert "yf_paused" in open("bot/market_overview.py", encoding="utf-8").read()
+
 
 class TestHighlowRenderShared:
     """신고저/급등락/상한가 공용 리치 렌더러 (사용자 2026-06-13 '미국 포맷

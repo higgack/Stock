@@ -611,6 +611,23 @@ def fetch_earnings_calendar_kr(days_ahead: int = 90) -> list[dict]:
             return None
 
     results: list[dict] = []
+    try:
+        from bot.finviz_client import yf_paused
+        _paused = yf_paused()
+    except Exception:
+        _paused = False
+    if _paused:                         # YF_PAUSE → .calendar 스캔 skip, 직전 캐시
+        try:
+            for p in sorted(cache_dir.glob("earnings_kr_*.json"),
+                            key=lambda q: q.stat().st_mtime, reverse=True):
+                if p == cache_file:
+                    continue
+                prior = json.loads(p.read_text())
+                if prior:
+                    return prior
+        except Exception:
+            pass
+        return []
     universe = _kr_earnings_universe()
     with ThreadPoolExecutor(max_workers=12) as pool:
         for r in pool.map(_one, universe):
@@ -684,6 +701,20 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
             pass
     if cache_only:
         return []                       # on-request 경로 — 스캔 안 함
+    try:
+        from bot.finviz_client import yf_paused
+    except Exception:
+        yf_paused = lambda: False
+    if yf_paused():                     # YF_PAUSE → .calendar 스캔 skip, 직전 캐시
+        try:
+            for p in sorted(cache_dir.glob(f"earnings_{market}_*.json"),
+                            key=lambda q: q.stat().st_mtime, reverse=True):
+                prior = json.loads(p.read_text())
+                if prior:
+                    return prior
+        except Exception:
+            pass
+        return []
     universe = _intl_earnings_universe(market)
     if not universe:
         return []

@@ -106,7 +106,9 @@ def fetch_tw_highlow() -> dict:
     elif st.get("state") == "running" and age < 1800:
         pass        # 이미 산출 중
     else:
-        _kick_tw_highlow()
+        from bot.finviz_client import yf_paused
+        if not yf_paused():        # YF_PAUSE → 재산출 kick 안 함(스테일 유지)
+            _kick_tw_highlow()
     if stale is not None:
         return {**stale, "building": st.get("state") == "running"}
     return {"high": [], "low": [], "ts": "", "source": "",

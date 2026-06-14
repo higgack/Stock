@@ -128,6 +128,36 @@ def _now_label() -> str:
     return datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d %H:%M")
 
 
+# ── yfinance 일시정지 kill-switch (사용자 2026-06-14 '야후 콜 멈춰봐 — 안 돌아와')
+# 마커 파일 존재 = yfinance 부하 작업(52주/무버 스캔·시총·업종·실적 .calendar)
+# 일괄 skip → 레이트리밋 회복. 봇 밖에서도 touch/rm 가능(TRADING_HALT 패턴).
+# 파일이라 **재시작에도 유지** — 정지 중 재시작해도 스캔이 재발화 안 함(사용자
+# 질문 '재시작하면 첨부터 다시 도나?' → 정지 마커 있으면 NO). 네이버 경로는
+# yfinance 무관이라 정상 동작(무버·업종등락·신고저 표시숫자·홈 등). /yfpause 토글.
+_YF_PAUSE_MARKER = Path.home() / ".tradingagents" / "YF_PAUSE"
+
+
+def yf_paused() -> bool:
+    """yfinance 호출 일시정지 상태(마커 파일 존재)? graceful False."""
+    try:
+        return _YF_PAUSE_MARKER.exists()
+    except OSError:
+        return False
+
+
+def set_yf_pause(on: bool) -> bool:
+    """yfinance 정지 토글 — 마커 생성/삭제. 반환 = 결과 상태(on=True)."""
+    try:
+        if on:
+            _YF_PAUSE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            _YF_PAUSE_MARKER.write_text(_now_label())
+        elif _YF_PAUSE_MARKER.exists():
+            _YF_PAUSE_MARKER.unlink()
+    except OSError:
+        pass
+    return yf_paused()
+
+
 # ── 업종(industry) 등락 ────────────────────────────────────────────────────
 
 # href 가 .ashx 폐기 + 클린 URL 로 바뀜 (2026-06-10 VM 로그: screener.ashx
@@ -794,6 +824,9 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
     2026-06-10 VM surfaced: 단일 yf.download 통째 실패 시 빈 결과
     → 120종목 배치 분할 + 배치별 try/except + 진단 로그."""
     out: dict = {"high": [], "low": [], "ts": _now_label(), "source": source}
+    if yf_paused():
+        log.info("finviz: %s highlow — yfinance 정지(YF_PAUSE) → 스캔 skip, 캐시 유지", tag)
+        return _cached(cache_name, ttl=86400) or out
     try:
         import yfinance as yf
         _names = names or {}
@@ -915,6 +948,9 @@ def _compute_movers_from(universe: list, names: dict, cache_name: str,
     mcap/업종/한글명 백필(상·하위 hit 만). 백그라운드 산출 — 종목 적은 hit 만 enrich."""
     out: dict = {"up": [], "down": [], "ts": _now_label(), "source": source,
                  "scanned": 0}
+    if yf_paused():
+        log.info("finviz: %s movers — yfinance 정지(YF_PAUSE) → 스캔 skip, 캐시 유지", market)
+        return _cached(cache_name, ttl=86400) or out
     try:
         _CHUNK = 120
         rows: list = []
@@ -1093,7 +1129,7 @@ def _persist_mcap_overlay(rows: list, market: str) -> None:
 def _fetch_mcaps(tickers: list) -> dict:
     """hit 종목 시가총액(USD) {ticker: mcap}. yfinance fast_info 병렬
     (백그라운드 전용 — 종목당 1 HTTP). 실패/부재 시 누락(graceful)."""
-    if not tickers:
+    if not tickers or yf_paused():     # YF_PAUSE → 시총 fetch skip(persist 폴백)
         return {}
     out: dict = {}
     try:
@@ -1224,6 +1260,8 @@ def _fetch_industries(tickers: list, allow_slow: bool = True) -> dict:
     실패 종목은 누락(graceful), 해소되면 영구 캐시에 적재."""
     if not tickers:
         return {}
+    if yf_paused():               # YF_PAUSE → .info 레이어 skip(캐시·벌크맵 유지)
+        allow_slow = False
     cache = _cached("us_industry_cache.json", ttl=365 * 86400) or {}
     changed = False
     missing = [t for t in tickers if t not in cache]
@@ -1521,6 +1559,8 @@ def _compute_us_movers() -> dict:
         log.warning("naver US movers 실패 → yfinance 스캔 폴백: %s", exc)
     out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0,
                  "source": "전 미국 상장 산출(yfinance · 당일 등락)"}
+    if yf_paused():               # YF_PAUSE → yfinance 폴백 스캔 skip(캐시 유지)
+        return _cached(_MOVERS_CACHE, ttl=86400) or out
     tks, names = _us_full_universe()
     if not tks:
         tks = _us_universe_robust()
