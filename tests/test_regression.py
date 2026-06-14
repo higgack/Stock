@@ -8906,14 +8906,26 @@ class TestNaverCommodityCharts:
         assert "(count + _PS - 1) // _PS" in src          # 페이지 수 = ceil(count/30)
         assert '"pageSize": _PS' in src                   # count 가 아니라 _PS(30) 로 호출
         ms = open("bot/macro_snapshot.py", encoding="utf-8").read()
-        assert "fetch_commodity_spark(_MACRO_NAVER[s][1], 30)" in ms   # 카드=1개월(30점)
+        assert "fetch_commodity_spark(code, 30)" in ms     # 카드=1개월(30점, 1페이지)
+        assert "fetch_naver_index_history(code, 30)" in ms # 지수도 동일
 
     def test_macro_commodities_wired_to_naver(self):
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
         assert "fetch_commodity_spark" in src              # 원자재 스파크 네이버
-        assert "if sid in com_spark:" in src               # 루프 분기
-        assert "if not _is_com(s)" in src                  # 야후 chart 배치서 원자재 제외
-        assert "_fetch_macro_naver_values(all_yf_sids)" in src   # 값은 전체(원자재 포함)
+        assert "fetch_naver_index_history" in src          # 지수 스파크 네이버(S&P/나스닥/VIX)
+        assert "if sid in nv_spark:" in src                # 루프 분기(com+idx)
+        assert 'if _kind(s) not in ("com", "idx")' in src  # 야후 chart 배치서 원자재+지수 제외
+        assert "_fetch_macro_naver_values(all_yf_sids)" in src   # 값은 전체 네이버
+
+    def test_index_history_graceful_and_endpoint(self):
+        # 지수 history (사용자 Network 탭 확인: securityService/index/.INX/price).
+        # 'PNG 만 있다'던 옛 단정이 오류 — JSON history 존재(2026-06-14).
+        from bot.naver_marketindex import fetch_naver_index_history
+        assert fetch_naver_index_history("") == []         # 코드 없으면 []
+        assert isinstance(fetch_naver_index_history(".INX"), list)   # 샌드박스 graceful
+        src = open("bot/naver_marketindex.py", encoding="utf-8").read()
+        assert "securityService/index" in src              # 사용자 확인 엔드포인트
+        assert "raw.get(\"datas\")" in src                  # bare list/{datas:[]} 양형 수용
 
     def test_sentiment_gauge_uses_naver_vix(self):
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()

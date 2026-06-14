@@ -401,27 +401,29 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     # Collect yf tickers once. 값은 전체 yf sid(원자재 포함, macro_nv 네이버),
     # 차트는 **원자재 제외**(원자재 차트는 네이버 history 로 — 아래 com_spark).
     all_yf_sids = [sid for _, _, _, src, sid, _ in (DOMESTIC + GLOBAL) if src == "yf"]
-    _is_com = lambda s: _MACRO_NAVER.get(s, (None,))[0] == "com"
-    yf_tickers = [s for s in all_yf_sids if not _is_com(s)]
-    # 원자재 차트 = 네이버 history (yfinance 무티커 LME 금속·철광석·throttle 무관,
-    # 사용자 2026-06-14 '원자재 차트 다 네이버'). symbolCode→reutersCode·category 자동
-    # 매핑 후 ~1년 일봉. 야후 chart 배치에서 원자재 제외 → 야후 부하도 동시 경감.
-    com_spark: dict[str, list[float]] = {}
-    _com_sids = [s for s in all_yf_sids if _is_com(s)]
-    if _com_sids:
+    _kind = lambda s: _MACRO_NAVER.get(s, (None,))[0]
+    # 원자재(com)·지수(idx) 차트 = 네이버 history (yfinance 무티커 LME 금속·throttle
+    # 무관, 사용자 2026-06-14 '차트 다 네이버'). com=marketindex/{cat}/{reuters}/prices,
+    # idx=securityService/index/{reuters}/price (둘 다 사용자 VM 확인). pageSize=30
+    # 페이지네이션. 야후 chart 배치에서 제외 → 야후 부하 경감(코인/fx 만 yf 차트 잔존).
+    nv_spark: dict[str, list[float]] = {}
+    _nv_sids = [s for s in all_yf_sids if _kind(s) in ("com", "idx")]
+    yf_tickers = [s for s in all_yf_sids if _kind(s) not in ("com", "idx")]
+    if _nv_sids:
         try:
             from concurrent.futures import ThreadPoolExecutor
             from bot import naver_marketindex as _nmh
 
             def _cs(s):
-                # 카드 1개월 = ~22 거래일 → 30점(1페이지). 네이버 pageSize 캡 회피.
-                return s, _nmh.fetch_commodity_spark(_MACRO_NAVER[s][1], 30)
+                k, code = _MACRO_NAVER[s]    # 카드 1개월=30점(1p). pageSize 캡 회피.
+                return s, (_nmh.fetch_commodity_spark(code, 30) if k == "com"
+                           else _nmh.fetch_naver_index_history(code, 30))
             with ThreadPoolExecutor(max_workers=8) as _pool:
-                for _s, _ser in _pool.map(_cs, _com_sids):
-                    com_spark[_s] = _ser
+                for _s, _ser in _pool.map(_cs, _nv_sids):
+                    nv_spark[_s] = _ser
         except Exception as _exc:
-            log.warning("macro: commodity spark(naver) batch failed: %s", _exc)
-    # 차트(스파크라인)는 yf history(download) — fast_info 아님, rate-limit 무관.
+            log.warning("macro: naver chart spark batch failed: %s", _exc)
+    # 잔존 yf 차트(코인·fx)는 history(download) — fast_info 아님, rate-limit 무관.
     yf_monthly = _yf_monthly_batch(yf_tickers)
     yf_daily_1mo = _yf_daily_1mo_batch(yf_tickers)
     # ⛔ _yf_daily_change(fast_info ~24콜/갱신) 제거 (사용자 2026-06-14 '매크로카드
@@ -459,11 +461,11 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     _prev = value - change
                     if _prev not in (None, 0):
                         change_pct = change / _prev * 100
-                if sid in com_spark:
-                    # 원자재 — 네이버 history(yfinance 무티커 LME 금속·철광석·throttle
-                    # 무관). 카드=최근 1개월(뒤 22 거래일), 큰 차트=~1년 일봉. 값과
-                    # 같은 네이버 소스라 라인 끝이 현재가와 자연 싱크(사용자 2026-06-14).
-                    _ser = com_spark.get(sid) or []
+                if sid in nv_spark:
+                    # 원자재(com)·지수(idx) — 네이버 history(yfinance 무티커/throttle
+                    # 무관). 카드=최근 1개월(뒤 22 거래일). 값과 같은 네이버 소스라
+                    # 라인 끝이 현재가와 자연 싱크(사용자 2026-06-14 '차트 다 네이버').
+                    _ser = nv_spark.get(sid) or []
                     chart_spark = _ser
                     card_spark = _ser[-22:] if len(_ser) >= 22 else _ser
                     spark_span = "1개월"
