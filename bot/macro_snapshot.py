@@ -47,34 +47,37 @@ DOMESTIC = [
     ("kr_export", "한국 수출", "억$", "ecos", "export_amt", 0),
 ]
 
+# 사용자 2026-06-14 재정렬: FFR·달러인덱스 삭제 / 원자재 = WTI·브렌트·천연가스·
+# 금·은·백금·구리·알루미늄·[니켈]·옥수수·대두·소맥·돈육·커피·면화 / 코인은
+# 비트·이더·솔만(BNB·도지·리플 삭제). 니켈은 yfinance 무티커(네이버 metals 전용)
+# 라 이름 확정 후 추가.
 GLOBAL = [
-    ("us_ffr", "미국 FFR", "%", "fred", "FEDFUNDS", 2),
     ("us_2y", "미국 2Y", "%", "fred", "DGS2", 2),
     ("us_10y", "미국 10Y", "%", "fred", "DGS10", 2),
     ("us_cpi", "미국 CPI", "", "fred", "CPIAUCSL", 2),
     ("us_unemploy", "미국 실업률", "%", "fred", "UNRATE", 1),
     ("us_ism", "미국 ISM PMI", "", "fred", "NAPM", 1),
     ("us_gdp", "미국 GDP", "%", "fred", "A191RL1Q225SBEA", 1),
-    ("dxy", "달러인덱스", "", "yf", "DX-Y.NYB", 2),
     ("sp500", "S&P 500", "", "yf", "^GSPC", 2),
     ("nasdaq", "NASDAQ", "", "yf", "^IXIC", 2),
     ("vix", "VIX", "", "yf", "^VIX", 2),
     ("wti", "WTI", "$", "yf", "CL=F", 1),
     ("brent", "브렌트유", "$", "yf", "BZ=F", 1),
-    ("copper", "구리", "$", "yf", "HG=F", 2),
-    ("aluminum", "알루미늄", "$", "yf", "ALI=F", 2),
+    ("natgas", "천연가스", "$", "yf", "NG=F", 2),
     ("gold", "금", "$", "yf", "GC=F", 0),
     ("silver", "은", "$", "yf", "SI=F", 2),
-    ("natgas", "천연가스", "$", "yf", "NG=F", 2),
     ("platinum", "백금", "$", "yf", "PL=F", 0),
+    ("copper", "구리", "$", "yf", "HG=F", 2),
+    ("aluminum", "알루미늄", "$", "yf", "ALI=F", 2),
     ("corn", "옥수수", "$", "yf", "ZC=F", 0),
-    ("wheat", "밀", "$", "yf", "ZW=F", 0),
+    ("soybean", "대두", "$", "yf", "ZS=F", 0),
+    ("wheat", "소맥", "$", "yf", "ZW=F", 0),
+    ("hogs", "돈육", "$", "yf", "HE=F", 2),
+    ("coffee", "커피", "$", "yf", "KC=F", 2),
+    ("cotton", "면화", "$", "yf", "CT=F", 2),
     ("btc", "비트코인", "$", "yf", "BTC-USD", 0),
     ("eth", "이더리움", "$", "yf", "ETH-USD", 0),
     ("sol", "솔라나", "$", "yf", "SOL-USD", 2),
-    ("doge", "도지코인", "$", "yf", "DOGE-USD", 4),
-    ("xrp", "리플", "$", "yf", "XRP-USD", 4),
-    ("bnb", "BNB", "$", "yf", "BNB-USD", 2),
 ]
 
 # 지표 정의가 바뀌면(예: 은·알루미늄 추가) 디스크 캐시를 즉시 무효화하기
