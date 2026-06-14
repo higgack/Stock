@@ -466,6 +466,24 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                                    disable_web_page_preview=True)
         return
 
+    # /naverpause · /health in channel (사용자 2026-06-14) — yfpause 패턴 미러.
+    if first_word == "naverpause":
+        parts = body.split()
+        text = _handle_naverpause(parts[1] if len(parts) > 1 else "")
+        await ctx.bot.send_message(chat_id=post.chat.id, text=text,
+                                   parse_mode=ParseMode.HTML,
+                                   disable_web_page_preview=True)
+        return
+    if first_word == "health":
+        cid = post.chat.id
+        await ctx.bot.send_message(chat_id=cid, text="🩺 점검 중…",
+                                   parse_mode=ParseMode.HTML)
+        text = await asyncio.to_thread(_handle_health)
+        await ctx.bot.send_message(chat_id=cid, text=text,
+                                   parse_mode=ParseMode.HTML,
+                                   disable_web_page_preview=True)
+        return
+
     # /watch · /watchlist · /unwatch in channel — PTB CommandHandler doesn't
     # fire on channel_post, so without this branch '/watch' falls through to
     # ticker analysis and treats 'WATCH' as a symbol (2026-06-04 bug).
@@ -1051,6 +1069,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 충족 시 알림 (rsi/price/sma/52w/earnings·KR수급). 목록 /watchlist · 삭제 /unwatch
 /dart_alert on|off — 관심종목(KR) 새 DART 공시 알림 (전 카테고리, 켠 채팅으로)
 /paper — 페이퍼 모의매매(돈0). 전체 /paper help
+/health — 야후/네이버 소스 헬스체크 · /yfpause·/naverpause on|off — 소스 호출 정지토글
 ※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
 
 ━━━━━━━━━
@@ -3087,6 +3106,57 @@ async def cmd_yfpause(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
                                         parse_mode=ParseMode.HTML)
 
 
+def _handle_naverpause(arg: str) -> str:
+    """네이버 정지 토글 + 상태 텍스트 (DM·채널 공유, 사용자 2026-06-14 '네이버도
+    야후처럼 끄고 키는 명령'). arg=on|off|빈(상태만)."""
+    from bot.finviz_client import naver_paused, set_naver_pause
+    a = (arg or "").strip().lower()
+    if a in ("on", "정지", "stop", "1", "true", "pause"):
+        set_naver_pause(True)
+    elif a in ("off", "해제", "resume", "0", "false", "재개"):
+        set_naver_pause(False)
+    paused = naver_paused()
+    state = ("⏸ <b>정지됨</b> — 네이버 호출 skip (캐시만)"
+             if paused else "▶️ <b>정상</b> — 네이버 호출 중")
+    return (f"네이버 상태: {state}\n\n"
+            "정지하면 네이버 국내·해외 무버·업종·종목명·예탁금 등 네이버 fetch 가 "
+            "멈춰 안티봇 차단이 회복됩니다. 이미 산출된 캐시는 그대로 보여요. "
+            "<b>재시작해도 정지 유지</b>(마커 파일).\n\n"
+            "<code>/naverpause on</code> 정지 · <code>/naverpause off</code> 재개")
+
+
+async def cmd_naverpause(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """네이버 호출 일시정지 토글 — /naverpause [on|off] (DM)."""
+    arg = ""
+    if update.message and update.message.text:
+        parts = update.message.text.split()
+        if len(parts) > 1:
+            arg = parts[1]
+    if update.message:
+        await update.message.reply_text(_handle_naverpause(arg),
+                                        parse_mode=ParseMode.HTML)
+
+
+def _handle_health() -> str:
+    """야후/네이버 소스 헬스체크 텍스트 (DM·채널 공유). 정지 우회 raw fetch."""
+    try:
+        from bot.source_health import format_report, run
+        return "🩺 <b>데이터 소스 헬스체크</b>\n" + _html.escape(format_report(run()))
+    except Exception as exc:
+        return f"헬스체크 실패: {_html.escape(str(exc)[:200])}"
+
+
+async def cmd_health(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """야후/네이버 소스 헬스체크 — /health (DM). 잘 받아오는지 직접 점검."""
+    if update.message:
+        msg = await update.message.reply_text("🩺 점검 중…", parse_mode=ParseMode.HTML)
+        text = await asyncio.to_thread(_handle_health)
+        try:
+            await msg.edit_text(text, parse_mode=ParseMode.HTML)
+        except Exception:
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 def _static_command_registry() -> dict:
     """정적 명령 단일 레지스트리 — name → (handler, 메뉴 설명).
 
@@ -3115,6 +3185,8 @@ def _static_command_registry() -> dict:
         "unwatch": (cmd_unwatch, "감시 삭제 (TICKER/id/all)"),
         "dart_alert": (cmd_dart_alert, "관심종목 DART 공시 알림 (on/off)"),
         "yfpause": (cmd_yfpause, "yfinance 호출 일시정지 토글 (on/off)"),
+        "naverpause": (cmd_naverpause, "네이버 호출 일시정지 토글 (on/off)"),
+        "health": (cmd_health, "야후/네이버 소스 헬스체크 (잘 받아오는지)"),
         "paper": (cmd_paper, "페이퍼 트레이딩 (모의 매매·돈 0)"),
         # /screen·/screener — 콘솔은 전용 분기, 텔레그램은 이 핸들러
         "screen": (cmd_screen, "조건부 스크리너 (PER<15 PBR<1 등 자유 조건)"),

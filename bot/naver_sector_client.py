@@ -53,6 +53,12 @@ _UPJONG_NO_RE = re.compile(
 
 def _get(url: str, **kwargs) -> Optional[str]:
     try:
+        from bot.finviz_client import naver_paused
+        if naver_paused():       # NAVER_PAUSE → fetch skip(호출부 캐시 폴백)
+            return None
+    except Exception:
+        pass
+    try:
         resp = requests.get(url, headers=_HEADERS, timeout=15, **kwargs)
         resp.encoding = "euc-kr"
         if resp.status_code != 200 or not resp.text:

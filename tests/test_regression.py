@@ -7420,6 +7420,31 @@ class TestUpperLowerVolume:
             assert "if not yf_paused()" in open(f, encoding="utf-8").read()
         assert "yf_paused" in open("bot/market_overview.py", encoding="utf-8").read()
 
+    def test_naver_pause_gates_and_commands(self, monkeypatch, tmp_path):
+        # 사용자 2026-06-14 '네이버도 야후처럼 끄고 키는 명령' + /health 진단.
+        import bot.finviz_client as fc
+        import bot.naver_ranking_client as nv
+        import bot.naver_sector_client as ns
+        monkeypatch.setattr(fc, "_NAVER_PAUSE_MARKER", tmp_path / "NAVER_PAUSE")
+        assert fc.naver_paused() is False
+        assert fc.set_naver_pause(True) is True and fc.naver_paused() is True
+        assert nv._get_stocks("http://x") is None     # 정지 → fetch skip(네트워크 0)
+        assert ns._get("http://x") is None
+        assert fc.set_naver_pause(False) is False and fc.naver_paused() is False
+        # 배선: 명령·헬스체크·레지스트리·채널 라우팅
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "cmd_naverpause" in tb and "cmd_health" in tb
+        assert "_handle_naverpause" in tb and 'first_word == "naverpause"' in tb
+        assert '"naverpause":' in tb and '"health":' in tb
+        # source_health 진단 모듈
+        from bot.source_health import format_report, run
+        assert callable(run) and callable(format_report)
+        # help 에 신규 명령 등록
+        import re as _re
+        ht = _re.search(r'_HELP_TEXT\s*=\s*"""(.*?)"""',
+                        tb, _re.DOTALL).group(1)
+        assert "/yfpause" in ht and "/naverpause" in ht and "/health" in ht
+
 
 class TestHighlowRenderShared:
     """신고저/급등락/상한가 공용 리치 렌더러 (사용자 2026-06-13 '미국 포맷

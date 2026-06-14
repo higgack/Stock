@@ -158,6 +158,33 @@ def set_yf_pause(on: bool) -> bool:
     return yf_paused()
 
 
+# 네이버 정지 kill-switch (사용자 2026-06-14 '네이버도 야후처럼 끄고 키는 명령')
+# — yf_paused 와 동형. 정지 시 네이버 HTTP fetch(국내·해외·업종·sector) skip →
+# 안티봇 차단 회복. 캐시는 그대로 서빙. 마커라 재시작에도 유지. /naverpause 토글.
+_NAVER_PAUSE_MARKER = Path.home() / ".tradingagents" / "NAVER_PAUSE"
+
+
+def naver_paused() -> bool:
+    """네이버 호출 일시정지 상태(마커 파일 존재)? graceful False."""
+    try:
+        return _NAVER_PAUSE_MARKER.exists()
+    except OSError:
+        return False
+
+
+def set_naver_pause(on: bool) -> bool:
+    """네이버 정지 토글 — 마커 생성/삭제. 반환 = 결과 상태(on=True)."""
+    try:
+        if on:
+            _NAVER_PAUSE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            _NAVER_PAUSE_MARKER.write_text(_now_label())
+        elif _NAVER_PAUSE_MARKER.exists():
+            _NAVER_PAUSE_MARKER.unlink()
+    except OSError:
+        pass
+    return naver_paused()
+
+
 # ── 업종(industry) 등락 ────────────────────────────────────────────────────
 
 # href 가 .ashx 폐기 + 클린 URL 로 바뀜 (2026-06-10 VM 로그: screener.ashx
