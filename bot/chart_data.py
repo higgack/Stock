@@ -404,6 +404,14 @@ def _live_last_price(t, payload: dict, decimals: int, ticker: str):
                     return round(_kv, decimals)
             except Exception as exc:
                 log.debug("chart_data: KIS realtime price skipped for %s: %s", ticker, exc)
+        # fast_info 회로차단/정지 — 쿨다운·정지 중이면 라이브 skip(차트가 직전 종가
+        # 사용). yahoo fast_info IP 차단 회복 보호(사용자 2026-06-14).
+        try:
+            from bot.finviz_client import fast_info_ok, yf_paused
+            if yf_paused() or not fast_info_ok():
+                return None
+        except Exception:
+            pass
         fi = t.fast_info
         raw = None
         for attr in ("last_price", "lastPrice", "regularMarketPrice"):
@@ -424,6 +432,12 @@ def _live_last_price(t, payload: dict, decimals: int, ticker: str):
             return None
         return round(valid, decimals)
     except Exception as exc:
+        try:
+            from bot.finviz_client import fast_info_trip, is_rate_limit_error
+            if is_rate_limit_error(exc):
+                fast_info_trip("chart_live")
+        except Exception:
+            pass
         log.warning("chart_data: live price probe failed for %s: %s", ticker, exc)
         return None
 

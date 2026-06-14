@@ -185,6 +185,34 @@ def set_naver_pause(on: bool) -> bool:
     return naver_paused()
 
 
+# ── fast_info 회로차단기 (사용자 2026-06-14 /health: fast_info 만 IP 단위로
+# 끈끈하게 rate-limit — 정지 중 회복→재개 즉시 재차단, 단일 콜도 실패). 1회라도
+# rate-limit 에러가 나면 _FAST_INFO_COOLDOWN 동안 fast_info 전면 skip → download/
+# Naver/persist 폴백, yahoo 가 회복하게 둠. 자동 적응(수동 정지 불요). 프로세스
+# 내 메모리(재시작 시 리셋 — 첫 실패가 다시 trip). download(history API)·Naver 무관.
+_FAST_INFO_COOLDOWN = 1800          # 30분
+_FAST_INFO_COOLDOWN_UNTIL = 0.0
+
+
+def fast_info_ok() -> bool:
+    """fast_info 호출 가능?(회로차단 쿨다운 아님). source_health 진단은 우회(직접 yf)."""
+    return time.time() >= _FAST_INFO_COOLDOWN_UNTIL
+
+
+def fast_info_trip(reason: str = "") -> None:
+    """fast_info rate-limit 감지 → 쿨다운 발동(전 소비처 skip)."""
+    global _FAST_INFO_COOLDOWN_UNTIL
+    _FAST_INFO_COOLDOWN_UNTIL = time.time() + _FAST_INFO_COOLDOWN
+    log.warning("fast_info rate-limit → %ds 쿨다운 (%s)", _FAST_INFO_COOLDOWN, reason)
+
+
+def is_rate_limit_error(exc) -> bool:
+    """예외가 yfinance rate-limit 인가 (버전 무관 문자열·타입 매칭)."""
+    s = str(exc)
+    return ("Too Many Requests" in s or "Rate limit" in s
+            or "RateLimit" in type(exc).__name__)
+
+
 # ── 업종(industry) 등락 ────────────────────────────────────────────────────
 
 # href 가 .ashx 폐기 + 클린 URL 로 바뀜 (2026-06-10 VM 로그: screener.ashx
@@ -1184,8 +1212,8 @@ def _persist_mcap_overlay(rows: list, market: str) -> None:
 def _fetch_mcaps(tickers: list) -> dict:
     """hit 종목 시가총액(USD) {ticker: mcap}. yfinance fast_info 병렬
     (백그라운드 전용 — 종목당 1 HTTP). 실패/부재 시 누락(graceful)."""
-    if not tickers or yf_paused():     # YF_PAUSE → 시총 fetch skip(persist 폴백)
-        return {}
+    if not tickers or yf_paused() or not fast_info_ok():
+        return {}                      # YF_PAUSE 또는 fast_info 쿨다운 → skip(persist 폴백)
     out: dict = {}
     try:
         import yfinance as yf
@@ -1221,7 +1249,9 @@ def _fetch_mcaps(tickers: list) -> dict:
                 except Exception:
                     pass
                 return tk, mc
-            except Exception:
+            except Exception as exc:
+                if is_rate_limit_error(exc):   # rate-limit → 회로차단 발동
+                    fast_info_trip("_fetch_mcaps")
                 return tk, None
 
         with ThreadPoolExecutor(max_workers=12) as ex:

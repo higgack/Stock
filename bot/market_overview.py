@@ -228,13 +228,24 @@ def _fetch_yf_batch() -> dict[str, dict]:
             pc = getattr(fi, "previous_close", None)
             if lp is not None and pc is not None and float(pc) != 0:
                 return tk, (float(lp), float(pc))
-        except Exception:
-            pass
+        except Exception as exc:
+            try:
+                from bot.finviz_client import fast_info_trip, is_rate_limit_error
+                if is_rate_limit_error(exc):
+                    fast_info_trip("snapshot")
+            except Exception:
+                pass
         return tk, None
 
     live: dict[str, tuple[float, float]] = {}
     global _LAST_LIVE, _LAST_LIVE_TS
-    if time.time() - _LAST_LIVE_TS >= _LIVE_TTL:   # throttle — 10분마다만 fast_info
+    try:
+        from bot.finviz_client import fast_info_ok
+        _fi_ok = fast_info_ok()
+    except Exception:
+        _fi_ok = True
+    # throttle(10분) + 회로차단(쿨다운 중이면 download 만 사용)
+    if _fi_ok and time.time() - _LAST_LIVE_TS >= _LIVE_TTL:
         try:
             with ThreadPoolExecutor(max_workers=8) as pool:
                 for tk, v in pool.map(_live, tickers):
