@@ -5456,6 +5456,51 @@ class TestAnalysisCsvExport:
 
 
 
+class TestEquityFundNaver:
+    """주식형펀드 차트 데이터 (naver_sector_client, 2026-06-14) — 네이버
+    trendDeposit/chart beneficiaryCertificateStock 시계열 → deposit 모델 병합."""
+
+    def test_equity_fund_parse_and_merge(self, monkeypatch):
+        import bot.naver_sector_client as ns
+
+        class R:
+            status_code = 200
+
+            def json(self):
+                return [
+                    {"bizdate": "20260609", "beneficiaryCertificateStock": "3500000"},
+                    {"bizdate": "20260610", "beneficiaryCertificateStock": "3567731"}]
+        import requests
+        import bot.finviz_client as fv
+        monkeypatch.setattr(requests, "get", lambda *a, **k: R())
+        monkeypatch.setattr(fv, "naver_paused", lambda: False)
+        ser = ns._fetch_equity_fund_naver()
+        assert ser[-1] == ("20260610", 3567731.0)
+        # fetch_deposit 병합
+        monkeypatch.setattr(ns, "_fetch_deposit_fsc", lambda: {
+            "date": "06.10", "deposit": 1276066.0, "credit": 361901.0,
+            "deposit_series": [], "credit_series": [], "source": "금융투자협회"})
+        monkeypatch.setattr(ns, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(ns, "_cache_write", lambda *a, **k: None)
+        dep = ns.fetch_deposit()
+        assert dep["equity_fund"] == 3567731.0 and dep["equity_fund_chg"] == 67731.0
+        assert len(dep["equity_fund_series"]) == 2
+
+    def test_render_shows_third_chart(self):
+        # 렌더 스캐폴드(merged)가 equity_fund_series 있으면 3번째 차트 + 3-col
+        import bot.dashboard as d
+        dep = {"date": "06.10", "deposit": 1276066.0, "credit": 361901.0,
+               "equity_fund": 3567731.0, "equity_fund_chg": 67731.0,
+               "deposit_series": [{"d": "06.09", "v": 1.0}, {"d": "06.10", "v": 2.0}],
+               "credit_series": [{"d": "06.09", "v": 1.0}, {"d": "06.10", "v": 2.0}],
+               "equity_fund_series": [{"d": "06.09", "v": 1.0}, {"d": "06.10", "v": 2.0}],
+               "source": "금융투자협회"}
+        charts = d._render_deposit_charts(dep)
+        assert "주식형펀드 추이" in charts and "repeat(3,1fr)" in charts
+        widget = d._render_deposit_widget(dep)
+        assert "주식형펀드" in widget
+
+
 class TestNxtClient:
     """NXT 외국인·기관 수급 (nxt_client/nxt_pages, 2026-06-14) — 네이버
     trendForeignOrg 확정 구조 파싱 + 렌더."""
