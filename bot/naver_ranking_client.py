@@ -527,8 +527,9 @@ def world_quote_map(market: str) -> dict:
 def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
     """{up:[{name,pct}], down:[...], ts, source} — 네이버 업종별 등락(시총가중 평균)
     Top/Bottom (CN/HK/JP, 사용자 2026-06-14 '업종등락 네이버'). 전 업종 순회·각
-    업종 상위 종목(시총순 20) 시총가중 등락 → 랭킹. ETF 업종 제외. 1h 디스크 캐시
-    (등락 intraday). graceful·429 면역 — 실패 시 빈(호출부 ETF 합성 폴백)."""
+    업종 상위 종목(시총순 20) 시총가중 등락 → 랭킹. ETF 업종 제외. **5분 디스크
+    캐시**(market 별 동일 — CN/JP/HK 갱신주기 통일, 사용자 2026-06-14). graceful·
+    429 면역 — 실패 시 빈(호출부 ETF 합성 폴백)."""
     nat = _UPJONG_NATION.get(market)
     if not nat:
         return {"up": [], "down": [], "ts": "", "source": ""}
