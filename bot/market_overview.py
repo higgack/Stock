@@ -307,7 +307,7 @@ def _fred_fetch_series(series_id: str, lookback_days: int) -> Optional[dict]:
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < 12:
+            if age_h < 24:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
@@ -362,7 +362,7 @@ def _fetch_fred_yoy(series_id: str) -> Optional[dict]:
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            if age_h < 12:
+            if age_h < 24:
                 return json.loads(cache_file.read_text())
         except Exception:
             pass
