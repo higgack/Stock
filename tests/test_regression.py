@@ -8867,6 +8867,50 @@ class TestResearchRotation:
         assert "top_us = _sp_tks" not in src                      # 옛 500 일괄 universe 제거
 
 
+class TestNaverCommodityCharts:
+    """원자재 차트 = 네이버 history (yfinance 무티커 LME 금속·철광석·throttle 무관,
+    사용자 2026-06-14 '원자재 차트 다 네이버'). VM probe 확정: api.stock.naver.com/
+    marketindex/{category}/{reutersCode}/prices, reutersCode=리스트 item(금 GCcv1·
+    니켈 CMNI0). 일별 close 최신순 → chronological. 센티멘트 게이지도 네이버 VIX."""
+
+    def test_parse_history_closes_chronological(self):
+        from bot.naver_marketindex import _parse_history_closes
+        rows = [{"closePrice": "17,614.40"}, {"closePrice": "17,472.05"},
+                {"closePrice": "17,443.60"}]               # 최신순(네이버 응답)
+        s = _parse_history_closes(rows)
+        assert s == [17443.60, 17472.05, 17614.40]         # 뒤집어 오래된→최신
+        assert _parse_history_closes([]) == []
+        assert _parse_history_closes([{"x": 1}]) == []     # closePrice 없으면 skip
+
+    def test_parse_item_exposes_reuters_and_category(self):
+        from bot.naver_marketindex import _parse_item
+        it = {"closePrice": "4,238.80", "fluctuations": "124.80",
+              "fluctuationsRatio": "3.03", "fluctuationsType": {"code": "2"},
+              "name": "국제 금", "reutersCode": "GCcv1", "categoryType": "metals"}
+        rec = _parse_item(it)
+        assert rec["reutersCode"] == "GCcv1" and rec["category"] == "metals"
+        assert rec["close"] == 4238.80
+
+    def test_fetch_commodity_helpers_graceful(self):
+        # 샌드박스 네이버 불가 → graceful [](크래시 0)
+        from bot.naver_marketindex import (fetch_commodity_spark,
+                                           fetch_naver_commodity_history)
+        assert isinstance(fetch_commodity_spark("NI"), list)
+        assert fetch_naver_commodity_history("", "") == []     # 코드 없으면 []
+
+    def test_macro_commodities_wired_to_naver(self):
+        src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert "fetch_commodity_spark" in src              # 원자재 스파크 네이버
+        assert "if sid in com_spark:" in src               # 루프 분기
+        assert "if not _is_com(s)" in src                  # 야후 chart 배치서 원자재 제외
+        assert "_fetch_macro_naver_values(all_yf_sids)" in src   # 값은 전체(원자재 포함)
+
+    def test_sentiment_gauge_uses_naver_vix(self):
+        src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert '_build_charts(spark_cache, (macro_nv.get("^VIX")' in src
+        assert "vix_value if isinstance(vix_value" in src   # 네이버 VIX 우선
+
+
 class TestWorldIndicesCodesetCache:
     """worldstock/index 공유 캐시 코드셋 병합 — 부분집합 fetch 가 전체 카드를
     블랭크로 만들던 회귀(2026-06-14: macro_snapshot 이 .INX/.IXIC/.VIX 3종만 써

@@ -398,8 +398,28 @@ def fetch_macro_snapshot() -> dict[str, Any]:
 
     log.info("macro_snapshot: fetching fresh macro data")
 
-    # Collect yf tickers once.
-    yf_tickers = [sid for _, _, _, src, sid, _ in (DOMESTIC + GLOBAL) if src == "yf"]
+    # Collect yf tickers once. 값은 전체 yf sid(원자재 포함, macro_nv 네이버),
+    # 차트는 **원자재 제외**(원자재 차트는 네이버 history 로 — 아래 com_spark).
+    all_yf_sids = [sid for _, _, _, src, sid, _ in (DOMESTIC + GLOBAL) if src == "yf"]
+    _is_com = lambda s: _MACRO_NAVER.get(s, (None,))[0] == "com"
+    yf_tickers = [s for s in all_yf_sids if not _is_com(s)]
+    # 원자재 차트 = 네이버 history (yfinance 무티커 LME 금속·철광석·throttle 무관,
+    # 사용자 2026-06-14 '원자재 차트 다 네이버'). symbolCode→reutersCode·category 자동
+    # 매핑 후 ~1년 일봉. 야후 chart 배치에서 원자재 제외 → 야후 부하도 동시 경감.
+    com_spark: dict[str, list[float]] = {}
+    _com_sids = [s for s in all_yf_sids if _is_com(s)]
+    if _com_sids:
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            from bot import naver_marketindex as _nmh
+
+            def _cs(s):
+                return s, _nmh.fetch_commodity_spark(_MACRO_NAVER[s][1], 260)
+            with ThreadPoolExecutor(max_workers=8) as _pool:
+                for _s, _ser in _pool.map(_cs, _com_sids):
+                    com_spark[_s] = _ser
+        except Exception as _exc:
+            log.warning("macro: commodity spark(naver) batch failed: %s", _exc)
     # 차트(스파크라인)는 yf history(download) — fast_info 아님, rate-limit 무관.
     yf_monthly = _yf_monthly_batch(yf_tickers)
     yf_daily_1mo = _yf_daily_1mo_batch(yf_tickers)
@@ -409,7 +429,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     # 모든 yf 가격 sid 가 _MACRO_NAVER 에 매핑돼 값은 네이버로 충분, 네이버 결측 시
     # chart_spark[-1](yf_monthly=download/history) 폴백. fast_info 호출 0.
     yf_daily: dict[str, dict] = {}
-    macro_nv = _fetch_macro_naver_values(yf_tickers)
+    macro_nv = _fetch_macro_naver_values(all_yf_sids)   # 값=전체(원자재 포함)
 
     spark_cache: dict[str, list[float]] = {}  # 큰 차트용(월간 12개월)
 
@@ -438,19 +458,31 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                     _prev = value - change
                     if _prev not in (None, 0):
                         change_pct = change / _prev * 100
-                chart_spark = yf_monthly.get(sid, [])
-                # 카드 그래프 = 항상 최근 1개월 일봉 (사용자 2026-06-14 '캡쳐한
-                # 가격카드는 전부 1개월기준'). 색 = 1개월 시작 대비 현재(첫↔끝):
-                # 하락 빨강 / 상승 녹색. 일봉 결측 시에만 월간 꼬리로 폴백(드묾,
-                # _yf_daily_1mo_batch 개별 재시도로 결측 최소화). FRED/ECOS(월간)는
-                # 이 분기 밖이라 12개월 유지(사용자 '모든게 아니고 캡쳐한 것만').
-                one_mo = yf_daily_1mo.get(sid) or []
-                card_spark = one_mo or (chart_spark[-2:] if len(chart_spark) >= 2
-                                        else chart_spark)
-                spark_span = "1개월"
-                if value is None and chart_spark:
-                    value = chart_spark[-1]
-                spark_dir = _spark_dir(card_spark, 0)
+                if sid in com_spark:
+                    # 원자재 — 네이버 history(yfinance 무티커 LME 금속·철광석·throttle
+                    # 무관). 카드=최근 1개월(뒤 22 거래일), 큰 차트=~1년 일봉. 값과
+                    # 같은 네이버 소스라 라인 끝이 현재가와 자연 싱크(사용자 2026-06-14).
+                    _ser = com_spark.get(sid) or []
+                    chart_spark = _ser
+                    card_spark = _ser[-22:] if len(_ser) >= 22 else _ser
+                    spark_span = "1개월"
+                    if value is None and _ser:
+                        value = _ser[-1]
+                    spark_dir = _spark_dir(card_spark, 0)
+                else:
+                    chart_spark = yf_monthly.get(sid, [])
+                    # 카드 그래프 = 항상 최근 1개월 일봉 (사용자 2026-06-14 '캡쳐한
+                    # 가격카드는 전부 1개월기준'). 색 = 1개월 시작 대비 현재(첫↔끝):
+                    # 하락 빨강 / 상승 녹색. 일봉 결측 시에만 월간 꼬리로 폴백(드묾,
+                    # _yf_daily_1mo_batch 개별 재시도로 결측 최소화). FRED/ECOS(월간)는
+                    # 이 분기 밖이라 12개월 유지(사용자 '모든게 아니고 캡쳐한 것만').
+                    one_mo = yf_daily_1mo.get(sid) or []
+                    card_spark = one_mo or (chart_spark[-2:] if len(chart_spark) >= 2
+                                            else chart_spark)
+                    spark_span = "1개월"
+                    if value is None and chart_spark:
+                        value = chart_spark[-1]
+                    spark_dir = _spark_dir(card_spark, 0)
             elif src == "fred":
                 chart_spark = _fred_monthly(sid)
                 card_spark = chart_spark      # 월간 시계열(일봉 없음)
@@ -484,7 +516,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     glob = _build(GLOBAL)
 
     # ── Derived charts (reuse the sparklines we already fetched) ──
-    charts = _build_charts(spark_cache)
+    charts = _build_charts(spark_cache, (macro_nv.get("^VIX") or {}).get("value"))
 
     kst = datetime.utcnow() + timedelta(hours=9)
     result = {
@@ -516,7 +548,8 @@ def _month_labels(n: int) -> list[str]:
     return list(reversed(seq))
 
 
-def _build_charts(spark: dict[str, list[float]]) -> dict[str, Any]:
+def _build_charts(spark: dict[str, list[float]],
+                  vix_value: Optional[float] = None) -> dict[str, Any]:
     """Build the 3 chart payloads from cached sparklines.
 
     rates_fx: 미국 10Y + 한국 기준금리 (좌, %) + USD/KRW (우, 원)
@@ -553,10 +586,14 @@ def _build_charts(spark: dict[str, list[float]]) -> dict[str, Any]:
             "kr_cpi": krcpi[-n2:],
         }
 
-    # sentiment (VIX → 0-100, higher score = greed)
+    # sentiment (VIX → 0-100, higher score = greed). VIX 값 = 네이버 우선(macro_nv,
+    # 야후 throttle 무관, 사용자 2026-06-14 '게이지도 네이버·빅스 역산이고 네이버에
+    # 있으니까'), 없으면 yf 스파크 마지막값 폴백.
     vix_spark = spark.get("vix", [])
-    if vix_spark:
-        charts["sentiment"] = {"score": _vix_to_score(vix_spark[-1]), "vix": vix_spark[-1]}
+    vix = (vix_value if isinstance(vix_value, (int, float))
+           else (vix_spark[-1] if vix_spark else None))
+    if isinstance(vix, (int, float)):
+        charts["sentiment"] = {"score": _vix_to_score(vix), "vix": vix}
 
     return charts
 

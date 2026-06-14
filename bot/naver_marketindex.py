@@ -46,7 +46,9 @@ def _parse_item(it: dict) -> dict | None:
     prev = (close - sign * chg) if chg is not None else close
     return {"name": str(it.get("name") or ""), "close": close,
             "prev": prev, "change": (sign * abs(chg)) if chg is not None else 0.0,
-            "pct": (sign * abs(pct)) if pct is not None else 0.0}
+            "pct": (sign * abs(pct)) if pct is not None else 0.0,
+            "reutersCode": str(it.get("reutersCode") or ""),     # 차트 history 코드(금 GCcv1·니켈 CMNI0)
+            "category": str(it.get("categoryType") or "")}       # energy|metals|agricultural
 
 
 def fetch_commodities() -> dict:
@@ -77,6 +79,63 @@ def fetch_commodities() -> dict:
     else:                                  # 전 카테고리 실패 → 스테일 캐시
         return _cached(_CACHE, ttl=86400) or {}
     return out
+
+
+def _parse_history_closes(rows: list) -> list[float]:
+    """네이버 marketindex prices 응답(최신순) → close 시계열(오래된→최신). 순수(단위테스트)."""
+    out: list[float] = []
+    for it in rows if isinstance(rows, list) else []:
+        v = _num((it or {}).get("closePrice"))
+        if v is not None:
+            out.append(v)
+    out.reverse()                          # 최신순 응답 → chronological(차트용)
+    return out
+
+
+_COMHIST_BASE = "https://api.stock.naver.com/marketindex"
+
+
+def fetch_naver_commodity_history(category: str, reuters_code: str,
+                                  count: int = 260) -> list[float]:
+    """{category}/{reutersCode}/prices → 최근 close 시계열(오래된→최신, ~1년 일봉).
+    category ∈ energy|metals|agricultural. reutersCode = 리스트 item 의 reutersCode
+    (금 GCcv1·니켈 CMNI0 등 — symbolCode 아님, VM probe 2026-06-14 확정). yfinance
+    무티커(LME 금속·철광석)·throttle 전부 무관. 1h 디스크 캐시·naver_paused·graceful []."""
+    if not (category and reuters_code):
+        return []
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    ck = f"naver_comhist_{category}_{reuters_code}.json"
+    c = _cached(ck, ttl=3600)
+    if isinstance(c, list) and c:
+        return c
+    if naver_paused():
+        s = _cached(ck, ttl=86400)
+        return s if isinstance(s, list) else []
+    import requests
+    try:
+        r = requests.get(f"{_COMHIST_BASE}/{category}/{reuters_code}/prices",
+                         headers=_HDRS, params={"page": 1, "pageSize": count},
+                         timeout=10)
+        rows = r.json() if r.status_code == 200 else []
+    except Exception as exc:
+        log.warning("naver comhist %s/%s: %s", category, reuters_code, exc)
+        s = _cached(ck, ttl=86400)
+        return s if isinstance(s, list) else []
+    series = _parse_history_closes(rows)
+    if series:
+        _cache_write(ck, series)
+        return series
+    s = _cached(ck, ttl=86400)
+    return s if isinstance(s, list) else []
+
+
+def fetch_commodity_spark(symbol_code: str, count: int = 260) -> list[float]:
+    """네이버 원자재 symbolCode(NI·GC·CL 등) → close 시계열(차트용). 리스트에서
+    reutersCode·category 를 조회한 뒤 history fetch (symbolCode≠reutersCode 라 매핑
+    필요). 전 원자재 universal — 코드 하드코딩 0. graceful []."""
+    rec = (fetch_commodities() or {}).get(symbol_code) or {}
+    return fetch_naver_commodity_history(rec.get("category", ""),
+                                         rec.get("reutersCode", ""), count)
 
 
 _IDX_CACHE = "naver_worldindex.json"
