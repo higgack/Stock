@@ -11629,7 +11629,7 @@ def _render_fred_card(fred_data: list, dollar_idx: dict | None) -> str:
         rows.append(f'<tr><td>{_html.escape(label)}</td>'
                     f'<td>{val_str}</td>{chg_cell}</tr>')
     return ('<div class="mcard"><div class="mcard-title">'
-            '핵심 지표 (금리/달러)</div><table>'
+            '핵심 지표 (금리/경제)</div><table>'
             + "".join(rows) + '</table></div>')
 
 

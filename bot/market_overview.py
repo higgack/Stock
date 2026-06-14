@@ -114,7 +114,7 @@ CARD_SENTIMENT = [
     ("USD코인", "nvc:USDC"),
     ("리플", "nvc:XRP"),
     ("솔라나", "nvc:SOL"),
-    ("BNB", "nvc:BNB"),
+    ("트론", "nvc:TRX"),  # 사용자 2026-06-14 BNB(업비트 미상장) 대신 트론
     ("도지코인", "nvc:DOGE"),
 ]
 
@@ -130,9 +130,9 @@ CARD_US = [
     # 사용자 2026-06-14: 러셀·나스닥바이오·KBW 제거, 섹터 ETF 4종 추가(네이버
     # worldstock/etf, nve:). VM probe 확정 — bare 티커 코드(XLF 53.34 등).
     ("XLF 금융", "nve:XLF"),
-    ("XLV 헬스케어", "nve:XLV"),
-    ("XLP 필수소비", "nve:XLP"),
     ("XLE 에너지", "nve:XLE"),
+    ("XLP 필수소비", "nve:XLP"),
+    ("XLV 헬스케어", "nve:XLV"),
 ]
 
 # 사용자 2026-06-14: 선물에 운송(운임지수) 추가 — 중국컨테이너(CCFI)·BDI 건화물.
@@ -168,7 +168,7 @@ CARD_AMERICAS = [
 ALL_CARDS = [
     ("한국 & 아시아", CARD_ASIA),
     ("주요 환율 (FX)", CARD_FX),
-    ("핵심 지표 (금리/달러)", None),  # FRED — handled separately
+    ("핵심 지표 (금리/경제)", None),  # FRED — handled separately
     ("원자재 & 귀금속", CARD_COMMODITIES),
     ("시장 심리 & 코인", CARD_SENTIMENT),
     ("미국 지수", CARD_US),
@@ -179,15 +179,18 @@ ALL_CARDS = [
 
 # ── FRED Economic Indicators ────────────────────────────────────────
 
+# 사용자 2026-06-14: 달러인덱스·FFR 제거, 2년·GDP성장률 추가. 순서 = 사용자 지정.
 FRED_INDICATORS = [
+    ("US 미국채 2년 (금리)", "DGS2", "%", 90),
     ("US 미국채 10년 (금리)", "DGS10", "%", 90),
     ("US 미국채 30년 (금리)", "DGS30", "%", 90),
-    ("달러 인덱스", None, "", 0),  # yfinance DX-Y.NYB
-    ("미국 기준금리 (FFR)", "FEDFUNDS", "%", 365),
     ("JOLTS (비농업 구인)", "JTSJOL", "M", 365),
     ("비농업 고용 (월간)", "PAYEMS", "K", 365),
     ("실업수당 청구 (신규)", "ICSA", "", 90),
     ("실업률", "UNRATE", "%", 365),
+    ("GDP 성장률 (QoQ)", "A191RL1Q225SBEA", "%", 400),
+    ("근원 PCE 물가 (YoY)", "PCEPILFE", "%", 730),  # 사용자 2026-06-14 GDP 다음
+    ("소매판매 (YoY)", "RSAFS", "%", 400),
     ("CPI (YoY)", "CPIAUCSL", "%", 730),
     ("PPI (YoY)", "PPIACO", "%", 730),
 ]
@@ -600,7 +603,7 @@ def _fetch_all_fred() -> list[dict]:
     for label, series_id, unit, lookback in FRED_INDICATORS:
         if series_id is None:
             continue
-        if series_id in ("CPIAUCSL", "PPIACO"):
+        if series_id in ("CPIAUCSL", "PPIACO", "PCEPILFE", "RSAFS"):
             data = _fetch_fred_yoy(series_id)
         else:
             data = _fred_fetch_series(series_id, lookback)
@@ -1294,19 +1297,8 @@ def fetch_market_snapshot() -> dict[str, Any]:
         yf_data = yf_fut.result()
         fred_data = fred_fut.result()
 
-    # 달러인덱스 = 네이버 marketindex/exchange '.DXY' (사용자 2026-06-14 '모두 네이버').
-    # fetch_kr_fx 1분 캐시 재사용(원/달러도 같은 엔드포인트). 실패 시 row 생략(graceful).
+    # 달러인덱스 = 핵심지표 카드에서 제거(사용자 2026-06-14). 렌더 생략.
     dollar_idx = None
-    try:
-        from bot.naver_marketindex import fetch_kr_fx
-        _dxy = fetch_kr_fx().get(".DXY")
-        if _dxy and _dxy.get("close") is not None:
-            dollar_idx = {"close": _dxy["close"], "change": _dxy["change"],
-                          "pct": _dxy["pct"]}
-    except Exception as exc:
-        log.warning("market_overview: naver 달러인덱스(.DXY) 실패: %s", exc)
-    if dollar_idx is None:                      # 폴백(혹시 .DXY 미반환): 옛 yfinance
-        dollar_idx = yf_data.pop(_DOLLAR_INDEX_TICKER, None)
 
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)

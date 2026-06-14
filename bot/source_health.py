@@ -120,6 +120,64 @@ def _naver_sector() -> tuple[bool, str]:
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
+def _nv_api(url: str) -> tuple[bool, object, float]:
+    return _naver_get(url, headers={
+        "User-Agent": "Mozilla/5.0", "Accept": "application/json",
+        "Referer": "https://stock.naver.com/"})
+
+
+def _snap_index() -> tuple[bool, str]:
+    """홈 스냅샷 지수 — worldstock/index (나스닥·S&P)."""
+    try:
+        ok, data, dt = _nv_api("https://stock.naver.com/api/polling/worldstock/"
+                               "index?reutersCodes=.IXIC,.INX")
+        if not ok:
+            return False, f"{data} ({dt:.0f}ms)"
+        rows = (data or {}).get("datas") or []
+        return (len(rows) > 0), f"지수 {len(rows)}건 ({dt:.0f}ms)"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _snap_commodity() -> tuple[bool, str]:
+    """홈 스냅샷 원자재 — marketindex/metals."""
+    try:
+        ok, data, dt = _nv_api("https://stock.naver.com/api/securityService/"
+                               "marketindex/metals")
+        if not ok:
+            return False, f"{data} ({dt:.0f}ms)"
+        n = len(data) if isinstance(data, list) else 0
+        return (n > 0), f"원자재(metals) {n}건 ({dt:.0f}ms)"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _snap_coin() -> tuple[bool, str]:
+    """홈 스냅샷 코인 — coin/rank/UPBIT/majors (+ 티커 목록으로 DOGE/TRX 진단)."""
+    try:
+        ok, data, dt = _nv_api("https://stock.naver.com/api/coin/rank/UPBIT/majors")
+        if not ok:
+            return False, f"{data} ({dt:.0f}ms)"
+        rows = data if isinstance(data, list) else []
+        tickers = [x.get("nfTicker") for x in rows]
+        return (len(rows) > 0), f"코인 {len(rows)}건 {tickers[:12]} ({dt:.0f}ms)"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _snap_fx() -> tuple[bool, str]:
+    """홈 스냅샷 환율·달러인덱스 — marketindex/exchange."""
+    try:
+        ok, data, dt = _nv_api("https://api.stock.naver.com/marketindex/exchange")
+        if not ok:
+            return False, f"{data} ({dt:.0f}ms)"
+        rows = (data or {}).get("normalList") if isinstance(data, dict) else data
+        n = len(rows) if isinstance(rows, list) else 0
+        return (n > 0), f"환율 {n}건 ({dt:.0f}ms)"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+
+
 def run() -> dict:
     """전 소스 점검 → {name: (ok, detail)} + 정지 상태."""
     try:
@@ -129,6 +187,12 @@ def run() -> dict:
     except Exception:
         yfp = nvp = fi_breaker = False
     checks = {
+        # 홈 스냅샷 실제 소스 (사용자 2026-06-14 '다 네이버로' 전환 경로 점검)
+        "스냅샷 지수(worldstock)": _snap_index(),
+        "스냅샷 원자재(marketindex)": _snap_commodity(),
+        "스냅샷 코인(coin/rank)": _snap_coin(),
+        "스냅샷 환율(exchange)": _snap_fx(),
+        # 기존 경로 (업종 등락·movers·yf 폴백)
         "yfinance fast_info": _yf_check(),
         "yfinance batch": _yf_batch_check(),
         "Naver 국내(front-api)": _naver_domestic(),

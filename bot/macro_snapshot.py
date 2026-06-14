@@ -32,7 +32,7 @@ log = logging.getLogger("bot.macro_snapshot")
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "macro_snapshot"
 # 5분 — 글로벌 스냅샷(5분)과 값을 일치시킴(사용자 요청). FRED/ECOS 는 자체
 # 12h 캐시라 재fetch 안 함 → 추가 비용은 fast_info(~26) + yf batch 2회/5분(저위험).
-_CACHE_TTL_SEC = 300  # 5min
+_CACHE_TTL_SEC = 60  # 1min (사용자 2026-06-14 — 글로벌 스냅샷과 동일 1분 주기)
 
 # ── Indicator definitions ───────────────────────────────────────────
 # (key, label, unit, source, source_id, decimals)
@@ -70,6 +70,7 @@ GLOBAL = [
     ("platinum", "백금", "$", "yf", "PL=F", 0),
     ("copper", "구리", "$", "yf", "HG=F", 2),
     ("aluminum", "알루미늄", "$", "yf", "ALI=F", 2),
+    ("nickel", "니켈", "$", "yf", "NI=F", 0),  # 사용자 2026-06-14 (네이버 NI, yf 무차트)
     ("corn", "옥수수", "$", "yf", "ZC=F", 0),
     ("soybean", "대두", "$", "yf", "ZS=F", 0),
     ("wheat", "소맥", "$", "yf", "ZW=F", 0),
@@ -295,6 +296,50 @@ def _downsample_monthly(points: list[tuple[str, float]], n: int = _SPARK_N) -> l
     return [by_month[m] for m in months]
 
 
+# ── 네이버 현재값 매핑 (사용자 2026-06-14 '값 네이버 + 차트 유지') ──────────
+# Macro 가격 카드의 '현재값'을 네이버에서(=카드 안 사라짐, 야후 멈춤 영향 0).
+# 차트(스파크라인)는 네이버가 시계열 미제공 → yfinance history 그대로 유지.
+# 미매핑 항목(백금·곡물·돈육·커피·면화)은 네이버 코드 미확정 → yf 값 유지(폴백).
+# kind: idx=worldstock/index · com=marketindex · coin=업비트 · fx=marketindex/exchange
+_MACRO_NAVER = {
+    "^GSPC": ("idx", ".INX"), "^IXIC": ("idx", ".IXIC"), "^VIX": ("idx", ".VIX"),
+    "CL=F": ("com", "CL"), "BZ=F": ("com", "BRN"), "NG=F": ("com", "NG"),
+    "GC=F": ("com", "GC"), "SI=F": ("com", "SI"), "HG=F": ("com", "HG"),
+    "ALI=F": ("com", "AA"),
+    # VM probe 2026-06-14 확정 — 백금·곡물·돈육·커피·면화·니켈 (marketindex metals/agri)
+    "PL=F": ("com", "PL"), "ZC=F": ("com", "ZC"), "ZS=F": ("com", "ZS"),
+    "ZW=F": ("com", "ZW"), "HE=F": ("com", "HE"), "KC=F": ("com", "KC"),
+    "CT=F": ("com", "CT"), "NI=F": ("com", "NI"),
+    "BTC-USD": ("coin", "BTC"), "ETH-USD": ("coin", "ETH"), "SOL-USD": ("coin", "SOL"),
+    "USDKRW=X": ("fx", "FX_USDKRW"),
+}
+
+
+def _fetch_macro_naver_values(sids: list) -> dict:
+    """{sid: {value, change}} — 매핑된 sid 의 현재값만 네이버에서. 소스별 1회 fetch,
+    실패/미반환 sid 는 제외(호출부가 yf 값으로 폴백). 순수-ish(네트워크는 네이버 모듈)."""
+    need = [(s, _MACRO_NAVER[s]) for s in sids if s in _MACRO_NAVER]
+    if not need:
+        return {}
+    try:
+        from bot import naver_marketindex as _nm
+    except Exception:
+        return {}
+    idx_codes = tuple(c for _, (k, c) in need if k == "idx")
+    pools = {
+        "idx": (_nm.fetch_world_indices(idx_codes) if idx_codes else {}),
+        "com": (_nm.fetch_commodities() if any(k == "com" for _, (k, _) in need) else {}),
+        "coin": (_nm.fetch_naver_coins() if any(k == "coin" for _, (k, _) in need) else {}),
+        "fx": (_nm.fetch_kr_fx() if any(k == "fx" for _, (k, _) in need) else {}),
+    }
+    out: dict = {}
+    for sid, (k, code) in need:
+        rec = (pools.get(k) or {}).get(code)
+        if rec and rec.get("close") is not None:
+            out[sid] = {"value": rec["close"], "change": rec.get("change", 0.0)}
+    return out
+
+
 # ── Main ────────────────────────────────────────────────────────────
 def fetch_macro_snapshot() -> dict[str, Any]:
     """Assemble the full macro snapshot. 5min disk cache (글로벌 스냅샷과
@@ -324,6 +369,8 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     yf_monthly = _yf_monthly_batch(yf_tickers)
     yf_daily_1mo = _yf_daily_1mo_batch(yf_tickers)
     yf_daily = _yf_daily_change(yf_tickers)
+    # 현재값은 네이버 우선(값만; 차트는 yf). 사용자 2026-06-14 '값 네이버+차트 유지'.
+    macro_nv = _fetch_macro_naver_values(yf_tickers)
 
     spark_cache: dict[str, list[float]] = {}  # 큰 차트용(월간 12개월)
 
@@ -338,16 +385,20 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             spark_dir = 0
             spark_span = "12개월"           # 라인 기간 라벨(작게 표기)
             if src == "yf":
+                # 현재값 = 네이버 우선(카드 안 사라짐), 미매핑/실패는 yf 폴백.
+                nv = macro_nv.get(sid)
                 d = yf_daily.get(sid)
-                if d:
+                if nv:
+                    value, change = nv["value"], nv["change"]
+                elif d:
                     value, change = d["value"], d["change"]
-                    # 일일 % 변화 — 한달단위(1개월) 카드는 절대값 대신 %로
-                    # 표시(사용자 2026-06-10). 단 환율(USD/KRW)·달러인덱스는
-                    # 절대값 원복(사용자 2026-06-10 후속). prev = value - change.
-                    if sid not in _ABS_CHANGE_SIDS:
-                        _prev = value - change if (value is not None and change is not None) else None
-                        if _prev not in (None, 0):
-                            change_pct = change / _prev * 100
+                # 일일 % 변화 — 한달단위(1개월) 카드는 절대값 대신 %로
+                # 표시(사용자 2026-06-10). 단 환율(USD/KRW)는 절대값. prev=value-change.
+                if (value is not None and change is not None
+                        and sid not in _ABS_CHANGE_SIDS):
+                    _prev = value - change
+                    if _prev not in (None, 0):
+                        change_pct = change / _prev * 100
                 chart_spark = yf_monthly.get(sid, [])
                 # 카드 그래프 = 항상 최근 1개월 일봉 (사용자 2026-06-14 '캡쳐한
                 # 가격카드는 전부 1개월기준'). 색 = 1개월 시작 대비 현재(첫↔끝):
