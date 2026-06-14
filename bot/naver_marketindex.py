@@ -375,7 +375,9 @@ def fetch_naver_coins() -> dict:
         if isinstance(raw, list):
             rows = raw
         elif isinstance(raw, dict):
-            rows = raw.get("result") or raw.get("datas") or raw.get("coins") or []
+            # VM probe 2026-06-14: 풀 랭킹은 {contents:[...]} 래퍼 (DOGE/TRX 등 100종).
+            rows = (raw.get("contents") or raw.get("result") or raw.get("datas")
+                    or raw.get("coins") or [])
         else:
             rows = []
         return _parse_coins(rows)
