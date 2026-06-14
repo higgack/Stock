@@ -7445,6 +7445,22 @@ class TestUpperLowerVolume:
                         tb, _re.DOTALL).group(1)
         assert "/yfpause" in ht and "/naverpause" in ht and "/health" in ht
 
+    def test_fast_info_circuit_breaker(self, monkeypatch):
+        # 사용자 2026-06-14 /health: fast_info IP rate-limit 끈끈(재개 즉시 재차단) →
+        # 회로차단으로 자동 skip(download/Naver/persist 폴백, yahoo 회복 보호).
+        import bot.finviz_client as fc
+        monkeypatch.setattr(fc, "_FAST_INFO_COOLDOWN_UNTIL", 0.0)
+        assert fc.fast_info_ok() is True
+        assert fc.is_rate_limit_error(Exception("Too Many Requests. Rate limited")) is True
+        assert fc.is_rate_limit_error(Exception("connection reset")) is False
+        fc.fast_info_trip("test")
+        assert fc.fast_info_ok() is False
+        assert fc._fetch_mcaps(["AAPL"]) == {}     # 쿨다운 → fast_info skip(네트워크 0)
+        # 배선: 스냅샷·차트가 회로차단 게이트 + 헬스체크 표기
+        assert "fast_info_ok" in open("bot/market_overview.py", encoding="utf-8").read()
+        assert "fast_info_ok" in open("bot/chart_data.py", encoding="utf-8").read()
+        assert "fast_info_breaker" in open("bot/source_health.py", encoding="utf-8").read()
+
 
 class TestHighlowRenderShared:
     """신고저/급등락/상한가 공용 리치 렌더러 (사용자 2026-06-13 '미국 포맷

@@ -123,10 +123,11 @@ def _naver_sector() -> tuple[bool, str]:
 def run() -> dict:
     """전 소스 점검 → {name: (ok, detail)} + 정지 상태."""
     try:
-        from bot.finviz_client import naver_paused, yf_paused
+        from bot.finviz_client import fast_info_ok, naver_paused, yf_paused
         yfp, nvp = yf_paused(), naver_paused()
+        fi_breaker = not fast_info_ok()
     except Exception:
-        yfp = nvp = False
+        yfp = nvp = fi_breaker = False
     checks = {
         "yfinance fast_info": _yf_check(),
         "yfinance batch": _yf_batch_check(),
@@ -135,7 +136,8 @@ def run() -> dict:
         "Naver 업종(desktop API)": _naver_upjong(),
         "Naver 업종(finance HTML)": _naver_sector(),
     }
-    return {"yf_paused": yfp, "naver_paused": nvp, "checks": checks}
+    return {"yf_paused": yfp, "naver_paused": nvp,
+            "fast_info_breaker": fi_breaker, "checks": checks}
 
 
 def format_report(res: dict) -> str:
@@ -143,7 +145,10 @@ def format_report(res: dict) -> str:
     lines = [
         f"정지 상태: yfinance={'⏸정지' if res['yf_paused'] else '▶️정상'} · "
         f"Naver={'⏸정지' if res['naver_paused'] else '▶️정상'}",
-        "(정지와 무관하게 소스 raw fetch 가 되는지 직접 점검):",
+        ("fast_info 회로차단: "
+         + ("⏸발동 — 우리 코드가 fast_info 자동 skip 중(쿨다운, download/Naver 사용)"
+            if res.get("fast_info_breaker") else "▶️정상")),
+        "(아래는 정지·회로차단과 무관하게 소스 raw fetch 직접 점검):",
     ]
     for name, (ok, detail) in res["checks"].items():
         lines.append(f"  {'✅' if ok else '❌'} {name} — {detail}")
