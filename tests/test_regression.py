@@ -5379,6 +5379,21 @@ class TestUsPrepost:
         assert rec and rec["session"] == "post"
         assert rec["pct"] == 15.0 and rec["vol"] == 5000
 
+    def test_prepost_no_scan_when_closed(self, monkeypatch):
+        # 연장거래 창 밖(주말·휴장)엔 캐시 없어도 스캔 kick 안 함 — 매 페이지
+        # 접근마다 47배치 스캔 + 배포 재시작 살해로 '계속 새로 시작'하던 것 차단
+        import bot.prepost_client as pp
+        kicked = []
+        monkeypatch.setattr(pp, "_kick_refresh", lambda: kicked.append(1))
+        monkeypatch.setattr(pp, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(pp, "prepost_status", lambda: {})
+        monkeypatch.setattr(pp, "_in_extended_window", lambda now: False)
+        out = pp.fetch_us_prepost_movers()
+        assert not kicked and out["building"] is False     # 휴장 → 스캔 X
+        monkeypatch.setattr(pp, "_in_extended_window", lambda now: True)
+        pp.fetch_us_prepost_movers()
+        assert kicked                                       # 창 안 → kick
+
     def test_prepost_page_building_state(self, monkeypatch):
         import bot.prepost_client as pp
         monkeypatch.setattr(pp, "fetch_us_prepost_movers", lambda: {
