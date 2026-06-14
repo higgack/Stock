@@ -216,9 +216,51 @@ def fetch_world_fx() -> dict:
     return out
 
 
+_KRFX_URL = "https://api.stock.naver.com/marketindex/exchange"
+_KRFX_CACHE = "naver_krfx.json"
+
+
+def fetch_kr_fx() -> dict:
+    """{reutersCode: {name, close, prev, change, pct}} — marketindex/exchange
+    normalList (원/달러·원/엔 등 KRW-base 환율, 사용자 2026-06-14. VM probe: 엔드포인트
+    200, reutersCode=FX_USDKRW 형식). exchangeWorld 와 동일 marketindex 패밀리라
+    item 구조(closePrice·fluctuations·fluctuationsRatio·fluctuationsType.code) 재사용.
+    전체 반환(인자 무시). 1분 캐시·naver_paused·graceful. normalList/datas/bare 수용."""
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    c = _cached(_KRFX_CACHE, ttl=_TTL)
+    if isinstance(c, dict) and c:
+        return c
+    if naver_paused():
+        return _cached(_KRFX_CACHE, ttl=86400) or {}
+    import requests
+    out: dict = {}
+    try:
+        r = requests.get(_KRFX_URL, headers=_HDRS, timeout=12)
+        raw = r.json() if r.status_code == 200 else {}
+    except Exception as exc:
+        log.warning("naver kr fx fetch error: %s", exc)
+        return _cached(_KRFX_CACHE, ttl=86400) or {}
+    if isinstance(raw, dict):
+        rows = raw.get("normalList") or raw.get("datas") or []
+    else:
+        rows = raw
+    for it in rows if isinstance(rows, list) else []:
+        rc = str(it.get("reutersCode") or it.get("symbolCode") or "").strip()
+        rec = _parse_item(it) if rc else None
+        if rc and rec and rec.get("close") is not None:
+            out[rc] = rec
+    if out:
+        _cache_write(_KRFX_CACHE, out)
+    else:
+        return _cached(_KRFX_CACHE, ttl=86400) or {}
+    return out
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     print("국내지수:", fetch_domestic_indices(("KOSPI", "KOSDAQ")))
+    _kf = fetch_kr_fx()
+    print("KR환율:", {k: _kf.get(k) for k in ("FX_USDKRW", "FX_JPYKRW")})
     _fx = fetch_world_fx()
     print("세계환율:", {k: _fx.get(k) for k in ("EURUSD", "USDCNY", "USDTWD")})
     d = fetch_commodities()

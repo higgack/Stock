@@ -76,8 +76,8 @@ CARD_ASIA = [
 # ⚠️ 원/달러·엔/원은 KRW-base 라 exchangeWorld 미포함(KRW 부재) → yfinance 유지
 # (daily download 경로라 fast_info 무관, 후속에 KR 환율 엔드포인트 확인 시 이전).
 CARD_FX = [
-    ("KR 원/달러", "USDKRW=X"),
-    ("JP 엔/원 (100엔)", "JPYKRW=X"),
+    ("KR 원/달러", "nvk:FX_USDKRW"),       # 네이버 marketindex/exchange (사용자 2026-06-14)
+    ("JP 엔/원 (100엔)", "nvk:FX_JPYKRW"),  # 네이버 (100엔 기준 표기)
     ("EU 유로/달러", "nvx:EURUSD"),
     ("GB 파운드/달러", "nvx:GBPUSD"),
     ("CN 달러/위안", "nvx:USDCNY"),
@@ -116,15 +116,17 @@ CARD_SENTIMENT = [
 ]
 
 # 사용자 2026-06-14: 러셀 다음 다우운송·필라델피아반도체·나스닥바이오·KBW은행.
+# 사용자 2026-06-14 '다 네이버로' — yfinance(^) → 네이버 worldstock(nvi:reutersCode).
+# 확인된 ^XXX→.XXX 패턴(.N225/.TWII/.HSI/.VIX/.SOX/.BSESN). S&P 는 네이버 .INX.
 CARD_US = [
-    ("us S&P 500", "^GSPC"),
-    ("us 나스닥 종합", "^IXIC"),
-    ("us 다우 존스", "^DJI"),
-    ("us 러셀 2000", "^RUT"),
-    ("다우 운송", "^DJT"),
-    ("필라델피아 반도체", "nvi:.SOX"),   # 네이버 worldstock (사용자 2026-06-14)
-    ("나스닥 바이오", "^NBI"),
-    ("KBW 은행", "^BKX"),
+    ("us S&P 500", "nvi:.INX"),
+    ("us 나스닥 종합", "nvi:.IXIC"),
+    ("us 다우 존스", "nvi:.DJI"),
+    ("us 러셀 2000", "nvi:.RUT"),
+    ("다우 운송", "nvi:.DJT"),
+    ("필라델피아 반도체", "nvi:.SOX"),
+    ("나스닥 바이오", "nvi:.NBI"),
+    ("KBW 은행", "nvi:.BKX"),
 ]
 
 # 사용자 2026-06-14: 선물에 운송(운임지수) 추가 — 중국컨테이너(CCFI)·BDI 건화물.
@@ -139,23 +141,23 @@ CARD_FUTURES = [
 ]
 
 CARD_EU = [
-    ("EU 유로 스톡스 50", "^STOXX50E"),
-    ("DE 독일 DAX", "^GDAXI"),
-    ("GB 영국 FTSE 100", "^FTSE"),
-    ("FR 프랑스 CAC 40", "^FCHI"),
-    ("IT 이탈리아 FTSE MIB", "nvi:.FTMIB"),   # 네이버 worldstock (사용자 2026-06-14)
-    ("CH 스위스 SMI", "^SSMI"),
+    ("EU 유로 스톡스 50", "nvi:.STOXX50E"),
+    ("DE 독일 DAX", "nvi:.GDAXI"),
+    ("GB 영국 FTSE 100", "nvi:.FTSE"),
+    ("FR 프랑스 CAC 40", "nvi:.FCHI"),
+    ("IT 이탈리아 FTSE MIB", "nvi:.FTMIB"),
+    ("CH 스위스 SMI", "nvi:.SSMI"),
 ]
 
 # 사용자 2026-06-14: 캐나다 다음 호주 ASX 추가, 베트남은 아시아 카드로 이동,
 # 사우디 제거 → 말레이시아 KLCI.
 CARD_AMERICAS = [
-    ("CA 캐나다 TSX", "^GSPTSE"),
-    ("AU 호주 ASX 200", "^AXJO"),
-    ("BR 브라질 Bovespa", "^BVSP"),
-    ("MX 멕시코 IPC", "^MXX"),
-    ("ID 인도네시아 JCI", "^JKSE"),
-    ("MY 말레이시아 KLCI", "^KLSE"),
+    ("CA 캐나다 TSX", "nvi:.GSPTSE"),
+    ("AU 호주 ASX 200", "nvi:.AXJO"),
+    ("BR 브라질 Bovespa", "nvi:.BVSP"),
+    ("MX 멕시코 IPC", "nvi:.MXX"),
+    ("ID 인도네시아 JCI", "nvi:.JKSE"),
+    ("MY 말레이시아 KLCI", "nvi:.KLSE"),
 ]
 
 ALL_CARDS = [
@@ -198,8 +200,8 @@ def _all_yf_tickers() -> list[str]:
         if items is None:
             continue
         for _, tk in items:
-            if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:")):
-                continue  # 네이버 marketindex/worldstock/domestic/exchangeWorld (skip)
+            if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:", "nvk:")):
+                continue  # 네이버 (marketindex/worldstock/domestic/exchangeWorld/exchange)
             tickers.append(tk)
     tickers.append(_DOLLAR_INDEX_TICKER)
     return tickers
@@ -318,9 +320,10 @@ def _fetch_yf_batch() -> dict[str, dict]:
     #   nvi: = worldstock/index(reutersCode) — 세계지수(니케이/VIX/필반/이탈리아 등)
     #   nvd: = polling/domestic/index(itemCode) — 국내지수(코스피/코스닥)
     #   nvx: = marketindex/exchangeWorld(reutersCode) — 세계 환율 cross-rate
+    #   nvk: = marketindex/exchange(reutersCode) — KR-base 환율(원/달러·원/엔)
     # yfinance 무티커(두바이유/니켈/CCFI/BDI) 포함. 코드별 graceful —
     # 네이버 미반환 코드는 result 미주입(블랭크, 크래시 없음).
-    _nv_codes, _nvi_codes, _nvd_codes, _nvx_codes = [], [], [], []
+    _nv_codes, _nvi_codes, _nvd_codes, _nvx_codes, _nvk_codes = [], [], [], [], []
     for _grp, _items in ALL_CARDS:
         if not _items:
             continue
@@ -333,6 +336,8 @@ def _fetch_yf_batch() -> dict[str, dict]:
                 _nvd_codes.append(_tk)
             elif _tk.startswith("nvx:"):
                 _nvx_codes.append(_tk)
+            elif _tk.startswith("nvk:"):
+                _nvk_codes.append(_tk)
     if _nv_codes:
         try:
             from bot.naver_marketindex import fetch_commodities
@@ -377,6 +382,17 @@ def _fetch_yf_batch() -> dict[str, dict]:
                                    "change": _rec["change"], "pct": _rec["pct"]}
         except Exception as exc:
             log.warning("market_overview: naver 세계환율 병합 실패: %s", exc)
+    if _nvk_codes:                             # fetch_kr_fx 는 전체 반환(인자 무시)
+        try:
+            from bot.naver_marketindex import fetch_kr_fx
+            _nvk = fetch_kr_fx()
+            for _tk in _nvk_codes:
+                _rec = _nvk.get(_tk[4:])
+                if _rec and _rec.get("close") is not None:
+                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
+                                   "change": _rec["change"], "pct": _rec["pct"]}
+        except Exception as exc:
+            log.warning("market_overview: naver KR환율 병합 실패: %s", exc)
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)

@@ -78,7 +78,6 @@ GLOBAL = [
     ("cotton", "면화", "$", "yf", "CT=F", 2),
     ("btc", "비트코인", "$", "yf", "BTC-USD", 0),
     ("eth", "이더리움", "$", "yf", "ETH-USD", 0),
-    ("sol", "솔라나", "$", "yf", "SOL-USD", 2),
 ]
 
 # 지표 정의가 바뀌면(예: 은·알루미늄 추가) 디스크 캐시를 즉시 무효화하기
@@ -179,25 +178,46 @@ def _yf_daily_1mo_batch(tickers: list[str]) -> dict[str, list[float]]:
     out: dict[str, list[float]] = {}
     if not tickers:
         return out
+    import yfinance as yf
     try:
-        import yfinance as yf
         df = yf.download(
             " ".join(tickers), period="1mo", interval="1d",
             progress=False, threads=True, timeout=20,
         )
-        if df is None or df.empty:
-            return out
-        for tk in tickers:
-            try:
-                closes = (df["Close"][tk] if len(tickers) > 1
-                          else df["Close"]).dropna()
-                vals = [round(float(c), 4) for c in closes.tolist()]
-                if vals:
-                    out[tk] = vals
-            except Exception:
-                continue
+        if df is not None and not df.empty:
+            for tk in tickers:
+                try:
+                    closes = (df["Close"][tk] if len(tickers) > 1
+                              else df["Close"]).dropna()
+                    vals = [round(float(c), 4) for c in closes.tolist()]
+                    if vals:
+                        out[tk] = vals
+                except Exception:
+                    continue
     except Exception as exc:
         log.warning("macro: yf daily 1mo batch failed: %s", exc)
+    # 벌크 누락분 개별 재시도 (사용자 2026-06-14 '전부 1개월기준' — 부분실패가
+    # 12개월 폴백/혼합 라벨을 만들던 근본원인. history API 라 fast_info 무관).
+    missing = [tk for tk in tickers if tk not in out]
+    if missing:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _one(tk):
+            try:
+                h = yf.Ticker(tk).history(period="1mo", interval="1d")
+                cl = (h["Close"].dropna() if h is not None and not h.empty
+                      else None)
+                return tk, ([round(float(c), 4) for c in cl.tolist()]
+                            if cl is not None else [])
+            except Exception:
+                return tk, []
+        try:
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                for tk, vals in pool.map(_one, missing):
+                    if vals:
+                        out[tk] = vals
+        except Exception:
+            pass
     return out
 
 
@@ -351,9 +371,15 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                         if _prev not in (None, 0):
                             change_pct = change / _prev * 100
                 chart_spark = yf_monthly.get(sid, [])
-                # 카드 라인 = 최근 1개월 일봉(없으면 월간 폴백). 색 = 1개월(첫↔끝).
-                card_spark = yf_daily_1mo.get(sid, []) or chart_spark
-                spark_span = "1개월" if yf_daily_1mo.get(sid) else "12개월"
+                # 카드 그래프 = 항상 최근 1개월 일봉 (사용자 2026-06-14 '캡쳐한
+                # 가격카드는 전부 1개월기준'). 색 = 1개월 시작 대비 현재(첫↔끝):
+                # 하락 빨강 / 상승 녹색. 일봉 결측 시에만 월간 꼬리로 폴백(드묾,
+                # _yf_daily_1mo_batch 개별 재시도로 결측 최소화). FRED/ECOS(월간)는
+                # 이 분기 밖이라 12개월 유지(사용자 '모든게 아니고 캡쳐한 것만').
+                one_mo = yf_daily_1mo.get(sid) or []
+                card_spark = one_mo or (chart_spark[-2:] if len(chart_spark) >= 2
+                                        else chart_spark)
+                spark_span = "1개월"
                 if value is None and chart_spark:
                     value = chart_spark[-1]
                 spark_dir = _spark_dir(card_spark, 0)
