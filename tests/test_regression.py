@@ -8898,6 +8898,16 @@ class TestNaverCommodityCharts:
         assert isinstance(fetch_commodity_spark("NI"), list)
         assert fetch_naver_commodity_history("", "") == []     # 코드 없으면 []
 
+    def test_history_pagesize_cap_pagination(self):
+        # 네이버 pageSize 캡 — ps260 빈 응답·ps30 정상(VM 진단 2026-06-14, 'spark 0
+        # → direct ps260=0 ps30=30') → 30씩 페이지네이션. 옛 ps=count(260) 가 빈 차트 원인.
+        src = open("bot/naver_marketindex.py", encoding="utf-8").read()
+        assert "_PS = 30" in src                          # 고정 페이지 크기
+        assert "(count + _PS - 1) // _PS" in src          # 페이지 수 = ceil(count/30)
+        assert '"pageSize": _PS' in src                   # count 가 아니라 _PS(30) 로 호출
+        ms = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert "fetch_commodity_spark(_MACRO_NAVER[s][1], 30)" in ms   # 카드=1개월(30점)
+
     def test_macro_commodities_wired_to_naver(self):
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
         assert "fetch_commodity_spark" in src              # 원자재 스파크 네이버

@@ -414,7 +414,8 @@ def fetch_macro_snapshot() -> dict[str, Any]:
             from bot import naver_marketindex as _nmh
 
             def _cs(s):
-                return s, _nmh.fetch_commodity_spark(_MACRO_NAVER[s][1], 260)
+                # 카드 1개월 = ~22 거래일 → 30점(1페이지). 네이버 pageSize 캡 회피.
+                return s, _nmh.fetch_commodity_spark(_MACRO_NAVER[s][1], 30)
             with ThreadPoolExecutor(max_workers=8) as _pool:
                 for _s, _ser in _pool.map(_cs, _com_sids):
                     com_spark[_s] = _ser

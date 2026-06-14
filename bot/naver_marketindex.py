@@ -96,15 +96,16 @@ _COMHIST_BASE = "https://api.stock.naver.com/marketindex"
 
 
 def fetch_naver_commodity_history(category: str, reuters_code: str,
-                                  count: int = 260) -> list[float]:
-    """{category}/{reutersCode}/prices → 최근 close 시계열(오래된→최신, ~1년 일봉).
-    category ∈ energy|metals|agricultural. reutersCode = 리스트 item 의 reutersCode
-    (금 GCcv1·니켈 CMNI0 등 — symbolCode 아님, VM probe 2026-06-14 확정). yfinance
-    무티커(LME 금속·철광석)·throttle 전부 무관. 1h 디스크 캐시·naver_paused·graceful []."""
+                                  count: int = 30) -> list[float]:
+    """{category}/{reutersCode}/prices → 최근 close 시계열(오래된→최신). category ∈
+    energy|metals|agricultural. reutersCode = 리스트 item 의 reutersCode (금 GCcv1·
+    니켈 CMNI0, symbolCode 아님). yfinance 무티커(LME 금속·철광석)·throttle 무관.
+    ⚠️ 네이버 pageSize 캡 — ps260 은 빈 응답·ps30 은 정상(VM 진단 2026-06-14) →
+    **pageSize=30 고정 + count 만큼 페이지네이션**. 1h 디스크 캐시·naver_paused·graceful []."""
     if not (category and reuters_code):
         return []
     from bot.finviz_client import _cache_write, _cached, naver_paused
-    ck = f"naver_comhist_{category}_{reuters_code}.json"
+    ck = f"naver_comhist_{category}_{reuters_code}_{count}.json"
     c = _cached(ck, ttl=3600)
     if isinstance(c, list) and c:
         return c
@@ -112,16 +113,23 @@ def fetch_naver_commodity_history(category: str, reuters_code: str,
         s = _cached(ck, ttl=86400)
         return s if isinstance(s, list) else []
     import requests
-    try:
-        r = requests.get(f"{_COMHIST_BASE}/{category}/{reuters_code}/prices",
-                         headers=_HDRS, params={"page": 1, "pageSize": count},
-                         timeout=10)
-        rows = r.json() if r.status_code == 200 else []
-    except Exception as exc:
-        log.warning("naver comhist %s/%s: %s", category, reuters_code, exc)
-        s = _cached(ck, ttl=86400)
-        return s if isinstance(s, list) else []
-    series = _parse_history_closes(rows)
+    _PS = 30                               # 네이버 캡 — 30씩 페이지(ps260 빈 응답)
+    rows: list = []
+    for _pg in range(1, (count + _PS - 1) // _PS + 1):
+        try:
+            r = requests.get(f"{_COMHIST_BASE}/{category}/{reuters_code}/prices",
+                             headers=_HDRS, params={"page": _pg, "pageSize": _PS},
+                             timeout=10)
+            batch = r.json() if r.status_code == 200 else []
+        except Exception as exc:
+            log.warning("naver comhist %s/%s p%s: %s", category, reuters_code, _pg, exc)
+            break
+        if not (isinstance(batch, list) and batch):
+            break
+        rows.extend(batch)
+        if len(batch) < _PS:               # 마지막 페이지
+            break
+    series = _parse_history_closes(rows[:count] if count else rows)
     if series:
         _cache_write(ck, series)
         return series
@@ -129,7 +137,7 @@ def fetch_naver_commodity_history(category: str, reuters_code: str,
     return s if isinstance(s, list) else []
 
 
-def fetch_commodity_spark(symbol_code: str, count: int = 260) -> list[float]:
+def fetch_commodity_spark(symbol_code: str, count: int = 30) -> list[float]:
     """네이버 원자재 symbolCode(NI·GC·CL 등) → close 시계열(차트용). 리스트에서
     reutersCode·category 를 조회한 뒤 history fetch (symbolCode≠reutersCode 라 매핑
     필요). 전 원자재 universal — 코드 하드코딩 0. graceful []."""
