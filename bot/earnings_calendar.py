@@ -251,8 +251,9 @@ _MAX_PER_CELL = 3
 
 # 캘린더 intl 시장 — 위젯과 동일 소스(market_overview.fetch_earnings_calendar_intl,
 # yfinance .calendar). 사용자 2026-06-13 '캘린더에도 다른나라들'. (cal_key → (mkt, 라벨)).
-_INTL_CAL_MAP = {"jp": ("JP", "🇯🇵 일본"), "tw": ("TW", "🇹🇼 대만"),
-                 "cn": ("CN_A", "🇨🇳 중국"), "hk": ("HK", "🇭🇰 홍콩")}
+# HK 를 TW 앞으로 (사용자 2026-06-14 '대만·홍콩 순서' — market.html 통일).
+_INTL_CAL_MAP = {"jp": ("JP", "🇯🇵 일본"), "hk": ("HK", "🇭🇰 홍콩"),
+                 "cn": ("CN_A", "🇨🇳 중국"), "tw": ("TW", "🇹🇼 대만")}
 
 
 def _market_toggle(year: int, month: int, market: str,

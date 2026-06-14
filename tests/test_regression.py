@@ -7066,9 +7066,9 @@ class TestEarningsCalendarIntl:
         # 빈 시장 탭/패널이 렌더에서 제외되는지 — 동적 생성 로직 단위검증.
         _earn = {"kr": [{"x": 1}], "us": [], "jp": [{"y": 2}], "tw": [],
                  "cn": [], "hk": [{"z": 3}]}
-        defs = [(k, lbl, _earn[k]) for k, lbl in (
+        defs = [(k, lbl, _earn[k]) for k, lbl in (   # HK 가 TW 앞(2026-06-14)
             ("kr", "한국"), ("us", "미국"), ("jp", "일본"),
-            ("tw", "대만"), ("cn", "중국"), ("hk", "홍콩")) if _earn[k]]
+            ("hk", "홍콩"), ("cn", "중국"), ("tw", "대만")) if _earn[k]]
         assert [k for k, _l, _r in defs] == ["kr", "jp", "hk"]   # 빈 시장 제거
         assert defs[0][0] == "kr"                                # 첫 탭=active(한국)
 

@@ -12571,10 +12571,12 @@ def _render_market_page(data: dict) -> str:
                     (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".HK"))]
     # 빈 시장 탭 제거 (사용자 2026-06-13 '내용없으면 지워' — 중국 0건 등). 한국
     # 우선 순서 유지, 첫 비어있지 않은 탭이 active. 모두 비면 안내 문구.
+    # HK 를 TW 앞으로 (사용자 2026-06-14 '대만·홍콩 순서 바꿔' — market.html 위젯
+    # 순서와 통일).
     _etab_defs = [(k, lbl, rows) for k, lbl, rows in (
         ("kr", "한국", _earn_kr), ("us", "미국", _earn_us),
-        ("jp", "일본", _earn_jp), ("tw", "대만", _earn_tw),
-        ("cn", "중국", _earn_cn), ("hk", "홍콩", _earn_hk)) if rows]
+        ("jp", "일본", _earn_jp), ("hk", "홍콩", _earn_hk),
+        ("cn", "중국", _earn_cn), ("tw", "대만", _earn_tw)) if rows]
     if _etab_defs:
         _etab_btns = "".join(
             f'<button class="etab-btn{" active" if i == 0 else ""}" '
