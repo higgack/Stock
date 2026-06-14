@@ -81,17 +81,17 @@ CARD_FX = [
     ("CH 스위스프랑/달러", "USDCHF=X"),
 ]
 
-# 사용자 2026-06-14 재정렬: WTI·브렌트·[두바이유]·천연가스·금·은·구리·알루미늄.
-# 두바이유는 yfinance 무티커(네이버 energy 전용) → 이름 확정 후 추가 예정. 대두는
-# 매크로 스냅샷으로 이동.
+# 사용자 2026-06-14 '다 네이버로' — 원자재를 네이버 marketindex(nv:symbolCode)로
+# 전환(fast_info 무관, 1분). 두바이유(DCB)·알루미늄합금(AA) 포함. 대두는 매크로로.
 CARD_COMMODITIES = [
-    ("WTI 유가", "CL=F"),
-    ("브렌트유", "BZ=F"),
-    ("천연가스", "NG=F"),
-    ("국제 금", "GC=F"),
-    ("국제 은", "SI=F"),
-    ("구리", "HG=F"),
-    ("알루미늄", "ALI=F"),
+    ("WTI 유가", "nv:CL"),
+    ("브렌트유", "nv:BRN"),
+    ("두바이유", "nv:DCB"),
+    ("천연가스", "nv:NG"),
+    ("국제 금", "nv:GC"),
+    ("국제 은", "nv:SI"),
+    ("구리", "nv:HG"),
+    ("알루미늄", "nv:AA"),
 ]
 
 # 사용자 2026-06-14: 이더리움 다음 테더 추가.
@@ -182,6 +182,8 @@ def _all_yf_tickers() -> list[str]:
         if items is None:
             continue
         for _, tk in items:
+            if tk.startswith("nv:"):   # 네이버 marketindex (yfinance 아님 — skip)
+                continue
             tickers.append(tk)
     tickers.append(_DOLLAR_INDEX_TICKER)
     return tickers
@@ -295,6 +297,20 @@ def _fetch_yf_batch() -> dict[str, dict]:
         pct = (chg / prev * 100) if prev != 0 else 0.0
         result[tk] = {"close": cur, "prev_close": prev,
                       "change": chg, "pct": pct}
+    # 원자재 — 네이버 marketindex (사용자 2026-06-14 '다 네이버로'). fast_info 무관,
+    # nv:symbolCode CARD 항목에 네이버 시세 주입(두바이유 등 yfinance 무티커 포함).
+    try:
+        from bot.naver_marketindex import fetch_commodities
+        _nvc = fetch_commodities()
+        for _nm, _tk in CARD_COMMODITIES:
+            if _tk.startswith("nv:"):
+                _rec = _nvc.get(_tk[3:])
+                if _rec and _rec.get("close") is not None:
+                    result[_tk] = {"close": _rec["close"],
+                                   "prev_close": _rec["prev"],
+                                   "change": _rec["change"], "pct": _rec["pct"]}
+    except Exception as exc:
+        log.warning("market_overview: naver 원자재 병합 실패: %s", exc)
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
