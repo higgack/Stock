@@ -959,8 +959,12 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         out["low"] = [r for r in out["low"] if not _split_artifact(r)]
         # 시가총액 — hit 종목만 fast_info 병렬 fetch (백그라운드 산출이라
         # 페이지 hang 0). 종목옆 시총 표시용 (사용자 2026-06-11). 억$ 단위.
+        # ⚠️ JP/HK 는 아래 _naver_worldstock_overlay 가 시총을 네이버로 덮어쓰므로
+        # fast_info 호출이 **낭비** — 게다가 fast_info(quote API)는 yahoo 가
+        # 자주 rate-limit(2026-06-14 /health 진단: download 는 OK, fast_info 만
+        # Too Many Requests). JP/HK 는 fast_info 생략해 레이트리밋 트리거 감소.
         hits2 = [r["ticker"] for r in out["high"] + out["low"]]
-        mcaps = _fetch_mcaps(hits2)
+        mcaps = {} if tag in ("HK", "JP") else _fetch_mcaps(hits2)
         inds = _industries_for(hits2, tag)   # CN/HK/JP=네이버 업종, 그외 GICS/yfinance
         for r in out["high"] + out["low"]:
             mc = mcaps.get(r["ticker"])
