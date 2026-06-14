@@ -5427,6 +5427,33 @@ class TestFavoritesFastInfoGuard:
         assert "_FAV_TTL = 180" in src
 
 
+class TestAnalysisCsvExport:
+    """주식분석 아카이브 CSV 내보내기 (2026-06-14) — 분석 버튼 옆 ⬇CSV."""
+
+    def test_csv_button_and_data_rendered(self):
+        import json
+        import re
+        import bot.dashboard as d
+        # 빈 아카이브 — 버튼·JSON·JS 존재
+        h0 = d._render_index([])
+        assert 'id="csv-btn"' in h0 and "⬇ CSV" in h0
+        assert 'id="analysis-csv-data"' in h0
+        assert "noah_분석_" in h0 and "ufeff" in h0   # BOM(엑셀 한글) JS
+        # 레코드 → CSV row 수집(전 필드)
+        rec = {"trade_date": "2026-06-14", "ticker": "AAPL",
+               "analyzed_at": "2026-06-14T09:30:00",
+               "summary": "x", "full_report": "y", "cost_krw": 2133}
+        h1 = d._render_index([rec])
+        m = re.search(r'id="analysis-csv-data">(.*?)</script>', h1, re.S)
+        data = json.loads(m.group(1).replace("<\\/", "</"))
+        assert len(data) == 1
+        row = data[0]
+        for k in ("분석일", "시각", "종목", "종목명", "시장", "판정",
+                  "Stance", "5거래일수익률%", "알파%p", "비용원"):
+            assert k in row, k
+        assert row["종목"] == "AAPL" and row["시장"] == "US" and row["비용원"] == 2133
+
+
 class TestSnapshotLiveWhitelist:
     """글로벌 스냅샷 fast_info 라이브 축소 (2026-06-14) — 헤드라인 ~15 지수만
     fast_info, 롱테일은 daily download → rate-limit 재트립 빈도 급감."""

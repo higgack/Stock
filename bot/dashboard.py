@@ -1112,6 +1112,31 @@ mark {
 """
 
 
+_INDEX_CSV_JS = """<script>
+(function(){
+  var btn=document.getElementById('csv-btn');
+  if(!btn)return;
+  btn.addEventListener('click',function(){
+    var el=document.getElementById('analysis-csv-data');
+    if(!el){return;}
+    var rows;try{rows=JSON.parse(el.textContent||'[]');}catch(e){return;}
+    if(!rows.length){alert('내보낼 분석 기록이 없습니다.');return;}
+    var cols=Object.keys(rows[0]);
+    function esc(v){v=(v==null?'':String(v));return /[",\\n\\r]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
+    var lines=[cols.join(',')];
+    rows.forEach(function(r){lines.push(cols.map(function(c){return esc(r[c]);}).join(','));});
+    var csv='\\ufeff'+lines.join('\\r\\n');   // BOM = Excel 한글 깨짐 방지
+    var blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url;a.download='noah_분석_'+new Date().toISOString().slice(0,10)+'.csv';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(function(){URL.revokeObjectURL(url);},1000);
+  });
+})();
+</script>"""
+
+
 _INDEX_JS = """
 (function() {
   // Snippet-highlight search across BOTH card metadata (ticker / 한국명 /
@@ -1856,6 +1881,7 @@ def _render_index(records: list[dict]) -> str:
         _mk = _ticker_market(_r.get("ticker", ""))
         _market_counts[_mk] = _market_counts.get(_mk, 0) + 1
 
+    csv_rows: list[dict] = []   # 분석 전체 → CSV 내보내기(사용자 2026-06-14)
     if not records:
         body = '<div class="empty">아직 분석 기록이 없습니다.</div>'
     else:
@@ -1939,6 +1965,15 @@ def _render_index(records: list[dict]) -> str:
                     json.dumps(_idx_lines, ensure_ascii=False)
                 )
                 _card_mkt = _ticker_market(ticker)
+                _res = resolved_lookup.get((date, ticker)) or {}
+                csv_rows.append({
+                    "분석일": date, "시각": time_str, "종목": ticker,
+                    "종목명": kr_name or "", "시장": _card_mkt,
+                    "판정": rating, "Stance": stance or "",
+                    "5거래일수익률%": _res.get("raw", ""),
+                    "알파%p": _res.get("alpha", ""),
+                    "비용원": int(round(float(rec.get("cost_krw", 0) or 0))) or "",
+                })
                 cards.append(f"""
                 <div class="card" id="card-{_html.escape(date)}-{_html.escape(ticker).replace('.','_')}" data-ticker="{_html.escape(ticker)}"{data_name_attr} data-market="{_card_mkt}" data-date="{_html.escape(date)}" data-href="{href}" data-lines="{_lines_attr}">
                   <div class="card-row">
@@ -2050,6 +2085,8 @@ def _render_index(records: list[dict]) -> str:
         f'<div class="market-filter" id="market-filter">{"".join(_mf_btns)}</div>'
         if len(_market_counts) > 1 else ""
     )
+    # 전체 분석 기록 CSV(엑셀) — '</' defuse 로 <script> 안전 (사용자 2026-06-14).
+    csv_json = json.dumps(csv_rows, ensure_ascii=False).replace("</", "<\\/")
 
     return f"""<!doctype html>
 <html lang="ko">
@@ -2070,7 +2107,10 @@ def _render_index(records: list[dict]) -> str:
     <input id="search" type="text" placeholder="종목·본문 검색 · 분석은 [분석] · '/' 로 명령 (예: /usage · /portfolio · /screener ai)" autocomplete="off" spellcheck="false">
     <button id="clear-btn" type="button" title="검색 초기화">초기화</button>
     <button id="analyze-btn" type="button" class="run-btn" title="슬래시 없이 종목 입력 후 전체 분석(텔레그램 /티커 와 동일). '/' 입력 시엔 그 명령을 실행">분석</button>
+    <button id="csv-btn" type="button" title="전체 분석 기록을 CSV(엑셀)로 내보내기">⬇ CSV</button>
   </div>
+  <script type="application/json" id="analysis-csv-data">{csv_json}</script>
+  {_INDEX_CSV_JS}
   {market_filter_html}
   <p id="status" class="status-line">총 {len(records)}건의 분석 기록</p>
   <div id="cmd-panel" class="cmd-panel" style="display:none"></div>
