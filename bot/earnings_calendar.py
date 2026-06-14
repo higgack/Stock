@@ -266,9 +266,11 @@ def _market_toggle(year: int, month: int, market: str,
         return (f'<a class="mkt-btn{act}" '
                 f'href="?month={ym}&amp;market={m}">{lbl}</a>')
     btns = [_b("kr", "🇰🇷 한국 (IR)"), _b("us", "🇺🇸 미국 (실적)")]
+    # JP/TW/HK/CN 도 미국처럼 '(실적)' 라벨 (사용자 2026-06-14). _INTL_CAL_MAP 은
+    # 페이지 제목에서 ' 실적' 을 따로 붙이므로(중복 방지) 토글 버튼에서만 붙인다.
     for m, (_mk, lbl) in _INTL_CAL_MAP.items():
         if avail.get(m):
-            btns.append(_b(m, lbl))
+            btns.append(_b(m, lbl + " (실적)"))
     return '<div class="mkt-toggle">' + "".join(btns) + '</div>'
 
 
