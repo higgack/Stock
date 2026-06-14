@@ -1128,24 +1128,52 @@ def fetch_recent_research_kr_strategy(limit: int = 80) -> list[dict]:
 
 # ── US Research (yfinance upgrades aggregated) ──────────────────────
 
+def _rotation_slice(items: list, ordinal: int, window_days: int = 7) -> list:
+    """list 를 window_days 회전 슬라이스로 — ordinal(날짜 toordinal) 기반 '오늘 몫'.
+    슬라이스 크기 = ceil(N/window_days) (최소 50) → window_days 일이면 전체 1회전.
+    순수 함수(단위테스트). 리서치 야후 burst 방지용 day-slice 로테이션."""
+    if not items:
+        return []
+    size = max(50, (len(items) + window_days - 1) // window_days)
+    nsl = max(1, (len(items) + size - 1) // size)
+    idx = ordinal % nsl
+    return items[idx * size:(idx + 1) * size] or items[:size]
+
+
 def fetch_recent_research_us(limit: int = 25) -> list[dict]:
-    """Fetch recent US upgrades/downgrades from top stocks."""
+    """최근 US 등급변경 — S&P 500 **로테이션**(하루 ~72종목 day-slice, 7일 1회전)
+    + 7일 롤링 누적 store 로 전체 커버 유지. 옛 구조(매 refresh 500종목 일괄
+    fetch)는 upgrades_downgrades + .info = 회당 ~1,000 야후 quote-API 콜 burst →
+    cloud IP 하드차단 → 검색·상세 탭(.info) 동반 사망(2026-06-14 회귀). 로테이션
+    으로 회당 ~144콜(72×2)로 bound — 야후가 회복돼 .info 탭이 정상 채워짐."""
     cache_dir = _CACHE_DIR / "research"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today = date.today()
-    cache_file = cache_dir / f"us_{today.isoformat()}.json"
-    if cache_file.exists():
+    cutoff = (today - timedelta(days=7)).isoformat()
+    rolling_f = cache_dir / "us_rolling.json"
+    store: dict = {}
+    last_fetch = 0.0
+    if rolling_f.exists():
         try:
-            age_h = (time.time() - cache_file.stat().st_mtime) / 3600
-            # 6h 캐시 (사용자 2026-06-14 — S&P500 확대로 500종목 .upgrades/.info
-            # 호출이 1h burst 면 yahoo 부하↑. 리서치는 준실시간 불요 → 6h 로 완화).
-            if age_h < 6:
-                return json.loads(cache_file.read_text())
+            _d = json.loads(rolling_f.read_text())
+            _it = _d.get("items")
+            store = _it if isinstance(_it, dict) else {}
+            last_fetch = float(_d.get("last_fetch_ts") or 0)
         except Exception:
-            pass
+            store, last_fetch = {}, 0.0
 
-    # 시장 전체급 universe — S&P 500 (사용자 2026-06-14 '고정 30 말고 최대한').
-    # 8-worker 스레드 + 1h 캐시로 부하 bound. CSV 실패 시 메가캡 30 폴백.
+    def _emit() -> list[dict]:
+        rows = [v for v in store.values()
+                if isinstance(v, dict) and v.get("date", "") >= cutoff]
+        rows.sort(key=lambda x: x.get("date", ""), reverse=True)
+        return rows[:limit]
+
+    # 6h 내 이미 fetch 했으면 누적 store 그대로(버스트 방지)
+    if store and (time.time() - last_fetch) < 6 * 3600:
+        return _emit()
+
+    # universe = S&P 500 의 **오늘 슬라이스**만 (로테이션 — 전체 커버는 위 7일 누적
+    # store 가 유지). CSV 실패 시 메가캡 30 폴백. 회당 ~72종목 → burst 0.
     _FALLBACK_30 = ["AAPL", "NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSLA",
                     "AVGO", "JPM", "V", "MA", "UNH", "HD", "PG", "JNJ",
                     "NFLX", "CRM", "AMD", "INTC", "BA", "LLY", "BRK-B",
@@ -1153,9 +1181,10 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
     try:
         from bot.finviz_client import _fetch_sp500_csv
         _sp_tks, _sp_names, _sp_inds = _fetch_sp500_csv()
-        top_us = _sp_tks if (_sp_tks and len(_sp_tks) > 100) else _FALLBACK_30
+        _sp = _sp_tks if (_sp_tks and len(_sp_tks) > 100) else _FALLBACK_30
     except Exception:
-        top_us = _FALLBACK_30
+        _sp = _FALLBACK_30
+    top_us = _rotation_slice(_sp, today.toordinal())   # 오늘 슬라이스(7일 1회전)
     results = []
 
     def _fetch_one(tk):
@@ -1200,14 +1229,18 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
         for fut in as_completed(futs):
             results.extend(fut.result())
 
-    results.sort(key=lambda x: x.get("date", ""), reverse=True)
-    results = results[:limit]
-
+    # 이번 슬라이스 결과를 롤링 store 에 병합 + 7일 지난 항목 prune → 전체 커버 유지
+    for _it in results:
+        _k = f"{_it.get('symbol')}|{_it.get('date')}|{_it.get('firm')}"
+        store[_k] = _it
+    store = {k: v for k, v in store.items()
+             if isinstance(v, dict) and v.get("date", "") >= cutoff}
     try:
-        cache_file.write_text(json.dumps(results, ensure_ascii=False))
+        rolling_f.write_text(json.dumps(
+            {"items": store, "last_fetch_ts": time.time()}, ensure_ascii=False))
     except Exception:
         pass
-    return results
+    return _emit()
 
 
 def fetch_recent_research_intl(market: str, limit: int = 25) -> list[dict]:

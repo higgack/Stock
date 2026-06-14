@@ -8833,6 +8833,40 @@ class TestLookupQuoteHistoryFallback:
         assert q and q["fmt"]["price"] and q["meta"]["source"] == "yfinance"
 
 
+class TestResearchRotation:
+    """US 리서치 야후 burst 차단 — S&P500 일괄 fetch(회당 ~1,000 quote-API 콜:
+    upgrades_downgrades + .info)가 cloud IP 하드차단 → 검색·.info 탭 동반 사망
+    (2026-06-14 회귀). day-slice 로테이션으로 회당 ~72종목, 7일이면 전체 커버
+    (누적 store). _rotation_slice 순수 단위검증 + 배선."""
+
+    def test_rotation_covers_all_within_window(self):
+        from bot.market_overview import _rotation_slice
+        items = [f"T{i}" for i in range(500)]
+        seen = set()
+        for ordinal in range(7):                  # 7일
+            sl = _rotation_slice(items, ordinal, 7)
+            assert 50 <= len(sl) <= 100, len(sl)  # 회당 bound(burst 0)
+            seen.update(sl)
+        assert seen == set(items)                 # 7일이면 500 전체 커버
+
+    def test_rotation_advances_daily(self):
+        from bot.market_overview import _rotation_slice
+        items = [f"T{i}" for i in range(500)]
+        assert _rotation_slice(items, 0, 7) != _rotation_slice(items, 1, 7)
+
+    def test_rotation_small_list_no_split(self):
+        from bot.market_overview import _rotation_slice
+        items = [f"T{i}" for i in range(30)]       # 30<50 → 전체 한 슬라이스
+        assert _rotation_slice(items, 5, 7) == items
+        assert _rotation_slice([], 3, 7) == []
+
+    def test_rotation_wired_into_research(self):
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert "_rotation_slice(_sp, today.toordinal())" in src   # 로테이션 배선
+        assert "us_rolling.json" in src                           # 누적 store
+        assert "top_us = _sp_tks" not in src                      # 옛 500 일괄 universe 제거
+
+
 class TestWorldIndicesCodesetCache:
     """worldstock/index 공유 캐시 코드셋 병합 — 부분집합 fetch 가 전체 카드를
     블랭크로 만들던 회귀(2026-06-14: macro_snapshot 이 .INX/.IXIC/.VIX 3종만 써
