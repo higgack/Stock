@@ -455,6 +455,17 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
                             idem=f"tg:{post.message_id}")
         return
 
+    # /yfpause in channel — yfinance 일시정지 토글 (사용자 2026-06-14, 채널에서
+    # 사용). PTB CommandHandler 가 channel_post 에 안 fire 하므로 여기서 라우팅
+    # (없으면 'YFPAUSE' 를 티커로 오인). DM cmd_yfpause 와 _handle_yfpause 공유.
+    if first_word == "yfpause":
+        parts = body.split()
+        text = _handle_yfpause(parts[1] if len(parts) > 1 else "")
+        await ctx.bot.send_message(chat_id=post.chat.id, text=text,
+                                   parse_mode=ParseMode.HTML,
+                                   disable_web_page_preview=True)
+        return
+
     # /watch · /watchlist · /unwatch in channel — PTB CommandHandler doesn't
     # fire on channel_post, so without this branch '/watch' falls through to
     # ticker analysis and treats 'WATCH' as a symbol (2026-06-04 bug).
@@ -3047,31 +3058,34 @@ async def _periodic_highlow_prewarm() -> None:
 # 대시보드 명령 콘솔 — '/명령' → (update, ctx) 핸들러 화이트리스트.
 # 런타임 호출(모든 cmd_* 정의 후)이라 forward-ref 안전. screener/screen 은
 # 별도 채널 경로(아래 poller)라 제외, 티커 분석은 [분석] 버튼 전용이라 제외.
-async def cmd_yfpause(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
-    """yfinance 호출 일시정지 토글 — /yfpause [on|off]. 정지 시 52주/급등락
-    스캔·시총·업종·실적 yfinance 부하 작업 skip(네이버 경로·캐시·홈 지수는 유지)
-    → 레이트리밋 회복. 마커 파일이라 재시작에도 정지 유지(스캔 재발화 0)."""
+def _handle_yfpause(arg: str) -> str:
+    """yfinance 정지 토글 + 상태 텍스트 (DM·채널 공유). arg=on|off|빈(상태만)."""
     from bot.finviz_client import set_yf_pause, yf_paused
-    arg = ""
-    if update.message and update.message.text:
-        parts = update.message.text.split()
-        if len(parts) > 1:
-            arg = parts[1].strip().lower()
-    if arg in ("on", "정지", "stop", "1", "true", "pause"):
+    a = (arg or "").strip().lower()
+    if a in ("on", "정지", "stop", "1", "true", "pause"):
         set_yf_pause(True)
-    elif arg in ("off", "해제", "resume", "0", "false", "재개"):
+    elif a in ("off", "해제", "resume", "0", "false", "재개"):
         set_yf_pause(False)
     paused = yf_paused()
     state = ("⏸ <b>정지됨</b> — yfinance 호출 skip (네이버·캐시·홈 지수만)"
              if paused else "▶️ <b>정상</b> — yfinance 호출 중")
-    msg = (f"yfinance 상태: {state}\n\n"
-           "정지하면 52주/급등락 스캔·시총·업종·실적의 yfinance 부하 작업이 멈춰 "
-           "레이트리밋이 회복됩니다. 네이버 기반(무버·업종등락·홈 지수)과 이미 산출된 "
-           "캐시는 그대로 보여요. <b>재시작해도 정지 유지</b>(마커 파일)라 스캔이 "
-           "처음부터 다시 돌지 않습니다.\n\n"
-           "<code>/yfpause on</code> 정지 · <code>/yfpause off</code> 재개")
+    return (f"yfinance 상태: {state}\n\n"
+            "정지하면 52주/급등락 스캔·시총·업종·실적의 yfinance 부하 작업이 멈춰 "
+            "레이트리밋이 회복됩니다. 네이버 기반(무버·업종등락·홈 지수)·캐시는 그대로. "
+            "<b>재시작해도 정지 유지</b>(마커 파일)라 스캔이 처음부터 다시 안 돕니다.\n\n"
+            "<code>/yfpause on</code> 정지 · <code>/yfpause off</code> 재개")
+
+
+async def cmd_yfpause(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """yfinance 호출 일시정지 토글 — /yfpause [on|off] (DM)."""
+    arg = ""
+    if update.message and update.message.text:
+        parts = update.message.text.split()
+        if len(parts) > 1:
+            arg = parts[1]
     if update.message:
-        await update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        await update.message.reply_text(_handle_yfpause(arg),
+                                        parse_mode=ParseMode.HTML)
 
 
 def _static_command_registry() -> dict:
