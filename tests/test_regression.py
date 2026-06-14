@@ -8743,6 +8743,48 @@ class TestNaverWorldRanking:
         assert "거래대금" not in h2
 
 
+class TestWorldIndicesCodesetCache:
+    """worldstock/index 공유 캐시 코드셋 병합 — 부분집합 fetch 가 전체 카드를
+    블랭크로 만들던 회귀(2026-06-14: macro_snapshot 이 .INX/.IXIC/.VIX 3종만 써
+    naver_worldindex.json 을 덮어쓰자 market_overview 세계지수 카드 24종이 전부
+    '—' 로 표시). 부분집합 호출이 캐시를 축소하면 안 됨 + 요청 코드 부분집합 반환."""
+
+    def test_plan_hit_only_when_all_present(self):
+        from bot.naver_marketindex import _codeset_plan
+        assert _codeset_plan({"a": 1, "b": 2, "c": 3}, ("a", "b"))   # 전부 있음 → hit
+        assert not _codeset_plan({"a": 1}, ("a", "b"))               # b 부재 → refetch
+        assert not _codeset_plan({}, ("a",))                         # 빈 캐시 → refetch
+        assert _codeset_plan({"a": 1}, ())                           # 코드 무지정 → 캐시 있으면 hit
+        assert not _codeset_plan({}, ())                             # 빈 캐시 → miss
+
+    def test_finalize_merge_does_not_shrink(self):
+        # 핵심 회귀: 24종 캐시에 3종 부분 fetch 가 들어와도 캐시는 24종 유지.
+        from bot.naver_marketindex import _codeset_finalize
+        known = {f"x{i}": {"close": i} for i in range(24)}
+        fetched = {"x0": {"close": 99}, "x1": {"close": 88}}
+        merged, ret = _codeset_finalize(known, fetched, ("x0", "x1"))
+        assert len(merged) == 24                       # 축소 안 됨(블랭크 방지)
+        assert merged["x0"]["close"] == 99             # 신규 fetch 값으로 갱신
+        assert merged["x23"]["close"] == 23            # 기존 값 보존
+        assert set(ret) == {"x0", "x1"}                # 요청 부분집합만 반환
+
+    def test_finalize_adds_new_codes(self):
+        from bot.naver_marketindex import _codeset_finalize
+        merged, ret = _codeset_finalize({"a": 1}, {"b": 2, "c": 3}, ("b", "c"))
+        assert set(merged) == {"a", "b", "c"}          # 기존 ∪ 신규
+        assert set(ret) == {"b", "c"}
+
+    def test_fetch_wired_union_refetch(self):
+        # 배선 E2E: fetch_world_indices 가 요청 ∪ 기존코드 union refetch + 병합 finalize.
+        src = open("bot/naver_marketindex.py", encoding="utf-8").read()
+        assert "_codeset_plan(fresh, codes)" in src
+        assert "_codeset_finalize(known, out, codes)" in src
+        assert "dict.fromkeys([*codes, *known.keys()])" in src   # union refetch
+        # macro_snapshot 이 동일 함수의 부분집합 호출부(회귀 트리거) — 여전히 안전 배선
+        ms = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert "fetch_world_indices(idx_codes)" in ms
+
+
 class TestSessionAwarePerMarket:
     """시장-인지 신선도 (_session_fresh) — 사용자 2026-06-13 '장종료후 굳이 안
     돌려도·나라별 시간 체크해 부하없이'. 정규장 중 intra_ttl / 장 밖 마지막 마감

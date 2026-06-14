@@ -82,27 +82,58 @@ def fetch_commodities() -> dict:
 _IDX_CACHE = "naver_worldindex.json"
 
 
+def _codeset_plan(fresh: dict, codes: tuple) -> bool:
+    """신선 캐시가 요청 코드를 **모두** 커버하면 True(재fetch 불요). 부분만 있으면
+    False → 호출부가 union refetch. 공유 코드셋 캐시(아래 fetch_world_indices)용."""
+    if not codes:
+        return bool(fresh)
+    return bool(fresh) and all(x in fresh for x in codes)
+
+
+def _codeset_finalize(known: dict, fetched: dict, codes: tuple) -> tuple:
+    """(write, ret) — known=기존(임의 age) 캐시, fetched=이번 fetch 결과. 병합으로
+    **캐시 축소 방지**(부분집합 호출이 전체 카드를 블랭크로 만들던 회귀 차단) +
+    요청 코드 부분집합 반환."""
+    known = known if isinstance(known, dict) else {}
+    fetched = fetched if isinstance(fetched, dict) else {}
+    merged = {**known, **fetched}
+    ret = {c: merged[c] for c in codes if c in merged} if codes else merged
+    return merged, ret
+
+
 def fetch_world_indices(codes: tuple) -> dict:
     """{reutersCode: {close, prev, change, pct}} — polling/worldstock/index
     (사용자 2026-06-14 '다 네이버로', VM probe 구조 확정: datas[].reutersCode·
     indexName·closePrice·compareToPreviousClosePrice·compareToPreviousPrice.code
     2상승/5하락). 니케이(.N225)·대만(.TWII)·VIX(.VIX)·필반(.SOX) 등. 1분 캐시·
-    naver_paused·graceful."""
+    naver_paused·graceful.
+
+    ⚠️ 공유 캐시(naver_worldindex.json) **코드셋 병합** 정책 — 여러 호출부가 같은
+    파일을 쓴다(market_overview 24종 카드 / macro_snapshot 3종 값). 부분집합 fetch
+    가 캐시를 통째로 덮어쓰면 다른 호출부가 자기 코드를 못 찾아 블랭크가 되는 회귀
+    (2026-06-14: macro 가 .INX/.IXIC/.VIX 3종만 써 세계지수 카드 전부 — 표시). 방지:
+    캐시가 요청 코드를 모두 커버하면 그 부분집합 반환, 아니면 **요청 ∪ 기존코드**를
+    한 번에 refetch 후 병합(축소 0)."""
     from bot.finviz_client import _cache_write, _cached, naver_paused
-    c = _cached(_IDX_CACHE, ttl=_TTL)
-    if isinstance(c, dict) and c:
-        return c
+    codes = tuple(c for c in codes if c)
+    fresh = _cached(_IDX_CACHE, ttl=_TTL)
+    fresh = fresh if isinstance(fresh, dict) else {}
+    if _codeset_plan(fresh, codes):
+        return {c: fresh[c] for c in codes} if codes else fresh
+    known = _cached(_IDX_CACHE, ttl=86400) or {}
+    known = known if isinstance(known, dict) else {}
     if naver_paused():
-        return _cached(_IDX_CACHE, ttl=86400) or {}
+        return {c: known[c] for c in codes if c in known} if codes else known
+    want = tuple(dict.fromkeys([*codes, *known.keys()])) or codes
     import requests
     out: dict = {}
     try:
         r = requests.get(_INDEX_URL, headers=_HDRS, timeout=12,
-                         params={"reutersCodes": ",".join(codes)})
+                         params={"reutersCodes": ",".join(want)})
         datas = (r.json() or {}).get("datas") or [] if r.status_code == 200 else []
     except Exception as exc:
         log.warning("naver worldindex fetch error: %s", exc)
-        return _cached(_IDX_CACHE, ttl=86400) or {}
+        return {c: known[c] for c in codes if c in known} if codes else known
     for it in datas if isinstance(datas, list) else []:
         rc = str(it.get("reutersCode") or "").strip()
         close = _num(it.get("closePrice"))
@@ -117,10 +148,10 @@ def fetch_world_indices(codes: tuple) -> dict:
                    "change": (sign * abs(chg)) if chg is not None else 0.0,
                    "pct": pct}
     if out:
-        _cache_write(_IDX_CACHE, out)
-    else:
-        return _cached(_IDX_CACHE, ttl=86400) or {}
-    return out
+        merged, ret = _codeset_finalize(known, out, codes)
+        _cache_write(_IDX_CACHE, merged)
+        return ret
+    return {c: known[c] for c in codes if c in known} if codes else known
 
 
 _DOM_URL = "https://stock.naver.com/api/polling/domestic/index"
