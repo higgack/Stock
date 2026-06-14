@@ -2213,10 +2213,26 @@ NOAH /ticker 의 `_fetch_returns` 는 5거래일 그대로 유지 (정책 분리
   의도에 맞는 lens 선택. `/screener pharma` (L1 GLP-1/CDMO cycle) vs
   `/screener healthcare` (L2 헬스케어 전체) 도 동일 패턴.
 
-  registry `_VALID_LAYERS = ("L1_TREND", "L2_SECTOR", "L3_INDUSTRY")`.
-  Layer 누락 → default `L1_TREND` (back-compat). `_validate()` 가 layer
-  값 + binding_layer_taxonomy/regional_concentration 최소 2개 (Energy/
-  Real Estate L2 가 공식 L3 2개씩) 체크.
+  registry `_VALID_LAYERS = ("L1_TREND", "L2_SECTOR", "L3_INDUSTRY",
+  "L4_SUBINDUSTRY", "AD_HOC")`. Layer 누락 → default `L1_TREND` (back-
+  compat). `_validate()` 가 layer 값 + binding_layer_taxonomy/regional_
+  concentration 최소 2개 (Energy/Real Estate L2 가 공식 L3 2개씩) 체크.
+
+  **L4 Sub-industry themes (2026-06-14 신설 — GICS sub-industry 깊이)**:
+  각 L3 의 binding_layer 를 독립 lens 로 분리. 1차 = Semiconductors L4 8개
+  (`semiconductors_memory`/`_foundry`/`_equipment`/`_logic_ai`/`_logic_
+  mobile`/`_analog`/`_eda`/`_specialty`). slug = `<L3slug>_<세부>` (parent
+  prefix 로 전역 unique). ⛔ **별칭은 부모 L3 와 충돌 금지** — 부모
+  semiconductors 가 이미 `memory`/`foundry`/`eda`/`메모리`/`파운드리` 별칭
+  보유(registry first-wins, `semiconductors` 가 알파벳상 먼저 claim) →
+  L4 는 **전용 별칭만**(`dram`/`wfe`/`sic`/`npu`/`wafer_fab` 등). `/screener
+  <부모별칭>` 은 L3 유지, L4 는 slug 직접·전용 별칭·`/screener_list` 로 접근.
+  ⛔ **L4 는 `set_my_commands` 메뉴 제외** (Telegram 100/scope cap 보존 —
+  full L4 rollout 78+ 모듈 대비). 핸들러(`_register_dynamic_screener_
+  handlers`)는 등록되므로 `/screener_<slug>` 명령은 동작, 메뉴 autocomplete
+  에만 미노출. `/screener_list`(🎯 L4 그룹) + 대시보드 `screener_domains.
+  html`(`.l4` 파랑 섹션) 양쪽 노출. 다른 L3 의 L4 확장도 같은 패턴
+  (전용 별칭 + 메뉴 제외) 으로 모듈 drop.
 
   **L3 Industry themes (48, 사용자 정식 분류 sub-industry 전체)** —
   Phase B 2026-05-29 ✅ 한 batch 로 전체 ship. 각 L3 모듈 ~100-150 줄,

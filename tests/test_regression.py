@@ -190,6 +190,46 @@ class TestDashboardDetailsBalance:
 #    longName 과 어긋난 케이스 다수(EXV5 추측 '에너지' → 실제 '자동차').
 #    EU 추가 때 VM 검증으로 잡았음. 향후 추가 시 같은 실수 차단.
 # ─────────────────────────────────────────────────────────────────────────
+class TestScreenerL4Subindustry:
+    """L4 sub-industry layer (2026-06-14 — Semiconductors 세분화 8 모듈).
+    GICS sub-industry 깊이 + 부모 L3 별칭 충돌 0 + 메뉴 cap 보존."""
+
+    def test_l4_valid_layer_and_modules(self):
+        from bot.screener_themes import _VALID_LAYERS, list_domains
+        assert "L4_SUBINDUSTRY" in _VALID_LAYERS
+        l4 = [d for d in list_domains() if d.get("layer") == "L4_SUBINDUSTRY"]
+        slugs = {d["slug"] for d in l4}
+        # 반도체 L4 8 모듈 전부 등록 (모듈 import-time _validate 통과 = 등록됨)
+        expect = {f"semiconductors_{s}" for s in
+                  ("memory", "foundry", "equipment", "logic_ai",
+                   "logic_mobile", "analog", "eda", "specialty")}
+        assert expect <= slugs, expect - slugs
+
+    def test_l4_no_alias_collision_with_parent(self):
+        # 부모 L3 공유 별칭(memory/foundry/eda/메모리/파운드리)은 L3 유지,
+        # L4 전용 별칭(dram/wfe/sic/npu/wafer_fab)만 L4 로 — 충돌 0
+        from bot.screener_themes import resolve_slug
+        assert resolve_slug("memory") == "semiconductors"      # 부모 L3 보존
+        assert resolve_slug("파운드리") == "semiconductors"
+        assert resolve_slug("eda") == "semiconductors"
+        assert resolve_slug("dram") == "semiconductors_memory"
+        assert resolve_slug("wfe") == "semiconductors_equipment"
+        assert resolve_slug("wafer_fab") == "semiconductors_foundry"
+        assert resolve_slug("npu") == "semiconductors_logic_ai"
+        assert resolve_slug("sic") == "semiconductors_specialty"
+        assert resolve_slug("아날로그") == "semiconductors_analog"
+
+    def test_l4_menu_excluded_but_rendered(self):
+        # set_my_commands 는 L4 제외(100/scope cap 보존), /screener_list +
+        # 대시보드 _LAYER_META 는 L4 노출. 소스 검증(telegram import 무거움).
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert 'if d.get("layer") == "L4_SUBINDUSTRY":' in tb       # 메뉴 skip
+        assert "🎯 L4 Sub-industry" in tb                          # /screener_list
+        dd = open("bot/dashboard.py", encoding="utf-8").read()
+        assert '"L4_SUBINDUSTRY", "🎯 L4 Sub-industry"' in dd        # 대시보드 그룹
+        assert '"L4_SUBINDUSTRY": "l4"' in dd                       # CSS 클래스
+
+
 class TestScreenerPostProcessIdempotent:
     """fix commit: ba6e4bc (2026-06-01)."""
 
