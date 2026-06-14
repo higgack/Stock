@@ -896,6 +896,80 @@ def _industries_for(tickers: list, market: str | None) -> dict:
     return _fetch_industries(tickers)
 
 
+# ── 비-주식 가지치기 (CEF 펀드 vehicle · 유령티커 · 이중클래스 dedupe) ──────
+# 52주 신고저·급등락·장전장후 는 '주식' 표면 — 운용사 펀드(폐쇄형 CEF)·상장폐지
+# 유령티커·같은 회사 A/B주 중복을 솎아냄 (사용자 2026-06-14 'CEF·정지·이중클래스
+# dedupe'). 유니버스(nasdaqtrader)가 ETF/SPAC/워런트/채권형은 이미 거르나 CEF 는
+# 빠져나옴. enrich(시총·업종) 후 호출 — 순수·테스트. US 네이밍 기반이라 비-US
+# (JP/HK CJK명)는 자연 무발화(no-op).
+_CEF_INDUSTRY = "Trusts Except Educational Religious and Charitable"
+_FUND_WORD_RE = re.compile(r"\b(Fund|Fd)\b", re.I)
+_CLOSED_END_RE = re.compile(r"closed[- ]?end", re.I)
+_INCOME_TRUST_RE = re.compile(r"\b(Income|Municipal)\s+Trust\b", re.I)
+_CLASS_MARK_RE = re.compile(r"\b(?:Class|Cl)\s+[A-Z]\b", re.I)
+_CLASS_STRIP_RE = re.compile(r"\s+(?:Class|Cl)\s+[A-Z]\b.*$", re.I)
+
+
+def _is_fund_vehicle(name, ind) -> bool:
+    """폐쇄형 펀드(CEF) 등 펀드 vehicle 인가 — 신호: 업종=나스닥 CEF 분류코드 OR
+    종목명 Fund/Fd/Closed-End OR (Income/Municipal Trust + 비-부동산 업종 — OPI 류
+    REIT 오탐 방지). 순수. Northern Trust(은행)·TrustCo·REIT 는 'Trust' 만으론 안
+    잡힘(Fund/Fd/Closed-End 단어 또는 CEF 업종코드 필수)."""
+    n = name or ""
+    i = ind or ""
+    if i == _CEF_INDUSTRY:
+        return True
+    if _FUND_WORD_RE.search(n) or _CLOSED_END_RE.search(n):
+        return True
+    if _INCOME_TRUST_RE.search(n) and "Real Estate" not in i and "REIT" not in i:
+        return True
+    return False
+
+
+def _is_frozen_row(r: dict) -> bool:
+    """유령/정지 티커 — 시총·업종·거래량 삼중 공백(yfinance 회사정보 전무 →
+    상장폐지/장기정지, SVA 시노백 류). 순수. enrich 후만 호출(전부 None 단계 금지)."""
+    return (r.get("mcap") is None and r.get("ind") is None
+            and r.get("vol") is None)
+
+
+def _class_base(name):
+    """'X Class A'/'X Cl B' → 'x' (이중클래스 dedupe 키, 소문자). 순수."""
+    if not name:
+        return None
+    base = _CLASS_STRIP_RE.sub("", name).strip().lower()
+    return base or None
+
+
+def _dedupe_dual_class(rows: list) -> list:
+    """같은 회사 A/B주 중복 제거 — 유동성(거래량) 큰 쪽 1개만(없으면 시총).
+    CENT/CENTA·SENEA/SENEB 류. class-strip 동명 그룹 중 'Class/Cl X' 마커가
+    하나라도 있어야 dual-class 로 간주(우연 동명 비-클래스 그룹은 보존). 첫 등장
+    위치에 best 1개 삽입, 순서 보존. 순수."""
+    groups: dict = {}
+    for idx, r in enumerate(rows):
+        groups.setdefault(_class_base(r.get("name")), []).append(idx)
+    drop: set = set()
+    for b, idxs in groups.items():
+        if b is None or len(idxs) < 2:
+            continue
+        if not any(_CLASS_MARK_RE.search(rows[i].get("name") or "") for i in idxs):
+            continue
+        best_i = max(idxs, key=lambda i: ((rows[i].get("vol") or 0),
+                                          (rows[i].get("mcap") or 0)))
+        drop.update(i for i in idxs if i != best_i)
+    return [r for i, r in enumerate(rows) if i not in drop]
+
+
+def prune_non_stock(rows: list) -> list:
+    """CEF 펀드 vehicle + 유령(삼중 공백) 제거 후 이중클래스 dedupe — enrich 후
+    호출(시총·업종·거래량 채워진 상태). 신고저·무버·장전장후 공용. 순수."""
+    kept = [r for r in rows
+            if not _is_fund_vehicle(r.get("name"), r.get("ind"))
+            and not _is_frozen_row(r)]
+    return _dedupe_dual_class(kept)
+
+
 def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                           source: str, tag: str) -> dict:
     """1년 일봉 벌크로 **당일 52주 고저 갱신**(진짜 신고가/신저가) 산출 (universe 일반화).
@@ -1014,6 +1088,10 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
         # 장애 시 직전 성공값 유지, 사용자 2026-06-14 'TW 52주 시총 안 떠').
         elif tag == "TW":
             _persist_mcap_overlay(out["high"] + out["low"], "TW")
+        # 비-주식 가지치기 — CEF 펀드·유령티커 제거 + 이중클래스 dedupe (enrich 후,
+        # 사용자 2026-06-14). 시총·업종·거래량 채워진 상태라 정확. 비-US 는 무발화.
+        out["high"] = prune_non_stock(out["high"])
+        out["low"] = prune_non_stock(out["low"])
         log.info("finviz: %s highlow — scanned %d → high %d / low %d (mcap %d)",
                  tag, scanned, len(out["high"]), len(out["low"]), len(mcaps))
         if out["high"] or out["low"]:
@@ -1639,6 +1717,8 @@ def _compute_us_movers() -> dict:
                         r["ind"] = inds.get(r["ticker"]) or nv_ind.get(r["ticker"])
             except Exception as exc:
                 log.warning("US movers 업종 enrich 실패: %s", exc)
+            nv["up"] = prune_non_stock(nv["up"])       # CEF·유령·이중클래스 가지치기
+            nv["down"] = prune_non_stock(nv["down"])
             _cache_write(_MOVERS_CACHE, nv)
             _movers_status_write("done", up=len(nv["up"]), down=len(nv["down"]), src="naver")
             return nv
@@ -1722,7 +1802,7 @@ def _compute_us_movers() -> dict:
             mc = mcaps.get(r["ticker"])
             r["mcap"] = round(mc / 1e8, 2) if mc else None   # 억$
             r["ind"] = inds.get(r["ticker"])
-        out["up"], out["down"] = ups, downs
+        out["up"], out["down"] = prune_non_stock(ups), prune_non_stock(downs)
         log.info("finviz: movers — scanned %d → up %d / down %d (빈 배치 %d/%d)",
                  len(rows), len(ups), len(downs), empty_batches, n_batches)
         if ups or downs:

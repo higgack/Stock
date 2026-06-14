@@ -225,6 +225,13 @@ def _compute_us_prepost() -> dict:
                 r["ind"] = inds.get(r["ticker"])
         except Exception as exc:
             log.warning("prepost: 시총/업종 백필 실패: %s", exc)
+        # 비-주식 가지치기 — CEF 펀드·유령티커 제거 + 이중클래스 dedupe(신고저/무버
+        # 공용, 사용자 2026-06-14). enrich 후라 시총·업종 정확.
+        try:
+            from bot.finviz_client import prune_non_stock
+            ups, downs = prune_non_stock(ups), prune_non_stock(downs)
+        except Exception:
+            pass
         out["up"], out["down"] = ups, downs
         out["scanned"] = len(rows)
         # 결과 다수 세션 → 페이지 부제 라벨('장전'|'장후')
