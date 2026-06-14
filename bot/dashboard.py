@@ -13291,6 +13291,8 @@ def render_lookup_detail(ticker: str, enrich: bool = True, pane=None) -> str:
             si = collect_stock_snapshot(ticker)
         except Exception:
             pass
+        if not si:        # 스냅샷 실패(야후 차단 등) → 직전 분석 스냅샷 폴백(분석 종목)
+            si = _load_stored_stock_info(ticker)
         if si:
             _LOOKUP_SI_CACHE[_tk] = (time.time(), si)
             if len(_LOOKUP_SI_CACHE) > 48:

@@ -24,6 +24,8 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
         t = yf.Ticker(ticker)
         info = t.info or {}
         if not info or info.get("quoteType") is None:
+            # 야후 .info 차단/실패 → None. 호출부(render_lookup_detail)가 직전 분석
+            # 스냅샷으로 폴백(_load_stored_stock_info) — 야후 차단 중 상세 표시 유지.
             return None
 
         def _g(k, default=None):
