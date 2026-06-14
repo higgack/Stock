@@ -8743,6 +8743,39 @@ class TestNaverWorldRanking:
         assert "거래대금" not in h2
 
 
+class TestFastInfoCircuitGating:
+    """fast_info 회로차단 게이팅 — 자동(백그라운드) fast_info 소비처가 쿨다운 중에도
+    yahoo quote API 를 계속 때려 IP 차단이 회복 안 되던 회귀(2026-06-14 '뭘 하던
+    무조건 차단당하나') 차단. 회로차단(fast_info_ok)/정지(yf_paused) 트립 시 모든
+    자동 소비처가 0콜 → cloud IP 냉각 → yahoo per-IP 리미터 자동 리셋."""
+
+    def _fn_body(self, src: str, marker: str, span: int = 1200) -> str:
+        i = src.index(marker)
+        return src[i:i + span]
+
+    def test_dashboard_callers_now_gated(self):
+        fc = open("bot/finviz_client.py", encoding="utf-8").read()
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        # fetch_sectors (메인 11섹터 위젯, regen 마다) — 회로차단 시 fast_info ETF 0콜
+        sec = self._fn_body(fc, "def fetch_sectors")
+        assert "fast_info_ok()" in sec and "yf_paused()" in sec
+        # _groups_fallback_etf (Finviz 실패 폴백)
+        gfb = self._fn_body(fc, "def _groups_fallback_etf", 800)
+        assert "fast_info_ok()" in gfb and "yf_paused()" in gfb
+        # chart 52주 hi/lo (차트 페이지)
+        yhl = self._fn_body(cd, "def _year_high_low", 900)
+        assert "fast_info_ok()" in yhl and "yf_paused()" in yhl
+
+    def test_existing_gates_intact(self):
+        # 기존 게이트 회귀 방지 — _fetch_mcaps / market_favorites / chart 라이브가
+        fc = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert "not tickers or yf_paused() or not fast_info_ok()" in fc   # _fetch_mcaps
+        mf = open("bot/market_favorites.py", encoding="utf-8").read()
+        assert "fast_info_ok() and not yf_paused()" in mf
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "if yf_paused() or not fast_info_ok():" in cd              # _live_last_price + _year_high_low
+
+
 class TestWorldIndicesCodesetCache:
     """worldstock/index 공유 캐시 코드셋 병합 — 부분집합 fetch 가 전체 카드를
     블랭크로 만들던 회귀(2026-06-14: macro_snapshot 이 .INX/.IXIC/.VIX 3종만 써

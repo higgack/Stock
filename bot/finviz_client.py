@@ -353,6 +353,8 @@ def _groups_fallback_computed() -> dict:
 def _groups_fallback_etf() -> dict:
     """Finviz 차단 시 — 11 섹터 ETF 등락(yfinance fast_info)으로 강등."""
     out: dict = {"groups": [], "ts": _now_label(), "source": "섹터 ETF(yfinance)"}
+    if yf_paused() or not fast_info_ok():
+        return out      # 회로차단/정지 — fast_info ETF 폴백 0콜(yahoo IP 냉각)
     try:
         from bot.us_market_daily import _SECTOR_ETFS
         import yfinance as yf
@@ -390,6 +392,10 @@ def fetch_sectors() -> dict:
     if c is not None:
         return c
     out: dict = {"groups": [], "ts": _now_label(), "source": "yfinance"}
+    if yf_paused() or not fast_info_ok():
+        # 회로차단/정지 — fast_info ETF 0콜(yahoo IP 냉각) → stale 캐시/빈 서빙.
+        # 자동 dashboard regen 이 쿨다운 중 yahoo 를 재차단하던 회복-차단 루프 차단.
+        return _cached("sectors.json", ttl=86400) or out
     try:
         from bot.us_market_daily import _SECTOR_ETFS
         import yfinance as yf

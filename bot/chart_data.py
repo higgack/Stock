@@ -358,8 +358,13 @@ def _validate_live_price(lp, last_close, market: str = "US"):
 
 def _year_high_low(t, decimals: int):
     """fast_info 의 52주 신고가/신저가(반올림) → (high, low). 실패 시 (None, None).
-    52주값은 차트 interval/range 와 무관한 fundamental — 패널에 항상 표시용."""
+    52주값은 차트 interval/range 와 무관한 fundamental — 패널에 항상 표시용.
+    ⚠️ fast_info 회로차단/정지 중이면 skip(None) — yahoo IP 차단 회복 보호
+    (모든 fast_info 소비처를 회로차단에 물려 쿨다운 중 0콜 → IP 냉각 → 자동 회복)."""
     try:
+        from bot.finviz_client import fast_info_ok, yf_paused
+        if yf_paused() or not fast_info_ok():
+            return (None, None)
         fi = t.fast_info
 
         def _g(*names):
