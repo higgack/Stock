@@ -8786,6 +8786,53 @@ class TestFastInfoCircuitGating:
         assert "if yf_paused() or not fast_info_ok():" in cd              # _live_last_price + _year_high_low
 
 
+class TestLookupQuoteHistoryFallback:
+    """종목검색 LIGHT quote — 야후 .info(quote API) throttle 시 비-KR 이 블랭크
+    되던 회귀(2026-06-14 '야후가 짤라서 종목검색 아무것도 못함') 차단. history
+    (관대 chart API, /health 가 살아있음 확인)로 현재가 폴백 → 검색이 최소 현재가
+    표시. KR 은 KIS-first 가 이미 처리(비-KR 만 폴백 필요)."""
+
+    def _fake_yf(self, monkeypatch, info, closes):
+        import pandas as pd
+        import yfinance
+
+        class _FT:
+            def __init__(self, t):
+                pass
+
+            @property
+            def info(self):
+                return info
+
+            def history(self, period=None):
+                return pd.DataFrame({"Close": closes}) if closes else pd.DataFrame()
+
+        monkeypatch.setattr(yfinance, "Ticker", _FT)
+
+    def test_us_info_throttled_falls_back_to_history(self, monkeypatch):
+        import bot.dashboard as D
+        self._fake_yf(monkeypatch, {}, [100.0, 101.0, 102.5])
+        q = D.build_live_quote("AAPL", full=False)
+        assert q is not None, "throttle 시 None 블랭크 금지"
+        assert q.get("fmt", {}).get("price"), "현재가 폴백 표시"
+        assert "102" in q["fmt"]["price"]                 # history 마지막 종가
+        assert q["meta"]["source"] == "yfinance 종가"      # 지연 출처 표기
+
+    def test_history_split_glitch_rejected(self, monkeypatch):
+        # KLAC류 분할 미조정(직전 대비 >75%) 종가는 폴백에서 제외 — 잘못된 현재가 금지
+        import bot.dashboard as D
+        self._fake_yf(monkeypatch, {}, [100.0, 2411.0])
+        q = D.build_live_quote("AAPL", full=False)
+        assert q is None or not q.get("fmt", {}).get("price")
+
+    def test_normal_info_path_unaffected(self, monkeypatch):
+        # 정상 .info 면 기존 동작(폴백 미발동, source=yfinance) 유지 — 회귀 방지
+        import bot.dashboard as D
+        self._fake_yf(monkeypatch, {"currentPrice": 200.0, "currency": "USD"}, [1.0])
+        q = D.build_live_quote("AAPL", full=False)
+        assert q and q["fmt"]["price"] and q["meta"]["source"] == "yfinance"
+
+
 class TestWorldIndicesCodesetCache:
     """worldstock/index 공유 캐시 코드셋 병합 — 부분집합 fetch 가 전체 카드를
     블랭크로 만들던 회귀(2026-06-14: macro_snapshot 이 .INX/.IXIC/.VIX 3종만 써

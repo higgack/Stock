@@ -3992,10 +3992,15 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     except Exception as exc:
         log.debug("build_live_quote: yfinance .info failed for %s: %s", ticker, exc)
         info = {}
-    if not info and not is_kr:
-        return None
-
-    currency = info.get("currency") or ("KRW" if is_kr else "USD")
+    # 야후 .info throttle 시에도 블랭크 금지 — 아래 history 현재가 폴백으로 진행
+    # (사용자 2026-06-14 '야후가 짤라서 종목검색 아무것도 못함'). 진짜 데이터가
+    # 하나도 없으면 끝의 `if not fmt: return None` 가 잡음.
+    currency = info.get("currency")
+    if not currency:
+        _SUF_CCY = {".KS": "KRW", ".KQ": "KRW", ".T": "JPY", ".TW": "TWD",
+                    ".HK": "HKD", ".SS": "CNY", ".SZ": "CNY", ".L": "GBp"}
+        currency = next((c for s, c in _SUF_CCY.items()
+                         if ticker.upper().endswith(s)), "USD")
     csym = _currency_sym(currency)
     _0dec = ("KRW", "JPY", "TWD", "HKD")
     pdec = 0 if currency in _0dec else 2
@@ -4050,6 +4055,26 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
                 vals["fiftyTwoWeekLow"] = cur["low_52w"]
         except Exception as exc:
             log.debug("build_live_quote: KIS override skipped for %s: %s", ticker, exc)
+
+    if not price:
+        # 야후 .info(+KR KIS) 둘 다 비면 history(관대 chart API)로 현재가 폴백 —
+        # .info throttle(quote API 차단) 중에도 검색이 최소 현재가는 보이게(사용자
+        # 2026-06-14 '야후가 짤라서 아무것도 못함'). /health 가 history(batch) OK
+        # 확인 — quote API 와 별개로 살아있음. 전 시장 universal. 5d 마지막 종가
+        # = 직전 거래일 종가(지연 표기). KLAC류 분할 글리치는 75% 밖이면 제외.
+        try:
+            _h = yf.Ticker(ticker).history(period="5d")
+            if _h is not None and len(_h) and "Close" in _h:
+                _cl = _h["Close"].dropna()
+                if len(_cl):
+                    _hc = float(_cl.iloc[-1])
+                    _pc = float(_cl.iloc[-2]) if len(_cl) >= 2 else _hc
+                    if not (_pc > 0 and abs(_hc / _pc - 1) > 0.75):   # 글리치 가드
+                        price = _hc
+                        if source == "yfinance":
+                            source = "yfinance 종가"
+        except Exception as _exc:
+            log.debug("build_live_quote: history price fallback %s: %s", ticker, _exc)
 
     # Pre-format every field with the SAME helpers the renderer uses so
     # the client just drops strings into [data-q] cells (no JS-side
