@@ -231,6 +231,27 @@ class QuoteCacheTests(_TmpEnv):
         n = len([c for c in fake.calls if "inquire-price" in c[1]])
         self.assertEqual(n, 2)                                # 재호출됨
 
+    def test_weekend_fallback_keeps_stale_cache(self):
+        """장 마감/주말에 KIS가 빈 응답이면 기존 캐시를 last-known-good으로 유지."""
+        fake = FakeKIS({"005930": (74000, 72000, "삼성전자")})
+        pp.get_quotes(["005930"], transport=fake, ttl_s=60)
+        time.sleep(0.01)
+        empty = FakeKIS({})
+        with mock.patch.object(pp, "recommended_ttl", return_value=21600):
+            out = pp.get_quotes(["005930"], transport=empty, ttl_s=0)
+        self.assertIn("005930", out)
+        self.assertEqual(out["005930"].price, 74000)
+
+    def test_trading_hours_no_fallback(self):
+        """장중에는 빈 응답 시 stale 유지 안 함(가격이 변할 수 있으니)."""
+        fake = FakeKIS({"005930": (74000, 72000, "삼성전자")})
+        pp.get_quotes(["005930"], transport=fake, ttl_s=60)
+        time.sleep(0.01)
+        empty = FakeKIS({})
+        with mock.patch.object(pp, "recommended_ttl", return_value=90):
+            out = pp.get_quotes(["005930"], transport=empty, ttl_s=0)
+        self.assertNotIn("005930", out)
+
 
 class FakeDataPortal:
     """주식시세정보 transport 스텁 — likeItmsNm/likeSrtnCd 부분일치 필터."""

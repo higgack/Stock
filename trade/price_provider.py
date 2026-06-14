@@ -831,10 +831,26 @@ def get_quotes(symbols: Iterable[str], *,
             got = provider(stale, transport=transport)
         except Exception:
             got = {}
+        dirty = bool(got)
         for c, q in got.items():
             fresh[c] = q
             cache[c] = {**q.as_dict(), "_cached_at": now}
-        if got:
+        # 장 마감/주말: 공급자가 빈 응답이면 기존 캐시를 last-known-good으로
+        # 유지(가격은 장 마감 후 안 변함). _cached_at 갱신해 주말 내내 생존.
+        if recommended_ttl() > 3600:
+            for c in stale:
+                if c not in fresh:
+                    rec = cache.get(c)
+                    if rec and rec.get("price", 0) > 0:
+                        try:
+                            d = {k: v for k, v in rec.items()
+                                 if k != "_cached_at"}
+                            fresh[c] = Quote(**d)
+                            cache[c] = {**rec, "_cached_at": now}
+                            dirty = True
+                        except Exception:
+                            pass
+        if dirty:
             _save_cache(cache)
     return fresh
 
@@ -906,10 +922,24 @@ def get_quotes_by_name(names: Iterable[str], *,
             got = _dataportal_get_quotes_by_name(stale, transport=transport)
         except Exception:
             got = {}
+        dirty = bool(got)
         for n, q in got.items():
             fresh[n] = q
             cache["nm:" + n] = {**q.as_dict(), "_cached_at": now}
-        if got:
+        if recommended_ttl() > 3600:
+            for n in stale:
+                if n not in fresh:
+                    rec = cache.get("nm:" + n)
+                    if rec and rec.get("price", 0) > 0:
+                        try:
+                            d = {k: v for k, v in rec.items()
+                                 if k != "_cached_at"}
+                            fresh[n] = Quote(**d)
+                            cache["nm:" + n] = {**rec, "_cached_at": now}
+                            dirty = True
+                        except Exception:
+                            pass
+        if dirty:
             _save_cache(cache)
     return fresh
 
