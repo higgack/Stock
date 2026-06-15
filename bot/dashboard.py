@@ -11445,8 +11445,9 @@ _MARKET_CSS = (
     "color:var(--muted);border-bottom:2px solid var(--border);"
     "font-weight:600;white-space:nowrap;cursor:pointer;user-select:none}"
     ".dtbl th:hover{color:var(--accent)}"
-    ".dtbl th.sort-asc::after{content:' \\25B2';font-size:9px;color:var(--accent)}"
-    ".dtbl th.sort-desc::after{content:' \\25BC';font-size:9px;color:var(--accent)}"
+    ".dtbl th::after{content:' \\2195';font-size:9px;opacity:.4;font-weight:400}"
+    ".dtbl th.sort-asc::after{content:' \\25B2';font-size:9px;color:var(--accent);opacity:1}"
+    ".dtbl th.sort-desc::after{content:' \\25BC';font-size:9px;color:var(--accent);opacity:1}"
     ".dtbl td{padding:7px 10px;border-bottom:1px solid var(--surface-tint)}"
     ".dtbl tr:hover{background:var(--accent-soft)}"
     ".dtbl .sym{font-weight:600}"
@@ -12696,6 +12697,7 @@ def _render_market_page(data: dict) -> str:
   <div class="tbl-filter">
     <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
     <span class="cnt" id="earn-cnt"></span>
+    <span class="cnt" style="margin-left:auto">↕ 헤더 클릭 = 정렬 (날짜·EPS 등)</span>
   </div>
   <div class="tabs">{_etab_btns}</div>
   {_etab_panes}
@@ -12705,8 +12707,9 @@ def _render_market_page(data: dict) -> str:
     <span class="ts" style="margin-left:auto">{_html.escape(_res_ts)}</span>
   </div>
   <div class="tbl-filter">
-    <input id="research-filter" type="text" placeholder="종목 검색 …" autocomplete="off">
+    <input id="research-filter" type="text" placeholder="산업·증권사·제목 검색 …" autocomplete="off">
     <span class="cnt" id="research-cnt"></span>
+    <span class="cnt" style="margin-left:auto">↕ 헤더 클릭 = 정렬 (날짜 등)</span>
   </div>
   <div class="tabs">
     <button class="tab-btn active" data-tab="kr">한국 기업</button>
