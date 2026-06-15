@@ -9464,3 +9464,20 @@ class TestLiveAutoRefresh:
         assert is_open("US", 6, 3 * 60) is True        # 토 새벽 = 美 금 야간
         assert is_open("US", 0, 3 * 60) is False       # 일 새벽 美 주말
         assert is_open("JP", 1, 16 * 60) is False      # JP 장후
+
+
+class TestMacroChartReadable:
+    """홈 Macro 차트(금리·환율/물가) 축 글씨가 너무 작아 안 보이던 것 키움
+    (사용자 2026-06-15 '그래프 안에 글씨 너무 작아'). SVG 축/눈금 font 9→15."""
+
+    def test_svg_axis_font_bumped(self):
+        from bot.dashboard import _svg_line_chart
+        svg = _svg_line_chart(
+            ["2025-07", "2025-09", "2025-11", "2026-01"],
+            [{"name": "A", "color": "#42a5f5", "data": [4.4, 4.2, 4.1, 4.5], "axis": "L"},
+             {"name": "B", "color": "#ab47bc", "data": [1495, 1515, 1528, 1510], "axis": "R"}],
+        )
+        assert svg.startswith("<svg") and svg.endswith("</svg>")
+        assert 'font-size="15"' in svg          # 키운 축 글씨
+        assert 'font-size="9"' not in svg        # 옛 9px 회귀 차단
+        assert svg.count("<text") >= 12          # 좌·우 눈금 + x라벨 정상 emit
