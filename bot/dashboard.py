@@ -11514,12 +11514,12 @@ _MARKET_CSS = (
     "gap:14px;margin-bottom:24px}"
     ".chart-card{background:var(--card);border:1px solid var(--border);"
     "border-radius:12px;padding:14px 16px}"
-    ".chart-card h3{font-size:15px;margin:0 0 4px}"
-    ".chart-card .leg{font-size:13px;color:var(--muted);margin-bottom:8px;"
+    ".chart-card h3{font-size:14px;margin:0 0 4px}"
+    ".chart-card .leg{font-size:11px;color:var(--muted);margin-bottom:8px;"
     "display:flex;flex-wrap:wrap;gap:10px}"
     ".chart-card .leg span{display:inline-flex;align-items:center;gap:4px}"
     ".chart-card .leg i{width:9px;height:9px;border-radius:2px;display:inline-block}"
-    ".chart-card .foot{font-size:11px;color:var(--muted);margin-top:8px}"
+    ".chart-card .foot{font-size:10px;color:var(--muted);margin-top:8px}"
     ".chart-card svg{display:block;width:100%;height:auto;color:var(--muted)}"
     "@media(max-width:860px){.chart-row{grid-template-columns:1fr}}"
     # ── 투자자 예탁금·신용 (deposit) ──
@@ -12007,9 +12007,9 @@ def _svg_line_chart(labels: list, series: list) -> str:
     if not labels or not series:
         return ""
     has_right = any(s.get("axis") == "R" for s in series)
-    W, H = 520.0, 250.0
-    padL, padT, padB = 56.0, 16.0, 38.0
-    padR = 66.0 if has_right else 22.0
+    W, H = 520.0, 256.0
+    padL, padT, padB = 54.0, 14.0, 34.0
+    padR = 62.0 if has_right else 22.0
     plotW, plotH = W - padL - padR, H - padT - padB
 
     def _range(axis: str):
@@ -12050,7 +12050,7 @@ def _svg_line_chart(labels: list, series: list) -> str:
         )
         lv = lr[1] - (k / 4) * (lr[1] - lr[0])
         parts.append(
-            f'<text x="{padL - 7:.0f}" y="{gy + 5:.1f}" font-size="15" '
+            f'<text x="{padL - 7:.0f}" y="{gy + 5:.1f}" font-size="18" '
             f'fill="currentColor" text-anchor="end">{_ax_fmt(lv)}</text>'
         )
     # right axis ticks
@@ -12059,7 +12059,7 @@ def _svg_line_chart(labels: list, series: list) -> str:
             gy = padT + (k / 4) * plotH
             rv = rr[1] - (k / 4) * (rr[1] - rr[0])
             parts.append(
-                f'<text x="{W - padR + 7:.0f}" y="{gy + 5:.1f}" font-size="15" '
+                f'<text x="{W - padR + 7:.0f}" y="{gy + 5:.1f}" font-size="18" '
                 f'fill="currentColor" text-anchor="start">{_ax_fmt(rv)}</text>'
             )
     # x labels (~6 evenly)
@@ -12067,7 +12067,7 @@ def _svg_line_chart(labels: list, series: list) -> str:
     for i in range(0, n, step):
         lab = _html.escape(str(labels[i])) if i < len(labels) else ""
         parts.append(
-            f'<text x="{_x(i):.1f}" y="{H - 12:.0f}" font-size="15" '
+            f'<text x="{_x(i):.1f}" y="{H - 12:.0f}" font-size="18" '
             f'fill="currentColor" text-anchor="middle">{lab}</text>'
         )
     # series polylines
@@ -12081,7 +12081,7 @@ def _svg_line_chart(labels: list, series: list) -> str:
         )
         parts.append(
             f'<polyline points="{pts}" fill="none" stroke="{s["color"]}" '
-            f'stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>'
+            f'stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>'
         )
     parts.append("</svg>")
     return "".join(parts)

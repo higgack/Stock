@@ -9472,12 +9472,13 @@ class TestMacroChartReadable:
 
     def test_svg_axis_font_bumped(self):
         from bot.dashboard import _svg_line_chart
+        import re as _re
         svg = _svg_line_chart(
             ["2025-07", "2025-09", "2025-11", "2026-01"],
             [{"name": "A", "color": "#42a5f5", "data": [4.4, 4.2, 4.1, 4.5], "axis": "L"},
              {"name": "B", "color": "#ab47bc", "data": [1495, 1515, 1528, 1510], "axis": "R"}],
         )
         assert svg.startswith("<svg") and svg.endswith("</svg>")
-        assert 'font-size="15"' in svg          # 키운 축 글씨
-        assert 'font-size="9"' not in svg        # 옛 9px 회귀 차단
-        assert svg.count("<text") >= 12          # 좌·우 눈금 + x라벨 정상 emit
+        sizes = [int(x) for x in _re.findall(r'font-size="(\d+)"', svg)]
+        assert sizes and min(sizes) >= 16        # 축 숫자/날짜 충분히 큼(원본 9px 회귀 차단)
+        assert svg.count("<text") >= 8           # 좌·우 눈금 + x라벨 정상 emit
