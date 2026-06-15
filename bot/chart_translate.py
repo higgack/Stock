@@ -181,6 +181,82 @@ def translate_names_en(names: list[str]) -> dict:
     return out
 
 
+_NAME_KR_CACHE = _HOME / "names_kr.json"
+
+
+def _load_name_kr() -> dict:
+    try:
+        return json.loads(_NAME_KR_CACHE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_name_kr(d: dict) -> None:
+    try:
+        _HOME.mkdir(parents=True, exist_ok=True)
+        tmp = _NAME_KR_CACHE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, _NAME_KR_CACHE)
+    except OSError:
+        pass
+
+
+def translate_names_kr(pairs: list) -> dict:
+    """[(ticker, 현지명)…] → {ticker: 한글 회사명} — CN/TW/HK 종목명을 **영문 통용명
+    기준 한글 음역**으로(사용자 2026-06-15 '화봉전 말고 윈본드'). 한자음독(화봉전)
+    대신 한국 금융권 통용 표기(윈본드·폭스콘·미디어텍), 영문 약자가 더 통용되면 영문
+    유지(TSMC·UMC·SMIC). Flash 배치·영구 캐시(names_kr.json, **티커당 1회** → 이후
+    ₩0). graceful(키부재/실패 시 빠짐 → 호출부 원문 유지). 티커가 disambiguation
+    힌트라 현지명이 한자음독이어도 정확."""
+    seen: set = set()
+    uniq: list = []
+    for tk, nm in pairs:
+        tk = str(tk or "").strip()
+        if tk and tk not in seen:
+            seen.add(tk)
+            uniq.append((tk, str(nm or "").strip()))
+    if not uniq:
+        return {}
+    cache = _load_name_kr()
+    out = {tk: cache[tk] for tk, _ in uniq if cache.get(tk)}
+    todo = [(tk, nm) for tk, nm in uniq if tk not in cache][:_MAX_BATCH]
+    if not todo:
+        return out
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        return out
+    lines = "\n".join(f"{i + 1}. {tk} | {nm}" for i, (tk, nm) in enumerate(todo))
+    prompt = (
+        "다음은 대만/중국/홍콩 상장사입니다('티커 | 현지명'). 각 줄을 한국 투자자에게 "
+        "통용되는 **간결한 한글 회사명**으로 바꾸세요.\n"
+        "- 영문 통용명 기준 음역: 華邦電 → 윈본드, 鴻海 → 폭스콘, 聯發科 → 미디어텍, "
+        "比亞迪 → 비야디, 騰訊 → 텐센트, 阿里巴巴 → 알리바바\n"
+        "- 한국에서 영문 약자로 더 통용되면 영문 유지: 台積電 → TSMC, 聯電 → UMC, "
+        "中芯國際 → SMIC, 日月光 → ASE\n"
+        "- 한자 음독(화봉전 등) 금지. 법인격(Corporation/股份有限公司/控股) 생략, "
+        "핵심 브랜드만. 한 줄당 결과 하나, 입력과 동일한 '번호. 결과' 형식, 같은 "
+        "번호 유지. 설명 금지.\n\n" + lines)
+    try:
+        from bot.screener import _call_pro
+        text, pt, ot = _call_pro(api_key, prompt, model="gemini-2.5-flash",
+                                 enable_grounding=False)
+        _log_usage(pt, ot)
+        for line in (text or "").splitlines():
+            m = re.match(r"\s*(\d+)[.)]\s*(.+)", line)
+            if not m:
+                continue
+            idx = int(m.group(1)) - 1
+            kr = m.group(2).strip()
+            if 0 <= idx < len(todo) and kr:
+                tk = todo[idx][0]
+                out[tk] = kr
+                cache[tk] = kr
+        _save_name_kr(cache)
+    except Exception:
+        pass
+    return out
+
+
 def translate_titles_kr(titles: list[str]) -> dict:
     """[제목…] → {원문제목: 한국어}. 캐시 우선, 미캐시만 Flash 배치 번역. graceful.
 

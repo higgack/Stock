@@ -132,6 +132,19 @@ def stock_panel(title: str, items: list, tid: str, market: str,
     if not items:
         return (f'<div class="panel"><h2>{title}</h2>'
                 '<div class="empty">해당 종목 없음</div></div>')
+    # CN/TW/HK 종목명 = 영문 통용명 기준 한글 음역(사용자 2026-06-15 '화봉전→윈본드').
+    # 티커 기반 영구 캐시(Flash, 첫 1회만·이후 ₩0). graceful — 실패 시 원본 유지.
+    if market in ("CN_A", "TW", "HK"):
+        try:
+            from bot.chart_translate import translate_names_kr
+            _knm = translate_names_kr([(it.get("ticker"), it.get("name"))
+                                       for it in items if it.get("ticker")])
+            for it in items:
+                _k = _knm.get(it.get("ticker"))
+                if _k:
+                    it["name"] = _k
+        except Exception:
+            pass
     sym = _CUR.get(market, ("", 2))[0]
     cur_h = f" ({sym})" if sym else ""
 

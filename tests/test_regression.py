@@ -5606,6 +5606,43 @@ class TestMoversSortByPct:
             assert "sort_by_pct" in open(path, encoding="utf-8").read(), path
 
 
+class TestNameTranslationKr:
+    """CN/TW/HK 종목명 영문 통용명 기준 한글 음역 (chart_translate.translate_names_kr
+    + stock_panel 적용) — 사용자 2026-06-15 '화봉전→윈본드'. 티커 기반 영구 캐시."""
+
+    def test_translate_names_kr_cache_dedup_graceful(self):
+        from unittest.mock import patch
+        import bot.chart_translate as ct
+        with patch.object(ct, "_load_name_kr", lambda: {"2344.TW": "윈본드"}):
+            out = ct.translate_names_kr([("2344.TW", "華邦電"), ("2344.TW", "華邦電")])
+        assert out == {"2344.TW": "윈본드"}            # 캐시 히트 + 티커 dedup
+        with patch.object(ct, "_load_name_kr", lambda: {}), \
+             patch.dict("os.environ", {}, clear=True):
+            assert ct.translate_names_kr([("2330.TW", "台積電")]) == {}   # graceful
+
+    def test_stock_panel_applies_kr_names(self):
+        from unittest.mock import patch
+        from bot import highlow_render as hr
+        items = [{"ticker": "2344.TW", "name": "화봉전", "price": 172, "pct": 9.9}]
+        with patch("bot.chart_translate.translate_names_kr",
+                   lambda pairs: {"2344.TW": "윈본드"}):
+            html = hr.stock_panel("T", items, "t1", "TW", name_only=True)
+        assert "윈본드" in html and "화봉전" not in html
+
+    def test_stock_panel_skips_us(self):
+        from unittest.mock import patch
+        from bot import highlow_render as hr
+        called = {"n": 0}
+
+        def _spy(pairs):
+            called["n"] += 1
+            return {}
+        with patch("bot.chart_translate.translate_names_kr", _spy):
+            hr.stock_panel("U", [{"ticker": "AAPL", "name": "Apple",
+                                  "price": 1, "pct": 1}], "u1", "US", name_only=True)
+        assert called["n"] == 0           # US/KR 는 음역 미적용
+
+
 class TestPruneNonStock:
     """비-주식 가지치기 (finviz_client.prune_non_stock) — CEF 펀드·유령티커·
     이중클래스 dedupe (사용자 2026-06-14 실데이터 회귀)."""
