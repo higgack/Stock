@@ -571,5 +571,22 @@ class HtmlNoCacheTests(unittest.TestCase):
         self.assertIn('mime.startswith("text/html")', src)
 
 
+class CardModalPerfTests(unittest.TestCase):
+    """카드 클릭 모달 open 지연 — 긴 목록(1054+카드)에서 body{overflow:hidden}
+    스크롤 잠금이 스크롤바를 없애 페이지 폭이 변하면 전 카드 reflow → 지연.
+    scrollbar-gutter:stable 로 스크롤바 공간 항상 예약(폭 변동·reflow 제거).
+    (사용자 2026-06-15 '카드 여는거 느림'.)"""
+
+    def test_scrollbar_gutter_stable_present(self):
+        import tempfile
+        from trade.dashboard import render_html
+        from trade.store import open_db
+        d = tempfile.mkdtemp()
+        db = Path(d) / "store.db"
+        open_db(db).close()
+        html = render_html(db)
+        self.assertIn("scrollbar-gutter:stable", html)
+
+
 if __name__ == "__main__":
     unittest.main()

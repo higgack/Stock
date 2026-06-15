@@ -662,6 +662,11 @@ body.dark{
   --img-placeholder:#1f1f21;
 }
 *{box-sizing:border-box}
+/* 카드 클릭 시 모달 open 의 body{overflow:hidden}(스크롤 잠금)이 페이지 스크롤바를
+   없애 폭이 ~15px 변하면, 1054+ 카드 전체가 reflow 돼 체감 지연(사용자 2026-06-15
+   '카드 여는거 느림'). 스크롤바 공간을 항상 예약해 폭 변동·reflow 제거 — 긴 목록
+   페이지의 표준 모달-지연 해법. */
+html{scrollbar-gutter:stable}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Apple SD Gothic Neo","Malgun Gothic",sans-serif;margin:0;padding:0;background:var(--bg);color:var(--text);line-height:1.4;transition:background .25s,color .25s}
 header{background:var(--surface);padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
 h1{margin:0 0 4px;font-size:18px}
