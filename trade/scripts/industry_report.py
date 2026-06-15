@@ -7,7 +7,7 @@ new API surface. Read-only: writes nothing, sends nothing.
 
     .venv/bin/python -m trade.scripts.industry_report               # latest month, all industries
     .venv/bin/python -m trade.scripts.industry_report --industry 반도체   # one industry's full series
-    .venv/bin/python -m trade.scripts.industry_report --lookback-months 24
+    .venv/bin/python -m trade.scripts.industry_report --lookback-months 36 --store  # TTM YoY 추세선
 """
 from __future__ import annotations
 
@@ -34,8 +34,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--industry", default=None,
                     help="show one industry's full monthly series")
-    ap.add_argument("--lookback-months", type=int, default=24,
-                    help="window (YoY needs ≥13 months; 24 = 1 full YoY series)")
+    ap.add_argument("--lookback-months", type=int, default=36,
+                    help="window. 월별 YoY ≥13 / TTM YoY ≥25(=24 확정월) / 36 = TTM "
+                         "YoY 추세선(사용자 2026-06-15 — 옛 24는 23확정뿐이라 TTM YoY "
+                         "영구 미표시였음). DELETE+INSERT 라 매 run 이 window 만큼 재구축.")
     ap.add_argument("--max-chapters", type=int, default=len(customs_scan.CHAPTERS))
     ap.add_argument("--store", action="store_true",
                     help="persist the aggregated series to customs.db for the dashboard")
