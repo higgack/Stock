@@ -343,6 +343,11 @@ def _load_eval_miss_summary(
     p = Path(path)
     if not p.exists():
         return None
+    # IGNORED 매칭 캡션은 백로그에서 제외 (사용자 2026-06-15) — '주요 기업
+    # 수출입 확정치 코멘트' 같은 off-topic 시리즈는 영구 파싱 불가가 정상이라
+    # actionable 백로그가 아니다. read-only(파일 미변경)·다음 렌더에 즉시 반영·
+    # 향후 IGNORED 추가도 자동 적용. matches_prefix/contains 재사용.
+    from trade import ignored as _ignored
     count = 0
     oldest: datetime | None = None
     try:
@@ -354,6 +359,9 @@ def _load_eval_miss_summary(
                 try:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
+                    continue
+                cap = rec.get("caption") or rec.get("text") or ""
+                if _ignored.matches_prefix(cap) or _ignored.matches_contains(cap):
                     continue
                 count += 1
                 detected = rec.get("detected_at")

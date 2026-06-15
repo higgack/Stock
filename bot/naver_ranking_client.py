@@ -361,7 +361,7 @@ def world_industry_map(market: str, per_industry: int = 300) -> dict:   # 300: �
     if not nat:
         return {}
     from bot.finviz_client import _cache_write, _cached, naver_paused
-    cache = f"naver_industry_{market}.json"
+    cache = f"naver_industry_kr_{market}.json"   # _kr: 2026-06-15 한글 전환(옛 영문 캐시 폐기)
     cached = _cached(cache, ttl=7 * 86400)
     if isinstance(cached, dict) and cached:
         return cached
@@ -399,16 +399,9 @@ def world_industry_map(market: str, per_industry: int = 300) -> dict:   # 300: �
                 out[tk] = ind
             if tk and nm:
                 names[tk] = nm
-    # 업종명 영문화 (사용자 2026-06-14 '모두 영문') — 한글 업종명 → 영문 번역
-    # (Flash·영구 캐시). 키부재/실패 시 한글 유지(graceful).
-    if out:
-        try:
-            from bot.chart_translate import translate_industries_en
-            en = translate_industries_en(sorted(set(out.values())))
-            if en:
-                out = {tk: en.get(v, v) for tk, v in out.items()}
-        except Exception:
-            pass
+    # 업종명 한글 유지 (사용자 2026-06-15 '일본·중국·홍콩도 대만처럼 한글로')
+    # — 네이버 reutersIndustryName 이 이미 한글. 2026-06-14 '모두 영문' 번역
+    # 단계 폐기 (대만 _SECTOR_KR 한글 표기와 일관).
     if out:
         _cache_write(cache, out)
     if names:
@@ -538,7 +531,7 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
         return {"up": [], "down": [], "ts": "", "source": ""}
     from bot.finviz_client import (_CACHE_DIR, _cache_write, _cached,
                                    _now_label, _session_fresh)
-    cache = f"naver_sector_movers_{market}.json"
+    cache = f"naver_sector_movers_kr_{market}.json"   # _kr: 2026-06-15 한글 전환(옛 영문 캐시 폐기)
     # 세션-인지(사용자 2026-06-15 '업종 30초'): 장중 30초 / 장 밖엔 마지막 산출본이면
     # 재fetch 0(평면 5분이 장 밖·주말에도 재fetch 하던 낭비 제거). 무버·신고저와 통일.
     stale = _cached(cache, ttl=86400)
@@ -592,15 +585,8 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
             rows.append({"name": name, "pct": round(num / den, 2)})
     if not rows:
         return {"up": [], "down": [], "ts": "", "source": ""}
-    # 업종명 영문화 (사용자 2026-06-14 '모두 영문'). graceful.
-    try:
-        from bot.chart_translate import translate_industries_en
-        en = translate_industries_en([r["name"] for r in rows])
-        if en:
-            for r in rows:
-                r["name"] = en.get(r["name"], r["name"])
-    except Exception:
-        pass
+    # 업종명 한글 유지 (사용자 2026-06-15 '일본·중국·홍콩도 대만처럼 한글로')
+    # — name 은 industryGroupKor(네이버 한글). 2026-06-14 영문 번역 폐기.
     rows.sort(key=lambda r: r["pct"], reverse=True)
     up = [r for r in rows if r["pct"] > 0][:top_n]
     down = sorted([r for r in rows if r["pct"] < 0], key=lambda r: r["pct"])[:top_n]

@@ -2057,7 +2057,7 @@ def _render_index(records: list[dict]) -> str:
     # 도메인 목록은 제거(사용자 2026-06-10) — Screener 페이지 nav 에서 접근.
     errors_link = (
         ' · <a href="market.html">🌍 홈</a>'
-        ' · <a href="asia.html">🌏 ASIA</a>'   # 홈 옆 ASIA — 여기(NOAH 종목분석)만 (사용자 2026-06-15)
+        ' · <a href="asia.html">🏯 ASIA</a>'   # 홈 옆 ASIA — 여기(NOAH 종목분석)만 (사용자 2026-06-15)
         ' · <a href="dart_feed.html">📋 DART 공시</a>'
         ' · <a href="screener.html">📊 Screener</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
@@ -12664,7 +12664,7 @@ def _render_market_page(data: dict) -> str:
     <a href="portfolio.html">💼 자산</a>
     &middot; <a href="budget.html">📒 가계부</a>
     &nbsp;|&nbsp;
-    <a href="asia.html">🌏 ASIA</a>
+    <a href="asia.html">🏯 ASIA</a>
     &middot; <a href="index.html">🦉 NOAH 종목분석</a>
     &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="screener.html">📊 Screener</a>
@@ -12715,7 +12715,7 @@ def _render_market_page(data: dict) -> str:
     # 부재(ETF 합성 위젯 자체) + 가격제한 별도 페이지 부재 → ②만.
     _lk2 = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
     # 일·중·홍·대(ASIA) 업종 등락은 별도 asia.html 로 분리 — 홈 경량화·성능
-    # (사용자 2026-06-15). nav '🌏 ASIA' 링크. 같은 data 로 _render_asia_page 가
+    # (사용자 2026-06-15). nav '🏯 ASIA' 링크. 같은 data 로 _render_asia_page 가
     # 렌더(추가 fetch 0). KR·US 는 홈 유지.
     parts.append('</div>')  # close #live-sections (라이브 틱 단위 — 30초 자동 갱신)
 
@@ -13191,14 +13191,14 @@ def _render_market_page(data: dict) -> str:
         /* 통화 통합 정렬키 (USD 환산) — ₩1526조 가 $1.13T 위로 가게 */
         var fx = FX[f.currency] || 1;
         function usd(v) {{ return v != null ? (v / fx) : ''; }}
-        var da = 'data-name="' + (f.name || f.ticker).toLowerCase() + '" data-country="' + (f.country || '') + '"'
+        var da = 'data-name="' + ((f.name_kr||'') + ' ' + (f.name||'') + ' ' + f.ticker).toLowerCase() + '" data-country="' + (f.country || '') + '"'
           + ' data-saved="' + (f.saved_date || '') + '" data-mcap="' + usd(f.market_cap) + '"'
           + ' data-sprice="' + usd(f.saved_price) + '" data-cprice="' + usd(f.current_price) + '"'
           + ' data-pct="' + (pctVal !== '' ? pctVal : '') + '" data-eps="' + usd(f.eps_estimate) + '"'
           + ' data-per="' + (f.per != null ? f.per : '') + '" data-earn="' + (f.next_earnings || '') + '"';
         return '<tr ' + da + '>'
           + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="color:inherit;text-decoration:none">'
-          + '<span style="font-weight:600;font-size:13px">' + (f.name||f.ticker) + '</span>'
+          + '<span style="font-weight:600;font-size:13px">' + (f.name_kr||f.name||f.ticker) + '</span>'
           + '<span style="display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:1px">' + f.ticker + '</span></a></td>'
           + '<td>' + flag + '</td>'
           + '<td style="white-space:nowrap">' + (f.saved_date||'') + '</td>'
@@ -13366,7 +13366,7 @@ def _render_asia_page(data: dict) -> str:
         '\n<div class="wrap">\n  <div class="nav">\n'
         '    <a href="market.html">🌍 홈</a>\n'
         '    &middot; <a href="index.html">🦉 NOAH 종목분석</a>\n'
-        '  </div>\n  <h1>🌏 아시아 업종 등락</h1>\n'
+        '  </div>\n  <h1>🏯 아시아 업종 등락</h1>\n'
         '  <p class="sub">일본·중국·홍콩·대만 업종 등락 — 홈과 동일 소스·30초 자동 갱신</p>\n'
         '  <div id="live-sections">')
     parts.append(_render_etf_sector_movers(

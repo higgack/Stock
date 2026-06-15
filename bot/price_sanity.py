@@ -135,6 +135,27 @@ def price_outlier_vs_refs(px, low52=None, high52=None, sma50=None,
     return False
 
 
+def within_52w_range(px, low52, high52, tol: float = 0.03) -> bool:
+    """True when `px` sits INSIDE the 52-week [low, high] band (±tol).
+
+    A genuine large single-session move in a no-limit market (CAST +126%
+    / RGNT +752% 2026-06-15, US) lands INSIDE the 52-week range — it is a
+    real news move, not a split glitch. Magnitude vs the prior close
+    alone (e.g. >75%) can NOT tell the two apart, so callers gate the
+    magnitude-based glitch guard on this: in-range → trust the price (skip
+    the guard); only a price OUTSIDE the 52w band (KLAC $2,411 vs ~$300
+    high) is the impossible-move glitch worth correcting.
+
+    Returns False when either 52w ref is missing/invalid — the caller
+    then falls back to the magnitude guard (conservative; never suppresses
+    a real glitch just because refs are absent)."""
+    try:
+        lo, hi, p = float(low52), float(high52), float(px)
+    except (TypeError, ValueError):
+        return False
+    return lo > 0 and hi > 0 and lo * (1 - tol) <= p <= hi * (1 + tol)
+
+
 def should_hard_freeze_technicals(px, low52, high52, signals) -> bool:
     """Given a >30% price-vs-SMA gap with external `signals`, decide HARD
     freeze (ban all technical indicators) vs SOFT (technicals still valid).
