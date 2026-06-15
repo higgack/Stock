@@ -26,17 +26,16 @@ import yfinance as yf
 log = logging.getLogger("bot.market_overview")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "market_overview"
-# 스냅샷 — 지수·환율·원자재·코인·KR 개별종목 **전부 네이버**(사용자 2026-06-15
-# '홈 야후 완전 제거') → _all_yf_tickers 보통 0, yf 경로 무동작. 라이브 fast_info
-# throttle(_LIVE_TTL)·YF_PAUSE 는 야후 잔존 시 대비로만 유지. Finviz 업종 TTL 은
-# 각 클라이언트 별도(안티봇 경계 — 건드리지 말 것).
+# 스냅샷 — ALL_CARDS 는 지수·환율·원자재·코인·VIX 뿐(개별 종목 카드 없음) +
+# 전부 네이버(nv*) → _all_yf_tickers 보통 0, yf 경로 무동작(홈 스냅샷 야후 0).
+# 라이브 fast_info throttle(_LIVE_TTL)·YF_PAUSE 는 야후 잔존 시 대비로만 유지.
+# Finviz 업종 TTL 은 각 클라이언트 별도(안티봇 경계 — 건드리지 말 것).
 _CACHE_TTL_SEC = 30  # 30초 (사용자 2026-06-15 '네이버 다 실시간')
 
 # fast_info(라이브 quote API) throttle — 야후가 fast_info 만 쉽게 rate-limit.
-# 홈 스냅샷은 이제 지수·환율·원자재·코인·KR 개별종목 **전부 네이버**(사용자
-# 2026-06-15) → fast_info 호출 사실상 0(_all_yf_tickers 보통 빈 리스트). _LIVE_TTL
-# 은 야후 잔존(미래 추가 종목 등) 대비 방어적 throttle 로만 유지 — 야후 rate-limit
-# 시 daily 폴백.
+# 홈 스냅샷(ALL_CARDS)은 지수·환율·원자재·코인·VIX 뿐이고 전부 네이버 → fast_info
+# 호출 사실상 0(_all_yf_tickers 보통 빈 리스트). _LIVE_TTL 은 야후 잔존(미래 추가
+# 종목 등) 대비 방어적 throttle 로만 유지 — 야후 rate-limit 시 daily 폴백.
 _LIVE_TTL = 60      # fast_info 라이브 throttle (잔존 야후 대비 방어 — 홈은 보통 미사용)
 _LAST_LIVE: dict = {}
 _LAST_LIVE_TS = 0.0
@@ -208,12 +207,10 @@ def _all_yf_tickers() -> list[str]:
             if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:", "nvk:",
                               "nvf:", "nvc:", "nve:")):
                 continue  # 네이버 (marketindex/worldstock/domestic/exchange/futures/coin/etf)
-            if tk.endswith((".KS", ".KQ")):
-                continue  # KR 개별종목 = 네이버 polling/domestic/stock (사용자 2026-06-15
-                #           '홈 야후 완전 제거') — _fetch_market_snapshot 가 별도 병합.
             tickers.append(tk)
-    # 지수·환율·원자재·코인·KR 개별종목 전부 네이버로 전환 → 홈 스냅샷 yfinance
-    # **완전 제거**(사용자 2026-06-15). 이 함수는 보통 빈 리스트(야후 0)를 반환.
+    # ALL_CARDS = 지수·환율·원자재·코인·VIX 뿐(개별 종목 카드 없음) + 전부 네이버
+    # (nv*) → 이 함수는 보통 **빈 리스트**(홈 스냅샷 야후 0). 실적/리서치 유니버스는
+    # ALL_CARDS 와 별개(다가오는 실적은 yfinance .calendar, 스냅샷 무관).
     return tickers
 
 
@@ -445,21 +442,6 @@ def _fetch_yf_batch() -> dict[str, dict]:
                                    "change": _rec["change"], "pct": _rec["pct"]}
         except Exception as exc:
             log.warning("market_overview: naver ETF 병합 실패: %s", exc)
-    # KR 개별종목(.KS/.KQ) — 네이버 polling/domestic/stock (사용자 2026-06-15
-    # '홈 야후 완전 제거'). 33 KR 주요종목 시세를 야후→네이버. probe 확정 구조.
-    _kr_tks = [_tk for _grp, _items in ALL_CARDS if _items
-               for _nm, _tk in _items if _tk.endswith((".KS", ".KQ"))]
-    if _kr_tks:
-        try:
-            from bot.naver_marketindex import fetch_kr_stock_quotes
-            _krq = fetch_kr_stock_quotes(tuple(_t.rsplit(".", 1)[0] for _t in _kr_tks))
-            for _tk in _kr_tks:
-                _rec = _krq.get(_tk.rsplit(".", 1)[0])
-                if _rec and _rec.get("close") is not None:
-                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
-                                   "change": _rec["change"], "pct": _rec["pct"]}
-        except Exception as exc:
-            log.warning("market_overview: naver KR 개별종목 병합 실패: %s", exc)
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)

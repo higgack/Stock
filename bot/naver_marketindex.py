@@ -407,58 +407,6 @@ def fetch_domestic_indices(codes: tuple) -> dict:
     return out
 
 
-_DOMSTOCK_URL = "https://stock.naver.com/api/polling/domestic/stock"
-_DOMSTOCK_CACHE = "naver_domesticstock.json"
-
-
-def fetch_kr_stock_quotes(codes: tuple) -> dict:
-    """{code(6자리): {close, prev, change, pct, mcap}} — polling/domestic/stock
-    (KR 개별종목 시세). VM probe 2026-06-15 확정: 국내지수와 **동일 구조** —
-    itemCode·closePriceRaw·compareToPreviousClosePriceRaw·compareToPreviousPrice.
-    code(2상승/5하락)·fluctuationsRatioRaw·marketValueFullRaw(시총). *Raw=콤마없는
-    숫자. 30초 캐시(=_TTL)·naver_paused·graceful. 홈 33 KR 주요종목 카드를 야후
-    →네이버 이전(사용자 2026-06-15 '네이버는 다 실시간·홈 야후 완전 제거'). codes
-    가 고정 집합이라 전체 맵 캐시(지수 fetch 와 동일). 응답 bare list / {datas:[]} 양형."""
-    from bot.finviz_client import _cache_write, _cached, naver_paused
-    if not codes:
-        return {}
-    c = _cached(_DOMSTOCK_CACHE, ttl=_TTL)
-    if isinstance(c, dict) and c:
-        return c
-    if naver_paused():
-        return _cached(_DOMSTOCK_CACHE, ttl=86400) or {}
-    import requests
-    out: dict = {}
-    try:
-        r = requests.get(_DOMSTOCK_URL, headers=_HDRS, timeout=12,
-                         params={"itemCodes": ",".join(codes)})
-        raw = r.json() if r.status_code == 200 else []
-    except Exception as exc:
-        log.warning("naver domesticstock fetch error: %s", exc)
-        return _cached(_DOMSTOCK_CACHE, ttl=86400) or {}
-    rows = raw.get("datas") if isinstance(raw, dict) else raw
-    for it in rows if isinstance(rows, list) else []:
-        ic = str(it.get("itemCode") or "").strip()
-        close = _num(it.get("closePriceRaw") or it.get("closePrice"))
-        if not ic or close is None:
-            continue
-        chg = _num(it.get("compareToPreviousClosePriceRaw")
-                   or it.get("compareToPreviousClosePrice"))
-        code = (it.get("compareToPreviousPrice") or {}).get("code")
-        pctv = _num(it.get("fluctuationsRatioRaw") or it.get("fluctuationsRatio"))
-        sign = -1.0 if code == "5" else 1.0      # 5=하락, 2=상승
-        prev = (close - sign * chg) if chg is not None else close
-        out[ic] = {"close": close, "prev": prev,
-                   "change": (sign * abs(chg)) if chg is not None else 0.0,
-                   "pct": (sign * abs(pctv)) if pctv is not None else 0.0,
-                   "mcap": _num(it.get("marketValueFullRaw"))}
-    if out:
-        _cache_write(_DOMSTOCK_CACHE, out)
-    else:
-        return _cached(_DOMSTOCK_CACHE, ttl=86400) or {}
-    return out
-
-
 _FX_URL = "https://api.stock.naver.com/marketindex/exchangeWorld"
 _FX_CACHE = "naver_worldfx.json"
 

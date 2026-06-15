@@ -5577,37 +5577,15 @@ class TestMarketLiveTick:
         assert "DOMParser" in d._MARKET_LIVE_JS and "30000" in d._MARKET_LIVE_JS
 
 
-class TestHomeNaverMigration:
-    """홈 스냅샷 야후 완전 제거 — KR 33 주요종목까지 네이버 polling/domestic/stock
-    (사용자 2026-06-15 '네이버는 다 실시간·홈 야후 완전 제거'). VM probe 확정 구조."""
+class TestHomeSnapshotPureNaver:
+    """홈 스냅샷(ALL_CARDS) = 지수·환율·원자재·코인·VIX 뿐(개별 종목 카드 없음) +
+    전부 네이버(nv*) → _all_yf_tickers 빈 리스트(야후 0). 2026-06-15 확인: 정규식
+    으로 보였던 KR 종목은 '다가오는 실적' 유니버스(yfinance .calendar)이지 스냅샷
+    카드가 아님 — 잘못 넣은 KR 시세 병합 dead code 철회."""
 
-    def test_no_yahoo_tickers_left(self):
+    def test_no_yahoo_tickers_in_snapshot(self):
         import bot.market_overview as mo
-        tks = mo._all_yf_tickers()
-        assert not [t for t in tks if t.endswith((".KS", ".KQ"))]   # KR 야후 0
-        assert tks == []        # 전 카드 네이버 → 홈 스냅샷 100% 네이버
-
-    def test_kr_stock_quote_parser(self):
-        from unittest.mock import patch, MagicMock
-        import bot.naver_marketindex as nm
-        sample = {"datas": [
-            {"itemCode": "005930", "closePriceRaw": "337750",
-             "compareToPreviousClosePriceRaw": "15250",
-             "compareToPreviousPrice": {"code": "2"},        # 2=상승
-             "fluctuationsRatioRaw": "4.73", "marketValueFullRaw": "2015000"},
-            {"itemCode": "000660", "closePriceRaw": "200000",
-             "compareToPreviousClosePriceRaw": "5000",
-             "compareToPreviousPrice": {"code": "5"},        # 5=하락
-             "fluctuationsRatioRaw": "2.44", "marketValueFullRaw": "145000"}]}
-        mr = MagicMock(); mr.status_code = 200; mr.json = lambda: sample
-        with patch("bot.finviz_client._cached", lambda *a, **k: None), \
-             patch("bot.finviz_client.naver_paused", lambda: False), \
-             patch("bot.finviz_client._cache_write", lambda *a, **k: None), \
-             patch("requests.get", return_value=mr):
-            out = nm.fetch_kr_stock_quotes(("005930", "000660"))
-        assert out["005930"]["close"] == 337750 and out["005930"]["prev"] == 322500
-        assert out["005930"]["change"] == 15250 and abs(out["005930"]["pct"] - 4.73) < 1e-6
-        assert out["000660"]["prev"] == 205000 and out["000660"]["change"] == -5000
+        assert mo._all_yf_tickers() == []   # ALL_CARDS 전부 네이버 → 야후 0
 
 
 class TestMoversSortByPct:
