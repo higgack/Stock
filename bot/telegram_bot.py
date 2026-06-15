@@ -1236,6 +1236,12 @@ def _help_keyboard(bot_username: str | None) -> InlineKeyboardMarkup | None:
                 url=f"https://t.me/{bot_username}?start=sites",
             ),
         ],
+        [
+            InlineKeyboardButton(
+                "📝 감시 블로그",
+                url=f"https://t.me/{bot_username}?start=blog",
+            ),
+        ],
     ])
 
 
@@ -1288,6 +1294,12 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         if arg == "sites":
             await update.message.reply_text(
                 _SITES_TEXT, parse_mode=ParseMode.HTML, disable_web_page_preview=True
+            )
+            return
+        if arg == "blog":   # help 키보드 '📝 감시 블로그' 버튼 deep-link
+            await update.message.reply_text(
+                _blog_list_text(), parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True
             )
             return
         if arg == "screener_list":

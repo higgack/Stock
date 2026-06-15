@@ -5736,6 +5736,10 @@ class TestBlogWatchMultiBlog:
         assert '"blog": (cmd_blog' in src, "레지스트리 등록 누락(텔레그램·메뉴·콘솔)"
         assert 'first_word == "blog"' in src, "채널 dispatch 누락"
         assert "/blog" in src, "help §1 /blog 누락"
+        # help 인라인 키보드 버튼(📝 감시 블로그) + /start blog deep-link (sites 처럼)
+        assert "📝 감시 블로그" in src, "help 키보드 블로그 버튼 누락"
+        assert "start=blog" in src, "키보드 deep-link(start=blog) 누락"
+        assert 'arg == "blog"' in src, "/start blog deep-link 핸들러 누락"
 
     def test_state_migration_old_initialized(self, tmp_path):
         import bot.blog_watch as bw
