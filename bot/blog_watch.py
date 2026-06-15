@@ -24,19 +24,20 @@ from datetime import datetime, timedelta, timezone
 log = logging.getLogger("bot.blog_watch")
 
 _KST = timezone(timedelta(hours=9))
-_BLOG_ID = "beatthemkt"
-_BLOG_TITLE = "변화하는 기업을 찾아서"
-_RSS_URLS = (
-    f"https://rss.blog.naver.com/{_BLOG_ID}.xml",
-    f"https://rss.blog.naver.com/{_BLOG_ID}",
+# 감시 블로그 목록 (멀티 블로그 — 사용자 2026-06-15 teasky0221 추가). 각 블로그:
+# id(네이버 blogId) + title(표시명, 비면 런타임 RSS 채널 title 로 보강) +
+# categories(수집 카테고리 prefix; None = 전체 글). 새 블로그는 첫 run 에
+# **per-blog 초기화**로 기존 글 seen 처리(폭주 방지) → 이후 새 글만 push.
+_BLOGS = (
+    {"id": "beatthemkt", "title": "변화하는 기업을 찾아서",
+     "categories": ("관심종목", "기업탐방")},
+    {"id": "teasky0221", "title": "필승", "categories": None},   # 전체 글 (사용자 2026-06-15)
 )
 _HOME = os.path.expanduser("~")
 _STATE = os.path.join(_HOME, ".tradingagents", "blog_watch_state.json")
 _ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "blog_archive")
-_MAX_SEEN = 300
-# 수집 대상 카테고리(prefix 매칭 — 연도 suffix 변경 대응): 사용자 2026-06-11
-_ALLOWED_CATEGORY_PREFIXES = ("관심종목", "기업탐방")
-_MAX_NEW_PER_RUN = 5
+_MAX_SEEN = 600          # 멀티 블로그 — 블로그당 최근 GUID 충분히 보존
+_MAX_NEW_PER_RUN = 5     # 블로그당
 
 
 def _now_kst() -> datetime:
@@ -49,10 +50,14 @@ def _load_state() -> dict:
         with open(_STATE, encoding="utf-8") as f:
             d = json.load(f)
         d.setdefault("seen", [])
-        d.setdefault("initialized", False)
+        d.setdefault("init", {})          # per-blog 초기화 {blog_id: True}
+        # 옛 단일 블로그 bool 'initialized' → beatthemkt per-blog init 으로 승계
+        # (마이그레이션: 기존 VM state 는 초기화 끝난 beatthemkt 만 가짐).
+        if d.get("initialized") and not d["init"].get("beatthemkt"):
+            d["init"]["beatthemkt"] = True
         return d
     except Exception:
-        return {"seen": [], "initialized": False}
+        return {"seen": [], "init": {}}
 
 
 def _save_state(state: dict) -> None:
@@ -66,23 +71,32 @@ def _save_state(state: dict) -> None:
 
 
 # ── RSS fetch + parse ─────────────────────────────────────────────────────
-def _fetch_rss() -> str | None:
+def _fetch_rss(blog_id: str) -> str | None:
     import httpx
     headers = {
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
-        "Referer": f"https://m.blog.naver.com/{_BLOG_ID}",
+        "Referer": f"https://m.blog.naver.com/{blog_id}",
         "Accept": "application/rss+xml, application/xml, text/xml, */*",
     }
-    for url in _RSS_URLS:
+    for url in (f"https://rss.blog.naver.com/{blog_id}.xml",
+                f"https://rss.blog.naver.com/{blog_id}"):
         try:
             r = httpx.get(url, headers=headers, timeout=20, follow_redirects=True)
             if r.status_code == 200 and "<item" in r.text:
                 return r.text
-            log.warning("blog_watch: RSS %s → %d", url, r.status_code)
+            log.warning("blog_watch[%s]: RSS %s → %d", blog_id, url, r.status_code)
         except Exception as exc:
-            log.warning("blog_watch: RSS fetch %s failed: %s", url, exc)
+            log.warning("blog_watch[%s]: RSS fetch %s failed: %s", blog_id, url, exc)
     return None
+
+
+def _parse_channel_title(xml: str) -> str:
+    """RSS 채널 수준 <title>(첫 <item> 이전) = 블로그 표시명. 실패 시 ''."""
+    head = xml.split("<item", 1)[0]
+    m = re.search(r"<title[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>",
+                  head, re.DOTALL)
+    return _html.unescape(m.group(1).strip()) if m else ""
 
 
 def _parse_items(xml: str) -> list[dict]:
@@ -222,6 +236,8 @@ def _save_archive(item: dict) -> None:
         rec = {"ts": now.isoformat(timespec="seconds"), "date": date_iso,
                "title": item["title"], "link": item["link"],
                "guid": item["guid"], "pubDate": item.get("pubDate", ""),
+               "blog_id": item.get("blog_id", ""),
+               "blog_title": item.get("blog_title", ""),
                "desc": item.get("desc", "")[:15000],
                "full": bool(item.get("full"))}
         with open(path, "w", encoding="utf-8") as f:
@@ -236,7 +252,10 @@ def _push(item: dict) -> bool:
     요약 없음 → LLM 0, 비용 ₩0."""
     title = _html.escape(item["title"])
     link = _html.escape(item["link"])
+    blog = _html.escape(item.get("blog_title") or item.get("blog_id") or "")
     body = f'📝 <a href="{link}">{title}</a>'
+    if blog:
+        body += f'\n<i>— {blog}</i>'   # 멀티 블로그 — 출처 표시
     try:
         from bot.daily_kr_flow import push_telegram
         return push_telegram(body)
@@ -245,49 +264,55 @@ def _push(item: dict) -> bool:
         return False
 
 
-def run() -> int:
-    xml = _fetch_rss()
+def _process_blog(blog: dict, state: dict, seen: set) -> int:
+    """한 블로그 처리 → push 건수. RSS 미수신 시 -1(실패 신호)."""
+    bid = blog["id"]
+    xml = _fetch_rss(bid)
     if not xml:
-        log.warning("blog_watch: RSS 미수신 — skip (VM 네이버 접근 확인)")
-        return 1
+        log.warning("blog_watch[%s]: RSS 미수신 — skip (VM 네이버 접근 확인)", bid)
+        return -1
     items = _parse_items(xml)
     if not items:
-        log.warning("blog_watch: RSS 파싱 0건 — skip")
-        return 1
+        log.warning("blog_watch[%s]: RSS 파싱 0건 — skip", bid)
+        return 0
+    # 표시명: 설정 title(사용자 지정) 우선 → RSS 채널 title → blog id
+    ch_title = blog.get("title") or _parse_channel_title(xml) or bid
+    for it in items:
+        it["blog_id"] = bid
+        it["blog_title"] = ch_title
 
-    state = _load_state()
-    seen = set(state.get("seen", []))
-
-    # 첫 run: 기존 글을 seen 처리만 (폭주 방지), push 안 함.
-    if not state.get("initialized"):
-        state["seen"] = [it["guid"] for it in items][:_MAX_SEEN]
-        state["initialized"] = True
-        _save_state(state)
-        log.info("blog_watch: 초기화 — 기존 %d개 글 seen 처리 (push 생략)", len(items))
+    # 첫 run(이 블로그): 기존 글 seen 처리만(폭주 방지), push 안 함.
+    if not state["init"].get(bid):
+        for it in items:
+            if it["guid"] not in seen:
+                seen.add(it["guid"])
+                state["seen"].append(it["guid"])
+        state["init"][bid] = True
+        log.info("blog_watch[%s/%s]: 초기화 — 기존 %d개 글 seen 처리 (push 생략)",
+                 bid, ch_title, len(items))
         return 0
 
-    # 새 글 = seen 에 없는 것. RSS 는 최신순이라 뒤집어 오래된 것부터 push.
-    new_items = [it for it in items if it["guid"] not in seen]
-    new_items = list(reversed(new_items))
+    # 새 글 = seen 에 없는 것. RSS 최신순이라 뒤집어 오래된 것부터 push.
+    new_items = list(reversed([it for it in items if it["guid"] not in seen]))
     if not new_items:
-        log.info("blog_watch: 새 글 없음")
+        log.info("blog_watch[%s]: 새 글 없음", bid)
         return 0
 
-    # 카테고리 필터(사용자 2026-06-11) — '관심종목*'/'기업탐방*' 두 카테고리
-    # 글만 수집. 비대상 새 글도 seen 처리(재검사 방지). 피드에 category 가
-    # 전혀 없으면(형식 변동) 전부 허용 + 경고(놓침 방지).
+    # 카테고리 필터(per-blog). categories=None → 전체 글(teasky0221). 비대상
+    # 새 글도 seen 처리(재검사 방지). category 가 전혀 없으면 전부 허용(놓침 방지).
+    cats = blog.get("categories")
     feed_has_cat = any(it.get("category") for it in items)
-    allowed = []
+    allowed: list[dict] = []
     for it in new_items:
         cat = (it.get("category") or "").strip()
-        ok = (not feed_has_cat) or cat.startswith(_ALLOWED_CATEGORY_PREFIXES)
+        ok = (cats is None) or (not feed_has_cat) or cat.startswith(cats)
         if ok:
             allowed.append(it)
         else:
             seen.add(it["guid"])
             state["seen"].append(it["guid"])
-    if not feed_has_cat:
-        log.warning("blog_watch: RSS 에 category 없음 — 전체 허용(형식 확인)")
+    if cats and not feed_has_cat:
+        log.warning("blog_watch[%s]: RSS 에 category 없음 — 전체 허용(형식 확인)", bid)
     skipped_cat = len(new_items) - len(allowed)
     allowed = allowed[:_MAX_NEW_PER_RUN]
 
@@ -303,17 +328,31 @@ def run() -> int:
             pushed += 1
         seen.add(it["guid"])
         state["seen"].append(it["guid"])
+    log.info("blog_watch[%s]: 새 글 %d개 수집, %d push, 카테고리외 %d 제외",
+             bid, len(allowed), pushed, skipped_cat)
+    return pushed
+
+
+def run() -> int:
+    state = _load_state()
+    seen = set(state.get("seen", []))
+    fetched_any = False
+    for blog in _BLOGS:
+        r = _process_blog(blog, state, seen)
+        if r >= 0:
+            fetched_any = True
     _save_state(state)
-    log.info("blog_watch: 새 글 %d개 수집, %d push, 카테고리외 %d 제외",
-             len(allowed), pushed, skipped_cat)
-    # 기존 잘린 글 점진 백필(전문 교체, 사이클당 3건) — 새 글 없어도 진행.
+    if not fetched_any:
+        return 1            # 전 블로그 RSS 실패 — 타이머에 실패 신호
+
+    # 기존 잘린 글 점진 백필(전 블로그 공통 아카이브, 사이클당 3건) — 새 글 없어도.
     try:
         bf = _backfill_full(max_n=3)
         if bf:
             log.info("blog_watch: 전문 백필 %d건", bf)
     except Exception as exc:
         log.warning("blog_watch: backfill failed: %s", exc)
-    # 대시보드 갱신 — blog.html (사용자 2026-06-11, 레딧 워처 패턴 mirror)
+    # 대시보드 갱신 — blog.html (레딧 워처 패턴 mirror)
     try:
         from bot.dashboard import regenerate_blog_index
         regenerate_blog_index()

@@ -5653,6 +5653,92 @@ class TestFavoritesKoreanName:
         assert "naver_price = nq.get(\"price\")" in src, "네이버 가격 우선 미배선"
 
 
+class TestBlogWatchMultiBlog:
+    """멀티 블로그 (사용자 2026-06-15 teasky0221='필승' 추가) — per-blog
+    초기화로 새 블로그 기존 글 폭주 방지 + per-blog 카테고리(None=전체) +
+    설정 표시명 우선 + 옛 bool initialized 마이그레이션."""
+
+    def _xml(self, items, channel="채널명"):
+        body = "".join(
+            f"<item><title>{t}</title><link>{l}</link><guid>{g}</guid>"
+            f"<category>{c}</category></item>" for t, l, g, c in items)
+        return f"<rss><channel><title>{channel}</title>{body}</channel></rss>"
+
+    def test_blogs_config_has_teasky_pilseung(self):
+        import bot.blog_watch as bw
+        ids = {b["id"]: b for b in bw._BLOGS}
+        assert "teasky0221" in ids and ids["teasky0221"]["title"] == "필승"
+        assert ids["teasky0221"]["categories"] is None         # 전체 글
+        assert ids["beatthemkt"]["categories"] == ("관심종목", "기업탐방")
+
+    def test_parse_channel_title(self):
+        import bot.blog_watch as bw
+        assert bw._parse_channel_title(self._xml([], "티스카이")) == "티스카이"
+        assert bw._parse_channel_title("<rss><channel></channel></rss>") == ""
+
+    def test_new_blog_seeds_without_push(self, monkeypatch):
+        import bot.blog_watch as bw
+        xml = self._xml([("글1", "https://blog.naver.com/teasky0221/1", "g1", "일상")])
+        monkeypatch.setattr(bw, "_fetch_rss", lambda bid: xml)
+        pushes: list = []
+        monkeypatch.setattr(bw, "_push", lambda it: pushes.append(it) or True)
+        monkeypatch.setattr(bw, "_save_archive", lambda it: None)
+        monkeypatch.setattr(bw, "_fetch_post_text", lambda link: None)
+        state = {"seen": [], "init": {}}
+        seen: set = set()
+        blog = {"id": "teasky0221", "title": "필승", "categories": None}
+        r = bw._process_blog(blog, state, seen)
+        assert r == 0 and pushes == []            # 초기화 — push 0 (폭주 방지)
+        assert "g1" in seen and state["init"]["teasky0221"] is True
+
+    def test_initialized_blog_pushes_new_with_title(self, monkeypatch):
+        import bot.blog_watch as bw
+        xml = self._xml([("새글", "https://blog.naver.com/teasky0221/2", "g2", "일상")],
+                        channel="RSS채널명")
+        monkeypatch.setattr(bw, "_fetch_rss", lambda bid: xml)
+        pushed: list = []
+        monkeypatch.setattr(bw, "_push", lambda it: pushed.append(it) or True)
+        monkeypatch.setattr(bw, "_save_archive", lambda it: None)
+        monkeypatch.setattr(bw, "_fetch_post_text", lambda link: None)
+        state = {"seen": [], "init": {"teasky0221": True}}
+        blog = {"id": "teasky0221", "title": "필승", "categories": None}
+        r = bw._process_blog(blog, state, set())
+        assert r == 1 and pushed[0]["title"] == "새글"        # category None → 전체 push
+        assert pushed[0]["blog_title"] == "필승"              # 설정 표시명 우선(채널명 아님)
+
+    def test_category_filter_per_blog(self, monkeypatch):
+        import bot.blog_watch as bw
+        xml = self._xml([
+            ("관심글", "https://blog.naver.com/beatthemkt/3", "g3", "관심종목2026"),
+            ("잡담", "https://blog.naver.com/beatthemkt/4", "g4", "일상")])
+        monkeypatch.setattr(bw, "_fetch_rss", lambda bid: xml)
+        pushed: list = []
+        monkeypatch.setattr(bw, "_push", lambda it: pushed.append(it["title"]) or True)
+        monkeypatch.setattr(bw, "_save_archive", lambda it: None)
+        monkeypatch.setattr(bw, "_fetch_post_text", lambda link: None)
+        state = {"seen": [], "init": {"beatthemkt": True}}
+        seen: set = set()
+        blog = {"id": "beatthemkt", "title": "변화하는 기업을 찾아서",
+                "categories": ("관심종목", "기업탐방")}
+        bw._process_blog(blog, state, seen)
+        assert pushed == ["관심글"]               # 관심종목* 만, 잡담 제외
+        assert "g4" in seen                       # 비대상도 seen(재검사 방지)
+
+    def test_state_migration_old_initialized(self, tmp_path):
+        import bot.blog_watch as bw
+        import json as _j
+        p = tmp_path / "state.json"
+        p.write_text(_j.dumps({"seen": ["x"], "initialized": True}), encoding="utf-8")
+        orig = bw._STATE
+        bw._STATE = str(p)
+        try:
+            st = bw._load_state()
+            assert st["init"].get("beatthemkt") is True   # 옛 bool → per-blog 승계
+            assert "x" in st["seen"]
+        finally:
+            bw._STATE = orig
+
+
 class TestAnalysisCsvExport:
     """주식분석 아카이브 CSV 내보내기 (2026-06-14) — 분석 버튼 옆 ⬇CSV."""
 
