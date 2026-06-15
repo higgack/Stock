@@ -4029,10 +4029,23 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     source, delayed = "yfinance", True
 
     if is_kr:
-        # KIS is the official KRX feed — fresher / more accurate than
-        # yfinance's frequently EOD-stale KR quotes. Realtime (2-min
-        # cache) for 현재가; inquire-price for PER / PBR / EPS / BPS /
-        # 시가총액 / 52주. Any miss falls through to the yfinance values.
+        # Naver 실시간 — 키 불필요·VM IP 차단 없음·장중 라이브. yfinance 의 KR
+        # 시세는 EOD 라 장중엔 직전 거래일 종가(예: 월요일 장중에 금요일 종가)를
+        # 줘서 상세가 stale 했음(사용자 2026-06-15 'NXT 클릭→금요일종가', KIS 키
+        # 부재로 yfinance 폴백). NXT·신고저 등 다른 surface 가 쓰는 Naver 와 동일
+        # 소스로 채워 키·IP차단 무관하게 상세도 라이브가 되게 한다.
+        try:
+            from bot.naver_quote import fetch_kr_quote
+            nq = fetch_kr_quote(ticker)
+            if nq and nq.get("price"):
+                price = nq["price"]
+                source, delayed = "네이버 실시간", False
+                if nq.get("mcap"):
+                    mcap = nq["mcap"]
+        except Exception as exc:
+            log.debug("build_live_quote: Naver KR quote skipped for %s: %s", ticker, exc)
+        # KIS — 키 있으면 공식 KRX 피드로 현재가 override + PER / PBR / EPS / BPS /
+        # 시가총액 / 52주 보강(2분 캐시). 키 부재 시 위 Naver 라이브 유지.
         try:
             from bot.kis_client import get_kis
             kc = get_kis()

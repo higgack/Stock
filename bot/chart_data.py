@@ -401,6 +401,17 @@ def _live_last_price(t, payload: dict, decimals: int, ticker: str):
         # 종종 EOD)보다 정확·신선 → 우선 시도. 검증 통과 시 사용, 실패/비-KR/
         # creds 부재 시 아래 yfinance 폴백(2026-06-05).
         if market == "KR":
+            # Naver 실시간 우선 — 키 불필요·VM IP 차단 없음·장중 라이브. yfinance
+            # KR EOD(장중 직전 거래일 종가) staleness 대체(사용자 2026-06-15 'NXT
+            # 클릭→금요일종가'). 글리치는 _validate_live_price 가 직전 종가 대비 검증.
+            try:
+                from bot.naver_quote import fetch_kr_quote
+                _nq = fetch_kr_quote(ticker)
+                _nv = _validate_live_price((_nq or {}).get("price"), last_close, market)
+                if _nv is not None:
+                    return round(_nv, decimals)
+            except Exception as exc:
+                log.debug("chart_data: Naver realtime price skipped for %s: %s", ticker, exc)
             try:
                 from bot.kis_client import get_kis
                 _kp = get_kis().get_realtime_price(ticker)

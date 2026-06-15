@@ -9306,3 +9306,49 @@ class TestTradeProxyMediaPath:
         src = open("bot/dashboard_server.py", encoding="utf-8").read()
         assert "_trade_upstream_url(base, sub)" in src
         assert "_rewrite_trade_html(body, _TOKEN)" in src
+
+
+class TestNaverKrLiveQuote:
+    """상세 페이지 KR 현재가 → Naver 실시간 (사용자 2026-06-15 '상세는 무조건
+    라이브'). KIS 키 부재 시 yfinance 로 폴백하면 KR 은 EOD 라 장중에 직전 거래일
+    종가(NXT 클릭→금요일종가)를 줬음. Naver polling.finance 단일종목 시세로 키·
+    IP차단 무관하게 장중 라이브 보장. 엔드포인트 2026-06-15 VM 검증."""
+
+    def test_parse_quote_rising(self):
+        from bot.naver_quote import _parse_quote
+        q = _parse_quote({"closePriceRaw": 1194000, "fluctuationsRatioRaw": 5.66,
+                          "compareToPreviousPrice": {"code": "2"},
+                          "marketValueFullRaw": 43040279190000,
+                          "localTradedAt": "2026-06-15T15:30:00+09:00"})
+        assert q["price"] == 1194000.0
+        assert abs(q["pct"] - 5.66) < 1e-9          # 상승 = 양수
+        assert q["mcap"] == 43040279190000.0        # 시총 원 단위 그대로
+
+    def test_parse_quote_falling_sign(self):
+        from bot.naver_quote import _parse_quote
+        q = _parse_quote({"closePriceRaw": 1000, "fluctuationsRatioRaw": 3.2,
+                          "compareToPreviousPrice": {"code": "5"}})
+        assert q["pct"] == -3.2                      # 하락 code 5 → 음수
+
+    def test_parse_quote_guards(self):
+        from bot.naver_quote import _parse_quote
+        assert _parse_quote({"fluctuationsRatioRaw": 1.0}) is None   # price 없음
+        assert _parse_quote({}) is None
+        assert _parse_quote(None) is None
+        # 콤마 문자열 폴백
+        assert _parse_quote({"closePrice": "1,194,000"})["price"] == 1194000.0
+
+    def test_fetch_bad_code_no_network(self):
+        from bot.naver_quote import fetch_kr_quote
+        assert fetch_kr_quote("") is None
+        assert fetch_kr_quote("AAPL") is None        # 비숫자 → 네트워크 안 탐
+        assert fetch_kr_quote(None) is None
+
+    def test_wired_into_detail_and_chart(self):
+        # 배선 E2E: 카드(build_live_quote)와 차트(_live_last_price) KR 경로가
+        # 실제로 Naver fetch_kr_quote 를 탄다(추측 #12c — 호출부 배선 가드).
+        dh = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "from bot.naver_quote import fetch_kr_quote" in dh
+        assert '"네이버 실시간"' in dh                # source 라벨
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "from bot.naver_quote import fetch_kr_quote" in cd
