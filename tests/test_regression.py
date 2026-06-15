@@ -3974,6 +3974,39 @@ class TestDartFeedBackfill:
         assert m.is_parse_target({"category": "계약", "corp_code": "C",
                                   "report_nm": "단일판매ㆍ공급계약체결"}) is True
 
+    def test_coverage_audit_2nd_candidates_classified(self, tmp_path, monkeypatch):
+        # 사용자 2026-06-15 coverage-audit '기타 제목 분포' 보강 후보 — 기타-드롭
+        # 되던 실제 기업 사건을 카테고리화 + 제목완결(미파싱 색칠 제외).
+        m = self._load(tmp_path, monkeypatch)
+        cat = {
+            "기타시장안내(기업심사위원회 심의·의결 결과 안내)": "리스크",
+            "기타시장안내(정리매매 보류 관련)": "리스크",
+            "기타시장안내(개선기간 부여 결정)": "리스크",
+            "회계처리기준위반에따른임원의해임권고조치": "리스크",
+            "특수관계인에대한출자": "회사구조",
+            "특수관계인으로부터자금차입": "회사구조",
+            "지주회사의자회사편입": "회사구조",
+            "외국지주회사의자회사편입ㆍ탈퇴": "회사구조",
+            "대규모기업집단현황공시": "회사구조",
+            "동일인등출자계열회사와의상품ㆍ용역거래": "회사구조",
+            "자산재평가실시결정(자율공시)": "회사구조",
+            "상각형조건부자본증권발행결정": "자금조달",
+            "교환가액의조정": "자금조달",
+            "주권관련사채권의취득결정": "자금조달",
+            "투자판단관련주요경영사항(임상시험결과)": "실적",
+        }
+        for nm, exp in cat.items():
+            assert m._classify_report(nm) == exp, (nm, m._classify_report(nm))
+        # 제목완결 = is_parse_target False(미파싱 색칠 제외). 투자판단은 force-parse 라 제외.
+        for nm in ("기타시장안내(기업심사위원회 심의·의결 결과 안내)",
+                   "특수관계인에대한출자", "회계처리기준위반에따른임원의해임권고조치",
+                   "상각형조건부자본증권발행결정"):
+            it = {"category": m._classify_report(nm), "report_nm": nm, "corp_code": "C"}
+            assert m.is_parse_target(it) is False, nm
+        # 기존 분류 회귀 0
+        assert m._classify_report("단일판매ㆍ공급계약체결") == "계약"
+        assert m._classify_report("현금ㆍ현물배당결정") == "배당"
+
     def test_owner_share_change_form_classified_and_routed(self, tmp_path, monkeypatch):
         # 최대주주등소유주식변동신고서(공정거래법, 라이브 2026-06-13 5예시) —
         # 지분공시 분류 + 파싱대상 + _major_holding_change_lines 라우팅 + 고빈도

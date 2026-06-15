@@ -64,6 +64,12 @@ from telethon import utils as _tutils
 from telethon.errors import FloodWaitError
 from telethon.tl.custom.message import Message
 
+# 직접 실행(.backfill-venv/bin/python trade/scripts/backfill_beon.py)에서도 'trade'
+# 패키지가 임포트되게 레포 루트를 path 에 추가 — 스크립트 직접 실행은 cwd 가 아닌
+# 스크립트 디렉토리만 path 에 들어가 'from trade import' 가 ModuleNotFoundError 던짐
+# (사용자 2026-06-15). -m 실행에는 무해(중복 무시).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from trade import ignored as _ignored
 
 load_dotenv()
