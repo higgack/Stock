@@ -937,6 +937,12 @@ def _material_title_category(title_line: str) -> str | None:
         return "주주환원"
     if any(k in t for k in ("상장폐지", "거래정지", "회생", "파산")):
         return "리스크"
+    # 지배구조/그룹 재편 — 지주회사 전환·회사분할·주식교환/이전 (사용자
+    # 2026-06-15 '웅진 지주회사 전환신고가 왜 실적'). 제목에만 나타나 report_nm
+    # 의 '지주회사'(_classify_report) 가 못 잡던 케이스.
+    if any(k in t for k in ("지주회사", "지주사", "회사분할", "인적분할",
+                            "물적분할", "주식교환", "주식이전")):
+        return "회사구조"
     return None
 
 
@@ -3391,10 +3397,14 @@ def _upgrade_category(item: dict) -> None:
                     for k in ("소송", "가처분", "판결", "효력정지")):
                 item["category"] = "소송"
             return
-        if "투자판단" in rn and item.get("category") in ("기타", "", None):
+        if "투자판단" in rn:
+            # 투자판단 주요경영사항은 _classify_report 가 '실적'(임상·국책 등)으로
+            # 기본 분류한다. 본문 제목이 더 구체적 종류(지주회사 전환=회사구조 /
+            # 소송 / 계약 …)면 그것으로 덮음 — _material_title_category None 이면
+            # 실적 유지 (사용자 2026-06-15 '웅진 지주회사 전환이 왜 실적').
             tl = next((l for l in det if l.startswith("제목:")), "")
             cat = _material_title_category(tl)
-            if cat:
+            if cat and cat != item.get("category"):
                 item["category"] = cat
             return
         # 공정공시 wrapper (수시공시의무관련사항 등) — 본문이 주주환원
@@ -3489,6 +3499,12 @@ def significance(item: dict, shares_outstanding: float | None = None,
     cat = item.get("category", "")
     detail = item.get("detail") or []
     correction = "정정" in rn   # [기재정정] 등
+    # 기재정정은 중요 미발화 (사용자 2026-06-15 '기재정정은 중요로 안들어가.
+    # 알고 있지?'). 원 공시가 이미 중요를 발화했으므로 정정 wrapper 의 중복·
+    # 오발 방지 — 전 9규칙 일괄(개별 not-correction 가드 누락된 rule 3 소각·
+    # rule 7 상장폐지까지 커버). 이하 규칙들의 not correction 검사는 중복이나 무해.
+    if correction:
+        return None
 
     # 7 — 상장폐지 (최우선: 생존 이벤트). 발화 라인 화이트리스트 —
     # 제목/사건(소송·자율공시) + 사유/해제·만료/결론(매매거래정지·

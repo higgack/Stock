@@ -11492,6 +11492,13 @@ _MARKET_CSS = (
     "border-radius:6px;background:var(--card);color:var(--text);outline:none;width:240px}"
     ".tbl-filter input:focus{border-color:var(--accent)}"
     ".tbl-filter .cnt{color:var(--muted);font-size:12px}"
+    # 날짜 범위 필터(다가오는 실적·리서치, 사용자 2026-06-15 '정렬말고 필터로')
+    ".tbl-filter input.dfilt{width:auto;padding:5px 8px;font-size:12px}"
+    ".tbl-filter .dsep{color:var(--muted);font-size:12px}"
+    ".tbl-filter .dpreset{padding:5px 10px;font-size:12px;border:1px solid var(--border);"
+    "border-radius:6px;background:var(--card);color:var(--muted);cursor:pointer}"
+    ".tbl-filter .dpreset:hover{border-color:var(--accent);color:var(--text)}"
+    ".tbl-filter .dpreset.on{background:var(--accent);color:#fff;border-color:var(--accent)}"
     ".tabs{display:flex;gap:4px;margin-bottom:14px}"
     ".tab-btn,.etab-btn{padding:6px 16px;font-size:13px;font-weight:600;"
     "border:1px solid var(--border);border-radius:6px;"
@@ -12761,8 +12768,14 @@ def _render_market_page(data: dict) -> str:
   </div>
   <div class="tbl-filter">
     <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
+    <input id="earn-from" type="date" class="dfilt" title="이 날짜 이후">
+    <span class="dsep">~</span>
+    <input id="earn-to" type="date" class="dfilt" title="이 날짜 이전">
+    <button type="button" class="dpreset" data-from="0" data-to="7">오늘~7일</button>
+    <button type="button" class="dpreset" data-from="7" data-to="20">7~20일</button>
+    <button type="button" class="dpreset" data-clear="1">전체</button>
     <span class="cnt" id="earn-cnt"></span>
-    <span class="cnt" style="margin-left:auto">↕ 헤더 클릭 = 정렬 (날짜·EPS 등)</span>
+    <span class="cnt" style="margin-left:auto">날짜 범위·종목 필터 · ↕ 헤더 클릭 정렬</span>
   </div>
   <div class="tabs">{_etab_btns}</div>
   {_etab_panes}
@@ -12773,8 +12786,14 @@ def _render_market_page(data: dict) -> str:
   </div>
   <div class="tbl-filter">
     <input id="research-filter" type="text" placeholder="산업·증권사·제목 검색 …" autocomplete="off">
+    <input id="research-from" type="date" class="dfilt" title="이 날짜 이후">
+    <span class="dsep">~</span>
+    <input id="research-to" type="date" class="dfilt" title="이 날짜 이전">
+    <button type="button" class="dpreset" data-from="-7" data-to="0">최근 7일</button>
+    <button type="button" class="dpreset" data-from="-30" data-to="0">최근 30일</button>
+    <button type="button" class="dpreset" data-clear="1">전체</button>
     <span class="cnt" id="research-cnt"></span>
-    <span class="cnt" style="margin-left:auto">↕ 헤더 클릭 = 정렬 (날짜 등)</span>
+    <span class="cnt" style="margin-left:auto">날짜 범위·검색 필터 · ↕ 헤더 클릭 정렬</span>
   </div>
   <div class="tabs">
     <button class="tab-btn active" data-tab="kr">한국 기업</button>
@@ -12951,44 +12970,60 @@ def _render_market_page(data: dict) -> str:
       cn.textContent = q ? shown + '/' + total : '';
     }});
   }}
-  /* earnings filter applies across 한국/미국 etab panes */
-  (function() {{
-    var fi = document.getElementById('earn-filter');
-    var cn = document.getElementById('earn-cnt');
-    if (!fi) return;
-    fi.addEventListener('input', function() {{
-      var q = (fi.value || '').trim().toLowerCase();
+  /* 텍스트 + 날짜범위 결합 필터 (다가오는 실적·리서치, 사용자 2026-06-15
+     '정렬말고 필터로 — 7~20일꺼만, 그날 누가 발표하는지'). 행에서 ISO 날짜
+     (YYYY-MM-DD / YYYY.MM.DD) 자동 추출 → from~to 범위 + 텍스트 동시 적용.
+     날짜 필터 활성 시 날짜 없는 행은 숨김(범위 밖). 프리셋이 from/to 채움. */
+  function wireDateFilter(textId, fromId, toId, cntId, rowSel) {{
+    var ti = document.getElementById(textId), fi = document.getElementById(fromId),
+        to = document.getElementById(toId), cn = document.getElementById(cntId);
+    if (!ti && !fi) return;
+    function rowDate(row) {{
+      var m = row.textContent.match(/(\\d{{4}})[-.](\\d{{2}})[-.](\\d{{2}})/);
+      return m ? (m[1] + '-' + m[2] + '-' + m[3]) : '';
+    }}
+    function apply() {{
+      var q = ((ti && ti.value) || '').trim().toLowerCase();
+      var df = (fi && fi.value) || '', dt = (to && to.value) || '';
+      var hasDate = !!(df || dt), active = !!(q || hasDate);
       var total = 0, shown = 0;
-      document.querySelectorAll('.etab-pane .dtbl tbody tr').forEach(function(row) {{
+      document.querySelectorAll(rowSel).forEach(function(row) {{
         total++;
-        var txt = row.textContent.toLowerCase();
-        var vis = !q || txt.indexOf(q) >= 0;
-        if (vis && !q && row.classList.contains('xrow')) vis = false;
+        var tp = !q || row.textContent.toLowerCase().indexOf(q) >= 0;
+        var dp = true;
+        if (hasDate) {{
+          var rd = rowDate(row);
+          dp = !!rd && (!df || rd >= df) && (!dt || rd <= dt);
+        }}
+        var vis = tp && dp;
+        if (vis && !active && row.classList.contains('xrow')) vis = false;
         row.style.display = vis ? '' : 'none';
         if (vis) shown++;
       }});
-      cn.textContent = q ? shown + '/' + total : '';
-    }});
-  }})();
-  /* research filter applies to both KR and US tabs */
-  (function() {{
-    var fi = document.getElementById('research-filter');
-    var cn = document.getElementById('research-cnt');
-    if (!fi) return;
-    fi.addEventListener('input', function() {{
-      var q = (fi.value || '').trim().toLowerCase();
-      var total = 0, shown = 0;
-      document.querySelectorAll('.tab-pane .dtbl tbody tr').forEach(function(row) {{
-        total++;
-        var txt = row.textContent.toLowerCase();
-        var vis = !q || txt.indexOf(q) >= 0;
-        if (vis && !q && row.classList.contains('xrow')) vis = false;
-        row.style.display = vis ? '' : 'none';
-        if (vis) shown++;
+      if (cn) cn.textContent = active ? shown + '/' + total : '';
+    }}
+    if (ti) ti.addEventListener('input', apply);
+    if (fi) fi.addEventListener('change', apply);
+    if (to) to.addEventListener('change', apply);
+    var bar = (ti || fi).closest('.tbl-filter');
+    if (bar) bar.querySelectorAll('.dpreset').forEach(function(b) {{
+      b.addEventListener('click', function() {{
+        bar.querySelectorAll('.dpreset').forEach(function(o) {{ o.classList.remove('on'); }});
+        if (b.dataset.clear) {{ if (fi) fi.value = ''; if (to) to.value = ''; }}
+        else {{
+          var base = new Date(); base.setHours(0, 0, 0, 0);
+          function iso(off) {{ var x = new Date(base); x.setDate(x.getDate() + (+off));
+            return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0')
+                 + '-' + String(x.getDate()).padStart(2, '0'); }}
+          if (fi) fi.value = iso(b.dataset.from); if (to) to.value = iso(b.dataset.to);
+          b.classList.add('on');
+        }}
+        apply();
       }});
-      cn.textContent = q ? shown + '/' + total : '';
     }});
-  }})();
+  }}
+  wireDateFilter('earn-filter', 'earn-from', 'earn-to', 'earn-cnt', '.etab-pane .dtbl tbody tr');
+  wireDateFilter('research-filter', 'research-from', 'research-to', 'research-cnt', '.tab-pane .dtbl tbody tr');
 
   /* ── Favorites CRUD ── */
   (function() {{

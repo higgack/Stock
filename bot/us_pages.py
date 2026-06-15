@@ -11,6 +11,11 @@ import logging
 
 from bot.live_refresh import LIVE_REFRESH_JS as _LIVE_REFRESH_JS
 from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
+# 정렬 JS + 셀 CSS 는 highlow_render 단일 소스 사용 (사용자 2026-06-15 '미국만
+# 종목명이 글자가 붙어 나옴'): us_pages 가 갖고 있던 로컬 복사본이 .nk(티커
+# 아래 한글명 별도 줄) CSS + window.hlBindSort(자동 새로고침 후 정렬 재바인드)를
+# 빠뜨려 ① 미국 종목명이 티커에 붙어 렌더 ② live-refresh 후 정렬 헤더 사망.
+from bot.highlow_render import HL_SORT_JS as _HL_SORT_JS
 
 log = logging.getLogger("bot.us_pages")
 
@@ -18,50 +23,6 @@ log = logging.getLogger("bot.us_pages")
 # 한국시간은 동부 서머타임(EDT, +13h) 기준; 서머타임 해제(EST) 시 +1h.
 _EXT_WINDOW = ("장전 4:00–9:30 · 장후 16:00–20:00 ET = 한국시간 장전 17:00–22:30 · "
                "장후 익일 05:00–09:00 (서머타임 기준 · 해제 시 +1h)")
-
-# 신고저 테이블 헤더 클릭 정렬 (사용자 2026-06-11 '종목·현재가·등락률·시총
-# 나래비'). data-* raw 값 기준, 클릭 시 desc→asc 토글 + 화살표. 외부 의존 0.
-_HL_SORT_JS = """
-<style>
-.hl-table th.srt{cursor:pointer;user-select:none;white-space:nowrap}
-.hl-table td.ind{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted,#888);font-size:12px}
-.hl-table th.srt:hover{color:var(--accent,#3b82f6)}
-.hl-table th.srt .arw{opacity:.45;font-size:10px;margin-left:2px}
-.hl-table th.srt.on .arw{opacity:1}
-</style>
-<script>
-(function(){
-  function sortTable(tbl, key, type, asc){
-    var tb=tbl.tBodies[0];
-    var rows=Array.prototype.slice.call(tb.rows);
-    rows.sort(function(a,b){
-      var x=a.getAttribute('data-'+key), y=b.getAttribute('data-'+key);
-      if(type==='num'){ x=parseFloat(x); y=parseFloat(y);
-        if(isNaN(x))x=-Infinity; if(isNaN(y))y=-Infinity; return asc?x-y:y-x; }
-      x=(x||'').toString(); y=(y||'').toString();
-      return asc? x.localeCompare(y): y.localeCompare(x);
-    });
-    rows.forEach(function(r,i){ tb.appendChild(r);
-      var rk=r.querySelector('.rk'); if(rk) rk.textContent=i+1; });
-  }
-  document.querySelectorAll('table.hl-table').forEach(function(tbl){
-    tbl.querySelectorAll('th.srt').forEach(function(th){
-      var arw=document.createElement('span'); arw.className='arw'; arw.textContent='⇅';
-      th.appendChild(arw);
-      th.addEventListener('click', function(){
-        var key=th.getAttribute('data-key'), type=th.getAttribute('data-type');
-        var asc = th.classList.contains('on') ? !th._asc : (type!=='num');
-        tbl.querySelectorAll('th.srt').forEach(function(o){
-          o.classList.remove('on'); var a=o.querySelector('.arw'); if(a)a.textContent='⇅'; });
-        th.classList.add('on'); th._asc=asc; arw.textContent=asc?'▲':'▼';
-        sortTable(tbl, key, type, asc);
-      });
-    });
-  });
-})();
-</script>
-"""
-
 
 def _shell(title: str, sub: str, active: str, body: str) -> str:
     def _t(key: str, label: str) -> str:

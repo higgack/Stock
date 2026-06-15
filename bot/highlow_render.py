@@ -12,9 +12,22 @@ from __future__ import annotations
 
 import html as _html
 import logging
+import re as _re
 import time as _time
 
 log = logging.getLogger("bot.highlow_render")
+
+
+def _strip_dup_ticker(ticker: str, name: str) -> str:
+    """name 앞에 티커가 'TICKER | '/'TICKER - '/'TICKER:' 로 중복되면 그 뒤만
+    사용 (HK '0004.HK | 구룡창' → '구룡창'). 티커가 1줄에 이미 표시되는데
+    한글명 줄에 또 박혀 중복되던 것 제거(사용자 2026-06-15 '티커가 두번 겹치는
+    거 수정'). 순수·universal — 전 시장 _row 공용. 구분자 없으면 원본 유지."""
+    t, n = (ticker or "").strip(), (name or "").strip()
+    if not t or not n:
+        return n
+    m = _re.match(r'^' + _re.escape(t) + r'\s*[|\-:·]\s*(.+)$', n)
+    return m.group(1).strip() if m else n
 
 from bot.naver_pages import _fmt_vol, _pct_cell
 
@@ -158,8 +171,10 @@ def stock_panel(title: str, items: list, tid: str, market: str,
     cur_h = f" ({sym})" if sym else ""
 
     def _row(i: int, it: dict) -> str:
-        tk = _html.escape(str(it.get("ticker", "")))
-        nm = _html.escape(it.get("name") or it.get("ticker", ""))
+        _raw_tk = str(it.get("ticker", ""))
+        tk = _html.escape(_raw_tk)
+        # name 의 'TICKER | …' 중복 prefix 제거 후 escape (HK '0004.HK | 구룡창').
+        nm = _html.escape(_strip_dup_ticker(_raw_tk, it.get("name") or _raw_tk))
         if name_only:
             label = nm or tk
         else:

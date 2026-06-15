@@ -35,6 +35,9 @@ LIVE_REFRESH_JS = """<script>
       return false;
     }
     if(d===0||d===6) return false;               // 아시아장 주말 skip
+    // KR 08:00–20:00 = NXT(넥스트레이드) 프리마켓(08:00)~애프터마켓(20:00) 포함
+    // (정규 KRX 09:00–15:30 + NXT 연장거래, 사용자 2026-06-15 'NXT 도 고려').
+    // 그래서 NXT 시간대에도 폴링이 살아 라이브 갱신. JP/HK/CN/TW = 정규장 + 마감 버퍼.
     var W={KR:[8*60,20*60],JP:[9*60,15*60+10],HK:[10*60+30,17*60+10],
            CN:[10*60+30,16*60+10],TW:[10*60,14*60+40]}[market];
     return W?(hm>=W[0]&&hm<=W[1]):true;
@@ -56,5 +59,12 @@ LIVE_REFRESH_JS = """<script>
       }).catch(function(){});                      // graceful — 무변경
   }
   setInterval(tick, interval);
+  // 탭 복귀 즉시 라이브 (사용자 2026-06-15 '대쉬보드 들어가면 그 순간 가장
+  // Live'). 진입 자체는 no-cache 서버 렌더라 이미 최신 — 이건 백그라운드에
+  // 있다가 돌아왔을 때 다음 interval 까지 기다리지 않고 바로 1회 갱신(장중에만,
+  // tick 내부 isOpen·검색중 가드 그대로 적용). 장후·주말이면 tick 이 알아서 skip.
+  document.addEventListener('visibilitychange', function(){
+    if(!document.hidden) tick();
+  });
 })();
 </script>"""

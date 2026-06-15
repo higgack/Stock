@@ -9636,3 +9636,92 @@ class TestChartTweaks20260615b:
         assert "if price and not delayed:" in src      # 라이브일 때만 재계산
         # 공식 검증
         assert round(337000.0 / 5000.0, 2) == 67.40 and round(337000.0 / 50000.0, 2) == 6.74
+
+
+class TestDashboardBatch20260615c:
+    """사용자 2026-06-15 배치: ① 미국 신고저 종목명 2줄(.nk, 글자 붙던 것)
+    ② 티커 중복 prefix 제거 ③ 라이브 새로고침 탭복귀+NXT ④ 실적·리서치
+    날짜범위 필터 ⑤ 투자판단 지주회사전환→회사구조 ⑥ 기재정정 중요 제외."""
+
+    def test_us_highlow_single_source_sort_js(self):
+        # us_pages 가 highlow_render.HL_SORT_JS(.nk + hlBindSort)를 단일 소스로
+        # 사용 — 로컬 stale 복사본(미국 종목명 글자 붙음 + 정렬 사망) 제거.
+        import bot.us_pages as u
+        assert "td.nm .nk" in u._HL_SORT_JS         # 티커 아래 한글명 별도 줄
+        assert "hlBindSort" in u._HL_SORT_JS        # live-refresh 후 정렬 재바인드
+        src = open("bot/us_pages.py", encoding="utf-8").read()
+        # 로컬 _HL_SORT_JS = \"\"\" 정의가 사라지고 import 로 대체
+        assert "from bot.highlow_render import HL_SORT_JS" in src
+        assert '_HL_SORT_JS = """' not in src
+
+    def test_us_highlow_name_two_line(self):
+        # 미국 종목: 티커(1줄) + 이름(.nk 2줄). AMAT/Applied 가 붙지 않음.
+        from bot.highlow_render import stock_panel
+        html = stock_panel("t", [{"ticker": "AMAT", "name": "어플라이드 머티어리얼즈",
+                                   "price": 567.25, "pct": 2.64, "mcap": 4504, "vol": 1510000}],
+                           "tid", "US", show_vol=True, show_value=True)
+        assert '<span class="nk">어플라이드 머티어리얼즈</span>' in html
+        assert "AMAT어플라이드" not in html          # 붙어 나오던 버그
+
+    def test_strip_dup_ticker_prefix(self):
+        # 'TICKER | name' / 'TICKER - name' 중복 prefix 제거 (HK 케이스).
+        from bot.highlow_render import _strip_dup_ticker, stock_panel
+        assert _strip_dup_ticker("0004.HK", "0004.HK | 구룡창") == "구룡창"
+        assert _strip_dup_ticker("2688.HK", "2688.HK - ENN 에너지") == "ENN 에너지"
+        assert _strip_dup_ticker("1928.HK", "샌즈 차이나") == "샌즈 차이나"   # 구분자 없음 → 원본
+        assert _strip_dup_ticker("0700.HK", "0700.HK") == "0700.HK"          # 동일 → 원본(호출부 처리)
+        html = stock_panel("t", [{"ticker": "0004.HK", "name": "0004.HK | 구룡창",
+                                   "price": 1, "pct": 0}], "tid", "HK")
+        assert "구룡창" in html and "0004.HK | 구룡창" not in html
+
+    def test_live_refresh_tab_return_and_nxt(self):
+        # 탭 복귀 즉시 갱신(visibilitychange) + NXT(08:00~20:00) 윈도.
+        js = open("bot/live_refresh.py", encoding="utf-8").read()
+        assert "visibilitychange" in js and "if(!document.hidden) tick()" in js
+        assert "KR:[8*60,20*60]" in js                # NXT 프리~애프터마켓 포함
+        assert "NXT" in js                            # 의도 명시 주석
+        assert "'/ushighlow':1" in js                 # 미국 신고저 1h (한국제외 1h 제약)
+
+    def test_material_title_holding_company(self):
+        # 투자판단 '지주회사 전환' 제목 → 회사구조 (사용자 '웅진 왜 실적').
+        from bot.dart_feed import _material_title_category, _upgrade_category, _classify_report
+        assert _classify_report("투자판단관련주요경영사항") == "실적"        # 기본
+        assert _material_title_category("제목: 지주회사 전환신고에 대한 심사결과") == "회사구조"
+        assert _material_title_category("제목: 임상 3상 진입") is None        # 실적 유지
+        it = {"report_nm": "투자판단관련주요경영사항", "category": "실적",
+              "detail": ["제목: 지주회사 전환신고에 대한 심사결과 통지서 접수"]}
+        _upgrade_category(it)
+        assert it["category"] == "회사구조"
+        it2 = {"report_nm": "투자판단관련주요경영사항", "category": "실적",
+               "detail": ["제목: 임상시험 결과"]}
+        _upgrade_category(it2)
+        assert it2["category"] == "실적"                # 특정 종류 아니면 실적 유지
+
+    def test_correction_not_important(self):
+        # 기재정정은 중요 미발화 (사용자 '기재정정은 중요로 안들어가').
+        from bot.dart_feed import significance
+        assert significance({"report_nm": "[기재정정]상장폐지관련", "category": "리스크",
+                             "detail": ["제목: 상장폐지 결정"]}) is None
+        assert significance({"report_nm": "[기재정정]매출액또는손익구조30%이상변동",
+                             "detail": ["매출액: +50%"]}) is None
+        # 비정정 상장폐지는 여전히 발화 (회귀 방지)
+        assert significance({"report_nm": "상장폐지관련", "category": "리스크",
+                             "detail": ["제목: 상장폐지 결정"]}) == "상장폐지 관련"
+
+    def test_earnings_research_date_filter(self):
+        # 다가오는 실적·리서치 날짜범위 필터 (정렬 아닌 필터, '7~20일꺼만').
+        import bot.dashboard as d
+        data = {"earnings": [{"symbol": "AAPL", "name": "Apple", "date": "2026-06-20",
+                              "hour": "amc", "eps_estimate": 1.5, "revenue_estimate": 9e10,
+                              "quarter": 3, "year": 2026}],
+                "earnings_ts": "", "research_ts": "", "research_kr": [],
+                "research_kr_industry": [], "research_kr_strategy": [], "research_us": [],
+                "research_intl": {}, "snapshot": {}, "indices": [], "ts": "", "macro": {}}
+        html = d._render_market_page(data)
+        assert 'id="earn-from"' in html and 'id="earn-to"' in html
+        assert 'id="research-from"' in html and 'id="research-to"' in html
+        assert "7~20일" in html                         # 사용자 예시 프리셋
+        assert "function wireDateFilter(" in html       # 단일 brace(f-string 정상)
+        assert "wireDateFilter('earn-filter'" in html
+        assert "wireDateFilter('research-filter'" in html
+        assert "{{" not in html                         # f-string brace 누수 없음
