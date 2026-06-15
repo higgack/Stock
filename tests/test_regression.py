@@ -9352,3 +9352,55 @@ class TestNaverKrLiveQuote:
         assert '"네이버 실시간"' in dh                # source 라벨
         cd = open("bot/chart_data.py", encoding="utf-8").read()
         assert "from bot.naver_quote import fetch_kr_quote" in cd
+
+    def test_parse_quote_includes_today_ohlcv(self):
+        # 차트 당일봉 라이브용 OHLCV 도 파싱.
+        from bot.naver_quote import _parse_quote
+        q = _parse_quote({"closePriceRaw": 1194000, "openPriceRaw": 1132000,
+                          "highPriceRaw": 1194000, "lowPriceRaw": 1118000,
+                          "accumulatedTradingVolumeRaw": 314500})
+        assert q["open"] == 1132000.0 and q["high"] == 1194000.0
+        assert q["low"] == 1118000.0 and q["close"] == 1194000.0
+        assert q["volume"] == 314500.0
+
+    def test_merge_kr_today_bar(self, monkeypatch):
+        # yahoo 일봉에 Naver 당일 OHLCV 병합 — 당일봉 없으면 추가, 있으면 교체,
+        # 글리치(직전 대비 비현실)면 원본 유지 (사용자 2026-06-15 '장중 당일 캔들').
+        import pandas as pd
+        from datetime import datetime, timezone, timedelta
+        import bot.chart_data as cd
+        import bot.naver_quote as nq
+        today = datetime.now(timezone(timedelta(hours=9))).date()
+        prev = today - timedelta(days=3)
+
+        def _ser(dates, vals):
+            return pd.Series(vals, index=pd.DatetimeIndex([pd.Timestamp(d) for d in dates]))
+
+        # 추가 — 당일봉 없음(전일까지)
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: {
+            "close": 1194000, "open": 1132000, "high": 1194000,
+            "low": 1118000, "volume": 314500})
+        c, v, o, h, l = cd._merge_kr_today_bar(
+            "267260.KS", _ser([prev], [1130000.0]), _ser([prev], [100.0]),
+            _ser([prev], [1125000.0]), _ser([prev], [1135000.0]), _ser([prev], [1120000.0]))
+        assert len(c) == 2 and c.iloc[-1] == 1194000 and c.index[-1].date() == today
+        assert o.iloc[-1] == 1132000 and v.iloc[-1] == 314500
+
+        # 교체 — 당일봉 이미 있음(stale)
+        c, v, o, h, l = cd._merge_kr_today_bar(
+            "267260.KS", _ser([prev, today], [1130000.0, 1130000.0]),
+            _ser([prev, today], [100.0, 50.0]), _ser([prev, today], [1125000.0, 1125000.0]),
+            _ser([prev, today], [1135000.0, 1135000.0]), _ser([prev, today], [1120000.0, 1120000.0]))
+        assert len(c) == 2 and c.iloc[-1] == 1194000 and v.iloc[-1] == 314500
+
+        # 글리치 — 직전 대비 +200% → 원본 유지
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: {"close": 3390000})
+        c, _, _, _, _ = cd._merge_kr_today_bar(
+            "267260.KS", _ser([prev], [1130000.0]), None, None, None, None)
+        assert len(c) == 1 and c.iloc[-1] == 1130000
+
+    def test_chart_wires_merge(self):
+        # 배선 E2E: fetch_chart_payload 가 KR 1d 에서 당일봉 병합을 실제 호출.
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        assert "_merge_kr_today_bar(ticker, close, vol, op, hi, lo)" in cd
+        assert 'if _is_kr and interval == "1d":' in cd

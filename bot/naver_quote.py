@@ -62,6 +62,13 @@ def _parse_quote(item: dict) -> dict | None:
         "pct": pct,
         "mcap": _num(item.get("marketValueFullRaw")),
         "ts": item.get("localTradedAt"),
+        # 당일 OHLCV — 차트의 당일 일봉을 라이브로 그리는 데 사용(yahoo 가 장중
+        # 당일 봉을 EOD/미제공하는 문제 해소). close 는 price 와 동일.
+        "open": _num(item.get("openPriceRaw")),
+        "high": _num(item.get("highPriceRaw")),
+        "low": _num(item.get("lowPriceRaw")),
+        "close": price,
+        "volume": _num(item.get("accumulatedTradingVolumeRaw")),
     }
 
 

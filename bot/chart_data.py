@@ -458,6 +458,51 @@ def _live_last_price(t, payload: dict, decimals: int, ticker: str):
         return None
 
 
+def _merge_kr_today_bar(ticker, close, vol, op, hi, lo):
+    """KR 일봉(1d) series 의 '당일 봉'을 Naver 라이브 OHLCV 로 갱신/추가.
+
+    yahoo 는 KR 일봉을 EOD 로 줘서 장중엔 당일 봉이 미완성/누락 → 차트가 전일
+    까지만 그리고 이평선·RSI 가 전일 기준이었음(사용자 2026-06-15 '장중 당일 캔들
+    라이브'). Naver 단일종목 시세의 당일 OHLCV(키·IP차단 무관)로 마지막 봉을
+    교체하거나(이미 당일 봉 있으면) 새로 추가(없으면) → _series_payload 가 그 위에서
+    지표를 계산하므로 당일 종가가 이평선·RSI 에도 반영된다. 글리치는 직전 종가
+    대비 _validate_live_price(±35% KR 한도, 분할 오류 차단). 실패 시 원본(yahoo) 유지."""
+    try:
+        from bot.naver_quote import fetch_kr_quote
+        o = fetch_kr_quote(ticker) or {}
+        c = o.get("close")
+        if not c or close is None or len(close) == 0:
+            return close, vol, op, hi, lo
+        import pandas as pd
+        from datetime import datetime, timezone, timedelta
+        today = datetime.now(timezone(timedelta(hours=9))).date()
+        last_date = close.index[-1].date()
+        # 글리치 가드 — 당일 종가가 직전 종가 대비 비현실이면 원본 유지.
+        prior = (float(close.iloc[-2]) if (last_date == today and len(close) >= 2)
+                 else float(close.iloc[-1]))
+        if _validate_live_price(c, prior, "KR") is None:
+            return close, vol, op, hi, lo
+        o_, h_, l_, v_ = o.get("open"), o.get("high"), o.get("low"), o.get("volume")
+        if last_date == today:                       # 당일 봉 이미 있음 → 값 교체
+            close.iloc[-1] = c
+            if op is not None and o_ is not None: op.iloc[-1] = o_
+            if hi is not None and h_ is not None: hi.iloc[-1] = h_
+            if lo is not None and l_ is not None: lo.iloc[-1] = l_
+            if vol is not None and v_ is not None: vol.iloc[-1] = v_
+        elif today > last_date:                       # 당일 봉 없음 → 새로 추가
+            ts = pd.Timestamp(today)
+            if getattr(close.index, "tz", None) is not None:
+                ts = ts.tz_localize(close.index.tz)
+            close.loc[ts] = c
+            if op is not None: op.loc[ts] = (o_ if o_ is not None else c)
+            if hi is not None: hi.loc[ts] = (h_ if h_ is not None else c)
+            if lo is not None: lo.loc[ts] = (l_ if l_ is not None else c)
+            if vol is not None: vol.loc[ts] = (v_ if v_ is not None else 0)
+    except Exception as exc:
+        log.debug("chart_data: merge KR today bar skipped for %s: %s", ticker, exc)
+    return close, vol, op, hi, lo
+
+
 def fetch_chart_payload(
     ticker: str, interval: str = "1d", period: str = "1y"
 ) -> dict | None:
@@ -523,6 +568,11 @@ def fetch_chart_payload(
         op = hist["Open"].reindex(close.index) if "Open" in hist else None
         hi = hist["High"].reindex(close.index) if "High" in hist else None
         lo = hist["Low"].reindex(close.index) if "Low" in hist else None
+        # KR 일봉: yahoo 가 장중 당일 봉을 EOD/미제공 → Naver 라이브 OHLCV 로 당일
+        # 봉 교체/추가 후 지표 계산(당일 종가가 이평선·RSI 에 반영). 주/월봉은 제외
+        # (당일 일봉을 주/월 series 에 끼우면 안 됨). graceful(실패 시 yahoo 유지).
+        if _is_kr and interval == "1d":
+            close, vol, op, hi, lo = _merge_kr_today_bar(ticker, close, vol, op, hi, lo)
         payload = _series_payload(close, currency, decimals, vol, op, hi, lo, ticker=ticker, interval=interval)
         payload["interval"] = interval
         payload["period"] = period
