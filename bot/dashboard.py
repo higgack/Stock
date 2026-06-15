@@ -9031,12 +9031,6 @@ def _render_blog_page(runs: list[dict]) -> str:
     last_ts = ""
     if runs:
         last_ts = (runs[0].get("ts") or "")[:16].replace("T", " ")
-    # 멀티 블로그(사용자 2026-06-15) — 수집 글의 블로그명 distinct. 옛 기록
-    # (blog_title 부재)은 기존 단일 블로그 beatthemkt.
-    _blog_names = sorted({(r.get("blog_title") or "변화하는 기업을 찾아서")
-                          for r in runs}) or ["네이버 블로그"]
-    _blogs_sub = _html.escape(" · ".join(_blog_names))
-
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
 <div class="wrap">
@@ -9045,7 +9039,7 @@ def _render_blog_page(runs: list[dict]) -> str:
     · <a href="index.html">🦉 NOAH 종목분석</a>
   </div>
   <h1>📝 블로그 Archive</h1>
-  <p class="sub">네이버 블로그 새 글 자동 수집(30분) · {_blogs_sub} · 원문 전문 + 링크 · 정보 관찰(투자 권유 아님)</p>
+  <p class="sub">네이버 블로그 새 글 자동 수집(30분)</p>
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 수집 글</div></div>
