@@ -9585,3 +9585,54 @@ class TestWorldTwLiveQuote:
         llp = re.search(r"def _live_last_price\(.*?\n(?=def )", cd, re.DOTALL).group(0)
         assert "fetch_world_quote" in llp and "fetch_tw_quote" in llp
         assert "fetch_kr_quote" in llp and "kis_client" not in llp   # 차트도 KIS 말고
+
+
+class TestChartTweaks20260615b:
+    """차트 추가 다듬기(사용자 2026-06-15): E x축 연도 제거 · C KR 분봉 네이버
+    (KIS 말고) · D PER/PBR 라이브 재계산."""
+
+    def test_xaxis_drops_year(self):
+        # x축 라벨 "2025-07"→"07", "2025.11.28"→"11.28" (연도 제거, 월만).
+        from bot.dashboard import _svg_line_chart
+        import re
+        svg = _svg_line_chart(["2025-07", "2025-09", "2025-11", "2026-01"],
+                              [{"name": "A", "color": "#42a5f5", "data": [4, 4, 4, 4], "axis": "L"}])
+        xs = re.findall(r'text-anchor="middle">([^<]*)</text>', svg)
+        assert xs and all(re.match(r'^\d{2}$', x) for x in xs if x)   # 월만(2자리)
+        assert "2025" not in svg and "2026" not in svg                # 연도 잔존 없음
+
+    def test_kr_intraday_naver_not_kis(self, monkeypatch):
+        # KR 분봉 = 네이버 minute API (KIS 제거, 사용자 '분봉도 네이버로').
+        import requests
+        import bot.chart_data as cd
+        import bot.naver_quote as nq
+        bars = [{"localDateTime": f"2026061509{m:02d}00", "currentPrice": 344000.0 + m * 100,
+                 "openPrice": 344000.0 + m * 100, "highPrice": 344500.0 + m * 100,
+                 "lowPrice": 341500.0 + m * 100, "accumulatedTradingVolume": 1000 * (m + 1)}
+                for m in range(12)]
+
+        class _R:
+            status_code = 200
+            def json(self): return bars
+        _orig = requests.get
+        monkeypatch.setattr(requests, "get",
+                            lambda u, **k: _R() if "minute" in u else _orig(u, **k))
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: {"price": 345100.0})
+        p = cd._fetch_kr_intraday("005930.KS", "5m")
+        assert p and p["interval"] == "5m" and p["period"] == "1d"
+        assert p.get("close") and len(p["close"]) >= 2
+        assert p.get("last_price") == 345100        # 네이버 라이브 last
+        # 배선: _fetch_kr_intraday 가 네이버 minute 호출, KIS 미사용
+        src = open("bot/chart_data.py", encoding="utf-8").read()
+        fn = src[src.index("def _fetch_kr_intraday"):src.index("def ", src.index("def _fetch_kr_intraday") + 1)]
+        assert "chart/domestic/item/" in fn and "minute" in fn   # 네이버 분봉
+        assert "kis_client" not in fn                            # KIS 제거
+
+    def test_live_per_pbr_recompute_wired(self):
+        # 현재가 라이브 시 PER=현재가/EPS · PBR=현재가/BPS 재계산 배선(사용자
+        # 'PER/PBR 더 실시간'). 적자·무BPS 는 yfinance 유지.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'price / _eps' in src and 'price / _bps' in src
+        assert "if price and not delayed:" in src      # 라이브일 때만 재계산
+        # 공식 검증
+        assert round(337000.0 / 5000.0, 2) == 67.40 and round(337000.0 / 50000.0, 2) == 6.74

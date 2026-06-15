@@ -2595,13 +2595,13 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
     <script type="application/json" id="chart-data">{payload}</script>
     <div id="chart-disc" class="chart-disc"></div>
     <div class="chart-legend">
-      상단 헤드라인=현재가·기간수익률(절대+%)·거래량 · OHLC 바=날짜·시고저종·일간등락(마우스 올리면 그 봉, 떼면 마지막 봉) · 현재가=장중 라이브(KR은 KIS 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률(YTD=연초 이후 포함) · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 차트 아래 캡션=범위·봉 개수·날짜범위·출처 · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (새로고침 시 기본값으로 회귀)
+      상단 헤드라인=현재가·기간수익률(절대+%)·거래량 · OHLC 바=날짜·시고저종·일간등락(마우스 올리면 그 봉, 떼면 마지막 봉) · 현재가=장중 라이브(KR은 네이버 실시간 우선, 그 외 yfinance ~15분 지연) · 시점가=분석일 종가 · 분석 후=시점가 대비 현재가 변동% · 기간=표시 구간 수익률(YTD=연초 이후 포함) · 진입/손절/목표=트레이드 플랜 · ▲매수/▼매도/●보유 마커=우리 과거 추천(+5거래일 결과) · ■ 작은 사각=공시(수주·소송 초록·시설투자 파랑·주주환원 보라·자본변동 주황·M&A 청록·리스크 빨강·최대주주변경 분홍, hover 시 차트 아래에 종류·제목·원문 링크) · 차트 아래 캡션=범위·봉 개수·날짜범위·출처 · 마우스 hover로 그 날 값 확인 · 지표 버튼으로 캔들/이평선/볼린저/거래량/RSI/MACD/로그/공시 on/off (새로고침 시 기본값으로 회귀)
     </div>
     <details class="chart-guide">
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
       <div class="cg-sec"><b>가격 라인 / 기준선</b>
         <ul>
-          <li><span class="k" style="color:#4c9aff">현재가</span> — 장중 라이브(KR은 KIS 실시간 우선, 그 외 yfinance ~15분 지연). 우측 축에 항상 표시. 이상 시세(분할·조정 오류 등)는 자동으로 걸러져 직전 종가로 대체.</li>
+          <li><span class="k" style="color:#4c9aff">현재가</span> — 장중 라이브(KR은 네이버 실시간 우선, 그 외 yfinance ~15분 지연). 우측 축에 항상 표시. 이상 시세(분할·조정 오류 등)는 자동으로 걸러져 직전 종가로 대체.</li>
           <li><span class="k" style="color:#94a3b8">시점가</span>(회색 점선) — 분석한 날의 종가, 즉 "그때 가격" 기준선.</li>
           <li><span class="k" style="color:#9b59b6">진입</span> / <span class="k" style="color:#e2574c">손절</span> / <span class="k" style="color:#3ec46d">목표</span>(점선) — 트레이더 플랜의 가격대(본문에서 자동 추출, 비현실 값은 자동 제외).</li>
           <li>세로축(우측 가격) 라벨은 KRW(₩)는 <span class="k">만/억</span> 약식, 그 외 시장은 천단위 콤마로 — 큰 숫자 가독성.</li>
@@ -2647,7 +2647,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </div>
       <div class="cg-sec"><b>기간 · 봉 · 조작</b>
         <ul>
-          <li><span class="k">일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉(KR 종목은 KIS 실시간 분봉), 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
+          <li><span class="k">일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉(KR 종목은 네이버 실시간 분봉), 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
           <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁 + 상단 OHLC 바 갱신. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
           <li>차트 아래 <span class="k">캡션</span> — 현재 범위·봉 종류·봉 개수·날짜 범위·데이터 출처.</li>
           <li>지표를 켜고 꺼도 보던 확대 구간은 그대로 유지됩니다.</li>
@@ -3160,7 +3160,7 @@ _CHART_JS = """
     var first = n ? d.times[0] : '', last = n ? d.times[n - 1] : '';
     function fmtT(t){ if(typeof t!=='number') return t; var dt=new Date(t*1000); return dt.getUTCFullYear()+'-'+String(dt.getUTCMonth()+1).padStart(2,'0')+'-'+String(dt.getUTCDate()).padStart(2,'0')+' '+String(dt.getUTCHours()).padStart(2,'0')+':'+String(dt.getUTCMinutes()).padStart(2,'0'); }
     var isIntrd = (n > 0 && typeof d.times[0] === 'number');
-    var src = isIntrd ? 'KIS · Yahoo Finance' : 'Yahoo Finance';
+    var src = isIntrd ? '네이버 · Yahoo Finance' : 'Yahoo Finance';
     cEl.textContent = rangeLabel(curRange) + ' · ' + intervalLabel(curInterval) + ' · '
                     + n + '개 봉 · ' + fmtT(first) + ' → ' + fmtT(last) + ' · ' + src;
   }
@@ -3918,10 +3918,11 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     """Fresh live-quote payload for the detail-page overlay (numbers only).
 
     LIGHT (full=False): one yfinance ``.info`` call → price-derived
-    multiples + consensus + 52주 + 이평. KR (.KS/.KQ) takes a KIS-first
-    real-time 현재가 / PER / PBR / 시가총액 / 52주 override — KIS is the
-    official KRX feed, fresher and more accurate than yfinance's often
-    EOD-stale KR quotes. ~0.5-1s, intraday-fresh, ₩0.
+    multiples + consensus + 52주 + 이평. KR (.KS/.KQ) takes a Naver-first
+    real-time 현재가 / PER / PBR / 시가총액 / 52주 override — 네이버 폴링은
+    무키이고 데이터센터 IP 차단이 없으며 yfinance 의 EOD-stale KR 시세보다
+    신선하다 (PER/PBR 은 현재가/EPS·현재가/BPS 로 장중 재계산). ~0.5-1s,
+    intraday-fresh, ₩0.
 
     FULL (full=True): re-runs ``collect_stock_snapshot`` (every source —
     재무제표 / 실적 / 주주 / 수급 / 공시) and re-renders the heavy table
@@ -3981,7 +3982,7 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
         return {"mode": "full", "panes": heavy,
                 "meta": {"ts": datetime.datetime.now(_kst).strftime("%H:%M")}}
 
-    # ── LIGHT — price-derived numbers, one .info call (+ KR KIS) ───────
+    # ── LIGHT — price-derived numbers, one .info call (+ KR 네이버) ───────
     try:
         import yfinance as yf
     except Exception:
@@ -4065,7 +4066,7 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
             log.debug("build_live_quote: world/tw quote skipped for %s: %s", ticker, exc)
 
     if not price:
-        # 야후 .info(+KR KIS) 둘 다 비면 history(관대 chart API)로 현재가 폴백 —
+        # 야후 .info(+KR 네이버) 둘 다 비면 history(관대 chart API)로 현재가 폴백 —
         # .info throttle(quote API 차단) 중에도 검색이 최소 현재가는 보이게(사용자
         # 2026-06-14 '야후가 짤라서 아무것도 못함'). /health 가 history(batch) OK
         # 확인 — quote API 와 별개로 살아있음. 전 시장 universal. 5d 마지막 종가
@@ -4083,6 +4084,23 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
                             source = "yfinance 종가"
         except Exception as _exc:
             log.debug("build_live_quote: history price fallback %s: %s", ticker, _exc)
+
+    # PER/PBR 라이브 재계산 — 현재가가 라이브(네이버 국내·해외·TWSE)이고 yfinance
+    # EPS/BPS(장중 불변)가 있으면 PER=현재가/EPS · PBR=현재가/BPS 로 재산출해 장중
+    # 가격 반영(사용자 2026-06-15 'PER/PBR 더 실시간'). 적자(eps≤0)·무BPS 는 yfinance
+    # 값 유지. 52주 신고/신저도 장중 라이브가 극값 돌파 시 갱신. 전 시장 universal.
+    if price and not delayed:
+        _eps = vals.get("trailingEps")
+        if isinstance(_eps, (int, float)) and _eps > 0:
+            vals["trailingPE"] = price / _eps
+        _bps = vals.get("bookValue")
+        if isinstance(_bps, (int, float)) and _bps > 0:
+            vals["priceToBook"] = price / _bps
+        _h52, _l52 = vals.get("fiftyTwoWeekHigh"), vals.get("fiftyTwoWeekLow")
+        if isinstance(_h52, (int, float)) and price > _h52:
+            vals["fiftyTwoWeekHigh"] = price
+        if isinstance(_l52, (int, float)) and 0 < price < _l52:
+            vals["fiftyTwoWeekLow"] = price
 
     # Pre-format every field with the SAME helpers the renderer uses so
     # the client just drops strings into [data-q] cells (no JS-side
@@ -12057,10 +12075,12 @@ def _svg_line_chart(labels: list, series: list) -> str:
                 f'<text x="{W - padR + 7:.0f}" y="{gy + 5:.1f}" font-size="13" '
                 f'fill="currentColor" text-anchor="start">{_ax_fmt(rv)}</text>'
             )
-    # x labels (~6 evenly)
+    # x labels (~6 evenly). 연도 prefix 제거 — "2025-07"→"07", "2025.11.28"→"11.28"
+    # (사용자 2026-06-15 '연도 빼면 가독성↑, 월만으로 충분'). 짧아져 안 겹침.
     step = max(1, (n - 1) // 5) if n > 1 else 1
     for i in range(0, n, step):
-        lab = _html.escape(str(labels[i])) if i < len(labels) else ""
+        _raw = str(labels[i]) if i < len(labels) else ""
+        lab = _html.escape(re.sub(r'^\d{4}[-.]', '', _raw))
         parts.append(
             f'<text x="{_x(i):.1f}" y="{H - 12:.0f}" font-size="13" '
             f'fill="currentColor" text-anchor="middle">{lab}</text>'

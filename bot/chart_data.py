@@ -225,78 +225,90 @@ _INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60}
 
 
 def _fetch_kr_intraday(ticker: str, interval: str = "5m") -> dict | None:
-    """KR 종목 당일 분봉을 KIS API 로 fetch → chart payload.
-
-    yfinance 가 KR 분봉을 제공하지 않으므로 KIS 당일분봉조회로 대체.
-    KIS creds 부재 / API 실패 / 장전(데이터 없음) → None(graceful).
-    """
+    """KR 종목 당일 분봉 → chart payload. 네이버 분봉 API(사용자 2026-06-15 '분봉도
+    네이버로, KIS 말고'). api.stock.naver.com/chart/domestic/item/<code>/minute →
+    1분봉 [{localDateTime(YYYYMMDDHHMMSS), currentPrice, openPrice, highPrice,
+    lowPrice, accumulatedTradingVolume(누적)}]. 요청 interval 로 OHLCV 리샘플, 누적
+    거래량은 분간 증분(diff)으로 변환. 키 불필요·VM 차단 없음. 실패/장전 → None."""
     iv_min = _INTERVAL_MINUTES.get(interval, 5)
+    code = (ticker or "").upper().split(".")[0]
+    if not code.isdigit():
+        return None
     try:
-        from bot.kis_client import get_kis
-        bars = get_kis().get_minute_chart(ticker, interval_min=iv_min)
-        if not bars or len(bars) < 2:
+        import requests
+        from bot.naver_quote import _HDRS
+        r = requests.get(
+            f"https://api.stock.naver.com/chart/domestic/item/{code}/minute",
+            headers=_HDRS, timeout=8)
+        if r.status_code != 200:
+            return None
+        bars = r.json()
+        if not isinstance(bars, list) or len(bars) < 2:
             return None
 
         import pandas as pd
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime as _dt
 
-        KST = timezone(timedelta(hours=9))
-        today = datetime.now(KST).date()
-
-        records = []
+        recs = []
         for b in bars:
-            ts = b["time"]
-            h, m, s = int(ts[:2]), int(ts[2:4]), int(ts[4:6])
-            dt = datetime(today.year, today.month, today.day, h, m, s)
-            records.append({
-                "dt": dt,
-                "Close": float(b["close"]),
-                "Open": float(b.get("open") or b["close"]),
-                "High": float(b.get("high") or b["close"]),
-                "Low": float(b.get("low") or b["close"]),
-                "Volume": float(b.get("volume") or 0),
+            ldt = str(b.get("localDateTime") or "")
+            cp = b.get("currentPrice")
+            if len(ldt) < 12 or cp is None:
+                continue
+            try:
+                dt = _dt.strptime(ldt[:12], "%Y%m%d%H%M")
+            except Exception:
+                continue
+            recs.append({
+                "dt": dt, "Close": float(cp),
+                "Open": float(b.get("openPrice") or cp),
+                "High": float(b.get("highPrice") or cp),
+                "Low": float(b.get("lowPrice") or cp),
+                "Volume": float(b.get("accumulatedTradingVolume") or 0),
             })
-
-        df = pd.DataFrame(records).set_index("dt").sort_index()
+        if len(recs) < 2:
+            return None
+        df = pd.DataFrame(recs).set_index("dt").sort_index()
+        # 누적 거래량 → 분간 증분(첫 봉은 자기값), 음수 방어
+        df["Volume"] = df["Volume"].diff().fillna(df["Volume"]).clip(lower=0)
+        if iv_min > 1:                       # 1분봉 → 요청 interval 리샘플
+            df = df.resample(f"{iv_min}min").agg(
+                {"Open": "first", "High": "max", "Low": "min",
+                 "Close": "last", "Volume": "sum"}).dropna()
         close = df["Close"].dropna()
         if len(close) < 2:
             return None
 
         currency, decimals = _currency_for(ticker)
-        vol = df["Volume"].reindex(close.index)
-        op = df["Open"].reindex(close.index)
-        hi = df["High"].reindex(close.index)
-        lo = df["Low"].reindex(close.index)
-
         payload = _series_payload(
-            close, currency, decimals, vol, op, hi, lo,
+            close, currency, decimals,
+            df["Volume"].reindex(close.index), df["Open"].reindex(close.index),
+            df["High"].reindex(close.index), df["Low"].reindex(close.index),
             ticker=ticker, interval=interval,
         )
         payload["interval"] = interval
         payload["period"] = "1d"
-
+        # 라이브 현재가 — 네이버 국내 실시간(분봉 마지막점 보정)
         try:
-            from bot.kis_client import get_kis as _gk2
-            _kp = _gk2().get_realtime_price(ticker)
-            if _kp is not None:
-                payload["last_price"] = round(float(_kp), decimals)
+            from bot.naver_quote import fetch_kr_quote
+            _lp = (fetch_kr_quote(ticker) or {}).get("price")
+            if _lp:
+                payload["last_price"] = round(float(_lp), decimals)
         except Exception:
             pass
-
+        # 52주 신고/신저 — yfinance(분봉과 무관, EOD OK)
         try:
             import yfinance as yf
-            _t = yf.Ticker(ticker)
-            hi52, lo52 = _year_high_low(_t, decimals)
+            hi52, lo52 = _year_high_low(yf.Ticker(ticker), decimals)
             if hi52 is not None:
                 payload["wk52_high"] = hi52
             if lo52 is not None:
                 payload["wk52_low"] = lo52
         except Exception:
             pass
-
         return payload
     except Exception as exc:
-        log.warning("chart_data: KR intraday failed %s: %s", ticker, exc)
+        log.warning("chart_data: KR intraday (naver) failed %s: %s", ticker, exc)
         return None
 
 
