@@ -9031,6 +9031,11 @@ def _render_blog_page(runs: list[dict]) -> str:
     last_ts = ""
     if runs:
         last_ts = (runs[0].get("ts") or "")[:16].replace("T", " ")
+    # 멀티 블로그(사용자 2026-06-15) — 수집 글의 블로그명 distinct. 옛 기록
+    # (blog_title 부재)은 기존 단일 블로그 beatthemkt.
+    _blog_names = sorted({(r.get("blog_title") or "변화하는 기업을 찾아서")
+                          for r in runs}) or ["네이버 블로그"]
+    _blogs_sub = _html.escape(" · ".join(_blog_names))
 
     parts: list[str] = [_SCREENER_CSS]
     parts.append(f"""
@@ -9039,8 +9044,8 @@ def _render_blog_page(runs: list[dict]) -> str:
     <a href="market.html">🌍 홈</a>
     · <a href="index.html">🦉 NOAH 종목분석</a>
   </div>
-  <h1>📝 블로그 — '변화하는 기업을 찾아서' Archive</h1>
-  <p class="sub">네이버 블로그(beatthemkt) 새 글 자동 수집(30분) · Flash 3줄 요약 + 원문 링크 · 정보 관찰(투자 권유 아님)</p>
+  <h1>📝 블로그 Archive</h1>
+  <p class="sub">네이버 블로그 새 글 자동 수집(30분) · {_blogs_sub} · 원문 전문 + 링크 · 정보 관찰(투자 권유 아님)</p>
 
   <div class="stats">
     <div class="stat"><div class="stat-v">{total_runs}</div><div class="stat-l">총 수집 글</div></div>
@@ -9107,6 +9112,9 @@ def _render_blog_page(runs: list[dict]) -> str:
                 ts_html = _html.escape(ts_clock)
                 title = _html.escape(r.get("title") or "블로그 글")
                 link = _html.escape(r.get("link") or "")
+                # 멀티 블로그 출처(사용자 2026-06-15) — 옛 기록은 beatthemkt
+                blog_src = _html.escape(r.get("blog_title") or r.get("blog_id")
+                                        or "변화하는 기업을 찾아서")
                 desc_raw = (r.get("desc") or "").strip()
                 desc_html = _html.escape(desc_raw).replace("\n", "<br>")
                 # 전문 먼저, 원문 링크는 맨 밑 (요약 미표시 — 사용자 2026-06-11)
@@ -9117,7 +9125,7 @@ def _render_blog_page(runs: list[dict]) -> str:
                 if link:
                     body_parts.append(
                         f'<div style="margin:10px 0 2px"><a href="{link}" target="_blank" rel="noopener">🔗 원문 보기</a></div>')
-                plain = (title + "\n" + desc_raw)
+                plain = (title + " " + blog_src + "\n" + desc_raw)
                 card_lines: list[dict] = []
                 for ln in plain.splitlines():
                     s = ln.strip()
@@ -9141,7 +9149,7 @@ def _render_blog_page(runs: list[dict]) -> str:
   <details class="card"{card_open_attr} id="{card_id}" data-date="{_html.escape(r.get('_date', ''))}" data-filename="{filename}" data-search="{search_attr}" data-lines="{lines_attr}" data-default-open="{'true' if card_default_open else 'false'}">
     <summary class="card-h">
       <span class="card-toggle">▸</span>
-      <span class="domain">📝 {title} ({ts_html})</span>
+      <span class="domain">📝 {title} <span style="color:var(--muted);font-weight:400;font-size:12px">({ts_html} · {blog_src})</span></span>
       <button class="del-btn" type="button" title="이 글 삭제">🗑️</button>
     </summary>
     <div class="card-body">
