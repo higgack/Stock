@@ -9844,3 +9844,32 @@ class TestResearchMonthAndUSNames20260615:
                     src.index("def fetch_recent_research_intl")]
         assert "timedelta(days=30)).isoformat()" in us_fn   # US 롤링 30일
         assert "days_back=7," not in src                    # 7일 잔존 없음
+
+
+class TestRatesChartSpread20260615:
+    """사용자 2026-06-15: 금리·환율 차트 → 한·미 국채 비교(환율 대신 美-韓 10Y
+    금리차 spread). 비교 목적엔 금리차가 단일 핵심지표(캐리·자본흐름·원화 압력)."""
+
+    def test_rates_fx_spread_chart(self):
+        import bot.dashboard as d
+        rf = {"labels": ["07", "08", "09"], "us_10y": [4.5, 4.4, 4.6],
+              "kr_10y": [4.0, 3.9, 4.1], "kr_label": "한국 국고채 10년",
+              "spread": [0.5, 0.5, 0.5]}
+        dom = [{"name": "기준금리", "value": 2.5, "decimals": 2, "unit": "%"}]
+        html = d._render_macro_snapshot({"ts": "", "domestic": dom,
+                                         "charts": {"rates_fx": rf}})
+        assert "한·미 국채 금리 추이" in html
+        assert "美-韓 금리차 %p (우)" in html
+        assert "미국 10Y" in html and "한국 국고채 10년" in html
+        assert "원/달러" not in html and "yfinance" not in html   # 환율·소스 제외
+        rf2 = dict(rf); rf2.pop("spread")
+        html2 = d._render_macro_snapshot({"ts": "", "domestic": dom,
+                                          "charts": {"rates_fx": rf2}})
+        assert "美-韓 금리차" in html2                             # spread 폴백 계산
+
+    def test_build_charts_computes_spread(self):
+        from bot.macro_snapshot import _build_charts
+        rf = _build_charts({"us_10y": [4.5, 4.4, 4.6],
+                            "kr_10y": [4.0, 3.9, 4.1]}, None).get("rates_fx")
+        assert rf and rf["spread"] == [0.5, 0.5, 0.5]
+        assert "usdkrw" not in rf                                 # 환율 제외

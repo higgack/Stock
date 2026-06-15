@@ -12406,15 +12406,20 @@ def _render_macro_snapshot(macro: dict) -> str:
     rf = charts.get("rates_fx")
     if rf:
         _krlbl = rf.get("kr_label", "한국 국고채 10년")
+        # 한·미 금리 비교 = 양국 10Y(좌) + 美-韓 금리차(우, 단일 핵심지표). 환율
+        # 제외(사용자 2026-06-15 '환율말고 국채 조합'). spread 폴백=직접 계산.
+        _us, _kr = rf["us_10y"], rf.get("kr_10y") or rf.get("kr_rate", [])
+        _spread = rf.get("spread") or [round(u - k, 2) for u, k in zip(_us, _kr)]
         svg = _svg_line_chart(rf["labels"], [
-            {"name": "미국 10Y", "color": "#42a5f5", "data": rf["us_10y"], "axis": "L"},
-            {"name": _krlbl, "color": "#26c6da", "data": rf.get("kr_10y") or rf.get("kr_rate", []), "axis": "L"},
-            {"name": "원/달러", "color": "#ab47bc", "data": rf["usdkrw"], "axis": "R"},
+            {"name": "미국 10Y", "color": "#42a5f5", "data": _us, "axis": "L"},
+            {"name": _krlbl, "color": "#26c6da", "data": _kr, "axis": "L"},
+            {"name": "美-韓 금리차", "color": "#ab47bc", "data": _spread, "axis": "R"},
         ])
         cards.append(_chart_card(
-            "금리·환율 추이",
-            [("미국 10Y (좌)", "#42a5f5"), (f"{_krlbl} (좌)", "#26c6da"), ("원/달러 (우)", "#ab47bc")],
-            svg, "출처: FRED · 한국은행 · yfinance",
+            "한·미 국채 금리 추이",
+            [("미국 10Y (좌)", "#42a5f5"), (f"{_krlbl} (좌)", "#26c6da"),
+             ("美-韓 금리차 %p (우)", "#ab47bc")],
+            svg, "출처: FRED · 한국은행",
         ))
     inf = charts.get("inflation")
     if inf:
@@ -12853,21 +12858,31 @@ def _render_market_page(data: dict) -> str:
 
 <script>
 (function() {{
-  /* 홈 스크롤 위치 보존/복원 (사용자 2026-06-15 '홈으로 가면 원래 자리로').
-     어떤 경로로 홈(market.html)에 도착하든 — 자식 대시보드의 홈 버튼·full
-     reload·뒤로가기 — 마지막 스크롤로 복귀. bfcache 의존 없음(sessionStorage).
-     async 콘텐츠(관심종목 등)로 높이가 늦게 잡혀도 load·300ms 재적용. */
+  /* 홈 복귀 시 마지막 위치 복원 (사용자 2026-06-15 '미국 보이던 위치로, 새로고침
+     맨 위 아니라'). 어떤 경로로 홈(market.html)에 도착하든 — 자식 대시보드 홈
+     버튼·full reload — 마지막 스크롤로 복귀. history.back() 가로채기 아님.
+     ⚠️ 관심종목 등 async 콘텐츠가 높이를 늦게 잡으므로 0~2s 여러 번 재적용
+     (한 번이면 콘텐츠 로딩 전이라 맨 위로 튐). 사용자가 휠/터치/키로 직접
+     움직이면 즉시 중단(복원이 사용자 스크롤과 싸우지 않게). */
   try {{
-    var _SK = 'noah_home_scroll', _sy = sessionStorage.getItem(_SK);
-    if (_sy !== null) {{
-      var _y = parseInt(_sy) || 0;
-      var _restore = function() {{ window.scrollTo(0, _y); }};
-      _restore();
-      window.addEventListener('load', _restore);
-      setTimeout(_restore, 300);
+    if (history.scrollRestoration) history.scrollRestoration = 'manual';
+    var _SK = 'noah_home_scroll';
+    var _sy = sessionStorage.getItem(_SK);
+    var _target = (_sy !== null) ? (parseInt(_sy) || 0) : null;
+    var _settled = (_target === null), _userActed = false;
+    ['wheel', 'touchstart', 'keydown'].forEach(function(ev) {{
+      window.addEventListener(ev, function() {{ _userActed = true; _settled = true; }},
+                              {{passive: true, once: true}});
+    }});
+    if (_target !== null) {{
+      var _r = function() {{ if (!_userActed) window.scrollTo(0, _target); }};
+      _r();
+      [120, 350, 700, 1200, 2000].forEach(function(d) {{ setTimeout(_r, d); }});
+      window.addEventListener('load', _r);
+      setTimeout(function() {{ _settled = true; }}, 2100);
     }}
     window.addEventListener('scroll', function() {{
-      try {{ sessionStorage.setItem(_SK, String(window.scrollY)); }} catch (_e) {{}}
+      if (_settled) {{ try {{ sessionStorage.setItem(_SK, String(window.scrollY)); }} catch (_e) {{}} }}
     }}, {{passive: true}});
   }} catch (_e) {{}}
 

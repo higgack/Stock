@@ -566,7 +566,7 @@ def _build_charts(spark: dict[str, list[float]],
                   vix_value: Optional[float] = None) -> dict[str, Any]:
     """Build the 3 chart payloads from cached sparklines.
 
-    rates_fx: 미국 10Y + 한국 기준금리 (좌, %) + USD/KRW (우, 원)
+    rates_fx: 미국 10Y + 한국 국고채 10Y (좌, %) + 美-韓 10Y 금리차 (우, %p)
     inflation: 미국 CPI + 한국 CPI (지수)
     sentiment: VIX 최신값 → 0-100 점수
     """
@@ -576,23 +576,25 @@ def _build_charts(spark: dict[str, list[float]],
 
     charts: dict[str, Any] = {}
 
-    # rates_fx
+    # rates_fx — 한·미 금리 '비교'가 목적이라 환율 대신 **국채 조합**(사용자
+    # 2026-06-15 '환율말고 국채를 어떻게 조합하는게 목적에 부합'). 두 시장 10Y
+    # (시장금리, like-for-like) 절대수준 + **美-韓 10Y 금리차(spread)**. 금리차가
+    # 캐리·자본흐름·원화 압력을 설명하는 단일 핵심 지표 — 환율은 그 '결과'라 제외.
+    # ECOS kr10y 부재 시 기준금리 폴백(라벨 동기).
     us10 = spark.get("us_10y", [])
     kr10 = spark.get("kr_10y", [])
-    # 미국 10Y(시장금리)와 비교는 한국도 시장금리(국고채 10년)가 like-for-like —
-    # 양국 10Y 격차가 원/달러를 설명. 기준금리(정책금리·계단형)는 mismatch라 폴백만
-    # (사용자 2026-06-15 '미국 10년 적절한지 조사'). ECOS kr10y 부재 시 기준금리.
     krr = kr10 if kr10 else spark.get("kr_rate", [])
     kr_label = "한국 국고채 10년" if kr10 else "한국 기준금리"
-    fx = spark.get("usdkrw", [])
-    n = _align([us10, krr, fx])
+    n = _align([us10, krr])
     if n >= 2:
+        _u, _k = us10[-n:], krr[-n:]
+        spread = [round(u - k, 2) for u, k in zip(_u, _k)]   # 美 − 韓 (%p)
         charts["rates_fx"] = {
             "labels": _month_labels(n),
-            "us_10y": us10[-n:],
-            "kr_10y": krr[-n:],
+            "us_10y": _u,
+            "kr_10y": _k,
             "kr_label": kr_label,
-            "usdkrw": fx[-n:],
+            "spread": spread,
         }
 
     # inflation
