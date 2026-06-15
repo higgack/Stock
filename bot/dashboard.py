@@ -13364,14 +13364,7 @@ def _render_asia_page(data: dict) -> str:
     parts = [_MARKET_CSS]
     parts.append(
         '\n<div class="wrap">\n  <div class="nav">\n'
-        '    <a href="market.html">🌍 홈</a>\n    &nbsp;|&nbsp;\n'
-        '    <a href="asia.html" class="active">🌏 ASIA</a>\n'
-        '    &middot; <a href="index.html">🦉 NOAH 종목분석</a>\n'
-        '    &middot; <a href="dart_feed.html">📋 DART 공시</a>\n'
-        '    &middot; <a href="screener.html">📊 Screener</a>\n'
-        '    &middot; <a href="reddit_insider.html">📨 미국 레딧</a>\n'
-        '    &middot; <a href="daily_byte.html">📊 Daily Byte</a>\n'
-        '    &middot; <a href="trade/">' + _KR_FLAG_SVG + ' 한국 수출입</a>\n'
+        '    <a href="market.html">🌍 홈</a>\n'
         '  </div>\n  <h1>🌏 아시아 업종 등락</h1>\n'
         '  <p class="sub">일본·중국·홍콩·대만 업종 등락 — 홈과 동일 소스·30초 자동 갱신</p>\n'
         '  <div id="live-sections">')
