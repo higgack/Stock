@@ -9132,7 +9132,7 @@ def _render_blog_page(runs: list[dict]) -> str:
                     _json_bl.dumps(card_lines, ensure_ascii=False))
 
                 filename = _html.escape(r.get("_filename", ""))
-                card_default_open = (date == _today_kst_bl and day_count == 1)
+                card_default_open = False   # 본문 전부 접힘 (사용자 2026-06-15, 레딧 패턴)
                 card_open_attr = " open" if card_default_open else ""
                 card_id = (
                     f"card-{_html.escape(r.get('_date', ''))}-{filename}"
