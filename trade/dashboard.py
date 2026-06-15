@@ -736,6 +736,9 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-mini-chip .neg{color:var(--tone-import);font-weight:600}
 .ind-topbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px}
 .ind-note{font-size:12px;color:var(--text-sub)}
+/* 확정 데이터 빈티지 강조 badge (사용자 2026-06-15 '잠정 badge 처럼 강조') —
+   잠정(초록 ind-prov-cur)과 구분되게 확정은 파란 accent pill. */
+.ind-note-cur{font-size:11px;font-weight:700;color:var(--accent);border:1px solid var(--accent);border-radius:999px;padding:1px 8px;margin:0 3px;vertical-align:middle;white-space:nowrap}
 .ind-motie{margin:0 16px 6px;padding:8px 12px;border:1px solid var(--border-soft);border-left:3px solid var(--accent);border-radius:8px;background:var(--surface);font-size:12.5px}
 .ind-motie a{color:var(--accent);text-decoration:none;font-weight:600}
 .ind-motie a:hover{text-decoration:underline}

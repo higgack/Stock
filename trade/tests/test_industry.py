@@ -319,6 +319,10 @@ class StoreRenderTests(unittest.TestCase):
         self.assertIn("YoY 성장률", html)
         self.assertIn("월별 원자료", html)         # raw-data table
         self.assertIn("ind-table", html)
+        # 확정 빈티지 강조 badge (사용자 2026-06-15 '잠정처럼 강조') — '최신 …
+        # 관세청 확정/잠정' 을 파란 pill 로
+        self.assertIn("ind-note-cur", html)
+        self.assertIn("관세청", html)
 
 
 class IndicatorExtraTests(unittest.TestCase):

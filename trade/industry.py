@@ -1554,8 +1554,9 @@ def render_industry_html(by_industry: dict[str, dict[str, int]],
     out.append(
         "<div class='ind-topbar'>"
         f"<div class='ind-note'>산업분류별 월 수출·수입액 · YoY/ΔYoY/12M 이동평균 "
-        f"(HSK-MTI 연계표 기준) · 최신 <b>{_html.escape(latest_ym)}</b> "
-        f"관세청 <b>{status}</b> · 매일 갱신 · "
+        f"(HSK-MTI 연계표 기준) "
+        f"<span class='ind-note-cur'>최신 {_html.escape(latest_ym)} 관세청 {status}</span>"
+        f" · 매일 갱신 · "
         f"<b>금액 단위: 억 달러(1억$ = $100M)</b></div>"
         f"{dir_toggle}"
         "<div class='ind-legend'><span><i class='ind-lg-v'></i>금액</span>"
