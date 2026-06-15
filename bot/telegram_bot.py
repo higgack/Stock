@@ -429,6 +429,16 @@ async def on_channel_post(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # /blog in channel — 감시 블로그 목록 (_BLOGS 자동 생성).
+    if first_word == "blog":
+        await ctx.bot.send_message(
+            chat_id=post.chat.id,
+            text=_blog_list_text(),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        return
+
     # /screen in channel — generic conditional screener (비용 ₩0, pykrx bulk).
     if first_word == "screen":
         _scid = post.chat.id
@@ -1061,7 +1071,7 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
 <b>【1. 명령어】</b> (탭 자동입력)
-/help /usage /portfolio /screener_list /sites — 비용: /screener·daily_byte·cheongyak·realestate_cost
+/help /usage /portfolio /screener_list /sites /blog(감시 블로그) — 비용: /screener·daily_byte·cheongyak·realestate_cost
 /screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0). /screen list
 /screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list. 모든 명령은 대시보드 검색창 '/' 명령 모드에서도 동일 실행
 /NVDA /AAPL — 단일 분석 (채널에서)
@@ -2032,6 +2042,38 @@ async def cmd_sites(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
+
+
+def _blog_list_text() -> str:
+    """감시 블로그 목록 — bot.blog_watch._BLOGS 에서 자동 생성 (블로그 추가
+    시 이 명령·메뉴가 자동 반영, 수동 동기 불요 — /sites 패턴 mirror).
+    사용자 2026-06-15 '블로그도 sites 처럼'."""
+    import html as _h
+    try:
+        from bot.blog_watch import _BLOGS
+    except Exception:
+        _BLOGS = ()
+    lines = ["📝 <b>감시 블로그</b>", "",
+             "새 글을 30분마다 자동 수집 → 채널 알림 + 대시보드(blog.html, 전문·검색).",
+             ""]
+    for b in _BLOGS:
+        bid = b.get("id", "")
+        title = _h.escape(b.get("title") or bid)
+        cat = b.get("categories")
+        suffix = "" if cat is None else f" · {_h.escape('/'.join(cat))} 카테고리만"
+        lines.append(f' • <a href="https://m.blog.naver.com/{bid}">{title}</a>{suffix}')
+    lines += ["", "📊 대시보드: NOAH archive → 📝 블로그"]
+    return "\n".join(lines)
+
+
+async def cmd_blog(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """/blog — 감시 중인 네이버 블로그 목록(+대시보드 안내). 목록은
+    blog_watch._BLOGS 에서 자동 생성 → 블로그 추가 시 자동 반영. 채널은
+    on_channel_post 에서 처리(PTB CommandHandler 가 channel_post 미발화)."""
+    if update.message is None:
+        return
+    await update.message.reply_text(
+        _blog_list_text(), parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 _WATCH_HELP = (
@@ -3216,6 +3258,7 @@ def _static_command_registry() -> dict:
         "realestate_cost": (cmd_realestate_cost, "부동산 Byte 비용 (실거래 브리프)"),
         "screener_list": (cmd_screener_list, "Screener 도메인 목록 (전체)"),
         "sites": (cmd_sites, "참고 사이트"),
+        "blog": (cmd_blog, "감시 블로그 목록 (변화하는기업·필승·의교창)"),
         "watch": (cmd_watch, "종목 조건 감시 알림 (rsi/price/sma/52w/earnings)"),
         "watchlist": (cmd_watchlist, "감시 목록 보기"),
         "unwatch": (cmd_unwatch, "감시 삭제 (TICKER/id/all)"),

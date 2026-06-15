@@ -5726,6 +5726,17 @@ class TestBlogWatchMultiBlog:
         assert pushed == ["관심글"]               # 관심종목* 만, 잡담 제외
         assert "g4" in seen                       # 비대상도 seen(재검사 방지)
 
+    def test_blog_command_wired(self):
+        # /blog 명령(블로그도 sites 처럼, 사용자 2026-06-15) — 레지스트리·핸들러·
+        # 채널 dispatch·help 4곳 배선 + 목록이 _BLOGS 자동 생성(수동 동기 불요).
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def cmd_blog(" in src, "cmd_blog 핸들러 누락"
+        assert "def _blog_list_text(" in src, "_blog_list_text 누락"
+        assert "from bot.blog_watch import _BLOGS" in src, "목록 자동 생성(_BLOGS) 미연결"
+        assert '"blog": (cmd_blog' in src, "레지스트리 등록 누락(텔레그램·메뉴·콘솔)"
+        assert 'first_word == "blog"' in src, "채널 dispatch 누락"
+        assert "/blog" in src, "help §1 /blog 누락"
+
     def test_state_migration_old_initialized(self, tmp_path):
         import bot.blog_watch as bw
         import json as _j
