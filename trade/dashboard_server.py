@@ -296,12 +296,18 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             and any(mime.startswith(p) for p in _GZIP_MIME_PREFIXES)
             and len(body_bytes) >= _GZIP_MIN_BYTES
         )
+        # HTML 은 no-cache 강제 — 정적 대시보드라 브라우저가 옛 HTML/JS 를 캐싱하면
+        # 배포된 수정(예: 모달 perf 인덱스)이 사용자에게 안 닿는다(사용자 2026-06-15
+        # '여전히 느림' = 옛 JS 캐시 의심). NOAH 대시보드와 동일 패턴(최초 1회 강력
+        # 새로고침 후 일반 새로고침으로 항상 최신).
+        _nc = ({"Cache-Control": "no-cache, must-revalidate"}
+               if (mime and mime.startswith("text/html")) else {})
         if gzippable and method == "GET":
             gz = gzip.compress(body_bytes)
             patched = _patch_headers(
                 header_bytes,
                 content_length=len(gz),
-                add={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
+                add={"Content-Encoding": "gzip", "Vary": "Accept-Encoding", **_nc},
             )
             orig_wfile.write(patched + gz)
         elif gzippable and method == "HEAD":
@@ -312,8 +318,11 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             patched = _patch_headers(
                 header_bytes,
                 content_length=None,
-                add={"Vary": "Accept-Encoding"},
+                add={"Vary": "Accept-Encoding", **_nc},
             )
+            orig_wfile.write(patched + body_bytes)
+        elif _nc:
+            patched = _patch_headers(header_bytes, content_length=None, add=_nc)
             orig_wfile.write(patched + body_bytes)
         else:
             orig_wfile.write(header_bytes + body_bytes)

@@ -559,5 +559,17 @@ class AsofLabelTests(unittest.TestCase):
             self.assertEqual(_asof_label(bad), "")
 
 
+class HtmlNoCacheTests(unittest.TestCase):
+    """정적 대시보드 HTML 은 no-cache 강제 — 브라우저가 옛 HTML/JS 를 캐싱하면
+    배포된 수정(모달 perf 등)이 사용자에게 안 닿음 (사용자 2026-06-15 '여전히 느림'
+    = 옛 JS 캐시). text/html 응답에 Cache-Control: no-cache 주입 배선 확인."""
+
+    def test_html_gets_no_cache_header(self):
+        src = (Path(__file__).resolve().parents[1]
+               / "dashboard_server.py").read_text(encoding="utf-8")
+        self.assertIn('"Cache-Control": "no-cache, must-revalidate"', src)
+        self.assertIn('mime.startswith("text/html")', src)
+
+
 if __name__ == "__main__":
     unittest.main()

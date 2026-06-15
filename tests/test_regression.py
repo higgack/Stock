@@ -5648,6 +5648,22 @@ class TestNameTranslationKr:
         assert called["n"] == 0           # US/KR 는 음역 미적용
 
 
+class TestDartFeedTabCollapse:
+    """DART 공시 카테고리/플래그 탭도 '전체'처럼 최신일만 펼침 — 텍스트 검색
+    중에만 접힌 그룹 강제 펼침(df-searching). 사용자 2026-06-15 '다른 탭들도
+    전체탭처럼 해당일만 열어놓고 나머지일들은 접히는 것으로'."""
+
+    def test_df_searching_search_only(self):
+        import bot.dashboard as d
+        html = d._render_dart_feed_page({"2026-06-15": [
+            {"corp_name": "테스트", "report_nm": "감자완료", "category": "리스크",
+             "url": "#", "stock_code": "123456", "detail": []}]})
+        # df-searching 은 텍스트 검색(q)에만 — 카테고리/플래그엔 안 켜짐(접힘 유지)
+        assert "df-searching', !!q)" in html
+        assert "df-searching', !!q || activeCat" not in html   # 옛 조건 제거
+        assert 'data-cat="전체"' in html and "df-date-group" in html
+
+
 class TestPruneNonStock:
     """비-주식 가지치기 (finviz_client.prune_non_stock) — CEF 펀드·유령티커·
     이중클래스 dedupe (사용자 2026-06-14 실데이터 회귀)."""

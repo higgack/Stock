@@ -11256,8 +11256,10 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
 
   function applyFilters(){
     var q=(search?search.value:'').toLowerCase().trim();
-    // 검색/카테고리/플래그 필터 중에는 접힌 그룹도 펼쳐 매칭이 보이게.
-    if(wrap)wrap.classList.toggle('df-searching', !!q || activeCat!=='전체' || activeFlags.length>0);
+    // 텍스트 검색 중에만 접힌 그룹을 펼쳐 전 날짜 매칭을 보인다. 카테고리/플래그
+    // 탭은 '전체'처럼 기본 펼침(최신일만) 유지 — 나머지 날짜는 접힘(헤더 클릭 펼침,
+    // 일자별 매칭 카운트 표시). 사용자 2026-06-15 '다른 탭들도 전체탭처럼 해당일만'.
+    if(wrap)wrap.classList.toggle('df-searching', !!q);
     cards.forEach(function(c){
       var catMatch=activeCat==='전체'||c.dataset.cat===activeCat;
       var cf=(c.dataset.flag||'');
