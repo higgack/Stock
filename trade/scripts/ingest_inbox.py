@@ -33,6 +33,7 @@ from trade.store import (
     alert_to_row,
     open_db,
     stats,
+    update_media_paths,
     upsert_alert,
 )
 
@@ -88,6 +89,25 @@ def _resolve_photo_path(media_root: Path, row: dict) -> str | None:
     # Store relative to ~/.trade for portability (so moving the data
     # dir doesn't invalidate every row).
     return str(full.relative_to(media_root.parent))
+
+
+def _stored_media_empty(conn, chat_id: int, msg_id: int) -> bool:
+    """True when the already-stored alert has no media_paths yet — the
+    signal that its photo finished downloading AFTER ingest first ran
+    (the backfill/burst race), so a re-link is warranted. Missing row →
+    False (nothing to heal; the upsert will insert it instead)."""
+    cur = conn.execute(
+        "SELECT media_paths FROM alerts "
+        "WHERE source_chat_id=? AND source_message_id=?",
+        (chat_id, msg_id),
+    )
+    r = cur.fetchone()
+    if r is None:
+        return False
+    try:
+        return not json.loads(r[0] or "[]")
+    except Exception:
+        return False
 
 
 def _group_messages(rows: list[dict]) -> list[list[dict]]:
@@ -173,6 +193,24 @@ def _ingest_group(
             counters["with_warnings"] += 1
     else:
         counters["already_present"] += 1
+        # Self-heal the download↔ingest race. upsert is ON CONFLICT DO
+        # NOTHING, so a backfilled/burst alert that was ingested BEFORE
+        # its own photo finished the background download stays imageless
+        # forever — the file lands seconds later but the row is never
+        # revisited. When we now resolve media (file on disk) and the
+        # stored row still has none, re-link it so the next 5-min refresh
+        # cycle surfaces the image. (Album siblings already use
+        # update_media_paths in the live path; this covers the whole-
+        # alert race the BeOn backfill exposes — 732 imageless cards
+        # 2026-06-15.) Gated on stored-empty so healed rows aren't
+        # rewritten every cycle.
+        if media_paths and _stored_media_empty(
+            conn, primary["chat_id"], primary["message_id"]
+        ):
+            update_media_paths(
+                conn, primary["chat_id"], primary["message_id"], media_paths
+            )
+            counters["media_relinked"] += 1
 
 
 def main() -> int:
@@ -223,6 +261,7 @@ def main() -> int:
         "unparseable": 0,
         "multi_caption_album": 0,
         "with_warnings": 0,
+        "media_relinked": 0,
     }
     for grp in groups:
         _ingest_group(conn, grp, args.media_root, counters, ignored_ids)

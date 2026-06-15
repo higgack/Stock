@@ -120,12 +120,17 @@ MAX_FLOOD_WAIT_S = int(os.environ.get("TRADE_MAX_FLOOD_WAIT_S") or "600")
 # than the cap, abort with ⚠️ notify instead of silently flooding the
 # dest channel. Operator overrides with --max-candidates for explicit
 # wide catch-ups they actually want.
-# 기본 cap 200→1000 (사용자 2026-06-15 '안전장치 한도 늘려줘'). 포스팅은 멱등
-# (이미 아카이브분 재전송 안 함)이라 와이드 캐치업도 실제론 진짜 누락분만 발송 —
-# 200 은 정상 2시간 윈도엔 충분하나 다운타임 후 캐치업을 자주 막던 것 완화.
+# 기본 cap 200→1000→3000 (사용자 2026-06-15 '확정 새 업데이트가 하루 천개·한번에
+# 천개 이상도 가능'). 월별 확정 릴리스는 ~1000 품목 × (수출/수입 × 잠정/확정)이라
+# 단일 동기화 run 의 신규 후보가 1000~2000 에 이를 수 있다 → 1000 cap 이면 정상
+# 일배치를 통째 abort(아무것도 안 보냄)하던 것 해소. 포스팅은 멱등(이미 아카이브분
+# 재전송 안 함)이고 실시간 안전장치(FloodWait hard cap + 디스크 가드 + adaptive
+# pacing)가 진짜 홍수 방어선이라, 후보 cap 은 '비정상 대량 스캔'(수개월 다운타임
+# 등)만 걸러내면 충분 → 3000 으로 정상 월배치엔 여유, 진짜 runaway 엔 abort+notify.
 # ⚠️ VM 의 beon-sync 유닛/.env 가 TRADE_MAX_CANDIDATES 로 오버라이드 중이면 그 값이
-# 우선 — 이 기본값을 적용하려면 VM override 제거 필요(없으면 1000 적용).
-MAX_CANDIDATES_DEFAULT = int(os.environ.get("TRADE_MAX_CANDIDATES") or "1000")
+# 우선 — 이 기본값을 적용하려면 VM override 를 3000 이상으로 올리거나 제거해야 함
+# (예전 854>400 abort 가 정확히 VM override 400 때문이었음).
+MAX_CANDIDATES_DEFAULT = int(os.environ.get("TRADE_MAX_CANDIDATES") or "3000")
 
 # --- Disk guard -------------------------------------------------------
 MIN_FREE_GB = float(os.environ.get("TRADE_MIN_FREE_GB") or "2.0")
