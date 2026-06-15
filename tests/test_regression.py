@@ -5756,6 +5756,34 @@ class TestBlogWatchMultiBlog:
             bw._STATE = orig
 
 
+class TestUSPrepostKSTWindow:
+    """미국 장전·장후 세션시간 한국시간 명시 + 서머타임 자동 반영
+    (사용자 2026-06-15 '한국시간으로 명시, 섬머타임 고려해서 바꿔야'). EDT/EST
+    가 1h 차이라 하드코딩 금지 — zoneinfo America/New_York→Asia/Seoul."""
+
+    def test_summer_edt_kst_window(self):
+        from datetime import date
+        from bot.us_pages import _ext_kst_for_date
+        s = _ext_kst_for_date(date(2026, 7, 15))            # 서머타임(EDT)
+        assert "장전 17:00–22:30" in s, s
+        assert "장후 익일 05:00–09:00" in s, s
+        assert "서머타임" in s
+
+    def test_winter_est_kst_window(self):
+        from datetime import date
+        from bot.us_pages import _ext_kst_for_date
+        s = _ext_kst_for_date(date(2026, 1, 15))            # 표준시(EST) → +1h
+        assert "장전 18:00–23:30" in s, s
+        assert "장후 익일 06:00–10:00" in s, s
+        assert "표준시" in s
+
+    def test_prepost_subtitle_wired_and_no_hardcode(self):
+        src = open("bot/us_pages.py", encoding="utf-8").read()
+        assert "_ext_window_kst()" in src, "부제 KST 세션시간 미배선"
+        assert "연장거래 창에서 30분 · " in src, "부제에 KST 창 추가 누락"
+        assert "_EXT_WINDOW" not in src, "옛 하드코딩 상수 잔존(서머타임 미반영)"
+
+
 class TestAnalysisCsvExport:
     """주식분석 아카이브 CSV 내보내기 (2026-06-14) — 분석 버튼 옆 ⬇CSV."""
 
