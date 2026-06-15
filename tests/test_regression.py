@@ -9253,3 +9253,44 @@ class TestSessionAwarePerMarket:
             assert "_session_fresh(" in src, path
         fc = open("bot/finviz_client.py", encoding="utf-8").read()
         assert "_session_fresh(\"US\"" in fc          # US 전종목 티어도 장-인지
+
+
+class TestTradeProxyMediaPath:
+    """trade 대시보드를 NOAH 8081 이 /trade 리버스 프록시로 흡수할 때, 카드
+    이미지(상대 ../media/)가 회색이던 버그(사용자 2026-06-15). 미디어는 trade
+    백엔드 ROOT(8765/media/)에 있는데 (a) 상대 ../media/ 가 /trade/ 마운트 밖
+    /<token>/media/(NOAH 루트→404)로 탈출하고 (b) 프록시가 /trade/media/ 를
+    base(=…/dashboard) 아래로 보내 8765/dashboard/media→404. 두 헬퍼가 fix."""
+
+    def test_media_upstream_hits_backend_root(self):
+        from bot.dashboard_server import _trade_upstream_url
+        base = "http://127.0.0.1:8765/dashboard"
+        # 미디어는 /dashboard 의 형제 → 백엔드 ROOT 로
+        assert (_trade_upstream_url(base, "/media/2026-06-15/x.jpg")
+                == "http://127.0.0.1:8765/media/2026-06-15/x.jpg")
+        # 그 외는 base(=…/dashboard) 아래로 그대로
+        assert (_trade_upstream_url(base, "/index.html")
+                == "http://127.0.0.1:8765/dashboard/index.html")
+        assert _trade_upstream_url(base, "/") == "http://127.0.0.1:8765/dashboard/"
+
+    def test_body_rewrite_with_token(self):
+        from bot.dashboard_server import _rewrite_trade_html
+        tok = "06beb08f5f4ad5515007e65f8f60b471"
+        body = (b'<div class="mini-img" style="background-image:'
+                b'url(../media/2026-06-15/x.jpg)"></div>'
+                b'<a href="/dashboard/market.html">')
+        out = _rewrite_trade_html(body, tok)
+        # 상대 ../media/ → 토큰 포함 절대 /trade/media/ (마운트 안, 토큰 보존)
+        assert b"/%s/trade/media/2026-06-15/x.jpg" % tok.encode() in out
+        assert b"../media/" not in out                  # 탈출 경로 제거
+        assert b"/trade/market.html" in out             # 절대 /dashboard/ 정렬
+
+    def test_body_rewrite_without_token(self):
+        from bot.dashboard_server import _rewrite_trade_html
+        assert _rewrite_trade_html(b"url(../media/a.jpg)", "") == b"url(/trade/media/a.jpg)"
+
+    def test_proxy_wires_helpers(self):
+        # 배선 E2E: 프록시 핸들러가 두 헬퍼를 실제로 호출한다(인라인 회귀 방지).
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert "_trade_upstream_url(base, sub)" in src
+        assert "_rewrite_trade_html(body, _TOKEN)" in src

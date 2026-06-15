@@ -152,6 +152,36 @@ def _kick_lookup_detail_refresh(ticker: str, cache_f, enrich: bool = True) -> No
         pass
 
 
+def _trade_upstream_url(base: str, sub: str) -> str:
+    """trade 프록시(/trade[/...]) 업스트림 URL.
+
+    미디어(/media/...)는 trade 백엔드 ROOT(8765/media/...)에 있다 —
+    /dashboard/ 의 자식이 아니라 형제. 그래서 /trade/media/... 는 base(기본
+    …/dashboard)가 아니라 백엔드 루트로 보내야 8765/media/ 에 닿는다(안 그러면
+    8765/dashboard/media → 404 → 카드 이미지 회색, 사용자 2026-06-15). 그 외
+    경로는 base 아래로 그대로."""
+    if sub.startswith("/media/"):
+        from urllib.parse import urlsplit
+        p = urlsplit(base)
+        return f"{p.scheme}://{p.netloc}" + sub
+    return base.rstrip("/") + sub
+
+
+def _rewrite_trade_html(body: bytes, token: str) -> bytes:
+    """프록시된 trade HTML/CSS/JS 본문 경로 보정:
+
+    - 절대 /dashboard/ → /trade/ (마운트 정렬).
+    - 상대 ../media/ → /<token>/trade/media/ (토큰 포함 절대). trade HTML 은
+      미디어를 상대 ../media/ 로 참조하는데, /trade/ 프록시 마운트 아래선 ../ 가
+      /<token>/media/(NOAH 루트 → 404)로 탈출해 카드가 회색이 된다(사용자
+      2026-06-15). 토큰 포함 절대로 바꾸면 트레일링슬래시 무관하게 /trade/media/
+      로 해석되고 토큰 보존 → _trade_upstream_url 가 8765/media/ 로 매핑해 200
+      JPEG. 8765 직접 접속(원본 ../media/)은 프록시를 안 거쳐 그대로 정상."""
+    body = body.replace(b"/dashboard/", b"/trade/")
+    mpfx = (f"/{token}".encode() if token else b"") + b"/trade/media/"
+    return body.replace(b"../media/", mpfx)
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     """Serves the archive directory; adds POST /api/delete + optional
     URL-token and Basic-Auth gating."""
@@ -781,7 +811,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             sub = "/"
         if not sub.startswith(("/", "?")):
             sub = "/" + sub
-        url = base.rstrip("/") + sub
+        url = _trade_upstream_url(base, sub)
         headers = {"User-Agent": "NOAH-trade-proxy/1.0",
                    "Accept": self.headers.get("Accept", "*/*")}
         ta = os.environ.get("TRADE_PROXY_AUTH")
@@ -805,7 +835,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         low = (ctype or "").lower()
         if any(t in low for t in ("html", "javascript", "css", "json")):
-            body = body.replace(b"/dashboard/", b"/trade/")
+            body = _rewrite_trade_html(body, _TOKEN)
         # HTML 응답에 우리 nav 배너 주입 — 한국수출입 ↔ 홈·NOAH 연결(사용자
         # 2026-06-10 '메인보드·NOAH 분석대시보드 연결'). 토큰 prefix 포함
         # 절대경로라 trade 하위경로 무관. body 태그 직후 sticky 배너.
