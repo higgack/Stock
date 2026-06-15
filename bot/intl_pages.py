@@ -125,7 +125,7 @@ def render_intl_movers_page(market: str) -> str:
     _ind_src = ("업종=네이버+yfinance" if market in ("CN_A", "JP")
                 else "업종=yfinance+네이버" if market == "HK" else "업종=네이버")
     sub = (f"{flag} 당일 등락 상·하위 30 · {src} · 시총순·헤더 클릭 정렬 · "
-           f"{_ind_src} · 장중 30분" + (f" · {ts} 기준" if ts else ""))
+           f"{_ind_src} · 장중 1분" + (f" · {ts} 기준" if ts else ""))
     _active = {"JP": "jpmovers", "CN_A": "cnmovers", "HK": "hkmovers"}.get(market, "hkmovers")
     return _tw_shell(f"{flag} 급등·급락", sub, body,
                      nav=_market_nav(market, _active))

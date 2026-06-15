@@ -113,7 +113,7 @@ def fetch_intl_movers(market: str) -> dict:
             mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh(market, mt, _MOVERS_INTRA_TTL):   # 장중 30분(사용자 2026-06-14)
+        if _session_fresh(market, mt, _MOVERS_INTRA_TTL):   # 장중 1분(사용자 2026-06-14)
             return stale
     st = intl_movers_status(market)
     age = time.time() - (st.get("ts") or 0)

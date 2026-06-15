@@ -193,7 +193,7 @@ tbl.querySelectorAll('th.th-sort').forEach(function(th){
 def render_highlow_page() -> str:
     """KR 급등·급락 — 네이버 front-api domestic top 상승/하락 (사용자 2026-06-14
     'KR 상한가/하한가 → 급등/급락', JP/CN/HK 무버 형태). 한글명·시총·거래대금
-    native·429 면역. 장중 30분(무버 신선도)·장 밖 재스캔 0."""
+    native·429 면역. 장중 1분(무버 신선도)·장 밖 재스캔 0."""
     from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
                                     stock_panel)
     data = None
@@ -243,7 +243,7 @@ def render_highlow_page() -> str:
                               ind_dist_line(down), **_o)
                 + '</div>' + HL_SORT_JS)
         sub = ("네이버 증권 급등/급락 · 시총순·헤더 클릭 정렬 · 업종=네이버 · "
-               f"장중 30분{(' · ' + ts + ' 기준') if ts else ''}")
+               f"장중 1분{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("급등·급락", sub, "highlow", body)
 
     body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'

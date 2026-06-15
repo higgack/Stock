@@ -1940,7 +1940,7 @@ def _session_fresh(market: str, cache_ts: float, intra_ttl: float,
 
 
 def _movers_cache_is_fresh(cache_ts: float, now_ts: float | None = None) -> bool:
-    """US 무버 장-인지 신선도 — 장중 30분 / 장 밖 마지막 마감 이후 재스캔 0
+    """US 무버 장-인지 신선도 — 장중 1분 / 장 밖 마지막 마감 이후 재스캔 0
     (사용자 2026-06-14 '급등급락은 30분단위로 모두' — 52주 1h 와 분리)."""
     return _session_fresh("US", cache_ts, _MOVERS_INTRA_TTL, now_ts)
 

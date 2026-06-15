@@ -343,11 +343,11 @@ def render_us_movers_page() -> str:
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') — 무엇·출처(1회)·정렬·신선도.
     if "네이버" in src:
         sub = ("미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · "
-               "시총순·헤더 클릭 정렬 · 장중 30분" + (f" · {ts} 기준" if ts else ""))
+               "시총순·헤더 클릭 정렬 · 장중 1분" + (f" · {ts} 기준" if ts else ""))
     else:
         sub = ("미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · "
                "시총순·헤더 클릭 정렬"
-               + (f" · 출처 {src}" if src else "") + " · 장중 30분"
+               + (f" · 출처 {src}" if src else "") + " · 장중 1분"
                + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)
 
