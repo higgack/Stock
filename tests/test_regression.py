@@ -5669,6 +5669,8 @@ class TestBlogWatchMultiBlog:
         ids = {b["id"]: b for b in bw._BLOGS}
         assert "teasky0221" in ids and ids["teasky0221"]["title"] == "필승"
         assert ids["teasky0221"]["categories"] is None         # 전체 글
+        assert "doctordk" in ids and ids["doctordk"]["title"] == "의교창"
+        assert ids["doctordk"]["categories"] is None           # 전체 글
         assert ids["beatthemkt"]["categories"] == ("관심종목", "기업탐방")
 
     def test_parse_channel_title(self):
