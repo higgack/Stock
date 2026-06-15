@@ -630,5 +630,20 @@ class CardModalPerfTests(unittest.TestCase):
         self.assertIn("if(_CLIENT_VIEWS[tab]&&_viewDirty[tab])_buildView(tab)", html)
 
 
+class TestBatch20260615(unittest.TestCase):
+    """사용자 2026-06-15: ④ 월별 원자료 가로스크롤 우측 디폴트 · ⑥ BeOn 백필
+    cap 기본 5000."""
+
+    def test_raw_table_scroll_right_default(self):
+        src = Path("trade/dashboard.py").read_text(encoding="utf-8")
+        self.assertIn(".ind-raw-scroll", src)
+        self.assertIn("e.scrollLeft=e.scrollWidth", src)   # 우측(최신) 디폴트
+        self.assertIn("'toggle'", src)                     # details 펼칠 때도 재적용
+
+    def test_backfill_cap_default_5000(self):
+        src = Path("trade/scripts/backfill_beon.py").read_text(encoding="utf-8")
+        self.assertIn('TRADE_MAX_CANDIDATES") or "5000"', src)
+
+
 if __name__ == "__main__":
     unittest.main()

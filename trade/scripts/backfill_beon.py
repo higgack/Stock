@@ -127,11 +127,12 @@ MAX_FLOOD_WAIT_S = int(os.environ.get("TRADE_MAX_FLOOD_WAIT_S") or "600")
 # 일배치를 통째 abort(아무것도 안 보냄)하던 것 해소. 포스팅은 멱등(이미 아카이브분
 # 재전송 안 함)이고 실시간 안전장치(FloodWait hard cap + 디스크 가드 + adaptive
 # pacing)가 진짜 홍수 방어선이라, 후보 cap 은 '비정상 대량 스캔'(수개월 다운타임
-# 등)만 걸러내면 충분 → 3000 으로 정상 월배치엔 여유, 진짜 runaway 엔 abort+notify.
+# 등)만 걸러내면 충분 → 5000 으로 정상 월배치+여러 달 백필엔 여유, 진짜 runaway 엔
+# abort+notify (사용자 2026-06-15 '5천개까지 늘려 — 백필 가능하게').
 # ⚠️ VM 의 beon-sync 유닛/.env 가 TRADE_MAX_CANDIDATES 로 오버라이드 중이면 그 값이
-# 우선 — 이 기본값을 적용하려면 VM override 를 3000 이상으로 올리거나 제거해야 함
+# 우선 — 이 기본값(5000)을 적용하려면 VM override 를 5000 이상으로 올리거나 제거해야 함
 # (예전 854>400 abort 가 정확히 VM override 400 때문이었음).
-MAX_CANDIDATES_DEFAULT = int(os.environ.get("TRADE_MAX_CANDIDATES") or "3000")
+MAX_CANDIDATES_DEFAULT = int(os.environ.get("TRADE_MAX_CANDIDATES") or "5000")
 
 # --- Disk guard -------------------------------------------------------
 MIN_FREE_GB = float(os.environ.get("TRADE_MIN_FREE_GB") or "2.0")

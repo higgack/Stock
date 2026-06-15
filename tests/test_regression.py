@@ -9045,7 +9045,8 @@ class TestResearchRotation:
 
     def test_rotation_wired_into_research(self):
         src = open("bot/market_overview.py", encoding="utf-8").read()
-        assert "_rotation_slice(_sp, today.toordinal())" in src   # 로테이션 배선
+        # 4일 1회전 — 야후 안정화 후 일일 fetch 상향(사용자 2026-06-15).
+        assert "_rotation_slice(_sp, today.toordinal(), window_days=4)" in src
         assert "us_rolling.json" in src                           # 누적 store
         assert "top_us = _sp_tks" not in src                      # 옛 500 일괄 universe 제거
 
@@ -9783,3 +9784,26 @@ class TestDashboardBatch20260615d:
         assert "fav-earn-from" in src and "fav-earn-to" in src      # 드롭다운
         assert "tr.dataset.earn" in src                             # data-earn 필터
         assert "전체 실적일" in src                                  # 해제 옵션
+
+
+class TestPrepostAndTWFlow20260615:
+    """사용자 2026-06-15: ① 미국 장전/장후 현재-세션 우선(이른 장전이 전일 장후로
+    오라벨되던 것) ⑦ TW 수급 헤더·라벨 한글화."""
+
+    def test_prepost_current_session(self):
+        from datetime import datetime, timezone
+        from bot.prepost_client import _current_session
+        assert _current_session(datetime(2026, 6, 15, 9, 0, tzinfo=timezone.utc)) == "pre"   # 05:00 ET
+        assert _current_session(datetime(2026, 6, 15, 21, 0, tzinfo=timezone.utc)) == "post"  # 17:00 ET
+        assert _current_session(datetime(2026, 6, 15, 16, 0, tzinfo=timezone.utc)) == ""      # 정규장
+
+    def test_prepost_prefers_current_session(self):
+        src = open("bot/prepost_client.py", encoding="utf-8").read()
+        assert "cur_sess = _current_session()" in src
+        assert 'r.get("session") == cur_sess' in src   # 현재 세션 봉만 남김(있으면)
+
+    def test_tw_flow_korean(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "외국인·기관 매매동향 (종목별)" in src      # 三大法人 헤더 한글화
+        assert "三大法人 매매동향" not in src              # 한자 헤더 잔존 없음
+        assert '("외국인", "foreign")' in src and '("자기매매", "dealer")' in src

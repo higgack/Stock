@@ -714,6 +714,11 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
     from html import escape as _esc
     ym = _esc(ref.get("ym") or "")
     window = _esc(ref.get("window") or "")
+    # 현재 잠정 창 명시 badge (사용자 2026-06-15 '현재 잠정이 10일/20일/전월
+    # 잠정인지 명시 — 확정(익월 ~15일)처럼'). decile→발표시점 힌트.
+    _pub = {"D1": "11일 발표", "D2": "21일 발표",
+            "FULL": "월초 발표"}.get(ref.get("decile") or "", "")
+    cur_label = f"{ym} · {window}" + (f" · {_pub}" if _pub else "")
     # 🗄 잠정 타임라인 — 발표 창마다 적립된 과거 잠정 스냅샷(잠정↔확정 대조용).
     # 서빙 dir(index.html 옆)에 provisional_archive.html이 있으므로 상대 링크.
     timeline = (
@@ -723,7 +728,8 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
     )
     return (
         "<div class='ind-prov'>"
-        "<h3>🟢 잠정 속보 <span class='ind-prov-tag'>관세청 10일 단위 · 11일·21일·월초(전월 풀월) 발표</span></h3>"
+        f"<h3>🟢 잠정 속보 <span class='ind-prov-cur'>현재 {cur_label}</span> "
+        "<span class='ind-prov-tag'>관세청 10일 단위 · 11일·21일·월초(전월 풀월) 발표</span></h3>"
         f"<div class='ind-prov-sub'>{ym} · {window} 누적 기준 · 확정치보다 "
         "최대 ~한 달 선행 · YoY=작년 동월·동순 · MoM=전월 동순 · 단위 억$ "
         "<b>(산업 집계와 분리·참고용)</b></div>"

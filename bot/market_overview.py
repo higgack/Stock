@@ -1194,7 +1194,10 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
         _sp = _sp_tks if (_sp_tks and len(_sp_tks) > 100) else _FALLBACK_30
     except Exception:
         _sp = _FALLBACK_30
-    top_us = _rotation_slice(_sp, today.toordinal())   # 오늘 슬라이스(7일 1회전)
+    # 4일 1회전(~125종목/일) — 야후 안정화 후 일일 fetch 상향(사용자 2026-06-15
+    # '안정화 됐으니 일일개수 늘려'). 6h 캐시 게이트라 회당 ~125콜(여전히 안전),
+    # 전 S&P500 커버를 7→4일로 단축해 등급변경을 더 빠르게 노출.
+    top_us = _rotation_slice(_sp, today.toordinal(), window_days=4)
     results = []
 
     def _fetch_one(tk):

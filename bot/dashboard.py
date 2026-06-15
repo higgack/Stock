@@ -5134,16 +5134,16 @@ def _render_stock_info_html(rec: dict) -> str:
                     c = "#26a69a" if v > 0 else "#e2574c"
                     sign = "+" if v > 0 else ""
                     return f'<td class="num" style="color:{c}">{sign}{v:,}</td>'
-                tw_labels = [("외자 (外資)", "foreign"), ("투신 (投信)", "trust"),
-                             ("자영상 (自營商)", "dealer"), ("합계", "total")]
+                tw_labels = [("외국인", "foreign"), ("투신", "trust"),
+                             ("자기매매", "dealer"), ("합계", "total")]
                 tw_body = ""
                 for label, key in tw_labels:
                     tw_body += f"<tr><td>{label}</td>{_tw_cell(tw_today.get(key))}{_tw_cell(tw_5d.get(key))}</tr>\n"
                 flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">三大法人 매매동향 (종목별)</div>
+    <div class="si-section-title">외국인·기관 매매동향 (종목별)</div>
     <table class="si-table"><thead><tr><th>주체</th><th class="num">당일</th><th class="num">5일 누적</th></tr></thead><tbody>{tw_body}</tbody></table>
-    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">출처: {'TWSE' if ticker.upper().endswith('.TW') else 'TPEx'} 三大法人買賣超日報</div>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">출처: {'TWSE' if ticker.upper().endswith('.TW') else 'TPEx'} 일별 매매주체 순매수</div>
   </div>
   {_src_foot}출처: FinMind · {'TWSE' if ticker.upper().endswith('.TW') else 'TPEx'}</div>
 </div>"""

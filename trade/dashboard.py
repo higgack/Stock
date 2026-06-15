@@ -630,6 +630,14 @@ def _build_html(
         f"const LATEST_IDS=new Set({latest_ids_json});\n"
         f"const STOCK_QUOTES={stock_quotes_json};\n"
         + _JS
+        # 월별 원자료 가로 스크롤 = 최신(우측) 디폴트 (사용자 2026-06-15 '필터를
+        # 가장 오른쪽으로 땡겨서 — 앞쪽 옛 숫자는 볼 필요 없으니'). 로드 시 + <details>
+        # 펼칠 때(그 안의 표가 그제야 폭을 가짐) 우측 끝으로.
+        + ("\n;(function(){function s(r){(r||document)"
+           ".querySelectorAll('.ind-raw-scroll').forEach(function(e){"
+           "e.scrollLeft=e.scrollWidth;});}s();"
+           "document.addEventListener('toggle',function(e){"
+           "if(e.target&&e.target.open)s(e.target);},true);})();")
         + '</script></body></html>'
     )
 
@@ -741,6 +749,7 @@ body.dark .ind-imp-cap{background:rgba(16,185,129,.2);color:#6ee7b7}
 .ind-prov{margin:8px 16px 4px;padding:14px 16px;border:1px solid var(--border-soft);border-left:4px solid var(--tone-export);border-radius:12px;background:var(--surface);box-shadow:var(--shadow)}
 .ind-prov>h3{margin:0 0 2px;font-size:16px;color:var(--tone-export)}
 .ind-prov-tag{font-size:11px;font-weight:600;color:var(--text-sub);border:1px solid var(--border-soft);border-radius:999px;padding:1px 8px;margin-left:6px;vertical-align:middle}
+.ind-prov-cur{font-size:11px;font-weight:700;color:var(--tone-export);border:1px solid var(--tone-export);border-radius:999px;padding:1px 8px;margin-left:6px;vertical-align:middle}
 /* 영역 구분선 — 강조 pill (사용자 2026-06-12 '좀 더 선명하게') */
 .ind-zone-div{display:flex;align-items:center;gap:12px;margin:28px 8px 14px;color:var(--text);font-size:14.5px;font-weight:700}
 .ind-zone-div::before,.ind-zone-div::after{content:'';flex:1;height:2px;background:var(--accent);opacity:.5;border-radius:2px}

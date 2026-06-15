@@ -57,6 +57,25 @@ def _in_extended_window(now: datetime) -> bool:
     return pre or post or tail
 
 
+def _current_session(now: datetime | None = None) -> str:
+    """현재 ET 시각의 연장 세션 — 장전(4:00–9:30)='pre' · 장후(16:00–20:00)=
+    'post' · 그 외 ''. 순수(단위테스트). 활성 세션이면 그 세션의 오늘 봉을
+    우선해 직전(스테일) 세션이 섞이지 않게 함 (사용자 2026-06-15 '장전은 집계
+    안 되나' — 이른 장전에 전일 장후가 다수표로 '장후' 라벨되던 것 교정)."""
+    from datetime import time as _t
+    try:
+        from zoneinfo import ZoneInfo
+        et = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/New_York"))
+    except Exception:
+        return ""
+    tt = et.time()
+    if _t(4, 0) <= tt < _t(9, 30):
+        return "pre"
+    if _t(16, 0) <= tt < _t(20, 0):
+        return "post"
+    return ""
+
+
 def _prepost_fresh(cache_ts: float, now_ts: float | None = None) -> bool:
     """장-인지 신선도 — 연장거래 창에서만 30분 TTL(데이터 변동), 그 밖(정규장·
     완전 종료)엔 직전 스냅샷 fresh 취급(재스캔 0 — 연장 데이터 안 변함). 순수."""
@@ -211,6 +230,15 @@ def _compute_us_prepost() -> dict:
                     rows.append(rec)
                 except Exception:
                     continue
+        # 현재 ET 세션 우선 (사용자 2026-06-15 '장전 집계 안 되나') — 활성 장전/
+        # 장후 창이면 그 세션의 오늘 봉을 가진 종목만 남겨 직전(스테일) 세션을 배제.
+        # 단 현재 세션 데이터가 아직 0 이면(이른 장전 등) 폴백으로 전체 유지(빈 페이지
+        # 방지) — 그 경우 라벨은 자연히 직전 세션이 됨.
+        cur_sess = _current_session()
+        if cur_sess:
+            pref = [r for r in rows if r.get("session") == cur_sess]
+            if pref:
+                rows = pref
         ups, downs = _rank_prepost(rows)
         # 시총·업종 백필 — hit 종목만(소수). movers 와 동일 패턴(429 내성 벌크
         # 캐시 우선). fast_info 회로차단 시 mcap None graceful.
