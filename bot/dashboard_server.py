@@ -87,7 +87,7 @@ _TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,9}$")
 _ARCHIVE_ROOT = ARCHIVE_ROOT.resolve()
 # 우리 대시보드 루트 페이지명 — trade 프록시 밑으로 흡수된 상대링크 탈출용.
 _OUR_ROOT_PAGES = frozenset((
-    "market.html", "index.html", "screener.html", "screener_domains.html",
+    "market.html", "asia.html", "index.html", "screener.html", "screener_domains.html",
     "dart_feed.html", "watchlist.html", "daily_byte.html", "portfolio.html",
     "budget.html", "paper.html", "reddit_insider.html", "realestate.html",
     "cheongyak.html", "gics_candidates.html", "errors.html",

@@ -9893,3 +9893,37 @@ class TestTWSectorStaleFallback20260615:
             assert r["source"] == "TWSE 類股"          # ETF 폴백 아님
         finally:
             tw.fetch_mi_index, tw._cached_stale = _mi, _cs
+
+
+class TestAsiaDashboard20260615:
+    """사용자 2026-06-15: 일·중·홍·대 업종등락을 asia.html 로 분리(홈 경량화) +
+    nav 'ASIA'(분석그룹·NOAH 종목분석 왼쪽) + 진입 위치 복원(noah_asia_scroll).
+    홈은 KR·US 만 유지·아시아 위젯 제거."""
+
+    def test_asia_page(self):
+        import bot.dashboard as d
+        mv = {"up": [{"name": "반도체", "pct": 3.5}], "down": [], "ts": "", "source": "x"}
+        a = d._render_asia_page({"jp_sector_movers": mv, "cn_sector_movers": mv,
+                                 "hk_sector_movers": mv, "tw_sector_movers": mv})
+        assert all(x in a for x in ["🇯🇵 일본", "🇨🇳 중국", "🇭🇰 홍콩", "🇹🇼 대만"])
+        assert "fetch('asia.html'" in a            # 라이브 틱 self-fetch
+        assert "noah_asia_scroll" in a             # 진입 위치 복원
+        assert 'asia.html" class="active">🌏 ASIA' in a
+        assert a.startswith("<!doctype html>") and "{{" not in a
+
+    def test_home_drops_asia_keeps_link(self):
+        import bot.dashboard as d
+        mv = {"up": [{"name": "은행", "pct": 1.0}], "down": [], "ts": "", "source": ""}
+        data = {"earnings": [], "earnings_ts": "", "research_ts": "", "research_kr": [],
+                "research_kr_industry": [], "research_kr_strategy": [], "research_us": [],
+                "research_jp": [], "research_tw": [], "research_cn": [], "research_hk": [],
+                "indices": [], "ts": "", "macro": {}, "snapshot": {},
+                "sector_movers": mv, "us_sector_movers": mv, "jp_sector_movers": mv,
+                "cn_sector_movers": mv, "hk_sector_movers": mv, "tw_sector_movers": mv}
+        h = d._render_market_page(data)
+        assert 'href="asia.html">🌏 ASIA' in h          # nav 링크
+        assert "🇯🇵 일본 업종 등락" not in h            # 홈에서 제거
+        assert "🇹🇼 대만 업종 등락" not in h
+
+    def test_asia_in_serve_allowlist(self):
+        assert '"asia.html"' in open("bot/dashboard_server.py", encoding="utf-8").read()

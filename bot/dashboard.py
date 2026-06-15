@@ -12664,7 +12664,8 @@ def _render_market_page(data: dict) -> str:
     <a href="portfolio.html">💼 자산</a>
     &middot; <a href="budget.html">📒 가계부</a>
     &nbsp;|&nbsp;
-    <a href="index.html">🦉 NOAH 종목분석</a>
+    <a href="asia.html">🌏 ASIA</a>
+    &middot; <a href="index.html">🦉 NOAH 종목분석</a>
     &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="screener.html">📊 Screener</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
@@ -12713,27 +12714,9 @@ def _render_market_page(data: dict) -> str:
     # 신고가·신저가 ③ 상한가·하한가/급등·급락. JP/CN/HK 는 업종-전체 페이지
     # 부재(ETF 합성 위젯 자체) + 가격제한 별도 페이지 부재 → ②만.
     _lk2 = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
-    # JP/CN: 신고저(야후) + 급등·급락(네이버 worldstock·미국 미러, 사용자 2026-06-13
-    # '중국·홍콩·일본은 미국따라' — 상한가/하한가 있는 시장도 상승/하락 TOP 로)
-    parts.append(_render_etf_sector_movers(
-        data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10",
-        f'<a href="jp52" style="{_lk2}">📈 신고가·신저가</a>'
-        f'<a href="jpmovers" style="{_lk2}">🚀 급등·급락</a>'))
-    parts.append(_render_etf_sector_movers(
-        data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10",
-        f'<a href="cnmovers" style="{_lk2}">🚀 급등·급락</a>'))   # 52주 제거(2026-06-14)
-    _lk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
-    # HK 를 TW 위로 (사용자 2026-06-14 '홍콩을 대만 위쪽으로'). 무제한 시장 →
-    # 미국처럼 신고저 + 급등/급락.
-    parts.append(_render_etf_sector_movers(
-        data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락",
-        f'<a href="hk52" style="{_lk2}">📈 신고가·신저가</a>'
-        f'<a href="hkmovers" style="{_lk2}">🚀 급등·급락</a>'))
-    # TW: ② 신고가·신저가 → ③ 급등·급락 (사용자 2026-06-14 상한가→급등락)
-    _tw_link = (f'<a href="tw52" style="{_lk}">📈 신고가·신저가</a>'
-                f'<a href="twhighlow" style="{_lk}">🚀 급등·급락</a>')
-    parts.append(_render_etf_sector_movers(
-        data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
+    # 일·중·홍·대(ASIA) 업종 등락은 별도 asia.html 로 분리 — 홈 경량화·성능
+    # (사용자 2026-06-15). nav '🌏 ASIA' 링크. 같은 data 로 _render_asia_page 가
+    # 렌더(추가 fetch 0). KR·US 는 홈 유지.
     parts.append('</div>')  # close #live-sections (라이브 틱 단위 — 30초 자동 갱신)
 
     # 다가오는 실적 — 시장별 탭 분리(사용자 정책: 한국 기본·최대한 표시 +
@@ -13336,6 +13319,81 @@ def _render_market_page(data: dict) -> str:
     return "".join(parts)
 
 
+# ASIA 별도 대시보드 (일·중·홍·대 업종 등락을 홈에서 분리 — 홈 경량화·성능,
+# 사용자 2026-06-15). 홈과 동일 소스·라이브 틱(#live-sections 30초 swap) +
+# 진입 위치 복원(noah_asia_scroll). asia.html 은 regenerate_market_index 가
+# 홈과 같은 data 로 함께 렌더(추가 fetch 0).
+_ASIA_LIVE_JS = """<script>
+(function(){
+  function tick(){
+    if(document.hidden) return;
+    fetch('asia.html',{cache:'no-store'})
+      .then(function(r){if(!r.ok)throw 0;return r.text();})
+      .then(function(html){
+        var doc=new DOMParser().parseFromString(html,'text/html');
+        var fresh=doc.getElementById('live-sections'), cur=document.getElementById('live-sections');
+        if(fresh&&cur&&fresh.innerHTML.length>50) cur.innerHTML=fresh.innerHTML;
+      }).catch(function(){});
+  }
+  setInterval(tick, 30000);
+  /* 진입 위치 복원 (사용자 2026-06-15 '일본이면 일본·대만이면 대만') — 홈
+     market.html 과 동일 메커니즘, 키만 noah_asia_scroll. async 콘텐츠 대비 다중 재적용. */
+  try{
+    if(history.scrollRestoration) history.scrollRestoration='manual';
+    var SK='noah_asia_scroll', sy=sessionStorage.getItem(SK);
+    var tgt=(sy!==null)?(parseInt(sy)||0):null, settled=(tgt===null), acted=false;
+    ['wheel','touchstart','keydown'].forEach(function(ev){
+      window.addEventListener(ev,function(){acted=true;settled=true;},{passive:true,once:true});
+    });
+    if(tgt!==null){
+      var rr=function(){if(!acted)window.scrollTo(0,tgt);};
+      rr(); [120,350,700,1200,2000].forEach(function(d){setTimeout(rr,d);});
+      window.addEventListener('load',rr); setTimeout(function(){settled=true;},2100);
+    }
+    window.addEventListener('scroll',function(){if(settled){try{sessionStorage.setItem(SK,String(window.scrollY));}catch(_e){}}},{passive:true});
+  }catch(_e){}
+})();
+</script>"""
+
+
+def _render_asia_page(data: dict) -> str:
+    """asia.html — 일·중·홍·대 업종 등락. 홈에서 분리해 홈 경량화(성능). 홈과
+    동일 위젯·30초 자동 갱신 + 진입 위치 복원(사용자 2026-06-15)."""
+    _lk2 = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:8px"
+    _lk = "color:var(--accent);font-size:13px;text-decoration:none;margin-left:10px"
+    parts = [_MARKET_CSS]
+    parts.append(
+        '\n<div class="wrap">\n  <div class="nav">\n'
+        '    <a href="market.html">🌍 홈</a>\n    &nbsp;|&nbsp;\n'
+        '    <a href="asia.html" class="active">🌏 ASIA</a>\n'
+        '    &middot; <a href="index.html">🦉 NOAH 종목분석</a>\n'
+        '    &middot; <a href="dart_feed.html">📋 DART 공시</a>\n'
+        '    &middot; <a href="screener.html">📊 Screener</a>\n'
+        '    &middot; <a href="reddit_insider.html">📨 미국 레딧</a>\n'
+        '    &middot; <a href="daily_byte.html">📊 Daily Byte</a>\n'
+        '    &middot; <a href="trade/">' + _KR_FLAG_SVG + ' 한국 수출입</a>\n'
+        '  </div>\n  <h1>🌏 아시아 업종 등락</h1>\n'
+        '  <p class="sub">일본·중국·홍콩·대만 업종 등락 — 홈과 동일 소스·30초 자동 갱신</p>\n'
+        '  <div id="live-sections">')
+    parts.append(_render_etf_sector_movers(
+        data.get("jp_sector_movers", {}), "🇯🇵 일본 업종 등락 TOP 10",
+        f'<a href="jp52" style="{_lk2}">📈 신고가·신저가</a>'
+        f'<a href="jpmovers" style="{_lk2}">🚀 급등·급락</a>'))
+    parts.append(_render_etf_sector_movers(
+        data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10",
+        f'<a href="cnmovers" style="{_lk2}">🚀 급등·급락</a>'))
+    parts.append(_render_etf_sector_movers(
+        data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락",
+        f'<a href="hk52" style="{_lk2}">📈 신고가·신저가</a>'
+        f'<a href="hkmovers" style="{_lk2}">🚀 급등·급락</a>'))
+    _tw_link = (f'<a href="tw52" style="{_lk}">📈 신고가·신저가</a>'
+                f'<a href="twhighlow" style="{_lk}">🚀 급등·급락</a>')
+    parts.append(_render_etf_sector_movers(
+        data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
+    parts.append("</div>\n</div>\n" + _ASIA_LIVE_JS + "\n</body></html>")
+    return "".join(parts)
+
+
 # ⚠️ 배포 주의: dashboard_server 는 on-demand 페이지에서 bot/* 모듈
 # (finviz_client/us_pages/naver_*/earnings_calendar 등)을 import 한다 —
 # auto-update 는 bot/*.py 가 하나라도 바뀌면 대시보드를 재시작한다
@@ -13355,7 +13413,15 @@ def regenerate_market_index() -> None:
         tmp = target.with_suffix(".html.tmp")
         tmp.write_text(html, encoding="utf-8")
         tmp.replace(target)
-        log.info("dashboard: market.html regenerated")
+        # ASIA 별도 대시보드도 같은 data 로 함께 렌더(추가 fetch 0, 사용자
+        # 2026-06-15 — 홈에서 일·중·홍·대 분리). 실패해도 market.html 은 유지.
+        try:
+            atmp = (ARCHIVE_ROOT / "asia.html").with_suffix(".html.tmp")
+            atmp.write_text(_render_asia_page(data), encoding="utf-8")
+            atmp.replace(ARCHIVE_ROOT / "asia.html")
+        except Exception as aexc:
+            log.warning("dashboard: asia.html regen failed: %s", aexc)
+        log.info("dashboard: market.html + asia.html regenerated")
     except Exception as exc:
         log.warning("dashboard: market.html regen failed: %s", exc)
 
