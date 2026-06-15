@@ -928,6 +928,41 @@ class TestPriceGlitchGuard:
         # _build_factual_anchor + Comps 두 곳에서 price_outlier_vs_refs 재사용
         assert au.count("price_outlier_vs_refs") >= 2, "Comps 가 price_sanity 미재사용"
 
+    def test_within_52w_range_real_mover_in_range(self):
+        from bot.price_sanity import within_52w_range
+        # CAST 2026-06-15: 현재가 $3.54, 오늘 +126% 진짜 급등. 52주[$1.2, $9]
+        # 안 → 글리치 아님(가드 건너뜀). magnitude 만으론 못 거르던 false
+        # positive 의 코드측 게이트.
+        assert within_52w_range(3.54, 1.2, 9.0) is True
+        # RGNT +752% 도 52주 범위 안이면 진짜 무브
+        assert within_52w_range(12.79, 1.0, 15.0) is True
+
+    def test_within_52w_range_klac_glitch_out_of_range(self):
+        from bot.price_sanity import within_52w_range
+        # KLAC $2,411 글리치: 52주 고가 ~$350 의 수배 → 범위 밖 → 가드 적용
+        assert within_52w_range(2411, 180, 350) is False
+
+    def test_within_52w_range_missing_refs_false(self):
+        from bot.price_sanity import within_52w_range
+        # 52주 ref 부재/0/None → False (호출부가 magnitude 가드로 폴백, 보수적)
+        assert within_52w_range(3.54, None, None) is False
+        assert within_52w_range(3.54, 0, 0) is False
+        assert within_52w_range(3.54, 1.2, None) is False
+
+    def test_within_52w_range_tolerance(self):
+        from bot.price_sanity import within_52w_range
+        # ±3% tol — 신고가 살짝 갱신(고가의 1.02배)은 in-range, 1.05배는 밖
+        assert within_52w_range(102, 50, 100) is True
+        assert within_52w_range(106, 50, 100) is False
+
+    def test_stock_snapshot_52w_gate_wired(self):
+        """stock_snapshot 의 글리치 가드가 within_52w_range 게이트를 실제로
+        타는지 소스에서 확인 (CAST 류 진짜 급등 오발 차단 배선 회귀)."""
+        src = open("bot/stock_snapshot.py", encoding="utf-8").read()
+        assert "from bot.price_sanity import within_52w_range" in src, "헬퍼 import 누락"
+        assert "within_52w_range(price" in src, "글리치 가드가 52주 게이트 미사용"
+        assert "if price and not in_52w:" in src, "가드가 in_52w 로 게이트되지 않음"
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # 8a4) KR .KS↔.KQ suffix 정규화 + freeze 52주 게이트 (티로보틱스 117730 2026-06-04)
@@ -5495,6 +5530,70 @@ class TestFavoritesFastInfoGuard:
         assert "_FAV_TTL = 180" in src
 
 
+class TestFavoritesKoreanName:
+    """관심종목 종목명 한글화 (사용자 2026-06-15 '네이버에서, 모든 나라').
+    네이버 국내(KR)·해외(US/JP/CN/HK) 한글명을 name_kr 로 영속, 렌더가
+    name_kr||name 표시(티커는 밑에 작게). TW·기타는 네이버 미커버라 영문 fallback."""
+
+    def test_extract_name_prefers_korean_field(self):
+        from bot.naver_quote import _extract_name
+        # 해외: stockNameKor(한글) 우선, stockName(영문) 무시
+        assert _extract_name({"stockNameKor": "마이크론테크놀로지",
+                              "stockName": "Micron Technology"}) == "마이크론테크놀로지"
+        # 국내: stockName 이 한글
+        assert _extract_name({"stockName": "삼성전자"}) == "삼성전자"
+
+    def test_extract_name_absent_returns_none(self):
+        from bot.naver_quote import _extract_name
+        assert _extract_name({"closePriceRaw": "100"}) is None
+        assert _extract_name({"stockName": "   "}) is None   # 공백뿐 → None
+
+    def test_parse_quote_includes_name(self):
+        from bot.naver_quote import _parse_quote
+        q = _parse_quote({"closePriceRaw": "70000", "fluctuationsRatioRaw": "1.5",
+                          "stockName": "삼성전자"})
+        assert q["name"] == "삼성전자" and q["price"] == 70000
+
+    def test_resolve_kr_name_routes_by_market(self):
+        import bot.market_favorites as mf
+        import bot.naver_quote as nq
+        import bot.world_quote as wq
+        o_kr, o_wd = nq.fetch_kr_quote, wq.fetch_world_quote
+        nq.fetch_kr_quote = lambda t: {"name": "삼성전자"}
+        wq.fetch_world_quote = lambda t: {"name": "마이크론테크놀로지"}
+        try:
+            assert mf._resolve_kr_name("005930.KS", "Samsung") == "삼성전자"
+            assert mf._resolve_kr_name("MU", "Micron") == "마이크론테크놀로지"
+            assert mf._resolve_kr_name("688981.SS", "SMIC") == "마이크론테크놀로지"
+            # TW 는 네이버 미커버 → 영문 fallback
+            assert mf._resolve_kr_name("2330.TW", "TSMC") == "TSMC"
+        finally:
+            nq.fetch_kr_quote, wq.fetch_world_quote = o_kr, o_wd
+
+    def test_resolve_kr_name_graceful_fallback(self):
+        import bot.market_favorites as mf
+        import bot.naver_quote as nq
+        o_kr = nq.fetch_kr_quote
+        nq.fetch_kr_quote = lambda t: None         # 네이버 실패
+        try:
+            assert mf._resolve_kr_name("005930.KS", "Samsung") == "Samsung"
+        finally:
+            nq.fetch_kr_quote = o_kr
+
+    def test_add_favorite_sets_name_kr_field(self):
+        # add_favorite 엔트리에 name_kr 필드 배선 (소스 검증)
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        assert '"name_kr": _resolve_kr_name(' in src, "add_favorite name_kr 누락"
+        # 기존 엔트리(name_kr 부재)는 _refresh 병렬 풀에서 지연 해석 + 영속
+        assert 'if not f.get("name_kr"):' in src, "기존 엔트리 name_kr 백필 누락"
+
+    def test_renderfavs_uses_name_kr(self):
+        # 렌더가 name_kr||name 표시 + 티커 작게 (소스 검증)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "(f.name_kr||f.name||f.ticker)" in src, "renderFavs name_kr 미사용"
+        assert "(f.name_kr||'') + ' ' + (f.name||'')" in src, "검색 data-name 한·영 누락"
+
+
 class TestAnalysisCsvExport:
     """주식분석 아카이브 CSV 내보내기 (2026-06-14) — 분석 버튼 옆 ⬇CSV."""
 
@@ -8509,21 +8608,17 @@ class TestHkMovers:
         assert hkg["0005.HK"] == "Banks"         # 5자리 키 zfill 정규화
         assert hkg["0941.HK"] == "YF"            # 미스 → yfinance
 
-    def test_industry_english_translation_wired(self, monkeypatch):
-        # 사용자 2026-06-14 '모두 영문' — 네이버 한글 업종명 → 영문(Flash·영구 캐시).
-        import bot.chart_translate as ct
-        # 캐시 히트(키부재여도) → 영문 반환
-        monkeypatch.setattr(ct, "_load_ind",
-                            lambda: {"반도체와반도체장비": "Semiconductors & Equipment"})
-        r = ct.translate_industries_en(["반도체와반도체장비"])
-        assert r["반도체와반도체장비"] == "Semiconductors & Equipment"
-        # graceful: 미캐시+키부재 → 빠짐(원문 유지)
-        monkeypatch.setattr(ct, "_load_ind", lambda: {})
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-        assert ct.translate_industries_en(["없는업종"]) == {}
-        # world_industry_map + sector_movers 둘 다 영문화 배선
+    def test_industry_korean_preserved_not_english(self):
+        # 사용자 2026-06-15 '일본·중국·홍콩도 대만처럼 한글로' — 옛 2026-06-14
+        # '모두 영문'(translate_industries_en) 폐기. 업종 등락·업종맵은 네이버
+        # 한글(industryGroupKor / reutersIndustryName) 그대로 표기(대만 일관).
         src = open("bot/naver_ranking_client.py", encoding="utf-8").read()
-        assert src.count("translate_industries_en") >= 2
+        assert "translate_industries_en" not in src, \
+            "업종 영문화가 아직 배선됨 (한글 전환 회귀)"
+        assert "industryGroupKor" in src, "업종 등락이 네이버 한글 필드 미사용"
+        # _kr 캐시 키로 옛 영문 캐시 폐기 → 배포 즉시 한글
+        assert "naver_sector_movers_kr_" in src and "naver_industry_kr_" in src, \
+            "한글 전환 캐시 버전(_kr) 미반영"
 
     def test_name_english_translation_wired(self, monkeypatch):
         # 사용자 2026-06-14 'TW 소형주 中文→영문 번역 인프라 재사용'.

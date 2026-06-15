@@ -70,6 +70,26 @@ _CURRENCY_MAP = {
 }
 
 
+def _resolve_kr_name(ticker: str, fallback: str) -> str:
+    """네이버 한글 종목명 (사용자 2026-06-15 '관심종목 종목명 한글, 네이버에서,
+    모든 나라'). KR=네이버 국내·US/JP/CN/HK=네이버 해외. TW(.TW)·기타(EU 등)는
+    네이버 미커버라 영문 fallback 유지 (TW 한글은 중문명 번역 별도 소스 필요).
+    종목명은 정적이라 entry 의 name_kr 로 1회 영속 → 재호출 0. 실패 시 fallback."""
+    country = _detect_country(ticker)
+    try:
+        if country == "KR":
+            from bot.naver_quote import fetch_kr_quote
+            q = fetch_kr_quote(ticker) or {}
+            return q.get("name") or fallback
+        if country in ("US", "JP", "CN", "HK"):
+            from bot.world_quote import fetch_world_quote
+            q = fetch_world_quote(ticker) or {}
+            return q.get("name") or fallback
+    except Exception as exc:
+        log.debug("favorites: name_kr resolve failed for %s: %s", ticker, exc)
+    return fallback
+
+
 def add_favorite(ticker: str) -> Optional[dict]:
     """Fetch snapshot from yfinance and append to favorites. None on dupe/error."""
     import yfinance as yf
@@ -113,9 +133,11 @@ def add_favorite(ticker: str) -> Optional[dict]:
     currency = info.get("currency", "USD")
     now = datetime.now()
 
+    _en_name = info.get("longName") or info.get("shortName") or ticker
     entry = {
         "ticker": ticker,
-        "name": info.get("longName") or info.get("shortName") or ticker,
+        "name": _en_name,
+        "name_kr": _resolve_kr_name(ticker, _en_name),
         "country": _detect_country(ticker),
         "saved_date": now.strftime("%Y-%m-%d"),
         "saved_time": now.strftime("%H:%M"),
@@ -204,6 +226,10 @@ def get_favorites_with_prices() -> list[dict]:
         _fi_allowed = True
 
     def _refresh(f: dict) -> None:
+        # 한글 종목명 (사용자 2026-06-15) — 정적이라 1회만, 병렬 풀에서 해석
+        # (순차 prefetch 의 첫 로드 지연 회피). 가격과 무관 try.
+        if not f.get("name_kr"):
+            f["name_kr"] = _resolve_kr_name(f["ticker"], f.get("name") or f["ticker"])
         try:
             tk = yf.Ticker(f["ticker"])
             price = None
@@ -319,6 +345,20 @@ def get_favorites_with_prices() -> list[dict]:
 
     with ThreadPoolExecutor(max_workers=min(len(favorites), 8)) as pool:
         pool.map(_refresh, favorites)
+
+    # name_kr 백필분만 깨끗이 영속 (정적이라 1회) — volatile 가격은 저장 안 함:
+    # 디스크 재로드 → name_kr 복사 → save. 이후 cold load 부턴 재호출 0.
+    try:
+        _kr = {f["ticker"]: f.get("name_kr") for f in favorites if f.get("name_kr")}
+        disk = _load()
+        _chg = False
+        for d in disk:
+            if not d.get("name_kr") and _kr.get(d["ticker"]):
+                d["name_kr"], _chg = _kr[d["ticker"]], True
+        if _chg:
+            _save(disk)
+    except Exception:
+        pass
 
     _FAV_CACHE = favorites
     _FAV_CACHE_TS = _time.time()

@@ -53,6 +53,12 @@ IGNORED_PREFIXES: tuple[str, ...] = (
 # substring, case-sensitive.
 IGNORED_CONTAINS: tuple[str, ...] = (
     "dart.fss.or.kr",  # DART 공시 릴레이 (단일판매, 주요사항보고 등 전체)
+    # 월간 '주요 기업 수출입 확정치/잠정치 코멘트' 래퍼 (BeOn, msg 9226·9227
+    # 2026-06-15 확인). 실데이터는 첨부파일, 캡션은 인트로 narrative 라
+    # _FINAL_LINE_RE('YYYY년 M월 확정치 수출데이터') 불일치 → 영구 store.db
+    # 미진입 → 매일 미등록 알림. 본문 인트로 substring 은 제목의 연도·월·
+    # 확정/잠정 status 에 무관해 시리즈 전체를 한 entry 로 커버.
+    "이달의 주요 기업 수출데이터",
 )
 
 

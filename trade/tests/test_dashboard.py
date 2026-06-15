@@ -473,6 +473,39 @@ class TestEvalMissBacklogCard(unittest.TestCase):
         # No age suffix when we couldn't parse any detected_at.
         self.assertNotIn("일째", html)
 
+    def test_ignored_captions_excluded_from_backlog(self):
+        # 사용자 2026-06-15: IGNORED 매칭 캡션('주요 기업 수출입 확정치
+        # 코멘트' 래퍼 / DART 릴레이)은 영구 파싱 불가가 정상 → actionable
+        # 백로그 아님. 카운트에서 제외 (read-only, 파일 미변경).
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        self._write_misses([
+            {"detected_at": now, "chat_id": 1, "message_id": 1,
+             "caption": "26년 5월 주요 기업 수출입 확정치 코멘트\n\n"
+                        "이달의 주요 기업 수출데이터 확정치 공유드립니다"},
+            {"detected_at": now, "chat_id": 1, "message_id": 2,
+             "caption": "공시 https://dart.fss.or.kr/foo"},   # DART 릴레이도 제외
+            {"detected_at": now, "chat_id": 1, "message_id": 3,
+             "caption": "신규 양식 — 알 수 없는 수출 캡션"},   # 진짜 actionable
+        ])
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertIn("미파싱 백로그", html)
+        self.assertIn("<strong>1건</strong>", html)   # IGNORED 2건 제외 → 1건
+
+    def test_all_ignored_renders_no_backlog_line(self):
+        # 전부 IGNORED 면 count 0 → 줄 자체가 사라진다 (사용자가 본 msg
+        # 9226·9227 '확정치 코멘트' 2건 케이스).
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        cap = ("26년 5월 주요 기업 수출입 확정치 코멘트\n"
+               "이달의 주요 기업 수출데이터 확정치 공유드립니다")
+        self._write_misses([
+            {"detected_at": now, "chat_id": 1, "message_id": 9226, "caption": cap},
+            {"detected_at": now, "chat_id": 1, "message_id": 9227, "caption": cap},
+        ])
+        html = render_html(self.db_path, eval_miss_path=self.miss_path)
+        self.assertNotIn("미파싱 백로그", html)
+
 
 class TestCustomsPanel(unittest.TestCase):
     """The 관세청 comparison panel is server-rendered under the header.

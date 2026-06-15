@@ -13191,14 +13191,14 @@ def _render_market_page(data: dict) -> str:
         /* 통화 통합 정렬키 (USD 환산) — ₩1526조 가 $1.13T 위로 가게 */
         var fx = FX[f.currency] || 1;
         function usd(v) {{ return v != null ? (v / fx) : ''; }}
-        var da = 'data-name="' + (f.name || f.ticker).toLowerCase() + '" data-country="' + (f.country || '') + '"'
+        var da = 'data-name="' + ((f.name_kr||'') + ' ' + (f.name||'') + ' ' + f.ticker).toLowerCase() + '" data-country="' + (f.country || '') + '"'
           + ' data-saved="' + (f.saved_date || '') + '" data-mcap="' + usd(f.market_cap) + '"'
           + ' data-sprice="' + usd(f.saved_price) + '" data-cprice="' + usd(f.current_price) + '"'
           + ' data-pct="' + (pctVal !== '' ? pctVal : '') + '" data-eps="' + usd(f.eps_estimate) + '"'
           + ' data-per="' + (f.per != null ? f.per : '') + '" data-earn="' + (f.next_earnings || '') + '"';
         return '<tr ' + da + '>'
           + '<td style="text-align:left"><a href="lookup/' + encodeURIComponent(f.ticker) + '" style="color:inherit;text-decoration:none">'
-          + '<span style="font-weight:600;font-size:13px">' + (f.name||f.ticker) + '</span>'
+          + '<span style="font-weight:600;font-size:13px">' + (f.name_kr||f.name||f.ticker) + '</span>'
           + '<span style="display:block;font-size:11px;color:var(--muted);font-weight:400;margin-top:1px">' + f.ticker + '</span></a></td>'
           + '<td>' + flag + '</td>'
           + '<td style="white-space:nowrap">' + (f.saved_date||'') + '</td>'

@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from bot.price_sanity import within_52w_range
+
 log = logging.getLogger(__name__)
 
 
@@ -76,24 +78,33 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
         # 직전 종가×주식수로 재계산 + 보정 주석 필드.
         prev = _g("regularMarketPreviousClose") or _g("previousClose")
         shares = _g("sharesOutstanding")
-        try:
-            if (price and prev and float(prev) > 0
-                    and abs(float(price) / float(prev) - 1) > 0.75):
-                snap["price_glitch_note"] = (
-                    f"소스 이상치 보정 — 수신가 {float(price):,.2f} 가 직전 "
-                    f"종가 대비 ±75% 초과(분할 미조정 의심) → 직전 종가로 표시")
-                price = float(prev)
-                if shares:
-                    snap["market_cap"] = float(prev) * float(shares)
-        except (TypeError, ValueError):
-            pass
-        # 2차 가드 (KLAC 잔존 2026-06-12) — info 의 price 와 previousClose
-        # 가 **둘 다 같은 미조정 기준**이면 1차(상대비교)가 장님 (2,411 vs
-        # 직전 2,398 → 통과). 조정 일봉 히스토리(차트와 동일 소스) 마지막
-        # 종가와 교차: ±75% 초과면 조정 종가로 교체 + 시총 재산출. 차트는
-        # $241 인데 헤더만 $2,411 이던 불일치의 근본 차단.
-        try:
-            if price:
+        # 52주 범위 게이트 (CAST +126% / RGNT +752% 2026-06-15) — 무한도
+        # 시장(US/EU/HK)의 진짜 급등은 1일 변동이 ±75%를 넘어도 52주 범위
+        # 안이면 글리치가 아니다. magnitude 만으론 진짜 뉴스 무브와 분할
+        # 글리치를 구분 못 하므로(CLAUDE.md in-range 신뢰 원칙), 현재가가
+        # 52주 범위 안이면 글리치 가드를 통째로 건너뛴다. 52주 밖(KLAC
+        # $2,411 = 52주 고가의 수배) 또는 52주 미상일 때만 magnitude·조정
+        # 종가 가드를 적용 → KLAC 보호는 유지(.info 52주는 조정 기준).
+        in_52w = within_52w_range(price, _g("fiftyTwoWeekLow"),
+                                  _g("fiftyTwoWeekHigh"))
+        if price and not in_52w:
+            try:
+                if (prev and float(prev) > 0
+                        and abs(float(price) / float(prev) - 1) > 0.75):
+                    snap["price_glitch_note"] = (
+                        f"소스 이상치 보정 — 수신가 {float(price):,.2f} 가 직전 "
+                        f"종가 대비 ±75% 초과(분할 미조정 의심) → 직전 종가로 표시")
+                    price = float(prev)
+                    if shares:
+                        snap["market_cap"] = float(prev) * float(shares)
+            except (TypeError, ValueError):
+                pass
+            # 2차 가드 (KLAC 잔존 2026-06-12) — info 의 price 와 previousClose
+            # 가 **둘 다 같은 미조정 기준**이면 1차(상대비교)가 장님 (2,411 vs
+            # 직전 2,398 → 통과). 조정 일봉 히스토리(차트와 동일 소스) 마지막
+            # 종가와 교차: ±75% 초과면 조정 종가로 교체 + 시총 재산출. 차트는
+            # $241 인데 헤더만 $2,411 이던 불일치의 근본 차단.
+            try:
                 hist = t.history(period="5d")
                 if hist is not None and len(hist) and "Close" in hist:
                     hc = float(hist["Close"].dropna().iloc[-1])
@@ -105,8 +116,8 @@ def collect_stock_snapshot(ticker: str) -> dict | None:
                         price = hc
                         if shares:
                             snap["market_cap"] = hc * float(shares)
-        except Exception:
-            pass
+            except Exception:
+                pass
         if price:
             snap["current_price"] = price
         if "market_cap" not in snap:

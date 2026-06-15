@@ -41,12 +41,28 @@ def _num(v):
         return None
 
 
+def _extract_name(item: dict) -> str | None:
+    """datas[0] 의 한글 종목명 (관심종목 한글화, 사용자 2026-06-15 '네이버에서').
+
+    네이버 응답 한글명 필드키가 국내/해외·버전별로 달라 단정하지 않고 후보를
+    순서대로 시도(해외는 stockNameKor 가 한글, stockName 은 영문일 수 있어
+    한글 후보 우선). 모두 부재면 None → 호출부가 yfinance 영문 fallback.
+    값이 코드/티커뿐이면(실명 아님) skip. 라이브 필드키는 VM 1줄 검증."""
+    for k in ("stockNameKor", "stockName", "korNm", "itemName",
+              "stockNameEng", "name"):
+        v = item.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
 def _parse_quote(item: dict) -> dict | None:
-    """datas[0] 항목 → {price, pct, mcap, ts} (순수·단위테스트용). price 없으면 None.
+    """datas[0] 항목 → {price, pct, mcap, ts, name} (순수·단위테스트용). price 없으면 None.
 
     price = closePriceRaw(현재가). pct = fluctuationsRatioRaw 에 부호 적용
     (compareToPreviousPrice.code '5'=하락이면 음수). mcap = marketValueFullRaw
-    (원 단위, 그대로). ts = localTradedAt(마지막 체결시각, 신선도 표시용)."""
+    (원 단위, 그대로). ts = localTradedAt(마지막 체결시각, 신선도 표시용).
+    name = 한글 종목명(_extract_name, 관심종목 한글화용)."""
     if not isinstance(item, dict):
         return None
     price = _num(item.get("closePriceRaw") or item.get("closePrice"))
@@ -62,6 +78,7 @@ def _parse_quote(item: dict) -> dict | None:
         "pct": pct,
         "mcap": _num(item.get("marketValueFullRaw")),
         "ts": item.get("localTradedAt"),
+        "name": _extract_name(item),
         # 당일 OHLCV — 차트의 당일 일봉을 라이브로 그리는 데 사용(yahoo 가 장중
         # 당일 봉을 EOD/미제공하는 문제 해소). close 는 price 와 동일.
         "open": _num(item.get("openPriceRaw")),
