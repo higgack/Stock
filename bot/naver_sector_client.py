@@ -31,7 +31,7 @@ def _now_kst_label() -> str:
 
 _BASE = "https://finance.naver.com/sise"
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "naver_sector"
-_CACHE_TTL_SEC = 5 * 60  # 5분 통일(사용자 2026-06-14 '모두 5분') — 1 HTTP/요청
+_CACHE_TTL_SEC = 1 * 60  # 1분(사용자 2026-06-15 '업종도 다 1분·네이버 문제없음') — 1 HTTP/요청
 
 _HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -163,8 +163,8 @@ def _cached(name: str):
     if cache_file.exists():
         try:
             mt = cache_file.stat().st_mtime
-            # 세션-인지(개선점 C, 사용자 2026-06-14): KR 장중 5분 / 장 밖엔 마지막
-            # 산출본 fresh(재fetch 0). _session_fresh 부재 시 평면 5분 폴백.
+            # 세션-인지(사용자 2026-06-15 '업종 1분'): KR 장중 1분 / 장 밖엔 마지막
+            # 산출본 fresh(재fetch 0). _session_fresh 부재 시 _CACHE_TTL_SEC 폴백.
             try:
                 from bot.finviz_client import _session_fresh
                 fresh = _session_fresh("KR", mt, _CACHE_TTL_SEC)
@@ -281,7 +281,7 @@ def apply_kr_industry(items: list) -> list:
 
 
 def fetch_sector_movers(top_n: int = 10) -> dict:
-    """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}. 5분 캐시."""
+    """업종 등락률 → {'up': [...], 'down': [...], 'ts': iso}. 장중 1분 캐시."""
     c = _cached("upjong.json")
     if c is not None:
         return c

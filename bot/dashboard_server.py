@@ -125,11 +125,10 @@ def _atomic_write_bytes(path, data: bytes) -> None:
             pass
 
 
-def _kick_lookup_detail_refresh(ticker: str, cache_f, enrich: bool = True,
-                                pane=None) -> None:
+def _kick_lookup_detail_refresh(ticker: str, cache_f, enrich: bool = True) -> None:
     """stale 캐시를 백그라운드에서 1회 재렌더(동시 중복 방지). 실패해도 기존
     stale 캐시는 그대로 → 다음 방문이 다시 시도. 요청 경로를 막지 않음."""
-    _key = f"{ticker}:{pane or ('full' if enrich else 'core')}"
+    _key = f"{ticker}:{'full' if enrich else 'core'}"
     with _LOOKUP_REFRESH_LOCK:
         if _key in _LOOKUP_REFRESHING:
             return
@@ -138,7 +137,7 @@ def _kick_lookup_detail_refresh(ticker: str, cache_f, enrich: bool = True,
     def _work():
         try:
             from bot.dashboard import render_lookup_detail
-            html = render_lookup_detail(ticker, enrich=enrich, pane=pane)
+            html = render_lookup_detail(ticker, enrich=enrich)
             if html:
                 _atomic_write_bytes(cache_f, html.encode("utf-8"))
         except Exception as exc:
@@ -1213,18 +1212,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, "bad ticker")
                 return
 
-            # phase=core(스냅샷만, 빠름) | full(enrichment) | p_news/p_research
-            # (단일 탭 — '나머지 탭'을 끝나는 대로 개별 주입, 사용자 2026-06-14).
+            # phase=core(스냅샷만, 빠름 — 앞쪽 탭) | full(enrichment 포함).
             phase = (qs.get("phase", ["full"])[0] or "full").strip().lower()
-            _PANE_PHASES = {"p_news": "si-news", "p_research": "si-research"}
-            pane = _PANE_PHASES.get(phase)
             enrich = phase != "core"
 
             cache_dir = _ARCHIVE_ROOT.parent / "lookup_cache"
             cache_dir.mkdir(parents=True, exist_ok=True)
             safe = ticker.replace(".", "_").replace("-", "_")
-            # _v2: data-lk 파트 분할 fragment. core·per-pane 은 별도 캐시 파일.
-            _sfx = ("_" + phase) if (pane or phase == "core") else ""
+            # _v2: data-lk 파트 분할 fragment (구형식 캐시와 격리). core 는 별도 파일.
+            _sfx = "_core" if not enrich else ""
             cache_f = cache_dir / f"detail_{safe}{_sfx}_v2.html"
 
             age = None
@@ -1244,7 +1240,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 if encoded:
                     # 만료(>30분)면 백그라운드 1회 재렌더 → 다음 방문은 신선.
                     if age >= _LOOKUP_DETAIL_FRESH_SEC:
-                        _kick_lookup_detail_refresh(ticker, cache_f, enrich, pane)
+                        _kick_lookup_detail_refresh(ticker, cache_f, enrich)
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Content-Length", str(len(encoded)))
@@ -1255,7 +1251,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
             # 콜드(캐시 없음/너무 오래됨/읽기 실패) → 동기 렌더.
             from bot.dashboard import render_lookup_detail
-            html = render_lookup_detail(ticker, enrich=enrich, pane=pane)
+            html = render_lookup_detail(ticker, enrich=enrich)
             encoded = html.encode("utf-8")
             _atomic_write_bytes(cache_f, encoded)
             self.send_response(200)

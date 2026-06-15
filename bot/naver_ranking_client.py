@@ -530,8 +530,8 @@ def world_quote_map(market: str) -> dict:
 def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
     """{up:[{name,pct}], down:[...], ts, source} — 네이버 업종별 등락(시총가중 평균)
     Top/Bottom (CN/HK/JP, 사용자 2026-06-14 '업종등락 네이버'). 전 업종 순회·각
-    업종 상위 종목(시총순 20) 시총가중 등락 → 랭킹. ETF 업종 제외. **5분 디스크
-    캐시**(market 별 동일 — CN/JP/HK 갱신주기 통일, 사용자 2026-06-14). graceful·
+    업종 상위 종목(시총순 20) 시총가중 등락 → 랭킹. ETF 업종 제외. **장중 1분 디스크
+    캐시**(사용자 2026-06-15 '업종 다 1분'·session-aware 라 장 밖 0). graceful·
     429 면역 — 실패 시 빈(호출부 ETF 합성 폴백)."""
     nat = _UPJONG_NATION.get(market)
     if not nat:
@@ -539,7 +539,7 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
     from bot.finviz_client import (_CACHE_DIR, _cache_write, _cached,
                                    _now_label, _session_fresh)
     cache = f"naver_sector_movers_{market}.json"
-    # 세션-인지(개선점 C, 사용자 2026-06-14): 장중 5분 / 장 밖엔 마지막 산출본이면
+    # 세션-인지(사용자 2026-06-15 '업종 1분'): 장중 1분 / 장 밖엔 마지막 산출본이면
     # 재fetch 0(평면 5분이 장 밖·주말에도 재fetch 하던 낭비 제거). 무버·신고저와 통일.
     stale = _cached(cache, ttl=86400)
     if isinstance(stale, dict) and (stale.get("up") or stale.get("down")):
@@ -547,7 +547,7 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
             _mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             _mt = 0.0
-        if _session_fresh(market, _mt, 300):
+        if _session_fresh(market, _mt, 60):
             return stale
     import requests
     try:
