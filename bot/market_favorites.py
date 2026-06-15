@@ -248,9 +248,16 @@ def get_favorites_with_prices() -> list[dict]:
         # 제외') — 현재가·시총·한글명을 한 콜로. TW·기타·실패는 None → yfinance.
         nq = _naver_quote_for(f["ticker"])
         naver_price = nq.get("price") if nq else None
-        if not f.get("name_kr"):
-            f["name_kr"] = ((nq.get("name") if nq else None)
-                            or _resolve_kr_name(f["ticker"], f.get("name") or f["ticker"]))
+        # name_kr 미해결(부재 OR 영문 fallback==name)이면 (재)해석 — #419 이전
+        # 영문으로 영속된 TW / Naver 일시실패분을 자가치유(if-not-name_kr 게이트가
+        # 영문 영속분을 영구 고착시키던 것 해소). 진짜 한글명(≠name)은 skip.
+        # translate_names_kr·Naver 둘 다 캐시라 재호출 싸다.
+        _cur_kr = f.get("name_kr")
+        if not _cur_kr or _cur_kr == f.get("name"):
+            _new_kr = ((nq.get("name") if nq else None)
+                       or _resolve_kr_name(f["ticker"], f.get("name") or f["ticker"]))
+            if _new_kr:
+                f["name_kr"] = _new_kr
         try:
             tk = yf.Ticker(f["ticker"])
             price = naver_price       # 네이버 있으면 fast_info 생략(야후 부하·글리치↓)
@@ -381,12 +388,18 @@ def get_favorites_with_prices() -> list[dict]:
     # name_kr 백필분만 깨끗이 영속 (정적이라 1회) — volatile 가격은 저장 안 함:
     # 디스크 재로드 → name_kr 복사 → save. 이후 cold load 부턴 재호출 0.
     try:
-        _kr = {f["ticker"]: f.get("name_kr") for f in favorites if f.get("name_kr")}
+        by_t = {f["ticker"]: f for f in favorites}
         disk = _load()
         _chg = False
         for d in disk:
-            if not d.get("name_kr") and _kr.get(d["ticker"]):
-                d["name_kr"], _chg = _kr[d["ticker"]], True
+            f = by_t.get(d["ticker"])
+            nk = f.get("name_kr") if f else None
+            if not nk:
+                continue
+            # 한글명(영문 name 과 다름)이면 갱신(영문→한글 치유 포함); 디스크가
+            # 비어있으면 영문 fallback 이라도 채움. 기존 한글명을 영문으로 안 덮음.
+            if (nk != f.get("name") and nk != d.get("name_kr")) or not d.get("name_kr"):
+                d["name_kr"], _chg = nk, True
         if _chg:
             _save(disk)
     except Exception:

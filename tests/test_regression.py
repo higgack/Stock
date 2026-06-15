@@ -5597,8 +5597,28 @@ class TestFavoritesKoreanName:
         # add_favorite 엔트리에 name_kr 필드 배선 (소스 검증)
         src = open("bot/market_favorites.py", encoding="utf-8").read()
         assert '"name_kr": _resolve_kr_name(' in src, "add_favorite name_kr 누락"
-        # 기존 엔트리(name_kr 부재)는 _refresh 병렬 풀에서 지연 해석 + 영속
-        assert 'if not f.get("name_kr"):' in src, "기존 엔트리 name_kr 백필 누락"
+        # 기존 엔트리는 _refresh 병렬 풀에서 (재)해석 — 부재 OR 영문(==name)
+        # fallback 이면 재해석(영문 영속 자가치유)
+        assert "if not _cur_kr or _cur_kr == f.get(\"name\"):" in src, "name_kr 자가치유 게이트 누락"
+
+    def test_refresh_self_heals_english_name_kr(self, monkeypatch):
+        # #419 이전 TW 가 영문으로 name_kr 영속된 것을 _refresh 가 자가치유:
+        # name_kr == 영문 name 이면 재해석 → 한글(translate_names_kr). 사용자
+        # 2026-06-15 '캐시인지 딜레이인지' = 영속 영문 게이트 고착이 원인.
+        import bot.market_favorites as mf
+        import bot.chart_translate as ct
+        mf._FAV_CACHE = None
+        mf._FAV_CACHE_TS = 0
+        # TW 엔트리에 영문 name_kr 가 이미 영속돼 있는 상태
+        monkeypatch.setattr(mf, "_load", lambda: [{
+            "ticker": "2344.TW", "name": "Winbond Electronics Corporation",
+            "name_kr": "Winbond Electronics Corporation", "currency": "TWD"}])
+        saved = {}
+        monkeypatch.setattr(mf, "_save", lambda x: saved.update(rows=x))
+        monkeypatch.setattr(ct, "translate_names_kr", lambda pairs: {"2344.TW": "윈본드"})
+        out = mf.get_favorites_with_prices()
+        assert out[0]["name_kr"] == "윈본드"               # 영문→한글 자가치유
+        assert saved["rows"][0]["name_kr"] == "윈본드"     # 디스크에도 영속
 
     def test_renderfavs_uses_name_kr(self):
         # 렌더가 name_kr||name 표시 + 티커 작게 (소스 검증)
