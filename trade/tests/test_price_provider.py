@@ -57,9 +57,11 @@ class _TmpEnv(unittest.TestCase):
             p.start()
         # clear=True로 격리 — 앰비언트 TRADE_DATA_GO_KR_KEY가 있으면 auto가
         # dataportal로 가버려 KIS 경로 테스트가 깨지므로(전체 스위트 오염 방지).
+        # KIS 동작(토큰·캐시·캡) 테스트는 KIS 명시 선택 — auto 기본이 'naver' 로
+        # 바뀌었으므로(사용자 2026-06-15 'KIS 말고 네이버') KIS 경로는 explicit.
         self.env = mock.patch.dict(os.environ, {
             "TRADE_KIS_APPKEY": "AK", "TRADE_KIS_APPSECRET": "AS",
-            "TRADE_PRICE_PROVIDER": "auto", "TRADE_KIS_THROTTLE_MS": "0",
+            "TRADE_PRICE_PROVIDER": "kis", "TRADE_KIS_THROTTLE_MS": "0",
         }, clear=True)
         self.env.start()
         pp._KIS_REISSUE_COOLDOWN_UNTIL = 0.0   # self-heal 쿨다운 테스트 격리
@@ -72,50 +74,57 @@ class _TmpEnv(unittest.TestCase):
 
 
 class ProviderSelectTests(unittest.TestCase):
-    def test_off_when_no_keys(self):
+    def test_auto_is_naver_no_keys(self):
+        # auto 기본 = 네이버(무키·실시간·IP차단 없음, 사용자 2026-06-15 'KIS 말고
+        # 네이버'). 키 없어도 항상 활성.
         with mock.patch.dict(os.environ, {"TRADE_PRICE_PROVIDER": "auto"}, clear=True):
-            self.assertEqual(pp._provider(), "none")
-            self.assertFalse(pp.provider_active())
-            # 키 없으면 외부 호출 0 — 빈 결과
-            self.assertEqual(pp.get_quotes(["005930"]), {})
+            self.assertEqual(pp._provider(), "naver")
+            self.assertTrue(pp.provider_active())
 
-    def test_kis_when_keys_present(self):
+    def test_auto_is_naver_even_with_kis_keys(self):
+        # KIS 키가 있어도 auto = 네이버(KIS 는 명시 선택 시에만).
         with mock.patch.dict(os.environ, {
                 "TRADE_KIS_APPKEY": "AK", "TRADE_KIS_APPSECRET": "AS",
+                "TRADE_DATA_GO_KR_KEY": "DK",
                 "TRADE_PRICE_PROVIDER": "auto"}, clear=True):
+            self.assertEqual(pp._provider(), "naver")
+
+    def test_explicit_kis(self):
+        with mock.patch.dict(os.environ, {
+                "TRADE_KIS_APPKEY": "AK", "TRADE_KIS_APPSECRET": "AS",
+                "TRADE_PRICE_PROVIDER": "kis"}, clear=True):
             self.assertEqual(pp._provider(), "kis")
             self.assertTrue(pp.provider_active())
 
-    def test_kis_fallback_env_names_noah_style(self):
-        # NOAH 네이밍(KIS_APP_KEY/KIS_APP_SECRET)도 인식 — 한 호스트에서
-        # 같은 KIS 앱을 NOAH와 공유할 때 .env 중복 없게.
+    def test_kis_keys_resolution(self):
+        # NOAH 네이밍 폴백 + TRADE_ 우선(명시 > 폴백) — 키 해석은 그대로.
         with mock.patch.dict(os.environ, {
-                "KIS_APP_KEY": "AK", "KIS_APP_SECRET": "AS",
-                "TRADE_PRICE_PROVIDER": "auto"}, clear=True):
+                "KIS_APP_KEY": "AK", "KIS_APP_SECRET": "AS"}, clear=True):
             self.assertEqual(pp._kis_keys(), ("AK", "AS"))
-            self.assertEqual(pp._provider(), "kis")
-
-    def test_trade_prefix_wins_over_noah_fallback(self):
-        # 같이 있으면 TRADE_KIS_* 우선(명시 > 폴백).
         with mock.patch.dict(os.environ, {
                 "TRADE_KIS_APPKEY": "T", "TRADE_KIS_APPSECRET": "T",
-                "KIS_APP_KEY": "N", "KIS_APP_SECRET": "N",
-                "TRADE_PRICE_PROVIDER": "auto"}, clear=True):
+                "KIS_APP_KEY": "N", "KIS_APP_SECRET": "N"}, clear=True):
             self.assertEqual(pp._kis_keys(), ("T", "T"))
-
-    def test_auto_prefers_kis_over_dataportal(self):
-        # 둘 다 있으면 KIS(실시간)가 dataportal(EOD T+1)을 이김.
-        with mock.patch.dict(os.environ, {
-                "KIS_APP_KEY": "AK", "KIS_APP_SECRET": "AS",
-                "TRADE_DATA_GO_KR_KEY": "DK",
-                "TRADE_PRICE_PROVIDER": "auto"}, clear=True):
-            self.assertEqual(pp._provider(), "kis")
 
     def test_explicit_none_forces_off(self):
         with mock.patch.dict(os.environ, {
                 "TRADE_KIS_APPKEY": "AK", "TRADE_KIS_APPSECRET": "AS",
                 "TRADE_PRICE_PROVIDER": "none"}, clear=True):
             self.assertEqual(pp._provider(), "none")
+
+    def test_naver_quote_parse(self):
+        # 네이버 datas[0] → Quote (price/pct 부호/이름). 하락은 code '5'.
+        def up(m, u, *, headers, body=None):
+            return {"datas": [{"closePriceRaw": "344000", "fluctuationsRatioRaw": "1.5",
+                               "compareToPreviousPrice": {"code": "2"}, "stockName": "삼성전자"}]}
+        q = pp._naver_quote_kr("005930.KS", transport=up)
+        self.assertEqual((q.price, q.change_pct, q.name), (344000.0, 1.5, "삼성전자"))
+
+        def dn(m, u, *, headers, body=None):
+            return {"datas": [{"closePriceRaw": "100", "fluctuationsRatioRaw": "2.0",
+                               "compareToPreviousPrice": {"code": "5"}}]}
+        self.assertEqual(pp._naver_quote_kr("000660", transport=dn).change_pct, -2.0)
+        self.assertIn("naver", pp._PROVIDERS)
 
 
 class QuoteParseTests(_TmpEnv):
@@ -284,8 +293,9 @@ class _DPEnv(unittest.TestCase):
         ]
         for p in self._p:
             p.start()
+        # dataportal 동작 테스트는 명시 선택 — auto 기본이 'naver' 로 바뀜.
         self.env = mock.patch.dict(os.environ, {
-            "TRADE_DATA_GO_KR_KEY": "DK", "TRADE_PRICE_PROVIDER": "auto",
+            "TRADE_DATA_GO_KR_KEY": "DK", "TRADE_PRICE_PROVIDER": "dataportal",
         }, clear=True)
         self.env.start()
         pp._KIS_REISSUE_COOLDOWN_UNTIL = 0.0   # self-heal 쿨다운 테스트 격리
@@ -298,7 +308,8 @@ class _DPEnv(unittest.TestCase):
 
 
 class DataPortalTests(_DPEnv):
-    def test_auto_selects_dataportal_when_datagokr_key(self):
+    def test_dataportal_provider_active(self):
+        # 명시 dataportal 선택 시 활성 (auto 기본은 이제 naver).
         self.assertEqual(pp._provider(), "dataportal")
         self.assertTrue(pp.provider_active())
 

@@ -130,12 +130,10 @@ def _provider() -> str:
     data.go.kr durable 캐시로 푸는 하이브리드(resolve_codes)."""
     p = (os.environ.get("TRADE_PRICE_PROVIDER") or "auto").strip().lower()
     if p == "auto":
-        ak, sk = _kis_keys()
-        if ak and sk:
-            return "kis"
-        if os.environ.get("TRADE_DATA_GO_KR_KEY"):
-            return "dataportal"
-        return "none"
+        # 사용자 2026-06-15 'KIS 말고 네이버' — 네이버 폴링은 무키·실시간·데이터센터
+        # IP 차단 없음. 장중 라이브, 장후 당일종가(+recommended_ttl 마감 6h=조정).
+        # KIS/dataportal 은 TRADE_PRICE_PROVIDER 로 명시 시에만.
+        return "naver"
     return p
 
 
@@ -613,7 +611,62 @@ def resolve_codes(names: Iterable[str], *,
     return out
 
 
+# ── 네이버 실시간 시세 (무키·IP차단 없음·장중 라이브, 사용자 2026-06-15
+# 'KIS 말고 네이버·실시간·장종료후 조정') — polling.finance.naver.com 단일코드.
+# 장중 closePriceRaw 라이브, 장후 당일 종가(자연 세션 인지) + recommended_ttl
+# 마감 6h 로 장종료 후 재호출 억제(=조정). NOAH bot/naver_quote 와 동일 소스.
+_NAVER_URL = "https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+_NAVER_HDRS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+    "Accept": "application/json", "Referer": "https://m.stock.naver.com/",
+}
+
+
+def _naver_quote_kr(code: str, *,
+                    transport: Transport = _default_transport) -> Optional[Quote]:
+    """네이버 실시간 단일 종목 → Quote. 키 불필요. 실패/빈 응답 → None.
+    pct 부호: compareToPreviousPrice.code '5'=하락. prev_close 는 price·pct 역산."""
+    code6 = "".join(ch for ch in str(code) if ch.isdigit()).zfill(6)[:6]
+    try:
+        resp = transport("GET", _NAVER_URL.format(code=code6),
+                         headers=_NAVER_HDRS, body=None)
+    except Exception:
+        return None
+    datas = (resp.get("datas") if isinstance(resp, dict) else None) or []
+    it = datas[0] if datas and isinstance(datas[0], dict) else None
+    if not it:
+        return None
+    price = _fnum(it.get("closePriceRaw") or it.get("closePrice"))
+    if price <= 0:
+        return None
+    pct = _fnum(it.get("fluctuationsRatioRaw") or it.get("fluctuationsRatio"))
+    cmp_ = it.get("compareToPreviousPrice")
+    pct = -abs(pct) if (isinstance(cmp_, dict) and str(cmp_.get("code")) == "5") else abs(pct)
+    prev = price / (1.0 + pct / 100.0) if pct else price
+    return Quote(symbol=code6, name=(it.get("stockName") or code6),
+                 price=price, change=price - prev, change_pct=pct,
+                 prev_close=prev, currency="KRW",
+                 ts=datetime.now(timezone.utc).isoformat())
+
+
+def _naver_get_quotes(symbols: list[str], *,
+                      transport: Transport = _default_transport) -> dict[str, Quote]:
+    """네이버 실시간 배치 — 단일코드 엔드포인트라 코드별 1콜 + 가벼운 throttle.
+    관련종목은 보통 수십 개라 부담 작음. 실패 코드는 생략(공란)."""
+    throttle = _fnum(os.environ.get("TRADE_NAVER_THROTTLE_MS") or "40") / 1000.0
+    out: dict[str, Quote] = {}
+    for i, sym in enumerate(symbols):
+        if i and throttle > 0:
+            time.sleep(throttle)
+        q = _naver_quote_kr(sym, transport=transport)
+        if q:
+            out[q.symbol] = q
+    return out
+
+
 _PROVIDERS: dict[str, Callable[..., dict[str, Quote]]] = {
+    "naver": _naver_get_quotes,      # 기본(auto) — 무키·실시간
     "kis": _kis_get_quotes,
     "dataportal": _dataportal_get_quotes,
     # "toss": _toss_get_quotes,   # 출시 후 동일 시그니처로 추가

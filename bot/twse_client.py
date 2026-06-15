@@ -80,6 +80,19 @@ def _cached(name: str) -> Optional[dict]:
     return None
 
 
+def _cached_stale(name: str, max_age_sec: int = 86400) -> Optional[dict]:
+    """live TTL(5분) 무시하고 max_age 안의 마지막 스냅샷 반환 — 장 마감/점검
+    으로 live 가 비었을 때 '직전 좋은 데이터' 복원용(사용자 2026-06-15 '대만 장중엔
+    제대로 나오더니 마감 후 ETF 4개로 degrade'). 24h 안이면 당일 마지막 장중 스냅샷."""
+    try:
+        fp = _CACHE_DIR / f"{name}.json"
+        if fp.exists() and (time.time() - fp.stat().st_mtime) < max_age_sec:
+            return json.loads(fp.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return None
+
+
 def _cache_write(name: str, obj: dict) -> None:
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -296,9 +309,17 @@ def fetch_mi_index() -> dict:
 
 
 def fetch_tw_sector_movers(top_n: int = 10) -> dict:
-    """TW 업종 등락 — TWSE 類股 지수. 빈 결과 시 {} (호출부가 ETF 폴백)."""
+    """TW 업종 등락 — TWSE 類股 지수(약 20업종). 장 마감/점검으로 live 가 비면
+    당일 마지막 장중 스냅샷(stale 캐시)을 복원해 ETF 4개 폴백 degrade 방지
+    (사용자 2026-06-15). 그래도 없으면 {} (호출부가 ETF 폴백)."""
     mi = fetch_mi_index()
     secs = mi.get("sectors") or []
+    if not secs:
+        # 장 마감/점검 — 직전 좋은 類股 스냅샷(24h 내) 복원
+        cached = _cached_stale("mi_index") or {}
+        c_secs = cached.get("sectors") or []
+        if c_secs:
+            mi, secs = cached, c_secs
     if not secs:
         return {"up": [], "down": [], "ts": mi.get("ts", ""), "source": ""}
     up = sorted([s for s in secs if s["pct"] > 0], key=lambda s: s["pct"], reverse=True)[:top_n]

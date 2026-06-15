@@ -9873,3 +9873,23 @@ class TestRatesChartSpread20260615:
                             "kr_10y": [4.0, 3.9, 4.1]}, None).get("rates_fx")
         assert rf and rf["spread"] == [0.5, 0.5, 0.5]
         assert "usdkrw" not in rf                                 # 환율 제외
+
+
+class TestTWSectorStaleFallback20260615:
+    """사용자 2026-06-15 '대만 장중엔 제대로, 마감 후 ETF 4개로 degrade' — 장 마감/
+    점검으로 live 類股 가 비면 당일 마지막 장중 스냅샷(stale 캐시) 복원, ETF 폴백 방지."""
+
+    def test_serves_stale_twse_after_close(self):
+        import bot.twse_client as tw
+        _mi, _cs = tw.fetch_mi_index, tw._cached_stale
+        tw.fetch_mi_index = lambda: {"sectors": [], "ts": ""}            # live 비음(마감)
+        tw._cached_stale = lambda n, max_age_sec=86400: {
+            "sectors": [{"name": "반도체", "pct": 3.5}, {"name": "전자", "pct": -1.2}],
+            "ts": "2026-06-15 13:30"}
+        try:
+            r = tw.fetch_tw_sector_movers()
+            assert [s["name"] for s in r["up"]] == ["반도체"]
+            assert [s["name"] for s in r["down"]] == ["전자"]
+            assert r["source"] == "TWSE 類股"          # ETF 폴백 아님
+        finally:
+            tw.fetch_mi_index, tw._cached_stale = _mi, _cs
