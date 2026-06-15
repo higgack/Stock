@@ -11280,6 +11280,11 @@ def _render_dart_feed_page(by_date: dict[str, list[dict]]) -> str:
     });
     document.querySelectorAll('.df-month').forEach(function(m){
       var n=m.querySelectorAll('.df-card:not(.hidden)').length;
+      // 월 카운트도 필터 동기화 — 안 그러면 일 카운트(df-date-cnt)는 필터된
+      // 수로 줄어드는데 월은 전체(예: 일 90 ↔ 월 4697건)로 남아 데이터가
+      // 사라진 듯 보인다(사용자 2026-06-15 '심각'). 필터 없으면 전체 복원.
+      var mc=m.querySelector('.df-month-cnt');
+      if(mc)mc.textContent=n+'건';
       m.style.display=n?'':'none';
     });
   }

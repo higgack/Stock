@@ -5717,6 +5717,18 @@ class TestDartFeedTabCollapse:
         assert "df-searching', !!q || activeCat" not in html   # 옛 조건 제거
         assert 'data-cat="전체"' in html and "df-date-group" in html
 
+    def test_month_count_syncs_with_filter(self):
+        # 필터 적용 시 일 카운트(df-date-cnt)만 줄고 월 카운트(df-month-cnt)는
+        # 전체로 남아 '일 90 ↔ 월 4697건' 어긋남 → 데이터 손실로 오인(사용자
+        # 2026-06-15 '심각'). 월 카운트도 보이는 카드 수로 동기화해야.
+        import bot.dashboard as d
+        html = d._render_dart_feed_page({"2026-06-15": [
+            {"corp_name": "테스트", "report_nm": "감자완료", "category": "리스크",
+             "url": "#", "stock_code": "123456", "detail": []}]})
+        # 필터 JS 가 .df-month-cnt 를 보이는 카드 수+'건' 으로 재계산
+        assert "querySelector('.df-month-cnt')" in html
+        assert "mc.textContent=n+'건'" in html
+
 
 class TestPruneNonStock:
     """비-주식 가지치기 (finviz_client.prune_non_stock) — CEF 펀드·유령티커·
