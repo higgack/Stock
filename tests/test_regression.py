@@ -9807,3 +9807,38 @@ class TestPrepostAndTWFlow20260615:
         assert "외국인·기관 매매동향 (종목별)" in src      # 三大法人 헤더 한글화
         assert "三大法人 매매동향" not in src              # 한자 헤더 잔존 없음
         assert '("외국인", "foreign")' in src and '("자기매매", "dealer")' in src
+
+
+class TestResearchMonthAndUSNames20260615:
+    """사용자 2026-06-15: 미국 실적·리서치 한글명 ( ) (신고저와 동일 Naver
+    koreanCodeName 소스) + KR/US 리서치 30일치(intl 은 기존 30일과 통일)."""
+
+    def test_us_earnings_research_korean_names(self):
+        import bot.naver_ranking_client as nrc
+        _orig = nrc.world_upjong_name
+        nrc.world_upjong_name = lambda m: (
+            {"AAOI": "어플라이드 옵토일렉트로닉스", "CCL": "카니발"} if m == "US" else {})
+        try:
+            import bot.dashboard as d
+            data = {"earnings": [{"symbol": "AAOI", "name": "", "date": "2026-08-05",
+                                  "hour": "", "eps_estimate": 0.02, "revenue_estimate": 1.94e8,
+                                  "quarter": 2, "year": 2026}],
+                    "earnings_ts": "", "research_ts": "", "research_kr": [],
+                    "research_kr_industry": [], "research_kr_strategy": [],
+                    "research_us": [{"symbol": "CCL", "firm": "Stifel", "to_grade": "Buy",
+                                     "from_grade": "Buy", "date": "2026-06-12"}],
+                    "research_jp": [], "research_tw": [], "research_cn": [],
+                    "research_hk": [], "snapshot": {}, "indices": [], "ts": "", "macro": {}}
+            html = d._render_market_page(data)
+            assert 'AAOI <span class="ts">(어플라이드 옵토일렉트로닉스)</span>' in html
+            assert 'CCL <span class="ts">(카니발)</span>' in html
+        finally:
+            nrc.world_upjong_name = _orig
+
+    def test_research_30day_window(self):
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        assert src.count("days_back=30,") == 3   # KR 기업/산업/전략 한 달
+        us_fn = src[src.index("def fetch_recent_research_us"):
+                    src.index("def fetch_recent_research_intl")]
+        assert "timedelta(days=30)).isoformat()" in us_fn   # US 롤링 30일
+        assert "days_back=7," not in src                    # 7일 잔존 없음

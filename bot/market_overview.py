@@ -1032,10 +1032,10 @@ def fetch_earnings_calendar_intl(market: str, days_ahead: int = 90,
 # Naver Finance 전체 시장 리서치 목록(naver_research_client)으로 대체.
 
 def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
-    """Fetch latest KR 종목(기업) 리서치 리포트 — 일주일치(Naver Finance).
+    """Fetch latest KR 종목(기업) 리서치 리포트 — 한 달치(Naver Finance).
 
-    개별 종목 분석이 Naver 리서치를 쓰는 것과 동일 소스. 사용자 정책
-    2026-06-09: 최근 7일(일주일치) 윈도. Returns
+    개별 종목 분석이 Naver 리서치를 쓰는 것과 동일 소스. 사용자 2026-06-15:
+    7→30일 윈도(상세 호출은 limit 으로 상한이라 윈도 확대 비용 ~0). Returns
     [{code, name, broker, rating, target, title, date}]."""
     cache_dir = _CACHE_DIR / "research"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1052,7 +1052,7 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
     results: list[dict] = []
     try:
         from bot.naver_research_client import fetch_recent_research_market
-        results = fetch_recent_research_market(limit=limit, days_back=7,
+        results = fetch_recent_research_market(limit=limit, days_back=30,
                                                max_pages=20)
     except Exception as exc:
         log.warning("naver research market fetch error: %s", exc)
@@ -1066,9 +1066,9 @@ def fetch_recent_research_kr(limit: int = 150) -> list[dict]:
 
 
 def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
-    """Fetch latest KR 산업(업종) 리서치 리포트 — 일주일치(Naver Finance).
+    """Fetch latest KR 산업(업종) 리서치 리포트 — 한 달치(Naver Finance).
 
-    종목 리포트와 동일 7일 윈도. Returns [{category, broker, title, date, link}]."""
+    종목 리포트와 동일 30일 윈도(사용자 2026-06-15). Returns [{category, broker, title, date, link}]."""
     cache_dir = _CACHE_DIR / "research"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today = date.today()
@@ -1084,7 +1084,7 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
     results: list[dict] = []
     try:
         from bot.naver_research_client import fetch_recent_research_industry
-        results = fetch_recent_research_industry(limit=limit, days_back=7,
+        results = fetch_recent_research_industry(limit=limit, days_back=30,
                                                  max_pages=12)
     except Exception as exc:
         log.warning("naver research industry fetch error: %s", exc)
@@ -1098,10 +1098,10 @@ def fetch_recent_research_kr_industry(limit: int = 80) -> list[dict]:
 
 
 def fetch_recent_research_kr_strategy(limit: int = 80) -> list[dict]:
-    """Fetch latest KR 투자전략(투자정보) 리서치 리포트 — 일주일치(Naver).
+    """Fetch latest KR 투자전략(투자정보) 리서치 리포트 — 한 달치(Naver).
 
-    종목·산업 리포트와 동일 7일 윈도. Returns [{broker, title, date, link}]
-    (분류·목표가 없음). 사용자 2026-06-12 '네이버 투자전략 → 한국 전략 탭'."""
+    종목·산업 리포트와 동일 30일 윈도(사용자 2026-06-15). Returns [{broker, title,
+    date, link}] (분류·목표가 없음). 사용자 2026-06-12 '네이버 투자전략 → 한국 전략 탭'."""
     cache_dir = _CACHE_DIR / "research"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today = date.today()
@@ -1117,7 +1117,7 @@ def fetch_recent_research_kr_strategy(limit: int = 80) -> list[dict]:
     results: list[dict] = []
     try:
         from bot.naver_research_client import fetch_recent_research_strategy
-        results = fetch_recent_research_strategy(limit=limit, days_back=7,
+        results = fetch_recent_research_strategy(limit=limit, days_back=30,
                                                  max_pages=12)
     except Exception as exc:
         log.warning("naver research strategy fetch error: %s", exc)
@@ -1153,7 +1153,9 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
     cache_dir = _CACHE_DIR / "research"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today = date.today()
-    cutoff = (today - timedelta(days=7)).isoformat()
+    # 30일 롤링 윈도 (사용자 2026-06-15 '한 달치') — store 보관만 7→30일, 로테이션
+    # fetch 증가 0(이미 4일 1회전으로 전 S&P500 커버). 미국 리서치 표시량 ↑.
+    cutoff = (today - timedelta(days=30)).isoformat()
     rolling_f = cache_dir / "us_rolling.json"
     store: dict = {}
     last_fetch = 0.0

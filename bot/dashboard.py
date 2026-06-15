@@ -11755,8 +11755,9 @@ def _render_earnings_table(earnings: list) -> str:
         q_str = f'Q{q} {y}' if q and y else "—"
         lookup_url = f'lookup/{sym}'
         # KR/US=회사명(종목코드 생략, 사용자 2026-06-10). intl(JP/CN/HK/TW)=
-        # 티커+(한글명) (사용자 2026-06-14 '티커뒤에 () 로'). 한글명 미확보 시 티커만.
-        if is_intl and co_name and co_name != sym:
+        # 비-KR(미국 포함, 사용자 2026-06-15)=티커+(한글명). 한글명 미확보 시 티커만.
+        # KR 은 종목명만(한글이라 자명). US co_name 은 위에서 네이버 한글명으로 주입.
+        if (not is_kr) and co_name and co_name != sym:
             display = f'{sym} <span class="ts">({co_name})</span>'
         else:
             display = co_name if co_name else sym
@@ -11870,6 +11871,11 @@ def _render_research_us_table(research: list) -> str:
     rows: list[str] = []
     for r in research[:40]:
         sym = _html.escape(r.get("symbol", ""))
+        # 미국 종목 한글명 ( ) — 위에서 네이버 koreanCodeName 주입(name_kr). 있으면
+        # '티커 (한글명)'(사용자 2026-06-15 '미국도 다른나라처럼'). 미매핑은 티커만.
+        kr = _html.escape(r.get("name_kr", "") or "")
+        sym_disp = (f'{sym} <span class="ts">({kr})</span>'
+                    if kr and kr != sym else sym)
         firm = _html.escape(r.get("firm", ""))
         to_g = _html.escape(r.get("to_grade", ""))
         from_g = _html.escape(r.get("from_grade", ""))
@@ -11882,7 +11888,7 @@ def _render_research_us_table(research: list) -> str:
             tp_str = '—'
         lookup_url = f'lookup/{sym}'
         rows.append(
-            f'<tr><td class="sym"><a href="{lookup_url}">{sym}</a></td>'
+            f'<tr><td class="sym"><a href="{lookup_url}">{sym_disp}</a></td>'
             f'<td>{firm}</td><td>{grade_str}</td>'
             f'<td>{tp_str}</td><td>{dt}</td></tr>'
         )
@@ -12751,6 +12757,19 @@ def _render_market_page(data: dict) -> str:
     _earn_us = [e for e in earnings
                 if not str(e.get("symbol", "")).endswith(
                     (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".HK"))]
+    # 미국 종목 한글명 ( ) — 신고저 대시보드와 동일 소스(Naver koreanCodeName,
+    # 7d 캐시). 실적·리서치 US 행에 주입 → '티커 (한글명)' 표시(사용자 2026-06-15
+    # '미국도 다른나라처럼 한글명'). 미매핑(소형주)은 티커만. 1회 fetch·graceful.
+    # ⚠️ 반드시 _etab_panes(실적표) 빌드 **전**에 — 표 렌더가 name 을 읽으므로.
+    try:
+        from bot.naver_ranking_client import world_upjong_name as _wun
+        _us_kr = _wun("US") or {}
+    except Exception:
+        _us_kr = {}
+    for _r in _earn_us:
+        _r["name"] = _us_kr.get(str(_r.get("symbol", "")), "")
+    for _r in research_us:
+        _r["name_kr"] = _us_kr.get(str(_r.get("symbol", "")), "")
     # 빈 시장 탭 제거 (사용자 2026-06-13 '내용없으면 지워' — 중국 0건 등). 한국
     # 우선 순서 유지, 첫 비어있지 않은 탭이 active. 모두 비면 안내 문구.
     # HK 를 TW 앞으로 (사용자 2026-06-14 '대만·홍콩 순서 바꿔' — market.html 위젯
