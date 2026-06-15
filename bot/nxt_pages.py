@@ -81,7 +81,7 @@ def _investor_block(label: str, data: dict | None) -> str:
 
 _NXT_CSS = """
 <style>
-.nxt-inv{font-size:17px;margin:22px 0 8px;color:var(--fg,#e8eaed)}
+.nxt-inv{font-size:17px;margin:22px 0 8px;color:var(--text,#e8eaed)}
 .nxt-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media(max-width:860px){.nxt-grid{grid-template-columns:1fr}}
 .nxt-panel{background:var(--card,#1c1f26);border:1px solid var(--border,#2a2e37);border-radius:10px;overflow:hidden}
@@ -93,7 +93,7 @@ _NXT_CSS = """
 .nxt-tbl th:nth-child(2){text-align:left}
 .nxt-tbl td{padding:4px 6px;text-align:right;border-bottom:1px solid var(--border,#23262e);white-space:nowrap}
 .nxt-tbl td:nth-child(2){text-align:left;max-width:100px;overflow:hidden;text-overflow:ellipsis}
-.nxt-tbl td a{color:var(--fg,#e8eaed);text-decoration:none}
+.nxt-tbl td a{color:var(--text,#e8eaed);font-weight:600;text-decoration:none}
 .nxt-tbl td a:hover{color:var(--accent,#3b82f6);text-decoration:underline}
 .nxt-tbl .rk{color:var(--muted,#9aa0aa)}
 .nxt-tbl .amt.buy{color:#ef5350;font-weight:600}.nxt-tbl .amt.sell{color:#42a5f5;font-weight:600}
