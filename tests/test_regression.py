@@ -9930,3 +9930,23 @@ class TestAsiaDashboard20260615:
 
     def test_asia_in_serve_allowlist(self):
         assert '"asia.html"' in open("bot/dashboard_server.py", encoding="utf-8").read()
+
+
+class TestAsiaChildBackLink20260615:
+    """사용자 2026-06-15 '아시아 자식 대시보드에서 홈으로 누르면 아시아 대시보드로'
+    — JP/CN/HK/TW 신고저·급등락 child 의 back-link = asia.html(← ASIA). KR 은 홈에
+    있으므로 market.html 유지."""
+
+    def test_asia_back_targets(self):
+        from bot.tw_pages import _asia_back
+        for m in ("TW", "JP", "HK", "CN_A"):
+            assert _asia_back(m) == ("asia.html", "← ASIA"), m
+        assert _asia_back("KR") == ("market.html", "← 홈으로")
+
+    def test_callers_wire_asia_back(self):
+        tw = open("bot/tw_pages.py", encoding="utf-8").read()
+        intl = open("bot/intl_pages.py", encoding="utf-8").read()
+        assert tw.count("back=_asia_back(") >= 2      # TW 2 child 페이지
+        assert intl.count("back=_asia_back(") >= 3    # JP/HK/CN movers·52·jphighlow
+        # _tw_shell 이 back 파라미터를 실제 back-link href 에 사용
+        assert 'href="{_bh}"' in tw

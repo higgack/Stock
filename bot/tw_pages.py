@@ -38,12 +38,22 @@ def _market_nav(market: str, active: str) -> str:
     return '<div class="toggle">' + "".join(out) + "</div>"
 
 
-def _tw_shell(title: str, sub: str, body: str, nav: str = "") -> str:
+def _asia_back(market: str) -> tuple[str, str]:
+    """ASIA 자식(JP/CN/HK/TW)의 '홈으로'는 메인 홈이 아니라 ASIA 대시보드로
+    (사용자 2026-06-15 '아시아 자식에서 홈으로 누르면 아시아 대시보드로'). KR 은
+    홈(market.html) — KR 은 홈에 그대로 있으므로. → (href, label)."""
+    return (("market.html", "← 홈으로") if (market or "").upper().startswith("KR")
+            else ("asia.html", "← ASIA"))
+
+
+def _tw_shell(title: str, sub: str, body: str, nav: str = "",
+              back: tuple[str, str] = ("market.html", "← 홈으로")) -> str:
+    _bh, _bl = back
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_html.escape(title)} — NOAH</title>{_CSS}</head><body>
-<a class="back-link" href="market.html">← 홈으로</a>
+<a class="back-link" href="{_bh}">{_html.escape(_bl)}</a>
 <h1>{_html.escape(title)}</h1>
 <div class="sub">{sub}</div>
 {nav}
@@ -96,7 +106,7 @@ def render_tw_highlow_page() -> str:
            f"업종·시총=yfinance · {(dt + ' 종가 기준 · ') if dt else ''}장중 30분"
            f"{(' · ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 급등·급락", sub, body,
-                     nav=_market_nav("TW", "twhighlow"))
+                     nav=_market_nav("TW", "twhighlow"), back=_asia_back("TW"))
 
 
 def render_tw_highlow52_page() -> str:
@@ -147,4 +157,4 @@ def render_tw_highlow52_page() -> str:
     sub = (f"TWSE 전종목 1년 일봉 · 당일 52주 신고가/신저가 갱신 · 시총순·헤더 클릭 정렬 · "
            f"장중 1h{(' · ' + ts + ' 기준') if ts else ''}")
     return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body,
-                     nav=_market_nav("TW", "tw52"))
+                     nav=_market_nav("TW", "tw52"), back=_asia_back("TW"))
