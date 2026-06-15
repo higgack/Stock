@@ -9,6 +9,7 @@ from __future__ import annotations
 import html as _html
 import logging
 
+from bot.live_refresh import LIVE_REFRESH_JS as _LIVE_REFRESH_JS
 from bot.naver_pages import _CSS, _THEME_SCRIPT, _fmt_vol, _pct_cell
 
 log = logging.getLogger("bot.tw_pages")
@@ -46,8 +47,11 @@ def _tw_shell(title: str, sub: str, body: str, nav: str = "") -> str:
 <h1>{_html.escape(title)}</h1>
 <div class="sub">{sub}</div>
 {nav}
+<div id="live-root">
 {body}
+</div>
 {_THEME_SCRIPT}
+{_LIVE_REFRESH_JS}
 </body></html>"""
 
 

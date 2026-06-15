@@ -53,8 +53,12 @@ HL_SORT_JS = """
     rows.forEach(function(r,i){ tb.appendChild(r);
       var rk=r.querySelector('.rk'); if(rk) rk.textContent=i+1; });
   }
+  // window.hlBindSort — 자동 새로고침(live_refresh) 이 #live-root 를 innerHTML
+  // 교체한 뒤 새 표에 정렬을 재바인드하려 호출. _srtb 가드로 중복 바인드 차단.
+  window.hlBindSort=function(){
   document.querySelectorAll('table.hl-table').forEach(function(tbl){
     tbl.querySelectorAll('th.srt').forEach(function(th){
+      if(th._srtb) return; th._srtb=true;
       var arw=document.createElement('span'); arw.className='arw'; arw.textContent='⇅';
       th.appendChild(arw);
       th.addEventListener('click', function(){
@@ -67,6 +71,8 @@ HL_SORT_JS = """
       });
     });
   });
+  };
+  window.hlBindSort();
 })();
 </script>
 """

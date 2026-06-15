@@ -9404,3 +9404,63 @@ class TestNaverKrLiveQuote:
         cd = open("bot/chart_data.py", encoding="utf-8").read()
         assert "_merge_kr_today_bar(ticker, close, vol, op, hi, lo)" in cd
         assert 'if _is_kr and interval == "1d":' in cd
+
+
+class TestLiveAutoRefresh:
+    """라이브 대시보드 자동 새로고침 (사용자 2026-06-15 '진입시 라이브·매번 수동
+    새로고침 안 하고', '장후엔 돌릴 필요 없어', '신고저는 한시간 기준 부하 방지').
+    동적 페이지 no-cache(진입 신선) + 세션·cadence 인지 폴링(장중에만·신고저 1h·
+    무버 30s) + #live-root swap + 정렬 재바인드."""
+
+    def test_dynamic_pages_no_cache(self):
+        # 진입시 라이브 — 동적 render-on-GET 핸들러가 no-cache(브라우저 stale 차단).
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        # 정적 1 + 동적 핸들러 다수 = 10+ (replace_all 로 일괄). 들여쓰기 깨짐 0(구문가드).
+        assert src.count('"Cache-Control", "no-cache, must-revalidate"') >= 9
+
+    def test_live_refresh_js_markers(self):
+        from bot.live_refresh import LIVE_REFRESH_JS as js
+        assert "'/kr52':1" in js and "'/ushighlow':1" in js   # 신고저=1h(SLOW)
+        assert "3600000:30000" in js                          # 1h vs 30s cadence
+        assert "if(!isOpen()) return" in js                   # 장후·주말 폴링 skip
+        assert "document.hidden" in js                        # 백그라운드 탭 skip
+        assert "getElementById('live-root')" in js            # #live-root swap
+        assert "window.hlBindSort" in js                      # 정렬 재바인드
+        assert "location.href" in js                          # fetch-self
+
+    def test_shells_emit_live_root(self):
+        # 3개 shell(KR naver · US · TW/intl) 모두 #live-root + 자동새로고침 JS emit.
+        import bot.naver_pages as np, bot.us_pages as up, bot.tw_pages as tp
+        kr = np._shell("t", "s", "nxt", "<b>body</b>")
+        us = up._shell("t", "s", "usmovers", "<b>body</b>")
+        tw = tp._tw_shell("t", "s", "<b>body</b>", nav="")
+        for h in (kr, us, tw):
+            assert 'id="live-root"' in h
+            assert "setInterval(tick, interval)" in h
+
+    def test_hl_sort_rebindable(self):
+        from bot.highlow_render import HL_SORT_JS
+        assert "window.hlBindSort=function()" in HL_SORT_JS    # swap 후 재바인드 가능
+        assert "window.hlBindSort()" in HL_SORT_JS             # 초기 1회 호출
+        assert "if(th._srtb) return" in HL_SORT_JS             # 중복 바인드 가드
+
+    def test_market_hours_logic(self):
+        # LIVE_REFRESH_JS isOpen 의 KST 거래시간 판정 충실 포팅(의도 가드).
+        def is_open(market, day, hm):
+            if market == "US":
+                if 1 <= day <= 5 and hm >= 22 * 60 + 30: return True
+                if 2 <= day <= 6 and hm <= 5 * 60 + 10: return True
+                return False
+            if day in (0, 6): return False
+            W = {"KR": (8 * 60, 20 * 60), "JP": (9 * 60, 15 * 60 + 10),
+                 "HK": (10 * 60 + 30, 17 * 60 + 10), "CN": (10 * 60 + 30, 16 * 60 + 10),
+                 "TW": (10 * 60, 14 * 60 + 40)}.get(market)
+            return (W[0] <= hm <= W[1]) if W else True
+        assert is_open("KR", 1, 12 * 60) is True       # 월 정오 장중
+        assert is_open("KR", 1, 21 * 60) is False      # 월 21시 장후
+        assert is_open("KR", 6, 12 * 60) is False      # 주말
+        assert is_open("US", 2, 2 * 60) is True        # 화 새벽 = 美 월 야간
+        assert is_open("US", 2, 12 * 60) is False      # 화 정오 美 휴장
+        assert is_open("US", 6, 3 * 60) is True        # 토 새벽 = 美 금 야간
+        assert is_open("US", 0, 3 * 60) is False       # 일 새벽 美 주말
+        assert is_open("JP", 1, 16 * 60) is False      # JP 장후

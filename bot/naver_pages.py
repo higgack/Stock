@@ -8,6 +8,8 @@ from __future__ import annotations
 import html as _html
 import logging
 
+from bot.live_refresh import LIVE_REFRESH_JS as _LIVE_REFRESH_JS
+
 log = logging.getLogger("bot.naver_pages")
 
 _CSS = """
@@ -82,8 +84,11 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
 <h1>{_html.escape(title)}</h1>
 <div class="sub">{sub}</div>
 {toggle}
+<div id="live-root">
 {body}
+</div>
 {_THEME_SCRIPT}
+{_LIVE_REFRESH_JS}
 </body></html>"""
 
 
