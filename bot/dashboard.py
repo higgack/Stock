@@ -2058,14 +2058,13 @@ def _render_index(records: list[dict]) -> str:
     errors_link = (
         ' · <a href="market.html">🌍 홈</a>'
         ' · <a href="asia.html">🏯 ASIA</a>'   # 홈 옆 ASIA — 여기(NOAH 종목분석)만 (사용자 2026-06-15)
-        ' · <a href="dart_feed.html">📋 DART 공시</a>'
         ' · <a href="screener.html">📊 Screener</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
+        ' · <a href="dart_feed.html">📋 DART 공시</a>'
+        f' · <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>'
+        ' · <a href="daily_byte.html">📊 Daily Byte</a>'
         ' · <a href="reddit_insider.html">📨 미국 레딧</a>'
         ' · <a href="blog.html">📝 블로그</a>'
-        ' · <a href="daily_byte.html">📊 Daily Byte</a>'
-        ''
-        f' · <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>'
     )
 
     # Market filter buttons (show only if >1 market present)
@@ -12666,12 +12665,12 @@ def _render_market_page(data: dict) -> str:
     &nbsp;|&nbsp;
     <a href="asia.html">🏯 ASIA</a>
     &middot; <a href="index.html">🦉 NOAH 종목분석</a>
-    &middot; <a href="dart_feed.html">📋 DART 공시</a>
     &middot; <a href="screener.html">📊 Screener</a>
+    &middot; <a href="dart_feed.html">📋 DART 공시</a>
+    &middot; <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>
+    &middot; <a href="daily_byte.html">📊 Daily Byte</a>
     &middot; <a href="reddit_insider.html">📨 미국 레딧</a>
     &middot; <a href="blog.html">📝 블로그</a>
-    &middot; <a href="daily_byte.html">📊 Daily Byte</a>
-    &middot; <a href="trade/">{_KR_FLAG_SVG} 한국 수출입</a>
     &nbsp;|&nbsp;
     <a href="realestate.html">🏠 부동산</a>
   </div>
