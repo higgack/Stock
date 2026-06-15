@@ -70,24 +70,29 @@ _CURRENCY_MAP = {
 }
 
 
-def _resolve_kr_name(ticker: str, fallback: str) -> str:
-    """네이버 한글 종목명 (사용자 2026-06-15 '관심종목 종목명 한글, 네이버에서,
-    모든 나라'). KR=네이버 국내·US/JP/CN/HK=네이버 해외. TW(.TW)·기타(EU 등)는
-    네이버 미커버라 영문 fallback 유지 (TW 한글은 중문명 번역 별도 소스 필요).
-    종목명은 정적이라 entry 의 name_kr 로 1회 영속 → 재호출 0. 실패 시 fallback."""
+def _naver_quote_for(ticker: str) -> Optional[dict]:
+    """네이버 실시간 시세 {price, pct, mcap, name} — KR=네이버 국내·US/JP/CN/HK=
+    네이버 해외 (사용자 2026-06-15 '관심종목 시총·현재가 네이버, 대만 제외').
+    한 콜로 현재가·시총·한글명을 모두 받는다. TW(.TW)·기타(EU 등)·실패는 None
+    → 호출부가 yfinance 폴백. (네이버는 KR 국내·US/JP/CN/HK 해외만 커버)."""
     country = _detect_country(ticker)
     try:
         if country == "KR":
             from bot.naver_quote import fetch_kr_quote
-            q = fetch_kr_quote(ticker) or {}
-            return q.get("name") or fallback
+            return fetch_kr_quote(ticker)
         if country in ("US", "JP", "CN", "HK"):
             from bot.world_quote import fetch_world_quote
-            q = fetch_world_quote(ticker) or {}
-            return q.get("name") or fallback
+            return fetch_world_quote(ticker)
     except Exception as exc:
-        log.debug("favorites: name_kr resolve failed for %s: %s", ticker, exc)
-    return fallback
+        log.debug("favorites: naver quote failed for %s: %s", ticker, exc)
+    return None
+
+
+def _resolve_kr_name(ticker: str, fallback: str) -> str:
+    """네이버 한글 종목명 (정적, add_favorite 1회 영속). TW·기타·실패는
+    영문 fallback. _naver_quote_for 단일 소스(가격·시총·이름 같은 콜)."""
+    q = _naver_quote_for(ticker)
+    return (q.get("name") if q else None) or fallback
 
 
 def add_favorite(ticker: str) -> Optional[dict]:
@@ -226,16 +231,19 @@ def get_favorites_with_prices() -> list[dict]:
         _fi_allowed = True
 
     def _refresh(f: dict) -> None:
-        # 한글 종목명 (사용자 2026-06-15) — 정적이라 1회만, 병렬 풀에서 해석
-        # (순차 prefetch 의 첫 로드 지연 회피). 가격과 무관 try.
+        # 네이버 실시간 시세 우선 (사용자 2026-06-15 '시총·현재가 네이버, 대만
+        # 제외') — 현재가·시총·한글명을 한 콜로. TW·기타·실패는 None → yfinance.
+        nq = _naver_quote_for(f["ticker"])
+        naver_price = nq.get("price") if nq else None
         if not f.get("name_kr"):
-            f["name_kr"] = _resolve_kr_name(f["ticker"], f.get("name") or f["ticker"])
+            f["name_kr"] = ((nq.get("name") if nq else None)
+                            or f.get("name") or f["ticker"])
         try:
             tk = yf.Ticker(f["ticker"])
-            price = None
+            price = naver_price       # 네이버 있으면 fast_info 생략(야후 부하·글리치↓)
             info = None
             prev_close = None
-            if _fi_allowed:
+            if price is None and _fi_allowed:
                 try:
                     fi = tk.fast_info
                     price = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
@@ -255,41 +263,52 @@ def get_favorites_with_prices() -> list[dict]:
                     prev_close = prev_close or info.get("previousClose")
                 except Exception:
                     info = {}
-            # 가격 글리치 가드 (KLAC 클래스 — yfinance 분할 미조정 last_price):
-            # 직전 종가 대비 ±75% 초과면 직전 종가로 교체 (교체 우선 정책).
+            # 가격 글리치 가드 — yfinance 폴백 경로만 (네이버 실시간은 클린이라
+            # skip). KLAC 클래스: 직전 종가 대비 ±75% 초과면 직전 종가로 교체.
             glitched = False
-            try:
-                from bot.price_sanity import quote_glitch_gap
-                if quote_glitch_gap(price, prev_close):
-                    price = prev_close
-                    glitched = True
-                # 2차 — price·prev 가 둘 다 같은 미조정 기준이면 1차가 장님
-                # (KLAC $2,411 vs $2,398 통과). 조정 일봉 종가와 교차.
-                if not glitched and price:
-                    hist = tk.history(period="5d")
-                    if hist is not None and len(hist) and "Close" in hist:
-                        hc = float(hist["Close"].dropna().iloc[-1])
-                        if hc > 0 and quote_glitch_gap(price, hc):
-                            price = hc
-                            prev_close = hc
-                            glitched = True
-            except Exception:
-                pass
+            if naver_price is None:
+                try:
+                    from bot.price_sanity import quote_glitch_gap
+                    if quote_glitch_gap(price, prev_close):
+                        price = prev_close
+                        glitched = True
+                    # 2차 — price·prev 가 둘 다 같은 미조정 기준이면 1차가 장님
+                    # (KLAC $2,411 vs $2,398 통과). 조정 일봉 종가와 교차.
+                    if not glitched and price:
+                        hist = tk.history(period="5d")
+                        if hist is not None and len(hist) and "Close" in hist:
+                            hc = float(hist["Close"].dropna().iloc[-1])
+                            if hc > 0 and quote_glitch_gap(price, hc):
+                                price = hc
+                                prev_close = hc
+                                glitched = True
+                except Exception:
+                    pass
             f["current_price"] = price
 
             if info is None:
                 try:
-                    info = tk.info or {}
+                    info = tk.info or {}      # EPS/PER/주식수/실적일 — yfinance 유지
                 except Exception:
                     info = {}
 
+            # 시총: 네이버 우선 (KR=원 신뢰 / 해외=price×shares 단위 sanity 통과
+            # 시만 — 네이버 해외 시총 단위 불확실, 원/달러 혼동 방지), 없으면
+            # yfinance (글리치 시 직전종가×주식수 재산출).
             mcap = info.get("marketCap")
             if glitched and mcap:
-                # 시총도 같은 글리치 가격 기반 — 주식수×직전종가로 재산출,
-                # 주식수 부재 시 표기 생략(None)이 $3.15T 노출보다 낫다.
                 shares = info.get("sharesOutstanding")
                 mcap = (shares * prev_close
                         if (shares and prev_close) else None)
+            naver_mcap = nq.get("mcap") if nq else None
+            if naver_mcap and naver_price:
+                if _detect_country(f["ticker"]) == "KR":
+                    mcap = naver_mcap          # 국내 marketValueFullRaw = 원, 신뢰
+                else:
+                    sh = info.get("sharesOutstanding")
+                    implied = naver_price * sh if sh else 0
+                    if implied and 0.5 <= naver_mcap / implied <= 2.0:
+                        mcap = naver_mcap      # 해외: 단위 일치 확인 시만
             f["market_cap"] = mcap
 
             fwd = info.get("forwardEps")

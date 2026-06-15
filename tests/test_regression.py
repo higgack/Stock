@@ -5525,7 +5525,8 @@ class TestFavoritesFastInfoGuard:
         # 게이트 뒤 + rate-limit 시 fast_info_trip — 소스 검증(yfinance import 무거움)
         src = open("bot/market_favorites.py", encoding="utf-8").read()
         assert "_fi_allowed = fast_info_ok() and not yf_paused()" in src
-        assert "if _fi_allowed:" in src
+        # 네이버 우선(2026-06-15): 네이버 가격 없을 때만 fast_info (야후 부하↓)
+        assert "if price is None and _fi_allowed:" in src
         assert "fast_info_trip(\"favorites\")" in src
         assert "_FAV_TTL = 180" in src
 
@@ -5592,6 +5593,32 @@ class TestFavoritesKoreanName:
         src = open("bot/dashboard.py", encoding="utf-8").read()
         assert "(f.name_kr||f.name||f.ticker)" in src, "renderFavs name_kr 미사용"
         assert "(f.name_kr||'') + ' ' + (f.name||'')" in src, "검색 data-name 한·영 누락"
+
+    def test_refresh_uses_naver_price_mcap_name(self, monkeypatch):
+        # 사용자 2026-06-15 '시총·현재가 네이버, 대만 제외' — KR 종목 현재가·시총·
+        # 한글명 모두 네이버 실시간에서. yfinance 가 실패(샌드박스 403)해도 무관.
+        import bot.market_favorites as mf
+        mf._FAV_CACHE = None
+        mf._FAV_CACHE_TS = 0
+        monkeypatch.setattr(mf, "_load", lambda: [
+            {"ticker": "005930.KS", "name": "Samsung", "currency": "KRW"}])
+        monkeypatch.setattr(mf, "_save", lambda x: None)
+        monkeypatch.setattr(mf, "_naver_quote_for", lambda t: {
+            "price": 337000, "mcap": 2_212_900_000_000_000, "name": "삼성전자"})
+        out = mf.get_favorites_with_prices()
+        assert out[0]["current_price"] == 337000          # 네이버 현재가
+        assert out[0]["market_cap"] == 2_212_900_000_000_000  # 네이버 시총(KR=원 신뢰)
+        assert out[0]["name_kr"] == "삼성전자"
+
+    def test_refresh_overseas_mcap_unit_sanity_gate(self, monkeypatch):
+        # 해외 네이버 시총 단위 불확실 → price×shares 와 0.5~2x 일치할 때만 채택.
+        # 단위 불일치(원/달러 혼동 류) 시 네이버 시총 무시(yfinance 폴백 유지).
+        import bot.market_favorites as mf
+        # KR 은 게이트 없이 신뢰, 해외는 sanity 게이트 — 게이트 함수 자체 검증
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        assert '_detect_country(f["ticker"]) == "KR"' in src, "KR 시총 신뢰 분기 누락"
+        assert "0.5 <= naver_mcap / implied <= 2.0" in src, "해외 시총 단위 sanity 누락"
+        assert "naver_price = nq.get(\"price\")" in src, "네이버 가격 우선 미배선"
 
 
 class TestAnalysisCsvExport:
@@ -10019,7 +10046,9 @@ class TestAsiaDashboard20260615:
                 "sector_movers": mv, "us_sector_movers": mv, "jp_sector_movers": mv,
                 "cn_sector_movers": mv, "hk_sector_movers": mv, "tw_sector_movers": mv}
         h = d._render_market_page(data)
-        assert 'href="asia.html">🌏 ASIA' in h          # nav 링크
+        # ASIA 이모지는 홈(Market overview)의 지구본과 구분 (사용자 2026-06-15) — 🏯
+        assert 'href="asia.html">🏯 ASIA' in h          # nav 링크(지구본 아님)
+        assert "🌏 ASIA" not in h                       # 옛 지구본 이모지 제거
         assert "🇯🇵 일본 업종 등락" not in h            # 홈에서 제거
         assert "🇹🇼 대만 업종 등락" not in h
 
