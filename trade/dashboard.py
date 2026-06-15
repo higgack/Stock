@@ -1458,12 +1458,14 @@ function renderSection(title, subtitles, miniCardsHtml, newBadge, headerExtra){
 }
 
 function buildItemsView(filtered){
-  // Group filtered alerts by item; sort sections by the most recent
-  // posted_at of any variant (newest items rise to the top); within
-  // each section sort variants by recency too.
+  // Group filtered alerts by item; **첫 등장 품목(isItemNew)을 맨 위로**
+  // (사용자 2026-06-15), 그 다음 most recent posted_at 순(newest items rise);
+  // within each section sort variants by recency too.
   const byItem={};
   filtered.forEach(a=>{(byItem[a.item]=byItem[a.item]||[]).push(a)});
   const sorted=Object.entries(byItem).sort((x,y)=>{
+    const xNew=isItemNew(x[0]), yNew=isItemNew(y[0]);
+    if(xNew!==yNew)return xNew?-1:1;          // 첫 등장 품목 최상단
     const xMax=x[1].reduce((m,a)=>(a.posted_at||'')>m?a.posted_at:m,'');
     const yMax=y[1].reduce((m,a)=>(a.posted_at||'')>m?a.posted_at:m,'');
     return yMax.localeCompare(xMax)||x[0].localeCompare(y[0]);

@@ -587,6 +587,18 @@ class CardModalPerfTests(unittest.TestCase):
         html = render_html(db)
         self.assertIn("scrollbar-gutter:stable", html)
 
+    def test_items_view_sorts_first_appearance_top(self):
+        # 사용자 2026-06-15 '첫 등장 품목이 품목별에서 맨 위로'. buildItemsView
+        # 정렬이 isItemNew 를 1차 키로 (NEW 먼저), 그 다음 posted_at 최신순.
+        import tempfile
+        from trade.dashboard import render_html
+        from trade.store import open_db
+        d = tempfile.mkdtemp()
+        db = Path(d) / "store.db"
+        open_db(db).close()
+        html = render_html(db)
+        self.assertIn("if(xNew!==yNew)return xNew?-1:1", html)
+
 
 if __name__ == "__main__":
     unittest.main()
