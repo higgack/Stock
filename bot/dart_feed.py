@@ -2919,13 +2919,16 @@ def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
             ("합병비율", ("mg_rt",), "text"),
             ("상대회사", ("mgprt_cmpnm", "cmpcmpnm"), "text"),
         ])]
-    elif "타법인" in t and "양수" in t:
+    elif "타법인" in t and any(k in t for k in ("양수", "취득")):
+        # 양식명이 '타법인주식및출자증권취득결정'(취득)으로도 옴 — dispatch 가
+        # '양수'만 봐 미파싱이던 것(사용자 2026-06-15 --unparsed-audit). 취득≈양수,
+        # 같은 Inh API. 처분도 동일(처분≈양도, Trf).
         specs = [("otcprStkInvscrInhDecsn", [
             ("대상회사", ("iscmp_cmpnm", "cmpnm"), "text"),
             ("양수주식", ("inhstk_cnt", "inh_stk_cnt"), "num"),
             ("양수금액", ("inh_prc", "trf_prc"), "won"),
         ])]
-    elif "타법인" in t and "양도" in t:
+    elif "타법인" in t and any(k in t for k in ("양도", "처분")):
         specs = [("otcprStkInvscrTrfDecsn", [
             ("대상회사", ("iscmp_cmpnm", "cmpnm"), "text"),
             ("양도주식", ("trfstk_cnt", "trf_stk_cnt"), "num"),
