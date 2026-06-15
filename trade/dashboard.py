@@ -1029,6 +1029,24 @@ function whereLabel(a){return [a.region,a.country].filter(Boolean).join(' → ')
 const BY_DEDUP={};
 ALERTS.forEach(a=>{(BY_DEDUP[a.dedup_key]=BY_DEDUP[a.dedup_key]||[]).push(a)});
 
+// 모달 조회용 사전 인덱스 (클릭마다 ALERTS 풀스캔 → O(1) 조회, 사용자 2026-06-15
+// '개별 카드 클릭 너무 느림'). ALERT_BY_ID=클릭 룩업, BY_ITEM=품목별 alerts,
+// COMPOSITE_BY_PART=합산 부품명→합산 alerts (findCompositeLinks/findPeerStocks 의
+// ALERTS.forEach 풀스캔 제거 — 카드 클릭 O(n)→O(소수)).
+const ALERT_BY_ID=new Map();
+const BY_ITEM={};
+const COMPOSITE_BY_PART={};
+ALERTS.forEach(a=>{
+  ALERT_BY_ID.set(a.id,a);
+  (BY_ITEM[a.item]=BY_ITEM[a.item]||[]).push(a);
+  if(a.is_composite){
+    (a.composite_parts||[]).forEach(p=>{
+      const k=(p||'').trim();
+      if(k)(COMPOSITE_BY_PART[k]=COMPOSITE_BY_PART[k]||[]).push(a);
+    });
+  }
+});
+
 function isLatest(a){return LATEST_IDS.has(a.id)}
 
 // Union of stocks across a section's variants, sorted by frequency
@@ -1289,32 +1307,26 @@ function findCompositeLinks(a){
   // for the given alert's item.
   const out={asComposite:[], asPart:[]};
   if(a.is_composite&&a.composite_parts&&a.composite_parts.length){
-    // For each part name, find latest alert with that item name.
+    // 각 부품명의 최신 alert — BY_ITEM 인덱스(전체 ALERTS 스캔 제거).
     a.composite_parts.forEach(part=>{
       const partName=part.trim();
       if(!partName)return;
-      const found=ALERTS.find(x=>isLatest(x)&&x.item===partName);
+      const found=(BY_ITEM[partName]||[]).find(isLatest);
       if(found)out.asComposite.push(found);
     });
   }
-  // Look for any composite alert whose composite_parts contain THIS item.
-  ALERTS.forEach(x=>{
-    if(!isLatest(x))return;
-    if(!x.is_composite)return;
-    if((x.composite_parts||[]).map(p=>p.trim()).includes(a.item)){
-      out.asPart.push(x);
-    }
-  });
+  // 이 품목을 부품으로 갖는 합산 alert — COMPOSITE_BY_PART 인덱스(풀스캔 제거).
+  (COMPOSITE_BY_PART[a.item]||[]).forEach(x=>{ if(isLatest(x))out.asPart.push(x); });
   return out;
 }
 
 function findPeerStocks(a){
   // Other companies mentioned on alerts of the SAME item (any
   // region/country). Dedup, drop the alert's own stocks.
+  // 같은 품목 alerts 만 — BY_ITEM 인덱스(전체 ALERTS 스캔 제거).
   const own=new Set(a.stocks||[]);
   const peers={};
-  ALERTS.forEach(x=>{
-    if(x.item!==a.item)return;
+  (BY_ITEM[a.item]||[]).forEach(x=>{
     if(x.id===a.id)return;
     (x.stocks||[]).forEach(s=>{
       if(own.has(s))return;
@@ -1754,7 +1766,7 @@ document.addEventListener('click',e=>{
   const link=e.target.closest('.link-chip');
   if(link&&link.dataset.id){
     const id=parseInt(link.dataset.id,10);
-    const a=ALERTS.find(x=>x.id===id);
+    const a=ALERT_BY_ID.get(id);
     if(a){document.getElementById('modal-body').scrollTop=0;showModal(a)}
     return;
   }
@@ -1776,7 +1788,7 @@ document.addEventListener('click',e=>{
   const tool=e.target.closest('.tool-btn');
   if(tool&&tool.dataset.tool){
     const id=parseInt(tool.dataset.id,10);
-    const a=ALERTS.find(x=>x.id===id);
+    const a=ALERT_BY_ID.get(id);
     if(!a)return;
     if(tool.dataset.tool==='copy-url'){
       copyToClipboard(alertShareUrl(a)).then(ok=>flashTool(tool,ok?'복사됨 ✓':'복사 실패'));
@@ -1792,7 +1804,7 @@ document.addEventListener('click',e=>{
   const card=e.target.closest('.mini-card');
   if(card&&card.dataset.id){
     const id=parseInt(card.dataset.id,10);
-    const a=ALERTS.find(x=>x.id===id);
+    const a=ALERT_BY_ID.get(id);
     if(a){document.getElementById('modal-body').scrollTop=0;showModal(a)}
     return;
   }
@@ -1800,7 +1812,7 @@ document.addEventListener('click',e=>{
   const cell=e.target.closest('.matrix-table .cell');
   if(cell&&cell.dataset.id){
     const id=parseInt(cell.dataset.id,10);
-    const a=ALERTS.find(x=>x.id===id);
+    const a=ALERT_BY_ID.get(id);
     if(a){document.getElementById('modal-body').scrollTop=0;showModal(a)}
     return;
   }
@@ -1810,7 +1822,7 @@ document.addEventListener('click',e=>{
   const sib=e.target.closest('.modal-card.secondary');
   if(sib&&sib.dataset.id){
     const id=parseInt(sib.dataset.id,10);
-    const a=ALERTS.find(x=>x.id===id);
+    const a=ALERT_BY_ID.get(id);
     if(a){document.getElementById('modal-body').scrollTop=0;showModal(a)}
     return;
   }
@@ -1825,7 +1837,7 @@ function handleHashDeepLink(){
   const m=location.hash.match(/^#a\/(\d+)$/);
   if(!m)return;
   const id=parseInt(m[1],10);
-  const a=ALERTS.find(x=>x.id===id);
+  const a=ALERT_BY_ID.get(id);
   if(a)showModal(a);
 }
 window.addEventListener('hashchange',handleHashDeepLink);
