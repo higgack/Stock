@@ -27,6 +27,9 @@ HL_SORT_JS = """
 <style>
 .hl-table th.srt{cursor:pointer;user-select:none;white-space:nowrap}
 .hl-table td.ind{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted,#888);font-size:12px}
+/* 비-KR 종목명: 티커 아래 한글명 별도 줄(.nk). 괄호 인라인이 좁은 셀에서 단어
+   중간 줄바꿈돼 안 보이던 것 해소(사용자 2026-06-15). 작게·muted·단어 보존. */
+.hl-table td.nm .nk{display:block;font-size:11.5px;color:var(--muted,#888);font-weight:400;word-break:keep-all;line-height:1.25;margin-top:1px}
 /* KR/CJK(name_only) 종목명 줄바꿈 절대 금지 — 상한가 등 다컬럼에서 '원익/IPS'
    처럼 깨지던 것 방지(사용자 2026-06-14 재요청 — 두 번째). nowrap + keep-all +
    !important 로 어떤 상위/캐시 규칙도 못 덮게. td 와 내부 a 둘 다 명시. min-width
@@ -160,7 +163,10 @@ def stock_panel(title: str, items: list, tid: str, market: str,
         if name_only:
             label = nm or tk
         else:
-            label = f'{tk}<span class="ts">({nm})</span>' if nm and nm != tk else tk
+            # 비-KR: 티커(1줄) + 한글명(2줄, .nk) — "TICKER (한글명)" 인라인이 좁은
+            # 셀에서 단어 중간 줄바꿈돼 안 보이던 것 해소(사용자 2026-06-15, 한국제외
+            # 전 시장·전 자식대시보드). 괄호 제거·줄 분리·keep-all 로 가독성.
+            label = f'{tk}<span class="nk">{nm}</span>' if nm and nm != tk else tk
         price, pct = it.get("price"), it.get("pct")
         vol, mcap = it.get("vol"), it.get("mcap")
         ind = _html.escape(str(it.get("ind") or ""))

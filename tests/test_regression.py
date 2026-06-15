@@ -8144,7 +8144,10 @@ class TestIntlKoreanNames:
         h = stock_panel("x", [{"ticker": "6758.T", "name": "소니 그룹",
                         "price": 13000, "pct": 1.0, "vol": 100,
                         "mcap": 180000, "ind": "Electronics"}], "t", "JP")
-        assert "6758.T" in h and "소니 그룹" in h and "(소니 그룹)" in h
+        # 정책 변경(사용자 2026-06-15): 티커 + 한글명 별도 줄(.nk) — 괄호 인라인이
+        # 좁은 셀에서 단어 중간 줄바꿈되던 것 해소. 한국제외 전 시장.
+        assert "6758.T" in h and '<span class="nk">소니 그룹</span>' in h
+        assert "(소니 그룹)" not in h
 
 
 class TestKisKrNewHighlow:
@@ -9478,8 +9481,32 @@ class TestMacroChartReadable:
         )
         assert svg.startswith("<svg") and svg.endswith("</svg>")
         sizes = [int(x) for x in _re.findall(r'font-size="(\d+)"', svg)]
-        assert sizes and min(sizes) >= 16        # 축 숫자/날짜 충분히 큼(원본 9px 회귀 차단)
+        # 원본 9px(안 보임) 회귀 차단 + 18px(너무 큼) 회귀 차단 — 사용자 2026-06-15
+        # '9 너무 작아'→'18 너무 커' → 13px 적정.
+        assert sizes and 12 <= min(sizes) <= 16
         assert svg.count("<text") >= 8           # 좌·우 눈금 + x라벨 정상 emit
+
+    def test_rates_fx_uses_kr_10y(self):
+        # 금리·환율 비교: 미국 10Y(시장금리)엔 한국도 국고채 10년(시장금리)이
+        # like-for-like — 기준금리(정책금리) mismatch 대체(사용자 2026-06-15 '미국
+        # 10년 적절한지 조사'). ECOS kr10y 부재 시 기준금리 폴백 + 라벨도 폴백.
+        from bot.macro_snapshot import _build_charts
+        rf = _build_charts({"us_10y": [4.4, 4.1, 4.5], "kr_10y": [3.1, 3.2, 3.3],
+                            "kr_rate": [2.5, 2.5, 2.5], "usdkrw": [1495, 1520, 1510]}, 18.0)["rates_fx"]
+        assert rf["kr_10y"] == [3.1, 3.2, 3.3] and rf["kr_label"] == "한국 국고채 10년"
+        rf2 = _build_charts({"us_10y": [4, 4, 4], "kr_rate": [2.5, 2.5, 2.5],
+                             "usdkrw": [1490, 1500, 1510]}, 18.0)["rates_fx"]
+        assert rf2["kr_label"] == "한국 기준금리"     # 10Y 부재 → 폴백 라벨
+
+    def test_nonkr_name_two_line(self):
+        # 비-KR 종목명: 티커 아래 한글명 별도 줄(.nk) — "TICKER (한글)" 인라인이
+        # 좁은 셀에서 단어 중간 줄바꿈되던 것 해소(사용자 2026-06-15, 한국제외 전 시장).
+        from bot.highlow_render import stock_panel, HL_SORT_JS
+        html = stock_panel("T", [{"ticker": "LRCX", "name": "램 리서치",
+                                  "price": 366.81, "pct": 1.18}], "x", "US")
+        assert '<span class="nk">램 리서치</span>' in html      # 한글명 별도 줄
+        assert 'class="ts">(' not in html.split("tbody")[1]      # 옛 괄호 인라인 제거
+        assert ".hl-table td.nm .nk{display:block" in HL_SORT_JS  # 줄 분리 CSS
 
 
 class TestWorldTwLiveQuote:

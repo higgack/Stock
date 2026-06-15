@@ -578,14 +578,20 @@ def _build_charts(spark: dict[str, list[float]],
 
     # rates_fx
     us10 = spark.get("us_10y", [])
-    krr = spark.get("kr_rate", [])
+    kr10 = spark.get("kr_10y", [])
+    # 미국 10Y(시장금리)와 비교는 한국도 시장금리(국고채 10년)가 like-for-like —
+    # 양국 10Y 격차가 원/달러를 설명. 기준금리(정책금리·계단형)는 mismatch라 폴백만
+    # (사용자 2026-06-15 '미국 10년 적절한지 조사'). ECOS kr10y 부재 시 기준금리.
+    krr = kr10 if kr10 else spark.get("kr_rate", [])
+    kr_label = "한국 국고채 10년" if kr10 else "한국 기준금리"
     fx = spark.get("usdkrw", [])
     n = _align([us10, krr, fx])
     if n >= 2:
         charts["rates_fx"] = {
             "labels": _month_labels(n),
             "us_10y": us10[-n:],
-            "kr_rate": krr[-n:],
+            "kr_10y": krr[-n:],
+            "kr_label": kr_label,
             "usdkrw": fx[-n:],
         }
 

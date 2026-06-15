@@ -12002,9 +12002,9 @@ def _svg_line_chart(labels: list, series: list) -> str:
     if not labels or not series:
         return ""
     has_right = any(s.get("axis") == "R" for s in series)
-    W, H = 520.0, 256.0
-    padL, padT, padB = 54.0, 14.0, 34.0
-    padR = 62.0 if has_right else 22.0
+    W, H = 520.0, 244.0
+    padL, padT, padB = 50.0, 12.0, 30.0
+    padR = 58.0 if has_right else 20.0
     plotW, plotH = W - padL - padR, H - padT - padB
 
     def _range(axis: str):
@@ -12045,7 +12045,7 @@ def _svg_line_chart(labels: list, series: list) -> str:
         )
         lv = lr[1] - (k / 4) * (lr[1] - lr[0])
         parts.append(
-            f'<text x="{padL - 7:.0f}" y="{gy + 5:.1f}" font-size="18" '
+            f'<text x="{padL - 7:.0f}" y="{gy + 5:.1f}" font-size="13" '
             f'fill="currentColor" text-anchor="end">{_ax_fmt(lv)}</text>'
         )
     # right axis ticks
@@ -12054,7 +12054,7 @@ def _svg_line_chart(labels: list, series: list) -> str:
             gy = padT + (k / 4) * plotH
             rv = rr[1] - (k / 4) * (rr[1] - rr[0])
             parts.append(
-                f'<text x="{W - padR + 7:.0f}" y="{gy + 5:.1f}" font-size="18" '
+                f'<text x="{W - padR + 7:.0f}" y="{gy + 5:.1f}" font-size="13" '
                 f'fill="currentColor" text-anchor="start">{_ax_fmt(rv)}</text>'
             )
     # x labels (~6 evenly)
@@ -12062,7 +12062,7 @@ def _svg_line_chart(labels: list, series: list) -> str:
     for i in range(0, n, step):
         lab = _html.escape(str(labels[i])) if i < len(labels) else ""
         parts.append(
-            f'<text x="{_x(i):.1f}" y="{H - 12:.0f}" font-size="18" '
+            f'<text x="{_x(i):.1f}" y="{H - 12:.0f}" font-size="13" '
             f'fill="currentColor" text-anchor="middle">{lab}</text>'
         )
     # series polylines
@@ -12370,14 +12370,15 @@ def _render_macro_snapshot(macro: dict) -> str:
     cards: list[str] = []
     rf = charts.get("rates_fx")
     if rf:
+        _krlbl = rf.get("kr_label", "한국 국고채 10년")
         svg = _svg_line_chart(rf["labels"], [
             {"name": "미국 10Y", "color": "#42a5f5", "data": rf["us_10y"], "axis": "L"},
-            {"name": "한국 기준금리", "color": "#26c6da", "data": rf["kr_rate"], "axis": "L"},
+            {"name": _krlbl, "color": "#26c6da", "data": rf.get("kr_10y") or rf.get("kr_rate", []), "axis": "L"},
             {"name": "원/달러", "color": "#ab47bc", "data": rf["usdkrw"], "axis": "R"},
         ])
         cards.append(_chart_card(
             "금리·환율 추이",
-            [("미국 10Y (좌)", "#42a5f5"), ("한국 기준금리 (좌)", "#26c6da"), ("원/달러 (우)", "#ab47bc")],
+            [("미국 10Y (좌)", "#42a5f5"), (f"{_krlbl} (좌)", "#26c6da"), ("원/달러 (우)", "#ab47bc")],
             svg, "출처: FRED · 한국은행 · yfinance",
         ))
     inf = charts.get("inflation")
