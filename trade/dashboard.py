@@ -1637,12 +1637,33 @@ function renderHeaderMeta(){
   }
 }
 
+// --- lazy view rendering (2026-06-15) ---
+// 옛 render() 는 3개 클라이언트 뷰(품목별/회사별/매트릭스)를 매 필터·검색
+// 마다 innerHTML 로 전부 빌드 → 카드 ~1054개 × 3 = DOM 3000+ 노드를 항상
+// 보유했다. 모달 클릭(showModal 의 innerHTML)·검색이 그 무게에 깔려 느렸음
+// (사용자 2026-06-15 '카드 클릭 너무 오래'). 이제 활성 탭만 빌드하고 나머지
+// 두 뷰는 '더티' 표시 후 탭 전환 시 빌드 → DOM 1×1054 로 1/3. CSV·모달은
+// ALERTS/ALERT_BY_ID(데이터)를 직접 읽어 DOM 무관이라 lazy 해도 안전.
+const _CLIENT_VIEWS={items:buildItemsView,companies:buildCompaniesView,matrix:buildMatrixView};
+let _viewDirty={items:true,companies:true,matrix:true};
+let _lastFiltered=[];
+function _activeTab(){
+  const a=document.querySelector('.tab.active');
+  return a?a.dataset.tab:'items';
+}
+function _buildView(name){
+  const fn=_CLIENT_VIEWS[name];
+  if(!fn)return;                       // industry/heatmap = 서버 렌더, 클라 빌드 없음
+  const el=document.getElementById(name+'-view');
+  if(el)el.innerHTML=fn(_lastFiltered);
+  _viewDirty[name]=false;
+}
 function render(){
-  const filtered=ALERTS.filter(matches);
-  document.getElementById('visible-count').textContent=filtered.length;
-  document.getElementById('items-view').innerHTML=buildItemsView(filtered);
-  document.getElementById('companies-view').innerHTML=buildCompaniesView(filtered);
-  document.getElementById('matrix-view').innerHTML=buildMatrixView(filtered);
+  _lastFiltered=ALERTS.filter(matches);
+  document.getElementById('visible-count').textContent=_lastFiltered.length;
+  // 클라 3뷰 전부 더티 표시 → 활성 뷰만 즉시 빌드, 나머지는 탭 전환 때.
+  _viewDirty={items:true,companies:true,matrix:true};
+  _buildView(_activeTab());                           // industry/heatmap 이면 no-op (정상)
   filterIndustryCards();                              // 산업트렌드 탭도 검색 (2026-06-12)
   if(window.hmFilter) window.hmFilter(state.q||'');   // 히트맵 탭도 검색
   renderHeaderMeta();
@@ -1725,7 +1746,9 @@ document.querySelectorAll('.tab').forEach(btn=>{
     document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
     document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
     btn.classList.add('active');
-    document.getElementById(btn.dataset.tab+'-view').classList.add('active');
+    const tab=btn.dataset.tab;
+    document.getElementById(tab+'-view').classList.add('active');
+    if(_CLIENT_VIEWS[tab]&&_viewDirty[tab])_buildView(tab);   // lazy: 더티면 지금 빌드
   });
 });
 document.querySelectorAll('.chip').forEach(chip=>{

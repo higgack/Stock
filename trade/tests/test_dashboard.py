@@ -599,6 +599,36 @@ class CardModalPerfTests(unittest.TestCase):
         html = render_html(db)
         self.assertIn("if(xNew!==yNew)return xNew?-1:1", html)
 
+    def test_lazy_render_only_active_view_built(self):
+        # 사용자 2026-06-15 '카드 클릭 안 빨라졌어'. 옛 render() 는 3 클라이언트
+        # 뷰를 매번 innerHTML 로 전부 빌드(1054×3 DOM) → lazy 로 활성 탭만
+        # 빌드, 나머지는 더티 표시 후 탭 전환 때 빌드. 배선 마커를 가드:
+        #  (a) render() 가 활성 탭만 빌드 (_buildView(_activeTab()))
+        #  (b) 3 뷰를 무조건 빌드하던 옛 직접 innerHTML 줄이 사라짐
+        #  (c) 탭 핸들러가 더티 클라이언트 뷰를 그때 빌드
+        import tempfile
+        from trade.dashboard import render_html
+        from trade.store import open_db
+        d = tempfile.mkdtemp()
+        db = Path(d) / "store.db"
+        open_db(db).close()
+        html = render_html(db)
+        # (a) render() builds only the active view
+        self.assertIn("_buildView(_activeTab())", html)
+        self.assertIn("_viewDirty", html)
+        self.assertIn("_CLIENT_VIEWS", html)
+        # (b) the old unconditional 3-view build is gone
+        self.assertNotIn(
+            "document.getElementById('companies-view').innerHTML=buildCompaniesView(filtered)",
+            html,
+        )
+        self.assertNotIn(
+            "document.getElementById('matrix-view').innerHTML=buildMatrixView(filtered)",
+            html,
+        )
+        # (c) tab-switch lazily builds a dirty client view
+        self.assertIn("if(_CLIENT_VIEWS[tab]&&_viewDirty[tab])_buildView(tab)", html)
+
 
 if __name__ == "__main__":
     unittest.main()
