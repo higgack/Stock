@@ -2057,6 +2057,7 @@ def _render_index(records: list[dict]) -> str:
     # 도메인 목록은 제거(사용자 2026-06-10) — Screener 페이지 nav 에서 접근.
     errors_link = (
         ' · <a href="market.html">🌍 홈</a>'
+        ' · <a href="asia.html">🌏 ASIA</a>'   # 홈 옆 ASIA — 여기(NOAH 종목분석)만 (사용자 2026-06-15)
         ' · <a href="dart_feed.html">📋 DART 공시</a>'
         ' · <a href="screener.html">📊 Screener</a>'
         ' · <a href="paper.html">🔔 워치리스트</a>'
@@ -8540,7 +8541,6 @@ def _render_realestate_page(runs: list[dict]) -> str:
 <div class="wrap">
   <div class="nav">
     <a href="market.html">🌍 홈</a>
-    · <a href="index.html">🦉 NOAH 종목분석</a>
   </div>
   <h1>🏠 부동산 — Archive</h1>
   <p class="sub">아파트 실거래가(MOLIT) 주간 브리프 + 청약홈 분양 피드 · ticker·5거래일과 별개 · 공공데이터 관찰(투자 권유 아님)</p>
@@ -13365,6 +13365,7 @@ def _render_asia_page(data: dict) -> str:
     parts.append(
         '\n<div class="wrap">\n  <div class="nav">\n'
         '    <a href="market.html">🌍 홈</a>\n'
+        '    &middot; <a href="index.html">🦉 NOAH 종목분석</a>\n'
         '  </div>\n  <h1>🌏 아시아 업종 등락</h1>\n'
         '  <p class="sub">일본·중국·홍콩·대만 업종 등락 — 홈과 동일 소스·30초 자동 갱신</p>\n'
         '  <div id="live-sections">')

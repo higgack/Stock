@@ -9908,10 +9908,10 @@ class TestAsiaDashboard20260615:
         assert all(x in a for x in ["🇯🇵 일본", "🇨🇳 중국", "🇭🇰 홍콩", "🇹🇼 대만"])
         assert "fetch('asia.html'" in a            # 라이브 틱 self-fetch
         assert "noah_asia_scroll" in a             # 진입 위치 복원
-        # ASIA 는 홈이랑만 연결 (사용자 2026-06-15) — nav 에 홈만, 분석 peers 없음
+        # ASIA nav = 홈 + NOAH 종목분석만 (사용자 2026-06-15) — 그 외 peers 없음
         _nav = a[a.index('<div class="nav">'):a.index("</div>", a.index('<div class="nav">'))]
-        assert "market.html" in _nav
-        assert "index.html" not in _nav and "screener.html" not in _nav
+        assert "market.html" in _nav and "index.html" in _nav   # 홈 + NOAH 종목분석
+        assert "screener.html" not in _nav and "dart_feed.html" not in _nav
         assert a.startswith("<!doctype html>") and "{{" not in a
 
     def test_home_drops_asia_keeps_link(self):
