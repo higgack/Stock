@@ -1308,8 +1308,9 @@ class TestMarketCalendar:
 
 
 class TestKisRealtimeChartPrice:
-    """fix(2026-06-05): 차트 라이브 현재가가 KR 은 KIS 실시간(2분 캐시)을
-    우선 — yfinance fast_info(~15분 지연·KR EOD) 약점 보완. 실패 시 yfinance 폴백."""
+    """차트 라이브 현재가 정책. (2026-06-05) KR 은 KIS 우선이었으나 (2026-06-15
+    사용자 '한국도 네이버, KIS 말고') → **네이버 국내 실시간** 우선으로 변경.
+    kis_client.get_realtime_price 자체 테스트는 유지(분봉·수급에 여전히 사용)."""
 
     def test_kis_get_realtime_price(self, monkeypatch):
         import bot.kis_client as k
@@ -1323,36 +1324,33 @@ class TestKisRealtimeChartPrice:
         monkeypatch.setattr(k, "_ticker_to_code", lambda t: None)
         assert k.KisClient().get_realtime_price("AAPL") is None
 
-    def test_live_last_price_kr_prefers_kis(self, monkeypatch):
+    def test_live_last_price_kr_prefers_naver(self, monkeypatch):
+        # 정책 변경(사용자 2026-06-15 '한국도 네이버, KIS 말고'): KR 차트 라이브
+        # 현재가는 네이버 국내 실시간 우선(KIS 아님).
         import bot.chart_data as cd
-
-        class _Kis:
-            def get_realtime_price(self, ticker):
-                return 103   # 직전 종가 102 근처 → 검증 통과
-        monkeypatch.setattr("bot.kis_client.get_kis", lambda: _Kis())
-        # t 는 KR-valid 경로에서 안 쓰임 → None 전달해도 됨.
+        import bot.naver_quote as nq
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: {"price": 103})  # 직전 102 근처
         out = cd._live_last_price(None, {"close": [100, 101, 102]}, 0, "005930.KS")
-        assert out == 103, "KR 라이브 현재가가 KIS 우선이 아님"
+        assert out == 103, "KR 라이브 현재가가 네이버 우선이 아님"
 
     def test_live_last_price_falls_back_to_yfinance(self, monkeypatch):
         import bot.chart_data as cd
-
-        class _KisNone:
-            def get_realtime_price(self, ticker):
-                return None   # KIS 미가용 → yfinance 폴백
-        monkeypatch.setattr("bot.kis_client.get_kis", lambda: _KisNone())
+        import bot.naver_quote as nq
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: None)   # 네이버 미가용 → yfinance
 
         class _FI:
             last_price = 104
         class _T:
             fast_info = _FI()
         out = cd._live_last_price(_T(), {"close": [100, 101, 102]}, 0, "005930.KS")
-        assert out == 104, "KIS None 일 때 yfinance 폴백 실패"
+        assert out == 104, "네이버 None 일 때 yfinance 폴백 실패"
 
     def test_wiring_present(self):
         assert "get_realtime_price" in open("bot/kis_client.py", encoding="utf-8").read()
         cd = open("bot/chart_data.py", encoding="utf-8").read()
-        assert "get_realtime_price" in cd and 'market == "KR"' in cd, "차트 KR→KIS 배선 누락"
+        # 정책: KR→네이버(fetch_kr_quote) · 비-KR→worldstock/TWSE (KIS 아님).
+        assert "fetch_kr_quote" in cd and 'market == "KR"' in cd, "차트 KR→네이버 배선 누락"
+        assert "fetch_world_quote" in cd and "fetch_tw_quote" in cd, "비-KR 라이브 배선 누락"
 
 
 class TestExactPriceLimits:
@@ -9482,3 +9480,57 @@ class TestMacroChartReadable:
         sizes = [int(x) for x in _re.findall(r'font-size="(\d+)"', svg)]
         assert sizes and min(sizes) >= 16        # 축 숫자/날짜 충분히 큼(원본 9px 회귀 차단)
         assert svg.count("<text") >= 8           # 좌·우 눈금 + x라벨 정상 emit
+
+
+class TestWorldTwLiveQuote:
+    """비-KR 상세/차트 현재가 라이브 (사용자 2026-06-15 '다 네이버, 한국도 네이버
+    KIS 말고'). US/JP/HK/CN=네이버 해외(worldstock, 국내와 동일 필드→_parse_quote
+    재사용) · TW=대만거래소(TWSE) 공식 MIS. KR 가격경로 KIS 제거."""
+
+    def test_world_reuters_candidates(self):
+        from bot.world_quote import _candidates
+        assert _candidates("AAPL") == ["AAPL.O", "AAPL.N"]   # US NASDAQ→NYSE
+        assert _candidates("7203.T") == ["7203.T"]            # JP suffix 그대로
+        assert _candidates("600519.SS") == ["600519.SS"]      # CN
+        hk = _candidates("0700.HK")
+        assert hk[0] == "0700.HK" and all(c.endswith(".HK") for c in hk)
+        assert _candidates("005930.KS") == [] and _candidates("2330.TW") == []  # KR·TW 제외
+
+    def test_worldstock_parse_reuses_naver(self):
+        # 해외 worldstock 필드 = 국내와 동일(2026-06-15 VM: AAPL.O) → _parse_quote 재사용
+        from bot.naver_quote import _parse_quote
+        q = _parse_quote({"closePriceRaw": 294.93, "fluctuationsRatioRaw": 1.30,
+                          "compareToPreviousPrice": {"code": "2"},
+                          "marketValueFullRaw": 4331668468300})
+        assert q["price"] == 294.93 and abs(q["pct"] - 1.30) < 1e-9
+        assert q["mcap"] == 4331668468300
+
+    def test_tw_parse(self):
+        from bot.tw_quote import _parse_tw
+        t = _parse_tw({"z": "2375.0000", "y": "2310.0000", "o": "2360.0000",
+                       "h": "2375.0000", "l": "2345.0000", "v": "25410"})
+        assert t["price"] == 2375.0 and t["volume"] == 25410.0
+        assert abs(t["pct"] - ((2375 / 2310 - 1) * 100)) < 1e-6      # +2.81%
+        assert _parse_tw({"z": "-", "pz": "2370.0", "y": "2310"})["price"] == 2370.0  # 체결없음→pz
+        assert _parse_tw({"z": "-", "y": "2310"}) is None            # 가격 전무
+
+    def test_bad_input_no_network(self):
+        from bot.world_quote import fetch_world_quote
+        from bot.tw_quote import fetch_tw_quote
+        assert fetch_world_quote("") is None
+        assert fetch_tw_quote("AAPL") is None       # 비숫자 → 네트워크 안 탐
+        assert fetch_tw_quote("") is None
+
+    def test_wired_card_and_chart(self):
+        # 배선 E2E + KIS 말고: build_live_quote(카드)·_live_last_price(차트)가
+        # world/tw quote 를 타고, KR 가격경로엔 KIS 없음(사용자 'KIS 말고').
+        import re
+        dh = open("bot/dashboard.py", encoding="utf-8").read()
+        m = re.search(r"def build_live_quote\(.*?\n(?=def )", dh, re.DOTALL).group(0)
+        assert "fetch_world_quote" in m and "fetch_tw_quote" in m
+        assert "fetch_kr_quote" in m                 # KR 은 네이버
+        assert "kis_client" not in m                 # KR 가격경로 KIS 제거
+        cd = open("bot/chart_data.py", encoding="utf-8").read()
+        llp = re.search(r"def _live_last_price\(.*?\n(?=def )", cd, re.DOTALL).group(0)
+        assert "fetch_world_quote" in llp and "fetch_tw_quote" in llp
+        assert "fetch_kr_quote" in llp and "kis_client" not in llp   # 차트도 KIS 말고

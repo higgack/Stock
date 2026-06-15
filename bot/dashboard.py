@@ -4029,11 +4029,9 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     source, delayed = "yfinance", True
 
     if is_kr:
-        # Naver 실시간 — 키 불필요·VM IP 차단 없음·장중 라이브. yfinance 의 KR
-        # 시세는 EOD 라 장중엔 직전 거래일 종가(예: 월요일 장중에 금요일 종가)를
-        # 줘서 상세가 stale 했음(사용자 2026-06-15 'NXT 클릭→금요일종가', KIS 키
-        # 부재로 yfinance 폴백). NXT·신고저 등 다른 surface 가 쓰는 Naver 와 동일
-        # 소스로 채워 키·IP차단 무관하게 상세도 라이브가 되게 한다.
+        # KR 현재가·시총 = Naver 국내 실시간 (키 불필요·VM 차단 없음·장중 라이브).
+        # 사용자 2026-06-15 '한국도 네이버로, KIS 말고' — 상세/차트 가격에서 KIS
+        # 의존 제거(Naver 만). PER/PBR/EPS/52주 는 yfinance .info(vals) 사용.
         try:
             from bot.naver_quote import fetch_kr_quote
             nq = fetch_kr_quote(ticker)
@@ -4044,30 +4042,27 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
                     mcap = nq["mcap"]
         except Exception as exc:
             log.debug("build_live_quote: Naver KR quote skipped for %s: %s", ticker, exc)
-        # KIS — 키 있으면 공식 KRX 피드로 현재가 override + PER / PBR / EPS / BPS /
-        # 시가총액 / 52주 보강(2분 캐시). 키 부재 시 위 Naver 라이브 유지.
+    else:
+        # 비-KR 현재가·시총 = 시장별 라이브(사용자 2026-06-15 '다 네이버'): US/JP/HK/
+        # CN → 네이버 해외(worldstock), TW → 대만거래소(TWSE) 공식. 키 불필요·VM
+        # 차단 없음. 실패/미지원 시장은 아래 yfinance 폴백 유지.
         try:
-            from bot.kis_client import get_kis
-            kc = get_kis()
-            cur = kc.get_current_price(ticker) or {}
-            rt = kc.get_realtime_price(ticker)
-            kis_price = rt or cur.get("price")
-            if kis_price:
-                price = kis_price
-                source, delayed = "KIS 실시간", False
-            for src_k, dst_k in (("per", "trailingPE"), ("pbr", "priceToBook"),
-                                 ("eps", "trailingEps"), ("bps", "bookValue")):
-                v = cur.get(src_k)
-                if v:  # KIS sends 0 for unknown → keep yfinance value
-                    vals[dst_k] = v
-            if cur.get("market_cap"):
-                mcap = cur["market_cap"]
-            if cur.get("high_52w"):
-                vals["fiftyTwoWeekHigh"] = cur["high_52w"]
-            if cur.get("low_52w"):
-                vals["fiftyTwoWeekLow"] = cur["low_52w"]
+            from bot.market import detect_market
+            _mkt = detect_market(ticker)
+            wq = None
+            if _mkt == "TW":
+                from bot.tw_quote import fetch_tw_quote
+                wq = fetch_tw_quote(ticker)
+            elif _mkt in ("US", "JP", "HK", "CN_A"):
+                from bot.world_quote import fetch_world_quote
+                wq = fetch_world_quote(ticker)
+            if wq and wq.get("price"):
+                price = wq["price"]
+                source, delayed = wq.get("source", "실시간"), False
+                if wq.get("mcap"):
+                    mcap = wq["mcap"]
         except Exception as exc:
-            log.debug("build_live_quote: KIS override skipped for %s: %s", ticker, exc)
+            log.debug("build_live_quote: world/tw quote skipped for %s: %s", ticker, exc)
 
     if not price:
         # 야후 .info(+KR KIS) 둘 다 비면 history(관대 chart API)로 현재가 폴백 —
