@@ -4007,6 +4007,27 @@ class TestDartFeedBackfill:
         assert m._classify_report("단일판매ㆍ공급계약체결") == "계약"
         assert m._classify_report("현금ㆍ현물배당결정") == "배당"
 
+    def test_unparsed_audit_counts_real_unparsed(self, tmp_path, monkeypatch):
+        # 사용자 2026-06-15 '미파싱 쌓임' — unparsed_audit 가 아카이브의 **진짜
+        # 미파싱**(파싱대상·detail 없음·intended-freeform 제외)만 report_nm 분포로
+        # 집계(대시보드 ⚠️ 칩과 동일 판정). 파서 추가 진단용.
+        m = self._load(tmp_path, monkeypatch)
+        arch = {"2026-06-15": [
+            {"category": "계약", "report_nm": "단일판매ㆍ공급계약체결", "detail": [],
+             "url": "u1", "corp_code": "C", "stock_code": "000001"},
+            {"category": "계약", "report_nm": "단일판매ㆍ공급계약체결",
+             "detail": ["계약금액: 100억"], "url": "u2", "corp_code": "C",
+             "stock_code": "000001"},
+            {"category": "기타", "report_nm": "주주총회소집공고", "detail": [],
+             "url": "u3", "corp_code": "C", "stock_code": "000003"},
+        ]}
+        monkeypatch.setattr(m, "load_all_archives", lambda days_back: arch)
+        rep = m.unparsed_audit(7)
+        assert rep["total"] == 1                                  # detail 없는 계약만
+        assert rep["dist"].get("단일판매ㆍ공급계약체결") == 1
+        assert "주주총회소집공고" not in rep["dist"]               # 제목완결=파싱대상 아님
+        assert rep["samples"].get("단일판매ㆍ공급계약체결") == "u1"
+
     def test_owner_share_change_form_classified_and_routed(self, tmp_path, monkeypatch):
         # 최대주주등소유주식변동신고서(공정거래법, 라이브 2026-06-13 5예시) —
         # 지분공시 분류 + 파싱대상 + _major_holding_change_lines 라우팅 + 고빈도

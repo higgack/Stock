@@ -3126,6 +3126,33 @@ def coverage_audit(days_back: int = 2, max_pages: int = 80) -> dict:
             "dropped_other": dropped_other}
 
 
+def unparsed_audit(days_back: int = 7) -> dict:
+    """아카이브의 **진짜 미파싱**(is_parse_target 인데 의미있는 detail 부재 +
+    intended-freeform 제외 — 대시보드 ⚠️ 미파싱 칩과 **동일 판정**) report_nm
+    분포 + 샘플 url. '어느 양식이 미파싱인지' 진단해 전용 파서를 추가하기 위함
+    (사용자 2026-06-15 '미파싱 쌓임 — 다시 보고 파싱정리'). coverage_audit 은
+    '드롭'만 보여줘 미파싱(수집·파싱대상이나 detail 없음)은 안 보였음.
+    VM 에서: .venv/bin/python -m bot.dart_feed --unparsed-audit [days]."""
+    by_date = load_all_archives(days_back=days_back)
+    dist: dict[str, int] = {}
+    samples: dict[str, str] = {}      # report_nm → 원문 url (파서 작성 참조)
+    total = 0
+    for _ds, items in by_date.items():
+        for it in items:
+            meaningful = [l for l in (it.get("detail") or [])
+                          if not str(l).startswith("주요사업:")
+                          and "시가총액" not in str(l)]
+            if not (is_parse_target(it) and not meaningful):
+                continue
+            if intended_freeform_unparsed(it.get("report_nm", "")):
+                continue              # 의도된 미파싱(noparse — freeform/첨부정정) 제외
+            total += 1
+            key = _norm_report_nm(it.get("report_nm", ""))
+            dist[key] = dist.get(key, 0) + 1
+            samples.setdefault(key, it.get("url", ""))
+    return {"total": total, "dist": dist, "samples": samples}
+
+
 def fetch_market_disclosures(target_date: date | None = None,
                              max_pages: int = 20,
                              days_back: int = 3,
@@ -4365,6 +4392,21 @@ if __name__ == "__main__":
         print("[coverage] 드롭 — 상장사 '기타' 제목 분포 (보강 후보 — 실제 기업 사건):")
         for k, v in sorted(rep["dropped_listed"].items(), key=lambda kv: -kv[1])[:40]:
             print(f"  {v:4d} × {k}")
+        raise SystemExit(0)
+    if any("unparsed-audit" in a or "unparsed_audit" in a for a in _sys.argv[1:]):
+        # 진짜 미파싱(파싱대상인데 detail 없음) report_nm 분포 + 샘플 url —
+        # 어느 양식에 파서가 없는지 진단(사용자 2026-06-15 '미파싱 쌓임'):
+        #   .venv/bin/python -m bot.dart_feed --unparsed-audit [days]
+        _days = 7
+        for a in _sys.argv[1:]:
+            if a.isdigit():
+                _days = int(a)
+        rep = unparsed_audit(days_back=_days)
+        print(f"[미파싱] 윈도 {_days}일 · 진짜 미파싱 {rep['total']}건 "
+              f"({len(rep['dist'])} 양식) — 아래 report_nm 으로 파서 추가")
+        for k, v in sorted(rep["dist"].items(), key=lambda kv: -kv[1]):
+            print(f"  {v:3d} × {k}")
+            print(f"        예: {rep['samples'].get(k, '')}")
         raise SystemExit(0)
     if any("selftest" in a for a in _sys.argv[1:]):
         # VM 1줄 진단(쓰기 없음): 아카이브의 detail 없는 게이트 대상 5건을
