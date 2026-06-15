@@ -19,10 +19,36 @@ from bot.highlow_render import HL_SORT_JS as _HL_SORT_JS
 
 log = logging.getLogger("bot.us_pages")
 
-# 연장거래 창 라벨 — ET(미국 거래 기준) + 한국시간 병기 (CLAUDE.md 시간표기 KST 정책).
-# 한국시간은 동부 서머타임(EDT, +13h) 기준; 서머타임 해제(EST) 시 +1h.
-_EXT_WINDOW = ("장전 4:00–9:30 · 장후 16:00–20:00 ET = 한국시간 장전 17:00–22:30 · "
-               "장후 익일 05:00–09:00 (서머타임 기준 · 해제 시 +1h)")
+# 연장거래 창 라벨 — ET(미국 거래 기준)를 현재 한국시간으로 (CLAUDE.md KST
+# 시간표기 정책). 동부 서머타임(EDT)/표준시(EST) **자동 반영** (사용자 2026-06-15
+# '섬머타임 고려해서') — zoneinfo America/New_York→Asia/Seoul. lib 부재 시 폴백.
+def _ext_kst_for_date(d) -> str:
+    """주어진 ET 날짜의 연장거래(장전 4:00–9:30·장후 16:00–20:00 ET) KST 창 +
+    서머타임 여부 (순수·테스트용). 장후는 KST 익일."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    et, kst = ZoneInfo("America/New_York"), ZoneInfo("Asia/Seoul")
+
+    def _k(h: int, m: int) -> str:
+        return datetime(d.year, d.month, d.day, h, m,
+                        tzinfo=et).astimezone(kst).strftime("%H:%M")
+
+    probe = datetime(d.year, d.month, d.day, 12, 0, tzinfo=et)
+    is_dst = bool(probe.dst()) and probe.dst().total_seconds() != 0
+    return (f"한국시간 장전 {_k(4, 0)}–{_k(9, 30)} · 장후 익일 "
+            f"{_k(16, 0)}–{_k(20, 0)} (美 {'서머타임' if is_dst else '표준시'})")
+
+
+def _ext_window_kst() -> str:
+    """오늘(美 동부 기준) 연장거래 창의 KST 표기 — 서머타임 자동 반영.
+    zoneinfo/tzdata 부재 시 EDT 기준 폴백."""
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return _ext_kst_for_date(datetime.now(ZoneInfo("America/New_York")).date())
+    except Exception:
+        return "한국시간 장전 17:00–22:30 · 장후 익일 05:00–09:00 (美 서머타임)"
+
 
 def _shell(title: str, sub: str, active: str, body: str) -> str:
     def _t(key: str, label: str) -> str:
@@ -341,7 +367,7 @@ def render_us_prepost_page() -> str:
                 detail = _html.escape(str(st.get("detail") or ""))
                 body = (f'<div class="empty">⚠️ 최근 산출 실패'
                         + (f' ({ts_lb})' if ts_lb else '') + f' — {detail}<br>'
-                        f'연장거래({_EXT_WINDOW})에만 데이터가 '
+                        f'연장거래({_ext_window_kst()})에만 데이터가 '
                         '있습니다. 정규장 중·장 완전 종료 시에는 직전 연장 스냅샷을 '
                         '보여줍니다.</div>')
             elif st.get("state") == "running":
@@ -357,7 +383,7 @@ def render_us_prepost_page() -> str:
                         '연장거래 스캔(수 분 소요). 잠시 후 새로고침해 주세요.</div>')
         else:
             body = (f'<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
-                    f'연장거래({_EXT_WINDOW}) 시간에 '
+                    f'연장거래({_ext_window_kst()}) 시간에 '
                     '확인해 주세요.</div>')
     else:
         from bot.highlow_render import sort_by_pct, stock_panel as _hpanel
@@ -369,6 +395,7 @@ def render_us_prepost_page() -> str:
                           _ind_dist_line(down), show_vol=True) + '</div>'
                 + _HL_SORT_JS)
     sub = (f"미국 {sess_kr} 연장거래 등락 상·하위 30 · 정규장 종가 대비 · "
-           "yfinance 30분봉 · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분"
+           "yfinance 30분봉 · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분 · "
+           + _ext_window_kst()
            + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 장전·장후 급등·급락", sub, "usprepost", body)
