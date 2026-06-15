@@ -71,6 +71,7 @@ from telethon.tl.custom.message import Message
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from trade import ignored as _ignored
+from trade import beon_skip as _beon_skip
 
 load_dotenv()
 
@@ -149,11 +150,16 @@ class BackfillAborted(Exception):
 # ---------------------------------------------------------------------
 # Notification helper (best-effort; never raises into the main loop)
 # ---------------------------------------------------------------------
-def _notify(text: str) -> None:
+def _notify(text: str, buttons: list | None = None) -> None:
     """Push a short HTML message to the trade channel via the live
     trade-bot's credentials. Silent if creds are absent so the script
     still works without notifications configured.
+
+    buttons: optional [(label, callback_data), ...] → 인라인 키보드. 봇 토큰
+    으로 보내므로 인라인 버튼 부착 가능(콜백은 trade-bot 이 처리). 사용자가
+    탭 한 번으로 반복 메시지를 차단하는 🚫 버튼용(사용자 2026-06-15).
     """
+    import json as _json
     token = os.environ.get("TRADE_BOT_TOKEN")
     chat_ids = os.environ.get("TRADE_CHANNEL_CHAT_IDS", "")
     if not token or not chat_ids:
@@ -161,20 +167,19 @@ def _notify(text: str) -> None:
     chat_id = chat_ids.split(",")[0].strip()
     if not chat_id:
         return
+    cmd = [
+        "curl", "-s", "-m", "10",
+        "-X", "POST",
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        "--data-urlencode", f"chat_id={chat_id}",
+        "--data-urlencode", f"text={text}",
+        "--data-urlencode", "parse_mode=HTML",
+    ]
+    if buttons:
+        kb = {"inline_keyboard": [[{"text": t, "callback_data": cb}] for t, cb in buttons]}
+        cmd += ["--data-urlencode", "reply_markup=" + _json.dumps(kb, ensure_ascii=False)]
     try:
-        subprocess.run(
-            [
-                "curl", "-s", "-m", "10",
-                "-X", "POST",
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                "--data-urlencode", f"chat_id={chat_id}",
-                "--data-urlencode", f"text={text}",
-                "--data-urlencode", "parse_mode=HTML",
-            ],
-            timeout=15,
-            check=False,
-            capture_output=True,
-        )
+        subprocess.run(cmd, timeout=15, check=False, capture_output=True)
     except Exception as e:
         log.warning("notify failed: %s", e)
 
@@ -442,6 +447,8 @@ async def run(
         candidates: list[Message] = []
         skipped_existing = 0
         skipped_ignored = 0
+        skipped_skip = 0                 # 🚫 사용자가 알림 버튼으로 영구 차단한 메시지
+        fallback_ids: list[int] = []     # 재포워드-위험(fallback) 후보 id — 알림 버튼용
         # fwd_fallback_count: msgs whose fwd_from chain is present but
         # missing channel_post / from_id, so we fell back to keying on
         # (source_chat_id, msg.id). The listener wouldn't have recorded
@@ -457,8 +464,15 @@ async def run(
             if until is not None and msg.date > until:
                 break
             iterated += 1
+            # 🚫 사용자가 '동기화 완료' 알림의 버튼으로 영구 차단한 메시지 →
+            # 후보에서 제외해 재포워드 루프 종료(사용자 2026-06-15 '두 시간마다
+            # 계속 옴'). 유저-포워드 등 dedup 불가 메시지의 단일 종료 수단.
+            if _beon_skip.contains(msg.id):
+                skipped_skip += 1
+                continue
             key, origin = _msg_key_with_origin(msg, source_chat_id)
-            if origin == _ORIGIN_FALLBACK:
+            is_fallback = (origin == _ORIGIN_FALLBACK)
+            if is_fallback:
                 fwd_fallback_count += 1
                 log.warning(
                     "fwd fallback msg=%d — fwd_from present but "
@@ -482,6 +496,8 @@ async def run(
                 )
                 continue
             candidates.append(msg)
+            if is_fallback:
+                fallback_ids.append(msg.id)   # 재포워드 루프 주범 → 알림 버튼에 실음
 
         until_label = (until or datetime.now(timezone.utc)).date().isoformat()
         log.info(
@@ -550,11 +566,22 @@ async def run(
             total_msgs,
         )
         if forwarded_msgs > 0:
-            _notify(
+            _note = (
                 f"✅ <b>BeOn 동기화 완료</b>\n"
                 f"신규 forwarded: {forwarded_msgs}/{total_msgs} msgs\n"
                 f"units: {len(units)}"
             )
+            _buttons = None
+            if fallback_ids:
+                # 재포워드-위험(유저-포워드 등 dedup 불가) 메시지가 있으면 🚫 차단
+                # 버튼. callback_data 64바이트 제한 내로 id cap(보통 1건). 탭하면
+                # trade-bot 콜백이 beon_skip 에 추가 → 다음 틱부터 후보 제외.
+                _ids = fallback_ids[:6]
+                _buttons = [("🚫 이 반복 메시지 그만 받기",
+                             "beon_skip:" + ",".join(str(i) for i in _ids))]
+                _note += (f"\n⚠️ 출처 불명 {len(fallback_ids)}건 포함 — 반복되면 "
+                          f"아래 버튼으로 차단")
+            _notify(_note, buttons=_buttons)
         else:
             # Empty / all-already-ingested / all-ignored window — the
             # normal quiet state for a safety net behind the realtime

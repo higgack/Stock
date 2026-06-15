@@ -953,6 +953,35 @@ async def on_hs_done_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) ->
         log.debug("hs_done edit skipped: %s", exc)
 
 
+async def on_beon_skip_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Inline 'beon_skip:<id,id,...>' 버튼 — 반복 재포워드되는 BeOn 메시지를
+    탭 한 번으로 영구 차단(사용자 2026-06-15 '형식 안 맞는 거 두 시간마다 계속
+    옴'). callback 의 BeOn 소스 msg_id 들을 beon_skip set 에 추가 → backfill_beon
+    이 다음 동기화 틱부터 후보에서 제외 → 재포워드 루프 종료. 버튼 제거로 확인."""
+    q = update.callback_query
+    if q is None or q.data is None or not q.data.startswith("beon_skip:"):
+        return
+    raw = q.data.split(":", 1)[1]
+    ids = [x.strip() for x in raw.split(",") if x.strip().isdigit()]
+    if not ids:
+        await q.answer("차단할 메시지가 없습니다", show_alert=True)
+        return
+    try:
+        from trade import beon_skip
+        total = beon_skip.add(ids)
+        await q.answer(f"🚫 {len(ids)}건 차단 — 다시 받지 않습니다 (총 {total})")
+        try:                                  # 버튼 제거 + 차단 표시
+            await q.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    except Exception as exc:
+        log.warning("beon_skip callback failed: %s", exc)
+        try:
+            await q.answer("차단 실패 — 다시 시도", show_alert=True)
+        except Exception:
+            pass
+
+
 async def cmd_unhs(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message is None or update.effective_user is None:
         return
@@ -1311,6 +1340,7 @@ def main() -> None:
     app.add_handler(CommandHandler("export", cmd_export))
     app.add_handler(CallbackQueryHandler(on_hs_pin_callback, pattern=r"^hs_pin:"))
     app.add_handler(CallbackQueryHandler(on_hs_done_callback, pattern=r"^hs_done$"))
+    app.add_handler(CallbackQueryHandler(on_beon_skip_callback, pattern=r"^beon_skip:"))
     # Channel posts (BeOn forwards plus in-channel /help / /start).
     app.add_handler(MessageHandler(filters.ChatType.CHANNEL, on_channel_post))
     log.info(
