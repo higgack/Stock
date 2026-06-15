@@ -42,8 +42,10 @@ def _parse_tw(a: dict) -> dict | None:
         return None
     y = _num(a.get("y"))
     pct = ((z / y - 1) * 100) if (y and y > 0) else None
-    return {"price": z, "pct": pct, "open": _num(a.get("o")), "high": _num(a.get("h")),
-            "low": _num(a.get("l")), "volume": _num(a.get("v")), "source": "TWSE 실시간"}
+    return {"price": z, "close": z, "pct": pct, "open": _num(a.get("o")),
+            "high": _num(a.get("h")), "low": _num(a.get("l")), "volume": _num(a.get("v")),
+            "ts": a.get("^"),  # 거래일 YYYYMMDD (당일봉 병합 날짜 매칭용)
+            "source": "TWSE 실시간"}
 
 
 def fetch_tw_quote(ticker: str) -> dict | None:

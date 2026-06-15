@@ -572,15 +572,17 @@ async def run(
                 f"units: {len(units)}"
             )
             _buttons = None
+            # 소량 동기화(≤5건) = 반복 straggler(형식·출처 불명 문서가 매 틱 재포워드)
+            # 가능성 → 방금 받은 메시지 전부에 🚫 차단 버튼(사용자 2026-06-15 '취소
+            # 버튼 안 달려있어' — fallback 만 달던 것이 정상 채널포워드 .html 을 놓침).
+            # 대량 일배치엔 미부착(오탭 mass-block 방지). 탭 → trade-bot 콜백이 그
+            # BeOn msg_id 를 beon_skip 에 add → 다음 틱부터 후보 제외. callback 64B cap 6.
+            _cand_ids = [m.id for m in candidates][:6]
+            if _cand_ids and forwarded_msgs <= 5:
+                _buttons = [("🚫 이 메시지 그만 받기 (반복 시)",
+                             "beon_skip:" + ",".join(str(i) for i in _cand_ids))]
             if fallback_ids:
-                # 재포워드-위험(유저-포워드 등 dedup 불가) 메시지가 있으면 🚫 차단
-                # 버튼. callback_data 64바이트 제한 내로 id cap(보통 1건). 탭하면
-                # trade-bot 콜백이 beon_skip 에 추가 → 다음 틱부터 후보 제외.
-                _ids = fallback_ids[:6]
-                _buttons = [("🚫 이 반복 메시지 그만 받기",
-                             "beon_skip:" + ",".join(str(i) for i in _ids))]
-                _note += (f"\n⚠️ 출처 불명 {len(fallback_ids)}건 포함 — 반복되면 "
-                          f"아래 버튼으로 차단")
+                _note += f"\n⚠️ 출처 불명 {len(fallback_ids)}건 포함"
             _notify(_note, buttons=_buttons)
         else:
             # Empty / all-already-ingested / all-ignored window — the

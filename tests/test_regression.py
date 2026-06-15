@@ -9376,35 +9376,59 @@ class TestNaverKrLiveQuote:
 
         def _ser(dates, vals):
             return pd.Series(vals, index=pd.DatetimeIndex([pd.Timestamp(d) for d in dates]))
+        _ts = f"{today}T15:30:00+09:00"   # 당일 판정용 거래소 현지 ts
 
-        # 추가 — 당일봉 없음(전일까지)
+        # 추가 — 당일봉 없음(전일까지), ts=오늘 → append
         monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: {
             "close": 1194000, "open": 1132000, "high": 1194000,
-            "low": 1118000, "volume": 314500})
-        c, v, o, h, l = cd._merge_kr_today_bar(
+            "low": 1118000, "volume": 314500, "ts": _ts})
+        c, v, o, h, l = cd._merge_today_bar(
             "267260.KS", _ser([prev], [1130000.0]), _ser([prev], [100.0]),
             _ser([prev], [1125000.0]), _ser([prev], [1135000.0]), _ser([prev], [1120000.0]))
         assert len(c) == 2 and c.iloc[-1] == 1194000 and c.index[-1].date() == today
         assert o.iloc[-1] == 1132000 and v.iloc[-1] == 314500
 
-        # 교체 — 당일봉 이미 있음(stale)
-        c, v, o, h, l = cd._merge_kr_today_bar(
+        # 교체 — 당일봉 이미 있음(stale), ts=오늘 → replace
+        c, v, o, h, l = cd._merge_today_bar(
             "267260.KS", _ser([prev, today], [1130000.0, 1130000.0]),
             _ser([prev, today], [100.0, 50.0]), _ser([prev, today], [1125000.0, 1125000.0]),
             _ser([prev, today], [1135000.0, 1135000.0]), _ser([prev, today], [1120000.0, 1120000.0]))
         assert len(c) == 2 and c.iloc[-1] == 1194000 and v.iloc[-1] == 314500
 
         # 글리치 — 직전 대비 +200% → 원본 유지
-        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: {"close": 3390000})
-        c, _, _, _, _ = cd._merge_kr_today_bar(
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: {"close": 3390000, "ts": _ts})
+        c, _, _, _, _ = cd._merge_today_bar(
             "267260.KS", _ser([prev], [1130000.0]), None, None, None, None)
         assert len(c) == 1 and c.iloc[-1] == 1130000
 
+    def test_merge_nonkr_us_tw(self, monkeypatch):
+        # 비-KR 확장(사용자 2026-06-15): US=네이버해외·TW=대만거래소 당일 OHLCV 병합.
+        import pandas as pd
+        from datetime import datetime, timezone, timedelta
+        import bot.chart_data as cd, bot.world_quote as wq, bot.tw_quote as tw
+        today = datetime.now(timezone(timedelta(hours=9))).date()
+        prev = today - timedelta(days=3)
+
+        def _ser(ds, vs):
+            return pd.Series(vs, index=pd.DatetimeIndex([pd.Timestamp(d) for d in ds]))
+        monkeypatch.setattr(wq, "fetch_world_quote", lambda t: {
+            "close": 295.2, "open": 294.19, "high": 295.82, "low": 291.7,
+            "volume": 6242520, "ts": f"{today}T09:55:09-04:00"})
+        c, *_ = cd._merge_today_bar("AAPL", _ser([prev, today], [290.0, 290.0]),
+                                    None, None, None, None)
+        assert c.iloc[-1] == 295.2                       # US worldstock 당일봉 교체
+        monkeypatch.setattr(tw, "fetch_tw_quote", lambda t: {
+            "close": 2375.0, "price": 2375.0, "open": 2360.0, "high": 2375.0,
+            "low": 2345.0, "volume": 25410, "ts": today.strftime("%Y%m%d")})
+        c, *_ = cd._merge_today_bar("2330.TW", _ser([prev, today], [2310.0, 2310.0]),
+                                    None, None, None, None)
+        assert c.iloc[-1] == 2375.0                       # TWSE 당일봉 교체(ts=YYYYMMDD)
+
     def test_chart_wires_merge(self):
-        # 배선 E2E: fetch_chart_payload 가 KR 1d 에서 당일봉 병합을 실제 호출.
+        # 배선 E2E: fetch_chart_payload 가 전 시장 1d 에서 당일봉 병합을 실제 호출.
         cd = open("bot/chart_data.py", encoding="utf-8").read()
-        assert "_merge_kr_today_bar(ticker, close, vol, op, hi, lo)" in cd
-        assert 'if _is_kr and interval == "1d":' in cd
+        assert "_merge_today_bar(ticker, close, vol, op, hi, lo)" in cd
+        assert 'if interval == "1d":' in cd
 
 
 class TestLiveAutoRefresh:
