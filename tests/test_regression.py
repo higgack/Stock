@@ -9748,14 +9748,16 @@ class TestDashboardBatch20260615d:
               re.findall(r'<text x="([\d.]+)"[^>]*text-anchor="end"', svg)]
         assert xs and all(x >= 55 for x in xs)   # 라벨 우측 끝이 충분히 안쪽
 
-    def test_home_back_is_history_back(self):
-        # '← 홈으로' = 뒤로가기 가로채기 (사용자 2026-06-15 재요청). 두 테마
-        # 스크립트(naver+us+tw / 전 대시보드) 모두 적용.
-        nav = open("bot/naver_pages.py", encoding="utf-8").read()
+    def test_home_scroll_restore_not_history_back(self):
+        # 홈 복귀 = market.html 스크롤 복원(sessionStorage) — history.back()
+        # 가로채기는 bfcache 불안정·다단이동 문제로 제거(사용자 2026-06-15 '또
+        # 새로고침처럼'). 어떤 경로로 홈에 도착해도 마지막 위치 복귀.
         dash = open("bot/dashboard.py", encoding="utf-8").read()
-        for src in (nav, dash):
-            assert "a.back-link" in src and "history.back()" in src
-            assert "location.origin" in src       # 같은 사이트에서 왔을 때만
+        nav = open("bot/naver_pages.py", encoding="utf-8").read()
+        assert "noah_home_scroll" in dash and "sessionStorage" in dash   # 복원
+        # 가로채기 코드(주석 아님) 제거 — back-link click 가로채기 시그니처 부재
+        assert "closest('a.back-link')" not in dash
+        assert "closest('a.back-link')" not in nav
 
     def test_tw_chinese_sectors_mapped(self):
         from bot.twse_client import _SECTOR_KR

@@ -714,8 +714,8 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
     from html import escape as _esc
     ym = _esc(ref.get("ym") or "")
     window = _esc(ref.get("window") or "")
-    # 현재 잠정 창 명시 badge (사용자 2026-06-15 '현재 잠정이 10일/20일/전월
-    # 잠정인지 명시 — 확정(익월 ~15일)처럼'). decile→발표시점 힌트.
+    # 최신 잠정 창 명시 badge (사용자 2026-06-15 '현재 말고 최신으로' — 확정
+    # 라벨 '최신 2026-05 …' 과 표기 통일). decile→발표시점 힌트.
     _pub = {"D1": "11일 발표", "D2": "21일 발표",
             "FULL": "월초 발표"}.get(ref.get("decile") or "", "")
     cur_label = f"{ym} · {window}" + (f" · {_pub}" if _pub else "")
@@ -728,7 +728,7 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
     )
     return (
         "<div class='ind-prov'>"
-        f"<h3>🟢 잠정 속보 <span class='ind-prov-cur'>현재 {cur_label}</span> "
+        f"<h3>🟢 잠정 속보 <span class='ind-prov-cur'>최신 {cur_label}</span> "
         "<span class='ind-prov-tag'>관세청 10일 단위 · 11일·21일·월초(전월 풀월) 발표</span></h3>"
         f"<div class='ind-prov-sub'>{ym} · {window} 누적 기준 · 확정치보다 "
         "최대 ~한 달 선행 · YoY=작년 동월·동순 · MoM=전월 동순 · 단위 억$ "

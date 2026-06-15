@@ -866,20 +866,9 @@ _THEME_JS = """
   }
   apply();
   setInterval(apply, 60000);
-  /* '← 홈으로' = 뒤로가기 (사용자 2026-06-15 재요청 — 06-11 직행 정책 반전):
-     같은 사이트에서 왔으면 history.back() 으로 들어왔던 화면을 스크롤째 복원
-     (응답 no-store 아니라 bfcache → 새로고침 아님). 직접 진입/외부 유입은 href
-     로 홈 직행. 모든 홈으로 버튼·대쉬보드 공통. */
-  document.addEventListener('click', function(e) {
-    var a = e.target.closest && e.target.closest('a.back-link');
-    if (!a) return;
-    try {
-      var r = document.referrer;
-      if (r && new URL(r).origin === location.origin && history.length > 1) {
-        e.preventDefault(); history.back();
-      }
-    } catch (_) {}
-  });
+  /* '← 홈으로' 가로채기 제거 (사용자 2026-06-15 '또 새로고침처럼') — history.back()
+     은 bfcache 불안정·다단이동 시 엉뚱한 페이지. '원래 자리로'는 market.html 의
+     스크롤 복원(sessionStorage)으로 해결(어떤 경로로 도착해도 마지막 위치 복귀). */
 })();
 """
 
@@ -12864,6 +12853,24 @@ def _render_market_page(data: dict) -> str:
 
 <script>
 (function() {{
+  /* 홈 스크롤 위치 보존/복원 (사용자 2026-06-15 '홈으로 가면 원래 자리로').
+     어떤 경로로 홈(market.html)에 도착하든 — 자식 대시보드의 홈 버튼·full
+     reload·뒤로가기 — 마지막 스크롤로 복귀. bfcache 의존 없음(sessionStorage).
+     async 콘텐츠(관심종목 등)로 높이가 늦게 잡혀도 load·300ms 재적용. */
+  try {{
+    var _SK = 'noah_home_scroll', _sy = sessionStorage.getItem(_SK);
+    if (_sy !== null) {{
+      var _y = parseInt(_sy) || 0;
+      var _restore = function() {{ window.scrollTo(0, _y); }};
+      _restore();
+      window.addEventListener('load', _restore);
+      setTimeout(_restore, 300);
+    }}
+    window.addEventListener('scroll', function() {{
+      try {{ sessionStorage.setItem(_SK, String(window.scrollY)); }} catch (_e) {{}}
+    }}, {{passive: true}});
+  }} catch (_e) {{}}
+
   var inp = document.getElementById('mkt-search');
   var btn = document.getElementById('mkt-go');
   function go() {{

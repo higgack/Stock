@@ -635,10 +635,15 @@ class TestBatch20260615(unittest.TestCase):
     cap 기본 5000."""
 
     def test_raw_table_scroll_right_default(self):
+        # 산업트렌드는 탭이라 숨겨진 동안 scrollWidth=0 → 탭 활성화 시 재적용
+        # (사용자 2026-06-15 '맨 오른쪽 디폴트 안 되는거야'). window._scrollRaw +
+        # 탭 click 핸들러 hook + rAF.
         src = Path("trade/dashboard.py").read_text(encoding="utf-8")
         self.assertIn(".ind-raw-scroll", src)
-        self.assertIn("e.scrollLeft=e.scrollWidth", src)   # 우측(최신) 디폴트
-        self.assertIn("'toggle'", src)                     # details 펼칠 때도 재적용
+        self.assertIn("e.scrollLeft=e.scrollWidth", src)        # 우측(최신) 디폴트
+        self.assertIn("window._scrollRaw", src)                 # 노출 함수
+        self.assertIn("requestAnimationFrame", src)             # 레이아웃 완료 후
+        self.assertIn("if(window._scrollRaw)window._scrollRaw(view)", src)  # 탭 hook
 
     def test_backfill_cap_default_5000(self):
         src = Path("trade/scripts/backfill_beon.py").read_text(encoding="utf-8")

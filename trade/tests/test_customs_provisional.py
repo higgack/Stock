@@ -214,11 +214,11 @@ class RenderTests(unittest.TestCase):
         self.assertIn("잠정 타임라인", html)
 
     def test_current_window_badge(self):
-        # 현재 잠정 창 명시 badge (사용자 2026-06-15 '10일/20일/전월 잠정인지 명시
-        # — 확정(익월 ~15일)처럼'). _signals() 는 D2(1~20일) → 21일 발표 힌트.
+        # 최신 잠정 창 명시 badge (사용자 2026-06-15 '현재 말고 최신으로' — 확정
+        # 라벨과 통일). _signals() 는 D2(1~20일) → 21일 발표 힌트.
         html = prov.render_box(self._signals())
-        self.assertIn("ind-prov-cur", html)      # 현재-창 강조 badge
-        self.assertIn("현재", html)
+        self.assertIn("ind-prov-cur", html)      # 최신-창 강조 badge
+        self.assertIn("최신", html)               # '현재' 아님(사용자 정정)
         self.assertIn("21일 발표", html)           # D2 → 21일 발표
 
     def test_export_cells_no_caveat(self):

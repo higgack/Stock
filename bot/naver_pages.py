@@ -57,16 +57,10 @@ td.ld a:hover{color:var(--accent)}
 _THEME_SCRIPT = r"""
 <script>
 (function(){var h=parseInt(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';})();
-/* '← 홈으로' = 뒤로가기 (사용자 2026-06-15 재요청 — 06-11 직행 정책 반전):
-   같은 사이트에서 왔으면 history.back() 으로 들어왔던 화면을 스크롤째 복원
-   (응답이 no-store 아니라 bfcache 동작 → 새로고침 아님). 직접 진입/외부 유입은
-   href 로 홈 직행. 모든 홈으로 버튼·대쉬보드 공통. */
-document.addEventListener('click',function(e){
-  var a=e.target.closest&&e.target.closest('a.back-link'); if(!a) return;
-  try{var r=document.referrer;
-    if(r&&new URL(r).origin===location.origin&&history.length>1){e.preventDefault();history.back();}
-  }catch(_){}
-});
+/* '← 홈으로' 는 일반 nav 로 market.html 직행. '원래 자리로'는 history.back()
+   (bfcache 불안정·다단이동 시 엉뚱한 페이지) 대신 market.html 자체의 스크롤
+   복원(sessionStorage)으로 해결 — 어떤 경로로 홈에 도착해도 마지막 위치 복귀
+   (사용자 2026-06-15 '또 새로고침처럼'). 가로채기 제거. */
 </script>
 """
 

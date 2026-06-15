@@ -630,14 +630,17 @@ def _build_html(
         f"const LATEST_IDS=new Set({latest_ids_json});\n"
         f"const STOCK_QUOTES={stock_quotes_json};\n"
         + _JS
-        # 월별 원자료 가로 스크롤 = 최신(우측) 디폴트 (사용자 2026-06-15 '필터를
-        # 가장 오른쪽으로 땡겨서 — 앞쪽 옛 숫자는 볼 필요 없으니'). 로드 시 + <details>
-        # 펼칠 때(그 안의 표가 그제야 폭을 가짐) 우측 끝으로.
+        # 월별 원자료 가로 스크롤 = 최신(우측) 디폴트 (사용자 2026-06-15 '맨 오른쪽
+        # 디폴트'). ⚠️ 산업트렌드는 탭이라 숨겨진 동안 scrollWidth=0 → 탭 핸들러가
+        # 활성화 후 window._scrollRaw 호출(아래 _JS 의 .tab click). rAF 로 레이아웃
+        # 완료 후 적용. 로드 시(보이는 표)·<details> 펼침도 커버.
         + ("\n;(function(){function s(r){(r||document)"
            ".querySelectorAll('.ind-raw-scroll').forEach(function(e){"
-           "e.scrollLeft=e.scrollWidth;});}s();"
+           "e.scrollLeft=e.scrollWidth;});}"
+           "window._scrollRaw=function(r){requestAnimationFrame(function(){s(r);});};"
+           "window._scrollRaw();"
            "document.addEventListener('toggle',function(e){"
-           "if(e.target&&e.target.open)s(e.target);},true);})();")
+           "if(e.target&&e.target.open)window._scrollRaw(e.target);},true);})();")
         + '</script></body></html>'
     )
 
@@ -1756,8 +1759,11 @@ document.querySelectorAll('.tab').forEach(btn=>{
     document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
     btn.classList.add('active');
     const tab=btn.dataset.tab;
-    document.getElementById(tab+'-view').classList.add('active');
+    const view=document.getElementById(tab+'-view');
+    view.classList.add('active');
     if(_CLIENT_VIEWS[tab]&&_viewDirty[tab])_buildView(tab);   // lazy: 더티면 지금 빌드
+    // 탭이 보이면(레이아웃 생김) 월별 원자료를 우측(최신) 끝으로 (사용자 2026-06-15)
+    if(window._scrollRaw)window._scrollRaw(view);
   });
 });
 document.querySelectorAll('.chip').forEach(chip=>{
