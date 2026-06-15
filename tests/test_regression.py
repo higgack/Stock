@@ -5554,6 +5554,11 @@ class TestNxtClient:
         assert "NXT 장전·장후" in html and "NAVER" in html
         assert "외국인" in html and "기관" in html and "데이터 없음" in html
         assert 'href="lookup/035420.KS"' in html
+        # KR 공통 nav (사용자 2026-06-15 'NXT 도 다른 대시보드 가는 nav') — _shell
+        # toggle(NXT active) + 형제 KR 페이지 링크.
+        assert 'class="toggle"' in html and 'class="active" href="nxt"' in html
+        assert ('href="theme"' in html and 'href="kr52"' in html
+                and 'href="highlow"' in html)
 
 
 class TestMarketLiveTick:

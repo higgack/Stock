@@ -8,7 +8,7 @@ from __future__ import annotations
 import html as _html
 import logging
 
-from bot.naver_pages import _CSS, _THEME_SCRIPT
+from bot.naver_pages import _shell
 
 log = logging.getLogger("bot.nxt_pages")
 
@@ -120,15 +120,10 @@ def render_nxt_page() -> str:
     sub = ("넥스트레이드(NXT) 연장거래 투자자별 순매수/순매도 상위 · 장전 "
            "08:00~09:00 · 장후 15:30~20:00 KST · 네이버"
            + (f" · {date_lb} 기준" if date_lb else ""))
-    body = (_investor_block("🌐 외국인", foreign)
+    # KR 페이지 공통 nav(_shell — 업종별 시세·신고가/신저가·급등락·NXT toggle, NXT
+    # active) 사용 (사용자 2026-06-15 'NXT 도 다른 대시보드 가는 nav'). _NXT_CSS 는
+    # body 선두 <style> 로 주입(_shell 은 공통 _CSS 만 head 에 넣음).
+    body = (_NXT_CSS
+            + _investor_block("🌐 외국인", foreign)
             + _investor_block("🏦 기관", organ))
-    return f"""<!DOCTYPE html>
-<html lang="ko"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NXT 외국인·기관 수급 — NOAH</title>{_CSS}{_NXT_CSS}</head><body>
-<a class="back-link" href="market.html">← 홈으로</a>
-<h1>🇰🇷 NXT 장전·장후 외국인·기관 수급</h1>
-<div class="sub">{_html.escape(sub)}</div>
-{body}
-{_THEME_SCRIPT}
-</body></html>"""
+    return _shell("🇰🇷 NXT 장전·장후 외국인·기관 수급", _html.escape(sub), "nxt", body)
