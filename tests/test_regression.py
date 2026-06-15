@@ -5555,6 +5555,32 @@ class TestFavoritesKoreanName:
                           "stockName": "삼성전자"})
         assert q["name"] == "삼성전자" and q["price"] == 70000
 
+    def test_parse_quote_overmarket_uses_extended_price(self):
+        # 미국 장후(AFTER_MARKET OPEN, 사용자 2026-06-15 'world_quote 시간외가
+        # 반영') → 현재가=시간외가, 등락%=전일 종가 대비 재산출. Naver
+        # overMarketPriceInfo (VM probe 2026-06-15 AAPL 296.10 확인).
+        from bot.naver_quote import _parse_quote
+        item = {"closePriceRaw": "296.42", "fluctuationsRatioRaw": "1.82",
+                "compareToPreviousClosePriceRaw": "5.29",
+                "compareToPreviousPrice": {"code": "2"},
+                "overMarketPriceInfo": {"overMarketStatus": "OPEN",
+                                        "tradingSessionType": "AFTER_MARKET",
+                                        "overPrice": "296.10"}}
+        q = _parse_quote(item)
+        assert q["price"] == 296.10 and q["close"] == 296.10   # 정규장 296.42 아님
+        assert q["over_session"] == "AFTER_MARKET"
+        # 전일종가 296.42−5.29=291.13 → (296.10/291.13−1)*100 ≈ +1.71%
+        assert abs(q["pct"] - 1.71) < 0.05
+
+    def test_parse_quote_overmarket_closed_keeps_regular(self):
+        from bot.naver_quote import _parse_quote
+        item = {"closePriceRaw": "296.42", "fluctuationsRatioRaw": "1.82",
+                "compareToPreviousPrice": {"code": "2"},
+                "overMarketPriceInfo": {"overMarketStatus": "CLOSE",
+                                        "overPrice": "296.10"}}
+        q = _parse_quote(item)
+        assert q["price"] == 296.42 and q["over_session"] == ""  # 시간외 닫힘→정규장
+
     def test_resolve_kr_name_routes_by_market(self):
         import bot.market_favorites as mf
         import bot.naver_quote as nq

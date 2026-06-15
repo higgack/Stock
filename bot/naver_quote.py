@@ -73,12 +73,29 @@ def _parse_quote(item: dict) -> dict | None:
         cmp = item.get("compareToPreviousPrice") or {}
         falling = isinstance(cmp, dict) and str(cmp.get("code")) == "5"
         pct = -abs(pct) if falling else abs(pct)
+    # 미국 시간외(장전/장후) 진행 중이면 현재가를 시간외가로 (사용자 2026-06-15
+    # 'world_quote 시간외가 반영'). Naver overMarketPriceInfo.overPrice — over-market
+    # OPEN 일 때만. KR 국내엔 이 필드 없음(안전·무영향). 누적 등락%는 전일 종가
+    # (정규장 종가 − 전일대비) 대비 재산출 → 시간외가와 등락%가 일관.
+    over_session = ""
+    _over = item.get("overMarketPriceInfo")
+    if isinstance(_over, dict) and str(_over.get("overMarketStatus")) == "OPEN":
+        _op = _num(_over.get("overPrice"))
+        if _op:
+            over_session = str(_over.get("tradingSessionType") or "")
+            _rc = _num(item.get("closePriceRaw"))
+            _diff = _num(item.get("compareToPreviousClosePriceRaw"))
+            _prev = (_rc - _diff) if (_rc is not None and _diff is not None) else None
+            price = _op
+            if _prev and _prev > 0:
+                pct = round((_op / _prev - 1) * 100, 2)
     return {
         "price": price,
         "pct": pct,
         "mcap": _num(item.get("marketValueFullRaw")),
         "ts": item.get("localTradedAt"),
         "name": _extract_name(item),
+        "over_session": over_session,   # "" / PRE_MARKET / AFTER_MARKET (시간외 표기용)
         # 당일 OHLCV — 차트의 당일 일봉을 라이브로 그리는 데 사용(yahoo 가 장중
         # 당일 봉을 EOD/미제공하는 문제 해소). close 는 price 와 동일.
         "open": _num(item.get("openPriceRaw")),
