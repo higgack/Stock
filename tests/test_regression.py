@@ -9709,19 +9709,77 @@ class TestDashboardBatch20260615c:
                              "detail": ["제목: 상장폐지 결정"]}) == "상장폐지 관련"
 
     def test_earnings_research_date_filter(self):
-        # 다가오는 실적·리서치 날짜범위 필터 (정렬 아닌 필터, '7~20일꺼만').
+        # 다가오는 실적·리서치 날짜 필터 = 드롭다운(20260615 redo, 사용자 '날짜
+        # 입력 말고 스크롤 내려서 선택'). 가용 날짜만 option, from~to 범위.
         import bot.dashboard as d
         data = {"earnings": [{"symbol": "AAPL", "name": "Apple", "date": "2026-06-20",
                               "hour": "amc", "eps_estimate": 1.5, "revenue_estimate": 9e10,
                               "quarter": 3, "year": 2026}],
-                "earnings_ts": "", "research_ts": "", "research_kr": [],
+                "earnings_ts": "", "research_ts": "",
+                "research_kr": [{"name": "네이버", "code": "035420", "date": "2026-06-15",
+                                 "broker": "미래", "rating": "매수", "tp": "30만", "title": "상향"}],
                 "research_kr_industry": [], "research_kr_strategy": [], "research_us": [],
-                "research_intl": {}, "snapshot": {}, "indices": [], "ts": "", "macro": {}}
+                "research_jp": [], "research_tw": [], "research_cn": [], "research_hk": [],
+                "snapshot": {}, "indices": [], "ts": "", "macro": {}}
         html = d._render_market_page(data)
-        assert 'id="earn-from"' in html and 'id="earn-to"' in html
-        assert 'id="research-from"' in html and 'id="research-to"' in html
-        assert "7~20일" in html                         # 사용자 예시 프리셋
-        assert "function wireDateFilter(" in html       # 단일 brace(f-string 정상)
-        assert "wireDateFilter('earn-filter'" in html
-        assert "wireDateFilter('research-filter'" in html
-        assert "{{" not in html                         # f-string brace 누수 없음
+        assert '<select id="earn-from"' in html and '<select id="earn-to"' in html
+        assert '<select id="research-from"' in html and '<select id="research-to"' in html
+        assert '<option value="2026-06-20">2026-06-20</option>' in html   # 실적 가용일
+        assert '<option value="2026-06-15">2026-06-15</option>' in html   # 리서치 가용일
+        assert "전체 날짜" in html and 'type="date"' not in html          # 입력 제거
+        assert "function wireDateFilter(" in html and "{{" not in html
+
+
+class TestDashboardBatch20260615d:
+    """사용자 2026-06-15 후속 배치: ① 매크로 차트 y라벨 잘림(padL) ② 홈으로=뒤로
+    가기 ③ 대만 중국어 업종→한글 ⑧ 미국 무버 비보통주(권리·유닛·CVR) 제외 ·
+    ⑥ 날짜 필터 드롭다운화 ⑦ 관심종목 실적일 필터."""
+
+    def test_macro_chart_ylabel_not_clipped(self):
+        # padL 66 — 6~7자리 콤마 y라벨이 좌측 잘리지 않게(사용자 '안에 글씨 짤림').
+        from bot.dashboard import _svg_line_chart
+        import re
+        svg = _svg_line_chart(["11.28", "03.23", "06.05"],
+                              [{"name": "예탁금", "color": "#c0f",
+                                "data": [394367, 272224, 377760], "axis": "L"}])
+        # y축 라벨 text-anchor=end 가 x=padL-7=59 (50→66 상향). x<50 이면 잘림.
+        xs = [float(m) for m in re.findall(r'text-anchor="end">[^<]+</text>', svg) and
+              re.findall(r'<text x="([\d.]+)"[^>]*text-anchor="end"', svg)]
+        assert xs and all(x >= 55 for x in xs)   # 라벨 우측 끝이 충분히 안쪽
+
+    def test_home_back_is_history_back(self):
+        # '← 홈으로' = 뒤로가기 가로채기 (사용자 2026-06-15 재요청). 두 테마
+        # 스크립트(naver+us+tw / 전 대시보드) 모두 적용.
+        nav = open("bot/naver_pages.py", encoding="utf-8").read()
+        dash = open("bot/dashboard.py", encoding="utf-8").read()
+        for src in (nav, dash):
+            assert "a.back-link" in src and "history.back()" in src
+            assert "location.origin" in src       # 같은 사이트에서 왔을 때만
+
+    def test_tw_chinese_sectors_mapped(self):
+        from bot.twse_client import _SECTOR_KR
+        for cn, kr in (("電子兩倍槓桿", "전자 2배(레버리지)"), ("電子反向", "전자 인버스"),
+                       ("塑膠化工", "플라스틱·화학"), ("機電", "기계·전기")):
+            assert _SECTOR_KR.get(cn) == kr
+
+    def test_us_movers_exclude_noncommon(self):
+        # 권리·워런트·유닛·우선주·CVR 제외, Wright/United/정상명 보존.
+        from bot.finviz_client import prune_non_stock, _is_noncommon_security
+        for nm in ("LGL Group Rights Expiry 23rd June 2026",
+                   "M3 Brigade Acquisition V Units", "Gen Digital Contingent Value Rights",
+                   "AIMD Warrant", "XYZ Preferred Series B"):
+            assert _is_noncommon_security(nm), nm
+        for nm in ("Wright Medical", "United Airlines", "Bright Health",
+                   "Verde Clean Fuels, Inc.", "Apple Inc", "삼성전자"):
+            assert not _is_noncommon_security(nm), nm
+        rows = [{"name": "LGL Group Rights", "mcap": 1, "ind": "x", "vol": 1},
+                {"name": "Apple Inc", "mcap": 1, "ind": "x", "vol": 1}]
+        assert [r["name"] for r in prune_non_stock(rows)] == ["Apple Inc"]
+
+    def test_favorites_date_filter_wired(self):
+        # 관심종목 다음예상 실적일(data-earn) from~to 드롭다운 필터 배선.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "earnFrom: ''" in src and "earnTo: ''" in src        # favState
+        assert "fav-earn-from" in src and "fav-earn-to" in src      # 드롭다운
+        assert "tr.dataset.earn" in src                             # data-earn 필터
+        assert "전체 실적일" in src                                  # 해제 옵션

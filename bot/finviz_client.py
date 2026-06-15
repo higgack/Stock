@@ -912,6 +912,17 @@ _CLOSED_END_RE = re.compile(r"closed[- ]?end", re.I)
 _INCOME_TRUST_RE = re.compile(r"\b(Income|Municipal)\s+Trust\b", re.I)
 _CLASS_MARK_RE = re.compile(r"\b(?:Class|Cl)\s+[A-Z]\b", re.I)
 _CLASS_STRIP_RE = re.compile(r"\s+(?:Class|Cl)\s+[A-Z]\b.*$", re.I)
+# 보통주 아닌 파생/특수 증권 — 권리(Rights)·워런트·유닛·우선주·CVR(Contingent
+# Value Rights). 무버/신고저는 보통주만(사용자 2026-06-15 'LGL Rights·M3 Brigade
+# Units 같은 종목 아닌 것들 빼'). \b 워드바운더리로 Wright/United/Bright 오탐 차단.
+_NON_COMMON_RE = re.compile(
+    r"\b(rights?|warrants?|units?|preferred)\b|contingent\s+value", re.I)
+
+
+def _is_noncommon_security(name) -> bool:
+    """이름이 권리/워런트/유닛/우선주/CVR 이면 True(보통주 아님). 순수.
+    CJK명(JP/HK/CN)·정상 보통주는 무발화(no-op)."""
+    return bool(_NON_COMMON_RE.search(name or ""))
 
 
 def _is_fund_vehicle(name, ind) -> bool:
@@ -966,10 +977,12 @@ def _dedupe_dual_class(rows: list) -> list:
 
 
 def prune_non_stock(rows: list) -> list:
-    """CEF 펀드 vehicle + 유령(삼중 공백) 제거 후 이중클래스 dedupe — enrich 후
-    호출(시총·업종·거래량 채워진 상태). 신고저·무버·장전장후 공용. 순수."""
+    """CEF 펀드 vehicle + 유령(삼중 공백) + 비보통주(권리·워런트·유닛·우선주·
+    CVR) 제거 후 이중클래스 dedupe — enrich 후 호출(시총·업종·거래량 채워진
+    상태). 신고저·무버·장전장후 공용. 순수."""
     kept = [r for r in rows
             if not _is_fund_vehicle(r.get("name"), r.get("ind"))
+            and not _is_noncommon_security(r.get("name"))
             and not _is_frozen_row(r)]
     return _dedupe_dual_class(kept)
 

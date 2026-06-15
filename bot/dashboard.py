@@ -866,9 +866,20 @@ _THEME_JS = """
   }
   apply();
   setInterval(apply, 60000);
-  /* '홈 = 뒤로가기' 가로채기는 제거 (사용자 2026-06-11) — 수출입→NOAH→홈
-     클릭이 직전 페이지(수출입)로 돌아가는 등 다단 이동 오작동의 본체.
-     홈 링크는 항상 메인 홈으로 직행. */
+  /* '← 홈으로' = 뒤로가기 (사용자 2026-06-15 재요청 — 06-11 직행 정책 반전):
+     같은 사이트에서 왔으면 history.back() 으로 들어왔던 화면을 스크롤째 복원
+     (응답 no-store 아니라 bfcache → 새로고침 아님). 직접 진입/외부 유입은 href
+     로 홈 직행. 모든 홈으로 버튼·대쉬보드 공통. */
+  document.addEventListener('click', function(e) {
+    var a = e.target.closest && e.target.closest('a.back-link');
+    if (!a) return;
+    try {
+      var r = document.referrer;
+      if (r && new URL(r).origin === location.origin && history.length > 1) {
+        e.preventDefault(); history.back();
+      }
+    } catch (_) {}
+  });
 })();
 """
 
@@ -11492,13 +11503,12 @@ _MARKET_CSS = (
     "border-radius:6px;background:var(--card);color:var(--text);outline:none;width:240px}"
     ".tbl-filter input:focus{border-color:var(--accent)}"
     ".tbl-filter .cnt{color:var(--muted);font-size:12px}"
-    # 날짜 범위 필터(다가오는 실적·리서치, 사용자 2026-06-15 '정렬말고 필터로')
-    ".tbl-filter input.dfilt{width:auto;padding:5px 8px;font-size:12px}"
-    ".tbl-filter .dsep{color:var(--muted);font-size:12px}"
-    ".tbl-filter .dpreset{padding:5px 10px;font-size:12px;border:1px solid var(--border);"
-    "border-radius:6px;background:var(--card);color:var(--muted);cursor:pointer}"
-    ".tbl-filter .dpreset:hover{border-color:var(--accent);color:var(--text)}"
-    ".tbl-filter .dpreset.on{background:var(--accent);color:#fff;border-color:var(--accent)}"
+    # 날짜 드롭다운 필터(실적·리서치·관심종목, 사용자 2026-06-15 '스크롤 내려서
+    # 날짜 선택 — 관심종목처럼'). select 로 가용 날짜만 픽(타이핑 0).
+    ".tbl-filter .dfilt,.fav-ctrl .dfilt{width:auto;padding:5px 8px;font-size:12px;"
+    "border:1px solid var(--border);border-radius:6px;background:var(--card);"
+    "color:var(--text);cursor:pointer;outline:none}"
+    ".tbl-filter .dsep,.fav-ctrl .dsep{color:var(--muted);font-size:12px}"
     ".tabs{display:flex;gap:4px;margin-bottom:14px}"
     ".tab-btn,.etab-btn{padding:6px 16px;font-size:13px;font-weight:600;"
     "border:1px solid var(--border);border-radius:6px;"
@@ -12028,7 +12038,10 @@ def _svg_line_chart(labels: list, series: list) -> str:
         return ""
     has_right = any(s.get("axis") == "R" for s in series)
     W, H = 520.0, 244.0
-    padL, padT, padB = 50.0, 12.0, 30.0
+    # padL 66 — y축 라벨이 6~7자리 콤마 숫자(372,224)일 때 선두 숫자가 잘리던 것
+    # 해소(사용자 2026-06-15 '안에 글씨가 짤리는듯'). text-anchor=end 가 padL-7 에
+    # 끝나므로 라벨 폭(~47px)+여유를 위해 50→66.
+    padL, padT, padB = 66.0, 12.0, 30.0
     padR = 58.0 if has_right else 20.0
     plotW, plotH = W - padL - padR, H - padT - padB
 
@@ -12760,6 +12773,20 @@ def _render_market_page(data: dict) -> str:
         _etab_panes = ('<div class="etab-pane active">'
                        '<div class="empty-msg">실적 발표 일정이 없습니다.</div></div>')
 
+    # 날짜 드롭다운 옵션 (사용자 2026-06-15 '날짜 입력 말고 스크롤 내려서 선택').
+    # 실적=업커밍 → 오름차순(가까운 날 먼저), 리서치=과거 → 내림차순(최근 먼저).
+    # 빈 '전체 날짜' = 필터 해제. wireDateFilter 가 from~to 범위로 행 필터.
+    def _date_opts(dates: list) -> str:
+        return ('<option value="">전체 날짜</option>'
+                + "".join(f'<option value="{_html.escape(d)}">{_html.escape(d)}</option>'
+                          for d in dates))
+    _eopts = _date_opts(sorted({str(e.get("date")) for e in earnings if e.get("date")}))
+    _res_rows_all = (research_kr + research_kr_industry + research_kr_strategy
+                     + research_us
+                     + [r for _k, _l, _rows in _res_intl_defs for r in _rows])
+    _ropts = _date_opts(sorted({str(r.get("date")) for r in _res_rows_all
+                                if r.get("date")}, reverse=True))
+
     parts.append(f"""
   <div class="section-hd" style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap">
     <h2>다가오는 실적</h2>
@@ -12768,14 +12795,11 @@ def _render_market_page(data: dict) -> str:
   </div>
   <div class="tbl-filter">
     <input id="earn-filter" type="text" placeholder="종목 검색 (AAPL, NVDA …)" autocomplete="off">
-    <input id="earn-from" type="date" class="dfilt" title="이 날짜 이후">
+    <select id="earn-from" class="dfilt" title="시작일(이 날짜부터)">{_eopts}</select>
     <span class="dsep">~</span>
-    <input id="earn-to" type="date" class="dfilt" title="이 날짜 이전">
-    <button type="button" class="dpreset" data-from="0" data-to="7">오늘~7일</button>
-    <button type="button" class="dpreset" data-from="7" data-to="20">7~20일</button>
-    <button type="button" class="dpreset" data-clear="1">전체</button>
+    <select id="earn-to" class="dfilt" title="종료일(이 날짜까지)">{_eopts}</select>
     <span class="cnt" id="earn-cnt"></span>
-    <span class="cnt" style="margin-left:auto">날짜 범위·종목 필터 · ↕ 헤더 클릭 정렬</span>
+    <span class="cnt" style="margin-left:auto">날짜 드롭다운·종목 필터 · ↕ 헤더 클릭 정렬</span>
   </div>
   <div class="tabs">{_etab_btns}</div>
   {_etab_panes}
@@ -12786,14 +12810,11 @@ def _render_market_page(data: dict) -> str:
   </div>
   <div class="tbl-filter">
     <input id="research-filter" type="text" placeholder="산업·증권사·제목 검색 …" autocomplete="off">
-    <input id="research-from" type="date" class="dfilt" title="이 날짜 이후">
+    <select id="research-from" class="dfilt" title="시작일(이 날짜부터)">{_ropts}</select>
     <span class="dsep">~</span>
-    <input id="research-to" type="date" class="dfilt" title="이 날짜 이전">
-    <button type="button" class="dpreset" data-from="-7" data-to="0">최근 7일</button>
-    <button type="button" class="dpreset" data-from="-30" data-to="0">최근 30일</button>
-    <button type="button" class="dpreset" data-clear="1">전체</button>
+    <select id="research-to" class="dfilt" title="종료일(이 날짜까지)">{_ropts}</select>
     <span class="cnt" id="research-cnt"></span>
-    <span class="cnt" style="margin-left:auto">날짜 범위·검색 필터 · ↕ 헤더 클릭 정렬</span>
+    <span class="cnt" style="margin-left:auto">날짜 드롭다운·검색 필터 · ↕ 헤더 클릭 정렬</span>
   </div>
   <div class="tabs">
     <button class="tab-btn active" data-tab="kr">한국 기업</button>
@@ -13029,7 +13050,7 @@ def _render_market_page(data: dict) -> str:
   (function() {{
     var favBody = document.getElementById('fav-body');
     var favCnt = document.getElementById('fav-cnt');
-    var favState = {{ sortK: null, sortDir: 1, country: 'ALL' }};
+    var favState = {{ sortK: null, sortDir: 1, country: 'ALL', earnFrom: '', earnTo: '' }};
 
     var FLAG = {{'US':'🇺🇸','KR':'🇰🇷','JP':'🇯🇵','TW':'🇹🇼','CN':'🇨🇳','HK':'🇭🇰','UK':'🇬🇧','DE':'🇩🇪','FR':'🇫🇷'}};
     /* 정렬 전용 USD 환산율 (사용자 2026-06-13 '통화기호 달라도 통합
@@ -13097,8 +13118,25 @@ def _render_market_page(data: dict) -> str:
       countries.forEach(function(c) {{
         copts += '<option value="' + c + '"' + (favState.country === c ? ' selected' : '') + '>' + (FLAG[c] || c) + '</option>';
       }});
+      /* 다음예상 실적일 드롭다운 (사용자 2026-06-15 '관심종목도 날짜 필터') —
+         가용 실적일만 스크롤 선택, from~to 범위. 선택 보존(재렌더). */
+      var edates = [];
+      list.forEach(function(f) {{ if (f.next_earnings && edates.indexOf(f.next_earnings) < 0) edates.push(f.next_earnings); }});
+      edates.sort();
+      function dopts(sel) {{
+        var o = '<option value="">전체 실적일</option>';
+        edates.forEach(function(d) {{ o += '<option value="' + d + '"' + (sel === d ? ' selected' : '') + '>' + d + '</option>'; }});
+        return o;
+      }}
+      if (favState.earnFrom && edates.indexOf(favState.earnFrom) < 0) favState.earnFrom = '';
+      if (favState.earnTo && edates.indexOf(favState.earnTo) < 0) favState.earnTo = '';
+      var dctrl = edates.length
+        ? ('<select id="fav-earn-from" class="dfilt" title="실적일 시작">' + dopts(favState.earnFrom) + '</select>'
+           + '<span class="dsep">~</span>'
+           + '<select id="fav-earn-to" class="dfilt" title="실적일 종료">' + dopts(favState.earnTo) + '</select>')
+        : '';
       var ctrl = '<div class="fav-ctrl">'
-        + '<select id="fav-country">' + copts + '</select>'
+        + '<select id="fav-country">' + copts + '</select>' + dctrl
         + '<span style="font-size:11px;color:var(--muted)">↕ 화살표로 순서 변경 · 헤더 클릭 정렬</span></div>';
 
       /* 정렬 헤더 (data-k/data-t) */
@@ -13166,6 +13204,10 @@ def _render_market_page(data: dict) -> str:
       }});
       var csel = document.getElementById('fav-country');
       if (csel) csel.addEventListener('change', function() {{ favState.country = csel.value; applyFavFilter(); }});
+      var efr = document.getElementById('fav-earn-from');
+      if (efr) efr.addEventListener('change', function() {{ favState.earnFrom = efr.value; applyFavFilter(); }});
+      var eto = document.getElementById('fav-earn-to');
+      if (eto) eto.addEventListener('change', function() {{ favState.earnTo = eto.value; applyFavFilter(); }});
       var tbl = document.getElementById('fav-tbl');
       [].forEach.call(tbl.tHead.rows[0].cells, function(th) {{
         if (th.dataset.k) th.addEventListener('click', function() {{ sortFav(th.dataset.k, th.dataset.t); }});
@@ -13177,13 +13219,19 @@ def _render_market_page(data: dict) -> str:
       var tbl = document.getElementById('fav-tbl');
       if (!tbl) return;
       var shown = 0, total = 0;
+      var df = favState.earnFrom || '', dt = favState.earnTo || '';
+      var dateOn = !!(df || dt);
       [].forEach.call(tbl.tBodies[0].rows, function(tr) {{
         total++;
         var ok = (favState.country === 'ALL') || (tr.dataset.country === favState.country);
+        if (ok && dateOn) {{   /* 다음예상 실적일(data-earn) 범위 필터(사용자 2026-06-15) */
+          var ed = tr.dataset.earn || '';
+          ok = !!ed && (!df || ed >= df) && (!dt || ed <= dt);
+        }}
         tr.style.display = ok ? '' : 'none';
         if (ok) shown++;
       }});
-      favCnt.textContent = (favState.country === 'ALL') ? (total + '종목') : (shown + '/' + total + '종목');
+      favCnt.textContent = (favState.country === 'ALL' && !dateOn) ? (total + '종목') : (shown + '/' + total + '종목');
     }}
 
     function sortFav(k, t) {{

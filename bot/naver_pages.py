@@ -57,8 +57,16 @@ td.ld a:hover{color:var(--accent)}
 _THEME_SCRIPT = r"""
 <script>
 (function(){var h=parseInt(new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Seoul',hour:'numeric',hour12:false}).format(new Date()),10)%24;document.documentElement.dataset.theme=(h>=19||h<7)?'dark':'light';})();
-/* '홈으로 = 뒤로가기' 가로채기는 제거(사용자 2026-06-11) — 테마→상한가
-   다단 이동 후 홈 클릭 시 직전 탭으로 가던 오작동. 홈은 항상 메인 홈. */
+/* '← 홈으로' = 뒤로가기 (사용자 2026-06-15 재요청 — 06-11 직행 정책 반전):
+   같은 사이트에서 왔으면 history.back() 으로 들어왔던 화면을 스크롤째 복원
+   (응답이 no-store 아니라 bfcache 동작 → 새로고침 아님). 직접 진입/외부 유입은
+   href 로 홈 직행. 모든 홈으로 버튼·대쉬보드 공통. */
+document.addEventListener('click',function(e){
+  var a=e.target.closest&&e.target.closest('a.back-link'); if(!a) return;
+  try{var r=document.referrer;
+    if(r&&new URL(r).origin===location.origin&&history.length>1){e.preventDefault();history.back();}
+  }catch(_){}
+});
 </script>
 """
 
