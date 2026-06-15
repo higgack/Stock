@@ -12339,7 +12339,7 @@ def _render_macro_snapshot(macro: dict) -> str:
     out.append(f"""
   <div class="section-hd">
     <h2>Macro Snapshot</h2>
-    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 1분 주기 갱신</span>
+    <span class="ts">{_html.escape(macro.get("ts", ""))} 기준 · 30초 자동 갱신</span>
   </div>""")
 
     if domestic:
@@ -12530,6 +12530,33 @@ def _render_market_daily_cards() -> str:
     return f'<div class="md-row">{kr_card}{us_card}</div>'
 
 
+# 라이브 틱 (사용자 2026-06-15 '홈 위젯 실시간 — 신규기능') — 정적 market.html 은
+# 타이머가 30초마다 재생성(no-cache)하므로, 페이지가 스스로 market.html 을 다시
+# 받아 #live-sections(스냅샷·Macro·업종등락)만 innerHTML 교체 → 새로고침 없이 자동
+# 갱신. 라이브 섹션은 전부 정적 HTML(인라인 SVG 스파크라인·표, JS 위젯 0)이라 swap
+# 안전. graceful: fetch 실패·빈 조각이면 무변경. 탭 숨김·검색 입력 중엔 skip.
+_MARKET_LIVE_JS = """<script>
+(function(){
+  var POLL = 30000;   // 30초 (소스 TTL·재생성 주기와 동일)
+  function tick(){
+    if (document.hidden) return;                       // 백그라운드 탭 skip
+    var s = document.getElementById('mkt-search');
+    if (s && (s === document.activeElement || s.value)) return;  // 검색 중 skip
+    fetch('market.html', {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw 0; return r.text(); })
+      .then(function(html){
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var fresh = doc.getElementById('live-sections');
+        var cur = document.getElementById('live-sections');
+        if (fresh && cur && fresh.innerHTML.length > 100) cur.innerHTML = fresh.innerHTML;
+      })
+      .catch(function(){});                             // graceful — 무변경
+  }
+  setInterval(tick, POLL);
+})();
+</script>"""
+
+
 def _render_market_page(data: dict) -> str:
     """Render market.html — global market snapshot + earnings + research."""
     from bot.market_overview import ALL_CARDS
@@ -12603,9 +12630,10 @@ def _render_market_page(data: dict) -> str:
 
 {_render_market_daily_cards()}
 
+  <div id="live-sections">
   <div class="section-hd">
     <h2>글로벌 시장 스냅샷</h2>
-    <span class="ts">{_html.escape(ts)} 기준 · 1분 주기 갱신</span>
+    <span class="ts">{_html.escape(ts)} 기준 · 30초 자동 갱신</span>
   </div>
   <div class="card-grid">
 """)
@@ -12650,6 +12678,7 @@ def _render_market_page(data: dict) -> str:
                 f'<a href="twhighlow" style="{_lk}">🚀 급등·급락</a>')
     parts.append(_render_etf_sector_movers(
         data.get("tw_sector_movers", {}), "🇹🇼 대만 업종 등락 TOP 10", _tw_link))
+    parts.append('</div>')  # close #live-sections (라이브 틱 단위 — 30초 자동 갱신)
 
     # 다가오는 실적 — 시장별 탭 분리(사용자 정책: 한국 기본·최대한 표시 +
     # 2026-06-13 '실적빌드 다국가' JP/TW/CN/HK 추가, 접미사 재필터).
@@ -13141,6 +13170,7 @@ def _render_market_page(data: dict) -> str:
   }})();
 }})();
 </script>
+{_MARKET_LIVE_JS}
 </body></html>
 """)
     return "".join(parts)

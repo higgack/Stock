@@ -2992,18 +2992,24 @@ async def _periodic_paper_pending(application=None) -> None:
 
 
 async def _periodic_market_refresh() -> None:
-    """market.html 1분 주기 재생성 (사용자 2026-06-11 '리스크 없는 선에서
-    가장 빠르게').
+    """market.html 30초 주기 재생성 (사용자 2026-06-15 '실시간' — 라이브 틱이
+    받아갈 정적 파일을 30초 신선하게).
 
     주기 단축이 안전한 이유: 페이지는 각 소스의 **디스크 캐시에서 렌더**
-    하고, 외부 호출 빈도는 소스별 TTL 이 상한 — Finviz 5분(데이터센터 IP
-    안티봇 검증 한계)·Naver 업종 5분·스냅샷 5분·실적/리서치/예탁금 1~12h.
-    루프는 sequential(await)이라 겹침 불가, to_thread 라 폴링 비차단
-    (watchdog 영향 0). 효과: 위젯 최대 지연 = 소스 TTL + 1분 (기존 +5분).
-    ⚠️ Finviz/Naver TTL 을 더 줄이는 건 차단 리스크 — 여기 말고 TTL 이
-    경계다."""
+    하고, 외부 호출 빈도는 소스별 TTL 이 상한 — Naver 업종/테마 30초 · 글로벌
+    스냅샷 1분 · Macro 1분 · Finviz 5분(데이터센터 IP 안티봇 한계) · 실적/리서치
+    1~12h. 루프는 sequential(await)이라 겹침 불가, to_thread 라 폴링 비차단
+    (watchdog 영향 0). 효과: 위젯 최대 지연 = 소스 TTL + 30초.
+    ⚠️ **라이브 틱(_MARKET_LIVE_JS)**: market.html 이 #live-sections(스냅샷·
+    Macro·업종등락)를 30초마다 스스로 다시 받아 innerHTML 교체 → 사용자 새로고침
+    없이 자동 갱신. 정적 파일을 30초 재생성하므로 이 틱이 30초 신선도를 본다.
+    ⚠️ 홈 스냅샷의 지수·FX·VIX·원자재·코인·Macro 는 **전부 네이버**(nvi:/nvk:/
+    nvx: + _MACRO_NAVER). 남은 yahoo = **33개 KR 주요종목 시세 카드**(삼성전자
+    등 .KS/.KQ, _all_yf_tickers)뿐 → 그래서 스냅샷 _CACHE_TTL_SEC 은 1분 유지
+    (더 줄이면 그 KR 카드 fast_info 가 차단 재유발, _LIVE_TTL=60 도 동일 경계).
+    이 33종목을 네이버 domestic 시세로 옮기면 홈 야후 완전 제거 가능(진행 예정)."""
     while True:
-        await asyncio.sleep(60)   # 1분
+        await asyncio.sleep(30)   # 30초 (사용자 2026-06-15 '실시간')
         try:
             from bot.dashboard import regenerate_market_index
             await asyncio.to_thread(regenerate_market_index)

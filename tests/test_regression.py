@@ -5277,17 +5277,17 @@ class TestUsMovers:
         assert kicked
 
     def test_movers_session_aware_freshness(self):
-        # 장-인지 TTL: 장중 30분 / 장 밖은 '마지막 마감 이후 산출본' fresh
-        # (사용자 2026-06-14 '급등급락은 30분단위로 모두' — 52주 1h 와 분리)
+        # 장-인지 TTL: 장중 30초 / 장 밖은 '마지막 마감 이후 산출본' fresh
+        # (사용자 2026-06-15 '급등락 30초, 대만제외' — 52주 1h 와 분리)
         from datetime import datetime, timezone
         from bot.finviz_client import _movers_cache_is_fresh
 
         def ts(*a):
             return datetime(*a, tzinfo=timezone.utc).timestamp()
         wed_1500 = ts(2026, 6, 10, 15, 0)          # 수요일 장중
-        # 무버 장중 TTL = 1분 (사용자 2026-06-14 '급등급락 1분, 대만제외')
-        assert _movers_cache_is_fresh(wed_1500 - 30, wed_1500)        # 30초 (1분 내)
-        assert not _movers_cache_is_fresh(wed_1500 - 90, wed_1500)    # 90초 (1분 초과)
+        # 무버 장중 TTL = 30초 (사용자 2026-06-15 '급등락 30초, 대만제외')
+        assert _movers_cache_is_fresh(wed_1500 - 15, wed_1500)        # 15초 (30초 내)
+        assert not _movers_cache_is_fresh(wed_1500 - 45, wed_1500)    # 45초 (30초 초과)
         sat_noon = ts(2026, 6, 13, 12, 0)          # 토요일 (장 밖)
         fri_2200 = ts(2026, 6, 12, 22, 0)          # 금 마감(21:30) 후 산출
         fri_2000 = ts(2026, 6, 12, 20, 0)          # 금 장중 산출 (마감 미반영)
@@ -5520,6 +5520,12 @@ class TestNxtClient:
     """NXT 외국인·기관 수급 (nxt_client/nxt_pages, 2026-06-14) — 네이버
     trendForeignOrg 확정 구조 파싱 + 렌더."""
 
+    def test_swr_floor_30s(self):
+        # 사용자 2026-06-15 '실시간/30초' — NXT 수급 디스크 캐시 floor 30s.
+        # 페이지는 매 방문 라이브 렌더(no-cache)지만 floor 로 네이버 reload 폭주 차단.
+        import bot.nxt_client as nc
+        assert nc._TTL == 30
+
     def test_row_parse(self):
         import bot.nxt_client as nc
         r = nc._row({"itemcode": "035420", "itemname": "NAVER",
@@ -5548,6 +5554,78 @@ class TestNxtClient:
         assert "NXT 장전·장후" in html and "NAVER" in html
         assert "외국인" in html and "기관" in html and "데이터 없음" in html
         assert 'href="lookup/035420.KS"' in html
+
+
+class TestMarketLiveTick:
+    """홈 라이브 틱 (dashboard._render_market_page + _MARKET_LIVE_JS, 2026-06-15)
+    — 정적 market.html 을 30초마다 스스로 다시 받아 #live-sections(스냅샷·Macro·
+    업종등락)만 innerHTML 교체(새로고침 없이 자동 갱신). 라이브 섹션은 전부 정적
+    HTML(인라인 SVG·표, JS 위젯 0)이라 swap 안전. graceful·탭숨김/검색중 skip."""
+
+    def test_live_sections_wrap_and_js(self):
+        from bot.dashboard import _render_market_page
+        html = _render_market_page({})
+        assert html.count('id="live-sections"') == 1          # 라이브 블록 1 wrap
+        assert "DOMParser" in html and "fetch('market.html'" in html
+        assert "getElementById('live-sections')" in html      # #live-sections 교체
+        assert "document.hidden" in html                      # 탭 숨김 skip
+        assert html.index("DOMParser") < html.rindex("</body>")  # JS body 내부
+        assert "30초 자동 갱신" in html                        # ts 라벨
+
+    def test_live_js_constant(self):
+        import bot.dashboard as d
+        assert "DOMParser" in d._MARKET_LIVE_JS and "30000" in d._MARKET_LIVE_JS
+
+
+class TestHomeNaverMigration:
+    """홈 스냅샷 야후 완전 제거 — KR 33 주요종목까지 네이버 polling/domestic/stock
+    (사용자 2026-06-15 '네이버는 다 실시간·홈 야후 완전 제거'). VM probe 확정 구조."""
+
+    def test_no_yahoo_tickers_left(self):
+        import bot.market_overview as mo
+        tks = mo._all_yf_tickers()
+        assert not [t for t in tks if t.endswith((".KS", ".KQ"))]   # KR 야후 0
+        assert tks == []        # 전 카드 네이버 → 홈 스냅샷 100% 네이버
+
+    def test_kr_stock_quote_parser(self):
+        from unittest.mock import patch, MagicMock
+        import bot.naver_marketindex as nm
+        sample = {"datas": [
+            {"itemCode": "005930", "closePriceRaw": "337750",
+             "compareToPreviousClosePriceRaw": "15250",
+             "compareToPreviousPrice": {"code": "2"},        # 2=상승
+             "fluctuationsRatioRaw": "4.73", "marketValueFullRaw": "2015000"},
+            {"itemCode": "000660", "closePriceRaw": "200000",
+             "compareToPreviousClosePriceRaw": "5000",
+             "compareToPreviousPrice": {"code": "5"},        # 5=하락
+             "fluctuationsRatioRaw": "2.44", "marketValueFullRaw": "145000"}]}
+        mr = MagicMock(); mr.status_code = 200; mr.json = lambda: sample
+        with patch("bot.finviz_client._cached", lambda *a, **k: None), \
+             patch("bot.finviz_client.naver_paused", lambda: False), \
+             patch("bot.finviz_client._cache_write", lambda *a, **k: None), \
+             patch("requests.get", return_value=mr):
+            out = nm.fetch_kr_stock_quotes(("005930", "000660"))
+        assert out["005930"]["close"] == 337750 and out["005930"]["prev"] == 322500
+        assert out["005930"]["change"] == 15250 and abs(out["005930"]["pct"] - 4.73) < 1e-6
+        assert out["000660"]["prev"] == 205000 and out["000660"]["change"] == -5000
+
+
+class TestMoversSortByPct:
+    """모든 나라 급등락 기본정렬 = 등락률순(시총순 아님) — 사용자 2026-06-15
+    '처음 디폴트화면을'. 52주 신고저는 시총순 유지(별개 surface)."""
+
+    def test_sort_by_pct(self):
+        from bot.highlow_render import sort_by_pct
+        up = [{"pct": 2.0}, {"pct": 9.5}, {"pct": 5.0}, {"pct": None}]
+        dn = [{"pct": -3.0}, {"pct": -8.0}, {"pct": -1.0}]
+        assert [r["pct"] for r in sort_by_pct(up, gainers=True)] == [9.5, 5.0, 2.0, None]
+        assert [r["pct"] for r in sort_by_pct(dn, gainers=False)] == [-8.0, -3.0, -1.0]
+
+    def test_movers_render_uses_pct(self):
+        # 모든 나라 movers 파일이 sort_by_pct 사용(기본 등락률순 배선·시총순 회귀 차단)
+        for path in ("bot/naver_pages.py", "bot/us_pages.py",
+                     "bot/intl_pages.py", "bot/tw_pages.py"):
+            assert "sort_by_pct" in open(path, encoding="utf-8").read(), path
 
 
 class TestPruneNonStock:
@@ -7693,11 +7771,11 @@ class TestUpperLowerVolume:
 
     def test_cache_ttls(self):
         # 엄마보드 스냅샷 2분→5분(#368)→1분(사용자 2026-06-14 '데이터 주기 1분').
-        # naver_sector 5분→1분(사용자 2026-06-15 '업종도 다 1분·네이버 문제없음').
+        # 네이버 라이브 전부 30초(사용자 2026-06-15 '네이버는 다 실시간').
         import bot.market_overview as mo
         import bot.naver_sector_client as ns
-        assert mo._CACHE_TTL_SEC == 60        # 엄마보드 스냅샷 1분(페이지 재생성과 동기)
-        assert ns._CACHE_TTL_SEC == 60        # 네이버 업종 1분(장중·session-aware)
+        assert mo._CACHE_TTL_SEC == 30        # 홈 스냅샷 30초(KR 개별종목까지 네이버=순수)
+        assert ns._CACHE_TTL_SEC == 30        # 네이버 업종·테마 30초(장중·session-aware)
 
     def test_pause_keeps_naver_hk_industry_earnings(self, monkeypatch):
         # 사용자 2026-06-14 '정지 중에도 US/HK 업종·TW/HK 실적 한국어'. 정지 게이트가
@@ -8681,7 +8759,7 @@ class TestNaverKrRanking:
         assert '_ind_lbl = "업종=네이버 · "' in ip       # KR 업종=네이버
         assert "apply_kr_industry" in ip               # KR 52주 업종 백필 배선
         np = open("bot/naver_pages.py", encoding="utf-8").read()
-        # KR 급등락(사용자 2026-06-14) — 무버 신선도 장중 30분(_MOVERS_INTRA_TTL)
+        # KR 급등락(사용자 2026-06-14) — 무버 신선도 장중 30초(_MOVERS_INTRA_TTL, 2026-06-15)
         assert "kr_movers_v1.json" in np
         assert '_session_fresh("KR", _mt, _MOVERS_INTRA_TTL)' in np
         assert "거래대금·시총 native · 시총순" not in np             # 부제 trim

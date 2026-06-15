@@ -204,9 +204,18 @@ def clean_source(src: str) -> str:
 
 
 def sort_by_mcap(items: list) -> list:
-    """시총 내림차순(없으면 뒤로) — 사용자 '시총순위대로 표시'."""
+    """시총 내림차순(없으면 뒤로) — 사용자 '시총순위대로 표시'. 52주 신고저용."""
     return sorted(items, key=lambda it: (it.get("mcap") is None,
                                          -(it.get("mcap") or 0)))
+
+
+def sort_by_pct(items: list, gainers: bool = True) -> list:
+    """등락률 순 — 급등(gainers)은 높은 %, 급락은 낮은(음수 큰) % 먼저. pct None 은
+    뒤로. 사용자 2026-06-15 '모든 나라 급등락 기본화면을 시총순 아닌 등락률순으로'.
+    (헤더 클릭으로 시총 등 재정렬은 그대로 — 기본 정렬만 변경.)"""
+    return sorted(items, key=lambda it: (
+        it.get("pct") is None,
+        -(it.get("pct") or 0.0) if gainers else (it.get("pct") or 0.0)))
 
 
 # (filter_min_mcap 시총 필터는 사용자 2026-06-14 '다시 생각' 으로 제거 — 시총

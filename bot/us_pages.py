@@ -314,11 +314,11 @@ def render_us_movers_page() -> str:
             body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
-        from bot.highlow_render import sort_by_mcap, stock_panel as _hpanel
+        from bot.highlow_render import sort_by_pct, stock_panel as _hpanel
         # 네이버 소스면 거래량·거래대금 표시(Naver 제공) — 사용자 2026-06-14
-        # '거래량과 거래대금 모두'. 모든 자식은 기본 시총순(헤더로 등락률 재정렬).
+        # '거래량과 거래대금 모두'. 기본 등락률순(헤더로 시총 재정렬, 사용자 2026-06-15).
         _is_nv = "네이버" in src
-        up, down = sort_by_mcap(up), sort_by_mcap(down)
+        up, down = sort_by_pct(up, gainers=True), sort_by_pct(down, gainers=False)
         # 업종 render-time 백필 (사용자 2026-06-14 'US 급등락 업종 안 나옴') — 무버
         # 캐시가 네이버 업종맵 생기기 전(stale 02:12)이라 ind=None. GICS/NASDAQ 벌크
         # (캐시) + 네이버 USA 업종맵(캐시 읽기만)으로 즉시 채움. render-safe(.info 안 함·
@@ -343,11 +343,11 @@ def render_us_movers_page() -> str:
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') — 무엇·출처(1회)·정렬·신선도.
     if "네이버" in src:
         sub = ("미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · "
-               "시총순·헤더 클릭 정렬 · 장중 1분" + (f" · {ts} 기준" if ts else ""))
+               "등락률순·헤더 클릭 정렬 · 장중 30초" + (f" · {ts} 기준" if ts else ""))
     else:
         sub = ("미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · "
-               "시총순·헤더 클릭 정렬"
-               + (f" · 출처 {src}" if src else "") + " · 장중 1분"
+               "등락률순·헤더 클릭 정렬"
+               + (f" · 출처 {src}" if src else "") + " · 장중 30초"
                + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)
 
@@ -395,8 +395,8 @@ def render_us_prepost_page() -> str:
                     f'연장거래({_EXT_WINDOW}) 시간에 '
                     '확인해 주세요.</div>')
     else:
-        from bot.highlow_render import sort_by_mcap, stock_panel as _hpanel
-        up, down = sort_by_mcap(up), sort_by_mcap(down)
+        from bot.highlow_render import sort_by_pct, stock_panel as _hpanel
+        up, down = sort_by_pct(up, gainers=True), sort_by_pct(down, gainers=False)
         body = ('<div class="grid">'
                 + _hpanel(f"🚀 {sess_kr} 가장 많이 오른 TOP 30", up, "pp-up", "US",
                           _ind_dist_line(up), show_vol=True)
@@ -404,6 +404,6 @@ def render_us_prepost_page() -> str:
                           _ind_dist_line(down), show_vol=True) + '</div>'
                 + _HL_SORT_JS)
     sub = (f"미국 {sess_kr} 연장거래 등락 상·하위 30 · 정규장 종가 대비 · "
-           "yfinance 30분봉 · 시총순·헤더 클릭 정렬 · 연장거래 창에서 30분"
+           "yfinance 30분봉 · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분"
            + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 장전·장후 급등·급락", sub, "usprepost", body)

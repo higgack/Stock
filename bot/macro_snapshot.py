@@ -30,9 +30,10 @@ import requests
 log = logging.getLogger("bot.macro_snapshot")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "macro_snapshot"
-# 5분 — 글로벌 스냅샷(5분)과 값을 일치시킴(사용자 요청). FRED/ECOS 는 자체
-# 12h 캐시라 재fetch 안 함 → 추가 비용은 fast_info(~26) + yf batch 2회/5분(저위험).
-_CACHE_TTL_SEC = 60  # 1min (사용자 2026-06-14 — 글로벌 스냅샷과 동일 1분 주기)
+# 30초 — 글로벌 스냅샷과 값 일치(사용자 2026-06-15 '네이버 다 실시간'). 라이브
+# 값은 전부 네이버(_MACRO_NAVER: idx/com/coin/fx) → 야후 무관. FRED/ECOS 자체
+# 12h, 12개월 차트(yf monthly/daily)는 1h(_cached ttl=3600) — 실시간 불요.
+_CACHE_TTL_SEC = 30  # 30초 (사용자 2026-06-15 — 글로벌 스냅샷과 동일 30초)
 
 # ── Indicator definitions ───────────────────────────────────────────
 # (key, label, unit, source, source_id, decimals)
@@ -142,7 +143,7 @@ def _yf_monthly_batch(tickers: list[str]) -> dict[str, list[float]]:
     """Batch monthly close (13mo) for all tickers → {ticker: [floats]}.
 
     ⚠️ 차트 전용 1h 캐시 (사용자 2026-06-14 '매크로 차트 또 날아감'): 값은
-    네이버(1분)인데 차트 download 를 매 1분 snapshot 재생성마다 돌리면 22종목
+    네이버(30초)인데 차트 download 를 매 30초 snapshot 재생성마다 돌리면 22종목
     yf.download 가 yahoo IP rate-limit 을 유발 → 차트가 throttle 로 빔. 12개월
     월간 라인은 1h 묵어도 무해 → download 트래픽 60배↓. 실패 시 스테일 폴백."""
     out: dict[str, list[float]] = {}
@@ -376,9 +377,9 @@ def _fetch_macro_naver_values(sids: list) -> dict:
 
 # ── Main ────────────────────────────────────────────────────────────
 def fetch_macro_snapshot() -> dict[str, Any]:
-    """Assemble the full macro snapshot. 5min disk cache (글로벌 스냅샷과
+    """Assemble the full macro snapshot. 30초 disk cache (글로벌 스냅샷과
     동일 주기) — FRED/ECOS 하위 시계열은 각자 12h 캐시(공식 통계라 일·월
-    단위 갱신). _periodic_market_refresh 가 5분마다 market.html 재생성.
+    단위 갱신). _periodic_market_refresh 가 30초마다 market.html 재생성.
 
     Returns {"domestic": [...], "global": [...], "charts": {...}, "ts": str}
     where each indicator is {key,label,unit,value,change,decimals,spark}.
@@ -433,7 +434,7 @@ def fetch_macro_snapshot() -> dict[str, Any]:
     yf_monthly = _yf_monthly_batch(yf_tickers)
     yf_daily_1mo = _yf_daily_1mo_batch(yf_tickers)
     # ⛔ _yf_daily_change(fast_info ~24콜/갱신) 제거 (사용자 2026-06-14 '매크로카드
-    # 맨날 없어져·뭐가 fast_info 트리거하냐'). 이게 1분마다 야후 quote 를 24회 때려
+    # 맨날 없어져·뭐가 fast_info 트리거하냐'). 이게 매 갱신마다 야후 quote 를 24회 때려
     # YFRateLimitError 유발 → 회로차단 → Macro value None → 카드 소실의 주범이었음.
     # 모든 yf 가격 sid 가 _MACRO_NAVER 에 매핑돼 값은 네이버로 충분, 네이버 결측 시
     # chart_spark[-1](yf_monthly=download/history) 폴백. fast_info 호출 0.
@@ -470,9 +471,9 @@ def fetch_macro_snapshot() -> dict[str, Any]:
                 if sid in nv_spark:
                     # 원자재·지수·코인·환율 — 네이버 history(yfinance 무티커/throttle
                     # 무관, 매크로 야후 차트 0). 카드=최근 1개월(뒤 22점). **라인 끝점을
-                    # 1분 현재값(macro_nv)으로 교체** → 값과 차트가 1분 싱크(사용자
-                    # 2026-06-14 '차트까지 1분으로 다 싱크'). 일봉 history 는 1h 캐시
-                    # (일 1회 갱신이라 충분), 끝점만 매 1분 regen 시 현재값 반영.
+                    # 현재값(macro_nv)으로 교체** → 값과 차트 끝점이 실시간 싱크(사용자
+                    # 2026-06-15 '네이버 다 실시간'). 일봉 history 는 1h 캐시(일 1회
+                    # 갱신이라 충분), 끝점만 매 regen(30초) 시 현재값 반영.
                     _ser = list(nv_spark.get(sid) or [])
                     if value is None and _ser:
                         value = _ser[-1]

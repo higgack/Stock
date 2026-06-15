@@ -26,20 +26,18 @@ import yfinance as yf
 log = logging.getLogger("bot.market_overview")
 
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "market_overview"
-# 스냅샷 — download 일봉 배치는 1분(사용자 2026-06-14 '데이터 주기 1분', 1콜/분
-# 이라 가벼움), 라이브 fast_info 는 별도 10분 throttle(_LIVE_TTL — rate-limit
-# 회피). YF_PAUSE 시 둘 다 skip. Finviz/Naver 업종 TTL 은 각 클라이언트가 별도
-# 보유(안티봇 경계 — 건드리지 말 것).
-_CACHE_TTL_SEC = 60  # 1 min
+# 스냅샷 — 지수·환율·원자재·코인·KR 개별종목 **전부 네이버**(사용자 2026-06-15
+# '홈 야후 완전 제거') → _all_yf_tickers 보통 0, yf 경로 무동작. 라이브 fast_info
+# throttle(_LIVE_TTL)·YF_PAUSE 는 야후 잔존 시 대비로만 유지. Finviz 업종 TTL 은
+# 각 클라이언트 별도(안티봇 경계 — 건드리지 말 것).
+_CACHE_TTL_SEC = 30  # 30초 (사용자 2026-06-15 '네이버 다 실시간')
 
-# fast_info(라이브 quote API) 호출 throttle — yahoo 가 fast_info 만 쉽게 rate-limit
-# (사용자 2026-06-14 /health: 재개 즉시 재차단, download 는 OK). 홈 스냅샷이 1분마다
-# ~20 fast_info 병렬 호출하던 게 주범 → 라이브가는 _LIVE_TTL(10분)마다만 갱신,
-# 그 사이엔 download 일봉(1콜) + 직전 라이브 캐시 사용. fast_info 부하 ~10x↓.
-# (download 는 아시아 지수 하루 지연 이슈가 있어 fast_info 를 아예 끄진 않고 throttle.)
-_LIVE_TTL = 60      # fast_info 라이브 throttle — 1분 (사용자 2026-06-14
-#                     '전부 1분, fast_info 가 문제 아닌듯'). 회로차단 가드는 유지
-#                     (야후 rate-limit 시에만 skip→daily 폴백, 무해).
+# fast_info(라이브 quote API) throttle — 야후가 fast_info 만 쉽게 rate-limit.
+# 홈 스냅샷은 이제 지수·환율·원자재·코인·KR 개별종목 **전부 네이버**(사용자
+# 2026-06-15) → fast_info 호출 사실상 0(_all_yf_tickers 보통 빈 리스트). _LIVE_TTL
+# 은 야후 잔존(미래 추가 종목 등) 대비 방어적 throttle 로만 유지 — 야후 rate-limit
+# 시 daily 폴백.
+_LIVE_TTL = 60      # fast_info 라이브 throttle (잔존 야후 대비 방어 — 홈은 보통 미사용)
 _LAST_LIVE: dict = {}
 _LAST_LIVE_TS = 0.0
 
@@ -56,9 +54,10 @@ except OSError:
 
 # ── Market Snapshot Ticker Groups ────────────────────────────────────
 
-# 사용자 2026-06-14 '다 네이버로' — 세계지수는 네이버 worldstock/index(nvi:reuters
-# Code, VM probe 확정). 니케이/대만/상해/항셍/Sensex 네이버. 코스피/코스닥(폴링
-# domestic)·CSI300·항셍테크·Nifty 는 reutersCode 미확정이라 yfinance 유지(후속).
+# 사용자 2026-06-14 '다 네이버로' — 세계지수·코스피/코스닥 **전부 네이버**(nvi:worldstock/
+# index + nvd:domestic, VM probe 확정). 니케이/대만/상해/심천/항셍/Sensex/VN 네이버.
+# ⚠️ CSI300·항셍테크(HSTECH)·Nifty 는 **현재 미표시**(상해종합 .SSEC·항셍 .HSI·Sensex
+# .BSESN 으로 대체) — 추가하려면 네이버 reutersCode 발굴 필요(코멘트 정정 2026-06-15).
 CARD_ASIA = [
     ("KR 코스피", "nvd:KOSPI"),    # 네이버 polling/domestic (사용자 2026-06-14)
     ("KR 코스닥", "nvd:KOSDAQ"),
@@ -74,8 +73,8 @@ CARD_ASIA = [
 ]
 
 # 사용자 2026-06-14 '다 네이버로' — 세계 cross-rate 는 네이버 exchangeWorld(nvx:).
-# ⚠️ 원/달러·엔/원은 KRW-base 라 exchangeWorld 미포함(KRW 부재) → yfinance 유지
-# (daily download 경로라 fast_info 무관, 후속에 KR 환율 엔드포인트 확인 시 이전).
+# 원/달러·엔/원은 KRW-base 라 exchangeWorld 미포함(KRW 부재) → 네이버 marketindex/
+# exchange(nvk:FX_*)로 가져온다. **야후 아님** (옛 'yfinance 유지' 주석 정정 2026-06-15).
 CARD_FX = [
     ("KR 원/달러", "nvk:FX_USDKRW"),       # 네이버 marketindex/exchange (사용자 2026-06-14)
     ("JP 엔/원 (100엔)", "nvk:FX_JPYKRW"),  # 네이버 (100엔 기준 표기)
@@ -209,9 +208,12 @@ def _all_yf_tickers() -> list[str]:
             if tk.startswith(("nv:", "nvi:", "nvd:", "nvx:", "nvk:",
                               "nvf:", "nvc:", "nve:")):
                 continue  # 네이버 (marketindex/worldstock/domestic/exchange/futures/coin/etf)
+            if tk.endswith((".KS", ".KQ")):
+                continue  # KR 개별종목 = 네이버 polling/domestic/stock (사용자 2026-06-15
+                #           '홈 야후 완전 제거') — _fetch_market_snapshot 가 별도 병합.
             tickers.append(tk)
-    # 달러인덱스도 네이버(.DXY, marketindex/exchange)로 전환 — yfinance 완전 제거
-    # (사용자 2026-06-14 '모두 네이버로'). _fetch_market_snapshot 가 별도 주입.
+    # 지수·환율·원자재·코인·KR 개별종목 전부 네이버로 전환 → 홈 스냅샷 yfinance
+    # **완전 제거**(사용자 2026-06-15). 이 함수는 보통 빈 리스트(야후 0)를 반환.
     return tickers
 
 
@@ -241,8 +243,10 @@ def _fetch_yf_batch() -> dict[str, dict]:
     # 1) 일봉 batch — 폴백용 (fast_info 없는 종목)
     daily: dict[str, tuple[float, float]] = {}
     try:
-        df = yf.download(" ".join(tickers), period="5d", progress=False,
-                         threads=True, timeout=20)
+        # 야후 티커 0(전부 네이버, 사용자 2026-06-15) → download 생략(빈 문자열 호출
+        # → 로그 스팸 차단). 아래 네이버 병합이 result 를 채운다.
+        df = (yf.download(" ".join(tickers), period="5d", progress=False,
+                          threads=True, timeout=20) if tickers else None)
         if df is not None and not df.empty:
             for tk in tickers:
                 try:
@@ -282,7 +286,7 @@ def _fetch_yf_batch() -> dict[str, dict]:
     except Exception:
         _fi_ok = True
     # throttle(10분) + 회로차단(쿨다운 중이면 download 만 사용)
-    if _fi_ok and time.time() - _LAST_LIVE_TS >= _LIVE_TTL:
+    if tickers and _fi_ok and time.time() - _LAST_LIVE_TS >= _LIVE_TTL:
         try:
             # fast_info 라이브 — 전 종목(사용자 2026-06-14 '전부 1분으로'; (A) 축소
             # 원복). 회로차단(_fi_ok)·throttle(1분)·daily 폴백이 가드.
@@ -441,6 +445,21 @@ def _fetch_yf_batch() -> dict[str, dict]:
                                    "change": _rec["change"], "pct": _rec["pct"]}
         except Exception as exc:
             log.warning("market_overview: naver ETF 병합 실패: %s", exc)
+    # KR 개별종목(.KS/.KQ) — 네이버 polling/domestic/stock (사용자 2026-06-15
+    # '홈 야후 완전 제거'). 33 KR 주요종목 시세를 야후→네이버. probe 확정 구조.
+    _kr_tks = [_tk for _grp, _items in ALL_CARDS if _items
+               for _nm, _tk in _items if _tk.endswith((".KS", ".KQ"))]
+    if _kr_tks:
+        try:
+            from bot.naver_marketindex import fetch_kr_stock_quotes
+            _krq = fetch_kr_stock_quotes(tuple(_t.rsplit(".", 1)[0] for _t in _kr_tks))
+            for _tk in _kr_tks:
+                _rec = _krq.get(_tk.rsplit(".", 1)[0])
+                if _rec and _rec.get("close") is not None:
+                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
+                                   "change": _rec["change"], "pct": _rec["pct"]}
+        except Exception as exc:
+            log.warning("market_overview: naver KR 개별종목 병합 실패: %s", exc)
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)

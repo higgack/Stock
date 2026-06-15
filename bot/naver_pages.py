@@ -165,7 +165,7 @@ def render_theme_page() -> str:
                 f'<th>주도주</th></tr></thead>'
                 f'<tbody>{"".join(rows)}</tbody></table></div>{_THEME_SORT_JS}')
     return _shell("테마별 시세",
-                  "Naver 증권 테마별 등락률 · 상승순. 테마명·주도주 클릭 시 상세/종목분석. 5분 캐시.",
+                  "Naver 증권 테마별 등락률 · 상승순. 테마명·주도주 클릭 시 상세/종목분석. 장중 30초 캐시.",
                   "theme", body)
 
 
@@ -193,8 +193,8 @@ tbl.querySelectorAll('th.th-sort').forEach(function(th){
 def render_highlow_page() -> str:
     """KR 급등·급락 — 네이버 front-api domestic top 상승/하락 (사용자 2026-06-14
     'KR 상한가/하한가 → 급등/급락', JP/CN/HK 무버 형태). 한글명·시총·거래대금
-    native·429 면역. 장중 1분(무버 신선도)·장 밖 재스캔 0."""
-    from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
+    native·429 면역. 장중 30초(무버 신선도)·장 밖 재스캔 0."""
+    from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_pct,
                                     stock_panel)
     data = None
     try:
@@ -224,8 +224,8 @@ def render_highlow_page() -> str:
         log.warning("naver KR movers: %s", exc)
 
     if data is not None:
-        up = sort_by_mcap(data["up"])
-        down = sort_by_mcap(data["down"])
+        up = sort_by_pct(data["up"], gainers=True)      # 기본 등락률순(사용자 2026-06-15)
+        down = sort_by_pct(data["down"], gainers=False)
         # KR 업종(한글) 백필 — 네이버 업종 그룹 멤버맵 (사용자 2026-06-14 'KR
         # 급등락에 업종 추가, 그냥 한글로'). SWR·graceful(빌드 중이면 —).
         try:
@@ -242,8 +242,8 @@ def render_highlow_page() -> str:
                 + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "KR",
                               ind_dist_line(down), **_o)
                 + '</div>' + HL_SORT_JS)
-        sub = ("네이버 증권 급등/급락 · 시총순·헤더 클릭 정렬 · 업종=네이버 · "
-               f"장중 1분{(' · ' + ts + ' 기준') if ts else ''}")
+        sub = ("네이버 증권 급등/급락 · 등락률순·헤더 클릭 정렬 · 업종=네이버 · "
+               f"장중 30초{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("급등·급락", sub, "highlow", body)
 
     body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'

@@ -5,7 +5,7 @@ yfinance fast_info(quote API, 데이터센터 IP rate-limit) 대체 (사용자 2
 stock.naver.com/api/securityService/marketindex/{energy|metals|agricultural}
 → [{symbolCode, name, closePrice(콤마), fluctuations(절대변동), fluctuationsRatio,
 fluctuationsType:{code:'2'상승|'5'하락}}]. 두바이유(DCB)·니켈(NI) 등 yfinance
-무티커 항목 포함. 무료·무키·1분 캐시·graceful.
+무티커 항목 포함. 무료·무키·30초 캐시·graceful.
 """
 from __future__ import annotations
 
@@ -19,7 +19,9 @@ _INDEX_URL = "https://stock.naver.com/api/polling/worldstock/index"
 # 동일 구조라 fetch_commodities 로 함께 수집(nv:CCFI·nv:BADI 등으로 CARD 참조).
 _CATEGORIES = ("energy", "metals", "agricultural", "transport")
 _CACHE = "naver_marketindex.json"
-_TTL = 60       # 1분 (스냅샷 주기와 일치, 사용자 2026-06-14)
+_TTL = 30       # 30초 (네이버 라이브값 — 지수·환율·원자재·코인·KR 개별종목,
+#                 사용자 2026-06-15 '네이버는 다 실시간'). 12개월 차트 history 는
+#                 별도 1h(_cached ttl=3600) — 실시간 불요.
 _HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -53,7 +55,7 @@ def _parse_item(it: dict) -> dict | None:
 
 def fetch_commodities() -> dict:
     """{symbolCode: {name, close, prev, change, pct}} — energy+metals+agri 합산.
-    1분 디스크 캐시. NAVER_PAUSE·실패 시 직전 캐시(블랭크 방지) 또는 {}."""
+    30초 디스크 캐시. NAVER_PAUSE·실패 시 직전 캐시(블랭크 방지) 또는 {}."""
     from bot.finviz_client import _cache_write, _cached, naver_paused
     c = _cached(_CACHE, ttl=_TTL)
     if isinstance(c, dict) and c:
@@ -309,7 +311,7 @@ def fetch_world_indices(codes: tuple) -> dict:
     """{reutersCode: {close, prev, change, pct}} — polling/worldstock/index
     (사용자 2026-06-14 '다 네이버로', VM probe 구조 확정: datas[].reutersCode·
     indexName·closePrice·compareToPreviousClosePrice·compareToPreviousPrice.code
-    2상승/5하락). 니케이(.N225)·대만(.TWII)·VIX(.VIX)·필반(.SOX) 등. 1분 캐시·
+    2상승/5하락). 니케이(.N225)·대만(.TWII)·VIX(.VIX)·필반(.SOX) 등. 30초 캐시·
     naver_paused·graceful.
 
     ⚠️ 공유 캐시(naver_worldindex.json) **코드셋 병합** 정책 — 여러 호출부가 같은
@@ -366,7 +368,7 @@ def fetch_domestic_indices(codes: tuple) -> dict:
     """{itemCode: {close, prev, change, pct}} — polling/domestic/index
     (코스피/코스닥 등 국내지수, 사용자 2026-06-14 '다 네이버로'. VM probe 구조 확정:
     itemCode·closePriceRaw·compareToPreviousClosePriceRaw·compareToPreviousPrice.code
-    (2상승/5하락)·fluctuationsRatioRaw). *Raw 필드 = 콤마 없는 숫자. 1분 캐시·
+    (2상승/5하락)·fluctuationsRatioRaw). *Raw 필드 = 콤마 없는 숫자. 30초 캐시·
     naver_paused·graceful. 응답이 bare list 또는 {datas:[...]} 양형 모두 수용."""
     from bot.finviz_client import _cache_write, _cached, naver_paused
     c = _cached(_DOM_CACHE, ttl=_TTL)
@@ -405,6 +407,58 @@ def fetch_domestic_indices(codes: tuple) -> dict:
     return out
 
 
+_DOMSTOCK_URL = "https://stock.naver.com/api/polling/domestic/stock"
+_DOMSTOCK_CACHE = "naver_domesticstock.json"
+
+
+def fetch_kr_stock_quotes(codes: tuple) -> dict:
+    """{code(6자리): {close, prev, change, pct, mcap}} — polling/domestic/stock
+    (KR 개별종목 시세). VM probe 2026-06-15 확정: 국내지수와 **동일 구조** —
+    itemCode·closePriceRaw·compareToPreviousClosePriceRaw·compareToPreviousPrice.
+    code(2상승/5하락)·fluctuationsRatioRaw·marketValueFullRaw(시총). *Raw=콤마없는
+    숫자. 30초 캐시(=_TTL)·naver_paused·graceful. 홈 33 KR 주요종목 카드를 야후
+    →네이버 이전(사용자 2026-06-15 '네이버는 다 실시간·홈 야후 완전 제거'). codes
+    가 고정 집합이라 전체 맵 캐시(지수 fetch 와 동일). 응답 bare list / {datas:[]} 양형."""
+    from bot.finviz_client import _cache_write, _cached, naver_paused
+    if not codes:
+        return {}
+    c = _cached(_DOMSTOCK_CACHE, ttl=_TTL)
+    if isinstance(c, dict) and c:
+        return c
+    if naver_paused():
+        return _cached(_DOMSTOCK_CACHE, ttl=86400) or {}
+    import requests
+    out: dict = {}
+    try:
+        r = requests.get(_DOMSTOCK_URL, headers=_HDRS, timeout=12,
+                         params={"itemCodes": ",".join(codes)})
+        raw = r.json() if r.status_code == 200 else []
+    except Exception as exc:
+        log.warning("naver domesticstock fetch error: %s", exc)
+        return _cached(_DOMSTOCK_CACHE, ttl=86400) or {}
+    rows = raw.get("datas") if isinstance(raw, dict) else raw
+    for it in rows if isinstance(rows, list) else []:
+        ic = str(it.get("itemCode") or "").strip()
+        close = _num(it.get("closePriceRaw") or it.get("closePrice"))
+        if not ic or close is None:
+            continue
+        chg = _num(it.get("compareToPreviousClosePriceRaw")
+                   or it.get("compareToPreviousClosePrice"))
+        code = (it.get("compareToPreviousPrice") or {}).get("code")
+        pctv = _num(it.get("fluctuationsRatioRaw") or it.get("fluctuationsRatio"))
+        sign = -1.0 if code == "5" else 1.0      # 5=하락, 2=상승
+        prev = (close - sign * chg) if chg is not None else close
+        out[ic] = {"close": close, "prev": prev,
+                   "change": (sign * abs(chg)) if chg is not None else 0.0,
+                   "pct": (sign * abs(pctv)) if pctv is not None else 0.0,
+                   "mcap": _num(it.get("marketValueFullRaw"))}
+    if out:
+        _cache_write(_DOMSTOCK_CACHE, out)
+    else:
+        return _cached(_DOMSTOCK_CACHE, ttl=86400) or {}
+    return out
+
+
 _FX_URL = "https://api.stock.naver.com/marketindex/exchangeWorld"
 _FX_CACHE = "naver_worldfx.json"
 
@@ -415,7 +469,7 @@ def fetch_world_fx() -> dict:
     closePrice·fluctuations·fluctuationsRatio·fluctuationsType.code 2상승/5하락).
     전체 113쌍 반환(인자 무시) → 호출부가 필요한 코드만 사용(EURUSD/GBPUSD/USDCNY
     등). ⚠️ 원/달러·엔/원 같은 KRW-base 는 미포함(세계 cross-rate 만, KRW 부재).
-    1분 캐시·naver_paused·graceful. 응답 bare list/{datas:[]} 양형 수용."""
+    30초 캐시·naver_paused·graceful. 응답 bare list/{datas:[]} 양형 수용."""
     from bot.finviz_client import _cache_write, _cached, naver_paused
     c = _cached(_FX_CACHE, ttl=_TTL)
     if isinstance(c, dict) and c:
@@ -460,7 +514,7 @@ def fetch_kr_fx() -> dict:
     normalList (원/달러·원/엔 등 KRW-base 환율, 사용자 2026-06-14. VM probe: 엔드포인트
     200, reutersCode=FX_USDKRW 형식). exchangeWorld 와 동일 marketindex 패밀리라
     item 구조(closePrice·fluctuations·fluctuationsRatio·fluctuationsType.code) 재사용.
-    전체 반환(인자 무시). 1분 캐시·naver_paused·graceful. normalList/datas/bare 수용."""
+    전체 반환(인자 무시). 30초 캐시·naver_paused·graceful. normalList/datas/bare 수용."""
     from bot.finviz_client import _cache_write, _cached, naver_paused
     c = _cached(_KRFX_CACHE, ttl=_TTL)
     if isinstance(c, dict) and c:
@@ -499,7 +553,7 @@ def fetch_world_futures(codes: tuple) -> dict:
     """{reutersCode: {close, prev, change, pct}} — polling/worldstock/futures
     (미국 지수선물, 사용자 2026-06-14 'EScv1' 등). worldstock/index 와 동일 datas[]
     구조(reutersCode·closePrice·compareToPreviousClosePrice·compareToPreviousPrice.
-    code 2상승/5하락). 1분 캐시·naver_paused·graceful."""
+    code 2상승/5하락). 30초 캐시·naver_paused·graceful."""
     from bot.finviz_client import _cache_write, _cached, naver_paused
     c = _cached(_FUT_CACHE, ttl=_TTL)
     if isinstance(c, dict) and c:
@@ -544,7 +598,7 @@ def fetch_world_etf(codes: tuple) -> dict:
     (미국 섹터 ETF XLF/XLV/XLP/XLE 등, 사용자 2026-06-14 '다 네이버로'). worldstock/
     index·futures 와 동일 datas[] 구조(reutersCode·closePrice·compareToPreviousClose
     Price·compareToPreviousPrice.code 2상승/5하락). ⚠️ reutersCode 형식 verify 필요
-    (XLF / XLF.K / XLF.P 등). 1분 캐시·naver_paused·graceful."""
+    (XLF / XLF.K / XLF.P 등). 30초 캐시·naver_paused·graceful."""
     from bot.finviz_client import _cache_write, _cached, naver_paused
     c = _cached(_ETF_CACHE, ttl=_TTL)
     if isinstance(c, dict) and c:
@@ -591,7 +645,7 @@ def fetch_naver_coins() -> dict:
     사용자 2026-06-14). VM probe 구조 확정(bare list): nfTicker(심볼)·tradePrice(원화
     숫자)·changeRate(%, 부호포함)·changeValue(원화 변동)·change(RISING/FALLING).
     ⚠️ Upbit=KRW 라 값이 원화(₩). 응답 bare list / {result|datas|coins:[...]} 수용.
-    BNB 등 업비트 미상장은 자연 누락(graceful). 1분 캐시·naver_paused."""
+    BNB 등 업비트 미상장은 자연 누락(graceful). 30초 캐시·naver_paused."""
     from bot.finviz_client import _cache_write, _cached, naver_paused
     c = _cached(_COIN_CACHE, ttl=_TTL)
     if isinstance(c, dict) and c:

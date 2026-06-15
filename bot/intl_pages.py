@@ -106,12 +106,12 @@ def render_intl_movers_page(market: str) -> str:
             body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
                     '(잠시 후 다시 시도해 주세요.)</div>')
     else:
-        from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_mcap,
+        from bot.highlow_render import (HL_SORT_JS, ind_dist_line, sort_by_pct,
                                         stock_panel)
         # 네이버 무버: 거래량·거래대금·시총 native + yfinance 업종(야후방식).
-        # 모든 자식 기본 시총순(사용자 2026-06-14, 헤더로 등락률 재정렬).
+        # 기본 등락률순(사용자 2026-06-15, 헤더로 시총 재정렬).
         _o = dict(show_vol=True, show_value=True, show_ind=True)
-        up, down = sort_by_mcap(up), sort_by_mcap(down)
+        up, down = sort_by_pct(up, gainers=True), sort_by_pct(down, gainers=False)
         body = ('<div class="grid">'
                 + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", market,
                               ind_dist_line(up), **_o)
@@ -124,8 +124,8 @@ def render_intl_movers_page(market: str) -> str:
     # 업종 소스 정직 표기 — CN/JP=네이버 우선+야후 폴백, HK=야후 우선+네이버 폴백.
     _ind_src = ("업종=네이버+yfinance" if market in ("CN_A", "JP")
                 else "업종=yfinance+네이버" if market == "HK" else "업종=네이버")
-    sub = (f"{flag} 당일 등락 상·하위 30 · {src} · 시총순·헤더 클릭 정렬 · "
-           f"{_ind_src} · 장중 1분" + (f" · {ts} 기준" if ts else ""))
+    sub = (f"{flag} 당일 등락 상·하위 30 · {src} · 등락률순·헤더 클릭 정렬 · "
+           f"{_ind_src} · 장중 30초" + (f" · {ts} 기준" if ts else ""))
     _active = {"JP": "jpmovers", "CN_A": "cnmovers", "HK": "hkmovers"}.get(market, "hkmovers")
     return _tw_shell(f"{flag} 급등·급락", sub, body,
                      nav=_market_nav(market, _active))

@@ -1902,11 +1902,11 @@ _SESSIONS_UTC = {
     "HK":   (1, 30, 8, 0),     # 09:30–16:00 HKT(+8)
 }
 _HL_INTRA_TTL = 1 * 3600       # 장중 52주 신고저 재산출 간격 (사용자 2026-06-13). 장 밖 0.
-_MOVERS_INTRA_TTL = 1 * 60     # 장중 무버(급등락) 재산출 간격 — 1분 (사용자 2026-06-14
-#  '급등급락 1분, 대만제외'). US/JP/CN/HK 무버는 네이버 랭킹(fast_info·야후 무관, 컴퓨트당
-#  ~2-6콜) + SWR(페이지 접근 시만) + graceful(네이버 throttle 시 stale 서빙) 이라 1분이어도
-#  야후 rate-limit 리스크 0. TW 무버는 별도 경로(TWSE 전종목 대용량 CSV, _HL_INTRA_TTL 1h
-#  유지 — 1분이면 대용량 fetch 낭비·throttle 위험). 52주 신고저는 _HL_INTRA_TTL(1h) 그대로.
+_MOVERS_INTRA_TTL = 30         # 장중 무버(급등락) 재산출 간격 — 30초 (사용자 2026-06-15
+#  '급등락 30초, 대만제외'). US/JP/CN/HK/KR 무버는 네이버 랭킹(fast_info·야후 무관, 컴퓨트당
+#  ~2-6콜) + SWR(페이지 접근 시만·백그라운드 킥) + graceful(네이버 throttle 시 stale 서빙)
+#  이라 30초여도 야후 rate-limit 리스크 0. TW 무버는 별도 경로(TWSE 전종목 대용량 CSV,
+#  _HL_INTRA_TTL 1h 유지 — 30초면 대용량 fetch 낭비·throttle 위험). 52주 신고저는 1h 그대로.
 
 
 def _session_fresh(market: str, cache_ts: float, intra_ttl: float,

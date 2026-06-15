@@ -77,16 +77,18 @@ def render_tw_highlow_page() -> str:
     else:
         # 종목명=영문 + 업종 + 시총 + 거래량/거래대금(TWSE). enrich=mcap/업종/영문명.
         from bot.highlow_render import (HL_SORT_JS, enrich_for_panel,
-                                        sort_by_mcap, stock_panel)
-        up = sort_by_mcap(enrich_for_panel(up, "TW", want_ind=True, want_name=True))
-        down = sort_by_mcap(enrich_for_panel(down, "TW", want_ind=True, want_name=True))
+                                        sort_by_pct, stock_panel)
+        up = sort_by_pct(enrich_for_panel(up, "TW", want_ind=True, want_name=True),
+                         gainers=True)        # 기본 등락률순(사용자 2026-06-15)
+        down = sort_by_pct(enrich_for_panel(down, "TW", want_ind=True, want_name=True),
+                           gainers=False)
         body = ('<div class="grid">'
                 + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "TW",
                               show_vol=True, show_value=True, show_ind=True)
                 + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "TW",
                               show_vol=True, show_value=True, show_ind=True)
                 + '</div>' + HL_SORT_JS)
-    sub = (f"TWSE 전종목 당일 등락 상·하위 · 시총순·헤더 클릭 정렬 · 종목명=한글 · "
+    sub = (f"TWSE 전종목 당일 등락 상·하위 · 등락률순·헤더 클릭 정렬 · 종목명=한글 · "
            f"업종·시총=yfinance · {(dt + ' 종가 기준 · ') if dt else ''}장중 30분"
            f"{(' · ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 급등·급락", sub, body,

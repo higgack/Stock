@@ -26,11 +26,12 @@ _HDRS = {
 _ORGAN_CANDIDATES = ("ORGANIZATION", "ORGAN", "INSTITUTION", "ORGN")
 _FCACHE = "nxt_foreign.json"
 _OCACHE = "nxt_organ.json"
-_TTL = 120   # 2분 (연장거래 준실시간) — SWR: 매 방문 라이브 호출 방지(개선점 B)
+_TTL = 30    # 30초 (연장거래 준실시간, 사용자 2026-06-15 '실시간/30초') — 페이지는 매
+             # 방문 라이브 렌더(no-cache)지만 30s floor 로 네이버 reload 폭주 차단
 
 
 def _cached_fetch(cache_name: str, fn) -> dict | None:
-    """2분 디스크 캐시 + 실패 시 스테일(24h) 폴백 — 매 방문 네이버 직접 호출 차단
+    """30초 디스크 캐시 + 실패 시 스테일(24h) 폴백 — 매 방문 네이버 직접 호출 차단
     (사용자 2026-06-14 개선점 B). 신선 캐시 즉시 / 미스 시 fetch+저장 / 실패 시 스테일."""
     from bot.finviz_client import _cache_write, _cached
     c = _cached(cache_name, ttl=_TTL)
@@ -94,12 +95,12 @@ def _fetch(investor: str, trade_type: str = "NXT",
 
 
 def fetch_nxt_foreign(trade_type: str = "NXT") -> dict | None:
-    """NXT 외국인 순매수/순매도 상위. 2분 SWR 캐시. graceful None."""
+    """NXT 외국인 순매수/순매도 상위. 30초 SWR 캐시. graceful None."""
     return _cached_fetch(_FCACHE, lambda: _fetch("FOREIGNER", trade_type))
 
 
 def fetch_nxt_organ(trade_type: str = "NXT") -> dict | None:
-    """NXT 기관(ORGANIZATION) 순매수/순매도 상위. 2분 SWR 캐시. graceful None."""
+    """NXT 기관(ORGANIZATION) 순매수/순매도 상위. 30초 SWR 캐시. graceful None."""
     def _go():
         for inv in _ORGAN_CANDIDATES:
             out = _fetch(inv, trade_type)
