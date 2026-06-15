@@ -5571,6 +5571,18 @@ class TestFavoritesKoreanName:
         finally:
             nq.fetch_kr_quote, wq.fetch_world_quote = o_kr, o_wd
 
+    def test_resolve_kr_name_tw_uses_translation(self, monkeypatch):
+        # TW 는 네이버 미커버 → 대만 신고가와 동일 chart_translate 번역(티커 캐시
+        # 공유 → 같은 한글명). 사용자 2026-06-15 '대만도 대만신고가처럼'.
+        import bot.market_favorites as mf
+        import bot.chart_translate as ct
+        monkeypatch.setattr(ct, "translate_names_kr",
+                            lambda pairs: {"2344.TW": "윈본드"})
+        assert mf._resolve_kr_name("2344.TW", "Winbond Electronics Corporation") == "윈본드"
+        # 번역 미스(키부재 류) → 영문 fallback graceful
+        monkeypatch.setattr(ct, "translate_names_kr", lambda pairs: {})
+        assert mf._resolve_kr_name("6239.TW", "Powertech Technology Inc.") == "Powertech Technology Inc."
+
     def test_resolve_kr_name_graceful_fallback(self):
         import bot.market_favorites as mf
         import bot.naver_quote as nq

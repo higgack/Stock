@@ -89,10 +89,23 @@ def _naver_quote_for(ticker: str) -> Optional[dict]:
 
 
 def _resolve_kr_name(ticker: str, fallback: str) -> str:
-    """네이버 한글 종목명 (정적, add_favorite 1회 영속). TW·기타·실패는
-    영문 fallback. _naver_quote_for 단일 소스(가격·시총·이름 같은 콜)."""
+    """네이버 한글 종목명 (정적, add_favorite 1회 영속). KR/US/JP/CN/HK=네이버.
+    TW(.TW/.TWO)=네이버 미커버 → 대만 신고가 페이지와 **동일한** chart_translate
+    번역(사용자 2026-06-15 '대만도 대만신고가처럼'). names_kr.json 캐시가 티커
+    기준이라 신고가가 이미 채운 한글명을 그대로 공유(₩0·동일 표기). 그 외(EU
+    등)·실패는 영문 fallback."""
     q = _naver_quote_for(ticker)
-    return (q.get("name") if q else None) or fallback
+    if q and q.get("name"):
+        return q["name"]
+    if _detect_country(ticker) == "TW":
+        try:
+            from bot.chart_translate import translate_names_kr
+            kr = translate_names_kr([(ticker, fallback)])
+            if kr.get(ticker):
+                return kr[ticker]
+        except Exception as exc:
+            log.debug("favorites: TW name translate failed for %s: %s", ticker, exc)
+    return fallback
 
 
 def add_favorite(ticker: str) -> Optional[dict]:
@@ -237,7 +250,7 @@ def get_favorites_with_prices() -> list[dict]:
         naver_price = nq.get("price") if nq else None
         if not f.get("name_kr"):
             f["name_kr"] = ((nq.get("name") if nq else None)
-                            or f.get("name") or f["ticker"])
+                            or _resolve_kr_name(f["ticker"], f.get("name") or f["ticker"]))
         try:
             tk = yf.Ticker(f["ticker"])
             price = naver_price       # 네이버 있으면 fast_info 생략(야후 부하·글리치↓)
