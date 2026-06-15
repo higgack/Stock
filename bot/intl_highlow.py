@@ -295,23 +295,25 @@ def _kick(market: str) -> None:
 
 def fetch_intl_highlow(market: str) -> dict:
     """JP/CN_A/HK/KR 52주 신고가/신저가 — **동기 계산 안 함**. 시장-인지 신선도
-    (정규장 2h / 장 밖 마지막 마감 이후 재스캔 0) 즉시 / 스테일+백그라운드 킥 /
-    캐시부재 building. 실패 5분 백오프·진행중 30분 dedup. {high,low,ts,source,
-    building,status}."""
+    (KR=장중 30초[네이버] / JP·HK=장중 1h[yfinance 스캔] / 장 밖 마지막 마감 이후
+    재스캔 0) 즉시 / 스테일+백그라운드 킥 / 캐시부재 building. 실패 5분 백오프·
+    진행중 30분 dedup. {high,low,ts,source,building,status}."""
     if market not in _CFG:
         return {"high": [], "low": [], "ts": "", "source": "", "building": False}
-    from bot.finviz_client import _CACHE_DIR, _HL_INTRA_TTL, _cached, _session_fresh
+    from bot.finviz_client import (_CACHE_DIR, _HL_INTRA_TTL, _MOVERS_INTRA_TTL,
+                                   _cached, _session_fresh)
     cache = _CFG[market][1]
-    # 시장-인지 신선도 (사용자 2026-06-13 '모두 장중에만 1h'): 정규장 중 1h /
-    # 장 밖 마지막 마감 이후 산출본이면 재스캔 0. 전 시장 통일(KR 네이버·JP/CN/HK
-    # yfinance 모두 장중 1h). 옛 플랫 6h 대체(부하↓·장중↑).
+    # 시장-인지 신선도: KR=네이버(fetch_kr_highlow 1콜씩, 야후 무관) → **장중 30초**
+    # (사용자 2026-06-15 '한국 신고저 네이버니 실시간'). JP/CN/HK=yfinance 유니버스
+    # 스캔(heavy·수 분) → 장중 1h 유지. 장 밖 마지막 마감 이후 재스캔 0(전 시장 공통).
+    _intra = _MOVERS_INTRA_TTL if market == "KR" else _HL_INTRA_TTL
     stale = _cached(cache, ttl=86400)
     if stale is not None:
         try:
             mt = (_CACHE_DIR / cache).stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh(market, mt, _HL_INTRA_TTL):
+        if _session_fresh(market, mt, _intra):
             return stale
     st = intl_highlow_status(market)
     age = time.time() - (st.get("ts") or 0)

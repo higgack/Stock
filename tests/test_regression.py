@@ -8107,12 +8107,14 @@ class TestIntlFullMarket:
             iu.full_universe = orig
 
     def test_full_market_session_aware_wired(self):
-        # 사용자 2026-06-13 '모두 장중에만 1h': JP/HK 전종목(full_universe) 경로 +
-        # 신선도는 시장-인지 _session_fresh(_HL_INTRA_TTL 1h) 통일(옛 플랫 _TTL_FULL 대체).
+        # JP/HK 전종목(full_universe) + 시장-인지 신선도. KR=네이버(fetch_kr_highlow)
+        # → 장중 30초(_MOVERS_INTRA_TTL, 사용자 2026-06-15 '한국 신고저 실시간'),
+        # JP/HK=yfinance 스캔 → 장중 1h(_HL_INTRA_TTL).
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
         assert 'market in ("JP", "HK")' in src
         assert "from bot.intl_universe import full_universe" in src
-        assert "_session_fresh(market, mt, _HL_INTRA_TTL)" in src   # 장-인지 1h
+        assert '_MOVERS_INTRA_TTL if market == "KR" else _HL_INTRA_TTL' in src
+        assert "_session_fresh(market, mt, _intra)" in src   # KR 30초·JP/HK 1h
 
     def test_intl_52w_volume_value_when_yfinance_populates(self, monkeypatch):
         # 사용자 2026-06-14 '모두 거래량/거래대금': JP/CN/HK 52주는 네이버에 52주

@@ -68,8 +68,10 @@ def render_intl_highlow52_page(market: str) -> str:
                 + '</div>' + HL_SORT_JS)
     from bot.highlow_render import clean_source as _clean_src
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
-    # KR=네이버(업종 그룹 멤버맵 백필), JP/CN/HK=yfinance — 신선도는 전 시장 장중
-    # 1h 통일(사용자 2026-06-13 '모두 장중에만 1h'). 부제 군더더기 제거 — 출처·정렬·갱신만.
+    # KR=네이버(업종 그룹 멤버맵 백필), JP/CN/HK=yfinance — 신선도는 KR 장중 30초
+    # (네이버 1콜씩, 사용자 2026-06-15 '한국 신고저 실시간')·JP/HK 장중 1h(yfinance
+    # 스캔 heavy). 부제 군더더기 제거 — 출처·정렬·갱신만.
+    _fresh_lbl = "장중 30초" if market == "KR" else "장중 1h"
     if market == "KR":
         _ind_lbl = "업종=네이버 · "
     elif market == "HK":   # 사용자 2026-06-14 'HK 거래량·시총 네이버·업종 야후'
@@ -78,7 +80,7 @@ def render_intl_highlow52_page(market: str) -> str:
         _ind_lbl = "거래량·거래대금·시총·종목명=네이버 · "
     else:
         _ind_lbl = "업종=yfinance · "
-    sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}장중 1h"
+    sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}{_fresh_lbl}"
            f"{(' · ' + ts + ' 기준') if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "CN_A": "cn52", "HK": "hk52"}.get(market, "")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body,
