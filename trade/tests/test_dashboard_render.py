@@ -42,6 +42,10 @@ class DashboardRenderSmokeTests(unittest.TestCase):
         self.assertIn("function _lazyFetchView", src)        # 탭 열 때 fetch 헬퍼
         self.assertIn("_lazyFetchView(view)", src)           # 탭 클릭 핸들러 배선
         self.assertIn('industry_out=args.out.parent / "industry_panel.html"', src)  # main 배선
+        # #455 회귀 fix(2026-06-16): innerHTML 은 <script> 미실행 → 프래그먼트
+        # 스크립트 재실행(window._scrollRaw 정의·월별 원자료 우측 스크롤 복구).
+        self.assertIn("createElement('script')", src)        # 프래그먼트 스크립트 재실행
+        self.assertIn("if(window._scrollRaw)window._scrollRaw(view)", src)  # 우측 스크롤 호출
 
     def test_alerts_history_split(self):
         # 사용자 2026-06-16 '최신만 인라인 + 모달 히스토리 on-demand': history_out
