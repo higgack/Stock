@@ -1343,9 +1343,10 @@ class TestMarketCalendar:
 
 
 class TestKisRealtimeChartPrice:
-    """차트 라이브 현재가 정책. (2026-06-05) KR 은 KIS 우선이었으나 (2026-06-15
-    사용자 '한국도 네이버, KIS 말고') → **네이버 국내 실시간** 우선으로 변경.
-    kis_client.get_realtime_price 자체 테스트는 유지(분봉·수급에 여전히 사용)."""
+    """차트 라이브 현재가 폴백 = ① 네이버 → ② KIS → ③ Yahoo (사용자 2026-06-16).
+    Yahoo fast_info 는 ~15분 지연이라 최후순위. KR=네이버 국내·KIS 국내 모두
+    실시간 / US·JP·HK·CN=네이버 해외(worldstock)·KIS 해외(지연 가능) / TW=네이버·
+    KIS 미지원 → TWSE 공식 + Yahoo 만."""
 
     def test_kis_get_realtime_price(self, monkeypatch):
         import bot.kis_client as k
@@ -1353,39 +1354,90 @@ class TestKisRealtimeChartPrice:
         monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
         monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
         monkeypatch.setattr(k, "_get",
-                            lambda path, tr_id, params: {"output": {"stck_prpr": "70100"}})
+                            lambda path, tr_id, params, custtype=None: {"output": {"stck_prpr": "70100"}})
         assert k.KisClient().get_realtime_price("005930.KS") == 70100
-        # 비-KR(코드 매핑 없음) → None(graceful, yfinance 폴백 신호).
+        # 비-KR(코드 매핑 없음) → None(graceful, 다음 소스 폴백 신호).
         monkeypatch.setattr(k, "_ticker_to_code", lambda t: None)
         assert k.KisClient().get_realtime_price("AAPL") is None
 
-    def test_live_last_price_kr_prefers_naver(self, monkeypatch):
-        # 정책 변경(사용자 2026-06-15 '한국도 네이버, KIS 말고'): KR 차트 라이브
-        # 현재가는 네이버 국내 실시간 우선(KIS 아님).
+    def test_overseas_excd_symb_mapping(self):
+        from bot.kis_client import _overseas_excd_symb
+        assert _overseas_excd_symb("7203.T") == (["TSE"], "7203")
+        assert _overseas_excd_symb("0700.HK") == (["HKS"], "0700")
+        assert _overseas_excd_symb("600519.SS") == (["SHS"], "600519")
+        assert _overseas_excd_symb("000002.SZ") == (["SZS"], "000002")
+        # 미국 순수 심볼 → 거래소 후보(기본 NAS→NYS→AMS).
+        assert _overseas_excd_symb("AAPL") == (["NAS", "NYS", "AMS"], "AAPL")
+        # 대만·국내·빈값 → 미지원 (None, None).
+        assert _overseas_excd_symb("2330.TW") == (None, None)
+        assert _overseas_excd_symb("005930.KS") == (None, None)
+        assert _overseas_excd_symb("") == (None, None)
+
+    def test_overseas_excd_rc_suffix_priority(self, monkeypatch):
+        from bot import world_quote
+        from bot.kis_client import _overseas_excd_symb
+        monkeypatch.setitem(world_quote._rc_cache, "JPM", "JPM.N")    # NYSE
+        monkeypatch.setitem(world_quote._rc_cache, "INTC", "INTC.O")  # NASDAQ
+        assert _overseas_excd_symb("JPM")[0][0] == "NYS"
+        assert _overseas_excd_symb("INTC")[0][0] == "NAS"
+
+    def test_kis_get_overseas_realtime_price(self, monkeypatch):
+        import bot.kis_client as k
+        monkeypatch.setattr(k, "_cache_get", lambda key, ttl_hours=None: None)
+        monkeypatch.setattr(k, "_cache_put", lambda key, val: None)
+        monkeypatch.setattr(k, "_get",
+                            lambda path, tr_id, params, custtype=None: {"output": {"last": "185.5"}})
+        assert k.KisClient().get_overseas_realtime_price("AAPL") == 185.5
+        assert k.KisClient().get_overseas_realtime_price("7203.T") == 185.5
+        # 대만 = KIS 해외 미지원 → None(graceful, _get 미호출).
+        assert k.KisClient().get_overseas_realtime_price("2330.TW") is None
+
+    def test_live_last_price_kr_order(self, monkeypatch):
+        # KR: 네이버 우선 → 네이버 None 이면 KIS → 둘 다 None 이면 Yahoo.
         import bot.chart_data as cd
+        import bot.kis_client as k
         import bot.naver_quote as nq
-        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: {"price": 103})  # 직전 102 근처
-        out = cd._live_last_price(None, {"close": [100, 101, 102]}, 0, "005930.KS")
-        assert out == 103, "KR 라이브 현재가가 네이버 우선이 아님"
+        # ① 네이버 살아있으면 네이버.
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: {"price": 103})
+        assert cd._live_last_price(None, {"close": [100, 101, 102]}, 0, "005930.KS") == 103
+        # ② 네이버 None → KIS.
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: None)
+        monkeypatch.setattr(k.KisClient, "get_realtime_price", lambda self, t: 105)
+        assert cd._live_last_price(None, {"close": [100, 101, 102]}, 0, "005930.KS") == 105
+
+    def test_live_last_price_overseas_order(self, monkeypatch):
+        # US: 네이버 해외 우선 → None 이면 KIS 해외 → None 이면 Yahoo.
+        import bot.chart_data as cd
+        import bot.kis_client as k
+        import bot.world_quote as wq
+        monkeypatch.setattr(wq, "fetch_world_quote", lambda t: None)   # 네이버 해외 실패
+        monkeypatch.setattr(k.KisClient, "get_overseas_realtime_price", lambda self, t: 185)
+        assert cd._live_last_price(None, {"close": [178, 179, 180]}, 0, "AAPL") == 185
 
     def test_live_last_price_falls_back_to_yfinance(self, monkeypatch):
         import bot.chart_data as cd
+        import bot.kis_client as k
         import bot.naver_quote as nq
-        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: None)   # 네이버 미가용 → yfinance
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda t: None)            # 네이버 실패
+        monkeypatch.setattr(k.KisClient, "get_realtime_price", lambda self, t: None)  # KIS 실패
 
         class _FI:
             last_price = 104
         class _T:
             fast_info = _FI()
         out = cd._live_last_price(_T(), {"close": [100, 101, 102]}, 0, "005930.KS")
-        assert out == 104, "네이버 None 일 때 yfinance 폴백 실패"
+        assert out == 104, "네이버·KIS 모두 None 일 때 yfinance 폴백 실패"
 
     def test_wiring_present(self):
-        assert "get_realtime_price" in open("bot/kis_client.py", encoding="utf-8").read()
+        ks = open("bot/kis_client.py", encoding="utf-8").read()
+        assert "get_realtime_price" in ks and "get_overseas_realtime_price" in ks
+        assert "_overseas_excd_symb" in ks and "HHDFS00000300" in ks, "KIS 해외시세 배선 누락"
         cd = open("bot/chart_data.py", encoding="utf-8").read()
-        # 정책: KR→네이버(fetch_kr_quote) · 비-KR→worldstock/TWSE (KIS 아님).
+        # 정책: ① 네이버(KR fetch_kr_quote · 비-KR worldstock/TWSE) → ② KIS
+        # (get_realtime_price · get_overseas_realtime_price) → ③ Yahoo.
         assert "fetch_kr_quote" in cd and 'market == "KR"' in cd, "차트 KR→네이버 배선 누락"
-        assert "fetch_world_quote" in cd and "fetch_tw_quote" in cd, "비-KR 라이브 배선 누락"
+        assert "fetch_world_quote" in cd and "fetch_tw_quote" in cd, "비-KR 네이버 배선 누락"
+        assert "get_realtime_price" in cd and "get_overseas_realtime_price" in cd, "차트 KIS 폴백 배선 누락"
 
 
 class TestExactPriceLimits:
@@ -10073,18 +10125,19 @@ class TestWorldTwLiveQuote:
         assert fetch_tw_quote("") is None
 
     def test_wired_card_and_chart(self):
-        # 배선 E2E + KIS 말고: build_live_quote(카드)·_live_last_price(차트)가
-        # world/tw quote 를 타고, KR 가격경로엔 KIS 없음(사용자 'KIS 말고').
+        # 배선 E2E: build_live_quote(카드)는 네이버만(KIS 없음). _live_last_price
+        # (차트)는 ① 네이버 → ② KIS → ③ Yahoo 폴백(사용자 2026-06-16 — 차트만 KIS).
         import re
         dh = open("bot/dashboard.py", encoding="utf-8").read()
         m = re.search(r"def build_live_quote\(.*?\n(?=def )", dh, re.DOTALL).group(0)
         assert "fetch_world_quote" in m and "fetch_tw_quote" in m
         assert "fetch_kr_quote" in m                 # KR 은 네이버
-        assert "kis_client" not in m                 # KR 가격경로 KIS 제거
+        assert "kis_client" not in m                 # 카드 가격경로는 KIS 미사용
         cd = open("bot/chart_data.py", encoding="utf-8").read()
         llp = re.search(r"def _live_last_price\(.*?\n(?=def )", cd, re.DOTALL).group(0)
         assert "fetch_world_quote" in llp and "fetch_tw_quote" in llp
-        assert "fetch_kr_quote" in llp and "kis_client" not in llp   # 차트도 KIS 말고
+        assert "fetch_kr_quote" in llp               # ① 네이버
+        assert "get_realtime_price" in llp and "get_overseas_realtime_price" in llp  # ② KIS 폴백
 
 
 class TestChartTweaks20260615b:

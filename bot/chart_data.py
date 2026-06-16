@@ -409,32 +409,49 @@ def _live_last_price(t, payload: dict, decimals: int, ticker: str):
             market = detect_market(ticker)
         except Exception:
             market = "US"
-        # 라이브 현재가 = 시장별 소스 우선(사용자 2026-06-15 '다 네이버, KIS 말고').
-        # KR → 네이버 국내 · US/JP/HK/CN → 네이버 해외(worldstock) · TW → TWSE 공식.
-        # 전부 키 불필요·VM 차단 없음·장중 실시간 → yfinance fast_info(~15분 지연·
-        # 서킷브레이커 차단 가능)보다 우선. 검증 통과 시 사용, 실패 시 아래 yfinance.
-        if market == "KR":
-            try:
+        # 라이브 현재가 폴백 순서 = ① 네이버 → ② KIS → ③ Yahoo (사용자 2026-06-16).
+        # Yahoo fast_info 는 ~15분 지연 + IP 서킷브레이커 차단 가능 → 최후순위.
+        #  ① 네이버: KR=국내 실시간 · US/JP/HK/CN=해외(worldstock, delayTime:0) ·
+        #            TW=TWSE 공식 (네이버는 .TW 미지원).
+        #  ② KIS:    KR=국내 실시간(get_realtime_price) · US/JP/HK/CN=해외
+        #            (get_overseas_realtime_price — 무료시세 ~15분 지연 가능하나
+        #            Yahoo 와 달리 IP 차단 없음) · TW=KIS 미지원 → skip.
+        # 검증(_validate_live_price)이 직전 종가 대비 밴드를 강제하므로 어떤
+        # 소스의 글리치·거래소 오매칭값도 자동 reject → 다음 소스로 폴백.
+
+        # ① 네이버 (TW 는 네이버 미지원 → TWSE 공식)
+        try:
+            if market == "KR":
                 from bot.naver_quote import fetch_kr_quote
-                _nv = _validate_live_price(
-                    (fetch_kr_quote(ticker) or {}).get("price"), last_close, market)
-                if _nv is not None:
-                    return round(_nv, decimals)
-            except Exception as exc:
-                log.debug("chart_data: Naver KR price skipped for %s: %s", ticker, exc)
-        elif market in ("US", "JP", "HK", "CN_A", "TW"):
-            try:
-                if market == "TW":
-                    from bot.tw_quote import fetch_tw_quote
-                    _wq = fetch_tw_quote(ticker)
-                else:
-                    from bot.world_quote import fetch_world_quote
-                    _wq = fetch_world_quote(ticker)
-                _wv = _validate_live_price((_wq or {}).get("price"), last_close, market)
-                if _wv is not None:
-                    return round(_wv, decimals)
-            except Exception as exc:
-                log.debug("chart_data: world/tw price skipped for %s: %s", ticker, exc)
+                _q = fetch_kr_quote(ticker)
+            elif market == "TW":
+                from bot.tw_quote import fetch_tw_quote
+                _q = fetch_tw_quote(ticker)
+            elif market in ("US", "JP", "HK", "CN_A"):
+                from bot.world_quote import fetch_world_quote
+                _q = fetch_world_quote(ticker)
+            else:
+                _q = None
+            _nv = _validate_live_price((_q or {}).get("price"), last_close, market)
+            if _nv is not None:
+                return round(_nv, decimals)
+        except Exception as exc:
+            log.debug("chart_data: Naver/TWSE price skipped for %s: %s", ticker, exc)
+
+        # ② KIS (대만 미지원 → skip)
+        try:
+            _kp = None
+            if market == "KR":
+                from bot.kis_client import get_kis
+                _kp = get_kis().get_realtime_price(ticker)
+            elif market in ("US", "JP", "HK", "CN_A"):
+                from bot.kis_client import get_kis
+                _kp = get_kis().get_overseas_realtime_price(ticker)
+            _kv = _validate_live_price(_kp, last_close, market)
+            if _kv is not None:
+                return round(_kv, decimals)
+        except Exception as exc:
+            log.debug("chart_data: KIS price skipped for %s: %s", ticker, exc)
         # fast_info 회로차단/정지 — 쿨다운·정지 중이면 라이브 skip(차트가 직전 종가
         # 사용). yahoo fast_info IP 차단 회복 보호(사용자 2026-06-14).
         try:

@@ -63,6 +63,45 @@ def _mkt_div(ticker: str) -> str:
     return "Q" if ticker.upper().endswith(".KQ") else "J"
 
 
+# ─── 해외주식 거래소 코드 매핑 (차트 라이브 현재가용) ──────────────────────────
+# KIS 해외시세 EXCD. ⚠️ 대만(.TW)은 KIS 해외주식 미지원 → 폴백에서 제외.
+_OVERSEAS_EXCD = {
+    ".T":  "TSE",   # 도쿄
+    ".HK": "HKS",   # 홍콩
+    ".SS": "SHS",   # 상해
+    ".SZ": "SZS",   # 심천
+}
+
+
+def _overseas_excd_symb(ticker: str) -> tuple[Optional[list], Optional[str]]:
+    """ticker → (EXCD 후보 리스트, SYMB) 또는 (None, None)=미지원.
+
+    JP/HK/CN 은 suffix 로 거래소가 정해지므로 단일 EXCD. 미국은 ticker 만으론
+    상장 거래소(NAS/NYS/AMS)를 알 수 없어 후보 리스트 — world_quote 가 발견·
+    캐시한 reutersCode suffix(.O=NASDAQ · .N/.K=NYSE · .A/.P=AMEX)로 우선순위
+    조정, 없으면 NAS→NYS→AMS 순차. 호출부(_validate_live_price)가 직전 종가
+    대비 밴드 검증하므로 잘못된 거래소 매칭값은 자동 reject 된다(무해)."""
+    t = (ticker or "").strip().upper()
+    if not t:
+        return (None, None)
+    for suf, excd in _OVERSEAS_EXCD.items():
+        if t.endswith(suf):
+            return ([excd], t[: -len(suf)])
+    if "." not in t:   # 순수 심볼 = 미국
+        order = ["NAS", "NYS", "AMS"]
+        try:
+            from bot import world_quote
+            rc = (world_quote._rc_cache.get(t) or "").upper()
+            if rc.endswith(".N") or rc.endswith(".K"):
+                order = ["NYS", "NAS", "AMS"]
+            elif rc.endswith(".A") or rc.endswith(".P"):
+                order = ["AMS", "NAS", "NYS"]
+        except Exception:
+            pass
+        return (order, t)
+    return (None, None)   # .TW 등 미지원
+
+
 def _cache_get(key: str, ttl_hours: float = _CACHE_TTL_HOURS) -> Optional[dict]:
     f = _CACHE_DIR / key
     if not f.exists():
@@ -145,20 +184,27 @@ def _get_token() -> Optional[str]:
 
 # ─── generic GET wrapper ─────────────────────────────────────────────────────
 
-def _get(path: str, tr_id: str, params: dict) -> Optional[dict]:
+def _get(path: str, tr_id: str, params: dict, custtype: Optional[str] = None) -> Optional[dict]:
     token = _get_token()
     if not token:
         return None
+
+    def _hdrs(tok: str) -> dict:
+        h = {
+            "authorization": f"Bearer {tok}",
+            "appkey": _app_key(),
+            "appsecret": _app_secret(),
+            "tr_id": tr_id,
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        if custtype:                       # 해외시세 등 일부 TR 은 custtype='P' 필요
+            h["custtype"] = custtype
+        return h
+
     try:
         resp = requests.get(
             f"{_BASE_PROD}{path}",
-            headers={
-                "authorization": f"Bearer {token}",
-                "appkey": _app_key(),
-                "appsecret": _app_secret(),
-                "tr_id": tr_id,
-                "Content-Type": "application/json; charset=utf-8",
-            },
+            headers=_hdrs(token),
             params=params,
             timeout=_HTTP_TIMEOUT,
         )
@@ -172,13 +218,7 @@ def _get(path: str, tr_id: str, params: dict) -> Optional[dict]:
             if token2:
                 resp = requests.get(
                     f"{_BASE_PROD}{path}",
-                    headers={
-                        "authorization": f"Bearer {token2}",
-                        "appkey": _app_key(),
-                        "appsecret": _app_secret(),
-                        "tr_id": tr_id,
-                        "Content-Type": "application/json; charset=utf-8",
-                    },
+                    headers=_hdrs(token2),
                     params=params,
                     timeout=_HTTP_TIMEOUT,
                 )
@@ -282,6 +322,38 @@ class KisClient:
             return None
         _cache_put(cache_key, {"price": price})
         return price
+
+    # 1c. 해외주식(미국/일본/홍콩/중국) 장중 현재가 (차트 라이브용)
+    def get_overseas_realtime_price(self, ticker: str) -> Optional[float]:
+        """해외주식 현재가(float). KIS 해외시세 HHDFS00000300, 2분 캐시.
+        미지원 시장(대만 등)/creds 부재/실패 시 None(graceful → Yahoo 폴백).
+
+        ⚠️ KIS 무료 해외시세는 거래소·계정에 따라 **지연(~15분)** 일 수 있다
+        (국내는 실시간). 실시간 여부는 VM 실측 필요 — 그래도 Yahoo 와 달리 IP
+        서킷브레이커에 안 걸려 Yahoo 차단 시 신선한 값을 주는 이점이 있다.
+        호출부(_validate_live_price)가 직전 종가 대비 밴드 검증하므로 잘못된
+        거래소/심볼 매칭은 자동 reject 된다."""
+        excds, symb = _overseas_excd_symb(ticker)
+        if not excds or not symb:
+            return None
+        cache_key = f"rtovs_{ticker.upper().replace('.', '_')}.json"
+        cached = _cache_get(cache_key, ttl_hours=2 / 60.0)   # 2분
+        if cached is not None:
+            return cached.get("price")
+        for excd in excds:
+            data = _get(
+                "/uapi/overseas-price/v1/quotations/price",
+                "HHDFS00000300",
+                {"AUTH": "", "EXCD": excd, "SYMB": symb},
+                custtype="P",
+            )
+            if not data:
+                continue
+            px = _float((data.get("output") or {}).get("last"))
+            if px and px > 0:
+                _cache_put(cache_key, {"price": px})
+                return px
+        return None
 
     # 2+3. 외인/기관/개인 + 기관 주체별
     def get_investor_flow(self, ticker: str) -> Optional[dict]:
