@@ -15,7 +15,9 @@ NASDAQ+NYSE+AMEX up/down 랭킹 합집합, 사용자 2026-06-16 '전시장 정�
 시간외 거의 미동 → 유니버스 부적합). ~480종목 ThreadPool 스캔(over-market
 OPEN 인 종목만 집계). 한글명도 랭킹 행에서 native. 시간외 미개장(정규장·장
 완전 종료) 시엔 0 행 → SWR 가 직전 스냅샷 서빙. 글리치(|pct|>75%)·페니 컷은
-over_pct 가 정규장 종가 대비라 자연 완만.
+over_pct 가 정규장 종가 대비라 자연 완만(**VM 실측 확인 2026-06-16**: AAPL/TSLA/
+NVDA/AMD/MSFT over_pct 가 vs정규장종가에 정확 일치·vs전일종가와 어긋남 → KR 처럼
+전일종가 누적 이중계산 아님 → recompute 불요. 그대로 passthrough 정확).
 
 SWR 백그라운드(장-인지 신선도 — 연장거래 창에서만 재스캔, ~480 네이버 콜은
 pre/post 세션에만) + 무료·무키·graceful. (TW=盤後정가 고정·KR=시간외단일가는
