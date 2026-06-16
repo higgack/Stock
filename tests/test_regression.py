@@ -4026,10 +4026,17 @@ class TestDartFeedBackfill:
             "상각형조건부자본증권발행결정": "자금조달",
             "교환가액의조정": "자금조달",
             "주권관련사채권의취득결정": "자금조달",
-            "투자판단관련주요경영사항(임상시험결과)": "실적",
+            # 투자판단관련주요경영사항 = 실적 아님(사용자 2026-06-16 압타바이오 FDA) —
+            # 본문 미승격 시 '기타'(일반 주요경영사항), force-parse 라 카드 detail 유지.
+            "투자판단관련주요경영사항(임상시험결과)": "기타",
         }
         for nm, exp in cat.items():
             assert m._classify_report(nm) == exp, (nm, m._classify_report(nm))
+        # 임상 투자판단(압타바이오 류): 실적 칩 오염 0 + force-parse 라 카드 보존.
+        _ap_nm = "투자판단관련주요경영사항(임상시험결과)"
+        _ap = {"category": m._classify_report(_ap_nm), "report_nm": _ap_nm, "corp_code": "C"}
+        assert _ap["category"] != "실적", _ap["category"]
+        assert m.is_parse_target(_ap) is True   # 카드 detail 유지(force-parse)
         # 제목완결 = is_parse_target False(미파싱 색칠 제외). 투자판단은 force-parse 라 제외.
         for nm in ("기타시장안내(기업심사위원회 심의·의결 결과 안내)",
                    "특수관계인에대한출자", "회계처리기준위반에따른임원의해임권고조치",
@@ -10082,19 +10089,20 @@ class TestDashboardBatch20260615c:
         assert "'/ushighlow':1" in js                 # 미국 신고저 1h (한국제외 1h 제약)
 
     def test_material_title_holding_company(self):
-        # 투자판단 '지주회사 전환' 제목 → 회사구조 (사용자 '웅진 왜 실적').
+        # 투자판단 '지주회사 전환' 제목 → 회사구조 (사용자 '웅진 왜 실적'). 기본
+        # 카테고리는 2026-06-16 '실적'→'기타'로 교정(사용자 압타바이오 FDA 임상).
         from bot.dart_feed import _material_title_category, _upgrade_category, _classify_report
-        assert _classify_report("투자판단관련주요경영사항") == "실적"        # 기본
+        assert _classify_report("투자판단관련주요경영사항") == "기타"        # 기본(실적 아님)
         assert _material_title_category("제목: 지주회사 전환신고에 대한 심사결과") == "회사구조"
-        assert _material_title_category("제목: 임상 3상 진입") is None        # 실적 유지
-        it = {"report_nm": "투자판단관련주요경영사항", "category": "실적",
+        assert _material_title_category("제목: 임상 3상 진입") is None        # 특정 종류 아님 → 미승격
+        it = {"report_nm": "투자판단관련주요경영사항", "category": "기타",
               "detail": ["제목: 지주회사 전환신고에 대한 심사결과 통지서 접수"]}
         _upgrade_category(it)
-        assert it["category"] == "회사구조"
-        it2 = {"report_nm": "투자판단관련주요경영사항", "category": "실적",
+        assert it["category"] == "회사구조"             # 지주회사 본문이면 승격
+        it2 = {"report_nm": "투자판단관련주요경영사항", "category": "기타",
                "detail": ["제목: 임상시험 결과"]}
         _upgrade_category(it2)
-        assert it2["category"] == "실적"                # 특정 종류 아니면 실적 유지
+        assert it2["category"] == "기타"                # 임상=특정 종류 아님 → 기타 유지(실적 오염 0)
 
     def test_correction_not_important(self):
         # 기재정정은 중요 미발화 (사용자 '기재정정은 중요로 안들어가').

@@ -3120,12 +3120,30 @@ def _prewarm_highlow() -> None:
         seq.append(("kr_industry", _bkim))
     except Exception:
         pass
+    # yfinance 무거운 52주 스캔(JP/HK/TW highlow, 1y 벌크)을 서로 떨어뜨려
+    # 레이트리밋 회복 간격 확보 (사용자 2026-06-16 '일본·중국·홍콩 10~15분 간격
+    # 으로 서로 콜 시작 시간 조정·부하 감소'). ⚠️ JP/CN/HK 무버·KR 신고저는 이미
+    # 네이버(1콜·가벼움)라 무지연 — yfinance 무거운 건 highlow 3종뿐(CN highlow 는
+    # 2026-06-14 제거). 스캔 끝→다음 스캔 시작 사이 HIGHLOW_STAGGER_SEC(기본 600초
+    # =10분) 간격. 백그라운드 thread sleep 이라 이벤트루프·watchdog(getUpdates·busy
+    # 마커) 무관 — 폴링 비차단. 0 으로 끄면 즉시 연속(옛 동작).
+    _stagger = int(os.getenv("HIGHLOW_STAGGER_SEC", "600"))
+    _heavy = {"highlow JP", "highlow HK", "tw_highlow"}   # yfinance 1y 벌크 스캔
+    _last_heavy = 0.0
     for label, fn in seq:
+        if label in _heavy and _last_heavy and _stagger > 0:
+            _gap = _stagger - (time.time() - _last_heavy)
+            if _gap > 0:
+                log.info("highlow prewarm: %s 전 %.0f초 stagger(yfinance 분산)",
+                         label, _gap)
+                time.sleep(_gap)
         try:
             fn()
             log.info("highlow prewarm: %s done", label)
         except Exception as exc:
             log.warning("highlow prewarm %s: %s", label, exc)
+        if label in _heavy:
+            _last_heavy = time.time()
     # US (Finviz·가벼움) — SWR fetch 로 warm
     try:
         from bot.finviz_client import fetch_high_low, fetch_us_movers
