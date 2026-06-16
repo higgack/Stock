@@ -10886,5 +10886,8 @@ class TestNaverOverviewNews20260616:
         assert "fetch_naver_world_news(ticker" in src      # 뉴스 네이버 우선
         assert "_nv_desc" in src and "_nv_news" in src     # 폴백 분기
         assert "네이버 해외뉴스" in src                      # 뉴스 소스 라벨
+        # 개요가 네이버면 회사 pane 출처도 '개요 네이버'로 — footer 'yfinance' 만이라
+        # 네이버 개요를 yfinance 로 오해하던 것 정정(사용자 2026-06-16 NTLA).
+        assert "개요 네이버 · 그 외 yfinance" in src
         # KR 은 제외(기존 DART/네이버) — 비-KR 게이트
         assert "if not is_kr:" in src

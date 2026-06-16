@@ -4437,7 +4437,7 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
   </div>
   {kr_financial_html}
-  {_src_foot}출처: yfinance</div>
+  {_src_foot}출처: {"개요 네이버 · 그 외 yfinance" if _nv_desc else "yfinance"}</div>
 </div>"""
 
     # ── 컨센서스 pane ───────────────────────────────────────────
