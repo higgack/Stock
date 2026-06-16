@@ -5593,6 +5593,22 @@ class TestFavoritesKoreanName:
         assert 'fmt["over_line"] = over_line' in src, "fmt over_line 미배선"
         assert ".si-over:empty" in src, ":empty 숨김 누락"
 
+    def test_over_line_helper_all_markets_except_tw(self):
+        # 사용자 2026-06-16 '대만제외 다 적용' — _fmt_over_line 헬퍼가 KR(국내)·
+        # US/JP/HK/CN(해외) 공용. over_session 없으면 "" (정규장·비지원·TW).
+        import bot.dashboard as d
+        s = d._fmt_over_line({"over_session": "AFTER_MARKET", "reg_close": 370.66,
+                              "over_pct": 0.36}, "$", 2)
+        assert "장후" in s and "정규장 종가 $370.66" in s and "+0.36%" in s
+        kr = d._fmt_over_line({"over_session": "PRE_MARKET", "reg_close": 70000,
+                               "over_pct": -0.5}, "₩", 0)
+        assert "장전" in kr and "₩70,000" in kr and "-0.50%" in kr
+        assert d._fmt_over_line({"over_session": ""}, "$", 2) == ""   # 정규장→빈
+        assert d._fmt_over_line(None, "$", 2) == ""
+        # KR 분기·wq 블록 둘 다 헬퍼 사용 (def 1 + 호출 2 = 3)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert src.count("_fmt_over_line") >= 3, "KR/해외 양쪽 배선 누락"
+
     def test_parse_quote_overmarket_closed_keeps_regular(self):
         from bot.naver_quote import _parse_quote
         item = {"closePriceRaw": "296.42", "fluctuationsRatioRaw": "1.82",
