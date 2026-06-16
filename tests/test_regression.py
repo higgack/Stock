@@ -11111,3 +11111,42 @@ class TestDetailTabEnhancements20260616:
         assert "cache_only=True" in d and "Alpha Vantage" in d, "B2 감성 배선 누락"
         av = open("bot/av_sentiment_client.py", encoding="utf-8").read()
         assert "cache_only" in av, "AV cache_only 파라미터 누락"
+
+
+class TestAsiaTier2_20260616:
+    """ASIA 보드 Tier-2 (사용자 2026-06-16): T8 CN 업종 bare-code 폴백 · T11 허브
+    isOpen 게이트 · T12 TW 상·하한 마커."""
+
+    def test_t8_cn_industry_barecode_fallback(self):
+        # _industries_for 가 CN_A 도 bare 6자리 코드로 폴백 매칭(접미사 .SS↔.SZ
+        # 불일치 시 '업종 —' 방지).
+        import inspect
+        from bot import finviz_client as fc
+        s = inspect.getsource(fc._industries_for)
+        assert 'market in ("HK", "CN_A")' in s, "CN_A bare-code 정규화 누락"
+
+    def test_t11_asia_hub_isopen_gate(self):
+        from bot.dashboard import _ASIA_LIVE_JS as js
+        assert "function isOpen()" in js and "if(!isOpen()) return" in js
+        assert "d===0||d===6" in js          # 주말 skip
+
+    def test_t12_tw_limit_marker(self):
+        from bot import highlow_render as hr
+        up = hr.stock_panel("T", [{"ticker": "2330.TW", "name": "TSMC",
+                                   "price": 100, "pct": 9.95}], "t", "TW", limit_pct=9.9)
+        dn = hr.stock_panel("T", [{"ticker": "2317.TW", "name": "폭스콘",
+                                   "price": 50, "pct": -10.0}], "t2", "TW", limit_pct=9.9)
+        mid = hr.stock_panel("T", [{"ticker": "2454.TW", "name": "미디어텍",
+                                    "price": 80, "pct": 3.2}], "t3", "TW", limit_pct=9.9)
+        assert "🔺" in up and "🔻" in dn
+        assert "🔺" not in mid and "🔻" not in mid
+        # 기본 None(다른 보드) → 한도여도 마커 없음
+        us = hr.stock_panel("T", [{"ticker": "AAPL", "name": "Apple",
+                                   "price": 1, "pct": 9.95}], "t4", "US")
+        assert "🔺" not in us
+
+    def test_t12_tw_movers_passes_limit(self):
+        import inspect
+        from bot import tw_pages
+        s = inspect.getsource(tw_pages.render_tw_highlow_page)
+        assert "limit_pct=9.9" in s, "TW 급등락이 limit_pct 미전달"

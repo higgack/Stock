@@ -13607,8 +13607,16 @@ def _render_market_page(data: dict) -> str:
 # 홈과 같은 data 로 함께 렌더(추가 fetch 0).
 _ASIA_LIVE_JS = """<script>
 (function(){
+  function kstNow(){var n=new Date();return new Date(n.getTime()+(n.getTimezoneOffset()+540)*60000);}
+  // 아시아 전 시장(JP·CN·HK·TW) 장 밖이면 폴링 skip (T11 2026-06-16) — 옛 코드는
+  // 30초 24/7 폴링이라 장후·주말에도 풀 마켓 렌더를 트리거. KST 09:00–17:10 =
+  // JP 개장(09:00 KST)~HK 마감(16:00 HKT=17:00 KST)+버퍼 union, 주말 제외.
+  function isOpen(){var k=kstNow(),d=k.getDay(),m=k.getHours()*60+k.getMinutes();
+    if(d===0||d===6) return false;
+    return m>=540 && m<=1030;}
   function tick(){
     if(document.hidden) return;
+    if(!isOpen()) return;
     fetch('asia.html',{cache:'no-store'})
       .then(function(r){if(!r.ok)throw 0;return r.text();})
       .then(function(html){

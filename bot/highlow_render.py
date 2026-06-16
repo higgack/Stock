@@ -148,7 +148,8 @@ def stock_panel(title: str, items: list, tid: str, market: str,
                 extra_head: str = "", name_only: bool = False,
                 show_vol: bool = True, show_ind: bool = True,
                 show_mcap: bool = True, show_value: bool = False,
-                vol_label: str = "거래량(주)", value_label: str = "거래대금") -> str:
+                vol_label: str = "거래량(주)", value_label: str = "거래대금",
+                limit_pct: float | None = None) -> str:
     """리치 종목 패널 — 종목·현재가·등락률·(거래량)·(거래대금)·(시총)·(업종),
     헤더 클릭 정렬. **통화기호는 셀이 아닌 헤더에만**(사용자 2026-06-13).
     플래그: name_only·show_vol·show_value(거래대금)·show_ind·show_mcap.
@@ -195,6 +196,13 @@ def stock_panel(title: str, items: list, tid: str, market: str,
             # 전 시장·전 자식대시보드). 괄호 제거·줄 분리·keep-all 로 가독성.
             label = f'{tk}<span class="nk">{nm}</span>' if nm and nm != tk else tk
         price, pct = it.get("price"), it.get("pct")
+        # 상·하한가(漲停/跌停) 마커 — limit_pct 설정 시(TW=9.9) 일일 한도 도달
+        # 종목 표시(T12 2026-06-16). 추가 fetch 0(기존 pct 사용). 기본 None=무표시.
+        if limit_pct and isinstance(pct, (int, float)):
+            if pct >= limit_pct:
+                label = "🔺 " + label
+            elif pct <= -limit_pct:
+                label = "🔻 " + label
         vol, mcap = it.get("vol"), it.get("mcap")
         ind = _html.escape(str(it.get("ind") or ""))
         try:

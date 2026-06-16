@@ -871,8 +871,14 @@ def _industries_for(tickers: list, market: str | None) -> dict:
             from bot.naver_ranking_client import world_industry_map
             m = world_industry_map(market)
             if m:
+                # bare 6자리 코드 정규화 매칭 — HK(5↔4자리 zfill) + CN_A(T8
+                # 2026-06-16): 업종맵 키는 _upjong_ticker(코드 6→.SS else .SZ
+                # 휴리스틱)인데 movers/52w 티커는 _suffix_ticker(거래소 기준
+                # .SS/.SZ)라, 상하이 9xx(B주) 등 휴리스틱이 빗나가는 코드는
+                # 접미사 불일치로 직접 매칭 실패 → '업종 —'. CN 코드는 SH/SZ
+                # 전역 고유라 bare-code 폴백 안전(충돌 0).
                 norm: dict = {}
-                if market == "HK":     # 5자리↔4자리 zfill 정수 정규화
+                if market in ("HK", "CN_A"):
                     for k, v in m.items():
                         c = str(k).split(".")[0]
                         if c.isdigit():
@@ -880,7 +886,7 @@ def _industries_for(tickers: list, market: str | None) -> dict:
 
                 def _look(tk, _m=m, _norm=norm):
                     v = _m.get(tk)
-                    if v is None and market == "HK":
+                    if v is None and _norm:     # 접미사 불일치 → bare 코드 폴백
                         c = str(tk).split(".")[0]
                         if c.isdigit():
                             v = _norm.get(str(int(c)))
