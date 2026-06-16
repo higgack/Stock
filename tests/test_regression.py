@@ -10891,3 +10891,26 @@ class TestNaverOverviewNews20260616:
         assert "개요 네이버 · 그 외 yfinance" in src
         # KR 은 제외(기존 DART/네이버) — 비-KR 게이트
         assert "if not is_kr:" in src
+
+
+class TestFavoritesSaveInvalidatesCache20260616:
+    """사용자 2026-06-16 '휴지통 작동 안 함': add/remove/reorder(_save) 후
+    _FAV_CACHE 무효화 안 하면 get_favorites_with_prices(SWR, #454)가 옛 목록(삭제분
+    포함)을 stale 로 계속 서빙 → 삭제·추가가 화면에 안 먹는 것처럼 보임. _save 가
+    캐시 무효화 → 다음 조회가 _load()(갱신 디스크) 즉시 반영."""
+
+    def test_save_invalidates_fav_cache(self, monkeypatch, tmp_path):
+        import time as _t
+        import bot.market_favorites as mf
+        monkeypatch.setattr(mf, "_FAVORITES_FILE", tmp_path / "favorites.json")
+        mf._FAV_CACHE = [{"ticker": "OLD.KS", "name": "old"}]   # 삭제 전 stale 캐시
+        mf._FAV_CACHE_TS = _t.time()                            # fresh(만료 전)
+        mf._save([{"ticker": "NEW.KS", "name": "new"}])         # 변경 저장
+        assert mf._FAV_CACHE is None                            # 무효화됨 → 다음 조회 갱신
+
+    def test_save_invalidation_wired(self):
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        # _save 본문에 _FAV_CACHE 무효화 (단일 choke point — add/remove/reorder 공통)
+        i = src.find("def _save(")
+        body = src[i:i + 600]
+        assert "_FAV_CACHE = None" in body and "global _FAV_CACHE" in body

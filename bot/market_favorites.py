@@ -42,6 +42,12 @@ def _save(favorites: list[dict]) -> None:
     tmp = _FAVORITES_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(favorites, ensure_ascii=False, indent=2), "utf-8")
     tmp.replace(_FAVORITES_FILE)
+    # 추가/삭제/순서변경 후 SWR 가격 캐시 무효화 — 안 하면 get_favorites_with_prices
+    # 가 옛 목록(삭제분 포함)을 stale 로 계속 줘서 '휴지통/추가가 안 먹는' 것처럼
+    # 보임(사용자 2026-06-16 '휴지통 작동 안 함'). 다음 조회가 _load()(갱신 디스크)
+    # 즉시 반영 + 백그라운드 가격 재계산. _FAV_CACHE 는 아래에서 정의(런타임 global).
+    global _FAV_CACHE
+    _FAV_CACHE = None
 
 
 def _detect_country(ticker: str) -> str:
