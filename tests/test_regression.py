@@ -5507,6 +5507,10 @@ class TestUsPrepost:
         from bot.us_pages import render_us_prepost_page
         html = render_us_prepost_page()
         assert "장후" in html and "NVDA" in html and 'href="lookup/NVDA"' in html
+        # 거래량 컬럼 = '정규장 거래량'으로 명확화 (네이버 worldstock 美 시간외 거래량
+        # 미제공 → 정규장 값, 시간외 보드 오해 방지, 사용자 2026-06-16). 가격만 시간외 라이브.
+        assert "정규장 거래량" in html
+        assert "거래량=정규장 누적(시간외 거래량은 네이버 미제공)" in html   # 부제 동기
 
 
 class TestFavoritesFastInfoGuard:
