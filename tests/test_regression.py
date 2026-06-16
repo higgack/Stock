@@ -11183,3 +11183,10 @@ class TestAsiaTier2_20260616:
         assert "fetch_tpex_day_all" in inspect.getsource(tc._tw_all_common)
         assert "_tw_all_common" in inspect.getsource(tc.fetch_tw_movers)
         assert "_tw_all_common" in inspect.getsource(tc.fetch_tw_upper_lower)
+
+    def test_t10_jp_hk_52w_cap_label(self):
+        # T10(2026-06-16): JP/HK 52w 유니버스 ~900 cap → '전종목' 라벨 정직화.
+        import inspect
+        from bot import intl_pages
+        s = inspect.getsource(intl_pages.render_intl_highlow52_page)
+        assert '주요 ~900종목' in s and 'market in ("JP", "HK")' in s

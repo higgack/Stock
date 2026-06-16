@@ -68,6 +68,11 @@ def render_intl_highlow52_page(market: str) -> str:
                 + '</div>' + HL_SORT_JS)
     from bot.highlow_render import clean_source as _clean_src
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
+    # T10(2026-06-16): JP/HK 52w 유니버스는 네이버 시총 상위 ~900 으로 cap(yfinance
+    # 1년 스캔 비용·안정성) → '전종목' 은 과장. 정직하게 '주요 ~900종목' 으로 표기
+    # (소형주 신저가 구조적 누락 고지). KR=네이버 전종목·TW=上市 전종목이라 무관.
+    if market in ("JP", "HK") and "전종목" in src:
+        src = src.replace("전종목", "주요 ~900종목(유동성 상위)")
     # KR=네이버(업종 그룹 멤버맵 백필), JP/CN/HK=yfinance — 신선도는 KR 장중 30초
     # (네이버 1콜씩, 사용자 2026-06-15 '한국 신고저 실시간')·JP/HK 장중 1h(yfinance
     # 스캔 heavy). 부제 군더더기 제거 — 출처·정렬·갱신만.
