@@ -4005,6 +4005,7 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     csym = _currency_sym(currency)
     _0dec = ("KRW", "JPY", "TWD", "HKD")
     pdec = 0 if currency in _0dec else 2
+    over_line = ""    # 미국 시간외(장전/장후) 라인 (Naver 식) — wq 에서 채움
 
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     mcap = info.get("marketCap")
@@ -4062,6 +4063,20 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
                 source, delayed = wq.get("source", "실시간"), False
                 if wq.get("mcap"):
                     mcap = wq["mcap"]
+                # 미국 시간외(장전/장후) 라인 — Naver 식 '🌙 장후 · 정규장 종가
+                # $370.66 · 시간외 +0.36%' (사용자 2026-06-16). 현재가(메인)는
+                # 시간외가, 이 라인이 정규장 종가 + 시간외 변동을 따로 보여줌.
+                _osess = wq.get("over_session") or ""
+                if _osess:
+                    _olabel = "장전" if "PRE" in _osess else "장후"
+                    _parts = [f"🌙 {_olabel}"]
+                    _orc = wq.get("reg_close")
+                    if _orc is not None:
+                        _parts.append(f"정규장 종가 {csym}{_fmt_num(_orc, decimals=pdec)}")
+                    _opct = wq.get("over_pct")
+                    if _opct is not None:
+                        _parts.append(f"시간외 {'+' if _opct >= 0 else ''}{_opct:.2f}%")
+                    over_line = " · ".join(_parts)
         except Exception as exc:
             log.debug("build_live_quote: world/tw quote skipped for %s: %s", ticker, exc)
 
@@ -4109,6 +4124,7 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     fmt: dict = {}
     if price:
         fmt["price"] = _fmt_num(price, decimals=pdec, prefix=csym)
+    fmt["over_line"] = over_line   # 미국 시간외 라인(없으면 "" → :empty 로 숨김)
     if mcap:
         fmt["mcap"] = _fmt_mcap(mcap, csym, currency)
     for k, suf in (("trailingPE", "x"), ("forwardPE", "x"), ("priceToBook", "x"),
@@ -4205,6 +4221,8 @@ def _render_stock_info_html(rec: dict) -> str:
     <span class="si-value">{esc(ne_label)}</span>
     <span class="si-sub">{esc(ne_sub)}</span></div>
 </div>
+<style>.si-over:empty{{display:none}}</style>
+<div class="si-over" data-q="over_line" style="margin:-4px 0 10px;font-size:13px;color:#c77d2e;font-weight:600"></div>
 <div class="si-quote-status" style="margin:-8px 0 16px;font-size:11px;color:var(--fg-soft)">
   <span id="q-badge" style="font-weight:600"></span>
   <span id="q-dot" class="q-dot q-dot-load" title="데이터 로딩 중…"></span>

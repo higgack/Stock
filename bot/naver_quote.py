@@ -73,19 +73,30 @@ def _parse_quote(item: dict) -> dict | None:
         cmp = item.get("compareToPreviousPrice") or {}
         falling = isinstance(cmp, dict) and str(cmp.get("code")) == "5"
         pct = -abs(pct) if falling else abs(pct)
-    # 미국 시간외(장전/장후) 진행 중이면 현재가를 시간외가로 (사용자 2026-06-15
-    # 'world_quote 시간외가 반영'). Naver overMarketPriceInfo.overPrice — over-market
-    # OPEN 일 때만. KR 국내엔 이 필드 없음(안전·무영향). 누적 등락%는 전일 종가
-    # (정규장 종가 − 전일대비) 대비 재산출 → 시간외가와 등락%가 일관.
+    # 미국 시간외(장전/장후) 진행 중 (사용자 2026-06-15/16). Naver
+    # overMarketPriceInfo — over-market OPEN 일 때만. KR 국내엔 이 필드 없음
+    # (안전·무영향). 라이브 price/pct(차트·관심종목)는 시간외가로 교체(누적
+    # 등락% vs 전일종가). 동시에 정규장 종가(reg_close)·시간외가(over_price)·
+    # 시간외 등락%(over_pct, vs 정규장 종가)·세션·체결시각을 분리 노출 →
+    # 상세 페이지가 Naver 식 '정규장 + 시간외' 라인을 그릴 수 있게.
+    reg_close, reg_pct = price, pct
+    over_price = over_pct = None
     over_session = ""
+    over_ts = ""
     _over = item.get("overMarketPriceInfo")
     if isinstance(_over, dict) and str(_over.get("overMarketStatus")) == "OPEN":
         _op = _num(_over.get("overPrice"))
         if _op:
             over_session = str(_over.get("tradingSessionType") or "")
-            _rc = _num(item.get("closePriceRaw"))
+            over_ts = str(_over.get("localTradedAt") or "")
+            over_price = _op
+            _opct = _num(_over.get("fluctuationsRatio"))
+            if _opct is not None:
+                _ocmp = _over.get("compareToPreviousPrice") or {}
+                _ofall = isinstance(_ocmp, dict) and str(_ocmp.get("code")) == "5"
+                over_pct = -abs(_opct) if _ofall else abs(_opct)
             _diff = _num(item.get("compareToPreviousClosePriceRaw"))
-            _prev = (_rc - _diff) if (_rc is not None and _diff is not None) else None
+            _prev = (reg_close - _diff) if (_diff is not None) else None
             price = _op
             if _prev and _prev > 0:
                 pct = round((_op / _prev - 1) * 100, 2)
@@ -95,7 +106,12 @@ def _parse_quote(item: dict) -> dict | None:
         "mcap": _num(item.get("marketValueFullRaw")),
         "ts": item.get("localTradedAt"),
         "name": _extract_name(item),
-        "over_session": over_session,   # "" / PRE_MARKET / AFTER_MARKET (시간외 표기용)
+        "reg_close": reg_close,         # 정규장 종가 (시간외 중에도 보존)
+        "reg_pct": reg_pct,             # 정규장 등락%
+        "over_price": over_price,       # 시간외가 (없으면 None)
+        "over_pct": over_pct,           # 시간외 등락% (vs 정규장 종가)
+        "over_session": over_session,   # "" / PRE_MARKET / AFTER_MARKET
+        "over_ts": over_ts,             # 시간외 체결시각(ET ISO) — KST 변환용
         # 당일 OHLCV — 차트의 당일 일봉을 라이브로 그리는 데 사용(yahoo 가 장중
         # 당일 봉을 EOD/미제공하는 문제 해소). close 는 price 와 동일.
         "open": _num(item.get("openPriceRaw")),
