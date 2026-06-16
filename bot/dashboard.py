@@ -4274,8 +4274,12 @@ def _render_stock_info_html(rec: dict) -> str:
     kr = si.get("kr", {})
 
     # ── tab navigation ──────────────────────────────────────────
-    has_disclosures = bool(mkt.get("disclosures"))
-    disclosure_tab = '  <button type="button" class="si-tab" data-pane="si-disclosures">공시</button>\n' if has_disclosures else ""
+    # 공시 버튼은 항상 노출 (사용자 2026-06-16 A2): 옛 분석은 정적 저장분에
+    # 공시가 없어 has_disclosures=False 였고, 그러면 버튼이 안 떠 라이브
+    # 오버레이(/api/quote?full=1)가 si-disclosures 를 채워도 사용자가 탭에
+    # 접근할 수 없었다. 모든 시장에 실제 공시 소스(DART/EDINET/MOPS/AKShare/
+    # SEC)가 있으므로 flow/financials/peers 처럼 항상 노출 → 오버레이가 채움.
+    disclosure_tab = '  <button type="button" class="si-tab" data-pane="si-disclosures">공시</button>\n'
     # Tab buttons for live-fetchable panes are always shown — the JS
     # overlay (/api/quote?full=1) fills them after page load.  During
     # batch regen the pane content is empty, but the button + placeholder
@@ -4520,7 +4524,7 @@ def _render_stock_info_html(rec: dict) -> str:
     {range_html}
   </div>
   {supp_consensus_html}
-  {_src_foot}출처: {"yfinance · FnGuide · 한경" if is_kr else "yfinance · Kabutan" if is_jp else "yfinance · AKShare" if is_cn else "yfinance"}</div>
+  {_src_foot}출처: {"yfinance · FnGuide · Naver · 한경" if is_kr else "yfinance · Kabutan" if is_jp else "yfinance · 鉅亨網" if is_tw else "yfinance"}</div>
 </div>"""
 
     # ── 밸류에이션 pane ────────────────────────────────────────
@@ -4554,11 +4558,31 @@ def _render_stock_info_html(rec: dict) -> str:
     </div>
   </div>"""
 
+    # B3/B4 (2026-06-16): CN A주(AKShare)·TW(FinMind) 멀티플 폴백 — yfinance
+    # PER/PBR(/PSR) None 시 현지 소스 값으로 채움. 폴백값은 라이브 [data-q]
+    # 오버레이가 yfinance None 으로 덮어쓰지 않도록 data-q 를 비워 정적 표시.
+    _alt_val: dict = {}
+    if is_cn:
+        _alt_val = mkt.get("valuation") or {}          # {per, pbr, psr}
+    elif is_tw:
+        _pp = [r for r in (mkt.get("per_pbr") or []) if isinstance(r, dict)]
+        if _pp:
+            _lt = max(_pp, key=lambda r: r.get("date", ""))   # 최신 일자
+            _alt_val = {"per": _lt.get("PER"), "pbr": _lt.get("PBR")}
+    def _mrow(label, yf_key, alt_key, suffix="x"):
+        yv = si.get(yf_key)
+        if yv is not None:
+            return _val_row(label, yv, suffix, yf_key)
+        av = _alt_val.get(alt_key)
+        if av is not None:
+            return _val_row(label, av, suffix, "")   # 정적(현지 소스 폴백)
+        return _val_row(label, None, suffix, yf_key)
+
     val_multiples = ""
-    val_multiples += _val_row("PER (후행)", si.get("trailingPE"), "x", "trailingPE")
+    val_multiples += _mrow("PER (후행)", "trailingPE", "per")
     val_multiples += _val_row("PER (선행)", si.get("forwardPE"), "x", "forwardPE")
-    val_multiples += _val_row("PBR (주가순자산)", si.get("priceToBook"), "x", "priceToBook")
-    val_multiples += _val_row("PSR (주가매출)", si.get("priceToSalesTrailing12Months"), "x", "priceToSalesTrailing12Months")
+    val_multiples += _mrow("PBR (주가순자산)", "priceToBook", "pbr")
+    val_multiples += _mrow("PSR (주가매출)", "priceToSalesTrailing12Months", "psr")
     val_multiples += _val_row("EV/EBITDA", si.get("enterpriseToEbitda"), "x", "enterpriseToEbitda")
     _dy_pct = _safe_dy_pct(si.get("dividendYield"), si.get("dividendRate"), si.get("current_price"))
     val_multiples += _val_row("배당수익률", _dy_pct, "%", "dividendYield")
@@ -4677,8 +4701,10 @@ def _render_stock_info_html(rec: dict) -> str:
     <div style="margin-top:8px;font-size:12px;color:var(--fg-soft)">출처: FinMind/TWSE · 상장사 매월 10일 이내 의무 공시</div>
   </div>"""
 
-    earn_src = ("DART" if is_kr else "MOPS" if is_tw
-                else "AKShare" if is_cn else "yfinance")
+    # 최근 실적(EPS 예상/실제/서프라이즈) 표는 전 시장 yfinance earnings_history.
+    # TW 월매출만 FinMind/TWSE(자체 풋노트 보유). 옛 코드가 KR=DART·TW=MOPS·
+    # CN=AKShare 로 표기했으나 실제 소스와 불일치 → yfinance 로 정정(사용자 2026-06-16).
+    earn_src = "yfinance" + (" · FinMind/TWSE(월매출)" if (is_tw and tw_revenue_html) else "")
     earnings_pane = f"""<div class="si-pane" id="si-earnings">
   <div class="si-section">
     <div class="si-section-title">최근 실적</div>
@@ -4720,10 +4746,27 @@ def _render_stock_info_html(rec: dict) -> str:
         research_table = f"""<table class="si-table">
   <thead><tr><th>발행일</th><th>증권사</th><th>투자의견</th><th class="num">목표가</th></tr></thead>
   <tbody>{r_rows}</tbody></table>"""
+    elif (is_jp or is_tw) and (mkt.get("consensus") or {}).get("target_mean"):
+        # C1(2026-06-16): JP(Kabutan)/TW(cnyes)는 per-broker 액션 피드가 없지만
+        # 종합 레이팅+목표가+기관수+최신일은 있어 최소 1행으로 표시 → 리서치
+        # 탭 빈칸 해소. (per-firm 피드 소스 부재는 CLAUDE.md TODO 로 보류 중.)
+        _c = mkt["consensus"]
+        _crating = esc(str(_c.get("rating") or "—"))
+        _ctgt = _c.get("target_mean")
+        _ctgt_str = f"{csym}{_fmt_num(_ctgt, decimals=2 if currency not in _0dec else 0)}" if _ctgt else "—"
+        _cnn = _c.get("n_analysts")
+        _cnn_str = f"{_cnn}명" if _cnn else "—"
+        _cdate = esc(str(_c.get("last_report_date") or "—"))
+        research_table = f"""<table class="si-table">
+  <thead><tr><th>최신 리포트</th><th>소스</th><th>종합 의견</th><th class="num">목표가</th><th class="num">기관수</th></tr></thead>
+  <tbody><tr><td>{_cdate}</td><td>{esc(str(_c.get("source","")))}</td><td>{_crating}</td><td class="num">{_ctgt_str}</td><td class="num">{_cnn_str}</td></tr></tbody></table>"""
     else:
         research_table = '<div class="si-empty">리서치 액션 데이터가 없습니다.</div>'
 
-    _res_src = "한경 컨센서스" if kr_reports else "yfinance"
+    _res_src = ("한경 컨센서스" if kr_reports
+                else "Kabutan" if (is_jp and (mkt.get("consensus") or {}).get("target_mean"))
+                else "鉅亨網" if (is_tw and (mkt.get("consensus") or {}).get("target_mean"))
+                else "yfinance")
     research_pane = f"""<div class="si-pane" id="si-research">
   <div class="si-section">
     <div class="si-section-title">리서치 액션</div>
@@ -4951,17 +4994,40 @@ def _render_stock_info_html(rec: dict) -> str:
     else:
         news_html = '<div class="si-empty">뉴스 데이터가 없습니다.</div>'
 
+    # ── AV 뉴스 감성 (B2, 2026-06-16) — 기사별 사전 점수(-1~+1) 집계.
+    # cache_only=True: 분석이 이미 캐시한 종목만 표시, 대시보드 조회가 AV
+    # 무료한도(25/day)를 절대 소진하지 않음(미분석 종목은 배지 생략). 전 시장.
+    av_sent_html = ""
+    try:
+        from bot.av_sentiment_client import fetch_news_sentiment
+        _avs = fetch_news_sentiment(ticker, cache_only=True)
+        _ag = (_avs or {}).get("aggregate") or {}
+        if _ag.get("total"):
+            bull, bear, neu = _ag.get("bullish", 0), _ag.get("bearish", 0), _ag.get("neutral", 0)
+            avg = _ag.get("avg_score", 0.0) or 0.0
+            tot = _ag.get("total", 0)
+            _lab = "강세" if avg >= 0.15 else "약세" if avg <= -0.15 else "중립"
+            _lc = "#26a69a" if avg >= 0.15 else "#e2574c" if avg <= -0.15 else "var(--fg-soft)"
+            av_sent_html = f"""<div class="si-section">
+    <div class="si-section-title">뉴스 감성 (Alpha Vantage)</div>
+    <div style="font-size:14px">종합 <span style="color:{_lc};font-weight:600">{_lab}</span> (평균 {avg:+.2f}) · 🐂 {bull} · 😐 {neu} · 🐻 {bear} · 총 {tot}건</div>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:4px">기사별 사전 점수 집계 · 분석 시점 캐시</div>
+  </div>"""
+    except Exception as exc:
+        log.debug("detail: AV sentiment %s: %s", ticker, exc)
+
     # 시장별 1차 뉴스 소스(개별 기사 publisher 는 행마다 별도 표시).
     news_src = ("네이버 해외뉴스" if _nv_news else
                 "Naver Finance" if is_kr else "Kabutan" if is_jp
                 else "cnyes" if is_tw else "동방재부(AKShare)" if is_cn
                 else "yfinance")
     news_pane = f"""<div class="si-pane" id="si-news">
+  {av_sent_html}
   <div class="si-section">
     <div class="si-section-title">주요 뉴스</div>
     {news_html}
   </div>
-  {_src_foot}출처: {news_src}</div>
+  {_src_foot}출처: {news_src}{" · Alpha Vantage(감성)" if av_sent_html else ""}</div>
 </div>"""
 
     # ── 수급 pane (KR only — KIS + pykrx flow data) ─────────────
@@ -5294,6 +5360,39 @@ def _render_stock_info_html(rec: dict) -> str:
         except Exception as exc:
             log.info("detail: finnhub insider %s: %s", ticker, exc)
 
+        # Finnhub 애널리스트 의견 분포 추이 (B1, 2026-06-16) — 월별
+        # StrongBuy/Buy/Hold/Sell/StrongSell 카운트 + 매수비중. 컨센서스
+        # 평균 한 점이 아니라 '시간에 따른 의견 쏠림 변화'를 보여줌.
+        try:
+            from bot.finnhub_client import fetch_recommendation_trends, finnhub_key_ready
+            if finnhub_key_ready():
+                rt = fetch_recommendation_trends(ticker)
+                if rt:
+                    rt_rows = ""
+                    for r in rt[:6]:
+                        period = esc(str(r.get("period", ""))[:7])
+                        sb = int(r.get("strongBuy", 0) or 0)
+                        b = int(r.get("buy", 0) or 0)
+                        h = int(r.get("hold", 0) or 0)
+                        s = int(r.get("sell", 0) or 0)
+                        ss = int(r.get("strongSell", 0) or 0)
+                        tot = sb + b + h + s + ss
+                        if not tot:
+                            continue
+                        buy_pct = (sb + b) / tot * 100
+                        bc = "#26a69a" if buy_pct >= 60 else "#e2574c" if buy_pct < 40 else ""
+                        bs = f' style="color:{bc}"' if bc else ""
+                        rt_rows += (f'<tr><td>{period}</td><td class="num">{sb}</td><td class="num">{b}</td>'
+                                    f'<td class="num">{h}</td><td class="num">{s}</td><td class="num">{ss}</td>'
+                                    f'<td class="num"{bs}>{buy_pct:.0f}%</td></tr>\n')
+                    if rt_rows:
+                        us_flow_parts.append(f"""<div class="si-section">
+      <div class="si-section-title">애널리스트 의견 분포 추이</div>
+      <table class="si-table"><thead><tr><th>월</th><th class="num">강력매수</th><th class="num">매수</th><th class="num">보유</th><th class="num">매도</th><th class="num">강력매도</th><th class="num">매수%</th></tr></thead><tbody>{rt_rows}</tbody></table>
+    </div>""")
+        except Exception as exc:
+            log.info("detail: finnhub rec trends %s: %s", ticker, exc)
+
         if us_flow_parts:
             flow_pane = '<div class="si-pane" id="si-flow">\n  ' + "\n  ".join(us_flow_parts) + f'\n  {_src_foot}출처: yfinance · SEC · Finnhub</div>\n</div>'
 
@@ -5471,7 +5570,11 @@ def _render_stock_info_html(rec: dict) -> str:
             d_reporter = esc(str(disc.get("reporter") or disc.get("filer_name") or disc.get("doc_type_label") or ""))
             d_url = disc.get("url", "")
             title_html = f'<a href="{esc(d_url)}" target="_blank" rel="noopener">{d_title}</a>' if d_url else d_title
-            d_rows += f"<tr><td>{d_date}</td><td>{title_html}</td><td>{d_reporter}</td></tr>\n"
+            # B5: KR 구조화 요약(dart_detail) 한 줄 — 제목 아래 회색 보조줄.
+            _dsumm = disc.get("summary")
+            summ_html = (f'<div style="font-size:12px;color:var(--fg-soft);margin-top:2px">{esc(str(_dsumm))}</div>'
+                         if _dsumm else "")
+            d_rows += f"<tr><td>{d_date}</td><td>{title_html}{summ_html}</td><td>{d_reporter}</td></tr>\n"
         disclosures_pane = f"""<div class="si-pane" id="si-disclosures">
   <div class="si-section">
     <div class="si-section-title">공시</div>
@@ -5597,7 +5700,8 @@ def _render_stock_info_html(rec: dict) -> str:
 </script>"""
 
     # ── assemble deferred panes (depend on variables defined above) ──
-    _val_src = "yfinance" + (" · SEC XBRL" if is_us else " · DART" if is_kr else "")
+    _val_src = "yfinance" + (" · SEC XBRL" if is_us else " · DART" if is_kr
+                             else " · AKShare" if is_cn else " · FinMind" if is_tw else "")
     valuation_pane = f"""<div class="si-pane" id="si-valuation">
   {w52_bar_html}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
@@ -5859,6 +5963,34 @@ def _render_stock_info_html(rec: dict) -> str:
     </table>
   </div>"""
 
+    # TW TDCC 집보호 주식분산 (C2, 2026-06-16) — 보유구간별 분포(개미 vs
+    # 대주주 집중도). FinMind 행 shape 의존이라 방어적 렌더(키 폴백·예외시 생략).
+    tw_disp_html = ""
+    tw_disp = si.get("tw", {}).get("shareholding", []) if is_tw else []
+    if tw_disp:
+        td_rows = ""
+        for d in tw_disp:
+            lvl = esc(str(d.get("HoldingSharesLevel") or d.get("level") or "")).strip()
+            if not lvl or lvl.lower() in ("total", "合計", "总计", "總計"):
+                continue
+            pct = d.get("percent")
+            try:
+                pct_str = f"{float(pct):.2f}%"
+            except (TypeError, ValueError):
+                pct_str = "—"
+            ppl = d.get("people")
+            ppl_str = f"{int(ppl):,}" if isinstance(ppl, (int, float)) and ppl else "—"
+            td_rows += f"<tr><td>{lvl}</td><td class='num'>{pct_str}</td><td class='num'>{ppl_str}</td></tr>\n"
+        if td_rows:
+            tw_disp_html = f"""<div class="si-section">
+    <div class="si-section-title">집보호 주식분산 (TDCC)</div>
+    <table class="si-table">
+      <thead><tr><th>보유구간(주)</th><th class="num">비중</th><th class="num">인원</th></tr></thead>
+      <tbody>{td_rows}</tbody>
+    </table>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:4px">보유구간별 지분 분포 — 소액(개미) vs 대주주 집중도 · 출처: FinMind/TDCC</div>
+  </div>"""
+
     # CN AKShare major holders (主要流通股东)
     cn_holders_html = ""
     cn_holders = si.get("cn", {}).get("major_holders", []) if is_cn else []
@@ -5930,7 +6062,8 @@ def _render_stock_info_html(rec: dict) -> str:
   </div>"""
 
     _hold_src = ("yfinance · DART · pykrx" if is_kr else "yfinance · EDINET" if is_jp
-                 else "yfinance · MOPS" if is_tw else "yfinance · AKShare" if is_cn
+                 else ("yfinance · MOPS · FinMind" if tw_disp_html else "yfinance · MOPS") if is_tw
+                 else "yfinance · AKShare" if is_cn
                  else "yfinance · SEC")
     holders_pane = f"""<div class="si-pane" id="si-holders">
   <div class="si-section">
@@ -5948,6 +6081,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {us_insider_html}
   {jp_holders_html}
   {tw_insiders_html}
+  {tw_disp_html}
   {cn_holders_html}
   {_src_foot}출처: {_hold_src}</div>
 </div>"""

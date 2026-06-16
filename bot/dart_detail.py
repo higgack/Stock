@@ -108,6 +108,16 @@ def get_disclosure_summaries(stock_code: str, days_back: int = 400) -> dict:
     corp = d.stock_code_to_corp_code(stock_code)
     if not corp:
         return {}
+    # 12h 디스크 캐시 (2026-06-16 B5) — 상세 공시 탭이 collect_stock_snapshot
+    # (라이브 오버레이 매 조회 재실행)에서 호출하므로 무캐시면 KR 종목당 매
+    # 조회 다중 DART 호출(주요사항보고서 4종+배당). corp 해석 성공 후 캐시
+    # (설정/식별 실패는 미캐시 — 위 early-return). 빈 결과도 캐시(재호출 차단).
+    from bot.finviz_client import _cache_write, _cached
+    _code6 = (stock_code or "").upper().split(".")[0]
+    _ck = f"dart_detail_summ_{_code6}.json"
+    _hit = _cached(_ck, ttl=12 * 3600)
+    if isinstance(_hit, dict) and "data" in _hit:
+        return _hit["data"] or {}
     end = date.today()
     bgn = end - timedelta(days=min(max(days_back, 90), 1200))
     out: dict[str, str] = {}
@@ -163,6 +173,10 @@ def get_disclosure_summaries(stock_code: str, days_back: int = 400) -> dict:
             if bits:
                 out["__DIVIDEND__"] = f"최근 결산 배당 · " + " · ".join(bits)
                 break
+    except Exception:
+        pass
+    try:
+        _cache_write(_ck, {"data": out})
     except Exception:
         pass
     return out

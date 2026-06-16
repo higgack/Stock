@@ -79,8 +79,14 @@ def _av_ticker(ticker: str) -> str:
     return suffix_map.get(suffix, ticker)
 
 
-def fetch_news_sentiment(ticker: str, limit: int = 50) -> Optional[dict]:
+def fetch_news_sentiment(ticker: str, limit: int = 50,
+                         cache_only: bool = False) -> Optional[dict]:
     """Fetch news with pre-computed sentiment scores.
+
+    cache_only=True (대시보드 표시용, 2026-06-16 B2): 디스크 캐시 히트만
+    반환하고 네트워크 호출은 절대 안 함 → AV 무료 한도(25 req/day)를
+    대시보드 조회가 소진하지 못하게 보호. 분석 경로가 이미 캐시한 종목만
+    감성 배지가 뜨고, 미분석 종목은 None(배지 생략).
 
     Returns:
         {
@@ -105,6 +111,8 @@ def fetch_news_sentiment(ticker: str, limit: int = 50) -> Optional[dict]:
     cached = _cache_get(ck)
     if cached is not None:
         return cached
+    if cache_only:           # 대시보드 표시 전용 — 캐시 미스면 호출 없이 None
+        return None
 
     try:
         resp = requests.get(

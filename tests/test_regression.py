@@ -10983,3 +10983,87 @@ class TestFavoritesPagination20260616:
         assert 'class="fav-pager"' in html                   # nav 컨테이너
         assert "favState.page = 0" in html                   # 필터/정렬/새데이터 리셋
         assert "pass.slice(start, end)" in html              # 현재 페이지만 노출
+
+
+class TestDetailTabEnhancements20260616:
+    """상세탭 보강 (사용자 2026-06-16 전수감사 적용): A1-A3·B1-B5·C1-C2.
+    _BATCH_REGEN=True 로 라이브 fetch 를 끄고 스냅샷 dict 만으로 새 렌더
+    분기를 검증(hermetic). B1(finnhub)·B2(AV)는 라이브 fetch 라 배선만 확인."""
+
+    def _html(self, ticker, si, monkeypatch):
+        import bot.dashboard as d
+        monkeypatch.setattr(d, "_BATCH_REGEN", True, raising=False)
+        parts = d._render_stock_info_html({"ticker": ticker, "stock_info": si})
+        s = parts.get("other_panes", "") or ""
+        for v in (parts.get("panes") or {}).values():
+            s += v or ""
+        s += parts.get("tabs", "") or ""
+        return s
+
+    def test_b3_cn_valuation_fallback(self, monkeypatch):
+        # yfinance PER None → AKShare get_valuation 값으로 채움(정적, data-q 없음).
+        h = self._html("600519.SS", {"current_price": 50.0,
+                       "cn": {"valuation": {"per": 12.3, "pbr": 1.4, "psr": 2.1}}}, monkeypatch)
+        assert "12.3" in h, "CN PER 폴백 누락"
+
+    def test_b4_tw_per_pbr_fallback(self, monkeypatch):
+        h = self._html("2330.TW", {"current_price": 100.0,
+                       "tw": {"per_pbr": [{"date": "2026-06-10", "PER": 18.5, "PBR": 3.2}]}},
+                       monkeypatch)
+        assert "18.5" in h, "TW PER 폴백 누락"
+
+    def test_c2_tw_dispersion(self, monkeypatch):
+        h = self._html("2330.TW", {"current_price": 100.0, "tw": {"shareholding": [
+            {"date": "2026-06-13", "HoldingSharesLevel": "1-999", "percent": 2.5, "people": 12000},
+            {"date": "2026-06-13", "HoldingSharesLevel": "total", "percent": 100, "people": 50000},
+        ]}}, monkeypatch)
+        assert "TDCC" in h and "1-999" in h, "TDCC 분산 누락"
+        # 'total' 합계행은 제외
+        seg = h.split("TDCC", 1)[1][:500]
+        assert "total" not in seg, "합계행 미필터"
+
+    def test_c1_jp_research_row(self, monkeypatch):
+        h = self._html("7203.T", {"current_price": 3000.0, "jp": {"consensus": {
+            "source": "Kabutan", "rating": "매수", "target_mean": 3500,
+            "n_analysts": 7, "last_report_date": "2026-06-12"}}}, monkeypatch)
+        assert "Kabutan" in h and "리서치 액션 데이터가 없습니다" not in h, "JP 리서치 행 누락"
+
+    def test_a3_supp_consensus_with_yf_present(self, monkeypatch):
+        # yfinance target_mean 이 있어도 현지 보조 컨센서스 병기.
+        h = self._html("005930.KS", {"current_price": 70000.0, "target_mean": 90000,
+            "kr": {"consensus": {"source": "FnGuide", "target_mean": 88000,
+                                 "rating": "매수", "n_analysts": 9}}}, monkeypatch)
+        assert "보조 컨센서스" in h and "88" in h, "보조 컨센서스 병기 누락"
+
+    def test_b5_kr_disclosure_summary(self, monkeypatch):
+        h = self._html("005930.KS", {"current_price": 70000.0, "kr": {"disclosures": [
+            {"date": "2026-06-12", "title": "자기주식취득결정", "url": "x?rcpNo=123",
+             "reporter": "회사", "summary": "취득금액 500억 · 보통주 100만주"}]}}, monkeypatch)
+        assert "취득금액 500억" in h, "공시 구조화 요약 누락"
+
+    def test_a2_disclosure_tab_always_shown(self, monkeypatch):
+        # 공시 저장분이 없어도 탭 버튼은 항상 노출(라이브 오버레이가 채움).
+        h = self._html("AAPL", {"current_price": 200.0}, monkeypatch)
+        assert 'data-pane="si-disclosures"' in h, "공시 탭 버튼 누락"
+
+    def test_a1_earnings_footer_honest(self):
+        # 실적 풋노트가 시장 무관 yfinance(거짓 DART/MOPS/AKShare 표기 제거).
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'earn_src = "yfinance"' in src, "실적 풋노트 정직화 누락"
+
+    def test_a3_consensus_clients_cached(self):
+        fg = open("bot/fnguide_consensus.py", encoding="utf-8").read()
+        kb = open("bot/kabutan_consensus.py", encoding="utf-8").read()
+        assert "_cached" in fg and "fnguide_consensus_" in fg, "FnGuide 캐시 누락"
+        assert "_cached" in kb and "kabutan_consensus_" in kb, "Kabutan 캐시 누락"
+        # B5: dart_detail.get_disclosure_summaries 도 per-view 호출이라 캐시 필수.
+        dd = open("bot/dart_detail.py", encoding="utf-8").read()
+        assert "_cached" in dd and "dart_detail_summ_" in dd, "dart_detail 캐시 누락"
+
+    def test_b1_b2_wiring(self):
+        d = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "fetch_recommendation_trends" in d, "B1 의견분포 추이 배선 누락"
+        assert "애널리스트 의견 분포 추이" in d
+        assert "cache_only=True" in d and "Alpha Vantage" in d, "B2 감성 배선 누락"
+        av = open("bot/av_sentiment_client.py", encoding="utf-8").read()
+        assert "cache_only" in av, "AV cache_only 파라미터 누락"

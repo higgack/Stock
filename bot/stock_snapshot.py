@@ -397,6 +397,21 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         if dart:
             disclosures = dart.get_recent_disclosures(stock_code, days_back=365, limit=30)
             if disclosures:
+                # B5(2026-06-16): dart_detail 구조화 요약(증자금액·자기주식
+                # 취득금액·CB 전환가·배당 주당/시가배당률)을 rcept_no 매칭으로
+                # 부착 → 공시 탭이 제목만이 아니라 핵심 숫자 한 줄을 함께 표시.
+                # 실패해도 무해(제목만 표시). chart_events 가 이미 쓰는 데이터.
+                try:
+                    import re as _re
+                    from bot.dart_detail import get_disclosure_summaries
+                    summaries = get_disclosure_summaries(stock_code) or {}
+                    if summaries:
+                        for d in disclosures:
+                            m = _re.search(r"rcpNo=(\d+)", d.get("url", "") or "")
+                            if m and summaries.get(m.group(1)):
+                                d["summary"] = summaries[m.group(1)]
+                except Exception as exc:
+                    log.debug("stock_snapshot: DART detail summaries skipped: %s", exc)
                 out.setdefault("kr", {})["disclosures"] = disclosures
         return out
 
@@ -527,9 +542,10 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         return out
 
     def _t_fnguide() -> dict:
+        # A3(2026-06-16): yfinance 컨센서스 유무와 무관하게 항상 수집 →
+        # 대시보드가 월가(yfinance)와 현지(FnGuide) 컨센서스를 병기. 12h
+        # 디스크 캐시라 라이브 오버레이 재조회 비용 ~0.
         out: dict = {}
-        if snap.get("target_mean"):   # yfinance 컨센서스 있으면 불필요 (기존 gate)
-            return out
         from bot.fnguide_consensus import fetch_consensus as fnguide_fetch
         fg = fnguide_fetch(ticker)
         if fg and fg.get("target_mean"):
@@ -579,9 +595,9 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
         if _kr_research:
             if _kr_research.get("reports"):
                 out.setdefault("kr", {})["research_reports"] = _kr_research["reports"]
-            if (not snap.get("target_mean")
-                    and _kr_research.get("target_price")):
-                # consensus 는 FnGuide 우선 — 병합 순서(setdefault)가 보장.
+            if _kr_research.get("target_price"):
+                # A3: yfinance 유무 무관 항상. consensus 는 FnGuide 우선 —
+                # 병합 순서(setdefault)가 보장(FnGuide 먼저 set 되면 유지).
                 out.setdefault("kr", {})["consensus"] = {
                     "source": "Naver Finance",
                     "target_mean": _kr_research["target_price"],
@@ -727,21 +743,20 @@ def _enrich_jp(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: EDINET major holders skipped: %s", exc)
 
-    # ── Kabutan consensus (yfinance 보완) ────────────────────────
-    if not snap.get("target_mean"):
-        try:
-            from bot.kabutan_consensus import fetch_consensus as kabutan_fetch
-            kb = kabutan_fetch(ticker)
-            if kb and kb.get("target_mean"):
-                snap.setdefault("jp", {})["consensus"] = {
-                    "source": "Kabutan",
-                    "target_mean": kb["target_mean"],
-                    "rating": kb.get("rating"),
-                    "n_analysts": kb.get("n_analysts"),
-                    "last_report_date": kb.get("last_report_date"),
-                }
-        except Exception as exc:
-            log.debug("stock_snapshot: Kabutan consensus skipped: %s", exc)
+    # ── Kabutan consensus (yfinance 와 병기, A3 2026-06-16 무게이트) ──
+    try:
+        from bot.kabutan_consensus import fetch_consensus as kabutan_fetch
+        kb = kabutan_fetch(ticker)
+        if kb and kb.get("target_mean"):
+            snap.setdefault("jp", {})["consensus"] = {
+                "source": "Kabutan",
+                "target_mean": kb["target_mean"],
+                "rating": kb.get("rating"),
+                "n_analysts": kb.get("n_analysts"),
+                "last_report_date": kb.get("last_report_date"),
+            }
+    except Exception as exc:
+        log.debug("stock_snapshot: Kabutan consensus skipped: %s", exc)
 
     # ── Kabutan 뉴스 폴백 (yfinance JP 뉴스 미커버) ───────────────
     _collect_news_fallback(ticker, snap)
@@ -792,21 +807,37 @@ def _enrich_tw(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: FinMind PER/PBR skipped: %s", exc)
 
-    # ── cnyes 컨센서스 (yfinance TW 보완) ────────────────────────
-    if not snap.get("target_mean"):
-        try:
-            from bot.cnyes_consensus import fetch_consensus as cnyes_fetch
-            cn = cnyes_fetch(ticker)
-            if cn and cn.get("target_mean"):
-                snap.setdefault("tw", {})["consensus"] = {
-                    "source": "鉅亨網",
-                    "target_mean": cn["target_mean"],
-                    "rating": cn.get("rating"),
-                    "n_analysts": cn.get("n_analysts"),
-                    "last_report_date": cn.get("last_report_date"),
-                }
-        except Exception as exc:
-            log.debug("stock_snapshot: cnyes consensus skipped: %s", exc)
+    # ── FinMind TDCC 집보호 주식분산 (C2, 2026-06-16) — 보유구간별 분포
+    # (개미/대주주 집중도). 최신 일자만 보관. 행 shape 가 FinMind 의존이라
+    # 렌더는 방어적(level/percent/people 일반 표시). 실패 무해(섹션 생략).
+    try:
+        from bot.finmind_client import fetch_shareholding
+        sh = fetch_shareholding(ticker)
+        if sh and isinstance(sh, list):
+            latest_date = max((r.get("date", "") for r in sh if isinstance(r, dict)),
+                              default="")
+            if latest_date:
+                rows = [r for r in sh if isinstance(r, dict)
+                        and r.get("date") == latest_date]
+                if rows:
+                    snap.setdefault("tw", {})["shareholding"] = rows
+    except Exception as exc:
+        log.debug("stock_snapshot: FinMind shareholding skipped: %s", exc)
+
+    # ── cnyes 컨센서스 (yfinance 와 병기, A3 2026-06-16 무게이트) ──
+    try:
+        from bot.cnyes_consensus import fetch_consensus as cnyes_fetch
+        cn = cnyes_fetch(ticker)
+        if cn and cn.get("target_mean"):
+            snap.setdefault("tw", {})["consensus"] = {
+                "source": "鉅亨網",
+                "target_mean": cn["target_mean"],
+                "rating": cn.get("rating"),
+                "n_analysts": cn.get("n_analysts"),
+                "last_report_date": cn.get("last_report_date"),
+            }
+    except Exception as exc:
+        log.debug("stock_snapshot: cnyes consensus skipped: %s", exc)
 
     # ── 鉅亨網 뉴스 폴백 (yfinance TW 뉴스 미커버) ────────────────
     _collect_news_fallback(ticker, snap)
@@ -864,6 +895,17 @@ def _enrich_cn(ticker: str, snap: dict) -> None:
                 snap.setdefault("cn", {})["hsgt_flow"] = flow
     except Exception as exc:
         log.debug("stock_snapshot: AKShare HSGT flow skipped: %s", exc)
+
+    # ── AKShare 밸류에이션 (PER/PBR/PSR — yfinance CN/HK 미커버 보완, B3) ──
+    try:
+        from bot.akshare_client import get_akshare
+        ak = get_akshare()
+        if ak:
+            val = ak.get_valuation(ticker)
+            if val and (val.get("per") or val.get("pbr") or val.get("psr")):
+                snap.setdefault("cn", {})["valuation"] = val
+    except Exception as exc:
+        log.debug("stock_snapshot: AKShare valuation skipped: %s", exc)
 
     # ── 东方财富 뉴스 폴백 (yfinance CN/HK 뉴스 미커버) ───────────
     _collect_news_fallback(ticker, snap)

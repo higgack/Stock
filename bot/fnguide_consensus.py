@@ -70,6 +70,18 @@ def fetch_consensus(stock_code: str) -> Optional[dict]:
     if not (code.isdigit() and len(code) == 6):
         return None
 
+    # 12h 디스크 캐시 (사용자 2026-06-16 A3) — 컨센서스를 yfinance 유무와
+    # 무관하게 항상 수집하도록 게이트를 풀면서, 무캐시 스크레이프가 상세
+    # 페이지 라이브 오버레이(매 조회 collect_stock_snapshot 재실행)에서 매번
+    # 호출되는 것을 차단. 성공·무커버리지(페이지 로드됨, 빈 결과) 둘 다 캐시,
+    # 네트워크 오류는 미캐시(다음 조회 재시도). {"data": dict|None} 래퍼로
+    # None(무커버리지)도 캐시 구분.
+    from bot.finviz_client import _cache_write, _cached
+    ck = f"fnguide_consensus_{code}.json"
+    hit = _cached(ck, ttl=12 * 3600)
+    if isinstance(hit, dict) and "data" in hit:
+        return hit["data"] or None
+
     try:
         resp = requests.get(
             _URL_TMPL.format(code=code), headers=_HEADERS, timeout=_TIMEOUT
@@ -78,7 +90,7 @@ def fetch_consensus(stock_code: str) -> Optional[dict]:
         html = resp.text
     except Exception as exc:
         log.warning("fnguide: fetch failed for %s: %s", code, exc)
-        return None
+        return None   # 네트워크 오류 — 미캐시(다음에 재시도)
 
     target = _parse_target(html)
     rating = _parse_rating(html)
@@ -89,14 +101,17 @@ def fetch_consensus(stock_code: str) -> Optional[dict]:
     # caller can label '분석가 커버리지 없음' instead of showing a
     # half-empty consensus line that looks broken.
     if target is None and rating is None and n_analysts is None:
+        _cache_write(ck, {"data": None})   # 무커버리지 캐시 (재스크레이프 차단)
         return None
 
-    return {
+    result = {
         "last_report_date": last_report_date,
         "target_mean": target,
         "rating": rating,
         "n_analysts": n_analysts,
     }
+    _cache_write(ck, {"data": result})
+    return result
 
 
 def _parse_latest_report_date(html: str) -> Optional[str]:

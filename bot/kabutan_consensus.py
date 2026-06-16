@@ -85,6 +85,15 @@ def fetch_consensus(stock_code: str) -> Optional[dict]:
     if not (code.isdigit() and len(code) == 4):
         return None
 
+    # 12h 디스크 캐시 (사용자 2026-06-16 A3) — fnguide 와 동일 사유(무게이트
+    # 컨센서스가 라이브 오버레이에서 매 조회 스크레이프되는 것 차단). 성공·
+    # 무커버리지 캐시, 네트워크 오류 미캐시.
+    from bot.finviz_client import _cache_write, _cached
+    ck = f"kabutan_consensus_{code}.json"
+    hit = _cached(ck, ttl=12 * 3600)
+    if isinstance(hit, dict) and "data" in hit:
+        return hit["data"] or None
+
     try:
         resp = requests.get(
             _URL_TMPL.format(code=code), headers=_HEADERS, timeout=_TIMEOUT
@@ -100,7 +109,7 @@ def fetch_consensus(stock_code: str) -> Optional[dict]:
             html = resp.text
     except Exception as exc:
         log.warning("kabutan: fetch failed for %s: %s", code, exc)
-        return None
+        return None   # 네트워크 오류 — 미캐시
 
     target = _parse_target(html)
     rating = _parse_rating(html)
@@ -108,14 +117,17 @@ def fetch_consensus(stock_code: str) -> Optional[dict]:
     last_report_date = _parse_latest_report_date(html)
 
     if target is None and rating is None and n_analysts is None:
+        _cache_write(ck, {"data": None})
         return None
 
-    return {
+    result = {
         "last_report_date": last_report_date,
         "target_mean": target,
         "rating": rating,
         "n_analysts": n_analysts,
     }
+    _cache_write(ck, {"data": result})
+    return result
 
 
 def _parse_target(html: str) -> Optional[float]:
