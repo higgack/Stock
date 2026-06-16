@@ -80,7 +80,7 @@ def _parse_quote(item: dict) -> dict | None:
     # 시간외 등락%(over_pct, vs 정규장 종가)·세션·체결시각을 분리 노출 →
     # 상세 페이지가 Naver 식 '정규장 + 시간외' 라인을 그릴 수 있게.
     reg_close, reg_pct = price, pct
-    over_price = over_pct = None
+    over_price = over_pct = over_volume = None
     over_session = ""
     over_ts = ""
     _over = item.get("overMarketPriceInfo")
@@ -90,6 +90,7 @@ def _parse_quote(item: dict) -> dict | None:
             over_session = str(_over.get("tradingSessionType") or "")
             over_ts = str(_over.get("localTradedAt") or "")
             over_price = _op
+            over_volume = _num(_over.get("accumulatedTradingVolume"))  # 시간외 거래량
             _opct = _num(_over.get("fluctuationsRatio"))
             if _opct is not None:
                 _ocmp = _over.get("compareToPreviousPrice") or {}
@@ -109,7 +110,10 @@ def _parse_quote(item: dict) -> dict | None:
         "reg_close": reg_close,         # 정규장 종가 (시간외 중에도 보존)
         "reg_pct": reg_pct,             # 정규장 등락%
         "over_price": over_price,       # 시간외가 (없으면 None)
-        "over_pct": over_pct,           # 시간외 등락% (vs 정규장 종가)
+        "over_pct": over_pct,           # Naver overMarketPriceInfo.fluctuationsRatio
+                                        # (KR=전일종가 누적 / US=정규장종가 대비 — 시장별
+                                        # 상이. 순수 시간외 move 는 over_price/reg_close 로)
+        "over_volume": over_volume,     # 시간외 세션 누적 거래량 (없으면 None)
         "over_session": over_session,   # "" / PRE_MARKET / AFTER_MARKET
         "over_ts": over_ts,             # 시간외 체결시각(ET ISO) — KST 변환용
         # 당일 OHLCV — 차트의 당일 일봉을 라이브로 그리는 데 사용(yahoo 가 장중

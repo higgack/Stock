@@ -69,15 +69,21 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
     def _t(key: str, label: str) -> str:
         cls = ' class="active"' if key == active else ""
         return f'<a{cls} href="{key}">{label}</a>'
-    # 자식 링크 순서·명칭 통일(사용자 2026-06-13): 업종별 시세(전체) →
-    # 신고가·신저가(kr52) → 상한가·하한가. kr52 는 intl_pages(_tw_shell)
-    # 렌더라 이 toggle 에선 active 안 됨(일반 링크).
-    toggle = ('<div class="toggle">'
-              + _t("theme", "🏭 업종별 시세(전체)")
-              + _t("kr52", "📈 신고가·신저가")
-              + _t("highlow", "🚀 급등·급락")
-              + _t("nxt", "🌙 NXT 장전·장후")
-              + '</div>')
+    # KR 자식 nav = tw_pages._MARKET_NAV 단일 소스 (사용자 2026-06-16 'NXT 등
+    # 다른 페이지엔 시간외 탭이 없음' — 하드코딩 nav 가 _MARKET_NAV 와 drift,
+    # 시간외 급등·급락 신설 누락). lazy import 로 모듈 순환(tw_pages →
+    # naver_pages) 회피. 실패 시 폴백도 동일 탭 구성(시간외 포함)으로 유지.
+    try:
+        from bot.tw_pages import _market_nav
+        toggle = _market_nav("KR", active)
+    except Exception:
+        toggle = ('<div class="toggle">'
+                  + _t("theme", "🏭 업종별 시세(전체)")
+                  + _t("kr52", "📈 신고가·신저가")
+                  + _t("highlow", "🚀 급등·급락")
+                  + _t("krprepost", "🌙 시간외 급등·급락")
+                  + _t("nxt", "📊 NXT 수급")
+                  + '</div>')
     return f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">

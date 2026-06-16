@@ -10527,17 +10527,23 @@ class TestKrPrepostBoard20260616:
             "up": [{"ticker": "005930.KS", "name": "삼성전자", "mcap": 4500000.0},
                    {"ticker": "247540.KQ", "name": "에코프로비엠", "mcap": 120000.0}],
             "down": [{"ticker": "000660.KS", "name": "SK하이닉스", "mcap": 900000.0}]})
-        over = {"005930": {"over_session": "AFTER_MARKET", "over_price": 342000.0, "over_pct": 1.48, "volume": 13768940},
-                "247540": {"over_session": "AFTER_MARKET", "over_price": 180000.0, "over_pct": -3.2, "volume": 500000},
-                "000660": {"over_session": "AFTER_MARKET", "over_price": 210000.0, "over_pct": -1.1, "volume": 800000}}
+        # 등락률 = 시간외가 vs 정규장 종가(순수 시간외 move) · 거래량 = 시간외 세션.
+        over = {"005930": {"over_session": "AFTER_MARKET", "over_price": 342000.0,
+                           "reg_close": 337000.0, "over_volume": 50000, "volume": 13768940},
+                "247540": {"over_session": "AFTER_MARKET", "over_price": 180000.0,
+                           "reg_close": 186000.0, "over_volume": 30000, "volume": 500000},
+                "000660": {"over_session": "AFTER_MARKET", "over_price": 210000.0,
+                           "reg_close": 212000.0, "over_volume": 40000, "volume": 800000}}
         monkeypatch.setattr(nq, "fetch_kr_quote", lambda tk: over.get(str(tk).split(".")[0]))
         monkeypatch.setattr(pp, "_cache_write", lambda *a, **k: None)
         monkeypatch.setattr(pp, "_kr_status_write", lambda *a, **k: None)
         monkeypatch.setattr(pp, "_current_kr_session", lambda *a, **k: "post")
         out = pp._compute_kr_prepost()
         assert out["scanned"] == 3
-        assert [r["ticker"] for r in out["up"]] == ["005930.KS"]          # KS 보존
-        assert [r["ticker"] for r in out["down"]] == ["247540.KQ", "000660.KS"]  # KQ 보존·하락순
+        assert [r["ticker"] for r in out["up"]] == ["005930.KS"]          # +1.48% 순수 시간외
+        assert [r["ticker"] for r in out["down"]] == ["247540.KQ", "000660.KS"]  # -3.23 < -0.94
+        assert abs(out["up"][0]["pct"] - 1.48) < 0.05                     # 342000/337000-1
+        assert out["up"][0]["vol"] == 50000                              # 시간외 거래량(전체 13.7M 아님)
         assert out["up"][0]["mcap"] == 4500000.0                          # 시총 carry
         assert out["session"] == "post"
 
@@ -10563,6 +10569,30 @@ class TestKrPrepostBoard20260616:
         assert '"/krprepost"' in ds and "render_kr_prepost_page" in ds
         db = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'href="krprepost"' in db                      # KR 홈 nav 링크
+        # NXT/업종/급등락 페이지도 시간외 탭 노출 — naver_pages._shell 가 단일 소스
+        # _market_nav 사용(하드코딩 nav drift 차단, 사용자 2026-06-16 '다른 페이지에
+        # 시간외 없음'). 폴백도 시간외 포함.
+        np = open("bot/naver_pages.py", encoding="utf-8").read()
+        assert '_market_nav("KR", active)' in np
+        assert "🌙 NXT 장전·장후" not in np   # 하드코딩 옛 NXT 라벨 잔존 없음
+
+    def test_over_volume_and_pure_move(self):
+        # 시간외 거래량(over_volume) 파싱 + 순수 시간외 move 계산 배선.
+        from bot.naver_quote import _parse_quote
+        item = {"closePriceRaw": "337000", "fluctuationsRatioRaw": "0",
+                "accumulatedTradingVolumeRaw": "13768940",
+                "overMarketPriceInfo": {"overMarketStatus": "OPEN",
+                                        "tradingSessionType": "AFTER_MARKET",
+                                        "overPrice": "342000", "fluctuationsRatio": "1.48",
+                                        "accumulatedTradingVolume": "50000",
+                                        "compareToPreviousPrice": {"code": "2"}}}
+        q = _parse_quote(item)
+        assert q["over_volume"] == 50000.0      # 시간외 세션 거래량(전체와 별개)
+        assert q["reg_close"] == 337000.0       # 정규장 종가(순수 move 계산용)
+        assert q["over_price"] == 342000.0
+        pp = open("bot/prepost_client.py", encoding="utf-8").read()
+        assert "(op / reg - 1) * 100" in pp     # 순수 시간외 move 배선
+        assert 'q.get("over_volume")' in pp     # 시간외 거래량 우선
 
 
 class TestEarningsDateSort20260616:
