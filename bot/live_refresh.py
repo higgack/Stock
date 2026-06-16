@@ -19,7 +19,7 @@ LIVE_REFRESH_JS = """<script>
   var page='/'+p.split('/').pop();
   // 신고저(52주)=1h, 그 외 라이브 페이지=30s
   var SLOW={'/kr52':1,'/jp52':1,'/hk52':1,'/tw52':1,'/ushighlow':1};
-  var MKT={'/nxt':'KR','/theme':'KR','/highlow':'KR','/kr52':'KR',
+  var MKT={'/nxt':'KR','/theme':'KR','/highlow':'KR','/kr52':'KR','/krprepost':'KR',
     '/usmovers':'US','/ushighlow':'US','/usindustry':'US','/usprepost':'US',
     '/jpmovers':'JP','/jp52':'JP','/hkmovers':'HK','/hk52':'HK',
     '/cnmovers':'CN','/twhighlow':'TW','/tw52':'TW'};
