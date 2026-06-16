@@ -376,11 +376,11 @@ def render_us_prepost_page() -> str:
                         if done is not None and total else "")
                 body = (f'<div class="empty">⏳ 산출 진행 중{prog}'
                         + (f' (시작 {ts_lb})' if ts_lb else '')
-                        + ' — 전 미국 상장 연장거래 스캔(수 분 소요). '
+                        + ' — S&P 500 연장거래 스캔(~1분). '
                           '잠시 후 새로고침해 주세요.</div>')
             else:
-                body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전 미국 상장 '
-                        '연장거래 스캔(수 분 소요). 잠시 후 새로고침해 주세요.</div>')
+                body = ('<div class="empty">⏳ 첫 산출 진행 중 — S&P 500 '
+                        '연장거래 스캔(~1분). 잠시 후 새로고침해 주세요.</div>')
         else:
             body = (f'<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
                     f'연장거래({_ext_window_kst()}) 시간에 '
@@ -394,7 +394,7 @@ def render_us_prepost_page() -> str:
                 + _hpanel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down, "pp-down", "US",
                           _ind_dist_line(down), show_vol=True) + '</div>'
                 + _HL_SORT_JS)
-    sub = (f"미국 {sess_kr} 연장거래 등락 상·하위 30 · 정규장 종가 대비 · "
+    sub = (f"S&P 500 {sess_kr} 연장거래 등락 상·하위 30 · 정규장 종가 대비 · "
            "yfinance 30분봉 · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분 · "
            + _ext_window_kst()
            + (f" · {ts} 기준" if ts else ""))

@@ -5809,6 +5809,17 @@ class TestUSPrepostKSTWindow:
         assert "연장거래 창에서 30분 · " in src, "부제에 KST 창 추가 누락"
         assert "_EXT_WINDOW" not in src, "옛 하드코딩 상수 잔존(서머타임 미반영)"
 
+    def test_prepost_universe_is_sp500(self):
+        # 사용자 2026-06-16: prepost board 유니버스를 전미국→S&P 500 (유동성 얇은
+        # 뉴스 종목 대신 대형주). 캐시 버전 bump 로 옛 전미국 캐시 폐기.
+        src = open("bot/prepost_client.py", encoding="utf-8").read()
+        assert "_us_universe_robust()" in src, "S&P 500 유니버스 미배선"
+        assert "_sp500_names()" in src, "S&P 500 종목명 맵 미배선"
+        assert "_us_full_universe" not in src, "옛 전미국 유니버스 잔존"
+        assert "us_prepost_sp500" in src, "캐시 버전 bump 누락"
+        us = open("bot/us_pages.py", encoding="utf-8").read()
+        assert "S&P 500 {sess_kr} 연장거래" in us, "부제 S&P 500 미반영"
+
 
 class TestAnalysisCsvExport:
     """주식분석 아카이브 CSV 내보내기 (2026-06-14) — 분석 버튼 옆 ⬇CSV."""
