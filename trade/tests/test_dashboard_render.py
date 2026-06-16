@@ -43,6 +43,48 @@ class DashboardRenderSmokeTests(unittest.TestCase):
         self.assertIn("_lazyFetchView(view)", src)           # 탭 클릭 핸들러 배선
         self.assertIn('industry_out=args.out.parent / "industry_panel.html"', src)  # main 배선
 
+    def test_alerts_history_split(self):
+        # 사용자 2026-06-16 '최신만 인라인 + 모달 히스토리 on-demand': history_out
+        # 지정 시 ALERTS 인라인=최신만, 과거 발표는 alerts_history.json 으로.
+        import json
+        import tempfile
+        from pathlib import Path
+        from trade import dashboard as d
+        alerts = [
+            {"id": 1, "dedup_key": "K", "direction": "export", "status": "final",
+             "item": "X", "posted_at": "2026-06-10"},   # 최신
+            {"id": 2, "dedup_key": "K", "direction": "export", "status": "preliminary",
+             "item": "X", "posted_at": "2026-06-01"},   # 과거(history)
+        ]
+        latest_ids = [1]
+        with tempfile.TemporaryDirectory() as td:
+            hp = Path(td) / "alerts_history.json"
+            html = d._build_html(alerts, latest_ids, {}, "", None, [], "", "",
+                                 history_out=hp)
+            # 인라인 ALERTS 엔 최신(id 1)만, 과거(id 2)는 없음
+            import re
+            m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+            inline_ids = {a["id"] for a in json.loads(m.group(1))}
+            self.assertEqual(inline_ids, {1})            # 최신만 인라인
+            self.assertIn("alerts_history.json", html)   # HISTORY_SRC 배선
+            # history 파일엔 과거(id 2)
+            hist = json.loads(hp.read_text(encoding="utf-8"))
+            self.assertEqual({a["id"] for a in hist}, {2})
+        # history_out 미지정 → 전체 인라인(back-compat, 모달 기존대로)
+        html2 = d._build_html(alerts, latest_ids, {}, "")
+        import re as _re2
+        m2 = _re2.search(r"const ALERTS=(\[.*?\]);", html2, _re2.DOTALL)
+        self.assertEqual({a["id"] for a in __import__("json").loads(m2.group(1))}, {1, 2})
+
+    def test_alerts_history_lazy_wiring(self):
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[1] / "dashboard.py"
+               ).read_text(encoding="utf-8")
+        self.assertIn("function _loadHistory", src)          # 모달 히스토리 fetch
+        self.assertIn("_loadHistory();", src)                # showModal 트리거
+        self.assertIn("const HISTORY_SRC=", src)             # 클라이언트 소스 상수
+        self.assertIn('history_out=args.out.parent / "alerts_history.json"', src)  # main 배선
+
 
 if __name__ == "__main__":
     unittest.main()
