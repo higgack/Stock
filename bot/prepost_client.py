@@ -249,9 +249,13 @@ def _compute_us_prepost() -> dict:
             sess = wq.get("over_session") or ""
             op, opct = wq.get("over_price"), wq.get("over_pct")
             if sess and op and opct is not None:
+                _rv = wq.get("value")      # 정규장 누적 거래대금($) → 억$
                 return {"ticker": tk, "name": names.get(tk, tk),
                         "price": op, "pct": opct,
                         "vol": wq.get("volume"),   # 정규장 누적거래량(유동성 게이트·표시)
+                        # 거래대금 = 정규장 누적($→억$, 사용자 2026-06-16 '정규장
+                        # 기준이더라도'). 시간외 거래대금 네이버 미제공이라 정규장값.
+                        "value": round(_rv / 1e8, 2) if _rv else None,
                         "session": "pre" if "PRE" in sess else "post"}
         except Exception:
             pass

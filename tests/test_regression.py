@@ -5501,16 +5501,17 @@ class TestUsPrepost:
         import bot.prepost_client as pp
         monkeypatch.setattr(pp, "fetch_us_prepost_movers", lambda: {
             "up": [{"ticker": "NVDA", "name": "NVIDIA", "price": 900.0,
-                    "pct": 5.5, "vol": 120000, "mcap": 22000.0, "ind": "Semis",
-                    "session": "post"}],
+                    "pct": 5.5, "vol": 120000, "value": 350.0, "mcap": 22000.0,
+                    "ind": "Semis", "session": "post"}],
             "down": [], "ts": "T", "source": "yf", "session": "post"})
         from bot.us_pages import render_us_prepost_page
         html = render_us_prepost_page()
         assert "장후" in html and "NVDA" in html and 'href="lookup/NVDA"' in html
-        # 거래량 컬럼 = '정규장 거래량'으로 명확화 (네이버 worldstock 美 시간외 거래량
-        # 미제공 → 정규장 값, 시간외 보드 오해 방지, 사용자 2026-06-16). 가격만 시간외 라이브.
-        assert "정규장 거래량" in html
-        assert "거래량=정규장 누적(시간외 거래량은 네이버 미제공)" in html   # 부제 동기
+        # 거래량·거래대금 컬럼 = '정규장 거래량/거래대금'으로 명확화 (네이버 worldstock
+        # 美 시간외 미제공 → 정규장 값, 시간외 보드 오해 방지, 사용자 2026-06-16).
+        # 가격만 시간외 라이브.
+        assert "정규장 거래량" in html and "정규장 거래대금" in html
+        assert "거래량·거래대금=정규장 누적(시간외분은 네이버 미제공)" in html   # 부제 동기
 
 
 class TestFavoritesFastInfoGuard:
