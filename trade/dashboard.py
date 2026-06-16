@@ -1752,7 +1752,18 @@ function _lazyFetchView(view){
   view.dataset.loaded='1';
   fetch(view.dataset.src,{cache:'no-store'})
     .then(function(r){if(!r.ok)throw 0;return r.text();})
-    .then(function(html){view.innerHTML=html;})
+    .then(function(html){
+      view.innerHTML=html;
+      // innerHTML 은 <script> 미실행 → 프래그먼트의 스크립트(window._scrollRaw
+      // 정의·호출, 월별 원자료 우측 디폴트 스크롤 등) 재실행해야 동작(사용자
+      // 2026-06-16 '스크롤 디폴트 오른쪽 풀림' — #455 lazy 전환 회귀). 1회만(loaded gate).
+      view.querySelectorAll('script').forEach(function(old){
+        const s=document.createElement('script');
+        if(old.src){s.src=old.src;}else{s.textContent=old.textContent;}
+        old.parentNode.replaceChild(s,old);
+      });
+      if(window._scrollRaw)window._scrollRaw(view);   // 월별 원자료 → 최신(우측)
+    })
     .catch(function(){view.dataset.loaded='';
       view.innerHTML='<div class="lazy-load">산업트렌드 불러오기 실패 — 다시 눌러 주세요.</div>';});
 }

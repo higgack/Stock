@@ -862,8 +862,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             m = _re.search(rb"<body[^>]*>", body, _re.IGNORECASE)
             if m:
                 body = body[:m.end()] + _banner + body[m.end():]
-            else:
-                body = _banner + body
+            # <body> 없는 응답(industry_panel.html 등 lazy 프래그먼트, #455)엔 배너
+            # 주입 안 함 — prepend 하면 탭 콘텐츠 안에 nav 가 중복 표시됨(사용자
+            # 2026-06-16 '연결 대시보드 두번'). 풀페이지(<body> 보유)만 배너 1회.
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))

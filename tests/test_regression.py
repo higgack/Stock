@@ -7502,6 +7502,20 @@ class TestTradeDashboardSudoersSelfHeal:
         assert "systemctl restart trade-bot-dashboard 2>/dev/null" in src
 
 
+class TestTradeProxyBannerFragment20260616:
+    """#455 회귀: trade 리버스 프록시가 nav 배너를 모든 html 응답에 주입하며
+    <body> 없는 lazy 프래그먼트(industry_panel.html)엔 prepend → 산업트렌드 탭
+    콘텐츠 안에 nav 중복 표시(사용자 2026-06-16 '연결 대시보드 두번'). 풀페이지
+    (<body>)만 1회 주입하도록 — 프래그먼트 prepend 제거."""
+
+    def test_proxy_banner_only_full_page(self):
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        # <body> 매칭 시에만 주입, else-prepend(프래그먼트 배너) 제거됨
+        assert "body[:m.end()] + _banner + body[m.end():]" in src
+        assert "body = _banner + body" not in src, \
+            "프래그먼트(<body> 없는 응답)에 배너 prepend 잔존 — 탭 nav 중복"
+
+
 class TestBackfillV4StatusLabel:
     """백필 v4 상태 라벨 (2026-06-12 '확실히 확인한거지') — 공시 페이지가
     marker 파일로 완료/대기를 직접 표시. SSH·문의 없이 화면 확인."""
