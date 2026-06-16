@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading as _threading
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -220,16 +221,53 @@ _FAV_CACHE_TS: float = 0.0
 _FAV_TTL = 180   # 관심종목 가격 캐시 3분 — 위젯 반복 로드(브라우저 /api/favorites)가
 #                  매번 fast_info 를 버스트해 회로차단을 재트립하던 것 차단 (사용자
 #                  2026-06-14 '야후 멈춤 너무 힘들어'). dashboard_server 단일 프로세스 캐시.
+_FAV_REFRESHING = False
+_FAV_LOCK = _threading.Lock()
 
 
 def get_favorites_with_prices() -> list[dict]:
-    """Return favorites with current_price + refreshed estimates via yfinance.
+    """관심종목 + 현재가/추정치 — **렌더-세이프 SWR (사용자 2026-06-16 '오래걸려')**.
 
-    가격 캐시 3분 + fast_info 회로차단 게이트 — 야후 rate-limit 재트립 차단."""
+    엔드포인트(/api/favorites)가 종목당 yfinance(tk.info EPS/PER·fast_info·history)를
+    동기로 때려 '불러오는 중…'이 오래 걸리던 것 해소: 신선 캐시 즉시 / 스테일·콜드 시
+    **백그라운드 daemon 갱신 + 즉시 반환**(스테일 있으면 스테일, 없으면 이름만 —
+    위젯 폴이 곧 가격 채움). 가격 캐시 3분 + fast_info 회로차단 게이트 유지."""
     global _FAV_CACHE, _FAV_CACHE_TS
     import time as _time
-    if _FAV_CACHE is not None and (_time.time() - _FAV_CACHE_TS) < _FAV_TTL:
+    now = _time.time()
+    if _FAV_CACHE is not None and (now - _FAV_CACHE_TS) < _FAV_TTL:
         return _FAV_CACHE
+    _kick_fav_refresh()              # 스테일/콜드 → 백그라운드 full 갱신(비차단)
+    if _FAV_CACHE is not None:
+        return _FAV_CACHE           # 스테일 즉시(곧 daemon 이 갱신)
+    return _load()                  # 첫 로드 — 이름만(가격은 위젯 다음 폴에 채워짐)
+
+
+def _kick_fav_refresh() -> None:
+    """백그라운드 daemon — full yfinance 갱신(_compute). dedup + daemon(종료 블로킹 0)."""
+    global _FAV_REFRESHING
+    with _FAV_LOCK:
+        if _FAV_REFRESHING:
+            return
+        _FAV_REFRESHING = True
+
+    def _run():
+        global _FAV_REFRESHING
+        try:
+            _compute_favorites_with_prices()
+        except Exception as exc:
+            log.warning("favorites refresh: %s", exc)
+        finally:
+            with _FAV_LOCK:
+                _FAV_REFRESHING = False
+
+    _threading.Thread(target=_run, daemon=True, name="fav-refresh").start()
+
+
+def _compute_favorites_with_prices() -> list[dict]:
+    """관심종목 full 갱신(yfinance per-ticker) — 백그라운드 daemon 전용. _FAV_CACHE 적재."""
+    global _FAV_CACHE, _FAV_CACHE_TS
+    import time as _time
     import yfinance as yf
     from concurrent.futures import ThreadPoolExecutor
 

@@ -5691,7 +5691,7 @@ class TestFavoritesKoreanName:
         saved = {}
         monkeypatch.setattr(mf, "_save", lambda x: saved.update(rows=x))
         monkeypatch.setattr(ct, "translate_names_kr", lambda pairs: {"2344.TW": "윈본드"})
-        out = mf.get_favorites_with_prices()
+        out = mf._compute_favorites_with_prices()   # SWR: 동기 compute 직접(2026-06-16)
         assert out[0]["name_kr"] == "윈본드"               # 영문→한글 자가치유
         assert saved["rows"][0]["name_kr"] == "윈본드"     # 디스크에도 영속
 
@@ -5712,7 +5712,7 @@ class TestFavoritesKoreanName:
         monkeypatch.setattr(mf, "_save", lambda x: None)
         monkeypatch.setattr(mf, "_naver_quote_for", lambda t: {
             "price": 337000, "mcap": 2_212_900_000_000_000, "name": "삼성전자"})
-        out = mf.get_favorites_with_prices()
+        out = mf._compute_favorites_with_prices()   # SWR: 동기 compute 직접(2026-06-16)
         assert out[0]["current_price"] == 337000          # 네이버 현재가
         assert out[0]["market_cap"] == 2_212_900_000_000_000  # 네이버 시총(KR=원 신뢰)
         assert out[0]["name_kr"] == "삼성전자"
@@ -8278,6 +8278,29 @@ class TestUpperLowerVolume:
         # 사용자 2026-06-14 '모두 장중 1h' — TW 상한가도 _session_fresh(옛 5분 대체)
         src = open("bot/twse_client.py", encoding="utf-8").read()
         assert "_session_fresh(\"TW\"" in src and "_HL_INTRA_TTL" in src
+
+    def test_tw_sector_kr_suffix_match(self):
+        # 사용자 2026-06-16 한자 누수: TWSE 電腦及週邊設備類指數 → core 電腦及週邊設備
+        # 가 map key 電腦及週邊(設備 없음) 미스로 繁體 그대로 노출되던 것. 정식명 추가
+        # + suffix-robust _sector_kr.
+        from bot.twse_client import _sector_kr
+        assert _sector_kr("電腦及週邊設備") == "컴퓨터·주변기기"   # 設備 정식명
+        assert _sector_kr("鋼鐵") == "철강"                       # 기존 정확매칭 유지
+        assert _sector_kr("電子反向") == "전자 인버스"             # 인버스 카테고리(정상)
+        assert _sector_kr("未知業種XYZ") == "未知業種XYZ"          # 미매핑 → 원문 graceful
+        # 짧은 core 오매칭 방지(電子 → 電子兩倍槓桿 으로 잘못 매칭 금지)
+        assert _sector_kr("電子") != "전자 2배(레버리지)"
+
+    def test_favorites_endpoint_is_swr(self):
+        # 사용자 2026-06-16 '관심종목 오래걸려': /api/favorites 가 종목당 yfinance
+        # (tk.info) 동기 콜로 블로킹하던 것 → SWR(스테일/콜드 즉시 + 백그라운드 daemon).
+        src = open("bot/market_favorites.py", encoding="utf-8").read()
+        assert "_kick_fav_refresh" in src and "_compute_favorites_with_prices" in src
+        assert "daemon=True, name=\"fav-refresh\"" in src   # 백그라운드 daemon(비차단)
+        assert "return _load()" in src                       # 콜드 — 이름만 즉시
+        js = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "setTimeout(loadFavs, 5000)" in js            # 콜드 가격 픽업 재폴
+        assert "setInterval(function() {{ if (!document.hidden) loadFavs();" in js
 
     def test_tw_upper_panel_has_volume_col(self):
         src = open("bot/tw_pages.py", encoding="utf-8").read()

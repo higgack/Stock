@@ -13374,6 +13374,10 @@ def _render_market_page(data: dict) -> str:
 
 
     loadFavs();
+    // SWR: 엔드포인트가 콜드 시 이름만 즉시 주고 백그라운드로 가격 채움(사용자
+    // 2026-06-16 '오래걸려' fix) → 5초 뒤 1회 재폴(가격 픽업) + 60초 라이브 폴.
+    setTimeout(loadFavs, 5000);
+    setInterval(function() {{ if (!document.hidden) loadFavs(); }}, 60000);
   }})();
 }})();
 </script>
