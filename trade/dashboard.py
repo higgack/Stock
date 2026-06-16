@@ -49,6 +49,7 @@ def render_html(
     customs_db_path: Path | str | None = None,
     hs_map_path: Path | str | None = None,
     industry_out: Path | str | None = None,
+    history_out: Path | str | None = None,
 ) -> str:
     """Render the dashboard HTML from store.db.
 
@@ -104,6 +105,7 @@ def render_html(
     return _build_html(
         all_alerts, latest_ids, s, media_url_prefix, backlog, customs_rows,
         industry_html, heatmap_html, industry_src=industry_src,
+        history_out=history_out,
     )
 
 
@@ -537,18 +539,43 @@ def _build_html(
     industry_html: str = "",
     heatmap_html: str = "",
     industry_src: str = "",
+    history_out: Path | str | None = None,
 ) -> str:
     # industry_src(있을 때) = 산업트렌드를 별도 파일로 빼고 탭 열 때 lazy fetch
     # (초기 11MB→~3MB, 사용자 2026-06-16). industry_html 인라인과 양립 — src 우선.
     _has_industry = bool(industry_html) or bool(industry_src)
-    payload = [_alert_to_payload(a, media_prefix) for a in alerts]
+    full_payload = [_alert_to_payload(a, media_prefix) for a in alerts]
+    # ALERTS 인라인 = **최신만**(latest-per-dedup_key), 모달 히스토리(siblings)는
+    # 별도 alerts_history.json 으로 빼 모달 첫 클릭 때만 fetch (사용자 2026-06-16
+    # '최신만 인라인 + 모달 히스토리 on-demand'). 뷰/검색/CSV 는 전부 isLatest
+    # 필터라 최신만 필요 — 리스크는 모달 siblings 한 곳에 격리(fetch 실패 시 최신만
+    # 표시되는 graceful degrade). history_out 미지정(아카이브/share·테스트)이면 전체
+    # 인라인(back-compat·자체완결, 모달 기존대로). _stock_quotes_for 는 항상 전체
+    # 기준 — 히스토리 sibling 카드도 가격칩.
+    history_src = ""
+    payload = full_payload
+    if history_out is not None:
+        _latest_set = set(latest_ids)
+        _inline = [p for p in full_payload if p["id"] in _latest_set]
+        _history = [p for p in full_payload if p["id"] not in _latest_set]
+        try:
+            Path(history_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(history_out).write_text(
+                json.dumps(_history, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8")
+            history_src = Path(history_out).name      # 같은 디렉토리 상대경로
+            payload = _inline                         # 인라인 = 최신만
+        except Exception:
+            payload = full_payload                    # 쓰기 실패 → 전체 인라인 폴백
     payload_json = json.dumps(
         payload, ensure_ascii=False, separators=(",", ":")
     )
+    history_src_json = json.dumps(history_src)
     latest_ids_json = json.dumps(latest_ids, separators=(",", ":"))
     # 관련종목 EOD 시세 — BeOn stocks(회사명)를 data.go.kr 종가에 자동 매칭.
-    # 공급자 off/키 없음/예외 → {} (칩은 가격 없이 그대로). 표시 전용.
-    stock_quotes_json = json.dumps(_stock_quotes_for(payload),
+    # 공급자 off/키 없음/예외 → {} (칩은 가격 없이 그대로). 표시 전용. 전체(latest+
+    # history) stocks 커버 — 모달 sibling 카드도 가격칩 유지.
+    stock_quotes_json = json.dumps(_stock_quotes_for(full_payload),
                                    ensure_ascii=False, separators=(",", ":"))
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -655,6 +682,7 @@ def _build_html(
         '</div>'
         '<script>'
         f"const ALERTS={payload_json};\n"
+        f"const HISTORY_SRC={history_src_json};\n"   # 모달 히스토리 lazy 파일(빈문자=인라인)
         f"const LATEST_IDS=new Set({latest_ids_json});\n"
         f"const STOCK_QUOTES={stock_quotes_json};\n"
         + _JS
@@ -1095,6 +1123,30 @@ ALERTS.forEach(a=>{
   }
 });
 
+// 모달 히스토리 lazy (2026-06-16 '최신만 인라인 + 모달 히스토리 on-demand') —
+// 과거 발표(siblings)는 alerts_history.json 으로 빼 초기 인라인 ALERTS=최신만.
+// 모달 첫 클릭 때만 fetch → BY_DEDUP/ALERT_BY_ID 병합 → 열린 모달 재렌더. 뷰/검색/
+// CSV 는 isLatest 라 무영향. fetch 실패 시 최신만 표시(graceful, 크래시 0).
+let _histLoaded=false, _openAlert=null;
+function _loadHistory(){
+  if(_histLoaded||!HISTORY_SRC) return;
+  _histLoaded=true;
+  fetch(HISTORY_SRC,{cache:'no-store'})
+    .then(function(r){if(!r.ok)throw 0;return r.json();})
+    .then(function(hist){
+      hist.forEach(function(a){
+        (BY_DEDUP[a.dedup_key]=BY_DEDUP[a.dedup_key]||[]).push(a);
+        ALERT_BY_ID.set(a.id,a);
+      });
+      // 모달이 (siblings 로드 전) 열려있으면 이전발표 채워 재렌더.
+      if(_openAlert){
+        const mb=document.getElementById('modal-body');
+        if(mb)mb.innerHTML=renderModalBody(_openAlert);
+      }
+    })
+    .catch(function(){_histLoaded=false;});   // 실패 → 다음 모달서 재시도(최신만 표시)
+}
+
 function isLatest(a){return LATEST_IDS.has(a.id)}
 
 // Union of stocks across a section's variants, sorted by frequency
@@ -1457,11 +1509,14 @@ function renderModalCard(a, primary){
 }
 
 function showModal(a){
+  _openAlert=a;                 // 히스토리 lazy 로드 후 재렌더 대상
   document.getElementById('modal-body').innerHTML=renderModalBody(a);
   document.getElementById('modal').hidden=false;
   document.body.style.overflow='hidden';
+  _loadHistory();               // 모달 첫 클릭 때만 siblings fetch(이후 재렌더)
 }
 function hideModal(){
+  _openAlert=null;
   document.getElementById('modal').hidden=true;
   document.body.style.overflow='';
 }
@@ -2091,6 +2146,11 @@ def main() -> int:
         # fetch → 초기 로딩 11MB→~3MB (사용자 2026-06-16 '느려'). 같은 디렉토리라
         # 정적 서버가 그대로 서빙(상대 fetch). 미생성 시 인라인 폴백.
         industry_out=args.out.parent / "industry_panel.html",
+        # 모달 히스토리(siblings, 3036행 ~2.3MB)도 별도 파일로 빼 모달 첫 클릭 때만
+        # fetch → 초기 ALERTS 인라인 3.17MB→~0.8MB(최신만) (사용자 2026-06-16
+        # '최신만 인라인 + 모달 히스토리 on-demand'). 뷰/검색/CSV 는 최신만 쓰므로
+        # 무영향, 리스크는 모달 siblings 한 곳(graceful degrade).
+        history_out=args.out.parent / "alerts_history.json",
     )
     args.out.write_text(html, encoding="utf-8")
     size_kb = len(html.encode("utf-8")) / 1024
