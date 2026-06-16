@@ -389,14 +389,18 @@ def render_us_prepost_page() -> str:
     else:
         from bot.highlow_render import sort_by_pct, stock_panel as _hpanel
         up, down = sort_by_pct(up, gainers=True), sort_by_pct(down, gainers=False)
+        # 거래량 컬럼 = 정규장 누적(네이버 worldstock 이 美 시간외 거래량/거래대금
+        # 미제공 — probe 확인 2026-06-16). 시간외 보드라 '정규장 거래량'으로 명확화해
+        # 시간외 거래량으로 오해 안 되게(사용자 요청). 가격·등락만 시간외 라이브.
         body = ('<div class="grid">'
                 + _hpanel(f"🚀 {sess_kr} 가장 많이 오른 TOP 30", up, "pp-up", "US",
-                          _ind_dist_line(up), show_vol=True)
+                          _ind_dist_line(up), show_vol=True, vol_label="정규장 거래량(주)")
                 + _hpanel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down, "pp-down", "US",
-                          _ind_dist_line(down), show_vol=True) + '</div>'
+                          _ind_dist_line(down), show_vol=True, vol_label="정규장 거래량(주)") + '</div>'
                 + _HL_SORT_JS)
     sub = (f"전시장 무버 {sess_kr} 시간외 등락 상·하위 30 · 정규장 종가 대비 · "
-           "네이버 실시간 · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분 · "
+           "네이버 실시간 · 가격·등락=시간외 라이브 · 거래량=정규장 누적(시간외 "
+           "거래량은 네이버 미제공) · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분 · "
            + _ext_window_kst()
            + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 장전·장후 급등·급락", sub, "usprepost", body)

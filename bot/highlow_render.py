@@ -146,11 +146,14 @@ def ind_dist_line(items: list, top_k: int = 5) -> str:
 def stock_panel(title: str, items: list, tid: str, market: str,
                 extra_head: str = "", name_only: bool = False,
                 show_vol: bool = True, show_ind: bool = True,
-                show_mcap: bool = True, show_value: bool = False) -> str:
+                show_mcap: bool = True, show_value: bool = False,
+                vol_label: str = "거래량(주)") -> str:
     """리치 종목 패널 — 종목·현재가·등락률·(거래량)·(거래대금)·(시총)·(업종),
     헤더 클릭 정렬. **통화기호는 셀이 아닌 헤더에만**(사용자 2026-06-13).
     플래그: name_only·show_vol·show_value(거래대금)·show_ind·show_mcap.
-    거래대금/시총 = it['value']/it['mcap'] 억 단위(fmt_mcap 규약)."""
+    거래대금/시총 = it['value']/it['mcap'] 억 단위(fmt_mcap 규약).
+    vol_label: 거래량 컬럼 헤더 — 미국 장전·장후 보드는 '정규장 거래량(주)'로
+    명확화(네이버 worldstock 이 시간외 거래량 미제공이라 정규장 값, 사용자 2026-06-16)."""
     if not items:
         return (f'<div class="panel"><h2>{title}</h2>'
                 '<div class="empty">해당 종목 없음</div></div>')
@@ -219,7 +222,7 @@ def stock_panel(title: str, items: list, tid: str, market: str,
              f'<th class="srt" data-key="price" data-type="num" style="text-align:right">현재가{cur_h}</th>',
              '<th class="srt" data-key="pct" data-type="num" style="text-align:right">등락률</th>']
     if show_vol:
-        heads.append('<th class="srt" data-key="vol" data-type="num" style="text-align:right">거래량(주)</th>')
+        heads.append(f'<th class="srt" data-key="vol" data-type="num" style="text-align:right">{vol_label}</th>')
     if show_value:
         heads.append(f'<th class="srt" data-key="value" data-type="num" style="text-align:right">거래대금{cur_h}</th>')
     if show_mcap:
