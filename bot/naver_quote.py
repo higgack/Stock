@@ -140,6 +140,10 @@ def _parse_quote(item: dict) -> dict | None:
         "low": _num(item.get("lowPriceRaw")),
         "close": price,
         "volume": _num(item.get("accumulatedTradingVolumeRaw")),
+        # 정규장 누적 거래대금(현지통화 원금액) — 미국 장전·장후 보드 거래대금
+        # 컬럼용(사용자 2026-06-16 '거래대금, 정규장 기준이더라도'). 시간외 거래대금
+        # 은 네이버 worldstock 미제공이라 정규장 누적값. graceful(부재 시 None).
+        "value": _num(item.get("accumulatedTradingValueRaw")),
     }
 
 
