@@ -105,8 +105,8 @@ def render_tw_highlow_page() -> str:
                               show_vol=True, show_value=True, show_ind=True,
                               limit_pct=9.9)
                 + '</div>' + HL_SORT_JS)
-    sub = (f"TWSE 전종목(上市) 당일 등락 상·하위 · 등락률순·헤더 클릭 정렬 · 종목명=한글 · "
-           f"🔺상한/🔻하한(±10%) 표시 · 업종·시총=yfinance · "
+    sub = (f"上市(TWSE)+上櫃(TPEx) 전종목 당일 등락 상·하위 · 등락률순·헤더 클릭 정렬 · "
+           f"종목명=한글 · 🔺상한/🔻하한(±10%) 표시 · 업종·시총=yfinance · "
            f"{(dt + ' 종가 기준 · ') if dt else ''}장중 1h{(' · ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 급등·급락", sub, body,
                      nav=_market_nav("TW", "twhighlow"), back=_asia_back("TW"))

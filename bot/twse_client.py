@@ -28,6 +28,10 @@ _URL = "https://www.twse.com.tw/exchangeReport/MI_INDEX"
 # 되므로(stat 메시지), 점검 무관한 별도 OpenAPI 호스트를 쓴다. 업종(類股)은
 # OpenAPI 동등물이 없어 legacy MI_INDEX 를 best-effort 로 유지(실패 시 ETF 폴백).
 _OPENAPI_STOCK = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+# 上櫃(TPEx) 전종목 일일 — TWSE STOCK_DAY_ALL 의 上櫃 등가물(T9 2026-06-16, VM
+# probe 로 필드 확인: SecuritiesCompanyCode/CompanyName/Close/Change/TradingShares/
+# TransactionAmount, Date=ROC 7자리). parse_stock_day_all 이 두 필드셋 공용 처리.
+_OPENAPI_TPEX = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
 _HDRS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.twse.com.tw/",
          "Accept": "application/json"}
 _CACHE_DIR = Path.home() / ".tradingagents" / "cache" / "twse"
@@ -242,16 +246,18 @@ def parse_stock_day_all(rows: list) -> list[dict]:
             continue
         prev = close - chg
         pct = (chg / prev * 100.0) if prev else 0.0
-        vol = _num(r.get("TradeVolume") or r.get("成交股數"))  # 거래량(주식수)
-        val = _num(r.get("TradeValue") or r.get("成交金額"))   # 거래대금(NT$)
-        # TradeValue 미제공(OpenAPI STOCK_DAY_ALL 가 거래대금 필드 없음, 사용자
-        # 2026-06-14 'TW 거래대금 왜 안 채워져')이면 종가×거래량으로 산출 —
-        # 52주/무버 위젯과 동일식(value = last*vol). 있으면 원값 우선.
+        # 거래량(주식수)·거래대금(NT$) — TWSE STOCK_DAY_ALL(TradeVolume/TradeValue)
+        # + TPEx daily_close_quotes(TradingShares/TransactionAmount) 둘 다 tolerant
+        # (T9 2026-06-16 上櫃 확장 — 한 파서로 上市/上櫃 공용).
+        vol = _num(r.get("TradeVolume") or r.get("成交股數") or r.get("TradingShares"))
+        val = _num(r.get("TradeValue") or r.get("成交金額") or r.get("TransactionAmount"))
         if val is None and vol is not None and close:
             val = close * vol
         out.append({
-            "code": str(r.get("Code") or r.get("代號") or "").strip(),
-            "name": str(r.get("Name") or r.get("名稱") or "").strip(),
+            "code": str(r.get("Code") or r.get("代號")
+                        or r.get("SecuritiesCompanyCode") or "").strip(),
+            "name": str(r.get("Name") or r.get("名稱")
+                        or r.get("CompanyName") or "").strip(),
             "close": close, "pct": round(pct, 2),
             "vol": int(vol) if vol is not None else None,
             "value": round(val / 1e8, 2) if val is not None else None})  # 억 NT$
@@ -298,6 +304,41 @@ def fetch_stock_day_all() -> dict:
     out = {"rows": rows, "date": date}
     if rows:
         _cache_write("stock_day_all", out)
+    return out
+
+
+def fetch_tpex_day_all() -> dict:
+    """上櫃(TPEx) 전종목 일일 → {rows:[{code,name,close,pct,vol,value}], date}.
+    STOCK_DAY_ALL(上市) 의 上櫃 등가물(T9 2026-06-16) — 무버/상한가 보드 유니버스를
+    上市+上櫃 합집합으로 확장. parse_stock_day_all 공용(TPEx 필드명 tolerant).
+    시장-인지 신선도(_session_fresh TW, 장중 1h). graceful — 실패 시 스테일/빈."""
+    fp = _CACHE_DIR / "tpex_day_all.json"
+    try:
+        if fp.exists():
+            from bot.finviz_client import _HL_INTRA_TTL, _session_fresh
+            if _session_fresh("TW", fp.stat().st_mtime, _HL_INTRA_TTL):
+                return json.loads(fp.read_text(encoding="utf-8"))
+    except Exception:
+        c = _cached("tpex_day_all")
+        if c is not None:
+            return c
+    try:
+        r = requests.get(_OPENAPI_TPEX, headers=_HDRS, timeout=15)
+        r.raise_for_status()
+        raw = r.json()
+        rows = parse_stock_day_all(raw)
+        date = _roc_to_iso(raw[0].get("Date")) if isinstance(raw, list) and raw else ""
+    except Exception as exc:
+        log.warning("tpex day_all fetch error: %s", exc)
+        try:
+            if fp.exists():
+                return json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {"rows": [], "date": ""}
+    out = {"rows": rows, "date": date}
+    if rows:
+        _cache_write("tpex_day_all", out)
     return out
 
 
@@ -355,28 +396,47 @@ def _is_common_stock(code: str) -> bool:
     return len(c) == 4 and c.isdigit() and c[0] != "0"
 
 
-def fetch_tw_upper_lower(limit: int = 80) -> dict:
-    """TW 상한가/하한가권 — OpenAPI 전종목 중 ±9.5%+ (TW 한도 ±10% 도달·근접).
-    순수 일반종목만(ETF·워런트 제외). 점검 무관. {upper,lower,ts,date}."""
+def _tw_all_common(include_tpex: bool = True) -> tuple[list, str]:
+    """上市(STOCK_DAY_ALL) + 上櫃(TPEx) 일반종목 합집합 (T9 2026-06-16) — 무버/
+    상한가 유니버스를 두 거래소 전종목으로 확장. code dedup(上市 우선). 무버 보드는
+    가격/등락을 OpenAPI 가 직접 줘 비용 0(52주 신고저는 yfinance 1년 스캔이라
+    上櫃 미포함 — fetch_stock_day_all 직접 사용 경로 유지). (rows, date)."""
     data = fetch_stock_day_all()
-    stocks = [s for s in data.get("rows", []) if _is_common_stock(s.get("code"))]
+    rows = [s for s in data.get("rows", []) if _is_common_stock(s.get("code"))]
+    date = data.get("date", "")
+    if include_tpex:
+        try:
+            seen = {s.get("code") for s in rows}
+            for s in fetch_tpex_day_all().get("rows", []):
+                c = s.get("code")
+                if c and c not in seen and _is_common_stock(c):
+                    rows.append(s)
+                    seen.add(c)
+            if not date:
+                date = fetch_tpex_day_all().get("date", "")
+        except Exception as exc:
+            log.warning("tpex merge skipped: %s", exc)
+    return rows, date
+
+
+def fetch_tw_upper_lower(limit: int = 80) -> dict:
+    """TW 상한가/하한가권 — 上市+上櫃 전종목 중 ±9.9%+ (TW 한도 ±10% 도달).
+    순수 일반종목만(ETF·워런트 제외). 점검 무관. {upper,lower,ts,date}."""
+    stocks, date = _tw_all_common()
     upper = sorted([s for s in stocks if s["pct"] >= _TW_LIMIT],
                    key=lambda s: s["pct"], reverse=True)[:limit]
     lower = sorted([s for s in stocks if s["pct"] <= -_TW_LIMIT],
                    key=lambda s: s["pct"])[:limit]
-    return {"upper": upper, "lower": lower, "ts": _now_kst_label(),
-            "date": data.get("date", "")}
+    return {"upper": upper, "lower": lower, "ts": _now_kst_label(), "date": date}
 
 
 def fetch_tw_movers(limit: int = 30) -> dict:
-    """TW 급등/급락 — STOCK_DAY_ALL 전종목(일반종목) 등락 상·하위 (사용자 2026-06-14
-    'TW 상한가/하한가 → 급등/급락', JP/CN/HK 무버 형태). {up,down,ts,date}."""
-    data = fetch_stock_day_all()
-    stocks = [s for s in data.get("rows", []) if _is_common_stock(s.get("code"))]
+    """TW 급등/급락 — 上市(STOCK_DAY_ALL)+上櫃(TPEx) 전종목(일반종목) 등락 상·하위
+    (T9 2026-06-16 上櫃 확장, JP/CN/HK 무버 형태). {up,down,ts,date}."""
+    stocks, date = _tw_all_common()
     up = sorted(stocks, key=lambda s: s["pct"], reverse=True)[:limit]
     down = sorted(stocks, key=lambda s: s["pct"])[:limit]
-    return {"up": up, "down": down, "ts": _now_kst_label(),
-            "date": data.get("date", "")}
+    return {"up": up, "down": down, "ts": _now_kst_label(), "date": date}
 
 
 if __name__ == "__main__":   # VM 라이브 구조 검증

@@ -11165,3 +11165,21 @@ class TestAsiaTier2_20260616:
         from bot import highlow_render as hr
         s = inspect.getsource(hr._enrich_compute)
         assert "fetch_shares_outstanding" in s and 'market == "TW"' in s
+
+    def test_t9_tpex_parse_and_merge(self):
+        # T9(2026-06-16): TPEx daily_close_quotes 필드 tolerant 파싱 + 무버/상한가
+        # 유니버스가 上市+上櫃 합집합. (52주는 yfinance 비용으로 上市 only 유지.)
+        from bot.twse_client import parse_stock_day_all, _is_common_stock
+        rows = parse_stock_day_all([
+            {"Date": "1150616", "SecuritiesCompanyCode": "6488", "CompanyName": "環球晶",
+             "Close": "1045.0", "Change": "+95.0", "TradingShares": "13056886",
+             "TransactionAmount": "13538566505"}])
+        assert rows and rows[0]["code"] == "6488" and rows[0]["name"] == "環球晶"
+        assert rows[0]["pct"] == 10.0 and rows[0]["vol"] == 13056886
+        assert rows[0]["value"] == 135.39          # TransactionAmount/1e8 억NT$
+        assert _is_common_stock("6488") and not _is_common_stock("006201")  # ETF 제외
+        import inspect
+        from bot import twse_client as tc
+        assert "fetch_tpex_day_all" in inspect.getsource(tc._tw_all_common)
+        assert "_tw_all_common" in inspect.getsource(tc.fetch_tw_movers)
+        assert "_tw_all_common" in inspect.getsource(tc.fetch_tw_upper_lower)
