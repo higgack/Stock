@@ -468,9 +468,11 @@ def _compute_kr_prepost() -> dict:
                 # 종목이 시간외 보드를 점령) → 정규장 종가 대비로 재계산해 시간외
                 # '추가' 움직임만 랭킹. 거래량도 시간외 세션 거래량 우선.
                 pct = round((op / reg - 1) * 100, 2)
+                _ov = q.get("over_value")    # 시간외 거래대금(원) → 억
                 return {"ticker": tk, "name": names.get(tk, tk),
                         "price": op, "pct": pct,
                         "vol": q.get("over_volume") or q.get("volume"),
+                        "value": round(_ov / 1e8, 2) if _ov else None,
                         "mcap": mcaps.get(tk),
                         "session": "pre" if "PRE" in sess else "post"}
         except Exception:

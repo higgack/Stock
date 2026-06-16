@@ -3915,22 +3915,27 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
 
 
 def _fmt_over_line(q: dict, csym: str, pdec: int) -> str:
-    """Naver overMarketPriceInfo → 상세 시간외 라인 '🌙 장후 · 정규장 종가
-    $370.66 · 시간외 +0.36%' (사용자 2026-06-16 '대만제외 다 적용'). KR 국내·
-    US/JP/HK/CN 해외 공용 — over_session 없으면(정규장·비지원) "" → :empty 숨김."""
+    """Naver overMarketPriceInfo → 상세 시간외(NXT) 라인 '🌙 장후(NXT) · 정규장
+    종가 ₩123,200 · 시간외 ₩135,600 (+10.06%)' (사용자 2026-06-16, 네이버페이
+    미러: 메인=정규장종가, NXT=별도 표기). 메인 현재가/차트는 정규장 종가이고
+    이 라인이 시간외(NXT) 가격 + 정규장 대비 변동을 분리 표시. KR·US/JP/HK/CN
+    공용. over_session/over_price 없으면(정규장·비지원) "" → :empty 숨김."""
     if not isinstance(q, dict):
         return ""
     sess = q.get("over_session") or ""
-    if not sess:
+    op = q.get("over_price")
+    rc = q.get("reg_close")
+    if not sess or not op:
         return ""
     label = "장전" if "PRE" in sess else "장후"
-    parts = [f"🌙 {label}"]
-    rc = q.get("reg_close")
+    parts = [f"🌙 {label}(NXT)"]
     if rc is not None:
         parts.append(f"정규장 종가 {csym}{_fmt_num(rc, decimals=pdec)}")
-    opct = q.get("over_pct")
-    if opct is not None:
-        parts.append(f"시간외 {'+' if opct >= 0 else ''}{opct:.2f}%")
+    seg = f"시간외 {csym}{_fmt_num(op, decimals=pdec)}"
+    if rc and rc > 0:                       # 정규장 종가 대비 순수 시간외 변동(보드와 동일식)
+        mv = (op / rc - 1) * 100
+        seg += f" ({'+' if mv >= 0 else ''}{mv:.2f}%)"
+    parts.append(seg)
     return " · ".join(parts)
 
 

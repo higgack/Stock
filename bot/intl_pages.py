@@ -201,7 +201,7 @@ def render_kr_prepost_page() -> str:
                     '확인해 주세요.</div>')
     else:
         from bot.highlow_render import HL_SORT_JS, sort_by_pct, stock_panel
-        _o = dict(show_vol=True, show_ind=False)   # KR 시간외 = 가격·시총·거래량(업종 생략)
+        _o = dict(show_vol=True, show_value=True, show_ind=False)  # 가격·거래량·거래대금·시총
         up, down = sort_by_pct(up, gainers=True), sort_by_pct(down, gainers=False)
         body = ('<div class="grid">'
                 + stock_panel(f"🚀 {sess_kr} 가장 많이 오른 TOP 30", up,
@@ -210,7 +210,7 @@ def render_kr_prepost_page() -> str:
                               "kpp-down", "KR", "", **_o)
                 + '</div>' + HL_SORT_JS)
     sub = (f"🇰🇷 {sess_kr} 시간외 급등·급락 상·하위 30 · 등락률=시간외가 vs 정규장 "
-           "종가(순수 시간외 변동) · 거래량=시간외 세션 · 네이버 실시간 · "
+           "종가(순수 시간외 변동) · 거래량·거래대금=시간외 세션 · 네이버 실시간 · "
            "등락률순·헤더 클릭 정렬 · 장전 08:00–09:00 · 장후 16:00–18:00 KST · "
            "시간외 창에서 5분" + (f" · {ts} 기준" if ts else ""))
     return _tw_shell("🇰🇷 한국 장전·장후 급등·급락", sub, body,
