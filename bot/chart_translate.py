@@ -257,17 +257,19 @@ def translate_names_kr(pairs: list) -> dict:
     return out
 
 
-def translate_titles_kr(titles: list[str]) -> dict:
+def translate_titles_kr(titles: list[str], cache_only: bool = False) -> dict:
     """[제목…] → {원문제목: 한국어}. 캐시 우선, 미캐시만 Flash 배치 번역. graceful.
 
-    실패/키부재 시 번역 못 한 제목은 dict 에서 빠짐(호출부가 원문 유지)."""
+    cache_only=True 면 캐시된 번역만 반환(Flash 호출 0 — 렌더-세이프 경로용,
+    사용자 2026-06-16 TW 렌더 8.2s 블록 제거). 실패/키부재 시 번역 못 한 제목은
+    dict 에서 빠짐(호출부가 원문 유지)."""
     uniq = [t for t in dict.fromkeys(titles) if t and t.strip()]
     if not uniq:
         return {}
     cache = _load()
     out = {t: cache[t] for t in uniq if t in cache and cache[t]}
     todo = [t for t in uniq if t not in cache][:_MAX_BATCH]
-    if not todo:
+    if cache_only or not todo:        # 렌더-세이프(캐시만) 또는 전부 캐시됨
         return out
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
