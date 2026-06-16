@@ -10418,3 +10418,57 @@ class TestSupplyCjkKoreanAndBlogReadability20260616:
         assert r"</p\s*>|<br\s*/?>" in src, "블록 태그 → 개행 변환 미배선"
         assert '"\\n", body)' in src or '"\\n",\n' in src or "'\\n', body" in src \
             or "</div\\s*>" in src, "블록 경계 개행 보존 미배선"
+
+
+class TestDartProvisionalQuarterly20260616:
+    """분기 영업(잠정)실적 Form C — 연결 본표 전부 '-', 국가별/순매출만 채워진
+    다국적 공정공시(오리온 271560, 사용자 2026-06-16 '실제 파서내용 거의 없어').
+    VM 프로브로 받은 실문서 텍스트 스냅샷으로 회귀 가드."""
+
+    _ORION = (
+        '정치로서 향후 확정치와는 다를 수 있음. 1. 연결실적내용 단위 : 억원, % '
+        '구분 당기실적 전기실적 전기대비 전년동기실적 전년동기대비 (-) (-) 증감율(%) 흑자적자전환여부 (-) 증감율(%) 흑자적자전환여부 '
+        '매출액 당해실적 - - - - - - - 누계실적 - - - - - - - 영업이익 당해실적 - - - - - - - 누계실적 - - - - - - - '
+        '법인세비용차감전계속사업이익 당해실적 - - - - - - - 누계실적 - - - - - - - 당기순이익 당해실적 - - - - - - - 누계실적 - - - - - - - '
+        '지배기업 소유주지분 순이익 당해실적 - - - - - - - 누계실적 - - - - - - - '
+        '구분(억원, %) 당기실적(26년 5월) 전기실적(26년 4월) 전기대비 증감율(%) 흑자전환여부 전년동기실적(25년5월) 전년동기대비증감율(%) 흑자전환여부 '
+        '국가별 매출액 - - - - - - - 한국(오리온) 1,004 1,012 -0.8 - 1,031 -2.6 - 중국(OFC) 1,237 1,303 -5.1 - 1,024 20.8 - 베트남(OFV) 401 379 5.8 - 355 13.0 - 러시아(OIE) 369 332 11.1 - 290 27.2 - '
+        '국가별 영업이익 - - - - - - - 한국(오리온) 142 150 -5.3 - 187 -24.1 - 중국(OFC등 8개법인) 218 223 -2.2 - 177 23.2 - 베트남(OFV) 54 41 31.7 - 56 -3.6 - 러시아(OIE) 53 55 -3.6 - 35 51.4 - '
+        '2. 정보제공내역 정보제공자 재경팀 정보제공대상자 기관투자자 및 일반투자자 등 '
+        '4. 기타 2026년 5월 당월 한국 중국 베트남 러시아 합계 총매출* 1,128 1,453 445 380 3,406 매출차감 -124 -216 -44 -11 -395 순매출** 1,004 1,237 401 369 3,011 '
+        '2026년 5월 누계 한국 중국 베트남 러시아 합계 총매출* 5,402 7,839 2,549 1,646 17,436 매출차감 -553 -1,202 -256 -40 -2,051 순매출** 4,849 6,637 2,293 1,606 15,385 ')
+
+    def test_orion_segment_form(self):
+        from bot.dart_feed import _doc_unit_mult, _provisional_lines
+        assert _doc_unit_mult(self._ORION) == 1e8          # 억원 인식(1e8)
+        out = _provisional_lines(self._ORION, _doc_unit_mult(self._ORION))
+        j = " | ".join(out)
+        assert "매출액(순매출): 3,011억원" in j              # 당월 순매출 합계
+        assert "누계 1.5조원" in j or "누계 15,385억원" in j   # 누계 합계
+        assert "한국 1,004억원" in j and "중국 1,237억원" in j  # 국가별 매출
+        assert "베트남 401억원" in j and "러시아 369억원" in j
+        assert "국가별 영업이익" in j and "한국 142억원" in j   # 국가별 영업이익
+        # 연락처만 남던 회귀 차단: 라인 ≥ 4
+        assert len(out) >= 4, out
+
+    def test_standard_consolidated_filled(self):
+        # 표준 분기(연결 본표 채워진 경우) — 매출액/영업이익/당기순이익 추출,
+        # 국가별/순매출 fallback 미진입. (Orion 식이 아닌 일반 분기 잠정실적)
+        from bot.dart_feed import _provisional_lines
+        txt = ('단위 : 백만원 구분 당기실적 전기실적 전년동기실적 '
+               '매출액 당해실적 1,500,000 1,400,000 5.3 - 1,300,000 15.4 - 누계실적 - - - - - - - '
+               '영업이익 당해실적 300,000 250,000 20.0 - 280,000 7.1 - 누계실적 - - - - - - - '
+               '당기순이익 당해실적 200,000 180,000 11.1 - 190,000 5.3 - 누계실적 - - - - - - - ')
+        out = _provisional_lines(txt, 1e6)
+        j = " | ".join(out)
+        assert "매출액:" in j and "영업이익:" in j and "당기순이익:" in j
+        assert "전년동기대비 +15.4%" in j                    # YoY 비율
+        assert "순매출" not in j and "국가별" not in j        # 본표 채워지면 fallback 안 탐
+
+    def test_dispatch_unit_reparse_wired(self):
+        src = open("bot/dart_feed.py", encoding="utf-8").read()
+        assert "_parse_provisional_doc(rcept_no, api_key, t)" in src  # 디스패치 배선
+        assert "1e8 if u == " in src                                  # 억원 단위
+        assert "def reparse_provisional_once_if_needed" in src        # 소급 재추출
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "reparse_provisional_once_if_needed" in tb             # startup 배선
