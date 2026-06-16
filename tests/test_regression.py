@@ -10563,3 +10563,24 @@ class TestKrPrepostBoard20260616:
         assert '"/krprepost"' in ds and "render_kr_prepost_page" in ds
         db = open("bot/dashboard.py", encoding="utf-8").read()
         assert 'href="krprepost"' in db                      # KR 홈 nav 링크
+
+
+class TestEarningsDateSort20260616:
+    """다가오는 실적 탭 = 날짜 오름차순(가까운 날 먼저), 종목 알파벳순 아님
+    (사용자 2026-06-16 '금일기준 최신이 위로, 미국'). 전 시장 탭 적용."""
+
+    def test_earnings_sort_wired(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "_earn_by_date" in src
+        assert "_earn_us = _earn_by_date(_earn_us)" in src
+        assert "_earn_kr = _earn_by_date(_earn_kr)" in src   # 전 시장 적용
+
+    def test_earnings_sort_key_logic(self):
+        # 정렬 키: 날짜 asc · 동률은 티커 · 무날짜 맨뒤 (nested _earn_by_date 미러)
+        rows = [{"symbol": "ZZZ", "date": "2026-06-17"},
+                {"symbol": "AAA", "date": "2026-08-05"},
+                {"symbol": "MMM", "date": None},
+                {"symbol": "BBB", "date": "2026-06-17"}]
+        out = sorted(rows, key=lambda e: (str(e.get("date") or "9999-99-99"),
+                                          str(e.get("symbol") or "")))
+        assert [r["symbol"] for r in out] == ["BBB", "ZZZ", "AAA", "MMM"]

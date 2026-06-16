@@ -12780,6 +12780,18 @@ def _render_market_page(data: dict) -> str:
     _earn_us = [e for e in earnings
                 if not str(e.get("symbol", "")).endswith(
                     (".KS", ".KQ", ".T", ".TW", ".TWO", ".SS", ".SZ", ".HK"))]
+    # 업커밍 = 가까운 날 먼저(날짜 오름차순) — 종목 알파벳순(소스 기본)이 아니라
+    # 금일 기준 가장 임박한 실적이 위로(사용자 2026-06-16 '금일기준 최신이 위로,
+    # 미국'). 날짜 동률은 티커, 무날짜는 맨 뒤. 헤더 클릭 재정렬(JS)은 그대로.
+    def _earn_by_date(rows: list) -> list:
+        return sorted(rows, key=lambda e: (str(e.get("date") or "9999-99-99"),
+                                           str(e.get("symbol") or "")))
+    _earn_kr = _earn_by_date(_earn_kr)
+    _earn_us = _earn_by_date(_earn_us)
+    _earn_jp = _earn_by_date(_earn_jp)
+    _earn_tw = _earn_by_date(_earn_tw)
+    _earn_cn = _earn_by_date(_earn_cn)
+    _earn_hk = _earn_by_date(_earn_hk)
     # 미국 종목 한글명 ( ) — 신고저 대시보드와 동일 소스(Naver koreanCodeName,
     # 7d 캐시). 실적·리서치 US 행에 주입 → '티커 (한글명)' 표시(사용자 2026-06-15
     # '미국도 다른나라처럼 한글명'). 미매핑(소형주)은 티커만. 1회 fetch·graceful.
