@@ -4914,7 +4914,7 @@ def _render_stock_info_html(rec: dict) -> str:
 
     # 시장별 1차 뉴스 소스(개별 기사 publisher 는 행마다 별도 표시).
     news_src = ("Naver Finance" if is_kr else "Kabutan" if is_jp
-                else "鉅亨網(cnyes)" if is_tw else "東方財富(AKShare)" if is_cn
+                else "cnyes" if is_tw else "동방재부(AKShare)" if is_cn
                 else "yfinance")
     news_pane = f"""<div class="si-pane" id="si-news">
   <div class="si-section">
@@ -5077,7 +5077,7 @@ def _render_stock_info_html(rec: dict) -> str:
   {_src_foot}출처: KIS · pykrx</div>
 </div>"""
 
-    # CN/HK 港股通 flow
+    # CN/HK 스톡커넥트(Stock Connect) flow
     if is_cn and not flow_pane:
         hsgt = mkt.get("hsgt_flow", {})
         if hsgt:
@@ -5094,14 +5094,14 @@ def _render_stock_info_html(rec: dict) -> str:
             sd = hsgt.get("south_direction", "")
             flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">港股通 시장 전체 자금 흐름 (5일 누적)</div>
+    <div class="si-section-title">스톡커넥트 시장 전체 자금 흐름 (5일 누적)</div>
     <table class="si-table"><thead><tr><th>구분</th><th class="num">5일 순매수</th><th>방향</th></tr></thead><tbody>
-      <tr><td>北向 (외국인→A주)</td>{_cn_flow(nb)}<td>{esc(nd)}</td></tr>
-      <tr><td>南向 (본토→HK)</td>{_cn_flow(sb)}<td>{esc(sd)}</td></tr>
+      <tr><td>북향 (외국인 → 중국 A주)</td>{_cn_flow(nb)}<td>{esc(nd)}</td></tr>
+      <tr><td>남향 (중국 본토 → 홍콩)</td>{_cn_flow(sb)}<td>{esc(sd)}</td></tr>
     </tbody></table>
-    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 이 종목의 개별 수급이 아닌 Stock Connect 시장 전체 집계. 출처: 东方财富 (12시간 캐시)</div>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 이 종목의 개별 수급이 아닌 스톡커넥트(Stock Connect) 시장 전체 집계. 출처: 동방재부(Eastmoney · 12시간 캐시)</div>
   </div>
-  {_src_foot}출처: AKShare · 东方财富</div>
+  {_src_foot}출처: AKShare · 동방재부(Eastmoney)</div>
 </div>"""
 
     # ── JP: JPX 주간 투자주체별 수급 (시장 전체) ────────────────
@@ -5129,9 +5129,9 @@ def _render_stock_info_html(rec: dict) -> str:
                     jpx_body += f"<tr><td>{label}</td>{cells}</tr>\n"
                 flow_pane = f"""<div class="si-pane" id="si-flow">
   <div class="si-section">
-    <div class="si-section-title">JPX 시장 전체 주간 수급 (百万円)</div>
+    <div class="si-section-title">JPX 시장 전체 주간 수급 (백만엔)</div>
     <table class="si-table"><thead><tr><th>주체</th>{wk_hdrs}</tr></thead><tbody>{jpx_body}</tbody></table>
-    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 이 종목의 개별 수급이 아닌 일본 시장 전체 집계 · 최신 기준: {esc(str(jpx_rows[0].get("date",""))[:10])}. 출처: JPX 投資部門別 売買状況 (주 1회 목/금 발표, 96시간 캐시)</div>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:6px">※ 이 종목의 개별 수급이 아닌 일본 시장 전체 집계 · 최신 기준: {esc(str(jpx_rows[0].get("date",""))[:10])}. 출처: JPX 투자부문별 매매현황 (주 1회 목/금 발표, 96시간 캐시)</div>
   </div>
   {_src_foot}출처: JPX</div>
 </div>"""
@@ -9044,6 +9044,21 @@ def _load_blog_runs() -> list[dict]:
     return runs
 
 
+def _blog_desc_html(text: str) -> str:
+    """블로그 본문 텍스트 → 문단 단위 <p> HTML (사용자 2026-06-16 '문맥단위로
+    띄어쓰기 가독성'). 빈 줄/줄바꿈으로 문단을 분리해 각 문단에 아래 여백 +
+    넉넉한 줄간격을 줌 — 옛 기록(단일 \\n 문단)·신규 기록(블록경계 \\n 보존)
+    모두 한 덩어리 wall-of-text 를 문단으로 분리. HTML escape."""
+    import html as _h
+    text = (text or "").strip()
+    if not text:
+        return ""
+    paras = [p.strip() for p in re.split(r"\n+", text) if p.strip()]
+    return "".join(
+        f'<p style="margin:0 0 11px;line-height:1.7">{_h.escape(p)}</p>'
+        for p in paras)
+
+
 def _render_blog_page(runs: list[dict]) -> str:
     """Render blog.html — 레딧 페이지 mirror (월/일 collapse + 검색 + 카드).
     카드 = 글 제목(원문 링크) + Flash 3줄 요약 + 본문 발췌."""
@@ -9139,7 +9154,7 @@ def _render_blog_page(runs: list[dict]) -> str:
                 blog_src = _html.escape(r.get("blog_title") or r.get("blog_id")
                                         or "변화하는 기업을 찾아서")
                 desc_raw = (r.get("desc") or "").strip()
-                desc_html = _html.escape(desc_raw).replace("\n", "<br>")
+                desc_html = _blog_desc_html(desc_raw)
                 # 전문 먼저, 원문 링크는 맨 밑 (요약 미표시 — 사용자 2026-06-11)
                 body_parts = []
                 if desc_html:
