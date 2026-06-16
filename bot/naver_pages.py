@@ -81,7 +81,7 @@ def _shell(title: str, sub: str, active: str, body: str) -> str:
                   + _t("theme", "🏭 업종별 시세(전체)")
                   + _t("kr52", "📈 신고가·신저가")
                   + _t("highlow", "🚀 급등·급락")
-                  + _t("krprepost", "🌙 시간외 급등·급락")
+                  + _t("krprepost", "🌙 NXT 급등·급락")
                   + _t("nxt", "📊 NXT 수급")
                   + '</div>')
     return f"""<!DOCTYPE html>

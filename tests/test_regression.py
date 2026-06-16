@@ -5602,13 +5602,14 @@ class TestFavoritesKoreanName:
         # 표시(네이버페이 미러). KR(국내)·US/JP/HK/CN(해외) 공용. over_session 또는
         # over_price 없으면 "" (정규장·비지원·TW).
         import bot.dashboard as d
+        # src 라벨 시장별 (KR='NXT' / US='시간외' — NXT≠시간외, 사용자 2026-06-16)
         s = d._fmt_over_line({"over_session": "AFTER_MARKET", "reg_close": 370.66,
-                              "over_price": 408.73}, "$", 2)   # +10.27% vs 정규장
-        assert "장후(NXT)" in s and "정규장 종가 $370.66" in s
+                              "over_price": 408.73}, "$", 2, "시간외")   # US +10.27%
+        assert "장후" in s and "정규장 종가 $370.66" in s
         assert "시간외 $408.73" in s and "+10.27%" in s
         kr = d._fmt_over_line({"over_session": "PRE_MARKET", "reg_close": 70000,
-                               "over_price": 66500}, "₩", 0)    # -5.00%
-        assert "장전(NXT)" in kr and "시간외 ₩66,500" in kr and "-5.00%" in kr
+                               "over_price": 66500}, "₩", 0, "NXT")    # KR -5.00%
+        assert "장전" in kr and "NXT ₩66,500" in kr and "-5.00%" in kr
         assert d._fmt_over_line({"over_session": ""}, "$", 2) == ""   # 정규장→빈
         assert d._fmt_over_line({"over_session": "AFTER_MARKET"}, "$", 2) == ""  # over_price 없음→빈
         assert d._fmt_over_line(None, "$", 2) == ""
@@ -10557,14 +10558,14 @@ class TestKrPrepostBoard20260616:
             "ts": "2026-06-16 16:05 KST", "session": "post", "source": "네이버"})
         from bot.intl_pages import render_kr_prepost_page
         html = render_kr_prepost_page()
-        assert "한국 장전·장후 급등·급락" in html
+        assert "한국 NXT 장전·장후 급등·급락" in html
         assert "삼성전자" in html and "SK하이닉스" in html
         assert 'href="krprepost"' in html and 'class="active"' in html
 
     def test_nav_route_wired(self):
         tw = open("bot/tw_pages.py", encoding="utf-8").read()
-        assert '("krprepost", "🌙 시간외 급등·급락")' in tw   # KR nav 신설 탭
-        assert '("nxt", "📊 NXT 수급")' in tw               # NXT 라벨 = 수급(가격 보드와 구분)
+        assert '("krprepost", "🌙 NXT 급등·급락")' in tw   # KR NXT 가격 보드 탭(시간외→NXT 정정)
+        assert '("nxt", "📊 NXT 수급")' in tw               # NXT 수급(흐름) — 가격 보드와 구분
         ds = open("bot/dashboard_server.py", encoding="utf-8").read()
         assert '"/krprepost"' in ds and "render_kr_prepost_page" in ds
         db = open("bot/dashboard.py", encoding="utf-8").read()
