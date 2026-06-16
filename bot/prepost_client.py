@@ -382,7 +382,10 @@ def fetch_us_prepost_movers() -> dict:
 _KST9 = timezone(timedelta(hours=9))
 _KR_PREPOST_CACHE = "kr_prepost_v1.json"
 _KR_PREPOST_STATUS = "kr_prepost_status.json"
-_KR_PREPOST_TTL = 5 * 60        # 시간외 창 재산출 간격 5분(단일가 10분 주기라 충분)
+_KR_PREPOST_TTL = 2 * 60        # NXT 창 재산출 간격 2분 (사용자 2026-06-16, 옛 5분
+#   에서 단축 — NXT 는 연속거래라 5분은 거침). 부하 무: SWR 요청-트리거(미열람 시 0)
+#   + _KR_REFRESHING 락(스캔 비중첩·stampede 차단) + 종목당 30초 캐시 + 6-worker
+#   풀. 열람 중 ~200종목 네이버 2분당 1회(~100콜/분) — realtime 엔드포인트 안전.
 _KR_LOCK = _threading.Lock()
 _KR_REFRESHING = False
 
