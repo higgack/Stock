@@ -3176,10 +3176,19 @@ async def _periodic_highlow_prewarm() -> None:
         future = [t for t in cands if t > now]
         target = min(future) if future else (cands[0] + timedelta(days=1))
         await asyncio.sleep(max(60.0, (target - now).total_seconds()))
+        # ⚠️ 데몬 thread 로 fire-and-forget (asyncio.to_thread 금지) — to_thread 의
+        # 기본 executor 는 non-daemon 이라 봇 종료 시 _python_exit atexit 가 join
+        # 하는데, _prewarm_highlow 의 stagger time.sleep(600)(10분)이 그 join 을
+        # 최대 10분 블로킹 → 봇이 'deactivating' 에 멈춰 watchdog 재시작도 안 먹는
+        # 다운 (2026-06-16 16:37 배포가 16:30 prewarm stagger sleep 중 떨어져 발생,
+        # 실수 #6). 데몬 thread 는 종료 시 join 없이 killed → 블로킹 0. prewarm 은
+        # 9h 간격이라 fire-and-forget 겹침 없음(소요 ~40분).
         try:
-            await asyncio.to_thread(_prewarm_highlow)
+            import threading as _pwt
+            _pwt.Thread(target=_prewarm_highlow, daemon=True,
+                        name="highlow-prewarm").start()
         except Exception:
-            log.exception("highlow prewarm failed")
+            log.exception("highlow prewarm thread failed")
 
 
 # 대시보드 명령 콘솔 — '/명령' → (update, ctx) 핸들러 화이트리스트.

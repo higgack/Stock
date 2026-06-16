@@ -10614,3 +10614,18 @@ class TestEarningsDateSort20260616:
         out = sorted(rows, key=lambda e: (str(e.get("date") or "9999-99-99"),
                                           str(e.get("symbol") or "")))
         assert [r["symbol"] for r in out] == ["BBB", "ZZZ", "AAA", "MMM"]
+
+
+class TestPrewarmDaemonThread20260616:
+    """prewarm stagger time.sleep(600) 이 봇 종료를 블로킹 → 'deactivating' 멈춤
+    (라이브 다운, 실수 #6, 2026-06-16 16:37). _periodic_highlow_prewarm 은 데몬
+    thread fire-and-forget 이어야 — asyncio.to_thread 의 non-daemon 기본 executor 가
+    종료 시 atexit(_python_exit) join 으로 sleep 을 최대 10분 기다려 봇이 안 죽음."""
+
+    def test_prewarm_uses_daemon_thread_not_to_thread(self):
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "asyncio.to_thread(_prewarm_highlow)" not in src, \
+            "prewarm 은 데몬 thread 여야 (to_thread non-daemon executor 가 stagger " \
+            "time.sleep 으로 봇 종료 블로킹 — 'deactivating' 멈춤)"
+        assert "Thread(target=_prewarm_highlow, daemon=True" in src, \
+            "prewarm 데몬 thread 미배선"
