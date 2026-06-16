@@ -10817,3 +10817,74 @@ class TestOverValueRegularPriceFinnhub20260616:
         assert "{cursor.isoformat()}" in src       # 월별 from= 커서
         assert "_v2.json" in src                   # 옛 캐시 무효화
         assert "fetch_earnings_calendar, 45)" in src   # 호출부 45일(이번달~다음달)
+
+
+class TestNaverOverviewNews20260616:
+    """해외 종목 개요·뉴스 = 네이버 한국어 worldstock 우선(₩0·번역 불요, 사용자
+    2026-06-16) → 실패/KR 은 yfinance+translate 폴백. reutersCode 기반·디스크 캐시
+    (bulk regen 부하 무)·graceful."""
+
+    def test_strip_html(self):
+        from bot.naver_overview import _strip_html
+        assert _strip_html("애플은<br>스마트폰<br><br>SW") == "애플은\n스마트폰\n\nSW"
+        assert _strip_html("<b>x</b> y") == "x y"
+
+    def test_overview_parses_and_caches(self, monkeypatch):
+        import requests
+        import bot.finviz_client as fc
+        import bot.naver_overview as no
+        monkeypatch.setattr(no, "_rc_for", lambda t: "AAPL.O")
+        store = {}
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: store.get(name))
+        monkeypatch.setattr(fc, "_cache_write", lambda name, obj: store.__setitem__(name, obj))
+
+        class _R:
+            status_code = 200
+
+            def json(self):
+                return {"summary": "애플은 폰<br>제조"}
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _R())
+        assert no.fetch_naver_overview("AAPL") == "애플은 폰\n제조"   # <br>→\n
+        assert "naver_overview_AAPL.json" in store                    # 성공 캐시
+        # 2회차 = 캐시 히트(네트워크 0 — 호출되면 fail)
+        monkeypatch.setattr(requests, "get",
+                            lambda *a, **k: (_ for _ in ()).throw(AssertionError("캐시 무시")))
+        assert no.fetch_naver_overview("AAPL") == "애플은 폰\n제조"
+
+    def test_overview_graceful_no_rc(self, monkeypatch):
+        import bot.finviz_client as fc
+        import bot.naver_overview as no
+        monkeypatch.setattr(no, "_rc_for", lambda t: None)
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: None)
+        assert no.fetch_naver_overview("ZZZZ") is None   # rc 부재 → graceful None
+
+    def test_world_news_parses(self, monkeypatch):
+        import requests
+        import bot.finviz_client as fc
+        import bot.naver_overview as no
+        monkeypatch.setattr(no, "_rc_for", lambda t: "AAPL.O")
+        store = {}
+        monkeypatch.setattr(fc, "_cached", lambda name, ttl=0: store.get(name))
+        monkeypatch.setattr(fc, "_cache_write", lambda name, obj: store.__setitem__(name, obj))
+
+        class _R:
+            status_code = 200
+
+            def json(self):
+                return [{"tit": "애플 신제품", "ohnm": "로이터",
+                         "dt": "20260616210545", "subcontent": "요약"},
+                        {"tit": "", "dt": "x"}]   # 빈 제목 → 스킵
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _R())
+        out = no.fetch_naver_world_news("AAPL", max_items=10)
+        assert len(out) == 1                              # 빈 제목 제외
+        assert out[0]["title"] == "애플 신제품"
+        assert out[0]["publisher"] == "로이터" and out[0]["date"] == "2026-06-16"
+
+    def test_dashboard_naver_first_wiring(self):
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert "fetch_naver_overview(ticker)" in src       # 개요 네이버 우선
+        assert "fetch_naver_world_news(ticker" in src      # 뉴스 네이버 우선
+        assert "_nv_desc" in src and "_nv_news" in src     # 폴백 분기
+        assert "네이버 해외뉴스" in src                      # 뉴스 소스 라벨
+        # KR 은 제외(기존 DART/네이버) — 비-KR 게이트
+        assert "if not is_kr:" in src

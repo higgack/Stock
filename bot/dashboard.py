@@ -4305,9 +4305,23 @@ def _render_stock_info_html(rec: dict) -> str:
                                grade_kr, action_kr,
                                translate_description_kr, translate_news_titles_kr)
     desc = si.get("description", "")
-    if desc:
-        desc = translate_description_kr(desc)
-    desc_html = f'<div class="si-desc">{esc(desc[:2000])}</div>' if desc else ""
+    # 비-KR: 네이버 한국어 기업개요(worldstock summary) 우선 — ₩0·번역 불요(사용자
+    # 2026-06-16). 실패/KR 은 yfinance 영문 + Gemini 번역 폴백. 디스크 캐시(30일)라
+    # bulk regen 부하 무(종목당 1회). graceful.
+    _nv_desc = None
+    if not is_kr:
+        try:
+            from bot.naver_overview import fetch_naver_overview
+            _nv_desc = fetch_naver_overview(ticker)
+        except Exception:
+            _nv_desc = None
+    if _nv_desc:
+        desc = _nv_desc                        # 네이버 한국어 — 번역 불요
+    elif desc:
+        desc = translate_description_kr(desc)   # 폴백: 영문 → Gemini
+    # 네이버 summary 는 <br>→\n 변환돼 있어 문단 보존 위해 esc 후 <br> 복원.
+    desc_html = (f'<div class="si-desc">{esc(desc[:2000]).replace(chr(10), "<br>")}</div>'
+                 if desc else "")
 
     def grid_row(key, val, qkey=""):
         qattr = f' data-q="{qkey}"' if qkey else ""
@@ -4898,7 +4912,26 @@ def _render_stock_info_html(rec: dict) -> str:
 
     # ── 뉴스 pane ───────────────────────────────────────────────
     news = si.get("news", [])
-    if news:
+    # 비-KR: 네이버 한국어 해외뉴스 우선(worldstock, ₩0·번역 불요, 사용자 2026-06-16)
+    # → 실패/KR 은 stored(yfinance 등)+translate 폴백. 디스크 캐시(12h)라 bulk regen
+    # 부하 무. ⚠️ 네이버는 현재 시점 기사(분석시점 아님) — 개요와 달리 뉴스는 최신.
+    _nv_news = None
+    if not is_kr:
+        try:
+            from bot.naver_overview import fetch_naver_world_news
+            _nv_news = fetch_naver_world_news(ticker, max_items=10)
+        except Exception:
+            _nv_news = None
+    if _nv_news:
+        n_items = ""
+        for n in _nv_news:
+            title = esc(n.get("title", ""))
+            publisher = esc(n.get("publisher", ""))
+            ndate = esc(n.get("date", ""))
+            n_items += (f'<div class="si-news-item"><div class="si-news-title">{title}</div>'
+                        f'<div class="si-news-meta">{publisher} · {ndate}</div></div>\n')
+        news_html = n_items
+    elif news:
         # KR (Naver) news is already Korean — only send the rest (US
         # English / JP·TW·CN foreign titles) to the translator. kr_native
         # items pass through unchanged (₩0, no Gemini call).
@@ -4919,7 +4952,8 @@ def _render_stock_info_html(rec: dict) -> str:
         news_html = '<div class="si-empty">뉴스 데이터가 없습니다.</div>'
 
     # 시장별 1차 뉴스 소스(개별 기사 publisher 는 행마다 별도 표시).
-    news_src = ("Naver Finance" if is_kr else "Kabutan" if is_jp
+    news_src = ("네이버 해외뉴스" if _nv_news else
+                "Naver Finance" if is_kr else "Kabutan" if is_jp
                 else "cnyes" if is_tw else "동방재부(AKShare)" if is_cn
                 else "yfinance")
     news_pane = f"""<div class="si-pane" id="si-news">
