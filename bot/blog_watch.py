@@ -170,10 +170,17 @@ def _fetch_post_text(link: str) -> str | None:
         body = html[start:end]
         body = re.sub(r"<(script|style)\b.*?</\1>", " ", body,
                       flags=re.DOTALL | re.IGNORECASE)
+        # 블록 경계(문단 </p>·줄바꿈 <br>·헤딩·리스트·컴포넌트 </div>)를 줄바꿈으로
+        # 보존한 뒤 잔여 태그만 공백 strip — 전부 공백으로 치환하면 문단이 한
+        # 덩어리로 뭉쳐 가독성↓ (사용자 2026-06-16 '문맥단위로 띄어쓰기'). 스마트
+        # 에디터 ONE 은 문단=<p class=se-text-paragraph>·컴포넌트=<div class=
+        # se-component> 라, 그 닫힘을 줄바꿈으로 만들면 렌더가 문단 간격을 준다.
+        body = re.sub(r"(?i)</p\s*>|<br\s*/?>|</h[1-6]\s*>|</li\s*>|</div\s*>",
+                      "\n", body)
         text = _html.unescape(re.sub(r"<[^>]+>", " ", body))
         text = re.sub(r"[ \t]+", " ", text)
-        text = re.sub(r"\s*\n\s*", "\n", text).strip()
-        text = re.sub(r" {2,}", " ", text)
+        text = re.sub(r" *\n *", "\n", text)            # 줄 양끝 공백 제거(개행 보존)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()  # 과도한 빈 줄만 정리
         return text[:15000] if len(text) >= 200 else None
     except Exception as exc:
         log.warning("blog_watch: full text fetch failed (%s): %s", link, exc)

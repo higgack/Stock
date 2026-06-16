@@ -10358,3 +10358,41 @@ class TestAsiaChildBackLink20260615:
         assert intl.count("back=_asia_back(") >= 3    # JP/HK/CN movers·52·jphighlow
         # _tw_shell 이 back 파라미터를 실제 back-link href 에 사용
         assert 'href="{_bh}"' in tw
+
+
+class TestSupplyCjkKoreanAndBlogReadability20260616:
+    """수급 탭 한자 → 한글 (JP/HK/CN, 대만 미러) + 블로그 본문 문단 가독성
+    (사용자 2026-06-16 '여기 대만처럼 한글로'·'문맥단위로 띄어쓰기')."""
+
+    def test_supply_tab_no_cjk_terms(self):
+        # CN/HK 港股通·北向·南向·东方财富 + JP 投資部門別·百万円·売買状況 한글화.
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        for cjk in ("港股通", "北向", "南向", "东方财富", "東方財富",
+                    "投資部門別", "百万円", "売買状況"):
+            assert cjk not in src, f"수급 탭 한자 잔존: {cjk}"
+        # 한글 대체 확인
+        assert "스톡커넥트 시장 전체 자금 흐름" in src
+        assert "북향 (외국인 → 중국 A주)" in src
+        assert "남향 (중국 본토 → 홍콩)" in src
+        assert "동방재부(Eastmoney" in src
+        assert "JPX 시장 전체 주간 수급 (백만엔)" in src
+        assert "JPX 투자부문별 매매현황" in src
+
+    def test_blog_desc_html_paragraphs(self):
+        from bot.dashboard import _blog_desc_html
+        # 빈 줄/줄바꿈 → 문단 단위 <p> (간격), HTML escape
+        out = _blog_desc_html("문단1.\n둘째 줄.\n\n문단2 <b>x</b>.")
+        assert out.count("<p ") == 3, out
+        assert "&lt;b&gt;" in out and "<b>" not in out      # escape
+        assert "line-height:1.7" in out
+        assert _blog_desc_html("") == "" and _blog_desc_html(None) == ""
+        # wall-of-text(개행 없음) → 단일 문단(렌더 깨짐 0)
+        assert _blog_desc_html("긴 한 줄 텍스트").count("<p ") == 1
+
+    def test_blog_extraction_preserves_block_breaks(self):
+        # _fetch_post_text 가 블록 경계(</p>·<br>·</div>)를 개행으로 보존하는지
+        # — 소스 코드에 변환 정규식이 배선됐는지 (네트워크 없이 회귀 가드).
+        src = open("bot/blog_watch.py", encoding="utf-8").read()
+        assert r"</p\s*>|<br\s*/?>" in src, "블록 태그 → 개행 변환 미배선"
+        assert '"\\n", body)' in src or '"\\n",\n' in src or "'\\n', body" in src \
+            or "</div\\s*>" in src, "블록 경계 개행 보존 미배선"
