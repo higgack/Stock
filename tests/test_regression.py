@@ -8201,14 +8201,17 @@ class TestUpperLowerVolume:
         import bot.chart_translate as ct
         import bot.finviz_client as fc
         from bot import highlow_render as hr
+        # 렌더-세이프 SWR(2026-06-16): 슬로우 함수는 allow_slow/cache_only 받음.
         monkeypatch.setattr(fc, "_fetch_mcaps", lambda tks: {})
-        monkeypatch.setattr(fc, "_fetch_display_names", lambda tks: {})   # yfinance 전무
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks, allow_slow=True: {})   # yfinance 전무
         monkeypatch.setattr(ct, "translate_titles_kr",
-                            lambda names: {n: "번역된회사" for n in names})
+                            lambda names, cache_only=False: {n: "번역된회사" for n in names})
         hr._ENRICH_CACHE.clear()
         items = [{"ticker": "9999.TW", "name": "中文小型股"}]
-        out = hr.enrich_for_panel(items, "TW", want_name=True)
-        assert out[0]["name"] == "번역된회사"         # 中文 미스분 한국어 번역
+        # 렌더 경로 = _enrich_compute(allow_slow=False) — 中文 native 명 번역(캐시-only mock).
+        meta = hr._enrich_compute(["9999.TW"], items, "TW", False, True, allow_slow=False)
+        assert meta["9999.TW"]["name_kr"] == "번역된회사"   # 中文 미스분 한국어 번역
         hr._ENRICH_CACHE.clear()
 
     def test_tw_52w_name_translation(self, monkeypatch):
@@ -8228,7 +8231,8 @@ class TestUpperLowerVolume:
 
     def test_enrich_mcap_persist_fallback(self, monkeypatch):
         # 사용자 2026-06-14 'TW 급등락 시총 안 떠 (52주는 됨)' — yfinance None 이어도
-        # 직전 성공 시총 디스크 캐시 유지(렌더-라이브 fetch 장애 비대칭 해소).
+        # 직전 성공 시총 디스크 캐시 유지. 2026-06-16 SWR: yfinance fetch 는
+        # 백그라운드(allow_slow=True), 렌더(allow_slow=False)는 persist 만.
         import bot.finviz_client as fc
         from bot import highlow_render as hr
         store: dict = {}
@@ -8236,14 +8240,39 @@ class TestUpperLowerVolume:
         monkeypatch.setattr(fc, "_cache_write",
                             lambda name, obj: store.__setitem__(name, obj))
         monkeypatch.setattr(fc, "_fetch_mcaps", lambda tks: {"2330.TW": 1e13})
-        hr._ENRICH_CACHE.clear()
-        o1 = hr.enrich_for_panel([{"ticker": "2330.TW", "name": "x"}], "TW")
-        assert o1[0]["mcap"] == round(1e13 / 1e8, 2)      # 성공 → persist
+        items = [{"ticker": "2330.TW", "name": "x"}]
+        # 백그라운드 enrich(allow_slow=True) = yfinance fetch → persist 적재.
+        m1 = hr._enrich_compute(["2330.TW"], items, "TW", False, False, allow_slow=True)
+        assert m1["2330.TW"]["mcap"] == round(1e13 / 1e8, 2)      # 성공 → persist
         monkeypatch.setattr(fc, "_fetch_mcaps", lambda tks: {})   # yfinance 죽음
-        hr._ENRICH_CACHE.clear()
-        o2 = hr.enrich_for_panel([{"ticker": "2330.TW", "name": "x"}], "TW")
-        assert o2[0]["mcap"] == round(1e13 / 1e8, 2)      # 직전 성공값 유지
-        hr._ENRICH_CACHE.clear()
+        m2 = hr._enrich_compute(["2330.TW"], items, "TW", False, False, allow_slow=True)
+        assert m2["2330.TW"]["mcap"] == round(1e13 / 1e8, 2)      # 직전 성공값 유지
+        # 렌더-세이프(allow_slow=False) — _fetch_mcaps 미호출, persist 만 사용.
+        m3 = hr._enrich_compute(["2330.TW"], items, "TW", False, False, allow_slow=False)
+        assert m3["2330.TW"]["mcap"] == round(1e13 / 1e8, 2)      # 렌더도 persist 폴백
+
+    def test_enrich_render_safe_skips_slow_yfinance(self, monkeypatch):
+        # 사용자 2026-06-16 (TW 렌더 8.2s→~0s): 렌더(allow_slow=False)는 _fetch_mcaps
+        # (fast_info+history)·_fetch_display_names(.info) per-ticker·Flash 번역 호출 0
+        # — persist/캐시/벌크맵만. 슬로우 yfinance 는 백그라운드 daemon 으로 이전.
+        import bot.chart_translate as ct
+        import bot.finviz_client as fc
+        from bot import highlow_render as hr
+
+        def _boom(*a, **k):
+            raise AssertionError("렌더 경로에서 슬로우 yfinance/Flash 호출 금지")
+        seen: dict = {}
+        monkeypatch.setattr(fc, "_fetch_mcaps", _boom)             # 호출되면 fail
+        monkeypatch.setattr(fc, "_fetch_industries",
+                            lambda tks, allow_slow=True: seen.update(ind=allow_slow) or {})
+        monkeypatch.setattr(fc, "_fetch_display_names",
+                            lambda tks, allow_slow=True: (_boom() if allow_slow else {}))
+        monkeypatch.setattr(ct, "translate_titles_kr",
+                            lambda names, cache_only=False: ({} if cache_only else _boom()))
+        meta = hr._enrich_compute(["2330.TW"], [{"ticker": "2330.TW", "name": "台積電"}],
+                                  "TW", True, True, allow_slow=False)
+        assert isinstance(meta, dict)        # 슬로우 호출 0 → 예외 없이 완료
+        assert seen.get("ind") is False      # 업종도 allow_slow=False(캐시/벌크만)
 
     def test_tw_stock_day_session_aware(self):
         # 사용자 2026-06-14 '모두 장중 1h' — TW 상한가도 _session_fresh(옛 5분 대체)

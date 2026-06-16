@@ -13,6 +13,7 @@ from __future__ import annotations
 import html as _html
 import logging
 import re as _re
+import threading as _threading
 import time as _time
 
 log = logging.getLogger("bot.highlow_render")
@@ -267,14 +268,149 @@ def sort_by_pct(items: list, gainers: bool = True) -> list:
 
 _ENRICH_CACHE: dict = {}
 _ENRICH_TTL = 600   # 10분 — render 비용 amortize
+_ENRICH_REFRESHING: set = set()   # 백그라운드 full-enrich 진행 중 key (dedup)
+_ENRICH_LOCK = _threading.Lock()
+
+
+def _enrich_compute(tickers: list, items: list, market: str, want_ind: bool,
+                    want_name: bool, allow_slow: bool) -> dict:
+    """{ticker: {mcap,ind,name_kr}} 산출.
+
+    allow_slow=False(렌더 경로) = **캐시/벌크맵만** — yfinance per-ticker(_fetch_
+    mcaps fast_info+history / _fetch_display_names .info / _fetch_industries .info)
+    + Flash 번역 **0** → 즉시 반환(사용자 2026-06-16 TW 렌더 8.2s 블록 제거).
+    allow_slow=True(백그라운드 daemon) = yfinance 풀 fetch + 디스크 캐시 적재."""
+    meta: dict = {}
+    from bot.finviz_client import _cache_write, _cached, _fetch_mcaps
+    # 시총: 렌더-세이프(allow_slow=False)는 persist(12h 디스크, 과거 산출분)만 —
+    # yfinance fast_info+history per-ticker 는 백그라운드에서만(사용자 2026-06-14
+    # 내구 캐시 비대칭 해소 위에 렌더-블록 제거 추가).
+    mcaps = _fetch_mcaps(tickers) if allow_slow else {}
+    pkey = f"enrich_mcap_{market}.json"
+    persist = _cached(pkey, ttl=12 * 3600)
+    persist = dict(persist) if isinstance(persist, dict) else {}
+    changed = False
+    for tk in tickers:
+        mc = mcaps.get(tk)
+        if mc:
+            eok = round(mc / 1e8, 2)
+            meta.setdefault(tk, {})["mcap"] = eok
+            if persist.get(tk) != eok:
+                persist[tk] = eok
+                changed = True
+        else:                       # yfinance 미스/렌더-세이프 → 직전 성공값 폴백
+            meta.setdefault(tk, {})["mcap"] = persist.get(tk)
+    if changed:
+        _cache_write(pkey, persist)
+    if want_ind:
+        from bot.finviz_client import _fetch_industries
+        inds = _fetch_industries(tickers, allow_slow=allow_slow)
+        for tk in tickers:
+            meta.setdefault(tk, {})["ind"] = inds.get(tk)
+    _co = not allow_slow            # 렌더-세이프 → 번역 캐시-only(Flash 0)
+    if want_name and market == "TW":
+        # 대만 한국어명 (사용자 2026-06-14 '대만도 한글로' — 옛 영문 정책 번복):
+        # 1차 yfinance longName(영문)·2차 中文 종목명 → 한국어 번역
+        # (translate_titles_kr, 영구캐시). JP/HK 와 통일, 소형주까지.
+        from bot.finviz_client import _fetch_display_names
+        from bot.chart_translate import translate_titles_kr
+        en = _fetch_display_names(tickers, allow_slow=allow_slow)
+        ue = sorted({n for n in en.values() if n})
+        ke = translate_titles_kr(ue, cache_only=_co) if ue else {}
+        for tk in tickers:
+            e = en.get(tk, "")
+            if e:
+                meta.setdefault(tk, {})["name_kr"] = ke.get(e) or e
+        miss = [tk for tk in tickers
+                if not meta.get(tk, {}).get("name_kr")]
+        if miss:
+            miss_set = set(miss)
+            # 中文 native 명(STOCK_DAY_ALL Name — items 에 이미 있음) 한국어 번역.
+            nat = {it.get("ticker"): it.get("name") for it in items
+                   if it.get("ticker") in miss_set and it.get("name")
+                   and it.get("name") != it.get("ticker")}
+            uniq = sorted({v for v in nat.values() if v})
+            if uniq:
+                try:
+                    kr = translate_titles_kr(uniq, cache_only=_co)
+                    for tk, nm in nat.items():
+                        if kr.get(nm):
+                            meta.setdefault(tk, {})["name_kr"] = kr[nm]
+                except Exception:
+                    pass
+    elif want_name:
+        from bot.chart_translate import translate_titles_kr
+        # 네이티브명(JPX 銘柄名 — items 에 이미 있음) **직접 번역**.
+        # 옛 코드는 yfinance longName 만 번역해 longName 비populate 시
+        # 南亞科 류가 그대로 노출됐음(사용자 2026-06-13 캡쳐). 네이티브명
+        # 없는 항목만 longName 폴백.
+        nat = {it.get("ticker"): it.get("name") for it in items
+               if it.get("name") and it.get("name") != it.get("ticker")}
+        uniq = sorted({v for v in nat.values() if v})
+        kr = translate_titles_kr(uniq, cache_only=_co) if uniq else {}
+        for tk, nm in nat.items():
+            if kr.get(nm):
+                meta.setdefault(tk, {})["name_kr"] = kr[nm]
+        miss = [tk for tk in tickers if tk not in nat]
+        if miss:
+            from bot.finviz_client import _fetch_display_names
+            en = _fetch_display_names(miss, allow_slow=allow_slow)
+            ue = sorted({v for v in en.values() if v})
+            ke = translate_titles_kr(ue, cache_only=_co) if ue else {}
+            for tk in miss:
+                e = en.get(tk, "")
+                if e:
+                    meta.setdefault(tk, {})["name_kr"] = ke.get(e) or e
+    return meta
+
+
+def _enrich_incomplete(meta: dict, tickers: list, want_ind: bool,
+                       want_name: bool) -> bool:
+    """캐시-only 결과에 누락분(미해소 시총/업종/한글명) 있으면 True → 백그라운드
+    full enrich kick 판단."""
+    for tk in tickers:
+        m = meta.get(tk) or {}
+        if m.get("mcap") is None:
+            return True
+        if want_ind and not m.get("ind"):
+            return True
+        if want_name and not m.get("name_kr"):
+            return True
+    return False
+
+
+def _kick_enrich(key, items: list, market: str, want_ind: bool,
+                 want_name: bool) -> None:
+    """백그라운드 daemon — full(allow_slow) enrich 로 디스크/모듈 캐시 적재 →
+    다음 렌더 즉시 반영(SWR). dedup(_ENRICH_REFRESHING). daemon 이라 종료 블로킹 0."""
+    with _ENRICH_LOCK:
+        if key in _ENRICH_REFRESHING:
+            return
+        _ENRICH_REFRESHING.add(key)
+
+    def _run():
+        try:
+            tks = [it.get("ticker") for it in items if it.get("ticker")]
+            meta = _enrich_compute(tks, items, market, want_ind, want_name, True)
+            _ENRICH_CACHE[key] = (_time.time(), meta)
+        except Exception as exc:
+            log.warning("enrich bg (%s): %s", market, exc)
+        finally:
+            with _ENRICH_LOCK:
+                _ENRICH_REFRESHING.discard(key)
+
+    _threading.Thread(target=_run, daemon=True, name=f"enrich-{market}").start()
 
 
 def enrich_for_panel(items: list, market: str, want_ind: bool = False,
                      want_name: bool = False) -> list:
     """상한가/하한가 등 단순 fetch 항목에 mcap(+업종/한글명) 백필 — stock_panel
     리치 표시용(사용자 2026-06-13 KR 시총·TW 업종). 항목은 'ticker' 보유 가정.
-    10분 모듈 캐시로 render 비용 bound(항목 적음·동일 코드셋 재사용). graceful —
-    실패/creds 부재 시 원본 유지. mcap=억(현지통화) 단위(fmt_mcap 규약)."""
+
+    **렌더-세이프 SWR (사용자 2026-06-16 TW 렌더 8.2s→~0s)**: 렌더는 캐시/벌크만으로
+    즉시 반환(yfinance per-ticker·Flash 0), 누락분이 있으면 백그라운드 daemon 이
+    full enrich 해 디스크/모듈 캐시 적재 → 다음 렌더에 반영. 10분 모듈 캐시 +
+    graceful(실패 시 원본 유지). mcap=억(현지통화, fmt_mcap 규약)."""
     tickers = [it.get("ticker") for it in items if it.get("ticker")]
     if not tickers:
         return items
@@ -284,92 +420,16 @@ def enrich_for_panel(items: list, market: str, want_ind: bool = False,
     if hit and now - hit[0] < _ENRICH_TTL:
         meta = hit[1]
     else:
-        meta: dict = {}
         try:
-            from bot.finviz_client import _cache_write, _cached, _fetch_mcaps
-            mcaps = _fetch_mcaps(tickers)
-            # 시총 내구 캐시 (사용자 2026-06-14 'TW 급등락 시총 안 떠 — 52주는
-            # 되는데'): yfinance 가 일시적으로 죽어 _fetch_mcaps 가 None 줘도 직전
-            # 성공값 유지(12h 디스크). 52주는 백그라운드 스캔 결과에 캐시돼 있고
-            # 무버는 렌더-라이브 fetch 라 yfinance 장애에 취약하던 비대칭 해소.
-            pkey = f"enrich_mcap_{market}.json"
-            persist = _cached(pkey, ttl=12 * 3600)
-            persist = dict(persist) if isinstance(persist, dict) else {}
-            changed = False
-            for tk in tickers:
-                mc = mcaps.get(tk)
-                if mc:
-                    eok = round(mc / 1e8, 2)
-                    meta.setdefault(tk, {})["mcap"] = eok
-                    if persist.get(tk) != eok:
-                        persist[tk] = eok
-                        changed = True
-                else:                       # yfinance 미스 → 직전 성공값 폴백
-                    meta.setdefault(tk, {})["mcap"] = persist.get(tk)
-            if changed:
-                _cache_write(pkey, persist)
-            if want_ind:
-                from bot.finviz_client import _fetch_industries
-                inds = _fetch_industries(tickers)
-                for tk in tickers:
-                    meta.setdefault(tk, {})["ind"] = inds.get(tk)
-            if want_name and market == "TW":
-                # 대만 한국어명 (사용자 2026-06-14 '대만도 한글로' — 옛 영문 정책 번복):
-                # 1차 yfinance longName(영문)·2차 中文 종목명 → 한국어 번역
-                # (translate_titles_kr, 영구캐시). JP/HK 와 통일, 소형주까지.
-                from bot.finviz_client import _fetch_display_names
-                from bot.chart_translate import translate_titles_kr
-                en = _fetch_display_names(tickers)
-                ue = sorted({n for n in en.values() if n})
-                ke = translate_titles_kr(ue) if ue else {}
-                for tk in tickers:
-                    e = en.get(tk, "")
-                    if e:
-                        meta.setdefault(tk, {})["name_kr"] = ke.get(e) or e
-                miss = [tk for tk in tickers
-                        if not meta.get(tk, {}).get("name_kr")]
-                if miss:
-                    miss_set = set(miss)
-                    # 中文 native 명(STOCK_DAY_ALL Name — items 에 이미 있음) 한국어 번역.
-                    nat = {it.get("ticker"): it.get("name") for it in items
-                           if it.get("ticker") in miss_set and it.get("name")
-                           and it.get("name") != it.get("ticker")}
-                    uniq = sorted({v for v in nat.values() if v})
-                    if uniq:
-                        try:
-                            kr = translate_titles_kr(uniq)
-                            for tk, nm in nat.items():
-                                if kr.get(nm):
-                                    meta.setdefault(tk, {})["name_kr"] = kr[nm]
-                        except Exception:
-                            pass
-            elif want_name:
-                from bot.chart_translate import translate_titles_kr
-                # 네이티브명(JPX 銘柄名 — items 에 이미 있음) **직접 번역**.
-                # 옛 코드는 yfinance longName 만 번역해 longName 비populate 시
-                # 南亞科 류가 그대로 노출됐음(사용자 2026-06-13 캡쳐). 네이티브명
-                # 없는 항목만 longName 폴백.
-                nat = {it.get("ticker"): it.get("name") for it in items
-                       if it.get("name") and it.get("name") != it.get("ticker")}
-                uniq = sorted({v for v in nat.values() if v})
-                kr = translate_titles_kr(uniq) if uniq else {}
-                for tk, nm in nat.items():
-                    if kr.get(nm):
-                        meta.setdefault(tk, {})["name_kr"] = kr[nm]
-                miss = [tk for tk in tickers if tk not in nat]
-                if miss:
-                    from bot.finviz_client import _fetch_display_names
-                    en = _fetch_display_names(miss)
-                    ue = sorted({v for v in en.values() if v})
-                    ke = translate_titles_kr(ue) if ue else {}
-                    for tk in miss:
-                        e = en.get(tk, "")
-                        if e:
-                            meta.setdefault(tk, {})["name_kr"] = ke.get(e) or e
-            _ENRICH_CACHE[key] = (now, meta)
+            meta = _enrich_compute(tickers, items, market, want_ind,
+                                   want_name, False)   # 렌더-세이프(캐시-only)
         except Exception as exc:
             log.warning("enrich_for_panel(%s): %s", market, exc)
             return items
+        _ENRICH_CACHE[key] = (now, meta)
+        # 누락분 있으면 백그라운드 full enrich(yfinance) — 렌더는 안 막고 다음에 채움.
+        if _enrich_incomplete(meta, tickers, want_ind, want_name):
+            _kick_enrich(key, list(items), market, want_ind, want_name)
     for it in items:
         m = meta.get(it.get("ticker"), {})
         if m.get("mcap") is not None:

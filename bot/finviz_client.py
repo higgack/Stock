@@ -1516,15 +1516,16 @@ def _fetch_industries(tickers: list, allow_slow: bool = True) -> dict:
     return {t: cache[t] for t in tickers if t in cache}
 
 
-def _fetch_display_names(tickers: list) -> dict:
+def _fetch_display_names(tickers: list, allow_slow: bool = True) -> dict:
     """{ticker: longName(영문)} — 영구 캐시(이름 불변) + yfinance .info 병렬.
-    백그라운드 산출 전용(.info 느림 — render 경로 금지). 실패분은 캐시 안 함
-    (다음 스캔 재시도). VM 검증: .info longName 전 시장 정상(2026-06-13)."""
+    .info 느림 → allow_slow=False(렌더 경로) 면 .info skip·영구 캐시만(사용자
+    2026-06-16 TW 렌더 8.2s 블록 제거 — 느린 .info 는 백그라운드 enrich 로 이전).
+    실패분은 캐시 안 함(다음 스캔 재시도). VM 검증: .info longName 전 시장 정상."""
     if not tickers:
         return {}
     cache = _cached("highlow_names.json", ttl=365 * 86400) or {}
     missing = [t for t in tickers if t not in cache]
-    if yf_paused():           # YF_PAUSE → .info skip, 영구 캐시만 사용
+    if yf_paused() or not allow_slow:   # YF_PAUSE 또는 렌더-세이프 → .info skip, 캐시만
         missing = []
     if missing:
         from concurrent.futures import ThreadPoolExecutor  # _fetch_mcaps 패턴
