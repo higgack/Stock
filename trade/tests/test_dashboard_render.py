@@ -21,6 +21,28 @@ class DashboardRenderSmokeTests(unittest.TestCase):
                ).read_text(encoding="utf-8")
         self.assertIn("industry_html, heatmap_html,", src)
 
+    def test_industry_lazy_split(self):
+        # 사용자 2026-06-16 '느려': 산업트렌드(588 SVG ~7MB)를 index.html 인라인
+        # 대신 industry_src(별도 파일)로 빼 탭 열 때 lazy fetch → 초기 11MB→~3MB.
+        from trade import dashboard as d
+        # industry_src 지정 → 인라인(BIGINLINE) 대신 data-src placeholder + 탭 버튼.
+        lazy = d._build_html([], [], {}, "", None, [], "BIGINLINE", "",
+                             industry_src="industry_panel.html")
+        self.assertIn('data-tab="industry"', lazy)          # 탭 버튼 존재
+        self.assertIn('data-src="industry_panel.html"', lazy)
+        self.assertNotIn("BIGINLINE", lazy)                 # 인라인 안 됨(src 우선=lazy)
+        # industry_src 없으면 기존대로 인라인(아카이브/share·자체완결 보존).
+        inline = d._build_html([], [], {}, "", None, [], "BIGINLINE", "")
+        self.assertIn("BIGINLINE", inline)
+
+    def test_industry_lazy_wiring(self):
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[1] / "dashboard.py"
+               ).read_text(encoding="utf-8")
+        self.assertIn("function _lazyFetchView", src)        # 탭 열 때 fetch 헬퍼
+        self.assertIn("_lazyFetchView(view)", src)           # 탭 클릭 핸들러 배선
+        self.assertIn('industry_out=args.out.parent / "industry_panel.html"', src)  # main 배선
+
 
 if __name__ == "__main__":
     unittest.main()
