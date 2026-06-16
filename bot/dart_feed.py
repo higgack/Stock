@@ -156,8 +156,14 @@ def _classify_report(report_nm: str) -> str:
     # 조건부자본증권 발행·교환가액 조정·주권관련 사채 취득 = 자금조달.
     if any(k in t for k in ("조건부자본증권", "교환가액", "주권관련사채")):
         return "자금조달"
-    if "투자판단" in t:                        # 투자판단 주요경영사항(임상·국책 등)
-        return "실적"
+    if "투자판단" in t:
+        # 투자판단관련주요경영사항 = 임상시험·FDA·국책과제·특허 등 '주요경영사항'
+        # wrapper — 영업/잠정실적이 아님(사용자 2026-06-16 '압타바이오 공시 실적
+        # 아닌것 같은데' — FDA Remove Clinical Hold 가 실적 칩에 오염). enrich 의
+        # _upgrade_category 가 본문 제목 기준으로 계약/소송/주주환원/배당 등 특정
+        # 종류면 승격하고, 임상·FDA·국책 등 잔여는 '기타'(일반 주요경영사항)로 둠.
+        # force-parse(_PARSE_FORCE_KW '투자판단')라 카드 detail 은 그대로 유지.
+        return "기타"
     if "장래사업" in t or "공정공시" in t:
         # 장래사업ㆍ경영계획/수시공시의무관련사항(공정공시) — 가이던스성
         # wrapper. chart 분류 '뒤'에 두어 '공급계약체결(공정공시)' 류가
