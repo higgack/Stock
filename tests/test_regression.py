@@ -5846,21 +5846,55 @@ class TestUSPrepostKSTWindow:
         assert "연장거래 창에서 30분 · " in src, "부제에 KST 창 추가 누락"
         assert "_EXT_WINDOW" not in src, "옛 하드코딩 상수 잔존(서머타임 미반영)"
 
-    def test_prepost_universe_is_sp500(self):
-        # 사용자 2026-06-16: prepost board 유니버스를 전미국→S&P 500 (유동성 얇은
-        # 뉴스 종목 대신 대형주). 캐시 버전 bump 로 옛 전미국 캐시 폐기.
+    def test_prepost_universe_is_market_movers(self):
+        # 사용자 2026-06-16: prepost board 유니버스를 S&P 500→전시장 정규장 무버
+        # (시간외 급변=뉴스주라 무버 랭킹에 직격, 대형주는 시간외 미동). 네이버
+        # worldstock up/down 랭킹 합집합. 캐시 버전 bump 로 옛 S&P 500 캐시 폐기.
         src = open("bot/prepost_client.py", encoding="utf-8").read()
-        assert "_us_universe_robust()" in src, "S&P 500 유니버스 미배선"
-        assert "_sp500_names()" in src, "S&P 500 종목명 맵 미배선"
-        assert "_us_full_universe" not in src, "옛 전미국 유니버스 잔존"
-        assert "us_prepost_sp500" in src, "캐시 버전 bump 누락"
+        assert "_us_movers_universe()" in src, "전시장 무버 유니버스 미배선"
+        assert "fetch_world_ranking" in src, "네이버 무버 랭킹 미배선"
+        assert "_us_universe_robust" not in src, "옛 S&P 500 유니버스 잔존"
+        assert "_sp500_names" not in src, "옛 S&P 500 종목명 맵 잔존"
+        assert "us_prepost_movers" in src, "캐시 버전 bump 누락"
+        # _one 행이 vol(정규장 누적거래량)을 실어 _rank_prepost 의 _MIN_EXT_VOL
+        # 게이트를 통과(빈 보드 회귀 차단 — over 데이터엔 연장거래량 없음).
+        assert 'wq.get("volume")' in src, "vol 게이트 통과용 거래량 미배선"
         # 사용자 2026-06-16: 야후 제거 → 네이버 실시간 시간외(overMarketPriceInfo)
         assert "fetch_world_quote" in src, "네이버 시간외 스캔 미배선"
         assert "yf.download" not in src, "yfinance 스캔 잔존(야후 제거 위반)"
         assert "네이버 실시간" in src, "소스 라벨 네이버 미반영"
         us = open("bot/us_pages.py", encoding="utf-8").read()
-        assert "S&P 500 {sess_kr} 시간외" in us, "부제 S&P 500 시간외 미반영"
+        assert "전시장 무버 {sess_kr} 시간외" in us, "부제 전시장 무버 시간외 미반영"
+        assert "S&P 500 {sess_kr} 시간외" not in us, "옛 S&P 500 부제 잔존"
         assert "yfinance 30분봉" not in us, "부제 yfinance 잔존"
+
+    def test_bare_us_strips_only_exchange_suffix(self):
+        from bot.prepost_client import _bare_us
+        assert _bare_us("CAST") == "CAST"          # 무접미사 그대로
+        assert _bare_us("CAST.O") == "CAST"        # NASDAQ reuters 접미사 제거
+        assert _bare_us("F.N") == "F"              # NYSE 접미사 제거
+        assert _bare_us("BRK.B") == "BRK.B"        # 클래스주 점 보존(거래소코드 아님)
+        assert _bare_us("aapl") == "AAPL"          # 대문자화
+        assert _bare_us(None) == ""                # graceful
+
+    def test_us_movers_universe_dedupes_and_names(self, monkeypatch):
+        # 전시장 무버 유니버스 — 거래소·방향 랭킹 합집합·dedupe·한글명 native.
+        import bot.prepost_client as pp
+
+        def _fake_ranking(ex, sort, limit=80):
+            if ex == "NASDAQ" and sort == "up":
+                return [{"ticker": "CAST", "name": "캐스트"},
+                        {"ticker": "AAPL.O", "name": "애플"}]
+            if ex == "NYSE" and sort == "down":
+                return [{"ticker": "CAST", "name": "캐스트"},   # 중복 → 1회만
+                        {"ticker": "F.N", "name": "포드"}]
+            return []
+        monkeypatch.setattr(pp, "fetch_world_ranking", _fake_ranking, raising=False)
+        monkeypatch.setattr("bot.naver_ranking_client.fetch_world_ranking",
+                            _fake_ranking)
+        tks, names = pp._us_movers_universe()
+        assert tks == ["CAST", "AAPL", "F"]        # dedupe + 무접미사
+        assert names["CAST"] == "캐스트" and names["AAPL"] == "애플"
 
 
 class TestAnalysisCsvExport:

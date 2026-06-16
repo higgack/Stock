@@ -344,10 +344,11 @@ def render_us_movers_page() -> str:
 
 
 def render_us_prepost_page() -> str:
-    """미국 S&P 500 장전(pre-market)·장후(after-hours) 급등·급락 TOP30 — 정규장
-    종가 대비 시간외 등락(네이버 실시간 overMarketPriceInfo, 사용자 2026-06-16
-    '야후 안 쓰고 네이버'). 급등락(정규장)의 형제 표면. SWR 백그라운드 — 첫 방문 kick.
-    연장거래는 유동성 얇아 뉴스 종목 위주(정상). 종목 → 우리 종목분석(lookup)."""
+    """미국 전시장(정규장 무버) 장전(pre-market)·장후(after-hours) 급등·급락 TOP30 —
+    정규장 종가 대비 시간외 등락(네이버 실시간 overMarketPriceInfo, 사용자 2026-06-16
+    '야후 안 쓰고 네이버'). 유니버스 = 전시장 NASDAQ+NYSE+AMEX 정규장 무버(사용자
+    2026-06-16 '전시장 정규장 무버' — 시간외 급변은 뉴스주라 무버 랭킹에 직격). 급등락
+    (정규장)의 형제 표면. SWR 백그라운드 — 첫 방문 kick. 종목 → 우리 종목분석(lookup)."""
     try:
         from bot.prepost_client import fetch_us_prepost_movers
         data = fetch_us_prepost_movers()
@@ -376,11 +377,11 @@ def render_us_prepost_page() -> str:
                         if done is not None and total else "")
                 body = (f'<div class="empty">⏳ 산출 진행 중{prog}'
                         + (f' (시작 {ts_lb})' if ts_lb else '')
-                        + ' — S&P 500 연장거래 스캔(~1분). '
+                        + ' — 전시장 무버 시간외 스캔(~1분). '
                           '잠시 후 새로고침해 주세요.</div>')
             else:
-                body = ('<div class="empty">⏳ 첫 산출 진행 중 — S&P 500 '
-                        '연장거래 스캔(~1분). 잠시 후 새로고침해 주세요.</div>')
+                body = ('<div class="empty">⏳ 첫 산출 진행 중 — 전시장 무버 '
+                        '시간외 스캔(~1분). 잠시 후 새로고침해 주세요.</div>')
         else:
             body = (f'<div class="empty">장전·장후 급등·급락 데이터가 없습니다.<br>'
                     f'연장거래({_ext_window_kst()}) 시간에 '
@@ -394,7 +395,7 @@ def render_us_prepost_page() -> str:
                 + _hpanel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down, "pp-down", "US",
                           _ind_dist_line(down), show_vol=True) + '</div>'
                 + _HL_SORT_JS)
-    sub = (f"S&P 500 {sess_kr} 시간외 등락 상·하위 30 · 정규장 종가 대비 · "
+    sub = (f"전시장 무버 {sess_kr} 시간외 등락 상·하위 30 · 정규장 종가 대비 · "
            "네이버 실시간 · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분 · "
            + _ext_window_kst()
            + (f" · {ts} 기준" if ts else ""))
