@@ -37,13 +37,13 @@ _running: dict[str, bool] = {}
 _lock = threading.Lock()
 
 
-def _cap_by_liquidity_hk(full: list[str], cap: int) -> list[str]:
-    """HK 전종목을 네이버 worldstock 시총 상위 N 으로 캡 — yfinance 1y 스캔 부하↓.
-    네이버 HK 코드(5자리 '00700')↔yfinance(4자리 '0700') 는 선행 0 제거 정수로
+def _cap_by_liquidity(full: list[str], cap: int, market: str) -> list[str]:
+    """전종목을 네이버 worldstock 시총 상위 N 으로 캡 — yfinance 1y 스캔 부하↓.
+    HK 코드(5자리 '00700')↔yfinance(4자리 '0700')·JP 4자리는 선행 0 제거 정수로
     매칭. world_stock_map 부재 시 원본 앞 N(저번호=대개 메인보드 대형주) 폴백."""
     try:
         from bot.naver_ranking_client import world_stock_map
-        wsm = world_stock_map("HK")
+        wsm = world_stock_map(market)
     except Exception:
         wsm = {}
     if not wsm:
@@ -60,6 +60,11 @@ def _cap_by_liquidity_hk(full: list[str], cap: int) -> list[str]:
     return sorted(full, key=_rank)[:cap]
 
 
+def _cap_by_liquidity_hk(full: list[str], cap: int) -> list[str]:
+    """HK 캡 — _cap_by_liquidity(market='HK') 하위호환 별칭."""
+    return _cap_by_liquidity(full, cap, "HK")
+
+
 def _universe(market: str) -> tuple[list[str], dict]:
     """peer 맵의 unique 티커(주요종목). names 는 ticker 기본(맵에 명칭 없음)."""
     cfg = _CFG.get(market)
@@ -72,12 +77,14 @@ def _universe(market: str) -> tuple[list[str], dict]:
             from bot.intl_universe import full_universe
             full = full_universe(market)
             if len(full) > 100:
-                if market == "HK" and len(full) > 900:
-                    # HK 전종목(~2000) yfinance 1y 스캔이 rate-limit 으로 느림/
-                    # 불안정(사용자 2026-06-14 '산출중·야후 맛탱이'). 네이버 worldstock
-                    # 시총 상위 ~900 으로 캡 — 유동성 큰 종목만(의미있는 52주, 미세
-                    # micro-cap 은 노이즈). 스캔 ~2배 빠름·안정. 키는 zfill 정수 정규화.
-                    full = _cap_by_liquidity_hk(full, 900)
+                if market in ("HK", "JP") and len(full) > 900:
+                    # HK(~2000)·JP(~2500) 전종목 yfinance 1y 스캔이 rate-limit 으로
+                    # 느림/불안정 (HK 사용자 2026-06-14 '산출중·야후 맛탱이' / JP 실측
+                    # 14분 = HK 3분의 ~4배, 2026-06-16 — 미캡이라 21배치 vs HK 8배치).
+                    # 네이버 worldstock 시총 상위 ~900 으로 캡 — 유동성 큰 종목만
+                    # (의미있는 52주, 미세 micro-cap 은 노이즈). 스캔 ~4배 빠름·안정.
+                    # 키는 zfill 정수 정규화. (CN_A 는 차단으로 peer-only 라 무관.)
+                    full = _cap_by_liquidity(full, 900, market)
                 return full, {t: t for t in full}
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
