@@ -9,12 +9,15 @@
 대비)를 실시간으로 받아 랭킹 — yfinance 30분봉(지연)·Yahoo 의존 제거. VM
 probe 2026-06-15 로 AAPL 장후 overPrice 296.10·AFTER_MARKET 확인.
 
-유니버스 = **S&P 500**(`_us_universe_robust`, 사용자 2026-06-16, 유동성 얇은
-전미국 대신 대형주). 500종목 ThreadPool 스캔(over-market OPEN 인 종목만 집계).
-시간외 미개장(정규장·장 완전 종료) 시엔 0 행 → SWR 가 직전 스냅샷 서빙.
-글리치(|pct|>75%)·페니 컷은 over_pct 가 정규장 종가 대비라 자연 완만.
+유니버스 = **전시장 정규장 무버**(`_us_movers_universe` — 네이버 worldstock
+NASDAQ+NYSE+AMEX up/down 랭킹 합집합, 사용자 2026-06-16 '전시장 정규장 무버').
+시간외 급변은 뉴스주라 정규장 무버 랭킹에 직격으로 잡힘(S&P 500 대형주는
+시간외 거의 미동 → 유니버스 부적합). ~480종목 ThreadPool 스캔(over-market
+OPEN 인 종목만 집계). 한글명도 랭킹 행에서 native. 시간외 미개장(정규장·장
+완전 종료) 시엔 0 행 → SWR 가 직전 스냅샷 서빙. 글리치(|pct|>75%)·페니 컷은
+over_pct 가 정규장 종가 대비라 자연 완만.
 
-SWR 백그라운드(장-인지 신선도 — 연장거래 창에서만 재스캔, 500 네이버 콜은
+SWR 백그라운드(장-인지 신선도 — 연장거래 창에서만 재스캔, ~480 네이버 콜은
 pre/post 세션에만) + 무료·무키·graceful. (TW=盤後정가 고정·KR=시간외단일가는
 별도 — 본 표면은 US 전용.)
 """
@@ -25,18 +28,18 @@ import threading as _threading
 import time
 from datetime import datetime, timezone
 
-from bot.finviz_client import (_CACHE_DIR, _cache_write, _cached, _now_label,
-                               _sp500_names, _us_universe_robust)
+from bot.finviz_client import _CACHE_DIR, _cache_write, _cached, _now_label
 
 log = logging.getLogger("bot.prepost_client")
 
-_PREPOST_CACHE = "us_prepost_sp500_v1.json"   # S&P 500 유니버스 (2026-06-16, 옛 전미국 캐시 폐기)
-_PREPOST_STATUS = "us_prepost_sp500_status.json"
+_PREPOST_CACHE = "us_prepost_movers_v1.json"   # 전시장 정규장 무버 유니버스 (2026-06-16, 옛 S&P 500 캐시 폐기)
+_PREPOST_STATUS = "us_prepost_movers_status.json"
 _PREPOST_TOP_N = 30
 _PREPOST_TTL = 30 * 60         # 연장거래 창에서 재산출 간격 30분 (movers 와 동일)
 _MIN_PRICE = 1.0               # 페니 컷
-_MIN_EXT_VOL = 1000            # 연장거래량 하한(유동성 — 0거래 종목 배제)
+_MIN_EXT_VOL = 1000            # 거래량 하한(유동성 — 0거래 종목 배제; 네이버는 정규장 누적거래량)
 _GLITCH_PCT = 75.0             # 분할/조정 아티팩트 컷 (KLAC 클래스, CLAUDE.md 가드)
+_UNIVERSE_PER_DIR = 80         # 시간외 스캔 유니버스 — 거래소·방향당 정규장 무버 상위(×3거래소×2방향≈480)
 
 
 # ── 순수 함수 (단위테스트) ──────────────────────────────────────────────
@@ -182,16 +185,53 @@ def prepost_status() -> dict:
     return _cached(_PREPOST_STATUS, ttl=86400) or {}
 
 
+def _bare_us(tk) -> str:
+    """네이버 worldstock 티커 → 무접미사 US 티커(yfinance/enrich 규약). symbolCode
+    는 보통 무접미사('CAST')라 그대로, reutersCode 폴백('CAST.O')만 거래소 접미사
+    (.O/.N/.A/.OQ/.K/.P) 제거. BRK.B 등 클래스주 점은 보존(거래소 코드 아님)."""
+    tk = str(tk or "").strip().upper()
+    if "." in tk:
+        base, suf = tk.rsplit(".", 1)
+        if suf in ("O", "N", "A", "OQ", "K", "P", "PK"):
+            return base
+    return tk
+
+
+def _us_movers_universe() -> tuple[list, dict]:
+    """시간외 스캔 유니버스 = **전시장(NASDAQ+NYSE+AMEX) 정규장 무버** — 네이버
+    worldstock up/down 랭킹의 티커 합집합(사용자 2026-06-16 '전시장 정규장 무버').
+    시간외 급변 종목은 뉴스주라 정규장 무버 랭킹에 직격으로 잡힘(S&P 500 대형주는
+    시간외 거의 미동). 한글명도 랭킹 행에서 native 수집(미국 무버/신고저 표면과
+    동일). 반환 (tks, {ticker: 한글명}). graceful — 랭킹 전부 실패 시 빈 유니버스."""
+    from bot.naver_ranking_client import fetch_world_ranking
+    tks: list = []
+    names: dict = {}
+    seen: set = set()
+    for ex in ("NASDAQ", "NYSE", "AMEX"):
+        for sort in ("up", "down"):
+            for r in fetch_world_ranking(ex, sort, limit=_UNIVERSE_PER_DIR):
+                tk = _bare_us(r.get("ticker"))
+                if not tk or tk in seen:
+                    continue
+                seen.add(tk)
+                tks.append(tk)
+                nm = r.get("name")
+                if nm and nm != tk:
+                    names[tk] = nm
+    return tks, names
+
+
 def _compute_us_prepost() -> dict:
-    """S&P 500 시간외(장전/장후) 급등·급락 TOP30 — **네이버 실시간**(worldstock
-    overMarketPriceInfo, 사용자 2026-06-16 '야후 안 쓰고 네이버 실시간'). 종목별
-    overPrice·시간외 등락%(정규장 종가 대비)로 상·하위 산출. over-market OPEN 인
-    종목만 집계(시간외 미개장·정규장 시간엔 0 행 → SWR 가 직전 스냅샷 서빙).
-    백그라운드 전용(500종목 네이버 스캔, ThreadPool). yfinance 미사용."""
+    """전시장(정규장 무버) 시간외(장전/장후) 급등·급락 TOP30 — **네이버 실시간**
+    (worldstock overMarketPriceInfo, 사용자 2026-06-16 '야후 안 쓰고 네이버 실시간').
+    유니버스 = 전시장 NASDAQ+NYSE+AMEX 정규장 무버(`_us_movers_universe`, 사용자
+    2026-06-16 '전시장 정규장 무버'). 종목별 overPrice·시간외 등락%(정규장 종가
+    대비)로 상·하위 산출. over-market OPEN 인 종목만 집계(시간외 미개장·정규장
+    시간엔 0 행 → SWR 가 직전 스냅샷 서빙). 백그라운드 전용(~480종목 네이버 스캔,
+    ThreadPool). yfinance 미사용."""
     out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0,
-                 "session": "", "source": "S&P 500 시간외 · 네이버 실시간"}
-    tks = _us_universe_robust()       # S&P 500 (사용자 2026-06-16)
-    names = _sp500_names()
+                 "session": "", "source": "전시장 정규장 무버 시간외 · 네이버 실시간"}
+    tks, names = _us_movers_universe()   # 전시장 정규장 무버 (사용자 2026-06-16)
     if not tks:
         log.warning("prepost: universe empty")
         _status_write("failed", detail="universe 전 소스 실패")
@@ -209,6 +249,7 @@ def _compute_us_prepost() -> dict:
             if sess and op and opct is not None:
                 return {"ticker": tk, "name": names.get(tk, tk),
                         "price": op, "pct": opct,
+                        "vol": wq.get("volume"),   # 정규장 누적거래량(유동성 게이트·표시)
                         "session": "pre" if "PRE" in sess else "post"}
         except Exception:
             pass
@@ -216,7 +257,7 @@ def _compute_us_prepost() -> dict:
 
     rows: list = []
     try:
-        log.info("prepost: S&P 500 %d종목 네이버 시간외 스캔 시작", len(tks))
+        log.info("prepost: 전시장 무버 %d종목 네이버 시간외 스캔 시작", len(tks))
         with ThreadPoolExecutor(max_workers=6) as pool:
             for rec in pool.map(_one, tks):
                 if rec:
@@ -296,8 +337,8 @@ def _kick_refresh() -> None:
 
 
 def fetch_us_prepost_movers() -> dict:
-    """장전/장후 급등·급락 — **동기 계산 절대 안 함**(전미국 배치 = 페이지 hang
-    금지, movers/highlow SWR 와 동일): 신선 서빙 / stale 서빙 + 백그라운드
+    """장전/장후 급등·급락 — **동기 계산 절대 안 함**(전시장 무버 ~480 스캔 =
+    페이지 hang 금지, movers/highlow SWR 와 동일): 신선 서빙 / stale 서빙 + 백그라운드
     재계산 / 캐시 부재 시 kick 후 'building'. 재발동 백오프(실패 5분·running
     30분). 신선도 = 장-인지(연장거래 창에서만 30분, 그 밖 재스캔 0)."""
     stale = _cached(_PREPOST_CACHE, ttl=86400)
@@ -309,7 +350,7 @@ def fetch_us_prepost_movers() -> dict:
         if _prepost_fresh(mt):
             return stale
     # 연장거래 창(미국 장전 4:00–9:30 · 장후 16:00–20:00 ET) 밖이면 스캔 안 함
-    # (사용자 2026-06-14 '계속 새로 시작'). 주말·휴장에 캐시 부재 시 전미국 47배치
+    # (사용자 2026-06-14 '계속 새로 시작'). 주말·휴장에 캐시 부재 시 전시장 무버
     # 스캔을 매 페이지 접근마다 kick → 무의미(직전 거래일 데이터)·무겁고, 배포
     # 재시작에 매번 살해돼 영영 미완 → no-cache → 반복. 창 안일 때만 kick.
     in_win = _in_extended_window(datetime.now(timezone.utc))
