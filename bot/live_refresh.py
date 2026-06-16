@@ -17,15 +17,18 @@ LIVE_REFRESH_JS = """<script>
 (function(){
   var p=location.pathname; if(p.charAt(p.length-1)==='/') p=p.slice(0,-1);
   var page='/'+p.split('/').pop();
-  // 신고저(52주)=1h, 그 외 라이브 페이지=30s
+  // 신고저(52주)=1h, 美 장전·장후=5분(서버 30분 TTL), 그 외 라이브 페이지=30s
   var SLOW={'/kr52':1,'/jp52':1,'/hk52':1,'/tw52':1,'/ushighlow':1};
+  // 美 장전·장후: 서버 _PREPOST_TTL=30분이라 30초 폴링은 60배 over-poll(동일
+  // 데이터 재서빙·라이브 착시) → 5분으로(사용자 2026-06-16 C 그룹).
+  var MED={'/usprepost':300000};
   var MKT={'/nxt':'KR','/theme':'KR','/highlow':'KR','/kr52':'KR','/krprepost':'KR',
     '/usmovers':'US','/ushighlow':'US','/usindustry':'US','/usprepost':'US',
     '/jpmovers':'JP','/jp52':'JP','/hkmovers':'HK','/hk52':'HK',
     '/cnmovers':'CN','/twhighlow':'TW','/tw52':'TW'};
   var market=MKT[page];
   if(!market) return;                          // 라이브 페이지 아님 → 폴링 0
-  var interval=SLOW[page]?3600000:30000;       // 신고저 1h · 그 외 30s
+  var interval=SLOW[page]?3600000:(MED[page]||30000);  // 신고저 1h · 美 장전장후 5분 · 그 외 30s
   function kstNow(){var n=new Date();return new Date(n.getTime()+(n.getTimezoneOffset()+540)*60000);}
   function isOpen(){
     var k=kstNow(), d=k.getDay(), hm=k.getHours()*60+k.getMinutes();

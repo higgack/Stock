@@ -218,12 +218,17 @@ def render_us_highlow_page() -> str:
         kr = _nm.get(r.get("ticker"))
         if kr:
             r["name"] = kr
-        q = _q.get(r.get("ticker"))       # 네이버 거래량/거래대금 우선
+        q = _q.get(r.get("ticker"))       # 네이버 거래량/거래대금/시총 우선
         if q:
             if q.get("vol") is not None:
                 r["vol"] = q["vol"]
             if q.get("value") is not None:
                 r["value"] = q["value"]
+            # 시총 네이버 무료 우선(B 그룹 2026-06-16) — tier-1 Finviz 는 시총
+            # 미제공이고 fast_info 는 rate-limit 회로차단 1순위라, 네이버 업종
+            # endpoint 시총(억$)으로 채워 '시총 —' 연쇄 + 시총-정렬 붕괴 해소.
+            if r.get("mcap") is None and q.get("mcap") is not None:
+                r["mcap"] = q["mcap"]
         # 네이버 미스 시 Finviz Volume 으로 거래대금 산출(폴백)
         if r.get("value") is None and r.get("price") and r.get("vol"):
             try:

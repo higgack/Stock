@@ -213,7 +213,7 @@ def render_kr_prepost_page() -> str:
     sub = (f"🇰🇷 {sess_kr} NXT 급등·급락 상·하위 30 · 등락률=NXT가 vs 정규장 "
            "종가(NXT-정규장 격차) · 거래량·거래대금=NXT 세션(정규장 별개) · 실제 NXT "
            "체결 종목만(미체결=전일가 placeholder 제외) · 네이버 실시간 · 등락률순·헤더 "
-           "클릭 정렬 · NXT 장전 08:00–09:00 · 장후 15:40–20:00 KST · NXT 창에서 5분"
+           "클릭 정렬 · NXT 장전 08:00–09:00 · 장후 15:40–20:00 KST · NXT 창에서 2분"
            + (f" · {ts} 기준" if ts else ""))
     return _tw_shell("🇰🇷 한국 NXT 장전·장후 급등·급락", sub, body,
                      nav=_market_nav("KR", "krprepost"), back=_asia_back("KR"))

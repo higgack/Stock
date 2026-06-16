@@ -201,7 +201,7 @@ def _bare_us(tk) -> str:
     return tk
 
 
-def _us_movers_universe() -> tuple[list, dict]:
+def _us_movers_universe() -> tuple[list, dict, dict]:
     """시간외 스캔 유니버스 = **전시장(NASDAQ+NYSE+AMEX) 정규장 무버** — 네이버
     worldstock up/down 랭킹의 티커 합집합(사용자 2026-06-16 '전시장 정규장 무버').
     시간외 급변 종목은 뉴스주라 정규장 무버 랭킹에 직격으로 잡힘(S&P 500 대형주는
@@ -210,6 +210,7 @@ def _us_movers_universe() -> tuple[list, dict]:
     from bot.naver_ranking_client import fetch_world_ranking
     tks: list = []
     names: dict = {}
+    mcaps: dict = {}
     seen: set = set()
     for ex in ("NASDAQ", "NYSE", "AMEX"):
         for sort in ("up", "down"):
@@ -222,7 +223,11 @@ def _us_movers_universe() -> tuple[list, dict]:
                 nm = r.get("name")
                 if nm and nm != tk:
                     names[tk] = nm
-    return tks, names
+                # 네이버 랭킹 시총(marketValue/1e8 = 억$) — fast_info(rate-limit
+                # 회로차단 1순위) 대신 무료 우선 소스(B 그룹, 2026-06-16).
+                if r.get("mcap") is not None:
+                    mcaps[tk] = r["mcap"]
+    return tks, names, mcaps
 
 
 def _compute_us_prepost() -> dict:
@@ -235,7 +240,7 @@ def _compute_us_prepost() -> dict:
     ThreadPool). yfinance 미사용."""
     out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0,
                  "session": "", "source": "전시장 정규장 무버 시간외 · 네이버 실시간"}
-    tks, names = _us_movers_universe()   # 전시장 정규장 무버 (사용자 2026-06-16)
+    tks, names, uni_mcaps = _us_movers_universe()   # 전시장 정규장 무버 (사용자 2026-06-16)
     if not tks:
         log.warning("prepost: universe empty")
         _status_write("failed", detail="universe 전 소스 실패")
@@ -280,17 +285,24 @@ def _compute_us_prepost() -> dict:
             if pref:
                 rows = pref
         ups, downs = _rank_prepost(rows)
-        # 시총·업종 백필 — hit 종목만(소수). movers 와 동일 패턴(429 내성 벌크
-        # 캐시 우선). fast_info 회로차단 시 mcap None graceful.
+        # 시총·업종 백필 — hit 종목만(소수). 시총은 **네이버 랭킹값(uni_mcaps,
+        # 억$, 무료) 우선 → 누락분만 fast_info 폴백** (B 그룹 2026-06-16): fast_info
+        # 는 rate-limit 회로차단 1순위라 그것만 쓰면 차단 시 전 행 "—". 네이버
+        # 랭킹은 유니버스 소스라 hit 대부분 이미 보유.
         try:
             from bot.finviz_client import _fetch_industries, _fetch_mcaps
             hits = [r["ticker"] for r in ups + downs]
-            mcaps = _fetch_mcaps(hits)
+            miss = [t for t in hits if uni_mcaps.get(t) is None]
+            fi_mcaps = _fetch_mcaps(miss) if miss else {}
             inds = _fetch_industries(hits)
             for r in ups + downs:
-                mc = mcaps.get(r["ticker"])
-                r["mcap"] = round(mc / 1e8, 2) if mc else None
-                r["ind"] = inds.get(r["ticker"])
+                tk = r["ticker"]
+                me = uni_mcaps.get(tk)              # 억$ (네이버 랭킹)
+                if me is None:
+                    mc = fi_mcaps.get(tk)
+                    me = round(mc / 1e8, 2) if mc else None
+                r["mcap"] = me
+                r["ind"] = inds.get(tk)
         except Exception as exc:
             log.warning("prepost: 시총/업종 백필 실패: %s", exc)
         # 비-주식 가지치기 — CEF 펀드·유령티커 제거 + 이중클래스 dedupe(신고저/무버
@@ -532,7 +544,7 @@ def _compute_kr_prepost() -> dict:
 
 
 def _kr_prepost_fresh(cache_ts: float) -> bool:
-    """KR 장-인지 신선도 — 시간외 창에서만 5분 TTL, 그 밖엔 직전 스냅샷 fresh."""
+    """KR 장-인지 신선도 — 시간외 창에서만 2분 TTL(_KR_PREPOST_TTL), 그 밖엔 직전 스냅샷 fresh."""
     if _in_kr_extended_window(datetime.now(_KST9)):
         return (time.time() - cache_ts) < _KR_PREPOST_TTL
     return True

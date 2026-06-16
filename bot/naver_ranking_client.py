@@ -485,15 +485,25 @@ def _build_quote_map(market: str) -> None:
                 value = round(float(tv) / 1e8, 2) if tv else None
             except (TypeError, ValueError):
                 value = None
-            if vol is not None or value is not None:
-                out[tk] = {"vol": vol, "value": value}
+            # 시총(marketValue/1e8 = 억$) — B 그룹(2026-06-16): US 52주 신고저가
+            # tier-1 Finviz(시총 미제공) 일 때 fast_info(rate-limit) 대신 무료
+            # 네이버 시총으로 채워 '시총 —' 연쇄 + 시총-정렬 붕괴 해소. 업종
+            # endpoint 가 orderType=marketValue 라 marketValue 항상 존재.
+            try:
+                mv = s.get("marketValue")
+                mcap = round(float(mv) / 1e8, 2) if mv else None
+            except (TypeError, ValueError):
+                mcap = None
+            if vol is not None or value is not None or mcap is not None:
+                out[tk] = {"vol": vol, "value": value, "mcap": mcap}
     if out:
         _cache_write(f"naver_quote_{market}.json", out)
 
 
 def world_quote_map(market: str) -> dict:
-    """{yfinance 티커 → {vol, value(억)}} — 네이버 업종 endpoint 의 거래량·거래대금.
-    US 52주 거래량/거래대금을 네이버로(사용자 2026-06-14 '미국 거래량 다 네이버').
+    """{yfinance 티커 → {vol, value(억), mcap(억)}} — 네이버 업종 endpoint 의
+    거래량·거래대금·시총. US 52주 거래량/거래대금/시총을 네이버로(사용자
+    2026-06-14 '미국 거래량 다 네이버' + 2026-06-16 시총도 네이버 무료로).
     intraday → 30분 캐시·SWR(렌더 블로킹 안 함, 캐시 없으면 백그라운드 빌드 후 빈
     {} → Finviz 폴백, 다음 방문부터 네이버)."""
     if market not in _UPJONG_NATION:

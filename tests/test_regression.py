@@ -5948,8 +5948,8 @@ class TestUSPrepostKSTWindow:
 
         def _fake_ranking(ex, sort, limit=80):
             if ex == "NASDAQ" and sort == "up":
-                return [{"ticker": "CAST", "name": "캐스트"},
-                        {"ticker": "AAPL.O", "name": "애플"}]
+                return [{"ticker": "CAST", "name": "캐스트", "mcap": 123.4},
+                        {"ticker": "AAPL.O", "name": "애플", "mcap": 34000.0}]
             if ex == "NYSE" and sort == "down":
                 return [{"ticker": "CAST", "name": "캐스트"},   # 중복 → 1회만
                         {"ticker": "F.N", "name": "포드"}]
@@ -5957,9 +5957,12 @@ class TestUSPrepostKSTWindow:
         monkeypatch.setattr(pp, "fetch_world_ranking", _fake_ranking, raising=False)
         monkeypatch.setattr("bot.naver_ranking_client.fetch_world_ranking",
                             _fake_ranking)
-        tks, names = pp._us_movers_universe()
+        tks, names, mcaps = pp._us_movers_universe()   # 3-tuple (시총 추가, 2026-06-16)
         assert tks == ["CAST", "AAPL", "F"]        # dedupe + 무접미사
         assert names["CAST"] == "캐스트" and names["AAPL"] == "애플"
+        # 네이버 랭킹 시총(억$) 수집 — fast_info 폴백 대체분.
+        assert mcaps["CAST"] == 123.4 and mcaps["AAPL"] == 34000.0
+        assert "F" not in mcaps                     # mcap 없는 행은 미수집
 
 
 class TestAnalysisCsvExport:
@@ -6070,7 +6073,11 @@ class TestNxtClient:
             "sell": [], "date": "20260612"})
         monkeypatch.setattr(nc, "fetch_nxt_organ", lambda **k: None)
         html = render_nxt_page()
-        assert "NXT 장전·장후" in html and "NAVER" in html
+        # 점1(2026-06-16): NXT 수급은 NXT venue 당일 합계라 옛 '장전·장후' 제목/
+        # 세션라벨 제거. (공통 JS 주석의 '美 장전·장후' 와 충돌 않도록 옛 제목 정확
+        # 매칭으로 검사.)
+        assert "NXT 외국인·기관 수급" in html and "NAVER" in html
+        assert "NXT 장전·장후" not in html and "장전 08:00" not in html
         assert "외국인" in html and "기관" in html and "데이터 없음" in html
         assert 'href="lookup/035420.KS"' in html
         # KR 공통 nav (사용자 2026-06-15 'NXT 도 다른 대시보드 가는 nav') — _shell
@@ -9998,7 +10005,9 @@ class TestLiveAutoRefresh:
     def test_live_refresh_js_markers(self):
         from bot.live_refresh import LIVE_REFRESH_JS as js
         assert "'/kr52':1" in js and "'/ushighlow':1" in js   # 신고저=1h(SLOW)
-        assert "3600000:30000" in js                          # 1h vs 30s cadence
+        # 美 장전·장후 = 5분(MED), 신고저 1h, 그 외 30s (2026-06-16 C 그룹).
+        assert "'/usprepost':300000" in js                    # MED 5분
+        assert "SLOW[page]?3600000:(MED[page]||30000)" in js  # 1h · 5분 · 30s
         assert "if(!isOpen()) return" in js                   # 장후·주말 폴링 skip
         assert "document.hidden" in js                        # 백그라운드 탭 skip
         assert "getElementById('live-root')" in js            # #live-root swap

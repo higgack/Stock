@@ -1,6 +1,9 @@
-"""🇰🇷 NXT 장전·장후 외국인·기관 수급 대시보드 (nxt.html).
+"""🇰🇷 NXT 외국인·기관 수급 대시보드 (nxt.html).
 
-넥스트레이드(NXT) 연장거래의 투자자별 순매수/순매도 상위 — 네이버 trendForeignOrg
+넥스트레이드(NXT) 거래소 venue 의 당일 투자자별 순매수/순매도 상위 — 네이버
+trendForeignOrg (tradeType=NXT, periodType=DAY). 장전/장후로 분리된 게 아니라
+NXT 일중 합계라 '장전·장후' 라벨은 쓰지 않음 (사용자 2026-06-16).
+원본 주석: 네이버 trendForeignOrg
 (사용자 2026-06-14). 외국인·기관 각각 순매수 Top20 / 순매도 Top20. 종목 → NOAH
 분석(lookup). 무료·야후 무관. 데이터 없으면 안내."""
 from __future__ import annotations
@@ -117,8 +120,9 @@ def render_nxt_page() -> str:
             date = d["date"]
             break
     date_lb = (f"{date[:4]}-{date[4:6]}-{date[6:8]}" if len(date) == 8 else date)
-    sub = ("넥스트레이드(NXT) 연장거래 투자자별 순매수/순매도 상위 · 장전 "
-           "08:00~09:00 · 장후 15:30~20:00 KST · 네이버"
+    # NXT 거래소 venue 의 당일(periodType=DAY) 투자자별 순매수/순매도 — 장전/장후로
+    # 분리된 게 아니라 NXT 일중 합계. 따라서 '장전·장후' 멘트 제거(사용자 2026-06-16).
+    sub = ("넥스트레이드(NXT) 투자자별 순매수/순매도 상위 (외국인·기관) · 네이버"
            + (f" · {date_lb} 기준" if date_lb else ""))
     # KR 페이지 공통 nav(_shell — 업종별 시세·신고가/신저가·급등락·NXT toggle, NXT
     # active) 사용 (사용자 2026-06-15 'NXT 도 다른 대시보드 가는 nav'). _NXT_CSS 는
@@ -126,4 +130,4 @@ def render_nxt_page() -> str:
     body = (_NXT_CSS
             + _investor_block("🌐 외국인", foreign)
             + _investor_block("🏦 기관", organ))
-    return _shell("🇰🇷 NXT 장전·장후 외국인·기관 수급", _html.escape(sub), "nxt", body)
+    return _shell("🇰🇷 NXT 외국인·기관 수급", _html.escape(sub), "nxt", body)
