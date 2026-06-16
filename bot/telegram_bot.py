@@ -3804,6 +3804,15 @@ async def _on_startup(application) -> None:
                              stp.get("cleared", 0))
             except Exception as exc:
                 log.warning("startup: DART 분기 잠정실적 재추출 failed: %s", exc)
+            # 투자판단 실적→기타 소급 재분류 1회 (2026-06-16 압타바이오 — reclassify
+            # v5/v7 의 'new_cat != 기타' 가드가 다운그레이드를 막던 것 전용 패스로 보강)
+            try:
+                from bot.dart_feed import reclassify_tuja_once_if_needed
+                ntj = reclassify_tuja_once_if_needed()
+                if ntj:
+                    log.info("startup: DART 투자판단 실적→기타 재분류 %d건 소급", ntj)
+            except Exception as exc:
+                log.warning("startup: DART 투자판단 재분류 failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:
