@@ -32,7 +32,9 @@ from bot.finviz_client import _CACHE_DIR, _cache_write, _cached, _now_label
 
 log = logging.getLogger("bot.prepost_client")
 
-_PREPOST_CACHE = "us_prepost_movers_v1.json"   # 전시장 정규장 무버 유니버스 (2026-06-16, 옛 S&P 500 캐시 폐기)
+_PREPOST_CACHE = "us_prepost_movers_v2.json"   # 전시장 정규장 무버 (v2: 2026-06-16 정규장
+#   거래대금 value 필드 추가 — v1 옛 스냅샷은 value 없어 '—'. 버전 bump 으로 즉시
+#   fresh 재계산(30분 TTL stale-serve 대기 회피).
 _PREPOST_STATUS = "us_prepost_movers_status.json"
 _PREPOST_TOP_N = 30
 _PREPOST_TTL = 30 * 60         # 연장거래 창에서 재산출 간격 30분 (movers 와 동일)
