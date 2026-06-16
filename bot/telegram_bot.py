@@ -3794,6 +3794,16 @@ async def _on_startup(application) -> None:
                              "(generic 폴백 래퍼로 재시도)", n7)
             except Exception as exc:
                 log.warning("startup: DART doc_fail v7 failed: %s", exc)
+            # 분기 영업(잠정)실적 Form C 파서(2026-06-16 오리온) 소급 재추출 1회
+            try:
+                from bot.dart_feed import reparse_provisional_once_if_needed
+                stp = reparse_provisional_once_if_needed()
+                if stp and stp.get("replaced"):
+                    log.info("startup: DART 분기 잠정실적 재추출 — 교체 %d건 "
+                             "(doc_fail %d 해제)", stp.get("replaced", 0),
+                             stp.get("cleared", 0))
+            except Exception as exc:
+                log.warning("startup: DART 분기 잠정실적 재추출 failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:

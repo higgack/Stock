@@ -1913,13 +1913,15 @@ def _extract_generic_document(rcept_no: str, api_key: str) -> dict | None:
 # ── 배치 구현 2026-06-11 (사용자 승인 양식) — 공용 헬퍼 ──────────────────
 
 def _doc_unit_mult(txt: str) -> float:
-    """공시 표 단위 감지: 원=1 / 천원=1e3 / 백만원=1e6 (회사별 혼재 —
-    미감지 시 1,000배 오류 클래스라 필수)."""
-    m = re.search(r"단위\s*[:：]\s*(백만\s*원|천\s*원|원)", txt)
+    """공시 표 단위 감지: 억원=1e8 / 백만원=1e6 / 천원=1e3 / 원=1 (회사별 혼재 —
+    미감지 시 단위 오류 클래스라 필수). 억원 = 분기 잠정실적 등(오리온 2026-06-16
+    '단위: 억원' — 미감지 시 1,004 을 1,004원으로 1e8 저평가)."""
+    m = re.search(r"단위\s*[:：]\s*(억\s*원|백만\s*원|천\s*원|원)", txt)
     if not m:
         return 1.0
     u = m.group(1).replace(" ", "")
-    return 1e6 if u == "백만원" else (1e3 if u == "천원" else 1.0)
+    return (1e8 if u == "억원" else 1e6 if u == "백만원"
+            else 1e3 if u == "천원" else 1.0)
 
 
 def _amt_won(raw: str, mult: float = 1.0) -> str | None:
@@ -2078,6 +2080,85 @@ def _parse_earnings_doc(rcept_no: str, api_key: str, title: str) -> dict | None:
             parts.append(f"변동 주요원인: {why.group(1).strip()}")
         return {"lines": parts} if len(parts) >= 2 else None
     return None
+
+
+def _segment_rows(txt: str, kw: str, mult: float) -> list[str]:
+    """'국가별/부문별 <kw>' 헤더 후 부문 행 ['이름 금액'] — 당기실적(첫 숫자)만.
+    이름의 괄호(소속 법인) 제거. 다음 섹션/순매출 전까지. 최대 6행."""
+    m = re.search(rf"(?:국가별|부문별|지역별|사업부문)\s*{kw}\s+-(?:\s+-){{3,7}}", txt)
+    if not m:
+        return []
+    seg = txt[m.end(): m.end() + 500]
+    seg = re.split(r"(?:국가별|부문별|지역별|사업부문)\s*(?:매출|영업)"
+                   r"|\d\.\s|순매출|총매출", seg)[0]
+    rows: list[str] = []
+    for rm in re.finditer(r"([가-힣]{2,}(?:\([^)]*\))?)\s+([\d,]+)\s+"
+                          r"[-\d,]+\s+[-\d.,]+", seg):
+        name = re.sub(r"\([^)]*\)", "", rm.group(1)).strip()
+        amt = _tok_amt(rm.group(2), mult)
+        if name and amt:
+            rows.append(f"{name} {amt}")
+    return rows[:6]
+
+
+def _provisional_lines(txt: str, mult: float) -> list[str]:
+    """분기 잠정실적 본문 → 카드 라인 (순수·실문서 스냅샷 테스트). 연결 본표
+    (매출액/영업이익/당기순이익 '당해실적' 행)가 채워졌으면 그걸, 비어있고
+    (오리온식 다국적) 순매출 합계·국가별만 있으면 그걸."""
+    out: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        out.append(corr)
+    ml = re.search(r"당기실적\s*\((\d{2}년\s*\d{1,2}월)\)", txt)
+    out.append("구분: 분기 잠정실적"
+               + (f" ({ml.group(1).replace(' ', '')})" if ml else ""))
+    # 1) 연결 본표(당해실적 행, '국가별'헤더는 당해실적 미동반이라 자동 배제) —
+    #    셀이 채워진 경우만 (오리온은 전부 '-' → _tok_amt None → skip).
+    body = False
+    for label in ("매출액", "영업이익", "당기순이익"):
+        m = re.search(rf"{label}\s*당해실적\s+([-\d,]+)\s+([-\d,]+)\s+([-\d.,]+)"
+                      rf"\s+\S+\s+([-\d,]+)\s+([-\d.,]+)", txt)
+        if not m:
+            continue
+        cur = _tok_amt(m.group(1), mult)
+        if not cur:
+            continue
+        body = True
+        ex = []
+        yoy = _tok_amt(m.group(4), mult)
+        if yoy:
+            ex.append(f"전년동기 {yoy}")
+        p = _pct1(m.group(5)) if m.group(5) != "-" else None
+        if p:
+            ex.append(f"전년동기대비 {p}")
+        out.append(f"{label}: {cur}" + (f" ({' · '.join(ex)})" if ex else ""))
+    if body:
+        return out
+    # 2) 본표 비었음(오리온식) — 순매출 합계(당월·누계, 마지막=합계 컬럼) + 국가별.
+    sm = re.findall(r"순매출\*+\s+(?:[-\d,]+\s+){4}([-\d,]+)", txt)
+    if sm:
+        cur = _tok_amt(sm[0], mult)
+        if cur:
+            nxt = _tok_amt(sm[1], mult) if len(sm) > 1 else None
+            out.append(f"매출액(순매출): {cur}"
+                       + (f" (누계 {nxt})" if nxt else ""))
+    for kw, lbl in (("매출액", "국가별 매출"), ("영업이익", "국가별 영업이익")):
+        seg = _segment_rows(txt, kw, mult)
+        if seg:
+            out.append(f"{lbl}: " + " · ".join(seg))
+    return out
+
+
+def _parse_provisional_doc(rcept_no: str, api_key: str, title: str) -> dict | None:
+    """분기 영업(잠정)실적(공정공시) — '당기실적/전기실적/전년동기실적' 컬럼 양식.
+    Form A(월별 당해/누계)·B(연간 직전사업연도)가 못 잡는 분기 양식 보강(사용자
+    2026-06-16 '오리온 실제 파서내용 거의 없어' — 연결 본표 전부 '-', 국가별·
+    순매출만 채워진 다국적 공정공시). 단위 억원(1e8) 인식. graceful None."""
+    txt = _fetch_doc_text(rcept_no, api_key)
+    if not txt or "당기실적" not in txt:
+        return None
+    lines = _provisional_lines(txt, _doc_unit_mult(txt))
+    return {"lines": lines} if len(lines) >= 2 else None
 
 
 # ── 주주환원 — 신탁 체결/해지 · 소각 · 취득결과 · 배당 기준일 ────────────
@@ -2596,6 +2677,10 @@ def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
             # 금액표 전부 '-' 인 월간 판매물량 변형 (도시가스 천톤/완성차
             # 대수 — 2026-06-12 '파싱안된것들')
             doc = _parse_volume(rcept_no, api_key)
+        if not doc and "영업(잠정)실적" in t:
+            # 분기 양식(당기실적/전기실적/전년동기실적 컬럼) — 연결 본표가 비고
+            # 국가별/순매출만 채워진 다국적 공정공시(오리온 2026-06-16) Form C.
+            doc = _parse_provisional_doc(rcept_no, api_key, t)
         if doc:
             return doc
     elif "공급계약" in t or "단일판매" in t or "단일공급" in t:
@@ -4221,6 +4306,31 @@ def clear_doc_fail_once_v7() -> int | None:
     except OSError:
         pass
     return n
+
+
+_REPARSE_PROVISIONAL_MARKER = _ARCHIVE_DIR.parent / ".dart_reparse_provisional_v1"
+
+
+def reparse_provisional_once_if_needed() -> dict | None:
+    """분기 영업(잠정)실적 Form C 파서 신설(2026-06-16 오리온) 소급 1회 — doc_fail
+    캐시 클리어(negative-cache 고착 해제) 후 '영업(잠정)실적' 항목 detail 재추출.
+    연결 본표 비고 국가별/순매출만 있던 양식이 연락처만 남던 것 → 매출·국가별
+    채움. reparse_details 가 성공 시에만 교체(회귀 0). marker 1회(배포 후)."""
+    if _REPARSE_PROVISIONAL_MARKER.exists():
+        return None
+    cleared = clear_doc_fail_cache()
+    st = reparse_details(days_back=40, kw=("영업(잠정)실적",))
+    try:
+        _REPARSE_PROVISIONAL_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _REPARSE_PROVISIONAL_MARKER.write_text(json.dumps({
+            "ts": datetime.now(_KST).isoformat(timespec="seconds"),
+            "doc_fail_cleared": cleared,
+            "reparse_replaced": st.get("replaced", 0),
+            "reparse_checked": st.get("checked", 0),
+        }, ensure_ascii=False))
+    except OSError:
+        pass
+    return {"cleared": cleared, **st}
 
 
 _RECLASS_MARKER_V7 = _ARCHIVE_DIR.parent / ".dart_feed_reclassified_v7"
