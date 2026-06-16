@@ -2112,6 +2112,19 @@ setInterval(applyDarkMode,60000);
 render();
 // Fire after initial render so the modal can locate by id.
 handleHashDeepLink();
+
+// 산업트렌드(무거운 ~7MB 프래그먼트)는 탭 클릭 시 fetch 라 첫 클릭이 느림(사용자
+// 2026-06-16 '갭 두고 자동 로드'). 초기 렌더(경량 index) 끝난 뒤 브라우저 idle
+// (최대 3초) 시 백그라운드로 미리 prefetch → 탭 클릭 시 즉시 표시(따로 안 눌러도).
+// _lazyFetchView 의 loaded 가드로 클릭과 중복 fetch 안 되고, idle 후라 첫 화면
+// 속도엔 영향 없음(critical paint 와 비경쟁). requestIdleCallback 없으면 2.5초 폴백.
+(function(){
+  function _prefetchLazy(){
+    document.querySelectorAll('.view[data-src]').forEach(function(v){_lazyFetchView(v);});
+  }
+  if(window.requestIdleCallback) requestIdleCallback(_prefetchLazy,{timeout:3000});
+  else setTimeout(_prefetchLazy,2500);
+})();
 """
 
 

@@ -46,6 +46,10 @@ class DashboardRenderSmokeTests(unittest.TestCase):
         # 스크립트 재실행(window._scrollRaw 정의·월별 원자료 우측 스크롤 복구).
         self.assertIn("createElement('script')", src)        # 프래그먼트 스크립트 재실행
         self.assertIn("if(window._scrollRaw)window._scrollRaw(view)", src)  # 우측 스크롤 호출
+        # 산업트렌드 백그라운드 prefetch(사용자 2026-06-16 '갭 두고 자동 로드') —
+        # idle(최대 3초) 시 미리 fetch 해 탭 클릭 즉시 표시.
+        self.assertIn("requestIdleCallback(_prefetchLazy", src)
+        self.assertIn(".view[data-src]", src)                # prefetch 대상 = lazy 뷰
 
     def test_alerts_history_split(self):
         # 사용자 2026-06-16 '최신만 인라인 + 모달 히스토리 on-demand': history_out
