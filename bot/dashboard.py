@@ -5700,6 +5700,46 @@ def _render_stock_info_html(rec: dict) -> str:
 </script>"""
 
     # ── assemble deferred panes (depend on variables defined above) ──
+    # TW 분기 재무 박스 (B4 2026-06-16) — FinMind 손익/재무상태/현금흐름. US SEC
+    # XBRL·KR DART 박스의 TW 등가물(밸류에이션 탭). type 값 VM probe 확정(영문).
+    tw_fin_html = ""
+    tw_fin = si.get("tw", {}).get("financials") if is_tw else None
+    if tw_fin and isinstance(tw_fin, list) and tw_fin:
+        def _twf(v):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return "—"
+            a = abs(v)
+            if a >= 1e12:
+                return f"NT${v / 1e12:,.2f}兆"
+            if a >= 1e8:
+                return f"NT${v / 1e8:,.0f}億"
+            return f"{v:,.0f}"
+        _cols = tw_fin[:4]
+        _hdr = "<th>항목</th>" + "".join(
+            f"<th class='num'>{esc(str(c.get('date', '')))}</th>" for c in _cols)
+        _rowdef = [("매출", "revenue"), ("매출총이익", "gross_profit"),
+                   ("영업이익", "operating_income"), ("순이익", "net_income"),
+                   ("EPS", "eps"), ("자산총계", "total_assets"),
+                   ("부채총계", "total_liab"), ("자본총계", "equity"),
+                   ("영업현금흐름", "op_cf")]
+        _body = ""
+        for _label, _key in _rowdef:
+            _cells = ""
+            for c in _cols:
+                v = c.get(_key)
+                if _key == "eps":
+                    _cells += f"<td class='num'>{('%.2f' % float(v)) if v is not None else '—'}</td>"
+                else:
+                    _cells += f"<td class='num'>{_twf(v) if v is not None else '—'}</td>"
+            _body += f"<tr><td>{_label}</td>{_cells}</tr>"
+        tw_fin_html = f"""<div class="si-section">
+    <div class="si-section-title">분기 재무 (FinMind)</div>
+    <table class="si-table"><thead><tr>{_hdr}</tr></thead><tbody>{_body}</tbody></table>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:4px">출처: FinMind(TWSE 재무보고) · 분기말 기준</div>
+  </div>"""
+
     _val_src = "yfinance" + (" · SEC XBRL" if is_us else " · DART" if is_kr
                              else " · AKShare" if is_cn else " · FinMind" if is_tw else "")
     valuation_pane = f"""<div class="si-pane" id="si-valuation">
@@ -5716,6 +5756,7 @@ def _render_stock_info_html(rec: dict) -> str:
   </div>
   {kr_fin_ts_html}
   {us_xbrl_html}
+  {tw_fin_html}
   {div_html}
   {_src_foot}출처: {_val_src}</div>
 </div>"""

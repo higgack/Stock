@@ -137,6 +137,54 @@ def fetch_cashflow(ticker: str, quarters: int = 8) -> Optional[list]:
     return rows
 
 
+# 손익/재무상태/현금흐름 핵심 항목 → FinMind type 코드 (VM probe 2026-06-16 확정,
+# 전부 영문). 박스 표시용 — origin_name 은 中文이라 키는 영문 type 으로 매칭.
+_TW_FIN_MAP = {
+    "revenue": ("Revenue",),
+    "gross_profit": ("GrossProfit",),
+    "operating_income": ("OperatingIncome",),
+    "net_income": ("IncomeAfterTaxes",),
+    "eps": ("EPS",),
+    "total_assets": ("TotalAssets",),
+    "total_liab": ("Liabilities",),
+    "equity": ("Equity",),
+    "op_cf": ("CashFlowsFromOperatingActivities", "NetCashInflowFromOperatingActivities"),
+}
+
+
+def fetch_tw_financials(ticker: str, quarters: int = 4) -> Optional[list]:
+    """TW 분기 재무 요약 — 손익/재무상태/현금흐름 3표를 분기말 date 로 피벗.
+    [{date, revenue, gross_profit, operating_income, net_income, eps, total_assets,
+    total_liab, equity, op_cf}] 최신순(US SEC XBRL·KR DART 박스 등가물, B4 2026-06-16).
+    값은 TWD 절대값(EPS 만 주당). graceful None. _per(비율) type 은 제외."""
+    code = _tw_code(ticker)
+    if not code:
+        return None
+    by_date: dict = {}
+    for fn in (fetch_income_statement, fetch_balance_sheet, fetch_cashflow):
+        try:
+            rows = fn(ticker, quarters=max(quarters, 8))
+        except Exception:
+            rows = None
+        for r in (rows or []):
+            if not isinstance(r, dict):
+                continue
+            d, t, v = r.get("date"), r.get("type"), r.get("value")
+            if not d or t is None or v is None:
+                continue
+            by_date.setdefault(d, {})[t] = v
+    if not by_date:
+        return None
+    out: list = []
+    for d in sorted(by_date, reverse=True)[:quarters]:
+        q = by_date[d]
+        rec: dict = {"date": d}
+        for key, types in _TW_FIN_MAP.items():
+            rec[key] = next((q[t] for t in types if q.get(t) is not None), None)
+        out.append(rec)
+    return out or None
+
+
 # ------------------------------------------------------------------
 # Monthly Revenue (TW unique — mandatory 10-day disclosure)
 # ------------------------------------------------------------------

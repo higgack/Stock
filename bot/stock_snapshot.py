@@ -807,6 +807,16 @@ def _enrich_tw(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: FinMind PER/PBR skipped: %s", exc)
 
+    # ── FinMind 분기 재무 요약 (B4 2026-06-16) — 손익/재무상태/현금흐름.
+    # US SEC XBRL·KR DART 박스의 TW 등가물(밸류에이션 탭). 12h 캐시.
+    try:
+        from bot.finmind_client import fetch_tw_financials
+        fin = fetch_tw_financials(ticker)
+        if fin:
+            snap.setdefault("tw", {})["financials"] = fin
+    except Exception as exc:
+        log.debug("stock_snapshot: FinMind financials skipped: %s", exc)
+
     # ── FinMind 외국인 보유 현황 (2026-06-16 정정) — VM probe 로 확인: FinMind
     # TaiwanStockShareholding 은 TDCC 보유구간 분산이 아니라 **외국인 투자 현황 +
     # 발행주식수**다(옛 'TDCC 분산' 가정은 오류 → 빈 표였음). 외국인 보유비율은

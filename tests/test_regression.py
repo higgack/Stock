@@ -11062,6 +11062,26 @@ class TestDetailTabEnhancements20260616:
             "shares_issued": 25932370067}}}, monkeypatch)
         assert "외국인 보유" in h and "69.99%" in h, "외국인 보유비율 누락"
 
+    def test_b4_tw_financials_box(self, monkeypatch):
+        # B4(2026-06-16): FinMind 손익/재무상태/현금흐름 → TW 분기재무 박스
+        # (US SEC XBRL·KR DART 등가물). type 값 VM probe 확정(영문). _per 비율 제외.
+        import bot.finmind_client as fm
+        monkeypatch.setattr(fm, "fetch_income_statement", lambda t, quarters=8: [
+            {"date": "2026-03-31", "type": "Revenue", "value": 8e11},
+            {"date": "2026-03-31", "type": "EPS", "value": 13.94},
+            {"date": "2026-03-31", "type": "Revenue_per", "value": 100.0}])  # 비율 무시
+        monkeypatch.setattr(fm, "fetch_balance_sheet", lambda t, quarters=8: [
+            {"date": "2026-03-31", "type": "Equity", "value": 4e12}])
+        monkeypatch.setattr(fm, "fetch_cashflow", lambda t, quarters=8: [
+            {"date": "2026-03-31", "type": "CashFlowsFromOperatingActivities", "value": 5e11}])
+        out = fm.fetch_tw_financials("2330.TW")
+        assert out and out[0]["revenue"] == 8e11 and out[0]["eps"] == 13.94
+        assert out[0]["equity"] == 4e12 and out[0]["op_cf"] == 5e11
+        assert fm.fetch_tw_financials("AAPL") is None      # 비-TW graceful
+        h = self._html("2330.TW", {"current_price": 1045.0,
+                                   "tw": {"financials": out}}, monkeypatch)
+        assert "분기 재무 (FinMind)" in h and "13.94" in h and "2026-03-31" in h
+
     def test_c1_jp_research_row(self, monkeypatch):
         h = self._html("7203.T", {"current_price": 3000.0, "jp": {"consensus": {
             "source": "Kabutan", "rating": "매수", "target_mean": 3500,
