@@ -3914,6 +3914,26 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                 log.debug("_ensure_detail_enrichment: EDGAR disclosures %s: %s", ticker, exc)
 
 
+def _fmt_over_line(q: dict, csym: str, pdec: int) -> str:
+    """Naver overMarketPriceInfo → 상세 시간외 라인 '🌙 장후 · 정규장 종가
+    $370.66 · 시간외 +0.36%' (사용자 2026-06-16 '대만제외 다 적용'). KR 국내·
+    US/JP/HK/CN 해외 공용 — over_session 없으면(정규장·비지원) "" → :empty 숨김."""
+    if not isinstance(q, dict):
+        return ""
+    sess = q.get("over_session") or ""
+    if not sess:
+        return ""
+    label = "장전" if "PRE" in sess else "장후"
+    parts = [f"🌙 {label}"]
+    rc = q.get("reg_close")
+    if rc is not None:
+        parts.append(f"정규장 종가 {csym}{_fmt_num(rc, decimals=pdec)}")
+    opct = q.get("over_pct")
+    if opct is not None:
+        parts.append(f"시간외 {'+' if opct >= 0 else ''}{opct:.2f}%")
+    return " · ".join(parts)
+
+
 def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     """Fresh live-quote payload for the detail-page overlay (numbers only).
 
@@ -4042,6 +4062,7 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
                 source, delayed = "네이버 실시간", False
                 if nq.get("mcap"):
                     mcap = nq["mcap"]
+                over_line = _fmt_over_line(nq, csym, pdec)   # KR 시간외(있으면)
         except Exception as exc:
             log.debug("build_live_quote: Naver KR quote skipped for %s: %s", ticker, exc)
     else:
@@ -4063,20 +4084,10 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
                 source, delayed = wq.get("source", "실시간"), False
                 if wq.get("mcap"):
                     mcap = wq["mcap"]
-                # 미국 시간외(장전/장후) 라인 — Naver 식 '🌙 장후 · 정규장 종가
-                # $370.66 · 시간외 +0.36%' (사용자 2026-06-16). 현재가(메인)는
-                # 시간외가, 이 라인이 정규장 종가 + 시간외 변동을 따로 보여줌.
-                _osess = wq.get("over_session") or ""
-                if _osess:
-                    _olabel = "장전" if "PRE" in _osess else "장후"
-                    _parts = [f"🌙 {_olabel}"]
-                    _orc = wq.get("reg_close")
-                    if _orc is not None:
-                        _parts.append(f"정규장 종가 {csym}{_fmt_num(_orc, decimals=pdec)}")
-                    _opct = wq.get("over_pct")
-                    if _opct is not None:
-                        _parts.append(f"시간외 {'+' if _opct >= 0 else ''}{_opct:.2f}%")
-                    over_line = " · ".join(_parts)
+                # 시간외(장전/장후) 라인 — US/JP/HK/CN 해외 공용 (사용자 2026-06-16
+                # '대만제외 다 적용'). over_session 없으면 "" (JP/HK/CN 은 연장거래
+                # 미지원이라 보통 빈 값 → :empty 숨김).
+                over_line = _fmt_over_line(wq, csym, pdec)
         except Exception as exc:
             log.debug("build_live_quote: world/tw quote skipped for %s: %s", ticker, exc)
 
