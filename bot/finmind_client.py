@@ -182,7 +182,12 @@ def fetch_per_pbr(ticker: str, days: int = 90) -> Optional[list]:
 # ------------------------------------------------------------------
 
 def fetch_shareholding(ticker: str) -> Optional[list]:
-    """TDCC shareholding dispersion — weekly snapshot of holder-size tiers."""
+    """**외국인 보유 현황 + 발행주식수** (FinMind TaiwanStockShareholding) —
+    rows {date, ForeignInvestmentSharesRatio(외국인보유비율%), ForeignInvestmentShares,
+    ForeignInvestmentRemainRatio(한도소진 여유%), NumberOfSharesIssued(발행주식수),
+    …}. ⚠️ VM probe 2026-06-16 확정: 이 데이터셋은 **TDCC 집보호 보유구간 분산이
+    아니다**(그건 TaiwanStockHoldingSharesPer). 옛 docstring 'TDCC dispersion' 은
+    오기였음 — 호출부도 외국인 보유로 사용해야 함. 上市+上櫃, 주간 갱신."""
     code = _tw_code(ticker)
     if not code:
         return None
@@ -195,6 +200,24 @@ def fetch_shareholding(ticker: str) -> Optional[list]:
     if rows:
         _cache_set(ck, rows)
     return rows
+
+
+def fetch_shares_outstanding(ticker: str) -> Optional[int]:
+    """발행주식수(NumberOfSharesIssued, 최신) — TaiwanStockShareholding 에서 추출.
+    TW 시총 = 발행주식수 × 종가 산출용(T7 2026-06-16, yfinance fast_info rate-limit
+    대체). 上市+上櫃 모두 커버. None graceful."""
+    rows = fetch_shareholding(ticker)
+    if not rows or not isinstance(rows, list):
+        return None
+    latest = max((r for r in rows if isinstance(r, dict)),
+                 key=lambda r: r.get("date", ""), default=None)
+    if not latest:
+        return None
+    n = latest.get("NumberOfSharesIssued")
+    try:
+        return int(n) if n else None
+    except (TypeError, ValueError):
+        return None
 
 
 # ------------------------------------------------------------------

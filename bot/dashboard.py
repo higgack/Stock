@@ -5963,32 +5963,30 @@ def _render_stock_info_html(rec: dict) -> str:
     </table>
   </div>"""
 
-    # TW TDCC 집보호 주식분산 (C2, 2026-06-16) — 보유구간별 분포(개미 vs
-    # 대주주 집중도). FinMind 행 shape 의존이라 방어적 렌더(키 폴백·예외시 생략).
+    # TW 외국인 보유 현황 (2026-06-16 정정) — VM probe 로 FinMind
+    # TaiwanStockShareholding 이 TDCC 보유구간 분산이 아니라 외국인 투자 현황+
+    # 발행주식수임을 확인(옛 'TDCC 분산' 표는 그 필드가 없어 항상 빈 표였음).
+    # 외국인 보유비율은 TW 핵심 수급 신호.
     tw_disp_html = ""
-    tw_disp = si.get("tw", {}).get("shareholding", []) if is_tw else []
-    if tw_disp:
-        td_rows = ""
-        for d in tw_disp:
-            lvl = esc(str(d.get("HoldingSharesLevel") or d.get("level") or "")).strip()
-            if not lvl or lvl.lower() in ("total", "合計", "总计", "總計"):
-                continue
-            pct = d.get("percent")
+    tw_fgn = si.get("tw", {}).get("foreign", {}) if is_tw else {}
+    if tw_fgn and tw_fgn.get("foreign_ratio") is not None:
+        def _pctf(v):
             try:
-                pct_str = f"{float(pct):.2f}%"
+                return f"{float(v):.2f}%"
             except (TypeError, ValueError):
-                pct_str = "—"
-            ppl = d.get("people")
-            ppl_str = f"{int(ppl):,}" if isinstance(ppl, (int, float)) and ppl else "—"
-            td_rows += f"<tr><td>{lvl}</td><td class='num'>{pct_str}</td><td class='num'>{ppl_str}</td></tr>\n"
-        if td_rows:
-            tw_disp_html = f"""<div class="si-section">
-    <div class="si-section-title">집보호 주식분산 (TDCC)</div>
-    <table class="si-table">
-      <thead><tr><th>보유구간(주)</th><th class="num">비중</th><th class="num">인원</th></tr></thead>
-      <tbody>{td_rows}</tbody>
-    </table>
-    <div style="font-size:11px;color:var(--fg-soft);margin-top:4px">보유구간별 지분 분포 — 소액(개미) vs 대주주 집중도 · 출처: FinMind/TDCC</div>
+                return "—"
+        _fr = _pctf(tw_fgn.get("foreign_ratio"))
+        _rr = tw_fgn.get("remain_ratio")
+        _rr_html = (f' · 한도 여유 {_pctf(_rr)}'
+                    if _rr is not None else "")
+        _si = tw_fgn.get("shares_issued")
+        _si_html = (f' · 발행주식수 {int(_si):,}'
+                    if isinstance(_si, (int, float)) and _si else "")
+        _fdate = esc(str(tw_fgn.get("date") or ""))
+        tw_disp_html = f"""<div class="si-section">
+    <div class="si-section-title">외국인 보유 현황</div>
+    <div style="font-size:14px">외국인 보유비율 <b>{_fr}</b>{_rr_html}{_si_html}</div>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:4px">출처: FinMind(TaiwanStockShareholding){(' · ' + _fdate) if _fdate else ''}</div>
   </div>"""
 
     # CN AKShare major holders (主要流通股东)

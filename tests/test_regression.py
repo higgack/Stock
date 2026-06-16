@@ -11056,15 +11056,13 @@ class TestDetailTabEnhancements20260616:
                        monkeypatch)
         assert "18.5" in h, "TW PER 폴백 누락"
 
-    def test_c2_tw_dispersion(self, monkeypatch):
-        h = self._html("2330.TW", {"current_price": 100.0, "tw": {"shareholding": [
-            {"date": "2026-06-13", "HoldingSharesLevel": "1-999", "percent": 2.5, "people": 12000},
-            {"date": "2026-06-13", "HoldingSharesLevel": "total", "percent": 100, "people": 50000},
-        ]}}, monkeypatch)
-        assert "TDCC" in h and "1-999" in h, "TDCC 분산 누락"
-        # 'total' 합계행은 제외
-        seg = h.split("TDCC", 1)[1][:500]
-        assert "total" not in seg, "합계행 미필터"
+    def test_c2_tw_foreign_holding(self, monkeypatch):
+        # 2026-06-16 정정: FinMind TaiwanStockShareholding = 외국인 보유+발행주식수
+        # (TDCC 보유구간 분산 아님 — 옛 가정 오류로 빈 표였음). 외국인 보유비율 표시.
+        h = self._html("2330.TW", {"current_price": 100.0, "tw": {"foreign": {
+            "date": "2026-06-16", "foreign_ratio": 69.99, "remain_ratio": 30.0,
+            "shares_issued": 25932370067}}}, monkeypatch)
+        assert "외국인 보유" in h and "69.99%" in h, "외국인 보유비율 누락"
 
     def test_c1_jp_research_row(self, monkeypatch):
         h = self._html("7203.T", {"current_price": 3000.0, "jp": {"consensus": {
@@ -11150,3 +11148,22 @@ class TestAsiaTier2_20260616:
         from bot import tw_pages
         s = inspect.getsource(tw_pages.render_tw_highlow_page)
         assert "limit_pct=9.9" in s, "TW 급등락이 limit_pct 미전달"
+
+    def test_t7_fetch_shares_outstanding(self, monkeypatch):
+        # FinMind TaiwanStockShareholding.NumberOfSharesIssued (VM probe 확인) →
+        # TW 시총 = 발행주식수×종가. 최신 일자 행 선택.
+        import bot.finmind_client as fm
+        monkeypatch.setattr(fm, "_cache_get", lambda k: None)
+        monkeypatch.setattr(fm, "_cache_set", lambda k, v: None)
+        monkeypatch.setattr(fm, "_fetch", lambda ds, code, start, **x: [
+            {"date": "2026-06-15", "NumberOfSharesIssued": 25900000000},
+            {"date": "2026-06-16", "NumberOfSharesIssued": 25932370067}])
+        assert fm.fetch_shares_outstanding("2330.TW") == 25932370067   # 최신
+        assert fm.fetch_shares_outstanding("AAPL") is None             # 비-TW graceful
+
+    def test_t7_tw_mcap_fallback_wired(self):
+        # _enrich_compute 가 TW yfinance 시총 미스 시 FinMind 발행주식수×종가 폴백.
+        import inspect
+        from bot import highlow_render as hr
+        s = inspect.getsource(hr._enrich_compute)
+        assert "fetch_shares_outstanding" in s and 'market == "TW"' in s

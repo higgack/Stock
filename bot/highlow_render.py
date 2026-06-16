@@ -333,6 +333,11 @@ def _enrich_compute(tickers: list, items: list, market: str, want_ind: bool,
     persist = _cached(pkey, ttl=12 * 3600)
     persist = dict(persist) if isinstance(persist, dict) else {}
     changed = False
+    # T7(2026-06-16): TW 는 네이버 worldstock 시총 overlay 가 없어 fast_info(rate-
+    # limit 회로차단 1순위) 의존이 컸음 → '시총 —' 빈출. yfinance 미스 시 FinMind
+    # 발행주식수(NumberOfSharesIssued)×종가로 폴백 산출(백그라운드에서만, persist
+    # 적재 → 렌더-세이프 경로가 다음 렌더에 사용). 단위: shares×종가(NT$)/1e8 = 억 NT$.
+    _tw_px = {it.get("ticker"): it.get("price") for it in items} if market == "TW" else {}
     for tk in tickers:
         mc = mcaps.get(tk)
         if mc:
@@ -342,7 +347,19 @@ def _enrich_compute(tickers: list, items: list, market: str, want_ind: bool,
                 persist[tk] = eok
                 changed = True
         else:                       # yfinance 미스/렌더-세이프 → 직전 성공값 폴백
-            meta.setdefault(tk, {})["mcap"] = persist.get(tk)
+            eok = persist.get(tk)
+            if eok is None and allow_slow and market == "TW":
+                try:
+                    from bot.finmind_client import fetch_shares_outstanding
+                    sh = fetch_shares_outstanding(tk)
+                    px = _tw_px.get(tk)
+                    if sh and px:
+                        eok = round(sh * float(px) / 1e8, 2)
+                        persist[tk] = eok
+                        changed = True
+                except Exception:
+                    pass
+            meta.setdefault(tk, {})["mcap"] = eok
     if changed:
         _cache_write(pkey, persist)
     if want_ind:

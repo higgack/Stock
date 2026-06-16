@@ -807,22 +807,25 @@ def _enrich_tw(ticker: str, snap: dict) -> None:
     except Exception as exc:
         log.debug("stock_snapshot: FinMind PER/PBR skipped: %s", exc)
 
-    # ── FinMind TDCC 집보호 주식분산 (C2, 2026-06-16) — 보유구간별 분포
-    # (개미/대주주 집중도). 최신 일자만 보관. 행 shape 가 FinMind 의존이라
-    # 렌더는 방어적(level/percent/people 일반 표시). 실패 무해(섹션 생략).
+    # ── FinMind 외국인 보유 현황 (2026-06-16 정정) — VM probe 로 확인: FinMind
+    # TaiwanStockShareholding 은 TDCC 보유구간 분산이 아니라 **외국인 투자 현황 +
+    # 발행주식수**다(옛 'TDCC 분산' 가정은 오류 → 빈 표였음). 외국인 보유비율은
+    # TW 핵심 수급 신호라 그대로 유용. 최신 1행만 보관.
     try:
         from bot.finmind_client import fetch_shareholding
         sh = fetch_shareholding(ticker)
         if sh and isinstance(sh, list):
-            latest_date = max((r.get("date", "") for r in sh if isinstance(r, dict)),
-                              default="")
-            if latest_date:
-                rows = [r for r in sh if isinstance(r, dict)
-                        and r.get("date") == latest_date]
-                if rows:
-                    snap.setdefault("tw", {})["shareholding"] = rows
+            latest = max((r for r in sh if isinstance(r, dict)),
+                         key=lambda r: r.get("date", ""), default=None)
+            if latest and latest.get("ForeignInvestmentSharesRatio") is not None:
+                snap.setdefault("tw", {})["foreign"] = {
+                    "date": latest.get("date"),
+                    "foreign_ratio": latest.get("ForeignInvestmentSharesRatio"),
+                    "remain_ratio": latest.get("ForeignInvestmentRemainRatio"),
+                    "shares_issued": latest.get("NumberOfSharesIssued"),
+                }
     except Exception as exc:
-        log.debug("stock_snapshot: FinMind shareholding skipped: %s", exc)
+        log.debug("stock_snapshot: FinMind foreign holding skipped: %s", exc)
 
     # ── cnyes 컨센서스 (yfinance 와 병기, A3 2026-06-16 무게이트) ──
     try:
