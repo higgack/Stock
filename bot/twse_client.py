@@ -43,7 +43,9 @@ _SECTOR_KR = {
     "電機機械": "전기기계", "電器電纜": "전선", "化學生技醫療": "화학·바이오",
     "化學": "화학", "生技醫療": "바이오·의료", "玻璃陶瓷": "유리·도자",
     "造紙": "제지", "鋼鐵": "철강", "橡膠": "고무", "汽車": "자동차",
-    "半導體": "반도체", "電腦及週邊": "컴퓨터·주변", "光電": "광전(디스플레이)",
+    "半導體": "반도체", "電腦及週邊": "컴퓨터·주변",
+    "電腦及週邊設備": "컴퓨터·주변기기",   # TWSE 정식명(類指數 strip 후) — 設備 suffix
+    "光電": "광전(디스플레이)",
     "通信網路": "통신·네트워크", "電子零組件": "전자부품", "電子通路": "전자유통",
     "資訊服務": "IT서비스", "其他電子": "기타전자", "建材營造": "건설·건자재",
     "航運": "해운", "觀光": "관광", "觀光餐旅": "관광·외식", "金融保險": "금융·보험",
@@ -57,6 +59,23 @@ _SECTOR_KR = {
     "塑膠工業": "플라스틱", "化學工業": "화학", "電子類": "전자",
     "半導體業": "반도체", "其他電子業": "기타전자", "貿易百貨業": "무역·백화",
 }
+
+
+def _sector_kr(core: str) -> str:
+    """繁體 類股명 → 한국어. 정확 매칭 우선, 미스 시 接尾 변형 자가매칭(電腦及週邊設備
+    ↔ 電腦及週邊 — 길이 4+ prefix 만, 오매칭 방지) → 끝내 미스면 繁體 그대로(사용자
+    2026-06-16 한자 누수 fix). TWSE 類股명에 設備/業 등 suffix 변형이 섞여 나오던 것 흡수."""
+    if core in _SECTOR_KR:
+        return _SECTOR_KR[core]
+    # core(TWSE 정식명)가 map key(짧은 형)로 시작할 때만 매칭 — 設備/業 등 suffix
+    # 변형 흡수. 역방향(k.startswith(core))은 짧은 core 의 오매칭(電子→電子兩倍槓桿)
+    # 위험이라 제외. 가장 긴(구체적) key 우선.
+    best = None
+    for k in _SECTOR_KR:
+        if len(k) >= 4 and core.startswith(k):
+            if best is None or len(k) > len(best):
+                best = k
+    return _SECTOR_KR[best] if best else core
 
 
 def _now_kst_label() -> str:
@@ -169,7 +188,7 @@ def parse_sector_rows(tables: list[dict]) -> list[dict]:
             pct = _num(r[pct_i])
             if pct is None or not core:
                 continue
-            rows.append({"name": _SECTOR_KR.get(core, core), "pct": round(pct, 2)})
+            rows.append({"name": _sector_kr(core), "pct": round(pct, 2)})
         if len(rows) >= 5:          # 류股 테이블로 확정(섹터 다수)
             return rows
     return []
