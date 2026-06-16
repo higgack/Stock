@@ -8338,6 +8338,28 @@ class TestUpperLowerVolume:
         monkeypatch.setattr(nv, "world_stock_map", lambda m: {})
         assert ih._cap_by_liquidity_hk(full, 2) == full[:2]   # 맵 부재 폴백
 
+    def test_jp_universe_liquidity_cap(self, monkeypatch):
+        # JP 신고저 스캔 14분 병목(미캡 ~2500=21배치) — HK 와 동일하게 네이버 시총
+        # 상위 900 캡(사용자 2026-06-16). _cap_by_liquidity 가 market 별 라우팅.
+        import bot.intl_highlow as ih
+        import bot.naver_ranking_client as nv
+        seen = {}
+
+        def _wsm(m):
+            seen["m"] = m
+            return {"7203.T": {"mcap": 30000.0}, "6758.T": {"mcap": 12000.0},
+                    "4062.T": {"mcap": 6000.0}, "9999.T": {"mcap": 50.0}}
+        monkeypatch.setattr(nv, "world_stock_map", _wsm)
+        full = ["9999.T", "4062.T", "7203.T", "6758.T"]
+        out = ih._cap_by_liquidity(full, 3, "JP")
+        assert seen["m"] == "JP"                        # JP 맵 라우팅(HK 하드코딩 아님)
+        assert out[:2] == ["7203.T", "6758.T"]          # 시총 상위 우선
+        assert "9999.T" not in out                      # 소형 탈락
+        # _universe 가 JP 도 캡 분기 (HK 와 동일), 일반화 함수 호출 배선
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert 'market in ("HK", "JP")' in src, "JP 캡 분기 미배선"
+        assert "_cap_by_liquidity(full, 900, market)" in src
+
     def test_jp_hk_naver_overlay(self, monkeypatch):
         # JP 네이버 worldstock overlay(직접 매칭) + HK overlay(zfill 정수 매칭).
         # (시총 필터는 사용자 2026-06-14 '다시 생각' 으로 제거 — 시총 표시는 유지.)
