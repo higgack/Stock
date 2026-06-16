@@ -5571,6 +5571,27 @@ class TestFavoritesKoreanName:
         assert q["over_session"] == "AFTER_MARKET"
         # 전일종가 296.42−5.29=291.13 → (296.10/291.13−1)*100 ≈ +1.71%
         assert abs(q["pct"] - 1.71) < 0.05
+        # Naver 식 상세 라인용 분리 필드 (사용자 2026-06-16)
+        assert q["reg_close"] == 296.42          # 정규장 종가 보존
+        assert q["over_price"] == 296.10         # 시간외가
+
+    def test_parse_quote_over_pct_and_detail_line_wired(self):
+        from bot.naver_quote import _parse_quote
+        # 시간외 등락%(vs 정규장 종가) = over.fluctuationsRatio 부호적용
+        item = {"closePriceRaw": "370.66", "fluctuationsRatioRaw": "4.60",
+                "compareToPreviousClosePriceRaw": "16.29",
+                "compareToPreviousPrice": {"code": "2"},
+                "overMarketPriceInfo": {"overMarketStatus": "OPEN",
+                    "tradingSessionType": "AFTER_MARKET", "overPrice": "372.00",
+                    "fluctuationsRatio": "0.36", "compareToPreviousPrice": {"code": "2"}}}
+        q = _parse_quote(item)
+        assert q["reg_close"] == 370.66 and q["over_price"] == 372.0
+        assert abs(q["over_pct"] - 0.36) < 0.001
+        # 상세 헤더에 시간외 라인 배선 (build_live_quote over_line + 헤더 span)
+        src = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'data-q="over_line"' in src, "상세 헤더 시간외 라인 span 누락"
+        assert 'fmt["over_line"] = over_line' in src, "fmt over_line 미배선"
+        assert ".si-over:empty" in src, ":empty 숨김 누락"
 
     def test_parse_quote_overmarket_closed_keeps_regular(self):
         from bot.naver_quote import _parse_quote
