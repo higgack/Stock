@@ -10472,3 +10472,34 @@ class TestDartProvisionalQuarterly20260616:
         assert "def reparse_provisional_once_if_needed" in src        # 소급 재추출
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "reparse_provisional_once_if_needed" in tb             # startup 배선
+
+
+class TestDartReclassTuja20260616:
+    """투자판단 실적→기타 소급 재분류 (압타바이오 FDA) — reclassify_v5/v7 의
+    'new_cat != 기타' 가드가 다운그레이드를 막던 것 전용 패스로 보강."""
+
+    def test_reclassify_tuja_downgrades_existing(self, monkeypatch, tmp_path):
+        import bot.dart_feed as d
+        from datetime import datetime
+        today = datetime.now(d._KST).date()
+        base = [
+            {"report_nm": "투자판단관련주요경영사항(임상시험결과)", "category": "실적",
+             "detail": ["제목: FDA Remove Clinical Hold 공문 수령"]},
+            {"report_nm": "연결재무제표기준영업(잠정)실적(공정공시)", "category": "실적"},
+        ]
+        saved: dict = {}
+        monkeypatch.setattr(d, "load_archive",
+                            lambda dd: [dict(x) for x in base] if dd == today else None)
+        monkeypatch.setattr(d, "save_archive",
+                            lambda dd, its: saved.__setitem__(dd, its))
+        monkeypatch.setattr(d, "_RECLASS_TUJA_MARKER", tmp_path / ".m")
+        n = d.reclassify_tuja_once_if_needed()
+        assert n == 1, n                              # 투자판단만 1건
+        out = saved[today]
+        assert out[0]["category"] == "기타"            # 압타바이오 실적→기타
+        assert out[1]["category"] == "실적"            # 영업잠정실적은 진짜 실적 유지
+        assert d.reclassify_tuja_once_if_needed() is None  # marker 1회
+
+    def test_startup_wired(self):
+        tb = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "reclassify_tuja_once_if_needed" in tb

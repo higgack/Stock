@@ -4333,6 +4333,49 @@ def reparse_provisional_once_if_needed() -> dict | None:
     return {"cleared": cleared, **st}
 
 
+_RECLASS_TUJA_MARKER = _ARCHIVE_DIR.parent / ".dart_reclass_tuja_v1"
+
+
+def reclassify_tuja_once_if_needed() -> int | None:
+    """투자판단관련주요경영사항 실적→기타 소급 재분류 (2026-06-16 압타바이오 FDA —
+    _classify_report 의 투자판단 기본값을 실적→기타로 교정). reclassify_v5/v7 의
+    'new_cat != 기타' 가드가 이 **다운그레이드만** 막아 기존 카드가 실적에 고착
+    되던 것 → 전용 1회 패스. report_nm 에 '투자판단' + 현재 category=='실적' 인
+    항목만 재분류하고 본문 승격(계약/소송/지주회사 등)은 _upgrade_category 로
+    보존. marker 1회. API 0·로컬 수 초."""
+    if _RECLASS_TUJA_MARKER.exists():
+        return None
+    n = 0
+    today = datetime.now(_KST).date()
+    for i in range(60):
+        d = today - timedelta(days=i)
+        items = load_archive(d)
+        if not items:
+            continue
+        changed = False
+        for it in items:
+            if "투자판단" in it.get("report_nm", "") and it.get("category") == "실적":
+                nc = _classify_report(it.get("report_nm", ""))
+                if nc and nc != "실적":
+                    it["category"] = nc
+                    _upgrade_category(it)   # 본문에 특정 종류 있으면 승격 복원
+                    n += 1
+                    changed = True
+        if changed:
+            try:
+                save_archive(d, items)
+            except Exception as exc:
+                log.warning("dart reclass tuja save %s: %s", d, exc)
+    try:
+        _RECLASS_TUJA_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _RECLASS_TUJA_MARKER.write_text(datetime.now(_KST).isoformat())
+    except OSError:
+        pass
+    if n:
+        log.info("dart reclass tuja: 투자판단 실적→기타 %d건 소급", n)
+    return n
+
+
 _RECLASS_MARKER_V7 = _ARCHIVE_DIR.parent / ".dart_feed_reclassified_v7"
 # 분류 정책 버전 — 바뀔 때마다 bump 하면 startup 1회 로컬 재분류가 소급
 # (marker 가 버전 문자열을 저장, 불일치 시 재실행. API 0·수 초).
