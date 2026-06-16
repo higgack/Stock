@@ -41,6 +41,22 @@ def _num(v):
         return None
 
 
+def _parse_amt(v):
+    """'4,707,022백만' / '47억' / '1.2조' / 숫자 → 원(float). 네이버 거래대금이
+    단위 접미사로 와 _num 이 못 푸는 것 처리(백만 먼저 — '만'과 충돌 방지). graceful None."""
+    s = str(v or "").strip()
+    if not s:
+        return None
+    mult = 1.0
+    for suf, m in (("조", 1e12), ("백만", 1e6), ("억", 1e8), ("만", 1e4)):
+        if suf in s:
+            s = s.split(suf)[0]
+            mult = m
+            break
+    n = _num(s)
+    return n * mult if n is not None else None
+
+
 def _extract_name(item: dict) -> str | None:
     """datas[0] 의 한글 종목명 (관심종목 한글화, 사용자 2026-06-15 '네이버에서').
 
@@ -80,7 +96,7 @@ def _parse_quote(item: dict) -> dict | None:
     # 시간외 등락%(over_pct, vs 정규장 종가)·세션·체결시각을 분리 노출 →
     # 상세 페이지가 Naver 식 '정규장 + 시간외' 라인을 그릴 수 있게.
     reg_close, reg_pct = price, pct
-    over_price = over_pct = over_volume = None
+    over_price = over_pct = over_volume = over_value = None
     over_session = ""
     over_ts = ""
     _over = item.get("overMarketPriceInfo")
@@ -90,30 +106,31 @@ def _parse_quote(item: dict) -> dict | None:
             over_session = str(_over.get("tradingSessionType") or "")
             over_ts = str(_over.get("localTradedAt") or "")
             over_price = _op
-            over_volume = _num(_over.get("accumulatedTradingVolume"))  # 시간외 거래량
+            over_volume = _num(_over.get("accumulatedTradingVolume"))     # 시간외 거래량
+            over_value = _parse_amt(_over.get("accumulatedTradingValue"))  # 시간외 거래대금(원)
             _opct = _num(_over.get("fluctuationsRatio"))
             if _opct is not None:
                 _ocmp = _over.get("compareToPreviousPrice") or {}
                 _ofall = isinstance(_ocmp, dict) and str(_ocmp.get("code")) == "5"
                 over_pct = -abs(_opct) if _ofall else abs(_opct)
-            _diff = _num(item.get("compareToPreviousClosePriceRaw"))
-            _prev = (reg_close - _diff) if (_diff is not None) else None
-            price = _op
-            if _prev and _prev > 0:
-                pct = round((_op / _prev - 1) * 100, 2)
+            # ⚠️ price/차트는 정규장 종가 유지 — 시간외(NXT) 가격은 over_price 로만
+            # 분리 노출(시간외 라인·시간외 보드). 네이버페이도 메인=정규장종가,
+            # NXT=별도 표기 (사용자 2026-06-16 '차트·현재가 모든곳·모든나라 정규장
+            # 기준'). 옛 price=over_price 대체가 라이브 틱을 NXT 가로 튀게 하던 것 제거.
     return {
         "price": price,
         "pct": pct,
         "mcap": _num(item.get("marketValueFullRaw")),
         "ts": item.get("localTradedAt"),
         "name": _extract_name(item),
-        "reg_close": reg_close,         # 정규장 종가 (시간외 중에도 보존)
+        "reg_close": reg_close,         # 정규장 종가 (= price, 메인)
         "reg_pct": reg_pct,             # 정규장 등락%
-        "over_price": over_price,       # 시간외가 (없으면 None)
+        "over_price": over_price,       # 시간외(NXT)가 (없으면 None) — 별도 라인/보드용
         "over_pct": over_pct,           # Naver overMarketPriceInfo.fluctuationsRatio
-                                        # (KR=전일종가 누적 / US=정규장종가 대비 — 시장별
-                                        # 상이. 순수 시간외 move 는 over_price/reg_close 로)
+                                        # (NXT 세션 자체 등락 — 순수 시간외 move 는
+                                        # over_price/reg_close 로 계산)
         "over_volume": over_volume,     # 시간외 세션 누적 거래량 (없으면 None)
+        "over_value": over_value,       # 시간외 세션 누적 거래대금(원, 없으면 None)
         "over_session": over_session,   # "" / PRE_MARKET / AFTER_MARKET
         "over_ts": over_ts,             # 시간외 체결시각(ET ISO) — KST 변환용
         # 당일 OHLCV — 차트의 당일 일봉을 라이브로 그리는 데 사용(yahoo 가 장중

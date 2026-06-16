@@ -624,7 +624,7 @@ def fetch_earnings_calendar(days_ahead: int = 14) -> list[dict]:
     cache_dir = _CACHE_DIR / "finnhub"
     cache_dir.mkdir(parents=True, exist_ok=True)
     today = date.today()
-    cache_file = cache_dir / f"earnings_{today.isoformat()}_{_CODE_SALT}.json"
+    cache_file = cache_dir / f"earnings_{today.isoformat()}_{_CODE_SALT}_v2.json"  # v2: 월별 분할(cap fix)
     if cache_file.exists():
         try:
             age_h = (time.time() - cache_file.stat().st_mtime) / 3600
@@ -633,23 +633,40 @@ def fetch_earnings_calendar(days_ahead: int = 14) -> list[dict]:
         except Exception:
             pass
 
-    from_date = today.isoformat()
-    to_date = (today + timedelta(days=days_ahead)).isoformat()
-    url = f"https://finnhub.io/api/v1/calendar/earnings?from={from_date}&to={to_date}&token={api_key}"
-    try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        events = data.get("earningsCalendar", [])
-    except Exception as exc:
-        log.warning("finnhub: earnings calendar fetch error: %s", exc)
-        return []
+    # 월 단위 분할 질의 — Finnhub 무료티어 ~1500건 cap 회피 (사용자 2026-06-16
+    # '위젯 US만 8월 쏠림'). 넓은 단일 범위(60일)는 먼 달의 추정일 군집이 cap 을
+    # 채워 가까운 실제 일정을 통째로 잘라냄 (probe 확정: 60일=1500 전부 8월 /
+    # 30일=445 6·7월 실제). 이번달(오늘부터)~다음달을 월별로 끊어 질의(각 한 달
+    # <cap) 후 합침 — 캘린더 페이지(_fetch_us_month, 월별)와 동일 접근이라 일치.
+    events: list = []
+    cursor = today
+    end = today + timedelta(days=days_ahead)
+    while cursor <= end:
+        if cursor.month == 12:
+            m_end = date(cursor.year, 12, 31)
+        else:
+            m_end = date(cursor.year, cursor.month + 1, 1) - timedelta(days=1)
+        to_d = min(m_end, end)
+        url = (f"https://finnhub.io/api/v1/calendar/earnings"
+               f"?from={cursor.isoformat()}&to={to_d.isoformat()}&token={api_key}")
+        try:
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+            events += resp.json().get("earningsCalendar", [])
+        except Exception as exc:
+            log.warning("finnhub: earnings %s~%s fetch error: %s", cursor, to_d, exc)
+        cursor = m_end + timedelta(days=1)
 
     result = []
+    _seen: set = set()
     for e in events:
         symbol = e.get("symbol", "")
         if not symbol:
             continue
+        _k = (symbol, e.get("date", ""))    # 월 경계 중복 방어
+        if _k in _seen:
+            continue
+        _seen.add(_k)
         result.append({
             "symbol": symbol,
             "date": e.get("date", ""),
@@ -1433,7 +1450,7 @@ def fetch_all_market_data() -> dict[str, Any]:
         # 다가오는 실적 윈도 최대화 (사용자 2026-06-10 '최대한 가져오기'):
         # 미국 14→60일(Finnhub 가 확정 발표일 ~4-8주 채움, 표는 100행 cap),
         # 한국 90일(DART IR + yfinance) 유지.
-        earn_fut = pool.submit(fetch_earnings_calendar, 60)
+        earn_fut = pool.submit(fetch_earnings_calendar, 45)   # 이번달~다음달(월별 분할)
         earn_kr_fut = pool.submit(fetch_earnings_calendar_kr, 90)
         # JP/TW/CN/HK 실적 — KR 패턴 일반화(사용자 2026-06-13 '실적빌드 다국가').
         # 산업 peer 맵 주요종목 universe, yfinance .calendar 6h 캐시(소스 TTL).

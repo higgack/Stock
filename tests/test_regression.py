@@ -5562,10 +5562,10 @@ class TestFavoritesKoreanName:
                           "stockName": "삼성전자"})
         assert q["name"] == "삼성전자" and q["price"] == 70000
 
-    def test_parse_quote_overmarket_uses_extended_price(self):
-        # 미국 장후(AFTER_MARKET OPEN, 사용자 2026-06-15 'world_quote 시간외가
-        # 반영') → 현재가=시간외가, 등락%=전일 종가 대비 재산출. Naver
-        # overMarketPriceInfo (VM probe 2026-06-15 AAPL 296.10 확인).
+    def test_parse_quote_overmarket_price_stays_regular(self):
+        # 사용자 2026-06-16 '차트·현재가 모든곳·모든나라 정규장종가' (네이버페이
+        # 미러: 메인=정규장종가, NXT=별도). 시간외(NXT) OPEN 이어도 price/close 는
+        # 정규장 종가 유지, 시간외가는 over_price 로만 분리. 옛 price=시간외가 대체 제거.
         from bot.naver_quote import _parse_quote
         item = {"closePriceRaw": "296.42", "fluctuationsRatioRaw": "1.82",
                 "compareToPreviousClosePriceRaw": "5.29",
@@ -5574,13 +5574,10 @@ class TestFavoritesKoreanName:
                                         "tradingSessionType": "AFTER_MARKET",
                                         "overPrice": "296.10"}}
         q = _parse_quote(item)
-        assert q["price"] == 296.10 and q["close"] == 296.10   # 정규장 296.42 아님
+        assert q["price"] == 296.42 and q["close"] == 296.42   # 정규장 종가 유지(시간외가 아님)
+        assert abs(q["pct"] - 1.82) < 0.001                    # 정규장 등락% 유지(재산출 안 함)
         assert q["over_session"] == "AFTER_MARKET"
-        # 전일종가 296.42−5.29=291.13 → (296.10/291.13−1)*100 ≈ +1.71%
-        assert abs(q["pct"] - 1.71) < 0.05
-        # Naver 식 상세 라인용 분리 필드 (사용자 2026-06-16)
-        assert q["reg_close"] == 296.42          # 정규장 종가 보존
-        assert q["over_price"] == 296.10         # 시간외가
+        assert q["reg_close"] == 296.42 and q["over_price"] == 296.10  # 시간외가 분리
 
     def test_parse_quote_over_pct_and_detail_line_wired(self):
         from bot.naver_quote import _parse_quote
@@ -5601,16 +5598,19 @@ class TestFavoritesKoreanName:
         assert ".si-over:empty" in src, ":empty 숨김 누락"
 
     def test_over_line_helper_all_markets_except_tw(self):
-        # 사용자 2026-06-16 '대만제외 다 적용' — _fmt_over_line 헬퍼가 KR(국내)·
-        # US/JP/HK/CN(해외) 공용. over_session 없으면 "" (정규장·비지원·TW).
+        # 사용자 2026-06-16 — _fmt_over_line 이 시간외(NXT) 가격 + 정규장 대비 변동
+        # 표시(네이버페이 미러). KR(국내)·US/JP/HK/CN(해외) 공용. over_session 또는
+        # over_price 없으면 "" (정규장·비지원·TW).
         import bot.dashboard as d
         s = d._fmt_over_line({"over_session": "AFTER_MARKET", "reg_close": 370.66,
-                              "over_pct": 0.36}, "$", 2)
-        assert "장후" in s and "정규장 종가 $370.66" in s and "+0.36%" in s
+                              "over_price": 408.73}, "$", 2)   # +10.27% vs 정규장
+        assert "장후(NXT)" in s and "정규장 종가 $370.66" in s
+        assert "시간외 $408.73" in s and "+10.27%" in s
         kr = d._fmt_over_line({"over_session": "PRE_MARKET", "reg_close": 70000,
-                               "over_pct": -0.5}, "₩", 0)
-        assert "장전" in kr and "₩70,000" in kr and "-0.50%" in kr
+                               "over_price": 66500}, "₩", 0)    # -5.00%
+        assert "장전(NXT)" in kr and "시간외 ₩66,500" in kr and "-5.00%" in kr
         assert d._fmt_over_line({"over_session": ""}, "$", 2) == ""   # 정규장→빈
+        assert d._fmt_over_line({"over_session": "AFTER_MARKET"}, "$", 2) == ""  # over_price 없음→빈
         assert d._fmt_over_line(None, "$", 2) == ""
         # KR 분기·wq 블록 둘 다 헬퍼 사용 (def 1 + 호출 2 = 3)
         src = open("bot/dashboard.py", encoding="utf-8").read()
@@ -7470,7 +7470,7 @@ class TestDeployAwareWidgetCache:
     def test_salt_defined_and_applied(self):
         src = open("bot/market_overview.py", encoding="utf-8").read()
         assert "_CODE_SALT" in src
-        assert 'f"earnings_{today.isoformat()}_{_CODE_SALT}.json"' in src
+        assert 'f"earnings_{today.isoformat()}_{_CODE_SALT}_v2.json"' in src  # v2: 월별 분할
         assert 'f"earnings_kr_{today.isoformat()}_{_CODE_SALT}.json"' in src
         assert "kr_earnings_universe_{_CODE_SALT}.json" in src
 
@@ -10629,3 +10629,59 @@ class TestPrewarmDaemonThread20260616:
             "time.sleep 으로 봇 종료 블로킹 — 'deactivating' 멈춤)"
         assert "Thread(target=_prewarm_highlow, daemon=True" in src, \
             "prewarm 데몬 thread 미배선"
+
+
+class TestOverValueRegularPriceFinnhub20260616:
+    """사용자 2026-06-16 (네이버페이 미러): ①현재가/차트=정규장 종가(모든 나라)·
+    시간외(NXT)가는 분리 ②KR 시간외 보드에 거래대금 추가 ③Finnhub 위젯 월별 분할
+    (1500 cap 으로 US만 8월 쏠림 fix)."""
+
+    def test_parse_amt_unit_suffix(self):
+        from bot.naver_quote import _parse_amt
+        assert _parse_amt("4,707,022백만") == 4707022 * 1e6   # 백만(만보다 먼저)
+        assert _parse_amt("47억") == 47e8
+        assert _parse_amt("1.2조") == 1.2e12
+        assert _parse_amt("1234") == 1234.0
+        assert _parse_amt("") is None and _parse_amt(None) is None
+
+    def test_overmarket_price_regular_and_over_value(self):
+        from bot.naver_quote import _parse_quote
+        item = {"closePriceRaw": "123200", "fluctuationsRatioRaw": "9.14",
+                "compareToPreviousPrice": {"code": "5"},
+                "overMarketPriceInfo": {"overMarketStatus": "OPEN",
+                    "tradingSessionType": "AFTER_MARKET", "overPrice": "135600",
+                    "accumulatedTradingVolume": "290000",
+                    "accumulatedTradingValue": "35,775백만",
+                    "fluctuationsRatio": "0.00", "compareToPreviousPrice": {"code": "2"}}}
+        q = _parse_quote(item)
+        assert q["price"] == 123200.0              # 정규장 종가 유지(NXT 135600 아님)
+        assert q["over_price"] == 135600.0         # NXT 분리
+        assert q["over_value"] == 35775 * 1e6      # 시간외 거래대금(원)
+        assert q["over_volume"] == 290000.0
+
+    def test_kr_board_includes_over_value(self, monkeypatch):
+        import bot.naver_quote as nq
+        import bot.naver_ranking_client as nr
+        import bot.prepost_client as pp
+        monkeypatch.setattr(nr, "fetch_kr_movers", lambda limit=200: {
+            "up": [{"ticker": "031980.KQ", "name": "피에스케이홀딩스", "mcap": 26600.0}],
+            "down": []})
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda tk: {
+            "over_session": "AFTER_MARKET", "over_price": 135600.0, "reg_close": 123200.0,
+            "over_volume": 290000, "over_value": 35775 * 1e6, "volume": 1000000})
+        monkeypatch.setattr(pp, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(pp, "_kr_status_write", lambda *a, **k: None)
+        monkeypatch.setattr(pp, "_current_kr_session", lambda *a, **k: "post")
+        out = pp._compute_kr_prepost()
+        r = out["up"][0]
+        assert abs(r["pct"] - 10.06) < 0.05        # 135600/123200-1 순수 시간외
+        assert r["vol"] == 290000                  # 시간외 거래량
+        assert abs(r["value"] - 357.75) < 0.1      # 거래대금 35,775백만 → 357.75억
+
+    def test_finnhub_widget_month_chunked(self):
+        src = open("bot/market_overview.py", encoding="utf-8").read()
+        # 월별 분할 루프(단일 60일 범위 금지 — 1500 cap 회피)
+        assert "while cursor <= end:" in src and "/calendar/earnings" in src
+        assert "{cursor.isoformat()}" in src       # 월별 from= 커서
+        assert "_v2.json" in src                   # 옛 캐시 무효화
+        assert "fetch_earnings_calendar, 45)" in src   # 호출부 45일(이번달~다음달)
