@@ -460,10 +460,17 @@ def _compute_kr_prepost() -> dict:
         try:
             q = fetch_kr_quote(tk) or {}     # 접미사 내부 strip
             sess = q.get("over_session") or ""
-            op, opct = q.get("over_price"), q.get("over_pct")
-            if sess and op and opct is not None:
+            op, reg = q.get("over_price"), q.get("reg_close")
+            if sess and op and reg and reg > 0:
+                # 순수 시간외 move = 시간외가 vs 정규장 종가 (사용자 2026-06-16
+                # '시간외는 정규장 종가보다 얼마 등락'). Naver over_pct(=fluctuations
+                # Ratio)는 KR 에서 전일종가 누적이라 정규장 급등락과 중복(상한가
+                # 종목이 시간외 보드를 점령) → 정규장 종가 대비로 재계산해 시간외
+                # '추가' 움직임만 랭킹. 거래량도 시간외 세션 거래량 우선.
+                pct = round((op / reg - 1) * 100, 2)
                 return {"ticker": tk, "name": names.get(tk, tk),
-                        "price": op, "pct": opct, "vol": q.get("volume"),
+                        "price": op, "pct": pct,
+                        "vol": q.get("over_volume") or q.get("volume"),
                         "mcap": mcaps.get(tk),
                         "session": "pre" if "PRE" in sess else "post"}
         except Exception:

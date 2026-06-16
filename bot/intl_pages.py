@@ -209,9 +209,9 @@ def render_kr_prepost_page() -> str:
                 + stock_panel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down,
                               "kpp-down", "KR", "", **_o)
                 + '</div>' + HL_SORT_JS)
-    sub = (f"🇰🇷 {sess_kr} 시간외 급등·급락 상·하위 30 · 정규장 종가 대비 · "
-           "네이버 시간외단일가 실시간 · 등락률순·헤더 클릭 정렬 · "
-           "장전 08:00–09:00 · 장후 16:00–18:00 KST · 시간외 창에서 5분"
-           + (f" · {ts} 기준" if ts else ""))
+    sub = (f"🇰🇷 {sess_kr} 시간외 급등·급락 상·하위 30 · 등락률=시간외가 vs 정규장 "
+           "종가(순수 시간외 변동) · 거래량=시간외 세션 · 네이버 실시간 · "
+           "등락률순·헤더 클릭 정렬 · 장전 08:00–09:00 · 장후 16:00–18:00 KST · "
+           "시간외 창에서 5분" + (f" · {ts} 기준" if ts else ""))
     return _tw_shell("🇰🇷 한국 장전·장후 급등·급락", sub, body,
                      nav=_market_nav("KR", "krprepost"), back=_asia_back("KR"))
