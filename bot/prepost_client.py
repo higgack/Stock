@@ -24,12 +24,12 @@ import time
 from datetime import datetime, timezone
 
 from bot.finviz_client import (_CACHE_DIR, _cache_write, _cached, _now_label,
-                               _us_full_universe, yf_paused)
+                               _sp500_names, _us_universe_robust, yf_paused)
 
 log = logging.getLogger("bot.prepost_client")
 
-_PREPOST_CACHE = "us_prepost_v1.json"
-_PREPOST_STATUS = "us_prepost_status.json"
+_PREPOST_CACHE = "us_prepost_sp500_v1.json"   # S&P 500 유니버스 (2026-06-16, 옛 전미국 캐시 폐기)
+_PREPOST_STATUS = "us_prepost_sp500_status.json"
 _PREPOST_TOP_N = 30
 _PREPOST_TTL = 30 * 60         # 연장거래 창에서 재산출 간격 30분 (movers 와 동일)
 _MIN_PRICE = 1.0               # 페니 컷
@@ -185,10 +185,11 @@ def _compute_us_prepost() -> dict:
     TOP30. 백그라운드 전용(배치 ~50회·수 분). period=2d 는 장전 시 전일 정규장
     종가 기준 필요(당일 정규장 봉 아직 없음). interval=30m 으로 데이터량 절감."""
     out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0,
-                 "session": "", "source": "전 미국 상장 연장거래(yfinance · 30분봉)"}
+                 "session": "", "source": "S&P 500 연장거래(yfinance · 30분봉)"}
     if yf_paused():
         return _cached(_PREPOST_CACHE, ttl=86400) or out
-    tks, names = _us_full_universe()
+    tks = _us_universe_robust()       # S&P 500 (사용자 2026-06-16, 유동성 얇은 전미국 대신)
+    names = _sp500_names()
     if not tks:
         log.warning("prepost: universe empty")
         _status_write("failed", detail="universe 전 소스 실패")
