@@ -10110,6 +10110,9 @@ class TestDashboardBatch20260615c:
         assert "KR:[8*60,20*60]" in js                # NXT 프리~애프터마켓 포함
         assert "NXT" in js                            # 의도 명시 주석
         assert "'/ushighlow':1" in js                 # 미국 신고저 1h (한국제외 1h 제약)
+        assert "'/krprepost':'KR'" in js              # KR NXT 보드 자동새로고침 배선
+        #   (라우트는 dashboard_server 에 있는데 MKT 맵 누락 시 폴링 0 → 수동
+        #   새로고침만 — 형제 보드(/nxt·/highlow)처럼 30초 자동갱신 보장)
 
     def test_material_title_holding_company(self):
         # 투자판단 '지주회사 전환' 제목 → 회사구조 (사용자 '웅진 왜 실적'). 기본
