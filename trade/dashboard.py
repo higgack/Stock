@@ -48,6 +48,7 @@ def render_html(
     eval_miss_path: Path | str | None = None,
     customs_db_path: Path | str | None = None,
     hs_map_path: Path | str | None = None,
+    industry_out: Path | str | None = None,
 ) -> str:
     """Render the dashboard HTML from store.db.
 
@@ -88,9 +89,21 @@ def render_html(
     # ⚠️ heatmap_html 인자 누락 = 2026-06-12 12:52 이후 5분 refresh 전부
     # NameError 크래시 → index.html 동결 (순서/잠정/히트맵 전부 미표시의
     # 최종 진범). _build_html 파라미터 누락 회귀는 render 스모크가 가드.
+    # 산업트렌드 패널이 무거우면(588 SVG 카드 ~7MB) index.html 인라인 대신 별도
+    # 파일로 빼 탭 열 때 lazy fetch — 초기 로딩 11MB→~3MB (사용자 2026-06-16 '느려').
+    # industry_out 미지정(아카이브/share·테스트) 시 기존대로 인라인(자체완결 보존).
+    industry_src = ""
+    if industry_out is not None and industry_html:
+        try:
+            Path(industry_out).parent.mkdir(parents=True, exist_ok=True)
+            Path(industry_out).write_text(industry_html, encoding="utf-8")
+            industry_src = Path(industry_out).name      # 같은 디렉토리 상대경로
+            industry_html = ""                          # 인라인 제거 → placeholder+data-src
+        except Exception:
+            industry_src = ""                           # 쓰기 실패 → 인라인 폴백(기능 보존)
     return _build_html(
         all_alerts, latest_ids, s, media_url_prefix, backlog, customs_rows,
-        industry_html, heatmap_html,
+        industry_html, heatmap_html, industry_src=industry_src,
     )
 
 
@@ -523,7 +536,11 @@ def _build_html(
     customs_rows: list[dict] | None = None,
     industry_html: str = "",
     heatmap_html: str = "",
+    industry_src: str = "",
 ) -> str:
+    # industry_src(있을 때) = 산업트렌드를 별도 파일로 빼고 탭 열 때 lazy fetch
+    # (초기 11MB→~3MB, 사용자 2026-06-16). industry_html 인라인과 양립 — src 우선.
+    _has_industry = bool(industry_html) or bool(industry_src)
     payload = [_alert_to_payload(a, media_prefix) for a in alerts]
     payload_json = json.dumps(
         payload, ensure_ascii=False, separators=(",", ":")
@@ -592,7 +609,7 @@ def _build_html(
         '<button class="tab" data-tab="companies">회사별</button>'
         '<button class="tab" data-tab="matrix">매트릭스</button>'
         + (f'<button class="tab" data-tab="industry">📈 산업트렌드</button>'
-           if industry_html else '')
+           if _has_industry else '')
         + (f'<button class="tab" data-tab="heatmap">🟩 히트맵</button>'
            if heatmap_html else '')
         + '</nav>'
@@ -622,7 +639,10 @@ def _build_html(
         '<main id="items-view" class="view active"></main>'
         '<main id="companies-view" class="view"></main>'
         '<main id="matrix-view" class="view"></main>'
-        + (f'<main id="industry-view" class="view">{industry_html}</main>'
+        + (f'<main id="industry-view" class="view" data-src="{industry_src}">'
+           '<div class="lazy-load">📈 산업트렌드 불러오는 중…</div></main>'
+           if industry_src
+           else f'<main id="industry-view" class="view">{industry_html}</main>'
            if industry_html else '')
         + (f'<main id="heatmap-view" class="view">{heatmap_html}</main>'
            if heatmap_html else '')
@@ -1669,6 +1689,18 @@ function renderHeaderMeta(){
 // ALERTS/ALERT_BY_ID(데이터)를 직접 읽어 DOM 무관이라 lazy 해도 안전.
 const _CLIENT_VIEWS={items:buildItemsView,companies:buildCompaniesView,matrix:buildMatrixView};
 let _viewDirty={items:true,companies:true,matrix:true};
+// 별도파일 lazy fetch (2026-06-16 '느려') — 산업트렌드(588 SVG ~7MB)를 index.html
+// 인라인 대신 industry_panel.html 로 빼 탭 첫 열 때만 fetch. 초기 로딩 11MB→~3MB.
+// data-src 없는 뷰(인라인/클라이언트)는 무시. 실패 시 재시도 가능하게 loaded 해제.
+function _lazyFetchView(view){
+  if(!view||!view.dataset.src||view.dataset.loaded) return;
+  view.dataset.loaded='1';
+  fetch(view.dataset.src,{cache:'no-store'})
+    .then(function(r){if(!r.ok)throw 0;return r.text();})
+    .then(function(html){view.innerHTML=html;})
+    .catch(function(){view.dataset.loaded='';
+      view.innerHTML='<div class="lazy-load">산업트렌드 불러오기 실패 — 다시 눌러 주세요.</div>';});
+}
 let _lastFiltered=[];
 function _activeTab(){
   const a=document.querySelector('.tab.active');
@@ -1773,6 +1805,7 @@ document.querySelectorAll('.tab').forEach(btn=>{
     const view=document.getElementById(tab+'-view');
     view.classList.add('active');
     if(_CLIENT_VIEWS[tab]&&_viewDirty[tab])_buildView(tab);   // lazy: 더티면 지금 빌드
+    _lazyFetchView(view);   // 산업트렌드 등 별도파일(data-src) 탭 — 첫 열 때 fetch(초기 11MB→3MB)
     // 탭이 보이면(레이아웃 생김) 월별 원자료를 우측(최신) 끝으로 (사용자 2026-06-15)
     if(window._scrollRaw)window._scrollRaw(view);
   });
@@ -2054,6 +2087,10 @@ def main() -> int:
         eval_miss_path=args.eval_miss_path,
         # customs_db_path / hs_map_path default to None → render_html uses
         # the module defaults (~/.trade/customs.db, ~/.trade/hs_map.tsv).
+        # 산업트렌드(무거운 588 SVG)는 index.html 옆 별도 파일로 빼 탭 열 때 lazy
+        # fetch → 초기 로딩 11MB→~3MB (사용자 2026-06-16 '느려'). 같은 디렉토리라
+        # 정적 서버가 그대로 서빙(상대 fetch). 미생성 시 인라인 폴백.
+        industry_out=args.out.parent / "industry_panel.html",
     )
     args.out.write_text(html, encoding="utf-8")
     size_kb = len(html.encode("utf-8")) / 1024
