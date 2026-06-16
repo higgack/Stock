@@ -74,15 +74,16 @@ def render_intl_highlow52_page(market: str) -> str:
     _fresh_lbl = "장중 30초" if market == "KR" else "장중 1h"
     if market == "KR":
         _ind_lbl = "업종=네이버 · "
-    elif market == "HK":   # 사용자 2026-06-14 'HK 거래량·시총 네이버·업종 야후'
-        _ind_lbl = "거래량·거래대금·시총·종목명=네이버 · 업종=yfinance · "
-    elif market == "JP":   # 사용자 2026-06-14 'JP 시총 네이버'
-        _ind_lbl = "거래량·거래대금·시총·종목명=네이버 · "
+    elif market in ("HK", "JP"):
+        # 거래량·시총·종목명=네이버. 업종은 _industries_for 가 HK/JP 도 네이버
+        # 업종맵 우선·yfinance 미스폴백(2026-06-16 T5 — 옛 'HK 업종=yfinance'
+        # 라벨은 부정확, JP 는 라벨 누락이었음).
+        _ind_lbl = "거래량·거래대금·시총·종목명=네이버 · 업종=네이버+yfinance · "
     else:
         _ind_lbl = "업종=yfinance · "
     sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}{_fresh_lbl}"
            f"{(' · ' + ts + ' 기준') if ts else ''}")
-    _active = {"KR": "kr52", "JP": "jp52", "CN_A": "cn52", "HK": "hk52"}.get(market, "")
+    _active = {"KR": "kr52", "JP": "jp52", "HK": "hk52"}.get(market, "")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body,
                      nav=_market_nav(market, _active), back=_asia_back(market))
 

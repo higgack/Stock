@@ -6155,17 +6155,34 @@ class TestNameTranslationKr:
         from unittest.mock import patch
         from bot import highlow_render as hr
         items = [{"ticker": "2344.TW", "name": "화봉전", "price": 172, "pct": 9.9}]
+        # 렌더-세이프(2026-06-16): stock_panel 은 cache_only=True 로 호출 → 캐시
+        # 히트 시뮬(2-인자 시그니처). 미캐시면 백그라운드 워밍·원문 유지(블로킹 0).
         with patch("bot.chart_translate.translate_names_kr",
-                   lambda pairs: {"2344.TW": "윈본드"}):
+                   lambda pairs, cache_only=False: {"2344.TW": "윈본드"}):
             html = hr.stock_panel("T", items, "t1", "TW", name_only=True)
         assert "윈본드" in html and "화봉전" not in html
+
+    def test_stock_panel_render_safe_cache_only(self):
+        # 렌더 경로는 cache_only=True 로만 호출(네트워크/LLM 블로킹 0).
+        from unittest.mock import patch
+        from bot import highlow_render as hr
+        seen = {"cache_only": None}
+
+        def _spy(pairs, cache_only=False):
+            seen["cache_only"] = cache_only
+            return {}
+        with patch("bot.chart_translate.translate_names_kr", _spy), \
+             patch.object(hr, "_kick_name_fill", lambda pairs: None):
+            hr.stock_panel("T", [{"ticker": "2344.TW", "name": "화봉전",
+                                  "price": 1, "pct": 1}], "t2", "TW", name_only=True)
+        assert seen["cache_only"] is True, "stock_panel 이 cache_only 로 호출 안 함"
 
     def test_stock_panel_skips_us(self):
         from unittest.mock import patch
         from bot import highlow_render as hr
         called = {"n": 0}
 
-        def _spy(pairs):
+        def _spy(pairs, cache_only=False):
             called["n"] += 1
             return {}
         with patch("bot.chart_translate.translate_names_kr", _spy):
@@ -9164,29 +9181,44 @@ class TestJpStop:
 
 
 class TestActualNewHighLow:
-    """신고저 = 1% 근접 → **진짜 신고가/신저가**(당일 고가/저가가 직전 극값 갱신)
-    전환 (사용자 2026-06-13 'Yahoo 차트처럼 진짜, EOD 1일 1회'). 일봉 1년 스캔."""
+    """신고저 = **현재가(종가/장중 현재가)가 직전 52주 고가/저가를 돌파** (사용자
+    2026-06-16: 당일 intraday 고가가 아니라 현재가 기준 — 장중 $220 스파이크 후
+    $180 되밀리면 다음 1h 리프레쉬에 신고가에서 빠짐). 일봉 1년 스캔."""
 
     def test_daily_interval_and_new_high_criterion(self):
         src = open("bot/finviz_client.py", encoding="utf-8").read()
         scan = src[src.index("def _compute_highlow_from"):
                    src.index("def _compute_movers_from")]
         assert 'interval="1d"' in scan          # 주봉→일봉
-        assert "highs.iloc[-1]) >= float(highs.iloc[:-1].max())" in scan
-        assert "lows.iloc[-1]) <= float(lows.iloc[:-1].min())" in scan
+        # 좌변 = last(현재가/종가, closes.iloc[-1]) · 우변 = 직전 251일 intraday 극값.
+        assert "last >= float(highs.iloc[:-1].max())" in scan
+        assert "last <= float(lows.iloc[:-1].min())" in scan
+        # 옛 intraday-high 기준(스파이크 후 종가 낮아도 영구 신고가) 제거됐는지.
+        assert "highs.iloc[-1]) >= float(highs.iloc[:-1].max())" not in scan
         assert "* 0.99" not in scan and "* 1.01" not in scan   # 1% 근접 제거
 
-    def test_new_high_logic(self):
-        # 순수 미러: 당일 고가가 직전 극값 갱신 = 신고가
-        def is_new_high(highs):
-            return highs[-1] >= max(highs[:-1])
+    def test_intl_sector_sign_defensive(self):
+        # T3(2026-06-16): JP/CN/HK 업종 등락 부호가 fluctuationsType(표준) 우선 +
+        # compareToPreviousPrice 폴백 둘 다 검사 — 옛 후자 단독은 객체가
+        # fluctuationsType 만 주면 '하락 업종' 칸이 비는 버그.
+        import inspect
+        from bot import naver_ranking_client as nr
+        s = inspect.getsource(nr.fetch_intl_sector_movers_naver)
+        assert 'fluctuationsType' in s and 'compareToPreviousPrice' in s
+        assert s.index('fluctuationsType') < s.index('compareToPreviousPrice')  # 우선순위
 
-        def is_new_low(lows):
-            return lows[-1] <= min(lows[:-1])
-        assert is_new_high([10, 12, 15, 16])        # 16 = 신고가
-        assert not is_new_high([10, 20, 15, 16])    # 16 < 20, 신고가 아님
-        assert is_new_low([10, 8, 9, 7])            # 7 = 신저가
-        assert not is_new_low([5, 8, 9, 7])         # 7 > 5, 신저가 아님
+    def test_new_high_logic(self):
+        # 순수 미러: **현재가**가 직전 52주 고가/저가 돌파 = 신고/신저 (현재가 기준).
+        def is_new_high(last_close, prior_highs):
+            return last_close >= max(prior_highs)
+
+        def is_new_low(last_close, prior_lows):
+            return last_close <= min(prior_lows)
+        assert is_new_high(16, [10, 12, 15])        # 현재가 16 ≥ 직전고가 15 → 신고가
+        # 사용자 케이스: 장중 $220 스파이크 후 현재가 $14(=180 비유) → 신고가 아님.
+        assert not is_new_high(14, [10, 12, 15])    # 현재가 14 < 직전고가 15
+        assert is_new_low(7, [10, 8, 9])            # 현재가 7 ≤ 직전저가 8 → 신저가
+        assert not is_new_low(9, [10, 8, 9])        # 현재가 9 > 직전저가 8 → 신저가 아님
 
     def test_labels_drop_1pct(self):
         # '1% 근접' 라벨 제거 (진짜 신고가로 전환)
@@ -10005,6 +10037,9 @@ class TestLiveAutoRefresh:
     def test_live_refresh_js_markers(self):
         from bot.live_refresh import LIVE_REFRESH_JS as js
         assert "'/kr52':1" in js and "'/ushighlow':1" in js   # 신고저=1h(SLOW)
+        # 대만 급등락 /twhighlow 도 서버 1h TTL 이라 SLOW(1h) — 옛 30초 over-poll
+        # 해소(2026-06-16 TW T2).
+        assert "'/twhighlow':1" in js
         # 美 장전·장후 = 5분(MED), 신고저 1h, 그 외 30s (2026-06-16 C 그룹).
         assert "'/usprepost':300000" in js                    # MED 5분
         assert "SLOW[page]?3600000:(MED[page]||30000)" in js  # 1h · 5분 · 30s

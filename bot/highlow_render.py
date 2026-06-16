@@ -160,16 +160,23 @@ def stock_panel(title: str, items: list, tid: str, market: str,
         return (f'<div class="panel"><h2>{title}</h2>'
                 '<div class="empty">해당 종목 없음</div></div>')
     # CN/TW/HK 종목명 = 영문 통용명 기준 한글 음역(사용자 2026-06-15 '화봉전→윈본드').
-    # 티커 기반 영구 캐시(Flash, 첫 1회만·이후 ₩0). graceful — 실패 시 원본 유지.
+    # 티커 기반 영구 캐시(Flash, 첫 1회만·이후 ₩0). **렌더-세이프(2026-06-16)**:
+    # cache_only=True 로 캐시된 번역만 적용 → 매 30초/1h 재렌더가 네트워크·LLM 을
+    # 블로킹하지 않음(TW 8.2s 블록과 동일 클래스 차단). 미캐시분은 백그라운드 워밍 →
+    # 다음 렌더 반영. CN/HK 는 네이버 native 한글명이라 미캐시여도 원문이 이미 한글.
     if market in ("CN_A", "TW", "HK"):
         try:
             from bot.chart_translate import translate_names_kr
-            _knm = translate_names_kr([(it.get("ticker"), it.get("name"))
-                                       for it in items if it.get("ticker")])
+            _pairs = [(it.get("ticker"), it.get("name"))
+                      for it in items if it.get("ticker")]
+            _knm = translate_names_kr(_pairs, cache_only=True)
             for it in items:
                 _k = _knm.get(it.get("ticker"))
                 if _k:
                     it["name"] = _k
+            _miss = [p for p in _pairs if p[0] not in _knm]
+            if _miss:
+                _kick_name_fill(_miss)
         except Exception:
             pass
     sym = _CUR.get(market, ("", 2))[0]
@@ -271,6 +278,33 @@ _ENRICH_CACHE: dict = {}
 _ENRICH_TTL = 600   # 10분 — render 비용 amortize
 _ENRICH_REFRESHING: set = set()   # 백그라운드 full-enrich 진행 중 key (dedup)
 _ENRICH_LOCK = _threading.Lock()
+
+_NAME_FILLING: set = set()         # 백그라운드 종목명 번역 워밍 진행 중 (dedup)
+_NAME_FILL_LOCK = _threading.Lock()
+
+
+def _kick_name_fill(pairs: list) -> None:
+    """미캐시 종목명을 백그라운드 daemon 으로 번역·캐시 워밍(렌더 블로킹 0, 2026-06-16
+    T1). 다음 렌더에 cache_only 로 반영. dedup·graceful."""
+    key = tuple(sorted(str(p[0]) for p in pairs if p and p[0]))
+    if not key:
+        return
+    with _NAME_FILL_LOCK:
+        if key in _NAME_FILLING:
+            return
+        _NAME_FILLING.add(key)
+
+    def _run() -> None:
+        try:
+            from bot.chart_translate import translate_names_kr
+            translate_names_kr(pairs)   # full(캐시 워밍) — 이후 렌더는 cache_only 히트
+        except Exception:
+            pass
+        finally:
+            with _NAME_FILL_LOCK:
+                _NAME_FILLING.discard(key)
+
+    _threading.Thread(target=_run, daemon=True, name="name-fill").start()
 
 
 def _enrich_compute(tickers: list, items: list, market: str, want_ind: bool,

@@ -87,9 +87,10 @@ def _kick_tw_highlow() -> None:
 
 
 def fetch_tw_highlow() -> dict:
-    """TW 52주 신고가/신저가 — **동기 계산 안 함**. 시장-인지 신선도(정규장 2h /
-    장 밖 마지막 마감 이후 재스캔 0) 즉시 / 스테일 + 백그라운드 킥 / 캐시 부재 시
-    building. 실패 5분 백오프·진행중 30분 dedup. {high,low,ts,source,building,status}."""
+    """TW 52주 신고가/신저가 — **동기 계산 안 함**. 시장-인지 신선도(정규장 1h /
+    장 밖 마지막 마감 이후 재스캔 0, _HL_INTRA_TTL=3600) 즉시 / 스테일 + 백그라운드
+    킥 / 캐시 부재 시 building. 실패 5분 백오프·진행중 30분 dedup.
+    {high,low,ts,source,building,status}."""
     from bot.finviz_client import _CACHE_DIR, _HL_INTRA_TTL, _cached, _session_fresh
     stale = _cached(_CACHE, ttl=86400)
     if stale is not None:

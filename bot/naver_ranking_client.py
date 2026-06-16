@@ -585,7 +585,11 @@ def fetch_intl_sector_movers_naver(market: str, top_n: int = 10) -> dict:
                 pct = abs(float(s.get("fluctuationsRatio") or 0))
             except (TypeError, ValueError):
                 continue
-            ft = str(s.get("compareToPreviousPrice") or "")
+            # 부호 = fluctuationsType 우선(_signed_pct·랭킹과 동일 표준), 폴백
+            # compareToPreviousPrice (사용자 2026-06-16 T3 방어). 옛 코드는 후자
+            # 단독이라, upjong 객체가 fluctuationsType 만 주면 ft="" → 전 업종 +부호
+            # → '하락 업종' 칸이 비는 버그 위험. 두 필드 다 검사해 무위험.
+            ft = str(s.get("fluctuationsType") or s.get("compareToPreviousPrice") or "")
             if "FALL" in ft or "LOWER" in ft:
                 pct = -pct
             if mc > 0:

@@ -201,13 +201,17 @@ def _save_name_kr(d: dict) -> None:
         pass
 
 
-def translate_names_kr(pairs: list) -> dict:
+def translate_names_kr(pairs: list, cache_only: bool = False) -> dict:
     """[(ticker, 현지명)…] → {ticker: 한글 회사명} — CN/TW/HK 종목명을 **영문 통용명
     기준 한글 음역**으로(사용자 2026-06-15 '화봉전 말고 윈본드'). 한자음독(화봉전)
     대신 한국 금융권 통용 표기(윈본드·폭스콘·미디어텍), 영문 약자가 더 통용되면 영문
     유지(TSMC·UMC·SMIC). Flash 배치·영구 캐시(names_kr.json, **티커당 1회** → 이후
     ₩0). graceful(키부재/실패 시 빠짐 → 호출부 원문 유지). 티커가 disambiguation
-    힌트라 현지명이 한자음독이어도 정확."""
+    힌트라 현지명이 한자음독이어도 정확.
+
+    cache_only=True (렌더-세이프, 2026-06-16): 캐시된 번역만 반환하고 Flash 호출은
+    안 함 — stock_panel 등 렌더 경로가 매 30초/시간 재호출돼도 네트워크·LLM 블로킹
+    0. 미캐시 종목은 빠지고(호출부가 원문 유지), 호출부가 백그라운드로 워밍."""
     seen: set = set()
     uniq: list = []
     for tk, nm in pairs:
@@ -220,7 +224,7 @@ def translate_names_kr(pairs: list) -> dict:
     cache = _load_name_kr()
     out = {tk: cache[tk] for tk, _ in uniq if cache.get(tk)}
     todo = [(tk, nm) for tk, nm in uniq if tk not in cache][:_MAX_BATCH]
-    if not todo:
+    if cache_only or not todo:        # 렌더-세이프(캐시만) 또는 전부 캐시됨
         return out
     api_key = os.environ.get("GOOGLE_API_KEY")
     if not api_key:
