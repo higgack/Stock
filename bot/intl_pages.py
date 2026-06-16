@@ -173,3 +173,45 @@ def render_jp_stop_page() -> str:
            + (f"· 갱신 {ts}" if ts else ""))
     return _tw_shell("🇯🇵 일본 상한가·하한가", sub, body,
                      nav=_market_nav("JP", "jphighlow"), back=_asia_back("JP"))
+
+
+def render_kr_prepost_page() -> str:
+    """KR 장전·장후 시간외(단일가) 급등·급락 TOP30 — 네이버 시간외단일가
+    (overMarketPriceInfo) 가격 등락(정규장 종가 대비, 사용자 2026-06-16). 미국
+    '🌙 장전·장후' 보드의 KR 버전. NXT 수급 보드와 별개(이건 '가격', NXT 는
+    '외국인·기관 수급'). 정규장 무버 유니버스를 종목별 네이버 시간외로 스캔."""
+    try:
+        from bot.prepost_client import fetch_kr_prepost_movers
+        data = fetch_kr_prepost_movers()
+    except Exception as exc:
+        log.warning("kr prepost page: %s", exc)
+        data = {"up": [], "down": [], "ts": "", "building": False,
+                "status": {}, "session": ""}
+    ts = _html.escape(data.get("ts", ""))
+    up, down = data.get("up", []), data.get("down", [])
+    sess = data.get("session") or ""
+    sess_kr = "장전" if sess == "pre" else "장후" if sess == "post" else "장전·장후"
+    if not up and not down:
+        if data.get("building"):
+            body = ('<div class="empty">⏳ 시간외 급등·급락 산출 중…<br>'
+                    '네이버 시간외단일가 스캔 중. 잠시 후 새로고침해 주세요.</div>')
+        else:
+            body = ('<div class="empty">시간외 급등·급락 데이터가 없습니다.<br>'
+                    '장전(08:00–09:00) · 장후 시간외단일가(16:00–18:00) KST 에 '
+                    '확인해 주세요.</div>')
+    else:
+        from bot.highlow_render import HL_SORT_JS, sort_by_pct, stock_panel
+        _o = dict(show_vol=True, show_ind=False)   # KR 시간외 = 가격·시총·거래량(업종 생략)
+        up, down = sort_by_pct(up, gainers=True), sort_by_pct(down, gainers=False)
+        body = ('<div class="grid">'
+                + stock_panel(f"🚀 {sess_kr} 가장 많이 오른 TOP 30", up,
+                              "kpp-up", "KR", "", **_o)
+                + stock_panel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down,
+                              "kpp-down", "KR", "", **_o)
+                + '</div>' + HL_SORT_JS)
+    sub = (f"🇰🇷 {sess_kr} 시간외 급등·급락 상·하위 30 · 정규장 종가 대비 · "
+           "네이버 시간외단일가 실시간 · 등락률순·헤더 클릭 정렬 · "
+           "장전 08:00–09:00 · 장후 16:00–18:00 KST · 시간외 창에서 5분"
+           + (f" · {ts} 기준" if ts else ""))
+    return _tw_shell("🇰🇷 한국 장전·장후 급등·급락", sub, body,
+                     nav=_market_nav("KR", "krprepost"), back=_asia_back("KR"))
