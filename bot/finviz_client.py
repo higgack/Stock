@@ -1035,9 +1035,9 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                  tag, len(universe))
         _CHUNK = 120
         scanned = 0
-        # 일봉 1년 — **현재가가 직전 251일 고가/저가를 돌파**한 종목만(진짜 52주
-        # 신고가/신저가, 사용자 2026-06-13 '1% 근접 말고 진짜' + 2026-06-16 '현재가
-        # 기준 — intraday 스파이크 후 되밀리면 빠짐'). 1h 리프레쉬마다 재평가.
+        # 일봉 1년 — **당일 intraday 고가/저가가 직전 251일 극값을 갱신**한 종목만
+        # (진짜 52주 신고/신저, 사용자 2026-06-13 '1% 근접 말고 진짜'). 장중 한 번
+        # 갱신하면 종가 무관 신고가 = 시장 통용 정의(사용자 2026-06-16 재확정).
         # pct/거래량도 같은 일봉에서 산출(이전의 별도 5d 패스 불요로 제거).
         for ci in range(0, len(universe), _CHUNK):
             chunk = universe[ci:ci + _CHUNK]
@@ -1080,16 +1080,14 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                     rec = {"ticker": tk, "name": _names.get(tk, tk),
                            "price": round(last, 2), "pct": pct,
                            "vol": vol, "value": value}
-                    # 신고가/신저가 = **현재가(종가/장중 현재가 = closes.iloc[-1])** 가
-                    # 직전 52주 고가/저가를 돌파(동률 포함). 사용자 2026-06-16: 당일
-                    # intraday 고가가 아니라 '현재가' 기준 — 장중 $220 스파이크 후
-                    # $180 으로 되밀리면(또는 그게 종가면) 다음 1h 리프레쉬에 신고가에서
-                    # 빠진다(스냅샷 보드라 '지금 신고가냐'가 맞음). intraday-high 기준은
-                    # 한 번 스파이크하면 종가가 낮아도 영구히 신고가로 남는 문제가 있었음.
-                    # 우측(임계)은 직전 251일 intraday 극값(=그 종목의 52주 최고/최저가).
-                    if last >= float(highs.iloc[:-1].max()):
+                    # 신고가/신저가 = **당일 intraday 고가/저가가 직전 251일 극값을
+                    # 갱신**(동률 포함). 사용자 2026-06-16(재확정): 장중 한 번이라도
+                    # 신고가를 찍으면 종가와 무관하게 신고가 = 시장 통용 정의(Yahoo/
+                    # 네이버 등). 신저가 동일. (앞선 '현재가 기준' 변경은 사용자 정정
+                    # 으로 환원 — intraday high/low 가 표준.)
+                    if float(highs.iloc[-1]) >= float(highs.iloc[:-1].max()):
                         out["high"].append(rec)
-                    elif last <= float(lows.iloc[:-1].min()):
+                    elif float(lows.iloc[-1]) <= float(lows.iloc[:-1].min()):
                         out["low"].append(rec)
                 except Exception:
                     continue

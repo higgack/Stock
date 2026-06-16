@@ -9181,20 +9181,18 @@ class TestJpStop:
 
 
 class TestActualNewHighLow:
-    """신고저 = **현재가(종가/장중 현재가)가 직전 52주 고가/저가를 돌파** (사용자
-    2026-06-16: 당일 intraday 고가가 아니라 현재가 기준 — 장중 $220 스파이크 후
-    $180 되밀리면 다음 1h 리프레쉬에 신고가에서 빠짐). 일봉 1년 스캔."""
+    """신고저 = **당일 intraday 고가/저가가 직전 251일 극값을 갱신**(동률 포함) —
+    시장 통용 정의(사용자 2026-06-16 재확정: 장중 한 번이라도 신고가 찍으면 종가
+    무관하게 신고가, 신저가 동일). 일봉 1년 스캔. (close-based 변경은 정정 환원.)"""
 
     def test_daily_interval_and_new_high_criterion(self):
         src = open("bot/finviz_client.py", encoding="utf-8").read()
         scan = src[src.index("def _compute_highlow_from"):
                    src.index("def _compute_movers_from")]
         assert 'interval="1d"' in scan          # 주봉→일봉
-        # 좌변 = last(현재가/종가, closes.iloc[-1]) · 우변 = 직전 251일 intraday 극값.
-        assert "last >= float(highs.iloc[:-1].max())" in scan
-        assert "last <= float(lows.iloc[:-1].min())" in scan
-        # 옛 intraday-high 기준(스파이크 후 종가 낮아도 영구 신고가) 제거됐는지.
-        assert "highs.iloc[-1]) >= float(highs.iloc[:-1].max())" not in scan
+        # 당일 intraday 고가/저가가 직전 251일 극값 갱신 = 신고/신저 (시장 통용).
+        assert "highs.iloc[-1]) >= float(highs.iloc[:-1].max())" in scan
+        assert "lows.iloc[-1]) <= float(lows.iloc[:-1].min())" in scan
         assert "* 0.99" not in scan and "* 1.01" not in scan   # 1% 근접 제거
 
     def test_intl_sector_sign_defensive(self):
@@ -9208,17 +9206,17 @@ class TestActualNewHighLow:
         assert s.index('fluctuationsType') < s.index('compareToPreviousPrice')  # 우선순위
 
     def test_new_high_logic(self):
-        # 순수 미러: **현재가**가 직전 52주 고가/저가 돌파 = 신고/신저 (현재가 기준).
-        def is_new_high(last_close, prior_highs):
-            return last_close >= max(prior_highs)
+        # 순수 미러: 당일 고가/저가가 직전 극값 갱신 = 신고/신저 (intraday 기준).
+        # 장중 한 번이라도 갱신하면 종가 무관 신고가 — 그날 High 가 안 내려가므로.
+        def is_new_high(highs):
+            return highs[-1] >= max(highs[:-1])
 
-        def is_new_low(last_close, prior_lows):
-            return last_close <= min(prior_lows)
-        assert is_new_high(16, [10, 12, 15])        # 현재가 16 ≥ 직전고가 15 → 신고가
-        # 사용자 케이스: 장중 $220 스파이크 후 현재가 $14(=180 비유) → 신고가 아님.
-        assert not is_new_high(14, [10, 12, 15])    # 현재가 14 < 직전고가 15
-        assert is_new_low(7, [10, 8, 9])            # 현재가 7 ≤ 직전저가 8 → 신저가
-        assert not is_new_low(9, [10, 8, 9])        # 현재가 9 > 직전저가 8 → 신저가 아님
+        def is_new_low(lows):
+            return lows[-1] <= min(lows[:-1])
+        assert is_new_high([10, 12, 15, 16])        # 당일고가 16 = 신고가
+        assert not is_new_high([10, 20, 15, 16])    # 당일고가 16 < 직전 20, 신고가 아님
+        assert is_new_low([10, 8, 9, 7])            # 당일저가 7 = 신저가
+        assert not is_new_low([5, 8, 9, 7])         # 당일저가 7 > 직전 5, 신저가 아님
 
     def test_labels_drop_1pct(self):
         # '1% 근접' 라벨 제거 (진짜 신고가로 전환)
