@@ -97,7 +97,9 @@ def _rank_prepost(rows: list, top_n: int = _PREPOST_TOP_N) -> tuple[list, list]:
           if r.get("pct") is not None
           and abs(r.get("pct") or 0) <= _GLITCH_PCT
           and (r.get("price") or 0) >= _MIN_PRICE
-          and (r.get("vol") or 0) >= _MIN_EXT_VOL]
+          # 유동성 게이트는 reg_vol(정규장, KR NXT 보드) 우선 — 표시는 NXT 세션
+          # 거래량(vol)이라 결측 가능. reg_vol 부재(US)면 vol 로 폴백.
+          and (r.get("reg_vol", r.get("vol")) or 0) >= _MIN_EXT_VOL]
     ups = sorted((r for r in ok if r["pct"] > 0),
                  key=lambda r: r["pct"], reverse=True)[:top_n]
     downs = sorted((r for r in ok if r["pct"] < 0),
@@ -386,23 +388,23 @@ _KR_REFRESHING = False
 
 
 def _in_kr_extended_window(now_kst: datetime) -> bool:
-    """KST now 가 KR 장전(08:00–09:00) 또는 장후 시간외단일가(15:40–18:00) 창
+    """KST now 가 NXT(넥스트레이드) 장전(08:00–09:00) 또는 장후(15:40–20:00) 창
     안인가 — 순수. 평일만(주말 휴장). 창 밖이면 직전 스냅샷 fresh(재스캔 0)."""
     wd, h, m = now_kst.weekday(), now_kst.hour, now_kst.minute
     if wd >= 5:
         return False
     pre = (8, 0) <= (h, m) < (9, 0)
-    post = (15, 40) <= (h, m) < (18, 0)
+    post = (15, 40) <= (h, m) < (20, 0)
     return pre or post
 
 
 def _current_kr_session(now_kst: datetime | None = None) -> str:
-    """현재 KST 의 KR 연장 세션 — 'pre'(08:00–09:00)·'post'(15:40–18:00)·''. 순수."""
+    """현재 KST 의 NXT 세션 — 'pre'(08:00–09:00)·'post'(15:40–20:00)·''. 순수."""
     now = now_kst or datetime.now(_KST9)
     h, m = now.hour, now.minute
     if (8, 0) <= (h, m) < (9, 0):
         return "pre"
-    if (15, 40) <= (h, m) < (18, 0):
+    if (15, 40) <= (h, m) < (20, 0):
         return "post"
     return ""
 
@@ -445,7 +447,7 @@ def _compute_kr_prepost() -> dict:
     정규장 무버 유니버스를 종목별 fetch_kr_quote 로 스캔(over-market OPEN 만 집계).
     백그라운드 전용. yfinance 미사용·네이버만."""
     out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0, "session": "",
-                 "source": "KR 정규장 무버 시간외(단일가) · 네이버 실시간"}
+                 "source": "KR 정규장 무버 NXT 장전·장후 · 네이버 실시간"}
     tks, names, mcaps = _kr_movers_universe()
     if not tks:
         log.warning("kr prepost: universe empty")
@@ -468,11 +470,18 @@ def _compute_kr_prepost() -> dict:
                 # 종목이 시간외 보드를 점령) → 정규장 종가 대비로 재계산해 시간외
                 # '추가' 움직임만 랭킹. 거래량도 시간외 세션 거래량 우선.
                 pct = round((op / reg - 1) * 100, 2)
-                _ov = q.get("over_value")    # 시간외 거래대금(원) → 억
+                _ov = q.get("over_value")    # NXT 세션 거래대금(원) → 억
                 return {"ticker": tk, "name": names.get(tk, tk),
                         "price": op, "pct": pct,
-                        "vol": q.get("over_volume") or q.get("volume"),
+                        # 표시 거래량/거래대금 = NXT 세션 전용(정규장과 별개, 사용자
+                        # 2026-06-16 'NXT 거래량·거래대금만 정규장과 별개로'). 정규장
+                        # 폴백 금지 — Naver 가 NXT 세션 값을 안 주면 '—'(정규장
+                        # 풀데이 거래량을 NXT 인 양 오인시키던 옛 폴백 제거).
+                        "vol": q.get("over_volume"),
                         "value": round(_ov / 1e8, 2) if _ov else None,
+                        # 유동성 게이트 전용(미표시) — 정규장 누적거래량으로 페니·
+                        # 유령 컷. NXT 거래량이 결측이어도 보드가 안 비게 표시와 분리.
+                        "reg_vol": q.get("volume"),
                         "mcap": mcaps.get(tk),
                         "session": "pre" if "PRE" in sess else "post"}
         except Exception:

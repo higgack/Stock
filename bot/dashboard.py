@@ -3914,12 +3914,13 @@ def _ensure_detail_enrichment(ticker: str, si: dict) -> None:
                 log.debug("_ensure_detail_enrichment: EDGAR disclosures %s: %s", ticker, exc)
 
 
-def _fmt_over_line(q: dict, csym: str, pdec: int) -> str:
-    """Naver overMarketPriceInfo → 상세 시간외(NXT) 라인 '🌙 장후(NXT) · 정규장
-    종가 ₩123,200 · 시간외 ₩135,600 (+10.06%)' (사용자 2026-06-16, 네이버페이
-    미러: 메인=정규장종가, NXT=별도 표기). 메인 현재가/차트는 정규장 종가이고
-    이 라인이 시간외(NXT) 가격 + 정규장 대비 변동을 분리 표시. KR·US/JP/HK/CN
-    공용. over_session/over_price 없으면(정규장·비지원) "" → :empty 숨김."""
+def _fmt_over_line(q: dict, csym: str, pdec: int, src: str = "시간외") -> str:
+    """Naver overMarketPriceInfo → 상세 연장거래 라인 '🌙 장후 · 정규장 종가
+    ₩123,200 · NXT ₩135,600 (+10.06%)' (사용자 2026-06-16, 네이버페이 미러:
+    메인=정규장종가, 연장가=별도). 메인 현재가/차트는 정규장 종가이고 이 라인이
+    연장(KR=NXT·US=프리/애프터) 가격 + 정규장 대비 변동을 분리 표시. src =
+    소스명(KR='NXT'(넥스트레이드) / US/JP/HK='시간외' — NXT≠시간외라 시장별,
+    사용자 2026-06-16). over_session/over_price 없으면(정규장·비지원) "" → 숨김."""
     if not isinstance(q, dict):
         return ""
     sess = q.get("over_session") or ""
@@ -3928,11 +3929,11 @@ def _fmt_over_line(q: dict, csym: str, pdec: int) -> str:
     if not sess or not op:
         return ""
     label = "장전" if "PRE" in sess else "장후"
-    parts = [f"🌙 {label}(NXT)"]
+    parts = [f"🌙 {label}"]
     if rc is not None:
         parts.append(f"정규장 종가 {csym}{_fmt_num(rc, decimals=pdec)}")
-    seg = f"시간외 {csym}{_fmt_num(op, decimals=pdec)}"
-    if rc and rc > 0:                       # 정규장 종가 대비 순수 시간외 변동(보드와 동일식)
+    seg = f"{src} {csym}{_fmt_num(op, decimals=pdec)}"
+    if rc and rc > 0:                       # 정규장 종가 대비 순수 연장 변동(보드와 동일식)
         mv = (op / rc - 1) * 100
         seg += f" ({'+' if mv >= 0 else ''}{mv:.2f}%)"
     parts.append(seg)
@@ -4067,7 +4068,7 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
                 source, delayed = "네이버 실시간", False
                 if nq.get("mcap"):
                     mcap = nq["mcap"]
-                over_line = _fmt_over_line(nq, csym, pdec)   # KR 시간외(있으면)
+                over_line = _fmt_over_line(nq, csym, pdec, "NXT")  # KR=NXT(넥스트레이드)
         except Exception as exc:
             log.debug("build_live_quote: Naver KR quote skipped for %s: %s", ticker, exc)
     else:
@@ -4092,7 +4093,7 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
                 # 시간외(장전/장후) 라인 — US/JP/HK/CN 해외 공용 (사용자 2026-06-16
                 # '대만제외 다 적용'). over_session 없으면 "" (JP/HK/CN 은 연장거래
                 # 미지원이라 보통 빈 값 → :empty 숨김).
-                over_line = _fmt_over_line(wq, csym, pdec)
+                over_line = _fmt_over_line(wq, csym, pdec, "시간외")  # US=프리/애프터(NXT 아님)
         except Exception as exc:
             log.debug("build_live_quote: world/tw quote skipped for %s: %s", ticker, exc)
 
@@ -12341,7 +12342,7 @@ def _render_sector_movers(movers: dict) -> str:
         f'<a href="theme" style="{_lnk}">🏭 업종별 시세(전체)</a>'
         f'<a href="kr52" style="{_lnk}">📈 신고가·신저가</a>'
         f'<a href="highlow" style="{_lnk}">🚀 급등·급락</a>'
-        f'<a href="krprepost" style="{_lnk}">🌙 시간외 급등·급락</a>'
+        f'<a href="krprepost" style="{_lnk}">🌙 NXT 급등·급락</a>'
         f'<a href="nxt" style="{_lnk}">📊 NXT 수급</a>'
         f'<span class="ts" style="margin-left:auto">{ts} · Naver</span></div>'
         '<div class="sm-wrap">'
