@@ -10914,3 +10914,19 @@ class TestFavoritesSaveInvalidatesCache20260616:
         i = src.find("def _save(")
         body = src[i:i + 600]
         assert "_FAV_CACHE = None" in body and "global _FAV_CACHE" in body
+
+
+class TestFavoritesPagination20260616:
+    """관심종목 = 10개/페이지 + 하단 페이지 번호 + '전체 펼치기' 토글(사용자
+    2026-06-16). 필터·정렬·새데이터 시 1페이지로 리셋."""
+
+    def test_pagination_wired(self):
+        from bot.dashboard import _render_market_page
+        html = _render_market_page({})
+        assert "FAV_PAGE_SIZE = 10" in html                 # 10개/페이지
+        assert "function renderFavPager" in html             # 페이지 nav 렌더
+        assert "전체 펼치기" in html and "10개씩 보기" in html  # 펼치기/접기 토글
+        assert "favState.showAll" in html and "favState.page" in html
+        assert 'class="fav-pager"' in html                   # nav 컨테이너
+        assert "favState.page = 0" in html                   # 필터/정렬/새데이터 리셋
+        assert "pass.slice(start, end)" in html              # 현재 페이지만 노출
