@@ -1,20 +1,22 @@
-"""미국 장전(pre-market)·장후(after-hours) 급등·급락 — yfinance prepost 일중봉.
+"""미국 장전(pre-market)·장후(after-hours) 급등·급락 — **네이버 실시간**(S&P 500).
 
 기존 급등락(`finviz_client.fetch_us_movers`, 정규장 일봉)의 **형제 표면**
 (사용자 2026-06-14 '장전/장후도 별도 자식 대시보드'). 정규장 종가 대비
-연장거래 가격 변화율로 상·하위 산출.
+시간외 가격 변화율로 상·하위 산출.
 
-왜 yfinance 인가: 연장거래 가격은 `yf.download(prepost=True, interval=…)` =
-**history API**(우리가 겪는 fast_info quote-API rate-limit 과 무관, /health 에서
-download ✅ 확인). 따라서 fast_info 회로차단과 독립적으로 작동.
+소스 = **네이버 해외(worldstock) overMarketPriceInfo** (사용자 2026-06-16
+'야후 안 쓰고 네이버 실시간'). 종목별 overPrice·시간외 등락%(정규장 종가
+대비)를 실시간으로 받아 랭킹 — yfinance 30분봉(지연)·Yahoo 의존 제거. VM
+probe 2026-06-15 로 AAPL 장후 overPrice 296.10·AFTER_MARKET 확인.
 
-⚠️ US 전용 — 한국 시간외단일가는 yfinance 가 거의 미커버(Naver 시간외
-엔드포인트 검증 후 별도 추가 예정). 연장거래는 유동성이 얇아 대부분 종목은
-거래 0 → 실제 결과는 뉴스 나온 소수 종목(정상). 글리치(|pct|>75%)·박거래·
-페니 컷.
+유니버스 = **S&P 500**(`_us_universe_robust`, 사용자 2026-06-16, 유동성 얇은
+전미국 대신 대형주). 500종목 ThreadPool 스캔(over-market OPEN 인 종목만 집계).
+시간외 미개장(정규장·장 완전 종료) 시엔 0 행 → SWR 가 직전 스냅샷 서빙.
+글리치(|pct|>75%)·페니 컷은 over_pct 가 정규장 종가 대비라 자연 완만.
 
-SWR 백그라운드(전미국 스캔 수 분 = 페이지 hang 금지) + 장-인지 신선도
-(연장거래 창에서만 재스캔, 장 완전 종료 시 직전 스냅샷 서빙). 무료·무키·graceful.
+SWR 백그라운드(장-인지 신선도 — 연장거래 창에서만 재스캔, 500 네이버 콜은
+pre/post 세션에만) + 무료·무키·graceful. (TW=盤後정가 고정·KR=시간외단일가는
+별도 — 본 표면은 US 전용.)
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ import time
 from datetime import datetime, timezone
 
 from bot.finviz_client import (_CACHE_DIR, _cache_write, _cached, _now_label,
-                               _sp500_names, _us_universe_robust, yf_paused)
+                               _sp500_names, _us_universe_robust)
 
 log = logging.getLogger("bot.prepost_client")
 
@@ -181,56 +183,44 @@ def prepost_status() -> dict:
 
 
 def _compute_us_prepost() -> dict:
-    """전미국 2일 30분봉(prepost) 벌크 → 정규장 종가 대비 연장거래 등락 상·하위
-    TOP30. 백그라운드 전용(배치 ~50회·수 분). period=2d 는 장전 시 전일 정규장
-    종가 기준 필요(당일 정규장 봉 아직 없음). interval=30m 으로 데이터량 절감."""
+    """S&P 500 시간외(장전/장후) 급등·급락 TOP30 — **네이버 실시간**(worldstock
+    overMarketPriceInfo, 사용자 2026-06-16 '야후 안 쓰고 네이버 실시간'). 종목별
+    overPrice·시간외 등락%(정규장 종가 대비)로 상·하위 산출. over-market OPEN 인
+    종목만 집계(시간외 미개장·정규장 시간엔 0 행 → SWR 가 직전 스냅샷 서빙).
+    백그라운드 전용(500종목 네이버 스캔, ThreadPool). yfinance 미사용."""
     out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0,
-                 "session": "", "source": "S&P 500 연장거래(yfinance · 30분봉)"}
-    if yf_paused():
-        return _cached(_PREPOST_CACHE, ttl=86400) or out
-    tks = _us_universe_robust()       # S&P 500 (사용자 2026-06-16, 유동성 얇은 전미국 대신)
+                 "session": "", "source": "S&P 500 시간외 · 네이버 실시간"}
+    tks = _us_universe_robust()       # S&P 500 (사용자 2026-06-16)
     names = _sp500_names()
     if not tks:
         log.warning("prepost: universe empty")
         _status_write("failed", detail="universe 전 소스 실패")
         return out
+    from concurrent.futures import ThreadPoolExecutor
+
+    from bot.world_quote import fetch_world_quote
+    _status_write("running", done=0, total=len(tks), universe=len(tks))
+
+    def _one(tk: str):
+        try:
+            wq = fetch_world_quote(tk) or {}
+            sess = wq.get("over_session") or ""
+            op, opct = wq.get("over_price"), wq.get("over_pct")
+            if sess and op and opct is not None:
+                return {"ticker": tk, "name": names.get(tk, tk),
+                        "price": op, "pct": opct,
+                        "session": "pre" if "PRE" in sess else "post"}
+        except Exception:
+            pass
+        return None
+
     rows: list = []
-    _CHUNK = 120
-    n_batches = (len(tks) + _CHUNK - 1) // _CHUNK
-    _status_write("running", done=0, total=n_batches, universe=len(tks))
     try:
-        import yfinance as yf
-        log.info("prepost: universe %d, 30분봉(prepost) 배치 시작", len(tks))
-        for ci in range(0, len(tks), _CHUNK):
-            chunk = tks[ci:ci + _CHUNK]
-            bi = ci // _CHUNK + 1
-            if bi % 5 == 0:
-                _status_write("running", done=bi, total=n_batches,
-                              universe=len(tks), rows=len(rows))
-            try:
-                df = yf.download(chunk, period="2d", interval="30m",
-                                 prepost=True, group_by="ticker", threads=True,
-                                 progress=False, auto_adjust=False)
-            except Exception:
-                continue
-            if df is None or df.empty:
-                continue
-            kinds, dates = _classify_index(df.index)
-            if not kinds:
-                continue
-            time.sleep(0.2)            # 벌크 사이 호흡 (yfinance 보호)
-            for tk in chunk:
-                try:
-                    if tk not in df.columns.get_level_values(0):
-                        continue
-                    sub = df[tk]
-                    rec = _ticker_prepost(sub["Close"], sub["Volume"], kinds, dates)
-                    if not rec:
-                        continue
-                    rec.update({"ticker": tk, "name": names.get(tk, tk)})
+        log.info("prepost: S&P 500 %d종목 네이버 시간외 스캔 시작", len(tks))
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for rec in pool.map(_one, tks):
+                if rec:
                     rows.append(rec)
-                except Exception:
-                    continue
         # 현재 ET 세션 우선 (사용자 2026-06-15 '장전 집계 안 되나') — 활성 장전/
         # 장후 창이면 그 세션의 오늘 봉을 가진 종목만 남겨 직전(스테일) 세션을 배제.
         # 단 현재 세션 데이터가 아직 0 이면(이른 장전 등) 폴백으로 전체 유지(빈 페이지
@@ -273,7 +263,7 @@ def _compute_us_prepost() -> dict:
                           session=out["session"])
         else:
             _status_write("failed", scanned=len(rows),
-                          detail="연장거래 행 0 — 장 마감·연장 미개장 또는 yfinance 제한")
+                          detail="시간외 행 0 — 장전/장후 미개장(정규장·장 마감) 또는 네이버 시간외 미제공")
     except Exception as exc:
         log.warning("prepost: 산출 실패: %s", exc)
         _status_write("failed", detail=f"{type(exc).__name__}: {exc}")

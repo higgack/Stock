@@ -344,9 +344,9 @@ def render_us_movers_page() -> str:
 
 
 def render_us_prepost_page() -> str:
-    """미국 장전(pre-market)·장후(after-hours) 급등·급락 TOP30 — 정규장 종가
-    대비 연장거래 등락(yfinance prepost 30분봉, 사용자 2026-06-14 '장전/장후도
-    별도 자식'). 급등락(정규장)의 형제 표면. SWR 백그라운드 — 첫 방문 kick.
+    """미국 S&P 500 장전(pre-market)·장후(after-hours) 급등·급락 TOP30 — 정규장
+    종가 대비 시간외 등락(네이버 실시간 overMarketPriceInfo, 사용자 2026-06-16
+    '야후 안 쓰고 네이버'). 급등락(정규장)의 형제 표면. SWR 백그라운드 — 첫 방문 kick.
     연장거래는 유동성 얇아 뉴스 종목 위주(정상). 종목 → 우리 종목분석(lookup)."""
     try:
         from bot.prepost_client import fetch_us_prepost_movers
@@ -394,8 +394,8 @@ def render_us_prepost_page() -> str:
                 + _hpanel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down, "pp-down", "US",
                           _ind_dist_line(down), show_vol=True) + '</div>'
                 + _HL_SORT_JS)
-    sub = (f"S&P 500 {sess_kr} 연장거래 등락 상·하위 30 · 정규장 종가 대비 · "
-           "yfinance 30분봉 · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분 · "
+    sub = (f"S&P 500 {sess_kr} 시간외 등락 상·하위 30 · 정규장 종가 대비 · "
+           "네이버 실시간 · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분 · "
            + _ext_window_kst()
            + (f" · {ts} 기준" if ts else ""))
     return _shell("미국 장전·장후 급등·급락", sub, "usprepost", body)

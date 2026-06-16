@@ -5854,8 +5854,13 @@ class TestUSPrepostKSTWindow:
         assert "_sp500_names()" in src, "S&P 500 종목명 맵 미배선"
         assert "_us_full_universe" not in src, "옛 전미국 유니버스 잔존"
         assert "us_prepost_sp500" in src, "캐시 버전 bump 누락"
+        # 사용자 2026-06-16: 야후 제거 → 네이버 실시간 시간외(overMarketPriceInfo)
+        assert "fetch_world_quote" in src, "네이버 시간외 스캔 미배선"
+        assert "yf.download" not in src, "yfinance 스캔 잔존(야후 제거 위반)"
+        assert "네이버 실시간" in src, "소스 라벨 네이버 미반영"
         us = open("bot/us_pages.py", encoding="utf-8").read()
-        assert "S&P 500 {sess_kr} 연장거래" in us, "부제 S&P 500 미반영"
+        assert "S&P 500 {sess_kr} 시간외" in us, "부제 S&P 500 시간외 미반영"
+        assert "yfinance 30분봉" not in us, "부제 yfinance 잔존"
 
 
 class TestAnalysisCsvExport:
