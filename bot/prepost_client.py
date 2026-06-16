@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import threading as _threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from bot.finviz_client import _CACHE_DIR, _cache_write, _cached, _now_label
 
@@ -367,6 +367,190 @@ def fetch_us_prepost_movers() -> dict:
     if stale is not None:
         return stale
     # 창 밖이면 building=False → 페이지가 '연장거래 시간에 확인' 안내(스캔 표시 X).
+    return {"up": [], "down": [], "ts": "", "source": "", "session": "",
+            "building": in_win, "status": st}
+
+
+# ── KR 장전·장후 시간외(단일가) 급등·급락 — 미국 prepost 의 KR 버전 ─────────
+# (사용자 2026-06-16 'KR 시간외 가격 Top 30'). 네이버 KR domestic overMarketPriceInfo
+# (시간외단일가, VM probe 2026-06-16 삼성전자 342,000 AFTER_MARKET 확인) — NXT 수급
+# 보드와 별개(이건 가격 등락). 유니버스 = 정규장 무버(네이버 domestic), 종목별
+# fetch_kr_quote 로 시간외가·등락% 수집. 무료·무키·rate-limit 면역(네이버).
+
+_KST9 = timezone(timedelta(hours=9))
+_KR_PREPOST_CACHE = "kr_prepost_v1.json"
+_KR_PREPOST_STATUS = "kr_prepost_status.json"
+_KR_PREPOST_TTL = 5 * 60        # 시간외 창 재산출 간격 5분(단일가 10분 주기라 충분)
+_KR_LOCK = _threading.Lock()
+_KR_REFRESHING = False
+
+
+def _in_kr_extended_window(now_kst: datetime) -> bool:
+    """KST now 가 KR 장전(08:00–09:00) 또는 장후 시간외단일가(15:40–18:00) 창
+    안인가 — 순수. 평일만(주말 휴장). 창 밖이면 직전 스냅샷 fresh(재스캔 0)."""
+    wd, h, m = now_kst.weekday(), now_kst.hour, now_kst.minute
+    if wd >= 5:
+        return False
+    pre = (8, 0) <= (h, m) < (9, 0)
+    post = (15, 40) <= (h, m) < (18, 0)
+    return pre or post
+
+
+def _current_kr_session(now_kst: datetime | None = None) -> str:
+    """현재 KST 의 KR 연장 세션 — 'pre'(08:00–09:00)·'post'(15:40–18:00)·''. 순수."""
+    now = now_kst or datetime.now(_KST9)
+    h, m = now.hour, now.minute
+    if (8, 0) <= (h, m) < (9, 0):
+        return "pre"
+    if (15, 40) <= (h, m) < (18, 0):
+        return "post"
+    return ""
+
+
+def _kr_status_write(state: str, **kw) -> None:
+    kw.update({"state": state, "ts": time.time(), "ts_label": _now_label()})
+    _cache_write(_KR_PREPOST_STATUS, kw)
+
+
+def kr_prepost_status() -> dict:
+    return _cached(_KR_PREPOST_STATUS, ttl=86400) or {}
+
+
+def _kr_movers_universe() -> tuple[list, dict, dict]:
+    """KR 시간외 스캔 유니버스 = 정규장 무버(네이버 domestic up/down). 반환
+    (티커들, {티커: 한글명}, {티커: 시총억}). 시간외 급변은 뉴스주라 정규장 무버에
+    잡힘(미국 board 동일 철학). graceful — 빈 랭킹이면 빈 유니버스."""
+    from bot.naver_ranking_client import fetch_kr_movers
+    d = fetch_kr_movers(limit=200)
+    tks: list = []
+    names: dict = {}
+    mcaps: dict = {}
+    seen: set = set()
+    for r in (d.get("up") or []) + (d.get("down") or []):
+        tk = str(r.get("ticker") or "").strip()    # '005930.KS'/'…​.KQ'(접미사 보존)
+        if not tk or tk in seen:
+            continue
+        seen.add(tk)
+        tks.append(tk)
+        nm = r.get("name")
+        if nm and nm != tk:
+            names[tk] = nm
+        if r.get("mcap") is not None:
+            mcaps[tk] = r.get("mcap")
+    return tks, names, mcaps
+
+
+def _compute_kr_prepost() -> dict:
+    """KR 장전·장후 시간외(단일가) 급등·급락 TOP30 — 네이버 시간외단일가 실시간.
+    정규장 무버 유니버스를 종목별 fetch_kr_quote 로 스캔(over-market OPEN 만 집계).
+    백그라운드 전용. yfinance 미사용·네이버만."""
+    out: dict = {"up": [], "down": [], "ts": _now_label(), "scanned": 0, "session": "",
+                 "source": "KR 정규장 무버 시간외(단일가) · 네이버 실시간"}
+    tks, names, mcaps = _kr_movers_universe()
+    if not tks:
+        log.warning("kr prepost: universe empty")
+        _kr_status_write("failed", detail="universe 실패(네이버 무버 0)")
+        return out
+    from concurrent.futures import ThreadPoolExecutor
+
+    from bot.naver_quote import fetch_kr_quote
+    _kr_status_write("running", total=len(tks))
+
+    def _one(tk: str):
+        try:
+            q = fetch_kr_quote(tk) or {}     # 접미사 내부 strip
+            sess = q.get("over_session") or ""
+            op, opct = q.get("over_price"), q.get("over_pct")
+            if sess and op and opct is not None:
+                return {"ticker": tk, "name": names.get(tk, tk),
+                        "price": op, "pct": opct, "vol": q.get("volume"),
+                        "mcap": mcaps.get(tk),
+                        "session": "pre" if "PRE" in sess else "post"}
+        except Exception:
+            pass
+        return None
+
+    rows: list = []
+    try:
+        log.info("kr prepost: 정규장 무버 %d종목 네이버 시간외 스캔 시작", len(tks))
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for rec in pool.map(_one, tks):
+                if rec:
+                    rows.append(rec)
+        cur = _current_kr_session()
+        if cur:
+            pref = [r for r in rows if r.get("session") == cur]
+            if pref:
+                rows = pref
+        ups, downs = _rank_prepost(rows)
+        out["up"], out["down"] = ups, downs
+        out["scanned"] = len(rows)
+        votes = [r.get("session") for r in ups + downs if r.get("session")]
+        out["session"] = max(set(votes), key=votes.count) if votes else ""
+        if ups or downs:
+            _cache_write(_KR_PREPOST_CACHE, out)
+            _kr_status_write("done", up=len(ups), down=len(downs),
+                             session=out["session"])
+        else:
+            _kr_status_write("failed", scanned=len(rows),
+                             detail="시간외 행 0 — 장전/장후 미개장(시간외단일가 시간 외)")
+    except Exception as exc:
+        log.warning("kr prepost: 산출 실패: %s", exc)
+        _kr_status_write("failed", detail=f"{type(exc).__name__}: {exc}")
+    return out
+
+
+def _kr_prepost_fresh(cache_ts: float) -> bool:
+    """KR 장-인지 신선도 — 시간외 창에서만 5분 TTL, 그 밖엔 직전 스냅샷 fresh."""
+    if _in_kr_extended_window(datetime.now(_KST9)):
+        return (time.time() - cache_ts) < _KR_PREPOST_TTL
+    return True
+
+
+def _kick_kr_refresh() -> None:
+    global _KR_REFRESHING
+    with _KR_LOCK:
+        if _KR_REFRESHING:
+            return
+        _KR_REFRESHING = True
+
+    def _run():
+        global _KR_REFRESHING
+        try:
+            _compute_kr_prepost()
+        except Exception as exc:
+            log.warning("kr prepost: 백그라운드 재계산 실패: %s", exc)
+        finally:
+            with _KR_LOCK:
+                _KR_REFRESHING = False
+
+    _threading.Thread(target=_run, daemon=True, name="kr-prepost").start()
+
+
+def fetch_kr_prepost_movers() -> dict:
+    """KR 장전/장후 시간외 급등·급락 — 동기 계산 안 함(SWR, US prepost 동일):
+    신선/스테일 서빙 + 시간외 창에서만 백그라운드 재계산. 재발동 백오프."""
+    stale = _cached(_KR_PREPOST_CACHE, ttl=86400)
+    if stale is not None:
+        try:
+            mt = (_CACHE_DIR / _KR_PREPOST_CACHE).stat().st_mtime
+        except OSError:
+            mt = 0.0
+        if _kr_prepost_fresh(mt):
+            return stale
+    in_win = _in_kr_extended_window(datetime.now(_KST9))
+    st = kr_prepost_status()
+    age = time.time() - (st.get("ts") or 0)
+    if not in_win:
+        pass
+    elif st.get("state") == "failed" and age < 300:
+        pass
+    elif st.get("state") == "running" and age < 1800:
+        pass
+    else:
+        _kick_kr_refresh()
+    if stale is not None:
+        return stale
     return {"up": [], "down": [], "ts": "", "source": "", "session": "",
             "building": in_win, "status": st}
 

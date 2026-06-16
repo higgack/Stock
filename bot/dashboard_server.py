@@ -265,7 +265,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                   "/twhighlow", "/tw52",
                                   "/jp52", "/hk52", "/kr52",
                                   "/hkmovers", "/jpmovers", "/cnmovers",
-                                  "/jphighlow", "/nxt")
+                                  "/jphighlow", "/nxt", "/krprepost")
                 or path_lower.startswith("/lookup/")
                 or path_lower == "/trade" or path_lower.startswith("/trade/")):
             # /trade* — 프록시는 매 요청 trade 백엔드로 fresh fetch(서버 캐시
@@ -318,6 +318,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if raw == "/nxt":
             return self._handle_simple_page(
                 "bot.nxt_pages", "render_nxt_page")
+        # /krprepost — KR 장전·장후 시간외(단일가) 가격 급등·급락 TOP30 (네이버
+        # overMarketPriceInfo, 2026-06-16). NXT(수급)와 별개 — 이건 '가격'.
+        if raw == "/krprepost":
+            return self._handle_simple_page(
+                "bot.intl_pages", "render_kr_prepost_page")
         # /jphighlow — 일본 상한가/하한가 (구 경로, jpmovers 로 대체 — 캐시 링크 호환)
         if raw == "/jphighlow":            return self._handle_jp_stop()
         # /trade[/...] — 한국 수출입(trade) 대시보드 리버스 프록시

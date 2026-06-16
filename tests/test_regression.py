@@ -10503,3 +10503,63 @@ class TestDartReclassTuja20260616:
     def test_startup_wired(self):
         tb = open("bot/telegram_bot.py", encoding="utf-8").read()
         assert "reclassify_tuja_once_if_needed" in tb
+
+
+class TestKrPrepostBoard20260616:
+    """KR 장전·장후 시간외(단일가) 가격 급등·급락 board — 미국 prepost 의 KR
+    버전(사용자 2026-06-16, 네이버 overMarketPriceInfo). NXT 수급 보드와 별개."""
+
+    def test_kr_session_windows(self):
+        from datetime import datetime, timedelta, timezone
+        from bot.prepost_client import _current_kr_session, _in_kr_extended_window
+        K = timezone(timedelta(hours=9))
+        assert _current_kr_session(datetime(2026, 6, 16, 8, 30, tzinfo=K)) == "pre"
+        assert _current_kr_session(datetime(2026, 6, 16, 16, 3, tzinfo=K)) == "post"
+        assert _current_kr_session(datetime(2026, 6, 16, 11, 0, tzinfo=K)) == ""
+        assert _in_kr_extended_window(datetime(2026, 6, 16, 16, 3, tzinfo=K)) is True
+        assert _in_kr_extended_window(datetime(2026, 6, 20, 16, 3, tzinfo=K)) is False  # 토
+
+    def test_kr_compute_suffix_and_rank(self, monkeypatch):
+        import bot.naver_quote as nq
+        import bot.naver_ranking_client as nr
+        import bot.prepost_client as pp
+        monkeypatch.setattr(nr, "fetch_kr_movers", lambda limit=200: {
+            "up": [{"ticker": "005930.KS", "name": "삼성전자", "mcap": 4500000.0},
+                   {"ticker": "247540.KQ", "name": "에코프로비엠", "mcap": 120000.0}],
+            "down": [{"ticker": "000660.KS", "name": "SK하이닉스", "mcap": 900000.0}]})
+        over = {"005930": {"over_session": "AFTER_MARKET", "over_price": 342000.0, "over_pct": 1.48, "volume": 13768940},
+                "247540": {"over_session": "AFTER_MARKET", "over_price": 180000.0, "over_pct": -3.2, "volume": 500000},
+                "000660": {"over_session": "AFTER_MARKET", "over_price": 210000.0, "over_pct": -1.1, "volume": 800000}}
+        monkeypatch.setattr(nq, "fetch_kr_quote", lambda tk: over.get(str(tk).split(".")[0]))
+        monkeypatch.setattr(pp, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(pp, "_kr_status_write", lambda *a, **k: None)
+        monkeypatch.setattr(pp, "_current_kr_session", lambda *a, **k: "post")
+        out = pp._compute_kr_prepost()
+        assert out["scanned"] == 3
+        assert [r["ticker"] for r in out["up"]] == ["005930.KS"]          # KS 보존
+        assert [r["ticker"] for r in out["down"]] == ["247540.KQ", "000660.KS"]  # KQ 보존·하락순
+        assert out["up"][0]["mcap"] == 4500000.0                          # 시총 carry
+        assert out["session"] == "post"
+
+    def test_kr_page_renders_with_data(self, monkeypatch):
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda: {
+            "up": [{"ticker": "005930.KS", "name": "삼성전자", "price": 342000.0,
+                    "pct": 1.48, "vol": 1000, "mcap": 4500000.0}],
+            "down": [{"ticker": "000660.KS", "name": "SK하이닉스", "price": 210000.0,
+                      "pct": -1.1, "vol": 1000, "mcap": 900000.0}],
+            "ts": "2026-06-16 16:05 KST", "session": "post", "source": "네이버"})
+        from bot.intl_pages import render_kr_prepost_page
+        html = render_kr_prepost_page()
+        assert "한국 장전·장후 급등·급락" in html
+        assert "삼성전자" in html and "SK하이닉스" in html
+        assert 'href="krprepost"' in html and 'class="active"' in html
+
+    def test_nav_route_wired(self):
+        tw = open("bot/tw_pages.py", encoding="utf-8").read()
+        assert '("krprepost", "🌙 시간외 급등·급락")' in tw   # KR nav 신설 탭
+        assert '("nxt", "📊 NXT 수급")' in tw               # NXT 라벨 = 수급(가격 보드와 구분)
+        ds = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert '"/krprepost"' in ds and "render_kr_prepost_page" in ds
+        db = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'href="krprepost"' in db                      # KR 홈 nav 링크
