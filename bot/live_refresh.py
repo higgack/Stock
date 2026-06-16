@@ -29,7 +29,15 @@ LIVE_REFRESH_JS = """<script>
   function kstNow(){var n=new Date();return new Date(n.getTime()+(n.getTimezoneOffset()+540)*60000);}
   function isOpen(){
     var k=kstNow(), d=k.getDay(), hm=k.getHours()*60+k.getMinutes();
-    if(market==='US'){   // 美 정규장 ≈ KST 22:30~익일 05:10 (서머타임 버퍼)
+    if(market==='US'){
+      if(page==='/usprepost'){   // 美 연장(장전·장후) — 정규장 창보다 넓게(서머타임
+        // 버퍼). 장전 KST~17:00–22:30 + 정규 22:30–05:10 + 장후 ~05:00–09:00 →
+        // 17:00→익일 10:10. 월저녁~토오전. 서버 30분 SWR 라 30초 폴링=캐시 재조회(부하 무).
+        if(d>=1&&d<=5&&hm>=17*60) return true;       // 월~금 저녁(美 장전 onset)
+        if(d>=2&&d<=6&&hm<=10*60+10) return true;     // 화~토 오전(정규+장후 tail)
+        return false;
+      }
+      // 정규장 보드(/usmovers·/ushighlow·/usindustry) ≈ KST 22:30~익일 05:10
       if(d>=1&&d<=5&&hm>=22*60+30) return true;   // 월~금 밤(美 당일)
       if(d>=2&&d<=6&&hm<=5*60+10) return true;     // 화~토 새벽(美 전일)
       return false;

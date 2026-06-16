@@ -10117,6 +10117,28 @@ class TestDashboardBatch20260615c:
         assert "'/krprepost':'KR'" in js              # KR NXT 보드 자동새로고침 배선
         #   (라우트는 dashboard_server 에 있는데 MKT 맵 누락 시 폴링 0 → 수동
         #   새로고침만 — 형제 보드(/nxt·/highlow)처럼 30초 자동갱신 보장)
+        # /usprepost = 美 연장(장전·장후) 전용 폴링 창 — 정규장 창(22:30–05:10)이
+        # 아니라 17:00→익일 10:10 (장전 17:00–22:30 포함). 이게 없으면 美 장전에
+        # 화면 자동갱신 안 됨(서버는 30분 재산출하는데 브라우저가 안 당김).
+        assert "page==='/usprepost'" in js
+        assert "hm>=17*60" in js and "hm<=10*60+10" in js
+
+    def test_usprepost_extended_polling_window(self):
+        # /usprepost 폴링 창(KST) 포팅 가드 — 美 장전(한국 저녁 17:00~)·장후(익일
+        # 오전)에 자동갱신 살아있고, 美 휴장(한국 낮·주말)엔 skip.
+        def open_pp(day, hm):   # day: 0=일..6=토
+            if 1 <= day <= 5 and hm >= 17 * 60:
+                return True
+            if 2 <= day <= 6 and hm <= 10 * 60 + 10:
+                return True
+            return False
+        assert open_pp(1, 18 * 60) is True        # 월 18:00 = 美 장전(프리마켓)
+        assert open_pp(2, 2 * 60) is True         # 화 02:00 = 美 정규장(한국 새벽)
+        assert open_pp(2, 7 * 60) is True         # 화 07:00 = 美 장후(애프터)
+        assert open_pp(1, 12 * 60) is False       # 월 정오 = 美 휴장
+        assert open_pp(6, 9 * 60) is True         # 토 09:00 = 금 장후 tail(美 금요일 밤)
+        assert open_pp(6, 12 * 60) is False       # 토 정오 = 주말 skip
+        assert open_pp(0, 18 * 60) is False       # 일 저녁 = 美 아직 휴장
 
     def test_material_title_holding_company(self):
         # 투자판단 '지주회사 전환' 제목 → 회사구조 (사용자 '웅진 왜 실적'). 기본
