@@ -463,24 +463,28 @@ def _compute_kr_prepost() -> dict:
             q = fetch_kr_quote(tk) or {}     # 접미사 내부 strip
             sess = q.get("over_session") or ""
             op, reg = q.get("over_price"), q.get("reg_close")
-            if sess and op and reg and reg > 0:
-                # 순수 시간외 move = 시간외가 vs 정규장 종가 (사용자 2026-06-16
-                # '시간외는 정규장 종가보다 얼마 등락'). Naver over_pct(=fluctuations
-                # Ratio)는 KR 에서 전일종가 누적이라 정규장 급등락과 중복(상한가
-                # 종목이 시간외 보드를 점령) → 정규장 종가 대비로 재계산해 시간외
-                # '추가' 움직임만 랭킹. 거래량도 시간외 세션 거래량 우선.
+            ovol = q.get("over_volume")      # NXT 세션 거래량 — 실제 NXT 체결 신호
+            # NXT 보드 = 실제 NXT 체결 종목만 (사용자 2026-06-16 'NXT 장전장후
+            # 거래량과 거래대금'). Naver 는 NXT 미체결이면 accumulatedTradingVolume=
+            # '-'(→ _num None) → 제외. overPrice 만 있고 NXT 거래량 0 인 phantom
+            # (참조가) 랭킹 차단 — 후성 093370/피에스케이홀딩스 031980 류(over '-'
+            # 인데 옛 over_volume-or-volume 폴백이 정규장 풀데이 거래량으로 보드를
+            # 점령하던 것)가 이 클래스. 신세계 004170(NXT vol 54,419 실체결)만 잔존.
+            if sess and op and reg and reg > 0 and ovol:
+                # 순수 NXT move = NXT가 vs 정규장 종가 (사용자 2026-06-16 '신세계
+                # 장후가 2천원 싸면 정규장보다 내린 것 → 격차순 고하 30'). Naver
+                # over_pct(=fluctuationsRatio)는 KR 에서 전일종가 누적이라 정규장
+                # 급등락과 중복 → 정규장 종가 대비로 재계산해 NXT '추가' 움직임만 랭킹.
                 pct = round((op / reg - 1) * 100, 2)
                 _ov = q.get("over_value")    # NXT 세션 거래대금(원) → 억
                 return {"ticker": tk, "name": names.get(tk, tk),
                         "price": op, "pct": pct,
-                        # 표시 거래량/거래대금 = NXT 세션 전용(정규장과 별개, 사용자
-                        # 2026-06-16 'NXT 거래량·거래대금만 정규장과 별개로'). 정규장
-                        # 폴백 금지 — Naver 가 NXT 세션 값을 안 주면 '—'(정규장
-                        # 풀데이 거래량을 NXT 인 양 오인시키던 옛 폴백 제거).
-                        "vol": q.get("over_volume"),
+                        # 표시 거래량/거래대금 = NXT 세션 전용(정규장과 별개). 정규장
+                        # 폴백 금지(옛 버그) — vol 은 위 가드로 항상 실체결값.
+                        "vol": ovol,
                         "value": round(_ov / 1e8, 2) if _ov else None,
                         # 유동성 게이트 전용(미표시) — 정규장 누적거래량으로 페니·
-                        # 유령 컷. NXT 거래량이 결측이어도 보드가 안 비게 표시와 분리.
+                        # 유령 컷. 표시(NXT)와 게이트(정규장) 분리.
                         "reg_vol": q.get("volume"),
                         "mcap": mcaps.get(tk),
                         "session": "pre" if "PRE" in sess else "post"}

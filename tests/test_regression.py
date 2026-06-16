@@ -10679,6 +10679,41 @@ class TestOverValueRegularPriceFinnhub20260616:
         assert r["vol"] == 290000                  # 시간외 거래량
         assert abs(r["value"] - 357.75) < 0.1      # 거래대금 35,775백만 → 357.75억
 
+    def test_kr_nxt_phantom_excluded(self, monkeypatch):
+        # 후성 093370 류: NXT overMarketStatus OPEN + overPrice 22,400 이지만 실제
+        # NXT 체결 0(Naver accumulatedTradingVolume='-'/0 → over_volume None). 그
+        # 22,400 은 전일가 placeholder라 정규장 종가(19,200) 대비 +16.67% 는 phantom
+        # 갭 → 보드에서 제외해야(사용자 2026-06-16 screenshot: 후성 NXT 거래량 0).
+        # 실제 NXT 체결 있는 신세계 004170(NXT vol 54,478)만 잔존. 옛 over_volume-or-
+        # volume 폴백이 정규장 풀데이 거래량으로 phantom 을 보드에 점령시키던 버그.
+        import bot.naver_quote as nq
+        import bot.naver_ranking_client as nr
+        import bot.prepost_client as pp
+        monkeypatch.setattr(nr, "fetch_kr_movers", lambda limit=200: {
+            "up": [{"ticker": "004170.KS", "name": "신세계", "mcap": 70000.0},
+                   {"ticker": "093370.KS", "name": "후성", "mcap": 20000.0}],
+            "down": []})
+        over = {  # 신세계=실체결, 후성=NXT 미체결(over_volume None)
+            "004170": {"over_session": "AFTER_MARKET", "over_price": 764000.0,
+                       "reg_close": 767000.0, "over_volume": 54478,
+                       "over_value": 39944 * 1e6, "volume": 115979},
+            "093370": {"over_session": "AFTER_MARKET", "over_price": 22400.0,
+                       "reg_close": 19200.0, "over_volume": None,
+                       "over_value": None, "volume": 11267003}}
+        monkeypatch.setattr(nq, "fetch_kr_quote",
+                            lambda tk: over.get(str(tk).split(".")[0]))
+        monkeypatch.setattr(pp, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(pp, "_kr_status_write", lambda *a, **k: None)
+        monkeypatch.setattr(pp, "_current_kr_session", lambda *a, **k: "post")
+        out = pp._compute_kr_prepost()
+        tickers = [r["ticker"] for r in out["up"] + out["down"]]
+        assert "093370.KS" not in tickers          # phantom(NXT 거래량 0) 제외
+        assert tickers == ["004170.KS"]             # 실제 NXT 체결만
+        r = out["down"][0]                          # 764000 < 767000 → 내림
+        assert abs(r["pct"] - (-0.39)) < 0.05       # NXT 764000 vs 정규장 종가 767000
+        assert r["vol"] == 54478                    # NXT 세션 거래량
+        assert abs(r["value"] - 399.44) < 0.1       # 39,944백만 → 399.44억
+
     def test_finnhub_widget_month_chunked(self):
         src = open("bot/market_overview.py", encoding="utf-8").read()
         # 월별 분할 루프(단일 60일 범위 금지 — 1500 cap 회피)
