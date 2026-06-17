@@ -98,20 +98,20 @@ def render_tw_highlow_page() -> str:
                          gainers=True)        # 기본 등락률순(사용자 2026-06-15)
         down = sort_by_pct(enrich_for_panel(down, "TW", want_ind=True, want_name=True),
                            gainers=False)
+        # 🔺상한/🔻하한(±10%) 마커 제거 (사용자 2026-06-17 '대만에서 이건 없어도 돼')
+        # — limit_pct 미전달 → 행 마커 없음, 부제 legend 도 함께 제거(아래).
         body = ('<div class="grid">'
                 + stock_panel("🚀 가장 많이 오른 TOP 30", up, "mv-up", "TW",
-                              show_vol=True, show_value=True, show_ind=True,
-                              limit_pct=9.9)
+                              show_vol=True, show_value=True, show_ind=True)
                 + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "TW",
-                              show_vol=True, show_value=True, show_ind=True,
-                              limit_pct=9.9)
+                              show_vol=True, show_value=True, show_ind=True)
                 + '</div>' + HL_SORT_JS)
     # TW 무버 = TWSE/TPEx 공식 OpenAPI(STOCK_DAY_ALL) = **EOD 종가** 데이터(네이버
     # worldstock 이 TW 미지원이라 KR/US/JP/HK/CN 처럼 라이브 30초 불가, 사용자
     # 2026-06-17 '대만 30초 적용가능?'). '장중 N 갱신' 은 라이브 오인 → EOD 정직 표기.
     from bot.highlow_render import market_hours_label as _mhl
     sub = (f"上市(TWSE)+上櫃(TPEx) 전종목 당일 등락 상·하위 · {_mhl('TW')} · "
-           f"종목명=한글 · 🔺상한/🔻하한(±10%) · 업종·시총="
+           f"종목명=한글 · 업종·시총="
            f"yfinance · {(dt + ' 종가 기준 · ') if dt else ''}TWSE/TPEx 공식 종가(EOD·실시간 아님)"
            f"{(' · 마지막 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 급등·급락", sub, body,
