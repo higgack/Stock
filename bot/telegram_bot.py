@@ -3195,9 +3195,10 @@ def _ensure_highlow_eod() -> None:
     """장 마감 후 **비-네이버 컴퓨티드 보드**(52주 신고저 + 급등·급락)의 EOD 캐시
     보장 — off-session 시장만 self-gating fetch 호출(사용자 2026-06-16 '장 종료되면
     페이지 안 열려도 종가기준 스스로 계산. 네이버에서 다 가져오는 게 아닌 보드는
-    종료기준으로 잡혀야'). 네이버 직접(KR movers/highlow·JP/CN/HK movers)은 네이버가
-    EOD 보유 → 제외. **우리 산출**(US 52w=Finviz/yf · US movers=Finviz/yf · JP/HK
-    52w=yf · TW 52w=yf · TW movers=TWSE/TPEx)만 대상.
+    종료기준으로 잡혀야'). 네이버 직접(KR movers/highlow·JP/CN/HK movers·**US
+    movers**)은 네이버가 EOD 보유 → 제외(US 급등·급락도 _compute_us_movers 가 네이버
+    1차라 네이버 동류, 사용자 2026-06-16 확인). **우리 산출**(US 52w=Finviz/yf ·
+    JP/HK 52w=yf · TW 52w=yf · TW movers=TWSE/TPEx)만 대상.
 
     fetch_* 는 _session_fresh 로 자가 게이트 — 이미 EOD 반영이면 캐시 read(가벼움),
     마감 직후 미포착(장중 스냅샷)이면 1회 재산출. in-session 은 skip(방문·장중 갱신
@@ -3217,13 +3218,15 @@ def _ensure_highlow_eod() -> None:
         return now.weekday() < 5 and (oh, om) <= (now.hour, now.minute) < (ch, cm)
 
     if not _open("US"):
-        # US 52주 + 무버 — 둘 다 Finviz/yfinance 컴퓨티드(네이버 직접 아님).
-        for _imp in ("fetch_high_low", "fetch_us_movers"):
-            try:
-                import bot.finviz_client as _fc
-                getattr(_fc, _imp)()
-            except Exception as exc:
-                log.warning("boards eod US %s: %s", _imp, exc)
+        # US 52주만 — Finviz(전미국 신고저 리스트) 1차 + 전미국 yfinance 산출 폴백.
+        # ⚠️ US 급등·급락(fetch_us_movers)은 **네이버 1차**(_compute_us_movers,
+        # JP/CN/HK movers 동류)라 제외 — 네이버가 EOD 보유, 방문 refetch 로 종가
+        # 반영(사용자 2026-06-16 확인).
+        try:
+            from bot.finviz_client import fetch_high_low
+            fetch_high_low()
+        except Exception as exc:
+            log.warning("boards eod US 52w: %s", exc)
     for m in ("JP", "HK"):
         if not _open(m):
             try:
