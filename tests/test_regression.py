@@ -11614,7 +11614,7 @@ class TestIndexCardRecompose:
         assert "nve:XLC" in us.values() and "nve:XLE" not in us.values()
         us2 = d["미국 지수-2"]
         assert len(us2) == 6 and all(tk.startswith("nve:") for _, tk in us2)
-        assert {tk for _, tk in us2} == {"nve:TSLL", "nve:XLI", "nve:XLE",
+        assert {tk for _, tk in us2} == {"nve:XLY", "nve:XLI", "nve:XLE",
                                          "nve:XLU", "nve:IYR", "nve:AIQ"}
         # 제거된 이머징/베트남 지수가 어느 카드에도 없음
         allt = {tk for _, c in m.ALL_CARDS if c for _, tk in c}
@@ -11623,12 +11623,12 @@ class TestIndexCardRecompose:
             assert gone not in allt, gone
 
     def test_etf_yf_fallback(self, monkeypatch):
-        # 네이버 etf 미커버(AIQ/TSLL) → yfinance 폴백 (사용자 2026-06-17 VM probe).
+        # 네이버 etf 미커버(AIQ) → yfinance 폴백 (사용자 2026-06-17 VM probe).
         import bot.finviz_client as fc
         import bot.market_overview as mo
         import bot.naver_marketindex as nm
         monkeypatch.setattr(nm, "fetch_world_etf", lambda codes: {
-            "XLF": {"close": 54.3, "prev": 53.9, "change": 0.4, "pct": 0.7}})
+            "XLY": {"close": 220.1, "prev": 218.9, "change": 1.2, "pct": 0.55}})
         monkeypatch.setattr(fc, "yf_paused", lambda: False)
         seen = {}
 
@@ -11637,14 +11637,14 @@ class TestIndexCardRecompose:
             return {f"nve:{s}": {"close": 1.0, "prev_close": 0.9,
                                  "change": 0.1, "pct": 11.1} for s in syms}
         monkeypatch.setattr(mo, "_yf_etf_quotes", _fake_yf)
-        out = mo._fetch_etf_quotes(["nve:XLF", "nve:AIQ", "nve:TSLL"])
-        assert out["nve:XLF"]["close"] == 54.3            # 네이버 커버분 보존
-        assert seen["syms"] == ["AIQ", "TSLL"]            # 미커버만 yf 폴백
-        assert out["nve:AIQ"]["close"] == 1.0 and out["nve:TSLL"]["close"] == 1.0
+        out = mo._fetch_etf_quotes(["nve:XLY", "nve:AIQ"])
+        assert out["nve:XLY"]["close"] == 220.1           # 네이버 커버분 보존
+        assert seen["syms"] == ["AIQ"]                    # 미커버만 yf 폴백
+        assert out["nve:AIQ"]["close"] == 1.0
         # YF_PAUSE → yf 폴백 skip(네이버분만, 미커버는 블랭크)
         monkeypatch.setattr(fc, "yf_paused", lambda: True)
-        out2 = mo._fetch_etf_quotes(["nve:XLF", "nve:AIQ"])
-        assert "nve:XLF" in out2 and "nve:AIQ" not in out2
+        out2 = mo._fetch_etf_quotes(["nve:XLY", "nve:AIQ"])
+        assert "nve:XLY" in out2 and "nve:AIQ" not in out2
 
 
 class TestCN52Reenabled:
