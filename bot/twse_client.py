@@ -372,14 +372,20 @@ def fetch_mi_index() -> dict:
 
 
 def fetch_tw_sector_movers(top_n: int = 10) -> dict:
-    """TW 업종 등락 — TWSE 類股 지수(약 20업종). 장 마감/점검으로 live 가 비면
-    당일 마지막 장중 스냅샷(stale 캐시)을 복원해 ETF 4개 폴백 degrade 방지
-    (사용자 2026-06-15). 그래도 없으면 {} (호출부가 ETF 폴백)."""
+    """TW 업종 등락 — TWSE 類股 지수(약 20-40업종). 장 마감/점검으로 live 가 비면
+    직전 좋은 類股 스냅샷(stale 캐시)을 복원해 ETF 4개 폴백 degrade 방지
+    (사용자 2026-06-15). 그래도 없으면 {} (호출부가 ETF 폴백).
+
+    freeze 윈도 = **4일**(사용자 2026-06-17 'TW 업종 4개로 떨어짐' 진단): 24h 였을
+    때, 어제 14:30 캐시가 오늘 14:30 만료 → 오늘 장중(10:00-14:30) 類股 fetch 가
+    배포 churn/TWSE 일시장애로 못 들어오면 그 직후 윈도에 캐시 0 → ETF 4개 degrade.
+    4일이면 전일·주말(금→월) 캐시가 fallback 으로 유지돼 transient/overnight 갭에도
+    類股(39) 서빙. ts 라벨이 실제 스냅샷 시각을 보여줘 stale 여부는 화면에서 정직."""
     mi = fetch_mi_index()
     secs = mi.get("sectors") or []
     if not secs:
-        # 장 마감/점검 — 직전 좋은 類股 스냅샷(24h 내) 복원
-        cached = _cached_stale("mi_index") or {}
+        # 장 마감/점검/일시장애 — 직전 좋은 類股 스냅샷(4일 내) 복원
+        cached = _cached_stale("mi_index", max_age_sec=4 * 86400) or {}
         c_secs = cached.get("sectors") or []
         if c_secs:
             mi, secs = cached, c_secs

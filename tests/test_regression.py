@@ -11549,6 +11549,38 @@ class TestAmexExclusion:
         assert usn.us_amex_symbols() == {"IMO"}          # Exchange='A' 만
 
 
+class TestTwSectorFreeze:
+    """TW 업종 등락 freeze 윈도 4일 (사용자 2026-06-17 'TW 업종 4개로 degrade'
+    진단): 24h 였을 때 어제 14:30 캐시가 오늘 14:30 만료 → 오늘 장중 類股 fetch 가
+    배포 churn/일시장애로 지연되면 그 윈도에 ETF 4개 폴백. 4일이면 전일·주말 캐시가
+    fallback 으로 유지돼 transient/overnight 갭에도 類股 서빙(ts 로 stale 정직 표기)."""
+
+    def test_live_empty_serves_stale_within_4d(self, monkeypatch):
+        import bot.twse_client as tw
+        monkeypatch.setattr(tw, "fetch_mi_index", lambda: {"sectors": [], "ts": ""})
+        snap = {"sectors": [{"name": f"S{i}", "pct": (i - 5)} for i in range(12)],
+                "ts": "2026-06-16 14:30"}
+        seen = {}
+
+        def _stale(name, max_age_sec=86400):
+            seen["max_age"] = max_age_sec
+            return snap if name == "mi_index" else None
+        monkeypatch.setattr(tw, "_cached_stale", _stale)
+        r = tw.fetch_tw_sector_movers(top_n=10)
+        assert r.get("source") == "TWSE 類股"            # ETF 4개 폴백 아님
+        assert r.get("n") == 12 and r["up"] and r["down"]
+        assert seen["max_age"] == 4 * 86400              # 4일 freeze 윈도(24h→4d)
+        assert r.get("ts") == "2026-06-16 14:30"         # stale 스냅샷 시각 노출(정직)
+
+    def test_live_present_uses_live(self, monkeypatch):
+        import bot.twse_client as tw
+        live = {"sectors": [{"name": "金融", "pct": 1.6}, {"name": "電子", "pct": -0.3}],
+                "ts": "now"}
+        monkeypatch.setattr(tw, "fetch_mi_index", lambda: live)
+        r = tw.fetch_tw_sector_movers(top_n=10)
+        assert r.get("source") == "TWSE 類股" and r.get("n") == 2  # live 우선
+
+
 class TestCN52Reenabled:
     """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로' →
     'CSI300+500') — **CSI 300 + CSI 500**(대형+중형 ~800, AKShare list_csi300_500)
