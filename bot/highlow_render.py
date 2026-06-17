@@ -86,15 +86,24 @@ _MULTISELECT_JS = """
   background:var(--bg,#111);color:var(--text,#ddd);border:1px solid var(--border,#333);
   border-radius:3px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ms-btn.on{border-color:var(--accent,#3b82f6);color:var(--accent,#3b82f6)}
+/* 팝업 내부는 host 페이지 CSS 변수에 의존하지 않고 명시 색 + !important 로 고정 —
+   변수 미정의/특이도 충돌/host label{color} 룰로 라벨이 안 보이던 것 차단(사용자
+   2026-06-17 '필터에 글씨가 안보이잖아'). 기본 다크 + 라이트 테마 명시 오버라이드. */
 .ms-pop{position:absolute;z-index:40;top:100%;left:0;min-width:150px;max-width:260px;
-  background:var(--card,#1a1a1a);border:1px solid var(--border,#333);border-radius:4px;
-  padding:4px;box-shadow:0 4px 14px rgba(0,0,0,.45)}
+  background:#161b22 !important;color:#e6edf3 !important;border:1px solid #30363d;
+  border-radius:4px;padding:4px;box-shadow:0 4px 14px rgba(0,0,0,.5)}
 .ms-srch{width:100%;box-sizing:border-box;font-size:11px;padding:2px 4px;margin-bottom:4px;
-  background:var(--bg,#111);color:var(--text,#ddd);border:1px solid var(--border,#333);border-radius:3px}
+  background:#0e1117 !important;color:#e6edf3 !important;border:1px solid #30363d;border-radius:3px}
+.ms-srch::placeholder{color:#8b949e}
 .ms-list{max-height:210px;overflow-y:auto}
-.ms-list label{display:block;font-size:11px;padding:2px 3px;white-space:nowrap;cursor:pointer;color:var(--text,#ddd)}
-.ms-list label:hover{background:var(--border,#333)}
+.ms-list label{display:block;font-size:11px;padding:2px 3px;white-space:nowrap;cursor:pointer;color:#e6edf3 !important}
+.ms-list label:hover{background:#30363d}
 .ms-list input{margin-right:5px;vertical-align:middle}
+[data-theme="light"] .ms-pop{background:#ffffff !important;color:#1f2328 !important;border-color:#d0d7de}
+[data-theme="light"] .ms-srch{background:#f6f8fa !important;color:#1f2328 !important;border-color:#d0d7de}
+[data-theme="light"] .ms-srch::placeholder{color:#6e7781}
+[data-theme="light"] .ms-list label{color:#1f2328 !important}
+[data-theme="light"] .ms-list label:hover{background:#eaeef2}
 </style>
 <script>
 if(!window.mkMultiSelect){

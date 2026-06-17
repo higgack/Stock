@@ -161,11 +161,11 @@ CARD_US2 = [
     ("XLE 에너지", "nve:XLE"),
     ("XLU 유틸리티", "nve:XLU"),
     ("IYR 부동산", "nve:IYR"),
-    # 사용자 2026-06-17: AIQ(테마 ETF·네이버 etf 미커버 → '—' 빈칸)를 XLK(기술/IT)로
-    # 대체 — 11 GICS 섹터 중 우리가 유일하게 빠졌던 최대 섹터(표준 SPDR이라 네이버
-    # 커버, 빈칸 해소). 보유 섹터: XLF·XLV·XLC·XLP(지수1) + XLY·XLI·XLE·XLU·IYR(지수2).
-    # 남은 미보유는 XLB(소재) 정도.
-    ("XLK 기술", "nve:XLK"),
+    # 사용자 2026-06-17: AIQ(테마 ETF·네이버 etf 미커버 → '—' 빈칸)를 XLB(소재)로
+    # 대체 — 기술(XLK/IT)은 다른 위젯에서 커버되므로 미보유 GICS 섹터인 소재를 채움
+    # (표준 SPDR이라 네이버 커버, 빈칸 해소). 보유 섹터: XLF·XLV·XLC·XLP(지수1) +
+    # XLY·XLI·XLE·XLU·IYR(지수2) + XLB(소재) → XLK 기술만 의도적 제외.
+    ("XLB 소재", "nve:XLB"),
 ]
 
 ALL_CARDS = [
@@ -1247,14 +1247,21 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
         rows.sort(key=lambda x: x.get("date", ""), reverse=True)
         return rows[:limit]
 
-    # 6h 내 이미 fetch 했으면 누적 store 그대로(버스트 방지)
-    if store and (time.time() - last_fetch) < 6 * 3600:
+    # cold-start = store 가 한 번도 시드된 적 없음(빈 누적). 빈 store 는 가치 0인데
+    # 회로차단 게이트가 영구 미시드 deadlock 을 만들 수 있다: 다른 탭이 야후를 계속
+    # 호출해 회로가 거의 항상 trip → 빈 store 가 시드 race 를 못 이겨 last_fetch=0 인
+    # 채 영원히 빈 채로 남음(2026-06-17 발견 — us_rolling.json last_fetch=0 =
+    # write 경로 1회도 미실행). cold-start 는 회로차단을 1회 우회해 전수 시드 허용
+    # (사용자 2026-06-17 '야후 잠깐 멈춰도 됨, 끝까지 뽑는건 일회성'). 6h 가드는
+    # store 유무 무관 적용 → 시드 실패해도 매 refresh 재시도(버스트) 없이 6h 1회 bound.
+    cold_start = not store
+    if last_fetch > 0 and (time.time() - last_fetch) < 6 * 3600:
         return _emit()
-    # ⛔ 야후 quote-API 회로차단/정지 중이면 fetch 안 함(누적 store 유지) — 차단 회복
-    # 보호(사용자 2026-06-14). 차단 중 6h 만료마다 재poke 하던 것 차단.
     from bot.finviz_client import (fast_info_ok, fast_info_trip,
                                    is_rate_limit_error, yf_paused)
-    if yf_paused() or not fast_info_ok():
+    # ⛔ 야후 quote-API 회로차단/정지 중이면 fetch 보류(누적 store 유지, 차단 회복
+    # 보호, 사용자 2026-06-14) — 단 cold-start(시드 전무)는 위 사유로 1회 우회.
+    if not cold_start and (yf_paused() or not fast_info_ok()):
         return _emit()
 
     # universe = S&P 500 의 **오늘 슬라이스**만 (로테이션 — 전체 커버는 위 7일 누적
@@ -1272,7 +1279,11 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
     # 4일 1회전(~125종목/일) — 야후 안정화 후 일일 fetch 상향(사용자 2026-06-15
     # '안정화 됐으니 일일개수 늘려'). 6h 캐시 게이트라 회당 ~125콜(여전히 안전),
     # 전 S&P500 커버를 7→4일로 단축해 등급변경을 더 빠르게 노출.
-    top_us = _rotation_slice(_sp, today.toordinal(), window_days=4)
+    # cold-start 는 전수 시드(일회성, 사용자 2026-06-17 '끝까지'). .info 미호출이라
+    # 콜=종목수(~500, 옛 ~1000 의 절반). 시드 후엔 누적 store 가 생겨 4일 로테이션
+    # 슬라이스(~125)로 복귀 → 정상 증분.
+    top_us = _sp if cold_start else _rotation_slice(
+        _sp, today.toordinal(), window_days=4)
     results = []
 
     def _fetch_one(tk):
