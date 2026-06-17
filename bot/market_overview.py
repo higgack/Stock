@@ -152,9 +152,9 @@ CARD_EU = [
 ]
 
 # 사용자 2026-06-17: 옛 '아메리카 & 이머징'(호주·브라질·멕시코·아르헨티나·인니·말련)
-# 폐기 → '미국 지수-2'(미국 섹터/테마 ETF). 전부 네이버 worldstock/etf(nve: bare 티커,
-# XLF 등과 동일 경로). ⚠️ TSLL(레버리지)·AIQ 등 일부는 네이버 etf 커버리지 VM 검증 필요
-# (미커버 시 해당 행만 graceful 블랭크 → 보고 후 대체 소스). 인니·말련은 아시아 카드로 이동.
+# 폐기 → '미국 지수-2'(미국 섹터/테마 ETF). nve: bare 티커. VM probe 2026-06-17:
+# XLI/XLE/XLU/IYR = 네이버 etf 커버, **AIQ·TSLL = 네이버 미커버 → _fetch_etf_quotes
+# 의 yfinance 폴백**으로 채움(YF_PAUSE 시 그 둘만 블랭크). 인니·말련은 아시아 카드로 이동.
 CARD_US2 = [
     ("TSLL 테슬라 2X", "nve:TSLL"),
     ("XLI 산업재", "nve:XLI"),
@@ -432,17 +432,8 @@ def _fetch_yf_batch() -> dict[str, dict]:
                                    "change": _rec["change"], "pct": _rec["pct"]}
         except Exception as exc:
             log.warning("market_overview: naver 코인 병합 실패: %s", exc)
-    if _nve_codes:                             # 미국 섹터 ETF (worldstock/etf)
-        try:
-            from bot.naver_marketindex import fetch_world_etf
-            _nve = fetch_world_etf(tuple(_t[4:] for _t in _nve_codes))
-            for _tk in _nve_codes:
-                _rec = _nve.get(_tk[4:])
-                if _rec and _rec.get("close") is not None:
-                    result[_tk] = {"close": _rec["close"], "prev_close": _rec["prev"],
-                                   "change": _rec["change"], "pct": _rec["pct"]}
-        except Exception as exc:
-            log.warning("market_overview: naver ETF 병합 실패: %s", exc)
+    if _nve_codes:                             # 미국 ETF — 네이버 etf 1차 + yfinance 폴백
+        result.update(_fetch_etf_quotes(list(_nve_codes)))
     if result:                       # YF_PAUSE 시 폴백용 직전 배치 디스크 캐시
         try:
             _CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -450,6 +441,66 @@ def _fetch_yf_batch() -> dict[str, dict]:
         except Exception:
             pass
     return result
+
+
+def _yf_etf_quotes(syms: list) -> dict:
+    """yfinance 로 ETF close/prev (네이버 etf 미커버 폴백) → {nve:SYM: rec}. 5일 일봉
+    마지막 2종가로 close·prev·change·pct. 종목별 실패 격리(graceful)."""
+    out: dict = {}
+    if not syms:
+        return out
+    import yfinance as yf
+    df = yf.download(list(syms), period="5d", interval="1d", group_by="ticker",
+                     threads=True, progress=False, auto_adjust=False)
+    for sym in syms:
+        try:
+            if len(syms) > 1:
+                if sym not in df.columns.get_level_values(0):
+                    continue
+                sub = df[sym]
+            else:
+                sub = df
+            closes = sub["Close"].dropna()
+            if len(closes) >= 2:
+                c0, c1 = float(closes.iloc[-1]), float(closes.iloc[-2])
+                if c1:
+                    out[f"nve:{sym}"] = {
+                        "close": round(c0, 2), "prev_close": round(c1, 2),
+                        "change": round(c0 - c1, 2),
+                        "pct": round((c0 / c1 - 1) * 100, 2)}
+        except Exception:
+            continue
+    return out
+
+
+def _fetch_etf_quotes(nve_codes: list) -> dict:
+    """nve: 미국 ETF 시세 — 네이버 worldstock/etf 1차, **네이버 미커버는 yfinance
+    폴백**(사용자 2026-06-17: AIQ·TSLL 등 일부 테마/레버리지 ETF 가 네이버 etf API
+    미수록 — VM probe 로 XLC/XLI/XLE/XLU/IYR 커버·AIQ/TSLL None 확인). '다 네이버로'
+    정책의 문서화된 예외(네이버가 못 주는 것만 yf). {nve_code: {close,prev_close,
+    change,pct}}. YF_PAUSE 시 yf 폴백 skip(네이버분만). graceful."""
+    out: dict = {}
+    if not nve_codes:
+        return out
+    try:
+        from bot.naver_marketindex import fetch_world_etf
+        nv = fetch_world_etf(tuple(t[4:] for t in nve_codes))
+        for t in nve_codes:
+            rec = nv.get(t[4:])
+            if rec and rec.get("close") is not None:
+                out[t] = {"close": rec["close"], "prev_close": rec["prev"],
+                          "change": rec["change"], "pct": rec["pct"]}
+    except Exception as exc:
+        log.warning("market_overview: naver ETF 병합 실패: %s", exc)
+    missing = [t for t in nve_codes if t not in out]
+    if missing:                                # 네이버 미커버 → yfinance 폴백
+        try:
+            from bot.finviz_client import yf_paused
+            if not yf_paused():
+                out.update(_yf_etf_quotes([t[4:] for t in missing]))
+        except Exception as exc:
+            log.warning("market_overview: ETF yfinance 폴백 실패: %s", exc)
+    return out
 
 
 # ── FRED fetch ──────────────────────────────────────────────────────

@@ -11622,6 +11622,30 @@ class TestIndexCardRecompose:
                      "nvi:.VNI", "nvi:.HNXI"):
             assert gone not in allt, gone
 
+    def test_etf_yf_fallback(self, monkeypatch):
+        # 네이버 etf 미커버(AIQ/TSLL) → yfinance 폴백 (사용자 2026-06-17 VM probe).
+        import bot.finviz_client as fc
+        import bot.market_overview as mo
+        import bot.naver_marketindex as nm
+        monkeypatch.setattr(nm, "fetch_world_etf", lambda codes: {
+            "XLF": {"close": 54.3, "prev": 53.9, "change": 0.4, "pct": 0.7}})
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        seen = {}
+
+        def _fake_yf(syms):
+            seen["syms"] = sorted(syms)
+            return {f"nve:{s}": {"close": 1.0, "prev_close": 0.9,
+                                 "change": 0.1, "pct": 11.1} for s in syms}
+        monkeypatch.setattr(mo, "_yf_etf_quotes", _fake_yf)
+        out = mo._fetch_etf_quotes(["nve:XLF", "nve:AIQ", "nve:TSLL"])
+        assert out["nve:XLF"]["close"] == 54.3            # 네이버 커버분 보존
+        assert seen["syms"] == ["AIQ", "TSLL"]            # 미커버만 yf 폴백
+        assert out["nve:AIQ"]["close"] == 1.0 and out["nve:TSLL"]["close"] == 1.0
+        # YF_PAUSE → yf 폴백 skip(네이버분만, 미커버는 블랭크)
+        monkeypatch.setattr(fc, "yf_paused", lambda: True)
+        out2 = mo._fetch_etf_quotes(["nve:XLF", "nve:AIQ"])
+        assert "nve:XLF" in out2 and "nve:AIQ" not in out2
+
 
 class TestCN52Reenabled:
     """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로' →
