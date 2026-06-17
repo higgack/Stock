@@ -3191,21 +3191,33 @@ async def _periodic_highlow_prewarm() -> None:
             log.exception("highlow prewarm thread failed")
 
 
-def _ensure_highlow_eod() -> None:
-    """장 마감 후 **비-네이버 컴퓨티드 보드**(52주 신고저 + 급등·급락)의 EOD 캐시
-    보장 — off-session 시장만 self-gating fetch 호출(사용자 2026-06-16 '장 종료되면
-    페이지 안 열려도 종가기준 스스로 계산. 네이버에서 다 가져오는 게 아닌 보드는
-    종료기준으로 잡혀야'). 네이버 직접(KR movers/highlow·JP/CN/HK movers·**US
-    movers**)은 네이버가 EOD 보유 → 제외(US 급등·급락도 _compute_us_movers 가 네이버
-    1차라 네이버 동류, 사용자 2026-06-16 확인). **우리 산출**(US 52w=Finviz/yf ·
-    JP/HK 52w=yf · TW 52w=yf · TW movers=TWSE/TPEx)만 대상.
+# 시간대별 슬롯 스캔 (사용자 2026-06-16 '우리가 산출하는 것도 장중에 1시간단위로
+# 돌아야돼 · 스캔부하는 시간대별 배치로 분산 · 장종료엔 종가기준으로 멈춰 부하↓').
+# **비-네이버 컴퓨티드 보드**만 대상 — 네이버 직접(KR 52w/movers · JP/CN/HK movers ·
+# **US movers**=_compute_us_movers 네이버 1차)은 네이버가 EOD·실시간 보유 → 제외.
+# 무거운 Asia 52주(JP/HK/TW yfinance 1년 벌크 ~10-14분)를 시(時) 안에서 20분씩
+# 떨어뜨려(:00 / :20 / :40) 동시 부하 회피 — 겹침창(UTC 01:30-05:30 = KST 10:30-
+# 14:30) 에서도 스캔이 서로 안 겹침(각 ~12분 < 20분 간격). US 52주(Finviz·가벼움)는
+# 야간장(UTC 13:00-21:30)이라 Asia 와 충돌 0 → :00 동거. TW 무버(TWSE OpenAPI·가벼움)
+# 는 TW 52주와 같은 :40(소스 다름 — yfinance vs OpenAPI, 충돌 0).
+#   slot 분(分) → (보드 토큰…). 토큰: US/JP/HK/TW=52주, TWMV=TW 무버.
+_HL_SCAN_SLOTS = {
+    0:  ("US", "JP"),     # :00 — US 52주(Finviz) + JP 52주(yfinance, 야간 US 와 비충돌)
+    20: ("HK",),          # :20 — HK 52주(yfinance)
+    40: ("TW", "TWMV"),   # :40 — TW 52주(yfinance) + TW 무버(TWSE/TPEx OpenAPI)
+}
 
-    fetch_* 는 _session_fresh 로 자가 게이트 — 이미 EOD 반영이면 캐시 read(가벼움),
-    마감 직후 미포착(장중 스냅샷)이면 1회 재산출. in-session 은 skip(방문·장중 갱신
-    담당 → 불필요 스캔 0). 닫힌 시장 재스캔도 0."""
+
+def _run_highlow_slot(slot: int) -> None:
+    """한 슬롯의 컴퓨티드 보드를 산출 — **장중이면 force 재산출**(1시간 슬롯 경계의
+    sub-초 jitter 로 신선도 게이트가 skip 하지 않게), **장 밖이면 게이트 fetch**
+    (마감 직후 stale 면 EOD 1회 재산출 → 이후 freeze, 사용자 2026-06-16 '장종료엔
+    종가기준으로 멈춰'). force 경로는 yfinance 정지(YF_PAUSE) 존중 — 정지 중엔 게이트
+    fetch 로 폴백(스테일 유지, 스캔 0). daemon thread 에서만 호출(무거운 yfinance
+    스캔이라 이벤트루프·watchdog 폴링 비차단)."""
     from datetime import datetime, timezone
     try:
-        from bot.finviz_client import _SESSIONS_UTC
+        from bot.finviz_client import _SESSIONS_UTC, yf_paused
     except Exception:
         return
     now = datetime.now(timezone.utc)
@@ -3217,53 +3229,67 @@ def _ensure_highlow_eod() -> None:
         oh, om, ch, cm = s
         return now.weekday() < 5 and (oh, om) <= (now.hour, now.minute) < (ch, cm)
 
-    if not _open("US"):
-        # US 52주만 — Finviz(전미국 신고저 리스트) 1차 + 전미국 yfinance 산출 폴백.
-        # ⚠️ US 급등·급락(fetch_us_movers)은 **네이버 1차**(_compute_us_movers,
-        # JP/CN/HK movers 동류)라 제외 — 네이버가 EOD 보유, 방문 refetch 로 종가
-        # 반영(사용자 2026-06-16 확인).
+    try:
+        paused = yf_paused()
+    except Exception:
+        paused = False
+
+    for tok in _HL_SCAN_SLOTS.get(slot, ()):
         try:
-            from bot.finviz_client import fetch_high_low
-            fetch_high_low()
+            if tok == "US":
+                # US 52주 — Finviz(전미국 신고저 리스트) 1차 + 전미국 yfinance 폴백.
+                from bot.finviz_client import fetch_high_low
+                fetch_high_low(force=(_open("US") and not paused))
+            elif tok in ("JP", "HK"):
+                from bot.intl_highlow import _kick, fetch_intl_highlow
+                if _open(tok) and not paused:
+                    _kick(tok)                 # 장중 force(전 유니버스 재스크레이프·_running dedup)
+                else:
+                    fetch_intl_highlow(tok)    # 장 밖 게이트 → EOD 1회 후 freeze
+            elif tok == "TW":
+                from bot.tw_highlow import _kick_tw_highlow, fetch_tw_highlow
+                if _open("TW") and not paused:
+                    _kick_tw_highlow()         # 장중 force(上市+上櫃 yfinance, _running dedup)
+                else:
+                    fetch_tw_highlow()         # 장 밖 게이트 → EOD 1회 후 freeze
+            elif tok == "TWMV":
+                # TW 무버 — TWSE/TPEx OpenAPI(가벼움). 장중 force·장 밖 게이트.
+                from bot.twse_client import fetch_tw_movers
+                fetch_tw_movers(force=_open("TW"))
         except Exception as exc:
-            log.warning("boards eod US 52w: %s", exc)
-    for m in ("JP", "HK"):
-        if not _open(m):
-            try:
-                from bot.intl_highlow import fetch_intl_highlow
-                fetch_intl_highlow(m)      # JP/HK 52주(yfinance) — movers 는 네이버라 제외
-            except Exception as exc:
-                log.warning("boards eod %s: %s", m, exc)
-    if not _open("TW"):
-        # TW 52주 + 무버 — 둘 다 TWSE/TPEx 컴퓨티드(네이버 아님) → EOD 자동 재산출
-        # (사용자 2026-06-16 '대만은 급등급락도').
-        try:
-            from bot.tw_highlow import fetch_tw_highlow
-            fetch_tw_highlow()
-        except Exception as exc:
-            log.warning("boards eod TW 52w: %s", exc)
-        try:
-            from bot.twse_client import fetch_tw_movers
-            fetch_tw_movers()
-        except Exception as exc:
-            log.warning("boards eod TW movers: %s", exc)
+            log.warning("highlow slot %s/%s: %s", slot, tok, exc)
 
 
-async def _periodic_highlow_eod() -> None:
-    """52주 신고저 EOD 자동 재산출 — 페이지 방문·고정시각 무관(사용자 2026-06-16).
-    30분마다 off-session 시장의 self-gating fetch 를 호출해, 마감 직후 stale 면 1회
-    EOD 재산출. 고정 07:30/16:30 prewarm 의 재시작-누락·HK 17:00(KST) 미커버를
-    보완하는 self-healing 경로. daemon thread fire(실수 #6 shutdown-join 회피).
-    startup 직후 한 박자 늦춰 다른 init 와 분산."""
-    await asyncio.sleep(180)
+async def _periodic_highlow_scan() -> None:
+    """컴퓨티드 보드(US/JP/HK/TW 52주 + TW 무버) 시간대별 슬롯 스캐너 — 페이지
+    방문·고정시각 무관(사용자 2026-06-16 '내가 안 들어가도 1시간단위로 최신 ·
+    장종료엔 멈춰서 부하↓'). 매시 :00 / :20 / :40 경계로 깨어나 그 슬롯 보드를
+    daemon thread 로 산출. 장중 = force 재산출(1h 신선), 장 밖 = 게이트(EOD 1회→
+    freeze). 옛 30분 off-session-only EOD task 를 장중 1h 까지 확장 + 시간대 분산.
+    벽시계 정렬 sleep(드리프트 0)·daemon fire(실수 #6 shutdown-join 회피)·startup
+    한 박자 늦춤."""
+    await asyncio.sleep(120)
+    from datetime import datetime, timedelta, timezone
+    slot_mins = sorted(_HL_SCAN_SLOTS.keys())
     while True:
+        now = datetime.now(timezone.utc)
+        nxt = None
+        for sm in slot_mins:                       # 다음 :00/:20/:40 경계
+            cand = now.replace(minute=sm, second=0, microsecond=0)
+            if cand > now:
+                nxt = cand
+                break
+        if nxt is None:                            # 이번 시(時) 슬롯 다 지남 → 다음 시 첫 슬롯
+            nxt = (now + timedelta(hours=1)).replace(
+                minute=slot_mins[0], second=0, microsecond=0)
+        await asyncio.sleep(max(5.0, (nxt - now).total_seconds()))
+        slot = nxt.minute
         try:
-            import threading as _eodt
-            _eodt.Thread(target=_ensure_highlow_eod, daemon=True,
-                         name="highlow-eod").start()
+            import threading as _slt
+            _slt.Thread(target=_run_highlow_slot, args=(slot,), daemon=True,
+                        name=f"highlow-slot-{slot}").start()
         except Exception:
-            log.exception("highlow eod thread failed")
-        await asyncio.sleep(30 * 60)
+            log.exception("highlow slot thread failed")
 
 
 # 대시보드 명령 콘솔 — '/명령' → (update, ctx) 핸들러 화이트리스트.
@@ -4112,9 +4138,10 @@ async def _on_startup(application) -> None:
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
     application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
     application._highlow_prewarm_task = asyncio.create_task(_periodic_highlow_prewarm())
-    # 52주 신고저 EOD 자동 재산출 (30분, off-session 시장 self-gating) — 장 종료 후
-    # 페이지 방문 없이도 종가기준 EOD 캐시 보장 (사용자 2026-06-16, KR 제외 전 시장).
-    application._highlow_eod_task = asyncio.create_task(_periodic_highlow_eod())
+    # 컴퓨티드 보드(US/JP/HK/TW 52주 + TW 무버) 시간대별 슬롯 스캐너 (:00/:20/:40) —
+    # 장중 1h force 재산출(페이지 방문 없이도 최신) + 장 밖 EOD 1회 후 freeze, 무거운
+    # Asia 52주를 20분씩 분산 (사용자 2026-06-16, KR·네이버 직접 보드 제외 전 시장).
+    application._highlow_scan_task = asyncio.create_task(_periodic_highlow_scan())
     # 관심종목 DART 공시 알림 폴러 (75초, /dart_alert on 일 때만 발송)
     application._dart_fav_alerts_task = asyncio.create_task(
         _periodic_dart_fav_alerts(application))

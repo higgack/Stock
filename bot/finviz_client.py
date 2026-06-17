@@ -649,7 +649,7 @@ def _fetch_signal(signal: str) -> list[dict]:
     return out
 
 
-def fetch_high_low() -> dict:
+def fetch_high_low(force: bool = False) -> dict:
     """52주 신고가/신저가 → {'high': [...], 'low': [...], 'ts', 'source'}.
 
     3-tier (사용자 2026-06-11 '전체 신고저' — Finviz 의존 제거):
@@ -658,9 +658,13 @@ def fetch_high_low() -> dict:
           전용, 첫 빌드 전엔 3차로 폴스루)
       3차 S&P 500 산출(빠른 최후 폴백)
     신선도 = 시장-인지(_session_fresh US, 장중 1h / 장 밖 마지막 마감 이후 재스캔 0
-    — 사용자 2026-06-14 '미국 신고저도 장중 1h'). 옛 플랫 5분 대체."""
+    — 사용자 2026-06-14 '미국 신고저도 장중 1h'). 옛 플랫 5분 대체.
+
+    force=True 면 신선도 게이트를 건너뛰고 즉시 재산출(장중 시간대별 슬롯 스캔이
+    1시간 경계의 sub-초 jitter 로 skip 되지 않게 — 사용자 2026-06-16 '내가 안
+    들어가도 1시간단위로 최신'). 장 밖 슬롯은 force 없이 호출 → EOD 1회 후 freeze."""
     stale = _cached("highlow.json", ttl=86400)
-    if stale is not None:
+    if not force and stale is not None:
         try:
             mt = (_CACHE_DIR / "highlow.json").stat().st_mtime
         except OSError:
