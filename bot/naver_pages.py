@@ -170,7 +170,7 @@ def render_theme_page() -> str:
                 f'{_pct_cell(pct)}{_pct_cell(pct3)}'
                 f'<td class="ld">{leaders or "—"}</td></tr>')
         body = (f'<div class="panel"><h2>전체 테마 {len(themes)}개 '
-                f'<span class="ts">{ts} 기준 · 헤더 클릭 정렬</span></h2>'
+                f'<span class="ts">{ts} 기준</span></h2>'
                 f'<table id="thm-tbl"><thead><tr><th>#</th>'
                 f'<th class="th-sort" data-k="name">테마</th>'
                 f'<th class="th-sort" data-k="pct" style="text-align:right">등락률</th>'
@@ -256,7 +256,7 @@ def render_highlow_page() -> str:
                               ind_dist_line(down), **_o)
                 + '</div>' + HL_SORT_JS)
         from bot.highlow_render import movers_freshness as _mf
-        sub = ("네이버 증권 급등/급락 · 등락률순·헤더 클릭 정렬 · 업종=네이버 · "
+        sub = ("네이버 증권 급등/급락 · 업종=네이버 · "
                f"{_mf('KR')}{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("급등·급락", sub, "highlow", body)
 

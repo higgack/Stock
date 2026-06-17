@@ -12973,8 +12973,9 @@ def _render_market_page(data: dict) -> str:
     parts.append(_render_deposit_charts(deposit))
     parts.append(_render_sector_movers(sector_movers))
     parts.append(_render_us_sector_movers(us_sector_movers))
-    # JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(Phase 1). TW·HK 는 ETF 희소라
-    # '주요 업종'(TOP 10 아님) 정직 라벨. 신고저 링크(주요종목 유니버스 스캔).
+    # JP/TW/CN/HK 업종 등락 — 섹터 ETF 합성(Phase 1). TW 는 TWSE 類股(~30) 우선.
+    # HK 는 ETF 희소(~4-6)지만 사용자 2026-06-17 요청으로 'Top 10' 라벨 통일(가용분
+    # 만큼 표시). 신고저 링크(주요종목 유니버스 스캔).
     # 자식 링크 순서·명칭 통일(사용자 2026-06-13): ① 업종별 시세(전체) ②
     # 신고가·신저가 ③ 상한가·하한가/급등·급락. JP/CN/HK 는 업종-전체 페이지
     # 부재(ETF 합성 위젯 자체) + 가격제한 별도 페이지 부재 → ②만.
@@ -13707,7 +13708,7 @@ def _render_asia_page(data: dict) -> str:
         f'<a href="cn52" style="{_lk2}">📈 신고가·신저가</a>'      # 재도입 2026-06-17
         f'<a href="cnmovers" style="{_lk2}">🚀 급등·급락</a>'))
     parts.append(_render_etf_sector_movers(
-        data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락",
+        data.get("hk_sector_movers", {}), "🇭🇰 홍콩 업종 등락 Top 10",
         f'<a href="hk52" style="{_lk2}">📈 신고가·신저가</a>'
         f'<a href="hkmovers" style="{_lk2}">🚀 급등·급락</a>'))
     _tw_link = (f'<a href="tw52" style="{_lk}">📈 신고가·신저가</a>'

@@ -111,7 +111,7 @@ def render_tw_highlow_page() -> str:
     # 2026-06-17 '대만 30초 적용가능?'). '장중 N 갱신' 은 라이브 오인 → EOD 정직 표기.
     from bot.highlow_render import market_hours_label as _mhl
     sub = (f"上市(TWSE)+上櫃(TPEx) 전종목 당일 등락 상·하위 · {_mhl('TW')} · "
-           f"등락률순·헤더 클릭 정렬 · 종목명=한글 · 🔺상한/🔻하한(±10%) · 업종·시총="
+           f"종목명=한글 · 🔺상한/🔻하한(±10%) · 업종·시총="
            f"yfinance · {(dt + ' 종가 기준 · ') if dt else ''}TWSE/TPEx 공식 종가(EOD·실시간 아님)"
            f"{(' · 마지막 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 급등·급락", sub, body,
@@ -165,7 +165,7 @@ def render_tw_highlow52_page() -> str:
                 + '</div>' + HL_SORT_JS)
     from bot.highlow_render import market_hours_label as _mhl
     sub = (f"上市(TWSE)+上櫃(TPEx) 전종목 1년 일봉 · 당일 52주 신고가/신저가 갱신 · "
-           f"{_mhl('TW')} · 시총순·헤더 클릭 정렬 · 장중 1h·마감후 EOD 자동"
+           f"{_mhl('TW')} · 장중 1h·마감후 EOD 자동"
            f"{(' · 마지막 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 52주 신고가·신저가", sub, body,
                      nav=_market_nav("TW", "tw52"), back=_asia_back("TW"))

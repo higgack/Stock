@@ -252,7 +252,7 @@ def render_us_highlow_page() -> str:
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') + 장중 1h(다른 52주와 통일).
     from bot.highlow_render import market_hours_label as _mhl
     sub = (f"미국 52주 신고가·신저가 · {_mhl('US')} · 종목명=네이버 한글 · 거래량·거래대금 · "
-           f"시총순·헤더 클릭 정렬 · 업종=GICS·yfinance · 출처 {src} · 장중 1h·마감후 EOD 자동"
+           f"업종=GICS·yfinance · 출처 {src} · 장중 1h·마감후 EOD 자동"
            + (f" · 마지막 갱신 {ts}" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
 
@@ -343,12 +343,10 @@ def render_us_movers_page() -> str:
     _hrs = _mhl("US")
     _fresh = _mf("US")
     if "네이버" in src:
-        sub = (f"미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE·AMEX 제외) · {_hrs} · "
-               f"등락률순·헤더 클릭 정렬 · {_fresh}"
+        sub = (f"미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE) · {_hrs} · {_fresh}"
                + (f" · 마지막 갱신 {ts}" if ts else ""))
     else:
-        sub = (f"미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · {_hrs} · "
-               "등락률순·헤더 클릭 정렬"
+        sub = (f"미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · {_hrs}"
                + (f" · 출처 {src}" if src else "") + f" · {_fresh}"
                + (f" · 마지막 갱신 {ts}" if ts else ""))
     return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)
@@ -413,7 +411,7 @@ def render_us_prepost_page() -> str:
                 + _HL_SORT_JS)
     sub = (f"전시장 무버 {sess_kr} 시간외 등락 상·하위 30 · 정규장 종가 대비 · "
            "네이버 실시간 · 가격·등락=시간외 라이브 · 거래량·거래대금=정규장 누적"
-           "(시간외분은 네이버 미제공) · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분 · "
+           "(시간외분은 네이버 미제공) · 연장거래 창에서 30분 · "
            + _ext_window_kst()
            + (f" · 마지막 갱신 {ts}" if ts else ""))
     return _shell("미국 장전·장후 급등·급락", sub, "usprepost", body)
