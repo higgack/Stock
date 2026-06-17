@@ -5189,10 +5189,12 @@ class TestIntlHighLow52:
     나라도 모두' + '한국도 신고가신저가'). peer 유니버스 + SWR 동기계산 금지
     + 페이지. KR 은 peer 맵의 해외 비교군을 native 접미사 필터로 제외."""
 
-    def test_universe_from_peer_maps(self):
+    def test_universe_from_peer_maps(self, monkeypatch):
         import bot.intl_highlow as ih
-        # CN_A 52주 제거(2026-06-14) — JP/HK/KR 만
-        for mk, lo in (("JP", 40), ("HK", 30), ("KR", 50)):
+        # CN_A 재도입(2026-06-17) — 전종목(AKShare)+peer 폴백. AKShare 를 빈
+        # 결과로 강제해 peer 폴백 경로를 결정적 검증(네트워크 0, VM 에서도).
+        monkeypatch.setattr("bot.akshare_client.list_all_a_shares", lambda: {})
+        for mk, lo in (("JP", 40), ("HK", 30), ("KR", 50), ("CN_A", 30)):
             uni, names = ih._universe(mk)
             assert len(uni) >= lo, (mk, len(uni))
             assert len(uni) == len(set(uni))          # dedupe
@@ -5237,8 +5239,8 @@ class TestIntlHighLow52:
         from pathlib import Path as _P
         root = _P(__file__).resolve().parents[1] / "bot"
         srv = (root / "dashboard_server.py").read_text("utf-8")
-        assert "/jp52" in srv and "/hk52" in srv   # CN 52주 제거(2026-06-14)
-        assert "/cn52" not in srv
+        assert "/jp52" in srv and "/hk52" in srv
+        assert "/cn52" in srv                      # CN 52주 재도입(2026-06-17)
         assert "/kr52" in srv and "_handle_intl_page" in srv
         dash = (root / "dashboard.py").read_text("utf-8")
         assert 'href="jp52"' in dash and 'href="hk52"' in dash
@@ -9261,8 +9263,9 @@ class TestChildDashboardCrossLink:
         assert 'href="hk52"' in hk and 'href="hkmovers"' in hk
         tw = _market_nav("TW", "tw52")
         assert 'href="tw52"' in tw and 'href="twhighlow"' in tw
-        cn = _market_nav("CN_A", "cnmovers")   # CN 52주 제거 — cnmovers 만(2026-06-14)
-        assert 'href="cnmovers"' in cn and 'href="cn52"' not in cn
+        cn = _market_nav("CN_A", "cn52")       # CN 52주 재도입(2026-06-17, peer-only)
+        assert 'href="cnmovers"' in cn and 'href="cn52"' in cn
+        assert 'class="active" href="cn52"' in cn
 
     def test_intl_pages_emit_nav(self, monkeypatch):
         import bot.intl_highlow as ih, bot.jp_stop as js
@@ -11254,22 +11257,28 @@ class TestHighlowSlotScan:
         assert "_kick(tok)" in seg and "fetch_intl_highlow(tok)" in seg
         assert "_kick_tw_highlow()" in seg and "fetch_tw_highlow()" in seg
         assert "fetch_tw_movers(force=" in seg
+        assert '"CN_A"' in seg             # CN 재도입(2026-06-17) — intl 경로 라우팅
         # KR·US movers 제외(네이버 직접 — 슬롯 대상 아님).
         assert '"KR"' not in seg and "fetch_us_movers" not in seg
         assert "yf_paused" in seg          # force 경로는 YF_PAUSE 존중
 
-    def test_slots_staggered_20min(self):
-        # 무거운 Asia 52주(JP/HK/TW)가 :00/:20/:40 으로 20분씩 분리(동시 부하 회피).
+    def test_slots_staggered_15min(self):
+        # CN 재도입(2026-06-17)으로 무거운 Asia 52주 4종(JP/HK/CN/TW)이 :00/:15/
+        # :30/:45 로 15분씩 분리(동시 부하 회피, 사용자 '부하고려해서 다시 전체적으로').
         import pytest as _pt
         _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
         from bot.telegram_bot import _HL_SCAN_SLOTS
         assert _HL_SCAN_SLOTS[0] == ("US", "JP")     # 야간 US + JP(비충돌) 동거
-        assert _HL_SCAN_SLOTS[20] == ("HK",)
-        assert _HL_SCAN_SLOTS[40] == ("TW", "TWMV")  # TW 52주 + TW 무버(소스 다름)
-        # 무거운 yfinance 52주 3종이 서로 다른 슬롯에(20분 간격) — 겹침 0.
+        assert _HL_SCAN_SLOTS[15] == ("HK",)
+        assert _HL_SCAN_SLOTS[30] == ("CN_A",)       # CN 재도입 슬롯
+        assert _HL_SCAN_SLOTS[45] == ("TW", "TWMV")  # TW 52주 + TW 무버(소스 다름)
+        # 무거운 yfinance 52주 4종이 서로 다른 슬롯에(15분 간격) — 겹침 0.
         heavy_slots = {m: s for s, toks in _HL_SCAN_SLOTS.items()
-                       for m in toks if m in ("JP", "HK", "TW")}
-        assert len(set(heavy_slots.values())) == 3   # JP/HK/TW 각자 다른 슬롯
+                       for m in toks if m in ("JP", "HK", "CN_A", "TW")}
+        assert len(set(heavy_slots.values())) == 4   # JP/HK/CN/TW 각자 다른 슬롯
+        # 슬롯 분(分) 간격 = 60/슬롯수 균등(15분) — 부하 분산 불변식.
+        mins = sorted(_HL_SCAN_SLOTS.keys())
+        assert mins == [0, 15, 30, 45]
 
     def test_run_slot_in_session_forces(self, monkeypatch):
         # 진입점 스모크(CLAUDE.md §7d) — 장중이면 force 경로 라우팅.
@@ -11282,13 +11291,14 @@ class TestHighlowSlotScan:
         import bot.twse_client as tw
         rec: dict = {}
         monkeypatch.setattr(fc, "yf_paused", lambda: False)
-        # US·TW 종일 개장 → 평일이면 _open True. JP/HK 는 빈 창(항상 닫힘).
+        # US·TW·CN 종일 개장 → 평일이면 _open True. JP 는 빈 창(항상 닫힘).
         monkeypatch.setattr(fc, "_SESSIONS_UTC",
                             {**fc._SESSIONS_UTC, "US": (0, 0, 23, 59),
-                             "TW": (0, 0, 23, 59), "JP": (12, 0, 12, 0)})
+                             "TW": (0, 0, 23, 59), "CN_A": (0, 0, 23, 59),
+                             "JP": (12, 0, 12, 0)})
         monkeypatch.setattr(fc, "fetch_high_low",
                             lambda force=False: rec.__setitem__("us", force))
-        monkeypatch.setattr(ih, "_kick", lambda m: rec.__setitem__("kick", m))
+        monkeypatch.setattr(ih, "_kick", lambda m: rec.__setitem__(f"kick_{m}", True))
         monkeypatch.setattr(ih, "fetch_intl_highlow",
                             lambda m: rec.__setitem__(f"gate_{m}", True))
         monkeypatch.setattr(th, "_kick_tw_highlow",
@@ -11300,13 +11310,16 @@ class TestHighlowSlotScan:
         from datetime import datetime, timezone
         wd = datetime.now(timezone.utc).weekday() < 5
         tb._run_highlow_slot(0)            # US + JP
-        tb._run_highlow_slot(40)           # TW + TWMV
+        tb._run_highlow_slot(30)           # CN_A (재도입)
+        tb._run_highlow_slot(45)           # TW + TWMV
         assert rec.get("us") is wd                       # US: 평일 force / 주말 gate
         assert rec.get("gate_JP") is True                # JP 닫힘 → 게이트
         assert rec.get("twmv") is wd                     # TW 무버: 평일 force
         if wd:
+            assert rec.get("kick_CN_A") is True          # CN 52주 장중 force(재도입)
             assert rec.get("tw_kick") is True            # TW 52주 force
         else:
+            assert rec.get("gate_CN_A") is True          # 주말 → CN 게이트
             assert rec.get("tw_gate") is True            # 주말 → 게이트
 
     def test_run_slot_off_session_gates(self, monkeypatch):
@@ -11333,10 +11346,11 @@ class TestHighlowSlotScan:
                             lambda: rec.__setitem__("tw_gate", True))
         monkeypatch.setattr(tw, "fetch_tw_movers",
                             lambda force=False: rec.__setitem__("twmv", force))
-        for s in (0, 20, 40):
+        for s in (0, 15, 30, 45):
             tb._run_highlow_slot(s)
         assert rec.get("us") is False                    # force 안 함
         assert rec.get("gate_JP") and rec.get("gate_HK") # JP/HK 게이트
+        assert rec.get("gate_CN_A") is True              # CN 게이트(재도입)
         assert rec.get("tw_gate") and rec.get("twmv") is False
         assert "kick" not in rec and "tw_kick" not in rec  # force 경로 미진입
 
@@ -11372,6 +11386,77 @@ class TestHighlowSlotScan:
             return datetime(2026, 6, 16, h, mi, tzinfo=timezone.utc).timestamp()
         assert _session_fresh("US", ts(19, 0), 3600, now_ts=ts(23, 0)) is False
         assert _session_fresh("US", ts(22, 0), 3600, now_ts=ts(23, 0)) is True
+
+
+class TestCN52Reenabled:
+    """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로 · 그냥
+    전시장 · 해줘') — **전종목**(AKShare list_all_a_shares 전 A주) + AKShare 부재
+    시 주요종목(peer) 폴백 + 슬롯 :30 분산. 옛 2026-06-14 제거(yfinance CN 커버
+    리지 빈약) 번복. ⚠️ yfinance CN 1년 커버리지 한계로 전종목 스캔해도 결과 부분."""
+
+    def test_cn_in_cfg(self):
+        from bot.intl_highlow import _CFG
+        assert "CN_A" in _CFG
+        peer_map, cache, status, label, suffix = _CFG["CN_A"]
+        assert peer_map == "_CN_A_INDUSTRY_PEERS"   # AKShare 부재 시 peer 폴백 소스
+        assert cache.startswith("highlow_cn") and status.startswith("cn_highlow")
+        assert suffix == (".SS", ".SZ")             # native A주 접미사 필터
+
+    def test_cn_full_universe_wired(self, monkeypatch):
+        # 전종목 경로: _universe('CN_A') 가 AKShare list_all_a_shares 를 우선 사용.
+        import bot.intl_highlow as ih
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert "list_all_a_shares" in src           # AKShare 전종목 소스 배선
+        # AKShare 가 전종목 주면 그게 유니버스(폴백 아님) — 배선 검증(네트워크 0).
+        monkeypatch.setattr("bot.akshare_client.list_all_a_shares",
+                            lambda: {f"{600000 + i}.SS": f"종목{i}" for i in range(300)})
+        uni, names = ih._universe("CN_A")
+        assert len(uni) == 300 and names["600000.SS"] == "종목0"
+        # AKShare 빈 결과(미설치/실패) → peer(_CN_A_INDUSTRY_PEERS) 폴백, 회귀 0.
+        monkeypatch.setattr("bot.akshare_client.list_all_a_shares", lambda: {})
+        uni2, names2 = ih._universe("CN_A")
+        assert len(uni2) >= 30                       # peer ~64
+        assert all(t.endswith((".SS", ".SZ")) for t in uni2)
+
+    def test_cn_akshare_code_conversion(self, monkeypatch):
+        # list_all_a_shares 변환 규칙: 6→.SS, 0/3→.SZ, 4/8/9(北京)→제외.
+        import bot.akshare_client as ak
+
+        class _Row(dict):
+            def get(self, k, d=None):
+                return dict.get(self, k, d)
+
+        class _DF:                                   # 최소 DataFrame 흉내
+            empty = False
+            columns = ["code", "name"]
+
+            def iterrows(self):
+                rows = [{"code": "600519", "name": "贵州茅台"},
+                        {"code": "000858", "name": "五粮液"},
+                        {"code": "300750", "name": "宁德时代"},
+                        {"code": "830799", "name": "北证종목"},   # 北京 → 제외
+                        {"code": "12", "name": "잘못"}]           # 6자리 아님 → 제외
+                for i, r in enumerate(rows):
+                    yield i, _Row(r)
+
+        monkeypatch.setattr(ak, "_import_akshare", lambda: object())
+        monkeypatch.setattr(ak, "_fetch_with_retry", lambda fn, label, **k: _DF())
+        monkeypatch.setattr(ak, "_cache_get", lambda *a, **k: None)
+        monkeypatch.setattr(ak, "_cache_put", lambda *a, **k: None)
+        out = ak.list_all_a_shares()
+        assert out == {"600519.SS": "贵州茅台", "000858.SZ": "五粮液",
+                       "300750.SZ": "宁德时代"}        # 北京·비6자리 제외
+
+    def test_cn52_route_and_nav_wired(self):
+        # 서버 라우트 + ASIA 허브/시장 nav 에 cn52 노출(JP/HK 미러).
+        srv = open("bot/dashboard_server.py", encoding="utf-8").read()
+        assert '"/cn52"' in srv and '"/cn52": "CN_A"' in srv
+        navs = open("bot/tw_pages.py", encoding="utf-8").read()
+        assert '("cn52", "📈 신고가·신저가")' in navs   # CN_A 자식 nav
+        ip = open("bot/intl_pages.py", encoding="utf-8").read()
+        assert '"CN_A": "cn52"' in ip                  # 52w active-nav 매핑
+        dash = open("bot/dashboard.py", encoding="utf-8").read()
+        assert 'href="cn52"' in dash                   # ASIA 허브 링크
 
 
 class TestHighlowUniverseFullCoverage:
