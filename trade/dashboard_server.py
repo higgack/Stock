@@ -158,6 +158,20 @@ def _patch_headers(
 # API payloads
 # ---------------------------------------------------------------------
 
+def _api_company_report(q: str, mode: str) -> dict:
+    """GET /api/company_report?q=&mode=free|llm — 기업 중심 보고서 HTML (사용자
+    2026-06-17 '버튼으로 보고서 뽑기, 무료+유료'). mode=llm 만 비용(opt-in). graceful."""
+    if not q:
+        return {"ok": False, "error": "회사명 또는 6자리 코드를 입력하세요."}
+    try:
+        from trade.company_report import build
+        html = build(q, "llm" if mode == "llm" else "free")
+        return {"ok": True, "html": html, "mode": mode}
+    except Exception as exc:
+        log.warning("company_report api %s/%s: %s", q, mode, exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def _api_alerts() -> dict:
     if not _STORE_PATH.exists():
         return {"alerts": [], "latest_ids": []}
@@ -337,6 +351,11 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             payload = _api_health()
         elif path == "/api/stats":
             payload = _api_stats()
+        elif path == "/api/company_report":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            payload = _api_company_report((qs.get("q", [""])[0] or "").strip(),
+                                          (qs.get("mode", ["free"])[0] or "free").strip())
         else:
             self.send_error(404)
             return

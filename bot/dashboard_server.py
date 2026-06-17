@@ -1052,7 +1052,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             if not ticker:
                 self._json_ok({"ok": False, "error": "missing ticker"})
                 return
-            if direction not in ("up", "down"):
+            if direction not in ("up", "down", "top", "bottom"):
                 self._json_ok({"ok": False, "error": "invalid direction"})
                 return
             from bot.market_favorites import reorder_favorite

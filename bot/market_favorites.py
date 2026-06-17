@@ -204,9 +204,10 @@ def get_favorites() -> list[dict]:
 
 
 def reorder_favorite(ticker: str, direction: str) -> bool:
-    """Move a ticker up/down one position in the saved order. Persists.
+    """Move a ticker in the saved order. Persists.
 
-    direction: 'up' (앞으로) | 'down' (뒤로). Returns True if order changed."""
+    direction: 'up'/'down' (한 칸) | 'top'/'bottom' (맨 위/아래 — 사용자 2026-06-17
+    '하나씩 올리면 끝까지 한참'). Returns True if order changed."""
     favorites = _load()
     idx = next((i for i, f in enumerate(favorites)
                 if f.get("ticker", "").upper() == ticker.upper()), None)
@@ -216,6 +217,10 @@ def reorder_favorite(ticker: str, direction: str) -> bool:
         favorites[idx - 1], favorites[idx] = favorites[idx], favorites[idx - 1]
     elif direction == "down" and idx < len(favorites) - 1:
         favorites[idx + 1], favorites[idx] = favorites[idx], favorites[idx + 1]
+    elif direction == "top" and idx > 0:
+        favorites.insert(0, favorites.pop(idx))      # 맨 위로
+    elif direction == "bottom" and idx < len(favorites) - 1:
+        favorites.append(favorites.pop(idx))         # 맨 아래로
     else:
         return False
     _save(favorites)
