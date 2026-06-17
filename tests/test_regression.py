@@ -4696,6 +4696,11 @@ class TestDartParseTargetAndSignificance:
         assert ff("주식등의대량보유상황보고서(약식)")
         assert not ff("주식등의대량보유상황보고서(일반)")    # 일반=majorstock API
         assert not ff("유형자산양수도종료보고서")            # _asset_complete_lines 파싱
+        # 2026-06-17 '미파싱제외건' — 자산/영업 양수도·양도 종료보고서(完了 보고,
+        # 전용 소스 없음)는 미파싱제외. 단 유형자산 양수도 종료는 위처럼 파서 보유라 제외.
+        assert ff("합병등종료보고서(자산양수도)")            # 합병등 → 完了 보고
+        assert ff("자산양수도종료보고서")
+        assert ff("영업양도종료보고서")
         assert not ff("단일판매ㆍ공급계약체결")             # 진짜 파서 대상
         assert not ff("주요사항보고서(유상증자결정)")
         assert not ff("[기재정정]단일판매ㆍ공급계약체결")   # 본문 정정은 재추출 대상

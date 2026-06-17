@@ -3453,7 +3453,14 @@ def intended_freeform_unparsed(report_nm: str) -> bool:
     # 사실 보고, _fetch_doc_text=없음·전용 API 없음) + 대량보유 약식(간이 5% 보고,
     # 원문 미제공). detail 빈 게 정상 → 진짜 미파싱 아닌 미파싱제외. 유형자산
     # 양수도 종료(_asset_complete_lines 파싱)·대량보유 일반(majorstock API)은 미해당.
-    if "종료보고서" in rn and ("합병" in rn or "분할" in rn):
+    # 자산/영업 양수도·양도 종료보고서(대주주 지분변동만 있는 完了 보고)도 포함
+    # — 完了 보고는 전용 구조화 소스 없어 빈 detail 이 정상(사용자 2026-06-17
+    # '미파싱제외건'). ⚠️ **유형자산** 양수도 종료(_asset_complete_lines 파서 보유)는
+    # 제외 — 그건 파싱 대상이고 실패 시 '진짜 미파싱'으로 보여야 함(기존 정책·
+    # 회귀 test_intended_freeform_split). 그래서 (양수도/양도) AND not 유형자산.
+    if "종료보고서" in rn and ("합병" in rn or "분할" in rn
+                            or (("양수도" in rn or "양도" in rn)
+                                and "유형자산" not in rn)):
         return True
     if "대량보유" in rn and "약식" in rn:
         return True
