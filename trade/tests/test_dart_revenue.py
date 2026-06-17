@@ -19,6 +19,19 @@ class DartRevenueTests(unittest.TestCase):
         # 키 없으면 네트워크 전에 None (샌드박스·creds 부재 graceful).
         self.assertIsNone(D.fetch_company_products("005930", api_key=""))
 
+    def test_clean_products(self):
+        raw = [{"name": "매출액", "share_pct": None},
+               {"name": "DRAM 등", "share_pct": 39.0},
+               {"name": "제7조 (허위, 과장된 정보제공)", "share_pct": None},
+               {"name": "2024년(제40기)", "share_pct": None},
+               {"name": "양극재(양극활물질)", "share_pct": 96.7}]
+        names = [p["name"] for p in D._clean_products(raw)]
+        self.assertIn("DRAM", names)               # '등' 꼬리 제거
+        self.assertIn("양극재(양극활물질)", names)
+        self.assertNotIn("매출액", names)           # 헤더 토큰 제거
+        self.assertTrue(all("제7조" not in n for n in names))   # 약관 조항 제거
+        self.assertTrue(all("2024년" not in n for n in names))  # 기수 라벨 제거
+
     def test_build_inventory_assembles_and_saves(self):
         tmp = tempfile.mkdtemp()
         fake = {"code": "005930", "company": "삼성전자", "report": "사업보고서",
