@@ -134,52 +134,86 @@ def _cache_put(cache_key: str, value) -> None:
         log.warning("akshare: cache write failed for %s: %s", cache_key, exc)
 
 
-def list_all_a_shares() -> dict:
-    """전 A주(上海 .SS + 深圳 .SZ) {yfinance_ticker: 中文명} — CN 52주 신고저
-    full-market 유니버스 (사용자 2026-06-17 '그냥 전시장'). AKShare
-    stock_info_a_code_name(~5천 A주 코드+명)에서 6→.SS / 0·3→.SZ 로 변환,
-    北京거래소(4·8·9 prefix → .BJ)는 yfinance 미커버라 제외. 7일 디스크 캐시
-    (상장목록 변동 느림). AKShare 미설치/실패 → {} (호출측 peer 폴백).
+def _cn_code_to_ticker(code: str) -> Optional[str]:
+    """6자리 A주 코드 → yfinance 티커. 6→.SS(上海), 0·3→.SZ(深圳), 4·8·9
+    (北京거래소)는 yfinance 미커버라 None. 6자리 아니면 None (순수·테스트 가능)."""
+    code = str(code or "").strip()
+    if len(code) != 6 or not code.isdigit():
+        return None
+    if code[0] == "6":
+        return f"{code}.SS"            # 上海(600/601/603/605/688/689)
+    if code[0] in ("0", "3"):
+        return f"{code}.SZ"            # 深圳(000/001/002/003/300/301)
+    return None                        # 4/8/9 = 北京거래소
 
-    ⚠️ 이건 '전종목 코드'일 뿐 — yfinance 가 CN A주 1년 일봉을 빈약하게 줘서
-    이 전체를 스캔해도 데이터 있는 종목만 신고저에 남는다(전종목 '시도'·결과는
-    부분). JP/HK(거래소 공식)·TW(OpenAPI) 대비 CN 만의 구조적 한계."""
-    cache_key = "all_a_shares.json"
+
+def _pick_cons_col(columns, kind: str):
+    """CSI 구성종목 DataFrame 에서 '成分券/品种 코드·명칭' 컬럼 선택 — '指数코드'
+    (=000300 자기자신) 오선택 방지. kind='code'|'name'. 순수·테스트 가능."""
+    cn = "代码" if kind == "code" else "名称"
+    en = "code" if kind == "code" else "name"
+    cols = [str(c) for c in columns]
+    for pref in ("成分券", "成份券", "品种"):            # 구성종목 컬럼 우선
+        for c in cols:
+            if pref in c and cn in c:
+                return c
+    for c in cols:                                       # '指数…' 는 제외
+        if cn in c and "指数" not in c:
+            return c
+    for c in cols:                                       # 영문 폴백
+        if en in c.lower() and "index" not in c.lower():
+            return c
+    return None
+
+
+def list_csi300_500() -> dict:
+    """CSI 300 + CSI 500 구성종목 {yfinance_ticker: 中文명} — CN 52주 신고저
+    유니버스 (사용자 2026-06-17 'CSI300+500'). 대형(沪深300)+중형(中证500) ≈
+    시총 상위 ~800. 전 A주(~5천)는 소형주를 yfinance 가 1년 일봉으로 잘 안 줘서
+    신고저가 듬성듬성했음 — CSI300+500 은 yfinance 커버리지가 양호한 대형·중형만
+    이라 dense·가벼움. AKShare index_stock_cons_csindex(공식 中证指数, 폴백
+    index_stock_cons) → 6→.SS / 0·3→.SZ. 7일 디스크 캐시. AKShare 미설치/실패
+    → {} (호출측 peer ~64 폴백).
+
+    ⚠️ AKShare 가 서버 IP 에서 차단/지연될 수 있어 VM 라이브 검증 필요(샌드박스
+    미설치). 함수명·컬럼명은 방어적 탐지(_pick_cons_col)로 AKShare 버전 차이 흡수."""
+    cache_key = "csi300_500.json"
     cached = _cache_get(cache_key, ttl_hours=7 * 24)
     if isinstance(cached, dict) and len(cached) > 100:
         return cached
     ak = _import_akshare()
     if ak is None:
         return {}
-    try:
-        df = _fetch_with_retry(lambda: ak.stock_info_a_code_name(),
-                               "stock_info_a_code_name")
-    except Exception as exc:
-        log.warning("akshare stock_info_a_code_name failed: %s", exc)
-        return {}
-    if df is None or getattr(df, "empty", True):
-        return {}
     out: dict = {}
-    try:
-        # 컬럼명 방어적 탐지 (보통 'code'/'name', 버전따라 한자일 수 있음).
-        cols = {str(c).lower(): c for c in df.columns}
-        code_c = cols.get("code") or (df.columns[0] if len(df.columns) else None)
-        name_c = cols.get("name") or (df.columns[1] if len(df.columns) > 1 else None)
-        for _, row in df.iterrows():
-            code = str(row.get(code_c) or "").strip()
-            if len(code) != 6 or not code.isdigit():
+    for sym in ("000300", "000905"):                     # 沪深300 · 中证500
+        df = None
+        for fn_name in ("index_stock_cons_csindex", "index_stock_cons"):
+            fn = getattr(ak, fn_name, None)
+            if fn is None:
                 continue
-            if code[0] == "6":
-                tk = f"{code}.SS"            # 上海(600/601/603/605/688/689)
-            elif code[0] in ("0", "3"):
-                tk = f"{code}.SZ"            # 深圳(000/001/002/003/300/301)
-            else:
-                continue                    # 4/8/9 = 北京거래소 — yfinance 미커버
-            nm = str(row.get(name_c) or "").strip() if name_c is not None else ""
-            out[tk] = nm or tk
-    except Exception as exc:
-        log.warning("akshare A-share list parse failed: %s", exc)
-        return {}
+            try:
+                df = _fetch_with_retry(lambda f=fn, s=sym: f(symbol=s),
+                                       f"{fn_name} {sym}")
+            except Exception as exc:
+                log.warning("akshare %s(%s) failed: %s", fn_name, sym, exc)
+                df = None
+            if df is not None and not getattr(df, "empty", True):
+                break
+        if df is None or getattr(df, "empty", True):
+            continue
+        try:
+            code_c = _pick_cons_col(df.columns, "code")
+            name_c = _pick_cons_col(df.columns, "name")
+            if code_c is None:
+                continue
+            for _, row in df.iterrows():
+                tk = _cn_code_to_ticker(row.get(code_c))
+                if not tk:
+                    continue
+                nm = str(row.get(name_c) or "").strip() if name_c else ""
+                out.setdefault(tk, nm or tk)             # 300∩500 중복 dedup
+        except Exception as exc:
+            log.warning("akshare CSI %s parse failed: %s", sym, exc)
     if len(out) > 100:
         _cache_put(cache_key, out)
     return out
