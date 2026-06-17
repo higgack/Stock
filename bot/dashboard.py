@@ -5501,17 +5501,30 @@ def _render_stock_info_html(rec: dict) -> str:
             lat = m.get("latest", {})
             unit = m.get("unit", "USD")
             def _xbrl_fmt(v, u):
+                # 단위 축약 (사용자 2026-06-17 '단위 너무 길다') — 정수/실수 동일
+                # 처리(옛 정수 분기가 $113,097,000,000 전체 자릿수 노출했음).
                 if v is None:
                     return "—"
-                if isinstance(v, float):
-                    if u == "shares" or key == "eps_diluted":
-                        return f"{v:,.2f}"
-                    if abs(v) >= 1e9:
-                        return f"${v/1e9:,.2f}B"
-                    if abs(v) >= 1e6:
-                        return f"${v/1e6:,.1f}M"
-                    return f"${v:,.0f}"
-                return f"${int(v):,}" if isinstance(v, int) and abs(v) > 1000 else str(v)
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    return str(v)
+                if key == "eps_diluted":
+                    return f"{v:,.2f}"                       # EPS = 평문(통화기호 X)
+                if u == "shares" or key == "shares":         # 발행주식수 = 주식 수($ X)
+                    if abs(v) >= 1e8:
+                        return f"{v/1e8:,.2f}억주"
+                    if abs(v) >= 1e4:
+                        return f"{v/1e4:,.0f}만주"
+                    return f"{v:,.0f}주"
+                sym = "$" if u in ("USD", None) else ""      # ADR 외화(EUR/JPY)는 기호 생략
+                if abs(v) >= 1e12:
+                    return f"{sym}{v/1e12:,.2f}T"
+                if abs(v) >= 1e9:
+                    return f"{sym}{v/1e9:,.2f}B"
+                if abs(v) >= 1e6:
+                    return f"{sym}{v/1e6:,.1f}M"
+                return f"{sym}{v:,.0f}"
             ann_str = _xbrl_fmt(ann.get("val"), unit)
             lat_str = _xbrl_fmt(lat.get("val"), unit)
             fy_str = f"FY{ann.get('fy', '')}" if ann.get("fy") else "—"
