@@ -11388,6 +11388,82 @@ class TestHighlowSlotScan:
         assert _session_fresh("US", ts(22, 0), 3600, now_ts=ts(23, 0)) is True
 
 
+class TestLightBoardWarm:
+    """경량 동적 보드 서버사이드 워머 (사용자 2026-06-17 '모든 대시보드가 내가 안
+    들어가도 자기 리프레쉬 주기로 갱신') — 방문해야만 갱신되던 무버(KR/JP/HK/CN/US)·
+    KR 52주·장전후·NXT·테마/업종을 render 함수 호출('방문 시뮬')로 파일 캐시를 데움.
+    무거운 yfinance 52주는 슬롯스캐너(시간당) 담당. 시장시간·pause 게이트."""
+
+    def test_render_targets_resolve(self):
+        # E2E 배선(실수 #12c) — 워머가 호출하는 9개 render 가 실제 존재·callable.
+        # render 를 rename 하면 워머가 silent no-op 되기 전에 여기서 즉시 fail.
+        import importlib
+        targets = [
+            ("bot.intl_pages", "render_intl_highlow52_page"),   # KR 52주
+            ("bot.naver_pages", "render_highlow_page"),         # KR 무버
+            ("bot.naver_pages", "render_theme_page"),           # KR 테마
+            ("bot.intl_pages", "render_intl_movers_page"),      # JP/HK/CN 무버
+            ("bot.intl_pages", "render_kr_prepost_page"),       # KR 장전후
+            ("bot.nxt_pages", "render_nxt_page"),               # KR NXT 수급
+            ("bot.us_pages", "render_us_movers_page"),          # US 무버
+            ("bot.us_pages", "render_us_industry_page"),        # US 업종
+            ("bot.us_pages", "render_us_prepost_page"),         # US 장전후
+        ]
+        for m, fn in targets:
+            assert callable(getattr(importlib.import_module(m), fn)), m + "." + fn
+        from bot.finviz_client import _SESSIONS_UTC, naver_paused, yf_paused
+        from bot.prepost_client import _in_extended_window
+        assert set(_SESSIONS_UTC) >= {"US", "KR", "JP", "HK", "CN_A"}
+        assert callable(naver_paused) and callable(yf_paused)
+        assert callable(_in_extended_window)
+
+    def test_warmer_boot_wired(self):
+        s = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "async def _periodic_light_board_warm" in s
+        assert "def _warm_light_boards" in s
+        assert ("_light_board_warm_task = asyncio.create_task("
+                "_periodic_light_board_warm())") in s
+        assert "LIGHT_BOARD_WARM_SEC" in s              # 부하 튜닝 env knob
+        seg = s[s.index("def _warm_light_boards"):
+                s.index("async def _periodic_light_board_warm")]
+        # 게이트: naver/yf pause + 시장시간 _open + US 연장창 + thread 쌓임 가드.
+        assert "naver_paused" in seg and "yf_paused" in seg
+        assert "_in_extended_window" in seg and "_LIGHT_WARM_RUNNING" in seg
+
+    def test_warm_light_boards_gating(self, monkeypatch):
+        # 진입점 스모크(§7d) + 게이트 — 장중 전 보드 데움, naverpause 시 네이버 skip.
+        import pytest as _pt
+        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        from datetime import datetime, timezone
+        import bot.finviz_client as fc
+        import bot.prepost_client as pp
+        import bot.telegram_bot as tb
+        calls: list = []
+        monkeypatch.setattr(tb, "_warm_render",
+                            lambda module, fn, *a: calls.append((fn, a)))
+        monkeypatch.setattr(fc, "naver_paused", lambda: False)
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        monkeypatch.setattr(fc, "_SESSIONS_UTC",       # 전 시장 종일 개장(평일)
+                            {m: (0, 0, 23, 59) for m in fc._SESSIONS_UTC})
+        monkeypatch.setattr(pp, "_in_extended_window", lambda now: False)
+        tb._warm_light_boards()
+        fns = {c[0] for c in calls}
+        wd = datetime.now(timezone.utc).weekday() < 5
+        if wd:                                          # 장중 → 방문 시뮬 전부
+            assert "render_intl_highlow52_page" in fns  # KR 52주
+            assert "render_highlow_page" in fns         # KR 무버
+            assert "render_intl_movers_page" in fns     # JP/HK/CN 무버
+            assert "render_us_movers_page" in fns       # US 무버
+            assert ("render_intl_highlow52_page", ("KR",)) in calls
+        # naverpause → 네이버 보드 skip (워머도 정지 존중, 부하 0)
+        calls.clear()
+        monkeypatch.setattr(fc, "naver_paused", lambda: True)
+        tb._warm_light_boards()
+        fns2 = {c[0] for c in calls}
+        assert "render_highlow_page" not in fns2
+        assert "render_intl_movers_page" not in fns2
+
+
 class TestCN52Reenabled:
     """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로' →
     'CSI300+500') — **CSI 300 + CSI 500**(대형+중형 ~800, AKShare list_csi300_500)

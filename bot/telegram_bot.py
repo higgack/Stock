@@ -3195,7 +3195,8 @@ async def _periodic_highlow_prewarm() -> None:
 # 시간대별 슬롯 스캔 (사용자 2026-06-16 '우리가 산출하는 것도 장중에 1시간단위로
 # 돌아야돼 · 스캔부하는 시간대별 배치로 분산 · 장종료엔 종가기준으로 멈춰 부하↓').
 # **비-네이버 컴퓨티드 보드**만 대상 — 네이버 직접(KR 52w/movers · JP/CN/HK movers ·
-# **US movers**=_compute_us_movers 네이버 1차)은 네이버가 EOD·실시간 보유 → 제외.
+# **US movers**=_compute_us_movers 네이버 1차)은 가벼워(1콜씩) **_periodic_light_
+# board_warm**(180초 워머)이 방문 없이도 장중 신선 유지하므로 여기(시간당 슬롯)서 제외.
 # 무거운 Asia 52주(JP/HK/CN/TW yfinance 1년 벌크)를 시(時) 안에서 15분씩 떨어뜨려
 # (:00 / :15 / :30 / :45) 동시 부하 회피 — 4개 Asia 52주 겹침창(UTC 01:30-05:30 =
 # KST 10:30-14:30, JP·TW·HK·CN 모두 개장)에서도 서로 안 겹침(JP/HK/CN=peer ~50-100
@@ -3294,6 +3295,128 @@ async def _periodic_highlow_scan() -> None:
                         name=f"highlow-slot-{slot}").start()
         except Exception:
             log.exception("highlow slot thread failed")
+
+
+# ── 경량 동적 보드 서버사이드 워머 (사용자 2026-06-17 '모든 대시보드가 내가 안
+# 들어가도 자기 리프레쉬 주기로 갱신') ──────────────────────────────────────
+# 무거운 yfinance 52주(JP/HK/CN/TW)·US 52주는 슬롯스캐너(_periodic_highlow_scan,
+# 시간당)가 담당. 여기서는 **방문해야만 갱신되던 경량 동적 보드**를 데운다:
+# KR 52주(네이버) · 무버(KR/JP/HK/CN/US) · 장전후(US/KR) · KR NXT · 테마/업종.
+# 메커니즘 = '방문 시뮬레이션' — 페이지의 render 함수를 그대로 호출하면 그 페이지가
+# 읽는 **파일 캐시**(kr_movers_v1.json·highlow_kr_v2.json·intl movers/us movers
+# 캐시 등)가 채워진다. dashboard_server 는 별도 프로세스지만 같은 파일 캐시를
+# 읽으므로 cross-process 로 신선해진다(렌더 HTML 자체는 폐기 — 캐시 채우기 목적).
+# 각 보드 내부 fetch 는 자기 SWR TTL(무버 30초·KR 52주 30초·테마/업종 더 김)로
+# 게이트되므로, 워머가 자주 깨어나도 TTL 안이면 외부 호출 0(과fetch 없음).
+_LIGHT_WARM_RUNNING = False
+
+
+def _warm_render(module: str, fn: str, *args) -> None:
+    """페이지 render 호출(반환 HTML 폐기) — 그 페이지의 파일 캐시를 채운다."""
+    import importlib
+    getattr(importlib.import_module(module), fn)(*args)
+
+
+def _warm_light_boards() -> None:
+    """장중인 경량 동적 보드의 render 를 호출해 파일 캐시를 데움(방문 없이 신선).
+    시장시간·pause(naverpause/yfpause) 게이트 → 장 밖·정지 시 skip(부하 0·freeze).
+    daemon thread 에서만 호출(render 가 네이버/Finviz 동기 fetch 포함 → 이벤트루프·
+    watchdog 폴링 비차단). 직전 사이클 미완 시 skip(thread 쌓임 방지)."""
+    global _LIGHT_WARM_RUNNING
+    if _LIGHT_WARM_RUNNING:
+        return
+    _LIGHT_WARM_RUNNING = True
+    try:
+        from datetime import datetime, timezone
+        try:
+            from bot.finviz_client import _SESSIONS_UTC, naver_paused, yf_paused
+        except Exception:
+            return
+        now = datetime.now(timezone.utc)
+
+        def _open(m: str) -> bool:
+            s = _SESSIONS_UTC.get(m)
+            if not s:
+                return False
+            oh, om, ch, cm = s
+            return now.weekday() < 5 and (oh, om) <= (now.hour, now.minute) < (ch, cm)
+
+        try:
+            nav_off = naver_paused()
+        except Exception:
+            nav_off = False
+        try:
+            yf_off = yf_paused()
+        except Exception:
+            yf_off = False
+
+        kst_h = (now.hour + 9) % 24
+        kr_ext = now.weekday() < 5 and 8 <= kst_h < 20   # KST 08-20 (NXT 장전후 포함)
+
+        jobs = []   # (label, callable) — 시장시간/연장창 게이트 통과분만
+        if not nav_off:                                  # 네이버 경량 보드
+            if _open("KR"):
+                jobs += [
+                    ("kr52", lambda: _warm_render(
+                        "bot.intl_pages", "render_intl_highlow52_page", "KR")),
+                    ("krmovers", lambda: _warm_render(
+                        "bot.naver_pages", "render_highlow_page")),
+                    ("theme", lambda: _warm_render(
+                        "bot.naver_pages", "render_theme_page")),
+                ]
+            for m in ("JP", "HK", "CN_A"):
+                if _open(m):
+                    jobs.append((f"{m}movers", lambda m=m: _warm_render(
+                        "bot.intl_pages", "render_intl_movers_page", m)))
+            if kr_ext:                                   # KR 장전후(NXT) — KST 08-20
+                jobs += [
+                    ("krprepost", lambda: _warm_render(
+                        "bot.intl_pages", "render_kr_prepost_page")),
+                    ("nxt", lambda: _warm_render("bot.nxt_pages", "render_nxt_page")),
+                ]
+        if _open("US"):                                  # US 무버·업종(Finviz)
+            jobs += [
+                ("usmovers", lambda: _warm_render(
+                    "bot.us_pages", "render_us_movers_page")),
+                ("usindustry", lambda: _warm_render(
+                    "bot.us_pages", "render_us_industry_page")),
+            ]
+        try:                                             # US 장전후(연장창만)
+            from bot.prepost_client import _in_extended_window
+            if _in_extended_window(now) and not yf_off:
+                jobs.append(("usprepost", lambda: _warm_render(
+                    "bot.us_pages", "render_us_prepost_page")))
+        except Exception:
+            pass
+
+        for label, fn in jobs:
+            try:
+                fn()
+            except Exception as exc:
+                log.debug("light board warm %s: %s", label, exc)
+    finally:
+        _LIGHT_WARM_RUNNING = False
+
+
+async def _periodic_light_board_warm() -> None:
+    """경량 동적 보드(무버·KR 52주·장전후·NXT·테마/업종) 서버사이드 워머 — 페이지
+    방문 없이도 장중 자동 신선(사용자 2026-06-17 '모든 대시보드가 내가 안 들어가도
+    자기 주기로 갱신'). LIGHT_BOARD_WARM_SEC(기본 180초) 마다 daemon thread 로
+    _warm_light_boards 발화. 무거운 yfinance 52주는 슬롯스캐너(시간당)가 담당 —
+    분리. 단순 간격 sleep·daemon fire(실수 #6 shutdown-join 회피)·startup 늦춤
+    (슬롯스캐너 120s·prewarm 과 startup 버스트 겹침 완화). ⚠️ 무버는 on-visit
+    SWR=30초지만 서버 워머는 부하(네이버 안티봇) 고려 기본 180초 — 더 조이려면
+    LIGHT_BOARD_WARM_SEC 낮춤, 네이버 차단 시 /naverpause 로 워머도 자동 skip."""
+    await asyncio.sleep(170)
+    warm_sec = max(60, int(os.getenv("LIGHT_BOARD_WARM_SEC", "180")))
+    while True:
+        try:
+            import threading as _lbt
+            _lbt.Thread(target=_warm_light_boards, daemon=True,
+                        name="light-board-warm").start()
+        except Exception:
+            log.exception("light board warm thread failed")
+        await asyncio.sleep(warm_sec)
 
 
 # 대시보드 명령 콘솔 — '/명령' → (update, ctx) 핸들러 화이트리스트.
@@ -4146,6 +4269,9 @@ async def _on_startup(application) -> None:
     # 장중 1h force 재산출(페이지 방문 없이도 최신) + 장 밖 EOD 1회 후 freeze, 무거운
     # Asia 52주를 20분씩 분산 (사용자 2026-06-16, KR·네이버 직접 보드 제외 전 시장).
     application._highlow_scan_task = asyncio.create_task(_periodic_highlow_scan())
+    # 경량 동적 보드 워머 (180초) — 무버·KR 52주·장전후·NXT·테마/업종을 방문 없이도
+    # 장중 자동 신선 유지 (사용자 2026-06-17). 무거운 52주는 위 슬롯스캐너 담당.
+    application._light_board_warm_task = asyncio.create_task(_periodic_light_board_warm())
     # 관심종목 DART 공시 알림 폴러 (75초, /dart_alert on 일 때만 발송)
     application._dart_fav_alerts_task = asyncio.create_task(
         _periodic_dart_fav_alerts(application))
