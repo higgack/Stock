@@ -11581,6 +11581,19 @@ class TestTwSectorFreeze:
         assert r.get("source") == "TWSE 類股" and r.get("n") == 2  # live 우선
 
 
+class TestSectorTitleCaps:
+    """업종 등락 위젯 제목 대소문자 통일 — 전 시장(KR/US/JP/CN/HK/TW) 'TOP 10'
+    (사용자 2026-06-17 시장개요 점검: HK 만 'Top 10' 으로 불일치하던 것 교정)."""
+
+    def test_all_sector_titles_uppercase_top10(self):
+        import re as _re
+        s = open("bot/dashboard.py", encoding="utf-8").read()
+        caps = _re.findall(r"업종 등락 (TOP|Top|top) 10", s)
+        assert caps, "업종 등락 TOP 10 제목 미발견"
+        assert all(c == "TOP" for c in caps), caps   # Top/top 잔존 금지(일관성)
+        assert "홍콩 업종 등락 TOP 10" in s            # HK 교정 확인
+
+
 class TestCN52Reenabled:
     """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로' →
     'CSI300+500') — **CSI 300 + CSI 500**(대형+중형 ~800, AKShare list_csi300_500)
