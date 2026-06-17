@@ -11647,6 +11647,20 @@ class TestIndexCardRecompose:
         assert "nve:XLY" in out2 and "nve:AIQ" not in out2
 
 
+class TestTwMoversNoLimitMarker:
+    """TW 무버 상한/하한(±10%) 마커·legend 제거 (사용자 2026-06-17 '대만에서 이건
+    없어도 돼'). stock_panel limit_pct 미전달(행 🔺/🔻 마커 없음) + 부제 legend 제거.
+    TW 52주·JP 상한가 페이지는 별개(영향 없음)."""
+
+    def test_tw_movers_no_limit_marker(self):
+        s = open("bot/tw_pages.py", encoding="utf-8").read()
+        mv = s[s.index("def render_tw_highlow_page"):
+               s.index("def render_tw_highlow52_page")]
+        sub = mv[mv.index("sub = "):mv.index("return _tw_shell")]
+        assert "🔺상한/🔻하한" not in sub          # 부제 legend 제거(코멘트는 무관)
+        assert "limit_pct=" not in mv              # 행 마커 kwarg 제거
+
+
 class TestCN52Reenabled:
     """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로' →
     'CSI300+500') — **CSI 300 + CSI 500**(대형+중형 ~800, AKShare list_csi300_500)
