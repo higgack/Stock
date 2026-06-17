@@ -21,20 +21,33 @@ _lock = threading.Lock()
 
 
 def _tw_universe() -> tuple[list[str], dict]:
-    """TWSE 전종목 일반종목 → (['2330.TW', ...], {ticker: name}). graceful []."""
-    try:
-        from bot.twse_client import fetch_stock_day_all, _is_common_stock
-        rows = fetch_stock_day_all().get("rows", [])
-    except Exception as exc:
-        log.warning("tw highlow universe error: %s", exc)
-        return [], {}
+    """TWSE(上市 .TW) + TPEx(上櫃 .TWO) 전 일반종목 → (tickers, names). graceful.
+    上櫃 포함은 env TW_HIGHLOW_OTC(기본 on, 사용자 2026-06-16 '전종목 다') — +~800
+    종목 yfinance 1y 스캔이라 EOD 백그라운드에서만 감내. 0/off 면 上市만."""
+    import os
+    from bot.twse_client import _is_common_stock
     uni, names = [], {}
-    for s in rows:
-        c = str(s.get("code") or "")
-        if _is_common_stock(c):
-            tk = f"{c}.TW"
-            uni.append(tk)
-            names[tk] = s.get("name") or c
+    try:
+        from bot.twse_client import fetch_stock_day_all
+        for s in fetch_stock_day_all().get("rows", []):
+            c = str(s.get("code") or "")
+            if _is_common_stock(c):
+                tk = f"{c}.TW"
+                uni.append(tk)
+                names[tk] = s.get("name") or c
+    except Exception as exc:
+        log.warning("tw highlow universe (上市): %s", exc)
+    if os.getenv("TW_HIGHLOW_OTC", "1").lower() not in ("0", "false", "off"):
+        try:
+            from bot.twse_client import fetch_tpex_day_all
+            for s in fetch_tpex_day_all().get("rows", []):
+                c = str(s.get("code") or "")
+                if _is_common_stock(c):
+                    tk = f"{c}.TWO"      # yfinance 上櫃 접미사
+                    uni.append(tk)
+                    names[tk] = s.get("name") or c
+        except Exception as exc:
+            log.warning("tw highlow universe (上櫃): %s", exc)
     return uni, names
 
 

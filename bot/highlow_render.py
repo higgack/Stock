@@ -36,6 +36,23 @@ from bot.naver_pages import _fmt_vol, _pct_cell
 _CUR = {"US": ("$", 2), "KR": ("₩", 0), "JP": ("¥", 0),
         "TW": ("NT$", 2), "CN_A": ("¥", 2), "HK": ("HK$", 2)}
 
+# 시장별 장 시간(현지·KST 병기) — 대시보드 부제에 '장 시작·종료' 명시(사용자
+# 2026-06-16 '각 대시보드에 장시작·종료·마지막 update·한계 명확히'). 서머타임 변동
+# 큰 US 만 근사(EDT 기준, EST 면 +1h). KST=UTC+9 기준 환산.
+_MKT_HOURS = {
+    "KR": "장 09:00–15:30 KST",
+    "JP": "장 09:00–15:00 JST(=KST)",
+    "HK": "장 09:30–16:00 HKT(=KST 10:30–17:00)",
+    "TW": "장 09:00–13:30 TST(=KST 10:00–14:30)",
+    "CN_A": "장 09:30–15:00 CST(=KST 10:30–16:00)",
+    "US": "장 09:30–16:00 ET(=KST 22:30–05:00, EDT 기준)",
+}
+
+
+def market_hours_label(market: str) -> str:
+    """'장 09:00–15:30 KST' 류 장 시간 라벨(현지·KST). 미상 시 ''."""
+    return _MKT_HOURS.get(market, "")
+
 # 정렬/업종 셀 스타일 + 헤더 클릭 정렬 (us_pages 동일 — 단일 소스로 이관).
 HL_SORT_JS = """
 <style>

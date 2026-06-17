@@ -250,9 +250,10 @@ def render_us_highlow_page() -> str:
                 + _panel("🔻 52주 신저가", lo, "hl-low", _ind_dist_line(lo))
                 + '</div>' + _HL_SORT_JS)
     # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') + 장중 1h(다른 52주와 통일).
-    sub = (f"미국 52주 신고가·신저가 · 종목명=네이버 한글 · 거래량·거래대금 · "
-           f"시총순·헤더 클릭 정렬 · 업종=GICS·yfinance · 출처 {src} · 장중 1h"
-           + (f" · {ts} 기준" if ts else ""))
+    from bot.highlow_render import market_hours_label as _mhl
+    sub = (f"미국 52주 신고가·신저가 · {_mhl('US')} · 종목명=네이버 한글 · 거래량·거래대금 · "
+           f"시총순·헤더 클릭 정렬 · 업종=GICS·yfinance · 출처 {src} · 장중 1h·마감후 EOD 자동"
+           + (f" · 마지막 갱신 {ts}" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
 
 
@@ -336,15 +337,18 @@ def render_us_movers_page() -> str:
                 + _hpanel("📉 가장 많이 내린 TOP 30", down, "mv-down", "US",
                           _ind_dist_line(down), show_vol=_is_nv, show_value=_is_nv) + '</div>'
                 + _HL_SORT_JS)
-    # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') — 무엇·출처(1회)·정렬·신선도.
+    # 부제 — 무엇·출처·장시간·정렬·신선도·마지막갱신(사용자 2026-06-16).
+    from bot.highlow_render import market_hours_label as _mhl
+    _hrs = _mhl("US")
     if "네이버" in src:
-        sub = ("미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · "
-               "등락률순·헤더 클릭 정렬 · 장중 30초" + (f" · {ts} 기준" if ts else ""))
+        sub = (f"미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · {_hrs} · "
+               "등락률순·헤더 클릭 정렬 · 장중 30초(네이버 종가 EOD 보유)"
+               + (f" · 마지막 갱신 {ts}" if ts else ""))
     else:
-        sub = ("미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · "
+        sub = (f"미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · {_hrs} · "
                "등락률순·헤더 클릭 정렬"
                + (f" · 출처 {src}" if src else "") + " · 장중 30초"
-               + (f" · {ts} 기준" if ts else ""))
+               + (f" · 마지막 갱신 {ts}" if ts else ""))
     return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)
 
 
@@ -409,5 +413,5 @@ def render_us_prepost_page() -> str:
            "네이버 실시간 · 가격·등락=시간외 라이브 · 거래량·거래대금=정규장 누적"
            "(시간외분은 네이버 미제공) · 등락률순·헤더 클릭 정렬 · 연장거래 창에서 30분 · "
            + _ext_window_kst()
-           + (f" · {ts} 기준" if ts else ""))
+           + (f" · 마지막 갱신 {ts}" if ts else ""))
     return _shell("미국 장전·장후 급등·급락", sub, "usprepost", body)

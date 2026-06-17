@@ -66,28 +66,23 @@ def render_intl_highlow52_page(market: str) -> str:
                 + stock_panel("📈 52주 신고가", hi, "hl-high", market, _dist(hi), **_opt)
                 + stock_panel("📉 52주 신저가", lo, "hl-low", market, _dist(lo), **_opt)
                 + '</div>' + HL_SORT_JS)
-    from bot.highlow_render import clean_source as _clean_src
+    from bot.highlow_render import clean_source as _clean_src, market_hours_label
     src = _html.escape(_clean_src(data.get("source") or "전종목 1년 일봉"))
-    # T10(2026-06-16): JP/HK 52w 유니버스는 네이버 시총 상위 ~900 으로 cap(yfinance
-    # 1년 스캔 비용·안정성) → '전종목' 은 과장. 정직하게 '주요 ~900종목' 으로 표기
-    # (소형주 신저가 구조적 누락 고지). KR=네이버 전종목·TW=上市 전종목이라 무관.
-    if market in ("JP", "HK") and "전종목" in src:
-        src = src.replace("전종목", "주요 ~900종목(유동성 상위)")
-    # KR=네이버(업종 그룹 멤버맵 백필), JP/CN/HK=yfinance — 신선도는 KR 장중 30초
-    # (네이버 1콜씩, 사용자 2026-06-15 '한국 신고저 실시간')·JP/HK 장중 1h(yfinance
-    # 스캔 heavy). 부제 군더더기 제거 — 출처·정렬·갱신만.
-    _fresh_lbl = "장중 30초" if market == "KR" else "장중 1h"
+    # JP/HK 52w 커버리지 = env HIGHLOW_UNIVERSE_CAP(기본 5000=사실상 전종목, 사용자
+    # 2026-06-16 '전시장 다'). 기본값이면 full 이라 '전종목' 정확(옛 ~900 캡 라벨
+    # 제거). env 로 캡 낮추면 시총 상위만 — 그 땐 라벨이 약간 낙관적.
+    # KR=네이버(업종 그룹 멤버맵 백필), JP/CN/HK=yfinance — 신선도는 KR 장중 30초·
+    # JP/HK 장중 1h + **장 마감 후 EOD 자동 재산출**(페이지 무관).
+    _fresh_lbl = "장중 30초" if market == "KR" else "장중 1h·마감후 EOD 자동"
     if market == "KR":
         _ind_lbl = "업종=네이버 · "
     elif market in ("HK", "JP"):
-        # 거래량·시총·종목명=네이버. 업종은 _industries_for 가 HK/JP 도 네이버
-        # 업종맵 우선·yfinance 미스폴백(2026-06-16 T5 — 옛 'HK 업종=yfinance'
-        # 라벨은 부정확, JP 는 라벨 누락이었음).
         _ind_lbl = "거래량·거래대금·시총·종목명=네이버 · 업종=네이버+yfinance · "
     else:
         _ind_lbl = "업종=yfinance · "
-    sub = (f"{flag} {src} · 시총순·헤더 클릭 정렬 · {_ind_lbl}{_fresh_lbl}"
-           f"{(' · ' + ts + ' 기준') if ts else ''}")
+    _hrs = market_hours_label(market)
+    sub = (f"{flag} {src} · {(_hrs + ' · ') if _hrs else ''}시총순·헤더 클릭 정렬 · "
+           f"{_ind_lbl}{_fresh_lbl}{(' · 마지막 갱신 ' + ts) if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "HK": "hk52"}.get(market, "")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body,
                      nav=_market_nav(market, _active), back=_asia_back(market))
@@ -132,8 +127,11 @@ def render_intl_movers_page(market: str) -> str:
     # 업종 소스 정직 표기 — CN/JP=네이버 우선+야후 폴백, HK=야후 우선+네이버 폴백.
     _ind_src = ("업종=네이버+yfinance" if market in ("CN_A", "JP")
                 else "업종=yfinance+네이버" if market == "HK" else "업종=네이버")
-    sub = (f"{flag} 당일 등락 상·하위 30 · {src} · 등락률순·헤더 클릭 정렬 · "
-           f"{_ind_src} · 장중 30초" + (f" · {ts} 기준" if ts else ""))
+    from bot.highlow_render import market_hours_label as _mhl
+    _hrs = _mhl(market)
+    sub = (f"{flag} 당일 등락 상·하위 30 · {src} · {(_hrs + ' · ') if _hrs else ''}"
+           f"등락률순·헤더 클릭 정렬 · {_ind_src} · 장중 30초(네이버 종가 EOD 보유)"
+           + (f" · 마지막 갱신 {ts}" if ts else ""))
     _active = {"JP": "jpmovers", "CN_A": "cnmovers", "HK": "hkmovers"}.get(market, "hkmovers")
     return _tw_shell(f"{flag} 급등·급락", sub, body,
                      nav=_market_nav(market, _active), back=_asia_back(market))

@@ -8508,8 +8508,8 @@ class TestUpperLowerVolume:
         assert ih._cap_by_liquidity_hk(full, 2) == full[:2]   # 맵 부재 폴백
 
     def test_jp_universe_liquidity_cap(self, monkeypatch):
-        # JP 신고저 스캔 14분 병목(미캡 ~2500=21배치) — HK 와 동일하게 네이버 시총
-        # 상위 900 캡(사용자 2026-06-16). _cap_by_liquidity 가 market 별 라우팅.
+        # _cap_by_liquidity 가 market 별 라우팅 + 시총 상위 우선(캡이 적용될 때).
+        # 캡 자체는 2026-06-16 env HIGHLOW_UNIVERSE_CAP(기본 full)로 전환.
         import bot.intl_highlow as ih
         import bot.naver_ranking_client as nv
         seen = {}
@@ -8524,10 +8524,10 @@ class TestUpperLowerVolume:
         assert seen["m"] == "JP"                        # JP 맵 라우팅(HK 하드코딩 아님)
         assert out[:2] == ["7203.T", "6758.T"]          # 시총 상위 우선
         assert "9999.T" not in out                      # 소형 탈락
-        # _universe 가 JP 도 캡 분기 (HK 와 동일), 일반화 함수 호출 배선
+        # _universe 가 JP 도 캡 분기 (HK 와 동일), env 캡 배선(기본 full)
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
         assert 'market in ("HK", "JP")' in src, "JP 캡 분기 미배선"
-        assert "_cap_by_liquidity(full, 900, market)" in src
+        assert "HIGHLOW_UNIVERSE_CAP" in src and "_cap_by_liquidity(full, _cap, market)" in src
 
     def test_jp_hk_naver_overlay(self, monkeypatch):
         # JP 네이버 worldstock overlay(직접 매칭) + HK overlay(zfill 정수 매칭).
@@ -11225,12 +11225,14 @@ class TestAsiaTier2_20260616:
         assert "_tw_all_common" in inspect.getsource(tc.fetch_tw_movers)
         assert "_tw_all_common" in inspect.getsource(tc.fetch_tw_upper_lower)
 
-    def test_t10_jp_hk_52w_cap_label(self):
-        # T10(2026-06-16): JP/HK 52w 유니버스 ~900 cap → '전종목' 라벨 정직화.
-        import inspect
-        from bot import intl_pages
-        s = inspect.getsource(intl_pages.render_intl_highlow52_page)
-        assert '주요 ~900종목' in s and 'market in ("JP", "HK")' in s
+    def test_t10_jp_hk_52w_cap_configurable_full(self):
+        # 2026-06-16: JP/HK 52w 캡을 env HIGHLOW_UNIVERSE_CAP(기본 5000=사실상
+        # 전종목)로 전환 — 옛 하드코딩 ~900·'주요 ~900종목' 라벨 제거(전종목 커버).
+        ih = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert "HIGHLOW_UNIVERSE_CAP" in ih and '"5000"' in ih
+        assert "_cap_by_liquidity(full, 900" not in ih   # 하드코딩 900 제거
+        ip = open("bot/intl_pages.py", encoding="utf-8").read()
+        assert "주요 ~900종목" not in ip                  # full 커버라 옛 캡 라벨 제거
 
 
 class TestHighlowEodAutoRecompute:
@@ -11264,3 +11266,30 @@ class TestHighlowEodAutoRecompute:
             return datetime(2026, 6, 16, h, mi, tzinfo=timezone.utc).timestamp()
         assert _session_fresh("US", ts(19, 0), 3600, now_ts=ts(23, 0)) is False
         assert _session_fresh("US", ts(22, 0), 3600, now_ts=ts(23, 0)) is True
+
+
+class TestHighlowUniverseFullCoverage:
+    """52주 신고저 전종목 커버리지 (사용자 2026-06-16 '전시장 다·리미트 늘려'):
+    JP/HK 캡 env 화(기본 full) + TW 52w 上市+上櫃."""
+
+    def test_tw_52w_includes_otc(self, monkeypatch):
+        import bot.tw_highlow as th
+        monkeypatch.setattr("bot.twse_client.fetch_stock_day_all",
+                            lambda: {"rows": [{"code": "2330", "name": "台積電"}]})
+        monkeypatch.setattr("bot.twse_client.fetch_tpex_day_all",
+                            lambda: {"rows": [{"code": "6488", "name": "環球晶"},
+                                              {"code": "006201", "name": "ETF"}]})
+        monkeypatch.delenv("TW_HIGHLOW_OTC", raising=False)
+        uni, names = th._tw_universe()
+        assert "2330.TW" in uni and "6488.TWO" in uni      # 上市 + 上櫃
+        assert "006201.TWO" not in uni                      # ETF(6자리) 제외
+        assert names["6488.TWO"] == "環球晶"
+        monkeypatch.setenv("TW_HIGHLOW_OTC", "0")            # off → 上市만
+        uni2, _ = th._tw_universe()
+        assert "2330.TW" in uni2 and "6488.TWO" not in uni2
+
+    def test_market_hours_label(self):
+        from bot.highlow_render import market_hours_label
+        assert "KST" in market_hours_label("US")
+        assert "10:00–14:30" in market_hours_label("TW")
+        assert market_hours_label("ZZ") == ""

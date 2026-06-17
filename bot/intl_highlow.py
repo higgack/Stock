@@ -77,14 +77,17 @@ def _universe(market: str) -> tuple[list[str], dict]:
             from bot.intl_universe import full_universe
             full = full_universe(market)
             if len(full) > 100:
-                if market in ("HK", "JP") and len(full) > 900:
-                    # HK(~2000)·JP(~2500) 전종목 yfinance 1y 스캔이 rate-limit 으로
-                    # 느림/불안정 (HK 사용자 2026-06-14 '산출중·야후 맛탱이' / JP 실측
-                    # 14분 = HK 3분의 ~4배, 2026-06-16 — 미캡이라 21배치 vs HK 8배치).
-                    # 네이버 worldstock 시총 상위 ~900 으로 캡 — 유동성 큰 종목만
-                    # (의미있는 52주, 미세 micro-cap 은 노이즈). 스캔 ~4배 빠름·안정.
-                    # 키는 zfill 정수 정규화. (CN_A 는 차단으로 peer-only 라 무관.)
-                    full = _cap_by_liquidity(full, 900, market)
+                if market in ("HK", "JP"):
+                    # 캡 = env HIGHLOW_UNIVERSE_CAP, **기본 5000 = 사실상 전종목**
+                    # (사용자 2026-06-16 '전시장 다'). JP~2500·HK~2000 이라 기본값이면
+                    # 무캡(전종목). ⚠️ yfinance 1y full 스캔은 ~14분(JP)·rate-limit
+                    # 위험이나, 이제 EOD 백그라운드(장 마감 후 1회·stagger·circuit-
+                    # breaker 보호)라 감내. 문제 시 env 로 하향(예 900 = 시총 상위만,
+                    # 네이버 worldstock 시총 정규화 캡). CN_A 는 차단으로 peer-only.
+                    import os as _os
+                    _cap = int(_os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
+                    if len(full) > _cap:
+                        full = _cap_by_liquidity(full, _cap, market)
                 return full, {t: t for t in full}
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
