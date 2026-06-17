@@ -272,13 +272,15 @@ def _roc_to_iso(s) -> str:
     return ""
 
 
-def fetch_stock_day_all() -> dict:
+def fetch_stock_day_all(force: bool = False) -> dict:
     """OpenAPI 전종목 일일 → {rows:[{code,name,close,pct,vol,value}], date}.
     시장-인지 신선도(_session_fresh TW, 장중 1h / 장 밖 마지막 마감 이후 재산출 0
-    — 사용자 2026-06-14 '모두 장중 1h'). 옛 플랫 5분 대체. graceful."""
+    — 사용자 2026-06-14 '모두 장중 1h'). 옛 플랫 5분 대체. graceful.
+    force=True 면 신선도 게이트 건너뛰고 즉시 refetch(장중 슬롯 스캔 1h 경계
+    jitter skip 방지, 사용자 2026-06-16)."""
     fp = _CACHE_DIR / "stock_day_all.json"
     try:
-        if fp.exists():
+        if not force and fp.exists():
             from bot.finviz_client import _HL_INTRA_TTL, _session_fresh
             if _session_fresh("TW", fp.stat().st_mtime, _HL_INTRA_TTL):
                 return json.loads(fp.read_text(encoding="utf-8"))
@@ -307,14 +309,15 @@ def fetch_stock_day_all() -> dict:
     return out
 
 
-def fetch_tpex_day_all() -> dict:
+def fetch_tpex_day_all(force: bool = False) -> dict:
     """上櫃(TPEx) 전종목 일일 → {rows:[{code,name,close,pct,vol,value}], date}.
     STOCK_DAY_ALL(上市) 의 上櫃 등가물(T9 2026-06-16) — 무버/상한가 보드 유니버스를
     上市+上櫃 합집합으로 확장. parse_stock_day_all 공용(TPEx 필드명 tolerant).
-    시장-인지 신선도(_session_fresh TW, 장중 1h). graceful — 실패 시 스테일/빈."""
+    시장-인지 신선도(_session_fresh TW, 장중 1h). graceful — 실패 시 스테일/빈.
+    force=True 면 게이트 건너뛰고 즉시 refetch(장중 슬롯 스캔, 사용자 2026-06-16)."""
     fp = _CACHE_DIR / "tpex_day_all.json"
     try:
-        if fp.exists():
+        if not force and fp.exists():
             from bot.finviz_client import _HL_INTRA_TTL, _session_fresh
             if _session_fresh("TW", fp.stat().st_mtime, _HL_INTRA_TTL):
                 return json.loads(fp.read_text(encoding="utf-8"))
@@ -396,24 +399,26 @@ def _is_common_stock(code: str) -> bool:
     return len(c) == 4 and c.isdigit() and c[0] != "0"
 
 
-def _tw_all_common(include_tpex: bool = True) -> tuple[list, str]:
+def _tw_all_common(include_tpex: bool = True, force: bool = False) -> tuple[list, str]:
     """上市(STOCK_DAY_ALL) + 上櫃(TPEx) 일반종목 합집합 (T9 2026-06-16) — 무버/
     상한가 유니버스를 두 거래소 전종목으로 확장. code dedup(上市 우선). 무버 보드는
     가격/등락을 OpenAPI 가 직접 줘 비용 0(52주 신고저는 yfinance 1년 스캔이라
-    上櫃 미포함 — fetch_stock_day_all 직접 사용 경로 유지). (rows, date)."""
-    data = fetch_stock_day_all()
+    上櫃 미포함 — fetch_stock_day_all 직접 사용 경로 유지). (rows, date).
+    force=True 면 양 거래소 즉시 refetch(장중 슬롯 스캔, 사용자 2026-06-16)."""
+    data = fetch_stock_day_all(force=force)
     rows = [s for s in data.get("rows", []) if _is_common_stock(s.get("code"))]
     date = data.get("date", "")
     if include_tpex:
         try:
             seen = {s.get("code") for s in rows}
-            for s in fetch_tpex_day_all().get("rows", []):
+            tpex = fetch_tpex_day_all(force=force)
+            for s in tpex.get("rows", []):
                 c = s.get("code")
                 if c and c not in seen and _is_common_stock(c):
                     rows.append(s)
                     seen.add(c)
             if not date:
-                date = fetch_tpex_day_all().get("date", "")
+                date = tpex.get("date", "")
         except Exception as exc:
             log.warning("tpex merge skipped: %s", exc)
     return rows, date
@@ -430,10 +435,11 @@ def fetch_tw_upper_lower(limit: int = 80) -> dict:
     return {"upper": upper, "lower": lower, "ts": _now_kst_label(), "date": date}
 
 
-def fetch_tw_movers(limit: int = 30) -> dict:
+def fetch_tw_movers(limit: int = 30, force: bool = False) -> dict:
     """TW 급등/급락 — 上市(STOCK_DAY_ALL)+上櫃(TPEx) 전종목(일반종목) 등락 상·하위
-    (T9 2026-06-16 上櫃 확장, JP/CN/HK 무버 형태). {up,down,ts,date}."""
-    stocks, date = _tw_all_common()
+    (T9 2026-06-16 上櫃 확장, JP/CN/HK 무버 형태). {up,down,ts,date}.
+    force=True 면 OpenAPI 즉시 refetch(장중 시간대별 슬롯 스캔, 사용자 2026-06-16)."""
+    stocks, date = _tw_all_common(force=force)
     up = sorted(stocks, key=lambda s: s["pct"], reverse=True)[:limit]
     down = sorted(stocks, key=lambda s: s["pct"])[:limit]
     return {"up": up, "down": down, "ts": _now_kst_label(), "date": date}

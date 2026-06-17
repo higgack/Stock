@@ -5141,7 +5141,7 @@ class TestTwseSectorHighLow:
         assert not tw._is_common_stock("0050") and not tw._is_common_stock("2887A")
         assert tw._roc_to_iso("1150612") == "2026-06-12"   # ROC→ISO
         monkeypatch.setattr(tw, "fetch_stock_day_all",
-                            lambda: {"rows": parsed, "date": "2026-06-12"})
+                            lambda force=False: {"rows": parsed, "date": "2026-06-12"})
         ul = tw.fetch_tw_upper_lower()
         assert any(s["code"] == "2330" for s in ul["upper"])
         assert any(s["code"] == "2317" for s in ul["lower"])
@@ -5155,7 +5155,7 @@ class TestTwseSectorHighLow:
             {"Code": "1234", "Name": "x", "ClosingPrice": "90.05", "Change": "-9.95"},
             {"Code": "5678", "Name": "y", "ClosingPrice": "90.14", "Change": "-9.86"}])
         monkeypatch.setattr(tw, "fetch_stock_day_all",
-                            lambda: {"rows": near, "date": "x"})
+                            lambda force=False: {"rows": near, "date": "x"})
         low = tw.fetch_tw_upper_lower()["lower"]
         assert any(s["code"] == "1234" for s in low)       # -9.95% 포함(한도 도달)
         assert not any(s["code"] == "5678" for s in low)   # -9.86% 제외(근접 ≠ 한도)
@@ -11235,30 +11235,136 @@ class TestAsiaTier2_20260616:
         assert "주요 ~900종목" not in ip                  # full 커버라 옛 캡 라벨 제거
 
 
-class TestHighlowEodAutoRecompute:
-    """52주 신고저 EOD 자동 재산출 (사용자 2026-06-16: 장 종료 후 페이지 안 열려도
-    종가기준 스스로 계산, KR 제외 전 시장). off-session self-gating 30분 task."""
+class TestHighlowSlotScan:
+    """컴퓨티드 보드(US/JP/HK/TW 52주 + TW 무버) 시간대별 슬롯 스캐너 (사용자
+    2026-06-16: 장중 1h force 재산출[페이지 방문 없이도 최신] + 장 밖 EOD 1회 후
+    freeze, 무거운 Asia 52주를 :00/:20/:40 으로 20분씩 분산, KR·네이버 직접 보드
+    제외). 옛 off-session-only 30분 EOD task 를 대체."""
 
-    def test_eod_task_wired(self):
+    def test_scan_task_wired(self):
         src = open("bot/telegram_bot.py", encoding="utf-8").read()
-        assert "def _ensure_highlow_eod" in src and "async def _periodic_highlow_eod" in src
-        assert "_highlow_eod_task = asyncio.create_task(_periodic_highlow_eod())" in src
-        seg = src[src.index("def _ensure_highlow_eod"):
-                  src.index("async def _periodic_highlow_eod")]
-        # off-session 시장만(in-session skip), 비-네이버 컴퓨티드 보드만, KR 제외.
-        assert 'if not _open("US")' in seg
-        # US 52w(우리 산출), JP/HK 52w, TW 52w + TW 무버(TWSE/TPEx).
-        assert "fetch_high_low" in seg
-        assert "fetch_intl_highlow" in seg
-        assert "fetch_tw_highlow" in seg and "fetch_tw_movers" in seg
-        assert '_open("KR")' not in seg   # KR 은 네이버 직접 — EOD 대상 아님
-        # US 급등·급락은 _compute_us_movers 가 네이버 1차 → EOD 호출 안 함(옛 movers
-        # 루프 제거 확인). fetch_us_movers 는 제외 사유 주석으로만 언급.
-        assert "getattr(_fc" not in seg   # 옛 (fetch_high_low, fetch_us_movers) 루프 제거
+        assert "def _run_highlow_slot" in src and "async def _periodic_highlow_scan" in src
+        assert "_highlow_scan_task = asyncio.create_task(_periodic_highlow_scan())" in src
+        # 옛 EOD task 흔적 제거(슬롯 스캐너로 대체).
+        assert "_periodic_highlow_eod" not in src and "_ensure_highlow_eod" not in src
+        seg = src[src.index("def _run_highlow_slot"):
+                  src.index("async def _periodic_highlow_scan")]
+        # 장중 force vs 장 밖 게이트 분기 — US force 인자, JP/HK·TW kick(force), 게이트 fetch.
+        assert "fetch_high_low(force=" in seg
+        assert "_kick(tok)" in seg and "fetch_intl_highlow(tok)" in seg
+        assert "_kick_tw_highlow()" in seg and "fetch_tw_highlow()" in seg
+        assert "fetch_tw_movers(force=" in seg
+        # KR·US movers 제외(네이버 직접 — 슬롯 대상 아님).
+        assert '"KR"' not in seg and "fetch_us_movers" not in seg
+        assert "yf_paused" in seg          # force 경로는 YF_PAUSE 존중
+
+    def test_slots_staggered_20min(self):
+        # 무거운 Asia 52주(JP/HK/TW)가 :00/:20/:40 으로 20분씩 분리(동시 부하 회피).
+        import pytest as _pt
+        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        from bot.telegram_bot import _HL_SCAN_SLOTS
+        assert _HL_SCAN_SLOTS[0] == ("US", "JP")     # 야간 US + JP(비충돌) 동거
+        assert _HL_SCAN_SLOTS[20] == ("HK",)
+        assert _HL_SCAN_SLOTS[40] == ("TW", "TWMV")  # TW 52주 + TW 무버(소스 다름)
+        # 무거운 yfinance 52주 3종이 서로 다른 슬롯에(20분 간격) — 겹침 0.
+        heavy_slots = {m: s for s, toks in _HL_SCAN_SLOTS.items()
+                       for m in toks if m in ("JP", "HK", "TW")}
+        assert len(set(heavy_slots.values())) == 3   # JP/HK/TW 각자 다른 슬롯
+
+    def test_run_slot_in_session_forces(self, monkeypatch):
+        # 진입점 스모크(CLAUDE.md §7d) — 장중이면 force 경로 라우팅.
+        import pytest as _pt
+        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        import bot.finviz_client as fc
+        import bot.intl_highlow as ih
+        import bot.telegram_bot as tb
+        import bot.tw_highlow as th
+        import bot.twse_client as tw
+        rec: dict = {}
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        # US·TW 종일 개장 → 평일이면 _open True. JP/HK 는 빈 창(항상 닫힘).
+        monkeypatch.setattr(fc, "_SESSIONS_UTC",
+                            {**fc._SESSIONS_UTC, "US": (0, 0, 23, 59),
+                             "TW": (0, 0, 23, 59), "JP": (12, 0, 12, 0)})
+        monkeypatch.setattr(fc, "fetch_high_low",
+                            lambda force=False: rec.__setitem__("us", force))
+        monkeypatch.setattr(ih, "_kick", lambda m: rec.__setitem__("kick", m))
+        monkeypatch.setattr(ih, "fetch_intl_highlow",
+                            lambda m: rec.__setitem__(f"gate_{m}", True))
+        monkeypatch.setattr(th, "_kick_tw_highlow",
+                            lambda: rec.__setitem__("tw_kick", True))
+        monkeypatch.setattr(th, "fetch_tw_highlow",
+                            lambda: rec.__setitem__("tw_gate", True))
+        monkeypatch.setattr(tw, "fetch_tw_movers",
+                            lambda force=False: rec.__setitem__("twmv", force))
+        from datetime import datetime, timezone
+        wd = datetime.now(timezone.utc).weekday() < 5
+        tb._run_highlow_slot(0)            # US + JP
+        tb._run_highlow_slot(40)           # TW + TWMV
+        assert rec.get("us") is wd                       # US: 평일 force / 주말 gate
+        assert rec.get("gate_JP") is True                # JP 닫힘 → 게이트
+        assert rec.get("twmv") is wd                     # TW 무버: 평일 force
+        if wd:
+            assert rec.get("tw_kick") is True            # TW 52주 force
+        else:
+            assert rec.get("tw_gate") is True            # 주말 → 게이트
+
+    def test_run_slot_off_session_gates(self, monkeypatch):
+        # 장 밖(전 시장 닫힘) → 전부 게이트 fetch(EOD 1회 후 freeze, force 안 함).
+        import pytest as _pt
+        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        import bot.finviz_client as fc
+        import bot.intl_highlow as ih
+        import bot.telegram_bot as tb
+        import bot.tw_highlow as th
+        import bot.twse_client as tw
+        rec: dict = {}
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        monkeypatch.setattr(fc, "_SESSIONS_UTC",      # 빈 창 = 항상 닫힘
+                            {m: (12, 0, 12, 0) for m in fc._SESSIONS_UTC})
+        monkeypatch.setattr(fc, "fetch_high_low",
+                            lambda force=False: rec.__setitem__("us", force))
+        monkeypatch.setattr(ih, "_kick", lambda m: rec.__setitem__("kick", m))
+        monkeypatch.setattr(ih, "fetch_intl_highlow",
+                            lambda m: rec.__setitem__(f"gate_{m}", True))
+        monkeypatch.setattr(th, "_kick_tw_highlow",
+                            lambda: rec.__setitem__("tw_kick", True))
+        monkeypatch.setattr(th, "fetch_tw_highlow",
+                            lambda: rec.__setitem__("tw_gate", True))
+        monkeypatch.setattr(tw, "fetch_tw_movers",
+                            lambda force=False: rec.__setitem__("twmv", force))
+        for s in (0, 20, 40):
+            tb._run_highlow_slot(s)
+        assert rec.get("us") is False                    # force 안 함
+        assert rec.get("gate_JP") and rec.get("gate_HK") # JP/HK 게이트
+        assert rec.get("tw_gate") and rec.get("twmv") is False
+        assert "kick" not in rec and "tw_kick" not in rec  # force 경로 미진입
+
+    def test_run_slot_paused_falls_back_to_gate(self, monkeypatch):
+        # YF_PAUSE 중엔 장중이어도 force 안 함(게이트 폴백 → 스테일 유지·스캔 0).
+        import pytest as _pt
+        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+        import bot.finviz_client as fc
+        import bot.intl_highlow as ih
+        import bot.telegram_bot as tb
+        rec: dict = {}
+        monkeypatch.setattr(fc, "yf_paused", lambda: True)         # 정지
+        monkeypatch.setattr(fc, "_SESSIONS_UTC",
+                            {**fc._SESSIONS_UTC, "US": (0, 0, 23, 59),
+                             "JP": (0, 0, 23, 59)})
+        monkeypatch.setattr(fc, "fetch_high_low",
+                            lambda force=False: rec.__setitem__("us", force))
+        monkeypatch.setattr(ih, "_kick", lambda m: rec.__setitem__("kick", m))
+        monkeypatch.setattr(ih, "fetch_intl_highlow",
+                            lambda m: rec.__setitem__(f"gate_{m}", True))
+        tb._run_highlow_slot(0)
+        assert rec.get("us") is False        # 정지 → US force 안 함
+        assert rec.get("gate_JP") is True    # 정지 → JP 게이트(킥 안 함)
+        assert "kick" not in rec
 
     def test_session_fresh_eod_gate(self):
         # 장중 스냅샷은 마감 후 stale(→EOD 재산출 트리거), 마감 후 산출본은 fresh
-        # (→재스캔 0). EOD task 가 이 게이트에 의존.
+        # (→재스캔 0). 슬롯 장-밖 경로가 이 게이트에 의존.
         from datetime import datetime, timezone
         from bot.finviz_client import _session_fresh
 
