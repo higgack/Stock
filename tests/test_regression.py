@@ -11187,10 +11187,12 @@ class TestAsiaTier2_20260616:
         assert "🔺" not in us
 
     def test_t12_tw_movers_passes_limit(self):
+        # 사용자 2026-06-17 'TW 상한/하한(±10%) 마커 불필요' → limit_pct 제거(#472).
+        # 옛 'limit_pct 전달' 단언을 '미전달'로 반전(TestTwMoversNoLimitMarker 와 일치).
         import inspect
         from bot import tw_pages
         s = inspect.getsource(tw_pages.render_tw_highlow_page)
-        assert "limit_pct=9.9" in s, "TW 급등락이 limit_pct 미전달"
+        assert "limit_pct=" not in s, "TW 급등락 상한/하한 마커 제거됨(사용자 2026-06-17)"
 
     def test_t7_fetch_shares_outstanding(self, monkeypatch):
         # FinMind TaiwanStockShareholding.NumberOfSharesIssued (VM probe 확인) →
