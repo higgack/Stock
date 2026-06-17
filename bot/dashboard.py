@@ -5884,8 +5884,9 @@ def _render_stock_info_html(rec: dict) -> str:
         </svg>
       </div>"""
 
-                # YoY growth rates
-                growth_rows = ""
+                # YoY growth rates — 최신 연도가 위로 (사용자 2026-06-17 '최신이
+                # 위쪽'). 차트(수익성 추이)는 시간순 좌→우 유지, 표만 내림차순.
+                _grows = []
                 for i in range(1, len(chart_items)):
                     prev = chart_items[i - 1]
                     cur = chart_items[i]
@@ -5901,7 +5902,8 @@ def _render_stock_info_html(rec: dict) -> str:
                             cells += f'<td class="num" style="color:{color}">{sign}{g:.1f}%</td>'
                         else:
                             cells += '<td class="num">—</td>'
-                    growth_rows += f"<tr><td>{period}</td>{cells}</tr>\n"
+                    _grows.append(f"<tr><td>{period}</td>{cells}</tr>")
+                growth_rows = "\n".join(reversed(_grows))
                 if growth_rows:
                     chart_svg += f"""<div class="si-section" style="margin-top:12px">
         <div class="si-section-title">YoY 성장률</div>
