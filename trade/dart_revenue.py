@@ -67,6 +67,38 @@ def load_inventory() -> dict:
         return {}
 
 
+def audit_inventory(inv: dict | None = None) -> list[dict]:
+    """인벤토리에서 **파싱 의심 항목** 추출 — [{code, company, n, reasons}].
+    DART 피드 coverage-audit 처럼 반복 고도화 대상 식별(사용자 2026-06-17 '파싱
+    제대로 안 된 거 구분 → 너랑 같이 고도화'). 순수(단위테스트).
+
+    의심 신호: 제품 0 · 1개만(과소추출) · 비중 전무 · 비중합 ≠100(±) · 잔여
+    노이즈 이름(4자리수·매출/영업이익 토큰·기호만)."""
+    inv = inv if inv is not None else load_inventory()
+    out: list[dict] = []
+    for code, rec in (inv or {}).items():
+        prods = rec.get("products") or []
+        reasons: list[str] = []
+        if not prods:
+            reasons.append("제품 0")
+        else:
+            if len(prods) == 1:
+                reasons.append("제품 1개(과소추출 의심)")
+            shares = [p["share_pct"] for p in prods if p.get("share_pct") is not None]
+            if not shares:
+                reasons.append("비중 전무")
+            elif not (60 <= sum(shares) <= 140):
+                reasons.append(f"비중합 {sum(shares):.0f}%(≠100)")
+            noisy = [p.get("name", "") for p in prods
+                     if _re.search(r"\d{4,}|매출|영업이익|손익|^\W+$", p.get("name", ""))]
+            if noisy:
+                reasons.append("이름 의심: " + ", ".join(noisy[:3]))
+        if reasons:
+            out.append({"code": code, "company": rec.get("company", code),
+                        "n": len(prods), "reasons": reasons})
+    return out
+
+
 def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict | None:
     """6자리 stock_code → {code, company, report, rcept_no, products:[{name,
     share_pct, amount}]} 또는 None. DART 사업보고서 매출표 1개를 골라 제품·비중 추출.
@@ -215,7 +247,19 @@ def main(argv: list[str] | None = None) -> int:
                    help="전 KRX 상장 전수 갱신(변경분만·정기 파싱용)")
     p.add_argument("--shard", default="",
                    help="분할 실행 'i/m' — codes[i::m] 만(마지막주 날짜별 분산)")
+    p.add_argument("--audit", action="store_true",
+                   help="저장된 인벤토리의 파싱 의심 항목만 출력(고도화 대상)")
     args = p.parse_args(argv)
+    if args.audit:                  # 인벤토리 audit — DART 키 불요(저장 파일만)
+        sus = audit_inventory()
+        inv = load_inventory()
+        print(f"\n🔎 파싱 audit — 의심 {len(sus)}/{len(inv)} 사")
+        print("─" * 96)
+        for s in sus:
+            print(f"  {s['code']} {s['company'][:16]:<18} 제품{s['n']} · {' | '.join(s['reasons'])[:70]}")
+        print(f"\n→ 이 목록의 원문을 보고(아래) 전용 파서/별칭 보강:")
+        print("   회사 1건 원문: .venv/bin/python -m trade.company_report <회사명>  # 또는 probe raw/")
+        return 0
     _load_env()
     key = (os.environ.get("DART_API_KEY") or "").strip()
     if not key:
