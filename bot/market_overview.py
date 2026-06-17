@@ -152,11 +152,11 @@ CARD_EU = [
 ]
 
 # 사용자 2026-06-17: 옛 '아메리카 & 이머징'(호주·브라질·멕시코·아르헨티나·인니·말련)
-# 폐기 → '미국 지수-2'(미국 섹터/테마 ETF). nve: bare 티커. VM probe 2026-06-17:
-# XLI/XLE/XLU/IYR = 네이버 etf 커버, **AIQ·TSLL = 네이버 미커버 → _fetch_etf_quotes
-# 의 yfinance 폴백**으로 채움(YF_PAUSE 시 그 둘만 블랭크). 인니·말련은 아시아 카드로 이동.
+# 폐기 → '미국 지수-2'(미국 섹터 ETF). nve: bare 티커 — XLY/XLI/XLE/XLU/IYR(표준
+# SPDR 섹터) 네이버 etf 커버, AIQ(테마) 등 네이버 미커버는 _fetch_etf_quotes 의
+# yfinance 폴백으로 채움(YF_PAUSE 시 미커버만 블랭크). 인니·말련은 아시아 카드로 이동.
 CARD_US2 = [
-    ("TSLL 테슬라 2X", "nve:TSLL"),
+    ("XLY 임의소비", "nve:XLY"),   # 사용자 2026-06-17 TSLL→XLY (XLP 필수소비 대응)
     ("XLI 산업재", "nve:XLI"),
     ("XLE 에너지", "nve:XLE"),
     ("XLU 유틸리티", "nve:XLU"),
