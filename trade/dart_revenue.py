@@ -56,6 +56,17 @@ def _clean_products(products: list[dict]) -> list[dict]:
     return out
 
 
+def load_inventory() -> dict:
+    """저장된 매출구성 인벤토리(code→{company, products}) 로드. 없으면 {}."""
+    p = _data_dir() / "dart_revenue_inventory.json"
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
 def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict | None:
     """6자리 stock_code → {code, company, report, rcept_no, products:[{name,
     share_pct, amount}]} 또는 None. DART 사업보고서 매출표 1개를 골라 제품·비중 추출.
@@ -122,18 +133,102 @@ def build_inventory(stock_codes: list[str], api_key: str | None = None,
     return inv
 
 
+def all_listed_codes() -> list[str]:
+    """전 KRX 상장 6자리 코드 (DART corp_code 맵 — 상장사 전수). 실패 시 []."""
+    try:
+        from bot.dart_client import get_dart
+        return sorted(get_dart()._load_corp_code_map().keys())
+    except Exception as exc:
+        log.warning("all_listed_codes: %s", exc)
+        return []
+
+
+def _needs_rebuild(entry: dict | None, latest_rcept: str) -> bool:
+    """인벤토리 항목을 다시 파싱해야 하나 — 최신 정기보고서 rcept_no 가 바뀌었거나
+    저장된 제품이 없으면 True. 같으면 False(document.xml fetch skip). 순수."""
+    if not entry or not entry.get("products"):
+        return True
+    return (entry.get("rcept_no") or "") != (latest_rcept or "")
+
+
+def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None,
+                      shard: tuple[int, int] | None = None, sleep: float = 0.3) -> dict:
+    """전수 인벤토리 갱신 — **변경분만**(정기 파싱, 사용자 2026-06-17). 회사별 최신
+    정기보고서 rcept_no(list.json·경량) 확인 → 안 바뀌면 document.xml 파싱 skip,
+    바뀐 회사만 재파싱. 월말/마지막주 타이머용. shard=(i,m) 면 codes[i::m] 만(분할 실행).
+
+    Returns {built, skipped, failed, total}. 진척 로그(silent-fail 금지·실수기록 #12d)."""
+    key = (api_key if api_key is not None else os.environ.get("DART_API_KEY") or "").strip()
+    if not key:
+        log.warning("refresh_inventory: DART_API_KEY 없음")
+        return {"built": 0, "skipped": 0, "failed": 0, "total": 0}
+    from trade.scripts.probe_dart_revenue import _fetch_report_list, pick_business_report
+    from bot.dart_client import get_dart
+    dart = get_dart()
+    inv = load_inventory()
+    codes = codes or all_listed_codes()
+    if shard:
+        i, m = shard
+        codes = codes[i::m]
+    built = skipped = failed = 0
+    for n, code in enumerate(codes, 1):
+        try:
+            corp = dart.stock_code_to_corp_code(code)
+            rep = pick_business_report(_fetch_report_list(key, corp)) if corp else None
+            if not rep:
+                failed += 1
+                continue
+            if not _needs_rebuild(inv.get(code), rep["rcept_no"]):
+                skipped += 1
+                continue
+            r = fetch_company_products(code, key)   # 변경분만 무거운 document.xml 파싱
+            if r:
+                inv[code] = r
+                built += 1
+            else:
+                failed += 1
+        except Exception as exc:
+            log.warning("refresh_inventory %s: %s", code, exc)
+            failed += 1
+        if n % 200 == 0:
+            log.info("refresh_inventory 진척 %d/%d (built=%d skip=%d fail=%d)",
+                     n, len(codes), built, skipped, failed)
+        time.sleep(sleep)
+    out = _data_dir() / "dart_revenue_inventory.json"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(inv, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log.warning("refresh_inventory 저장 실패: %s", exc)
+    res = {"built": built, "skipped": skipped, "failed": failed, "total": len(codes)}
+    log.info("refresh_inventory 완료: %s", res)
+    return res
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     from trade.scripts.probe_dart_revenue import _SAMPLE_WIDE, _load_env
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser(description="G1 DART 매출구성 인벤토리 빌더 (회사→제품)")
     p.add_argument("--codes", default="", help="쉼표구분 6자리 코드 (미지정 시 ~40 표본)")
+    p.add_argument("--refresh", action="store_true",
+                   help="전 KRX 상장 전수 갱신(변경분만·정기 파싱용)")
+    p.add_argument("--shard", default="",
+                   help="분할 실행 'i/m' — codes[i::m] 만(마지막주 날짜별 분산)")
     args = p.parse_args(argv)
     _load_env()
     key = (os.environ.get("DART_API_KEY") or "").strip()
     if not key:
         print("⛔ DART_API_KEY 없음 — ~/stock/.env 확인.")
         return 2
+    if args.refresh:
+        shard = None
+        if args.shard and "/" in args.shard:
+            i, m = args.shard.split("/", 1)
+            shard = (int(i), int(m))
+        res = refresh_inventory(api_key=key, shard=shard)
+        print(f"📦 전수 갱신: {res}")
+        return 0
     codes = [c.strip() for c in args.codes.split(",") if c.strip()] or [c for c, _, _ in _SAMPLE_WIDE]
     inv = build_inventory(codes, key)
     print(f"\n📦 매출구성 인벤토리 — {len(inv)}/{len(codes)} 사 추출")

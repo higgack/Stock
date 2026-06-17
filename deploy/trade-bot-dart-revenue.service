@@ -1,0 +1,17 @@
+[Unit]
+Description=DART 매출구성 인벤토리 전수 갱신 — 변경분만(회사→제품, G1/G2 backbone)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+# 전 KRX 상장 전수 — 회사별 최신 정기보고서 rcept_no 가 안 바뀌면 document.xml
+# 파싱 skip(변경분만). 사업보고서=연1회·분기/반기 분기별이라 대부분 회사는 skip →
+# 거의 무부하. ~2,800 list.json(경량) + 변경분 document.xml. ₩0(무료 DART·LLM 0).
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dart_revenue --refresh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=5400

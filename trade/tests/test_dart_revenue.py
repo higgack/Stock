@@ -32,6 +32,13 @@ class DartRevenueTests(unittest.TestCase):
         self.assertTrue(all("제7조" not in n for n in names))   # 약관 조항 제거
         self.assertTrue(all("2024년" not in n for n in names))  # 기수 라벨 제거
 
+    def test_needs_rebuild(self):
+        # 변경분만 — rcept 같고 products 있으면 skip(False), 아니면 재파싱(True)
+        self.assertTrue(D._needs_rebuild(None, "r1"))
+        self.assertTrue(D._needs_rebuild({"rcept_no": "r1", "products": []}, "r1"))
+        self.assertTrue(D._needs_rebuild({"rcept_no": "r1", "products": [{"name": "x"}]}, "r2"))
+        self.assertFalse(D._needs_rebuild({"rcept_no": "r1", "products": [{"name": "x"}]}, "r1"))
+
     def test_build_inventory_assembles_and_saves(self):
         tmp = tempfile.mkdtemp()
         fake = {"code": "005930", "company": "삼성전자", "report": "사업보고서",

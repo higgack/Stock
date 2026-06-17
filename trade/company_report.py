@@ -199,6 +199,76 @@ def _note(msg: str) -> str:
             f'{_html.escape(msg)}</div>')
 
 
+def render_telegram(data: dict, ai_text: str = "") -> str:
+    """보고서 → 텔레그램 HTML(≤4096, 표 대신 줄 목록). 채널 전송용. 순수."""
+    e = _html.escape
+    name = e(data.get("name") or data.get("query") or "—")
+    code = e(data.get("code") or "")
+    lines = [f"🏢 <b>{name}</b>{(' · ' + code) if code else ''} — 기업 보고서",
+             "DART 매출구성 + 관세청 수출입 품목 노출", ""]
+    products = data.get("products") or []
+    if products:
+        lines.append("📦 <b>제품 구성</b> (DART 매출비중)")
+        for p in products[:12]:
+            sh = f" ({p['share_pct']}%)" if p.get("share_pct") is not None else ""
+            lines.append(f"• {e(str(p.get('name','')))}{sh}")
+    else:
+        lines.append("📦 제품 구성 — DART 매출표 미확보")
+    lines.append("")
+    exposure = data.get("exposure") or []
+    if exposure:
+        lines.append("🚢 <b>관세청 수출입 품목 노출</b> (최신월 수출)")
+        for x in exposure[:12]:
+            lines.append(f"• {e(x['item'])} — {_eok_usd(x.get('latest_usd'))}")
+    else:
+        lines.append("🚢 관세청 노출 — 매핑된 품목 없음")
+    if ai_text:
+        lines += ["", "🤖 <b>AI 요약</b>", e(ai_text)]
+    out = "\n".join(lines)
+    return out[:4000]
+
+
+def send_to_channel(query: str, mode: str = "free", api_key: str | None = None) -> dict:
+    """보고서를 trade 텔레그램 채널로 전송 (사용자 2026-06-17 '버튼→채널'). free=₩0,
+    llm=AI 요약 포함(유료). {ok, sent}."""
+    data = gather(query, api_key)
+    ai_text = ""
+    if mode == "llm":
+        try:
+            from trade import llm_insights
+            if llm_insights._api_key():
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                from trade import llm_usage
+                mdl = llm_insights.DEFAULT_MODEL
+                resp = ChatGoogleGenerativeAI(
+                    model=mdl, temperature=0.3,
+                    google_api_key=llm_insights._api_key()).invoke(
+                        [("system", _LLM_SYS), ("human", _llm_digest(data))])
+                um = getattr(resp, "usage_metadata", None) or {}
+                try:
+                    llm_usage.record(mdl, um.get("input_tokens", 0), um.get("output_tokens", 0))
+                except Exception:
+                    pass
+                ai_text = (getattr(resp, "content", "") or "").strip()
+        except Exception as exc:
+            log.warning("send_to_channel LLM: %s", exc)
+    body = render_telegram(data, ai_text)
+    ids = [int(x) for x in (os.environ.get("TRADE_CHANNEL_CHAT_IDS") or "").split(",")
+           if x.strip()]
+    if not ids:
+        return {"ok": False, "error": "TRADE_CHANNEL_CHAT_IDS 미설정"}
+    sent = 0
+    try:
+        from trade.scripts import customs_alert
+        for cid in ids:
+            if customs_alert._send(cid, body):
+                sent += 1
+    except Exception as exc:
+        log.warning("send_to_channel: %s", exc)
+        return {"ok": False, "error": str(exc)}
+    return {"ok": sent > 0, "sent": sent}
+
+
 def build(query: str, mode: str = "free", api_key: str | None = None) -> str:
     """query + mode('free'|'llm') → 보고서 HTML."""
     data = gather(query, api_key)
