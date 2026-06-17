@@ -5189,9 +5189,11 @@ class TestIntlHighLow52:
     나라도 모두' + '한국도 신고가신저가'). peer 유니버스 + SWR 동기계산 금지
     + 페이지. KR 은 peer 맵의 해외 비교군을 native 접미사 필터로 제외."""
 
-    def test_universe_from_peer_maps(self):
+    def test_universe_from_peer_maps(self, monkeypatch):
         import bot.intl_highlow as ih
-        # CN_A 재도입(2026-06-17, peer-only) — JP/HK/KR/CN 모두
+        # CN_A 재도입(2026-06-17) — 전종목(AKShare)+peer 폴백. AKShare 를 빈
+        # 결과로 강제해 peer 폴백 경로를 결정적 검증(네트워크 0, VM 에서도).
+        monkeypatch.setattr("bot.akshare_client.list_all_a_shares", lambda: {})
         for mk, lo in (("JP", 40), ("HK", 30), ("KR", 50), ("CN_A", 30)):
             uni, names = ih._universe(mk)
             assert len(uni) >= lo, (mk, len(uni))
@@ -11387,25 +11389,63 @@ class TestHighlowSlotScan:
 
 
 class TestCN52Reenabled:
-    """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로 · 부하
-    고려해서 다시 전체적으로') — peer-only(주요종목) + 슬롯 :30 분산. 옛 2026-06-14
-    제거(yfinance 전종목 커버리지 빈약) 번복하되 peer 한정으로 부하·커버리지 관리."""
+    """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로 · 그냥
+    전시장 · 해줘') — **전종목**(AKShare list_all_a_shares 전 A주) + AKShare 부재
+    시 주요종목(peer) 폴백 + 슬롯 :30 분산. 옛 2026-06-14 제거(yfinance CN 커버
+    리지 빈약) 번복. ⚠️ yfinance CN 1년 커버리지 한계로 전종목 스캔해도 결과 부분."""
 
-    def test_cn_in_cfg_peer_only(self):
+    def test_cn_in_cfg(self):
         from bot.intl_highlow import _CFG
         assert "CN_A" in _CFG
         peer_map, cache, status, label, suffix = _CFG["CN_A"]
-        assert peer_map == "_CN_A_INDUSTRY_PEERS"
+        assert peer_map == "_CN_A_INDUSTRY_PEERS"   # AKShare 부재 시 peer 폴백 소스
         assert cache.startswith("highlow_cn") and status.startswith("cn_highlow")
-        assert suffix == (".SS", ".SZ")          # native A주 접미사 필터
+        assert suffix == (".SS", ".SZ")             # native A주 접미사 필터
 
-    def test_cn_universe_peer_resolves(self):
-        # peer-only: _universe('CN_A') 가 주요종목(.SS/.SZ)만 반환(전종목 스캔 안 함).
-        from bot.intl_highlow import _universe
-        uni, names = _universe("CN_A")
-        assert len(uni) >= 30                     # _CN_A_INDUSTRY_PEERS ~73
-        assert all(t.endswith((".SS", ".SZ")) for t in uni)  # 해외 비교군 제외
-        assert all(names[t] for t in uni)
+    def test_cn_full_universe_wired(self, monkeypatch):
+        # 전종목 경로: _universe('CN_A') 가 AKShare list_all_a_shares 를 우선 사용.
+        import bot.intl_highlow as ih
+        src = open("bot/intl_highlow.py", encoding="utf-8").read()
+        assert "list_all_a_shares" in src           # AKShare 전종목 소스 배선
+        # AKShare 가 전종목 주면 그게 유니버스(폴백 아님) — 배선 검증(네트워크 0).
+        monkeypatch.setattr("bot.akshare_client.list_all_a_shares",
+                            lambda: {f"{600000 + i}.SS": f"종목{i}" for i in range(300)})
+        uni, names = ih._universe("CN_A")
+        assert len(uni) == 300 and names["600000.SS"] == "종목0"
+        # AKShare 빈 결과(미설치/실패) → peer(_CN_A_INDUSTRY_PEERS) 폴백, 회귀 0.
+        monkeypatch.setattr("bot.akshare_client.list_all_a_shares", lambda: {})
+        uni2, names2 = ih._universe("CN_A")
+        assert len(uni2) >= 30                       # peer ~64
+        assert all(t.endswith((".SS", ".SZ")) for t in uni2)
+
+    def test_cn_akshare_code_conversion(self, monkeypatch):
+        # list_all_a_shares 변환 규칙: 6→.SS, 0/3→.SZ, 4/8/9(北京)→제외.
+        import bot.akshare_client as ak
+
+        class _Row(dict):
+            def get(self, k, d=None):
+                return dict.get(self, k, d)
+
+        class _DF:                                   # 최소 DataFrame 흉내
+            empty = False
+            columns = ["code", "name"]
+
+            def iterrows(self):
+                rows = [{"code": "600519", "name": "贵州茅台"},
+                        {"code": "000858", "name": "五粮液"},
+                        {"code": "300750", "name": "宁德时代"},
+                        {"code": "830799", "name": "北证종목"},   # 北京 → 제외
+                        {"code": "12", "name": "잘못"}]           # 6자리 아님 → 제외
+                for i, r in enumerate(rows):
+                    yield i, _Row(r)
+
+        monkeypatch.setattr(ak, "_import_akshare", lambda: object())
+        monkeypatch.setattr(ak, "_fetch_with_retry", lambda fn, label, **k: _DF())
+        monkeypatch.setattr(ak, "_cache_get", lambda *a, **k: None)
+        monkeypatch.setattr(ak, "_cache_put", lambda *a, **k: None)
+        out = ak.list_all_a_shares()
+        assert out == {"600519.SS": "贵州茅台", "000858.SZ": "五粮液",
+                       "300750.SZ": "宁德时代"}        # 北京·비6자리 제외
 
     def test_cn52_route_and_nav_wired(self):
         # 서버 라우트 + ASIA 허브/시장 nav 에 cn52 노출(JP/HK 미러).

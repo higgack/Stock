@@ -134,6 +134,57 @@ def _cache_put(cache_key: str, value) -> None:
         log.warning("akshare: cache write failed for %s: %s", cache_key, exc)
 
 
+def list_all_a_shares() -> dict:
+    """전 A주(上海 .SS + 深圳 .SZ) {yfinance_ticker: 中文명} — CN 52주 신고저
+    full-market 유니버스 (사용자 2026-06-17 '그냥 전시장'). AKShare
+    stock_info_a_code_name(~5천 A주 코드+명)에서 6→.SS / 0·3→.SZ 로 변환,
+    北京거래소(4·8·9 prefix → .BJ)는 yfinance 미커버라 제외. 7일 디스크 캐시
+    (상장목록 변동 느림). AKShare 미설치/실패 → {} (호출측 peer 폴백).
+
+    ⚠️ 이건 '전종목 코드'일 뿐 — yfinance 가 CN A주 1년 일봉을 빈약하게 줘서
+    이 전체를 스캔해도 데이터 있는 종목만 신고저에 남는다(전종목 '시도'·결과는
+    부분). JP/HK(거래소 공식)·TW(OpenAPI) 대비 CN 만의 구조적 한계."""
+    cache_key = "all_a_shares.json"
+    cached = _cache_get(cache_key, ttl_hours=7 * 24)
+    if isinstance(cached, dict) and len(cached) > 100:
+        return cached
+    ak = _import_akshare()
+    if ak is None:
+        return {}
+    try:
+        df = _fetch_with_retry(lambda: ak.stock_info_a_code_name(),
+                               "stock_info_a_code_name")
+    except Exception as exc:
+        log.warning("akshare stock_info_a_code_name failed: %s", exc)
+        return {}
+    if df is None or getattr(df, "empty", True):
+        return {}
+    out: dict = {}
+    try:
+        # 컬럼명 방어적 탐지 (보통 'code'/'name', 버전따라 한자일 수 있음).
+        cols = {str(c).lower(): c for c in df.columns}
+        code_c = cols.get("code") or (df.columns[0] if len(df.columns) else None)
+        name_c = cols.get("name") or (df.columns[1] if len(df.columns) > 1 else None)
+        for _, row in df.iterrows():
+            code = str(row.get(code_c) or "").strip()
+            if len(code) != 6 or not code.isdigit():
+                continue
+            if code[0] == "6":
+                tk = f"{code}.SS"            # 上海(600/601/603/605/688/689)
+            elif code[0] in ("0", "3"):
+                tk = f"{code}.SZ"            # 深圳(000/001/002/003/300/301)
+            else:
+                continue                    # 4/8/9 = 北京거래소 — yfinance 미커버
+            nm = str(row.get(name_c) or "").strip() if name_c is not None else ""
+            out[tk] = nm or tk
+    except Exception as exc:
+        log.warning("akshare A-share list parse failed: %s", exc)
+        return {}
+    if len(out) > 100:
+        _cache_put(cache_key, out)
+    return out
+
+
 def _is_transient_network_error(exc: Exception) -> bool:
     """True when the exception looks like a one-off Eastmoney / 新浪 / 同花顺
     rate-limit or transient TCP close — worth retrying. Excludes

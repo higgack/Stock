@@ -81,8 +81,10 @@ def render_intl_highlow52_page(market: str) -> str:
     else:
         _ind_lbl = "업종=yfinance · "
     _hrs = market_hours_label(market)
-    # CN_A 는 주요종목(peer) 한정 — 라벨에 명시(전종목 yfinance 1y 커버리지·부하).
-    _scope = " · 주요종목(peer)" if market == "CN_A" else ""
+    # CN_A 는 전종목(AKShare) 시도하되 yfinance CN 1년 커버리지가 빈약해 데이터
+    # 있는 종목만 표시됨 — 한계 명시(사용자 2026-06-16 '한계도 명시'). AKShare
+    # 미설치/실패 시 주요종목(peer) 폴백.
+    _scope = " · 전종목(yfinance 커버 한정)" if market == "CN_A" else ""
     sub = (f"{flag} {src}{_scope} · {(_hrs + ' · ') if _hrs else ''}시총순·헤더 클릭 정렬 · "
            f"{_ind_lbl}{_fresh_lbl}{(' · 마지막 갱신 ' + ts) if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "HK": "hk52",

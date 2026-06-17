@@ -20,14 +20,13 @@ log = logging.getLogger(__name__)
 _CFG = {
     "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v3.json",
            "jp_highlow_status.json", "일본 주요종목", (".T",)),
-    # CN_A 52주 재도입 (사용자 2026-06-17 '중국도 같은 방식으로 신고가 신저가 ·
-    # 부하고려') — 옛 2026-06-14 제거(yfinance CN A주 1년 커버리지 빈약) 번복.
-    # **peer-only**: _CN_A_INDUSTRY_PEERS 주요종목(~73)만 스캔(JP/HK 처럼 full_
-    # universe 안 씀 — CN 전종목 yfinance 1y 는 커버리지·부하 리스크) + graceful
-    # (미해소 종목 자동 skip). 슬롯 스캐너 :30 분산(부하 고려). CN 무버·업종등락
-    # (네이버)은 그대로 유지.
+    # CN_A 52주 재도입 (사용자 2026-06-17 '중국도 같은 방식으로 · 그냥 전시장') —
+    # 옛 2026-06-14 제거 번복. **전종목**: AKShare(list_all_a_shares) 전 A주 코드
+    # → yfinance 1y 스캔(_universe CN_A 분기). ⚠️ yfinance CN 커버리지 빈약 →
+    # 전종목 '시도'·결과 부분(데이터 있는 종목만). AKShare 미설치/실패 시 peer
+    # (_CN_A_INDUSTRY_PEERS ~64) 폴백. 슬롯 :30 분산 + 마감후 freeze(부하 관리).
     "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v1.json",
-             "cn_highlow_status.json", "중국 주요종목", (".SS", ".SZ")),
+             "cn_highlow_status.json", "중국 전종목", (".SS", ".SZ")),
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v4.json",
            "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
     # KR — 사용자 2026-06-13 '한국도 신고가신저가'. KIS 신고저 순위 엔드포인트
@@ -98,6 +97,24 @@ def _universe(market: str) -> tuple[list[str], dict]:
                 return full, {t: t for t in full}
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
+    if market == "CN_A":
+        # CN 전종목 (사용자 2026-06-17 '그냥 전시장 · 해줘') — AKShare 전 A주 코드.
+        # ⚠️ yfinance CN 1년 커버리지가 빈약해 전종목을 긁어도 데이터 있는 종목만
+        # 신고저에 남음(전종목 '시도'·결과는 부분). AKShare 미설치/실패 시 아래
+        # peer 폴백(주요종목 ~64, 회귀 0). 캡=HIGHLOW_UNIVERSE_CAP(시총 상위).
+        try:
+            from bot.akshare_client import list_all_a_shares
+            allcn = list_all_a_shares()          # {ticker: 中文명}, AKShare
+            if len(allcn) > 100:
+                full = list(allcn.keys())
+                import os as _os
+                _cap = int(_os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
+                if len(full) > _cap:
+                    full = _cap_by_liquidity(full, _cap, "CN_A")
+                return full, {t: allcn.get(t, t) for t in full}
+        except Exception as exc:
+            log.warning("intl CN full universe (AKShare): %s", exc)
+        # AKShare 부재/실패 → 아래 peer 폴백으로 진행(회귀 0)
     try:
         from bot import market as mkt
         peers = getattr(mkt, cfg[0], {}) or {}
