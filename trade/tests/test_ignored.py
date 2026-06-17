@@ -204,5 +204,39 @@ class TestExportCommentaryWrapper(unittest.TestCase):
         self.assertFalse(ignored.matches_contains(legit))
 
 
+class TestProspectusAnalysisRelay(unittest.TestCase):
+    """IPO/투자설명서 분석 릴레이 (BeOn, msg 9249 '세레브라스(Cerebras)
+    투자설명서 분석' 2026-06-15). 미국 상장 예정 기업 equity 노트 —
+    한국 수출입 데이터가 아닌 무관 자료. 제목이 회사마다 달라 '투자설명서
+    분석' 본문 키워드로 시리즈 전체 skip."""
+
+    SAMPLE = (
+        "OpenAI가 선택한 엔비디아 대항마, 세레브라스(Cerebras) 투자설명서 분석\n"
+        "\n"
+        "■ 웨이퍼 스케일 프로세서 (WSE-3)\n"
+        "연산 코어와 온칩 메모리(44GB SRAM)를 단일 실리콘 위에 통합한 아키텍처."
+    )
+
+    def test_prospectus_analysis_matches(self):
+        self.assertTrue(ignored.matches_contains(self.SAMPLE))
+
+    def test_company_independent(self):
+        # 회사명·헤드라인이 매 포스트 바뀌어도 '투자설명서 분석' 어구는 안정적.
+        other = "엔비디아 잡는 차세대 칩, 그록(Groq) 투자설명서 분석\n본문…"
+        self.assertTrue(ignored.matches_contains(other))
+
+    def test_in_registry(self):
+        self.assertIn("투자설명서 분석", ignored.IGNORED_CONTAINS)
+
+    def test_real_export_alert_does_not_match(self):
+        # 진짜 수출입 알림은 '투자설명서 분석' 어구를 쓰지 않아 안전 통과.
+        legit = (
+            "SK하이닉스 (HBM)\n"
+            "수출 9,876만$ (+120%)\n"
+            "2026년 5월 확정치 수출데이터 입니다."
+        )
+        self.assertFalse(ignored.matches_contains(legit))
+
+
 if __name__ == "__main__":
     unittest.main()
