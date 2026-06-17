@@ -27,6 +27,35 @@ def _data_dir() -> Path:
     return Path(os.environ.get("TRADE_DATA_DIR") or str(Path.home() / ".trade"))
 
 
+# 제품명이 아닌 헤더/구조/합계 토큰 — 1차 빌드(사용자 2026-06-17)에서 '매출액'·'비율'·
+# '금액'·'영업이익'·'제N조(약관)' 등이 제품명으로 누수. G2 매칭 전 제거(정확도 우선).
+import re as _re
+_NONPRODUCT = frozenset({
+    "매출액", "매출", "비율", "비율(%)", "비중", "매출비중", "금액", "구분", "용도",
+    "용도/기능", "기능", "소계", "합계", "계", "총계", "내부매출액", "순매출액",
+    "영업이익", "당기순이익", "자산", "주요제품", "주요제품및서비스", "품목",
+    "사업부문", "사업구분", "대상회사", "구체적용도", "주요상표등", "회사명",
+    "매출형태", "매출유형", "주요품목", "주요생산품목", "회계처리", "제조경비",
+    "정부보조금", "주요회사", "주요고객", "사업영역", "주요수요처및특성",
+})
+
+
+def _clean_products(products: list[dict]) -> list[dict]:
+    """제품 리스트에서 헤더/구조 토큰·약관 조항·기수 라벨 제거(G2 매칭 전 정제).
+    순수 — 단위테스트."""
+    out: list[dict] = []
+    for p in products or []:
+        nm = (p.get("name") or "").strip().rstrip(" 등").strip()
+        if not nm or nm in _NONPRODUCT:
+            continue
+        if _re.match(r"^제?\s*\d+\s*[조기항](?:\b|\()", nm):   # 제7조(약관)/제19기 류
+            continue
+        if _re.fullmatch(r"\d{4}년.*", nm):                     # '2024년(제40기)' 류
+            continue
+        out.append({**p, "name": nm})                           # 정제된 이름으로 저장
+    return out
+
+
 def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict | None:
     """6자리 stock_code → {code, company, report, rcept_no, products:[{name,
     share_pct, amount}]} 또는 None. DART 사업보고서 매출표 1개를 골라 제품·비중 추출.
@@ -57,7 +86,7 @@ def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict 
     if not best:
         return None
     _t, rows = best
-    products = [p for p in products_from_rows(rows) if p.get("name")]
+    products = _clean_products([p for p in products_from_rows(rows) if p.get("name")])
     if not products:
         return None
     return {
