@@ -53,6 +53,25 @@ def market_hours_label(market: str) -> str:
     """'장 09:00–15:30 KST' 류 장 시간 라벨(현지·KST). 미상 시 ''."""
     return _MKT_HOURS.get(market, "")
 
+
+def movers_freshness(market: str) -> str:
+    """무버 제목 신선도 라벨 — 장중이면 '장중 30초 갱신', 장 밖·주말(토·일)이면
+    '장 마감 · 마지막 거래일 종가 기준'. 사용자 2026-06-17 '무버 제목양식 토일' —
+    토·일·장후에 '장중 30초'로 표기돼 라이브로 오인되던 것 정정(데이터는 마지막
+    거래일 종가로 고정인데 제목만 라이브 주장). 시장시간(_SESSIONS_UTC) 단일 소스
+    로 판정, 전 시장(KR/US/JP/HK/CN) 무버 공통. _SESSIONS_UTC 부재 시 보수적 라이브."""
+    from datetime import datetime, timezone
+    try:
+        from bot.finviz_client import _SESSIONS_UTC
+    except Exception:
+        return "장중 30초 갱신"
+    s = _SESSIONS_UTC.get(market)
+    now = datetime.now(timezone.utc)
+    is_open = (bool(s) and now.weekday() < 5
+               and (s[0], s[1]) <= (now.hour, now.minute) < (s[2], s[3]))
+    return "장중 30초 갱신" if is_open else "장 마감 · 마지막 거래일 종가 기준"
+
+
 # 정렬/업종 셀 스타일 + 헤더 클릭 정렬 (us_pages 동일 — 단일 소스로 이관).
 HL_SORT_JS = """
 <style>

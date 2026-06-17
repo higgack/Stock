@@ -11464,6 +11464,34 @@ class TestLightBoardWarm:
         assert "render_intl_movers_page" not in fns2
 
 
+class TestMoversFreshnessLabel:
+    """무버 제목 신선도 라벨 (사용자 2026-06-17 '무버 제목양식 토일') — 장중이면
+    '장중 30초 갱신', 장 밖·주말(토·일)이면 '장 마감 · 마지막 거래일 종가 기준'.
+    무버 데이터는 마지막 거래일 종가로 고정인데 제목만 '장중 30초'(라이브)로 오인
+    되던 것 정정. 전 무버 보드(KR/US/JP/HK/CN) 제목 공통."""
+
+    def test_open_vs_closed(self, monkeypatch):
+        from datetime import datetime, timezone
+        import bot.finviz_client as fc
+        from bot.highlow_render import movers_freshness
+        wd = datetime.now(timezone.utc).weekday() < 5
+        closed = "장 마감 · 마지막 거래일 종가 기준"
+        monkeypatch.setattr(fc, "_SESSIONS_UTC", {"KR": (0, 0, 23, 59)})  # 종일 개장
+        assert movers_freshness("KR") == ("장중 30초 갱신" if wd else closed)
+        monkeypatch.setattr(fc, "_SESSIONS_UTC", {"KR": (12, 0, 12, 0)})  # 빈 창=닫힘
+        assert movers_freshness("KR") == closed                          # 장 밖→마감
+        assert movers_freshness("ZZ") == closed                          # 미상 시장→마감
+
+    def test_movers_titles_session_aware(self):
+        # 세 무버 페이지 모두 movers_freshness 사용 — '장중 30초' 하드코딩 제거
+        # (토·일 라이브 오인 차단). 52주/상한가 보드는 이미 '장 마감 후 고정' 표기.
+        for f in ("bot/naver_pages.py", "bot/intl_pages.py", "bot/us_pages.py"):
+            assert "movers_freshness" in open(f, encoding="utf-8").read(), f
+        # 무버 제목의 하드코딩 라이브 문구 잔존 금지.
+        for f in ("bot/intl_pages.py", "bot/us_pages.py"):
+            assert "장중 30초(네이버 종가 EOD 보유)" not in open(f, encoding="utf-8").read(), f
+
+
 class TestCN52Reenabled:
     """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로' →
     'CSI300+500') — **CSI 300 + CSI 500**(대형+중형 ~800, AKShare list_csi300_500)
