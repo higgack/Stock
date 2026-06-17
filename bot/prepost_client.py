@@ -435,6 +435,19 @@ def _current_kr_session(now_kst: datetime | None = None) -> str:
     return ""
 
 
+def _kr_over_session(sess: str) -> str | None:
+    """네이버 over_session → 'pre'(PRE_MARKET)·'post'(AFTER_MARKET)·None. 순수.
+    ⚠️ REGULAR_MARKET(정규장 시간 NXT 연속거래)·기타는 None → **보드 제외**(사용자
+    2026-06-16: 정규장에 강제 산출 시 REGULAR 행이 '장후'로 오분류돼 새어들던 것
+    원천 차단). 보드는 장전/장후 시간외만 — 정규장 데이터는 '급등·급락' 보드 소관."""
+    s = sess or ""
+    if "PRE" in s:
+        return "pre"
+    if "AFTER" in s:
+        return "post"
+    return None
+
+
 def _kr_status_write(state: str, **kw) -> None:
     kw.update({"state": state, "ts": time.time(), "ts_label": _now_label()})
     _cache_write(_KR_PREPOST_STATUS, kw)
@@ -487,7 +500,7 @@ def _compute_kr_prepost() -> dict:
     def _one(tk: str):
         try:
             q = fetch_kr_quote(tk) or {}     # 접미사 내부 strip
-            sess = q.get("over_session") or ""
+            _ses = _kr_over_session(q.get("over_session") or "")   # pre/post/None(REGULAR 제외)
             op, reg = q.get("over_price"), q.get("reg_close")
             ovol = q.get("over_volume")      # NXT 세션 거래량 — 실제 NXT 체결 신호
             # NXT 보드 = 실제 NXT 체결 종목만 (사용자 2026-06-16 'NXT 장전장후
@@ -496,7 +509,7 @@ def _compute_kr_prepost() -> dict:
             # (참조가) 랭킹 차단 — 후성 093370/피에스케이홀딩스 031980 류(over '-'
             # 인데 옛 over_volume-or-volume 폴백이 정규장 풀데이 거래량으로 보드를
             # 점령하던 것)가 이 클래스. 신세계 004170(NXT vol 54,419 실체결)만 잔존.
-            if sess and op and reg and reg > 0 and ovol:
+            if _ses and op and reg and reg > 0 and ovol:
                 # 순수 NXT move = NXT가 vs 정규장 종가 (사용자 2026-06-16 '신세계
                 # 장후가 2천원 싸면 정규장보다 내린 것 → 격차순 고하 30'). Naver
                 # over_pct(=fluctuationsRatio)는 KR 에서 전일종가 누적이라 정규장
@@ -513,7 +526,7 @@ def _compute_kr_prepost() -> dict:
                         # 유령 컷. 표시(NXT)와 게이트(정규장) 분리.
                         "reg_vol": q.get("volume"),
                         "mcap": mcaps.get(tk),
-                        "session": "pre" if "PRE" in sess else "post"}
+                        "session": _ses}
         except Exception:
             pass
         return None

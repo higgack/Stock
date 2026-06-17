@@ -5522,6 +5522,16 @@ class TestUsPrepost:
         assert [r["ticker"] for r in ups] == ["P"]   # reg_vol=0 이어도 NXT vol=5000 통과
         assert [r["ticker"] for r in downs] == []     # Q 는 NXT vol=100 박거래 컷
 
+    def test_kr_over_session_excludes_regular(self):
+        # 보드는 장전(PRE)·장후(AFTER) 시간외만 — REGULAR_MARKET(정규장 NXT 연속
+        # 거래)·기타는 None → 제외(2026-06-16: 11:35 정규장 강제산출 시 REGULAR 행이
+        # '장후'로 오분류돼 새던 것 원천 차단).
+        from bot.prepost_client import _kr_over_session
+        assert _kr_over_session("PRE_MARKET") == "pre"
+        assert _kr_over_session("AFTER_MARKET") == "post"
+        assert _kr_over_session("REGULAR_MARKET") is None
+        assert _kr_over_session("") is None and _kr_over_session(None) is None
+
     def test_classify_index_and_ticker_prepost(self):
         import pandas as pd
         from bot.prepost_client import _classify_index, _ticker_prepost
