@@ -127,6 +127,22 @@ class CollectTests(unittest.TestCase):
         self.assertGreaterEqual(P.collect_score(rows), 4)
         self.assertEqual(P.collect_score([["가나", "다라"]]), 0)
 
+    def test_collect_score_excludes_accounting(self):
+        # 2026-06-17 정밀화 — 회계 주석/정책 표(추정내용연수·재무제표·감가상각)는 0.
+        for acct in (
+            "<TABLE><TR><TD>구분</TD><TD>추정내용연수</TD></TR>"
+            "<TR><TD>건물</TD><TD>40년</TD></TR></TABLE>",
+            "<TABLE><TR><TD>다음은 연결재무제표 작성에 적용된</TD></TR>"
+            "<TR><TD>감가상각</TD><TD>정액법</TD></TR></TABLE>",
+        ):
+            self.assertEqual(P.collect_score(P.parse_table_block(acct)), 0)
+
+    def test_best_revenue_table_skips_accounting_only(self):
+        # 회계 표만 있는 문서 → 매출표 미발견(가짜 시그니처 방지).
+        doc = ("<TABLE><TR><TD>구분</TD><TD>추정내용연수</TD></TR>"
+               "<TR><TD>건물</TD><TD>40년</TD></TR></TABLE>")
+        self.assertEqual(P.best_revenue_table(doc), (None, 0))
+
     def test_header_signature(self):
         sig = P.header_signature(P.parse_table_block(_TABLE))
         self.assertEqual(sig[0], "사업부문")   # 키워드 헤더 행 채택

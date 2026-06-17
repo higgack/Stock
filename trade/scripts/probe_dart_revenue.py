@@ -324,19 +324,27 @@ def products_from_flat(segment: str, cap: int = 12) -> list[dict]:
 
 
 # ── 케이스 수집·분류 (--wide) — 표 '틀' 형태를 헤더 시그니처로 그룹핑 ─────────
-# 넓힌 키워드로 매출-관련 표를 폭넓게 찾고(요약재무 행렬형 POSCO 등 포함), 헤더
-# 시그니처로 형태 분류 → 몇 개의 틀이 있는지 집계. 순수(단위테스트).
-_COLLECT_KW = ("매출", "비중", "구성", "품목", "제품", "사업부문", "부문",
-               "자산", "영업이익", "구분", "주요", "금액", "수익")
+# 매출구성 표 선택기 (2026-06-17 정밀화 — 회계 주석 표 오선택 차단). 1차 --wide 에서
+# 넓은 키워드(자산/영업이익 포함)가 회계 주석 표(재무제표 작성/추정내용연수)를 ~15개사
+# 에서 오선택. → 강한 매출 신호(품목/주요제품/매출유형/매출액/매출비중) 가중 2 + 보조
+# (사업부문/비중/비율/제품/구체적용도) 1, 회계 주석 표는 0 으로 즉시 제외.
+_REV_STRONG = ("품목", "주요제품", "매출유형", "매출비중", "매출액")
+_REV_OK = ("사업부문", "주요제품및서비스", "구체적용도", "비중", "비율", "제품", "매출")
+_ACCT_KW = ("재무제", "내용연수", "회계정책", "회계정", "주석", "상각방법",
+            "한국채", "정상영업주기", "투자부동산", "자신의자산", "공동기업",
+            "충당부채", "이연법인세", "감가상각", "유효이자율")
 
 
 def collect_score(rows: list[list[str]]) -> int:
-    """매출-관련 표스러운 정도 (넓힌 키워드 — 수집용, score_revenue_table 보다
-    관대해 요약재무 행렬형도 포착). 순수."""
+    """매출구성 표스러운 정도(정밀). 회계 주석/정책 표는 0(제외). 강한 매출 신호
+    가중 2 · 보조 1 · %존재 +1. 순수(단위테스트)."""
     if not rows:
         return 0
     joined = " ".join(c for r in rows[:3] for c in r)
-    s = sum(1 for k in _COLLECT_KW if k in joined)
+    if any(k in joined for k in _ACCT_KW):     # 회계 주석/정책 표 → 제외
+        return 0
+    s = sum(2 for k in _REV_STRONG if k in joined)
+    s += sum(1 for k in _REV_OK if k in joined)
     if any("%" in c for r in rows for c in r):
         s += 1
     return s
@@ -356,15 +364,16 @@ def header_signature(rows: list[list[str]]) -> tuple:
     return sig
 
 
-def best_revenue_table(markup: str):
-    """원문에서 매출-관련도 가장 높은 표 (rows, score). 없으면 (None, 0). 순수."""
+def best_revenue_table(markup: str, min_score: int = 3):
+    """원문에서 매출구성 표(점수 최고). min_score 미만이면 (None,0) — 회계 표만 있는
+    문서는 '표 미발견'으로(가짜 시그니처 방지). 순수."""
     best, bs = None, -1
     for t in extract_tables_raw(markup, cap=150):
         rows = parse_table_block(t)
         sc = collect_score(rows)
         if sc > bs:
             bs, best = sc, (t, rows)
-    return (best, bs) if best else (None, 0)
+    return (best, bs) if (best and bs >= min_score) else (None, 0)
 
 
 # ─────────────────────────────────────────────────────────────────────
