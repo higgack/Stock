@@ -60,12 +60,16 @@ LIVE_REFRESH_JS = """<script>
   // 2026-06-17). 필터 해제 시 폴링 재개. 텍스트는 type=search 라 아래 검색 가드에도
   // 걸리지만, 숫자(number)·업종(select)은 여기서만 잡힌다.
   function filtering(){
-    var f=document.querySelectorAll('.hl-flt, tr.cflt-row input');  // hl-table + 범용(테마/업종강도/NXT) 필터
-    for(var i=0;i<f.length;i++){
-      var el=f[i];
-      if(el===document.activeElement) return true;
-      if(el.tagName==='SELECT'){ if(el.selectedIndex>0) return true; }
-      else if(el.value) return true;
+    // hl-table + 범용(테마/업종강도/NXT) 숫자/검색 입력
+    var f=document.querySelectorAll('.hl-flt, tr.cflt-row input');
+    for(var i=0;i<f.length;i++){ var el=f[i];
+      if(el===document.activeElement || el.value) return true; }
+    // 다중선택 드롭다운(.ms): 선택 있음 또는 팝업 열림(상호작용 중) → swap skip
+    var ms=document.querySelectorAll('.ms');
+    for(var k=0;k<ms.length;k++){
+      if(ms[k]._sel && ms[k]._sel.length) return true;
+      var pop=ms[k].querySelector('.ms-pop');
+      if(pop && pop.style.display==='block') return true;
     }
     return false;
   }

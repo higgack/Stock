@@ -75,8 +75,78 @@ def movers_freshness(market: str) -> str:
     return "장중 30초 갱신" if is_open else "장 마감 · 마지막 거래일 종가 기준"
 
 
+# 다중선택 드롭다운 공유 컨트롤 (필터 — 사용자 2026-06-17 '검색 말고 선택, 중복선택').
+# in-popup 검색 내장(고카디널리티 종목/테마 대응). hl-table·cflt 양쪽이 prepend 해
+# window.mkMultiSelect 1회 정의(guard). values 배열 → 체크박스 다중선택, onChange(선택배열).
+# 선택값은 wrap._sel(배열)·clearMs()·data-fk 로 노출(applyFilter/live_refresh 가 읽음).
+_MULTISELECT_JS = """
+<style>
+.ms{position:relative;display:block;width:100%}
+.ms-btn{width:100%;box-sizing:border-box;font-size:11px;padding:2px 4px;text-align:left;
+  background:var(--bg,#111);color:var(--text,#ddd);border:1px solid var(--border,#333);
+  border-radius:3px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ms-btn.on{border-color:var(--accent,#3b82f6);color:var(--accent,#3b82f6)}
+.ms-pop{position:absolute;z-index:40;top:100%;left:0;min-width:150px;max-width:260px;
+  background:var(--card,#1a1a1a);border:1px solid var(--border,#333);border-radius:4px;
+  padding:4px;box-shadow:0 4px 14px rgba(0,0,0,.45)}
+.ms-srch{width:100%;box-sizing:border-box;font-size:11px;padding:2px 4px;margin-bottom:4px;
+  background:var(--bg,#111);color:var(--text,#ddd);border:1px solid var(--border,#333);border-radius:3px}
+.ms-list{max-height:210px;overflow-y:auto}
+.ms-list label{display:block;font-size:11px;padding:2px 3px;white-space:nowrap;cursor:pointer;color:var(--text,#ddd)}
+.ms-list label:hover{background:var(--border,#333)}
+.ms-list input{margin-right:5px;vertical-align:middle}
+</style>
+<script>
+if(!window.mkMultiSelect){
+window.mkMultiSelect=function(values, onChange){
+  var wrap=document.createElement('span'); wrap.className='ms'; wrap._sel=[];
+  var btn=document.createElement('button'); btn.type='button'; btn.className='ms-btn'; btn.textContent='전체';
+  var pop=document.createElement('div'); pop.className='ms-pop'; pop.style.display='none';
+  var srch=document.createElement('input'); srch.type='search'; srch.className='ms-srch'; srch.placeholder='검색';
+  var list=document.createElement('div'); list.className='ms-list';
+  var sel={};
+  function sync(){
+    wrap._sel=Object.keys(sel);
+    btn.textContent=wrap._sel.length===0?'전체':(wrap._sel.length===1?wrap._sel[0]:wrap._sel.length+'개 선택');
+    btn.className='ms-btn'+(wrap._sel.length?' on':'');
+    if(onChange) onChange(wrap._sel);
+  }
+  (values||[]).forEach(function(v){
+    var lab=document.createElement('label'); lab._v=v;
+    var cb=document.createElement('input'); cb.type='checkbox';
+    cb.addEventListener('change',function(){ if(cb.checked) sel[v]=1; else delete sel[v]; sync(); });
+    lab.appendChild(cb); lab.appendChild(document.createTextNode(' '+v));
+    list.appendChild(lab);
+  });
+  srch.addEventListener('input',function(){
+    var q=srch.value.toLowerCase();
+    Array.prototype.forEach.call(list.children,function(l){
+      l.style.display=l._v.toLowerCase().indexOf(q)<0?'none':'';
+    });
+  });
+  srch.addEventListener('click',function(e){ e.stopPropagation(); });
+  btn.addEventListener('click',function(e){
+    e.stopPropagation();
+    var open=pop.style.display==='none';
+    document.querySelectorAll('.ms-pop').forEach(function(p){ p.style.display='none'; });
+    pop.style.display=open?'block':'none';
+    if(open) srch.focus();
+  });
+  pop.addEventListener('click',function(e){ e.stopPropagation(); });
+  document.addEventListener('click',function(){ pop.style.display='none'; });
+  pop.appendChild(srch); pop.appendChild(list);
+  wrap.appendChild(btn); wrap.appendChild(pop);
+  wrap.clearMs=function(){ sel={};
+    Array.prototype.forEach.call(list.querySelectorAll('input'),function(c){c.checked=false;}); sync(); };
+  return wrap;
+};
+}
+</script>
+"""
+
+
 # 정렬/업종 셀 스타일 + 헤더 클릭 정렬 + 컬럼별 필터 (us_pages 동일 — 단일 소스로 이관).
-HL_SORT_JS = """
+HL_SORT_JS = _MULTISELECT_JS + """
 <style>
 .hl-table th.srt{cursor:pointer;user-select:none;white-space:nowrap}
 .hl-table td.ind{max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted,#888);font-size:12px}
@@ -162,31 +232,37 @@ HL_SORT_JS = """
     });
     return m;
   }
+  function _hlDistinct(tbl, ci){       // 컬럼 ci 의 고유 셀텍스트(정렬) — 다중선택 옵션
+    var seen={}, out=[];
+    Array.prototype.forEach.call(tbl.tBodies[0].rows,function(r){
+      var t=r.cells[ci]?r.cells[ci].textContent.replace(/\\s+/g,' ').trim():'';
+      if(!t||t==='—'||seen[t]) return; seen[t]=1; out.push(t);
+    });
+    out.sort(function(a,b){return a.localeCompare(b,'ko');});
+    return out;
+  }
   function applyFilter(tbl){
     var tb=tbl.tBodies[0]; if(!tb) return;
     var fr=tbl.tHead.querySelector('tr.hl-filter'); if(!fr) return;
     var cmap=colIndexMap(tbl);
-    var ctrls=Array.prototype.slice.call(fr.querySelectorAll('.hl-flt'));
+    var nums=Array.prototype.slice.call(fr.querySelectorAll('input[data-bound]'));
+    var mses=Array.prototype.slice.call(fr.querySelectorAll('.ms[data-fk]'));
     var total=tb.rows.length, vis=0;
     Array.prototype.forEach.call(tb.rows,function(r){
       var ok=true;
-      for(var i=0;i<ctrls.length && ok;i++){
-        var c=ctrls[i], fk=c.getAttribute('data-fk'), v=c.value;
-        if(v===''||v==null) continue;
-        if(c.tagName==='SELECT'){            // 업종 등 카테고리 — data-속성 정확 매칭
-          if((r.getAttribute('data-'+fk)||'')!==v) ok=false;
-        } else if(c.getAttribute('data-bound')){   // 숫자 범위
-          var fv=parseFloat(v); if(isNaN(fv)) continue;
-          var num=parseFloat(r.getAttribute('data-'+fk));
-          if(isNaN(num)){ ok=false; }
-          else if(c.getAttribute('data-bound')==='min'){ if(num<fv) ok=false; }
-          else if(num>fv){ ok=false; }
-        } else {                              // 텍스트 부분검색(보이는 셀+data-속성)
-          var ci=cmap[fk];
-          var cell=(ci!=null && r.cells[ci])? r.cells[ci].textContent:'';
-          var hay=(cell+' '+(r.getAttribute('data-'+fk)||'')).toLowerCase();
-          if(hay.indexOf(v.toLowerCase())<0) ok=false;
-        }
+      for(var i=0;i<nums.length && ok;i++){      // 숫자 범위(현재가/등락률/거래량/시총…)
+        var c=nums[i], v=c.value; if(v===''||v==null) continue;
+        var fv=parseFloat(v); if(isNaN(fv)) continue;
+        var num=parseFloat(r.getAttribute('data-'+c.getAttribute('data-fk')));
+        if(isNaN(num)){ ok=false; }
+        else if(c.getAttribute('data-bound')==='min'){ if(num<fv) ok=false; }
+        else if(num>fv){ ok=false; }
+      }
+      for(var j=0;j<mses.length && ok;j++){       // 종목·업종 = 다중선택 멤버십(OR)
+        var ms=mses[j]; if(!ms._sel||!ms._sel.length) continue;
+        var ci=cmap[ms.getAttribute('data-fk')];
+        var cell=(ci!=null && r.cells[ci])? r.cells[ci].textContent.replace(/\\s+/g,' ').trim():'';
+        if(ms._sel.indexOf(cell)<0) ok=false;
       }
       r.style.display = ok?'':'none';
       if(ok) vis++;
@@ -225,9 +301,8 @@ HL_SORT_JS = """
   }
   function clearFilters(tbl){
     var fr=tbl.tHead.querySelector('tr.hl-filter'); if(!fr) return;
-    fr.querySelectorAll('.hl-flt').forEach(function(c){
-      if(c.tagName==='SELECT') c.selectedIndex=0; else c.value='';
-    });
+    fr.querySelectorAll('input[data-bound]').forEach(function(c){c.value='';});
+    fr.querySelectorAll('.ms').forEach(function(m){ if(m.clearMs) m.clearMs(); });
     applyFilter(tbl);
   }
   // window.hlBindFilter — hlBindSort 와 동일하게 live_refresh swap 후 재호출.
@@ -249,23 +324,17 @@ HL_SORT_JS = """
             wrap.appendChild(mkNum(tbl,key,'min','≥'));
             wrap.appendChild(mkNum(tbl,key,'max','≤'));
             cell.appendChild(wrap);
-          } else if(key==='ind'){                      // 업종 → 드롭다운
-            var sel=document.createElement('select'); sel.className='hl-flt';
-            sel.setAttribute('data-fk',key);
-            sel.addEventListener('change',function(){applyFilter(tbl);});
-            cell.appendChild(sel);
-          } else {                                     // 종목 등 텍스트 → 검색
-            var inp=document.createElement('input'); inp.type='search';
-            inp.className='hl-flt'; inp.setAttribute('data-fk',key);
-            inp.placeholder='검색';
-            inp.addEventListener('input',function(){applyFilter(tbl);});
-            cell.appendChild(inp);
+          } else {                                     // 종목·업종 등 텍스트 → 다중선택 드롭다운
+            var ci2=colIndexMap(tbl)[key];
+            var ms=window.mkMultiSelect(ci2!=null?_hlDistinct(tbl,ci2):[],
+                                        function(){applyFilter(tbl);});
+            ms.setAttribute('data-fk',key);
+            cell.appendChild(ms);
           }
           fr.appendChild(cell);
         });
         thead.appendChild(fr);
       }
-      refreshIndOptions(tbl);   // 업종 옵션을 현재 데이터로 (재)생성·선택 보존
       applyFilter(tbl);
     });
   };
@@ -281,8 +350,10 @@ HL_SORT_JS = """
 # 업종강도(속성 없음)·NXT(nxt-tbl) 는 컨벤션이 제각각. 그래서 **보이는 셀 텍스트
 # 기반** 범용 필터를 별도로 둔다(데이터 속성 무의존). `class="cflt"` 표에 자동
 # 부착: 첫칸=✕해제, 링크/단위(억·조·만·T·B·M) 셀 컬럼=텍스트 검색, 그 외 숫자
-# 컬럼(등락률·% 등)=min~max 범위. 단위 혼재 컬럼은 범위 오해를 막으려 텍스트로.
-GENERIC_FILTER_JS = """
+# 컬럼(등락률·% 등)=min~max 범위. 순수 텍스트(종목/업종/사업부문)=다중선택 드롭다운
+# (사용자 2026-06-17 '검색 말고 선택·중복선택'). 억/조/만 등 단위 혼재 숫자컬럼은
+# 그대로 검색 유지('숫자부분은 그대로').
+GENERIC_FILTER_JS = _MULTISELECT_JS + """
 <style>
 table.cflt tr.cflt-row th{padding:2px 4px}
 table.cflt tr.cflt-row input{width:100%;box-sizing:border-box;font-size:11px;padding:2px 3px;background:var(--bg,#111);color:var(--text,#ddd);border:1px solid var(--border,#333);border-radius:3px}
@@ -299,15 +370,30 @@ table.cflt tr.cflt-row input::placeholder{color:var(--muted,#777)}
   function colType(th,idx,tb){
     var ft=th.getAttribute('data-ft');if(ft)return ft;        // 명시 우선
     if(idx===0||(th.textContent||'').trim()==='#')return 'none';
-    var r=firstRow(tb);
-    if(r&&r.cells[idx]){
-      var c=r.cells[idx];
-      if(c.querySelector('a'))return 'text';                   // 이름/링크 컬럼
-      var t=c.textContent.trim();
-      if(/[억조만]|[TBM]\\b/.test(t))return 'text';            // 단위 혼재 → 범위 오해 방지
-      if(/\\d/.test(t)&&!isNaN(pnum(t)))return 'num';
+    // 데이터 행 샘플(≤12)로 판정 — 첫 행이 '—'여도 robust.
+    var rows=tb.tBodies[0]?tb.tBodies[0].rows:[],nNum=0,nUnit=0,nText=0,nLink=0,seen=0;
+    for(var i=0;i<rows.length&&seen<12;i++){
+      var r=rows[i];if(r.querySelector('.empty')||!r.cells[idx])continue;
+      var c=r.cells[idx],t=c.textContent.trim();if(t===''||t==='—')continue;seen++;
+      if(c.querySelector('a')){nLink++;continue;}
+      if(/[억조만]|[TBM]\\b/.test(t)){nUnit++;continue;}      // 억/조/만 단위 숫자
+      if(/\\d/.test(t)&&!isNaN(pnum(t))){nNum++;continue;}
+      nText++;
     }
-    return 'text';
+    if(nLink>0&&nLink>=nText)return 'text';   // 링크(종목/회사) → 다중선택
+    if(nUnit>nNum&&nUnit>=nText)return 'unit'; // 억/조/만 → 검색 유지(숫자부분 그대로)
+    if(nNum>0&&nNum>=nText)return 'num';        // 순수 숫자 → min~max 범위
+    return 'text';                              // 순수 텍스트 → 다중선택
+  }
+  function cdistinct(tbl,ci){          // 컬럼 ci 고유 셀텍스트(정렬) — 다중선택 옵션
+    var seen={},out=[];
+    Array.prototype.forEach.call(tbl.tBodies[0].rows,function(r){
+      if(r.querySelector('.empty')||!r.cells[ci])return;
+      var t=r.cells[ci].textContent.replace(/\\s+/g,' ').trim();
+      if(!t||t==='—'||seen[t])return;seen[t]=1;out.push(t);
+    });
+    out.sort(function(a,b){return a.localeCompare(b,'ko');});
+    return out;
   }
   function renum(tbl){var tb=tbl.tBodies[0];if(!tb)return;var i=0;
     Array.prototype.forEach.call(tb.rows,function(r){if(r.style.display==='none'||r.querySelector('.empty'))return;
@@ -315,17 +401,24 @@ table.cflt tr.cflt-row input::placeholder{color:var(--muted,#777)}
   function apply(tbl){
     var tb=tbl.tBodies[0];if(!tb)return;
     var fr=tbl.tHead.querySelector('tr.cflt-row');if(!fr)return;
-    var ctrls=Array.prototype.slice.call(fr.querySelectorAll('input'));
+    var ins=Array.prototype.slice.call(fr.querySelectorAll('input'));
+    var mses=Array.prototype.slice.call(fr.querySelectorAll('.ms[data-ci]'));
     Array.prototype.forEach.call(tb.rows,function(r){
       if(r.querySelector('.empty'))return;
       var ok=true;
-      for(var i=0;i<ctrls.length&&ok;i++){
-        var c=ctrls[i],v=c.value;if(v==='')continue;
+      for(var i=0;i<ins.length&&ok;i++){           // 숫자 범위 + 단위 검색
+        var c=ins[i],v=c.value;if(v==='')continue;
         var ci=+c.getAttribute('data-ci'),cell=r.cells[ci];if(!cell)continue;
         var b=c.getAttribute('data-b');
         if(b){var fv=pnum(v);if(isNaN(fv))continue;var n=pnum(cell.textContent);
           if(isNaN(n)){ok=false;}else if(b==='min'){if(n<fv)ok=false;}else if(n>fv){ok=false;}}
         else if(cell.textContent.toLowerCase().indexOf(v.toLowerCase())<0){ok=false;}
+      }
+      for(var j=0;j<mses.length&&ok;j++){          // 다중선택 멤버십(OR)
+        var ms=mses[j];if(!ms._sel||!ms._sel.length)continue;
+        var mc=r.cells[+ms.getAttribute('data-ci')];
+        var ct=mc?mc.textContent.replace(/\\s+/g,' ').trim():'';
+        if(ms._sel.indexOf(ct)<0)ok=false;
       }
       r.style.display=ok?'':'none';
     });
@@ -341,13 +434,17 @@ table.cflt tr.cflt-row input::placeholder{color:var(--muted,#777)}
         var cell=document.createElement('th'),ty=colType(th,idx,tbl);
         if(idx===0){var b=document.createElement('button');b.type='button';b.className='cflt-clear';
           b.textContent='✕';b.title='필터 해제';
-          b.addEventListener('click',function(){fr.querySelectorAll('input').forEach(function(x){x.value='';});apply(tbl);});
+          b.addEventListener('click',function(){
+            fr.querySelectorAll('input').forEach(function(x){x.value='';});
+            fr.querySelectorAll('.ms').forEach(function(m){if(m.clearMs)m.clearMs();});apply(tbl);});
           cell.appendChild(b);}
         else if(ty==='num'){var w=document.createElement('div');w.className='rng';
           w.appendChild(mkNum(tbl,idx,'min','≥'));w.appendChild(mkNum(tbl,idx,'max','≤'));cell.appendChild(w);}
-        else if(ty==='text'){var inp=document.createElement('input');inp.type='search';
+        else if(ty==='unit'){var inp=document.createElement('input');inp.type='search';
           inp.setAttribute('data-ci',idx);inp.placeholder='검색';
           inp.addEventListener('input',function(){apply(tbl);});cell.appendChild(inp);}
+        else{var ms=window.mkMultiSelect(cdistinct(tbl,idx),function(){apply(tbl);});
+          ms.setAttribute('data-ci',idx);cell.appendChild(ms);}
         fr.appendChild(cell);
       });
       thead.appendChild(fr);
