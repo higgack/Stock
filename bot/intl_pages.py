@@ -84,7 +84,7 @@ def render_intl_highlow52_page(market: str) -> str:
     # CN_A 는 CSI 300+500(대형+중형 ~800, yfinance 커버 양호) — 사용자 2026-06-17.
     # 전 A주 소형주는 yfinance 1년 커버 빈약해 제외. AKShare 미설치/실패 시 peer 폴백.
     _scope = " · CSI300+500(대형·중형)" if market == "CN_A" else ""
-    sub = (f"{flag} {src}{_scope} · {(_hrs + ' · ') if _hrs else ''}시총순·헤더 클릭 정렬 · "
+    sub = (f"{flag} {src}{_scope} · {(_hrs + ' · ') if _hrs else ''}"
            f"{_ind_lbl}{_fresh_lbl}{(' · 마지막 갱신 ' + ts) if ts else ''}")
     _active = {"KR": "kr52", "JP": "jp52", "HK": "hk52",
                "CN_A": "cn52"}.get(market, "")
@@ -135,7 +135,7 @@ def render_intl_movers_page(market: str) -> str:
     from bot.highlow_render import movers_freshness as _mf
     _hrs = _mhl(market)
     sub = (f"{flag} 당일 등락 상·하위 30 · {src} · {(_hrs + ' · ') if _hrs else ''}"
-           f"등락률순·헤더 클릭 정렬 · {_ind_src} · {_mf(market)}"
+           f"{_ind_src} · {_mf(market)}"
            + (f" · 마지막 갱신 {ts}" if ts else ""))
     _active = {"JP": "jpmovers", "CN_A": "cnmovers", "HK": "hkmovers"}.get(market, "hkmovers")
     return _tw_shell(f"{flag} 급등·급락", sub, body,
@@ -178,7 +178,7 @@ def render_jp_stop_page() -> str:
     sc = data.get("scanned")
     sub = ("🇯🇵 일본 상한가·하한가(ストップ高/安) — 전일종가별 TSE 制限値幅 도달 · "
            + (f"{sc}종목 스캔 · " if sc else "")
-           + "종목명=티커(한글) · 시총순·헤더 클릭 정렬 · 장중 1h 갱신·장 마감 후 고정(재스캔 0). "
+           + "종목명=티커(한글) · 장중 1h 갱신·장 마감 후 고정(재스캔 0). "
            + (f"· 갱신 {ts}" if ts else ""))
     return _tw_shell("🇯🇵 일본 상한가·하한가", sub, body,
                      nav=_market_nav("JP", "jphighlow"), back=_asia_back("JP"))
@@ -220,9 +220,9 @@ def render_kr_prepost_page() -> str:
                               "kpp-down", "KR", "", **_o)
                 + '</div>' + HL_SORT_JS)
     sub = (f"🇰🇷 {sess_kr} NXT 급등·급락 상·하위 30 · 등락률=NXT가 vs 정규장 "
-           "종가(NXT-정규장 격차) · 거래량·거래대금=NXT 세션(정규장 별개) · 실제 NXT "
-           "체결 종목만(미체결=전일가 placeholder 제외) · 네이버 실시간 · 등락률순·헤더 "
-           "클릭 정렬 · NXT 장전 08:00–09:00 · 장후 15:40–20:00 KST · NXT 창에서 2분"
+           "종가(NXT-정규장 격차) · 거래량·거래대금=NXT 세션 누적(당일 NXT 거래소 체결, "
+           "정규장 별개) · 실제 NXT 체결 종목만(미체결=전일가 placeholder 제외) · 네이버 "
+           "실시간 · NXT 장전 08:00–09:00 · 장후 15:40–20:00 KST · NXT 창에서 2분"
            + (f" · {ts} 기준" if ts else ""))
     return _tw_shell("🇰🇷 한국 NXT 장전·장후 급등·급락", sub, body,
                      nav=_market_nav("KR", "krprepost"), back=_asia_back("KR"))

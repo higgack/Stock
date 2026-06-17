@@ -122,7 +122,8 @@ def render_nxt_page() -> str:
     date_lb = (f"{date[:4]}-{date[4:6]}-{date[6:8]}" if len(date) == 8 else date)
     # NXT 거래소 venue 의 당일(periodType=DAY) 투자자별 순매수/순매도 — 장전/장후로
     # 분리된 게 아니라 NXT 일중 합계. 따라서 '장전·장후' 멘트 제거(사용자 2026-06-16).
-    sub = ("넥스트레이드(NXT) 투자자별 순매수/순매도 상위 (외국인·기관) · 네이버"
+    sub = ("넥스트레이드(NXT) 투자자별 순매수/순매도 상위 (외국인·기관) · 네이버 · "
+           "일 1회(장 마감 후) 갱신"
            + (f" · {date_lb} 기준" if date_lb else ""))
     # KR 페이지 공통 nav(_shell — 업종별 시세·신고가/신저가·급등락·NXT toggle, NXT
     # active) 사용 (사용자 2026-06-15 'NXT 도 다른 대시보드 가는 nav'). _NXT_CSS 는
