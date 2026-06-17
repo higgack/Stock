@@ -9071,10 +9071,11 @@ class TestHkMovers:
         assert _suffix_ticker("7203", ".T") == "7203.T"
         assert _suffix_ticker("700", ".HK") == "0700.HK"
         assert _suffix_ticker("601288", ".SS") == "601288.SS"
-        # US 추가(2026-06-14) — 52주 시총 worldstock overlay 용(접미사 없음)
+        # US 추가(2026-06-14) — 52주 시총 worldstock overlay 용(접미사 없음).
+        # AMEX 제외(2026-06-17 'AMEX 포함 안 함') → NASDAQ+NYSE 만.
         assert set(_INTL_MOVER_EX) == {"JP", "HK", "CN_A", "US"}
         assert _INTL_MOVER_EX["CN_A"] == [("SHANGHAI", ".SS"), ("SHENZHEN", ".SZ")]
-        assert _INTL_MOVER_EX["US"] == [("NASDAQ", ""), ("NYSE", ""), ("AMEX", "")]
+        assert _INTL_MOVER_EX["US"] == [("NASDAQ", ""), ("NYSE", "")]
         assert _suffix_ticker("NVDA", "") == "NVDA"   # US 접미사 없음 직접
 
     def test_naver_industry_map_and_routing(self):
@@ -11494,6 +11495,58 @@ class TestMoversFreshnessLabel:
         tw = open("bot/tw_pages.py", encoding="utf-8").read()
         assert "공식 종가(EOD" in tw                  # EOD 정직 라벨
         assert "movers_freshness" not in tw           # TW 는 EOD라 라이브 헬퍼 미사용
+
+
+class TestAmexExclusion:
+    """모든 미국 대시보드에서 AMEX(NYSE American) 제외 (사용자 2026-06-17 'AMEX 는
+    포함 안 할거야'). 무버(네이버)·장전후(네이버)·52주(Finviz/yfinance) 전 표면.
+    네이버 경로=거래소 루프에서 AMEX 드랍, Finviz/yfinance=us_amex_symbols
+    (otherlisted Exchange='A') set 필터."""
+
+    def test_us_exchange_iterations_drop_amex(self):
+        # 네이버 무버·장전후 유니버스 + overlay 맵에서 AMEX 거래소 제거(소스 단).
+        nv = open("bot/naver_ranking_client.py", encoding="utf-8").read()
+        seg = nv[nv.index("def fetch_us_movers"):nv.index("_INTL_MOVER_EX")]
+        assert '"AMEX"' not in seg                       # 무버 거래소 루프
+        us_cfg = nv[nv.index('"US": ['):nv.index('"US": [') + 90]
+        assert "AMEX" not in us_cfg                      # _INTL_MOVER_EX["US"] overlay
+        pp = open("bot/prepost_client.py", encoding="utf-8").read()
+        seg2 = pp[pp.index("def _us_movers_universe"):pp.index("def _compute_us_prepost")]
+        assert '"AMEX"' not in seg2                      # 장전후 유니버스 루프
+        # Finviz 52주 출력이 AMEX 필터(_drop_amex_hl) 경유 — 전 티어 공통.
+        fc = open("bot/finviz_client.py", encoding="utf-8").read()
+        fhl = fc[fc.index("def fetch_high_low"):fc.index("def _fetch_sp500_csv")]
+        assert fhl.count("_drop_amex_hl") >= 2          # 캐시 반환 + 신규 산출 둘 다
+
+    def test_drop_amex_hl_filters(self, monkeypatch):
+        import bot.finviz_client as fc
+        import bot.us_symbol_names as usn
+        monkeypatch.setattr(usn, "us_amex_symbols", lambda: {"IMO", "GORO"})
+        d = fc._drop_amex_hl({"high": [{"ticker": "AAPL"}, {"ticker": "IMO"}],
+                              "low": [{"ticker": "goro"}, {"ticker": "NVDA"}]})
+        assert [r["ticker"] for r in d["high"]] == ["AAPL"]   # IMO(AMEX) 제거
+        assert [r["ticker"] for r in d["low"]] == ["NVDA"]    # goro 대소문자 무관
+        monkeypatch.setattr(usn, "us_amex_symbols", lambda: set())
+        d2 = fc._drop_amex_hl({"high": [{"ticker": "IMO"}], "low": []})
+        assert [r["ticker"] for r in d2["high"]] == ["IMO"]   # 빈 set → no-op(graceful)
+
+    def test_us_amex_symbols_parse(self, monkeypatch, tmp_path):
+        import pytest as _pt
+        _pt.importorskip("httpx")
+        import httpx
+        import bot.us_symbol_names as usn
+        fake = ("ACT Symbol|Security Name|Exchange|ETF\n"
+                "IMO|Imperial Oil|A|N\n"          # A = NYSE American(AMEX) → 포함
+                "BRK|Berkshire|N|N\n"             # N = NYSE → 제외
+                "SPY|SPDR S&P 500|P|Y\n"          # P = Arca → 제외
+                "File Creation Time: ...|||\n")
+
+        class _R:
+            status_code = 200
+            text = fake
+        monkeypatch.setattr(usn, "_AMEX_CACHE_FILE", tmp_path / "amex.json")
+        monkeypatch.setattr(httpx, "get", lambda *a, **k: _R())
+        assert usn.us_amex_symbols() == {"IMO"}          # Exchange='A' 만
 
 
 class TestCN52Reenabled:

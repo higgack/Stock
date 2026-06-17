@@ -10,7 +10,7 @@
 probe 2026-06-15 로 AAPL 장후 overPrice 296.10·AFTER_MARKET 확인.
 
 유니버스 = **전시장 정규장 무버**(`_us_movers_universe` — 네이버 worldstock
-NASDAQ+NYSE+AMEX up/down 랭킹 합집합, 사용자 2026-06-16 '전시장 정규장 무버').
+NASDAQ+NYSE up/down 랭킹 합집합, 사용자 2026-06-16 '전시장 정규장 무버' · 2026-06-17 'AMEX 제외').
 시간외 급변은 뉴스주라 정규장 무버 랭킹에 직격으로 잡힘(S&P 500 대형주는
 시간외 거의 미동 → 유니버스 부적합). ~480종목 ThreadPool 스캔(over-market
 OPEN 인 종목만 집계). 한글명도 랭킹 행에서 native. 시간외 미개장(정규장·장
@@ -207,17 +207,17 @@ def _bare_us(tk) -> str:
 
 
 def _us_movers_universe() -> tuple[list, dict, dict]:
-    """시간외 스캔 유니버스 = **전시장(NASDAQ+NYSE+AMEX) 정규장 무버** — 네이버
-    worldstock up/down 랭킹의 티커 합집합(사용자 2026-06-16 '전시장 정규장 무버').
-    시간외 급변 종목은 뉴스주라 정규장 무버 랭킹에 직격으로 잡힘(S&P 500 대형주는
-    시간외 거의 미동). 한글명도 랭킹 행에서 native 수집(미국 무버/신고저 표면과
-    동일). 반환 (tks, {ticker: 한글명}). graceful — 랭킹 전부 실패 시 빈 유니버스."""
+    """시간외 스캔 유니버스 = **전시장(NASDAQ+NYSE) 정규장 무버** — 네이버 worldstock
+    up/down 랭킹의 티커 합집합(사용자 2026-06-16 '전시장 정규장 무버'; 2026-06-17
+    'AMEX 제외'). 시간외 급변 종목은 뉴스주라 정규장 무버 랭킹에 직격으로 잡힘
+    (S&P 500 대형주는 시간외 거의 미동). 한글명도 랭킹 행에서 native 수집(미국 무버/
+    신고저 표면과 동일). 반환 (tks, {ticker: 한글명}). graceful — 랭킹 전부 실패 시 빈."""
     from bot.naver_ranking_client import fetch_world_ranking
     tks: list = []
     names: dict = {}
     mcaps: dict = {}
     seen: set = set()
-    for ex in ("NASDAQ", "NYSE", "AMEX"):
+    for ex in ("NASDAQ", "NYSE"):          # AMEX 제외 (사용자 2026-06-17)
         for sort in ("up", "down"):
             for r in fetch_world_ranking(ex, sort, limit=_UNIVERSE_PER_DIR):
                 tk = _bare_us(r.get("ticker"))
@@ -238,7 +238,7 @@ def _us_movers_universe() -> tuple[list, dict, dict]:
 def _compute_us_prepost() -> dict:
     """전시장(정규장 무버) 시간외(장전/장후) 급등·급락 TOP30 — **네이버 실시간**
     (worldstock overMarketPriceInfo, 사용자 2026-06-16 '야후 안 쓰고 네이버 실시간').
-    유니버스 = 전시장 NASDAQ+NYSE+AMEX 정규장 무버(`_us_movers_universe`, 사용자
+    유니버스 = 전시장 NASDAQ+NYSE 정규장 무버(AMEX 제외, `_us_movers_universe`, 사용자
     2026-06-16 '전시장 정규장 무버'). 종목별 overPrice·시간외 등락%(정규장 종가
     대비)로 상·하위 산출. over-market OPEN 인 종목만 집계(시간외 미개장·정규장
     시간엔 0 행 → SWR 가 직전 스냅샷 서빙). 백그라운드 전용(~480종목 네이버 스캔,
