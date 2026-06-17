@@ -11594,6 +11594,35 @@ class TestSectorTitleCaps:
         assert "홍콩 업종 등락 TOP 10" in s            # HK 교정 확인
 
 
+class TestIndexCardRecompose:
+    """홈 지수 카드 재구성 (사용자 2026-06-17): 아시아=10(VN 제거·MY/ID 편입·
+    JCI→IDX종합·KR→JP→CN→HK→TW→MY→ID→IN 순), 미국 지수=9(XLE→지수-2·XLC 추가),
+    미국 지수-2=옛 '아메리카 & 이머징' 대체(미국 ETF 6, 미국 지수 바로 뒤). nve: ETF."""
+
+    def test_cards_composed(self):
+        import bot.market_overview as m
+        d = dict(m.ALL_CARDS)
+        assert "아메리카 & 이머징" not in d and "미국 지수-2" in d
+        titles = [t for t, _ in m.ALL_CARDS]
+        assert titles.index("미국 지수-2") == titles.index("미국 지수") + 1  # 인접
+        asia = dict(d["한국 & 아시아"])
+        toks = list(asia.values())
+        assert "nvi:.VNI" not in toks and "nvi:.HNXI" not in toks      # VN 제거
+        assert "nvi:.KLSE" in toks and "nvi:.JKSE" in toks            # MY/ID 편입
+        assert "ID 인도네시아 IDX종합" in asia and len(d["한국 & 아시아"]) == 10
+        us = dict(d["미국 지수"])
+        assert "nve:XLC" in us.values() and "nve:XLE" not in us.values()
+        us2 = d["미국 지수-2"]
+        assert len(us2) == 6 and all(tk.startswith("nve:") for _, tk in us2)
+        assert {tk for _, tk in us2} == {"nve:TSLL", "nve:XLI", "nve:XLE",
+                                         "nve:XLU", "nve:IYR", "nve:AIQ"}
+        # 제거된 이머징/베트남 지수가 어느 카드에도 없음
+        allt = {tk for _, c in m.ALL_CARDS if c for _, tk in c}
+        for gone in ("nvi:.AXJO", "nvi:.BVSP", "nvi:.MXX", "nvi:.MERV",
+                     "nvi:.VNI", "nvi:.HNXI"):
+            assert gone not in allt, gone
+
+
 class TestCN52Reenabled:
     """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로' →
     'CSI300+500') — **CSI 300 + CSI 500**(대형+중형 ~800, AKShare list_csi300_500)

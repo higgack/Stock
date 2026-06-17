@@ -53,22 +53,20 @@ except OSError:
 
 # ── Market Snapshot Ticker Groups ────────────────────────────────────
 
-# 사용자 2026-06-14 '다 네이버로' — 세계지수·코스피/코스닥 **전부 네이버**(nvi:worldstock/
-# index + nvd:domestic, VM probe 확정). 니케이/대만/상해/심천/항셍/Sensex/VN 네이버.
-# ⚠️ CSI300·항셍테크(HSTECH)·Nifty 는 **현재 미표시**(상해종합 .SSEC·항셍 .HSI·Sensex
-# .BSESN 으로 대체) — 추가하려면 네이버 reutersCode 발굴 필요(코멘트 정정 2026-06-15).
+# 사용자 2026-06-17 재구성: KR→JP→CN(상해·심천)→HK→TW→MY→ID→IN 순. VN(VN-Index·하노이
+# HNX) 제거, 말레이시아·인도네시아를 옛 이머징 카드에서 여기로 이동(JCI→IDX종합 개명).
+# 전부 네이버(nvd:domestic / nvi:worldstock index reutersCode, VM probe 확정).
 CARD_ASIA = [
-    ("KR 코스피", "nvd:KOSPI"),    # 네이버 polling/domestic (사용자 2026-06-14)
+    ("KR 코스피", "nvd:KOSPI"),    # 네이버 polling/domestic
     ("KR 코스닥", "nvd:KOSDAQ"),
     ("JP 니케이 225", "nvi:.N225"),
-    ("TW 대만 가권", "nvi:.TWII"),
     ("CN 상해 종합", "nvi:.SSEC"),
-    ("CN 심천 종합", "nvi:.SZSC"),  # 사용자 2026-06-14 (VM probe 확정 .SZSC=2,697.17)
+    ("CN 심천 종합", "nvi:.SZSC"),  # VM probe 확정 .SZSC
     ("HK 홍콩 항셍", "nvi:.HSI"),
-    ("VN 베트남 (VN-Index)", "nvi:.VNI"),  # 네이버 worldstock VN지수 (ETF→실지수, 2026-06-14)
-    ("VN 하노이 HNX", "nvi:.HNXI"),  # 사용자 2026-06-14 (VM probe 확정 .HNXI=302.49)
+    ("TW 대만 가권", "nvi:.TWII"),
+    ("MY 말레이시아 KLCI", "nvi:.KLSE"),     # 옛 이머징 카드에서 이동
+    ("ID 인도네시아 IDX종합", "nvi:.JKSE"),  # 옛 'JCI' → 'IDX종합' (사용자 2026-06-17)
     ("IN 인도 Sensex", "nvi:.BSESN"),
-    # 인도네시아·말레이시아는 아메리카&이머징으로 이동(사용자 2026-06-14 재이동).
 ]
 
 # 사용자 2026-06-14 '다 네이버로' — 세계 cross-rate 는 네이버 exchangeWorld(nvx:).
@@ -125,12 +123,12 @@ CARD_US = [
     ("us 다우 존스", "nvi:.DJI"),
     ("다우 운송", "nvi:.DJT"),
     ("필라델피아 반도체", "nvi:.SOX"),
-    # 사용자 2026-06-14: 러셀·나스닥바이오·KBW 제거, 섹터 ETF 4종 추가(네이버
-    # worldstock/etf, nve:). VM probe 확정 — bare 티커 코드(XLF 53.34 등).
+    # 섹터 ETF (네이버 worldstock/etf, nve: bare 티커). 사용자 2026-06-17 재구성:
+    # XLE 는 '미국 지수-2'로 이동, XLC(커뮤니케이션) 추가, 순서 XLF→XLV→XLC→XLP.
     ("XLF 금융", "nve:XLF"),
-    ("XLE 에너지", "nve:XLE"),
-    ("XLP 필수소비", "nve:XLP"),
     ("XLV 헬스케어", "nve:XLV"),
+    ("XLC 커뮤니케이션", "nve:XLC"),
+    ("XLP 필수소비", "nve:XLP"),
 ]
 
 # 사용자 2026-06-14: 선물에 운송(운임지수) 추가 — 중국컨테이너(CCFI)·BDI 건화물.
@@ -153,14 +151,17 @@ CARD_EU = [
     ("NL 네덜란드 AEX", "nvi:.AEX"),   # 사용자 2026-06-14 스위스 SMI 대신 네덜란드 AEX
 ]
 
-# 사용자 2026-06-14 순서: 호주·브라질·멕시코·아르헨티나·인도네시아·말레이시아.
-CARD_AMERICAS = [
-    ("AU 호주 ASX 200", "nvi:.AXJO"),
-    ("BR 브라질 Bovespa", "nvi:.BVSP"),
-    ("MX 멕시코 IPC", "nvi:.MXX"),
-    ("AR 아르헨티나 MERVAL", "nvi:.MERV"),
-    ("ID 인도네시아 JCI", "nvi:.JKSE"),
-    ("MY 말레이시아 KLCI", "nvi:.KLSE"),
+# 사용자 2026-06-17: 옛 '아메리카 & 이머징'(호주·브라질·멕시코·아르헨티나·인니·말련)
+# 폐기 → '미국 지수-2'(미국 섹터/테마 ETF). 전부 네이버 worldstock/etf(nve: bare 티커,
+# XLF 등과 동일 경로). ⚠️ TSLL(레버리지)·AIQ 등 일부는 네이버 etf 커버리지 VM 검증 필요
+# (미커버 시 해당 행만 graceful 블랭크 → 보고 후 대체 소스). 인니·말련은 아시아 카드로 이동.
+CARD_US2 = [
+    ("TSLL 테슬라 2X", "nve:TSLL"),
+    ("XLI 산업재", "nve:XLI"),
+    ("XLE 에너지", "nve:XLE"),
+    ("XLU 유틸리티", "nve:XLU"),
+    ("IYR 부동산", "nve:IYR"),
+    ("AIQ AI", "nve:AIQ"),
 ]
 
 ALL_CARDS = [
@@ -170,9 +171,9 @@ ALL_CARDS = [
     ("원자재 & 귀금속", CARD_COMMODITIES),
     ("시장 심리 & 코인", CARD_SENTIMENT),
     ("미국 지수", CARD_US),
+    ("미국 지수-2", CARD_US2),   # 사용자 2026-06-17 (옛 '아메리카 & 이머징' 대체)
     ("미국 지수 선물 & 운송 (Futures)", CARD_FUTURES),
     ("유럽 지수", CARD_EU),
-    ("아메리카 & 이머징", CARD_AMERICAS),
 ]
 
 # ── FRED Economic Indicators ────────────────────────────────────────
