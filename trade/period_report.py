@@ -14,6 +14,7 @@ import html as _html
 import logging
 import os
 from collections import defaultdict
+from datetime import date
 
 log = logging.getLogger("trade.period_report")
 
@@ -55,6 +56,21 @@ def _shift_month(ym: str, delta: int) -> str:
         return ""
 
 
+def _release_stage(period: str, today: date | None = None) -> str:
+    """그 달(period='YYYY-MM')이 관세청 발표 캘린더상 '확정'인지 '잠정'인지 추정
+    (사용자 2026-06-17 '1일 잠정 vs 15일 확정 구분'). 확정 공식 발표 = 익월 ~15일 →
+    오늘이 그 이후면 '확정', 전이면 '잠정'(전월 풀월). mti_series 에 status 컬럼이
+    없어(INSERT OR REPLACE) 캘린더+오늘 기준 추정 — 일일 갱신이 발표를 따라가므로
+    실용적으로 정확. 임시(11/21일)는 HS 분해가 없어 mti 월값엔 애초에 안 섞임."""
+    try:
+        y, m = int(period[:4]), int(period[5:7])
+    except Exception:
+        return ""
+    fy, fm = (y + 1, 1) if m == 12 else (y, m + 1)   # 익월
+    today = today or date.today()
+    return "확정" if today >= date(fy, fm, 15) else "잠정"
+
+
 def _months_of(node: dict) -> dict:
     return (node or {}).get("months") or {}
 
@@ -64,11 +80,16 @@ def gather_period(ym: str | None = None, top: int = _TOP) -> dict:
     mti 시리즈만, 신규 fetch 0). graceful — 데이터 없으면 period=None."""
     exp: dict = {}
     imp: dict = {}
+    prov_sigs: dict = {}
     try:
-        from trade import customs, industry
+        from trade import customs, customs_provisional, industry
         with customs.session() as conn:
             exp = industry.load_mti_stored(conn)
             imp = industry.load_mti_imports(conn)
+            try:
+                prov_sigs = customs_provisional.load_signals(conn)   # 잠정 속보(선행)
+            except Exception:
+                prov_sigs = {}
     except Exception as exc:
         log.warning("period_report load: %s", exc)
 
@@ -76,7 +97,7 @@ def gather_period(ym: str | None = None, top: int = _TOP) -> dict:
     for node in list(exp.values()) + list(imp.values()):
         months_all |= set(_months_of(node).keys())
     if not months_all:
-        return {"period": None, "prev": "", "yoy": "",
+        return {"period": None, "prev": "", "yoy": "", "status": "", "provisional": None,
                 "totals": {}, "top_export": [], "top_import": [],
                 "both_traded": [], "industries": [], "swings": [], "n_items": 0}
 
@@ -139,8 +160,17 @@ def gather_period(ym: str | None = None, top: int = _TOP) -> dict:
     movers = [r for r in rows if r["export"] >= _MIN_SWING_USD and r["export_mom"] is not None]
     movers.sort(key=lambda r: abs(r["export_mom"]), reverse=True)
 
+    # 잠정 속보(선행) — 관세청 10일 단위(11/21일/월초). 확정 품목 집계와 별개(섞지
+    # 않음, 운영자 정책). exp_item/imp_item 의 전체+주요10만(HS 분해 없음). 자체 최신월.
+    prov = None
+    pe, pi = prov_sigs.get("exp_item"), prov_sigs.get("imp_item")
+    if pe or pi:
+        prov = {"ym": (pe or pi).get("ym"), "window": (pe or pi).get("window"),
+                "export": pe, "import": pi}
+
     return {
         "period": period, "prev": prev, "yoy": yoy,
+        "status": _release_stage(period), "provisional": prov,
         "totals": {
             "export": tot_ex, "import": tot_im, "balance": tot_ex - tot_im,
             "export_mom": _pct(tot_ex, tot_ex_p), "import_mom": _pct(tot_im, tot_im_p),
@@ -176,11 +206,48 @@ def render_free(data: dict) -> str:
                 '<div style="color:#9aa0aa;font-size:13px;margin-top:8px">'
                 '수출입 집계 데이터 미확보 — 관세청 수집(mti_series) 후 이용 가능.</div></div>')
     t = data.get("totals") or {}
+    status = data.get("status") or ""
+    badge = ""
+    if status:
+        bc = "#26a69a" if status == "확정" else "#ff9500"
+        badge = (f' <span style="font-size:12px;font-weight:600;color:{bc};'
+                 f'border:1px solid {bc};border-radius:6px;padding:1px 7px;'
+                 f'vertical-align:middle">{status}</span>')
+    stage_note = ("관세청 ~익월15일 공식 확정" if status == "확정"
+                  else "전월 풀월 잠정(익월1일~) · 15일 확정으로 갱신 예정")
     head = (f'<div style="font-size:18px;font-weight:700;margin-bottom:2px">'
-            f'{e(period)} 수출입 시장 보고서</div>'
+            f'{e(period)} 수출입 시장 보고서{badge}</div>'
             '<div style="font-size:12px;color:#9aa0aa;margin-bottom:12px">'
-            f'관세청 품목 집계({data.get("n_items", 0):,}개 품목) · 수출↔수입 관계 · '
-            '무료(데이터) · 직전월 대비 MoM</div>')
+            f'관세청 품목 집계({data.get("n_items", 0):,}개 품목) · {stage_note} · '
+            '수출↔수입 관계 · 직전월 대비 MoM</div>')
+
+    # 🟢 잠정 속보(선행) — 확정 품목 집계와 별개(섞지 않음). 전체+주요10만(HS 분해 없음).
+    prov = data.get("provisional")
+    prov_html = ""
+    if prov and (prov.get("export") or prov.get("import")):
+        def _prov_line(label, sig):
+            if not sig:
+                return f'<div style="color:#9aa0aa">{label} — 데이터 없음</div>'
+            yoy = sig.get("total_yoy")
+            yoy_txt = ""
+            if yoy is not None:
+                yc = "#26a69a" if yoy >= 0 else "#e2574c"
+                yoy_txt = (f' <span style="color:{yc}">'
+                           f'(YoY {"+" if yoy >= 0 else ""}{yoy:.1f}%)</span>')
+            tops = [it for it in (sig.get("items") or []) if it.get("usd")][:3]
+            top3 = ", ".join(f'{e(it["name"])} {_usd(it["usd"])}' for it in tops)
+            return (f'<div style="margin-top:2px"><b>{label}</b> {_usd(sig.get("total_usd"))}{yoy_txt}'
+                    + (f'<div style="font-size:12px;color:#9aa0aa;margin-left:10px">상위: {top3}</div>'
+                       if top3 else '') + '</div>')
+        prov_html = (
+            '<div style="margin:6px 0 4px;padding:10px 12px;background:#10231a;'
+            'border:1px solid #1f5132;border-radius:8px">'
+            '<div style="font-weight:600;color:#3ddc84;margin-bottom:4px">🟢 잠정 속보 (선행)</div>'
+            '<div style="font-size:12px;color:#9aa0aa;margin-bottom:8px">'
+            f'관세청 10일 단위 · {e(prov.get("ym") or "")} {e(prov.get("window") or "")} 누적 · '
+            '주요 10개 품목만(HS 전체분해 없음) · <b>확정 품목 집계와 별개의 선행 신호</b></div>'
+            + _prov_line("수출", prov.get("export"))
+            + _prov_line("수입", prov.get("import")) + '</div>')
 
     def _kpi(label, val, mom):
         mtxt = ""
@@ -256,7 +323,7 @@ def render_free(data: dict) -> str:
         [("품목", "left", _nm), ("산업", "left", _ind),
          ("수출", "right", lambda r: _usd_cell(r["export"])),
          ("MoM", "right", lambda r: _pct_cell(r["export_mom"]))])
-    return (f'<div style="line-height:1.5">{head}{summary}{ind_tbl}'
+    return (f'<div style="line-height:1.5">{head}{summary}{prov_html}{ind_tbl}'
             f'{exp_tbl}{imp_tbl}{both_tbl}{sw_tbl}</div>')
 
 
@@ -267,7 +334,8 @@ def _llm_digest(data: dict) -> str:
 
     def _m(p):
         return f"(MoM {p:+.1f}%)" if p is not None else ""
-    lines = [f"기간: {data.get('period')} (직전월 {data.get('prev')}, 전년동월 {data.get('yoy')})",
+    lines = [f"기간: {data.get('period')} ({data.get('status', '')}, 직전월 "
+             f"{data.get('prev')}, 전년동월 {data.get('yoy')})",
              f"총수출 {_usd(t.get('export'))} {_m(t.get('export_mom'))}, "
              f"총수입 {_usd(t.get('import'))} {_m(t.get('import_mom'))}, "
              f"무역수지 {_usd(t.get('balance'))}"]
@@ -290,6 +358,16 @@ def _llm_digest(data: dict) -> str:
     if data.get("swings"):
         lines.append("급변동: " + ", ".join(
             f"{r['name']}({r['export_mom']:+.1f}%)" for r in data["swings"][:8]))
+    prov = data.get("provisional")
+    if prov and (prov.get("export") or prov.get("import")):
+        def _pl(sig):
+            if not sig:
+                return "—"
+            y = sig.get("total_yoy")
+            return _usd(sig.get("total_usd")) + (f"(YoY {y:+.1f}%)" if y is not None else "")
+        lines.append(f"잠정 속보(선행 · {prov.get('ym')} {prov.get('window')} 누적 · "
+                     f"확정과 별개): 수출 {_pl(prov.get('export'))}, "
+                     f"수입 {_pl(prov.get('import'))}")
     return "\n".join(lines)
 
 
@@ -299,8 +377,10 @@ _LLM_SYS = (
     "급변동)만 근거로 8~12문장 한국어 분석을 써라. 규칙: (1) 주어진 수치/품목만 사용, "
     "새 숫자·사건 날조 금지 (2) **수출과 수입의 관계를 핵심 축으로** — 중간재·자본재 "
     "수입 ↔ 완제품 수출 연결(가공무역 구조), 무역수지 동인, 산업별 net 포지션의 의미 "
-    "(3) MoM/YoY 가속·둔화로 선행/후행 신호 해석 (4) 투자 권유 금지·교육 목적·중립. "
-    "단정 대신 데이터가 보여주는 범위로 서술. 마크다운 없이 평문."
+    "(3) MoM/YoY 가속·둔화로 선행/후행 신호 해석 (4) '잠정 속보(선행)'가 있으면 "
+    "관세청 10일 단위 누적치로 확정보다 앞선 신호이니 방향(가속/둔화) 참고로만 — "
+    "확정 품목 집계와 섞지 말 것 (5) 투자 권유 금지·교육 목적·중립. 단정 대신 "
+    "데이터가 보여주는 범위로 서술. 마크다운 없이 평문."
 )
 
 
@@ -359,10 +439,18 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
 
     def _m(p):
         return f" ({'+' if p >= 0 else ''}{p:.1f}%)" if p is not None else ""
-    lines = [f"🗂️ <b>{e(period)} 수출입 시장 보고서</b>",
+    status = data.get("status") or ""
+    lines = [f"🗂️ <b>{e(period)} 수출입 시장 보고서</b>{f' ({status})' if status else ''}",
              f"총수출 {_usd(t.get('export'))}{_m(t.get('export_mom'))} · "
              f"총수입 {_usd(t.get('import'))}{_m(t.get('import_mom'))}",
              f"무역수지 <b>{_usd(t.get('balance'))}</b>", ""]
+    prov = data.get("provisional")
+    if prov and (prov.get("export") or prov.get("import")):
+        pe, pi = prov.get("export") or {}, prov.get("import") or {}
+        lines.append(f"🟢 잠정 속보(선행 · {e(prov.get('ym') or '')} "
+                     f"{e(prov.get('window') or '')}): 수출 {_usd(pe.get('total_usd'))} · "
+                     f"수입 {_usd(pi.get('total_usd'))}")
+        lines.append("")
     if data.get("top_export"):
         lines.append("🚢 <b>수출 상위</b>")
         for r in data["top_export"][:8]:

@@ -6,6 +6,7 @@ monkeypatch)·HTML/텔레그램 조립·헬퍼만 — 수출↔수입 관계 집
 
 import unittest
 from contextlib import contextmanager
+from datetime import date
 from unittest import mock
 
 from trade import period_report as P
@@ -28,15 +29,29 @@ _IMP = {
 }
 
 
+# 잠정 속보(선행) — exp_item/imp_item 의 전체+주요10 (latest_signal 반환 shape).
+_PROV = {
+    "exp_item": {"ym": "2026-06", "decile": "D2", "window": "1~20일",
+                 "total_usd": 3.5e10, "total_yoy": 8.0, "total_mom": 2.0,
+                 "items": [{"name": "반도체", "usd": 1.2e10, "yoy": 20.0, "mom": 3.0},
+                           {"name": "승용차", "usd": 4e9, "yoy": 5.0, "mom": 1.0}]},
+    "imp_item": {"ym": "2026-06", "decile": "D2", "window": "1~20일",
+                 "total_usd": 3.2e10, "total_yoy": -2.0, "total_mom": 1.0,
+                 "items": [{"name": "원유", "usd": 5e9, "yoy": -10.0, "mom": -1.0}]},
+}
+
+
 @contextmanager
 def _fake_session(*a, **k):
     yield object()
 
 
-def _gather(ym=None, exp=_EXP, imp=_IMP):
+def _gather(ym=None, exp=_EXP, imp=_IMP, prov=None):
+    prov = prov if prov is not None else {}
     with mock.patch("trade.customs.session", _fake_session), \
             mock.patch("trade.industry.load_mti_stored", lambda c: exp), \
-            mock.patch("trade.industry.load_mti_imports", lambda c: imp):
+            mock.patch("trade.industry.load_mti_imports", lambda c: imp), \
+            mock.patch("trade.customs_provisional.load_signals", lambda c: prov):
         return P.gather_period(ym)
 
 
@@ -58,6 +73,16 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(P._usd(-1e9), "-10.0억$")
         self.assertEqual(P._usd(0), "—")
         self.assertEqual(P._usd(None), "—")
+
+    def test_release_stage(self):
+        # 확정 발표 = 익월 15일. 그 전 = 잠정, 그 이후 = 확정.
+        self.assertEqual(P._release_stage("2026-05", date(2026, 6, 14)), "잠정")
+        self.assertEqual(P._release_stage("2026-05", date(2026, 6, 15)), "확정")
+        self.assertEqual(P._release_stage("2026-05", date(2026, 7, 1)), "확정")
+        # 12월 → 익월은 다음해 1월
+        self.assertEqual(P._release_stage("2026-12", date(2027, 1, 14)), "잠정")
+        self.assertEqual(P._release_stage("2026-12", date(2027, 1, 15)), "확정")
+        self.assertEqual(P._release_stage("bad", date(2026, 6, 15)), "")
 
 
 class GatherTests(unittest.TestCase):
@@ -103,6 +128,21 @@ class GatherTests(unittest.TestCase):
         d = _gather(exp={}, imp={})
         self.assertIsNone(d["period"])
         self.assertEqual(d["n_items"], 0)
+        self.assertIsNone(d["provisional"])
+
+    def test_status_label(self):
+        self.assertIn(_gather()["status"], ("잠정", "확정"))
+
+    def test_provisional_attached(self):
+        d = _gather(prov=_PROV)
+        p = d["provisional"]
+        self.assertIsNotNone(p)
+        self.assertEqual(p["ym"], "2026-06")
+        self.assertEqual(p["window"], "1~20일")
+        self.assertAlmostEqual(p["export"]["total_usd"], 3.5e10)
+        self.assertAlmostEqual(p["import"]["total_usd"], 3.2e10)
+        # 잠정 없으면 None (확정 품목 보고서는 그대로)
+        self.assertIsNone(_gather()["provisional"])
 
 
 class RenderTests(unittest.TestCase):
@@ -116,6 +156,17 @@ class RenderTests(unittest.TestCase):
         h = P.render_free({"period": None})
         self.assertIn("미확보", h)
 
+    def test_render_free_provisional_section(self):
+        h = P.render_free(_gather(prov=_PROV))
+        for must in ("잠정 속보 (선행)", "확정 품목 집계와 별개", "1~20일", "반도체"):
+            self.assertIn(must, h)
+        # 상태 배지(잠정/확정) 헤더에 표기
+        self.assertTrue("확정" in h or "잠정" in h)
+
+    def test_render_free_no_provisional(self):
+        # 잠정 없으면 선행 섹션 미표시(확정 보고서 정상)
+        self.assertNotIn("잠정 속보 (선행)", P.render_free(_gather()))
+
     def test_render_telegram(self):
         t = P.render_telegram(_gather())
         self.assertIn("2026-05 수출입 시장 보고서", t)
@@ -124,6 +175,12 @@ class RenderTests(unittest.TestCase):
         t2 = P.render_telegram(_gather(), ai_text="반도체 수출 회복이 무역수지를 견인")
         self.assertIn("AI 분석", t2)
         self.assertIn("반도체 수출 회복", t2)
+
+    def test_render_telegram_provisional(self):
+        t = P.render_telegram(_gather(prov=_PROV))
+        self.assertIn("잠정 속보(선행", t)
+        self.assertIn("1~20일", t)
+        self.assertLessEqual(len(t.encode("utf-16-le")) // 2, 4096)
 
     def test_render_telegram_empty(self):
         self.assertIn("데이터 미확보", P.render_telegram({"period": None}))
