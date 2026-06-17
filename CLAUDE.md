@@ -496,6 +496,20 @@ pattern to follow:
 - Stale process recovery → `stock-bot-watchdog.service` restarts if main loop hangs 12 min. ⚠️ watchdog 는 180초 polling-hang(getUpdates 부재) + `.busy` marker(분석 중이면 12분까지 skip) 두 체크. **무거운 작업(Screener 5-10분, /ticker)은 반드시 `_busy_acquire()`/`_busy_release()` 로 감싸야** watchdog 가 실행 중 재시작해 작업을 살해하지 않음. 2026-06-01 Screener 가 busy marker 미사용으로 Hospitality & Leisure run 이 watchdog 재시작에 살해됨 → `_run_screener_and_send` 에 busy wrap 추가. 새 long-running 핸들러 추가 시 동일 패턴 필수.
 - Memory pending-entry resolution → `_periodic_auto_resolve` asyncio task, 12 h cycle
 - Daily dashboard regen → `_periodic_dashboard_refresh` asyncio task, 00:01 KST
+- 대시보드 자동 신선 (사용자 2026-06-17 '모든 대시보드가 내가 안 들어가도 자기
+  리프레쉬 주기로 갱신') — 표면별로 서버사이드 스케줄에 묶임, 방문 불요:
+  • 홈(market.html) = `_periodic_market_refresh` 30초 · 무거운 52주(JP/HK/CN/TW
+    +US) = `_periodic_highlow_scan` 슬롯(:00/:15/:30/:45, 장중 force·장밖 freeze)
+  • **경량 동적 보드** = `_periodic_light_board_warm`(180초, env `LIGHT_BOARD_WARM_
+    SEC`) — 무버(KR/JP/HK/CN/US)·KR 52주·장전후(US/KR)·NXT·테마/업종을 **render
+    함수 호출('방문 시뮬')**로 그 페이지가 읽는 파일캐시를 채움(dashboard_server
+    별프로세스지만 같은 파일캐시 cross-process). 시장시간+pause(naver/yf) 게이트,
+    `_LIGHT_WARM_RUNNING` 가드. 무버 on-visit SWR=30초지만 서버워머는 네이버
+    안티봇 부하 고려 180초(필요시 env 하향, 차단 시 /naverpause 로 워머도 자동 skip).
+  • timer 구동(daily_byte·cheongyak·realestate·blog·reddit·dart_feed·portfolio·
+    watchlist 30분) + 이벤트구동(분석/screener/업로드) + 00:01 일일 regen 이
+    나머지 커버. portfolio/budget=업로드시 변동(라이브가 없어 intraday 무의미),
+    GICS=분기·realestate=주간이 의도된 cadence(갭 아님).
 - DART 공시 피드 → `dart-feed.timer` 1분(준실시간, 접수→카드 ~1.5분).
   매분 당일 3p 증분 + 시간당 4일 풀스캔 + 일일 콜버짓 15k 자가감속.
   enrich = 사이클당 8건(시간당 480) 점진 백필, 실패 쿨다운(30m/2h/12h),
