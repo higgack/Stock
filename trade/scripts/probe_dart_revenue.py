@@ -72,6 +72,42 @@ _SAMPLE: list[tuple[str, str, str]] = [
     ("042700", "한미반도체", "반도체장비 중형주"),
 ]
 
+# 넓은 표본 (--wide) — 산업·구조 다양성으로 '틀(표 형태)' 케이스 수집·분류용.
+# 지주(POSCO/SK/LG/한화 — 요약재무 행렬형) + 단일사업 + 멀티세그먼트 + 금융/통신/
+# 유통/게임/엔터(이질 구조) 골고루. mti_companies._MAP 산업군과 최대 교차.
+_SAMPLE_WIDE: list[tuple[str, str, str]] = _SAMPLE + [
+    ("000270", "기아", "완성차"),
+    ("005380", "현대차", "완성차"),
+    ("012330", "현대모비스", "자동차부품"),
+    ("011200", "HMM", "해운"),
+    ("009540", "HD한국조선해양", "조선 지주"),
+    ("010140", "삼성중공업", "조선"),
+    ("000810", "삼성화재", "보험"),
+    ("105560", "KB금융", "은행지주"),
+    ("030200", "KT", "통신"),
+    ("017670", "SK텔레콤", "통신"),
+    ("035420", "NAVER", "인터넷"),
+    ("035720", "카카오", "인터넷"),
+    ("259960", "크래프톤", "게임"),
+    ("352820", "하이브", "엔터"),
+    ("139480", "이마트", "유통"),
+    ("282330", "BGF리테일", "편의점"),
+    ("207940", "삼성바이오로직스", "CDMO"),
+    ("000100", "유한양행", "제약"),
+    ("003550", "LG", "지주"),
+    ("034730", "SK", "지주"),
+    ("000880", "한화", "지주"),
+    ("003490", "대한항공", "항공"),
+    ("000720", "현대건설", "건설"),
+    ("011170", "롯데케미칼", "석유화학"),
+    ("010130", "고려아연", "비철금속"),
+    ("004020", "현대제철", "철강"),
+    ("003670", "포스코퓨처엠", "이차전지소재"),
+    ("066570", "LG전자", "가전"),
+    ("018260", "삼성에스디에스", "IT서비스"),
+    ("097950", "CJ제일제당", "식품(중복-스킵)"),
+]
+
 _DART_BASE = "https://opendart.fss.or.kr/api"
 _REVENUE_KEYWORDS = (
     "매출실적", "매출 실적", "주요 제품", "주요제품", "매출 구성", "매출구성",
@@ -287,6 +323,50 @@ def products_from_flat(segment: str, cap: int = 12) -> list[dict]:
     return out
 
 
+# ── 케이스 수집·분류 (--wide) — 표 '틀' 형태를 헤더 시그니처로 그룹핑 ─────────
+# 넓힌 키워드로 매출-관련 표를 폭넓게 찾고(요약재무 행렬형 POSCO 등 포함), 헤더
+# 시그니처로 형태 분류 → 몇 개의 틀이 있는지 집계. 순수(단위테스트).
+_COLLECT_KW = ("매출", "비중", "구성", "품목", "제품", "사업부문", "부문",
+               "자산", "영업이익", "구분", "주요", "금액", "수익")
+
+
+def collect_score(rows: list[list[str]]) -> int:
+    """매출-관련 표스러운 정도 (넓힌 키워드 — 수집용, score_revenue_table 보다
+    관대해 요약재무 행렬형도 포착). 순수."""
+    if not rows:
+        return 0
+    joined = " ".join(c for r in rows[:3] for c in r)
+    s = sum(1 for k in _COLLECT_KW if k in joined)
+    if any("%" in c for r in rows for c in r):
+        s += 1
+    return s
+
+
+def header_signature(rows: list[list[str]]) -> tuple:
+    """표의 헤더 행 → 정규화 시그니처(형태 분류 키). 키워드 포함 첫 행을 헤더로
+    보고 셀을 8자 절단·공백제거. 같은 양식이면 같은 시그니처. 순수."""
+    cand = None
+    for r in rows[:4]:
+        j = "".join(r)
+        if any(k in j for k in ("매출", "비중", "부문", "제품", "품목", "자산", "구분", "수익")):
+            cand = r
+            break
+    cand = cand or (rows[0] if rows else [])
+    sig = tuple(c.replace(" ", "")[:8] for c in cand if c.strip())[:6]
+    return sig
+
+
+def best_revenue_table(markup: str):
+    """원문에서 매출-관련도 가장 높은 표 (rows, score). 없으면 (None, 0). 순수."""
+    best, bs = None, -1
+    for t in extract_tables_raw(markup, cap=150):
+        rows = parse_table_block(t)
+        sc = collect_score(rows)
+        if sc > bs:
+            bs, best = sc, (t, rows)
+    return (best, bs) if best else (None, 0)
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 네트워크 (VM 전용 — 샌드박스 미검증)
 # ─────────────────────────────────────────────────────────────────────
@@ -460,12 +540,71 @@ def _fmt_products(ps: list[dict], n: int = 4) -> str:
     return ", ".join(bits) if bits else "(없음)"
 
 
+def collect_mode(api_key: str, targets: list, sleep: float) -> int:
+    """넓은 표본에서 매출표 '틀'을 헤더 시그니처로 분류·집계 (읽기전용, ₩0).
+    형태별 대표 원문 1개 저장 → G1 파서를 2샘플 추측이 아닌 코퍼스로 설계."""
+    from collections import defaultdict
+
+    from bot.dart_client import get_dart
+    raw_dir = _data_dir() / "dart_revenue_probe" / "shapes"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    groups: dict[tuple, list[str]] = defaultdict(list)
+    sig_saved: set = set()
+    seen: set = set()
+    n = 0
+    print(f"\n{'코드':<7}{'회사':<20}{'score':>6}  헤더 시그니처")
+    print("─" * 100)
+    for code, name, _hint in targets:
+        if code in seen:
+            continue
+        seen.add(code)
+        sig: tuple = ("(미상)",)
+        score: object = "-"
+        try:
+            corp = get_dart().stock_code_to_corp_code(code)
+            rep = pick_business_report(_fetch_report_list(api_key, corp) if corp else [])
+            markup = download_doc_raw(api_key, rep["rcept_no"]) if rep else None
+            if not markup:
+                sig = ("(보고서/원문 없음)",)
+            else:
+                best, sc = best_revenue_table(markup)
+                if not best:
+                    sig = ("(표 미발견)",)
+                else:
+                    t, rows = best
+                    sig, score = header_signature(rows), sc
+                    if sig not in sig_saved:        # 형태별 대표 1개 원문 저장
+                        sig_saved.add(sig)
+                        try:
+                            (raw_dir / f"{code}_{name}.txt").write_text(
+                                f"# {code} {name} | sig={sig} | score={sc}\n\n{t[:6000]}",
+                                encoding="utf-8")
+                        except Exception:
+                            pass
+        except Exception as exc:
+            sig = (f"(예외:{exc})",)
+        groups[sig].append(f"{name}({code})")
+        n += 1
+        print(f"{code:<7}{name[:18]:<20}{str(score):>6}  {' | '.join(sig)[:70]}")
+        time.sleep(sleep)
+    print("\n" + "═" * 100)
+    print(f"📐 표 형태(틀) 분포 — {len(groups)}종 (표본 {n})")
+    for sig, members in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        print(f"  [{len(members)}] {' | '.join(sig)[:60]}")
+        print(f"       └ {', '.join(members[:8])}{' …' if len(members) > 8 else ''}")
+    print(f"\n💾 형태별 대표 원문: {raw_dir}/")
+    print("→ 이 분포로 G1 파서 틀 설계 (형태 종류·빈도·대표 마크업 확보)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser(description="DART 매출구성 추출 feasibility 프로브 (읽기전용)")
     p.add_argument("--tickers", default="",
                    help="쉼표구분 6자리 코드 (미지정 시 기본 12 표본)")
     p.add_argument("--sleep", type=float, default=0.4, help="종목간 대기(초)")
+    p.add_argument("--wide", action="store_true",
+                   help="넓은 표본(~40)에서 표 '틀' 형태를 헤더 시그니처로 수집·분류")
     args = p.parse_args(argv)
 
     _load_env()
@@ -475,6 +614,9 @@ def main(argv: list[str] | None = None) -> int:
         print("   공유 시: cat ~/stock/.env | sed 's/=.*$/=***REDACTED***/'")
         return 2
     print(f"✅ DART_API_KEY 로드됨 (len={len(key)})")
+
+    if args.wide:
+        return collect_mode(key, _SAMPLE_WIDE, args.sleep)
 
     if args.tickers.strip():
         targets = [(c.strip(), c.strip(), "") for c in args.tickers.split(",") if c.strip()]

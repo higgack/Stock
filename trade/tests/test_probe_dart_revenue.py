@@ -119,5 +119,39 @@ class ScalarHelperTests(unittest.TestCase):
         self.assertFalse(P._is_texty("-"))
 
 
+class CollectTests(unittest.TestCase):
+    """--wide 케이스 수집·분류 헬퍼 (헤더 시그니처 그룹핑)."""
+
+    def test_collect_score(self):
+        rows = P.parse_table_block(_TABLE)
+        self.assertGreaterEqual(P.collect_score(rows), 4)
+        self.assertEqual(P.collect_score([["가나", "다라"]]), 0)
+
+    def test_header_signature(self):
+        sig = P.header_signature(P.parse_table_block(_TABLE))
+        self.assertEqual(sig[0], "사업부문")   # 키워드 헤더 행 채택
+        self.assertIn("품목", sig)
+
+    def test_best_revenue_table(self):
+        best, sc = P.best_revenue_table(_DOC)
+        self.assertIsNotNone(best)
+        self.assertGreater(sc, 0)
+        _t, rows = best
+        self.assertEqual(P.header_signature(rows)[0], "사업부문")
+
+    def test_best_revenue_table_none(self):
+        self.assertEqual(P.best_revenue_table("<p>표 없음</p>"), (None, 0))
+
+    def test_signature_groups_distinct_shapes(self):
+        # 삼성형(부문/품목/매출액/비중) ≠ POSCO형(사업부문/자산/매출/영업이익)
+        posco = ("<TABLE><TR><TD>사업부문</TD><TD>자산</TD><TD>매출</TD>"
+                 "<TD>영업이익</TD></TR>"
+                 "<TR><TD>철강부문</TD><TD>65</TD><TD>59</TD><TD>1.9</TD></TR>"
+                 "<TR><TD>인프라</TD><TD>23</TD><TD>42</TD><TD>1.1</TD></TR></TABLE>")
+        s1 = P.header_signature(P.parse_table_block(_TABLE))
+        s2 = P.header_signature(P.parse_table_block(posco))
+        self.assertNotEqual(s1, s2)
+
+
 if __name__ == "__main__":
     unittest.main()
