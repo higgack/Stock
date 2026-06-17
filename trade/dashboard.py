@@ -886,7 +886,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-row{display:grid;grid-template-columns:minmax(230px,0.95fr) minmax(300px,1.25fr) minmax(240px,1fr);gap:14px;align-items:start}
 .ind-meta{min-width:0}
 .ind-chart-cell{min-width:0}
-.ind-chart-cell .ind-chart{width:100%;height:auto}
+.ind-chart-cell .ind-chart{width:100%;height:auto;max-width:400px}
 @media(max-width:900px){.ind-row{grid-template-columns:1fr}}
 .ind-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .ind-bar-pos{fill:#34c759}
@@ -923,7 +923,10 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-stats dd.pos{color:var(--tone-export)}
 .ind-stats dd.neg{color:var(--tone-import)}
 .ind-mstatus{font-size:10px;font-weight:500;color:var(--text-sub);white-space:nowrap}
-.ind-chart{width:100%;height:auto;display:block}
+.ind-chart{width:100%;height:auto;display:block;max-width:400px}
+/* 차트 max-width 캡 (사용자 2026-06-17 '클릭 상세 너무 큼'): viewBox 380×132 가
+   넓은 화면에서 셀 폭만큼 커져 차트·라벨이 거대 → 레퍼런스 원본(~380px) 수준으로
+   제한. width:100% 라 좁은 화면은 그대로 반응형. */
 .ind-grid{stroke:var(--border-soft);stroke-width:1}
 .ind-value-line{fill:none;stroke:var(--accent);stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
 .ind-ma-line{fill:none;stroke:#34c759;stroke-width:2;stroke-dasharray:5 4;stroke-linejoin:round;stroke-linecap:round}
