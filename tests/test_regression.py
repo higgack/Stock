@@ -11483,13 +11483,17 @@ class TestMoversFreshnessLabel:
         assert movers_freshness("ZZ") == closed                          # 미상 시장→마감
 
     def test_movers_titles_session_aware(self):
-        # 세 무버 페이지 모두 movers_freshness 사용 — '장중 30초' 하드코딩 제거
-        # (토·일 라이브 오인 차단). 52주/상한가 보드는 이미 '장 마감 후 고정' 표기.
+        # 네이버 라이브 무버(KR/US/JP/HK/CN) 제목은 movers_freshness 사용 — '장중 30초'
+        # 하드코딩 제거(토·일 라이브 오인 차단). 52주/상한가 보드는 별개.
         for f in ("bot/naver_pages.py", "bot/intl_pages.py", "bot/us_pages.py"):
             assert "movers_freshness" in open(f, encoding="utf-8").read(), f
-        # 무버 제목의 하드코딩 라이브 문구 잔존 금지.
         for f in ("bot/intl_pages.py", "bot/us_pages.py"):
             assert "장중 30초(네이버 종가 EOD 보유)" not in open(f, encoding="utf-8").read(), f
+        # TW 무버는 TWSE/TPEx 공식 EOD(실시간 아님) — Naver 가 TW worldstock 미지원
+        # 이라 30초 라이브 불가(사용자 '대만 30초 적용가능?' → EOD 구조라 불가). EOD 라벨.
+        tw = open("bot/tw_pages.py", encoding="utf-8").read()
+        assert "공식 종가(EOD" in tw                  # EOD 정직 라벨
+        assert "movers_freshness" not in tw           # TW 는 EOD라 라이브 헬퍼 미사용
 
 
 class TestCN52Reenabled:

@@ -106,10 +106,13 @@ def render_tw_highlow_page() -> str:
                               show_vol=True, show_value=True, show_ind=True,
                               limit_pct=9.9)
                 + '</div>' + HL_SORT_JS)
+    # TW 무버 = TWSE/TPEx 공식 OpenAPI(STOCK_DAY_ALL) = **EOD 종가** 데이터(네이버
+    # worldstock 이 TW 미지원이라 KR/US/JP/HK/CN 처럼 라이브 30초 불가, 사용자
+    # 2026-06-17 '대만 30초 적용가능?'). '장중 N 갱신' 은 라이브 오인 → EOD 정직 표기.
     from bot.highlow_render import market_hours_label as _mhl
     sub = (f"上市(TWSE)+上櫃(TPEx) 전종목 당일 등락 상·하위 · {_mhl('TW')} · "
            f"등락률순·헤더 클릭 정렬 · 종목명=한글 · 🔺상한/🔻하한(±10%) · 업종·시총="
-           f"yfinance · {(dt + ' 종가 기준 · ') if dt else ''}장중 1h·마감후 EOD 자동"
+           f"yfinance · {(dt + ' 종가 기준 · ') if dt else ''}TWSE/TPEx 공식 종가(EOD·실시간 아님)"
            f"{(' · 마지막 갱신 ' + ts) if ts else ''}")
     return _tw_shell("🇹🇼 대만 급등·급락", sub, body,
                      nav=_market_nav("TW", "twhighlow"), back=_asia_back("TW"))

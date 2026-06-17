@@ -58,8 +58,11 @@ def movers_freshness(market: str) -> str:
     """무버 제목 신선도 라벨 — 장중이면 '장중 30초 갱신', 장 밖·주말(토·일)이면
     '장 마감 · 마지막 거래일 종가 기준'. 사용자 2026-06-17 '무버 제목양식 토일' —
     토·일·장후에 '장중 30초'로 표기돼 라이브로 오인되던 것 정정(데이터는 마지막
-    거래일 종가로 고정인데 제목만 라이브 주장). 시장시간(_SESSIONS_UTC) 단일 소스
-    로 판정, 전 시장(KR/US/JP/HK/CN) 무버 공통. _SESSIONS_UTC 부재 시 보수적 라이브."""
+    거래일 종가로 고정인데 제목만 라이브 주장). 시장시간(_SESSIONS_UTC) 단일 소스로
+    판정. **네이버 라이브 무버(KR/US/JP/HK/CN) 전용** — TW 는 네이버 worldstock
+    미지원이라 TWSE/TPEx 공식 EOD(종가) 소스라 라이브 30초 불가, tw_pages 가 별도
+    'EOD' 라벨 사용(사용자 '대만 30초 적용가능?' → EOD 구조라 불가). _SESSIONS_UTC
+    부재 시 보수적 라이브."""
     from datetime import datetime, timezone
     try:
         from bot.finviz_client import _SESSIONS_UTC
