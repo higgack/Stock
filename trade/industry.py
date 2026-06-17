@@ -375,8 +375,14 @@ def _eokusd(n) -> str:
     return f"{eok:.2f}억$"
 
 
-def _pct(p, suffix="%") -> str:
-    return f"{p:+.1f}{suffix}" if p is not None else "—"
+def _pct(p, suffix="%", cap=None) -> str:
+    """% 표기. cap 지정 시 p>cap 이면 '+cap (기저)' (보고서 base-effect 표기,
+    사용자 2026-06-17 Tier1) — YoY 가 미미한 전년 기저로 폭증한 경우 가독성."""
+    if p is None:
+        return "—"
+    if cap is not None and p > cap:
+        return f"+{cap:.1f}{suffix} (기저)"
+    return f"{p:+.1f}{suffix}"
 
 
 def _dot_ym(ym: str) -> str:
@@ -596,9 +602,9 @@ def _stat_row(points: list[dict], lab: str = "수출액") -> str:
         "<dl class='ind-stats'>"
         f"<div><dt>최신월</dt><dd>{_html.escape(_dot_ym(latest['ym']))}{_prov}</dd></div>"
         f"<div><dt>{lab}</dt><dd>{_eokusd(exp)}</dd></div>"
-        f"<div><dt>YoY</dt><dd class='{cls(latest.get('yoy'))}'>{_pct(latest.get('yoy'))}</dd></div>"
+        f"<div><dt>YoY</dt><dd class='{cls(latest.get('yoy'))}'>{_pct(latest.get('yoy'), cap=999.9)}</dd></div>"
         f"<div><dt>ΔYoY</dt><dd class='{cls(latest.get('dyoy'))}'>{_pct(latest.get('dyoy'),'%p')}</dd></div>"
-        f"<div><dt>3개월 평균 YoY</dt><dd class='{cls(m['yoy3'])}'>{_pct(m['yoy3'])}</dd></div>"
+        f"<div><dt>3개월 평균 YoY</dt><dd class='{cls(m['yoy3'])}'>{_pct(m['yoy3'], cap=999.9)}</dd></div>"
         f"<div><dt>3개월 평균 ΔYoY</dt><dd class='{cls(m['dyoy3'])}'>{_pct(m['dyoy3'],'%p')}</dd></div>"
         f"<div><dt>12M MA</dt><dd>{_eokusd(ma)}</dd></div>"
         f"<div><dt>MA대비</dt><dd>{_pct(ma_rel)}</dd></div>"
@@ -707,6 +713,36 @@ def _mti_extras(node: dict, pts: list[dict], amt_th: str,
         lines.append(
             f"<p class='ind-extra'>💲 {amt_th} 단가 <b>{_unit_str(latest['unit'])}</b>"
             f"{yoy_html}</p>")
+    # 📊 스크리닝 — 4그룹·동력(P/Q 분해)·분기 진도율·★장기우상향 (보고서 차용
+    # 2026-06-17 Tier1+2). 월별 금액+중량으로 순수계산(screening.py), 데이터/중량
+    # 부재 시 해당 조각 생략 (graceful). 보고서의 회사 단위 스크리닝을 품목 단위로.
+    try:
+        from trade import screening as _scr
+        _months = node.get("months") or {}
+        _wgts = node.get("wgts") or {}
+        _grp, _glabel = _scr.classify_group(_months)
+        _seg = []
+        if _grp:
+            _badge = "⭐ " if _scr.long_uptrend(_months) else ""
+            _seg.append(f"{_badge}<b>G{_grp}</b> {_html.escape(_glabel)}")
+        _pq = _scr.pq_decompose(_months, _wgts)
+        if _pq and _pq.get("driver"):
+            _vq = _pct(_pq.get("vol_yoy"), cap=999.9)
+            _pp = _pct(_pq.get("price_yoy"), cap=999.9)
+            _pm = _pct(_pq.get("price_mom"), cap=999.9)
+            _seg.append(
+                f"동력 {_html.escape(_pq['driver'])} <span class='ind-extra-sub'>"
+                f"(물량YoY {_vq}·단가YoY {_pp}·단가MoM {_pm})</span>")
+        _prog = _scr.progress_rate(_months)
+        if _prog and _prog.get("rate_yoy") is not None:
+            _st = _prog.get("status_yoy") or ""
+            _seg.append(
+                f"{_prog['quarter']}Q 누적진도율 <b>{_prog['rate_yoy']:.0f}%</b> "
+                f"<span class='ind-extra-sub'>(pace {_prog['pace']:.0f}%·{_st})</span>")
+        if _seg:
+            lines.append("<p class='ind-extra'>📊 " + " · ".join(_seg) + "</p>")
+    except Exception:
+        pass
     # 구성 HS 코드 — 이 MTI 를 구성하는 관세청 HS10 leaf 목록
     members = _mti_hs_members().get(mti6) or []
     if members:
