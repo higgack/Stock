@@ -101,9 +101,12 @@ def _rank_prepost(rows: list, top_n: int = _PREPOST_TOP_N) -> tuple[list, list]:
           if r.get("pct") is not None
           and abs(r.get("pct") or 0) <= _GLITCH_PCT
           and (r.get("price") or 0) >= _MIN_PRICE
-          # 유동성 게이트는 reg_vol(정규장, KR NXT 보드) 우선 — 표시는 NXT 세션
-          # 거래량(vol)이라 결측 가능. reg_vol 부재(US)면 vol 로 폴백.
-          and (r.get("reg_vol", r.get("vol")) or 0) >= _MIN_EXT_VOL]
+          # 유동성 게이트 = reg_vol(정규장 거래량) 우선, **0/결측이면 NXT vol 로
+          # 폴백**. 장전(09:00 정규장 개장 전)엔 정규장 거래량이 0 이라, 옛
+          # `reg_vol` 키-default(0 을 그대로 사용)가 전 종목을 컷 → **장전 빈 보드**
+          # 버그(사용자 2026-06-16). _one 의 ovol 가드가 실제 NXT 체결을 보장하므로
+          # NXT vol 게이트는 안전. 장후엔 reg_vol>0 이라 동작 불변.
+          and ((r.get("reg_vol") or r.get("vol")) or 0) >= _MIN_EXT_VOL]
     ups = sorted((r for r in ok if r["pct"] > 0),
                  key=lambda r: r["pct"], reverse=True)[:top_n]
     downs = sorted((r for r in ok if r["pct"] < 0),

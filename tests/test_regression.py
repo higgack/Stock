@@ -5511,6 +5511,17 @@ class TestUsPrepost:
         assert [r["ticker"] for r in ups] == ["A"]
         assert [r["ticker"] for r in downs] == ["B"]
 
+    def test_rank_prepost_premarket_reg_vol_zero(self):
+        # 장전 버그fix(2026-06-16): 정규장 개장 전이라 reg_vol=0 이어도 NXT vol 로
+        # 폴백 게이트 → 장전 종목 생존. 옛 key-default 는 reg_vol=0 을 그대로 써
+        # 전 종목 컷 → 장전 빈 보드였음.
+        from bot.prepost_client import _rank_prepost
+        rows = [{"ticker": "P", "pct": 7.0, "price": 100, "reg_vol": 0, "vol": 5000},
+                {"ticker": "Q", "pct": 5.0, "price": 100, "reg_vol": 0, "vol": 100}]  # NXT 박거래 컷
+        ups, downs = _rank_prepost(rows)
+        assert [r["ticker"] for r in ups] == ["P"]   # reg_vol=0 이어도 NXT vol=5000 통과
+        assert [r["ticker"] for r in downs] == []     # Q 는 NXT vol=100 박거래 컷
+
     def test_classify_index_and_ticker_prepost(self):
         import pandas as pd
         from bot.prepost_client import _classify_index, _ticker_prepost
