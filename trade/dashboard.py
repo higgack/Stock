@@ -631,6 +631,29 @@ def _build_html(
         '</head><body>'
         + head
         + customs_panel
+        # 🏢 기업 보고서 (사용자 2026-06-17) — 회사 → DART 제품구성 + 관세청 수출입
+        # 품목 노출. 무료=데이터(₩0) / AI=Gemini 산문 요약(유료 opt-in). 정적 문자열
+        # 영역이라 인라인 <script> 중괄호 안전(f-string 아님).
+        + '<section class="report-box">'
+        '<div class="rb-row"><span class="rb-title">🏢 기업 보고서</span>'
+        '<input type="search" id="rb-q" placeholder="회사명 또는 6자리 코드 (예: 삼성전자 / 005930)" autocomplete="off">'
+        '<button type="button" id="rb-free" class="rb-btn">무료 보고서</button>'
+        '<button type="button" id="rb-llm" class="rb-btn rb-llm">AI 보고서 (유료)</button></div>'
+        '<div id="rb-result" class="rb-result"></div></section>'
+        '<script>(function(){'
+        'var q=document.getElementById("rb-q"),res=document.getElementById("rb-result");'
+        'function run(mode){var v=(q.value||"").trim();'
+        'if(!v){res.innerHTML="<div class=\\"rb-note\\">회사명 또는 6자리 코드를 입력하세요.</div>";return;}'
+        'if(mode==="llm"&&!confirm("AI 보고서는 Gemini 비용이 발생합니다. 생성할까요?"))return;'
+        'res.innerHTML="<div class=\\"rb-note\\">생성 중… ("+(mode==="llm"?"AI":"무료")+")</div>";'
+        'fetch("api/company_report?q="+encodeURIComponent(v)+"&mode="+mode,{cache:"no-store"})'
+        '.then(function(r){return r.json();})'
+        '.then(function(d){res.innerHTML=d.ok?d.html:("<div class=\\"rb-note\\">⚠️ "+(d.error||"실패")+"</div>");})'
+        '.catch(function(){res.innerHTML="<div class=\\"rb-note\\">⚠️ 네트워크 오류</div>";});}'
+        'document.getElementById("rb-free").addEventListener("click",function(){run("free");});'
+        'document.getElementById("rb-llm").addEventListener("click",function(){run("llm");});'
+        'q.addEventListener("keydown",function(e){if(e.key==="Enter")run("free");});'
+        '})();</script>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
@@ -943,6 +966,17 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .tab{flex:1;padding:13px 0;background:none;border:none;font-size:14px;font-weight:600;color:var(--text-sub);cursor:pointer;border-bottom:2px solid transparent}
 .tab.active{color:var(--accent);border-bottom-color:var(--accent)}
 .filters{background:var(--surface);padding:10px 18px;border-bottom:1px solid var(--border);position:sticky;top:108px;z-index:8}
+/* 🏢 기업 보고서 위젯 (사용자 2026-06-17) */
+.report-box{background:var(--surface);border-bottom:1px solid var(--border);padding:10px 18px}
+.rb-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.rb-title{font-weight:700;font-size:14px;white-space:nowrap}
+#rb-q{flex:1;min-width:180px;padding:8px 10px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;font-size:14px}
+.rb-btn{padding:8px 12px;border:1px solid var(--border);background:var(--surface-2);color:var(--text);border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.rb-btn:hover{border-color:var(--accent)}
+.rb-btn.rb-llm{background:var(--accent);color:#fff;border-color:var(--accent)}
+.rb-result{margin-top:10px;background:var(--card);border:1px solid var(--border-soft);border-radius:10px;padding:14px 16px}
+.rb-result:empty{display:none}
+.rb-note{color:var(--muted);font-size:13px;padding:6px 0}
 #q{width:100%;padding:9px 12px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;font-size:14px;margin-bottom:8px}
 .chips{display:flex;gap:14px;flex-wrap:wrap}
 .chip-group{display:flex;gap:3px;flex-wrap:wrap}

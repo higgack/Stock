@@ -13504,8 +13504,10 @@ def _render_market_page(data: dict) -> str:
           + '<td style="white-space:nowrap">' + fmtEstLabel(f.eps_estimate, f.eps_is_actual, f.currency_symbol, f.eps_fy_label) + '</td>'
           + '<td style="white-space:nowrap">' + fmtPER(f.per, f.per_is_trailing, f.eps_fy_label, f.eps_negative) + '</td>'
           + '<td style="white-space:nowrap">' + (f.next_earnings||'—') + '</td>'
-          + '<td class="fav-ord"><button class="fav-up" data-ticker="' + f.ticker + '" title="위로">▲</button>'
-          + '<button class="fav-down" data-ticker="' + f.ticker + '" title="아래로">▼</button></td>'
+          + '<td class="fav-ord"><button class="fav-top" data-ticker="' + f.ticker + '" title="맨 위로">⤒</button>'
+          + '<button class="fav-up" data-ticker="' + f.ticker + '" title="위로">▲</button>'
+          + '<button class="fav-down" data-ticker="' + f.ticker + '" title="아래로">▼</button>'
+          + '<button class="fav-bottom" data-ticker="' + f.ticker + '" title="맨 아래로">⤓</button></td>'
           + '<td><button class="fav-del" data-ticker="' + f.ticker + '" title="삭제">✕</button></td>'
           + '</tr>';
       }}).join('');
@@ -13521,6 +13523,12 @@ def _render_market_page(data: dict) -> str:
       }});
       favBody.querySelectorAll('.fav-down').forEach(function(b) {{
         b.addEventListener('click', function() {{ reorderFav(b.dataset.ticker, 'down'); }});
+      }});
+      favBody.querySelectorAll('.fav-top').forEach(function(b) {{
+        b.addEventListener('click', function() {{ reorderFav(b.dataset.ticker, 'top'); }});
+      }});
+      favBody.querySelectorAll('.fav-bottom').forEach(function(b) {{
+        b.addEventListener('click', function() {{ reorderFav(b.dataset.ticker, 'bottom'); }});
       }});
       var csel = document.getElementById('fav-country');
       if (csel) csel.addEventListener('change', function() {{ favState.country = csel.value; favState.page = 0; applyFavFilter(); }});
