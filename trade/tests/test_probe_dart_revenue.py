@@ -68,6 +68,27 @@ class TableParseTests(unittest.TestCase):
         self.assertEqual(prods[0]["amount"], 1_000_000)
         self.assertEqual(prods[1]["share_pct"], 16.5)
 
+    def test_products_converged_shapes(self):
+        # G1 — --wide 로 수렴 확인된 실제 매출표 형태 추출 가드.
+        # 셀트리온형: 사업부문|매출유형|품목|매출액|비율
+        t1 = ("<TABLE><TR><TD>사업부문</TD><TD>매출유형</TD><TD>품목</TD>"
+              "<TD>매출액</TD><TD>비율</TD></TR>"
+              "<TR><TD>바이오</TD><TD>제품</TD><TD>램시마</TD><TD>1,000,000</TD><TD>40.0%</TD></TR>"
+              "<TR><TD>바이오</TD><TD>제품</TD><TD>트룩시마</TD><TD>500,000</TD><TD>20.0%</TD></TR>"
+              "<TR><TD>합계</TD><TD>-</TD><TD>-</TD><TD>2,500,000</TD><TD>100.0%</TD></TR></TABLE>")
+        ps = P.products_from_rows(P.parse_table_block(t1))
+        self.assertEqual([p["name"] for p in ps], ["램시마", "트룩시마"])
+        self.assertEqual(ps[0]["share_pct"], 40.0)
+        self.assertEqual(ps[0]["amount"], 1_000_000)
+        # 매출액(비율) 병합 헤더/셀 — 한쪽 컬럼에 금액·비율 동시
+        t2 = ("<TABLE><TR><TD>품목</TD><TD>매출액(비율)</TD></TR>"
+              "<TR><TD>HBM</TD><TD>1,234,567 (56.7%)</TD></TR>"
+              "<TR><TD>DDR5</TD><TD>700,000 (32.1%)</TD></TR></TABLE>")
+        ps2 = P.products_from_rows(P.parse_table_block(t2))
+        self.assertEqual([p["name"] for p in ps2], ["HBM", "DDR5"])
+        self.assertEqual(ps2[0]["share_pct"], 56.7)
+        self.assertEqual(ps2[0]["amount"], 1_234_567)
+
     def test_segment_only_table_uses_구분(self):
         # 품목 컬럼 없는 세그먼트 표 → 구분/사업부문으로 폴백.
         seg = (
