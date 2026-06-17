@@ -5191,9 +5191,9 @@ class TestIntlHighLow52:
 
     def test_universe_from_peer_maps(self, monkeypatch):
         import bot.intl_highlow as ih
-        # CN_A 재도입(2026-06-17) — 전종목(AKShare)+peer 폴백. AKShare 를 빈
+        # CN_A 재도입(2026-06-17) — CSI300+500(AKShare)+peer 폴백. AKShare 를 빈
         # 결과로 강제해 peer 폴백 경로를 결정적 검증(네트워크 0, VM 에서도).
-        monkeypatch.setattr("bot.akshare_client.list_all_a_shares", lambda: {})
+        monkeypatch.setattr("bot.akshare_client.list_csi300_500", lambda: {})
         for mk, lo in (("JP", 40), ("HK", 30), ("KR", 50), ("CN_A", 30)):
             uni, names = ih._universe(mk)
             assert len(uni) >= lo, (mk, len(uni))
@@ -11389,10 +11389,10 @@ class TestHighlowSlotScan:
 
 
 class TestCN52Reenabled:
-    """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로 · 그냥
-    전시장 · 해줘') — **전종목**(AKShare list_all_a_shares 전 A주) + AKShare 부재
-    시 주요종목(peer) 폴백 + 슬롯 :30 분산. 옛 2026-06-14 제거(yfinance CN 커버
-    리지 빈약) 번복. ⚠️ yfinance CN 1년 커버리지 한계로 전종목 스캔해도 결과 부분."""
+    """CN_A 52주 신고저 재도입 (사용자 2026-06-17 '중국도 같은 방식으로' →
+    'CSI300+500') — **CSI 300 + CSI 500**(대형+중형 ~800, AKShare list_csi300_500)
+    + AKShare 부재 시 주요종목(peer ~64) 폴백 + 슬롯 :30 분산. 옛 2026-06-14
+    제거(yfinance CN 소형주 커버리지 빈약) 번복하되 커버리지 양호한 대형·중형만."""
 
     def test_cn_in_cfg(self):
         from bot.intl_highlow import _CFG
@@ -11402,50 +11402,68 @@ class TestCN52Reenabled:
         assert cache.startswith("highlow_cn") and status.startswith("cn_highlow")
         assert suffix == (".SS", ".SZ")             # native A주 접미사 필터
 
-    def test_cn_full_universe_wired(self, monkeypatch):
-        # 전종목 경로: _universe('CN_A') 가 AKShare list_all_a_shares 를 우선 사용.
+    def test_cn_csi_universe_wired(self, monkeypatch):
+        # CSI 경로: _universe('CN_A') 가 AKShare list_csi300_500 를 우선 사용.
         import bot.intl_highlow as ih
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
-        assert "list_all_a_shares" in src           # AKShare 전종목 소스 배선
-        # AKShare 가 전종목 주면 그게 유니버스(폴백 아님) — 배선 검증(네트워크 0).
-        monkeypatch.setattr("bot.akshare_client.list_all_a_shares",
-                            lambda: {f"{600000 + i}.SS": f"종목{i}" for i in range(300)})
+        assert "list_csi300_500" in src            # AKShare CSI 소스 배선
+        # AKShare 가 CSI 구성종목 주면 그게 유니버스(폴백 아님) — 배선 검증(네트워크 0).
+        monkeypatch.setattr("bot.akshare_client.list_csi300_500",
+                            lambda: {f"{600000 + i}.SS": f"종목{i}" for i in range(800)})
         uni, names = ih._universe("CN_A")
-        assert len(uni) == 300 and names["600000.SS"] == "종목0"
+        assert len(uni) == 800 and names["600000.SS"] == "종목0"
         # AKShare 빈 결과(미설치/실패) → peer(_CN_A_INDUSTRY_PEERS) 폴백, 회귀 0.
-        monkeypatch.setattr("bot.akshare_client.list_all_a_shares", lambda: {})
+        monkeypatch.setattr("bot.akshare_client.list_csi300_500", lambda: {})
         uni2, names2 = ih._universe("CN_A")
         assert len(uni2) >= 30                       # peer ~64
         assert all(t.endswith((".SS", ".SZ")) for t in uni2)
 
-    def test_cn_akshare_code_conversion(self, monkeypatch):
-        # list_all_a_shares 변환 규칙: 6→.SS, 0/3→.SZ, 4/8/9(北京)→제외.
+    def test_cn_csi_parse_and_code_conversion(self, monkeypatch):
         import bot.akshare_client as ak
+        # _cn_code_to_ticker 규칙: 6→.SS, 0/3→.SZ, 4/8/9(北京)·비6자리 → None.
+        assert ak._cn_code_to_ticker("600519") == "600519.SS"
+        assert ak._cn_code_to_ticker("000858") == "000858.SZ"
+        assert ak._cn_code_to_ticker("300750") == "300750.SZ"
+        assert ak._cn_code_to_ticker("830799") is None      # 北京거래소
+        assert ak._cn_code_to_ticker("12") is None           # 6자리 아님
+        # _pick_cons_col: '指数代码'(=000300 자기자신) 말고 '成分券代码' 선택.
+        cols = ["日期", "指数代码", "指数名称", "成分券代码", "成分券名称", "权重"]
+        assert ak._pick_cons_col(cols, "code") == "成分券代码"
+        assert ak._pick_cons_col(cols, "name") == "成分券名称"
 
         class _Row(dict):
             def get(self, k, d=None):
                 return dict.get(self, k, d)
 
-        class _DF:                                   # 최소 DataFrame 흉내
-            empty = False
-            columns = ["code", "name"]
+        class _DF:
+            def __init__(self, rows, columns):
+                self._rows, self.columns, self.empty = rows, columns, False
 
             def iterrows(self):
-                rows = [{"code": "600519", "name": "贵州茅台"},
-                        {"code": "000858", "name": "五粮液"},
-                        {"code": "300750", "name": "宁德时代"},
-                        {"code": "830799", "name": "北证종목"},   # 北京 → 제외
-                        {"code": "12", "name": "잘못"}]           # 6자리 아님 → 제외
-                for i, r in enumerate(rows):
+                for i, r in enumerate(self._rows):
                     yield i, _Row(r)
 
-        monkeypatch.setattr(ak, "_import_akshare", lambda: object())
-        monkeypatch.setattr(ak, "_fetch_with_retry", lambda fn, label, **k: _DF())
+        def _cons(sym):
+            base = {"指数代码": sym, "指数名称": "x", "权重": 1, "日期": "20260617"}
+            if sym == "000300":
+                rows = [{**base, "成分券代码": "600519", "成分券名称": "贵州茅台"},
+                        {**base, "成分券代码": "000858", "成分券名称": "五粮液"}]
+            else:   # 000905, 茅台 중복 → dedup
+                rows = [{**base, "成分券代码": "300750", "成分券名称": "宁德时代"},
+                        {**base, "成分券代码": "600519", "成分券名称": "贵州茅台"}]
+            return _DF(rows, list(base) + ["成分券代码", "成分券名称"])
+
+        class _AK:
+            def index_stock_cons_csindex(self, symbol):
+                return _cons(symbol)
+
+        monkeypatch.setattr(ak, "_import_akshare", lambda: _AK())
+        monkeypatch.setattr(ak, "_fetch_with_retry", lambda fn, label, **k: fn())
         monkeypatch.setattr(ak, "_cache_get", lambda *a, **k: None)
         monkeypatch.setattr(ak, "_cache_put", lambda *a, **k: None)
-        out = ak.list_all_a_shares()
+        out = ak.list_csi300_500()
         assert out == {"600519.SS": "贵州茅台", "000858.SZ": "五粮液",
-                       "300750.SZ": "宁德时代"}        # 北京·비6자리 제외
+                       "300750.SZ": "宁德时代"}       # 300∩500 茅台 dedup·北京 제외
 
     def test_cn52_route_and_nav_wired(self):
         # 서버 라우트 + ASIA 허브/시장 nav 에 cn52 노출(JP/HK 미러).
