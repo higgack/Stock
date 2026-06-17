@@ -132,9 +132,10 @@ def render_intl_movers_page(market: str) -> str:
     _ind_src = ("업종=네이버+yfinance" if market in ("CN_A", "JP")
                 else "업종=yfinance+네이버" if market == "HK" else "업종=네이버")
     from bot.highlow_render import market_hours_label as _mhl
+    from bot.highlow_render import movers_freshness as _mf
     _hrs = _mhl(market)
     sub = (f"{flag} 당일 등락 상·하위 30 · {src} · {(_hrs + ' · ') if _hrs else ''}"
-           f"등락률순·헤더 클릭 정렬 · {_ind_src} · 장중 30초(네이버 종가 EOD 보유)"
+           f"등락률순·헤더 클릭 정렬 · {_ind_src} · {_mf(market)}"
            + (f" · 마지막 갱신 {ts}" if ts else ""))
     _active = {"JP": "jpmovers", "CN_A": "cnmovers", "HK": "hkmovers"}.get(market, "hkmovers")
     return _tw_shell(f"{flag} 급등·급락", sub, body,

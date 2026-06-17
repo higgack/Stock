@@ -339,15 +339,17 @@ def render_us_movers_page() -> str:
                 + _HL_SORT_JS)
     # 부제 — 무엇·출처·장시간·정렬·신선도·마지막갱신(사용자 2026-06-16).
     from bot.highlow_render import market_hours_label as _mhl
+    from bot.highlow_render import movers_freshness as _mf
     _hrs = _mhl("US")
+    _fresh = _mf("US")
     if "네이버" in src:
         sub = (f"미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · {_hrs} · "
-               "등락률순·헤더 클릭 정렬 · 장중 30초(네이버 종가 EOD 보유)"
+               f"등락률순·헤더 클릭 정렬 · {_fresh}"
                + (f" · 마지막 갱신 {ts}" if ts else ""))
     else:
         sub = (f"미국 당일 등락 상·하위 30 · 전 미국 보통주(SPAC·워런트 제외) · {_hrs} · "
                "등락률순·헤더 클릭 정렬"
-               + (f" · 출처 {src}" if src else "") + " · 장중 30초"
+               + (f" · 출처 {src}" if src else "") + f" · {_fresh}"
                + (f" · 마지막 갱신 {ts}" if ts else ""))
     return _shell("미국 급등·급락 TOP30", sub, "usmovers", body)
 

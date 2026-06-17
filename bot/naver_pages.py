@@ -255,8 +255,9 @@ def render_highlow_page() -> str:
                 + stock_panel("📉 가장 많이 내린 TOP 30", down, "mv-down", "KR",
                               ind_dist_line(down), **_o)
                 + '</div>' + HL_SORT_JS)
+        from bot.highlow_render import movers_freshness as _mf
         sub = ("네이버 증권 급등/급락 · 등락률순·헤더 클릭 정렬 · 업종=네이버 · "
-               f"장중 30초{(' · ' + ts + ' 기준') if ts else ''}")
+               f"{_mf('KR')}{(' · ' + ts + ' 기준') if ts else ''}")
         return _shell("급등·급락", sub, "highlow", body)
 
     body = ('<div class="empty">급등·급락 데이터를 불러올 수 없습니다.<br>'
