@@ -11243,10 +11243,13 @@ class TestHighlowEodAutoRecompute:
         assert "_highlow_eod_task = asyncio.create_task(_periodic_highlow_eod())" in src
         seg = src[src.index("def _ensure_highlow_eod"):
                   src.index("async def _periodic_highlow_eod")]
-        # off-session 시장만(in-session skip), US/JP/HK/TW, KR 제외(네이버 직접).
-        assert 'if not _open("US")' in seg and "fetch_high_low" in seg
-        assert "fetch_intl_highlow" in seg and "fetch_tw_highlow" in seg
-        assert '"KR"' not in seg
+        # off-session 시장만(in-session skip), 비-네이버 컴퓨티드 보드만, KR 제외.
+        assert 'if not _open("US")' in seg
+        # US 52w + 무버, JP/HK 52w, TW 52w + 무버 (네이버 직접 보드는 제외).
+        assert "fetch_high_low" in seg and "fetch_us_movers" in seg
+        assert "fetch_intl_highlow" in seg
+        assert "fetch_tw_highlow" in seg and "fetch_tw_movers" in seg
+        assert '_open("KR")' not in seg   # KR 은 네이버 직접 — EOD 대상 아님
 
     def test_session_fresh_eod_gate(self):
         # 장중 스냅샷은 마감 후 stale(→EOD 재산출 트리거), 마감 후 산출본은 fresh

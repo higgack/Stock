@@ -3192,12 +3192,16 @@ async def _periodic_highlow_prewarm() -> None:
 
 
 def _ensure_highlow_eod() -> None:
-    """장 마감 후 52주 신고저 EOD 캐시 보장 — **off-session 시장만** self-gating
-    fetch 호출(사용자 2026-06-16 '장 종료되면 페이지 안 열려도 종가기준 스스로 계산,
-    네이버 직접인 KR 제외 전 시장'). fetch_*_highlow 는 _session_fresh 로 자가 게이트
-    — 이미 EOD 반영(마감 후 산출본)이면 캐시 read(가벼움), 마감 직후 미포착(장중
-    스냅샷)이면 1회 재산출. in-session 은 skip(방문·장중 1h 갱신 담당 → 불필요한
-    yfinance 스캔 0). 닫힌 시장 재스캔도 0(한 번 EOD 포착하면 이후 fresh)."""
+    """장 마감 후 **비-네이버 컴퓨티드 보드**(52주 신고저 + 급등·급락)의 EOD 캐시
+    보장 — off-session 시장만 self-gating fetch 호출(사용자 2026-06-16 '장 종료되면
+    페이지 안 열려도 종가기준 스스로 계산. 네이버에서 다 가져오는 게 아닌 보드는
+    종료기준으로 잡혀야'). 네이버 직접(KR movers/highlow·JP/CN/HK movers)은 네이버가
+    EOD 보유 → 제외. **우리 산출**(US 52w=Finviz/yf · US movers=Finviz/yf · JP/HK
+    52w=yf · TW 52w=yf · TW movers=TWSE/TPEx)만 대상.
+
+    fetch_* 는 _session_fresh 로 자가 게이트 — 이미 EOD 반영이면 캐시 read(가벼움),
+    마감 직후 미포착(장중 스냅샷)이면 1회 재산출. in-session 은 skip(방문·장중 갱신
+    담당 → 불필요 스캔 0). 닫힌 시장 재스캔도 0."""
     from datetime import datetime, timezone
     try:
         from bot.finviz_client import _SESSIONS_UTC
@@ -3213,24 +3217,33 @@ def _ensure_highlow_eod() -> None:
         return now.weekday() < 5 and (oh, om) <= (now.hour, now.minute) < (ch, cm)
 
     if not _open("US"):
-        try:
-            from bot.finviz_client import fetch_high_low
-            fetch_high_low()
-        except Exception as exc:
-            log.warning("highlow eod US: %s", exc)
+        # US 52주 + 무버 — 둘 다 Finviz/yfinance 컴퓨티드(네이버 직접 아님).
+        for _imp in ("fetch_high_low", "fetch_us_movers"):
+            try:
+                import bot.finviz_client as _fc
+                getattr(_fc, _imp)()
+            except Exception as exc:
+                log.warning("boards eod US %s: %s", _imp, exc)
     for m in ("JP", "HK"):
         if not _open(m):
             try:
                 from bot.intl_highlow import fetch_intl_highlow
-                fetch_intl_highlow(m)
+                fetch_intl_highlow(m)      # JP/HK 52주(yfinance) — movers 는 네이버라 제외
             except Exception as exc:
-                log.warning("highlow eod %s: %s", m, exc)
+                log.warning("boards eod %s: %s", m, exc)
     if not _open("TW"):
+        # TW 52주 + 무버 — 둘 다 TWSE/TPEx 컴퓨티드(네이버 아님) → EOD 자동 재산출
+        # (사용자 2026-06-16 '대만은 급등급락도').
         try:
             from bot.tw_highlow import fetch_tw_highlow
             fetch_tw_highlow()
         except Exception as exc:
-            log.warning("highlow eod TW: %s", exc)
+            log.warning("boards eod TW 52w: %s", exc)
+        try:
+            from bot.twse_client import fetch_tw_movers
+            fetch_tw_movers()
+        except Exception as exc:
+            log.warning("boards eod TW movers: %s", exc)
 
 
 async def _periodic_highlow_eod() -> None:
