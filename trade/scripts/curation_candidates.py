@@ -52,18 +52,25 @@ def find_candidates(by_mti: dict, pairs: list, *, top: int,
     return out[:top]
 
 
-def compose(cands: list[tuple[str, str, float]]) -> str | None:
-    """후보 → 텔레그램 HTML. 후보 0 이면 None(무음)."""
+def compose(cands: list[tuple[str, str, float]],
+            suggestions: dict | None = None) -> str | None:
+    """후보 → 텔레그램 HTML. 후보 0 이면 None(무음). suggestions = {품목명: [회사…]}
+    (G2 — DART 인벤토리 매칭 추천, 사용자 2026-06-17)."""
     if not cands:
         return None
+    suggestions = suggestions or {}
     lines = [f"🏷️ <b>큐레이션 후보 {len(cands)}건</b> (미매핑 고수출 품목)",
              "큐레이션·채널 둘 다 없어 관련기업이 안 뜨는 품목 — 최신월 수출액순. "
              "관련 상장사 매핑 후보로 검토.", ""]
     for i, (name, ind, val) in enumerate(cands, 1):
         suffix = f" · {ind}" if ind else ""
-        lines.append(f"{i}. <b>{name}</b>{suffix} — {industry._eokusd(val)}")
-    lines += ["", "→ mti_companies.py _MAP 에 (키워드, 기업) 추가 시 "
-              "산업트렌드 카드 '관련기업(큐레이션)'에 노출."]
+        line = f"{i}. <b>{name}</b>{suffix} — {industry._eokusd(val)}"
+        sug = suggestions.get(name)
+        if sug:                       # G2: DART 매출구성 매칭 회사 추천
+            line += f"\n    🏢 DART 추천: {', '.join(sug[:5])}"
+        lines.append(line)
+    lines += ["", "→ mti_companies.py _MAP 에 (키워드, 기업) 추가 시 산업트렌드 "
+              "카드 '관련기업(큐레이션)'에 노출. 🏢 = DART 매출구성 자동 추천(검토 후 승인)."]
     return "\n".join(lines)
 
 
@@ -84,7 +91,17 @@ def main(argv: list[str] | None = None) -> int:
     pairs = mti_companies.load_channel_pairs()
     cands = find_candidates(by_mti, pairs, top=args.top,
                             min_usd=args.min_eok * 1e8)
-    body = compose(cands)
+    # G2 (사용자 2026-06-17): DART 매출구성 인벤토리로 미매핑 품목의 회사 후보 추천.
+    suggestions: dict = {}
+    try:
+        from trade import dart_match, dart_revenue
+        inv = dart_revenue.load_inventory()
+        if inv:
+            suggestions = dart_match.suggest_companies_for_items(
+                inv, [c[0] for c in cands])
+    except Exception as exc:
+        log.warning("curation: DART 추천 skip: %s", exc)
+    body = compose(cands, suggestions)
     if body is None:
         log.info("curation: 미매핑 고수출 품목 0 — 무음")
         return 0

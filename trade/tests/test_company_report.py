@@ -29,6 +29,20 @@ class RenderFreeTests(unittest.TestCase):
         self.assertIn("매핑된 품목 없음", h)
 
 
+class TelegramTests(unittest.TestCase):
+    def test_render_telegram(self):
+        data = {"name": "삼성전자", "code": "005930",
+                "products": [{"name": "DRAM", "share_pct": 39.0}],
+                "exposure": [{"item": "디램", "industry": "반도체", "latest_usd": 2e9}]}
+        t = C.render_telegram(data)
+        for must in ("삼성전자", "DRAM", "디램", "제품 구성", "관세청"):
+            self.assertIn(must, t)
+        self.assertLessEqual(len(t.encode("utf-16-le")) // 2, 4096)   # 텔레그램 cap
+        t2 = C.render_telegram(data, ai_text="주력은 메모리반도체입니다")
+        self.assertIn("AI 요약", t2)
+        self.assertIn("주력은 메모리반도체입니다", t2)
+
+
 class ExposureTests(unittest.TestCase):
     def test_reverse_lookup(self):
         # 삼성전자 ∈ companies_for('디램'), ∉ companies_for('라면')

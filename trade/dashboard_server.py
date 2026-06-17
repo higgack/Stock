@@ -164,6 +164,11 @@ def _api_company_report(q: str, mode: str) -> dict:
     if not q:
         return {"ok": False, "error": "회사명 또는 6자리 코드를 입력하세요."}
     try:
+        if mode in ("channel", "channel_llm"):          # 텔레그램 채널 전송
+            from trade.company_report import send_to_channel
+            res = send_to_channel(q, "llm" if mode == "channel_llm" else "free")
+            return {"ok": res.get("ok", False), "channel": True,
+                    "sent": res.get("sent", 0), "error": res.get("error")}
         from trade.company_report import build
         html = build(q, "llm" if mode == "llm" else "free")
         return {"ok": True, "html": html, "mode": mode}
