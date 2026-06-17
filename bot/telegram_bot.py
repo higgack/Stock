@@ -3191,6 +3191,65 @@ async def _periodic_highlow_prewarm() -> None:
             log.exception("highlow prewarm thread failed")
 
 
+def _ensure_highlow_eod() -> None:
+    """장 마감 후 52주 신고저 EOD 캐시 보장 — **off-session 시장만** self-gating
+    fetch 호출(사용자 2026-06-16 '장 종료되면 페이지 안 열려도 종가기준 스스로 계산,
+    네이버 직접인 KR 제외 전 시장'). fetch_*_highlow 는 _session_fresh 로 자가 게이트
+    — 이미 EOD 반영(마감 후 산출본)이면 캐시 read(가벼움), 마감 직후 미포착(장중
+    스냅샷)이면 1회 재산출. in-session 은 skip(방문·장중 1h 갱신 담당 → 불필요한
+    yfinance 스캔 0). 닫힌 시장 재스캔도 0(한 번 EOD 포착하면 이후 fresh)."""
+    from datetime import datetime, timezone
+    try:
+        from bot.finviz_client import _SESSIONS_UTC
+    except Exception:
+        return
+    now = datetime.now(timezone.utc)
+
+    def _open(m: str) -> bool:
+        s = _SESSIONS_UTC.get(m)
+        if not s:
+            return False
+        oh, om, ch, cm = s
+        return now.weekday() < 5 and (oh, om) <= (now.hour, now.minute) < (ch, cm)
+
+    if not _open("US"):
+        try:
+            from bot.finviz_client import fetch_high_low
+            fetch_high_low()
+        except Exception as exc:
+            log.warning("highlow eod US: %s", exc)
+    for m in ("JP", "HK"):
+        if not _open(m):
+            try:
+                from bot.intl_highlow import fetch_intl_highlow
+                fetch_intl_highlow(m)
+            except Exception as exc:
+                log.warning("highlow eod %s: %s", m, exc)
+    if not _open("TW"):
+        try:
+            from bot.tw_highlow import fetch_tw_highlow
+            fetch_tw_highlow()
+        except Exception as exc:
+            log.warning("highlow eod TW: %s", exc)
+
+
+async def _periodic_highlow_eod() -> None:
+    """52주 신고저 EOD 자동 재산출 — 페이지 방문·고정시각 무관(사용자 2026-06-16).
+    30분마다 off-session 시장의 self-gating fetch 를 호출해, 마감 직후 stale 면 1회
+    EOD 재산출. 고정 07:30/16:30 prewarm 의 재시작-누락·HK 17:00(KST) 미커버를
+    보완하는 self-healing 경로. daemon thread fire(실수 #6 shutdown-join 회피).
+    startup 직후 한 박자 늦춰 다른 init 와 분산."""
+    await asyncio.sleep(180)
+    while True:
+        try:
+            import threading as _eodt
+            _eodt.Thread(target=_ensure_highlow_eod, daemon=True,
+                         name="highlow-eod").start()
+        except Exception:
+            log.exception("highlow eod thread failed")
+        await asyncio.sleep(30 * 60)
+
+
 # 대시보드 명령 콘솔 — '/명령' → (update, ctx) 핸들러 화이트리스트.
 # 런타임 호출(모든 cmd_* 정의 후)이라 forward-ref 안전. screener/screen 은
 # 별도 채널 경로(아래 poller)라 제외, 티커 분석은 [분석] 버튼 전용이라 제외.
@@ -4037,6 +4096,9 @@ async def _on_startup(application) -> None:
     application._paper_pending_task = asyncio.create_task(_periodic_paper_pending(application))
     application._market_refresh_task = asyncio.create_task(_periodic_market_refresh())
     application._highlow_prewarm_task = asyncio.create_task(_periodic_highlow_prewarm())
+    # 52주 신고저 EOD 자동 재산출 (30분, off-session 시장 self-gating) — 장 종료 후
+    # 페이지 방문 없이도 종가기준 EOD 캐시 보장 (사용자 2026-06-16, KR 제외 전 시장).
+    application._highlow_eod_task = asyncio.create_task(_periodic_highlow_eod())
     # 관심종목 DART 공시 알림 폴러 (75초, /dart_alert on 일 때만 발송)
     application._dart_fav_alerts_task = asyncio.create_task(
         _periodic_dart_fav_alerts(application))

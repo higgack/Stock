@@ -11231,3 +11231,30 @@ class TestAsiaTier2_20260616:
         from bot import intl_pages
         s = inspect.getsource(intl_pages.render_intl_highlow52_page)
         assert '주요 ~900종목' in s and 'market in ("JP", "HK")' in s
+
+
+class TestHighlowEodAutoRecompute:
+    """52주 신고저 EOD 자동 재산출 (사용자 2026-06-16: 장 종료 후 페이지 안 열려도
+    종가기준 스스로 계산, KR 제외 전 시장). off-session self-gating 30분 task."""
+
+    def test_eod_task_wired(self):
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "def _ensure_highlow_eod" in src and "async def _periodic_highlow_eod" in src
+        assert "_highlow_eod_task = asyncio.create_task(_periodic_highlow_eod())" in src
+        seg = src[src.index("def _ensure_highlow_eod"):
+                  src.index("async def _periodic_highlow_eod")]
+        # off-session 시장만(in-session skip), US/JP/HK/TW, KR 제외(네이버 직접).
+        assert 'if not _open("US")' in seg and "fetch_high_low" in seg
+        assert "fetch_intl_highlow" in seg and "fetch_tw_highlow" in seg
+        assert '"KR"' not in seg
+
+    def test_session_fresh_eod_gate(self):
+        # 장중 스냅샷은 마감 후 stale(→EOD 재산출 트리거), 마감 후 산출본은 fresh
+        # (→재스캔 0). EOD task 가 이 게이트에 의존.
+        from datetime import datetime, timezone
+        from bot.finviz_client import _session_fresh
+
+        def ts(h, mi):
+            return datetime(2026, 6, 16, h, mi, tzinfo=timezone.utc).timestamp()
+        assert _session_fresh("US", ts(19, 0), 3600, now_ts=ts(23, 0)) is False
+        assert _session_fresh("US", ts(22, 0), 3600, now_ts=ts(23, 0)) is True
