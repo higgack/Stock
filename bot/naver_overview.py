@@ -109,11 +109,26 @@ def fetch_naver_world_news(ticker: str, max_items: int = 10) -> list[dict] | Non
                 continue
             dt = str(it.get("dt") or "")
             date = f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}" if len(dt) >= 8 else ""
+            # 원문 링크(사용자 2026-06-17 '뉴스 누르면 원본으로') — Naver 뉴스
+            # permalink. API 키명 변형 방어적 시도, **완전한 URL 만들 수 있을 때만**
+            # set(불완전하면 "" → 평문 폴백, 깨진 링크 절대 안 만듦).
+            link = ""
+            for _lk in ("linkUrl", "link", "url", "newsUrl", "bodyUrl", "origin"):
+                _v = it.get(_lk)
+                if isinstance(_v, str) and _v.startswith("http"):
+                    link = _v
+                    break
+            if not link:
+                _oid = str(it.get("officeId") or it.get("oid") or "").strip()
+                _aid = str(it.get("articleId") or it.get("aid") or "").strip()
+                if _oid.isdigit() and _aid.isdigit():
+                    link = f"https://n.news.naver.com/mnews/article/{_oid}/{_aid}"
             items.append({
                 "title": tit,
                 "publisher": (it.get("ohnm") or "").strip(),
                 "date": date,
                 "subcontent": (it.get("subcontent") or "").strip(),
+                "link": link,
             })
         if items:
             _cache_write(ck, {"items": items})

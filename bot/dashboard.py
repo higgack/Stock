@@ -4971,7 +4971,11 @@ def _render_stock_info_html(rec: dict) -> str:
             title = esc(n.get("title", ""))
             publisher = esc(n.get("publisher", ""))
             ndate = esc(n.get("date", ""))
-            n_items += (f'<div class="si-news-item"><div class="si-news-title">{title}</div>'
+            link = n.get("link", "")
+            # 원문 링크 있으면 클릭 가능(사용자 2026-06-17) — 없으면 평문(깨진 링크 방지).
+            title_html = (f'<a href="{esc(link)}" target="_blank" rel="noopener">{title}</a>'
+                          if link else title)
+            n_items += (f'<div class="si-news-item"><div class="si-news-title">{title_html}</div>'
                         f'<div class="si-news-meta">{publisher} · {ndate}</div></div>\n')
         news_html = n_items
     elif news:
@@ -5859,8 +5863,14 @@ def _render_stock_info_html(rec: dict) -> str:
         chart_svg = ""
         is_annual = fins.get("income_statement", {}).get("annual", [])
         if is_annual and len(is_annual) >= 2:
+            # 야후 annual 정렬이 종목마다 달라(최신우선/과거우선 혼재) → 순서 가정
+            # 제거: period(연도)로 명시 정렬 후 최근 4개. 차트=오름차순(좌→우 시간순),
+            # YoY 표=내림차순(최신 위, 아래 sort). blind reversed 가 일부 종목서 거꾸로
+            # 나오던 것 차단(사용자 2026-06-17 AMAT YoY 최신 아래로). 정렬 전 [:4] 가
+            # 과거 4개를 자르던 위험도 해소(이제 정렬 후 최근 4개).
+            _annual_sorted = sorted(is_annual, key=lambda r: str(r.get("period", "")))
             chart_items = []
-            for r in reversed(is_annual[:4]):
+            for r in _annual_sorted[-4:]:
                 chart_items.append({
                     "period": r.get("period", "?")[:4],
                     "revenue": r.get("Total Revenue", 0) or 0,
@@ -5915,8 +5925,11 @@ def _render_stock_info_html(rec: dict) -> str:
                             cells += f'<td class="num" style="color:{color}">{sign}{g:.1f}%</td>'
                         else:
                             cells += '<td class="num">—</td>'
-                    _grows.append(f"<tr><td>{period}</td>{cells}</tr>")
-                growth_rows = "\n".join(reversed(_grows))
+                    _grows.append((period, f"<tr><td>{period}</td>{cells}</tr>"))
+                # 최신 연도 위로 — period(연도) 기준 내림차순(blind reverse 아님,
+                # 입력 순서 무관 → 종목마다 야후 정렬 달라도 항상 최신 top).
+                _grows.sort(key=lambda x: x[0], reverse=True)
+                growth_rows = "\n".join(row for _, row in _grows)
                 if growth_rows:
                     chart_svg += f"""<div class="si-section" style="margin-top:12px">
         <div class="si-section-title">YoY 성장률</div>

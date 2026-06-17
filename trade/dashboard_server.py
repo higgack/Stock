@@ -177,6 +177,25 @@ def _api_company_report(q: str, mode: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _api_period_report(ym: str, mode: str) -> dict:
+    """GET /api/period_report?ym=&mode=free|llm|channel — 전체 기간(월) 수출입 시장
+    보고서 (사용자 2026-06-17 '전체를 다뽑을수 있게, 5월전체 식, 수출입 관계 고려').
+    ym 빈값=최신월. mode=llm 만 비용(opt-in). graceful."""
+    ym = (ym or "").strip() or None
+    try:
+        if mode in ("channel", "channel_llm"):          # 텔레그램 채널 전송
+            from trade.period_report import send_to_channel
+            res = send_to_channel(ym, "llm" if mode == "channel_llm" else "free")
+            return {"ok": res.get("ok", False), "channel": True,
+                    "sent": res.get("sent", 0), "error": res.get("error")}
+        from trade.period_report import build
+        html = build(ym, "llm" if mode == "llm" else "free")
+        return {"ok": True, "html": html, "mode": mode}
+    except Exception as exc:
+        log.warning("period_report api %s/%s: %s", ym, mode, exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def _api_alerts() -> dict:
     if not _STORE_PATH.exists():
         return {"alerts": [], "latest_ids": []}
@@ -361,6 +380,11 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             payload = _api_company_report((qs.get("q", [""])[0] or "").strip(),
                                           (qs.get("mode", ["free"])[0] or "free").strip())
+        elif path == "/api/period_report":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            payload = _api_period_report((qs.get("ym", [""])[0] or "").strip(),
+                                         (qs.get("mode", ["free"])[0] or "free").strip())
         else:
             self.send_error(404)
             return
