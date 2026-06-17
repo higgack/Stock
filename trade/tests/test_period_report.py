@@ -1,0 +1,133 @@
+"""trade.period_report — 전체 기간(월) 수출입 시장 보고서 순수 가드.
+
+네트워크(customs.db)·LLM(Gemini)은 VM 전용. 여기선 집계(gather_period, 로더
+monkeypatch)·HTML/텔레그램 조립·헬퍼만 — 수출↔수입 관계 집계의 핵심(₩0).
+"""
+
+import unittest
+from contextlib import contextmanager
+from unittest import mock
+
+from trade import period_report as P
+
+# 디램: 수출+수입 둘 다(중간재 신호) · 전년동월 존재. 승용차/합성수지: 수출만.
+# 원유: 수입만.
+_EXP = {
+    "831110": {"name": "디램", "industry": "반도체",
+               "months": {"2026-04": 1.8e10, "2026-05": 2.0e10, "2025-05": 1.5e10}},
+    "741400": {"name": "승용차", "industry": "자동차",
+               "months": {"2026-04": 5e9, "2026-05": 6e9}},
+    "133420": {"name": "합성수지", "industry": "석유화학",
+               "months": {"2026-04": 3.2e9, "2026-05": 3e9}},
+}
+_IMP = {
+    "831110": {"name": "디램", "industry": "반도체",
+               "months": {"2026-04": 3.8e9, "2026-05": 4e9}},
+    "271000": {"name": "원유", "industry": "에너지",
+               "months": {"2026-04": 6e9, "2026-05": 7e9}},
+}
+
+
+@contextmanager
+def _fake_session(*a, **k):
+    yield object()
+
+
+def _gather(ym=None, exp=_EXP, imp=_IMP):
+    with mock.patch("trade.customs.session", _fake_session), \
+            mock.patch("trade.industry.load_mti_stored", lambda c: exp), \
+            mock.patch("trade.industry.load_mti_imports", lambda c: imp):
+        return P.gather_period(ym)
+
+
+class HelperTests(unittest.TestCase):
+    def test_shift_month(self):
+        self.assertEqual(P._shift_month("2026-05", -1), "2026-04")
+        self.assertEqual(P._shift_month("2026-05", -12), "2025-05")
+        self.assertEqual(P._shift_month("2026-01", -1), "2025-12")
+        self.assertEqual(P._shift_month("bad", -1), "")
+
+    def test_pct(self):
+        self.assertAlmostEqual(P._pct(110, 100), 10.0)
+        self.assertAlmostEqual(P._pct(90, 100), -10.0)
+        self.assertIsNone(P._pct(100, 0))      # 기준 0 → None
+        self.assertIsNone(P._pct(100, None))
+
+    def test_usd(self):
+        self.assertEqual(P._usd(2e10), "200.0억$")
+        self.assertEqual(P._usd(-1e9), "-10.0억$")
+        self.assertEqual(P._usd(0), "—")
+        self.assertEqual(P._usd(None), "—")
+
+
+class GatherTests(unittest.TestCase):
+    def test_period_latest_and_totals(self):
+        d = _gather()
+        self.assertEqual(d["period"], "2026-05")
+        self.assertEqual(d["prev"], "2026-04")
+        self.assertEqual(d["yoy"], "2025-05")
+        t = d["totals"]
+        self.assertAlmostEqual(t["export"], 2.0e10 + 6e9 + 3e9)     # 2.9e10
+        self.assertAlmostEqual(t["import"], 4e9 + 7e9)              # 1.1e10
+        self.assertAlmostEqual(t["balance"], 1.8e10)
+        self.assertGreater(t["export_mom"], 0)                     # 26.2e9 → 29e9
+
+    def test_top_and_both_traded(self):
+        d = _gather()
+        self.assertEqual(d["top_export"][0]["name"], "디램")        # 2.0e10 최대
+        self.assertEqual(d["top_import"][0]["name"], "원유")        # 7e9 최대
+        both = {r["name"] for r in d["both_traded"]}
+        self.assertIn("디램", both)            # 수출+수입 둘 다 → 중간재 신호
+        self.assertNotIn("승용차", both)        # 수출만
+        self.assertNotIn("원유", both)          # 수입만
+
+    def test_industries_and_swings(self):
+        d = _gather()
+        self.assertEqual(d["industries"][0]["industry"], "반도체")   # 수출 최대
+        # 반도체 net = 수출2.0e10 - 수입4e9
+        semi = next(x for x in d["industries"] if x["industry"] == "반도체")
+        self.assertAlmostEqual(semi["net"], 2.0e10 - 4e9)
+        # 급변동: 승용차(+20%) > 디램(+11.1%) > 합성수지(-6.25%)
+        self.assertEqual(d["swings"][0]["name"], "승용차")
+
+    def test_ym_override(self):
+        self.assertEqual(_gather("2026-04")["period"], "2026-04")
+        self.assertEqual(_gather("9999-99")["period"], "2026-05")   # 부재월 → 최신
+
+    def test_yoy_computed(self):
+        d = _gather()
+        dram = next(r for r in d["top_export"] if r["name"] == "디램")
+        self.assertAlmostEqual(dram["export_yoy"], (2.0e10 - 1.5e10) / 1.5e10 * 100)
+
+    def test_empty_graceful(self):
+        d = _gather(exp={}, imp={})
+        self.assertIsNone(d["period"])
+        self.assertEqual(d["n_items"], 0)
+
+
+class RenderTests(unittest.TestCase):
+    def test_render_free_structure(self):
+        h = P.render_free(_gather())
+        for must in ("2026-05 수출입 시장 보고서", "총수출", "총수입", "무역수지",
+                     "디램", "원유", "🔁 수출입 동시", "산업별", "급변동"):
+            self.assertIn(must, h)
+
+    def test_render_free_empty(self):
+        h = P.render_free({"period": None})
+        self.assertIn("미확보", h)
+
+    def test_render_telegram(self):
+        t = P.render_telegram(_gather())
+        self.assertIn("2026-05 수출입 시장 보고서", t)
+        self.assertIn("디램", t)
+        self.assertLessEqual(len(t.encode("utf-16-le")) // 2, 4096)   # 텔레그램 cap
+        t2 = P.render_telegram(_gather(), ai_text="반도체 수출 회복이 무역수지를 견인")
+        self.assertIn("AI 분석", t2)
+        self.assertIn("반도체 수출 회복", t2)
+
+    def test_render_telegram_empty(self):
+        self.assertIn("데이터 미확보", P.render_telegram({"period": None}))
+
+
+if __name__ == "__main__":
+    unittest.main()
