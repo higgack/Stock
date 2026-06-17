@@ -13704,6 +13704,7 @@ def _render_asia_page(data: dict) -> str:
         f'<a href="jpmovers" style="{_lk2}">🚀 급등·급락</a>'))
     parts.append(_render_etf_sector_movers(
         data.get("cn_sector_movers", {}), "🇨🇳 중국 업종 등락 TOP 10",
+        f'<a href="cn52" style="{_lk2}">📈 신고가·신저가</a>'      # 재도입 2026-06-17
         f'<a href="cnmovers" style="{_lk2}">🚀 급등·급락</a>'))
     parts.append(_render_etf_sector_movers(
         data.get("hk_sector_movers", {}), "🇭🇰 홍콩 주요 업종 등락",

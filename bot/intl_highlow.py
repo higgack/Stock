@@ -20,8 +20,14 @@ log = logging.getLogger(__name__)
 _CFG = {
     "JP": ("_JP_INDUSTRY_PEERS", "highlow_jp_v3.json",
            "jp_highlow_status.json", "일본 주요종목", (".T",)),
-    # CN_A 52주 제거 (사용자 2026-06-14 '중국 신고저 거의 지원 안 돼 필요없음·자원
-    # 낭비') — yfinance CN A주 1년 history 커버리지 빈약. CN 무버·업종등락(네이버)은 유지.
+    # CN_A 52주 재도입 (사용자 2026-06-17 '중국도 같은 방식으로 신고가 신저가 ·
+    # 부하고려') — 옛 2026-06-14 제거(yfinance CN A주 1년 커버리지 빈약) 번복.
+    # **peer-only**: _CN_A_INDUSTRY_PEERS 주요종목(~73)만 스캔(JP/HK 처럼 full_
+    # universe 안 씀 — CN 전종목 yfinance 1y 는 커버리지·부하 리스크) + graceful
+    # (미해소 종목 자동 skip). 슬롯 스캐너 :30 분산(부하 고려). CN 무버·업종등락
+    # (네이버)은 그대로 유지.
+    "CN_A": ("_CN_A_INDUSTRY_PEERS", "highlow_cn_v1.json",
+             "cn_highlow_status.json", "중국 주요종목", (".SS", ".SZ")),
     "HK": ("_HK_INDUSTRY_PEERS", "highlow_hk_v4.json",
            "hk_highlow_status.json", "홍콩 주요종목", (".HK",)),
     # KR — 사용자 2026-06-13 '한국도 신고가신저가'. KIS 신고저 순위 엔드포인트
@@ -71,7 +77,8 @@ def _universe(market: str) -> tuple[list[str], dict]:
     if not cfg:
         return [], {}
     # JP/HK: 공식 상장목록 전종목 우선 (사용자 2026-06-13 full-market), 실패 시
-    # peer 폴백. 이름=ticker(번역 백필이 한글명 채움). CN_A 는 차단으로 peer 만.
+    # peer 폴백. 이름=ticker(번역 백필이 한글명 채움). CN_A 는 의도적 peer-only
+    # (재도입 2026-06-17 — 전종목 yfinance 1y 는 커버리지·부하 리스크라 주요종목만).
     if market in ("JP", "HK"):
         try:
             from bot.intl_universe import full_universe

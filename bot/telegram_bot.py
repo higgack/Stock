@@ -3088,7 +3088,7 @@ def _prewarm_highlow() -> None:
     try:
         from bot.intl_highlow import _compute as _ih
         seq += [(f"highlow {m}", (lambda m=m: _ih(m)))
-                for m in ("KR", "JP", "HK")]   # CN 52주 제거(사용자 2026-06-14)
+                for m in ("KR", "JP", "HK", "CN_A")]   # CN 재도입(사용자 2026-06-17, peer-only)
     except Exception:
         pass
     try:
@@ -3128,7 +3128,8 @@ def _prewarm_highlow() -> None:
     # =10분) 간격. 백그라운드 thread sleep 이라 이벤트루프·watchdog(getUpdates·busy
     # 마커) 무관 — 폴링 비차단. 0 으로 끄면 즉시 연속(옛 동작).
     _stagger = int(os.getenv("HIGHLOW_STAGGER_SEC", "600"))
-    _heavy = {"highlow JP", "highlow HK", "tw_highlow"}   # yfinance 1y 벌크 스캔
+    _heavy = {"highlow JP", "highlow HK", "highlow CN_A",   # yfinance 1y 벌크 스캔
+              "tw_highlow"}
     _last_heavy = 0.0
     for label, fn in seq:
         if label in _heavy and _last_heavy and _stagger > 0:
@@ -3195,16 +3196,19 @@ async def _periodic_highlow_prewarm() -> None:
 # 돌아야돼 · 스캔부하는 시간대별 배치로 분산 · 장종료엔 종가기준으로 멈춰 부하↓').
 # **비-네이버 컴퓨티드 보드**만 대상 — 네이버 직접(KR 52w/movers · JP/CN/HK movers ·
 # **US movers**=_compute_us_movers 네이버 1차)은 네이버가 EOD·실시간 보유 → 제외.
-# 무거운 Asia 52주(JP/HK/TW yfinance 1년 벌크 ~10-14분)를 시(時) 안에서 20분씩
-# 떨어뜨려(:00 / :20 / :40) 동시 부하 회피 — 겹침창(UTC 01:30-05:30 = KST 10:30-
-# 14:30) 에서도 스캔이 서로 안 겹침(각 ~12분 < 20분 간격). US 52주(Finviz·가벼움)는
-# 야간장(UTC 13:00-21:30)이라 Asia 와 충돌 0 → :00 동거. TW 무버(TWSE OpenAPI·가벼움)
-# 는 TW 52주와 같은 :40(소스 다름 — yfinance vs OpenAPI, 충돌 0).
-#   slot 분(分) → (보드 토큰…). 토큰: US/JP/HK/TW=52주, TWMV=TW 무버.
+# 무거운 Asia 52주(JP/HK/CN/TW yfinance 1년 벌크)를 시(時) 안에서 15분씩 떨어뜨려
+# (:00 / :15 / :30 / :45) 동시 부하 회피 — 4개 Asia 52주 겹침창(UTC 01:30-05:30 =
+# KST 10:30-14:30, JP·TW·HK·CN 모두 개장)에서도 서로 안 겹침(JP/HK/CN=peer ~50-100
+# 종목 ~수분 · TW=full 上市+上櫃 ~10-14분 < 15분 간격). CN 은 2026-06-17 재도입 시
+# 4번째 Asia 52주라 20분→15분 간격으로 재분산(사용자 '부하고려해서 다시 전체적으로').
+# US 52주(Finviz·가벼움)는 야간장(UTC 13:00-21:30)이라 Asia 와 충돌 0 → :00 동거.
+# TW 무버(TWSE OpenAPI·가벼움)는 TW 52주와 같은 :45(소스 다름 — yfinance vs OpenAPI).
+#   slot 분(分) → (보드 토큰…). 토큰: US/JP/HK/CN_A/TW=52주, TWMV=TW 무버.
 _HL_SCAN_SLOTS = {
-    0:  ("US", "JP"),     # :00 — US 52주(Finviz) + JP 52주(yfinance, 야간 US 와 비충돌)
-    20: ("HK",),          # :20 — HK 52주(yfinance)
-    40: ("TW", "TWMV"),   # :40 — TW 52주(yfinance) + TW 무버(TWSE/TPEx OpenAPI)
+    0:  ("US", "JP"),     # :00 — US 52주(Finviz·야간) + JP 52주(peer)
+    15: ("HK",),          # :15 — HK 52주(peer)
+    30: ("CN_A",),        # :30 — CN 52주(peer, 재도입 2026-06-17)
+    45: ("TW", "TWMV"),   # :45 — TW 52주(full 上市+上櫃) + TW 무버(TWSE/TPEx OpenAPI)
 }
 
 
@@ -3240,7 +3244,7 @@ def _run_highlow_slot(slot: int) -> None:
                 # US 52주 — Finviz(전미국 신고저 리스트) 1차 + 전미국 yfinance 폴백.
                 from bot.finviz_client import fetch_high_low
                 fetch_high_low(force=(_open("US") and not paused))
-            elif tok in ("JP", "HK"):
+            elif tok in ("JP", "HK", "CN_A"):
                 from bot.intl_highlow import _kick, fetch_intl_highlow
                 if _open(tok) and not paused:
                     _kick(tok)                 # 장중 force(전 유니버스 재스크레이프·_running dedup)

@@ -76,14 +76,17 @@ def render_intl_highlow52_page(market: str) -> str:
     _fresh_lbl = "장중 30초" if market == "KR" else "장중 1h·마감후 EOD 자동"
     if market == "KR":
         _ind_lbl = "업종=네이버 · "
-    elif market in ("HK", "JP"):
+    elif market in ("HK", "JP", "CN_A"):
         _ind_lbl = "거래량·거래대금·시총·종목명=네이버 · 업종=네이버+yfinance · "
     else:
         _ind_lbl = "업종=yfinance · "
     _hrs = market_hours_label(market)
-    sub = (f"{flag} {src} · {(_hrs + ' · ') if _hrs else ''}시총순·헤더 클릭 정렬 · "
+    # CN_A 는 주요종목(peer) 한정 — 라벨에 명시(전종목 yfinance 1y 커버리지·부하).
+    _scope = " · 주요종목(peer)" if market == "CN_A" else ""
+    sub = (f"{flag} {src}{_scope} · {(_hrs + ' · ') if _hrs else ''}시총순·헤더 클릭 정렬 · "
            f"{_ind_lbl}{_fresh_lbl}{(' · 마지막 갱신 ' + ts) if ts else ''}")
-    _active = {"KR": "kr52", "JP": "jp52", "HK": "hk52"}.get(market, "")
+    _active = {"KR": "kr52", "JP": "jp52", "HK": "hk52",
+               "CN_A": "cn52"}.get(market, "")
     return _tw_shell(f"{flag} 52주 신고가·신저가", sub, body,
                      nav=_market_nav(market, _active), back=_asia_back(market))
 
