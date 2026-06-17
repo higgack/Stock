@@ -624,6 +624,80 @@ class KisClient:
         _cache_put(cache_key, all_bars)
         return all_bars
 
+    # 9. 일봉 차트 (기간) — 차트 폴백용 (야후 미제공 종목, 사용자 2026-06-17
+    #    '야후→네이버→KIS 순'). 국내 inquire-daily-itemchartprice FHKST03010100 /
+    #    해외 dailyprice HHDFS76240000. ⚠️ tr_id/필드는 KIS 문서 기준이며 VM 실측
+    #    전이라 graceful(실패·미지원 시 None → 호출부가 기존 '데이터 없음' 유지).
+    #    단일 콜이라 국내 ~100영업일/해외 ~100건 — 폴백 용도엔 충분(MA200 부족분은
+    #    _series_payload 가 자동 생략). 12h 디스크 캐시.
+    def get_daily_chart(self, ticker: str, days: int = 366) -> Optional[list]:
+        """일봉 OHLCV. Returns list of {date:'YYYY-MM-DD', open, high, low, close,
+        volume} 오름차순. creds 부재/미지원/실패 → None (graceful)."""
+        from datetime import date as _date, timedelta as _td
+        code = _ticker_to_code(ticker)
+        end = _date.today()
+        start = end - _td(days=int(days) + 7)
+        ck = f"daily_{(code or ticker).replace('.', '_')}.json"
+        cached = _cache_get(ck, ttl_hours=12)
+        if cached is not None:
+            return cached.get("bars")
+        bars: list = []
+        try:
+            if code:                                    # 국내
+                data = _get(
+                    "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                    "FHKST03010100",
+                    {"FID_COND_MRKT_DIV_CODE": _mkt_div(ticker), "FID_INPUT_ISCD": code,
+                     "FID_INPUT_DATE_1": start.strftime("%Y%m%d"),
+                     "FID_INPUT_DATE_2": end.strftime("%Y%m%d"),
+                     "FID_PERIOD_DIV_CODE": "D", "FID_ORG_ADJ_PRC": "0"},
+                )
+                for r in ((data or {}).get("output2") or []):
+                    ds = (r.get("stck_bsop_date") or "").strip()
+                    cl = _float(r.get("stck_clpr"))
+                    if len(ds) != 8 or cl is None:
+                        continue
+                    bars.append({
+                        "date": f"{ds[:4]}-{ds[4:6]}-{ds[6:]}",
+                        "open": _float(r.get("stck_oprc")) or cl,
+                        "high": _float(r.get("stck_hgpr")) or cl,
+                        "low": _float(r.get("stck_lwpr")) or cl,
+                        "close": cl, "volume": _int(r.get("acml_vol")) or 0,
+                    })
+            else:                                       # 해외
+                excds, symb = _overseas_excd_symb(ticker)
+                for excd in (excds or []):
+                    data = _get(
+                        "/uapi/overseas-price/v1/quotations/dailyprice",
+                        "HHDFS76240000",
+                        {"AUTH": "", "EXCD": excd, "SYMB": symb, "GUBN": "0",
+                         "BYMD": end.strftime("%Y%m%d"), "MODP": "1"},
+                        custtype="P",
+                    )
+                    rows = (data or {}).get("output2") or []
+                    for r in rows:
+                        ds = (r.get("xymd") or "").strip()
+                        cl = _float(r.get("clos"))
+                        if len(ds) != 8 or cl is None:
+                            continue
+                        bars.append({
+                            "date": f"{ds[:4]}-{ds[4:6]}-{ds[6:]}",
+                            "open": _float(r.get("open")) or cl,
+                            "high": _float(r.get("high")) or cl,
+                            "low": _float(r.get("low")) or cl,
+                            "close": cl, "volume": _int(r.get("tvol")) or 0,
+                        })
+                    if bars:
+                        break
+        except Exception as exc:
+            log.warning("kis daily_chart %s: %s", ticker, exc)
+            return None
+        if len(bars) < 2:
+            return None
+        bars.sort(key=lambda x: x["date"])
+        _cache_put(ck, {"bars": bars})
+        return bars
+
     def get_all(self, ticker: str) -> dict:
         """7종 모든 데이터를 한 dict로. 각 필드가 None이면 해당 endpoint 실패."""
         return {
