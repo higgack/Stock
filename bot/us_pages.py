@@ -112,11 +112,12 @@ def render_us_industry_page() -> str:
             for i, g in enumerate(groups, 1))
         _clickable = any(g.get("slug") for g in groups)
         _hint = " · 업종 클릭 → 종목 목록" if _clickable else ""
+        from bot.highlow_render import GENERIC_FILTER_JS as _gfjs
         body = (f'<div class="panel"><h2>🏭 업종별 등락 '
                 f'<span class="ts">{len(groups)}개 · 등락 내림차순{_hint}</span></h2>'
-                f'<table><thead><tr><th>#</th><th>업종</th>'
+                f'<table class="cflt"><thead><tr><th>#</th><th>업종</th>'
                 f'<th style="text-align:right">등락률</th></tr></thead>'
-                f'<tbody>{rows}</tbody></table></div>')
+                f'<tbody>{rows}</tbody></table></div>{_gfjs}')
     sub = f"미국 업종(industry) 당일 등락 · 출처 {src} · 5분 캐시" + (f" · {ts} 기준" if ts else "")
     return _shell("미국 업종별 시세", sub, "usindustry", body)
 

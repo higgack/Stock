@@ -690,6 +690,16 @@ def fetch_high_low(force: bool = False) -> dict:
             # 실패로 비었던 경우 — 벌크 맵으로 채워지면 캐시도 갱신).
             if _backfill_industries(stale):
                 _cache_write("highlow.json", stale)
+                # ⚠️ 신선도 클록 보존 (사용자 2026-06-18 '왜 아직 22:00') — 업종 치유
+                # rewrite 가 mtime 을 올리면 _session_fresh 가 영구 fresh → 진짜
+                # 재산출(ts 갱신)이 1h 마다 발동 못 함(180초 워머가 매번 건드려 1h
+                # 경계 못 넘김). 원래 mtime 복원 → 데이터 산출 시각 기준으로 신선도
+                # 판정 → 1h 후 재산출 정상 발동(라벨 stale 22:00 고정 해소).
+                try:
+                    import os as _os
+                    _os.utime(_CACHE_DIR / "highlow.json", (mt, mt))
+                except OSError:
+                    pass
             # AMEX 제외 (사용자 2026-06-17) — 옛 캐시(필터 이전)도 서빙 시점에 정제.
             return _drop_amex_hl(_prune_cached(stale, ("high", "low"), "highlow.json"))
     out: dict = {"high": _fetch_signal("ta_newhigh"),

@@ -276,6 +276,89 @@ HL_SORT_JS = """
 """
 
 
+# ── 범용 컬럼 필터 (hl-table 이 아닌 표 — 테마·업종강도·NXT, 사용자 2026-06-17) ──
+# hl-table 은 data-key/data-type 스킴이라 hlBindFilter 가 붙지만, 테마(data-k)·
+# 업종강도(속성 없음)·NXT(nxt-tbl) 는 컨벤션이 제각각. 그래서 **보이는 셀 텍스트
+# 기반** 범용 필터를 별도로 둔다(데이터 속성 무의존). `class="cflt"` 표에 자동
+# 부착: 첫칸=✕해제, 링크/단위(억·조·만·T·B·M) 셀 컬럼=텍스트 검색, 그 외 숫자
+# 컬럼(등락률·% 등)=min~max 범위. 단위 혼재 컬럼은 범위 오해를 막으려 텍스트로.
+GENERIC_FILTER_JS = """
+<style>
+table.cflt tr.cflt-row th{padding:2px 4px}
+table.cflt tr.cflt-row input{width:100%;box-sizing:border-box;font-size:11px;padding:2px 3px;background:var(--bg,#111);color:var(--text,#ddd);border:1px solid var(--border,#333);border-radius:3px}
+table.cflt tr.cflt-row .rng{display:flex;gap:2px}
+table.cflt tr.cflt-row .rng input{width:50%;min-width:0}
+table.cflt tr.cflt-row input::placeholder{color:var(--muted,#777)}
+.cflt-clear{cursor:pointer;font-size:11px;line-height:1;padding:2px 5px;background:var(--bg,#111);color:var(--muted,#888);border:1px solid var(--border,#333);border-radius:3px}
+.cflt-clear:hover{color:var(--accent,#3b82f6);border-color:var(--accent,#3b82f6)}
+</style>
+<script>
+(function(){
+  function pnum(s){var m=(s||'').replace(/,/g,'').match(/-?\\d+(?:\\.\\d+)?/);return m?parseFloat(m[0]):NaN;}
+  function firstRow(tb){for(var i=0;i<tb.rows.length;i++){var r=tb.rows[i];if(r.cells.length>1&&!r.querySelector('.empty'))return r;}return null;}
+  function colType(th,idx,tb){
+    var ft=th.getAttribute('data-ft');if(ft)return ft;        // 명시 우선
+    if(idx===0||(th.textContent||'').trim()==='#')return 'none';
+    var r=firstRow(tb);
+    if(r&&r.cells[idx]){
+      var c=r.cells[idx];
+      if(c.querySelector('a'))return 'text';                   // 이름/링크 컬럼
+      var t=c.textContent.trim();
+      if(/[억조만]|[TBM]\\b/.test(t))return 'text';            // 단위 혼재 → 범위 오해 방지
+      if(/\\d/.test(t)&&!isNaN(pnum(t)))return 'num';
+    }
+    return 'text';
+  }
+  function renum(tbl){var tb=tbl.tBodies[0];if(!tb)return;var i=0;
+    Array.prototype.forEach.call(tb.rows,function(r){if(r.style.display==='none'||r.querySelector('.empty'))return;
+      var rk=r.querySelector('.rk');if(rk)rk.textContent=(++i);});}
+  function apply(tbl){
+    var tb=tbl.tBodies[0];if(!tb)return;
+    var fr=tbl.tHead.querySelector('tr.cflt-row');if(!fr)return;
+    var ctrls=Array.prototype.slice.call(fr.querySelectorAll('input'));
+    Array.prototype.forEach.call(tb.rows,function(r){
+      if(r.querySelector('.empty'))return;
+      var ok=true;
+      for(var i=0;i<ctrls.length&&ok;i++){
+        var c=ctrls[i],v=c.value;if(v==='')continue;
+        var ci=+c.getAttribute('data-ci'),cell=r.cells[ci];if(!cell)continue;
+        var b=c.getAttribute('data-b');
+        if(b){var fv=pnum(v);if(isNaN(fv))continue;var n=pnum(cell.textContent);
+          if(isNaN(n)){ok=false;}else if(b==='min'){if(n<fv)ok=false;}else if(n>fv){ok=false;}}
+        else if(cell.textContent.toLowerCase().indexOf(v.toLowerCase())<0){ok=false;}
+      }
+      r.style.display=ok?'':'none';
+    });
+    renum(tbl);
+  }
+  function mkNum(tbl,ci,b,ph){var i=document.createElement('input');i.type='number';i.placeholder=ph;
+    i.setAttribute('data-ci',ci);i.setAttribute('data-b',b);i.addEventListener('input',function(){apply(tbl);});return i;}
+  window.bindCflt=function(){
+    document.querySelectorAll('table.cflt').forEach(function(tbl){
+      var thead=tbl.tHead;if(!thead||!thead.rows[0]||thead.querySelector('tr.cflt-row'))return;
+      var fr=document.createElement('tr');fr.className='cflt-row';
+      Array.prototype.forEach.call(thead.rows[0].cells,function(th,idx){
+        var cell=document.createElement('th'),ty=colType(th,idx,tbl);
+        if(idx===0){var b=document.createElement('button');b.type='button';b.className='cflt-clear';
+          b.textContent='✕';b.title='필터 해제';
+          b.addEventListener('click',function(){fr.querySelectorAll('input').forEach(function(x){x.value='';});apply(tbl);});
+          cell.appendChild(b);}
+        else if(ty==='num'){var w=document.createElement('div');w.className='rng';
+          w.appendChild(mkNum(tbl,idx,'min','≥'));w.appendChild(mkNum(tbl,idx,'max','≤'));cell.appendChild(w);}
+        else if(ty==='text'){var inp=document.createElement('input');inp.type='search';
+          inp.setAttribute('data-ci',idx);inp.placeholder='검색';
+          inp.addEventListener('input',function(){apply(tbl);});cell.appendChild(inp);}
+        fr.appendChild(cell);
+      });
+      thead.appendChild(fr);
+    });
+  };
+  window.bindCflt();
+})();
+</script>
+"""
+
+
 def _fmt_price(price, market: str, with_sym: bool = True) -> str:
     if price is None:
         return "—"

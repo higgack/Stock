@@ -169,14 +169,15 @@ def render_theme_page() -> str:
                 f'<tr {da}><td class="rk">{i}</td><td class="nm">{name_cell}</td>'
                 f'{_pct_cell(pct)}{_pct_cell(pct3)}'
                 f'<td class="ld">{leaders or "—"}</td></tr>')
+        from bot.highlow_render import GENERIC_FILTER_JS as _gfjs
         body = (f'<div class="panel"><h2>전체 테마 {len(themes)}개 '
                 f'<span class="ts">{ts} 기준</span></h2>'
-                f'<table id="thm-tbl"><thead><tr><th>#</th>'
+                f'<table id="thm-tbl" class="cflt"><thead><tr><th>#</th>'
                 f'<th class="th-sort" data-k="name">테마</th>'
                 f'<th class="th-sort" data-k="pct" style="text-align:right">등락률</th>'
                 f'<th class="th-sort" data-k="pct3" style="text-align:right">최근3일</th>'
                 f'<th>주도주</th></tr></thead>'
-                f'<tbody>{"".join(rows)}</tbody></table></div>{_THEME_SORT_JS}')
+                f'<tbody>{"".join(rows)}</tbody></table></div>{_THEME_SORT_JS}{_gfjs}')
     return _shell("테마별 시세",
                   "Naver 증권 테마별 등락률 · 상승순. 테마명·주도주 클릭 시 상세/종목분석. 장중 30초 캐시.",
                   "theme", body)

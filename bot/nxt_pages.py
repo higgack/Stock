@@ -65,7 +65,7 @@ def _panel(title: str, rows: list, side: str) -> str:
             f'<td class="q">{_fmt_qty(r.get("volume"))}</td></tr>')
     body = "".join(trs) or '<tr><td colspan="7" class="empty">—</td></tr>'
     return (f'<div class="nxt-panel"><div class="nxt-hd {side}">{title}</div>'
-            f'<div class="nxt-tw"><table class="nxt-tbl"><thead><tr><th>#</th><th>종목</th>'
+            f'<div class="nxt-tw"><table class="nxt-tbl cflt"><thead><tr><th>#</th><th>종목</th>'
             f'<th>순매{"수" if side == "buy" else "도"}금액</th><th>순매{"수" if side == "buy" else "도"}량</th>'
             f'<th>현재가</th><th>등락</th><th>총거래량</th></tr></thead>'
             f'<tbody>{body}</tbody></table></div></div>')
@@ -128,7 +128,9 @@ def render_nxt_page() -> str:
     # KR 페이지 공통 nav(_shell — 업종별 시세·신고가/신저가·급등락·NXT toggle, NXT
     # active) 사용 (사용자 2026-06-15 'NXT 도 다른 대시보드 가는 nav'). _NXT_CSS 는
     # body 선두 <style> 로 주입(_shell 은 공통 _CSS 만 head 에 넣음).
+    from bot.highlow_render import GENERIC_FILTER_JS as _gfjs
     body = (_NXT_CSS
             + _investor_block("🌐 외국인", foreign)
-            + _investor_block("🏦 기관", organ))
+            + _investor_block("🏦 기관", organ)
+            + _gfjs)
     return _shell("🇰🇷 NXT 외국인·기관 수급", _html.escape(sub), "nxt", body)

@@ -60,7 +60,7 @@ LIVE_REFRESH_JS = """<script>
   // 2026-06-17). 필터 해제 시 폴링 재개. 텍스트는 type=search 라 아래 검색 가드에도
   // 걸리지만, 숫자(number)·업종(select)은 여기서만 잡힌다.
   function filtering(){
-    var f=document.querySelectorAll('.hl-flt');
+    var f=document.querySelectorAll('.hl-flt, tr.cflt-row input');  // hl-table + 범용(테마/업종강도/NXT) 필터
     for(var i=0;i<f.length;i++){
       var el=f[i];
       if(el===document.activeElement) return true;
@@ -83,7 +83,8 @@ LIVE_REFRESH_JS = """<script>
         if(fresh&&cur&&fresh.innerHTML.length>50){
           cur.innerHTML=fresh.innerHTML;
           if(window.hlBindSort) window.hlBindSort();     // 표 정렬 재바인드(swap 후)
-          if(window.hlBindFilter) window.hlBindFilter(); // 컬럼 필터행 재생성(swap 후)
+          if(window.hlBindFilter) window.hlBindFilter(); // hl-table 필터행 재생성(swap 후)
+          if(window.bindCflt) window.bindCflt();         // 범용 필터(테마/업종강도/NXT) 재생성
         }
       }).catch(function(){});                      // graceful — 무변경
   }
