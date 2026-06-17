@@ -11621,8 +11621,9 @@ class TestIndexCardRecompose:
         assert "nve:XLC" in us.values() and "nve:XLE" not in us.values()
         us2 = d["미국 지수-2"]
         assert len(us2) == 6 and all(tk.startswith("nve:") for _, tk in us2)
+        # 사용자 2026-06-17: AIQ(네이버 미커버 '—') → XLK 기술(최대 누락 섹터)
         assert {tk for _, tk in us2} == {"nve:XLY", "nve:XLI", "nve:XLE",
-                                         "nve:XLU", "nve:IYR", "nve:AIQ"}
+                                         "nve:XLU", "nve:IYR", "nve:XLK"}
         # 제거된 이머징/베트남 지수가 어느 카드에도 없음
         allt = {tk for _, c in m.ALL_CARDS if c for _, tk in c}
         for gone in ("nvi:.AXJO", "nvi:.BVSP", "nvi:.MXX", "nvi:.MERV",

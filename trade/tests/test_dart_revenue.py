@@ -32,6 +32,20 @@ class DartRevenueTests(unittest.TestCase):
         self.assertTrue(all("제7조" not in n for n in names))   # 약관 조항 제거
         self.assertTrue(all("2024년" not in n for n in names))  # 기수 라벨 제거
 
+    def test_audit_inventory(self):
+        inv = {
+            "A": {"company": "A", "products": [{"name": "DRAM", "share_pct": 39.0},
+                                               {"name": "NAND", "share_pct": 61.0}]},
+            "B": {"company": "B", "products": []},                       # 제품 0
+            "C": {"company": "C", "products": [{"name": "매출액", "share_pct": None}]},
+            "D": {"company": "D", "products": [{"name": "X", "share_pct": 10.0}]},
+        }
+        sus = {s["code"] for s in D.audit_inventory(inv)}
+        self.assertNotIn("A", sus)     # 2제품·비중합 100·노이즈無 → clean
+        self.assertIn("B", sus)        # 제품 0
+        self.assertIn("C", sus)        # 1개+비중전무+이름의심
+        self.assertIn("D", sus)        # 1개+비중합 10%
+
     def test_needs_rebuild(self):
         # 변경분만 — rcept 같고 products 있으면 skip(False), 아니면 재파싱(True)
         self.assertTrue(D._needs_rebuild(None, "r1"))

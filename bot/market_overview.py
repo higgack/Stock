@@ -161,7 +161,11 @@ CARD_US2 = [
     ("XLE 에너지", "nve:XLE"),
     ("XLU 유틸리티", "nve:XLU"),
     ("IYR 부동산", "nve:IYR"),
-    ("AIQ AI", "nve:AIQ"),
+    # 사용자 2026-06-17: AIQ(테마 ETF·네이버 etf 미커버 → '—' 빈칸)를 XLK(기술/IT)로
+    # 대체 — 11 GICS 섹터 중 우리가 유일하게 빠졌던 최대 섹터(표준 SPDR이라 네이버
+    # 커버, 빈칸 해소). 보유 섹터: XLF·XLV·XLC·XLP(지수1) + XLY·XLI·XLE·XLU·IYR(지수2).
+    # 남은 미보유는 XLB(소재) 정도.
+    ("XLK 기술", "nve:XLK"),
 ]
 
 ALL_CARDS = [
