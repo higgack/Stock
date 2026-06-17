@@ -55,11 +55,26 @@ LIVE_REFRESH_JS = """<script>
            CN:[10*60+30,16*60+10],TW:[10*60,14*60+40]}[market];
     return W?(hm>=W[0]&&hm<=W[1]):true;
   }
+  // 컬럼 필터(.hl-flt: 종목 검색·숫자 범위·업종 드롭다운)가 활성이면 swap skip —
+  // innerHTML 교체가 사용자가 설정한 필터를 지워버리지 않게(상태 보존, 사용자
+  // 2026-06-17). 필터 해제 시 폴링 재개. 텍스트는 type=search 라 아래 검색 가드에도
+  // 걸리지만, 숫자(number)·업종(select)은 여기서만 잡힌다.
+  function filtering(){
+    var f=document.querySelectorAll('.hl-flt');
+    for(var i=0;i<f.length;i++){
+      var el=f[i];
+      if(el===document.activeElement) return true;
+      if(el.tagName==='SELECT'){ if(el.selectedIndex>0) return true; }
+      else if(el.value) return true;
+    }
+    return false;
+  }
   function tick(){
     if(document.hidden) return;                  // 백그라운드 탭 skip
     if(!isOpen()) return;                         // 장후·주말 → 폴링 0(부하 방지)
     var s=document.querySelector('#q,#mkt-search,input[type=search]');
     if(s&&(s===document.activeElement||s.value)) return;   // 검색 중 skip
+    if(filtering()) return;                        // 컬럼 필터 활성 중 skip(상태 보존)
     fetch(location.href,{cache:'no-store'})
       .then(function(r){if(!r.ok)throw 0;return r.text();})
       .then(function(html){
@@ -67,7 +82,8 @@ LIVE_REFRESH_JS = """<script>
         var fresh=doc.getElementById('live-root'), cur=document.getElementById('live-root');
         if(fresh&&cur&&fresh.innerHTML.length>50){
           cur.innerHTML=fresh.innerHTML;
-          if(window.hlBindSort) window.hlBindSort();   // 표 정렬 재바인드(swap 후)
+          if(window.hlBindSort) window.hlBindSort();     // 표 정렬 재바인드(swap 후)
+          if(window.hlBindFilter) window.hlBindFilter(); // 컬럼 필터행 재생성(swap 후)
         }
       }).catch(function(){});                      // graceful — 무변경
   }

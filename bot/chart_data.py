@@ -565,6 +565,185 @@ def _merge_today_bar(ticker, close, vol, op, hi, lo):
 _merge_kr_today_bar = _merge_today_bar
 
 
+# ── 야후 미제공 종목 일봉 폴백 (야후 → 네이버 → KIS, 사용자 2026-06-17) ────────
+# yfinance 가 빈 종목(08076.HK 같은 delisted 표기·HK GEM 초소형주 등)은 차트가
+# '데이터 없음'. 네이버 차트 일봉(키 불필요)·KIS 일봉(creds) 순으로 폴백. 모두
+# graceful(None → 다음 소스 → 최종 None=기존 '데이터 없음'). 외부 API 라 필드명
+# 다중 후보 + 검증; VM probe(아래 _probe_fallback)로 양식 확정 후 정밀화 가능.
+
+def _period_start_end(period: str):
+    """period → (start, end) datetime — 일봉 폴백 fetch 범위."""
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    end = now + timedelta(days=1)
+    if period == "ytd":
+        start = datetime(now.year, 1, 1)
+    elif period == "max":
+        start = end - timedelta(days=4000)
+    else:
+        start = end - timedelta(days=_RANGE_DAYS.get(period, 366))
+    return start, end
+
+
+def _parse_naver_daily(raw) -> list:
+    """네이버 일봉 JSON(list 또는 {key:list}) → rows [{date,open,high,low,close,
+    volume}]. 날짜·가격 필드 다중 후보(VM 양식 확인 전 방어). 순수(단위테스트)."""
+    rows = raw
+    if isinstance(raw, dict):
+        for k in ("priceInfos", "chart", "result", "datas", "list", "data"):
+            if isinstance(raw.get(k), list):
+                rows = raw[k]
+                break
+    if not isinstance(rows, list):
+        return []
+    out = []
+    for b in rows:
+        if not isinstance(b, dict):
+            continue
+        ds = str(b.get("localDate") or b.get("localDateTime") or b.get("date")
+                 or b.get("dt") or b.get("bizdate") or "")
+        cp = (b.get("closePrice") if b.get("closePrice") is not None
+              else b.get("currentPrice") if b.get("currentPrice") is not None
+              else b.get("close"))
+        if not ds or cp is None:
+            continue
+
+        def g(*ks):
+            for k in ks:
+                v = b.get(k)
+                if v not in (None, ""):
+                    return v
+            return None
+        out.append({
+            "date": ds[:10] if "-" in ds[:10] else ds[:8],
+            "open": g("openPrice", "open", "startPrice"),
+            "high": g("highPrice", "high"),
+            "low": g("lowPrice", "low"),
+            "close": cp,
+            "volume": g("accumulatedTradingVolume", "volume", "accumulatedVolume"),
+        })
+    return out
+
+
+def _rows_to_daily_df(rows: list):
+    """[{date,open,high,low,close,volume}] → OHLCV DataFrame(DatetimeIndex,
+    오름차순·중복제거). <2행이면 None. O/H/L 결측은 종가로, 거래량 결측은 0.
+    순수(단위테스트)."""
+    import pandas as pd
+    from datetime import datetime as _dt
+    recs = []
+    for b in rows or []:
+        if not isinstance(b, dict):
+            continue
+        ds = str(b.get("date") or "")
+        cl = b.get("close")
+        if not ds or cl is None:
+            continue
+        digits = ds.replace("-", "")[:8]
+        try:
+            dt = _dt.strptime(digits, "%Y%m%d")
+            c = float(str(cl).replace(",", ""))
+        except Exception:
+            continue
+
+        def _f(k):
+            v = b.get(k)
+            try:
+                return float(str(v).replace(",", "")) if v not in (None, "") else c
+            except Exception:
+                return c
+
+        def _v():
+            v = b.get("volume")
+            try:
+                return float(str(v).replace(",", "")) if v not in (None, "") else 0.0
+            except Exception:
+                return 0.0
+        recs.append({"dt": dt, "Close": c, "Open": _f("open"),
+                     "High": _f("high"), "Low": _f("low"), "Volume": _v()})
+    if len(recs) < 2:
+        return None
+    df = pd.DataFrame(recs).set_index("dt").sort_index()
+    return df[~df.index.duplicated(keep="last")]
+
+
+def _df_to_daily_payload(df, ticker: str, period: str):
+    """OHLCV DataFrame → chart payload(_series_payload 경유, interval=1d)."""
+    if df is None or len(df) < 2:
+        return None
+    close = df["Close"].dropna()
+    if len(close) < 2:
+        return None
+    currency, decimals = _currency_for(ticker)
+    payload = _series_payload(
+        close, currency, decimals,
+        df["Volume"].reindex(close.index), df["Open"].reindex(close.index),
+        df["High"].reindex(close.index), df["Low"].reindex(close.index),
+        ticker=ticker, interval="1d",
+    )
+    payload["interval"] = "1d"
+    payload["period"] = period
+    return payload
+
+
+def _fetch_naver_daily(ticker: str, period: str = "1y"):
+    """네이버 차트 일봉 폴백. KR=domestic(6자리)·그 외=foreign(reutersCode —
+    world_quote 가 해결한 것 재사용). 키 불필요·VM 차단 없음. graceful None."""
+    t = (ticker or "").strip().upper()
+    if not t:
+        return None
+    try:
+        import requests
+        from bot.naver_quote import _HDRS
+        start, end = _period_start_end(period)
+        params = {"startDateTime": start.strftime("%Y%m%d") + "0000",
+                  "endDateTime": end.strftime("%Y%m%d") + "0000"}
+        if t.endswith((".KS", ".KQ")):
+            code = t.split(".")[0]
+            cands = [("domestic", code)] if code.isdigit() else []
+        else:
+            from bot.world_quote import _candidates, _rc_cache
+            ids = ([_rc_cache[t]] if t in _rc_cache else []) + _candidates(t)
+            cands = [("foreign", sid) for sid in dict.fromkeys(ids)]
+        for kind, sid in cands:
+            try:
+                r = requests.get(
+                    f"https://api.stock.naver.com/chart/{kind}/item/{sid}/day",
+                    headers=_HDRS, params=params, timeout=10)
+                if r.status_code != 200:
+                    continue
+                df = _rows_to_daily_df(_parse_naver_daily(r.json()))
+                payload = _df_to_daily_payload(df, ticker, period)
+                if payload is not None:
+                    payload["fallback"] = "네이버"
+                    return payload
+            except Exception:
+                continue
+    except Exception as exc:
+        log.warning("chart_data: naver daily fallback %s: %s", ticker, exc)
+    return None
+
+
+def _fetch_kis_daily(ticker: str, period: str = "1y"):
+    """KIS 일봉 폴백(최종). creds 필요. graceful None."""
+    try:
+        from bot.kis_client import get_kis
+        bars = get_kis().get_daily_chart(ticker, days=_RANGE_DAYS.get(period, 366))
+        payload = _df_to_daily_payload(_rows_to_daily_df(bars or []), ticker, period)
+        if payload is not None:
+            payload["fallback"] = "KIS"
+            return payload
+    except Exception as exc:
+        log.warning("chart_data: kis daily fallback %s: %s", ticker, exc)
+    return None
+
+
+def _fetch_series_fallback(ticker: str, period: str):
+    """야후가 빈 종목 → 네이버 → KIS 순 일봉 폴백. 둘 다 실패 시 None
+    (호출부가 기존 '데이터 없음'). 사용자 2026-06-17."""
+    return _fetch_naver_daily(ticker, period) or _fetch_kis_daily(ticker, period)
+
+
 def fetch_chart_payload(
     ticker: str, interval: str = "1d", period: str = "1y"
 ) -> dict | None:
@@ -621,10 +800,10 @@ def fetch_chart_payload(
                     auto_adjust=True,
                 )
         if hist is None or len(hist) < 2:
-            return None
+            return _fetch_series_fallback(ticker, period)   # 야후 빈 → 네이버/KIS
         close = hist["Close"].dropna()
         if len(close) < 2:
-            return None
+            return _fetch_series_fallback(ticker, period)
         currency, decimals = _currency_for(ticker)
         vol = hist["Volume"].reindex(close.index) if "Volume" in hist else None
         op = hist["Open"].reindex(close.index) if "Open" in hist else None
@@ -661,7 +840,7 @@ def fetch_chart_payload(
             "chart_data: fetch_chart_payload failed %s %s %s: %s",
             ticker, interval, period, exc,
         )
-        return None
+        return _fetch_series_fallback(ticker, period)   # 야후 실패 → 네이버/KIS
 
 
 # Trade-plan price levels emitted in full_report by the Trader / PM:

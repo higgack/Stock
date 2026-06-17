@@ -75,7 +75,7 @@ def movers_freshness(market: str) -> str:
     return "장중 30초 갱신" if is_open else "장 마감 · 마지막 거래일 종가 기준"
 
 
-# 정렬/업종 셀 스타일 + 헤더 클릭 정렬 (us_pages 동일 — 단일 소스로 이관).
+# 정렬/업종 셀 스타일 + 헤더 클릭 정렬 + 컬럼별 필터 (us_pages 동일 — 단일 소스로 이관).
 HL_SORT_JS = """
 <style>
 .hl-table th.srt{cursor:pointer;user-select:none;white-space:nowrap}
@@ -93,9 +93,30 @@ HL_SORT_JS = """
 .hl-table th.srt:hover{color:var(--accent,#3b82f6)}
 .hl-table th.srt .arw{opacity:.45;font-size:10px;margin-left:2px}
 .hl-table th.srt.on .arw{opacity:1}
+/* 컬럼별 필터행 (사용자 2026-06-17 '업종 등 모든 항목 필터로 좁혀보기'). */
+.hl-table tr.hl-filter th{padding:2px 4px}
+.hl-table tr.hl-filter input,.hl-table tr.hl-filter select{
+  width:100%;box-sizing:border-box;font-size:11px;padding:2px 3px;
+  background:var(--bg,#111);color:var(--fg,#ddd);
+  border:1px solid var(--border,#333);border-radius:3px}
+.hl-table tr.hl-filter .rng{display:flex;gap:2px}
+.hl-table tr.hl-filter .rng input{width:50%;min-width:0}
+.hl-table tr.hl-filter input::placeholder{color:var(--muted,#777)}
+.hl-flt-clear{cursor:pointer;font-size:11px;line-height:1;padding:2px 5px;
+  background:var(--bg,#111);color:var(--muted,#888);
+  border:1px solid var(--border,#333);border-radius:3px}
+.hl-flt-clear:hover{color:var(--accent,#3b82f6);border-color:var(--accent,#3b82f6)}
 </style>
 <script>
 (function(){
+  // 보이는 행만 1..N 재번호 (정렬·필터 공용). 숨김(display:none) 행 건너뜀.
+  function renumber(tbl){
+    var tb=tbl.tBodies[0]; if(!tb) return; var i=0;
+    Array.prototype.forEach.call(tb.rows,function(r){
+      if(r.style.display==='none') return;
+      var rk=r.querySelector('.rk'); if(rk) rk.textContent=(++i);
+    });
+  }
   function sortTable(tbl, key, type, asc){
     var tb=tbl.tBodies[0];
     var rows=Array.prototype.slice.call(tb.rows);
@@ -106,8 +127,8 @@ HL_SORT_JS = """
       x=(x||'').toString(); y=(y||'').toString();
       return asc? x.localeCompare(y): y.localeCompare(x);
     });
-    rows.forEach(function(r,i){ tb.appendChild(r);
-      var rk=r.querySelector('.rk'); if(rk) rk.textContent=i+1; });
+    rows.forEach(function(r){ tb.appendChild(r); });
+    renumber(tbl);   // 필터로 숨겨진 행 제외하고 재번호
   }
   // window.hlBindSort — 자동 새로고침(live_refresh) 이 #live-root 를 innerHTML
   // 교체한 뒤 새 표에 정렬을 재바인드하려 호출. _srtb 가드로 중복 바인드 차단.
@@ -128,7 +149,128 @@ HL_SORT_JS = """
     });
   });
   };
+
+  // ── 컬럼별 필터 ─────────────────────────────────────────────────────
+  // 헤더(th[data-key])를 읽어 필터행을 자동 생성 → stock_panel 의 모든 변형
+  // (show_vol/value/mcap/ind 조합)·전 시장 hl-table 에 동일 적용(추가 Python 0).
+  // 정렬과 같은 data-* 속성 공유: 텍스트=부분검색, 숫자=min~max 범위, 업종(ind)=
+  // 현재 행에서 만든 드롭다운(정확 매칭). 다중 컬럼 동시 = AND.
+  function colIndexMap(tbl){
+    var m={}, hr=tbl.tHead.rows[0];
+    Array.prototype.forEach.call(hr.cells,function(th,ci){
+      var k=th.getAttribute('data-key'); if(k) m[k]=ci;
+    });
+    return m;
+  }
+  function applyFilter(tbl){
+    var tb=tbl.tBodies[0]; if(!tb) return;
+    var fr=tbl.tHead.querySelector('tr.hl-filter'); if(!fr) return;
+    var cmap=colIndexMap(tbl);
+    var ctrls=Array.prototype.slice.call(fr.querySelectorAll('.hl-flt'));
+    var total=tb.rows.length, vis=0;
+    Array.prototype.forEach.call(tb.rows,function(r){
+      var ok=true;
+      for(var i=0;i<ctrls.length && ok;i++){
+        var c=ctrls[i], fk=c.getAttribute('data-fk'), v=c.value;
+        if(v===''||v==null) continue;
+        if(c.tagName==='SELECT'){            // 업종 등 카테고리 — data-속성 정확 매칭
+          if((r.getAttribute('data-'+fk)||'')!==v) ok=false;
+        } else if(c.getAttribute('data-bound')){   // 숫자 범위
+          var fv=parseFloat(v); if(isNaN(fv)) continue;
+          var num=parseFloat(r.getAttribute('data-'+fk));
+          if(isNaN(num)){ ok=false; }
+          else if(c.getAttribute('data-bound')==='min'){ if(num<fv) ok=false; }
+          else if(num>fv){ ok=false; }
+        } else {                              // 텍스트 부분검색(보이는 셀+data-속성)
+          var ci=cmap[fk];
+          var cell=(ci!=null && r.cells[ci])? r.cells[ci].textContent:'';
+          var hay=(cell+' '+(r.getAttribute('data-'+fk)||'')).toLowerCase();
+          if(hay.indexOf(v.toLowerCase())<0) ok=false;
+        }
+      }
+      r.style.display = ok?'':'none';
+      if(ok) vis++;
+    });
+    renumber(tbl);
+    var panel=tbl.closest && tbl.closest('.panel');
+    var ts=panel && panel.querySelector('h2 .ts');
+    if(ts){
+      if(ts.getAttribute('data-base')==null) ts.setAttribute('data-base', ts.textContent);
+      ts.textContent = (vis<total)? (vis+'/'+total+'종목 표시') : ts.getAttribute('data-base');
+    }
+  }
+  function refreshIndOptions(tbl){
+    var fr=tbl.tHead.querySelector('tr.hl-filter'); if(!fr) return;
+    var sel=fr.querySelector('select.hl-flt[data-fk="ind"]'); if(!sel) return;
+    var ci=colIndexMap(tbl)['ind']; if(ci==null) return;
+    var prev=sel.value, seen={}, opts=[];
+    Array.prototype.forEach.call(tbl.tBodies[0].rows,function(r){
+      var val=r.getAttribute('data-ind')||'';
+      var lab=r.cells[ci]?r.cells[ci].textContent.trim():'';
+      if(!val||!lab||lab==='—'||seen[val]) return;
+      seen[val]=1; opts.push([val,lab]);
+    });
+    opts.sort(function(a,b){return a[1].localeCompare(b[1],'ko');});
+    sel.innerHTML='<option value="">업종 전체</option>'+opts.map(function(o){
+      return '<option value="'+o[0].replace(/"/g,'&quot;')+'">'+o[1]+'</option>';
+    }).join('');
+    if(prev) sel.value=prev;   // 선택 보존(여전히 존재하면)
+  }
+  function mkNum(tbl,key,bound,ph){
+    var inp=document.createElement('input');
+    inp.type='number'; inp.className='hl-flt'; inp.placeholder=ph;
+    inp.setAttribute('data-fk',key); inp.setAttribute('data-bound',bound);
+    inp.addEventListener('input',function(){applyFilter(tbl);});
+    return inp;
+  }
+  function clearFilters(tbl){
+    var fr=tbl.tHead.querySelector('tr.hl-filter'); if(!fr) return;
+    fr.querySelectorAll('.hl-flt').forEach(function(c){
+      if(c.tagName==='SELECT') c.selectedIndex=0; else c.value='';
+    });
+    applyFilter(tbl);
+  }
+  // window.hlBindFilter — hlBindSort 와 동일하게 live_refresh swap 후 재호출.
+  window.hlBindFilter=function(){
+    document.querySelectorAll('table.hl-table').forEach(function(tbl){
+      var thead=tbl.tHead; if(!thead||!thead.rows[0]) return;
+      if(!thead.querySelector('tr.hl-filter')){
+        var fr=document.createElement('tr'); fr.className='hl-filter';
+        Array.prototype.forEach.call(thead.rows[0].cells,function(th){
+          var cell=document.createElement('th'); cell.className='fcell';
+          var key=th.getAttribute('data-key'), type=th.getAttribute('data-type');
+          if(!key){                                    // # 컬럼 → 필터 해제 버튼
+            var b=document.createElement('button'); b.type='button';
+            b.className='hl-flt-clear'; b.textContent='✕'; b.title='필터 해제';
+            b.addEventListener('click',function(){clearFilters(tbl);});
+            cell.appendChild(b);
+          } else if(type==='num'){                     // 숫자 → min/max 범위
+            var wrap=document.createElement('div'); wrap.className='rng';
+            wrap.appendChild(mkNum(tbl,key,'min','≥'));
+            wrap.appendChild(mkNum(tbl,key,'max','≤'));
+            cell.appendChild(wrap);
+          } else if(key==='ind'){                      // 업종 → 드롭다운
+            var sel=document.createElement('select'); sel.className='hl-flt';
+            sel.setAttribute('data-fk',key);
+            sel.addEventListener('change',function(){applyFilter(tbl);});
+            cell.appendChild(sel);
+          } else {                                     // 종목 등 텍스트 → 검색
+            var inp=document.createElement('input'); inp.type='search';
+            inp.className='hl-flt'; inp.setAttribute('data-fk',key);
+            inp.placeholder='검색';
+            inp.addEventListener('input',function(){applyFilter(tbl);});
+            cell.appendChild(inp);
+          }
+          fr.appendChild(cell);
+        });
+        thead.appendChild(fr);
+      }
+      refreshIndOptions(tbl);   // 업종 옵션을 현재 데이터로 (재)생성·선택 보존
+      applyFilter(tbl);
+    });
+  };
   window.hlBindSort();
+  window.hlBindFilter();
 })();
 </script>
 """

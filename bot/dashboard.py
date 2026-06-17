@@ -2647,7 +2647,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       </div>
       <div class="cg-sec"><b>기간 · 봉 · 조작</b>
         <ul>
-          <li><span class="k">일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉(KR 종목은 네이버 실시간 분봉), 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치).</li>
+          <li><span class="k">일/주/월봉</span> + <span class="k">1일·1주일·1개월·3개월·6개월·YTD·1년·3년·5년·전체</span> 범위. 단기 기간은 최적 봉 자동 매핑: 1일→5분봉(KR 종목은 네이버 실시간 분봉), 3개월 이상→일봉. 수동으로 봉 종류를 바꿀 수도 있음. 주·월봉은 이평선·RSI 등이 그 단위로 재계산(일봉만 본문 TECHNICAL SNAPSHOT과 일치). 가격 시리즈는 Yahoo가 1차이며, Yahoo에 데이터가 없는 종목은 네이버→KIS 일봉으로 자동 폴백(셋 다 없으면 '데이터 없음').</li>
           <li>마우스 <span class="k">hover</span> → 그 날짜의 모든 값 툴팁 + 상단 OHLC 바 갱신. 드래그=좌우 이동, 휠/핀치=확대·축소, 더블클릭=전체 보기.</li>
           <li>차트 아래 <span class="k">캡션</span> — 현재 범위·봉 종류·봉 개수·날짜 범위·데이터 출처.</li>
           <li>지표를 켜고 꺼도 보던 확대 구간은 그대로 유지됩니다.</li>
