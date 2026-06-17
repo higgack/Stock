@@ -343,7 +343,7 @@ def render_us_movers_page() -> str:
     _hrs = _mhl("US")
     _fresh = _mf("US")
     if "네이버" in src:
-        sub = (f"미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE+AMEX) · {_hrs} · "
+        sub = (f"미국 당일 등락 상·하위 30 · 네이버 증권(NASDAQ+NYSE·AMEX 제외) · {_hrs} · "
                f"등락률순·헤더 클릭 정렬 · {_fresh}"
                + (f" · 마지막 갱신 {ts}" if ts else ""))
     else:
@@ -357,7 +357,7 @@ def render_us_movers_page() -> str:
 def render_us_prepost_page() -> str:
     """미국 전시장(정규장 무버) 장전(pre-market)·장후(after-hours) 급등·급락 TOP30 —
     정규장 종가 대비 시간외 등락(네이버 실시간 overMarketPriceInfo, 사용자 2026-06-16
-    '야후 안 쓰고 네이버'). 유니버스 = 전시장 NASDAQ+NYSE+AMEX 정규장 무버(사용자
+    '야후 안 쓰고 네이버'). 유니버스 = 전시장 NASDAQ+NYSE 정규장 무버(AMEX 제외, 사용자
     2026-06-16 '전시장 정규장 무버' — 시간외 급변은 뉴스주라 무버 랭킹에 직격). 급등락
     (정규장)의 형제 표면. SWR 백그라운드 — 첫 방문 kick. 종목 → 우리 종목분석(lookup)."""
     try:

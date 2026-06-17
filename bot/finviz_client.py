@@ -649,6 +649,22 @@ def _fetch_signal(signal: str) -> list[dict]:
     return out
 
 
+def _drop_amex_hl(d: dict) -> dict:
+    """{high,low} dict 에서 AMEX(NYSE American) 종목 제거 — 모든 미국 대시보드에서
+    AMEX 제외 (사용자 2026-06-17 'AMEX 포함 안 함'). Finviz 1차·전미국·S&P500 전
+    티어 출력에 공통 적용(소스 무관 단일 시드). us_amex_symbols 빈 set(네트워크
+    부재 등) 시 no-op — graceful(크래시 0)."""
+    try:
+        from bot.us_symbol_names import drop_amex_rows
+    except Exception:
+        return d
+    if isinstance(d, dict):
+        for k in ("high", "low"):
+            if d.get(k):
+                d[k] = drop_amex_rows(d[k])
+    return d
+
+
 def fetch_high_low(force: bool = False) -> dict:
     """52주 신고가/신저가 → {'high': [...], 'low': [...], 'ts', 'source'}.
 
@@ -674,7 +690,8 @@ def fetch_high_low(force: bool = False) -> dict:
             # 실패로 비었던 경우 — 벌크 맵으로 채워지면 캐시도 갱신).
             if _backfill_industries(stale):
                 _cache_write("highlow.json", stale)
-            return _prune_cached(stale, ("high", "low"), "highlow.json")
+            # AMEX 제외 (사용자 2026-06-17) — 옛 캐시(필터 이전)도 서빙 시점에 정제.
+            return _drop_amex_hl(_prune_cached(stale, ("high", "low"), "highlow.json"))
     out: dict = {"high": _fetch_signal("ta_newhigh"),
                  "low": _fetch_signal("ta_newlow"),
                  "ts": _now_label(), "source": "Finviz(전 미국 상장 · 당일 신고/신저)"}
@@ -687,6 +704,7 @@ def fetch_high_low(force: bool = False) -> dict:
     _backfill_industries(out)   # SWR stale 티어 캐시(ind 부재)도 렌더 전 치유
     out["high"] = prune_non_stock(out.get("high", []))   # CEF·유령·이중클래스
     out["low"] = prune_non_stock(out.get("low", []))     # (Finviz 1차 티어 포함)
+    out = _drop_amex_hl(out)   # AMEX 제외 — 모든 미국 대시보드 (사용자 2026-06-17)
     log.info("finviz: high/low result — high=%d low=%d source=%s",
              len(out.get("high", [])), len(out.get("low", [])),
              out.get("source"))
@@ -1791,6 +1809,12 @@ def _compute_us_movers() -> dict:
                 log.warning("US movers 업종 enrich 실패: %s", exc)
             nv["up"] = prune_non_stock(nv["up"])       # CEF·유령·이중클래스 가지치기
             nv["down"] = prune_non_stock(nv["down"])
+            try:                                        # AMEX 제외 (사용자 2026-06-17)
+                from bot.us_symbol_names import drop_amex_rows
+                nv["up"] = drop_amex_rows(nv["up"])     # 네이버 거래소-드랍 belt-and-
+                nv["down"] = drop_amex_rows(nv["down"]) # suspenders + 옛 캐시 정제
+            except Exception:
+                pass
             _cache_write(_MOVERS_CACHE, nv)
             _movers_status_write("done", up=len(nv["up"]), down=len(nv["down"]), src="naver")
             return nv
@@ -1809,6 +1833,13 @@ def _compute_us_movers() -> dict:
         log.warning("finviz: movers — universe empty")
         _movers_status_write("failed", detail="universe 전 소스 실패")
         return out
+    try:                       # AMEX 제외 (사용자 2026-06-17) — yfinance 폴백 유니버스
+        from bot.us_symbol_names import us_amex_symbols
+        _amex = us_amex_symbols()
+        if _amex:
+            tks = [t for t in tks if str(t).upper() not in _amex]
+    except Exception:
+        pass
     rows: list[dict] = []
     _CHUNK = 120
     n_batches = (len(tks) + _CHUNK - 1) // _CHUNK

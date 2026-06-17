@@ -104,3 +104,63 @@ def us_symbol_names() -> dict:
         except Exception:
             pass
     return names
+
+
+_AMEX_CACHE_FILE = (Path.home() / ".tradingagents" / "cache" / "finviz"
+                    / "us_amex_symbols_v1.json")
+
+
+def us_amex_symbols() -> set:
+    """AMEX(NYSE American) 상장 심볼 set — NASDAQ Trader otherlisted.txt 의
+    Exchange 컬럼 == 'A'(NYSE American = 구 AMEX). 사용자 2026-06-17 '모든 미국
+    대시보드에서 AMEX 제외'. 무버·52주·장전후 등 미국 보드가 이 set 으로 AMEX 종목을
+    필터. 7d 디스크 캐시(상장목록 변동 느림). 실패/네트워크 부재 시 빈 set →
+    필터 no-op(AMEX 가 안 빠질 순 있어도 크래시 0, graceful)."""
+    try:
+        if (_AMEX_CACHE_FILE.exists()
+                and time.time() - _AMEX_CACHE_FILE.stat().st_mtime < _TTL):
+            return set(json.loads(_AMEX_CACHE_FILE.read_text("utf-8")))
+    except Exception:
+        pass
+    out: set = set()
+    try:
+        import httpx
+        # otherlisted = NYSE/NYSE American(AMEX)/Arca/BATS (nasdaqlisted 는 전부 NASDAQ)
+        r = httpx.get(_URLS[1], timeout=20, follow_redirects=True)
+        if r.status_code == 200 and r.text:
+            lines = r.text.splitlines()
+            header = lines[0].split("|") if lines else []
+            try:
+                si = next(i for i, h in enumerate(header)
+                          if h.strip() in ("ACT Symbol", "Symbol"))
+                ei = next(i for i, h in enumerate(header)
+                          if h.strip() == "Exchange")
+            except StopIteration:
+                return out
+            for ln in lines[1:]:
+                parts = ln.split("|")
+                if len(parts) <= max(si, ei):
+                    continue
+                sym, ex = parts[si].strip(), parts[ei].strip()
+                if sym and ex == "A" and not sym.startswith("File Creation"):
+                    out.add(sym.upper())          # 'A' = NYSE American(AMEX)
+    except Exception as exc:
+        log.warning("us_amex_symbols: unavailable: %s", exc)
+    if len(out) > 50:
+        try:
+            _AMEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _AMEX_CACHE_FILE.write_text(json.dumps(sorted(out)), encoding="utf-8")
+        except Exception:
+            pass
+    return out
+
+
+def drop_amex_rows(rows: list, key: str = "ticker") -> list:
+    """rows(각 dict[key]=티커)에서 AMEX(NYSE American) 종목 제거 — 모든 미국
+    대시보드 AMEX 제외 (사용자 2026-06-17). us_amex_symbols 빈 set(네트워크 부재
+    등) 시 원본 그대로 반환(graceful no-op). 네이버 거래소-드랍의 belt-and-suspenders
+    + Finviz/yfinance 처럼 거래소 메타가 없는 소스의 단일 필터."""
+    amex = us_amex_symbols()
+    if not amex:
+        return rows
+    return [r for r in rows if str(r.get(key) or "").upper() not in amex]

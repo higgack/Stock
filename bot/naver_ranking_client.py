@@ -171,14 +171,15 @@ def fetch_world_ranking(exchange: str, sort_type: str, limit: int = 30) -> list:
 
 
 def fetch_us_movers(top_n: int = 30) -> dict:
-    """미국 급등/급락 — 네이버 worldstock NASDAQ+NYSE+AMEX up/down 병합·정렬
-    (사용자 2026-06-13 '미국등급급락은 네이버·한글명'). {up,down,ts,source,scanned}.
-    한글명 native·거래대금/시총 포함. graceful — 전 거래소 실패 시 빈(호출부 폴백)."""
+    """미국 급등/급락 — 네이버 worldstock NASDAQ+NYSE up/down 병합·정렬 (사용자
+    2026-06-13 '미국등급급락은 네이버·한글명'; 2026-06-17 'AMEX 제외'). {up,down,ts,
+    source,scanned}. 한글명 native·거래대금/시총 포함. graceful — 전 거래소 실패 시
+    빈(호출부 폴백)."""
     from bot.finviz_client import _now_label
     ups: list = []
     downs: list = []
     ok = False
-    for ex in ("NASDAQ", "NYSE", "AMEX"):
+    for ex in ("NASDAQ", "NYSE"):          # AMEX 제외 (사용자 2026-06-17)
         u = fetch_world_ranking(ex, "up", limit=top_n)
         d = fetch_world_ranking(ex, "down", limit=top_n)
         if u or d:
@@ -190,7 +191,7 @@ def fetch_us_movers(top_n: int = 30) -> dict:
     ups.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else -1e9, reverse=True)
     downs.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else 1e9)
     return {"up": ups[:top_n], "down": downs[:top_n], "ts": _now_label(),
-            "source": "네이버 증권 미국 등락(NASDAQ+NYSE+AMEX·한글명)",
+            "source": "네이버 증권 미국 등락(NASDAQ+NYSE·한글명)",
             "scanned": len(ups) + len(downs)}
 
 
@@ -201,9 +202,10 @@ _INTL_MOVER_EX = {
     "JP": [("TOKYO", ".T")],
     "HK": [("HONG_KONG", ".HK")],
     "CN_A": [("SHANGHAI", ".SS"), ("SHENZHEN", ".SZ")],
-    # US — 52주 시총 overlay 용(접미사 없음). VM probe 2026-06-14: NASDAQ/NYSE/
-    # AMEX 전부 marketValue 채워짐 → fast_info 대신 네이버 시총(rate-limit 면역).
-    "US": [("NASDAQ", ""), ("NYSE", ""), ("AMEX", "")],
+    # US — 52주 시총/한글명 overlay 용(접미사 없음). AMEX 제외 (사용자 2026-06-17
+    # '모든 미국 대시보드에서 AMEX') → NASDAQ+NYSE 만. VM probe 2026-06-14:
+    # 두 거래소 marketValue 채워짐 → fast_info 대신 네이버 시총(rate-limit 면역).
+    "US": [("NASDAQ", ""), ("NYSE", "")],
 }
 _INTL_MOVER_LABEL = {"JP": "도쿄(TSE)", "HK": "홍콩(HKEX)", "CN_A": "상하이+선전"}
 
