@@ -720,20 +720,25 @@ pattern to follow:
   스탠스 유지). Fincept(C++/AGPL)·vibe-trade(TS/실거래)는 스코프 불일치라
   이 트리거 개념만 차용, 나머지(모델 티어링/불변 저널/라이브-데이터-only/
   페르소나)는 이미 보유 확인.
-- 블로그 Watcher — 네이버 '변화하는 기업을 찾아서'(beatthemkt) 새 글 자동
-  포워드+ingest (2026-05-31 사용자 요청). `bot/blog_watch.py` — RSS
-  (rss.blog.naver.com/<id>.xml, 브라우저 UA+Referer) 30분 polling
-  (`blog-watch.timer`) → 새 GUID 감지 → Gemini Flash 3줄 요약(grounding off,
-  발췌 기반 환각 0) → 채널 push + `blog_archive/` JSON 아카이브. state 파일
-  (`blog_watch_state.json`) 중복 차단 + 첫 run 은 기존 글 seen 처리만(폭주
-  방지). **대시보드 `blog.html` 운영 (사용자 정책 변경 2026-06-11 — 옛
-  2026-05-31 '대시보드 없음' 정책 폐기)**: 레딧 페이지 mirror(월/일 collapse
-  + 검색 + 카드 = 제목·원문링크·Flash 3줄요약·발췌). `regenerate_blog_index`
-  — blog_watch 새 글 후 + startup + 자정 regen. **nav 노출은 두 곳만 고정
-  (사용자 2026-06-11): 홈(market.html) + NOAH 종목분석(index.html), 각각
-  '한국 수출입' 다음.** 다른 그룹 페이지 nav 에 추가 금지. 비용
-  subsystem="blog" (글당 ~₩10 Flash). 키 불필요. ⚠️ VM 네이버 접근은 되나
-  RSS 403 시 헤더/대체 endpoint 점검 (news client 는 작동 중).
+- 블로그 Watcher — 네이버 블로그 새 글 자동 포워드+아카이브 (2026-05-31~).
+  `bot/blog_watch.py` `_BLOGS` **다중 블로그 (현재 4개)**: 변화하는 기업을
+  찾아서(beatthemkt, categories=관심종목·기업탐방) · 필승(teasky0221, 전체) ·
+  의교창(doctordk, 전체) · **천상천하(jkhan012, 전체, 사용자 2026-06-18)**.
+  새 블로그 추가 = `_BLOGS` 항목 1개(자동 first-run seed·`/blog`·nav 자동 반영).
+  RSS (rss.blog.naver.com/<id>.xml, 브라우저 UA+Referer) 30분 polling
+  (`blog-watch.timer`) → 새 GUID 감지. **⛔ LLM 0 · 비용 ₩0 (요약 제거
+  2026-06-11, 사용자 재확인 2026-06-18 '원문만·비용 안 드는 방식')** — 텔레그램
+  push 는 `_push` 가 **제목 1줄 + 원문 링크만**(Flash·요약 절대 금지, 재도입
+  하지 말 것), 본문은 `_fetch_post_text` 가 **HTML→텍스트 파싱만**(LLM 아님)
+  해서 blog.html 아카이브 카드에 전문 표시. state(`blog_watch_state.json`)
+  per-blog init 으로 첫 run 기존 글 seen 처리(폭주 방지). **대시보드 `blog.html`**
+  (사용자 2026-06-11 — 옛 '대시보드 없음' 폐기): 레딧 페이지 mirror(월/일
+  collapse + 검색 + 카드 = 제목·원문링크·**본문 파싱 전문**). `regenerate_blog_
+  index` — 새 글 후 + startup + 자정 regen. **nav 노출 두 곳 고정: 홈
+  (market.html) + NOAH 종목분석(index.html), '한국 수출입' 다음.** 다른 그룹
+  nav 추가 금지. 비용 subsystem="blog" 매핑은 잔존하나 LLM 0 이라 항상 ₩0
+  (합산 무해). 키 불필요. ⚠️ VM 네이버 접근은 되나 RSS 403 시 헤더/대체
+  endpoint 점검 (news client 는 작동 중).
 - 부동산 Byte — 아파트 실거래가 주간 브리프 (2026-05-31 사용자 요청,
   ticker·5거래일 완전 독립). `bot/realestate_client.py` (MOLIT 아파트 매매
   실거래 data.go.kr, 대표 10개 법정동) + `bot/realestate_brief.py` (Pro
