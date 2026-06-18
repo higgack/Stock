@@ -163,6 +163,7 @@ def render_archive_page(
     stats: list[Stat] | None = None,
     empty_message: str = "아직 기록이 없습니다.",
     delete_api: str | None = None,
+    send_api: str | None = None,
     id_field: str = "file",
 ) -> str:
     """Render the full archive HTML page.
@@ -306,13 +307,22 @@ def render_archive_page(
                 # Stable id for snippet-click target
                 card_id = f"card-{_re.sub(r'[^a-zA-Z0-9]', '_', date + '-' + str(ts_clock or 'x'))}"
 
+                _rid = _html.escape(str(r.get(id_field) or ""))
+                send_btn = ""
+                if send_api:
+                    send_btn = (f'<button class="card-send" type="button" '
+                                f'data-send="{_rid}" title="텔레그램 전송" '
+                                'style="margin-left:auto;background:none;border:none;'
+                                'cursor:pointer;font-size:15px;padding:0 4px">📤</button>')
                 del_btn = ""
                 if delete_api:
-                    _did = _html.escape(str(r.get(id_field) or ""))
                     del_btn = (f'<button class="card-del" type="button" '
-                               f'data-del="{_did}" title="삭제" '
-                               'style="margin-left:auto;background:none;border:none;'
+                               f'data-del="{_rid}" title="삭제" '
+                               'style="background:none;border:none;'
                                'cursor:pointer;font-size:15px;padding:0 4px">🗑️</button>')
+                # send 가 있으면 margin-auto 가 send 에 붙어 둘이 우측 정렬; 없으면 del 에.
+                if not send_api and del_btn:
+                    del_btn = del_btn.replace("padding:0 4px", "margin-left:auto;padding:0 4px", 1)
                 parts.append(
                     f'<details class="card"{card_open_attr} id="{card_id}" '
                     f'data-date="{_html.escape(date)}" '
@@ -323,7 +333,7 @@ def render_archive_page(
                     f'<span class="card-toggle">▸</span>'
                     f'<span class="domain">{card_title}</span>'
                     f'<span class="meta">{meta}</span>'
-                    f'{del_btn}'
+                    f'{send_btn}{del_btn}'
                     f'</summary>'
                     f'<div class="card-body">'
                     f'<div class="analysis-sec">'
@@ -353,6 +363,22 @@ def render_archive_page(
             ".then(function(d){if(d&&d.ok){var c=b.closest('.card');if(c)c.remove();}"
             "else{alert('삭제 실패: '+((d&&d.error)||''));}})"
             ".catch(function(){alert('네트워크 오류');});});})();</script>")
+    if send_api:
+        # 📤 텔레그램 전송 — 저장된(이미 과금된) 보고서를 채널로(재과금 없음, GET).
+        _send_js = _json.dumps(send_api)
+        parts.append(
+            "<script>(function(){var API=" + _send_js + ";"
+            "document.addEventListener('click',function(e){"
+            "var b=e.target.closest('.card-send');if(!b)return;"
+            "e.preventDefault();e.stopPropagation();"
+            "if(!confirm('이 보고서를 텔레그램 채널로 전송할까요?'))return;"
+            "b.textContent='⏳';"
+            "fetch(API+'?file='+encodeURIComponent(b.dataset.send),"
+            "{cache:'no-store',credentials:'include'})"
+            ".then(function(r){return r.json();})"
+            ".then(function(d){b.textContent='📤';"
+            "alert(d&&d.ok?('✅ 채널 전송 '+(d.sent||0)):('⚠️ '+((d&&d.error)||'전송 실패')));})"
+            ".catch(function(){b.textContent='📤';alert('네트워크 오류');});});})();</script>")
     parts.append('\n</body></html>')
     return "".join(parts)
 

@@ -158,6 +158,19 @@ def _patch_headers(
 # API payloads
 # ---------------------------------------------------------------------
 
+def _api_report_archive_send(file: str) -> dict:
+    """GET /api/report_archive_send?file= — 저장된(이미 과금된) AI 보고서를 텔레그램
+    채널로 전송(재과금 없음, 사용자 2026-06-18). GET(프록시 GET-only)·인증 뒤."""
+    if not file:
+        return {"ok": False, "error": "file 누락"}
+    try:
+        from trade.report_archive import send_to_channel
+        return send_to_channel(file)
+    except Exception as exc:
+        log.warning("report_archive_send %s: %s", file, exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def _api_report_archive_delete(file: str) -> dict:
     """GET /api/report_archive_delete?file= — AI 보고서 아카이브 카드 삭제 (사용자
     2026-06-18 휴지통). NOAH 프록시가 GET 만 포워드하므로 GET(인증·토큰 뒤라 안전).
@@ -403,6 +416,10 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             from urllib.parse import parse_qs, urlparse
             qs = parse_qs(urlparse(self.path).query)
             payload = _api_report_archive_delete((qs.get("file", [""])[0] or "").strip())
+        elif path == "/api/report_archive_send":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            payload = _api_report_archive_send((qs.get("file", [""])[0] or "").strip())
         else:
             self.send_error(404)
             return

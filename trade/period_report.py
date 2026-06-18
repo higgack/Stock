@@ -444,7 +444,7 @@ def render_llm(data: dict, model: str | None = None) -> tuple[str, dict]:
         report_archive.record(
             kind="🗂️ 전체", title=f"{data.get('period')} 수출입 시장 보고서",
             html_body=html, summary=_archive_summary(data, txt),
-            cost_krw=cost_krw or None)
+            cost_krw=cost_krw or None, tg=render_telegram(data, txt))
         report_archive.regenerate()
     except Exception as exc:
         log.warning("period_report archive: %s", exc)
@@ -504,7 +504,7 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
             lines.append(f"• {e(r['name'])} — {r['export_mom']:+.1f}%")
     if ai_text:
         lines += ["", "🤖 <b>AI 분석</b>", e(ai_text)]
-    return "\n".join(lines)[:4000]
+    return "\n".join(lines)              # 전체(전송 시 send_long 이 4096 단위 분할)
 
 
 def send_to_channel(ym: str | None = None, mode: str = "free") -> dict:
@@ -522,7 +522,7 @@ def send_to_channel(ym: str | None = None, mode: str = "free") -> dict:
     try:
         from trade.scripts import customs_alert
         for cid in ids:
-            if customs_alert._send(cid, body):
+            if customs_alert.send_long(cid, body) > 0:   # 4096 단위 분할 전송(전체)
                 sent += 1
     except Exception as exc:
         log.warning("period_report send_to_channel: %s", exc)

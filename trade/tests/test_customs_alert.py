@@ -231,5 +231,33 @@ class TestHsReferenceFreshness(unittest.TestCase):
         self.assertFalse(self.marker.exists())  # retry next tick
 
 
+class SplitTelegramTests(unittest.TestCase):
+    """전체 내용 전송 — 4096 한도 분할 (사용자 2026-06-18 '현재는 일부만')."""
+
+    def test_short_one_chunk(self):
+        self.assertEqual(customs_alert.split_telegram("짧은 내용"), ["짧은 내용"])
+
+    def test_long_splits_at_line_boundary_roundtrip(self):
+        text = "\n".join(f"• 품목{i} <b>값</b> 1.2억$" for i in range(400))
+        chunks = customs_alert.split_telegram(text, limit=4000)
+        self.assertGreaterEqual(len(chunks), 2)
+        for c in chunks:
+            self.assertLessEqual(customs_alert._u16(c), 4000)
+        self.assertEqual("\n".join(chunks), text)        # 줄 경계 → 무손실
+
+    def test_single_overlong_line_hard_split(self):
+        chunks = customs_alert.split_telegram("X" * 9000, limit=4000)
+        self.assertEqual(len(chunks), 3)
+        for c in chunks:
+            self.assertLessEqual(customs_alert._u16(c), 4000)
+
+    def test_send_long_sends_each_chunk(self):
+        text = "\n".join(f"line{i} " + "y" * 200 for i in range(60))   # >4000
+        with mock.patch.object(customs_alert, "_send", return_value=True) as snd:
+            n = customs_alert.send_long(111, text)
+        self.assertGreaterEqual(snd.call_count, 2)        # 다중 메시지
+        self.assertEqual(n, snd.call_count)
+
+
 if __name__ == "__main__":
     unittest.main()
