@@ -34,6 +34,7 @@ _BLOGS = (
     {"id": "teasky0221", "title": "필승", "categories": None},   # 전체 글 (사용자 2026-06-15)
     {"id": "doctordk", "title": "의교창", "categories": None},   # 전체 글 (사용자 2026-06-15)
     {"id": "jkhan012", "title": "천상천하", "categories": None},  # 전체 글 (사용자 2026-06-18)
+    {"id": "ranto28", "title": "메르", "categories": None},      # 전체 글 (사용자 2026-06-18)
 )
 _HOME = os.path.expanduser("~")
 _STATE = os.path.join(_HOME, ".tradingagents", "blog_watch_state.json")

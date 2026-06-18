@@ -1217,6 +1217,27 @@ def _rotation_slice(items: list, ordinal: int, window_days: int = 7) -> list:
     return items[idx * size:(idx + 1) * size] or items[:size]
 
 
+def _us_consensus_str(ticker: str) -> str | None:
+    """Finnhub 최신월 애널리스트 추천분포 → '매수 N·보유 N·매도 N' (사용자 2026-06-18
+    A2 — US 리서치 'TP(컨센서스)' 빈칸 채움). 야후와 별도 API(차단 무관)·12h 캐시·
+    graceful(키 부재/데이터 없음 → None → 렌더가 '—'). strongBuy+buy=매수, hold=보유,
+    sell+strongSell=매도. period 최신월 선택(정렬 비의존)."""
+    try:
+        from bot.finnhub_client import fetch_recommendation_trends
+        rec = fetch_recommendation_trends(ticker)
+        if not rec or not isinstance(rec, list):
+            return None
+        m = max(rec, key=lambda x: str(x.get("period", "")))   # 최신월
+        buy = int(m.get("strongBuy", 0) or 0) + int(m.get("buy", 0) or 0)
+        hold = int(m.get("hold", 0) or 0)
+        sell = int(m.get("sell", 0) or 0) + int(m.get("strongSell", 0) or 0)
+        if buy + hold + sell <= 0:
+            return None
+        return f"매수 {buy}·보유 {hold}·매도 {sell}"
+    except Exception:
+        return None
+
+
 def fetch_recent_research_us(limit: int = 25) -> list[dict]:
     """최근 US 등급변경 — S&P 500 **로테이션**(하루 ~72종목 day-slice, 7일 1회전)
     + 7일 롤링 누적 store 로 전체 커버 유지. 옛 구조(매 refresh 500종목 일괄
@@ -1294,8 +1315,7 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
                 return []
             # 목표가(.info targetMeanPrice) 생략 — 검색·상세탭과 **동일 quote API**라
             # 슬라이스당 72 .info 콜이 야후 차단 가중(사용자 2026-06-14 '계속 블락').
-            # 등급변경(firm/from/to)만 표시. 목표가는 상세 페이지 컨센서스 탭에 있음.
-            tp = None
+            # 'TP(컨센서스)' 칸은 대신 Finnhub 추천분포(별도 API·야후 무관)로 채움(A2 아래).
             # KR 탭과 동일 7일 윈도(사용자 2026-06-11) — 과거분 제외.
             cutoff = (date.today() - timedelta(days=7)).isoformat()
             items = []
@@ -1308,14 +1328,26 @@ def fetch_recent_research_us(limit: int = 25) -> list[dict]:
                     "firm": row.get("Firm", ""),
                     "to_grade": row.get("ToGrade", ""),
                     "from_grade": row.get("FromGrade", ""),
-                    "target": tp,
+                    # A1(사용자 2026-06-18): yfinance Action 보존 → 상향/하향/신규/유지
+                    # 배지·필터. 없으면 렌더가 from/to 비교로 유지↔변경 판정.
+                    "action": (row.get("Action") or ""),
+                    "target": None,
                     "date": d,
                 })
             # 종목당 최대 3건 — 일주일치 전체에서 최신순 3건, 초과분은
             # 기록하지 않음(사용자 2026-06-11 룰 확정). yfinance 정렬에
             # 기대지 않고 명시 정렬.
             items.sort(key=lambda x: x.get("date", ""), reverse=True)
-            return items[:3]
+            items = items[:3]
+            # A2(사용자 2026-06-18): 빈 'TP(컨센서스)' 칸을 Finnhub 최신월 추천분포로
+            # 채움 — **표시될 종목만**(items 있을 때) 호출해 콜 최소화. 야후와 별도 API라
+            # 차단 무관, 12h 캐시, graceful(키/데이터 없으면 None → 기존대로 '—').
+            if items:
+                tp = _us_consensus_str(tk)
+                if tp:
+                    for _it in items:
+                        _it["target"] = tp
+            return items
         except Exception as exc:
             if is_rate_limit_error(exc):       # 차단 감지 → 회로차단 발동(전 소비처 backoff)
                 fast_info_trip("research_us")

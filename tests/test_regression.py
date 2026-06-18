@@ -5828,6 +5828,27 @@ class TestBlogWatchMultiBlog:
         assert "doctordk" in ids and ids["doctordk"]["title"] == "의교창"
         assert ids["doctordk"]["categories"] is None           # 전체 글
         assert ids["beatthemkt"]["categories"] == ("관심종목", "기업탐방")
+        assert "jkhan012" in ids and ids["jkhan012"]["title"] == "천상천하"  # 사용자 2026-06-18
+        assert "ranto28" in ids and ids["ranto28"]["title"] == "메르"        # 사용자 2026-06-18
+
+    def test_research_us_action_badge_and_consensus_wired(self):
+        # 사용자 2026-06-18 A1(액션 배지/필터)+A2(Finnhub 컨센서스로 빈 TP칸).
+        # bot.dashboard/market_overview 는 무거운 import(샌드박스 불가) → 소스 grep 가드.
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        mo = (root / "bot" / "market_overview.py").read_text(encoding="utf-8")
+        dash = (root / "bot" / "dashboard.py").read_text(encoding="utf-8")
+        # A1: yfinance Action 보존 + 렌더 배지 헬퍼
+        assert '"action": (row.get("Action") or "")' in mo, "Action 필드 미보존(A1)"
+        assert "def _research_action_badge(" in dash, "배지 헬퍼 누락(A1)"
+        assert "_research_action_badge(r.get(\"action\"" in dash, "배지 미배선(A1)"
+        for lbl in ("유지", "상향", "하향", "신규", "변경"):
+            assert lbl in dash, f"배지 라벨 누락: {lbl}"
+        # A2: Finnhub 컨센서스 헬퍼 + 표시될 종목만 호출 + 문자열 렌더
+        assert "def _us_consensus_str(" in mo, "컨센서스 헬퍼 누락(A2)"
+        assert "fetch_recommendation_trends" in mo, "Finnhub 추천분포 미연결(A2)"
+        assert "_us_consensus_str(tk)" in mo, "컨센서스 미배선(A2)"
+        assert "isinstance(target, str)" in dash, "문자열 컨센서스 렌더 미처리(A2)"
 
     def test_parse_channel_title(self):
         import bot.blog_watch as bw
