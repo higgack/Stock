@@ -174,10 +174,13 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("잠정 속보 (선행)", P.render_free(_gather()))
 
     def test_render_telegram(self):
+        # 전문(全文) — 대시보드 보고서의 전 섹션 (사용자 2026-06-18 '전문 다 나오게').
+        # 길이 cap 은 render 가 아니라 send_long(분할)이 담당 → 여기선 섹션 전부 확인.
         t = P.render_telegram(_gather())
-        self.assertIn("2026-05 수출입 시장 보고서", t)
-        self.assertIn("디램", t)
-        self.assertLessEqual(len(t.encode("utf-16-le")) // 2, 4096)   # 텔레그램 cap
+        for sec in ("2026-05 수출입 시장 보고서", "디램", "🏭 <b>산업별 수출입</b>",
+                    "🚢 <b>수출 상위 품목</b>", "📥 <b>수입 상위 품목</b>",
+                    "🔁 <b>수출입 동시 품목</b>", "급변동"):
+            self.assertIn(sec, t)
         t2 = P.render_telegram(_gather(), ai_text="반도체 수출 회복이 무역수지를 견인")
         self.assertIn("AI 분석", t2)
         self.assertIn("반도체 수출 회복", t2)
@@ -186,7 +189,6 @@ class RenderTests(unittest.TestCase):
         t = P.render_telegram(_gather(prov=_PROV))
         self.assertIn("잠정 속보(선행", t)
         self.assertIn("1~20일", t)
-        self.assertLessEqual(len(t.encode("utf-16-le")) // 2, 4096)
 
     def test_render_telegram_empty(self):
         self.assertIn("데이터 미확보", P.render_telegram({"period": None}))

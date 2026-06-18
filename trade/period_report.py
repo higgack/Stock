@@ -488,23 +488,40 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
                      f"{e(prov.get('window') or '')}): 수출 {_usd(pe.get('total_usd'))} · "
                      f"수입 {_usd(pi.get('total_usd'))}")
         lines.append("")
+    # 전문(全文) — 대시보드 보고서의 전 섹션·전 행을 그대로(send_long 이 4096 분할).
+    if data.get("industries"):
+        lines.append("🏭 <b>산업별 수출입</b> (수출액순)")
+        for r in data["industries"]:
+            lines.append(f"• {e(r['industry'])} — 수출 {_usd(r['export'])} · "
+                         f"수입 {_usd(r['import'])} · 수지 {_usd(r['net'])}"
+                         f"{_m(r.get('export_yoy'))}YoY{_m(r.get('export_mom'))}MoM")
+        lines.append("")
     if data.get("top_export"):
-        lines.append("🚢 <b>수출 상위</b>")
-        for r in data["top_export"][:8]:
-            lines.append(f"• {e(r['name'])} — {_usd(r['export'])}{_m(r['export_mom'])}")
+        lines.append("🚢 <b>수출 상위 품목</b>")
+        for r in data["top_export"]:
+            lines.append(f"• {e(r['name'])} — {_usd(r['export'])}"
+                         f"{_m(r.get('export_mom'))}MoM{_m(r.get('export_yoy'))}YoY")
         lines.append("")
     if data.get("top_import"):
-        lines.append("📥 <b>수입 상위</b>")
-        for r in data["top_import"][:8]:
-            lines.append(f"• {e(r['name'])} — {_usd(r['import'])}{_m(r['import_mom'])}")
+        lines.append("📥 <b>수입 상위 품목</b>")
+        for r in data["top_import"]:
+            lines.append(f"• {e(r['name'])} — {_usd(r['import'])}"
+                         f"{_m(r.get('import_mom'))}MoM{_m(r.get('import_yoy'))}YoY")
+        lines.append("")
+    if data.get("both_traded"):
+        lines.append("🔁 <b>수출입 동시 품목</b> (중간재·가공무역)")
+        for r in data["both_traded"]:
+            lines.append(f"• {e(r['name'])} — 수출 {_usd(r['export'])} · "
+                         f"수입 {_usd(r['import'])} · 수지 {_usd(r['net'])}")
         lines.append("")
     if data.get("swings"):
         lines.append("⚡ <b>급변동(수출 MoM)</b>")
-        for r in data["swings"][:5]:
-            lines.append(f"• {e(r['name'])} — {r['export_mom']:+.1f}%")
+        for r in data["swings"]:
+            lines.append(f"• {e(r['name'])} — {r['export_mom']:+.1f}% "
+                         f"({_usd(r['export'])})")
     if ai_text:
         lines += ["", "🤖 <b>AI 분석</b>", e(ai_text)]
-    return "\n".join(lines)              # 전체(전송 시 send_long 이 4096 단위 분할)
+    return "\n".join(lines)              # 전문(전송 시 send_long 이 4096 단위 분할)
 
 
 def send_to_channel(ym: str | None = None, mode: str = "free") -> dict:

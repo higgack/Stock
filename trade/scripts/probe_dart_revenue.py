@@ -557,6 +557,9 @@ def _fetch_report_list(api_key: str, corp_code: str, days: int = 600) -> list[di
     return payload.get("list") or []
 
 
+_DOC_PARSE_CAP = 40_000_000   # document.xml 디코드·파싱 상한(대형 사업보고서 매출 포함)
+
+
 def download_doc_raw(api_key: str, rcept_no: str) -> str | None:
     """document.xml zip → 원문 마크업(태그 보존). bot/dart_feed._fetch_doc_text
     의 zip/디코딩 패턴 재사용, 단 flatten 안 함(표 구조 보려고)."""
@@ -573,7 +576,11 @@ def download_doc_raw(api_key: str, rcept_no: str) -> str | None:
         if not names:
             return None
         name = max(names, key=lambda n: zf.getinfo(n).file_size)
-        raw = zf.read(name)[:8_000_000]
+        # 대형 상장사(현대차·NAVER·KT&G·두산 등) 사업보고서는 8MB 초과 — '매출 및
+        # 수주상황' 표가 회사개요·주주·임원(앞 60여 표) 뒤라 8MB 컷에 잘려 매출후보 0
+        # 이 됐다(사용자 2026-06-18 probe 035420/005380/033780 = 표60·매출0). 40MB 로
+        # 상향 → 대형 단일-본문 보고서의 매출 섹션 포함. 소형(<8MB)은 무영향.
+        raw = zf.read(name)[:_DOC_PARSE_CAP]
         try:
             return raw.decode("utf-8")
         except UnicodeDecodeError:
