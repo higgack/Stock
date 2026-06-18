@@ -38,28 +38,123 @@ def _latest(node) -> float | None:
     return months[max(months)] if months else None
 
 
+def _load_alerts() -> list:
+    """store.db 의 BeOn 알림 전체 (회사별 탭과 동일 소스). 읽기전용 open —
+    report 프로세스가 스키마 마이그레이션(쓰기)을 트리거하지 않게(load_channel_pairs
+    패턴). DB/테이블 부재 시 [] (graceful)."""
+    import sqlite3
+    from trade import mti_companies, store
+    p = mti_companies._store_db_path()
+    if not p.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            return store.list_all_alerts(conn)
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("company_report alerts load: %s", exc)
+        return []
+
+
+def _company_alert_items(name: str, alerts: list) -> list[str]:
+    """회사명 → 그 회사가 태깅된 BeOn 알림 품목명들 (회사별 탭과 동일 소스·동일
+    split_names 매칭, 순서 보존 dedupe). 회사별 뷰는 alerts 를 회사로 묶는데, 기업
+    보고서는 그 역(회사→품목)을 같은 데이터로 재사용(사용자 2026-06-18 '큐레이션
+    말고 회사별 잘 정리된 거 써'). 순수(단위테스트)."""
+    target = _norm(name)
+    if not target or not alerts:
+        return []
+    try:
+        from trade import price_provider
+        _split = price_provider.split_names
+    except Exception:
+        _split = lambda xs: list(xs or [])  # noqa: E731
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in alerts:
+        try:
+            cos = _split(a.get("stocks") or [])
+        except Exception:
+            cos = a.get("stocks") or []
+        # 회사별 섹션과 동일하게 정규화 정확일치(±접미사) — substring 과매칭 방지.
+        if not any(_norm(c) == target or _norm(c).startswith(target)
+                   or target.startswith(_norm(c)) for c in cos if c):
+            continue
+        item = (a.get("item") or "").strip()
+        k = _norm(item)
+        if item and k not in seen:
+            seen.add(k)
+            out.append(item)
+    return out
+
+
+def _by_mti_name_index(by_mti: dict) -> dict:
+    """by_mti → {정규화 품목명: (mti6, node)} (첫 매치 우선). 품목명으로 관세청
+    수출입 시리즈를 찾기 위한 역인덱스."""
+    idx: dict = {}
+    for mti6, node in (by_mti or {}).items():
+        nm = _norm(node.get("name") or mti6)
+        if nm and nm not in idx:
+            idx[nm] = (mti6, node)
+    return idx
+
+
+def _match_mti(item: str, name_idx: dict):
+    """품목명 → (mti6, node) — 정규화 **정확일치만**. 부분일치는 '디램모듈'→'디램'
+    처럼 다른 제품에 엉뚱한 수출액을 붙이고 표시명을 덮어써 중복을 만들므로 금지
+    (2026-06-18 회사별 소스 통합 시 적발). 미발견 None(=관세청 수치 없는 관련 품목)."""
+    k = _norm(item)
+    return name_idx.get(k) if k else None
+
+
 def _company_exposure(name: str, by_mti: dict, pairs: list,
-                      by_imp: dict | None = None) -> list[dict]:
+                      by_imp: dict | None = None,
+                      alerts: list | None = None) -> list[dict]:
     """회사명 → 연결된 관세청 품목 [{item, industry, export_usd, import_usd}]
-    (수출액 내림차순). mti_companies(수동+채널) 역조회. 수입(by_imp)도 같은 품목(mti6)
-    매칭해 함께 표기(사용자 2026-06-18 '수출만? 수입도'). 순수(단위테스트)."""
+    (수출액 내림차순). 소스 union: (A) **BeOn 알림 = 회사별 탭과 동일**(회사가 태깅된
+    품목 전부, 사용자 2026-06-18) + (B) mti_companies 큐레이션·채널 역조회(보강).
+    각 품목에 관세청 수출/수입(by_mti) 부착. 순수(단위테스트)."""
     from trade import mti_companies
     target = _norm(name)
     if not target:
         return []
-    out: list[dict] = []
+    name_idx = _by_mti_name_index(by_mti)
+    rows: dict[str, dict] = {}   # 정규화 품목명 → row (dedupe)
+
+    def _add(item_display: str, hit=None):
+        key = _norm(item_display)
+        if not key or key in rows:
+            return
+        if hit is None:
+            hit = _match_mti(item_display, name_idx)
+        mti6, node = hit if hit else (None, None)
+        rows[key] = {
+            "item": (node.get("name") if node else item_display) or item_display,
+            "industry": (node.get("industry") if node else "") or "",
+            "export_usd": _latest(node) if node else None,
+            "import_usd": _latest((by_imp or {}).get(mti6)) if mti6 else None,
+        }
+
+    # (A) BeOn 알림 — 회사별 탭과 동일한 회사→품목 매핑(풍부)
+    for item in _company_alert_items(name, alerts or []):
+        _add(item)
+
+    # (B) 큐레이션 + 채널 역조회 — by_mti 품목 중 회사 매칭(보강, 관세청 집계 보장)
     for mti6, node in (by_mti or {}).items():
         item = (node.get("name") or mti6).strip()
         cos = set(mti_companies.companies_for(item)) | set(
             mti_companies.channel_companies_for(item, pairs))
-        if not any(_norm(c) == target or target in _norm(c) or _norm(c) in target
-                   for c in cos if c):
-            continue
-        out.append({"item": item, "industry": node.get("industry", ""),
-                    "export_usd": _latest(node),
-                    "import_usd": _latest((by_imp or {}).get(mti6))})
-    out.sort(key=lambda x: -(x["export_usd"] or 0))
-    return out[:20]
+        if any(_norm(c) == target or target in _norm(c) or _norm(c) in target
+               for c in cos if c):
+            _add(item, (mti6, node))
+
+    out = list(rows.values())
+    # 관세청 수출 있는 품목 먼저(내림차순), 그다음 노출만 있는(값 없는) 품목.
+    out.sort(key=lambda x: (x["export_usd"] is None, -(x["export_usd"] or 0)))
+    return out[:40]
 
 
 def _item_matches(query: str, by_mti: dict, pairs: list,
@@ -119,7 +214,9 @@ def gather(query: str, api_key: str | None = None) -> dict:
     dart = get_dart()
     q = (query or "").strip()
 
-    # 관세청 저장 시리즈 1회 로드 — 품목 역검색·회사 노출 양쪽이 공유.
+    # 관세청 저장 시리즈(customs.db) + BeOn 알림(store.db = 회사별 탭 소스) 로드.
+    # 두 DB 가 다름 — mti_series 는 customs.db, alerts 는 store.db (회사별 뷰가 읽는
+    # 곳). 같은 conn 으로 alerts 조회하면 'no such table' 로 silent no-op 되므로 분리.
     by_mti: dict = {}
     by_imp: dict = {}
     pairs: list = []
@@ -166,7 +263,9 @@ def gather(query: str, api_key: str | None = None) -> dict:
                 products = r.get("products", [])
         except Exception as exc:
             log.warning("company_report DART %s: %s", code, exc)
-    exposure = _company_exposure(name, by_mti, pairs, by_imp)
+    # 회사별 탭과 동일 소스(store.db BeOn 알림) — 회사 모드에서만 필요(품목 모드는
+    # 위에서 이미 반환). 풍부한 회사→품목 매핑(사용자 2026-06-18).
+    exposure = _company_exposure(name, by_mti, pairs, by_imp, _load_alerts())
     return {"mode": "company", "query": q, "code": code, "name": name,
             "products": products, "exposure": exposure}
 
@@ -251,7 +350,8 @@ def render_free(data: dict) -> str:
             f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("import_usd"))}</td></tr>'
             for x in exposure)
         exp_html = ('<div style="font-weight:600;margin:14px 0 4px">🚢 관세청 수출입 품목 노출 '
-                    '(최신월 수출액순)</div>'
+                    '<span style="font-weight:400;font-size:12px;color:#9aa0aa">'
+                    '· 회사별 채널 매핑 + 관세청 수출입 · 최신월 수출액순</span></div>'
                     '<table style="border-collapse:collapse;font-size:13px;width:100%">'
                     '<thead><tr><th style="text-align:left;padding:4px 8px;color:#9aa0aa">품목</th>'
                     '<th style="text-align:left;padding:4px 8px;color:#9aa0aa">산업</th>'
@@ -260,7 +360,7 @@ def render_free(data: dict) -> str:
                     f'<tbody>{erows}</tbody></table>')
     else:
         exp_html = ('<div style="color:#9aa0aa;font-size:13px;margin:14px 0">🚢 관세청 노출 — '
-                    '매핑된 품목 없음(mti_companies 큐레이션·채널 미등록)</div>')
+                    '매핑된 품목 없음(회사별 채널·큐레이션 미등록)</div>')
     return f'<div style="line-height:1.5">{head}{prod_html}{exp_html}</div>'
 
 
