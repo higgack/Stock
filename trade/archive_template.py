@@ -257,7 +257,10 @@ def render_archive_page(
         months[(date or "")[:7]].append(date)
 
     for month in sorted(months.keys(), reverse=True):
-        m_open = " open" if (default_open and month == _this_month) else ""
+        # 이번 달(month)은 항상 펼침 — 날짜 인덱스가 보여야 함(사용자 2026-06-18
+        # 스크린샷: 달 펼침 + 일 접힘 = '최신 날짜는 행으로 나오되 내용은 없이').
+        # default_open 은 '오늘 일·카드 내용까지 펼칠지'만 제어(아래 d_open/card).
+        m_open = " open" if month == _this_month else ""
         parts.append(
             f'<details class="month"{m_open}>'
             f'<summary class="month-head">'

@@ -314,6 +314,10 @@ _NO_BREAKDOWN_KW = (
     "인베스트", "벤처스", "기술투자", "창업투자", "ib투자", "파트너스",
     "자산운용", "리츠", "신탁", "기업인수목적", "스팩", "선박투자",
 )
+# ⚠️ '홀딩스'/'지주' 는 일부러 제외 안 함 — 한국 지주/홀딩스 다수가 연결 부문 매출을
+# 보고함(제일파마홀딩스 제품15·한국지주 제품2 실측). 이름만으론 순수 금융지주 ↔ 운영
+# 지주 구분 불가 → 키워드 추가 시 real breakdown 오제외. 순수 금융지주(신한지주 등)는
+# DART 업종분류 없이 안전 분류 불가라 보강 목록에 남김(빈칸 > 오제외).
 
 
 def _no_revenue_breakdown(name: str) -> bool:
@@ -362,6 +366,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--rescan-failures", action="store_true",
                    help="인벤토리 미수록(=직전 실패) 종목만 재시도 → 실패 분류 기록"
                         "(전수 재스캔 회피, 이미 추출된 종목은 건너뜀)")
+    p.add_argument("--reparse-suspect", action="store_true",
+                   help="audit '이름 의심'(회계라인 오매핑) 종목만 force 재파싱 — 파서"
+                        " 개선 적용(전수 force 회피, 사용자 2026-06-18)")
     p.add_argument("--force", action="store_true",
                    help="--refresh 시 rcept 변경 없어도 전수 재파싱(파서 개선 반영)")
     args = p.parse_args(argv)
@@ -427,6 +434,21 @@ def main(argv: list[str] | None = None) -> int:
         res = refresh_inventory(codes=failed, api_key=key)
         print(f"📦 실패 재스캔: {res}")
         print("→ `--failures` 로 파싱0(상장사·포맷 불일치) 목록 확인")
+        return 0
+    if args.reparse_suspect:
+        # 파서 개선(오매핑 차단 등) 적용 — audit '이름 의심'(회계라인 오매핑) 종목만 force
+        # 재파싱. 전수 force(~3,970·수시간) 회피하고 실제 영향받는 종목만(사용자 2026-06-18
+        # '10분 돌리다 껐어'). '비중 전무'·'과소추출'은 이름이 정상이라 이 fix 무관 → 제외.
+        sus = audit_inventory()
+        codes = [s["code"] for s in sus
+                 if any("이름 의심" in r for r in s.get("reasons", []))]
+        if not codes:
+            print("이름 의심(오매핑) 종목 없음 — 재파싱 불요(이미 깨끗하거나 인벤토리 비어있음).")
+            return 0
+        print(f"🔁 이름 의심(오매핑) {len(codes)}종만 force 재파싱 — 파서 개선 적용 중…")
+        res = refresh_inventory(codes=codes, api_key=key, force=True)
+        print(f"📦 타겟 재파싱: {res}")
+        print("→ `--audit` 로 이름 의심 감소 확인")
         return 0
     if args.refresh:
         shard = None

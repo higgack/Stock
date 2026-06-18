@@ -30,13 +30,14 @@ class DefaultOpenTests(unittest.TestCase):
         self.assertIn('<details class="month" open>', h)
         self.assertIn('<details class="day" open>', h)
 
-    def test_default_open_false_collapses_today(self):
-        # default_open=False: 오늘이어도 월/일 접힌 채로 (AI 아카이브 정책)
+    def test_default_open_false_keeps_month_collapses_content(self):
+        # default_open=False: 이번 달(month)은 펼침(날짜행 가시), 일·카드 내용은 접힘
+        # (사용자 2026-06-18 스크린샷 — '최신 날짜는 행으로 나오되 내용 없이').
         h = render_archive_page(_today_run(), title="T", subtitle="s",
                                 field_map=_FM, default_open=False)
-        self.assertIn('<details class="month">', h)       # open 속성 없음
-        self.assertNotIn('<details class="month" open>', h)
-        self.assertNotIn('<details class="day" open>', h)
+        self.assertIn('<details class="month" open>', h)    # 이번 달 펼침(인덱스 가시)
+        self.assertNotIn('<details class="day" open>', h)    # 일 접힘 → 카드 내용 숨김
+        self.assertNotIn('data-default-open="true"', h)      # 카드도 접힘
 
 
 class ScrollRestoreTests(unittest.TestCase):
