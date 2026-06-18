@@ -3207,9 +3207,10 @@ async def _periodic_highlow_prewarm() -> None:
 # TW 무버(TWSE OpenAPI·가벼움)는 TW 52주와 같은 :45(소스 다름 — yfinance vs OpenAPI).
 #   slot 분(分) → (보드 토큰…). 토큰: US/JP/HK/CN_A/TW=52주, TWMV=TW 무버.
 _HL_SCAN_SLOTS = {
-    0:  ("US", "JP"),     # :00 — US 52주(Finviz·야간) + JP 52주(peer)
+    0:  ("US", "JP"),     # :00 — US 52주(전량 재산출) + JP 52주(peer)
     15: ("HK",),          # :15 — HK 52주(peer)
-    30: ("CN_A",),        # :30 — CN 52주(peer, 재도입 2026-06-17)
+    30: ("CN_A", "US"),   # :30 — CN 52주 + US 52주 (US 30분 전량 갱신, 사용자 2026-06-19
+                          #       '미국장 새벽=저부하' → :00·:30 force 로 5,625 전체 재산출)
     45: ("TW", "TWMV"),   # :45 — TW 52주(full 上市+上櫃) + TW 무버(TWSE/TPEx OpenAPI)
 }
 

@@ -4952,6 +4952,36 @@ class TestHighlowFullUsAndCapWeight:
                             lambda: kicked.append(1))
         assert fv._highlow_full_us() == {} and kicked
 
+    def test_us_highlow_30min_full_refresh(self, monkeypatch):
+        # 사용자 2026-06-19: 미국 52주 30분마다 전량 재산출(B′·새벽 저부하). US TTL=30분,
+        # 타 시장 1h 유지. force(장중 슬롯)=게이트 우회 → 항상 재산출 kick.
+        import datetime as dt
+        import bot.finviz_client as fv
+        assert fv._HL_US_INTRA_TTL == 30 * 60       # US 30분
+        assert fv._HL_INTRA_TTL == 60 * 60          # 타 시장 1h(불변)
+        now = dt.datetime(2026, 6, 18, 15, 0, tzinfo=dt.timezone.utc).timestamp()  # 장중(목)
+        assert fv._session_fresh("US", now - 25 * 60, fv._HL_US_INTRA_TTL, now) is True
+        assert fv._session_fresh("US", now - 35 * 60, fv._HL_US_INTRA_TTL, now) is False
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: {"high": [], "low": []})
+        monkeypatch.setattr(fv, "_session_fresh", lambda *a, **k: True)   # 게이트 fresh 라도
+        monkeypatch.setattr(fv, "_prune_cached", lambda d, *a, **k: d)
+        kicked = []
+        monkeypatch.setattr(fv, "_kick_full_us_refresh", lambda: kicked.append(1))
+        fv._highlow_full_us(force=True)
+        assert kicked, "force=True 인데 재산출 kick 안 됨"
+        kicked.clear()
+        fv._highlow_full_us(force=False)             # 게이트 fresh → kick 안 함
+        assert not kicked, "force=False·fresh 인데 불필요 재산출"
+
+    def test_us_highlow_in_30_slot_and_force_wired(self):
+        # US 가 :00·:30 슬롯 + fetch_high_low 가 force 를 _highlow_full_us 로 전달
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        tb = (root / "bot" / "telegram_bot.py").read_text(encoding="utf-8")
+        assert '30: ("CN_A", "US")' in tb, "US 가 :30 슬롯에 없음"
+        fv = (root / "bot" / "finviz_client.py").read_text(encoding="utf-8")
+        assert "_highlow_full_us(force=force)" in fv, "fetch_high_low 가 force 미전달"
+
     # ── 업종 매칭 3-레이어 (2026-06-12 '업종 —' 전멸 fix — yfinance .info
     # 가 데이터센터 IP 에서 비고, stale 캐시는 ind 필드 도입 전이었음) ──
 
