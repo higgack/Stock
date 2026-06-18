@@ -694,7 +694,10 @@ def _build_html(
         '})();</script>'
         # 🤖 유료 AI 보고서 아카이브 링크 (사용자 2026-06-18 '돈내고 분석한건 대시보드에 아카이브').
         + '<div class="report-archive-link"><a href="report_archive.html">'
-        '🤖 AI 보고서 아카이브 — 유료로 생성한 기업/전체 보고서 다시 보기 →</a></div>'
+        '🤖 AI 보고서 아카이브 — 유료로 생성한 기업/전체 보고서 다시 보기 →</a>'
+        # 📖 품목 레퍼런스북 (사용자 2026-06-18 '품목↔HS↔관련기업 레퍼런스북').
+        ' &nbsp;·&nbsp; <a href="reference.html">'
+        '📖 품목 레퍼런스북 — 품목 ↔ HS코드 ↔ 산업 ↔ 관련기업 →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
@@ -2305,6 +2308,12 @@ def main() -> int:
         from trade import report_archive
         report_archive.ensure_exists()
         report_archive.regenerate()
+    except Exception:
+        pass
+    # 📖 품목 레퍼런스북 — 품목↔HS↔산업↔관련기업 (정적 연계표라 매 렌더 재생성 저렴).
+    try:
+        from trade import reference_book
+        reference_book.regenerate()
     except Exception:
         pass
     return 0
