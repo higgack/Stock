@@ -49,11 +49,14 @@ class RenderTests(unittest.TestCase):
     def test_render_structure(self):
         h = R.render_page(self._ROWS)
         for must in ("품목 레퍼런스북", "디램", "831110", "8542321000", "삼성전자",
-                     "반도체", "농수산식품", "관련 상장사", "id='q'"):
+                     "반도체", "농수산식품", "관련 상장사", "id='q'",
+                     "id='csv'", "📥 CSV"):            # CSV 다운로드 버튼(사용자 2026-06-18)
             self.assertIn(must, h)
         self.assertIn('data-s=', h)               # 검색 인덱스 속성
         self.assertIn('data-i="반도체"', h)        # 산업 필터 칩 키
         self.assertIn("총 2품목", h)
+        # 라이트모드 칩 글씨 진하게(흰색→#1f2328) — 관련상장사 가독성(사용자 2026-06-18)
+        self.assertIn("color:#1f2328", h)
 
     def test_render_search_index_lowercase(self):
         h = R.render_page([{"mti6": "831110", "name": "DRAM디램", "industry": "반도체",
