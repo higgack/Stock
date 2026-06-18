@@ -23,6 +23,15 @@ class DashboardRenderSmokeTests(unittest.TestCase):
         self.assertIn("scrollRestoration", html)
         self.assertIn("sessionStorage", html)
 
+    def test_build_html_has_flow_note(self):
+        # 📡 자동화 플로우 노트가 상단에 임베드 (사용자 2026-06-18 '플로우 상단에').
+        from trade import dashboard as d
+        html = d._build_html([], [], {}, "")
+        self.assertIn("flow-note", html)
+        self.assertIn("데이터 자동화 플로우", html)
+        self.assertIn("18일", html)          # DART 전수 = 매월 18일
+        self.assertIn("04:30", html)         # 파서개선 소급 드레이너 = 매일
+
     def test_render_passes_heatmap_to_build(self):
         from pathlib import Path
         src = (Path(__file__).resolve().parents[1] / "dashboard.py"

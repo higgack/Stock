@@ -124,87 +124,56 @@ def _dm_keyboard() -> InlineKeyboardMarkup | None:
 # trailing '최종 갱신' line records the last commit's date.
 _HELP_TEXT = """🇰🇷 <b>한국 수출입 데이터 대쉬보드 봇</b>
 
-<b>1. 무엇을 하나</b>
-BeOn (<code>t.me/BeOn_BeClear</code>) 한국 수출입 알림을 비공개 채널로 자동 수집·정리. BeOn 원본 그래프·표 이미지 그대로 보존, 메타데이터(품목·지역·국가·종목·기간·잠정/확정)만 regex 파싱. OCR 안 함, 가공 0.
+<b>1. 무엇을</b> BeOn(<code>t.me/BeOn_BeClear</code>) 수출입 알림을 비공개 채널로 자동 수집·정리. 원본 이미지 보존, 메타(품목·지역·국가·종목·기간·잠정/확정)만 regex 파싱. OCR·가공 0.
 
-<b>2. 대쉬보드</b>
-<a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
-모바일 OK · 5분마다 자동 갱신 · BasicAuth 보호 · 다크모드 자동 (19~07 KST)
-헤더에 📊 현재 잠정/확정 기간 + 다음 발표 D-N + 오늘 활동 + 🧪 미파싱 백로그 + 💰 비용·자원 + 📦 관세청 수출입 (📌내 핀 + 📈급등률·💵급증액 TOP30 <b>수출·수입 양방향</b> 발굴 + 🗄아카이브 무제한 수출·수입 각각) 자동 표시
+<b>2. 대쉬보드</b> <a href="http://34.50.23.221:8765/dashboard/">http://34.50.23.221:8765/dashboard/</a>
+모바일 OK · 5분 자동갱신 · BasicAuth · 다크모드(19~07 KST). 상단 📡<b>플로우 노트</b>(자동화 흐름) + 📊잠정/확정기간·다음발표 D-N·🧪미파싱백로그·💰비용 + 📦관세청(📌핀·📈급등률·💵급증액 TOP30 수출입·🗄아카이브).
 
-<b>3. BeOn 발표 사이클 (KST)</b>
-• 매월 11일경 — 1-10일 잠정
-• 매월 21일경 — 1-20일 잠정
-• 익월 1일경 — 전월 전체 잠정
-• 익월 15일경 — 전월 전체 확정 (관세청 공식)
+<b>3. 발표 사이클(KST)</b> 11일경 1-10일 잠정 · 21일경 1-20일 잠정 · 익월1일경 전월 잠정 · 익월15일경 확정(관세청 공식)
 
-<b>4. 네 가지 뷰</b>
-• <b>품목별</b> — 품목당 1 섹션 (다중 variant 섹션엔 국가 mix 막대 자동)
-• <b>회사별</b> — 회사당 1 섹션(품목설명·제품명 제외), 관련 (품목·지역) 미니카드
-• <b>매트릭스</b> — 품목 × 국가 heatmap (셀 = 알림 수, 셀 클릭 시 최신 alert)
-• <b>📈 산업트렌드</b> — 20산업+하위(MTI6): 분류보드(초고성장/턴어라운드/부진·가속/둔화·📥수입모멘텀) + 품목 카드(수출·MA·YoY막대·TTM·8지표·해석·원자료) + 하위품목 TOP(급등률·급증액 MoM·수출≥2억) + 🔍추가신호 + 🚀🔄산업내부동학 + 🟢잠정속보(관세청10일단위·확정선행·capex·🔟10일모멘텀) + 🗄아카이브 + 🔗export. HSK-MTI 기준
-• <b>🏷️ 큐레이션 후보 알림</b> — 관세청 갱신일(1·11·15·21) 18:00 KST, 큐레이션·채널 둘 다 미매핑인 고수출 품목을 operator DM (관련 상장사 매핑 후보). 후보 0이면 무음
+<b>4. 자동화 플로우</b> (방문 안 해도 서버가 갱신)
+• 관세청: customs-probe <b>10분마다</b> 새 통계 감지 → 산업트렌드·히트맵·월별표·관련기업 갱신
+• DART 매출구성(회사→제품·비중): <b>매월18일</b> 전수(변경분만; 잠정 몰리는 1일 회피) + <b>매일04:30</b> 파서개선 소급 드레이너(파서 좋아지면 기존 데이터까지 자동 재파싱·수렴). 영업손익·매출에누리 등 비제품 회계라인 오매핑 차단(빈칸&gt;오매핑)
+• 관련기업: BeOn 채널 매트릭스 실시간 → 보고서·검색·품목·레퍼런스북 공통소스
+→ 모든 표면이 방문 없이 자동 신선. 비용 ₩0(무료 공공API·LLM 0)
 
-<b>5. 카드 정렬</b>
-같은 섹션 안에서:
-① 전국 (no country) ② 전국_&lt;국가&gt; ③ 시군구
-각 단계 내 게시 최신순. 새 발표가 도착하면 그 dedup 키의 최신 카드로 자동 교체, 과거는 모달 history에 누적.
+<b>5. 뷰</b>
+• <b>품목별</b> — 품목당 1섹션(다중 variant엔 국가 mix막대)
+• <b>회사별</b> — 회사당 1섹션 + 관련(품목·지역) 미니카드
+• <b>매트릭스</b> — 품목×국가 heatmap(셀=알림수·클릭=최신alert)
+• <b>📈산업트렌드</b> — 20산업+하위(MTI6): 분류보드(초고성장/턴어라운드/부진·📥수입모멘텀)+품목카드(수출·MA·YoY·TTM·8지표·해석·원자료)+하위TOP(급등률·급증액 MoM)+🔍추가신호+🚀🔄산업동학+🟢잠정속보+🗄아카이브+🔗export. HSK-MTI 기준
+• <b>🏢기업 / 🗂️전체 보고서</b> — 회사·월별 수출입(YoY·MoM)+DART 제품구성 AI 종합, 🤖아카이브 보존
+• <b>📖레퍼런스북</b> — 품목(MTI)↔구성HS10↔산업↔관련상장사 검색표(CSV)
+• <b>🏷️큐레이션 후보</b> — 갱신일(1·11·15·21) 18:00, 미매핑 고수출 품목 DM(0이면 무음)
 
-<b>6. 배지</b>
-🟢 수출 · 🟠 수입 · 잠정 · 확정 · 합산
-🟡 확정 D-N (잠정의 예상 확정일 카운트다운)
-🔴 확정 D+N 지연 (예정일 초과)
-🆕 NEW — 7일내 게시/첫 등장 품목·회사
+<b>6. 카드 정렬</b> 섹션 내 ①전국 ②전국_&lt;국가&gt; ③시군구, 각 게시 최신순. 새 발표는 그 dedup키 최신카드로 교체, 과거는 모달 history.
 
-<b>7. 부가 기능</b>
-• 검색: 품목/회사/국가 부분일치 (회사명 정확 일치 시 회사 뷰 자동 좁힘)
-• 칩 필터: 수출/수입, 잠정/확정, 🆕 신규(최근 7일 게시 카드만)
-• 📥 CSV — 탭별 풀데이터(대시보드가 담는 모든 정보): 신호알림=현재 필터 결과 풀필드(전필드+media_urls 절대경로) · 히트맵=품목×수출입 YoY·MoM 표 · 산업트렌드=품목(MTI) <b>요약</b>(품목당 1행·수출+수입 양방향 전체: 급등률 MoM%·급증액 MoMΔ$·YoY·12M MA·단가$/kg·구성HS·관련기업)+<b>월별 원시</b> 2파일 (엑셀 바로 열림)
-• 모달 — 카드 클릭 시 같은 dedup 키 과거 발표 인라인 비교 (전번 확정 ↔ 이번 잠정)
-  · 🔗 URL 복사 (#a/&lt;id&gt; 딥링크) · 🖼 이미지 저장
-  · 합산 ↔ 개별 양방향 링크 (수산화칼륨+탄산칼륨 ↔ 각 개별)
-  · 같은 품목 다른 회사 (peer chip — 클릭 시 회사 뷰 자동 필터)
-  · 관련종목·회사헤더 시세 등락률(네이버 실시간; 장중 라이브·렌더 5분·장종료후 종가·미제공 공란)
+<b>7. 배지</b> 🟢수출·🟠수입·잠정·확정·합산 / 🟡확정 D-N / 🔴지연 D+N / 🆕7일내 신규
 
-<b>8. 명령어</b> (워치·ignore 명령은 봇과 <b>1:1 채팅(DM)</b>에서만 동작)
-/help · /start — 이 안내 (채널·DM 둘 다)
-/watch &lt;검색어&gt; — 품목+관련종목 둘 다 부분일치 시 DM (예: /watch 이오테크닉스)
-/watch item &lt;검색어&gt; — 품목만 매칭하고 싶을 때 (예: /watch item 라면)
-/watch company &lt;검색어&gt; — 관련종목만 매칭 (예: /watch company 삼양식품)
-/watch list — 현재 워치 목록
-/unwatch item|company &lt;검색어&gt; — 워치 1건 제거
-/unwatch all — 내 워치 전체 해제 (알림 끄기)
-/ignore &lt;msg_id&gt; — 일일 미등록 검사에서 그 msg 제외 (일회성 공지 등)
-/unignore &lt;msg_id&gt; — ignore 해제
-/ignored — 현재 ignore 목록
-/hs &lt;검색어&gt; — 한글/숫자(prefix) HS 검색 → 버튼 클릭 즉시 핀(✅ 토글), 맨 아래 <b>완료</b> (예: /hs 반도체). 직접: /hs &lt;품목&gt; &lt;HS코드&gt;
-/unhs &lt;품목&gt; · /hslist — 핀 해제 / 핀 목록 (검색은 ~/.trade/hs_codes.xlsx 필요 — 관세청 15049722 파일 다운로드, 개정 시 덮어쓰기)
-/map &lt;표기&gt; &lt;코드&gt; — 시세 코드 등록(KIS확인) · /map 목록 · /unmap 해제
-/customs — 관세청 수출입: 📌내 핀 + 📈급등률 TOP(≥$50M) + 💵급증액 TOP + 🗄아카이브 (수출·수입 양방향). 대쉬보드 📦 패널과 동일
-/cost — 비용·자원(외부 API 무료·LLM·디스크·관세청 호출 추정)
-/export — 산업트렌드 공유: 그 시점 월 스냅샷 파일 + 🔗공개 링크(인증 없음). 대쉬보드 🔗 링크(길게 눌러 복사)와 동일
-※ <b>[비온 인사이트]</b> · <b>DART 공시 릴레이</b>는 자동 skip (코드 상수)
+<b>8. 부가</b>
+• 검색: 품목/회사/국가 부분일치(회사명 정확일치 시 회사뷰)
+• 칩: 수출/수입·잠정/확정·🆕신규
+• 📥CSV 탭별 풀데이터(신호=필터결과 전필드+media절대경로 · 히트맵=품목×YoY·MoM · 산업트렌드=품목요약[수출입 급등률·급증액·YoY·MA·단가·구성HS·관련기업]+월별원시)
+• 모달: 과거발표 비교·🔗딥링크·🖼이미지·합산↔개별·peer chip·관련종목 시세(네이버 실시간; 장중 라이브·5분·장후 종가·미제공 공란)
 
-<b>9. 자동화 systemd</b>
-• trade-bot — 실시간 메시지 수집
-• trade-bot-update (1분) — git pull + 재배포
-• trade-bot-watchdog (1분) — 폴링 hang 감지 + 자동 재시작
-• trade-bot-dashboard — HTTP 서버 (포트 8765, gzip on)
-• trade-bot-dashboard-refresh (5분) — ingest→purge→시세워밍→HTML→미매칭종목 일일 DM점검
-• trade-bot-health (1시간) — BeOn 발표 예정일 (11/21/익월1/익월15) 기준 사이클 누락 감지 → ⚠️ 알림 (이벤트 기반, 침묵 기간엔 silent)
-• trade-bot-unstored-check (매일 00:00 KST) — inbox.jsonl에 있지만 store.db에 없는 alert 감지 → ⚠️ 알림 (없으면 silent) + 미파싱 캡션을 eval_misses.jsonl에 누적 (회귀 fixture용, 키별 1회)
-• trade-bot-beon-listener (상시) — 새 BeOn 글 즉시 forward (앨범 3s debounce, 🟢 가동/⚠️ 실패)
-• trade-bot-beon-sync (2시간마다) — listener 다운타임 대비 safety net (2일룩백+200cap, 초과시 ⚠️abort)
-• trade-bot-customs-fetch (1일 4회) — 전 chapter 스캔 → 📈급등률(+30%·≥$50M)·💵급증액 TOP30 (수출·수입 양방향) + 🗄아카이브, 신규진입 DM(첫스캔무음·cap10·수입 첫등장도 무음). 변동시 ✅갱신 DM
-• trade-bot-backup (매일 03:00 KST) — store.db 일간 스냅샷 (최근 14일 보관)
-신규/변경된 systemd unit은 auto-update이 install-trade-units.sh로 자동 cp + daemon-reload + enable (sudoers 1회 설정).
+<b>9. 명령어</b> (워치·ignore는 봇 <b>DM</b>에서만)
+/help·/start — 이 안내
+/watch &lt;검색어&gt; — 품목+관련종목 부분일치 DM (item·company 한정 / list 목록)
+/unwatch item|company &lt;검색어&gt; · /unwatch all
+/ignore·/unignore·/ignored &lt;msg_id&gt; — 일일 미등록 검사 제외
+/hs &lt;검색어&gt; — HS검색→클릭 핀(✅), 직접 /hs &lt;품목&gt; &lt;코드&gt; · /unhs·/hslist (검색은 ~/.trade/hs_codes.xlsx 필요)
+/map &lt;표기&gt; &lt;코드&gt; — 시세코드 등록 · /map·/unmap
+/customs — 관세청 수출입(핀·급등률·급증액·아카이브)
+/cost — 비용·자원 · /export — 산업트렌드 월스냅샷+🔗공개링크
+※ <b>[비온 인사이트]</b>·<b>DART 공시 릴레이</b>는 자동 skip
 
-<b>10. API endpoints</b>
-• /api/alerts.json — 전체 alert 덤프 (latest + history)
-• /api/stats — 카운트 (수출/수입, 잠정/확정 등)
-• /api/health — alert 수, 마지막 게시, 디스크 잔여, 대쉬보드 mtime + stale 초
+<b>10. 자동화 systemd</b>
+trade-bot(수집) · update(1분 재배포) · watchdog(1분 hang감지) · dashboard(8765) · dashboard-refresh(5분 ingest→HTML) · health(1h 사이클누락) · unstored-check(00:00) · beon-listener(상시 forward) · beon-sync(2h safety) · customs-fetch(4회/일 급등·급증 TOP30) · customs-probe(10분 신통계감지) · <b>dart-revenue(매월18일 매출구성 전수·변경분만)</b> · <b>dart-reparse(매일04:30 파서개선 소급)</b> · curation(1·11·15·21 18:00) · daily-digest(00:03) · backup(03:00).
+신규/변경 unit은 auto-update가 install-trade-units.sh로 자동 cp+daemon-reload+enable(변경 타이머 스케줄 재무장 포함).
 
-<i>최종 갱신: 2026-06-06 — /map 응답에 KRX 종목명 표시 + 시세 캐시 원자쓰기</i>
+<b>11. API</b> /api/alerts.json · /api/stats · /api/health
+
+<i>최종 갱신: 2026-06-18 — DART 매출구성 자동 소급 드레이너(매일04:30)+전수 18일, 📡플로우 노트·🏢기업/전체 보고서·📖레퍼런스북·🤖AI아카이브 반영</i>
 """
 
 
