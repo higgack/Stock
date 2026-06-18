@@ -185,7 +185,7 @@ def render_llm(data: dict, model: str | None = None) -> tuple[str, dict]:
         if not txt:
             return (free + _note("⚠️ AI 요약 비어있음 — 무료 보고서만."), {"used": False})
         ai = ('<div style="font-weight:600;margin:14px 0 4px">🤖 AI 요약 (Gemini · 유료)</div>'
-              f'<div style="font-size:13px;background:#1c1f26;border:1px solid #2a2e37;'
+              f'<div style="font-size:13px;background:#1c1f26;color:#e6edf3;border:1px solid #2a2e37;'
               f'border-radius:8px;padding:10px 12px;white-space:pre-wrap">{txt}</div>')
         return (free + ai, {"used": True, "model": mdl})
     except Exception as exc:
