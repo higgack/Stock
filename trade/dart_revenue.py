@@ -22,6 +22,14 @@ from pathlib import Path
 
 log = logging.getLogger("trade.dart_revenue")
 
+# 파서 세대 — **파서 추출 로직을 의미있게 바꿀 때마다 +1**. 인벤토리 각 항목에 pv 로
+# 스탬프되고, reparse_stale_inventory(매일 타이머)가 pv < 현재 버전 항목을 예산만큼
+# 점진 재파싱해 **파서 개선이 기존 데이터에 자동 적용**되게 한다(사용자 2026-06-18
+# '새로운거 들어오기만 하면 의미없잖아' — 코드 개선의 소급 적용 자동화). 월간 --refresh
+# 는 rcept 변경분만(신규 데이터)이라 이 드레이너가 코드-개선 소급을 담당.
+#   v1 = 초기  ·  v2 = 비제품 회계라인 오매핑 차단(#518 _NON_PRODUCT_SUBSTR)
+_PARSER_VERSION = 2
+
 
 def _data_dir() -> Path:
     return Path(os.environ.get("TRADE_DATA_DIR") or str(Path.home() / ".trade"))
@@ -180,6 +188,7 @@ def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict 
         "report": rep.get("report_nm"),
         "rcept_no": rep.get("rcept_no"),
         "products": products[:20],
+        "pv": _PARSER_VERSION,           # 파서 세대 — 드레이너가 stale 판정에 사용
     }
 
 
@@ -303,6 +312,46 @@ def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None
     return res
 
 
+def reparse_stale_inventory(budget: int = 400, api_key: str | None = None) -> dict:
+    """파서 세대(_PARSER_VERSION)가 오른 뒤 **기존 인벤토리에 코드 개선을 소급 적용** —
+    pv < 현재 버전 항목을 budget 개까지 재파싱(매일 타이머가 점진 드레인 → 자동 수렴,
+    사용자 2026-06-18). 재추출 성공 → 교체(새 pv 스탬프), 추출 0(None) → 항목 제거
+    ('빈칸 > stale/오매핑'; 월간 --refresh 가 재시도해 진짜 불가면 실패목록행), 예외
+    (transient) → stale 유지(다음 런 재시도). 네트워크만·₩0. Returns
+    {stale, reparsed, removed, remaining}."""
+    key = (api_key if api_key is not None else os.environ.get("DART_API_KEY") or "").strip()
+    if not key:
+        log.warning("reparse_stale_inventory: DART_API_KEY 없음")
+        return {"stale": 0, "reparsed": 0, "removed": 0, "remaining": 0}
+    inv = load_inventory()
+    stale = sorted(c for c, e in inv.items() if (e or {}).get("pv", 0) < _PARSER_VERSION)
+    todo = stale[:max(0, budget)]
+    reparsed = removed = 0
+    for code in todo:
+        try:
+            r = fetch_company_products(code, key)
+        except Exception as exc:
+            log.warning("reparse_stale %s: %s", code, exc)
+            continue                       # stale 유지 → 다음 런 재시도(transient 보호)
+        if r:
+            inv[code] = r                  # 새 pv 스탬프된 결과로 교체
+            reparsed += 1
+        else:
+            inv.pop(code, None)            # 현 파서로 추출 0 = stale/오매핑 제거(빈칸 우선)
+            removed += 1
+        time.sleep(0.3)
+    out = _data_dir() / "dart_revenue_inventory.json"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(inv, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log.warning("reparse_stale 저장 실패: %s", exc)
+    res = {"stale": len(stale), "reparsed": reparsed, "removed": removed,
+           "remaining": max(0, len(stale) - len(todo))}
+    log.info("reparse_stale_inventory 완료(v%d): %s", _PARSER_VERSION, res)
+    return res
+
+
 _FAILURES_FILE = "dart_revenue_failures.json"
 
 # 금융·투자·스팩·리츠·신탁 — 제조업식 '제품별 매출구성'이 구조적으로 없음(이자·수수료·
@@ -369,6 +418,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--reparse-suspect", action="store_true",
                    help="audit '이름 의심'(회계라인 오매핑) 종목만 force 재파싱 — 파서"
                         " 개선 적용(전수 force 회피, 사용자 2026-06-18)")
+    p.add_argument("--reparse-stale", action="store_true",
+                   help="파서 세대(pv) 오른 뒤 기존 인벤토리에 코드 개선 소급 적용 — "
+                        "stale 항목 budget 개 재파싱(매일 타이머용·점진 자동 드레인)")
+    p.add_argument("--budget", type=int, default=400,
+                   help="--reparse-stale 한 런 최대 재파싱 수(기본 400)")
     p.add_argument("--force", action="store_true",
                    help="--refresh 시 rcept 변경 없어도 전수 재파싱(파서 개선 반영)")
     args = p.parse_args(argv)
@@ -449,6 +503,12 @@ def main(argv: list[str] | None = None) -> int:
         res = refresh_inventory(codes=codes, api_key=key, force=True)
         print(f"📦 타겟 재파싱: {res}")
         print("→ `--audit` 로 이름 의심 감소 확인")
+        return 0
+    if args.reparse_stale:
+        res = reparse_stale_inventory(budget=args.budget, api_key=key)
+        print(f"📦 파서세대 v{_PARSER_VERSION} 소급 재파싱: {res}")
+        if res["remaining"]:
+            print(f"→ 남은 stale {res['remaining']} — 다음 타이머 런에서 계속 드레인")
         return 0
     if args.refresh:
         shard = None

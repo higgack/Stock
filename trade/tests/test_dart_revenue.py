@@ -131,6 +131,39 @@ class DartRevenueTests(unittest.TestCase):
         self.assertEqual(ri.call_args.kwargs["codes"], ["000001"])   # 이름 의심만
         self.assertTrue(ri.call_args.kwargs["force"])                # force 재파싱
 
+    def test_reparse_stale_drains_by_parser_version(self):
+        # 파서 세대(pv) 오른 뒤 stale 항목만 budget 개 재파싱 — 코드 개선 자동 소급
+        # (사용자 2026-06-18). None=제거(빈칸>stale), 성공=교체, current pv=skip.
+        import json as _j
+        import tempfile
+        from pathlib import Path
+        d = Path(tempfile.mkdtemp())
+        cur = D._PARSER_VERSION
+        inv = {
+            "001": {"code": "001", "products": [{"name": "영업손익"}], "pv": cur - 1},
+            "002": {"code": "002", "products": [{"name": "DRAM"}], "pv": cur - 1},
+            "003": {"code": "003", "products": [{"name": "칩"}], "pv": cur},   # current
+            "004": {"code": "004", "products": [{"name": "x"}]},               # pv 없음=0
+        }
+        (d / "dart_revenue_inventory.json").write_text(_j.dumps(inv), encoding="utf-8")
+
+        def fake_fetch(code, key):
+            if code == "001":
+                return None     # 새 파서 추출 0(전부 회계라인) → 제거
+            return {"code": code, "products": [{"name": "신제품"}], "pv": cur}
+
+        with mock.patch.object(D, "_data_dir", return_value=d), \
+                mock.patch.object(D, "fetch_company_products", side_effect=fake_fetch), \
+                mock.patch("time.sleep"):
+            res = D.reparse_stale_inventory(budget=2, api_key="k")
+        self.assertEqual(res["stale"], 3)            # 001·002·004 (003 은 current)
+        self.assertEqual(res["remaining"], 1)        # budget 2 → 004 다음 런
+        new = _j.loads((d / "dart_revenue_inventory.json").read_text(encoding="utf-8"))
+        self.assertNotIn("001", new)                 # None → 제거(빈칸 우선)
+        self.assertEqual(new["002"]["pv"], cur)      # 재파싱 교체(새 pv)
+        self.assertIn("003", new)                    # current 그대로
+        self.assertIn("004", new)                    # budget 밖 — 다음 런 드레인
+
     def test_no_revenue_breakdown_classifier(self):
         # 금융·스팩·리츠류 = 구조적 제외(파서 버그 아님), 제조/일반기업 = 보강 대상
         for fin in ("신한은행", "NH투자증권", "삼성화재해상보험", "KB금융",
