@@ -66,6 +66,22 @@ def _clean_products(products: list[dict]) -> list[dict]:
     return out
 
 
+def _fill_amount_based_share(products: list[dict]) -> list[dict]:
+    """비중 전무 + 금액 있으면 매출액 기반 비중 산출 (C4 — 비중 컬럼 없는 표, 한미·기아
+    등 사용자 2026-06-18 '비중전무 정밀화'). 비중이 하나라도 있으면 원본 유지(혼합 표는
+    건드리지 않음). 금액 2개+ 필요. 순수 — 단위테스트."""
+    if any(p.get("share_pct") is not None for p in products):
+        return products
+    amts = [p["amount"] for p in products if p.get("amount")]
+    if len(amts) < 2 or sum(amts) <= 0:
+        return products
+    tot = sum(amts)
+    for p in products:
+        if p.get("amount"):
+            p["share_pct"] = round(p["amount"] / tot * 100.0, 1)
+    return products
+
+
 def load_inventory() -> dict:
     """저장된 매출구성 인벤토리(code→{company, products}) 로드. 없으면 {}."""
     p = _data_dir() / "dart_revenue_inventory.json"
@@ -146,6 +162,7 @@ def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict 
     products = _clean_products([p for p in raw if p.get("name")])
     if not products:
         return None
+    products = _fill_amount_based_share(products)   # C4: 비중 컬럼 없는 표 → 매출액 기반 비중
     # 비중합 sanity 폴백(사용자 2026-06-18) — 합계행 제거·다기간 보정 후에도 비중합이
     # 비현실(>130 or <70)이면 비중을 신뢰 안 함: share 전체 None(빈 비중 = 정직, G 정책
     # '빈칸 > 오매핑'). 제품명/금액은 보존(품목 매칭은 가능).
