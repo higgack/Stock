@@ -158,9 +158,11 @@ def _trade_upstream_url(base: str, sub: str) -> str:
     미디어(/media/...)는 trade 백엔드 ROOT(8765/media/...)에 있다 —
     /dashboard/ 의 자식이 아니라 형제. 그래서 /trade/media/... 는 base(기본
     …/dashboard)가 아니라 백엔드 루트로 보내야 8765/media/ 에 닿는다(안 그러면
-    8765/dashboard/media → 404 → 카드 이미지 회색, 사용자 2026-06-15). 그 외
-    경로는 base 아래로 그대로."""
-    if sub.startswith("/media/"):
+    8765/dashboard/media → 404 → 카드 이미지 회색, 사용자 2026-06-15). **/api/**
+    도 동일 — trade 백엔드의 보고서 API(/api/company_report·/api/period_report)는
+    ROOT(8765/api/...)라, base(…/dashboard) 아래로 보내면 8765/dashboard/api → 404
+    → 기업/전체 보고서 위젯 '네트워크 오류'(사용자 2026-06-18). 그 외는 base 아래로."""
+    if sub.startswith("/media/") or sub.startswith("/api/"):
         from urllib.parse import urlsplit
         p = urlsplit(base)
         return f"{p.scheme}://{p.netloc}" + sub
