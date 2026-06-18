@@ -12205,12 +12205,18 @@ def _render_research_us_table(research: list) -> str:
     # 등급변경·목표가·리서치는 외부 집계 다수를 표 **위 가로 한 줄**로 (사용자 2026-06-19
     # '위쪽으로·다른 사이트들도 이어서·최대한 많이'). 컨텍스트 참조 링크라 /sites(외부 nav)
     # 정책과 무관 — 위젯 내 데이터-소스 모음. 전부 무료 열람 가능한 등급변경/리서치 페이지.
+    # 알약(pill) 칩 — accent 색·테두리 명시로 가독성↑ + 브라우저 :visited 보라색 override
+    # (사용자 2026-06-19 '잘 안 보인다'). var(--accent) 테마 연동 + fallback 색.
     def _ref(url, name):
-        return (f'<a href="{url}" target="_blank" rel="noopener noreferrer">{name}</a>')
+        return (f'<a href="{url}" target="_blank" rel="noopener noreferrer" '
+                'style="display:inline-block;padding:2px 10px;margin:2px 3px;'
+                'border:1px solid var(--accent,#2f81f7);border-radius:12px;'
+                'color:var(--accent,#2f81f7);font-weight:600;white-space:nowrap;'
+                f'text-decoration:none">{name}</a>')
     refs = (
-        '<div class="research-refs" style="margin:2px 2px 9px;font-size:12px;line-height:1.9">'
-        '📋 전체 미국 등급변경·리서치 참조: '
-        + ' · '.join([
+        '<div class="research-refs" style="margin:2px 2px 10px;font-size:12px;line-height:2.1">'
+        '<span style="opacity:.75">📋 전체 미국 등급변경·리서치 참조</span> '
+        + ' '.join([
             _ref("https://www.marketbeat.com/ratings/", "MarketBeat"),
             _ref("https://www.benzinga.com/analyst-ratings", "Benzinga"),
             _ref("https://www.tipranks.com/analysts/top", "TipRanks"),
