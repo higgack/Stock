@@ -34,6 +34,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from trade.archive_template import SCROLL_RESTORE_JS  # 뒤로가기 스크롤 위치 복원(공용)
 from trade.store import latest_per_dedup_key, list_all_alerts, open_db, stats
 
 # 수동 실행(`python -m trade.dashboard`)에서도 TRADE_PUBLIC_HOST 등 .env 값을
@@ -781,7 +782,7 @@ def _build_html(
            "window._scrollRaw();"
            "document.addEventListener('toggle',function(e){"
            "if(e.target&&e.target.open)window._scrollRaw(e.target);},true);})();")
-        + '</script></body></html>'
+        + '</script>' + SCROLL_RESTORE_JS + '</body></html>'
     )
 
 

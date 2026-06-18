@@ -67,6 +67,12 @@ class RenderTests(unittest.TestCase):
         self.assertIn("classList.toggle('dark'", h)
         self.assertNotIn("@media(prefers-color-scheme", h)   # OS기반 미디어쿼리 제거
 
+    def test_render_embeds_scroll_restore(self):
+        # 뒤로가기 시 보던 위치 복원 (사용자 2026-06-18 '모든 대시보드')
+        h = R.render_page(self._ROWS)
+        self.assertIn("scrollRestoration", h)
+        self.assertIn("sessionStorage", h)
+
     def test_render_search_index_lowercase(self):
         h = R.render_page([{"mti6": "831110", "name": "DRAM디램", "industry": "반도체",
                             "hs": ["8542321000"], "companies": ["삼성전자"]}])
