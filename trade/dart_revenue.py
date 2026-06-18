@@ -329,6 +329,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="저장된 인벤토리의 파싱 의심 항목만 출력(고도화 대상)")
     p.add_argument("--failures", action="store_true",
                    help="직전 --refresh 의 실패 목록 — 파싱0(상장사·포맷 불일치) 우선 출력")
+    p.add_argument("--rescan-failures", action="store_true",
+                   help="인벤토리 미수록(=직전 실패) 종목만 재시도 → 실패 분류 기록"
+                        "(전수 재스캔 회피, 이미 추출된 종목은 건너뜀)")
     p.add_argument("--force", action="store_true",
                    help="--refresh 시 rcept 변경 없어도 전수 재파싱(파서 개선 반영)")
     args = p.parse_args(argv)
@@ -374,6 +377,19 @@ def main(argv: list[str] | None = None) -> int:
     if not key:
         print("⛔ DART_API_KEY 없음 — ~/stock/.env 확인.")
         return 2
+    if args.rescan_failures:
+        # 직전 실패 = 전 상장사 − 인벤토리 수록분. 이것만 재시도 → 전수(3970) 스캔 회피.
+        all_codes = all_listed_codes()
+        failed = sorted(set(all_codes) - set(load_inventory().keys()))
+        if not failed:
+            print("재시도 대상 없음 — 인벤토리가 전 상장사를 커버.")
+            return 0
+        print(f"🔁 인벤토리 미수록 {len(failed)}종 재시도 (전체 {len(all_codes)} 중) — "
+              "실패 분류 기록 중…")
+        res = refresh_inventory(codes=failed, api_key=key)
+        print(f"📦 실패 재스캔: {res}")
+        print("→ `--failures` 로 파싱0(상장사·포맷 불일치) 목록 확인")
+        return 0
     if args.refresh:
         shard = None
         if args.shard and "/" in args.shard:

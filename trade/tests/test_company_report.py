@@ -18,7 +18,7 @@ class RenderFreeTests(unittest.TestCase):
                               "export_usd": 2e9, "import_usd": 5e8}]}
         h = C.render_free(data)
         for must in ("삼성전자", "005930", "DRAM", "디램", "제품 구성", "관세청",
-                     ">수출<", ">수입<", ">YoY<", ">MoM<"):
+                     "🚢 수출", "📥 수입", ">YoY<", ">ΔYoY<", ">MoM<", ">ΔMoM<"):
             self.assertIn(must, h)
         self.assertIn("39.0%", h)
         self.assertIn("20.0억$", h)        # 수출 노출 억$ 포맷
@@ -109,21 +109,27 @@ class ExposureTests(unittest.TestCase):
         rows = C._company_exposure("삼성전자", by_mti, [])
         self.assertTrue(any(r["item"] == "디램" for r in rows))
 
-    def test_exposure_has_yoy_mom_metrics(self):
-        # 사용자 2026-06-18 — 노출 표에 YoY·ΔYoY·MoM·ΔMoM (산업트렌드와 동일 계산식)
-        months = {f"2025-{m:02d}": 100 + m for m in range(1, 13)}
-        months.update({f"2026-{m:02d}": 120 + m for m in range(1, 6)})
-        by_mti = {"831110": {"name": "디램", "industry": "반도체", "months": months}}
-        rows = C._company_exposure("삼성전자", by_mti, [])
+    def test_exposure_has_yoy_mom_metrics_both_directions(self):
+        # 사용자 2026-06-18 — 노출 표에 수출·수입 YoY·ΔYoY·MoM·ΔMoM (산업트렌드 동일식)
+        exp_months = {f"2025-{m:02d}": 100 + m for m in range(1, 13)}
+        exp_months.update({f"2026-{m:02d}": 120 + m for m in range(1, 6)})
+        imp_months = {f"2025-{m:02d}": 50 + m for m in range(1, 13)}
+        imp_months.update({f"2026-{m:02d}": 40 + m for m in range(1, 6)})
+        by_mti = {"831110": {"name": "디램", "industry": "반도체", "months": exp_months}}
+        by_imp = {"831110": {"months": imp_months}}
+        rows = C._company_exposure("삼성전자", by_mti, [], by_imp)
         dram = next(r for r in rows if r["item"] == "디램")
-        for k in ("yoy", "dyoy", "mom", "dmom"):
+        for k in ("export_yoy", "export_dyoy", "export_mom", "export_dmom",
+                  "import_yoy", "import_dyoy", "import_mom", "import_dmom"):
             self.assertIn(k, dram)
-        self.assertIsNotNone(dram["yoy"])
-        self.assertIsNotNone(dram["mom"])
+        self.assertIsNotNone(dram["export_yoy"])
+        self.assertIsNotNone(dram["import_yoy"])     # 수입쪽도
+        self.assertGreater(dram["export_yoy"], 0)    # 수출 100+→120+ 상승
+        self.assertLess(dram["import_yoy"], 0)       # 수입 50+→40+ 하락
         h = C.render_free({"mode": "company", "name": "삼성전자", "code": "005930",
                            "products": [], "exposure": rows})
-        for col in (">YoY<", ">ΔYoY<", ">MoM<", ">ΔMoM<"):
-            self.assertIn(col, h)
+        for must in ("🚢 수출", "📥 수입", ">YoY<", ">ΔYoY<", ">MoM<", ">ΔMoM<"):
+            self.assertIn(must, h)
 
     def test_month_metrics_empty_graceful(self):
         self.assertEqual(C._month_metrics(None), {})
@@ -169,7 +175,7 @@ class ItemModeTests(unittest.TestCase):
                 "companies": ["삼성전자", "SK하이닉스"]}
         h = C.render_free(data)
         for must in ("관련 기업", "삼성전자", "SK하이닉스", "디램",
-                     ">수출<", ">수입<", "관련 상장사"):
+                     "🚢 수출", "📥 수입", "관련 상장사", "관련기업"):
             self.assertIn(must, h)
         self.assertIn("20.0억$", h)
 

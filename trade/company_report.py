@@ -61,6 +61,61 @@ def _pct_cell(v, suf: str = "%") -> str:
             f'{sign}{v:.1f}{suf}</td>')
 
 
+def _dir_metrics(exp_node, imp_node) -> dict:
+    """수출(exp_node)·수입(imp_node) 양방향 최신월 추세 → export_*/import_* (사용자
+    2026-06-18 '수입쪽도'). 산업트렌드와 동일 계산식(_month_metrics)."""
+    em = _month_metrics((exp_node or {}).get("months"))
+    im = _month_metrics((imp_node or {}).get("months"))
+    return {
+        "export_yoy": em.get("yoy"), "export_dyoy": em.get("dyoy"),
+        "export_mom": em.get("mom"), "export_dmom": em.get("dmom"),
+        "import_yoy": im.get("yoy"), "import_dyoy": im.get("dyoy"),
+        "import_mom": im.get("mom"), "import_dmom": im.get("dmom"),
+    }
+
+
+def _exposure_table(rows: list[dict], *, title: str, subtitle: str,
+                    with_companies: bool = False) -> str:
+    """노출/매칭 품목 표 — 수출·수입 양방향 값 + YoY·ΔYoY·MoM·ΔMoM (2단 헤더,
+    가로 스크롤). 회사 모드(노출)·품목 모드(매칭) 공용. 순수."""
+    e = _html.escape
+
+    def _row(x: dict) -> str:
+        c = (f'<td style="padding:4px 8px">{e(x["item"])}</td>'
+             f'<td style="padding:4px 8px;color:#9aa0aa">{e(x.get("industry",""))}</td>'
+             f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("export_usd"))}</td>'
+             f'{_pct_cell(x.get("export_yoy"))}{_pct_cell(x.get("export_dyoy"), "%p")}'
+             f'{_pct_cell(x.get("export_mom"))}{_pct_cell(x.get("export_dmom"), "%p")}'
+             f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("import_usd"))}</td>'
+             f'{_pct_cell(x.get("import_yoy"))}{_pct_cell(x.get("import_dyoy"), "%p")}'
+             f'{_pct_cell(x.get("import_mom"))}{_pct_cell(x.get("import_dmom"), "%p")}')
+        if with_companies:
+            c += (f'<td style="padding:4px 8px;color:#9aa0aa">'
+                  f'{e(", ".join(x.get("companies", [])[:4]))}</td>')
+        return f"<tr>{c}</tr>"
+
+    def _th(t, a="right", **attr):
+        a_str = "".join(f' {k}="{v}"' for k, v in attr.items())
+        return (f'<th{a_str} style="text-align:{a};padding:4px 8px;color:#9aa0aa">'
+                f'{t}</th>')
+
+    sub5 = (_th("최신월") + _th("YoY") + _th("ΔYoY") + _th("MoM") + _th("ΔMoM"))
+    header = (
+        '<thead><tr>'
+        + _th("품목", "left", rowspan=2) + _th("산업", "left", rowspan=2)
+        + _th("🚢 수출", "center", colspan=5) + _th("📥 수입", "center", colspan=5)
+        + (_th("관련기업", "left", rowspan=2) if with_companies else "")
+        + '</tr><tr>' + sub5 + sub5 + '</tr></thead>'
+    )
+    body = "".join(_row(x) for x in rows)
+    return (f'<div style="font-weight:600;margin:14px 0 4px">{title} '
+            f'<span style="font-weight:400;font-size:12px;color:#9aa0aa">{subtitle}'
+            '</span></div>'
+            '<div style="overflow-x:auto">'
+            '<table style="border-collapse:collapse;font-size:13px;width:100%;min-width:780px">'
+            f'{header}<tbody>{body}</tbody></table></div>')
+
+
 def _load_alerts() -> list:
     """store.db 의 BeOn 알림 전체 (회사별 탭과 동일 소스). 읽기전용 open —
     report 프로세스가 스키마 마이그레이션(쓰기)을 트리거하지 않게(load_channel_pairs
@@ -154,14 +209,13 @@ def _company_exposure(name: str, by_mti: dict, pairs: list,
         if hit is None:
             hit = _match_mti(item_display, name_idx)
         mti6, node = hit if hit else (None, None)
-        m = _month_metrics(node.get("months") if node else None)   # 수출 기준 추세
+        imp_node = (by_imp or {}).get(mti6) if mti6 else None
         rows[key] = {
             "item": (node.get("name") if node else item_display) or item_display,
             "industry": (node.get("industry") if node else "") or "",
             "export_usd": _latest(node) if node else None,
-            "import_usd": _latest((by_imp or {}).get(mti6)) if mti6 else None,
-            "yoy": m.get("yoy"), "dyoy": m.get("dyoy"),
-            "mom": m.get("mom"), "dmom": m.get("dmom"),
+            "import_usd": _latest(imp_node) if imp_node else None,
+            **_dir_metrics(node, imp_node),   # export_*/import_* YoY·ΔYoY·MoM·ΔMoM
         }
 
     # (A) BeOn 알림 — 회사별 탭과 동일한 회사→품목 매핑(풍부)
@@ -218,12 +272,11 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
             continue
         cos = list(dict.fromkeys(list(mti_companies.companies_for(item))
                                  + mti_companies.channel_companies_for(item, pairs)))
-        m = _month_metrics(node.get("months"))
+        imp_node = (by_imp or {}).get(mti6)
         rows.append({"item": item, "industry": ind,
                      "export_usd": _latest(node),
-                     "import_usd": _latest((by_imp or {}).get(mti6)),
-                     "yoy": m.get("yoy"), "dyoy": m.get("dyoy"),
-                     "mom": m.get("mom"), "dmom": m.get("dmom"),
+                     "import_usd": _latest(imp_node),
+                     **_dir_metrics(node, imp_node),
                      "companies": cos})
         _add(cos)
 
@@ -320,30 +373,9 @@ def _render_free_item(data: dict) -> str:
         comp_html = ('<div style="color:#9aa0aa;font-size:13px;margin:10px 0">🏢 관련 상장사 '
                      '— 큐레이션·채널 미등록</div>')
     if items:
-        irows = "".join(
-            f'<tr><td style="padding:4px 8px">{e(x["item"])}</td>'
-            f'<td style="padding:4px 8px;color:#9aa0aa">{e(x.get("industry",""))}</td>'
-            f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("export_usd"))}</td>'
-            f'{_pct_cell(x.get("yoy"))}{_pct_cell(x.get("dyoy"), "%p")}'
-            f'{_pct_cell(x.get("mom"))}{_pct_cell(x.get("dmom"), "%p")}'
-            f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("import_usd"))}</td>'
-            f'<td style="padding:4px 8px;color:#9aa0aa">{e(", ".join(x.get("companies", [])[:4]))}</td></tr>'
-            for x in items)
-        items_html = ('<div style="font-weight:600;margin:14px 0 4px">🚢 매칭 품목 '
-                      '<span style="font-weight:400;font-size:12px;color:#9aa0aa">'
-                      '· 수출 추세(YoY·MoM) · 최신월 수출액순</span></div>'
-                      '<table style="border-collapse:collapse;font-size:13px;width:100%">'
-                      '<thead><tr>'
-                      '<th style="text-align:left;padding:4px 8px;color:#9aa0aa">품목</th>'
-                      '<th style="text-align:left;padding:4px 8px;color:#9aa0aa">산업</th>'
-                      '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">수출</th>'
-                      '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">YoY</th>'
-                      '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">ΔYoY</th>'
-                      '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">MoM</th>'
-                      '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">ΔMoM</th>'
-                      '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">수입</th>'
-                      '<th style="text-align:left;padding:4px 8px;color:#9aa0aa">관련기업</th></tr></thead>'
-                      f'<tbody>{irows}</tbody></table>')
+        items_html = _exposure_table(
+            items, with_companies=True, title="🚢 매칭 품목",
+            subtitle="· 수출·수입 추세(YoY·ΔYoY·MoM·ΔMoM) · 최신월 수출액순")
     else:
         items_html = ''
     return f'<div style="line-height:1.5">{head}{comp_html}{items_html}</div>'
@@ -377,30 +409,12 @@ def render_free(data: dict) -> str:
     else:
         prod_html = ('<div style="color:#9aa0aa;font-size:13px;margin:10px 0">📦 제품 구성 — '
                      'DART 매출표 미확보(비상장·해외·미발견)</div>')
-    # 관세청 노출 (수출 추세 YoY·ΔYoY·MoM·ΔMoM 포함 — 산업트렌드와 동일 계산식)
+    # 관세청 노출 (수출·수입 추세 YoY·ΔYoY·MoM·ΔMoM 포함 — 산업트렌드와 동일 계산식)
     if exposure:
-        erows = "".join(
-            f'<tr><td style="padding:4px 8px">{e(x["item"])}</td>'
-            f'<td style="padding:4px 8px;color:#9aa0aa">{e(x.get("industry",""))}</td>'
-            f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("export_usd"))}</td>'
-            f'{_pct_cell(x.get("yoy"))}{_pct_cell(x.get("dyoy"), "%p")}'
-            f'{_pct_cell(x.get("mom"))}{_pct_cell(x.get("dmom"), "%p")}'
-            f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("import_usd"))}</td></tr>'
-            for x in exposure)
-        exp_html = ('<div style="font-weight:600;margin:14px 0 4px">🚢 관세청 수출입 품목 노출 '
-                    '<span style="font-weight:400;font-size:12px;color:#9aa0aa">'
-                    '· 회사별 채널 매핑 + 관세청 수출입 · 수출 추세(YoY·MoM) · 최신월 수출액순'
-                    '</span></div>'
-                    '<table style="border-collapse:collapse;font-size:13px;width:100%">'
-                    '<thead><tr><th style="text-align:left;padding:4px 8px;color:#9aa0aa">품목</th>'
-                    '<th style="text-align:left;padding:4px 8px;color:#9aa0aa">산업</th>'
-                    '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">수출</th>'
-                    '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">YoY</th>'
-                    '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">ΔYoY</th>'
-                    '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">MoM</th>'
-                    '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">ΔMoM</th>'
-                    '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">수입</th></tr></thead>'
-                    f'<tbody>{erows}</tbody></table>')
+        exp_html = _exposure_table(
+            exposure, title="🚢 관세청 수출입 품목 노출",
+            subtitle="· 회사별 채널 매핑 + 관세청 수출입 · 수출·수입 추세(YoY·ΔYoY·MoM·ΔMoM)"
+                     " · 최신월 수출액순")
     else:
         exp_html = ('<div style="color:#9aa0aa;font-size:13px;margin:14px 0">🚢 관세청 노출 — '
                     '매핑된 품목 없음(회사별 채널·큐레이션 미등록)</div>')
