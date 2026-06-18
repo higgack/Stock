@@ -192,6 +192,54 @@ def parse_table_block(block: str) -> list[list[str]]:
     return [r for r in rows if any(c.strip() for c in r)]
 
 
+def parse_table_grid(block: str, max_cols: int = 40) -> list[list[str]]:
+    """<TABLE> → rowspan/colspan 전파 정렬 그리드(병합셀 값 복제). 단순표(병합 없음)는
+    parse_table_block 과 사실상 동일. 다기간(연도별 매출액|비율) 표의 컬럼 정렬에 필수
+    — 대한항공 2026-06-18: rowspan('대한항공'·'항공운송' 다행 병합) 미처리로 비율
+    컬럼이 행마다 어긋나 760% 오집계. 순수(단위테스트)."""
+    trs = re.findall(r"<TR\b.*?</TR>", block, re.DOTALL | re.IGNORECASE)
+    grid: list[list[str]] = []
+    carry: dict[int, list] = {}        # col → [값, 남은 rowspan]
+    for tr in trs:
+        cells = re.findall(
+            r"<(?:TD|TE|TU|TH)\b([^>]*)>(.*?)</(?:TD|TE|TU|TH)>",
+            tr, re.DOTALL | re.IGNORECASE)
+        if not cells:                  # 셀 태그 변형 — 평문 1칸
+            flat = flatten(tr)
+            if flat:
+                grid.append([flat])
+            continue
+        row: list[str] = []
+        col = 0
+        ci = 0
+        while (ci < len(cells) or any(c <= col for c in carry)) and col < max_cols:
+            if col in carry:           # 위 행 rowspan 잔여를 이 col 에 먼저 채움
+                val, rem = carry[col]
+                row.append(val)
+                if rem > 1:
+                    carry[col] = [val, rem - 1]
+                else:
+                    del carry[col]
+                col += 1
+                continue
+            if ci >= len(cells):
+                break
+            attrs, raw = cells[ci]
+            ci += 1
+            val = flatten(raw)
+            cm = re.search(r'COLSPAN\s*=\s*"?(\d+)', attrs, re.IGNORECASE)
+            rm = re.search(r'ROWSPAN\s*=\s*"?(\d+)', attrs, re.IGNORECASE)
+            cspan = min(int(cm.group(1)), max_cols) if cm else 1
+            rspan = int(rm.group(1)) if rm else 1
+            for _ in range(max(1, cspan)):
+                row.append(val)
+                if rspan > 1:
+                    carry[col] = [val, rspan - 1]
+                col += 1
+        grid.append(row)
+    return [r for r in grid if any(c.strip() for c in r)]
+
+
 def _to_pct(s: str) -> float | None:
     """'33.1%' / '33.1' / '33.1 %' → 33.1 (0~100 범위만). 순수."""
     if not s:
@@ -302,6 +350,55 @@ def products_from_rows(rows: list[list[str]]) -> list[dict]:
             amount = max(nums) if nums else None
         out.append({"name": name.strip()[:40], "share_pct": share, "amount": amount})
     return out
+
+
+def products_from_grid(grid: list[list[str]]) -> list[dict] | None:
+    """다기간(연도별 매출액|비율) 그리드 → **최신연도(첫) 비율/매출만**. parse_table_grid
+    로 컬럼 정렬된 입력 가정. 지표헤더(매출액 2+ AND 비율 2+) 행에서 첫 비율=최신연도라
+    연도별 비율 중복합산(대한항공 760%) 차단. name=비율 왼쪽 첫 텍스트 컬럼(세부 품목).
+    다기간 아니면 None(호출부가 products_from_rows 폴백). 순수(단위테스트)."""
+    if not grid:
+        return None
+    hdr_i = None
+    for i, row in enumerate(grid[:6]):
+        n_amt = sum(1 for c in row if "매출액" in c or c.strip() in ("매출", "금액"))
+        n_pct = sum(1 for c in row if any(k in c for k in ("비율", "비중", "구성비")))
+        if n_amt >= 2 and n_pct >= 2:           # 다기간(연도 여러 개) 지표 헤더
+            hdr_i = i
+            break
+    if hdr_i is None:
+        return None
+    hdr = grid[hdr_i]
+    share_col = next((j for j, c in enumerate(hdr)
+                      if any(k in c for k in ("비율", "비중", "구성비"))), None)
+    amt_col = next((j for j, c in enumerate(hdr)
+                    if "매출액" in c or c.strip() in ("매출", "금액")), None)
+    if share_col is None:
+        return None
+    data = grid[hdr_i + 1:]
+    # name_col = share_col 왼쪽에서 데이터행이 texty 인 가장 오른쪽(세부 품목) 컬럼
+    name_col = None
+    for j in range(share_col - 1, -1, -1):
+        if any(j < len(r) and _is_texty(r[j]) for r in data[:6]):
+            name_col = j
+            break
+    if name_col is None:
+        return None
+    out: list[dict] = []
+    seen: set = set()
+    for row in data:
+        if name_col >= len(row):
+            continue
+        name = row[name_col].strip()
+        if not _is_texty(name) or name in seen:
+            continue
+        share = _to_pct(row[share_col]) if share_col < len(row) else None
+        amount = _to_amount(row[amt_col]) if (amt_col is not None and amt_col < len(row)) else None
+        if share is None and amount is None:
+            continue
+        seen.add(name)
+        out.append({"name": name[:40], "share_pct": share, "amount": amount})
+    return out or None
 
 
 def products_from_flat(segment: str, cap: int = 12) -> list[dict]:

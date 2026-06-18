@@ -122,7 +122,8 @@ def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict 
     # 프로브(검증·테스트된 추출 primitives) 재사용 — 단일 소스, dup 없음.
     from trade.scripts.probe_dart_revenue import (
         _fetch_report_list, best_revenue_table, download_doc_raw,
-        pick_business_report, products_from_rows,
+        parse_table_grid, pick_business_report, products_from_grid,
+        products_from_rows,
     )
     from bot.dart_client import get_dart
     dart = get_dart()
@@ -139,9 +140,19 @@ def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict 
     if not best:
         return None
     _t, rows = best
-    products = _clean_products([p for p in products_from_rows(rows) if p.get("name")])
+    # 다기간(연도별 매출액|비율) 표는 grid(rowspan/colspan 전파)로 최신연도만 — 비율
+    # 중복합산(대한항공 760%) 차단. 단일연도·비-다기간은 None → products_from_rows 폴백.
+    raw = products_from_grid(parse_table_grid(_t)) or products_from_rows(rows)
+    products = _clean_products([p for p in raw if p.get("name")])
     if not products:
         return None
+    # 비중합 sanity 폴백(사용자 2026-06-18) — 합계행 제거·다기간 보정 후에도 비중합이
+    # 비현실(>130 or <70)이면 비중을 신뢰 안 함: share 전체 None(빈 비중 = 정직, G 정책
+    # '빈칸 > 오매핑'). 제품명/금액은 보존(품목 매칭은 가능).
+    _sh = [p["share_pct"] for p in products if p.get("share_pct") is not None]
+    if _sh and not (70 <= sum(_sh) <= 130):
+        for p in products:
+            p["share_pct"] = None
     return {
         "code": stock_code,
         "company": dart.stock_code_to_name(stock_code) or stock_code,

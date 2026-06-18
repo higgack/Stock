@@ -181,6 +181,38 @@ class CollectTests(unittest.TestCase):
                  "<TR><TD>철강</TD><TD>5,000</TD><TD>400</TD><TD>80%</TD></TR></TABLE>")
         self.assertGreater(P.collect_score(P.parse_table_block(posco)), 0)  # 매출구성표 유지
 
+    def test_parse_table_grid_merge(self):
+        # rowspan/colspan 전파 — 병합셀 값 복제로 컬럼 정렬(대한항공 클래스).
+        t = ("<TABLE><TR><TD ROWSPAN=2>A</TD><TD COLSPAN=2>2025</TD></TR>"
+             "<TR><TD>매출액</TD><TD>비율</TD></TR>"
+             "<TR><TD>B</TD><TD>100</TD><TD>50%</TD></TR></TABLE>")
+        g = P.parse_table_grid(t)
+        self.assertEqual(g[0], ["A", "2025", "2025"])     # colspan 복제
+        self.assertEqual(g[1], ["A", "매출액", "비율"])   # rowspan 전파(A)
+        self.assertEqual(g[2], ["B", "100", "50%"])
+        # 단순표(병합 없음)는 parse_table_block 과 동일 → 회귀 0
+        s = "<TABLE><TR><TD>품목</TD><TD>비중</TD></TR><TR><TD>DRAM</TD><TD>60%</TD></TR></TABLE>"
+        self.assertEqual(P.parse_table_grid(s), P.parse_table_block(s))
+
+    def test_products_from_grid_multiperiod(self):
+        # 다기간(매출액|비율 ×연도) → 최신연도(첫 비율)만, 연도별 중복합산(760%) 차단.
+        t = ("<TABLE>"
+             "<TR><TD ROWSPAN=2>구분</TD><TD COLSPAN=2>2025</TD><TD COLSPAN=2>2024</TD></TR>"
+             "<TR><TD>매출액</TD><TD>비율</TD><TD>매출액</TD><TD>비율</TD></TR>"
+             "<TR><TD>여객</TD><TD>900</TD><TD>90%</TD><TD>800</TD><TD>88%</TD></TR>"
+             "<TR><TD>화물</TD><TD>100</TD><TD>10%</TD><TD>120</TD><TD>12%</TD></TR></TABLE>")
+        ps = P.products_from_grid(P.parse_table_grid(t))
+        got = {p["name"]: p["share_pct"] for p in ps}
+        self.assertEqual(got.get("여객"), 90.0)        # 2025 비율만(2024 88 미사용)
+        self.assertEqual(got.get("화물"), 10.0)
+        self.assertEqual(sum(p["share_pct"] for p in ps), 100.0)  # 188 아님
+
+    def test_products_from_grid_single_period_none(self):
+        # 단일연도(매출액1·비율1) → None → 호출부 products_from_rows 폴백(회귀 0)
+        t = ("<TABLE><TR><TD>품목</TD><TD>매출액</TD><TD>비중</TD></TR>"
+             "<TR><TD>DRAM</TD><TD>1000</TD><TD>60%</TD></TR></TABLE>")
+        self.assertIsNone(P.products_from_grid(P.parse_table_grid(t)))
+
     def test_best_revenue_table_skips_accounting_only(self):
         # 회계 표만 있는 문서 → 매출표 미발견(가짜 시그니처 방지).
         doc = ("<TABLE><TR><TD>구분</TD><TD>추정내용연수</TD></TR>"
