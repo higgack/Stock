@@ -980,9 +980,12 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-ttm-yoy-line{fill:none;stroke:#6d5bd0;stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
 .ind-ttm-yoy-dot{fill:#6d5bd0;stroke:#fff;stroke-width:1.5}
 .ind-sub-note{font-size:12px;color:var(--text-sub);padding:0 16px 8px}
-.ind-sub-wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 16px 8px}
+.ind-sub-wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 16px 8px;min-width:0}
 @media(max-width:860px){.ind-sub-wrap{grid-template-columns:1fr}}
-.ind-sub-card{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px;box-shadow:var(--shadow)}
+/* min-width:0 = 그리드 아이템이 1fr 트랙으로 수축 → 안의 .ind-raw-scroll(월별표)이
+   실제로 가로 스크롤(없으면 넓은 월별표가 카드를 밀어 페이지 블로우아웃·스크롤 0,
+   사용자 2026-06-18 '스크롤도 없어'). .ind-card(#497)와 동일 패턴, sub-card 누락분. */
+.ind-sub-card{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:10px 12px;box-shadow:var(--shadow);min-width:0}
 .ind-sub-card summary{cursor:pointer;font-size:13px;font-weight:600;margin-bottom:6px}
 .ind-sub-ind{color:var(--text-sub)}
 .ind-table td.pos{color:var(--tone-export)}.ind-table td.neg{color:var(--tone-import)}
