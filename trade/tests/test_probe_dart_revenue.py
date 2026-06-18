@@ -209,6 +209,29 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(got.get("화물"), 10.0)
         self.assertEqual(sum(p["share_pct"] for p in ps), 100.0)  # 188 아님
 
+    def test_products_from_grid_segment_metric_rows(self):
+        # 부문별 표(구분: 매출액/영업이익/내부매출액) — 매출액 행만, 이름=부문 컬럼
+        # (현대차 005380 raw 2026-06-18). 영업이익·내부매출 비중 합산 → sanity 폴백 차단.
+        t = ("<TABLE><TBODY>"
+             "<TR><TD COLSPAN=2 ROWSPAN=2>주요제품</TD><TD ROWSPAN=2>구분</TD>"
+             "<TD COLSPAN=2>2025</TD><TD COLSPAN=2>2024</TD></TR>"
+             "<TR><TD>금액</TD><TD>비중</TD><TD>금액</TD><TD>비중</TD></TR>"
+             "<TR><TD ROWSPAN=3>차량부문</TD><TD ROWSPAN=3>자동차 등</TD>"
+             "<TD>매출액</TD><TD>145,631,818</TD><TD>78.2</TD><TD>136,725,011</TD><TD>78.1</TD></TR>"
+             "<TR><TD>영업이익</TD><TD>8,470,939</TD><TD>73.9</TD><TD>11,411,499</TD><TD>80.1</TD></TR>"
+             "<TR><TD>내부매출액</TD><TD>(87,248,014)</TD><TD>97.3</TD><TD>(85,166,239)</TD><TD>97.6</TD></TR>"
+             "<TR><TD ROWSPAN=3>기타부문</TD><TD ROWSPAN=3>철도제작 등</TD>"
+             "<TD>매출액</TD><TD>10,389,879</TD><TD>5.6</TD><TD>10,059,492</TD><TD>5.7</TD></TR>"
+             "<TR><TD>영업이익</TD><TD>832,869</TD><TD>7.2</TD><TD>1,032,844</TD><TD>7.3</TD></TR>"
+             "<TR><TD>내부매출액</TD><TD>(2,064,276)</TD><TD>2.3</TD><TD>(1,756,849)</TD><TD>2.0</TD></TR>"
+             "</TBODY></TABLE>")
+        got = {p["name"]: p["share_pct"] for p in P.products_from_grid(P.parse_table_grid(t))}
+        self.assertEqual(got.get("자동차 등"), 78.2)     # 매출액 행 비중만
+        self.assertEqual(got.get("철도제작 등"), 5.6)
+        self.assertNotIn("영업이익", got)                # 지표 행 제외
+        self.assertNotIn("내부매출액", got)
+        self.assertNotIn("매출액", got)                  # 구분 컬럼이 이름 아님
+
     def test_products_from_grid_multicompany_break(self):
         # 대한항공 2026-06-18 — 연결 표(모회사+자회사 각 100%): 회사별 합계 행('합 계')
         # 에서 break → 모회사만. '기타'는 품목 포함, 진에어(자회사) 제외. 비중합 100%.

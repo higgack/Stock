@@ -118,6 +118,12 @@ _REVENUE_KEYWORDS = (
 # 합계/소계/총계/계(공백 변형 포함)만 비-품목 행으로 제외.
 _TOTAL_NAMES = ("합계", "합 계", "총계", "소계", "계", "총 계")
 
+# 부문별 표의 '구분' 컬럼 지표 라벨 — 이 라벨들이 한 컬럼 데이터에 반복되면 그 컬럼은
+# 품목명이 아니라 지표(매출액/영업이익/내부매출액) 행 구분이다(현대차·두산 등 005380
+# raw 2026-06-18). 매출액 행만 남기고 이름은 왼쪽 부문 컬럼에서.
+_METRIC_LABELS = ("매출액", "영업이익", "영업손실", "내부매출", "순매출액", "총매출액",
+                  "매출원가", "영업외", "당기순", "판매비", "영업비용")
+
 
 # ─────────────────────────────────────────────────────────────────────
 # 순수 헬퍼 (단위테스트 — test_probe_dart_revenue.py)
@@ -384,9 +390,22 @@ def products_from_grid(grid: list[list[str]]) -> list[dict] | None:
     if share_col is None:
         return None
     data = grid[hdr_i + 1:]
-    # name_col = share_col 왼쪽에서 데이터행이 texty 인 가장 오른쪽(세부 품목) 컬럼
-    name_col = None
+    # 부문별 표(현대차·두산·HD현대 등): '구분' 컬럼에 매출액/영업이익/내부매출액 행이
+    # 부문마다 반복돼, 그대로 두면 영업이익·내부매출액 비중까지 합산돼 sanity 폴백으로
+    # 0 제품이 된다(사용자 2026-06-18 005380 raw). 구분 컬럼을 찾아 '매출액' 행만 남기고
+    # 이름은 그 왼쪽 부문/품목 컬럼에서 — 정상 제품별 표엔 그런 컬럼이 없어 무영향.
+    name_search_start = share_col - 1
     for j in range(share_col - 1, -1, -1):
+        vals = [r[j].strip() for r in data[:10] if j < len(r) and r[j].strip()]
+        n_metric = sum(1 for v in vals if any(m in v for m in _METRIC_LABELS))
+        if vals and n_metric >= max(2, (len(vals) + 1) // 2):     # 구분(지표) 컬럼
+            data = [r for r in data if j < len(r)
+                    and "매출" in r[j] and "내부" not in r[j]]     # 매출액 행만(내부매출 제외)
+            name_search_start = j - 1
+            break
+    # name_col = (구분 왼쪽) share_col 왼쪽에서 데이터행이 texty 인 가장 오른쪽 컬럼
+    name_col = None
+    for j in range(name_search_start, -1, -1):
         if any(j < len(r) and _is_texty(r[j]) for r in data[:6]):
             name_col = j
             break
