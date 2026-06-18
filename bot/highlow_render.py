@@ -98,7 +98,11 @@ _MULTISELECT_JS = """
 .ms-list{max-height:210px;overflow-y:auto}
 .ms-list label{display:block;font-size:11px;padding:2px 3px;white-space:nowrap;cursor:pointer;color:#e6edf3 !important}
 .ms-list label:hover{background:#30363d}
-.ms-list input{margin-right:5px;vertical-align:middle}
+/* 체크박스는 width:auto 강제 — 필터행 규칙 '.hl-filter input{width:100%}'(아래)이
+   ms-list 체크박스에도 적용돼 라벨 텍스트를 화면 밖으로 밀어내던 것 차단(사용자
+   2026-06-18 '필터 여전히 안나옴', 가로 스크롤 증거). 검색창(.ms-srch)은 100% 유지. */
+.ms-list input{margin-right:5px;vertical-align:middle;width:auto !important;flex:none}
+.ms-list label{display:flex;align-items:center}
 [data-theme="light"] .ms-pop{background:#ffffff !important;color:#1f2328 !important;border-color:#d0d7de}
 [data-theme="light"] .ms-srch{background:#f6f8fa !important;color:#1f2328 !important;border-color:#d0d7de}
 [data-theme="light"] .ms-srch::placeholder{color:#6e7781}
