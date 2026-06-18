@@ -1162,7 +1162,8 @@ _SITES_TEXT = """🔗 <b>참고 사이트</b>
  • <a href="https://www.tessie.com/">Tesla tracking</a>
  • <a href="https://www.obf.md/app">키워드트래커</a>
  • <a href="https://stocks.allreview.kr/067010">실적분석</a>
- • <a href="https://www.ant.wiki/spacex">SpaceX</a>"""
+ • <a href="https://www.ant.wiki/spacex">SpaceX</a>
+ • <a href="https://kospi-king.codojun.com/">Global peer comparison</a>"""
 
 
 # Section divider used throughout _HELP_TEXT. Must match the literal
