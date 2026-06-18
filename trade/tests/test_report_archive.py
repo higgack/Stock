@@ -129,11 +129,20 @@ class ReportArchiveTests(unittest.TestCase):
         self.assertEqual(res["sent"], 1)
         self.assertTrue(sl.call_args[0][1].startswith("🏢"))   # 저장 tg 본문
 
-    def test_send_to_channel_no_tg_graceful(self):
-        f = self._rec(title="옛것")                       # tg 없음(이 기능 이전)
-        with mock.patch.dict(os.environ, {"TRADE_CHANNEL_CHAT_IDS": "123"}):
-            self.assertFalse(RA.send_to_channel(f)["ok"])
-        self.assertFalse(RA.send_to_channel("../../x.html")["ok"])   # path guard
+    def test_send_to_channel_falls_back_to_summary(self):
+        # tg 없는 옛 기록 → 색인 본문(summary, 링크 <a> 제거)으로 폴백 전송
+        f = self._rec(title="옛것", summary="🏢 옛것\n제품: ABC")
+        with mock.patch.dict(os.environ, {"TRADE_CHANNEL_CHAT_IDS": "123"}), \
+                mock.patch("trade.scripts.customs_alert.send_long", return_value=1) as sl:
+            res = RA.send_to_channel(f)
+        self.assertTrue(res["ok"])
+        body = sl.call_args[0][1]
+        self.assertIn("🏢 옛것", body)
+        self.assertNotIn("<a", body)                      # 링크 제거됨
+
+    def test_send_to_channel_path_guard(self):
+        self.assertFalse(RA.send_to_channel("../../x.html")["ok"])
+        self.assertFalse(RA.send_to_channel("report_archive_pages/../x.html")["ok"])
 
     def test_migrate_frozen_navs(self):
         # #505 이전 동결 페이지의 '../index.html'(NOAH 가로챔) → '../'(trade 루트)
