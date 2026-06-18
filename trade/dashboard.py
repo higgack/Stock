@@ -658,6 +658,9 @@ def _build_html(
         'document.getElementById("rb-llm").addEventListener("click",function(){run("llm");});'
         'document.getElementById("rb-chan").addEventListener("click",function(){run("channel");});'
         'q.addEventListener("keydown",function(e){if(e.key==="Enter")run("free");});'
+        # 검색어를 지우면(X 버튼·전체삭제) 보고서도 함께 비움 (사용자 2026-06-18).
+        'q.addEventListener("input",function(){if(!(q.value||"").trim())res.innerHTML="";});'
+        'q.addEventListener("search",function(){if(!(q.value||"").trim())res.innerHTML="";});'
         '})();</script>'
         # 🗂️ 전체 보고서 (사용자 2026-06-17) — 특정 월(기본 최신월) 수출입 전체 집계
         # + 수출↔수입 관계 분석. company_report 위젯 미러(pr-* ids). 무료=데이터(₩0) /
@@ -685,6 +688,9 @@ def _build_html(
         'document.getElementById("pr-llm").addEventListener("click",function(){run("llm");});'
         'document.getElementById("pr-chan").addEventListener("click",function(){run("channel");});'
         'ym.addEventListener("keydown",function(e){if(e.key==="Enter")run("free");});'
+        # 검색어를 지우면 보고서도 함께 비움 (사용자 2026-06-18).
+        'ym.addEventListener("input",function(){if(!(ym.value||"").trim())res.innerHTML="";});'
+        'ym.addEventListener("search",function(){if(!(ym.value||"").trim())res.innerHTML="";});'
         '})();</script>'
         # 🤖 유료 AI 보고서 아카이브 링크 (사용자 2026-06-18 '돈내고 분석한건 대시보드에 아카이브').
         + '<div class="report-archive-link"><a href="report_archive.html">'

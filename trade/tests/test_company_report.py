@@ -67,6 +67,48 @@ class ExposureTests(unittest.TestCase):
     def test_empty_name(self):
         self.assertEqual(C._company_exposure("", {"1": {"name": "x"}}, []), [])
 
+    def test_alert_items_mirror_company_view(self):
+        # 회사별 탭과 동일 소스: BeOn alerts 에서 그 회사가 태깅된 품목 (사용자 2026-06-18)
+        alerts = [
+            {"item": "디램", "stocks": ["삼성전자", "SK하이닉스"]},
+            {"item": "디램", "stocks": ["삼성전자"]},          # 중복 품목 → dedupe
+            {"item": "디램모듈", "stocks": ["삼성전자"]},
+            {"item": "라면", "stocks": ["농심"]},              # 삼성전자 아님 → 제외
+        ]
+        items = C._company_alert_items("삼성전자", alerts)
+        self.assertEqual(items, ["디램", "디램모듈"])
+        self.assertEqual(C._company_alert_items("삼성전자", []), [])
+
+    def test_exposure_union_no_dup_no_false_attach(self):
+        # 회사별 alert 품목(풍부) + 큐레이션 union, 관세청 수치 정확일치만 부착.
+        by_mti = {
+            "831110": {"name": "디램", "industry": "반도체",
+                       "months": {"2026-05": 186.1e8}},
+            "831200": {"name": "낸드", "industry": "반도체",
+                       "months": {"2026-05": 17.2e8}},
+        }
+        by_imp = {"831110": {"months": {"2026-05": 5e8}}}
+        alerts = [{"item": "디램", "stocks": ["삼성전자"]},
+                  {"item": "디램모듈", "stocks": ["삼성전자"]}]   # 관세청 미매칭
+        rows = C._company_exposure("삼성전자", by_mti, [], by_imp, alerts)
+        names = [r["item"] for r in rows]
+        self.assertEqual(names.count("디램"), 1)               # 중복 없음
+        self.assertIn("디램모듈", names)                       # 채널 전용 품목도 노출
+        self.assertIn("낸드", names)                           # 큐레이션 보강
+        dram = next(r for r in rows if r["item"] == "디램")
+        self.assertEqual(dram["export_usd"], 186.1e8)
+        self.assertEqual(dram["import_usd"], 5e8)
+        dmod = next(r for r in rows if r["item"] == "디램모듈")
+        self.assertIsNone(dmod["export_usd"])                  # 엉뚱한 값 부착 금지
+        self.assertLess(names.index("디램"), names.index("디램모듈"))  # 값 우선 정렬
+
+    def test_exposure_curation_only_fallback(self):
+        # alerts 없어도(None) 기존 큐레이션 경로 동작 (회귀 가드)
+        by_mti = {"831110": {"name": "디램", "industry": "반도체",
+                             "months": {"2026-05": 2e9}}}
+        rows = C._company_exposure("삼성전자", by_mti, [])
+        self.assertTrue(any(r["item"] == "디램" for r in rows))
+
 
 class ItemModeTests(unittest.TestCase):
     """품목 역검색 (사용자 2026-06-18 '창에 품목 치면 관련기업')."""
