@@ -115,8 +115,8 @@ class FlatTests(unittest.TestCase):
         shares = sorted(p["share_pct"] for p in prods)
         self.assertIn(33.1, shares)
         self.assertIn(16.5, shares)
-        # '기타'는 총계류 → 제외
-        self.assertNotIn("기타", [p["name"] for p in prods])
+        # '기타'는 잔여 매출 품목으로 포함(2026-06-18 — 합계/소계/총계/계만 제외)
+        self.assertIn(50.4, shares)
 
 
 class ScalarHelperTests(unittest.TestCase):
@@ -208,6 +208,26 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(got.get("여객"), 90.0)        # 2025 비율만(2024 88 미사용)
         self.assertEqual(got.get("화물"), 10.0)
         self.assertEqual(sum(p["share_pct"] for p in ps), 100.0)  # 188 아님
+
+    def test_products_from_grid_multicompany_break(self):
+        # 대한항공 2026-06-18 — 연결 표(모회사+자회사 각 100%): 회사별 합계 행('합 계')
+        # 에서 break → 모회사만. '기타'는 품목 포함, 진에어(자회사) 제외. 비중합 100%.
+        t = ("<TABLE>"
+             "<TR><TD COLSPAN=3 ROWSPAN=2>구분</TD><TD ROWSPAN=2>주요사업</TD>"
+             "<TD COLSPAN=2>2025</TD><TD COLSPAN=2>2024</TD></TR>"
+             "<TR><TD>매출액</TD><TD>비율</TD><TD>매출액</TD><TD>비율</TD></TR>"
+             "<TR><TD ROWSPAN=3>대한항공</TD><TD COLSPAN=2 ROWSPAN=2>항공운송</TD>"
+             "<TD>여객국제</TD><TD>93744</TD><TD>56.8%</TD><TD>93059</TD><TD>57.7%</TD></TR>"
+             "<TR><TD>기타</TD><TD>14683</TD><TD>43.2%</TD><TD>13334</TD><TD>42.3%</TD></TR>"
+             "<TR><TD COLSPAN=3>합 계</TD><TD>165019</TD><TD>100.0%</TD><TD>161166</TD><TD>100.0%</TD></TR>"
+             "<TR><TD ROWSPAN=2>진에어</TD><TD COLSPAN=2 ROWSPAN=2>항공운송</TD>"
+             "<TD>여객국내</TD><TD>2407</TD><TD>17.4%</TD><TD>2649</TD><TD>18.2%</TD></TR></TABLE>")
+        got = {p["name"]: p["share_pct"] for p in P.products_from_grid(P.parse_table_grid(t))}
+        self.assertEqual(got.get("여객국제"), 56.8)
+        self.assertEqual(got.get("기타"), 43.2)         # '기타' = 품목 포함
+        self.assertNotIn("여객국내", got)                # 진에어(합계 행 후) 제외
+        self.assertTrue(all("합" not in n for n in got))
+        self.assertEqual(sum(got.values()), 100.0)       # 모회사 100%(진에어 미합산)
 
     def test_products_from_grid_single_period_none(self):
         # 단일연도(매출액1·비율1) → None → 호출부 products_from_rows 폴백(회귀 0)
