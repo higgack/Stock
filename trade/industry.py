@@ -535,7 +535,7 @@ def _monthly_chart(pts: list[dict]) -> str:
     li, lv = vs[-1]
     lo_i, lo_v = min(vs, key=lambda t: t[1])
     callouts = [
-        (li, lv, f"최신 {_eokusd(lv)}", "ind-cl"),
+        (li, lv, f"{pts[li]['ym'].replace('-', '.')} {_eokusd(lv)}", "ind-cl"),
         (lo_i, lo_v, f"저점 {_eokusd(lo_v)}", "ind-cl"),
     ]
     if ma:
