@@ -60,6 +60,23 @@ class DartRevenueTests(unittest.TestCase):
         self.assertIn("C", sus)        # 1개+비중전무+이름의심
         self.assertIn("D", sus)        # 1개+비중합 10%
 
+    def test_fill_amount_based_share(self):
+        # C4 — 비중 전무 + 금액 → 매출액 기반 비중(한미·기아 류)
+        got = {p["name"]: p["share_pct"] for p in D._fill_amount_based_share(
+            [{"name": "반도체장비", "amount": 800, "share_pct": None},
+             {"name": "Conversion Kit", "amount": 200, "share_pct": None}])}
+        self.assertEqual(got["반도체장비"], 80.0)
+        self.assertEqual(got["Conversion Kit"], 20.0)
+        # 비중이 이미 있으면 원본 유지(혼합 표 안 건드림)
+        keep = D._fill_amount_based_share(
+            [{"name": "A", "amount": 800, "share_pct": 50.0},
+             {"name": "B", "amount": 200, "share_pct": None}])
+        self.assertEqual(keep[0]["share_pct"], 50.0)
+        self.assertIsNone(keep[1]["share_pct"])
+        # 금액 1개뿐 → 원본(비중 산출 안 함)
+        one = D._fill_amount_based_share([{"name": "A", "amount": 800, "share_pct": None}])
+        self.assertIsNone(one[0]["share_pct"])
+
     def test_needs_rebuild(self):
         # 변경분만 — rcept 같고 products 있으면 skip(False), 아니면 재파싱(True)
         self.assertTrue(D._needs_rebuild(None, "r1"))
