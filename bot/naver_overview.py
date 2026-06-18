@@ -88,7 +88,7 @@ def fetch_naver_world_news(ticker: str, max_items: int = 10) -> list[dict] | Non
     t = (ticker or "").strip().upper()
     if not t:
         return None
-    ck = f"naver_worldnews_{t}.json"
+    ck = f"naver_worldnews_v2_{t}.json"   # v2: 기사 permalink 수정(2026-06-19) → 옛 빈링크 캐시 무효화
     hit = _cached(ck, ttl=_NEWS_TTL)
     if isinstance(hit, dict) and hit.get("items"):
         return hit["items"][:max_items]
@@ -119,10 +119,15 @@ def fetch_naver_world_news(ticker: str, max_items: int = 10) -> list[dict] | Non
                     link = _v
                     break
             if not link:
-                _oid = str(it.get("officeId") or it.get("oid") or "").strip()
-                _aid = str(it.get("articleId") or it.get("aid") or "").strip()
-                if _oid.isdigit() and _aid.isdigit():
-                    link = f"https://n.news.naver.com/mnews/article/{_oid}/{_aid}"
+                # 워드스톡 뉴스 기사 permalink. oid 는 'fnGuide' 등 **비숫자 제공자**도
+                # 있어(VM probe 2026-06-19 ICHR: oid=fnGuide/aid=2612357), 구
+                # n.news.naver.com/mnews/article/{oid}/{aid} 는 비숫자 oid 에 500.
+                # worldstock/news/{oid}/{aid} 가 200(검증) — isdigit 가드 제거, 비어만
+                # 아니면 생성(불완전 시 "" → 평문 폴백, 깨진 링크 방지).
+                _oid = str(it.get("oid") or it.get("officeId") or "").strip()
+                _aid = str(it.get("aid") or it.get("articleId") or "").strip()
+                if _oid and _aid:
+                    link = f"https://m.stock.naver.com/worldstock/news/{_oid}/{_aid}"
             items.append({
                 "title": tit,
                 "publisher": (it.get("ohnm") or "").strip(),
