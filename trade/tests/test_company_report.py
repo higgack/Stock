@@ -18,7 +18,7 @@ class RenderFreeTests(unittest.TestCase):
                               "export_usd": 2e9, "import_usd": 5e8}]}
         h = C.render_free(data)
         for must in ("삼성전자", "005930", "DRAM", "디램", "제품 구성", "관세청",
-                     "최신월 수출", "최신월 수입"):
+                     ">수출<", ">수입<", ">YoY<", ">MoM<"):
             self.assertIn(must, h)
         self.assertIn("39.0%", h)
         self.assertIn("20.0억$", h)        # 수출 노출 억$ 포맷
@@ -109,6 +109,26 @@ class ExposureTests(unittest.TestCase):
         rows = C._company_exposure("삼성전자", by_mti, [])
         self.assertTrue(any(r["item"] == "디램" for r in rows))
 
+    def test_exposure_has_yoy_mom_metrics(self):
+        # 사용자 2026-06-18 — 노출 표에 YoY·ΔYoY·MoM·ΔMoM (산업트렌드와 동일 계산식)
+        months = {f"2025-{m:02d}": 100 + m for m in range(1, 13)}
+        months.update({f"2026-{m:02d}": 120 + m for m in range(1, 6)})
+        by_mti = {"831110": {"name": "디램", "industry": "반도체", "months": months}}
+        rows = C._company_exposure("삼성전자", by_mti, [])
+        dram = next(r for r in rows if r["item"] == "디램")
+        for k in ("yoy", "dyoy", "mom", "dmom"):
+            self.assertIn(k, dram)
+        self.assertIsNotNone(dram["yoy"])
+        self.assertIsNotNone(dram["mom"])
+        h = C.render_free({"mode": "company", "name": "삼성전자", "code": "005930",
+                           "products": [], "exposure": rows})
+        for col in (">YoY<", ">ΔYoY<", ">MoM<", ">ΔMoM<"):
+            self.assertIn(col, h)
+
+    def test_month_metrics_empty_graceful(self):
+        self.assertEqual(C._month_metrics(None), {})
+        self.assertEqual(C._month_metrics({}), {})
+
 
 class ItemModeTests(unittest.TestCase):
     """품목 역검색 (사용자 2026-06-18 '창에 품목 치면 관련기업')."""
@@ -149,7 +169,7 @@ class ItemModeTests(unittest.TestCase):
                 "companies": ["삼성전자", "SK하이닉스"]}
         h = C.render_free(data)
         for must in ("관련 기업", "삼성전자", "SK하이닉스", "디램",
-                     "최신월 수출", "최신월 수입", "관련 상장사"):
+                     ">수출<", ">수입<", "관련 상장사"):
             self.assertIn(must, h)
         self.assertIn("20.0억$", h)
 

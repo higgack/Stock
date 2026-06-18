@@ -84,6 +84,21 @@ class DartRevenueTests(unittest.TestCase):
         self.assertTrue(D._needs_rebuild({"rcept_no": "r1", "products": [{"name": "x"}]}, "r2"))
         self.assertFalse(D._needs_rebuild({"rcept_no": "r1", "products": [{"name": "x"}]}, "r1"))
 
+    def test_failures_save_load_roundtrip(self):
+        # 사용자 2026-06-18 — 파싱 실패 가시성(어느 상장사가 왜 실패했나)
+        tmp = tempfile.mkdtemp()
+        fails = [{"code": "005930", "company": "삼성전자", "reason": "parse_empty",
+                  "rcept_no": "2026"},
+                 {"code": "900110", "company": "스팩", "reason": "no_report",
+                  "rcept_no": ""}]
+        with mock.patch.dict(os.environ, {"TRADE_DATA_DIR": tmp}):
+            D._save_failures(fails)
+            self.assertEqual(D.load_failures(), fails)
+
+    def test_failures_load_absent_graceful(self):
+        with mock.patch.dict(os.environ, {"TRADE_DATA_DIR": tempfile.mkdtemp()}):
+            self.assertEqual(D.load_failures(), [])
+
     def test_build_inventory_assembles_and_saves(self):
         tmp = tempfile.mkdtemp()
         fake = {"code": "005930", "company": "삼성전자", "report": "사업보고서",

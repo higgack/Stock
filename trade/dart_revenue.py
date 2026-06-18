@@ -243,12 +243,22 @@ def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None
         i, m = shard
         codes = codes[i::m]
     built = skipped = failed = 0
+    failures: list[dict] = []   # {code, company, reason, rcept_no} — silent-fail 금지(#12d)
+
+    def _fail(code, reason, rcept=None):
+        nonlocal failed
+        failed += 1
+        failures.append({"code": code,
+                         "company": dart.stock_code_to_name(code) or code,
+                         "reason": reason, "rcept_no": rcept or ""})
+
     for n, code in enumerate(codes, 1):
         try:
             corp = dart.stock_code_to_corp_code(code)
             rep = pick_business_report(_fetch_report_list(key, corp)) if corp else None
             if not rep:
-                failed += 1
+                # 정기보고서 자체 없음 = 스팩/펀드/리츠/신규·관리종목 — 파서 문제 아님.
+                _fail(code, "no_report")
                 continue
             if not force and not _needs_rebuild(inv.get(code), rep["rcept_no"]):
                 skipped += 1
@@ -258,10 +268,11 @@ def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None
                 inv[code] = r
                 built += 1
             else:
-                failed += 1
+                # 보고서는 있는데 매출구성 추출 0 = 포맷 불일치(상장사 — 파서 보강 대상).
+                _fail(code, "parse_empty", rep.get("rcept_no"))
         except Exception as exc:
             log.warning("refresh_inventory %s: %s", code, exc)
-            failed += 1
+            _fail(code, f"error:{exc.__class__.__name__}")
         if n % 200 == 0:
             log.info("refresh_inventory 진척 %d/%d (built=%d skip=%d fail=%d)",
                      n, len(codes), built, skipped, failed)
@@ -272,9 +283,36 @@ def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None
         out.write_text(json.dumps(inv, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as exc:
         log.warning("refresh_inventory 저장 실패: %s", exc)
-    res = {"built": built, "skipped": skipped, "failed": failed, "total": len(codes)}
+    _save_failures(failures)
+    n_parse = sum(1 for f in failures if f["reason"] == "parse_empty")
+    n_noreport = sum(1 for f in failures if f["reason"] == "no_report")
+    res = {"built": built, "skipped": skipped, "failed": failed, "total": len(codes),
+           "parse_empty": n_parse, "no_report": n_noreport}
     log.info("refresh_inventory 완료: %s", res)
+    log.info("  → 실패 내역: 정기보고서없음(스팩·펀드·리츠 등) %d · 파싱0(포맷 불일치·"
+             "상장사 보강대상) %d · `--failures` 로 목록 확인", n_noreport, n_parse)
     return res
+
+
+_FAILURES_FILE = "dart_revenue_failures.json"
+
+
+def _save_failures(failures: list[dict]) -> None:
+    """실패 내역 저장 (가시성 — `--failures` 가 읽음). best-effort."""
+    try:
+        p = _data_dir() / _FAILURES_FILE
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(failures, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log.warning("dart_revenue 실패내역 저장: %s", exc)
+
+
+def load_failures() -> list[dict]:
+    """저장된 실패 내역 [{code, company, reason, rcept_no}] (없으면 [])."""
+    try:
+        return json.loads((_data_dir() / _FAILURES_FILE).read_text(encoding="utf-8"))
+    except Exception:
+        return []
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -289,9 +327,38 @@ def main(argv: list[str] | None = None) -> int:
                    help="분할 실행 'i/m' — codes[i::m] 만(마지막주 날짜별 분산)")
     p.add_argument("--audit", action="store_true",
                    help="저장된 인벤토리의 파싱 의심 항목만 출력(고도화 대상)")
+    p.add_argument("--failures", action="store_true",
+                   help="직전 --refresh 의 실패 목록 — 파싱0(상장사·포맷 불일치) 우선 출력")
     p.add_argument("--force", action="store_true",
                    help="--refresh 시 rcept 변경 없어도 전수 재파싱(파서 개선 반영)")
     args = p.parse_args(argv)
+    if args.failures:               # 실패 목록 — DART 키 불요(저장 파일만)
+        fails = load_failures()
+        if not fails:
+            print("실패 내역 파일 없음 — 먼저 `--refresh` 를 한 번 실행하세요 "
+                  "(dart_revenue_failures.json 생성).")
+            return 0
+        parse_empty = [f for f in fails if f["reason"] == "parse_empty"]
+        errors = [f for f in fails if str(f["reason"]).startswith("error")]
+        no_report = [f for f in fails if f["reason"] == "no_report"]
+        print(f"\n🔎 DART 파싱 실패 — 총 {len(fails)} "
+              f"(파싱0 {len(parse_empty)} · 오류 {len(errors)} · 정기보고서없음 {len(no_report)})")
+        print("─" * 96)
+        print(f"\n■ 파싱0 — 보고서는 있는데 매출구성 추출 실패 (상장사·포맷 불일치 = 보강 대상) "
+              f"{len(parse_empty)}건")
+        for f in parse_empty:
+            print(f"  {f['code']} {f['company'][:18]:<20} rcept={f.get('rcept_no','')}")
+        if errors:
+            print(f"\n■ 오류 (예외) {len(errors)}건")
+            for f in errors:
+                print(f"  {f['code']} {f['company'][:18]:<20} {f['reason']}")
+        print(f"\n■ 정기보고서 없음 {len(no_report)}건 — 스팩·펀드·리츠·신규/관리종목 "
+              "(파서 문제 아님, 정상)")
+        print("\n→ 파싱0 1건 원문 확인: "
+              ".venv/bin/python -m trade.scripts.probe_dart_revenue --tickers <code>")
+        print("  → 원문 저장 위치: <DATA>/dart_revenue_probe/raw/<code>_<rcept>.txt "
+              "(표 마크업+평문 — 포맷 파악 후 파서 보강)")
+        return 0
     if args.audit:                  # 인벤토리 audit — DART 키 불요(저장 파일만)
         sus = audit_inventory()
         inv = load_inventory()
