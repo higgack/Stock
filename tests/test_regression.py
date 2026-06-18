@@ -9772,6 +9772,30 @@ class TestNaverCommodityCharts:
         assert "fetch_commodity_spark(code, 30)" in ms     # 카드=1개월(30점, 1페이지)
         assert "fetch_naver_index_history(code, 30)" in ms # 지수도 동일
 
+    def test_naver_world_news_link_nonnumeric_oid(self, monkeypatch):
+        # 사용자 2026-06-19: 해외뉴스 원문링크 — oid='fnGuide'(비숫자 제공자)도 링크돼야.
+        # VM probe: worldstock/news/{oid}/{aid}=200, 구 n.news.naver(...)=500.
+        import requests
+        import bot.finviz_client as fv
+        import bot.naver_overview as no
+        monkeypatch.setattr(fv, "_cached", lambda *a, **k: None)
+        monkeypatch.setattr(fv, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(no, "_rc_for", lambda t: "ICHR.O")
+
+        class _R:
+            status_code = 200
+            def json(self):
+                return [{"type": 1, "oid": "fnGuide", "aid": "2612357",
+                         "ohnm": "로이터", "tit": "투자자들은...",
+                         "dt": "20260527192524", "subcontent": "x"}]
+        monkeypatch.setattr(requests, "get", lambda *a, **k: _R())
+        items = no.fetch_naver_world_news("ICHR")
+        assert items and items[0]["link"] == \
+            "https://m.stock.naver.com/worldstock/news/fnGuide/2612357"
+        src = open("bot/naver_overview.py", encoding="utf-8").read()
+        assert ".isdigit()" not in src.split("worldstock/news")[0][-400:], \
+            "비숫자 oid 차단 가드(.isdigit) 가 링크 생성 직전에 잔존"
+
     def test_macro_commodities_wired_to_naver(self):
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
         assert "fetch_commodity_spark" in src              # 원자재 스파크 네이버
