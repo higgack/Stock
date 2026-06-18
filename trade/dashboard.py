@@ -94,18 +94,32 @@ def render_html(
     # 파일로 빼 탭 열 때 lazy fetch — 초기 로딩 11MB→~3MB (사용자 2026-06-16 '느려').
     # industry_out 미지정(아카이브/share·테스트) 시 기존대로 인라인(자체완결 보존).
     industry_src = ""
+    industry_csv = ""
     if industry_out is not None and industry_html:
         try:
+            # CSV JSON 스크립트(ind-csv-data/mti-csv-summary/mti-csv-monthly)는 메인에
+            # 남겨야 csv-btn 이 산업 탭에서 lazy 패널 로드 전에도 찾음(사용자 2026-06-18
+            # '산업트렌드 CSV 안 돼' = lazy 분리 시 스크립트가 패널로만 가서 미발견).
+            import re as _re
+            panel_html = industry_html
+            for _cid in ("ind-csv-data", "mti-csv-summary", "mti-csv-monthly"):
+                _m = _re.search(
+                    r"<script type='application/json' id='" + _cid + r"'>.*?</script>",
+                    industry_html, _re.DOTALL)
+                if _m:
+                    industry_csv += _m.group(0)
+                    panel_html = panel_html.replace(_m.group(0), "", 1)
             Path(industry_out).parent.mkdir(parents=True, exist_ok=True)
-            Path(industry_out).write_text(industry_html, encoding="utf-8")
+            Path(industry_out).write_text(panel_html, encoding="utf-8")
             industry_src = Path(industry_out).name      # 같은 디렉토리 상대경로
             industry_html = ""                          # 인라인 제거 → placeholder+data-src
         except Exception:
             industry_src = ""                           # 쓰기 실패 → 인라인 폴백(기능 보존)
+            industry_csv = ""
     return _build_html(
         all_alerts, latest_ids, s, media_url_prefix, backlog, customs_rows,
         industry_html, heatmap_html, industry_src=industry_src,
-        history_out=history_out,
+        industry_csv=industry_csv, history_out=history_out,
     )
 
 
@@ -539,6 +553,7 @@ def _build_html(
     industry_html: str = "",
     heatmap_html: str = "",
     industry_src: str = "",
+    industry_csv: str = "",
     history_out: Path | str | None = None,
 ) -> str:
     # industry_src(있을 때) = 산업트렌드를 별도 파일로 빼고 탭 열 때 lazy fetch
@@ -733,6 +748,8 @@ def _build_html(
         '<main id="items-view" class="view active"></main>'
         '<main id="companies-view" class="view"></main>'
         '<main id="matrix-view" class="view"></main>'
+        # 산업트렌드 CSV 데이터 — lazy 분리 시 메인에 남겨 csv-btn 이 항상 찾음(#2 fix).
+        + industry_csv
         + (f'<main id="industry-view" class="view" data-src="{industry_src}">'
            '<div class="lazy-load">📈 산업트렌드 불러오는 중…</div></main>'
            if industry_src

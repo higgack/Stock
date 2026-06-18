@@ -137,8 +137,8 @@ def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict 
         return None
     # 프로브(검증·테스트된 추출 primitives) 재사용 — 단일 소스, dup 없음.
     from trade.scripts.probe_dart_revenue import (
-        _fetch_report_list, best_revenue_table, download_doc_raw,
-        parse_table_grid, pick_business_report, products_from_grid,
+        _fetch_report_list, best_revenue_table, business_report_candidates,
+        download_doc_raw, parse_table_grid, products_from_grid,
         products_from_rows,
     )
     from bot.dart_client import get_dart
@@ -146,11 +146,15 @@ def fetch_company_products(stock_code: str, api_key: str | None = None) -> dict 
     corp = dart.stock_code_to_corp_code(stock_code)
     if not corp:
         return None
-    rep = pick_business_report(_fetch_report_list(key, corp))
-    if not rep:
-        return None
-    markup = download_doc_raw(key, rep["rcept_no"])
-    if not markup:
+    # 최신 정정본의 document.xml 이 없을 때(014) 원본으로 폴백 — 후보를 순서대로
+    # 다운로드 시도(최대 4건, 사용자 2026-06-18 현대제철/한화에어로 '파일이 존재하지 않음').
+    rep, markup = None, None
+    for cand in business_report_candidates(_fetch_report_list(key, corp))[:4]:
+        markup = download_doc_raw(key, cand["rcept_no"])
+        if markup:
+            rep = cand
+            break
+    if not rep or not markup:
         return None
     best, _score = best_revenue_table(markup)
     if not best:

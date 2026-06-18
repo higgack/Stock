@@ -58,6 +58,15 @@ class RenderTests(unittest.TestCase):
         # 라이트모드 칩 글씨 진하게(흰색→#1f2328) — 관련상장사 가독성(사용자 2026-06-18)
         self.assertIn("color:#1f2328", h)
 
+    def test_render_time_based_theme(self):
+        # 테마 = 대시보드와 동일 시간기반(body.dark, KST 19-07), OS prefers 폐기
+        # (사용자 2026-06-18 'light/black 시간에 맞게 안 변해').
+        h = R.render_page(self._ROWS)
+        self.assertIn("body.dark{", h)                    # 다크 오버라이드
+        self.assertIn("applyDark", h)                     # 시간기반 토글 JS
+        self.assertIn("classList.toggle('dark'", h)
+        self.assertNotIn("@media(prefers-color-scheme", h)   # OS기반 미디어쿼리 제거
+
     def test_render_search_index_lowercase(self):
         h = R.render_page([{"mti6": "831110", "name": "DRAM디램", "industry": "반도체",
                             "hs": ["8542321000"], "companies": ["삼성전자"]}])

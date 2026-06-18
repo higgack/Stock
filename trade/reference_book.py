@@ -52,34 +52,38 @@ def build_rows() -> list[dict]:
     return rows
 
 
+# 테마 = 대시보드와 동일 시간기반(KST 19-07 = body.dark). 라이트 기본 + body.dark 오버라이드
+# (사용자 2026-06-18 'light/black 시간에 맞게 안 변해' — 기존 prefers-color-scheme OS기반 폐기).
 _CSS = """
 *{box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Apple SD Gothic Neo','Noto Sans KR',sans-serif;
- background:#0d1117;color:#e6edf3;margin:0;padding:0;line-height:1.5}
+ background:#fff;color:#1f2328;margin:0;padding:0;line-height:1.5}
 .wrap{max-width:1280px;margin:0 auto;padding:16px}
-.nav{font-size:13px;margin-bottom:10px}.nav a{color:#58a6ff;text-decoration:none;margin-right:10px}
-h1{font-size:20px;margin:6px 0 2px}.sub{font-size:12px;color:#9aa0aa;margin:0 0 12px}
-.bar{position:sticky;top:0;background:#0d1117;padding:8px 0;z-index:5;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-#q{flex:1;min-width:220px;padding:9px 12px;border:1px solid #2a2e37;background:#161b22;color:#e6edf3;border-radius:8px;font-size:14px}
-.chip{padding:5px 10px;border:1px solid #2a2e37;background:#161b22;color:#e6edf3;border-radius:14px;font-size:12px;cursor:pointer}
+.nav{font-size:13px;margin-bottom:10px}.nav a{color:#0969da;text-decoration:none;margin-right:10px}
+h1{font-size:20px;margin:6px 0 2px}.sub{font-size:12px;color:#656d76;margin:0 0 12px}
+.bar{position:sticky;top:0;background:#fff;padding:8px 0;z-index:5;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+#q{flex:1;min-width:220px;padding:9px 12px;border:1px solid #d0d7de;background:#f6f8fa;color:#1f2328;border-radius:8px;font-size:14px}
+.chip{padding:5px 10px;border:1px solid #d0d7de;background:#f6f8fa;color:#1f2328;border-radius:14px;font-size:12px;cursor:pointer}
 .chip.on{background:#2f81f7;border-color:#2f81f7;color:#fff}
-.cnt{font-size:12px;color:#9aa0aa;margin:6px 2px}
+.cnt{font-size:12px;color:#656d76;margin:6px 2px}
 table{border-collapse:collapse;width:100%;font-size:13px}
-thead th{position:sticky;top:52px;background:#161b22;color:#9aa0aa;text-align:left;padding:8px;border-bottom:1px solid #2a2e37;z-index:4}
-td{padding:7px 8px;border-bottom:1px solid #1c222b;vertical-align:top}
-tr:hover td{background:#11161d}
-.nm{font-weight:600}.mti{color:#9aa0aa;font-variant-numeric:tabular-nums;font-size:12px}
-.ind{color:#9aa0aa;white-space:nowrap}
-.hs{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#8b949e;word-break:break-all}
-.co{color:#e6edf3}.co .x{display:inline-block;background:#21262d;border:1px solid #3a414b;border-radius:10px;padding:1px 8px;margin:1px;font-size:12px;color:#e6edf3}
-.co .none{color:#6e7681}
-.dl{padding:8px 12px;border:1px solid #2a2e37;background:#238636;color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
-@media(prefers-color-scheme:light){
- body{background:#fff;color:#1f2328}.bar,thead th{background:#fff}#q,.chip{background:#f6f8fa;border-color:#d0d7de;color:#1f2328}
- thead th{color:#656d76;border-color:#d0d7de}td{border-color:#eaeef2}tr:hover td{background:#f6f8fa}
- .hs{color:#656d76}
- /* 라이트모드: 칩 글씨가 흰색(.co 기본)이라 안 보였음 → 진한 글씨·옅은 배경 (사용자 2026-06-18) */
- .co{color:#1f2328}.co .x{background:#eef1f4;border-color:#cdd4dc;color:#1f2328}}
+thead th{position:sticky;top:52px;background:#f6f8fa;color:#656d76;text-align:left;padding:8px;border-bottom:1px solid #d0d7de;z-index:4}
+td{padding:7px 8px;border-bottom:1px solid #eaeef2;vertical-align:top}
+tr:hover td{background:#f6f8fa}
+.nm{font-weight:600}.mti{color:#656d76;font-variant-numeric:tabular-nums;font-size:12px}
+.ind{color:#656d76;white-space:nowrap}
+.hs{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#656d76;word-break:break-all}
+.co{color:#1f2328}.co .x{display:inline-block;background:#eef1f4;border:1px solid #cdd4dc;border-radius:10px;padding:1px 8px;margin:1px;font-size:12px;color:#1f2328}
+.co .none{color:#8b949e}
+.dl{padding:8px 12px;border:1px solid #1f883d;background:#238636;color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+body.dark{background:#0d1117;color:#e6edf3}
+body.dark .nav a{color:#58a6ff}
+body.dark .bar{background:#0d1117}
+body.dark #q,body.dark .chip{background:#161b22;border-color:#2a2e37;color:#e6edf3}
+body.dark .sub,body.dark .cnt,body.dark .mti,body.dark .ind,body.dark .hs,body.dark .co .none{color:#9aa0aa}
+body.dark thead th{background:#161b22;color:#9aa0aa;border-color:#2a2e37}
+body.dark td{border-color:#1c222b}body.dark tr:hover td{background:#11161d}
+body.dark .co{color:#e6edf3}body.dark .co .x{background:#21262d;border-color:#3a414b;color:#e6edf3}
 """
 
 _JS = """
@@ -116,6 +120,10 @@ _JS = """
   var blob=new Blob(['\\ufeff'+out.join('\\n')],{type:'text/csv;charset=utf-8'});
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download='품목_레퍼런스북.csv';document.body.appendChild(a);a.click();a.remove();});
+ // 테마 = 대시보드와 동일 시간기반(KST 19시~07시 다크). prefers-color-scheme(OS) 아님.
+ function applyDark(){var h=(new Date().getUTCHours()+9)%24;
+  document.body.classList.toggle('dark',h>=19||h<7);}
+ applyDark();setInterval(applyDark,60000);
  apply();
 })();
 """
