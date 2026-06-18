@@ -51,6 +51,15 @@ class DashboardRenderSmokeTests(unittest.TestCase):
         self.assertIn("requestIdleCallback(_prefetchLazy", src)
         self.assertIn(".view[data-src]", src)                # prefetch 대상 = lazy 뷰
 
+    def test_industry_csv_kept_in_main(self):
+        # 산업트렌드 CSV JSON 스크립트는 lazy 분리돼도 메인에 남아야 csv-btn 이 찾음
+        # (사용자 2026-06-18 '산업트렌드 CSV 안 돼'). _build_html industry_csv 인자 본문 emit.
+        import trade.dashboard as d
+        csv = "<script type='application/json' id='mti-csv-summary'>[1]</script>"
+        html = d._build_html([], [], {}, "", None, [], "", "",
+                             industry_src="industry_panel.html", industry_csv=csv)
+        self.assertIn("mti-csv-summary", html)            # 메인에 존재 → 버튼이 찾음
+
     def test_alerts_history_split(self):
         # 사용자 2026-06-16 '최신만 인라인 + 모달 히스토리 on-demand': history_out
         # 지정 시 ALERTS 인라인=최신만, 과거 발표는 alerts_history.json 으로.

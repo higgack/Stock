@@ -135,17 +135,26 @@ def pick_business_report(rows: list[dict]) -> dict | None:
     rcept_dt. 정정본도 포함(최신이면 더 정확). 매칭 0 → None. 순수."""
     if not rows:
         return None
+    cands = business_report_candidates(rows)
+    return cands[0] if cands else None
+
+
+def business_report_candidates(rows: list[dict]) -> list[dict]:
+    """정기보고서 후보들(사업>반기>분기, 각 그룹 rcept_dt 내림차순). 최신 정정본의
+    document.xml 이 014('파일이 존재하지 않습니다')면 다음 후보(원본)로 폴백하기
+    위해 리스트로 반환(사용자 2026-06-18 현대제철·한화에어로). 순수."""
+    out: list[dict] = []
     for kind in ("사업보고서", "반기보고서", "분기보고서"):
-        cand = [r for r in rows if kind in (r.get("report_nm") or "")]
-        if cand:
-            best = max(cand, key=lambda r: (r.get("rcept_dt") or ""))
-            return {
-                "rcept_no": (best.get("rcept_no") or "").strip(),
-                "report_nm": (best.get("report_nm") or "").strip(),
-                "rcept_dt": (best.get("rcept_dt") or "").strip(),
+        cand = sorted([r for r in rows if kind in (r.get("report_nm") or "")],
+                      key=lambda r: (r.get("rcept_dt") or ""), reverse=True)
+        for r in cand:
+            out.append({
+                "rcept_no": (r.get("rcept_no") or "").strip(),
+                "report_nm": (r.get("report_nm") or "").strip(),
+                "rcept_dt": (r.get("rcept_dt") or "").strip(),
                 "kind": kind,
-            }
-    return None
+            })
+    return out
 
 
 def _unescape(s: str) -> str:

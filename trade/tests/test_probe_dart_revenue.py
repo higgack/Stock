@@ -45,6 +45,19 @@ class PickReportTests(unittest.TestCase):
     def test_empty(self):
         self.assertIsNone(P.pick_business_report([]))
 
+    def test_business_report_candidates_fallback_order(self):
+        # 최신 정정본 doc 가 014(파일없음)면 원본으로 폴백 — 후보 순서(사업>반기, 최신우선)
+        # 로 다운로드 시도(사용자 2026-06-18 현대제철/한화에어로). 정정 포함.
+        rows = [
+            {"report_nm": "사업보고서 (2025.12)", "rcept_no": "A1", "rcept_dt": "20260319"},
+            {"report_nm": "사업보고서 (2025.12) [기재정정]", "rcept_no": "A2",
+             "rcept_dt": "20260401"},
+            {"report_nm": "반기보고서 (2025.06)", "rcept_no": "H1", "rcept_dt": "20250814"},
+        ]
+        c = P.business_report_candidates(rows)
+        self.assertEqual([x["rcept_no"] for x in c], ["A2", "A1", "H1"])  # 정정→원본→반기
+        self.assertEqual(P.pick_business_report(rows)["rcept_no"], "A2")  # 기존=최신 보존
+
 
 class TableParseTests(unittest.TestCase):
     def test_extract_and_parse(self):
