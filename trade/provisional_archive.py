@@ -145,7 +145,7 @@ def regenerate(out_path: Path | None = None) -> Path:
                  "적립 · 확정(익월 ~15일)이 들어오면 '그때 잠정 ↔ 확정' 대조용 · "
                  "단위 억$ · 수출 절대액 ⚠️ 과대 가능 · 월/일 접기·검색",
         field_map=_FM,
-        nav_html='<a href="index.html">← 대시보드</a>',
+        nav_html='<a href="./">← 대시보드</a>',   # './'=trade 루트(index.html 은 NOAH 가로챔)
         stats=[Stat(value=str(len(runs)), label="잠정 스냅샷"),
                Stat(value=str(months), label="개월")],
         empty_message="아직 적립된 잠정 스냅샷이 없습니다. 다음 잠정 발표"

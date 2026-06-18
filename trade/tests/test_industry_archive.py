@@ -131,7 +131,10 @@ class FrozenSnapshotTests(unittest.TestCase):
         industry_archive.record_snapshot(self.conn, [])
         h = (industry_archive.SNAP_DIR / "2026-04.html").read_text(encoding="utf-8")
         self.assertIn("../industry_archive.html", h)
-        self.assertIn("../index.html", h)
+        # 대시보드 = trade 루트('../'). index.html 은 NOAH 프록시가 가로채므로 미사용
+        # (사용자 2026-06-18 '한국수출입으로 가야지').
+        self.assertIn('href="../"', h)
+        self.assertNotIn("../index.html", h)
 
     def test_write_export_month_stamped_snapshot(self):
         import tempfile as _t

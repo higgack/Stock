@@ -141,18 +141,22 @@ def gather_period(ym: str | None = None, top: int = _TOP) -> dict:
     # 산업 롤업
     ind_ex: dict = defaultdict(float)
     ind_im: dict = defaultdict(float)
-    ind_ex_p: dict = defaultdict(float)
+    ind_ex_p: dict = defaultdict(float)   # 직전월(MoM)
+    ind_ex_y: dict = defaultdict(float)   # 전년동월(YoY)
     for r in rows:
         ind_ex[r["industry"]] += r["export"]
         ind_im[r["industry"]] += r["import"]
     for c in codes:
         meta = exp.get(c) or imp.get(c) or {}
-        ind_ex_p[(meta.get("industry") or "").strip()] += _u(exp, c, prev)
+        ind = (meta.get("industry") or "").strip()
+        ind_ex_p[ind] += _u(exp, c, prev)
+        ind_ex_y[ind] += _u(exp, c, yoy)
     industries = [{
         "industry": ind or "(미분류)",
         "export": ind_ex[ind], "import": ind_im[ind],
         "net": ind_ex[ind] - ind_im[ind],
         "export_mom": _pct(ind_ex[ind], ind_ex_p[ind]),
+        "export_yoy": _pct(ind_ex[ind], ind_ex_y[ind]),
     } for ind in (set(ind_ex) | set(ind_im))]
     industries.sort(key=lambda x: -x["export"])
 
@@ -298,6 +302,7 @@ def render_free(data: dict) -> str:
          ("수출", "right", lambda r: _usd_cell(r["export"])),
          ("수입", "right", lambda r: _usd_cell(r["import"])),
          ("수지", "right", lambda r: _usd_cell(r["net"])),
+         ("수출YoY", "right", lambda r: _pct_cell(r.get("export_yoy"))),
          ("수출MoM", "right", lambda r: _pct_cell(r["export_mom"]))])
     exp_tbl = _table(
         "🚢 수출 상위 품목", data.get("top_export") or [],

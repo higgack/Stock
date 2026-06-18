@@ -136,6 +136,53 @@ class ExposureTests(unittest.TestCase):
         self.assertEqual(C._month_metrics({}), {})
 
 
+class GatherProductSourceTests(unittest.TestCase):
+    """제품 구성 = 빌드된 인벤토리 우선, 미수록만 라이브 (사용자 2026-06-18)."""
+
+    def test_inventory_first_skips_live(self):
+        from unittest import mock
+        inv = {"034220": {"company": "LG디스플레이",
+                          "products": [{"name": "OLED", "share_pct": 60.0}]}}
+
+        class _Dart:
+            stock_code_to_name = lambda self, c: "LG디스플레이"
+            find_by_name = lambda self, q: []
+            stock_code_to_corp_code = lambda self, c: "0001"
+
+        with mock.patch("bot.dart_client.get_dart", return_value=_Dart()), \
+                mock.patch.object(C, "_load_alerts", return_value=[]), \
+                mock.patch("trade.dart_revenue.load_inventory", return_value=inv), \
+                mock.patch("trade.dart_revenue.fetch_company_products") as live, \
+                mock.patch("trade.customs.session"), \
+                mock.patch("trade.industry.load_mti_stored", return_value={}), \
+                mock.patch("trade.industry.load_mti_imports", return_value={}), \
+                mock.patch("trade.mti_companies.load_channel_pairs", return_value=[]):
+            data = C.gather("034220")
+        self.assertEqual([p["name"] for p in data["products"]], ["OLED"])
+        live.assert_not_called()           # 인벤토리 hit → 라이브 호출 0
+
+    def test_live_fallback_when_not_in_inventory(self):
+        from unittest import mock
+
+        class _Dart:
+            stock_code_to_name = lambda self, c: "어떤회사"
+            find_by_name = lambda self, q: []
+            stock_code_to_corp_code = lambda self, c: "0009"
+
+        with mock.patch("bot.dart_client.get_dart", return_value=_Dart()), \
+                mock.patch.object(C, "_load_alerts", return_value=[]), \
+                mock.patch("trade.dart_revenue.load_inventory", return_value={}), \
+                mock.patch("trade.dart_revenue.fetch_company_products",
+                           return_value={"products": [{"name": "X", "share_pct": 100.0}]}) as live, \
+                mock.patch("trade.customs.session"), \
+                mock.patch("trade.industry.load_mti_stored", return_value={}), \
+                mock.patch("trade.industry.load_mti_imports", return_value={}), \
+                mock.patch("trade.mti_companies.load_channel_pairs", return_value=[]):
+            data = C.gather("000009")
+        self.assertEqual([p["name"] for p in data["products"]], ["X"])
+        live.assert_called_once()          # 미수록 → 라이브 폴백
+
+
 class ItemModeTests(unittest.TestCase):
     """품목 역검색 (사용자 2026-06-18 '창에 품목 치면 관련기업')."""
 
