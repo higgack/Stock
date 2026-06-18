@@ -12145,6 +12145,25 @@ def _render_research_strategy_table(research: list) -> str:
     )
 
 
+def _research_action_badge(action: str, from_g: str, to_g: str) -> tuple[str, str]:
+    """US 등급변경 종류 라벨+색 (사용자 2026-06-18 A1). from/to 비교가 1차
+    (유지↔변경↔신규 robust), yfinance Action(up/down)으로 상향/하향 방향만 보강.
+    '유지'(Buy→Buy 재확인)는 회색으로 묻고 실제 변동은 색으로 부각 + 라벨이 검색
+    필터 키(검색박스에 '상향' 입력 → 등급변경만). 색은 다크/라이트 공용."""
+    a = (action or "").strip().lower()
+    f = (from_g or "").strip()
+    t = (to_g or "").strip()
+    if not f:
+        return "신규", "#2563eb"          # 커버리지 개시(FromGrade 없음)
+    if f == t:
+        return "유지", "#9aa0aa"          # 재확인(Buy→Buy) — 회색 de-emphasize
+    if a == "up":
+        return "상향", "#16a34a"
+    if a == "down":
+        return "하향", "#dc2626"
+    return "변경", "#d4a017"              # 등급 바뀜·방향 불명(스케일 상이)
+
+
 def _render_research_us_table(research: list) -> str:
     """Render the US research actions table."""
     if not research:
@@ -12158,15 +12177,24 @@ def _render_research_us_table(research: list) -> str:
         sym_disp = (f'{sym} <span class="ts">({kr})</span>'
                     if kr and kr != sym else sym)
         firm = _html.escape(r.get("firm", ""))
-        to_g = _html.escape(r.get("to_grade", ""))
-        from_g = _html.escape(r.get("from_grade", ""))
+        raw_from = r.get("from_grade", "") or ""
+        raw_to = r.get("to_grade", "") or ""
+        to_g = _html.escape(raw_to)
+        from_g = _html.escape(raw_from)
         dt = _html.escape(r.get("date", ""))
-        grade_str = f'{from_g} → {to_g}' if from_g else to_g
+        # A1 배지 — 유지(회색)↔상향/하향/신규/변경(색). 라벨이 검색 필터 키.
+        b_lbl, b_col = _research_action_badge(r.get("action", ""), raw_from, raw_to)
+        badge = (f'<span style="color:{b_col};font-weight:600">{b_lbl}</span> '
+                 if b_lbl else '')
+        grade_str = badge + (f'{from_g} → {to_g}' if from_g else to_g)
         target = r.get("target")
-        try:
-            tp_str = f'${float(target):,.0f}' if target else '—'
-        except (TypeError, ValueError):
-            tp_str = '—'
+        if isinstance(target, str) and target.strip():
+            tp_str = _html.escape(target)        # A2: Finnhub 컨센서스 분포(매수·보유·매도)
+        else:
+            try:
+                tp_str = f'${float(target):,.0f}' if target else '—'
+            except (TypeError, ValueError):
+                tp_str = '—'
         lookup_url = f'lookup/{sym}'
         rows.append(
             f'<tr><td class="sym"><a href="{lookup_url}">{sym_disp}</a></td>'
