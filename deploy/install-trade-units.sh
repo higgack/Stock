@@ -64,6 +64,7 @@ if [ "$SUDOERS_CURRENT" != "$SUDOERS_DESIRED" ]; then
     fi
 fi
 
+CHANGED_TIMERS=()
 shopt -s nullglob
 for src in "$DEPLOY"/trade-bot*.service "$DEPLOY"/trade-bot*.timer; do
     name=$(basename "$src")
@@ -73,9 +74,16 @@ for src in "$DEPLOY"/trade-bot*.service "$DEPLOY"/trade-bot*.timer; do
         chmod 644 "$dst"
         CHANGED_FILES+=("$name")
         if [[ "$name" == *.timer ]]; then
-            # Newly-introduced timer (not yet active) → enable+start it.
             if ! systemctl is-active --quiet "$name" 2>/dev/null; then
+                # Newly-introduced timer (not yet active) → enable+start it.
                 NEW_TIMERS+=("$name")
+            else
+                # Already-active timer whose content changed (e.g. OnCalendar
+                # 스케줄 변경, 사용자 2026-06-18 DART refresh 1일→18일) → restart
+                # 해 새 spec 즉시 재무장(daemon-reload 만으론 active OnCalendar 타이머
+                # 재계산이 보장 안 됨 → silent 미적용 방지, 실수기록 #12d). 타이머
+                # restart 는 .service 를 실행하지 않음(스케줄만 재arm) — 안전.
+                CHANGED_TIMERS+=("$name")
             fi
         elif [[ "$name" == *.service ]]; then
             base="${name%.service}"
@@ -138,4 +146,11 @@ for s in "${CHANGED_SERVICES[@]:-}"; do
     echo "install-trade-units: restarted $s"
 done
 
-echo "install-trade-units: SUMMARY changed=${#CHANGED_FILES[@]} new_timers=${#NEW_TIMERS[@]} new_services=${#NEW_SERVICES[@]} restarted=${#CHANGED_SERVICES[@]} sudoers_installed=$SUDOERS_INSTALLED"
+for t in "${CHANGED_TIMERS[@]:-}"; do
+    [ -z "$t" ] && continue
+    # 스케줄(OnCalendar) 등이 바뀐 active 타이머 재무장. restart 는 .service 미실행.
+    systemctl restart "$t" || true
+    echo "install-trade-units: restarted timer $t (schedule change)"
+done
+
+echo "install-trade-units: SUMMARY changed=${#CHANGED_FILES[@]} new_timers=${#NEW_TIMERS[@]} changed_timers=${#CHANGED_TIMERS[@]} new_services=${#NEW_SERVICES[@]} restarted=${#CHANGED_SERVICES[@]} sudoers_installed=$SUDOERS_INSTALLED"
