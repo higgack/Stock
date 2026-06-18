@@ -83,6 +83,44 @@ class ReportArchiveTests(unittest.TestCase):
         self.assertIn("2026-05 수출입 시장 보고서", idx)
         self.assertIn("🗂️ 전체", idx)                   # kind 배지
 
+    def test_unique_filename_same_second(self):
+        # 같은 초 2건이라도 파일명 유니크 (사용자 16:03 2건 충돌 방지)
+        f1 = self._rec(title="이오테크닉스")
+        f2 = self._rec(title="이오테크닉스")            # 같은 now → 충돌 회피
+        self.assertNotEqual(f1, f2)
+        self.assertTrue((RA.SNAP_DIR / Path(f1).name).exists())
+        self.assertTrue((RA.SNAP_DIR / Path(f2).name).exists())
+
+    def test_delete_card_and_page(self):
+        f1 = self._rec(title="A")
+        f2 = self._rec(title="B")
+        RA.regenerate()
+        self.assertTrue(RA.delete(f1))
+        self.assertEqual([r["file"] for r in RA.load_runs()], [f2])   # f1 record 제거
+        self.assertFalse((RA.SNAP_DIR / Path(f1).name).exists())      # 동결 페이지 제거
+        self.assertTrue((RA.SNAP_DIR / Path(f2).name).exists())       # f2 보존
+
+    def test_delete_path_traversal_guard(self):
+        for bad in ("../../../etc/passwd", "report_archive_pages/../x.html",
+                    "nonexistent_pages/x.html", "", "report_archive_pages/x.txt"):
+            self.assertFalse(RA.delete(bad))
+
+    def test_index_has_delete_affordance(self):
+        self._rec(title="A")
+        idx = RA.regenerate().read_text(encoding="utf-8")
+        self.assertIn("card-del", idx)                    # 🗑️ 버튼
+        self.assertIn("api/report_archive_delete", idx)   # 삭제 API JS
+
+    def test_migrate_frozen_navs(self):
+        # #505 이전 동결 페이지의 '../index.html'(NOAH 가로챔) → '../'(trade 루트)
+        RA.SNAP_DIR.mkdir(parents=True, exist_ok=True)
+        old = RA.SNAP_DIR / "old.html"
+        old.write_text("<a href='../index.html'>대시보드</a>", encoding="utf-8")
+        RA._migrate_frozen_navs()
+        t = old.read_text(encoding="utf-8")
+        self.assertNotIn("../index.html", t)
+        self.assertIn("href='../'", t)
+
 
 if __name__ == "__main__":
     unittest.main()

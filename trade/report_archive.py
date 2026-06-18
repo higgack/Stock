@@ -95,8 +95,14 @@ def record(*, kind: str, title: str, html_body: str, summary: str,
     now = now or datetime.now(_KST)
     ts_compact = now.strftime("%Y%m%d_%H%M%S")
     slug = _SLUG_RE.sub("-", (title or "report")).strip("-")[:40] or "report"
-    fname = f"{ts_compact}_{slug}.html"
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
+    # 같은 초에 2건 실행되면 파일명이 충돌해 한쪽이 덮어써지고 색인이 같은 파일을
+    # 두 카드가 가리켜 삭제가 꼬인다(사용자 16:03 2건). 존재 시 카운터로 유니크화.
+    fname = f"{ts_compact}_{slug}.html"
+    _i = 1
+    while (SNAP_DIR / fname).exists():
+        fname = f"{ts_compact}_{slug}_{_i}.html"
+        _i += 1
     (SNAP_DIR / fname).write_text(_standalone(title, html_body), encoding="utf-8")
     rel = f"report_archive_pages/{fname}"
     link = (f'<a href="{rel}" style="display:inline-block;margin-top:8px;'
@@ -137,11 +143,62 @@ def regenerate(out_path: Path | None = None) -> Path:
         empty_message="아직 저장된 AI 보고서가 없습니다. '🏢 기업 보고서' 또는 "
                       "'🗂️ 전체 보고서'의 'AI 보고서 (유료)'를 실행하면 여기에 "
                       "자동 적립됩니다.",
+        delete_api="api/report_archive_delete",   # 🗑️ 카드별 삭제(사용자 2026-06-18)
+        id_field="file",
     )
     out = out_path or ARCHIVE_HTML
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")
+    _migrate_frozen_navs()
     return out
+
+
+_FILE_RE = re.compile(r"^report_archive_pages/[\w.\-]+\.html$")
+
+
+def delete(file: str) -> bool:
+    """색인 record + 동결 페이지 삭제 (file=record['file'] 상대경로). path traversal
+    가드(화이트리스트 정규식). 해당 record 없거나 형식 위반이면 False."""
+    file = (file or "").strip()
+    if not _FILE_RE.match(file):
+        return False
+    runs = load_runs()
+    kept = [r for r in runs if r.get("file") != file]
+    if len(kept) == len(runs):
+        return False
+    try:
+        ARCHIVE_JSONL.parent.mkdir(parents=True, exist_ok=True)
+        with ARCHIVE_JSONL.open("w", encoding="utf-8") as f:
+            for r in kept:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    except Exception:
+        return False
+    try:
+        p = SNAP_DIR / Path(file).name
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
+    regenerate()
+    return True
+
+
+def _migrate_frozen_navs() -> None:
+    """기존 동결 페이지의 '대시보드' back-link 이 NOAH 로 새던 것 일괄 정정 — #505
+    이전 생성분은 '../index.html'(NOAH 프록시 가로챔)이라 '../'(trade 루트)로 치환.
+    idempotent·best-effort(파일 몇 개라 저렴)."""
+    try:
+        for p in SNAP_DIR.glob("*.html"):
+            try:
+                t = p.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            if "../index.html" in t:
+                p.write_text(t.replace("href='../index.html'", "href='../'")
+                             .replace('href="../index.html"', 'href="../"'),
+                             encoding="utf-8")
+    except Exception:
+        pass
 
 
 def ensure_exists() -> None:

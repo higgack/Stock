@@ -158,6 +158,20 @@ def _patch_headers(
 # API payloads
 # ---------------------------------------------------------------------
 
+def _api_report_archive_delete(file: str) -> dict:
+    """GET /api/report_archive_delete?file= — AI 보고서 아카이브 카드 삭제 (사용자
+    2026-06-18 휴지통). NOAH 프록시가 GET 만 포워드하므로 GET(인증·토큰 뒤라 안전).
+    report_archive.delete 가 화이트리스트 정규식으로 path traversal 차단."""
+    if not file:
+        return {"ok": False, "error": "file 누락"}
+    try:
+        from trade.report_archive import delete
+        return {"ok": bool(delete(file))}
+    except Exception as exc:
+        log.warning("report_archive_delete %s: %s", file, exc)
+        return {"ok": False, "error": str(exc)}
+
+
 def _api_company_report(q: str, mode: str) -> dict:
     """GET /api/company_report?q=&mode=free|llm — 기업 중심 보고서 HTML (사용자
     2026-06-17 '버튼으로 보고서 뽑기, 무료+유료'). mode=llm 만 비용(opt-in). graceful."""
@@ -385,6 +399,10 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             qs = parse_qs(urlparse(self.path).query)
             payload = _api_period_report((qs.get("ym", [""])[0] or "").strip(),
                                          (qs.get("mode", ["free"])[0] or "free").strip())
+        elif path == "/api/report_archive_delete":
+            from urllib.parse import parse_qs, urlparse
+            qs = parse_qs(urlparse(self.path).query)
+            payload = _api_report_archive_delete((qs.get("file", [""])[0] or "").strip())
         else:
             self.send_error(404)
             return

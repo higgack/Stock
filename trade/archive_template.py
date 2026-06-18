@@ -162,6 +162,8 @@ def render_archive_page(
     nav_html: str = "",
     stats: list[Stat] | None = None,
     empty_message: str = "아직 기록이 없습니다.",
+    delete_api: str | None = None,
+    id_field: str = "file",
 ) -> str:
     """Render the full archive HTML page.
 
@@ -304,6 +306,13 @@ def render_archive_page(
                 # Stable id for snippet-click target
                 card_id = f"card-{_re.sub(r'[^a-zA-Z0-9]', '_', date + '-' + str(ts_clock or 'x'))}"
 
+                del_btn = ""
+                if delete_api:
+                    _did = _html.escape(str(r.get(id_field) or ""))
+                    del_btn = (f'<button class="card-del" type="button" '
+                               f'data-del="{_did}" title="삭제" '
+                               'style="margin-left:auto;background:none;border:none;'
+                               'cursor:pointer;font-size:15px;padding:0 4px">🗑️</button>')
                 parts.append(
                     f'<details class="card"{card_open_attr} id="{card_id}" '
                     f'data-date="{_html.escape(date)}" '
@@ -314,6 +323,7 @@ def render_archive_page(
                     f'<span class="card-toggle">▸</span>'
                     f'<span class="domain">{card_title}</span>'
                     f'<span class="meta">{meta}</span>'
+                    f'{del_btn}'
                     f'</summary>'
                     f'<div class="card-body">'
                     f'<div class="analysis-sec">'
@@ -327,6 +337,22 @@ def render_archive_page(
 
     parts.append('</div>\n')  # close .wrap
     parts.append(ARCHIVE_JS)
+    if delete_api:
+        # 🗑️ 삭제 — trade 프록시는 GET 만 포워드(POST 미지원)라 GET 으로(다른 trade
+        # API 동일). 인증·토큰 뒤라 안전. 성공 시 카드 DOM 제거.
+        _api_js = _json.dumps(delete_api)
+        parts.append(
+            "<script>(function(){var API=" + _api_js + ";"
+            "document.addEventListener('click',function(e){"
+            "var b=e.target.closest('.card-del');if(!b)return;"
+            "e.preventDefault();e.stopPropagation();"
+            "if(!confirm('이 항목을 삭제할까요?'))return;"
+            "fetch(API+'?file='+encodeURIComponent(b.dataset.del),"
+            "{cache:'no-store',credentials:'include'})"
+            ".then(function(r){return r.json();})"
+            ".then(function(d){if(d&&d.ok){var c=b.closest('.card');if(c)c.remove();}"
+            "else{alert('삭제 실패: '+((d&&d.error)||''));}})"
+            ".catch(function(){alert('네트워크 오류');});});})();</script>")
     parts.append('\n</body></html>')
     return "".join(parts)
 
