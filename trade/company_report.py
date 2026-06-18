@@ -549,19 +549,18 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
                  "관세청 수출입 품목 ↔ 관련 상장사", ""]
         companies = data.get("companies") or []
         if companies:
-            lines.append("🏢 <b>관련 상장사</b>")
-            lines.append(", ".join(e(c) for c in companies[:20]))
+            lines.append(f"🏢 <b>관련 상장사</b> ({len(companies)})")
+            lines.append(", ".join(e(c) for c in companies))   # 전체
         else:
             lines.append("🏢 관련 상장사 — 미등록")
         items = data.get("items") or []
         if items:
-            lines += ["", "🚢 <b>매칭 품목</b> (최신월 수출/수입)"]
-            for x in items[:12]:
-                lines.append(f"• {e(x['item'])} — 수출 {_eok_usd(x.get('export_usd'))}"
-                             f" / 수입 {_eok_usd(x.get('import_usd'))}")
+            lines += ["", "🚢 <b>매칭 품목</b> (수출/수입 · YoY·MoM)"]
+            for x in items:                                    # 전체
+                lines.append(_tg_item_line(x))
         if ai_text:
             lines += ["", "🤖 <b>AI 요약</b>", e(ai_text)]
-        return "\n".join(lines)          # 전체(전송 시 send_long 이 4096 단위 분할)
+        return "\n".join(lines)          # 전문(전송 시 send_long 이 4096 단위 분할)
     name = e(data.get("name") or data.get("query") or "—")
     code = e(data.get("code") or "")
     lines = [f"🏢 <b>{name}</b>{(' · ' + code) if code else ''} — 기업 보고서",
@@ -569,7 +568,7 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
     products = data.get("products") or []
     if products:
         lines.append("📦 <b>제품 구성</b> (DART 매출비중)")
-        for p in products[:12]:
+        for p in products:                                     # 전체
             sh = f" ({p['share_pct']}%)" if p.get("share_pct") is not None else ""
             lines.append(f"• {e(str(p.get('name','')))}{sh}")
     else:
@@ -577,15 +576,27 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
     lines.append("")
     exposure = data.get("exposure") or []
     if exposure:
-        lines.append("🚢 <b>관세청 수출입 품목 노출</b> (최신월 수출/수입)")
-        for x in exposure[:12]:
-            lines.append(f"• {e(x['item'])} — 수출 {_eok_usd(x.get('export_usd'))}"
-                         f" / 수입 {_eok_usd(x.get('import_usd'))}")
+        lines.append("🚢 <b>관세청 수출입 품목 노출</b> (수출/수입 · YoY·MoM)")
+        for x in exposure:                                     # 전체
+            lines.append(_tg_item_line(x))
     else:
         lines.append("🚢 관세청 노출 — 매핑된 품목 없음")
     if ai_text:
         lines += ["", "🤖 <b>AI 요약</b>", e(ai_text)]
-    return "\n".join(lines)              # 전체(전송 시 send_long 이 4096 단위 분할)
+    return "\n".join(lines)              # 전문(전송 시 send_long 이 4096 단위 분할)
+
+
+def _tg_item_line(x: dict) -> str:
+    """노출/매칭 품목 한 줄 — 수출·수입 값 + 양방향 YoY·MoM(있을 때만)."""
+    def _p(v, suf="%"):
+        return f" {v:+.1f}{suf}" if isinstance(v, (int, float)) else ""
+    exp = (f"수출 {_eok_usd(x.get('export_usd'))}"
+           + (f"({_p(x.get('export_yoy')).strip()}YoY{_p(x.get('export_mom')).strip()}MoM)"
+              if x.get("export_yoy") is not None or x.get("export_mom") is not None else ""))
+    imp = (f"수입 {_eok_usd(x.get('import_usd'))}"
+           + (f"({_p(x.get('import_yoy')).strip()}YoY{_p(x.get('import_mom')).strip()}MoM)"
+              if x.get("import_yoy") is not None or x.get("import_mom") is not None else ""))
+    return f"• {_html.escape(x['item'])} — {exp} / {imp}"
 
 
 def send_to_channel(query: str, mode: str = "free", api_key: str | None = None) -> dict:
