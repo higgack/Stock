@@ -12201,18 +12201,31 @@ def _render_research_us_table(research: list) -> str:
             f'<td>{firm}</td><td>{grade_str}</td>'
             f'<td>{tp_str}</td><td>{dt}</td></tr>'
         )
+    # 위젯은 yfinance 캡(최근 일부 종목)이라 전수가 아님 → 전체 미국 애널리스트
+    # 등급변경·목표가·리서치는 외부 집계 다수를 표 **위 가로 한 줄**로 (사용자 2026-06-19
+    # '위쪽으로·다른 사이트들도 이어서·최대한 많이'). 컨텍스트 참조 링크라 /sites(외부 nav)
+    # 정책과 무관 — 위젯 내 데이터-소스 모음. 전부 무료 열람 가능한 등급변경/리서치 페이지.
+    def _ref(url, name):
+        return (f'<a href="{url}" target="_blank" rel="noopener noreferrer">{name}</a>')
+    refs = (
+        '<div class="research-refs" style="margin:2px 2px 9px;font-size:12px;line-height:1.9">'
+        '📋 전체 미국 등급변경·리서치 참조: '
+        + ' · '.join([
+            _ref("https://www.marketbeat.com/ratings/", "MarketBeat"),
+            _ref("https://www.benzinga.com/analyst-ratings", "Benzinga"),
+            _ref("https://www.tipranks.com/analysts/top", "TipRanks"),
+            _ref("https://www.nasdaq.com/market-activity/analyst-activity", "Nasdaq"),
+            _ref("https://www.streetinsider.com/ratings.php", "StreetInsider"),
+            _ref("https://stockanalysis.com/", "StockAnalysis"),
+            _ref("https://finance.yahoo.com/research-hub/screener/analyst_strong_buy_stocks/", "Yahoo"),
+        ]) + '</div>'
+    )
     return (
+        refs +
         '<div class="tbl-wrap" data-limit="10"><table class="dtbl">'
         '<thead><tr><th>종목</th><th>증권사</th><th>등급 변경</th>'
         '<th>TP(컨센서스)</th><th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
-        # 위젯은 yfinance 캡(최근 일부 종목)이라 전수가 아님 — 전체 미국 애널리스트
-        # 등급변경·목표가는 외부 집계에서 (사용자 2026-06-19 '다 볼 수 있는 링크 박아줘').
-        # MarketBeat 무료 일일 ratings(업·다운·신규·목표가 전수). 컨텍스트 링크라
-        # /sites(외부 nav)와 무관 — 위젯 내 데이터-소스 '전체 보기'.
-        '<div class="research-all" style="margin:6px 2px 2px;font-size:12px">'
-        '<a href="https://www.marketbeat.com/ratings/" target="_blank" '
-        'rel="noopener noreferrer">📋 전체 미국 등급변경·목표가 보기 (MarketBeat) →</a></div>'
     )
 
 
