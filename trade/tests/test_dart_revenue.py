@@ -99,6 +99,20 @@ class DartRevenueTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TRADE_DATA_DIR": tempfile.mkdtemp()}):
             self.assertEqual(D.load_failures(), [])
 
+    def test_rescan_failures_only_uninventoried(self):
+        # --rescan-failures = 전 상장사 − 인벤토리 수록분만 재시도(전수 재스캔 회피)
+        import trade.scripts.probe_dart_revenue as P
+        with mock.patch.object(D, "all_listed_codes",
+                               return_value=["000001", "000002", "000003"]), \
+                mock.patch.object(D, "load_inventory",
+                                  return_value={"000001": {"products": [{"name": "x"}]}}), \
+                mock.patch.object(D, "refresh_inventory",
+                                  return_value={"built": 0, "failed": 2}) as ri, \
+                mock.patch.object(P, "_load_env"), \
+                mock.patch.dict(os.environ, {"DART_API_KEY": "k"}):
+            self.assertEqual(D.main(["--rescan-failures"]), 0)
+        self.assertEqual(sorted(ri.call_args.kwargs["codes"]), ["000002", "000003"])
+
     def test_build_inventory_assembles_and_saves(self):
         tmp = tempfile.mkdtemp()
         fake = {"code": "005930", "company": "삼성전자", "report": "사업보고서",
