@@ -114,7 +114,9 @@ _REVENUE_KEYWORDS = (
     "제품별 매출", "사업부문별", "주요 제품 및 서비스", "매출 및 수주",
     "품목별", "제품등의 현황", "주요제품등의현황",
 )
-_TOTAL_NAMES = ("합계", "합 계", "총계", "소계", "계", "총 계", "기타")
+# '기타'는 잔여 매출 품목(대한항공 '기타' 8.9% 등)이라 제외 대상에서 뺌(2026-06-18).
+# 합계/소계/총계/계(공백 변형 포함)만 비-품목 행으로 제외.
+_TOTAL_NAMES = ("합계", "합 계", "총계", "소계", "계", "총 계")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -272,6 +274,7 @@ def _to_amount(s: str) -> int | None:
 
 
 _TOTAL_NAMES_NS = frozenset(t.replace(" ", "") for t in _TOTAL_NAMES)  # 공백 변형('소 계'='소계')
+_COMPANY_BREAK = frozenset({"합계", "총계"})   # 연결 표 회사별 합계 행 = 모회사 경계(자회사 100% 중복 차단)
 
 
 def _is_texty(s: str) -> bool:
@@ -392,6 +395,10 @@ def products_from_grid(grid: list[list[str]]) -> list[dict] | None:
     out: list[dict] = []
     seen: set = set()
     for row in data:
+        # 연결 표(모회사+자회사 각 100%)의 회사별 합계 행(name_col='합 계')에서 중단 →
+        # 첫(모)회사만 (대한항공 100% + 진에어 100% → 합산 200% sanity 폴백 차단, 2026-06-18).
+        if name_col < len(row) and row[name_col].replace(" ", "") in _COMPANY_BREAK:
+            break
         if name_col >= len(row):
             continue
         name = row[name_col].strip()
