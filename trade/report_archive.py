@@ -78,8 +78,11 @@ def _standalone(title: str, inner_html: str) -> str:
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>{e(title)}</title><style>{_PAGE_CSS}</style></head><body>"
         "<div class='rb-wrap'>"
+        # '대시보드' = trade 대시보드(상위 디렉토리). index.html 은 NOAH 프록시가
+        # _OUR_ROOT_PAGES 로 가로채 NOAH 종목분석으로 보내므로 '../'(디렉토리)로
+        # 트레이드 루트를 직접 가리킨다(사용자 2026-06-18 '한국수출입으로 가야지').
         "<div class='rb-back'><a href='../report_archive.html'>← AI 보고서 아카이브</a>"
-        " · <a href='../index.html'>대시보드</a></div>"
+        " · <a href='../'>대시보드</a></div>"
         f"{inner_html}</div></body></html>"
     )
 
@@ -127,7 +130,9 @@ def regenerate(out_path: Path | None = None) -> Path:
         subtitle="유료 AI(Gemini) 실행 결과 보존 · 기업/전체(월) 보고서 · 카드 → "
                  "'전체 보기'로 그 시점 분석을 그대로 다시 봅니다 · 월/일 접기·검색",
         field_map=_FM,
-        nav_html='<a href="index.html">← 대시보드</a>',
+        # './' = trade 대시보드 루트(/trade/). 'index.html' 은 NOAH 프록시가
+        # 가로채 NOAH 로 보내므로 디렉토리로 직접 가리킨다(사용자 2026-06-18).
+        nav_html='<a href="./">← 대시보드</a>',
         stats=stats,
         empty_message="아직 저장된 AI 보고서가 없습니다. '🏢 기업 보고서' 또는 "
                       "'🗂️ 전체 보고서'의 'AI 보고서 (유료)'를 실행하면 여기에 "

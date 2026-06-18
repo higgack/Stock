@@ -115,6 +115,12 @@ class GatherTests(unittest.TestCase):
         # 급변동: 승용차(+20%) > 디램(+11.1%) > 합성수지(-6.25%)
         self.assertEqual(d["swings"][0]["name"], "승용차")
 
+    def test_industry_yoy(self):
+        # 사용자 2026-06-18 — 산업 롤업에 export_yoy (MoM 옆 YoY)
+        semi = next(x for x in _gather()["industries"] if x["industry"] == "반도체")
+        self.assertIn("export_yoy", semi)
+        self.assertIsNotNone(semi["export_yoy"])     # 반도체 수출 전년동월 데이터 존재
+
     def test_ym_override(self):
         self.assertEqual(_gather("2026-04")["period"], "2026-04")
         self.assertEqual(_gather("9999-99")["period"], "2026-05")   # 부재월 → 최신

@@ -955,6 +955,15 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-chart-cell{min-width:0}
 .ind-chart-cell .ind-chart{width:100%;height:auto;max-width:400px}
 @media(max-width:900px){.ind-row{grid-template-columns:1fr}}
+/* 하위품목 랭킹표(.ind-sub-wrap, 2단 half-width) 안에서 행을 펼치면 _card_body 의
+   .ind-row(3단 ~750px)가 반폭 셀을 넘쳐 표 전체가 가로로 밀리고 품목명(첫 칸)이
+   왼쪽으로 잘려 나갔다(사용자 2026-06-18 '늄괴→뉴괴' 클리핑). 좁은 셀에선 차트를
+   세로로 스택해 가로 넘침 자체를 없앤다(TOP10 풀카드 .ind-card 는 해당 없음). */
+.ind-sub-wrap .ind-row{grid-template-columns:1fr}
+/* 그래도 표가 넘칠 때 품목명 칸(랭킹 본문 첫 td)을 헤더처럼 sticky 고정(헤더
+   th:first-child 와 짝) — 가로 스크롤해도 품목명이 안 잘리게. 펼침 상세행
+   (.ind-mti-d, colspan 전폭)은 제외. */
+.ind-table tr.ind-mti-row td:first-child{position:sticky;left:0;z-index:1;background:var(--surface);box-shadow:1px 0 0 var(--border-soft)}
 .ind-head{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .ind-bar-pos{fill:#34c759}
 .ind-bar-neg{fill:#ff3b30}

@@ -338,13 +338,25 @@ def gather(query: str, api_key: str | None = None) -> dict:
         code, name = hits[0].get("stock_code"), hits[0].get("name") or q
     products = []
     if code:
+        # 먼저 빌드된 인벤토리(dart_revenue_inventory.json, refresh 타이머가 적립한
+        # 2700+ 상장사 매출구성) 사용 — 빠르고 안정적(라이브 DART 일시 실패 무관).
+        # 미수록 종목만 라이브 fetch 폴백(사용자 2026-06-18 '다트매출표는 뭐지' →
+        # 인벤토리 활용). 둘 다 실패 시 '미확보' 안내.
         try:
-            from trade.dart_revenue import fetch_company_products
-            r = fetch_company_products(code, api_key)
-            if r:
-                products = r.get("products", [])
+            from trade.dart_revenue import load_inventory
+            entry = load_inventory().get(code)
+            if entry and entry.get("products"):
+                products = entry["products"]
         except Exception as exc:
-            log.warning("company_report DART %s: %s", code, exc)
+            log.warning("company_report inventory %s: %s", code, exc)
+        if not products:
+            try:
+                from trade.dart_revenue import fetch_company_products
+                r = fetch_company_products(code, api_key)
+                if r:
+                    products = r.get("products", [])
+            except Exception as exc:
+                log.warning("company_report DART %s: %s", code, exc)
     # 회사별 탭과 동일 소스(store.db BeOn 알림) — 회사 모드에서만 필요(품목 모드는
     # 위에서 이미 반환). 풍부한 회사→품목 매핑(사용자 2026-06-18).
     exposure = _company_exposure(name, by_mti, pairs, by_imp, _load_alerts())

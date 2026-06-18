@@ -152,10 +152,12 @@ def render_standalone(inner_html: str, *, latest: str,
     )
 
 
+# '대시보드' = trade 루트('../'). index.html 은 NOAH 프록시가 _OUR_ROOT_PAGES 로
+# 가로채 NOAH 종목분석으로 보내므로 디렉토리로 직접 가리킨다(사용자 2026-06-18).
 _ARCHIVE_NAV = (
     "<a href=\"../industry_archive.html\" style=\"color:var(--accent);"
     "text-decoration:none\">← 아카이브 색인</a> · "
-    "<a href=\"../index.html\" style=\"color:var(--accent);text-decoration:none\">"
+    "<a href=\"../\" style=\"color:var(--accent);text-decoration:none\">"
     "대시보드</a>"
 )
 
@@ -301,7 +303,7 @@ def regenerate(out_path: Path | None = None) -> Path:
         subtitle="각 월 카드 → '전체 화면 보기'로 그 시점 산업트렌드 전체를 그대로 "
                  "다시 봅니다 · 관세청 확정치 기준 · 월/일 접기·검색·테마 토글",
         field_map=_FM,
-        nav_html='<a href="index.html">← 대시보드</a>',
+        nav_html='<a href="./">← 대시보드</a>',   # './'=trade 루트(index.html 은 NOAH 가로챔)
         stats=[Stat(value=str(len(runs)), label="동결 스냅샷"),
                Stat(value=str(months), label="확정월")],
         empty_message="아직 동결된 스냅샷이 없습니다. 다음 확정월(매월 ~15일) "
