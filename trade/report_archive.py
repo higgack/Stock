@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import html as _html
 import json
+import logging
 import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from trade.archive_template import FieldMap, Stat, render_archive_page
+
+log = logging.getLogger("trade.report_archive")
 
 _KST = timezone(timedelta(hours=9))
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
@@ -88,10 +91,13 @@ def _standalone(title: str, inner_html: str) -> str:
 
 
 def record(*, kind: str, title: str, html_body: str, summary: str,
-           cost_krw: float | None = None, now: datetime | None = None) -> str | None:
+           cost_krw: float | None = None, tg: str = "",
+           now: datetime | None = None) -> str | None:
     """유료 AI 보고서 1건 동결 + 색인 기록. 반환=동결 파일 상대경로(실패 시 None).
     호출측이 best-effort(try/except)로 감싼다 — 아카이브 실패가 보고서 응답을 막지
-    않게. summary 는 검색용 평문(렌더 시 .analysis-b white-space:pre-wrap)."""
+    않게. summary 는 검색용 평문(렌더 시 .analysis-b white-space:pre-wrap). tg =
+    텔레그램 전송용 전체 본문(저장 → 아카이브에서 재과금 없이 채널 전송, 사용자
+    2026-06-18 '이미 나온 내용을 텔레그램으로')."""
     now = now or datetime.now(_KST)
     ts_compact = now.strftime("%Y%m%d_%H%M%S")
     slug = _SLUG_RE.sub("-", (title or "report")).strip("-")[:40] or "report"
@@ -119,8 +125,38 @@ def record(*, kind: str, title: str, html_body: str, summary: str,
     }
     if cost_krw:
         rec["cost_krw"] = cost_krw
+    if tg:
+        rec["tg"] = tg
     _append(rec)
     return rel
+
+
+def send_to_channel(file: str) -> dict:
+    """아카이브된(이미 생성·과금된) 보고서를 텔레그램 채널로 전송 — 재계산/재과금
+    없음(사용자 2026-06-18). 저장된 tg 전체를 4096 단위 분할 전송. {ok, sent}."""
+    file = (file or "").strip()
+    if not _FILE_RE.match(file):
+        return {"ok": False, "error": "잘못된 파일"}
+    rec = next((r for r in load_runs() if r.get("file") == file), None)
+    if not rec:
+        return {"ok": False, "error": "기록 없음"}
+    tg = (rec.get("tg") or "").strip()
+    if not tg:
+        return {"ok": False, "error": "전송 본문 없음(이 기능 이전 기록 — 재생성 필요)"}
+    ids = [int(x) for x in (os.environ.get("TRADE_CHANNEL_CHAT_IDS") or "").split(",")
+           if x.strip()]
+    if not ids:
+        return {"ok": False, "error": "TRADE_CHANNEL_CHAT_IDS 미설정"}
+    sent = 0
+    try:
+        from trade.scripts import customs_alert
+        for cid in ids:
+            if customs_alert.send_long(cid, tg) > 0:
+                sent += 1
+    except Exception as exc:
+        log.warning("report_archive send_to_channel: %s", exc)
+        return {"ok": False, "error": str(exc)}
+    return {"ok": sent > 0, "sent": sent}
 
 
 def regenerate(out_path: Path | None = None) -> Path:
@@ -144,6 +180,7 @@ def regenerate(out_path: Path | None = None) -> Path:
                       "'🗂️ 전체 보고서'의 'AI 보고서 (유료)'를 실행하면 여기에 "
                       "자동 적립됩니다.",
         delete_api="api/report_archive_delete",   # 🗑️ 카드별 삭제(사용자 2026-06-18)
+        send_api="api/report_archive_send",        # 📤 저장본 채널 전송(재과금 없음)
         id_field="file",
     )
     out = out_path or ARCHIVE_HTML

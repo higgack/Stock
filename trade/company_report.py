@@ -502,7 +502,7 @@ def render_llm(data: dict, model: str | None = None) -> tuple[str, dict]:
             report_archive.record(
                 kind="🏢 기업", title=(data.get("name") or data.get("query") or "기업 보고서"),
                 html_body=html, summary=_archive_summary(data, raw),
-                cost_krw=cost_krw or None)
+                cost_krw=cost_krw or None, tg=render_telegram(data, raw))
             report_archive.regenerate()
         except Exception as exc:
             log.warning("company_report archive: %s", exc)
@@ -561,7 +561,7 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
                              f" / 수입 {_eok_usd(x.get('import_usd'))}")
         if ai_text:
             lines += ["", "🤖 <b>AI 요약</b>", e(ai_text)]
-        return "\n".join(lines)[:4000]
+        return "\n".join(lines)          # 전체(전송 시 send_long 이 4096 단위 분할)
     name = e(data.get("name") or data.get("query") or "—")
     code = e(data.get("code") or "")
     lines = [f"🏢 <b>{name}</b>{(' · ' + code) if code else ''} — 기업 보고서",
@@ -585,8 +585,7 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
         lines.append("🚢 관세청 노출 — 매핑된 품목 없음")
     if ai_text:
         lines += ["", "🤖 <b>AI 요약</b>", e(ai_text)]
-    out = "\n".join(lines)
-    return out[:4000]
+    return "\n".join(lines)              # 전체(전송 시 send_long 이 4096 단위 분할)
 
 
 def send_to_channel(query: str, mode: str = "free", api_key: str | None = None) -> dict:
@@ -622,7 +621,7 @@ def send_to_channel(query: str, mode: str = "free", api_key: str | None = None) 
     try:
         from trade.scripts import customs_alert
         for cid in ids:
-            if customs_alert._send(cid, body):
+            if customs_alert.send_long(cid, body) > 0:   # 4096 단위 분할 전송(전체)
                 sent += 1
     except Exception as exc:
         log.warning("send_to_channel: %s", exc)

@@ -160,6 +160,53 @@ def _send(chat_id: int, text: str) -> bool:
         return False
 
 
+def _u16(s: str) -> int:
+    """UTF-16 code-unit 길이 (텔레그램 4096 한도 기준 — 한글 1·이모지 2)."""
+    return len(s.encode("utf-16-le")) // 2
+
+
+def split_telegram(text: str, limit: int = 4000) -> list[str]:
+    """긴 텍스트를 줄 경계로 ≤limit(UTF-16) 청크들로 분할 (사용자 2026-06-18 '전체
+    내용 다 보내기'). 보고서 줄은 <b>…</b> 가 한 줄 안에서 닫히므로 줄 경계 분할이
+    HTML-안전. 한 줄이 limit 초과면 하드 분할. 순수 함수 — 단위테스트."""
+    out: list[str] = []
+    cur = ""
+    for ln in (text or "").split("\n"):
+        while _u16(ln) > limit:                 # 단일 초장문 줄 하드 분할
+            lo, hi = 1, len(ln)
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if _u16(ln[:mid]) <= limit:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            if cur:
+                out.append(cur)
+                cur = ""
+            out.append(ln[:lo])
+            ln = ln[lo:]
+        cand = (cur + "\n" + ln) if cur else ln
+        if _u16(cand) <= limit:
+            cur = cand
+        else:
+            if cur:
+                out.append(cur)
+            cur = ln
+    if cur:
+        out.append(cur)
+    return out or [""]
+
+
+def send_long(chat_id: int, text: str) -> int:
+    """긴 텍스트를 텔레그램 한도(4096) 내 여러 메시지로 분할 전송. 보낸 메시지 수
+    반환(0 = 전부 실패/토큰 없음). 청크 일부 실패해도 나머지는 계속."""
+    sent = 0
+    for chunk in split_telegram(text):
+        if _send(chat_id, chunk):
+            sent += 1
+    return sent
+
+
 def _format(candidates: list[dict]) -> str:
     """One DM body. candidates already sorted biggest-|pct|-first."""
     n = len(candidates)

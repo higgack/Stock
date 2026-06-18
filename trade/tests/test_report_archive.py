@@ -3,6 +3,7 @@
 네트워크·LLM 없음 — record(동결 페이지 write + jsonl append) / regenerate(색인) /
 ensure_exists 만. industry_archive 테스트 패턴 미러(경로 monkeypatch)."""
 
+import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -110,6 +111,29 @@ class ReportArchiveTests(unittest.TestCase):
         idx = RA.regenerate().read_text(encoding="utf-8")
         self.assertIn("card-del", idx)                    # 🗑️ 버튼
         self.assertIn("api/report_archive_delete", idx)   # 삭제 API JS
+
+    def test_index_has_send_affordance(self):
+        self._rec(title="A", tg="🏢 본문")
+        idx = RA.regenerate().read_text(encoding="utf-8")
+        self.assertIn("card-send", idx)                   # 📤 버튼
+        self.assertIn("api/report_archive_send", idx)     # 전송 API JS
+
+    def test_send_to_channel_uses_stored_tg(self):
+        # 저장된 tg 를 재과금 없이 send_long 으로 전송 (사용자 2026-06-18)
+        from unittest import mock
+        f = self._rec(title="이오테크닉스", tg="🏢 <b>이오테크닉스</b>\n전체 본문")
+        with mock.patch.dict(os.environ, {"TRADE_CHANNEL_CHAT_IDS": "123"}), \
+                mock.patch("trade.scripts.customs_alert.send_long", return_value=1) as sl:
+            res = RA.send_to_channel(f)
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["sent"], 1)
+        self.assertTrue(sl.call_args[0][1].startswith("🏢"))   # 저장 tg 본문
+
+    def test_send_to_channel_no_tg_graceful(self):
+        f = self._rec(title="옛것")                       # tg 없음(이 기능 이전)
+        with mock.patch.dict(os.environ, {"TRADE_CHANNEL_CHAT_IDS": "123"}):
+            self.assertFalse(RA.send_to_channel(f)["ok"])
+        self.assertFalse(RA.send_to_channel("../../x.html")["ok"])   # path guard
 
     def test_migrate_frozen_navs(self):
         # #505 이전 동결 페이지의 '../index.html'(NOAH 가로챔) → '../'(trade 루트)
