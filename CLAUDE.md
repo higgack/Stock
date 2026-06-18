@@ -123,6 +123,22 @@ this repo (currently: `bot/` NOAH stock-bot, `trade/` Korea import/export bot).
    (d) silent-fail(DEVNULL·except-pass) 은 디버깅 비용 폭증의 근원 —
        새 background 작업/렌더 경로에 절대 금지.
 
+13. **UI '안 됨' 디버깅은 접속 URL/렌더 환경부터 — 코드 추측 전 (2026-06-18,
+   trade 보고서 위젯 '네트워크 오류' 8회 추측, 사용자 격분)**: 기업/전체 보고서
+   위젯이 '네트워크 오류'인 걸 credentials·서버재시작·venv·라우트 등 **8번 코드로
+   헛짚다**, 사용자가 준 **접속 URL 한 줄**(http://…:8081/<token>/trade/)이 근본을
+   즉시 가리켰다 — NOAH(8081)가 trade(8765) 리버스 프록시인데 `_trade_upstream_url`
+   이 `/api/*` 를 `8765/dashboard/api`(404)로 보냄(미디어만 ROOT였음). 교훈:
+   (a) **UI 버그는 브라우저 접속 URL**(포트·프록시·토큰경로)을 **맨 먼저** 물어라.
+       `curl localhost:PORT` 가 200/401 이어도 브라우저는 프록시로 다른 경로를 탄다 —
+       서버 정상 ≠ 브라우저 정상. 프록시(8081→8765) 구조를 늦게 인지한 게 최대 낭비.
+   (b) **콘솔 DOM 측정 ≠ 화면**: 미국 더보기 `shown:40` 을 보고 '정상'이라 단정했으나
+       사용자 화면은 여전 10. DOM 상태와 실제 렌더(스크린샷)를 교차 안 하면 오진.
+   (c) **같은 증상 반복 호소(위젯·미국 더보기) = 추측 종료 신호**(실수 #12 재확인) —
+       즉시 가시 정보(URL·캡처) 요청, '됐다/정상' 단정 금지.
+   (d) **실수 기록 요구를 미루지 말 것** — 사용자가 'CLAUDE.md에 기록하라'를 여러 번
+       말했는데 안 해서 격분. user-visible 변경처럼 실수도 같은 턴에 기록한다.
+
 새 실수 발생 시 이 리스트에 날짜 + 한 줄 교훈 추가 의무.
 
 ## ⛔ UNIVERSAL CHANGES ONLY — every change applies to every market
