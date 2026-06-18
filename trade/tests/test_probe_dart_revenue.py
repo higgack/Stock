@@ -136,6 +136,8 @@ class ScalarHelperTests(unittest.TestCase):
         self.assertTrue(P._is_texty("DRAM"))
         self.assertTrue(P._is_texty("석유화학"))
         self.assertFalse(P._is_texty("합계"))
+        self.assertFalse(P._is_texty("소 계"))    # 공백 변형 소계 (대한항공 부문소계)
+        self.assertFalse(P._is_texty("합 계"))
         self.assertFalse(P._is_texty("1,000,000"))
         self.assertFalse(P._is_texty("-"))
 

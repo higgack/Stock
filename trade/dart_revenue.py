@@ -205,10 +205,12 @@ def _needs_rebuild(entry: dict | None, latest_rcept: str) -> bool:
 
 
 def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None,
-                      shard: tuple[int, int] | None = None, sleep: float = 0.3) -> dict:
+                      shard: tuple[int, int] | None = None, sleep: float = 0.3,
+                      force: bool = False) -> dict:
     """전수 인벤토리 갱신 — **변경분만**(정기 파싱, 사용자 2026-06-17). 회사별 최신
     정기보고서 rcept_no(list.json·경량) 확인 → 안 바뀌면 document.xml 파싱 skip,
     바뀐 회사만 재파싱. 월말/마지막주 타이머용. shard=(i,m) 면 codes[i::m] 만(분할 실행).
+    force=True 면 rcept 변경 없어도 전수 재파싱(파서 개선 반영용, 사용자 2026-06-18).
 
     Returns {built, skipped, failed, total}. 진척 로그(silent-fail 금지·실수기록 #12d)."""
     key = (api_key if api_key is not None else os.environ.get("DART_API_KEY") or "").strip()
@@ -231,10 +233,10 @@ def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None
             if not rep:
                 failed += 1
                 continue
-            if not _needs_rebuild(inv.get(code), rep["rcept_no"]):
+            if not force and not _needs_rebuild(inv.get(code), rep["rcept_no"]):
                 skipped += 1
                 continue
-            r = fetch_company_products(code, key)   # 변경분만 무거운 document.xml 파싱
+            r = fetch_company_products(code, key)   # 변경분만(또는 force 전수) document.xml 파싱
             if r:
                 inv[code] = r
                 built += 1
@@ -270,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="분할 실행 'i/m' — codes[i::m] 만(마지막주 날짜별 분산)")
     p.add_argument("--audit", action="store_true",
                    help="저장된 인벤토리의 파싱 의심 항목만 출력(고도화 대상)")
+    p.add_argument("--force", action="store_true",
+                   help="--refresh 시 rcept 변경 없어도 전수 재파싱(파서 개선 반영)")
     args = p.parse_args(argv)
     if args.audit:                  # 인벤토리 audit — DART 키 불요(저장 파일만)
         sus = audit_inventory()
@@ -291,8 +295,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.shard and "/" in args.shard:
             i, m = args.shard.split("/", 1)
             shard = (int(i), int(m))
-        res = refresh_inventory(api_key=key, shard=shard)
-        print(f"📦 전수 갱신: {res}")
+        res = refresh_inventory(api_key=key, shard=shard, force=args.force)
+        print(f"📦 전수 갱신{' (force 전수 재파싱)' if args.force else ''}: {res}")
         return 0
     codes = [c.strip() for c in args.codes.split(",") if c.strip()] or [c for c, _, _ in _SAMPLE_WIDE]
     inv = build_inventory(codes, key)
