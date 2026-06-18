@@ -671,6 +671,20 @@ def probe_one(api_key: str, code: str, name: str, raw_dir: Path) -> dict:
         _best, _bsc = best_revenue_table(markup)
         out.append(f"score={_bsc}\n{_best[0][:6000]}\n" if _best
                    else "(best_revenue_table 미발견 — 매출구성표 없음)\n")
+        # (D) 영업수익/수익/부문 표 진단 — 매출 키워드 없는 서비스·플랫폼사(NAVER 영업
+        # 수익 구성, 현대차 부문별)가 매출후보 0 일 때 실제 매출 표 포착(사용자 2026-06-18).
+        if not cand:
+            alt = []
+            for t in tables:
+                head = " ".join(" ".join(r) for r in parse_table_block(t)[:3])
+                if any(k in head for k in ("영업수익", "수익", "부문", "세그먼트", "구성")):
+                    alt.append(t)
+            out.append("\n===== (D) 영업수익/부문 표 진단 (매출후보 0, 상위 3) =====\n")
+            if alt:
+                for t in alt[:3]:
+                    out.append(f"\n--- alt ---\n{t[:5000]}\n")
+            else:
+                out.append("(영업수익/부문 표도 없음 — 첨부·이미지·doc 분할 가능성)\n")
         (raw_dir / f"{code}_{rep['rcept_no']}.txt").write_text(
             "\n".join(out), encoding="utf-8")
     except Exception as exc:
