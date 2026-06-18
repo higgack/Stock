@@ -636,7 +636,7 @@ def _build_html(
         # 영역이라 인라인 <script> 중괄호 안전(f-string 아님).
         + '<section class="report-box">'
         '<div class="rb-row"><span class="rb-title">🏢 기업 보고서</span>'
-        '<input type="search" id="rb-q" placeholder="회사명 또는 6자리 코드 (예: 삼성전자 / 005930)" autocomplete="off">'
+        '<input type="search" id="rb-q" placeholder="회사·6자리 코드 또는 품목 (예: 삼성전자 / 005930 / 반도체)" autocomplete="off">'
         '<button type="button" id="rb-free" class="rb-btn">무료 보고서</button>'
         '<button type="button" id="rb-llm" class="rb-btn rb-llm">AI 보고서 (유료)</button>'
         '<button type="button" id="rb-chan" class="rb-btn">📤 채널로 전송</button></div>'
@@ -686,6 +686,9 @@ def _build_html(
         'document.getElementById("pr-chan").addEventListener("click",function(){run("channel");});'
         'ym.addEventListener("keydown",function(e){if(e.key==="Enter")run("free");});'
         '})();</script>'
+        # 🤖 유료 AI 보고서 아카이브 링크 (사용자 2026-06-18 '돈내고 분석한건 대시보드에 아카이브').
+        + '<div class="report-archive-link"><a href="report_archive.html">'
+        '🤖 AI 보고서 아카이브 — 유료로 생성한 기업/전체 보고서 다시 보기 →</a></div>'
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
@@ -1012,6 +1015,9 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .rb-result{margin-top:10px;background:var(--card);border:1px solid var(--border-soft);border-radius:10px;padding:14px 16px}
 .rb-result:empty{display:none}
 .rb-note{color:var(--muted);font-size:13px;padding:6px 0}
+.report-archive-link{background:var(--surface);border-bottom:1px solid var(--border);padding:8px 18px}
+.report-archive-link a{color:var(--accent);text-decoration:none;font-size:13px;font-weight:600}
+.report-archive-link a:hover{text-decoration:underline}
 #q{width:100%;padding:9px 12px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;font-size:14px;margin-bottom:8px}
 .chips{display:flex;gap:14px;flex-wrap:wrap}
 .chip-group{display:flex;gap:3px;flex-wrap:wrap}
@@ -2273,6 +2279,14 @@ def main() -> int:
         from trade import provisional_archive, customs as _customs2
         with _customs2.session() as conn:
             provisional_archive.refresh(conn)
+    except Exception:
+        pass
+    # 🤖 AI 보고서 아카이브 색인 — 링크 404 방지 + 색인 템플릿 변경 소급 반영
+    # (jsonl 적립은 dashboard_server 의 유료 render_llm 이 즉시 append+regenerate).
+    try:
+        from trade import report_archive
+        report_archive.ensure_exists()
+        report_archive.regenerate()
     except Exception:
         pass
     return 0

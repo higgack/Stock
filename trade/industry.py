@@ -190,6 +190,8 @@ def industry_series(
         points: list[dict] = []
         exp_running: list[int] = []
         prev_yoy: Optional[float] = None
+        prev_exp_v: Optional[int] = None      # 전월 값 (MoM)
+        prev_mom: Optional[float] = None       # 전월 MoM (ΔMoM)
         ttm_hist: dict[str, float] = {}   # ym → trailing-12-mo sum (for TTM YoY)
         for k in keys:
             exp = norm[k] or 0
@@ -197,6 +199,9 @@ def industry_series(
             ago = norm.get(_prev_year_month(k))
             yoy = ((exp - ago) / ago * 100.0) if ago else None
             dyoy = (yoy - prev_yoy) if (yoy is not None and prev_yoy is not None) else None
+            # MoM(전월 대비) + ΔMoM(MoM 1차 미분, 가속/둔화). 사용자 2026-06-18.
+            mom = ((exp - prev_exp_v) / prev_exp_v * 100.0) if prev_exp_v else None
+            dmom = (mom - prev_mom) if (mom is not None and prev_mom is not None) else None
             # TTM = trailing 12-month export sum (only once 12 months exist).
             ttm = sum(exp_running[-12:]) if len(exp_running) >= 12 else None
             if ttm is not None:
@@ -209,12 +214,17 @@ def industry_series(
                 "exp": exp,
                 "yoy": yoy,
                 "dyoy": dyoy,
+                "mom": mom,
+                "dmom": dmom,
                 "ma12": _ma(exp_running, 12),
                 "ttm": ttm,
                 "ttm_yoy": ttm_yoy,
             })
             if yoy is not None:
                 prev_yoy = yoy
+            prev_exp_v = exp
+            if mom is not None:
+                prev_mom = mom
         out[industry] = points
     return out
 
@@ -604,6 +614,8 @@ def _stat_row(points: list[dict], lab: str = "수출액") -> str:
         f"<div><dt>{lab}</dt><dd>{_eokusd(exp)}</dd></div>"
         f"<div><dt>YoY</dt><dd class='{cls(latest.get('yoy'))}'>{_pct(latest.get('yoy'), cap=999.9)}</dd></div>"
         f"<div><dt>ΔYoY</dt><dd class='{cls(latest.get('dyoy'))}'>{_pct(latest.get('dyoy'),'%p')}</dd></div>"
+        f"<div><dt>MoM</dt><dd class='{cls(latest.get('mom'))}'>{_pct(latest.get('mom'), cap=999.9)}</dd></div>"
+        f"<div><dt>ΔMoM</dt><dd class='{cls(latest.get('dmom'))}'>{_pct(latest.get('dmom'),'%p')}</dd></div>"
         f"<div><dt>3개월 평균 YoY</dt><dd class='{cls(m['yoy3'])}'>{_pct(m['yoy3'], cap=999.9)}</dd></div>"
         f"<div><dt>3개월 평균 ΔYoY</dt><dd class='{cls(m['dyoy3'])}'>{_pct(m['dyoy3'],'%p')}</dd></div>"
         f"<div><dt>12M MA</dt><dd>{_eokusd(ma)}</dd></div>"
@@ -796,6 +808,8 @@ def _raw_table(pts: list[dict], lab: str = "수출액") -> str:
         row(lab, lambda p: _eokusd(p["exp"]))
         + row("YoY", lambda p: _pct(p.get("yoy")), lambda p: cls(p.get("yoy")))
         + row("ΔYoY", lambda p: _pct(p.get("dyoy"), "%p"), lambda p: cls(p.get("dyoy")))
+        + row("MoM", lambda p: _pct(p.get("mom")), lambda p: cls(p.get("mom")))
+        + row("ΔMoM", lambda p: _pct(p.get("dmom"), "%p"), lambda p: cls(p.get("dmom")))
         + row("12M MA", lambda p: _eokusd(p.get("ma12")))
         + row("MA 대비", lambda p: _pct(
             ((p["exp"] - p["ma12"]) / p["ma12"] * 100.0) if p.get("ma12") else None),

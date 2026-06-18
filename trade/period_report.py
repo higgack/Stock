@@ -402,11 +402,13 @@ def _run_llm(data: dict, model: str | None = None) -> tuple[str, dict]:
             google_api_key=llm_insights._api_key()).invoke(
                 [("system", _LLM_SYS), ("human", _llm_digest(data))])
         um = getattr(resp, "usage_metadata", None) or {}
+        in_tok, out_tok = um.get("input_tokens", 0), um.get("output_tokens", 0)
         try:
-            llm_usage.record(mdl, um.get("input_tokens", 0), um.get("output_tokens", 0))
+            llm_usage.record(mdl, in_tok, out_tok)
         except Exception:
             pass
-        return (getattr(resp, "content", "") or "").strip(), {"used": True, "model": mdl}
+        return ((getattr(resp, "content", "") or "").strip(),
+                {"used": True, "model": mdl, "in_tok": in_tok, "out_tok": out_tok})
     except Exception as exc:
         log.warning("period_report LLM: %s", exc)
         return "", {"used": False, "reason": exc.__class__.__name__}
@@ -426,7 +428,37 @@ def render_llm(data: dict, model: str | None = None) -> tuple[str, dict]:
     ai = ('<div style="font-weight:600;margin:14px 0 4px">🤖 AI 분석 (Gemini · 유료)</div>'
           f'<div style="font-size:13px;background:#1c1f26;border:1px solid #2a2e37;'
           f'border-radius:8px;padding:10px 12px;white-space:pre-wrap">{_html.escape(txt)}</div>')
-    return free + ai, meta
+    html = free + ai
+    # 유료 산출물 → 대시보드 아카이브 적립 (사용자 2026-06-18, company_report 미러).
+    try:
+        from trade import llm_usage, report_archive
+        cost_krw = round(llm_usage.cost_usd(meta.get("model") or "",
+                                            meta.get("in_tok") or 0,
+                                            meta.get("out_tok") or 0)
+                         * llm_usage.KRW_PER_USD, 1)
+        report_archive.record(
+            kind="🗂️ 전체", title=f"{data.get('period')} 수출입 시장 보고서",
+            html_body=html, summary=_archive_summary(data, txt),
+            cost_krw=cost_krw or None)
+        report_archive.regenerate()
+    except Exception as exc:
+        log.warning("period_report archive: %s", exc)
+    return html, meta
+
+
+def _archive_summary(data: dict, ai_text: str) -> str:
+    """아카이브 색인 카드 본문(검색용 평문) — 데이터 핵심 + AI 분석."""
+    t = data.get("totals") or {}
+    parts = [f"🗂️ {data.get('period')} 수출입 시장 보고서 ({data.get('status', '')})",
+             f"총수출 {_usd(t.get('export'))} · 총수입 {_usd(t.get('import'))} · "
+             f"무역수지 {_usd(t.get('balance'))}"]
+    if data.get("top_export"):
+        parts.append("수출상위: " + ", ".join(r["name"] for r in data["top_export"][:10]))
+    if data.get("top_import"):
+        parts.append("수입상위: " + ", ".join(r["name"] for r in data["top_import"][:10]))
+    if ai_text:
+        parts.append("🤖 " + ai_text)
+    return "\n".join(parts)
 
 
 def render_telegram(data: dict, ai_text: str = "") -> str:

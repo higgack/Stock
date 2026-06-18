@@ -32,9 +32,17 @@ def _eok_usd(v) -> str:
     return f"{x / 1e8:,.1f}억$" if x else "—"
 
 
-def _company_exposure(name: str, by_mti: dict, pairs: list) -> list[dict]:
-    """회사명 → 연결된 관세청 품목 [{item, industry, latest_usd}] (수출액 내림차순).
-    mti_companies(수동+채널) 역조회. 순수(단위테스트)."""
+def _latest(node) -> float | None:
+    """{months:{ym:usd}} → 최신월 값(없으면 None)."""
+    months = (node or {}).get("months") or {}
+    return months[max(months)] if months else None
+
+
+def _company_exposure(name: str, by_mti: dict, pairs: list,
+                      by_imp: dict | None = None) -> list[dict]:
+    """회사명 → 연결된 관세청 품목 [{item, industry, export_usd, import_usd}]
+    (수출액 내림차순). mti_companies(수동+채널) 역조회. 수입(by_imp)도 같은 품목(mti6)
+    매칭해 함께 표기(사용자 2026-06-18 '수출만? 수입도'). 순수(단위테스트)."""
     from trade import mti_companies
     target = _norm(name)
     if not target:
@@ -47,32 +55,108 @@ def _company_exposure(name: str, by_mti: dict, pairs: list) -> list[dict]:
         if not any(_norm(c) == target or target in _norm(c) or _norm(c) in target
                    for c in cos if c):
             continue
-        months = node.get("months") or {}
-        latest = months[max(months)] if months else None
         out.append({"item": item, "industry": node.get("industry", ""),
-                    "latest_usd": latest})
-    out.sort(key=lambda x: -(x["latest_usd"] or 0))
+                    "export_usd": _latest(node),
+                    "import_usd": _latest((by_imp or {}).get(mti6))})
+    out.sort(key=lambda x: -(x["export_usd"] or 0))
     return out[:20]
 
 
+def _item_matches(query: str, by_mti: dict, pairs: list,
+                  by_imp: dict | None = None) -> dict | None:
+    """품목/산업 키워드 query → {mode:'item', name, items[], companies[]} (사용자
+    2026-06-18 '창에 기업 말고 품목(반도체) 치면 관련기업'). 회사 노출의 역방향:
+    품목 → 관련 상장사. 두 소스 union — (1) query 자체가 큐레이션 키워드,
+    (2) query 와 이름/산업이 매칭되는 저장 품목들의 관련기업. 매칭 0이면 None
+    (→ gather 가 회사 모드로 폴백). 순수(단위테스트)."""
+    from trade import mti_companies
+    qn = _norm(query)
+    if not qn:
+        return None
+
+    seen: set[str] = set()
+    companies: list[str] = []
+
+    def _add(cos):
+        for c in cos:
+            k = _norm(c)
+            if c and k and k not in seen:
+                seen.add(k)
+                companies.append(c)
+
+    # (1) query 자체가 큐레이션 품목 키워드 (예: '디램'·'라면')
+    _add(mti_companies.companies_for(query))
+    _add(mti_companies.channel_companies_for(query, pairs))
+
+    # (2) query 와 이름/산업이 매칭되는 저장 품목들 → 행 + 그 품목들의 관련기업
+    rows: list[dict] = []
+    for mti6, node in (by_mti or {}).items():
+        item = (node.get("name") or mti6).strip()
+        ind = (node.get("industry") or "").strip()
+        if not (qn in _norm(item) or qn in _norm(ind)):
+            continue
+        cos = list(dict.fromkeys(list(mti_companies.companies_for(item))
+                                 + mti_companies.channel_companies_for(item, pairs)))
+        rows.append({"item": item, "industry": ind,
+                     "export_usd": _latest(node),
+                     "import_usd": _latest((by_imp or {}).get(mti6)),
+                     "companies": cos})
+        _add(cos)
+
+    if not companies and not rows:
+        return None
+    rows.sort(key=lambda x: -(x["export_usd"] or 0))
+    return {"mode": "item", "query": query, "name": query,
+            "items": rows[:30], "companies": companies[:40]}
+
+
 def gather(query: str, api_key: str | None = None) -> dict:
-    """회사(이름 또는 6자리 코드) → 보고서 데이터 {query, code, name, products,
-    exposure}. 네트워크: DART(corp_code·매출표). graceful."""
+    """회사(이름·6자리 코드) **또는 품목**(예: 반도체) → 보고서 데이터.
+    회사 모드: {mode:'company', query, code, name, products, exposure}.
+    품목 모드(사용자 2026-06-18 역검색): {mode:'item', query, name, items, companies}.
+    네트워크: DART(corp_code·매출표). graceful."""
     from bot.dart_client import get_dart
     dart = get_dart()
     q = (query or "").strip()
-    code, name = None, q
+
+    # 관세청 저장 시리즈 1회 로드 — 품목 역검색·회사 노출 양쪽이 공유.
+    by_mti: dict = {}
+    by_imp: dict = {}
+    pairs: list = []
+    try:
+        from trade import customs, industry, mti_companies
+        with customs.session() as conn:
+            by_mti = industry.load_mti_stored(conn)
+            by_imp = industry.load_mti_imports(conn)
+        pairs = mti_companies.load_channel_pairs()
+    except Exception as exc:
+        log.warning("company_report data %s: %s", q, exc)
+
     digits = q.upper().split(".")[0]
-    if digits.isdigit() and len(digits) == 6:
-        code = digits
-        name = dart.stock_code_to_name(code) or q
-    else:
+    is_code = digits.isdigit() and len(digits) == 6
+
+    # 이름 조회 1회 (회사 매칭 + 정확일치 판정 공유). 6자리 코드는 조회 불요.
+    hits: list = []
+    if q and not is_code:
         try:
             hits = dart.find_by_name(q)
         except Exception:
             hits = []
-        if hits:
-            code, name = hits[0].get("stock_code"), hits[0].get("name") or q
+        # 품목 역검색 우선 — 정확한 상장사명이 아닐 때만 (substring 매칭은 품목
+        # 키워드가 회사명 일부에 걸리는 흔한 경우라 회사 확정으로 안 봄).
+        exact = bool(hits) and _norm(hits[0].get("name", "")) == _norm(q)
+        if not exact:
+            item = _item_matches(q, by_mti, pairs, by_imp)
+            if item:
+                return item
+
+    # 회사 모드 (기존)
+    code, name = None, q
+    if is_code:
+        code = digits
+        name = dart.stock_code_to_name(code) or q
+    elif hits:
+        code, name = hits[0].get("stock_code"), hits[0].get("name") or q
     products = []
     if code:
         try:
@@ -82,21 +166,58 @@ def gather(query: str, api_key: str | None = None) -> dict:
                 products = r.get("products", [])
         except Exception as exc:
             log.warning("company_report DART %s: %s", code, exc)
-    exposure: list[dict] = []
-    try:
-        from trade import customs, industry, mti_companies
-        with customs.session() as conn:
-            by_mti = industry.load_mti_stored(conn)
-        pairs = mti_companies.load_channel_pairs()
-        exposure = _company_exposure(name, by_mti, pairs)
-    except Exception as exc:
-        log.warning("company_report exposure %s: %s", name, exc)
-    return {"query": q, "code": code, "name": name,
+    exposure = _company_exposure(name, by_mti, pairs, by_imp)
+    return {"mode": "company", "query": q, "code": code, "name": name,
             "products": products, "exposure": exposure}
+
+
+def _render_free_item(data: dict) -> str:
+    """품목 역검색 모드 → 관련 상장사 + 매칭 품목 HTML(인라인·₩0). 순수."""
+    e = _html.escape
+    name = e(data.get("name") or data.get("query") or "—")
+    items = data.get("items") or []
+    companies = data.get("companies") or []
+    head = (f'<div style="font-size:18px;font-weight:700;margin-bottom:2px">{name} '
+            '· 관련 기업</div>'
+            '<div style="font-size:12px;color:#9aa0aa;margin-bottom:12px">'
+            '품목 역검색 · 관세청 수출입 품목 ↔ 관련 상장사(큐레이션+채널) · 무료(데이터)</div>')
+    if companies:
+        chips = "".join(
+            '<span style="display:inline-block;background:#1c1f26;color:#e6edf3;'
+            'border:1px solid #2a2e37;border-radius:12px;padding:3px 10px;margin:2px;'
+            f'font-size:13px">{e(c)}</span>' for c in companies)
+        comp_html = ('<div style="font-weight:600;margin:10px 0 4px">🏢 관련 상장사 '
+                     f'({len(companies)})</div><div>{chips}</div>')
+    else:
+        comp_html = ('<div style="color:#9aa0aa;font-size:13px;margin:10px 0">🏢 관련 상장사 '
+                     '— 큐레이션·채널 미등록</div>')
+    if items:
+        irows = "".join(
+            f'<tr><td style="padding:4px 8px">{e(x["item"])}</td>'
+            f'<td style="padding:4px 8px;color:#9aa0aa">{e(x.get("industry",""))}</td>'
+            f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("export_usd"))}</td>'
+            f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("import_usd"))}</td>'
+            f'<td style="padding:4px 8px;color:#9aa0aa">{e(", ".join(x.get("companies", [])[:4]))}</td></tr>'
+            for x in items)
+        items_html = ('<div style="font-weight:600;margin:14px 0 4px">🚢 매칭 품목 '
+                      '(최신월 수출액순)</div>'
+                      '<table style="border-collapse:collapse;font-size:13px;width:100%">'
+                      '<thead><tr>'
+                      '<th style="text-align:left;padding:4px 8px;color:#9aa0aa">품목</th>'
+                      '<th style="text-align:left;padding:4px 8px;color:#9aa0aa">산업</th>'
+                      '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">최신월 수출</th>'
+                      '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">최신월 수입</th>'
+                      '<th style="text-align:left;padding:4px 8px;color:#9aa0aa">관련기업</th></tr></thead>'
+                      f'<tbody>{irows}</tbody></table>')
+    else:
+        items_html = ''
+    return f'<div style="line-height:1.5">{head}{comp_html}{items_html}</div>'
 
 
 def render_free(data: dict) -> str:
     """데이터 → 자체완결 HTML 보고서(인라인 스타일·₩0). 순수."""
+    if data.get("mode") == "item":
+        return _render_free_item(data)
     e = _html.escape
     name = e(data.get("name") or data.get("query") or "—")
     code = e(data.get("code") or "")
@@ -126,14 +247,16 @@ def render_free(data: dict) -> str:
         erows = "".join(
             f'<tr><td style="padding:4px 8px">{e(x["item"])}</td>'
             f'<td style="padding:4px 8px;color:#9aa0aa">{e(x.get("industry",""))}</td>'
-            f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("latest_usd"))}</td></tr>'
+            f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("export_usd"))}</td>'
+            f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("import_usd"))}</td></tr>'
             for x in exposure)
         exp_html = ('<div style="font-weight:600;margin:14px 0 4px">🚢 관세청 수출입 품목 노출 '
                     '(최신월 수출액순)</div>'
                     '<table style="border-collapse:collapse;font-size:13px;width:100%">'
                     '<thead><tr><th style="text-align:left;padding:4px 8px;color:#9aa0aa">품목</th>'
                     '<th style="text-align:left;padding:4px 8px;color:#9aa0aa">산업</th>'
-                    '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">최신월 수출</th></tr></thead>'
+                    '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">최신월 수출</th>'
+                    '<th style="text-align:right;padding:4px 8px;color:#9aa0aa">최신월 수입</th></tr></thead>'
                     f'<tbody>{erows}</tbody></table>')
     else:
         exp_html = ('<div style="color:#9aa0aa;font-size:13px;margin:14px 0">🚢 관세청 노출 — '
@@ -143,22 +266,34 @@ def render_free(data: dict) -> str:
 
 def _llm_digest(data: dict) -> str:
     """LLM 입력용 압축 텍스트(데이터만 — 환각 차단)."""
+    if data.get("mode") == "item":
+        lines = [f"품목 역검색: {data.get('name')}"]
+        if data.get("companies"):
+            lines.append("관련 상장사: " + ", ".join(data["companies"][:20]))
+        if data.get("items"):
+            lines.append("매칭 품목(최신월 수출|수입): " + ", ".join(
+                f"{x['item']}=수출{_eok_usd(x.get('export_usd'))}/수입{_eok_usd(x.get('import_usd'))}"
+                for x in data["items"][:12]))
+        return "\n".join(lines)
     lines = [f"회사: {data.get('name')} ({data.get('code') or '비상장/해외'})"]
     if data.get("products"):
         lines.append("제품(매출비중): " + ", ".join(
             f"{p.get('name')}({p['share_pct']}%)" if p.get("share_pct") is not None
             else str(p.get("name")) for p in data["products"][:12]))
     if data.get("exposure"):
-        lines.append("관세청 수출입 품목 노출(최신월 수출): " + ", ".join(
-            f"{x['item']}={_eok_usd(x.get('latest_usd'))}" for x in data["exposure"][:12]))
+        lines.append("관세청 수출입 품목 노출(최신월 수출|수입): " + ", ".join(
+            f"{x['item']}=수출{_eok_usd(x.get('export_usd'))}/수입{_eok_usd(x.get('import_usd'))}"
+            for x in data["exposure"][:12]))
     return "\n".join(lines)
 
 
 _LLM_SYS = (
-    "너는 한국 수출입·기업 애널리스트다. 아래 '데이터'(DART 매출구성 + 관세청 수출입 "
-    "품목 노출)만 근거로 5~7문장 한국어 요약을 써라. 규칙: (1) 주어진 수치/품목만 사용, "
-    "새 숫자·사건 날조 금지 (2) 주력 제품·매출 집중도, 수출입 품목 노출(수혜/부담 방향은 "
-    "데이터 범위 내에서만 중립 서술) (3) 투자 권유 금지·교육 목적. 마크다운 없이 평문."
+    "너는 한국 수출입·기업 애널리스트다. 아래 '데이터'(회사면 DART 매출구성 + 관세청 "
+    "수출입 품목 노출 / 품목이면 관련 상장사 + 그 품목 수출입)만 근거로 5~7문장 한국어 "
+    "요약을 써라. 규칙: (1) 주어진 수치/품목/기업만 사용, 새 숫자·사건 날조 금지 "
+    "(2) 회사면 주력 제품·매출 집중도와 수출입 품목 노출, 품목이면 그 품목의 수출입 "
+    "흐름과 관련 상장사 구도(수혜/부담 방향은 데이터 범위 내 중립 서술) (3) 투자 권유 "
+    "금지·교육 목적. 마크다운 없이 평문."
 )
 
 
@@ -177,21 +312,58 @@ def render_llm(data: dict, model: str | None = None) -> tuple[str, dict]:
                                      google_api_key=llm_insights._api_key())
         resp = llm.invoke([("system", _LLM_SYS), ("human", _llm_digest(data))])
         um = getattr(resp, "usage_metadata", None) or {}
+        in_tok, out_tok = um.get("input_tokens", 0), um.get("output_tokens", 0)
         try:
-            llm_usage.record(mdl, um.get("input_tokens", 0), um.get("output_tokens", 0))
+            llm_usage.record(mdl, in_tok, out_tok)
         except Exception:
             pass
-        txt = _html.escape((getattr(resp, "content", "") or "").strip())
-        if not txt:
+        raw = (getattr(resp, "content", "") or "").strip()
+        if not raw:
             return (free + _note("⚠️ AI 요약 비어있음 — 무료 보고서만."), {"used": False})
+        txt = _html.escape(raw)
         ai = ('<div style="font-weight:600;margin:14px 0 4px">🤖 AI 요약 (Gemini · 유료)</div>'
               f'<div style="font-size:13px;background:#1c1f26;color:#e6edf3;border:1px solid #2a2e37;'
               f'border-radius:8px;padding:10px 12px;white-space:pre-wrap">{txt}</div>')
-        return (free + ai, {"used": True, "model": mdl})
+        html = free + ai
+        # 유료 산출물 → 대시보드 아카이브 적립 (사용자 2026-06-18). best-effort.
+        try:
+            from trade import report_archive
+            cost_krw = round(llm_usage.cost_usd(mdl, in_tok, out_tok)
+                             * llm_usage.KRW_PER_USD, 1)
+            report_archive.record(
+                kind="🏢 기업", title=(data.get("name") or data.get("query") or "기업 보고서"),
+                html_body=html, summary=_archive_summary(data, raw),
+                cost_krw=cost_krw or None)
+            report_archive.regenerate()
+        except Exception as exc:
+            log.warning("company_report archive: %s", exc)
+        return (html, {"used": True, "model": mdl})
     except Exception as exc:
         log.warning("company_report LLM: %s", exc)
         return (free + _note(f"⚠️ AI 요약 실패({exc.__class__.__name__}) — 무료 보고서만."),
                 {"used": False})
+
+
+def _archive_summary(data: dict, ai_text: str) -> str:
+    """아카이브 색인 카드 본문(검색용 평문) — 데이터 핵심 + AI 요약."""
+    if data.get("mode") == "item":
+        parts = [f"🔎 {data.get('name') or data.get('query') or ''} — 관련 기업"]
+        if data.get("companies"):
+            parts.append("관련 상장사: " + ", ".join(data["companies"][:15]))
+        if data.get("items"):
+            parts.append("매칭 품목: " + ", ".join(x["item"] for x in data["items"][:12]))
+    else:
+        head = (data.get("name") or data.get("query") or "")
+        if data.get("code"):
+            head += f" · {data['code']}"
+        parts = [f"🏢 {head}"]
+        if data.get("products"):
+            parts.append("제품: " + ", ".join(str(p.get("name")) for p in data["products"][:12]))
+        if data.get("exposure"):
+            parts.append("관세청 노출: " + ", ".join(x["item"] for x in data["exposure"][:12]))
+    if ai_text:
+        parts.append("🤖 " + ai_text)
+    return "\n".join(parts)
 
 
 def _note(msg: str) -> str:
@@ -202,6 +374,25 @@ def _note(msg: str) -> str:
 def render_telegram(data: dict, ai_text: str = "") -> str:
     """보고서 → 텔레그램 HTML(≤4096, 표 대신 줄 목록). 채널 전송용. 순수."""
     e = _html.escape
+    if data.get("mode") == "item":
+        name = e(data.get("name") or data.get("query") or "—")
+        lines = [f"🔎 <b>{name}</b> — 관련 기업 (품목 역검색)",
+                 "관세청 수출입 품목 ↔ 관련 상장사", ""]
+        companies = data.get("companies") or []
+        if companies:
+            lines.append("🏢 <b>관련 상장사</b>")
+            lines.append(", ".join(e(c) for c in companies[:20]))
+        else:
+            lines.append("🏢 관련 상장사 — 미등록")
+        items = data.get("items") or []
+        if items:
+            lines += ["", "🚢 <b>매칭 품목</b> (최신월 수출/수입)"]
+            for x in items[:12]:
+                lines.append(f"• {e(x['item'])} — 수출 {_eok_usd(x.get('export_usd'))}"
+                             f" / 수입 {_eok_usd(x.get('import_usd'))}")
+        if ai_text:
+            lines += ["", "🤖 <b>AI 요약</b>", e(ai_text)]
+        return "\n".join(lines)[:4000]
     name = e(data.get("name") or data.get("query") or "—")
     code = e(data.get("code") or "")
     lines = [f"🏢 <b>{name}</b>{(' · ' + code) if code else ''} — 기업 보고서",
@@ -217,9 +408,10 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
     lines.append("")
     exposure = data.get("exposure") or []
     if exposure:
-        lines.append("🚢 <b>관세청 수출입 품목 노출</b> (최신월 수출)")
+        lines.append("🚢 <b>관세청 수출입 품목 노출</b> (최신월 수출/수입)")
         for x in exposure[:12]:
-            lines.append(f"• {e(x['item'])} — {_eok_usd(x.get('latest_usd'))}")
+            lines.append(f"• {e(x['item'])} — 수출 {_eok_usd(x.get('export_usd'))}"
+                         f" / 수입 {_eok_usd(x.get('import_usd'))}")
     else:
         lines.append("🚢 관세청 노출 — 매핑된 품목 없음")
     if ai_text:
