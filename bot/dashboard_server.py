@@ -1401,6 +1401,25 @@ def main() -> int:
     args = parser.parse_args()
 
     log.info("dotenv: %s", _DOTENV_STATUS)
+    # lookup_cache 무효화 — 서버 재시작(=배포)마다 비운다. /lookup·/api/lookup_detail 의
+    # 렌더 HTML(뉴스·리서치·동종비교 포함)은 SWR(30분 즉시서빙·24h) 디스크 캐시라,
+    # 코드를 고쳐도 캐시된 옛 페이지가 계속 서빙돼 변경이 화면에 안 닿던 클래스(실수 #11
+    # — 사용자 2026-06-19 ICHR 뉴스 원문링크 3회 재요청, #532 fix 가 stale 캐시에 가려짐).
+    # 배포는 dashboard 재시작을 동반(auto-update bot/*.py diff)하므로 startup-clear 가
+    # 배포→신선 렌더를 보장. 재시작 빈도라 1회 cold 렌더(SWR 재워밍)는 무해·graceful.
+    try:
+        _lc = _ARCHIVE_ROOT.parent / "lookup_cache"
+        if _lc.is_dir():
+            _cleared = 0
+            for _f in _lc.glob("*.html"):
+                try:
+                    _f.unlink()
+                    _cleared += 1
+                except OSError:
+                    pass
+            log.info("lookup_cache 무효화: %d HTML 제거 (배포 후 신선 렌더 보장)", _cleared)
+    except Exception as _cexc:
+        log.debug("lookup_cache clear skipped: %s", _cexc)
     # 검색 워밍업 — api/search(종목명→ticker)는 DART corp_code 맵을 처음 1회
     # 로드할 때 느리다(서버 재시작 직후 첫 검색). 백그라운드로 미리 로드해
     # 첫 검색 '...' 지연 제거. 실패해도 서버 기동에 무영향.

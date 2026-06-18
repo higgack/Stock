@@ -9796,6 +9796,19 @@ class TestNaverCommodityCharts:
         assert ".isdigit()" not in src.split("worldstock/news")[0][-400:], \
             "비숫자 oid 차단 가드(.isdigit) 가 링크 생성 직전에 잔존"
 
+    def test_lookup_cache_cleared_on_dashboard_startup(self):
+        # 사용자 2026-06-19: SWR lookup_cache 가 코드 배포를 가로질러 옛 HTML 서빙 →
+        # 코드 fix 가 페이지에 안 닿던 클래스(실수 #11). 서버 startup 이 lookup_cache
+        # *.html 을 비워 배포→신선 렌더 보장. main() 배선 가드(소스 grep).
+        src = open("bot/dashboard_server.py", encoding="utf-8").read()
+        main_body = src.split("def main(", 1)[1]
+        assert 'lookup_cache' in main_body, "startup lookup_cache 무효화 미배선"
+        assert '.glob("*.html")' in main_body and ".unlink()" in main_body, \
+            "lookup_cache HTML 제거 로직 누락"
+        # serve_forever 전에 위치(서빙 시작 전 clear)
+        assert main_body.index("lookup_cache") < main_body.index("serve_forever"), \
+            "캐시 clear 가 serve_forever 이후 — startup 전 비워야"
+
     def test_macro_commodities_wired_to_naver(self):
         src = open("bot/macro_snapshot.py", encoding="utf-8").read()
         assert "fetch_commodity_spark" in src              # 원자재 스파크 네이버
