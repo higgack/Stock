@@ -250,10 +250,11 @@ def render_us_highlow_page() -> str:
                 + _panel("🔺 52주 신고가", hi, "hl-high", _ind_dist_line(hi))
                 + _panel("🔻 52주 신저가", lo, "hl-low", _ind_dist_line(lo))
                 + '</div>' + _HL_SORT_JS)
-    # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고') + 장중 1h(다른 52주와 통일).
+    # 부제 간결화 (사용자 2026-06-14 '쓸데없는건 빼고'). 장중 30분 전량 갱신
+    # (사용자 2026-06-19 '미국장 새벽=저부하' — :00·:30 슬롯 force, 마감후 EOD freeze).
     from bot.highlow_render import market_hours_label as _mhl
     sub = (f"미국 52주 신고가·신저가 · {_mhl('US')} · 종목명=네이버 한글 · 거래량·거래대금 · "
-           f"업종=GICS·yfinance · 출처 {src} · 장중 1h·마감후 EOD 자동"
+           f"업종=GICS·yfinance · 출처 {src} · 장중 30분·마감후 EOD 자동"
            + (f" · 마지막 갱신 {ts}" if ts else ""))
     return _shell("미국 신고가·신저가", sub, "ushighlow", body)
 

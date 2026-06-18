@@ -685,7 +685,7 @@ def fetch_high_low(force: bool = False) -> dict:
             mt = (_CACHE_DIR / "highlow.json").stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh("US", mt, _HL_INTRA_TTL):
+        if _session_fresh("US", mt, _HL_US_INTRA_TTL):   # US 30분(사용자 2026-06-19)
             # 업종 누락 행 치유 (stale 캐시가 ind 필드 도입 전이거나 .info
             # 실패로 비었던 경우 — 벌크 맵으로 채워지면 캐시도 갱신).
             if _backfill_industries(stale):
@@ -707,7 +707,7 @@ def fetch_high_low(force: bool = False) -> dict:
                  "ts": _now_label(), "source": "Finviz(전 미국 상장 · 당일 신고/신저)"}
     if not out["high"] and not out["low"]:
         log.info("finviz: high/low primary empty → 전미국 산출 티어")
-        out = _highlow_full_us()
+        out = _highlow_full_us(force=force)   # 장중 슬롯 force → 30분마다 전량 재산출(B′)
     if not out.get("high") and not out.get("low"):
         log.info("finviz: 전미국 캐시 미준비 → S&P500 폴백 (백그라운드 빌드 중)")
         out = _highlow_fallback_sp500()
@@ -1728,21 +1728,21 @@ def _kick_full_us_refresh() -> None:
                       name="highlow-full-us").start()
 
 
-def _highlow_full_us() -> dict:
+def _highlow_full_us(force: bool = False) -> dict:
     """전미국 산출 티어 — **동기 계산 절대 안 함** (~수 분이라 페이지 hang
     금지). 장-인지 신선도(_session_fresh US, 장중 1h / 장 밖 마지막 마감 이후
     산출본이면 재스캔 0 — 사용자 2026-06-13 '모두 장중에만 1h'). stale
     (≤24h) 서빙+백그라운드 재계산 / 캐시 부재 시 kick 후 빈 dict → 호출부가
     S&P500 티어로 폴스루 (다음 방문부터 전량 표시)."""
     stale = _cached("highlow_full_us_v5.json", ttl=86400)
-    if stale is not None:
+    if stale is not None and not force:    # force(장중 슬롯)=게이트 우회 → 항상 재산출 kick
         try:
             mt = (_CACHE_DIR / "highlow_full_us_v5.json").stat().st_mtime
         except OSError:
             mt = 0.0
-        if _session_fresh("US", mt, _HL_INTRA_TTL):
+        if _session_fresh("US", mt, _HL_US_INTRA_TTL):   # US 30분(타 시장 1h)
             return _prune_cached(stale, ("high", "low"), "highlow_full_us_v5.json")
-    _kick_full_us_refresh()
+    _kick_full_us_refresh()   # _FULL_HL_REFRESHING 가드로 중복 0 — 동시 1개, 동기 계산 안 함
     return stale if stale is not None else {}
 
 
@@ -1972,6 +1972,10 @@ _SESSIONS_UTC = {
     "HK":   (1, 30, 8, 0),     # 09:30–16:00 HKT(+8)
 }
 _HL_INTRA_TTL = 1 * 3600       # 장중 52주 신고저 재산출 간격 (사용자 2026-06-13). 장 밖 0.
+# US 전용 30분(사용자 2026-06-19 '미국장은 새벽이라 부하 적다 → 30분 전량 갱신'). 타
+# 시장(JP/HK/CN/TW)은 _HL_INTRA_TTL 1h 유지. 슬롯(:00·:30)이 장중 force 로 30분마다
+# 전체 5,625 재산출, 종가엔 EOD 1회 후 freeze (B′ — 샤딩 대신 전량 더 자주, 새벽 저부하).
+_HL_US_INTRA_TTL = 30 * 60
 _MOVERS_INTRA_TTL = 30         # 장중 무버(급등락) 재산출 간격 — 30초 (사용자 2026-06-15
 #  '급등락 30초, 대만제외'). US/JP/CN/HK/KR 무버는 네이버 랭킹(fast_info·야후 무관, 컴퓨트당
 #  ~2-6콜) + SWR(페이지 접근 시만·백그라운드 킥) + graceful(네이버 throttle 시 stale 서빙)
