@@ -271,10 +271,15 @@ def _to_amount(s: str) -> int | None:
         return None
 
 
+_TOTAL_NAMES_NS = frozenset(t.replace(" ", "") for t in _TOTAL_NAMES)  # 공백 변형('소 계'='소계')
+
+
 def _is_texty(s: str) -> bool:
     """이름다운가 — 한글/영문 2자+ 포함 & 순수 숫자/기호가 아님. 순수."""
     s = (s or "").strip()
-    if not s or s in _TOTAL_NAMES:
+    # 합계/소계/총계 + 공백 변형('소 계'·'합 계') 제외 (다기간 표 부문소계가 품목으로
+    # 새 비중합 200%+ 유발하던 것 보강, 사용자 2026-06-18 대한항공).
+    if not s or s in _TOTAL_NAMES or s.replace(" ", "") in _TOTAL_NAMES_NS:
         return False
     if re.fullmatch(r"[\d,.\s%()\-~]+", s):
         return False
