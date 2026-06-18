@@ -343,6 +343,14 @@ def collect_score(rows: list[list[str]]) -> int:
     joined = " ".join(c for r in rows[:3] for c in r)
     if any(k in joined for k in _ACCT_KW):     # 회계 주석/정책 표 → 제외
         return 0
+    # 손익계산서(P&L) — 매출원가+매출총이익/영업이익 동시 = 매출구성 아님(사용자
+    # 2026-06-18 audit: '매출원가/매출총이익/영업이익'이 제품으로 누수 + 표 자체
+    # 오선택). 전체 행 검사 (P&L 항목은 세로로 흩어져 rows[:3] 만으론 놓침).
+    # POSCO형(매출+영업이익만, 1개)은 통과 — 진짜 매출구성표 오제거 방지.
+    pnl_join = " ".join(c for r in rows for c in r)
+    if sum(1 for k in ("매출원가", "매출총이익", "매출총손실", "영업이익", "영업손실")
+           if k in pnl_join) >= 2:
+        return 0
     s = sum(2 for k in _REV_STRONG if k in joined)
     s += sum(1 for k in _REV_OK if k in joined)
     if any("%" in c for r in rows for c in r):

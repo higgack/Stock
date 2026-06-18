@@ -158,6 +158,20 @@ class CollectTests(unittest.TestCase):
         ):
             self.assertEqual(P.collect_score(P.parse_table_block(acct)), 0)
 
+    def test_collect_score_excludes_pnl(self):
+        # 2026-06-18 audit — 손익계산서(매출원가+매출총이익+영업이익 세로) 표는 0 (매출
+        # 구성 표 아님). 항목이 흩어져 rows 전체 검사. POSCO형(매출+영업이익만)은 통과.
+        pnl = ("<TABLE><TR><TD>구분</TD><TD>금액</TD></TR>"
+               "<TR><TD>매출액</TD><TD>1,000</TD></TR>"
+               "<TR><TD>매출원가</TD><TD>700</TD></TR>"
+               "<TR><TD>매출총이익</TD><TD>300</TD></TR>"
+               "<TR><TD>영업이익</TD><TD>100</TD></TR></TABLE>")
+        self.assertEqual(P.collect_score(P.parse_table_block(pnl)), 0)
+        posco = ("<TABLE><TR><TD>사업부문</TD><TD>매출액</TD><TD>영업이익</TD>"
+                 "<TD>비중</TD></TR>"
+                 "<TR><TD>철강</TD><TD>5,000</TD><TD>400</TD><TD>80%</TD></TR></TABLE>")
+        self.assertGreater(P.collect_score(P.parse_table_block(posco)), 0)  # 매출구성표 유지
+
     def test_best_revenue_table_skips_accounting_only(self):
         # 회계 표만 있는 문서 → 매출표 미발견(가짜 시그니처 방지).
         doc = ("<TABLE><TR><TD>구분</TD><TD>추정내용연수</TD></TR>"

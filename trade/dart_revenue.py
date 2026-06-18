@@ -39,6 +39,14 @@ _NONPRODUCT = frozenset({
     "정부보조금", "주요회사", "주요고객", "사업영역", "주요수요처및특성",
 })
 
+# 손익계산서 항목 + 합계/소계 행 — 절대 제품명 아님(사용자 2026-06-18 audit: 비중합
+# 200%·'이름 의심: 매출원가/매출총이익/영업이익/매출총계/연결매출액' 다수의 근본 원인).
+# 로마숫자·번호 접두("II. 매출총이익")도 substring 매칭. '상품/용역/제품매출' 같은
+# 매출유형은 안 잡음(G2 품목매칭 단계 자료라 유지).
+_PNL_RE = _re.compile(r"매출원가|매출총(?:이익|손실)|영업(?:이익|손실)|당기순(?:이익|손실)"
+                      r"|법인세|포괄손익|영업외|금융손익|총포괄")
+_SUBTOTAL_RE = _re.compile(r"합\s*계|총\s*계|소\s*계|단순\s*합산|연결\s*매출|순\s*매출|내부\s*매출")
+
 
 def _clean_products(products: list[dict]) -> list[dict]:
     """제품 리스트에서 헤더/구조 토큰·약관 조항·기수 라벨 제거(G2 매칭 전 정제).
@@ -47,6 +55,8 @@ def _clean_products(products: list[dict]) -> list[dict]:
     for p in products or []:
         nm = (p.get("name") or "").strip().rstrip(" 등").strip()
         if not nm or nm in _NONPRODUCT:
+            continue
+        if _PNL_RE.search(nm) or _SUBTOTAL_RE.search(nm):       # 손익/합계·소계 행 제거
             continue
         if _re.match(r"^제?\s*\d+\s*[조기항](?:\b|\()", nm):   # 제7조(약관)/제19기 류
             continue
