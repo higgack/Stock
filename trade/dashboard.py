@@ -637,6 +637,26 @@ def _build_html(
 
     customs_panel = _customs_panel_html(customs_rows or [])
 
+    # 📡 전체 자동화 플로우 — 데이터 수신→파싱→갱신이 방문 없이 서버 스케줄로 자동
+    # (사용자 2026-06-18). 접이식(요약은 항상 보이고 펼치면 전체) — NOAH ℹ️가이드 패턴.
+    flow_note = (
+        '<details class="flow-note">'
+        '<summary>📡 데이터 자동화 플로우 — 방문 안 해도 서버가 자동 갱신 (펼쳐 보기)</summary>'
+        '<div class="flow-body">'
+        '<b>① 관세청 수출입</b> — 확정치(익월 ~15일 HSK-MTI 집계)가 본체, 잠정 속보'
+        '(매월 1·11·21일, 확정보다 ~20일 선행)가 보조. <b>customs-probe가 10분마다</b> '
+        '새 통계를 감지하면 산업트렌드·히트맵·월별 원자료·관련기업이 자동 갱신.<br>'
+        '<b>② DART 매출구성</b>(회사→제품·비중 매핑) — <b>매월 18일</b> 전수 갱신'
+        '(바뀐 보고서만 재파싱; 잠정 몰리는 1일은 회피) + <b>매일 04:30</b> 파서개선 소급'
+        ' 드레이너(파서가 좋아지면 기존 데이터까지 며칠에 걸쳐 자동 재파싱·수렴). '
+        '영업손익·매출에누리 같은 비제품 회계라인은 제품으로 오매핑하지 않음(빈칸 &gt; 오매핑).<br>'
+        '<b>③ 관련기업</b> — BeOn 채널 매트릭스를 실시간 반영(기업 보고서·검색·품목·'
+        '레퍼런스북이 같은 소스 공유).<br>'
+        '→ <b>모든 표면이 방문 없이 서버 스케줄로 자동 신선</b>하게 유지됩니다. '
+        '비용 ₩0(무료 공공 API·LLM 0).'
+        '</div></details>'
+    )
+
     return (
         '<!DOCTYPE html>\n'
         '<html lang="ko"><head>'
@@ -646,6 +666,7 @@ def _build_html(
         f"<style>{_CSS}</style>"
         '</head><body>'
         + head
+        + flow_note
         + customs_panel
         # 🏢 기업 보고서 (사용자 2026-06-17) — 회사 → DART 제품구성 + 관세청 수출입
         # 품목 노출. 무료=데이터(₩0) / AI=Gemini 산문 요약(유료 opt-in). 정적 문자열
@@ -833,6 +854,14 @@ h1{margin:0 0 4px;font-size:18px}
 .meta-backlog code{font-size:10.5px;background:var(--surface-2);padding:0 4px;border-radius:3px}
 .meta-cost{margin-top:2px;color:var(--text-sub)}
 .meta-cost:empty{display:none}
+/* 📡 자동화 플로우 노트(상단 접이식, 사용자 2026-06-18) — 테마변수라 다크/라이트 자동 */
+.flow-note{background:var(--surface-2);border-bottom:1px solid var(--border);padding:8px 18px;font-size:12px}
+.flow-note summary{cursor:pointer;font-weight:600;color:var(--text-sub);list-style:none}
+.flow-note summary::-webkit-details-marker{display:none}
+.flow-note summary::before{content:"▸ ";color:var(--text-sub)}
+.flow-note[open] summary::before{content:"▾ "}
+.flow-note .flow-body{margin-top:6px;color:var(--text-sub);line-height:1.7}
+.flow-note .flow-body b{color:var(--text)}
 .customs-panel{background:var(--surface);border-bottom:1px solid var(--border);padding:8px 18px}
 .customs-panel summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--text);list-style:none}
 .customs-panel summary::-webkit-details-marker{display:none}
