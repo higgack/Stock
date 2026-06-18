@@ -32,6 +32,20 @@ class DartRevenueTests(unittest.TestCase):
         self.assertTrue(all("제7조" not in n for n in names))   # 약관 조항 제거
         self.assertTrue(all("2024년" not in n for n in names))  # 기수 라벨 제거
 
+    def test_clean_products_drops_pnl_and_subtotals(self):
+        # 2026-06-18 audit: 손익계산서 항목·합계/소계 행이 제품으로 누수(비중합 200%
+        # ·이름 의심 다수)를 차단. 매출유형(상품/용역매출)은 유지(G2 단계 자료).
+        raw = [{"name": "II. 매출원가"}, {"name": "매출총이익"}, {"name": "영업이익(손실)"},
+               {"name": "기타포괄손익"}, {"name": "매출액 합계"}, {"name": "연결매출액"},
+               {"name": "매출총계"}, {"name": "내부매출 제거"},
+               {"name": "DRAM"}, {"name": "상품매출"}]
+        names = [p["name"] for p in D._clean_products(raw)]
+        self.assertIn("DRAM", names)
+        self.assertIn("상품매출", names)        # 매출유형 = 유지(품목매칭 단계 자료)
+        for bad in ("II. 매출원가", "매출총이익", "영업이익(손실)", "기타포괄손익",
+                    "매출액 합계", "연결매출액", "매출총계", "내부매출 제거"):
+            self.assertTrue(all(bad not in n for n in names), f"{bad} 미제거")
+
     def test_audit_inventory(self):
         inv = {
             "A": {"company": "A", "products": [{"name": "DRAM", "share_pct": 39.0},
