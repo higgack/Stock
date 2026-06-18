@@ -351,6 +351,11 @@ def collect_score(rows: list[list[str]]) -> int:
     if sum(1 for k in ("매출원가", "매출총이익", "매출총손실", "영업이익", "영업손실")
            if k in pnl_join) >= 2:
         return 0
+    # 매입(원자재·부품 조달) 현황 표 — 매출구성 아님(기아 2026-06-18: '매입유형/매입액/
+    # 주요매입처' 표를 매출로 오선택, 91.4% 는 매입처 현대모비스 대상 매입 비중). 매입
+    # 신호가 있고 매출 신호가 없으면 제외(매출·매입 혼합표는 보존).
+    if "매출" not in joined and any(k in joined for k in ("매입액", "매입처", "매입유형")):
+        return 0
     s = sum(2 for k in _REV_STRONG if k in joined)
     s += sum(1 for k in _REV_OK if k in joined)
     if any("%" in c for r in rows for c in r):
@@ -542,6 +547,14 @@ def probe_one(api_key: str, code: str, name: str, raw_dir: Path) -> dict:
             out.append(f"\n--- score={s} ---\n{t[:6000]}\n")
         out.append("\n===== (B) 평문 매출 세그먼트 =====\n")
         out.append(flat_segment[:3000])
+        # (C) 인벤토리 실사용 표 — fetch_company_products 가 쓰는 best_revenue_table
+        # (collect_score) 가 고르는 표. probe 의 score_revenue_table 과 다른 표를 골라
+        # (기아 매입표 오인) 진단이 어긋나던 것 해소(사용자 2026-06-18). C4 비중전무·
+        # C5 한셀·C3 다기간 진단은 이 표를 봐야 정확.
+        out.append("\n===== (C) 인벤토리 실사용 표(best_revenue_table/collect_score) =====\n")
+        _best, _bsc = best_revenue_table(markup)
+        out.append(f"score={_bsc}\n{_best[0][:6000]}\n" if _best
+                   else "(best_revenue_table 미발견 — 매출구성표 없음)\n")
         (raw_dir / f"{code}_{rep['rcept_no']}.txt").write_text(
             "\n".join(out), encoding="utf-8")
     except Exception as exc:

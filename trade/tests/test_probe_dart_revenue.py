@@ -158,6 +158,15 @@ class CollectTests(unittest.TestCase):
         ):
             self.assertEqual(P.collect_score(P.parse_table_block(acct)), 0)
 
+    def test_collect_score_excludes_purchase(self):
+        # 2026-06-18 기아 raw — '매입유형/매입액/주요매입처' = 원자재 매입표(매입처
+        # 현대모비스), 매출구성 아님. 매입 신호+매출 없음 → 0.
+        buy = ("<TABLE><TR><TD>구분</TD><TD>매입유형</TD><TD>주요품목</TD>"
+               "<TD>매입액</TD><TD>비중</TD><TD>주요 매입처</TD></TR>"
+               "<TR><TD>국내공장</TD><TD>부품</TD><TD>엔진,미션,모듈</TD>"
+               "<TD>487,286</TD><TD>91.4%</TD><TD>현대모비스</TD></TR></TABLE>")
+        self.assertEqual(P.collect_score(P.parse_table_block(buy)), 0)
+
     def test_collect_score_excludes_pnl(self):
         # 2026-06-18 audit — 손익계산서(매출원가+매출총이익+영업이익 세로) 표는 0 (매출
         # 구성 표 아님). 항목이 흩어져 rows 전체 검사. POSCO형(매출+영업이익만)은 통과.
