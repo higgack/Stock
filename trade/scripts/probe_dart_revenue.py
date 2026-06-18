@@ -588,7 +588,10 @@ def download_doc_raw(api_key: str, rcept_no: str) -> str | None:
                          timeout=25)
         blob = r.content or b""
         if len(blob) < 200 or (blob[:1] in (b"{", b"<") and b"status" in blob[:200]):
-            log.info("document.xml %s: 비-zip 응답 (len=%d)", rcept_no, len(blob))
+            # 비-zip = DART 에러 응답. 사유(013 데이터없음/020 사용한도/100 부적절 등)를
+            # 본문 발췌로 로깅 — 침묵 실패 금지(사용자 2026-06-18 현대제철 len=147 진단).
+            snip = blob[:180].decode("utf-8", "ignore").replace("\n", " ").strip()
+            log.info("document.xml %s: 비-zip 응답 (len=%d) %s", rcept_no, len(blob), snip)
             return None
         zf = zipfile.ZipFile(io.BytesIO(blob))
         names = [n for n in zf.namelist() if n.lower().endswith((".xml", ".html"))]

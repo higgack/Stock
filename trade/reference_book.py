@@ -71,12 +71,15 @@ tr:hover td{background:#11161d}
 .nm{font-weight:600}.mti{color:#9aa0aa;font-variant-numeric:tabular-nums;font-size:12px}
 .ind{color:#9aa0aa;white-space:nowrap}
 .hs{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#8b949e;word-break:break-all}
-.co{color:#e6edf3}.co .x{display:inline-block;background:#1c1f26;border:1px solid #2a2e37;border-radius:10px;padding:1px 8px;margin:1px;font-size:12px}
+.co{color:#e6edf3}.co .x{display:inline-block;background:#21262d;border:1px solid #3a414b;border-radius:10px;padding:1px 8px;margin:1px;font-size:12px;color:#e6edf3}
 .co .none{color:#6e7681}
+.dl{padding:8px 12px;border:1px solid #2a2e37;background:#238636;color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
 @media(prefers-color-scheme:light){
  body{background:#fff;color:#1f2328}.bar,thead th{background:#fff}#q,.chip{background:#f6f8fa;border-color:#d0d7de;color:#1f2328}
  thead th{color:#656d76;border-color:#d0d7de}td{border-color:#eaeef2}tr:hover td{background:#f6f8fa}
- .hs{color:#656d76}.co .x{background:#f6f8fa;border-color:#d0d7de}}
+ .hs{color:#656d76}
+ /* 라이트모드: 칩 글씨가 흰색(.co 기본)이라 안 보였음 → 진한 글씨·옅은 배경 (사용자 2026-06-18) */
+ .co{color:#1f2328}.co .x{background:#eef1f4;border-color:#cdd4dc;color:#1f2328}}
 """
 
 _JS = """
@@ -97,6 +100,22 @@ _JS = """
    else{document.querySelectorAll('.chip.on').forEach(function(o){o.classList.remove('on');});
     c.classList.add('on');ind=c.getAttribute('data-i');}
    apply();});});
+ // 📥 CSV — 현재 보이는(검색·산업 필터 반영) 품목을 CSV 로 (사용자 2026-06-18).
+ function cell(s){return '"'+String(s==null?'':s).replace(/"/g,'""')+'"';}
+ document.getElementById('csv').addEventListener('click',function(){
+  var out=['품목,MTI,산업,구성HS10,관련상장사'];
+  rows.forEach(function(r){
+   if(r.style.display==='none')return;
+   var td=r.querySelectorAll('td');
+   var nm=(td[0].querySelector('.nm')||{}).textContent||'';
+   var mti=(td[0].querySelector('.mti')||{}).textContent||'';
+   var ind2=td[1].textContent||'';
+   var hs=td[2].textContent||'';
+   var co=[].map.call(td[3].querySelectorAll('.x'),function(x){return x.textContent;}).join('; ');
+   out.push([nm,mti,ind2,hs,co].map(cell).join(','));});
+  var blob=new Blob(['\\ufeff'+out.join('\\n')],{type:'text/csv;charset=utf-8'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='품목_레퍼런스북.csv';document.body.appendChild(a);a.click();a.remove();});
  apply();
 })();
 """
@@ -135,6 +154,8 @@ def render_page(rows: list[dict], *, now: datetime | None = None) -> str:
         f"기준 {now.strftime('%Y-%m-%d %H:%M')} KST</p>"
         "<div class='bar'><input id='q' type='search' "
         "placeholder='검색: 품목명 / HS코드 / 산업 / 기업명' autocomplete='off'>"
+        "<button id='csv' class='dl' type='button' "
+        "title='현재 보이는 품목을 CSV로 내려받기'>📥 CSV</button>"
         f"{chips}</div>"
         "<p id='cnt' class='cnt'></p>"
         "<table><thead><tr><th>품목 (MTI)</th><th>산업</th>"
