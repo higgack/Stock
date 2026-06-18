@@ -12206,6 +12206,13 @@ def _render_research_us_table(research: list) -> str:
         '<thead><tr><th>종목</th><th>증권사</th><th>등급 변경</th>'
         '<th>TP(컨센서스)</th><th>날짜</th></tr></thead>'
         '<tbody>' + "".join(rows) + '</tbody></table></div>'
+        # 위젯은 yfinance 캡(최근 일부 종목)이라 전수가 아님 — 전체 미국 애널리스트
+        # 등급변경·목표가는 외부 집계에서 (사용자 2026-06-19 '다 볼 수 있는 링크 박아줘').
+        # MarketBeat 무료 일일 ratings(업·다운·신규·목표가 전수). 컨텍스트 링크라
+        # /sites(외부 nav)와 무관 — 위젯 내 데이터-소스 '전체 보기'.
+        '<div class="research-all" style="margin:6px 2px 2px;font-size:12px">'
+        '<a href="https://www.marketbeat.com/ratings/" target="_blank" '
+        'rel="noopener noreferrer">📋 전체 미국 등급변경·목표가 보기 (MarketBeat) →</a></div>'
     )
 
 
