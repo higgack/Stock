@@ -28,7 +28,8 @@ log = logging.getLogger("trade.dart_revenue")
 # '새로운거 들어오기만 하면 의미없잖아' — 코드 개선의 소급 적용 자동화). 월간 --refresh
 # 는 rcept 변경분만(신규 데이터)이라 이 드레이너가 코드-개선 소급을 담당.
 #   v1 = 초기  ·  v2 = 비제품 회계라인 오매핑 차단(#518 _NON_PRODUCT_SUBSTR)
-_PARSER_VERSION = 2
+#   v3 = 손익라인 변형 추가(당기손익·주당손익 — audit 잔여 P&L 오매핑, 2026-06-18)
+_PARSER_VERSION = 3
 
 
 def _data_dir() -> Path:
