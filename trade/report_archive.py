@@ -142,7 +142,12 @@ def send_to_channel(file: str) -> dict:
         return {"ok": False, "error": "기록 없음"}
     tg = (rec.get("tg") or "").strip()
     if not tg:
-        return {"ok": False, "error": "전송 본문 없음(이 기능 이전 기록 — 재생성 필요)"}
+        # 이 기능(tg 저장) 이전 기록은 색인 본문(summary+요약)으로 폴백 — '🔗 전체
+        # 보기' 링크(<a>)만 제거하면 평문이라 텔레그램 전송 가능(사용자 2026-06-18).
+        tg = re.sub(r"<a\b[^>]*>.*?</a>", "", rec.get("body") or "",
+                    flags=re.DOTALL).strip()
+    if not tg:
+        return {"ok": False, "error": "전송 본문 없음"}
     ids = [int(x) for x in (os.environ.get("TRADE_CHANNEL_CHAT_IDS") or "").split(",")
            if x.strip()]
     if not ids:
