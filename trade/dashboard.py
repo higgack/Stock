@@ -938,7 +938,10 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-group-na{border-left-color:var(--border)}
 .ind-cards{display:flex;flex-direction:column;gap:12px;padding:0 16px 8px}
 .ind-card{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:14px;box-shadow:var(--shadow)}
-.ind-row{display:grid;grid-template-columns:minmax(230px,0.95fr) minmax(300px,1.25fr) minmax(240px,1fr);gap:14px;align-items:start}
+/* 두 차트 열(라인 cell1 · 막대 cell2)을 동일 너비로 — 비대칭(1.25fr vs 1fr)이면
+   width:100%+height:auto 라 막대 차트가 낮아져 align:start 에서 위로 떠 보임(사용자
+   2026-06-18 '두번째 그래프 떨어져있다'). 같은 너비 → 같은 높이 → 정렬. */
+.ind-row{display:grid;grid-template-columns:minmax(230px,0.95fr) minmax(260px,1.1fr) minmax(260px,1.1fr);gap:14px;align-items:start}
 .ind-meta{min-width:0}
 .ind-chart-cell{min-width:0}
 .ind-chart-cell .ind-chart{width:100%;height:auto;max-width:400px}
