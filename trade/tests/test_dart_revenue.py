@@ -113,6 +113,24 @@ class DartRevenueTests(unittest.TestCase):
             self.assertEqual(D.main(["--rescan-failures"]), 0)
         self.assertEqual(sorted(ri.call_args.kwargs["codes"]), ["000002", "000003"])
 
+    def test_reparse_suspect_targets_name_doubt_only(self):
+        # --reparse-suspect = audit '이름 의심'(오매핑) 종목만 force 재파싱(전수 force 회피).
+        # '비중 전무'·'과소추출'은 이름 정상이라 제외(사용자 2026-06-18).
+        import trade.scripts.probe_dart_revenue as P
+        suspects = [
+            {"code": "000001", "company": "A", "n": 5, "reasons": ["이름 의심: 영업손익"]},
+            {"code": "000002", "company": "B", "n": 1, "reasons": ["제품 1개(과소추출 의심)"]},
+            {"code": "000003", "company": "C", "n": 8, "reasons": ["비중 전무"]},
+        ]
+        with mock.patch.object(D, "audit_inventory", return_value=suspects), \
+                mock.patch.object(D, "refresh_inventory",
+                                  return_value={"built": 1, "failed": 0}) as ri, \
+                mock.patch.object(P, "_load_env"), \
+                mock.patch.dict(os.environ, {"DART_API_KEY": "k"}):
+            self.assertEqual(D.main(["--reparse-suspect"]), 0)
+        self.assertEqual(ri.call_args.kwargs["codes"], ["000001"])   # 이름 의심만
+        self.assertTrue(ri.call_args.kwargs["force"])                # force 재파싱
+
     def test_no_revenue_breakdown_classifier(self):
         # 금융·스팩·리츠류 = 구조적 제외(파서 버그 아님), 제조/일반기업 = 보강 대상
         for fin in ("신한은행", "NH투자증권", "삼성화재해상보험", "KB금융",
