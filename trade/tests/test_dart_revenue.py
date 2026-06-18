@@ -113,6 +113,18 @@ class DartRevenueTests(unittest.TestCase):
             self.assertEqual(D.main(["--rescan-failures"]), 0)
         self.assertEqual(sorted(ri.call_args.kwargs["codes"]), ["000002", "000003"])
 
+    def test_no_revenue_breakdown_classifier(self):
+        # 금융·스팩·리츠류 = 구조적 제외(파서 버그 아님), 제조/일반기업 = 보강 대상
+        for fin in ("신한은행", "NH투자증권", "삼성화재해상보험", "KB금융",
+                    "케이비캐피탈", "삼성카드", "카카오뱅크", "동양생명",
+                    "에이티넘인베스트", "스톤브릿지벤처스", "롯데리츠",
+                    "한국토지신탁", "교보15호스팩", "미래에셋비전기업인수목적1호"):
+            self.assertTrue(D._no_revenue_breakdown(fin), fin)
+        for real in ("NAVER", "현대자동차", "케이티앤지", "하이브", "엘앤에프",
+                     "현대제철", "플럼라인생명과학", "지에프씨생명과학",
+                     "HD현대", "제일파마홀딩스", "코스메카코리아"):
+            self.assertFalse(D._no_revenue_breakdown(real), real)   # 보강대상 오제외 0
+
     def test_build_inventory_assembles_and_saves(self):
         tmp = tempfile.mkdtemp()
         fake = {"code": "005930", "company": "삼성전자", "report": "사업보고서",

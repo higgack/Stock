@@ -248,8 +248,11 @@ def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None
     def _fail(code, reason, rcept=None):
         nonlocal failed
         failed += 1
-        failures.append({"code": code,
-                         "company": dart.stock_code_to_name(code) or code,
+        company = dart.stock_code_to_name(code) or code
+        # 보고서는 있으나 추출 0 인데 금융·스팩·리츠류면 구조적 제외(파서 버그 아님).
+        if reason == "parse_empty" and _no_revenue_breakdown(company):
+            reason = "no_breakdown"
+        failures.append({"code": code, "company": company,
                          "reason": reason, "rcept_no": rcept or ""})
 
     for n, code in enumerate(codes, 1):
@@ -285,16 +288,39 @@ def refresh_inventory(codes: list[str] | None = None, api_key: str | None = None
         log.warning("refresh_inventory 저장 실패: %s", exc)
     _save_failures(failures)
     n_parse = sum(1 for f in failures if f["reason"] == "parse_empty")
+    n_nobreak = sum(1 for f in failures if f["reason"] == "no_breakdown")
     n_noreport = sum(1 for f in failures if f["reason"] == "no_report")
     res = {"built": built, "skipped": skipped, "failed": failed, "total": len(codes),
-           "parse_empty": n_parse, "no_report": n_noreport}
+           "parse_empty": n_parse, "no_breakdown": n_nobreak, "no_report": n_noreport}
     log.info("refresh_inventory 완료: %s", res)
-    log.info("  → 실패 내역: 정기보고서없음(스팩·펀드·리츠 등) %d · 파싱0(포맷 불일치·"
-             "상장사 보강대상) %d · `--failures` 로 목록 확인", n_noreport, n_parse)
+    log.info("  → 실패 내역: 정기보고서없음 %d · 구조적제외(금융·스팩·리츠) %d · "
+             "파싱0(진짜 보강대상) %d · `--failures` 로 목록 확인",
+             n_noreport, n_nobreak, n_parse)
     return res
 
 
 _FAILURES_FILE = "dart_revenue_failures.json"
+
+# 금융·투자·스팩·리츠·신탁 — 제조업식 '제품별 매출구성'이 구조적으로 없음(이자·수수료·
+# 보험료·임대·투자수익 구조). 파서 버그가 아니라 의도된 제외 (사용자 2026-06-18 rescan
+# 268건 중 ~절반). DART corp 업종분류 부재 시 회사명 패턴이 실용적. '생명과학'(bio,
+# 실제 매출구성 있음)은 endswith('생명')로만 보험사(동양생명) 구분.
+_NO_BREAKDOWN_KW = (
+    "은행", "뱅크", "증권", "화재", "보험", "캐피탈", "카드", "금융", "파이낸셜",
+    "인베스트", "벤처스", "기술투자", "창업투자", "ib투자", "파트너스",
+    "자산운용", "리츠", "신탁", "기업인수목적", "스팩", "선박투자",
+)
+
+
+def _no_revenue_breakdown(name: str) -> bool:
+    """회사명이 금융·투자·스팩·리츠류 → 제조업식 제품 매출구성이 구조적으로 없음
+    (= 파서 보강 대상 아님, 의도된 제외). 순수 함수 — 단위테스트."""
+    key = (name or "").replace(" ", "").lower()
+    if not key:
+        return False
+    if key.endswith("생명"):                      # 생명보험사(동양생명) ↔ 생명과학(bio) 구분
+        return True
+    return any(k in key for k in _NO_BREAKDOWN_KW)
 
 
 def _save_failures(failures: list[dict]) -> None:
@@ -341,23 +367,31 @@ def main(argv: list[str] | None = None) -> int:
             print("실패 내역 파일 없음 — 먼저 `--refresh` 를 한 번 실행하세요 "
                   "(dart_revenue_failures.json 생성).")
             return 0
-        parse_empty = [f for f in fails if f["reason"] == "parse_empty"]
+        # 파싱0 을 구조적 제외(금융·스팩·리츠) ↔ 진짜 보강 대상으로 분리. 저장된
+        # reason 이 옛 'parse_empty' 뿐인 파일도 회사명으로 재분류(사용자 2026-06-18).
+        pe_or_nb = [f for f in fails if f["reason"] in ("parse_empty", "no_breakdown")]
+        real = [f for f in pe_or_nb
+                if f["reason"] != "no_breakdown" and not _no_revenue_breakdown(f["company"])]
+        no_breakdown = [f for f in pe_or_nb if f not in real]
         errors = [f for f in fails if str(f["reason"]).startswith("error")]
         no_report = [f for f in fails if f["reason"] == "no_report"]
-        print(f"\n🔎 DART 파싱 실패 — 총 {len(fails)} "
-              f"(파싱0 {len(parse_empty)} · 오류 {len(errors)} · 정기보고서없음 {len(no_report)})")
+        print(f"\n🔎 DART 파싱 실패 — 총 {len(fails)} (진짜 보강 {len(real)} · "
+              f"구조적 제외[금융·스팩·리츠] {len(no_breakdown)} · 오류 {len(errors)} · "
+              f"정기보고서없음 {len(no_report)})")
         print("─" * 96)
-        print(f"\n■ 파싱0 — 보고서는 있는데 매출구성 추출 실패 (상장사·포맷 불일치 = 보강 대상) "
-              f"{len(parse_empty)}건")
-        for f in parse_empty:
+        print(f"\n■ 진짜 보강 대상 — 보고서 있고 제조업식 매출구성이 있어야 하는데 추출 실패 "
+              f"(상장사·포맷 불일치) {len(real)}건")
+        for f in real:
             print(f"  {f['code']} {f['company'][:18]:<20} rcept={f.get('rcept_no','')}")
+        print(f"\n■ 구조적 제외 {len(no_breakdown)}건 — 은행·증권·보험·캐피탈·금융지주·"
+              "스팩·리츠·신탁·VC (제품 매출구성이 구조적으로 없음, 파서 버그 아님)")
         if errors:
             print(f"\n■ 오류 (예외) {len(errors)}건")
             for f in errors:
                 print(f"  {f['code']} {f['company'][:18]:<20} {f['reason']}")
         print(f"\n■ 정기보고서 없음 {len(no_report)}건 — 스팩·펀드·리츠·신규/관리종목 "
               "(파서 문제 아님, 정상)")
-        print("\n→ 파싱0 1건 원문 확인: "
+        print("\n→ 진짜 보강 대상 1건 원문 확인: "
               ".venv/bin/python -m trade.scripts.probe_dart_revenue --tickers <code>")
         print("  → 원문 저장 위치: <DATA>/dart_revenue_probe/raw/<code>_<rcept>.txt "
               "(표 마크업+평문 — 포맷 파악 후 파서 보강)")
