@@ -1,0 +1,14 @@
+[Unit]
+Description=DART 매출구성 파서 세대 소급 재파싱 — 매일 04:30 KST(코드 개선 자동 드레인)
+
+[Timer]
+# 매일 04:30 — 월간 전수 --refresh(매월 1일 05:00) 직전대(daily) 점진 드레이너.
+# stale(pv<현재) 항목만 처리하므로 평소엔 즉시 종료(무부하). 파서 개선 배포로
+# _PARSER_VERSION 이 오른 직후부터 며칠간 budget(400)/일씩 기존 인벤토리를 재파싱해
+# 자동 수렴(~2,800건이면 약 1주). Persistent=true 로 다운 시 보정.
+OnCalendar=*-*-* 04:30:00 Asia/Seoul
+Persistent=true
+Unit=trade-bot-dart-reparse.service
+
+[Install]
+WantedBy=timers.target

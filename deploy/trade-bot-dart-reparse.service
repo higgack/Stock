@@ -1,0 +1,18 @@
+[Unit]
+Description=DART 매출구성 — 파서 세대 소급 재파싱(코드 개선을 기존 인벤토리에 자동 적용)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+# pv(_PARSER_VERSION) < 현재 항목만 budget 개 재파싱 → 매일 점진 드레인. 파서 개선
+# (예: 오매핑 차단)이 배포돼 _PARSER_VERSION 이 오르면, 이 타이머가 며칠에 걸쳐 기존
+# 데이터에 자동 소급한다(사용자 2026-06-18 '새로운거 들어오기만 하면 의미없잖아').
+# 평소(stale 0)엔 즉시 종료 → 무부하. ₩0(무료 DART·LLM 0). budget 상향 시 더 빨리 수렴.
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dart_revenue --reparse-stale --budget 400
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=5400
