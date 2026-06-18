@@ -154,6 +154,23 @@ class ScalarHelperTests(unittest.TestCase):
         self.assertFalse(P._is_texty("1,000,000"))
         self.assertFalse(P._is_texty("-"))
 
+    def test_non_product_label_blocklist(self):
+        # audit '이름 의심' 오매핑 차단 (사용자 2026-06-18) — 실제 출력 문자열로 가드.
+        # ⛔ 차단(제품 아님): 손익라인·매출 대조차감·연결내부거래·비율주석·총계 leak.
+        for bad in ("영업손익", "당기순손익", "계속사업손익", "기타포괄손익",
+                    "매출에누리", "매출할인", "매출조정", "차감매출(매출처원재료매입분)",
+                    "내부거래 매출액 제거", "연구개발비 / 매출액 비율", "매출액 대비 비율",
+                    "매출 발생 여부", "총 매출액", "전체 매출", "매출액 계", "제품매출계",
+                    "수익(매출액)", "매출액(백만원)", "매출액(비율)"):
+            self.assertTrue(P._is_non_product_label(bad), f"비제품 미차단: {bad}")
+            self.assertFalse(P._is_texty(bad), f"_is_texty 통과(오매핑): {bad}")
+        # ✅ 보존(정상 매출구성 카테고리·구체 품목) — '빈칸>오매핑'이라도 진짜 제품은 유지.
+        for good in ("상품매출", "제품매출", "용역매출", "임대매출", "기타매출",
+                     "수출매출", "내수매출기타", "연결대상매출", "별도매출액",
+                     "DRAM", "TB 3103외", "골판지원단"):
+            self.assertFalse(P._is_non_product_label(good), f"정상 품목 오차단: {good}")
+            self.assertTrue(P._is_texty(good), f"정상 품목 _is_texty 탈락: {good}")
+
 
 class CollectTests(unittest.TestCase):
     """--wide 케이스 수집·분류 헬퍼 (헤더 시그니처 그룹핑)."""
