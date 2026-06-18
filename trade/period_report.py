@@ -302,8 +302,9 @@ def render_free(data: dict) -> str:
          ("수출", "right", lambda r: _usd_cell(r["export"])),
          ("수입", "right", lambda r: _usd_cell(r["import"])),
          ("수지", "right", lambda r: _usd_cell(r["net"])),
-         ("수출YoY", "right", lambda r: _pct_cell(r.get("export_yoy"))),
-         ("수출MoM", "right", lambda r: _pct_cell(r["export_mom"]))])
+         # MoM 을 YoY 앞으로 (사용자 2026-06-18 — 품목 표들과 동일 순서)
+         ("수출MoM", "right", lambda r: _pct_cell(r["export_mom"])),
+         ("수출YoY", "right", lambda r: _pct_cell(r.get("export_yoy")))])
     exp_tbl = _table(
         "🚢 수출 상위 품목", data.get("top_export") or [],
         [("품목", "left", _nm), ("산업", "left", _ind),

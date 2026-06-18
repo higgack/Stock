@@ -9747,6 +9747,23 @@ class TestNaverCommodityCharts:
         assert '_NV_KINDS = ("com", "idx", "coin", "fx")' in src  # 야후 chart 배치서 전부 제외
         assert "_fetch_macro_naver_values(all_yf_sids)" in src   # 값은 전체 네이버
 
+    def test_macro_snapshot_ccfi_replaces_platinum(self):
+        # 사용자 2026-06-18: Macro Snapshot 에서 백금 제거 + CCFI(중국 컨테이너 운임)를
+        # VIX 뒤로(한달단위). CCFI 는 marketindex/transport(com) — fetch_commodities 가
+        # transport 포함하므로 백금과 동일 com 경로(값+스파크라인).
+        src = open("bot/macro_snapshot.py", encoding="utf-8").read()
+        assert "platinum" not in src and "PL=F" not in src, "백금 미제거"
+        assert '("ccfi", "중국 컨테이너 운임(CCFI)"' in src, "CCFI 카드 누락"
+        assert '"CCFI": ("com", "CCFI")' in src, "CCFI naver(transport) 매핑 누락"
+        # VIX 바로 뒤 순서 보장
+        i_vix = src.index('("vix", "VIX"')
+        i_ccfi = src.index('("ccfi", "중국 컨테이너 운임(CCFI)"')
+        i_wti = src.index('("wti", "WTI"')
+        assert i_vix < i_ccfi < i_wti, "CCFI 가 VIX 바로 뒤가 아님"
+        # naver_marketindex 가 transport 카테고리(CCFI/BADI)를 fetch_commodities 에 포함
+        nm = open("bot/naver_marketindex.py", encoding="utf-8").read()
+        assert '"transport"' in nm, "naver transport 카테고리 누락(CCFI 소스)"
+
     def test_research_gated_against_yahoo_block(self):
         # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →
         # 매 regen(5분) 240콜 재poke. 빈 결과도 캐시 + 회로차단 게이트 + rate-limit trip.

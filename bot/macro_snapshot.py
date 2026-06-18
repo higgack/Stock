@@ -49,9 +49,9 @@ DOMESTIC = [
 ]
 
 # 사용자 2026-06-14 재정렬: FFR·달러인덱스 삭제 / 원자재 = WTI·브렌트·천연가스·
-# 금·은·백금·구리·알루미늄·[니켈]·옥수수·대두·소맥·돈육·커피·면화 / 코인은
+# 금·은·구리·알루미늄·[니켈]·옥수수·대두·소맥·돈육·커피·면화 / 코인은
 # 비트·이더·솔만(BNB·도지·리플 삭제). 니켈은 yfinance 무티커(네이버 metals 전용)
-# 라 이름 확정 후 추가.
+# 라 이름 확정 후 추가. 백금 제거 + VIX 뒤 CCFI(중국 컨테이너 운임) 추가(2026-06-18).
 GLOBAL = [
     ("us_ffr", "미국 FFR", "%", "fred", "FEDFUNDS", 2),   # 사용자 2026-06-14 맨앞 재추가
     ("us_2y", "미국 2Y", "%", "fred", "DGS2", 2),
@@ -63,12 +63,16 @@ GLOBAL = [
     ("sp500", "S&P 500", "", "yf", "^GSPC", 2),
     ("nasdaq", "NASDAQ", "", "yf", "^IXIC", 2),
     ("vix", "VIX", "", "yf", "^VIX", 2),
+    # 백금 제거 + 중국 컨테이너 운임(CCFI)을 VIX 뒤로 (사용자 2026-06-18). 값·1개월
+    # 스파크라인 모두 네이버 marketindex/transport (CARD_FUTURES nv:CCFI 와 동일 소스,
+    # _MACRO_NAVER 아래 매핑). 'CCFI' 는 yf 티커 아님(yf 배치는 graceful 빈값) — 값/차트
+    # 는 _MACRO_NAVER com 경로가 담당(니켈 패턴 동일).
+    ("ccfi", "중국 컨테이너 운임(CCFI)", "", "yf", "CCFI", 1),
     ("wti", "WTI", "$", "yf", "CL=F", 1),
     ("brent", "브렌트유", "$", "yf", "BZ=F", 1),
     ("natgas", "천연가스", "$", "yf", "NG=F", 2),
     ("gold", "금", "$", "yf", "GC=F", 0),
     ("silver", "은", "$", "yf", "SI=F", 2),
-    ("platinum", "백금", "$", "yf", "PL=F", 0),
     ("copper", "구리", "$", "yf", "HG=F", 2),
     ("aluminum", "알루미늄 합금", "$", "yf", "ALI=F", 2),  # 네이버 metals=AA(합금), 사용자 2026-06-14
     ("nickel", "니켈", "$", "yf", "NI=F", 0),  # 사용자 2026-06-14 (네이버 NI, yf 무차트)
@@ -334,15 +338,19 @@ def _downsample_monthly(points: list[tuple[str, float]], n: int = _SPARK_N) -> l
 # ── 네이버 현재값 매핑 (사용자 2026-06-14 '값 네이버 + 차트 유지') ──────────
 # Macro 가격 카드의 '현재값'을 네이버에서(=카드 안 사라짐, 야후 멈춤 영향 0).
 # 차트(스파크라인)는 네이버가 시계열 미제공 → yfinance history 그대로 유지.
-# 미매핑 항목(백금·곡물·돈육·커피·면화)은 네이버 코드 미확정 → yf 값 유지(폴백).
+# 미매핑 항목(곡물·돈육·커피·면화)은 네이버 코드 미확정 → yf 값 유지(폴백).
 # kind: idx=worldstock/index · com=marketindex · coin=업비트 · fx=marketindex/exchange
 _MACRO_NAVER = {
     "^GSPC": ("idx", ".INX"), "^IXIC": ("idx", ".IXIC"), "^VIX": ("idx", ".VIX"),
     "CL=F": ("com", "CL"), "BZ=F": ("com", "BRN"), "NG=F": ("com", "NG"),
     "GC=F": ("com", "GC"), "SI=F": ("com", "SI"), "HG=F": ("com", "HG"),
     "ALI=F": ("com", "AA"),
-    # VM probe 2026-06-14 확정 — 백금·곡물·돈육·커피·면화·니켈 (marketindex metals/agri)
-    "PL=F": ("com", "PL"), "ZC=F": ("com", "ZC"), "ZS=F": ("com", "ZS"),
+    # VM probe 2026-06-14 확정 — 곡물·돈육·커피·면화·니켈 (marketindex metals/agri).
+    # CCFI(중국 컨테이너 운임)=marketindex/transport — fetch_commodities 가 transport
+    # 카테고리 포함(naver_marketindex _CATEGORIES), CARD_FUTURES nv:CCFI 와 동일 소스.
+    # 백금 com 매핑 제거(사용자 2026-06-18). 스파크라인은 fetch_commodity_spark 가 transport
+    # 히스토리 조회(없으면 값만, graceful) — 배포 후 화면 확인 권장.
+    "CCFI": ("com", "CCFI"), "ZC=F": ("com", "ZC"), "ZS=F": ("com", "ZS"),
     "ZW=F": ("com", "ZW"), "HE=F": ("com", "HE"), "KC=F": ("com", "KC"),
     "CT=F": ("com", "CT"), "NI=F": ("com", "NI"),
     "BTC-USD": ("coin", "BTC"), "ETH-USD": ("coin", "ETH"), "SOL-USD": ("coin", "SOL"),
