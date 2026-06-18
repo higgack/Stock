@@ -131,6 +131,7 @@ _JS = """
 
 def render_page(rows: list[dict], *, now: datetime | None = None) -> str:
     """검색 가능한 자체완결 HTML. 순수."""
+    from trade.archive_template import SCROLL_RESTORE_JS  # 뒤로가기 스크롤 복원(공용)
     e = _html.escape
     now = now or datetime.now(_KST)
     inds = sorted({r["industry"] for r in rows if r.get("industry")})
@@ -169,7 +170,7 @@ def render_page(rows: list[dict], *, now: datetime | None = None) -> str:
         "<table><thead><tr><th>품목 (MTI)</th><th>산업</th>"
         "<th>구성 HS10 코드</th><th>관련 상장사</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
-        f"<script>{_JS}</script></div></body></html>")
+        f"<script>{_JS}</script></div>{SCROLL_RESTORE_JS}</body></html>")
 
 
 def regenerate(out_path: Path | None = None) -> Path:

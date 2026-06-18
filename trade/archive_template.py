@@ -69,6 +69,21 @@ from trade.archive_assets import ARCHIVE_CSS as _RAW_CSS, ARCHIVE_JS as _RAW_JS
 ARCHIVE_CSS = _re.search(r"<script>.*</style>", _RAW_CSS, _re.DOTALL).group(0)
 ARCHIVE_JS = _re.sub(r"</body></html>\s*$", "", _RAW_JS).strip()
 
+# 뒤로가기 시 보던 스크롤 위치 복원 (사용자 2026-06-18 '뒤로 가면 원래 자리로').
+# 대시보드는 no-cache 라 back 시 재렌더되며 스크롤이 맨 위로 튐 → URL별로 scrollY 를
+# sessionStorage 에 저장하고 로드 시 복원. 탭/모달은 reload 아니라 무간섭. 모든 trade
+# 표면(대시보드·레퍼런스북·아카이브) 공용 1줄 임베드.
+SCROLL_RESTORE_JS = (
+    "<script>(function(){"
+    "try{if('scrollRestoration' in history)history.scrollRestoration='manual';}catch(e){}"
+    "var K='sc:'+location.pathname+location.search;"
+    "function R(){try{var y=sessionStorage.getItem(K);if(y)window.scrollTo(0,parseInt(y,10)||0);}catch(e){}}"
+    "requestAnimationFrame(R);addEventListener('load',function(){setTimeout(R,60);});"
+    "var t;addEventListener('scroll',function(){clearTimeout(t);"
+    "t=setTimeout(function(){try{sessionStorage.setItem(K,''+window.scrollY);}catch(e){}},120);}"
+    ",{passive:true});})();</script>"
+)
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # Public types
@@ -165,6 +180,7 @@ def render_archive_page(
     delete_api: str | None = None,
     send_api: str | None = None,
     id_field: str = "file",
+    default_open: bool = True,
 ) -> str:
     """Render the full archive HTML page.
 
@@ -241,7 +257,7 @@ def render_archive_page(
         months[(date or "")[:7]].append(date)
 
     for month in sorted(months.keys(), reverse=True):
-        m_open = " open" if month == _this_month else ""
+        m_open = " open" if (default_open and month == _this_month) else ""
         parts.append(
             f'<details class="month"{m_open}>'
             f'<summary class="month-head">'
@@ -251,7 +267,7 @@ def render_archive_page(
             f'<div class="month-body">'
         )
         for date in months[month]:
-            d_open = " open" if date == _today else ""
+            d_open = " open" if (default_open and date == _today) else ""
             day_count = len(by_date[date])
             parts.append(
                 f'<details class="day"{d_open}>'
@@ -301,7 +317,7 @@ def render_archive_page(
                 )
 
                 card_default_open = (
-                    date == _today and day_count == 1
+                    default_open and date == _today and day_count == 1
                 )
                 card_open_attr = " open" if card_default_open else ""
                 # Stable id for snippet-click target
@@ -379,6 +395,7 @@ def render_archive_page(
             ".then(function(d){b.textContent='📤';"
             "alert(d&&d.ok?('✅ 채널 전송 '+(d.sent||0)):('⚠️ '+((d&&d.error)||'전송 실패')));})"
             ".catch(function(){b.textContent='📤';alert('네트워크 오류');});});})();</script>")
+    parts.append(SCROLL_RESTORE_JS)   # 뒤로가기 스크롤 위치 복원
     parts.append('\n</body></html>')
     return "".join(parts)
 

@@ -187,6 +187,7 @@ def regenerate(out_path: Path | None = None) -> Path:
         delete_api="api/report_archive_delete",   # 🗑️ 카드별 삭제(사용자 2026-06-18)
         send_api="api/report_archive_send",        # 📤 저장본 채널 전송(재과금 없음)
         id_field="file",
+        default_open=False,   # 월/일 접힌 채로(사용자 2026-06-18 '접혀있게')
     )
     out = out_path or ARCHIVE_HTML
     out.parent.mkdir(parents=True, exist_ok=True)

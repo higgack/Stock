@@ -15,6 +15,14 @@ class DashboardRenderSmokeTests(unittest.TestCase):
         self.assertIsInstance(html, str)
         self.assertIn("<html", html.lower())
 
+    def test_build_html_embeds_scroll_restore(self):
+        # 뒤로가기 시 보던 위치 복원 (사용자 2026-06-18 '모든 대시보드') —
+        # 대시보드는 메인 스크롤 표면이라 가장 중요. </body> 직전 임베드.
+        from trade import dashboard as d
+        html = d._build_html([], [], {}, "")
+        self.assertIn("scrollRestoration", html)
+        self.assertIn("sessionStorage", html)
+
     def test_render_passes_heatmap_to_build(self):
         from pathlib import Path
         src = (Path(__file__).resolve().parents[1] / "dashboard.py"
