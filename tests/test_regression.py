@@ -5879,8 +5879,11 @@ class TestBlogWatchMultiBlog:
         assert "fetch_recommendation_trends" in mo, "Finnhub 추천분포 미연결(A2)"
         assert "_us_consensus_str(tk)" in mo, "컨센서스 미배선(A2)"
         assert "isinstance(target, str)" in dash, "문자열 컨센서스 렌더 미처리(A2)"
-        # 위젯 캡 → 전체 미국 등급변경 외부 링크(사용자 2026-06-19 '다 볼 수 있는 링크')
-        assert "marketbeat.com/ratings" in dash, "전체 등급변경 링크 누락"
+        # 위젯 캡 → 전체 미국 등급변경 참조 링크 다수, 표 위 가로 한 줄(사용자 2026-06-19)
+        assert "research-refs" in dash, "참조 링크 행 누락"
+        for site in ("marketbeat.com/ratings", "benzinga.com/analyst-ratings",
+                     "tipranks.com", "nasdaq.com/market-activity/analyst-activity"):
+            assert site in dash, f"참조 사이트 누락: {site}"
 
     def test_parse_channel_title(self):
         import bot.blog_watch as bw
