@@ -119,25 +119,51 @@ def suggest_companies_for_items(inventory: dict, item_names: list) -> dict:
     return out
 
 
-def additional_candidates(inventory: dict, item_current: dict) -> dict:
+def additional_candidates(inventory: dict, item_current: dict,
+                          min_share: float = 30.0) -> dict:
     """{품목명: 현재 관련사(정규화 set)} + G1 인벤토리 → {품목명: [DART 매출구성상
     추가 후보 회사…]} — **현재 목록에 없는 회사만**. 미매핑뿐 아니라 **이미 매핑된
-    품목도 포함**해 각 품목에 더 많은 상장사를 발굴(운영자 2026-06-19 'DART로 더 많이
-    붙여'). canon_company 로 표기변형·오타 통일 후 비교(중복 후보 방지). operator
-    승인 전 후보 — 자동 큐레이션 아님(오매핑이 신뢰를 깎으므로). 순수."""
+    품목도 포함**해 각 품목에 더 많은 상장사를 발굴.
+
+    ⚠️ **주력만**(사용자 2026-06-19 '진짜 주력인것만 — 안맞는게 너무 많다'): 매칭된
+    DART 제품의 **매출비중(share_pct) ≥ min_share%** 인 회사만 채택 → 부수 세그먼트
+    (한국주철관공업의 소액 화장품 매출 류) 노이즈 제거. share_pct 미상(None)·저비중
+    제외. canon_company 로 표기변형 통일(중복 후보 방지). operator 승인 전 후보 —
+    자동 큐레이션 아님(오매핑이 신뢰를 깎으므로). 순수.
+
+    min_share=30 기본(주력 보수적). 너무 적으면 낮추고 노이즈 많으면 올린다."""
     from trade import mti_companies
     canon = mti_companies.canon_company
-    sugg = suggest_companies_for_items(inventory, list(item_current.keys()))
+    valid = [(it, _canon(it)) for it in (item_current or {})]
+    valid = [(it, ic) for it, ic in valid if ic and len(ic) >= 2 and ic not in _GENERIC]
     out: dict[str, list] = {}
-    for item, cos in sugg.items():
-        cur = item_current.get(item) or set()
-        seen = set(cur)
-        new: list[str] = []
-        for c in cos:
-            k = canon(c).replace(" ", "").lower()
-            if k and k not in seen:
-                seen.add(k)
-                new.append(c)
-        if new:
-            out[item] = new
+    out_seen: dict[str, set] = {}
+    for _code, rec in (inventory or {}).items():
+        company = (rec.get("company") or "").strip()
+        if not company:
+            continue
+        # 주력 제품만 — share_pct ≥ min_share (dict 형식·수치 share 必, 부수 세그 제외).
+        pcs = set()
+        for p in (rec.get("products") or []):
+            if not isinstance(p, dict):
+                continue
+            try:
+                shv = float(p.get("share_pct"))
+            except (TypeError, ValueError):
+                continue
+            if shv < min_share:
+                continue
+            pc = _canon(p.get("name") or "")
+            if pc and len(pc) >= 2 and pc not in _GENERIC:
+                pcs.add(pc)
+        if not pcs:
+            continue
+        ck = canon(company).replace(" ", "").lower()
+        for it, ic in valid:
+            if any(_canon_match(pc, ic) for pc in pcs):
+                cur = item_current.get(it) or set()
+                seen = out_seen.setdefault(it, set(cur))
+                if ck and ck not in seen:
+                    seen.add(ck)
+                    out.setdefault(it, []).append(company)
     return out

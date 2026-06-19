@@ -12,10 +12,12 @@
 from __future__ import annotations
 
 import html as _html
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+log = logging.getLogger("trade.reference_book")
 _KST = timezone(timedelta(hours=9))
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 PAGE = _DATA_DIR / "dashboard" / "reference.html"
@@ -95,8 +97,10 @@ def build_rows() -> list[dict]:
             for m6 in mti_companies.theme_mti6(tr["name"], tr.get("hs", [])):
                 theme_co.setdefault(m6, []).extend(tr["companies"])
                 theme_kw.setdefault(m6, []).append(tr["name"])
-    except Exception:
-        pass
+    except Exception as exc:
+        # silent-pass 금지(사용자 2026-06-19 'CNT/평판 왜 안없어져' — 테마 병합이
+        # VM 에서 죽으면 테마 회사가 surfaced 안 돼 영구 미매칭). 원인을 로그로 노출.
+        log.warning("build_rows 테마 병합 실패(테마 회사 미surfaced): %s", exc)
     rows: list[dict] = []
     for mti6, meta in sorted(names.items(), key=lambda kv: (kv[1][1], kv[1][0])):
         name, industry = meta

@@ -1271,9 +1271,12 @@ HS 어느 쪽으로 검색해도 같은 수출입 숫자로 수렴). 핵심:
   으로 228900+290090(기타화학)만 핀. ②평판디스플레이 = 8524.11(LCD,837110) 아닌
   **8524.12(OLED,837120)** — 삼성디스플레이 TV LCD 철수·QD-OLED 집중.
 - **DART 매출구성 보강 후보 = 각 품목에 추가 상장사 발굴 (2026-06-19 '더 많이 붙여')**:
-  `dart_match.additional_candidates(inv, item_current)` = `suggest_companies_for_items`
-  를 **전 품목**(미매핑뿐 아니라 이미 매핑된 것 포함)에 돌려 **현재 큐레이션에 없는**
-  DART 매출구성 매칭 회사만 추림(canon 으로 표기변형 통일). **18일 자동(`trade-bot-
+  `dart_match.additional_candidates(inv, item_current, min_share=30.0)` 를 **전 품목**
+  (미매핑뿐 아니라 이미 매핑된 것 포함)에 돌려 **현재 큐레이션에 없는** DART 매출구성
+  매칭 회사를 추림(canon 표기변형 통일). ⚠️ **주력만**(사용자 2026-06-19 '진짜 주력인것만
+  — 안맞는게 너무 많다'): 매칭 DART 제품의 **매출비중(share_pct) ≥ 30%** 인 회사만 —
+  부수 세그먼트(한국주철관공업 소액 화장품 류) 노이즈 제거. share 미상·저비중 제외.
+  너무 적으면 min_share 낮추고 노이즈 많으면 올림. **18일 자동(`trade-bot-
   dart-revenue.timer` = `dart_revenue --refresh`)** — 전수 인벤토리 갱신 직후 `dart_
   revenue._build_reinforce()` 가 갓 빌드된 인벤토리로 계산(사용자 2026-06-19 '18일에
   같이 자동') → `~/.trade/dart_reinforce_candidates.json` 적재 + 운영자 DM(`reference_
