@@ -224,6 +224,19 @@ class ItemModeTests(unittest.TestCase):
         self.assertIn("코맥스", C._item_matches("CCTV", {}, [])["companies"])
         self.assertIn("클래시스", C._item_matches("피부과", {}, [])["companies"])
 
+    def test_theme_hs_links_to_customs(self):
+        # 테마 HS Code → 관세청 수출입 품목 연계 (사용자 2026-06-19 '수출입코드랑
+        # 연계돼서 안 잡힌 것 잡히게'). HS6→MTI6 해석 + by_mti 수출입 부착.
+        m6 = C._hs6_to_mti6("8486.90")
+        self.assertTrue(m6)                              # SiC HS → MTI6 해석
+        by_mti = {m6[0]: {"name": "반도체제조용장비부품", "industry": "반도체",
+                          "months": {"2026-05": 2e9}}}
+        res = C._item_matches("SiC", by_mti, [])
+        linked = [x for x in res["items"] if x.get("hs_linked")]
+        self.assertTrue(linked)                          # HS 연계 수출입 행 추가
+        self.assertEqual(linked[0]["export_usd"], 2e9)
+        self.assertEqual(C._hs6_to_mti6("12"), [])       # 6자리 미만 → []
+
     def test_render_free_item(self):
         data = {"mode": "item", "query": "반도체", "name": "반도체",
                 "items": [{"item": "디램", "industry": "반도체",

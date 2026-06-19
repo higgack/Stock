@@ -81,7 +81,9 @@ def _exposure_table(rows: list[dict], *, title: str, subtitle: str,
     e = _html.escape
 
     def _row(x: dict) -> str:
-        c = (f'<td style="padding:4px 8px">{e(x["item"])}</td>'
+        # 🔗 = 테마 HS Code 로 연계된 관세청 수출입 품목(카테고리 수준일 수 있음)
+        nm = ("🔗 " + x["item"]) if x.get("hs_linked") else x["item"]
+        c = (f'<td style="padding:4px 8px">{e(nm)}</td>'
              f'<td style="padding:4px 8px;color:#9aa0aa">{e(x.get("industry",""))}</td>'
              f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("export_usd"))}</td>'
              f'{_pct_cell(x.get("export_yoy"))}{_pct_cell(x.get("export_dyoy"), "%p")}'
@@ -237,6 +239,32 @@ def _company_exposure(name: str, by_mti: dict, pairs: list,
     return out[:40]
 
 
+_HS6_MTI_IDX: dict = {"v": None}
+
+
+def _hs6_to_mti6(hs_code: str) -> list[str]:
+    """HS6(포맷 무관 — HSK10·점·대시 허용) → MTI6 리스트. mti_map HSK-MTI
+    연계 역인덱스(프로세스 1회 빌드 캐시). 테마 HS Code → 관세청 수출입 품목
+    연계용(사용자 2026-06-19). 6자리 미만/미해석 → []. 순수에 가까움."""
+    digits = "".join(c for c in (hs_code or "") if c.isdigit())
+    if len(digits) < 6:
+        return []
+    if _HS6_MTI_IDX["v"] is None:
+        idx: dict = {}
+        try:
+            from trade import mti_map
+            for hsk, rec in mti_map.load_mti().items():
+                m6 = rec[0] if rec else ""
+                if m6:
+                    idx.setdefault(str(hsk)[:6], [])
+                    if m6 not in idx[str(hsk)[:6]]:
+                        idx[str(hsk)[:6]].append(m6)
+        except Exception:
+            idx = {}
+        _HS6_MTI_IDX["v"] = idx
+    return _HS6_MTI_IDX["v"].get(digits[:6], [])
+
+
 def _item_matches(query: str, by_mti: dict, pairs: list,
                   by_imp: dict | None = None) -> dict | None:
     """품목/산업 키워드 query → {mode:'item', name, items[], companies[]} (사용자
@@ -275,11 +303,13 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
     # 테마로 보강한 카테고리가 기업 보고서에도 나오게(사용자 2026-06-19 '테마로
     # 추가된 것도 나와야'). 테마명에 query 포함 시 그 테마 큐레이션 기업 노출.
     theme_name = None
+    theme_hs = ""
     if len(qn) >= 2:
         try:
             for tr in mti_companies.theme_rows():
                 if qn in _norm(tr["name"]):
                     theme_name = tr["name"]
+                    theme_hs = (tr.get("hs") or [""])[0]
                     _add(tr["companies"])
                     break
         except Exception:
@@ -287,6 +317,7 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
 
     # (2) query 와 이름/산업이 매칭되는 저장 품목들 → 행 + 그 품목들의 관련기업
     rows: list[dict] = []
+    seen_mti: set[str] = set()
     for mti6, node in (by_mti or {}).items():
         item = (node.get("name") or mti6).strip()
         ind = (node.get("industry") or "").strip()
@@ -300,7 +331,25 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
                      "import_usd": _latest(imp_node),
                      **_dir_metrics(node, imp_node),
                      "companies": cos})
+        seen_mti.add(mti6)
         _add(cos)
+
+    # (2b) 테마 HS Code → 관세청 수출입 품목 연계 (사용자 2026-06-19 '수출입코드랑
+    # 연계돼서 안 잡힌 것들 잡히게'). 테마 HS6 → MTI6(mti_map) → by_mti 수출입 트렌드
+    # 부착. 같은 HS6 가 여러 MTI 에 걸치면 모두(상위 3). ⚠️ 일부 HS6 는 광범위 MTI
+    # 버킷(기타정밀화학원료 등)이라 수출입은 'HS 연계 품목'(카테고리) 수준임을 표기.
+    if theme_hs:
+        for m6 in _hs6_to_mti6(theme_hs)[:3]:
+            node = (by_mti or {}).get(m6)
+            if not node or m6 in seen_mti:
+                continue
+            seen_mti.add(m6)
+            imp_node = (by_imp or {}).get(m6)
+            rows.append({"item": (node.get("name") or m6).strip(),
+                         "industry": (node.get("industry") or "").strip(),
+                         "export_usd": _latest(node), "import_usd": _latest(imp_node),
+                         **_dir_metrics(node, imp_node), "companies": [],
+                         "hs_linked": True})
 
     if not companies and not rows:
         return None
