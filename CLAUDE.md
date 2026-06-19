@@ -574,6 +574,13 @@ pattern to follow:
   유지·doc_fail 오염 0) ②doc_fail 캐시 클리어(신설 파서의 과거 실패분
   즉시 재시도 → run_once 14일 대기열이 8건/분 자연 드레인) ③당월
   재fetch(기타경영사항·투자판단 keep 신설분 소급 수집 + 전체 재분류).
+  **잔여 미파싱 일괄 재추출 백필 (`backfill_unparsed_once_if_needed`, marker
+  `.dart_unparsed_reextract_v1`, startup 1회, 2026-06-20)**: 파서가 나중 추가됐는데
+  옛 항목이 generic detail(시가총액 줄)이라 — detail-부재만 채우는 `backfill_admin_
+  issue`(`if detail: continue` 갭)·kw-한정 `reparse_details` 에 안 닿던 잔여 미파싱
+  (관리종목·조회공시 등)을 전 카테고리에서 재추출. 미파싱 판정(`_has_meaningful_
+  detail` = 시총/주요사업 줄 제외 후 남는 줄 有)과 동일 게이트로 골라 새 detail 에
+  meaningful 줄 있을 때만 교체(회귀 0). 콜버짓 가드. 사용자 2026-06-20 '미파싱처리'.
   파서 작성 시 재사용할 클래스: 정정 래퍼 stale-value 는 findall[-1]
   (마지막 출현), 라벨-값 gap 은 greedy(이중 콜론 차단), 압축표기 stop
   은 `\d{1,2}\s*\.`(뒤 공백 불요), 날짜 vs 항번호 구분은 stop 에 라벨형
@@ -667,8 +674,11 @@ pattern to follow:
   • `bot/portfolio_parser.py` — 비번 zip(ZipCrypto, stdlib zipfile pwd, AES 아님)
     → '뱅샐현황' 시트 6섹션 파싱(1.고객정보=PII 의도적 제외). 총자산/순자산은
     export 가 summary 셀을 비워둬 **항목 합으로 산출**. pandas/openpyxl 불필요.
-  • `bot/portfolio_resolve.py` — 종목 한글명→티커(국내 pykrx 역맵 graceful /
-    해외 한글음역 alias 맵, 미매칭은 '이름만 표시'). `bot/portfolio.py` — 집계
+  • `bot/portfolio_resolve.py` — 종목 한글명→티커. 순서: 해외 alias → 국내 pykrx
+    역맵 → KR ETF → **네이버 자동완성**(`resolve_via_naver`, ac.stock.naver.com →
+    국내 KOSPI/KOSDAQ=.KS/.KQ + 해외 NASDAQ/NYSE=US 티커, 정확일치만·7일 캐시·
+    graceful, 사용자 2026-06-20 '자동 분류 + 네이버로 국내도') → 미매칭 '이름만 표시'.
+    페르미=FRMI 등은 `_OVERSEAS_ALIAS` 큐레이션이 우선(운영자 확정). `bot/portfolio.py` — 집계
     모델+저장(~/.tradingagents/portfolio.json, atomic)+요약. `dashboard.
     _render_portfolio_page` → 풀 nav(메인 맨앞·단어 줄바꿈 방지)·순자산 헤더·
     자산배분 도넛(동산=자동차)·💹주식요약·증권사별 카드(국내/해외 비중·수익률 분포·
@@ -1282,7 +1292,9 @@ HS 어느 쪽으로 검색해도 같은 수출입 숫자로 수렴). 핵심:
   같이 자동') → `~/.trade/dart_reinforce_candidates.json` 적재 + 운영자 DM(`reference_
   book.reinforce_telegram` 상위 12). `reference_book` 가 그 JSON 읽어 '🧬 DART 보강
   후보' 패널(파랑, 접이식 — 미매칭 노랑과 색구분) 렌더(렌더는 캐시 read 만, 전품목×전
-  상장사 매칭은 무거워 18일에만). 패널은 **전수**(상위 N 아님) + 검색박스(rfq)·📥 CSV
+  상장사 매칭은 무거워 18일 전수갱신 + **매일 reparse-stale 타이머에서도 재계산** —
+  사용자 2026-06-20 'VM 안돌려도': 인벤토리는 18일 갱신이나 큐레이션 변동·주력 기준
+  변경은 매일 자동 반영, 수동 실행 불요). 패널은 **전수**(상위 N 아님) + 검색박스(rfq)·📥 CSV
   (rfcsv → DART_보강후보.csv)로 운영자 전수 검토(사용자 2026-06-19 '전체 확인'). DM 만
   상위 12 요약. **승인 전 후보**(자동 큐레이션 X — 오매핑이 신뢰 깎음;
   승인=`_MAP`/테마 추가하면 reference·report·heatmap-클릭 전 표면 자동 반영). curation_

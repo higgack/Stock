@@ -4028,6 +4028,16 @@ async def _on_startup(application) -> None:
                              sta.get("reclassified", 0), sta.get("filled", 0))
             except Exception as exc:
                 log.warning("startup: DART 관리종목 백필 failed: %s", exc)
+            # 잔여 미파싱(detail 있으나 meaningful 없음 — 관리종목·조회공시 등 stale)
+            # 전 카테고리 재추출 1회 (사용자 2026-06-20 '미파싱처리')
+            try:
+                from bot.dart_feed import backfill_unparsed_once_if_needed
+                stu = backfill_unparsed_once_if_needed()
+                if stu and stu.get("fixed"):
+                    log.info("startup: DART 미파싱 재추출 — 교체 %d/%d건",
+                             stu.get("fixed", 0), stu.get("checked", 0))
+            except Exception as exc:
+                log.warning("startup: DART 미파싱 재추출 failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:

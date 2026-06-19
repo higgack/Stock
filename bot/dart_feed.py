@@ -4466,6 +4466,85 @@ def backfill_admin_issue_once_if_needed() -> dict | None:
     return stats
 
 
+_BACKFILL_UNPARSED_MARKER = _ARCHIVE_DIR.parent / ".dart_unparsed_reextract_v1"
+
+
+def _has_meaningful_detail(detail) -> bool:
+    """대시보드 미파싱 판정과 동일 — '주요사업:'·'시가총액' 줄 제외하고 남는 줄이
+    있으면 의미있는 파싱(=미파싱 아님). 순수."""
+    return any(not str(l).startswith("주요사업:") and "시가총액" not in str(l)
+               for l in (detail or []))
+
+
+def backfill_unparsed_once_if_needed(days_back: int = 60) -> dict | None:
+    """잔여 미파싱(is_parse_target & meaningful detail 없음) 전 카테고리 재추출 1회
+    (사용자 2026-06-20 '미파싱처리'). 파서가 나중 추가됐는데 옛 항목이 generic
+    detail(시가총액 줄 등)을 갖고 있어 — detail-부재만 채우는 backfill_admin_issue
+    나 kw-한정 reparse_details 에 안 닿던 잔여(관리종목·조회공시 등)를 일괄 해소.
+    새 detail 에 meaningful 줄 있을 때만 교체(회귀 0). 콜버짓 가드. marker 1회."""
+    if _BACKFILL_UNPARSED_MARKER.exists():
+        return None
+    api_key = _dart_api_key()
+    cleared = clear_doc_fail_cache()      # 신설 파서 과거 실패분 쿨다운 해제
+    stats = {"checked": 0, "fixed": 0, "doc_fail_cleared": cleared}
+    if not api_key:
+        return stats                       # 키 생기면 다음 startup 재시도(marker 미기록)
+    today = datetime.now(_KST).date()
+    stop = False
+    for i in range(days_back):
+        if stop:
+            break
+        d = today - timedelta(days=i)
+        items = load_archive(d)
+        if not items:
+            continue
+        changed = False
+        for it in items:
+            if _has_meaningful_detail(it.get("detail")):
+                continue
+            if not is_parse_target(it) or intended_freeform_unparsed(
+                    it.get("report_nm", "")):
+                continue
+            if not it.get("corp_code"):
+                continue
+            if _budget_today() >= _BUDGET_HARD - 500:
+                log.warning("미파싱 재추출 백필: 콜버짓 헤드룸 — 중단")
+                stop = True
+                break
+            stats["checked"] += 1
+            _budget_add(2)
+            time.sleep(0.15)
+            try:
+                detail = _extract_detail(it.get("report_nm", ""),
+                                         str(it.get("rcept_no", "")),
+                                         it.get("corp_code", ""), api_key)
+                lines = list(detail.get("lines", [])) if detail else []
+                if lines and _has_meaningful_detail(lines):
+                    it["detail"] = lines
+                    nc = detail.get("category") if isinstance(detail, dict) else None
+                    if nc:
+                        it["category"] = nc
+                    stats["fixed"] += 1
+                    changed = True
+            except Exception as exc:
+                log.debug("미파싱 재추출 %s: %s", it.get("rcept_no", "?"), exc)
+        if changed:
+            try:
+                save_archive(d, items)
+            except Exception as exc:
+                log.warning("미파싱 재추출 save %s: %s", d, exc)
+    try:
+        _BACKFILL_UNPARSED_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _BACKFILL_UNPARSED_MARKER.write_text(json.dumps({
+            "ts": datetime.now(_KST).isoformat(timespec="seconds"), **stats},
+            ensure_ascii=False))
+    except OSError:
+        pass
+    log.info("dart_feed 미파싱 재추출: 교체 %d/%d (doc_fail %d 해제)",
+             stats["fixed"], stats["checked"], cleared)
+    return stats
+
+
 _RECLASS_TUJA_MARKER = _ARCHIVE_DIR.parent / ".dart_reclass_tuja_v1"
 
 
