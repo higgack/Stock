@@ -82,8 +82,9 @@ def fetch_naver_overview(ticker: str) -> str | None:
 
 
 def fetch_naver_world_news(ticker: str, max_items: int = 10) -> list[dict] | None:
-    """네이버 한국어 해외뉴스 [{title, publisher, date, subcontent}]. 12h 캐시.
-    실패/빈 결과 시 None(호출부가 stored+translate 폴백)."""
+    """네이버 한국어 해외뉴스 [{title, publisher, date, subcontent}]. 12h 캐시 +
+    실패 시 직전 성공 캐시(30일) 스테일 폴백. 캐시·스테일 모두 없을 때만 None
+    (호출부가 stored+translate 폴백)."""
     from bot.finviz_client import _cache_write, _cached
     t = (ticker or "").strip().upper()
     if not t:
@@ -92,9 +93,18 @@ def fetch_naver_world_news(ticker: str, max_items: int = 10) -> list[dict] | Non
     hit = _cached(ck, ttl=_NEWS_TTL)
     if isinstance(hit, dict) and hit.get("items"):
         return hit["items"][:max_items]
+
+    def _stale():
+        # 네이버 일시 차단/rate-limit 으로 12h 캐시 만료 후 fetch 실패 시, 직전 성공
+        # 캐시(30일)를 서빙 — 옛 동작(None 반환)은 호출부가 stored(yfinance) 뉴스로
+        # 폴백해 한국어 본문요약(subcontent)을 잃었음(사용자 2026-06-19 '처음엔 요약
+        # 나오더니 다시 원복'의 원인). 다른 네이버 클라이언트(nxt 등)와 동일 SWR 패턴.
+        s = _cached(ck, ttl=30 * 86400)
+        return s["items"][:max_items] if isinstance(s, dict) and s.get("items") else None
+
     rc = _rc_for(t)
     if not rc:
-        return None
+        return _stale()
     try:
         import requests
 
@@ -138,4 +148,4 @@ def fetch_naver_world_news(ticker: str, max_items: int = 10) -> list[dict] | Non
             return items[:max_items]
     except Exception as exc:
         log.debug("naver worldnews %s: %s", t, exc)
-    return None
+    return _stale()   # fetch 실패/빈 결과 → 직전 성공 캐시(subcontent 유지)
