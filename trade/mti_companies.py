@@ -602,6 +602,19 @@ def theme_rows() -> list[dict]:
             for nm, cat, hsk, cos in _THEME_ROWS]
 
 
+def theme_for_company(name: str) -> tuple[str | None, str]:
+    """회사명이 큐레이션 테마에 속하면 (테마명, 대표 HS Code). 표기통일 후
+    비교 — 회사→테마→HS→관세청 수출입 연계용(사용자 2026-06-19). 미소속 →
+    (None, ""). 첫 매칭 테마. 순수."""
+    k = canon_company(name).replace(" ", "").lower()
+    if not k:
+        return None, ""
+    for nm, _cat, hsk, cos in _THEME_ROWS:
+        if any(canon_company(c).replace(" ", "").lower() == k for c in cos):
+            return nm, hsk
+    return None, ""
+
+
 def search_synonyms(name: str) -> list[str]:
     """품목명에 대응하는 동의어/영문 표기들 — 레퍼런스북 검색 인덱스 보강
     용('PCB'·'FPCB' 로 인쇄회로 행이 검색되게). 순수."""

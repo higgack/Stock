@@ -237,6 +237,17 @@ class ItemModeTests(unittest.TestCase):
         self.assertEqual(linked[0]["export_usd"], 2e9)
         self.assertEqual(C._hs6_to_mti6("12"), [])       # 6자리 미만 → []
 
+    def test_theme_company_exposure_hs_linked(self):
+        # 회사명 검색도 테마 HS → 관세청 수출입 노출 (사용자 2026-06-19 회사검색 방향)
+        from trade import mti_companies as mc
+        self.assertEqual(mc.theme_for_company("티씨케이")[1], "8486.90-9000")
+        self.assertEqual(mc.theme_for_company("삼성전자"), (None, ""))   # 비테마
+        m6 = C._hs6_to_mti6("8486.90")[0]
+        by_mti = {m6: {"name": "반도체제조용장비부품", "industry": "반도체",
+                       "months": {"2026-05": 2e9}}}
+        exp = C._company_exposure("티씨케이", by_mti, [], {}, [])
+        self.assertIn("반도체제조용장비부품", [x["item"] for x in exp])
+
     def test_render_free_item(self):
         data = {"mode": "item", "query": "반도체", "name": "반도체",
                 "items": [{"item": "디램", "industry": "반도체",
