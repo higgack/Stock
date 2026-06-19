@@ -76,21 +76,46 @@ def matched_items(products: list, item_names: list) -> list[str]:
     return out
 
 
+def _canon_match(pc: str, ic: str) -> bool:
+    """정규화된 제품키 pc ↔ 품목키 ic 매칭(정규화·일반어 필터는 호출부가 선처리).
+    완전일치 또는 길이≥3 부분일치. 순수 문자열 연산(정규식 없음 — 핫루프용)."""
+    if pc == ic:
+        return True
+    return len(pc) >= 3 and len(ic) >= 3 and (pc in ic or ic in pc)
+
+
 def suggest_companies_for_items(inventory: dict, item_names: list) -> dict:
     """G1 인벤토리(code→{company, products}) + 관세청 품목명 → {품목명: [회사명…]}
     매칭 후보. 회사의 DART 제품이 품목과 매칭되면 그 품목 후보에 회사 추가. 순수.
 
-    operator 가 이 후보를 보고 mti_companies._MAP 에 승인 추가(자동 노출 아님)."""
+    operator 가 이 후보를 보고 mti_companies._MAP 에 승인 추가(자동 노출 아님).
+
+    ⚠️ 성능: 전 품목(1,294)×전 상장사(~2,700) 매칭이라 _canon(정규식)을 **품목·제품
+    당 1회만** 미리 계산(품목당 재호출 제거) → 핫루프는 순수 문자열 비교. 단순 구현
+    (품목당 _canon 재호출) 대비 ~수십배 빠름(운영자 2026-06-19 '되게 오래걸리네')."""
     out: dict[str, list] = {}
-    items = list(item_names or [])
+    # 품목 canon 1회 — 빈값/일반어/2자 미만 제외(매칭 자격 없음).
+    item_canon = [(it, _canon(it)) for it in (item_names or [])]
+    valid = [(it, ic) for it, ic in item_canon
+             if ic and len(ic) >= 2 and ic not in _GENERIC]
     for _code, rec in (inventory or {}).items():
         company = (rec.get("company") or "").strip()
         if not company:
             continue
-        for item in matched_items(rec.get("products") or [], items):
-            lst = out.setdefault(item, [])
-            if company not in lst:
-                lst.append(company)
+        # 제품 canon 1회/회사 (품목 루프 밖) — 중복·일반어·2자 미만 제거.
+        pcs = set()
+        for p in (rec.get("products") or []):
+            nm = p.get("name") if isinstance(p, dict) else p
+            pc = _canon(nm) if nm else ""
+            if pc and len(pc) >= 2 and pc not in _GENERIC:
+                pcs.add(pc)
+        if not pcs:
+            continue
+        for it, ic in valid:
+            if any(_canon_match(pc, ic) for pc in pcs):
+                lst = out.setdefault(it, [])
+                if company not in lst:
+                    lst.append(company)
     return out
 
 

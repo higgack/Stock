@@ -178,6 +178,21 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         # 비면 패널 자체가 안 나옴
         self.assertNotIn("미매칭 알림 후보", R.render_page(self._ROWS))
 
+    def test_reinforce_telegram_summary(self):
+        # 18일 dart-revenue 갱신이 보내는 보강 DM 요약(후보수순·0이면 무음).
+        note = R.reinforce_telegram({"디램": ["A", "B"], "낸드": ["X"]})
+        self.assertIn("DART 보강 후보", note)
+        self.assertTrue(note.index("디램") < note.index("낸드"))   # 후보 많은 것 먼저
+        self.assertIsNone(R.reinforce_telegram({}))
+
+    def test_samsung_display_dedup(self):
+        # _MAP '삼성디스플레이(삼성전자)' + 테마 '삼성디스플레이' 중복 통합(2026-06-19).
+        rows = R.build_rows()
+        oled = next((r for r in rows if r["name"] == "OLED"), None)
+        if oled:                                       # 연계표 있을 때만(graceful)
+            self.assertNotIn("삼성디스플레이(삼성전자)", oled["companies"])
+            self.assertLessEqual(oled["companies"].count("삼성디스플레이"), 1)
+
     def test_reinforce_roundtrip_and_panel(self):
         # DART 보강 후보 — 캐시 JSON 저장/로드(후보수순) + 패널 렌더(2026-06-19).
         with tempfile.TemporaryDirectory() as td:
