@@ -126,6 +126,32 @@ def mti_names(path: Path | str = DEFAULT_PATH) -> dict[str, tuple[str, str]]:
     return out
 
 
+_HS6_MTI6_CACHE: dict = {}
+
+
+def hs6_to_mti6(hs_code: str, path: Path | str = DEFAULT_PATH) -> list[str]:
+    """HS6(포맷 무관 — HSK10·점·대시 허용) → MTI6 리스트. HSK-MTI 연계표
+    역인덱스(경로별 1회 캐시). 테마 HS Code → 관세청 수출입 품목(MTI) 연계용
+    (사용자 2026-06-19). 6자리 미만/미해석/파일부재 → []. 순수."""
+    digits = "".join(c for c in (hs_code or "") if c.isdigit())
+    if len(digits) < 6:
+        return []
+    key = str(path)
+    if key not in _HS6_MTI6_CACHE:
+        idx: dict[str, list[str]] = {}
+        try:
+            for hsk, rec in load_mti(path).items():
+                m6 = rec[0] if rec else ""
+                if m6:
+                    bucket = idx.setdefault(str(hsk)[:6], [])
+                    if m6 not in bucket:
+                        bucket.append(m6)
+        except Exception:
+            idx = {}
+        _HS6_MTI6_CACHE[key] = idx
+    return _HS6_MTI6_CACHE[key].get(digits[:6], [])
+
+
 def industries(path: Path | str = DEFAULT_PATH,
                include_catch_all: bool = False) -> list[str]:
     """Sorted unique industry labels. Excludes '기타' by default."""

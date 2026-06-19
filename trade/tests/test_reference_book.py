@@ -21,6 +21,7 @@ class BuildRowsTests(unittest.TestCase):
                     "8542329000": ("831110", "반도체", "디램"),
                     "0101211000": ("021130", "농수산식품", "말")}), \
                 mock.patch.object(mti_companies, "load_channel_pairs", return_value=[]), \
+                mock.patch.object(mti_companies, "theme_rows", return_value=[]), \
                 mock.patch.object(mti_companies, "companies_for",
                                   side_effect=lambda n: ["삼성전자", "SK하이닉스"]
                                   if "디램" in n else []), \
@@ -136,25 +137,21 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         self.assertEqual(R.unmatched_candidates(self._ROWS,
                                                 db_path=Path("/no/such.db")), [])
 
-    def test_theme_rows_appended_and_surface(self):
-        """MTI 품목표에 없는 카테고리 = 큐레이션 테마 행 (사용자 2026-06-19)."""
-        from trade import mti_companies, mti_map
-        with mock.patch.object(mti_map, "mti_names", return_value={}), \
-                mock.patch.object(mti_map, "load_mti", return_value={}):
-            rows = R.build_rows()
-        theme = [r for r in rows if r.get("theme")]
-        self.assertGreaterEqual(len(theme), 50)              # HS 마스터 56품목
-        names = " ".join(r["name"] for r in theme)
-        self.assertIn("피부과", names)
-        self.assertIn("MLCC", names)
-        derm = next(r for r in theme if "피부과" in r["name"])
+    def test_theme_merged_into_mti_rows(self):
+        """테마 회사가 HS→MTI 로 **기존 MTI 품목 행에 병합** (사용자 2026-06-19
+        '별도 집계 말고 기존에 붙여'). 별도 테마 행 없음 + 테마명 검색 인덱스."""
+        rows = R.build_rows()                                # 실 mti_map(HS6→MTI6 해석)
+        self.assertTrue(rows)
+        self.assertFalse(any(r.get("theme") for r in rows))  # 별도 테마 행 없음
+        # 피부과 테마(클래시스) → HS 9018.90 → '미용및조직수복용' MTI 행에 병합
+        derm = next((r for r in rows if r["name"] == "미용및조직수복용"), None)
+        self.assertIsNotNone(derm)
         self.assertIn("클래시스", derm["companies"])
-        self.assertEqual(derm["hs"], ["9018.90-9000"])       # HS Code 부착
-        # 테마 회사 surfaced + HS Code 노출 (HS 기반 재배치)
-        html = R.render_page(rows, unmatched=[])
-        self.assertIn("🏷️ 테마", html)
+        # 테마명이 그 행 검색 인덱스에(피부과·SiC 등으로 검색 가능)
+        self.assertIn("피부과", " ".join(derm.get("theme_kw", [])))
+        html = R.render_page(rows)
         self.assertIn("클래시스", html)
-        self.assertIn("9018.90-9000", html)                  # 구성 HS10 칼럼
+        self.assertNotIn("🏷️ 테마", html)                   # 별도 테마 배지 없음
 
     def test_panel_renders_in_page(self):
         um = [("신소재 XYZ", ["듣보종목"], 2)]

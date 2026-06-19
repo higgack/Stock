@@ -251,30 +251,14 @@ def _company_exposure(name: str, by_mti: dict, pairs: list,
     return out[:40]
 
 
-_HS6_MTI_IDX: dict = {"v": None}
-
-
 def _hs6_to_mti6(hs_code: str) -> list[str]:
-    """HS6(포맷 무관 — HSK10·점·대시 허용) → MTI6 리스트. mti_map HSK-MTI
-    연계 역인덱스(프로세스 1회 빌드 캐시). 테마 HS Code → 관세청 수출입 품목
-    연계용(사용자 2026-06-19). 6자리 미만/미해석 → []. 순수에 가까움."""
-    digits = "".join(c for c in (hs_code or "") if c.isdigit())
-    if len(digits) < 6:
+    """HS6 → MTI6 리스트 (mti_map 공용 리졸버 위임). 테마 HS → 관세청 수출입
+    품목 연계용(사용자 2026-06-19). graceful → []."""
+    try:
+        from trade import mti_map
+        return mti_map.hs6_to_mti6(hs_code)
+    except Exception:
         return []
-    if _HS6_MTI_IDX["v"] is None:
-        idx: dict = {}
-        try:
-            from trade import mti_map
-            for hsk, rec in mti_map.load_mti().items():
-                m6 = rec[0] if rec else ""
-                if m6:
-                    idx.setdefault(str(hsk)[:6], [])
-                    if m6 not in idx[str(hsk)[:6]]:
-                        idx[str(hsk)[:6]].append(m6)
-        except Exception:
-            idx = {}
-        _HS6_MTI_IDX["v"] = idx
-    return _HS6_MTI_IDX["v"].get(digits[:6], [])
 
 
 def _item_matches(query: str, by_mti: dict, pairs: list,
