@@ -39,25 +39,34 @@ def build_rows() -> list[dict]:
         pairs = mti_companies.load_channel_pairs()
     except Exception:
         pairs = []
+    # 큐레이션 테마 회사·이름을 HS Code → MTI6 로 해석해 **기존 MTI 품목 행에 병합**
+    # (사용자 2026-06-19 '별도 집계 말고 기존 것에 붙여'). 별도 테마 행 없음 —
+    # 테마 회사는 그 HS 의 관세청 수출입 품목(MTI)에 합류, 테마명은 검색 인덱스로.
+    theme_co: dict[str, list[str]] = {}
+    theme_kw: dict[str, list[str]] = {}
+    try:
+        for tr in mti_companies.theme_rows():
+            for hsk_code in tr.get("hs", []):
+                for m6 in mti_map.hs6_to_mti6(hsk_code):
+                    theme_co.setdefault(m6, []).extend(tr["companies"])
+                    theme_kw.setdefault(m6, []).append(tr["name"])
+    except Exception:
+        pass
     rows: list[dict] = []
     for mti6, meta in sorted(names.items(), key=lambda kv: (kv[1][1], kv[1][0])):
         name, industry = meta
         try:
             cos = mti_companies.dedup_companies(
                 list(mti_companies.companies_for(name))
-                + mti_companies.channel_companies_for(name, pairs))
+                + mti_companies.channel_companies_for(name, pairs)
+                + theme_co.get(mti6, []))            # 테마 회사 병합(HS→MTI)
         except Exception:
             cos = []
-        rows.append({"mti6": mti6, "name": name, "industry": industry,
-                     "hs": sorted(hs_by_mti.get(mti6, [])), "companies": cos})
-    # MTI 품목표에 없는 카테고리 = 큐레이션 테마 행(사용자 2026-06-19)
-    try:
-        for tr in mti_companies.theme_rows():
-            rows.append({"mti6": "", "name": tr["name"], "industry": tr["industry"],
-                         "hs": tr.get("hs", []), "companies": tr["companies"],
-                         "theme": True})
-    except Exception:
-        pass
+        row = {"mti6": mti6, "name": name, "industry": industry,
+               "hs": sorted(hs_by_mti.get(mti6, [])), "companies": cos}
+        if theme_kw.get(mti6):
+            row["theme_kw"] = theme_kw[mti6]          # 검색 인덱스(SiC·피부과 등)
+        rows.append(row)
     return rows
 
 
@@ -224,6 +233,8 @@ def render_page(rows: list[dict], *, now: datetime | None = None,
         syn = " ".join(_mc.search_synonyms(r["name"]))
         if syn:                                  # 동의어(PCB→인쇄회로) 검색 인덱스
             parts.append(syn)
+        if r.get("theme_kw"):                    # 병합된 테마명(SiC·피부과 등) 검색 인덱스
+            parts.append(" ".join(r["theme_kw"]))
         search = " ".join(parts).lower()
         code_html = ('<span class="theme-badge">🏷️ 테마</span>' if r.get("theme")
                      else f'<span class="mti">{e(r["mti6"])}</span>')
