@@ -203,6 +203,9 @@ class UnmatchedCandidatesTests(unittest.TestCase):
             h = R.render_page(self._ROWS, reinforce=loaded)
             self.assertIn("DART 보강 후보", h)
             self.assertIn("낸드", h)
+            # 전수 검토 컨트롤(검색 + CSV) — 사용자 2026-06-19 '전체 확인'
+            for must in ("rftbl", "rfq", "rfcsv", "DART_보강후보.csv", 'data-s="'):
+                self.assertIn(must, h)
             # 비면 패널 없음
             self.assertNotIn("DART 보강 후보", R.render_page(self._ROWS))
             self.assertEqual(R.load_reinforce(Path("/no/such.json")), [])
