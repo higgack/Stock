@@ -46,10 +46,10 @@ def build_rows() -> list[dict]:
     theme_kw: dict[str, list[str]] = {}
     try:
         for tr in mti_companies.theme_rows():
-            for hsk_code in tr.get("hs", []):
-                for m6 in mti_map.hs6_to_mti6(hsk_code):
-                    theme_co.setdefault(m6, []).extend(tr["companies"])
-                    theme_kw.setdefault(m6, []).append(tr["name"])
+            # 핀(_THEME_MTI_PIN) 우선 → catch-all HS6 과잉부착 회피(사용자 2026-06-19).
+            for m6 in mti_companies.theme_mti6(tr["name"], tr.get("hs", [])):
+                theme_co.setdefault(m6, []).extend(tr["companies"])
+                theme_kw.setdefault(m6, []).append(tr["name"])
     except Exception:
         pass
     rows: list[dict] = []

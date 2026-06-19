@@ -475,9 +475,12 @@ def synonym_companies(query: str, pairs: list) -> tuple[str, list[str]] | None:
 # 정리한 매트릭스로 미매칭·테마 재배치'). 무역협회 MTI 1,294품목에 **행 자체가
 # 없는** 카테고리(반도체 소재·테스트, 2차전지 소재, 의료기기, 조선/기계, 소비재
 # 등)를 사용자 제공 HS Code 마스터(56품목·5대분류·HSK 10단위)로 큐레이션.
-# (품목명, 대분류, HSK10, 기업들). 기업은 채널 알림·매트릭스 검증분만(환각 0).
-# 레퍼런스북이 '🏷️ 테마' 배지 + 구성 HS10 표시 + surfaced 처리(미매칭 자동 제거).
-_THEME_ROWS: list[tuple[str, str, str, tuple[str, ...]]] = [
+# (품목명, 대분류, HS, 기업들). HS = 단일 HSK10 str **또는** 복수 tuple[str,...].
+# ⚠️ 복수 코드는 신중히 — HS는 앞 6자리로만 MTI에 연결되므로 catch-all HS6
+# (예 2106.90 '기타조제식료품' → 음료·홍삼·효모·커피 등 10개 MTI)는 한 코드만으로도
+# 과잉 부착된다. 복수는 좁은 HS6 일 때만(2026-06-19 건기식 1211 추가가 수삼·종자류
+# 과잉 부착 → 단일 환원). 기업은 채널·매트릭스 검증분만(환각 0). 레퍼런스북 surfaced.
+_THEME_ROWS: list[tuple[str, str, str | tuple[str, ...], tuple[str, ...]]] = [
     ("반도체 소재 (SiC·쿼츠·펠리클·마스크·PR)", "반도체/디스플레이", "8486.90-9000",
      ("티씨케이", "하나머티리얼즈", "케이엔제이", "원익QnC", "비씨엔씨", "월덱스", "에프에스티", "에스앤에스텍", "동진쎄미켐", "켐트로닉스")),
     ("반도체 테스트 (프로브카드·소켓·러버소켓)", "반도체/디스플레이", "8536.90-9000",
@@ -564,7 +567,10 @@ _THEME_ROWS: list[tuple[str, str, str, tuple[str, ...]]] = [
      ("강원에너지",)),
     ("MLCC (적층세라믹콘덴서)", "전기전자/소비재/기타", "8532.24-0000",
      ("삼성전기", "삼화콘덴서", "아모텍", "아바코", "아바텍", "삼영", "삼화전기")),
-    ("카메라 모듈 · OIS 액추에이터", "전기전자/소비재/기타", "8529.90-9500",
+    # 스마트폰 카메라모듈/OIS 는 실무상 '무선통신기기 부품'(8517.79 → 스마트폰부품
+    # MTI 812820)으로 통관 — 최종 귀착=스마트폰이라 통신기기부품에 종속. 8529.90
+    # (영상기기 부품)은 음향기기부품·기타전자부품으로 희석돼 부정확(사용자 2026-06-19 검토).
+    ("카메라 모듈 · OIS 액추에이터", "전기전자/소비재/기타", "8517.79-1020",
      ("LG이노텍", "자화전자", "액트로", "해성옵틱스", "동운아나텍")),
     ("영상보안 (CCTV)", "전기전자/소비재/기타", "8525.89-1000",
      ("코맥스", "코콤", "아이디스")),
@@ -574,6 +580,9 @@ _THEME_ROWS: list[tuple[str, str, str, tuple[str, ...]]] = [
      ("에스엘", "제일일렉트릭")),
     ("카드프린터 / 모바일프린터", "전기전자/소비재/기타", "8443.32-1000",
      ("아이디피", "빅솔론")),
+    # 건기식: 2106.90 catch-all(음료·홍삼·효모·로얄제리 등 11 MTI 분산, '건강기능
+    # 식품' MTI 부재)이라 HS6 자동해석이 과잉부착 → _THEME_MTI_PIN 으로 식이보충제
+    # 실분류 016900 기타농산가공품 1곳에 핀 고정(2026-06-19). HS 표시는 유지.
     ("건강기능식품 (펩타이드·식이보충제)", "전기전자/소비재/기타", "2106.90-9099",
      ("케어젠", "노바렉스", "서흥", "코스맥스엔비티")),
     ("김치", "전기전자/소비재/기타", "2005.99-1000",
@@ -592,12 +601,31 @@ _THEME_ROWS: list[tuple[str, str, str, tuple[str, ...]]] = [
      ("젤텍",)),
 ]
 
+# catch-all HS6(예 2106.90 → 11 MTI)이 HS6 자동해석으로 과잉부착되는 테마는
+# operator 가 정확한 MTI6 을 직접 핀(사용자 2026-06-19 '옵션 C'). 키 = 테마명,
+# 값 = 부착할 MTI6 들. 핀이 있으면 HS6 해석을 무시하고 이 MTI6 에만 회사 부착.
+# (HS10 자릿수 정밀화는 무효 — 테마코드 다수가 실제 leaf 아니거나 엉뚱한 leaf
+#  [2106909099=로얄제리]에 떨어져, 실데이터 검증 후 핀 방식 채택.)
+_THEME_MTI_PIN: dict[str, tuple[str, ...]] = {
+    # 건기식: '건강기능식품' MTI 부재 + 2106.90 은 음료·홍삼·효모·로얄제리로 분산 →
+    # 식이보충제가 실제 분류되는 016900 기타농산가공품 1곳에 고정(로얄제리·커피 오염 제거).
+    "건강기능식품 (펩타이드·식이보충제)": ("016900",),
+}
+
+
+def _hs_list(hsk) -> list[str]:
+    """테마행 HS 필드(단일 str 또는 복수 tuple/list) → HS 코드 리스트. 순수."""
+    if not hsk:
+        return []
+    seq = hsk if isinstance(hsk, (tuple, list)) else (hsk,)
+    return [h for h in seq if h]
+
 
 def theme_rows() -> list[dict]:
-    """큐레이션 테마 행 [{name, industry(대분류), hs:[HSK10], companies}] — MTI
-    품목표에 없는 카테고리를 HS Code 마스터로 보강(사용자 2026-06-19). hs 는
-    레퍼런스북 '구성 HS10' 칼럼에 표시. 순수."""
-    return [{"name": nm, "industry": cat, "hs": [hsk] if hsk else [],
+    """큐레이션 테마 행 [{name, industry(대분류), hs:[HSK10...], companies}] — MTI
+    품목표에 없는 카테고리를 HS Code 마스터로 보강(사용자 2026-06-19). hs 는 단일
+    또는 복수(파편화 품목) — 레퍼런스북 '구성 HS10' 칼럼에 표시. 순수."""
+    return [{"name": nm, "industry": cat, "hs": _hs_list(hsk),
              "companies": dedup_companies(cos)}
             for nm, cat, hsk, cos in _THEME_ROWS]
 
@@ -611,8 +639,28 @@ def theme_for_company(name: str) -> tuple[str | None, str]:
         return None, ""
     for nm, _cat, hsk, cos in _THEME_ROWS:
         if any(canon_company(c).replace(" ", "").lower() == k for c in cos):
-            return nm, hsk
+            codes = _hs_list(hsk)
+            return nm, (codes[0] if codes else "")   # 1차(대표) HS — 회사보고서 단일코드
     return None, ""
+
+
+def theme_mti6(theme_name: str, hs_codes) -> list[str]:
+    """테마 → 부착할 MTI6 리스트. _THEME_MTI_PIN 에 핀이 있으면 그 MTI6 만(catch-all
+    HS6 과잉부착 회피, 사용자 2026-06-19), 없으면 HS6 자동해석(mti_map.hs6_to_mti6).
+    build_rows·company_report 공용. 파일 읽기 외 순수. graceful → []."""
+    pin = _THEME_MTI_PIN.get(theme_name or "")
+    if pin:
+        return list(pin)
+    out: list[str] = []
+    try:
+        from trade import mti_map
+        for hs in (hs_codes or []):
+            for m6 in mti_map.hs6_to_mti6(hs):
+                if m6 not in out:
+                    out.append(m6)
+    except Exception:
+        pass
+    return out
 
 
 def search_synonyms(name: str) -> list[str]:

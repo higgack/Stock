@@ -248,6 +248,55 @@ class ItemModeTests(unittest.TestCase):
         exp = C._company_exposure("티씨케이", by_mti, [], {}, [])
         self.assertIn("반도체제조용장비부품", [x["item"] for x in exp])
 
+    def test_theme_hs_camera_and_hs_list(self):
+        # ② 카메라모듈 → 8517.79(스마트폰부품 MTI 812820). HS 필드 단일/복수 정규화.
+        from trade import mti_companies as mc
+        # ② 카메라모듈 HS = 8517.79 (8529.90 아님) → 스마트폰부품 직결
+        self.assertEqual(mc.theme_for_company("액트로")[1], "8517.79-1020")
+        self.assertIn("812820", C._hs6_to_mti6("8517.79"))   # 스마트폰부품 직결 검증
+        cam = [r for r in mc.theme_rows() if "카메라" in r["name"]][0]
+        self.assertEqual(cam["hs"], ["8517.79-1020"])
+        # 건기식은 단일 2106.90 유지(1211 과잉부착 역효과로 환원, 2026-06-19)
+        self.assertEqual(mc.theme_for_company("노바렉스")[1], "2106.90-9099")
+        geon = [r for r in mc.theme_rows() if "건강기능식품" in r["name"]][0]
+        self.assertEqual(geon["hs"], ["2106.90-9099"])
+        # _hs_list: 단일 str / 복수 tuple / 빈값 정규화(복수코드 구조 회귀 가드)
+        self.assertEqual(mc._hs_list("8517.79-1020"), ["8517.79-1020"])
+        self.assertEqual(mc._hs_list(("a", "b")), ["a", "b"])
+        self.assertEqual(mc._hs_list(""), [])
+        self.assertEqual(mc._hs_list(None), [])
+
+    def test_hs_pin_and_hs_code_search(self):
+        # 옵션C 후속(2026-06-19): 건기식 catch-all → 016900 기타농산가공품 핀 고정 +
+        # HS코드 직접 검색 → 수출입 숫자.
+        from trade import mti_companies as mc
+        # 핀: 건기식은 HS6 자동해석(11 MTI 분산) 대신 016900 1곳에만
+        self.assertEqual(
+            mc.theme_mti6("건강기능식품 (펩타이드·식이보충제)", ["2106.90-9099"]),
+            ["016900"])
+        # 핀 없는 테마는 HS6 자동해석 그대로(카메라 → 스마트폰부품 812820 포함)
+        self.assertIn("812820",
+                      mc.theme_mti6("카메라 모듈 · OIS 액추에이터", ["8517.79-1020"]))
+        # build_rows: 핀으로 노바렉스가 기타농산가공품에만, 로얄제리·커피엔 안 붙음
+        from trade import reference_book as R
+        nb = [r["name"] for r in R.build_rows() if "노바렉스" in (r.get("companies") or [])]
+        self.assertIn("기타농산가공품", nb)
+        self.assertNotIn("로얄제리", nb)
+        self.assertNotIn("커피조제품", nb)
+        # HS코드 판정: 점/긴자리 = HS, 6자리 bare = 주식코드
+        self.assertTrue(C._looks_like_hs("8517.79"))
+        self.assertTrue(C._looks_like_hs("2106.90-9099"))
+        self.assertTrue(C._looks_like_hs("8517791020"))
+        self.assertFalse(C._looks_like_hs("005930"))      # 6자리 = 주식코드
+        self.assertFalse(C._looks_like_hs("삼성전자"))
+        # HS코드 검색 → 해당 MTI 품목 + 수출입 숫자
+        by_mti = {"812820": {"name": "스마트폰부품", "industry": "무선통신기기",
+                             "months": {"2026-05": 5e8}}}
+        res = C._hs_code_search("8517.79", by_mti, [])
+        self.assertEqual(res["mode"], "item")
+        sp = [r for r in res["items"] if r["item"] == "스마트폰부품"]
+        self.assertTrue(sp and sp[0]["export_usd"] == 5e8)
+
     def test_render_free_item(self):
         data = {"mode": "item", "query": "반도체", "name": "반도체",
                 "items": [{"item": "디램", "industry": "반도체",
