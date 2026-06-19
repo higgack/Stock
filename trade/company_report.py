@@ -233,6 +233,18 @@ def _company_exposure(name: str, by_mti: dict, pairs: list,
                for c in cos if c):
             _add(item, (mti6, node))
 
+    # (C) 테마 회사 → 테마 HS Code → 관세청 수출입 품목 연계 (사용자 2026-06-19
+    # '안 잡힌 것들 잡히게'). MTI 품목표에 없던 테마 종목도 HS6→MTI6 로 수출입 부착.
+    try:
+        _tn, th_hs = mti_companies.theme_for_company(name)
+    except Exception:
+        th_hs = ""
+    if th_hs:
+        for m6 in _hs6_to_mti6(th_hs)[:3]:
+            node = (by_mti or {}).get(m6)
+            if node:
+                _add((node.get("name") or m6).strip(), (m6, node))
+
     out = list(rows.values())
     # 관세청 수출 있는 품목 먼저(내림차순), 그다음 노출만 있는(값 없는) 품목.
     out.sort(key=lambda x: (x["export_usd"] is None, -(x["export_usd"] or 0)))
