@@ -677,6 +677,9 @@ class TestBatch20260615(unittest.TestCase):
         self.assertIn("window._scrollRaw", src)                 # 노출 함수
         self.assertIn("requestAnimationFrame", src)             # 레이아웃 완료 후
         self.assertIn("if(window._scrollRaw)window._scrollRaw(view)", src)  # 탭 hook
+        # MTI 행 펼침(hidden 토글, <details> 아님 → toggle 이벤트 미발화)도 _scrollRaw
+        # 로 표를 최신(우측)으로 (사용자 2026-06-19 '스크롤 오른쪽 디폴트'). 회귀 가드.
+        self.assertIn("if(!d.hidden&&window._scrollRaw)window._scrollRaw(d)", src)
 
     def test_backfill_cap_default_5000(self):
         src = Path("trade/scripts/backfill_beon.py").read_text(encoding="utf-8")
