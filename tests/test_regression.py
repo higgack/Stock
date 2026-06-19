@@ -5961,11 +5961,16 @@ class TestBlogWatchMultiBlog:
         assert "fetch_recommendation_trends" in mo, "Finnhub 추천분포 미연결(A2)"
         assert "_us_consensus_str(tk)" in mo, "컨센서스 미배선(A2)"
         assert "isinstance(target, str)" in dash, "문자열 컨센서스 렌더 미처리(A2)"
-        # 위젯 캡 → 전체 미국 등급변경 참조 링크 다수, 표 위 가로 한 줄(사용자 2026-06-19)
+        # 위젯 캡 → 전체 미국 등급변경 참조 링크, 표 위 가로 한 줄(사용자 2026-06-19)
         assert "research-refs" in dash, "참조 링크 행 누락"
+        # 무료·접근가능한 곳만 (사용자 2026-06-19 '유료고 안돼' — TipRanks/Nasdaq/
+        # StreetInsider/Yahoo 제거)
         for site in ("marketbeat.com/ratings", "benzinga.com/analyst-ratings",
-                     "tipranks.com", "nasdaq.com/market-activity/analyst-activity"):
+                     "stockanalysis.com"):
             assert site in dash, f"참조 사이트 누락: {site}"
+        for gone in ("tipranks.com", "nasdaq.com/market-activity",
+                     "streetinsider.com", "finance.yahoo.com/research-hub"):
+            assert gone not in dash, f"제거된 유료 사이트 잔존: {gone}"
 
     def test_parse_channel_title(self):
         import bot.blog_watch as bw

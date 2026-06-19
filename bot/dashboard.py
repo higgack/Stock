@@ -12223,14 +12223,12 @@ def _render_research_us_table(research: list) -> str:
     refs = (
         '<div class="research-refs" style="margin:2px 2px 10px;font-size:12px;line-height:2.1">'
         '<span style="opacity:.75">📋 전체 미국 등급변경·리서치 참조</span> '
+        # TipRanks·Nasdaq·StreetInsider·Yahoo 제거 (사용자 2026-06-19 '유료고 안돼').
+        # 무료·접근가능한 곳만 유지.
         + ' '.join([
             _ref("https://www.marketbeat.com/ratings/", "MarketBeat"),
             _ref("https://www.benzinga.com/analyst-ratings", "Benzinga"),
-            _ref("https://www.tipranks.com/analysts/top", "TipRanks"),
-            _ref("https://www.nasdaq.com/market-activity/analyst-activity", "Nasdaq"),
-            _ref("https://www.streetinsider.com/ratings.php", "StreetInsider"),
             _ref("https://stockanalysis.com/", "StockAnalysis"),
-            _ref("https://finance.yahoo.com/research-hub/screener/analyst_strong_buy_stocks/", "Yahoo"),
         ]) + '</div>'
     )
     return (
