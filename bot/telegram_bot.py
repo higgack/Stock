@@ -3352,8 +3352,12 @@ def _warm_light_boards() -> None:
         except Exception:
             yf_off = False
 
-        kst_h = (now.hour + 9) % 24
-        kr_ext = now.weekday() < 5 and 8 <= kst_h < 20   # KST 08-20 (NXT 장전후 포함)
+        from datetime import timedelta as _td
+        _kst = now + _td(hours=9)                          # UTC→KST (weekday·hour 모두 KST)
+        # ⚠️ weekday 도 KST 로 — KST 08:xx 는 UTC 전일 23:xx 라 now.weekday()(UTC)
+        # 를 쓰면 월요일 장전(UTC 일요일)이 weekday<5 에 걸려 영영 워밍 안 됨
+        # (사용자 'NXT 장전집계 또 안 됨' 클래스). _kst.weekday() 로 교정.
+        kr_ext = _kst.weekday() < 5 and 8 <= _kst.hour < 20   # KST 평일 08-20 (NXT 장전후)
 
         jobs = []   # (label, callable) — 시장시간/연장창 게이트 통과분만
         if not nav_off:                                  # 네이버 경량 보드

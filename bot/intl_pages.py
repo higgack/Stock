@@ -191,12 +191,14 @@ def render_kr_prepost_page() -> str:
     수급 보드(외국인·기관 흐름)와 별개 — 이건 'NXT 가격'. 정규장 무버 유니버스를
     종목별 네이버 NXT 가로 스캔."""
     try:
-        from bot.prepost_client import fetch_kr_prepost_movers
+        from bot.prepost_client import fetch_kr_prepost_movers, kr_prepost_status
         data = fetch_kr_prepost_movers()
+        st = kr_prepost_status()
     except Exception as exc:
         log.warning("kr prepost page: %s", exc)
         data = {"up": [], "down": [], "ts": "", "building": False,
                 "status": {}, "session": ""}
+        st = {}
     ts = _html.escape(data.get("ts", ""))
     up, down = data.get("up", []), data.get("down", [])
     sess = data.get("session") or ""
@@ -219,6 +221,29 @@ def render_kr_prepost_page() -> str:
                 + stock_panel(f"📉 {sess_kr} 가장 많이 내린 TOP 30", down,
                               "kpp-down", "KR", "", **_o)
                 + '</div>' + HL_SORT_JS)
+    # 스캔 상태 배너 — 직전 성공 스냅샷을 서빙 중인데 최근 집계가 실패/진행이면
+    # 사용자가 화면에서 '왜 오늘 장전이 안 보이는지' 즉시 인지(silent-fail 제거,
+    # 실수 #12). state=done(최신 반영)이면 배너 없음 — 스냅샷이 곧 최신.
+    _state = (st or {}).get("state")
+    _stl = _html.escape(str((st or {}).get("ts_label") or ""))
+    if _state == "failed":
+        _detail = _html.escape(str((st or {}).get("detail") or ""))
+        _scanned = (st or {}).get("scanned")
+        _scan_txt = f" · 스캔 {_scanned}종목" if _scanned is not None else ""
+        body = (
+            '<div style="margin:10px 0;padding:10px 14px;border-radius:8px;'
+            'background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.45);'
+            'font-size:13px;line-height:1.55">'
+            f'⚠️ <b>최근 NXT 집계 실패</b> — {_stl}{_scan_txt} · 사유: {_detail}<br>'
+            '아래는 직전 성공 스냅샷입니다. NXT 장전(08:00–09:00)·장후'
+            '(15:40–20:00) KST 창에서 자동 재집계됩니다.</div>') + body
+    elif _state == "running":
+        body = (
+            '<div style="margin:10px 0;padding:10px 14px;border-radius:8px;'
+            'background:rgba(56,139,253,.12);border:1px solid rgba(56,139,253,.45);'
+            'font-size:13px;line-height:1.55">'
+            f'⏳ <b>NXT 집계 진행 중</b> — {_stl} · 잠시 후 새로고침하면 최신으로 '
+            '갱신됩니다. 아래는 직전 스냅샷.</div>') + body
     sub = (f"🇰🇷 {sess_kr} NXT 급등·급락 상·하위 30 · 등락률=NXT가 vs 정규장 "
            "종가(NXT-정규장 격차) · 거래량·거래대금=NXT 세션 누적(당일 NXT 거래소 체결, "
            "정규장 별개) · 실제 NXT 체결 종목만(미체결=전일가 placeholder 제외) · 네이버 "

@@ -1983,6 +1983,10 @@ document.addEventListener('click',function(e){
     d.hidden=!d.hidden;
     const m=tr.querySelector('.ind-mti-more');
     if(m)m.textContent=d.hidden?'▸':'▾';
+    // 펼친 상세의 월별 원자료표를 최신(우측)으로 디폴트 스크롤 — MTI 행 펼침은
+    // <details> 가 아니라 hidden 토글이라 toggle 이벤트가 안 떠서 _scrollRaw 가
+    // 안 걸렸음(사용자 2026-06-19 '스크롤을 오른쪽으로 밀어 최신이 디폴트').
+    if(!d.hidden&&window._scrollRaw)window._scrollRaw(d);
   }
 });
 

@@ -405,6 +405,7 @@ def fetch_us_prepost_movers() -> dict:
 _KST9 = timezone(timedelta(hours=9))
 _KR_PREPOST_CACHE = "kr_prepost_v1.json"
 _KR_PREPOST_STATUS = "kr_prepost_status.json"
+_KR_UNIVERSE_CACHE = "kr_prepost_universe.json"   # 직전 성공 유니버스(장전 공백 폴백)
 _KR_PREPOST_TTL = 2 * 60        # NXT 창 재산출 간격 2분 (사용자 2026-06-16, 옛 5분
 #   에서 단축 — NXT 는 연속거래라 5분은 거침). 부하 무: SWR 요청-트리거(미열람 시 0)
 #   + _KR_REFRESHING 락(스캔 비중첩·stampede 차단) + 종목당 30초 캐시 + 6-worker
@@ -478,6 +479,19 @@ def _kr_movers_universe() -> tuple[list, dict, dict]:
             names[tk] = nm
         if r.get("mcap") is not None:
             mcaps[tk] = r.get("mcap")
+    # 장전(08:00–09:00, 정규장 개장 전)엔 네이버 정규장 무버 랭킹이 비거나 얇아
+    # 유니버스 0 → NXT 장전 스캔이 'universe 실패'로 영영 빈 보드(사용자 'NXT
+    # 장전집계 또 안 됨'의 유력 원인). 직전 성공 유니버스(전일 정규장 무버)를
+    # 폴백 — NXT 활동 확인용 후보군이라 전일 리스트로 충분(additive·라이브가
+    # 차면 no-op). 라이브 성공 시 캐시 갱신.
+    if not tks:
+        cached = _cached(_KR_UNIVERSE_CACHE, ttl=86400)
+        if isinstance(cached, dict) and cached.get("tks"):
+            log.info("kr prepost: 라이브 유니버스 0 → 직전 성공 유니버스(%d종목) 폴백",
+                     len(cached["tks"]))
+            return (cached["tks"], cached.get("names") or {}, cached.get("mcaps") or {})
+        return tks, names, mcaps
+    _cache_write(_KR_UNIVERSE_CACHE, {"tks": tks, "names": names, "mcaps": mcaps})
     return tks, names, mcaps
 
 

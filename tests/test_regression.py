@@ -5569,6 +5569,62 @@ class TestUsPrepost:
         assert _kr_over_session("REGULAR_MARKET") is None
         assert _kr_over_session("") is None and _kr_over_session(None) is None
 
+    def test_kr_universe_fallback_on_empty(self, monkeypatch):
+        # 장전(08:00–09:00, 정규장 개장 전) 네이버 정규장 무버가 비면 NXT 스캔이
+        # universe-empty 로 영영 실패 → '장전집계 또 안 됨'. 직전 성공 유니버스
+        # 폴백(전일 정규장 무버 = NXT 활동 확인용 후보군). 라이브 차면 캐시 갱신·no-op.
+        import bot.naver_ranking_client as nr
+        import bot.prepost_client as pp
+        store = {}
+        monkeypatch.setattr(pp, "_cached", lambda name, ttl=0: store.get(name))
+        monkeypatch.setattr(pp, "_cache_write",
+                            lambda name, val: store.__setitem__(name, val))
+        monkeypatch.setattr(nr, "fetch_kr_movers", lambda limit=30: {
+            "up": [{"ticker": "005930.KS", "name": "삼성전자", "mcap": 5e6}],
+            "down": [{"ticker": "000660.KS", "name": "SK하이닉스", "mcap": 4e6}]})
+        tks, _names, _mcaps = pp._kr_movers_universe()
+        assert set(tks) == {"005930.KS", "000660.KS"}
+        assert store.get(pp._KR_UNIVERSE_CACHE)              # 라이브 성공 → 캐시 적재
+        monkeypatch.setattr(nr, "fetch_kr_movers",
+                            lambda limit=30: {"up": [], "down": []})
+        tks2, names2, _ = pp._kr_movers_universe()
+        assert set(tks2) == {"005930.KS", "000660.KS"}       # 빈 라이브 → 직전 유니버스
+        assert names2.get("005930.KS") == "삼성전자"
+        # 라이브·캐시 둘 다 비면 graceful 빈(크래시 X)
+        store.clear()
+        assert pp._kr_movers_universe()[0] == []
+
+    def test_kr_prepost_page_failed_banner(self, monkeypatch):
+        # 직전 스냅샷 서빙 중 최근 집계 실패면 페이지에 '사유' 배너 노출 (silent-fail
+        # 제거, 실수 #12) — 사용자가 '왜 오늘 장전이 안 보이는지' 화면에서 즉시 인지.
+        import bot.prepost_client as pp
+        monkeypatch.setattr(pp, "fetch_kr_prepost_movers", lambda: {
+            "up": [{"ticker": "005930.KS", "name": "삼성전자", "price": 80000,
+                    "pct": 1.2, "vol": 50000, "value": 40.0, "mcap": 5e6,
+                    "session": "post"}],
+            "down": [], "ts": "2026-06-18 19:58", "source": "x", "session": "post"})
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda: {
+            "state": "failed", "ts_label": "2026-06-19 08:30",
+            "detail": "universe 실패(네이버 무버 0)", "scanned": 0})
+        from bot.intl_pages import render_kr_prepost_page
+        html = render_kr_prepost_page()
+        assert "최근 NXT 집계 실패" in html
+        assert "universe 실패(네이버 무버 0)" in html and "2026-06-19 08:30" in html
+        # state=done 이면 배너 없음(스냅샷이 곧 최신)
+        monkeypatch.setattr(pp, "kr_prepost_status", lambda: {"state": "done"})
+        assert "최근 NXT 집계 실패" not in render_kr_prepost_page()
+
+    def test_light_board_warm_kr_ext_uses_kst_weekday(self):
+        # 워머 kr_ext 게이트는 KST weekday 로 — KST 08:xx 는 UTC 전일이라 raw
+        # now.weekday()(UTC)면 월요일 장전(UTC 일요일)이 weekday<5 에 걸려 영영
+        # 워밍 안 됨('NXT 장전집계 또 안 됨' 클래스). KST 로 교정한 게 회귀 안 하게.
+        import re
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert re.search(r"_kst = now \+ _td\(hours=9\)[\s\S]{0,400}?"
+                         r"kr_ext = _kst\.weekday\(\) < 5", src), \
+            "워머 kr_ext 가 KST weekday 를 안 씀 (월요일 장전 갭 회귀)"
+        assert "kr_ext = now.weekday() < 5 and 8 <= kst_h" not in src   # 옛 버그 패턴
+
     def test_classify_index_and_ticker_prepost(self):
         import pandas as pd
         from bot.prepost_client import _classify_index, _ticker_prepost
