@@ -150,6 +150,12 @@ class GatherTests(unittest.TestCase):
         # 잠정 없으면 None (확정 품목 보고서는 그대로)
         self.assertIsNone(_gather()["provisional"])
 
+    def test_provisional_only_on_latest(self):
+        # 잠정 속보는 **최신 보고서에만** (사용자 2026-06-19 '2025-02 인데 잠정은 최신
+        # 꺼' — 과거 보고서엔 혼선). 최신월(2026-05)=붙음, 과거월(2026-04)=None.
+        self.assertIsNotNone(_gather(ym="2026-05", prov=_PROV)["provisional"])
+        self.assertIsNone(_gather(ym="2026-04", prov=_PROV)["provisional"])
+
 
 class RenderTests(unittest.TestCase):
     def test_render_free_structure(self):
@@ -168,6 +174,14 @@ class RenderTests(unittest.TestCase):
             self.assertIn(must, h)
         # 상태 배지(잠정/확정) 헤더에 표기
         self.assertTrue("확정" in h or "잠정" in h)
+        # 라이트/다크 가독 + MoM (사용자 2026-06-19) — 테마변수·반투명그린·YoY→MoM
+        self.assertIn("var(--text,#1d1d1f)", h)        # KPI·잠정 글씨 테마변수
+        self.assertIn("rgba(38,166,122,.12)", h)       # 잠정 박스 반투명 그린
+        self.assertNotIn("#10231a", h)                 # 옛 고정 다크배경 제거
+        self.assertNotIn("background:#1c1f26", h)       # 옛 KPI 다크배경 제거
+        self.assertIn("(YoY ", h)
+        self.assertIn("(MoM ", h)                                # MoM 도 포함
+        self.assertLess(h.index("(YoY "), h.index("(MoM "))      # YoY 앞
 
     def test_render_free_no_provisional(self):
         # 잠정 없으면 선행 섹션 미표시(확정 보고서 정상)
