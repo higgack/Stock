@@ -2221,6 +2221,7 @@ class TestPortfolioResolve:
         assert resolve_overseas("어플라이드 머티어리얼즈") == ("AMAT", "US")
         assert resolve_overseas("ST 마이크로 일렉트로닉스 ADR") == ("STM", "US")
         assert resolve_overseas("엔비디아") == ("NVDA", "US")
+        assert resolve_overseas("페르미") == ("FRMI", "US")   # Fermi America(2026-06-19)
         # 국내 종목(파마리서치)·미등록은 alias None (pykrx 가 잡음)
         assert resolve_overseas("파마리서치") is None
         assert resolve_overseas("없는종목xyz") is None

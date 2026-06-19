@@ -103,6 +103,7 @@ _OVERSEAS_ALIAS: dict[str, tuple[str, str]] = {
     "틸레이브랜즈": ("TLRY", "US"),
     "아이보타": ("IBTA", "US"),
     "pdl바이오파마": ("PDLI", "US"),
+    "페르미": ("FRMI", "US"),          # Fermi America (NASDAQ, 운영자 확인 2026-06-19)
     # US ETF
     "firsttrustrbaamericanindustrialrena": ("AIRR", "US"),
     "roundhillmemory": ("DRAM", "US"),
