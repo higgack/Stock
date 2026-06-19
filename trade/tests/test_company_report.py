@@ -283,6 +283,11 @@ class ItemModeTests(unittest.TestCase):
         self.assertIn("기타농산가공품", nb)
         self.assertNotIn("로얄제리", nb)
         self.assertNotIn("커피조제품", nb)
+        # 과잉부착 4개 핀 (2026-06-19 전수감사) — 각 테마가 정확한 MTI6 1곳에만
+        self.assertEqual(mc.theme_mti6("가정용 미용기기", ["8543.70-9020"]), ["829100"])
+        self.assertEqual(mc.theme_mti6("탈철기 (자력 선별 장치)", ["8479.89-9099"]), ["729010"])
+        self.assertEqual(mc.theme_mti6("연마재 (CMP공정에 쓰이는 슬러리 소재)", ["3824.99-9000"]), ["290090"])
+        self.assertEqual(mc.theme_mti6("카드프린터 / 모바일프린터", ["8443.32-1000"]), ["813390"])
         # HS코드 판정: 점/긴자리 = HS, 6자리 bare = 주식코드
         self.assertTrue(C._looks_like_hs("8517.79"))
         self.assertTrue(C._looks_like_hs("2106.90-9099"))
