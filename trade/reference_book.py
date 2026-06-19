@@ -197,6 +197,9 @@ body.dark .co{color:#e6edf3}body.dark .co .x{background:#21262d;border-color:#3a
 body.dark .um{background:#1c1808;border-color:#3a3417}body.dark .um>summary{color:#e3b341}
 body.dark .umt thead th{border-color:#4a3f17}body.dark .umi,body.dark .umc{color:#e6edf3}
 .rf{background:#eef4ff;border-color:#bcd2f7}.rf>summary{color:#1f5fbf}
+.rfbar{display:flex;gap:8px;align-items:center;margin:0 12px 8px}
+.rfbar #rfq{flex:1;min-width:160px;padding:6px 10px;border:1px solid #bcd2f7;background:#fff;color:#1f2328;border-radius:8px;font-size:13px}
+body.dark .rfbar #rfq{background:#0d1117;border-color:#1f3354;color:#e6edf3}
 .rf .umt thead th{border-bottom-color:#bcd2f7}
 body.dark .rf{background:#0e1726;border-color:#1f3354}body.dark .rf>summary{color:#6cb6ff}
 body.dark .rf .umt thead th{border-color:#1f3354}
@@ -236,6 +239,25 @@ _JS = """
   var blob=new Blob(['\\ufeff'+out.join('\\n')],{type:'text/csv;charset=utf-8'});
   var a=document.createElement('a');a.href=URL.createObjectURL(blob);
   a.download='품목_레퍼런스북.csv';document.body.appendChild(a);a.click();a.remove();});
+ // 🧬 보강 후보 패널(rf) — 전수 검토(검색 필터 + CSV 내려받기, 사용자 2026-06-19 '전체 확인').
+ var rfq=document.getElementById('rfq'), rftbl=document.getElementById('rftbl');
+ var rfrows=rftbl?[].slice.call(document.querySelectorAll('#rftbl tbody tr')):[];
+ if(rfq&&rftbl){
+  rfq.addEventListener('input',function(){
+   var t=(rfq.value||'').toLowerCase().split(/\\s+/).filter(Boolean);
+   rfrows.forEach(function(r){var s=r.getAttribute('data-s')||'';
+    r.style.display=t.every(function(w){return s.indexOf(w)>=0;})?'':'none';});});
+ }
+ var rfcsv=document.getElementById('rfcsv');
+ if(rfcsv&&rftbl){rfcsv.addEventListener('click',function(){
+  var out=['품목,DART추가후보상장사,수'];
+  rfrows.forEach(function(r){
+   if(r.style.display==='none')return;
+   var td=r.querySelectorAll('td');
+   out.push([td[0].textContent,td[1].textContent,td[2].textContent].map(cell).join(','));});
+  var blob=new Blob(['\\ufeff'+out.join('\\n')],{type:'text/csv;charset=utf-8'});
+  var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='DART_보강후보.csv';document.body.appendChild(a);a.click();a.remove();});}
  // 테마 = 대시보드와 동일 시간기반(KST 19시~07시 다크). prefers-color-scheme(OS) 아님.
  function applyDark(){var h=(new Date().getUTCHours()+9)%24;
   document.body.classList.toggle('dark',h>=19||h<7);}
@@ -279,17 +301,22 @@ def _render_reinforce(reinforce: list[tuple[str, list[str]]] | None) -> str:
     total = sum(len(c) for _, c in reinforce)
     body = []
     for item, cos in reinforce:
+        joined = ", ".join(cos)
+        s = e((item + " " + joined).lower())          # 검색 인덱스(품목+회사)
         body.append(
-            f'<tr><td class="umi">{e(item)}</td>'
-            f'<td class="umc">{e(", ".join(cos))}</td>'
+            f'<tr data-s="{s}"><td class="umi">{e(item)}</td>'
+            f'<td class="umc">{e(joined)}</td>'
             f'<td class="umn">{len(cos)}</td></tr>')
     return (
         f"<details class='um rf'><summary>🧬 DART 보강 후보 "
-        f"<b>{total}</b>건 ({len(reinforce)}품목) — 추가 상장사 후보</summary>"
+        f"<b>{total}</b>건 ({len(reinforce)}품목) — 추가 상장사 후보 (전체)</summary>"
         "<p class='umnote'>각 품목에 <b>현재 큐레이션엔 없지만 DART 매출구성상 그 "
-        "제품을 만드는</b> 상장사 후보. 더 많은 상장사 발굴용 — 검토 후 승인 추가. "
-        "(보수적 규칙 매칭 · 자동 큐레이션 아님)</p>"
-        "<table class='umt'><thead><tr><th>품목</th>"
+        "제품을 만드는</b> 상장사 후보 — <b>전수</b>. 검토 후 승인 추가. "
+        "(보수적 규칙 매칭 · 자동 큐레이션 아님 · 부수 세그먼트 포함될 수 있음)</p>"
+        "<div class='rfbar'><input id='rfq' type='search' placeholder='품목·회사 검색' "
+        "autocomplete='off'><button id='rfcsv' class='dl' type='button' "
+        "title='전체 보강 후보 CSV 내려받기'>📥 CSV</button></div>"
+        "<table class='umt' id='rftbl'><thead><tr><th>품목</th>"
         "<th>DART 추가 후보 상장사</th><th>수</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table></details>")
 

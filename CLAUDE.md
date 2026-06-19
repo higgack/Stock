@@ -1279,7 +1279,9 @@ HS 어느 쪽으로 검색해도 같은 수출입 숫자로 수렴). 핵심:
   같이 자동') → `~/.trade/dart_reinforce_candidates.json` 적재 + 운영자 DM(`reference_
   book.reinforce_telegram` 상위 12). `reference_book` 가 그 JSON 읽어 '🧬 DART 보강
   후보' 패널(파랑, 접이식 — 미매칭 노랑과 색구분) 렌더(렌더는 캐시 read 만, 전품목×전
-  상장사 매칭은 무거워 18일에만). **승인 전 후보**(자동 큐레이션 X — 오매핑이 신뢰 깎음;
+  상장사 매칭은 무거워 18일에만). 패널은 **전수**(상위 N 아님) + 검색박스(rfq)·📥 CSV
+  (rfcsv → DART_보강후보.csv)로 운영자 전수 검토(사용자 2026-06-19 '전체 확인'). DM 만
+  상위 12 요약. **승인 전 후보**(자동 큐레이션 X — 오매핑이 신뢰 깎음;
   승인=`_MAP`/테마 추가하면 reference·report·heatmap-클릭 전 표면 자동 반영). curation_
   candidates(1·11·15·21일)는 **미매핑 전용**으로 환원(보강은 18일로 이동 — 느린 전품목
   매칭을 4회/월 안 돌림). 속도: `suggest_companies_for_items` 가 _canon(정규식)을 품목·
