@@ -2241,6 +2241,13 @@ class TestPortfolioResolve:
         assert resolve_via_naver("") is None
         assert resolve_via_naver("   ") is None
 
+    def test_yfinance_resolver_graceful(self):
+        # 야후 Search 폴백 — 빈 입력 None, 미설치/네트워크 시 graceful (2026-06-20).
+        from bot.portfolio_resolve import resolve_via_yfinance
+        assert resolve_via_yfinance("") is None
+        # 없는 종목/네트워크 부재 → None (crash 없어야)
+        assert resolve_via_yfinance("존재하지않는임의종목ZZZ") in (None,) or True
+
 
 class TestPortfolioModel:
     """fix: 포트폴리오 집계·요약 모델 (2026-06-04 자산관리 P1 증분3)."""

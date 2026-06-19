@@ -677,7 +677,9 @@ pattern to follow:
   • `bot/portfolio_resolve.py` — 종목 한글명→티커. 순서: 해외 alias → 국내 pykrx
     역맵 → KR ETF → **네이버 자동완성**(`resolve_via_naver`, ac.stock.naver.com →
     국내 KOSPI/KOSDAQ=.KS/.KQ + 해외 NASDAQ/NYSE=US 티커, 정확일치만·7일 캐시·
-    graceful, 사용자 2026-06-20 '자동 분류 + 네이버로 국내도') → 미매칭 '이름만 표시'.
+    graceful, 사용자 2026-06-20 '자동 분류 + 네이버로 국내도') → **yfinance Search**
+    (`resolve_via_yfinance`, top EQUITY·국내 .KS/.KQ·미국거래소만 보수적, 사용자 '야후도')
+    → 미매칭 '이름만 표시'.
     페르미=FRMI 등은 `_OVERSEAS_ALIAS` 큐레이션이 우선(운영자 확정). `bot/portfolio.py` — 집계
     모델+저장(~/.tradingagents/portfolio.json, atomic)+요약. `dashboard.
     _render_portfolio_page` → 풀 nav(메인 맨앞·단어 줄바꿈 방지)·순자산 헤더·
