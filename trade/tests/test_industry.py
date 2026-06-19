@@ -639,6 +639,44 @@ class MtiCodeAndChannelTests(unittest.TestCase):
         self.assertEqual(channel_companies_for("디램", pairs), [])
         self.assertEqual(channel_companies_for("램", pairs), [])  # <3자 컷
 
+    def test_channel_alias_bridge(self):
+        """언어적 별칭 — 영문 약어·표기 변형 알림이 공식 MTI 품목명에
+        매칭 (사용자 2026-06-19 '품목간 언어적 차이로 매치 미싱')."""
+        from trade.mti_companies import channel_companies_for
+        pairs = [
+            ("2차전지원형각형등팩모듈(capassy포함)", ["상신이디피"]),
+            ("ess", ["서진시스템"]),
+            ("isp(imagesignalprocessor,이미지신호처리)pcb", ["LG이노텍"]),  # ess ⊄ proc'ess'or
+            ("fpcb", ["비에이치"]),
+            ("ccl동박적층판", ["두산"]),
+            ("evrelay1,000v이하", ["와이엠텍"]),
+            ("전차와그밖의장갑차량", ["현대로템"]),
+            ("k-2tanks및기타수송장비부품", ["한화에어로스페이스"]),
+            ("(덴티움+오스템임플란트+디오)", ["임플란트"]),          # 도치 행 — 품목어 누수
+            ("임플란트수출", ["덴티움", "디오"]),
+            ("건식식각장비", ["브이엠"]),
+        ]
+        # 2차전지/ESS → 리튬이온전지 (영문 경계로 processor 오매칭 차단)
+        cos = channel_companies_for("리튬이온전지", pairs)
+        self.assertIn("상신이디피", cos)
+        self.assertIn("서진시스템", cos)
+        self.assertNotIn("LG이노텍", cos)           # 'ess' ⊄ 'processor'
+        # FPCB/CCL/동박적층 → 인쇄회로
+        self.assertEqual(channel_companies_for("인쇄회로", pairs), ["비에이치", "두산"])
+        # EV Relay → 계전기
+        self.assertEqual(channel_companies_for("계전기", pairs), ["와이엠텍"])
+        # 장갑차/K-2 TANKS → 무기류
+        self.assertEqual(channel_companies_for("무기류", pairs),
+                         ["현대로템", "한화에어로스페이스"])
+        # 식각장비 → 반도체제조용장비
+        self.assertIn("브이엠", channel_companies_for("반도체제조용장비", pairs))
+        # 임플란트 → 치과용기기및재료, 도치 행 누수('임플란트')는 회사로 안 잡힘
+        cos = channel_companies_for("치과용기기및재료", pairs)
+        self.assertEqual(cos, ["덴티움", "디오"])
+        self.assertNotIn("임플란트", cos)
+        # 별칭은 무관 품목으로 번지지 않음 (디램엔 별칭 없음)
+        self.assertEqual(channel_companies_for("디램", pairs), [])
+
     def test_channel_pairs_from_sqlite(self):
         import json
         import sqlite3

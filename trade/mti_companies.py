@@ -20,6 +20,8 @@
 """
 from __future__ import annotations
 
+import re
+
 # 부분일치 함정 차단 — 품목명에 아래 토큰이 있으면 매핑하지 않는다
 # (실명 감사 2026-06-13: '음료자동판매기'가 '동판'에, '차량·항공기·선박용
 # 시계'가 '선박'에, '합성수지제가방'·'에틸렌중합체필름'이 화학사에 걸리던
@@ -248,24 +250,78 @@ _CH_SHORT_OK = frozenset({
 })
 
 
+# ── 언어적 별칭 브리지 (사용자 2026-06-19 '품목간 언어적 차이로 매치 미싱').
+# 채널 알림 item 은 자유 텍스트(영문 약어·표기 변형·신제품명)라 공식 MTI
+# 품목명이 그대로 안 들어가 substring 매칭이 자주 실패한다(텔레그램 회사 ≫
+# 매칭된 회사). 아래 그룹 = (레퍼런스측 marker 부분문자열 → 알림측 surface
+# 표기들): 어떤 품목명의 키가 marker 를 포함하면 그 품목의 채널 매칭에
+# surface 표기들도 함께 검색한다. marker 는 해당 품목명에 실재하는 좁은
+# 부분문자열만(의도 외 품목행에 안 붙게), surface 는 실알림 1,057건으로
+# 오매핑 0 검증(2026-06-19). 새 브리지 = 한 줄 추가 + trade/tests 회귀 +
+# 실알림 검증 후에만. 매핑 키는 항상 universal(품목 무관 규칙).
+_ALIAS_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("반도체제조용장비", ("식각장비", "증착장비", "세척장비", "열처리장비", "급속열처리",
+                      "이온주입", "tcbonder", "핸들러", "스크러버",
+                      "웨이퍼세척", "웨이퍼습식", "진공펌프")),
+    ("리튬이온전지", ("2차전지", "이차전지", "ess")),     # ess 는 영문 경계 매칭
+    ("자동차부품", ("bumperrail", "carbody")),
+    ("와이어하네스", ("와이어링하네스",)),
+    ("계전기", ("relay",)),
+    ("무기류", ("장갑차", "tank", "로켓발사", "유도무기")),
+    ("미용및조직수복", ("보툴리눔", "필러")),
+    ("치과용기기", ("임플란트",)),
+    ("안과및광학", ("콘택트렌즈",)),
+    ("영상진단", ("엑스선", "x-레이", "c-arm")),
+    ("체외진단", ("진단키트", "면역진단", "진단시약")),
+    ("인쇄회로", ("fpcb", "fccl", "ccl", "동박적층")),
+    ("적층제조기계", ("3d프린터", "3d바이오프린터")),
+)
+
+# 영문 짧은 surface 는 영단어 내부 substring 오매칭 위험('ess' ⊂ proc'ess'or /
+# proc'ess'ing → LG이노텍/AP시스템 오수집) → 앞뒤에 영소문자/숫자가 없을
+# 때만 매칭. 공백제거 item 에서 한글·괄호·시작/끝이 경계로 작동(2026-06-19 검증).
+_BOUNDARY_SURFACES = frozenset({"ess"})
+_BOUNDARY_RE = {s: re.compile(r"(?<![a-z0-9])" + re.escape(s) + r"(?![a-z0-9])")
+                for s in _BOUNDARY_SURFACES}
+
+# surface 표기는 정의상 품목어 → 회사명으로 수집되면 안 됨(도치 파싱 행이
+# stocks 칸에 품목명을 흘리는 경우 방어 — '임플란트'·'소주' 실관측). 어떤
+# 실제 상장사명과도 일치하지 않아 정상 회사 탈락 위험 0(2026-06-19 검증).
+_ALIAS_SURFACES = frozenset(s for _, surfaces in _ALIAS_GROUPS for s in surfaces)
+_NON_COMPANY = frozenset({"소주"}) | _ALIAS_SURFACES
+
+
+def _surface_hit(term: str, item: str) -> bool:
+    """surface term 이 알림 item(공백제거·소문자)에 매칭되는지. 영문 경계
+    surface(ess)는 영단어 내부 오매칭 차단, 그 외 substring. 순수."""
+    bre = _BOUNDARY_RE.get(term)
+    return bool(bre.search(item)) if bre else term in item
+
+
 def channel_companies_for(name: str, pairs: list[tuple[str, list[str]]]) -> list[str]:
     """품목명 ⊂ 알림 item 텍스트 조인 → 종목 합집합 (순서 보존 dedupe,
     캡 8). 2자 키는 _CH_SHORT_OK 화이트리스트만(짧은 키 부분일치 함정),
-    1자/일반어 제외. 품목명과 같은 토큰 제외 (채널의 item/종목 도치 행
-    방어). 순수 함수 — 단위테스트."""
+    1자/일반어 제외. 품목명과 같은 토큰·품목어 누수(_NON_COMPANY) 제외
+    (채널의 item/종목 도치 행 방어). 언어적 별칭(_ALIAS_GROUPS)으로 영문
+    약어·표기 변형 알림도 매칭(사용자 2026-06-19). 순수 함수 — 단위테스트."""
     key = (name or "").replace(" ", "").lower()
     if (not key or len(key) < 2 or key in ("기타", "부품", "모듈")
             or (len(key) == 2 and key not in _CH_SHORT_OK)
             or any(d in key for d in _DENY)):
         return []
+    terms = [key]
+    for marker, surfaces in _ALIAS_GROUPS:
+        if marker in key:
+            terms.extend(surfaces)
     seen: set[str] = set()
     out: list[str] = []
     for item, stocks in pairs:
-        if key not in item:
+        if not any(_surface_hit(t, item) for t in terms):
             continue
         for s in stocks:
             k = s.replace(" ", "").lower()
-            if k != key and k not in seen:
-                seen.add(k)
-                out.append(s)
+            if k == key or k in _NON_COMPANY or k in seen:
+                continue
+            seen.add(k)
+            out.append(s)
     return out[:8]
