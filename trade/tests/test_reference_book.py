@@ -137,6 +137,24 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         self.assertEqual(R.unmatched_candidates(self._ROWS,
                                                 db_path=Path("/no/such.db")), [])
 
+    def test_space_joined_companies_split(self):
+        """BeOn 1-space 결합 토큰('나노신소재 제이오')을 split_names 로 쪼개 surfaced
+        대조 — _clean_stocks 가 쉼표만 쪼개 결합 토큰이 영구 미매칭으로 남던 것 해소
+        (사용자 2026-06-20 '미매칭 왜 계속 안없어져')."""
+        rows = [{"mti6": "1", "name": "탄소", "industry": "화학", "hs": [],
+                 "companies": ["나노신소재", "제이오"]}]   # 둘 다 surfaced(개별)
+        with tempfile.TemporaryDirectory() as td:
+            db = self._db(td, [
+                ("CNT 도전재", ["나노신소재 제이오"]),     # 결합 → split → 둘 다 surfaced
+                ("진짜미매칭", ["듣보종목 또다른듣보"]),    # 결합이나 둘 다 미surfaced → 유지
+            ])
+            cands = R.unmatched_candidates(rows, db_path=db)
+        items = [c[0] for c in cands]
+        self.assertNotIn("CNT 도전재", items)            # 결합 토큰 분리로 해소
+        self.assertIn("진짜미매칭", items)               # 진짜 미등록은 유지
+        real = next(c for c in cands if c[0] == "진짜미매칭")
+        self.assertEqual(real[1], ["듣보종목", "또다른듣보"])   # 분리 표시
+
     def test_typo_company_not_flagged_unmatched(self):
         """알림 원문 회사명 오타는 canon 교정 후 surfaced 대조 → 미매칭 오노출
         안 됨 (사용자 2026-06-19 '업데이트했는데 숫자가 안 준다'). surfaced 의
