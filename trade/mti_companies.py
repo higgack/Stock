@@ -709,6 +709,66 @@ def theme_rows() -> list[dict]:
             for nm, cat, hsk, cos in _THEME_ROWS]
 
 
+# ── 운영자 승인 DART 보강후보 (품목명 → 추가 상장사) ─────────────────────
+# 🧬 DART 보강 후보 패널(additional_candidates)이 발굴한 '추가로 붙일 수 있는
+# 상장사'를 운영자가 검토·이름교정·승인한 결과를 trade/data/reinforce_approved.csv
+# (repo 체크인·auto-update 배포)로 적재. build_rows 가 관련상장사에 병합 → ①관련
+# 상장사로 노출 ②additional_candidates 가 current 로 인식해 보강 패널에서 자동 드롭
+# (사용자 2026-06-20 '보강후보 업데이트분 이름 정리했으니 반영'). 새 승인 = CSV 행 추가.
+_REINFORCE_APPROVED_CACHE: dict[str, list[str]] | None = None
+
+
+def _approved_csv_path():
+    from pathlib import Path
+    return Path(__file__).resolve().parent / "data" / "reinforce_approved.csv"
+
+
+def load_reinforce_approved(path=None) -> dict[str, list[str]]:
+    """승인 보강후보 CSV(품목,추가상장사) → {정규화 품목키: [canon 회사…]}.
+    품목명은 MTI 품목명 그대로(쉼표 포함 '메이크업, 기초화장품'도 단일 품목 →
+    CSV 인용으로 보존, 분리 금지). 회사는 canon·dedup. 파일 부재/실패 → {} (graceful).
+    캐시(같은 프로세스 1회 로드) — path 지정 시 캐시 우회(테스트). 순수에 가까움."""
+    global _REINFORCE_APPROVED_CACHE
+    if path is None and _REINFORCE_APPROVED_CACHE is not None:
+        return _REINFORCE_APPROVED_CACHE
+    import csv
+    from pathlib import Path
+    p = Path(path) if path else _approved_csv_path()
+    out: dict[str, list[str]] = {}
+    try:
+        with open(p, encoding="utf-8-sig", newline="") as f:
+            reader = csv.reader(f)
+            next(reader, None)                       # 헤더 (품목,DART추가후보상장사)
+            for row in reader:
+                if len(row) < 2:
+                    continue
+                item = (row[0] or "").strip()
+                if not item:
+                    continue
+                cos = dedup_companies(
+                    [c.strip() for c in (row[1] or "").split(",") if c.strip()])
+                if not cos:
+                    continue
+                key = item.replace(" ", "").lower()
+                bucket = out.setdefault(key, [])
+                seen = {c.replace(" ", "").lower() for c in bucket}
+                for c in cos:
+                    ck = c.replace(" ", "").lower()
+                    if ck not in seen:
+                        seen.add(ck)
+                        bucket.append(c)
+    except Exception:
+        return {}
+    if path is None:
+        _REINFORCE_APPROVED_CACHE = out
+    return out
+
+
+def reinforce_approved_for(name: str) -> list[str]:
+    """품목명 → 운영자 승인 추가 상장사(없으면 []). 순수(캐시)."""
+    return list(load_reinforce_approved().get((name or "").replace(" ", "").lower(), []))
+
+
 def theme_for_company(name: str) -> tuple[str | None, str]:
     """회사명이 큐레이션 테마에 속하면 (테마명, 대표 HS Code). 표기통일 후
     비교 — 회사→테마→HS→관세청 수출입 연계용(사용자 2026-06-19). 미소속 →

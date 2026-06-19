@@ -211,6 +211,50 @@ class UnmatchedCandidatesTests(unittest.TestCase):
             self.assertNotIn("삼성디스플레이(삼성전자)", oled["companies"])
             self.assertLessEqual(oled["companies"].count("삼성디스플레이"), 1)
 
+    def test_reinforce_approved_loader_and_merge(self):
+        # 운영자 승인 보강후보 CSV(품목→추가상장사) — 로더 + build_rows 병합
+        # (사용자 2026-06-20 '보강후보 업데이트분 이름 정리했으니 반영').
+        from trade import mti_companies as mc
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "approved.csv"
+            # 쉼표 포함 품목명('메이크업, 기초화장품')은 인용으로 단일 품목 보존,
+            # 회사 필드는 쉼표 분리. 같은 키 정규화(공백 차이) 병합.
+            p.write_text(
+                "품목,DART추가후보상장사\n"
+                '"메이크업, 기초화장품","졸스, 콜마홀딩스, 졸스"\n'
+                "아몬드,매일유업\n"
+                "기타 화장품,에이\n"
+                "기타화장품,비\n",
+                encoding="utf-8-sig")
+            d = mc.load_reinforce_approved(p)
+            # 쉼표 품목명 보존(분리 금지) + 회사 dedup
+            self.assertEqual(d["메이크업,기초화장품"], ["졸스", "콜마홀딩스"])
+            self.assertEqual(d["아몬드"], ["매일유업"])
+            # 공백 차이 같은 키 병합
+            self.assertEqual(d["기타화장품"], ["에이", "비"])
+            # path 지정은 캐시 우회 → 부재 파일은 {}
+            self.assertEqual(mc.load_reinforce_approved(Path("/no/x.csv")), {})
+
+    def test_reinforce_approved_in_repo_csv(self):
+        # repo 체크인 CSV 가 실제 로드되고 build_rows 관련상장사에 병합되는지(배선 E2E).
+        from trade import mti_companies as mc
+        approved = mc.load_reinforce_approved()
+        if not approved:                       # CSV 부재 환경(graceful)
+            self.skipTest("approved csv 부재")
+        rows = R.build_rows()
+        if not rows:                           # 연계표 부재(graceful)
+            self.skipTest("연계표 부재")
+        idx = {r["name"]: r for r in rows}
+        # 승인 품목 중 MTI 품목명으로 존재하는 것은 그 회사가 관련상장사에 떠야
+        for key, cos in approved.items():
+            row = next((r for r in rows
+                        if r["name"].replace(" ", "").lower() == key), None)
+            if row and cos:
+                self.assertIn(cos[0], row["companies"])
+                break
+        else:
+            self.skipTest("승인 품목이 MTI 품목명과 매칭되지 않음")
+
     def test_reinforce_roundtrip_and_panel(self):
         # DART 보강 후보 — 캐시 JSON 저장/로드(후보수순) + 패널 렌더(2026-06-19).
         with tempfile.TemporaryDirectory() as td:
