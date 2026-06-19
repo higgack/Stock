@@ -681,6 +681,17 @@ class TestBatch20260615(unittest.TestCase):
         # 로 표를 최신(우측)으로 (사용자 2026-06-19 '스크롤 오른쪽 디폴트'). 회귀 가드.
         self.assertIn("if(!d.hidden&&window._scrollRaw)window._scrollRaw(d)", src)
 
+    def test_mti_detail_comment_left_chart_right(self):
+        # 펼침 품목 상세 = 코멘트(좌) · 차트(우 세로) 2단 (사용자 2026-06-19). 위
+        # .ind-sub-wrap .ind-row 1단 스택을 .ind-mti-d 에 한해 2단으로 override +
+        # 코멘트 nowrap 해제(반폭 셀 품목명 클리핑 회귀 방지). 회귀 가드.
+        src = Path("trade/dashboard.py").read_text(encoding="utf-8")
+        self.assertIn(".ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:"
+                      "minmax(0,0.82fr) minmax(0,1.18fr)}", src)
+        self.assertIn(".ind-sub-wrap .ind-mti-d .ind-row>.ind-meta{grid-column:1;"
+                      "grid-row:1/span 2}", src)
+        self.assertIn(".ind-sub-wrap .ind-mti-d>td{white-space:normal}", src)
+
     def test_backfill_cap_default_5000(self):
         src = Path("trade/scripts/backfill_beon.py").read_text(encoding="utf-8")
         self.assertIn('TRADE_MAX_CANDIDATES") or "5000"', src)
