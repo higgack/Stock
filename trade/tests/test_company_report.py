@@ -248,6 +248,24 @@ class ItemModeTests(unittest.TestCase):
         exp = C._company_exposure("티씨케이", by_mti, [], {}, [])
         self.assertIn("반도체제조용장비부품", [x["item"] for x in exp])
 
+    def test_theme_hs_camera_and_hs_list(self):
+        # ② 카메라모듈 → 8517.79(스마트폰부품 MTI 812820). HS 필드 단일/복수 정규화.
+        from trade import mti_companies as mc
+        # ② 카메라모듈 HS = 8517.79 (8529.90 아님) → 스마트폰부품 직결
+        self.assertEqual(mc.theme_for_company("액트로")[1], "8517.79-1020")
+        self.assertIn("812820", C._hs6_to_mti6("8517.79"))   # 스마트폰부품 직결 검증
+        cam = [r for r in mc.theme_rows() if "카메라" in r["name"]][0]
+        self.assertEqual(cam["hs"], ["8517.79-1020"])
+        # 건기식은 단일 2106.90 유지(1211 과잉부착 역효과로 환원, 2026-06-19)
+        self.assertEqual(mc.theme_for_company("노바렉스")[1], "2106.90-9099")
+        geon = [r for r in mc.theme_rows() if "건강기능식품" in r["name"]][0]
+        self.assertEqual(geon["hs"], ["2106.90-9099"])
+        # _hs_list: 단일 str / 복수 tuple / 빈값 정규화(복수코드 구조 회귀 가드)
+        self.assertEqual(mc._hs_list("8517.79-1020"), ["8517.79-1020"])
+        self.assertEqual(mc._hs_list(("a", "b")), ["a", "b"])
+        self.assertEqual(mc._hs_list(""), [])
+        self.assertEqual(mc._hs_list(None), [])
+
     def test_render_free_item(self):
         data = {"mode": "item", "query": "반도체", "name": "반도체",
                 "items": [{"item": "디램", "industry": "반도체",
