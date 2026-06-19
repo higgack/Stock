@@ -181,7 +181,7 @@ class RenderTests(unittest.TestCase):
         self.assertNotIn("background:#1c1f26", h)       # 옛 KPI 다크배경 제거
         self.assertIn("(YoY ", h)
         self.assertIn("(MoM ", h)                                # MoM 도 포함
-        self.assertLess(h.index("(YoY "), h.index("(MoM "))      # YoY 앞
+        self.assertLess(h.index("(MoM "), h.index("(YoY "))      # MoM 앞 (사용자 2026-06-19 순서변경)
 
     def test_render_free_no_provisional(self):
         # 잠정 없으면 선행 섹션 미표시(확정 보고서 정상)
