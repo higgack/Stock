@@ -74,6 +74,22 @@ def compose(cands: list[tuple[str, str, float]],
     return "\n".join(lines)
 
 
+def compose_reinforce(reinforce: dict, top: int = 12) -> str | None:
+    """보강 후보 → 텔레그램 HTML 요약(후보수 상위 top 품목). 0이면 None(무음).
+    전체 목록은 레퍼런스북 '🧬 DART 보강 후보' 패널. 순수."""
+    if not reinforce:
+        return None
+    items = sorted(reinforce.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    total = sum(len(v) for v in reinforce.values())
+    lines = [f"🧬 <b>DART 보강 후보 {total}건</b> ({len(reinforce)}품목, 상위 {min(top,len(items))})",
+             "이미 매핑된 품목에도 DART 매출구성상 <b>추가로 붙일 수 있는</b> 상장사. "
+             "검토 후 승인 추가. 전체는 레퍼런스북 🧬 패널.", ""]
+    for name, cos in items[:top]:
+        lines.append(f"• <b>{name}</b> — {', '.join(cos[:6])}"
+                     + (f" 외 {len(cos)-6}" if len(cos) > 6 else ""))
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     p = argparse.ArgumentParser(description="큐레이션 후보 알림 (미매핑 고수출 품목)")
@@ -91,27 +107,44 @@ def main(argv: list[str] | None = None) -> int:
     pairs = mti_companies.load_channel_pairs()
     cands = find_candidates(by_mti, pairs, top=args.top,
                             min_usd=args.min_eok * 1e8)
-    # G2 (사용자 2026-06-17): DART 매출구성 인벤토리로 미매핑 품목의 회사 후보 추천.
-    suggestions: dict = {}
+    # DART 매출구성 인벤토리(G1) 1회 로드 — G2(미매핑 추천) + 보강(추가 발굴) 공용.
+    inv: dict = {}
     try:
         from trade import dart_match, dart_revenue
         inv = dart_revenue.load_inventory()
-        if inv:
-            suggestions = dart_match.suggest_companies_for_items(
-                inv, [c[0] for c in cands])
     except Exception as exc:
-        log.warning("curation: DART 추천 skip: %s", exc)
+        log.warning("curation: DART 인벤토리 skip: %s", exc)
+    # G2 (사용자 2026-06-17): 미매핑 품목의 회사 후보 추천.
+    suggestions = (dart_match.suggest_companies_for_items(inv, [c[0] for c in cands])
+                   if inv else {})
+    # 보강 후보 (사용자 2026-06-19): 이미 매핑된 품목 포함 **전 품목**에 DART 매출구성상
+    # 추가 상장사 발굴 → 레퍼런스북 '🧬 DART 보강 후보' 패널이 읽는 JSON 으로 적재.
+    reinforce: dict = {}
+    if inv:
+        try:
+            from trade import reference_book
+            item_current = {
+                r["name"]: {mti_companies.canon_company(c).replace(" ", "").lower()
+                            for c in (r.get("companies") or [])}
+                for r in reference_book.build_rows()}
+            reinforce = dart_match.additional_candidates(inv, item_current)
+            reference_book.save_reinforce(reinforce)
+            log.info("curation: 보강 후보 %d품목 적재", len(reinforce))
+        except Exception as exc:
+            log.warning("curation: 보강 skip: %s", exc)
     body = compose(cands, suggestions)
-    if body is None:
-        log.info("curation: 미매핑 고수출 품목 0 — 무음")
+    rf_note = compose_reinforce(reinforce)
+    if body is None and rf_note is None:
+        log.info("curation: 후보 없음 — 무음")
         return 0
+    full = "\n\n".join(x for x in (body, rf_note) if x)
     if args.dry_run:
-        print(body)
+        print(full)
         return 0
     from trade.scripts.scan_customs import _send_alert
-    ok = _send_alert(body)
-    log.info("curation: %d candidates %s", len(cands),
-             "sent" if ok else "send failed")
+    ok = _send_alert(full)
+    log.info("curation: %d unmapped + %d reinforce %s",
+             len(cands), len(reinforce), "sent" if ok else "send failed")
     return 0 if ok else 1
 
 

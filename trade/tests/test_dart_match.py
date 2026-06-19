@@ -38,6 +38,19 @@ class MatchTests(unittest.TestCase):
         self.assertIn("삼성전자", sug.get("텔레비전", []))   # TV→텔레비전 별칭
         self.assertNotIn("라면", sug)                        # 매칭 회사 없음
 
+    def test_additional_candidates_excludes_current(self):
+        # 각 품목에 더 많은 상장사 발굴 — 현재 큐레이션에 없는 DART 회사만(2026-06-19).
+        inv = {
+            "005930": {"company": "삼성전자", "products": [{"name": "DRAM"}]},
+            "000660": {"company": "SK하이닉스", "products": [{"name": "DRAM"}]},
+        }
+        # 디램에 삼성전자만 이미 매핑(정규화 set) → SK하이닉스만 추가 후보로
+        add = M.additional_candidates(inv, {"디램": {"삼성전자"}})
+        self.assertEqual(add.get("디램"), ["SK하이닉스"])
+        # 전부 이미 매핑이면 후보 없음
+        self.assertEqual(
+            M.additional_candidates(inv, {"디램": {"삼성전자", "sk하이닉스"}}), {})
+
 
 if __name__ == "__main__":
     unittest.main()

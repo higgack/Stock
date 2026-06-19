@@ -92,3 +92,27 @@ def suggest_companies_for_items(inventory: dict, item_names: list) -> dict:
             if company not in lst:
                 lst.append(company)
     return out
+
+
+def additional_candidates(inventory: dict, item_current: dict) -> dict:
+    """{품목명: 현재 관련사(정규화 set)} + G1 인벤토리 → {품목명: [DART 매출구성상
+    추가 후보 회사…]} — **현재 목록에 없는 회사만**. 미매핑뿐 아니라 **이미 매핑된
+    품목도 포함**해 각 품목에 더 많은 상장사를 발굴(운영자 2026-06-19 'DART로 더 많이
+    붙여'). canon_company 로 표기변형·오타 통일 후 비교(중복 후보 방지). operator
+    승인 전 후보 — 자동 큐레이션 아님(오매핑이 신뢰를 깎으므로). 순수."""
+    from trade import mti_companies
+    canon = mti_companies.canon_company
+    sugg = suggest_companies_for_items(inventory, list(item_current.keys()))
+    out: dict[str, list] = {}
+    for item, cos in sugg.items():
+        cur = item_current.get(item) or set()
+        seen = set(cur)
+        new: list[str] = []
+        for c in cos:
+            k = canon(c).replace(" ", "").lower()
+            if k and k not in seen:
+                seen.add(k)
+                new.append(c)
+        if new:
+            out[item] = new
+    return out

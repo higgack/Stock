@@ -19,6 +19,33 @@ from pathlib import Path
 _KST = timezone(timedelta(hours=9))
 _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 PAGE = _DATA_DIR / "dashboard" / "reference.html"
+# DART 보강 후보 캐시 — curation_candidates(타이머)가 계산·기록, 레퍼런스북 렌더가 읽음
+# (전 품목×전 상장사 매칭은 무거우므로 렌더에서 매번 돌리지 않고 캐시 read).
+REINFORCE_JSON = _DATA_DIR / "dart_reinforce_candidates.json"
+
+
+def save_reinforce(data: dict, path: Path | None = None) -> None:
+    """{품목명: [추가 후보 회사…]} → JSON. curation_candidates 가 호출. best-effort."""
+    import json
+    p = path or REINFORCE_JSON
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def load_reinforce(path: Path | None = None) -> list[tuple[str, list[str]]]:
+    """캐시 JSON → [(품목명, [추가 후보 회사…])] (후보수 내림차순). 부재/실패 → []."""
+    import json
+    p = path or REINFORCE_JSON
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    items = [(k, list(v)) for k, v in d.items() if v]
+    items.sort(key=lambda kv: (-len(kv[1]), kv[0]))
+    return items
 
 
 def build_rows() -> list[dict]:
@@ -151,6 +178,10 @@ body.dark .co{color:#e6edf3}body.dark .co .x{background:#21262d;border-color:#3a
 .umi{color:#1f2328}.umc{color:#1f2328}.umn{text-align:right;color:#656d76;font-variant-numeric:tabular-nums}
 body.dark .um{background:#1c1808;border-color:#3a3417}body.dark .um>summary{color:#e3b341}
 body.dark .umt thead th{border-color:#4a3f17}body.dark .umi,body.dark .umc{color:#e6edf3}
+.rf{background:#eef4ff;border-color:#bcd2f7}.rf>summary{color:#1f5fbf}
+.rf .umt thead th{border-bottom-color:#bcd2f7}
+body.dark .rf{background:#0e1726;border-color:#1f3354}body.dark .rf>summary{color:#6cb6ff}
+body.dark .rf .umt thead th{border-color:#1f3354}
 """
 
 _JS = """
@@ -220,8 +251,34 @@ def _render_unmatched(unmatched: list[tuple[str, list[str], int]] | None) -> str
         f"<tbody>{''.join(body)}</tbody></table></details>")
 
 
+def _render_reinforce(reinforce: list[tuple[str, list[str]]] | None) -> str:
+    """DART 매출구성 보강 후보 패널 — 각 품목에 '현재 큐레이션엔 없지만 DART 상
+    그 제품을 만드는' 상장사 후보(후보수순, 접이식). 더 많은 상장사 발굴(운영자
+    2026-06-19). 승인 전 후보(자동 큐레이션 아님). 비면 ''. 순수."""
+    if not reinforce:
+        return ""
+    e = _html.escape
+    total = sum(len(c) for _, c in reinforce)
+    body = []
+    for item, cos in reinforce:
+        body.append(
+            f'<tr><td class="umi">{e(item)}</td>'
+            f'<td class="umc">{e(", ".join(cos))}</td>'
+            f'<td class="umn">{len(cos)}</td></tr>')
+    return (
+        f"<details class='um rf'><summary>🧬 DART 보강 후보 "
+        f"<b>{total}</b>건 ({len(reinforce)}품목) — 추가 상장사 후보</summary>"
+        "<p class='umnote'>각 품목에 <b>현재 큐레이션엔 없지만 DART 매출구성상 그 "
+        "제품을 만드는</b> 상장사 후보. 더 많은 상장사 발굴용 — 검토 후 승인 추가. "
+        "(보수적 규칙 매칭 · 자동 큐레이션 아님)</p>"
+        "<table class='umt'><thead><tr><th>품목</th>"
+        "<th>DART 추가 후보 상장사</th><th>수</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table></details>")
+
+
 def render_page(rows: list[dict], *, now: datetime | None = None,
-                unmatched: list[tuple[str, list[str], int]] | None = None) -> str:
+                unmatched: list[tuple[str, list[str], int]] | None = None,
+                reinforce: list[tuple[str, list[str]]] | None = None) -> str:
     """검색 가능한 자체완결 HTML. 순수."""
     from trade.archive_template import SCROLL_RESTORE_JS  # 뒤로가기 스크롤 복원(공용)
     from trade import mti_companies as _mc                # 검색 동의어(PCB→인쇄회로)
@@ -271,6 +328,7 @@ def render_page(rows: list[dict], *, now: datetime | None = None,
         f"{chips}</div>"
         "<p id='cnt' class='cnt'></p>"
         f"{_render_unmatched(unmatched)}"
+        f"{_render_reinforce(reinforce)}"
         "<table id='tbl'><thead><tr><th>품목 (MTI)</th><th>산업</th>"
         "<th>구성 HS10 코드</th><th>관련 상장사</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
@@ -284,7 +342,11 @@ def regenerate(out_path: Path | None = None) -> Path:
         unmatched = unmatched_candidates(rows)
     except Exception:
         unmatched = []
-    html = render_page(rows, unmatched=unmatched)
+    try:
+        reinforce = load_reinforce()          # curation 타이머가 적재한 캐시(없으면 [])
+    except Exception:
+        reinforce = []
+    html = render_page(rows, unmatched=unmatched, reinforce=reinforce)
     out = out_path or PAGE
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")

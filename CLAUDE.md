@@ -1260,6 +1260,27 @@ HS 어느 쪽으로 검색해도 같은 수출입 숫자로 수렴). 핵심:
   무수불산·ECH·포토레지스트·챔버부품·평판디스플레이·광섬유·태양광셀·SEM·SEM부품·
   EDS·이온빔·봉합바늘·캐뉼러·의료기기부분품·줄자·절삭공구·담배). 회사명은 운영자
   확인 표기 그대로(DATA INTEGRITY) — '+' 파편화 복합행은 메인장비 테마로 그룹핑.
+- **기준표 = 공식 2026 무협 연계표와 100% 일치 검증 (2026-06-19)**: `trade/data/
+  hsk_mti.tsv` 를 운영자 제공 `2026_MTIHSK_..vFF_260507.xlsx`(HSK-MTI 연계표 11,327행
+  + MTI코드표 1,294 6단위 품목명)와 행 단위 대조 → HSK/MTI6/산업/품목명 **불일치 0**.
+  2026 대규모 개편(반도체·일반기계·이차전지·디스플레이·바이오헬스·철강 코드개편, 연계표
+  2,288행 재매핑·MTI 신규290/변경106/삭제251)도 이미 신코드로 반영(구코드 잔존 0).
+  테마 74개 HS·핀 5개 전부 공식표에서 해석됨. tsv 갱신 시 이 vFF 파일이 원천.
+- **품목별 정밀화 (2026-06-19 운영자 검토)**: ①CNT 도전재 = 파우더(2803.00→228900)
+  +슬러리(3824.99) 둘 다 — 단 3824.99 는 농약원제/전해액 분산이라 `_THEME_MTI_PIN`
+  으로 228900+290090(기타화학)만 핀. ②평판디스플레이 = 8524.11(LCD,837110) 아닌
+  **8524.12(OLED,837120)** — 삼성디스플레이 TV LCD 철수·QD-OLED 집중.
+- **DART 매출구성 보강 후보 = 각 품목에 추가 상장사 발굴 (2026-06-19 '더 많이 붙여')**:
+  `dart_match.additional_candidates(inv, item_current)` = G2 `suggest_companies_for_
+  items` 를 **전 품목**(미매핑뿐 아니라 이미 매핑된 것 포함)에 돌려 **현재 큐레이션에
+  없는** DART 매출구성 매칭 회사만 추림(canon 으로 표기변형 통일). `curation_candidates`
+  타이머(1·11·15·21일)가 계산 → `~/.trade/dart_reinforce_candidates.json` 적재 +
+  텔레그램 DM 요약(`compose_reinforce`, 상위 12). `reference_book` 가 그 JSON 읽어
+  '🧬 DART 보강 후보' 패널(파랑, 접이식 — 미매칭 노랑과 색구분) 렌더(렌더는 캐시 read
+  만, 전품목×전상장사 매칭은 무거워 타이머에서만). **승인 전 후보**(자동 큐레이션 X —
+  오매핑이 신뢰 깎음). 즉시 채우려면 VM 에서 `python -m trade.scripts.curation_
+  candidates --dry-run`(출력만) 또는 무옵션(DM+JSON). 회귀: `test_dart_match::test_
+  additional_candidates_excludes_current` + `test_reference_book::test_reinforce_*`.
 
 ## Multi-market expansion (US → KR → JP → TW → CN)
 

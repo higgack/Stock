@@ -178,6 +178,20 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         # 비면 패널 자체가 안 나옴
         self.assertNotIn("미매칭 알림 후보", R.render_page(self._ROWS))
 
+    def test_reinforce_roundtrip_and_panel(self):
+        # DART 보강 후보 — 캐시 JSON 저장/로드(후보수순) + 패널 렌더(2026-06-19).
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "rf.json"
+            R.save_reinforce({"디램": ["A"], "낸드": ["B", "C", "D"]}, p)
+            loaded = R.load_reinforce(p)
+            self.assertEqual(loaded[0][0], "낸드")           # 후보 많은 것 먼저
+            h = R.render_page(self._ROWS, reinforce=loaded)
+            self.assertIn("DART 보강 후보", h)
+            self.assertIn("낸드", h)
+            # 비면 패널 없음
+            self.assertNotIn("DART 보강 후보", R.render_page(self._ROWS))
+            self.assertEqual(R.load_reinforce(Path("/no/such.json")), [])
+
 
 if __name__ == "__main__":
     unittest.main()
