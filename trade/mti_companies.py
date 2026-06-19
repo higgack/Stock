@@ -204,9 +204,18 @@ def _store_db_path():
 
 
 def load_channel_pairs(db_path=None) -> list[tuple[str, list[str]]]:
-    """store.db alerts → [(정규화 item 텍스트, 종목 리스트)] 1회 로드.
+    """store.db alerts → [(정규화 item 텍스트, 종목 리스트)] 1회 로드
+    (매칭용 — 공백제거·소문자). DB 부재/실패 → [] (graceful)."""
+    return [(item.replace(" ", "").lower(), toks)
+            for item, toks in _load_alerts(db_path)]
+
+
+def _load_alerts(db_path=None) -> list[tuple[str, list[str]]]:
+    """store.db alerts → [(원본 item 텍스트, 종목 리스트)] 공용 로더.
     DB 부재/실패 → [] (graceful — 채널 라인만 생략). 비상장 메타 토큰
-    제외 ('파미=비상장' 류 stocks_meta)."""
+    제외 ('파미=비상장' 류 stocks_meta), 14자 초과 토큰 제외. 원본 item
+    보존 — 매칭(load_channel_pairs)·미매칭 후보 표시(unmatched_candidates)
+    공용."""
     import json as _json
     import sqlite3
     from pathlib import Path
@@ -231,7 +240,7 @@ def load_channel_pairs(db_path=None) -> list[tuple[str, list[str]]]:
                         if s and len(s) <= 14
                         and "비상장" not in str(meta.get(s, ""))]
                 if toks:
-                    out.append((str(item).replace(" ", "").lower(), toks))
+                    out.append((str(item), toks))
         finally:
             conn.close()
     except Exception:
@@ -298,6 +307,14 @@ def _surface_hit(term: str, item: str) -> bool:
     return bool(bre.search(item)) if bre else term in item
 
 
+def _channel_key_ok(key: str) -> bool:
+    """채널 매칭 키 게이트 — 빈 키·1자·일반어·짧은 키 함정·_DENY 차단.
+    2자 키는 _CH_SHORT_OK 화이트리스트만 허용. 순수."""
+    return not (not key or len(key) < 2 or key in ("기타", "부품", "모듈")
+                or (len(key) == 2 and key not in _CH_SHORT_OK)
+                or any(d in key for d in _DENY))
+
+
 def channel_companies_for(name: str, pairs: list[tuple[str, list[str]]]) -> list[str]:
     """품목명 ⊂ 알림 item 텍스트 조인 → 종목 합집합 (순서 보존 dedupe,
     캡 8). 2자 키는 _CH_SHORT_OK 화이트리스트만(짧은 키 부분일치 함정),
@@ -305,9 +322,7 @@ def channel_companies_for(name: str, pairs: list[tuple[str, list[str]]]) -> list
     (채널의 item/종목 도치 행 방어). 언어적 별칭(_ALIAS_GROUPS)으로 영문
     약어·표기 변형 알림도 매칭(사용자 2026-06-19). 순수 함수 — 단위테스트."""
     key = (name or "").replace(" ", "").lower()
-    if (not key or len(key) < 2 or key in ("기타", "부품", "모듈")
-            or (len(key) == 2 and key not in _CH_SHORT_OK)
-            or any(d in key for d in _DENY)):
+    if not _channel_key_ok(key):
         return []
     terms = [key]
     for marker, surfaces in _ALIAS_GROUPS:

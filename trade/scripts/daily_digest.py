@@ -5,6 +5,8 @@
   📦 관세청: 스윕 n회 · 데이터 갱신 m회 · 신규 급증 k건 (run_ledger)
   ❌ 오류: probe/스캔 실패·부분 스캔 횟수 (있을 때만)
   ⛔ 시스템: BeOn 리스너 비활성 / 대시보드 렌더 정체 (지금 상태 점검)
+  🔍 신규 미매칭 품목 후보: 레퍼런스북 어디에도 안 붙는 새 알림 회사
+     (별칭 추가 대상 — seen-set 으로 신규분만, 사용자 2026-06-19)
 
 **활동·오류가 전혀 없으면 무음** — '실제 작동하는 날에만' (사용자 정책).
 unstored_check(00:00, 유실 감지)와 별개·보완: 그쪽은 '잃은 것', 이쪽은
@@ -15,6 +17,8 @@ unstored_check(00:00, 유실 감지)와 별개·보완: 그쪽은 '잃은 것', 
 from __future__ import annotations
 
 import argparse
+import html as _html
+import json
 import logging
 import os
 import subprocess
@@ -35,6 +39,7 @@ _DATA_DIR = Path(os.environ.get("TRADE_DATA_DIR") or Path.home() / ".trade")
 
 
 _STORE_PATH = _DATA_DIR / "store.db"
+_UNMATCHED_SEEN = _DATA_DIR / "unmatched_seen.json"
 
 
 def _kst_date_of(ts: str) -> str:
@@ -91,9 +96,41 @@ def _dashboard_stale_min() -> int | None:
         return None
 
 
+def _new_unmatched() -> list[str]:
+    """현재 미매칭 후보(회사는 있으나 어떤 품목·별칭에도 안 붙는 알림)
+    중 '이전에 보고 안 한' 신규 item 만 반환(별칭 추가 검토용). 영구
+    seen-set 으로 중복 차단(실수 #9 — 재시작마다 재발송 금지). 첫 실행은
+    전량 seed 후 무보고(기존 백로그는 레퍼런스북 패널에서 확인). 실패→[]."""
+    try:
+        from trade import reference_book
+        cands = reference_book.unmatched_candidates(
+            reference_book.build_rows(), limit=500)   # seen-set 포괄(표시는 80)
+    except Exception as exc:
+        log.warning("unmatched scan failed: %s", exc)
+        return []
+    cur = {item.replace(" ", "").lower(): item for item, _cos, _n in cands}
+    first_run = not _UNMATCHED_SEEN.exists()
+    seen: set[str] = set()
+    if not first_run:
+        try:
+            seen = set(json.loads(_UNMATCHED_SEEN.read_text(encoding="utf-8")))
+        except Exception:
+            seen = set()
+    new = [disp for norm, disp in cur.items() if norm not in seen]
+    try:
+        _UNMATCHED_SEEN.parent.mkdir(parents=True, exist_ok=True)
+        _UNMATCHED_SEEN.write_text(
+            json.dumps(sorted(seen | set(cur)), ensure_ascii=False),
+            encoding="utf-8")
+    except Exception:
+        pass
+    return [] if first_run else new
+
+
 def compose(date_key: str, fwd: int, counts: dict,
-            listener_down: bool, stale_min: int | None) -> str | None:
-    """결산 본문 — 활동·오류 전무면 None(무음). 순수(단위테스트)."""
+            listener_down: bool, stale_min: int | None,
+            new_unmatched: list[str] | None = None) -> str | None:
+    """결산 본문 — 활동·오류·신규후보 전무면 None(무음). 순수(단위테스트)."""
     mmdd = date_key[5:].replace("-", "/")
     work: list[str] = []
     if fwd:
@@ -118,13 +155,21 @@ def compose(date_key: str, fwd: int, counts: dict,
         sys_warn.append("⛔ BeOn 리스너 비활성 — 포워드 중단 상태")
     if stale_min is not None and stale_min > 30:
         sys_warn.append(f"⛔ 대시보드 렌더 정체 — index.html {stale_min}분 미갱신")
-    if not work and not errs and not sys_warn:
-        return None   # 실제 작동/이상 없는 날 — 무음
+    new_um = new_unmatched or []
+    if not work and not errs and not sys_warn and not new_um:
+        return None   # 실제 작동/이상/신규후보 없는 날 — 무음
     lines = [f"📊 <b>{mmdd} 결산</b>"]
-    lines += work or ["(작동 내역 없음)"]
+    lines += work
+    if not work and (errs or sys_warn):
+        lines.append("(작동 내역 없음)")
     if errs:
         lines.append("❌ 오류: " + " · ".join(errs))
     lines += sys_warn
+    if new_um:
+        shown = " · ".join(f"«{_html.escape(x)}»" for x in new_um[:8])
+        more = f" 외 {len(new_um) - 8}건" if len(new_um) > 8 else ""
+        lines.append(f"🔍 신규 미매칭 품목 후보 {len(new_um)}건 — 별칭 추가 "
+                     f"검토: {shown}{more} (레퍼런스북)")
     return "\n".join(lines)
 
 
@@ -145,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         run_ledger.day_counts(date_key),
         _listener_inactive(),
         _dashboard_stale_min(),
+        new_unmatched=_new_unmatched(),
     )
     if body is None:
         log.info("digest %s: 활동·이상 없음 — 무음", date_key)

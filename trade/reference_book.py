@@ -52,6 +52,40 @@ def build_rows() -> list[dict]:
     return rows
 
 
+def unmatched_candidates(rows: list[dict], db_path=None,
+                         limit: int = 80) -> list[tuple[str, list[str], int]]:
+    """레퍼런스북 어디에도 안 나타난 알림 회사 = '새 언어격차' 자동 발굴
+    (사용자 2026-06-19 '새 격차 생겼는지 어떻게 알아?'). 전체 행의 관련상장사
+    합집합(static ∪ channel ∪ 별칭)을 기준으로, 알림(store.db)의 종목 중
+    **어느 행에도 안 붙은 회사**를 가진 item 을 빈도순으로 반환
+    [(item 원문, [누락 회사…≤8], 빈도)]. 회사가 이미 노출된 item(라면 등
+    static 커버)은 제외 → 노이즈 최소. 품목어 누수(_NON_COMPANY)는 회사로
+    안 셈. 파일 읽기 외 순수 — graceful → []."""
+    from trade import mti_companies
+    surfaced = {c.replace(" ", "").lower()
+                for r in rows for c in (r.get("companies") or [])}
+    try:
+        alerts = mti_companies._load_alerts(db_path)
+    except Exception:
+        return []
+    agg: dict[str, list] = {}
+    for item, stocks in alerts:
+        missing = [s for s in stocks
+                   if s.replace(" ", "").lower() not in surfaced
+                   and s.replace(" ", "").lower() not in mti_companies._NON_COMPANY]
+        if not missing:
+            continue
+        norm = item.replace(" ", "").lower()
+        rec = agg.get(norm)
+        if rec is None:
+            agg[norm] = [item.strip(), dict.fromkeys(missing), 1]
+        else:
+            rec[1].update(dict.fromkeys(missing))
+            rec[2] += 1
+    ordered = sorted(agg.values(), key=lambda r: (-r[2], r[0]))
+    return [(disp, list(cos)[:8], n) for disp, cos, n in ordered][:limit]
+
+
 # 테마 = 대시보드와 동일 시간기반(KST 19-07 = body.dark). 라이트 기본 + body.dark 오버라이드
 # (사용자 2026-06-18 'light/black 시간에 맞게 안 변해' — 기존 prefers-color-scheme OS기반 폐기).
 _CSS = """
@@ -84,6 +118,13 @@ body.dark .sub,body.dark .cnt,body.dark .mti,body.dark .ind,body.dark .hs,body.d
 body.dark thead th{background:#161b22;color:#9aa0aa;border-color:#2a2e37}
 body.dark td{border-color:#1c222b}body.dark tr:hover td{background:#11161d}
 body.dark .co{color:#e6edf3}body.dark .co .x{background:#21262d;border-color:#3a414b;color:#e6edf3}
+.um{margin:4px 0 12px;border:1px solid #d0d7de;border-radius:8px;background:#fff8e6;padding:0}
+.um>summary{cursor:pointer;padding:9px 12px;font-size:13px;font-weight:600;color:#9a6700}
+.umnote{font-size:12px;color:#656d76;margin:0 12px 8px}
+.umt{font-size:12.5px}.umt thead th{position:static;background:transparent;border-bottom:1px solid #eaca7a}
+.umi{color:#1f2328}.umc{color:#1f2328}.umn{text-align:right;color:#656d76;font-variant-numeric:tabular-nums}
+body.dark .um{background:#1c1808;border-color:#3a3417}body.dark .um>summary{color:#e3b341}
+body.dark .umt thead th{border-color:#4a3f17}body.dark .umi,body.dark .umc{color:#e6edf3}
 """
 
 _JS = """
@@ -129,7 +170,32 @@ _JS = """
 """
 
 
-def render_page(rows: list[dict], *, now: datetime | None = None) -> str:
+def _render_unmatched(unmatched: list[tuple[str, list[str], int]] | None) -> str:
+    """미매칭 후보 패널 — 회사는 있으나 어떤 품목·별칭에도 안 붙은 알림
+    (빈도순, 접이식). 새 언어격차(별칭 추가 대상) 자동 노출. 비면 ''. 순수."""
+    if not unmatched:
+        return ""
+    e = _html.escape
+    body = []
+    for item, cos, n in unmatched:
+        co = ", ".join(cos)
+        body.append(
+            f'<tr><td class="umi">{e(item)}</td>'
+            f'<td class="umc">{e(co)}</td>'
+            f'<td class="umn">{n}</td></tr>')
+    return (
+        f"<details class='um'><summary>🔍 미매칭 알림 후보 "
+        f"<b>{len(unmatched)}</b>건 — 별칭 추가 대상</summary>"
+        "<p class='umnote'>회사는 있으나 어떤 품목·별칭에도 안 붙은 알림"
+        "(빈도순). 새 언어격차 발굴용 — 캡쳐 주시면 매칭을 추가합니다. "
+        "(자동 갱신 · 일일 결산에 신규분 통지)</p>"
+        "<table class='umt'><thead><tr><th>알림 품목 (원문)</th>"
+        "<th>회사</th><th>빈도</th></tr></thead>"
+        f"<tbody>{''.join(body)}</tbody></table></details>")
+
+
+def render_page(rows: list[dict], *, now: datetime | None = None,
+                unmatched: list[tuple[str, list[str], int]] | None = None) -> str:
     """검색 가능한 자체완결 HTML. 순수."""
     from trade.archive_template import SCROLL_RESTORE_JS  # 뒤로가기 스크롤 복원(공용)
     e = _html.escape
@@ -167,6 +233,7 @@ def render_page(rows: list[dict], *, now: datetime | None = None) -> str:
         "title='현재 보이는 품목을 CSV로 내려받기'>📥 CSV</button>"
         f"{chips}</div>"
         "<p id='cnt' class='cnt'></p>"
+        f"{_render_unmatched(unmatched)}"
         "<table><thead><tr><th>품목 (MTI)</th><th>산업</th>"
         "<th>구성 HS10 코드</th><th>관련 상장사</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
@@ -176,7 +243,11 @@ def render_page(rows: list[dict], *, now: datetime | None = None) -> str:
 def regenerate(out_path: Path | None = None) -> Path:
     """레퍼런스북 HTML 생성. 데이터 없으면 빈 안내 페이지."""
     rows = build_rows()
-    html = render_page(rows)
+    try:
+        unmatched = unmatched_candidates(rows)
+    except Exception:
+        unmatched = []
+    html = render_page(rows, unmatched=unmatched)
     out = out_path or PAGE
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(html, encoding="utf-8")

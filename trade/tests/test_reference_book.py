@@ -86,5 +86,57 @@ class RenderTests(unittest.TestCase):
         self.assertIn("디램", out.read_text(encoding="utf-8"))
 
 
+class UnmatchedCandidatesTests(unittest.TestCase):
+    """미매칭 후보 자동 발굴 — 레퍼런스북 어디에도 없는 알림 회사 노출
+    (사용자 2026-06-19 '새 언어격차 생겼는지 어떻게 알아?')."""
+
+    _ROWS = [{"mti6": "831110", "name": "디램", "industry": "반도체",
+              "hs": [], "companies": ["삼성전자", "SK하이닉스"]}]   # surfaced = {삼성전자,SK하이닉스}
+
+    def _db(self, td, alerts):
+        import json
+        import sqlite3
+        db = Path(td) / "store.db"
+        conn = sqlite3.connect(db)
+        conn.execute("CREATE TABLE alerts (item TEXT, stocks TEXT, stocks_meta TEXT)")
+        for item, stocks in alerts:
+            conn.execute("INSERT INTO alerts VALUES (?,?,?)",
+                         (item, json.dumps(stocks), "{}"))
+        conn.commit(); conn.close()
+        return db
+
+    def test_only_truly_missing_companies(self):
+        with tempfile.TemporaryDirectory() as td:
+            db = self._db(td, [
+                ("디램 수출", ["삼성전자"]),          # 이미 surfaced → 제외
+                ("신소재 XYZ", ["듣보종목"]),         # 어디에도 없음 → 후보
+                ("신소재 XYZ", ["듣보종목"]),         # 빈도 2
+                ("(도치행)", ["소주"]),               # 품목어 누수 → 제외
+            ])
+            cands = R.unmatched_candidates(self._ROWS, db_path=db)
+        self.assertEqual(len(cands), 1)
+        item, cos, n = cands[0]
+        self.assertEqual(item, "신소재 XYZ")
+        self.assertEqual(cos, ["듣보종목"])
+        self.assertEqual(n, 2)                      # 빈도 집계
+        # 누수·기노출 회사는 어떤 후보에도 없음
+        allco = {c for _, c, _ in cands for c in cos}
+        self.assertNotIn("소주", allco)
+        self.assertNotIn("삼성전자", allco)
+
+    def test_graceful_no_db(self):
+        self.assertEqual(R.unmatched_candidates(self._ROWS,
+                                                db_path=Path("/no/such.db")), [])
+
+    def test_panel_renders_in_page(self):
+        um = [("신소재 XYZ", ["듣보종목"], 2)]
+        h = R.render_page(self._ROWS, unmatched=um)
+        self.assertIn("미매칭 알림 후보", h)
+        self.assertIn("신소재 XYZ", h)
+        self.assertIn("듣보종목", h)
+        # 비면 패널 자체가 안 나옴
+        self.assertNotIn("미매칭 알림 후보", R.render_page(self._ROWS))
+
+
 if __name__ == "__main__":
     unittest.main()
