@@ -677,6 +677,34 @@ class MtiCodeAndChannelTests(unittest.TestCase):
         # 별칭은 무관 품목으로 번지지 않음 (디램엔 별칭 없음)
         self.assertEqual(channel_companies_for("디램", pairs), [])
 
+    def test_cap_canon_junk_synonym(self):
+        """캡 상향·표기통일·junk 정제·품목 동의어 (사용자 2026-06-19)."""
+        from trade import mti_companies as mc
+        # 캡 상향(40) — 8개 초과 매칭 다 반환
+        pairs = [(f"인쇄회로{i}", [f"종목{i}"]) for i in range(12)]
+        self.assertEqual(len(mc.channel_companies_for("인쇄회로", pairs)), 12)
+        # 회사 표기통일 — LS일렉트릭↔LS ELECTRIC, 포스코홀딩스↔POSCO홀딩스
+        self.assertEqual(mc.canon_company("LS일렉트릭"), "LS ELECTRIC")
+        self.assertEqual(mc.canon_company("포스코홀딩스"), "POSCO홀딩스")
+        self.assertIn("LS ELECTRIC", mc.companies_for("변압기"))
+        self.assertNotIn("LS일렉트릭", mc.companies_for("변압기"))
+        # junk 토큰 정제 — 콤마 분리·'관련종목 :' 머리말·다중공백 junk 제외
+        self.assertEqual(mc._clean_stocks(
+            ["에코프로비엠, LG화학", "관련종목 : LG전자",
+             "클래시스 비올 원텍 텐텍", "비에이치"], {}),
+            ["에코프로비엠", "LG화학", "LG전자", "비에이치"])
+        # 품목 동의어 — 'PCB'·'인쇄회로' 같은 통합 결과로 수렴
+        syn_pairs = [("fpcb", ["비에이치"]), ("ccl동박적층판", ["두산"]),
+                     ("afci pcb assembly", ["제일일렉트릭"])]
+        sp = mc.synonym_companies("PCB", syn_pairs)
+        si = mc.synonym_companies("인쇄회로", syn_pairs)
+        self.assertEqual(sp[0], "인쇄회로")          # 대표 품목명
+        self.assertEqual(set(sp[1]), set(si[1]))     # 수렴
+        self.assertIn("제일일렉트릭", sp[1])          # bare 'pcb' 알림도(recall)
+        self.assertIsNone(mc.synonym_companies("라면", syn_pairs))
+        # 검색 인덱스 동의어
+        self.assertIn("pcb", mc.search_synonyms("인쇄회로"))
+
     def test_channel_pairs_from_sqlite(self):
         import json
         import sqlite3

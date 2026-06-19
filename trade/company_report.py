@@ -263,6 +263,14 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
     _add(mti_companies.companies_for(query))
     _add(mti_companies.channel_companies_for(query, pairs))
 
+    # (1b) 품목 동의어 그룹 통합 — 'PCB'·'인쇄회로'가 같은 통합 결과로 수렴
+    # (사용자 2026-06-19 '같은 건데 다른 이름 다 보여줘'). 대표 품목명도 노출.
+    syn_name = None
+    syn = mti_companies.synonym_companies(query, pairs)
+    if syn:
+        syn_name, syn_cos = syn
+        _add(syn_cos)
+
     # (2) query 와 이름/산업이 매칭되는 저장 품목들 → 행 + 그 품목들의 관련기업
     rows: list[dict] = []
     for mti6, node in (by_mti or {}).items():
@@ -284,6 +292,7 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
         return None
     rows.sort(key=lambda x: -(x["export_usd"] or 0))
     return {"mode": "item", "query": query, "name": query,
+            "synonym": syn_name if syn_name and _norm(syn_name) != qn else None,
             "items": rows[:30], "companies": companies[:40]}
 
 
@@ -370,7 +379,10 @@ def _render_free_item(data: dict) -> str:
     name = e(data.get("name") or data.get("query") or "—")
     items = data.get("items") or []
     companies = data.get("companies") or []
-    head = (f'<div style="font-size:18px;font-weight:700;margin-bottom:2px">{name} '
+    syn = data.get("synonym")
+    syn_tag = (f' <span style="font-size:13px;color:#9aa0aa;font-weight:400">'
+               f'≡ {e(syn)}</span>') if syn else ''
+    head = (f'<div style="font-size:18px;font-weight:700;margin-bottom:2px">{name}{syn_tag} '
             '· 관련 기업</div>'
             '<div style="font-size:12px;color:#9aa0aa;margin-bottom:12px">'
             '품목 역검색 · 관세청 수출입 품목 ↔ 관련 상장사(큐레이션+채널) · 무료(데이터)</div>')

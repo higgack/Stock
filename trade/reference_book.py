@@ -198,6 +198,7 @@ def render_page(rows: list[dict], *, now: datetime | None = None,
                 unmatched: list[tuple[str, list[str], int]] | None = None) -> str:
     """검색 가능한 자체완결 HTML. 순수."""
     from trade.archive_template import SCROLL_RESTORE_JS  # 뒤로가기 스크롤 복원(공용)
+    from trade import mti_companies as _mc                # 검색 동의어(PCB→인쇄회로)
     e = _html.escape
     now = now or datetime.now(_KST)
     inds = sorted({r["industry"] for r in rows if r.get("industry")})
@@ -208,8 +209,11 @@ def render_page(rows: list[dict], *, now: datetime | None = None,
         cos = r.get("companies") or []
         co_html = ("".join(f'<span class="x">{e(c)}</span>' for c in cos)
                    if cos else '<span class="none">—</span>')
-        search = " ".join([r["name"], r["mti6"], r["industry"], hs,
-                           " ".join(cos)]).lower()
+        parts = [r["name"], r["mti6"], r["industry"], hs, " ".join(cos)]
+        syn = " ".join(_mc.search_synonyms(r["name"]))
+        if syn:                                  # 동의어(PCB→인쇄회로) 검색 인덱스
+            parts.append(syn)
+        search = " ".join(parts).lower()
         body.append(
             f'<tr data-s="{e(search)}" data-i="{e(r["industry"])}">'
             f'<td><span class="nm">{e(r["name"])}</span> '
