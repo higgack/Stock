@@ -54,7 +54,8 @@ def build_rows() -> list[dict]:
     try:
         for tr in mti_companies.theme_rows():
             rows.append({"mti6": "", "name": tr["name"], "industry": tr["industry"],
-                         "hs": [], "companies": tr["companies"], "theme": True})
+                         "hs": tr.get("hs", []), "companies": tr["companies"],
+                         "theme": True})
     except Exception:
         pass
     return rows
