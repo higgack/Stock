@@ -166,9 +166,13 @@ def gather_period(ym: str | None = None, top: int = _TOP) -> dict:
 
     # 잠정 속보(선행) — 관세청 10일 단위(11/21일/월초). 확정 품목 집계와 별개(섞지
     # 않음, 운영자 정책). exp_item/imp_item 의 전체+주요10만(HS 분해 없음). 자체 최신월.
+    # ⚠️ **최신 보고서에만** 표시 (사용자 2026-06-19 '2025-02 인데 잠정은 최신꺼가 나옴
+    # — 최신 아닐 때는 없애 혼선 방지'). 잠정은 항상 최신 월 1종뿐이라(과거월 잠정 미적립)
+    # 과거 보고서에 붙이면 오해 → period==최신월일 때만.
     prov = None
+    is_latest = period == max(months_all)
     pe, pi = prov_sigs.get("exp_item"), prov_sigs.get("imp_item")
-    if pe or pi:
+    if is_latest and (pe or pi):
         prov = {"ym": (pe or pi).get("ym"), "window": (pe or pi).get("window"),
                 "export": pe, "import": pi}
 
@@ -229,25 +233,32 @@ def render_free(data: dict) -> str:
     prov = data.get("provisional")
     prov_html = ""
     if prov and (prov.get("export") or prov.get("import")):
+        def _pc_span(kind, v):   # YoY/MoM 색 칩 (라이트/다크 양쪽 보이는 중간 톤)
+            if v is None:
+                return ""
+            c = "#1a9d57" if v >= 0 else "#e2574c"
+            return f' <span style="color:{c}">({kind} {"+" if v >= 0 else ""}{v:.1f}%)</span>'
         def _prov_line(label, sig):
             if not sig:
-                return f'<div style="color:#9aa0aa">{label} — 데이터 없음</div>'
-            yoy = sig.get("total_yoy")
-            yoy_txt = ""
-            if yoy is not None:
-                yc = "#26a69a" if yoy >= 0 else "#e2574c"
-                yoy_txt = (f' <span style="color:{yc}">'
-                           f'(YoY {"+" if yoy >= 0 else ""}{yoy:.1f}%)</span>')
+                return f'<div style="color:var(--text-sub,#6e6e73)">{label} — 데이터 없음</div>'
+            # YoY 먼저, MoM 추가 (사용자 2026-06-19 'MoM 도 포함, YoY 앞으로')
+            metrics = (_pc_span("YoY", sig.get("total_yoy"))
+                       + _pc_span("MoM", sig.get("total_mom")))
             tops = [it for it in (sig.get("items") or []) if it.get("usd")][:3]
             top3 = ", ".join(f'{e(it["name"])} {_usd(it["usd"])}' for it in tops)
-            return (f'<div style="margin-top:2px"><b>{label}</b> {_usd(sig.get("total_usd"))}{yoy_txt}'
-                    + (f'<div style="font-size:12px;color:#9aa0aa;margin-left:10px">상위: {top3}</div>'
-                       if top3 else '') + '</div>')
+            return (f'<div style="margin-top:2px;color:var(--text,#1d1d1f)"><b>{label}</b> '
+                    f'{_usd(sig.get("total_usd"))}{metrics}'
+                    + (f'<div style="font-size:12px;color:var(--text-sub,#6e6e73);'
+                       f'margin-left:10px">상위: {top3}</div>' if top3 else '') + '</div>')
+        # 라이트/다크 양 테마 — 반투명 그린(라이트=연녹·다크=어두운 녹) + var(--text)
+        # 글씨로 양쪽 가독(사용자 2026-06-19 '글씨 안보임 + 라이트/블랙 맞춰'). 옛
+        # #10231a 고정 다크배경 + 무색 글씨는 라이트 페이지에서 안 보였음.
         prov_html = (
-            '<div style="margin:6px 0 4px;padding:10px 12px;background:#10231a;'
-            'border:1px solid #1f5132;border-radius:8px">'
-            '<div style="font-weight:600;color:#3ddc84;margin-bottom:4px">🟢 잠정 속보 (선행)</div>'
-            '<div style="font-size:12px;color:#9aa0aa;margin-bottom:8px">'
+            '<div style="margin:6px 0 4px;padding:10px 12px;'
+            'background:rgba(38,166,122,.12);border:1px solid rgba(38,166,122,.42);'
+            'border-radius:8px">'
+            '<div style="font-weight:600;color:#1a9d57;margin-bottom:4px">🟢 잠정 속보 (선행)</div>'
+            '<div style="font-size:12px;color:var(--text-sub,#6e6e73);margin-bottom:8px">'
             f'관세청 10일 단위 · {e(prov.get("ym") or "")} {e(prov.get("window") or "")} 누적 · '
             '주요 10개 품목만(HS 전체분해 없음) · <b>확정 품목 집계와 별개의 선행 신호</b></div>'
             + _prov_line("수출", prov.get("export"))
@@ -259,18 +270,23 @@ def render_free(data: dict) -> str:
             mc = "#26a69a" if mom >= 0 else "#e2574c"
             mtxt = (f' <span style="font-size:12px;color:{mc}">'
                     f'{"+" if mom >= 0 else ""}{mom:.1f}%</span>')
-        return (f'<div style="flex:1;min-width:120px;background:#1c1f26;border:1px solid '
-                f'#2a2e37;border-radius:8px;padding:8px 12px">'
-                f'<div style="font-size:11px;color:#9aa0aa">{label}</div>'
-                f'<div style="font-size:16px;font-weight:700">{val}{mtxt}</div></div>')
+        # 라이트/다크 양 테마 — bg·border·텍스트를 대시보드 CSS 변수로(라이트=흰 카드·
+        # 검은 글씨, 다크=어두운 카드·밝은 글씨). 옛 하드코딩(#1c1f26 카드 + 무색 값)은
+        # 라이트 페이지에서 값이 안 보였음(사용자 2026-06-19 '글씨가 안보이네'). 폴백은
+        # 스탠드얼론(흰 페이지) 기준 라이트값.
+        return (f'<div style="flex:1;min-width:120px;background:var(--surface-2,#f4f4f7);'
+                f'border:1px solid var(--border,#d8d8de);border-radius:8px;padding:8px 12px">'
+                f'<div style="font-size:11px;color:var(--text-sub,#6e6e73)">{label}</div>'
+                f'<div style="font-size:16px;font-weight:700;color:var(--text,#1d1d1f)">'
+                f'{val}{mtxt}</div></div>')
     bal = t.get("balance", 0)
     bal_c = "#26a69a" if bal >= 0 else "#e2574c"
     summary = ('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
                + _kpi("총수출", _usd(t.get("export")), t.get("export_mom"))
                + _kpi("총수입", _usd(t.get("import")), t.get("import_mom"))
-               + f'<div style="flex:1;min-width:120px;background:#1c1f26;border:1px solid '
-                 f'#2a2e37;border-radius:8px;padding:8px 12px">'
-                 f'<div style="font-size:11px;color:#9aa0aa">무역수지</div>'
+               + f'<div style="flex:1;min-width:120px;background:var(--surface-2,#f4f4f7);'
+                 f'border:1px solid var(--border,#d8d8de);border-radius:8px;padding:8px 12px">'
+                 f'<div style="font-size:11px;color:var(--text-sub,#6e6e73)">무역수지</div>'
                  f'<div style="font-size:16px;font-weight:700;color:{bal_c}">{_usd(bal)}</div></div>'
                + '</div>')
 
