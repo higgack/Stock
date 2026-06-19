@@ -43,8 +43,9 @@ def build_rows() -> list[dict]:
     for mti6, meta in sorted(names.items(), key=lambda kv: (kv[1][1], kv[1][0])):
         name, industry = meta
         try:
-            cos = list(dict.fromkeys(list(mti_companies.companies_for(name))
-                                     + mti_companies.channel_companies_for(name, pairs)))
+            cos = mti_companies.dedup_companies(
+                list(mti_companies.companies_for(name))
+                + mti_companies.channel_companies_for(name, pairs))
         except Exception:
             cos = []
         rows.append({"mti6": mti6, "name": name, "industry": industry,

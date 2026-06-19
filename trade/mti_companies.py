@@ -344,6 +344,37 @@ def canon_company(name: str) -> str:
     return _COMPANY_CANON.get((name or "").replace(" ", "").lower(), name)
 
 
+def _krx_code(name: str) -> str:
+    """회사명 → KRX 6자리 코드(로컬 상장 마스터). 없거나 비상장이면 "".
+    price_provider 의 검증된 KRX 마스터 재사용 — 외부콜 0. graceful."""
+    try:
+        from trade import price_provider
+        return price_provider._load_krx_master().get((name or "").replace(" ", ""), "")
+    except Exception:
+        return ""
+
+
+def dedup_companies(names) -> list[str]:
+    """회사 리스트 표준화 + 중복제거 (순서 보존). 표기통일(canon) 후 **KRX
+    코드 기준** dedup — 같은 상장사의 모든 표기 변형(SK하이닉스/하이닉스, 영문/
+    한글, 띄어쓰기 차이)을 코드로 통합(사용자 2026-06-19 '그런 종류 전부').
+    코드 미해석(마스터 부재·비상장·해외)은 정규화 이름 기준 폴백 → 샌드박스·
+    오프라인에서도 안전(곧 curated/normalize 와 동일). 순수에 가까움."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in names:
+        c = canon_company(n)
+        nk = c.replace(" ", "").lower()
+        if not nk or nk in _NON_COMPANY:
+            continue
+        key = _krx_code(c) or nk
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
 def _surface_hit(term: str, item: str) -> bool:
     """surface term 이 알림 item(공백제거·소문자)에 매칭되는지. 영문 경계
     surface(ess)는 영단어 내부 오매칭 차단, 그 외 substring. 순수."""
@@ -372,18 +403,14 @@ def channel_companies_for(name: str, pairs: list[tuple[str, list[str]]]) -> list
     for marker, surfaces in _ALIAS_GROUPS:
         if marker in key:
             terms.extend(surfaces)
-    seen: set[str] = set()
-    out: list[str] = []
+    raw: list[str] = []
     for item, stocks in pairs:
         if not any(_surface_hit(t, item) for t in terms):
             continue
         for s in stocks:
-            c = canon_company(s)
-            k = c.replace(" ", "").lower()
-            if k == key or k in _NON_COMPANY or k in seen:
-                continue
-            seen.add(k)
-            out.append(c)
+            if canon_company(s).replace(" ", "").lower() != key:   # 도치 토큰 제외
+                raw.append(s)
+    out = dedup_companies(raw)        # canon + KRX코드 통합 + _NON_COMPANY 제외
     return out[:_CHANNEL_CAP] if _CHANNEL_CAP else out
 
 
@@ -391,13 +418,19 @@ def channel_companies_for(name: str, pairs: list[tuple[str, list[str]]]) -> list
 # 다 보여주거나 비슷한 품목 묶어줘'). 검색(기업보고서·레퍼런스북)에서 어느
 # 표기로 쳐도 같은 통합 결과로 수렴. 검색은 recall 우선(별칭이 행 큐레이션
 # 에서 제외한 bare 'pcb' 알림도 포함). 대표 품목명 + 동의어/영문 표기들. ──────
-_SYNONYM_GROUPS = (
-    ("인쇄회로", ("pcb", "fpcb", "fccl", "ccl", "연성회로", "동박적층")),
-    ("리튬이온전지", ("2차전지", "이차전지", "ess")),
-    ("계전기", ("relay", "릴레이")),
-    ("치과용기기및재료", ("임플란트",)),
-    ("미용및조직수복용", ("보툴리눔", "톡신", "필러")),
-    ("반도체제조용장비", ("반도체장비",)),
+# 별칭에 없는 bare 검색 표기만 보강(영문 약어 등). '인쇄회로기판' 류 풀네임은
+# substring 매칭(ck in qn)이 알아서 처리 → 등재 불요.
+_EXTRA_SYNONYMS = {
+    "인쇄회로": ("pcb",),
+    "계전기": ("릴레이",),
+    "반도체제조용장비": ("반도체장비",),
+}
+# 검색 동의어 = **별칭 그룹 전부**(품목 marker → 알림 surface) + bare 보강.
+# 별칭이 늘면 동의어도 자동 확장(별도 큐레이션 불요) — 사용자 2026-06-19
+# 'PCB·하이닉스는 예시일 뿐, 그런 종류 전부'.
+_SYNONYM_GROUPS = tuple(
+    (marker, tuple(dict.fromkeys(surfaces + _EXTRA_SYNONYMS.get(marker, ()))))
+    for marker, surfaces in _ALIAS_GROUPS
 )
 
 
@@ -419,9 +452,12 @@ def synonym_companies(query: str, pairs: list) -> tuple[str, list[str]] | None:
         def _add(cos):
             for c in cos:
                 c = canon_company(c)
-                k = c.replace(" ", "").lower()
-                if k and k != ck and k not in _NON_COMPANY and k not in seen:
-                    seen.add(k)
+                nk = c.replace(" ", "").lower()
+                if not nk or nk == ck or nk in _NON_COMPANY:
+                    continue
+                dk = _krx_code(c) or nk          # KRX 코드 기준 통합
+                if dk not in seen:
+                    seen.add(dk)
                     out.append(c)
 
         _add(companies_for(canon))
