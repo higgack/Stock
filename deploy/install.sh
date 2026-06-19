@@ -60,7 +60,8 @@ for unit in \
     reddit-insider-watch.service    reddit-insider-watch.timer \
     portfolio-watch.service         portfolio-watch.timer \
     watchlist-check.service         watchlist-check.timer \
-    dart-feed.service               dart-feed.timer ;
+    dart-feed.service               dart-feed.timer \
+    highlow-scan.service            highlow-scan.timer ;
 do
     if [ -f "$DEPLOY_DIR/$unit" ]; then
         install -m 0644 "$DEPLOY_DIR/$unit" /etc/systemd/system/
@@ -185,6 +186,11 @@ if [ -f "$DEPLOY_DIR/watchlist-check.timer" ]; then
 fi
 if [ -f "$DEPLOY_DIR/dart-feed.timer" ]; then
     systemctl enable --now dart-feed.timer
+fi
+if [ -f "$DEPLOY_DIR/highlow-scan.timer" ]; then
+    # 52주 신고저 슬롯 스캐너 — 봇 배포와 독립(사용자 2026-06-19). enable --now 로
+    # 타이머 가동(부팅·배포 후에도 :00/:15/:30/:45 지속).
+    systemctl enable --now highlow-scan.timer
 fi
 if [ -f "$DEPLOY_DIR/trade-bot-update.timer" ]; then
     systemctl enable --now trade-bot-update.timer

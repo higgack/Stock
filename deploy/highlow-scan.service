@@ -1,0 +1,18 @@
+[Unit]
+# 52주 신고가/신저가 슬롯 스캐너 — stock-bot 과 분리된 독립 oneshot (사용자
+# 2026-06-19 '배포로 중간에 변경해도 아시아·미국 신고가는 그대로 돌게'). 봇
+# 재시작(매 배포)이 진행 중 스캔을 죽이던 것을 별도 프로세스로 분리해 해결.
+Description=52주 신고가/신저가 슬롯 스캔 (US/JP/HK/CN/TW · 봇 배포와 독립)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.highlow_scan
+StandardOutput=journal
+StandardError=journal
+# 한 슬롯 유니버스 스캔(yfinance) 최대 대기 — _join_workers 1500s 와 정합.
+TimeoutStartSec=1700

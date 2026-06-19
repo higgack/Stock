@@ -515,7 +515,13 @@ pattern to follow:
 - 대시보드 자동 신선 (사용자 2026-06-17 '모든 대시보드가 내가 안 들어가도 자기
   리프레쉬 주기로 갱신') — 표면별로 서버사이드 스케줄에 묶임, 방문 불요:
   • 홈(market.html) = `_periodic_market_refresh` 30초 · 무거운 52주(JP/HK/CN/TW
-    +US) = `_periodic_highlow_scan` 슬롯(:00/:15/:30/:45, 장중 force·장밖 freeze)
+    +US) = **독립 `highlow-scan.timer`(:00/:15/:30/:45, 봇 배포·재시작과 무관 — 별
+    프로세스 oneshot `bot.highlow_scan`)**, 장중 force·장밖 freeze. 슬롯 로직 단일
+    소스 `bot/highlow_scan.py`(`_HL_SCAN_SLOTS`/`run_slot`/`_current_slot`+daemon
+    join). in-process `_periodic_highlow_scan` 는 타이머 미설치 VM 폴백(타이머 활성
+    시 `_highlow_timer_active()` 로 skip — 이중 스캔 방지). 사유: 옛 in-process
+    asyncio 만이면 매 배포(봇 재시작)가 진행 중 스캔을 죽여 잦은 배포일에 14:00 류로
+    멈춤(사용자 2026-06-19 '배포 중간에도 신고가 그대로 돌게').
   • **경량 동적 보드** = `_periodic_light_board_warm`(180초, env `LIGHT_BOARD_WARM_
     SEC`) — 무버(KR/JP/HK/CN/US)·KR 52주·장전후(US/KR)·NXT·테마/업종을 **render
     함수 호출('방문 시뮬')**로 그 페이지가 읽는 파일캐시를 채움(dashboard_server

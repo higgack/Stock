@@ -1,0 +1,14 @@
+[Unit]
+Description=52주 신고저 슬롯 스캔 트리거 — 매 :00/:15/:30/:45 (봇 배포와 독립)
+
+[Timer]
+# 매시 :00·:15·:30·:45 발화 → 그 슬롯의 시장(_HL_SCAN_SLOTS)을 산출. 봇
+# 재시작과 무관(별도 oneshot 프로세스). 오래 걸리는 슬롯이 다음 트리거를
+# 넘겨도 systemd 가 oneshot 중복 실행 안 함(겹침 방지). Persistent 로 부팅
+# 직후 누락 슬롯 1회 보정.
+OnCalendar=*-*-* *:00,15,30,45:00 Asia/Seoul
+Persistent=true
+Unit=highlow-scan.service
+
+[Install]
+WantedBy=timers.target
