@@ -143,16 +143,18 @@ class UnmatchedCandidatesTests(unittest.TestCase):
                 mock.patch.object(mti_map, "load_mti", return_value={}):
             rows = R.build_rows()
         theme = [r for r in rows if r.get("theme")]
-        self.assertGreaterEqual(len(theme), 6)               # 주요 카테고리
+        self.assertGreaterEqual(len(theme), 50)              # HS 마스터 56품목
         names = " ".join(r["name"] for r in theme)
         self.assertIn("피부과", names)
         self.assertIn("MLCC", names)
         derm = next(r for r in theme if "피부과" in r["name"])
         self.assertIn("클래시스", derm["companies"])
-        # 테마 회사는 surfaced → 미매칭에서 제외 (패널 축소)
+        self.assertEqual(derm["hs"], ["9018.90-9000"])       # HS Code 부착
+        # 테마 회사 surfaced + HS Code 노출 (HS 기반 재배치)
         html = R.render_page(rows, unmatched=[])
         self.assertIn("🏷️ 테마", html)
         self.assertIn("클래시스", html)
+        self.assertIn("9018.90-9000", html)                  # 구성 HS10 칼럼
 
     def test_panel_renders_in_page(self):
         um = [("신소재 XYZ", ["듣보종목"], 2)]
