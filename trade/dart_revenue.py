@@ -544,6 +544,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.reparse_stale:
         res = reparse_stale_inventory(budget=args.budget, api_key=key)
         print(f"📦 파서세대 v{_PARSER_VERSION} 소급 재파싱: {res}")
+        # 보강 후보도 매일 재계산 — 인벤토리는 18일 갱신이지만 큐레이션 변동·주력
+        # 기준 변경을 매일 반영(사용자 2026-06-20 '내가 VM 안돌려도'). 가벼움(~수초).
+        print(f"🧬 DART 보강 후보: {_build_reinforce()}품목")
         if res["remaining"]:
             print(f"→ 남은 stale {res['remaining']} — 다음 타이머 런에서 계속 드레인")
         return 0

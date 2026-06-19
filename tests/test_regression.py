@@ -2235,6 +2235,12 @@ class TestPortfolioResolve:
         r2 = resolve_ticker("이오테크닉스")
         assert r2["matched"] in (True, False) and r2.get("ticker") in (None, "039030.KS", "039030.KQ")
 
+    def test_naver_resolver_graceful(self):
+        # 네이버 자동완성 폴백 — 빈 입력은 네트워크 안 타고 None (2026-06-20).
+        from bot.portfolio_resolve import resolve_via_naver
+        assert resolve_via_naver("") is None
+        assert resolve_via_naver("   ") is None
+
 
 class TestPortfolioModel:
     """fix: 포트폴리오 집계·요약 모델 (2026-06-04 자산관리 P1 증분3)."""
@@ -4120,6 +4126,15 @@ class TestDartFeedBackfill:
         assert rep["dist"].get("단일판매ㆍ공급계약체결") == 1
         assert "주주총회소집공고" not in rep["dist"]               # 제목완결=파싱대상 아님
         assert rep["samples"].get("단일판매ㆍ공급계약체결") == "u1"
+
+    def test_meaningful_detail_gate(self, tmp_path, monkeypatch):
+        # 미파싱 재추출 백필(2026-06-20)의 핵심 게이트 — 시총/주요사업 줄만 있으면
+        # meaningful 아님(=재추출 대상). _admin_issue_lines '경과:' 줄이 생기면 해소.
+        m = self._load(tmp_path, monkeypatch)
+        assert m._has_meaningful_detail(["결론: ... 시가총액 150억원 미만 ..."]) is False
+        assert m._has_meaningful_detail(["주요사업: 반도체"]) is False
+        assert m._has_meaningful_detail([]) is False
+        assert m._has_meaningful_detail(["경과: 연속 25매매거래일 미달 지속"]) is True
 
     def test_owner_share_change_form_classified_and_routed(self, tmp_path, monkeypatch):
         # 최대주주등소유주식변동신고서(공정거래법, 라이브 2026-06-13 5예시) —

@@ -15,7 +15,9 @@
 """
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 
 # ── 해외 한글음역 → (티커, 시장). 사용자 export 에서 실제 등장한 종목 + 한국
 #    투자자가 흔히 보유하는 미국/외국 종목. 키는 _normalize() 적용 후 형태
@@ -280,11 +282,89 @@ def resolve_kr_etf(name: str) -> tuple[str, str] | None:
     return None
 
 
+# ── 네이버 종목 자동완성 → 코드 자동 해석 (사용자 2026-06-20 '자동 분류 + 네이버로
+#    국내도'). 큐레이션 alias/pykrx 가 못 잡은 종목을 ac.stock.naver.com 자동완성으로
+#    국내(KOSPI/KOSDAQ → .KS/.KQ) + 해외(NASDAQ/NYSE/AMEX → US 티커) 한 번에 해석.
+#    7일 디스크 캐시. 네트워크/포맷 불일치 시 graceful None('이름만 표시' 유지).
+_NAVER_AC = "https://ac.stock.naver.com/ac"
+_NAVER_CACHE = (Path(os.environ.get("TRADINGAGENTS_DATA_DIR")
+                     or (Path.home() / ".tradingagents")) / "naver_stock_ac.json")
+_KR_MKT = {"KOSPI": ".KS", "KOSDAQ": ".KQ", "KONEX": ".KQ"}
+_US_MKT = {"NASDAQ", "NYSE", "AMEX", "NYSE ARCA", "NYSEARCA", "OTC"}
+
+
+def _naver_cache_load() -> dict:
+    import json
+    try:
+        return json.loads(_NAVER_CACHE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _naver_cache_save(d: dict) -> None:
+    import json
+    try:
+        _NAVER_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        _NAVER_CACHE.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def resolve_via_naver(name: str) -> tuple[str, str] | None:
+    """네이버 종목 자동완성 → (ticker, market) 또는 None. 국내=.KS/.KQ, 해외=US 티커.
+    이름 정규화 정확일치 우선 매칭(부분일치 오매칭 방지). 7일 캐시 + graceful."""
+    import time
+    q = (name or "").strip()
+    if not q:
+        return None
+    key = _normalize(q)
+    cache = _naver_cache_load()
+    hit = cache.get(key)
+    if hit and (time.time() - hit.get("ts", 0)) < 7 * 86400:
+        v = hit.get("v")
+        return tuple(v) if v else None
+    res: tuple[str, str] | None = None
+    try:
+        import requests
+        r = requests.get(_NAVER_AC, params={"q": q, "target": "stock"},
+                         headers={"User-Agent": "Mozilla/5.0",
+                                  "Referer": "https://m.stock.naver.com/"},
+                         timeout=4)
+        items = (r.json() or {}).get("items") or []
+        # items 는 [[...]] 또는 [...] — dict 항목만 평탄화
+        flat = []
+        for x in items:
+            if isinstance(x, dict):
+                flat.append(x)
+            elif isinstance(x, list):
+                flat.extend([y for y in x if isinstance(y, dict)])
+        for it in flat:
+            nm = it.get("name") or it.get("nm") or ""
+            code = (it.get("code") or it.get("cd") or it.get("symbolCode")
+                    or it.get("reutersCode") or "").strip()
+            typ = (it.get("typeCode") or it.get("type") or it.get("nationCode")
+                   or it.get("market") or "").upper()
+            if not code or _normalize(nm) != key:        # 정확일치만(오매칭 차단)
+                continue
+            if typ in _KR_MKT and code.isdigit():
+                res = (f"{code.zfill(6)}{_KR_MKT[typ]}", "KR")
+                break
+            if typ in _US_MKT or (not code.isdigit() and code.isascii()):
+                res = (code.upper(), "US")
+                break
+    except Exception:
+        res = None
+    cache[key] = {"ts": time.time(), "v": list(res) if res else None}
+    _naver_cache_save(cache)
+    return res
+
+
 def resolve_ticker(name: str) -> dict:
     """상품명 → {ticker, market, matched, source}.
 
-    순서: 해외 alias → 국내 DART/pykrx → KR ETF → 미매칭(None).
-    미매칭이어도 스냅샷 평가금액은 표시되므로 ingest 가 계속 진행한다('이름만 표시')."""
+    순서: 해외 alias → 국내 DART/pykrx → KR ETF → **네이버 자동완성(국내+해외)** →
+    미매칭(None). 미매칭이어도 스냅샷 평가금액은 표시되므로 ingest 가 계속 진행한다
+    ('이름만 표시'). 네이버 단계가 페르미(FRMI)·pykrx 누락 국내종목을 자동 흡수."""
     ov = resolve_overseas(name)
     if ov:
         return {"ticker": ov[0], "market": ov[1], "matched": True, "source": "alias"}
@@ -296,4 +376,7 @@ def resolve_ticker(name: str) -> dict:
         src = "etf_meta" if etf[0] else "etf_brand"
         matched = etf[0] is not None
         return {"ticker": etf[0], "market": etf[1], "matched": matched, "source": src}
+    nv = resolve_via_naver(name)
+    if nv:
+        return {"ticker": nv[0], "market": nv[1], "matched": True, "source": "naver"}
     return {"ticker": None, "market": None, "matched": False, "source": None}
