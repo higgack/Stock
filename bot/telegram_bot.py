@@ -4056,6 +4056,16 @@ async def _on_startup(application) -> None:
                     log.info("startup: DART 투자판단 실적→기타 재분류 %d건 소급", ntj)
             except Exception as exc:
                 log.warning("startup: DART 투자판단 재분류 failed: %s", exc)
+            # 관리종목 지정우려/지정 파서 신설(2026-06-19) 소급 — 기타→리스크 재분류
+            # + detail(사유·연속거래일·지정조건) 채움 1회.
+            try:
+                from bot.dart_feed import backfill_admin_issue_once_if_needed
+                sta = backfill_admin_issue_once_if_needed()
+                if sta and (sta.get("reclassified") or sta.get("filled")):
+                    log.info("startup: DART 관리종목 백필 — 재분류 %d · detail %d건",
+                             sta.get("reclassified", 0), sta.get("filled", 0))
+            except Exception as exc:
+                log.warning("startup: DART 관리종목 백필 failed: %s", exc)
 
         _dt_thr.Thread(target=_dart_initial_fetch, daemon=True).start()
     except Exception as exc:
