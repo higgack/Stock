@@ -128,6 +128,24 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         self.assertEqual(R.unmatched_candidates(self._ROWS,
                                                 db_path=Path("/no/such.db")), [])
 
+    def test_theme_rows_appended_and_surface(self):
+        """MTI 품목표에 없는 카테고리 = 큐레이션 테마 행 (사용자 2026-06-19)."""
+        from trade import mti_companies, mti_map
+        with mock.patch.object(mti_map, "mti_names", return_value={}), \
+                mock.patch.object(mti_map, "load_mti", return_value={}):
+            rows = R.build_rows()
+        theme = [r for r in rows if r.get("theme")]
+        self.assertGreaterEqual(len(theme), 6)               # 주요 카테고리
+        names = " ".join(r["name"] for r in theme)
+        self.assertIn("피부과", names)
+        self.assertIn("MLCC", names)
+        derm = next(r for r in theme if "피부과" in r["name"])
+        self.assertIn("클래시스", derm["companies"])
+        # 테마 회사는 surfaced → 미매칭에서 제외 (패널 축소)
+        html = R.render_page(rows, unmatched=[])
+        self.assertIn("🏷️ 테마", html)
+        self.assertIn("클래시스", html)
+
     def test_panel_renders_in_page(self):
         um = [("신소재 XYZ", ["듣보종목"], 2)]
         h = R.render_page(self._ROWS, unmatched=um)

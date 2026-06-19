@@ -50,6 +50,13 @@ def build_rows() -> list[dict]:
             cos = []
         rows.append({"mti6": mti6, "name": name, "industry": industry,
                      "hs": sorted(hs_by_mti.get(mti6, [])), "companies": cos})
+    # MTI 품목표에 없는 카테고리 = 큐레이션 테마 행(사용자 2026-06-19)
+    try:
+        for tr in mti_companies.theme_rows():
+            rows.append({"mti6": "", "name": tr["name"], "industry": tr["industry"],
+                         "hs": [], "companies": tr["companies"], "theme": True})
+    except Exception:
+        pass
     return rows
 
 
@@ -106,6 +113,8 @@ thead th{position:sticky;top:52px;background:#f6f8fa;color:#656d76;text-align:le
 td{padding:7px 8px;border-bottom:1px solid #eaeef2;vertical-align:top}
 tr:hover td{background:#f6f8fa}
 .nm{font-weight:600}.mti{color:#656d76;font-variant-numeric:tabular-nums;font-size:12px}
+.theme-badge{display:inline-block;background:#fff1c2;color:#9a6700;border:1px solid #eaca7a;border-radius:10px;padding:0 7px;font-size:11px;font-weight:600}
+body.dark .theme-badge{background:#2a2410;color:#e3b341;border-color:#4a3f17}
 .ind{color:#656d76;white-space:nowrap}
 .hs{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:#656d76;word-break:break-all}
 .co{color:#1f2328}.co .x{display:inline-block;background:#eef1f4;border:1px solid #cdd4dc;border-radius:10px;padding:1px 8px;margin:1px;font-size:12px;color:#1f2328}
@@ -215,13 +224,17 @@ def render_page(rows: list[dict], *, now: datetime | None = None,
         if syn:                                  # 동의어(PCB→인쇄회로) 검색 인덱스
             parts.append(syn)
         search = " ".join(parts).lower()
+        code_html = ('<span class="theme-badge">🏷️ 테마</span>' if r.get("theme")
+                     else f'<span class="mti">{e(r["mti6"])}</span>')
         body.append(
             f'<tr data-s="{e(search)}" data-i="{e(r["industry"])}">'
             f'<td><span class="nm">{e(r["name"])}</span> '
-            f'<span class="mti">{e(r["mti6"])}</span></td>'
+            f'{code_html}</td>'
             f'<td class="ind">{e(r["industry"])}</td>'
             f'<td class="hs">{e(hs) or "—"}</td>'
             f'<td class="co">{co_html}</td></tr>')
+    n_theme = sum(1 for r in rows if r.get("theme"))
+    n_mti = len(rows) - n_theme
     return (
         "<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -230,7 +243,8 @@ def render_page(rows: list[dict], *, now: datetime | None = None,
         "<div class='nav'><a href='./'>← 대시보드</a></div>"
         "<h1>📖 품목 레퍼런스북</h1>"
         f"<p class='sub'>MTI 품목 ↔ 구성 HS10 코드 ↔ 산업 ↔ 관련 상장사 · "
-        f"무역협회 HSK-MTI 연계표 + 큐레이션·채널 관련기업 · 총 {len(rows):,}품목 · "
+        f"무역협회 HSK-MTI 연계표 + 큐레이션·채널 관련기업 · 총 {n_mti:,}품목"
+        f"{f' + 🏷️ {n_theme} 테마' if n_theme else ''} · "
         f"기준 {now.strftime('%Y-%m-%d %H:%M')} KST</p>"
         "<div class='bar'><input id='q' type='search' "
         "placeholder='검색: 품목명 / HS코드 / 산업 / 기업명' autocomplete='off'>"
