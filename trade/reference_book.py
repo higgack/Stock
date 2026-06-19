@@ -108,7 +108,8 @@ def build_rows() -> list[dict]:
             cos = mti_companies.dedup_companies(
                 list(mti_companies.companies_for(name))
                 + mti_companies.channel_companies_for(name, pairs)
-                + theme_co.get(mti6, []))            # 테마 회사 병합(HS→MTI)
+                + theme_co.get(mti6, [])             # 테마 회사 병합(HS→MTI)
+                + mti_companies.reinforce_approved_for(name))  # 운영자 승인 DART 보강
         except Exception:
             cos = []
         row = {"mti6": mti6, "name": name, "industry": industry,

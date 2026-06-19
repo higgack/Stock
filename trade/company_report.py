@@ -234,8 +234,9 @@ def _company_exposure(name: str, by_mti: dict, pairs: list,
     # (B) 큐레이션 + 채널 역조회 — by_mti 품목 중 회사 매칭(보강, 관세청 집계 보장)
     for mti6, node in (by_mti or {}).items():
         item = (node.get("name") or mti6).strip()
-        cos = set(mti_companies.companies_for(item)) | set(
-            mti_companies.channel_companies_for(item, pairs))
+        cos = (set(mti_companies.companies_for(item))
+               | set(mti_companies.channel_companies_for(item, pairs))
+               | set(mti_companies.reinforce_approved_for(item)))
         if any(_norm(c) == target or target in _norm(c) or _norm(c) in target
                for c in cos if c):
             _add(item, (mti6, node))
@@ -294,6 +295,7 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
     # (1) query 자체가 큐레이션 품목 키워드 (예: '디램'·'라면')
     _add(mti_companies.companies_for(query))
     _add(mti_companies.channel_companies_for(query, pairs))
+    _add(mti_companies.reinforce_approved_for(query))   # 운영자 승인 DART 보강
 
     # (1b) 품목 동의어 그룹 통합 — 'PCB'·'인쇄회로'가 같은 통합 결과로 수렴
     # (사용자 2026-06-19 '같은 건데 다른 이름 다 보여줘'). 대표 품목명도 노출.
@@ -328,7 +330,8 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
         if not (qn in _norm(item) or qn in _norm(ind)):
             continue
         cos = list(dict.fromkeys(list(mti_companies.companies_for(item))
-                                 + mti_companies.channel_companies_for(item, pairs)))
+                                 + mti_companies.channel_companies_for(item, pairs)
+                                 + mti_companies.reinforce_approved_for(item)))
         imp_node = (by_imp or {}).get(mti6)
         rows.append({"item": item, "industry": ind,
                      "export_usd": _latest(node),
@@ -408,7 +411,8 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
         ind = ((node.get("industry") if node else "") or "").strip()
         imp_node = (by_imp or {}).get(m6)
         cos = list(dict.fromkeys(list(mti_companies.companies_for(item))
-                                 + mti_companies.channel_companies_for(item, pairs)))
+                                 + mti_companies.channel_companies_for(item, pairs)
+                                 + mti_companies.reinforce_approved_for(item)))
         rows.append({"item": item, "industry": ind,
                      "export_usd": _latest(node), "import_usd": _latest(imp_node),
                      **_dir_metrics(node, imp_node), "companies": cos,
