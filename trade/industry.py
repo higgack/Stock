@@ -1011,6 +1011,64 @@ def load_mti_imports(conn) -> dict[str, dict]:
     return out
 
 
+def load_mti_heatmap(conn) -> tuple[dict[str, dict], dict[str, dict]]:
+    """customs_heatmap_leaf(전 leaf 스냅샷) → (by_mti_exp, by_mti_imp), 단 **'기타'
+    (CATCH_ALL) 포함**. `aggregate_by_mti` 가 기타 산업 MTI 를 통째 제외하는 탓에
+    고정식축전기(MLCC=MTI 833310, 산업='기타')·기타 catch-all 품목이 `load_mti_
+    stored` 에 없어 별칭 검색(MLCC 등) 시 관련기업만 나오고 수출입 숫자가 영구
+    누락됐다(사용자 2026-06-19). 히트맵 leaf 는 기타 제외 없이 전 leaf 를 보관하므로,
+    그 leaf 를 MTI6(mti_map)로 묶어 최신월 exp/imp + YoY(전년동월)·MoM(전월) 을 채운다.
+    `company_report.gather` 가 `by_mti` 결손분(기타)을 이걸로 메우면 기존 테마 HS→
+    MTI→노드 경로가 자동으로 실제 품목명·수출입을 표시한다(MLCC 뿐 아니라 모든
+    catch-all 별칭에 universal 적용).
+
+    히트맵은 3-포인트(최신월·전월·전년동월)만 보관 → ΔYoY/ΔMoM(가속)은 산출 불가라
+    None(정직). 노드는 precomputed 'metrics' 를 보유해 `company_report._dir_metrics`
+    가 sparse-series 오산정 없이 그대로 사용한다. 테이블/연계표 부재 → ({}, {})."""
+    from trade import customs_scan, mti_map
+    try:
+        rows = customs_scan.load_heatmap(conn)
+    except Exception:
+        return {}, {}
+    if not rows:
+        return {}, {}
+    try:
+        hsk_map = mti_map.load_mti()
+        names = mti_map.mti_names()
+    except Exception:
+        return {}, {}
+    agg: dict[str, dict] = {}
+    ref_ym = ""
+    fields = ("exp", "exp_pm", "exp_py", "imp", "imp_pm", "imp_py")
+    for r in rows:
+        rec = hsk_map.get(str(r.get("hs_code") or ""))
+        mti6 = rec[0] if rec else ""
+        if not mti6:
+            continue                      # 연계표 미매핑 leaf — 품목명 없음, 제외
+        ref_ym = ref_ym or (r.get("ref_ym") or "")
+        a = agg.setdefault(mti6, {k: 0 for k in fields})
+        for k in fields:
+            a[k] += int(r.get(k) or 0)
+
+    def _node(name: str, ind: str, cur: int, pm: int, py: int) -> dict:
+        yoy = ((cur - py) / py * 100.0) if py else None
+        mom = ((cur - pm) / pm * 100.0) if pm else None
+        return {"name": name, "industry": ind,
+                "months": {ref_ym: cur} if ref_ym else {},
+                # precomputed → _dir_metrics 가 sparse months 재계산 안 함.
+                "metrics": {"yoy": yoy, "dyoy": None, "mom": mom, "dmom": None}}
+
+    by_exp: dict[str, dict] = {}
+    by_imp: dict[str, dict] = {}
+    for mti6, a in agg.items():
+        nm, ind = names.get(mti6, (mti6, mti_map.CATCH_ALL))
+        if a["exp"] or a["exp_pm"] or a["exp_py"]:
+            by_exp[mti6] = _node(nm, ind, a["exp"], a["exp_pm"], a["exp_py"])
+        if a["imp"] or a["imp_pm"] or a["imp_py"]:
+            by_imp[mti6] = _node(nm, ind, a["imp"], a["imp_pm"], a["imp_py"])
+    return by_exp, by_imp
+
+
 def load_stored_imports(conn) -> dict[str, dict[str, int]]:
     """{industry: {ym: imp}} from the store, or {} when absent/empty/old
     schema (imports_json NULL)."""

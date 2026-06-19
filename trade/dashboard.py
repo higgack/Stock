@@ -651,7 +651,8 @@ def _build_html(
         ' 드레이너(파서가 좋아지면 기존 데이터까지 며칠에 걸쳐 자동 재파싱·수렴). '
         '영업손익·매출에누리 같은 비제품 회계라인은 제품으로 오매핑하지 않음(빈칸 &gt; 오매핑).<br>'
         '<b>③ 관련기업</b> — BeOn 채널 매트릭스를 실시간 반영(기업 보고서·검색·품목·'
-        '레퍼런스북이 같은 소스 공유).<br>'
+        '레퍼런스북이 같은 소스 공유). <b>별칭 검색</b>(예: MLCC)도 HS 연계로 실제 '
+        '품목명(고정식축전기)·수출입 숫자를 함께 표시 — 품목명 클릭 시 재검색.<br>'
         '→ <b>모든 표면이 방문 없이 서버 스케줄로 자동 신선</b>하게 유지됩니다. '
         '비용 ₩0(무료 공공 API·LLM 0).'
         '</div></details>'
@@ -695,6 +696,12 @@ def _build_html(
         'document.getElementById("rb-llm").addEventListener("click",function(){run("llm");});'
         'document.getElementById("rb-chan").addEventListener("click",function(){run("channel");});'
         'q.addEventListener("keydown",function(e){if(e.key==="Enter")run("free");});'
+        # 결과 안의 품목명(data-rb-search) 클릭 → 그 실제 품목명으로 재검색 (사용자
+        # 2026-06-19 — MLCC 등 별칭으로 들어와도 실제 품목명으로 한 번에 재조회).
+        'res.addEventListener("click",function(e){'
+        'var t=e.target.closest("[data-rb-search]");if(!t)return;'
+        'q.value=t.getAttribute("data-rb-search");q.focus();run("free");'
+        'window.scrollTo({top:q.getBoundingClientRect().top+window.scrollY-80,behavior:"smooth"});});'
         # 검색어를 지우면(X 버튼·전체삭제) 보고서도 함께 비움 (사용자 2026-06-18).
         'q.addEventListener("input",function(){if(!(q.value||"").trim())res.innerHTML="";});'
         'q.addEventListener("search",function(){if(!(q.value||"").trim())res.innerHTML="";});'

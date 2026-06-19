@@ -63,9 +63,11 @@ def _pct_cell(v, suf: str = "%") -> str:
 
 def _dir_metrics(exp_node, imp_node) -> dict:
     """수출(exp_node)·수입(imp_node) 양방향 최신월 추세 → export_*/import_* (사용자
-    2026-06-18 '수입쪽도'). 산업트렌드와 동일 계산식(_month_metrics)."""
-    em = _month_metrics((exp_node or {}).get("months"))
-    im = _month_metrics((imp_node or {}).get("months"))
+    2026-06-18 '수입쪽도'). 산업트렌드와 동일 계산식(_month_metrics). 노드가
+    precomputed 'metrics'(히트맵 fallback, 3-포인트라 ΔYoY/ΔMoM None)를 가지면
+    sparse-series 오산정 없이 그대로 사용(industry.load_mti_heatmap)."""
+    em = (exp_node or {}).get("metrics") or _month_metrics((exp_node or {}).get("months"))
+    im = (imp_node or {}).get("metrics") or _month_metrics((imp_node or {}).get("months"))
     return {
         "export_yoy": em.get("yoy"), "export_dyoy": em.get("dyoy"),
         "export_mom": em.get("mom"), "export_dmom": em.get("dmom"),
@@ -81,9 +83,14 @@ def _exposure_table(rows: list[dict], *, title: str, subtitle: str,
     e = _html.escape
 
     def _row(x: dict) -> str:
-        # 🔗 = 테마 HS Code 로 연계된 관세청 수출입 품목(카테고리 수준일 수 있음)
-        nm = ("🔗 " + x["item"]) if x.get("hs_linked") else x["item"]
-        c = (f'<td style="padding:4px 8px">{e(nm)}</td>'
+        # 🔗 = 테마 HS Code 로 연계된 관세청 수출입 품목(카테고리 수준일 수 있음).
+        # 품목명은 클릭 시 그 실제 품목명으로 재검색(data-rb-search) — 별칭(MLCC)으로
+        # 들어와도 실제 품목명(고정식축전기)으로 한 번에 재조회(사용자 2026-06-19).
+        prefix = "🔗 " if x.get("hs_linked") else ""
+        nm = (f'{prefix}<span class="rb-relink" data-rb-search="{e(x["item"])}" '
+              f'title="이 품목명으로 재검색" style="cursor:pointer;color:#6cb6ff;'
+              f'text-decoration:underline dotted">{e(x["item"])}</span>')
+        c = (f'<td style="padding:4px 8px">{nm}</td>'
              f'<td style="padding:4px 8px;color:#9aa0aa">{e(x.get("industry",""))}</td>'
              f'<td style="padding:4px 8px;text-align:right">{_eok_usd(x.get("export_usd"))}</td>'
              f'{_pct_cell(x.get("export_yoy"))}{_pct_cell(x.get("export_dyoy"), "%p")}'
@@ -335,8 +342,11 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
     # 연계돼서 안 잡힌 것들 잡히게'). 테마 HS6 → MTI6(mti_map) → by_mti 수출입 트렌드
     # 부착. 같은 HS6 가 여러 MTI 에 걸치면 모두(상위 3). ⚠️ 일부 HS6 는 광범위 MTI
     # 버킷(기타정밀화학원료 등)이라 수출입은 'HS 연계 품목'(카테고리) 수준임을 표기.
-    if theme_hs:
-        for m6 in _hs6_to_mti6(theme_hs)[:3]:
+    if theme_name:
+        # theme_mti6 = 핀(_THEME_MTI_PIN) 우선 → HS6 자동해석(_company_exposure 의
+        # (C) 와 동일 리졸버). 핀은 건기식 등 catch-all HS6 의 과잉부착을 막는데,
+        # gap-fill 로 기타 품목까지 수치가 붙으므로 여기서도 핀 존중이 필수.
+        for m6 in mti_companies.theme_mti6(theme_name, [theme_hs])[:3]:
             node = (by_mti or {}).get(m6)
             if not node or m6 in seen_mti:
                 continue
@@ -429,6 +439,15 @@ def gather(query: str, api_key: str | None = None) -> dict:
         with customs.session() as conn:
             by_mti = industry.load_mti_stored(conn)
             by_imp = industry.load_mti_imports(conn)
+            # '기타'(catch-all) MTI 결손분을 히트맵 leaf 로 메움 — 고정식축전기
+            # (MLCC) 등 별칭 검색에서 관련기업만 나오고 수출입 숫자가 빠지던 것
+            # 해소(사용자 2026-06-19). setdefault = named-industry full-series 노드는
+            # 보존(ΔYoY/ΔMoM 유지), 없던 기타 품목만 보강. universal(전 catch-all 별칭).
+            hm_exp, hm_imp = industry.load_mti_heatmap(conn)
+            for _m6, _n in hm_exp.items():
+                by_mti.setdefault(_m6, _n)
+            for _m6, _n in hm_imp.items():
+                by_imp.setdefault(_m6, _n)
         pairs = mti_companies.load_channel_pairs()
     except Exception as exc:
         log.warning("company_report data %s: %s", q, exc)
@@ -506,7 +525,8 @@ def _render_free_item(data: dict) -> str:
     head = (f'<div style="font-size:18px;font-weight:700;margin-bottom:2px">{name}{syn_tag} '
             '· 관련 기업</div>'
             '<div style="font-size:12px;color:#9aa0aa;margin-bottom:12px">'
-            '품목 역검색 · 관세청 수출입 품목 ↔ 관련 상장사(큐레이션+채널) · 무료(데이터)</div>')
+            '품목 역검색 · 관세청 수출입 품목 ↔ 관련 상장사(큐레이션+채널) · 무료(데이터)'
+            ' · 💡 아래 <b>품목명 클릭</b>으로 실제 품목명 재검색</div>')
     if companies:
         chips = "".join(
             '<span style="display:inline-block;background:#1c1f26;color:#e6edf3;'
