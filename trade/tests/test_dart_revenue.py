@@ -46,6 +46,18 @@ class DartRevenueTests(unittest.TestCase):
                     "매출액 합계", "연결매출액", "매출총계", "내부매출 제거"):
             self.assertTrue(all(bad not in n for n in names), f"{bad} 미제거")
 
+    def test_clean_products_drops_eps_per_share(self):
+        # 2026-06-19 audit(67건): _PNL_RE 에 '당기순'만 있고 '주당' 누락이라 EPS
+        # 라인('주당순이익(손실)'·'기본 및 희석주당이익(원)' 등)이 제품으로 샜음.
+        # bare '주당'으로 전 변형 차단 + _PARSER_VERSION bump 로 드레이너가 소급 정리.
+        raw = [{"name": "주당순이익(손실)"}, {"name": "IV. 기본 및 희석주당순이익"},
+               {"name": "주당순이익(단위:원)"}, {"name": "주당순이익"},
+               {"name": "기본 및 희석주당이익(원)"}, {"name": "희석주당이익"},
+               {"name": "주당배당금"}, {"name": "반도체"}, {"name": "디스플레이"}]
+        names = [p["name"] for p in D._clean_products(raw)]
+        self.assertEqual(names, ["반도체", "디스플레이"])      # 주당* 7종 전부 제거
+        self.assertGreaterEqual(D._PARSER_VERSION, 4)          # 드레이너 소급 트리거
+
     def test_audit_inventory(self):
         inv = {
             "A": {"company": "A", "products": [{"name": "DRAM", "share_pct": 39.0},
