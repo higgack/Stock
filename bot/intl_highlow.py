@@ -55,13 +55,20 @@ def _cap_by_liquidity(full: list[str], cap: int, market: str) -> list[str]:
         return full[:cap]
     mc: dict = {}
     for k, v in wsm.items():
-        c = str(k).split(".")[0]
+        c = str(k).split(".")[0].upper()
+        if not c:
+            continue
+        cap_v = (v or {}).get("mcap") or 0.0
+        mc[c] = cap_v                       # 원 코드(영숫자 285A 키옥시아 포함)
         if c.isdigit():
-            mc[str(int(c))] = (v or {}).get("mcap") or 0.0
+            mc[str(int(c))] = cap_v         # 선행0 정규화 별칭(JP 4자리·HK pad)
 
     def _rank(t: str) -> float:
-        c = str(t).split(".")[0]
-        return -(mc.get(str(int(c)), 0.0) if c.isdigit() else 0.0)
+        # 영숫자 코드(285A)도 시총으로 랭크 — 옛 isdigit-only 는 신규 대형주를 0
+        # (최하위)로 떨궈 캡 적용 시 탈락시켰음(사용자 2026-06-19).
+        c = str(t).split(".")[0].upper()
+        key = str(int(c)) if c.isdigit() else c
+        return -(mc.get(key) or mc.get(c) or 0.0)
     return sorted(full, key=_rank)[:cap]
 
 
