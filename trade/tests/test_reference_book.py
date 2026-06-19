@@ -73,6 +73,14 @@ class RenderTests(unittest.TestCase):
         self.assertIn("scrollRestoration", h)
         self.assertIn("sessionStorage", h)
 
+    def test_csv_search_scope_to_main_table(self):
+        # CSV·검색 JS가 미매칭 패널의 tbody tr 까지 잡으면 카운트 부풀고 CSV 크래시
+        # (사용자 2026-06-19 'CSV 또 안 됨' — 패널 80행 오염). 메인 표 한정 가드.
+        h = R.render_page(self._ROWS, unmatched=[("미매칭X", ["듣보종목"], 3)])
+        self.assertIn("<table id='tbl'>", h)
+        self.assertIn("#tbl tbody tr", h)
+        self.assertNotIn("querySelectorAll('tbody tr')", h)   # 비한정 선택자 금지
+
     def test_render_search_index_lowercase(self):
         h = R.render_page([{"mti6": "831110", "name": "DRAM디램", "industry": "반도체",
                             "hs": ["8542321000"], "companies": ["삼성전자"]}])

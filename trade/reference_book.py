@@ -139,7 +139,7 @@ body.dark .umt thead th{border-color:#4a3f17}body.dark .umi,body.dark .umc{color
 
 _JS = """
 (function(){
- var q=document.getElementById('q'),rows=[].slice.call(document.querySelectorAll('tbody tr')),
+ var q=document.getElementById('q'),rows=[].slice.call(document.querySelectorAll('#tbl tbody tr')),
   cnt=document.getElementById('cnt'),ind='';
  function apply(){
   var t=(q.value||'').trim().toLowerCase().split(/\\s+/).filter(Boolean),n=0;
@@ -253,7 +253,7 @@ def render_page(rows: list[dict], *, now: datetime | None = None,
         f"{chips}</div>"
         "<p id='cnt' class='cnt'></p>"
         f"{_render_unmatched(unmatched)}"
-        "<table><thead><tr><th>품목 (MTI)</th><th>산업</th>"
+        "<table id='tbl'><thead><tr><th>품목 (MTI)</th><th>산업</th>"
         "<th>구성 HS10 코드</th><th>관련 상장사</th></tr></thead>"
         f"<tbody>{''.join(body)}</tbody></table>"
         f"<script>{_JS}</script></div>{SCROLL_RESTORE_JS}</body></html>")
