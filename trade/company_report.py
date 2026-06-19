@@ -238,9 +238,10 @@ def _company_exposure(name: str, by_mti: dict, pairs: list,
     try:
         _tn, th_hs = mti_companies.theme_for_company(name)
     except Exception:
-        th_hs = ""
+        _tn, th_hs = None, ""
     if th_hs:
-        for m6 in _hs6_to_mti6(th_hs)[:3]:
+        # 핀(_THEME_MTI_PIN) 우선 — 건기식 등 catch-all 은 정확한 MTI6 에만(2026-06-19).
+        for m6 in mti_companies.theme_mti6(_tn, [th_hs])[:3]:
             node = (by_mti or {}).get(m6)
             if node:
                 _add((node.get("name") or m6).strip(), (m6, node))
@@ -356,6 +357,58 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
             "items": rows[:30], "companies": companies[:40]}
 
 
+def _looks_like_hs(q: str) -> bool:
+    """입력이 HS코드 표기인지 — 점/대시 포함 거의-숫자(8517.79·2106.90-9099) 또는
+    8~10자리 bare(HSK10). 6자리 bare 는 주식코드라 제외. 순수."""
+    s = (q or "").strip()
+    d = "".join(c for c in s if c.isdigit())
+    if len(d) < 6:
+        return False
+    if s.isdigit():
+        return 8 <= len(d) <= 10                     # bare = HSK10 (6자리=주식코드)
+    nondigit = sum(1 for c in s if not c.isdigit() and c not in ".- ")
+    return nondigit == 0                             # 점/대시 표기 HS (숫자 외 토큰 없음)
+
+
+def _hs_code_search(query: str, by_mti: dict, pairs: list,
+                    by_imp: dict | None = None) -> dict | None:
+    """HS코드 → 그 HS6 의 MTI 품목들 + 수출입 숫자 + 관련 상장사 (사용자 2026-06-19
+    'HS코드로 검색하면 숫자'). HS6→MTI6(mti_map). 미해석 → None. 순수."""
+    from trade import mti_companies, mti_map
+    try:
+        m6s = mti_map.hs6_to_mti6(query)
+    except Exception:
+        m6s = []
+    if not m6s:
+        return None
+    seen: set[str] = set()
+    companies: list[str] = []
+
+    def _add(cos):
+        for c in cos:
+            k = _norm(c)
+            if c and k and k not in seen:
+                seen.add(k)
+                companies.append(c)
+
+    rows: list[dict] = []
+    for m6 in m6s:
+        node = (by_mti or {}).get(m6)
+        item = ((node.get("name") if node else None) or m6).strip()
+        ind = ((node.get("industry") if node else "") or "").strip()
+        imp_node = (by_imp or {}).get(m6)
+        cos = list(dict.fromkeys(list(mti_companies.companies_for(item))
+                                 + mti_companies.channel_companies_for(item, pairs)))
+        rows.append({"item": item, "industry": ind,
+                     "export_usd": _latest(node), "import_usd": _latest(imp_node),
+                     **_dir_metrics(node, imp_node), "companies": cos,
+                     "hs_linked": True})
+        _add(cos)
+    rows.sort(key=lambda x: -(x["export_usd"] or 0))
+    return {"mode": "item", "query": query, "name": f"HS {query}",
+            "synonym": None, "items": rows[:30], "companies": companies[:40]}
+
+
 def gather(query: str, api_key: str | None = None) -> dict:
     """회사(이름·6자리 코드) **또는 품목**(예: 반도체) → 보고서 데이터.
     회사 모드: {mode:'company', query, code, name, products, exposure}.
@@ -379,6 +432,14 @@ def gather(query: str, api_key: str | None = None) -> dict:
         pairs = mti_companies.load_channel_pairs()
     except Exception as exc:
         log.warning("company_report data %s: %s", q, exc)
+
+    # HS코드 직접 검색 → 해당 품목 수출입 숫자 (사용자 2026-06-19 'HS로 치면 숫자
+    # 나와야'). 점/대시 포함 or 8~10자리 bare = HS(6자리 bare 는 주식코드라 제외 —
+    # HS6 는 '8517.79' 점표기로). HS6→MTI6 → 그 품목들의 수출입.
+    if _looks_like_hs(q):
+        hs_res = _hs_code_search(q, by_mti, pairs, by_imp)
+        if hs_res:
+            return hs_res
 
     digits = q.upper().split(".")[0]
     is_code = digits.isdigit() and len(digits) == 6
