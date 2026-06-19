@@ -410,5 +410,41 @@ class CatchAllHeatmapFallbackTests(unittest.TestCase):
         self.assertIn('data-rb-search="고정식축전기"', html)
 
 
+class TypoAndAliasBatchTests(unittest.TestCase):
+    """회사명 오타 교정 + 미매칭 알림 후보 별칭 매칭(사용자 2026-06-19 xlsx)."""
+
+    def test_company_typo_correction(self):
+        from trade import mti_companies as mc
+        # 운영자 확인 오타 → 정확 표기(매칭/표시 레이어)
+        self.assertEqual(mc.canon_company("에스테아이"), "에스티아이")
+        self.assertEqual(mc.canon_company("SK바이오센서"), "SK바이오사이언스")
+        self.assertEqual(mc.canon_company("메티바이오메드"), "메타바이오메드")
+        # 미등재는 원본 보존
+        self.assertEqual(mc.canon_company("삼성전기"), "삼성전기")
+
+    def test_price_alias_has_typos(self):
+        from trade import price_provider as pp
+        self.assertEqual(pp._NAME_ALIASES.get("SK바이오센서"), "SK바이오사이언스")
+        self.assertEqual(pp._NAME_ALIASES.get("메티바이오메드"), "메타바이오메드")
+
+    def test_new_aliases_resolve_company_and_hs(self):
+        from trade import mti_companies as mc
+        rows = {r["name"]: r for r in mc.theme_rows()}
+        # 신규 테마 — 회사·HS 연결
+        self.assertIn("코스모신소재",
+                      rows["NCM 양극재 (니켈코발트망간 리튬염)"]["companies"])
+        self.assertEqual(mc.theme_for_company("코셈")[0], "SEM (주사전자현미경)")
+        # 기존 테마 회사 추가
+        self.assertIn("다이요유덴", rows["MLCC (적층세라믹콘덴서)"]["companies"])
+        self.assertIn("경산제지", rows["골심지 / 특수지 (판지 원지)"]["companies"])
+        self.assertIn("이녹스리튬", rows["수산화리튬 / 수입 수산화리튬"]["companies"])
+
+    def test_new_alias_hs_links_to_mti(self):
+        # NCM 2841.90 → MTI6 해석되어 수출입 부착 가능(히트맵 gap-fill 과 결합).
+        self.assertTrue(C._hs6_to_mti6("2841.90"))
+        self.assertTrue(C._hs6_to_mti6("9012.10"))     # SEM
+        self.assertTrue(C._hs6_to_mti6("2402.20"))     # 담배
+
+
 if __name__ == "__main__":
     unittest.main()

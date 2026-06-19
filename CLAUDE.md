@@ -1234,6 +1234,32 @@ HS 어느 쪽으로 검색해도 같은 수출입 숫자로 수렴). 핵심:
   `test_theme_hs_camera_and_hs_list`. 새 핀 추가 시 theme_mti6 회귀 동반.
 - 상시: '🔍 미매칭 알림 후보' 패널(레퍼런스북)이 어느 품목에도 안 붙는 알림
   회사를 빈도순 노출 → 새 데이터 들어올 때 별칭/매핑 추가.
+- **catch-all '기타' MTI 수출입 누락 해소 (2026-06-19 MLCC)**: `industry.
+  aggregate_by_mti` 가 산업='기타'(CATCH_ALL) MTI 를 통째 제외 → 고정식축전기
+  (MLCC=MTI 833310) 등 catch-all 품목이 `load_mti_stored(by_mti)` 에 없어 별칭
+  검색 시 관련기업만 나오고 수출입 숫자 영구 누락. fix = `industry.load_mti_
+  heatmap(conn)` 이 `customs_heatmap_leaf`(전 leaf, 기타 제외 없음)를 MTI6 로 묶어
+  최신월 exp/imp + YoY·MoM(3-포인트라 ΔYoY/ΔMoM None, precomputed 'metrics')
+  반환 → `company_report.gather` 가 `by_mti`/`by_imp` 결손분만 `setdefault` gap-fill
+  (named-industry full-series 노드 보존). 기존 테마 HS→MTI→노드 경로가 자동으로
+  실제 품목명·수출입 표시. universal(전 catch-all 별칭). `_item_matches` (2b)도
+  `theme_mti6`(핀 존중)으로 통일. 결과 품목명 클릭 → 실제 품목명 재검색(dashboard
+  rb 위젯 위임 핸들러 `data-rb-search`). 회귀 `CatchAllHeatmapFallbackTests`.
+- **회사명 오타(타이포) 교정 = 단일 레지스트리 + 운영자 확인 (사용자 2026-06-19
+  '타이포 교정 저장 + 앞으로 들어오는 것 처리')**: BeOn/텔레그램 알림의 회사명
+  오타는 두 곳에 등재 — ① **매칭/표시** = `mti_companies._COMPANY_TYPO`(canon_
+  company 가 _COMPANY_CANON 보다 먼저 적용 → chip·dedup·테마/노출 매칭 전부 정확
+  표기로 수렴) ② **가격 해석** = `price_provider._NAME_ALIASES`. 현재 3건(에스테
+  아이→에스티아이·SK바이오센서→SK바이오사이언스·메티바이오메드→메타바이오메드).
+  ⚠️ **fuzzy 자동교정 금지**(오병합 위험) — forward 절차: '🔍 미매칭 알림 후보'
+  패널이 새 오타 노출 → 운영자 확인 → 두 dict 에 1줄씩 추가. 회귀 `TypoAndAlias
+  BatchTests`.
+- **미매칭 알림 후보 배치 매칭 (2026-06-19 Unmatched_Items_HS_Mapping.xlsx)**:
+  29행 검토 → 기존 테마 회사 추가 5(골심지+경산제지·수산화리튬+이녹스리튬·MLCC+
+  다이요유덴·천연가스+대성산업/SH에너지화학·변압기+KP일렉트릭) + 신규 테마 18(NCM·
+  무수불산·ECH·포토레지스트·챔버부품·평판디스플레이·광섬유·태양광셀·SEM·SEM부품·
+  EDS·이온빔·봉합바늘·캐뉼러·의료기기부분품·줄자·절삭공구·담배). 회사명은 운영자
+  확인 표기 그대로(DATA INTEGRITY) — '+' 파편화 복합행은 메인장비 테마로 그룹핑.
 
 ## Multi-market expansion (US → KR → JP → TW → CN)
 
