@@ -31,7 +31,9 @@ log = logging.getLogger("trade.dart_revenue")
 #   v3 = 손익라인 변형 추가(당기손익·주당손익 — audit 잔여 P&L 오매핑, 2026-06-18)
 #   v4 = 주당* EPS 라인 전부 차단(주당순이익/주당이익/희석주당 등 — _PNL_RE 에
 #        '당기순' 만 있고 '주당' 누락이라 67건 잔존, 사용자 audit 2026-06-19)
-_PARSER_VERSION = 4
+#   v5 = 표선택 정밀화(parse_empty 보강, 2026-06-20): 연구개발비(R&D) 표 제외 +
+#        목차/데이터없는 표(콤마금액·% 0) 제외 → 차순위 진짜 매출표가 선택되게
+_PARSER_VERSION = 5
 
 
 def _data_dir() -> Path:

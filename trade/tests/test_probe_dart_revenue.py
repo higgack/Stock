@@ -214,6 +214,27 @@ class CollectTests(unittest.TestCase):
                  "<TR><TD>철강</TD><TD>5,000</TD><TD>400</TD><TD>80%</TD></TR></TABLE>")
         self.assertGreater(P.collect_score(P.parse_table_block(posco)), 0)  # 매출구성표 유지
 
+    def test_collect_score_excludes_rnd(self):
+        # parse_empty 002710 류 — '연구개발비/매출액 비율' R&D 비용표가 '매출액'+'%'
+        # 신호로 오선택돼 진짜 매출표를 가렸다. R&D 표 → 0 (차순위 매출표 선택되게).
+        rnd = ("<TABLE><TR><TD>구분</TD><TD>연구개발비용</TD>"
+               "<TD>매출액</TD><TD>연구개발비/매출액 비율</TD></TR>"
+               "<TR><TD>당기</TD><TD>12,345</TD><TD>500,000</TD><TD>2.5%</TD></TR></TABLE>")
+        self.assertEqual(P.collect_score(P.parse_table_block(rnd)), 0)
+
+    def test_collect_score_excludes_dataless_toc(self):
+        # parse_empty 002290 류 — '사업의 내용' 목차/섹션 표가 '매출/사업/제품' 키워드로
+        # 오선택. 콤마금액·% 데이터 0 → 0 (매출구성표는 반드시 금액·비중을 가짐).
+        toc = ("<TABLE><TR><TD>구분</TD><TD>주요 제품 및 사업</TD></TR>"
+               "<TR><TD>1</TD><TD>토목 매출</TD></TR>"
+               "<TR><TD>2</TD><TD>건축 사업 부문</TD></TR></TABLE>")
+        self.assertEqual(P.collect_score(P.parse_table_block(toc)), 0)
+        # 같은 형태라도 콤마금액 있으면 정상 매출표 — 회귀 0 확인
+        real = ("<TABLE><TR><TD>공사종류</TD><TD>매출액</TD></TR>"
+                "<TR><TD>토목</TD><TD>123,456</TD></TR>"
+                "<TR><TD>건축</TD><TD>234,567</TD></TR></TABLE>")
+        self.assertGreater(P.collect_score(P.parse_table_block(real)), 0)
+
     def test_parse_table_grid_merge(self):
         # rowspan/colspan 전파 — 병합셀 값 복제로 컬럼 정렬(대한항공 클래스).
         t = ("<TABLE><TR><TD ROWSPAN=2>A</TD><TD COLSPAN=2>2025</TD></TR>"
