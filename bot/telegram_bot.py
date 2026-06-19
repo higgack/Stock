@@ -3206,82 +3206,42 @@ async def _periodic_highlow_prewarm() -> None:
 # US 52주(Finviz·가벼움)는 야간장(UTC 13:00-21:30)이라 Asia 와 충돌 0 → :00 동거.
 # TW 무버(TWSE OpenAPI·가벼움)는 TW 52주와 같은 :45(소스 다름 — yfinance vs OpenAPI).
 #   slot 분(分) → (보드 토큰…). 토큰: US/JP/HK/CN_A/TW=52주, TWMV=TW 무버.
-_HL_SCAN_SLOTS = {
-    0:  ("US", "JP"),     # :00 — US 52주(전량 재산출) + JP 52주(peer)
-    15: ("HK",),          # :15 — HK 52주(peer)
-    30: ("CN_A", "US"),   # :30 — CN 52주 + US 52주 (US 30분 전량 갱신, 사용자 2026-06-19
-                          #       '미국장 새벽=저부하' → :00·:30 force 로 5,625 전체 재산출)
-    45: ("TW", "TWMV"),   # :45 — TW 52주(full 上市+上櫃) + TW 무버(TWSE/TPEx OpenAPI)
-}
+_HL_TIMER_ACTIVE: bool | None = None
 
 
-def _run_highlow_slot(slot: int) -> None:
-    """한 슬롯의 컴퓨티드 보드를 산출 — **장중이면 force 재산출**(1시간 슬롯 경계의
-    sub-초 jitter 로 신선도 게이트가 skip 하지 않게), **장 밖이면 게이트 fetch**
-    (마감 직후 stale 면 EOD 1회 재산출 → 이후 freeze, 사용자 2026-06-16 '장종료엔
-    종가기준으로 멈춰'). force 경로는 yfinance 정지(YF_PAUSE) 존중 — 정지 중엔 게이트
-    fetch 로 폴백(스테일 유지, 스캔 0). daemon thread 에서만 호출(무거운 yfinance
-    스캔이라 이벤트루프·watchdog 폴링 비차단)."""
-    from datetime import datetime, timezone
+def _highlow_timer_active() -> bool:
+    """독립 highlow-scan.timer 가 설치·활성인가 — 활성이면 in-process 폴백 슬롯
+    스캔을 돌리지 않는다(별 프로세스 타이머와 이중 스캔·yfinance throttle 방지).
+    systemctl 부재/실패 시 False(폴백 가동). 프로세스 수명 1회 캐시."""
+    global _HL_TIMER_ACTIVE
+    if _HL_TIMER_ACTIVE is not None:
+        return _HL_TIMER_ACTIVE
     try:
-        from bot.finviz_client import _SESSIONS_UTC, yf_paused
+        import subprocess
+        r = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "highlow-scan.timer"],
+            timeout=5)
+        _HL_TIMER_ACTIVE = (r.returncode == 0)
     except Exception:
-        return
-    now = datetime.now(timezone.utc)
-
-    def _open(m: str) -> bool:
-        s = _SESSIONS_UTC.get(m)
-        if not s:
-            return False
-        oh, om, ch, cm = s
-        return now.weekday() < 5 and (oh, om) <= (now.hour, now.minute) < (ch, cm)
-
-    try:
-        paused = yf_paused()
-    except Exception:
-        paused = False
-
-    for tok in _HL_SCAN_SLOTS.get(slot, ()):
-        try:
-            if tok == "US":
-                # US 52주 — Finviz(전미국 신고저 리스트) 1차 + 전미국 yfinance 폴백.
-                from bot.finviz_client import fetch_high_low
-                fetch_high_low(force=(_open("US") and not paused))
-            elif tok in ("JP", "HK", "CN_A"):
-                from bot.intl_highlow import _kick, fetch_intl_highlow
-                if _open(tok) and not paused:
-                    _kick(tok)                 # 장중 force(전 유니버스 재스크레이프·_running dedup)
-                else:
-                    fetch_intl_highlow(tok)    # 장 밖 게이트 → EOD 1회 후 freeze
-            elif tok == "TW":
-                from bot.tw_highlow import _kick_tw_highlow, fetch_tw_highlow
-                if _open("TW") and not paused:
-                    _kick_tw_highlow()         # 장중 force(上市+上櫃 yfinance, _running dedup)
-                else:
-                    fetch_tw_highlow()         # 장 밖 게이트 → EOD 1회 후 freeze
-            elif tok == "TWMV":
-                # TW 무버 — TWSE/TPEx OpenAPI(가벼움). 장중 force·장 밖 게이트.
-                from bot.twse_client import fetch_tw_movers
-                fetch_tw_movers(force=_open("TW"))
-        except Exception as exc:
-            log.warning("highlow slot %s/%s: %s", slot, tok, exc)
+        _HL_TIMER_ACTIVE = False
+    return _HL_TIMER_ACTIVE
 
 
 async def _periodic_highlow_scan() -> None:
-    """컴퓨티드 보드(US/JP/HK/TW 52주 + TW 무버) 시간대별 슬롯 스캐너 — 페이지
-    방문·고정시각 무관(사용자 2026-06-16 '내가 안 들어가도 1시간단위로 최신 ·
-    장종료엔 멈춰서 부하↓'). 매시 :00 / :20 / :40 경계로 깨어나 그 슬롯 보드를
-    daemon thread 로 산출. 장중 = force 재산출(1h 신선), 장 밖 = 게이트(EOD 1회→
-    freeze). 옛 30분 off-session-only EOD task 를 장중 1h 까지 확장 + 시간대 분산.
-    벽시계 정렬 sleep(드리프트 0)·daemon fire(실수 #6 shutdown-join 회피)·startup
-    한 박자 늦춤."""
+    """52주 신고저 슬롯 스캐너 — **독립 highlow-scan.timer 가 주(主)**(봇 배포·
+    재시작과 무관하게 :00/:15/:30/:45 별 프로세스로 스캔; 사용자 2026-06-19 '배포로
+    중간에 변경해도 아시아·미국 신고가는 그대로 돌게'). 이 in-process 경로는 타이머
+    미설치/비활성 VM 의 **폴백** — 타이머가 활성이면 매 슬롯에서 skip(이중 스캔 방지).
+    슬롯 로직은 bot.highlow_scan 단일 소스. 벽시계 정렬 sleep·daemon fire(실수 #6)."""
     await asyncio.sleep(120)
     from datetime import datetime, timedelta, timezone
+
+    from bot.highlow_scan import _HL_SCAN_SLOTS, run_slot
     slot_mins = sorted(_HL_SCAN_SLOTS.keys())
     while True:
         now = datetime.now(timezone.utc)
         nxt = None
-        for sm in slot_mins:                       # 다음 :00/:20/:40 경계
+        for sm in slot_mins:                       # 다음 :00/:15/:30/:45 경계
             cand = now.replace(minute=sm, second=0, microsecond=0)
             if cand > now:
                 nxt = cand
@@ -3290,10 +3250,12 @@ async def _periodic_highlow_scan() -> None:
             nxt = (now + timedelta(hours=1)).replace(
                 minute=slot_mins[0], second=0, microsecond=0)
         await asyncio.sleep(max(5.0, (nxt - now).total_seconds()))
+        if _highlow_timer_active():
+            continue                               # 독립 타이머가 담당 → in-process skip
         slot = nxt.minute
         try:
             import threading as _slt
-            _slt.Thread(target=_run_highlow_slot, args=(slot,), daemon=True,
+            _slt.Thread(target=run_slot, args=(slot,), daemon=True,
                         name=f"highlow-slot-{slot}").start()
         except Exception:
             log.exception("highlow slot thread failed")

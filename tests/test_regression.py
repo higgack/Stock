@@ -5000,11 +5000,12 @@ class TestHighlowFullUsAndCapWeight:
         assert not kicked, "force=False·fresh 인데 불필요 재산출"
 
     def test_us_highlow_in_30_slot_and_force_wired(self):
-        # US 가 :00·:30 슬롯 + fetch_high_low 가 force 를 _highlow_full_us 로 전달
+        # US 가 :00·:30 슬롯 + fetch_high_low 가 force 를 _highlow_full_us 로 전달.
+        # 슬롯 정의는 bot.highlow_scan 으로 이관(2026-06-19 독립 타이머 분리).
         import pathlib
         root = pathlib.Path(__file__).resolve().parents[1]
-        tb = (root / "bot" / "telegram_bot.py").read_text(encoding="utf-8")
-        assert '30: ("CN_A", "US")' in tb, "US 가 :30 슬롯에 없음"
+        hs = (root / "bot" / "highlow_scan.py").read_text(encoding="utf-8")
+        assert '30: ("CN_A", "US")' in hs, "US 가 :30 슬롯에 없음"
         fv = (root / "bot" / "finviz_client.py").read_text(encoding="utf-8")
         assert "_highlow_full_us(force=force)" in fv, "fetch_high_low 가 force 미전달"
 
@@ -11482,54 +11483,69 @@ class TestAsiaTier2_20260616:
 
 
 class TestHighlowSlotScan:
-    """컴퓨티드 보드(US/JP/HK/TW 52주 + TW 무버) 시간대별 슬롯 스캐너 (사용자
-    2026-06-16: 장중 1h force 재산출[페이지 방문 없이도 최신] + 장 밖 EOD 1회 후
-    freeze, 무거운 Asia 52주를 :00/:20/:40 으로 20분씩 분산, KR·네이버 직접 보드
-    제외). 옛 off-session-only 30분 EOD task 를 대체."""
+    """52주 신고저 슬롯 스캐너 — **독립 highlow-scan.timer 가 주(主)**(봇 배포·재시작
+    과 무관하게 :00/:15/:30/:45 별 프로세스 oneshot 으로 스캔; 사용자 2026-06-19
+    '배포로 중간에 변경해도 아시아·미국 신고가는 그대로 돌게'). in-process asyncio
+    task 는 타이머 미설치 VM 폴백(타이머 활성 시 skip — 이중 스캔 방지). 슬롯 로직은
+    bot.highlow_scan 단일 소스 — telegram 의존 없이 oneshot 가능."""
 
-    def test_scan_task_wired(self):
-        src = open("bot/telegram_bot.py", encoding="utf-8").read()
-        assert "def _run_highlow_slot" in src and "async def _periodic_highlow_scan" in src
-        assert "_highlow_scan_task = asyncio.create_task(_periodic_highlow_scan())" in src
-        # 옛 EOD task 흔적 제거(슬롯 스캐너로 대체).
-        assert "_periodic_highlow_eod" not in src and "_ensure_highlow_eod" not in src
-        seg = src[src.index("def _run_highlow_slot"):
-                  src.index("async def _periodic_highlow_scan")]
-        # 장중 force vs 장 밖 게이트 분기 — US force 인자, JP/HK·TW kick(force), 게이트 fetch.
-        assert "fetch_high_low(force=" in seg
-        assert "_kick(tok)" in seg and "fetch_intl_highlow(tok)" in seg
-        assert "_kick_tw_highlow()" in seg and "fetch_tw_highlow()" in seg
-        assert "fetch_tw_movers(force=" in seg
-        assert '"CN_A"' in seg             # CN 재도입(2026-06-17) — intl 경로 라우팅
-        # KR·US movers 제외(네이버 직접 — 슬롯 대상 아님).
-        assert '"KR"' not in seg and "fetch_us_movers" not in seg
-        assert "yf_paused" in seg          # force 경로는 YF_PAUSE 존중
-
-    def test_slots_staggered_15min(self):
-        # CN 재도입(2026-06-17)으로 무거운 Asia 52주 4종(JP/HK/CN/TW)이 :00/:15/
-        # :30/:45 로 15분씩 분리(동시 부하 회피, 사용자 '부하고려해서 다시 전체적으로').
-        import pytest as _pt
-        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
-        from bot.telegram_bot import _HL_SCAN_SLOTS
-        assert _HL_SCAN_SLOTS[0] == ("US", "JP")     # 야간 US + JP(비충돌) 동거
+    def test_scan_module_slots(self):
+        from bot.highlow_scan import _HL_SCAN_SLOTS
+        assert _HL_SCAN_SLOTS[0] == ("US", "JP")
         assert _HL_SCAN_SLOTS[15] == ("HK",)
-        assert _HL_SCAN_SLOTS[30] == ("CN_A",)       # CN 재도입 슬롯
-        assert _HL_SCAN_SLOTS[45] == ("TW", "TWMV")  # TW 52주 + TW 무버(소스 다름)
-        # 무거운 yfinance 52주 4종이 서로 다른 슬롯에(15분 간격) — 겹침 0.
-        heavy_slots = {m: s for s, toks in _HL_SCAN_SLOTS.items()
-                       for m in toks if m in ("JP", "HK", "CN_A", "TW")}
-        assert len(set(heavy_slots.values())) == 4   # JP/HK/CN/TW 각자 다른 슬롯
-        # 슬롯 분(分) 간격 = 60/슬롯수 균등(15분) — 부하 분산 불변식.
-        mins = sorted(_HL_SCAN_SLOTS.keys())
-        assert mins == [0, 15, 30, 45]
+        assert _HL_SCAN_SLOTS[30] == ("CN_A", "US")
+        assert _HL_SCAN_SLOTS[45] == ("TW", "TWMV")
+        assert sorted(_HL_SCAN_SLOTS) == [0, 15, 30, 45]
+        # 무거운 Asia 52주 4종이 서로 다른 슬롯(동시 yfinance 부하 회피, 겹침 0)
+        heavy = {m: s for s, toks in _HL_SCAN_SLOTS.items()
+                 for m in toks if m in ("JP", "HK", "CN_A", "TW")}
+        assert len(set(heavy.values())) == 4
 
-    def test_run_slot_in_session_forces(self, monkeypatch):
-        # 진입점 스모크(CLAUDE.md §7d) — 장중이면 force 경로 라우팅.
-        import pytest as _pt
-        _pt.importorskip("telegram")   # telegram_bot 무거운 의존성 — VM 에서만 import
+    def test_current_slot_floor(self):
+        from datetime import datetime, timezone
+        from bot.highlow_scan import _current_slot
+        def f(m):
+            return _current_slot(datetime(2026, 6, 19, 5, m, tzinfo=timezone.utc))
+        assert [f(m) for m in (0, 7, 15, 29, 30, 44, 45, 59)] == \
+            [0, 0, 15, 15, 30, 30, 45, 45]
+
+    def test_systemd_units_and_install(self):
+        # 독립 타이머 — service(oneshot, python -m bot.highlow_scan) + timer(:00/15/30/45)
+        # + install.sh enable. 봇 재시작과 무관(사용자 2026-06-19).
+        import os
+        assert os.path.exists("deploy/highlow-scan.service")
+        assert os.path.exists("deploy/highlow-scan.timer")
+        svc = open("deploy/highlow-scan.service", encoding="utf-8").read()
+        assert "python -m bot.highlow_scan" in svc and "Type=oneshot" in svc
+        tmr = open("deploy/highlow-scan.timer", encoding="utf-8").read()
+        assert "*:00,15,30,45:00" in tmr and "Unit=highlow-scan.service" in tmr
+        ins = open("deploy/install.sh", encoding="utf-8").read()
+        assert "highlow-scan.service" in ins and "highlow-scan.timer" in ins
+        assert "enable --now highlow-scan.timer" in ins
+
+    def test_main_joins_workers(self):
+        # oneshot 이 daemon 스캔 스레드 완료를 join — 프로세스 조기 종료 시 스캔이
+        # 중간에 죽던 것(=봇 재시작 버그의 oneshot 판) 방지(CLAUDE.md §7d).
+        src = open("bot/highlow_scan.py", encoding="utf-8").read()
+        assert "def _join_workers" in src and "join(timeout" in src
+        assert "run_slot(slot)" in src and "_join_workers()" in src
+
+    def test_timer_gate_in_telegram(self):
+        # in-process 폴백은 타이머 활성 시 skip(이중 스캔·throttle 방지) + 단일 소스 import
+        src = open("bot/telegram_bot.py", encoding="utf-8").read()
+        assert "def _highlow_timer_active" in src and "highlow-scan.timer" in src
+        seg = src[src.index("async def _periodic_highlow_scan"):][:2200]
+        assert "if _highlow_timer_active():" in seg and "continue" in seg
+        assert "from bot.highlow_scan import" in seg
+        assert "_highlow_scan_task = asyncio.create_task(_periodic_highlow_scan())" in src
+        # 옛 in-line 슬롯 로직 제거(highlow_scan 으로 이관)
+        assert "def _run_highlow_slot" not in src
+
+    def test_run_slot_routing(self, monkeypatch):
+        # 진입점 스모크(CLAUDE.md §7d) — 장중 force vs 장 밖 게이트 라우팅 (telegram 불요)
         import bot.finviz_client as fc
+        import bot.highlow_scan as hs
         import bot.intl_highlow as ih
-        import bot.telegram_bot as tb
         import bot.tw_highlow as th
         import bot.twse_client as tw
         rec: dict = {}
@@ -11552,14 +11568,14 @@ class TestHighlowSlotScan:
                             lambda force=False: rec.__setitem__("twmv", force))
         from datetime import datetime, timezone
         wd = datetime.now(timezone.utc).weekday() < 5
-        tb._run_highlow_slot(0)            # US + JP
-        tb._run_highlow_slot(30)           # CN_A (재도입)
-        tb._run_highlow_slot(45)           # TW + TWMV
+        hs.run_slot(0)             # US + JP
+        hs.run_slot(30)            # CN_A + US
+        hs.run_slot(45)            # TW + TWMV
         assert rec.get("us") is wd                       # US: 평일 force / 주말 gate
         assert rec.get("gate_JP") is True                # JP 닫힘 → 게이트
         assert rec.get("twmv") is wd                     # TW 무버: 평일 force
         if wd:
-            assert rec.get("kick_CN_A") is True          # CN 52주 장중 force(재도입)
+            assert rec.get("kick_CN_A") is True          # CN 52주 장중 force
             assert rec.get("tw_kick") is True            # TW 52주 force
         else:
             assert rec.get("gate_CN_A") is True          # 주말 → CN 게이트
