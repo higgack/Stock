@@ -185,7 +185,7 @@ def companies_for(name: str) -> list[str]:
         return []
     for kws, cos in _MAP:
         if any(k in key for k in kws):
-            return list(cos)
+            return [canon_company(c) for c in cos]   # 표기 통일(LS·POSCO 등)
     return []
 
 
@@ -208,6 +208,32 @@ def load_channel_pairs(db_path=None) -> list[tuple[str, list[str]]]:
     (매칭용 — 공백제거·소문자). DB 부재/실패 → [] (graceful)."""
     return [(item.replace(" ", "").lower(), toks)
             for item, toks in _load_alerts(db_path)]
+
+
+def _clean_stocks(stocks, meta) -> list[str]:
+    """alert stocks 토큰 정제 (순서 보존 dedupe) — 콤마 결합 분리('에코프로비엠,
+    LG화학' → 둘), '관련종목 :' 머리말 제거, 14자 초과·다중공백(다사 결합) junk
+    제외, 비상장 제외, 표준 표기 정규화(canon_company). 순수."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for s in stocks:
+        if not isinstance(s, str):
+            continue
+        s = s.strip()
+        if ":" in s:                      # '관련종목 : LG전자' 머리말 제거
+            s = s.split(":")[-1].strip()
+        parts = [p.strip() for p in s.split(",")] if "," in s else [s]
+        for p in parts:
+            if not p or len(p) > 14 or p.count(" ") >= 2:   # 다중공백=다사 junk
+                continue
+            if "비상장" in str(meta.get(p, "")):
+                continue
+            c = canon_company(p)
+            k = c.replace(" ", "").lower()
+            if k and k not in seen:
+                seen.add(k)
+                out.append(c)
+    return out
 
 
 def _load_alerts(db_path=None) -> list[tuple[str, list[str]]]:
@@ -235,10 +261,7 @@ def _load_alerts(db_path=None) -> list[tuple[str, list[str]]]:
                     meta = _json.loads(meta_j or "{}")
                 except Exception:
                     continue
-                toks = [s.strip() for s in stocks if isinstance(s, str)]
-                toks = [s for s in toks
-                        if s and len(s) <= 14
-                        and "비상장" not in str(meta.get(s, ""))]
+                toks = _clean_stocks(stocks, meta)
                 if toks:
                     out.append((str(item), toks))
         finally:
@@ -278,6 +301,7 @@ _ALIAS_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("계전기", ("relay",)),
     ("무기류", ("장갑차", "tank", "로켓발사", "유도무기")),
     ("미용및조직수복", ("보툴리눔", "필러")),
+    ("화장품", ("메이크업", "기초화장", "화장용", "마스크팩", "눈화장", "입술화장")),
     ("치과용기기", ("임플란트",)),
     ("안과및광학", ("콘택트렌즈",)),
     ("영상진단", ("엑스선", "x-레이", "c-arm")),
@@ -298,6 +322,26 @@ _BOUNDARY_RE = {s: re.compile(r"(?<![a-z0-9])" + re.escape(s) + r"(?![a-z0-9])")
 # 실제 상장사명과도 일치하지 않아 정상 회사 탈락 위험 0(2026-06-19 검증).
 _ALIAS_SURFACES = frozenset(s for _, surfaces in _ALIAS_GROUPS for s in surfaces)
 _NON_COMPANY = frozenset({"소주"}) | _ALIAS_SURFACES
+
+# 품목당 관련상장사 캡 — 비슷한 제품을 만드는 업체가 많아 8은 과도하게 잘림
+# (사용자 2026-06-19 '캡 꼭 있어야 해? 엄청 많은데'). 한 행 chip 폭주만 막는
+# 넉넉한 상한(실데이터 최대 ~30). 0/None 이면 무제한.
+_CHANNEL_CAP = 40
+
+# 같은 회사 다른 표기 정규화 (사용자 2026-06-19 'SK하이닉스/하이닉스, 영문/한글
+# 변형 합쳐서'). 공백제거·소문자 키 → 표준 표기. 콤마/부분일치 fuzzy 금지(하이텍팜
+# ≠ DB하이텍 류 오병합 차단) — **검증된 동일사 변형만** 수기 등재. 알림·큐레이션
+# 양쪽 표기 불일치(LS ELECTRIC↔LS일렉트릭, POSCO홀딩스↔포스코홀딩스)를 한 chip 으로.
+_COMPANY_CANON = {
+    "ls일렉트릭": "LS ELECTRIC", "lselectric": "LS ELECTRIC",
+    "포스코홀딩스": "POSCO홀딩스",
+    "sk하이닉스": "SK하이닉스", "하이닉스": "SK하이닉스",
+}
+
+
+def canon_company(name: str) -> str:
+    """회사명 표준 표기 (검증된 변형만). 미등재는 원본 그대로. 순수."""
+    return _COMPANY_CANON.get((name or "").replace(" ", "").lower(), name)
 
 
 def _surface_hit(term: str, item: str) -> bool:
@@ -334,9 +378,68 @@ def channel_companies_for(name: str, pairs: list[tuple[str, list[str]]]) -> list
         if not any(_surface_hit(t, item) for t in terms):
             continue
         for s in stocks:
-            k = s.replace(" ", "").lower()
+            c = canon_company(s)
+            k = c.replace(" ", "").lower()
             if k == key or k in _NON_COMPANY or k in seen:
                 continue
             seen.add(k)
-            out.append(s)
-    return out[:8]
+            out.append(c)
+    return out[:_CHANNEL_CAP] if _CHANNEL_CAP else out
+
+
+# ── 품목 동의어 그룹 (사용자 2026-06-19 '인쇄회로·PCB 같은 건데 따로 나옴 —
+# 다 보여주거나 비슷한 품목 묶어줘'). 검색(기업보고서·레퍼런스북)에서 어느
+# 표기로 쳐도 같은 통합 결과로 수렴. 검색은 recall 우선(별칭이 행 큐레이션
+# 에서 제외한 bare 'pcb' 알림도 포함). 대표 품목명 + 동의어/영문 표기들. ──────
+_SYNONYM_GROUPS = (
+    ("인쇄회로", ("pcb", "fpcb", "fccl", "ccl", "연성회로", "동박적층")),
+    ("리튬이온전지", ("2차전지", "이차전지", "ess")),
+    ("계전기", ("relay", "릴레이")),
+    ("치과용기기및재료", ("임플란트",)),
+    ("미용및조직수복용", ("보툴리눔", "톡신", "필러")),
+    ("반도체제조용장비", ("반도체장비",)),
+)
+
+
+def synonym_companies(query: str, pairs: list) -> tuple[str, list[str]] | None:
+    """검색어가 동의어 그룹(예 PCB↔인쇄회로)에 속하면 (대표 품목명, 통합
+    회사 리스트). 대표 품목 static+channel(별칭 포함) + 동의어 surface 알림을
+    모두 합쳐 'PCB'·'인쇄회로' 검색이 같은 결과로 수렴(사용자 2026-06-19).
+    표기 통일·품목어 누수 제외·캡 적용. 미해당 → None. 순수."""
+    qn = (query or "").replace(" ", "").lower()
+    if not qn:
+        return None
+    for canon, syns in _SYNONYM_GROUPS:
+        ck = canon.replace(" ", "").lower()
+        if not (qn == ck or qn in syns or (len(qn) >= 3 and (qn in ck or ck in qn))):
+            continue
+        seen: set[str] = set()
+        out: list[str] = []
+
+        def _add(cos):
+            for c in cos:
+                c = canon_company(c)
+                k = c.replace(" ", "").lower()
+                if k and k != ck and k not in _NON_COMPANY and k not in seen:
+                    seen.add(k)
+                    out.append(c)
+
+        _add(companies_for(canon))
+        _add(channel_companies_for(canon, pairs))
+        for syn in syns:                      # bare 동의어 알림도(검색=recall)
+            for item, stocks in pairs:
+                if _surface_hit(syn, item):
+                    _add(stocks)
+        return canon, (out[:_CHANNEL_CAP] if _CHANNEL_CAP else out)
+    return None
+
+
+def search_synonyms(name: str) -> list[str]:
+    """품목명에 대응하는 동의어/영문 표기들 — 레퍼런스북 검색 인덱스 보강
+    용('PCB'·'FPCB' 로 인쇄회로 행이 검색되게). 순수."""
+    nk = (name or "").replace(" ", "").lower()
+    out: list[str] = []
+    for canon, syns in _SYNONYM_GROUPS:
+        if canon.replace(" ", "").lower() in nk:
+            out.extend(syns)
+    return out
