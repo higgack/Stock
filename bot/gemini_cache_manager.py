@@ -127,14 +127,18 @@ class GeminiContextCache:
             return None
 
         try:
-            from google import genai
             from google.genai import types as genai_types
+            from bot.genai_factory import make_client
         except ImportError as exc:
             log.warning("gemini cache skipped: google-genai not importable (%s)", exc)
             return None
 
         try:
-            client = genai.Client(api_key=api_key)
+            # 팩토리 경유 — Vertex 모드면 ADC 클라이언트(api_key 무시→401 회피). 지금은
+            # 위 use_vertex() early-return 으로 Vertex 시 미도달(캐싱 보류)이나, 향후
+            # Vertex 캐싱 활성화 시 이 줄이 api_key 를 Vertex 에 들이밀어 401 나는 걸
+            # 방지(사용자 2026-06-19 지적). AI Studio 모드에선 api_key 클라이언트.
+            client = make_client(api_key)
             cache = client.caches.create(
                 model=model,
                 config=genai_types.CreateCachedContentConfig(

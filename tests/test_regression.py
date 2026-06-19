@@ -12196,6 +12196,10 @@ class TestGenaiFactoryVertexToggle:
         cm = open("bot/gemini_cache_manager.py", encoding="utf-8").read()
         assert "from bot.genai_factory import use_vertex" in cm
         assert "explicit caching deferred" in cm
+        # 137줄 하드닝(2026-06-19): api_key 직접 클라이언트 제거(Vertex 401 방지) →
+        # 팩토리 경유. early-return 으로 현재 Vertex 시 미도달이나 방어차원.
+        assert "genai.Client(api_key=" not in cm
+        assert "make_client(api_key)" in cm
 
     def test_google_client_has_vertex_branch(self):
         gc = open("TradingAgents/tradingagents/llm_clients/google_client.py",
