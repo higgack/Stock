@@ -2367,7 +2367,8 @@ mark.snippet-target {
 .si-news-title { font-size: 13px; font-weight: 600; color: var(--fg); }
 .si-news-title a { color: var(--fg); text-decoration: none; }
 .si-news-title a:hover { color: var(--accent); }
-.si-news-meta { font-size: 11px; color: var(--fg-soft); margin-top: 2px; }
+.si-news-sub { font-size: 12px; color: var(--fg-soft); margin-top: 4px; line-height: 1.5; }
+.si-news-meta { font-size: 11px; color: var(--fg-soft); margin-top: 4px; }
 .si-empty { color: var(--fg-soft); font-size: 13px; padding: 14px 0; }
 .si-tl-item { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .si-tl-date { min-width: 80px; font-size: 12px; color: var(--fg-soft); flex-shrink: 0; }
@@ -4972,10 +4973,16 @@ def _render_stock_info_html(rec: dict) -> str:
             publisher = esc(n.get("publisher", ""))
             ndate = esc(n.get("date", ""))
             link = n.get("link", "")
-            # 원문 링크 있으면 클릭 가능(사용자 2026-06-17) — 없으면 평문(깨진 링크 방지).
+            sub = esc(n.get("subcontent", ""))
+            # worldStock 뉴스는 기사별 URL 이 없다(oid=fnGuide 고정, FnGuide 와이어
+            # 요약) → 제목은 종목 네이버 페이지로 링크하고, **본문 요약(subcontent)을
+            # 카드에 인라인** 노출해 클릭 없이 바로 읽히게(사용자 2026-06-19 '뉴스
+            # 누르면 다 같은데로' — 깨진 deep-link 폐기, 내용 직접 표시).
             title_html = (f'<a href="{esc(link)}" target="_blank" rel="noopener">{title}</a>'
                           if link else title)
+            sub_html = f'<div class="si-news-sub">{sub}</div>' if sub else ""
             n_items += (f'<div class="si-news-item"><div class="si-news-title">{title_html}</div>'
+                        f'{sub_html}'
                         f'<div class="si-news-meta">{publisher} · {ndate}</div></div>\n')
         news_html = n_items
     elif news:

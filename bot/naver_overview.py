@@ -88,7 +88,7 @@ def fetch_naver_world_news(ticker: str, max_items: int = 10) -> list[dict] | Non
     t = (ticker or "").strip().upper()
     if not t:
         return None
-    ck = f"naver_worldnews_v2_{t}.json"   # v2: 기사 permalink 수정(2026-06-19) → 옛 빈링크 캐시 무효화
+    ck = f"naver_worldnews_v3_{t}.json"   # v3: 기사 deep-link 폐기(2026-06-19) — 본문요약 인라인 + 종목 페이지 링크
     hit = _cached(ck, ttl=_NEWS_TTL)
     if isinstance(hit, dict) and hit.get("items"):
         return hit["items"][:max_items]
@@ -109,25 +109,23 @@ def fetch_naver_world_news(ticker: str, max_items: int = 10) -> list[dict] | Non
                 continue
             dt = str(it.get("dt") or "")
             date = f"{dt[:4]}-{dt[4:6]}-{dt[6:8]}" if len(dt) >= 8 else ""
-            # 원문 링크(사용자 2026-06-17 '뉴스 누르면 원본으로') — Naver 뉴스
-            # permalink. API 키명 변형 방어적 시도, **완전한 URL 만들 수 있을 때만**
-            # set(불완전하면 "" → 평문 폴백, 깨진 링크 절대 안 만듦).
+            # 링크 — worldStock 뉴스 item 엔 기사 URL 필드가 **없다** (VM probe
+            # 2026-06-19 ICHR: keys=type/subcontent/thumbUrl/oid/ohnm/aid/tit/dt,
+            # oid='fnGuide' 고정·aid 만 상이). 옛 worldstock/news/{oid}/{aid} 는
+            # deep-link 미작동 — 네이버 SPA 가 인식 못 해 **모든 기사가 일반 시장
+            # 페이지로 폴백**(사용자 2026-06-19 '어떤 뉴스든 다 같은데로'). FnGuide 가
+            # 통신사(로이터 등) 와이어를 한국어로 요약한 것이라 표준 기사 페이지가
+            # 부재. 해결: (a) 전체 요약(subcontent)을 카드에 **인라인** 노출(클릭 없이
+            # 읽힘) + (b) 제목은 종목의 네이버 worldstock 페이지로 링크(신뢰 가능,
+            # 깨진 deep-link 안 만듦). _link 우선순위 필드가 생기면 그걸 사용.
             link = ""
             for _lk in ("linkUrl", "link", "url", "newsUrl", "bodyUrl", "origin"):
                 _v = it.get(_lk)
                 if isinstance(_v, str) and _v.startswith("http"):
                     link = _v
                     break
-            if not link:
-                # 워드스톡 뉴스 기사 permalink. oid 는 'fnGuide' 등 **비숫자 제공자**도
-                # 있어(VM probe 2026-06-19 ICHR: oid=fnGuide/aid=2612357), 구
-                # n.news.naver.com/mnews/article/{oid}/{aid} 는 비숫자 oid 에 500.
-                # worldstock/news/{oid}/{aid} 가 200(검증) — isdigit 가드 제거, 비어만
-                # 아니면 생성(불완전 시 "" → 평문 폴백, 깨진 링크 방지).
-                _oid = str(it.get("oid") or it.get("officeId") or "").strip()
-                _aid = str(it.get("aid") or it.get("articleId") or "").strip()
-                if _oid and _aid:
-                    link = f"https://m.stock.naver.com/worldstock/news/{_oid}/{_aid}"
+            if not link and rc:
+                link = f"https://m.stock.naver.com/worldstock/stock/{rc}/total"
             items.append({
                 "title": tit,
                 "publisher": (it.get("ohnm") or "").strip(),
