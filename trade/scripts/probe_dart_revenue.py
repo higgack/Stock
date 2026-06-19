@@ -607,8 +607,14 @@ def _fetch_report_list(api_key: str, corp_code: str, days: int = 600) -> list[di
         log.warning("list.json %s 실패: %s", corp_code, exc)
         return []
     if payload.get("status") != "000":
-        log.info("list.json %s status=%s msg=%s", corp_code,
-                 payload.get("status"), payload.get("message", ""))
+        st = payload.get("status")
+        # 013(조회된 데이타 없음 = 사업보고서 없는 종목: SPAC·상폐·펀드·비보고법인)은
+        # 전수 스윕에서 수백 건 정상 발생 → debug(로그 홍수 차단, 사용자 2026-06-20).
+        # 020(사용한도 초과)은 운영 영향이라 warning 유지. 그 외는 info.
+        lvl = (log.debug if st == "013"
+               else log.warning if st == "020" else log.info)
+        lvl("list.json %s status=%s msg=%s", corp_code, st,
+            payload.get("message", ""))
         return []
     return payload.get("list") or []
 
@@ -628,7 +634,12 @@ def download_doc_raw(api_key: str, rcept_no: str) -> str | None:
             # 비-zip = DART 에러 응답. 사유(013 데이터없음/020 사용한도/100 부적절 등)를
             # 본문 발췌로 로깅 — 침묵 실패 금지(사용자 2026-06-18 현대제철 len=147 진단).
             snip = blob[:180].decode("utf-8", "ignore").replace("\n", " ").strip()
-            log.info("document.xml %s: 비-zip 응답 (len=%d) %s", rcept_no, len(blob), snip)
+            # 014(파일 없음 = 정정본 doc 부재 → 호출부가 원본 후보로 폴백)는 전수
+            # 스윕 정상 발생 → debug(홍수 차단). 020(사용한도)은 warning, 그 외 info.
+            lvl = (log.debug if "014" in snip or "파일이 존재하지 않" in snip
+                   else log.warning if "020" in snip or "사용한도" in snip
+                   else log.info)
+            lvl("document.xml %s: 비-zip 응답 (len=%d) %s", rcept_no, len(blob), snip)
             return None
         zf = zipfile.ZipFile(io.BytesIO(blob))
         names = [n for n in zf.namelist() if n.lower().endswith((".xml", ".html"))]
