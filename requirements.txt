@@ -39,4 +39,11 @@ exchange_calendars>=4.5
 # JPX 가 2026-06 URL 구조를 고정 CSV → per-week XLS (BIFF, Code page 932)
 # 로 변경. xlrd 가 없으면 JP 수급 데이터 graceful skip.
 xlrd>=2.0
+# langchain-google-vertexai — Vertex AI backend for the Gemini Chat surface
+# (analysts + decision tier via TradingAgents google_client.py, trade bot).
+# Only needed when GOOGLE_GENAI_USE_VERTEXAI=true; the google-genai SDK
+# (genai.Client(vertexai=True), already a dep) covers the screener/feed
+# surface. Pulls google-cloud-aiplatform. Also declared in TradingAgents
+# pyproject (installed via -e below) — listed here for explicitness.
+langchain-google-vertexai>=2.0.0
 -e ./TradingAgents

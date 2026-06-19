@@ -29,6 +29,7 @@ import hashlib
 import json
 import logging
 import os
+from bot.genai_factory import effective_key as _effective_key
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -512,7 +513,7 @@ def resolve_freetext(text: str) -> tuple[Optional[dict], Optional[str], float, b
         return None, f"__REDIRECT__:{existing_slug}", 0.0, False
 
     # 3) Phase 0 — generate via Pro.
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         return None, "GOOGLE_API_KEY 미설정 — 자유텍스트 도메인 사용 불가", 0.0, False
 

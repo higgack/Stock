@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+from bot.genai_factory import effective_key as _effective_key
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("bot.daily_kr_flow")
@@ -535,7 +536,7 @@ def generate() -> tuple[str, float, str | None] | None:
     (제목 포함 본문, cost_krw, png_path|None). 데이터 전무 시 None."""
     import time as _time
     _t0 = _time.monotonic()
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         log.error("daily_byte: GOOGLE_API_KEY missing")
         return None

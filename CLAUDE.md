@@ -1162,6 +1162,41 @@ TEXT`) 한 곳에만 추가**. 메인 대시보드 nav `_external_links` 추가 
 default. (SV·한국수출입 등 외부 앱은 자체 인증 env 보유.) ⚠️ 비번이
 채팅에 노출되면 회전 권고.
 
+## Gemini 백엔드 — AI Studio ↔ Vertex AI (env 토글, 2026-06-19)
+
+사용자가 Google Gemini 를 **AI Studio(Gemini Developer API) → Vertex AI**
+로 전환 (GCP project `gen-lang-client-0325676393`, region `us-central1`,
+VM SA `roles/aiplatform.user` + ADC + `aiplatform.googleapis.com` 활성).
+코드는 **단일 env 토글**로 두 백엔드를 오감 — `GOOGLE_GENAI_USE_VERTEXAI=
+true` 면 전 봇이 Vertex(ADC, API 키 불요), 미설정/false 면 기존 AI Studio
+(`GOOGLE_API_KEY`). 토글 off 가 기본이라 **안전한 롤백**(한 줄로 복구).
+
+두 surface 가 따로:
+1. **google-genai SDK** (`genai.Client`) — `bot/genai_factory.py` 가 단일
+   factory. `make_client(api_key)` 가 vertex 면 `Client(vertexai=True,
+   project, location)`, 아니면 `Client(api_key=)`. `effective_key()` 는
+   vertex 모드에서 **truthy sentinel `"vertex-adc"`** 반환 → 전 봇의
+   `if not api_key:` readiness 가드가 키 없이도 통과(ADC 인증이므로).
+   적용: `screener._call_pro`(피드 11모듈 공용)·`screener_gics_check`·피드
+   모듈 11개 guard. `gemini_cache_manager` 는 vertex 시 **명시적 캐싱 보류**
+   (Vertex 캐시 규약 다름·cached_content bind 미검증, ~5% 비용↑ graceful).
+2. **langchain Chat** (`ChatGoogleGenerativeAI`) — AI Studio 전용 패키지라
+   Vertex 는 **별도 `langchain-google-vertexai`(ChatVertexAI)** 필요(신규
+   의존성). `TradingAgents/.../google_client.py` 가 `_use_vertex()` 분기
+   (`_get_vertex_llm`/`_get_aistudio_llm`, thinking_budget 매핑 공유 +
+   구버전 reject 시 graceful fallback). 트레이드 봇은 `trade/llm_insights.
+   make_chat()` 단일 factory (`_llm_ready()` 가드, company/period_report 공용).
+
+VM 적용(1회): ① 양 venv 에 `pip install langchain-google-vertexai`
+(`~/stock/.venv` + `~/stock-trade/.venv`) ② `.env` 에 `GOOGLE_GENAI_USE_
+VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION=us-central1`
+(GOOGLE_API_KEY 공백 가능) ③ 서비스 재시작 ④ probe:
+`~/stock/.venv/bin/python3 -c "from google import genai; print(genai.Client(
+vertexai=True,project='gen-lang-client-0325676393',location='us-central1').
+models.generate_content(model='gemini-2.5-flash',contents='ok').text)"`.
+회귀 테스트: `tests/test_regression.py::TestGenaiFactoryVertexToggle`(10).
+⚠️ 비용: stock + 봇이 같은 GCP 크레딧 공유 → 결제 예산 알림 권장.
+
 ## Multi-market expansion (US → KR → JP → TW → CN)
 
 Phase tracking — what's done, what's blocking the next phase:

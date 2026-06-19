@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from bot.genai_factory import effective_key as _effective_key
 import re
 import time
 from pathlib import Path
@@ -290,7 +291,7 @@ def translate_description_kr(desc: str) -> str:
         return cache[key]
     if _CACHE_ONLY:
         return desc
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         return desc
     prompt = (
@@ -334,7 +335,7 @@ def translate_news_titles_kr(titles: list[str]) -> dict[str, str]:
         return out
     if _CACHE_ONLY:
         return out
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         return out
     lines = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(todo))

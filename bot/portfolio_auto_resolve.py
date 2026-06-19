@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from bot.genai_factory import effective_key as _effective_key
 import re
 import time
 from pathlib import Path
@@ -98,7 +99,7 @@ def batch_resolve(names: list[str]) -> dict[str, tuple[str, str] | None]:
     if not todo:
         return result
 
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         for key, _ in todo:
             result[key] = None

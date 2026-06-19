@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from bot.genai_factory import effective_key as _effective_key
 import re
 import time
 from dataclasses import dataclass
@@ -1713,8 +1714,8 @@ def _call_pro(api_key: str, prompt: str, model: str = "gemini-2.5-pro",
     non-grounded call if the SDK version doesn't support the grounding API
     (try/except on types import).
     """
-    from google import genai
-    client = genai.Client(api_key=api_key)
+    from bot.genai_factory import make_client
+    client = make_client(api_key)
 
     grounding_config = None
     if enable_grounding:
@@ -2424,7 +2425,7 @@ def run_screener_with_theme(
             )
             return cached
 
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         log.error("screener: GOOGLE_API_KEY missing")
         return None
