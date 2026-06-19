@@ -1211,6 +1211,30 @@ docstring 참조). ⚠️ `ChatVertexAI` 는 langchain-google-vertexai 3.2 에�
 설치가 google-cloud-aiplatform 를 끌어와 **protobuf 7→6 다운그레이드**(양 venv)
 — Gemini 외 이상 동작 시 1순위 의심.
 
+## 트레이드 레퍼런스북 HS↔수출입 매칭 — 핀 + HS검색 (2026-06-19)
+
+`trade/` 레퍼런스북·기업보고서의 HS↔MTI↔회사↔수출입 연계 정밀화 (회사·품목·
+HS 어느 쪽으로 검색해도 같은 수출입 숫자로 수렴). 핵심:
+- **`trade/mti_companies._THEME_MTI_PIN`** = catch-all HS6 과잉부착 해결.
+  HS 는 **앞 6자리만 MTI 에 연결**(`mti_map.hs6_to_mti6`)되므로 `2106.90`
+  ('기타조제식료품' → 음료·홍삼·효모·로얄제리 등 10+ MTI 분산) 같은 catch-all
+  은 한 코드로도 무관 품목에 회사가 과잉부착됨. → 테마명 → **정확한 MTI6 핀**
+  (operator 큐레이션). ⚠️ HS10 자릿수 정밀화는 **무효**(테마코드 다수가 실제
+  HSK10 leaf 아님; `2106909099`=로얄제리 오착, 실데이터 검증). 현재 **5핀**:
+  건기식→016900·가정용미용기기→829100·탈철기→729010·연마재→290090·카드프린터
+  →813390. `build_rows`·`company_report` 공용 `theme_mti6(name, hs)` 가 핀
+  우선, 없으면 HS6 자동해석. **새 과잉부착 = `_THEME_MTI_PIN` 한 줄 추가**
+  (감사: `theme_mti6` 가 4+ MTI 뱉는 테마 = 후보).
+- **카메라모듈** = `8529.90`(음향·LCD·OLED 혼재) → **`8517.79`**(스마트폰부품
+  MTI 812820). 식이보충제·카메라 등 '실무 통관 분류 ≠ 이론 HS' 케이스.
+- **HS코드 검색** = `company_report.gather` 가 HS 입력(점/대시·8~10자리; 6자리
+  bare 는 주식코드라 제외, HS6 는 `8517.79` 점표기)을 `_hs_code_search` 로
+  라우팅 → HS6→MTI6 품목별 수출입(YoY/MoM)+관련 상장사 (item-mode 렌더 재사용).
+- 회귀: `trade/tests/test_company_report.py::test_hs_pin_and_hs_code_search` +
+  `test_theme_hs_camera_and_hs_list`. 새 핀 추가 시 theme_mti6 회귀 동반.
+- 상시: '🔍 미매칭 알림 후보' 패널(레퍼런스북)이 어느 품목에도 안 붙는 알림
+  회사를 빈도순 노출 → 새 데이터 들어올 때 별칭/매핑 추가.
+
 ## Multi-market expansion (US → KR → JP → TW → CN)
 
 Phase tracking — what's done, what's blocking the next phase:
