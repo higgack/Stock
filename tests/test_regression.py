@@ -9890,6 +9890,27 @@ class TestNaverCommodityCharts:
         dsrc = open("bot/dashboard.py", encoding="utf-8").read()
         assert "si-news-sub" in dsrc and 'n.get("subcontent"' in dsrc  # 인라인 배선
 
+    def test_naver_world_news_stale_fallback(self, monkeypatch):
+        # 사용자 2026-06-19 '처음엔 요약 나오더니 다시 원복' — 네이버 일시차단으로 12h
+        # 캐시 만료 후 fetch 실패 시 옛 동작(None)은 호출부가 stored(yfinance) 뉴스로
+        # 폴백해 subcontent 를 잃음. 직전 성공 캐시(30일) 스테일 폴백으로 subcontent 유지.
+        import requests
+        import bot.finviz_client as fv
+        import bot.naver_overview as no
+        store = {"naver_worldnews_v3_ICHR.json":
+                 {"items": [{"title": "옛제목", "subcontent": "옛 요약", "link": "L"}]}}
+        # 12h 캐시 만료(None)·30일 스테일만 존재
+        monkeypatch.setattr(fv, "_cached",
+                            lambda ck, ttl=0: store.get(ck) if ttl >= 30 * 86400 else None)
+        monkeypatch.setattr(fv, "_cache_write", lambda ck, v: store.__setitem__(ck, v))
+        monkeypatch.setattr(no, "_rc_for", lambda t: "ICHR.O")
+        monkeypatch.setattr(requests, "get",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("blocked")))
+        out = no.fetch_naver_world_news("ICHR")
+        assert out and out[0]["subcontent"] == "옛 요약"   # 스테일 폴백 — None 아님
+        store.clear()
+        assert no.fetch_naver_world_news("ICHR") is None   # 스테일도 없으면 None
+
     def test_lookup_cache_cleared_on_dashboard_startup(self):
         # 사용자 2026-06-19: SWR lookup_cache 가 코드 배포를 가로질러 옛 HTML 서빙 →
         # 코드 fix 가 페이지에 안 닿던 클래스(실수 #11). 서버 startup 이 lookup_cache
