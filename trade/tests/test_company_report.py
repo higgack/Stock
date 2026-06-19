@@ -214,6 +214,16 @@ class ItemModeTests(unittest.TestCase):
         # 매칭 없으면 None → gather 가 회사 모드로 폴백
         self.assertIsNone(C._item_matches("존재하지않는임의문자열X", {}, []))
 
+    def test_item_matches_theme(self):
+        # 큐레이션 테마 키워드(SiC·MLCC·CCTV 등)도 기업보고서에 노출
+        # (사용자 2026-06-19 '테마로 추가된 것도 나와야').
+        res = C._item_matches("SiC", {}, [])
+        self.assertIsNotNone(res)
+        self.assertIn("티씨케이", res["companies"])
+        self.assertIn("반도체 소재", res["synonym"])      # 테마 카테고리명 노출
+        self.assertIn("코맥스", C._item_matches("CCTV", {}, [])["companies"])
+        self.assertIn("클래시스", C._item_matches("피부과", {}, [])["companies"])
+
     def test_render_free_item(self):
         data = {"mode": "item", "query": "반도체", "name": "반도체",
                 "items": [{"item": "디램", "industry": "반도체",

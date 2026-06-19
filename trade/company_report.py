@@ -271,6 +271,20 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
         syn_name, syn_cos = syn
         _add(syn_cos)
 
+    # (1c) 큐레이션 테마 행도 검색 — SiC·MLCC·CCTV·피부과 등 MTI 품목표에 없어
+    # 테마로 보강한 카테고리가 기업 보고서에도 나오게(사용자 2026-06-19 '테마로
+    # 추가된 것도 나와야'). 테마명에 query 포함 시 그 테마 큐레이션 기업 노출.
+    theme_name = None
+    if len(qn) >= 2:
+        try:
+            for tr in mti_companies.theme_rows():
+                if qn in _norm(tr["name"]):
+                    theme_name = tr["name"]
+                    _add(tr["companies"])
+                    break
+        except Exception:
+            pass
+
     # (2) query 와 이름/산업이 매칭되는 저장 품목들 → 행 + 그 품목들의 관련기업
     rows: list[dict] = []
     for mti6, node in (by_mti or {}).items():
@@ -291,8 +305,9 @@ def _item_matches(query: str, by_mti: dict, pairs: list,
     if not companies and not rows:
         return None
     rows.sort(key=lambda x: -(x["export_usd"] or 0))
+    label = syn_name or theme_name          # 동의어 또는 테마 카테고리명 노출
     return {"mode": "item", "query": query, "name": query,
-            "synonym": syn_name if syn_name and _norm(syn_name) != qn else None,
+            "synonym": label if label and _norm(label) != qn else None,
             "items": rows[:30], "companies": companies[:40]}
 
 
