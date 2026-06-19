@@ -1271,16 +1271,26 @@ HS 어느 쪽으로 검색해도 같은 수출입 숫자로 수렴). 핵심:
   으로 228900+290090(기타화학)만 핀. ②평판디스플레이 = 8524.11(LCD,837110) 아닌
   **8524.12(OLED,837120)** — 삼성디스플레이 TV LCD 철수·QD-OLED 집중.
 - **DART 매출구성 보강 후보 = 각 품목에 추가 상장사 발굴 (2026-06-19 '더 많이 붙여')**:
-  `dart_match.additional_candidates(inv, item_current)` = G2 `suggest_companies_for_
-  items` 를 **전 품목**(미매핑뿐 아니라 이미 매핑된 것 포함)에 돌려 **현재 큐레이션에
-  없는** DART 매출구성 매칭 회사만 추림(canon 으로 표기변형 통일). `curation_candidates`
-  타이머(1·11·15·21일)가 계산 → `~/.trade/dart_reinforce_candidates.json` 적재 +
-  텔레그램 DM 요약(`compose_reinforce`, 상위 12). `reference_book` 가 그 JSON 읽어
-  '🧬 DART 보강 후보' 패널(파랑, 접이식 — 미매칭 노랑과 색구분) 렌더(렌더는 캐시 read
-  만, 전품목×전상장사 매칭은 무거워 타이머에서만). **승인 전 후보**(자동 큐레이션 X —
-  오매핑이 신뢰 깎음). 즉시 채우려면 VM 에서 `python -m trade.scripts.curation_
-  candidates --dry-run`(출력만) 또는 무옵션(DM+JSON). 회귀: `test_dart_match::test_
-  additional_candidates_excludes_current` + `test_reference_book::test_reinforce_*`.
+  `dart_match.additional_candidates(inv, item_current)` = `suggest_companies_for_items`
+  를 **전 품목**(미매핑뿐 아니라 이미 매핑된 것 포함)에 돌려 **현재 큐레이션에 없는**
+  DART 매출구성 매칭 회사만 추림(canon 으로 표기변형 통일). **18일 자동(`trade-bot-
+  dart-revenue.timer` = `dart_revenue --refresh`)** — 전수 인벤토리 갱신 직후 `dart_
+  revenue._build_reinforce()` 가 갓 빌드된 인벤토리로 계산(사용자 2026-06-19 '18일에
+  같이 자동') → `~/.trade/dart_reinforce_candidates.json` 적재 + 운영자 DM(`reference_
+  book.reinforce_telegram` 상위 12). `reference_book` 가 그 JSON 읽어 '🧬 DART 보강
+  후보' 패널(파랑, 접이식 — 미매칭 노랑과 색구분) 렌더(렌더는 캐시 read 만, 전품목×전
+  상장사 매칭은 무거워 18일에만). **승인 전 후보**(자동 큐레이션 X — 오매핑이 신뢰 깎음;
+  승인=`_MAP`/테마 추가하면 reference·report·heatmap-클릭 전 표면 자동 반영). curation_
+  candidates(1·11·15·21일)는 **미매핑 전용**으로 환원(보강은 18일로 이동 — 느린 전품목
+  매칭을 4회/월 안 돌림). 속도: `suggest_companies_for_items` 가 _canon(정규식)을 품목·
+  제품당 1회만 선계산 → 핫루프 순수 문자열(전품목×전상장사 ~2초, 이전 수분). 즉시
+  채우려면 VM `python -m trade.dart_revenue --refresh`. 회귀: `test_dart_match::test_
+  additional_candidates_excludes_current` + `test_reference_book::test_reinforce_*`/
+  `test_samsung_display_dedup`.
+- **표기변형 중복 통합 (2026-06-19)**: `_MAP` OLED 의 모회사표기 '삼성디스플레이(삼성
+  전자)' ↔ 테마/알림의 '삼성디스플레이' 가 OLED 행에 둘 다 떠 중복(타이포처럼 보임) →
+  `_COMPANY_CANON['삼성디스플레이(삼성전자)']='삼성디스플레이'` 로 dedup·매칭 통합.
+  이런 '같은 회사 다른 표기' 케이스 = _COMPANY_CANON, 순수 오타 = _COMPANY_TYPO.
 
 ## Multi-market expansion (US → KR → JP → TW → CN)
 

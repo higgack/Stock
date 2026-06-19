@@ -48,6 +48,24 @@ def load_reinforce(path: Path | None = None) -> list[tuple[str, list[str]]]:
     return items
 
 
+def reinforce_telegram(reinforce: dict, top: int = 12) -> str | None:
+    """보강 후보 → 텔레그램 HTML 요약(후보수 상위 top 품목). 0이면 None(무음).
+    전체는 레퍼런스북 '🧬 DART 보강 후보' 패널. 18일 dart-revenue 갱신이 호출. 순수."""
+    if not reinforce:
+        return None
+    items = sorted(reinforce.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    total = sum(len(v) for v in reinforce.values())
+    lines = [f"🧬 <b>DART 보강 후보 {total}건</b> ({len(reinforce)}품목, 상위 "
+             f"{min(top, len(items))})",
+             "이미 매핑된 품목에도 DART 매출구성상 <b>추가로 붙일 수 있는</b> 상장사. "
+             "검토 후 승인 추가. 전체는 레퍼런스북 🧬 패널.", ""]
+    for name, cos in items[:top]:
+        more = f" 외 {len(cos) - 6}" if len(cos) > 6 else ""
+        lines.append(f"• <b>{_html.escape(name)}</b> — "
+                     f"{_html.escape(', '.join(cos[:6]))}{more}")
+    return "\n".join(lines)
+
+
 def build_rows() -> list[dict]:
     """전 품목 [{mti6, name, industry, hs:[HS10...], companies:[상장사...]}]
     (산업·품목명 정렬). 연계표 부재 시 [] (graceful). 순수에 가까움(파일·store.db 읽기)."""

@@ -405,6 +405,36 @@ def load_failures() -> list[dict]:
         return []
 
 
+def _build_reinforce() -> int:
+    """전수 인벤토리 직후 DART 보강 후보(품목별 추가 상장사) 재계산 → 레퍼런스북
+    캐시 JSON 적재 + 운영자 DM(사용자 2026-06-19 '18일 자동, 다트로 품목·회사 연결').
+    전 품목(이미 매핑 포함)에 현재 큐레이션에 없는 DART 매출구성 매칭 회사 발굴 —
+    승인 전 후보. 후보 품목수 반환. best-effort(실패해도 refresh 결과와 무관)."""
+    try:
+        from trade import dart_match, mti_companies, reference_book
+        inv = load_inventory()
+        if not inv:
+            return 0
+        item_current = {
+            r["name"]: {mti_companies.canon_company(c).replace(" ", "").lower()
+                        for c in (r.get("companies") or [])}
+            for r in reference_book.build_rows()}
+        reinforce = dart_match.additional_candidates(inv, item_current)
+        reference_book.save_reinforce(reinforce)
+        log.info("DART 보강 후보 %d품목 적재", len(reinforce))
+        note = reference_book.reinforce_telegram(reinforce)
+        if note:
+            try:
+                from trade.scripts.scan_customs import _send_alert
+                _send_alert(note)
+            except Exception as exc:
+                log.warning("보강 DM skip: %s", exc)
+        return len(reinforce)
+    except Exception as exc:
+        log.warning("보강 후보 계산 skip: %s", exc)
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     from trade.scripts.probe_dart_revenue import _SAMPLE_WIDE, _load_env
@@ -524,6 +554,10 @@ def main(argv: list[str] | None = None) -> int:
             shard = (int(i), int(m))
         res = refresh_inventory(api_key=key, shard=shard, force=args.force)
         print(f"📦 전수 갱신{' (force 전수 재파싱)' if args.force else ''}: {res}")
+        # 전수(비-shard) 갱신 직후 DART 보강 후보 재계산 — 갓 빌드된 인벤토리로
+        # 품목별 추가 상장사 발굴(사용자 2026-06-19 '18일에 같이 자동'). 18일 타이머.
+        if not shard:
+            print(f"🧬 DART 보강 후보: {_build_reinforce()}품목")
         return 0
     codes = [c.strip() for c in args.codes.split(",") if c.strip()] or [c for c, _, _ in _SAMPLE_WIDE]
     inv = build_inventory(codes, key)
