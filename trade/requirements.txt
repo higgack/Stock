@@ -3,3 +3,6 @@ python-dotenv==1.0.1
 # 산업트렌드 🔍추가신호(Gemini 2.5 Pro)용 — 선택적.
 # 미설치 또는 GOOGLE_API_KEY 미설정 시 박스만 조용히 생략(파이프라인 정상).
 langchain-google-genai>=2.0
+# Vertex AI backend (optional) — only used when GOOGLE_GENAI_USE_VERTEXAI=true.
+# Routes the trade bot's Gemini calls through Vertex (ADC, no API key).
+langchain-google-vertexai>=2.0

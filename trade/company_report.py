@@ -544,13 +544,11 @@ def render_llm(data: dict, model: str | None = None) -> tuple[str, dict]:
     free = render_free(data)
     try:
         from trade import llm_insights, llm_usage
-        if not llm_insights._api_key():
-            return (free + _note("⚠️ AI 요약 생략 — GOOGLE_API_KEY 없음(무료 보고서만)."),
+        if not llm_insights._llm_ready():
+            return (free + _note("⚠️ AI 요약 생략 — Gemini 백엔드 없음(무료 보고서만)."),
                     {"used": False})
-        from langchain_google_genai import ChatGoogleGenerativeAI
         mdl = model or llm_insights.DEFAULT_MODEL
-        llm = ChatGoogleGenerativeAI(model=mdl, temperature=0.3,
-                                     google_api_key=llm_insights._api_key())
+        llm = llm_insights.make_chat(mdl, temperature=0.3)
         resp = llm.invoke([("system", _LLM_SYS), ("human", _llm_digest(data))])
         um = getattr(resp, "usage_metadata", None) or {}
         in_tok, out_tok = um.get("input_tokens", 0), um.get("output_tokens", 0)
@@ -679,13 +677,10 @@ def send_to_channel(query: str, mode: str = "free", api_key: str | None = None) 
     if mode == "llm":
         try:
             from trade import llm_insights
-            if llm_insights._api_key():
-                from langchain_google_genai import ChatGoogleGenerativeAI
+            if llm_insights._llm_ready():
                 from trade import llm_usage
                 mdl = llm_insights.DEFAULT_MODEL
-                resp = ChatGoogleGenerativeAI(
-                    model=mdl, temperature=0.3,
-                    google_api_key=llm_insights._api_key()).invoke(
+                resp = llm_insights.make_chat(mdl, temperature=0.3).invoke(
                         [("system", _LLM_SYS), ("human", _llm_digest(data))])
                 um = getattr(resp, "usage_metadata", None) or {}
                 try:

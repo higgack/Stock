@@ -12084,3 +12084,130 @@ class TestHighlowUniverseFullCoverage:
         assert "KST" in market_hours_label("US")
         assert "10:00–14:30" in market_hours_label("TW")
         assert market_hours_label("ZZ") == ""
+
+
+class TestGenaiFactoryVertexToggle:
+    """Gemini 백엔드 AI Studio ↔ Vertex AI env 토글 (bot.genai_factory).
+
+    GOOGLE_GENAI_USE_VERTEXAI 한 스위치로 전 봇이 이동. effective_key()
+    sentinel(키 부재여도 readiness 가드 통과) · make_client() 라우팅 ·
+    호출부 배선(E2E)을 영구 회귀 차단."""
+
+    def _clear(self, mp):
+        for k in ("GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_CLOUD_PROJECT",
+                  "GCP_PROJECT", "GOOGLE_CLOUD_LOCATION", "GOOGLE_CLOUD_REGION",
+                  "GOOGLE_API_KEY"):
+            mp.delenv(k, raising=False)
+
+    def test_use_vertex_parsing(self, monkeypatch):
+        from bot import genai_factory as gf
+        self._clear(monkeypatch)
+        assert gf.use_vertex() is False
+        for v in ("true", "TRUE", "1", "yes", "on", " True "):
+            monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", v)
+            assert gf.use_vertex() is True, v
+        for v in ("false", "0", "no", "off", ""):
+            monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", v)
+            assert gf.use_vertex() is False, v
+
+    def test_location_default_and_override(self, monkeypatch):
+        from bot import genai_factory as gf
+        self._clear(monkeypatch)
+        assert gf.location() == "us-central1"      # default
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "asia-northeast3")
+        assert gf.location() == "asia-northeast3"
+
+    def test_effective_key_ai_studio(self, monkeypatch):
+        from bot import genai_factory as gf
+        self._clear(monkeypatch)
+        monkeypatch.setenv("GOOGLE_API_KEY", "ais-key-123")
+        assert gf.use_vertex() is False
+        assert gf.effective_key() == "ais-key-123"
+        assert gf.llm_ready() is True
+
+    def test_effective_key_vertex_sentinel(self, monkeypatch):
+        from bot import genai_factory as gf
+        self._clear(monkeypatch)
+        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "proj-x")
+        # No GOOGLE_API_KEY at all — guards must still pass via the sentinel.
+        key = gf.effective_key()
+        assert key == gf._VERTEX_SENTINEL and bool(key) is True
+        assert gf.llm_ready() is True
+
+    def test_vertex_without_project_not_ready(self, monkeypatch):
+        from bot import genai_factory as gf
+        self._clear(monkeypatch)
+        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        assert gf.effective_key() is None
+        assert gf.llm_ready() is False
+
+    def test_make_client_routes_by_mode(self, monkeypatch):
+        import sys
+        import types
+        from bot import genai_factory as gf
+        self._clear(monkeypatch)
+        captured = {}
+        fake_genai = types.ModuleType("google.genai")
+
+        def _Client(**kw):
+            captured.clear()
+            captured.update(kw)
+            return object()
+
+        fake_genai.Client = _Client
+        fake_google = sys.modules.get("google") or types.ModuleType("google")
+        monkeypatch.setitem(sys.modules, "google", fake_google)
+        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+        monkeypatch.setattr(fake_google, "genai", fake_genai, raising=False)
+
+        # AI Studio mode: api_key passed through verbatim.
+        monkeypatch.setenv("GOOGLE_API_KEY", "k-ais")
+        gf.make_client("k-ais")
+        assert captured == {"api_key": "k-ais"}
+
+        # Vertex mode: vertexai=True + project/location; sentinel ignored.
+        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "proj-x")
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        gf.make_client(gf._VERTEX_SENTINEL)
+        assert captured == {"vertexai": True, "project": "proj-x",
+                            "location": "us-central1"}
+        assert "api_key" not in captured
+
+    def test_call_sites_wired_to_factory(self):
+        scr = open("bot/screener.py", encoding="utf-8").read()
+        assert "from bot.genai_factory import make_client" in scr
+        assert "client = make_client(api_key)" in scr
+        assert "genai.Client(api_key=" not in scr        # old path removed
+        gics = open("bot/screener_gics_check.py", encoding="utf-8").read()
+        assert "client = make_client(api_key)" in gics
+        assert "genai.Client(api_key=" not in gics
+        # Feed modules route readiness through effective_key (no raw env).
+        for m in ("cheongyak_brief", "daily_kr_flow", "realestate_brief",
+                  "chart_translate", "us_market_daily", "screener_freetext",
+                  "translate", "portfolio_auto_resolve", "us_market_weekly",
+                  "daily_kr_weekly", "realestate_monthly"):
+            src = open(f"bot/{m}.py", encoding="utf-8").read()
+            assert "from bot.genai_factory import effective_key" in src, m
+            assert 'os.environ.get("GOOGLE_API_KEY")' not in src, m
+
+    def test_cache_manager_defers_in_vertex(self):
+        cm = open("bot/gemini_cache_manager.py", encoding="utf-8").read()
+        assert "from bot.genai_factory import use_vertex" in cm
+        assert "explicit caching deferred" in cm
+
+    def test_google_client_has_vertex_branch(self):
+        gc = open("TradingAgents/tradingagents/llm_clients/google_client.py",
+                  encoding="utf-8").read()
+        assert "_use_vertex" in gc and "ChatVertexAI" in gc
+        assert "_get_vertex_llm" in gc and "_get_aistudio_llm" in gc
+
+    def test_trade_factory_wired(self):
+        li = open("trade/llm_insights.py", encoding="utf-8").read()
+        assert "def make_chat(" in li and "ChatVertexAI" in li
+        assert "def _llm_ready(" in li
+        for f in ("trade/company_report.py", "trade/period_report.py"):
+            src = open(f, encoding="utf-8").read()
+            assert "llm_insights.make_chat(" in src, f
+            assert "llm_insights._llm_ready()" in src, f

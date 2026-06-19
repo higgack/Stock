@@ -416,13 +416,10 @@ def _run_llm(data: dict, model: str | None = None) -> tuple[str, dict]:
     """Gemini 산문 요약 → (text, meta). 키부재/실패 시 ('', {used:False})."""
     try:
         from trade import llm_insights, llm_usage
-        if not llm_insights._api_key():
+        if not llm_insights._llm_ready():
             return "", {"used": False, "reason": "no_key"}
-        from langchain_google_genai import ChatGoogleGenerativeAI
         mdl = model or llm_insights.DEFAULT_MODEL
-        resp = ChatGoogleGenerativeAI(
-            model=mdl, temperature=0.3,
-            google_api_key=llm_insights._api_key()).invoke(
+        resp = llm_insights.make_chat(mdl, temperature=0.3).invoke(
                 [("system", _LLM_SYS), ("human", _llm_digest(data))])
         um = getattr(resp, "usage_metadata", None) or {}
         in_tok, out_tok = um.get("input_tokens", 0), um.get("output_tokens", 0)

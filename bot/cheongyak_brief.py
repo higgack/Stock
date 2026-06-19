@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from bot.genai_factory import effective_key as _effective_key
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("bot.cheongyak_brief")
@@ -180,7 +181,7 @@ def _save_archive(body: str, cost_krw: float, count: int, elapsed: float) -> Non
 def generate() -> tuple[str, float, int] | None:
     import time as _time
     _t0 = _time.monotonic()
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         log.error("cheongyak: GOOGLE_API_KEY missing")
         return None

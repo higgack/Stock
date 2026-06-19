@@ -107,6 +107,14 @@ class GeminiContextCache:
                 by the LLMs that will reference the cache (typically
                 'gemini-2.5-pro' for decision tier).
         """
+        from bot.genai_factory import use_vertex
+        if use_vertex():
+            # Vertex explicit caching uses a different resource API and the
+            # cached_content bind path on ChatVertexAI is unverified. Defer
+            # it — caching is only a ~5% input-cost optimization and is
+            # graceful to skip (decision nodes just run without a cache).
+            log.info("gemini cache skipped: Vertex mode (explicit caching deferred)")
+            return None
         api_key = os.getenv("GOOGLE_API_KEY", "").strip()
         if not api_key:
             log.info("gemini cache skipped: GOOGLE_API_KEY not set")

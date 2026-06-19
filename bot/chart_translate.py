@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from bot.genai_factory import effective_key as _effective_key
 import re
 import time
 from pathlib import Path
@@ -87,7 +88,7 @@ def translate_industries_en(names: list[str]) -> dict:
     todo = [n for n in uniq if n not in cache][:_MAX_BATCH]
     if not todo:
         return out
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         return out
     lines = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(todo))
@@ -151,7 +152,7 @@ def translate_names_en(names: list[str]) -> dict:
     todo = [n for n in uniq if n not in cache][:_MAX_BATCH]
     if not todo:
         return out
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         return out
     lines = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(todo))
@@ -226,7 +227,7 @@ def translate_names_kr(pairs: list, cache_only: bool = False) -> dict:
     todo = [(tk, nm) for tk, nm in uniq if tk not in cache][:_MAX_BATCH]
     if cache_only or not todo:        # 렌더-세이프(캐시만) 또는 전부 캐시됨
         return out
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         return out
     lines = "\n".join(f"{i + 1}. {tk} | {nm}" for i, (tk, nm) in enumerate(todo))
@@ -275,7 +276,7 @@ def translate_titles_kr(titles: list[str], cache_only: bool = False) -> dict:
     todo = [t for t in uniq if t not in cache][:_MAX_BATCH]
     if cache_only or not todo:        # 렌더-세이프(캐시만) 또는 전부 캐시됨
         return out
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         return out  # graceful — 원문 유지
     lines = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(todo))

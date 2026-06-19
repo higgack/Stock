@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from bot.genai_factory import effective_key as _effective_key
 
 log = logging.getLogger("bot.realestate_monthly")
 
@@ -76,7 +77,7 @@ _PROMPT = """당신은 한국 부동산 시장 전문 애널리스트입니다. 
 def generate() -> tuple[str, float] | None:
     import time as _time
     _t0 = _time.monotonic()
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         log.error("re-monthly: GOOGLE_API_KEY missing")
         return None

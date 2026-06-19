@@ -49,6 +49,45 @@ def _api_key() -> str | None:
     return os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
 
 
+def _use_vertex() -> bool:
+    return (os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _vertex_project() -> str:
+    return (os.environ.get("GOOGLE_CLOUD_PROJECT")
+            or os.environ.get("GCP_PROJECT") or "").strip()
+
+
+def _vertex_location() -> str:
+    return (os.environ.get("GOOGLE_CLOUD_LOCATION")
+            or os.environ.get("GOOGLE_CLOUD_REGION") or "us-central1").strip()
+
+
+def _llm_ready() -> bool:
+    """True when a Gemini backend is configured — Vertex (ADC + project)
+    or AI Studio (GOOGLE_API_KEY / GEMINI_API_KEY)."""
+    if _use_vertex() and _vertex_project():
+        return True
+    return bool(_api_key())
+
+
+def make_chat(model: str, temperature: float = 0.4):
+    """Return a langchain Gemini chat model for the active backend.
+
+    Vertex (GOOGLE_GENAI_USE_VERTEXAI=true): ChatVertexAI via ADC, no key.
+    Otherwise: ChatGoogleGenerativeAI via API key. Shared by company_report
+    / period_report so the whole trade bot moves with one toggle. Raises
+    ImportError if the relevant langchain google package isn't installed."""
+    if _use_vertex():
+        from langchain_google_vertexai import ChatVertexAI
+        return ChatVertexAI(model=model, temperature=temperature,
+                            project=_vertex_project(), location=_vertex_location())
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    return ChatGoogleGenerativeAI(model=model, temperature=temperature,
+                                  google_api_key=_api_key())
+
+
 def _max_calls() -> int:
     try:
         return int(os.environ.get("TRADE_LLM_MAX_CALLS_PER_DAY") or "10")
@@ -93,8 +132,8 @@ def generate(digest: str, *, model: str | None = None) -> list[dict]:
     if not _enabled():
         log.info("TRADE_LLM_INSIGHTS off — skip insights")
         return []
-    if not _api_key():
-        log.info("no GOOGLE_API_KEY — skip LLM insights")
+    if not _llm_ready():
+        log.info("no Gemini backend (AI Studio key / Vertex) — skip LLM insights")
         return []
     if not (digest or "").strip():
         return []
@@ -102,17 +141,14 @@ def generate(digest: str, *, model: str | None = None) -> list[dict]:
         log.warning("LLM daily call cap reached — skip insights")
         return []
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-    except ImportError:
-        log.warning("langchain_google_genai not installed — skip LLM insights")
-        return []
-    try:
-        llm = ChatGoogleGenerativeAI(
-            model=model, temperature=0.4, google_api_key=_api_key())
+        llm = make_chat(model, temperature=0.4)
         resp = llm.invoke([("system", _SYS_PROMPT), ("human", digest)])
         um = getattr(resp, "usage_metadata", None) or {}
         llm_usage.record(model, um.get("input_tokens", 0), um.get("output_tokens", 0))
         return _parse(getattr(resp, "content", "") or "")
+    except ImportError as exc:
+        log.warning("langchain google package missing — skip LLM insights: %s", exc)
+        return []
     except Exception as exc:  # network / quota / parse-upstream — never break pipeline
         log.warning("LLM insight generation failed: %s", exc)
         return []

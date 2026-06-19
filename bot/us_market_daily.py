@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+from bot.genai_factory import effective_key as _effective_key
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("bot.us_market_daily")
@@ -535,7 +536,7 @@ def generate() -> tuple[str, float] | None:
     데이터 없거나 키 부재 시 None."""
     import time as _time
     _t0 = _time.monotonic()
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         log.error("us_market_daily: GOOGLE_API_KEY missing")
         return None

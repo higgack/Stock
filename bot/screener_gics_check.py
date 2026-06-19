@@ -33,6 +33,7 @@ import argparse
 import json
 import logging
 import os
+from bot.genai_factory import effective_key as _effective_key
 import re
 import sys
 import time
@@ -152,8 +153,8 @@ reconstitution", "GICS structure changes". 분기 review 결과 + 임시 발표
 def _call_pro(api_key: str, prompt: str) -> tuple[str, int, int]:
     """Mirror of bot.screener._call_pro — Gemini Pro + web search grounding.
     Returns (text, prompt_tokens, output_tokens)."""
-    from google import genai
-    client = genai.Client(api_key=api_key)
+    from bot.genai_factory import make_client
+    client = make_client(api_key)
     grounding_config = None
     try:
         from google.genai import types as _genai_types
@@ -376,7 +377,7 @@ def main() -> int:
     except ImportError:
         pass
 
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    api_key = _effective_key()
     if not api_key:
         log.error("GOOGLE_API_KEY missing")
         return 1
