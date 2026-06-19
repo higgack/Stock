@@ -8953,6 +8953,15 @@ class TestIntlFullMarket:
         assert _jp_pick("13080", "ETF・ETN") is None
         assert _jp_pick("2971", "REIT") is None
         assert _jp_pick("720", "プライム") is None         # 3자리 제외
+        # 2024~ TSE 영숫자 신규상장 코드 — 키옥시아 285A 등(사용자 2026-06-19,
+        # 옛 isdigit 필터가 통째 제외해 52주 보드에서 누락). 4자 영숫자 허용.
+        assert _jp_pick("285A", "プライム（内国株式）") == "285A.T"
+        assert _jp_pick("130A", "グロース（内国株式）") == "130A.T"
+        assert _jp_pick("285a", "プライム") == "285A.T"    # 소문자→대문자
+        assert _jp_pick("コード", "プライム") is None       # 헤더/CJK 제외
+        assert _jp_pick("12345", "プライム") is None        # 5자 제외
+        # 영숫자라도 ETF/REIT div 면 제외
+        assert _jp_pick("285A", "ETF・ETN") is None
 
     def test_hk_pick(self):
         from bot.intl_universe import _hk_pick

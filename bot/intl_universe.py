@@ -27,12 +27,15 @@ def _http_get(url: str):
 
 
 def _jp_pick(code, div) -> str | None:
-    """JPX 한 행 → 'NNNN.T' 또는 None (순수·테스트 가능). 4자리 숫자 보통주,
-    ETF/REIT/출자증권 등 제외."""
+    """JPX 한 행 → 'NNNN.T' 또는 None (순수·테스트 가능). 4자 보통주 코드,
+    ETF/REIT/출자증권 등 제외. ⚠️ 2024~ TSE 신규상장은 **영숫자 코드**(예 285A
+    키옥시아 — 숫자3+영문1, 130A 등)라 옛 `isdigit` 필터가 이들을 통째 제외 →
+    키옥시아(시총 1위·신고가)가 52주 보드 등 전 유니버스에서 누락됐음(사용자
+    2026-06-19). 4자 ASCII 영숫자 허용(ETF/REIT 은 div=_JP_EXCL 로 이미 제외)."""
     if any(x in str(div or "") for x in _JP_EXCL):
         return None
-    code = str(code or "").strip().split(".")[0]
-    return f"{code}.T" if len(code) == 4 and code.isdigit() else None
+    code = str(code or "").strip().split(".")[0].upper()
+    return f"{code}.T" if len(code) == 4 and code.isalnum() and code.isascii() else None
 
 
 def _hk_pick(code, category) -> str | None:
@@ -154,7 +157,7 @@ def full_universe_names(market: str) -> dict:
         from bot.finviz_client import _cache_write, _cached
     except Exception:
         _cached = _cache_write = None
-    cache_name = f"full_universe_names_{market}.json"
+    cache_name = f"full_universe_names_{market}_v2.json"   # v2: 영숫자 코드 종목명 포함(2026-06-19)
     if _cached:
         c = _cached(cache_name, ttl=7 * 86400)
         if isinstance(c, dict) and len(c) > 100:
@@ -182,7 +185,9 @@ def full_universe(market: str) -> list[str]:
         from bot.finviz_client import _cache_write, _cached
     except Exception:
         _cached = _cache_write = None
-    cache_name = f"full_universe_{market}.json"
+    # v2 (2026-06-19): 영숫자 코드(285A 등) 포함 — 옛 캐시(숫자-only)를 즉시
+    # 무효화해 키옥시아 등 신규 대형주가 7일 TTL 기다림 없이 바로 유니버스 진입.
+    cache_name = f"full_universe_{market}_v2.json"
     if _cached:
         c = _cached(cache_name, ttl=7 * 86400)
         if isinstance(c, list) and len(c) > 100:
