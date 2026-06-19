@@ -333,5 +333,118 @@ class ItemModeTests(unittest.TestCase):
         self.assertIn("매칭 품목", d)
 
 
+class CatchAllHeatmapFallbackTests(unittest.TestCase):
+    """'기타'(CATCH_ALL) MTI 가 by_mti 에서 통째 제외돼 별칭 검색(MLCC 등)에서
+    수출입 숫자가 누락되던 것 — 히트맵 leaf gap-fill 로 해소(사용자 2026-06-19)."""
+
+    def _heatmap_conn(self):
+        import sqlite3
+        conn = sqlite3.connect(":memory:")
+        conn.execute(
+            "CREATE TABLE customs_heatmap_leaf (hs_code TEXT, name TEXT, "
+            "ref_ym TEXT, exp INT, exp_pm INT, exp_py INT, imp INT, "
+            "imp_pm INT, imp_py INT)")
+        # 8532* = 고정식축전기(MTI 833310, 산업 '기타') — shipped 연계표에 존재.
+        conn.executemany(
+            "INSERT INTO customs_heatmap_leaf VALUES (?,?,?,?,?,?,?,?,?)",
+            [("8532240000", "고정식축전기", "2026-05", 1000, 800, 500, 300, 200, 100),
+             ("8532210000", "고정식축전기", "2026-05", 1000, 800, 500, 200, 100, 100)])
+        conn.commit()
+        return conn
+
+    def test_load_mti_heatmap_includes_catch_all(self):
+        from trade import industry
+        conn = self._heatmap_conn()
+        try:
+            by_exp, by_imp = industry.load_mti_heatmap(conn)
+        finally:
+            conn.close()
+        self.assertIn("833310", by_exp)                   # 기타 MTI 포함
+        node = by_exp["833310"]
+        self.assertEqual(node["name"], "고정식축전기")     # MTI 품목명(연계표)
+        self.assertEqual(node["industry"], "기타")
+        self.assertEqual(node["months"]["2026-05"], 2000)  # 두 leaf 합산
+        self.assertAlmostEqual(node["metrics"]["yoy"], 100.0)   # (2000-1000)/1000
+        self.assertAlmostEqual(node["metrics"]["mom"], 25.0)    # (2000-1600)/1600
+        self.assertIsNone(node["metrics"]["dyoy"])         # 3-포인트 → 가속 None
+        self.assertIsNone(node["metrics"]["dmom"])
+        self.assertIn("833310", by_imp)
+        self.assertEqual(by_imp["833310"]["months"]["2026-05"], 500)
+
+    def test_load_mti_heatmap_empty_graceful(self):
+        import sqlite3
+        from trade import industry
+        conn = sqlite3.connect(":memory:")           # 테이블 부재
+        try:
+            self.assertEqual(industry.load_mti_heatmap(conn), ({}, {}))
+        finally:
+            conn.close()
+
+    def test_dir_metrics_uses_precomputed(self):
+        # 히트맵 노드의 precomputed metrics 우선(sparse-series 오산정 회피).
+        exp_node = {"months": {"2026-05": 1000},
+                    "metrics": {"yoy": 12.0, "dyoy": None, "mom": 3.0, "dmom": None}}
+        m = C._dir_metrics(exp_node, None)
+        self.assertEqual(m["export_yoy"], 12.0)
+        self.assertEqual(m["export_mom"], 3.0)
+        self.assertIsNone(m["export_dyoy"])
+
+    def test_mlcc_alias_resolves_real_item_and_numbers(self):
+        # MLCC(별칭) → 테마 HS(8532.24) → MTI6 833310(고정식축전기) 수출입 부착.
+        # by_mti 는 gather 의 히트맵 gap-fill 모사(기타 품목 노드 주입).
+        self.assertIn("833310", C._hs6_to_mti6("8532.24"))
+        by_mti = {"833310": {"name": "고정식축전기", "industry": "기타",
+                             "months": {"2026-05": 2000.0},
+                             "metrics": {"yoy": 100.0, "dyoy": None,
+                                         "mom": 25.0, "dmom": None}}}
+        res = C._item_matches("MLCC", by_mti, [])
+        self.assertEqual(res["mode"], "item")
+        self.assertIn("삼성전기", res["companies"])         # 테마 관련기업
+        linked = [x for x in res["items"] if x.get("hs_linked")]
+        self.assertTrue(linked)
+        self.assertEqual(linked[0]["item"], "고정식축전기")  # 실제 품목명
+        self.assertEqual(linked[0]["export_usd"], 2000.0)
+        self.assertAlmostEqual(linked[0]["export_yoy"], 100.0)
+        # 렌더에 재검색 클릭 속성(품목명 클릭 → 실제 품목명 재검색)
+        html = C.render_free(res)
+        self.assertIn('data-rb-search="고정식축전기"', html)
+
+
+class TypoAndAliasBatchTests(unittest.TestCase):
+    """회사명 오타 교정 + 미매칭 알림 후보 별칭 매칭(사용자 2026-06-19 xlsx)."""
+
+    def test_company_typo_correction(self):
+        from trade import mti_companies as mc
+        # 운영자 확인 오타 → 정확 표기(매칭/표시 레이어)
+        self.assertEqual(mc.canon_company("에스테아이"), "에스티아이")
+        self.assertEqual(mc.canon_company("SK바이오센서"), "SK바이오사이언스")
+        self.assertEqual(mc.canon_company("메티바이오메드"), "메타바이오메드")
+        # 미등재는 원본 보존
+        self.assertEqual(mc.canon_company("삼성전기"), "삼성전기")
+
+    def test_price_alias_has_typos(self):
+        from trade import price_provider as pp
+        self.assertEqual(pp._NAME_ALIASES.get("SK바이오센서"), "SK바이오사이언스")
+        self.assertEqual(pp._NAME_ALIASES.get("메티바이오메드"), "메타바이오메드")
+
+    def test_new_aliases_resolve_company_and_hs(self):
+        from trade import mti_companies as mc
+        rows = {r["name"]: r for r in mc.theme_rows()}
+        # 신규 테마 — 회사·HS 연결
+        self.assertIn("코스모신소재",
+                      rows["NCM 양극재 (니켈코발트망간 리튬염)"]["companies"])
+        self.assertEqual(mc.theme_for_company("코셈")[0], "SEM (주사전자현미경)")
+        # 기존 테마 회사 추가
+        self.assertIn("다이요유덴", rows["MLCC (적층세라믹콘덴서)"]["companies"])
+        self.assertIn("경산제지", rows["골심지 / 특수지 (판지 원지)"]["companies"])
+        self.assertIn("이녹스리튬", rows["수산화리튬 / 수입 수산화리튬"]["companies"])
+
+    def test_new_alias_hs_links_to_mti(self):
+        # NCM 2841.90 → MTI6 해석되어 수출입 부착 가능(히트맵 gap-fill 과 결합).
+        self.assertTrue(C._hs6_to_mti6("2841.90"))
+        self.assertTrue(C._hs6_to_mti6("9012.10"))     # SEM
+        self.assertTrue(C._hs6_to_mti6("2402.20"))     # 담배
+
+
 if __name__ == "__main__":
     unittest.main()
