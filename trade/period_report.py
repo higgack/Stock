@@ -241,9 +241,10 @@ def render_free(data: dict) -> str:
         def _prov_line(label, sig):
             if not sig:
                 return f'<div style="color:var(--text-sub,#6e6e73)">{label} — 데이터 없음</div>'
-            # YoY 먼저, MoM 추가 (사용자 2026-06-19 'MoM 도 포함, YoY 앞으로')
-            metrics = (_pc_span("YoY", sig.get("total_yoy"))
-                       + _pc_span("MoM", sig.get("total_mom")))
+            # MoM 먼저, YoY 다음 (사용자 2026-06-19 'MoM YoY 로 순서변경' — 품목 표들과
+            # 동일 순서로 통일)
+            metrics = (_pc_span("MoM", sig.get("total_mom"))
+                       + _pc_span("YoY", sig.get("total_yoy")))
             tops = [it for it in (sig.get("items") or []) if it.get("usd")][:3]
             top3 = ", ".join(f'{e(it["name"])} {_usd(it["usd"])}' for it in tops)
             return (f'<div style="margin-top:2px;color:var(--text,#1d1d1f)"><b>{label}</b> '
