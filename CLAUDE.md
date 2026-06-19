@@ -1191,11 +1191,25 @@ VM 적용(1회): ① 양 venv 에 `pip install langchain-google-vertexai`
 (`~/stock/.venv` + `~/stock-trade/.venv`) ② `.env` 에 `GOOGLE_GENAI_USE_
 VERTEXAI=true` + `GOOGLE_CLOUD_PROJECT` + `GOOGLE_CLOUD_LOCATION=us-central1`
 (GOOGLE_API_KEY 공백 가능) ③ 서비스 재시작 ④ probe:
-`~/stock/.venv/bin/python3 -c "from google import genai; print(genai.Client(
-vertexai=True,project='gen-lang-client-0325676393',location='us-central1').
-models.generate_content(model='gemini-2.5-flash',contents='ok').text)"`.
+`~/stock/.venv/bin/python3 -c "from google import genai; c=genai.Client(
+vertexai=True,project='gen-lang-client-0325676393',location='us-central1');
+print(c.models.generate_content(model='gemini-2.5-flash',contents='ok').text)"`
+(client 를 변수로 — 체인 금지, 아래 운영 노트 참조).
 회귀 테스트: `tests/test_regression.py::TestGenaiFactoryVertexToggle`(10).
 ⚠️ 비용: stock + 봇이 같은 GCP 크레딧 공유 → 결제 예산 알림 권장.
+
+**VM 검증 (2026-06-19 실측, 토글 ON)**: 양 경로 라이브 확인 — screener/피드
+`genai.Client(vertexai=True)`(stock venv) + 분석가·트레이드 `ChatVertexAI`(양
+venv) 정상 응답. ⚠️ **genai.Client 는 반환값을 변수로 잡아 쓸 것** — 체인
+(`genai.Client(...).models.generate_content(...)`)은 임시 Client 가 GC 되며
+httpx transport 를 닫아 "Cannot send a request, as the client has been closed"
+발생(우리 코드는 `client = make_client(...)` 변수형이라 무관 — make_client
+docstring 참조). ⚠️ `ChatVertexAI` 는 langchain-google-vertexai 3.2 에서
+**deprecated**(4.0 제거 예정, 대체 = langchain-google-genai 의 ChatGoogleGenerativeAI)
+— 단 env-only Vertex 경로(GOOGLE_GENAI_USE_VERTEXAI + 키 없음)는 **빈 응답**이라
+미신뢰 → 현행 ChatVertexAI 유지(후속 cleanup 보류). ⚠️ langchain-google-vertexai
+설치가 google-cloud-aiplatform 를 끌어와 **protobuf 7→6 다운그레이드**(양 venv)
+— Gemini 외 이상 동작 시 1순위 의심.
 
 ## Multi-market expansion (US → KR → JP → TW → CN)
 
