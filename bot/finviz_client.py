@@ -1067,10 +1067,54 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                  tag, len(universe))
         _CHUNK = 120
         scanned = 0
+        _seen: set = set()   # yfinance 가 데이터를 반환한 티커 (벌크 누락 재시도 판별)
+
         # 일봉 1년 — **당일 intraday 고가/저가가 직전 251일 극값을 갱신**한 종목만
         # (진짜 52주 신고/신저, 사용자 2026-06-13 '1% 근접 말고 진짜'). 장중 한 번
         # 갱신하면 종가 무관 신고가 = 시장 통용 정의(사용자 2026-06-16 재확정).
-        # pct/거래량도 같은 일봉에서 산출(이전의 별도 5d 패스 불요로 제거).
+        def _proc(df, chunk) -> None:
+            """한 배치 df → 신고/신저 판정·append. 단일 티커는 yfinance 가 flat 컬럼
+            을 줘 멀티레벨 분기. yfinance 가 준 티커만 _seen 에 기록(누락=재시도 대상)."""
+            nonlocal scanned
+            multi = getattr(df.columns, "nlevels", 1) > 1
+            lv0 = set(df.columns.get_level_values(0)) if multi else set()
+            for tk in chunk:
+                try:
+                    if multi:
+                        if tk not in lv0:
+                            continue            # yfinance 가 이 티커를 안 줌(drop) → 재시도
+                        sub = df[tk]
+                    else:
+                        sub = df                # 단일 티커 flat 컬럼
+                    _seen.add(tk)
+                    closes = sub["Close"].dropna()
+                    highs = sub["High"].dropna()
+                    lows = sub["Low"].dropna()
+                    if len(closes) < 20 or len(highs) < 2 or len(lows) < 2:
+                        continue
+                    scanned += 1
+                    last = float(closes.iloc[-1])
+                    prev = float(closes.iloc[-2])
+                    pct = round((last / prev - 1) * 100, 2) if prev > 0 else None
+                    vols = sub["Volume"].dropna()
+                    vol = int(float(vols.iloc[-1])) if len(vols) else None
+                    # 비거래(거래량 0/None) 제외 — HK ADR/HDR·휴면 종목이 평평한
+                    # 가격으로 거짓 52주 고저에 잡히는 것 차단(사용자 2026-06-14).
+                    if not vol:
+                        continue
+                    value = round(last * vol / 1e8, 2)    # 거래대금 ≈ 종가×거래량(억)
+                    rec = {"ticker": tk, "name": _names.get(tk, tk),
+                           "price": round(last, 2), "pct": pct,
+                           "vol": vol, "value": value}
+                    # 당일 intraday 고가/저가가 직전 251일 극값 갱신(동률 포함) = 신고/신저
+                    # (사용자 2026-06-16 — 장중 한 번이라도 찍으면 종가 무관, 시장 통용 정의).
+                    if float(highs.iloc[-1]) >= float(highs.iloc[:-1].max()):
+                        out["high"].append(rec)
+                    elif float(lows.iloc[-1]) <= float(lows.iloc[:-1].min()):
+                        out["low"].append(rec)
+                except Exception:
+                    continue
+
         for ci in range(0, len(universe), _CHUNK):
             chunk = universe[ci:ci + _CHUNK]
             try:
@@ -1085,44 +1129,28 @@ def _compute_highlow_from(universe: list, names: dict, cache_name: str,
                 log.warning("finviz: %s 배치 %d 빈 응답", tag, ci // _CHUNK + 1)
                 continue
             time.sleep(0.2)   # 대형 universe 벌크 사이 호흡 (yfinance 보호)
-            for tk in chunk:
+            _proc(df, chunk)
+
+        # 벌크 누락 재시도 (사용자 2026-06-19 '키옥시아 같은 미싱') — yfinance batch 가
+        # 일부 티커를 통째 드롭(285A 단일 다운로드는 성공·flag True 인데 120-배치에선
+        # 빠져 신고가 보드에서 누락)하는 간헐 현상. 누락분만 작은 배치(40)로 **1회**
+        # 재시도 → 미싱 방지. 누락은 통상 소수라 부하 bound(전수 재스캔 아님).
+        dropped = [t for t in universe if t not in _seen]
+        if dropped:
+            log.info("finviz: %s highlow — 벌크 누락 %d종목 작은 배치 재시도",
+                     tag, len(dropped))
+            for ci in range(0, len(dropped), 40):
+                sub = dropped[ci:ci + 40]
                 try:
-                    if tk not in df.columns.get_level_values(0):
-                        continue
-                    closes = df[tk]["Close"].dropna()
-                    highs = df[tk]["High"].dropna()
-                    lows = df[tk]["Low"].dropna()
-                    if len(closes) < 20 or len(highs) < 2 or len(lows) < 2:
-                        continue
-                    scanned += 1
-                    last = float(closes.iloc[-1])
-                    prev = float(closes.iloc[-2])
-                    pct = round((last / prev - 1) * 100, 2) if prev > 0 else None
-                    vols = df[tk]["Volume"].dropna()
-                    vol = int(float(vols.iloc[-1])) if len(vols) else None
-                    # 비거래(거래량 0/None) 제외 — HK ADR/HDR(마이크로소프트·인텔 등
-                    # 미국주식 예탁증서)·휴면 종목이 평평한 가격으로 거짓 52주 고저에
-                    # 잡히는 것 차단(사용자 2026-06-14 '홍콩 미국주식 ADR 다 제거').
-                    # 진짜 신고저는 당일 거래가 있어야 성립 — universal(전 시장 무의미).
-                    if not vol:
-                        continue
-                    # 거래대금 ≈ 종가×거래량 (억, 현지통화) — 네이버 미제공 52주에
-                    # 거래량/거래대금 표시용(사용자 2026-06-14).
-                    value = round(last * vol / 1e8, 2)
-                    rec = {"ticker": tk, "name": _names.get(tk, tk),
-                           "price": round(last, 2), "pct": pct,
-                           "vol": vol, "value": value}
-                    # 신고가/신저가 = **당일 intraday 고가/저가가 직전 251일 극값을
-                    # 갱신**(동률 포함). 사용자 2026-06-16(재확정): 장중 한 번이라도
-                    # 신고가를 찍으면 종가와 무관하게 신고가 = 시장 통용 정의(Yahoo/
-                    # 네이버 등). 신저가 동일. (앞선 '현재가 기준' 변경은 사용자 정정
-                    # 으로 환원 — intraday high/low 가 표준.)
-                    if float(highs.iloc[-1]) >= float(highs.iloc[:-1].max()):
-                        out["high"].append(rec)
-                    elif float(lows.iloc[-1]) <= float(lows.iloc[:-1].min()):
-                        out["low"].append(rec)
+                    df = yf.download(sub, period="1y", interval="1d",
+                                     group_by="ticker", threads=True,
+                                     progress=False, auto_adjust=False)
                 except Exception:
                     continue
+                if df is None or df.empty:
+                    continue
+                time.sleep(0.3)
+                _proc(df, sub)
         # SPAC 신탁가 백스톱 — 2026-06-12 보강: 옛 밴드($9.5~10.6·|pct|
         # <0.05%)가 신탁 이자 드리프트(+0.1~0.3%)와 $10.68 류를 통과시킴
         # (ALDF/CEPV/NOEM 실사례). 밴드 $9.4~11.0 + |pct|<1.0% 로 확대,
