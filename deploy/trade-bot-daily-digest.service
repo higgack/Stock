@@ -1,5 +1,5 @@
 [Unit]
-Description=자정 결산 — 어제 포워드/관세청 작동·오류 요약 DM (활동한 날만)
+Description=자정 결산 — 어제 포워드/관세청 작동·오류 + 신규 미매칭 품목 후보 요약 DM (활동한 날만)
 After=network-online.target
 Wants=network-online.target
 

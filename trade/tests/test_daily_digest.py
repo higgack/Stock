@@ -44,6 +44,33 @@ class DigestComposeTests(unittest.TestCase):
         self.assertIsNotNone(
             dg.compose("2026-06-10", 0, {"scan_fail": 1}, False, None))
 
+    def test_new_unmatched_triggers_send_and_escapes(self):
+        # 신규 미매칭 후보만 있어도 발화 (활동 없는 날도) + HTML 이스케이프
+        b = dg.compose("2026-06-10", 0, {}, False, None,
+                       new_unmatched=["부채비율<200 소재", "신소재 XYZ"])
+        self.assertIsNotNone(b)
+        self.assertIn("신규 미매칭 품목 후보 2건", b)
+        self.assertIn("신소재 XYZ", b)
+        self.assertIn("&lt;200", b)             # < 이스케이프(실수 #7)
+        self.assertNotIn("<200", b)
+
+    def test_new_unmatched_seen_set_first_run_seeds(self):
+        from unittest import mock
+        from trade import reference_book
+        rows_ret, cand_ret = [], [("신소재 XYZ", ["듣보종목"], 2)]
+        dg._UNMATCHED_SEEN = Path(tempfile.mkdtemp()) / "seen.json"
+        with mock.patch.object(reference_book, "build_rows", return_value=rows_ret), \
+                mock.patch.object(reference_book, "unmatched_candidates",
+                                  return_value=cand_ret):
+            first = dg._new_unmatched()          # 첫 실행 → seed 후 무보고
+            second = dg._new_unmatched()         # 동일 후보 → 이미 seen, 무보고
+            with mock.patch.object(reference_book, "unmatched_candidates",
+                                   return_value=cand_ret + [("새거", ["새종목"], 1)]):
+                third = dg._new_unmatched()      # 신규 1건만 보고
+        self.assertEqual(first, [])              # 백로그 flood 방지(실수 #9)
+        self.assertEqual(second, [])
+        self.assertEqual(third, ["새거"])
+
     def test_error_alerts_wired_in_scan(self):
         from trade.scripts import scan_customs as sc
         src = Path(sc.__file__).read_text(encoding="utf-8")

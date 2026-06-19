@@ -168,7 +168,7 @@ _HELP_TEXT = """🇰🇷 <b>한국 수출입 데이터 대쉬보드 봇</b>
 ※ <b>[비온 인사이트]</b>·<b>DART 공시 릴레이</b>는 자동 skip
 
 <b>10. 자동화 systemd</b>
-trade-bot(수집) · update(1분 재배포) · watchdog(1분 hang감지) · dashboard(8765) · dashboard-refresh(5분 ingest→HTML) · health(1h 사이클누락) · unstored-check(00:00) · beon-listener(상시 forward) · beon-sync(2h safety) · customs-fetch(4회/일 급등·급증 TOP30) · customs-probe(10분 신통계감지) · <b>dart-revenue(매월18일 매출구성 전수·변경분만)</b> · <b>dart-reparse(매일04:30 파서개선 소급)</b> · curation(1·11·15·21 18:00) · daily-digest(00:03) · backup(03:00).
+trade-bot(수집) · update(1분 재배포) · watchdog(1분 hang감지) · dashboard(8765) · dashboard-refresh(5분 ingest→HTML) · health(1h 사이클누락) · unstored-check(00:00) · beon-listener(상시 forward) · beon-sync(2h safety) · customs-fetch(4회/일 급등·급증 TOP30) · customs-probe(10분 신통계감지) · <b>dart-revenue(매월18일 매출구성 전수·변경분만)</b> · <b>dart-reparse(매일04:30 파서개선 소급)</b> · curation(1·11·15·21 18:00) · daily-digest(00:03 — 결산+🔍신규 미매칭 품목 후보) · backup(03:00).
 신규/변경 unit은 auto-update가 install-trade-units.sh로 자동 cp+daemon-reload+enable(변경 타이머 스케줄 재무장 포함).
 
 <b>11. API</b> /api/alerts.json · /api/stats · /api/health
