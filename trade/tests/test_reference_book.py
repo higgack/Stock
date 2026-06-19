@@ -137,6 +137,22 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         self.assertEqual(R.unmatched_candidates(self._ROWS,
                                                 db_path=Path("/no/such.db")), [])
 
+    def test_typo_company_not_flagged_unmatched(self):
+        """알림 원문 회사명 오타는 canon 교정 후 surfaced 대조 → 미매칭 오노출
+        안 됨 (사용자 2026-06-19 '업데이트했는데 숫자가 안 준다'). surfaced 의
+        정확표기(에스티아이)와 원문 타이포(에스테아이)가 canon 으로 수렴."""
+        rows = [{"mti6": "1", "name": "x", "industry": "y", "hs": [],
+                 "companies": ["에스티아이"]}]   # surfaced = canon 표기
+        with tempfile.TemporaryDirectory() as td:
+            db = self._db(td, [
+                ("CCSS", ["에스테아이"]),         # 타이포 → canon 에스티아이(surfaced) → 제외
+                ("진짜품목", ["듣보종목"]),        # 진짜 미매칭 → 유지
+            ])
+            cands = R.unmatched_candidates(rows, db_path=db)
+        items = [c[0] for c in cands]
+        self.assertNotIn("CCSS", items)            # 타이포 교정으로 매칭됨
+        self.assertIn("진짜품목", items)
+
     def test_theme_merged_into_mti_rows(self):
         """테마 회사가 HS→MTI 로 **기존 MTI 품목 행에 병합** (사용자 2026-06-19
         '별도 집계 말고 기존에 붙여'). 별도 테마 행 없음 + 테마명 검색 인덱스."""
