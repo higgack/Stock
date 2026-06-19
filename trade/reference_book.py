@@ -141,8 +141,22 @@ def unmatched_candidates(rows: list[dict], db_path=None,
     # (사용자 2026-06-19 '업데이트했는데 숫자가 안 준다'). 비-타이포는 canon 이
     # 원본 그대로라 무영향.
     canon = mti_companies.canon_company
+    # 회사 뷰(_company_alert_items)와 동일하게 split_names 로 **공백 결합 토큰 분리** —
+    # _clean_stocks 는 쉼표만 쪼개 '나노신소재 제이오'(BeOn 1-space 결합)가 한 토큰으로
+    # 남아 canon('나노신소재제이오')이 surfaced 와 영구 불일치 → CNT 등 미매칭 잔존
+    # (사용자 2026-06-20 '미매칭 왜 계속 안없어져'). split_names 가 'JYP Ent.'(마침표)
+    # 류는 통째 보존. graceful.
+    try:
+        from trade import price_provider
+        _split = price_provider.split_names
+    except Exception:
+        _split = lambda xs: list(xs or [])  # noqa: E731
     agg: dict[str, list] = {}
     for item, stocks in alerts:
+        try:
+            stocks = _split(stocks) or stocks
+        except Exception:
+            pass
         missing = [s for s in stocks
                    if canon(s).replace(" ", "").lower() not in surfaced
                    and s.replace(" ", "").lower() not in mti_companies._NON_COMPANY]

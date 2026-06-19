@@ -1266,6 +1266,13 @@ HS 어느 쪽으로 검색해도 같은 수출입 숫자로 수렴). 핵심:
   ⚠️ **fuzzy 자동교정 금지**(오병합 위험) — forward 절차: '🔍 미매칭 알림 후보'
   패널이 새 오타 노출 → 운영자 확인 → 두 dict 에 1줄씩 추가. 회귀 `TypoAndAlias
   BatchTests`.
+- **미매칭 후보 공백-결합 토큰 분리 (2026-06-20 'CNT 왜 계속 안없어져')**: `_clean_
+  stocks` 는 쉼표만 쪼개 BeOn 1-space 결합('나노신소재 제이오')이 한 토큰으로 남아
+  canon('나노신소재제이오')이 surfaced 와 영구 불일치 → CNT 등 미매칭 잔존. 회사 뷰
+  (`_company_alert_items`)는 `split_names`로 쪼개 정상이었는데 `unmatched_candidates`
+  만 안 쪼갰음 — 동일하게 `split_names` 적용('JYP Ent.' 마침표류는 통째 보존). 회귀
+  `test_space_joined_companies_split`. ⚠️ 두 알림-소비 표면(회사 뷰·미매칭)은 항상
+  같은 split/canon 파이프를 타야 한다.
 - **미매칭 알림 후보 배치 매칭 (2026-06-19 Unmatched_Items_HS_Mapping.xlsx)**:
   29행 검토 → 기존 테마 회사 추가 5(골심지+경산제지·수산화리튬+이녹스리튬·MLCC+
   다이요유덴·천연가스+대성산업/SH에너지화학·변압기+KP일렉트릭) + 신규 테마 18(NCM·
