@@ -86,10 +86,16 @@ def unmatched_candidates(rows: list[dict], db_path=None,
         alerts = mti_companies._load_alerts(db_path)
     except Exception:
         return []
+    # 알림 원문 회사명에 **오타 교정(canon_company) 적용 후** surfaced 와 대조 —
+    # surfaced 는 dedup_companies 로 이미 canon 된 표기라, 원문 타이포(에스테아이·
+    # SK바이오센서·메티바이오메드)는 canon 없이는 영원히 '미매칭' 으로 남았다
+    # (사용자 2026-06-19 '업데이트했는데 숫자가 안 준다'). 비-타이포는 canon 이
+    # 원본 그대로라 무영향.
+    canon = mti_companies.canon_company
     agg: dict[str, list] = {}
     for item, stocks in alerts:
         missing = [s for s in stocks
-                   if s.replace(" ", "").lower() not in surfaced
+                   if canon(s).replace(" ", "").lower() not in surfaced
                    and s.replace(" ", "").lower() not in mti_companies._NON_COMPANY]
         if not missing:
             continue
