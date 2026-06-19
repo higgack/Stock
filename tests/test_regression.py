@@ -5262,27 +5262,45 @@ class TestIntlHighLow52:
             assert len(uni) == len(set(uni))          # dedupe
             assert all(names[t] for t in uni)         # name 기본=ticker
 
-    def test_universe_naver_coverage_guard(self, monkeypatch):
-        # 사용자 2026-06-19 '앞으로 또 새 종목 누락 안 되나' — full_universe(JPX/HKEX
-        # 파싱)가 미래 코드형식 변화로 종목을 놓쳐도 독립 소스(네이버 worldstock)
-        # 합집합이 메워 자가 치유(285A 키옥시아 류 재발 방지).
-        import bot.intl_highlow as ih
-        import bot.intl_universe as iu
-        import bot.naver_ranking_client as nr
-        dummy = [f"{1000 + i}.T" for i in range(150)]        # JPX 파싱(285A 놓침 가정)
-        monkeypatch.setattr(iu, "full_universe",
-                            lambda m: dummy[:] if m == "JP" else [])
-        monkeypatch.setattr(nr, "world_stock_map",
-                            lambda m, **k: {"285A.T": {"name": "키옥시아"},
-                                            "7203.T": {"name": "도요타"}})
-        uni, names = ih._universe("JP")
-        assert "285A.T" in uni                               # 네이버 합집합이 메움
-        assert names["285A.T"] == "키옥시아"                  # native 명 반영
-        assert "1000.T" in uni                               # JPX 종목 보존
-        # 네이버 실패 → graceful (JPX 단독, 크래시 0)
-        monkeypatch.setattr(nr, "world_stock_map",
-                            lambda m, **k: (_ for _ in ()).throw(RuntimeError("down")))
-        assert len(ih._universe("JP")[0]) == 150
+    def test_highlow_bulk_drop_retry(self, monkeypatch):
+        # 사용자 2026-06-19 '키옥시아 같은 미싱' — yfinance 벌크가 일부 티커를 통째
+        # 드롭(285A 단일 다운로드는 성공·flag True 인데 120-배치에선 빠져 신고가 보드
+        # 누락)하는 간헐 현상. _compute_highlow_from 이 누락분(_seen 미포함)을 작은
+        # 배치로 1회 재시도해 미싱 방지. CLAUDE.md §7d 진입점 스모크.
+        import pandas as pd
+        import yfinance as yf
+        import bot.finviz_client as fc
+        idx = pd.bdate_range(end="2026-06-19", periods=260)
+        n = len(idx)
+        BIG = pd.DataFrame({"Open": [99500.0] * n,
+                            "High": [99500.0] * (n - 1) + [108600.0],  # 당일 신고가
+                            "Low": [99500.0] * n,
+                            "Close": [99500.0] * (n - 1) + [108600.0],
+                            "Volume": [1000] * n}, index=idx)
+        calls = {"n": 0}
+
+        def _fake_dl(tickers, **k):
+            calls["n"] += 1
+            req = tickers if isinstance(tickers, list) else [tickers]
+            # 1차 벌크에선 285A.T 드롭(yfinance batch drop 재현), 재시도에선 반환
+            avail = [t for t in req if not (calls["n"] == 1 and t == "285A.T")]
+            if not avail:
+                return pd.DataFrame()
+            if len(req) == 1:
+                return BIG.copy()                            # 단일 요청 → flat 컬럼
+            return pd.concat({t: BIG.copy() for t in avail}, axis=1)  # 멀티레벨
+        monkeypatch.setattr(fc, "yf_paused", lambda: False)
+        monkeypatch.setattr(fc, "_cache_write", lambda *a, **k: None)
+        monkeypatch.setattr(yf, "download", _fake_dl)
+        out = fc._compute_highlow_from(["7203.T", "285A.T"], {}, "x.json", "src", "JP")
+        hi = {r["ticker"] for r in out["high"]}
+        assert "285A.T" in hi, "재시도가 벌크 드롭 285A 를 못 잡음"
+        assert "7203.T" in hi
+        # 소스 가드 — 재시도 배선
+        src = open("bot/finviz_client.py", encoding="utf-8").read()
+        assert "dropped = [t for t in universe if t not in _seen]" in src
+        assert "range(0, len(dropped), 40)" in src
+        assert 'getattr(df.columns, "nlevels", 1)' in src    # 단일 티커 flat 처리
 
     def test_kr_strips_foreign_comparables(self):
         # _KR_INDUSTRY_PEERS 는 반도체에 TSM/NVDA 등 해외 비교군 포함 →
@@ -8697,11 +8715,11 @@ class TestUpperLowerVolume:
         assert seen["m"] == "JP"                        # JP 맵 라우팅(HK 하드코딩 아님)
         assert out[:2] == ["7203.T", "6758.T"]          # 시총 상위 우선
         assert "9999.T" not in out                      # 소형 탈락
-        # _universe 가 JP/HK 캡 분기 (env 캡, 기본 full) + 네이버 합집합 커버리지 가드
+        # _universe 가 JP/HK 캡 분기 (env 캡, 기본 full). 네이버 합집합 가드는
+        # 철회(2026-06-19 probe — REIT 재편입·HK 형식불일치 부작용, 공식 파싱이 완전).
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
         assert 'market in ("JP", "HK")' in src, "JP/HK 유니버스 분기 미배선"
         assert "HIGHLOW_UNIVERSE_CAP" in src and "_cap_by_liquidity(full, _cap, market)" in src
-        assert "world_stock_map" in src      # 네이버 합집합 커버리지 가드(2026-06-19)
 
     def test_jp_hk_naver_overlay(self, monkeypatch):
         # JP 네이버 worldstock overlay(직접 매칭) + HK overlay(zfill 정수 매칭).
