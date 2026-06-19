@@ -705,6 +705,25 @@ class MtiCodeAndChannelTests(unittest.TestCase):
         # 검색 인덱스 동의어
         self.assertIn("pcb", mc.search_synonyms("인쇄회로"))
 
+    def test_dedup_and_full_synonym_coverage(self):
+        """회사 표기 변형 통합 + 동의어는 별칭 전체 자동 파생 (사용자 2026-06-19
+        'PCB·하이닉스는 예시일 뿐 — 그런 종류 전부')."""
+        from trade import mti_companies as mc
+        # dedup_companies — canon + 정규화(공백) 통합, 순서 보존, 품목어 제외
+        self.assertEqual(
+            mc.dedup_companies(["삼성전기", "삼성 전기", "LS일렉트릭",
+                                "LS ELECTRIC", "임플란트", "비에이치"]),
+            ["삼성전기", "LS ELECTRIC", "비에이치"])
+        # 동의어 = 별칭 그룹 전부 자동 파생 (6개 하드코딩 아님)
+        markers = {g[0] for g in mc._SYNONYM_GROUPS}
+        self.assertEqual(markers, {m for m, _ in mc._ALIAS_GROUPS})
+        self.assertGreaterEqual(len(mc._SYNONYM_GROUPS), 12)
+        # 여러 개념이 검색으로 대표품목에 수렴
+        for q, canon in [("식각장비", "반도체제조용장비"), ("ESS", "리튬이온전지"),
+                         ("콘택트렌즈", "안과및광학"), ("3D프린터", "적층제조기계")]:
+            r = mc.synonym_companies(q, [("x", ["종목A"])])
+            self.assertEqual(r[0], canon)
+
     def test_channel_pairs_from_sqlite(self):
         import json
         import sqlite3
