@@ -64,8 +64,24 @@ restart_dashboard() {
         else
             notify "⚠️ <b>대시보드 재시작 후 active 아님</b> — 확인 필요"
         fi
+        return 0
+    fi
+    # 직접 restart 권한 거부 — higgack-stock-restart sudoers drop-in 이
+    # 미설치이거나 stock-bot-dashboard 라인이 없는 구버전(2026-06-03 이전).
+    # 옛 동작은 echo 한 줄 silent skip 이라, bot/*.py 만 바뀐 배포(예: 뉴스
+    # 링크·lookup 캐시클리어 fix)가 장기실행 대시보드 프로세스에 영영 반영
+    # 안 돼 사용자가 매번 수동 재시작해야 했음 — silent-fail 근본원인(실수
+    # 기록 #11 배포≠화면 / #12d silent-except 금지). self-heal: install.sh 를
+    # sudo -n(higgack-stock-deploy NOPASSWD)으로 실행 → sudoers drop-in
+    # 재설치(stock-bot-dashboard restart 라인 포함) + try-restart 동반 →
+    # 이후 직접 restart 가 영구 작동. 실패도 더는 조용히 넘기지 않고 notify.
+    echo "stock-bot-update: dashboard direct restart denied — install.sh self-heal 시도"
+    if [ -x "$REPO/deploy/install.sh" ] \
+            && sudo -n "$REPO/deploy/install.sh" >/tmp/stock-bot-install.log 2>&1 \
+            && systemctl is-active --quiet stock-bot-dashboard; then
+        notify "✅ <b>대시보드 재시작</b>: sudoers self-heal (install.sh 재설치로 권한 복구·이후 자동)"
     else
-        echo "stock-bot-update: dashboard restart skipped (NOPASSWD 미설정 또는 권한 없음)"
+        notify "⚠️ <b>대시보드 재시작 실패</b>: restart NOPASSWD 권한 부재. VM 1회 실행 필요: <code>sudo /home/higgack/stock/deploy/install.sh</code>"
     fi
 }
 
