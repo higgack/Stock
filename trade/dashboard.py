@@ -652,7 +652,8 @@ def _build_html(
         '영업손익·매출에누리 같은 비제품 회계라인은 제품으로 오매핑하지 않음(빈칸 &gt; 오매핑).<br>'
         '<b>③ 관련기업</b> — BeOn 채널 매트릭스를 실시간 반영(기업 보고서·검색·품목·'
         '레퍼런스북이 같은 소스 공유). <b>별칭 검색</b>(예: MLCC)도 HS 연계로 실제 '
-        '품목명(고정식축전기)·수출입 숫자를 함께 표시 — 품목명 클릭 시 재검색.<br>'
+        '품목명(고정식축전기)·수출입 숫자를 함께 표시 — 품목명 클릭 시 재검색. '
+        '<b>히트맵 셀 클릭</b>도 그 HS/품목의 관련 상장사·보고서로 연결.<br>'
         '→ <b>모든 표면이 방문 없이 서버 스케줄로 자동 신선</b>하게 유지됩니다. '
         '비용 ₩0(무료 공공 API·LLM 0).'
         '</div></details>'
@@ -702,6 +703,10 @@ def _build_html(
         'var t=e.target.closest("[data-rb-search]");if(!t)return;'
         'q.value=t.getAttribute("data-rb-search");q.focus();run("free");'
         'window.scrollTo({top:q.getBoundingClientRect().top+window.scrollY-80,behavior:"smooth"});});'
+        # 전역 훅 — 히트맵 셀 클릭 등 외부에서 이 위젯으로 검색을 던지는 단일 진입점
+        # (사용자 2026-06-19 '히트맵도 연결'). 검색창 채우고 무료 보고서 실행 + 스크롤.
+        'window.rbSearch=function(v){if(!v)return;q.value=v;q.focus();run("free");'
+        'window.scrollTo({top:q.getBoundingClientRect().top+window.scrollY-80,behavior:"smooth"});};'
         # 검색어를 지우면(X 버튼·전체삭제) 보고서도 함께 비움 (사용자 2026-06-18).
         'q.addEventListener("input",function(){if(!(q.value||"").trim())res.innerHTML="";});'
         'q.addEventListener("search",function(){if(!(q.value||"").trim())res.innerHTML="";});'

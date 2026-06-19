@@ -71,13 +71,16 @@ def build_heatmap_data(rows: list[dict]) -> dict:
         node = gnode["h4"].setdefault(h4, {
             "exp": 0, "exp_pm": 0, "exp_py": 0,
             "imp": 0, "imp_pm": 0, "imp_py": 0,
-            "top_name": "", "top_val": -1})
+            "top_name": "", "top_val": -1, "top_hs": ""})
         for k in ("exp", "exp_pm", "exp_py", "imp", "imp_pm", "imp_py"):
             node[k] += int(r.get(k) or 0)
         v = int(r.get("exp") or 0) + int(r.get("imp") or 0)
         if v > node["top_val"]:
             node["top_val"] = v
             node["top_name"] = (r.get("name") or h4)[:40]
+            # 대표 leaf HS(10) — 셀 클릭 시 기업 보고서 HS 검색용(사용자 2026-06-19
+            # '히트맵도 연결'). 보고서가 HS6→MTI6→품목+수출입+관련 상장사 해석.
+            node["top_hs"] = str(r.get("hs_code") or "")
 
     ch: dict[str, dict] = {}
     ind: dict[str, dict] = {}
@@ -96,7 +99,7 @@ def build_heatmap_data(rows: list[dict]) -> dict:
     def _flat(tree: dict, with_c2: bool) -> list:
         out = []
         for key, gnode in tree.items():
-            h4s = [{"h4": h4, "nm": n["top_name"],
+            h4s = [{"h4": h4, "nm": n["top_name"], "hs": n["top_hs"],
                     "e": n["exp"], "epm": n["exp_pm"], "epy": n["exp_py"],
                     "i": n["imp"], "ipm": n["imp_pm"], "ipy": n["imp_py"]}
                    for h4, n in gnode["h4"].items()]
@@ -142,7 +145,7 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
 <style>{_HEATMAP_CSS}</style>
 <div class="hm-wrap">
   <div class="hm-bar">
-    <span>기준 <b>{ref}</b>{status} · 박스=HS4 (크기=금액) · 10분 변경감지 · 일 4회 풀스윕</span>
+    <span>기준 <b>{ref}</b>{status} · 박스=HS4 (크기=금액) · 셀 클릭→관련 상장사·보고서 · 10분 변경감지 · 일 4회 풀스윕</span>
     <span class="hm-toggle" id="hm-dir">
       <button class="hm-tbtn is-active" data-v="exp">수출</button>
       <button class="hm-tbtn" data-v="imp">수입</button>
@@ -229,7 +232,7 @@ function render(){{
       var base=dir==='exp'?(mode==='yoy'?n.epy:n.epm):(mode==='yoy'?n.ipy:n.ipm);
       var p=pct(val,base);
       if(p===null)flat++; else if(p>0.5)up++; else if(p<-0.5)down++; else flat++;
-      v+=val; cells.push({{v:val,h4:n.h4,nm:n.nm,p:p}});
+      v+=val; cells.push({{v:val,h4:n.h4,nm:n.nm,p:p,hs:n.hs}});
     }});
     if(v>0) chs.push({{v:v,name:c.name,c2:c.c2,cells:cells}});
   }});
@@ -267,9 +270,16 @@ function render(){{
           tip.innerHTML='<b>'+n.h4+' '+n.nm+'</b><br>'
             +(dir==='exp'?'수출':'수입')+' '+fmt(n.v)
             +' · '+(mode==='yoy'?'YoY ':'MoM ')
-            +(n.p===null?'신규(전기 0)':(n.p>0?'+':'')+n.p.toFixed(1)+'%');
+            +(n.p===null?'신규(전기 0)':(n.p>0?'+':'')+n.p.toFixed(1)+'%')
+            +(n.hs&&window.rbSearch?'<br><span style="color:#6cb6ff">클릭 → 관련 상장사·보고서</span>':'');
         }});
         cell.addEventListener('mouseleave',function(){{tip.style.display='none';}});
+        // 셀 클릭 → 기업 보고서(품목 모드)로 그 HS/품목 + 관련 상장사 + 수출입
+        // (사용자 2026-06-19 '히트맵도 연결'). rbSearch = 기업 보고서 위젯 전역 훅.
+        if(n.hs&&window.rbSearch){{
+          cell.style.cursor='pointer';
+          cell.addEventListener('click',function(){{tip.style.display='none';window.rbSearch(n.hs);}});
+        }}
         div.appendChild(cell);
       }});
     map.appendChild(div);
