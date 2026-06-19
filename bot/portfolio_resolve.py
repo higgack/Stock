@@ -359,12 +359,54 @@ def resolve_via_naver(name: str) -> tuple[str, str] | None:
     return res
 
 
+_YF_US_EXCH = {"NMS", "NGM", "NCM", "NYQ", "ASE", "PCX", "BTS", "NIM", "OEM", "OQB"}
+
+
+def resolve_via_yfinance(name: str) -> tuple[str, str] | None:
+    """yfinance Search → (ticker, market). 네이버 폴백 뒤 보강 (사용자 2026-06-20
+    '야후도'). top EQUITY 만, 국내(.KS/.KQ)=KR · 미국거래소(점없는 심볼)=US 만 보수적
+    채택(타 시장은 None — 오분류 방지). 7일 캐시(네이버와 동일 파일, yf: prefix)·
+    graceful(yfinance 미설치/네트워크 시 None)."""
+    import time
+    q = (name or "").strip()
+    if not q:
+        return None
+    key = "yf:" + _normalize(q)
+    cache = _naver_cache_load()
+    hit = cache.get(key)
+    if hit and (time.time() - hit.get("ts", 0)) < 7 * 86400:
+        v = hit.get("v")
+        return tuple(v) if v else None
+    res: tuple[str, str] | None = None
+    try:
+        import yfinance as yf
+        quotes = getattr(yf.Search(q, max_results=6), "quotes", None) or []
+        for qd in quotes:
+            if (qd.get("quoteType") or "").upper() != "EQUITY":
+                continue
+            sym = (qd.get("symbol") or "").strip()
+            if not sym:
+                continue
+            if sym.endswith(".KS") or sym.endswith(".KQ"):
+                res = (sym, "KR")
+                break
+            ex = (qd.get("exchange") or "").upper()
+            if "." not in sym and sym.isascii() and ex in _YF_US_EXCH:
+                res = (sym.upper(), "US")
+                break
+    except Exception:
+        res = None
+    cache[key] = {"ts": time.time(), "v": list(res) if res else None}
+    _naver_cache_save(cache)
+    return res
+
+
 def resolve_ticker(name: str) -> dict:
     """상품명 → {ticker, market, matched, source}.
 
-    순서: 해외 alias → 국내 DART/pykrx → KR ETF → **네이버 자동완성(국내+해외)** →
-    미매칭(None). 미매칭이어도 스냅샷 평가금액은 표시되므로 ingest 가 계속 진행한다
-    ('이름만 표시'). 네이버 단계가 페르미(FRMI)·pykrx 누락 국내종목을 자동 흡수."""
+    순서: 해외 alias → 국내 DART/pykrx → KR ETF → **네이버 자동완성** → **yfinance
+    Search** → 미매칭(None). 미매칭이어도 스냅샷 평가금액은 표시되므로 ingest 가 계속
+    진행한다('이름만 표시'). 네이버·야후가 페르미(FRMI)·pykrx 누락 국내종목을 자동 흡수."""
     ov = resolve_overseas(name)
     if ov:
         return {"ticker": ov[0], "market": ov[1], "matched": True, "source": "alias"}
@@ -379,4 +421,7 @@ def resolve_ticker(name: str) -> dict:
     nv = resolve_via_naver(name)
     if nv:
         return {"ticker": nv[0], "market": nv[1], "matched": True, "source": "naver"}
+    yf = resolve_via_yfinance(name)
+    if yf:
+        return {"ticker": yf[0], "market": yf[1], "matched": True, "source": "yfinance"}
     return {"ticker": None, "market": None, "matched": False, "source": None}
