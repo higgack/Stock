@@ -90,18 +90,36 @@ def _universe(market: str) -> tuple[list[str], dict]:
             from bot.intl_universe import full_universe
             full = full_universe(market)
             if len(full) > 100:
-                if market in ("HK", "JP"):
-                    # 캡 = env HIGHLOW_UNIVERSE_CAP, **기본 5000 = 사실상 전종목**
-                    # (사용자 2026-06-16 '전시장 다'). JP~2500·HK~2000 이라 기본값이면
-                    # 무캡(전종목). ⚠️ yfinance 1y full 스캔은 ~14분(JP)·rate-limit
-                    # 위험이나, 이제 EOD 백그라운드(장 마감 후 1회·stagger·circuit-
-                    # breaker 보호)라 감내. 문제 시 env 로 하향(예 900 = 시총 상위만,
-                    # 네이버 worldstock 시총 정규화 캡). CN_A 는 차단으로 peer-only.
-                    import os as _os
-                    _cap = int(_os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
-                    if len(full) > _cap:
-                        full = _cap_by_liquidity(full, _cap, market)
-                return full, {t: t for t in full}
+                # 커버리지 가드 (사용자 2026-06-19 '앞으로 새 종목 또 누락 안 되나') —
+                # 공식 상장목록(JPX/HKEX) 파싱과 **독립 소스**(네이버 worldstock 시총
+                # 목록)를 합집합. 한쪽이 미래 코드형식 변화(예 TSE 영숫자)로 종목을 놓쳐도
+                # 다른 쪽이 메워 자가 치유 → 285A(키옥시아) 류 재발 방지. 네이버맵은 30분
+                # 캐시라 부하 bound. native 명 있으면 표시명으로 우선(merged-in 가독).
+                names = {t: t for t in full}
+                try:
+                    from bot.naver_ranking_client import world_stock_map
+                    nv = world_stock_map(market) or {}
+                    _have = set(full)
+                    for t in nv:
+                        if t and t not in _have:
+                            full.append(t)
+                            _have.add(t)
+                        nm = (nv.get(t) or {}).get("name")
+                        if nm:
+                            names[t] = nm
+                except Exception as exc:
+                    log.debug("intl universe naver 합집합 %s: %s", market, exc)
+                # 캡 = env HIGHLOW_UNIVERSE_CAP, **기본 5000 = 사실상 전종목**
+                # (사용자 2026-06-16 '전시장 다'). JP~2500·HK~2000 이라 기본값이면 무캡.
+                # ⚠️ yfinance 1y full 스캔은 ~14분(JP)·rate-limit 위험이나 EOD 백그라운드
+                # (장 마감 후 1회·stagger·circuit-breaker)라 감내. 문제 시 env 하향(예 900
+                # = 시총 상위만). CN_A 는 차단으로 peer-only.
+                import os as _os
+                _cap = int(_os.getenv("HIGHLOW_UNIVERSE_CAP", "5000"))
+                if len(full) > _cap:
+                    full = _cap_by_liquidity(full, _cap, market)
+                    names = {t: names.get(t, t) for t in full}
+                return full, names
         except Exception as exc:
             log.warning("intl full_universe %s: %s", market, exc)
     if market == "CN_A":

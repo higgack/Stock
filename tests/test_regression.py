@@ -5262,6 +5262,28 @@ class TestIntlHighLow52:
             assert len(uni) == len(set(uni))          # dedupe
             assert all(names[t] for t in uni)         # name 기본=ticker
 
+    def test_universe_naver_coverage_guard(self, monkeypatch):
+        # 사용자 2026-06-19 '앞으로 또 새 종목 누락 안 되나' — full_universe(JPX/HKEX
+        # 파싱)가 미래 코드형식 변화로 종목을 놓쳐도 독립 소스(네이버 worldstock)
+        # 합집합이 메워 자가 치유(285A 키옥시아 류 재발 방지).
+        import bot.intl_highlow as ih
+        import bot.intl_universe as iu
+        import bot.naver_ranking_client as nr
+        dummy = [f"{1000 + i}.T" for i in range(150)]        # JPX 파싱(285A 놓침 가정)
+        monkeypatch.setattr(iu, "full_universe",
+                            lambda m: dummy[:] if m == "JP" else [])
+        monkeypatch.setattr(nr, "world_stock_map",
+                            lambda m, **k: {"285A.T": {"name": "키옥시아"},
+                                            "7203.T": {"name": "도요타"}})
+        uni, names = ih._universe("JP")
+        assert "285A.T" in uni                               # 네이버 합집합이 메움
+        assert names["285A.T"] == "키옥시아"                  # native 명 반영
+        assert "1000.T" in uni                               # JPX 종목 보존
+        # 네이버 실패 → graceful (JPX 단독, 크래시 0)
+        monkeypatch.setattr(nr, "world_stock_map",
+                            lambda m, **k: (_ for _ in ()).throw(RuntimeError("down")))
+        assert len(ih._universe("JP")[0]) == 150
+
     def test_kr_strips_foreign_comparables(self):
         # _KR_INDUSTRY_PEERS 는 반도체에 TSM/NVDA 등 해외 비교군 포함 →
         # .KS/.KQ 만 남겨야(해외 종목이 한국 52주 페이지에 새지 않게).
@@ -8675,10 +8697,11 @@ class TestUpperLowerVolume:
         assert seen["m"] == "JP"                        # JP 맵 라우팅(HK 하드코딩 아님)
         assert out[:2] == ["7203.T", "6758.T"]          # 시총 상위 우선
         assert "9999.T" not in out                      # 소형 탈락
-        # _universe 가 JP 도 캡 분기 (HK 와 동일), env 캡 배선(기본 full)
+        # _universe 가 JP/HK 캡 분기 (env 캡, 기본 full) + 네이버 합집합 커버리지 가드
         src = open("bot/intl_highlow.py", encoding="utf-8").read()
-        assert 'market in ("HK", "JP")' in src, "JP 캡 분기 미배선"
+        assert 'market in ("JP", "HK")' in src, "JP/HK 유니버스 분기 미배선"
         assert "HIGHLOW_UNIVERSE_CAP" in src and "_cap_by_liquidity(full, _cap, market)" in src
+        assert "world_stock_map" in src      # 네이버 합집합 커버리지 가드(2026-06-19)
 
     def test_jp_hk_naver_overlay(self, monkeypatch):
         # JP 네이버 worldstock overlay(직접 매칭) + HK overlay(zfill 정수 매칭).
