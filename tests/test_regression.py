@@ -4716,6 +4716,32 @@ class TestDartParseTargetAndSignificance:
         assert "미파싱제외" in src
         assert "noparse:'미파싱제외'" in src                 # CSV 라벨
 
+    def test_admin_issue_parsing(self):
+        # 관리종목 지정우려/지정 (사용자 2026-06-19 '미파싱제외인데 파싱돼야') —
+        # 기타→리스크 재분류 + freeform 제외 + 전용 파서(사유·연속거래일·지정조건).
+        from bot.dart_feed import (_admin_issue_lines, _classify_report,
+                                   intended_freeform_unparsed, is_parse_target)
+        body = ("제목 : (주)엑시온그룹 관리종목 지정우려 관련 안내(시가총액 150억원 "
+                "미달) 코스닥시장 상장규정 제53조 및 동규정 부칙 제2343호 제4조에 따라 "
+                "'보통주식의 시가총액이 150억원 미만인 상태가 연속하여 30일(매매거래일 "
+                "기준)동안 계속'되는 경우 관리종목으로 지정하고 있으며, 이와 관련하여 "
+                "동사는 '26.06.18 현재 시가총액 150억원 미만인 상태가 연속하여 25매매"
+                "거래일 동안 지속되었습니다. 따라서 시가총액 150억원 미만인 상태가 "
+                "'26.06.19부터 5매매거래일 지속될 경우 관리종목으로 지정될 수 있음을 "
+                "알려드립니다.")
+        lines = _admin_issue_lines(body)
+        assert any("시가총액 150억원 미달" in x for x in lines)      # 사유
+        assert any("연속 25매매거래일" in x for x in lines)          # 경과(규정 30일 아님)
+        assert any("5매매거래일" in x and "2026.06.19" in x for x in lines)  # 지정조건+시작일
+        assert any("기준일: 2026.06.18" in x for x in lines)          # 기준일
+        # 분류 = 리스크, parse target, freeform 제외(진짜 미파싱 추적)
+        rn = "기타시장안내(관리종목지정우려종목)"
+        assert _classify_report(rn) == "리스크"
+        assert intended_freeform_unparsed(rn) is False
+        assert is_parse_target({"category": "리스크", "report_nm": rn, "corp_code": "x"})
+        # 회귀: 비-관리종목 기타시장안내는 기존대로 freeform(미파싱제외) 유지
+        assert intended_freeform_unparsed("기타시장안내(투자주의환기종목)") is True
+
     def test_enrich_uses_is_parse_target(self):
         # enrich 의 시도 조건이 is_parse_target 단일 소스로 통합됐는지
         # (인라인 _force/지분/자금조달 분기 중복 제거) — 회귀 차단.

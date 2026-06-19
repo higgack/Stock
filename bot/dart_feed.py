@@ -102,6 +102,13 @@ def _classify_report(report_nm: str) -> str:
         return "계약"
     if any(k in t for k in ("생산재개", "화재발생")):  # 생산중단은 chart KW
         return "리스크"
+    # 관리종목 지정우려/지정/지정해제 — 거래소 기타시장안내(관리종목지정우려종목 등).
+    # 시총·매출·자기자본·감사의견 미달로 관리종목 지정 위험을 알리는 상장폐지 전 단계
+    # 경고 (사용자 2026-06-19 '미파싱제외인데 파싱돼야'). '기타'로 빠져 미파싱제외되던
+    # 것 → 리스크 분류 + 전용 파서. report_nm 이 '기타시장안내(관리종목…)' 라 아래
+    # chart_events/freeform 으로 새던 것을 명시 분기.
+    if "관리종목" in t:
+        return "리스크"
     # 유형자산 양수/양도/처분/취득(+철회) = 자산양수도 (사용자 2026-06-13
     # '유형자산처분이 왜 신규시설투자' — chart_events _CAPEX_KW 의
     # '유형자산'이 capex 로 흘러들던 것 차단). 신규시설투자는 전용
@@ -818,6 +825,45 @@ _MARKET_NOTICE_FIELDS = [
      r"제출기한[^0-9]{0,10}?"
      r"(\d{4}\s*[년.\-]\s*\d{1,2}\s*[월.\-]\s*\d{1,2})", "text"),
 ]
+
+
+def _admin_issue_lines(txt: str) -> list[str]:
+    """관리종목 지정우려/지정 안내(거래소 기타시장안내) → 카드 lines (순수·테스트).
+
+    자유 서식 문장이라 라벨-값이 아닌 패턴 매칭: (a) 사유(시가총액/매출액/자기자본/
+    감사의견 미달 — 제목 괄호 우선), (b) 현재 연속 매매거래일(규정의 '30일'이 아닌
+    실제 경과 'N매매거래일'), (c) 지정 임박 조건(시작일 + N매매거래일 더 지속 시
+    지정), (d) 기준일. 빈손이면 호출부가 _MARKET_NOTICE_FIELDS(제목/결론) 폴백."""
+    out: list[str] = []
+    t = re.sub(r"\s+", " ", txt or "")
+    # (a) 사유 — 제목 괄호 '(시가총액 150억원 미달)' 우선
+    m = re.search(r"관리종목\s*지정\s*우려[^()]{0,30}?\(\s*([^)]{2,40}?)\s*\)", t)
+    if not m:
+        m = re.search(r"((?:시가총액|매출액|자기자본|법인세비용차감전계속사업손실|"
+                      r"세전계속사업손실)\s*(?:이|가)?\s*[\d,]+\s*억원?\s*(?:미만|미달))", t)
+    if not m:
+        m = re.search(r"((?:감사|반기검토)\s*의견\s*[가-힣]{2,12})", t)
+    if m:
+        out.append(f"사유: {m.group(1).strip()[:40]}")
+    # (b) 현재 연속 매매거래일 — '연속하여 25매매거래일'('30일(매매거래일 기준)'은 불일치)
+    m = re.search(r"연속하여\s*(\d{1,3})\s*매매거래일", t)
+    if m:
+        out.append(f"경과: 연속 {m.group(1)}매매거래일 미달 지속")
+    # (c) 지정 임박 조건 + 시작일 — "'26.06.19부터 5매매거래일 …지정"
+    m = re.search(r"['‘’]?(\d{2}\.\d{1,2}\.\d{1,2})\s*부터\s*(\d{1,3})\s*매매거래일", t)
+    if m:
+        out.append(f"지정 조건: 20{m.group(1)}부터 {m.group(2)}매매거래일 더 "
+                   f"지속 시 관리종목 지정")
+    else:
+        m = re.search(r"(\d{1,3})\s*매매거래일\s*(?:이상\s*)?(?:지속|계속)"
+                      r"[^.]{0,30}?관리종목", t)
+        if m:
+            out.append(f"지정 조건: {m.group(1)}매매거래일 더 지속 시 관리종목 지정")
+    # (d) 기준일 — "'26.06.18 현재"
+    m = re.search(r"['‘’]?(\d{2}\.\d{1,2}\.\d{1,2})\s*현재", t)
+    if m:
+        out.append(f"기준일: 20{m.group(1)}")
+    return out
 
 
 def _rehab_lines(txt: str) -> list[str]:
@@ -2897,6 +2943,19 @@ def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
         doc = _parse_rehab(rcept_no, api_key)
         if doc:
             return doc
+    elif "관리종목" in t:
+        # 관리종목 지정우려/지정 (사용자 2026-06-19) — 전용 파서로 사유·연속
+        # 매매거래일·지정조건 클린 추출, 빈손이면 기타시장안내 제목/결론 폴백.
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _admin_issue_lines(txt2)
+            if parts:
+                return {"lines": parts}
+        doc = _extract_doc_fields(rcept_no, api_key,
+                                  _MARKET_NOTICE_FIELDS, min_fields=1)
+        if doc:
+            return doc
+        _doc_fail_mark(rcept_no, hours=12.0)
     elif "기타시장안내" in t:
         doc = _extract_doc_fields(rcept_no, api_key,
                                   _MARKET_NOTICE_FIELDS, min_fields=1)
@@ -3444,6 +3503,11 @@ def intended_freeform_unparsed(report_nm: str) -> bool:
     True. 대시보드가 '미파싱제외'(회색·설계상 정상)로 분리. 나머지 빈 항목은 '진짜
     미파싱'(파서 갭). 순수·테스트."""
     rn = report_nm or ""
+    # 관리종목 지정우려/지정 = 전용 파서 대상(사유·연속 매매거래일·지정조건) →
+    # '기타시장안내' freeform 에서 제외(사용자 2026-06-19 '파싱돼야'). detail 비면
+    # 진짜 미파싱으로 색칠돼 추적되게(의도된 제외 아님).
+    if "관리종목" in rn:
+        return False
     if any(k in rn for k in _INTENDED_FREEFORM_KW):
         return True
     if rn.startswith("[첨부정정]"):
@@ -4338,6 +4402,68 @@ def reparse_provisional_once_if_needed() -> dict | None:
     except OSError:
         pass
     return {"cleared": cleared, **st}
+
+
+_BACKFILL_ADMIN_ISSUE_MARKER = _ARCHIVE_DIR.parent / ".dart_admin_issue_v1"
+
+
+def backfill_admin_issue_once_if_needed() -> dict | None:
+    """관리종목 지정우려/지정 파서 신설(2026-06-19) 소급 1회 — 기존 '기타시장안내
+    (관리종목…)' 항목을 (a) 기타→리스크 재분류 (b) doc_fail 클리어 후 detail 추출
+    (사유·연속 매매거래일·지정조건). 신설 유형이라 detail 부재 → reparse_details
+    (detail 필수)가 못 닿음 → 직접 추출. detail 추출 성공 시에만 채움(회귀 0),
+    재분류는 항상. 빈도 낮아(종목당 드묾) 콜 적음, 콜버짓 가드. marker 1회."""
+    if _BACKFILL_ADMIN_ISSUE_MARKER.exists():
+        return None
+    api_key = _dart_api_key()
+    cleared = clear_doc_fail_cache()    # 신설 파서 과거 실패분 12h 쿨다운 해제
+    stats = {"reclassified": 0, "filled": 0, "checked": 0, "doc_fail_cleared": cleared}
+    today = datetime.now(_KST).date()
+    for i in range(60):
+        d = today - timedelta(days=i)
+        items = load_archive(d)
+        if not items:
+            continue
+        changed = False
+        for it in items:
+            rn = it.get("report_nm", "")
+            if "관리종목" not in rn:
+                continue
+            nc = _classify_report(rn)               # (a) 기타→리스크
+            if nc != it.get("category"):
+                it["category"] = nc
+                stats["reclassified"] += 1
+                changed = True
+            if it.get("detail") or not (api_key and it.get("corp_code")):
+                continue                            # 이미 파싱됨 or 키 부재 → 유지
+            if _budget_today() >= _BUDGET_HARD - 500:
+                log.warning("관리종목 백필: 콜버짓 헤드룸 도달 — 중단")
+                break
+            stats["checked"] += 1
+            _budget_add(2)
+            time.sleep(0.15)
+            try:                                    # (b) detail 추출
+                detail = _extract_detail(rn, str(it.get("rcept_no", "")),
+                                         it.get("corp_code", ""), api_key)
+                lines = list(detail.get("lines", [])) if detail else []
+                if lines:
+                    it["detail"] = lines
+                    stats["filled"] += 1
+                    changed = True
+            except Exception as exc:
+                log.debug("관리종목 백필 %s: %s", it.get("rcept_no", "?"), exc)
+        if changed:
+            save_archive(d, items)
+    try:
+        _BACKFILL_ADMIN_ISSUE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        _BACKFILL_ADMIN_ISSUE_MARKER.write_text(json.dumps({
+            "ts": datetime.now(_KST).isoformat(timespec="seconds"), **stats},
+            ensure_ascii=False))
+    except OSError:
+        pass
+    log.info("dart_feed 관리종목 백필: 재분류 %d · detail 채움 %d/%d (doc_fail %d 해제)",
+             stats["reclassified"], stats["filled"], stats["checked"], cleared)
+    return stats
 
 
 _RECLASS_TUJA_MARKER = _ARCHIVE_DIR.parent / ".dart_reclass_tuja_v1"
