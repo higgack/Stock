@@ -76,6 +76,14 @@ def make_client(api_key: Optional[str] = None):
                    no key. `api_key` arg (often the sentinel) is ignored.
     AI Studio mode: genai.Client(api_key=...). Falls back to GOOGLE_API_KEY
                    from the environment when no real key is passed in.
+
+    Callers MUST bind the result to a variable before use — do NOT chain
+    `make_client(...).models.generate_content(...)`. The google-genai
+    Client closes its httpx transport when garbage-collected, so a chained
+    temporary can be collected mid-request and raise "Cannot send a
+    request, as the client has been closed." (`client = make_client(...)`
+    then `client.models...` is safe — that is the pattern every call site
+    uses.) Verified on Vertex 2026-06-19.
     """
     from google import genai
 
