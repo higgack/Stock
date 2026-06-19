@@ -469,6 +469,16 @@ class HeatmapTest(unittest.TestCase):
         self.assertEqual(ch85["name"], "전기전자")
         self.assertEqual(ch85["h4s"][0]["h4"], "8542")
         self.assertEqual(ch85["h4s"][0]["epy"], 5_000_000_000)
+        # 셀이 대표 leaf HS 를 실어야 클릭→기업 보고서 HS 검색 가능(2026-06-19)
+        self.assertTrue(ch85["h4s"][0]["hs"].startswith("8542"))
+
+    def test_heatmap_cells_clickable_to_report(self):
+        # 히트맵 셀 클릭 → window.rbSearch(HS) → 기업 보고서 연결(사용자 2026-06-19).
+        from trade.heatmap import render_heatmap_html
+        html = render_heatmap_html(cs.heatmap_rows(self._leaves()))
+        self.assertIn("window.rbSearch", html)            # 전역 훅 호출
+        self.assertIn("cursor='pointer'", html)           # 셀 클릭 가능 표시
+        self.assertIn("관련 상장사·보고서", html)          # 클릭 힌트(범례/툴팁)
 
 
 class ScanUsesRangeFetchTests(unittest.TestCase):
