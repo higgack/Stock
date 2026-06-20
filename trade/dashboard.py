@@ -811,7 +811,12 @@ def _build_html(
         + ("\n;(function(){function s(r){(r||document)"
            ".querySelectorAll('.ind-raw-scroll').forEach(function(e){"
            "e.scrollLeft=e.scrollWidth;});}"
-           "window._scrollRaw=function(r){requestAnimationFrame(function(){s(r);});};"
+           # 단일 rAF 는 레이아웃 미정착(폰트·lazy innerHTML·카드 전폭 reflow) 시점에
+           # 실행돼 scrollWidth 가 옛값→좌측 잔류(사용자 2026-06-20 반복). 이중 rAF +
+           # 60·240ms 백업으로 정착 후 재적용 → 최신(우측) 디폴트 보장.
+           "window._scrollRaw=function(r){requestAnimationFrame(function(){s(r);"
+           "requestAnimationFrame(function(){s(r);});});"
+           "setTimeout(function(){s(r);},60);setTimeout(function(){s(r);},240);};"
            "window._scrollRaw();"
            "document.addEventListener('toggle',function(e){"
            "if(e.target&&e.target.open)window._scrollRaw(e.target);},true);})();")
@@ -1009,10 +1014,10 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-group-na{border-left-color:var(--border)}
 .ind-cards{display:flex;flex-direction:column;gap:12px;padding:0 16px 8px;min-width:0}
 .ind-card{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:14px;box-shadow:var(--shadow);min-width:0}
-/* 두 차트 열(라인 cell1 · 막대 cell2)을 동일 너비로 — 비대칭(1.25fr vs 1fr)이면
-   width:100%+height:auto 라 막대 차트가 낮아져 align:start 에서 위로 떠 보임(사용자
-   2026-06-18 '두번째 그래프 떨어져있다'). 같은 너비 → 같은 높이 → 정렬. */
-.ind-row{display:grid;grid-template-columns:minmax(230px,0.95fr) minmax(260px,1.1fr) minmax(260px,1.1fr);gap:14px;align-items:start}
+/* meta(좌, 1fr 슬랙 흡수) + 라인·막대 차트 2개를 **고정폭(400px)으로 오른쪽에 붙여**
+   동일 너비·동일 높이·동일 간격(사용자 2026-06-20 '그래프 간격 차이·오른쪽으로 몰기').
+   1fr 메타가 여백을 다 먹어 두 차트가 우측 끝에 14px 간격으로 나란히 → 간격 균일. */
+.ind-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,400px) minmax(0,400px);gap:14px;align-items:start;justify-content:end}
 .ind-meta{min-width:0}
 .ind-chart-cell{min-width:0}
 .ind-chart-cell .ind-chart{width:100%;height:auto;max-width:400px}
@@ -1029,7 +1034,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
    400px} 상속(옛 max-width:100% 오버사이즈 제거). 상세 td nowrap 해제(코멘트 줄바꿈).
    좁으면(<900px) 기본과 동일하게 1단. 월별 원자료 우측(최신) 스크롤은 _scrollRaw(JS). */
 .ind-sub-wrap .ind-mti-d>td{white-space:normal}
-.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(230px,0.95fr) minmax(260px,1.1fr) minmax(260px,1.1fr)}
+.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(0,1fr) minmax(0,400px) minmax(0,400px);justify-content:end}
 @media(max-width:900px){.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:1fr}}
 /* 그래도 표가 넘칠 때 품목명 칸(랭킹 본문 첫 td)을 헤더처럼 sticky 고정(헤더
    th:first-child 와 짝) — 가로 스크롤해도 품목명이 안 잘리게. 펼침 상세행
