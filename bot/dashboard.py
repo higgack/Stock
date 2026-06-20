@@ -2635,14 +2635,14 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
           <li>출처: KR DART · US SEC 8-K · JP EDINET · TW MOPS · CN/HK AKShare(무료). US 8-K 는 항목 종류가 넓어(실적·Reg FD·임원 위주) 매칭되는 마커가 KR DART(세밀한 공시명)보다 적게 표시될 수 있음. <b>호재/악재 판단은 안 함</b> — 종류만 색, 내용은 원문에서 직접 확인. '공시' 버튼으로 on/off(<b>기본 OFF</b> — 선택해서 보기).</li>
         </ul>
       </div>
-      <div class="cg-sec"><b>보조지표 버튼</b> — 페이지 안에서 자유롭게 켜고 끌 수 있습니다. 새로고침하면 기본값(캔들·이평선·거래량·RSI)으로 돌아갑니다.
+      <div class="cg-sec"><b>보조지표 버튼</b> — 페이지 안에서 자유롭게 켜고 끌 수 있습니다. 새로고침하면 기본값(캔들·이평선·거래량·RSI·MACD)으로 돌아갑니다.
         <ul>
           <li><span class="k">캔들</span> — 라인 ↔ 캔들(시·고·저·종) 전환.</li>
           <li><span class="k">이평선</span> — <span style="color:#2563eb">10 EMA</span>(단기) · <span style="color:#3ec46d">50 SMA</span>(중기) · <span style="color:#e2574c">200 SMA</span>(장기) 추세선.</li>
           <li><span class="k" style="color:#7890c8">볼린저</span> — 20일·2σ 밴드. 상단 부근=과열, 하단 부근=과매도, 폭=변동성.</li>
           <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
           <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석).</li>
-          <li><span class="k" style="color:#4c9aff">MACD</span> — 하단 별도 패널. 라인이 시그널 위로 교차=상승 모멘텀, 아래로=하락.</li>
+          <li><span class="k" style="color:#4c9aff">MACD</span>(이동평균수렴확산) — 하단 별도 패널. <b>MACD선=12일EMA−26일EMA</b>(단기·장기 추세 격차), <b>시그널선=MACD의 9일EMA</b>, <b>막대(히스토그램)=MACD−시그널</b>. ① MACD가 시그널 <b>위로 교차(골든)=상승 모멘텀</b>, 아래로(데드)=하락. ② 0선 위=상승추세·아래=하락추세. ③ 히스토그램이 0에서 커질수록 모멘텀 강화, 줄면 약화. ④ 가격은 신고가인데 MACD는 더 낮으면 <b>다이버전스</b>(추세 약화 경고). 추세추종 보조지표라 횡보장선 신호가 잦음.</li>
           <li><span class="k">로그</span> — 세로축 로그 스케일. 긴 기간 %변동 비교에 유리.</li>
           <li><span class="k">공시</span> — 공시 마커 표시/숨김(위 '공시 마커' 참고).</li>
         </ul>
@@ -2679,7 +2679,7 @@ _CHART_JS = """
   // 지표 on/off 상태 (새로고침 시 항상 기본값으로 회귀 — 사용자 정책 2026-06-06).
   // 페이지 안에서는 토글 자유(in-memory ind 변경 후 재렌더), 단 localStorage 미저장.
   var IND_KEY = 'noah_chart_ind_v1';
-  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:false, log:false, events:false };
+  var IND_DEFAULT = { candle:true, ma:true, bb:false, vol:true, rsi:true, macd:true, log:false, events:false };
   function loadInd(){
     try { localStorage.removeItem(IND_KEY); } catch(e){}  // 옛 영속값 정리
     var out = {};
