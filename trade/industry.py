@@ -702,8 +702,15 @@ def _unit_str(v) -> str:
     return f"${v:.3f}/kg"
 
 
+# 산업 카드 '🏢 관련기업(큐레이션)' 라인에 테마(HS연계)+DART 보강승인까지 병합할지
+# (사용자 2026-06-20 '테마·보강 반영, 너무 많아 지저분하면 회귀'). True=레퍼런스북과
+# 동일 풍부 / False=수동 _MAP 대표주만(회귀). 채널(📨) 라인은 플래그 무관 항상 별도.
+_CARD_RICH_CURATION = True
+
+
 def _mti_extras(node: dict, pts: list[dict], amt_th: str,
-                mti6: str = "", channel: list[str] | None = None) -> str:
+                mti6: str = "", channel: list[str] | None = None,
+                extra_cos: list[str] | None = None) -> str:
     """품목 카드 meta 하단 부가줄 (사용자 2026-06-13 텔레그램 채널
     미러): 💲 최신월 단가 + 전년동월 대비, 🧾 구성 HS 코드(MTI 는 HS10
     여러 개의 묶음이라 자기 HS 가 없음 — 구성 목록이 답), 🏢 관련기업
@@ -765,18 +772,23 @@ def _mti_extras(node: dict, pts: list[dict], amt_th: str,
             f"<p class='ind-extra'>🧾 구성 HS <span class='ind-extra-sub' "
             f"title='{_html.escape(full)}'>{_html.escape(shown)}{more}"
             f" (총 {len(members)}개 HS10)</span></p>")
-    # 관련기업 ① 수동 큐레이션 (대표 상장사)
+    # 관련기업 ① 큐레이션 — 수동(_MAP) + 테마(HS연계) + DART 보강승인(extra_cos) 병합
+    # → 레퍼런스북과 동일 소스(사용자 2026-06-20). extra_cos 는 호출부가 _CARD_RICH_
+    # CURATION 플래그로 공급/차단 → False 면 _MAP-only 로 즉시 회귀(지저분하면).
     try:
-        from trade.mti_companies import companies_for
-        cos = companies_for(node.get("name") or "")
+        from trade.mti_companies import companies_for, dedup_companies
+        cos = list(companies_for(node.get("name") or ""))
+        if extra_cos:
+            cos = dedup_companies(cos + list(extra_cos))
     except Exception:
         cos = []
     if cos:
         chips = " · ".join(f"<b>{_html.escape(c)}</b>" for c in cos)
+        _src = ("수동 큐레이션 + 테마(HS연계) + DART 보강승인" if extra_cos
+                else "품목명 키워드 기반 수동 큐레이션")
         lines.append(
             "<p class='ind-extra'>🏢 관련기업(큐레이션): " + chips
-            + " <span class='ind-extra-sub' title='품목명 키워드 기반 수동 "
-              "큐레이션 — 자동 추정 아님'>ⓘ</span></p>")
+            + f" <span class='ind-extra-sub' title='{_src} — 자동 추정 아님'>ⓘ</span></p>")
     # 관련기업 ② 채널 알림 조인 (BeOn 수출입 알림이 같은 품목명을 다룬
     # 기업들 — store.db 라이브, 큐레이션과 출처 구분 표기, 중복 제거)
     channel = [c for c in (channel or []) if c not in set(cos)]
@@ -1261,6 +1273,20 @@ def render_subitem_html(by_mti: dict[str, dict],
     except Exception:
         _ch_pairs = []
         channel_companies_for = lambda name, pairs: []  # noqa: E731
+    # 카드 관련기업(큐레이션 라인)에 테마(HS연계)+DART 보강승인도 병합 → 레퍼런스북과
+    # 동일 소스(사용자 2026-06-20). 테마 회사를 mti6 별 1회 precompute(build_rows 와 동일
+    # theme_mti6 핀 경로). 지저분하면 _CARD_RICH_CURATION=False 한 줄로 _MAP-only 회귀.
+    _theme_by_mti: dict[str, list[str]] = {}
+    _reinforce_for = lambda name: []  # noqa: E731
+    if _CARD_RICH_CURATION:
+        try:
+            from trade import mti_companies as _mc
+            for _tr in _mc.theme_rows():
+                for _m6 in _mc.theme_mti6(_tr["name"], _tr.get("hs", [])):
+                    _theme_by_mti.setdefault(_m6, []).extend(_tr["companies"])
+            _reinforce_for = _mc.reinforce_approved_for
+        except Exception:
+            _theme_by_mti = {}
     rows = []
     pts_by_mti: dict[str, list[dict]] = {}
     extras_by_mti: dict[str, str] = {}
@@ -1273,9 +1299,12 @@ def render_subitem_html(by_mti: dict[str, dict],
         # 부가줄. wgts 없는 옛 스냅샷/미수록 품목은 줄 생략 (graceful).
         _attach_units(pts, node.get("wgts"))
         pts_by_mti[mti6] = pts
+        _extra = (list(_theme_by_mti.get(mti6, []))
+                  + list(_reinforce_for(node.get("name") or ""))) or None
         extras_by_mti[mti6] = _mti_extras(
             node, pts, amt_th, mti6=mti6,
-            channel=channel_companies_for(node.get("name") or "", _ch_pairs))
+            channel=channel_companies_for(node.get("name") or "", _ch_pairs),
+            extra_cos=_extra)
         latest = pts[-1]
         # MoM = 최신 확정월 vs 달력상 직전월. 직전월 포인트가 없으면(데이터
         # 공백) MoM 미정의 → 두 랭킹표에서 제외. 미래 미발표월은 애초에

@@ -1053,6 +1053,9 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-sub-note{font-size:12px;color:var(--text-sub);padding:0 16px 8px}
 .ind-sub-wrap{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 16px 8px;min-width:0}
 @media(max-width:860px){.ind-sub-wrap{grid-template-columns:1fr}}
+/* 행 펼침 시 그 카드를 전폭으로(반대편 빈 공간까지) → 상세가 기본 카드와 같은 너비로
+   (사용자 2026-06-20). 다시 접으면 JS 가 ind-open 제거 → 원래 2단 복귀. */
+.ind-sub-wrap .ind-sub-card.ind-open{grid-column:1/-1}
 /* min-width:0 = 그리드 아이템이 1fr 트랙으로 수축 → 안의 .ind-raw-scroll(월별표)이
    실제로 가로 스크롤(없으면 넓은 월별표가 카드를 밀어 페이지 블로우아웃·스크롤 0,
    사용자 2026-06-18 '스크롤도 없어'). .ind-card(#497)와 동일 패턴, sub-card 누락분. */
@@ -2004,6 +2007,10 @@ document.addEventListener('click',function(e){
     d.hidden=!d.hidden;
     const m=tr.querySelector('.ind-mti-more');
     if(m)m.textContent=d.hidden?'▸':'▾';
+    // 펼치면 그 카드를 전폭으로(반대편 빈공간까지) → 상세가 기본 카드 너비로, 접으면
+    // 원복 (사용자 2026-06-20). 카드에 열린 상세가 하나라도 있으면 ind-open.
+    const card=tr.closest('.ind-sub-card');
+    if(card)card.classList.toggle('ind-open',!!card.querySelector('.ind-mti-d:not([hidden])'));
     // 펼친 상세의 월별 원자료표를 최신(우측)으로 디폴트 스크롤 — MTI 행 펼침은
     // <details> 가 아니라 hidden 토글이라 toggle 이벤트가 안 떠서 _scrollRaw 가
     // 안 걸렸음(사용자 2026-06-19 '스크롤을 오른쪽으로 밀어 최신이 디폴트').
