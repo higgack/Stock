@@ -1014,10 +1014,10 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-group-na{border-left-color:var(--border)}
 .ind-cards{display:flex;flex-direction:column;gap:12px;padding:0 16px 8px;min-width:0}
 .ind-card{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:14px;box-shadow:var(--shadow);min-width:0}
-/* meta(좌, 1fr 슬랙 흡수) + 라인·막대 차트 2개를 **고정폭(400px)으로 오른쪽에 붙여**
-   동일 너비·동일 높이·동일 간격(사용자 2026-06-20 '그래프 간격 차이·오른쪽으로 몰기').
-   1fr 메타가 여백을 다 먹어 두 차트가 우측 끝에 14px 간격으로 나란히 → 간격 균일. */
-.ind-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,400px) minmax(0,400px);gap:14px;align-items:start;justify-content:end}
+/* 두 차트 열(라인 cell1 · 막대 cell2)을 동일 너비로(같은 너비→같은 높이→정렬). meta
+   좌·차트 우. 개별(.ind-mti-d)도 펼치면 전폭(ind-open)이라 이 그리드 그대로 = 기존과
+   동일(사용자 2026-06-20 '기존처럼·심플'; 1fr+고정400 과교정 되돌림). */
+.ind-row{display:grid;grid-template-columns:minmax(230px,0.95fr) minmax(260px,1.1fr) minmax(260px,1.1fr);gap:14px;align-items:start}
 .ind-meta{min-width:0}
 .ind-chart-cell{min-width:0}
 .ind-chart-cell .ind-chart{width:100%;height:auto;max-width:400px}
@@ -1034,7 +1034,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
    400px} 상속(옛 max-width:100% 오버사이즈 제거). 상세 td nowrap 해제(코멘트 줄바꿈).
    좁으면(<900px) 기본과 동일하게 1단. 월별 원자료 우측(최신) 스크롤은 _scrollRaw(JS). */
 .ind-sub-wrap .ind-mti-d>td{white-space:normal}
-.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(0,1fr) minmax(0,400px) minmax(0,400px);justify-content:end}
+.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(230px,0.95fr) minmax(260px,1.1fr) minmax(260px,1.1fr)}
 @media(max-width:900px){.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:1fr}}
 /* 그래도 표가 넘칠 때 품목명 칸(랭킹 본문 첫 td)을 헤더처럼 sticky 고정(헤더
    th:first-child 와 짝) — 가로 스크롤해도 품목명이 안 잘리게. 펼침 상세행
