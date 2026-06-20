@@ -24,6 +24,32 @@ PAGE = _DATA_DIR / "dashboard" / "reference.html"
 # DART 보강 후보 캐시 — curation_candidates(타이머)가 계산·기록, 레퍼런스북 렌더가 읽음
 # (전 품목×전 상장사 매칭은 무거우므로 렌더에서 매번 돌리지 않고 캐시 read).
 REINFORCE_JSON = _DATA_DIR / "dart_reinforce_candidates.json"
+# 운영자가 '아니다'고 한 보강 후보 (품목→거절 회사) 영구 거절 목록 — 다시 후보로
+# 안 뜨게(사용자 2026-06-20). _build_reinforce 가 승인 시 패널−승인분을 자동 적재.
+REJECTED_JSON = _DATA_DIR / "dart_reinforce_rejected.json"
+# 승인 CSV 내용 해시 — 변경(=새 승인 배치) 감지해 그 시점 패널−승인분을 1회 거절 적재.
+REINFORCE_APPROVED_HASH = _DATA_DIR / ".reinforce_approved_hash"
+
+
+def load_rejected(path: Path | None = None) -> dict:
+    """{품목명: [거절 회사…]} 거절 목록 로드. 부재/실패 → {} (graceful)."""
+    import json
+    try:
+        d = json.loads((path or REJECTED_JSON).read_text(encoding="utf-8"))
+        return {k: list(v) for k, v in d.items() if v}
+    except Exception:
+        return {}
+
+
+def save_rejected(data: dict, path: Path | None = None) -> None:
+    """거절 목록 저장 (best-effort)."""
+    import json
+    p = path or REJECTED_JSON
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def save_reinforce(data: dict, path: Path | None = None) -> None:

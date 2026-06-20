@@ -120,7 +120,8 @@ def suggest_companies_for_items(inventory: dict, item_names: list) -> dict:
 
 
 def additional_candidates(inventory: dict, item_current: dict,
-                          min_share: float = 30.0) -> dict:
+                          min_share: float = 30.0,
+                          rejected: dict | None = None) -> dict:
     """{품목명: 현재 관련사(정규화 set)} + G1 인벤토리 → {품목명: [DART 매출구성상
     추가 후보 회사…]} — **현재 목록에 없는 회사만**. 미매핑뿐 아니라 **이미 매핑된
     품목도 포함**해 각 품목에 더 많은 상장사를 발굴.
@@ -131,9 +132,14 @@ def additional_candidates(inventory: dict, item_current: dict,
     제외. canon_company 로 표기변형 통일(중복 후보 방지). operator 승인 전 후보 —
     자동 큐레이션 아님(오매핑이 신뢰를 깎으므로). 순수.
 
-    min_share=30 기본(주력 보수적). 너무 적으면 낮추고 노이즈 많으면 올린다."""
+    min_share=30 기본(주력 보수적). 너무 적으면 낮추고 노이즈 많으면 올린다.
+
+    rejected = {품목명: set(회사 canon키)} — 운영자가 '아니다'고 한 (품목,회사)는
+    영구 제외(다시 후보로 안 뜸, 사용자 2026-06-20 '아니다고 한건 기억해서 다시
+    안나오게'). _build_reinforce 가 승인 시 패널−승인분을 자동 적재."""
     from trade import mti_companies
     canon = mti_companies.canon_company
+    rejected = rejected or {}
     valid = [(it, _canon(it)) for it in (item_current or {})]
     valid = [(it, ic) for it, ic in valid if ic and len(ic) >= 2 and ic not in _GENERIC]
     out: dict[str, list] = {}
@@ -162,8 +168,9 @@ def additional_candidates(inventory: dict, item_current: dict,
         for it, ic in valid:
             if any(_canon_match(pc, ic) for pc in pcs):
                 cur = item_current.get(it) or set()
+                rej = rejected.get(it) or set()      # 운영자 거절 (품목,회사) 영구 제외
                 seen = out_seen.setdefault(it, set(cur))
-                if ck and ck not in seen:
+                if ck and ck not in seen and ck not in rej:
                     seen.add(ck)
                     out.setdefault(it, []).append(company)
     return out

@@ -281,6 +281,15 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         else:
             self.skipTest("승인 품목이 MTI 품목명과 매칭되지 않음")
 
+    def test_rejected_roundtrip(self):
+        # 보강 거절 메모리(사용자 2026-06-20 '아니다고 한건 기억') — 저장/로드.
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "rej.json"
+            R.save_rejected({"변압기": ["거절사"], "빈것": []}, p)
+            loaded = R.load_rejected(p)
+            self.assertEqual(loaded, {"변압기": ["거절사"]})   # 빈 값 제외
+            self.assertEqual(R.load_rejected(Path("/no/x.json")), {})
+
     def test_reinforce_roundtrip_and_panel(self):
         # DART 보강 후보 — 캐시 JSON 저장/로드(후보수순) + 패널 렌더(2026-06-19).
         with tempfile.TemporaryDirectory() as td:

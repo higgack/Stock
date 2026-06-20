@@ -413,15 +413,54 @@ def _build_reinforce() -> int:
     전 품목(이미 매핑 포함)에 현재 큐레이션에 없는 DART 매출구성 매칭 회사 발굴 —
     승인 전 후보. 후보 품목수 반환. best-effort(실패해도 refresh 결과와 무관)."""
     try:
+        import hashlib
+
         from trade import dart_match, mti_companies, reference_book
         inv = load_inventory()
         if not inv:
             return 0
+
+        def _ck(c):
+            return mti_companies.canon_company(c).replace(" ", "").lower()
+
+        # 거절 메모리(사용자 2026-06-20 '아니다고 한건 기억해서 다시 안나오게'). 승인 CSV
+        # 해시가 바뀌면(=새 승인 배치) 그 직전 패널에서 '승인 안 된 회사'를 거절로 1회
+        # 적재 → 운영자는 승인분만 주면 나머지는 자동 거절(다시 후보 미출현). 전체 거절
+        # 리스트 불요. 신규 filing 후보는 패널에 새로 떠 운영자가 다음에 검토.
+        rejected = reference_book.load_rejected()       # {품목명: [거절 회사…]}
+        try:
+            csv_bytes = mti_companies._approved_csv_path().read_bytes()
+            cur_hash = hashlib.sha256(csv_bytes).hexdigest()
+            prev_hash = ""
+            try:
+                prev_hash = reference_book.REINFORCE_APPROVED_HASH.read_text().strip()
+            except Exception:
+                prev_hash = ""
+            if cur_hash != prev_hash:
+                approved = mti_companies.load_reinforce_approved()   # {정규화품목: [회사]}
+                prior = dict(reference_book.load_reinforce())        # 직전 패널 {품목:[회사]}
+                for item, cos in prior.items():
+                    apk = {_ck(c) for c in approved.get(item.replace(" ", "").lower(), [])}
+                    rej_now = {_ck(c) for c in rejected.get(item, [])}
+                    for co in cos:
+                        if _ck(co) not in apk and _ck(co) not in rej_now:
+                            rejected.setdefault(item, []).append(co)
+                            rej_now.add(_ck(co))
+                reference_book.save_rejected(rejected)
+                try:
+                    reference_book.REINFORCE_APPROVED_HASH.write_text(cur_hash)
+                except OSError:
+                    pass
+                log.info("DART 보강 거절 메모리 갱신 — 거절 %d품목",
+                         sum(1 for v in rejected.values() if v))
+        except Exception as exc:
+            log.warning("보강 거절 적재 skip: %s", exc)
+
         item_current = {
-            r["name"]: {mti_companies.canon_company(c).replace(" ", "").lower()
-                        for c in (r.get("companies") or [])}
+            r["name"]: {_ck(c) for c in (r.get("companies") or [])}
             for r in reference_book.build_rows()}
-        reinforce = dart_match.additional_candidates(inv, item_current)
+        rej_keys = {item: {_ck(c) for c in cos} for item, cos in rejected.items()}
+        reinforce = dart_match.additional_candidates(inv, item_current, rejected=rej_keys)
         reference_book.save_reinforce(reinforce)
         log.info("DART 보강 후보 %d품목 적재", len(reinforce))
         note = reference_book.reinforce_telegram(reinforce)

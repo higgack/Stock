@@ -50,6 +50,21 @@ class MatchTests(unittest.TestCase):
         self.assertEqual(
             M.additional_candidates(inv, {"디램": {"삼성전자", "sk하이닉스"}}), {})
 
+    def test_additional_candidates_excludes_rejected(self):
+        # 운영자 거절(품목,회사)은 영구 제외 — 다시 후보로 안 뜸(사용자 2026-06-20).
+        inv = {
+            "001": {"company": "거절사", "products": [{"name": "변압기", "share_pct": 80}]},
+            "002": {"company": "정상사", "products": [{"name": "변압기", "share_pct": 80}]},
+        }
+        ic = {"초고압 변압기": set()}
+        # 거절 없으면 둘 다
+        self.assertEqual(set(M.additional_candidates(inv, ic)["초고압 변압기"]),
+                         {"거절사", "정상사"})
+        # 거절사 거절 → 정상사만
+        add = M.additional_candidates(
+            inv, ic, rejected={"초고압 변압기": {"거절사"}})
+        self.assertEqual(add.get("초고압 변압기"), ["정상사"])
+
     def test_additional_candidates_jooryeok_only(self):
         # 부수 세그먼트(저비중·share None)는 제외 — '진짜 주력만'(사용자 2026-06-19).
         inv = {
