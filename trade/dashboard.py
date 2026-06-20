@@ -1047,8 +1047,12 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .ind-zero-line{stroke:var(--text-sub);stroke-width:1}
 .ind-raw{margin-top:14px;border-top:1px solid var(--border-soft);padding-top:10px}
 .ind-raw-title{font-size:12px;color:var(--text-sub);margin-bottom:6px;font-weight:600}
-.ind-raw-scroll{overflow-x:auto}
-.ind-table{border-collapse:separate;border-spacing:0;font-size:11px;line-height:1.35;white-space:nowrap;width:max-content;min-width:100%}
+/* direction:rtl = 스크롤 컨테이너의 기본 위치를 '오른쪽(최신)'으로 — 레이아웃 기반이라
+   reflow·lazy·hidden→show·전폭전환 타이밍과 무관하게 항상 최신부터 보임(JS scrollLeft
+   타이밍 의존 종식, 사용자 2026-06-20 반복 '스크롤 풀림'). 표 내용은 direction:ltr 로
+   정상(좌→우 시간축). 기본·개별 카드 공통(.ind-raw-scroll 단일 정의). */
+.ind-raw-scroll{overflow-x:auto;direction:rtl}
+.ind-table{border-collapse:separate;border-spacing:0;font-size:11px;line-height:1.35;white-space:nowrap;width:max-content;min-width:100%;direction:ltr}
 .ind-table th,.ind-table td{border-top:1px solid var(--border-soft);border-right:1px solid var(--border-soft);padding:5px 8px;text-align:right;background:var(--surface)}
 .ind-table thead th{background:var(--surface-2);color:var(--text-sub);font-weight:650}
 .ind-table th:first-child{position:sticky;left:0;z-index:1;min-width:72px;text-align:left;background:var(--surface-2);box-shadow:1px 0 0 var(--border-soft)}
