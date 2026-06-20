@@ -18,6 +18,12 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# HS4 박스 클릭 → 내부 개별 품목(leaf) 드릴다운(2단 줌인, 사용자 2026-06-20).
+# 너무 난잡하면 _HEATMAP_DRILLDOWN=False 한 줄로 원복(데이터 leaf 미포함 + 🔍 버튼·줌
+# 비활성 → 기존 HS4 1단과 100% 동일). _DRILL_CAP = HS4당 보관 leaf 상한(페이로드·가독성).
+_HEATMAP_DRILLDOWN = True
+_DRILL_CAP = 40
+
 # HS 2자리 chapter 한글명 (관세청 표준 류 명칭 축약 — 라벨용).
 CHAPTER_KR: dict[str, str] = {
     "01": "산동물", "02": "육류", "03": "어패류", "04": "낙농품",
@@ -71,10 +77,16 @@ def build_heatmap_data(rows: list[dict]) -> dict:
         node = gnode["h4"].setdefault(h4, {
             "exp": 0, "exp_pm": 0, "exp_py": 0,
             "imp": 0, "imp_pm": 0, "imp_py": 0,
-            "n": 0, "top_name": "", "top_val": -1, "top_hs": ""})
+            "n": 0, "top_name": "", "top_val": -1, "top_hs": "", "lv": []})
         for k in ("exp", "exp_pm", "exp_py", "imp", "imp_pm", "imp_py"):
             node[k] += int(r.get(k) or 0)
         node["n"] += 1                       # HS4 내 leaf(품목) 수 — '외 N' 표기용
+        if _HEATMAP_DRILLDOWN:               # 드릴다운(2단)용 leaf 보관 — 플래그로 원복
+            node["lv"].append({
+                "nm": (r.get("name") or h4)[:40], "hs": str(r.get("hs_code") or ""),
+                "e": int(r.get("exp") or 0), "epm": int(r.get("exp_pm") or 0),
+                "epy": int(r.get("exp_py") or 0), "i": int(r.get("imp") or 0),
+                "ipm": int(r.get("imp_pm") or 0), "ipy": int(r.get("imp_py") or 0)})
         v = int(r.get("exp") or 0) + int(r.get("imp") or 0)
         if v > node["top_val"]:
             node["top_val"] = v
@@ -100,10 +112,15 @@ def build_heatmap_data(rows: list[dict]) -> dict:
     def _flat(tree: dict, with_c2: bool) -> list:
         out = []
         for key, gnode in tree.items():
-            h4s = [{"h4": h4, "nm": n["top_name"], "hs": n["top_hs"], "n": n["n"],
-                    "e": n["exp"], "epm": n["exp_pm"], "epy": n["exp_py"],
-                    "i": n["imp"], "ipm": n["imp_pm"], "ipy": n["imp_py"]}
-                   for h4, n in gnode["h4"].items()]
+            h4s = []
+            for h4, n in gnode["h4"].items():
+                d = {"h4": h4, "nm": n["top_name"], "hs": n["top_hs"], "n": n["n"],
+                     "e": n["exp"], "epm": n["exp_pm"], "epy": n["exp_py"],
+                     "i": n["imp"], "ipm": n["imp_pm"], "ipy": n["imp_py"]}
+                if _HEATMAP_DRILLDOWN and n["n"] > 1:
+                    # leaf 보관(드릴다운) — 페이로드 제한: 금액(수출+수입) 상위 _DRILL_CAP 만.
+                    d["lv"] = sorted(n["lv"], key=lambda x: -(x["e"] + x["i"]))[:_DRILL_CAP]
+                h4s.append(d)
             out.append({"c2": key if with_c2 else "",
                         "name": gnode["name"], "h4s": h4s})
         return out
@@ -127,6 +144,10 @@ _HEATMAP_CSS = """
 .hm-cell{position:absolute;overflow:hidden;border:1px solid rgba(0,0,0,.3);cursor:default}
 .hm-cell span{position:absolute;inset:auto 2px 1px 3px;top:1px;font-size:10px;line-height:1.25;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6);overflow:hidden;pointer-events:none}
 .hm-tip{position:fixed;z-index:50;background:rgba(20,22,28,.95);color:#fff;font-size:12px;line-height:1.5;padding:8px 10px;border-radius:8px;pointer-events:none;max-width:300px;display:none}
+.hm-zoom-btn{position:absolute;top:1px;right:1px;z-index:4;width:19px;height:19px;padding:0;border:none;border-radius:4px;background:rgba(0,0,0,.5);color:#fff;font-size:11px;line-height:19px;text-align:center;cursor:pointer}
+.hm-zoom-btn:hover{background:rgba(0,0,0,.8)}
+.hm-zoom-bar{position:absolute;top:0;left:0;right:0;z-index:6;height:30px;box-sizing:border-box;background:rgba(20,22,28,.95);color:#fff;font-size:12.5px;padding:0 10px;display:flex;align-items:center;gap:10px}
+.hm-zoom-bar .hm-tbtn{padding:3px 10px}
 """
 
 
@@ -142,6 +163,7 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     # </ defuse — JSON 안 '</script>' 류가 블록을 닫지 않게
     payload = payload.replace("</", "<\\/")
+    drill = "true" if _HEATMAP_DRILLDOWN else "false"
     return f"""
 <style>{_HEATMAP_CSS}</style>
 <div class="hm-wrap">
@@ -170,6 +192,7 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
 (function(){{
 var DATA=JSON.parse(document.getElementById('hm-data').textContent);
 var dir='exp', mode='yoy', grp='ch', HMQ='';
+var DRILL={drill}, zoomH4=null;   // HS4 드릴다운(2단) — zoomH4 설정 시 그 HS4 leaf 렌더
 window.hmFilter=function(q){{ HMQ=(q||'').toLowerCase();
   if(document.getElementById('hm-map').offsetParent!==null) render(); }};
 document.addEventListener('click',function(e){{
@@ -223,6 +246,7 @@ function render(){{
   var map=document.getElementById('hm-map');
   var W=map.clientWidth, H=map.clientHeight;
   map.innerHTML='';
+  if(DRILL&&zoomH4){{ renderZoom(map,W,H); return; }}
   var chs=[], up=0,down=0,flat=0;
   var GROUPS=(grp==='ind'&&DATA.industries)?DATA.industries:DATA.chapters;
   GROUPS.forEach(function(c){{
@@ -233,7 +257,7 @@ function render(){{
       var base=dir==='exp'?(mode==='yoy'?n.epy:n.epm):(mode==='yoy'?n.ipy:n.ipm);
       var p=pct(val,base);
       if(p===null)flat++; else if(p>0.5)up++; else if(p<-0.5)down++; else flat++;
-      v+=val; cells.push({{v:val,h4:n.h4,nm:n.nm,p:p,hs:n.hs}});
+      v+=val; cells.push({{v:val,h4:n.h4,nm:n.nm,p:p,hs:n.hs,cnt:n.n,lv:n.lv}});
     }});
     if(v>0) chs.push({{v:v,name:c.name,c2:c.c2,cells:cells}});
   }});
@@ -282,9 +306,60 @@ function render(){{
           cell.style.cursor='pointer';
           cell.addEventListener('click',function(){{tip.style.display='none';window.rbSearch(n.hs);}});
         }}
+        // 🔍 = HS4 내부 개별 품목 드릴다운(2단). 단일클릭=보고서와 분리(사용자 2026-06-20).
+        if(DRILL&&n.cnt>1&&n.lv&&q.w>44&&q.h>30){{
+          var zb=document.createElement('button'); zb.className='hm-zoom-btn'; zb.textContent='🔍';
+          zb.title='HS4 내 개별 품목 보기';
+          zb.addEventListener('click',function(ev){{ev.stopPropagation();tip.style.display='none';
+            zoomH4={{h4:n.h4,name:n.nm,lv:n.lv}};render();}});
+          cell.appendChild(zb);
+        }}
         div.appendChild(cell);
       }});
     map.appendChild(div);
+  }});
+}}
+// 2단 드릴다운 — zoomH4 의 leaf(개별 HS6/HS10 품목)만 treemap 렌더 + 뒤로(사용자 2026-06-20).
+function renderZoom(map,W,H){{
+  var z=zoomH4, tip=document.getElementById('hm-tip'), BH=30;
+  var bar=document.createElement('div'); bar.className='hm-zoom-bar';
+  bar.innerHTML='<button class="hm-tbtn" id="hm-back">← 전체</button>'
+    +'<b>'+z.h4+' '+z.name+'</b> · HS4 내 '+z.lv.length+'개 품목(개별)';
+  map.appendChild(bar);
+  document.getElementById('hm-back').addEventListener('click',function(){{zoomH4=null;render();}});
+  var up=0,down=0,flat=0,cells=[];
+  z.lv.forEach(function(n){{
+    var val=dir==='exp'?n.e:n.i; if(val<=0) return;
+    var base=dir==='exp'?(mode==='yoy'?n.epy:n.epm):(mode==='yoy'?n.ipy:n.ipm);
+    var p=pct(val,base);
+    if(p===null)flat++; else if(p>0.5)up++; else if(p<-0.5)down++; else flat++;
+    cells.push({{v:val,nm:n.nm,p:p,hs:n.hs}});
+  }});
+  document.getElementById('hm-counts').innerHTML=
+    '<b style="color:#34c759">▲'+up+'</b> · <b style="color:#ff5b5b">▼'+down+'</b> · —'+flat;
+  squarify(cells.map(function(n){{return {{v:n.v,n:n}}}}),0,BH,W,H-BH).forEach(function(q){{
+    var n=q.it.n;
+    var cell=document.createElement('div'); cell.className='hm-cell';
+    cell.style.cssText='left:'+q.x+'px;top:'+q.y+'px;width:'+q.w+'px;height:'+q.h+'px;background:'+color(n.p);
+    if(HMQ&&n.nm.toLowerCase().indexOf(HMQ)<0){{ cell.style.opacity='.12'; }}
+    if(q.w>54&&q.h>26){{
+      var s=document.createElement('span');
+      s.textContent=n.nm+' '+(n.p===null?'신규':(n.p>0?'+':'')+n.p.toFixed(1)+'%');
+      cell.appendChild(s);
+    }}
+    cell.addEventListener('mousemove',function(ev){{
+      tip.style.display='block';
+      tip.style.left=Math.min(ev.clientX+14,window.innerWidth-310)+'px';
+      tip.style.top=(ev.clientY+12)+'px';
+      tip.innerHTML='<b>'+n.nm+'</b> <span style="color:#9aa0ab">'+(n.hs||'')+'</span><br>'
+        +(dir==='exp'?'수출':'수입')+' '+fmt(n.v)+' · '+(mode==='yoy'?'YoY ':'MoM ')
+        +(n.p===null?'신규(전기 0)':(n.p>0?'+':'')+n.p.toFixed(1)+'%')
+        +(n.hs&&window.rbSearch?'<br><span style="color:#6cb6ff">클릭 → 관련 상장사·보고서</span>':'');
+    }});
+    cell.addEventListener('mouseleave',function(){{tip.style.display='none';}});
+    if(n.hs&&window.rbSearch){{ cell.style.cursor='pointer';
+      cell.addEventListener('click',function(){{tip.style.display='none';window.rbSearch(n.hs);}}); }}
+    map.appendChild(cell);
   }});
 }}
 ['hm-dir','hm-mode','hm-grp'].forEach(function(id){{
@@ -292,7 +367,8 @@ function render(){{
     var b=e.target.closest('.hm-tbtn'); if(!b)return;
     this.querySelectorAll('.hm-tbtn').forEach(function(x){{x.classList.remove('is-active')}});
     b.classList.add('is-active');
-    if(id==='hm-dir')dir=b.dataset.v; else if(id==='hm-mode')mode=b.dataset.v; else grp=b.dataset.v;
+    if(id==='hm-dir')dir=b.dataset.v; else if(id==='hm-mode')mode=b.dataset.v;
+    else {{ grp=b.dataset.v; zoomH4=null; }}   // 그룹 바꾸면 줌 해제(leaf 가 그룹별이라)
     render();
   }});
 }});
