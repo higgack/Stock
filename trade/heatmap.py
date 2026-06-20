@@ -146,6 +146,9 @@ _HEATMAP_CSS = """
 .hm-tip{position:fixed;z-index:50;background:rgba(20,22,28,.95);color:#fff;font-size:12px;line-height:1.5;padding:8px 10px;border-radius:8px;pointer-events:none;max-width:300px;display:none}
 .hm-zoom-btn{position:absolute;top:1px;right:1px;z-index:4;width:19px;height:19px;padding:0;border:none;border-radius:4px;background:rgba(0,0,0,.5);color:#fff;font-size:11px;line-height:19px;text-align:center;cursor:pointer}
 .hm-zoom-btn:hover{background:rgba(0,0,0,.8)}
+.hm-ch-zoom{z-index:5}
+.hm-zoom-hover{display:none;width:16px;height:16px;line-height:16px;font-size:9px}
+.hm-cell:hover>.hm-zoom-hover{display:block}
 .hm-zoom-bar{position:absolute;top:0;left:0;right:0;z-index:6;height:30px;box-sizing:border-box;background:rgba(20,22,28,.95);color:#fff;font-size:12.5px;padding:0 10px;display:flex;align-items:center;gap:10px}
 .hm-zoom-bar .hm-tbtn{padding:3px 10px}
 """
@@ -168,7 +171,7 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
 <style>{_HEATMAP_CSS}</style>
 <div class="hm-wrap">
   <div class="hm-bar">
-    <span>기준 <b>{ref}</b>{status} · 박스=HS4 류 전체 합(크기=금액, 라벨=대표품목 외N) · 셀 클릭→대표품목 상장사·보고서 · 10분 변경감지 · 일 4회 풀스윕</span>
+    <span>기준 <b>{ref}</b>{status} · 박스=HS4 류 전체 합(크기=금액, 라벨=대표품목 외N) · 셀 클릭→상장사·보고서 · 류 🔍→해당 류 확대 · 셀 🔍→개별 품목 · 10분 변경감지 · 일 4회 풀스윕</span>
     <span class="hm-toggle" id="hm-dir">
       <button class="hm-tbtn is-active" data-v="exp">수출</button>
       <button class="hm-tbtn" data-v="imp">수입</button>
@@ -192,7 +195,7 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
 (function(){{
 var DATA=JSON.parse(document.getElementById('hm-data').textContent);
 var dir='exp', mode='yoy', grp='ch', HMQ='';
-var DRILL={drill}, zoomH4=null;   // HS4 드릴다운(2단) — zoomH4 설정 시 그 HS4 leaf 렌더
+var DRILL={drill}, zoomH4=null, zoomCh=null;   // 2단 줌: zoomCh=류 확대 / zoomH4=HS4 내 개별품목
 window.hmFilter=function(q){{ HMQ=(q||'').toLowerCase();
   if(document.getElementById('hm-map').offsetParent!==null) render(); }};
 document.addEventListener('click',function(e){{
@@ -242,31 +245,81 @@ function squarify(items,x,y,w,h){{
   }}
   return rects;
 }}
-function render(){{
-  var map=document.getElementById('hm-map');
-  var W=map.clientWidth, H=map.clientHeight;
-  map.innerHTML='';
-  if(DRILL&&zoomH4){{ renderZoom(map,W,H); return; }}
-  var chs=[], up=0,down=0,flat=0;
-  var GROUPS=(grp==='ind'&&DATA.industries)?DATA.industries:DATA.chapters;
-  GROUPS.forEach(function(c){{
-    var v=0, cells=[];
-    c.h4s.forEach(function(n){{
-      var val=dir==='exp'?n.e:n.i;
-      if(val<=0) return;
-      var base=dir==='exp'?(mode==='yoy'?n.epy:n.epm):(mode==='yoy'?n.ipy:n.ipm);
-      var p=pct(val,base);
-      if(p===null)flat++; else if(p>0.5)up++; else if(p<-0.5)down++; else flat++;
-      v+=val; cells.push({{v:val,h4:n.h4,nm:n.nm,p:p,hs:n.hs,cnt:n.n,lv:n.lv}});
-    }});
-    if(v>0) chs.push({{v:v,name:c.name,c2:c.c2,cells:cells}});
+// 현 dir/mode 기준 한 그룹의 HS4 셀 + 등락 카운트 (render·renderChZoom 공용).
+function buildCells(h4s){{
+  var cells=[], up=0,down=0,flat=0, v=0;
+  h4s.forEach(function(n){{
+    var val=dir==='exp'?n.e:n.i;
+    if(val<=0) return;
+    var base=dir==='exp'?(mode==='yoy'?n.epy:n.epm):(mode==='yoy'?n.ipy:n.ipm);
+    var p=pct(val,base);
+    if(p===null)flat++; else if(p>0.5)up++; else if(p<-0.5)down++; else flat++;
+    v+=val; cells.push({{v:val,h4:n.h4,nm:n.nm,p:p,hs:n.hs,cnt:n.n,lv:n.lv}});
   }});
+  return {{cells:cells,up:up,down:down,flat:flat,v:v}};
+}}
+function updateMeter(up,down,flat){{
   document.getElementById('hm-counts').innerHTML=
     '<b style="color:#34c759">▲'+up+'</b> · <b style="color:#ff5b5b">▼'+down+'</b> · —'+flat;
   var m=document.getElementById('hm-meter'); var tot=up+down+flat||1;
   m.innerHTML='<i style="width:'+(up/tot*100)+'%;background:#34c759"></i>'
     +'<i style="width:'+(flat/tot*100)+'%;background:#9aa0ab"></i>'
     +'<i style="width:'+(down/tot*100)+'%;background:#ff5b5b"></i>';
+}}
+// HS4 셀 1개 생성 (전체뷰·류 확대뷰 공용). x/y/w/h = 부모 기준 위치/크기.
+function makeH4Cell(n,x,y,w,h,tip){{
+  var cell=document.createElement('div'); cell.className='hm-cell';
+  cell.style.cssText='left:'+x+'px;top:'+y+'px;width:'+w+'px;height:'+h+'px;background:'+color(n.p);
+  if(HMQ&&(n.h4+' '+n.nm).toLowerCase().indexOf(HMQ)<0){{ cell.style.opacity='.12'; }}
+  if(w>54&&h>26){{
+    var s=document.createElement('span');
+    s.textContent=n.h4+' '+n.nm+(n.cnt>1?' 외'+(n.cnt-1):'')+' '+(n.p===null?'신규':(n.p>0?'+':'')+n.p.toFixed(1)+'%');
+    cell.appendChild(s);
+  }}
+  cell.addEventListener('mousemove',function(ev){{
+    tip.style.display='block';
+    tip.style.left=Math.min(ev.clientX+14,window.innerWidth-310)+'px';
+    tip.style.top=(ev.clientY+12)+'px';
+    tip.innerHTML='<b>'+n.h4+' · 대표 '+n.nm+(n.cnt>1?' 외'+(n.cnt-1)+'품목':'')+'</b><br>'
+      +'<b>HS4 합계</b> '+(dir==='exp'?'수출':'수입')+' '+fmt(n.v)
+      +' · '+(mode==='yoy'?'YoY ':'MoM ')
+      +(n.p===null?'신규(전기 0)':(n.p>0?'+':'')+n.p.toFixed(1)+'%')
+      +(n.cnt>1?'<br><span style="color:#9aa0ab">※ 박스=HS4 류 전체 합 · 🔍=개별 품목</span>':'')
+      +(n.hs&&window.rbSearch?'<br><span style="color:#6cb6ff">클릭 → 대표품목 관련 상장사·보고서</span>':'');
+  }});
+  cell.addEventListener('mouseleave',function(){{tip.style.display='none';}});
+  // 셀 클릭 → 기업 보고서(품목 모드)로 그 HS/품목 + 관련 상장사 + 수출입
+  // (사용자 2026-06-19 '히트맵도 연결'). 크기 무관 항상 클릭 가능(사용자 2026-06-20).
+  if(n.hs&&window.rbSearch){{
+    cell.style.cursor='pointer';
+    cell.addEventListener('click',function(){{tip.style.display='none';window.rbSearch(n.hs);}});
+  }}
+  // 🔍 = HS4 내부 개별 품목 드릴다운(2단). 큰 셀=상시 노출, 작은 셀=hover 노출
+  // (사용자 2026-06-20 '작은 박스도 접근'). 너무 작으면(>22×16 미만) 류 확대로 커버.
+  if(DRILL&&n.cnt>1&&n.lv&&w>22&&h>16){{
+    var zb=document.createElement('button'); zb.className='hm-zoom-btn'; zb.textContent='🔍';
+    zb.title='HS4 내 개별 품목 보기';
+    if(w<=44||h<=30) zb.className+=' hm-zoom-hover';
+    zb.addEventListener('click',function(ev){{ev.stopPropagation();tip.style.display='none';
+      zoomH4={{h4:n.h4,name:n.nm,lv:n.lv}};render();}});
+    cell.appendChild(zb);
+  }}
+  return cell;
+}}
+function render(){{
+  var map=document.getElementById('hm-map');
+  var W=map.clientWidth, H=map.clientHeight;
+  map.innerHTML='';
+  if(DRILL&&zoomH4){{ renderZoom(map,W,H); return; }}
+  if(DRILL&&zoomCh){{ renderChZoom(map,W,H); return; }}
+  var chs=[], up=0,down=0,flat=0;
+  var GROUPS=(grp==='ind'&&DATA.industries)?DATA.industries:DATA.chapters;
+  GROUPS.forEach(function(c){{
+    var bc=buildCells(c.h4s);
+    up+=bc.up; down+=bc.down; flat+=bc.flat;
+    if(bc.v>0) chs.push({{v:bc.v,name:c.name,c2:c.c2,h4s:c.h4s,cells:bc.cells}});
+  }});
+  updateMeter(up,down,flat);
   var tip=document.getElementById('hm-tip');
   squarify(chs.map(function(c){{return {{v:c.v,c:c}}}}),0,0,W,H).forEach(function(r){{
     var c=r.it.c;
@@ -276,47 +329,35 @@ function render(){{
     var lbl=document.createElement('div'); lbl.className='hm-ch-label';
     lbl.textContent=(c.c2?c.c2+' ':'')+c.name;
     div.appendChild(lbl);
+    // 류(chapter) 🔍 = 이 류만 전체화면 확대 → 찌부러진 작은 HS4 박스 정상크기 복귀
+    // (사용자 2026-06-20 '작은 박스 접근'). dir/mode 토글해도 유지(h4s 재계산).
+    if(DRILL&&c.cells.length>1){{
+      var cz=document.createElement('button'); cz.className='hm-zoom-btn hm-ch-zoom'; cz.textContent='🔍';
+      cz.title=c.name+' 류만 확대';
+      cz.addEventListener('click',function(ev){{ev.stopPropagation();tip.style.display='none';
+        zoomCh={{c2:c.c2,name:c.name,h4s:c.h4s}};render();}});
+      div.appendChild(cz);
+    }}
     var pad=13;
     squarify(c.cells.map(function(n){{return {{v:n.v,n:n}}}}),0,0,r.w-2,r.h-pad-2)
       .forEach(function(q){{
-        var n=q.it.n;
-        var cell=document.createElement('div'); cell.className='hm-cell';
-        cell.style.cssText='left:'+q.x+'px;top:'+(q.y+pad)+'px;width:'+q.w+'px;height:'+q.h+'px;background:'+color(n.p);
-        if(HMQ&&(n.h4+' '+n.nm).toLowerCase().indexOf(HMQ)<0){{ cell.style.opacity='.12'; }}
-        if(q.w>54&&q.h>26){{
-          var s=document.createElement('span');
-          s.textContent=n.h4+' '+n.nm+(n.n>1?' 외'+(n.n-1):'')+' '+(n.p===null?'신규':(n.p>0?'+':'')+n.p.toFixed(1)+'%');
-          cell.appendChild(s);
-        }}
-        cell.addEventListener('mousemove',function(ev){{
-          tip.style.display='block';
-          tip.style.left=Math.min(ev.clientX+14,window.innerWidth-310)+'px';
-          tip.style.top=(ev.clientY+12)+'px';
-          tip.innerHTML='<b>'+n.h4+' · 대표 '+n.nm+(n.n>1?' 외'+(n.n-1)+'품목':'')+'</b><br>'
-            +'<b>HS4 합계</b> '+(dir==='exp'?'수출':'수입')+' '+fmt(n.v)
-            +' · '+(mode==='yoy'?'YoY ':'MoM ')
-            +(n.p===null?'신규(전기 0)':(n.p>0?'+':'')+n.p.toFixed(1)+'%')
-            +(n.n>1?'<br><span style="color:#9aa0ab">※ 박스=HS4 류 전체 합 · 개별 품목은 상세표 참조</span>':'')
-            +(n.hs&&window.rbSearch?'<br><span style="color:#6cb6ff">클릭 → 대표품목 관련 상장사·보고서</span>':'');
-        }});
-        cell.addEventListener('mouseleave',function(){{tip.style.display='none';}});
-        // 셀 클릭 → 기업 보고서(품목 모드)로 그 HS/품목 + 관련 상장사 + 수출입
-        // (사용자 2026-06-19 '히트맵도 연결'). rbSearch = 기업 보고서 위젯 전역 훅.
-        if(n.hs&&window.rbSearch){{
-          cell.style.cursor='pointer';
-          cell.addEventListener('click',function(){{tip.style.display='none';window.rbSearch(n.hs);}});
-        }}
-        // 🔍 = HS4 내부 개별 품목 드릴다운(2단). 단일클릭=보고서와 분리(사용자 2026-06-20).
-        if(DRILL&&n.cnt>1&&n.lv&&q.w>44&&q.h>30){{
-          var zb=document.createElement('button'); zb.className='hm-zoom-btn'; zb.textContent='🔍';
-          zb.title='HS4 내 개별 품목 보기';
-          zb.addEventListener('click',function(ev){{ev.stopPropagation();tip.style.display='none';
-            zoomH4={{h4:n.h4,name:n.nm,lv:n.lv}};render();}});
-          cell.appendChild(zb);
-        }}
-        div.appendChild(cell);
+        div.appendChild(makeH4Cell(q.it.n,q.x,q.y+pad,q.w,q.h,tip));
       }});
     map.appendChild(div);
+  }});
+}}
+// 1.5단 줌 — 한 류(chapter/industry)의 HS4 박스만 전체화면 treemap(작은 박스 확대) + 뒤로.
+function renderChZoom(map,W,H){{
+  var z=zoomCh, tip=document.getElementById('hm-tip'), BH=30;
+  var bar=document.createElement('div'); bar.className='hm-zoom-bar';
+  bar.innerHTML='<button class="hm-tbtn" id="hm-back">← 전체</button>'
+    +'<b>'+(z.c2?z.c2+' ':'')+z.name+'</b> · HS4 '+z.h4s.length+'개 류 · 셀 클릭→보고서 · 셀 🔍→개별 품목';
+  map.appendChild(bar);
+  document.getElementById('hm-back').addEventListener('click',function(){{zoomCh=null;render();}});
+  var bc=buildCells(z.h4s);
+  updateMeter(bc.up,bc.down,bc.flat);
+  squarify(bc.cells.map(function(n){{return {{v:n.v,n:n}}}}),0,BH,W,H-BH).forEach(function(q){{
+    map.appendChild(makeH4Cell(q.it.n,q.x,q.y,q.w,q.h,tip));
   }});
 }}
 // 2단 드릴다운 — zoomH4 의 leaf(개별 HS6/HS10 품목)만 treemap 렌더 + 뒤로(사용자 2026-06-20).
@@ -368,7 +409,7 @@ function renderZoom(map,W,H){{
     this.querySelectorAll('.hm-tbtn').forEach(function(x){{x.classList.remove('is-active')}});
     b.classList.add('is-active');
     if(id==='hm-dir')dir=b.dataset.v; else if(id==='hm-mode')mode=b.dataset.v;
-    else {{ grp=b.dataset.v; zoomH4=null; }}   // 그룹 바꾸면 줌 해제(leaf 가 그룹별이라)
+    else {{ grp=b.dataset.v; zoomH4=null; zoomCh=null; }}   // 그룹 바꾸면 줌 해제(셀이 그룹별)
     render();
   }});
 }});
