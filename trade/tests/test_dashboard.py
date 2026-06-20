@@ -668,29 +668,24 @@ class TestBatch20260615(unittest.TestCase):
     cap 기본 5000."""
 
     def test_raw_table_scroll_right_default(self):
-        # 산업트렌드는 탭이라 숨겨진 동안 scrollWidth=0 → 탭 활성화 시 재적용
-        # (사용자 2026-06-15 '맨 오른쪽 디폴트 안 되는거야'). window._scrollRaw +
-        # 탭 click 핸들러 hook + rAF.
+        # 월별 원자료 가로스크롤 우측(최신) 디폴트 — JS scrollLeft 타이밍이 깨져(탭
+        # 숨김 중 scrollWidth=0) CSS direction:rtl 레이아웃 기반으로 전환(사용자
+        # 2026-06-20, mistake #14). _scrollRaw 는 호출부 안전용 no-op 로 잔존. 회귀 가드.
         src = Path("trade/dashboard.py").read_text(encoding="utf-8")
-        self.assertIn(".ind-raw-scroll", src)
-        self.assertIn("e.scrollLeft=e.scrollWidth", src)        # 우측(최신) 디폴트
-        self.assertIn("window._scrollRaw", src)                 # 노출 함수
-        self.assertIn("requestAnimationFrame", src)             # 레이아웃 완료 후
-        self.assertIn("if(window._scrollRaw)window._scrollRaw(view)", src)  # 탭 hook
-        # MTI 행 펼침(hidden 토글, <details> 아님 → toggle 이벤트 미발화)도 _scrollRaw
-        # 로 표를 최신(우측)으로 (사용자 2026-06-19 '스크롤 오른쪽 디폴트'). 회귀 가드.
-        self.assertIn("if(!d.hidden&&window._scrollRaw)window._scrollRaw(d)", src)
+        self.assertIn(".ind-raw-scroll{overflow-x:auto;direction:rtl}", src)  # 우측 디폴트(CSS)
+        self.assertIn("window._scrollRaw=function(){};", src)                 # 호출부 안전 no-op
+        # 자식 월별표(.ind-mti-card 내부)가 부모 폭 안 늘리도록 직속-자식만 width:100%.
+        self.assertIn(".ind-sub-card>.ind-raw-scroll>.ind-table{width:100%}", src)
 
     def test_mti_detail_comment_left_chart_right(self):
-        # 펼침 품목 상세 = 코멘트(좌) · 차트(우 세로) 2단 (사용자 2026-06-19). 위
-        # .ind-sub-wrap .ind-row 1단 스택을 .ind-mti-d 에 한해 2단으로 override +
-        # 코멘트 nowrap 해제(반폭 셀 품목명 클리핑 회귀 방지). 회귀 가드.
+        # 펼침 품목 상세 = 코멘트(좌)·차트(우) — grid-in-<td> 트랙깨짐을 .ind-mti-card
+        # 블록래퍼(contain:inline-size)로 해결, 차트 우측정렬 고정폭 그리드(사용자
+        # 2026-06-20, mistake #14). 코멘트 nowrap·우측정렬 누수 해제. 회귀 가드.
         src = Path("trade/dashboard.py").read_text(encoding="utf-8")
         self.assertIn(".ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:"
-                      "minmax(0,0.82fr) minmax(0,1.18fr)}", src)
-        self.assertIn(".ind-sub-wrap .ind-mti-d .ind-row>.ind-meta{grid-column:1;"
-                      "grid-row:1/span 2}", src)
-        self.assertIn(".ind-sub-wrap .ind-mti-d>td{white-space:normal}", src)
+                      "minmax(230px,400px) 400px 400px}", src)
+        self.assertIn(".ind-mti-card{min-width:0;contain:inline-size}", src)
+        self.assertIn(".ind-sub-wrap .ind-mti-d>td{white-space:normal;text-align:left}", src)
 
     def test_backfill_cap_default_5000(self):
         src = Path("trade/scripts/backfill_beon.py").read_text(encoding="utf-8")

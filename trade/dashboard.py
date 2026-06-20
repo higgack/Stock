@@ -442,6 +442,7 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
     intentionally omitted from the payload — they'd inflate it
     materially for little browser-side gain.
     """
+    from trade import price_provider
     return {
         "id": a["id"],
         "dir": a["direction"],
@@ -452,7 +453,10 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
         "country": a.get("country") or "",
         "regions": a.get("regions") or [],
         "countries": a.get("countries") or [],
-        "stocks": a.get("stocks") or [],
+        # 운영자 영구 무시 회사(비상장/외국/제품명) 제외 — 칩·CSV·검색 전부
+        # 원본 stocks 를 쓰므로 여기서 한 번 거르면 모든 surface 에서 사라진다.
+        "stocks": [s for s in (a.get("stocks") or [])
+                   if not price_provider.is_ignored(s)],
         # 회사별 뷰 섹션 그룹핑 전용 — 품목 설명/제품명을 거른 회사명만.
         "companies": _companies_for(a.get("stocks") or []),
         "stocks_meta": a.get("stocks_meta") or {},

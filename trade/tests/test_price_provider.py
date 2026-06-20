@@ -513,15 +513,27 @@ class SplitNamesTests(unittest.TestCase):
         self.assertEqual(pp.split_names(["JYP Ent."]), ["JYP Ent."])
 
     def test_joined_company_kept_whole(self):
-        # 콤마/공백이 사명 일부인 단일 회사(EEW KHPC·지앤비에스에코)는 분리 안 함
+        # 콤마/공백이 사명 일부인 단일 회사(지앤비에스에코)는 분리 안 함
         # (사용자 2026-06-20 미매칭 회사명수정). 콤마·공백 변형 모두 정규표기로 수렴.
-        self.assertEqual(pp.split_names(["EEW, KHPC"]), ["EEW KHPC"])
-        self.assertEqual(pp.split_names(["EEW KHPC"]), ["EEW KHPC"])
         self.assertEqual(pp.split_names(["지앤비에스, 에코"]), ["지앤비에스에코"])
         self.assertEqual(pp.joined_company("지앤비에스 에코"), "지앤비에스에코")
         self.assertIsNone(pp.joined_company("삼성전자"))
+        # joined_company 매핑은 보존(단일토큰화)되나 EEW KHPC 은 영구 무시 대상.
+        self.assertEqual(pp.joined_company("EEW KHPC"), "EEW KHPC")
         # 일반 콤마 나열은 정상 분리(회귀 0)
         self.assertEqual(pp.split_names(["삼성전자, 하이닉스"]), ["삼성전자", "하이닉스"])
+
+    def test_ignored_company_dropped(self):
+        # 운영자 영구 무시(비상장) — split_names 에서 변형 무관 제거(사용자 2026-06-20
+        # 'EEW KHPC 무시·대시보드 삭제·앞으로도 안뜨게'). 무관 회사는 영향 없음.
+        self.assertTrue(pp.is_ignored("EEW KHPC"))
+        self.assertTrue(pp.is_ignored("EEW, KHPC"))
+        self.assertTrue(pp.is_ignored("eew  khpc"))
+        self.assertFalse(pp.is_ignored("삼성전자"))
+        self.assertEqual(pp.split_names(["EEW, KHPC"]), [])
+        self.assertEqual(pp.split_names(["EEW KHPC"]), [])
+        # 별개 원소로 섞여 와도 무시분만 빠지고 나머지는 유지(실데이터=원소별 1회사).
+        self.assertEqual(pp.split_names(["삼성전자", "EEW KHPC"]), ["삼성전자"])
 
     def test_parser_prefix_stripped(self):
         self.assertEqual(pp.split_names(["관련종목 : LG전자"]), ["LG전자"])

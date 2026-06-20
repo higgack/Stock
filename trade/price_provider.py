@@ -710,7 +710,8 @@ def split_names(stocks: Iterable[str]) -> list[str]:
         name = name.strip()
         if name.endswith(" 등"):
             name = name[:-2].strip()
-        if name and name not in seen and _looks_like_stock(name):
+        if (name and name not in seen and not is_ignored(name)
+                and _looks_like_stock(name)):
             seen.add(name)
             out.append(name)
 
@@ -744,7 +745,7 @@ def _join_key(s: str) -> str:
 
 _JOINED_COMPANY: dict[str, str] = {
     _join_key(k): v for k, v in {
-        "EEW KHPC": "EEW KHPC",        # 비상장(이미 테마 등록) — 한 회사
+        "EEW KHPC": "EEW KHPC",        # 비상장 → is_ignored 로 영구 무시(단일토큰 보존용 유지)
         "지앤비에스 에코": "지앤비에스에코",  # 상장 — 정규표기(공백없음)로 수렴
     }.items()
 }
@@ -753,6 +754,23 @@ _JOINED_COMPANY: dict[str, str] = {
 def joined_company(s: str) -> str | None:
     """콤마/공백 결합 단일 회사명이면 정규표기 반환, 아니면 None. 순수."""
     return _JOINED_COMPANY.get(_join_key(s))
+
+
+# 운영자가 '상장 안 됨(비상장/외국/제품명) → 영구 무시'로 확인한 회사명. 시세
+# 미매칭 알림(resolve_check)·대시보드 관련종목 칩·회사뷰·CSV·검색 어디에도 안
+# 뜬다(사용자 2026-06-20 'EEW KHPC 무시·대시보드 삭제·앞으로도 안뜨게'). 키=
+# 공백/콤마 제거 소문자(_join_key)라 'EEW, KHPC'·'EEW KHPC' 등 모든 변형 흡수.
+# 새 무시 = 1줄 추가, 되돌리기 = 해당 줄 제거(안전·가역). 테마 큐레이션 핀에서도
+# 동시 제거할 것(mti_companies._THEME_MTI_PIN).
+_IGNORED_COMPANIES: tuple[str, ...] = (
+    "EEW KHPC",   # 비상장(독일 EEW·한국 합작 대구경강관) — 상장 코드 없음
+)
+_IGNORED_CANON: frozenset = frozenset(_join_key(x) for x in _IGNORED_COMPANIES)
+
+
+def is_ignored(name: str) -> bool:
+    """운영자 영구 무시 회사명이면 True(공백/콤마 변형 무관). 순수."""
+    return _join_key(name) in _IGNORED_CANON
 
 
 # 파서 누수 ('관련종목 : LG전자') 접두사
