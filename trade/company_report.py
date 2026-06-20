@@ -419,7 +419,7 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
                      "hs_linked": True})
         _add(cos)
     rows.sort(key=lambda x: -(x["export_usd"] or 0))
-    return {"mode": "item", "query": query, "name": f"HS {query}",
+    return {"mode": "item", "query": query, "name": f"HS {query}", "hs_search": True,
             "synonym": None, "items": rows[:30], "companies": companies[:40]}
 
 
@@ -531,6 +531,15 @@ def _render_free_item(data: dict) -> str:
             '<div style="font-size:12px;color:#9aa0aa;margin-bottom:12px">'
             '품목 역검색 · 관세청 수출입 품목 ↔ 관련 상장사(큐레이션+채널) · 무료(데이터)'
             ' · 💡 아래 <b>품목명 클릭</b>으로 실제 품목명 재검색</div>')
+    # HS코드 검색(히트맵 셀 클릭 등) breadcrumb — 한 HS는 여러 MTI품목으로 연계될 수
+    # 있어 표가 여러 행이 됨을 명시(사용자 2026-06-20 '코팅머신 눌렀는데 기타기계류가 뜸').
+    if data.get("hs_search") and items:
+        n_it = len(items)
+        head += (f'<div style="font-size:12px;color:#c8a24a;background:#2a2410;'
+                 f'border:1px solid #4a3f1a;border-radius:6px;padding:6px 10px;margin-bottom:12px">'
+                 f'🔎 HS <b>{e(data.get("query") or "")}</b> → 연계 MTI품목 <b>{n_it}개</b>. '
+                 f'한 HS코드는 여러 MTI품목(카테고리)으로 분류될 수 있어 해당 품목을 모두 표시합니다 '
+                 f'— 클릭한 세부품목은 아래 중 하나에 귀속됩니다.</div>')
     if companies:
         chips = "".join(
             '<span style="display:inline-block;background:#1c1f26;color:#e6edf3;'

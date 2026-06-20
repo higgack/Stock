@@ -119,7 +119,17 @@ def build_heatmap_data(rows: list[dict]) -> dict:
                      "i": n["imp"], "ipm": n["imp_pm"], "ipy": n["imp_py"]}
                 if _HEATMAP_DRILLDOWN and n["n"] > 1:
                     # leaf 보관(드릴다운) — 페이로드 제한: 금액(수출+수입) 상위 _DRILL_CAP 만.
-                    d["lv"] = sorted(n["lv"], key=lambda x: -(x["e"] + x["i"]))[:_DRILL_CAP]
+                    lv = sorted(n["lv"], key=lambda x: -(x["e"] + x["i"]))[:_DRILL_CAP]
+                    # 동명 leaf 구분 — 관세청 leaf명이 '신품'·'기타' 등으로 겹치면(건설중장비
+                    # 8429 등 신품/중고품 구분자) HS 꼬리(5~10자리) 붙여 식별(사용자 2026-06-20).
+                    from collections import Counter as _Counter
+                    _dup = {nm for nm, c in _Counter(x["nm"] for x in lv).items() if c > 1}
+                    for x in lv:
+                        if x["nm"] in _dup:
+                            _tail = str(x.get("hs") or "")[4:10]
+                            if _tail:
+                                x["nm"] = f'{x["nm"]} {_tail}'
+                    d["lv"] = lv
                 h4s.append(d)
             out.append({"c2": key if with_c2 else "",
                         "name": gnode["name"], "h4s": h4s})
