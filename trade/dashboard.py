@@ -1047,6 +1047,11 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
    정상(좌→우 시간축). 기본·개별 카드 공통(.ind-raw-scroll 단일 정의). */
 .ind-raw-scroll{overflow-x:auto;direction:rtl}
 .ind-table{border-collapse:separate;border-spacing:0;font-size:11px;line-height:1.35;white-space:nowrap;width:max-content;min-width:100%;direction:ltr}
+/* 랭킹표(.ind-sub-card 직속)만 width:100% — max-content 면 펼침 상세행(colspan)의 넓은
+   월별표가 랭킹표 전체를 늘려 바깥 스크롤바가 섹션 맨아래 달림. 100% 로 가두면 월별표는
+   자기 .ind-raw-scroll 안(=클릭한 표 바로 밑)에서 스크롤(사용자 2026-06-20). 월별표
+   (.ind-mti-card 내부 .ind-raw-scroll>.ind-table)는 직속-자식 셀렉터라 미적용→max-content 유지. */
+.ind-sub-card>.ind-raw-scroll>.ind-table{width:100%}
 .ind-table th,.ind-table td{border-top:1px solid var(--border-soft);border-right:1px solid var(--border-soft);padding:5px 8px;text-align:right;background:var(--surface)}
 .ind-table thead th{background:var(--surface-2);color:var(--text-sub);font-weight:650}
 .ind-table th:first-child{position:sticky;left:0;z-index:1;min-width:72px;text-align:left;background:var(--surface-2);box-shadow:1px 0 0 var(--border-soft)}
