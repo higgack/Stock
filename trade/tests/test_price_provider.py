@@ -512,6 +512,17 @@ class SplitNamesTests(unittest.TestCase):
         # 명칭일 수 있음). 원본 그대로만 등록.
         self.assertEqual(pp.split_names(["JYP Ent."]), ["JYP Ent."])
 
+    def test_joined_company_kept_whole(self):
+        # 콤마/공백이 사명 일부인 단일 회사(EEW KHPC·지앤비에스에코)는 분리 안 함
+        # (사용자 2026-06-20 미매칭 회사명수정). 콤마·공백 변형 모두 정규표기로 수렴.
+        self.assertEqual(pp.split_names(["EEW, KHPC"]), ["EEW KHPC"])
+        self.assertEqual(pp.split_names(["EEW KHPC"]), ["EEW KHPC"])
+        self.assertEqual(pp.split_names(["지앤비에스, 에코"]), ["지앤비에스에코"])
+        self.assertEqual(pp.joined_company("지앤비에스 에코"), "지앤비에스에코")
+        self.assertIsNone(pp.joined_company("삼성전자"))
+        # 일반 콤마 나열은 정상 분리(회귀 0)
+        self.assertEqual(pp.split_names(["삼성전자, 하이닉스"]), ["삼성전자", "하이닉스"])
+
     def test_parser_prefix_stripped(self):
         self.assertEqual(pp.split_names(["관련종목 : LG전자"]), ["LG전자"])
         self.assertEqual(pp.split_names(["관련종목: 삼성전자"]), ["삼성전자"])

@@ -716,6 +716,10 @@ def split_names(stocks: Iterable[str]) -> list[str]:
 
     for s in stocks or []:
         s = _PARSER_PREFIX_RE.sub("", str(s)).strip()
+        jc = joined_company(s)             # 콤마/공백이 사명 일부인 단일 회사 → 통째 보존
+        if jc:
+            _add(jc)
+            continue
         for part in _PRIMARY_SPLIT_RE.split(s):
             p = part.strip()
             if p.endswith(" 등"):
@@ -728,6 +732,27 @@ def split_names(stocks: Iterable[str]) -> list[str]:
             else:
                 _add(p)
     return out
+
+
+# 콤마/공백이 **사명 일부**인 단일 회사 — BeOn 이 'EEW, KHPC'·'지앤비에스, 에코'
+# 처럼 한 회사를 콤마/공백으로 적어, 콤마·공백 분리기가 두 고아 토큰으로 쪼개 영구
+# 미매칭이 되던 것(사용자 2026-06-20). 운영자 확인분만. 분리 전 통째 보존·정규표기로
+# 수렴. 키 = 공백·콤마 제거 소문자(모든 변형 흡수). 새 케이스 = 1줄 추가.
+def _join_key(s: str) -> str:
+    return re.sub(r"[\s,]", "", (s or "")).lower()
+
+
+_JOINED_COMPANY: dict[str, str] = {
+    _join_key(k): v for k, v in {
+        "EEW KHPC": "EEW KHPC",        # 비상장(이미 테마 등록) — 한 회사
+        "지앤비에스 에코": "지앤비에스에코",  # 상장 — 정규표기(공백없음)로 수렴
+    }.items()
+}
+
+
+def joined_company(s: str) -> str | None:
+    """콤마/공백 결합 단일 회사명이면 정규표기 반환, 아니면 None. 순수."""
+    return _JOINED_COMPANY.get(_join_key(s))
 
 
 # 파서 누수 ('관련종목 : LG전자') 접두사

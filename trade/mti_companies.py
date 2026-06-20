@@ -223,7 +223,17 @@ def _clean_stocks(stocks, meta) -> list[str]:
         s = s.strip()
         if ":" in s:                      # '관련종목 : LG전자' 머리말 제거
             s = s.split(":")[-1].strip()
-        parts = [p.strip() for p in s.split(",")] if "," in s else [s]
+        # 콤마/공백이 사명 일부인 단일 회사(EEW KHPC·지앤비에스에코)는 콤마 분리 전
+        # 통째 보존(사용자 2026-06-20). 아니면 콤마 분리.
+        try:
+            from trade import price_provider as _pp
+            _jc = _pp.joined_company(s)
+        except Exception:
+            _jc = None
+        if _jc:
+            parts = [_jc]
+        else:
+            parts = [p.strip() for p in s.split(",")] if "," in s else [s]
         for p in parts:
             if not p or len(p) > 14 or p.count(" ") >= 2:   # 다중공백=다사 junk
                 continue
@@ -591,6 +601,10 @@ _THEME_ROWS: list[tuple[str, str, str | tuple[str, ...], tuple[str, ...]]] = [
      ("아스플로", "디케이락")),
     ("대구경 철강제 관 (라인파이프)", "기계/조선/철강", "7305.11-1000",
      ("EEW코리아", "EEW KHPC", "KBI동양철관")),
+    # 스크러버(반도체·대기 기체 여과·정화) — 상장 지앤비에스에코(미매칭 회사명수정,
+    # 2026-06-20). 8421.39 는 729010 외 다수 해석 → _THEME_MTI_PIN 으로 729010 만.
+    ("스크러버 (기체 여과·정화 장치)", "기계/조선/철강", "8421.39-9000",
+     ("지앤비에스에코",)),
     ("풍력 하부구조물 / 타워 플랜지", "기계/조선/철강", "7308.90-9000",
      ("SK오션플랜트", "태웅")),
     ("탈철기 (자력 선별 장치)", "기계/조선/철강", "8479.89-9099",
@@ -696,6 +710,8 @@ _THEME_MTI_PIN: dict[str, tuple[str, ...]] = {
     # CNT 도전재: 파우더(2803.00→228900 기타정밀화학원료) + 슬러리(3824.99) 모니터.
     # 3824.99 는 농약원제·전해액·기타로 분산 → 슬러리 해당 290090(기타화학)만 핀(오부착 차단).
     "CNT 도전재 (탄소나노튜브)": ("228900", "290090"),
+    # 스크러버 8421.39 → 729010/732100/747290 분산 → 기타산업기계(729010)에만 핀.
+    "스크러버 (기체 여과·정화 장치)": ("729010",),
 }
 
 
