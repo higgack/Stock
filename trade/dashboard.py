@@ -1022,18 +1022,15 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
    왼쪽으로 잘려 나갔다(사용자 2026-06-18 '늄괴→뉴괴' 클리핑). 좁은 셀에선 차트를
    세로로 스택해 가로 넘침 자체를 없앤다(TOP10 풀카드 .ind-card 는 해당 없음). */
 .ind-sub-wrap .ind-row{grid-template-columns:1fr}
-/* 펼침 상세(.ind-mti-d) — 코멘트(좌) · 차트 2개(우, 세로) 나란히 (사용자 2026-06-19
-   '차트를 오른쪽으로 밀어 코멘트쪽에 붙이고'). 위 1단 스택을 이 행에 한해 2단으로
-   되돌리되 반폭 셀 넘침(품목명 클리핑, 2026-06-18) 회귀 방지: 상세 td 의 nowrap 해제
-   (코멘트 줄바꿈) + minmax(0,..) + 차트 max-width 셀맞춤. meta 가 좌측 1열을 두 행
-   span, 차트 2개는 우측 2열에 세로로 자동 배치. 아주 좁으면(<560px) 다시 1단. */
+/* 펼침 상세(.ind-mti-d) = TOP10 풀카드(.ind-card)와 동일 레이아웃: 코멘트(meta) +
+   라인·막대 차트 2개 나란히 3단, 차트 max-width 400px 캡(사용자 2026-06-20 '개별항목도
+   기본처럼 보이게·이상하게 크게 나오는거 수정'). .ind-sub-wrap .ind-row{1fr}(랭킹행
+   스택)을 상세행만 기본 3단으로 복원, 차트는 기본 .ind-chart-cell .ind-chart{max-width:
+   400px} 상속(옛 max-width:100% 오버사이즈 제거). 상세 td nowrap 해제(코멘트 줄바꿈).
+   좁으면(<900px) 기본과 동일하게 1단. 월별 원자료 우측(최신) 스크롤은 _scrollRaw(JS). */
 .ind-sub-wrap .ind-mti-d>td{white-space:normal}
-.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(0,0.82fr) minmax(0,1.18fr)}
-.ind-sub-wrap .ind-mti-d .ind-row>.ind-meta{grid-column:1;grid-row:1/span 2}
-.ind-sub-wrap .ind-mti-d .ind-row>.ind-chart-cell{grid-column:2}
-.ind-sub-wrap .ind-mti-d .ind-chart-cell .ind-chart{max-width:100%}
-@media(max-width:560px){.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:1fr}
-.ind-sub-wrap .ind-mti-d .ind-row>.ind-meta{grid-row:auto}}
+.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(230px,0.95fr) minmax(260px,1.1fr) minmax(260px,1.1fr)}
+@media(max-width:900px){.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:1fr}}
 /* 그래도 표가 넘칠 때 품목명 칸(랭킹 본문 첫 td)을 헤더처럼 sticky 고정(헤더
    th:first-child 와 짝) — 가로 스크롤해도 품목명이 안 잘리게. 펼침 상세행
    (.ind-mti-d, colspan 전폭)은 제외. */
