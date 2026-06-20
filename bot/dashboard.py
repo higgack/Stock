@@ -4201,100 +4201,75 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     }
 
 
-# 밴드차트(PER/PBR 멀티플) 클라이언트 렌더 — 외부 라이브러리 0, 순수 SVG.
-# 서버가 #si-band-data(연도별 EPS/BPS)를 심고, 탭 활성화 시 /api/chart 가격이력을
-# 받아 멀티플(과거 PER/PBR 분포 분위수)×주당지표 밴드 + 주가선을 그린다.
+# 밴드차트(PER/PBR) 클라이언트 렌더 — FnGuide BandChart 충실 재현, 외부 라이브러리 0.
+# 탭 활성화 시 /api/band 로 lazy fetch → FnGuide 가 준 멀티플·밴드선·주가(전망 포함)
+# 시계열(x=ms epoch, y=값/미래 price=null)을 순수 SVG 로 그린다.
 _BAND_JS = r"""
 (function(){
-  var dataEl=document.getElementById('si-band-data'); if(!dataEl) return;
-  var BD; try{ BD=JSON.parse(dataEl.textContent); }catch(e){ return; }
+  var pane=document.getElementById('si-bandchart'); if(!pane) return;
   var CD=null, fetching=false;
   function base(){ return (typeof NOAH_BASE!=='undefined')?NOAH_BASE:'../'; }
   function tkr(){ return (typeof NOAH_TICKER!=='undefined')?NOAH_TICKER:''; }
-  function fracYear(t){ var y=parseInt((t||'').substring(0,4),10);
-    var m=parseInt((t||'').substring(5,7),10)||6; return y+(m-0.5)/12; }
-  // 주당지표 시계열을 **선형보간**(연 계단 톱니 제거 — FnGuide TTM 근사). 회계연도
-  // Y 실적은 연말 확정 → 앵커 Y+1.0, 추정연도(선행치 fwd)는 +1년. 구간 밖은 클램프.
-  function epsAt(ts, fwd, f){
-    if(!ts||!ts.length) return null;
-    var pts=ts.map(function(p){return [p.y+1.0, p.v];});
-    if(fwd!=null && fwd>0) pts.push([pts[pts.length-1][0]+1.0, fwd]);
-    if(f<=pts[0][0]) return pts[0][1];
-    var last=pts[pts.length-1]; if(f>=last[0]) return last[1];
-    for(var i=1;i<pts.length;i++){ if(f<=pts[i][0]){
-      var a=pts[i-1], b=pts[i]; return a[1]+(b[1]-a[1])*((f-a[0])/(b[0]-a[0])); } }
-    return last[1];
-  }
-  function pctile(arr,p){ if(!arr.length) return null;
-    var idx=(arr.length-1)*p, lo=Math.floor(idx), hi=Math.ceil(idx);
-    return lo===hi?arr[lo]:arr[lo]+(arr[hi]-arr[lo])*(idx-lo); }
-  function fmt0(v){ if(v==null||!isFinite(v)) return '—';
-    return Math.round(v).toLocaleString(); }
-  var BANDC=['#e2574c','#9aa056','#7e57c2','#ef8a33'];   // 최저/중하/중상/최고
-  var NAMES=['최저','중하','중상','최고'];
-  function drawBand(holderId, lgId, times, close, ts, fwd){
+  function fmt0(v){ if(v==null||!isFinite(v)) return '—'; return Math.round(v).toLocaleString(); }
+  function ymd(ms){ var d=new Date(ms); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2); }
+  var BANDC=['#ef8a33','#7e57c2','#9aa056','#e2574c'];   // VAL1 최고 … VAL4 최저
+  var NAMES=['최고','중상','중하','최저'];
+  // obj = {mult:[v1..v4], price:[[ms,y|null]], bands:[[[ms,y]]×4]}
+  function drawBand(holderId, lgId, obj, csym){
     var holder=document.getElementById(holderId), lg=document.getElementById(lgId);
     if(!holder) return;
-    var n=times.length, vals=new Array(n), ratios=[];
-    for(var i=0;i<n;i++){
-      var pv=epsAt(ts,fwd,fracYear(times[i])); vals[i]=pv;
-      if(pv!=null&&pv>0&&close[i]!=null){ var r=close[i]/pv; if(isFinite(r)&&r>0&&r<500) ratios.push(r); }
-    }
-    if(!ratios.length){ holder.innerHTML='<div style="font-size:12px;color:var(--fg-soft)">밴드 산출 불가(주당지표 음수/부재)</div>'; if(lg)lg.innerHTML=''; return; }
-    ratios.sort(function(a,b){return a-b;});
-    // 극단치 제거 — 저EPS 연도가 만든 PER 폭주(예: 36x 단일 밴드)가 차트를 바닥에
-    // 뭉치게 하지 않게 중앙값 ±(0.25~4배) 범위로 클리핑 후 분위수. 표본 적으면 원본.
-    var med=pctile(ratios,0.5);
-    var clean=ratios.filter(function(r){return r>=med*0.25 && r<=med*4;});
-    if(clean.length<4) clean=ratios;
-    var mult=[clean[0], pctile(clean,0.40), pctile(clean,0.72), clean[clean.length-1]];
-    var W=holder.clientWidth||340, H=220, PADL=52, PADR=8, PADT=8, PADB=22;
-    var ymin=Infinity, ymax=-Infinity;
-    function cons(v){ if(v!=null&&isFinite(v)){ if(v<ymin)ymin=v; if(v>ymax)ymax=v; } }
-    for(var i=0;i<n;i++){ cons(close[i]);
-      if(vals[i]!=null&&vals[i]>0) for(var k=0;k<4;k++) cons(mult[k]*vals[i]); }
-    if(!isFinite(ymin)||!isFinite(ymax)||ymax<=ymin){ holder.innerHTML=''; return; }
+    if(!obj||!obj.price||!obj.price.length){
+      holder.innerHTML='<div style="font-size:12px;color:var(--fg-soft)">데이터 없음</div>'; if(lg)lg.innerHTML=''; return; }
+    var price=obj.price, bands=obj.bands||[], mult=obj.mult||[];
+    var W=holder.clientWidth||340, H=240, PADL=58, PADR=8, PADT=8, PADB=22;
+    var minX=Infinity,maxX=-Infinity, ymin=Infinity,ymax=-Infinity;
+    function scanX(a){ for(var i=0;i<a.length;i++){ var x=a[i][0]; if(x!=null){ if(x<minX)minX=x; if(x>maxX)maxX=x; } } }
+    function scanY(a){ for(var i=0;i<a.length;i++){ var y=a[i][1]; if(y!=null&&isFinite(y)){ if(y<ymin)ymin=y; if(y>ymax)ymax=y; } } }
+    scanX(price); scanY(price);
+    for(var b=0;b<bands.length;b++){ scanX(bands[b]); scanY(bands[b]); }
+    if(!isFinite(minX)||!isFinite(ymin)||maxX<=minX||ymax<=ymin){ holder.innerHTML=''; return; }
     var pd=(ymax-ymin)*0.05; ymin-=pd; ymax+=pd; if(ymin<0)ymin=0;
-    function X(i){ return PADL+(W-PADL-PADR)*(n<=1?0:i/(n-1)); }
+    function X(ms){ return PADL+(W-PADL-PADR)*(ms-minX)/(maxX-minX); }
     function Y(v){ return PADT+(H-PADT-PADB)*(1-(v-ymin)/(ymax-ymin)); }
-    function poly(getY){ var d='',on=false;
-      for(var i=0;i<n;i++){ var yv=getY(i);
-        if(yv==null){ on=false; continue; }
-        d+=(on?'L':'M')+X(i).toFixed(1)+' '+Y(yv).toFixed(1)+' '; on=true; }
+    function poly(a){ var d='',on=false;
+      for(var i=0;i<a.length;i++){ if(a[i][0]==null||a[i][1]==null){ on=false; continue; }
+        d+=(on?'L':'M')+X(a[i][0]).toFixed(1)+' '+Y(a[i][1]).toFixed(1)+' '; on=true; }
       return d; }
     var svg='<svg viewBox="0 0 '+W+' '+H+'" width="100%" height="'+H+'" preserveAspectRatio="none" style="overflow:visible">';
     for(var g=0;g<=4;g++){ var gv=ymin+(ymax-ymin)*g/4, gy=Y(gv);
       svg+='<line x1="'+PADL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--border-soft,#333)" stroke-width="0.5"/>';
-      svg+='<text x="'+(PADL-4)+'" y="'+(gy+3).toFixed(1)+'" text-anchor="end" font-size="9" fill="var(--fg-soft,#999)">'+BD.csym+fmt0(gv)+'</text>'; }
-    for(var k=0;k<4;k++){ (function(k){
-      var d=poly(function(i){ return (vals[i]!=null&&vals[i]>0)?mult[k]*vals[i]:null; });
-      if(d) svg+='<path d="'+d+'" fill="none" stroke="'+BANDC[k]+'" stroke-width="1.3" opacity="0.85"/>';
-    })(k); }
-    svg+='<path d="'+poly(function(i){return close[i];})+'" fill="none" stroke="#2f80ed" stroke-width="2"/>';
-    svg+='<text x="'+PADL+'" y="'+(H-6)+'" font-size="9" fill="var(--fg-soft,#999)">'+(times[0]||'')+'</text>';
-    svg+='<text x="'+(W-PADR)+'" y="'+(H-6)+'" text-anchor="end" font-size="9" fill="var(--fg-soft,#999)">'+(times[n-1]||'')+'</text>';
+      svg+='<text x="'+(PADL-4)+'" y="'+(gy+3).toFixed(1)+'" text-anchor="end" font-size="9" fill="var(--fg-soft,#999)">'+csym+fmt0(gv)+'</text>'; }
+    // 현재(price 마지막 비-null) 세로 점선 — 오른쪽은 전망 구간
+    var lastReal=null; for(var i=price.length-1;i>=0;i--){ if(price[i][1]!=null){ lastReal=price[i][0]; break; } }
+    if(lastReal!=null && lastReal<maxX){ var lx=X(lastReal).toFixed(1);
+      svg+='<line x1="'+lx+'" y1="'+PADT+'" x2="'+lx+'" y2="'+(H-PADB)+'" stroke="var(--fg-soft,#888)" stroke-width="0.6" stroke-dasharray="3 3"/>'; }
+    for(var k=0;k<bands.length;k++){ var d=poly(bands[k]);
+      if(d) svg+='<path d="'+d+'" fill="none" stroke="'+BANDC[k]+'" stroke-width="1.2" opacity="0.85"/>'; }
+    svg+='<path d="'+poly(price)+'" fill="none" stroke="#2f80ed" stroke-width="2"/>';
+    svg+='<text x="'+PADL+'" y="'+(H-6)+'" font-size="9" fill="var(--fg-soft,#999)">'+ymd(minX)+'</text>';
+    svg+='<text x="'+(W-PADR)+'" y="'+(H-6)+'" text-anchor="end" font-size="9" fill="var(--fg-soft,#999)">'+ymd(maxX)+'</text>';
     svg+='</svg>';
     holder.innerHTML=svg;
     if(lg){ var h='<span style="color:#2f80ed;font-weight:600">― 주가</span> ';
-      for(var k2=0;k2<4;k2++) h+='<span style="color:'+BANDC[k2]+'">― '+mult[k2].toFixed(1)+'x('+NAMES[k2]+')</span> ';
+      for(var k2=0;k2<mult.length;k2++){ if(mult[k2]==null) continue;
+        h+='<span style="color:'+BANDC[k2]+'">― '+mult[k2].toFixed(1)+'x('+NAMES[k2]+')</span> '; }
       lg.innerHTML=h; }
   }
   function draw(){ if(!CD) return;
-    drawBand('si-band-per','si-band-per-lg',CD.times,CD.close,BD.eps,BD.epsFwd);
-    drawBand('si-band-pbr','si-band-pbr-lg',CD.times,CD.close,BD.bps,BD.bpsCur); }
+    drawBand('si-band-per','si-band-per-lg',CD.per,'₩');
+    drawBand('si-band-pbr','si-band-pbr-lg',CD.pbr,'₩'); }
   function load(){ if(CD||fetching) return; fetching=true;
     var st=document.getElementById('si-band-status');
-    fetch(base()+'api/chart?ticker='+encodeURIComponent(tkr())+'&interval=1mo&range=5y',{cache:'no-store'})
+    fetch(base()+'api/band?ticker='+encodeURIComponent(tkr()),{cache:'no-store'})
       .then(function(r){return r.json();})
       .then(function(j){ fetching=false;
-        if(!j||!j.ok||!j.chart||!j.chart.times){ if(st)st.textContent='가격이력을 불러오지 못했습니다.'; return; }
-        CD=j.chart; if(st)st.style.display='none'; draw(); })
+        if(!j||!j.ok||!j.band){ if(st)st.textContent='밴드차트 데이터가 없습니다(커버리지 없음).'; return; }
+        CD=j.band; if(st)st.style.display='none'; draw(); })
       .catch(function(){ fetching=false; if(st)st.textContent='차트 로딩 실패.'; }); }
   document.addEventListener('click',function(e){
     var b=e.target.closest&&e.target.closest('.si-tab[data-pane="si-bandchart"]');
     if(b) setTimeout(load,30); });
-  var pane=document.getElementById('si-bandchart');
-  if(pane&&pane.classList.contains('active')) setTimeout(load,60);
+  if(pane.classList.contains('active')) setTimeout(load,60);
   var rT; window.addEventListener('resize',function(){ if(CD){ clearTimeout(rT); rT=setTimeout(draw,150); } });
 })();
 """
@@ -4374,32 +4349,12 @@ def _render_stock_info_html(rec: dict) -> str:
         mkt = si.get("us", {})
     kr = si.get("kr", {})
 
-    # ── 밴드차트 데이터 (PER/PBR 멀티플 — KR, DART 연결실적÷발행주식수) ──
-    # 데이터소스(DART financials_ts)가 KR 전용이라 밴드도 KR 한정 — 타시장은
-    # 연도별 EPS/BPS 시계열 부재로 탭 미노출(소스 확보 시 동일 경로 확장 가능).
-    band_tab = ""
-    _band_payload_js = ""
-    _shares = si.get("shares_outstanding")
-    _fin_ts = kr.get("financials_ts") or []
-    if is_kr and _shares and _shares > 0 and _fin_ts:
-        import json as _bjson
-        _eps_ts, _bps_ts = [], []
-        for _f in sorted(_fin_ts, key=lambda x: x.get("year") or 0):
-            _yr = _f.get("year")
-            if not _yr:
-                continue
-            _ni, _eq = _f.get("당기순이익"), _f.get("자본총계")
-            if _ni is not None:
-                _eps_ts.append({"y": int(_yr), "v": _ni / _shares})
-            if _eq is not None:
-                _bps_ts.append({"y": int(_yr), "v": _eq / _shares})
-        if len(_eps_ts) >= 2 or len(_bps_ts) >= 2:
-            _bp = {"csym": csym, "eps": _eps_ts, "bps": _bps_ts,
-                   "epsFwd": si.get("forwardEps"), "bpsCur": si.get("bookValue")}
-            _band_payload_js = _bjson.dumps(
-                _bp, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
-            band_tab = ('  <button type="button" class="si-tab" '
-                        'data-pane="si-bandchart">밴드차트</button>\n')
+    # ── 밴드차트 탭 (PER/PBR — FnGuide 밴드차트 충실 재현, KR 전용) ──
+    # 데이터는 탭 활성화 시 /api/band 로 lazy fetch(FnGuide BandChart3.aspx, 12h 캐시).
+    # 자체 EPS/BPS 보간 근사 대신 FnGuide 가 산출한 밴드선·멀티플·전망(미래)을 그대로.
+    # 데이터소스가 KR 전용이라 탭도 KR 한정 — 커버리지 없으면 패널이 '데이터 없음'.
+    band_tab = ('  <button type="button" class="si-tab" data-pane="si-bandchart">밴드차트</button>\n'
+                if is_kr else "")
 
     # ── tab navigation ──────────────────────────────────────────
     # 공시 버튼은 항상 노출 (사용자 2026-06-16 A2): 옛 분석은 정적 저장분에
@@ -5650,6 +5605,9 @@ def _render_stock_info_html(rec: dict) -> str:
     divs = si.get("dividends", [])
     div_html = ""
     if divs:
+        # 최신이 위로 (사용자 2026-06-20) — 배당락일 내림차순. 날짜 문자열 정렬이라
+        # 'YYYY-MM-DD' 사전식 = 시간순 일치. 날짜 없는 행은 맨 아래.
+        divs = sorted(divs, key=lambda d: str(d.get("date") or ""), reverse=True)
         div_rows = ""
         for dv in divs:
             d_date = esc(str(dv.get("date", "—")))
@@ -5953,15 +5911,15 @@ def _render_stock_info_html(rec: dict) -> str:
   {_src_foot}출처: {_val_src}</div>
 </div>"""
 
-    # ── 밴드차트 pane (PER/PBR 멀티플 밴드 — 네이티브 SVG, 외부 라이브러리 0) ──
+    # ── 밴드차트 pane (PER/PBR — FnGuide BandChart 충실 재현, lazy /api/band) ──
     band_pane = ""
     if band_tab:
         band_pane = f"""<div class="si-pane" id="si-bandchart">
   <div class="si-section">
     <div class="si-section-title">밴드차트 (PER/PBR 멀티플)</div>
     <div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px;line-height:1.5">
-      파란선=주가 · 밴드선=멀티플×주당지표(EPS·BPS, DART 연결실적÷발행주식수, 연 단위 계단).
-      멀티플=표시구간(5년) 과거 PER/PBR 분포의 분위수(최저·중하·중상·최고). 추정연도는 컨센서스 선행치 적용.
+      파란선=주가 · 밴드선=PER/PBR 멀티플(최고·중상·중하·최저)별 적정주가 · 세로 점선 오른쪽=현재 이후(컨센서스 전망 구간).
+      FnGuide 밴드차트 데이터(밴드·멀티플·전망 동일).
     </div>
     <div id="si-band-status" style="font-size:12px;color:var(--fg-soft)">차트 로딩…</div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="si-band-grid">
@@ -5972,9 +5930,8 @@ def _render_stock_info_html(rec: dict) -> str:
         <div id="si-band-pbr"></div>
         <div id="si-band-pbr-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div></div>
     </div>
-    {_src_foot}출처: yfinance(가격·선행치) · DART(주당지표) · 멀티플=봇 자체 산출</div>
+    {_src_foot}출처: FnGuide(네이버 임베드) · BandChart</div>
   </div>
-  <script type="application/json" id="si-band-data">{_band_payload_js}</script>
   <script>{_BAND_JS}</script>
 </div>"""
 

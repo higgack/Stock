@@ -12322,28 +12322,58 @@ class TestWisereportEarningsSurprise:
 
 
 class TestBandChartPane:
-    """밴드차트 탭(2026-06-20) — KR DART financials_ts ÷ 발행주식수 → EPS/BPS,
-    네이티브 SVG. KR 만 탭 노출, 타시장 미노출(EPS/BPS 시계열 부재)."""
+    """밴드차트 탭(2026-06-20) — FnGuide BandChart 충실 재현. KR 만 탭 노출,
+    탭 활성화 시 /api/band lazy fetch(financials_ts 불요). 타시장 미노출."""
 
-    def test_kr_band_tab_and_payload(self):
+    def test_kr_band_tab_lazy_fetch(self):
         import bot.dashboard as d
-        import json
         parts = d._render_stock_info_html({"ticker": "005930.KS", "stock_info": {
-            "currency": "KRW", "current_price": 354000, "shares_outstanding": 5.96e9,
-            "forwardEps": 44426, "bookValue": 106831, "kr": {"financials_ts": [
-                {"year": 2024, "당기순이익": 34_000_000_000_000, "자본총계": 380_000_000_000_000},
-                {"year": 2025, "당기순이익": 39_000_000_000_000, "자본총계": 410_000_000_000_000}]}}})
+            "currency": "KRW", "current_price": 354000, "kr": {}}})
         assert "밴드차트" in parts["tabs"]
         op = parts["other_panes"]
-        assert 'id="si-bandchart"' in op and 'id="si-band-data"' in op
-        m = re.search(r'id="si-band-data">(.*?)</script>', op, re.S)
-        payload = json.loads(m.group(1).replace("<\\/", "</"))
-        assert len(payload["eps"]) == 2 and len(payload["bps"]) == 2
-        assert payload["epsFwd"] == 44426
+        assert 'id="si-bandchart"' in op
+        assert "id=\"si-band-data\"" not in op            # 임베드 payload 제거(lazy)
+        assert "api/band?ticker=" in op and "drawBand" in op
 
     def test_non_kr_no_band_tab(self):
         import bot.dashboard as d
         parts = d._render_stock_info_html({"ticker": "AAPL", "stock_info": {
-            "currency": "USD", "current_price": 200, "shares_outstanding": 1e9,
-            "forwardEps": 7}})
+            "currency": "USD", "current_price": 200}})
         assert "밴드차트" not in parts["tabs"]
+
+    def test_dividend_history_newest_first(self):
+        # 배당 이력 최신이 위로(사용자 2026-06-20) — 배당락일 내림차순 회귀 가드.
+        import bot.dashboard as d
+        op = d._render_stock_info_html({"ticker": "032830.KS", "stock_info": {
+            "currency": "KRW", "current_price": 497000, "kr": {}, "dividends": [
+                {"date": "2014-12-29", "amount": 553},
+                {"date": "2025-12-29", "amount": 1550},
+                {"date": "2020-12-29", "amount": 660}]}})["other_panes"]
+        i25, i20, i14 = op.find("2025-12-29"), op.find("2020-12-29"), op.find("2014-12-29")
+        assert -1 < i25 < i20 < i14, (i25, i20, i14)
+
+    def test_band_parser_matches_fnguide(self):
+        from bot.fnguide_bandchart import _parse
+        d_ = {"bandChart1": {"name": {"VAL1": "36.8배", "VAL2": "26.5배",
+                                      "VAL3": "16.3배", "VAL4": "6.0배"},
+                             "price": [{"x": 1656547200000, "y": 57000.0},
+                                       {"x": 1843344000000, "y": None}],
+                             "val1": [{"x": 1656547200000, "y": 254545.6}],
+                             "val2": [{"x": 1656547200000, "y": 183300.5}],
+                             "val3": [{"x": 1656547200000, "y": 112747.1}],
+                             "val4": [{"x": 1656547200000, "y": 41502.0}]},
+              "bandChart2": {"name": {"VAL1": "3.3배", "VAL2": "2.5배",
+                                      "VAL3": "1.7배", "VAL4": "0.9배"},
+                             "price": [{"x": 1656547200000, "y": 57000.0}],
+                             "val1": [{"x": 1656547200000, "y": 155806.2}],
+                             "val2": [{"x": 1656547200000, "y": 118035.0}],
+                             "val3": [{"x": 1656547200000, "y": 80263.8}],
+                             "val4": [{"x": 1656547200000, "y": 42492.6}]}}
+        r = _parse(d_, "0")
+        assert r["gubun"] == "0"
+        assert r["per"]["mult"] == [36.8, 26.5, 16.3, 6.0]    # 첫 스크린샷과 일치
+        assert r["pbr"]["mult"] == [3.3, 2.5, 1.7, 0.9]
+        assert r["per"]["price"] == [[1656547200000, 57000.0], [1843344000000, None]]
+        assert r["per"]["bands"][0] == [[1656547200000, 254545.6]]
+        # price 비면 None(무커버리지 graceful)
+        assert _parse({"bandChart1": {"price": []}}, "0") is None

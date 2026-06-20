@@ -285,6 +285,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         # token prefix is already stripped by _authorize() above.
         if self.path.split("?", 1)[0] == "/api/chart":
             return self._handle_chart_api()
+        # /api/band?ticker=..  — FnGuide PER/PBR 밴드차트(KR 전용), 탭 lazy fetch.
+        if self.path.split("?", 1)[0] == "/api/band":
+            return self._handle_band_api()
         # /api/quote?ticker=..[&full=1]  — live numbers for the detail page.
         # LIGHT (default): price-derived multiples + consensus + 52주 + 이평
         # (yfinance .info, KR KIS-first). FULL: re-snapshot heavy panes.
@@ -618,6 +621,29 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         except Exception as exc:
             log.exception("daily_byte_delete: unexpected failure")
             self._reply_json(500, {"ok": False, "error": str(exc)})
+
+    def _handle_band_api(self) -> None:
+        """FnGuide PER/PBR 밴드차트 데이터(KR 전용). 모듈이 12h 디스크 캐시하므로
+        여기선 검증·위임만. Read-only GET — _authorize() 게이트 통과분."""
+        import urllib.parse as _uparse
+        try:
+            qs = _uparse.urlparse(self.path).query
+            ticker = (_uparse.parse_qs(qs).get("ticker", [""])[0] or "").strip().upper()
+            if not _TICKER_RE.match(ticker):
+                self._reply_json(400, {"ok": False, "error": "bad ticker"})
+                return
+            if not ticker.endswith((".KS", ".KQ")):
+                self._reply_json(200, {"ok": False, "error": "non-KR"})
+                return
+            from bot.fnguide_bandchart import fetch_band_chart
+            data = fetch_band_chart(ticker)
+            if not data:
+                self._reply_json(200, {"ok": False, "error": "no data"})
+                return
+            self._reply_json(200, {"ok": True, "band": data})
+        except Exception as exc:
+            log.warning("band_api: failed — %s", exc)
+            self._reply_json(500, {"ok": False, "error": "internal"})
 
     def _handle_chart_api(self) -> None:
         """Serve an on-demand chart payload for a ticker / interval / range.
