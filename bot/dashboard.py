@@ -2280,10 +2280,11 @@ mark.snippet-target {
   font-variant-numeric: tabular-nums; }
 .si-card .si-sub { font-size: 11px; color: var(--fg-soft); }
 /* ── Tab navigation ──────────────────────────────────────── */
-.si-tabs { display: flex; gap: 0; border-bottom: 2px solid var(--border); margin: 0 0 16px; }
+.si-tabs { display: flex; flex-wrap: wrap; gap: 2px 2px; border-bottom: 2px solid var(--border); margin: 0 0 16px; }
 .si-tab {
-  padding: 8px 16px; font-size: 13px; color: var(--fg-soft); cursor: pointer;
+  padding: 8px 14px; font-size: 13px; color: var(--fg-soft); cursor: pointer;
   border-bottom: 2px solid transparent; margin-bottom: -2px;
+  white-space: nowrap; flex: 0 0 auto;          /* 칩 단위 — 한글 글자단위 줄바꿈 방지 */
   font-family: inherit; background: none; border-top: none; border-left: none; border-right: none;
 }
 .si-tab:hover { color: var(--fg); }
@@ -4210,14 +4211,19 @@ _BAND_JS = r"""
   var CD=null, fetching=false;
   function base(){ return (typeof NOAH_BASE!=='undefined')?NOAH_BASE:'../'; }
   function tkr(){ return (typeof NOAH_TICKER!=='undefined')?NOAH_TICKER:''; }
-  // 연도→주당지표(계단). 추정연도(>최대실적연도)는 선행치(fwd) 우선.
-  function lookup(ts, fwd, year){
+  function fracYear(t){ var y=parseInt((t||'').substring(0,4),10);
+    var m=parseInt((t||'').substring(5,7),10)||6; return y+(m-0.5)/12; }
+  // 주당지표 시계열을 **선형보간**(연 계단 톱니 제거 — FnGuide TTM 근사). 회계연도
+  // Y 실적은 연말 확정 → 앵커 Y+1.0, 추정연도(선행치 fwd)는 +1년. 구간 밖은 클램프.
+  function epsAt(ts, fwd, f){
     if(!ts||!ts.length) return null;
-    var maxY=ts[ts.length-1].y, val=null;
-    for(var i=0;i<ts.length;i++){ if(ts[i].y<=year) val=ts[i].v; }
-    if(val===null) val=ts[0].v;                  // year < 최소연도 → 최소연도값
-    if(year>maxY && fwd!=null && fwd>0) val=fwd;  // 추정연도 → 선행치
-    return val;
+    var pts=ts.map(function(p){return [p.y+1.0, p.v];});
+    if(fwd!=null && fwd>0) pts.push([pts[pts.length-1][0]+1.0, fwd]);
+    if(f<=pts[0][0]) return pts[0][1];
+    var last=pts[pts.length-1]; if(f>=last[0]) return last[1];
+    for(var i=1;i<pts.length;i++){ if(f<=pts[i][0]){
+      var a=pts[i-1], b=pts[i]; return a[1]+(b[1]-a[1])*((f-a[0])/(b[0]-a[0])); } }
+    return last[1];
   }
   function pctile(arr,p){ if(!arr.length) return null;
     var idx=(arr.length-1)*p, lo=Math.floor(idx), hi=Math.ceil(idx);
@@ -4231,13 +4237,17 @@ _BAND_JS = r"""
     if(!holder) return;
     var n=times.length, vals=new Array(n), ratios=[];
     for(var i=0;i<n;i++){
-      var yr=parseInt((times[i]||'').substring(0,4),10);
-      var pv=lookup(ts,fwd,yr); vals[i]=pv;
+      var pv=epsAt(ts,fwd,fracYear(times[i])); vals[i]=pv;
       if(pv!=null&&pv>0&&close[i]!=null){ var r=close[i]/pv; if(isFinite(r)&&r>0&&r<500) ratios.push(r); }
     }
     if(!ratios.length){ holder.innerHTML='<div style="font-size:12px;color:var(--fg-soft)">밴드 산출 불가(주당지표 음수/부재)</div>'; if(lg)lg.innerHTML=''; return; }
     ratios.sort(function(a,b){return a-b;});
-    var mult=[pctile(ratios,0),pctile(ratios,0.33),pctile(ratios,0.67),pctile(ratios,1)];
+    // 극단치 제거 — 저EPS 연도가 만든 PER 폭주(예: 36x 단일 밴드)가 차트를 바닥에
+    // 뭉치게 하지 않게 중앙값 ±(0.25~4배) 범위로 클리핑 후 분위수. 표본 적으면 원본.
+    var med=pctile(ratios,0.5);
+    var clean=ratios.filter(function(r){return r>=med*0.25 && r<=med*4;});
+    if(clean.length<4) clean=ratios;
+    var mult=[clean[0], pctile(clean,0.40), pctile(clean,0.72), clean[clean.length-1]];
     var W=holder.clientWidth||340, H=220, PADL=52, PADR=8, PADT=8, PADB=22;
     var ymin=Infinity, ymax=-Infinity;
     function cons(v){ if(v!=null&&isFinite(v)){ if(v<ymin)ymin=v; if(v>ymax)ymax=v; } }
