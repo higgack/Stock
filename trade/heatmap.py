@@ -71,9 +71,10 @@ def build_heatmap_data(rows: list[dict]) -> dict:
         node = gnode["h4"].setdefault(h4, {
             "exp": 0, "exp_pm": 0, "exp_py": 0,
             "imp": 0, "imp_pm": 0, "imp_py": 0,
-            "top_name": "", "top_val": -1, "top_hs": ""})
+            "n": 0, "top_name": "", "top_val": -1, "top_hs": ""})
         for k in ("exp", "exp_pm", "exp_py", "imp", "imp_pm", "imp_py"):
             node[k] += int(r.get(k) or 0)
+        node["n"] += 1                       # HS4 내 leaf(품목) 수 — '외 N' 표기용
         v = int(r.get("exp") or 0) + int(r.get("imp") or 0)
         if v > node["top_val"]:
             node["top_val"] = v
@@ -99,7 +100,7 @@ def build_heatmap_data(rows: list[dict]) -> dict:
     def _flat(tree: dict, with_c2: bool) -> list:
         out = []
         for key, gnode in tree.items():
-            h4s = [{"h4": h4, "nm": n["top_name"], "hs": n["top_hs"],
+            h4s = [{"h4": h4, "nm": n["top_name"], "hs": n["top_hs"], "n": n["n"],
                     "e": n["exp"], "epm": n["exp_pm"], "epy": n["exp_py"],
                     "i": n["imp"], "ipm": n["imp_pm"], "ipy": n["imp_py"]}
                    for h4, n in gnode["h4"].items()]
@@ -145,7 +146,7 @@ def render_heatmap_html(rows: list[dict], status_label: str = "") -> str:
 <style>{_HEATMAP_CSS}</style>
 <div class="hm-wrap">
   <div class="hm-bar">
-    <span>기준 <b>{ref}</b>{status} · 박스=HS4 (크기=금액) · 셀 클릭→관련 상장사·보고서 · 10분 변경감지 · 일 4회 풀스윕</span>
+    <span>기준 <b>{ref}</b>{status} · 박스=HS4 류 전체 합(크기=금액, 라벨=대표품목 외N) · 셀 클릭→대표품목 상장사·보고서 · 10분 변경감지 · 일 4회 풀스윕</span>
     <span class="hm-toggle" id="hm-dir">
       <button class="hm-tbtn is-active" data-v="exp">수출</button>
       <button class="hm-tbtn" data-v="imp">수입</button>
@@ -260,18 +261,19 @@ function render(){{
         if(HMQ&&(n.h4+' '+n.nm).toLowerCase().indexOf(HMQ)<0){{ cell.style.opacity='.12'; }}
         if(q.w>54&&q.h>26){{
           var s=document.createElement('span');
-          s.textContent=n.h4+' '+n.nm+' '+(n.p===null?'신규':(n.p>0?'+':'')+n.p.toFixed(1)+'%');
+          s.textContent=n.h4+' '+n.nm+(n.n>1?' 외'+(n.n-1):'')+' '+(n.p===null?'신규':(n.p>0?'+':'')+n.p.toFixed(1)+'%');
           cell.appendChild(s);
         }}
         cell.addEventListener('mousemove',function(ev){{
           tip.style.display='block';
           tip.style.left=Math.min(ev.clientX+14,window.innerWidth-310)+'px';
           tip.style.top=(ev.clientY+12)+'px';
-          tip.innerHTML='<b>'+n.h4+' '+n.nm+'</b><br>'
-            +(dir==='exp'?'수출':'수입')+' '+fmt(n.v)
+          tip.innerHTML='<b>'+n.h4+' · 대표 '+n.nm+(n.n>1?' 외'+(n.n-1)+'품목':'')+'</b><br>'
+            +'<b>HS4 합계</b> '+(dir==='exp'?'수출':'수입')+' '+fmt(n.v)
             +' · '+(mode==='yoy'?'YoY ':'MoM ')
             +(n.p===null?'신규(전기 0)':(n.p>0?'+':'')+n.p.toFixed(1)+'%')
-            +(n.hs&&window.rbSearch?'<br><span style="color:#6cb6ff">클릭 → 관련 상장사·보고서</span>':'');
+            +(n.n>1?'<br><span style="color:#9aa0ab">※ 박스=HS4 류 전체 합 · 개별 품목은 상세표 참조</span>':'')
+            +(n.hs&&window.rbSearch?'<br><span style="color:#6cb6ff">클릭 → 대표품목 관련 상장사·보고서</span>':'');
         }});
         cell.addEventListener('mouseleave',function(){{tip.style.display='none';}});
         // 셀 클릭 → 기업 보고서(품목 모드)로 그 HS/품목 + 관련 상장사 + 수출입
@@ -299,13 +301,13 @@ var hmObs=new IntersectionObserver(function(es){{
 }});
 hmObs.observe(document.getElementById('hm-map'));
 window.hmCSV=function(){{
-  // 활성 그룹 기준 CSV rows — [그룹,HS4,품목,수출$,수출YoY%,수출MoM%,수입$,수입YoY%,수입MoM%]
+  // 활성 그룹 기준 CSV rows — 값은 HS4 류 전체 합(대표품목명+외N), 개별품목 아님
   var G=(grp==='ind'&&DATA.industries)?DATA.industries:DATA.chapters;
-  var rows=[['그룹','HS4','품목','수출$','수출YoY%','수출MoM%','수입$','수입YoY%','수입MoM%']];
+  var rows=[['그룹','HS4','대표품목','HS4품목수','수출$(HS4합계)','수출YoY%','수출MoM%','수입$(HS4합계)','수입YoY%','수입MoM%']];
   function p(c,b){{ if(!b)return ''; return ((c-b)/b*100).toFixed(1); }}
   G.forEach(function(c){{
     c.h4s.forEach(function(n){{
-      rows.push([(c.c2?c.c2+' ':'')+c.name,n.h4,n.nm,
+      rows.push([(c.c2?c.c2+' ':'')+c.name,n.h4,n.nm+(n.n>1?' 외'+(n.n-1):''),n.n,
         n.e,p(n.e,n.epy),p(n.e,n.epm),n.i,p(n.i,n.ipy),p(n.i,n.ipm)]);
     }});
   }});
