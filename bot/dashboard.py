@@ -4200,6 +4200,96 @@ def build_live_quote(ticker: str, full: bool = False) -> dict | None:
     }
 
 
+# 밴드차트(PER/PBR 멀티플) 클라이언트 렌더 — 외부 라이브러리 0, 순수 SVG.
+# 서버가 #si-band-data(연도별 EPS/BPS)를 심고, 탭 활성화 시 /api/chart 가격이력을
+# 받아 멀티플(과거 PER/PBR 분포 분위수)×주당지표 밴드 + 주가선을 그린다.
+_BAND_JS = r"""
+(function(){
+  var dataEl=document.getElementById('si-band-data'); if(!dataEl) return;
+  var BD; try{ BD=JSON.parse(dataEl.textContent); }catch(e){ return; }
+  var CD=null, fetching=false;
+  function base(){ return (typeof NOAH_BASE!=='undefined')?NOAH_BASE:'../'; }
+  function tkr(){ return (typeof NOAH_TICKER!=='undefined')?NOAH_TICKER:''; }
+  // 연도→주당지표(계단). 추정연도(>최대실적연도)는 선행치(fwd) 우선.
+  function lookup(ts, fwd, year){
+    if(!ts||!ts.length) return null;
+    var maxY=ts[ts.length-1].y, val=null;
+    for(var i=0;i<ts.length;i++){ if(ts[i].y<=year) val=ts[i].v; }
+    if(val===null) val=ts[0].v;                  // year < 최소연도 → 최소연도값
+    if(year>maxY && fwd!=null && fwd>0) val=fwd;  // 추정연도 → 선행치
+    return val;
+  }
+  function pctile(arr,p){ if(!arr.length) return null;
+    var idx=(arr.length-1)*p, lo=Math.floor(idx), hi=Math.ceil(idx);
+    return lo===hi?arr[lo]:arr[lo]+(arr[hi]-arr[lo])*(idx-lo); }
+  function fmt0(v){ if(v==null||!isFinite(v)) return '—';
+    return Math.round(v).toLocaleString(); }
+  var BANDC=['#e2574c','#9aa056','#7e57c2','#ef8a33'];   // 최저/중하/중상/최고
+  var NAMES=['최저','중하','중상','최고'];
+  function drawBand(holderId, lgId, times, close, ts, fwd){
+    var holder=document.getElementById(holderId), lg=document.getElementById(lgId);
+    if(!holder) return;
+    var n=times.length, vals=new Array(n), ratios=[];
+    for(var i=0;i<n;i++){
+      var yr=parseInt((times[i]||'').substring(0,4),10);
+      var pv=lookup(ts,fwd,yr); vals[i]=pv;
+      if(pv!=null&&pv>0&&close[i]!=null){ var r=close[i]/pv; if(isFinite(r)&&r>0&&r<500) ratios.push(r); }
+    }
+    if(!ratios.length){ holder.innerHTML='<div style="font-size:12px;color:var(--fg-soft)">밴드 산출 불가(주당지표 음수/부재)</div>'; if(lg)lg.innerHTML=''; return; }
+    ratios.sort(function(a,b){return a-b;});
+    var mult=[pctile(ratios,0),pctile(ratios,0.33),pctile(ratios,0.67),pctile(ratios,1)];
+    var W=holder.clientWidth||340, H=220, PADL=52, PADR=8, PADT=8, PADB=22;
+    var ymin=Infinity, ymax=-Infinity;
+    function cons(v){ if(v!=null&&isFinite(v)){ if(v<ymin)ymin=v; if(v>ymax)ymax=v; } }
+    for(var i=0;i<n;i++){ cons(close[i]);
+      if(vals[i]!=null&&vals[i]>0) for(var k=0;k<4;k++) cons(mult[k]*vals[i]); }
+    if(!isFinite(ymin)||!isFinite(ymax)||ymax<=ymin){ holder.innerHTML=''; return; }
+    var pd=(ymax-ymin)*0.05; ymin-=pd; ymax+=pd; if(ymin<0)ymin=0;
+    function X(i){ return PADL+(W-PADL-PADR)*(n<=1?0:i/(n-1)); }
+    function Y(v){ return PADT+(H-PADT-PADB)*(1-(v-ymin)/(ymax-ymin)); }
+    function poly(getY){ var d='',on=false;
+      for(var i=0;i<n;i++){ var yv=getY(i);
+        if(yv==null){ on=false; continue; }
+        d+=(on?'L':'M')+X(i).toFixed(1)+' '+Y(yv).toFixed(1)+' '; on=true; }
+      return d; }
+    var svg='<svg viewBox="0 0 '+W+' '+H+'" width="100%" height="'+H+'" preserveAspectRatio="none" style="overflow:visible">';
+    for(var g=0;g<=4;g++){ var gv=ymin+(ymax-ymin)*g/4, gy=Y(gv);
+      svg+='<line x1="'+PADL+'" y1="'+gy.toFixed(1)+'" x2="'+(W-PADR)+'" y2="'+gy.toFixed(1)+'" stroke="var(--border-soft,#333)" stroke-width="0.5"/>';
+      svg+='<text x="'+(PADL-4)+'" y="'+(gy+3).toFixed(1)+'" text-anchor="end" font-size="9" fill="var(--fg-soft,#999)">'+BD.csym+fmt0(gv)+'</text>'; }
+    for(var k=0;k<4;k++){ (function(k){
+      var d=poly(function(i){ return (vals[i]!=null&&vals[i]>0)?mult[k]*vals[i]:null; });
+      if(d) svg+='<path d="'+d+'" fill="none" stroke="'+BANDC[k]+'" stroke-width="1.3" opacity="0.85"/>';
+    })(k); }
+    svg+='<path d="'+poly(function(i){return close[i];})+'" fill="none" stroke="#2f80ed" stroke-width="2"/>';
+    svg+='<text x="'+PADL+'" y="'+(H-6)+'" font-size="9" fill="var(--fg-soft,#999)">'+(times[0]||'')+'</text>';
+    svg+='<text x="'+(W-PADR)+'" y="'+(H-6)+'" text-anchor="end" font-size="9" fill="var(--fg-soft,#999)">'+(times[n-1]||'')+'</text>';
+    svg+='</svg>';
+    holder.innerHTML=svg;
+    if(lg){ var h='<span style="color:#2f80ed;font-weight:600">― 주가</span> ';
+      for(var k2=0;k2<4;k2++) h+='<span style="color:'+BANDC[k2]+'">― '+mult[k2].toFixed(1)+'x('+NAMES[k2]+')</span> ';
+      lg.innerHTML=h; }
+  }
+  function draw(){ if(!CD) return;
+    drawBand('si-band-per','si-band-per-lg',CD.times,CD.close,BD.eps,BD.epsFwd);
+    drawBand('si-band-pbr','si-band-pbr-lg',CD.times,CD.close,BD.bps,BD.bpsCur); }
+  function load(){ if(CD||fetching) return; fetching=true;
+    var st=document.getElementById('si-band-status');
+    fetch(base()+'api/chart?ticker='+encodeURIComponent(tkr())+'&interval=1mo&range=5y',{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(j){ fetching=false;
+        if(!j||!j.ok||!j.chart||!j.chart.times){ if(st)st.textContent='가격이력을 불러오지 못했습니다.'; return; }
+        CD=j.chart; if(st)st.style.display='none'; draw(); })
+      .catch(function(){ fetching=false; if(st)st.textContent='차트 로딩 실패.'; }); }
+  document.addEventListener('click',function(e){
+    var b=e.target.closest&&e.target.closest('.si-tab[data-pane="si-bandchart"]');
+    if(b) setTimeout(load,30); });
+  var pane=document.getElementById('si-bandchart');
+  if(pane&&pane.classList.contains('active')) setTimeout(load,60);
+  var rT; window.addEventListener('resize',function(){ if(CD){ clearTimeout(rT); rT=setTimeout(draw,150); } });
+})();
+"""
+
+
 def _render_stock_info_html(rec: dict) -> str:
     """Render header cards + tabbed company info sections from stock_info."""
     si = rec.get("stock_info")
@@ -4274,6 +4364,33 @@ def _render_stock_info_html(rec: dict) -> str:
         mkt = si.get("us", {})
     kr = si.get("kr", {})
 
+    # ── 밴드차트 데이터 (PER/PBR 멀티플 — KR, DART 연결실적÷발행주식수) ──
+    # 데이터소스(DART financials_ts)가 KR 전용이라 밴드도 KR 한정 — 타시장은
+    # 연도별 EPS/BPS 시계열 부재로 탭 미노출(소스 확보 시 동일 경로 확장 가능).
+    band_tab = ""
+    _band_payload_js = ""
+    _shares = si.get("shares_outstanding")
+    _fin_ts = kr.get("financials_ts") or []
+    if is_kr and _shares and _shares > 0 and _fin_ts:
+        import json as _bjson
+        _eps_ts, _bps_ts = [], []
+        for _f in sorted(_fin_ts, key=lambda x: x.get("year") or 0):
+            _yr = _f.get("year")
+            if not _yr:
+                continue
+            _ni, _eq = _f.get("당기순이익"), _f.get("자본총계")
+            if _ni is not None:
+                _eps_ts.append({"y": int(_yr), "v": _ni / _shares})
+            if _eq is not None:
+                _bps_ts.append({"y": int(_yr), "v": _eq / _shares})
+        if len(_eps_ts) >= 2 or len(_bps_ts) >= 2:
+            _bp = {"csym": csym, "eps": _eps_ts, "bps": _bps_ts,
+                   "epsFwd": si.get("forwardEps"), "bpsCur": si.get("bookValue")}
+            _band_payload_js = _bjson.dumps(
+                _bp, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+            band_tab = ('  <button type="button" class="si-tab" '
+                        'data-pane="si-bandchart">밴드차트</button>\n')
+
     # ── tab navigation ──────────────────────────────────────────
     # 공시 버튼은 항상 노출 (사용자 2026-06-16 A2): 옛 분석은 정적 저장분에
     # 공시가 없어 has_disclosures=False 였고, 그러면 버튼이 안 떠 라이브
@@ -4298,7 +4415,7 @@ def _render_stock_info_html(rec: dict) -> str:
   <button type="button" class="si-tab" data-pane="si-company">기업</button>
   <button type="button" class="si-tab" data-pane="si-consensus">컨센서스</button>
   <button type="button" class="si-tab" data-pane="si-valuation">밸류에이션</button>
-{financials_tab}{peers_tab}  <button type="button" class="si-tab" data-pane="si-earnings">실적</button>
+{band_tab}{financials_tab}{peers_tab}  <button type="button" class="si-tab" data-pane="si-earnings">실적</button>
   <button type="button" class="si-tab" data-pane="si-research">리서치</button>
   <button type="button" class="si-tab" data-pane="si-holders">주주</button>
 {flow_tab}{disclosure_tab}{risk_tab}  <button type="button" class="si-tab" data-pane="si-news">뉴스</button>
@@ -4446,6 +4563,46 @@ def _render_stock_info_html(rec: dict) -> str:
 </div>"""
 
     # ── 컨센서스 pane ───────────────────────────────────────────
+    # 실적 서프라이즈(KR) — WISEreport 어닝서프라이즈(영업이익·당기순이익 ×
+    # 컨센서스/잠정치/Surprise/전년동기). mkt.earnings_surprise = 스냅샷 수집분.
+    def _es_table(es: dict) -> str:
+        periods = es.get("periods") or []
+        if not periods:
+            return ""
+        ncol = len(periods)
+        def _amt(v):   # 억원
+            return f"{v:,.0f}" if isinstance(v, (int, float)) else "—"
+        def _pct(v):
+            if not isinstance(v, (int, float)):
+                return "—"
+            c = "#26a69a" if v >= 0 else "#e2574c"
+            return f'<span style="color:{c}">{v:+.1f}%</span>'
+        def _row(label, vals, fmt, top=False):
+            cells = "".join(f'<td class="num">{fmt(vals[i] if i < len(vals) else None)}</td>'
+                            for i in range(ncol))
+            edge = ' style="border-top:1px solid var(--border-soft)"' if top else ""
+            return f'<tr{edge}><td>{esc(label)}</td>{cells}</tr>\n'
+        ann = es.get("announce") or []
+        ann_cells = "".join(f'<td class="num">{esc(str(ann[i])) if i < len(ann) else "—"}</td>'
+                            for i in range(ncol))
+        hdr = "".join(f'<th class="num">{esc(p)}</th>' for p in periods)
+        op, ni = es.get("op", {}), es.get("ni", {})
+        return f"""<div class="si-section" style="margin-top:16px">
+    <div class="si-section-title">실적 서프라이즈 <span style="font-weight:400;color:var(--fg-soft);font-size:11px">(영업이익·당기순이익 · 단위 억원, %)</span></div>
+    <table class="si-table"><thead><tr><th>항목</th>{hdr}</tr></thead><tbody>
+      {_row("영업이익 컨센서스", op.get("consensus", []), _amt, top=True)}{_row("영업이익 잠정치", op.get("actual", []), _amt)}{_row("영업이익 Surprise", op.get("surprise", []), _pct)}{_row("영업이익 전년동기대비", op.get("yoy", []), _pct)}
+      {_row("당기순이익 컨센서스", ni.get("consensus", []), _amt, top=True)}{_row("당기순이익 잠정치", ni.get("actual", []), _amt)}{_row("당기순이익 Surprise", ni.get("surprise", []), _pct)}{_row("당기순이익 전년동기대비", ni.get("yoy", []), _pct)}
+      <tr style="border-top:1px solid var(--border-soft)"><td>잠정치 발표(예정)일/회계기준</td>{ann_cells}</tr>
+    </tbody></table>
+    <div style="font-size:11px;color:var(--fg-soft);margin-top:4px">컨센서스·잠정치=억원 · Surprise·전년동기대비=% · 잠정치 ●=지배주주 기준</div>
+  </div>"""
+
+    surprise_html = ""
+    if is_kr:
+        _es = mkt.get("earnings_surprise")
+        if _es:
+            surprise_html = _es_table(_es)
+
     rec_key = (si.get("recommendation_key") or "").lower()
     rec_map = {"buy": "매수", "strong_buy": "강력 매수", "hold": "보유",
                "sell": "매도", "strong_sell": "강력 매도", "overweight": "비중확대",
@@ -4525,6 +4682,7 @@ def _render_stock_info_html(rec: dict) -> str:
     {range_html}
   </div>
   {supp_consensus_html}
+  {surprise_html}
   {_src_foot}출처: {"yfinance · FnGuide · Naver · 한경" if is_kr else "yfinance · Kabutan" if is_jp else "yfinance · 鉅亨網" if is_tw else "yfinance"}</div>
 </div>"""
 
@@ -5785,6 +5943,31 @@ def _render_stock_info_html(rec: dict) -> str:
   {_src_foot}출처: {_val_src}</div>
 </div>"""
 
+    # ── 밴드차트 pane (PER/PBR 멀티플 밴드 — 네이티브 SVG, 외부 라이브러리 0) ──
+    band_pane = ""
+    if band_tab:
+        band_pane = f"""<div class="si-pane" id="si-bandchart">
+  <div class="si-section">
+    <div class="si-section-title">밴드차트 (PER/PBR 멀티플)</div>
+    <div style="font-size:12px;color:var(--fg-soft);margin-bottom:8px;line-height:1.5">
+      파란선=주가 · 밴드선=멀티플×주당지표(EPS·BPS, DART 연결실적÷발행주식수, 연 단위 계단).
+      멀티플=표시구간(5년) 과거 PER/PBR 분포의 분위수(최저·중하·중상·최고). 추정연도는 컨센서스 선행치 적용.
+    </div>
+    <div id="si-band-status" style="font-size:12px;color:var(--fg-soft)">차트 로딩…</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px" id="si-band-grid">
+      <div><div class="si-section-title" style="font-size:13px">PER 밴드</div>
+        <div id="si-band-per"></div>
+        <div id="si-band-per-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div></div>
+      <div><div class="si-section-title" style="font-size:13px">PBR 밴드</div>
+        <div id="si-band-pbr"></div>
+        <div id="si-band-pbr-lg" style="font-size:11px;margin-top:4px;display:flex;flex-wrap:wrap;gap:8px"></div></div>
+    </div>
+    {_src_foot}출처: yfinance(가격·선행치) · DART(주당지표) · 멀티플=봇 자체 산출</div>
+  </div>
+  <script type="application/json" id="si-band-data">{_band_payload_js}</script>
+  <script>{_BAND_JS}</script>
+</div>"""
+
     # ── 재무제표 pane (IS / BS / CF + 수익성 차트) ──────────────────
     financials_pane = ""
     fins = si.get("financials", {})
@@ -6169,7 +6352,7 @@ def _render_stock_info_html(rec: dict) -> str:
         "tabs": tabs_html,
         "tab_js": tab_js,
         "other_panes": company_pane + "\n" + consensus_pane + "\n" +
-                       valuation_pane + "\n" + financials_pane + "\n" +
+                       valuation_pane + "\n" + band_pane + "\n" + financials_pane + "\n" +
                        peers_pane + "\n" + earnings_pane + "\n" +
                        research_pane + "\n" + holders_pane + "\n" +
                        flow_pane + "\n" + disclosures_pane + "\n" +

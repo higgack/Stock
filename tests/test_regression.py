@@ -12255,3 +12255,95 @@ class TestGenaiFactoryVertexToggle:
             src = open(f, encoding="utf-8").read()
             assert "llm_insights.make_chat(" in src, f
             assert "llm_insights._llm_ready()" in src, f
+
+
+class TestWisereportEarningsSurprise:
+    """어닝서프라이즈 파서(2026-06-20) — 네이버 임베드 WISEreport c1010001.aspx 의
+    서버사이드 `var res={...}` 추출. VM 실측 데이터(005930)로 회귀 고정 —
+    템플릿 인덱싱(yymm 첫컬럼 스킵·data[0..4] 영업이익/[5..9] 당기순이익) 보존."""
+
+    _RES = (
+        '{"yymm":["202509","202512","202603"],"data":['
+        '{"1":101922.75,"2":185098.0384615385,"3":401923.44},'
+        '{"1":121000.0,"2":200000.0,"3":572000.0},'
+        '{"1":18.71736,"2":8.05085,"3":42.31566},'
+        '{"1":31.7599,"2":208.03812,"3":755.61216},'
+        '{"1":158.76502,"2":64.39173,"3":184.95053},'
+        '{"1":96001.55,"2":163415.8181818182,"3":358348.18},'
+        '{"1":120064.0,"2":192920.0,"3":471012.0},'
+        '{"1":25.06464,"2":18.05467,"3":31.43976},'
+        '{"1":22.74541,"2":154.64178,"3":486.68177},'
+        '{"1":143.33841,"2":60.68015,"3":144.14819}],'
+        '"yymmdd":["2025/10/14(연결)","2026/01/08(연결)","2026/04/07(연결)"],'
+        '"type":[1,1,1]}'
+    )
+
+    def _html(self):
+        return ('<table id="earning_list"></table><script>var EarnigList=function(){'
+                ' var res = ' + self._RES + ';\n tmp=_.template($("#tmpl-list").html());'
+                '\n $("#earning_list tbody").html(tmp(res));}</script>')
+
+    def test_parses_screenshot_values(self):
+        from bot.wisereport_earnings import parse_earnings_surprise
+        out = parse_earnings_surprise(self._html())
+        assert out["periods"] == ["2025/12", "2026/03"]      # 첫 컬럼(202509) 스킵
+        assert out["op"]["consensus"] == [185098.0384615385, 401923.44]
+        assert out["op"]["actual"] == [200000.0, 572000.0]
+        assert round(out["op"]["surprise"][0], 2) == 8.05
+        assert round(out["op"]["surprise"][1], 2) == 42.32
+        assert out["ni"]["consensus"] == [163415.8181818182, 358348.18]
+        assert out["ni"]["actual"] == [192920.0, 471012.0]   # data[6], 당기순이익
+        assert out["announce"] == ["2026/01/08(연결)", "2026/04/07(연결)"]
+        assert out["unit"] == "억원"
+
+    def test_graceful_none_on_missing(self):
+        from bot.wisereport_earnings import parse_earnings_surprise
+        assert parse_earnings_surprise("<html>no earnings here</html>") is None
+        assert parse_earnings_surprise("") is None
+
+    def test_render_in_consensus_pane(self):
+        import bot.dashboard as d
+        es = {"periods": ["2025/12", "2026/03"],
+              "op": {"consensus": [185098.04, 401923.44], "actual": [200000.0, 572000.0],
+                     "surprise": [8.05, 42.32], "yoy": [208.04, 755.61]},
+              "ni": {"consensus": [163415.82, 358348.18], "actual": [192920.0, 471012.0],
+                     "surprise": [18.05, 31.44], "yoy": [154.64, 486.68]},
+              "announce": ["2026/01/08(연결)", "2026/04/07(연결)"], "unit": "억원"}
+        parts = d._render_stock_info_html({"ticker": "005930.KS", "stock_info": {
+            "currency": "KRW", "current_price": 354000, "recommendation_key": "buy",
+            "kr": {"earnings_surprise": es}}})
+        op = parts["other_panes"]
+        assert "실적 서프라이즈" in op and "영업이익 컨센서스" in op
+        assert "185,098" in op and "572,000" in op and "+8.1%" in op
+        # 비-KR 은 미표시
+        p2 = d._render_stock_info_html({"ticker": "AAPL", "stock_info": {
+            "currency": "USD", "current_price": 200, "recommendation_key": "buy"}})
+        assert "실적 서프라이즈" not in p2["other_panes"]
+
+
+class TestBandChartPane:
+    """밴드차트 탭(2026-06-20) — KR DART financials_ts ÷ 발행주식수 → EPS/BPS,
+    네이티브 SVG. KR 만 탭 노출, 타시장 미노출(EPS/BPS 시계열 부재)."""
+
+    def test_kr_band_tab_and_payload(self):
+        import bot.dashboard as d
+        import json
+        parts = d._render_stock_info_html({"ticker": "005930.KS", "stock_info": {
+            "currency": "KRW", "current_price": 354000, "shares_outstanding": 5.96e9,
+            "forwardEps": 44426, "bookValue": 106831, "kr": {"financials_ts": [
+                {"year": 2024, "당기순이익": 34_000_000_000_000, "자본총계": 380_000_000_000_000},
+                {"year": 2025, "당기순이익": 39_000_000_000_000, "자본총계": 410_000_000_000_000}]}}})
+        assert "밴드차트" in parts["tabs"]
+        op = parts["other_panes"]
+        assert 'id="si-bandchart"' in op and 'id="si-band-data"' in op
+        m = re.search(r'id="si-band-data">(.*?)</script>', op, re.S)
+        payload = json.loads(m.group(1).replace("<\\/", "</"))
+        assert len(payload["eps"]) == 2 and len(payload["bps"]) == 2
+        assert payload["epsFwd"] == 44426
+
+    def test_non_kr_no_band_tab(self):
+        import bot.dashboard as d
+        parts = d._render_stock_info_html({"ticker": "AAPL", "stock_info": {
+            "currency": "USD", "current_price": 200, "shares_outstanding": 1e9,
+            "forwardEps": 7}})
+        assert "밴드차트" not in parts["tabs"]

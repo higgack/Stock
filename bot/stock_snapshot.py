@@ -555,6 +555,16 @@ def _enrich_kr(ticker: str, snap: dict) -> None:
                 "rating": fg.get("rating"),
                 "n_analysts": fg.get("n_analysts"),
             }
+        # 어닝서프라이즈(영업이익·당기순이익 × 컨센서스/잠정치/Surprise/전년동기)
+        # — 네이버 임베드(WISEreport) 기업현황의 서버사이드 res 객체. 12h 캐시라
+        # 라이브 오버레이 재조회 비용 ~0. graceful(무커버리지/실패 시 미저장).
+        try:
+            from bot.wisereport_earnings import fetch_earnings_surprise
+            es = fetch_earnings_surprise(ticker)
+            if es and es.get("periods"):
+                out.setdefault("kr", {})["earnings_surprise"] = es
+        except Exception as exc:
+            log.debug("stock_snapshot: wisereport earnings skipped: %s", exc)
         return out
 
     def _t_research() -> dict:
