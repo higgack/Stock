@@ -384,7 +384,7 @@ def _looks_like_hs(q: str) -> bool:
 
 
 def _hs_code_search(query: str, by_mti: dict, pairs: list,
-                    by_imp: dict | None = None) -> dict | None:
+                    by_imp: dict | None = None, leaf: str | None = None) -> dict | None:
     """HS코드 → 그 HS6 의 MTI 품목들 + 수출입 숫자 + 관련 상장사 (사용자 2026-06-19
     'HS코드로 검색하면 숫자'). HS6→MTI6(mti_map). 미해석 → None. 순수."""
     from trade import mti_companies, mti_map
@@ -420,10 +420,11 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
         _add(cos)
     rows.sort(key=lambda x: -(x["export_usd"] or 0))
     return {"mode": "item", "query": query, "name": f"HS {query}", "hs_search": True,
-            "synonym": None, "items": rows[:30], "companies": companies[:40]}
+            "synonym": None, "items": rows[:30], "companies": companies[:40],
+            "leaf": (leaf or "").strip() or None}
 
 
-def gather(query: str, api_key: str | None = None) -> dict:
+def gather(query: str, api_key: str | None = None, leaf: str | None = None) -> dict:
     """회사(이름·6자리 코드) **또는 품목**(예: 반도체) → 보고서 데이터.
     회사 모드: {mode:'company', query, code, name, products, exposure}.
     품목 모드(사용자 2026-06-18 역검색): {mode:'item', query, name, items, companies}.
@@ -460,7 +461,7 @@ def gather(query: str, api_key: str | None = None) -> dict:
     # 나와야'). 점/대시 포함 or 8~10자리 bare = HS(6자리 bare 는 주식코드라 제외 —
     # HS6 는 '8517.79' 점표기로). HS6→MTI6 → 그 품목들의 수출입.
     if _looks_like_hs(q):
-        hs_res = _hs_code_search(q, by_mti, pairs, by_imp)
+        hs_res = _hs_code_search(q, by_mti, pairs, by_imp, leaf=leaf)
         if hs_res:
             return hs_res
 
@@ -535,9 +536,13 @@ def _render_free_item(data: dict) -> str:
     # 있어 표가 여러 행이 됨을 명시(사용자 2026-06-20 '코팅머신 눌렀는데 기타기계류가 뜸').
     if data.get("hs_search") and items:
         n_it = len(items)
+        leaf = (data.get("leaf") or "").strip()
+        # 히트맵 셀에서 넘어온 클릭품목(leaf)명을 그대로 보여줌 — 사용자가 누른 게
+        # '코팅머신'인데 표엔 귀속 MTI품목(기타기계류 등)만 떠 혼란하던 것(2026-06-20).
+        leaf_tag = (f'클릭품목 <b>{e(leaf)}</b> · ' if leaf else '')
         head += (f'<div style="font-size:12px;color:#c8a24a;background:#2a2410;'
                  f'border:1px solid #4a3f1a;border-radius:6px;padding:6px 10px;margin-bottom:12px">'
-                 f'🔎 HS <b>{e(data.get("query") or "")}</b> → 연계 MTI품목 <b>{n_it}개</b>. '
+                 f'🔎 {leaf_tag}HS <b>{e(data.get("query") or "")}</b> → 연계 MTI품목 <b>{n_it}개</b>. '
                  f'한 HS코드는 여러 MTI품목(카테고리)으로 분류될 수 있어 해당 품목을 모두 표시합니다 '
                  f'— 클릭한 세부품목은 아래 중 하나에 귀속됩니다.</div>')
     if companies:
@@ -801,9 +806,10 @@ def send_to_channel(query: str, mode: str = "free", api_key: str | None = None) 
     return {"ok": sent > 0, "sent": sent}
 
 
-def build(query: str, mode: str = "free", api_key: str | None = None) -> str:
-    """query + mode('free'|'llm') → 보고서 HTML."""
-    data = gather(query, api_key)
+def build(query: str, mode: str = "free", api_key: str | None = None,
+          leaf: str | None = None) -> str:
+    """query + mode('free'|'llm') → 보고서 HTML. leaf=히트맵 클릭 품목명(breadcrumb)."""
+    data = gather(query, api_key, leaf=leaf)
     if mode == "llm":
         return render_llm(data)[0]
     return render_free(data)

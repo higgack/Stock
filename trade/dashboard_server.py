@@ -185,9 +185,10 @@ def _api_report_archive_delete(file: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _api_company_report(q: str, mode: str) -> dict:
-    """GET /api/company_report?q=&mode=free|llm — 기업 중심 보고서 HTML (사용자
-    2026-06-17 '버튼으로 보고서 뽑기, 무료+유료'). mode=llm 만 비용(opt-in). graceful."""
+def _api_company_report(q: str, mode: str, leaf: str = "") -> dict:
+    """GET /api/company_report?q=&mode=free|llm&leaf= — 기업 중심 보고서 HTML (사용자
+    2026-06-17 '버튼으로 보고서 뽑기, 무료+유료'). mode=llm 만 비용(opt-in). leaf=히트맵
+    셀 클릭 품목명(breadcrumb, 2026-06-20). graceful."""
     if not q:
         return {"ok": False, "error": "회사명 또는 6자리 코드를 입력하세요."}
     try:
@@ -197,7 +198,7 @@ def _api_company_report(q: str, mode: str) -> dict:
             return {"ok": res.get("ok", False), "channel": True,
                     "sent": res.get("sent", 0), "error": res.get("error")}
         from trade.company_report import build
-        html = build(q, "llm" if mode == "llm" else "free")
+        html = build(q, "llm" if mode == "llm" else "free", leaf=leaf or None)
         return {"ok": True, "html": html, "mode": mode}
     except Exception as exc:
         log.warning("company_report api %s/%s: %s", q, mode, exc)
@@ -406,7 +407,8 @@ class GatedHandler(http.server.SimpleHTTPRequestHandler):
             from urllib.parse import parse_qs, urlparse
             qs = parse_qs(urlparse(self.path).query)
             payload = _api_company_report((qs.get("q", [""])[0] or "").strip(),
-                                          (qs.get("mode", ["free"])[0] or "free").strip())
+                                          (qs.get("mode", ["free"])[0] or "free").strip(),
+                                          (qs.get("leaf", [""])[0] or "").strip())
         elif path == "/api/period_report":
             from urllib.parse import parse_qs, urlparse
             qs = parse_qs(urlparse(self.path).query)
