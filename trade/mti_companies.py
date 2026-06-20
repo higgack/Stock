@@ -333,7 +333,10 @@ _BOUNDARY_RE = {s: re.compile(r"(?<![a-z0-9])" + re.escape(s) + r"(?![a-z0-9])")
 # stocks 칸에 품목명을 흘리는 경우 방어 — '임플란트'·'소주' 실관측). 어떤
 # 실제 상장사명과도 일치하지 않아 정상 회사 탈락 위험 0(2026-06-19 검증).
 _ALIAS_SURFACES = frozenset(s for _, surfaces in _ALIAS_GROUPS for s in surfaces)
-_NON_COMPANY = frozenset({"소주"}) | _ALIAS_SURFACES
+# 상장폐지 종목 — 관련 상장사로 surfaced 금지(현재 거래 불가). 사명변경(=_COMPANY_CANON)과
+# 구분: 폐지는 여기. 운영자 확인분, 정규화 키. 새 폐지 = 1줄 추가(아라온테크 2026-06-20).
+_DELISTED = frozenset({"아라온테크"})
+_NON_COMPANY = frozenset({"소주"}) | _ALIAS_SURFACES | _DELISTED
 
 # 품목당 관련상장사 캡 — 비슷한 제품을 만드는 업체가 많아 8은 과도하게 잘림
 # (사용자 2026-06-19 '캡 꼭 있어야 해? 엄청 많은데'). 한 행 chip 폭주만 막는
@@ -357,6 +360,7 @@ _COMPANY_CANON = {
     # _MAP OLED 의 모회사 표기 '삼성디스플레이(삼성전자)' ↔ 테마/알림의 '삼성디스플레이'
     # 중복 통합(비상장 — 가격 없어도 chip 1개로 수렴, 2026-06-19). 알림 매칭도 일치.
     "삼성디스플레이(삼성전자)": "삼성디스플레이",
+    "라온테크": "라온로보틱스",   # 사명변경(2026 라온테크→라온로보틱스, 232680) — 표시·매칭 통일
 }
 
 # 텔레그램/BeOn 회사명 **오타 교정** 단일 레지스트리 (운영자 확인분만, 사용자

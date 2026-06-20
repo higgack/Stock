@@ -197,6 +197,15 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         self.assertNotIn("평판디스플레이 텔레비전용", items)
         self.assertIn("진짜품목", items)
 
+    def test_rename_and_delisted(self):
+        # 사명변경(라온테크→라온로보틱스 232680) + 상장폐지(아라온테크) 처리
+        # (사용자 2026-06-20 '잘못매치중'). 표시·매칭은 신명, 폐지는 surfaced 금지.
+        from trade import mti_companies as mc
+        self.assertEqual(mc.canon_company("라온테크"), "라온로보틱스")
+        self.assertIn("아라온테크", mc._NON_COMPANY)
+        self.assertEqual(mc.dedup_companies(["라온테크", "아라온테크", "삼성전자"]),
+                         ["라온로보틱스", "삼성전자"])   # 신명 수렴 + 폐지 드롭
+
     def test_theme_merged_into_mti_rows(self):
         """테마 회사가 HS→MTI 로 **기존 MTI 품목 행에 병합** (사용자 2026-06-19
         '별도 집계 말고 기존에 붙여'). 별도 테마 행 없음 + 테마명 검색 인덱스."""
