@@ -1035,6 +1035,10 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
    400px} 상속(옛 max-width:100% 오버사이즈 제거). 상세 td nowrap 해제(코멘트 줄바꿈).
    좁으면(<900px) 기본과 동일하게 1단. 월별 원자료 우측(최신) 스크롤은 _scrollRaw(JS). */
 .ind-sub-wrap .ind-mti-d>td{white-space:normal}
+/* _card_body 를 td 직속 grid 로 두면 표셀 폭 산정과 충돌해 차트 트랙이 0/거대로 깨짐
+   (라인차트 빈칸·세로 빈공간, 사용자 2026-06-20 '계속 문제'). 블록 div(min-width:0)로
+   감싸 기본 카드와 동일한 블록 포매팅 컨텍스트 부여 → grid 정상 산정. */
+.ind-mti-card{min-width:0}
 .ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(230px,0.95fr) minmax(260px,400px) minmax(260px,400px)}
 @media(max-width:900px){.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:1fr}}
 /* 그래도 표가 넘칠 때 품목명 칸(랭킹 본문 첫 td)을 헤더처럼 sticky 고정(헤더

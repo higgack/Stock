@@ -1339,9 +1339,10 @@ def render_subitem_html(by_mti: dict[str, dict],
                 f"<td>{_eokusd(r['exp'])}</td>"
                 f"<td class='{cl}'>{val}</td></tr>"
                 f"<tr class='ind-mti-d' hidden><td colspan='4'>"
+                f"<div class='ind-mti-card'>"
                 + _card_body(pts_by_mti[r["mti6"]], lab,
                              extra=extras_by_mti.get(r["mti6"], ""))
-                + "</td></tr>")
+                + "</div></td></tr>")
         return "".join(out)
 
     # 급등률: 수출 ≥ 하한 + 전월대비(MoM) 양수 중 MoM% 내림차순 상위 30.
