@@ -806,21 +806,11 @@ def _build_html(
         + _JS
         # 월별 원자료 가로 스크롤 = 최신(우측) 디폴트 (사용자 2026-06-15 '맨 오른쪽
         # 디폴트'). ⚠️ 산업트렌드는 탭이라 숨겨진 동안 scrollWidth=0 → 탭 핸들러가
-        # 활성화 후 window._scrollRaw 호출(아래 _JS 의 .tab click). rAF 로 레이아웃
-        # 완료 후 적용. 로드 시(보이는 표)·<details> 펼침도 커버.
-        + ("\n;(function(){function s(r){(r||document)"
-           ".querySelectorAll('.ind-raw-scroll').forEach(function(e){"
-           "e.scrollLeft=e.scrollWidth;});}"
-           # 단일 rAF 는 레이아웃 미정착(폰트·lazy innerHTML·카드 전폭 reflow) 시점에
-           # 실행돼 scrollWidth 가 옛값→좌측 잔류(사용자 2026-06-20 반복). 이중 rAF +
-           # 60·240ms 백업으로 정착 후 재적용 → 최신(우측) 디폴트 보장.
-           "window._scrollRaw=function(r){requestAnimationFrame(function(){s(r);"
-           "requestAnimationFrame(function(){s(r);});});"
-           "setTimeout(function(){s(r);},60);setTimeout(function(){s(r);},240);"
-           "setTimeout(function(){s(r);},450);};"
-           "window._scrollRaw();"
-           "document.addEventListener('toggle',function(e){"
-           "if(e.target&&e.target.open)window._scrollRaw(e.target);},true);})();")
+        # 월별표 최신(우측) 디폴트 = CSS .ind-raw-scroll{direction:rtl} 가 레이아웃으로
+        # 보장(타이밍 무관). JS scrollLeft 설정은 rtl 의 브라우저별 scrollLeft 규약과
+        # 충돌해 우측 디폴트를 도로 좌측으로 밀던 케이스 발생(사용자 2026-06-20 일부 표
+        # 2026.2 노출) → 제거. _scrollRaw 는 호출부(_lazyFetchView·탭·펼침) 안전용 no-op.
+        + ("\n;(function(){window._scrollRaw=function(){};})();")
         + '</script>' + SCROLL_RESTORE_JS + '</body></html>'
     )
 
