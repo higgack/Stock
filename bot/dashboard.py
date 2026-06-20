@@ -2221,7 +2221,7 @@ _DETAIL_CSS = _BASE_CSS + """
   font-variant-numeric: tabular-nums; }
 .chart-legend { color: var(--fg-soft); font-size: 12px; margin-top: 8px; }
 .chart-legend .lg { margin-right: 10px; font-weight: 600; }
-.chart-legend .lg-close { color: #4c9aff; }
+.chart-legend .lg-close { color: var(--fg); }
 .chart-legend .lg-ema   { color: #2563eb; }
 .chart-legend .lg-s50   { color: #3ec46d; }
 .chart-legend .lg-s200  { color: #e2574c; }
@@ -2603,7 +2603,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <summary>ℹ️ 차트 보는 법 — 라인·지표·조작 자세히</summary>
       <div class="cg-sec"><b>가격 라인 / 기준선</b>
         <ul>
-          <li><span class="k" style="color:#4c9aff">현재가</span> — 장중 라이브(KR은 네이버 실시간 우선, 그 외 yfinance ~15분 지연). 우측 축에 항상 표시. 이상 시세(분할·조정 오류 등)는 자동으로 걸러져 직전 종가로 대체.</li>
+          <li><span class="k" style="color:var(--fg)">현재가</span> — 장중 라이브(KR은 네이버 실시간 우선, 그 외 yfinance ~15분 지연). 우측 축에 항상 표시. 이상 시세(분할·조정 오류 등)는 자동으로 걸러져 직전 종가로 대체.</li>
           <li><span class="k" style="color:#94a3b8">시점가</span>(회색 점선) — 분석한 날의 종가, 즉 "그때 가격" 기준선.</li>
           <li><span class="k" style="color:#9b59b6">진입</span> / <span class="k" style="color:#e2574c">손절</span> / <span class="k" style="color:#3ec46d">목표</span>(점선) — 트레이더 플랜의 가격대(본문에서 자동 추출, 비현실 값은 자동 제외).</li>
           <li>세로축(우측 가격) 라벨은 KRW(₩)는 <span class="k">만/억</span> 약식, 그 외 시장은 천단위 콤마로 — 큰 숫자 가독성.</li>
@@ -2691,6 +2691,8 @@ _CHART_JS = """
 
   function isDark(){ return document.documentElement.dataset.theme === 'dark'; }
   function txtColor(){ return isDark() ? '#cbd5e1' : '#334155'; }
+  // 현재가(주가) = 전경색 — 가장 또렷한 주인공, 모든 지표선과 구분(사용자 2026-06-20).
+  function fgColor(){ return isDark() ? '#e5e7eb' : '#1f2937'; }
   function gridColor(){ return isDark() ? 'rgba(148,163,184,0.12)' : 'rgba(100,116,139,0.12)'; }
 
   // 여러 차트(가격 + RSI + MACD) 시간축 동기화 — 한쪽 줌/팬이 전부 반영.
@@ -2777,7 +2779,7 @@ _CHART_JS = """
       }
       mainS.setData(cd);
     } else {
-      mainS = chart.addLineSeries({ color: '#4c9aff', lineWidth: 2, priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
+      mainS = chart.addLineSeries({ color: fgColor(), lineWidth: 2, priceFormat: pf, lastValueVisible: true, priceLineVisible: false, title: '현재가' });
       var closeData = zip(d.close);
       if (lp != null && closeData.length > 0) {
         var last = closeData[closeData.length - 1];
@@ -2918,7 +2920,7 @@ _CHART_JS = """
         trow('고가', d.high && d.high[idx], '#26a69a', prec);
         trow('저가', d.low && d.low[idx], '#e2574c', prec);
       }
-      trow('종가', d.close[idx], '#4c9aff', prec);
+      trow('종가', d.close[idx], fgColor(), prec);
       if (ind.ma) {
         trow('10 EMA', d.ema10 && d.ema10[idx], '#2563eb', prec);
         trow('50 SMA', d.sma50 && d.sma50[idx], '#3ec46d', prec);
@@ -3035,7 +3037,7 @@ _CHART_JS = """
     var items = [];
     // 분석 가격 — 차트 안에선 가까우면 라벨이 겹쳐 가려지므로 패널에서 항상
     // 보이게 (선 색과 매칭). 현재가/시점가/진입/손절/목표.
-    items.push(['현재가', (d.last_price != null ? d.last_price : lastNonNull(d.close)), '#4c9aff', dec]);
+    items.push(['현재가', (d.last_price != null ? d.last_price : lastNonNull(d.close)), fgColor(), dec]);
     if (asOfClose != null) items.push(['시점가', asOfClose, '#94a3b8', dec]);
     // 분석 후 변동 — 시점가(분석일 종가) 대비 현재가 %. 이 차트의 핵심
     // 복기 지표 (그때 가격 ↔ 지금 가격). 현재가는 패널 '현재가' 와 동일값.
@@ -3139,7 +3141,7 @@ _CHART_JS = """
     // 종가 — 마지막 봉이면 라이브 현재가 반영(차트 렌더와 일치).
     var cval = d.close[idx];
     if (idx === d.times.length - 1 && d.last_price != null) cval = d.last_price;
-    seg('종', cval, '#4c9aff');
+    seg('종', cval, fgColor());
     // 일간 등락 — 종가 vs 직전 봉 종가.
     if (idx > 0 && d.close[idx - 1] != null && cval != null && d.close[idx - 1] > 0) {
       var ch = (cval - d.close[idx - 1]) / d.close[idx - 1] * 100;
