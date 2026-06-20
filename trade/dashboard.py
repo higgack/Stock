@@ -816,7 +816,8 @@ def _build_html(
            # 60·240ms 백업으로 정착 후 재적용 → 최신(우측) 디폴트 보장.
            "window._scrollRaw=function(r){requestAnimationFrame(function(){s(r);"
            "requestAnimationFrame(function(){s(r);});});"
-           "setTimeout(function(){s(r);},60);setTimeout(function(){s(r);},240);};"
+           "setTimeout(function(){s(r);},60);setTimeout(function(){s(r);},240);"
+           "setTimeout(function(){s(r);},450);};"
            "window._scrollRaw();"
            "document.addEventListener('toggle',function(e){"
            "if(e.target&&e.target.open)window._scrollRaw(e.target);},true);})();")
@@ -2016,10 +2017,13 @@ document.addEventListener('click',function(e){
     // 원복 (사용자 2026-06-20). 카드에 열린 상세가 하나라도 있으면 ind-open.
     const card=tr.closest('.ind-sub-card');
     if(card)card.classList.toggle('ind-open',!!card.querySelector('.ind-mti-d:not([hidden])'));
-    // 펼친 상세의 월별 원자료표를 최신(우측)으로 디폴트 스크롤 — MTI 행 펼침은
-    // <details> 가 아니라 hidden 토글이라 toggle 이벤트가 안 떠서 _scrollRaw 가
-    // 안 걸렸음(사용자 2026-06-19 '스크롤을 오른쪽으로 밀어 최신이 디폴트').
-    if(!d.hidden&&window._scrollRaw)window._scrollRaw(d);
+    // 펼친 상세의 월별 원자료표를 최신(우측)으로. ind-open 전폭 전환은 큰 reflow라
+    // 스크롤 계산이 그 전에 잡히면 좌측에 남음(사용자 2026-06-20 '개별 스크롤 풀림').
+    // offsetWidth 읽어 reflow 강제 flush 후 _scrollRaw(이중rAF+백업) → 우측 고정.
+    if(!d.hidden){
+      if(card)void card.offsetWidth;
+      if(window._scrollRaw)window._scrollRaw(d);
+    }
   }
 });
 
