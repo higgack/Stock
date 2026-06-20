@@ -2222,7 +2222,7 @@ _DETAIL_CSS = _BASE_CSS + """
 .chart-legend { color: var(--fg-soft); font-size: 12px; margin-top: 8px; }
 .chart-legend .lg { margin-right: 10px; font-weight: 600; }
 .chart-legend .lg-close { color: #4c9aff; }
-.chart-legend .lg-ema   { color: #22d3ee; }
+.chart-legend .lg-ema   { color: #cc2eb0; }
 .chart-legend .lg-s50   { color: #3ec46d; }
 .chart-legend .lg-s200  { color: #e2574c; }
 .chart-markers-legend { margin-top: 3px; }
@@ -2638,7 +2638,7 @@ def _render_chart_section(rec: dict, analysis_markers: list[dict] | None = None)
       <div class="cg-sec"><b>보조지표 버튼</b> — 페이지 안에서 자유롭게 켜고 끌 수 있습니다. 새로고침하면 기본값(캔들·이평선·거래량·RSI)으로 돌아갑니다.
         <ul>
           <li><span class="k">캔들</span> — 라인 ↔ 캔들(시·고·저·종) 전환.</li>
-          <li><span class="k">이평선</span> — <span style="color:#22d3ee">10 EMA</span>(단기) · <span style="color:#3ec46d">50 SMA</span>(중기) · <span style="color:#e2574c">200 SMA</span>(장기) 추세선.</li>
+          <li><span class="k">이평선</span> — <span style="color:#cc2eb0">10 EMA</span>(단기) · <span style="color:#3ec46d">50 SMA</span>(중기) · <span style="color:#e2574c">200 SMA</span>(장기) 추세선.</li>
           <li><span class="k" style="color:#7890c8">볼린저</span> — 20일·2σ 밴드. 상단 부근=과열, 하단 부근=과매도, 폭=변동성.</li>
           <li><span class="k">거래량</span> — 가격 아래 막대(상승 초록/하락 빨강).</li>
           <li><span class="k" style="color:#b07cff">RSI</span> — 하단 별도 패널. 70↑ 과열 · 30↓ 과매도(흔한 해석).</li>
@@ -2819,7 +2819,7 @@ _CHART_JS = """
       try { mainS.setMarkers(mk); } catch (e) {}
     }
     if (ind.ma) {
-      if (d.ema10)  chart.addLineSeries({ color: '#22d3ee', lineWidth: 2, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.ema10));
+      if (d.ema10)  chart.addLineSeries({ color: '#cc2eb0', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.ema10));
       if (d.sma50)  chart.addLineSeries({ color: '#3ec46d', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.sma50));
       if (d.sma200) chart.addLineSeries({ color: '#e2574c', lineWidth: 1, priceFormat: pf, lastValueVisible: false, priceLineVisible: false }).setData(zip(d.sma200));
     }
@@ -2920,7 +2920,7 @@ _CHART_JS = """
       }
       trow('종가', d.close[idx], '#4c9aff', prec);
       if (ind.ma) {
-        trow('10 EMA', d.ema10 && d.ema10[idx], '#22d3ee', prec);
+        trow('10 EMA', d.ema10 && d.ema10[idx], '#cc2eb0', prec);
         trow('50 SMA', d.sma50 && d.sma50[idx], '#3ec46d', prec);
         trow('200 SMA', d.sma200 && d.sma200[idx], '#e2574c', prec);
       }
@@ -3067,7 +3067,7 @@ _CHART_JS = """
     if (d.wk52_low  != null) items.push(['52주 신저가', d.wk52_low,  '#e2574c', dec]);
     items.push(null);   // 구분선
     if (ind.ma) {
-      if (d.ema10)  items.push(['10 EMA', lastNonNull(d.ema10), '#22d3ee', dec]);
+      if (d.ema10)  items.push(['10 EMA', lastNonNull(d.ema10), '#cc2eb0', dec]);
       if (d.sma50)  items.push(['50 SMA', lastNonNull(d.sma50), '#3ec46d', dec]);
       if (d.sma200) items.push(['200 SMA', lastNonNull(d.sma200), '#e2574c', dec]);
     }
@@ -3147,7 +3147,7 @@ _CHART_JS = """
       parts.push('<span class="co-seg" style="color:' + col + '">' + (ch >= 0 ? '+' : '') + ch.toFixed(2) + '%</span>');
     }
     if (ind.ma) {
-      if (d.ema10 && d.ema10[idx] != null)  seg('10EMA', d.ema10[idx], '#22d3ee');
+      if (d.ema10 && d.ema10[idx] != null)  seg('10EMA', d.ema10[idx], '#cc2eb0');
       if (d.sma50 && d.sma50[idx] != null)  seg('50SMA', d.sma50[idx], '#3ec46d');
       if (d.sma200 && d.sma200[idx] != null) seg('200SMA', d.sma200[idx], '#e2574c');
     }
