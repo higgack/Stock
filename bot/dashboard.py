@@ -4226,7 +4226,9 @@ _BAND_JS = r"""
     var W=holder.clientWidth||340, H=240, PADL=58, PADR=8, PADT=8, PADB=22;
     var minX=Infinity,maxX=-Infinity, ymin=Infinity,ymax=-Infinity;
     function scanX(a){ for(var i=0;i<a.length;i++){ var x=a[i][0]; if(x!=null){ if(x<minX)minX=x; if(x>maxX)maxX=x; } } }
-    function scanY(a){ for(var i=0;i<a.length;i++){ var y=a[i][1]; if(y!=null&&isFinite(y)){ if(y<ymin)ymin=y; if(y>ymax)ymax=y; } } }
+    // FnGuide 는 적자(EPS≤0)·무의미 구간의 밴드/멀티플을 0 으로 채워 보낸다 →
+    // 0 = '그 시기 PER 정의 불가'라 선을 ₩0 으로 잇지 않고 갭 처리(축 범위에서도 제외).
+    function scanY(a){ for(var i=0;i<a.length;i++){ var y=a[i][1]; if(y!=null&&isFinite(y)&&y>0){ if(y<ymin)ymin=y; if(y>ymax)ymax=y; } } }
     scanX(price); scanY(price);
     for(var b=0;b<bands.length;b++){ scanX(bands[b]); scanY(bands[b]); }
     if(!isFinite(minX)||!isFinite(ymin)||maxX<=minX||ymax<=ymin){ holder.innerHTML=''; return; }
@@ -4234,7 +4236,7 @@ _BAND_JS = r"""
     function X(ms){ return PADL+(W-PADL-PADR)*(ms-minX)/(maxX-minX); }
     function Y(v){ return PADT+(H-PADT-PADB)*(1-(v-ymin)/(ymax-ymin)); }
     function poly(a){ var d='',on=false;
-      for(var i=0;i<a.length;i++){ if(a[i][0]==null||a[i][1]==null){ on=false; continue; }
+      for(var i=0;i<a.length;i++){ if(a[i][0]==null||a[i][1]==null||a[i][1]<=0){ on=false; continue; }
         d+=(on?'L':'M')+X(a[i][0]).toFixed(1)+' '+Y(a[i][1]).toFixed(1)+' '; on=true; }
       return d; }
     var svg='<svg viewBox="0 0 '+W+' '+H+'" width="100%" height="'+H+'" preserveAspectRatio="none" style="overflow:visible">';
@@ -4245,7 +4247,8 @@ _BAND_JS = r"""
     var lastReal=null; for(var i=price.length-1;i>=0;i--){ if(price[i][1]!=null){ lastReal=price[i][0]; break; } }
     if(lastReal!=null && lastReal<maxX){ var lx=X(lastReal).toFixed(1);
       svg+='<line x1="'+lx+'" y1="'+PADT+'" x2="'+lx+'" y2="'+(H-PADB)+'" stroke="var(--fg-soft,#888)" stroke-width="0.6" stroke-dasharray="3 3"/>'; }
-    for(var k=0;k<bands.length;k++){ var d=poly(bands[k]);
+    for(var k=0;k<bands.length;k++){ if(mult[k]==null||mult[k]<=0) continue;   // 0.0x 등 무의미 밴드 제외
+      var d=poly(bands[k]);
       if(d) svg+='<path d="'+d+'" fill="none" stroke="'+BANDC[k]+'" stroke-width="1.2" opacity="0.85"/>'; }
     svg+='<path d="'+poly(price)+'" fill="none" stroke="#2f80ed" stroke-width="2"/>';
     svg+='<text x="'+PADL+'" y="'+(H-6)+'" font-size="9" fill="var(--fg-soft,#999)">'+ymd(minX)+'</text>';
@@ -4253,7 +4256,7 @@ _BAND_JS = r"""
     svg+='</svg>';
     holder.innerHTML=svg;
     if(lg){ var h='<span style="color:#2f80ed;font-weight:600">― 주가</span> ';
-      for(var k2=0;k2<mult.length;k2++){ if(mult[k2]==null) continue;
+      for(var k2=0;k2<mult.length;k2++){ if(mult[k2]==null||mult[k2]<=0) continue;
         h+='<span style="color:'+BANDC[k2]+'">― '+mult[k2].toFixed(1)+'x('+NAMES[k2]+')</span> '; }
       lg.innerHTML=h; }
   }
