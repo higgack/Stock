@@ -347,3 +347,21 @@ class ReportMappingReflectedTests(unittest.TestCase):
         assert "오스템임플란트" in mc.companies_for("치과용기기및재료")
         assert "토모큐브" in mc.companies_for("생물현미경")     # 신규 품목(선점 없음)
         assert mc.companies_for("전혀무관한품목xyz") == []      # 글자순회 버그 가드
+
+
+class CatalogGuardTests(unittest.TestCase):
+    """연계표↔큐레이션 정합 가드(사용자 2026-06-20). 현재 reinforce/핀/테마 키가
+    카탈로그(hsk_mti.tsv)에 모두 존재 = silent-drop 위험 0. 신규 추가가 카탈로그에
+    없는 키를 들이면 이 테스트가 잡는다(회귀 가드)."""
+
+    def test_curation_keys_in_catalog(self):
+        from trade.scripts import catalog_guard
+        r = catalog_guard.scan()
+        if not r:
+            self.skipTest("카탈로그 미존재(테스트 환경)")
+        self.assertEqual(r["reinforce_orphan"], [],
+                         f"reinforce 키가 카탈로그에 없음: {r['reinforce_orphan']}")
+        self.assertEqual(r["pin_orphan"], [],
+                         f"_THEME_MTI_PIN MTI6 가 카탈로그에 없음: {r['pin_orphan']}")
+        self.assertEqual(r["theme_orphan"], [],
+                         f"_THEME_ROWS HS 미해석 테마: {r['theme_orphan']}")
