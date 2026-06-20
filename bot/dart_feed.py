@@ -4476,7 +4476,10 @@ def backfill_admin_issue_once_if_needed() -> dict | None:
     return stats
 
 
-_BACKFILL_UNPARSED_MARKER = _ARCHIVE_DIR.parent / ".dart_unparsed_reextract_v1"
+# v2 (2026-06-20): 조회공시 답변(부인) 파서 개선(_inquiry_lines 한국식 날짜 푸터 +
+# 부인 입장) 소급 — marker 범프로 startup 1회 재실행해 기존 미파싱 조회공시 답변(VGXI
+# 류)을 재추출. days_back=60 윈도 내 전 미파싱 재시도(새 detail meaningful 시에만 교체).
+_BACKFILL_UNPARSED_MARKER = _ARCHIVE_DIR.parent / ".dart_unparsed_reextract_v2"
 
 
 def _has_meaningful_detail(detail) -> bool:
