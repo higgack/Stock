@@ -1028,7 +1028,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 /* _card_body 를 td 직속 grid 로 두면 표셀 폭 산정과 충돌해 차트 트랙이 0/거대로 깨짐
    (라인차트 빈칸·세로 빈공간, 사용자 2026-06-20 '계속 문제'). 블록 div(min-width:0)로
    감싸 기본 카드와 동일한 블록 포매팅 컨텍스트 부여 → grid 정상 산정. */
-.ind-mti-card{min-width:0}
+.ind-mti-card{min-width:0;contain:inline-size}
 .ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(230px,400px) 400px 400px}
 @media(max-width:900px){.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:1fr}}
 /* 그래도 표가 넘칠 때 품목명 칸(랭킹 본문 첫 td)을 헤더처럼 sticky 고정(헤더
