@@ -1070,77 +1070,41 @@ async def on_full_report(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 ━━━━━━━━━
-<b>【1. 명령어】</b> (탭 자동입력)
-/help /usage /portfolio /screener_list /sites /blog(감시 블로그) — 비용: /screener·daily_byte·cheongyak·realestate_cost
-/screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0). /screen list
-/screener [도메인 | 자유어] — Bottleneck (65 도메인+자유어 즉석). 전체 → /screener_list. 모든 명령은 대시보드 검색창 '/' 명령 모드에서도 동일 실행
-/NVDA /AAPL — 단일 분석 (채널에서)
+<b>【명령어】</b> (탭 자동입력 · 대시보드 검색창 '/' 모드에서도 동일)
+/help /usage /portfolio /screener_list /sites /blog — 비용: /screener·daily_byte·cheongyak·realestate_cost
+/티커 — 단일 분석 (예: /NVDA · /005930.KS · 한국은 종목명 /삼성전자)
 /compare NVDA AMD — 두 종목 비교
-/watch NVDA rsi&lt;30 price&gt;950 — 조건 충족 시 알림 (rsi/price/sma/52w/earnings·KR수급). 목록 /watchlist · 삭제 /unwatch
-/dart_alert on|off — 관심종목(KR) 새 DART 공시 알림 (전 카테고리, 켠 채팅으로)
-/paper — 페이퍼 모의매매(돈0). 전체 /paper help
-/health — 야후/네이버 소스 헬스체크 · /yfpause·/naverpause on|off — 소스 호출 정지토글
-※ 다른 종목은 /티커 (예: /PLTR · /005930.KS) 또는 한국은 종목명 직접 (/삼성전자)
+/screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0) · /screen list
+/screener [도메인 | 자유어] — Bottleneck (67도메인+L4세분+자유어) · 전체 /screener_list
+/watch NVDA rsi&lt;30 price&gt;950 — 조건 알림 (rsi/price/sma/52w/earnings·KR수급) · /watchlist · /unwatch
+/dart_alert on|off — 관심종목(KR) 새 DART 공시 알림
+/paper — 페이퍼 모의매매(돈0) · /paper help
+/health · /yfpause·/naverpause on|off — 소스 헬스/정지토글
 
 ━━━━━━━━━
-<b>【2. 분석 흐름】</b> (~3분, ~₩100~150/회)
- 1) 채널에 <code>/티커</code> → 즉시 진행 메시지
- 2) <b>사전 fetch (Python, 결정적·스킵 불가)</b>
-    매크로 9개 / 리스크 (σ·Sharpe·VaR·MDD·β) / 섹터 ETF / 컨센서스 / 공매도·내부자·기관 / 실적 일정
-    ETF·뉴스 0건 → 해당 분석가 자동 스킵
- 3) 분석가 4명 (~2분, Flash) — 📈시장 💬감정 📰뉴스 💰펀더멘털
-    빈/사과형 응답 → 1회 retry → 실패 시 토론 스킵 + 알림
- 4) Bull/Bear 페르소나 토론 (Flash-Lite)
-    Bull: 버핏(해자) + 린치(PEG) / Bear: 그레이엄(안전마진) + 막스(사이클)
- 5) Trader → Risk 3인 → Portfolio Manager (Pro, thinking 4096)
-    5거래일 평가 윈도 인지 → valuation-only 매도 자제
- 6) 채널에 요약 + [📋 전체 리포트]
-
-━━━━━━━━━
-<b>【3. 요약 구성】</b>
-🎯 최종판정(Buy~Sell) · 📒 지난추천 결과(5거래일 자동) · ⚠️ 실적±10일·뉴스스킵 알림 · 4명 stance+mismatch · 한 줄 요지 · [📋 전체 리포트]
-
-━━━━━━━━━
-<b>【4. 자동 데이터 소스】</b>
-yfinance·네이버·Kabutan 뉴스 · 재무(분기+연간) · 매크로9종 · ECOS/FRED · 섹터ETF·리스크6종 · 컨센서스·공매도·내부자·기관 · 실적±10일 · DART/EDINET/MOPS/EDGAR공시+XBRL · US옵션·KRX수급·KIS7종
-
-━━━━━━━━━
-<b>【5. 메모리 피드백 + 자동 평가】</b>
- • pending → <b>12h 자동 해소</b> → 5거래일 raw return + <b>섹터 ETF α</b>
- • 다음 동일 종목 요약 상단에 자동 표시 · 결정 LLM 과거 실수 반영
-
-━━━━━━━━━
-<b>【6. 조건부 스크리너 /screen】</b> ₩0 · LLM 미사용
-정량 조건으로 KR 전 종목(KOSPI+KOSDAQ) 또는 US S&amp;P 500 필터.
- • <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — KR 자유 조건
- • <code>/screen us PER&lt;15 DIV&gt;2</code> — US S&amp;P 500
- • <code>/screen 매출QoQ&gt;10 영업이익QoQ&gt;5</code> — QoQ 성장 필터
- • <code>/screen valueup</code> — 프리셋 · <code>/screen list</code>
- • Phase 1 pykrx 벌크 → Phase 2 yfinance+QoQ(분기 재무 7종) 생존만
- • 24h 캐시 · 대시보드 통합(실행 버튼 + 📖설명서) · /screen list 전체 지표
-
-━━━━━━━━━
-<b>【7. 캐시 &amp; 비용】</b>
- • 같은 종목 재분석 → 캐시 즉시(무료) · 새 분석 ~₩100~150 · /compare ~₩200~300
- • Gemini cache: 결정 3노드 context 공유 · 자정 만료 · /usage 차트
-
-━━━━━━━━━
-<b>【8. 채널 알림】</b>
-🚀✅ 배포 · ⚠️ hang · ❌ 실패 · 📋 관심종목 DART공시(/dart_alert) · 📊 Daily Byte(한국평일19:00·미국08:00·주간 한·미 일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분·₩0)
-
-━━━━━━━━━
-<b>【9. 대시보드】</b> 3개 entry — 나머지(Screener·레딧·Daily Byte·📝블로그(글 요약+원문 아카이브)·부동산·청약·수출입)는 🌍Main nav, 워치·도메인목록은 Screener nav 에서
- 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율·센티먼트) · 다가오는실적(한·미·일·대·중·홍 6시장 탭·미국 한글명·날짜 드롭다운 필터) · 리서치액션(30일치·한국 기업/산업/전략(네이버)+미국TP·미국 한글명·날짜 드롭다운 필터) · 관심종목(한글명(전시장·네이버)·시총·PER(적자표시)·EPS FY라벨·등락·정렬/나라·실적일 필터/순서) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱/미파싱제외 색상+카테고리 동시필터·소송/리스크/조회공시/공정공시/자율공시 파싱·지분 노이즈컷·CSV) · 업종등락(홈=한·미 + 🏯 ASIA 대시보드=일·중·홍·대 — 업종별시세(업종명 한글)·신고가신저가·급등급락·한·미 장전·장후 시간외(한국=시간외단일가·NXT수급) · 비보통주 제외 · 표 헤더정렬+컬럼필터(종목·업종 다중선택 드롭다운·숫자 범위) · 장중 자동갱신: 신고저 1h·그 외 30s·NXT) · 종목검색(헤더→탭→차트 즉시) · 홈·ASIA 복귀 시 마지막 스크롤 위치 복원
+<b>【대시보드】</b> 3개 entry — 나머지(Screener·레딧·Daily Byte·블로그·부동산·청약·수출입)는 🌍Main nav, 워치·도메인목록은 Screener nav
+ 🌍 <b>Main</b> — 글로벌스냅샷·Macro(금리·물가·환율) · 다가오는실적(한·미·일·대·중·홍 6시장) · 리서치액션(한국 기업/산업/전략+미국TP) · 관심종목(한글명·시총·PER·등락·정렬/필터) · 📋DART공시(40+종 구조화 카드·🔥중요/⚠️미파싱 색상+카테고리 필터·CSV) · 업종등락 +🏯ASIA(신고저·급등락·한·미 장전·장후 시간외·NXT·헤더정렬/컬럼필터·장중 자동갱신) · 종목검색·스크롤복원
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/market.html
- 🦉 <b>NOAH 주식분석 아카이브</b> — 분석카드(📊·💰·⏱·🎯알파·5/15/30d) · 차트 · 스니펫검색(🟡클릭→분석) · 🗑️ · <b>분석버튼</b>(종목 분석) · 입력창 <b>'/' 명령</b>(/usage·/portfolio·/watch·/screener 등 텔레그램 명령을 대시보드에서 실행→결과 패널)
+ 🦉 <b>NOAH 분석 아카이브</b> — 분석카드(📊·💰·🎯알파·5/15/30d)·차트·스니펫검색·🗑️·<b>분석버튼</b>·입력창 <b>'/' 명령</b> 실행→결과 패널
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/index.html
  💼 <b>자산</b> — 뱅샐 전계좌·증권사·손익·NOAH판정 오버레이
    http://34.50.23.221:8081/06beb08f5f4ad5515007e65f8f60b471/portfolio.html
  • 데이터: <code>~/.tradingagents/</code> · 외부참고: /sites
 
 ━━━━━━━━━
-<b>【10. 진행 중 / 예정】</b>
- • Screener 65도메인+자유어+24h캐시 · 분기GICS · 실거래 E1 KIS모의+자동신호+RiskGate · 예정: IBKR·실전(E2)
+<b>【채널 알림】</b>
+🚀 배포 · ⚠️ hang · ❌ 실패 · 📋 관심종목 DART공시(/dart_alert) · 📊 Daily Byte(한 평일19:00·미 08:00·주간 한·미 일22:00) · 🎟️ 청약(평일10·14시) · 🏠 부동산(금09:00·1일) · 📝 블로그(30분) · 📨 레딧(1분)
+
+━━━━━━━━━
+<b>【분석 &amp; 비용】</b> ~3분 · ₩100~150/회 (/compare ₩200~300)
+ • <code>/티커</code> → 사전 fetch(매크로9·리스크·섹터ETF·컨센서스·공매도/내부자/기관·실적일) → 분석가 4명(📈시장 💬감정 📰뉴스 💰펀더멘털) → Bull/Bear 토론 → Trader→Risk 3인→PM(5거래일 평가 윈도)
+ • 요약: 🎯판정 · 📒지난추천 5거래일 결과 · ⚠️실적±10일·뉴스스킵 · 4명 stance+mismatch · [📋 전체 리포트]
+ • 같은 종목 재분석 = 캐시 즉시(무료) · /usage 비용차트
+ • 데이터: yfinance·네이버·Kabutan·DART/EDINET/MOPS/EDGAR+XBRL·ECOS/FRED·US옵션·KRX수급·KIS
+
+━━━━━━━━━
+<b>【진행 중 / 예정】</b>
+ • Screener 67도메인+L4세분+자유어+24h캐시 · 분기GICS · 실거래 E1 KIS모의+자동신호+RiskGate · 예정: IBKR·실전(E2)
 """
 
 
