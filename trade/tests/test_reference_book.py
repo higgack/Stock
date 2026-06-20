@@ -171,6 +171,32 @@ class UnmatchedCandidatesTests(unittest.TestCase):
         self.assertNotIn("CCSS", items)            # 타이포 교정으로 매칭됨
         self.assertIn("진짜품목", items)
 
+    def test_unmatched_electric_and_display_corrections(self):
+        """운영자 미매칭 회사명수정(2026-06-20) — BeOn split 고아 'ELECTRIC' → LS
+        ELECTRIC(canon), '삼성디플레이' → 삼성디스플레이(typo). 둘 다 surfaced 표기로
+        수렴 → 전력기기·평판디스플레이 미매칭 드롭. surfaced 는 전역 집합이라 변압기
+        행 1개만 있어도 전 전력기기 알림이 드롭. (운영 surfaced 엔 LS·LS ELECTRIC
+        둘 다 존재 — 'LS ELECTRIC' 가 split_names 로 'LS'+'ELECTRIC' 로 쪼개져도 둘 다
+        매칭되게 mock 에 LS 지주 포함.)"""
+        rows = [{"mti6": "841110", "name": "초고압 변압기", "industry": "전력",
+                 "hs": [], "companies": ["LS ELECTRIC", "HD현대일렉트릭"]},
+                {"mti6": "000001", "name": "지주", "industry": "지주",
+                 "hs": [], "companies": ["LS"]},   # 운영 surfaced 반영(LS Corp)
+                {"mti6": "853710", "name": "OLED", "industry": "디스플레이",
+                 "hs": [], "companies": ["삼성디스플레이"]}]
+        with tempfile.TemporaryDirectory() as td:
+            db = self._db(td, [
+                ("고압배전반", ["ELECTRIC"]),               # 고아 → LS ELECTRIC(surfaced) → 제외
+                ("계전기 (전압 60V ~ 1000V)", ["ELECTRIC"]),
+                ("평판디스플레이 텔레비전용", ["삼성디플레이"]),  # 오타 → 삼성디스플레이 → 제외
+                ("진짜품목", ["듣보종목"]),                  # 진짜 미매칭 유지
+            ])
+            items = [c[0] for c in R.unmatched_candidates(rows, db_path=db)]
+        self.assertNotIn("고압배전반", items)
+        self.assertNotIn("계전기 (전압 60V ~ 1000V)", items)
+        self.assertNotIn("평판디스플레이 텔레비전용", items)
+        self.assertIn("진짜품목", items)
+
     def test_theme_merged_into_mti_rows(self):
         """테마 회사가 HS→MTI 로 **기존 MTI 품목 행에 병합** (사용자 2026-06-19
         '별도 집계 말고 기존에 붙여'). 별도 테마 행 없음 + 테마명 검색 인덱스."""

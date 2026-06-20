@@ -6827,6 +6827,23 @@ class TestDartInquiryParsing:
         assert any("요구일 2026-06-08 · 답변일 2026-06-09" == l for l in L)
         assert "재공시: 2026-07-09" in L
 
+    def test_inquiry_denial_answer_korean_date_footer(self):
+        # 조회공시 답변(부인) — VGXI 텍사스 공장 소유권 이전 부인(2026-06-20). 제목만
+        # 잡혀 parts<2 미파싱이던 것: 한국식 날짜 푸터(조회요구(2026년 06월 17일)) +
+        # 부인 입장(매각이나 처분은 아닌 점을 밝힘)으로 ≥2 part 확보.
+        from bot.dart_feed import _inquiry_lines
+        L = _inquiry_lines(
+            "조회공시 요구(풍문 또는 보도)에 대한 답변(부인) 1. 제목 종속회사 VGXI, "
+            "Inc.의 텍사스 공장 소유권 이전에 대한 조회공시 답변 2. 내용 당사는 2026년 "
+            "4월 6일 미국 C2R 와의 대물변제 계약을 체결하였습니다. 현재 소유권은 C2R "
+            "Secured Debt Fund I, LP가 가지고 있습니다. 이는 형식적 소유권이전으로 "
+            "매각이나 처분은 아닌 점을 밝힙니다. (공시책임자) 전경하 ※이 내용은 "
+            "거래소의 조회요구(2026년 06월 17일 18:46)에 따른 공시사항임")
+        assert any(l.startswith("제목: 종속회사 VGXI") for l in L), L
+        assert any(l.startswith("입장:") and "아닌 점을 밝" in l for l in L), L
+        assert any("요구일 2026-06-17" in l for l in L), L
+        assert len(L) >= 2   # parse 성공(미파싱 탈출)
+
     def test_inquiry_category_is_parse_target(self):
         # 조회공시 카테고리가 enrich 대상에 포함 (옛 _PARSE_CATS 누락 fix)
         from bot.dart_feed import is_parse_target

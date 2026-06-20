@@ -1682,11 +1682,21 @@ def _inquiry_lines(txt: str) -> list[str]:
     if prog:
         parts.append(f"추진: {prog}")
     stance = _cl(_g(r"([^.\n]{0,90}(?:사실이\s*아님|결정된\s*바는?\s*없"
-                    r"|확정된\s*사항은?\s*없|확정되지\s*않았)[^.\n]{0,40})"))
+                    r"|확정된\s*사항은?\s*없|확정되지\s*않았"
+                    r"|아닌\s*점을\s*밝|매각이나\s*처분은?\s*아니"
+                    r"|진정한\s*매각이?\s*아니)[^.\n]{0,40})"))
     if stance:
         parts.append(f"입장: {stance}")
     askday = _g(r"조회공시요구일[^0-9]{0,10}?(\d{4}-\d{1,2}-\d{1,2})")
     ansday = _g(r"조회공시답변일[^0-9]{0,10}?(\d{4}-\d{1,2}-\d{1,2})")
+    # 답변(부인) 푸터 — '거래소의 조회요구(2026년 06월 17일 18:46)에 따른 공시사항임'
+    # (한국식 날짜·ISO 라벨 부재). 답변형은 제목만 잡혀 parts<2 미파싱이던 것 보강
+    # (VGXI 2026-06-17 조회공시 답변, 사용자 2026-06-20). ISO 라벨이 이미 잡혔으면 skip.
+    if not askday:
+        mk = re.search(r"조회\s*요구\s*\(?\s*(\d{4})\s*년\s*(\d{1,2})\s*월"
+                       r"\s*(\d{1,2})\s*일", txt)
+        if mk:
+            askday = f"{mk.group(1)}-{int(mk.group(2)):02d}-{int(mk.group(3)):02d}"
     if askday or ansday:
         parts.append(" · ".join(x for x in (
             f"요구일 {askday}" if askday else None,
