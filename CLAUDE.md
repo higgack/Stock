@@ -41,6 +41,11 @@
     특정까지 "됐다" 금지. 헬퍼 만들면 호출부 배선 grep E2E. silent-fail(DEVNULL·except-pass) 금지.
 13. UI '안됨' = 브라우저 접속 URL(포트·프록시·토큰경로) 맨 먼저 물어라. curl 200 ≠ 브라우저
     정상(프록시). DOM 측정 ≠ 스크린샷. 같은증상 반복 = 즉시 가시정보 요청. 실수기록은 같은 턴에.
+14. 대시보드 CSS 디버깅(샌드박스서 렌더 불가, 2026-06-20 trade 차트표 ~10턴 삽질): 추측 반복 금지
+    → 생성 HTML 먼저 찍어 구조 확인 + CSS 상속함정 의심 — `.ind-table td{text-align:right}` 가
+    colspan 상세셀로 누수(코멘트 우측정렬·좌측잘림), grid 를 `<td>` 직속으로 두면 트랙 깨짐(블록
+    div 래퍼로 해결), `direction:rtl`(표 최신-우측 디폴트)는 JS scrollLeft 와 충돌(JS 제거),
+    자식표 max-content 가 부모표 폭 늘려 스크롤바 엉뚱한 위치(직속표만 width:100%). 2회+면 DOM 요청.
    (새 실수 = 날짜 + 한 줄 추가 의무.)
 
 ## ⛔ UNIVERSAL CHANGES ONLY (가장 중요)
