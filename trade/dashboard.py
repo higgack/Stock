@@ -1008,7 +1008,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 /* 두 차트 열(라인 cell1 · 막대 cell2)을 동일 너비로(같은 너비→같은 높이→정렬). meta
    좌·차트 우. 개별(.ind-mti-d)도 펼치면 전폭(ind-open)이라 이 그리드 그대로 = 기존과
    동일(사용자 2026-06-20 '기존처럼·심플'; 1fr+고정400 과교정 되돌림). */
-.ind-row{display:grid;grid-template-columns:minmax(230px,400px) minmax(260px,400px) minmax(260px,400px);gap:14px;align-items:start;justify-content:end}
+.ind-row{display:grid;grid-template-columns:minmax(230px,400px) 400px 400px;gap:14px;align-items:start;justify-content:end}
 .ind-meta{min-width:0}
 .ind-chart-cell{min-width:0}
 .ind-chart-cell .ind-chart{width:100%;height:auto;max-width:400px}
@@ -1029,7 +1029,7 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
    (라인차트 빈칸·세로 빈공간, 사용자 2026-06-20 '계속 문제'). 블록 div(min-width:0)로
    감싸 기본 카드와 동일한 블록 포매팅 컨텍스트 부여 → grid 정상 산정. */
 .ind-mti-card{min-width:0}
-.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(230px,400px) minmax(260px,400px) minmax(260px,400px)}
+.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:minmax(230px,400px) 400px 400px}
 @media(max-width:900px){.ind-sub-wrap .ind-mti-d .ind-row{grid-template-columns:1fr}}
 /* 그래도 표가 넘칠 때 품목명 칸(랭킹 본문 첫 td)을 헤더처럼 sticky 고정(헤더
    th:first-child 와 짝) — 가로 스크롤해도 품목명이 안 잘리게. 펼침 상세행
