@@ -42,6 +42,32 @@ from trade.store import latest_per_dedup_key, list_all_alerts, open_db, stats
 load_dotenv()
 
 
+def _kr_holiday_dates(window_days: int = 80) -> list[str]:
+    """오늘(KST)부터 window_days 일 안의 **KR 공휴일**(평일이지만 휴장) 'YYYY-MM-DD'
+    리스트. 관세청 발표는 관공서 공휴일에 안 나가고 다음 영업일로 순연 — 이 목록을
+    JS nextAnnouncement 에 넘겨 '다음 발표 D-N' 표시를 순연 반영(사용자 2026-06-21
+    '21일 잠정인데 일요일'). KRX(XKRX) 휴장일 = 관공서 공휴일과 동일.
+
+    bot.market_calendar(exchange_calendars) 사용 — 부재(샌드박스)/예외 시 빈 리스트
+    (JS 가 주말 순연은 자체 처리하므로 graceful 강등). 주말은 JS 가 거르니 평일 휴장만
+    수집(중복 무의미)."""
+    import datetime as _dt
+    try:
+        from bot import market_calendar as _mc
+    except Exception:
+        return []
+    today = _dt.datetime.now(timezone.utc) + _dt.timedelta(hours=9)   # KST
+    out: list[str] = []
+    for i in range(window_days):
+        d = today.date() + _dt.timedelta(days=i)
+        if d.weekday() >= 5:                      # 토(5)·일(6) = JS 가 순연 처리
+            continue
+        ds = d.strftime("%Y-%m-%d")
+        if _mc.is_trading_day("KR", ds) is False:  # 평일인데 휴장 = 공휴일
+            out.append(ds)
+    return out
+
+
 def render_html(
     db_path: Path | str,
     *,
@@ -597,6 +623,8 @@ def _build_html(
     # history) stocks 커버 — 모달 sibling 카드도 가격칩 유지.
     stock_quotes_json = json.dumps(_stock_quotes_for(full_payload),
                                    ensure_ascii=False, separators=(",", ":"))
+    # KR 공휴일(평일 휴장) → JS 가 '다음 발표' 후보를 주말+공휴일 순연(2026-06-21).
+    kr_holidays_json = json.dumps(_kr_holiday_dates(), separators=(",", ":"))
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     by_status = s.get("by_status", {})
@@ -812,6 +840,7 @@ def _build_html(
         f"const HISTORY_SRC={history_src_json};\n"   # 모달 히스토리 lazy 파일(빈문자=인라인)
         f"const LATEST_IDS=new Set({latest_ids_json});\n"
         f"const STOCK_QUOTES={stock_quotes_json};\n"
+        f"const KR_HOLIDAYS=new Set({kr_holidays_json});\n"
         + _JS
         # 월별 원자료 가로 스크롤 = 최신(우측) 디폴트 (사용자 2026-06-15 '맨 오른쪽
         # 디폴트'). ⚠️ 산업트렌드는 탭이라 숨겨진 동안 scrollWidth=0 → 탭 핸들러가
@@ -1381,12 +1410,29 @@ function kstTodayString(){
   return new Date(utcMs+9*3600000).toISOString().slice(0,10);
 }
 
-// Next-up BeOn publication date. The schedule (KST):
+// 주말+공휴일 순연 — nominal 발표일이 토·일이거나 KR 공휴일(KR_HOLIDAYS,
+// 서버가 KRX 휴장으로 주입)이면 다음 영업일로 민다. 관세청은 관공서 공휴일에
+// 발표 안 함(사용자 2026-06-21 '21일 잠정인데 일요일'). KR_HOLIDAYS 부재 시
+// 주말만 순연(graceful).
+function rollToBusinessDay(dateStr){
+  let d=new Date(dateStr+'T00:00:00Z');
+  for(let i=0;i<14;i++){                       // 연휴 안전 상한
+    const wd=d.getUTCDay();                     // 0=일,6=토
+    const ds=d.toISOString().slice(0,10);
+    if(wd!==0&&wd!==6&&!(typeof KR_HOLIDAYS!=='undefined'&&KR_HOLIDAYS.has(ds)))return ds;
+    d=new Date(d.getTime()+86400000);
+  }
+  return d.toISOString().slice(0,10);
+}
+
+// Next-up BeOn publication date. The schedule (KST), nominal — 주말/공휴일이면
+// rollToBusinessDay 로 다음 영업일로 순연:
 //   매월 11일경 — 1-10일 잠정
 //   매월 21일경 — 1-20일 잠정
 //   익월 1일경 — 전월 전체 잠정
 //   익월 15일경 — 전월 전체 확정 (관세청)
-// Returns {date, kind, daysUntil} for the first one strictly after today.
+// Returns {date(=순연된 영업일), kind, daysUntil} for the first one whose
+// effective date is today-or-later (오늘이 발표일이면 데이터 도착 전까지 D-0 표시).
 function nextAnnouncement(){
   const today=kstTodayString();
   const [y,m]=today.split('-').map(Number);
@@ -1403,7 +1449,11 @@ function nextAnnouncement(){
     {date:ny+'-'+pad(nm)+'-01', kind:m+'월 전체 잠정'},
     {date:ny+'-'+pad(nm)+'-15', kind:m+'월 전체 확정'},
   ];
-  const future=cands.filter(c=>c.date>today).sort((a,b)=>a.date.localeCompare(b.date));
+  // nominal → 순연된 유효 발표일로 매핑한 뒤 today 이상 첫 건 선택. (순연 전엔
+  // 06/21 일요일에 6월 1-20일 잠정을 건너뛰고 7/1 을 다음으로 잘못 표시했음.)
+  const future=cands.map(c=>({kind:c.kind, date:rollToBusinessDay(c.date)}))
+                    .filter(c=>c.date>=today)
+                    .sort((a,b)=>a.date.localeCompare(b.date));
   if(!future.length)return null;
   const f=future[0];
   return {date:f.date, kind:f.kind, daysUntil:daysBetween(today,f.date)};
