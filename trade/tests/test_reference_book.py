@@ -319,3 +319,31 @@ class UnmatchedCandidatesTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReportMappingReflectedTests(unittest.TestCase):
+    """보고서(5월 수출 스크리닝) 품목↔기업 매핑이 실존 MTI품목명 기준으로
+    reinforce_approved.csv(=customs MTI카드 보강) + _MAP(품목검색)에 반영됐는지
+    회귀 가드(사용자 2026-06-20). 새 freeform 품목명 없이 기존 MTI에 부착."""
+
+    def test_reinforce_has_report_companies(self):
+        from trade import mti_companies as mc
+        mc._REINFORCE_APPROVED_CACHE = None
+        d = mc.load_reinforce_approved()
+        # MTI품목명 키로 등재 (node["name"]=mti_names()[mti6] 와 동일 키)
+        def has(mtinm, co):
+            k = mtinm.replace(" ", "").lower()
+            return any(co.replace(" ", "").lower() == c.replace(" ", "").lower()
+                       for c in d.get(k, []))
+        assert has("반도체제조용장비", "이오테크닉스")        # 레이저그루빙→반도체장비
+        assert has("양극재", "코스모신소재")                   # NCM→양극재
+        assert has("치과용기기및재료", "오스템임플란트")
+        assert has("기타정밀화학원료", "한국유미코아")          # 수산화리튬→228900
+        assert has("기타선박", "한화오션")                     # 유조선/LNG선
+
+    def test_map_returns_report_companies(self):
+        from trade import mti_companies as mc
+        # companies_for(MTI품목명) 가 신규 품목에서 보고서 기업 반환(첫매치)
+        assert "오스템임플란트" in mc.companies_for("치과용기기및재료")
+        assert "토모큐브" in mc.companies_for("생물현미경")     # 신규 품목(선점 없음)
+        assert mc.companies_for("전혀무관한품목xyz") == []      # 글자순회 버그 가드
