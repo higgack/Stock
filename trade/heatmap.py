@@ -302,7 +302,7 @@ function makeH4Cell(n,x,y,w,h,tip){{
   // (사용자 2026-06-19 '히트맵도 연결'). 크기 무관 항상 클릭 가능(사용자 2026-06-20).
   if(n.hs&&window.rbSearch){{
     cell.style.cursor='pointer';
-    cell.addEventListener('click',function(){{tip.style.display='none';window.rbSearch(n.hs);}});
+    cell.addEventListener('click',function(){{tip.style.display='none';window.rbSearch(n.hs,n.nm);}});
   }}
   // 🔍 = HS4 내부 개별 품목 드릴다운(2단). 큰 셀=상시 노출, 작은 셀=hover 노출
   // (사용자 2026-06-20 '작은 박스도 접근'). 너무 작으면(>22×16 미만) 류 확대로 커버.
@@ -409,7 +409,7 @@ function renderZoom(map,W,H){{
     }});
     cell.addEventListener('mouseleave',function(){{tip.style.display='none';}});
     if(n.hs&&window.rbSearch){{ cell.style.cursor='pointer';
-      cell.addEventListener('click',function(){{tip.style.display='none';window.rbSearch(n.hs);}}); }}
+      cell.addEventListener('click',function(){{tip.style.display='none';window.rbSearch(n.hs,n.nm);}}); }}
     map.appendChild(cell);
   }});
 }}

@@ -301,6 +301,15 @@ class ItemModeTests(unittest.TestCase):
         self.assertEqual(res["mode"], "item")
         sp = [r for r in res["items"] if r["item"] == "스마트폰부품"]
         self.assertTrue(sp and sp[0]["export_usd"] == 5e8)
+        self.assertIsNone(res.get("leaf"))                # leaf 없으면 None
+        # 히트맵 셀 클릭 leaf 명 → breadcrumb 표시 (사용자 2026-06-20 '코팅머신').
+        res_l = C._hs_code_search("8517.79", by_mti, [], leaf="코팅머신")
+        self.assertEqual(res_l["leaf"], "코팅머신")
+        h_leaf = C.render_free(res_l)
+        self.assertIn("클릭품목", h_leaf)
+        self.assertIn("코팅머신", h_leaf)
+        # leaf 없는 hs_search 는 '클릭품목' 미표시(기존 동작 보존)
+        self.assertNotIn("클릭품목", C.render_free(res))
 
     def test_render_free_item(self):
         data = {"mode": "item", "query": "반도체", "name": "반도체",
