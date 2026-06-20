@@ -249,3 +249,68 @@ class ProvLabelVocabularyTests(unittest.TestCase):
         # 속보 라벨·태그에 '익월1일' 부재 (산업트렌드 divider 의 '익월 1일'
         # 은 dashboard.py 에 별도 존재 — 공백 있는 형태라 충돌 없음)
         assert "익월1일" not in dash and "익월1일" not in prov
+
+
+class NextAnnouncementRollForwardTests(unittest.TestCase):
+    """'다음 발표 D-N' 주말+공휴일 순연 (사용자 2026-06-21 '21일 잠정인데
+    일요일'). 종전: nextAnnouncement 가 고정 캘린더(11/15/21/1/15)에서 today
+    초과만 골라, KST 가 6/21(일)이 되자 아직 안 나온 6월 1-20일 잠정을 건너뛰고
+    7/1 을 다음으로 표시. fix: nominal→다음 영업일 순연 + today 이상 선택."""
+
+    def test_kr_holiday_dates_graceful_and_weekday_only(self):
+        from trade import dashboard as d
+        out = d._kr_holiday_dates()
+        self.assertIsInstance(out, list)              # 라이브러리 부재여도 []·예외X
+        import datetime as _dt
+        for ds in out:                                # 평일만(주말은 JS 가 순연)
+            wd = _dt.date.fromisoformat(ds).weekday()
+            self.assertLess(wd, 5, f"{ds} 는 주말 — 평일 휴장만 수집해야")
+
+    def test_rollforward_wiring_embedded(self):
+        # JS 배선이 본문에 실렸는지(주입 const + 순연 함수 + today 이상 필터).
+        from trade import dashboard as d
+        html = d._build_html([], [], {}, "")
+        self.assertIn("KR_HOLIDAYS=new Set(", html)   # 서버 주입 공휴일 셋
+        self.assertIn("rollToBusinessDay", html)      # 순연 헬퍼
+        self.assertIn("c.date>=today", html)          # 엄격 초과(>)→이상(>=)
+
+    def test_nextannouncement_rolls_sunday_to_monday(self):
+        # JS nextAnnouncement 를 추출해 today=2026-06-21(일) 시나리오 평가.
+        # node 부재 환경이면 skip (회귀는 wiring 테스트가 1차 가드).
+        import re, shutil, subprocess, tempfile, os
+        if not shutil.which("node"):
+            self.skipTest("node 미설치")
+        from trade import dashboard as d
+        html = d._build_html([], [], {}, "")
+        blocks = re.findall(r"<script>(.*?)</script>", html, re.S)
+        js = "\n;\n".join(b for b in blocks
+                          if b.strip() and "application/json" not in b[:60])
+        harness = (
+            "const js=" + __import__("json").dumps(js) + ";"
+            "function grab(n){const m=js.match(new RegExp('function '+n+'\\\\([^]*?\\\\n}','m'));"
+            "if(!m)throw new Error('miss '+n);return m[0];}"
+            "const src=grab('rollToBusinessDay')+'\\n'+grab('daysBetween')+'\\n'+grab('nextAnnouncement');"
+            "function run(today,hol){const fn=new Function('KR_HOLIDAYS','kstTodayString',"
+            "src+'\\nreturn nextAnnouncement();');return fn(new Set(hol),()=>today);}"
+            "console.log(JSON.stringify(run('2026-06-21',[])));"
+            "console.log(JSON.stringify(run('2026-06-12',[])));"
+            "console.log(JSON.stringify(run('2026-09-21',['2026-09-21','2026-09-22','2026-09-23'])));"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+            f.write(harness); path = f.name
+        try:
+            out = subprocess.run(["node", path], capture_output=True, text=True, timeout=20)
+        finally:
+            os.unlink(path)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        import json as _j
+        sun, fri, chuseok = [_j.loads(x) for x in out.stdout.strip().splitlines()]
+        # 6/21(일) → 6/22(월) 6월 1-20일 잠정 (7/1 로 건너뛰지 않음)
+        self.assertEqual(sun["date"], "2026-06-22")
+        self.assertEqual(sun["kind"], "6월 1-20일 잠정")
+        self.assertEqual(sun["daysUntil"], 1)
+        # 종전 6/12 확정-누락 fix 보존 — 6/15 5월 전체 확정
+        self.assertEqual(fri["date"], "2026-06-15")
+        self.assertEqual(fri["kind"], "5월 전체 확정")
+        # 공휴일(추석 연휴) 순연 — 9/21~23 휴장 → 9/24(목)
+        self.assertEqual(chuseok["date"], "2026-09-24")
