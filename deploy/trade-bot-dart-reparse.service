@@ -12,7 +12,11 @@ EnvironmentFile=-/home/higgack/stock-trade/.env
 # (예: 오매핑 차단)이 배포돼 _PARSER_VERSION 이 오르면, 이 타이머가 며칠에 걸쳐 기존
 # 데이터에 자동 소급한다(사용자 2026-06-18 '새로운거 들어오기만 하면 의미없잖아').
 # 평소(stale 0)엔 즉시 종료 → 무부하. ₩0(무료 DART·LLM 0). budget 상향 시 더 빨리 수렴.
-ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dart_revenue --reparse-stale --budget 400
+# budget 400→1000 (2026-06-20): v5 파서 배포로 전 인벤토리(~3970)가 일시 stale →
+# 400/일이면 ~10일 수렴이라 1000/일(~4일)로 가속. 런당 ~2000 DART콜(무료한도 20k/일
+# 여유)·~50분(<90분 timeout)·04:30 off-hours라 NOAH dart-feed 와도 안전. 평상시
+# stale 0 이면 무부하라 상시 1000 유지 무해(다음 pv 범프도 빠르게 소급).
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.dart_revenue --reparse-stale --budget 1000
 StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=5400
