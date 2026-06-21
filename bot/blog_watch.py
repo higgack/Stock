@@ -35,8 +35,9 @@ _BLOGS = (
     {"id": "doctordk", "title": "의교창", "categories": None},   # 전체 글 (사용자 2026-06-15)
     {"id": "jkhan012", "title": "천상천하", "categories": None},  # 전체 글 (사용자 2026-06-18)
     {"id": "ranto28", "title": "메르", "categories": None},      # 전체 글 (사용자 2026-06-18)
-    {"id": "pillion21", "title": "알바트로스의 파생 이야기", "categories": None},  # 전체 글 (사용자 2026-06-21)
 )
+# 제거: pillion21("알바트로스의 파생 이야기") — 이웃공개 블로그라 RSS 미노출 +
+# 본문 자동추출 불가(로그인 벽). 자동수집 효과 없어 제외(사용자 2026-06-21).
 _HOME = os.path.expanduser("~")
 _STATE = os.path.join(_HOME, ".tradingagents", "blog_watch_state.json")
 _ARCHIVE_DIR = os.path.join(_HOME, ".tradingagents", "blog_archive")
