@@ -1,0 +1,14 @@
+[Unit]
+Description=잠정 속보 旬 집중 fetch — 관세청 10일 단위 잠정 4종(data.go.kr) 즉시 반영
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock-trade
+EnvironmentFile=-/home/higgack/stock-trade/.env
+ExecStart=/home/higgack/stock-trade/.venv/bin/python -m trade.scripts.fetch_provisional
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300
