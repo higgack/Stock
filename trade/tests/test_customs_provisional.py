@@ -677,3 +677,30 @@ class MomChgDeltaTests(unittest.TestCase):
             "ym": "2026-06", "window": "1~10일", "items": []}})
         self.assertIn("YoY +85.9%", box)
         self.assertIn("MoM +59.1%", box)
+
+
+class ProvFetchTimerTests(unittest.TestCase):
+    """旬 집중 폴링 systemd 유닛 (사용자 2026-06-21 'data.go.kr D2 올리면 즉시
+    반영'). install-trade-units.sh가 deploy/trade-bot*.{service,timer}를 자동
+    발견하므로, 파일 존재 + 배선(ExecStart=fetch_provisional, OnCalendar 旬일)을
+    회귀로 고정. 누가 유닛명/경로를 바꾸면 조용히 미설치되는 걸 차단."""
+
+    def _deploy(self, name):
+        from pathlib import Path
+        return (Path(__file__).resolve().parents[2] / "deploy" / name).read_text(encoding="utf-8")
+
+    def test_service_runs_fetch_provisional(self):
+        svc = self._deploy("trade-bot-prov-fetch.service")
+        self.assertIn("trade.scripts.fetch_provisional", svc)
+        self.assertIn("WorkingDirectory=/home/higgack/stock-trade", svc)
+        self.assertIn("Type=oneshot", svc)
+
+    def test_timer_covers_sun_boundary_days(self):
+        tmr = self._deploy("trade-bot-prov-fetch.timer")
+        # 旬 경계일(11/21/1) + 익영업일 버퍼 2일(02/03·12/13·22/23) — 무료(관세청)는
+        # 주말·휴일 순연하므로 연휴 적층 대비(사용자 2026-06-21 진흥원 무료표 확인)
+        self.assertIn("01,02,03,11,12,13,21,22,23", tmr)
+        self.assertIn("Asia/Seoul", tmr)
+        self.assertIn("00/30", tmr)                 # 30분 간격
+        self.assertIn("Unit=trade-bot-prov-fetch.service", tmr)
+        self.assertIn("Persistent=true", tmr)       # 부팅 후 보정

@@ -1,0 +1,19 @@
+[Unit]
+Description=잠정 속보 旬 집중 fetch 트리거 — 旬 경계일 30분 간격 (사용자 2026-06-21)
+
+[Timer]
+# 관세청 旬별 잠정(1~10/1~20/전월풀월)은 매월 11·21·1일에 새로 공개된다.
+# 단 무료(관세청/data.go.kr)는 주말·공휴일을 지켜 다음 영업일로 밀린다(사용자
+# 2026-06-21 진흥원 무료표 확인 — 일요일 21일엔 6월 1-20일 미공개, 월요일로 순연.
+# 유료 진흥원분만 21일 보유 = ToS·유료라 사용불가). 그래서 旬 경계일 + 익영업일
+# 버퍼(+2일: 02/03, 12/13, 22/23)를 30분 간격으로 조밀 폴링해 연휴 적층에도
+# data.go.kr이 D2를 올리는 즉시 카드를 넘긴다. 카드는 latest_signal로 가장 진행된
+# 창을 자동 선택하므로 D2 들어오는 순간 1~20일 전환. fetch_provisional은 idempotent
+# (INSERT OR REPLACE)+silent라 중복 무해. 비용: 30분×9일×4콜 ≈ 1,730콜/월(무시 가능).
+# Persistent=true — 서버 다운 시 부팅 후 1회 보정.
+OnCalendar=*-*-01,02,03,11,12,13,21,22,23 *:00/30:00 Asia/Seoul
+Persistent=true
+Unit=trade-bot-prov-fetch.service
+
+[Install]
+WantedBy=timers.target
