@@ -733,6 +733,13 @@ def render_box(signals: dict[str, dict], *, momentum_html: str = "") -> str:
         f"<div class='ind-prov-sub'>{ym} · {window} 누적 기준 · 확정치보다 "
         "최대 ~한 달 선행 · YoY=작년 동월·동순 · MoM=전월 동순 · 단위 억$ "
         "<b>(산업 집계와 분리·참고용)</b></div>"
+        # 출처 명시 (사용자 2026-06-21 '채널은 1-20일인데 카드는 1-10일') — 이 박스는
+        # 관세청 공개 OpenAPI(data.go.kr 순별 잠정 4종) 기준. 텔레그램 수출입 속보
+        # 채널은 더 빠른 관세청 경로(보도자료·무역통계)를 relay 해 같은 旬을 1~2일
+        # 먼저 싣는다 → 상단 '현재 잠정'(채널)과 이 박스 旬이 잠시 다를 수 있음.
+        "<div class='ind-prov-src'>📡 출처: 관세청 공개 OpenAPI(data.go.kr 순별 잠정) "
+        "· 상단 속보(텔레그램 채널)보다 1~2일 늦게 공개될 수 있어 旬(1-10/1-20)이 "
+        "일시적으로 다를 수 있음 — OpenAPI 갱신 시 자동 반영</div>"
         f"<div class='ind-prov-grid'>{body}</div>"
         f"{caveat}"
         f"{momentum_html}"
