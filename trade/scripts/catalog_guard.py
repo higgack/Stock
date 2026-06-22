@@ -80,19 +80,42 @@ def scan() -> dict:
         if not any(mti_map.hs6_to_mti6(h) for h in mc._hs_list(hsk)):
             theme_orphan.append(nm)
 
+    # HS품목명 사전 버전 (사용자 2026-06-22 '연계표처럼 추적') — 매년 1월 1일자
+    # 신규본 발효. build_hs_names 헤더에서 발효일/행수 읽음.
+    try:
+        from trade import hs_names as _hn
+        hsv = _hn.version()
+    except Exception:
+        hsv = {}
+
     return {"version": _catalog_version(),
             "reinforce_orphan": reinforce_orphan,
             "pin_orphan": pin_orphan,
             "theme_orphan": sorted(theme_orphan),
-            "n_reinforce": len(reinforce), "n_mti": len(valid_mti6)}
+            "n_reinforce": len(reinforce), "n_mti": len(valid_mti6),
+            "hs_names_effective": hsv.get("effective", ""),
+            "hs_names_rows": hsv.get("rows", "")}
 
 
 def _build_message(r: dict) -> str:
+    import datetime as _dt
     ro, po, to = r["reinforce_orphan"], r["pin_orphan"], r["theme_orphan"]
     n_orphan = len(ro) + len(po) + len(to)
+    # HS품목명 사전 줄 + 연 1회(1~2월) 신규본 넛지(매년 1.1자 발효).
+    _eff = r.get("hs_names_effective") or "미적재"
+    _hsrow = r.get("hs_names_rows") or "0"
+    _cur_y = _dt.date.today().year
+    _stale = bool(r.get("hs_names_effective")) and r["hs_names_effective"][:4] != str(_cur_y)
+    _jan = _dt.date.today().month in (1, 2)
+    hs_line = (f"\nHS품목명 사전: 발효 <b>{_eff}</b> · {_hsrow}개")
+    if _stale or _jan:
+        hs_line += ("\n⚠️ <b>HS품목명 신규본 확인</b>: data.go.kr '관세청_HS부호 단위별 "
+                    "품목명'(매년 1.1자 발효) 받아 build_hs_names 재적재 권장 "
+                    f"(보유 {_eff[:4] if _eff != '미적재' else '없음'} → 올해 {_cur_y}).")
     head = (f"📋 <b>연계표 정합 점검</b> (월례)\n"
             f"보유 연계표: <b>{r['version']}</b> · MTI품목 {r['n_mti']}개 · "
-            f"reinforce {r['n_reinforce']}품목\n"
+            f"reinforce {r['n_reinforce']}품목"
+            f"{hs_line}\n"
             f"신규 연계표 확인: KITA stat.kita.net 자료실 — Claude 세션서 "
             f"'연계표 웹확인' 요청(꼼꼼한 웹검색).")
     if not n_orphan:

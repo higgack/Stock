@@ -417,9 +417,52 @@ def _leaf_pv(leaf_row: dict) -> dict | None:
     return out if any(out.values()) else None
 
 
+def _agg_dir_node(m6s: list, src: dict | None) -> dict:
+    """검색레벨 하위 MTI품목들의 월별 금액+중량을 합산한 단일 노드 {months,wgts}
+    (사용자 2026-06-22 '검색한 레벨 하나로'). by_mti(수출)·by_imp(수입) 각각에 사용.
+    HS10 월별이력은 관세청 미제공 → MTI품목 단위가 시계열 바닥이라 그 합산이 최선."""
+    months: dict = {}
+    wgts: dict = {}
+    for m6 in m6s:
+        node = (src or {}).get(m6) or {}
+        for ym, v in (node.get("months") or {}).items():
+            try:
+                months[ym] = months.get(ym, 0) + float(v or 0)
+            except (TypeError, ValueError):
+                pass
+        for ym, w in (node.get("wgts") or {}).items():
+            try:
+                wgts[ym] = wgts.get(ym, 0) + float(w or 0)
+            except (TypeError, ValueError):
+                pass
+    return {"months": months, "wgts": wgts}
+
+
+def _node_pv(node: dict) -> dict | None:
+    """합산 노드 {months,wgts} → 최신월 YoY·MoM 판가/물량 분해(금액=판가×물량,
+    단가=금액÷중량). 해설(동력)과 동일 노드라 일관. 데이터부족 → None."""
+    months = (node or {}).get("months") or {}
+    wgts = (node or {}).get("wgts") or {}
+    if not months:
+        return None
+    latest = max(months)
+    try:
+        y, m = int(latest[:4]), int(latest[5:7])
+    except (ValueError, IndexError):
+        return None
+    pm = f"{y-1}-12" if m == 1 else f"{y}-{m-1:02d}"
+    py = f"{y-1}-{m:02d}"
+    out = {"yoy": _pv_split(months.get(latest), months.get(py),
+                            wgts.get(latest), wgts.get(py)),
+           "mom": _pv_split(months.get(latest), months.get(pm),
+                            wgts.get(latest), wgts.get(pm))}
+    return out if (out["yoy"] or out["mom"]) else None
+
+
 def _hs_code_search(query: str, by_mti: dict, pairs: list,
                     by_imp: dict | None = None, leaf: str | None = None,
-                    hs_leaf: dict | None = None) -> dict | None:
+                    hs_leaf: dict | None = None,
+                    direction: str | None = None) -> dict | None:
     """HS코드 → 그 HS6 의 MTI 품목들 + 수출입 숫자 + 관련 상장사 (사용자 2026-06-19
     'HS코드로 검색하면 숫자'). HS6→MTI6(mti_map). 미해석 → None. 순수.
     정확 HS10 검색이면 그 leaf 의 한글품목명(stat_kor)+판가/물량 분해도 첨부."""
@@ -458,46 +501,34 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
                      "hs_linked": True, "_m6": m6})
         _add(cos)
     rows.sort(key=lambda x: -(x["export_usd"] or 0))
-    # 품목별 해설 — 산업트렌드 카드와 **동일한** 코멘트(요약·신호·단가·G그룹·동력
-    # P/Q·분기 진도율)를 상위 5개 품목에 부착(사용자 2026-06-22 '밑에 표처럼 코멘트').
-    # industry.item_comment_html 재사용(드리프트 0). 방향=최신월 큰 쪽(수출/수입).
-    try:
-        from trade import industry as _ind
-        for r in rows[:5]:
-            _m6 = r.get("_m6")
-            _en, _im = (by_mti or {}).get(_m6), (by_imp or {}).get(_m6)
-            _is_imp = (_latest(_im) or 0) > (_latest(_en) or 0)
-            r["comment"] = _ind.item_comment_html(_im if _is_imp else _en,
-                                                  "수입" if _is_imp else "수출")
-    except Exception as exc:
-        log.warning("hs_code_search comment: %s", exc)
     for r in rows:
         r.pop("_m6", None)
-    # 판가/물량 분해 — 검색 prefix(2/4/6/8/10) 하위 전 leaf 의 금액·중량 합산 →
-    # 단가($/kg)=합산금액÷합산중량 (사용자 2026-06-22 '각 HS 자릿수에 모두'). 정확
-    # HS10 이면 단일 leaf, 광역(2/4)은 혼합 가중평균 단가(렌더가 'N개 합산' 라벨).
+    # 검색레벨 하위 MTI품목 합산 단일 노드(수출/수입) → 판가물량·동력·진도율·요약을
+    # **한 블록·한 방향**으로 (사용자 2026-06-22: 두 블록 어긋남·방향 무시 해소).
+    exp_node = _agg_dir_node(m6s, by_mti)
+    imp_node = _agg_dir_node(m6s, by_imp)
+    # 방향: 히트맵 클릭이 준 direction 우선, 없으면(검색창) 최신월 큰 쪽 자동.
+    if direction in ("exp", "imp"):
+        is_imp = direction == "imp"
+    else:
+        is_imp = (max((imp_node["months"] or {0: 0}).values()) >
+                  max((exp_node["months"] or {0: 0}).values()))
+    dir_node = imp_node if is_imp else exp_node
+    dir_lab = "수입" if is_imp else "수출"
+    hs_pv = _node_pv(dir_node)                       # 판가물량(선택방향, 합산노드)
+    hs_n = sum(1 for m6 in m6s if (by_mti or {}).get(m6) or (by_imp or {}).get(m6))
+    hs_comment = ""
+    try:
+        from trade import industry as _ind
+        hs_comment = _ind.item_comment_html(dir_node, dir_lab)   # 요약·동력·진도율
+    except Exception as exc:
+        log.warning("hs_code_search comment: %s", exc)
+    # 한글명 — 정확 HS10 leaf stat_kor 우선, 없으면 전 HS 사전 prefix 폴백.
     hs_name = None
-    hs_pv = None
-    hs_pv_n = 0
-    if hs_leaf and bare:
-        _WK = ("exp", "exp_pm", "exp_py", "imp", "imp_pm", "imp_py",
-               "exp_wgt", "exp_wgt_pm", "exp_wgt_py",
-               "imp_wgt", "imp_wgt_pm", "imp_wgt_py")
-        agg = dict.fromkeys(_WK, 0)
-        for _code, _lf in hs_leaf.items():
-            if not _code.startswith(bare):
-                continue
-            hs_pv_n += 1
-            for _k in _WK:
-                agg[_k] += int(_lf.get(_k) or 0)
-            if _code == bare:               # 정확 HS10 → 그 leaf 한글품목명
-                hs_name = (_lf.get("name") or "").strip() or None
-                if hs_name == bare:
-                    hs_name = None
-        if hs_pv_n:
-            hs_pv = _leaf_pv(agg)
-    # 한글명: 정확 leaf 명 없으면(광역·무실적) 전 HS 사전 prefix 폴백 (사용자
-    # 2026-06-22). 사전 부재 시 None(graceful).
+    if hs_leaf and bare and len(bare) == 10 and bare in hs_leaf:
+        hs_name = (hs_leaf[bare].get("name") or "").strip() or None
+        if hs_name == bare:
+            hs_name = None
     if not hs_name:
         try:
             from trade import hs_names as _hn
@@ -506,11 +537,13 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
             pass
     return {"mode": "item", "query": query, "name": f"HS {query}", "hs_search": True,
             "synonym": None, "items": rows[:30], "companies": companies[:40],
-            "leaf": (leaf or "").strip() or None,
-            "hs_name": hs_name, "hs_pv": hs_pv, "hs_pv_n": hs_pv_n}
+            "leaf": (leaf or "").strip() or None, "hs_name": hs_name,
+            "hs_pv": hs_pv, "hs_dir": dir_lab, "hs_n": hs_n,
+            "hs_comment": hs_comment, "hs_level": len(bare)}
 
 
-def gather(query: str, api_key: str | None = None, leaf: str | None = None) -> dict:
+def gather(query: str, api_key: str | None = None, leaf: str | None = None,
+           direction: str | None = None) -> dict:
     """회사(이름·6자리 코드) **또는 품목**(예: 반도체) → 보고서 데이터.
     회사 모드: {mode:'company', query, code, name, products, exposure}.
     품목 모드(사용자 2026-06-18 역검색): {mode:'item', query, name, items, companies}.
@@ -552,7 +585,8 @@ def gather(query: str, api_key: str | None = None, leaf: str | None = None) -> d
     # 나와야'). 점/대시 포함 or 8~10자리 bare = HS(6자리 bare 는 주식코드라 제외 —
     # HS6 는 '8517.79' 점표기로). HS6→MTI6 → 그 품목들의 수출입.
     if _looks_like_hs(q):
-        hs_res = _hs_code_search(q, by_mti, pairs, by_imp, leaf=leaf, hs_leaf=hs_leaf)
+        hs_res = _hs_code_search(q, by_mti, pairs, by_imp, leaf=leaf,
+                                 hs_leaf=hs_leaf, direction=direction)
         if hs_res:
             return hs_res
 
@@ -637,13 +671,18 @@ def _render_free_item(data: dict) -> str:
         _hn_disp = (hs_name[:44] + "…") if len(hs_name) > 45 else hs_name
         name_tag = (f' <span style="color:#e6c97a" title="{e(hs_name)}">'
                     f'[{e(_hn_disp)}]</span>' if hs_name else '')
+        _dir = data.get("hs_dir") or "수출"
+        _lvl = data.get("hs_level") or 0
+        _lvl_lab = (f'HS{_lvl}자리' if _lvl in (2, 4, 6, 8, 10) else 'HS')
+        _ico = "📥" if _dir == "수입" else "🚢"
         head += (f'<div style="font-size:12px;color:#c8a24a;background:#2a2410;'
                  f'border:1px solid #4a3f1a;border-radius:6px;padding:6px 10px;margin-bottom:12px">'
-                 f'🔎 {leaf_tag}HS <b>{e(data.get("query") or "")}</b>{name_tag} → 연계 MTI품목 <b>{n_it}개</b>. '
-                 f'한 HS코드는 여러 MTI품목(카테고리)으로 분류될 수 있어 해당 품목을 모두 표시합니다 '
-                 f'— 클릭한 세부품목은 아래 중 하나에 귀속됩니다.</div>')
-        # 판가 vs 물량 분해 (사용자 2026-06-22 '이 상승은 판가야 물량이야?') — 정확
-        # HS10 leaf 의 중량(물량) 기반 단가($/kg) 분해. 데이터 없으면(구 스냅샷) 미표시.
+                 f'🔎 {leaf_tag}HS <b>{e(data.get("query") or "")}</b>{name_tag} '
+                 f'· {_lvl_lab} 기준 · {_ico} <b>{e(_dir)}</b> 분석 '
+                 f'<span style="color:#9aa0aa">(연계 MTI품목 {n_it}개 합산 — 한 HS는 여러 '
+                 f'MTI품목으로 분류돼 모두 합산)</span></div>')
+        # 📊 판가 vs 물량 분해 — 선택 방향(히트맵 클릭 방향/자동), 검색레벨 합산노드
+        # 기준(해설과 동일 소스 → 일관). 금액=판가×물량, 단가=금액÷중량 (사용자 2026-06-22).
         pv = data.get("hs_pv")
         if pv:
             def _pct(v):
@@ -658,19 +697,14 @@ def _render_free_item(data: dict) -> str:
                 unit = f' · 단가 ${sp["unit_now"]:,.1f}/kg' if sp.get("unit_now") else ''
                 return (f'<div>{label} 금액 {_pct(sp["value"])} = '
                         f'판가 {_pct(sp["price"])} × 물량 {_pct(sp["qty"])}{unit}</div>')
-            blk = (_line("🚢 수출 YoY", pv.get("exp_yoy"))
-                   + _line("🚢 수출 MoM", pv.get("exp_mom"))
-                   + _line("📥 수입 YoY", pv.get("imp_yoy"))
-                   + _line("📥 수입 MoM", pv.get("imp_mom")))
+            blk = (_line(f"{_ico} {_dir} YoY", pv.get("yoy"))
+                   + _line(f"{_ico} {_dir} MoM", pv.get("mom")))
             if blk:
-                _n = data.get("hs_pv_n") or 0
-                scope = (f'{_n:,}개 세부품목 합산 · 단가=가중평균 · ' if _n > 1
-                         else '단가=금액÷중량 · ')
                 head += (f'<div style="font-size:12px;color:#c8c8d0;background:#15181f;'
                          f'border:1px solid #2a2e37;border-radius:6px;padding:6px 10px;'
                          f'margin-bottom:12px;line-height:1.7">'
                          f'<b>📊 판가 vs 물량 분해</b> '
-                         f'<span style="color:#9aa0aa">({scope}근사식이라 '
+                         f'<span style="color:#9aa0aa">(단가=금액÷중량 · 근사식이라 '
                          f'판가×물량 합이 금액과 미세차 가능)</span>{blk}</div>')
     if companies:
         chips = "".join(
@@ -688,23 +722,22 @@ def _render_free_item(data: dict) -> str:
             subtitle="· 수출·수입 추세(YoY·ΔYoY·MoM·ΔMoM) · 최신월 수출액순")
     else:
         items_html = ''
-    # 📋 품목별 해설 — 산업트렌드 카드와 동일한 코멘트(요약·신호·단가·G그룹·동력·
-    # 분기 진도율)를 상위 품목에 (사용자 2026-06-22 '밑에 표처럼 코멘트'). 코멘트
-    # 있는 품목만, 상위 5개.
-    cmt_rows = [it for it in items if (it.get("comment") or "").strip()][:5]
+    # 📋 품목별 해설 — 검색레벨 합산노드(선택방향) 단일 코멘트(요약·신호·단가·G그룹·
+    # 동력 P/Q·분기 진도율). 산업트렌드 카드와 동일 생성기(industry.item_comment_html)
+    # + 위 판가물량과 동일 소스라 일관(사용자 2026-06-22 '한 레벨·한 방향으로'). HS10
+    # 단위 월별이력은 관세청 미제공 → MTI품목 단위 합산이 시계열 바닥(스코프 라벨로 명시).
     commentary = ''
-    if cmt_rows:
-        blocks = "".join(
-            f'<div style="margin:8px 0;padding:8px 10px;background:var(--surface-2,#15181f);'
-            f'border:1px solid var(--border-soft,#2a2e37);border-radius:8px">'
-            f'<div style="font-weight:600;margin-bottom:2px">{e(it.get("item") or "")}'
-            f'{(" · " + e(it["industry"])) if it.get("industry") else ""}</div>'
-            f'{it["comment"]}</div>'
-            for it in cmt_rows)
-        commentary = ('<div style="font-weight:600;margin:14px 0 4px">📋 품목별 해설 '
-                      '<span style="font-size:12px;color:#9aa0aa;font-weight:400">'
-                      '· 산업트렌드 동일(요약·동력 P/Q·분기 진도율)</span></div>'
-                      + blocks)
+    cmt = (data.get("hs_comment") or "").strip()
+    if cmt:
+        _dir2 = data.get("hs_dir") or "수출"
+        _n2 = data.get("hs_n") or 0
+        commentary = (
+            '<div style="font-weight:600;margin:14px 0 4px">📋 품목별 해설 '
+            '<span style="font-size:12px;color:#9aa0aa;font-weight:400">'
+            f'· {e(_dir2)} 기준 · 연계 MTI품목 {_n2}개 합산(월별이력 단위) · '
+            '산업트렌드 동일</span></div>'
+            f'<div style="margin:6px 0;padding:8px 10px;background:var(--surface-2,#15181f);'
+            f'border:1px solid var(--border-soft,#2a2e37);border-radius:8px">{cmt}</div>')
     return f'<div style="line-height:1.5">{head}{comp_html}{items_html}{commentary}</div>'
 
 
@@ -951,9 +984,10 @@ def send_to_channel(query: str, mode: str = "free", api_key: str | None = None) 
 
 
 def build(query: str, mode: str = "free", api_key: str | None = None,
-          leaf: str | None = None) -> str:
-    """query + mode('free'|'llm') → 보고서 HTML. leaf=히트맵 클릭 품목명(breadcrumb)."""
-    data = gather(query, api_key, leaf=leaf)
+          leaf: str | None = None, direction: str | None = None) -> str:
+    """query + mode('free'|'llm') → 보고서 HTML. leaf=히트맵 클릭 품목명(breadcrumb),
+    direction='exp'/'imp'=히트맵 방향(해설·판가물량을 그 방향으로)."""
+    data = gather(query, api_key, leaf=leaf, direction=direction)
     if mode == "llm":
         return render_llm(data)[0]
     return render_free(data)

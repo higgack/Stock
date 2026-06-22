@@ -50,6 +50,26 @@ def load_hs_names(path: str | None = None) -> dict[str, str]:
     return out
 
 
+def version(path: str | None = None) -> dict:
+    """hs_names.tsv 헤더(# effective=… built=… rows=…) 파싱 → {effective,built,rows}.
+    catalog_guard 가 갱신 추적·연1회 신규본 넛지에 사용(사용자 2026-06-22). 헤더/파일
+    없으면 빈 dict."""
+    p = path or _PATH
+    try:
+        with open(p, encoding="utf-8") as f:
+            first = f.readline()
+    except OSError:
+        return {}
+    if not first.startswith("#"):
+        return {}
+    out: dict = {}
+    for tok in first[1:].split():
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            out[k] = v
+    return out
+
+
 def hs_name(query: str, names: dict[str, str] | None = None) -> str | None:
     """질의(점·대시 포함 가능) → 한글품목명. 정확(긴 자릿수) 우선, 없으면 더 짧은
     prefix(8·6·4·2)로 폴백 — HS10 이 사전에 없어도 그 HS6/HS4 카테고리명은 뜨게."""

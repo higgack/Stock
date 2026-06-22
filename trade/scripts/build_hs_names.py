@@ -118,11 +118,20 @@ def build(path: str, out: str = _DEFAULT_OUT,
             seen[code] = name                # 동일 코드 최신만(마지막 승)
     if not seen:
         sys.exit("추출 0행 — --code-col/--name-col 로 열을 지정해 재실행하세요.")
+    # 버전 헤더 — 파일명의 발효일(YYYYMMDD) + 빌드시각 + 행수. catalog_guard 가
+    # 읽어 갱신 추적·연 1회 신규본 넛지(사용자 2026-06-22 '연계표처럼'). 로더는
+    # '#' 줄을 무시(탭 없음)하므로 무해.
+    import datetime as _dt
+    m = re.search(r"(20\d{6})", os.path.basename(path))
+    eff = m.group(1) if m else ""
+    built = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
+        f.write(f"# effective={eff} built={built} rows={len(seen)} "
+                f"src={os.path.basename(path)}\n")
         for code in sorted(seen):
             f.write(f"{code}\t{seen[code]}\n")
-    print(f"✅ {len(seen):,}개 HS 한글품목명 → {out}")
+    print(f"✅ {len(seen):,}개 HS 한글품목명 (발효 {eff or '미상'}) → {out}")
     return len(seen)
 
 

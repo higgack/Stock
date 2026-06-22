@@ -32,6 +32,17 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(HN.load_hs_names("/no/such/file.tsv"), {})
         self.assertIsNone(HN.hs_name("7108131010", {}))
 
+    def test_version_header(self):
+        # build_hs_names 헤더(# effective=…) → version() 파싱, 로더는 헤더 무시.
+        p = self._tsv("# effective=20260101 built=2026-06-22 rows=2 src=x.xlsx\n"
+                      "85\t전기기기\n8542\t집적회로\n")
+        self.assertEqual(HN.version(p)["effective"], "20260101")
+        self.assertEqual(HN.version(p)["rows"], "2")
+        d = HN.load_hs_names(p)
+        self.assertEqual(len(d), 2)                # 헤더(#) 줄은 미포함
+        self.assertEqual(d["85"], "전기기기")
+        self.assertEqual(HN.version("/no/file"), {})
+
 
 class ConverterTests(unittest.TestCase):
     def test_csv_autodetect(self):
