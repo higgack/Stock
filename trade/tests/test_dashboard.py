@@ -101,10 +101,10 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn('id="companies-view"', html)
 
     def test_countries_tab_wired(self):
-        # 나라별 탭 (사용자 2026-06-22) — 회사별 옆, 국가로 그룹핑. 탭·뷰·빌더·
-        # _CLIENT_VIEWS 등록까지 E2E 배선 + 회사별<나라별<매트릭스 순서.
+        # 국가별 탭 (사용자 2026-06-22) — 회사별 옆, 국가로 그룹핑. 탭·뷰·빌더·
+        # _CLIENT_VIEWS 등록까지 E2E 배선 + 회사별<국가별<매트릭스 순서.
         html = render_html(self.db_path)
-        self.assertIn('data-tab="countries">나라별', html)
+        self.assertIn('data-tab="countries">국가별', html)
         self.assertIn('id="countries-view"', html)
         self.assertIn("function buildCountriesView(", html)
         self.assertIn("countries:buildCountriesView", html)
@@ -112,7 +112,7 @@ class TestDashboardRenderer(unittest.TestCase):
             html.index('data-tab="companies"')
             < html.index('data-tab="countries"')
             < html.index('data-tab="matrix"'),
-            "탭 순서가 회사별<나라별<매트릭스 가 아님")
+            "탭 순서가 회사별<국가별<매트릭스 가 아님")
         # 다중국가 검색 hay 에 countries 포함(다중국가 alert 도 국가검색에 잡힘)
         self.assertIn("(a.countries||[]).join(' ')", html)
 

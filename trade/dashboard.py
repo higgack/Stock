@@ -9,7 +9,7 @@ client-side views over the same data:
   회사별 (company view): one section per stock mentioned, with mini-cards
                        linking to the latest alert for each item that
                        references it
-  나라별 (country view): one section per country, same mini-card layout as
+  국가별 (country view): one section per country, same mini-card layout as
                        회사별, grouping each alert under every country it
                        lists (multi-country → multiple sections)
 
@@ -766,7 +766,7 @@ def _build_html(
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
-        '<button class="tab" data-tab="countries">나라별</button>'
+        '<button class="tab" data-tab="countries">국가별</button>'
         '<button class="tab" data-tab="matrix">매트릭스</button>'
         + (f'<button class="tab" data-tab="industry">📈 산업트렌드</button>'
            if _has_industry else '')
@@ -1907,7 +1907,7 @@ function buildCompaniesView(filtered){
   }).join('');
 }
 
-// 나라별 뷰 (사용자 2026-06-22) — 회사별과 동일 구조이되 국가로 그룹핑. BeOn
+// 국가별 뷰 (사용자 2026-06-22) — 회사별과 동일 구조이되 국가로 그룹핑. BeOn
 // 데이터의 6요소 중 '나라' 축. 한 alert 이 여러 국가를 달면(countries 다중) 각
 // 국가 섹션에 모두 들어간다(매트릭스 셀 의미와 일치). 국가 미상은 '전국'.
 // 필터(수출/수입/잠정/확정/전체/🆕신규)는 전역 matches() 가 이미 적용한 filtered
