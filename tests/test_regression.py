@@ -6384,6 +6384,19 @@ class TestMoversSortByPct:
         assert [r["pct"] for r in sort_by_pct(up, gainers=True)] == [9.5, 5.0, 2.0, None]
         assert [r["pct"] for r in sort_by_pct(dn, gainers=False)] == [-8.0, -3.0, -1.0]
 
+    def test_sort_by_pct_mcap_tiebreak(self):
+        # 동률 등락률(상·하한가 다수 +10%)이면 시총 큰 순 tiebreak (사용자 2026-06-22
+        # — 가나다순 아니라 시총순). 급등·급락 양쪽.
+        from bot.highlow_render import sort_by_pct
+        up = [{"name": "A", "pct": 10.0, "mcap": 32}, {"name": "B", "pct": 10.0, "mcap": 200},
+              {"name": "C", "pct": 10.0, "mcap": 45}, {"name": "D", "pct": 9.99, "mcap": 999}]
+        assert [r["name"] for r in sort_by_pct(up, gainers=True)] == ["B", "C", "A", "D"]
+        dn = [{"name": "X", "pct": -10.0, "mcap": 10}, {"name": "Y", "pct": -10.0, "mcap": 50}]
+        assert [r["name"] for r in sort_by_pct(dn, gainers=False)] == ["Y", "X"]
+        # JS 정렬도 동률 pct → 시총 tiebreak (data-mcap)
+        from bot.highlow_render import HL_SORT_JS
+        assert "key==='pct'" in HL_SORT_JS and "data-mcap" in HL_SORT_JS
+
     def test_movers_render_uses_pct(self):
         # 모든 나라 movers 파일이 sort_by_pct 사용(기본 등락률순 배선·시총순 회귀 차단)
         for path in ("bot/naver_pages.py", "bot/us_pages.py",
