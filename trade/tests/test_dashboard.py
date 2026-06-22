@@ -100,37 +100,47 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn('id="items-view"', html)
         self.assertIn('id="companies-view"', html)
 
-    def test_countries_and_regions_tabs_wired(self):
-        # 국가별·지역별 탭 (사용자 2026-06-22) — 회사별 옆, 국가/지역으로 그룹핑.
-        # 탭·뷰·빌더·_CLIENT_VIEWS 등록 E2E + 회사별<국가별<지역별<매트릭스 순서.
+    def test_axis_tabs_wired(self):
+        # 산업별·국가별·지역별 탭 (사용자 2026-06-22) — 공용 buildGroupedAxisView.
+        # 산업별 = 맨 앞(active default). 탭·뷰·빌더·등록·순서·칩바 E2E.
         html = render_html(self.db_path)
+        self.assertIn('data-tab="industries">🏭 산업별', html)
         self.assertIn('data-tab="countries">국가별', html)
         self.assertIn('data-tab="regions">지역별', html)
-        self.assertIn('id="countries-view"', html)
-        self.assertIn('id="regions-view"', html)
-        self.assertIn("function buildCountriesView(", html)
-        self.assertIn("function buildRegionsView(", html)
-        self.assertIn("function buildGroupedAxisView(", html)  # 공용 빌더
-        self.assertIn("countries:buildCountriesView", html)
-        self.assertIn("regions:buildRegionsView", html)
-        self.assertTrue(
-            html.index('data-tab="companies"')
-            < html.index('data-tab="countries"')
-            < html.index('data-tab="regions"')
-            < html.index('data-tab="matrix"'),
-            "탭 순서가 회사별<국가별<지역별<매트릭스 가 아님")
-        # 공용 빌더가 올바른 축 인자로 호출되는지(국가/지역 wrapper)
+        for vid in ('industries-view', 'countries-view', 'regions-view'):
+            self.assertIn(f'id="{vid}"', html)
+        # 산업별이 첫 탭이며 active default (맨 처음)
+        self.assertIn('<button class="tab active" data-tab="industries">', html)
+        self.assertIn('<main id="industries-view" class="view active">', html)
+        for fn in ("buildIndustriesView", "buildCountriesView", "buildRegionsView",
+                   "buildGroupedAxisView"):
+            self.assertIn(f"function {fn}(", html)
+        for reg in ("industries:buildIndustriesView", "countries:buildCountriesView",
+                    "regions:buildRegionsView"):
+            self.assertIn(reg, html)
+        # 탭 순서: 산업별 < 품목별 < 회사별 < 국가별 < 지역별 < 매트릭스
+        order = [html.index('data-tab="%s"' % t) for t in
+                 ("industries", "items", "companies", "countries", "regions", "matrix")]
+        self.assertEqual(order, sorted(order), "탭 순서 불일치")
+        # 공용 빌더 축 인자 — 산업은 '미분류' fallback+sink
         self.assertIn("buildGroupedAxisView(filtered,'country','countries','country','country'", html)
         self.assertIn("buildGroupedAxisView(filtered,'region','regions','region','region'", html)
-        # 검색 hay 에 countries·regions 다중 포함(다중값 alert 도 검색에 잡힘)
+        self.assertIn("buildGroupedAxisView(filtered,'industry','industries','industry','industry'", html)
+        self.assertIn("'미분류','미분류'", html)   # 산업 fallback + sink 라벨
+        # 검색 hay 에 countries·regions·industry 포함
         self.assertIn("(a.countries||[]).join(' ')", html)
         self.assertIn("(a.regions||[]).join(' ')", html)
-        # 축 선택 버튼 바 — CSS 클래스(국가·지역 공용) + 칩은 'data-'+cls 로 동적생성.
-        self.assertIn(".country-bar,.region-bar{", html)
-        self.assertIn(".country-chip,.region-chip{", html)
+        self.assertIn("(a.industry||'')", html)
+        # 축 선택 버튼 바 CSS(산업·국가·지역 공용)
+        self.assertIn(".country-bar,.region-bar,.industry-bar{", html)
+        self.assertIn(".country-chip,.region-chip,.industry-chip{", html)
+        # payload 에 industry 부착(서버 매핑)
+        m = re.search(r"const ALERTS=(\[.*?\]);", html, re.DOTALL)
+        for a in json.loads(m.group(1)):
+            self.assertIn("industry", a)
         self.assertIn("data-'+cls+'=", html)          # 칩 data 속성 동적 빌드
-        self.assertIn("closest('.country-chip,.region-chip')", html)
-        self.assertIn("country:'',region:''", html)   # state 에 국가·지역 서브필터
+        self.assertIn("closest('.country-chip,.region-chip,.industry-chip')", html)
+        self.assertIn("country:'',region:'',industry:''", html)   # state 서브필터 3축
 
     def test_filter_controls_exist(self):
         html = render_html(self.db_path)
@@ -405,6 +415,24 @@ class TestDashboardRenderer(unittest.TestCase):
         # CSS for matrix + mix
         self.assertIn("matrix-table", html)
         self.assertIn("country-mix", html)
+
+    def test_matrix_multi_axis(self):
+        # 다축 매트릭스 (사용자 2026-06-22) — 행/열 축을 품목·회사·국가·지역 중 선택.
+        html = render_html(self.db_path)
+        self.assertIn("_MX_AXES", html)
+        self.assertIn("function axisVals(", html)
+        self.assertIn("mx-axisbar", html)
+        self.assertIn("mx-axis-chip", html)
+        self.assertIn("data-axis=", html)
+        # 4개 축 라벨 모두(산업 제외 — 매핑 없음)
+        for lab in ("품목", "회사", "국가", "지역"):
+            self.assertIn(lab, html)
+        self.assertIn("item:'품목',company:'회사',country:'국가',region:'지역'", html)
+        # 행/열 축 state + 축 칩 클릭 핸들러
+        self.assertIn("mxRow:'item',mxCol:'country'", html)
+        self.assertIn("closest('.mx-axis-chip')", html)
+        # CSV 헤더에 industry 포함(전 축 export — 화면 2축이라도 CSV 는 전부)
+        self.assertIn("'item','item_raw','industry'", html)
 
     def test_empty_store_renders_without_crash(self):
         import tempfile

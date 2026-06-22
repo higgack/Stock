@@ -437,6 +437,15 @@ def _companies_for(stocks: list) -> list:
         return list(stocks or [])
 
 
+def _industry_for_item(item: str) -> str:
+    """산업별 탭 그룹핑용 — 품목→산업 정확매칭. 실패/예외 시 '' (뷰에서 '미분류')."""
+    try:
+        from trade import item_industry
+        return item_industry.industry_for(item)
+    except Exception:
+        return ""
+
+
 def _alert_to_payload(a: dict, media_prefix: str) -> dict:
     """Strip the alert down to the fields the client view actually uses.
 
@@ -458,6 +467,9 @@ def _alert_to_payload(a: dict, media_prefix: str) -> dict:
         "country": a.get("country") or "",
         "regions": a.get("regions") or [],
         "countries": a.get("countries") or [],
+        # 산업별 탭 그룹핑용 — 품목→산업 정확매칭(item_industry), 미해석은 ''(뷰에서
+        # '미분류'). 국가/지역과 달리 alert 고유필드가 아니라 매핑이라 커버리지 낮음.
+        "industry": _industry_for_item(a.get("item") or ""),
         # 운영자 영구 무시 회사(비상장/외국/제품명) 제외 — 칩·CSV·검색 전부
         # 원본 stocks 를 쓰므로 여기서 한 번 거르면 모든 surface 에서 사라진다.
         "stocks": [s for s in (a.get("stocks") or [])
@@ -766,7 +778,8 @@ def _build_html(
         ' &nbsp;·&nbsp; <a href="reference.html">'
         '📖 품목 레퍼런스북 — 품목 ↔ HS코드 ↔ 산업 ↔ 관련기업 →</a></div>'
         + '<nav class="tabs">'
-        '<button class="tab active" data-tab="items">품목별</button>'
+        '<button class="tab active" data-tab="industries">🏭 산업별</button>'
+        '<button class="tab" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
         '<button class="tab" data-tab="countries">국가별</button>'
         '<button class="tab" data-tab="regions">지역별</button>'
@@ -799,7 +812,8 @@ def _build_html(
         '</div>'
         f'<div class="count"><span id="visible-count">{len(latest_ids)}</span> / {len(latest_ids)} 표시 중</div>'
         '</section>'
-        '<main id="items-view" class="view active"></main>'
+        '<main id="industries-view" class="view active"></main>'
+        '<main id="items-view" class="view"></main>'
         '<main id="companies-view" class="view"></main>'
         '<main id="countries-view" class="view"></main>'
         '<main id="regions-view" class="view"></main>'
@@ -1148,13 +1162,20 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
 .chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .count{margin-top:7px;font-size:11px;color:var(--text-sub)}
-/* 국가별·지역별 탭 축 선택 바 (사용자 2026-06-22) — 검색 대신 칩 클릭으로 리뷰 */
-.country-bar,.region-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
-.country-chip,.region-chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
-.country-chip:hover,.region-chip:hover{border-color:var(--accent)}
-.country-chip.active,.region-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-.country-chip em,.region-chip em{font-style:normal;opacity:.6;margin-left:3px;font-size:11px}
-.country-chip.active em,.region-chip.active em{opacity:.85}
+/* 산업별·국가별·지역별 탭 축 선택 바 (사용자 2026-06-22) — 검색 대신 칩 클릭 리뷰 */
+.country-bar,.region-bar,.industry-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.country-chip,.region-chip,.industry-chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
+.country-chip:hover,.region-chip:hover,.industry-chip:hover{border-color:var(--accent)}
+.country-chip.active,.region-chip.active,.industry-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.country-chip em,.region-chip em,.industry-chip em{font-style:normal;opacity:.6;margin-left:3px;font-size:11px}
+.country-chip.active em,.region-chip.active em,.industry-chip.active em{opacity:.85}
+/* 매트릭스 행/열 축 선택 바 (사용자 2026-06-22) — 품목·회사·국가·지역 2축 조합 */
+.mx-axisbar{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+.mx-axis-grp{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+.mx-axis-lab{font-size:12px;color:var(--text-sub);margin-right:2px}
+.mx-axis-chip{padding:4px 10px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:13px;font-size:12px;cursor:pointer}
+.mx-axis-chip:hover{border-color:var(--accent)}
+.mx-axis-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .view{display:none;padding:12px}
 .view.active{display:block}
 .section{background:var(--surface);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
@@ -1731,7 +1752,7 @@ function hideModal(){
 }
 
 // --- state + filter ---
-const state={dir:'',status:'',q:'',onlynew:'',country:'',region:''};
+const state={dir:'',status:'',q:'',onlynew:'',country:'',region:'',industry:'',mxRow:'item',mxCol:'country'};
 function matches(a){
   if(!isLatest(a))return false;  // views render the latest of each dedup_key
   if(state.dir&&a.dir!==state.dir)return false;
@@ -1739,7 +1760,7 @@ function matches(a){
   if(state.onlynew&&!isAlertNew(a))return false;  // 🆕 최근 7일 게시 카드만
   if(state.q){
     const q=state.q.toLowerCase();
-    const hay=(a.item+' '+a.region+' '+a.country+' '+(a.countries||[]).join(' ')+' '+(a.regions||[]).join(' ')+' '+(a.stocks||[]).join(' ')).toLowerCase();
+    const hay=(a.item+' '+a.region+' '+a.country+' '+(a.industry||'')+' '+(a.countries||[]).join(' ')+' '+(a.regions||[]).join(' ')+' '+(a.stocks||[]).join(' ')).toLowerCase();
     if(!hay.includes(q))return false;
   }
   return true;
@@ -1798,53 +1819,71 @@ function buildItemsView(filtered){
   }).join('');
 }
 
-// Item × country matrix view. One row per item, one column per
-// country (sorted by total alerts desc), cell color = number of
-// distinct alerts for that pair. Clicking a cell opens the latest
-// alert for that (item, country) pair as a modal.
+// 다축 매트릭스 (사용자 2026-06-22) — 행/열 축을 품목·회사·국가·지역 중 선택.
+// 셀=그 (행값,열값) alert 수, 색 진하기=빈도, 셀 클릭→최신 alert. 5개 동시는 2D
+// 표라 불가 → 임의 2축 조합(국가×지역 등). 산업은 매핑 신뢰도 낮아 축에서 제외
+// (CSV 로는 industry 포함 전 축 export 가능). 각 축 값은 axisVals 로 다중 분해.
+const _MX_AXES={item:'품목',company:'회사',country:'국가',region:'지역'};
+function axisVals(a, axis){
+  if(axis==='company'){const c=a.companies||a.stocks||[];return c.length?c:['(기타)'];}
+  if(axis==='country'){return (a.countries&&a.countries.length)?a.countries:[a.country||'전국'];}
+  if(axis==='region'){return (a.regions&&a.regions.length)?a.regions:[a.region||'전국'];}
+  return [a.item||'-'];                       // item (기본)
+}
+function _mxAxisBar(role,sel){
+  // role='row'|'col'. 같은 축이 양쪽에 동시 선택되지 않게 반대축과 다른 것만 활성표시.
+  return '<span class="mx-axis-grp" data-role="'+role+'">'+
+    '<span class="mx-axis-lab">'+(role==='row'?'행':'열')+':</span>'+
+    Object.keys(_MX_AXES).map(function(k){
+      return '<button class="mx-axis-chip'+(sel===k?' active':'')+'" data-role="'+role+'" data-axis="'+k+'">'+_MX_AXES[k]+'</button>';
+    }).join('')+'</span>';
+}
 function buildMatrixView(filtered){
+  const rowAx=_MX_AXES[state.mxRow]?state.mxRow:'item';
+  let colAx=_MX_AXES[state.mxCol]?state.mxCol:'country';
+  if(colAx===rowAx)colAx=(rowAx==='item')?'country':'item';   // 같은 축이면 자동 분리
+  const bar='<div class="mx-axisbar">'+_mxAxisBar('row',rowAx)+_mxAxisBar('col',colAx)+'</div>';
   const pivot={};
-  const itemTotals={};
-  const countryTotals={};
   filtered.forEach(a=>{
-    const country=a.country||'전국';
-    pivot[a.item]=pivot[a.item]||{};
-    (pivot[a.item][country]=pivot[a.item][country]||[]).push(a);
-    itemTotals[a.item]=(itemTotals[a.item]||0)+1;
-    countryTotals[country]=(countryTotals[country]||0)+1;
+    const rs=axisVals(a,rowAx), cs=axisVals(a,colAx);
+    rs.forEach(r=>{
+      pivot[r]=pivot[r]||{};
+      cs.forEach(c=>{(pivot[r][c]=pivot[r][c]||[]).push(a)});
+    });
   });
-  const items=Object.keys(itemTotals).sort((x,y)=>itemTotals[y]-itemTotals[x]||x.localeCompare(y));
-  const countries=Object.keys(countryTotals).sort((x,y)=>countryTotals[y]-countryTotals[x]||x.localeCompare(y));
-
-  if(!items.length||!countries.length){
-    return '<div class="empty">조건에 맞는 데이터가 없습니다.</div>';
+  // 행/열 합계 = 셀(=교차쌍별 alert) 합. 셀에서 재계산해 다중축 중복도 정확 반영.
+  const rowTot={}, colTot={};
+  Object.keys(pivot).forEach(r=>Object.keys(pivot[r]).forEach(c=>{
+    const n=pivot[r][c].length;
+    rowTot[r]=(rowTot[r]||0)+n; colTot[c]=(colTot[c]||0)+n;
+  }));
+  const rows=Object.keys(rowTot).sort((x,y)=>rowTot[y]-rowTot[x]||x.localeCompare(y));
+  const cols=Object.keys(colTot).sort((x,y)=>colTot[y]-colTot[x]||x.localeCompare(y));
+  if(!rows.length||!cols.length){
+    return bar+'<div class="empty">조건에 맞는 데이터가 없습니다.</div>';
   }
-
-  // Cell color scales with frequency vs the section max so the
-  // densest pair is fully saturated and sparse pairs fade out.
   let maxCell=1;
-  items.forEach(i=>countries.forEach(c=>{const v=(pivot[i][c]||[]).length;if(v>maxCell)maxCell=v}));
+  rows.forEach(i=>cols.forEach(c=>{const v=(pivot[i][c]||[]).length;if(v>maxCell)maxCell=v}));
   function cellColor(n){
     if(!n)return 'transparent';
-    const ratio=n/maxCell;
-    const op=(0.15+ratio*0.85).toFixed(2);
+    const op=(0.15+n/maxCell*0.85).toFixed(2);
     return 'rgba(0,113,227,'+op+')';
   }
-
-  const head='<thead><tr><th class="row-head">품목 \\ 국가</th>'+
-    countries.map(c=>'<th class="col-head"><span>'+esc(c)+'</span><em>'+countryTotals[c]+'</em></th>').join('')+
+  const head='<thead><tr><th class="row-head">'+esc(_MX_AXES[rowAx])+' \\ '+esc(_MX_AXES[colAx])+'</th>'+
+    cols.map(c=>'<th class="col-head"><span>'+esc(c)+'</span><em>'+colTot[c]+'</em></th>').join('')+
     '</tr></thead>';
-  const body='<tbody>'+items.map(i=>{
-    const cells=countries.map(c=>{
+  const body='<tbody>'+rows.map(i=>{
+    const cells=cols.map(c=>{
       const alerts=pivot[i][c]||[];
       if(!alerts.length)return '<td class="cell empty-cell"></td>';
-      const latest=alerts.sort((a,b)=>(b.posted_at||'').localeCompare(a.posted_at||''))[0];
+      const latest=alerts.slice().sort((a,b)=>(b.posted_at||'').localeCompare(a.posted_at||''))[0];
       return '<td class="cell" data-id="'+latest.id+'" style="background:'+cellColor(alerts.length)+'">'+alerts.length+'</td>';
     }).join('');
-    return '<tr><th class="row-head">'+esc(i)+' <em>'+itemTotals[i]+'</em></th>'+cells+'</tr>';
+    return '<tr><th class="row-head">'+esc(i)+' <em>'+rowTot[i]+'</em></th>'+cells+'</tr>';
   }).join('')+'</tbody>';
-
-  return '<div class="matrix-meta">'+items.length+'개 품목 × '+countries.length+'개 국가 (셀 = (품목·국가) 알림 수, 색 진하기 = 빈도). 셀 클릭 → 최신 alert 모달.</div>'+
+  return bar+
+    '<div class="matrix-meta">'+rows.length+'개 '+esc(_MX_AXES[rowAx])+' × '+cols.length+'개 '+esc(_MX_AXES[colAx])+
+    ' (셀 = 알림 수, 색 진하기 = 빈도). 셀 클릭 → 최신 alert. 다른 축 조합은 위 행/열 버튼, 전체 축은 📥 CSV.</div>'+
     '<div class="matrix-scroll"><table class="matrix-table">'+head+body+'</table></div>';
 }
 
@@ -1926,13 +1965,21 @@ function buildCompaniesView(filtered){
 // 한 alert 이 여러 값을 달면 각 섹션에 모두 포함. 값 미상은 '전국'. 칩 바로 검색
 // 없이 클릭 리뷰(state[sk]). 필터(수출/수입/잠정/확정/🆕신규)는 전역 matches() 가
 // 이미 적용한 filtered 를 받으므로 칩 목록·카운트도 그에 맞춰 자동 갱신.
-function buildGroupedAxisView(filtered, field, multi, sk, cls, emptyMsg){
+function buildGroupedAxisView(filtered, field, multi, sk, cls, emptyMsg, fallback, sinkLabel){
+  const fb=fallback||'전국';                  // 값 미상 버킷(국가/지역=전국, 산업=미분류)
   const by={};
   filtered.forEach(a=>{
-    const vs=(a[multi]&&a[multi].length)?a[multi]:[a[field]||'전국'];
-    vs.forEach(v=>{const k=v||'전국';(by[k]=by[k]||[]).push(a)});
+    const vs=(a[multi]&&a[multi].length)?a[multi]:[a[field]||fb];
+    vs.forEach(v=>{const k=v||fb;(by[k]=by[k]||[]).push(a)});
   });
-  const entries=Object.entries(by).sort((x,y)=>y[1].length-x[1].length||x[0].localeCompare(y[0]));
+  // 빈도순. sinkLabel(예: 미분류)은 카운트 무관 항상 맨 아래.
+  const entries=Object.entries(by).sort((x,y)=>{
+    if(sinkLabel){
+      if(x[0]===sinkLabel&&y[0]!==sinkLabel)return 1;
+      if(y[0]===sinkLabel&&x[0]!==sinkLabel)return -1;
+    }
+    return y[1].length-x[1].length||x[0].localeCompare(y[0]);
+  });
   if(!entries.length)return '<div class="empty">'+emptyMsg+'</div>';
   const names=entries.map(e=>e[0]);
   const active=names.includes(state[sk])?state[sk]:'';            // 결과에 없으면 전체 폴백
@@ -1966,6 +2013,10 @@ function buildCountriesView(filtered){
 }
 function buildRegionsView(filtered){
   return buildGroupedAxisView(filtered,'region','regions','region','region','조건에 맞는 지역이 없습니다.');
+}
+// 산업별 — 품목→산업 매핑(미해석=미분류). 산업명 빈도순 + '미분류'는 항상 맨 아래.
+function buildIndustriesView(filtered){
+  return buildGroupedAxisView(filtered,'industry','industries','industry','industry','조건에 맞는 산업이 없습니다.','미분류','미분류');
 }
 
 function renderHeaderMeta(){
@@ -2001,8 +2052,8 @@ function renderHeaderMeta(){
 // (사용자 2026-06-15 '카드 클릭 너무 오래'). 이제 활성 탭만 빌드하고 나머지
 // 두 뷰는 '더티' 표시 후 탭 전환 시 빌드 → DOM 1×1054 로 1/3. CSV·모달은
 // ALERTS/ALERT_BY_ID(데이터)를 직접 읽어 DOM 무관이라 lazy 해도 안전.
-const _CLIENT_VIEWS={items:buildItemsView,companies:buildCompaniesView,countries:buildCountriesView,regions:buildRegionsView,matrix:buildMatrixView};
-let _viewDirty={items:true,companies:true,countries:true,regions:true,matrix:true};
+const _CLIENT_VIEWS={industries:buildIndustriesView,items:buildItemsView,companies:buildCompaniesView,countries:buildCountriesView,regions:buildRegionsView,matrix:buildMatrixView};
+let _viewDirty={industries:true,items:true,companies:true,countries:true,regions:true,matrix:true};
 // 별도파일 lazy fetch (2026-06-16 '느려') — 산업트렌드(588 SVG ~7MB)를 index.html
 // 인라인 대신 industry_panel.html 로 빼 탭 첫 열 때만 fetch. 초기 로딩 11MB→~3MB.
 // data-src 없는 뷰(인라인/클라이언트)는 무시. 실패 시 재시도 가능하게 loaded 해제.
@@ -2029,7 +2080,7 @@ function _lazyFetchView(view){
 let _lastFiltered=[];
 function _activeTab(){
   const a=document.querySelector('.tab.active');
-  return a?a.dataset.tab:'items';
+  return a?a.dataset.tab:'industries';
 }
 function _buildView(name){
   const fn=_CLIENT_VIEWS[name];
@@ -2041,8 +2092,8 @@ function _buildView(name){
 function render(){
   _lastFiltered=ALERTS.filter(matches);
   document.getElementById('visible-count').textContent=_lastFiltered.length;
-  // 클라 5뷰 전부 더티 표시 → 활성 뷰만 즉시 빌드, 나머지는 탭 전환 때.
-  _viewDirty={items:true,companies:true,countries:true,regions:true,matrix:true};
+  // 클라 6뷰 전부 더티 표시 → 활성 뷰만 즉시 빌드, 나머지는 탭 전환 때.
+  _viewDirty={industries:true,items:true,companies:true,countries:true,regions:true,matrix:true};
   _buildView(_activeTab());                           // industry/heatmap 이면 no-op (정상)
   filterIndustryCards();                              // 산업트렌드 탭도 검색 (2026-06-12)
   if(window.hmFilter) window.hmFilter(state.q||'');   // 히트맵 탭도 검색
@@ -2159,14 +2210,23 @@ document.querySelectorAll('.chip').forEach(chip=>{
 // 좁히기. 칩은 빌더가 매번 다시 그리므로 위임(delegated) 처리. 다른 탭/뷰엔 영향
 // 없음(state.country/region 은 해당 빌더만 읽음). 같은 칩 재클릭=전체(토글).
 document.addEventListener('click',function(e){
-  const cc=e.target.closest('.country-chip,.region-chip');
+  const cc=e.target.closest('.country-chip,.region-chip,.industry-chip');
   if(!cc)return;
-  const isRegion=cc.classList.contains('region-chip');
-  const sk=isRegion?'region':'country', view=isRegion?'regions':'countries';
+  const sk=cc.classList.contains('region-chip')?'region'
+          :cc.classList.contains('industry-chip')?'industry':'country';
+  const view={country:'countries',region:'regions',industry:'industries'}[sk];
   const v=cc.dataset[sk]||'';
   state[sk]=(state[sk]===v)?'':v;             // 토글 — 선택값 재클릭 시 전체로
   _viewDirty[view]=true;
   _buildView(view);                           // 전역 필터 불변 → 이 뷰만 재빌드
+});
+// 매트릭스 행/열 축 선택 (사용자 2026-06-22) — 품목·회사·국가·지역 임의 2축 조합.
+document.addEventListener('click',function(e){
+  const ab=e.target.closest('.mx-axis-chip');
+  if(!ab)return;
+  state[ab.dataset.role==='row'?'mxRow':'mxCol']=ab.dataset.axis;
+  _viewDirty.matrix=true;
+  _buildView('matrix');                       // 전역 필터 불변 → 매트릭스만 재빌드
 });
 let qTimer;
 document.getElementById('q').addEventListener('input',e=>{
@@ -2306,7 +2366,7 @@ function downloadCSV(){
   const today=kstTodayString();
   const headers=[
     'id','dedup_key','direction','status','title_kind',
-    'item','item_raw','is_composite','composite_parts',
+    'item','item_raw','industry','is_composite','composite_parts',
     'region','country','regions','countries',
     'stocks','stocks_meta','has_etc',
     'period_start','period_end','period_kind',
@@ -2320,7 +2380,7 @@ function downloadCSV(){
     const days=expectedFinal?daysBetween(today,expectedFinal):'';
     rows.push([
       a.id,a.dedup_key,a.dir,a.status,a.title_kind,
-      a.item,a.item_raw,a.is_composite?1:0,(a.composite_parts||[]).join(';'),
+      a.item,a.item_raw,a.industry||'',a.is_composite?1:0,(a.composite_parts||[]).join(';'),
       a.region,a.country,(a.regions||[]).join(';'),(a.countries||[]).join(';'),
       (a.stocks||[]).join(';'),metaPairsToString(a.stocks_meta),a.has_etc?1:0,
       a.period_start,a.period_end,a.period_kind,
