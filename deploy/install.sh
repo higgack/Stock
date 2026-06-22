@@ -61,7 +61,8 @@ for unit in \
     portfolio-watch.service         portfolio-watch.timer \
     watchlist-check.service         watchlist-check.timer \
     dart-feed.service               dart-feed.timer \
-    highlow-scan.service            highlow-scan.timer ;
+    highlow-scan.service            highlow-scan.timer \
+    trend-precompute.service        trend-precompute.timer ;
 do
     if [ -f "$DEPLOY_DIR/$unit" ]; then
         install -m 0644 "$DEPLOY_DIR/$unit" /etc/systemd/system/
@@ -191,6 +192,10 @@ if [ -f "$DEPLOY_DIR/highlow-scan.timer" ]; then
     # 52주 신고저 슬롯 스캐너 — 봇 배포와 독립(사용자 2026-06-19). enable --now 로
     # 타이머 가동(부팅·배포 후에도 :00/:15/:30/:45 지속).
     systemctl enable --now highlow-scan.timer
+fi
+if [ -f "$DEPLOY_DIR/trend-precompute.timer" ]; then
+    # KR 추세 템플릿(Minervini) 사전계산 — 평일 16:30 KST(사용자 2026-06-23).
+    systemctl enable --now trend-precompute.timer
 fi
 if [ -f "$DEPLOY_DIR/trade-bot-update.timer" ]; then
     systemctl enable --now trade-bot-update.timer
