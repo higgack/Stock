@@ -115,6 +115,12 @@ class TestDashboardRenderer(unittest.TestCase):
             "탭 순서가 회사별<국가별<매트릭스 가 아님")
         # 다중국가 검색 hay 에 countries 포함(다중국가 alert 도 국가검색에 잡힘)
         self.assertIn("(a.countries||[]).join(' ')", html)
+        # 국가 선택 버튼 바 (사용자 2026-06-22) — 검색 대신 칩 클릭으로 국가 리뷰.
+        self.assertIn("country-bar", html)
+        self.assertIn("data-country=", html)
+        self.assertIn("class=\"country-chip", html)
+        self.assertIn("closest('.country-chip')", html)
+        self.assertIn("country:''", html)   # state 에 국가 서브필터 추가
 
     def test_filter_controls_exist(self):
         html = render_html(self.db_path)

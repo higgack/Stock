@@ -1144,6 +1144,13 @@ tr.ind-mti-d>td{background:var(--surface);padding:10px 12px}
 .chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
 .chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .count{margin-top:7px;font-size:11px;color:var(--text-sub)}
+/* 국가별 탭 국가 선택 바 (사용자 2026-06-22) — 검색 대신 칩 클릭으로 국가 리뷰 */
+.country-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.country-chip{padding:5px 11px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:14px;font-size:12px;cursor:pointer}
+.country-chip:hover{border-color:var(--accent)}
+.country-chip.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.country-chip em{font-style:normal;opacity:.6;margin-left:3px;font-size:11px}
+.country-chip.active em{opacity:.85}
 .view{display:none;padding:12px}
 .view.active{display:block}
 .section{background:var(--surface);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
@@ -1720,7 +1727,7 @@ function hideModal(){
 }
 
 // --- state + filter ---
-const state={dir:'',status:'',q:'',onlynew:''};
+const state={dir:'',status:'',q:'',onlynew:'',country:''};
 function matches(a){
   if(!isLatest(a))return false;  // views render the latest of each dedup_key
   if(state.dir&&a.dir!==state.dir)return false;
@@ -1918,16 +1925,28 @@ function buildCountriesView(filtered){
     const cs=(a.countries&&a.countries.length)?a.countries:[a.country||'전국'];
     cs.forEach(c=>{const k=c||'전국';(byCountry[k]=byCountry[k]||[]).push(a)});
   });
-  let sorted=Object.entries(byCountry).sort((x,y)=>y[1].length-x[1].length||x[0].localeCompare(y[0]));
-  // RULE: 검색어가 국가명을 직접 매칭하면 그 섹션만으로 좁힌다(회사별과 동일
-  // 패턴). 아니면 alert 내용 매칭(예: '라면')은 전역 matches() 가 이미 처리.
-  if(state.q){
+  const entries=Object.entries(byCountry).sort((x,y)=>y[1].length-x[1].length||x[0].localeCompare(y[0]));
+  if(!entries.length)return '<div class="empty">조건에 맞는 국가가 없습니다.</div>';
+  // 국가 선택 버튼 바 (사용자 2026-06-22) — 어떤 국가가 있는지 한눈에 보고 검색
+  // 대신 칩 클릭으로 리뷰. '전체' + 국가별(빈도순) 칩, state.country 로 한 국가만
+  // 보기. 현재 필터(수출/수입/잠정/확정/신규) 결과에 맞춰 국가 목록·카운트가 갱신됨.
+  const names=entries.map(e=>e[0]);
+  const active=names.includes(state.country)?state.country:'';   // 결과에 없으면 전체 폴백
+  const chips='<div class="country-bar">'+
+    '<button class="country-chip'+(active===''?' active':'')+'" data-country="">전체 <em>'+entries.length+'</em></button>'+
+    entries.map(([n,arr])=>'<button class="country-chip'+(active===n?' active':'')+'" data-country="'+esc(n)+'">'+esc(n)+' <em>'+arr.length+'</em></button>').join('')+
+  '</div>';
+  // 표시 섹션 선택: 국가 칩이 선택돼 있으면 그 국가만, 아니면 검색어가 국가명을
+  // 직접 매칭하면 그 섹션만(회사별 스마트검색과 동일), 둘 다 아니면 전부.
+  let sorted=entries;
+  if(active){
+    sorted=entries.filter(([n])=>n===active);
+  }else if(state.q){
     const q=state.q.toLowerCase();
-    const direct=sorted.filter(([n])=>n.toLowerCase().includes(q));
+    const direct=entries.filter(([n])=>n.toLowerCase().includes(q));
     if(direct.length)sorted=direct;
   }
-  if(!sorted.length)return '<div class="empty">조건에 맞는 국가가 없습니다.</div>';
-  return sorted.map(([name,items])=>{
+  return chips+sorted.map(([name,items])=>{
     // 회사별과 동일: 같은 품목끼리 묶고(localeCompare), 그 안에서 전국-tier +
     // posted_at desc. 같은 alert 이 국가 섹션 안에서 중복되진 않음(국가당 1회 push).
     items.sort((a,b)=>
@@ -2126,6 +2145,17 @@ document.querySelectorAll('.chip').forEach(chip=>{
     state[g.dataset.key]=chip.dataset.val;
     render();
   });
+});
+// 국가별 탭 국가 선택 칩 (사용자 2026-06-22) — 검색 대신 클릭으로 국가 좁히기.
+// 칩은 buildCountriesView 가 매번 다시 그리므로 위임(delegated) 처리. 다른 탭/
+// 뷰엔 영향 없음(state.country 는 buildCountriesView 만 읽음). 같은 칩 재클릭=전체.
+document.addEventListener('click',function(e){
+  const cc=e.target.closest('.country-chip');
+  if(!cc)return;
+  const v=cc.dataset.country||'';
+  state.country=(state.country===v)?'':v;     // 토글 — 선택국 재클릭 시 전체로
+  _viewDirty.countries=true;
+  _buildView('countries');                    // 전역 필터 불변 → 이 뷰만 재빌드
 });
 let qTimer;
 document.getElementById('q').addEventListener('input',e=>{
