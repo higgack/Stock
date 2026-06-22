@@ -264,6 +264,12 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
         log.warning("ecos: series fetch failed for %s: %s", key, exc)
         return []
     if "RESULT" in payload and "StatisticSearch" not in payload:
+        # silent-fail 금지(사용자 2026-06-23 '카드 빠짐 왜?'): ECOS RESULT 에러
+        # (잘못된 table/item·키한도·데이터없음)를 로그로 가시화 — 카드가 조용히
+        # 드롭되던 근본원인 추적용. CODE/MESSAGE 그대로 노출.
+        _r = payload.get("RESULT") or {}
+        log.warning("ecos: %s RESULT %s — %s (table=%s item=%s)", key,
+                    _r.get("CODE"), _r.get("MESSAGE"), cfg.get("table"), cfg.get("item"))
         return []
     rows = payload.get("StatisticSearch", {}).get("row") or []
     points: list[tuple[str, float]] = []

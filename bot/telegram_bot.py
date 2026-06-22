@@ -1080,7 +1080,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /help /usage /portfolio /screener_list /sites /blog — 비용: /screener·daily_byte·cheongyak·realestate_cost
 /티커 — 단일 분석 (예: /NVDA · /005930.KS · 한국은 종목명 /삼성전자)
 /compare NVDA AMD — 두 종목 비교
-/screen [us|jp] [조건 | 프리셋] [fresh] — 조건부 스크리너 (KR/US/JP, ₩0) · 프리셋 minervini/valueup · fresh=캐시무시 · /screen list
+/screen [us|jp|hk|cn|tw] [조건 | 프리셋] [fresh] — 조건부 스크리너 (KR/US/JP/HK/CN/TW, ₩0) · 프리셋 minervini/valueup · fresh=캐시무시 · /screen list
 /screener [도메인 | 자유어] — Bottleneck (67도메인+L4세분+자유어) · 전체 /screener_list
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 알림 (rsi/price/sma/52w/earnings·KR수급) · /watchlist · /unwatch
 /dart_alert on|off — 관심종목(KR) 새 DART 공시 알림
@@ -2226,21 +2226,24 @@ async def _handle_screen(args: list[str], send) -> None:
         format_result_message, save_screen_archive,
     )
 
+    # 시장 접두 — us/jp/hk/cn/tw (cn→내부코드 CN_A). 해외는 yfinance 개별 조회.
+    _PFX = {"us": "US", "jp": "JP", "hk": "HK", "cn": "CN_A", "tw": "TW"}
+    _LBL = {"US": "🇺🇸 S&amp;P 500", "JP": "🇯🇵 닛케이225격", "HK": "🇭🇰 홍콩",
+            "CN_A": "🇨🇳 본토", "TW": "🇹🇼 대만"}
     market = "KR"
     tokens = raw.split(None, 1)
-    if tokens and tokens[0].lower() in ("us", "jp"):
-        market = tokens[0].upper()
+    if tokens and tokens[0].lower() in _PFX:
+        market = _PFX[tokens[0].lower()]
         raw = tokens[1] if len(tokens) > 1 else ""
         if not raw:
-            _ex = "us PER&lt;15 DIV&gt;2" if market == "US" else "jp minervini"
-            await send(f"⚠️ 조건을 입력하세요. 예: <code>/screen {_ex}</code>")
+            await send(f"⚠️ 조건을 입력하세요. 예: <code>/screen {tokens[0].lower()} minervini</code>")
             return
 
     preset = PRESETS.get(raw.lower())
     if preset:
         cond_text = preset["conditions"]
         _esc = cond_text.replace("<", "&lt;").replace(">", "&gt;")
-        label = {"US": "🇺🇸 S&amp;P 500", "JP": "🇯🇵 닛케이225격"}.get(market, "🇰🇷 KR")
+        label = _LBL.get(market, "🇰🇷 KR")
         await send(
             f"📊 <b>조건부 스크리너</b> ({label}) — {preset['name']}\n"
             f"조건: <code>{_esc}</code>\n⏱ 실행 중..."
@@ -2256,9 +2259,8 @@ async def _handle_screen(args: list[str], send) -> None:
 
     cond_display = " · ".join(c.display() for c in conditions)
     if not preset:
-        label = {"US": "🇺🇸 S&amp;P 500", "JP": "🇯🇵 닛케이225격"}.get(market, "🇰🇷 KR")
-        wait_note = (" (yfinance 개별 조회, ~1-2분 소요)"
-                     if market in ("US", "JP") else "")
+        label = _LBL.get(market, "🇰🇷 KR")
+        wait_note = " (yfinance 개별 조회, ~1-2분 소요)" if market != "KR" else ""
         await send(
             f"📊 <b>조건부 스크리너</b> ({label})\n"
             f"조건: <code>{cond_display}</code>\n⏱ 실행 중...{wait_note}"
