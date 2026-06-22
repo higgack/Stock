@@ -366,6 +366,27 @@ class ItemModeTests(unittest.TestCase):
         self.assertIsNone(res2["hs_pv"])
         self.assertNotIn("판가 vs 물량 분해", C.render_free(res2))
 
+    def test_item_commentary_reused_from_industry(self):
+        # HS 검색 품목별 해설이 산업트렌드 카드와 동일 생성기(industry.item_comment_html)
+        # 재사용 (사용자 2026-06-22 '밑에 표처럼 코멘트'). 요약·신호·단가·스크리닝.
+        from trade import industry as I
+        months = {f"2025-{m:02d}": 100 for m in range(1, 13)}
+        months.update({f"2026-{m:02d}": 300 + m * 40 for m in range(1, 6)})  # 급증
+        wgts = {ym: max(1, v // 50) for ym, v in months.items()}
+        node = {"name": "디램", "industry": "반도체", "months": months, "wgts": wgts}
+        cmt = I.item_comment_html(node, "수출")
+        self.assertIn("ind-summary", cmt)              # 요약 <p>
+        self.assertTrue(("누적진도율" in cmt) or ("동력" in cmt) or ("G" in cmt))
+        # 빈 노드 → '' (graceful)
+        self.assertEqual(I.item_comment_html({}, "수출"), "")
+        # _hs_code_search 가 상위 품목에 comment 부착 + 렌더 섹션
+        by_mti = {"831210": node}
+        res = C._hs_code_search("854231", by_mti, [])
+        commented = [it for it in res["items"] if it.get("comment")]
+        self.assertTrue(commented)
+        self.assertNotIn("_m6", res["items"][0])       # 내부 키 제거
+        self.assertIn("품목별 해설", C.render_free(res))
+
     def test_pv_aggregate_at_heading_level(self):
         # 광역(호/챕터) 검색도 prefix 하위 leaf 합산해 분해 (사용자 2026-06-22
         # '각 HS 자릿수에 모두'). 8542.31(=854231) → 그 아래 leaf 2개 금액·중량 합산.

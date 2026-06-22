@@ -708,6 +708,30 @@ def _unit_str(v) -> str:
 _CARD_RICH_CURATION = True
 
 
+def item_comment_html(node: dict, amt_th: str = "수출") -> str:
+    """MTI 노드({months,wgts}) → 산업트렌드 카드와 **동일한** 해설 HTML 블록:
+    요약(3M YoY 수준) + 신호(가속/둔화) + 💲단가(전년동월) + 📊스크리닝(G그룹·동력
+    P/Q·분기 진도율·★장기우상향). 기업 보고서 HS 검색이 개별 품목에서도 같은
+    코멘트를 보게 재사용 (사용자 2026-06-22 '밑에 표처럼 코멘트'). 데이터/중량 부족
+    조각은 생략(graceful). 빈 데이터 → ''. 순수(파일 I/O 없음)."""
+    months = (node or {}).get("months") or {}
+    if not months:
+        return ""
+    pts = industry_series({"_": months}).get("_") or []
+    if not pts:
+        return ""
+    _attach_units(pts, (node or {}).get("wgts") or {})
+    interp = interpret(pts)
+    summary = (f"<p class='ind-summary'>{_html.escape(interp['summary'])}</p>"
+               if interp["summary"] else "")
+    note = ""
+    if interp["signal_label"]:
+        note = (f"<p class='ind-signal'><b>{_html.escape(interp['signal_label'])}</b>"
+                f" · {_html.escape(interp['signal_text'])}</p>")
+    extra = _mti_extras(node, pts, amt_th)
+    return summary + note + extra
+
+
 def _mti_extras(node: dict, pts: list[dict], amt_th: str,
                 mti6: str = "", channel: list[str] | None = None,
                 extra_cos: list[str] | None = None) -> str:

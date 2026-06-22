@@ -455,9 +455,24 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
         rows.append({"item": item, "industry": ind,
                      "export_usd": _latest(node), "import_usd": _latest(imp_node),
                      **_dir_metrics(node, imp_node), "companies": cos,
-                     "hs_linked": True})
+                     "hs_linked": True, "_m6": m6})
         _add(cos)
     rows.sort(key=lambda x: -(x["export_usd"] or 0))
+    # 품목별 해설 — 산업트렌드 카드와 **동일한** 코멘트(요약·신호·단가·G그룹·동력
+    # P/Q·분기 진도율)를 상위 5개 품목에 부착(사용자 2026-06-22 '밑에 표처럼 코멘트').
+    # industry.item_comment_html 재사용(드리프트 0). 방향=최신월 큰 쪽(수출/수입).
+    try:
+        from trade import industry as _ind
+        for r in rows[:5]:
+            _m6 = r.get("_m6")
+            _en, _im = (by_mti or {}).get(_m6), (by_imp or {}).get(_m6)
+            _is_imp = (_latest(_im) or 0) > (_latest(_en) or 0)
+            r["comment"] = _ind.item_comment_html(_im if _is_imp else _en,
+                                                  "수입" if _is_imp else "수출")
+    except Exception as exc:
+        log.warning("hs_code_search comment: %s", exc)
+    for r in rows:
+        r.pop("_m6", None)
     # 판가/물량 분해 — 검색 prefix(2/4/6/8/10) 하위 전 leaf 의 금액·중량 합산 →
     # 단가($/kg)=합산금액÷합산중량 (사용자 2026-06-22 '각 HS 자릿수에 모두'). 정확
     # HS10 이면 단일 leaf, 광역(2/4)은 혼합 가중평균 단가(렌더가 'N개 합산' 라벨).
@@ -670,7 +685,24 @@ def _render_free_item(data: dict) -> str:
             subtitle="· 수출·수입 추세(YoY·ΔYoY·MoM·ΔMoM) · 최신월 수출액순")
     else:
         items_html = ''
-    return f'<div style="line-height:1.5">{head}{comp_html}{items_html}</div>'
+    # 📋 품목별 해설 — 산업트렌드 카드와 동일한 코멘트(요약·신호·단가·G그룹·동력·
+    # 분기 진도율)를 상위 품목에 (사용자 2026-06-22 '밑에 표처럼 코멘트'). 코멘트
+    # 있는 품목만, 상위 5개.
+    cmt_rows = [it for it in items if (it.get("comment") or "").strip()][:5]
+    commentary = ''
+    if cmt_rows:
+        blocks = "".join(
+            f'<div style="margin:8px 0;padding:8px 10px;background:var(--surface-2,#15181f);'
+            f'border:1px solid var(--border-soft,#2a2e37);border-radius:8px">'
+            f'<div style="font-weight:600;margin-bottom:2px">{e(it.get("item") or "")}'
+            f'{(" · " + e(it["industry"])) if it.get("industry") else ""}</div>'
+            f'{it["comment"]}</div>'
+            for it in cmt_rows)
+        commentary = ('<div style="font-weight:600;margin:14px 0 4px">📋 품목별 해설 '
+                      '<span style="font-size:12px;color:#9aa0aa;font-weight:400">'
+                      '· 산업트렌드 동일(요약·동력 P/Q·분기 진도율)</span></div>'
+                      + blocks)
+    return f'<div style="line-height:1.5">{head}{comp_html}{items_html}{commentary}</div>'
 
 
 def render_free(data: dict) -> str:
