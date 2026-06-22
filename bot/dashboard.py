@@ -7793,7 +7793,7 @@ noahConsoleSetup({
 noahConsoleSetup({
   inputId: 'cs-search', btnId: 'cs-run', statusId: 'cs-status', panelId: 'scr-cmd-panel',
   runKind: 'screen', requireQuery: true,
-  emptyMsg: '실행할 조건 또는 프리셋을 입력하세요.\n예: PER<15 PBR<1 · us PER<15 · valueup · minervini · 트렌드템플릿>=1\n(전체 지표는 제목 옆 📖 설명서)\n또는 / 명령 (예: /usage · /screener_list)',
+  emptyMsg: '실행할 조건 또는 프리셋을 입력하세요.\n예: PER<15 PBR<1 · us PER<15 · valueup · minervini · 트렌드템플릿>=1\n뒤에 fresh 붙이면 캐시 무시 강제 재실행 (예: minervini fresh)\n(전체 지표는 제목 옆 📖 설명서)\n또는 / 명령 (예: /usage · /screener_list)',
   confirmText: '조건부 스크리너를 실행할까요?\n· KR 수초~수십초 · us 는 ~1-2분 · 비용 ₩0\n· 결과: 텔레그램 채널 + 이 페이지(자동 갱신)',
   okMsg: '조건부 스크리너 요청 접수 — 결과는 텔레그램 채널과 이 페이지에 게시됩니다.'
 });

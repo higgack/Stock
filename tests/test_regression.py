@@ -12491,3 +12491,18 @@ class TestMinerviniScreener:
         # 기존 조건 회귀 없음
         cs2 = s.parse_conditions("PER<15 배당수익률>3")
         assert {c.metric_key for c in cs2} == {"per", "div"}
+
+    def test_screen_cache_has_ttl(self, tmp_path, monkeypatch):
+        # 영구캐시 고착 방지(사용자 2026-06-23 '또 0종목·💾캐시') — 6h TTL.
+        import time
+        import os as _os
+        import bot.stock_screener as s
+        monkeypatch.setattr(s, "_CACHE_DIR", tmp_path)
+        k = "__ttl_regr__"
+        s._save_cache(k, {"hits": [], "total_universe": 1, "note": "x"})
+        assert s._load_cache(k) is not None                 # 신선 → 로드
+        p = s._cache_path(k)
+        old = time.time() - (s._SCREEN_CACHE_TTL + 600)      # TTL 초과
+        _os.utime(p, (old, old))
+        assert s._load_cache(k) is None                      # 만료 → 재실행
+        assert s._SCREEN_CACHE_TTL > 0
