@@ -7268,7 +7268,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
         '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> '
         '· <code>/screen valueup</code> · <code>/screen list</code></p>'
         '<div class="search-bar">'
-        '<input id="cs-search" type="text" placeholder="검색 — 또는 실행할 조건/프리셋 입력 (예: PER<15 PBR<1, us PER<15, valueup) → 실행" autocomplete="off" spellcheck="false">'
+        '<input id="cs-search" type="text" placeholder="검색 — 또는 실행할 조건/프리셋 입력 (예: PER<15 PBR<1, us PER<15, valueup, minervini) → 실행" autocomplete="off" spellcheck="false">'
         '<button id="cs-clear" type="button" title="검색 초기화">초기화</button>'
         '<button id="cs-run" type="button" class="run-btn" title="입력 조건으로 조건부 스크리너 실행 — 텔레그램 /screen 과 동일 (₩0)">실행</button>'
         '</div>'
@@ -7793,7 +7793,7 @@ noahConsoleSetup({
 noahConsoleSetup({
   inputId: 'cs-search', btnId: 'cs-run', statusId: 'cs-status', panelId: 'scr-cmd-panel',
   runKind: 'screen', requireQuery: true,
-  emptyMsg: '실행할 조건 또는 프리셋을 입력하세요.\n예: PER<15 PBR<1 · us PER<15 · valueup\n(전체 지표는 제목 옆 📖 설명서)\n또는 / 명령 (예: /usage · /screener_list)',
+  emptyMsg: '실행할 조건 또는 프리셋을 입력하세요.\n예: PER<15 PBR<1 · us PER<15 · valueup · minervini · 트렌드템플릿>=1\n뒤에 fresh 붙이면 캐시 무시 강제 재실행 (예: minervini fresh)\n(전체 지표는 제목 옆 📖 설명서)\n또는 / 명령 (예: /usage · /screener_list)',
   confirmText: '조건부 스크리너를 실행할까요?\n· KR 수초~수십초 · us 는 ~1-2분 · 비용 ₩0\n· 결과: 텔레그램 채널 + 이 페이지(자동 갱신)',
   okMsg: '조건부 스크리너 요청 접수 — 결과는 텔레그램 채널과 이 페이지에 게시됩니다.'
 });

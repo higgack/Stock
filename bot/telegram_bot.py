@@ -1080,7 +1080,7 @@ _HELP_TEXT = """🧠 <b>NOAH 주식분석 봇</b>
 /help /usage /portfolio /screener_list /sites /blog — 비용: /screener·daily_byte·cheongyak·realestate_cost
 /티커 — 단일 분석 (예: /NVDA · /005930.KS · 한국은 종목명 /삼성전자)
 /compare NVDA AMD — 두 종목 비교
-/screen [us] [조건 | 프리셋] — 조건부 스크리너 (KR/US, ₩0) · 프리셋 minervini/valueup · /screen list
+/screen [us] [조건 | 프리셋] [fresh] — 조건부 스크리너 (KR/US, ₩0) · 프리셋 minervini/valueup · fresh=캐시무시 · /screen list
 /screener [도메인 | 자유어] — Bottleneck (67도메인+L4세분+자유어) · 전체 /screener_list
 /watch NVDA rsi&lt;30 price&gt;950 — 조건 알림 (rsi/price/sma/52w/earnings·KR수급) · /watchlist · /unwatch
 /dart_alert on|off — 관심종목(KR) 새 DART 공시 알림
@@ -2213,6 +2213,14 @@ async def _handle_screen(args: list[str], send) -> None:
         await send(format_list_message())
         return
 
+    # 'fresh'(강제 재실행) 토큰 — 캐시 무시. 영구캐시로 옛 결과 고착되던 것 우회
+    # (사용자 2026-06-23). 어디 위치하든 제거 후 force_fresh.
+    force_fresh = False
+    _ftoks = [t for t in raw.split() if t.lower() not in ("fresh", "강제", "새로", "!")]
+    if len(_ftoks) != len(raw.split()):
+        force_fresh = True
+        raw = " ".join(_ftoks).strip()
+
     from bot.stock_screener import (
         PRESETS, parse_conditions, run_screen,
         format_result_message, save_screen_archive,
@@ -2257,7 +2265,7 @@ async def _handle_screen(args: list[str], send) -> None:
     import asyncio
     try:
         result = await asyncio.get_event_loop().run_in_executor(
-            None, lambda: run_screen(conditions, market=market)
+            None, lambda: run_screen(conditions, market=market, force_fresh=force_fresh)
         )
     except Exception as exc:
         log.warning("screen failed: %s", exc)

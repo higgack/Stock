@@ -458,11 +458,19 @@ def _cache_path(key: str) -> Path:
     return _CACHE_DIR / f"{key}_{today}.json"
 
 
+# 스크린 결과 캐시 TTL — 가격/펀더는 EOD 갱신이라 영구캐시는 옛 결과 고착(사용자
+# 2026-06-23 '또 0종목·💾캐시'). 6h 면 같은 조회 반복은 캐시, 하루 뒤·세션후엔 신선.
+# 즉시 무시는 'fresh' 키워드(force_fresh).
+_SCREEN_CACHE_TTL = 6 * 3600
+
+
 def _load_cache(key: str) -> Optional[dict]:
     p = _cache_path(key)
     if not p.exists():
         return None
     try:
+        if time.time() - p.stat().st_mtime > _SCREEN_CACHE_TTL:
+            return None            # 만료 → 재실행(신선)
         data = json.loads(p.read_text(encoding="utf-8"))
         return data
     except Exception:
@@ -846,7 +854,8 @@ def format_list_message() -> str:
     lines.append("  <code>/screen PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — KR")
     lines.append("  <code>/screen us PER&lt;15 DIV&gt;2</code> — US S&amp;P 500")
     lines.append("  <code>/screen 매출QoQ&gt;10 영업이익QoQ&gt;5</code> — QoQ 성장")
-    lines.append("  <code>/screen valueup</code> (프리셋)")
+    lines.append("  <code>/screen valueup</code> (프리셋) · <code>/screen minervini</code> (추세)")
+    lines.append("  <code>/screen minervini fresh</code> — 캐시 무시 강제 재실행")
     lines.append("  <code>/screen list</code> (이 목록)\n")
 
     lines.append("<b>📋 사용 가능 지표:</b>")
