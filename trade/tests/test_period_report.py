@@ -114,6 +114,14 @@ class GatherTests(unittest.TestCase):
         self.assertAlmostEqual(semi["net"], 2.0e10 - 4e9)
         # 급변동: 승용차(+20%) > 디램(+11.1%) > 합성수지(-6.25%)
         self.assertEqual(d["swings"][0]["name"], "승용차")
+        # 급변동(수입 MoM) 대칭 추가 (사용자 2026-06-22) — import_mom 절대값 큰 순,
+        # 수입 ≥$30M 만. 각 행은 import_mom 보유.
+        self.assertIn("swings_imp", d)
+        for r in d["swings_imp"]:
+            self.assertGreaterEqual(r["import"], 3e7)
+            self.assertIsNotNone(r["import_mom"])
+        imps = [abs(r["import_mom"]) for r in d["swings_imp"]]
+        self.assertEqual(imps, sorted(imps, reverse=True))   # 절대값 내림차순
 
     def test_industry_yoy(self):
         # 사용자 2026-06-18 — 산업 롤업에 export_yoy (MoM 옆 YoY)

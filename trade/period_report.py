@@ -163,6 +163,9 @@ def gather_period(ym: str | None = None, top: int = _TOP) -> dict:
     # 급변동 — 수출 MoM 절대값 큰 순(유의미 규모만)
     movers = [r for r in rows if r["export"] >= _MIN_SWING_USD and r["export_mom"] is not None]
     movers.sort(key=lambda r: abs(r["export_mom"]), reverse=True)
+    # 급변동(수입 MoM) — 수출과 대칭 (사용자 2026-06-22 '수입 MoM 큰 순도').
+    movers_imp = [r for r in rows if r["import"] >= _MIN_SWING_USD and r["import_mom"] is not None]
+    movers_imp.sort(key=lambda r: abs(r["import_mom"]), reverse=True)
 
     # 잠정 속보(선행) — 관세청 10일 단위(11/21일/월초). 확정 품목 집계와 별개(섞지
     # 않음, 운영자 정책). exp_item/imp_item 의 전체+주요10만(HS 분해 없음). 자체 최신월.
@@ -186,7 +189,7 @@ def gather_period(ym: str | None = None, top: int = _TOP) -> dict:
         },
         "top_export": top_export, "top_import": top_import,
         "both_traded": both_traded, "industries": industries[:12],
-        "swings": movers[:top], "n_items": len(rows),
+        "swings": movers[:top], "swings_imp": movers_imp[:top], "n_items": len(rows),
     }
 
 
@@ -346,8 +349,13 @@ def render_free(data: dict) -> str:
         [("품목", "left", _nm), ("산업", "left", _ind),
          ("수출", "right", lambda r: _usd_cell(r["export"])),
          ("MoM", "right", lambda r: _pct_cell(r["export_mom"]))])
+    sw_imp_tbl = _table(
+        "⚡ 급변동 품목 (수입 MoM 큰 순)", data.get("swings_imp") or [],
+        [("품목", "left", _nm), ("산업", "left", _ind),
+         ("수입", "right", lambda r: _usd_cell(r["import"])),
+         ("MoM", "right", lambda r: _pct_cell(r["import_mom"]))])
     return (f'<div style="line-height:1.5">{head}{summary}{prov_html}{ind_tbl}'
-            f'{exp_tbl}{imp_tbl}{both_tbl}{sw_tbl}</div>')
+            f'{exp_tbl}{imp_tbl}{both_tbl}{sw_tbl}{sw_imp_tbl}</div>')
 
 
 # ─── LLM 산문 요약(opt-in, 유료) ─────────────────────────────────────────
@@ -379,8 +387,11 @@ def _llm_digest(data: dict) -> str:
             f"{r['name']}(수출 {_usd(r['export'])}·수입 {_usd(r['import'])})"
             for r in data["both_traded"][:8]))
     if data.get("swings"):
-        lines.append("급변동: " + ", ".join(
+        lines.append("급변동(수출MoM): " + ", ".join(
             f"{r['name']}({r['export_mom']:+.1f}%)" for r in data["swings"][:8]))
+    if data.get("swings_imp"):
+        lines.append("급변동(수입MoM): " + ", ".join(
+            f"{r['name']}({r['import_mom']:+.1f}%)" for r in data["swings_imp"][:8]))
     prov = data.get("provisional")
     if prov and (prov.get("export") or prov.get("import")):
         def _pl(sig):
@@ -534,6 +545,12 @@ def render_telegram(data: dict, ai_text: str = "") -> str:
         for r in data["swings"]:
             lines.append(f"• {e(r['name'])} — {r['export_mom']:+.1f}% "
                          f"({_usd(r['export'])})")
+        lines.append("")
+    if data.get("swings_imp"):
+        lines.append("⚡ <b>급변동(수입 MoM)</b>")
+        for r in data["swings_imp"]:
+            lines.append(f"• {e(r['name'])} — {r['import_mom']:+.1f}% "
+                         f"({_usd(r['import'])})")
     if ai_text:
         lines += ["", "🤖 <b>AI 분석</b>", e(ai_text)]
     return "\n".join(lines)              # 전문(전송 시 send_long 이 4096 단위 분할)
