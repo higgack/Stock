@@ -266,6 +266,110 @@ def get_kr_ohlcv_stats(ticker: str) -> Optional[dict]:
     return result
 
 
+def trend_template_from_series(closes, highs, lows) -> Optional[dict]:
+    """Minervini 추세 템플릿 7조건 판정 — 순수(pandas 무관, 단위테스트용). closes/
+    highs/lows = 오래된→최신 일봉 시계열(list[float]). 최소 222거래일. None=이력부족.
+    Returns {tt, off_low, to_high, rs6m, close, sma50, sma150, sma200}."""
+    n = len(closes)
+    if n < 222 or len(highs) < n or len(lows) < n:   # 200일선+22일 기울기 최소
+        return None
+
+    def _avg(seq):
+        return sum(seq) / len(seq) if seq else 0.0
+
+    last = closes[-1]
+    sma50 = _avg(closes[-50:])
+    sma150 = _avg(closes[-150:])
+    sma200 = _avg(closes[-200:])
+    sma200_prev = _avg(closes[-222:-22])           # 22거래일 전 200일선
+    win = min(252, n)
+    wk_high = max(highs[-win:])
+    wk_low = min(lows[-win:])
+    if wk_low <= 0 or wk_high <= 0:
+        return None
+    c1 = last > sma150 and last > sma200
+    c2 = sma150 > sma200
+    c3 = sma200 > sma200_prev
+    c4 = sma50 > sma150 > sma200
+    c5 = last > sma50
+    c6 = last >= wk_low * 1.30
+    c7 = last >= wk_high * 0.75
+    tt = 1.0 if all((c1, c2, c3, c4, c5, c6, c7)) else 0.0
+    c126 = closes[-126] if n >= 126 else closes[0]
+    rs6m = (last / c126 - 1.0) * 100.0 if c126 > 0 else 0.0
+    return {
+        "tt": tt,
+        "off_low": round((last / wk_low - 1.0) * 100.0, 1),
+        "to_high": round((last / wk_high - 1.0) * 100.0, 1),
+        "rs6m": round(rs6m, 1),
+        "close": int(last), "sma50": round(sma50), "sma150": round(sma150),
+        "sma200": round(sma200),
+    }
+
+
+def get_kr_trend_template(ticker: str) -> Optional[dict]:
+    """Minervini SEPA 추세 템플릿 — KR 종목 일봉(pykrx)으로 7개 구조조건 판정
+    (사용자 2026-06-22, finance-skills sepa-strategy 개념 ₩0 재구현). 가격·이동
+    평균만 쓰므로 yfinance throttle 무관. 종목별 daily 캐시.
+
+    7개 조건(전부 충족 시 tt=1):
+      1) 종가 > 150일선 & > 200일선   2) 150일선 > 200일선
+      3) 200일선 상승추세(현재 > 22거래일 전)   4) 50일선 > 150일선 > 200일선
+      5) 종가 > 50일선   6) 종가 ≥ 52주저점 +30%   7) 종가 ≥ 52주고점 −25%
+    (Minervini 8번째 RS레이팅≥70 은 전종목 백분위라 별도 — 여기선 rs6m=6개월
+    수익률을 참고치로 함께 반환, tt 게이트엔 미포함.)
+
+    Returns {tt(1.0/0.0), off_low(%), to_high(%, 음수=고점아래), rs6m(%),
+    close, sma50, sma150, sma200, date} 또는 None(미설치/미상장/이력부족<222일).
+    """
+    code = _normalize_code(ticker)
+    if not code or not krx_login_ready():
+        return None
+    today_str = date.today().isoformat()
+    cache_file = _CACHE_DIR / f"trend_tmpl_{code}_{today_str}.json"
+    if cache_file.exists():
+        try:
+            if (time.time() - cache_file.stat().st_mtime) / 3600 < _CACHE_TTL_HOURS:
+                return json.loads(cache_file.read_text())
+        except Exception:
+            pass
+    try:
+        from pykrx import stock
+    except ImportError:
+        return None
+    end = date.today()
+    start = end - timedelta(days=420)            # ~252+22 거래일 buffer
+    try:
+        df = stock.get_market_ohlcv_by_date(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code)
+    except Exception as exc:
+        log.warning("pykrx: trend OHLCV fetch failed for %s: %s", code, exc)
+        return None
+    if df is None or df.empty or len(df) < 222:   # 200일선 + 22일 기울기 최소
+        return None
+    try:
+        closes = [float(x) for x in df["종가"].tolist()]
+        highs = [float(x) for x in df["고가"].tolist()]
+        lows = [float(x) for x in df["저가"].tolist()]
+        result = trend_template_from_series(closes, highs, lows)
+        if not result:
+            return None
+        last_date = df.index[-1]
+        try:
+            result["date"] = last_date.strftime("%Y-%m-%d")
+        except Exception:
+            result["date"] = str(last_date)[:10]
+    except Exception as exc:
+        log.warning("pykrx: trend template parse failed for %s: %s", code, exc)
+        return None
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(result))
+    except Exception:
+        pass
+    return result
+
+
 def get_kr_beta_60m(ticker: str) -> Optional[float]:
     """60-month monthly beta of a KR stock vs KOSPI 200 (pykrx index
     code 1028). yfinance .info["beta"] for KR tickers is computed
