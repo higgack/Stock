@@ -6921,6 +6921,7 @@ def _render_screen_manual() -> str:
             '<h4>사용법 (텔레그램 /screen = 대시보드 실행 버튼 동일)</h4>'
             '<div class="mrow"><code>PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — KR (KOSPI+KOSDAQ 전 종목)</div>'
             '<div class="mrow"><code>us PER&lt;15 DIV&gt;2</code> — 앞에 <code>us</code> = US S&amp;P 500</div>'
+            '<div class="mrow"><code>jp minervini</code> — 앞에 <code>jp</code> = JP 닛케이225격(JPX 시총상위 ~225)</div>'
             '<div class="mrow"><code>매출QoQ&gt;10 영업이익QoQ&gt;5</code> — 전분기 대비 성장 필터</div>'
             '<div class="mrow"><code>valueup</code> — 프리셋 이름만 입력</div>'
             '<h4>Phase 1 지표 (pykrx 벌크 — KR 전 종목 즉시)</h4>'
@@ -6929,7 +6930,7 @@ def _render_screen_manual() -> str:
             + _metric_rows("yfinance", 2) +
             '<h4>QoQ 지표 (전분기 대비 성장률, yfinance 분기 재무제표)</h4>'
             + _metric_rows("qoq", 2) +
-            '<h4>추세 지표 (일봉 · 시총 상위 스캔 · KR=pykrx / US=yfinance)</h4>'
+            '<h4>추세 지표 (일봉 · 시총 상위 스캔 · KR=pykrx / US·JP=yfinance)</h4>'
             + _metric_rows("tech", 2) +
             '<div class="mrow" style="opacity:.85">📈 <b>Minervini 추세 템플릿</b>'
             ' (<code>/screen minervini</code> 또는 <code>트렌드템플릿&gt;=1</code>) — 7조건 전부 충족 시 1:'
@@ -6943,8 +6944,8 @@ def _render_screen_manual() -> str:
             + preset_rows +
             '<h4>연산자 · 시장 · 비용</h4>'
             '<div class="mrow">연산자: <code>&gt; &lt; &gt;= &lt;= =</code> · '
-            '시장: KR 기본, <code>us</code> 접두 시 US S&amp;P 500 (개별 조회 ~1-2분) · '
-            '비용 ₩0 (LLM 미사용) · 24h 캐시</div>'
+            '시장: KR 기본, <code>us</code>=US S&amp;P 500 · <code>jp</code>=JP 닛케이225격 '
+            '(개별 조회 ~1-2분) · 비용 ₩0 (LLM 미사용) · 24h 캐시</div>'
             '</div></details>'
         )
     except Exception:
@@ -7266,9 +7267,9 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
         + _render_screen_manual() +
         '<button id="cs-csv" type="button" class="csv-btn" title="모든 조건부 스크리너 결과를 CSV(엑셀)로 — 조건·날짜·종목·시총·지표 포함">📥 CSV</button>'
         '</h2>'
-        '<p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0). '
+        '<p class="sub">정량 조건으로 KR + US + JP 종목 필터 (pykrx/yfinance, ₩0). '
         '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> '
-        '· <code>/screen valueup</code> · <code>/screen list</code></p>'
+        '· <code>/screen jp minervini</code> · <code>/screen valueup</code> · <code>/screen list</code></p>'
         '<div class="search-bar">'
         '<input id="cs-search" type="text" placeholder="검색 — 또는 실행할 조건/프리셋 입력 (예: PER<15 PBR<1, us PER<15, valueup, minervini) → 실행" autocomplete="off" spellcheck="false">'
         '<button id="cs-clear" type="button" title="검색 초기화">초기화</button>'
@@ -10097,8 +10098,8 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
   <a class="back" href="./index.html">← 아카이브로 돌아가기</a>
   · <a href="portfolio.html">💼 자산</a>
   <h1>📊 조건부 스크리너</h1>
-  <p class="sub">정량 조건으로 KR + US 종목 필터 (pykrx/yfinance, ₩0).
-  텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> · <code>/screen valueup</code> · <code>/screen list</code></p>
+  <p class="sub">정량 조건으로 KR + US + JP 종목 필터 (pykrx/yfinance, ₩0).
+  텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> · <code>/screen jp minervini</code> · <code>/screen valueup</code> · <code>/screen list</code></p>
   {{cards}}
 </div>
 <script>
