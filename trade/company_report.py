@@ -464,6 +464,14 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
         if hs_name == bare:                 # 이름이 코드와 동일하면 의미 없음
             hs_name = None
         hs_pv = _leaf_pv(_lf)
+    # 라이브 stat_kor 미스(무실적 코드·HS6/HS4 검색) → 전 HS 사전 폴백 (사용자
+    # 2026-06-22 '무실적 코드까지 전부'). 사전 부재 시 None(graceful).
+    if not hs_name:
+        try:
+            from trade import hs_names as _hn
+            hs_name = _hn.hs_name(query)
+        except Exception:
+            pass
     return {"mode": "item", "query": query, "name": f"HS {query}", "hs_search": True,
             "synonym": None, "items": rows[:30], "companies": companies[:40],
             "leaf": (leaf or "").strip() or None,
