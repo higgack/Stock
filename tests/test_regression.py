@@ -10111,6 +10111,24 @@ class TestNaverCommodityCharts:
         # .SOX 가 idx pool(fetch_world_indices) 로 잡히는지 — idx 분기 존재 확인
         assert 'fetch_naver_index_history' in src, "idx 스파크라인 경로 누락"
 
+    def test_macro_sol_card_and_ecos_visibility(self):
+        # 사용자 2026-06-23 '카드 3개 빠짐': (1) 솔라나(SOL) 가 _MACRO_NAVER 매핑은
+        # 있는데 GLOBAL 카드목록에서 누락 → 복원. (2) ECOS fetch_series_points 가
+        # RESULT 에러를 silent-[] 로 드롭해 경상수지·한국수출 카드가 조용히 사라지던
+        # 근본원인 → RESULT CODE/MESSAGE 로그 가시화(silent-fail 금지).
+        import bot.macro_snapshot as m
+        sids = [sid for _, _, _, _, sid, _ in m.GLOBAL]
+        assert "SOL-USD" in sids, "솔라나 카드 누락"
+        assert m._MACRO_NAVER.get("SOL-USD") == ("coin", "SOL")
+        # 경상수지·한국수출은 DOMESTIC 에 정의돼 있음(값 없으면 드롭 — 코드 정의는 존재).
+        dsids = [sid for _, _, _, _, sid, _ in m.DOMESTIC]
+        assert "current_account" in dsids and "export_amt" in dsids
+        # ECOS 카드 경로(fetch_series_points)가 RESULT 에러를 로그로 노출(silent 금지).
+        import inspect
+        import bot.bok_ecos_client as e
+        fs = inspect.getsource(e.fetch_series_points)
+        assert "RESULT" in fs and "log.warning" in fs, "ECOS series silent-fail 미가시화"
+
     def test_research_gated_against_yahoo_block(self):
         # 야후 차단 지속 근본원인(2026-06-14): intl research 가 빈 결과 미캐시 →
         # 매 regen(5분) 240콜 재poke. 빈 결과도 캐시 + 회로차단 게이트 + rate-limit trip.
