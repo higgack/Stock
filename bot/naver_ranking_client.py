@@ -188,8 +188,12 @@ def fetch_us_movers(top_n: int = 30) -> dict:
         downs += d
     if not ok:
         return {"up": [], "down": [], "ts": _now_label(), "source": "", "scanned": 0}
-    ups.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else -1e9, reverse=True)
-    downs.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else 1e9)
+    # 등락률 우선 + 동률(상·하한가 다수)이면 시총 큰 순 — cap(top_n)이 시총 큰
+    # 종목을 자르지 않게 (사용자 2026-06-22 '동률은 시총순').
+    ups.sort(key=lambda r: (-(r.get("pct") if r.get("pct") is not None else -1e9),
+                            -(r.get("mcap") or 0)))
+    downs.sort(key=lambda r: ((r.get("pct") if r.get("pct") is not None else 1e9),
+                              -(r.get("mcap") or 0)))
     return {"up": ups[:top_n], "down": downs[:top_n], "ts": _now_label(),
             "source": "네이버 증권 미국 등락(NASDAQ+NYSE·한글명)",
             "scanned": len(ups) + len(downs)}
@@ -245,8 +249,12 @@ def fetch_intl_movers_naver(market: str, top_n: int = 30) -> dict:
         downs += d
     if not ok:
         return {"up": [], "down": [], "ts": _now_label(), "source": "", "scanned": 0}
-    ups.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else -1e9, reverse=True)
-    downs.sort(key=lambda r: r.get("pct") if r.get("pct") is not None else 1e9)
+    # 등락률 우선 + 동률(상·하한가 다수)이면 시총 큰 순 — cap(top_n)이 시총 큰
+    # 종목을 자르지 않게 (사용자 2026-06-22 '동률은 시총순').
+    ups.sort(key=lambda r: (-(r.get("pct") if r.get("pct") is not None else -1e9),
+                            -(r.get("mcap") or 0)))
+    downs.sort(key=lambda r: ((r.get("pct") if r.get("pct") is not None else 1e9),
+                              -(r.get("mcap") or 0)))
     lbl = _INTL_MOVER_LABEL.get(market, market)
     return {"up": ups[:top_n], "down": downs[:top_n], "ts": _now_label(),
             "source": f"네이버 증권 {lbl} 등락(한글명·거래대금/시총)",

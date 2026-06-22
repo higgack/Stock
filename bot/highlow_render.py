@@ -206,7 +206,14 @@ HL_SORT_JS = _MULTISELECT_JS + """
     rows.sort(function(a,b){
       var x=a.getAttribute('data-'+key), y=b.getAttribute('data-'+key);
       if(type==='num'){ x=parseFloat(x); y=parseFloat(y);
-        if(isNaN(x))x=-Infinity; if(isNaN(y))y=-Infinity; return asc?x-y:y-x; }
+        if(isNaN(x))x=-Infinity; if(isNaN(y))y=-Infinity;
+        var d=asc?x-y:y-x;
+        // 등락률 동률(상·하한가 다수)이면 시총 큰 순 tiebreak (사용자 2026-06-22).
+        if(d===0 && key==='pct'){
+          var mx=parseFloat(a.getAttribute('data-mcap')), my=parseFloat(b.getAttribute('data-mcap'));
+          if(isNaN(mx))mx=-Infinity; if(isNaN(my))my=-Infinity; return my-mx;
+        }
+        return d; }
       x=(x||'').toString(); y=(y||'').toString();
       return asc? x.localeCompare(y): y.localeCompare(x);
     });
@@ -646,10 +653,13 @@ def sort_by_mcap(items: list) -> list:
 def sort_by_pct(items: list, gainers: bool = True) -> list:
     """등락률 순 — 급등(gainers)은 높은 %, 급락은 낮은(음수 큰) % 먼저. pct None 은
     뒤로. 사용자 2026-06-15 '모든 나라 급등락 기본화면을 시총순 아닌 등락률순으로'.
-    (헤더 클릭으로 시총 등 재정렬은 그대로 — 기본 정렬만 변경.)"""
+    동률(상·하한가 다수 +10.00% 등)이면 **시총 큰 순** tiebreak (사용자 2026-06-22 —
+    가나다순 아니라 시총순). (헤더 클릭 재정렬은 그대로 — 기본 정렬만.)"""
     return sorted(items, key=lambda it: (
         it.get("pct") is None,
-        -(it.get("pct") or 0.0) if gainers else (it.get("pct") or 0.0)))
+        -(it.get("pct") or 0.0) if gainers else (it.get("pct") or 0.0),
+        it.get("mcap") is None,
+        -(it.get("mcap") or 0.0)))
 
 
 # (filter_min_mcap 시총 필터는 사용자 2026-06-14 '다시 생각' 으로 제거 — 시총
