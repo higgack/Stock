@@ -294,6 +294,16 @@ class ItemModeTests(unittest.TestCase):
         self.assertTrue(C._looks_like_hs("8517791020"))
         self.assertFalse(C._looks_like_hs("005930"))      # 6자리 = 주식코드
         self.assertFalse(C._looks_like_hs("삼성전자"))
+        # 상위 자릿수 검색 (사용자 2026-06-22 '85 치면 다 나오게') — 2(챕터)/4(호)/8 bare
+        self.assertTrue(C._looks_like_hs("85"))           # 챕터
+        self.assertTrue(C._looks_like_hs("8542"))         # 호
+        self.assertTrue(C._looks_like_hs("85423100"))     # HSK8
+        # prefix → MTI6: 챕터(2)가 호(4)보다 넓게 잡힘
+        from trade import mti_map as _MM
+        m85 = _MM.hs_prefix_to_mti6("85")
+        m8542 = _MM.hs_prefix_to_mti6("8542")
+        self.assertTrue(len(m85) > len(m8542) > 0)
+        self.assertEqual(_MM.hs_prefix_to_mti6(""), [])   # 빈 → []
         # HS코드 검색 → 해당 MTI 품목 + 수출입 숫자
         by_mti = {"812820": {"name": "스마트폰부품", "industry": "무선통신기기",
                              "months": {"2026-05": 5e8}}}
