@@ -551,6 +551,8 @@ def run_screen(conditions: list[Condition],
         result = _screen_kr(conditions)
     elif market == "US":
         result = _screen_us(conditions)
+    elif market == "JP":
+        result = _screen_jp(conditions)
     else:
         log.warning("stock_screener: market %s not yet supported", market)
         result = ScreenResult(conditions=conditions, hits=[], total_universe=0,
@@ -780,6 +782,38 @@ _PYKRX_TO_YF_INFO: dict[str, tuple[str, float]] = {
 }
 
 _US_UNIVERSE_CACHE = _CACHE_DIR / "us_sp500.json"
+_JP_UNIVERSE_CACHE = _CACHE_DIR / "jp_n225.json"
+# JP 는 닛케이225 격 유동 부분집합으로 바운드(사용자 2026-06-23 'A'): JPX 전종목
+# (~3700)을 .info+일봉 전수 스캔하면 10분+ 행 → 네이버 시총상위 _JP_UNIVERSE_CAP 만.
+_JP_UNIVERSE_CAP = 225
+
+
+def _get_jp_universe() -> list[str]:
+    """JP 유니버스 = JPX 공식 상장목록(intl_universe.full_universe)을 네이버
+    worldstock 시총상위 ~225 로 바운드(intl_highlow._cap_by_liquidity 재사용 —
+    신고저가 위젯과 동일 검증 파이프). 7일 캐시. 소스/네트워크 실패 시 빈 목록."""
+    if _JP_UNIVERSE_CACHE.exists():
+        try:
+            data = json.loads(_JP_UNIVERSE_CACHE.read_text(encoding="utf-8"))
+            if time.time() - data.get("ts", 0) < 7 * 86400:
+                return data.get("tickers", [])
+        except Exception:
+            pass
+    tickers: list[str] = []
+    try:
+        from bot.intl_universe import full_universe
+        from bot.intl_highlow import _cap_by_liquidity
+        full = full_universe("JP")
+        if full and len(full) > 100:
+            tickers = _cap_by_liquidity(full, _JP_UNIVERSE_CAP, "JP")
+    except Exception as exc:
+        log.warning("stock_screener: JP universe(JPX) failed: %s", exc)
+    if tickers:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _JP_UNIVERSE_CACHE.write_text(
+            json.dumps({"tickers": tickers, "ts": time.time()}),
+            encoding="utf-8")
+    return tickers
 
 
 def _get_us_universe() -> list[str]:
@@ -800,6 +834,16 @@ def _get_us_universe() -> list[str]:
 
 
 def _fetch_sp500_tickers() -> list[str]:
+    # GitHub raw CSV(비차단) 우선 — 위키피디아는 VM 데이터센터 IP 가 403 차단되어
+    # universe 가 비고 /screen us 가 0종목/0 이던 근본원인(사용자 2026-06-23). 위키는
+    # 폴백. CSV 는 finviz_client 가 신고저 업종에 쓰는 검증된 소스 재사용.
+    try:
+        from bot.finviz_client import _fetch_sp500_csv
+        tks, _names, _inds = _fetch_sp500_csv()
+        if tks and len(tks) > 100:
+            return tks
+    except Exception as exc:
+        log.warning("stock_screener: S&P 500 GitHub CSV failed: %s", exc)
     try:
         import pandas as pd
         tables = pd.read_html(
@@ -808,19 +852,20 @@ def _fetch_sp500_tickers() -> list[str]:
         tickers = tables[0]["Symbol"].tolist()
         return [t.replace(".", "-") for t in tickers if isinstance(t, str)]
     except Exception as exc:
-        log.warning("stock_screener: S&P 500 list fetch failed: %s", exc)
+        log.warning("stock_screener: S&P 500 wiki fallback failed: %s", exc)
         return []
 
 
-def get_us_trend_template(ticker: str) -> Optional[dict]:
-    """US 종목 Minervini 추세 템플릿 — yfinance 일봉(~15mo)으로 7조건 판정. KR
+def get_yf_trend_template(ticker: str) -> Optional[dict]:
+    """yfinance 종목(US/JP 등) Minervini 추세 템플릿 — 일봉(2y)으로 7조건 판정. KR
     (pykrx)과 동일 순수함수 trend_template_from_series 재사용(universal). 종목별
-    daily 캐시. yfinance history(download 계열)라 .info quote 보다 throttle 덜함.
-    None=이력부족/실패(<222일)."""
+    daily 캐시(티커 globally-unique: AAPL·7203.T 충돌 없음). yfinance history
+    (download 계열)라 .info quote 보다 throttle 덜함. None=이력부족/실패(<222일).
+    Rule applies to all yfinance markets going forward / US+JP 적용."""
     if not ticker:
         return None
     today = datetime.now().strftime("%Y-%m-%d")
-    cf = _CACHE_DIR / f"trend_tmpl_us_{ticker}_{today}.json"
+    cf = _CACHE_DIR / f"trend_tmpl_{ticker}_{today}.json"
     if cf.exists():
         try:
             if time.time() - cf.stat().st_mtime < 12 * 3600:
@@ -834,7 +879,7 @@ def get_us_trend_template(ticker: str) -> Optional[dict]:
         # trend_template 은 최근 252/≥222 사용.
         df = yf.Ticker(ticker).history(period="2y", auto_adjust=False)
     except Exception as exc:
-        log.debug("us_trend: %s fetch failed: %s", ticker, exc)
+        log.debug("yf_trend: %s fetch failed: %s", ticker, exc)
         return None
     if df is None or df.empty or len(df) < 222:
         return None
@@ -847,7 +892,7 @@ def get_us_trend_template(ticker: str) -> Optional[dict]:
             return None
         res["date"] = str(df.index[-1])[:10]
     except Exception as exc:
-        log.debug("us_trend: %s parse failed: %s", ticker, exc)
+        log.debug("yf_trend: %s parse failed: %s", ticker, exc)
         return None
     try:
         _CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -857,12 +902,35 @@ def get_us_trend_template(ticker: str) -> Optional[dict]:
     return res
 
 
+# 하위호환 별칭(옛 US 전용 이름) — 실 함수는 시장중립(get_yf_trend_template).
+get_us_trend_template = get_yf_trend_template
+
+
 def _screen_us(conditions: list[Condition]) -> ScreenResult:
-    """Screen US S&P 500 using yfinance for all metrics."""
+    """Screen US S&P 500 using yfinance for all metrics (thin wrapper)."""
     universe = _get_us_universe()
+    return _screen_yf(conditions, universe, "US",
+                      empty_note="유니버스 비어있음 — S&P500 소스(GitHub CSV·위키 폴백) 실패")
+
+
+def _screen_jp(conditions: list[Condition]) -> ScreenResult:
+    """Screen JP using yfinance — 닛케이225 격 유동 부분집합(JPX 전종목을 네이버
+    시총상위 ~225 로 바운드, 사용자 2026-06-23 'A: 유동 부분집합·깔끔·빠름').
+    US 와 완전히 동일한 _screen_yf 경로(게이트 없음·universal)."""
+    universe = _get_jp_universe()
+    return _screen_yf(conditions, universe, "JP",
+                      empty_note="유니버스 비어있음 — JP 상장목록(JPX) 소스 실패")
+
+
+def _screen_yf(conditions: list[Condition], universe: list[str], market: str,
+               empty_note: str = "") -> ScreenResult:
+    """yfinance 기반 시장 공용 스크리너(US/JP). .info 사전필터 → Phase 3 추세
+    템플릿(데드라인·캡·daily캐시). 시장특정 분기 없음 — universe·market 만 주입.
+    Rule applies to all yfinance markets going forward / US+JP 적용."""
     if not universe:
         return ScreenResult(conditions=conditions, hits=[],
-                            total_universe=0, elapsed_sec=0, market="US")
+                            total_universe=0, elapsed_sec=0, market=market,
+                            note=empty_note)
     total = len(universe)
 
     yf_fields: set[str] = set()
@@ -891,8 +959,8 @@ def _screen_us(conditions: list[Condition]) -> ScreenResult:
 
     yf_fields.update(["marketCap", "shortName", "regularMarketPrice"])
 
-    log.info("stock_screener: US — fetching yfinance for %d tickers%s",
-             total, f" (+ QoQ {len(qoq_map)})" if qoq_map else "")
+    log.info("stock_screener: %s — fetching yfinance for %d tickers%s",
+             market, total, f" (+ QoQ {len(qoq_map)})" if qoq_map else "")
     yf_data = _fetch_yfinance_batch(universe, list(yf_fields), max_workers=20,
                                      qoq_fields=qoq_map or None)
 
@@ -917,7 +985,7 @@ def _screen_us(conditions: list[Condition]) -> ScreenResult:
                 "code": ticker,
                 "ticker": ticker,
                 "name": data.get("shortName", "") or "",
-                "market": "US",
+                "market": market,
                 "mcap": mcap_m,
             }
             for c, yf_field, prescale in cond_info:
@@ -928,7 +996,7 @@ def _screen_us(conditions: list[Condition]) -> ScreenResult:
             hits.append(hit)
 
     hits.sort(key=lambda x: x.get("mcap", 0) or 0, reverse=True)
-    log.info("stock_screener: US — %d/%d survive (.info)", len(hits), total)
+    log.info("stock_screener: %s — %d/%d survive (.info)", market, len(hits), total)
 
     # ── Phase 3 tech (추세 템플릿) — KR 과 동일 패턴(데드라인·캡·daily캐시·순수함수).
     note = ""
@@ -940,7 +1008,7 @@ def _screen_us(conditions: list[Condition]) -> ScreenResult:
         loaded = 0
         timed_out = False
         pool = ThreadPoolExecutor(max_workers=5)
-        futmap = {pool.submit(get_us_trend_template, h["ticker"]): h for h in scan}
+        futmap = {pool.submit(get_yf_trend_template, h["ticker"]): h for h in scan}
         try:
             for fut in _cf.as_completed(futmap, timeout=_TECH_BUDGET_SEC):
                 h = futmap[fut]
@@ -963,11 +1031,11 @@ def _screen_us(conditions: list[Condition]) -> ScreenResult:
                 f" · 통과 {len(final)}"
                 + (f" · ⏱{_TECH_BUDGET_SEC}s 초과(부분)" if timed_out else "")
                 + f" (시총상위 {_TECH_SCAN_CAP}캡)")
-        log.info("stock_screener: US Phase 3 tech — %s", note)
+        log.info("stock_screener: %s Phase 3 tech — %s", market, note)
         hits = final
 
     return ScreenResult(conditions=conditions, hits=hits,
-                        total_universe=total, elapsed_sec=0, market="US", note=note)
+                        total_universe=total, elapsed_sec=0, market=market, note=note)
 
 
 # ── Telegram formatting ────────────────────────────────────────────
@@ -1002,7 +1070,7 @@ def format_list_message() -> str:
             aliases = "/".join(m.aliases[:2])
             lines.append(f"  <code>{m.name}</code> ({aliases}) — {m.desc}")
 
-    lines.append("\n<b>📈 추세 (일봉, 시총 상위 스캔 · KR=pykrx/US=yfinance):</b>")
+    lines.append("\n<b>📈 추세 (일봉, 시총 상위 스캔 · KR=pykrx/US·JP=yfinance):</b>")
     for k, m in METRICS.items():
         if m.source == "tech":
             aliases = "/".join(m.aliases[:2])
@@ -1015,9 +1083,10 @@ def format_list_message() -> str:
 
     lines.append(
         "\n<b>연산자:</b> <code>&gt; &lt; &gt;= &lt;= =</code>"
-        "\n<b>시장:</b> KR (KOSPI+KOSDAQ) 기본, <code>us</code> 붙이면 US S&amp;P 500."
+        "\n<b>시장:</b> KR (KOSPI+KOSDAQ) 기본, <code>us</code>=US S&amp;P 500,"
+        " <code>jp</code>=JP 닛케이225격(JPX 시총상위 ~225)."
         "\n  KR: Phase 1 pykrx 전 종목 → Phase 2 yfinance 생존만"
-        "\n  US: yfinance 개별 조회 (~1-2분, Phase 1 지표도 yfinance)"
+        "\n  US·JP: yfinance 개별 조회 (~1-2분, Phase 1 지표도 yfinance)"
         "\n  QoQ: 전분기 대비 성장률 (yfinance 분기 재무제표 기반)"
         "\n비용 ₩0. 24h 캐시."
     )
@@ -1029,8 +1098,12 @@ def format_result_message(result: ScreenResult) -> list[str]:
     cond_str = " · ".join(c.display() for c in result.conditions)
     cache_tag = " 💾캐시" if result.was_cached else ""
     is_us = result.market == "US"
-    market_tag = " (US S&amp;P 500)" if is_us else " (KR)"
-    sort_note = "시가총액 내림차순 ($M, 대형주 우선)" if is_us else "시가총액 내림차순 (대형주 우선)"
+    is_jp = result.market == "JP"
+    market_tag = (" (US S&amp;P 500)" if is_us
+                  else " (JP 닛케이225격)" if is_jp else " (KR)")
+    sort_note = ("시가총액 내림차순 ($M, 대형주 우선)" if is_us
+                 else "시가총액 내림차순 (¥M, 대형주 우선)" if is_jp
+                 else "시가총액 내림차순 (대형주 우선)")
 
     header = (
         f"📊 <b>조건부 스크리너 결과{market_tag}</b>{cache_tag}\n"
@@ -1054,7 +1127,9 @@ def format_result_message(result: ScreenResult) -> list[str]:
         name = h.get("name", "")
         ticker = h.get("ticker", "")
         mcap = h.get("mcap")
-        mcap_str = (_fmt_mcap_us(mcap) if is_us else _fmt_mcap(mcap)) if mcap else ""
+        mcap_str = ((_fmt_mcap_us(mcap) if is_us
+                     else _fmt_mcap_jp(mcap) if is_jp
+                     else _fmt_mcap(mcap)) if mcap else "")
 
         vals = []
         for mk in metric_keys:
@@ -1086,6 +1161,15 @@ def _fmt_mcap_us(v_millions: float) -> str:
     if v_millions >= 1000:
         return f"[${v_millions/1000:.1f}B]"
     return f"[${v_millions:,.0f}M]"
+
+
+def _fmt_mcap_jp(v_millions: float) -> str:
+    # marketCap(¥) / 1e6 = ¥백만. 1조엔 = 1e6 백만.
+    if v_millions >= 1e6:
+        return f"[¥{v_millions/1e6:.1f}조]"
+    if v_millions >= 100:
+        return f"[¥{v_millions/100:,.0f}억]"
+    return f"[¥{v_millions:,.0f}M]"
 
 
 def _chunk_html(text: str, limit: int) -> list[str]:

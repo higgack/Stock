@@ -12493,17 +12493,28 @@ class TestMinerviniScreener:
         assert {c.metric_key for c in cs2} == {"per", "div"}
 
     def test_us_trend_template_graceful_and_wired(self):
-        # US Minervini — get_us_trend_template 존재 + graceful(yfinance 미설치/
-        # 실패 시 None, 무크래시) + _screen_us 에 tech 단계 배선(사용자 2026-06-23 US 확장).
+        # US/JP Minervini — 추세 템플릿 함수 존재 + graceful(yfinance 미설치/
+        # 실패 시 None, 무크래시) + 공용 _screen_yf 에 tech 단계 배선(US 2026-06-23,
+        # JP 확장 2026-06-23 'A: 유동 부분집합'). US/JP 는 동일 _screen_yf 경로.
         import inspect
         import bot.stock_screener as s
+        # 시장중립 본명 + 하위호환 별칭 둘 다 노출(동일 객체).
+        assert hasattr(s, "get_yf_trend_template")
         assert hasattr(s, "get_us_trend_template")
-        assert s.get_us_trend_template("") is None              # 빈 입력 graceful
-        assert s.get_us_trend_template("__NOPE__") is None      # 실패/미설치 graceful
-        us = inspect.getsource(s._screen_us)
-        assert "tech_conds" in us and "get_us_trend_template" in us
-        assert "_TECH_BUDGET_SEC" in us                          # 데드라인 적용
-        assert 'note=note' in us                                 # 진단 surface
+        assert s.get_us_trend_template is s.get_yf_trend_template
+        assert s.get_yf_trend_template("") is None              # 빈 입력 graceful
+        assert s.get_yf_trend_template("__NOPE__") is None      # 실패/미설치 graceful
+        yfsrc = inspect.getsource(s._screen_yf)
+        assert "tech_conds" in yfsrc and "get_yf_trend_template" in yfsrc
+        assert "_TECH_BUDGET_SEC" in yfsrc                       # 데드라인 적용
+        assert 'note=note' in yfsrc                              # 진단 surface
+        # US/JP 둘 다 게이트 없이 공용 _screen_yf 로 위임(universal — if market== 금지).
+        assert "_screen_yf" in inspect.getsource(s._screen_us)
+        assert "_screen_yf" in inspect.getsource(s._screen_jp)
+        # run_screen 에 JP 분기 배선.
+        assert '"JP"' in inspect.getsource(s.run_screen)
+        # JP 유니버스 헬퍼 존재 + graceful(소스 실패/네트워크 없을 때 빈 목록·무크래시).
+        assert hasattr(s, "_get_jp_universe")
 
     def test_precompute_top_by_mcap(self):
         # 사전계산 캐시 워밍 대상 선택 — 시총>500&거래량>0 중 시총 상위 N(내림차순).
