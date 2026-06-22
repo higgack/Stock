@@ -16,8 +16,8 @@
    `📦 누적: N개` (= `git diff --name-only origin/<base>`).
 2. 중간응답 최소(1~2줄 + 카운트). 질문/리뷰만이면 카운트 무변동.
 3. 적재 내구: dev 에 `[배치 보류 — merge 금지]` prefix 커밋 + push 체크포인트(컨테이너 휘발).
-4. "커밋/푸시/배포" 한마디 = 일괄 flush: 검증 → 배포전 셀프리뷰(아래 §Pre-commit 7)
-   → PR ready → squash merge 1회 → 자동배포 → 최종 통합보고 + `📦 누적: 0`.
+4. "커밋/푸시/배포" 한마디 = 일괄 flush: 검증 → 배포전 셀프리뷰 + 비자명변경 `/code-review`
+   (아래 §Pre-commit 7~8) → PR ready → squash merge 1회 → 자동배포 → 최종 통합보고 + `📦 누적: 0`.
 5. 라이브 장애 fix 는 즉시 merge 판단 가능. 적재 과대 시 중간 flush 제안.
 6. 변경은 항상 universal (아래).
 
@@ -80,6 +80,8 @@ ECOS/FRED/pykrx/MOPS/AKShare) 또는 한·일 언어출력.
 7. **배포전 셀프리뷰**(테스트 green 만으론 부족 — 사용자 '같은 거 두 번 힘들어'): base 대비 전체 diff
    재독 + (a) 기존함수 시그니처/반환형 정의부 확인 (b) 타임존(UTC↔KST)·단위·포맷 실기록부서 확인 +
    경계테스트 (c) 호출부 배선 E2E grep (d) 진입점 1회 실행 스모크(NameError/ImportError류).
+8. **독립 리뷰 게이트**(비자명 변경만): 다파일·구조변경·공용헬퍼·새 모듈이면 배포 전 `/code-review`
+   1회 독립 패스(셀프리뷰 사각 보완, 설치·비용 0). 한줄 라벨변경 등 자명한 건 스킵.
 
 ## Help / Dashboard 등록 — 의무 (같은 commit)
 - user-visible 변경(명령/소스/RULE/분석가/대시보드/기능제거)은 `_HELP_TEXT`(bot/telegram_bot.py)
