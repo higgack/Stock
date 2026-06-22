@@ -484,8 +484,12 @@ def _kr_movers_universe() -> tuple[list, dict, dict]:
     # 장전집계 또 안 됨'의 유력 원인). 직전 성공 유니버스(전일 정규장 무버)를
     # 폴백 — NXT 활동 확인용 후보군이라 전일 리스트로 충분(additive·라이브가
     # 차면 no-op). 라이브 성공 시 캐시 갱신.
+    # ⚠️ TTL 은 주말·연휴를 넘겨야 함(사용자 2026-06-22 월요일 08:56 'universe 실패'):
+    # 24h 면 금요일 장후 캐시가 월요일 장전에 이미 만료(~61h) → 폴백도 빈 보드.
+    # 14일로 확장 — 설·추석 최장 연휴(직전 거래일+~6일 휴장)도 커버. 후보군은
+    # 매 거래일 성공 시 재기록되므로 평소엔 항상 신선, 긴 휴장 때만 stale 폴백(무해).
     if not tks:
-        cached = _cached(_KR_UNIVERSE_CACHE, ttl=86400)
+        cached = _cached(_KR_UNIVERSE_CACHE, ttl=1209600)   # 14일(주말·연휴 생존)
         if isinstance(cached, dict) and cached.get("tks"):
             log.info("kr prepost: 라이브 유니버스 0 → 직전 성공 유니버스(%d종목) 폴백",
                      len(cached["tks"]))
