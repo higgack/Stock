@@ -5684,6 +5684,25 @@ class TestUsPrepost:
         store.clear()
         assert pp._kr_movers_universe()[0] == []
 
+    def test_kr_universe_fallback_ttl_survives_weekend(self, monkeypatch):
+        # 사용자 2026-06-22 월요일 08:56 'universe 실패' — 폴백 캐시 read TTL이
+        # 24h라 금요일 장후 캐시가 월요일 장전(~61h)에 만료 → 폴백도 빈 보드.
+        # TTL은 주말+연휴를 넘겨야(>=3일; 현재 14일=설·추석 커버). 24h로 회귀하면
+        # 이 가드가 잡는다. (기존 fallback 테스트는 ttl 무시 mock이라 못 잡았음.)
+        import bot.naver_ranking_client as nr
+        import bot.prepost_client as pp
+        seen = {}
+
+        def _cap(name, ttl=0):
+            seen[name] = ttl
+            return {"tks": ["005930.KS"], "names": {}, "mcaps": {}}
+        monkeypatch.setattr(pp, "_cached", _cap)
+        monkeypatch.setattr(pp, "_cache_write", lambda name, val: None)
+        monkeypatch.setattr(nr, "fetch_kr_movers",
+                            lambda limit=30: {"up": [], "down": []})
+        pp._kr_movers_universe()
+        assert seen.get(pp._KR_UNIVERSE_CACHE, 0) >= 3 * 86400   # 최소 주말 생존
+
     def test_kr_prepost_page_failed_banner(self, monkeypatch):
         # 직전 스냅샷 서빙 중 최근 집계 실패면 페이지에 '사유' 배너 노출 (silent-fail
         # 제거, 실수 #12) — 사용자가 '왜 오늘 장전이 안 보이는지' 화면에서 즉시 인지.
