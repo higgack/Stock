@@ -12492,6 +12492,19 @@ class TestMinerviniScreener:
         cs2 = s.parse_conditions("PER<15 배당수익률>3")
         assert {c.metric_key for c in cs2} == {"per", "div"}
 
+    def test_us_trend_template_graceful_and_wired(self):
+        # US Minervini — get_us_trend_template 존재 + graceful(yfinance 미설치/
+        # 실패 시 None, 무크래시) + _screen_us 에 tech 단계 배선(사용자 2026-06-23 US 확장).
+        import inspect
+        import bot.stock_screener as s
+        assert hasattr(s, "get_us_trend_template")
+        assert s.get_us_trend_template("") is None              # 빈 입력 graceful
+        assert s.get_us_trend_template("__NOPE__") is None      # 실패/미설치 graceful
+        us = inspect.getsource(s._screen_us)
+        assert "tech_conds" in us and "get_us_trend_template" in us
+        assert "_TECH_BUDGET_SEC" in us                          # 데드라인 적용
+        assert 'note=note' in us                                 # 진단 surface
+
     def test_precompute_top_by_mcap(self):
         # 사전계산 캐시 워밍 대상 선택 — 시총>500&거래량>0 중 시총 상위 N(내림차순).
         # /screen minervini 스캔 선택과 동일 규칙(사용자 2026-06-23 행 해소 background).

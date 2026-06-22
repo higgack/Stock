@@ -812,6 +812,51 @@ def _fetch_sp500_tickers() -> list[str]:
         return []
 
 
+def get_us_trend_template(ticker: str) -> Optional[dict]:
+    """US 종목 Minervini 추세 템플릿 — yfinance 일봉(~15mo)으로 7조건 판정. KR
+    (pykrx)과 동일 순수함수 trend_template_from_series 재사용(universal). 종목별
+    daily 캐시. yfinance history(download 계열)라 .info quote 보다 throttle 덜함.
+    None=이력부족/실패(<222일)."""
+    if not ticker:
+        return None
+    today = datetime.now().strftime("%Y-%m-%d")
+    cf = _CACHE_DIR / f"trend_tmpl_us_{ticker}_{today}.json"
+    if cf.exists():
+        try:
+            if time.time() - cf.stat().st_mtime < 12 * 3600:
+                return json.loads(cf.read_text())
+        except Exception:
+            pass
+    try:
+        import yfinance as yf
+        from bot.pykrx_client import trend_template_from_series
+        # period 는 yfinance 유효값만('15mo' 무효 → 빈 결과). 2y → ~500거래일,
+        # trend_template 은 최근 252/≥222 사용.
+        df = yf.Ticker(ticker).history(period="2y", auto_adjust=False)
+    except Exception as exc:
+        log.debug("us_trend: %s fetch failed: %s", ticker, exc)
+        return None
+    if df is None or df.empty or len(df) < 222:
+        return None
+    try:
+        closes = [float(x) for x in df["Close"].tolist()]
+        highs = [float(x) for x in df["High"].tolist()]
+        lows = [float(x) for x in df["Low"].tolist()]
+        res = trend_template_from_series(closes, highs, lows)
+        if not res:
+            return None
+        res["date"] = str(df.index[-1])[:10]
+    except Exception as exc:
+        log.debug("us_trend: %s parse failed: %s", ticker, exc)
+        return None
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cf.write_text(json.dumps(res))
+    except Exception:
+        pass
+    return res
+
+
 def _screen_us(conditions: list[Condition]) -> ScreenResult:
     """Screen US S&P 500 using yfinance for all metrics."""
     universe = _get_us_universe()
@@ -823,7 +868,10 @@ def _screen_us(conditions: list[Condition]) -> ScreenResult:
     yf_fields: set[str] = set()
     qoq_map: dict[str, tuple[str, str]] = {}
     cond_info: list[tuple[Condition, str, float]] = []
+    tech_conds = [c for c in conditions if c.metric.source == "tech"]
     for c in conditions:
+        if c.metric.source == "tech":
+            continue                       # tech 는 .info 아닌 일봉 — 아래 Phase 3
         if c.metric.source == "qoq":
             yf_field = c.metric.yf_field
             prescale = 1.0
@@ -880,9 +928,46 @@ def _screen_us(conditions: list[Condition]) -> ScreenResult:
             hits.append(hit)
 
     hits.sort(key=lambda x: x.get("mcap", 0) or 0, reverse=True)
-    log.info("stock_screener: US — %d/%d survive", len(hits), total)
+    log.info("stock_screener: US — %d/%d survive (.info)", len(hits), total)
+
+    # ── Phase 3 tech (추세 템플릿) — KR 과 동일 패턴(데드라인·캡·daily캐시·순수함수).
+    note = ""
+    if tech_conds and hits:
+        import concurrent.futures as _cf
+        info_n = len(hits)
+        scan = hits[:_TECH_SCAN_CAP]       # 이미 시총 내림차순
+        final = []
+        loaded = 0
+        timed_out = False
+        pool = ThreadPoolExecutor(max_workers=5)
+        futmap = {pool.submit(get_us_trend_template, h["ticker"]): h for h in scan}
+        try:
+            for fut in _cf.as_completed(futmap, timeout=_TECH_BUDGET_SEC):
+                h = futmap[fut]
+                try:
+                    td = fut.result()
+                except Exception:
+                    td = None
+                if not td:
+                    continue
+                loaded += 1
+                if all(c.test(td.get(c.metric.yf_field)) for c in tech_conds):
+                    for c in tech_conds:
+                        if td.get(c.metric.yf_field) is not None:
+                            h[c.metric.key] = round(td[c.metric.yf_field], 2)
+                    final.append(h)
+        except _cf.TimeoutError:
+            timed_out = True
+        pool.shutdown(wait=False, cancel_futures=True)
+        note = (f".info 통과 {info_n} · 추세스캔 {len(scan)} · 일봉데이터 {loaded}"
+                f" · 통과 {len(final)}"
+                + (f" · ⏱{_TECH_BUDGET_SEC}s 초과(부분)" if timed_out else "")
+                + f" (시총상위 {_TECH_SCAN_CAP}캡)")
+        log.info("stock_screener: US Phase 3 tech — %s", note)
+        hits = final
+
     return ScreenResult(conditions=conditions, hits=hits,
-                        total_universe=total, elapsed_sec=0, market="US")
+                        total_universe=total, elapsed_sec=0, market="US", note=note)
 
 
 # ── Telegram formatting ────────────────────────────────────────────
@@ -917,7 +1002,7 @@ def format_list_message() -> str:
             aliases = "/".join(m.aliases[:2])
             lines.append(f"  <code>{m.name}</code> ({aliases}) — {m.desc}")
 
-    lines.append("\n<b>📈 추세 (pykrx 일봉, 시총 상위 스캔 · KR):</b>")
+    lines.append("\n<b>📈 추세 (일봉, 시총 상위 스캔 · KR=pykrx/US=yfinance):</b>")
     for k, m in METRICS.items():
         if m.source == "tech":
             aliases = "/".join(m.aliases[:2])
