@@ -71,6 +71,11 @@ def _classify_report(report_nm: str) -> str:
     # 파서가 닿도록 명시 분류.
     if "전환청구권" in t and "행사" in t:
         return "자금조달"
+    # 자기 (전환/교환)사채 만기전 취득(Call Option) = 자기증권 취득 = 주주환원
+    # (자기주식취득과 동류, 희석 제거). '전환사채' 포함이라 일반 사채발행으로
+    # 새던 미파싱 보강 (보로노이 2026-06-22). '처분' 제외.
+    if "사채" in t and "취득" in t and "자기" in t and "처분" not in t:
+        return "주주환원"
     if any(k in t for k in ("주식분할", "주식병합", "액면분할", "액면병합")):
         return "회사구조"
     # 회사분할(인적/물적) = 회사구조 (사용자 2026-06-13 — 옛 M&A 버킷에서
@@ -1110,6 +1115,44 @@ def _disposal_lines(txt: str) -> list[str]:
             r"([가-힣A-Za-z0-9() ]{2,30}?)\s*(?:\d{1,2}\s*\.|위탁|$)")
     if to:
         parts.append(f"상대방: {to}")
+    return parts
+
+
+def _self_bond_acquire_lines(txt: str) -> list[str]:
+    """자기 (전환/교환/신주인수권부)사채 만기전 취득 결정 표준 표 (미파싱, 보로노이
+    2026-06-22) — 구조화 API 미보유 → 원문 폴백. 회차/종류·취득대상 권면·취득금액
+    (원금+이자)·취득사유(Call Option 등)·방법(장외매수)·취득후 잔액. 자기주식취득과
+    동류(자기증권 취득)이나 양식이 달라 전용. 순수(단위테스트)."""
+    parts: list[str] = []
+    corr = _correction_header(txt)
+    if corr:
+        parts.append(corr)
+    from bot.dart_detail import _won
+
+    def _g(pat: str) -> str | None:
+        m = re.search(pat, txt)
+        return m.group(1).strip() if m else None
+
+    rnd = _g(r"사채의?\s*종류[\s\S]{0,12}?회차[^0-9]{0,6}?(\d{1,3})")
+    head = f"{rnd}회차 자기사채 만기전 취득" if rnd else "자기사채 만기전 취득"
+    parts.append(head)
+    tgt = _g(r"취득\s*대상[\s\S]{0,30}?금액\s*\(원\)[^0-9]{0,12}?([\d,]{7,})")
+    if tgt:
+        parts.append(f"취득대상 권면: {_won(tgt) or tgt + '원'}")
+    amt = _g(r"취득금액[\s\S]{0,40}?금액\s*\(원\)[^0-9]{0,12}?([\d,]{7,})")
+    if amt:
+        parts.append(f"취득금액: {_won(amt) or amt + '원'}")
+    why = _g(r"만기전\s*취득\s*사유[^가-힣A-Za-z0-9]{0,10}?"
+             r"([가-힣A-Za-z0-9() ]{2,40}?)\s*(?:\d{1,2}\s*\.|향후|$)")
+    if why:
+        parts.append(f"사유: {why}")
+    how = _g(r"취득\s*방법[^가-힣A-Za-z0-9]{0,10}?"
+             r"([가-힣A-Za-z0-9() ]{2,20}?)\s*(?:\d{1,2}\s*\.|만기전|$)")
+    if how:
+        parts.append(f"방법: {how}")
+    rem = _g(r"취득\s*후[\s\S]{0,30}?잔액\s*\(원\)[^0-9]{0,12}?([\d,]{7,})")
+    if rem:
+        parts.append(f"취득후 잔액: {_won(rem) or rem + '원'}")
     return parts
 
 
@@ -2791,6 +2834,16 @@ def _extract_detail_specific(report_nm: str, rcept_no: str, corp_code: str,
         doc = _parse_rights_issue_doc(rcept_no, api_key, t)
         if doc:
             return doc
+    elif "사채" in t and "취득" in t and "자기" in t and "처분" not in t:
+        # 자기 (전환/교환/신주인수권부)사채 만기전 취득 — '전환사채' 포함이라
+        # 아래 CB 발행 파서로 오라우팅되던 미파싱 (보로노이 2026-06-22). 취득
+        # 양식은 발행과 별개라 전용 원문 파서 + 주주환원 분류(자기증권 취득).
+        txt2 = _fetch_doc_text(rcept_no, api_key)
+        if txt2:
+            parts = _self_bond_acquire_lines(txt2)
+            if len(parts) >= 2:
+                return {"lines": parts, "category": "주주환원"}
+            _doc_fail_mark(rcept_no, hours=12.0)
     elif "전환사채" in t:
         doc = _parse_cb_doc(rcept_no, api_key)
         if doc:

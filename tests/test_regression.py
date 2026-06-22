@@ -3996,6 +3996,34 @@ class TestDartFeedBackfill:
         assert m._classify_report("전환청구권행사(제5회차)") != "기타"
         assert m._classify_report("주요사항보고서(주식병합결정)") != "기타"
 
+    def test_self_bond_acquire_parsed(self, tmp_path, monkeypatch):
+        # 자기 전환사채 만기전 취득(Call Option) — '전환사채' 포함이라 CB 발행 파서로
+        # 오라우팅되어 미파싱이던 것(보로노이 2026-06-22). 주주환원 분류 + 전용 파서.
+        m = self._load(tmp_path, monkeypatch)
+        assert m._classify_report("주요사항보고서(자기전환사채만기전취득결정)") == "주주환원"
+        assert m._classify_report("주요사항보고서(자기교환사채만기전취득결정)") == "주주환원"
+        # CB 발행은 안 깨짐(자금조달 유지)
+        assert m._classify_report("주요사항보고서(전환사채권발행결정)") == "자금조달"
+        txt = ("자기 전환사채 만기전 취득 결정 "
+               "1. 사채의 종류 회차 3 종류 무보증 사모 전환사채 "
+               "6. 취득 대상 사채의 권면(전자등록) 금액(원) 8,500,000,000 "
+               "8. 취득금액 금액(원) 8,928,187,500 산정근거 원금 및 이자 "
+               "9. 취득 방법 장외매수 "
+               "10. 만기전 취득사유 매도청구권(Call Option) 행사 "
+               "11. 향후 처리계획 이사회 "
+               "13. 취득후 사채의 권면(전자등록) 잔액(원) 41,500,000,000")
+        lines = m._self_bond_acquire_lines(txt)
+        joined = " / ".join(lines)
+        assert "3회차" in joined
+        assert "85억원" in joined          # 취득대상 권면
+        assert "89.3억원" in joined        # 취득금액(원금+이자)
+        assert "Call Option" in joined     # 사유
+        assert "장외매수" in joined        # 방법
+        assert "415억원" in joined         # 취득후 잔액
+        assert len(lines) >= 2
+        # 빈 원문 → 헤더만(미달) → dispatch 가 fail-mark 후 generic 폴백
+        assert len(m._self_bond_acquire_lines("관련 없는 텍스트")) == 1
+
     def test_noncorp_docs_split_from_backfill_candidates(self, tmp_path, monkeypatch):
         # 발행·등록 서류(투자설명서/일괄신고/증권신고서)는 펀드 동류 비대상 —
         # coverage 의 '보강 후보'가 아니라 별도 '의도된 제외'로 (사용자 2026-06-13)
