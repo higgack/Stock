@@ -86,19 +86,21 @@ _SERIES = {
         "lookback_days": 400,
     },
     "current_account": {
-        "table": "301Y017",   # 국제수지 — 경상수지
-        "item": "000000",
+        "table": "301Y017",   # 2.5.1.2 경상수지(계절조정)
+        "item": "SA000",      # 경상수지 (ECOS item 확인 2026-06-23, 옛 000000=데이터없음)
         "freq": "M",
         "label": "경상수지",
         "unit": "억$",
+        "scale": 0.01,        # ECOS 백만달러 → 억달러(÷100)
         "lookback_days": 400,
     },
     "export_amt": {
-        "table": "403Y014",   # 통관기준 수출입 — 수출총액
-        "item": "000000",
+        "table": "901Y118",   # 3.2.1 통관기준 수출입 총괄 (옛 403Y014=데이터없음)
+        "item": "T002",       # 수출금액 (ECOS item 확인 2026-06-23)
         "freq": "M",
         "label": "한국 수출",
         "unit": "억$",
+        "scale": 1e-5,        # ECOS 천달러 → 억달러(÷100,000)
         "lookback_days": 400,
     },
 }
@@ -165,9 +167,10 @@ def _fetch_indicator(key: str) -> Optional[dict]:
 
     # Sort ascending by TIME; pick latest + previous for change calc.
     rows = sorted(rows, key=lambda r: r.get("TIME", ""))
+    _scale = float(cfg.get("scale", 1.0))   # ECOS 원단위 → 카드 단위(예: 백만$→억$)
     try:
         latest = rows[-1]
-        latest_val = float(latest.get("DATA_VALUE", "") or "nan")
+        latest_val = float(latest.get("DATA_VALUE", "") or "nan") * _scale
     except Exception:
         return None
     if latest_val != latest_val:  # NaN guard
@@ -177,7 +180,7 @@ def _fetch_indicator(key: str) -> Optional[dict]:
     if len(rows) >= 2:
         try:
             prev = rows[-2]
-            prev_val = float(prev.get("DATA_VALUE", "") or "nan")
+            prev_val = float(prev.get("DATA_VALUE", "") or "nan") * _scale
             if prev_val != prev_val:
                 prev_val = None
         except Exception:
@@ -272,11 +275,12 @@ def fetch_series_points(key: str, lookback_days: int | None = None) -> list[tupl
                     _r.get("CODE"), _r.get("MESSAGE"), cfg.get("table"), cfg.get("item"))
         return []
     rows = payload.get("StatisticSearch", {}).get("row") or []
+    _scale = float(cfg.get("scale", 1.0))   # ECOS 원단위 → 카드 단위(예: 천$→억$)
     points: list[tuple[str, float]] = []
     for r in rows:
         t = r.get("TIME", "")
         try:
-            v = float(r.get("DATA_VALUE", "") or "nan")
+            v = float(r.get("DATA_VALUE", "") or "nan") * _scale
         except Exception:
             continue
         if v != v:  # NaN
