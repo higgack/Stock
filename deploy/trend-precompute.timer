@@ -1,0 +1,12 @@
+[Unit]
+Description=KR 추세 템플릿 사전계산 트리거 — KR 장마감 후(평일 16:30 KST)
+
+[Timer]
+# KR 장마감 15:30 KST + 데이터 settle 여유 → 평일 16:30 KST 1회. 그날 EOD
+# 일봉으로 상위 종목 추세템플릿 캐시 워밍. Persistent=부팅 직후 누락분 1회 보정.
+OnCalendar=Mon-Fri *-*-* 16:30:00 Asia/Seoul
+Persistent=true
+Unit=trend-precompute.service
+
+[Install]
+WantedBy=timers.target

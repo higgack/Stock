@@ -1,0 +1,18 @@
+[Unit]
+# KR 추세 템플릿(Minervini) 사전계산 — /screen minervini on-demand 행 해소
+# (사용자 2026-06-23). stock-bot 과 분리된 독립 oneshot(봇 배포·재시작 무관).
+# 시총 상위 종목 일봉을 미리 받아 daily 캐시 워밍 → /screen 은 캐시만 읽어 즉시.
+Description=KR 추세 템플릿 사전계산 (Minervini 캐시 워밍 · 봇과 독립)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=higgack
+WorkingDirectory=/home/higgack/stock
+EnvironmentFile=/home/higgack/stock/.env
+ExecStart=/home/higgack/stock/.venv/bin/python -m bot.screener_precompute
+StandardOutput=journal
+StandardError=journal
+# 상위 ~200종목 일봉 fetch(pykrx ~1-2초/종목) 최대 대기 — 넉넉히.
+TimeoutStartSec=900

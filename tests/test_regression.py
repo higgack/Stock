@@ -12492,6 +12492,21 @@ class TestMinerviniScreener:
         cs2 = s.parse_conditions("PER<15 배당수익률>3")
         assert {c.metric_key for c in cs2} == {"per", "div"}
 
+    def test_precompute_top_by_mcap(self):
+        # 사전계산 캐시 워밍 대상 선택 — 시총>500&거래량>0 중 시총 상위 N(내림차순).
+        # /screen minervini 스캔 선택과 동일 규칙(사용자 2026-06-23 행 해소 background).
+        from bot.screener_precompute import top_by_mcap
+        bulk = {
+            "A": {"시가총액": 9000, "거래량": 100},
+            "B": {"시가총액": 700, "거래량": 0},      # 거래량 0 → 제외
+            "C": {"시가총액": 300, "거래량": 50},     # 시총 ≤500 → 제외
+            "D": {"시가총액": 5000, "거래량": 10},
+            "E": {"시가총액": None, "거래량": 5},      # 시총 None → 제외
+        }
+        assert top_by_mcap(bulk, 10) == ["A", "D"]       # 시총 내림차순, 적격만
+        assert top_by_mcap(bulk, 1) == ["A"]             # 상위 N 캡
+        assert top_by_mcap({}, 5) == []                  # graceful
+
     def test_screen_cache_has_ttl(self, tmp_path, monkeypatch):
         # 영구캐시 고착 방지(사용자 2026-06-23 '또 0종목·💾캐시') — 6h TTL.
         import time
