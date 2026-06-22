@@ -6931,6 +6931,12 @@ def _render_screen_manual() -> str:
             + _metric_rows("qoq", 2) +
             '<h4>추세 지표 (pykrx 일봉 · 시총 상위 스캔 · KR)</h4>'
             + _metric_rows("tech", 2) +
+            '<div class="mrow" style="opacity:.85">📈 <b>Minervini 추세 템플릿</b>'
+            ' (<code>/screen minervini</code> 또는 <code>트렌드템플릿&gt;=1</code>) — 7조건 전부 충족 시 1:'
+            ' ①종가&gt;150·200일선 ②150&gt;200일선 ③200일선 상승추세(22일전 대비)'
+            ' ④50&gt;150&gt;200일선 ⑤종가&gt;50일선 ⑥52주저점 +30%↑ ⑦52주고점 −25% 이내.'
+            ' 비용 bound 위해 <b>시총 상위 종목만 스캔</b>(대형주 우선이라 모멘텀 신흥주는'
+            ' 적게 잡힐 수 있음) · 결과에 <code>🔎 추세 스캔 N·일봉 M·통과 K</code> 진단 표시.</div>'
             '<h4>프리셋</h4>'
             + preset_rows +
             '<h4>연산자 · 시장 · 비용</h4>'
@@ -7365,11 +7371,14 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                     )
                 else:
                     # 0종목 — 텔레그램처럼 명시(사용자 2026-06-11: 펼쳤는데
-                    # 빈 카드면 깨진 것처럼 보임).
+                    # 빈 카드면 깨진 것처럼 보임) + 추세 진단 note(0 원인 가시화,
+                    # 사용자 2026-06-23).
+                    _scr_note = _shtml.escape(str(_sa.get("note", "")))
+                    _note_html = (f"<br>🔎 {_scr_note}" if _scr_note else "")
                     _scr_table = (
                         "<p class='muted' style='padding:10px 14px;margin:0'>"
                         "조건에 맞는 종목이 없습니다 "
-                        f"(0종목 / {_scr_total:,}종목 스캔).</p>"
+                        f"(0종목 / {_scr_total:,}종목 스캔).{_note_html}</p>"
                     )
                 _scr_mbadge = " 🇺🇸" if _scr_is_us else ""
                 parts.append(
