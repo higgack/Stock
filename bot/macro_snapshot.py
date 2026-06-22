@@ -58,7 +58,10 @@ GLOBAL = [
     ("us_10y", "미국 10Y", "%", "fred", "DGS10", 2),
     ("us_cpi", "미국 CPI", "", "fred", "CPIAUCSL", 2),
     ("us_unemploy", "미국 실업률", "%", "fred", "UNRATE", 1),
-    ("us_ism", "미국 ISM PMI", "", "fred", "NAPM", 1),
+    # ISM PMI(NAPM)는 FRED 에서 폐기(ISM 저작권) → 무료 대체 = Chicago Fed
+    # National Activity Index(CFNAI, 월간 85지표 합성 경기선행). 라벨 정확화
+    # (사용자 2026-06-23 'ISM PMI 카드 400'). GDP 는 분기 series → _FRED_QUARTERLY.
+    ("us_cfnai", "미국 경기활동(CFNAI)", "", "fred", "CFNAI", 2),
     ("us_gdp", "미국 GDP", "%", "fred", "A191RL1Q225SBEA", 1),
     ("sp500", "S&P 500", "", "yf", "^GSPC", 2),
     ("nasdaq", "NASDAQ", "", "yf", "^IXIC", 2),
@@ -104,12 +107,19 @@ _DEFS_VERSION = _hashlib.md5(
 _SPARK_N = 12  # months in sparkline
 
 
+# FRED 분기 series — monthly aggregation(frequency=m) 요청 시 400(upsample 불가,
+# 사용자 2026-06-23 GDP 400). 네이티브 분기로 요청. (월간 series 는 'm' 유지.)
+_FRED_QUARTERLY = {"A191RL1Q225SBEA"}
+
+
 # ── FRED monthly fetch ──────────────────────────────────────────────
 def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
-    """FRED monthly observations, oldest→newest, last `months` values."""
+    """FRED observations, oldest→newest, last `months` values. 분기 series 는
+    frequency=q(monthly 요청 시 FRED 400)."""
     api_key = os.getenv("FRED_API_KEY", "").strip()
     if not api_key:
         return []
+    freq = "q" if series_id in _FRED_QUARTERLY else "m"
     try:
         r = requests.get(
             "https://api.stlouisfed.org/fred/series/observations",
@@ -119,7 +129,7 @@ def _fred_monthly(series_id: str, months: int = _SPARK_N) -> list[float]:
                 "file_type": "json",
                 "sort_order": "desc",
                 "limit": months * 2,
-                "frequency": "m",
+                "frequency": freq,
             },
             timeout=12,
         )
