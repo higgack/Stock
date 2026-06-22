@@ -614,6 +614,12 @@ def _build_html(
     # history) stocks 커버 — 모달 sibling 카드도 가격칩 유지.
     stock_quotes_json = json.dumps(_stock_quotes_for(full_payload),
                                    ensure_ascii=False, separators=(",", ":"))
+    # 국가/지역 축 정제용 화이트리스트(국가별·지역별·매트릭스 축에서 노이즈→전국).
+    from trade import geo as _geo
+    geo_countries_json = json.dumps(sorted(_geo.COUNTRIES), ensure_ascii=False,
+                                    separators=(",", ":"))
+    geo_sido_json = json.dumps(list(_geo.KR_SIDO_ROOTS), ensure_ascii=False,
+                               separators=(",", ":"))
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     by_status = s.get("by_status", {})
@@ -839,6 +845,8 @@ def _build_html(
         f"const HISTORY_SRC={history_src_json};\n"   # 모달 히스토리 lazy 파일(빈문자=인라인)
         f"const LATEST_IDS=new Set({latest_ids_json});\n"
         f"const STOCK_QUOTES={stock_quotes_json};\n"
+        f"const GEO_COUNTRIES=new Set({geo_countries_json});\n"
+        f"const GEO_SIDO={geo_sido_json};\n"
         + _JS
         # 월별 원자료 가로 스크롤 = 최신(우측) 디폴트 (사용자 2026-06-15 '맨 오른쪽
         # 디폴트'). ⚠️ 산업트렌드는 탭이라 숨겨진 동안 scrollWidth=0 → 탭 핸들러가
@@ -1824,10 +1832,19 @@ function buildItemsView(filtered){
 // 표라 불가 → 임의 2축 조합(국가×지역 등). 산업은 매핑 신뢰도 낮아 축에서 제외
 // (CSV 로는 industry 포함 전 축 export 가능). 각 축 값은 axisVals 로 다중 분해.
 const _MX_AXES={item:'품목',company:'회사',country:'국가',region:'지역'};
+// 국가/지역 축 정제 (사용자 2026-06-22) — 파서가 거른 노이즈(제품명·스펙·국가↔지역
+// 혼입)를 실제 국가/한국지역만 남기고 나머지는 '전국'으로 접는다. GEO_* = 서버 화이
+// 트리스트(geo.py). 표시 축·칩·매트릭스만 정제(원본 alert·CSV·검색은 원값 유지).
+function normCountry(v){v=(v||'').trim();if(!v)return '전국';
+  if(v==='전국'||v==='글로벌')return v;return GEO_COUNTRIES.has(v)?v:'전국';}
+function normRegion(v){v=(v||'').trim().replace(/^[.,;]+/,'').trim();if(!v)return '전국';
+  if(v==='전국')return v;return GEO_SIDO.some(function(r){return v.indexOf(r)===0})?v:'전국';}
+function _uniq(a){return Array.from(new Set(a));}
 function axisVals(a, axis){
   if(axis==='company'){const c=a.companies||a.stocks||[];return c.length?c:['(기타)'];}
-  if(axis==='country'){return (a.countries&&a.countries.length)?a.countries:[a.country||'전국'];}
-  if(axis==='region'){return (a.regions&&a.regions.length)?a.regions:[a.region||'전국'];}
+  if(axis==='country'){const c=(a.countries&&a.countries.length)?a.countries:[a.country];return _uniq(c.map(normCountry));}
+  if(axis==='region'){const r=(a.regions&&a.regions.length)?a.regions:[a.region];return _uniq(r.map(normRegion));}
+  if(axis==='industry')return [a.industry||'미분류'];
   return [a.item||'-'];                       // item (기본)
 }
 function _mxAxisBar(role,sel){
@@ -1957,20 +1974,15 @@ function buildCompaniesView(filtered){
   }).join('');
 }
 
-// 국가별·지역별 공용 그룹 뷰 (사용자 2026-06-22) — 회사별과 동일 카드 레이아웃,
-// 한 축(국가 또는 한국 내 지역)으로 그룹핑. BeOn 6요소 중 '나라'(country/countries)
-// 와 '지역'(region/regions, 수출지=서울 강남구 등) 축이 같은 구조라 한 빌더로 처리.
-//   field=단일키(country|region), multi=다중키(countries|regions), sk=state 서브필터
-//   키, cls=CSS/데이터 접두(country|region), emptyMsg=빈 결과 문구.
-// 한 alert 이 여러 값을 달면 각 섹션에 모두 포함. 값 미상은 '전국'. 칩 바로 검색
-// 없이 클릭 리뷰(state[sk]). 필터(수출/수입/잠정/확정/🆕신규)는 전역 matches() 가
-// 이미 적용한 filtered 를 받으므로 칩 목록·카운트도 그에 맞춰 자동 갱신.
-function buildGroupedAxisView(filtered, field, multi, sk, cls, emptyMsg, fallback, sinkLabel){
-  const fb=fallback||'전국';                  // 값 미상 버킷(국가/지역=전국, 산업=미분류)
+// 산업별·국가별·지역별 공용 그룹 뷰 (사용자 2026-06-22) — 회사별과 동일 카드 레이아웃,
+// 한 축으로 그룹핑. 축 값 추출은 axisVals 한 곳에서(국가/지역 노이즈 정제·산업 미분류
+// fallback 포함) → 칩 바·매트릭스와 동일 규칙. field=axisVals 축키(industry|country|
+// region), sk=state 서브필터키, cls=CSS 접두, emptyMsg=빈 결과, sinkLabel=항상 맨아래
+// (산업 '미분류'). 필터(수출/수입/잠정/확정/🆕신규)는 전역 matches() 가 이미 적용.
+function buildGroupedAxisView(filtered, field, sk, cls, emptyMsg, sinkLabel){
   const by={};
   filtered.forEach(a=>{
-    const vs=(a[multi]&&a[multi].length)?a[multi]:[a[field]||fb];
-    vs.forEach(v=>{const k=v||fb;(by[k]=by[k]||[]).push(a)});
+    axisVals(a, field).forEach(v=>{(by[v]=by[v]||[]).push(a)});
   });
   // 빈도순. sinkLabel(예: 미분류)은 카운트 무관 항상 맨 아래.
   const entries=Object.entries(by).sort((x,y)=>{
@@ -2009,14 +2021,14 @@ function buildGroupedAxisView(filtered, field, multi, sk, cls, emptyMsg, fallbac
   }).join('');
 }
 function buildCountriesView(filtered){
-  return buildGroupedAxisView(filtered,'country','countries','country','country','조건에 맞는 국가가 없습니다.');
+  return buildGroupedAxisView(filtered,'country','country','country','조건에 맞는 국가가 없습니다.');
 }
 function buildRegionsView(filtered){
-  return buildGroupedAxisView(filtered,'region','regions','region','region','조건에 맞는 지역이 없습니다.');
+  return buildGroupedAxisView(filtered,'region','region','region','조건에 맞는 지역이 없습니다.');
 }
 // 산업별 — 품목→산업 매핑(미해석=미분류). 산업명 빈도순 + '미분류'는 항상 맨 아래.
 function buildIndustriesView(filtered){
-  return buildGroupedAxisView(filtered,'industry','industries','industry','industry','조건에 맞는 산업이 없습니다.','미분류','미분류');
+  return buildGroupedAxisView(filtered,'industry','industry','industry','조건에 맞는 산업이 없습니다.','미분류');
 }
 
 function renderHeaderMeta(){

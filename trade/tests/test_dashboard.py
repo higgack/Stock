@@ -122,11 +122,11 @@ class TestDashboardRenderer(unittest.TestCase):
         order = [html.index('data-tab="%s"' % t) for t in
                  ("industries", "items", "companies", "countries", "regions", "matrix")]
         self.assertEqual(order, sorted(order), "탭 순서 불일치")
-        # 공용 빌더 축 인자 — 산업은 '미분류' fallback+sink
-        self.assertIn("buildGroupedAxisView(filtered,'country','countries','country','country'", html)
-        self.assertIn("buildGroupedAxisView(filtered,'region','regions','region','region'", html)
-        self.assertIn("buildGroupedAxisView(filtered,'industry','industries','industry','industry'", html)
-        self.assertIn("'미분류','미분류'", html)   # 산업 fallback + sink 라벨
+        # 공용 빌더 축 인자(axisVals 일원화) — 산업은 sinkLabel '미분류'
+        self.assertIn("buildGroupedAxisView(filtered,'country','country','country'", html)
+        self.assertIn("buildGroupedAxisView(filtered,'region','region','region'", html)
+        self.assertIn("buildGroupedAxisView(filtered,'industry','industry','industry'", html)
+        self.assertIn("'조건에 맞는 산업이 없습니다.','미분류'", html)   # 산업 sink 라벨
         # 검색 hay 에 countries·regions·industry 포함
         self.assertIn("(a.countries||[]).join(' ')", html)
         self.assertIn("(a.regions||[]).join(' ')", html)
@@ -433,6 +433,11 @@ class TestDashboardRenderer(unittest.TestCase):
         self.assertIn("closest('.mx-axis-chip')", html)
         # CSV 헤더에 industry 포함(전 축 export — 화면 2축이라도 CSV 는 전부)
         self.assertIn("'item','item_raw','industry'", html)
+        # 국가/지역 축 노이즈 정제(사용자 2026-06-22) — 화이트리스트 임베드 + 정규화
+        self.assertIn("GEO_COUNTRIES=new Set(", html)
+        self.assertIn("GEO_SIDO=", html)
+        self.assertIn("function normCountry(", html)
+        self.assertIn("function normRegion(", html)
 
     def test_empty_store_renders_without_crash(self):
         import tempfile
