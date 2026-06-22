@@ -6929,6 +6929,8 @@ def _render_screen_manual() -> str:
             + _metric_rows("yfinance", 2) +
             '<h4>QoQ 지표 (전분기 대비 성장률, yfinance 분기 재무제표)</h4>'
             + _metric_rows("qoq", 2) +
+            '<h4>추세 지표 (pykrx 일봉 · 시총 상위 스캔 · KR)</h4>'
+            + _metric_rows("tech", 2) +
             '<h4>프리셋</h4>'
             + preset_rows +
             '<h4>연산자 · 시장 · 비용</h4>'

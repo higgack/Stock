@@ -12441,3 +12441,53 @@ class TestBandChartPane:
         assert r["per"]["bands"][0] == [[1656547200000, 254545.6]]
         # price 비면 None(무커버리지 graceful)
         assert _parse({"bandChart1": {"price": []}}, "0") is None
+
+
+class TestMinerviniScreener:
+    """Minervini 추세 스크리너 (사용자 2026-06-22, finance-skills sepa 개념 ₩0 재구현).
+    순수 추세템플릿 로직 + 조건파서 숫자/음수 지표명 회귀."""
+
+    def test_trend_template_uptrend_passes(self):
+        from bot.pykrx_client import trend_template_from_series
+        up = [100 + i * 0.5 for i in range(260)]          # 꾸준한 우상향
+        hi = [c * 1.01 for c in up]
+        lo = [c * 0.99 for c in up]
+        r = trend_template_from_series(up, hi, lo)
+        assert r and r["tt"] == 1.0
+        assert r["off_low"] > 30 and r["to_high"] >= -25   # 52주 위치 조건
+        assert r["rs6m"] > 0
+
+    def test_trend_template_downtrend_fails(self):
+        from bot.pykrx_client import trend_template_from_series
+        dn = [300 - i * 0.5 for i in range(260)]
+        hi = [c * 1.01 for c in dn]
+        lo = [c * 0.99 for c in dn]
+        r = trend_template_from_series(dn, hi, lo)
+        assert r and r["tt"] == 0.0
+
+    def test_trend_template_insufficient_history(self):
+        from bot.pykrx_client import trend_template_from_series
+        s = [100.0] * 100
+        assert trend_template_from_series(s, s, s) is None
+
+    def test_screener_tech_metrics_and_preset(self):
+        import bot.stock_screener as s
+        for k in ("tt", "off_low", "to_high", "rs6m"):
+            assert s.METRICS[k].source == "tech", k
+        assert "minervini" in s.PRESETS
+        # 트렌드템플릿 별칭 + 시총/거래량 (preset 그대로)
+        cs = s.parse_conditions(s.PRESETS["minervini"]["conditions"])
+        keys = {c.metric_key for c in cs}
+        assert {"tt", "mcap", "volume"} <= keys
+
+    def test_parse_conditions_digit_and_negative(self):
+        # 숫자 든 지표명(rs6m·52주고점대비) + 음수 값 — _COND_RE 회귀 가드
+        import bot.stock_screener as s
+        cs = s.parse_conditions("rs6m>20 52주고점대비>=-25 52주저점대비>=30")
+        got = {c.metric_key: c.value for c in cs}
+        assert got["rs6m"] == 20.0
+        assert got["to_high"] == -25.0
+        assert got["off_low"] == 30.0
+        # 기존 조건 회귀 없음
+        cs2 = s.parse_conditions("PER<15 배당수익률>3")
+        assert {c.metric_key for c in cs2} == {"per", "div"}

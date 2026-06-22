@@ -35,6 +35,9 @@ log = logging.getLogger(__name__)
 
 _CACHE_DIR = Path(os.path.expanduser("~/.tradingagents/screen_cache"))
 _ARCHIVE_DIR = Path(os.path.expanduser("~/.tradingagents/screen_archive"))
+# tech(추세) 메트릭은 종목별 일봉 fetch 라 시총 상위 N개만 스캔(비용 bound,
+# 일봉당 daily 캐시). Minervini 는 유동 대형주 대상이라 상위 스캔이 적합.
+_TECH_SCAN_CAP = 300
 
 # ── Metric definitions ─────────────────────────────────────────────
 
@@ -135,6 +138,18 @@ _reg("ocf_qoq", "영업현금흐름QoQ", ("영업현금흐름QoQ", "영업현금
                                   "ocfqoq", "ocf_qoq"), "qoq",
      "_qoq_ocf", "%", 1.0, "영업현금흐름 QoQ 성장률")
 
+# 기술적 추세 (Phase 3 — pykrx 일봉, 시총 상위 N개만 스캔, ₩0·yfinance 무관).
+# Minervini SEPA 추세 템플릿 (finance-skills 개념 재구현, 사용자 2026-06-22).
+_reg("tt", "트렌드템플릿", ("트렌드템플릿", "tt", "minervini", "미너비니",
+                          "추세템플릿", "trend_template"), "tech",
+     "tt", "", desc="Minervini 추세 템플릿 7조건 충족=1 (이평정렬·52주위치)")
+_reg("off_low", "52주저점대비", ("52주저점대비", "off_low", "저점대비"), "tech",
+     "off_low", "%", desc="52주 최저가 대비 상승률 (Minervini ≥30)")
+_reg("to_high", "52주고점대비", ("52주고점대비", "to_high", "고점대비"), "tech",
+     "to_high", "%", desc="52주 최고가 대비 위치 (음수=아래, Minervini ≥-25)")
+_reg("rs6m", "6개월수익률", ("6개월수익률", "rs6m", "rs", "상대강도6개월"), "tech",
+     "rs6m", "%", desc="6개월 가격수익률 (상대강도 참고치)")
+
 _QOQ_STMT_MAP: dict[str, tuple[str, str]] = {
     "_qoq_revenue": ("income_stmt", "Total Revenue"),
     "_qoq_gross_profit": ("income_stmt", "Gross Profit"),
@@ -197,8 +212,11 @@ class Condition:
         return f"{self.metric.name}{self.operator}{self.value:g}{self.metric.unit}"
 
 
+# 지표명에 숫자 허용(52주저점대비·rs6m·6개월수익률 등) — 연산자(>·<…)가 클래스에
+# 없어 greedy 라도 값과 안 섞임(최장일치 = 접두 별칭 모호성 차단). 값은 음수 허용
+# (52주고점대비>=-25 = 고점 25% 이내 등).
 _COND_RE = re.compile(
-    r"([가-힣A-Za-z/_]+)\s*(>=|<=|!=|>|<|=)\s*([0-9]+(?:\.[0-9]+)?)"
+    r"([가-힣A-Za-z0-9/_]+)\s*(>=|<=|!=|>|<|=)\s*(-?[0-9]+(?:\.[0-9]+)?)"
 )
 
 
@@ -259,6 +277,11 @@ PRESETS: dict[str, dict] = {
         "name": "저PBR",
         "desc": "PBR<0.5 (청산 가치 대비 저평가)",
         "conditions": "PBR<0.5 PBR>0 시총>500",
+    },
+    "minervini": {
+        "name": "Minervini 추세",
+        "desc": "SEPA 추세 템플릿(이평 정렬+52주 위치) · 시총 상위 스캔",
+        "conditions": "트렌드템플릿>=1 시총>500 거래량>0",
     },
 }
 
@@ -595,6 +618,32 @@ def _screen_kr(conditions: list[Condition]) -> ScreenResult:
     elif (yf_conds or qoq_conds) and not survivors:
         pass
 
+    tech_conds = [c for c in conditions if c.metric.source == "tech"]
+    if tech_conds and survivors:
+        from bot import pykrx_client as _pk
+        # 일봉 fetch 비용 bound — 시총 상위 _TECH_SCAN_CAP 개만 스캔(시총순 정렬 후 캡).
+        ranked = sorted(survivors.items(),
+                        key=lambda kv: kv[1].get("시가총액", 0) or 0, reverse=True)
+        scan = ranked[:_TECH_SCAN_CAP]
+        log.info("stock_screener: Phase 3 tech — top %d by mcap (%d conditions)",
+                 len(scan), len(tech_conds))
+
+        def _tt(kv):
+            try:
+                return kv[0], _pk.get_kr_trend_template(kv[0])
+            except Exception:
+                return kv[0], None
+
+        final = {}
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for code, td in pool.map(_tt, scan):
+                if not td:
+                    continue
+                if all(c.test(td.get(c.metric.yf_field)) for c in tech_conds):
+                    final[code] = {**survivors[code], **td}
+        log.info("stock_screener: Phase 3 tech — %d/%d survive", len(final), len(scan))
+        survivors = final
+
     name_map = _resolve_kr_names(list(survivors.keys()))
 
     hits = []
@@ -806,6 +855,12 @@ def format_list_message() -> str:
     lines.append("\n<b>QoQ (전분기 대비 성장률, yfinance 분기 재무제표):</b>")
     for k, m in METRICS.items():
         if m.source == "qoq":
+            aliases = "/".join(m.aliases[:2])
+            lines.append(f"  <code>{m.name}</code> ({aliases}) — {m.desc}")
+
+    lines.append("\n<b>📈 추세 (pykrx 일봉, 시총 상위 스캔 · KR):</b>")
+    for k, m in METRICS.items():
+        if m.source == "tech":
             aliases = "/".join(m.aliases[:2])
             lines.append(f"  <code>{m.name}</code> ({aliases}) — {m.desc}")
 
