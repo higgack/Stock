@@ -633,7 +633,10 @@ def _render_free_item(data: dict) -> str:
         leaf_tag = (f'클릭품목 <b>{e(leaf)}</b> · ' if leaf else '')
         # 정확 HS10 검색이면 그 leaf 의 관세청 한글품목명(stat_kor) 병기 (사용자 2026-06-22).
         hs_name = (data.get("hs_name") or "").strip()
-        name_tag = (f' <span style="color:#e6c97a">[{e(hs_name)}]</span>' if hs_name else '')
+        # 챕터/호 한글명은 매우 길 수 있어(제85류 전기기기…) 표시만 ~44자 축약.
+        _hn_disp = (hs_name[:44] + "…") if len(hs_name) > 45 else hs_name
+        name_tag = (f' <span style="color:#e6c97a" title="{e(hs_name)}">'
+                    f'[{e(_hn_disp)}]</span>' if hs_name else '')
         head += (f'<div style="font-size:12px;color:#c8a24a;background:#2a2410;'
                  f'border:1px solid #4a3f1a;border-radius:6px;padding:6px 10px;margin-bottom:12px">'
                  f'🔎 {leaf_tag}HS <b>{e(data.get("query") or "")}</b>{name_tag} → 연계 MTI품목 <b>{n_it}개</b>. '
