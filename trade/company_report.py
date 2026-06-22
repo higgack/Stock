@@ -728,8 +728,8 @@ def _render_free_item(data: dict) -> str:
                          f'border:1px solid #1f3a2a;border-radius:6px;padding:6px 10px;'
                          f'margin-bottom:12px;line-height:1.7">'
                          f'<b>📍 정확 HS10 (이 코드 자체)</b> '
-                         f'<span style="color:#9aa0aa">(관세청 旬 스냅샷 3개월 기준 · '
-                         f'추세·진도율은 위 MTI 단위)</span>{xblk}</div>')
+                         f'<span style="color:#9aa0aa">(YoY=기준월÷작년동월·MoM=기준월÷전월, '
+                         f'이 HS10 스냅샷 직접계산 · 추세·진도율만 위 MTI 단위)</span>{xblk}</div>')
     if companies:
         chips = "".join(
             '<span style="display:inline-block;background:#1c1f26;color:#e6edf3;'
