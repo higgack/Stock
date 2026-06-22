@@ -1040,11 +1040,34 @@ def _screen_cn(conditions: list[Condition]) -> ScreenResult:
 
 def _screen_tw(conditions: list[Condition]) -> ScreenResult:
     """Screen TW — TWSE/TPEx 전종목을 거래대금상위 ~225 로 바운드 + 中文명(네이버
-    미커버라 STOCK_DAY_ALL 명칭)."""
+    미커버라 STOCK_DAY_ALL 명칭). 결과 종목명은 신고가/급등과 동일 chart_translate
+    로 한국어화(中文/영문 → 한글, TSMC 류 통용명 유지, 사용자 2026-06-23)."""
     universe, names = _get_tw_universe()
-    return _screen_yf(conditions, universe, "TW",
-                      empty_note="유니버스 비어있음 — TW 상장목록(TWSE/TPEx) 소스 실패",
-                      names=names)
+    res = _screen_yf(conditions, universe, "TW",
+                     empty_note="유니버스 비어있음 — TW 상장목록(TWSE/TPEx) 소스 실패",
+                     names=names)
+    _translate_hit_names_kr(res.hits)
+    return res
+
+
+def _translate_hit_names_kr(hits: list[dict]) -> None:
+    """결과 종목명을 한국어로 번역 — 신고가/급등과 동일 chart_translate.translate_
+    titles_kr(영구캐시 공유, TSMC 같은 통용명은 영문 유지). 中文/영문 명칭 시장(TW)
+    한글화용. graceful — 키부재/실패/미번역은 원문 유지. (JP/HK/CN/US 는 네이버 한글·
+    영문이라 호출 불필요.)"""
+    src_names = [h["name"] for h in hits if h.get("name")]
+    if not src_names:
+        return
+    try:
+        from bot.chart_translate import translate_titles_kr
+        kr = translate_titles_kr(src_names, cache_only=False)
+    except Exception as exc:
+        log.debug("stock_screener: name translate failed: %s", exc)
+        return
+    for h in hits:
+        nm = h.get("name")
+        if nm and kr.get(nm):
+            h["name"] = kr[nm]
 
 
 def _screen_yf(conditions: list[Condition], universe: list[str], market: str,

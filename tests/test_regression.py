@@ -12539,6 +12539,14 @@ class TestMinerviniScreener:
         assert s._get_hk_universe() == [] or isinstance(s._get_hk_universe(), list)
         tw_uni, tw_names = s._get_tw_universe()   # 튜플(tickers, names) 반환·무크래시
         assert isinstance(tw_uni, list) and isinstance(tw_names, dict)
+        # TW 결과 종목명 한국어화 — 신고가/급등과 동일 chart_translate(사용자 2026-06-23
+        # 'TW 한자→한글'). _screen_tw 가 _translate_hit_names_kr 호출 + graceful(키부재 시
+        # 원문 유지·무크래시).
+        import inspect
+        assert "_translate_hit_names_kr" in inspect.getsource(s._screen_tw)
+        _h = [{"name": "台積電", "ticker": "2330.TW"}, {"ticker": "x", "name": ""}]
+        s._translate_hit_names_kr(_h)             # 샌드박스 키X → 원문 유지·무크래시
+        assert _h[0]["name"] == "台積電"
 
     def test_fmt_mcap_display_per_market(self):
         # 시총 표기 단일 소스 — 시장별 통화·단위(텔레그램 bracket / 대시보드 plain).
