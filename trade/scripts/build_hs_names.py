@@ -26,8 +26,9 @@ _DEFAULT_OUT = os.path.join(os.path.dirname(os.path.dirname(__file__)),
 _HANGUL = re.compile(r"[가-힣]")
 
 
-def _read_rows(path: str) -> list[list[str]]:
-    """파일 → 행 리스트(헤더 포함). .csv/.tsv = csv 모듈, .xlsx = openpyxl."""
+def _read_blocks(path: str) -> list[list[list[str]]]:
+    """파일 → [블록(헤더+행)]. .xlsx = **전 시트**(관세청 파일은 HS2/4/6/8/10단위
+    시트 분리, 사용자 2026-06-22), 각 시트가 1블록. .csv/.tsv = 단일 블록."""
     ext = os.path.splitext(path)[1].lower()
     if ext in (".xlsx", ".xlsm"):
         try:
@@ -35,9 +36,14 @@ def _read_rows(path: str) -> list[list[str]]:
         except ImportError:
             sys.exit("openpyxl 미설치 — data.go.kr 에서 CSV 로 받아 재실행하세요.")
         wb = load_workbook(path, read_only=True, data_only=True)
-        ws = wb.active
-        return [["" if c is None else str(c) for c in row]
-                for row in ws.iter_rows(values_only=True)]
+        blocks = []
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            rows = [["" if c is None else str(c) for c in row]
+                    for row in ws.iter_rows(values_only=True)]
+            if rows:
+                blocks.append(rows)
+        return blocks
     # CSV/TSV — 인코딩 폴백(utf-8-sig → cp949, 정부 파일 cp949 흔함)
     for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
         try:
@@ -45,7 +51,7 @@ def _read_rows(path: str) -> list[list[str]]:
                 sample = f.read(4096)
                 f.seek(0)
                 delim = "\t" if sample.count("\t") > sample.count(",") else ","
-                return [list(r) for r in csv.reader(f, delimiter=delim)]
+                return [[list(r) for r in csv.reader(f, delimiter=delim)]]
         except (UnicodeDecodeError, UnicodeError):
             continue
     sys.exit(f"인코딩 판독 실패: {path}")
@@ -87,30 +93,29 @@ def _detect_cols(rows: list[list[str]]) -> tuple[int, int]:
 
 def build(path: str, out: str = _DEFAULT_OUT,
           code_col: str | None = None, name_col: str | None = None) -> int:
-    rows = _read_rows(path)
-    header = [(_h or "").strip() for _h in rows[0]] if rows else []
-    if code_col and code_col in header:
-        code_i = header.index(code_col)
-    elif name_col and name_col in header:
-        code_i, _ = _detect_cols(rows)
-    else:
-        code_i, name_i = _detect_cols(rows)
-    if name_col and name_col in header:
-        name_i = header.index(name_col)
-    elif code_col and code_col in header:
-        _, name_i = _detect_cols(rows)
-    print(f"열 매핑: 코드='{header[code_i] if code_i < len(header) else code_i}' "
-          f"명='{header[name_i] if name_i < len(header) else name_i}'")
     seen: dict[str, str] = {}
-    for r in rows[1:]:
-        if code_i >= len(r) or name_i >= len(r):
+    for rows in _read_blocks(path):          # 시트(블록)별 — 헤더·열 매핑 각자
+        if not rows:
             continue
-        code = re.sub(r"\D", "", r[code_i] or "")
-        name = (r[name_i] or "").strip()
-        if not code or not name or not _HANGUL.search(name):
-            continue
-        # 더 구체적(긴 코드)·동일 코드 최신만 — 마지막 승(정렬 가정 안 함)
-        seen[code] = name
+        header = [(_h or "").strip() for _h in rows[0]]
+        if code_col and code_col in header:
+            code_i = header.index(code_col)
+        else:
+            code_i, _auto_n = _detect_cols(rows)
+        if name_col and name_col in header:
+            name_i = header.index(name_col)
+        else:
+            _auto_c, name_i = _detect_cols(rows)
+        print(f"열 매핑: 코드='{header[code_i] if code_i < len(header) else code_i}' "
+              f"명='{header[name_i] if name_i < len(header) else name_i}' ({len(rows)-1}행)")
+        for r in rows[1:]:
+            if code_i >= len(r) or name_i >= len(r):
+                continue
+            code = re.sub(r"\D", "", r[code_i] or "")
+            name = (r[name_i] or "").strip()
+            if not code or not name or not _HANGUL.search(name):
+                continue
+            seen[code] = name                # 동일 코드 최신만(마지막 승)
     if not seen:
         sys.exit("추출 0행 — --code-col/--name-col 로 열을 지정해 재실행하세요.")
     os.makedirs(os.path.dirname(out), exist_ok=True)
