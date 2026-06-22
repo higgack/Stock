@@ -12508,13 +12508,35 @@ class TestMinerviniScreener:
         assert "tech_conds" in yfsrc and "get_yf_trend_template" in yfsrc
         assert "_TECH_BUDGET_SEC" in yfsrc                       # 데드라인 적용
         assert 'note=note' in yfsrc                              # 진단 surface
-        # US/JP 둘 다 게이트 없이 공용 _screen_yf 로 위임(universal — if market== 금지).
-        assert "_screen_yf" in inspect.getsource(s._screen_us)
-        assert "_screen_yf" in inspect.getsource(s._screen_jp)
-        # run_screen 에 JP 분기 배선.
-        assert '"JP"' in inspect.getsource(s.run_screen)
-        # JP 유니버스 헬퍼 존재 + graceful(소스 실패/네트워크 없을 때 빈 목록·무크래시).
-        assert hasattr(s, "_get_jp_universe")
+        # 전 해외시장이 게이트 없이 공용 _screen_yf 로 위임(universal — if market== 금지).
+        for fn in (s._screen_us, s._screen_jp, s._screen_hk, s._screen_cn, s._screen_tw):
+            assert "_screen_yf" in inspect.getsource(fn)
+        # run_screen 에 US/JP/HK/CN_A/TW 분기 배선(사용자 2026-06-23 '셋 다 추가').
+        rs = inspect.getsource(s.run_screen)
+        for code in ('"US"', '"JP"', '"HK"', '"CN_A"', '"TW"'):
+            assert code in rs
+        # 시장별 유니버스 헬퍼 존재 + graceful(소스/네트워크 없을 때 빈 목록·무크래시).
+        for h in ("_get_jp_universe", "_get_hk_universe", "_get_cn_universe", "_get_tw_universe"):
+            assert hasattr(s, h)
+        assert s._get_hk_universe() == [] or isinstance(s._get_hk_universe(), list)
+        tw_uni, tw_names = s._get_tw_universe()   # 튜플(tickers, names) 반환·무크래시
+        assert isinstance(tw_uni, list) and isinstance(tw_names, dict)
+
+    def test_fmt_mcap_display_per_market(self):
+        # 시총 표기 단일 소스 — 시장별 통화·단위(텔레그램 bracket / 대시보드 plain).
+        # 사용자 2026-06-23 'HK/CN/TW 셋 다 추가'. 새 시장은 _MKT_CCY 1줄.
+        from bot.stock_screener import fmt_mcap_display as fm
+        assert fm("US", 5000, True) == "[$5.0B]"
+        assert fm("JP", 5000, False) == "¥50억"
+        assert fm("HK", 1500000, True) == "[HK$1.5조]"
+        assert fm("CN_A", 5000, False) == "元50억"
+        assert fm("TW", 1500000, False) == "NT$1.5조"
+        assert fm("KR", 15000, True) == "[1.5조]"
+        assert fm("JP", 0, True) == "" and fm("JP", 0, False) == "—"   # 빈값 graceful
+        # 대시보드도 단일 소스 사용.
+        import inspect
+        import bot.dashboard as d
+        assert "fmt_mcap_display" in inspect.getsource(d)
 
     def test_fmt_metric_value_no_scientific(self):
         # 스크리너 지표값 표기 — 과학표기(1.1e+06) 금지·천단위 콤마(사용자 2026-06-23

@@ -553,6 +553,12 @@ def run_screen(conditions: list[Condition],
         result = _screen_us(conditions)
     elif market == "JP":
         result = _screen_jp(conditions)
+    elif market == "HK":
+        result = _screen_hk(conditions)
+    elif market == "CN_A":
+        result = _screen_cn(conditions)
+    elif market == "TW":
+        result = _screen_tw(conditions)
     else:
         log.warning("stock_screener: market %s not yet supported", market)
         result = ScreenResult(conditions=conditions, hits=[], total_universe=0,
@@ -783,37 +789,137 @@ _PYKRX_TO_YF_INFO: dict[str, tuple[str, float]] = {
 
 _US_UNIVERSE_CACHE = _CACHE_DIR / "us_sp500.json"
 _JP_UNIVERSE_CACHE = _CACHE_DIR / "jp_n225.json"
-# JP 는 닛케이225 격 유동 부분집합으로 바운드(사용자 2026-06-23 'A'): JPX 전종목
-# (~3700)을 .info+일봉 전수 스캔하면 10분+ 행 → 네이버 시총상위 _JP_UNIVERSE_CAP 만.
-_JP_UNIVERSE_CAP = 225
+_HK_UNIVERSE_CACHE = _CACHE_DIR / "hk_top.json"
+_CN_UNIVERSE_CACHE = _CACHE_DIR / "cn_top.json"
+_TW_UNIVERSE_CACHE = _CACHE_DIR / "tw_top.json"
+# 아시아 시장은 유동 부분집합으로 바운드(사용자 2026-06-23 JP 'A' → HK/CN/TW 동일):
+# 전종목(JPX ~3700·TWSE ~1800) .info+일봉 전수 스캔하면 10분+ 행 → 시총/거래대금
+# 상위 _ASIA_UNIVERSE_CAP 만. JP/HK/CN 은 네이버 worldstock 시총, TW 는 거래대금.
+_ASIA_UNIVERSE_CAP = 225
+_JP_UNIVERSE_CAP = _ASIA_UNIVERSE_CAP    # 하위호환(테스트/문서)
 
 
-def _get_jp_universe() -> list[str]:
-    """JP 유니버스 = JPX 공식 상장목록(intl_universe.full_universe)을 네이버
-    worldstock 시총상위 ~225 로 바운드(intl_highlow._cap_by_liquidity 재사용 —
-    신고저가 위젯과 동일 검증 파이프). 7일 캐시. 소스/네트워크 실패 시 빈 목록."""
-    if _JP_UNIVERSE_CACHE.exists():
+def _read_universe_cache(path: Path) -> Optional[list[str]]:
+    """유니버스 7일 디스크 캐시 읽기 — 신선하면 tickers, 아니면 None."""
+    if path.exists():
         try:
-            data = json.loads(_JP_UNIVERSE_CACHE.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
             if time.time() - data.get("ts", 0) < 7 * 86400:
                 return data.get("tickers", [])
         except Exception:
             pass
+    return None
+
+
+def _write_universe_cache(path: Path, tickers: list[str], **extra) -> None:
+    if tickers:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"tickers": tickers, "ts": time.time(), **extra}),
+                        encoding="utf-8")
+
+
+def _cap_by_liq(full: list[str], market: str) -> list[str]:
+    """전종목 → 네이버 worldstock 시총상위 _ASIA_UNIVERSE_CAP (신고저 위젯과 동일
+    검증 파이프 재사용). 네이버 미커버(TW 등)·실패 시 앞 N 폴백."""
+    try:
+        from bot.intl_highlow import _cap_by_liquidity
+        return _cap_by_liquidity(full, _ASIA_UNIVERSE_CAP, market)
+    except Exception:
+        return full[:_ASIA_UNIVERSE_CAP]
+
+
+def _get_jp_universe() -> list[str]:
+    """JP 유니버스 = JPX 공식 상장목록(intl_universe.full_universe)을 시총상위 ~225
+    로 바운드. 7일 캐시. 소스/네트워크 실패 시 빈 목록."""
+    c = _read_universe_cache(_JP_UNIVERSE_CACHE)
+    if c is not None:
+        return c
     tickers: list[str] = []
     try:
         from bot.intl_universe import full_universe
-        from bot.intl_highlow import _cap_by_liquidity
         full = full_universe("JP")
         if full and len(full) > 100:
-            tickers = _cap_by_liquidity(full, _JP_UNIVERSE_CAP, "JP")
+            tickers = _cap_by_liq(full, "JP")
     except Exception as exc:
         log.warning("stock_screener: JP universe(JPX) failed: %s", exc)
-    if tickers:
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        _JP_UNIVERSE_CACHE.write_text(
-            json.dumps({"tickers": tickers, "ts": time.time()}),
-            encoding="utf-8")
+    _write_universe_cache(_JP_UNIVERSE_CACHE, tickers)
     return tickers
+
+
+def _get_hk_universe() -> list[str]:
+    """HK 유니버스 = HKEX 공식 상장목록(full_universe)을 시총상위 ~225 로 바운드
+    (JP 와 완전 동일 경로). 7일 캐시. graceful."""
+    c = _read_universe_cache(_HK_UNIVERSE_CACHE)
+    if c is not None:
+        return c
+    tickers: list[str] = []
+    try:
+        from bot.intl_universe import full_universe
+        full = full_universe("HK")
+        if full and len(full) > 100:
+            tickers = _cap_by_liq(full, "HK")
+    except Exception as exc:
+        log.warning("stock_screener: HK universe(HKEX) failed: %s", exc)
+    _write_universe_cache(_HK_UNIVERSE_CACHE, tickers)
+    return tickers
+
+
+def _get_cn_universe() -> list[str]:
+    """CN 유니버스 = CSI300+500(akshare_client.list_csi300_500, ~800)을 시총상위
+    ~225 로 바운드. 7일 캐시. AKShare 미설치/실패 시 빈 목록(신고저와 동일 소스)."""
+    c = _read_universe_cache(_CN_UNIVERSE_CACHE)
+    if c is not None:
+        return c
+    tickers: list[str] = []
+    try:
+        from bot.akshare_client import list_csi300_500
+        csi = list_csi300_500()              # {ticker(.SS/.SZ): 中文명}
+        full = list(csi.keys())
+        if full and len(full) > 100:
+            tickers = _cap_by_liq(full, "CN_A")
+    except Exception as exc:
+        log.warning("stock_screener: CN universe(CSI300+500) failed: %s", exc)
+    _write_universe_cache(_CN_UNIVERSE_CACHE, tickers)
+    return tickers
+
+
+def _get_tw_universe() -> tuple[list[str], dict]:
+    """TW 유니버스 = TWSE(.TW)+TPEx(.TWO) 전 일반종목을 **거래대금(value)** 상위
+    ~225 로 바운드 + 中文명 맵(네이버 worldstock 이 TW 미지원이라 STOCK_DAY_ALL 명칭
+    사용). 7일 캐시. graceful — 소스 실패 시 ([], {})."""
+    if _TW_UNIVERSE_CACHE.exists():
+        try:
+            data = json.loads(_TW_UNIVERSE_CACHE.read_text(encoding="utf-8"))
+            if time.time() - data.get("ts", 0) < 7 * 86400:
+                return data.get("tickers", []), data.get("names", {})
+        except Exception:
+            pass
+    rows: list[tuple[str, float, str]] = []   # (ticker, value, name)
+    try:
+        from bot.twse_client import _is_common_stock, fetch_stock_day_all
+        srcs = [("fetch_stock_day_all", ".TW")]
+        import os as _os
+        if _os.getenv("TW_HIGHLOW_OTC", "1").lower() not in ("0", "false", "off"):
+            srcs.append(("fetch_tpex_day_all", ".TWO"))
+        import bot.twse_client as _tw
+        for fn_name, suf in srcs:
+            fn = getattr(_tw, fn_name, None)
+            if not fn:
+                continue
+            for s in fn().get("rows", []):
+                code = str(s.get("code") or "")
+                if not _is_common_stock(code):
+                    continue
+                tk = f"{code}{suf}"
+                rows.append((tk, float(s.get("value") or 0), s.get("name") or code))
+    except Exception as exc:
+        log.warning("stock_screener: TW universe(TWSE/TPEx) failed: %s", exc)
+    rows.sort(key=lambda r: r[1], reverse=True)
+    rows = rows[:_ASIA_UNIVERSE_CAP]
+    tickers = [r[0] for r in rows]
+    names = {r[0]: r[2] for r in rows}
+    _write_universe_cache(_TW_UNIVERSE_CACHE, tickers, names=names)
+    return tickers, names
 
 
 def _get_us_universe() -> list[str]:
@@ -914,19 +1020,39 @@ def _screen_us(conditions: list[Condition]) -> ScreenResult:
 
 
 def _screen_jp(conditions: list[Condition]) -> ScreenResult:
-    """Screen JP using yfinance — 닛케이225 격 유동 부분집합(JPX 전종목을 네이버
-    시총상위 ~225 로 바운드, 사용자 2026-06-23 'A: 유동 부분집합·깔끔·빠름').
+    """Screen JP — JPX 전종목을 시총상위 ~225 로 바운드(사용자 2026-06-23 'A').
     US 와 완전히 동일한 _screen_yf 경로(게이트 없음·universal)."""
-    universe = _get_jp_universe()
-    return _screen_yf(conditions, universe, "JP",
+    return _screen_yf(conditions, _get_jp_universe(), "JP",
                       empty_note="유니버스 비어있음 — JP 상장목록(JPX) 소스 실패")
 
 
+def _screen_hk(conditions: list[Condition]) -> ScreenResult:
+    """Screen HK — HKEX 전종목을 시총상위 ~225 로 바운드(JP 와 동일 경로)."""
+    return _screen_yf(conditions, _get_hk_universe(), "HK",
+                      empty_note="유니버스 비어있음 — HK 상장목록(HKEX) 소스 실패")
+
+
+def _screen_cn(conditions: list[Condition]) -> ScreenResult:
+    """Screen CN — CSI300+500 을 시총상위 ~225 로 바운드(AKShare, 신고저와 동일)."""
+    return _screen_yf(conditions, _get_cn_universe(), "CN_A",
+                      empty_note="유니버스 비어있음 — CN CSI300+500(AKShare) 소스 실패")
+
+
+def _screen_tw(conditions: list[Condition]) -> ScreenResult:
+    """Screen TW — TWSE/TPEx 전종목을 거래대금상위 ~225 로 바운드 + 中文명(네이버
+    미커버라 STOCK_DAY_ALL 명칭)."""
+    universe, names = _get_tw_universe()
+    return _screen_yf(conditions, universe, "TW",
+                      empty_note="유니버스 비어있음 — TW 상장목록(TWSE/TPEx) 소스 실패",
+                      names=names)
+
+
 def _screen_yf(conditions: list[Condition], universe: list[str], market: str,
-               empty_note: str = "") -> ScreenResult:
-    """yfinance 기반 시장 공용 스크리너(US/JP). .info 사전필터 → Phase 3 추세
-    템플릿(데드라인·캡·daily캐시). 시장특정 분기 없음 — universe·market 만 주입.
-    Rule applies to all yfinance markets going forward / US+JP 적용."""
+               empty_note: str = "", names: Optional[dict] = None) -> ScreenResult:
+    """yfinance 기반 시장 공용 스크리너(US/JP/HK/CN/TW). .info 사전필터 → Phase 3
+    추세 템플릿(데드라인·캡·daily캐시). 시장특정 분기 없음 — universe·market(·names)
+    만 주입. names = 유니버스 소스가 제공한 종목명(TW 中文 등, 네이버 미커버 보완).
+    Rule applies to all yfinance markets going forward / US+JP+HK+CN+TW 적용."""
     if not universe:
         return ScreenResult(conditions=conditions, hits=[],
                             total_universe=0, elapsed_sec=0, market=market,
@@ -1034,6 +1160,11 @@ def _screen_yf(conditions: list[Condition], universe: list[str], market: str,
         log.info("stock_screener: %s Phase 3 tech — %s", market, note)
         hits = final
 
+    # 종목명 백필 — (1) 유니버스 소스 제공명(TW 中文 등), (2) 네이버 한글명(JP/HK/CN/US).
+    if names:
+        for h in hits:
+            if (not h.get("name") or h.get("name") == h.get("ticker")) and names.get(h.get("ticker")):
+                h["name"] = names[h["ticker"]]
     _backfill_names_naver(hits, market)
     return ScreenResult(conditions=conditions, hits=hits,
                         total_universe=total, elapsed_sec=0, market=market, note=note)
@@ -1095,7 +1226,7 @@ def format_list_message() -> str:
             aliases = "/".join(m.aliases[:2])
             lines.append(f"  <code>{m.name}</code> ({aliases}) — {m.desc}")
 
-    lines.append("\n<b>📈 추세 (일봉, 시총 상위 스캔 · KR=pykrx/US·JP=yfinance):</b>")
+    lines.append("\n<b>📈 추세 (일봉, 시총 상위 스캔 · KR=pykrx / 해외=yfinance):</b>")
     for k, m in METRICS.items():
         if m.source == "tech":
             aliases = "/".join(m.aliases[:2])
@@ -1108,10 +1239,11 @@ def format_list_message() -> str:
 
     lines.append(
         "\n<b>연산자:</b> <code>&gt; &lt; &gt;= &lt;= =</code>"
-        "\n<b>시장:</b> KR (KOSPI+KOSDAQ) 기본, <code>us</code>=US S&amp;P 500,"
-        " <code>jp</code>=JP 닛케이225격(JPX 시총상위 ~225)."
+        "\n<b>시장:</b> KR(KOSPI+KOSDAQ) 기본 · <code>us</code>=S&amp;P500 ·"
+        " <code>jp</code>=닛케이격 · <code>hk</code>=홍콩 · <code>cn</code>=본토 ·"
+        " <code>tw</code>=대만 (해외=시총상위 ~225)."
         "\n  KR: Phase 1 pykrx 전 종목 → Phase 2 yfinance 생존만"
-        "\n  US·JP: yfinance 개별 조회 (~1-2분, Phase 1 지표도 yfinance)"
+        "\n  해외(us/jp/hk/cn/tw): yfinance 개별 조회 (~1-2분, Phase 1 지표도 yfinance)"
         "\n  QoQ: 전분기 대비 성장률 (yfinance 분기 재무제표 기반)"
         "\n비용 ₩0. 24h 캐시."
     )
@@ -1122,12 +1254,10 @@ def format_result_message(result: ScreenResult) -> list[str]:
     """Format screen result for Telegram (chunked for 4096 limit)."""
     cond_str = " · ".join(c.display() for c in result.conditions)
     cache_tag = " 💾캐시" if result.was_cached else ""
-    is_us = result.market == "US"
-    is_jp = result.market == "JP"
-    market_tag = (" (US S&amp;P 500)" if is_us
-                  else " (JP 닛케이225격)" if is_jp else " (KR)")
-    sort_note = ("시가총액 내림차순 ($M, 대형주 우선)" if is_us
-                 else "시가총액 내림차순 (¥M, 대형주 우선)" if is_jp
+    market_tag = f" ({_MKT_TAG.get(result.market, 'KR')})"
+    _ccy = _MKT_CCY.get(result.market, "")
+    sort_note = (f"시가총액 내림차순 ({_ccy}M, 대형주 우선)" if _ccy
+                 else "거래대금 상위 (대형주 우선)" if result.market == "TW"
                  else "시가총액 내림차순 (대형주 우선)")
 
     header = (
@@ -1152,9 +1282,7 @@ def format_result_message(result: ScreenResult) -> list[str]:
         name = h.get("name", "")
         ticker = h.get("ticker", "")
         mcap = h.get("mcap")
-        mcap_str = ((_fmt_mcap_us(mcap) if is_us
-                     else _fmt_mcap_jp(mcap) if is_jp
-                     else _fmt_mcap(mcap)) if mcap else "")
+        mcap_str = fmt_mcap_display(result.market, mcap, bracket=True) if mcap else ""
 
         vals = []
         for mk in metric_keys:
@@ -1176,25 +1304,32 @@ def format_result_message(result: ScreenResult) -> list[str]:
     return _chunk_html(full, 4000)
 
 
-def _fmt_mcap(v: float) -> str:
-    if v >= 10000:
-        return f"[{v/10000:.1f}조]"
-    return f"[{v:,.0f}억]"
+# 시장 표시 메타 — 결과 헤더 태그 + 시총 통화기호(전 surface 단일 소스).
+_MKT_TAG = {
+    "US": "US S&amp;P 500", "JP": "JP 닛케이225격", "HK": "HK 홍콩 시총상위",
+    "CN_A": "CN 본토 CSI300+500", "TW": "TW 대만 거래대금상위", "KR": "KR",
+}
+# 통화기호 — 아시아권은 현지통화 조/억(10^12/10^8) 규약. US 는 별도($B/M).
+_MKT_CCY = {"JP": "¥", "HK": "HK$", "CN_A": "元", "TW": "NT$"}
 
 
-def _fmt_mcap_us(v_millions: float) -> str:
-    if v_millions >= 1000:
-        return f"[${v_millions/1000:.1f}B]"
-    return f"[${v_millions:,.0f}M]"
-
-
-def _fmt_mcap_jp(v_millions: float) -> str:
-    # marketCap(¥) / 1e6 = ¥백만. 1조엔 = 1e6 백만.
-    if v_millions >= 1e6:
-        return f"[¥{v_millions/1e6:.1f}조]"
-    if v_millions >= 100:
-        return f"[¥{v_millions/100:,.0f}억]"
-    return f"[¥{v_millions:,.0f}M]"
+def fmt_mcap_display(market: str, mcap_millions: float, bracket: bool = True) -> str:
+    """시총 표기 — 시장별 통화·단위 단일 소스(텔레그램 bracket=True / 대시보드
+    bracket=False). US=$B/M, JP/HK/CN/TW=현지통화 조/억(marketCap/1e6=현지백만),
+    KR=조/억(mcap 단위 억원). universal — 새 시장은 _MKT_CCY 1줄."""
+    if not mcap_millions:
+        return "" if bracket else "—"
+    v = mcap_millions
+    if market == "US":
+        s = f"${v/1000:.1f}B" if v >= 1000 else f"${v:,.0f}M"
+    elif market in _MKT_CCY:
+        sym = _MKT_CCY[market]
+        s = (f"{sym}{v/1e6:.1f}조" if v >= 1e6
+             else f"{sym}{v/100:,.0f}억" if v >= 100
+             else f"{sym}{v:,.0f}M")
+    else:                                    # KR — mcap 이 이미 억원 단위
+        s = f"{v/10000:.1f}조" if v >= 10000 else f"{v:,.0f}억"
+    return f"[{s}]" if bracket else s
 
 
 def fmt_metric_value(v) -> str:

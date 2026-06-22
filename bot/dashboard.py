@@ -6921,7 +6921,8 @@ def _render_screen_manual() -> str:
             '<h4>사용법 (텔레그램 /screen = 대시보드 실행 버튼 동일)</h4>'
             '<div class="mrow"><code>PER&lt;15 PBR&lt;1 배당수익률&gt;3</code> — KR (KOSPI+KOSDAQ 전 종목)</div>'
             '<div class="mrow"><code>us PER&lt;15 DIV&gt;2</code> — 앞에 <code>us</code> = US S&amp;P 500</div>'
-            '<div class="mrow"><code>jp minervini</code> — 앞에 <code>jp</code> = JP 닛케이225격(JPX 시총상위 ~225)</div>'
+            '<div class="mrow"><code>jp minervini</code> · <code>hk</code> · <code>cn</code> · <code>tw</code>'
+            ' — 닛케이격/홍콩/본토/대만 (해외=시총·거래대금 상위 ~225)</div>'
             '<div class="mrow"><code>매출QoQ&gt;10 영업이익QoQ&gt;5</code> — 전분기 대비 성장 필터</div>'
             '<div class="mrow"><code>valueup</code> — 프리셋 이름만 입력</div>'
             '<h4>Phase 1 지표 (pykrx 벌크 — KR 전 종목 즉시)</h4>'
@@ -6930,7 +6931,7 @@ def _render_screen_manual() -> str:
             + _metric_rows("yfinance", 2) +
             '<h4>QoQ 지표 (전분기 대비 성장률, yfinance 분기 재무제표)</h4>'
             + _metric_rows("qoq", 2) +
-            '<h4>추세 지표 (일봉 · 시총 상위 스캔 · KR=pykrx / US·JP=yfinance)</h4>'
+            '<h4>추세 지표 (일봉 · 시총 상위 스캔 · KR=pykrx / 해외=yfinance)</h4>'
             + _metric_rows("tech", 2) +
             '<div class="mrow" style="opacity:.85">📈 <b>Minervini 추세 템플릿</b>'
             ' (<code>/screen minervini</code> 또는 <code>트렌드템플릿&gt;=1</code>) — 7조건 전부 충족 시 1:'
@@ -6944,8 +6945,9 @@ def _render_screen_manual() -> str:
             + preset_rows +
             '<h4>연산자 · 시장 · 비용</h4>'
             '<div class="mrow">연산자: <code>&gt; &lt; &gt;= &lt;= =</code> · '
-            '시장: KR 기본, <code>us</code>=US S&amp;P 500 · <code>jp</code>=JP 닛케이225격 '
-            '(개별 조회 ~1-2분) · 비용 ₩0 (LLM 미사용) · 24h 캐시</div>'
+            '시장: KR 기본 · <code>us</code>=S&amp;P500 · <code>jp</code>=닛케이격 · '
+            '<code>hk</code>=홍콩 · <code>cn</code>=본토 · <code>tw</code>=대만 '
+            '(해외=개별 조회 ~1-2분) · 비용 ₩0 (LLM 미사용) · 24h 캐시</div>'
             '</div></details>'
         )
     except Exception:
@@ -7267,7 +7269,7 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
         + _render_screen_manual() +
         '<button id="cs-csv" type="button" class="csv-btn" title="모든 조건부 스크리너 결과를 CSV(엑셀)로 — 조건·날짜·종목·시총·지표 포함">📥 CSV</button>'
         '</h2>'
-        '<p class="sub">정량 조건으로 KR + US + JP 종목 필터 (pykrx/yfinance, ₩0). '
+        '<p class="sub">정량 조건으로 KR + US + JP + HK + CN + TW 종목 필터 (pykrx/yfinance, ₩0). '
         '텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> '
         '· <code>/screen jp minervini</code> · <code>/screen valueup</code> · <code>/screen list</code></p>'
         '<div class="search-bar">'
@@ -7334,8 +7336,6 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                 _scr_date = _sa.get("_date", "")
                 _scr_file = _sa.get("_file", "")
                 _scr_market = _sa.get("market", "KR")
-                _scr_is_us = _scr_market == "US"
-                _scr_is_jp = _scr_market == "JP"
                 _search_hay = _raw_conds
                 for _sh in (_sa.get("hits") or []):
                     _search_hay += " " + str(_sh.get("name", "")) + " " + str(_sh.get("ticker", ""))
@@ -7346,16 +7346,9 @@ def _render_screener_page(runs: list[dict], outcomes: dict, screen_archives: lis
                     _sh_ticker = _shtml.escape(str(_sh.get("ticker", "")))
                     _sh_mkt = _shtml.escape(str(_sh.get("market", "")))
                     _sh_mcap = _sh.get("mcap")
-                    if _scr_is_us:
-                        _sh_mcap_str = (f"${_sh_mcap/1000:.1f}B" if _sh_mcap and _sh_mcap >= 1000
-                                        else f"${_sh_mcap:,.0f}M" if _sh_mcap else "—")
-                    elif _scr_is_jp:
-                        # ¥백만(marketCap/1e6) → 조/억 (텔레그램 _fmt_mcap_jp 동일 규약)
-                        _sh_mcap_str = (f"¥{_sh_mcap/1e6:.1f}조" if _sh_mcap and _sh_mcap >= 1e6
-                                        else f"¥{_sh_mcap/100:,.0f}억" if _sh_mcap and _sh_mcap >= 100
-                                        else f"¥{_sh_mcap:,.0f}M" if _sh_mcap else "—")
-                    else:
-                        _sh_mcap_str = f"{_sh_mcap:,.0f}" if _sh_mcap else "—"
+                    # 시총 표기 — 텔레그램과 단일 소스(fmt_mcap_display, 시장별 통화).
+                    from bot.stock_screener import fmt_mcap_display as _fmd
+                    _sh_mcap_str = _fmd(_scr_market, _sh_mcap, bracket=False)
                     from bot.stock_screener import fmt_metric_value as _fmv
                     _sh_extras = []
                     for _ek, _ev in _sh.items():
@@ -10106,7 +10099,7 @@ code {{ font-family:'IBM Plex Mono',monospace; }}
   <a class="back" href="./index.html">← 아카이브로 돌아가기</a>
   · <a href="portfolio.html">💼 자산</a>
   <h1>📊 조건부 스크리너</h1>
-  <p class="sub">정량 조건으로 KR + US + JP 종목 필터 (pykrx/yfinance, ₩0).
+  <p class="sub">정량 조건으로 KR + US + JP + HK + CN + TW 종목 필터 (pykrx/yfinance, ₩0).
   텔레그램: <code>/screen PER&lt;15 PBR&lt;1</code> · <code>/screen us PER&lt;15</code> · <code>/screen jp minervini</code> · <code>/screen valueup</code> · <code>/screen list</code></p>
   {{cards}}
 </div>
