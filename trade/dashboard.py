@@ -9,6 +9,9 @@ client-side views over the same data:
   회사별 (company view): one section per stock mentioned, with mini-cards
                        linking to the latest alert for each item that
                        references it
+  나라별 (country view): one section per country, same mini-card layout as
+                       회사별, grouping each alert under every country it
+                       lists (multi-country → multiple sections)
 
 Filters (search, direction toggle, status toggle) run client-side over
 the embedded ALERTS array, so re-rendering after a filter change is a
@@ -763,6 +766,7 @@ def _build_html(
         + '<nav class="tabs">'
         '<button class="tab active" data-tab="items">품목별</button>'
         '<button class="tab" data-tab="companies">회사별</button>'
+        '<button class="tab" data-tab="countries">나라별</button>'
         '<button class="tab" data-tab="matrix">매트릭스</button>'
         + (f'<button class="tab" data-tab="industry">📈 산업트렌드</button>'
            if _has_industry else '')
@@ -794,6 +798,7 @@ def _build_html(
         '</section>'
         '<main id="items-view" class="view active"></main>'
         '<main id="companies-view" class="view"></main>'
+        '<main id="countries-view" class="view"></main>'
         '<main id="matrix-view" class="view"></main>'
         # 산업트렌드 CSV 데이터 — lazy 분리 시 메인에 남겨 csv-btn 이 항상 찾음(#2 fix).
         + industry_csv
@@ -1723,7 +1728,7 @@ function matches(a){
   if(state.onlynew&&!isAlertNew(a))return false;  // 🆕 최근 7일 게시 카드만
   if(state.q){
     const q=state.q.toLowerCase();
-    const hay=(a.item+' '+a.region+' '+a.country+' '+(a.stocks||[]).join(' ')).toLowerCase();
+    const hay=(a.item+' '+a.region+' '+a.country+' '+(a.countries||[]).join(' ')+' '+(a.stocks||[]).join(' ')).toLowerCase();
     if(!hay.includes(q))return false;
   }
   return true;
@@ -1902,6 +1907,39 @@ function buildCompaniesView(filtered){
   }).join('');
 }
 
+// 나라별 뷰 (사용자 2026-06-22) — 회사별과 동일 구조이되 국가로 그룹핑. BeOn
+// 데이터의 6요소 중 '나라' 축. 한 alert 이 여러 국가를 달면(countries 다중) 각
+// 국가 섹션에 모두 들어간다(매트릭스 셀 의미와 일치). 국가 미상은 '전국'.
+// 필터(수출/수입/잠정/확정/전체/🆕신규)는 전역 matches() 가 이미 적용한 filtered
+// 를 받으므로 별도 처리 불필요 — 회사별과 동일하게 자동 반영.
+function buildCountriesView(filtered){
+  const byCountry={};
+  filtered.forEach(a=>{
+    const cs=(a.countries&&a.countries.length)?a.countries:[a.country||'전국'];
+    cs.forEach(c=>{const k=c||'전국';(byCountry[k]=byCountry[k]||[]).push(a)});
+  });
+  let sorted=Object.entries(byCountry).sort((x,y)=>y[1].length-x[1].length||x[0].localeCompare(y[0]));
+  // RULE: 검색어가 국가명을 직접 매칭하면 그 섹션만으로 좁힌다(회사별과 동일
+  // 패턴). 아니면 alert 내용 매칭(예: '라면')은 전역 matches() 가 이미 처리.
+  if(state.q){
+    const q=state.q.toLowerCase();
+    const direct=sorted.filter(([n])=>n.toLowerCase().includes(q));
+    if(direct.length)sorted=direct;
+  }
+  if(!sorted.length)return '<div class="empty">조건에 맞는 국가가 없습니다.</div>';
+  return sorted.map(([name,items])=>{
+    // 회사별과 동일: 같은 품목끼리 묶고(localeCompare), 그 안에서 전국-tier +
+    // posted_at desc. 같은 alert 이 국가 섹션 안에서 중복되진 않음(국가당 1회 push).
+    items.sort((a,b)=>
+      (a.item||'').localeCompare(b.item||'')||
+      regionTier(a)-regionTier(b)||
+      (b.posted_at||'').localeCompare(a.posted_at||'')
+    );
+    const cards=items.map(renderMiniCard).join('');
+    return renderSection(name, [items.length+'개 품목'], cards);
+  }).join('');
+}
+
 function renderHeaderMeta(){
   const st=currentDataStatus();
   const ms=document.getElementById('meta-status');
@@ -1935,8 +1973,8 @@ function renderHeaderMeta(){
 // (사용자 2026-06-15 '카드 클릭 너무 오래'). 이제 활성 탭만 빌드하고 나머지
 // 두 뷰는 '더티' 표시 후 탭 전환 시 빌드 → DOM 1×1054 로 1/3. CSV·모달은
 // ALERTS/ALERT_BY_ID(데이터)를 직접 읽어 DOM 무관이라 lazy 해도 안전.
-const _CLIENT_VIEWS={items:buildItemsView,companies:buildCompaniesView,matrix:buildMatrixView};
-let _viewDirty={items:true,companies:true,matrix:true};
+const _CLIENT_VIEWS={items:buildItemsView,companies:buildCompaniesView,countries:buildCountriesView,matrix:buildMatrixView};
+let _viewDirty={items:true,companies:true,countries:true,matrix:true};
 // 별도파일 lazy fetch (2026-06-16 '느려') — 산업트렌드(588 SVG ~7MB)를 index.html
 // 인라인 대신 industry_panel.html 로 빼 탭 첫 열 때만 fetch. 초기 로딩 11MB→~3MB.
 // data-src 없는 뷰(인라인/클라이언트)는 무시. 실패 시 재시도 가능하게 loaded 해제.
@@ -1975,8 +2013,8 @@ function _buildView(name){
 function render(){
   _lastFiltered=ALERTS.filter(matches);
   document.getElementById('visible-count').textContent=_lastFiltered.length;
-  // 클라 3뷰 전부 더티 표시 → 활성 뷰만 즉시 빌드, 나머지는 탭 전환 때.
-  _viewDirty={items:true,companies:true,matrix:true};
+  // 클라 4뷰 전부 더티 표시 → 활성 뷰만 즉시 빌드, 나머지는 탭 전환 때.
+  _viewDirty={items:true,companies:true,countries:true,matrix:true};
   _buildView(_activeTab());                           // industry/heatmap 이면 no-op (정상)
   filterIndustryCards();                              // 산업트렌드 탭도 검색 (2026-06-12)
   if(window.hmFilter) window.hmFilter(state.q||'');   // 히트맵 탭도 검색
