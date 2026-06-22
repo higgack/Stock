@@ -458,17 +458,31 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
                      "hs_linked": True})
         _add(cos)
     rows.sort(key=lambda x: -(x["export_usd"] or 0))
-    # 정확 HS10(점·대시 제거 10자리) → 그 leaf 의 한글품목명 + 판가/물량 분해.
+    # 판가/물량 분해 — 검색 prefix(2/4/6/8/10) 하위 전 leaf 의 금액·중량 합산 →
+    # 단가($/kg)=합산금액÷합산중량 (사용자 2026-06-22 '각 HS 자릿수에 모두'). 정확
+    # HS10 이면 단일 leaf, 광역(2/4)은 혼합 가중평균 단가(렌더가 'N개 합산' 라벨).
     hs_name = None
     hs_pv = None
-    if len(bare) == 10 and hs_leaf and bare in hs_leaf:
-        _lf = hs_leaf[bare]
-        hs_name = (_lf.get("name") or "").strip() or None
-        if hs_name == bare:                 # 이름이 코드와 동일하면 의미 없음
-            hs_name = None
-        hs_pv = _leaf_pv(_lf)
-    # 라이브 stat_kor 미스(무실적 코드·HS6/HS4 검색) → 전 HS 사전 폴백 (사용자
-    # 2026-06-22 '무실적 코드까지 전부'). 사전 부재 시 None(graceful).
+    hs_pv_n = 0
+    if hs_leaf and bare:
+        _WK = ("exp", "exp_pm", "exp_py", "imp", "imp_pm", "imp_py",
+               "exp_wgt", "exp_wgt_pm", "exp_wgt_py",
+               "imp_wgt", "imp_wgt_pm", "imp_wgt_py")
+        agg = dict.fromkeys(_WK, 0)
+        for _code, _lf in hs_leaf.items():
+            if not _code.startswith(bare):
+                continue
+            hs_pv_n += 1
+            for _k in _WK:
+                agg[_k] += int(_lf.get(_k) or 0)
+            if _code == bare:               # 정확 HS10 → 그 leaf 한글품목명
+                hs_name = (_lf.get("name") or "").strip() or None
+                if hs_name == bare:
+                    hs_name = None
+        if hs_pv_n:
+            hs_pv = _leaf_pv(agg)
+    # 한글명: 정확 leaf 명 없으면(광역·무실적) 전 HS 사전 prefix 폴백 (사용자
+    # 2026-06-22). 사전 부재 시 None(graceful).
     if not hs_name:
         try:
             from trade import hs_names as _hn
@@ -478,7 +492,7 @@ def _hs_code_search(query: str, by_mti: dict, pairs: list,
     return {"mode": "item", "query": query, "name": f"HS {query}", "hs_search": True,
             "synonym": None, "items": rows[:30], "companies": companies[:40],
             "leaf": (leaf or "").strip() or None,
-            "hs_name": hs_name, "hs_pv": hs_pv}
+            "hs_name": hs_name, "hs_pv": hs_pv, "hs_pv_n": hs_pv_n}
 
 
 def gather(query: str, api_key: str | None = None, leaf: str | None = None) -> dict:
@@ -631,11 +645,14 @@ def _render_free_item(data: dict) -> str:
                    + _line("📥 수입 YoY", pv.get("imp_yoy"))
                    + _line("📥 수입 MoM", pv.get("imp_mom")))
             if blk:
+                _n = data.get("hs_pv_n") or 0
+                scope = (f'{_n:,}개 세부품목 합산 · 단가=가중평균 · ' if _n > 1
+                         else '단가=금액÷중량 · ')
                 head += (f'<div style="font-size:12px;color:#c8c8d0;background:#15181f;'
                          f'border:1px solid #2a2e37;border-radius:6px;padding:6px 10px;'
                          f'margin-bottom:12px;line-height:1.7">'
                          f'<b>📊 판가 vs 물량 분해</b> '
-                         f'<span style="color:#9aa0aa">(단가=금액÷중량 · 근사식이라 '
+                         f'<span style="color:#9aa0aa">({scope}근사식이라 '
                          f'판가×물량 합이 금액과 미세차 가능)</span>{blk}</div>')
     if companies:
         chips = "".join(
