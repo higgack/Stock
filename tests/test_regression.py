@@ -12516,6 +12516,40 @@ class TestMinerviniScreener:
         # JP 유니버스 헬퍼 존재 + graceful(소스 실패/네트워크 없을 때 빈 목록·무크래시).
         assert hasattr(s, "_get_jp_universe")
 
+    def test_fmt_metric_value_no_scientific(self):
+        # 스크리너 지표값 표기 — 과학표기(1.1e+06) 금지·천단위 콤마(사용자 2026-06-23
+        # '볼륨 이상해'). 전 surface(텔레그램·대시보드 스크리너/아카이브) 공용.
+        from bot.stock_screener import fmt_metric_value as f
+        assert f(1099290.0) == "1,099,290"      # 거래량 — 콤마, no e+06
+        assert f(23790200.0) == "23,790,200"
+        assert "e" not in f(62336000.0).lower()  # 과학표기 절대 금지
+        assert f(1) == "1" and f(1.0) == "1"     # 트렌드템플릿 정수
+        assert f(30.5) == "30.5"                  # 소수 보존
+        assert f(617600) == "617,600"
+        # 텔레그램·대시보드 surface 가 공용 헬퍼 사용(:g 직접 금지).
+        import inspect
+        import bot.stock_screener as s
+        import bot.dashboard as d
+        assert "fmt_metric_value" in inspect.getsource(s.format_result_message)
+        assert ":{v:g}" not in inspect.getsource(s.format_result_message)
+        dsrc = inspect.getsource(d)
+        assert "fmt_metric_value" in dsrc
+
+    def test_screen_name_backfill_naver_wired(self):
+        # JP/US 등 yfinance shortName 비면 네이버 한글명 백필(사용자 2026-06-23
+        # 'JP 티커만 → 네이버 종목명, 미국도·향후 타국도'). graceful·기존명 보존.
+        import inspect
+        import bot.stock_screener as s
+        assert hasattr(s, "_backfill_names_naver")
+        # _screen_yf 가 백필을 호출(전 yfinance 시장 universal).
+        assert "_backfill_names_naver" in inspect.getsource(s._screen_yf)
+        # graceful: 네트워크/소스 없어도 무크래시, 기존명 보존(없을 때만 채움).
+        hits = [{"ticker": "AAA.T", "name": "AAA.T"},
+                {"ticker": "BBB.T", "name": "기존명"}]
+        s._backfill_names_naver(hits, "JP")     # 샌드박스 네트워크X → 무크래시
+        assert hits[1]["name"] == "기존명"        # 양호한 기존명 보존
+        s._backfill_names_naver([], "JP")        # 빈 입력 graceful
+
     def test_precompute_top_by_mcap(self):
         # 사전계산 캐시 워밍 대상 선택 — 시총>500&거래량>0 중 시총 상위 N(내림차순).
         # /screen minervini 스캔 선택과 동일 규칙(사용자 2026-06-23 행 해소 background).
