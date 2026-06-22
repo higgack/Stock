@@ -359,6 +359,25 @@ class ItemModeTests(unittest.TestCase):
         self.assertIn("판가 vs 물량 분해", h)
         self.assertIn("수출", h)
 
+    def test_exact_hs10_leaf_pv_line(self):
+        # 10자리 정확 검색 → 그 코드 자체 旬 스냅샷(3개월) 판가물량 별도 줄 (사용자
+        # 2026-06-22). 광역검색엔 없음. 추세·진도율은 여전히 MTI 단위.
+        node = {"name": "금", "industry": "기타",
+                "months": {"2025-05": 100, "2026-05": 300},
+                "wgts": {"2025-05": 10, "2026-05": 20}}
+        leaf = {"7108131010": {"hs_code": "7108131010", "name": "반도체 제조용",
+                               "exp": 300, "exp_py": 100, "imp": 0, "imp_py": 0,
+                               "exp_wgt": 20, "exp_wgt_py": 10,
+                               "imp_wgt": 0, "imp_wgt_py": 0}}
+        res = C._hs_code_search("7108131010", {"111100": node}, [], None, hs_leaf=leaf)
+        self.assertIsNotNone(res["hs_pv_exact"])
+        self.assertEqual(res["hs_pv_exact"]["yoy"]["value"], 200.0)   # 300 vs 100
+        self.assertIn("정확 HS10", C.render_free(res))
+        # 광역(2자리) → 정확 HS10 없음
+        res2 = C._hs_code_search("71", {"111100": node}, [], None, hs_leaf=leaf)
+        self.assertIsNone(res2["hs_pv_exact"])
+        self.assertNotIn("정확 HS10", C.render_free(res2))
+
     def test_direction_param_forces_import(self):
         # 히트맵 수입 클릭 → direction='imp' → 해설·판가물량 수입 기준 (사용자 2026-06-22).
         exp = {"name": "x", "industry": "반도체",
