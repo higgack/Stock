@@ -366,6 +366,29 @@ class ItemModeTests(unittest.TestCase):
         self.assertIsNone(res2["hs_pv"])
         self.assertNotIn("판가 vs 물량 분해", C.render_free(res2))
 
+    def test_pv_aggregate_at_heading_level(self):
+        # 광역(호/챕터) 검색도 prefix 하위 leaf 합산해 분해 (사용자 2026-06-22
+        # '각 HS 자릿수에 모두'). 8542.31(=854231) → 그 아래 leaf 2개 금액·중량 합산.
+        by_mti = {"831210": {"name": "프로세서와 컨트롤러", "industry": "반도체",
+                             "months": {"2026-05": 3e8}}}
+        leaf = {
+            "8542311000": {"hs_code": "8542311000", "name": "CPU", "exp": 100,
+                           "exp_py": 50, "imp": 0, "imp_py": 0,
+                           "exp_wgt": 10, "exp_wgt_py": 8, "imp_wgt": 0, "imp_wgt_py": 0},
+            "8542312000": {"hs_code": "8542312000", "name": "MCU", "exp": 200,
+                           "exp_py": 100, "imp": 0, "imp_py": 0,
+                           "exp_wgt": 20, "exp_wgt_py": 12, "imp_wgt": 0, "imp_wgt_py": 0},
+        }
+        res = C._hs_code_search("8542.31", by_mti, [], None, hs_leaf=leaf)
+        self.assertEqual(res["hs_pv_n"], 2)            # 두 leaf 합산
+        # 합산: exp 300 vs 150(+100%), 중량 30 vs 20(+50%) → 판가 +33.3%
+        self.assertEqual(res["hs_pv"]["exp_yoy"]["value"], 100.0)
+        self.assertEqual(res["hs_pv"]["exp_yoy"]["qty"], 50.0)
+        self.assertEqual(res["hs_pv"]["exp_yoy"]["price"], 33.3)
+        h = C.render_free(res)
+        self.assertIn("세부품목 합산", h)              # 광역 라벨
+        self.assertIn("가중평균", h)
+
     def test_render_telegram_item(self):
         data = {"mode": "item", "name": "반도체",
                 "items": [{"item": "디램", "export_usd": 2e9, "import_usd": 5e8}],
