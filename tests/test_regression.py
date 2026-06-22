@@ -6055,6 +6055,8 @@ class TestBlogWatchMultiBlog:
         assert "ranto28" in ids and ids["ranto28"]["title"] == "메르"        # 사용자 2026-06-18
         assert "richyun0108" in ids and ids["richyun0108"]["title"] == "작은 투자자"  # 사용자 2026-06-22
         assert ids["richyun0108"]["categories"] is None        # 전체 글
+        assert "bboyanaga" in ids and ids["bboyanaga"]["title"] == "애널리스트 김경민"  # 사용자 2026-06-23
+        assert ids["bboyanaga"]["categories"] is None          # 전체 글
 
     def test_research_us_action_badge_and_consensus_wired(self):
         # 사용자 2026-06-18 A1(액션 배지/필터)+A2(Finnhub 컨센서스로 빈 TP칸).
